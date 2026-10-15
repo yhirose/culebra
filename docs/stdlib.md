@@ -3096,6 +3096,31 @@ every view of `buf` a `ValueError` (`SharedBuffer has been dropped`), while a
 handle another isolate holds keeps the bytes for that isolate. A view sent to
 another isolate takes a handle along with it.
 
+A view is a handle too, and reads as its bytes decoded at that moment when it
+is printed, spread (`{...v}`, `[...v]`), or written by `JSON.stringify` /
+`TOML.stringify`: a record as an Object of its fields, printed under its
+class's name, a `FixedArray` or `BoundedArray` field as an Array, a
+`BoundedSet` as a Set, and a `BoundedMap` as an Object keyed by its keys (so
+`JSON.stringify` refuses a record holding one, as it refuses any Object with
+non-String keys). A view has no fields of its own: a record's names are its
+fields (`v["x"]` reads and writes `v.x`), and setting a name on any other view
+is a `TypeError`. Two views are `==` when they read the same bytes as the same
+thing. A view of a dropped buffer prints as `[dropped SharedBuffer view]`.
+
+```culebra
+@packable
+class Cell {
+  v: Int64 = 0
+  near: BoundedArray<Int32, 4>
+}
+let cells = SharedBuffer.new(2, Cell)
+cells[0].v = 42
+cells[0].near.push(1)
+inspect("{cells[0]}")                      # => 'Cell {v: 42, near: [1]}'
+inspect(JSON.stringify(cells[0].near))     # => '[1]'
+inspect([cells[0] == cells[0], cells[0] == cells[1]])  # => [true, false]
+```
+
 #### Sharing across isolates (zero copy)
 
 A buffer crosses an isolate boundary **by reference** — the child reads and
@@ -3331,9 +3356,9 @@ for k, v in m { ... }          # yields (key, value) tuples
 fixed scalars; equality is by the scalar's bytes (so `BoundedSet<Float32>` treats
 `0.0` and `-0.0` as distinct). Assigning the whole field is a `TypeError` —
 mutate through the view's methods. The view itself holds nothing but the way to
-the bytes, so writing onto it (`m.note = 1`, `m[42] = 1`) is an
-`ImmutableError`. The bytes live in the record, so the collection shares across
-isolates with the buffer.
+the bytes, so writing onto it (`m.note = 1`, `m[42] = 1`) is a `TypeError`.
+The bytes live in the record, so the collection shares across isolates with
+the buffer.
 
 #### Optional fields: `T?`
 

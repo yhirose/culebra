@@ -408,35 +408,28 @@ void jit_borrow_drop_thunk(JitValue* __ret, JitClosure*, int8_t self_tag, int64_
 // +1 the way it does — the caller transfers it into the instance's `proto`.
 template <class T>
 JitObject* jit_wrapped_meta(bool borrow) {
-  auto& t = culebra::runtime_substate<_JitPinnedMetas<int64_t>>(
-      culebra::kSlotWrappedMetas);
   // One entry per (class, which handle kind) — the two differ in `drop`.
   int64_t key = foreign::state_fn_id<T>() * 2 + (borrow ? 1 : 0);
-  auto it = t.tbl.find(key);
-  if (it == t.tbl.end()) {
-    // The method closures are unrooted until slotted into the meta, so a
-    // GC_STRESS collect mid-build would sweep them.
-    culebra::gc::Heap::CollectPause pause(_gc_heap());
-    auto* meta = culebra_runtime_make_variant_meta(
+  auto* meta = _jit_pinned_meta(culebra::kSlotWrappedMetas, key, [&] {
+    auto* m = culebra_runtime_make_variant_meta(
         jit_class_info<T>::name.c_str(), /*enum_name=*/nullptr);
-    for (const auto& m : jit_class_info<T>::methods) {
-      _jit_handle_bind_method(meta, m.name.c_str(), m.thunk, m.arity, m.meta);
+    for (const auto& method : jit_class_info<T>::methods) {
+      _jit_handle_bind_method(m, method.name.c_str(), method.thunk,
+                              method.arity, method.meta);
     }
     _jit_handle_bind_method(
-        meta, "drop",
-        borrow ? &jit_borrow_drop_thunk<T> : &jit_drop_thunk<T>, 0);
+        m, "drop", borrow ? &jit_borrow_drop_thunk<T> : &jit_drop_thunk<T>, 0);
     // What is true of the class rather than of one instance of it.
-    meta->specials->opaque_instances = true;  // state is in C++, not in slots
-    meta->specials->nonsendable_instances = true;  // it reaches this thread
-    meta->specials->foreign_state_fn = foreign::state_fn_id<T>();
+    m->specials->opaque_instances = true;  // state is in C++, not in slots
+    m->specials->nonsendable_instances = true;  // it reaches this thread
+    m->specials->foreign_state_fn = foreign::state_fn_id<T>();
     // The method set is fixed from here on — resolve the specials table and
     // the `drop` gate once, as a declared class's meta does.
-    _jit_fill_specials(meta);
-    _gc_heap().pin(meta);
-    it = t.tbl.emplace(key, meta).first;
-  }
-  it->second->refcount++;
-  return it->second;
+    _jit_fill_specials(m);
+    return m;
+  });
+  meta->refcount++;
+  return meta;
 }
 
 template <class T>

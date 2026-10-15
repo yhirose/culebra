@@ -30,15 +30,16 @@ struct SendNode {
   // stays unbound) — and so does a closure over a `self` no frame supplied.
   // Either way the receiver re-asks against its own Runtime.
   enum class K { Nil, Bool, Long, Float, Str, Array, Object, Set, Tuple,
-                 Closure, Channel, SharedBuffer, SharedVal, Unbound };
+                 Closure, Channel, SharedBuffer, BufView, SharedVal, Unbound };
   K kind = K::Nil;
 
   bool b = false;  // Bool; also Channel role (false = tx, true = rx)
-  int64_t i = 0;   // Long; also a Channel / SharedBuffer word
+  int64_t i = 0;   // Long; also a Channel / SharedBuffer word, a BufView's
+                   // first byte
   double d = 0.0;
-  std::string s;   // Str
+  std::string s;   // Str; also a BufView's field type (empty: `buf[i]`)
 
-  std::vector<SendNode> elems;  // Array / Set / Tuple
+  std::vector<SendNode> elems;  // Array / Set / Tuple; a BufView's buffer
 
   // Object: ordered (key, value) pairs + parallel mutability flags. Keys are
   // themselves SendNodes (String keys → K::Str; non-String keys serialize as
@@ -79,8 +80,6 @@ struct SendNode {
   // Object: the Error Object a catch built (JitObject::is_error), which a
   // re-throw on the receiving side still reports as that error.
   bool is_error = false;
-  // Object: a bare packed view (JitObject::is_packed_view).
-  bool is_packed_view = false;
   // Object, a class meta: which Dir module class it is (JitSpecialTable::
   // dir_kind), a fact of the meta's C++ side that the entries cannot carry.
   int8_t dir_kind = 0;

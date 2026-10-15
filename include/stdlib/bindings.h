@@ -1530,15 +1530,16 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_sys_argv() {
 
 struct _JitJsonReader {
   using Value = JitValue;
-  // What a value is read as: itself, or for a Shared view the value it froze.
+  // What a value is read as: itself, or for a view the value it reads as.
   struct Plain {
-    JitOwnedVal held{TAG_NIL, 0};  // the frozen value, when `v` is one
+    JitOwnedVal held{TAG_NIL, 0};  // the view's value, when `v` is one
     JitValue v;
     explicit Plain(const JitValue& in) : v(in) {
-      if (in.tag != TAG_OBJECT) return;
-      auto* obj = reinterpret_cast<JitObject*>(in.data);
-      if (!obj->is_shared_val) return;
-      held = JitOwnedVal(culebra::_jit_shared_val_plain(obj, 0, 0));
+      JitValue whole;
+      if (in.tag != TAG_OBJECT ||
+          !_jit_view_plain(reinterpret_cast<JitObject*>(in.data), &whole, 0, 0))
+        return;
+      held = JitOwnedVal(whole);
       v = held.v;
     }
   };
@@ -7060,7 +7061,7 @@ inline JitValue _ns_sharedbuffer_new(JitValue* a, int64_t n) {
     throw culebra::CulebraError("TypeError",
         "SharedBuffer.new: second argument must be a @packable class");
   }
-  const auto* layout = culebra::lookup_packable_layout(cname);
+  auto layout = culebra::lookup_packable_layout(cname);
   if (!layout) {
     throw culebra::CulebraError("TypeError",
         culebra::format("SharedBuffer.new: no @packable layout for `{}`", cname));
@@ -7095,7 +7096,7 @@ inline JitValue _ns_sharedbuffer_file(JitValue* a, int64_t n) {
     throw culebra::CulebraError("TypeError",
         "SharedBuffer.file: type must be a @packable class");
   }
-  const auto* layout = culebra::lookup_packable_layout(cname);
+  auto layout = culebra::lookup_packable_layout(cname);
   if (!layout) {
     throw culebra::CulebraError("TypeError",
         culebra::format("SharedBuffer.file: no @packable layout for `{}`", cname));
@@ -7125,7 +7126,7 @@ inline JitValue _ns_sharedbuffer_shared(JitValue* a, int64_t n) {
     throw culebra::CulebraError("TypeError",
         "SharedBuffer.shared: second argument must be a @packable class");
   }
-  const auto* layout = culebra::lookup_packable_layout(cname);
+  auto layout = culebra::lookup_packable_layout(cname);
   if (!layout) {
     throw culebra::CulebraError("TypeError",
         culebra::format("SharedBuffer.shared: no @packable layout for `{}`", cname));
@@ -7152,7 +7153,7 @@ inline JitValue _ns_sharedbuffer_receive(JitValue* a, int64_t n) {
     throw culebra::CulebraError("TypeError",
         "SharedBuffer.receive: second argument must be a @packable class");
   }
-  const auto* layout = culebra::lookup_packable_layout(cname);
+  auto layout = culebra::lookup_packable_layout(cname);
   if (!layout) {
     throw culebra::CulebraError("TypeError",
         culebra::format("SharedBuffer.receive: no @packable layout for `{}`",
@@ -7675,9 +7676,9 @@ inline culebra::toml::Node _jit_to_toml_node(int8_t tag, int64_t data,
     case TAG_OBJECT: {
       _toml_check_stringify_depth(depth, line, col);
       auto* obj = reinterpret_cast<JitObject*>(data);
-      // A Shared view is written as the value it froze.
-      if (obj->is_shared_val) {
-        JitOwnedVal plain(culebra::_jit_shared_val_plain(obj, line, col));
+      // A view is written as the value it reads as.
+      if (JitValue whole; _jit_view_plain(obj, &whole, line, col)) {
+        JitOwnedVal plain(whole);
         return _jit_to_toml_node(plain.v.tag, plain.v.data, line, col, depth);
       }
       if (obj->non_string_props && !obj->non_string_props->empty()) {
@@ -7962,12 +7963,7 @@ inline void _xml_elem_stringify(JitValue* ret, JitClosure*, int8_t st,
 // like the native metas: the table holds a +1 and every element one more.
 // Its methods are portable, so an element keeps them across an Isolate.
 inline JitObject* _xml_element_meta() {
-  auto& t = culebra::runtime_substate<_JitPinnedMetas<int>>(
-      culebra::kSlotXmlElementMeta);
-  auto it = t.tbl.find(0);
-  if (it == t.tbl.end()) {
-    // The method closures are unrooted until slotted into the meta.
-    culebra::gc::Heap::CollectPause pause(_gc_heap());
+  return _jit_pinned_meta(culebra::kSlotXmlElementMeta, 0, [] {
     auto* meta = culebra_runtime_object_new();
     static const JitParamMeta* find_meta =
         _jit_make_handle_meta({"path", "namespaces"}, {false, true});
@@ -7986,10 +7982,8 @@ inline JitObject* _xml_element_meta() {
     _jit_bind_portable_method(meta, "text", _xml_elem_text, 0, text_meta);
     _jit_bind_portable_method(meta, "stringify", _xml_elem_stringify, 0,
                               stringify_meta);
-    _gc_heap().pin(meta);
-    it = t.tbl.emplace(0, meta).first;
-  }
-  return it->second;
+    return meta;
+  });
 }
 
 // XML.events: the pull parser behind a lazy iterator. Its state is native, so

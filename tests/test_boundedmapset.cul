@@ -90,13 +90,21 @@ w.join()
 assert_eq(shared[0].tags.contains(111), true)
 assert_eq(shared[0].counts.get(5), 55)
 
-// The view holds only the way to the bytes, and every read of the field hands
-// out the same one, so nothing may be written onto the view itself.
+// The view is a handle onto the bytes, and every read of the field hands out
+// the same one, so nothing may be written onto the view itself.
 let held = SharedBuffer.new(1, Bag)
 let hv = held[0]
-assert_throws("ImmutableError", fn () { hv.counts.note = 1 })
-assert_throws("ImmutableError", fn () { hv.counts[42] = 1 })
-assert_throws("ImmutableError", fn () { hv.tags.note = 1 })
+assert_throws("TypeError", fn () { hv.counts.note = 1 })
+assert_throws("TypeError", fn () { hv.counts[42] = 1 })
+assert_throws("TypeError", fn () { hv.tags.note = 1 })
 assert_eq(hv.counts.get(42), nil)
+
+// A method takes the arguments it names, and a cursor stops at its end.
+assert_throws("ArityError", fn () { hv.tags.contains() })
+assert_throws("ArityError", fn () { hv.counts.set(1) })
+assert_throws("TypeError", fn () { hv.tags.add([1]) })
+let drained = hv.tags.iter()
+assert_eq(drained.has_next(), false)
+assert_throws("IndexError", fn () { drained.next() })
 
 IO.inspect("test_boundedmapset OK")

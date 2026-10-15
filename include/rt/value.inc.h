@@ -357,16 +357,6 @@ static_assert(std::size(kSpecialNames) == static_cast<size_t>(Special::Count));
 inline const char* special_name(Special s) {
   return kSpecialNames[static_cast<size_t>(s)];
 }
-// A packed view's field reads return under the +0-borrowed contract every
-// property read does, but a heap value one mints — a sub-view, an enum
-// variant — is a fresh +1. The view keeps each here, keyed by the field's
-// offset in its record, and owns it: released with the view, traced as its
-// edge. Off to the side rather than in the view's properties, which `==`,
-// display and a send would otherwise see.
-struct JitViewCache {
-  std::vector<std::pair<int64_t, JitValue>> fields;
-};
-
 // A declared enum's weak handle: the enum object holds one and every variant
 // meta it declared shares it, the way a std::weak_ptr shares a control block.
 // The enum owns its nullary singletons and its constructors, so a strong edge
@@ -503,12 +493,18 @@ struct JitGenFrame;  // rt/gen.inc.h
 
 // The C++ half of a handle Object (JitObject::has_handle): what the value
 // stands for outside this Runtime's heap: a channel end, an rx's cursor, a
-// SharedBuffer.
+// SharedBuffer, a view of one's bytes and a view's cursor.
 // The Object owns it and deletes it with itself, so what it holds is given
 // back however the Object goes; the Object's methods are on the meta its kind
 // shares.
 struct JitHandle {
-  enum class Kind : uint8_t { ChannelEnd, ChannelIter, SharedBuffer };
+  enum class Kind : uint8_t {
+    ChannelEnd,
+    ChannelIter,
+    SharedBuffer,
+    BufView,
+    BufViewIter,
+  };
   const Kind kind;
   explicit JitHandle(Kind k) : kind(k) {}
   JitHandle(const JitHandle&) = delete;
@@ -516,8 +512,16 @@ struct JitHandle {
   virtual ~JitHandle() = default;
   // How the value shows (`println`, interpolation): its slots are none.
   virtual std::string show() const = 0;
+  // What an error says the value is ("a FixedArray view").
+  virtual std::string what() const { return show(); }
   // What `==` asks of two handles, neither the same object.
   virtual bool same(const JitHandle& other) const = 0;
+  // Each heap value the handle owns a count on: an edge of the Object, which
+  // the release path gives back before deleting the handle and the collector
+  // and the trial-deletion walk follow. Deleting the handle releases none of
+  // them, since a sweep frees each on its own.
+  using Visit = void (*)(void* ctx, JitValue& v);
+  virtual void each_value(Visit, void*) {}
 };
 
 struct JitObject {
@@ -593,10 +597,8 @@ struct JitObject {
   // type checks for the object get/set/index helpers, avoiding a
   // marker-name shape scan on every (non-packable) property/subscript.
   // Trailing fields; codegen only GEPs earlier members via offsetof.
-  bool is_packed_view = false;
   bool is_shared_buffer = false;
   bool is_shared_val = false;
-  bool is_array_view = false;
   // A Regex match: `m[i]` / `m["name"]` subscripts hit its capture groups
   // (mirrors interp's ObjectValue::is_match). Trailing, like the flags above.
   bool is_match = false;
@@ -660,10 +662,8 @@ struct JitObject {
   // A declared enum's object: `enum_ref` is its weak handle, which it clears
   // as it is freed (_jit_enum_forget). Never GEP'd.
   bool is_enum = false;
-  // One trailing pointer, eight exclusive roles: a packed view's cache of the
-  // heap values its field reads minted (`is_packed_view`, see JitViewCache), a
-  // declared enum's weak handle (`is_enum`, see JitEnumRef), a builtin
-  // namespace's name (`is_namespace`), a generator's frame (`is_gen_frame`,
+  // One trailing pointer, seven exclusive roles: a declared enum's weak handle
+  // (`is_enum`, see JitEnumRef), a builtin namespace's name (`is_namespace`), a generator's frame (`is_gen_frame`,
   // see generator_frame), a handle's C++ half (`has_handle`, see handle_of),
   // the class object any other value with a `proto`
   // was built by (see built_by), a class object's instance meta (`is_class`,
@@ -680,7 +680,6 @@ struct JitObject {
     JitObject* instance_meta;
     JitSpecialTable* specials;
     JitEnumRef* enum_ref;
-    JitViewCache* view_cache;
     JitGenFrame* gen_frame;  // `is_gen_frame`
     JitHandle* handle;       // `has_handle`
   };
@@ -977,12 +976,14 @@ inline void _jit_enum_forget(JitObject* obj) {
   obj->enum_ref->release();
   obj->enum_ref = nullptr;
 }
-// Each value a packed view's cache owns — an edge the release path, the
-// collector and the trial-deletion walk follow beside the view's slots.
+// Each value a handle owns (JitHandle::each_value) — an edge the release
+// path, the collector and the trial-deletion walk follow beside the slots.
 template <class F>
-inline void _jit_view_cache_each(JitObject* obj, F&& f) {
-  if (!obj->is_packed_view || !obj->view_cache) return;
-  for (auto& entry : obj->view_cache->fields) f(entry.second);
+inline void _jit_handle_each_value(JitObject* obj, F&& f) {
+  if (auto* h = obj->handle_of())
+    h->each_value(
+        [](void* ctx, JitValue& v) { (*static_cast<decltype(&f)>(ctx))(v); },
+        &f);
 }
 
 // culebra_runtime_build_class_meta's flag bits (Chunk::name_table_flags).

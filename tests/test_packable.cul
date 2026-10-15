@@ -236,4 +236,53 @@ assert_eq(sbv2.x, 2.5)
 sbtx.drop()
 sbrx.drop()
 
+# A view is a handle too. Read whole (shown, spread, serialized) it is its
+# bytes as they are now: a record an Object of its fields under its class's
+# name, a field of a collection type that collection. It has no slots of its
+# own, and two views are `==` when they read the same bytes as the same thing.
+@packable
+class Tally {
+  id: Int32
+  at: FloatPair
+  hits: BoundedArray<Int32, 3>
+  seen: BoundedSet<Int32, 4>
+  best: BoundedMap<Int32, Float, 2>
+}
+let tb = SharedBuffer.new(2, Tally)
+let tv = tb[1]
+tv.id = 4
+tv.at.x = 1.5
+tv.hits.push(7)
+tv.seen.add(3)
+tv.best.set(1, 0.5)
+assert_eq(
+  "{tv}",
+  'Tally {id: 4, at: {x: 1.5, y: 0.0}, hits: [7], seen: Set(3), best: {1: 0.5}}',
+)
+assert_eq(
+  ["{tv.at}", "{tv.hits}", "{tv.seen.iter()}"],
+  ['FloatPair {x: 1.5, y: 0.0}', '[7]', '[BoundedSet view iterator]'],
+)
+assert_eq(JSON.stringify([tv.at, tv.hits, tv.seen]), '[{"x":1.5,"y":0.0},[7],[3]]')
+assert_throws('TypeError', || JSON.stringify(tv))  # `best` is keyed by Int
+assert_eq([{...tv.at}, [...tv.hits]], [{x: 1.5, y: 0.0}, [7]])
+assert_eq(tv.hits.keys(), [])
+fn thrown(f) {
+  try {
+    f()
+  } catch e {
+    return "{e.kind}: {e.message}"
+  }
+  'no throw'
+}
+assert_eq(thrown(|| tv.hits.note = 1), 'TypeError: a BoundedArray view has no fields to set')
+tv["id"] = 5
+assert_eq([tv["id"], tv.id], [5, 5])
+assert_eq([tv == tb[1], tv == tb[0], tv.at == tb[1].at, tv.hits == tb[1].hits], [true, false, true, true])
+assert_eq(Isolate.spawn(|s| s.contains(3), tv.seen).join(), true)
+assert_eq(Isolate.spawn(|p| p.x, tv.at).join(), 1.5)
+let seen = tv.seen
+tb.drop()
+assert_eq(["{tv}", "{seen}"], ['[dropped SharedBuffer view]', '[dropped SharedBuffer view]'])
+
 inspect("packable ok")

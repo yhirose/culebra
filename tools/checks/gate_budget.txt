@@ -168,7 +168,9 @@ ctest.entries 35
 # optimize_ast, packrat parsing, the logger for a grammar and for a subject,
 # the user data, a predicate, its message and data, and enter / leave, in en
 # and ja.
-docs.blocks 1060
+# 1062 since stdlib's SharedBuffer shows a view read whole and compared, in en
+# and ja.
+docs.blocks 1062
 
 # The samples the language front ends are run over (examples/languages/*).
 languages.samples 130

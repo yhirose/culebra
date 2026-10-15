@@ -3005,6 +3005,31 @@ buffer自体はバイト列へのハンドルである。表示は`[SharedBuffer
 そのisolateのためにバイト列を保つ。別のisolateに送ったviewは、ハンドルを
 一緒に持っていく。
 
+viewもハンドルで、表示・展開（`{...v}`、`[...v]`）・`JSON.stringify` /
+`TOML.stringify`では、その時点のバイト列を読み解いた値として読まれる。
+レコードはフィールドのObject（表示ではclass名が前に付く）、`FixedArray`と
+`BoundedArray`のフィールドはArray、`BoundedSet`はSet、`BoundedMap`はキーを
+キーにしたObjectになる（そのため`BoundedMap`を持つレコードは、String以外の
+キーを持つObjectと同じく`JSON.stringify`できない）。viewは自分のフィールドを
+持たない。レコードの名前はそのフィールドで（`v["x"]`は`v.x`を読み書きする）、
+それ以外のviewに名前を代入すると`TypeError`。2つのviewは、同じバイト列を
+同じものとして読んでいれば`==`。dropしたbufferのviewは
+`[dropped SharedBuffer view]`と表示される。
+
+```culebra
+@packable
+class Cell {
+  v: Int64 = 0
+  near: BoundedArray<Int32, 4>
+}
+let cells = SharedBuffer.new(2, Cell)
+cells[0].v = 42
+cells[0].near.push(1)
+inspect("{cells[0]}")                      # => 'Cell {v: 42, near: [1]}'
+inspect(JSON.stringify(cells[0].near))     # => '[1]'
+inspect([cells[0] == cells[0], cells[0] == cells[1]])  # => [true, false]
+```
+
 #### isolate 間での共有（zero copy）
 
 bufferはisolate境界を **参照で**越える — 子は同じバイトを読み書きす
@@ -3236,7 +3261,7 @@ for k, v in m { ... }          # (key, value) タプルを yield
 スカラのバイト比較（`BoundedSet<Float32>`は`0.0`と`-0.0`を別物とみなす）。
 フィールドまるごとの代入は`TypeError` — viewのメソッド経由で変更する。view自体は
 バイトへの道筋しか持たないので、viewへの書き込み（`m.note = 1`、`m[42] = 1`）は
-`ImmutableError`。バイトはレコード内にあるので、bufferとともにisolate間で共有
+`TypeError`。バイトはレコード内にあるので、bufferとともにisolate間で共有
 される。
 
 #### Optional フィールド: `T?`

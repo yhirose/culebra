@@ -274,7 +274,7 @@ culebra_runtime_owned_scope_exit(int64_t mark_arg) {
       case TAG_OBJECT: {
         auto* o = reinterpret_cast<JitObject*>(p);
         for (auto& entry : o->slots) self(entry.value, id, self);
-        _jit_view_cache_each(o, [&](JitValue& v) { self(v, id, self); });
+        _jit_handle_each_value(o, [&](JitValue& v) { self(v, id, self); });
         // A suspended generator's frame holds what its registers own, so
         // a cycle through one resolves here like any other.
         if (auto* frame = o->generator_frame()) {
@@ -516,13 +516,9 @@ inline void _culebra_value_release_node(int8_t tag, int64_t data) {
         for (auto& entry : o->slots) {
           _culebra_value_release_impl(entry.value.tag, entry.value.data);
         }
-        _jit_view_cache_each(o, [](JitValue& v) {
+        _jit_handle_each_value(o, [](JitValue& v) {
           _culebra_value_release_impl(v.tag, v.data);
         });
-        if (o->is_packed_view) {
-          delete o->view_cache;
-          o->view_cache = nullptr;
-        }
         // The frame's own references go, then the frame.
         if (auto* frame = o->generator_frame()) {
           _jit_gen_frame_release(frame);

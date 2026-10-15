@@ -47,7 +47,6 @@ struct FrozenShape {
   uint32_t meta = kFrozenNone;  // a class instance: its class's node
   int8_t dir_kind = 0;          // a class meta's (JitSpecialTable::dir_kind)
   bool is_error = false;
-  bool is_packed_view = false;
   bool has_drop = false;        // a class instance's drop gate
 };
 

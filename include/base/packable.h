@@ -56,7 +56,7 @@ struct PackableTypeInfo {
 
 // The packable scalars: each one's spellings and the fixed-width scalar its
 // bytes are (scalar_bytes.h), whose width is both its size and its alignment
-// in a record. Its index here is its code (packable_scalar_code).
+// in a record.
 struct PackableScalar {
   std::string_view name;
   std::string_view alias;  // a second spelling, or empty
@@ -218,12 +218,12 @@ parse_packable_enum_spec(std::string_view spec) {
   return variants;
 }
 
-// Stride/align of a registered @packable class (the nested-record case),
-// 0 if `name` is not a registered @packable class. Defined after the layout
-// registry below; forward-declared here so packable_field_info can resolve a
-// nested @packable class field.
-inline size_t packable_class_stride(std::string_view name);
-inline size_t packable_class_align(std::string_view name);
+// A registered @packable class's layout (the nested-record case), or null.
+// Defined with the layout registry below; declared here so
+// packable_field_info can resolve a nested @packable class field.
+struct PackableLayout;
+using PackableLayoutRef = std::shared_ptr<const PackableLayout>;
+inline PackableLayoutRef lookup_packable_layout(std::string_view name);
 
 // Layout of a whole field — a scalar, or an inline collection with no
 // pointers, so it fits a @packable record: a `FixedArray<T, N>` (exactly N,
@@ -241,6 +241,7 @@ struct PackableFieldInfo {
   bool is_enum = false;          // a registered @packable enum: `[tag:i32][payload]`
   bool is_bytes = false;         // Bytes<N>: exactly N raw bytes (no length prefix)
   bool is_struct = false;        // a nested @packable class (its record, inline)
+  PackableLayoutRef record;      // is_struct: that class's layout
   std::string elem_type;     // BoundedArray/Set element (or BoundedMap key) scalar
                              // — or, for is_enum/is_struct, the enum/class name
   std::string val_type;      // BoundedMap value scalar
@@ -256,6 +257,99 @@ struct PackableFieldInfo {
   // count that varies), an optional, an enum, a nested record.
   size_t wire_size = 0;
   const scalar_bytes::Type* wire = nullptr;
+};
+
+// The layout of a field of type `t` (defined below PackableLayout, whose
+// stride and alignment a nested record field takes).
+inline PackableFieldInfo packable_field_info(std::string_view t);
+
+inline bool is_packable_type(std::string_view t) {
+  return packable_field_info(t).size != 0;
+}
+
+// A single declared field: its name, the type token as written (`Float32`,
+// `BoundedArray<Int32, 8>`, ...), the byte offset from C-ABI natural alignment,
+// and `layout` — what `packable_field_info` says about that type. A field
+// *has* a layout rather than being one, so the two stay separate structs and
+// `compute_packable_layout` never recomputes the layout from `type`.
+//
+// The read/write paths also address the *elements* of a BoundedArray/Set/Map,
+// which are bare scalars with no declaration of their own. `scalar()` builds
+// that second shape: only `type` carries information, and the all-zero
+// `layout` is what routes it past every `layout.is_*` arm to the scalar
+// ladder. A new `is_*` arm must therefore be reachable from a declared field
+// only — an element field will always read it as false.
+struct PackableField {
+  std::string name;
+  std::string type;
+  size_t offset = 0;
+  PackableFieldInfo layout;
+
+  static PackableField scalar(std::string_view type) {
+    return {"", std::string(type), 0, {}};
+  }
+};
+
+// FNV-1a over `n` key bytes — the hash for open-addressed Bounded{Set,Map}.
+// Byte-level so interp and JIT share one hash (the keys are fixed scalars,
+// already canonicalized into their field bytes before hashing).
+inline uint64_t fixed_hash_bytes(const uint8_t* key, size_t n) {
+  uint64_t h = 1469598103934665603ULL;
+  for (size_t i = 0; i < n; i++) {
+    h ^= key[i];
+    h *= 1099511628211ULL;
+  }
+  return h;
+}
+
+// Slot states for an open-addressed Bounded{Set,Map}.
+enum : uint8_t { kFixedEmpty = 0, kFixedFull = 1, kFixedTomb = 2 };
+
+// Linear-probe for `key` (key_size bytes) among `cap` slots. `keys` is the
+// key array with element stride `stride`. Returns the slot index of an
+// existing equal key, or -1 if absent; `*out_insert` receives the first
+// reusable slot (empty or tombstone) for an insert, or -1 if the table is
+// full. Shared by interp and JIT so probing/equality stay identical.
+inline int64_t fixed_probe(const uint8_t* states, const uint8_t* keys, size_t cap,
+                        size_t key_size, size_t stride, const uint8_t* key,
+                        int64_t* out_insert) {
+  if (out_insert) *out_insert = -1;
+  if (cap == 0) return -1;
+  uint64_t h = fixed_hash_bytes(key, key_size);
+  int64_t insert = -1;
+  for (size_t probe = 0; probe < cap; probe++) {
+    size_t i = (h + probe) % cap;
+    uint8_t st = states[i];
+    if (st == kFixedEmpty) {
+      if (insert < 0) insert = static_cast<int64_t>(i);
+      if (out_insert) *out_insert = insert;
+      return -1;  // an empty slot terminates the probe chain
+    }
+    if (st == kFixedTomb) {
+      if (insert < 0) insert = static_cast<int64_t>(i);
+      continue;
+    }
+    if (std::memcmp(keys + i * stride, key, key_size) == 0) {
+      if (out_insert) *out_insert = static_cast<int64_t>(i);
+      return static_cast<int64_t>(i);
+    }
+  }
+  if (out_insert) *out_insert = insert;
+  return -1;  // table full, key not present
+}
+
+// Full layout of a @packable class: ordered fields + total stride (record
+// size, rounded up to the record alignment) and the record alignment.
+struct PackableLayout {
+  std::vector<PackableField> fields;
+  size_t stride = 0;
+  size_t align = 1;
+
+  const PackableField* find(std::string_view name) const {
+    for (const auto& f : fields)
+      if (f.name == name) return &f;
+    return nullptr;
+  }
 };
 
 inline PackableFieldInfo packable_field_info(std::string_view t) {
@@ -416,13 +510,13 @@ inline PackableFieldInfo packable_field_info(std::string_view t) {
     return fi;
   }
   // A registered @packable class used by name -> a nested record, inline.
-  // (forward-declared accessors; the layout registry is defined further down.)
-  if (packable_class_stride(t) != 0) {
+  if (auto rec = lookup_packable_layout(t); rec && rec->stride != 0) {
     PackableFieldInfo fi;
     fi.is_struct = true;
     fi.elem_type = std::string(t);
-    fi.size = packable_class_stride(t);
-    fi.align = packable_class_align(t);
+    fi.size = rec->stride;
+    fi.align = rec->align;
+    fi.record = std::move(rec);
     return fi;
   }
   auto* scalar = find_packable_scalar(t);
@@ -432,108 +526,6 @@ inline PackableFieldInfo packable_field_info(std::string_view t) {
   fi.size = fi.align = fi.wire_size = fi.wire->width;
   return fi;
 }
-
-inline bool is_packable_type(std::string_view t) {
-  return packable_field_info(t).size != 0;
-}
-
-// Small integer code for a packable scalar, so a JIT BoundedArray view can
-// store its element type in a numeric slot (no JIT-string allocation) and
-// map back to the name for the byte read/write switch. -1 = not a scalar.
-inline int packable_scalar_code(std::string_view t) {
-  auto* s = find_packable_scalar(t);
-  return s ? static_cast<int>(s - kPackableScalars) : -1;
-}
-inline std::string_view packable_scalar_name(int code) {
-  return code >= 0 && code < static_cast<int>(std::size(kPackableScalars))
-             ? kPackableScalars[code].name
-             : std::string_view{};
-}
-
-// A single declared field: its name, the type token as written (`Float32`,
-// `BoundedArray<Int32, 8>`, ...), the byte offset from C-ABI natural alignment,
-// and `layout` — what `packable_field_info` says about that type. A field
-// *has* a layout rather than being one, so the two stay separate structs and
-// `compute_packable_layout` never recomputes the layout from `type`.
-//
-// The read/write paths also address the *elements* of a BoundedArray/Set/Map,
-// which are bare scalars with no declaration of their own. `scalar()` builds
-// that second shape: only `type` carries information, and the all-zero
-// `layout` is what routes it past every `layout.is_*` arm to the scalar
-// ladder. A new `is_*` arm must therefore be reachable from a declared field
-// only — an element field will always read it as false.
-struct PackableField {
-  std::string name;
-  std::string type;
-  size_t offset = 0;
-  PackableFieldInfo layout;
-
-  static PackableField scalar(std::string_view type) {
-    return {"", std::string(type), 0, {}};
-  }
-};
-
-// FNV-1a over `n` key bytes — the hash for open-addressed Bounded{Set,Map}.
-// Byte-level so interp and JIT share one hash (the keys are fixed scalars,
-// already canonicalized into their field bytes before hashing).
-inline uint64_t fixed_hash_bytes(const uint8_t* key, size_t n) {
-  uint64_t h = 1469598103934665603ULL;
-  for (size_t i = 0; i < n; i++) {
-    h ^= key[i];
-    h *= 1099511628211ULL;
-  }
-  return h;
-}
-
-// Slot states for an open-addressed Bounded{Set,Map}.
-enum : uint8_t { kFixedEmpty = 0, kFixedFull = 1, kFixedTomb = 2 };
-
-// Linear-probe for `key` (key_size bytes) among `cap` slots. `keys` is the
-// key array with element stride `stride`. Returns the slot index of an
-// existing equal key, or -1 if absent; `*out_insert` receives the first
-// reusable slot (empty or tombstone) for an insert, or -1 if the table is
-// full. Shared by interp and JIT so probing/equality stay identical.
-inline int64_t fixed_probe(const uint8_t* states, const uint8_t* keys, size_t cap,
-                        size_t key_size, size_t stride, const uint8_t* key,
-                        int64_t* out_insert) {
-  if (out_insert) *out_insert = -1;
-  if (cap == 0) return -1;
-  uint64_t h = fixed_hash_bytes(key, key_size);
-  int64_t insert = -1;
-  for (size_t probe = 0; probe < cap; probe++) {
-    size_t i = (h + probe) % cap;
-    uint8_t st = states[i];
-    if (st == kFixedEmpty) {
-      if (insert < 0) insert = static_cast<int64_t>(i);
-      if (out_insert) *out_insert = insert;
-      return -1;  // an empty slot terminates the probe chain
-    }
-    if (st == kFixedTomb) {
-      if (insert < 0) insert = static_cast<int64_t>(i);
-      continue;
-    }
-    if (std::memcmp(keys + i * stride, key, key_size) == 0) {
-      if (out_insert) *out_insert = static_cast<int64_t>(i);
-      return static_cast<int64_t>(i);
-    }
-  }
-  if (out_insert) *out_insert = insert;
-  return -1;  // table full, key not present
-}
-
-// Full layout of a @packable class: ordered fields + total stride (record
-// size, rounded up to the record alignment) and the record alignment.
-struct PackableLayout {
-  std::vector<PackableField> fields;
-  size_t stride = 0;
-  size_t align = 1;
-
-  const PackableField* find(std::string_view name) const {
-    for (const auto& f : fields)
-      if (f.name == name) return &f;
-    return nullptr;
-  }
-};
 
 // The name a field type was renamed to, when `t` spells a retired one:
 // FixedString/FixedSet/FixedMap became Bounded* (their count varies up to N),
@@ -584,11 +576,14 @@ inline PackableLayout compute_packable_layout(
   return layout;
 }
 
-// Registry of @packable class layouts, keyed by class name. Populated at
-// class-declaration time (interp eval_class_decl), read by SharedBuffer.new.
-inline std::map<std::string, PackableLayout, std::less<>>&
+// Registry of @packable class layouts, keyed by class name. Populated when a
+// class declaration runs, read by SharedBuffer.new and a nested record's view.
+// A declaration that runs again (another isolate's, a second call of the
+// function declaring it) replaces the entry, so a reader holds the layout it
+// was handed rather than a place in the table.
+inline std::map<std::string, PackableLayoutRef, std::less<>>&
 packable_layout_registry() {
-  static std::map<std::string, PackableLayout, std::less<>> reg;
+  static std::map<std::string, PackableLayoutRef, std::less<>> reg;
   return reg;
 }
 inline std::mutex& packable_layout_mutex() {
@@ -596,13 +591,14 @@ inline std::mutex& packable_layout_mutex() {
   return m;
 }
 inline void register_packable_layout(std::string name, PackableLayout layout) {
+  auto ref = std::make_shared<const PackableLayout>(std::move(layout));
   std::lock_guard<std::mutex> lk(packable_layout_mutex());
-  packable_layout_registry()[std::move(name)] = std::move(layout);
+  packable_layout_registry()[std::move(name)] = std::move(ref);
 }
-inline const PackableLayout* lookup_packable_layout(std::string_view name) {
+inline PackableLayoutRef lookup_packable_layout(std::string_view name) {
   std::lock_guard<std::mutex> lk(packable_layout_mutex());
   auto it = packable_layout_registry().find(name);
-  return it == packable_layout_registry().end() ? nullptr : &it->second;
+  return it == packable_layout_registry().end() ? nullptr : it->second;
 }
 
 // --- A record as a byte stream (String.pack / String.unpack) --------------
@@ -624,15 +620,6 @@ inline std::optional<size_t> packable_wire_size(const PackableLayout& l,
     n += f.layout.wire_size;
   }
   return n;
-}
-
-inline size_t packable_class_stride(std::string_view name) {
-  auto* l = lookup_packable_layout(name);
-  return l ? l->stride : 0;
-}
-inline size_t packable_class_align(std::string_view name) {
-  auto* l = lookup_packable_layout(name);
-  return l ? l->align : 1;
 }
 
 // --- with_lock escape hatch: the cross-process lock header ----------------

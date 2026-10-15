@@ -407,6 +407,16 @@ check_same "sized array spread" 'let a = [9, ...[8]](3)'
 # were, is a SyntaxError at its `{` that names `Set(...)`.
 check_eq "brace set" 'let s = [{1, 2}]' \
   'SyntaxError: braces build an Object; a Set is written `Set(a, b)` at 1:10.'
+# A SharedBuffer view's method throws positionless in the runtime; every lane
+# reports it at the call.
+check_eq "view method error" '@packable
+class S {
+  a: BoundedArray<Int32, 1>
+}
+let buf = SharedBuffer.new(1, S)
+let a = buf[0].a
+a.push(1)
+a.push(2)' 'IndexError: BoundedArray is full (capacity 1) at 8:1.'
 # Set(...)'s unhashable throw is positionless in the runtime; every lane
 # reports it at the call.
 check_same "Set(...) unhashable" 'let s = Set([1], 2)'

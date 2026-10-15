@@ -2472,6 +2472,9 @@ enum RuntimeSlot : size_t {
   // The same, for the two a SharedBuffer points its at (a file-backed one's
   // has `flush`). Placed like the five above.
   kSlotSharedBufferMetas,
+  // The same, for the ones its views and their iterators point theirs at.
+  // Placed like the six above.
+  kSlotBufViewMetas,
   kSlotShapeRegistry,  // reserved/unused: the Shape intern table is now a
                        // process-global singleton (see jit.h ShapeRegistry) —
                        // Shapes are shared immutable metadata, not isolated heap

@@ -149,6 +149,7 @@ enum class JitHandleKind {
   None,
   Channel,
   SharedBuffer,
+  BufView,
   SharedVal,
   Generator,
   Native,
@@ -157,6 +158,7 @@ inline JitHandleKind _jit_handle_kind(JitObject* o) {
   constexpr auto none = static_cast<size_t>(-1);
   if (_jit_chan_end(o)) return JitHandleKind::Channel;
   if (o->is_shared_buffer) return JitHandleKind::SharedBuffer;
+  if (_jit_buf_view(o)) return JitHandleKind::BufView;
   if (o->has_handle) return JitHandleKind::Native;
   if (o->is_shared_val) return JitHandleKind::SharedVal;
   if (o->is_gen_frame) return JitHandleKind::Generator;
@@ -222,6 +224,17 @@ inline sendable::SendNode jit_serialize(JitValue v, JitSerCtx& ctx) {
                     : culebra::shared_buffer_word(_jit_shared_buf(o)->core);
           return n;
         }
+        // A view of a SharedBuffer: the buffer, as above, and where in its
+        // bytes the view reads what (a field's type; a record of the
+        // buffer's class has none).
+        case JitHandleKind::BufView: {
+          auto* view = _jit_buf_view(o);
+          n.kind = K::BufView;
+          n.i = view->off;
+          n.s = std::string(view->type());
+          n.elems.push_back(jit_serialize(view->buf, ctx));
+          return n;
+        }
         // Shared.new view: ship the frozen tree by (id, node) reference.
         // Bump for the in-flight window (released by the consumer's
         // release_inflight_channels; the receiver handle takes its own ref
@@ -251,7 +264,6 @@ inline sendable::SendNode jit_serialize(JitValue v, JitSerCtx& ctx) {
       culebra::ValueWalkFrame walk;
       n.kind = K::Object;
       n.is_error = o->is_error;
-      n.is_packed_view = o->is_packed_view;
       // Every entry, in the order the Object holds them: the receiver stores
       // them as they arrive, and that is the order it then iterates in. A key
       // that is no String serializes as a value node.
@@ -422,6 +434,17 @@ inline void _jit_link_instance(JitObject* o, JitObject* meta, bool has_drop) {
   if (has_drop) _jit_owned_bind_drop(o);
 }
 
+// A field of type `type` in `layout`, or in a record nested in it, or null.
+inline const culebra::PackableField* _jit_field_of_type(
+    const culebra::PackableLayout& layout, std::string_view type) {
+  for (const auto& f : layout.fields) {
+    if (f.type == type) return &f;
+    if (f.layout.is_struct)
+      if (auto* hit = _jit_field_of_type(*f.layout.record, type)) return hit;
+  }
+  return nullptr;
+}
+
 inline JitValue jit_deserialize(const sendable::SendNode& n, JitDeCtx& ctx) {
   using K = sendable::SendNode::K;
   switch (n.kind) {
@@ -462,10 +485,7 @@ inline JitValue jit_deserialize(const sendable::SendNode& n, JitDeCtx& ctx) {
       if (n.is_backref)
         return {TAG_OBJECT,
                 reinterpret_cast<int64_t>(ctx.protos.at(n.ref_id))};
-      // A bare packed view (rare — usually the buffer crosses, not a view)
-      // arrives as a generic Object, a view before its markers land.
-      auto* o = n.is_packed_view ? _jit_view_new(&JitObject::is_packed_view)
-                                 : culebra_runtime_object_new();
+      auto* o = culebra_runtime_object_new();
       o->is_error = n.is_error;
       // Register a shared class meta BEFORE filling entries so a backref
       // inside its own subtree (a method capturing another instance of
@@ -546,6 +566,15 @@ inline JitValue jit_deserialize(const sendable::SendNode& n, JitDeCtx& ctx) {
     }
     case K::SharedBuffer:  // the rebuilt handle's own ref
       return _jit_make_shared_buffer_handle(culebra::shared_buffer_of(n.i));
+    case K::BufView: {
+      JitOwnedVal buf(jit_deserialize(n.elems[0], ctx));
+      auto* b = reinterpret_cast<JitObject*>(buf.v.data);
+      // The field, in the layout the rebuilt buffer keeps: any of that type
+      // lays out the same. A dropped buffer keeps none, and its view reads as
+      // dropped whatever it is.
+      return _jit_make_buf_view(new JitBufView(
+          b, n.i, _jit_field_of_type(_jit_shared_buf(b)->layout, n.s)));
+    }
     case K::SharedVal: {
       // The receiver takes its own count; the in-flight one from the
       // sender's extract is released by release_inflight_channels. A tree
@@ -1119,12 +1148,6 @@ inline JitChanIter* _jit_self_chan_iter(JitValue self) {
     throw culebra::CulebraError("TypeError", "not a channel iterator");
   return static_cast<JitChanIter*>(h);
 }
-inline void _jit_chan_iter_self(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t,
-                                    JitValue*) {
-  JitValue self{self_tag, self_data};
-  culebra_runtime_value_retain(self.tag, self.data);
-  { *__ret = self; return; }
-}
 inline void _jit_chan_iter_has_next(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t,
                                         JitValue*) {
   JitValue self{self_tag, self_data};
@@ -1150,7 +1173,6 @@ inline void _jit_chan_iter_next(JitValue* __ret, JitClosure*, int8_t self_tag, i
   }
   { *__ret = ret; return; }
 }
-inline JitValue _jit_make_handle(JitHandle* handle, JitObject* meta);
 inline JitObject* _jit_channel_meta(int role);
 inline void _jit_chan_iter(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t, JitValue*) {
   JitValue self{self_tag, self_data};
@@ -1164,15 +1186,10 @@ inline void _jit_chan_iter(JitValue* __ret, JitClosure*, int8_t self_tag, int64_
 // native metas. Borrowed: the table holds the +1, and each end takes one of
 // its own.
 inline JitObject* _jit_channel_meta(int role) {
-  auto& t = culebra::runtime_substate<_JitPinnedMetas<int>>(
-      culebra::kSlotChannelMetas);
-  auto it = t.tbl.find(role);
-  if (it == t.tbl.end()) {
-    // The method closures are unrooted until slotted into the meta.
-    culebra::gc::Heap::CollectPause pause(_gc_heap());
+  return _jit_pinned_meta(culebra::kSlotChannelMetas, role, [&] {
     auto* meta = culebra_runtime_object_new();
     if (role == 2) {
-      _jit_view_method(meta, "iter", _jit_chan_iter_self);
+      _jit_view_method(meta, "iter", _jit_iter_self);
       _jit_view_method(meta, "has_next", _jit_chan_iter_has_next);
       _jit_view_method(meta, "next", _jit_chan_iter_next);
     } else {
@@ -1187,22 +1204,10 @@ inline JitObject* _jit_channel_meta(int role) {
       _jit_view_method(meta, "try_recv", _jit_chan_try_recv);
       _jit_view_method(meta, "drain", _jit_chan_drain);
     }
-    _gc_heap().pin(meta);
-    it = t.tbl.emplace(role, meta).first;
-  }
-  return it->second;
+    return meta;
+  });
 }
 
-// The Object of `handle`, its methods on `meta`. It has no slots of its own:
-// what it is lives in the JitHandle, out of reach of anything that reads an
-// Object's entries.
-inline JitValue _jit_make_handle(JitHandle* handle, JitObject* meta) {
-  auto* h = _jit_view_new(&JitObject::has_handle);
-  h->handle = handle;
-  meta->refcount++;
-  h->set_proto(meta);
-  return {TAG_OBJECT, reinterpret_cast<int64_t>(h)};
-}
 // An end of `core` (null: one already dropped), taking over a count the
 // caller holds for it.
 inline JitValue _jit_make_channel_endpoint(ChannelCore* core, int role) {
@@ -1652,8 +1657,7 @@ struct JitSvFreezer {
     if (shared) {
       mix(h, s.meta);
       mix(h, static_cast<size_t>(s.name));
-      mix(h, (s.is_error ? 1u : 0u) | (s.is_packed_view ? 2u : 0u) |
-                 (s.has_drop ? 4u : 0u) |
+      mix(h, (s.is_error ? 1u : 0u) | (s.has_drop ? 4u : 0u) |
                  (static_cast<size_t>(static_cast<uint8_t>(s.dir_kind)) << 8));
       for (size_t i = base; i < keys.size(); i++) {
         mix(h, static_cast<size_t>(keys[i].tag));
@@ -1679,7 +1683,7 @@ struct JitSvFreezer {
             size_t base) const {
     if (a.count != s.count || a.meta != s.meta || a.name != s.name ||
         a.dir_kind != s.dir_kind || a.is_error != s.is_error ||
-        a.is_packed_view != s.is_packed_view || a.has_drop != s.has_drop)
+        a.has_drop != s.has_drop)
       return false;
     const auto* theirs = t.keys_of(a);
     for (uint32_t i = 0; i < s.count; i++) {
@@ -1802,7 +1806,6 @@ struct JitSvFreezer {
         });
     culebra::FrozenShape s{};
     s.is_error = o->is_error;
-    s.is_packed_view = o->is_packed_view;
     if (auto names = _jit_class_meta_names(o); !names.empty()) {
       s.name = key_str(names);
       s.dir_kind = o->specials->dir_kind;
@@ -1904,8 +1907,7 @@ struct JitSvThaw {
   JitObject* object(uint32_t at, bool is_meta) {
     const auto& n = t.nodes[at];
     const auto& shape = t.shapes[n.shape];
-    auto* o = shape.is_packed_view ? _jit_view_new(&JitObject::is_packed_view)
-                                   : culebra_runtime_object_new();
+    auto* o = culebra_runtime_object_new();
     o->is_error = shape.is_error;
     if (is_meta) metas.emplace(at, o);
     const auto* keys = t.keys_of(shape);
@@ -2377,12 +2379,7 @@ inline void _jit_sv_iter(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t 
 // the reader methods, pinned like the native metas. Borrowed: the table holds
 // the +1, and each view takes one of its own.
 inline JitObject* _jit_shared_val_meta() {
-  auto& t = culebra::runtime_substate<_JitPinnedMetas<int>>(
-      culebra::kSlotSharedValMeta);
-  auto it = t.tbl.find(0);
-  if (it == t.tbl.end()) {
-    // The method closures are unrooted until slotted into the meta.
-    culebra::gc::Heap::CollectPause pause(_gc_heap());
+  return _jit_pinned_meta(culebra::kSlotSharedValMeta, 0, [] {
     auto* meta = culebra_runtime_object_new();
     _jit_view_method(meta, "size", _jit_sv_size);
     _jit_view_method(meta, "has", _jit_sv_has);
@@ -2396,8 +2393,6 @@ inline JitObject* _jit_shared_val_meta() {
     _jit_view_method(meta, "map", _jit_sv_map);
     _jit_view_method(meta, "filter", _jit_sv_filter);
     _jit_view_method(meta, "drop", _jit_sv_drop);
-    _gc_heap().pin(meta);
-    it = t.tbl.emplace(0, meta).first;
     // No view exists before the first meta does, so this is where the
     // generic paths learn how to read one (rt_runtime.inc.h).
     static constexpr SharedValOps ops{
@@ -2405,8 +2400,8 @@ inline JitObject* _jit_shared_val_meta() {
         _jit_shared_val_plain_impl, _jit_shared_val_walk_impl,
         _jit_shared_val_step_impl,  _jit_shared_val_drop_impl};
     _jit_shared_val_ops_hook().store(&ops, std::memory_order_release);
-  }
-  return it->second;
+    return meta;
+  });
 }
 
 // A view of node `node` through `hold`, counted on it (a null hold makes a
@@ -2448,20 +2443,13 @@ inline JitValue _jit_shared_val_root(const culebra::SharedValCore* core,
 // The meta every SharedBuffer of this Runtime points its `proto` at: one for
 // a file-backed buffer, whose `flush` writes its pages out, one for the rest.
 inline JitObject* _jit_shared_buffer_meta(bool file) {
-  auto& t = culebra::runtime_substate<_JitPinnedMetas<int>>(
-      culebra::kSlotSharedBufferMetas);
-  auto it = t.tbl.find(file);
-  if (it == t.tbl.end()) {
-    // The method closures are unrooted until slotted into the meta.
-    culebra::gc::Heap::CollectPause pause(_gc_heap());
+  return _jit_pinned_meta(culebra::kSlotSharedBufferMetas, int{file}, [&] {
     auto* meta = culebra_runtime_object_new();
     _jit_view_method(meta, "drop", _jit_shared_buffer_drop);
     _jit_view_method(meta, "with_lock", _jit_shared_buffer_with_lock);
     if (file) _jit_view_method(meta, "flush", _jit_shared_buffer_flush);
-    _gc_heap().pin(meta);
-    it = t.tbl.emplace(file, meta).first;
-  }
-  return it->second;
+    return meta;
+  });
 }
 
 // A SharedBuffer over `core` (null: one already dropped), with a ref of its
@@ -2601,7 +2589,7 @@ inline void _jit_merged_iter(JitValue* __ret, JitClosure*, int8_t self_tag, int6
         JitValue{TAG_FUNC, reinterpret_cast<int64_t>(_jit_native_method(f))},
         false);
   };
-  meth("iter", _jit_chan_iter_self);          // reuse: returns self
+  meth("iter", _jit_iter_self);
   meth("has_next", _jit_merged_iter_has_next);
   meth("next", _jit_merged_iter_next);
   { *__ret = {TAG_OBJECT, reinterpret_cast<int64_t>(it)}; return; }

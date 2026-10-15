@@ -1239,7 +1239,7 @@ inline void _jit_gc_enumerate_children(void* obj, uint8_t tag,
         if (auto* cls = o->built_by()) out.push_back(cls);
       }
       if (auto* meta = o->class_meta_of()) out.push_back(meta);
-      _jit_view_cache_each(o, [&](JitValue& v) { _gc_push_value(out, v); });
+      _jit_handle_each_value(o, [&](JitValue& v) { _gc_push_value(out, v); });
       if (auto* frame = o->generator_frame())
         _jit_gen_frame_children(frame, out);
       break;
@@ -1324,7 +1324,6 @@ inline void _jit_gc_sweep_object(void* obj, uint8_t tag) {
       delete o->non_string_props;
       if (o->is_dict) delete o->dict_;
       if (o->is_class_meta) delete o->specials;
-      if (o->is_packed_view) delete o->view_cache;
       if (auto* frame = o->generator_frame()) _jit_gen_frame_sweep(frame);
       delete o->handle_of();
       _jit_enum_forget(o);

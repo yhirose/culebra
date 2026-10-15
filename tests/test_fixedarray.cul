@@ -35,13 +35,15 @@ assert_eq(buf[1].dims.size(), 3)  # its own record, still zeros
 assert_eq(buf[1].dims[0], 0)
 assert_throws("IndexError", || d[3])
 assert_eq(d.has("push"), false)  # nothing to push onto a fixed count
+assert_throws("TypeError", || d.get([0]))  # an index is a number
+assert_throws("ArityError", || d.get())
 assert_eq(
   err(|| buf[0].dims = [1, 2, 3]),
   "TypeError: cannot assign to FixedArray field `dims`; mutate it via [i] = ...",
 )
 assert_eq(
   err(|| d.foo = 1),
-  "ImmutableError: cannot add property 'foo' to a FixedArray view",
+  "TypeError: a FixedArray view has no fields to set",
 )
 # the bounded one beside it keeps its count
 buf[0].trail.push(-5)
