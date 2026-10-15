@@ -22,7 +22,8 @@
 #   fall on; a bar without one keeps the chord before it
 # - the title, the creators, the rights and the source become `about`
 # - notes keep their ties, tuplets, grace notes, staccato, accents, tenuto,
-#   marcato, fermatas and arpeggios; dynamics, hairpins and tempo marks
+#   marcato, fermatas, arpeggios and jazz articulations (scoops, plops, doits
+#   and falloffs); dynamics, hairpins and tempo marks
 #   become directions; a meter change becomes a `meter` line
 #
 # Slurs, lyrics, ornaments, key changes and partial bars other than an
@@ -79,6 +80,8 @@ let DYNAMICS = {
   fff: "ff",
 }
 let MARKS = {staccato: ".", accent: "!", tenuto: "-", "strong-accent": "^"}
+# The jazz articulations, as the directions written before their note.
+let BENDS = {scoop: "scoop", plop: "plop", doit: "doit", falloff: "fall"}
 # <harmony>'s kinds, as the chord table spells them.
 let KINDS = {
   major: "",
@@ -313,6 +316,10 @@ fn read_part(part) {
             tuplet_start: c.find("notations/tuplet[@type='start']") != nil,
             tuplet_stop: c.find("notations/tuplet[@type='stop']") != nil,
             marks: marks,
+            bends: c
+              .find_all("notations/articulations/*")
+              .map(|a| BENDS.get(a.tag, nil))
+              .filter(|b| b != nil),
             arpeggio: c.find("notations/arpeggiate") != nil,
             graces: rest ? [] : graces.get(line, []),
             staff: text_of(c, "staff") ?? "1",
@@ -472,7 +479,8 @@ fn bar_notes(events, directions, len, start, state) {
     }
     let tie = !ev.rest && ev.notes.all(|n| n.tie) ? "~" : ""
     let written = TYPES.get(ev.type ?? "", nil)
-    let head = graces + marks + body
+    let bent = held || ev.rest ? "" : ev.bends.map(|b| "\\{b} ").join("")
+    let head = bent + graces + marks + body
     if ev.tuplet != nil && written != nil {
       let opening = tuplet == nil
       let shown = value_text((written, ev.dots))

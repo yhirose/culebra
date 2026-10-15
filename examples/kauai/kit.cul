@@ -1,7 +1,8 @@
-# A jazz kit for Audio.Kauai.load's `drums:`: `host Ride` and `host Hat`.
-# A cymbal is six square waves at frequencies no harmonic series holds, with
-# some noise, through two high-pass stages: the ride rings on, and the hat
-# closed by the pedal is the same metal cut short.
+# A jazz kit for Audio.Kauai.load's `drums:`: `host Ride`, `host Hat` and
+# `host OpenHat`. A cymbal is six square waves at frequencies no harmonic
+# series holds, with some noise, through two high-pass stages: the ride rings
+# on, the hat closed by the pedal is the same metal cut short, and the open
+# hat rings until the next hit of its choke group closes it.
 
 import wave from './wave.cul'
 
@@ -32,11 +33,35 @@ fn metal(seconds, decay, cutoff, noisy, seed) {
 
 let RIDE = metal(2.0, 0.7, 3500.0, 0.3, 11).map(|s| s * 0.6)
 let HAT = metal(0.15, 0.03, 6000.0, 0.5, 23).map(|s| s * 0.7)
+let OPEN = metal(1.0, 0.35, 6000.0, 0.5, 29).map(|s| s * 0.6)
 
-let sounds = {ride: |params| RIDE, hat: |params| HAT}
+# The open hat, closed `n.next` seconds on if its choke group hits again.
+fn open_hat(n) {
+  let fade = Math.round(0.01 * RATE)
+  let stop = n.next == nil
+    ? OPEN.size()
+    : Math.min(OPEN.size(), Math.round(n.next * RATE))
+  iota(Math.min(
+    OPEN.size(),
+    stop + fade,
+  )).map(|i| OPEN[i] * (i < stop ? 1.0 : 1.0 - (i - stop) / fade))
+}
+
+let sounds = {
+  ride: |n, params| RIDE,
+  hat: |n, params| HAT,
+  openhat: |n, params| open_hat(n),
+}
+let HEARS = {ride: [], hat: [], openhat: ["next"]}
 let drums = sounds
   .keys()
-  .map(|k| (k, |params| Audio.Sound(wave.wav(wave.room(sounds[k](params))))))
+  .map(|k| (
+    k,
+    {
+      hit: |n, params| Audio.Sound(wave.wav(wave.room(sounds[k](n, params)))),
+      hears: HEARS[k],
+    },
+  ))
   .to_object()
 
-export {drums, sounds}
+export {drums, sounds, HEARS}

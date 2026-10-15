@@ -77,13 +77,61 @@ fn wav(samples) {
     data
 }
 
+# A phrase as the lines that move through it: the notes struck together
+# from the lowest, the k-th of each onset in line k. One line is the phrase.
+fn lines(notes) {
+  mut onsets = []
+  for n in notes {
+    if onsets.empty() || onsets[onsets.size() - 1][0].at != n.at {
+      onsets.push([n])
+    } else {
+      onsets[onsets.size() - 1].push(n)
+    }
+  }
+  let width = onsets.map(|o| o.size()).max()
+  iota(width).map(|k| onsets.filter(|o| o.size() > k).map(|o| o[k]))
+}
+
+# `play(line)` for each line of `notes`, each line `spread` seconds after the
+# one below it (a strum, from the lowest string), added together: a chord's
+# tones each on a string or a bow of their own. A line starts from its first
+# note, its `at` and `next` counted from there.
+fn by_line(notes, spread, play) {
+  let parts = lines(notes).map(fn (line) {
+    let t0 = line[0].at
+    let since = |t| t == nil ? nil : t - t0
+    {
+      t0: t0,
+      s: play(line.map(|n| {
+        ...n,
+        at: n.at - t0,
+        next: since(n.get("next", nil)),
+      })),
+    }
+  })
+  let starts = iota(parts.size()).map(|k| Math.round((parts[k].t0 +
+    k * spread) *
+    RATE))
+  mut out = repeat(
+    iota(parts.size()).map(|k| starts[k] + parts[k].s.size()).max(),
+    0.0,
+  )
+  for k in 0..parts.size() {
+    let s = parts[k].s
+    for i in 0..s.size() {
+      out[starts[k] + i] += s[i]
+    }
+  }
+  out
+}
+
 # `voices:`'s instrument for `play(notes, params)`, which answers a phrase's
-# samples: it hears each note's length and dynamic, and sounds in the room.
-fn voice(play) {
+# samples: it hears what `hears` names of each note, and sounds in the room.
+fn voice(play, hears) {
   {
     phrase: |notes, params| Audio.Sound(wav(room(play(notes, params)))),
-    hears: ["len", "level"],
+    hears: hears,
   }
 }
 
-export {RATE, hz, noise, room, wav, voice}
+export {RATE, hz, noise, room, wav, lines, by_line, voice}

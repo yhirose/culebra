@@ -5,7 +5,9 @@
 # fills it with noise, and it rings down by itself. Under a slur the string
 # is not plucked again: a finger hammers on or pulls off, the loop changes
 # length with the string still moving, and only a little energy is added.
-# When the note is let go the fretting hand damps it. A guitar's body
+# The string rings on until the hand moves to what the voice plays next, and
+# a staccato is damped where it ends. A chord is a string for each of its
+# tones, strummed from the lowest. A guitar's body
 # rings with the string at its own resonances, which is most of why it does
 # not sound like a koto or a harp.
 
@@ -48,7 +50,11 @@ fn burst(n, period, strength, kind, seed) {
 # after the one before it.
 fn string(notes, kind) {
   let last = notes[notes.size() - 1]
-  let held = last.at + last.len
+  let end = last.at + last.len
+  let next = last.get("next", nil)
+  let held = last.get("marks", []).contains("staccato")
+    ? Math.min(end, next ?? end)
+    : Math.min(next ?? end + 1.5, end + 2.0)
   let total = Math.round((held + 0.25) * RATE)
   let loops = notes.map(|n| loop_of(
     wave.hz(n.pitch),
@@ -95,24 +101,9 @@ fn string(notes, kind) {
   })
 }
 
-# A phrase: one string, unless notes start together (a chord under a slur),
-# when each note is a string of its own.
+# A phrase, each of its lines on a string of its own.
 fn pluck(notes, kind) {
-  let ats = notes.map(|n| n.at)
-  let apart = iota(ats.size()).all(|k| k == 0 || ats[k] > ats[k - 1])
-  return string(notes, kind) if apart
-  let parts = notes.map(|n| {
-    start: Math.round(n.at * RATE),
-    s: string([{...n, at: 0.0}], kind),
-  })
-  let size = parts.map(|p| p.start + p.s.size()).max()
-  mut out = repeat(size, 0.0)
-  for p in parts {
-    for i in 0..p.s.size() {
-      out[p.start + i] += p.s[i]
-    }
-  }
-  out
+  wave.by_line(notes, kind.strum, |line| string(line, kind))
 }
 
 # The body's resonances {at, width, gain}: the air inside, the top plate and
@@ -153,15 +144,18 @@ fn body(samples, modes) {
   })
 }
 
-let NYLON = {sustain: 2.0, bright: 0.4, position: 0.18}
-let STEEL = {sustain: 2.5, bright: 0.8, position: 0.13}
-let BASS = {sustain: 3.0, bright: 0.35, position: 0.2}
+let NYLON = {sustain: 2.0, bright: 0.4, position: 0.18, strum: 0.008}
+let STEEL = {sustain: 2.5, bright: 0.8, position: 0.13, strum: 0.015}
+let BASS = {sustain: 3.0, bright: 0.35, position: 0.2, strum: 0.0}
 
 let sounds = {
   guitar: |notes, params| body(pluck(notes, NYLON), WOOD),
   steel: |notes, params| pluck(notes, STEEL),
   bass: |notes, params| pluck(notes, BASS),
 }
-let voices = sounds.keys().map(|k| (k, wave.voice(sounds[k]))).to_object()
+let voices = sounds
+  .keys()
+  .map(|k| (k, wave.voice(sounds[k], ["len", "level", "marks", "next"])))
+  .to_object()
 
 export {voices, sounds}
