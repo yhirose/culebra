@@ -178,4 +178,25 @@ assert_eq(side_rx.recv(), 1)
 spin.drop()
 assert_eq(side_rx.recv(), nil)
 
+# join() only waits for the producers: what their fn returns is not its
+# result, and is not built on this side.
+fn join_once() {
+  let mj = Channel.fan_in([1, 2], fn (w, tx) {
+    tx.send(w)
+    [w, w]
+  })
+  for _ in mj {
+  }
+  mj.join()
+}
+fn join_leaked() {
+  join_once()
+  let before = GC.stat().rc_objects
+  for _ in 0..5 {
+    join_once()
+  }
+  GC.stat().rc_objects - before
+}
+assert_eq(join_leaked(), 0)
+
 inspect("test_fanin: all assertions passed")

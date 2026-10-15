@@ -780,7 +780,7 @@ inline void run_isolate_child_jit(std::shared_ptr<IsolateCore> core,
     core->finished = true;
   } catch (CulebraException& e) {
     // A raw user `throw <value>` (not a structured error). Serialize the value
-    // so it crosses the isolate boundary; _jit_isolate_extract re-raises it as a
+    // so it crosses the isolate boundary; _jit_isolate_settle re-raises it as a
     // CulebraException on the parent. Mirrors the interp child's `catch (Value&)`.
     JitValue tv;
     tv.tag = e.tag;
@@ -804,7 +804,8 @@ inline void run_isolate_child_jit(std::shared_ptr<IsolateCore> core,
 // --- JIT isolate handle (join/poll/drop). JIT handle methods are captureless,
 //     so the IsolateCore is reached through the registry by id. ---------------
 
-inline JitValue _jit_isolate_extract(const std::shared_ptr<IsolateCore>& core) {
+// Joins the child and re-raises its failure; the result stays serialized.
+inline void _jit_isolate_settle(const std::shared_ptr<IsolateCore>& core) {
   if (!core->joined && core->thread.joinable()) {
     core->thread.join();
     core->joined = true;
@@ -821,6 +822,10 @@ inline JitValue _jit_isolate_extract(const std::shared_ptr<IsolateCore>& core) {
     // so no position in this program's source applies to the re-raise.
     culebra_runtime_throw(tv.tag, tv.data, 0, 0);  // [[noreturn]]
   }
+}
+
+inline JitValue _jit_isolate_extract(const std::shared_ptr<IsolateCore>& core) {
+  _jit_isolate_settle(core);
   JitDeCtx dc;
   return jit_deserialize(core->result, dc);  // on the parent heap
 }
@@ -1205,7 +1210,7 @@ inline void _jit_merged_drop(JitValue* __ret, JitClosure*, int8_t self_tag, int6
 inline void _jit_merged_join(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t, JitValue*) {
   JitValue self{self_tag, self_data};
   JitMethodSelf _s{self};  // consumed on any exit (join re-raises a failure)
-  // Join the producers (fan_in(items, fn)) and surface the first error. Extract
+  // Join the producers (fan_in(items, fn)) and surface the first error. Settle
   // through the JIT path so a structured error re-raises as CulebraError and a
   // raw `throw <value>` re-raises as a CulebraException — both caught by a
   // compiled `catch`.
@@ -1218,7 +1223,7 @@ inline void _jit_merged_join(JitValue* __ret, JitClosure*, int8_t self_tag, int6
   int64_t td = 0;
   for (const auto& core : merge ? merge->producers : none) {
     try {
-      _jit_isolate_extract(core);  // joins; re-raises the producer's failure
+      _jit_isolate_settle(core);  // the producer's return value is not join()'s
     } catch (const culebra::Interrupted&) {
       // A cancelled producer. Recorded like a failure, first-wins with the
       // two below, so the remaining producers are still joined here.
