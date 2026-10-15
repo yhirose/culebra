@@ -18,6 +18,8 @@ let PEAKS = [
   {at: 3000.0, width: 1000.0, gain: 0.3},
 ]
 let PARTIALS = 24
+# The air heard through a held note, against the tone's level.
+let AIR = 0.008
 
 fn body(f) {
   PEAKS.reduce(
@@ -147,15 +149,18 @@ fn blow(notes) {
       let open = opening ? Math.min(1.0, t / (0.01 + 0.003 * k)) : 1.0
       sum += (a0[k] + (a1[k] - a0[k]) * x) * open * cur
     }
-    # Air through the reed: a band of noise, strongest as the tongue lets go
-    # and through a change of fingering.
+    # Air through the reed: a band of noise that passes as the reed opens on
+    # each cycle, so it is heard in the tone rather than beside it; strongest
+    # as the tongue lets go and through a change of fingering.
     let n = white()
-    air_fast += 0.55 * (n - air_fast)
-    air_slow += 0.08 * (n - air_slow)
+    air_fast += 0.3 * (n - air_fast)
+    air_slow += 0.04 * (n - air_slow)
     let tongue = t < 0.2 ? Math.exp(-t / 0.03) : 0.0
     let burst = tongue +
       (since < 0.15 ? ch.dip * 2.0 * Math.exp(-since / 0.02) : 0.0)
-    let air = (air_fast - air_slow) * notes[at].level * (0.03 + 0.25 * burst)
+    let air = (air_fast - air_slow) *
+      notes[at].level *
+      (AIR * (0.5 + 0.5 * s1) + 0.25 * burst)
     let rise = Math.min(1.0, t / attack)
     let fall = t <= held ? 1.0 : Math.max(0.0, 1.0 - (t - held) / release)
     # A crescendo or a diminuendo through the note.

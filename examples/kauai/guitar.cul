@@ -18,7 +18,7 @@ let SIZE = 4096
 
 # Seconds for a string at `f` Hz to ring down by 60 dB: longer low.
 fn ring_time(f, sustain) {
-  Math.max(0.4, Math.min(6.0, sustain * Math.sqrt(110.0 / f)))
+  Math.max(0.4, Math.min(10.0, sustain * Math.sqrt(110.0 / f)))
 }
 
 # The loop at `f` Hz: a whole-sample delay, an allpass for the fraction
@@ -52,15 +52,17 @@ fn string(notes, kind) {
   let last = notes[notes.size() - 1]
   let end = last.at + last.len
   let next = last.get("next", nil)
-  let held = last.get("marks", []).contains("staccato")
-    ? Math.min(end, next ?? end)
-    : Math.min(next ?? end + 1.5, end + 2.0)
-  let total = Math.round((held + 0.25) * RATE)
   let loops = notes.map(|n| loop_of(
     wave.hz(n.pitch),
     ring_time(wave.hz(n.pitch), kind.sustain),
   ))
-  let damped = notes.map(|n| loop_of(wave.hz(n.pitch), 0.12))
+  # Rung out, the last string fades below hearing in half its ring time.
+  let rung = end + 0.5 * ring_time(wave.hz(last.pitch), kind.sustain)
+  let held = last.get("marks", []).contains("staccato")
+    ? Math.min(end, next ?? end)
+    : Math.min(next ?? rung, rung)
+  let total = Math.round((held + 0.3) * RATE)
+  let damped = notes.map(|n| loop_of(wave.hz(n.pitch), 0.2))
   let starts = notes.map(|n| Math.round(n.at * RATE))
   # The pluck, then a hammer-on (up) or a pull-off (down) for each note after.
   let bursts = iota(notes.size()).map(fn (k) {
@@ -144,9 +146,9 @@ fn body(samples, modes) {
   })
 }
 
-let NYLON = {sustain: 2.0, bright: 0.4, position: 0.18, strum: 0.008}
-let STEEL = {sustain: 2.5, bright: 0.8, position: 0.13, strum: 0.015}
-let BASS = {sustain: 3.0, bright: 0.35, position: 0.2, strum: 0.0}
+let NYLON = {sustain: 6.0, bright: 0.4, position: 0.18, strum: 0.008}
+let STEEL = {sustain: 7.0, bright: 0.8, position: 0.13, strum: 0.015}
+let BASS = {sustain: 6.0, bright: 0.35, position: 0.2, strum: 0.0}
 
 let sounds = {
   guitar: |notes, params| body(pluck(notes, NYLON), WOOD),
