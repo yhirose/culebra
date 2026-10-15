@@ -3304,7 +3304,8 @@ struct JIT {
     module_->getOrInsertFunction(rt::str_sentences, ptrTy, ptrTy);
     module_->getOrInsertFunction(rt::str_bytes, ptrTy, ptrTy);
     module_->getOrInsertFunction(rt::array_iter, ptrTy, ptrTy);
-    module_->getOrInsertFunction(rt::object_iter, ptrTy, ptrTy);
+    module_->getOrInsertFunction(rt::object_iter, ptrTy, ptrTy,
+                                 builder_.getInt64Ty(), builder_.getInt64Ty());
     // sum/product/min/max: (arr, line, col) -> %Value. The result tag is
     // data-dependent (a Float element promotes sum/product; min/max return
     // the winning element), so these cannot return a bare i64.
@@ -4703,8 +4704,10 @@ struct JIT {
     // No user-defined `iter`: drive the builtin object_iter so the same
     // mut_count fail-fast that protects `obj.iter()` also covers the
     // `for k in obj` sugar.
-    auto objIter = emit_call(module_->getFunction(rt::object_iter),
-                             {objPtr});
+    auto objIter = emit_call(
+        module_->getFunction(rt::object_iter),
+        {objPtr, builder_.getInt64(static_cast<int64_t>(iter_line)),
+         builder_.getInt64(static_cast<int64_t>(iter_col))});
     store_slot(own_slot, make_object(objIter));
     builder_.CreateBr(protoOpenBB);
 

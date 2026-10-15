@@ -15584,7 +15584,7 @@ struct Exec {
           proto_open(it);
           return;
         }
-        auto* keys = culebra_runtime_object_iter(obj);
+        auto* keys = culebra_runtime_object_iter(obj, line, col);
         proto_open({TAG_OBJECT, reinterpret_cast<int64_t>(keys)});
         return;
       }

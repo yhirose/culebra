@@ -82,15 +82,22 @@ for k, v in inst {
 }
 assert_eq(inst_seen, ['x'])
 
-# 8. A handle onto other storage has no entries of its own to walk: its slots
-#    are its bookkeeping, and it is read through its own methods.
+# 8. A handle onto other storage has no entries of its own to walk: it is read
+#    through its own methods. The walk is refused where it is asked for.
 @packable
 class Cell {
   mass: Float32 = 1.5
 }
 let cells = SharedBuffer.new(2, Cell)
-assert_throws('TypeError', fn () {
-  for k, v in cells {
-    k
+let (tx, rx) = Channel.new()
+let walk = fn (h) {
+  try {
+    for k, v in h {
+      k
+    }
+  } catch e {
+    [e.kind, e.line, e.col]
   }
-})
+}
+assert_eq(walk(cells), ['TypeError', 95, 17])
+assert_eq(walk(tx), ['TypeError', 95, 17])

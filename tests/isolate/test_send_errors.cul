@@ -197,3 +197,42 @@ let child_dropped = Isolate.spawn(fn () {
 assert_eq(child_dropped, 'sent-drop-ran')
 
 inspect("test_send_errors: drop-gate assertions passed")
+
+# --- A message that goes gives back what it holds ----------------------------
+# A channel end a message carries holds a count on its channel from the moment
+# it is serialized. A message refused part-way, or one a server kept for its
+# workers, goes and gives the count back: the channel closes when its end is
+# dropped (it stayed open, and a `for` over it hung).
+fn closes_after(use) {
+  let (ctx, crx) = Channel.new(1)
+  caught(fn () {
+    use(ctx)
+  })
+  ctx.drop()
+  match crx.try_recv() {
+    Closed() => true,
+    _ => false,
+  }
+}
+let (otx, orx) = Channel.new(1)
+assert_true(closes_after(fn (end) {
+  otx.send([end, println])
+}))
+assert_true(closes_after(fn (end) {
+  Isolate.spawn(|a, b| a, end, println)
+}))
+assert_true(closes_after(fn (end) {
+  Parallel.map([end, println], |x| x)
+}))
+assert_true(closes_after(fn (end) {
+  Shared.new([end])
+}))
+assert_true(closes_after(fn (end) {
+  let srv = Http.server()
+  srv.get("/", fn (req) {
+    end.send(1)
+    'ok'
+  })
+  srv.listen_async(0)
+  srv.close()
+}))

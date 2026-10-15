@@ -50,11 +50,6 @@ inline SharedValCore* shared_val_acquire(int64_t id) {
   it->second->refcount.fetch_add(1, std::memory_order_relaxed);
   return it->second.get();
 }
-// One more count on a tree the caller holds a count on already: a view going
-// into a message.
-inline void shared_val_retain(const SharedValCore& core) {
-  core.refcount.fetch_add(1, std::memory_order_relaxed);
-}
 // Give a count back, by the tree (a Runtime's hold). The last one takes the
 // tree out of the registry, releasing it outside the lock; a count taken by
 // id in between leaves it there.
@@ -70,16 +65,14 @@ inline void shared_val_release(const SharedValCore& core, int64_t id) {
     shared_val_registry().erase(it);
   }
 }
-// The same, by id: a message's in-flight count, once it has been rebuilt.
-inline void shared_val_drop(int64_t id) {
-  std::shared_ptr<SharedValCore> core;
-  {
-    std::lock_guard<std::mutex> lock(shared_val_mutex());
-    auto it = shared_val_registry().find(id);
-    if (it == shared_val_registry().end()) return;
-    core = it->second;
-  }
-  shared_val_release(*core, id);
+// One more count on a tree the caller holds a count on already, for a message
+// to carry (SendNode::held): given back when the message goes.
+inline std::shared_ptr<void> shared_val_held(const SharedValCore& core,
+                                             int64_t id) {
+  core.refcount.fetch_add(1, std::memory_order_relaxed);
+  return {const_cast<SharedValCore*>(&core), [id](void* p) {
+            shared_val_release(*static_cast<SharedValCore*>(p), id);
+          }};
 }
 
 // Why a value that can be sent still cannot be frozen, or null: Shared

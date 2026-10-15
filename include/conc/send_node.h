@@ -1,8 +1,8 @@
 #pragma once
 
-// The neutral transfer representation (SendNode) plus the two helpers every
-// backend's serializer shares: send_error (one SendError spelling) and the
-// dry-run flag. Owns no GC-heap pointer and no engine type, so
+// The neutral transfer representation (SendNode) plus the one helper every
+// backend's serializer shares: send_error (one SendError spelling). Owns no
+// GC-heap pointer and no engine type, so
 // the compiled lanes' serializer (sendable_rt.h) and the isolate/channel
 // core (isolate_core.h) can include it without the interp. Moved verbatim
 // from sendable.h (Phase 4 B7-b).
@@ -19,9 +19,9 @@
 namespace culebra::sendable {
 
 // ---------------------------------------------------------------------------
-// Neutral representation. Owns no GC-heap pointer. The only cross-heap-safe
-// shared_ptr it may hold is shared_ptr<peg::Ast> (process-lifetime, atomic
-// control block).
+// Neutral representation. Owns no GC-heap pointer. The shared_ptrs it holds
+// have atomic control blocks: `body` (a process-lifetime peg::Ast) and `held`
+// (a count on a handle, given back on whichever thread drops the last copy).
 // ---------------------------------------------------------------------------
 struct SendNode {
   // Unbound is the "nothing has bound this yet" sentinel, in `i` with the
@@ -34,9 +34,13 @@ struct SendNode {
   K kind = K::Nil;
 
   bool b = false;  // Bool; also Channel role (false = tx, true = rx)
-  int64_t i = 0;   // Long; also a Channel / SharedBuffer word, a BufView's
-                   // first byte
+  int64_t i = 0;   // Long; also a Channel word, a BufView's first byte
   double d = 0.0;
+  // What a node carrying a handle by reference (a Channel end, a SharedBuffer,
+  // a Shared tree) holds on it in flight: the count serialize took, given
+  // back when the last copy of the node goes, consumed or not. Empty for a
+  // dropped handle and for every other kind.
+  std::shared_ptr<void> held;
   std::string s;   // Str; also a BufView's field type (empty: `buf[i]`)
 
   std::vector<SendNode> elems;  // Array / Set / Tuple; a BufView's buffer
@@ -117,21 +121,5 @@ using TraitDefaults = std::vector<TraitDefaultNode>;
 [[noreturn]] inline void send_error(const std::string& what) {
   throw culebra::CulebraError("SendError", what);
 }
-
-// True while a value is serialized only to be looked at, with no message to
-// carry it: Shared.new writing out a value it is about to refuse (it wants
-// the serializer's reason), a snapshot of the trait defaults. The extract
-// hooks consult it to SKIP the in-flight refcount bump, which nothing would
-// give back — on the serialize-throws path (a cycle past an already
-// extracted handle) least of all. Set by a RAII guard.
-inline bool& dry_run() {
-  static thread_local bool f = false;
-  return f;
-}
-struct DryRun {
-  bool prev;
-  DryRun() : prev(dry_run()) { dry_run() = true; }
-  ~DryRun() { dry_run() = prev; }
-};
 
 }  // namespace culebra::sendable

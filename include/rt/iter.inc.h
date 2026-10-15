@@ -1554,7 +1554,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int8_t culebra_runtime_range_contains(
 
 // Defined below, next to the other Object walkers.
 extern "C" CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject*
-culebra_runtime_object_iter(JitObject* obj);
+culebra_runtime_object_iter(JitObject* obj, int64_t line, int64_t col);
 extern "C" CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject*
 culebra_runtime_set_iter(JitSet* set);
 
@@ -1597,7 +1597,7 @@ inline JitValue _iter_coerce_iterable(int8_t t, int64_t d, int64_t line,
     // the same two-step way here — so an iterator-shaped class instance with
     // no `iter` method is a dict to this coercion, not a non-iterable.
     return {TAG_OBJECT, reinterpret_cast<int64_t>(culebra_runtime_object_iter(
-                            reinterpret_cast<JitObject*>(d)))};
+                            reinterpret_cast<JitObject*>(d), line, col))};
   }
   // Match interp's for-in / flat_map coercion wording (throw_type_mismatch),
   // not a JIT-only "target is not iterable".
@@ -2283,10 +2283,13 @@ inline void _iter_from_object_pairs_fast_fn(JitClosure* cls, JitValue,
 
 // Object.iter(): yield `(key, value)` pairs in insertion order (Ruby-style
 // entries view). Mutating the object in the loop body is safe (adds not
-// visited, removes skipped, value read live).
+// visited, removes skipped, value read live). (line, col) is where the walk
+// was asked for: a handle has no entries to walk, and says so there.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_object_iter(
-    JitObject* obj) {
-  return _jit_obj_snapshot_iter<&_iter_from_object_pairs_fast_fn>(obj);
+    JitObject* obj, int64_t line, int64_t col) {
+  return _jit_at_pos(line, col, [&] {
+    return _jit_obj_snapshot_iter<&_iter_from_object_pairs_fast_fn>(obj);
+  });
 }
 
 // Object.values() fast fn — the value-only view of the pairs iterator.
@@ -2320,7 +2323,7 @@ culebra_runtime_object_iter_dispatch(JitObject* obj) {
     // The user iter() returns an Object (+1) — caller takes that retain.
     return reinterpret_cast<JitObject*>(r.data);
   }
-  return culebra_runtime_object_iter(obj);
+  return culebra_runtime_object_iter(obj, 0, 0);  // the method call's site
 }
 
 }  // extern "C" (close briefly for the flatten step)

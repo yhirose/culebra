@@ -705,22 +705,6 @@ struct SharedBufferCore {
 };
 using SharedBufferRef = std::shared_ptr<SharedBufferCore>;
 
-// A buffer as a message carries it, in SendNode::i: a ref of its own, let go
-// of once the message is consumed (shared_buffer_word_release). Zero is a
-// dropped buffer.
-inline int64_t shared_buffer_word(const SharedBufferRef& core) {
-  return core ? static_cast<int64_t>(reinterpret_cast<intptr_t>(
-                    new SharedBufferRef(core)))
-              : 0;
-}
-inline SharedBufferRef shared_buffer_of(int64_t word) {
-  return word ? *reinterpret_cast<SharedBufferRef*>(static_cast<intptr_t>(word))
-              : nullptr;
-}
-inline void shared_buffer_word_release(int64_t word) {
-  delete reinterpret_cast<SharedBufferRef*>(static_cast<intptr_t>(word));
-}
-
 // --- Lock header accessors + lifecycle ------------------------------------
 // The pthread mutex lives at the front of a File/Shared mapping; heap has none.
 inline SharedLockHeader* shared_lock_header(const SharedBufferCore& core) {

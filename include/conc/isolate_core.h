@@ -8,10 +8,8 @@
 // (sendable_rt.h) include this alone. Moved verbatim from isolate.h
 // (Phase 4 B7-b), whose tree-walker half retired with the engine (B7-f).
 
-#include <base/packable.h>       // shared_buffer_word_release
 #include <conc/send_node.h>      // SendNode
 #include <base/shared.h>         // SizedThread, the cancel/wake flags
-#include <conc/sharedval_core.h> // shared_val_drop
 
 #include <algorithm>
 #include <atomic>
@@ -30,10 +28,6 @@
 #include <vector>
 
 namespace culebra {
-
-// Defined in isolate_core.h's own Channel section below; declared early
-// because chan_merge_drop consumes endpoints before that section.
-inline void release_inflight_channels(const sendable::SendNode& n);
 
 // Process-wide parallelism cap and live-isolate counter. Raw spawns and (later)
 // Parallel.map share ONE counter so recursive parallelism can't exceed the cap.
@@ -97,8 +91,6 @@ struct IsolateCore {
       thread.join();
     }
     _reap_isolate_cancel(*this);
-    release_inflight_channels(result);
-    if (thrown) release_inflight_channels(*thrown);
   }
 };
 
@@ -141,7 +133,7 @@ inline bool _isolate_finished(IsolateCore& core) {
 //
 // The core lives exactly as long as its counts. Whatever holds a pointer to
 // one holds one count of its own, tx or rx: an endpoint, a message carrying an
-// endpoint (counted when it is serialized, given back once it is consumed), a
+// endpoint (counted when it is serialized, given back when the message goes), a
 // fan_in merge's sources, the Signal.notify table, a select under way. The
 // last count given back frees it, so nothing looks a channel up: a send or a
 // recv touches no lock but the channel's own.
@@ -286,30 +278,19 @@ inline void chan_bump(ChannelCore* core, int role) {
   else           core->rx_count++;
 }
 
-// Recursively release the in-flight refs (the extract-time bumps) a serialized
-// node holds for any channel endpoints it carries. Called exactly once per
-// serialized node, after it has been fully consumed (deserialized), so the
-// "endpoint = one count" invariant holds across both 1:1 (spawn / recv) and
-// 1:N (Parallel) transfers. Plain values are a no-op.
-inline void release_inflight_channels(const sendable::SendNode& n) {
-  using K = sendable::SendNode::K;
-  if (n.kind == K::Channel) {
-    if (auto* core = chan_core(n.i)) chan_drop(core, n.b ? 1 : 0);
-    return;
-  }
-  // A SharedBuffer node holds a ref of its own on the bytes.
-  if (n.kind == K::SharedBuffer) {
-    culebra::shared_buffer_word_release(n.i);
-    return;
-  }
-  // A Shared.new view node likewise (extract bumped the frozen tree).
-  if (n.kind == K::SharedVal) { culebra::shared_val_drop(n.i); return; }
-  for (const auto& e : n.elems) release_inflight_channels(e);
-  for (const auto& e : n.entries) {
-    release_inflight_channels(e.first);
-    release_inflight_channels(e.second);
-  }
-  for (const auto& c : n.captures) release_inflight_channels(c.second);
+// A channel end as a message carries it: the core, the role, and the count the
+// caller already took for it (SendNode::held), given back when the last copy
+// of the message goes. A dropped end (null core) holds nothing.
+inline sendable::SendNode chan_node(ChannelCore* core, int role) {
+  sendable::SendNode n;
+  n.kind = sendable::SendNode::K::Channel;
+  n.i = chan_word(core);
+  n.b = (role == 1);
+  if (core)
+    n.held = {core, [role](void* p) {
+                chan_drop(static_cast<ChannelCore*>(p), role);
+              }};
+  return n;
 }
 
 // Does a serialized value carry a channel endpoint (captured by a closure, held
@@ -317,8 +298,7 @@ inline void release_inflight_channels(const sendable::SendNode& n) {
 // inter-isolate primitive that may block on send/recv whose only unblocker is
 // ANOTHER isolate running concurrently — so it must run on a real thread, never
 // the inline-over-cap fallback (which would deadlock: a streaming producer fills
-// a bounded channel with no consumer draining it yet). Mirrors the structure
-// walk of release_inflight_channels.
+// a bounded channel with no consumer draining it yet).
 template <class Leaf>
 inline bool node_any(const sendable::SendNode& n, Leaf leaf) {
   if (leaf(n.kind)) return true;
@@ -336,9 +316,9 @@ inline bool node_carries_channel(const sendable::SendNode& n) {
   return node_any(n, [](K k) { return k == K::Channel; });
 }
 
-// Does a serialized value hold an in-flight ref — a node of any kind
-// release_inflight_channels drops? (node_carries_channel asks a narrower
-// question: only a channel endpoint can block its isolate.)
+// Does a serialized value carry a handle by reference, live or dropped?
+// (node_carries_channel asks a narrower question: only a channel endpoint can
+// block its isolate.)
 inline bool node_carries_inflight(const sendable::SendNode& n) {
   using K = sendable::SendNode::K;
   return node_any(n, [](K k) {
@@ -364,14 +344,9 @@ inline void chan_drop(ChannelCore* core, int role) {
       core->cv.notify_all();
     }
   }
-  if (reclaim) {
-    // Undelivered nodes: a value that crossed by reference (a channel
-    // endpoint, SharedBuffer, or Shared view) was counted at extract for the
-    // in-flight window, and a never-received node gives that count back here.
-    // No count is left, so nothing else can reach the core.
-    for (auto& node : core->q) release_inflight_channels(node);
-    delete core;
-  }
+  // No count is left, so nothing else can reach the core. An undelivered
+  // node goes with it, and gives back what it holds in flight.
+  if (reclaim) delete core;
 }
 
 // Non-blocking enqueue: push iff there is room, else drop and return false.
@@ -455,14 +430,8 @@ inline void signal_notify_reset() {
 // Backend-neutral enqueue: the caller has already serialized the value into a
 // neutral node. Blocks while the buffer is full; interrupt- and close-aware. A
 // null core is an endpoint already dropped, which is a closed channel. A node
-// that never makes it into the queue gives back what it counted at serialize.
+// that never makes it into the queue goes, and gives back what it holds.
 inline void channel_send_node(ChannelCore* core, sendable::SendNode node) {
-  struct Unsent {
-    sendable::SendNode* node;
-    ~Unsent() {
-      if (node) release_inflight_channels(*node);
-    }
-  } unsent{&node};
   if (!core) throw culebra::CulebraError("ChannelError", "send on a closed channel");
   std::unique_lock<std::mutex> lk(core->m);
   // A rendezvous channel (cap 0) holds at most one in-transit value: wait for an
@@ -477,7 +446,6 @@ inline void channel_send_node(ChannelCore* core, sendable::SendNode node) {
   if (core->closed)
     throw culebra::CulebraError("ChannelError", "send on a closed channel");
   core->q.push_back(std::move(node));
-  unsent.node = nullptr;
   core->cv.notify_all();
   core->signal_selectors();  // wake any fan_in waiter (under lk = no dangling)
   if (core->cap == 0) {
