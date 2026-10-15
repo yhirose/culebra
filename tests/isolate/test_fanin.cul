@@ -139,4 +139,43 @@ let ch = try {
 }
 assert_eq(ch, [1, 2, 3])
 
+# A merged rx is a handle onto its merge, as an endpoint is onto its channel:
+# it has no fields and does not cross to an isolate. Its for-in cursor holds
+# the merge too, so the loop runs whatever becomes of the rx it came from.
+let (th, rh) = Channel.new(4)
+th.send(10)
+th.send(20)
+th.drop()
+let mh = Channel.fan_in([rh])
+assert_eq("{mh}", "[merged Channel rx]")
+assert_eq(mh.keys(), [])
+assert_throws('TypeError', fn () {
+  mh.x = 1
+})
+mut read = []
+for v in mh {
+  read.push(v)
+  mh.drop()
+}
+assert_eq(read, [10, 20])
+assert_eq("{mh}", "[dropped merged Channel rx]")
+assert_eq(mh.recv(), nil)
+
+# Dropping a merged rx stops the producers still running: the one below never
+# ends on its own, and its `side_tx` closes when it is cancelled.
+let (side_tx, side_rx) = Channel.new(1)
+let spin = Channel.fan_in([1], fn (w, tx) {
+  tx.send(w)
+  side_tx.send(w)
+  mut i = 0
+  while true {
+    i += 1
+  }
+})
+side_tx.drop()
+assert_eq(spin.recv(), 1)
+assert_eq(side_rx.recv(), 1)
+spin.drop()
+assert_eq(side_rx.recv(), nil)
+
 inspect("test_fanin: all assertions passed")

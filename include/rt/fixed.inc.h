@@ -136,11 +136,8 @@ inline void _jit_iter_self(JitValue* __ret, JitClosure*, int8_t self_tag,
 
 // The view a method was called on: its methods are only reached through one.
 inline JitBufView& _jit_self_view(JitValue self) {
-  auto* v = self.tag == TAG_OBJECT
-                ? _jit_buf_view(reinterpret_cast<JitObject*>(self.data))
-                : nullptr;
-  if (!v) throw culebra::CulebraError("TypeError", "not a SharedBuffer view");
-  return *v;
+  return *_jit_self_handle<JitBufView>(self, JitHandle::Kind::BufView,
+                                       "SharedBuffer view");
 }
 
 // A view's for-in cursor (a handle, see JitHandle): the view it walks, and
@@ -163,12 +160,8 @@ struct JitBufViewIter final : JitHandle {
   void each_value(Visit visit, void* ctx) override { visit(ctx, view); }
 };
 inline JitBufViewIter& _jit_self_view_iter(JitValue self) {
-  auto* h = self.tag == TAG_OBJECT
-                ? reinterpret_cast<JitObject*>(self.data)->handle_of()
-                : nullptr;
-  if (!h || h->kind != JitHandle::Kind::BufViewIter)
-    throw culebra::CulebraError("TypeError", "not a SharedBuffer view iterator");
-  return *static_cast<JitBufViewIter*>(h);
+  return *_jit_self_handle<JitBufViewIter>(self, JitHandle::Kind::BufViewIter,
+                                           "SharedBuffer view iterator");
 }
 
 extern "C++" {

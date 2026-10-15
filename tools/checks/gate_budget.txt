@@ -98,7 +98,9 @@ tests.cul 310
 # Isolate and a Channel).
 # 19 since test_isolate_jit.cul and test_parallel_jit.cul went into
 # test_isolate.cul and test_parallel.cul, which every engine runs too.
-tests.isolate 19
+# 20 since test_fanin_teardown.cul (a run that ends with a fan_in producer
+# still running, in a file with no Isolate.spawn to arrange its join).
+tests.isolate 20
 
 # tests/gen_frames/*.cul: the generator probes held to frozen outputs, on both
 # engines in the landing gate and under the collector's axes and `culebra

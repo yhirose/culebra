@@ -54,6 +54,11 @@ let h = caught(fn () {
 })
 assert_eq(h, "SendError: a native handle is not Sendable")
 
+let m = caught(fn () {
+  send_through(Channel.fan_in([]))
+})
+assert_eq(m, "SendError: a native handle is not Sendable")
+
 # A handle returned out of an isolate is rejected the same way.
 let r = caught(fn () {
   Isolate.spawn(fn () {

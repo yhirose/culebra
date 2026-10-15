@@ -492,14 +492,16 @@ inline culebra::Shape* dict_shape() {
 struct JitGenFrame;  // rt/gen.inc.h
 
 // The C++ half of a handle Object (JitObject::has_handle): what the value
-// stands for outside this Runtime's heap: a channel end, an rx's cursor, a
-// SharedBuffer, a view of one's bytes and a view's cursor.
+// stands for outside this Runtime's heap: a channel end, a fan_in's merged
+// rx, an rx's cursor, a SharedBuffer, a view of one's bytes and a view's
+// cursor.
 // The Object owns it and deletes it with itself, so what it holds is given
 // back however the Object goes; the Object's methods are on the meta its kind
 // shares.
 struct JitHandle {
   enum class Kind : uint8_t {
     ChannelEnd,
+    MergedRx,
     ChannelIter,
     SharedBuffer,
     BufView,

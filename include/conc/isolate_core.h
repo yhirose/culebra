@@ -24,7 +24,6 @@
 #include <optional>
 #include <string_view>
 #include <thread>
-#include <unordered_map>
 #include <vector>
 
 namespace culebra {
@@ -134,9 +133,9 @@ inline bool _isolate_finished(IsolateCore& core) {
 // The core lives exactly as long as its counts. Whatever holds a pointer to
 // one holds one count of its own, tx or rx: an endpoint, a message carrying an
 // endpoint (counted when it is serialized, given back when the message goes), a
-// fan_in merge's sources, the Signal.notify table, a select under way. The
-// last count given back frees it, so nothing looks a channel up: a send or a
-// recv touches no lock but the channel's own.
+// fan_in merge's sources, the Signal.notify table. The last count given back
+// frees it, so nothing looks a channel up: a send or a recv touches no lock but
+// the channel's own.
 
 // A consumer waiting on SEVERAL channels at once (Channel.fan_in, the basis for
 // a future select) registers one MergeWaiter on each source's `selectors` list.
@@ -182,77 +181,8 @@ inline ChannelCore* chan_core(int64_t word) {
 
 inline void chan_drop(ChannelCore* core, int role);  // fwd
 
-// Merged-rx (fan_in) registry: a merged id → its source channels, each held by
-// one rx count, plus (for the `fan_in(items, fn)` form) the producer isolates
-// it spawned. Keyed by id so the merged endpoint's methods stay captureless;
-// the registry holds the producer cores alive (a GC'd handle would cancel
-// them) and the erase makes drop idempotent (explicit + GC).
-struct MergeEntry {
-  std::vector<ChannelCore*> sources;
-  std::vector<std::shared_ptr<IsolateCore>> producers;  // empty for fan_in([rx])
-};
-inline std::mutex& merge_registry_mutex() { static std::mutex m; return m; }
-inline std::unordered_map<long, MergeEntry>& merge_registry() {
-  static std::unordered_map<long, MergeEntry> r;
-  return r;
-}
-inline std::atomic<long>& merge_next_id() {
-  static std::atomic<long> n{1};
-  return n;
-}
-inline int64_t chan_merge_register(
-    std::vector<ChannelCore*> sources,
-    std::vector<std::shared_ptr<IsolateCore>> producers = {}) {
-  int64_t id = merge_next_id().fetch_add(1, std::memory_order_relaxed);
-  std::lock_guard<std::mutex> lk(merge_registry_mutex());
-  merge_registry()[id] = MergeEntry{std::move(sources), std::move(producers)};
-  return id;
-}
-// Drop a merged endpoint: release the rx count fan_in took on each source, and
-// erase the entry (releasing any producer cores — their threads are finished
-// once every source has closed, so destruction joins them). Idempotent.
-inline void chan_merge_drop(int64_t mid) {
-  MergeEntry e;
-  {
-    std::lock_guard<std::mutex> lk(merge_registry_mutex());
-    auto it = merge_registry().find(mid);
-    if (it == merge_registry().end()) return;
-    e = std::move(it->second);
-    merge_registry().erase(it);
-  }
-  for (auto* core : e.sources) chan_drop(core, /*role=*/1);
-  // e.producers' shared_ptrs drop here; the last ref joins the finished thread.
-}
-// Join the producer isolates of a `fan_in(items, fn)` merge and surface the
-// first error (no-op for fan_in([rx]), which has no producers). Leaves the
-// merge registered so the merged rx still drops cleanly afterward.
-// The producer cores a merge owns, kept alive by copying the shared_ptrs.
-// Both backends join through this; each then re-raises in its own throw form
-// (interp throws a Value, the JIT a CulebraException) so the surfaced error is
-// symmetric — see _jit_merged_join.
-inline std::vector<std::shared_ptr<IsolateCore>> chan_merge_producers(int64_t mid) {
-  std::lock_guard<std::mutex> lk(merge_registry_mutex());
-  auto it = merge_registry().find(mid);
-  if (it == merge_registry().end()) return {};
-  return it->second.producers;
-}
-
-// Producers of every merge_registry entry (Channel.fan_in(items, fn)) not
-// yet joined. Shared by both backends' teardown walks: interp's below and
-// JIT's _jit_isolate_teardown_join_all (sendable_rt.h) — a fan_in producer
-// always runs through this same registry regardless of which backend spawned
-// it (a process runs under exactly one backend, so the two walks never race).
-inline void collect_live_merge_producers(
-    std::vector<std::shared_ptr<IsolateCore>>& live) {
-  std::lock_guard<std::mutex> lk(merge_registry_mutex());
-  for (auto& [_, entry] : merge_registry())
-    for (auto& core : entry.producers)
-      if (!core->joined) live.push_back(core);
-}
-
 // Cancel every isolate in `live` up front (so every wait below unblocks
 // promptly instead of waiting each one out serially), then join + reap.
-// Shared by both backends' teardown walks (see collect_live_merge_producers).
 inline void cancel_and_join_isolates(
     std::vector<std::shared_ptr<IsolateCore>> live) {
   for (auto& core : live) mark_isolate_cancelled(*core);
@@ -268,6 +198,59 @@ inline void cancel_and_join_isolates(
     core->joined = true;
     _reap_isolate_cancel(*core);
   }
+}
+
+// A Channel.fan_in merge: the channels it reads, each held by an rx count of
+// the merge's own, and for `fan_in(items, fn)` the producer isolates it
+// spawned, one per source. Whatever reads through it shares it: the merged rx
+// and each of its for-in cursors. The last of them to go stops the producers
+// still running and joins them all, then gives the counts back. (A producer's
+// thread holds its core too, so letting the merge's refs go would stop none.)
+struct ChannelMerge {
+  std::vector<ChannelCore*> sources;
+  std::vector<std::shared_ptr<IsolateCore>> producers;  // empty for fan_in([rx])
+  ChannelMerge() = default;
+  ChannelMerge(const ChannelMerge&) = delete;
+  ChannelMerge& operator=(const ChannelMerge&) = delete;
+  ~ChannelMerge() {
+    std::vector<std::shared_ptr<IsolateCore>> unjoined;
+    for (const auto& core : producers)
+      if (!core->joined) unjoined.push_back(core);
+    cancel_and_join_isolates(std::move(unjoined));
+    for (auto* core : sources) chan_drop(core, /*role=*/1);
+  }
+};
+
+// Every merge a fan_in(items, fn) has made, for the teardown walk to reach
+// the producers of the ones still alive (a merge that goes joins its own).
+// Touched when a fan_in spawns and at teardown, never by a recv.
+inline std::mutex& fan_in_merges_mutex() { static std::mutex m; return m; }
+inline std::vector<std::weak_ptr<ChannelMerge>>& fan_in_merges() {
+  static std::vector<std::weak_ptr<ChannelMerge>> v;
+  return v;
+}
+inline void fan_in_merges_add(const std::shared_ptr<ChannelMerge>& merge) {
+  std::lock_guard<std::mutex> lk(fan_in_merges_mutex());
+  auto& v = fan_in_merges();
+  std::erase_if(v, [](const auto& w) { return w.expired(); });
+  v.push_back(merge);
+}
+
+// The fan_in producers not yet joined, for the teardown walk
+// (_jit_isolate_teardown_join_all). A merge held here may be the last ref to
+// it by the time this returns, and its going joins threads, so that happens
+// outside the lock.
+inline void collect_live_fan_in_producers(
+    std::vector<std::shared_ptr<IsolateCore>>& live) {
+  std::vector<std::shared_ptr<ChannelMerge>> merges;
+  {
+    std::lock_guard<std::mutex> lk(fan_in_merges_mutex());
+    for (const auto& w : fan_in_merges())
+      if (auto merge = w.lock()) merges.push_back(std::move(merge));
+  }
+  for (const auto& merge : merges)
+    for (const auto& core : merge->producers)
+      if (!core->joined) live.push_back(core);
 }
 
 // Take one more count on an end: the caller holds one already (an endpoint, a
@@ -551,8 +534,6 @@ inline size_t chan_drain_max(DrainMaxKind kind, int64_t n, int64_t line,
   return static_cast<size_t>(n);
 }
 
-inline bool _isolate_finished(IsolateCore& c);  // fwd (defined after IsolateCore)
-
 // Wait until one of a merge's sources has a value and pop it; return nullopt
 // once EVERY source is drained AND done. This is the fan_in / select core:
 // register one waiter on each source, then block on it — event-driven, no
@@ -564,42 +545,25 @@ inline bool _isolate_finished(IsolateCore& c);  // fwd (defined after IsolateCor
 // (for the fan_in(items, fn) form) has finished — the latter is the safety net
 // for a producer that ends while something still holds a `tx` for its channel,
 // so the channel never closed itself.
-inline std::optional<sendable::SendNode> chan_select_recv(int64_t mid) {
-  // The select takes an rx count on each source for itself, under the
-  // registry's lock: a drop of the merge from elsewhere cannot free a source
-  // under it.
-  std::vector<ChannelCore*> cores;
-  std::vector<std::shared_ptr<IsolateCore>> producers;
-  {
-    std::lock_guard<std::mutex> lk(merge_registry_mutex());
-    auto it = merge_registry().find(mid);
-    if (it == merge_registry().end()) return std::nullopt;
-    cores = it->second.sources;
-    producers = it->second.producers;
-    for (auto* c : cores) chan_bump(c, /*role=*/1);
-  }
-  std::vector<IsolateCore*> prod;  // parallel to cores; null for fan_in([rx])
-  for (size_t i = 0; i < cores.size(); i++)
-    prod.push_back(i < producers.size() ? producers[i].get() : nullptr);
-
+//
+// The caller holds the merge for the call, which holds the sources.
+inline std::optional<sendable::SendNode> chan_select_recv(
+    const ChannelMerge& merge) {
+  const auto& cores = merge.sources;
   MergeWaiter w;
   for (auto* c : cores) {
     std::lock_guard<std::mutex> lk(c->m);
     c->selectors.push_back(&w);  // register before the first scan: no lost wakeup
   }
-  // Unregister and give the counts back on every exit (value / all done /
-  // interrupt throw).
+  // Unregister on every exit (value / all done / interrupt throw).
   struct Unreg {
-    std::vector<ChannelCore*>& cores;
+    const std::vector<ChannelCore*>& cores;
     MergeWaiter* w;
     ~Unreg() {
       for (auto* c : cores) {
-        {
-          std::lock_guard<std::mutex> lk(c->m);
-          auto& s = c->selectors;
-          s.erase(std::remove(s.begin(), s.end(), w), s.end());
-        }
-        chan_drop(c, /*role=*/1);
+        std::lock_guard<std::mutex> lk(c->m);
+        auto& s = c->selectors;
+        s.erase(std::remove(s.begin(), s.end(), w), s.end());
       }
     }
   } unreg{cores, &w};
@@ -607,7 +571,7 @@ inline std::optional<sendable::SendNode> chan_select_recv(int64_t mid) {
   while (true) {
     bool all_done = true;
     for (size_t i = 0; i < cores.size(); i++) {
-      auto& c = cores[i];
+      auto* c = cores[i];
       std::unique_lock<std::mutex> lk(c->m);
       if (!c->q.empty()) {
         sendable::SendNode node = std::move(c->q.front());
@@ -616,7 +580,10 @@ inline std::optional<sendable::SendNode> chan_select_recv(int64_t mid) {
         c->cv.notify_all();  // a sender waiting for room (bounded / rendezvous)
         return node;
       }
-      bool done = c->closed || (prod[i] && _isolate_finished(*prod[i]));
+      // The source's producer, if the merge spawned one.
+      auto* prod =
+          i < merge.producers.size() ? merge.producers[i].get() : nullptr;
+      bool done = c->closed || (prod && _isolate_finished(*prod));
       if (!done) all_done = false;
     }
     if (all_done) return std::nullopt;

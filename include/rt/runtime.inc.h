@@ -4050,6 +4050,21 @@ inline JitValue _jit_make_handle(JitHandle* handle, JitObject* meta) {
   return {TAG_OBJECT, reinterpret_cast<int64_t>(h)};
 }
 
+// The handle of kind `kind` a method was called on. Its methods are only ever
+// reached through one, so anything else is a call no program can spell.
+extern "C++" {
+template <class H>
+inline H* _jit_self_handle(JitValue self, JitHandle::Kind kind,
+                           const char* what) {
+  auto* h = self.tag == TAG_OBJECT
+                ? reinterpret_cast<JitObject*>(self.data)->handle_of()
+                : nullptr;
+  if (!h || h->kind != kind)
+    throw culebra::CulebraError("TypeError", std::string("not a ") + what);
+  return static_cast<H*>(h);
+}
+}  // extern "C++"
+
 // A view of a SharedBuffer's bytes (a handle, see JitHandle): a record
 // (`buf[i]`, or a nested @packable field of one), or a FixedArray /
 // BoundedArray / BoundedSet / BoundedMap field. It holds the buffer and reads

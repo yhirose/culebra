@@ -89,14 +89,39 @@ inline JitChanEnd* _jit_chan_end(JitValue v) {
                              : nullptr;
 }
 
-// An rx's for-in cursor's C++ half (see _jit_chan_iter): an rx count of its
-// own while it has one, and the value has_next() took.
+// A merged rx's C++ half (Channel.fan_in): its share of the merge it reads.
+struct JitMergedRx final : JitHandle {
+  std::shared_ptr<ChannelMerge> merge;  // null once dropped
+  explicit JitMergedRx(std::shared_ptr<ChannelMerge> m)
+      : JitHandle(Kind::MergedRx), merge(std::move(m)) {}
+  std::string show() const override {
+    return merge ? "[merged Channel rx]" : "[dropped merged Channel rx]";
+  }
+  // Nothing makes a second rx of one merge.
+  bool same(const JitHandle&) const override { return false; }
+};
+
+// An rx's for-in cursor's C++ half (see _jit_chan_iter): what it reads, held
+// on its own while it has it (an rx count on a channel, or a share of a
+// merge), and the value has_next() took.
 struct JitChanIter final : JitHandle {
-  ChannelCore* core;  // null once the close is met, or made from a dropped rx
+  ChannelCore* core = nullptr;          // a plain rx's channel
+  std::shared_ptr<ChannelMerge> merge;  // a merged rx's merge
   std::optional<sendable::SendNode> taken;
+  // Both null once the close is met, or when made from a dropped rx.
   explicit JitChanIter(ChannelCore* c) : JitHandle(Kind::ChannelIter), core(c) {}
-  ~JitChanIter() override {
-    if (core) chan_drop(core, /*role=*/1);
+  explicit JitChanIter(std::shared_ptr<ChannelMerge> m)
+      : JitHandle(Kind::ChannelIter), merge(std::move(m)) {}
+  ~JitChanIter() override { close(); }
+  // The next value into `taken`, or let the source go once it is met closed.
+  void pull() {
+    if (taken || (!core && !merge)) return;
+    taken = core ? chan_pop_blocking(*core) : chan_select_recv(*merge);
+    if (!taken) close();
+  }
+  void close() {
+    if (auto* c = std::exchange(core, nullptr)) chan_drop(c, /*role=*/1);
+    merge.reset();
   }
   std::string show() const override { return "[Channel rx iterator]"; }
   bool same(const JitHandle&) const override { return false; }
@@ -859,9 +884,9 @@ inline void _jit_isolate_drop(JitValue* __ret, JitClosure*, int8_t self_tag, int
 }
 
 // Cancel + join every JIT isolate still outstanding — a standalone
-// Isolate.spawn handle (jit_isolate_reg) or a Channel.fan_in producer
-// (merge_registry's MergeEntry.producers, isolate.h) — before JIT::exec
-// (jit.h) tears down the LLJIT that backs every one's shared
+// Isolate.spawn handle (jit_isolate_reg) or a producer of a Channel.fan_in
+// merge still alive (fan_in_merges, isolate_core.h) — before JIT::exec (jit.h)
+// tears down the LLJIT that backs every one's shared
 // JitClosure::fn_ptr (see the header comment at the top of this file). A
 // script normally reaps its own isolates via h.join()/h.drop(), which mark
 // `joined` and make this a no-op walk; the gap is a top-level throw that
@@ -877,7 +902,7 @@ inline void _jit_isolate_teardown_join_all() {
     for (auto& [_, core] : jit_isolate_reg())
       if (!core->joined) live.push_back(core);
   }
-  collect_live_merge_producers(live);  // isolate.h; shared with the interp side
+  collect_live_fan_in_producers(live);
   cancel_and_join_isolates(std::move(live));
 }
 // Installed by the first spawn (below) rather than a static initializer: an
@@ -986,19 +1011,10 @@ inline JitValue culebra_jit_isolate_spawn(int8_t fn_tag, int64_t fn_data,
 // end they are called on.
 // ===========================================================================
 
-inline int64_t _jit_self_long(JitValue self, const char* key) {
-  auto* h = reinterpret_cast<JitObject*>(self.data);
-  size_t i = h->find_slot(key);
-  return i == static_cast<size_t>(-1) ? 0 : h->slots[i].value.data;
-}
-
-// The end a method was called on. Its methods are only ever reached through
-// an end, so anything else is a call no program can spell.
+// The end a method was called on (see _jit_self_handle).
 inline JitChanEnd* _jit_self_chan_end(JitValue self) {
-  auto* end = _jit_chan_end(self);
-  if (!end)
-    throw culebra::CulebraError("TypeError", "not a channel endpoint");
-  return end;
+  return _jit_self_handle<JitChanEnd>(self, JitHandle::Kind::ChannelEnd,
+                                      "channel endpoint");
 }
 
 inline void _jit_chan_send(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t n,
@@ -1127,22 +1143,15 @@ inline void _jit_chan_clone(JitValue* __ret, JitClosure*, int8_t self_tag, int64
 // and next() has not yet handed out. A cursor that met the close has let its
 // count go.
 inline JitChanIter* _jit_self_chan_iter(JitValue self) {
-  auto* h = self.tag == TAG_OBJECT
-                ? reinterpret_cast<JitObject*>(self.data)->handle_of()
-                : nullptr;
-  if (!h || h->kind != JitHandle::Kind::ChannelIter)
-    throw culebra::CulebraError("TypeError", "not a channel iterator");
-  return static_cast<JitChanIter*>(h);
+  return _jit_self_handle<JitChanIter>(self, JitHandle::Kind::ChannelIter,
+                                       "channel iterator");
 }
 inline void _jit_chan_iter_has_next(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t,
                                         JitValue*) {
   JitValue self{self_tag, self_data};
   JitMethodSelf _s{self};  // consumed on any exit (blocking pull can raise)
   auto* it = _jit_self_chan_iter(self);
-  if (!it->taken && it->core) {
-    it->taken = chan_pop_blocking(*it->core);
-    if (!it->taken) chan_drop(std::exchange(it->core, nullptr), /*role=*/1);
-  }
+  it->pull();
   { *__ret = {TAG_BOOL, it->taken ? 1 : 0}; return; }
 }
 inline void _jit_chan_iter_next(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t,
@@ -1166,28 +1175,114 @@ inline void _jit_chan_iter(JitValue* __ret, JitClosure*, int8_t self_tag, int64_
   if (core) chan_bump(core, /*role=*/1);
   { *__ret = _jit_make_handle(new JitChanIter(core), _jit_channel_meta(2)); return; }
 }
-// The meta every tx (role 0) or every rx (role 1) of this Runtime points its
-// `proto` at: a plain Object holding that end's methods, pinned like the
-// native metas. Borrowed: the table holds the +1, and each end takes one of
-// its own.
+
+// A merged rx (Channel.fan_in) reads its sources through chan_select_recv,
+// the backend-neutral core; its cursor is an rx's, reading the merge.
+inline JitMergedRx* _jit_self_merged_rx(JitValue self) {
+  return _jit_self_handle<JitMergedRx>(self, JitHandle::Kind::MergedRx,
+                                       "merged channel endpoint");
+}
+inline void _jit_merged_recv(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t, JitValue*) {
+  JitValue self{self_tag, self_data};
+  JitMethodSelf _s{self};  // consumed on any exit (blocking select can raise)
+  const auto& merge = _jit_self_merged_rx(self)->merge;
+  JitValue ret{TAG_NIL, 0};
+  if (merge) {
+    if (auto node = chan_select_recv(*merge)) {
+      JitDeCtx dc;
+      ret = jit_deserialize(*node, dc);
+    }
+  }
+  { *__ret = ret; return; }
+}
+// Idempotent, like an end's.
+inline void _jit_merged_drop(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t, JitValue*) {
+  JitValue self{self_tag, self_data};
+  JitMethodSelf _s{self};
+  _jit_self_merged_rx(self)->merge.reset();
+  { *__ret = {TAG_NIL, 0}; return; }
+}
+inline void _jit_merged_join(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t, JitValue*) {
+  JitValue self{self_tag, self_data};
+  JitMethodSelf _s{self};  // consumed on any exit (join re-raises a failure)
+  // Join the producers (fan_in(items, fn)) and surface the first error. Extract
+  // through the JIT path so a structured error re-raises as CulebraError and a
+  // raw `throw <value>` re-raises as a CulebraException — both caught by a
+  // compiled `catch`.
+  auto merge = _jit_self_merged_rx(self)->merge;  // held for the joins
+  static const std::vector<std::shared_ptr<IsolateCore>> none;
+  std::optional<culebra::CulebraError> first_err;
+  bool have_thrown = false;
+  bool interrupted = false;
+  int8_t tt = 0;
+  int64_t td = 0;
+  for (const auto& core : merge ? merge->producers : none) {
+    try {
+      _jit_isolate_extract(core);  // joins; re-raises the producer's failure
+    } catch (const culebra::Interrupted&) {
+      // A cancelled producer. Recorded like a failure, first-wins with the
+      // two below, so the remaining producers are still joined here.
+      if (!first_err && !have_thrown) interrupted = true;
+    } catch (culebra::CulebraError& e) {
+      if (!first_err && !have_thrown && !interrupted) first_err = e;
+    } catch (CulebraException& e) {
+      // We are the matching catch, so we owe the throw's balancing release
+      // (a compiled `catch` would do it). Keep the first value's origin ref for
+      // the re-raise below; drop any later ones fully.
+      culebra_runtime_consume_throw(e);
+      if (!first_err && !have_thrown && !interrupted) {
+        have_thrown = true;
+        tt = e.tag;
+        td = e.data;
+      } else {
+        culebra_runtime_value_release(e.tag, e.data);
+      }
+    }
+  }
+  if (interrupted) throw culebra::Interrupted("isolate cancelled");
+  if (have_thrown) culebra_runtime_throw(tt, td, 0, 0);  // see above: no position
+  if (first_err) throw *first_err;
+  { *__ret = {TAG_NIL, 0}; return; }
+}
+inline void _jit_merged_iter(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t, JitValue*) {
+  JitValue self{self_tag, self_data};
+  JitMethodSelf _s{self};
+  auto* it = new JitChanIter(_jit_self_merged_rx(self)->merge);
+  { *__ret = _jit_make_handle(it, _jit_channel_meta(2)); return; }
+}
+
+// The meta every tx (role 0), every rx (1), every rx's cursor (2) or every
+// merged rx (3) of this Runtime points its `proto` at: a plain Object holding
+// its methods, pinned like the native metas. Borrowed: the table holds the
+// +1, and each handle takes one of its own.
 inline JitObject* _jit_channel_meta(int role) {
   return _jit_pinned_meta(culebra::kSlotChannelMetas, role, [&] {
     auto* meta = culebra_runtime_object_new();
-    if (role == 2) {
-      _jit_view_method(meta, "iter", _jit_iter_self);
-      _jit_view_method(meta, "has_next", _jit_chan_iter_has_next);
-      _jit_view_method(meta, "next", _jit_chan_iter_next);
-    } else {
-      _jit_view_method(meta, "drop", _jit_chan_drop);
-      _jit_view_method(meta, "clone", _jit_chan_clone);
-    }
-    if (role == 0) {
-      _jit_view_method(meta, "send", _jit_chan_send);
-    } else if (role == 1) {
-      _jit_view_method(meta, "recv", _jit_chan_recv);
-      _jit_view_method(meta, "iter", _jit_chan_iter);
-      _jit_view_method(meta, "try_recv", _jit_chan_try_recv);
-      _jit_view_method(meta, "drain", _jit_chan_drain);
+    switch (role) {
+      case 0:
+        _jit_view_method(meta, "drop", _jit_chan_drop);
+        _jit_view_method(meta, "clone", _jit_chan_clone);
+        _jit_view_method(meta, "send", _jit_chan_send);
+        break;
+      case 1:
+        _jit_view_method(meta, "drop", _jit_chan_drop);
+        _jit_view_method(meta, "clone", _jit_chan_clone);
+        _jit_view_method(meta, "recv", _jit_chan_recv);
+        _jit_view_method(meta, "iter", _jit_chan_iter);
+        _jit_view_method(meta, "try_recv", _jit_chan_try_recv);
+        _jit_view_method(meta, "drain", _jit_chan_drain);
+        break;
+      case 2:
+        _jit_view_method(meta, "iter", _jit_iter_self);
+        _jit_view_method(meta, "has_next", _jit_chan_iter_has_next);
+        _jit_view_method(meta, "next", _jit_chan_iter_next);
+        break;
+      case 3:
+        _jit_view_method(meta, "recv", _jit_merged_recv);
+        _jit_view_method(meta, "iter", _jit_merged_iter);
+        _jit_view_method(meta, "drop", _jit_merged_drop);
+        _jit_view_method(meta, "join", _jit_merged_join);
+        break;
     }
     return meta;
   });
@@ -1200,13 +1295,18 @@ inline JitValue _jit_make_channel_endpoint(ChannelCore* core, int role) {
   reinterpret_cast<JitObject*>(v.data)->has_drop = true;
   return v;
 }
+inline JitValue _jit_make_merged_rx(std::shared_ptr<ChannelMerge> merge) {
+  JitValue v = _jit_make_handle(new JitMergedRx(std::move(merge)),
+                                _jit_channel_meta(3));
+  reinterpret_cast<JitObject*>(v.data)->has_drop = true;
+  return v;
+}
 
 // The buffer a method was called on. Its methods are only ever reached
 // through a buffer, so anything else is a call no program can spell.
 inline JitSharedBuf* _jit_self_shared_buf(JitValue self) {
-  auto* o = _jit_as_shared_buffer(self);
-  if (!o) throw culebra::CulebraError("TypeError", "not a SharedBuffer");
-  return _jit_shared_buf(o);
+  return _jit_self_handle<JitSharedBuf>(self, JitHandle::Kind::SharedBuffer,
+                                        "SharedBuffer");
 }
 
 // Idempotent: the buffer lets go of its ref once (explicit `buf.drop()`, the
@@ -2449,152 +2549,6 @@ inline JitValue _jit_make_shared_buffer_handle(culebra::SharedBufferRef core) {
   return v;
 }
 
-// JIT merged rx (Channel.fan_in). Same JitObject endpoint shape as a channel rx,
-// but reaches several sources via chan_select_recv (the backend-neutral core).
-// The iterator's iter_self/next slots are generic, so only has_next differs.
-inline void _jit_merged_recv(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t, JitValue*) {
-  JitValue self{self_tag, self_data};
-  JitMethodSelf _s{self};  // consumed on any exit (blocking select can raise)
-  int64_t mid = _jit_self_long(self, "__merged_id__");
-  auto node = chan_select_recv(mid);
-  JitValue ret{TAG_NIL, 0};
-  if (node) {
-    JitDeCtx dc;
-    ret = jit_deserialize(*node, dc);
-  }
-  { *__ret = ret; return; }
-}
-inline void _jit_merged_drop(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t, JitValue*) {
-  JitValue self{self_tag, self_data};
-  JitMethodSelf _s{self};
-  auto* h = reinterpret_cast<JitObject*>(self.data);
-  size_t di = h->find_slot("_dropped");
-  if (di != static_cast<size_t>(-1) && h->slots[di].value.tag == TAG_BOOL &&
-      h->slots[di].value.data) {
-    { *__ret = {TAG_NIL, 0}; return; }
-  }
-  h->set_or_append("_dropped", JitValue{TAG_BOOL, 1}, true);
-  chan_merge_drop(_jit_self_long(self, "__merged_id__"));  // idempotent anyway
-  { *__ret = {TAG_NIL, 0}; return; }
-}
-inline void _jit_merged_join(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t, JitValue*) {
-  JitValue self{self_tag, self_data};
-  JitMethodSelf _s{self};  // consumed on any exit (join re-raises a failure)
-  int64_t mid = _jit_self_long(self, "__merged_id__");
-  // Join the producers (fan_in(items, fn)) and surface the first error. Extract
-  // through the JIT path so a structured error re-raises as CulebraError and a
-  // raw `throw <value>` re-raises as a CulebraException — both caught by a
-  // compiled `catch`. (chan_merge_join is the interp twin, using Value throws.)
-  std::optional<culebra::CulebraError> first_err;
-  bool have_thrown = false;
-  bool interrupted = false;
-  int8_t tt = 0;
-  int64_t td = 0;
-  for (auto& core : chan_merge_producers(mid)) {
-    try {
-      _jit_isolate_extract(core);  // joins; re-raises the producer's failure
-    } catch (const culebra::Interrupted&) {
-      // A cancelled producer. Recorded like a failure, first-wins with the
-      // two below, so the remaining producers are still joined here.
-      if (!first_err && !have_thrown) interrupted = true;
-    } catch (culebra::CulebraError& e) {
-      if (!first_err && !have_thrown && !interrupted) first_err = e;
-    } catch (CulebraException& e) {
-      // We are the matching catch, so we owe the throw's balancing release
-      // (a compiled `catch` would do it). Keep the first value's origin ref for
-      // the re-raise below; drop any later ones fully.
-      culebra_runtime_consume_throw(e);
-      if (!first_err && !have_thrown && !interrupted) {
-        have_thrown = true;
-        tt = e.tag;
-        td = e.data;
-      } else {
-        culebra_runtime_value_release(e.tag, e.data);
-      }
-    }
-  }
-  if (interrupted) throw culebra::Interrupted("isolate cancelled");
-  if (have_thrown) culebra_runtime_throw(tt, td, 0, 0);  // see above: no position
-  if (first_err) throw *first_err;
-  { *__ret = {TAG_NIL, 0}; return; }
-}
-inline void _jit_merged_iter_has_next(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t,
-                                          JitValue*) {
-  JitValue self{self_tag, self_data};
-  JitMethodSelf _s{self};  // consumed on any exit (blocking select can raise)
-  auto* it = reinterpret_cast<JitObject*>(self.data);
-  int64_t st = _jit_self_long(self, "_st");
-  JitValue ret;
-  if (st == 1) {
-    ret = {TAG_BOOL, 1};
-  } else if (st == 2) {
-    ret = {TAG_BOOL, 0};
-  } else {
-    auto node = chan_select_recv(_jit_self_long(self, "_mid"));
-    if (node) {
-      JitDeCtx dc;
-      JitValue v = jit_deserialize(*node, dc);
-      it->set_or_append("_lv", v, true);
-      it->set_or_append("_st", JitValue{TAG_LONG, 1}, true);
-      ret = {TAG_BOOL, 1};
-    } else {
-      it->set_or_append("_st", JitValue{TAG_LONG, 2}, true);
-      ret = {TAG_BOOL, 0};
-    }
-  }
-  { *__ret = ret; return; }
-}
-inline void _jit_merged_iter_next(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t,
-                                      JitValue*) {
-  JitValue self{self_tag, self_data};
-  JitMethodSelf _s{self};
-  auto* it = reinterpret_cast<JitObject*>(self.data);
-  JitValue ret{TAG_NIL, 0};
-  if (_jit_self_long(self, "_st") == 1) {
-    ret = it->slots[it->find_slot("_lv")].value;  // transfer slot's +1 to caller
-    it->set_or_append("_lv", JitValue{TAG_NIL, 0}, true);  // overwrite, no release
-    it->set_or_append("_st", JitValue{TAG_LONG, 0}, true);
-  }
-  { *__ret = ret; return; }
-}
-inline void _jit_merged_iter(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t, JitValue*) {
-  JitValue self{self_tag, self_data};
-  JitMethodSelf _s{self};
-  int64_t mid = _jit_self_long(self, "__merged_id__");
-  auto* it = culebra_runtime_object_new();
-  it->set_or_append("_mid", JitValue{TAG_LONG, mid}, true);
-  it->set_or_append("_st", JitValue{TAG_LONG, 0}, true);
-  it->set_or_append("_lv", JitValue{TAG_NIL, 0}, true);
-  auto meth = [&](const char* nm,
-                  void (*f)(JitValue*, JitClosure*, int8_t, int64_t, int64_t, JitValue*)) {
-    it->set_or_append(nm,
-        JitValue{TAG_FUNC, reinterpret_cast<int64_t>(_jit_native_method(f))},
-        false);
-  };
-  meth("iter", _jit_iter_self);
-  meth("has_next", _jit_merged_iter_has_next);
-  meth("next", _jit_merged_iter_next);
-  { *__ret = {TAG_OBJECT, reinterpret_cast<int64_t>(it)}; return; }
-}
-inline JitValue _jit_make_merged_rx_endpoint(int64_t mid) {
-  auto* h = culebra_runtime_object_new();
-  h->set_or_append("__merged_rx__", JitValue{TAG_BOOL, 1}, false);
-  h->set_or_append("__merged_id__", JitValue{TAG_LONG, mid}, false);
-  h->set_or_append("_dropped", JitValue{TAG_BOOL, 0}, true);
-  auto meth = [&](const char* nm,
-                  void (*f)(JitValue*, JitClosure*, int8_t, int64_t, int64_t, JitValue*)) {
-    h->set_or_append(nm,
-        JitValue{TAG_FUNC, reinterpret_cast<int64_t>(_jit_native_method(f))},
-        false);
-  };
-  meth("recv", _jit_merged_recv);
-  meth("iter", _jit_merged_iter);
-  meth("drop", _jit_merged_drop);
-  meth("join", _jit_merged_join);
-  h->has_drop = true;
-  return {TAG_OBJECT, reinterpret_cast<int64_t>(h)};
-}
-
 // Channel.fan_in(a, fn = nil) -> merged rx. With one arg, merge the given
 // receivers. With (items, fn), spawn one producer per item (fn(item, tx)) and
 // merge their streams — JIT mirror of make_channel_namespace's fan_in.
@@ -2617,15 +2571,15 @@ inline JitValue culebra_jit_channel_fan_in(int64_t n, JitValue* args,
             "Channel.fan_in: every source must be a receiver (rx)", line, col);
       }
     }
-    std::vector<ChannelCore*> sources;
-    sources.reserve(arr->size);
+    auto merge = std::make_shared<ChannelMerge>();
+    merge->sources.reserve(arr->size);
     for (size_t i = 0; i < arr->size; i++) {
       auto* end = _jit_chan_end(arr->items[i]);
       if (!end->core) continue;
       chan_bump(end->core, /*role=*/1);
-      sources.push_back(end->core);
+      merge->sources.push_back(end->core);
     }
-    return _jit_make_merged_rx_endpoint(chan_merge_register(std::move(sources)));
+    return _jit_make_merged_rx(std::move(merge));
   }
 
   // fan_in(items, fn): spawn one producer per item, merge. Producers run
@@ -2649,19 +2603,11 @@ inline JitValue culebra_jit_channel_fan_in(int64_t n, JitValue* args,
     JitSerCtx fsc;
     jit_serialize(args[1], fsc);
   });
+  _install_jit_isolate_teardown_hook();  // the producers are isolates too
   auto defaults = jit_snapshot_trait_defaults();  // shared by the producers
-  std::vector<ChannelCore*> sources;
-  std::vector<std::shared_ptr<IsolateCore>> producers;
-  // A refused item leaves the channels made so far with their merge's rx
-  // count and nothing else, so it gives those back.
-  struct Unmerged {
-    std::vector<ChannelCore*>& sources;
-    bool merged = false;
-    ~Unmerged() {
-      if (!merged)
-        for (auto* c : sources) chan_drop(c, /*role=*/1);
-    }
-  } unmerged{sources};
+  // A refused item lets the merge go with the channels and producers made so
+  // far, as a dropped merged rx would.
+  auto merge = std::make_shared<ChannelMerge>();
   for (size_t i = 0; i < arr->size; i++) {
     JitSerCtx asc;
     sendable::SendNode sfn;
@@ -2673,7 +2619,7 @@ inline JitValue culebra_jit_channel_fan_in(int64_t n, JitValue* args,
     // Its rx count is the merge's; its tx count is the message's, in flight
     // to the producer.
     auto* chcore = new ChannelCore(1);
-    sources.push_back(chcore);
+    merge->sources.push_back(chcore);
     sargs.push_back(chan_node(chcore, /*role=*/0));
     auto pcore = std::make_shared<IsolateCore>();
     g_live_isolates().fetch_add(1, std::memory_order_relaxed);
@@ -2683,11 +2629,10 @@ inline JitValue culebra_jit_channel_fan_in(int64_t n, JitValue* args,
           run_isolate_child_jit(pcore, std::move(sfn), std::move(sargs),
                                 std::move(defaults), /*decrement_live=*/true);
         });
-    producers.push_back(std::move(pcore));
+    merge->producers.push_back(std::move(pcore));
   }
-  unmerged.merged = true;
-  return _jit_make_merged_rx_endpoint(
-      chan_merge_register(std::move(sources), std::move(producers)));
+  fan_in_merges_add(merge);
+  return _jit_make_merged_rx(std::move(merge));
 }
 
 // ===========================================================================

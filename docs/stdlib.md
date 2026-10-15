@@ -2912,6 +2912,12 @@ merged.join()  # join the producers; re-raises the first one that errored
 the first error; without it, producer errors are dropped (as with not joining an
 `Isolate.spawn` handle). Producers run on their own threads.
 
+A merged `rx` of either form is a handle onto its merge, as an endpoint is onto
+its channel: it prints as `[merged Channel rx]`, has no fields, and is not
+Sendable. `drop()` lets the sources go, and cancels any producer still running.
+A `for` loop already reading the merged `rx` keeps reading after a `drop()`,
+until every source ends.
+
 ### Parallel — `Parallel.map` / `each` / `map_settled` / `race`
 
 The high-level form: apply a function to every element of an array across a pool

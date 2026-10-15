@@ -2824,6 +2824,12 @@ merged.join()  # producer を join、最初のエラーを再送出
 呼ばなければproducerのエラーは握り潰し（`Isolate.spawn` handleをjoinしない
 のと同じ）。producerは専用スレッドで実行されます。
 
+どちらの形でも、束ねた`rx`はendpointがchannelへのハンドルであるのと同じく、
+mergeへのハンドルです。表示は`[merged Channel rx]`で、フィールドを持たず、
+Sendableではありません。`drop()`はsourceを手放し、まだ動いているproducerを
+キャンセルします。束ねた`rx`を既に読んでいる`for`ループは、`drop()`の後も
+全sourceが終わるまで読み続けます。
+
 ### Parallel — `Parallel.map` / `each` / `map_settled` / `race`
 
 高レベル形。配列の各要素に関数をisolateプールで並列適用します（ハンドル管理

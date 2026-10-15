@@ -1,0 +1,11 @@
+# The program ends while a Channel.fan_in producer still runs its own loop and
+# its merged rx lives. Ending the run cancels and joins it before its compiled
+# body is freed. No Isolate.spawn here: fan_in alone has to arrange that.
+let busy = Channel.fan_in([1, 2], fn (w, tx) {
+  tx.send(w)
+  mut i = 0
+  while true {
+    i += 1
+  }
+})
+assert_ne(busy.recv(), nil)
