@@ -960,9 +960,10 @@ function playTone(m) {
 
 // A tone from `now` on the context's clock, its phases in seconds; answers
 // the source node (null when audio is unavailable). `scale` multiplies the
-// levels after they are clamped, as a score's volume does natively.
+// levels after they are clamped, as a score's volume does natively, and `out`
+// is where it sounds (a score's own bus).
 function toneAt(now, ch, startFreq, endFreq, attackT, decayT, sustainT, releaseT,
-                vol, peak, duty, scale = 1) {
+                vol, peak, duty, scale = 1, out = audioCtx.destination) {
   try {
     let total = attackT + decayT + sustainT + releaseT;
     if (total <= 0) total = 1 / 60;  // guarantee an audible blip
@@ -1015,7 +1016,7 @@ function toneAt(now, ch, startFreq, endFreq, attackT, decayT, sustainT, releaseT
     t += sustainT; gain.gain.setValueAtTime(Math.max(0.0001, susG), t);
     t += releaseT; gain.gain.linearRampToValueAtTime(0.0001, t);
 
-    gain.connect(audioCtx.destination);
+    gain.connect(out);
     src.start(now);
     src.stop(end);
     const voice = { src, start: now, end };
@@ -1179,7 +1180,61 @@ function startTrack(id, t, offset) {
 // lookahead: the notes keep time however the page's own timers jitter.
 const SCORE_STRIDE = 11;
 const SCORE_AHEAD = 0.2;  // seconds of notes scheduled ahead of the clock
-const scores = new Map();  // id -> { events, length, loopAt, volume, run }
+const scores = new Map();  // id -> { events, length, loopAt, volume, room, run }
+
+// The room a score plays in, as the native mixer has it (Freeverb: eight
+// damped combs in parallel, then four allpasses in series, at Jezar's delays
+// and gain, scaled to the context's rate): its echoes of a single click,
+// 2.3 seconds of them, which a convolver plays against the score's sound.
+const roomEchoes = new Map();  // sample rate -> AudioBuffer
+function roomEcho(rate) {
+  if (roomEchoes.has(rate)) return roomEchoes.get(rate);
+  const at = (d) => Math.round(d * rate / 44100);
+  const combs = [1116, 1188, 1277, 1356, 1422, 1491, 1557, 1617].map((d) => new Float32Array(at(d)));
+  const passes = [556, 441, 341, 225].map((d) => new Float32Array(at(d)));
+  const damped = new Float32Array(combs.length);
+  const n = Math.round(2.3 * rate);
+  const buf = audioCtx.createBuffer(1, n, rate);
+  const out = buf.getChannelData(0);
+  for (let i = 0; i < n; i++) {
+    const into = (i === 0 ? 1 : 0) * 0.015;
+    let echo = 0;
+    combs.forEach((c, k) => {
+      const j = i % c.length;
+      const y = c[j];
+      damped[k] = y * 0.75 + damped[k] * 0.25;
+      c[j] = into + damped[k] * 0.86;
+      echo += y;
+    });
+    for (const p of passes) {
+      const j = i % p.length;
+      const held = p[j];
+      p[j] = echo + held * 0.5;
+      echo = held - echo;
+    }
+    out[i] = echo;
+  }
+  roomEchoes.set(rate, buf);
+  return buf;
+}
+
+// Where a score's notes sound: straight out, and through its room when it
+// plays in one.
+function scoreBus(e) {
+  const dry = audioCtx.createGain();
+  dry.connect(audioCtx.destination);
+  const nodes = [dry];
+  if (e.room > 0) {
+    const verb = audioCtx.createConvolver();
+    verb.normalize = false;
+    verb.buffer = roomEcho(audioCtx.sampleRate);
+    const wet = audioCtx.createGain();
+    wet.gain.value = e.room;
+    dry.connect(verb).connect(wet).connect(audioCtx.destination);
+    nodes.push(verb, wet);
+  }
+  return { out: dry, nodes };
+}
 
 function stopScore(e) {
   const run = e.run;
@@ -1187,6 +1242,8 @@ function stopScore(e) {
   if (!run) return;
   clearInterval(run.timer);
   for (const node of run.nodes) { try { node.stop(); } catch {} }
+  // Its room goes silent with it, as the native mixer's does.
+  for (const node of run.bus.nodes) { try { node.disconnect(); } catch {} }
   // Its notes give their channels up now, not when their `ended` comes round.
   for (const voices of activeVoices) {
     for (const v of voices) if (run.nodes.has(v.src)) voices.delete(v);
@@ -1218,13 +1275,13 @@ function pumpScore(e) {
           node.buffer = snd.buf;
           const gain = audioCtx.createGain();
           gain.gain.value = Math.max(0, ev[i + 3] * e.volume);
-          node.connect(gain).connect(audioCtx.destination);
+          node.connect(gain).connect(run.bus.out);
           node.start(when);
         }
       } else {
         node = toneAt(when, ev[i + 1], ev[i + 2], ev[i + 3], ev[i + 4], ev[i + 5],
                       ev[i + 6], ev[i + 7], ev[i + 8], ev[i + 9], ev[i + 10],
-                      e.volume);
+                      e.volume, run.bus.out);
       }
       if (node) {
         run.nodes.add(node);
@@ -1249,7 +1306,7 @@ function handleScore(m) {
     switch (m.cmd) {
       case "new":
         scores.set(m.id, { events: m.events, length: m.length, loopAt: m.loopAt,
-                           volume: 1, run: null });
+                           volume: 1, room: 0, run: null });
         break;
       case "play": {
         if (!e || !ensureAudio()) return;
@@ -1260,7 +1317,7 @@ function handleScore(m) {
         for (let i = 0; i < e.events.length; i += SCORE_STRIDE) {
           if (e.events[i + 1] < 0) decoding.push(sounds.get(e.events[i + 2])?.ready);
         }
-        const run = { origin: 0, next: 0, nodes: new Set(), timer: 0 };
+        const run = { origin: 0, next: 0, nodes: new Set(), timer: 0, bus: scoreBus(e) };
         e.run = run;
         Promise.all(decoding).then(() => {
           if (e.run !== run) return;  // stopped or played again meanwhile
@@ -1275,6 +1332,9 @@ function handleScore(m) {
         break;
       case "volume":
         if (e) e.volume = Math.max(0, m.value);
+        break;
+      case "room":
+        if (e) e.room = Math.max(0, m.value);
         break;
       case "free":
         if (e) stopScore(e);

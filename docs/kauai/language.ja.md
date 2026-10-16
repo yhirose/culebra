@@ -809,6 +809,7 @@ song JeTeVeux {
 | `part NAME in LO..HI` | パート`NAME`の音の範囲 | メロディの範囲 |
 | `swing 8` | 8分音符2つの組（`swing 16`なら16分音符）を長・短で弾く。比を書かなければ2:1（`swing 8 3:2`）（[スウィング](#スウィング)） | 書いたとおり |
 | `loop` | 最後まで演奏したら頭から繰り返す | 1回だけ |
+| `room 40%` | バンドが部屋の中で演奏する。部屋の響きを40%の強さ（1%から100%）で重ねる。チャンネルの音源にもhost楽器の音にも、曲が鳴らすすべての音に効き、響きは最後の音のあとも残る | 響きなし |
 | `mark NAME` | プログラムから到達を確かめられる位置（[10章](#10-culebra-から再生する)） | |
 
 それ以外の行は、sectionを演奏する行です。次のオプションを、順序を問わず、
@@ -888,6 +889,7 @@ section Bridge {
 - 取り込まれるファイルにある`song`。1つのファイルにある2つ以上の`song`
 - 取り込まれるファイルにある`about`、1つのファイルにある2つ以上の`about`。`about`にない項目、2回書いた項目、内容のない項目、数でない`year`
 - `#`や`b`で始まる、またはコード表にすでにある`voicings`の名前
+- 1%から100%の割合になっていない`room`
 - `8`と`16`以外を指定した`swing`。「長:短」になっていない比（`3:2`のように書く）。組が小節をちょうど埋めないスウィング（3/8拍子の`swing 8`）
 
 ## 10. Culebra から再生する
@@ -1008,7 +1010,7 @@ let song = Audio.Kauai.load("trio.kau", voices: {
 弓で弾く音かは、`at`ではなく`line`で分かります。`next`は期限で
 あって、音を切る指示ではありません。音声はどれも最後まで鳴り、`next`を聞く
 楽器が、その時刻までに自分のやり方で音を終えます（弦を押さえて止める、息を
-止める、オープンのハイハットを閉じる）。楽器が音声に入れた部屋の響きは、その
+止める、オープンのハイハットを閉じる）。曲の`room`の響きは、その
 あとも残ります。`next`は後から始まるものだけを数えるので、和音の構成音や、
 同時に鳴らしたドラムが互いを止めることはありません。ジャズの奏法は、音の中の
 時間を使います。しゃくりとプロップは音の頭から、ドゥイットとフォールは音の
@@ -1175,7 +1177,7 @@ Tempo      <- (Value '=')? Number                 # quarter notes a minute, or V
 Song       <- 'song' Name '{' EOL SongLine* '}' EOL
 SongLine   <- 'tempo' Tempo / 'meter' Int '/' Int / 'key' Key / 'band' Name
             / 'groove' Name / 'melody' 'in' Range / 'part' Name 'in' Range
-            / 'loop' / 'mark' Name / 'swing' Swing
+            / 'loop' / 'mark' Name / 'swing' Swing / 'room' Int '%'
             / Play / EOL
 Swing      <- ('8' / '16') (Int ':' Int)?
 Play       <- Name PlayOption* EOL          # each option at most once

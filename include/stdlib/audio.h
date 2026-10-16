@@ -140,7 +140,7 @@ EM_JS(void, _wasm_audio_score_new,
                 length: length, loopAt: loop_at });
 });
 EM_JS(void, _wasm_audio_score, (int cmd, int id, double value), {
-  const names = ["play", "stop", "free", "volume"];
+  const names = ["play", "stop", "free", "volume", "room"];
   postMessage({ type: "score", cmd: names[cmd], id: id, value: value });
 });
 
@@ -198,6 +198,7 @@ inline void score_play(int64_t id) { _wasm_audio_score(0, static_cast<int>(id), 
 inline void score_stop(int64_t id) { _wasm_audio_score(1, static_cast<int>(id), 0); }
 inline void score_free(int64_t id) { _wasm_audio_score(2, static_cast<int>(id), 0); }
 inline void score_volume(int64_t id, double x) { _wasm_audio_score(3, static_cast<int>(id), x); }
+inline void score_room(int64_t id, double x) { _wasm_audio_score(4, static_cast<int>(id), x); }
 
 #elif defined(CULEBRA_AUDIO_DEVICE)
 
@@ -259,6 +260,8 @@ void score_free(int64_t id);
 void score_play(int64_t id);
 void score_stop(int64_t id);
 void score_volume(int64_t id, double v);
+// How much of the room the score plays in is heard with it, 0 for none.
+void score_room(int64_t id, double wet);
 
 #endif
 
@@ -301,6 +304,7 @@ CULEBRA_RT_AUDIO_LINKAGE void score_free(int64_t) {}
 CULEBRA_RT_AUDIO_LINKAGE void score_play(int64_t) {}
 CULEBRA_RT_AUDIO_LINKAGE void score_stop(int64_t) {}
 CULEBRA_RT_AUDIO_LINKAGE void score_volume(int64_t, double) {}
+CULEBRA_RT_AUDIO_LINKAGE void score_room(int64_t, double) {}
 #endif
 
 #if !defined(CULEBRA_AUDIO_DEVICE)

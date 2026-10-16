@@ -173,6 +173,9 @@ fails(
   ).replace("  Bs 1 5\n  Ch x -", "  Bs 1 - - - - - - - - - - - - - -"),
   "line 14: a bar of 15 steps makes each one no note value (plain, dotted or triplet): count the steps",
 )
+for room in ["room 40", "room 0%", "room 120%", "room", "room 40% 50%"] {
+  fails(play("  {room}\n  T", "C c1"), "line 11: a room is how much of its echo is heard: room 40%")
+}
 fails(
   play("  T\n  loop", "pickup g a\nC c1"),
   "line 19: the song loops, so its last bar has to rest where the pickup plays",

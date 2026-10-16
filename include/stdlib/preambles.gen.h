@@ -3000,6 +3000,11 @@ let _kauai_module = fn () {
         },
         "melody" => song.low = window(w[2], it.line),
         "loop" => song.loop = true,
+        "room" => {
+          let wet = w.size() == 2 && w[1].ends_with("%") ? w[1].strip_suffix("%") : ""
+          fail(it.line, "a room is how much of its echo is heard: room 40%") if !is_count(wet) || to_long(wet) > 100
+          song.room = to_long(wet) / 100.0
+        },
         "swing" => song.swing = parse_swing(w, 1, it.line),
         "mark" => song.plays.push({mark: name_at(w, 1, it.line, "a mark")}),
         _ => {
@@ -3971,6 +3976,7 @@ let _kauai_module = fn () {
       let time = clock(x)
       self._length = time(x.steps)
       self._loop_at = x.song.loop ? time(x.loop_at) : -1.0
+      self._room = x.song.get("room", 0.0)
       self._marks = x.marks.keys().map(|k| (k, time(x.marks[k]))).to_object()
       self._about = x.about
       let host = host_sounds(x, self._events, voices, drums)
@@ -4008,6 +4014,7 @@ let _kauai_module = fn () {
         let flat = [...tones, ...hosts]
         self._score = _Audio.score_new(flat, self._length, self._loop_at)
         _Audio.score_volume(self._score, self._volume)
+        _Audio.score_room(self._score, self._room)
       }
       _Audio.score_play(self._score)
       self._started = _Time.monotonic()

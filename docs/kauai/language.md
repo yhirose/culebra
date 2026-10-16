@@ -813,6 +813,7 @@ song JeTeVeux {
 | `part NAME in LO..HI` | the range for part `NAME`'s notes | the melody's |
 | `swing 8` | pairs of eighths (`swing 16`: sixteenths) played long-short, 2:1 unless a ratio follows (`swing 8 3:2`) ([Swing](#swing)) | as written |
 | `loop` | at the end, start again from the top | play once |
+| `room 40%` | the band plays in a room, its echo heard at 40% (1% to 100%) with everything the song plays, a tone channel or a host sound, and ringing on past the last note | none |
 | `mark NAME` | a point the program can ask about ([section 10](#10-playing-from-culebra)) | |
 
 Any other line plays a section, with these options, in any order and each
@@ -891,6 +892,7 @@ under.
 - a `song` in a file that is used, or more than one in a file
 - an `about` in a file that is used or twice in a file; an item it does not have, one written twice or without its text, or a `year` that is not a number
 - a `voicings` name that starts with `#` or `b`, or that the chord table already has
+- a `room` that is not a percentage from 1% to 100%
 - a `swing` on other than `8` or `16`, a ratio that is not long to short (`3:2`), or a swing whose pairs do not fill the bar (`swing 8` in 3/8)
 
 ## 10. Playing from Culebra
@@ -1010,7 +1012,7 @@ the lowest; a rolled chord's start a sixty-fourth apart, so `line`, not `at`,
 says which string or bow each is on. `next` is a
 deadline, not a cut: every sound still plays through, and an instrument that
 hears it ends its own by then, in its own way (a string damped, a breath
-stopped, an open hi-hat closed), while the room it carries rings on. It
+stopped, an open hi-hat closed), while the song's `room` rings on. It
 counts only what starts later, so a chord's tones, and drums struck
 together, do not stop each other. The jazz articulations take their time
 inside the note: a scoop or a plop from its start, a doit or a fall from its
@@ -1178,7 +1180,7 @@ Tempo      <- (Value '=')? Number                 # quarter notes a minute, or V
 Song       <- 'song' Name '{' EOL SongLine* '}' EOL
 SongLine   <- 'tempo' Tempo / 'meter' Int '/' Int / 'key' Key / 'band' Name
             / 'groove' Name / 'melody' 'in' Range / 'part' Name 'in' Range
-            / 'loop' / 'mark' Name / 'swing' Swing
+            / 'loop' / 'mark' Name / 'swing' Swing / 'room' Int '%'
             / Play / EOL
 Swing      <- ('8' / '16') (Int ':' Int)?
 Play       <- Name PlayOption* EOL          # each option at most once

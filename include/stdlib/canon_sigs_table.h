@@ -1495,6 +1495,9 @@ inline constexpr CanonParam kCanonParams_Audio_native[] = {
   // 74: _Audio.score_volume
   {"id", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
   {"v", false, false, false, false, false, "Long|Float", CanonDefault::None, 0, {}},
+  // 76: _Audio.score_room
+  {"id", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
+  {"wet", false, false, false, false, false, "Long|Float", CanonDefault::None, 0, {}},
 };
 
 inline constexpr CanonSig kCanonSigs_Audio_native[] = {
@@ -1548,6 +1551,7 @@ inline constexpr CanonSig kCanonSigs_Audio_native[] = {
   {"_Audio", "", "score_play", kCanonParams_Audio_native + 72, 1, "", 1, 1, false, -1, -1, -1},
   {"_Audio", "", "score_stop", kCanonParams_Audio_native + 73, 1, "", 1, 1, false, -1, -1, -1},
   {"_Audio", "", "score_volume", kCanonParams_Audio_native + 74, 2, "", 2, 2, false, -1, -1, -1},
+  {"_Audio", "", "score_room", kCanonParams_Audio_native + 76, 2, "", 2, 2, false, -1, -1, -1},
 };
 
 inline constexpr CanonParam kCanonParams_Dir_native[] = {

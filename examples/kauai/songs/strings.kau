@@ -11,6 +11,7 @@ band Trio {
 
 song Held {
   tempo 66
+  room 90%
   band Trio
   melody in C5..B5
   part Alto in G4..F#5

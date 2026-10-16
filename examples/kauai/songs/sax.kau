@@ -21,6 +21,7 @@ groove Walk {
 
 song Blue {
   tempo 132
+  room 90%
   swing 8
   band Quartet
   groove Walk

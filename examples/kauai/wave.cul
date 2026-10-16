@@ -1,7 +1,7 @@
 # What the instruments beside it share: the sample rate, a pitch's frequency,
-# a noise source that sounds the same every time, a room to play in, samples
-# as WAV bytes, and a voice for Audio.Kauai made from a function that plays a
-# phrase.
+# a noise source that sounds the same every time, samples as WAV bytes, and a
+# voice for Audio.Kauai made from a function that plays a phrase. The room
+# they sound in is the song's own (`room 90%`), not theirs.
 
 let RATE = 44100
 
@@ -17,49 +17,6 @@ fn noise(seed) {
     x = (x * 1103515245 + 12345) % 2147483648
     x / 1073741824.0 - 1.0
   }
-}
-
-# The room (Freeverb: eight damped combs in parallel, then four allpasses in
-# series), at Jezar's delays for 44.1 kHz. A song's sounds add, and so do
-# their echoes, so each sound carrying its own tail is the song in the room.
-let COMBS = [
-  1116, 1188, 1277, 1356, 1422, 1491, 1557, 1617,
-].map(|d| Math.round(d * RATE / 44100.0))
-let PASSES = [556, 441, 341, 225].map(|d| Math.round(d * RATE / 44100.0))
-let FEEDBACK = 0.86
-let DAMP = 0.25
-let WET = 0.9
-let TAIL = 1.5
-
-# `samples` as heard in the room: themselves, then their echoes TAIL seconds on.
-fn room(samples) {
-  mut combs = COMBS.map(|d| repeat(d, 0.0))
-  mut damped = repeat(COMBS.size(), 0.0)
-  mut passes = PASSES.map(|d| repeat(d, 0.0))
-  mut at = 0
-  let n = samples.size()
-  iota(n + Math.round(TAIL * RATE)).map(fn (i) {
-    let x = i < n ? samples[i] : 0.0
-    let into = x * 0.015
-    mut echo = 0.0
-    for k in 0..COMBS.size() {
-      let buf = combs[k]
-      let j = at % COMBS[k]
-      let y = buf[j]
-      damped[k] = y * (1.0 - DAMP) + damped[k] * DAMP
-      buf[j] = into + damped[k] * FEEDBACK
-      echo += y
-    }
-    for k in 0..PASSES.size() {
-      let buf = passes[k]
-      let j = at % PASSES[k]
-      let held = buf[j]
-      buf[j] = echo + held * 0.5
-      echo = held - echo
-    }
-    at += 1
-    x + echo * WET
-  })
 }
 
 # 16-bit mono samples (-1.0..1.0) as a WAV file's bytes.
@@ -129,12 +86,12 @@ fn swell(n, since) {
 let HEARS = ["len", "level", "line", "marks", "next"]
 
 # `voices:`'s instrument for `play(notes, params)`, which answers a phrase's
-# samples: it hears what `hears` names of each note, and sounds in the room.
+# samples: it hears what `hears` names of each note.
 fn voice(play, hears) {
   {
-    phrase: |notes, params| Audio.Sound(wav(room(play(notes, params)))),
+    phrase: |notes, params| Audio.Sound(wav(play(notes, params))),
     hears: hears,
   }
 }
 
-export {RATE, HEARS, hz, noise, room, wav, by_line, swell, voice}
+export {RATE, HEARS, hz, noise, wav, by_line, swell, voice}

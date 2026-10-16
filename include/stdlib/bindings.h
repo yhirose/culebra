@@ -10589,6 +10589,7 @@ inline const NsMethod kNsRows_Audio_native[] = {
   {"_Audio", "score_play",     1, &_ns_audio_on<culebra::_audio_detail::score_play>},
   {"_Audio", "score_stop",     1, &_ns_audio_on<culebra::_audio_detail::score_stop>},
   {"_Audio", "score_volume",   2, &_ns_audio_set<culebra::_audio_detail::score_volume>},
+  {"_Audio", "score_room",     2, &_ns_audio_set<culebra::_audio_detail::score_room>},
 };
 inline const NsMethod kNsRows_Canvas_native[] = {
   {"_Canvas", "init",            2,  &_ns_canvas_init},

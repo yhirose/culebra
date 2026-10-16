@@ -110,6 +110,8 @@ constexpr int kSampleRate = 44100;
 // default case: only their duty cycle differs, not their shape.
 constexpr int kTriangle = 2, kNoise = 3, kSawtooth = 4;
 
+struct Room;
+
 struct Note {
   bool active = false;
   double start_freq = 0, end_freq = 0;
@@ -121,6 +123,7 @@ struct Note {
   double phase = 0;           // 0..1, oscillator channels
   double lp_state = 0;        // noise channel's one-pole lowpass
   int64_t owner = 0;          // the score that started it; 0 for tone()
+  Room* room = nullptr;       // the room its score plays in
 };
 
 // A note carries where it starts, on the stream's own sample clock. tone()
@@ -163,6 +166,75 @@ int64_t g_pos = 0;           // samples rendered so far
 // long a frame runs, and plays in a program with no frame loop. A note is a
 // tone on one of the channels, or a sample (an Audio.Sound's decoded PCM)
 // mixed in alongside them, as many at once as the song asks for.
+// The room a score plays in (Freeverb: eight damped combs in parallel, then
+// four allpasses in series, at Jezar's delays and gain), heard `wet` strong
+// alongside the score's own sound. The score's tones and samples add into
+// `send` as they render, and step() runs the room one sample on. It is a
+// score's own, so a song's echoes are its own, and ring on after its last
+// sound. Audio thread only, but for `wet`.
+struct Room {
+  static constexpr int kCombs[8] = {1116, 1188, 1277, 1356, 1422, 1491, 1557, 1617};
+  static constexpr int kPasses[4] = {556, 441, 341, 225};
+  static constexpr double kFeedback = 0.86, kDamp = 0.25, kInput = 0.015;
+  // Samples it rings on after the last of its sound: some 90 dB down.
+  static constexpr int64_t kTail = 2 * kSampleRate;
+
+  std::atomic<double> wet{0.0};
+  std::vector<float> combs[8];
+  std::vector<float> passes[4];
+  float damped[8] = {};
+  size_t comb_at[8] = {};
+  size_t pass_at[4] = {};
+  double send = 0;
+  int64_t quiet = kTail;  // samples since `send` last had sound in it
+
+  Room() {
+    for (int k = 0; k < 8; k++) combs[k].assign(kCombs[k], 0.0f);
+    for (int k = 0; k < 4; k++) passes[k].assign(kPasses[k], 0.0f);
+  }
+  // Silent again, for a score played from the top.
+  void reset() {
+    for (int k = 0; k < 8; k++) {
+      std::ranges::fill(combs[k], 0.0f);
+      damped[k] = 0;
+      comb_at[k] = 0;
+    }
+    for (int k = 0; k < 4; k++) {
+      std::ranges::fill(passes[k], 0.0f);
+      pass_at[k] = 0;
+    }
+    send = 0;
+    quiet = kTail;
+  }
+  bool ringing() const { return quiet < kTail; }
+  // The echoes this sample, of `send` and what came before it.
+  double step() {
+    double x = send;
+    send = 0;
+    double w = wet.load(std::memory_order_relaxed);
+    quiet = w <= 0 ? kTail : x != 0 ? 0 : std::min(quiet + 1, kTail);
+    if (!ringing()) return 0;
+    double into = x * kInput;
+    double echo = 0;
+    for (int k = 0; k < 8; k++) {
+      auto& buf = combs[k];
+      double y = buf[comb_at[k]];
+      damped[k] = static_cast<float>(y * (1.0 - kDamp) + damped[k] * kDamp);
+      buf[comb_at[k]] = static_cast<float>(into + damped[k] * kFeedback);
+      comb_at[k] = (comb_at[k] + 1) % buf.size();
+      echo += y;
+    }
+    for (int k = 0; k < 4; k++) {
+      auto& buf = passes[k];
+      double held = buf[pass_at[k]];
+      buf[pass_at[k]] = static_cast<float>(echo + held * 0.5);
+      pass_at[k] = (pass_at[k] + 1) % buf.size();
+      echo = held - echo;
+    }
+    return echo * w;
+  }
+};
+
 struct ScoreEvent {
   int64_t at = 0;    // samples from the score's start
   int channel = -1;  // a tone channel, or -1 for a sample
@@ -176,6 +248,7 @@ struct Score {
   int64_t length = 0;              // samples in one time through
   int64_t loop_at = -1;            // where a loop goes back to; -1 plays once
   std::atomic<double> volume{1.0};
+  std::unique_ptr<Room> room = std::make_unique<Room>();
 };
 
 // Asked for on the main thread, carried out at the next buffer.
@@ -200,6 +273,7 @@ struct Sampler {
   std::span<const float> pcm;  // the owner's
   size_t pos = 0;
   double gain = 0;
+  Room* room = nullptr;        // the owner's
 };
 constexpr size_t kMaxSamplers = 64;  // the oldest goes, as a channel's note would
 
@@ -235,15 +309,19 @@ bool advance_score(PlayingScore& ps, int64_t p, Note* voices) {
         n.vol *= v;
         n.peak *= v;
         n.owner = ps.id;
+        n.room = s.room.get();
         voices[e.channel] = n;
       } else {
         if (g_samplers.size() == kMaxSamplers) g_samplers.erase(g_samplers.begin());
-        g_samplers.push_back(Sampler{ps.id, *e.pcm, 0, e.gain * v});
+        g_samplers.push_back(Sampler{ps.id, *e.pcm, 0, e.gain * v, s.room.get()});
       }
     }
     if (p < ps.origin + s.length) return true;
     if (s.loop_at < 0 || s.length <= s.loop_at) {
-      return std::ranges::any_of(g_samplers, [&](const Sampler& x) { return x.owner == ps.id; });
+      // Played through, it goes once nothing it started sounds, its room too.
+      return s.room->ringing() ||
+             std::ranges::any_of(g_samplers, [&](const Sampler& x) { return x.owner == ps.id; }) ||
+             std::any_of(voices, voices + 5, [&](const Note& n) { return n.active && n.owner == ps.id; });
     }
     ps.origin += s.length - s.loop_at;
     ps.next = std::lower_bound(s.events.begin(), s.events.end(), s.loop_at,
@@ -353,7 +431,10 @@ void tone_callback(void* buffer_data, unsigned int frames) {
     for (auto& cmd : g_score_inbox) {
       std::erase_if(g_playing, [&](const PlayingScore& ps) { return ps.id == cmd.id; });
       cut_score(cmd.id, g_voice);
-      if (cmd.score) g_playing.push_back(PlayingScore{cmd.id, std::move(cmd.score), cmd.start, 0});
+      if (cmd.score) {
+        cmd.score->room->reset();
+        g_playing.push_back(PlayingScore{cmd.id, std::move(cmd.score), cmd.start, 0});
+      }
     }
     g_score_inbox.clear();
     g_stream_next = g_pos + frames;
@@ -373,7 +454,10 @@ void tone_callback(void* buffer_data, unsigned int frames) {
     std::erase_if(g_playing, [&](PlayingScore& ps) { return !advance_score(ps, p, g_voice); });
     double mixed = 0.0;
     for (auto& s : g_samplers) {
-      if (s.pos < s.pcm.size()) mixed += s.pcm[s.pos++] * s.gain;
+      if (s.pos >= s.pcm.size()) continue;
+      double v = s.pcm[s.pos++] * s.gain;
+      mixed += v;
+      if (s.room) s.room->send += v;
     }
     std::erase_if(g_samplers, [](const Sampler& s) { return s.pos >= s.pcm.size(); });
     for (int c = 0; c < 5; c++) {
@@ -388,8 +472,10 @@ void tone_callback(void* buffer_data, unsigned int frames) {
       double raw = c == kNoise ? noise_sample(n, std::max(1.0, freq * 8.0))
                                 : oscillate(n, c, std::max(1.0, freq));
       mixed += raw * g;
+      if (n.room) n.room->send += raw * g;
       n.elapsed++;
     }
+    for (auto& ps : g_playing) mixed += ps.score->room->step();
     out[i] = static_cast<float>(std::clamp(mixed, -1.0, 1.0));
   }
 
@@ -767,6 +853,10 @@ void score_stop(int64_t id) {
 void score_volume(int64_t id, double v) {
   auto it = g_scores.find(id);
   if (it != g_scores.end()) it->second->volume.store(std::max(0.0, v));
+}
+void score_room(int64_t id, double wet) {
+  auto it = g_scores.find(id);
+  if (it != g_scores.end()) it->second->room->wet.store(std::max(0.0, wet));
 }
 
 // The format sniff (and its ValueError) has already run in the backend-neutral

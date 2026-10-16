@@ -21,6 +21,7 @@ groove End {
 
 song Afternoon {
   tempo 132
+  room 90%
   band Trio
   groove Bossa
   melody in E4..D#5
