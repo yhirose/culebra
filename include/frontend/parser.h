@@ -1188,8 +1188,8 @@ inline bool is_compile_time_decorator(const peg::Ast& decorator) {
          !view_derive(decorator).empty();
 }
 
-// Registry of `@value` class names, so a later `@value` class can declare a
-// field of one (`a: Vector2`). Written where a declaration is first seen —
+// Registry of a program's `@value` class names, so a later `@value` class can
+// declare a field of one (`a: Vec2`). Written where a declaration is first seen —
 // lint pre-eval, and compile_class_decl as its safety net — the same
 // two-writer arrangement @packable's layout registry has, and with the same
 // limitation: a name stays registered for the life of the process.
@@ -1204,6 +1204,14 @@ inline std::set<std::string, std::less<>>& value_class_registry() {
 inline void register_value_class(std::string name) {
   std::lock_guard<std::mutex> lk(value_class_mutex());
   value_class_registry().insert(std::move(name));
+}
+// The stdlib's `@value` classes, by name: lint checks a field of one before
+// the module declaring it is compiled or parsed. Sorted. culebra_preamble_cc
+// refuses to bake a module that declares a `@value` class this list lacks.
+inline bool is_stdlib_value_class_name(std::string_view name) {
+  static constexpr std::string_view kNames[] = {"Vector2", "Vector3"};
+  static_assert(std::ranges::is_sorted(kNames));
+  return std::ranges::binary_search(kNames, name);
 }
 inline bool is_value_class(std::string_view name) {
   std::lock_guard<std::mutex> lk(value_class_mutex());
@@ -1299,21 +1307,23 @@ inline void add_type_decl_names(const peg::Ast& decl, TypeNames& out) {
       out.emplace(m->nodes[0]->token);
 }
 
-// The names `ast` gives to a type that is not a `@value` class, wherever in
-// it the declaration stands: `classes` to an ordinary class, `others` to an
-// enum, a variant or a trait.
-struct OrdinaryTypeNames {
+// The names `ast` gives to a type, wherever in it the declaration stands:
+// `values` to a `@value` class, `classes` to an ordinary class, `others` to
+// an enum, a variant or a trait.
+struct DeclaredTypeNames {
+  TypeNames values;
   TypeNames classes;
   TypeNames others;
 };
-inline void collect_ordinary_type_names(const peg::Ast& ast,
-                                        OrdinaryTypeNames& out) {
+inline void collect_declared_type_names(const peg::Ast& ast,
+                                        DeclaredTypeNames& out) {
   using namespace peg::udl;
-  if (ast.tag == "CLASS_DECL"_ && !is_value_class_decl(ast))
-    out.classes.emplace(type_decl_name(ast));
+  if (ast.tag == "CLASS_DECL"_)
+    (is_value_class_decl(ast) ? out.values : out.classes)
+        .emplace(type_decl_name(ast));
   else if (ast.tag == "ENUM_DECL"_ || ast.tag == "TRAIT_DECL"_)
     add_type_decl_names(ast, out.others);
-  for (const auto& n : ast.nodes) collect_ordinary_type_names(*n, out);
+  for (const auto& n : ast.nodes) collect_declared_type_names(*n, out);
 }
 
 // The names the stdlib gives to a type that is not a `@value` class: the
@@ -1345,14 +1355,18 @@ inline bool is_stdlib_type_name(std::string_view name) {
 // else — String, Array, Object, a closure, `T?`, an ordinary class — carries
 // a heap body or an identity of its own, so admitting it would give the
 // contract nothing to stand on. Deliberately narrow: widening this set later
-// is additive, narrowing it is not. `ordinary`: the names the module at hand
-// gives to a class that is not one (collect_ordinary_type_names). A field's
-// annotation is a name too, so such a name is not a value's even where some
-// other class of it is.
+// is additive, narrowing it is not. `declared`: the names the module at hand
+// gives to its types. A field's annotation is a name too, so one the module
+// gives to an ordinary class is not a value's even where some other class of
+// it is, and a stdlib value class's name is one only where the module
+// declares nothing under it (a program's own `Vector3` answers for itself).
 inline bool is_value_field_type(std::string_view t,
-                                const TypeNames& ordinary) {
-  return t == "Long" || t == "Float" || t == "Bool" ||
-         (is_value_class(t) && !ordinary.contains(t));
+                                const DeclaredTypeNames& declared) {
+  if (t == "Long" || t == "Float" || t == "Bool") return true;
+  if (declared.classes.contains(t)) return false;
+  if (is_value_class(t)) return true;
+  return is_stdlib_value_class_name(t) && !declared.values.contains(t) &&
+         !declared.others.contains(t);
 }
 
 // The machine-scalar half of the above: a field an unboxed layout can give
@@ -1537,7 +1551,7 @@ inline bool value_body_writes_self(const peg::Ast& body) {
 // member's name, matching what lint reports pre-eval.
 inline void require_value_member(const MethodView& mv,
                                  std::string_view class_name,
-                                 const TypeNames& ordinary) {
+                                 const DeclaredTypeNames& declared) {
   if (mv.is_static) return;
   auto at = [&](std::string msg) {
     return CulebraError("SyntaxError", std::move(msg),
@@ -1545,7 +1559,7 @@ inline void require_value_member(const MethodView& mv,
                         static_cast<long>(mv.name_col));
   };
   if (mv.name == "drop") throw at(value_drop_message(class_name));
-  if (mv.is_typed_field && !is_value_field_type(mv.type_annotation, ordinary))
+  if (mv.is_typed_field && !is_value_field_type(mv.type_annotation, declared))
     throw at(value_field_type_message(class_name, mv.name,
                                       mv.type_annotation));
   if (mv.is_field) throw at(value_untyped_field_message(mv.name, class_name));

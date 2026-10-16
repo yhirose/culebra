@@ -215,6 +215,22 @@ test_value_nested = fn () {
 }
 test_value_nested()
 
+test_value_nested_stdlib = fn () {
+  # The stdlib's own `@value` classes count too, though lint checks the
+  # field before the module declaring them is loaded or compiled.
+  @value
+  class Body {
+    pos: Vector3
+    vel: Vector2
+    new(.pos, .vel) {}
+  }
+  let b = Body(Vector3(1.0, 2.0, 3.0), Vector2(0.5, 0.0))
+  assert_eq([b.pos.z, b.vel.x], [3.0, 0.5])
+  assert_eq(b == Body(Vector3(1.0, 2.0, 3.0), Vector2(0.5, 0.0)), true)
+  assert_eq(b == Body(Vector3(1.0, 2.0, 4.0), Vector2(0.5, 0.0)), false)
+}
+test_value_nested_stdlib()
+
 test_value_without_new = fn () {
   # No `new`: the declared fields zero-initialize and the instance freezes
   # with exactly those fields.

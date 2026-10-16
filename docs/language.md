@@ -6947,9 +6947,10 @@ statics, `match` type patterns, `keys()` and display all behave as they do
 for any class (§10). The field types are deliberately narrow — `String`,
 `Array`, `Object` and closures carry a body or an identity of their own —
 and a field type naming another `@value` class must name one declared
-earlier. The annotation is a name, so every class the file declares under
-that name has to be a `@value` class: one ordinary class of it, anywhere in
-the file, and the field is refused.
+earlier, or one of the stdlib's (`Vector2`, `Vector3`) where the file
+declares nothing of that name. The annotation is a name, so every class the
+file declares under that name has to be a `@value` class: one ordinary class
+of it, anywhere in the file, and the field is refused.
 
 The unboxed form is decided per binding and is all-or-nothing: one use that
 is not a field read, a same-class operand or a reassignment — passing `v`

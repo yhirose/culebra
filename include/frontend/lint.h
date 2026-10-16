@@ -79,21 +79,21 @@ class RuleWalker {
 
   void run(const peg::Ast& ast) {
     root_ = &ast;
-    ordinary_types_.reset();
+    declared_types_.reset();
     walk(ast);
   }
 
  private:
   std::vector<Diagnostic>& diags_;
-  // The module being walked, and the names it gives to a class that is not
-  // `@value`: gathered the first time a `@value` field names a class, since
-  // the declaration that settles it may stand anywhere in the module.
+  // The module being walked, and the names it gives to its types: gathered
+  // the first time a `@value` field names a class, since the declaration that
+  // settles it may stand anywhere in the module.
   const peg::Ast* root_ = nullptr;
-  std::optional<culebra::OrdinaryTypeNames> ordinary_types_;
-  const culebra::TypeNames& ordinary_classes() {
-    if (!ordinary_types_)
-      culebra::collect_ordinary_type_names(*root_, ordinary_types_.emplace());
-    return ordinary_types_->classes;
+  std::optional<culebra::DeclaredTypeNames> declared_types_;
+  const culebra::DeclaredTypeNames& declared_types() {
+    if (!declared_types_)
+      culebra::collect_declared_type_names(*root_, declared_types_.emplace());
+    return *declared_types_;
   }
   // The loops a break/continue here could target, innermost last, each held
   // by its label (empty for an unlabelled loop). Its depth is what the
@@ -622,7 +622,7 @@ inline void RuleWalker::walk(const peg::Ast& node) {
           if (is_value && mv.is_typed_field &&
               !culebra::is_flat_value_field_type(mv.type_annotation) &&
               !culebra::is_value_field_type(mv.type_annotation,
-                                            ordinary_classes())) {
+                                            declared_types())) {
             diags_.push_back(Diagnostic{
                 "SyntaxError",
                 culebra::value_field_type_message(class_name, mv.name,

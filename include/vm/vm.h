@@ -5392,7 +5392,7 @@ class Compiler {
   bool library_ = false;
   // The module being compiled, inherited the same way and for the same
   // reason: what a `@value` field may name is read off the whole module, as
-  // lint reads it (FnAnalysis::ordinary_classes).
+  // lint reads it (FnAnalysis::declared_types).
   const peg::Ast* module_root_ = nullptr;
 
   int64_t pos_line(size_t line) const {
@@ -7960,8 +7960,8 @@ class Compiler {
                                           FnAnalysis& analysis) {
     using namespace peg::udl;
     if (ast.tag == "CLASS_DECL"_ && culebra::is_value_class_decl(ast)) {
+      // Its name is a value's already (culebra::is_stdlib_value_class_name).
       auto class_name = std::string(culebra::type_decl_name(ast));
-      culebra::register_value_class(class_name);
       // The same field list compile_class_decl lays the class out from.
       // (Its field types reach the name through settle_class_names, as the
       // compiled lane's do.)
@@ -8014,13 +8014,13 @@ class Compiler {
     // value (lint reports both first; this is the same safety net the other
     // backends keep).
     auto fields = culebra::collect_instance_fields(ast, dec_end + 1);
-    // The names a `@value` field may not take for a value's: its module's
-    // ordinary classes, as lint holds it to. A stdlib module's class is held
-    // to none: a lane that calls its baked entry never compiles it at all.
-    static const culebra::TypeNames no_names;
-    const culebra::TypeNames& ordinary =
+    // The names a `@value` field reads against: its module's own types, as
+    // lint holds it to. A stdlib module's class is held to none: a lane that
+    // calls its baked entry never compiles it at all.
+    static const culebra::DeclaredTypeNames no_names;
+    const culebra::DeclaredTypeNames& declared =
         is_value && !library_ && module_root_
-            ? analysis_.ordinary_classes(*module_root_)
+            ? analysis_.declared_types(*module_root_)
             : no_names;
     // Declared (name, type) pairs in field order — the @packable layout spec.
     std::vector<std::pair<std::string, std::string>> packable_fields;
@@ -8028,7 +8028,7 @@ class Compiler {
       auto mv = culebra::view_method(*f);
       if (is_packable && mv.is_field)
         culebra::require_typed_packable_field(mv, class_name);
-      if (is_value) culebra::require_value_member(mv, class_name, ordinary);
+      if (is_value) culebra::require_value_member(mv, class_name, declared);
       if (is_packable && mv.is_typed_field)
         packable_fields.emplace_back(mv.name, mv.type_annotation);
     }
@@ -8043,7 +8043,7 @@ class Compiler {
         static_fields.push_back(&m);
         continue;
       }
-      if (is_value) culebra::require_value_member(mv, class_name, ordinary);
+      if (is_value) culebra::require_value_member(mv, class_name, declared);
       if (mv.is_static) {
         static_names.emplace_back(mv.name);
         static_asts.push_back(&m);
@@ -8083,8 +8083,10 @@ class Compiler {
     const culebra::ClassFieldClasses* own_field_classes = &own.classes;
     // The class joins the registry only once its own members have passed, and
     // after the scan above rather than before it, so a field naming the class
-    // being declared is still refused — a value cannot contain itself.
-    if (is_value) culebra::register_value_class(class_name);
+    // being declared is still refused — a value cannot contain itself. A
+    // stdlib class answers by name instead (culebra::is_stdlib_value_class_name),
+    // the same on a lane that never compiles it.
+    if (is_value && !library_) culebra::register_value_class(class_name);
     // And, when its shape allows it, the layout an unboxed construction lays
     // the instance out as: one slot per declared field, in declaration order.
     if (is_value)

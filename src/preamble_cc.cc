@@ -111,21 +111,28 @@ int main(int argc, char** argv) {
       return 1;
     }
   }
-  // A type the module declares that is not a `@value` class has to be on the
-  // list every lane takes such names from: a lane that calls this entry
-  // never reads the declaration.
-  culebra::OrdinaryTypeNames types;
-  culebra::collect_ordinary_type_names(*ast, types);
+  // Every type the module declares has to be on the list that answers for its
+  // name without the declaration: a lane that calls this entry never reads
+  // the module's other types, and lint checks a `@value` field before any
+  // lane parses the module's `@value` classes.
+  culebra::DeclaredTypeNames types;
+  culebra::collect_declared_type_names(*ast, types);
   bool listed = true;
-  for (const auto* names : {&types.classes, &types.others})
-    for (const auto& n : *names)
-      if (!culebra::is_stdlib_type_name(n)) {
+  auto require = [&](const culebra::TypeNames& names, auto is_listed,
+                     const char* list) {
+    for (const auto& n : names)
+      if (!is_listed(n)) {
         std::fprintf(stderr,
                      "culebra_preamble_cc: stdlib module '%s' declares the "
-                     "type `%s`, which is_stdlib_type_name (parser.h) lacks\n",
-                     name.c_str(), n.c_str());
+                     "type `%s`, which %s (parser.h) lacks\n",
+                     name.c_str(), n.c_str(), list);
         listed = false;
       }
+  };
+  require(types.classes, culebra::is_stdlib_type_name, "is_stdlib_type_name");
+  require(types.others, culebra::is_stdlib_type_name, "is_stdlib_type_name");
+  require(types.values, culebra::is_stdlib_value_class_name,
+          "is_stdlib_value_class_name");
   if (!listed) return 1;
   auto prog = culebra::vm::Compiler::compile_stdlib_prologue(*ast);
   return culebra::vm::Lowering::build_preamble_object(

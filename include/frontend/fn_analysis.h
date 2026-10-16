@@ -202,15 +202,14 @@ struct FnAnalysis {
     auto it = type_params.find(&node);
     return it == type_params.end() ? nullptr : &it->second;
   }
-  // The names a module gives to a class that is not `@value`
-  // (culebra::is_value_field_type), read off the module's root the first time
-  // one of its `@value` classes is compiled: the same names, by the same
-  // walk, as lint holds the module to.
-  const culebra::TypeNames& ordinary_classes(const peg::Ast& module_root) {
-    auto [names, first] = ordinary_types_.try_emplace(&module_root);
+  // The names a module gives to its types (culebra::is_value_field_type),
+  // read off the module's root the first time one of its `@value` classes is
+  // compiled: the same names, by the same walk, as lint holds the module to.
+  const culebra::DeclaredTypeNames& declared_types(const peg::Ast& module_root) {
+    auto [names, first] = declared_types_.try_emplace(&module_root);
     if (first)
-      culebra::collect_ordinary_type_names(module_root, names->second);
-    return names->second.classes;
+      culebra::collect_declared_type_names(module_root, names->second);
+    return names->second;
   }
 
   // `session`: the names earlier inputs of a session declared, when
@@ -233,9 +232,9 @@ struct FnAnalysis {
 
  private:
   IsBuiltinVar is_builtin_var_;
-  // ordinary_classes' answers, by module root.
-  std::unordered_map<const peg::Ast*, culebra::OrdinaryTypeNames>
-      ordinary_types_;
+  // declared_types' answers, by module root.
+  std::unordered_map<const peg::Ast*, culebra::DeclaredTypeNames>
+      declared_types_;
   int defer_count_ = 0;  // DEFER nodes seen so far, across all scans
   // The program being analyzed is a REPL line: its top-level `let`s are
   // session cells a later line may rebind (analyze_program's flag).

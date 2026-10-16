@@ -1314,10 +1314,13 @@ trait、`Range`や`Generator`のようにネイティブに作られるオブジ
 保つ。
 
 `@value`のfieldが書けない名前は、モジュールごとに決まる。そのモジュールが
-`@value`でないクラスに付けている名前で、宣言の場所は問わない。コンパイラ
-（`Compiler::module_root_`を渡して`FnAnalysis::ordinary_classes`に尋ねる）と
-lintは、同じモジュール根から同じ走査（`culebra::collect_ordinary_type_names`）で
-それを読むので、両者の判定はずれない。
+`@value`でないクラスに付けている名前で、宣言の場所は問わない。stdlibの値の
+クラス（`Vector2`・`Vector3`）は名前で知っているので、lintはそれを宣言する
+モジュールが解析される前でも受け入れる。ただし、モジュールがその名前で何も
+宣言していない場合に限る。コンパイラ（`Compiler::module_root_`を渡して
+`FnAnalysis::declared_types`に尋ねる）とlintは、同じモジュール根から同じ走査
+（`culebra::collect_declared_type_names`）でモジュールの名前を読むので、両者の
+判定はずれない。
 
 #### パラメータの宣言型を、捨てずに保つ
 

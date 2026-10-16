@@ -831,6 +831,24 @@ fn local() {
   new(t) { self.t = t }
 }
 println([local(), Holder.new(Tag.new(2)).t.n])" '[1.5, 2]'
+# A stdlib value class is a value by its name, but only where the program
+# declares nothing of that name: its own `Vector3` answers for itself.
+check_eq "value field, the program's Vector3 holding itself" "@value class Vector3 {
+  n: Long
+  inner: Vector3
+}" 'SyntaxError: @value class `Vector3`: field `inner` has non-value type `Vector3` (expected Long, Float, Bool, or another @value class) at 3:3.'
+check_eq "value field, the program's Vector2 and Vector3 holding each other" "@value class Vector2 {
+  b: Vector3
+}
+@value class Vector3 {
+  a: Vector2
+}" 'SyntaxError: @value class `Vector2`: field `b` has non-value type `Vector3` (expected Long, Float, Bool, or another @value class) at 2:3.'
+check_eq "value field, a trait named Vector2" "trait Vector2 {
+  len() -> Float
+}
+@value class Body {
+  shape: Vector2
+}" 'SyntaxError: @value class `Body`: field `shape` has non-value type `Vector2` (expected Long, Float, Bool, or another @value class) at 5:3.'
 check_same "value drop method"         "@value class A {
   x: Long
   drop() { 1 }

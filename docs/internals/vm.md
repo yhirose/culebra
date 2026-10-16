@@ -1352,10 +1352,13 @@ line narrows the name for every reader compiled after it. A reader compiled
 before it keeps the answer it was given.
 
 What a `@value` field may not name is a module's own matter: the names the
-module gives to a class that is not `@value`, wherever in it. The compiler
-(`FnAnalysis::ordinary_classes`, asked with `Compiler::module_root_`) and
-lint read them off the same module root with the same walk
-(`culebra::collect_ordinary_type_names`), so the two cannot disagree.
+module gives to a class that is not `@value`, wherever in it. A stdlib value
+class (`Vector2`, `Vector3`) is known by name, so lint takes it before the
+module declaring it is parsed, but only for a name the module declares
+nothing under. The compiler (`FnAnalysis::declared_types`, asked with
+`Compiler::module_root_`) and lint read the module's names off the same
+module root with the same walk (`culebra::collect_declared_type_names`), so
+the two cannot disagree.
 
 #### A parameter's declared type, kept rather than discarded
 
