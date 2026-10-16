@@ -640,7 +640,7 @@ the melody's.
 A band leaves its groove to strike a rhythm together (hits), or to stop and
 leave a bar to one player (a break). A `hits:` line under a bar gives that
 rhythm: `x` where the band strikes and `r` where it rests, with values, dots,
-ties and tuplets as notes have, and the marks `!` and `.`.
+ties and tuplets as notes have, and the playing marks `.` `!` `-` `^`.
 
 In that bar the band plays the hits in place of its groove:
 
@@ -651,9 +651,10 @@ In that bar the band plays the hits in place of its groove:
 | a drum that `plays hits` | a hit |
 | the other drums | nothing: they rest through the bar |
 
-A hit sounds for its value (`x4` a quarter), half of it under `.`, and a tie
-holds it on (`x8~ x8`). Each hit takes the chord sounding at its moment, and
-the band's dynamic; `!` makes it a level louder. The melody plays its notes,
+A hit sounds for its value (`x4` a quarter), and a tie holds it on
+(`x8~ x8`). Its marks play it as they play a note: `.` half of it, `!` a level
+louder; a host instrument that hears marks is told them. Each hit takes the
+chord sounding at its moment, and the band's dynamic. The melody plays its notes,
 and a part voice its part where the section writes one, as it does over a
 groove.
 

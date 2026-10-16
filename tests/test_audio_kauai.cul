@@ -445,6 +445,34 @@ assert_eq(told.sorted(), [
 ])
 assert_eq(hit_told.sorted(), ['next 2.0', 'next nil', 'ride next 1.0', 'ride next nil'])
 
+# The band's hits carry their marks as written notes do: a staccato hit is
+# let go at half its length, and an instrument that hears marks is told so.
+mut plucked = []
+let kime = Audio.Kauai.new(lines([
+  'band Duo {',
+  '  voice Lead  pulse  plays melody  vol 20',
+  '  voice Bass  host Pluck  plays roots in E2..D#3  vol 50%',
+  '}',
+  'groove Walk {', '  Bass  1 1 1 1', '}',
+  'song Kime {', '  tempo 60', '  band Duo', '  groove Walk', '  melody in C4..B4', '  Kime', '}',
+  'section Kime {', '  C  r1', '    hits:  .x4 x4 !x2', '}',
+]), voices: {
+  pluck: {
+    phrase: fn (notes, params) {
+      plucked.push(notes.map(said).join(" / "))
+      Audio.Sound.new(WAV)
+    },
+    hears: ["len", "marks"],
+  },
+})
+kime.play()
+kime.stop()
+assert_eq(plucked.sorted(), [
+  "pitch 48, at 0.0, len 0.5, marks ['staccato']",
+  "pitch 48, at 0.0, len 1.0, marks []",
+  "pitch 48, at 0.0, len 2.0, marks ['accent']",
+])
+
 
 let refused = fn (voices, drums) {
   try {

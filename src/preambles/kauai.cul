@@ -728,7 +728,7 @@ let _kauai_module = fn () {
           state.slur_line = line
           state.phrase = next_phrase(state) if state.slur
           # The last note under a slur is not joined to the one after it.
-          state.last.legato = false if it.slur == ")" && state.last != nil
+          state.last.on = false if it.slur == ")" && state.last != nil
         },
         it.has("direct") => {
           let w = it.direct
@@ -778,7 +778,7 @@ let _kauai_module = fn () {
           fail(line, "the note is too short for its grace notes or its arpeggio") if struck.any(|p| late(p) >= it.length)
           for k, nm in it.graces.enumerate() {
             let g = melody_note(nm, low, line) + shift
-            state.notes.push({pitch: g, start: pos + k * GRACE, mut len: GRACE, line: line, shift: 0, grace: true, span: state.span, touch: nil, phrase: state.slur ? state.phrase : nil, marks: []})
+            state.notes.push({pitch: g, start: pos + k * GRACE, mut len: GRACE, line: line, shift: 0, grace: true, span: state.span, legato: nil, phrase: state.slur ? state.phrase : nil, marks: []})
           }
           # The notes a slur joins are a phrase, and so are notes struck together.
           let phrase = cond {
@@ -788,21 +788,16 @@ let _kauai_module = fn () {
           }
           # What is written on the struck notes, for an instrument that hears it.
           let marks = [...it.marks, ...(it.arpeggio ? ["arpeggio"] : [])]
-          # How the struck notes are played, which the slur's end can change.
-          let touch = {
-            mut legato: state.slur,
-            staccato: it.marks.contains("staccato"),
-            accent: it.marks.contains("accent"),
-            tenuto: it.marks.contains("tenuto"),
-            marcato: it.marks.contains("marcato"),
-          }
+          # Whether the struck notes are joined to the next, which the slur's
+          # end can change.
+          let legato = {mut on: state.slur}
           # Every note, tied ones lengthened.
           mut ties_now = {}
           for k, p in pitches.enumerate() {
             if state.ties.has(p) {
               state.notes[state.ties[p]].len += it.length
             } else {
-              state.notes.push({pitch: p, start: pos + late(p), mut len: it.length - late(p), line: line, shift: late(p), grace: false, span: state.span, touch: touch, phrase: phrase, marks: marks})
+              state.notes.push({pitch: p, start: pos + late(p), mut len: it.length - late(p), line: line, shift: late(p), grace: false, span: state.span, legato: legato, phrase: phrase, marks: marks})
             }
             let idx = state.ties.has(p) ? state.ties[p] : state.notes.size() - 1
             ties_now[p] = idx if it.tie || it.ties[k]
@@ -816,7 +811,7 @@ let _kauai_module = fn () {
             state.open = {at: at, pitch: pitch, mut len: pos + it.length - at}
             state.lead.push(state.open)
           }
-          state.last = touch if !struck.empty()
+          state.last = legato if !struck.empty()
           state.ties = ties_now
           # A fermata holds the whole band: its written time plays twice as long.
           state.holds.push((pos, it.length)) if it.marks.contains("fermata")
@@ -1762,7 +1757,7 @@ let _kauai_module = fn () {
       (all[at], own.line)
     }
 
-    # A bar's hits as [{at, len, accent, staccato}] from its start: a rhythm of
+    # A bar's hits as [{at, len, marks}] from its start: a rhythm of
     # `x` (the band strikes) and `r` (it rests), read as notes are, a tie
     # holding a hit on.
     let hits_of = fn (b) {
@@ -1789,7 +1784,7 @@ let _kauai_module = fn () {
           if tied {
             out[out.size() - 1].len += ev.length
           } else {
-            out.push({at: at_unit, mut len: ev.length, accent: ev.marks.contains("accent"), staccato: ev.marks.contains("staccato")})
+            out.push({at: at_unit, mut len: ev.length, marks: ev.marks.filter(|m| m != "fermata")})
           }
           tied = ev.tie
         }
@@ -1824,11 +1819,13 @@ let _kauai_module = fn () {
       o.len += kept
       rv.open = nil if kept < units
     }
-    let strike = fn (rv, in_bar, offset, units, pitches, accent) {
-      let o = {at: in_bar.at + offset, mut len: 0, pitches: pitches, accent: accent}
+    let strike = fn (rv, in_bar, offset, units, pitches, hit_marks) {
+      let o = {at: in_bar.at + offset, mut len: 0, pitches: pitches, marks: hit_marks}
       rv.notes.push(o)
       rv.open = o
       hold(rv, in_bar, offset, units)
+      # A staccato hit is let go: what follows does not hold it on.
+      rv.open = nil if hit_marks.contains("staccato")
     }
     let bass_row = row_voice(bass_v)
     let chord_row = row_voice(chord_v)
@@ -1894,22 +1891,22 @@ let _kauai_module = fn () {
         song.loop => bars[lead_in ? 1 : 0],
         _ => nil,
       }
-      # What a voice plays in the bar, as (slot, token, units, accent): its
-      # groove row, token by token; or the hits, each held for its length (half
-      # of it under a staccato); or nothing, where it plays a part.
+      # What a voice plays in the bar, as (slot, token, units, marks): its
+      # groove row, token by token; or the hits, each held for its length; or
+      # nothing, where it plays a part.
       let pattern = fn (vname) {
         return [] if vname == nil || busy(b, vname)
         if hit_plan != nil {
           # A chord voice that is not poly takes the chord's top tone.
           let tok = vname == bass_v.name ? "1" : (chord_v.poly ? "x" : "99")
-          return hit_plan.map(|h| (h.at, tok, h.staccato ? Math.max(1, h.len / 2) : h.len, h.accent))
+          return hit_plan.map(|h| (h.at, tok, h.len, h.marks))
         }
         let voice_row = row_steps(b, g, vname, false)
         return [] if voice_row == nil
         let row = voice_row[0]
-        row.toks.enumerate().map(|(k, t)| (k * row.size, t, row.size, false))
+        row.toks.enumerate().map(|(k, t)| (k * row.size, t, row.size, []))
       }
-      for (slot, hit, units, accent) in pattern(bass_v.name) {
+      for (slot, hit, units, hit_marks) in pattern(bass_v.name) {
         let c = chord_at(b, slot)
         cond {
           hit == "." || c == nil => bass_row.open = nil,
@@ -1923,11 +1920,11 @@ let _kauai_module = fn () {
               "<" => next == nil ? low : bass_note(next.chords[0] ?? fail(b.line, "< leads into N.C.")) + 1,
               _ => at_or_above(c.root + degree(c, hit, b.line), low),
             }
-            strike(bass_row, b, slot, units, [p], accent)
+            strike(bass_row, b, slot, units, [p], hit_marks)
           },
         }
       }
-      for (slot, pick, units, accent) in pattern(chord_v.name) {
+      for (slot, pick, units, hit_marks) in pattern(chord_v.name) {
         let c = chord_at(b, slot)
         cond {
           pick == "." || c == nil => chord_row.open = nil,
@@ -1935,7 +1932,7 @@ let _kauai_module = fn () {
           _ => {
             let tones = voiced(chord_v, c)
             let struck = pick == "x" ? tones : [tones[Math.min(to_long(pick) - 1, tones.size() - 1)]]
-            strike(chord_row, b, slot, units, chord_v.poly ? struck : [struck[0]], accent)
+            strike(chord_row, b, slot, units, chord_v.poly ? struck : [struck[0]], hit_marks)
           },
         }
       }
@@ -1987,7 +1984,7 @@ let _kauai_module = fn () {
         players: players(pname),
       })).to_object(),
       # What the groove's voices and the derived parts play, {voice, notes}
-      # with each note {at, len, pitches, accent, level}, and the drums' hits,
+      # with each note {at, len, pitches, marks, level}, and the drums' hits,
       # {at, name}; in units.
       rows: [...second, {voice: bass_v, notes: bass_row.notes}, {voice: chord_v, notes: chord_row.notes}],
       hits: [
@@ -2012,9 +2009,6 @@ let _kauai_module = fn () {
 
   # A voice's `vol` is its level at mf.
   let MF = DYNAMICS["mf"]
-
-  # How a groove's voice plays a hit written with `!`.
-  let ACCENT = {legato: false, staccato: false, accent: true, tenuto: false, marcato: false}
 
   # A level louder than `level`, as an accent plays it.
   fn louder(level) {
@@ -2089,18 +2083,17 @@ let _kauai_module = fn () {
     mut out = []
     let band_level = x.level_at
     # Voice `v`'s note, heard from `t0` to `t1` seconds, as `how` says: its
-    # dynamic where it starts and where it ends (`level`, `level_end`), its
-    # `touch` (how a written note is played, nil for one a groove plays), its
-    # `marks`, and its `phrase` (the notes it sounds with; nil for none).
+    # dynamic where it starts and where it ends (`level`, `level_end`), the
+    # `marks` written on it, whether a slur joins it to the next (`legato`),
+    # and its `phrase` (the notes it sounds with; nil for none).
     let note = fn (v, pitch, t0, t1, how) {
-      let touch = how.touch
+      let marks = how.marks
       let level = how.level
-      let loud = touch != nil && (touch.accent || touch.marcato) ? louder(level) : level
+      let loud = marks.contains("accent") || marks.contains("marcato") ? louder(level) : level
       let len = t1 - t0
       let sounded = cond {
-        touch == nil => len,
-        touch.staccato => len / 2,
-        touch.marcato => len * 3 / 4,
+        marks.contains("staccato") => len / 2,
+        marks.contains("marcato") => len * 3 / 4,
         _ => len,
       }
       if v.host != nil {
@@ -2108,12 +2101,12 @@ let _kauai_module = fn () {
         out.push({
           at: t0, len: len, by: v.name, pitch: pitch, mut vol: v.vol * loud / MF,
           level: loud / MF, level_end: how.level_end / MF, sounded: sounded,
-          phrase: how.phrase, marks: how.marks,
+          phrase: how.phrase, marks: marks,
         })
         return nil
       }
       let vol = v.vol * loud / MF
-      let joined = touch != nil && (touch.legato || touch.tenuto)
+      let joined = how.legato || marks.contains("tenuto")
       let sustain = Math.max(0.0, sounded - (joined ? 0 : v.gap) / 60.0)
       let f = hz(pitch)
       out.push({
@@ -2131,8 +2124,8 @@ let _kauai_module = fn () {
       note(v, h.pitch, time(h.start), time(h.start + h.len), {
         level: level_at(nt.start),
         level_end: level_at(last_unit(nt.start, nt.len)),
-        touch: nt.touch,
         marks: nt.marks,
+        legato: nt.legato != nil && nt.legato.on,
         phrase: nt.phrase == nil ? nil : "{v.name} {nt.phrase} {shift}",
       })
     }
@@ -2158,14 +2151,13 @@ let _kauai_module = fn () {
       for n in row.notes {
         let from = at(n.at)
         let until = at(n.at + n.len)
-        let accent = n.get("accent", false)
         let level = n.get("level", 1.0)
         chords += 1 if n.pitches.size() > 1
         let how = {
           level: band_level(n.at) * level,
           level_end: band_level(last_unit(n.at, n.len)) * level,
-          touch: accent ? ACCENT : nil,
-          marks: accent ? ["accent"] : [],
+          marks: n.get("marks", []),
+          legato: false,
           phrase: n.pitches.size() > 1 ? "{row.voice.name} chord {chords}" : nil,
         }
         for tone_pitch in n.pitches {
