@@ -6385,14 +6385,6 @@ class Compiler {
     return kconst({TAG_NIL, 0});
   }
 
-  // A typed field with no initializer takes its type's zero (the JIT's
-  // emit_zero_value over the shared zero_kind_for_type table).
-  int32_t emit_zero_value(const peg::Ast& at, std::string_view type) {
-    int32_t t = alloc_temp(at);
-    emit(Op::LoadConst, t, zero_const(type));
-    return t;
-  }
-
   // Declaration point of a captured local: a fresh cell absorbs the value.
   void store_new_cell(const peg::Ast& at, int32_t dst, ExprResult r) {
     emit(Op::CellNew, dst, owned_src(at, r));

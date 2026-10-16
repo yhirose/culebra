@@ -2762,26 +2762,6 @@ struct JIT {
                       builder_.CreatePtrToInt(ptr, builder_.getInt64Ty()));
   }
 
-  // Zero value for a declared field type (`x: T` with no initializer),
-  // single-sourced with the interp's zero_value_for_type through
-  // culebra::zero_kind_for_type.
-  Owned emit_zero_value(std::string_view type) {
-    switch (culebra::zero_kind_for_type(type)) {
-      case culebra::ZeroKind::Float:
-        return own(make_float(
-            llvm::ConstantFP::get(builder_.getDoubleTy(), 0.0)));
-      case culebra::ZeroKind::Bool:
-        return own(make_bool(builder_.getInt1(false)));
-      case culebra::ZeroKind::String:
-        return own(make_string(emit_str_literal("")));
-      case culebra::ZeroKind::Long:
-        return own(make_long(builder_.getInt64(0)));
-      case culebra::ZeroKind::Nil:
-        break;
-    }
-    return own(make_nil());
-  }
-
   llvm::Value* make_func(llvm::Value* ptr) { return make_ptr_value(TAG_FUNC, ptr); }
   llvm::Value* make_string(llvm::Value* ptr) { return make_ptr_value(TAG_STRING, ptr); }
   llvm::Value* make_stringview(llvm::Value* ptr) { return make_ptr_value(TAG_STRINGVIEW, ptr); }
