@@ -467,6 +467,30 @@ let kime = Audio.Kauai.new(lines([
 })
 kime.play()
 kime.stop()
+
+# Each note's line through the phrase, from the lowest: a rolled chord's
+# tones start apart and keep their lines, and a note a tie holds keeps its
+# own while the struck ones take the rest.
+mut lined = []
+let rolled = Audio.Kauai.new(lines([
+  'band Solo {', '  voice Harp  host Harp  plays melody  poly  vol 50%', '}',
+  'song Roll {', '  tempo 60', '  band Solo', '  melody in C4..B4', '  Roll', '}',
+  'section Roll {', '  C  ~<c~ e g>2 <c d f>2', '}',
+]), voices: {
+  harp: {
+    phrase: fn (notes, params) {
+      lined.push(notes.map(said).join(" / "))
+      Audio.Sound.new(WAV)
+    },
+    hears: ["line"],
+  },
+})
+rolled.play()
+rolled.stop()
+assert_eq(lined.sorted(), [
+  "pitch 60, at 0.0, line 0 / pitch 64, at 0.062, line 1 / pitch 67, at 0.125, line 2",
+  "pitch 62, at 0.0, line 1 / pitch 65, at 0.0, line 2",
+])
 assert_eq(plucked.sorted(), [
   "pitch 48, at 0.0, len 0.5, marks ['staccato']",
   "pitch 48, at 0.0, len 1.0, marks []",
@@ -486,7 +510,7 @@ let snare = {snare: |params| Audio.Sound.new(WAV)}
 let fiddle = {fiddle: |pitch, params| Audio.Sound.new(WAV)}
 assert_eq(
   refused({fiddle: {phrase: |notes, params| nil, hears: ["slur"]}}, snare),
-  "Audio.Kauai: voices: `fiddle` hears slur; it can hear len, level, marks, next",
+  "Audio.Kauai: voices: `fiddle` hears slur; it can hear len, level, line, marks, next",
 )
 assert_eq(
   refused(fiddle, {snare: {hit: |n, params| nil, hears: ["len"]}}),

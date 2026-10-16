@@ -1001,11 +1001,13 @@ let song = Audio.Kauai.load("trio.kau", voices: {
 | (always) | `pitch`, a MIDI note, and `at`, seconds from the phrase's first note, to the millisecond | a voice |
 | `"len"` | `len`, seconds the note is held: a staccato's half, a marcato's three quarters, to the millisecond | a voice |
 | `"level"` | `level`, the note's dynamic over `mf`'s (`1.0` at `mf`, `0.47` at `pp`, `1.35` at `ff`; an accent a step louder), to the hundredth; a voice's note also `level_end`, the dynamic it ends at, which differs from `level` through a `cresc` or a `dim` (and after an accent) | a voice or a drum |
+| `"line"` | `line`, the line the note moves in through the phrase, `0` the lowest: the k-th lowest of notes struck together is in line k, and a note a tie holds keeps its line while the others take the rest in turn | a voice |
 | `"marks"` | `marks`, the names of what is written on the note: `staccato` `accent` `tenuto` `marcato` `fermata` `arpeggio` `scoop` `plop` `doit` `fall` | a voice |
 | `"next"` | `next`, seconds from the phrase's first note until the voice's next phrase starts; for a drum, from the hit until the drum, or its choke group, hits next; `nil` when nothing comes, to the millisecond | a voice or a drum |
 
 Notes struck together are each a note of the phrase, at the same `at`, from
-the lowest; a rolled chord's start a sixty-fourth apart. `next` is a
+the lowest; a rolled chord's start a sixty-fourth apart, so `line`, not `at`,
+says which string or bow each is on. `next` is a
 deadline, not a cut: every sound still plays through, and an instrument that
 hears it ends its own by then, in its own way (a string damped, a breath
 stopped, an open hi-hat closed), while the room it carries rings on. It

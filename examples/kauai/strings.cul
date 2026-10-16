@@ -133,7 +133,7 @@ let chord = |peaks| |notes, params| wave.by_line(
 let sounds = {violin: chord(VIOLIN), viola: chord(VIOLA), cello: chord(CELLO)}
 let voices = sounds
   .keys()
-  .map(|k| (k, wave.voice(sounds[k], ["len", "level"])))
+  .map(|k| (k, wave.voice(sounds[k], ["len", "level", "line"])))
   .to_object()
 
 export {voices, sounds}

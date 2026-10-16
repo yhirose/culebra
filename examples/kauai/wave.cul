@@ -77,15 +77,14 @@ fn wav(samples) {
     data
 }
 
-# A phrase as the lines that move through it: the notes struck together
-# from the lowest, the k-th of each onset in line k. One line is the phrase.
+# A phrase as the lines that move through it, from the lowest, as Kauai
+# numbers each note's `line`. One line is the phrase.
 fn lines(notes) {
-  let onsets = notes.group_by(|n| n.at).values().collect()
-  let width = onsets.map(|o| o.size()).max()
-  iota(width).map(|k| onsets.filter(|o| o.size() > k).map(|o| o[k]))
+  let by = notes.group_by(|n| n.line)
+  iota(notes.map(|n| n.line).max() + 1).filter(|k| by.has(k)).map(|k| by[k])
 }
 
-# `play(line)` for each line of `notes`, each line `spread` seconds after the
+# `play(line)` for each line of `notes` (which hear `line`), each line `spread` seconds after the
 # one below it (a strum, from the lowest string), added together: a chord's
 # tones each on a string or a bow of their own. A line starts from its first
 # note, its `at` and `next` counted from there.
@@ -127,7 +126,7 @@ fn swell(n, since) {
 }
 
 # All a phrase instrument can hear of a note.
-let HEARS = ["len", "level", "marks", "next"]
+let HEARS = ["len", "level", "line", "marks", "next"]
 
 # `voices:`'s instrument for `play(notes, params)`, which answers a phrase's
 # samples: it hears what `hears` names of each note, and sounds in the room.

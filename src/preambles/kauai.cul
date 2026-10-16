@@ -778,7 +778,7 @@ let _kauai_module = fn () {
           fail(line, "the note is too short for its grace notes or its arpeggio") if struck.any(|p| late(p) >= it.length)
           for k, nm in it.graces.enumerate() {
             let g = melody_note(nm, low, line) + shift
-            state.notes.push({pitch: g, start: pos + k * GRACE, mut len: GRACE, line: line, shift: 0, grace: true, span: state.span, legato: nil, phrase: state.slur ? state.phrase : nil, marks: []})
+            state.notes.push({pitch: g, start: pos + k * GRACE, mut len: GRACE, line: line, shift: 0, grace: true, span: state.span, legato: nil, phrase: state.slur ? state.phrase : nil, marks: [], rank: 0})
           }
           # The notes a slur joins are a phrase, and so are notes struck together.
           let phrase = cond {
@@ -788,6 +788,18 @@ let _kauai_module = fn () {
           }
           # What is written on the struck notes, for an instrument that hears it.
           let marks = [...it.marks, ...(it.arpeggio ? ["arpeggio"] : [])]
+          # Each struck note's line, from the lowest: a note a tie holds keeps
+          # its own, and the struck ones take the others in turn.
+          let taken = state.ties.keys().map(|tp| state.notes[state.ties[tp]].rank)
+          mut ranks = {}
+          mut free = 0
+          for p in struck {
+            while taken.contains(free) {
+              free += 1
+            }
+            ranks[p] = free
+            free += 1
+          }
           # Whether the struck notes are joined to the next, which the slur's
           # end can change.
           let legato = {mut on: state.slur}
@@ -797,7 +809,7 @@ let _kauai_module = fn () {
             if state.ties.has(p) {
               state.notes[state.ties[p]].len += it.length
             } else {
-              state.notes.push({pitch: p, start: pos + late(p), mut len: it.length - late(p), line: line, shift: late(p), grace: false, span: state.span, legato: legato, phrase: phrase, marks: marks})
+              state.notes.push({pitch: p, start: pos + late(p), mut len: it.length - late(p), line: line, shift: late(p), grace: false, span: state.span, legato: legato, phrase: phrase, marks: marks, rank: ranks[p]})
             }
             let idx = state.ties.has(p) ? state.ties[p] : state.notes.size() - 1
             ties_now[p] = idx if it.tie || it.ties[k]
@@ -2085,7 +2097,8 @@ let _kauai_module = fn () {
     # Voice `v`'s note, heard from `t0` to `t1` seconds, as `how` says: its
     # dynamic where it starts and where it ends (`level`, `level_end`), the
     # `marks` written on it, whether a slur joins it to the next (`legato`),
-    # and its `phrase` (the notes it sounds with; nil for none).
+    # its `phrase` (the notes it sounds with; nil for none) and its `rank`
+    # there, the line it moves in from the lowest.
     let note = fn (v, pitch, t0, t1, how) {
       let marks = how.marks
       let level = how.level
@@ -2101,7 +2114,7 @@ let _kauai_module = fn () {
         out.push({
           at: t0, len: len, by: v.name, pitch: pitch, mut vol: v.vol * loud / MF,
           level: loud / MF, level_end: how.level_end / MF, sounded: sounded,
-          phrase: how.phrase, marks: marks,
+          phrase: how.phrase, marks: marks, rank: how.rank,
         })
         return nil
       }
@@ -2127,6 +2140,7 @@ let _kauai_module = fn () {
         marks: nt.marks,
         legato: nt.legato != nil && nt.legato.on,
         phrase: nt.phrase == nil ? nil : "{v.name} {nt.phrase} {shift}",
+        rank: nt.rank,
       })
     }
     let melody = x.melody
@@ -2160,8 +2174,9 @@ let _kauai_module = fn () {
           legato: false,
           phrase: n.pitches.size() > 1 ? "{row.voice.name} chord {chords}" : nil,
         }
+        let low_first = n.pitches.sorted()
         for tone_pitch in n.pitches {
-          note(row.voice, tone_pitch, from, until, how)
+          note(row.voice, tone_pitch, from, until, {...how, rank: low_first.index_of(tone_pitch)})
         }
       }
     }
@@ -2184,9 +2199,9 @@ let _kauai_module = fn () {
   }
 
   # What an instrument may hear of a note: a voice its length, its dynamic,
-  # its marks and when the voice plays next; a drum its dynamic and when it,
-  # or its choke group, hits next.
-  let VOICE_HEARS = ["len", "level", "marks", "next"]
+  # its marks, its line in the phrase and when the voice plays next; a drum
+  # its dynamic and when it, or its choke group, hits next.
+  let VOICE_HEARS = ["len", "level", "line", "marks", "next"]
   let DRUM_HEARS = ["level", "next"]
 
   # How host sound `host` is made, from `kind.table` (the `voices:` or
@@ -2288,6 +2303,7 @@ let _kauai_module = fn () {
         at: ms(e.at - head.at),
         ...(hears.contains("len") ? {len: ms(e.sounded)} : {}),
         ...(hears.contains("level") ? {level: hundredths(e.level), level_end: hundredths(e.level_end)} : {}),
+        ...(hears.contains("line") ? {line: e.rank} : {}),
         ...(hears.contains("marks") ? {marks: e.marks} : {}),
         ...(hears.contains("next") ? {next: after} : {}),
       }))
