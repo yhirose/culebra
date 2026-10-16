@@ -2854,6 +2854,12 @@ for ev in rx.drain(16) { world.apply(ev) }   # at most 16 this frame
 The rest stays queued for the next call. `max` must be a `Long` (a count) or
 `nil` for no limit; a negative value raises `ValueError`.
 
+Taken in one step, a batch also goes as one. A value can fail to rebuild on
+the receiving side (a `Set` member whose `hash()` throws there, its fields
+changed since it was added): `recv()`, `try_recv()` and `for v in rx` throw
+that error with the value taken, and `drain()` throws it with the rest of its
+batch taken too.
+
 Neither method is available on a `Channel.fan_in` receiver yet; both are only
 on a plain `rx`.
 

@@ -189,6 +189,74 @@ assert_eq(scursor.next(), 'after')
 assert_eq(scursor.has_next(), false)
 srx.drop()
 
+# --- and what was rebuilt of it before the throw goes, whichever way it was
+#     received ---
+let rebuild_fails = fn (receive) {
+  let (tx, rx) = Channel.new(1)
+  let round = fn () {
+    tx.send([[1, 2], hset])  # the Arrays are rebuilt before the Set fails
+    assert_throws('HashError', fn () { receive(rx) })
+  }
+  round()
+  let before = GC.stat().rc_objects
+  for _ in 0..3 {
+    round()
+  }
+  let grew = GC.stat().rc_objects - before
+  tx.drop()
+  rx.drop()
+  grew
+}
+assert_eq(rebuild_fails(|rx| rx.recv()), 0)
+assert_eq(rebuild_fails(|rx| rx.try_recv()), 0)
+assert_eq(rebuild_fails(|rx| rx.drain()), 0)
+assert_eq(rebuild_fails(fn (rx) {
+  for v in rx {
+    return v
+  }
+}), 0)
+
+# --- a drain's batch, taken in one step, goes as one ---
+let (btx, brx) = Channel.new(3)
+btx.send('before')
+btx.send(hset)
+btx.send('after')
+assert_throws('HashError', fn () { brx.drain() })
+assert_eq("{brx.try_recv()}", 'ChannelResult.Empty')
+btx.drop()
+brx.drop()
+
+# --- a value that is in a message twice arrives as one value, with a
+#     reference for each place it is in ---
+let twice = |x| x + 1
+let (wtx, wrx) = Channel.new(1)
+wtx.send([twice, twice])
+let pair = wrx.recv()
+assert_eq(GC.refcount(pair[0]), GC.refcount(twice) + 1)
+
+# --- even when the first place it was in is gone before the second is
+#     rebuilt: a Set member that comes out equal to an earlier one here ---
+class SameByX {
+  new(.x, .f) {}
+  hash() {
+    self.x
+  }
+  eq(o) {
+    self.x == o.x
+  }
+}
+let plus100 = |y| y + 100
+let kept = SameByX(1, nil)
+let dropped = SameByX(2, plus100)  # plus100 is rebuilt here first
+let colliding = Set(kept, dropped)
+kept.x = 2
+wtx.send([colliding, plus100])
+let after = wrx.recv()
+assert_eq(after[0].size(), 1)
+assert_eq(after[1](1), 101)
+wtx.drop()
+wrx.drop()
+
 # --- what an isolate hands back keeps its ends for as long as the isolate:
 #     every join rebuilds them, and the isolate's going lets them go ---
 let (rtx, rrx) = Channel.new(4)

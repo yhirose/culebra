@@ -23,7 +23,13 @@ for f in include/jit/jit.h include/stdlib/bindings.h include/conc/sendable.h; do
   }
 done
 
-ratchet() { # name actual ceiling
+# What the OK line prints: each ratchet's own count and ceiling, so a ceiling
+# moved above cannot be shown stale there.
+ok=()
+ratchet() { # label name actual ceiling
+  local label=$1
+  shift
+  ok+=("$label=$2/$3")
   if ! [[ $2 =~ ^[0-9]+$ ]]; then
     echo "rc-discipline FAIL: $1 produced no count ('$2') — the pattern or" >&2
     echo "  the path it scans moved; this ratchet is measuring nothing." >&2
@@ -73,7 +79,7 @@ ret=$(grep "emit_value_retain(" include/jit/jit.h \
 # each arm needs its own retain-for-merge-result / release-of-the-discarded
 # short-circuit-or-nil-hit value, mirroring the bare-RC style the adjacent
 # compound/plain arms already use for the same receiver kinds.
-ratchet "bare emit_value_release sites (jit.h)" "$rel" 55
+ratchet release "bare emit_value_release sites (jit.h)" "$rel" 55
 # 29 includes the ctor-overload shared-meta multi-capture retain in
 # compile_class_decl: one class meta fans out into N `new` overload closures,
 # each capture needing its own +1 (a genuine fan-out, not a throw-safety
@@ -85,7 +91,7 @@ ratchet "bare emit_value_release sites (jit.h)" "$rel" 55
 # expression result) and retain the Object-INDEX key across the
 # object_get_for_coalesce / object_set_any pair, matching the existing
 # compound branch's identical retain-before-transient-consume pattern.
-ratchet "bare emit_value_retain sites (jit.h)" "$ret" 34
+ratchet retain "bare emit_value_retain sites (jit.h)" "$ret" 34
 # The borrow -> +1 seam funnels its retain through one call, so its call sites
 # are invisible to the grep above. Count them here on their own ceiling —
 # otherwise the seam becomes a way to add hand-placed retains unnoticed.
@@ -95,14 +101,14 @@ ratchet "bare emit_value_retain sites (jit.h)" "$ret" 34
 # owned crossing through the seam, not a bare retain bypassing it.
 brw=$(grep "emit_borrow_to_owned(" include/jit/jit.h \
       | grep -v "llvm::Value\* emit_borrow_to_owned" | grep -vc "^[[:space:]]*//")
-ratchet "borrow->owned conversions (jit.h)" "$brw" 5
+ratchet borrow "borrow->owned conversions (jit.h)" "$brw" 5
 
 # Native-method endpoints consume self via RAII (JitMethodSelf at entry), not
 # a tail release a throw would skip. sendable_rt.h is fully converted; keep
 # it at zero.
 tail_self=$(grep -c "culebra_runtime_value_release(self\.tag, self\.data)" \
             include/conc/sendable.h || true)
-ratchet "tail self-releases (sendable_rt.h)" "$tail_self" 0
+ratchet tail-self "tail self-releases (sendable_rt.h)" "$tail_self" 0
 
 # Helper-side (runtime C++) bare RC calls per file (GAP3-ENFORCE ratchet). A
 # helper that owns a value across a may-throw region uses the RAII forms
@@ -146,7 +152,7 @@ count_bare() { # file
 # that holds every value in JitOwnedVal, so the slab path's hand-placed
 # releases and its splat retain are gone, and the kwarg hook no longer takes
 # the receiver (a throw out of the resolver used to strand it).
-ratchet "bare RC calls (stdlib_rt.h)" "$(count_bare include/stdlib/bindings.h)" 82
+ratchet stdlib "bare RC calls (stdlib_rt.h)" "$(count_bare include/stdlib/bindings.h)" 82
 # 17 -> 12 (2026-08-01): the isolate/parallel child entries hold the rebuilt
 # closure, its args and the call result in JitOwnedVal, so their tail releases
 # are gone — and with them the hang a throwing child caused by never dropping a
@@ -154,7 +160,10 @@ ratchet "bare RC calls (stdlib_rt.h)" "$(count_bare include/stdlib/bindings.h)" 
 # 12 -> 11 (2026-08-08): the Shared view's iterator keeps its state in closure
 # captures, so its `iter` self-returning reader (and that reader's hand-placed
 # retain) is gone.
-ratchet "bare RC calls (sendable_rt.h)" "$(count_bare include/conc/sendable.h)" 11
+# 11 -> 7 (2026-10-16): jit_deserialize returns its value owned, so the
+# instance's class link no longer releases a rebuilt meta by hand (the count
+# had already come down to 8 without the ceiling following).
+ratchet sendable "bare RC calls (sendable_rt.h)" "$(count_bare include/conc/sendable.h)" 7
 
 # Runtime-side borrow -> +1 seam (JitOwnedVal::from_borrowed). Its retain lives
 # inside the ownership layer, so it is invisible to count_bare above — the same
@@ -179,15 +188,21 @@ ratchet "bare RC calls (sendable_rt.h)" "$(count_bare include/conc/sendable.h)" 
 # (_xml_match_owned, one site for all three).
 # 6 -> 7 (2026-09-29, reviewed): String.unpack(..., into: arr) fills the
 # borrowed `into` in place and returns that same Array, the Sys.env shape.
+# 7 -> 9 (2026-10-16, reviewed): jit_deserialize's memo of the closures and
+# class metas a message rebuilt (JitDeCtx). `recall` gives a backref a
+# reference of its own (it handed the memo's pointer back bare, so a closure
+# sent twice in one message had one count for two places), and `remember`
+# holds one until the message is rebuilt (the node that carried it can go
+# first, a Set member that comes out equal to an earlier one).
 rbrw=$(grep -rE --include='*.h' "JitOwnedVal::from_borrowed\(" include/ \
        | grep -vcE "^[^:]*:[[:space:]]*//" || true)
-ratchet "runtime borrow->owned seam sites" "$rbrw" 7
+ratchet rt-borrow "runtime borrow->owned seam sites" "$rbrw" 9
 
 # Codegen-side hand-placed throw guards: the automatic unwind-temp window
 # is the default cleaner for a codegen-owned +1, so the hand-placed
 # ThrowGuard population should only shrink as sites migrate onto it.
 tg=$(grep -cE "ThrowGuard [a-z_]+\(this" include/jit/jit.h)
-ratchet "ThrowGuard sites (jit.h)" "$tg" 21
+ratchet throwguard "ThrowGuard sites (jit.h)" "$tg" 21
 
 # Raw-across-BB ENFORCE. consume() is block-pinned (using the raw
 # outside its pin block aborts codegen), so the only ways a bare +1 can
@@ -213,10 +228,10 @@ ratchet "ThrowGuard sites (jit.h)" "$tg" 21
 # each with a per-site rationale comment).
 cu=$(grep "consume_unchecked()" include/jit/jit.h \
      | grep -v "llvm::Value\* consume_unchecked" | grep -vc "^[[:space:]]*//")
-ratchet "consume_unchecked sites (jit.h)" "$cu" 14
+ratchet unchecked "consume_unchecked sites (jit.h)" "$cu" 14
 vphi=$(grep -v "jit_->builder_" include/jit/jit.h | grep -c "CreatePHI(valueType_" \
        || true)
-ratchet "hand-built %Value phis (jit.h)" "$vphi" 0
+ratchet vphi "hand-built %Value phis (jit.h)" "$vphi" 0
 
 # compile_* raw-return seam (closed 2026-07-12): every compile_* helper
 # and extension compile hook returns Owned — a raw llvm::Value* return type on
@@ -227,14 +242,10 @@ ratchet "hand-built %Value phis (jit.h)" "$vphi" 0
 rawc=$({ grep -cE "llvm::Value\* (JIT::|JitExtension::)?(try_)?compile_" \
          include/jit/jit.h include/stdlib/bindings.h || true; } \
        | awk -F: '{s+=$2} END {print s}')
-ratchet "raw-returning compile_* helpers (jit.h + stdlib_rt.h)" "$rawc" 0
+ratchet rawcompile "raw-returning compile_* helpers (jit.h + stdlib_rt.h)" "$rawc" 0
 tassign=$(grep -cE '(llvm::Value|auto) ?\* ?[A-Za-z_]+ ?= ?[^;]*\.consume\(\);' \
           include/jit/jit.h || true)
-ratchet "typed consume assignments (jit.h)" "$tassign" 0
+ratchet typed-consume "typed consume assignments (jit.h)" "$tassign" 0
 
 if (( fail )); then exit 1; fi
-echo "rc-discipline OK (release=$rel/55 retain=$ret/34 borrow=$brw/5" \
-     "rt-borrow=$rbrw/3 tail-self=$tail_self/0" \
-     "stdlib=$(count_bare include/stdlib/bindings.h)/82" \
-     "sendable=$(count_bare include/conc/sendable.h)/11 throwguard=$tg/21" \
-     "unchecked=$cu/14 vphi=$vphi/0 typed-consume=$tassign/0 rawcompile=$rawc/0)"
+echo "rc-discipline OK (${ok[*]})"

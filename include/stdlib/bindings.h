@@ -3802,8 +3802,7 @@ inline void _jit_net_listener_serve(JitValue* __ret, JitClosure*, int8_t self_ta
   culebra::net::ServeHooks hooks;
   hooks.setup = [snode, defaults = culebra::jit_snapshot_trait_defaults()]() {
     culebra::jit_install_trait_defaults(defaults);
-    culebra::JitDeCtx dc;
-    JitValue h = culebra::jit_deserialize(*snode, dc);  // +1
+    JitValue h = culebra::jit_deserialize(*snode).consume();
     // Held only in this C++ slot → pin so the GC backstop won't sweep it.
     _gc_heap().pin(reinterpret_cast<void*>(h.data));
     g_jit_net_w_handler.emplace(h);
@@ -6780,8 +6779,7 @@ inline JitValue _jit_http_server_do_serve(int64_t id, int64_t workers,
       g_jit_srv_w_handlers.clear();
       g_jit_srv_w_handlers.reserve(snodes->size());
       for (const auto& sn : *snodes) {
-        JitDeCtx dc;
-        JitValue h = jit_deserialize(sn, dc);  // +1
+        JitValue h = jit_deserialize(sn).consume();
         // Held only in this C++ vector → pin so the GC backstop won't sweep it.
         _gc_heap().pin(reinterpret_cast<void*>(h.data));
         g_jit_srv_w_handlers.push_back(h);

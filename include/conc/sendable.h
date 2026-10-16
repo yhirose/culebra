@@ -139,9 +139,30 @@ struct JitChanIter final : JitHandle {
   bool same(const JitHandle&) const override { return false; }
 };
 
+// What one message's rebuild remembers. A closure or class meta can be in a
+// message more than once: its first node rebuilds it, and each later one is a
+// backref to it (the sender numbers both kinds from one counter).
 struct JitDeCtx {
-  std::map<int, JitValue> closures;        // ref id -> rebuilt closure
-  std::map<int, JitObject*> protos;        // ref id -> rebuilt class meta
+  std::map<int, JitValue> rebuilt;  // ref id -> the value
+  // A reference on each until the message is rebuilt: the node that carried
+  // one can go first (a Set member that comes out equal to an earlier one
+  // here) while a later backref still names it. A heap Array, which a
+  // collection reaches from this frame, as it does not a map's nodes.
+  JitOwnedVal held{TAG_NIL, 0};
+
+  void remember(int id, JitValue v) {
+    if (held.borrow().tag == TAG_NIL)
+      held = JitOwnedVal(TAG_ARRAY,
+                         reinterpret_cast<int64_t>(culebra_runtime_array_new()));
+    JitValue ref = JitOwnedVal::from_borrowed(v).consume();
+    culebra_runtime_array_push(reinterpret_cast<JitArray*>(held.borrow().data),
+                               ref.tag, ref.data);
+    rebuilt.emplace(id, v);
+  }
+  // A reference of its own, like any other node's.
+  JitOwnedVal recall(int id) const {
+    return JitOwnedVal::from_borrowed(rebuilt.at(id));
+  }
 };
 
 // The node of a value that holds no other value; false for one that does.
@@ -473,96 +494,88 @@ inline const culebra::PackableField* _jit_field_of_type(
   return nullptr;
 }
 
-inline JitValue jit_deserialize(const sendable::SendNode& n, JitDeCtx& ctx) {
+// The value `n` describes, rebuilt on this Runtime's heap and owned from the
+// moment it exists. A container is owned before its members are rebuilt, and
+// each member goes into it with its +1 (the runtime's adds consume it on every
+// exit), so a rebuild that throws part-way (a Set member's hash(), run again
+// on this side) lets go of everything it built.
+inline JitOwnedVal jit_deserialize(const sendable::SendNode& n, JitDeCtx& ctx) {
   using K = sendable::SendNode::K;
+  if (n.is_backref) return ctx.recall(n.ref_id);
+  auto fill = [&](auto* c, int8_t tag, auto add) {
+    JitOwnedVal out(tag, reinterpret_cast<int64_t>(c));
+    for (const auto& e : n.elems) add(c, jit_deserialize(e, ctx).consume());
+    return out;
+  };
+  auto push = [](JitArray* a, JitValue v) {
+    culebra_runtime_array_push(a, v.tag, v.data);
+  };
   switch (n.kind) {
-    case K::Nil:   return {TAG_NIL, 0};
-    case K::Unbound: return {TAG_NO_SELF, n.i};
-    case K::Bool:  return {TAG_BOOL, n.b ? 1 : 0};
-    case K::Long:  return {TAG_LONG, n.i};
-    case K::Float: return jit_float(n.d);
+    case K::Nil:   return JitOwnedVal(TAG_NIL, 0);
+    case K::Unbound: return JitOwnedVal(TAG_NO_SELF, n.i);
+    case K::Bool:  return JitOwnedVal(TAG_BOOL, n.b ? 1 : 0);
+    case K::Long:  return JitOwnedVal(TAG_LONG, n.i);
+    case K::Float: return JitOwnedVal(jit_float(n.d));
     case K::Str:
-      return {TAG_STRING, reinterpret_cast<int64_t>(_culebra_heap_str(n.s))};
-    case K::Array: {
-      auto* a = culebra_runtime_array_new();
-      for (const auto& e : n.elems) {
-        JitValue ev = jit_deserialize(e, ctx);
-        culebra_runtime_array_push(a, ev.tag, ev.data);
-      }
-      return {TAG_ARRAY, reinterpret_cast<int64_t>(a)};
-    }
-    case K::Tuple: {
-      auto* a = culebra_runtime_tuple_new();
-      for (const auto& e : n.elems) {
-        JitValue ev = jit_deserialize(e, ctx);
-        culebra_runtime_array_push(a, ev.tag, ev.data);
-      }
-      return {TAG_TUPLE, reinterpret_cast<int64_t>(a)};
-    }
-    case K::Set: {
-      auto* s = culebra_runtime_set_new();
-      for (const auto& e : n.elems) {
-        JitValue ev = jit_deserialize(e, ctx);
-        culebra_runtime_set_add(s, ev.tag, ev.data);
-      }
-      return {TAG_SET, reinterpret_cast<int64_t>(s)};
-    }
+      return JitOwnedVal(TAG_STRING,
+                         reinterpret_cast<int64_t>(_culebra_heap_str(n.s)));
+    case K::Array: return fill(culebra_runtime_array_new(), TAG_ARRAY, push);
+    case K::Tuple: return fill(culebra_runtime_tuple_new(), TAG_TUPLE, push);
+    case K::Set:
+      return fill(culebra_runtime_set_new(), TAG_SET, [](JitSet* s, JitValue v) {
+        culebra_runtime_set_add(s, v.tag, v.data);
+      });
     case K::Object: {
-      // A backref to a class meta already rebuilt in this message. The
-      // caller (the instance's proto link below) takes its own retain.
-      if (n.is_backref)
-        return {TAG_OBJECT,
-                reinterpret_cast<int64_t>(ctx.protos.at(n.ref_id))};
       auto* o = culebra_runtime_object_new();
+      JitOwnedVal out(TAG_OBJECT, reinterpret_cast<int64_t>(o));
       o->is_error = n.is_error;
       // Register a shared class meta BEFORE filling entries so a backref
       // inside its own subtree (a method capturing another instance of
-      // the same class) resolves — mirrors the closure memo above.
-      if (n.ref_id >= 0) ctx.protos.emplace(n.ref_id, o);
+      // the same class) resolves — mirrors the closure memo below.
+      if (n.ref_id >= 0) ctx.remember(n.ref_id, out.borrow());
       for (size_t k = 0; k < n.entries.size(); k++) {
-        JitValue val = jit_deserialize(n.entries[k].second, ctx);
+        JitOwnedVal val = jit_deserialize(n.entries[k].second, ctx);
         bool mut = k < n.entry_mut.size() ? n.entry_mut[k] : true;
         if (n.entries[k].first.kind == sendable::SendNode::K::Str) {
           // Through the chokepoint, not set_or_append: mirrors the interp's
           // `initialize` (well-known contract check + owned `drop`
           // registration for a plain object's own slot).
+          JitValue v = val.consume();
           culebra_runtime_object_set(o, n.entries[k].first.s.c_str(), mut,
-                                     val.tag, val.data, 0, 0,
-                                     /*is_init=*/true);
+                                     v.tag, v.data, 0, 0, /*is_init=*/true);
         } else {
-          // Non-string key: rebuild the key value and store via the
-          // value-key path (consumes both +1s).
-          JitValue key = jit_deserialize(n.entries[k].first, ctx);
-          culebra_runtime_object_set_any(o, key.tag, key.data, mut, val.tag,
-                                         val.data, 0, 0, /*is_init=*/true);
+          // Non-string key: rebuilt after its value, as it was sent, and
+          // stored via the value-key path (consumes both +1s).
+          JitValue kv = jit_deserialize(n.entries[k].first, ctx).consume();
+          JitValue v = val.consume();
+          culebra_runtime_object_set_any(o, kv.tag, kv.data, mut, v.tag,
+                                         v.data, 0, 0, /*is_init=*/true);
         }
       }
       if (!n.s.empty()) _jit_restore_class_meta(o, n.s, n.dir_kind);
-      // Class instance: elems[0] = the rebuilt class meta.
+      // Class instance: elems[0] = the rebuilt class meta, which the link
+      // takes a reference of its own on.
       if (!n.elems.empty()) {
-        JitValue proto = jit_deserialize(n.elems[0], ctx);
-        _jit_link_instance(o, reinterpret_cast<JitObject*>(proto.data), n.b);
-        // Drop the +1 jit_deserialize handed back when this was the
-        // meta's first (full) rebuild; a backref arrives borrowed.
-        if (!n.elems[0].is_backref)
-          _culebra_value_release_impl(proto.tag, proto.data);
+        JitOwnedVal proto = jit_deserialize(n.elems[0], ctx);
+        _jit_link_instance(o, reinterpret_cast<JitObject*>(proto.borrow().data),
+                           n.b);
       }
-      return {TAG_OBJECT, reinterpret_cast<int64_t>(o)};
+      return out;
     }
     case K::Closure: {
-      if (n.is_backref) return ctx.closures.at(n.ref_id);
       // Multifn dispatcher: rebuild the thunk closure and re-register its name
       // + overload methods in this thread's tables (recursion resolves because
       // the dispatcher is memoized before its method bodies are rebuilt).
       if (!n.mf_name.empty()) {
         auto* c = _jit_multifn_new_dispatcher(n.mf_name,
                                               static_cast<size_t>(n.i));
-        JitValue cv{TAG_FUNC, reinterpret_cast<int64_t>(c)};
-        ctx.closures.emplace(n.ref_id, cv);
+        JitOwnedVal out(TAG_FUNC, reinterpret_cast<int64_t>(c));
+        ctx.remember(n.ref_id, out.borrow());
         auto& methods = _jit_multimethods()[n.mf_name];
         for (size_t i = 0; i < n.elems.size(); i++) {
-          JitValue body = jit_deserialize(n.elems[i], ctx);
-          auto* body_cls = reinterpret_cast<JitClosure*>(body.data);
+          // The table holds the body's +1.
+          auto* body_cls = reinterpret_cast<JitClosure*>(
+              jit_deserialize(n.elems[i], ctx).consume().data);
           methods.push_back({n.mf_param_types[i],
                              n.mf_param_names[i],
                              body_cls,
@@ -573,45 +586,65 @@ inline JitValue jit_deserialize(const sendable::SendNode& n, JitDeCtx& ctx) {
           _jit_multifn_uplink_set(body_cls, c);
         }
         _jit_multifn_refresh_mono(c);
-        return cv;
+        return out;
       }
       auto* c = culebra_runtime_closure_new(
           n.jit_fn, n.elems.size(), static_cast<size_t>(n.i), n.jit_flags,
           reinterpret_cast<const JitParamMeta*>(n.jit_meta));
-      JitValue cv{TAG_FUNC, reinterpret_cast<int64_t>(c)};
-      ctx.closures.emplace(n.ref_id, cv);
+      JitOwnedVal out(TAG_FUNC, reinterpret_cast<int64_t>(c));
+      ctx.remember(n.ref_id, out.borrow());
       for (size_t i = 0; i < n.elems.size(); i++) {
-        JitValue capv = jit_deserialize(n.elems[i], ctx);
+        JitValue capv = jit_deserialize(n.elems[i], ctx).consume();
         c->captures[i] = culebra_runtime_cell_new(capv.tag, capv.data);
       }
-      return cv;
+      return out;
     }
     case K::Channel: {
       auto* core = chan_core(n.i);
       int role = n.b ? 1 : 0;
       if (core) chan_bump(core, role);  // this rebuilt endpoint's own count
-      return _jit_make_channel_endpoint(core, role);
+      return JitOwnedVal(_jit_make_channel_endpoint(core, role));
     }
     case K::SharedBuffer:  // the rebuilt handle's own ref
-      return _jit_make_shared_buffer_handle(
-          std::static_pointer_cast<culebra::SharedBufferCore>(n.held));
+      return JitOwnedVal(_jit_make_shared_buffer_handle(
+          std::static_pointer_cast<culebra::SharedBufferCore>(n.held)));
     case K::BufView: {
-      JitOwnedVal buf(jit_deserialize(n.elems[0], ctx));
-      auto* b = reinterpret_cast<JitObject*>(buf.v.data);
+      JitOwnedVal buf = jit_deserialize(n.elems[0], ctx);
+      auto* b = reinterpret_cast<JitObject*>(buf.borrow().data);
       // The field, in the layout the rebuilt buffer keeps: any of that type
       // lays out the same. A dropped buffer keeps none, and its view reads as
       // dropped whatever it is.
-      return _jit_make_buf_view(new JitBufView(
-          b, n.i, _jit_field_of_type(_jit_shared_buf(b)->layout, n.s)));
+      return JitOwnedVal(_jit_make_buf_view(new JitBufView(
+          b, n.i, _jit_field_of_type(_jit_shared_buf(b)->layout, n.s))));
     }
     case K::SharedVal: {
       // The receiver takes its own count; the node's goes with the node. A
       // tree that is gone makes a view that reads as a dropped one.
-      return _jit_shared_val_root(culebra::shared_val_acquire(n.i), n.i,
-                                  n.ref_id);
+      return JitOwnedVal(_jit_shared_val_root(culebra::shared_val_acquire(n.i),
+                                              n.i, n.ref_id));
     }
   }
-  return {TAG_NIL, 0};
+  return JitOwnedVal(TAG_NIL, 0);
+}
+
+// A message rebuilt by itself: its backrefs name only what it carries.
+inline JitOwnedVal jit_deserialize(const sendable::SendNode& n) {
+  JitDeCtx ctx;
+  return jit_deserialize(n, ctx);
+}
+
+// Messages rebuilt each by itself into one Array; a rebuild that throws lets
+// go of the Array and what it holds.
+template <class Nodes>
+inline JitOwnedVal jit_deserialize_each(const Nodes& nodes) {
+  auto* out =
+      culebra_runtime_array_new_reserved(static_cast<int64_t>(nodes.size()));
+  JitOwnedVal held(TAG_ARRAY, reinterpret_cast<int64_t>(out));
+  for (const auto& n : nodes) {
+    JitValue v = jit_deserialize(n).consume();  // the array takes the +1
+    culebra_runtime_array_push(out, v.tag, v.data);
+  }
+  return held;
 }
 
 // --- Trait defaults across Runtimes ------------------------------------------
@@ -681,8 +714,8 @@ inline JitClosure* jit_install_shipped_default(JitObject* obj, const char* key,
   }
   if (pick == t.shipped->size()) return nullptr;
   const auto& d = (*t.shipped)[pick];
-  JitDeCtx dc;
-  auto* cls = reinterpret_cast<JitClosure*>(jit_deserialize(d.body, dc).data);
+  auto* cls =
+      reinterpret_cast<JitClosure*>(jit_deserialize(d.body).consume().data);
   t.shipped_open[pick] = false;
   culebra_runtime_register_trait_default(d.trait.c_str(), d.method.c_str(),
                                          cls);
@@ -721,7 +754,7 @@ inline void run_isolate_child_jit(IsolateCore& core,
     // via heap teardown). Held in JitOwnedVal because that has to happen on the
     // unwind path too: a body that throws past here with a captured `tx` would
     // otherwise leave the channel open forever and hang every receiver.
-    JitOwnedVal fn(jit_deserialize(sclosure, dc));
+    JitOwnedVal fn = jit_deserialize(sclosure, dc);
     auto* cls = reinterpret_cast<JitClosure*>(fn.borrow().data);
     // The rebuilt arguments wait in a heap Array this frame reaches, not in a
     // std::vector: rebuilding the next one allocates, and a collection there
@@ -733,13 +766,15 @@ inline void run_isolate_child_jit(IsolateCore& core,
     JitOwnedVal argv_guard(
         JitValue{TAG_ARRAY, reinterpret_cast<int64_t>(argv)});
     for (const auto& sa : sargs) {
-      JitValue a = jit_deserialize(sa, dc);
+      JitValue a = jit_deserialize(sa, dc).consume();
       culebra_runtime_array_push(argv, a.tag, a.data);  // absorbs the +1
     }
     // Rebuilt endpoints hold their own refs now, so the message goes before
-    // the body runs: a channel it carried closes when the body's end does.
+    // the body runs, and the rebuild's memo with it: a channel it carried
+    // closes when the body's end does.
     sclosure = {};
     sargs.clear();
+    dc = {};
     // Each arm consumes exactly what it passes: the invoke takes the args over,
     // and the callee frame releases the params on both its exit paths. So the
     // Array gives its elements up first, and is only their buffer from here.
@@ -822,8 +857,7 @@ inline void _jit_isolate_settle(const std::shared_ptr<IsolateCore>& core) {
     // A raw user `throw <value>` from the child. Rebuild it on the parent heap
     // and re-raise in the JIT's throw form, so a compiled `catch` binds the
     // value (symmetric with the interp `throw chan_take(*core.thrown)`).
-    JitDeCtx tdc;
-    JitValue tv = jit_deserialize(*core->thrown, tdc);
+    JitValue tv = jit_deserialize(*core->thrown).consume();
     // 0:0 — the throw that produced this value ran on the isolate's thread,
     // so no position in this program's source applies to the re-raise.
     culebra_runtime_throw(tv.tag, tv.data, 0, 0);  // [[noreturn]]
@@ -832,8 +866,7 @@ inline void _jit_isolate_settle(const std::shared_ptr<IsolateCore>& core) {
 
 inline JitValue _jit_isolate_extract(const std::shared_ptr<IsolateCore>& core) {
   _jit_isolate_settle(core);
-  JitDeCtx dc;
-  return jit_deserialize(core->result, dc);  // on the parent heap
+  return jit_deserialize(core->result).consume();  // on the parent heap
 }
 
 // The handle a method was called on (see _jit_self_handle).
@@ -997,10 +1030,7 @@ inline void _jit_chan_recv(JitValue* __ret, JitClosure*, int8_t self_tag, int64_
   JitValue ret{TAG_NIL, 0};
   if (!end->core) { *__ret = ret; return; }
   auto node = chan_pop_blocking(*end->core);
-  if (node) {
-    JitDeCtx dc;
-    ret = jit_deserialize(*node, dc);
-  }
+  if (node) ret = jit_deserialize(*node).consume();
   { *__ret = ret; return; }
 }
 
@@ -1034,8 +1064,7 @@ inline void _jit_chan_try_recv(JitValue* __ret, JitClosure*, int8_t self_tag, in
                      : ChanTryPopResult{ChanTryPopStatus::Closed, std::nullopt};
   JitValue ret;
   if (r.status == ChanTryPopStatus::Value) {
-    JitDeCtx dc;
-    JitValue v = jit_deserialize(*r.node, dc);  // build_variant takes the +1
+    JitValue v = jit_deserialize(*r.node).consume();  // build_variant takes it
     ret = _jit_channel_result(r.status, &v);
   } else {
     ret = _jit_channel_result(r.status, nullptr);
@@ -1058,14 +1087,9 @@ inline void _jit_chan_drain(JitValue* __ret, JitClosure*, int8_t self_tag, int64
   });
   auto taken = end->core ? chan_take_queued(*end->core, max)
                          : std::deque<sendable::SendNode>{};
-  auto* out =
-      culebra_runtime_array_new_reserved(static_cast<int64_t>(taken.size()));
-  for (const auto& node : taken) {
-    JitDeCtx dc;
-    JitValue v = jit_deserialize(node, dc);  // the array takes the +1
-    culebra_runtime_array_push(out, v.tag, v.data);
-  }
-  { *__ret = {TAG_ARRAY, reinterpret_cast<int64_t>(out)}; return; }
+  // Taken in one step, the batch goes as one: a value that fails to rebuild
+  // fails the drain, and the values taken with it go with it.
+  { *__ret = jit_deserialize_each(taken).consume(); return; }
 }
 
 // Idempotent: the end gives its count back once (explicit `drop()`, the
@@ -1111,10 +1135,8 @@ inline void _jit_chan_iter_next(JitValue* __ret, JitClosure*, int8_t self_tag, i
   JitValue ret{TAG_NIL, 0};
   // Taken before it is rebuilt, as recv() takes it: a rebuild that throws
   // (a member's hash()) has still consumed the value.
-  if (auto node = std::exchange(it->taken, std::nullopt)) {
-    JitDeCtx dc;
-    ret = jit_deserialize(*node, dc);
-  }
+  if (auto node = std::exchange(it->taken, std::nullopt))
+    ret = jit_deserialize(*node).consume();
   { *__ret = ret; return; }
 }
 inline JitObject* _jit_channel_meta(int role);
@@ -1138,10 +1160,8 @@ inline void _jit_merged_recv(JitValue* __ret, JitClosure*, int8_t self_tag, int6
   const auto& merge = _jit_self_merged_rx(self)->merge;
   JitValue ret{TAG_NIL, 0};
   if (merge) {
-    if (auto node = chan_select_recv(*merge)) {
-      JitDeCtx dc;
-      ret = jit_deserialize(*node, dc);
-    }
+    if (auto node = chan_select_recv(*merge))
+      ret = jit_deserialize(*node).consume();
   }
   { *__ret = ret; return; }
 }
@@ -2655,17 +2675,15 @@ inline void jit_parallel_worker(std::shared_ptr<ParallelState> st) {
   culebra::RuntimeScope scope(rt);
   try {
     jit_install_trait_defaults(st->trait_defaults);
-    JitDeCtx dc;
     // Owned for the same reason as the isolate child's closure: the captures
     // (a `tx` above all) must drop on every exit path, throw included.
-    JitOwnedVal fn(jit_deserialize(st->fn, dc));
+    JitOwnedVal fn = jit_deserialize(st->fn);
     auto* cls = reinterpret_cast<JitClosure*>(fn.borrow().data);
     while (!st->interrupt.load(std::memory_order_relaxed)) {
       size_t i = st->next.fetch_add(1, std::memory_order_relaxed);
       if (i >= st->items.size()) break;
       try {
-        JitDeCtx idc;
-        JitOwnedVal item(jit_deserialize(st->items[i], idc));
+        JitOwnedVal item = jit_deserialize(st->items[i]);
         // A thrown value fails its element as an error does, by what it says,
         // and the next element starts with nothing of this one in the Runtime.
         JitValue r = culebra_runtime_call_from_host([&] {
@@ -2796,10 +2814,7 @@ inline JitValue jit_parallel_run(JitValue items_v, JitValue fn_v, int64_t limit,
   if (cb_err) std::rethrow_exception(cb_err);
 
   if (mode == culebra::PMode::Race) {
-    if (st->race_won.load()) {
-      JitDeCtx dc;
-      return jit_deserialize(st->race_result, dc);
-    }
+    if (st->race_won.load()) return jit_deserialize(st->race_result).consume();
     throw culebra::CulebraError("ParallelError",
         culebra::format("Parallel.race: all {} elements failed: {}",
                         static_cast<size_t>(arr->size),
@@ -2813,13 +2828,7 @@ inline JitValue jit_parallel_run(JitValue items_v, JitValue fn_v, int64_t limit,
         line, col);
   }
   if (!st->collects()) return {TAG_NIL, 0};
-  auto* out = culebra_runtime_array_new();
-  for (const auto& rn : st->results) {
-    JitDeCtx dc;
-    JitValue v = jit_deserialize(rn, dc);
-    culebra_runtime_array_push(out, v.tag, v.data);
-  }
-  return {TAG_ARRAY, reinterpret_cast<int64_t>(out)};
+  return jit_deserialize_each(st->results).consume();
 }
 
 // Channel.new(cap = 1) -> (tx, rx).
