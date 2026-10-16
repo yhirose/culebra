@@ -5249,6 +5249,74 @@ inline JitValue _ns_audio_capture_read(JitValue* a, int64_t) {
                                _culebra_double_to_bits(static_cast<double>(f)));
   return _ns_adapt::v_array(r);
 }
+// A samples Array as Floats.
+inline JitValue _ns_audio_samples(const std::vector<double>& xs,
+                                  const char* what) {
+  auto* r = _jit_array_new_reserved(static_cast<int64_t>(xs.size()), what);
+  for (double x : xs)
+    culebra_runtime_array_push(r, TAG_FLOAT, _culebra_double_to_bits(x));
+  return _ns_adapt::v_array(r);
+}
+// Checked here, before any samples are touched: a rate above zero, and each
+// mode a freq inside (0, rate/2) and a width above zero.
+inline JitValue _ns_audio_resonate(JitValue* a, int64_t) {
+  namespace ad = culebra::_audio_detail;
+  std::vector<double> x, modes;
+  _ns_audio_numbers(a[0], x, ad::kResonateSamplesError);
+  _ns_audio_numbers(a[1], modes, ad::kResonateModesError);
+  double dry = _ns_adapt::take_double(a[2]);
+  double rate = _ns_adapt::take_double(a[3]);
+  if (!(rate > 0))
+    culebra::throw_runtime_error_at("ValueError", "Audio.resonate: the rate is above 0", 0, 0);
+  for (size_t k = 0; k + 2 < modes.size(); k += 3) {
+    if (!(modes[k] > 0 && modes[k] < rate / 2))
+      culebra::throw_runtime_error_at("ValueError", "Audio.resonate: a mode's freq is above 0 and below half the rate", 0, 0);
+    if (!(modes[k + 1] > 0))
+      culebra::throw_runtime_error_at("ValueError", "Audio.resonate: a mode's width is above 0", 0, 0);
+  }
+  std::vector<double> out(x.size());
+  ad::resonate(x.data(), static_cast<int64_t>(x.size()), modes.data(),
+               static_cast<int64_t>(modes.size() / 3), dry, rate, out.data());
+  return _ns_audio_samples(out, "Audio.resonate() result");
+}
+// The strikes come as (at, count) pairs and their samples end to end; they
+// are laid into one kick the string's loop takes in as it passes.
+inline JitValue _ns_audio_pluck(JitValue* a, int64_t) {
+  namespace ad = culebra::_audio_detail;
+  auto fail = [](const char* msg) {
+    culebra::throw_runtime_error_at("ValueError", msg, 0, 0);
+  };
+  double seconds = _ns_adapt::take_double(a[0]);
+  std::vector<double> tunings, strikes, samples;
+  _ns_audio_numbers(a[1], tunings, ad::kPluckTuningsError);
+  _ns_audio_numbers(a[2], strikes, ad::kPluckStrikesError);
+  _ns_audio_numbers(a[3], samples, ad::kPluckStrikesError);
+  double rate = _ns_adapt::take_double(a[4]);
+  if (!(rate > 0)) fail("Audio.pluck: the rate is above 0");
+  if (!(seconds >= 0 && seconds * rate < 1e10)) fail("Audio.pluck: the seconds are 0 or more");
+  if (tunings.empty()) fail("Audio.pluck: a string has a tuning");
+  for (size_t k = 0; k + 2 < tunings.size(); k += 3) {
+    if (!(tunings[k] >= 0)) fail("Audio.pluck: a tuning's at is 0 or more");
+    if (k > 0 && tunings[k] < tunings[k - 3]) fail("Audio.pluck: the tunings come in the order they play");
+    if (!(tunings[k + 1] > 0 && tunings[k + 1] < rate / 2))
+      fail("Audio.pluck: a tuning's freq is above 0 and below half the rate");
+    if (!(tunings[k + 2] > 0)) fail("Audio.pluck: a tuning's ring is above 0");
+  }
+  auto n = ad::sample_at(seconds, rate);
+  std::vector<double> kick(static_cast<size_t>(n), 0.0);
+  size_t from = 0;
+  for (size_t j = 0; j + 1 < strikes.size(); j += 2) {
+    if (!(strikes[j] >= 0)) fail("Audio.pluck: a strike's at is 0 or more");
+    auto start = ad::sample_at(strikes[j], rate);
+    auto count = static_cast<size_t>(strikes[j + 1]);
+    for (size_t i = 0; i < count && from + i < samples.size(); i++)
+      if (start + static_cast<int64_t>(i) < n) kick[static_cast<size_t>(start) + i] += samples[from + i];
+    from += count;
+  }
+  std::vector<double> out(static_cast<size_t>(n));
+  ad::pluck(n, tunings.data(), static_cast<int64_t>(tunings.size() / 3), kick.data(), rate, out.data());
+  return _ns_audio_samples(out, "Audio.pluck() result");
+}
 // Audio.Kauai's timed notes, kScoreStride numbers an event (stdlib/audio.h).
 inline JitValue _ns_audio_score_new(JitValue* a, int64_t) {
   namespace ad = culebra::_audio_detail;
@@ -10590,6 +10658,8 @@ inline const NsMethod kNsRows_Audio_native[] = {
   {"_Audio", "score_stop",     1, &_ns_audio_on<culebra::_audio_detail::score_stop>},
   {"_Audio", "score_volume",   2, &_ns_audio_set<culebra::_audio_detail::score_volume>},
   {"_Audio", "score_room",     2, &_ns_audio_set<culebra::_audio_detail::score_room>},
+  {"_Audio", "resonate",       4, &_ns_audio_resonate},
+  {"_Audio", "pluck",          5, &_ns_audio_pluck},
 };
 inline const NsMethod kNsRows_Canvas_native[] = {
   {"_Canvas", "init",            2,  &_ns_canvas_init},

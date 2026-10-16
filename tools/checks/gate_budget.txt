@@ -181,7 +181,8 @@ ctest.entries 36
 # ja.
 # 1068 since Kauai §10 shows a host instrument that plays a phrase at a time
 # and names what it hears of each note, in en and ja.
-docs.blocks 1068
+# 1070 since stdlib §40 shows Audio.resonate ringing an impulse, in en and ja.
+docs.blocks 1070
 
 # The samples the language front ends are run over (examples/languages/*).
 languages.samples 130

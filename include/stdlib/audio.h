@@ -21,9 +21,12 @@
 
 #include <stdlib/pcm_block.h>
 
+#include <algorithm>
 #include <climits>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <numbers>
 #include <unordered_map>
 #include <vector>
 
@@ -82,6 +85,106 @@ inline int64_t alloc_id() {
 
 // Numbers an event takes in a score's flat list (score_new).
 inline constexpr int64_t kScoreStride = 11;
+
+// --- Parts an instrument builds its sound from, the same on every backend ---
+
+inline constexpr auto kResonateSamplesError =
+    "type error: parameter 'samples' expects an Array of Long|Float";
+inline constexpr auto kResonateModesError =
+    "Audio.resonate: a mode is {freq, width, gain}, each a number";
+
+// `x` through a bank of resonances, `modes` three numbers each (freq and
+// width in Hz, gain), plus `dry` of `x` itself, into `out` (as long as `x`).
+// Each is a two-pole resonator, its poles `width` wide about `freq`, scaled
+// so its peak is about `gain`.
+inline void resonate(const double* x, int64_t n, const double* modes,
+                     int64_t m, double dry, double rate, double* out) {
+  struct Ring {
+    double a1, a2, b0, y1 = 0, y2 = 0;
+  };
+  std::vector<Ring> rings;
+  rings.reserve(static_cast<size_t>(m));
+  for (int64_t k = 0; k < m; k++) {
+    double freq = modes[3 * k], width = modes[3 * k + 1], gain = modes[3 * k + 2];
+    double r = std::exp(-std::numbers::pi * width / rate);
+    double w = 2.0 * std::numbers::pi * freq / rate;
+    rings.push_back({2.0 * r * std::cos(w), -r * r, (1.0 - r) * 2.0 * std::sin(w) * gain});
+  }
+  for (int64_t i = 0; i < n; i++) {
+    double v = dry * x[i];
+    for (auto& g : rings) {
+      double y = g.b0 * x[i] + g.a1 * g.y1 + g.a2 * g.y2;
+      g.y2 = g.y1;
+      g.y1 = y;
+      v += y;
+    }
+    out[i] = v;
+  }
+}
+
+inline constexpr auto kPluckTuningsError =
+    "Audio.pluck: a tuning is {at, freq, ring}, each a number";
+inline constexpr auto kPluckStrikesError =
+    "Audio.pluck: a strike is {at, samples}, its samples numbers";
+
+// The sample nearest `seconds` in, a tie going to the even one as Math.round
+// has it, so a part and the script that times it agree on the sample.
+inline int64_t sample_at(double seconds, double rate) {
+  return static_cast<int64_t>(std::nearbyint(seconds * rate));
+}
+
+// A plucked string's loop at `freq` Hz, ringing down 60 dB in `ring`
+// seconds: a whole-sample delay, an allpass for the fraction (Jaffe and
+// Smith), and the loss each pass.
+struct PluckLoop {
+  int64_t len;
+  double c, loss;
+};
+inline PluckLoop pluck_loop(double freq, double ring, double rate) {
+  double period = rate / freq;
+  double whole = std::floor(period - 0.6);
+  double frac = period - 0.5 - whole;
+  return {static_cast<int64_t>(whole), (1.0 - frac) / (1.0 + frac),
+          std::pow(10.0, -3.0 / (ring * freq))};
+}
+
+// `n` samples of a string (Karplus-Strong): `tunings` three numbers each (at
+// in seconds, freq in Hz, ring in seconds), in the order they come, each
+// holding until the next and the first from the start; `kick` (n long) is
+// added into the loop as it passes, the string moving on from what it holds
+// whenever its tuning changes. What the string answers passes no DC.
+inline void pluck(int64_t n, const double* tunings, int64_t nt,
+                  const double* kick, double rate, double* out) {
+  std::vector<PluckLoop> loops;
+  std::vector<int64_t> from;
+  int64_t longest = 1;
+  for (int64_t k = 0; k < nt; k++) {
+    loops.push_back(pluck_loop(tunings[3 * k + 1], tunings[3 * k + 2], rate));
+    from.push_back(sample_at(tunings[3 * k], rate));
+    longest = std::max(longest, loops.back().len);
+  }
+  int64_t size = longest + 1;
+  std::vector<double> buf(static_cast<size_t>(size), 0.0);
+  double pole = std::pow(0.995, 44100.0 / rate);
+  double prev = 0, ap_in = 0, ap_out = 0, dc_in = 0, dc_out = 0;
+  int64_t w = 0;
+  size_t at = 0;
+  for (int64_t i = 0; i < n; i++) {
+    while (at + 1 < loops.size() && i >= from[at + 1]) at++;
+    const PluckLoop& lp = loops[at];
+    double read = buf[static_cast<size_t>((w - lp.len + size) % size)];
+    double v = 0.5 * (read + prev) * lp.loss;
+    prev = read;
+    double ap = lp.c * v + ap_in - lp.c * ap_out;
+    ap_in = v;
+    ap_out = ap;
+    buf[static_cast<size_t>(w)] = ap + kick[i];
+    w = (w + 1) % size;
+    dc_out = read - dc_in + pole * dc_out;
+    dc_in = read;
+    out[i] = dc_out;
+  }
+}
 
 #if defined(CULEBRA_AUDIO_BROWSER)
 

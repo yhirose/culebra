@@ -149,6 +149,142 @@ assert_throws("TypeError", fn () {
   mic.read("all")
 })
 
+// resonate: a bank of two-pole resonators, natively, the same samples as the
+// same filters written out here; Longs are samples too.
+fn rings(samples, modes, dry, rate) {
+  let gs = modes.map(fn (m) {
+    let r = Math.exp(-Math.pi * m.width / rate)
+    let w = 2.0 * Math.pi * m.freq / rate
+    {a1: 2.0 * r * Math.cos(w), a2: -r * r, b0: (1.0 - r) * 2.0 * Math.sin(w) * m.gain}
+  })
+  mut y1 = repeat(gs.size(), 0.0)
+  mut y2 = repeat(gs.size(), 0.0)
+  samples.map(fn (x) {
+    mut out = dry * x
+    for k in 0..gs.size() {
+      let y = gs[k].b0 * x + gs[k].a1 * y1[k] + gs[k].a2 * y2[k]
+      y2[k] = y1[k]
+      y1[k] = y
+      out += y
+    }
+    out
+  })
+}
+let struck = [1, 0.5, -0.25, ...repeat(200, 0.0), 0.75, ...repeat(100, 0.0)]
+let two = [{freq: 440.0, width: 20.0, gain: 1.0}, {freq: 1250, width: 90, gain: 0.3}]
+assert_eq(Audio.resonate(struck, two), rings(struck, two, 0.0, 44100.0))
+assert_eq(Audio.resonate(struck, two, dry: 0.4, rate: 22050), rings(struck, two, 0.4, 22050.0))
+assert_eq(Audio.resonate(struck, [], dry: 0.5), struck.map(|x| 0.5 * x))
+assert_eq(Audio.resonate([], two), [])
+for (modes, message) in [
+  ([{freq: 0.0, width: 20.0, gain: 1.0}], "a mode's freq is above 0 and below half the rate"),
+  ([{freq: 22050.0, width: 20.0, gain: 1.0}], "a mode's freq is above 0 and below half the rate"),
+  ([{freq: 440.0, width: 0.0, gain: 1.0}], "a mode's width is above 0"),
+] {
+  let e = try {
+    Audio.resonate(struck, modes)
+  } catch e {
+    e
+  }
+  assert_eq((e.kind, e.message), ("ValueError", "Audio.resonate: " + message))
+}
+for modes in [[440.0], [{freq: 440.0, width: 20.0}], [{freq: "440", width: 20.0, gain: 1.0}]] {
+  let e = try {
+    Audio.resonate(struck, modes)
+  } catch e {
+    e
+  }
+  assert_eq((e.kind, e.message), ("TypeError", "Audio.resonate: a mode is \{freq, width, gain}, each a number"))
+}
+assert_throws("ValueError", fn () {
+  Audio.resonate(struck, two, rate: 0)
+})
+assert_throws("TypeError", fn () {
+  Audio.resonate([0.5, "loud"], two)
+})
+
+// pluck: a Karplus-Strong string, natively, the same samples as the same
+// string written out here. A change of tuning keeps what the string holds,
+// and a strike is added into it from its sample on.
+fn plucked(seconds, tunings, strikes, rate) {
+  let loops = tunings.map(fn (t) {
+    let period = rate / t.freq
+    let whole = Math.floor(period - 0.6)
+    let frac = period - 0.5 - whole
+    {len: whole, c: (1.0 - frac) / (1.0 + frac), loss: 10.0 ** (-3.0 / (t.ring * t.freq))}
+  })
+  let from = tunings.map(|t| Math.round(t.at * rate))
+  let total = Math.round(seconds * rate)
+  mut kick = repeat(total, 0.0)
+  for s in strikes {
+    let start = Math.round(s.at * rate)
+    for i in 0..s.samples.size() {
+      kick[start + i] += s.samples[i] if start + i < total
+    }
+  }
+  let size = loops.map(|lp| lp.len).max() + 1
+  let pole = 0.995 ** (44100.0 / rate)
+  mut buf = repeat(size, 0.0)
+  mut w = 0
+  mut at = 0
+  mut prev = 0.0
+  mut ap_in = 0.0
+  mut ap_out = 0.0
+  mut dc_in = 0.0
+  mut dc_out = 0.0
+  iota(total).map(fn (i) {
+    while at + 1 < loops.size() && i >= from[at + 1] {
+      at += 1
+    }
+    let lp = loops[at]
+    let read = buf[(w - lp.len + size) % size]
+    let v = 0.5 * (read + prev) * lp.loss
+    prev = read
+    let ap = lp.c * v + ap_in - lp.c * ap_out
+    ap_in = v
+    ap_out = ap
+    buf[w] = ap + kick[i]
+    w = (w + 1) % size
+    dc_out = read - dc_in + pole * dc_out
+    dc_in = read
+    dc_out
+  })
+}
+let shape = [0.0, 0.25, 0.5, 0.25, 0, -0.25, -0.5, -0.25]
+let tunings = [{at: 0, freq: 196.0, ring: 2.0}, {at: 0.05, freq: 220.0, ring: 2.0}, {at: 0.08, freq: 220, ring: 0.1}]
+let strikes = [{at: 0.0, samples: shape}, {at: 0.05, samples: shape.map(|x| 0.3 * x)}, {at: 0.0999, samples: shape}]
+assert_eq(Audio.pluck(0.1, tunings, strikes), plucked(0.1, tunings, strikes, 44100.0))
+assert_eq(Audio.pluck(0.1, tunings, strikes, rate: 22050), plucked(0.1, tunings, strikes, 22050.0))
+assert_eq(Audio.pluck(0.01, [{at: 0, freq: 440.0, ring: 1.0}]), repeat(441, 0.0))
+assert_eq(Audio.pluck(0, tunings, strikes), [])
+for (bad, message) in [
+  ([], "a string has a tuning"),
+  ([{at: 0, freq: 22050.0, ring: 1.0}], "a tuning's freq is above 0 and below half the rate"),
+  ([{at: 0, freq: 440.0, ring: 0}], "a tuning's ring is above 0"),
+  ([{at: -1, freq: 440.0, ring: 1.0}], "a tuning's at is 0 or more"),
+  ([{at: 0.5, freq: 440.0, ring: 1.0}, {at: 0.2, freq: 440.0, ring: 1.0}], "the tunings come in the order they play"),
+] {
+  let e = try {
+    Audio.pluck(1.0, bad)
+  } catch e {
+    e
+  }
+  assert_eq((e.kind, e.message), ("ValueError", "Audio.pluck: " + message))
+}
+for (bad_tunings, bad_strikes, message) in [
+  ([440.0], [], "a tuning is \{at, freq, ring}, each a number"),
+  ([{at: 0, freq: 440.0}], [], "a tuning is \{at, freq, ring}, each a number"),
+  (tunings, [shape], "a strike is \{at, samples}, its samples numbers"),
+  (tunings, [{at: 0, samples: [0.5, "loud"]}], "a strike is \{at, samples}, its samples numbers"),
+] {
+  let e = try {
+    Audio.pluck(1.0, bad_tunings, bad_strikes)
+  } catch e {
+    e
+  }
+  assert_eq((e.kind, e.message), ("TypeError", "Audio.pluck: " + message))
+}
+
 // Closed like the C++ namespaces: an unknown member raises.
 assert_throws("AttributeError", fn () {
   Audio.typo

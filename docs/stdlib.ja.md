@@ -8215,7 +8215,7 @@ isolateごとに別の索引を持たせる。
 ## 40. `Audio`
 
 どのプログラムでも使える音: WASM-4流のtone、ワンショットのサンプル、ストリーム
-再生の音楽、スクリプトが合成するPCM、マイク、Kauaiで書いた曲。`Audio`は音声デバイスを単独で持ち、
+再生の音楽、スクリプトが合成するPCMとそれを組み立てるネイティブの部品、マイク、Kauaiで書いた曲。`Audio`は音声デバイスを単独で持ち、
 ウィンドウを必要としないので、`Canvas`で描くプログラムでも、`Scene`で描く
 プログラムでも、何も描かないプログラムでも同じように動く。デバイスは初回使用時に
 開き、何も鳴らさないプログラムはデバイスを開かない。
@@ -8368,6 +8368,46 @@ Canvas.run(160, 160, fn () {
 必要とする。サンプルごとに呼ぶのでなく、ブロック全体をまとめて作って渡すことが、
 スクリプトの1フレームの予算に収めるための要点になる。`PCM`はブラウザでは
 鳴らず、音声デバイスの無いマシンと同じように答える。
+
+### 音を組み立てる部品
+
+自分で音を作るプログラム（`Audio.Kauai`の楽器や、`PCM`のブロックを埋める
+ループ）は、音を1サンプルずつ計算し、そのループに時間のほとんどを使う。ここに
+挙げる関数は、そうした音を組み立てる部品である。どれもサンプル（1秒に`rate`個
+並んだ数）の配列全体をネイティブで処理し、`Float`の配列を返す。
+
+| 関数 | 効果 |
+| --- | --- |
+| `Audio.resonate(samples: Array, modes: Array, dry = 0.0, rate = 44100) -> Array` | ギターの胴が弦と一緒に鳴るように、`samples`を共鳴の集まりに通す。モード`{freq, width, gain}`はそれぞれ2極の共鳴器で、`freq` Hzで鳴り、極の幅は`width` Hz、ピークはおよそ`gain`になる。`samples`そのものを`dry`倍して足す。返す配列の長さは`samples`と同じ |
+| `Audio.pluck(seconds, tunings: Array, strikes: Array = [], rate = 44100) -> Array` | `seconds`秒の、はじいた弦（Karplus-Strong）。チューニング`{at, freq, ring}`は、`at`秒から弦を`freq` Hzに合わせ、`ring`秒で60 dB減衰させる。最初のものは始めから効き、来る順に並べる。ストローク`{at, samples}`は、`at`秒から弦に足し込む。チューニングが変わっても弦は振動を続けるので、指のハンマリングや弦を止める動きになる。弦が返す音に直流成分は含まれない |
+
+3つの数を持つオブジェクトでないモードや、`Long`でも`Float`でもないサンプルは
+`TypeError`。0より大きく`rate`の半分より小さくない`freq`、0より大きくない
+`width`、0より大きくない`rate`は`ValueError`。共鳴は打たれた後も鳴り続けるので、
+最後のサンプルの先まで消えていく音を聞くには、`samples`の終わりに無音を足す。
+
+`pluck`の時刻は最も近いサンプルに置かれ、ちょうど中間なら`Math.round`と同じく偶数の
+サンプルになる。そのため、自分でサンプルを数えるスクリプトとも一致する。終わりを越える
+ストロークは、終わりで切られる。数を持つオブジェクトでないチューニングやストロークは
+`TypeError`。チューニングが無い、チューニングの順が逆、`at`や`seconds`が0未満、
+0より大きく`rate`の半分より小さくない`freq`、0より大きくない`ring`は`ValueError`。
+
+```culebra
+let impulse = [1.0, ...repeat(44099, 0.0)]
+let ping = Audio.resonate(impulse, [{freq: 440.0, width: 20.0, gain: 1.0}])
+let loudest = |xs| xs.map(|s| Math.abs(s)).max()
+println(ping.size())                                                     # => 44100
+println(loudest(ping.slice(0, 441)) > 100 * loudest(ping.slice(43659, 44100)))  # => true
+
+# A string plucked at G, and hammered on to A half a second in.
+let shape = [0.0, 0.3, 0.6, 0.3, 0.0, -0.3, -0.6, -0.3]
+let string = Audio.pluck(
+  1.0,
+  [{at: 0.0, freq: 196.0, ring: 2.0}, {at: 0.5, freq: 220.0, ring: 2.0}],
+  [{at: 0.0, samples: shape}, {at: 0.5, samples: shape.map(|x| 0.2 * x)}],
+)
+println(string.size())                                                   # => 44100
+```
 
 ### Capture
 

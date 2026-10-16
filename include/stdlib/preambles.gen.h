@@ -4172,6 +4172,42 @@ let _audio_module = fn () {
     _Audio.tone(freq, ef, attack, decay, dur, release, vol, pk, wave, duty)
   }
 
+  # `samples` through a bank of resonances, as a guitar's body rings with its
+  # strings: each mode {freq, width, gain} is a two-pole resonator ringing at
+  # `freq` Hz, `width` Hz wide, its peak about `gain`; `dry` of the samples
+  # themselves is added. The answer is as long as `samples`.
+  let resonate = fn (samples: Array, modes: Array, dry: Long | Float = 0.0, rate: Long | Float = 44100) {
+    let flat = modes.flat_map(fn (m) {
+      __raise("TypeError", "Audio.resonate: a mode is \{freq, width, gain}, each a number") if type_of(m) != "Object"
+      [m.freq, m.width, m.gain]
+    })
+    _Audio.resonate(samples, flat, dry, rate)
+  }
+
+  # A plucked string (Karplus-Strong), `seconds` long: `tunings` say what it
+  # is tuned to from when, {at, freq, ring} (seconds, Hz, and seconds to ring
+  # down by 60 dB), in the order they come, the first from the start; each
+  # strike {at, samples} is added into the string from `at` on. A change of
+  # tuning keeps the string moving, as a finger hammering on does.
+  let pluck = fn (seconds: Long | Float, tunings: Array, strikes: Array = [], rate: Long | Float = 44100) {
+    let flat = tunings.flat_map(fn (t) {
+      __raise("TypeError", "Audio.pluck: a tuning is \{at, freq, ring}, each a number") if type_of(t) != "Object"
+      [t.at, t.freq, t.ring]
+    })
+    for s in strikes {
+      if type_of(s) != "Object" || type_of(s.samples) != "Array" {
+        __raise("TypeError", "Audio.pluck: a strike is \{at, samples}, its samples numbers")
+      }
+    }
+    _Audio.pluck(
+      seconds,
+      flat,
+      strikes.flat_map(|s| [s.at, s.samples.size()]),
+      strikes.flat_map(|s| s.samples),
+      rate,
+    )
+  }
+
   # A one-shot sample decoded once from WAV, MP3 or Ogg bytes (a String, e.g.
   # from FS.read or a Dir) and played per call. One voice: play() restarts
   # it. Raises ValueError when the bytes are none of the three formats.
@@ -4335,6 +4371,8 @@ let _audio_module = fn () {
       _Audio.capture_present()
     },
     tone: tone,
+    resonate: resonate,
+    pluck: pluck,
     Sound: Sound,
     Music: Music,
     PCM: PCM,

@@ -1,9 +1,9 @@
 # Plucked strings for Audio.Kauai.load's `voices:`: `host Guitar` (nylon
 # strings on a wooden body), `host Steel` (bright strings and no body) and
-# `host Bass`, playing a phrase at a time. A string is a loop of delay that
-# loses a little of its brightness on every pass (Karplus-Strong): a pluck
-# fills it with the shape the string is let go from, and it rings down by
-# itself. A finger draws a nylon string aside to a point, a triangle whose
+# `host Bass`, playing a phrase at a time. A string is Audio.pluck's, a loop
+# of delay that loses a little of its brightness on every pass
+# (Karplus-Strong): a pluck fills it with the shape the string is let go
+# from, and it rings down by itself. A finger draws a nylon string aside to a point, a triangle whose
 # upper harmonics are weak; a pick's scrape is noise, bright in all of them.
 # A voice's `pluck=` says how far along the string from the bridge it is
 # plucked (`host Guitar pluck=0.3`, over the soundhole and mellow). Under a slur the string
@@ -18,20 +18,10 @@
 import wave from './wave.cul'
 
 let RATE = wave.RATE
-let SIZE = 4096
 
 # Seconds for a string at `f` Hz to ring down by 60 dB: longer low.
 fn ring_time(f, sustain) {
   Math.clamp(sustain * Math.sqrt(110.0 / f), 0.4, 10.0)
-}
-
-# The loop at `f` Hz: a whole-sample delay, an allpass for the fraction
-# (Jaffe and Smith), and the loss per pass that rings it down in `t60`.
-fn loop_of(f, t60) {
-  let period = RATE / f
-  let whole = Math.floor(period - 0.6)
-  let frac = period - 0.5 - whole
-  {len: whole, c: (1.0 - frac) / (1.0 + frac), loss: 10.0 ** (-3.0 / (t60 * f))}
 }
 
 # What the pluck leaves on the string, one period long: the string drawn
@@ -57,60 +47,37 @@ fn burst(n, period, strength, kind, seed) {
 }
 
 # One string's phrase `notes` ([{pitch, at, len, level}]), each starting
-# after the one before it.
+# after the one before it: Audio.pluck's string, tuned to each note as it
+# comes, and let go where the hand leaves it.
 fn string(notes, kind) {
   let last = notes[notes.size() - 1]
   let end = last.at + last.len
   let next = last.get("next", nil)
-  let loops = notes.map(|n| loop_of(
-    wave.hz(n.pitch),
-    ring_time(wave.hz(n.pitch), kind.sustain),
-  ))
   # Rung out, the last string fades below hearing in half its ring time.
   let rung = end + 0.5 * ring_time(wave.hz(last.pitch), kind.sustain)
   let held = last.get("marks", []).contains("staccato")
     ? Math.min(end, next ?? end)
     : Math.min(next ?? rung, rung)
-  let total = Math.round((held + 0.3) * RATE)
-  let damped = notes.map(|n| loop_of(wave.hz(n.pitch), kind.let_go))
-  let starts = notes.map(|n| Math.round(n.at * RATE))
-  # The pluck, then a hammer-on (up) or a pull-off (down) for each note after.
-  let bursts = iota(notes.size()).map(fn (k) {
+  let tunings = [
+    ...notes.map(|n| {
+      at: n.at,
+      freq: wave.hz(n.pitch),
+      ring: ring_time(wave.hz(n.pitch), kind.sustain),
+    }),
+    {at: held, freq: wave.hz(last.pitch), ring: kind.let_go},
+  ]
+  # The pluck, then a hammer-on (up) or a pull-off (down) for each note after,
+  # each a period of the string long (the loop's whole samples).
+  let strikes = iota(notes.size()).map(fn (k) {
     let strength = cond {
-      k == 0 => 1.0,
-      notes[k].pitch > notes[k - 1].pitch => 0.25,
-      _ => 0.45,
+      k == 0 => 0.5,
+      notes[k].pitch > notes[k - 1].pitch => 0.125,
+      _ => 0.225,
     }
-    burst(notes[k], loops[k].len, strength, kind, notes[k].pitch * 7919 + k)
+    let period = Math.floor(RATE / wave.hz(notes[k].pitch) - 0.6)
+    {at: notes[k].at, samples: burst(notes[k], period, strength, kind, notes[k].pitch * 7919 + k)}
   })
-  mut buf = repeat(SIZE, 0.0)
-  mut w = 0
-  mut at = 0
-  mut prev = 0.0
-  mut ap_in = 0.0
-  mut ap_out = 0.0
-  mut dc_in = 0.0
-  mut dc_out = 0.0
-  iota(total).map(fn (i) {
-    while at + 1 < notes.size() && i >= starts[at + 1] {
-      at += 1
-    }
-    let lp = i.to_float() / RATE > held ? damped[at] : loops[at]
-    let read = buf[(w - lp.len + SIZE) % SIZE]
-    let v = 0.5 * (read + prev) * lp.loss
-    prev = read
-    let ap = lp.c * v + ap_in - lp.c * ap_out
-    ap_in = v
-    ap_out = ap
-    let into = i - starts[at]
-    let b = bursts[at]
-    buf[w] = ap + (into < b.size() ? b[into] : 0.0)
-    w = (w + 1) % SIZE
-    # The body passes no DC.
-    dc_out = read - dc_in + 0.995 * dc_out
-    dc_in = read
-    dc_out * 0.5
-  })
+  Audio.pluck(held + 0.3, tunings, strikes)
 }
 
 # A phrase, each of its lines on a string of its own.
@@ -118,43 +85,17 @@ fn pluck(notes, kind) {
   wave.by_line(notes, kind.strum, |line| string(line, kind))
 }
 
-# The body's resonances {at, width, gain}: the air inside, the top plate and
-# the modes above them, each a two-pole resonator whose peak is `gain`.
+# The body's resonances for Audio.resonate: the air inside, the top plate
+# and the modes above them. The body passes some of the string straight.
 let WOOD = [
-  {at: 98.0, width: 10.0, gain: 0.9},
-  {at: 204.0, width: 16.0, gain: 1.0},
-  {at: 390.0, width: 35.0, gain: 0.5},
-  {at: 560.0, width: 50.0, gain: 0.35},
-  {at: 1100.0, width: 200.0, gain: 0.25},
-  {at: 2600.0, width: 800.0, gain: 0.15},
+  {freq: 98.0, width: 10.0, gain: 0.9},
+  {freq: 204.0, width: 16.0, gain: 1.0},
+  {freq: 390.0, width: 35.0, gain: 0.5},
+  {freq: 560.0, width: 50.0, gain: 0.35},
+  {freq: 1100.0, width: 200.0, gain: 0.25},
+  {freq: 2600.0, width: 800.0, gain: 0.15},
 ]
-
-# `samples` as the body gives them back: some of the string straight, and
-# each resonance ringing with it.
-fn body(samples, modes) {
-  let rings = modes.map(fn (m) {
-    let r = Math.exp(-Math.pi * m.width / RATE)
-    let w = 2.0 * Math.pi * m.at / RATE
-    {
-      a1: 2.0 * r * Math.cos(w),
-      a2: -r * r,
-      b0: (1.0 - r) * 2.0 * Math.sin(w) * m.gain,
-    }
-  })
-  mut y1 = repeat(modes.size(), 0.0)
-  mut y2 = repeat(modes.size(), 0.0)
-  samples.map(fn (x) {
-    mut out = 0.4 * x
-    for k in 0..rings.size() {
-      let g = rings[k]
-      let y = g.b0 * x + g.a1 * y1[k] + g.a2 * y2[k]
-      y2[k] = y1[k]
-      y1[k] = y
-      out += y
-    }
-    out
-  })
-}
+let STRAIGHT = 0.4
 
 let NYLON = {
   sustain: 6.0,
@@ -189,7 +130,7 @@ fn played(kind, params) {
 }
 
 let sounds = {
-  guitar: |notes, params| body(pluck(notes, played(NYLON, params)), WOOD),
+  guitar: |notes, params| Audio.resonate(pluck(notes, played(NYLON, params)), WOOD, dry: STRAIGHT),
   steel: |notes, params| pluck(notes, played(STEEL, params)),
   bass: |notes, params| pluck(notes, played(BASS, params)),
 }

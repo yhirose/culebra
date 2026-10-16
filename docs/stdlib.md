@@ -8552,7 +8552,7 @@ built it. Give each isolate its own.
 ## 40. `Audio`
 
 Sound for any program: WASM-4-style tones, one-shot samples, streamed music,
-PCM the script synthesises, the microphone, and songs written in Kauai. `Audio` owns the sound device on its own and
+PCM the script synthesises and native parts to build it from, the microphone, and songs written in Kauai. `Audio` owns the sound device on its own and
 needs no window, so it works the same whether a program draws with `Canvas`,
 with `Scene`, or not at all. The device opens on first use; a program that
 never plays anything never opens it.
@@ -8710,6 +8710,49 @@ At 60 fps a 44.1 kHz stream wants 735 frames a frame; producing and pushing a
 whole block at once (rather than one call per sample) is what keeps this
 affordable in a script's own per-frame budget. A `PCM` is silent in the
 browser, where it answers as a machine with no audio device does.
+
+### Building a sound
+
+A program that synthesises its own sound, as an instrument for `Audio.Kauai`
+does or a loop that fills a `PCM`'s blocks, computes it a sample at a time,
+and that loop is where its time goes. The functions here are parts such a
+sound is built from: each runs natively over a whole Array of samples
+(numbers, `rate` of them a second) and answers an Array of `Float`s.
+
+| Function | Effect |
+| --- | --- |
+| `Audio.resonate(samples: Array, modes: Array, dry = 0.0, rate = 44100) -> Array` | `samples` through a bank of resonances, as a guitar's body rings with its strings: each mode `{freq, width, gain}` is a two-pole resonator ringing at `freq` Hz, its poles `width` Hz wide, its peak about `gain`; `dry` of `samples` themselves is added. The answer is as long as `samples` |
+| `Audio.pluck(seconds, tunings: Array, strikes: Array = [], rate = 44100) -> Array` | a plucked string (Karplus-Strong), `seconds` long: each tuning `{at, freq, ring}` tunes it to `freq` Hz from `at` seconds on, ringing down by 60 dB in `ring` seconds, the first from the start, in the order they come; each strike `{at, samples}` is added into the string from `at` on. A change of tuning keeps the string moving, as a finger hammering on or damping it does, and what the string answers passes no DC |
+
+A mode that is not an object of three numbers, or a sample that is neither
+`Long` nor `Float`, raises `TypeError`. A `freq` that is not above 0 and below
+half the `rate`, a `width` that is not above 0, or a `rate` that is not above
+0 raises `ValueError`. The resonances ring on after what strikes them, so to
+hear them die away past the last sample, end `samples` with silence.
+
+A time in `pluck` falls on the nearest sample, a tie going to the even one
+as `Math.round` has it, so a script that counts samples itself agrees with
+it; a strike that runs past the end is cut there. A tuning or a strike that
+is not an object of numbers raises `TypeError`. No tuning, tunings out of
+order, an `at` or `seconds` below 0, a `freq` that is not above 0 and below
+half the `rate`, or a `ring` that is not above 0 raises `ValueError`.
+
+```culebra
+let impulse = [1.0, ...repeat(44099, 0.0)]
+let ping = Audio.resonate(impulse, [{freq: 440.0, width: 20.0, gain: 1.0}])
+let loudest = |xs| xs.map(|s| Math.abs(s)).max()
+println(ping.size())                                                     # => 44100
+println(loudest(ping.slice(0, 441)) > 100 * loudest(ping.slice(43659, 44100)))  # => true
+
+# A string plucked at G, and hammered on to A half a second in.
+let shape = [0.0, 0.3, 0.6, 0.3, 0.0, -0.3, -0.6, -0.3]
+let string = Audio.pluck(
+  1.0,
+  [{at: 0.0, freq: 196.0, ring: 2.0}, {at: 0.5, freq: 220.0, ring: 2.0}],
+  [{at: 0.0, samples: shape}, {at: 0.5, samples: shape.map(|x| 0.2 * x)}],
+)
+println(string.size())                                                   # => 44100
+```
 
 ### Capture
 
