@@ -2304,13 +2304,36 @@ let _kauai_module = fn () {
     })
   }
 
+  # `events` with each jazz articulation written before a note in the bar
+  # taken into that note's marks.
+  fn fold_bends(events, line) {
+    mut pending = []
+    mut out = []
+    for e in events {
+      cond {
+        e.has("direct") && BENDS.contains(e.direct) => {
+          fail(line, "\\{e.direct} is written once for its note") if pending.contains(e.direct)
+          pending.push(e.direct)
+        },
+        e.has("length") && !pending.empty() => {
+          fail(line, "\\{pending[0]} marks a note, not a rest") if e.rest
+          out.push({...e, marks: [...e.marks, ...pending]})
+          pending = []
+        },
+        _ => out.push(e),
+      }
+    }
+    fail(line, "\\{pending[0]} with no note after it in its bar") if !pending.empty()
+    out
+  }
+
   # A bar's notes (or a pickup's) as a timeline, and how long they last; a
   # first note without a value is a `beat` long.
   fn melody_notes(text, line, beat) {
     let toks = lex(text)
     let (items, end, _) = items_from(toks, 0, beat, line)
     fail(line, "a ] without its [") if end < toks.size()
-    let events = timeline(items, 1, 1, line)
+    let events = fold_bends(timeline(items, 1, 1, line), line)
     (events, events.filter(|e| e.has("length")).map(|e| e.length).sum())
   }
 
@@ -2376,11 +2399,6 @@ let _kauai_module = fn () {
               fail(line, "a \\! ends a cresc or dim, and none is going") if !state.swell
               settle(state, nil, pos)
             },
-            BENDS.contains(w) => {
-              fail(line, "\\{w} is written once for its note") if state.bends.contains(w)
-              state.bends.push(w)
-              state.bends_line = line
-            },
             w == "tempo" => tempos[pos] = {bpm: it.arg ?? song_tempo, gradual: false},
             w == "rit" || w == "accel" => tempos[pos] = {bpm: it.arg, gradual: true},
             _ => fail(line, "not a direction: \\{w}"),
@@ -2389,7 +2407,6 @@ let _kauai_module = fn () {
         it.rest => {
           state.holds.push((pos, it.length)) if it.marks.contains("fermata")
           fail(line, "a tie into a rest") if !state.ties.empty()
-          fail(line, "\\{state.bends[0]} marks a note, not a rest") if !state.bends.empty()
           state.open = nil
           # A rest under a slur ends the phrase it joins.
           state.phrase = next_phrase(state) if state.slur
@@ -2405,7 +2422,7 @@ let _kauai_module = fn () {
           # below it; `shift` is how late a note starts against where it is written.
           let head = it.graces.size() * GRACE
           let struck = pitches.filter(|p| !state.ties.has(p)).sorted()
-          fail(line, "a note held by a tie is not struck, and takes no marks") if struck.empty() && (!it.marks.empty() || it.arpeggio || !state.bends.empty())
+          fail(line, "a note held by a tie is not struck, and takes no marks") if struck.empty() && (!it.marks.empty() || it.arpeggio)
           fail(line, "grace notes lead into a note, not a tied one") if head > 0 && struck.size() != pitches.size()
           let late = |p| head + (it.arpeggio ? struck.index_of(p) * GRACE : 0)
           fail(line, "the note is too short for its grace notes or its arpeggio") if struck.any(|p| late(p) >= it.length)
@@ -2420,8 +2437,7 @@ let _kauai_module = fn () {
             _ => nil,
           }
           # What is written on the struck notes, for an instrument that hears it.
-          let marks = [...it.marks, ...state.bends, ...(it.arpeggio ? ["arpeggio"] : [])]
-          state.bends = []
+          let marks = [...it.marks, ...(it.arpeggio ? ["arpeggio"] : [])]
           # How the struck notes are played, which the slur's end can change.
           let touch = {
             mut legato: state.slur,
@@ -3132,7 +3148,7 @@ let _kauai_module = fn () {
     let opened = {mut n: 0}
     let fresh_state = fn () {
       return {
-        mut ties: {}, notes: [], mut slur: false, mut slur_line: 0, mut phrase: nil, opened: opened, mut bends: [], mut bends_line: 0, mut level: "mf", mut swell: false, mut swell_dir: nil, mut swell_line: 0, mut last: nil, mut tuplet_depth: 0, mut span: nil, holds: [], points: [], lead: [], mut open: nil,
+        mut ties: {}, notes: [], mut slur: false, mut slur_line: 0, mut phrase: nil, opened: opened, mut level: "mf", mut swell: false, mut swell_dir: nil, mut swell_line: 0, mut last: nil, mut tuplet_depth: 0, mut span: nil, holds: [], points: [], lead: [], mut open: nil,
       }
     }
     let voice_state = fresh_state()
@@ -3242,7 +3258,6 @@ let _kauai_module = fn () {
       }
       fail(st.slur_line, "{what}: a slur the song never closes") if st.slur
       fail(st.swell_line, "{what}: a {st.swell_dir} that nothing ends") if st.swell
-      fail(st.bends_line, "{what}: \\{st.bends[0]} with no note after it") if !st.bends.empty()
     }
     unfinished(voice_state, "the melody")
     for pname, st in part_states {

@@ -562,7 +562,7 @@ after it.
 | `\scoop` `\plop` `\doit` `\fall` | the next note's jazz articulation: into it from below, into it from above, out of it upward, out of it falling away |
 
 The jazz articulations mark one note, as a chart draws them on it, and are
-written once each before it; they go with its marks, `\fall !c2`. A host
+written once each before it in its bar; they go with its marks, `\fall !c2`. A host
 instrument that hears marks plays them
 ([section 10](#10-playing-from-culebra)); a tone channel plays the note as
 written.
@@ -875,7 +875,7 @@ under.
 - the first bar of a section or an ending without chords
 - a `%` or `%%` without the bars before it in its section or ending, or a line under a `%`
 - a pickup over notes of the bar before it, or longer than that bar; at the start of a song that loops, a pickup over notes of the song's last bar
-- a `\scoop`, `\plop`, `\doit` or `\fall` before a rest or a note a tie holds on, written twice before one note, or with no note after it when the song ends
+- a `\scoop`, `\plop`, `\doit` or `\fall` before a rest or a note a tie holds on, written twice before one note, or with no note after it in its bar
 - a `\!` with no `cresc` or `dim` going, a `cresc` or `dim` still going when the song ends, or a `\rit` or `\accel` without its tempo (`\rit 104`)
 - a tempo counted in what is no note value (`tempo 3=60`)
 - a groove, voice, drum, section, band, ending or derived part that is not defined, or a name defined twice

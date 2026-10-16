@@ -235,7 +235,7 @@ fails(play("  T in D in E", "C c1"), "line 11: `in` is said once a line")
 fails(play("  T", "C  c2 \\doit r2"), "line 18: \\doit marks a note, not a rest")
 fails(play("  T", "C  c2~ \\fall c2"), "line 18: a note held by a tie is not struck, and takes no marks")
 fails(play("  T", "C  c2 \\fall \\fall d2"), "line 18: \\fall is written once for its note")
-fails(play("  T", "C  c1 \\fall"), "line 18: the melody: \\fall with no note after it")
+fails(play("  T", "C  c1 \\fall"), "line 18: \\fall with no note after it in its bar")
 # A choke group is a host drum's, and one name.
 fails(
   with_hits("C c1").replace("drum Kick host Kick plays hits vol 80%", "drum Kick host Kick vol 80% choke A B"),
