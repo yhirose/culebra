@@ -47,9 +47,19 @@ let _audio_module = fn () {
   # strings: each mode {freq, width, gain} is a two-pole resonator ringing at
   # `freq` Hz, `width` Hz wide, its peak about `gain`; `dry` of the samples
   # themselves is added. The answer is as long as `samples`.
-  let resonate = fn (samples: Array, modes: Array, dry: Long | Float = 0.0, rate: Long | Float = 44100) {
+  let resonate = fn (
+    samples: Array,
+    modes: Array,
+    dry: Long | Float = 0.0,
+    rate: Long | Float = 44100,
+  ) {
     let flat = modes.flat_map(fn (m) {
-      __raise("TypeError", "Audio.resonate: a mode is \{freq, width, gain}, each a number") if type_of(m) != "Object"
+      if type_of(m) != "Object" {
+        __raise(
+          "TypeError",
+          "Audio.resonate: a mode is \{freq, width, gain}, each a number",
+        )
+      }
       [m.freq, m.width, m.gain]
     })
     _Audio.resonate(samples, flat, dry, rate)
@@ -60,14 +70,27 @@ let _audio_module = fn () {
   # down by 60 dB), in the order they come, the first from the start; each
   # strike {at, samples} is added into the string from `at` on. A change of
   # tuning keeps the string moving, as a finger hammering on does.
-  let pluck = fn (seconds: Long | Float, tunings: Array, strikes: Array = [], rate: Long | Float = 44100) {
+  let pluck = fn (
+    seconds: Long | Float,
+    tunings: Array,
+    strikes: Array = [],
+    rate: Long | Float = 44100,
+  ) {
     let flat = tunings.flat_map(fn (t) {
-      __raise("TypeError", "Audio.pluck: a tuning is \{at, freq, ring}, each a number") if type_of(t) != "Object"
+      if type_of(t) != "Object" {
+        __raise(
+          "TypeError",
+          "Audio.pluck: a tuning is \{at, freq, ring}, each a number",
+        )
+      }
       [t.at, t.freq, t.ring]
     })
     for s in strikes {
       if type_of(s) != "Object" || type_of(s.samples) != "Array" {
-        __raise("TypeError", "Audio.pluck: a strike is \{at, samples}, its samples numbers")
+        __raise(
+          "TypeError",
+          "Audio.pluck: a strike is \{at, samples}, its samples numbers",
+        )
       }
     }
     _Audio.pluck(
@@ -94,17 +117,28 @@ let _audio_module = fn () {
     rate: Long | Float = 44100,
   ) {
     let pairs = |xs| xs.flat_map(fn (p) {
-      __raise("TypeError", "Audio.partials: an envelope is a list of (at, value), each a number") if type_of(p) != "Tuple" || p.size() != 2
+      if type_of(p) != "Tuple" || p.size() != 2 {
+        __raise(
+          "TypeError",
+          "Audio.partials: an envelope is a list of (at, value), each a number",
+        )
+      }
       [p[0], p[1]]
     })
     for p in spectrum {
       if type_of(p) != "Tuple" || p.size() != 2 || type_of(p[1]) != "Array" {
-        __raise("TypeError", "Audio.partials: a spectrum is a list of (at, amps), amps a list of numbers")
+        __raise(
+          "TypeError",
+          "Audio.partials: a spectrum is a list of (at, amps), amps a list of numbers",
+        )
       }
     }
     let quiet = noise == nil
     if !quiet && type_of(noise) != "Object" {
-      __raise("TypeError", "Audio.partials: the noise is \{low, high, seed, steady, pulsed}")
+      __raise(
+        "TypeError",
+        "Audio.partials: the noise is \{low, high, seed, steady, pulsed}",
+      )
     }
     _Audio.partials(
       seconds,

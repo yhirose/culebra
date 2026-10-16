@@ -132,10 +132,11 @@ fn blow(notes) {
   }
   # The spectrum where it bends: as the partials open, and as each change
   # starts and settles; straight between.
-  let bends = [
+  let turns = [
     ...iota(PARTIALS).map(|k| k == 0 ? 0.0 : 0.01 + 0.003 * k),
     ...iota(1, notes.size()).flat_map(|k| [notes[k].at, notes[k].at + changes[k].settle]),
-  ].filter(|t| t < seconds).sorted()
+  ]
+  let bends = turns.filter(|t| t < seconds).sorted()
   # The rest of the controls, worked out often, at each corner one turns
   # (the breath's rise and fall, each change's settling and dip), and on
   # both sides of each note's start, where a bend jumps.
@@ -145,22 +146,25 @@ fn blow(notes) {
     ...iota(1, notes.size()).flat_map(|k| [notes[k].at + changes[k].settle, notes[k].at + changes[k].dip_len]),
   ]
   let starts = iota(1, notes.size()).map(|k| (notes[k].at, k))
-  let controls = wave.control_times(seconds, starts, corners).map(fn ((t, note)) {
+  let times = wave.control_times(seconds, starts, corners)
+  let controls = times.map(fn ((t, note)) {
     let s = state(t, note ?? sounding(t))
     let ch = changes[s.at]
     # A tongued start speaks a little flat and comes up to pitch.
     let speak = s.at == 0 && s.since < 0.15
       ? 1.0 - 0.015 * Math.exp(-s.since / 0.025)
       : 1.0
+    let marks = marked[s.at]
     let (
       semis,
       bent,
-    ) = marked[s.at].empty() ? (0.0, 1.0) : bend(marked[s.at], s.since, ends[s.at] - t)
+    ) = marks.empty() ? (0.0, 1.0) : bend(marks, s.since, ends[s.at] - t)
     let depth = 0.005 * Math.max(0.0, Math.min(1.0, (s.since - 0.3) / 0.4))
     let wobble = Math.sin(2.0 * Math.pi * 5.2 * t)
-    let f = (s.x < 1.0 ? freqs[s.was] * Math.exp(s.x * ch.ratio) : freqs[s.at]) *
-      speak *
-      2.0 ** (semis / 12.0)
+    let fingered = s.x < 1.0
+      ? freqs[s.was] * Math.exp(s.x * ch.ratio)
+      : freqs[s.at]
+    let f = fingered * speak * 2.0 ** (semis / 12.0)
     let dip = s.since < ch.dip_len
       ? 1.0 - ch.dip * Math.sin(Math.pi * s.since / ch.dip_len)
       : 1.0

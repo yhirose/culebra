@@ -66,7 +66,8 @@ fn bowed(notes, peaks) {
     ...iota(1, notes.size()).flat_map(|k| [notes[k].at + CHANGE, notes[k].at + DIP_LEN]),
   ]
   let starts = iota(1, notes.size()).map(|k| (notes[k].at, k))
-  let controls = wave.control_times(seconds, starts, corners).map(fn ((t, note)) {
+  let times = wave.control_times(seconds, starts, corners)
+  let controls = times.map(fn ((t, note)) {
     mut at = 0
     while at + 1 < notes.size() && t >= notes[at + 1].at {
       at += 1
@@ -84,12 +85,14 @@ fn bowed(notes, peaks) {
     let wobble = Math.sin(2.0 * Math.pi * 5.6 * t)
     let rise = Math.min(1.0, t / attack)
     let fall = t <= held ? 1.0 : Math.max(0.0, 1.0 - (t - held) / release)
+    let bow = dip * wave.swell(notes[at], since) * rise * rise * fall
     {
       freq: (t, f * (1.0 + depth * wobble)),
-      gain: (t, dip * wave.swell(notes[at], since) * rise * rise * fall * (1.0 + 2.0 * depth * wobble)),
+      gain: (t, bow * (1.0 + 2.0 * depth * wobble)),
     }
   })
-  Audio.partials(seconds, controls.map(|c| c.freq), spectra, gain: controls.map(|c| c.gain))
+  let freq = controls.map(|c| c.freq)
+  Audio.partials(seconds, freq, spectra, gain: controls.map(|c| c.gain))
 }
 
 let VIOLIN = [

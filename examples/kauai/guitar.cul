@@ -75,7 +75,8 @@ fn string(notes, kind) {
       _ => 0.225,
     }
     let period = Math.floor(RATE / wave.hz(notes[k].pitch) - 0.6)
-    {at: notes[k].at, samples: burst(notes[k], period, strength, kind, notes[k].pitch * 7919 + k)}
+    let seed = notes[k].pitch * 7919 + k
+    {at: notes[k].at, samples: burst(notes[k], period, strength, kind, seed)}
   })
   Audio.pluck(held + 0.3, tunings, strikes)
 }
@@ -130,7 +131,11 @@ fn played(kind, params) {
 }
 
 let sounds = {
-  guitar: |notes, params| Audio.resonate(pluck(notes, played(NYLON, params)), WOOD, dry: STRAIGHT),
+  guitar: |notes, params| Audio.resonate(
+    pluck(notes, played(NYLON, params)),
+    WOOD,
+    dry: STRAIGHT,
+  ),
   steel: |notes, params| pluck(notes, played(STEEL, params)),
   bass: |notes, params| pluck(notes, played(BASS, params)),
 }
