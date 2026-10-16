@@ -1,6 +1,6 @@
 about {
   title  Blue phrase
-  note   a blues in F for an alto saxophone, a walking bass, a ride cymbal and a hi-hat, swung, with scoops, plops, doits and falls, on host instruments that play a phrase at a time
+  note   a blues in F for an alto saxophone, a walking bass, a ride cymbal and a hi-hat, swung, with scoops, plops, doits and falls, and a tag the band hits together over a crash, on host instruments that play a phrase at a time
 }
 
 band Quartet {
@@ -10,6 +10,7 @@ band Quartet {
   drum Ride     host Ride     vol 45%
   drum Hat      host Hat      vol 35%  choke Hats
   drum OpenHat  host OpenHat  vol 25%  choke Hats
+  drum Crash    host Crash    vol 40%  plays hits
 }
 
 groove Walk {
@@ -47,5 +48,8 @@ section Head {
 }
 
 section Tag {
+  C7       r4 .c'8 r .db' r .c'4
+    hits:  r4 .x8 r .x r .x4
   F6       \fall !f'2 r
+    hits:  \fall !x2 r2
 }

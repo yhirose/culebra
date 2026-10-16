@@ -577,7 +577,8 @@ after it.
 | `\scoop` `\plop` `\doit` `\fall` | the next note's jazz articulation: into it from below, into it from above, out of it upward, out of it falling away |
 
 The jazz articulations mark one note, as a chart draws them on it, and are
-written once each before it in its bar; they go with its marks, `\fall !c2`. A host
+written once each before it in its bar; they go with its marks, `\fall !c2`,
+and mark a hit of the band's in the same way ([Hits and breaks](#hits-and-breaks)). A host
 instrument that hears marks plays them
 ([section 10](#10-playing-from-culebra)); a tone channel plays the note as
 written.
@@ -655,7 +656,8 @@ section, else the song's, else the melody's.
 A band leaves its groove to strike a rhythm together (hits), or to stop and
 leave a bar to one player (a break). A `hits:` line under a bar gives that
 rhythm: `x` where the band strikes and `r` where it rests, with values, dots,
-ties and tuplets as notes have, and the playing marks `.` `!` `-` `^`.
+ties and tuplets as notes have, the playing marks `.` `!` `-` `^`, and the
+jazz articulations (`\fall !x2`).
 
 In that bar the band plays the hits in place of its groove:
 
@@ -668,8 +670,10 @@ In that bar the band plays the hits in place of its groove:
 
 A hit sounds for its value (`x4` a quarter), and a tie holds it on
 (`x8~ x8`). Its marks play it as they play a note: `.` half of it, `!` a level
-louder; a host instrument that hears marks is told them. Each hit takes the
-chord sounding at its moment, and the band's dynamic. The melody plays its notes,
+louder, on the drums too; a host instrument that hears marks is told them,
+a drum's as well, so a crash can ring on under a long hit and be caught by
+the hand on a short one. Each hit takes the chord sounding at its moment, and
+the band's dynamic. The melody plays its notes,
 and a part voice its part where the section writes one, as it does over a
 groove.
 
@@ -1019,7 +1023,7 @@ let song = Audio.Kauai.load("trio.kau", voices: {
 | `"len"` | `len`, seconds the note is held: a staccato's half, a marcato's three quarters, to the millisecond | a voice |
 | `"level"` | `level`, the note's dynamic over `mf`'s (`1.0` at `mf`, `0.47` at `pp`, `1.35` at `ff`; an accent a step louder), to the hundredth; a voice's note also `level_end`, the dynamic it ends at, which differs from `level` through a `cresc` or a `dim` (and after an accent) | a voice or a drum |
 | `"line"` | `line`, the line the note moves in through the phrase, `0` the lowest: the k-th lowest of notes struck together is in line k, and a note a tie holds keeps its line while the others take the rest in turn | a voice |
-| `"marks"` | `marks`, the names of what is written on the note: `staccato` `accent` `tenuto` `marcato` `fermata` `arpeggio` `scoop` `plop` `doit` `fall` | a voice |
+| `"marks"` | `marks`, the names of what is written on the note: `staccato` `accent` `tenuto` `marcato` `fermata` `arpeggio` `scoop` `plop` `doit` `fall`; for a drum, what is written on the band's hit it strikes, and none on a groove's | a voice or a drum |
 | `"next"` | `next`, seconds from the phrase's first note until the voice's next phrase starts; for a drum, from the hit until the drum, or its choke group, hits next; `nil` when nothing comes, to the millisecond | a voice or a drum |
 
 Notes struck together are each a note of the phrase, at the same `at`, from
@@ -1173,7 +1177,8 @@ Again      <- Ordinal ':' (Chord+ Notes? / Notes) EOL / Ordinal Name ':' (Notes 
             / Ordinal 'hits' ':' (HitNotes / '.') EOL
 Hits       <- 'hits' ':' HitNotes EOL
 Repeat     <- ('%%' / '%') EOL                    # the bar, or the two bars, before it again
-HitNotes   <- (Int (':' Int)? '[' Hit+ ']' / Hit)+
+HitNotes   <- (Int (':' Int)? '[' (Jazz / Hit)+ ']' / Jazz / Hit)+
+Jazz       <- '\\' ('scoop' / 'plop' / 'doit' / 'fall')   # marks the hit after it
 Hit        <- ('.' / '!' / '-' / '^')* ('x' / 'r') Value? '~'?
 Ordinal    <- Int ('st' / 'nd' / 'rd' / 'th')
 

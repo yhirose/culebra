@@ -446,17 +446,20 @@ assert_eq(told.sorted(), [
 assert_eq(hit_told.sorted(), ['next 2.0', 'next nil', 'ride next 1.0', 'ride next nil'])
 
 # The band's hits carry their marks as written notes do: a staccato hit is
-# let go at half its length, a marcato at three quarters, and an instrument
-# that hears marks is told so.
+# let go at half its length, a marcato at three quarters, an accent strikes
+# a level louder, and an instrument that hears marks is told them, a jazz
+# articulation among them; a drum that plays hits is told them too.
 mut plucked = []
+mut crashed = []
 let kime = Audio.Kauai.new(lines([
   'band Duo {',
   '  voice Lead  pulse  plays melody  vol 20',
   '  voice Bass  host Pluck  plays roots in E2..D#3  vol 50%',
+  '  drum Crash  host Crash  vol 50%  plays hits',
   '}',
   'groove Walk {', '  Bass  1 1 1 1', '}',
   'song Kime {', '  tempo 60', '  band Duo', '  groove Walk', '  melody in C4..B4', '  Kime', '}',
-  'section Kime {', '  C  r1', '    hits:  .x4 -x4 ^x4 !x4', '}',
+  'section Kime {', '  C  r1', '    hits:  .x4 -x4 ^x4 \fall !x4', '}',
 ]), voices: {
   pluck: {
     phrase: fn (notes, params) {
@@ -464,6 +467,14 @@ let kime = Audio.Kauai.new(lines([
       Audio.Sound.new(WAV)
     },
     hears: ["len", "marks"],
+  },
+}, drums: {
+  crash: {
+    hit: fn (n, params) {
+      crashed.push(said(n))
+      Audio.Sound.new(WAV)
+    },
+    hears: ["level", "marks"],
   },
 })
 kime.play()
@@ -495,8 +506,14 @@ assert_eq(lined.sorted(), [
 assert_eq(plucked.sorted(), [
   "pitch 48, at 0.0, len 0.5, marks ['staccato']",
   "pitch 48, at 0.0, len 0.75, marks ['marcato']",
-  "pitch 48, at 0.0, len 1.0, marks ['accent']",
+  "pitch 48, at 0.0, len 1.0, marks ['accent', 'fall']",
   "pitch 48, at 0.0, len 1.0, marks ['tenuto']",
+])
+assert_eq(crashed.sorted(), [
+  "level 1.0, marks ['staccato']",
+  "level 1.0, marks ['tenuto']",
+  "level 1.18, marks ['accent', 'fall']",
+  "level 1.18, marks ['marcato']",
 ])
 
 # A `melody in` or `part NAME in` line holds for the bars after it, as a
@@ -550,7 +567,7 @@ assert_eq(
 )
 assert_eq(
   refused(fiddle, {snare: {hit: |n, params| nil, hears: ["len"]}}),
-  "Audio.Kauai: drums: `snare` hears len; it can hear level, next",
+  "Audio.Kauai: drums: `snare` hears len; it can hear level, marks, next",
 )
 assert_eq(
   refused({fiddle: {note: |n, params| nil, hears: ["len"]}}, snare),

@@ -1804,13 +1804,13 @@ let _kauai_module = fn () {
       let h = b.band_hits
       let toks = lex(h.text)
       let written = toks.map(fn (t) {
-        return t if t == "]" || t.ends_with("[")
+        return t if t == "]" || t.ends_with("[") || t.starts_with("\\") && BENDS.contains(t.strip_prefix("\\"))
         mut i = 0
         while i < t.size() && ".!-^".contains(t.slice(i, i + 1).to_string()) {
           i += 1
         }
         let head = t.slice(i, i + 1).to_string()
-        fail(h.line, "hits are x (strike) and r (rest), with a value and the marks . ! - ^: {t}") if head != "x" && head != "r"
+        fail(h.line, "hits are x (strike) and r (rest), with a value, the marks . ! - ^ and a jazz articulation: {t}") if head != "x" && head != "r"
         head == "x" ? t.slice(0, i).to_string() + "c" + t.slice(i + 1, t.size()).to_string() : t
       }).join(" ")
       let (events, len) = melody_notes(written, h.line, b.beat)
@@ -1873,14 +1873,14 @@ let _kauai_module = fn () {
     # the host drums', which sound together.
     mut noise_hits = {}
     mut host_hits = []
-    let hit_drum = fn (dn, hit_bar, offset, line) {
+    let hit_drum = fn (dn, hit_bar, offset, line, hit_marks) {
       let step = hit_bar.at + offset
       if band.drums[dn].has("host") {
-        host_hits.push({at: step, name: dn})
+        host_hits.push({at: step, name: dn, marks: hit_marks})
       } else {
         let beat = 1 + offset * 1.0 / hit_bar.beat
-        fail(line, "{noise_hits[step]} and {dn} both hit at beat {beat} of the bar at {hit_bar.line}, on the noise channel") if noise_hits.has(step)
-        noise_hits[step] = dn
+        fail(line, "{noise_hits[step].name} and {dn} both hit at beat {beat} of the bar at {hit_bar.line}, on the noise channel") if noise_hits.has(step)
+        noise_hits[step] = {name: dn, marks: hit_marks}
       }
     }
     # A derived part needs its voice.
@@ -1909,7 +1909,7 @@ let _kauai_module = fn () {
         for h in hit_plan {
           for dn in band.drums.keys() {
             continue if !band.drums[dn].on_hits
-            hit_drum(dn, b, h.at, b.band_hits.line)
+            hit_drum(dn, b, h.at, b.band_hits.line, h.marks)
           }
         }
       } else {
@@ -1920,7 +1920,7 @@ let _kauai_module = fn () {
           for k, t in row.toks.enumerate() {
             continue if t == "."
             fail(row_line, "{dn} hits with `{t}`, not x, under the bar at {b.line}") if t != "x"
-            hit_drum(dn, b, k * row.size, row_line)
+            hit_drum(dn, b, k * row.size, row_line, [])
           }
         }
       }
@@ -2028,10 +2028,10 @@ let _kauai_module = fn () {
       })).to_object(),
       # What the groove's voices and the derived parts play, {voice, notes}
       # with each note {at, len, pitches, marks, level}, and the drums' hits,
-      # {at, name}; in units.
+      # {at, name, marks}; in units.
       rows: [...second, {voice: bass_v, notes: bass_row.notes}, {voice: chord_v, notes: chord_row.notes}],
       hits: [
-        ...noise_hits.keys().map(|u| ({at: u, name: noise_hits[u]})),
+        ...noise_hits.keys().map(|u| ({at: u, ...noise_hits[u]})),
         ...host_hits,
       ],
       # Written times under a fermata, (start, length): each plays twice as
@@ -2213,11 +2213,13 @@ let _kauai_module = fn () {
     }
     for hit in x.hits {
       let d = x.drums[hit.name]
-      let hit_vol = d.vol * band_level(hit.at) / MF
+      # A hit of the band's that is accented strikes a level louder, as a note does.
+      let level = hit.marks.contains("accent") || hit.marks.contains("marcato") ? louder(band_level(hit.at)) : band_level(hit.at)
+      let hit_vol = d.vol * level / MF
       if d.has("host") {
         out.push({
           at: at(hit.at), len: 0.0, by: hit.name, pitch: nil, mut vol: hit_vol,
-          level: band_level(hit.at) / MF,
+          level: level / MF, marks: hit.marks,
         })
       } else {
         out.push({
@@ -2231,9 +2233,10 @@ let _kauai_module = fn () {
 
   # What an instrument may hear of a note: a voice its length, its dynamic,
   # its marks, its line in the phrase and when the voice plays next; a drum
-  # its dynamic and when it, or its choke group, hits next.
+  # its dynamic, the marks on the band's hit it strikes, and when it, or its
+  # choke group, hits next.
   let VOICE_HEARS = ["len", "level", "line", "marks", "next"]
-  let DRUM_HEARS = ["level", "next"]
+  let DRUM_HEARS = ["level", "marks", "next"]
 
   # How host sound `host` is made, from `kind.table` (the `voices:` or
   # `drums:` given): a function, or an instrument `{phrase: ..., hears: [...]}`
@@ -2319,6 +2322,7 @@ let _kauai_module = fn () {
       let e = h.e
       let n = {
         ...(h.hears.contains("level") ? {level: hundredths(e.level)} : {}),
+        ...(h.hears.contains("marks") ? {marks: e.marks} : {}),
         ...(h.hears.contains("next") ? {next: next(h.group, e.at)} : {}),
       }
       let make = h.make

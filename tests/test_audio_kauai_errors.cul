@@ -224,12 +224,17 @@ fails(
 )
 fails(
   with_hits("C c1\n  hits: c2 r"),
-  "line 19: hits are x (strike) and r (rest), with a value and the marks . ! - ^: c2",
+  "line 19: hits are x (strike) and r (rest), with a value, the marks . ! - ^ and a jazz articulation: c2",
 )
 fails(
   with_hits("C c1\n  hits: (x4 x) r2"),
-  "line 19: hits are x (strike) and r (rest), with a value and the marks . ! - ^: (",
+  "line 19: hits are x (strike) and r (rest), with a value, the marks . ! - ^ and a jazz articulation: (",
 )
+fails(
+  with_hits("C c1\n  hits: \\p x1"),
+  "line 19: hits are x (strike) and r (rest), with a value, the marks . ! - ^ and a jazz articulation: \\p",
+)
+fails(with_hits("C c1\n  hits: \\fall r2 x2"), "line 19: \\fall marks a note, not a rest")
 fails(
   with_hits("C c1\n  hits: x2"),
   "line 19: the hits are 2.0 beats long, want 4",

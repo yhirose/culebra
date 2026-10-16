@@ -1,8 +1,10 @@
-# A jazz kit for Audio.Kauai.load's `drums:`: `host Ride`, `host Hat` and
-# `host OpenHat`. A cymbal is six square waves at frequencies no harmonic
-# series holds, with some noise, through two high-pass stages: the ride rings
-# on, the hat closed by the pedal is the same metal cut short, and the open
-# hat rings until the next hit of its choke group closes it.
+# A jazz kit for Audio.Kauai.load's `drums:`: `host Ride`, `host Hat`,
+# `host OpenHat` and `host Crash`. A cymbal is six square waves at
+# frequencies no harmonic series holds, with some noise, through two
+# high-pass stages: the ride rings on, the hat closed by the pedal is the
+# same metal cut short, the open hat rings until the next hit of its choke
+# group closes it, and the crash rings on unless the band's hit is short (a
+# staccato or a marcato), when the hand catches it.
 
 import wave from './wave.cul'
 
@@ -34,23 +36,36 @@ fn metal(seconds, decay, cutoff, noisy, seed) {
 let RIDE = metal(2.0, 0.7, 3500.0, 0.3, 11).map(|s| s * 0.6)
 let HAT = metal(0.15, 0.03, 6000.0, 0.5, 23).map(|s| s * 0.7)
 let OPEN = metal(1.0, 0.35, 6000.0, 0.5, 29).map(|s| s * 0.6)
+let CRASH = metal(2.5, 0.9, 4000.0, 0.5, 31).map(|s| s * 0.6)
+
+# `samples` stopped `seconds` in (nil: rung out), fading over `fade` seconds.
+fn stopped(samples, seconds, fade) {
+  let n = Math.round(fade * RATE)
+  let stop = seconds == nil ? samples.size() : Math.round(seconds * RATE)
+  iota(Math.min(
+    samples.size(),
+    stop + n,
+  )).map(|i| samples[i] * (i < stop ? 1.0 : 1.0 - (i - stop).to_float() / n))
+}
 
 # The open hat, closed `n.next` seconds on if its choke group hits again.
 fn open_hat(n) {
-  let fade = Math.round(0.01 * RATE)
-  let stop = n.next == nil ? OPEN.size() : Math.round(n.next * RATE)
-  iota(Math.min(
-    OPEN.size(),
-    stop + fade,
-  )).map(|i| OPEN[i] * (i < stop ? 1.0 : 1.0 - (i - stop).to_float() / fade))
+  stopped(OPEN, n.next, 0.01)
+}
+
+# The crash, caught by the hand a moment after a short hit of the band's.
+fn crash(n) {
+  let short = n.marks.contains("staccato") || n.marks.contains("marcato")
+  stopped(CRASH, short ? 0.12 : nil, 0.05)
 }
 
 let sounds = {
   ride: |n, params| RIDE,
   hat: |n, params| HAT,
   openhat: |n, params| open_hat(n),
+  crash: |n, params| crash(n),
 }
-let HEARS = {ride: [], hat: [], openhat: ["next"]}
+let HEARS = {ride: [], hat: [], openhat: ["next"], crash: ["marks"]}
 let drums = sounds
   .keys()
   .map(|k| (
