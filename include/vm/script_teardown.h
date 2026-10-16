@@ -12,7 +12,7 @@ namespace culebra {
 
 struct ScriptTeardownGuard {
   ~ScriptTeardownGuard() {
-    if (auto& fn = isolate_teardown_join_hook()) fn();
+    if (auto* join_all = isolate_teardown_join_hook.load()) join_all();
     fswatch::fs_watch_close_all();
   }
 };

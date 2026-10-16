@@ -269,7 +269,7 @@ expect_absent none 'culebra::foreign_fixture::' "the fixture's own C++ class"
 # installs (rt_runtime.inc.h), never by symbol from the generic property paths.
 expect_absent none 'culebra::jit_serialize[(]' "the isolate transfer graph"
 expect_absent none "$shared_reader" "the SharedVal reader"
-expect_absent none '_jit_isolate_teardown_join_all' "the isolate teardown join"
+expect_absent none 'culebra::join_started_isolates' "the isolate teardown join"
 expect_absent none "$fmt_machinery" "libstdc++'s formatter, a program that formats nothing"
 expect_absent none "$tensor_kernels" "cpp-tensorlib's elementwise kernels"
 expect_absent none "$tensor_device_clone" "clone()'s device arm"

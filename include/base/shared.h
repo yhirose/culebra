@@ -2794,20 +2794,31 @@ __attribute__((used)) inline std::atomic<bool> culebra_g_sigint{false};
 __attribute__((used)) inline std::atomic<bool> culebra_g_wake{false};
 }
 
-// Count of isolates cancelled but not yet reaped. Keeps `culebra_g_wake` set
+// Count of isolates cancelled but not yet joined. Keeps `culebra_g_wake` set
 // while a cancelled JIT isolate may still be spinning toward its next safepoint;
-// the last reap (IsolateCore's dtor) clears the wake. Host-side only — no JIT IR
+// the last IsolateCore::join() clears the wake. Host-side only — no JIT IR
 // references it.
 inline std::atomic<int> culebra_g_cancel_pending{0};
+
+// Drops the JIT wake once neither a Ctrl+C nor a cancel wants it. Asked again
+// after the store, so one that lands between the first look and the store sets
+// it back instead of being lost (each setter stores its own flag, then the
+// wake, all sequentially consistent).
+inline void _clear_wake_if_idle() {
+  auto wanted = [] {
+    return culebra_g_sigint.load() || culebra_g_cancel_pending.load() > 0;
+  };
+  if (wanted()) return;
+  culebra_g_wake.store(false);
+  if (wanted()) culebra_g_wake.store(true);
+}
 
 // Consume a pending Ctrl+C (so a `catch` can resume) and release the JIT wake
 // flag when nothing else is pending. Shared by the interp poll, the JIT
 // safepoint, and the stdin poll so the wake is dropped uniformly.
 inline void _consume_sigint() {
-  culebra_g_sigint.store(false, std::memory_order_relaxed);
-  if (culebra_g_cancel_pending.load(std::memory_order_relaxed) == 0) {
-    culebra_g_wake.store(false, std::memory_order_relaxed);
-  }
+  culebra_g_sigint.store(false);
+  _clear_wake_if_idle();
 }
 
 // Signal.notify (Go's signal.Notify model). When a program registers a channel
@@ -2820,19 +2831,12 @@ inline void _consume_sigint() {
 inline std::atomic<bool> culebra_g_signal_notify{false};
 inline std::atomic<bool> culebra_g_signal_pending{false};
 
-// Hook sendable_rt.h fills in at load, read by jit.h and the script
-// teardown guard — kept as a hook so script_teardown.h stays light instead
-// of pulling the whole isolate stack into every consumer. Called right
-// before JIT::exec tears
-// down the LLJIT: every isolate's compiled body is the SAME JitClosure::fn_ptr
-// living in that LLJIT (sendable_rt.h), so a spawn still running when the
-// module's code memory is freed returns into unmapped memory. Cancels + joins
-// whatever is still outstanding — a no-op once every isolate has already been
-// joined (the normal case), which is the vast majority of runs.
-inline std::function<void()>& isolate_teardown_join_hook() {
-  static std::function<void()> fn;
-  return fn;
-}
+// Cancels and joins every isolate still running when a run ends
+// (join_started_isolates, isolate_core.h), set by the first one started. The
+// run boundaries call it (ScriptTeardownGuard): under JIT::exec, before the
+// LLJIT whose code every isolate's body runs is freed. A hook, so a program
+// that never starts an isolate links none of it.
+inline std::atomic<void (*)()> isolate_teardown_join_hook{nullptr};
 
 // True iff `f` is the process SIGINT flag (a Ctrl+C) rather than a per-isolate
 // cancel — the poll uses this to pick the message and the one-shot consume.
@@ -2852,13 +2856,13 @@ inline void _culebra_sigint_handler(int sig) {
     culebra_g_signal_pending.store(true, std::memory_order_relaxed);
     return;
   }
-  if (culebra_g_sigint.exchange(true, std::memory_order_relaxed)) {
+  if (culebra_g_sigint.exchange(true)) {
     std::signal(sig, SIG_DFL);
     std::raise(sig);
   } else {
     // First Ctrl+C: wake the JIT/AOT loop safepoints (atomic store is
     // async-signal-safe). The slow path consumes the one-shot flag.
-    culebra_g_wake.store(true, std::memory_order_relaxed);
+    culebra_g_wake.store(true);
   }
 }
 
@@ -2869,8 +2873,8 @@ inline void _culebra_sigint_handler(int sig) {
 // poll reads the throw flag directly; the inlined JIT safepoint reads only the
 // wake flag (it can't cheaply read the per-thread flag).
 inline void request_interrupt() {
-  culebra_g_sigint.store(true, std::memory_order_relaxed);
-  culebra_g_wake.store(true, std::memory_order_relaxed);
+  culebra_g_sigint.store(true);
+  culebra_g_wake.store(true);
 }
 
 // Install the SIGINT handler and point the current (main) thread's Runtime at

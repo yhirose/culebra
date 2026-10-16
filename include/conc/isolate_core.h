@@ -47,70 +47,53 @@ inline std::atomic<int>& g_live_isolates() {
   return n;
 }
 
-struct IsolateCore;
-// Request cancellation of a still-running isolate: set its sticky per-thread
-// `interrupt` flag AND the global JIT wake flag (so a JIT isolate's tight loop
-// branches to its safepoint). Counted once per core so the wake stays set until
-// every cancelled isolate is reaped. Use everywhere `interrupt` would be set.
-inline void mark_isolate_cancelled(IsolateCore& core);
-// Pair of mark_isolate_cancelled: release this core's pending count (if it was
-// counted) and clear the wake when nothing remains pending. Called at reap (the
-// dtor, after join).
-inline void _reap_isolate_cancel(IsolateCore& core);
-
-// Shared, GC-external result slot for one spawned isolate. Holds the OS thread
-// plus its completion state; the result crosses the boundary as a neutral
-// SendNode (threaded) or, for the inline fallback, as a parent-heap Value.
+// One spawned isolate: its OS thread, and what the thread hands back (the
+// result as a neutral SendNode). The thread only borrows the core
+// (run_isolate_child_jit), so the core owns the thread's whole life: cancel()
+// asks it to stop, join() waits for it to end, and whoever lets the core go
+// last does both. Either may be called again, and join() from any thread.
 struct IsolateCore {
   culebra::SizedThread thread;
-  std::mutex m;
-  std::condition_variable cv;
+  std::mutex m;  // guards `finished` and what the child hands back
   bool finished = false;
-  bool joined = false;
-  std::atomic<bool> interrupt{false};           // set by drop() to cancel
-  std::atomic<bool> cancel_counted{false};      // contributed to g_cancel_pending
-
   sendable::SendNode result;                    // neutral result
   std::optional<culebra::CulebraError> error;   // structured error crossed back
   std::optional<sendable::SendNode> thrown;     // threaded user `throw` value
   // A cancel that reached the child, kept apart from `error`: an Interrupted
   // is not a CulebraError, and join() must not re-raise it as one.
   std::optional<std::string> interrupted;
+  std::atomic<bool> interrupt{false};       // set by cancel()
+  std::atomic<bool> cancel_counted{false};  // contributed to g_cancel_pending
 
-  // The thread only borrows the core (run_isolate_child_jit), so it must be
-  // gone before the core is: whoever lets the core go last cancels it and
-  // joins it here, unless `join`/`drop` already did.
-  //
+  // Sets the child's sticky `interrupt` AND the global JIT wake (so a JIT
+  // tight loop branches to its safepoint). Counted once per core, so the wake
+  // stays set until every cancelled isolate is joined.
+  void cancel() {
+    interrupt.store(true, std::memory_order_relaxed);
+    if (!cancel_counted.exchange(true)) culebra_g_cancel_pending.fetch_add(1);
+    culebra_g_wake.store(true);
+  }
+  // Locked: at exit the teardown walk and a parent isolate's own teardown may
+  // both reach one grandchild at once, and a thread is not safe to join from two.
+  void join() {
+    std::lock_guard<std::mutex> lk(join_m_);
+    if (thread.joinable()) thread.join();
+    if (cancel_counted.exchange(false) && culebra_g_cancel_pending.fetch_sub(1) == 1)
+      _clear_wake_if_idle();
+  }
+
   // What the child handed back stays here for as long as the handle may be
   // asked for it (`join` after `poll` reads it again), so the refs its nodes
   // hold in flight (a channel end, a SharedBuffer, a Shared view) go back
   // with it and not at a read.
   ~IsolateCore() {
-    if (thread.joinable()) {
-      mark_isolate_cancelled(*this);  // unwedge a still-running (maybe JIT) loop
-      thread.join();
-    }
-    _reap_isolate_cancel(*this);
+    if (thread.joinable()) cancel();
+    join();
   }
+
+ private:
+  std::mutex join_m_;
 };
-
-inline void mark_isolate_cancelled(IsolateCore& core) {
-  core.interrupt.store(true, std::memory_order_relaxed);
-  if (!core.cancel_counted.exchange(true, std::memory_order_relaxed)) {
-    culebra::culebra_g_cancel_pending.fetch_add(1, std::memory_order_relaxed);
-  }
-  culebra::culebra_g_wake.store(true, std::memory_order_relaxed);
-}
-
-inline void _reap_isolate_cancel(IsolateCore& core) {
-  if (core.cancel_counted.exchange(false, std::memory_order_relaxed)) {
-    if (culebra::culebra_g_cancel_pending.fetch_sub(
-            1, std::memory_order_relaxed) == 1 &&
-        !culebra::culebra_g_sigint.load(std::memory_order_relaxed)) {
-      culebra::culebra_g_wake.store(false, std::memory_order_relaxed);
-    }
-  }
-}
 
 // Whether the isolate has finished (normally or by throwing). Read under the
 // core lock; used by the fan_in merge to treat a finished producer's drained
@@ -182,31 +165,19 @@ inline ChannelCore* chan_core(int64_t word) {
 
 inline void chan_drop(ChannelCore* core, int role);  // fwd
 
-// Cancel every isolate in `live` up front (so every wait below unblocks
-// promptly instead of waiting each one out serially), then join + reap.
+// Cancels them all before joining any, so they wind down together rather than
+// one after another.
 inline void cancel_and_join_isolates(
-    std::vector<std::shared_ptr<IsolateCore>> live) {
-  for (auto& core : live) mark_isolate_cancelled(*core);
-  for (auto& core : live) {
-    if (core->joined) continue;  // defensive: joining twice is UB, and
-                                  // nothing currently guarantees `live` is
-                                  // duplicate-free across future callers
-    {
-      std::unique_lock<std::mutex> lk(core->m);
-      core->cv.wait(lk, [&] { return core->finished; });
-    }
-    if (core->thread.joinable()) core->thread.join();
-    core->joined = true;
-    _reap_isolate_cancel(*core);
-  }
+    const std::vector<std::shared_ptr<IsolateCore>>& cores) {
+  for (const auto& core : cores) core->cancel();
+  for (const auto& core : cores) core->join();
 }
 
 // A Channel.fan_in merge: the channels it reads, each held by an rx count of
 // the merge's own, and for `fan_in(items, fn)` the producer isolates it
 // spawned, one per source. Whatever reads through it shares it: the merged rx
 // and each of its for-in cursors. The last of them to go stops the producers
-// still running and joins them all, then gives the counts back. It cancels
-// them all before joining any, so they wind down together.
+// still running and joins them all, then gives the counts back.
 struct ChannelMerge {
   std::vector<ChannelCore*> sources;
   std::vector<std::shared_ptr<IsolateCore>> producers;  // empty for fan_in([rx])
@@ -214,18 +185,16 @@ struct ChannelMerge {
   ChannelMerge(const ChannelMerge&) = delete;
   ChannelMerge& operator=(const ChannelMerge&) = delete;
   ~ChannelMerge() {
-    std::vector<std::shared_ptr<IsolateCore>> unjoined;
-    for (const auto& core : producers)
-      if (!core->joined) unjoined.push_back(core);
-    cancel_and_join_isolates(std::move(unjoined));
+    cancel_and_join_isolates(producers);
     for (auto* core : sources) chan_drop(core, /*role=*/1);
   }
 };
 
-// Every isolate an Isolate.spawn or a fan_in(items, fn) has started, for the
-// teardown walk (_jit_isolate_teardown_join_all) to reach the ones still
-// running. Weak: what keeps one is its handle or its merge.
-// Touched when an isolate starts and at teardown, never by a join.
+// Every isolate an Isolate.spawn or a fan_in(items, fn) has started. A handle
+// that goes cancels and joins its own; this is for the ones nothing lets go
+// of by the end of the run (a handle held in a cycle a top-level binding
+// reaches), which join_started_isolates stops before the code they run is
+// freed. Weak: what keeps one is its handle or its merge.
 struct StartedIsolates {
   std::mutex m;
   std::vector<std::weak_ptr<IsolateCore>> cores;
@@ -235,7 +204,20 @@ inline StartedIsolates& started_isolates() {
   static StartedIsolates s;
   return s;
 }
+inline void join_started_isolates() {
+  std::vector<std::shared_ptr<IsolateCore>> live;
+  {
+    auto& s = started_isolates();
+    std::lock_guard<std::mutex> lk(s.m);
+    for (const auto& w : s.cores)
+      if (auto core = w.lock()) live.push_back(std::move(core));
+  }
+  cancel_and_join_isolates(live);
+}
+// Once it has a thread to join.
 inline void started_isolates_add(const std::shared_ptr<IsolateCore>& core) {
+  isolate_teardown_join_hook.store(&join_started_isolates,
+                                   std::memory_order_relaxed);
   auto& s = started_isolates();
   std::lock_guard<std::mutex> lk(s.m);
   if (s.cores.size() >= s.prune_at) {
@@ -243,14 +225,6 @@ inline void started_isolates_add(const std::shared_ptr<IsolateCore>& core) {
     s.prune_at = std::max<size_t>(64, s.cores.size() * 2);
   }
   s.cores.push_back(core);
-}
-inline std::vector<std::shared_ptr<IsolateCore>> started_isolates_unjoined() {
-  auto& s = started_isolates();
-  std::vector<std::shared_ptr<IsolateCore>> live;
-  std::lock_guard<std::mutex> lk(s.m);
-  for (const auto& w : s.cores)
-    if (auto core = w.lock(); core && !core->joined) live.push_back(std::move(core));
-  return live;
 }
 
 // Take one more count on an end: the caller holds one already (an endpoint, a
@@ -655,11 +629,6 @@ inline const char* parallel_mode_name(PMode m) {
     case PMode::Race:       return "race";
   }
   return "map";
-}
-
-inline std::atomic<long>& isolate_next_id() {
-  static std::atomic<long> n{1};
-  return n;
 }
 
 }  // namespace culebra

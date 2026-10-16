@@ -9,6 +9,7 @@
 
 #include <frontend/module_loader.h>  // LoadedModule — the embedding entries' argument
 #include <stdlib/preamble.h>  // baked_preambles — symbols every JITDylib defines
+#include <vm/script_teardown.h>  // ScriptTeardownGuard, at the end of exec()
 
 #include <chrono>  // time_phase (CULEBRA_JIT_TIME_PASSES)
 #include <filesystem>  // the object cache's directory
@@ -6007,20 +6008,11 @@ struct JIT {
     using namespace llvm;
     auto phase_t = std::chrono::steady_clock::now();
     auto jit = create_jit_instance(fast_codegen);
-    // Reap what the script left running before `jit` (just above) tears down:
-    // declared after `jit`, so on any exit path — including an uncaught throw
-    // that skips past the script's own h.join() — this runs FIRST during
-    // unwind. Every isolate's compiled body is the same JitClosure::fn_ptr
-    // living in this LLJIT (sendable_rt.h); one still running when the
-    // module's code memory is freed returns into memory the teardown just
-    // unmapped. See isolate_teardown_join_hook (shared.h). A watch left open
-    // is stopped for the reason script_teardown.h gives.
-    struct ScriptTeardownGuard {
-      ~ScriptTeardownGuard() {
-        if (auto& fn = isolate_teardown_join_hook()) fn();
-        fswatch::fs_watch_close_all();
-      }
-    } script_teardown_guard;
+    // Declared after `jit`, so on any exit path it runs before `jit` tears
+    // down: every isolate's compiled body is the same JitClosure::fn_ptr in
+    // this LLJIT, and one still running when the code is freed returns into
+    // unmapped memory.
+    ScriptTeardownGuard script_teardown_guard;
     if (cached) {
       mod.reset();
       ctx.reset();
