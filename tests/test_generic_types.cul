@@ -156,6 +156,141 @@ class Holder<T> {
 }
 assert_eq(Holder.new().unwrap(3), 8)
 
+// --- A type parameter is in scope through its declaration's whole body ---
+// A nested function's, a `let`'s, a return type's, a pattern's and a nested
+// class field's `Elem` is the enclosing declaration's parameter, not the
+// class that happens to be called Elem; an inner declaration's own `Elem`
+// shadows it.
+class Elem {
+  x: Float
+  new(.x) {}
+}
+class Plain {
+  new(.x) {}
+}
+trait Labeled {
+  label() -> String
+}
+class Badge {
+  new(.x) {}
+  label() {
+    'badge'
+  }
+}
+
+fn in_scope<Elem>(v) {
+  let lam = |p: Elem| p.x
+  fn named(p: Elem) -> Elem {
+    p
+  }
+  let held: Elem = v
+  let picked = match v {
+    p: Elem => 'matched',
+    _ => 'fell through',
+  }
+  [lam(v), named(v).x, held.x, picked]
+}
+assert_eq(in_scope(Plain('p')), ['p', 'p', 'p', 'matched'])
+
+fn maybe<Elem>(v: Elem?) {
+  v
+}
+assert_eq([maybe(Plain('m')).x, maybe(nil)], ['m', nil])
+
+fn wrapped<Elem>(v) {
+  class Wrap {
+    item: Elem
+    new(.item) {}
+  }
+  fn read(w: Wrap) {
+    let item = w.item
+    item.x
+  }
+  read(Wrap(v))
+}
+assert_eq(wrapped(Plain('w')), 'w')
+
+// a bound is the enclosing parameter's too, and a class's own bounded
+// parameter names no class to a reader of its field
+fn bounded<Elem: Labeled>(v) {
+  let f = |p: Elem| p.label()
+  f(v)
+}
+assert_eq(bounded(Badge(1)), 'badge')
+let refused = try {
+  bounded(Plain('p'))
+} catch e {
+  [e.message, e.line]
+}
+assert_eq(refused, ["type error: parameter 'p' expects Labeled", 217])
+
+class Shelf<Elem: Labeled> {
+  item: Elem
+  new(.item) {}
+}
+fn shelf_x(s: Shelf) {
+  let item = s.item
+  item.x
+}
+assert_eq(shelf_x(Shelf(Badge('s'))), 's')
+
+fn shadowed<Elem: Labeled>(v) {
+  fn inner<Elem>(p: Elem) {
+    'inner'
+  }
+  inner(v)
+}
+assert_eq(shadowed(Plain('s')), 'inner')
+
+// a trait's own parameter, supertraits or not, and a `@value` member's,
+// spliced in or called boxed: the body reads it where it was written
+trait KeepsElem<Elem>: Labeled {
+  keep_elem(v) {
+    let held: Elem = v
+    held.x
+  }
+}
+class Keeper {
+  label() {
+    'keeper'
+  }
+}
+assert_eq(Keeper().keep_elem(Plain('kept')), 'kept')
+
+@value class Scaled<Elem> {
+  k: Float
+  new(k: Float) {
+    self.k = k
+  }
+  doubled(v) {
+    let held: Elem = v
+    self.k * 2.0
+  }
+}
+assert_eq([Scaled.new(1.5).doubled(Plain('s')),
+           [Scaled.new(1.5)][0].doubled(Plain('s'))], [3.0, 3.0])
+
+// a static field's value is the class's code, as its annotation is
+class Statics<Elem> {
+  static held: Elem = Plain('h')
+  static picked = match Plain('h') {
+    p: Elem => 'matched',
+    _ => 'fell through',
+  }
+}
+assert_eq([Statics.held.x, Statics.picked], ['h', 'matched'])
+
+// a field typed by a parameter is no scalar field, whatever its bound names:
+// the layout reads the annotation as written, so nothing checks it
+class Measure<Elem: Float> {
+  v: Elem
+  new(.v) {}
+  get() {
+    self.v
+  }
+}
+assert_eq(Measure(nil).get(), nil)
+
 // --- Generic-inner-Union must not recurse forever (depth-aware gate) ---
 fn inner_union(xs: Array<Long | Float>) -> Long {
   xs.size()

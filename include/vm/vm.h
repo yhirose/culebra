@@ -3585,10 +3585,6 @@ struct MemberOpts {
   // compiled, so `Name.new(...)` inside a member resolves — behind the guard
   // its receiver-read name owes (Chunk::Reach::Guarded).
   int32_t owner_ctor_chunk = -1;
-  // The enclosing class's Generic parameters (`class Box<T>`): a member's
-  // annotations lower against them, exactly as the JIT's class_type_params_
-  // does — an unbounded `T` is documentation and checks as Any.
-  const std::vector<std::string_view>* type_params = nullptr;
   // This is the ONLY `fn name` declaration of its name in the scope around
   // it (Scope::sole_multifn, and not a REPL line appending to an earlier
   // one), so its dispatcher's table has one entry for as long as the
@@ -5171,12 +5167,27 @@ class Compiler {
     const std::vector<std::string>* layout;   // field names, declaration order
   };
   std::vector<MemberFrame> member_frames_;
+  // Code compiled into this chunk that was written in another declaration's
+  // scope (a static field's value, a spliced member's body) names that
+  // scope's Generic parameters (type_params_) for as long as it compiles.
+  struct TypeParamsIn {
+    Compiler& c;
+    const std::vector<std::string_view>* saved;
+    TypeParamsIn(Compiler& comp, const std::vector<std::string_view>* tps)
+        : c(comp), saved(comp.type_params_) {
+      c.type_params_ = tps;
+    }
+    ~TypeParamsIn() { c.type_params_ = saved; }
+    TypeParamsIn(const TypeParamsIn&) = delete;
+    TypeParamsIn& operator=(const TypeParamsIn&) = delete;
+  };
   struct InMember {
     Compiler& c;
+    TypeParamsIn type_params;  // the member's, not the landing chunk's
     InMember(Compiler& comp, const peg::Ast& member, const peg::Ast& cls,
              int32_t base = -1,
              const std::vector<std::string>* layout = nullptr)
-        : c(comp) {
+        : c(comp), type_params(comp, comp.analysis_.type_params_in(member)) {
       c.member_frames_.push_back(
           {&cls, c.member_own_name(member), c.scopes_.size(), base, layout});
     }
@@ -5258,6 +5269,19 @@ class Compiler {
     return field_recv_ >= 0 ? field_recv_ : chunk_.self_slot;
   }
   const culebra::ClassFieldClasses* self_field_classes_ = nullptr;
+  // The Generic parameters this chunk's annotations may name
+  // (FnAnalysis::type_params), or null for none.
+  const std::vector<std::string_view>* type_params_ = nullptr;
+  // An annotation as its check reads it: each Generic parameter in scope
+  // lowered (an unbounded `T` checks as Any, a bounded one as its bound).
+  static std::string lower_annotation(
+      std::string_view type, const std::vector<std::string_view>* type_params) {
+    return type_params ? culebra::lower_type_params(type, *type_params)
+                       : std::string(type);
+  }
+  std::string lower_annotation(std::string_view type) const {
+    return lower_annotation(type, type_params_);
+  }
   const FuncInfo* info_;  // this chunk's analysis (captured_locals gate)
   Chunk chunk_;
   // Where `chunk_` will land in prog_.chunks — reserved before the body
@@ -5555,9 +5579,10 @@ class Compiler {
     // the name means an instance of that class from here on — the one route
     // that reaches an array element, which carries no type of its own.
     if (!annotation.empty()) {
-      if (const auto* fields = culebra::class_field_types_of(annotation)) {
+      auto type = lower_annotation(annotation);
+      if (const auto* fields = culebra::class_field_types_of(type)) {
         b.decl_fields = fields;
-        b.decl_field_classes = culebra::class_field_classes_of(annotation);
+        b.decl_field_classes = culebra::class_field_classes_of(type);
         return;
       }
     }
@@ -7643,15 +7668,11 @@ class Compiler {
            ast.nodes[dec_end]->tag == "DECORATOR"_)
       dec_end++;
     auto head = culebra::parse_generic_head(ast.nodes[dec_end]->token);
+    // `fn id<T>(x: T)`: the name is the outer half — the type parameters are
+    // erased everywhere but the annotations they lower (FnAnalysis::
+    // type_params), so two arities of `id` still overload.
     auto name = std::string(head.outer);
-    // `fn id<T>(x: T)`: the declaration's own Generic parameters, which its
-    // annotations lower against the way a Generic class's members lower
-    // against the class's. The name is the outer half — the type parameters
-    // are erased everywhere else, so two arities of `id` still overload.
-    std::vector<std::string_view> type_params;
-    if (!head.args.empty()) type_params = culebra::split_generic_args(head.args);
     MemberOpts mo;
-    if (!type_params.empty()) mo.type_params = &type_params;
     // At the REPL the session IS the enclosing scope: a `fn f(a)` line
     // appends to the dispatcher an earlier `fn f()` installed, so the name
     // is not the sole declaration of its dispatcher however this line reads.
@@ -7968,18 +7989,13 @@ class Compiler {
       if (culebra::is_packable_decorator(*ast.nodes[i])) is_packable = true;
       if (culebra::is_value_decorator(*ast.nodes[i])) is_value = true;
     }
-    auto class_head =
-        culebra::parse_generic_head(ast.nodes[dec_end]->token);
-    auto class_name = std::string(class_head.outer);
+    auto class_name = std::string(culebra::type_decl_name(ast));
     // The one clause of the `@value` contract that is about the decorators
     // rather than a member; the per-member half is require_value_member,
     // called from the collection loop below. lint reports both pre-eval.
     if (is_value && is_packable)
       throw culebra::CulebraError("SyntaxError",
                                   culebra::value_packable_message(class_name));
-    // A member's annotations lower against the class's Generic params, as
-    // the JIT's class_type_params_ does.
-    auto type_params = culebra::split_generic_args(class_head.args);
 
     // Names may repeat: same-named members with distinct signatures are an
     // overload set (lint has already rejected two identical signatures, so
@@ -8165,20 +8181,21 @@ class Compiler {
     // which keeps the method run below contiguous. Each is a scope of its
     // own.
     std::vector<int32_t> static_field_vals;
-    for (auto* m : static_fields) {
-      auto mv = culebra::view_method(*m);
-      int32_t dst = alloc_temp(*m);
-      compile_scoped_expr_into(*mv.value, dst);
-      if (!mv.type_annotation.empty()) {
-        StampGuard pos(*this, *m);
-        auto type = type_params.empty()
-                        ? std::string(mv.type_annotation)
-                        : culebra::lower_type_params(mv.type_annotation,
-                                                     type_params);
-        emit_type_check(type, dst,
-                        culebra::format("static field '{}'", mv.name));
+    {
+      // A static field is the class's code, value and annotation alike: it
+      // names the class's Generic parameters with every enclosing one.
+      TypeParamsIn tps(*this, analysis_.type_params_in(ast));
+      for (auto* m : static_fields) {
+        auto mv = culebra::view_method(*m);
+        int32_t dst = alloc_temp(*m);
+        compile_scoped_expr_into(*mv.value, dst);
+        if (!mv.type_annotation.empty()) {
+          StampGuard pos(*this, *m);
+          emit_type_check(lower_annotation(mv.type_annotation), dst,
+                          culebra::format("static field '{}'", mv.name));
+        }
+        static_field_vals.push_back(dst);
       }
-      static_field_vals.push_back(dst);
     }
     std::vector<int32_t> method_chunks;
     for (auto* m : method_asts) {
@@ -8187,7 +8204,6 @@ class Compiler {
           compile_fn_chunk(*m, mv.params, **mv.body,
                            {.receiver = true,
                             .owner_ctor_chunk = ctor_chunk_idx,
-                            .type_params = &type_params,
                             .owner_fields = own_fields,
                             .owner_field_classes = own_field_classes}));
       auto& ch = prog_.chunks[method_chunks.back()];
@@ -8201,8 +8217,7 @@ class Compiler {
       // object as its `self`, which is what the interp's namespace call
       // does (probed — a detached `let f = S.f` keeps that receiver).
       static_chunks.push_back(
-          compile_fn_chunk(*m, mv.params, **mv.body,
-                           {.receiver = true, .type_params = &type_params}));
+          compile_fn_chunk(*m, mv.params, **mv.body, {.receiver = true}));
       prog_.chunks[static_chunks.back()].multifn_name = std::string(mv.name);
     }
     // The field-init thunk is compiled — and bound under its hidden name —
@@ -8237,8 +8252,7 @@ class Compiler {
       int32_t idx = compile_fn_chunk(ast, /*params=*/nullptr, ast,
                                      {.receiver = true,
                                       .thunk_fields = &fields,
-                                      .thunk_params = &field_params,
-                                      .type_params = &type_params});
+                                      .thunk_params = &field_params});
       int32_t t = alloc_temp(ast);
       emit(Op::MakeClosure, t, idx);
       finit_slot = alloc_cell_slot(ast, "(field.init)");
@@ -8261,7 +8275,6 @@ class Compiler {
                (!fields.empty() && !fields_need_a_thunk) ? &fields : nullptr,
            .finit_params = fields_need_a_thunk ? &field_params : nullptr,
            .owner_ctor_chunk = ctor_chunk_idx,
-           .type_params = &type_params,
            .owner_fields = own_fields,
            .owner_field_classes = own_field_classes}));
     }
@@ -8767,6 +8780,7 @@ class Compiler {
     Compiler fc(prog_, analysis_, /*in_function=*/true, &info, idx);
     fc.self_fields_ = mo.owner_fields;
     fc.self_field_classes_ = mo.owner_field_classes;
+    fc.type_params_ = analysis_.type_params_in(ast);
     fc.repl_ = repl_;
     fc.check_ = check_;
     fc.debug_ = debug_;
@@ -8881,10 +8895,7 @@ class Compiler {
           reject(*p, "a field parameter outside a class's `new`");
         auto name = std::string(pv.name);
         int32_t slot = fc.alloc_slot(*p, name);
-        auto type = mo.type_params && !mo.type_params->empty()
-                        ? culebra::lower_type_params(pv.type_annotation,
-                                                     *mo.type_params)
-                        : std::string(pv.type_annotation);
+        auto type = fc.lower_annotation(pv.type_annotation);
         auto abi = static_cast<int32_t>(fc.chunk_.param_names.size());
         fc.chunk_.param_names.push_back(name);
         fc.chunk_.param_types.push_back(type);
@@ -9007,10 +9018,7 @@ class Compiler {
       // written, which is what `f.return_type` reports, while the check runs
       // against the lowered one — a Generic's unbounded `T` checks as Any.
       fc.chunk_.return_type = std::string(return_type);
-      fc.ret_type_str_ =
-          mo.type_params && !mo.type_params->empty()
-              ? culebra::lower_type_params(return_type, *mo.type_params)
-              : std::string(return_type);
+      fc.ret_type_str_ = fc.lower_annotation(return_type);
       fc.ret_type_ = fc.kconst_str(fc.ret_type_str_);
       fc.ret_pos_slot_ = site;  // the same snapshot, when there is one
       if (site < 0) {
@@ -9498,7 +9506,8 @@ class Compiler {
     auto r = compile_expr(*av.rhs);
     if (!av.type_annotation.empty()) {
       StampGuard pos(*this, ast);
-      emit_type_check(av.type_annotation, r.slot, "assignment");
+      emit_type_check(lower_annotation(av.type_annotation), r.slot,
+                      "assignment");
     }
     return r;
   }
@@ -10544,23 +10553,27 @@ class Compiler {
   // A required field parameter (`new(.x)`) is a plain parameter plus a
   // store into the run, so it splices; `.x?` is an optional one, refused
   // with the defaults.
+  // `type` is lowered as the boxed frame's prologue lowers it.
   struct InlineParam {
     const peg::Ast* at;
     std::string name;
     std::string type;
     bool field = false;
   };
-  static std::optional<std::vector<InlineParam>> inline_params(
-      const peg::Ast* params) {
+  std::optional<std::vector<InlineParam>> inline_params(
+      const peg::Ast& member) const {
     std::vector<InlineParam> out;
+    const peg::Ast* params = culebra::view_method(member).params;
     if (!params) return out;
+    const auto* type_params = analysis_.type_params_in(member);
     for (const auto& pn : params->nodes) {
       auto pv = culebra::view_parameter(*pn);
       if (pv.is_kw_only_sep || pv.is_args_rest || pv.is_kwargs_rest ||
           pv.pattern || pv.default_value || pv.is_optional)
         return std::nullopt;
       out.push_back({pn.get(), std::string(pv.name),
-                     std::string(pv.type_annotation), pv.is_field});
+                     lower_annotation(pv.type_annotation, type_params),
+                     pv.is_field});
     }
     return out;
   }
@@ -10652,7 +10665,7 @@ class Compiler {
     // it is the frame's own handle, and spliced it would be the landing
     // frame's.
     if (fi.uses_fn) return ChainEnd::Declined;
-    auto ps = inline_params(mv.params);
+    auto ps = inline_params(member);
     if (!ps) return ChainEnd::Declined;
     bool ok = true;
     auto check_name = [&](std::string_view n) {
@@ -10703,7 +10716,7 @@ class Compiler {
     // A run leaves no value for the return type's check (emit_inline_body
     // makes it on a scalar), so it may stand only under one every instance
     // passes.
-    auto rt = member_return_type(member, class_ast);
+    auto rt = member_return_type(member);
     if (end == ChainEnd::Run && !rt.empty() &&
         !annotation_admits_class(rt, class_name))
       return ChainEnd::Declined;
@@ -10711,15 +10724,12 @@ class Compiler {
   }
 
   // A member's declared return type as its boxed frame checks it, lowered
-  // against its class's type parameters (compile_fn_chunk_impl), or empty.
-  static std::string member_return_type(const peg::Ast& member,
-                                        const peg::Ast& class_ast) {
+  // against the Generic parameters in its scope (compile_fn_chunk_impl), or
+  // empty.
+  std::string member_return_type(const peg::Ast& member) const {
     auto rt = culebra::view_method(member).return_type;
     if (rt.empty()) return {};
-    auto head = culebra::parse_generic_head(
-        class_ast.nodes[culebra::first_non_decorator_index(class_ast)]->token);
-    auto tps = culebra::split_generic_args(head.args);
-    return tps.empty() ? std::string(rt) : culebra::lower_type_params(rt, tps);
+    return lower_annotation(rt, analysis_.type_params_in(member));
   }
 
   // A flat `@value` class's identity: the outer name off its declaration
@@ -10754,7 +10764,7 @@ class Compiler {
     const peg::Ast* m =
         dunder.empty() ? nullptr : value_method_ast(cls, dunder);
     if (!m) return false;
-    auto ps = inline_params(culebra::view_method(*m).params);
+    auto ps = inline_params(*m);
     return ps && ps->size() == arity &&
            inline_body_end(*m, /*is_ctor=*/false, cls, class_name, layout) ==
                ChainEnd::Run;
@@ -11495,7 +11505,7 @@ class Compiler {
     if (!m) return false;
     auto mv = culebra::view_method(*m);
     if (!mv.body) return false;
-    auto ps = inline_params(mv.params);
+    auto ps = inline_params(*m);
     if (!ps || ps->size() != 1) return false;
     // A run has no instance to check an annotation against, and the check
     // itself (`ChkTypeAt`) needs a tagged Value in one slot.
@@ -11579,7 +11589,8 @@ class Compiler {
     // The boxed declaration checks its annotation against the instance; a run
     // has none to check, so only an annotation every instance passes holds it.
     if (!av.type_annotation.empty() &&
-        !annotation_admits_class(av.type_annotation, vc->name))
+        !annotation_admits_class(lower_annotation(av.type_annotation),
+                                 vc->name))
       return std::nullopt;
     auto class_name = vc->name;
     const auto* layout = vc->layout;
@@ -12001,7 +12012,7 @@ class Compiler {
     // A run needs none: inline_body_end only splices one under an annotation
     // every instance passes.
     if (!is_ctor && !out_layout) {
-      if (auto rt = member_return_type(member, cls_ast); !rt.empty()) {
+      if (auto rt = member_return_type(member); !rt.empty()) {
         StampGuard pos(*this, site);
         emit_type_check(rt, out_base, "return value");
       }
@@ -12118,7 +12129,7 @@ class Compiler {
       }
       const peg::Ast* m = value_method_ast(class_ast, post.token);
       if (!m) return ChainEnd::Declined;
-      auto ps = inline_params(culebra::view_method(*m).params);
+      auto ps = inline_params(*m);
       if (!ps || !positional_args_match(*ps, *at.nodes[i + 1]))
         return ChainEnd::Declined;
       ChainEnd step = inline_body_end(*m, /*is_ctor=*/false, class_ast,
@@ -12157,7 +12168,7 @@ class Compiler {
     if (!ctor ||
         !inline_body_ok(*ctor, /*is_ctor=*/true, *cls, vc->name, vc->layout))
       return std::nullopt;
-    auto cps = inline_params(culebra::view_method(*ctor).params);
+    auto cps = inline_params(*ctor);
     if (!cps || !positional_args_match(*cps, *ast.nodes[2]))
       return std::nullopt;
     ChainEnd end = chain_end(ast, 3, *cls, vc->name, vc->layout);
@@ -12273,7 +12284,7 @@ class Compiler {
         return ExprResult{cur.slot + ix, /*owned=*/false};
       }
       const peg::Ast* m = value_method_ast(cls, post.token);
-      auto ps = inline_params(culebra::view_method(*m).params);
+      auto ps = inline_params(*m);
       std::vector<ExprResult> margs;
       std::vector<const peg::Ast*> masts;
       for (const auto& a : at.nodes[i + 1]->nodes) {
@@ -12328,7 +12339,7 @@ class Compiler {
         culebra::parse_generic_head(cls.nodes[dec_end]->token).outer;
     const peg::Ast* m = value_method_ast(cls, dunder);
     if (!m) return std::nullopt;
-    auto ps = inline_params(culebra::view_method(*m).params);
+    auto ps = inline_params(*m);
     if (!ps || ps->size() != args.size()) return std::nullopt;
     ChainEnd end = inline_body_end(*m, /*is_ctor=*/false, cls, class_name,
                                    lhs.unboxed);
@@ -14255,10 +14266,10 @@ class Compiler {
   // then the runtime's type_matches unless the tag already decided the name
   // (_culebra_exact_type_tag; generic args stripped, so `Array<Long>` is
   // Array's tag alone). A union ORs its alternatives, and an `Any`
-  // alternative gates nothing at all.
+  // alternative (an unbounded Generic parameter's, too) gates nothing at all.
   void compile_type_gate(const peg::Ast& type_node, int32_t subj,
                          std::vector<size_t>& fail) {
-    auto full = type_node.token;
+    auto full = lower_annotation(type_node.token);
     // (name, whether its tag decides it). Collected before emitting so an
     // `Any` alternative can drop the whole gate without leaving half of it
     // behind.

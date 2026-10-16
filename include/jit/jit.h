@@ -1572,15 +1572,6 @@ struct JIT {
   FnAnalysis analysis_{&is_builtin_var};
   FuncInfo main_info_;
 
-  // Holds the active function's Generic type-params ({"T", "U"}) while
-  // its param annotations are compiled, so each can be lowered
-  // (unbounded -> "Any", bounded -> bound trait; see lower_type_params).
-  // Set for class methods (`class Foo<T, U>`) and free multifns
-  // (compile_multifn_decl); compile_fn_common clears it before
-  // descending so nested fns don't inherit it.
-  std::vector<std::string_view> class_type_params_;
-
-
 
   // Currently compiling function's info (to know which locals are cells)
   const FuncInfo* current_info_ = nullptr;

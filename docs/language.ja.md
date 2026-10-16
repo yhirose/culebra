@@ -3953,6 +3953,24 @@ culebraの型checkはruntime)。帰結:
     both(5)        # OK — Longは両方にconform
     both([1, 2])   # !! ArrayはStringerだがHashableでない -> reject
 
+#### 型パラメータのスコープ
+
+型パラメータはシグネチャだけでなく、宣言の本体全体で有効です。本体の
+`let`の注釈、入れ子の関数やlambda、入れ子のクラスのフィールド、`match`の
+型パターンは、どれも`T`をその型パラメータとして読み、シグネチャと同じように
+lowerします（制約なしの`T`は`Any`、boundがあればそのboundとして検査）。
+`T`という名前のものが他にあっても変わりません。`T?`はどこでも`T | Nil`です。
+入れ子の宣言が自分の`T`を持てば、外側の`T`を隠します。
+
+```culebra
+fn pair_up<T>(a: T) {
+  let keep = fn (b: T) -> T { b }
+  let first: T = a
+  [first, keep('x')]
+}
+inspect(pair_up(1))          # => [1, 'x']
+```
+
 #### dispatch tie-break
 
 trait paramのスコアはObjectと具象の中間。同じ関数名で`x: Pri`

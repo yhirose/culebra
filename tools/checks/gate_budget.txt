@@ -174,7 +174,9 @@ ctest.entries 35
 # and ja.
 # 1062 since stdlib's SharedBuffer shows a view read whole and compared, in en
 # and ja.
-docs.blocks 1062
+# 1064 since Generic types shows a type parameter read in a nested function
+# and a `let` of its declaration's body, in en and ja.
+docs.blocks 1064
 
 # The samples the language front ends are run over (examples/languages/*).
 languages.samples 130

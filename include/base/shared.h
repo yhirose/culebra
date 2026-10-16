@@ -2044,6 +2044,8 @@ inline TraitHead parse_trait_head(std::string_view token) {
   return out;
 }
 
+inline bool is_fn_type(std::string_view name);
+
 // Lower every occurrence of a type-param name (`T`, `K`, ...) inside
 // `tn` to its runtime check target, including nested forms like
 // `Array<T>` and `T | Long`. An *unbounded* param (`T`) lowers to
@@ -2069,6 +2071,15 @@ inline std::string lower_type_params(
       first = false;
     }
     return out;
+  }
+  // `T?` is `T | Nil`: it lowers as `T` does, keeping the nil beside it —
+  // nothing to add to Any, and a Union for a composite bound, which `?`
+  // cannot follow. (A function type's trailing `?` is its return's.)
+  if (trimmed.back() == '?' && !is_fn_type(trimmed)) {
+    auto base = lower_type_params(trimmed.substr(0, trimmed.size() - 1),
+                                  type_params);
+    if (base == "Any") return base;
+    return has_toplevel_plus(base) ? base + " | Nil" : base + "?";
   }
   auto head = parse_generic_head(trimmed);
   // Outer alone matches a type-param: the whole annotation collapses to

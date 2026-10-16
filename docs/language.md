@@ -3718,6 +3718,25 @@ A **composite bound** `<T: A + B>` requires the argument to conform to
     both(5)        # OK — Long conforms to both
     both([1, 2])   # !! Array is Stringer but not Hashable -> rejected
 
+#### A type parameter's scope
+
+A type parameter is in scope through its whole declaration, not only
+its signature: a `let`'s annotation in the body, a nested function or
+lambda, a nested class's field and a `match` type pattern all read `T`
+as the parameter, lowered the same way (an unbounded `T` checks as
+`Any`, a bounded one as its bound), whatever else is called `T`. `T?`
+is `T | Nil` there as anywhere. A nested declaration's own `T` shadows
+the enclosing one.
+
+```culebra
+fn pair_up<T>(a: T) {
+  let keep = fn (b: T) -> T { b }
+  let first: T = a
+  [first, keep('x')]
+}
+inspect(pair_up(1))          # => [1, 'x']
+```
+
 #### Known limitations
 
 * Two overloads sharing an outer Generic name (`fn show(xs:

@@ -46,7 +46,6 @@
 13. Pattern matching > Exhaustiveness
 13. Pattern matching > Patterns
 14. Optional type annotations > Function types (`fn(T) -> U`)
-14. Optional type annotations > Generic types
 14. Optional type annotations > Nil and annotations (null-safety policy)
 14. Optional type annotations > Optional types (`T?`)
 14. Optional type annotations > Recognized type names

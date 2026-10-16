@@ -193,6 +193,15 @@ struct FnAnalysis {
   // The enum and trait declarations analysed: the other things a name may
   // be carried by.
   std::vector<const peg::Ast*> enum_trait_decls;
+  // The Generic parameters an annotation inside a function-like node may
+  // name, by the node func_info keys it by: its own (`fn id<T>`, a member's
+  // `class Box<T>`) and every enclosing declaration's, the innermost first so
+  // a nested `T` shadows an outer one. Absent where none is in scope.
+  std::unordered_map<const peg::Ast*, std::vector<std::string_view>> type_params;
+  const std::vector<std::string_view>* type_params_in(const peg::Ast& node) const {
+    auto it = type_params.find(&node);
+    return it == type_params.end() ? nullptr : &it->second;
+  }
   // The names a module gives to a class that is not `@value`
   // (culebra::is_value_field_type), read off the module's root the first time
   // one of its `@value` classes is compiled: the same names, by the same
@@ -241,6 +250,24 @@ struct FnAnalysis {
   // `let name = fn …` literals whose body reads `name` as itself: filled
   // by the assignment's walk, read when the literal's own walk starts.
   std::map<const peg::Ast*, std::string> literal_own_names_;
+  // The Generic parameters in scope where the walk is (type_params' order).
+  std::vector<std::string_view> type_scope_;
+
+  // A Generic declaration's parameters (`Box<T>` of `head_token`), in scope
+  // for the walk below it.
+  struct TypeParamScope {
+    FnAnalysis& a;
+    std::vector<std::string_view> saved;
+    TypeParamScope(FnAnalysis& a, std::string_view head_token)
+        : a(a), saved(a.type_scope_) {
+      auto args = culebra::parse_generic_head(head_token).args;
+      if (args.empty()) return;
+      auto own = culebra::split_generic_args(args);
+      own.insert(own.end(), saved.begin(), saved.end());
+      a.type_scope_ = std::move(own);
+    }
+    ~TypeParamScope() { a.type_scope_ = std::move(saved); }
+  };
 
   // free_vars keeps first-seen order, so "add if absent" is a linear probe
   // rather than a set.
@@ -325,8 +352,10 @@ struct FnAnalysis {
       enum_trait_decls.push_back(&node);
       size_t i = culebra::first_non_decorator_index(node);
       for (size_t d = 0; d < i; d++) visit(*node.nodes[d], info);
-      // node.nodes[i] is CLASS_HEAD; methods follow. A default body is a
+      // node.nodes[i] is TRAIT_HEAD; methods follow. A default body is a
       // receiver frame, so it captures no enclosing `self`.
+      TypeParamScope tps(*this,
+                         culebra::parse_trait_head(node.nodes[i]->token).name);
       for (size_t j = i + 1; j < node.nodes.size(); j++) {
         auto tv = culebra::view_trait_method(*node.nodes[j]);
         if (tv.body) analyze_fn_common(node.nodes[j].get(), tv.params, *tv.body);
@@ -338,7 +367,9 @@ struct FnAnalysis {
       size_t i = culebra::first_non_decorator_index(node);
       for (size_t d = 0; d < i; d++) visit(*node.nodes[d], info);
       if (declared_once(*node.nodes[i])) sole_class_decls.insert(&node);
-      class_fields.try_emplace(&node, culebra::declared_class_fields(node));
+      TypeParamScope tps(*this, node.nodes[i]->token);
+      class_fields.try_emplace(&node,
+                               culebra::declared_class_fields(node, type_scope_));
       // A class whose value the declarator loop never touches names
       // itself through its receiver (FuncInfo::own_name) rather than
       // capturing the declaring scope's cell — the ring
@@ -428,8 +459,10 @@ struct FnAnalysis {
       if (const peg::Ast* builder = lazy_ns_builder(node)) {
         auto fv = culebra::view_function(*builder);
         int saved = std::exchange(depth_, 0);
+        auto saved_scope = std::exchange(type_scope_, {});
         analyze_fn_common(builder, fv.params, *fv.body);
         depth_ = saved;
+        type_scope_ = std::move(saved_scope);
         return;
       }
       // `v.name(...)` may reach the body's own name through UFCS, unless the
@@ -817,6 +850,7 @@ struct FnAnalysis {
     FuncInfo& slot = func_info[key] = std::move(info);
     if (auto it = scopes.find(scope_key); it != scopes.end())
       fns_[it->second] = &slot;
+    if (!type_scope_.empty()) type_params[key] = type_scope_;
     return slot;
   }
 
@@ -831,6 +865,7 @@ struct FnAnalysis {
         name_idx == 0
             ? culebra::parse_generic_head(multifnAst.nodes[0]->token).outer
             : std::string_view{};
+    TypeParamScope tps(*this, multifnAst.nodes[name_idx]->token);
     return analyze_fn_common(&multifnAst, multifnAst.nodes[name_idx + 1].get(),
                              *multifnAst.nodes.back(), self_name,
                              FuncInfo::OwnNameSource::Dispatch);

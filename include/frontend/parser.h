@@ -2185,23 +2185,24 @@ inline DeclaredFields declared_instance_fields(
 // off the same list. An annotation is one or the other: a scalar the tag
 // decides, or a name (a class, most usefully, which the chain walk follows
 // to the next step). The second is recorded as written and resolved where it
-// is used, so a forward reference works. One of the class's own type
-// parameters names no class, whatever else is called that.
-inline ClassFields declared_class_fields(const peg::Ast& cls) {
+// is used, so a forward reference works. A Generic parameter in scope
+// (`type_params`: the class's own and its enclosing declarations') names no
+// class, whatever else is called that: it is read as it lowers.
+inline ClassFields declared_class_fields(
+    const peg::Ast& cls, const std::vector<std::string_view>& type_params) {
   size_t head = first_non_decorator_index(cls);
-  auto type_params =
-      split_generic_args(parse_generic_head(cls.nodes[head]->token).args);
   ClassFields out;
   for (const auto* f : collect_instance_fields(cls, head + 1)) {
     auto mv = view_method(*f);
     if (mv.type_annotation.empty()) continue;
+    // The scalar a write is checked as is the written one, which is how the
+    // layout reads it (emit_declared_field_layout): a parameter names none.
     auto t = field_type_for_annotation(mv.type_annotation);
     if (t != FieldType::Any)
       out.types.emplace(std::string(mv.name), static_cast<uint8_t>(t));
-    else if (std::ranges::find(type_params, mv.type_annotation) ==
-             type_params.end())
+    else
       out.classes.emplace(std::string(mv.name),
-                          std::string(mv.type_annotation));
+                          lower_type_params(mv.type_annotation, type_params));
   }
   return out;
 }
