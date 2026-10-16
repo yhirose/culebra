@@ -506,6 +506,7 @@ struct JitHandle {
     SharedBuffer,
     BufView,
     BufViewIter,
+    Isolate,
   };
   const Kind kind;
   explicit JitHandle(Kind k) : kind(k) {}

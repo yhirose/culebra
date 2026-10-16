@@ -13,4 +13,15 @@ let h = Isolate.spawn(fn () {
 })
 Time.sleep(0.05)
 h.drop()  # cancel the still-spinning isolate; must return, not hang
+
+# One left spinning when its program ends, with a handle nothing lets go of:
+# the end of the run still cancels and joins it, on either engine.
+for engine in ["--vm", "--jit"] {
+  let r = Proc.run([
+    Sys.executable,
+    engine,
+    "tests/isolate/exit_worker/held_in_cycle.cul",
+  ])
+  assert_eq(r.stdout, "main ends\nchild unwound\n", engine)
+}
 inspect("test_cancel_tight_loop: passed")

@@ -77,8 +77,9 @@ struct IsolateCore {
   // is not a CulebraError, and join() must not re-raise it as one.
   std::optional<std::string> interrupted;
 
-  // Safety net: a joinable std::thread destroyed without join() calls
-  // std::terminate. `join`/`drop` normally join first; this covers the rest.
+  // The thread only borrows the core (run_isolate_child_jit), so it must be
+  // gone before the core is: whoever lets the core go last cancels it and
+  // joins it here, unless `join`/`drop` already did.
   //
   // What the child handed back stays here for as long as the handle may be
   // asked for it (`join` after `poll` reads it again), so the refs its nodes
@@ -204,8 +205,8 @@ inline void cancel_and_join_isolates(
 // the merge's own, and for `fan_in(items, fn)` the producer isolates it
 // spawned, one per source. Whatever reads through it shares it: the merged rx
 // and each of its for-in cursors. The last of them to go stops the producers
-// still running and joins them all, then gives the counts back. (A producer's
-// thread holds its core too, so letting the merge's refs go would stop none.)
+// still running and joins them all, then gives the counts back. It cancels
+// them all before joining any, so they wind down together.
 struct ChannelMerge {
   std::vector<ChannelCore*> sources;
   std::vector<std::shared_ptr<IsolateCore>> producers;  // empty for fan_in([rx])
@@ -221,36 +222,35 @@ struct ChannelMerge {
   }
 };
 
-// Every merge a fan_in(items, fn) has made, for the teardown walk to reach
-// the producers of the ones still alive (a merge that goes joins its own).
-// Touched when a fan_in spawns and at teardown, never by a recv.
-inline std::mutex& fan_in_merges_mutex() { static std::mutex m; return m; }
-inline std::vector<std::weak_ptr<ChannelMerge>>& fan_in_merges() {
-  static std::vector<std::weak_ptr<ChannelMerge>> v;
-  return v;
+// Every isolate an Isolate.spawn or a fan_in(items, fn) has started, for the
+// teardown walk (_jit_isolate_teardown_join_all) to reach the ones still
+// running. Weak: what keeps one is its handle or its merge.
+// Touched when an isolate starts and at teardown, never by a join.
+struct StartedIsolates {
+  std::mutex m;
+  std::vector<std::weak_ptr<IsolateCore>> cores;
+  size_t prune_at = 64;  // doubles with the live ones, so a start is O(1) amortized
+};
+inline StartedIsolates& started_isolates() {
+  static StartedIsolates s;
+  return s;
 }
-inline void fan_in_merges_add(const std::shared_ptr<ChannelMerge>& merge) {
-  std::lock_guard<std::mutex> lk(fan_in_merges_mutex());
-  auto& v = fan_in_merges();
-  std::erase_if(v, [](const auto& w) { return w.expired(); });
-  v.push_back(merge);
-}
-
-// The fan_in producers not yet joined, for the teardown walk
-// (_jit_isolate_teardown_join_all). A merge held here may be the last ref to
-// it by the time this returns, and its going joins threads, so that happens
-// outside the lock.
-inline void collect_live_fan_in_producers(
-    std::vector<std::shared_ptr<IsolateCore>>& live) {
-  std::vector<std::shared_ptr<ChannelMerge>> merges;
-  {
-    std::lock_guard<std::mutex> lk(fan_in_merges_mutex());
-    for (const auto& w : fan_in_merges())
-      if (auto merge = w.lock()) merges.push_back(std::move(merge));
+inline void started_isolates_add(const std::shared_ptr<IsolateCore>& core) {
+  auto& s = started_isolates();
+  std::lock_guard<std::mutex> lk(s.m);
+  if (s.cores.size() >= s.prune_at) {
+    std::erase_if(s.cores, [](const auto& w) { return w.expired(); });
+    s.prune_at = std::max<size_t>(64, s.cores.size() * 2);
   }
-  for (const auto& merge : merges)
-    for (const auto& core : merge->producers)
-      if (!core->joined) live.push_back(core);
+  s.cores.push_back(core);
+}
+inline std::vector<std::shared_ptr<IsolateCore>> started_isolates_unjoined() {
+  auto& s = started_isolates();
+  std::vector<std::shared_ptr<IsolateCore>> live;
+  std::lock_guard<std::mutex> lk(s.m);
+  for (const auto& w : s.cores)
+    if (auto core = w.lock(); core && !core->joined) live.push_back(std::move(core));
+  return live;
 }
 
 // Take one more count on an end: the caller holds one already (an endpoint, a

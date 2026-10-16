@@ -2635,10 +2635,14 @@ The handle has:
 |---|---|---|
 | `h.join()` | the closure's return value | block until the isolate finishes, then hand back its (copied) result |
 | `h.poll()` | the result or `nil` | the result if finished, else `nil` (non-blocking) |
+| `h.drop()` | `nil` | cancel the isolate if it is still running, and join it; `join()` and `poll()` then return `nil` |
 
 If the closure throws, the exception is re-raised on the thread that calls
-`join()`, with its original kind preserved. A handle dropped without `join()` is
-joined by the GC, so no thread is left dangling.
+`join()`, with its original kind preserved. A handle that goes without `join()`
+cancels and joins its isolate as `drop()` does, so no thread is left dangling.
+
+The handle holds its isolate: it prints as `[Isolate]` (`[dropped Isolate]`
+after `drop()`), has no fields, and is not Sendable.
 
 ### Sendable: what can cross the boundary
 

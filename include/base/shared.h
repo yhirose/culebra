@@ -2475,6 +2475,9 @@ enum RuntimeSlot : size_t {
   // The same, for the ones its views and their iterators point theirs at.
   // Placed like the six above.
   kSlotBufViewMetas,
+  // The same, for the one an Isolate.spawn handle points its at. Placed like
+  // the seven above.
+  kSlotIsolateMeta,
   kSlotShapeRegistry,  // reserved/unused: the Shape intern table is now a
                        // process-global singleton (see jit.h ShapeRegistry) —
                        // Shapes are shared immutable metadata, not isolated heap

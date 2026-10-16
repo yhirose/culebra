@@ -101,6 +101,18 @@ struct JitMergedRx final : JitHandle {
   bool same(const JitHandle&) const override { return false; }
 };
 
+// An Isolate.spawn handle's C++ half: its share of the isolate's core.
+struct JitIsolate final : JitHandle {
+  std::shared_ptr<IsolateCore> core;  // null once dropped
+  explicit JitIsolate(std::shared_ptr<IsolateCore> c)
+      : JitHandle(Kind::Isolate), core(std::move(c)) {}
+  std::string show() const override {
+    return core ? "[Isolate]" : "[dropped Isolate]";
+  }
+  // Nothing makes a second handle of one isolate.
+  bool same(const JitHandle&) const override { return false; }
+};
+
 // An rx's for-in cursor's C++ half (see _jit_chan_iter): what it reads, held
 // on its own while it has it (an rx count on a channel, or a share of a
 // merge), and the value has_next() took.
@@ -688,35 +700,18 @@ inline void jit_install_trait_defaults(
   t.shipped = std::move(defaults);
 }
 
-// --- Isolate handle registry (JIT handle methods are captureless → store the
-//     IsolateCore behind an integer id) -------
-
-inline std::mutex& jit_isolate_reg_mutex() { static std::mutex m; return m; }
-inline std::unordered_map<long, std::shared_ptr<IsolateCore>>&
-jit_isolate_reg() {
-  static std::unordered_map<long, std::shared_ptr<IsolateCore>> r;
-  return r;
-}
-inline std::atomic<long>& jit_isolate_next_id() {
-  static std::atomic<long> n{1};
-  return n;
-}
-inline std::shared_ptr<IsolateCore> jit_isolate_lookup(int64_t id) {
-  std::lock_guard<std::mutex> lk(jit_isolate_reg_mutex());
-  auto it = jit_isolate_reg().find(id);
-  return it == jit_isolate_reg().end() ? nullptr : it->second;
-}
-
 // --- Child entry point: run the spawned closure on a fresh JIT heap ----------
 
-inline void run_isolate_child_jit(std::shared_ptr<IsolateCore> core,
+// `core` is borrowed: ~IsolateCore joins this thread before it goes, so the
+// thread is never the last to let it go (and never joins itself).
+inline void run_isolate_child_jit(IsolateCore& core,
                                   sendable::SendNode sclosure,
                                   std::vector<sendable::SendNode> sargs,
                                   std::shared_ptr<const sendable::TraitDefaults> defaults,
                                   bool decrement_live) {
   // A fresh Runtime gives this work its own JIT heap (and fresh thread_local
   // multifn tables); the shared fn_ptr allocates on whichever Runtime is active.
-  culebra::Runtime rt(&core->interrupt);
+  culebra::Runtime rt(&core.interrupt);
   culebra::RuntimeScope scope(rt);
   try {
     jit_install_trait_defaults(std::move(defaults));
@@ -762,22 +757,22 @@ inline void run_isolate_child_jit(std::shared_ptr<IsolateCore> core,
     JitSerCtx sc;
     sendable::SendNode out = jit_serialize(r.borrow(), sc);
     {
-      std::lock_guard<std::mutex> lk(core->m);
-      core->result = std::move(out);
-      core->finished = true;
+      std::lock_guard<std::mutex> lk(core.m);
+      core.result = std::move(out);
+      core.finished = true;
     }
   } catch (const culebra::Interrupted& e) {
     culebra_runtime_release_passed_error();
     // A cancelled child: join() re-raises this as an Interrupted, not as a
     // program error. Explicit — the type no longer rides in `error`.
-    std::lock_guard<std::mutex> lk(core->m);
-    core->interrupted = e.what();
-    core->finished = true;
+    std::lock_guard<std::mutex> lk(core.m);
+    core.interrupted = e.what();
+    core.finished = true;
   } catch (culebra::CulebraError& e) {
     culebra_runtime_release_passed_error();
-    std::lock_guard<std::mutex> lk(core->m);
-    core->error = e;
-    core->finished = true;
+    std::lock_guard<std::mutex> lk(core.m);
+    core.error = e;
+    core.finished = true;
   } catch (CulebraException& e) {
     // A raw user `throw <value>` (not a structured error). Serialize the value
     // so it crosses the isolate boundary; _jit_isolate_settle re-raises it as a
@@ -788,21 +783,21 @@ inline void run_isolate_child_jit(std::shared_ptr<IsolateCore> core,
     JitSerCtx sc;
     sendable::SendNode tn = jit_serialize(tv, sc);
     culebra_runtime_consume_throw(e);
-    std::lock_guard<std::mutex> lk(core->m);
-    core->thrown = std::move(tn);
-    core->finished = true;
+    std::lock_guard<std::mutex> lk(core.m);
+    core.thrown = std::move(tn);
+    core.finished = true;
   } catch (std::exception& e) {
-    std::lock_guard<std::mutex> lk(core->m);
-    core->error = culebra::CulebraError("RuntimeError", e.what());
-    core->finished = true;
+    std::lock_guard<std::mutex> lk(core.m);
+    core.error = culebra::CulebraError("RuntimeError", e.what());
+    core.finished = true;
   }
-  core->cv.notify_all();
+  core.cv.notify_all();
   if (decrement_live)
     g_live_isolates().fetch_sub(1, std::memory_order_relaxed);
 }
 
-// --- JIT isolate handle (join/poll/drop). JIT handle methods are captureless,
-//     so the IsolateCore is reached through the registry by id. ---------------
+// --- JIT isolate handle (join/poll/drop): a handle Object whose JitIsolate
+//     holds the IsolateCore. ---------------------------------------------------
 
 // Joins the child and re-raises its failure; the result stays serialized.
 inline void _jit_isolate_settle(const std::shared_ptr<IsolateCore>& core) {
@@ -830,10 +825,10 @@ inline JitValue _jit_isolate_extract(const std::shared_ptr<IsolateCore>& core) {
   return jit_deserialize(core->result, dc);  // on the parent heap
 }
 
-inline int64_t _jit_isolate_self_id(JitValue self) {
-  auto* h = reinterpret_cast<JitObject*>(self.data);
-  size_t i = h->find_slot("_core_id");
-  return i == static_cast<size_t>(-1) ? 0 : h->slots[i].value.data;
+// The handle a method was called on (see _jit_self_handle).
+inline JitIsolate* _jit_self_isolate(JitValue self) {
+  return _jit_self_handle<JitIsolate>(self, JitHandle::Kind::Isolate,
+                                      "handle from Isolate.spawn");
 }
 
 inline void _jit_isolate_join(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t, JitValue*) {
@@ -842,7 +837,7 @@ inline void _jit_isolate_join(JitValue* __ret, JitClosure*, int8_t self_tag, int
   // failure, and the caller does not clean a native method's operands on
   // unwind, so a tail release would strand `self` there.
   JitMethodSelf _s{self};
-  auto core = jit_isolate_lookup(_jit_isolate_self_id(self));
+  auto core = _jit_self_isolate(self)->core;  // a copy: outlives a drop() during the wait
   JitValue ret{TAG_NIL, 0};
   if (core) {
     {
@@ -857,7 +852,7 @@ inline void _jit_isolate_join(JitValue* __ret, JitClosure*, int8_t self_tag, int
 inline void _jit_isolate_poll(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t, JitValue*) {
   JitValue self{self_tag, self_data};
   JitMethodSelf _s{self};  // consumed on any exit (extract re-raises)
-  auto core = jit_isolate_lookup(_jit_isolate_self_id(self));
+  auto core = _jit_self_isolate(self)->core;
   JitValue ret{TAG_NIL, 0};
   if (core) {
     bool done;
@@ -870,45 +865,24 @@ inline void _jit_isolate_poll(JitValue* __ret, JitClosure*, int8_t self_tag, int
 inline void _jit_isolate_drop(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t, JitValue*) {
   JitValue self{self_tag, self_data};
   JitMethodSelf _s{self};
-  int64_t id = _jit_isolate_self_id(self);
-  auto core = jit_isolate_lookup(id);
-  if (core && !core->joined && core->thread.joinable()) {
-    mark_isolate_cancelled(*core);  // sets the JIT wake so a tight loop unwinds
-    {
-      std::unique_lock<std::mutex> lk(core->m);
-      core->cv.wait(lk, [&] { return core->finished; });
-    }
-    core->thread.join();
-    core->joined = true;
-  }
-  {
-    std::lock_guard<std::mutex> lk(jit_isolate_reg_mutex());
-    jit_isolate_reg().erase(id);
-  }
+  // Idempotent, like a channel end's: a dropped handle holds no core.
+  auto core = std::exchange(_jit_self_isolate(self)->core, nullptr);
+  if (core && !core->joined) cancel_and_join_isolates({std::move(core)});
   { *__ret = {TAG_NIL, 0}; return; }
 }
 
-// Cancel + join every JIT isolate still outstanding — a standalone
-// Isolate.spawn handle (jit_isolate_reg) or a producer of a Channel.fan_in
-// merge still alive (fan_in_merges, isolate_core.h) — before JIT::exec (jit.h)
-// tears down the LLJIT that backs every one's shared
+// Cancel + join every JIT isolate still outstanding — an Isolate.spawn
+// handle's or a Channel.fan_in producer (started_isolates, isolate_core.h) —
+// before JIT::exec (jit.h) tears down the LLJIT that backs every one's shared
 // JitClosure::fn_ptr (see the header comment at the top of this file). A
-// script normally reaps its own isolates via h.join()/h.drop(), which mark
-// `joined` and make this a no-op walk; the gap is a top-level throw that
-// unwinds straight past an unreached join(), leaving one still running when
-// the LLJIT that owns its compiled body is about to be freed out from under
-// it. Installed into isolate_teardown_join_hook (shared.h) below, where the
-// consumers that must stay light (script_teardown.h) reach it without
-// pulling this header.
+// handle that goes cancels and joins its own isolate; the gap is one nothing
+// lets go of by then (held in a cycle a top-level binding reaches), whose
+// isolate would still be running when the LLJIT that owns its compiled body
+// is freed out from under it. Installed into isolate_teardown_join_hook
+// (shared.h) below, where the consumers that must stay light
+// (script_teardown.h) reach it without pulling this header.
 inline void _jit_isolate_teardown_join_all() {
-  std::vector<std::shared_ptr<IsolateCore>> live;
-  {
-    std::lock_guard<std::mutex> lk(jit_isolate_reg_mutex());
-    for (auto& [_, core] : jit_isolate_reg())
-      if (!core->joined) live.push_back(core);
-  }
-  collect_live_fan_in_producers(live);
-  cancel_and_join_isolates(std::move(live));
+  cancel_and_join_isolates(started_isolates_unjoined());
 }
 // Installed by the first spawn (below) rather than a static initializer: an
 // initializer would pin this join and the registry behind it into every
@@ -920,24 +894,22 @@ inline void _install_jit_isolate_teardown_hook() {
   });
 }
 
-// _jit_native_method (captureless native method closure) now lives in jit.h.
-
-inline JitValue _jit_build_isolate_handle(int64_t id) {
-  auto* h = culebra_runtime_object_new();
-  h->set_or_append("_core_id", JitValue{TAG_LONG, id}, true);
-  h->set_or_append("__nonsendable__", JitValue{TAG_BOOL, 1}, false);
-  auto m = [&](const char* name,
-               void (*f)(JitValue*, JitClosure*, int8_t, int64_t, int64_t, JitValue*)) {
-    h->set_or_append(
-        name,
-        JitValue{TAG_FUNC, reinterpret_cast<int64_t>(_jit_native_method(f))},
-        false);
-  };
-  m("join", _jit_isolate_join);
-  m("poll", _jit_isolate_poll);
-  m("drop", _jit_isolate_drop);
-  h->has_drop = true;
-  return {TAG_OBJECT, reinterpret_cast<int64_t>(h)};
+// The meta every Isolate.spawn handle of this Runtime points its `proto` at,
+// pinned like the channel metas. Borrowed.
+inline JitObject* _jit_isolate_meta() {
+  return _jit_pinned_meta(culebra::kSlotIsolateMeta, 0, [] {
+    auto* meta = culebra_runtime_object_new();
+    _jit_view_method(meta, "join", _jit_isolate_join);
+    _jit_view_method(meta, "poll", _jit_isolate_poll);
+    _jit_view_method(meta, "drop", _jit_isolate_drop);
+    return meta;
+  });
+}
+inline JitValue _jit_make_isolate_handle(std::shared_ptr<IsolateCore> core) {
+  JitValue v = _jit_make_handle(new JitIsolate(std::move(core)),
+                                _jit_isolate_meta());
+  reinterpret_cast<JitObject*>(v.data)->has_drop = true;
+  return v;
 }
 
 // Runtime entry for Isolate.spawn(fn, *args). First slice: validates cross-
@@ -969,16 +941,9 @@ inline JitValue culebra_jit_isolate_spawn(int8_t fn_tag, int64_t fn_data,
     throw;
   }
 
-  // Before the core is registered: nothing may throw between that and the
-  // thread that teardown joins.
   auto defaults = jit_snapshot_trait_defaults();
   auto core = std::make_shared<IsolateCore>();
-  int64_t id = jit_isolate_next_id().fetch_add(1, std::memory_order_relaxed);
   _install_jit_isolate_teardown_hook();
-  {
-    std::lock_guard<std::mutex> lk(jit_isolate_reg_mutex());
-    jit_isolate_reg()[id] = core;
-  }
   // A channel-carrying closure (or arg) may block on a peer isolate, so it MUST
   // run concurrently — never the synchronous over-cap fallback below, which
   // joins immediately and would deadlock (e.g. a streaming producer fills a
@@ -992,11 +957,12 @@ inline JitValue culebra_jit_isolate_spawn(int8_t fn_tag, int64_t fn_data,
   bool threaded = must_thread || under_cap;
   if (!threaded) g_live_isolates().fetch_sub(1, std::memory_order_relaxed);
   core->thread = culebra::SizedThread(
-      [core, sclo = std::move(sclo), sargs = std::move(sargs),
+      [c = core.get(), sclo = std::move(sclo), sargs = std::move(sargs),
        defaults = std::move(defaults), threaded]() mutable {
-        run_isolate_child_jit(core, std::move(sclo), std::move(sargs),
+        run_isolate_child_jit(*c, std::move(sclo), std::move(sargs),
                               std::move(defaults), /*decrement_live=*/threaded);
       });
+  started_isolates_add(core);  // once it has a thread for teardown to join
   if (!threaded) {
     // Synchronous fallback over the cap: still a fresh thread (the JIT multifn
     // tables are thread_local, so an inline run on the parent thread would
@@ -1005,7 +971,7 @@ inline JitValue culebra_jit_isolate_spawn(int8_t fn_tag, int64_t fn_data,
     core->thread.join();
     core->joined = true;
   }
-  return _jit_build_isolate_handle(id);
+  return _jit_make_isolate_handle(std::move(core));
 }
 
 // ===========================================================================
@@ -2629,14 +2595,14 @@ inline JitValue culebra_jit_channel_fan_in(int64_t n, JitValue* args,
     auto pcore = std::make_shared<IsolateCore>();
     g_live_isolates().fetch_add(1, std::memory_order_relaxed);
     pcore->thread = culebra::SizedThread(
-        [pcore, sfn = std::move(sfn), sargs = std::move(sargs),
+        [c = pcore.get(), sfn = std::move(sfn), sargs = std::move(sargs),
          defaults]() mutable {
-          run_isolate_child_jit(pcore, std::move(sfn), std::move(sargs),
+          run_isolate_child_jit(*c, std::move(sfn), std::move(sargs),
                                 std::move(defaults), /*decrement_live=*/true);
         });
+    started_isolates_add(pcore);
     merge->producers.push_back(std::move(pcore));
   }
-  fan_in_merges_add(merge);
   return _jit_make_merged_rx(std::move(merge));
 }
 

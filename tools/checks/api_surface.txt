@@ -359,6 +359,7 @@ h.kill(sig = 15)
 Isolate.spawn(fn, *args) -> handle
 h.join()
 h.poll()
+h.drop()
 Channel.new(cap = 1) -> (tx, rx)
 tx.send(v)
 tx.clone()
