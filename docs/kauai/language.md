@@ -236,9 +236,9 @@ E5; with `plays chords rootless from E3`, `Abmaj9` is C4 Eb4 G4 Bb4.
 | `gap N` | ticks cut from the end of every note, so that notes are heard apart | `0` |
 | `poly` | a host voice that sounds several notes at once | one note at a time |
 
-A host voice plays each note's sound through to its end; `env` and `gap` do
-not apply to it, and the note's length does only to an instrument that
-hears it ([section 10](#10-playing-from-culebra)). It may carry parameters
+A host voice plays each note's sound through to its end, so it takes no
+`env`, `gap` or `duty`, and the note's length applies only to an instrument
+that hears it ([section 10](#10-playing-from-culebra)). It may carry parameters
 of its own as `name=value` words after its name (`host Ep bright=0.8`);
 Kauai hands them to the host with every note.
 
@@ -345,7 +345,7 @@ chord the chord table does not give a degree takes a default: 4, 7, 10 and
 
 The voice that `plays chords` reads places in its voicing, counted from the
 bottom: `1 2 3 ...` (a number past the top is the top tone), or `x` for the
-whole chord at once (a `poly` voice).
+whole chord at once, which needs a `poly` voice.
 
 ### Drum rows
 
@@ -387,13 +387,13 @@ section Refrain {
 | `pickup NOTES` | notes that lead into the section, sounding over the last beats of the bar played before it; that bar has to rest there ([Pickups](#pickups)) |
 | `groove NAME` | the groove for the bars after it |
 | `meter N/D` | the meter for the bars after it ([Meter changes](#meter-changes)) |
-| `melody in LO..HI` | the range for this section's notes ([Octaves](#octaves)) |
+| `melody in LO..HI` | the range for the notes of the bars after it ([Octaves](#octaves)) |
 | `NAME: NOTES` | under a bar, the notes part `NAME` plays in it ([Parts](#parts)) |
 | `%` / `%%` | the bar before again, or the two bars before ([Repeat signs](#repeat-signs)) |
 | `hits: x8 r ...` | under a bar, the rhythm the band plays in it in place of its groove ([Hits and breaks](#hits-and-breaks)) |
 | `2nd: NOTES` | under a bar, the bar as it plays the second time ([Later times](#later-times)) |
 | `part NAME { ... }` | part `NAME` written out, a line a bar ([Parts](#parts)) |
-| `part NAME in LO..HI` | the range for part `NAME`'s notes |
+| `part NAME in LO..HI` | the range for part `NAME`'s notes in the bars after it |
 | `swing 8` / `straight` | the swing for the bars after it ([Swing](#swing)); `straight` plays them as written |
 | `ending N { ... }` | bars that close the section, a different set for each time it is played; `ending N as written { ... }` is not moved by the song's `in` |
 
@@ -494,14 +494,29 @@ be a chord, and may not be a rest or a note held by a tie.
 ### Octaves
 
 A note without `'` or `,` takes its letter's place inside the range: the
-section's `melody in`, else the song's. The range is one octave from a
+last `melody in` above its bar in the section, else the song's. The range is one octave from a
 natural note to the note a semitone below its octave (`melody in F5..E6`,
 `melody in D4..C#5`), so each letter's natural falls in it once, and a sharp
 or flat then moves the note from there, as on a staff: in `C4..B4`, `cb` is
 just below `c` (B3) and `b#` just above `b` (C5). Each `'` moves a note an
 octave up and each `,` an octave down. A note does not depend on the note
 before it, so changing one changes nothing else. A range that starts near the
-tune's lowest note keeps the marks few.
+tune's lowest note keeps the marks few, and a tune that climbs can move its
+range where it climbs:
+
+```kauai
+section Climb {
+  C             e4 g c'2
+  melody in C5..B5
+  F             a4 c' f'2
+  G7            g4 b d'2
+}
+```
+
+A range line holds for the bars after it, to the end of the section, as a
+`meter` line does: the bars before it and the pickup keep theirs. An ending
+starts in the range its section's body ends in, and a `%` plays the bar it
+repeats as it was written.
 
 ### Marks on notes
 
@@ -632,8 +647,8 @@ does, and suits a voice that runs throughout. A part is written one way in
 each section or ending, and a block has exactly as many lines as its bars.
 
 A part's notes are written as a melody's are. Those without `'` or `,` are
-in the part's range, `part NAME in LO..HI` in the section or the song, else
-the melody's.
+in the part's range: the last `part NAME in LO..HI` above the bar in the
+section, else the song's, else the melody's.
 
 ### Hits and breaks
 
@@ -869,7 +884,7 @@ under.
 - a mark other than a fermata on a rest, a mark on a note a tie holds on, a tie to a different note or into a rest, or a tie still open when the song ends
 - a `(` while a slur is open, a `)` with none open, or a slur still open when the song ends
 - a tuplet without a ratio that holds other than its number of notes, or a ratio that is not two counts above zero (`2:3`)
-- a chord of one note, or notes sounding together on a voice that is not `poly`
+- a chord of one note, or notes sounding together on a voice that is not `poly`, a chord row's `x` among them
 - a part written both under its bars and in a block, a part block with other than its bars' number of lines, or a part line before any bar
 - an arpeggio on a single note, grace notes before a rest or a tied note, or a note too short for its grace notes or its roll
 - a `2nd:` line before any bar or line it could change, one with neither chords nor notes, a time the song never plays the section (`3rd:` under a section it plays twice), or a time spelt otherwise than `1st` `2nd` `3rd` `4th` ...
@@ -883,7 +898,7 @@ under.
 - a groove, voice, drum, section, band, ending or derived part that is not defined, or a name defined twice
 - a groove row with a bar of no tokens, or of tokens that come to no note value (15 in 4/4)
 - two noise drums hitting at the same moment, or two voices of a band on one channel
-- a host drum without a sound, with a `len` or an `env`, with a `vol` that is not a percentage, or with a `choke` of other than one name; a `choke` on a noise drum
+- a host voice with an `env`, a `gap` or a `duty`; a host drum without a sound, with a `len` or an `env`, with a `vol` that is not a percentage, or with a `choke` of other than one name; a `choke` on a noise drum
 - no voice that plays melody, or more than one
 - a range that is not one octave, or that starts on a sharp or a flat
 - a `meter` whose beat is not a note value (`3/5`)
@@ -1146,7 +1161,8 @@ SectionLine <- 'pickup' Notes EOL / 'groove' Name EOL / 'melody' 'in' Range EOL
             / 'part' Name 'in' Range EOL / PartBlock / Ending / Again / PartLine
             / Hits / Repeat / Feel / Meter / Bar / EOL
 Ending     <- 'ending' Int ('as' 'written')? '{' EOL
-              (Bar / Repeat / Again / PartLine / Hits / PartBlock / 'groove' Name EOL / Feel / Meter / EOL)* '}' EOL
+              (Bar / Repeat / Again / PartLine / Hits / PartBlock / 'groove' Name EOL / Feel / Meter
+               / 'melody' 'in' Range EOL / 'part' Name 'in' Range EOL / EOL)* '}' EOL
 Feel       <- ('swing' Swing / 'straight') EOL
 Meter      <- 'meter' Int '/' Int EOL
 Bar        <- (Chord / '/')+ Notes? EOL / Notes EOL     # '/': a beat more of the chord
@@ -1158,7 +1174,7 @@ Again      <- Ordinal ':' (Chord+ Notes? / Notes) EOL / Ordinal Name ':' (Notes 
 Hits       <- 'hits' ':' HitNotes EOL
 Repeat     <- ('%%' / '%') EOL                    # the bar, or the two bars, before it again
 HitNotes   <- (Int (':' Int)? '[' Hit+ ']' / Hit)+
-Hit        <- ('.' / '!')* ('x' / 'r') Value? '~'?
+Hit        <- ('.' / '!' / '-' / '^')* ('x' / 'r') Value? '~'?
 Ordinal    <- Int ('st' / 'nd' / 'rd' / 'th')
 
 Notes      <- (Direction / Tuplet / Slurred)+

@@ -446,7 +446,8 @@ assert_eq(told.sorted(), [
 assert_eq(hit_told.sorted(), ['next 2.0', 'next nil', 'ride next 1.0', 'ride next nil'])
 
 # The band's hits carry their marks as written notes do: a staccato hit is
-# let go at half its length, and an instrument that hears marks is told so.
+# let go at half its length, a marcato at three quarters, and an instrument
+# that hears marks is told so.
 mut plucked = []
 let kime = Audio.Kauai.new(lines([
   'band Duo {',
@@ -455,7 +456,7 @@ let kime = Audio.Kauai.new(lines([
   '}',
   'groove Walk {', '  Bass  1 1 1 1', '}',
   'song Kime {', '  tempo 60', '  band Duo', '  groove Walk', '  melody in C4..B4', '  Kime', '}',
-  'section Kime {', '  C  r1', '    hits:  .x4 x4 !x2', '}',
+  'section Kime {', '  C  r1', '    hits:  .x4 -x4 ^x4 !x4', '}',
 ]), voices: {
   pluck: {
     phrase: fn (notes, params) {
@@ -493,9 +494,44 @@ assert_eq(lined.sorted(), [
 ])
 assert_eq(plucked.sorted(), [
   "pitch 48, at 0.0, len 0.5, marks ['staccato']",
-  "pitch 48, at 0.0, len 1.0, marks []",
-  "pitch 48, at 0.0, len 2.0, marks ['accent']",
+  "pitch 48, at 0.0, len 0.75, marks ['marcato']",
+  "pitch 48, at 0.0, len 1.0, marks ['accent']",
+  "pitch 48, at 0.0, len 1.0, marks ['tenuto']",
 ])
+
+# A `melody in` or `part NAME in` line holds for the bars after it, as a
+# `meter` line does: the bars before it, and the pickup, keep the range they
+# were written in; a repeat sign plays the bar it repeats as written, and an
+# ending starts in the range its section's body ends in.
+let ranged = Audio.Kauai.new(lines([
+  'band Pair {',
+  '  voice Lead  pulse     plays melody  vol 20',
+  '  voice Alto  triangle  plays part A  vol 20',
+  '}',
+  'song Range {', '  tempo 60', '  band Pair', '  melody in C4..B4', '  Range ending 1', '  Range ending 2', '}',
+  'section Range {',
+  '  pickup  g4',
+  '  C  c1',
+  '    A:  e1',
+  '  melody in C5..B5',
+  '  part A in C3..B3',
+  '  C  c1',
+  '    A:  e1',
+  '  melody in C6..B6',
+  '  %',
+  '  ending 1 {',
+  '    C  c2 r',
+  '      A:  e1',
+  '  }',
+  '  ending 2 {',
+  '    melody in C4..B4',
+  '    C  c1',
+  '  }',
+  '}',
+]))
+let pitches_of = |who| ranged.events().filter(|e| e.by == who).map(|e| e.pitch)
+assert_eq(pitches_of("Lead"), [67, 60, 72, 72, 84, 67, 60, 72, 72, 60])
+assert_eq(pitches_of("Alto"), [64, 52, 52, 52, 64, 52, 52])
 
 
 let refused = fn (voices, drums) {

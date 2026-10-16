@@ -196,6 +196,16 @@ fails(
   play("  T", "C c1\nmeter 3/4\n%"),
   "line 20: the bar is 4.0 beats long, want 3",
 )
+fails(
+  play("  T", "C c1").replace("  voice Ch  host Ep   plays chords from C4  poly", "  voice Ch  host Ep   plays chords from C4"),
+  "line 15: Ch plays x, the whole chord, under the bar at line 18, and is not poly",
+)
+for opt in ["env 1 2 3", "gap 2", "duty 1/4"] {
+  fails(
+    play("  T", "C c1").replace("poly  vol 40%", "poly  vol 40%  {opt}"),
+    "line 4: a host voice plays its sound through: no env, gap or duty",
+  )
+}
 
 # Later times, hits and the song's lines.
 fails(
@@ -214,11 +224,11 @@ fails(
 )
 fails(
   with_hits("C c1\n  hits: c2 r"),
-  "line 19: hits are x (strike) and r (rest), with a value and the marks ! and .: c2",
+  "line 19: hits are x (strike) and r (rest), with a value and the marks . ! - ^: c2",
 )
 fails(
   with_hits("C c1\n  hits: (x4 x) r2"),
-  "line 19: hits are x (strike) and r (rest), with a value and the marks ! and .: (",
+  "line 19: hits are x (strike) and r (rest), with a value and the marks . ! - ^: (",
 )
 fails(
   with_hits("C c1\n  hits: x2"),

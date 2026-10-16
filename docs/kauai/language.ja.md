@@ -234,8 +234,8 @@ C4 Eb4 G4 Bb4になります。
 | `gap N` | 各音の終わりを何tick切り詰めるか。音と音の間にすき間を作って、区切って聞かせる | `0` |
 | `poly` | 複数の音を同時に鳴らせる（host楽器のみ） | 一度に1音 |
 
-host楽器は、音ごとに用意された音声を最後まで鳴らします。`env`と`gap`は
-効きません。音符の長さは、長さを聞く楽器（[10章](#10-culebra-から再生する)）に
+host楽器は、音ごとに用意された音声を最後まで鳴らします。そのため`env`、
+`gap`、`duty`は書けません。音符の長さは、長さを聞く楽器（[10章](#10-culebra-から再生する)）に
 だけ効きます。名前の後ろに`name=value`の形で独自のパラメータを
 付けられます（`host Ep bright=0.8`）。このパラメータは、音ごとにKauaiから
 ホストへ渡されます。
@@ -344,7 +344,7 @@ grooveには、伴奏する楽器やドラムごとに1行ずつ書き、行頭�
 
 `plays chords`の楽器の行には、ボイシングの中の位置を下から数えて書きます。
 `1 2 3 …`で1音ずつ（最上音より大きい数は最上音）、`x`で和音全体を同時に
-鳴らします（`x`は`poly`の楽器で使います）。
+鳴らします（`x`には`poly`の楽器が必要です）。
 
 ### ドラムの行
 
@@ -386,13 +386,13 @@ section Refrain {
 | `pickup NOTES` | sectionへ入る弱起の音。直前に演奏される小節の最後の拍に重ねて鳴らすので、その小節のその部分は休符でなければならない（[弱起](#弱起)） |
 | `groove NAME` | これ以降の小節のgroove |
 | `meter N/D` | これ以降の小節の拍子（[拍子の変化](#拍子の変化)） |
-| `melody in LO..HI` | このsectionの音の範囲（[オクターブ](#オクターブ)） |
+| `melody in LO..HI` | この行より後の小節の音の範囲（[オクターブ](#オクターブ)） |
 | `NAME: NOTES` | 小節の下に書く。その小節でパート`NAME`が弾く音（[パート](#パート)） |
 | `%` / `%%` | 直前の1小節、または直前の2小節を繰り返す（[反復記号](#反復記号)） |
 | `hits: x8 r ...` | 小節の下に書く。その小節でバンドがgrooveの代わりに弾くリズム（[キメとブレイク](#キメとブレイク)） |
 | `2nd: NOTES` | 小節の下に書く。2回目に演奏するときのその小節（[2回目以降](#2回目以降)） |
 | `part NAME { ... }` | パート`NAME`の書き譜。1行が1小節（[パート](#パート)） |
-| `part NAME in LO..HI` | パート`NAME`の音の範囲 |
+| `part NAME in LO..HI` | この行より後の小節での、パート`NAME`の音の範囲 |
 | `swing 8` / `straight` | これ以降の小節のスウィング（[スウィング](#スウィング)）。`straight`は書いたとおりのリズムで弾く |
 | `ending N { ... }` | sectionを締めくくる小節。演奏する回ごとに別のものを使える。`ending N as written { ... }`はsongの`in`で移調しない |
 
@@ -493,14 +493,30 @@ Gは伸びたままで、Dだけが新しく鳴ります。同時に鳴る音を
 ### オクターブ
 
 `'`も`,`も付かない音は、範囲の中で、その音名の位置に置かれます。範囲には
-sectionの`melody in`を、なければsongのものを使います。範囲は、幹音から始まり、
+section内でその小節より上にある最後の`melody in`を、なければsongのものを
+使います。範囲は、幹音から始まり、
 その1オクターブ上の半音下で終わる1オクターブです（`melody in F5..E6`、
 `melody in D4..C#5`）。そのため、どの音名の幹音も範囲にちょうど1回ずつ現れ、
 シャープやフラットは、五線譜と同じくそこから音をずらします。たとえば`C4..B4`
 では、`cb`は`c`のすぐ下（B3）、`b#`は`b`のすぐ上（C5）です。`'`を1つ付けると
 1オクターブ上、`,`を1つ付けると1オクターブ下に移ります。音の高さは直前の音に
 左右されないので、1つの音を直してもほかの音は変わりません。範囲をメロディの
-最低音の近くから始めると、記号が少なくて済みます。
+最低音の近くから始めると、記号が少なくて済みます。高いところへ上っていく
+メロディは、上ったところで範囲を移せます。
+
+```kauai
+section Climb {
+  C             e4 g c'2
+  melody in C5..B5
+  F             a4 c' f'2
+  G7            g4 b d'2
+}
+```
+
+範囲の行は、`meter`の行と同じく、その行より後の小節にsectionの終わりまで
+効きます。それより前の小節とpickupは、それぞれの範囲のままです。endingは、
+sectionの本体が終わったときの範囲で始まります。`%`は、くり返す小節を
+書いたときの範囲で鳴らします。
 
 ### 音符に付ける印
 
@@ -628,8 +644,8 @@ section Theme {
 どちらか一方の書き方で書きます。ブロックの行数は、小節数とちょうど同じにします。
 
 パートの音の書き方は、メロディと同じです。`'`も`,`も付かない音は、パートの
-範囲（sectionかsongの`part NAME in LO..HI`、なければメロディの範囲）に
-置かれます。
+範囲（section内でその小節より上にある最後の`part NAME in LO..HI`、
+なければsongのもの、それもなければメロディの範囲）に置かれます。
 
 ### キメとブレイク
 
@@ -866,7 +882,7 @@ section Bridge {
 - 休符に付けたフェルマータ以外の記号。タイで伸ばしている音に付けた記号。高さの違う音や休符へのタイ。曲が終わってもつながったままのタイ
 - スラーの途中にある`(`、スラーの外にある`)`、曲が終わっても閉じていないスラー
 - 比を書かない連符で、数字と中の音の数が合わないもの。0より大きい2つの数になっていない比（`2:3`のように書く）
-- 1音だけの和音。`poly`でない楽器で、複数の音が同時に鳴るもの
+- 1音だけの和音。`poly`でない楽器で、複数の音が同時に鳴るもの（和音の行の`x`を含む）
 - 小節の下とブロックの両方に書いたパート。行数が小節数と合わないパートのブロック。最初の小節より前にあるパートの行
 - 1音だけのアルペジオ。休符やタイで伸ばしている音の前の装飾音。装飾音やアルペジオのずれに対して短すぎる音
 - 変更の対象になる小節や行より前にある`2nd:`の行。コードも音符もない`2nd:`の行。そのsectionが演奏されない回（2回しか演奏しないsectionの`3rd:`）。`1st` `2nd` `3rd` `4th`…以外の書き方をした回数
@@ -880,7 +896,7 @@ section Bridge {
 - 定義されていないgroove、楽器、ドラム、section、band、ending、派生パート。2回定義された名前
 - トークンのない小節や、トークンの長さが音価にならない小節（4/4で15個）を含むgrooveの行
 - 同時に鳴るnoiseのドラム2つ。同じチャンネルを使う1つのbandの楽器2つ
-- 音声の名前がない、`len`や`env`が付いている、`vol`が百分率でない、または`choke`に名前が1つでないhostのドラム。noiseのドラムの`choke`
+- `env`、`gap`、`duty`が付いたhost楽器。音声の名前がない、`len`や`env`が付いている、`vol`が百分率でない、または`choke`に名前が1つでないhostのドラム。noiseのドラムの`choke`
 - メロディを弾く楽器がない、または2つ以上ある
 - 1オクターブでない範囲。シャープやフラットの付いた音から始まる範囲
 - 1拍が音価にならない`meter`（`3/5`）
@@ -1143,7 +1159,8 @@ SectionLine <- 'pickup' Notes EOL / 'groove' Name EOL / 'melody' 'in' Range EOL
             / 'part' Name 'in' Range EOL / PartBlock / Ending / Again / PartLine
             / Hits / Repeat / Feel / Meter / Bar / EOL
 Ending     <- 'ending' Int ('as' 'written')? '{' EOL
-              (Bar / Repeat / Again / PartLine / Hits / PartBlock / 'groove' Name EOL / Feel / Meter / EOL)* '}' EOL
+              (Bar / Repeat / Again / PartLine / Hits / PartBlock / 'groove' Name EOL / Feel / Meter
+               / 'melody' 'in' Range EOL / 'part' Name 'in' Range EOL / EOL)* '}' EOL
 Feel       <- ('swing' Swing / 'straight') EOL
 Meter      <- 'meter' Int '/' Int EOL
 Bar        <- (Chord / '/')+ Notes? EOL / Notes EOL     # '/': a beat more of the chord
@@ -1155,7 +1172,7 @@ Again      <- Ordinal ':' (Chord+ Notes? / Notes) EOL / Ordinal Name ':' (Notes 
 Hits       <- 'hits' ':' HitNotes EOL
 Repeat     <- ('%%' / '%') EOL                    # the bar, or the two bars, before it again
 HitNotes   <- (Int (':' Int)? '[' Hit+ ']' / Hit)+
-Hit        <- ('.' / '!')* ('x' / 'r') Value? '~'?
+Hit        <- ('.' / '!' / '-' / '^')* ('x' / 'r') Value? '~'?
 Ordinal    <- Int ('st' / 'nd' / 'rd' / 'th')
 
 Notes      <- (Direction / Tuplet / Slurred)+

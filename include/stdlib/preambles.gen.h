@@ -1824,6 +1824,17 @@ let _kauai_module = fn () {
     low
   }
 
+  # A section's `melody in LO..HI` line, and its `part NAME in LO..HI` line
+  # as {NAME: low}.
+  fn melody_range(it) {
+    window(it.words[2], it.line)
+  }
+
+  fn part_range(it) {
+    fail(it.line, '`part NAME in LO..HI`, or a block `part NAME {`') if it.words.size() != 4 || it.words[2] != "in"
+    [(name_at(it.words, 1, it.line, "a part"), window(it.words[3], it.line))].to_object()
+  }
+
   # A melody note: with an octave number, exactly that note; without, its
   # letter's natural inside the window, then its accidental, and an octave for
   # each ' or ,. So `cb` is just below `c` and `b#` just above `b`, as on a staff.
@@ -2528,6 +2539,7 @@ let _kauai_module = fn () {
     fail(line, "vol takes a number: vol 20") if vol.size() != 1
     if host {
       fail(line, "a host voice's vol is a percentage: vol 40%") if !vol[0].ends_with("%")
+      fail(line, "a host voice plays its sound through: no env, gap or duty") if o.has("env") || o.has("gap") || o.has("duty")
     } else {
       fail(line, "a voice's vol is 0 to 100, as Audio.tone's: vol 20") if vol[0].ends_with("%")
     }
@@ -2693,7 +2705,10 @@ let _kauai_module = fn () {
     # The meter for the bars after a `meter` line; nil keeps the song's.
     mut meter = nil
     mut groove_bar = 0
+    # The ranges for the bars after a `melody in` or `part NAME in` line; nil
+    # (or no entry) keeps the song's.
     mut low = nil
+    mut part_low = {}
     mut pickup = nil
     mut body = []
     mut endings = {}
@@ -2833,7 +2848,6 @@ let _kauai_module = fn () {
         fail(blk.line, "part {pname}'s block has {k + 1} lines for {bars_in.size()} bars")
       }
     }
-    mut part_low = {}
     for it in b.body {
       if it.has("head") {
         if it.head[0] == "part" {
@@ -2849,6 +2863,8 @@ let _kauai_module = fn () {
         mut meter_here = meter
         mut groove_here = groove
         mut named_here = named
+        mut low_here = low
+        mut part_low_here = part_low
         for r in it.body {
           if r.has("head") {
             fail(r.line, "an ending holds `part` blocks") if r.head[0] != "part"
@@ -2869,6 +2885,14 @@ let _kauai_module = fn () {
             gb = 0
             continue
           }
+          if r.words[0] == "melody" {
+            low_here = melody_range(r)
+            continue
+          }
+          if r.words[0] == "part" {
+            part_low_here = {...part_low_here, ...part_range(r)}
+            continue
+          }
           let nth_of_row = ordinal(r.words[0], r.line)
           if nth_of_row != nil {
             add_again(rows, r, nth_of_row)
@@ -2883,7 +2907,7 @@ let _kauai_module = fn () {
             add_part(rows, pn, r.words.slice(1, r.words.size()).join(" "), r.line, "under")
             continue
           }
-          for placed in repeated(rows, r) ?? [bar(r, groove_here, gb, written, named_here, rows.empty() ? nil : rows[rows.size() - 1].chords)] {
+          for placed in repeated(rows, r) ?? [{...bar(r, groove_here, gb, written, named_here, rows.empty() ? nil : rows[rows.size() - 1].chords), low: low_here, part_low: part_low_here}] {
             rows.push({...placed, groove: groove_here, groove_bar: gb, as_written: written, named_groove: named_here, swing: swing_here, meter: meter_here})
             gb += 1
           }
@@ -2901,10 +2925,9 @@ let _kauai_module = fn () {
       } else if it.words[0] == "meter" {
         meter = parse_meter(it.words, it.line)
       } else if it.words[0] == "melody" {
-        low = window(it.words[2], it.line)
+        low = melody_range(it)
       } else if it.words[0] == "part" {
-        fail(it.line, '`part NAME in LO..HI`, or a block `part NAME {`') if it.words.size() != 4 || it.words[2] != "in"
-        part_low[name_at(it.words, 1, it.line, "a part")] = window(it.words[3], it.line)
+        part_low = {...part_low, ...part_range(it)}
       } else if ordinal(it.words[0], it.line) != nil {
         add_again(body, it, ordinal(it.words[0], it.line))
       } else if it.words[0] == "hits:" {
@@ -2913,9 +2936,9 @@ let _kauai_module = fn () {
         add_part(body, part_line(it), it.words.slice(1, it.words.size()).join(" "), it.line, "under")
       } else if it.words[0] == "pickup" {
         fail(it.line, "a pickup comes before the section's first bar") if !body.empty()
-        pickup = {notes: it.words.slice(1, it.words.size()).join(" "), line: it.line}
+        pickup = {notes: it.words.slice(1, it.words.size()).join(" "), line: it.line, low: low}
       } else {
-        for placed in repeated(body, it) ?? [bar(it, groove, groove_bar, false, named, body.empty() ? nil : body[body.size() - 1].chords)] {
+        for placed in repeated(body, it) ?? [{...bar(it, groove, groove_bar, false, named, body.empty() ? nil : body[body.size() - 1].chords), low: low, part_low: part_low}] {
           body.push({...placed, groove: groove, groove_bar: groove_bar, as_written: false, named_groove: named, swing: swing, meter: meter})
           groove_bar += 1
         }
@@ -2924,7 +2947,7 @@ let _kauai_module = fn () {
     for blk in part_blocks {
       add_block(body, blk)
     }
-    {name: name, key: key, low: low, part_low: part_low, pickup: pickup, body: body, endings: endings, latest: latest}
+    {name: name, key: key, pickup: pickup, body: body, endings: endings, latest: latest}
   }
 
   # `swing 8`, `swing 16 3:2` from word `at`: {unit (a note value), first,
@@ -3187,7 +3210,7 @@ let _kauai_module = fn () {
       let from = sec.key == nil ? song_key : key_pc(sec.key, p.line)
       let up = p.key == nil ? 0 : Math.wrap(key_pc(p.key, p.line) - from, 12)
       let shift = up > 6 ? up - 12 : up
-      let low = sec.low ?? song.low ?? fail(p.line, "say `melody in LO..HI`")
+      let low_of = |r| r.low ?? song.low ?? fail(p.line, "say `melody in LO..HI`")
       for _ in 0..p.times {
         played[p.section] = played.get(p.section, 0) + 1
         let nth = "{played[p.section]}"
@@ -3200,7 +3223,7 @@ let _kauai_module = fn () {
           if bars.empty() {
             # At the very start the song begins with the pickup: a bar of its
             # own length, before the first, that the band does not play in.
-            write_melody(events, low, shift, pk.line, 0, tempos, song_tempo, voice_state)
+            write_melody(events, low_of(pk), shift, pk.line, 0, tempos, song_tempo, voice_state)
             bars.push({lead_in: true, at: 0, len: len, beats: 0, beat: into.beat, chords: [nil], parts: {}, line: pk.line, first: false, last: false, swing: nil})
             pos = len
           } else {
@@ -3208,7 +3231,7 @@ let _kauai_module = fn () {
             fail(pk.line, "the pickup is longer than the bar before it") if len > before.len
             let from_at = pos - len
             fail(pk.line, "the bar before the pickup has to rest where the pickup plays") if !rests(from_at, len) || !voice_state.ties.empty()
-            write_melody(events, low, shift, pk.line, from_at, tempos, song_tempo, voice_state)
+            write_melody(events, low_of(pk), shift, pk.line, from_at, tempos, song_tempo, voice_state)
           }
         }
         for i, written_bar in rows.enumerate() {
@@ -3226,7 +3249,7 @@ let _kauai_module = fn () {
           if len != blen {
             fail(r.line, "the bar is {len * 1.0 / m.beat} beats long, want {m.beats}")
           }
-          write_melody(events, low, n, r.line, base, tempos, song_tempo, voice_state)
+          write_melody(events, low_of(r), n, r.line, base, tempos, song_tempo, voice_state)
           for pname, pt in r.parts {
             if !part_states.has(pname) {
               part_states[pname] = fresh_state()
@@ -3235,7 +3258,7 @@ let _kauai_module = fn () {
             if plen != blen {
               fail(pt.line, "{pname}'s bar is {plen * 1.0 / m.beat} beats long, want {m.beats}")
             }
-            let plow = sec.part_low.get(pname, nil) ?? song.part_low.get(pname, nil) ?? low
+            let plow = r.part_low.get(pname, nil) ?? song.part_low.get(pname, nil) ?? low_of(r)
             write_melody(pev, plow, n, pt.line, base, tempos, song_tempo, part_states[pname])
           }
           bars.push({
@@ -3433,11 +3456,11 @@ let _kauai_module = fn () {
       let written = toks.map(fn (t) {
         return t if t == "]" || t.ends_with("[")
         mut i = 0
-        while i < t.size() && ".!".contains(t.slice(i, i + 1).to_string()) {
+        while i < t.size() && ".!-^".contains(t.slice(i, i + 1).to_string()) {
           i += 1
         }
         let head = t.slice(i, i + 1).to_string()
-        fail(h.line, "hits are x (strike) and r (rest), with a value and the marks ! and .: {t}") if head != "x" && head != "r"
+        fail(h.line, "hits are x (strike) and r (rest), with a value and the marks . ! - ^: {t}") if head != "x" && head != "r"
         head == "x" ? t.slice(0, i).to_string() + "c" + t.slice(i + 1, t.size()).to_string() : t
       }).join(" ")
       let (events, len) = melody_notes(written, h.line, b.beat)
@@ -3451,7 +3474,7 @@ let _kauai_module = fn () {
           if tied {
             out[out.size() - 1].len += ev.length
           } else {
-            out.push({at: at_unit, mut len: ev.length, marks: ev.marks.filter(|m| m != "fermata")})
+            out.push({at: at_unit, mut len: ev.length, marks: ev.marks})
           }
           tied = ev.tie
         }
@@ -3571,6 +3594,9 @@ let _kauai_module = fn () {
         let voice_row = row_steps(b, g, vname, false)
         return [] if voice_row == nil
         let row = voice_row[0]
+        if vname == chord_v.name && !chord_v.poly && row.toks.contains("x") {
+          fail(voice_row[1], "{vname} plays x, the whole chord, under the bar at {b.line}, and is not poly")
+        }
         row.toks.enumerate().map(|(k, t)| (k * row.size, t, row.size, []))
       }
       for (slot, hit, units, hit_marks) in pattern(bass_v.name) {
