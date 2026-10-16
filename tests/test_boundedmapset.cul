@@ -107,4 +107,11 @@ let drained = hv.tags.iter()
 assert_eq(drained.has_next(), false)
 assert_throws("IndexError", fn () { drained.next() })
 
+// A value that does not fit throws with the map as it was: its key does not
+// go in without it, and a full map still says so first.
+assert_throws("TypeError", fn () { hv.counts.set(1, 'x') })
+assert_eq([hv.counts.size(), hv.counts.get(1)], [0, nil])
+for k in 0..8 { hv.counts.set(k, k) }
+assert_throws("CapacityError", fn () { hv.counts.set(99, 'x') })
+
 IO.inspect("test_boundedmapset OK")

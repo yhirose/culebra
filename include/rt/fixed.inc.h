@@ -291,11 +291,11 @@ inline int64_t _jit_table_find(const JitBufView& v, uint8_t* p, JitValue key,
                               l.capacity, l.elem_size, l.elem_size, encoded,
                               insert);
 }
-// The slot `key` has or takes, adding it when it is new: full, a
-// CapacityError naming `what`.
-inline int64_t _jit_table_put(const JitBufView& v, uint8_t* p, JitValue key,
-                              const char* what) {
-  uint8_t encoded[8];
+// Where `key` goes: the slot it has, or the one it would take, with its bytes
+// in `encoded`; full, a CapacityError naming `what`. Nothing is stored yet,
+// so what else an add checks can still throw first.
+inline int64_t _jit_table_place(const JitBufView& v, uint8_t* p, JitValue key,
+                                const char* what, uint8_t* encoded) {
   int64_t insert = -1;
   int64_t slot = _jit_table_find(v, p, key, &insert, encoded);
   if (slot >= 0) return slot;
@@ -303,10 +303,15 @@ inline int64_t _jit_table_put(const JitBufView& v, uint8_t* p, JitValue key,
     throw culebra::CulebraError(
         "CapacityError",
         culebra::format("{} is full (capacity {})", what, v.info().capacity));
-  std::memcpy(_jit_coll_elem(v.info(), p, insert), encoded, v.info().elem_size);
-  _jit_coll_states(p)[insert] = culebra::kFixedFull;
-  _jit_coll_set_count(p, _jit_coll_count(v.info(), p) + 1);
   return insert;
+}
+// Store the key _jit_table_place placed at `slot`, unless it is there already.
+inline void _jit_table_take(const JitBufView& v, uint8_t* p, int64_t slot,
+                            const uint8_t* encoded) {
+  if (_jit_coll_full(p, slot)) return;
+  std::memcpy(_jit_coll_elem(v.info(), p, slot), encoded, v.info().elem_size);
+  _jit_coll_states(p)[slot] = culebra::kFixedFull;
+  _jit_coll_set_count(p, _jit_coll_count(v.info(), p) + 1);
 }
 // The first occupied slot at `from` or after it, or the capacity.
 inline int64_t _jit_table_next(const JitBufView& v, const uint8_t* p,
@@ -329,7 +334,10 @@ inline JitValue _jit_table_remove(JitBufView& v, JitValue* args) {
   return {TAG_BOOL, 1};
 }
 inline JitValue _jit_fs_add(JitBufView& v, JitValue* args) {
-  _jit_table_put(v, v.bytes(), args[0], "BoundedSet");
+  uint8_t* p = v.bytes();
+  uint8_t key[8];
+  int64_t slot = _jit_table_place(v, p, args[0], "BoundedSet", key);
+  _jit_table_take(v, p, slot, key);
   return {TAG_NIL, 0};
 }
 inline JitValue _jit_fm_get(JitBufView& v, JitValue* args) {
@@ -337,12 +345,16 @@ inline JitValue _jit_fm_get(JitBufView& v, JitValue* args) {
   int64_t slot = _jit_table_find(v, p, args[0]);
   return slot < 0 ? JitValue{TAG_NIL, 0} : _jit_coll_read_val(v.info(), p, slot);
 }
+// The value goes in before a new key does, so one that does not fit throws
+// with the map as it was.
 inline JitValue _jit_fm_set(JitBufView& v, JitValue* args) {
   uint8_t* p = v.bytes();
-  int64_t slot = _jit_table_put(v, p, args[0], "BoundedMap");
+  uint8_t key[8];
+  int64_t slot = _jit_table_place(v, p, args[0], "BoundedMap", key);
   _jit_packable_write_field(_jit_coll_val(v.info(), p, slot),
                             culebra::PackableField::scalar(v.info().val_type),
                             args[1].tag, args[1].data);
+  _jit_table_take(v, p, slot, key);
   return {TAG_NIL, 0};
 }
 inline JitValue _jit_fm_keys(JitBufView& v, JitValue*) {

@@ -4320,7 +4320,10 @@ inline JitValue _jit_packable_read_field(const uint8_t* base,
 // mirrors the interp (Long<->Float implicit). Pure borrow-and-write: it
 // never releases `(tag, data)` — both the storing callers (which consume
 // via an owned JitOwnedVal) and the key-encoding callers (BoundedSet/Map probe,
-// which must NOT consume) rely on that.
+// which must NOT consume) rely on that. Every check comes before the first
+// byte is written (an optional's flag goes up after its value is in, and an
+// enum's tag and payload are built on a copy of the field), so a value that
+// does not fit throws with the field as it was.
 inline void _jit_packable_write_field(uint8_t* base,
                                       const culebra::PackableField& f,
                                       int8_t tag, int64_t data) {
@@ -4359,10 +4362,10 @@ inline void _jit_packable_write_field(uint8_t* base,
   }
   if (f.layout.is_optional) {
     if (tag == TAG_NIL) { *p = 0; return; }
-    *p = 1;
     _jit_packable_write_field(p + f.layout.data_offset,
                               culebra::PackableField::scalar(f.layout.elem_type),
                               tag, data);
+    *p = 1;
     return;
   }
   if (f.layout.is_enum) {
@@ -4380,20 +4383,25 @@ inline void _jit_packable_write_field(uint8_t* base,
       throw culebra::CulebraError("TypeError", culebra::format(
           "field `{}`: unknown variant for enum `{}`", f.name, f.layout.elem_type));
     }
+    // The tag and the payload go onto a copy of the field, which goes in whole.
+    uint8_t local[64];
+    std::vector<uint8_t> heap;
+    uint8_t* staged =
+        el.size <= sizeof local ? local : (heap.resize(el.size), heap.data());
+    std::memcpy(staged, p, el.size);
     int32_t vtag = static_cast<int32_t>(idx);
-    std::memcpy(p, &vtag, 4);
-    uint8_t* payload = p + el.payload_offset;
+    std::memcpy(staged, &vtag, 4);
+    uint8_t* payload = staged + el.payload_offset;
     const auto& var = el.variants[idx];
     for (size_t fi = 0; fi < var.fields.size(); fi++) {
-      culebra::PackableField sf;
-      sf.type = var.fields[fi].type;
-      sf.offset = 0;
       size_t fs = obj->find_slot(culebra::positional_field_name(fi).data());
       JitValue fv = (fs != static_cast<size_t>(-1)) ? obj->slots[fs].value
                                                     : JitValue{TAG_NIL, 0};
-      _jit_packable_write_field(payload + var.fields[fi].offset, sf, fv.tag,
-                                fv.data);
+      _jit_packable_write_field(payload + var.fields[fi].offset,
+                                culebra::PackableField::scalar(var.fields[fi].type),
+                                fv.tag, fv.data);
     }
+    std::memcpy(p, staged, el.size);
     return;
   }
   auto as_double = [&]() -> double {

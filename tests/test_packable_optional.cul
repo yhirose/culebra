@@ -51,4 +51,12 @@ w = Isolate.spawn(fn () {
 w.join()
 assert_eq(shared[0].parent, 42)
 
+// A value that does not fit throws with the field as it was: the present flag
+// does not go up without it.
+buf[1].parent = nil
+assert_throws('TypeError', fn () {
+  buf[1].parent = 'x'
+})
+assert_eq(buf[1].parent, nil)
+
 IO.inspect("test_packable_optional OK")

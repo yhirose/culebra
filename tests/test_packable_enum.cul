@@ -116,4 +116,30 @@ assert_throws('TypeError', fn () {
 })
 assert_eq("{cells[2].k}", 'Kind.P(0)')
 
+// A payload value that does not fit throws with the field as it was: the tag
+// does not go in without it.
+buf[3].shape = Shape.Point
+assert_throws('TypeError', fn () {
+  buf[3].shape = Shape.Circle('x')
+})
+assert_eq("{buf[3].shape}", 'Shape.Point')
+
+// The same for an enum wider than the 64 bytes a write builds on the stack,
+// the bad value last so the ones before it would show.
+@packable
+enum WideRoute {
+  Idle,
+  Hops(Int64, Int64, Int64, Int64, Int64, Int64, Int64, Int64, Int64),
+}
+@packable
+class RouteCell {
+  r: WideRoute
+}
+routes = SharedBuffer.new(1, RouteCell)
+routes[0].r = WideRoute.Hops(1, 2, 3, 4, 5, 6, 7, 8, 9)
+assert_throws('TypeError', fn () {
+  routes[0].r = WideRoute.Hops(0, 0, 0, 0, 0, 0, 0, 0, 'x')
+})
+assert_eq("{routes[0].r}", 'WideRoute.Hops(1, 2, 3, 4, 5, 6, 7, 8, 9)')
+
 IO.inspect("test_packable_enum OK")
