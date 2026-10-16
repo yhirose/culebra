@@ -1109,10 +1109,11 @@ inline void _jit_chan_iter_next(JitValue* __ret, JitClosure*, int8_t self_tag, i
   JitMethodSelf _s{self};
   auto* it = _jit_self_chan_iter(self);
   JitValue ret{TAG_NIL, 0};
-  if (it->taken) {
+  // Taken before it is rebuilt, as recv() takes it: a rebuild that throws
+  // (a member's hash()) has still consumed the value.
+  if (auto node = std::exchange(it->taken, std::nullopt)) {
     JitDeCtx dc;
-    ret = jit_deserialize(*it->taken, dc);
-    it->taken.reset();
+    ret = jit_deserialize(*node, dc);
   }
   { *__ret = ret; return; }
 }

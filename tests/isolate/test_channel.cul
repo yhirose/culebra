@@ -161,6 +161,34 @@ ptx.drop()
 prx.drop()
 qrx.drop()
 
+# --- a value that fails to rebuild here (a Set member's hash() throws once
+#     its field changed) is taken all the same, as recv() takes it: the
+#     cursor goes on to the next ---
+class HashedByX {
+  new(.x) {}
+  hash() {
+    throw {kind: 'HashError', message: 'changed since the add'} if self.x > 0
+    0
+  }
+  eq(o) {
+    true
+  }
+}
+let hk = HashedByX(0)
+let hset = Set(hk)
+hk.x = 1
+let (stx, srx) = Channel.new(4)
+stx.send(hset)
+stx.send('after')
+stx.drop()
+let scursor = srx.iter()
+assert_eq(scursor.has_next(), true)
+assert_throws('HashError', fn () { scursor.next() })
+assert_eq(scursor.has_next(), true)
+assert_eq(scursor.next(), 'after')
+assert_eq(scursor.has_next(), false)
+srx.drop()
+
 # --- what an isolate hands back keeps its ends for as long as the isolate:
 #     every join rebuilds them, and the isolate's going lets them go ---
 let (rtx, rrx) = Channel.new(4)
