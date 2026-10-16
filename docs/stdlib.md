@@ -8723,6 +8723,7 @@ sound is built from: each runs natively over a whole Array of samples
 | --- | --- |
 | `Audio.resonate(samples: Array, modes: Array, dry = 0.0, rate = 44100) -> Array` | `samples` through a bank of resonances, as a guitar's body rings with its strings: each mode `{freq, width, gain}` is a two-pole resonator ringing at `freq` Hz, its poles `width` Hz wide, its peak about `gain`; `dry` of `samples` themselves is added. The answer is as long as `samples` |
 | `Audio.pluck(seconds, tunings: Array, strikes: Array = [], rate = 44100) -> Array` | a plucked string (Karplus-Strong), `seconds` long: each tuning `{at, freq, ring}` tunes it to `freq` Hz from `at` seconds on, ringing down by 60 dB in `ring` seconds, the first from the start, in the order they come; each strike `{at, samples}` is added into the string from `at` on. A change of tuning keeps the string moving, as a finger hammering on or damping it does, and what the string answers passes no DC |
+| `Audio.partials(seconds, freq: Array, spectrum: Array, gain: Array = [], noise = nil, rate = 44100) -> Array` | a harmonic tone `seconds` long, whose phase runs on unbroken through every change: `freq` and `gain` are envelopes, lists of `(at, value)`, and `spectrum` a list of `(at, amps)`, the k-th amp the partial at k times the freq (those at or above 0.45 of the `rate` left out). `noise` `{low, high, seed, steady, pulsed}` adds band noise from `low` to `high` Hz, the same from the same `seed` (a whole number, `1` if left out), at the levels of two envelopes: `steady`, heard as it is, and `pulsed`, heard as the tone's wave rises (as air through a reed is) |
 
 A mode that is not an object of three numbers, or a sample that is neither
 `Long` nor `Float`, raises `TypeError`. A `freq` that is not above 0 and below
@@ -8736,6 +8737,17 @@ it; a strike that runs past the end is cut there. A tuning or a strike that
 is not an object of numbers raises `TypeError`. No tuning, tunings out of
 order, an `at` or `seconds` below 0, a `freq` that is not above 0 and below
 half the `rate`, or a `ring` that is not above 0 raises `ValueError`.
+
+`partials` moves each control in a straight line from one point to the next
+and holds its first value before them and its last after; two points at one
+time are a step. So an instrument works out its controls a millisecond or so
+apart, at the corners where one turns, and on both sides of a jump, rather
+than at every sample. An envelope that is not a list of `(at, value)`
+numbers, a spectrum that is not a list of `(at, amps)`, or a `noise` that is
+not an object raises `TypeError`. No freq or no spectrum, a freq that is not
+above 0, times below 0 or out of order, a noise band that is not above 0, in
+order and below half the `rate`, or a seed that is not a whole number from 0
+below 2^31 raises `ValueError`.
 
 ```culebra
 let impulse = [1.0, ...repeat(44099, 0.0)]
@@ -8752,6 +8764,17 @@ let string = Audio.pluck(
   [{at: 0.0, samples: shape}, {at: 0.5, samples: shape.map(|x| 0.2 * x)}],
 )
 println(string.size())                                                   # => 44100
+
+# A tone that slides from A to E over its first tenth of a second, its upper
+# partials fading in, with a little breath.
+let tone = Audio.partials(
+  0.5,
+  [(0.0, 220.0), (0.1, 330.0)],
+  [(0.0, [0.5]), (0.2, [0.5, 0.25, 0.12])],
+  gain: [(0.0, 0.0), (0.02, 1.0), (0.45, 1.0), (0.5, 0.0)],
+  noise: {low: 300.0, high: 2500.0, steady: [(0.0, 0.01)]},
+)
+println(tone.size())                                                     # => 22050
 ```
 
 ### Capture

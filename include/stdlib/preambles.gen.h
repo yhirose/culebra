@@ -4208,6 +4208,46 @@ let _audio_module = fn () {
     )
   }
 
+  # A harmonic tone `seconds` long, its controls given as points it moves
+  # between in straight lines: `freq` and `gain` envelopes of (at, value);
+  # `spectrum` of (at, amps), the k-th amp the partial at k times the freq;
+  # and `noise` {low, high, seed, steady, pulsed}, band noise from `low` to
+  # `high` Hz whose level is heard steadily and pulsing with the tone's
+  # wave, each an envelope.
+  let partials = fn (
+    seconds: Long | Float,
+    freq: Array,
+    spectrum: Array,
+    gain: Array = [],
+    noise = nil,
+    rate: Long | Float = 44100,
+  ) {
+    let pairs = |xs| xs.flat_map(fn (p) {
+      __raise("TypeError", "Audio.partials: an envelope is a list of (at, value), each a number") if type_of(p) != "Tuple" || p.size() != 2
+      [p[0], p[1]]
+    })
+    for p in spectrum {
+      if type_of(p) != "Tuple" || p.size() != 2 || type_of(p[1]) != "Array" {
+        __raise("TypeError", "Audio.partials: a spectrum is a list of (at, amps), amps a list of numbers")
+      }
+    }
+    let quiet = noise == nil
+    if !quiet && type_of(noise) != "Object" {
+      __raise("TypeError", "Audio.partials: the noise is \{low, high, seed, steady, pulsed}")
+    }
+    _Audio.partials(
+      seconds,
+      pairs(freq),
+      pairs(gain),
+      spectrum.flat_map(|p| [p[0], p[1].size()]),
+      spectrum.flat_map(|p| p[1]),
+      quiet ? [] : [noise.low, noise.high, noise.get("seed", 1)],
+      quiet ? [] : pairs(noise.get("steady", [])),
+      quiet ? [] : pairs(noise.get("pulsed", [])),
+      rate,
+    )
+  }
+
   # A one-shot sample decoded once from WAV, MP3 or Ogg bytes (a String, e.g.
   # from FS.read or a Dir) and played per call. One voice: play() restarts
   # it. Raises ValueError when the bytes are none of the three formats.
@@ -4373,6 +4413,7 @@ let _audio_module = fn () {
     tone: tone,
     resonate: resonate,
     pluck: pluck,
+    partials: partials,
     Sound: Sound,
     Music: Music,
     PCM: PCM,

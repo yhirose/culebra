@@ -285,6 +285,118 @@ for (bad_tunings, bad_strikes, message) in [
   assert_eq((e.kind, e.message), ("TypeError", "Audio.pluck: " + message))
 }
 
+// partials: a harmonic tone whose controls move in straight lines between
+// their points, natively, the same samples as the same tone written out
+// here; the noise is the same from the same seed.
+fn moving(points, rest) {
+  mut i = 0
+  fn (t) {
+    return rest if points.empty()
+    while i + 1 < points.size() && points[i + 1][0] <= t {
+      i += 1
+    }
+    let (t0, v0) = points[i]
+    return v0 if t <= t0 || i + 1 == points.size()
+    let (t1, v1) = points[i + 1]
+    t1 > t0 ? v0 + (v1 - v0) * (t - t0) / (t1 - t0) : v1
+  }
+}
+fn toned(seconds, freq, spectrum, gain, noise, rate) {
+  let f_at = moving(freq, 0.0)
+  let g_at = moving(gain, 1.0)
+  let steady = moving(noise == nil ? [] : noise.steady, 0.0)
+  let pulsed = moving(noise == nil ? [] : noise.pulsed, 0.0)
+  let widest = spectrum.map(|(_, a)| a.size()).max()
+  let fast_k = noise == nil ? 0.0 : 1.0 - Math.exp(-2.0 * Math.pi * noise.high / rate)
+  let slow_k = noise == nil ? 0.0 : 1.0 - Math.exp(-2.0 * Math.pi * noise.low / rate)
+  mut x = noise == nil ? 0 : noise.seed
+  mut fast = 0.0
+  mut slow = 0.0
+  mut phase = 0.0
+  mut j = 0
+  iota(Math.round(seconds * rate)).map(fn (i) {
+    let t = i.to_float() / rate
+    let f = f_at(t)
+    phase += 2.0 * Math.pi * f / rate
+    while j + 1 < spectrum.size() && spectrum[j + 1][0] <= t {
+      j += 1
+    }
+    let k1 = j + 1 < spectrum.size() && t > spectrum[j][0] ? j + 1 : j
+    let (at0, a0s) = spectrum[j]
+    let (at1, a1s) = spectrum[k1]
+    let mix = k1 == j || at1 <= at0 ? 0.0 : (t - at0) / (at1 - at0)
+    let amps = iota(widest).map(fn (k) {
+      let a0 = k < a0s.size() ? a0s[k] : 0.0
+      let a1 = k < a1s.size() ? a1s[k] : 0.0
+      a0 + (a1 - a0) * mix
+    })
+    let s1 = Math.sin(phase)
+    let c2 = 2.0 * Math.cos(phase)
+    let top = Math.min(widest, Math.floor(rate * 0.45 / f))
+    mut prev = 0.0
+    mut cur = s1
+    mut sum = top > 0 ? amps[0] * s1 : 0.0
+    for k in 1..top {
+      let next = c2 * cur - prev
+      prev = cur
+      cur = next
+      sum += amps[k] * cur
+    }
+    mut v = g_at(t) * sum
+    if noise != nil {
+      x = (x * 1103515245 + 12345) % 2147483648
+      let w = x / 1073741824.0 - 1.0
+      fast += fast_k * (w - fast)
+      slow += slow_k * (w - slow)
+      v += (fast - slow) * (steady(t) + pulsed(t) * (0.5 + 0.5 * s1))
+    }
+    v
+  })
+}
+let glide = [(0.0, 220.0), (0.01, 330.0), (0.01, 9000.0)]
+let colours = [(0.0, [1.0, 0.5]), (0.005, [0.8, 0.3, 0.2, 0.1])]
+let swell = [(0.0, 0.0), (0.002, 1.0), (0.015, 0.5)]
+let breath = {low: 300.0, high: 2500.0, seed: 7, steady: [(0.0, 0.1), (0.01, 0.0)], pulsed: [(0.0, 0.05)]}
+assert_eq(Audio.partials(0.02, glide, colours), toned(0.02, glide, colours, [], nil, 44100.0))
+assert_eq(
+  Audio.partials(0.02, glide, colours, gain: swell, noise: breath),
+  toned(0.02, glide, colours, swell, breath, 44100.0),
+)
+assert_eq(
+  Audio.partials(0.02, glide, colours, gain: swell, noise: breath, rate: 22050),
+  toned(0.02, glide, colours, swell, breath, 22050.0),
+)
+assert_eq(Audio.partials(0, glide, colours), [])
+for (bad_freq, bad_spectrum, bad_noise, message) in [
+  ([], colours, nil, "a tone has a freq"),
+  ([(0.0, 0.0)], colours, nil, "a freq is above 0"),
+  (glide, [], nil, "a tone has a spectrum"),
+  ([(0.01, 220.0), (0.0, 330.0)], colours, nil, "an envelope's times are 0 or more, in the order they come"),
+  (glide, [(0.005, [1.0]), (0.0, [1.0])], nil, "an envelope's times are 0 or more, in the order they come"),
+  (glide, colours, {low: 2500.0, high: 300.0}, "the noise's low and high are above 0, in order, and below half the rate"),
+  (glide, colours, {low: 300.0, high: 2500.0, seed: 0.5}, "the noise's seed is a whole number from 0 below 2^31"),
+] {
+  let e = try {
+    Audio.partials(0.01, bad_freq, bad_spectrum, noise: bad_noise)
+  } catch e {
+    e
+  }
+  assert_eq((e.kind, e.message), ("ValueError", "Audio.partials: " + message))
+}
+for (bad_freq, bad_spectrum, bad_noise, message) in [
+  ([220.0], colours, nil, "an envelope is a list of (at, value), each a number"),
+  ([(0.0, "A")], colours, nil, "an envelope is a list of (at, value), each a number"),
+  (glide, [(0.0, 1.0)], nil, "a spectrum is a list of (at, amps), amps a list of numbers"),
+  (glide, colours, "loud", "the noise is \{low, high, seed, steady, pulsed}"),
+] {
+  let e = try {
+    Audio.partials(0.01, bad_freq, bad_spectrum, noise: bad_noise)
+  } catch e {
+    e
+  }
+  assert_eq((e.kind, e.message), ("TypeError", "Audio.partials: " + message))
+}
+
 // Closed like the C++ namespaces: an unknown member raises.
 assert_throws("AttributeError", fn () {
   Audio.typo

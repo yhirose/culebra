@@ -37,8 +37,8 @@ let DIP = 0.35
 let DIP_LEN = 0.02
 
 # One phrase `notes` ([{pitch, at, len, level}]) on an instrument shaped by
-# `peaks`, as one sound whose phase never restarts; sin(k·x) comes from the
-# two before it, so the partials cost one sin and one cos a sample.
+# `peaks`, as one sound whose phase never restarts (Audio.partials), its
+# controls worked out a CONTROL apart.
 fn bowed(notes, peaks) {
   let specs = notes.map(|n| spectrum(n.pitch, n.level, peaks))
   let freqs = notes.map(|n| wave.hz(n.pitch))
@@ -50,15 +50,28 @@ fn bowed(notes, peaks) {
   let attack = 0.08
   let release = 0.15
   let held = last.at + Math.max(last.len, attack)
-  let total = Math.round((held + release) * RATE)
-  let limit = RATE * 0.45
-  mut phase = 0.0
-  mut at = 0
-  iota(total).map(fn (i) {
-    let t = i.to_float() / RATE
+  let seconds = held + release
+  # The spectrum changes with the finger, in straight lines from the note
+  # before to this one.
+  let spectra = [
+    (0.0, specs[0]),
+    ...iota(1, notes.size()).flat_map(|k| [(notes[k].at, specs[k - 1]), (notes[k].at + CHANGE, specs[k])]),
+  ].sorted_by(|(t, _)| t)
+  # The controls turn at the bow's rise and fall and as each change settles
+  # and its dip ends, and step at each note's start, where the vibrato
+  # starts again.
+  let corners = [
+    attack,
+    held,
+    ...iota(1, notes.size()).flat_map(|k| [notes[k].at + CHANGE, notes[k].at + DIP_LEN]),
+  ]
+  let starts = iota(1, notes.size()).map(|k| (notes[k].at, k))
+  let controls = wave.control_times(seconds, starts, corners).map(fn ((t, note)) {
+    mut at = 0
     while at + 1 < notes.size() && t >= notes[at + 1].at {
       at += 1
     }
+    at = note ?? at
     let since = t - notes[at].at
     let was = Math.max(0, at - 1)
     let x = at == 0 ? 1.0 : Math.min(1.0, since / CHANGE)
@@ -69,43 +82,14 @@ fn bowed(notes, peaks) {
     # Vibrato that grows in after each note has settled.
     let depth = 0.004 * Math.max(0.0, Math.min(1.0, (since - 0.2) / 0.3))
     let wobble = Math.sin(2.0 * Math.pi * 5.6 * t)
-    phase += 2.0 * Math.pi * f / RATE * (1.0 + depth * wobble)
-    let s1 = Math.sin(phase)
-    let c2 = 2.0 * Math.cos(phase)
-    let a0 = specs[was]
-    let a1 = specs[at]
-    let top = Math.min(PARTIALS, Math.floor(limit / f))
-    mut prev = 0.0
-    mut cur = s1
-    mut sum = 0.0
-    if x >= 1.0 {
-      # Settled, as the tone is nearly all the time.
-      sum = a1[0] * s1
-      for k in 1..top {
-        let next = c2 * cur - prev
-        prev = cur
-        cur = next
-        sum += a1[k] * cur
-      }
-    } else {
-      sum = (a0[0] + (a1[0] - a0[0]) * x) * s1
-      for k in 1..top {
-        let next = c2 * cur - prev
-        prev = cur
-        cur = next
-        sum += (a0[k] + (a1[k] - a0[k]) * x) * cur
-      }
-    }
     let rise = Math.min(1.0, t / attack)
     let fall = t <= held ? 1.0 : Math.max(0.0, 1.0 - (t - held) / release)
-    sum *
-      dip *
-      wave.swell(notes[at], since) *
-      rise *
-      rise *
-      fall *
-      (1.0 + 2.0 * depth * wobble)
+    {
+      freq: (t, f * (1.0 + depth * wobble)),
+      gain: (t, dip * wave.swell(notes[at], since) * rise * rise * fall * (1.0 + 2.0 * depth * wobble)),
+    }
   })
+  Audio.partials(seconds, controls.map(|c| c.freq), spectra, gain: controls.map(|c| c.gain))
 }
 
 let VIOLIN = [

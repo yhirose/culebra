@@ -8380,6 +8380,7 @@ Canvas.run(160, 160, fn () {
 | --- | --- |
 | `Audio.resonate(samples: Array, modes: Array, dry = 0.0, rate = 44100) -> Array` | ギターの胴が弦と一緒に鳴るように、`samples`を共鳴の集まりに通す。モード`{freq, width, gain}`はそれぞれ2極の共鳴器で、`freq` Hzで鳴り、極の幅は`width` Hz、ピークはおよそ`gain`になる。`samples`そのものを`dry`倍して足す。返す配列の長さは`samples`と同じ |
 | `Audio.pluck(seconds, tunings: Array, strikes: Array = [], rate = 44100) -> Array` | `seconds`秒の、はじいた弦（Karplus-Strong）。チューニング`{at, freq, ring}`は、`at`秒から弦を`freq` Hzに合わせ、`ring`秒で60 dB減衰させる。最初のものは始めから効き、来る順に並べる。ストローク`{at, samples}`は、`at`秒から弦に足し込む。チューニングが変わっても弦は振動を続けるので、指のハンマリングや弦を止める動きになる。弦が返す音に直流成分は含まれない |
+| `Audio.partials(seconds, freq: Array, spectrum: Array, gain: Array = [], noise = nil, rate = 44100) -> Array` | `seconds`秒の倍音でできた音。どんな変化の間も位相は途切れない。`freq`と`gain`はエンベロープ（`(at, value)`の列）、`spectrum`は`(at, amps)`の列で、k番目のampはfreqのk倍の倍音（`rate`の0.45倍以上のものは除く）。`noise` `{low, high, seed, steady, pulsed}`は`low`から`high` Hzの帯域の雑音を足す。雑音は同じ`seed`（整数、省略すると`1`）なら同じになり、2つのエンベロープの音量で鳴る。`steady`はそのまま、`pulsed`は音の波が上がるのに合わせて脈打つ（リードを通る息のように） |
 
 3つの数を持つオブジェクトでないモードや、`Long`でも`Float`でもないサンプルは
 `TypeError`。0より大きく`rate`の半分より小さくない`freq`、0より大きくない
@@ -8391,6 +8392,13 @@ Canvas.run(160, 160, fn () {
 ストロークは、終わりで切られる。数を持つオブジェクトでないチューニングやストロークは
 `TypeError`。チューニングが無い、チューニングの順が逆、`at`や`seconds`が0未満、
 0より大きく`rate`の半分より小さくない`freq`、0より大きくない`ring`は`ValueError`。
+
+`partials`は、それぞれの制御を点から次の点へ直線で動かし、最初の点より前は最初の値、最後の点より後は
+最後の値を保つ。同じ時刻の2点は段差になる。そのため楽器は、制御をサンプルごとでなく、1ミリ秒ほどの間隔と、
+制御が折れる角と、跳ぶところの前後で計算すればよい。`(at, value)`の数の列でないエンベロープ、`(at, amps)`の列で
+ないspectrum、オブジェクトでない`noise`は`TypeError`。次はどれも`ValueError`になる。freqやspectrumが無い。
+freqが0より大きくない。時刻が0未満か、順が逆。雑音の`low`と`high`が、0より大きく、この順に並び、`rate`の
+半分より小さい、になっていない。seedが0以上2^31未満の整数でない。
 
 ```culebra
 let impulse = [1.0, ...repeat(44099, 0.0)]
@@ -8407,6 +8415,17 @@ let string = Audio.pluck(
   [{at: 0.0, samples: shape}, {at: 0.5, samples: shape.map(|x| 0.2 * x)}],
 )
 println(string.size())                                                   # => 44100
+
+# A tone that slides from A to E over its first tenth of a second, its upper
+# partials fading in, with a little breath.
+let tone = Audio.partials(
+  0.5,
+  [(0.0, 220.0), (0.1, 330.0)],
+  [(0.0, [0.5]), (0.2, [0.5, 0.25, 0.12])],
+  gain: [(0.0, 0.0), (0.02, 1.0), (0.45, 1.0), (0.5, 0.0)],
+  noise: {low: 300.0, high: 2500.0, steady: [(0.0, 0.01)]},
+)
+println(tone.size())                                                     # => 22050
 ```
 
 ### Capture

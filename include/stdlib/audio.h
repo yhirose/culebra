@@ -186,6 +186,106 @@ inline void pluck(int64_t n, const double* tunings, int64_t nt,
   }
 }
 
+inline constexpr auto kPartialsEnvelopeError =
+    "Audio.partials: an envelope is a list of (at, value), each a number";
+inline constexpr auto kPartialsSpectrumError =
+    "Audio.partials: a spectrum is a list of (at, amps), amps a list of numbers";
+
+// A value that moves in straight lines between its points, (at, value) pairs
+// in the order they come, holding its first value before them and its last
+// after; asked for at times that only go forward.
+class Envelope {
+ public:
+  Envelope(const double* pairs, size_t n, double rest) : p_(pairs), n_(n / 2), rest_(rest) {}
+  double at(double t) {
+    if (n_ == 0) return rest_;
+    while (i_ + 1 < n_ && p_[2 * (i_ + 1)] <= t) i_++;
+    double t0 = p_[2 * i_], v0 = p_[2 * i_ + 1];
+    if (t <= t0 || i_ + 1 == n_) return v0;
+    double t1 = p_[2 * (i_ + 1)], v1 = p_[2 * (i_ + 1) + 1];
+    return t1 > t0 ? v0 + (v1 - v0) * (t - t0) / (t1 - t0) : v1;
+  }
+
+ private:
+  const double* p_;
+  size_t n_, i_ = 0;
+  double rest_;
+};
+
+// The same source of white noise, -1..1, from the same seed (a linear
+// congruential generator, as the examples' wave.noise is).
+struct Noise {
+  int64_t x;
+  double next() {
+    x = (x * 1103515245 + 12345) % 2147483648;
+    return static_cast<double>(x) / 1073741824.0 - 1.0;
+  }
+};
+
+// The pieces of a harmonic tone for partials(): its spectra, `count` amps
+// each starting at `from` in `amps`, and the noise heard with it.
+struct PartialsSpectrum {
+  std::vector<double> at;
+  std::vector<int64_t> from, count;
+  const double* amps;
+};
+struct PartialsNoise {
+  bool on;
+  double fast, slow;  // one-pole coefficients at the band's top and bottom
+  int64_t seed;
+  const double *steady, *pulsed;
+  size_t n_steady, n_pulsed;
+};
+
+// `n` samples of a harmonic tone: its frequency and gain envelopes, its
+// spectrum moving in straight lines between the amps given at their times
+// (the k-th of them at k times the frequency, those at or above 0.45 of the
+// rate left out), and band noise heard steadily and pulsing with the tone's
+// wave (0.5 + 0.5 sin of its phase), as air through a reed is.
+inline void partials(int64_t n, Envelope freq, Envelope gain, const PartialsSpectrum& sp,
+                     PartialsNoise noise, double rate, double* out) {
+  int64_t widest = 0;
+  for (int64_t c : sp.count) widest = std::max(widest, c);
+  std::vector<double> amps(static_cast<size_t>(widest), 0.0);
+  Envelope steady(noise.steady, noise.n_steady, 0.0), pulsed(noise.pulsed, noise.n_pulsed, 0.0);
+  Noise white{noise.seed};
+  double fast = 0, slow = 0, phase = 0;
+  double limit = rate * 0.45;
+  size_t j = 0;
+  for (int64_t i = 0; i < n; i++) {
+    double t = static_cast<double>(i) / rate;
+    double f = freq.at(t);
+    phase += 2.0 * std::numbers::pi * f / rate;
+    // The spectrum between the points about `t`.
+    while (j + 1 < sp.at.size() && sp.at[j + 1] <= t) j++;
+    size_t k1 = j + 1 < sp.at.size() && t > sp.at[j] ? j + 1 : j;
+    double x = k1 == j || sp.at[k1] <= sp.at[j] ? 0.0 : (t - sp.at[j]) / (sp.at[k1] - sp.at[j]);
+    for (int64_t k = 0; k < widest; k++) {
+      double a0 = k < sp.count[j] ? sp.amps[sp.from[j] + k] : 0.0;
+      double a1 = k < sp.count[k1] ? sp.amps[sp.from[k1] + k] : 0.0;
+      amps[static_cast<size_t>(k)] = a0 + (a1 - a0) * x;
+    }
+    double s1 = std::sin(phase), c2 = 2.0 * std::cos(phase);
+    double below = std::floor(limit / f);
+    int64_t top = below >= static_cast<double>(widest) ? widest : static_cast<int64_t>(below);
+    double prev = 0, cur = s1, sum = top > 0 ? amps[0] * s1 : 0.0;
+    for (int64_t k = 1; k < top; k++) {
+      double next = c2 * cur - prev;
+      prev = cur;
+      cur = next;
+      sum += amps[static_cast<size_t>(k)] * cur;
+    }
+    double v = gain.at(t) * sum;
+    if (noise.on) {
+      double w = white.next();
+      fast += noise.fast * (w - fast);
+      slow += noise.slow * (w - slow);
+      v += (fast - slow) * (steady.at(t) + pulsed.at(t) * (0.5 + 0.5 * s1));
+    }
+    out[i] = v;
+  }
+}
+
 #if defined(CULEBRA_AUDIO_BROWSER)
 
 // The page owns WebAudio and each handle's settings; these post commands to it

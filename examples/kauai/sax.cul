@@ -73,6 +73,11 @@ fn bend(marks, since, left) {
   (semis, gain)
 }
 
+# The air's band, between the two one-pole filters it passes (about the
+# reed's own noise, low and high).
+let AIR_LOW = 286.5
+let AIR_HIGH = 2503.4
+
 # One phrase `notes` ([{pitch, at, len, level, level_end, marks, next}]) as
 # samples. The phrase stops by the time the voice plays next.
 fn blow(notes) {
@@ -94,93 +99,101 @@ fn blow(notes) {
   let deadline = last.get("next", nil) ?? 1.0e9
   let held = Math.min(last.at + Math.max(last.len, attack), deadline)
   let release = Math.clamp(deadline - held, 0.005, 0.05)
-  let total = Math.round((held + release) * RATE)
+  let seconds = held + release
   # Where each note ends: the next one, or for the last, where the breath stops.
   let ends = iota(notes.size()).map(|k| k + 1 < notes.size()
     ? notes[k + 1].at
     : held)
   let marked = notes.map(|n| n.get("marks", []).filter(|m| BENDS.contains(m)))
-  let limit = RATE * 0.45
-  let white = wave.noise(notes[0].pitch * 7919 + 17)
-  mut phase = 0.0
-  mut at = 0
-  mut air_fast = 0.0
-  mut air_slow = 0.0
-  iota(total).map(fn (i) {
-    let t = i.to_float() / RATE
+  # The note sounding at `t`.
+  let sounding = fn (t) {
+    mut at = 0
     while at + 1 < notes.size() && t >= notes[at + 1].at {
       at += 1
     }
+    at
+  }
+  # Note `at` at `t`: how far into it, the one before, and how far its
+  # slurred change has settled.
+  let state = fn (t, at) {
     let since = t - notes[at].at
-    let was = Math.max(0, at - 1)
-    let ch = changes[at]
     # A slurred change settles within a few milliseconds.
-    let x = at == 0 ? 1.0 : Math.min(1.0, since / ch.settle)
+    let x = at == 0 ? 1.0 : Math.min(1.0, since / changes[at].settle)
+    {at: at, since: since, was: Math.max(0, at - 1), x: x}
+  }
+  # At the tongue's release the upper partials come in a moment late.
+  let opened = 0.01 + 0.003 * PARTIALS
+  let amps_at = fn (t) {
+    let s = state(t, sounding(t))
+    iota(PARTIALS).map(fn (k) {
+      let a = specs[s.was][k] + (specs[s.at][k] - specs[s.was][k]) * s.x
+      k > 0 && t < opened ? a * Math.min(1.0, t / (0.01 + 0.003 * k)) : a
+    })
+  }
+  # The spectrum where it bends: as the partials open, and as each change
+  # starts and settles; straight between.
+  let bends = [
+    ...iota(PARTIALS).map(|k| k == 0 ? 0.0 : 0.01 + 0.003 * k),
+    ...iota(1, notes.size()).flat_map(|k| [notes[k].at, notes[k].at + changes[k].settle]),
+  ].filter(|t| t < seconds).sorted()
+  # The rest of the controls, worked out often, at each corner one turns
+  # (the breath's rise and fall, each change's settling and dip), and on
+  # both sides of each note's start, where a bend jumps.
+  let corners = [
+    attack,
+    held,
+    ...iota(1, notes.size()).flat_map(|k| [notes[k].at + changes[k].settle, notes[k].at + changes[k].dip_len]),
+  ]
+  let starts = iota(1, notes.size()).map(|k| (notes[k].at, k))
+  let controls = wave.control_times(seconds, starts, corners).map(fn ((t, note)) {
+    let s = state(t, note ?? sounding(t))
+    let ch = changes[s.at]
     # A tongued start speaks a little flat and comes up to pitch.
-    let speak = at == 0 && since < 0.15
-      ? 1.0 - 0.015 * Math.exp(-since / 0.025)
+    let speak = s.at == 0 && s.since < 0.15
+      ? 1.0 - 0.015 * Math.exp(-s.since / 0.025)
       : 1.0
     let (
       semis,
       bent,
-    ) = marked[at].empty() ? (0.0, 1.0) : bend(marked[at], since, ends[at] - t)
-    let depth = 0.005 * Math.max(0.0, Math.min(1.0, (since - 0.3) / 0.4))
+    ) = marked[s.at].empty() ? (0.0, 1.0) : bend(marked[s.at], s.since, ends[s.at] - t)
+    let depth = 0.005 * Math.max(0.0, Math.min(1.0, (s.since - 0.3) / 0.4))
     let wobble = Math.sin(2.0 * Math.pi * 5.2 * t)
-    let f = (x < 1.0 ? freqs[was] * Math.exp(x * ch.ratio) : freqs[at]) *
+    let f = (s.x < 1.0 ? freqs[s.was] * Math.exp(s.x * ch.ratio) : freqs[s.at]) *
       speak *
       2.0 ** (semis / 12.0)
-    phase += 2.0 * Math.pi * f / RATE * (1.0 + depth * wobble)
-    let dip = since < ch.dip_len
-      ? 1.0 - ch.dip * Math.sin(Math.pi * since / ch.dip_len)
+    let dip = s.since < ch.dip_len
+      ? 1.0 - ch.dip * Math.sin(Math.pi * s.since / ch.dip_len)
       : 1.0
-    let s1 = Math.sin(phase)
-    let c2 = 2.0 * Math.cos(phase)
-    let a0 = specs[was]
-    let a1 = specs[at]
-    let top = Math.min(PARTIALS, Math.floor(limit / f))
-    mut prev = 0.0
-    mut cur = s1
-    # At the tongue's release the upper partials come in a moment late.
-    let opening = t < 0.01 + 0.003 * PARTIALS
-    mut sum = 0.0
-    if x >= 1.0 && !opening {
-      # Settled, as the tone is nearly all the time.
-      sum = a1[0] * s1
-      for k in 1..top {
-        let next = c2 * cur - prev
-        prev = cur
-        cur = next
-        sum += a1[k] * cur
-      }
-    } else {
-      sum = (a0[0] + (a1[0] - a0[0]) * x) * s1
-      for k in 1..top {
-        let next = c2 * cur - prev
-        prev = cur
-        cur = next
-        let open = opening ? Math.min(1.0, t / (0.01 + 0.003 * k)) : 1.0
-        sum += (a0[k] + (a1[k] - a0[k]) * x) * open * cur
-      }
-    }
+    let rise = Math.min(1.0, t / attack)
+    let fall = t <= held ? 1.0 : Math.max(0.0, 1.0 - (t - held) / release)
+    let whole = wave.swell(notes[s.at], s.since) * rise * fall
     # Air through the reed: a band of noise that passes as the reed opens on
     # each cycle, so it is heard in the tone rather than beside it; strongest
     # as the tongue lets go and through a change of fingering.
-    let n = white()
-    air_fast += 0.3 * (n - air_fast)
-    air_slow += 0.04 * (n - air_slow)
     let tongue = t < 0.2 ? Math.exp(-t / 0.03) : 0.0
     let burst = tongue +
-      (since < 0.15 ? ch.dip * 2.0 * Math.exp(-since / 0.02) : 0.0)
-    let air = (air_fast - air_slow) *
-      notes[at].level *
-      (AIR * (0.5 + 0.5 * s1) + 0.25 * burst)
-    let rise = Math.min(1.0, t / attack)
-    let fall = t <= held ? 1.0 : Math.max(0.0, 1.0 - (t - held) / release)
-    (sum * dip * bent * (1.0 + 1.5 * depth * wobble) + air) *
-      wave.swell(notes[at], since) *
-      rise *
-      fall
+      (s.since < 0.15 ? ch.dip * 2.0 * Math.exp(-s.since / 0.02) : 0.0)
+    let level = notes[s.at].level * whole
+    {
+      freq: (t, f * (1.0 + depth * wobble)),
+      gain: (t, dip * bent * (1.0 + 1.5 * depth * wobble) * whole),
+      steady: (t, level * 0.25 * burst),
+      pulsed: (t, level * AIR),
+    }
   })
+  Audio.partials(
+    seconds,
+    controls.map(|c| c.freq),
+    bends.map(|t| (t, amps_at(t))),
+    gain: controls.map(|c| c.gain),
+    noise: {
+      low: AIR_LOW,
+      high: AIR_HIGH,
+      seed: notes[0].pitch * 7919 + 17,
+      steady: controls.map(|c| c.steady),
+      pulsed: controls.map(|c| c.pulsed),
+    },
+  )
 }
 
 let sounds = {sax: |notes, params| blow(notes), bass: guitar.sounds.bass}

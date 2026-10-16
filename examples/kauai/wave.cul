@@ -1,6 +1,7 @@
 # What the instruments beside it share: the sample rate, a pitch's frequency,
-# a noise source that sounds the same every time, samples as WAV bytes, and a
-# voice for Audio.Kauai made from a function that plays a phrase. The room
+# a noise source that sounds the same every time, samples as WAV bytes, when
+# to work out a phrase's controls, and a voice for Audio.Kauai made from a
+# function that plays a phrase. The room
 # they sound in is the song's own (`room 90%`), not theirs.
 
 let RATE = 44100
@@ -82,6 +83,26 @@ fn swell(n, since) {
       Math.min(1.0, since / Math.max(n.len, 0.001))
 }
 
+# How often an instrument works out its controls for Audio.partials, which
+# moves in straight lines between them sample by sample.
+let CONTROL = 0.001
+
+# When a phrase `seconds` long works out its controls: every CONTROL, at
+# each of `corners` (where a control turns), and at each of `starts`, (at,
+# note), twice: as the note before it at that instant, then as that note,
+# for a control that jumps there. Each is (t, note), the note nil where it is
+# the one sounding.
+fn control_times(seconds, starts, corners) {
+  let steps = starts.flat_map(|(at, k)| [(at, 0, k - 1), (at, 2, k)])
+  let grid = iota(Math.ceil(seconds / CONTROL) + 1)
+    .map(|j| (j * CONTROL, 1, nil))
+    .filter(|(t, _, _)| !steps.any(|(at, _, _)| Math.abs(at - t) < 1.0e-9))
+  let turns = corners.filter(|t| t < seconds).map(|t| (t, 1, nil))
+  [...grid, ...turns, ...steps]
+    .sorted_by(|(t, order, _)| (t, order))
+    .map(|(t, _, note)| (t, note))
+}
+
 # All a phrase instrument can hear of a note.
 let HEARS = ["len", "level", "line", "marks", "next"]
 
@@ -94,4 +115,4 @@ fn voice(play, hears) {
   }
 }
 
-export {RATE, HEARS, hz, noise, wav, by_line, swell, voice}
+export {RATE, HEARS, CONTROL, hz, noise, wav, by_line, swell, control_times, voice}

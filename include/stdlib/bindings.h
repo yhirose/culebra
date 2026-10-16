@@ -5317,6 +5317,67 @@ inline JitValue _ns_audio_pluck(JitValue* a, int64_t) {
   ad::pluck(n, tunings.data(), static_cast<int64_t>(tunings.size() / 3), kick.data(), rate, out.data());
   return _ns_audio_samples(out, "Audio.pluck() result");
 }
+// An envelope's (at, value) pairs, end to end: times 0 or more and in order.
+inline void _ns_audio_envelope(JitValue v, std::vector<double>& out, const char* what) {
+  namespace ad = culebra::_audio_detail;
+  _ns_audio_numbers(v, out, ad::kPartialsEnvelopeError);
+  for (size_t k = 0; k + 1 < out.size(); k += 2) {
+    if (!(out[k] >= 0) || (k > 0 && out[k] < out[k - 2]))
+      culebra::throw_runtime_error_at("ValueError", what, 0, 0);
+  }
+}
+// The spectra come as (at, count) pairs and their amps end to end, and the
+// noise as [low, high, seed] or nothing.
+inline JitValue _ns_audio_partials(JitValue* a, int64_t) {
+  namespace ad = culebra::_audio_detail;
+  auto fail = [](const char* msg) {
+    culebra::throw_runtime_error_at("ValueError", msg, 0, 0);
+  };
+  double seconds = _ns_adapt::take_double(a[0]);
+  double rate = _ns_adapt::take_double(a[8]);
+  if (!(rate > 0)) fail("Audio.partials: the rate is above 0");
+  if (!(seconds >= 0 && seconds * rate < 1e10)) fail("Audio.partials: the seconds are 0 or more");
+  const char* order = "Audio.partials: an envelope's times are 0 or more, in the order they come";
+  std::vector<double> freq, gain, heads, amps, band, steady, pulsed;
+  _ns_audio_envelope(a[1], freq, order);
+  _ns_audio_envelope(a[2], gain, order);
+  _ns_audio_numbers(a[3], heads, ad::kPartialsSpectrumError);
+  _ns_audio_numbers(a[4], amps, ad::kPartialsSpectrumError);
+  _ns_audio_numbers(a[5], band, ad::kPartialsEnvelopeError);
+  _ns_audio_envelope(a[6], steady, order);
+  _ns_audio_envelope(a[7], pulsed, order);
+  if (freq.empty()) fail("Audio.partials: a tone has a freq");
+  for (size_t k = 1; k < freq.size(); k += 2)
+    if (!(freq[k] > 0)) fail("Audio.partials: a freq is above 0");
+  if (heads.empty()) fail("Audio.partials: a tone has a spectrum");
+  ad::PartialsSpectrum sp;
+  sp.amps = amps.data();
+  int64_t from = 0;
+  for (size_t k = 0; k + 1 < heads.size(); k += 2) {
+    if (!(heads[k] >= 0) || (k > 0 && heads[k] < heads[k - 2])) fail(order);
+    sp.at.push_back(heads[k]);
+    sp.from.push_back(from);
+    sp.count.push_back(static_cast<int64_t>(heads[k + 1]));
+    from += static_cast<int64_t>(heads[k + 1]);
+  }
+  ad::PartialsNoise noise{false, 0, 0, 0, steady.data(), pulsed.data(), steady.size(), pulsed.size()};
+  if (band.size() == 3) {
+    double low = band[0], high = band[1];
+    if (!(low > 0 && high > low && high < rate / 2))
+      fail("Audio.partials: the noise's low and high are above 0, in order, and below half the rate");
+    if (!(band[2] >= 0 && band[2] < 2147483648.0 && band[2] == std::floor(band[2])))
+      fail("Audio.partials: the noise's seed is a whole number from 0 below 2^31");
+    noise.on = true;
+    noise.fast = 1.0 - std::exp(-2.0 * std::numbers::pi * high / rate);
+    noise.slow = 1.0 - std::exp(-2.0 * std::numbers::pi * low / rate);
+    noise.seed = static_cast<int64_t>(band[2]);
+  }
+  auto n = ad::sample_at(seconds, rate);
+  std::vector<double> out(static_cast<size_t>(n));
+  ad::partials(n, ad::Envelope(freq.data(), freq.size(), 0.0), ad::Envelope(gain.data(), gain.size(), 1.0),
+               sp, noise, rate, out.data());
+  return _ns_audio_samples(out, "Audio.partials() result");
+}
 // Audio.Kauai's timed notes, kScoreStride numbers an event (stdlib/audio.h).
 inline JitValue _ns_audio_score_new(JitValue* a, int64_t) {
   namespace ad = culebra::_audio_detail;
@@ -10660,6 +10721,7 @@ inline const NsMethod kNsRows_Audio_native[] = {
   {"_Audio", "score_room",     2, &_ns_audio_set<culebra::_audio_detail::score_room>},
   {"_Audio", "resonate",       4, &_ns_audio_resonate},
   {"_Audio", "pluck",          5, &_ns_audio_pluck},
+  {"_Audio", "partials",       9, &_ns_audio_partials},
 };
 inline const NsMethod kNsRows_Canvas_native[] = {
   {"_Canvas", "init",            2,  &_ns_canvas_init},
