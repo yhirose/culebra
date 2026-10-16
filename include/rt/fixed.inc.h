@@ -1437,7 +1437,7 @@ inline JitClosure* _jit_find_shipped_default(JitObject* obj, const char* key,
 
 // The registered default named `key` whose trait this instance conforms to,
 // or null — in a worker Runtime, one its parent shipped is installed here on
-// its first miss. Conformance is cached inside _culebra_type_matches_single.
+// its first miss. Conformance is cached inside _jit_conforms_to_trait.
 // One source for the three askers: the property read, the UFCS gate, and the
 // `__call__` lookup — each keeps its own gate on what may ask.
 inline JitClosure* _jit_find_trait_default(JitObject* obj, const char* key) {
@@ -1446,9 +1446,8 @@ inline JitClosure* _jit_find_trait_default(JitObject* obj, const char* key) {
   for (auto& [trait_name, methods] : _jit_trait_default_impls()) {
     auto m_it = methods.find(key);
     if (m_it == methods.end() || !m_it->second) continue;
-    if (!_culebra_type_matches_single(TAG_OBJECT,
-                                      reinterpret_cast<int64_t>(obj),
-                                      trait_name))
+    if (!_jit_conforms_to_trait(TAG_OBJECT, reinterpret_cast<int64_t>(obj),
+                                trait_name))
       continue;
     if (from) _jit_trait_default_ambiguous(*from, trait_name, key);
     found = m_it->second;

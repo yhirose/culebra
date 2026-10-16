@@ -1593,9 +1593,11 @@ struct Lowering {
         case Op::TypeMatch: {
           auto v = load_slot(in.a);
           auto expected = vm_str_const(in.c, ".vm.tm.name");
+          // d: a constructor pattern's head, not a type (Op::TypeMatch).
           auto ok = j.emit_call(
-              j.module_->getOrInsertFunction(rt::type_matches, b.getInt1Ty(),
-                                             b.getInt8Ty(), i64Ty, ptrTy),
+              j.module_->getOrInsertFunction(
+                  in.d ? rt::ctor_matches : rt::type_matches, b.getInt1Ty(),
+                  b.getInt8Ty(), i64Ty, ptrTy),
               {j.extract_tag(v), j.extract_data(v), expected}, "vm.tm");
           b.CreateCondBr(ok, blocks.at(static_cast<int32_t>(i) + 1),
                          blocks.at(in.b));

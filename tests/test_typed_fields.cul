@@ -738,6 +738,136 @@ fn carried_builtin() {
 
 assert_eq(carried_builtin(), [1.5, 2])
 
+# but a primitive type's name is that type's alone: a program's own class of
+# the name passes no annotation of it, as a field typed with it refuses one,
+# so the tag a typed parameter settles on is the value's own
+fn primitive_thrown(f) {
+  try {
+    f()
+  } catch e {
+    e.message
+  }
+}
+
+fn primitive_long() {
+  class Long {
+    new(.v) {}
+  }
+  fn add_one(x: Long) {
+    x + 1
+  }
+  fn made() -> Long {
+    Long(2.5)
+  }
+  [add_one(2), primitive_thrown(|| add_one(Long(2.5))),
+   primitive_thrown(made), primitive_thrown(fn () { let y: Long = Long(2.5) })]
+}
+
+fn primitive_set() {
+  class Set {
+    new(.n) {}
+  }
+  fn first(s: Set) {
+    s.n
+  }
+  primitive_thrown(|| first(Set(3)))
+}
+
+# `Function` takes a callable instance, and still no class of the name
+fn primitive_function() {
+  class Function {
+    new(.v) {}
+  }
+  class Doubler {
+    __call__(x) {
+      x * 2
+    }
+  }
+  fn take(f: Function) {
+    f(21)
+  }
+  [take(Doubler()), primitive_thrown(|| take(Function(1)))]
+}
+
+assert_eq(primitive_long(), [3, 'no matching method for `add_one`',
+                             'type error: return value expects Long',
+                             'type error: assignment expects Long'])
+assert_eq(primitive_set(), 'no matching method for `first`')
+assert_eq(primitive_function(), [42, "type error: parameter 'f' expects Function"])
+
+# a library function's typed parameter is read the same way
+fn primitive_array() {
+  class Array {
+    new(.n) {}
+  }
+  primitive_thrown(|| Random.shuffle(Array(1)))
+}
+
+assert_eq(primitive_array(), "type error: parameter 'a' expects Array")
+
+# a variant of the name is no such value either, and a multimethod picks by
+# what the value is; a constructor pattern still names the variant, and a trait
+# of the name still lends its defaults
+trait Tuple {
+  builtin_items()
+  builtin_count() {
+    self.builtin_items().size()
+  }
+}
+
+fn primitive_variants() {
+  enum Json {
+    Long(Long),
+    String(String),
+    Object(Object),
+  }
+  fn describe(v) {
+    match v {
+      Object(o) => 'object',
+      Long(n) => "long {n}",
+      String(s) => "str {s}",
+      _ => 'other',
+    }
+  }
+  fn pick(x: Long) {
+    'long'
+  }
+  fn pick(x: Json) {
+    'json'
+  }
+  fn pick(x: Object) {
+    'object'
+  }
+  class Bag {
+    builtin_items() {
+      [1, 2, 3]
+    }
+  }
+  [describe(Json.Long(3)), describe(Json.String('a')), describe({_0: 1}),
+   pick(3), pick(Json.Long(3)), pick(Json.Object({})), Bag().builtin_count()]
+}
+
+assert_eq(primitive_variants(),
+          ['long 3', 'str a', 'other', 'long', 'json', 'json', 3])
+
+# what lends a trait's defaults is conforming to it, not carrying its name
+trait BuiltinLender {
+  builtin_need()
+  builtin_lent() {
+    'lent'
+  }
+}
+
+fn named_like_a_trait() {
+  enum BuiltinLender {
+    Dot,
+  }
+  primitive_thrown(|| BuiltinLender.Dot.builtin_lent())
+}
+
+assert_eq(named_like_a_trait(),
+          "type error: expected Function, got Nil ('builtin_lent' is not a method of Dot)")
+
 # a field annotated with the class's own type parameter names no class,
 # whatever else is called that
 class CarriedItem {

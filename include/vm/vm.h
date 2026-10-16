@@ -499,11 +499,10 @@ enum class Op : uint8_t {
   TypeMatch,   // a pattern's type test: unless regs[a] satisfies the type
                // name consts[c] (culebra_runtime_type_matches — a class tag,
                // an enum's variant or parent, a trait's conformance, `T?`,
-               // `fn(…) -> R`), jump to b. A constructor pattern gates on
-               // TAG_OBJECT first, since a primitive whose name the variant
-               // collides with answers true; a `v: T` annotation needs no
-               // such gate, having already taken the inline tag compare for
-               // every name that is a primitive's.
+               // `fn(…) -> R`), jump to b. With d set it is a constructor
+               // pattern's head instead (culebra_runtime_ctor_matches): the
+               // class or variant that built an Object the pattern gated
+               // on, which a built-in type's name (`Long(n)`) can name too.
   ClassObj,    // regs[a] = fresh Object (+1) marked `is_class`, so `C(args)`
                // finds its `new`, holding the instance meta regs[b] (absorbs
                // its +1; regs[b] = nil) — object_new + mark_class
@@ -14169,18 +14168,17 @@ class Compiler {
   // ignored). The tag gate stands on its own so `{}` still rejects a
   // non-Object, which no entry would be left to catch.
   // `Ok(x)` / `Result.Ok(x)`: an enum variant, then its positional payload
-  // fields against the sub-patterns. The path goes to TypeMatch whole —
-  // type_matches reads a qualified name as the variant plus the enum it
-  // belongs to, which is what tells two enums that each declare an `Ok`
-  // apart. The TAG_OBJECT gate comes first because type_matches answers
-  // true for a primitive whose name an unqualified variant collides with
-  // (`Long(x)`), and the field reads below would take that scalar for an
-  // object.
+  // fields against the sub-patterns. The path goes to TypeMatch whole, read
+  // as a constructor's name (d=1, ctor_matches): a qualified name is the
+  // variant plus the enum it belongs to, which is what tells two enums that
+  // each declare an `Ok` apart, and an unqualified `Long(x)` is the variant
+  // `Long` though no Object is a `Long`. The TAG_OBJECT gate comes first,
+  // so the field reads below never take a scalar for an object.
   void compile_ctor_pattern_test(const peg::Ast& pat, int32_t subj,
                                  std::vector<size_t>& fail) {
     emit_tag_gate(subj, {TAG_OBJECT}, fail);
-    fail.push_back(
-        emit(Op::TypeMatch, subj, 0, kconst_str(pat.nodes[0]->token)));
+    fail.push_back(emit(Op::TypeMatch, subj, 0,
+                        kconst_str(pat.nodes[0]->token), /*ctor=*/1));
     for (size_t i = 1; i < pat.nodes.size(); i++) {
       int32_t t = alloc_temp(*pat.nodes[i]);
       fail.push_back(emit(Op::ObjGet, t, 0, subj,
@@ -17842,9 +17840,10 @@ struct Exec {
         do {
           [[maybe_unused]] const Insn& in = *ip;
           const JitValue& v = regs[in.a];
-          if (culebra_runtime_type_matches(
-                  static_cast<int8_t>(v.tag), v.data,
-                  reinterpret_cast<const char*>(c.consts[in.c].data)))
+          auto* name = reinterpret_cast<const char*>(c.consts[in.c].data);
+          auto t = static_cast<int8_t>(v.tag);
+          if (in.d ? culebra_runtime_ctor_matches(t, v.data, name)
+                   : culebra_runtime_type_matches(t, v.data, name))
             ++ip;
           else
             ip = code + static_cast<size_t>(in.b);

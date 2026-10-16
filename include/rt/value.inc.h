@@ -1326,7 +1326,8 @@ constexpr bool _is_refcounted_value(const JitValue& v) {
 // Primitive type-name → TAG_* (nullopt for anything else: `Any`, traits,
 // user classes). Single source for the JIT's TYPED_IDENT pattern emitter
 // and the VM compiler's tag gate — the generic-strip and the Any / union /
-// non-primitive policies stay with the callers.
+// non-primitive policies stay with the callers. base's is_builtin_type_name
+// holds the same names for the dispatch scorer, which cannot see TAG_*.
 inline std::optional<int8_t> _culebra_primitive_type_tag(std::string_view tn) {
   if (tn == "Nil") return TAG_NIL;
   if (tn == "Bool") return TAG_BOOL;

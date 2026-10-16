@@ -815,22 +815,14 @@ inline JitMultifnDispatcher* _jit_dispatcher_record(JitClosure* c);
 // concrete-exact arm answers and nothing below it runs.
 //
 // The Object-side labels are left out on purpose: TAG_OBJECT reports a class
-// name, so an `Array` annotation would admit a user class called `Array`.
+// name, which is no annotation's one tag (an instance of a class called
+// `Array` is no `Array`, here as in the picker).
 // `Function` is out for the opposite reason — the scorer lets a class instance
 // with `__call__` match it, so the tag is not the whole answer. Anything left
 // out declines the shortcut and takes the picker, which is only slower.
 inline int8_t _jit_tag_exactly_matching(std::string_view annotation) {
-  if (annotation == "Nil") return TAG_NIL;
-  if (annotation == "Bool") return TAG_BOOL;
-  if (annotation == "Long") return TAG_LONG;
-  if (annotation == "Float") return TAG_FLOAT;
-  if (annotation == "String") return TAG_STRING;
-  if (annotation == "StringView") return TAG_STRINGVIEW;
-  if (annotation == "Array") return TAG_ARRAY;
-  if (annotation == "Tuple") return TAG_TUPLE;
-  if (annotation == "Set") return TAG_SET;
-  if (annotation == "Tensor") return TAG_TENSOR;
-  return -1;
+  auto tag = _culebra_primitive_type_tag(annotation);
+  return tag && *tag != TAG_OBJECT && *tag != TAG_FUNC ? *tag : -1;
 }
 
 // Recompute the shortcut and publish it. Both halves are non-owning: the
@@ -1384,14 +1376,18 @@ inline culebra::ArgType _jit_value_arg_type(JitValue v) {
     case TAG_OBJECT: {
       auto* obj = reinterpret_cast<JitObject*>(v.data);
       auto cls = _jit_derived_class_tag(obj);
-      if (cls.empty()) return {"Object", {}, nullptr, _jit_error_kind(obj)};
+      if (cls.empty())
+        return {.name = "Object", .error_kind = _jit_error_kind(obj),
+                .object = true};
       // Carry the class's conformance cache along: scoring a trait param
       // reads it, and only the value knows which class this name is.
-      return {cls, _jit_enum_name(obj).value_or(std::string_view{}),
-              _jit_meta_conformance(obj)};
+      return {.name = cls,
+              .enum_name = _jit_enum_name(obj).value_or(std::string_view{}),
+              .conformance = _jit_meta_conformance(obj),
+              .object = true};
     }
   }
-  return {"Object", {}};
+  return {.name = "Object", .object = true};
 }
 
 // Adapter: supplies the param-types accessor for the shared pick
@@ -1462,12 +1458,18 @@ inline MultifnPick _jit_multifn_resolve(
   // instances — and only where it can: snapshot_trait_names assumes a
   // trait-free program has an empty registry, but the preamble registers the
   // built-in traits, so the registry is never empty and every table used to
-  // pay the whole sweep.
-  if (!arg_types.empty() && _jit_multifn_wants_trait_warmup(m_it->second)) {
+  // pay the whole sweep. Only a class instance has a cache to fill; a
+  // primitive or a bare Object is scored from the built-in table directly.
+  auto has_cache = [](const culebra::ArgType& a) {
+    return a.conformance != nullptr;
+  };
+  if (std::ranges::any_of(arg_types, has_cache) &&
+      _jit_multifn_wants_trait_warmup(m_it->second)) {
     for (const auto& trait_name : culebra::snapshot_trait_names()) {
       for (size_t i = 0; i < arg_types.size(); i++) {
-        (void)_culebra_type_matches_single(positional[i].tag,
-                                            positional[i].data, trait_name);
+        if (has_cache(arg_types[i]))
+          (void)_jit_conforms_to_trait(positional[i].tag, positional[i].data,
+                                       trait_name);
       }
     }
   }

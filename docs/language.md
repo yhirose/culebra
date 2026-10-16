@@ -3446,7 +3446,8 @@ enforce their invariant at three specific runtime points:
 
 ### Recognized type names
 
-    Nil  Bool  Long  Float  String  Array  Object  Function  Any
+    Nil  Bool  Long  Float  String  StringView  Array  Tuple  Set
+    Object  Function  Tensor  Any
 
 `Any` always matches. Unknown type names fail the check and raise
 `type error`. Class names declared with `class C { ... }` are also
@@ -3457,6 +3458,17 @@ enum, and the qualified `Enum.Variant` accepts only that enum's — see
 
 An error's kind (`TypeError`, `IOError`, ... — §15) is a type name too,
 and accepts an Object carrying that kind.
+
+The name of a built-in type (every name in the list above but `Any`)
+always means that type. A class, enum, variant or trait of one of these
+names, a program's or a library's (`FST.Set`), does not satisfy an
+annotation of it: an instance of a program's `class Long` is not a
+`Long`, the same answer a field typed `Long` gives, and a multimethod
+does not pick an overload by it. Such an instance passes `Object`, or
+no annotation. `Function` also accepts an instance with a `__call__`
+method. A constructor pattern names such a variant or class by its
+name: `Long(n) =>` matches the variant `Long` of an
+`enum Json { Long(Long), ... }`.
 
 A type name starts with an uppercase letter: an annotation naming a
 class declared as `class point` does not parse. The same first letter is

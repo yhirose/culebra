@@ -3652,13 +3652,14 @@ inline bool is_error_kind_name(std::string_view name) {
 
 // --- Multimethod dispatch (shared between interp and JIT) ---
 
-// True for the reserved type-tag names value_dyn_type returns for
-// non-Object values. Class instances surface their class name here,
-// so a name that isn't on this list is always a class name.
-inline bool is_primitive_type_label(std::string_view n) {
+// The names of the built-in types (rt's _culebra_primitive_type_tag keys
+// the same set to their tags). As a parameter's annotation such a name
+// takes only its own values, whatever a class or variant is called.
+inline bool is_builtin_type_name(std::string_view n) {
   return n == "Nil" || n == "Bool" || n == "Long" || n == "Float" ||
          n == "String" || n == "StringView" || n == "Array" ||
-         n == "Function" || n == "Tensor" || n == "Tuple" || n == "Set";
+         n == "Object" || n == "Function" || n == "Tensor" || n == "Tuple" ||
+         n == "Set";
 }
 
 // One argument as dispatch sees it: the dynamic type label plus, for an
@@ -3669,13 +3670,18 @@ struct ArgType {
   std::string_view name;
   std::string_view enum_name;  // empty unless `name` is an enum variant
   // The conformance cache of the class this argument is an instance of, so
-  // scoring a trait param can read what type_matches already resolved. Null
-  // for a primitive or a bare Object literal — neither has a class meta, and
-  // both are answered by the built-in table instead.
+  // scoring a trait param can read what _jit_conforms_to_trait already
+  // resolved (the warm-up in _jit_multifn_resolve). Null for a primitive or a
+  // bare Object literal: neither has a class meta, and both are answered by
+  // the built-in table instead.
   TraitConformance* conformance = nullptr;
   // The error kind a classless Object carries (is_error_kind_name), which
   // its label — `Object` — does not say.
   std::string_view error_kind = {};
+  // Whether the value is an Object. Its label is then its class's or
+  // variant's name, which may be a built-in type's (`class Long`), and no
+  // Object is that type.
+  bool object = false;
 };
 
 // Specificity score for a (param_type, arg) pair. Higher = more
@@ -3731,23 +3737,16 @@ inline int multifn_specificity(std::string_view param_type, ArgType arg) {
     }
     return best;
   }
-  // Function type `fn(...) -> R`: ranks like `Function` (structural
-  // callable). A closure arg (label "Function") is an exact-ish match (6);
-  // a non-primitive arg (callable class instance / bare Object) scores at
-  // the Object-catch tier (2) and the value-aware post-pick check confirms
-  // `__call__`. Checked before `?` so an `fn(A) -> B?` param isn't read as
-  // optional. Mirrors the `Function` param branch below.
-  if (is_fn_type(param_type)) {
-    if (arg.name == "Function") return 6;
-    if (!is_primitive_type_label(arg.name)) return 2;
-    return -1;
-  }
+  // Function type `fn(...) -> R`: ranks as `Function` does (structural
+  // callable). Checked before `?` so an `fn(A) -> B?` param isn't read as
+  // optional.
+  if (is_fn_type(param_type)) return multifn_specificity("Function", arg);
   // `T?` Optional sugar = `T | Nil`: score like a two-alt Union. A Nil
   // arg matches at the Union tier; a non-nil arg scores its base type,
   // downgraded (concrete-in-Union -> 4) so a bare `T` param outranks it.
   if (!param_type.empty() && param_type.back() == '?') {
     auto base = param_type.substr(0, param_type.size() - 1);
-    if (arg.name == "Nil") return 4;
+    if (!arg.object && arg.name == "Nil") return 4;
     int s = multifn_specificity(base, arg);
     if (s < 0) return -1;
     return s >= 5 ? 4 : s;
@@ -3762,9 +3761,18 @@ inline int multifn_specificity(std::string_view param_type, ArgType arg) {
     return base == 6 ? 8 : base;
   }
   if (param_type == "Object") {
-    if (arg.name == "Object") return 6;        // bare dict — exact
-    if (is_primitive_type_label(arg.name)) return -1;
-    return 2;                                  // class instance catch
+    if (!arg.object) return -1;
+    return arg.conformance ? 2 : 6;  // instance catch, else bare dict exact
+  }
+  // A built-in type takes its own values only (type_matches): an Object
+  // labeled with the name, a class or variant called `Long`, is no `Long`.
+  // A callable class instance satisfies `Function` (Option A: structural
+  // callable), so any Object scores at the Object-catch tier there and the
+  // value-aware post-pick check_type confirms it has `__call__`; an exact
+  // class overload (6) still outranks this catch.
+  if (is_builtin_type_name(param_type)) {
+    if (!arg.object) return param_type == arg.name ? 6 : -1;
+    return param_type == "Function" ? 2 : -1;
   }
   if (param_type == arg.name) return 6;
   // An error under its kind's name: a narrower claim than the Object it also
@@ -3785,34 +3793,18 @@ inline int multifn_specificity(std::string_view param_type, ArgType arg) {
       return q.enum_name == arg.enum_name && q.variant == arg.name ? 7 : -1;
     }
   }
-  // A callable class instance satisfies `Function` (Option A: structural
-  // callable). The arg side carries only a type label here, so score any
-  // non-primitive (class instance / bare Object) at the Object-catch tier
-  // and let the value-aware post-pick check_type confirm it actually has
-  // `__call__` — a non-callable is rejected there, and an exact class
-  // overload (6) still outranks this catch.
-  if (param_type == "Function" && !is_primitive_type_label(arg.name)) {
-    return 2;
-  }
   // Trait conformance: a registered trait scores below concrete and
   // below Union exact, but above the bare-Object catch.
-  if (auto* trait = lookup_trait(param_type)) {
-    if (arg.name == "Object") {
-      // Bare Object literal — `ObjectValue::builtins()` provides
-      // default methods (`iter`, etc.) so the built-in table is the
-      // authority on which traits the literal conforms to.
+  if (lookup_trait(param_type)) {
+    // No class meta (a primitive, or a bare Object literal whose builtins
+    // lend it `iter` and the like): the built-in table answers, as
+    // _jit_conforms_to_trait has it.
+    if (!arg.conformance)
       return builtin_conforms_to_trait(arg.name, param_type) ? 3 : -1;
-    }
-    // Primitive arg: consult the hard-coded built-in conformance
-    // table directly (no instance methods to walk).
-    if (is_primitive_type_label(arg.name)) {
-      return builtin_conforms_to_trait(arg.name, param_type) ? 3 : -1;
-    }
     // Read-only path: `multifn_specificity` only reads the class's cache and
     // returns -1 on miss (the warm-up in _jit_multifn_resolve is what fills
-    // it, through type_matches). Take a shared lock so dispatchers don't
-    // serialize on this hot path.
-    if (!arg.conformance) return -1;
+    // it, through _jit_conforms_to_trait). Take a shared lock so dispatchers
+    // don't serialize on this hot path.
     std::shared_lock lock(trait_mutex());
     if (arg.conformance->gen != trait_generation()) return -1;
     auto it = arg.conformance->by_trait.find(std::string(param_type));
@@ -3844,6 +3836,7 @@ inline bool param_type_mentions_trait(std::string_view t) {
   if (t.back() == '?') return param_type_mentions_trait(t.substr(0, t.size() - 1));
   if (t.find('<') != std::string_view::npos)
     return param_type_mentions_trait(parse_generic_head(t).outer);
+  if (is_builtin_type_name(t)) return false;  // scored before the trait arm
   return lookup_trait(t) != nullptr;
 }
 

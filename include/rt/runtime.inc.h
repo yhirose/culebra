@@ -616,6 +616,12 @@ inline std::optional<std::string_view> _jit_enum_name(JitObject* obj) {
   if (!meta) return std::nullopt;
   return std::string_view(meta);
 }
+// Whether `name` is one of those two names.
+inline bool _jit_answers_to(JitObject* obj, std::string_view name) {
+  auto cls = _jit_derived_class_tag(obj);
+  auto en = _jit_enum_name(obj);
+  return (!cls.empty() && cls == name) || (en && *en == name);
+}
 
 // `hash(v)` builtin runtime entry. Routes Object to a user-defined
 // `hash()` method (Hashable + Eq structural conformance) or a variant's
@@ -1389,14 +1395,78 @@ inline const char* _culebra_tag_name(int8_t tag) {
   return "Unknown";
 }
 
-// Check that a Value matches a named type ("Any" matches everything).
-// For class-instance arguments (TAG_OBJECT with a `class:` String
-// property), also accept the matching class name — without this the
-// JIT can't validate `s: Square` annotations against `Square.new(...)`.
-// Test whether the runtime value at (tag, data) matches a single
-// non-Union type name. Mirrors interp's type_matches for the
-// primitive + Object/class side; called from culebra_runtime_type_check
-// once per Union alternative.
+// The `__call__` a class instance answers a call with, or null. The gate for
+// the structural-callable rule (Option A) the type check below, the callback
+// precheck and the adapter in _culebra_expect_callback all read, so one
+// answer serves them.
+inline const JitValue* _culebra_call_operator(int8_t fn_tag, int64_t fn_data) {
+  if (fn_tag != TAG_OBJECT) return nullptr;
+  auto* obj = reinterpret_cast<JitObject*>(fn_data);
+  auto* e = obj->proto() ? _find_property(obj, "__call__") : nullptr;
+  return e && e->value.tag == TAG_FUNC ? &e->value : nullptr;
+}
+
+// Whether a value conforms to the registered trait `name` (false when no
+// trait has that name): a primitive or a bare Object literal by the built-in
+// table, a variant by what its kind fixes, a class instance by the methods
+// its class supplies (matching arity), cached on the class. What an
+// annotation naming a trait asks, and what a trait's default method asks of
+// its receiver, whatever the trait is called.
+inline bool _jit_conforms_to_trait(int8_t tag, int64_t data,
+                                   std::string_view name) {
+  auto* trait = culebra::lookup_trait(name);
+  if (!trait) return false;
+  if (tag != TAG_OBJECT)
+    return culebra::builtin_conforms_to_trait(_culebra_tag_name(tag), name);
+  auto* obj = reinterpret_cast<JitObject*>(data);
+  // Bare Object literal — ObjectValue::builtins() provides defaults (e.g.
+  // `iter()` for Iterable) so the built-in table answers.
+  if (_jit_derived_class_tag(obj).empty())
+    return culebra::builtin_conforms_to_trait("Object", name);
+  std::string trait_name(name);
+  // A class name comes from the meta, so the meta is there to answer from.
+  auto& cache = *_jit_meta_conformance(obj);
+  std::unique_lock lock(culebra::trait_mutex());
+  if (cache.gen != culebra::trait_generation()) {
+    cache.by_trait.clear();
+    cache.gen = culebra::trait_generation();
+  }
+  auto& by_trait = cache.by_trait;
+  auto it = by_trait.find(trait_name);
+  if (it != by_trait.end()) return it->second;
+  // A variant has no method table; what it conforms to is fixed.
+  if (_jit_enum_name(obj)) {
+    return by_trait[trait_name] = culebra::enum_variant_conforms_to_trait(name);
+  }
+  std::unordered_map<std::string, size_t> class_methods;
+  auto walk_slots = [&](JitObject* o) {
+    if (!o || !o->shape) return;
+    for (size_t i = 0; i < o->prop_size(); i++) {
+      const auto& slot = o->slots[i];
+      if (slot.value.tag != TAG_FUNC) continue;
+      auto* cls = reinterpret_cast<JitClosure*>(slot.value.data);
+      // JitClosure::arity counts user-visible params (excluding __cls__
+      // and `self`); for an overloaded method (a dispatcher) report the
+      // widest overload so conformance sees the real arities (mirrors the
+      // interp walk). Helper is defined after the multimethod registry.
+      class_methods.emplace(o->prop_name(i), _jit_dispatcher_max_arity(cls));
+    }
+  };
+  // Methods live on the class meta (proto), data fields on the
+  // instance itself. Walk both so e.g. `to_s` defined on the class
+  // is visible to the conformance check.
+  walk_slots(obj);
+  walk_slots(obj->proto());
+  bool conforms = culebra::class_conforms_to_trait(class_methods, *trait);
+  by_trait[trait_name] = conforms;
+  return conforms;
+}
+
+// Whether the value at (tag, data) satisfies one non-Union type name ("Any"
+// matches everything): a built-in type's name by the tag alone (`Function`
+// also by `__call__`), any other name by the class, variant or enum that
+// built an Object, an error's kind, or a trait's conformance.
+// _culebra_value_matches_type calls it once per Union alternative.
 inline bool _culebra_type_matches_single(int8_t tag, int64_t data,
                                           std::string_view expected) {
   if (expected == "Any") return true;
@@ -1405,17 +1475,8 @@ inline bool _culebra_type_matches_single(int8_t tag, int64_t data,
   // a closure (TAG_FUNC) or a class instance with an own/proto `__call__`
   // satisfies it. Checked before the `?` sugar so `fn(A) -> B?` (optional
   // return) isn't misread as an optional function.
-  if (culebra::is_fn_type(expected)) {
-    if (tag == TAG_FUNC) return true;
-    if (tag == TAG_OBJECT) {
-      auto* obj = reinterpret_cast<JitObject*>(data);
-      if (obj->proto()) {
-        auto* e = _find_property(obj, "__call__");
-        if (e && e->value.tag == TAG_FUNC) return true;
-      }
-    }
-    return false;
-  }
+  if (culebra::is_fn_type(expected))
+    return tag == TAG_FUNC || _culebra_call_operator(tag, data);
   // Composite bound (`A + B`) — all-of: conform to every part.
   // Mirrors interp's type_matches.
   if (culebra::has_toplevel_plus(expected)) {
@@ -1436,11 +1497,16 @@ inline bool _culebra_type_matches_single(int8_t tag, int64_t data,
   if (expected.find('<') != std::string_view::npos) {
     expected = culebra::parse_generic_head(expected).outer;
   }
-  std::string_view actual = _culebra_tag_name(tag);
-  if (actual == expected) return true;
+  // A built-in type's name means that type, whatever a program calls its own
+  // classes, enums, variants or traits: only the tag passes, as a typed
+  // field's check has it and as an annotated parameter's ArgTag tells the
+  // code after the check. `Function` also takes a callable instance
+  // (Option A: structural callable, proto-gated so a dict is not one).
+  if (auto t = _culebra_primitive_type_tag(expected))
+    return tag == *t || (*t == TAG_FUNC && _culebra_call_operator(tag, data));
   // `Enum.Variant`: both halves, so nothing but that enum's variant
-  // satisfies it. Reached from an annotation and from a constructor
-  // pattern's TypeMatch alike — one reading for both.
+  // satisfies it. Reached from an annotation and, through
+  // culebra_runtime_ctor_matches, from a constructor pattern alike.
   if (auto q = culebra::parse_qualified_variant(expected);
       !q.enum_name.empty()) {
     if (tag != TAG_OBJECT) return false;
@@ -1449,96 +1515,41 @@ inline bool _culebra_type_matches_single(int8_t tag, int64_t data,
     return en && *en == q.enum_name &&
            _jit_derived_class_tag(obj) == q.variant;
   }
-  // Built-in trait conformance: primitives (non-Object tags) can
-  // satisfy Stringer / Eq / Comparable via the hard-coded table.
-  if (tag != TAG_OBJECT && culebra::lookup_trait(expected) &&
-      culebra::builtin_conforms_to_trait(actual, expected)) {
-    return true;
-  }
-  std::string_view class_tag_view;
   if (tag == TAG_OBJECT) {
     auto* obj = reinterpret_cast<JitObject*>(data);
-    // A class instance with an own/proto `__call__` satisfies `Function`
-    // (Option A: structural callable). Mirrors interp's type_matches and
-    // the callback adapter; proto-gated so a plain dict isn't callable.
-    if (expected == "Function" && obj->proto()) {
-      auto* e = _find_property(obj, "__call__");
-      if (e && e->value.tag == TAG_FUNC) return true;
-    }
-    if (const char* name = _jit_meta_class_name(obj)) {
-      class_tag_view = std::string_view(name);
-      if (class_tag_view == expected) return true;
-    }
-    // Enum variant: also matches the parent enum name (`__enum` field),
-    // so `r: Result` accepts any `Result.*` variant. Mirrors interp.
-    if (auto en = _jit_enum_name(obj); en && *en == expected) return true;
+    // Its class or variant, or a variant's parent enum, so `r: Result`
+    // accepts any `Result.*` variant.
+    if (_jit_answers_to(obj, expected)) return true;
     // An error carries its kind rather than a class: the kind's name is the
     // type that takes a classless Object carrying it. The name is tested
     // first, so a check against any other type reads no slot here; a
     // program's trait of that name is answered as a trait, below.
-    if (class_tag_view.empty() && culebra::is_error_kind_name(expected) &&
+    if (_jit_derived_class_tag(obj).empty() &&
+        culebra::is_error_kind_name(expected) &&
         !culebra::lookup_trait(expected) &&
         _jit_string_slot(obj, "kind") == expected)
       return true;
   }
-  // Structural trait conformance: when `expected` is a registered
-  // trait, check (and cache) whether this instance's class supplies
-  // every required method (matching arity). Primitive tags can't
-  // conform (no class tag, no method table).
-  if (auto* trait = culebra::lookup_trait(expected)) {
-    if (tag != TAG_OBJECT) return false;
-    if (class_tag_view.empty()) {
-      // Bare Object literal — ObjectValue::builtins() provides defaults
-      // (e.g. `iter()` for Iterable) so the built-in table answers.
-      return culebra::builtin_conforms_to_trait("Object", expected);
-    }
-    std::string trait_name(expected);
-    auto* obj = reinterpret_cast<JitObject*>(data);
-    // The name came from the meta, so the meta is there to answer from.
-    auto& cache = *_jit_meta_conformance(obj);
-    std::unique_lock lock(culebra::trait_mutex());
-    if (cache.gen != culebra::trait_generation()) {
-      cache.by_trait.clear();
-      cache.gen = culebra::trait_generation();
-    }
-    auto& by_trait = cache.by_trait;
-    auto it = by_trait.find(trait_name);
-    if (it != by_trait.end()) return it->second;
-    // A variant has no method table; what it conforms to is fixed.
-    if (_jit_enum_name(obj)) {
-      return by_trait[trait_name] =
-                 culebra::enum_variant_conforms_to_trait(expected);
-    }
-    std::unordered_map<std::string, size_t> class_methods;
-    auto walk_slots = [&](JitObject* o) {
-      if (!o || !o->shape) return;
-      for (size_t i = 0; i < o->prop_size(); i++) {
-        const auto& slot = o->slots[i];
-        if (slot.value.tag != TAG_FUNC) continue;
-        auto* cls = reinterpret_cast<JitClosure*>(slot.value.data);
-        // JitClosure::arity counts user-visible params (excluding __cls__
-        // and `self`); for an overloaded method (a dispatcher) report the
-        // widest overload so conformance sees the real arities (mirrors the
-        // interp walk). Helper is defined after the multimethod registry.
-        class_methods.emplace(o->prop_name(i),
-                              _jit_dispatcher_max_arity(cls));
-      }
-    };
-    // Methods live on the class meta (proto), data fields on the
-    // instance itself. Walk both so e.g. `to_s` defined on the class
-    // is visible to the conformance check.
-    walk_slots(obj);
-    walk_slots(obj->proto());
-    bool conforms = culebra::class_conforms_to_trait(class_methods, *trait);
-    by_trait[trait_name] = conforms;
-    return conforms;
-  }
-  return false;
+  return _jit_conforms_to_trait(tag, data, expected);
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_type_matches(
     int8_t tag, int64_t data, const char* expected) {
   return _culebra_type_matches_single(tag, data, std::string_view(expected));
+}
+
+// A constructor pattern's head (`Ok(x)`, `Point(x, y)`, `Result.Ok(x)`): the
+// class, variant or enum that built an Object, as an annotation reads those
+// names. No constructor builds anything else. A built-in type's name, which
+// no Object satisfies as a type, still names the class or variant a program
+// declared under it (`Long(n)` of `enum Json { Long(Long) }`).
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_ctor_matches(
+    int8_t tag, int64_t data, const char* name) {
+  if (tag != TAG_OBJECT) return false;
+  std::string_view n(name);
+  if (_culebra_primitive_type_tag(n))
+    return _jit_answers_to(reinterpret_cast<JitObject*>(data), n);
+  return _culebra_type_matches_single(tag, data, n);
 }
 
 // Whether a value satisfies a (possibly Union) type annotation. Empty / "Any"

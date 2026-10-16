@@ -491,12 +491,7 @@ inline void _iter_set_dispose(
 // exactly what _culebra_expect_callback accepts; a pass consumes nothing.
 inline void _culebra_callback_type_precheck(int8_t fn_tag, int64_t fn_data,
                                             const char* param_name) {
-  if (fn_tag == TAG_FUNC) return;
-  if (fn_tag == TAG_OBJECT) {
-    auto* obj = reinterpret_cast<JitObject*>(fn_data);
-    auto* e = obj->proto() ? _find_property(obj, "__call__") : nullptr;
-    if (e && e->value.tag == TAG_FUNC) return;
-  }
+  if (fn_tag == TAG_FUNC || _culebra_call_operator(fn_tag, fn_data)) return;
   _culebra_value_release_impl(fn_tag, fn_data);  // the callee-consumes +1
   throw culebra::CulebraError("TypeError",
       culebra::format("type error: parameter '{}' expects Function", param_name),
@@ -2963,16 +2958,6 @@ inline bool _culebra_callback_arity_ok(JitClosure* cls, size_t expected) {
                                            static_cast<long>(expected));
   }
   return cls->arity == expected;
-}
-
-// The `__call__` a class instance answers a call with, or null. The gate for
-// the structural-callable rule (Option A) both the type check below and the
-// adapter in _culebra_expect_callback read, so one answer serves both.
-inline const JitValue* _culebra_call_operator(int8_t fn_tag, int64_t fn_data) {
-  if (fn_tag != TAG_OBJECT) return nullptr;
-  auto* obj = reinterpret_cast<JitObject*>(fn_data);
-  auto* e = obj->proto() ? _find_property(obj, "__call__") : nullptr;
-  return e && e->value.tag == TAG_FUNC ? &e->value : nullptr;
 }
 
 // A callback parameter's declared `Function` type, checked on its own and

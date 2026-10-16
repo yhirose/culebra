@@ -704,8 +704,8 @@ inline JitClosure* jit_install_shipped_default(JitObject* obj, const char* key,
   for (size_t i = 0; i < t.shipped->size(); i++) {
     const auto& d = (*t.shipped)[i];
     if (!jit_shipped_pending(t, i) || d.method != key ||
-        !_culebra_type_matches_single(
-            TAG_OBJECT, reinterpret_cast<int64_t>(obj), d.trait.c_str()))
+        !_jit_conforms_to_trait(TAG_OBJECT, reinterpret_cast<int64_t>(obj),
+                                d.trait))
       continue;
     if (found) _jit_trait_default_ambiguous(*found, d.trait, key);
     if (pick < t.shipped->size())

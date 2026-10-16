@@ -3277,7 +3277,8 @@ Culebraは動的型付けで、型注釈は任意です。注釈は以下3つの
 
 ### 有効な型名
 
-    Nil  Bool  Long  Float  String  Array  Object  Function  Any
+    Nil  Bool  Long  Float  String  StringView  Array  Tuple  Set
+    Object  Function  Tensor  Any
 
 `Any`は常に一致します。未知の型名は検査失敗で`type error`と
 なります。`class C { ... }`で宣言したクラス名も有効な注釈で、
@@ -3288,6 +3289,16 @@ variant名はどのenumのものでも同名variantを、修飾形
 
 エラーのkind（`TypeError`、`IOError`など、§15）も型名で、そのkindを
 持つObjectを受け入れます。
+
+組み込み型の名前（上の一覧のうち`Any`以外のすべて）は、常にその型を
+指します。同じ名前のクラス・enum・variant・traitは、プログラムのもので
+もライブラリのもの（`FST.Set`）でも、その名前の注釈を満たしません。
+プログラムの`class Long`のインスタンスは`Long`ではありません。`Long`型の
+フィールドの検査と同じ答えで、multimethodもそれを理由にoverloadを選び
+ません。そうしたインスタンスは`Object`か、注釈なしで受け取れます。
+`Function`は`__call__`メソッドを持つインスタンスも受け入れます。
+constructorパターンでは、そうしたvariantやクラスもその名前で指せます。
+`Long(n) =>`は`enum Json { Long(Long), ... }`のvariant `Long`に一致します。
 
 型名は大文字で始まります。`class point`と宣言したクラスを指す注釈は
 構文エラーです。`match`のパターンで型と束縛を見分けるのも、この先頭の
