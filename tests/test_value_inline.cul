@@ -825,4 +825,92 @@ test_name_inside_another_writes_head = fn () {
 }
 test_name_inside_another_writes_head()
 
+# ---- what a boxed instance checks or refuses, a run checks or refuses the
+# ---- same, worded the same and at the same place: a field stepped in place
+# ---- by its constructor, a member's declared return type, `.new` on an
+# ---- instance, a declaration's annotation. Each runs in a function of its
+# ---- own, where its binding is not captured and so stays unboxed.
+@value
+class Stepped {
+  new(.x: Float, .y: Float) {
+    self.x += 1.0
+    self.y ??= 9.0
+  }
+}
+
+@value
+class LongStepped {
+  new(.n: Long) {
+    self.n += 0.5
+  }
+}
+
+@value
+class Checked {
+  new(.x: Float, .y: Float) {}
+  as_long() -> Long {
+    self.x
+  }
+  doubled() -> Checked {
+    Checked.new(self.x * 2.0, self.y)
+  }
+  rebuilt() -> Long {
+    Checked.new(self.x, self.y)
+  }
+}
+
+fn stepped_fields() {
+  let s = Stepped.new(3.0, 4.0)
+  [s.x, s.y]
+}
+fn long_stepped_half() {
+  LongStepped.new(1).n
+}
+fn checked_as_long() {
+  let c = Checked.new(1.0, 2.0)
+  c.as_long()
+}
+fn checked_doubled() {
+  Checked.new(1.0, 2.0).doubled().x
+}
+fn checked_rebuilt() {
+  Checked.new(1.0, 2.0).rebuilt().x
+}
+fn checked_new_on_instance() {
+  Checked.new(1.0, 2.0).new(5.0, 6.0)
+}
+fn checked_let_long() {
+  let v: Long = Checked.new(1.0, 2.0)
+  v.x
+}
+fn checked_let_own() {
+  let v: Checked = Checked.new(1.0, 2.0)
+  v.x
+}
+fn thrown_at(f) {
+  try {
+    f()
+  } catch e {
+    [e.message, e.line, e.col]
+  }
+}
+
+test_a_run_checks_what_an_instance_does = fn () {
+  assert_eq(stepped_fields(), [4.0, 4.0])
+  assert_eq(thrown_at(long_stepped_half),
+            ["type error: field 'n' expects Long", 844, 5])
+  assert_eq(thrown_at(checked_as_long),
+            ['type error: return value expects Long', 871, 3])
+  assert_eq(checked_doubled(), 2.0)
+  assert_eq(thrown_at(checked_rebuilt),
+            ['type error: return value expects Long', 877, 3])
+  assert_eq(thrown_at(checked_new_on_instance),
+            ["type error: expected Function, got Nil ('new' is not a method of Checked)",
+             880, 3])
+  assert_eq(thrown_at(checked_let_long),
+            ['type error: assignment expects Long', 883, 3])
+  assert_eq(checked_let_own(), 1.0)
+}
+test_a_run_checks_what_an_instance_does()
+
 inspect('value-inline OK')

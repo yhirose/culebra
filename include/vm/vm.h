@@ -9842,6 +9842,14 @@ class Compiler {
       int32_t dotpos = kconst_long(packed_pos(fin));
       if (av.compound && av.op_base == "??") {
         auto recv = chain_prefix();
+        // `self.x ??= v` inside an inlined constructor: the field is a slot
+        // of the run, read and written in place.
+        if (int32_t ix = inline_field_index(recv, fin.token); ix >= 0) {
+          size_t skip = emit(Op::JumpIfNotNil, recv.slot + ix);
+          store_inline_field(ast, recv, ix, compile_assign_rhs(ast, av));
+          patch_to_here(skip);
+          return {recv.slot + ix, /*owned=*/false};
+        }
         int32_t cur = alloc_temp(ast);
         emit(Op::PropCo, cur, recv.slot, name, dotpos);
         size_t skip = emit(Op::JumpIfNotNil, cur);
@@ -9855,6 +9863,14 @@ class Compiler {
         Op op = compound_op(ast, av.op_base);
         auto rhs = compile_assign_rhs(ast, av);
         auto recv = chain_prefix();
+        // `self.x op= v` inside an inlined constructor: the step reads and
+        // writes the run's own slot, through the store's field check.
+        if (int32_t ix = inline_field_index(recv, fin.token); ix >= 0) {
+          int32_t t = alloc_temp(ast);
+          emit(op, t, recv.slot + ix, rhs.slot, /*inplace=*/1);
+          store_inline_field(ast, recv, ix, {t, /*owned=*/true});
+          return {recv.slot + ix, /*owned=*/false};
+        }
         int32_t cur = alloc_temp(ast);
         // `<name>.<field>` reads what compile_property_read's first postfix
         // would: the declared class's promise about the field's tag.
@@ -9885,12 +9901,9 @@ class Compiler {
       // can appear here: the contract check at the class declaration already
       // refused any other name (value_undeclared_self_write_message).
       if (int32_t ix = inline_field_index(recv, fin.token); ix >= 0) {
-        StampGuard pos(*this, ast);
         assert(recv.unboxed == value_class_of(*recv.unboxed_class)->layout &&
                "a run is laid out as its own class");
-        emit_inline_field_check(*recv.unboxed_class, static_cast<size_t>(ix),
-                                rhs.slot);
-        store_into(recv.slot + ix, rhs, /*dst_is_fresh=*/false);
+        store_inline_field(ast, recv, ix, rhs);
         return rhs;
       }
       emit_prop_set(fin, recv.slot, rhs.slot,
@@ -10498,9 +10511,10 @@ class Compiler {
   // and a `no` compiles the ordinary boxed way. That is what keeps the two
   // arms honest: no half-inlined state to unwind, no run-time fallback.
 
-  // The member of a class named `name` (its AST), or nullptr. `new` is the
-  // constructor; anything else is an instance method. An overload set
+  // The member of a class named `name` (its AST), or nullptr. An overload set
   // answers nullptr: two same-named members are a dispatcher, not one body.
+  // Asked through the two below, which keep the constructor and the methods
+  // apart.
   static const peg::Ast* value_member_ast(const peg::Ast& class_ast,
                                           std::string_view name) {
     size_t dec_end = culebra::first_non_decorator_index(class_ast);
@@ -10513,6 +10527,25 @@ class Compiler {
       found = class_ast.nodes[i].get();
     }
     return found;
+  }
+  // Whether a type annotation is known to pass every instance of
+  // `class_name` whatever its fields hold: the class itself (its type
+  // arguments, if written, are not checked), or Any. Only such an annotation
+  // may stand over a run, which has no instance for the check a boxed value
+  // gets; others that would pass too (`C?`, a union, a trait) keep it boxed.
+  static bool annotation_admits_class(std::string_view annotation,
+                                      std::string_view class_name) {
+    return culebra::parse_generic_head(annotation).outer == class_name ||
+           annotation == "Any";
+  }
+  static const peg::Ast* value_ctor_ast(const peg::Ast& class_ast) {
+    return value_member_ast(class_ast, "new");
+  }
+  // An instance method: `new` is the class's, so `v.new(...)` is no step a
+  // run can take (a boxed instance says it is not a method).
+  static const peg::Ast* value_method_ast(const peg::Ast& class_ast,
+                                          std::string_view name) {
+    return name == "new" ? nullptr : value_member_ast(class_ast, name);
   }
 
   // The plain positional parameters of a member, or nullopt when its
@@ -10675,10 +10708,30 @@ class Compiler {
         if (!refs_ok(*body.nodes[i])) return ChainEnd::Declined;
       tail = body.nodes.back().get();
     }
-    if (is_own_construction(*tail, fi.own_name))
-      return own_construction_end(*tail, fi.own_name, class_ast, class_name,
-                                  layout);
-    return refs_ok(*tail) ? ChainEnd::Scalar : ChainEnd::Declined;
+    if (!is_own_construction(*tail, fi.own_name))
+      return refs_ok(*tail) ? ChainEnd::Scalar : ChainEnd::Declined;
+    ChainEnd end = own_construction_end(*tail, fi.own_name, class_ast,
+                                        class_name, layout);
+    // A run leaves no value for the return type's check (emit_inline_body
+    // makes it on a scalar), so it may stand only under one every instance
+    // passes.
+    auto rt = member_return_type(member, class_ast);
+    if (end == ChainEnd::Run && !rt.empty() &&
+        !annotation_admits_class(rt, class_name))
+      return ChainEnd::Declined;
+    return end;
+  }
+
+  // A member's declared return type as its boxed frame checks it, lowered
+  // against its class's type parameters (compile_fn_chunk_impl), or empty.
+  static std::string member_return_type(const peg::Ast& member,
+                                        const peg::Ast& class_ast) {
+    auto rt = culebra::view_method(member).return_type;
+    if (rt.empty()) return {};
+    auto head = culebra::parse_generic_head(
+        class_ast.nodes[culebra::first_non_decorator_index(class_ast)]->token);
+    auto tps = culebra::split_generic_args(head.args);
+    return tps.empty() ? std::string(rt) : culebra::lower_type_params(rt, tps);
   }
 
   // A flat `@value` class's identity: the outer name off its declaration
@@ -10711,7 +10764,7 @@ class Compiler {
                         const peg::Ast& cls, std::string_view class_name,
                         const std::vector<std::string>* layout) {
     const peg::Ast* m =
-        dunder.empty() ? nullptr : value_member_ast(cls, dunder);
+        dunder.empty() ? nullptr : value_method_ast(cls, dunder);
     if (!m) return false;
     auto ps = inline_params(culebra::view_method(*m).params);
     return ps && ps->size() == arity &&
@@ -11450,7 +11503,7 @@ class Compiler {
                               const peg::Ast& ocls, std::string_view oname,
                               const std::vector<std::string>* olayout) {
     Lookahead ahead(*this);
-    const peg::Ast* m = value_member_ast(cls, dunder);
+    const peg::Ast* m = value_method_ast(cls, dunder);
     if (!m) return false;
     auto mv = culebra::view_method(*m);
     if (!mv.body) return false;
@@ -11535,6 +11588,11 @@ class Compiler {
     if (!cls) return std::nullopt;
     auto vc = value_class_of(*cls);
     if (!vc) return std::nullopt;
+    // The boxed declaration checks its annotation against the instance; a run
+    // has none to check, so only an annotation every instance passes holds it.
+    if (!av.type_annotation.empty() &&
+        !annotation_admits_class(av.type_annotation, vc->name))
+      return std::nullopt;
     auto class_name = vc->name;
     const auto* layout = vc->layout;
     return ValueCandidate{&stmt,   i,      name, cls,
@@ -11816,6 +11874,17 @@ class Compiler {
                     culebra::format("field '{}'", field));
   }
 
+  // How every write form on a field of the run a spliced constructor is
+  // building ends (`=`, `op=`, `??=`): that check, at the assignment, then
+  // the move into the run's slot.
+  void store_inline_field(const peg::Ast& at, const ExprResult& recv,
+                          int32_t ix, ExprResult v) {
+    StampGuard pos(*this, at);
+    emit_inline_field_check(*recv.unboxed_class, static_cast<size_t>(ix),
+                            v.slot);
+    store_into(recv.slot + ix, v);
+  }
+
   // N contiguous slots named after a run's fields. `prefix` is only the
   // debug name: the class for a fresh run, the parameter for a bound one.
   int32_t alloc_run_slots(const peg::Ast& at, std::string_view prefix,
@@ -11859,9 +11928,10 @@ class Compiler {
   //
   // A constructor's result IS the run it filled (`new`'s value is the
   // instance, whatever its body's last expression was); a method's is its
-  // tail expression, copied out to `out_base` before the pop.
-  ExprResult emit_inline_body(const peg::Ast& member, const peg::Ast& cls_ast,
-                              int32_t self_base,
+  // tail expression, copied out to `out_base` before the pop. `site` is the
+  // call the splice stands for.
+  ExprResult emit_inline_body(const peg::Ast& site, const peg::Ast& member,
+                              const peg::Ast& cls_ast, int32_t self_base,
                               const std::vector<std::string>* layout,
                               const std::vector<InlineParam>& ps,
                               const std::vector<ExprResult>& args,
@@ -11935,6 +12005,16 @@ class Compiler {
                  /*dst_is_fresh=*/false);
       } else {
         store_into(out_base, tail, /*dst_is_fresh=*/false);
+      }
+    }
+    // The return type's check the boxed frame makes at its exit
+    // (emit_return_type_check), reported where it reports it: at the call.
+    // A run needs none: inline_body_end only splices one under an annotation
+    // every instance passes.
+    if (!is_ctor && !out_layout) {
+      if (auto rt = member_return_type(member, cls_ast); !rt.empty()) {
+        StampGuard pos(*this, site);
+        emit_type_check(rt, out_base, "return value");
       }
     }
     sweep_temps(temp_base, temp_slot_base);
@@ -12047,7 +12127,7 @@ class Compiler {
                         layout->end();
         return leaf ? ChainEnd::Scalar : ChainEnd::Declined;
       }
-      const peg::Ast* m = value_member_ast(class_ast, post.token);
+      const peg::Ast* m = value_method_ast(class_ast, post.token);
       if (!m) return ChainEnd::Declined;
       auto ps = inline_params(culebra::view_method(*m).params);
       if (!ps || !positional_args_match(*ps, *at.nodes[i + 1]))
@@ -12084,7 +12164,7 @@ class Compiler {
     if (!cls) return std::nullopt;
     auto vc = value_class_of(*cls);
     if (!vc) return std::nullopt;
-    const peg::Ast* ctor = value_member_ast(*cls, "new");
+    const peg::Ast* ctor = value_ctor_ast(*cls);
     if (!ctor ||
         !inline_body_ok(*ctor, /*is_ctor=*/true, *cls, vc->name, vc->layout))
       return std::nullopt;
@@ -12172,7 +12252,7 @@ class Compiler {
     std::vector<ExprResult> args;
     std::vector<const peg::Ast*> arg_asts;
     compile_args(*ast.nodes[2], args, arg_asts);
-    ExprResult cur = emit_inline_body(*chain->ctor, *cls, base, layout,
+    ExprResult cur = emit_inline_body(ast, *chain->ctor, *cls, base, layout,
                                       chain->params, args, arg_asts,
                                       /*is_ctor=*/true, /*out_base=*/-1,
                                       layout);
@@ -12203,7 +12283,7 @@ class Compiler {
                "every step before this one leaves a run");
         return ExprResult{cur.slot + ix, /*owned=*/false};
       }
-      const peg::Ast* m = value_member_ast(cls, post.token);
+      const peg::Ast* m = value_method_ast(cls, post.token);
       auto ps = inline_params(culebra::view_method(*m).params);
       std::vector<ExprResult> margs;
       std::vector<const peg::Ast*> masts;
@@ -12214,7 +12294,7 @@ class Compiler {
       bool run = inline_body_end(*m, /*is_ctor=*/false, cls, class_name,
                                  layout) == ChainEnd::Run;
       int32_t out_base = run ? fresh_run() : alloc_slot(at, "(value.ret)");
-      cur = emit_inline_body(*m, cls, cur.slot, layout, *ps,
+      cur = emit_inline_body(at, *m, cls, cur.slot, layout, *ps,
                              margs, masts, /*is_ctor=*/false, out_base,
                              run ? layout : nullptr);
       i += 2;
@@ -12255,7 +12335,7 @@ class Compiler {
     size_t dec_end = culebra::first_non_decorator_index(cls);
     auto class_name =
         culebra::parse_generic_head(cls.nodes[dec_end]->token).outer;
-    const peg::Ast* m = value_member_ast(cls, dunder);
+    const peg::Ast* m = value_method_ast(cls, dunder);
     if (!m) return std::nullopt;
     auto ps = inline_params(culebra::view_method(*m).params);
     if (!ps || ps->size() != args.size()) return std::nullopt;
@@ -12265,7 +12345,7 @@ class Compiler {
     bool run = end == ChainEnd::Run;
     int32_t out_base = run ? alloc_zeroed_run(at, cls, class_name, *lhs.unboxed)
                            : alloc_slot(at, "(value.ret)");
-    return emit_inline_body(*m, cls, lhs.slot, lhs.unboxed, *ps,
+    return emit_inline_body(at, *m, cls, lhs.slot, lhs.unboxed, *ps,
                             args, arg_asts, /*is_ctor=*/false, out_base,
                             run ? lhs.unboxed : nullptr);
   }

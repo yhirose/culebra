@@ -5,10 +5,11 @@ A flat `@value` class's instance may live as its fields in frame slots, and
 whether it does must not change what a program prints.  The reference for
 that is the same program with the decorator gone: its boxed twin.  This
 generates programs around one such class (members that end in a scalar and
-in an instance, operators, `let` / `let mut` bindings, writes, compound
-steps, loops, branches, closures, calls that take an instance, a class
-declared inside a function), runs each beside its twin, and keeps the ones
-that differ.
+in an instance, some with a declared return type, a constructor that steps
+its fields, operators, `let` / `let mut` bindings, some annotated, writes,
+compound steps, loops, branches, closures, calls that take an instance, a
+class declared inside a function), runs each beside its twin, and keeps the
+ones that differ.
 
 The twin has the `@value` line replaced by a comment, so every position in
 an error message is the same on both sides.  The twin's instances print
@@ -44,6 +45,8 @@ SCALAR_MEMBERS = {
     "first": (0, "first() { P.new(self.y, self.x).x }"),
     "sc": ("s", "sc(k) { self.scale(k).x }"),
     "lenlen": (0, "lenlen() { self.len() + self.g0() }"),
+    "lenf": (0, "lenf() -> Float { self.x * self.x + self.y }"),
+    "asl": (0, "asl() -> Long { self.x }"),  # a Float is never a Long
 }
 RUN_MEMBERS = {
     "scale": ("s", "scale(k) { P.new(self.x * k, self.y * k) }"),
@@ -52,8 +55,13 @@ RUN_MEMBERS = {
     "twice": (0, "twice() { self.scale(2.0) }"),
     "mix": ("r", "mix(o) { self.add(o).swap() }"),
     "me": (0, "me() { self.swap().swap() }"),
+    "swapp": (0, "swapp() -> P { P.new(self.y, self.x) }"),
+    "swapl": (0, "swapl() -> Long { P.new(self.y, self.x) }"),  # never passes
 }
 MEMBERS = {**SCALAR_MEMBERS, **RUN_MEMBERS}
+# the members a call of always throws: only a function's last statement
+# calls one (Gen.function), so the throw ends nothing else
+FAILS = {"asl", "swapl"}
 # what a member needs declared beside it
 NEEDS = {"sc": ["scale"], "twice": ["scale"], "mix": ["add", "swap"],
          "me": ["swap"], "lenlen": ["len", "g0"]}
@@ -66,6 +74,7 @@ OPERATORS = {
 CTORS = [
     "  new(.x: Float, .y: Float) {}",
     "  x: Float\n  y: Float\n  new(x: Float, y: Float) {\n    self.x = x\n    self.y = y\n  }",
+    "  new(.x: Float, .y: Float) {\n    self.x += 1.0\n    self.y *= 2.0\n  }",
 ]
 
 
@@ -121,8 +130,13 @@ class Gen:
         e = f"{self.scalar(env, d + 1)} {r.choice(['+', '-', '*'])} {self.scalar(env, d + 1)}"
         return f"({e})" if chain else e
 
-    # one of the members `names`, called on an instance
+    # one of the members `names`, called on an instance (a construction, or
+    # its field, when every one of them throws)
     def call(self, names, env, d):
+        scalar = names is self.smem
+        names = [n for n in names if n not in FAILS]
+        if not names:
+            return f"P.new({self.lit()}, {self.lit()})" + (".x" if scalar else "")
         m = self.r.choice(names)
         return f"{self.run(env, d + 1, chain=True)}.{m}({self.args(MEMBERS[m][0], env, d)})"
 
@@ -163,7 +177,9 @@ class Gen:
         if k < 0.22 or not env["runs"]:
             v = self.fresh("v")
             mut = r.random() < 0.6
-            s = f"{pad}let {'mut ' if mut else ''}{v} = {self.run(env)}"
+            # an annotation the instance passes (one it never does is a tail's)
+            ann = r.choices(["", ": P", ": Any"], weights=[8, 2, 1])[0]
+            s = f"{pad}let {'mut ' if mut else ''}{v}{ann} = {self.run(env)}"
             env["runs"].append(v)
             if mut:
                 env["mut"].append(v)
@@ -227,11 +243,17 @@ class Gen:
         f = self.fresh("f")
         env = {"runs": [], "boxed": [], "mut": [], "scal": []}
         body = self.block(env, 1, 0, r.randint(3, 8))
-        # every local's final state, then a tail of each kind
+        # every local's final state, then a tail of each kind, a throwing one
+        # (an annotation or a member nothing passes) among them
         for v in env["runs"] + env["boxed"]:
             body.append(f"  println({v}.x + {v}.y)")
         k = r.random()
-        if k < 0.25:
+        bad = [m for m in self.smem + self.rmem if m in FAILS]
+        if k < 0.15:
+            body.append(f"  let {self.fresh('t')}: Long = {self.run(env)}")
+        elif k < 0.5 and bad:
+            body.append(f"  {self.run(env, 1, chain=True)}.{r.choice(bad)}()")
+        elif k < 0.25:
             body.append(f"  let {self.fresh('t')} = {self.run(env)}")
         elif k < 0.45 and env["mut"]:
             body.append(f"  {r.choice(env['mut'])} = {self.run(env)}")
@@ -247,7 +269,8 @@ class Gen:
         for _ in range(self.r.randint(1, 2)):
             f, text = self.function()
             body += text
-            calls.append(f"println({f}())")
+            # a throw prints its kind, message and position, and the rest runs
+            calls.append(f"println(try {{ {f}() }} catch e {{ e }})")
         # a stretch outside any function too
         env = {"runs": [], "boxed": [], "mut": [], "scal": []}
         top = self.block(env, 0, 0, self.r.randint(0, 5))
