@@ -71,7 +71,35 @@ inline const char* sound_format(const uint8_t* p, size_t n) {
 inline constexpr auto kSoundFormatError =
     "not a valid WAV, MP3 or Ogg audio stream";
 
-inline constexpr auto kPcmSamplesError =
+// Samples (-1..1, mono, `rate` a second) as the 16-bit WAV file a program
+// would load, so a Sound made from samples decodes as one from bytes does.
+inline std::vector<uint8_t> wav16(const double* x, size_t n, uint32_t rate) {
+  std::vector<uint8_t> out;
+  out.reserve(44 + 2 * n);
+  auto put = [&](uint32_t v, int bytes) {
+    for (int i = 0; i < bytes; i++) out.push_back(static_cast<uint8_t>(v >> (8 * i)));
+  };
+  auto data = static_cast<uint32_t>(2 * n);
+  out.insert(out.end(), {'R', 'I', 'F', 'F'});
+  put(36 + data, 4);
+  out.insert(out.end(), {'W', 'A', 'V', 'E', 'f', 'm', 't', ' '});
+  put(16, 4);
+  put(1, 2);  // PCM
+  put(1, 2);  // mono
+  put(rate, 4);
+  put(rate * 2, 4);
+  put(2, 2);
+  put(16, 2);
+  out.insert(out.end(), {'d', 'a', 't', 'a'});
+  put(data, 4);
+  for (size_t i = 0; i < n; i++) {
+    double v = std::isnan(x[i]) ? 0.0 : std::clamp(x[i], -1.0, 1.0);
+    put(static_cast<uint16_t>(static_cast<int16_t>(std::nearbyint(v * 32767))), 2);
+  }
+  return out;
+}
+
+inline constexpr auto kSamplesError =
     "type error: parameter 'samples' expects an Array of Long|Float";
 inline constexpr auto kScoreEventsError =
     "type error: parameter 'events' expects an Array of Long|Float";
@@ -88,8 +116,6 @@ inline constexpr int64_t kScoreStride = 11;
 
 // --- Parts an instrument builds its sound from, the same on every backend ---
 
-inline constexpr auto kResonateSamplesError =
-    "type error: parameter 'samples' expects an Array of Long|Float";
 inline constexpr auto kResonateModesError =
     "Audio.resonate: a mode is {freq, width, gain}, each a number";
 

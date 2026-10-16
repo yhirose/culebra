@@ -5216,9 +5216,26 @@ inline void _ns_audio_numbers(JitValue v, std::vector<double>& out,
     out.push_back(_culebra_coerce_num(e.tag, e.data));
   }
 }
+// A Sound from samples goes to every backend as the WAV bytes of a file; no
+// samples is a silent handle, with nothing for a decoder to refuse.
+inline JitValue _ns_audio_sound_samples(JitValue* a, int64_t) {
+  namespace ad = culebra::_audio_detail;
+  std::vector<double> xs;
+  _ns_audio_numbers(a[0], xs, ad::kSamplesError);
+  int64_t rate = _ns_adapt::take_long(a[1]);
+  if (!(rate >= 1 && rate <= INT32_MAX))
+    culebra::throw_runtime_error_at("ValueError", "Audio.Sound: the rate is from 1 below 2^31", 0, 0);
+  culebra::narrow_or_too_large(44 + 2 * static_cast<int64_t>(xs.size()), "Audio.Sound: the sound", 0, 0);
+  int64_t id = ad::alloc_id();
+  if (!xs.empty()) {
+    auto wav = ad::wav16(xs.data(), xs.size(), static_cast<uint32_t>(rate));
+    ad::sound_load(id, wav.data(), static_cast<int64_t>(wav.size()), ".wav");
+  }
+  return _ns_adapt::v_long(id);
+}
 inline JitValue _ns_audio_pcm_push(JitValue* a, int64_t) {
   thread_local std::vector<double> scratch;  // a block a frame: no allocation
-  _ns_audio_numbers(a[1], scratch, culebra::_audio_detail::kPcmSamplesError);
+  _ns_audio_numbers(a[1], scratch, culebra::_audio_detail::kSamplesError);
   return _ns_adapt::v_long(culebra::_audio_detail::pcm_push(
       _ns_adapt::take_long(a[0]), scratch.data(),
       static_cast<int64_t>(scratch.size())));
@@ -5262,7 +5279,7 @@ inline JitValue _ns_audio_samples(const std::vector<double>& xs,
 inline JitValue _ns_audio_resonate(JitValue* a, int64_t) {
   namespace ad = culebra::_audio_detail;
   std::vector<double> x, modes;
-  _ns_audio_numbers(a[0], x, ad::kResonateSamplesError);
+  _ns_audio_numbers(a[0], x, ad::kSamplesError);
   _ns_audio_numbers(a[1], modes, ad::kResonateModesError);
   double dry = _ns_adapt::take_double(a[2]);
   double rate = _ns_adapt::take_double(a[3]);
@@ -10722,6 +10739,7 @@ inline const NsMethod kNsRows_Audio_native[] = {
   {"_Audio", "resonate",       4, &_ns_audio_resonate},
   {"_Audio", "pluck",          5, &_ns_audio_pluck},
   {"_Audio", "partials",       9, &_ns_audio_partials},
+  {"_Audio", "sound_samples",  2, &_ns_audio_sound_samples},
 };
 inline const NsMethod kNsRows_Canvas_native[] = {
   {"_Canvas", "init",            2,  &_ns_canvas_init},

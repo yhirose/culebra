@@ -71,7 +71,7 @@ let drums = sounds
   .map(|k| (
     k,
     {
-      hit: |n, params| Audio.Sound(wave.wav(sounds[k](n, params))),
+      hit: |n, params| Audio.Sound(sounds[k](n, params), rate: wave.RATE),
       hears: HEARS[k],
     },
   ))

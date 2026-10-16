@@ -1519,6 +1519,9 @@ inline constexpr CanonParam kCanonParams_Audio_native[] = {
   {"steady", false, false, false, false, false, "Array", CanonDefault::None, 0, {}},
   {"pulsed", false, false, false, false, false, "Array", CanonDefault::None, 0, {}},
   {"rate", false, false, false, false, false, "Long|Float", CanonDefault::None, 0, {}},
+  // 96: _Audio.sound_samples
+  {"samples", false, false, false, false, false, "Array", CanonDefault::None, 0, {}},
+  {"rate", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
 };
 
 inline constexpr CanonSig kCanonSigs_Audio_native[] = {
@@ -1576,6 +1579,7 @@ inline constexpr CanonSig kCanonSigs_Audio_native[] = {
   {"_Audio", "", "resonate", kCanonParams_Audio_native + 78, 4, "Array", 4, 4, false, -1, -1, -1},
   {"_Audio", "", "pluck", kCanonParams_Audio_native + 82, 5, "Array", 5, 5, false, -1, -1, -1},
   {"_Audio", "", "partials", kCanonParams_Audio_native + 87, 9, "Array", 9, 9, false, -1, -1, -1},
+  {"_Audio", "", "sound_samples", kCanonParams_Audio_native + 96, 2, "Long", 2, 2, false, -1, -1, -1},
 };
 
 inline constexpr CanonParam kCanonParams_Dir_native[] = {

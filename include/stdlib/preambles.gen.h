@@ -4255,6 +4255,11 @@ let _audio_module = fn () {
     new(data: String) {
       self._id = _Audio.sound_load(data)
     }
+    # One from samples the program made: -1.0..1.0, mono, `rate` a second,
+    # kept as 16 bits as a WAV file keeps them.
+    new(samples: Array, rate: Long = 44100) {
+      self._id = _Audio.sound_samples(samples, rate)
+    }
     play() {
       _Audio.sound_play(self._id)
     }

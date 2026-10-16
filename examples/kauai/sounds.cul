@@ -1,40 +1,9 @@
 # The host sounds the songs in songs/ name, for Audio.Kauai.load's `voices:`
 # and `drums:`: `host Ep` (an electric piano, `bright=` how hard its hammer
 # bites) and the drums `host Kick`, `Snare`, `Hat`, `Ride`, `Crash` and `Tom`.
-# Each is synthesised into a WAV once, as a song asks for it.
+# Each is synthesised once, as a song asks for it.
 
 let RATE = 22050
-
-# `v` as `n` little-endian bytes.
-fn le_bytes(v, n) {
-  iota(n).map(|i| v >> 8 * i & 255)
-}
-
-# 16-bit mono samples (-1.0..1.0) as a WAV file's bytes.
-fn wav(samples) {
-  let n = samples.size()
-  mut out = [
-    ...le_bytes(0x46464952, 4),  # RIFF
-    ...le_bytes(36 + n * 2, 4),
-    ...le_bytes(0x45564157, 4),  # WAVE
-    ...le_bytes(0x20746d66, 4),  # fmt
-    ...le_bytes(16, 4),
-    ...le_bytes(1, 2),  # PCM
-    ...le_bytes(1, 2),  # mono
-    ...le_bytes(RATE, 4),
-    ...le_bytes(RATE * 2, 4),
-    ...le_bytes(2, 2),
-    ...le_bytes(16, 2),
-    ...le_bytes(0x61746164, 4),  # data
-    ...le_bytes(n * 2, 4),
-  ]
-  for s in samples {
-    let v = Math.round(Math.max(-1.0, Math.min(1.0, s)) * 32000) & 0xFFFF
-    out.push(v & 255)
-    out.push(v >> 8)
-  }
-  String.from_bytes(out)
-}
 
 fn hz(pitch) {
   440.0 * Math.exp((pitch - 69) / 12.0 * Math.log(2.0))
@@ -82,13 +51,13 @@ let DRUMS = {
   tom: || drum(0.3, 180.0, 110.0, 0.8, 0.1),
 }
 
-let voices = {ep: |pitch, params| Audio.Sound(wav(electric_piano(
-  pitch,
-  params.get("bright", 1.0),
-)))}
+let voices = {ep: |pitch, params| Audio.Sound(
+  electric_piano(pitch, params.get("bright", 1.0)),
+  rate: RATE,
+)}
 let drums = DRUMS
   .keys()
-  .map(|k| (k, |params| Audio.Sound(wav(DRUMS[k]()))))
+  .map(|k| (k, |params| Audio.Sound(DRUMS[k](), rate: RATE)))
   .to_object()
 
 export {voices, drums}

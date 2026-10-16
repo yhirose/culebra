@@ -8609,6 +8609,10 @@ Audio.tone(700, 0, 10, Audio.PULSE, 870, 10, 5, 3, 20, Audio.DUTY_QUARTER)
 `Audio.Sound.new(data)` decodes a one-shot sample from its bytes (WAV, MP3 or
 Ogg Vorbis, a `String` from `FS.read`, a `Dir` or built by the program) and
 plays it per call: the recorded-sample counterpart to `tone`'s synthesis.
+`Audio.Sound.new(samples, rate = 44100)` makes one from samples the program
+worked out instead: an Array of numbers from -1.0 to 1.0, mono, `rate` of
+them a second, kept as 16 bits as a WAV file keeps them (a sample past
+-1.0..1.0 is held there, and NaN is silence).
 
 | Method | Effect |
 | --- | --- |
@@ -8621,10 +8625,12 @@ Each `Sound` is one voice, and the decoded sample is freed with the last
 reference, which also stops it: keep the handle for as long as it should be
 heard. Bytes that are none of the three formats raise
 `ValueError: not a valid WAV, MP3 or Ogg audio stream` on every backend; past
-that check, a stream that fails to decode stays silent. In the browser the
-bytes are decoded by WebAudio in the background, so a `play()` made right
-after the `Sound` is built starts once the decode finishes, a moment later;
-natively the sample is decoded when the `Sound` is built.
+that check, a stream that fails to decode stays silent. Samples that are not
+all numbers raise `TypeError`, and a `rate` that is not from 1 below 2^31
+raises `ValueError`. In the browser the bytes are decoded by WebAudio in the
+background, so a `play()` made right after the `Sound` is built starts once
+the decode finishes, a moment later; natively the sample is decoded when the
+`Sound` is built.
 
 ```culebra
 let WAV = Encoding.hex.decode("524946462800000057415645666d7420100000000100010040" +
@@ -8632,6 +8638,10 @@ let WAV = Encoding.hex.decode("524946462800000057415645666d742010000000010001004
 let blip = Audio.Sound.new(WAV)
 blip.volume(0.5)
 blip.play()
+
+# A tenth of a second of A, worked out by the program.
+let beep = Audio.Sound.new(iota(4410).map(|i| 0.3 * Math.sin(2.0 * Math.pi * 440.0 * i / 44100)))
+beep.play()
 ```
 
 ### Music
@@ -8717,7 +8727,8 @@ A program that synthesises its own sound, as an instrument for `Audio.Kauai`
 does or a loop that fills a `PCM`'s blocks, computes it a sample at a time,
 and that loop is where its time goes. The functions here are parts such a
 sound is built from: each runs natively over a whole Array of samples
-(numbers, `rate` of them a second) and answers an Array of `Float`s.
+(numbers, `rate` of them a second) and answers an Array of `Float`s, which
+`Audio.Sound.new(samples, rate)` plays.
 
 | Function | Effect |
 | --- | --- |

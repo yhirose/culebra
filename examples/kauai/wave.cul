@@ -1,8 +1,8 @@
 # What the instruments beside it share: the sample rate, a pitch's frequency,
-# a noise source that sounds the same every time, samples as WAV bytes, when
-# to work out a phrase's controls, and a voice for Audio.Kauai made from a
-# function that plays a phrase. The room
-# they sound in is the song's own (`room 90%`), not theirs.
+# a noise source that sounds the same every time, when to work out a
+# phrase's controls, and a voice for Audio.Kauai made from a function that
+# plays a phrase. The room they sound in is the song's own (`room 90%`), not
+# theirs.
 
 let RATE = 44100
 
@@ -18,21 +18,6 @@ fn noise(seed) {
     x = (x * 1103515245 + 12345) % 2147483648
     x / 1073741824.0 - 1.0
   }
-}
-
-# 16-bit mono samples (-1.0..1.0) as a WAV file's bytes.
-fn wav(samples) {
-  let data = String.pack(
-    "i16",
-    samples.map(|s| Math.round(Math.clamp(s, -1.0, 1.0) * 32000)),
-  )
-  let n = samples.size() * 2
-  String.pack("u32", [0x46464952, 36 + n, 0x45564157, 0x20746d66, 16]) +
-    String.pack("u16", [1, 1]) +
-    String.pack("u32", [RATE, RATE * 2]) +
-    String.pack("u16", [2, 16]) +
-    String.pack("u32", [0x61746164, n]) +
-    data
 }
 
 # A phrase as the lines that move through it, from the lowest, as Kauai
@@ -110,9 +95,9 @@ let HEARS = ["len", "level", "line", "marks", "next"]
 # samples: it hears what `hears` names of each note.
 fn voice(play, hears) {
   {
-    phrase: |notes, params| Audio.Sound(wav(play(notes, params))),
+    phrase: |notes, params| Audio.Sound(play(notes, params), rate: RATE),
     hears: hears,
   }
 }
 
-export {RATE, HEARS, CONTROL, hz, noise, wav, by_line, swell, control_times, voice}
+export {RATE, HEARS, CONTROL, hz, noise, by_line, swell, control_times, voice}

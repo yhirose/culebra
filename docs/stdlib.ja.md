@@ -8269,7 +8269,10 @@ Audio.tone(700, 0, 10, Audio.PULSE, 870, 10, 5, 3, 20, Audio.DUTY_QUARTER)
 `Audio.Sound.new(data)`はワンショットのサンプルをバイト列（WAV / MP3 /
 Ogg Vorbisの`String`。`FS.read`や`Dir`から、あるいはプログラムが組み立てた
 もの）からデコードし、呼び出しごとに再生する。`tone`の合成に対する録音サンプル
-側の対応物。
+側の対応物。`Audio.Sound.new(samples, rate = 44100)`は、代わりにプログラムが
+計算したサンプルから作る。サンプルは-1.0から1.0の数の配列で、モノラル、1秒に
+`rate`個。WAVファイルと同じく16ビットで持つ（-1.0..1.0を超えるサンプルはその端に
+とどめ、NaNは無音）。
 
 | メソッド | 効果 |
 | --- | --- |
@@ -8281,10 +8284,11 @@ Ogg Vorbisの`String`。`FS.read`や`Dir`から、あるいはプログラムが
 各`Sound`は1ボイスで、デコード済みサンプルは最後の参照とともに解放され、
 そのとき音も止まる: 鳴らしたい間はハンドルを持ち続ける。3形式のどれでもない
 バイト列はどのbackendでも`ValueError: not a valid WAV, MP3 or Ogg audio stream`を
-投げる。検査を通ったのにデコードできないストリームは無音のまま。ブラウザでは
-バイト列のデコードをWebAudioが裏で行うので、`Sound`を作った直後の`play()`は
-デコードが終わった時点で、わずかに遅れて鳴り始める。ネイティブでは`Sound`を
-作った時点でデコードが済んでいる。
+投げる。検査を通ったのにデコードできないストリームは無音のまま。数でない
+サンプルを含む配列は`TypeError`、1以上2^31未満でない`rate`は`ValueError`。
+ブラウザではバイト列のデコードをWebAudioが裏で行うので、`Sound`を作った直後の
+`play()`はデコードが終わった時点で、わずかに遅れて鳴り始める。ネイティブでは
+`Sound`を作った時点でデコードが済んでいる。
 
 ```culebra
 let WAV = Encoding.hex.decode("524946462800000057415645666d7420100000000100010040" +
@@ -8292,6 +8296,10 @@ let WAV = Encoding.hex.decode("524946462800000057415645666d742010000000010001004
 let blip = Audio.Sound.new(WAV)
 blip.volume(0.5)
 blip.play()
+
+# A tenth of a second of A, worked out by the program.
+let beep = Audio.Sound.new(iota(4410).map(|i| 0.3 * Math.sin(2.0 * Math.pi * 440.0 * i / 44100)))
+beep.play()
 ```
 
 ### Music
@@ -8374,7 +8382,8 @@ Canvas.run(160, 160, fn () {
 自分で音を作るプログラム（`Audio.Kauai`の楽器や、`PCM`のブロックを埋める
 ループ）は、音を1サンプルずつ計算し、そのループに時間のほとんどを使う。ここに
 挙げる関数は、そうした音を組み立てる部品である。どれもサンプル（1秒に`rate`個
-並んだ数）の配列全体をネイティブで処理し、`Float`の配列を返す。
+並んだ数）の配列全体をネイティブで処理し、`Float`の配列を返す。返した配列は
+`Audio.Sound.new(samples, rate)`で鳴らせる。
 
 | 関数 | 効果 |
 | --- | --- |
