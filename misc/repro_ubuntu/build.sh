@@ -19,7 +19,7 @@ echo CONFIGURED
 # LLVM-header-heavy and Docker Desktop's VM defaults to ~8 GB, where -j20
 # gets cc1plus OOM-killed ("fatal error: Killed signal terminated program").
 cmake --build build-linux -j"${JOBS:-4}" > /tmp/build.log 2>&1 || {
-  grep -E "error:" /tmp/build.log | head -15
+  grep -m 15 -E "error:" /tmp/build.log
   exit 1
 }
 echo BUILT

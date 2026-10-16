@@ -58,7 +58,7 @@ for name in http canvas; do
   # "broken" look the same from an exit code.
   if ! probe=$(cd "$work" && "$bin" --vm "$name.cul" 2>&1); then
     echo "  skip $name (this build has no such namespace)"
-    printf '%s\n' "$probe" | head -3 | sed 's/^/      /'
+    sed -n '1,3s/^/      /p' <<<"$probe"
     continue
   fi
 

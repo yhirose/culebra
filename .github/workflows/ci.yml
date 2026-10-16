@@ -1085,7 +1085,7 @@ jobs:
             echo "::error::the window probe failed (exit $rc)" >&2
             exit "$rc"
           fi
-          if echo "$out" | grep -q 'no window engine here'; then
+          if grep -q 'no window engine here' <<<"$out"; then
             echo "::error::no display under Xvfb — the probe passed without opening a window" >&2
             exit 1
           fi
@@ -1437,7 +1437,7 @@ jobs:
 
       - name: Toolchain versions
         run: |
-          g++ --version | head -1
+          g++ --version | sed -n 1p
           echo "llvm-config: $(llvm-config --version)"
 
       - name: Restore ccache
@@ -1643,9 +1643,9 @@ jobs:
       # installed because clang's libstdc++ and libgcc are its.
       - name: Toolchain versions
         run: |
-          clang++ --version | head -1
-          ld.lld --version | head -1
-          g++ --version | head -1
+          clang++ --version | sed -n 1p
+          ld.lld --version | sed -n 1p
+          g++ --version | sed -n 1p
           echo "llvm-config $(llvm-config --version)"
       - name: Restore ccache
         uses: actions/cache@v4
@@ -2208,8 +2208,8 @@ jobs:
 
       - name: Toolchain versions
         run: |
-          g++ --version | head -1
-          cmake --version | head -1
+          g++ --version | sed -n 1p
+          cmake --version | sed -n 1p
           llvm-config --version
 
       - name: Restore ccache

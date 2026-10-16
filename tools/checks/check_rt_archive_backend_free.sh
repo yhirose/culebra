@@ -95,8 +95,7 @@ out=$("$cxx" -o "$work/probe" "$work/main.o" "$core" "${uflags[@]}" \
 # flag it rejects -- leaves an output no backend name can match, and that reads
 # as a pass. Nothing else here would notice.
 if [[ "$rc" -ne 0 ]] &&
-   ! printf '%s\n' "$out" |
-     grep -qE 'Undefined symbols|undefined reference|undefined symbol'; then
+   ! grep -qE 'Undefined symbols|undefined reference|undefined symbol' <<<"$out"; then
   echo "rt-archive-backend-free: the probe link failed before it could report" >&2
   echo "  undefined symbols, so nothing was checked:" >&2
   printf '%s\n' "$out" | sed 's/^/  /' >&2

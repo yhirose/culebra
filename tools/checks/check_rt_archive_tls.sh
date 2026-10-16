@@ -228,7 +228,7 @@ else
     dup_fail=1
     echo "rt-archive-dup FAIL: $(basename "$ar") re-defines $(printf '%s\n' "$shared" | grep -c .) symbol(s) the" \
          "core archive defines strongly:" >&2
-    printf '%s\n' "$shared" | demangle | sed 's/^/  /' | head -20 >&2
+    printf '%s\n' "$shared" | demangle | sed -n '1,20s/^/  /p' >&2
   done
   if (( dup_fail )); then
     cat >&2 <<'EOF'

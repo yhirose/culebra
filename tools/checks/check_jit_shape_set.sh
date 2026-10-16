@@ -32,9 +32,10 @@ done < "$work/files"
 # given must not be missing from the gate's own sweep.
 grep -v '^#' tools/checks/codegen_sensitive.txt | grep . | sort > "$work/seeds"
 sort "$work/files" > "$work/files.sorted"
-if ! comm -23 "$work/seeds" "$work/files.sorted" | grep -q .; then :; else
+missing=$(comm -23 "$work/seeds" "$work/files.sorted")
+if [[ -n $missing ]]; then
     echo "jit-shape-set: codegen-sensitive files missing from the set:" >&2
-    comm -23 "$work/seeds" "$work/files.sorted" | sed 's/^/  /' >&2
+    sed 's/^/  /' <<<"$missing" >&2
     rc=1
 fi
 (( rc == 0 )) || { echo "  regenerate with: just gen-jit-shape-set" >&2; exit 1; }

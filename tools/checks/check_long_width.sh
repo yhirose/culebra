@@ -31,7 +31,7 @@ ratchet() { # name pattern ceiling hint  (same shape as check_rc_discipline.sh)
   if (( n > $3 )); then
     echo "long-width FAIL: $1 = $n (ceiling $3)" >&2
     echo "  $4" >&2
-    matches "$2" | head -10 >&2
+    matches "$2" | sed -n '1,10p' >&2
     fail=1
   fi
 }
@@ -66,7 +66,7 @@ residual=$(residual_matches | grep -c . || true)
 if (( residual > 64 )); then
   echo "long-width FAIL: non-position static_cast<long> = $residual (ceiling 64)" >&2
   echo "  A new one is a language value unless it is a bounded internal." >&2
-  residual_matches | head -10 >&2
+  residual_matches | sed -n '1,10p' >&2
   fail=1
 fi
 

@@ -345,7 +345,7 @@ jobs:
           test -f build/libculebra_rt_webview.a \
             || { echo "ERROR: Webview silently disabled (WebView2.h not found?)"; exit 1; }
           printf 'let srv = Http.server()\nprint("http ok")\n' > http.cul
-          ./build/culebra.exe --vm http.cul | grep -qx 'http ok' \
+          ./build/culebra.exe --vm http.cul | grep -x 'http ok' >/dev/null \
             || { echo "ERROR: Http silently disabled"; exit 1; }
           echo "OK: Webview and Http are built into this asset"
       # The same silent-disable shape as the two above, and the one with the

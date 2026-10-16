@@ -140,5 +140,5 @@ done
 
 "$HERE/release_diff.py" --baseline "$out_base" --head "$out_head" \
   --allow "$ALLOW" --cases "$cases" \
-  --baseline-name "$(env -u CULEBRA_REQUIRE_EXPLICIT_ENGINE "$BASELINE" --version 2>&1 | head -1)" \
-  --head-name "$(env -u CULEBRA_REQUIRE_EXPLICIT_ENGINE "$CULEBRA" --version 2>&1 | head -1)"
+  --baseline-name "$(env -u CULEBRA_REQUIRE_EXPLICIT_ENGINE "$BASELINE" --version 2>&1 | sed -n 1p)" \
+  --head-name "$(env -u CULEBRA_REQUIRE_EXPLICIT_ENGINE "$CULEBRA" --version 2>&1 | sed -n 1p)"

@@ -129,7 +129,7 @@ expect_class() {  # expect_class <binary> <symbol-start ERE> <allowed-class ERE>
 # like ' reg::'), wrong for "does this one function exist" (use expect_class).
 expect_absent() {  # expect_absent <binary> <ERE> <why>
   local hits
-  hits=$(grep -E "$2" "$work/$1.nm" | head -3 || true)
+  hits=$(grep -m 3 -E "$2" "$work/$1.nm" || true)
   if [[ -n "$hits" ]]; then
     echo "check_aot_feature_axes FAIL: $1 carries the engine it never names ($3):" >&2
     printf '%s\n' "$hits" | sed 's/^/  /' >&2

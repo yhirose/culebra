@@ -31,7 +31,7 @@ branch="$1"
 worktree_for_branch() {
   git worktree list --porcelain | awk -v want="refs/heads/$1" '
     /^worktree / { wt = substr($0, 10) }
-    /^branch /   { if (substr($0, 8) == want) { print wt; exit } }
+    /^branch / && !seen && substr($0, 8) == want { print wt; seen = 1 }
   '
 }
 

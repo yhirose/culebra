@@ -61,7 +61,7 @@ remote_branch() {
     return
   fi
   git -c credential.helper= -C "$path" ls-remote --symref origin HEAD 2>/dev/null \
-    | awk '/^ref:/ { sub(".*/", "", $2); print $2; exit }'
+    | awk '/^ref:/ && !seen { sub(".*/", "", $2); print $2; seen = 1 }'
 }
 
 # resolve_target <path> — echoes "<kind> <ref>" (kind is "tag" or "branch").

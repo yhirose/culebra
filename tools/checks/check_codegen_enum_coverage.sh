@@ -106,7 +106,7 @@ n_bound=$(echo "$bound_methods" | grep -c . || true)
 if [ "$n_bound" -lt 46 ]; then
   note "found only ${n_bound} bound method(s) in ${CODEGEN_BINDING} (expected >= 46) -- its own parse stopped matching, fix this script before trusting it"
 fi
-method_exists() { echo "$bound_methods" | grep -qx -- "$1"; }
+method_exists() { grep -qx -- "$1" <<<"$bound_methods"; }
 
 # --- 1. UnOp/BinOp/VarKind/IntrinsicId/ConstKind: documented both ways -----
 #

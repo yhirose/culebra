@@ -62,7 +62,7 @@ else
   echo "torch:   not available for --device $DEVICE (culebra rows only)"
 fi
 if command -v nvidia-smi >/dev/null; then
-  echo "gpu:     $(nvidia-smi --query-gpu=name,driver_version --format=csv,noheader | head -1)"
+  echo "gpu:     $(nvidia-smi --query-gpu=name,driver_version --format=csv,noheader | sed -n 1p)"
 fi
 echo "rounds:  $ROUNDS"
 echo

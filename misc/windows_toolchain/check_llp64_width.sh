@@ -105,7 +105,7 @@ printf '#include <cstdint>\nint64_t g();\nlong f() { return g(); }\n' > "$probe"
 if "$compiler" -fsyntax-only -x c++ -std=c++23 - \
      <<<'static_assert(sizeof(long) == 4, "");' 2>/dev/null; then
   if ! "$compiler" -fsyntax-only -std=c++23 -Wconversion "$probe" 2>&1 \
-       | grep -qE "$HIT_RE"; then
+       | grep -E "$HIT_RE" >/dev/null; then
     echo "LLP64 width FAIL: harness self-test — the probe drew no narrowing" >&2
     echo "  diagnostic on a 32-bit-long target. Fix the harness, not the code." >&2
     exit 1
@@ -121,7 +121,7 @@ fi
 hits=$(grep -E "$HIT_RE" "$log" || true)
 if [ -n "$hits" ]; then
   echo "LLP64 width FAIL: a 64-bit value is being narrowed to 32 bits" >&2
-  echo "$hits" | head -20 >&2
+  sed -n '1,20p' <<<"$hits" >&2
   echo "  (only lines matching the 64->32 rule are listed)" >&2
   echo "  These are culebra Longs. Use int64_t." >&2
   exit 1
@@ -130,7 +130,7 @@ fi
 # Type-identity errors (ambiguous Value(long), get<long>) surface as errors.
 if grep -qE "^[^[:space:]]+:[0-9]+:[0-9]+: (error|fatal error):" "$log"; then
   echo "LLP64 width FAIL: the headers do not compile for an LLP64 target" >&2
-  grep -E "^[^[:space:]]+:[0-9]+:[0-9]+: (error|fatal error):" "$log" | head -20 >&2
+  grep -m 20 -E "^[^[:space:]]+:[0-9]+:[0-9]+: (error|fatal error):" "$log" >&2
   exit 1
 fi
 

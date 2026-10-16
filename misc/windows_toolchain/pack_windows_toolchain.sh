@@ -265,8 +265,8 @@ done
 # --- report and archive ----------------------------------------------------
 raw=$(find "$kit" -type f -printf '%s\n' | awk '{s+=$1} END {print s}')
 echo "== kit: $(find "$kit" -type f | wc -l) files, $raw bytes raw" >&2
-find "$kit" -type f -printf '%s\t%P\n' | sort -rn | head -8 |
-  awk -F'\t' '{printf "   %12d  %s\n", $1, $2}' >&2
+find "$kit" -type f -printf '%s\t%P\n' | sort -rn |
+  awk -F'\t' 'NR <= 8 {printf "   %12d  %s\n", $1, $2}' >&2
 
 step "archiving"
 archive="culebra-toolchain-windows-x64.zip"

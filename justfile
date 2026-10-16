@@ -221,6 +221,14 @@ check-pe-exports-gen:
 check-header-naming:
     tools/checks/check_header_naming.sh
 
+# Under pipefail a pipe into `grep -q` or `head` answers with its writer's
+# SIGPIPE whenever the reader leaves first, which is a matter of timing: the
+# codegen-enums check above failed a landing gate that way, on a busy machine.
+[group("test")]
+[doc("Verify no pipefail script pipes into a reader that can leave early")]
+check-pipefail-readers:
+    tools/checks/check_pipefail_readers.sh
+
 # `catch IOError` takes an engine error by its kind, and the kinds that work
 # as type names are a list (culebra::is_error_kind_name). A kind the sources
 # raise and the list lacks is never caught by name, and nothing else says so.
@@ -312,7 +320,7 @@ check-docs-cpp:
 # the workflow-coverage ratchet. Cheap enough to gate both test recipes:
 # well under a second once the grammar-blob tool is ccache-warm.
 [private]
-check-generated: check-grammar-sync check-preambles check-blob check-site-version check-site-playground-sync check-difftest-coverage check-gate-budget check-release-coverage check-spec-examples check-api-coverage check-canon-return-types check-registrar-rooted check-pe-exports-gen check-interrupt-discipline check-thrown-value-discipline check-docs-cpp-includes check-header-naming check-error-kinds check-search-splitter check-layering check-codegen-enums check-vm-dispatch-table check-protocol-member-door check-value-equal-door check-value-order-door check-source-anchor-door
+check-generated: check-grammar-sync check-preambles check-blob check-site-version check-site-playground-sync check-difftest-coverage check-gate-budget check-release-coverage check-spec-examples check-api-coverage check-canon-return-types check-registrar-rooted check-pe-exports-gen check-interrupt-discipline check-thrown-value-discipline check-docs-cpp-includes check-header-naming check-pipefail-readers check-error-kinds check-search-splitter check-layering check-codegen-enums check-vm-dispatch-table check-protocol-member-door check-value-equal-door check-value-order-door check-source-anchor-door
 
 # Such a build still runs programs — everything below the LLVM lowering
 # (rt.h, vm.h) is LLVM-free, so the bytecode VM's executor is intact; what it
@@ -471,7 +479,7 @@ asan:
             || { echo "asan: run failed: $f" >&2; fail=1; }
         if grep -qiE "ERROR: AddressSanitizer|runtime error:|-buffer-|use-after" <<<"$out"; then
             echo "asan: sanitizer diagnostic in $f:" >&2
-            grep -iE "ERROR|runtime error|buffer|use-after" <<<"$out" | head -5 >&2
+            grep -m 5 -iE "ERROR|runtime error|buffer|use-after" <<<"$out" >&2
             fail=1
         fi
     done
@@ -833,7 +841,7 @@ _run-tests BACKEND:
             read -r u s < "$f" || true
             if [[ ! "$u" =~ ^[0-9]+\.[0-9]{3}$ || ! "$s" =~ ^[0-9]+\.[0-9]{3}$ ]]; then
                 echo "test $label WARN: unreadable timing for $shown, not measured against the budget" >&2
-                echo "  $f held: $(tr '\n' '|' < "$f" | head -c 200)" >&2
+                echo "  $f held: $(head -c 200 "$f" | tr '\n' '|')" >&2
                 continue
             fi
             ms=$(( 10#${u%.*} * 1000 + 10#${u#*.} + 10#${s%.*} * 1000 + 10#${s#*.} ))

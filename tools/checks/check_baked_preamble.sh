@@ -97,7 +97,7 @@ nm "$work/plain" > "$work/plain.nm"
 # assertion — a miss means the traits went back to being lowered per program.
 if ! grep -qE ' T _?culebra_preamble___Traits$' "$work/plain.nm"; then
   echo "check_baked_preamble FAIL: the built binary lacks culebra_preamble___Traits" >&2; fail=1; fi
-if grep -E ' T _?culebra_preamble_' "$work/plain.nm" | grep -qv '___Traits$'; then
+if grep -E ' T _?culebra_preamble_' "$work/plain.nm" | grep -v '___Traits$' >/dev/null; then
   echo "check_baked_preamble FAIL: a program naming no stdlib module links a baked preamble" >&2; fail=1; fi
 
 if (( fail )); then

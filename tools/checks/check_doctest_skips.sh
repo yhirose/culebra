@@ -140,7 +140,7 @@ if (( rc == 124 )); then
         "$(wc -l < "$work/names" | tr -d ' ')"
     if (( ${#slows[@]} )); then
         echo "  slowest blocks:"
-        cat "${slows[@]}" | sort -rn | head -5 | sed "s|$repo/||; s/^/    /"
+        cat "${slows[@]}" | sort -rn | sed -n "s|$repo/||; 1,5s/^/    /p"
     fi
     exit 0
 fi
