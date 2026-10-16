@@ -59,6 +59,26 @@ assert_eq(v.f, 2.5)
 assert_eq(v.n, 7)
 assert_eq(v.b, true)
 
+# §21's fixed-width spellings each stand for one of the three scalars, on an
+# ordinary class as on a packable one: its zero, and its check
+class Widths {
+  i: Int32
+  u: UInt16
+  b: Byte
+  f: Float32
+  new() {}
+}
+
+let widths = Widths()
+assert_eq([widths.i, widths.u, widths.b].map(type_of), ['Long', 'Long', 'Long'])
+assert_eq(type_of(widths.f), 'Float')
+assert_throws('TypeError', fn () {
+  widths.u = 1.5
+})
+assert_throws('TypeError', fn () {
+  widths.f = 1
+})
+
 # --- an initializer does not exempt the field from its own declaration ---
 #
 # A field with an initializer is stored by its own instruction rather than
@@ -140,6 +160,37 @@ class Optional {
 let opt = Optional()
 opt.n = 'not a Long'
 assert_eq(opt.n, 'not a Long')
+
+# a scalar is named by its whole spelling: a class whose name only starts
+# like one is a class like any other, so its field starts as nil, takes an
+# instance, and a reader follows it to the class
+class Interval {
+  lo: Float
+  new(.lo) {}
+}
+
+class UIntPair {
+  a: Long
+  new(.a) {}
+}
+
+class Span {
+  iv: Interval
+  pair: UIntPair
+  new() {}
+}
+
+let span = Span()
+assert_eq([span.iv, span.pair], [nil, nil])
+span.iv = Interval(1.5)
+span.pair = UIntPair(2)
+assert_eq([span.iv.lo, span.pair.a], [1.5, 2])
+
+fn span_lo(s: Span) {
+  s.iv.lo
+}
+
+assert_eq(span_lo(span), 1.5)
 
 # removing one of them rebuilds the shape, and the survivors keep the types
 # they were declared with — otherwise a `remove` anywhere on an instance

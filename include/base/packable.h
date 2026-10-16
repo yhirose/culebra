@@ -54,32 +54,8 @@ struct PackableTypeInfo {
   size_t align;
 };
 
-// The packable scalars: each one's spellings and the fixed-width scalar its
-// bytes are (scalar_bytes.h), whose width is both its size and its alignment
-// in a record.
-struct PackableScalar {
-  std::string_view name;
-  std::string_view alias;  // a second spelling, or empty
-  const scalar_bytes::Type* wire;
-};
-inline constexpr PackableScalar kPackableScalars[] = {
-    {"Float32", "", scalar_bytes::find_type("f32")},
-    {"Float64", "Float", scalar_bytes::find_type("f64")},
-    {"Int8", "", scalar_bytes::find_type("i8")},
-    {"Int16", "", scalar_bytes::find_type("i16")},
-    {"Int32", "", scalar_bytes::find_type("i32")},
-    {"Int64", "Long", scalar_bytes::find_type("i64")},
-    {"Byte", "", scalar_bytes::find_type("u8")},
-    {"Bool", "", scalar_bytes::find_type("bool")},
-    {"UInt16", "", scalar_bytes::find_type("u16")},
-    {"UInt32", "", scalar_bytes::find_type("u32")},
-};
-inline const PackableScalar* find_packable_scalar(std::string_view t) {
-  for (const auto& s : kPackableScalars)
-    if (t == s.name || (!s.alias.empty() && t == s.alias)) return &s;
-  return nullptr;
-}
-
+// The packable scalars themselves (kPackableScalars) are in shared.h, where a
+// typed field's check reads the same names.
 inline PackableTypeInfo packable_type_info(std::string_view t) {
   auto* s = find_packable_scalar(t);
   return s ? PackableTypeInfo{s->wire->width, s->wire->width}

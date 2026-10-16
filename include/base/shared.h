@@ -42,6 +42,7 @@
 #endif
 
 #include <base/format.h>
+#include <base/scalar_bytes.h>  // the fixed-width scalars' byte kinds
 
 #include <unicodelib_encodings.h>  // unicode::utf8::encode_codepoint
 
@@ -3188,20 +3189,48 @@ inline bool is_lowered_state_class(std::string_view class_name,
          class_name.starts_with(kEffectBodyClassPrefix);
 }
 
+// The packable scalars: each one's spellings and the fixed-width scalar its
+// bytes are (scalar_bytes.h), whose width is both its size and its alignment
+// in a record. The same names are the scalars a typed field is checked as.
+struct PackableScalar {
+  std::string_view name;
+  std::string_view alias;  // a second spelling, or empty
+  const scalar_bytes::Type* wire;
+};
+inline constexpr PackableScalar kPackableScalars[] = {
+    {"Float32", "", scalar_bytes::find_type("f32")},
+    {"Float64", "Float", scalar_bytes::find_type("f64")},
+    {"Int8", "", scalar_bytes::find_type("i8")},
+    {"Int16", "", scalar_bytes::find_type("i16")},
+    {"Int32", "", scalar_bytes::find_type("i32")},
+    {"Int64", "Long", scalar_bytes::find_type("i64")},
+    {"Byte", "", scalar_bytes::find_type("u8")},
+    {"Bool", "", scalar_bytes::find_type("bool")},
+    {"UInt16", "", scalar_bytes::find_type("u16")},
+    {"UInt32", "", scalar_bytes::find_type("u32")},
+};
+inline const PackableScalar* find_packable_scalar(std::string_view t) {
+  for (const auto& s : kPackableScalars)
+    if (t == s.name || (!s.alias.empty() && t == s.alias)) return &s;
+  return nullptr;
+}
+
 // The zero value a typed instance field (`x: T` with no initializer) takes
-// at construction. Single source for the interp's zero_value_for_type and
-// the JIT's emit_zero_value so a declared type maps to the same default on
-// every backend.
+// at construction, which the compiler writes into the bytecode every lane
+// runs. A scalar's follows its bytes' kind, String's is '', and any other
+// name's is nil.
 enum class ZeroKind { Float, Bool, String, Long, Nil };
 inline ZeroKind zero_kind_for_type(std::string_view type) {
-  if (type == "Float32" || type == "Float64" || type == "Float")
-    return ZeroKind::Float;
-  if (type == "Bool") return ZeroKind::Bool;
   if (type == "String") return ZeroKind::String;
-  if (type == "Long" || type == "Byte" || type.starts_with("Int") ||
-      type.starts_with("UInt"))
-    return ZeroKind::Long;
-  return ZeroKind::Nil;  // reference types default to nil
+  const auto* scalar = find_packable_scalar(type);
+  if (!scalar) return ZeroKind::Nil;
+  switch (scalar->wire->kind) {
+    case scalar_bytes::Kind::Float: return ZeroKind::Float;
+    case scalar_bytes::Kind::Bool: return ZeroKind::Bool;
+    case scalar_bytes::Kind::Signed:
+    case scalar_bytes::Kind::Unsigned: return ZeroKind::Long;
+  }
+  return ZeroKind::Nil;
 }
 
 // The declared type of an instance field, in the form a Shape stores per slot
