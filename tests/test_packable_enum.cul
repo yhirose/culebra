@@ -83,4 +83,37 @@ total = Isolate.spawn(fn () {
 }).join()
 assert_eq(total, 15.0)
 
+// A field keeps the layout of the enum its class was declared with: a later
+// declaration of the same name neither changes how its bytes read nor lays a
+// variant of its own out past the field.
+fn narrow() {
+  @packable
+  enum Kind {
+    P(Int64),
+    Q,
+  }
+  @packable
+  class Cell {
+    k: Kind
+  }
+  let cells = SharedBuffer.new(3, Cell)
+  cells[0].k = Kind.P(42)
+  cells
+}
+fn wide() {
+  @packable
+  enum Kind {
+    Q,
+    Wide(Int64, Int64, Int64, Int64),
+  }
+  Kind.Wide(-1, -1, -1, -1)
+}
+cells = narrow()
+w = wide()
+assert_eq("{cells[0].k}", 'Kind.P(42)')
+assert_throws('TypeError', fn () {
+  cells[1].k = w
+})
+assert_eq("{cells[2].k}", 'Kind.P(0)')
+
 IO.inspect("test_packable_enum OK")

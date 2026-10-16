@@ -151,23 +151,43 @@ inline PackableEnumLayout compute_packable_enum_layout(
   return layout;
 }
 
-inline std::map<std::string, PackableEnumLayout, std::less<>>&
-packable_enum_registry() {
-  static std::map<std::string, PackableEnumLayout, std::less<>> reg;
-  return reg;
-}
-inline std::mutex& packable_enum_mutex() {
-  static std::mutex m;
-  return m;
-}
+// The @packable enum or class layouts, keyed by name. Populated when a
+// declaration runs, read when a class declaring a field of that type computes
+// its layout (and, for a class, by SharedBuffer.new). A declaration that runs
+// again (another isolate's, a second call of the function declaring it)
+// replaces the entry, so a reader holds the layout it was handed rather than
+// a place in the table.
+template <class Layout>
+class PackableRegistry {
+ public:
+  using Ref = std::shared_ptr<const Layout>;
+  static PackableRegistry& instance() {
+    static PackableRegistry r;
+    return r;
+  }
+  void put(std::string name, Layout layout) {
+    auto ref = std::make_shared<const Layout>(std::move(layout));
+    std::lock_guard<std::mutex> lk(m_);
+    map_[std::move(name)] = std::move(ref);
+  }
+  Ref find(std::string_view name) {
+    std::lock_guard<std::mutex> lk(m_);
+    auto it = map_.find(name);
+    return it == map_.end() ? nullptr : it->second;
+  }
+
+ private:
+  std::mutex m_;
+  std::map<std::string, Ref, std::less<>> map_;
+};
+
+using PackableEnumLayoutRef = std::shared_ptr<const PackableEnumLayout>;
 inline void register_packable_enum(std::string name, PackableEnumLayout layout) {
-  std::lock_guard<std::mutex> lk(packable_enum_mutex());
-  packable_enum_registry()[std::move(name)] = std::move(layout);
+  PackableRegistry<PackableEnumLayout>::instance().put(std::move(name),
+                                                       std::move(layout));
 }
-inline const PackableEnumLayout* lookup_packable_enum(std::string_view name) {
-  std::lock_guard<std::mutex> lk(packable_enum_mutex());
-  auto it = packable_enum_registry().find(name);
-  return it == packable_enum_registry().end() ? nullptr : &it->second;
+inline PackableEnumLayoutRef lookup_packable_enum(std::string_view name) {
+  return PackableRegistry<PackableEnumLayout>::instance().find(name);
 }
 
 // Validate + register a @packable enum from already-parsed variants. Throws
@@ -219,7 +239,7 @@ parse_packable_enum_spec(std::string_view spec) {
 }
 
 // A registered @packable class's layout (the nested-record case), or null.
-// Defined with the layout registry below; declared here so
+// Defined below, beside register_packable_layout; declared here so
 // packable_field_info can resolve a nested @packable class field.
 struct PackableLayout;
 using PackableLayoutRef = std::shared_ptr<const PackableLayout>;
@@ -242,6 +262,7 @@ struct PackableFieldInfo {
   bool is_bytes = false;         // Bytes<N>: exactly N raw bytes (no length prefix)
   bool is_struct = false;        // a nested @packable class (its record, inline)
   PackableLayoutRef record;      // is_struct: that class's layout
+  PackableEnumLayoutRef tagged_union;  // is_enum: that enum's layout
   std::string elem_type;     // BoundedArray/Set element (or BoundedMap key) scalar
                              // — or, for is_enum/is_struct, the enum/class name
   std::string val_type;      // BoundedMap value scalar
@@ -501,12 +522,13 @@ inline PackableFieldInfo packable_field_info(std::string_view t) {
     return fi;
   }
   // A registered @packable enum used by name -> a tagged-union field.
-  if (auto* el = lookup_packable_enum(t)) {
+  if (auto el = lookup_packable_enum(t)) {
     PackableFieldInfo fi;
     fi.is_enum = true;
     fi.elem_type = std::string(t);
     fi.size = el->size;
     fi.align = el->align;
+    fi.tagged_union = std::move(el);
     return fi;
   }
   // A registered @packable class used by name -> a nested record, inline.
@@ -576,29 +598,12 @@ inline PackableLayout compute_packable_layout(
   return layout;
 }
 
-// Registry of @packable class layouts, keyed by class name. Populated when a
-// class declaration runs, read by SharedBuffer.new and a nested record's view.
-// A declaration that runs again (another isolate's, a second call of the
-// function declaring it) replaces the entry, so a reader holds the layout it
-// was handed rather than a place in the table.
-inline std::map<std::string, PackableLayoutRef, std::less<>>&
-packable_layout_registry() {
-  static std::map<std::string, PackableLayoutRef, std::less<>> reg;
-  return reg;
-}
-inline std::mutex& packable_layout_mutex() {
-  static std::mutex m;
-  return m;
-}
 inline void register_packable_layout(std::string name, PackableLayout layout) {
-  auto ref = std::make_shared<const PackableLayout>(std::move(layout));
-  std::lock_guard<std::mutex> lk(packable_layout_mutex());
-  packable_layout_registry()[std::move(name)] = std::move(ref);
+  PackableRegistry<PackableLayout>::instance().put(std::move(name),
+                                                   std::move(layout));
 }
 inline PackableLayoutRef lookup_packable_layout(std::string_view name) {
-  std::lock_guard<std::mutex> lk(packable_layout_mutex());
-  auto it = packable_layout_registry().find(name);
-  return it == packable_layout_registry().end() ? nullptr : it->second;
+  return PackableRegistry<PackableLayout>::instance().find(name);
 }
 
 // --- A record as a byte stream (String.pack / String.unpack) --------------

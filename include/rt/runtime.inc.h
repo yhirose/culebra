@@ -4276,15 +4276,15 @@ inline JitValue _jit_packable_read_field(const uint8_t* base,
     // `[tag:i32][payload]` -> the variant instance: its meta names the
     // variant and its enum, and the positional `_0.._n` fields follow,
     // matching culebra_runtime_build_variant.
-    const auto* el = culebra::lookup_packable_enum(f.layout.elem_type);
+    const auto& el = *f.layout.tagged_union;
     int32_t tag; std::memcpy(&tag, p, 4);
-    if (!el || tag < 0 || tag >= static_cast<int32_t>(el->variants.size()))
+    if (tag < 0 || tag >= static_cast<int32_t>(el.variants.size()))
       return {TAG_NIL, 0};
-    const auto& var = el->variants[tag];
+    const auto& var = el.variants[tag];
     auto* inst = culebra_runtime_object_new();
     inst->set_proto(culebra_runtime_make_variant_meta(  // transferred
         _intern_str(var.name), _intern_str(f.layout.elem_type)));
-    const uint8_t* payload = p + el->payload_offset;
+    const uint8_t* payload = p + el.payload_offset;
     for (size_t fi = 0; fi < var.fields.size(); fi++) {
       JitValue fv = _jit_packable_read_field(
           payload + var.fields[fi].offset,
@@ -4366,7 +4366,7 @@ inline void _jit_packable_write_field(uint8_t* base,
     return;
   }
   if (f.layout.is_enum) {
-    const auto* el = culebra::lookup_packable_enum(f.layout.elem_type);
+    const auto& el = *f.layout.tagged_union;
     JitObject* obj =
         (tag == TAG_OBJECT) ? reinterpret_cast<JitObject*>(data) : nullptr;
     auto en = obj ? _jit_enum_name(obj) : std::nullopt;
@@ -4375,15 +4375,15 @@ inline void _jit_packable_write_field(uint8_t* base,
           "field `{}` expects a `{}` enum value, got {}", f.name, f.layout.elem_type,
           _culebra_tag_name(tag)));
     }
-    int idx = el ? el->index_of(_jit_derived_class_tag(obj)) : -1;
+    int idx = el.index_of(_jit_derived_class_tag(obj));
     if (idx < 0) {
       throw culebra::CulebraError("TypeError", culebra::format(
           "field `{}`: unknown variant for enum `{}`", f.name, f.layout.elem_type));
     }
     int32_t vtag = static_cast<int32_t>(idx);
     std::memcpy(p, &vtag, 4);
-    uint8_t* payload = p + el->payload_offset;
-    const auto& var = el->variants[idx];
+    uint8_t* payload = p + el.payload_offset;
+    const auto& var = el.variants[idx];
     for (size_t fi = 0; fi < var.fields.size(); fi++) {
       culebra::PackableField sf;
       sf.type = var.fields[fi].type;
