@@ -1,0 +1,20 @@
+# An isolate still running when the program ends is cancelled and joined
+# before the process goes, on every engine (the AOT sweep compares this
+# file's output with --vm's): its defer's line is the last one printed. The
+# handle sits in a cycle a top-level binding reaches, so nothing lets it go
+# before the end.
+let (started_tx, started_rx) = Channel(1)
+let held = {}
+held.me = held
+held.isolate = Isolate.spawn(fn () {
+  defer {
+    println("the isolate was stopped")
+  }
+  started_tx.send(true)
+  mut i = 0
+  while true {
+    i += 1
+  }
+})
+assert_eq(started_rx.recv(), true)
+println("the program ends")

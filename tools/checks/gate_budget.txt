@@ -91,7 +91,9 @@
 # printed their results instead of asserting them).
 # 310 since test_embed_read.cul went into test_dir.cul and
 # test_codegen_at_positional.cul into test_codegen_at.cul (subsets of them).
-tests.cul 310
+# 311 since test_isolate_left_running.cul (an isolate still running at the end
+# of a program is stopped before it ends, AOT included).
+tests.cul 311
 
 # tests/isolate/*.cul — run on both engines, plus the over-cap modes.
 # 21 since test_xml_isolate.cul (an XML element keeps its methods across an

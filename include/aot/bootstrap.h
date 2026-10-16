@@ -40,14 +40,18 @@ extern "C" CULEBRA_RT_KEEP CULEBRA_RT_INLINE int culebra_aot_bootstrap(
   culebra::install_console_utf8();
   culebra::install_sigint_handler();
 
-  // Close any watch the program left open, on every exit path — the AOT twin
-  // of the script lanes' ScriptTeardownGuard. A
-  // top-level `let w = FS.watch(...)` never runs its drop (docs/language.md),
-  // so without this its OS notification thread would live into process
-  // teardown, and the three backends would differ in when the watch stops.
+  // Stop any isolate and close any watch the program left running, on every
+  // exit path — the AOT twin of the script lanes' ScriptTeardownGuard (which
+  // lives in vm/, out of this layer's reach). A top-level
+  // `let w = FS.watch(...)` never runs its drop (docs/language.md), so without
+  // this its OS notification thread would live into process teardown, and the
+  // three backends would differ in when the watch, or the isolate, stops.
   struct ScriptTeardownGuard {
-    ~ScriptTeardownGuard() { culebra::fswatch::fs_watch_close_all(); }
-  } script_teardown_guard;
+    ~ScriptTeardownGuard() {
+      if (auto* join_all = culebra::isolate_teardown_join_hook.load()) join_all();
+      culebra::fswatch::fs_watch_close_all();
+    }
+  };
 
   // The top-level defers an uncaught exit skipped run before the report, as
   // in JIT::exec.
@@ -61,35 +65,40 @@ extern "C" CULEBRA_RT_KEEP CULEBRA_RT_INLINE int culebra_aot_bootstrap(
       // of the error the drain started on.
     }
   };
-  auto exit_with = [](const culebra::UncaughtReport& r) {
-    std::fprintf(stderr, "%s\n", r.line.c_str());
-    return r.status;
-  };
-  try {
-    main_fn();
-  } catch (const CulebraException& e) {
-    // Format first, then consume the carrier's reference (the payload's
-    // final +1). The shared formatter is what keeps this identical to
-    // `JIT::exec` and the VM's boundary.
-    auto s = format_uncaught_throw(e);
-    culebra_runtime_consume_throw(e);
-    drain_defers();
-    return exit_with(culebra::uncaught_report(std::move(s)));
-  } catch (const culebra::Interrupted& e) {
-    culebra_runtime_release_passed_error();
-    drain_defers();
-    return exit_with(culebra::uncaught_report(e));
-  } catch (culebra::CulebraError& e) {
-    culebra_runtime_release_passed_error();
-    drain_defers();
-    // Backfill a positionless runtime error from the published op position
-    // (JIT::exec does the same before main.cc reports it).
-    _jit_backfill_op_pos(e);
-    return exit_with(culebra::uncaught_report(e));
-  } catch (const std::exception& e) {
-    return exit_with(culebra::uncaught_report(e));
-  }
-  return 0;
+  // An uncaught exit's report comes out once the guard has run, as the script
+  // lanes print theirs after their guard's scope has unwound: what a stopped
+  // isolate prints comes before it on every engine.
+  auto uncaught = [&]() -> std::optional<culebra::UncaughtReport> {
+    ScriptTeardownGuard script_teardown_guard;
+    try {
+      main_fn();
+    } catch (const CulebraException& e) {
+      // Format first, then consume the carrier's reference (the payload's
+      // final +1). The shared formatter is what keeps this identical to
+      // `JIT::exec` and the VM's boundary.
+      auto s = format_uncaught_throw(e);
+      culebra_runtime_consume_throw(e);
+      drain_defers();
+      return culebra::uncaught_report(std::move(s));
+    } catch (const culebra::Interrupted& e) {
+      culebra_runtime_release_passed_error();
+      drain_defers();
+      return culebra::uncaught_report(e);
+    } catch (culebra::CulebraError& e) {
+      culebra_runtime_release_passed_error();
+      drain_defers();
+      // Backfill a positionless runtime error from the published op position
+      // (JIT::exec does the same before main.cc reports it).
+      _jit_backfill_op_pos(e);
+      return culebra::uncaught_report(e);
+    } catch (const std::exception& e) {
+      return culebra::uncaught_report(e);
+    }
+    return std::nullopt;
+  }();
+  if (!uncaught) return 0;
+  std::fprintf(stderr, "%s\n", uncaught->line.c_str());
+  return uncaught->status;
 }
 
 #endif  // CULEBRA_JIT_ENABLED
