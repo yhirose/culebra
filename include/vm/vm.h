@@ -9719,8 +9719,7 @@ class Compiler {
              "an annotated compound step's RHS must arrive boxed");
       ExprResult cur{b->slot, /*owned=*/false, -1, b->unboxed_layout,
                      b->unboxed_class};
-      auto r = try_inline_operator(ast, cur, dunder_for_op(cop), {rhs},
-                                   {av.rhs});
+      auto r = try_inline_operator(ast, cur, dunder_for_op(cop), {rhs});
       assert(r && "the whole-scope walk promised this compound step splices");
       return store_unboxed_home(*b, *r);
     }
@@ -11822,11 +11821,12 @@ class Compiler {
   // its report position from thread-locals the CALLER publishes at a real
   // call (culebra_runtime_param_pos), and an inlined site publishes none, so
   // it would report some earlier call's position. Here the position is
-  // static — the argument's own expression — and the two runtime helpers
+  // static, `check_at[i]`: a call's own argument (constructor or method), or
+  // the whole operator expression for an operator. The two runtime helpers
   // share one format string, so the message is identical.
   void bind_inline_params(const std::vector<InlineParam>& ps,
                           const std::vector<ExprResult>& args,
-                          const std::vector<const peg::Ast*>& arg_asts) {
+                          const std::vector<const peg::Ast*>& check_at) {
     for (size_t i = 0; i < ps.size(); i++) {
       // An argument that stayed a run (`operand_stays_unboxed` proved the
       // body only reads it as one) binds to N slots instead of one, and
@@ -11847,7 +11847,7 @@ class Compiler {
       int32_t slot = alloc_slot(*ps[i].at, ps[i].name);
       store_into(slot, args[i], /*dst_is_fresh=*/true);
       if (!ps[i].type.empty()) {
-        StampGuard pos(*this, *arg_asts[i]);
+        StampGuard pos(*this, *check_at[i]);
         emit_param_type_check(ps[i].type, slot, ps[i].name);
       }
       push_binding(culebra::param_name_node(*ps[i].at),
@@ -11935,7 +11935,7 @@ class Compiler {
                               const std::vector<std::string>* layout,
                               const std::vector<InlineParam>& ps,
                               const std::vector<ExprResult>& args,
-                              const std::vector<const peg::Ast*>& arg_asts,
+                              const std::vector<const peg::Ast*>& check_at,
                               bool is_ctor, int32_t out_base,
                               const std::vector<std::string>* out_layout) {
     using namespace peg::udl;
@@ -11944,7 +11944,7 @@ class Compiler {
     // The frame first: its floor is the scope about to open.
     InMember env(*this, member, cls_ast, self_base, layout);
     push_scope(member, /*owned_mark=*/false);
-    bind_inline_params(ps, args, arg_asts);
+    bind_inline_params(ps, args, check_at);
     // The body's temps end with the body (compile_scoped_expr_into's order):
     // the pop below hands their slots back mid-statement, and one still on
     // the statement's sweep list would be released at its end under whatever
@@ -12318,9 +12318,11 @@ class Compiler {
 
   // `lhs OP rhs`, where `lhs` is already an unboxed run: splice the class's
   // operator method the same way a `.method(...)` step in a chain does.
-  // `args`/`arg_asts` are already-compiled — an operator's RHS is compiled
+  // `args` are already-compiled — an operator's RHS is compiled
   // exactly once, by the caller, whether or not this succeeds, so a decline
-  // here never throws work away. Returns nullopt (having emitted nothing
+  // here never throws work away. A parameter's type is checked at `at`, the
+  // operator expression, where the boxed dispatch reports it (a method
+  // call's argument reports at itself). Returns nullopt (having emitted nothing
   // beyond what the caller already compiled for the arguments) when the
   // class has no matching operator, or it is not splice-able — the caller's
   // fallback is the ordinary `emit(op, ...)` on `lhs.slot`, which is why
@@ -12329,7 +12331,7 @@ class Compiler {
   // this function does not reify a declined `lhs` back to an object.
   std::optional<ExprResult> try_inline_operator(
       const peg::Ast& at, const ExprResult& lhs, std::string_view dunder,
-      std::vector<ExprResult> args, std::vector<const peg::Ast*> arg_asts) {
+      std::vector<ExprResult> args) {
     if (!lhs.unboxed_class) return std::nullopt;
     const peg::Ast& cls = *lhs.unboxed_class;
     size_t dec_end = culebra::first_non_decorator_index(cls);
@@ -12345,8 +12347,9 @@ class Compiler {
     bool run = end == ChainEnd::Run;
     int32_t out_base = run ? alloc_zeroed_run(at, cls, class_name, *lhs.unboxed)
                            : alloc_slot(at, "(value.ret)");
+    std::vector<const peg::Ast*> check_at(args.size(), &at);
     return emit_inline_body(at, *m, cls, lhs.slot, lhs.unboxed, *ps,
-                            args, arg_asts, /*is_ctor=*/false, out_base,
+                            args, check_at, /*is_ctor=*/false, out_base,
                             run ? lhs.unboxed : nullptr);
   }
 
@@ -12446,8 +12449,7 @@ class Compiler {
                "an unclassified context");
         auto rhs = compile_spliced_operand(op_tok, *acc.unboxed_class,
                                            *ast.nodes[i + 1]);
-        auto r = try_inline_operator(ast, acc, dunder_for_op(op), {rhs},
-                                     {ast.nodes[i + 1].get()});
+        auto r = try_inline_operator(ast, acc, dunder_for_op(op), {rhs});
         assert(r && "fold_resolves_to_class's scan promised this inlines");
         acc = *r;
         continue;
@@ -12469,7 +12471,7 @@ class Compiler {
                                  bool allow_trailing_class) {
     if (allow_trailing_class && unary_minus_resolves_to_class(ast)) {
       auto r = *try_inline_value_chain(*ast.nodes[1], ChainEnd::Run);
-      auto out = try_inline_operator(ast, r, "__neg__", {}, {});
+      auto out = try_inline_operator(ast, r, "__neg__", {});
       assert(out && "unary_minus_resolves_to_class's scan promised this");
       return *out;
     }

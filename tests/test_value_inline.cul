@@ -828,8 +828,8 @@ test_name_inside_another_writes_head()
 # ---- what a boxed instance checks or refuses, a run checks or refuses the
 # ---- same, worded the same and at the same place: a field stepped in place
 # ---- by its constructor, a member's declared return type, `.new` on an
-# ---- instance, a declaration's annotation. Each runs in a function of its
-# ---- own, where its binding is not captured and so stays unboxed.
+# ---- instance, a declaration's annotation, an operator's parameter. Each
+# ---- runs in a function of its own: an uncaptured binding stays unboxed.
 @value
 class Stepped {
   new(.x: Float, .y: Float) {
@@ -887,6 +887,24 @@ fn checked_let_own() {
   let v: Checked = Checked.new(1.0, 2.0)
   v.x
 }
+
+@value
+class LongScaled {
+  new(.x: Float, .y: Float) {}
+  __mul__(k: Long) {
+    LongScaled.new(self.x * k, self.y * k)
+  }
+}
+
+fn long_scaled_step() {
+  let mut v = LongScaled.new(1.0, 2.0)
+  v *= 2.0
+  v.x
+}
+fn long_scaled_fold() {
+  let v = LongScaled.new(1.0, 2.0)
+  (v * 2 * 2.0).x
+}
 fn thrown_at(f) {
   try {
     f()
@@ -910,6 +928,12 @@ test_a_run_checks_what_an_instance_does = fn () {
   assert_eq(thrown_at(checked_let_long),
             ['type error: assignment expects Long', 883, 3])
   assert_eq(checked_let_own(), 1.0)
+  # an operator's parameter reports at the operator expression, not at its
+  # operand
+  assert_eq(thrown_at(long_scaled_step),
+            ["type error: parameter 'k' expects Long", 901, 3])
+  assert_eq(thrown_at(long_scaled_fold),
+            ["type error: parameter 'k' expects Long", 906, 4])
 }
 test_a_run_checks_what_an_instance_does()
 
