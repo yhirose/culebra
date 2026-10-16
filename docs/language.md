@@ -1985,7 +1985,7 @@ A class with `__call__` structurally satisfies the `Function` type, so a
 callable instance is a first-class function value: pass it to a
 higher-order builtin (`map` / `filter` / `reduce` / `sort_by`) or bind it
 to any `Function`-annotated parameter, and it is invoked through its
-`__call__`.
+`__call__`. A `Function` type pattern (§13) matches it too.
 
 ```culebra
 class Scale {
@@ -2002,6 +2002,12 @@ fn apply_twice(f: Function, x) {
   f(f(x))
 }
 inspect(apply_twice(Scale.new(2), 5))  # => 20
+
+let picked = match Scale.new(3) {
+  f: Function => f(4),
+  _ => 'not callable',
+}
+inspect(picked)                        # => 12
 ```
 
 `__call__` accepts the full call form — positional, `*args`, and keyword

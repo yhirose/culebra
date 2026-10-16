@@ -1,6 +1,6 @@
-# A `v: T` pattern gates on the type before it binds. A primitive name is a
-# tag compare; every other name — a user class, a trait, an enum, `T?`,
-# `fn(…) -> R` — asks the same runtime type test the interpreter uses.
+# A `v: T` pattern gates on the type before it binds. A name its tag decides
+# is a tag compare; every other name — `Function`, a user class, a trait, an
+# enum, `T?`, `fn(…) -> R` — asks the runtime type test an annotation uses.
 
 class Point {
   new(x, y) {

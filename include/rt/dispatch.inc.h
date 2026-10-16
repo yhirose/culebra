@@ -817,12 +817,13 @@ inline JitMultifnDispatcher* _jit_dispatcher_record(JitClosure* c);
 // The Object-side labels are left out on purpose: TAG_OBJECT reports a class
 // name, which is no annotation's one tag (an instance of a class called
 // `Array` is no `Array`, here as in the picker).
-// `Function` is out for the opposite reason — the scorer lets a class instance
-// with `__call__` match it, so the tag is not the whole answer. Anything left
-// out declines the shortcut and takes the picker, which is only slower.
+// `Function` has no exact tag for the opposite reason — the scorer lets a
+// class instance with `__call__` match it, so the tag is not the whole answer.
+// Anything left out declines the shortcut and takes the picker, which is only
+// slower.
 inline int8_t _jit_tag_exactly_matching(std::string_view annotation) {
-  auto tag = _culebra_primitive_type_tag(annotation);
-  return tag && *tag != TAG_OBJECT && *tag != TAG_FUNC ? *tag : -1;
+  auto tag = _culebra_exact_type_tag(annotation);
+  return tag && *tag != TAG_OBJECT ? *tag : -1;
 }
 
 // Recompute the shortcut and publish it. Both halves are non-owning: the

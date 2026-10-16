@@ -1324,10 +1324,9 @@ constexpr bool _is_refcounted_value(const JitValue& v) {
 }
 
 // Primitive type-name → TAG_* (nullopt for anything else: `Any`, traits,
-// user classes). Single source for the JIT's TYPED_IDENT pattern emitter
-// and the VM compiler's tag gate — the generic-strip and the Any / union /
-// non-primitive policies stay with the callers. base's is_builtin_type_name
-// holds the same names for the dispatch scorer, which cannot see TAG_*.
+// user classes). The generic-strip and the Any / union / non-primitive
+// policies stay with the callers. base's is_builtin_type_name holds the
+// same names for the dispatch scorer, which cannot see TAG_*.
 inline std::optional<int8_t> _culebra_primitive_type_tag(std::string_view tn) {
   if (tn == "Nil") return TAG_NIL;
   if (tn == "Bool") return TAG_BOOL;
@@ -1342,6 +1341,16 @@ inline std::optional<int8_t> _culebra_primitive_type_tag(std::string_view tn) {
   if (tn == "Set") return TAG_SET;
   if (tn == "Tensor") return TAG_TENSOR;
   return std::nullopt;
+}
+
+// The tag a value has exactly when it satisfies the type name `tn`, so a tag
+// compare can stand in for the type check. Every primitive name's but
+// `Function`'s, which a class instance with a `__call__` also satisfies
+// (_culebra_type_matches_single).
+inline std::optional<int8_t> _culebra_exact_type_tag(std::string_view tn) {
+  auto tag = _culebra_primitive_type_tag(tn);
+  if (tag == TAG_FUNC) return std::nullopt;
+  return tag;
 }
 
 // Forward decl: byte-view of a TAG_STRING or TAG_STRINGVIEW payload.

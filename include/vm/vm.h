@@ -9236,13 +9236,11 @@ class Compiler {
           fc.emit(Op::ChkArg, pl.slot, ty, ctx, pl.abi_index);
         for (size_t ix : skip) fc.patch_to_here(ix);
         // Past the check and past the gate that skips it: whichever route
-        // got here, the value satisfies the annotation. When the annotation
-        // names one primitive, that settles the tag for every read below.
-        // Two names are refused: a `mut` parameter, whose reassignment is
-        // not re-checked (§14), and `Function`, which a class instance with
-        // a `__call__` satisfies structurally — so it does not name one tag.
-        if (!pl.is_mut && pl.type != "Function")
-          if (auto tag = _culebra_primitive_type_tag(pl.type))
+        // got here, the value satisfies the annotation. When the annotation's
+        // tag decides it, that settles the tag for every read below — except
+        // in a `mut` parameter, whose reassignment is not re-checked (§14).
+        if (!pl.is_mut)
+          if (auto tag = _culebra_exact_type_tag(pl.type))
             fc.emit(Op::ArgTag, pl.slot, *tag);
       }
       if (pl.sink) {
@@ -14260,26 +14258,25 @@ class Compiler {
   }
 
   // A pattern's type annotation: fall through when the subject satisfies it,
-  // jump (via `fail`) when it doesn't. Mirrors the JIT's TYPED_IDENT emitter
-  // alternative for alternative — a primitive name is a tag compare over the
-  // shared _culebra_primitive_type_tag table (generic args stripped, so
-  // `Array<Long>` gates on Array), and every other name — a user class, an
-  // enum, a trait, `T?`, `fn(…) -> R` — asks the runtime's type_matches, the
-  // one the interp's type_matches mirrors. A union ORs its alternatives, and
-  // an `Any` alternative gates nothing at all.
+  // jump (via `fail`) when it doesn't, as the annotation's check decides.
+  // Each alternative is the check's own tag gate (emit_type_check_gate_alt),
+  // then the runtime's type_matches unless the tag already decided the name
+  // (_culebra_exact_type_tag; generic args stripped, so `Array<Long>` is
+  // Array's tag alone). A union ORs its alternatives, and an `Any`
+  // alternative gates nothing at all.
   void compile_type_gate(const peg::Ast& type_node, int32_t subj,
                          std::vector<size_t>& fail) {
     auto full = type_node.token;
-    // (tag, name): a set tag takes the inline compare, otherwise the name
-    // goes to the runtime. Collected before emitting so an `Any` alternative
-    // can drop the whole gate without leaving half of it behind.
-    std::vector<std::pair<std::optional<int8_t>, std::string_view>> alts;
+    // (name, whether its tag decides it). Collected before emitting so an
+    // `Any` alternative can drop the whole gate without leaving half of it
+    // behind.
+    std::vector<std::pair<std::string_view, bool>> alts;
     auto add_single = [&](std::string_view tn) -> bool {  // false: Any
       auto head = tn;
       if (head.find('<') != std::string_view::npos)
         head = culebra::parse_generic_head(head).outer;
       if (head == "Any") return false;
-      alts.push_back({_culebra_primitive_type_tag(head), head});
+      alts.push_back({head, _culebra_exact_type_tag(head).has_value()});
       return true;
     };
     if (full.find('|') != std::string_view::npos) {
@@ -14289,11 +14286,9 @@ class Compiler {
       return;
     }
     std::vector<size_t> ok;
-    for (const auto& [tag, name] : alts) {
-      if (tag) {
-        ok.push_back(emit(Op::JumpIfTag, subj, 0, *tag));
-        continue;
-      }
+    for (const auto& [name, decided] : alts) {
+      emit_type_check_gate_alt(name, subj, ok);
+      if (decided) continue;
       // TypeMatch falls through on a match; this chain wants the opposite
       // polarity, so the mismatch edge is what continues to the next
       // alternative.

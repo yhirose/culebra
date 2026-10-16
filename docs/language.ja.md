@@ -1868,7 +1868,8 @@ inspect(add3.__call__(10))  # => 13
 `__call__`を持つクラスは`Function`型を構造的に満たすので、callable
 インスタンスは第一級の関数値です — 高階ビルトイン (`map` / `filter` /
 `reduce` / `sort_by`) に渡しても、`Function`注釈の任意のパラメータに
-束縛しても、その`__call__`経由で呼ばれます:
+束縛しても、その`__call__`経由で呼ばれます。`Function`の型パターン（§13）
+にも一致します:
 
 ```culebra
 class Scale {
@@ -1885,6 +1886,12 @@ fn apply_twice(f: Function, x) {
   f(f(x))
 }
 inspect(apply_twice(Scale.new(2), 5))  # => 20
+
+let picked = match Scale.new(3) {
+  f: Function => f(4),
+  _ => 'not callable',
+}
+inspect(picked)                        # => 12
 ```
 
 `__call__`は呼び出しの全形式（位置引数・`*args`・キーワード引数）を

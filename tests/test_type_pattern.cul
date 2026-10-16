@@ -96,6 +96,33 @@ assert_eq(match nil {
   _ => 'other',
 }, 'long or nil')
 
+# `Function` takes what an annotation of it takes: a closure, and a class
+# instance with a `__call__` (a dict holding one is not a function). Bare,
+# typed, and as one alternative of a union.
+class Doubler {
+  __call__(n) {
+    n * 2
+  }
+}
+let callable = fn (v) {
+  match v {
+    f: Function => f(21),
+    _ => 'other',
+  }
+}
+assert_eq(callable(|n| n + 1), 22)
+assert_eq(callable(Doubler()), 42)
+assert_eq(callable(Dog('Rex')), 'other')
+assert_eq(callable({__call__: |n| n}), 'other')
+assert_eq(match Doubler() {
+  Function => 'function',
+  _ => 'other',
+}, 'function')
+assert_eq(match Doubler() {
+  Long | Function => 'long or function',
+  _ => 'other',
+}, 'long or function')
+
 # Nested in an array, an object entry, a tuple and a constructor.
 let nested = fn (v) {
   match v {
