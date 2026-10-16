@@ -263,17 +263,24 @@ if (( ${#progs[@]} == 0 )); then
   exit 1
 fi
 
-# Every block parses the whole stdlib header set (1.6 GB peak RSS for one
-# compile), so the fan-out is bounded by RAM before cores: one per 3 GB. On an
-# 8-core 16 GB machine a plain -P nproc swapped and the gate took 208 s where
-# -P 4 takes 60 s.
+# Every block parses the whole stdlib header set, so the fan-out is bounded by
+# RAM before cores. A syntax check peaks at 1.9-2.6 GB, so those take one job
+# per 3 GB; a host build (stages E and F: compile, link, run) peaks at 3.5-4.0
+# GB, so those take one per 5 GB. On an 8-core 16 GB machine a plain -P nproc
+# swapped and the gate took 208 s where -P 4 takes 60 s, and on a 16 GB one
+# five host builds at once ran it out of memory and a compiler was killed.
 jobs_cpu=$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)
 mem_bytes=$(sysctl -n hw.memsize 2>/dev/null \
   || echo $(( $(getconf _PHYS_PAGES 2>/dev/null || echo 0) * $(getconf PAGE_SIZE 2>/dev/null || echo 4096) )))
-jobs_mem=$(( mem_bytes / 3000000000 ))
-(( jobs_mem >= 1 )) || jobs_mem=1
-(( jobs_mem < jobs_cpu )) && jobs_cpu=$jobs_mem
-JOBS="${JOBS:-$jobs_cpu}"
+# Jobs of `$1` bytes each that the RAM holds, at least one and at most a core each.
+jobs_within() {
+  local n=$(( mem_bytes / $1 ))
+  (( n >= 1 )) || n=1
+  (( n < jobs_cpu )) && echo "$n" || echo "$jobs_cpu"
+}
+JOBS="${JOBS:-$(jobs_within 3000000000)}"
+build_jobs=$(jobs_within 5000000000)
+(( build_jobs < JOBS )) || build_jobs=$JOBS
 export CXXBIN llvm_inc TMP
 export INCS="${INC[*]}"
 
@@ -425,7 +432,7 @@ lanes=(
 "${CULEBRA_DOCS_CC:-${CC:-cc}}" -O0 -w -c src/runtime/culebra_sqlite3.c -o "$TMP/link/culebra_sqlite3.o"
 
 export LIBS_STR="${LIBS[*]}"
-printf '%s\n' "${lanes[@]}" | xargs -P "$JOBS" -I{} bash -c '
+printf '%s\n' "${lanes[@]}" | xargs -P "$build_jobs" -I{} bash -c '
   IFS="|" read -r name flags extra want <<< "$1"
   read -ra inc <<< "$INCS"; read -ra libs <<< "$LIBS_STR"; read -ra fl <<< "$flags"
   src="$TMP/link/$name.cc"; exe="$TMP/link/$name"
@@ -507,7 +514,7 @@ ef_lanes=(
   "http|--http|$TMP/link/http.cc|Function"
 )
 export EF_BIN
-printf '%s\n' "${ef_lanes[@]}" | xargs -P "$JOBS" -I{} bash -c '
+printf '%s\n' "${ef_lanes[@]}" | xargs -P "$build_jobs" -I{} bash -c '
   IFS="|" read -r name feats prog want <<< "$1"
   read -ra feat <<< "$feats"
   err="$TMP/link/ef_$name.err"
