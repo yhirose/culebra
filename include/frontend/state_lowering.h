@@ -380,6 +380,25 @@ inline bool is_label_position(const peg::Ast& parent, size_t i) {
           parent.nodes.size() >= 2);
 }
 
+// Where a node sits, as far as appending to it goes: a statement can be
+// followed by `; <stmt>`, an init-clause binding by `, <binding>`, and an
+// expression by nothing.
+enum class EditSite { Expr, Stmt, InitBinding };
+
+// Where the `i`th child of `n` sits. A block collapsed into its lone
+// statement keeps the block's tag in original_tag.
+inline EditSite child_site(const peg::Ast& n, size_t i) {
+  using namespace peg::udl;
+  auto contains = [](unsigned int tag) {
+    return tag == "STATEMENTS"_ || tag == "BLOCK"_ || tag == "LEXICAL_SCOPE"_;
+  };
+  const auto& c = *n.nodes[i];
+  if (contains(n.tag) || contains(c.original_tag) ||
+      c.original_tag == "STATEMENT"_ || (n.tag == "STATEMENT"_ && i == 0))
+    return EditSite::Stmt;
+  return n.tag == "INIT_CLAUSE"_ ? EditSite::InitBinding : EditSite::Expr;
+}
+
 // The locals a lowered body moves onto its state instance, by variable. The
 // body is resolved (resolve.h) under the names visible around it, and a
 // variable gets a slot when the machine enters the scope that holds it
@@ -395,17 +414,24 @@ inline bool is_label_position(const peg::Ast& parent, size_t i) {
 // is any function scope of the resolution, a `defer` among them though these
 // transforms inline one they run themselves: an extra box costs one object, a
 // missing one restores the cycle.
+//
+// A slotted variable that may be read before a declaration of it has run
+// holds the unbound sentinel until one has, as a plain fn's lazy binding does
+// (vm.h, Compiler::Binding::lazy), and is given it again whenever its scope is
+// entered. Such a read asks the slot whether a declaration ran, through the
+// compiler's lowering intrinsics (Compiler::compile_lowering_intrinsic).
 class PromotedLocals {
  public:
   struct Slot {
     std::string field;  // on the instance; empty while the variable has none
     std::string box;    // the plain local its box is reached through, if boxed
-    // Where the variable lives, as source. Each piece of emitted code binds
-    // the box locals it names on entry (box_prologue), so one spelling serves
-    // both inside a closure (which captures the local) and outside it.
-    std::string place() const {
-      return box.empty() ? "self." + field : box + ".v";
-    }
+    // Where the variable lives, as source: `holder.member`. Each piece of
+    // emitted code binds the box locals it names on entry (box_prologue), so
+    // one spelling serves both inside a closure (which captures the local)
+    // and outside it.
+    std::string holder() const { return box.empty() ? "self" : box; }
+    std::string member() const { return box.empty() ? field : "v"; }
+    std::string place() const { return holder() + "." + member(); }
   };
 
   PromotedLocals() = default;  // of no body: nothing has a slot
@@ -420,7 +446,9 @@ class PromotedLocals {
         slots_(res_.symbols.size()),
         captured_(res_.symbols.size()),
         declared_(res_.symbols.size()),
-        mut_param_(res_.symbols.size()) {
+        mut_param_(res_.symbols.size()),
+        in_expression_(res_.symbols.size()),
+        lazy_(res_.symbols.size()) {
     for (const auto& [node, use] : res_.uses)
       if (use.symbol != resolve::kNone && res_.frame_of(use.symbol) == body_ &&
           res_.function_of(use.scope) != body_ && !own_name(use))
@@ -440,6 +468,12 @@ class PromotedLocals {
       if (auto it = res_.scopes[body_].names.find(name);
           it != res_.scopes[body_].names.end())
         mut_param_[it->second] = true;
+    find_expression_declarations(body, EditSite::Stmt);
+    for (size_t sym = 0; sym < lazy_.size(); sym++) {
+      const auto& s = res_.symbols[sym];
+      lazy_[sym] = (captured_[sym] || in_expression_[sym]) &&
+                   !s.declared_as(Form::Parameter) && !is_machinery(s.name);
+    }
     promote(body_);
   }
 
@@ -463,7 +497,7 @@ class PromotedLocals {
       Slot& s = slots_[sym];
       if (!s.field.empty()) continue;
       int k = spelled_[name]++;
-      if (name.starts_with("_g_") || name.starts_with("_eff_")) {
+      if (is_machinery(name)) {
         if (k)
           throw CulebraError("InternalError",
                              "a lowering declared `" + name + "` twice", 0, 0);
@@ -486,6 +520,43 @@ class PromotedLocals {
       return nullptr;
     const Slot& s = slots_[it->second.symbol];
     return s.field.empty() || own_name(it->second) ? nullptr : &s;
+  }
+
+  // `name`, a slotted variable, as source. A write is to its place; a read
+  // asks the place first whether a declaration of it has run, when one may
+  // not have. Until one has, a closure's read is the NameError a plain fn's
+  // is, and a read in the body's own frame means the variable the name meant
+  // above the declaration (Compiler::read_shadowing): one around it, a stdlib
+  // global, or nothing, which is that NameError again.
+  std::string reference(const peg::Ast& name) const {
+    const auto& use = res_.uses.at(&name);
+    if (use.role != resolve::Role::Read) return slots_[use.symbol].place();
+    return read_at(use);
+  }
+
+  // `name` read where it is written, whatever the occurrence is: the value a
+  // compound assignment to it steps from.
+  std::string read(const peg::Ast& name) const {
+    return read_at(res_.uses.at(&name));
+  }
+
+  // Whether that read raises the NameError while no declaration of `name`
+  // has run, rather than reading what the name meant above it.
+  bool read_raises(const peg::Ast& name) const {
+    return read_check(res_.uses.at(&name)) == Check::Raise;
+  }
+
+  // The target of a compound assignment `name op= e`, as a place asked first
+  // whether a declaration of it has run: after the right-hand side and before
+  // the step reads it, which is when a plain fn's compound assignment reads.
+  // Until one has, the step raises the NameError, where the body's own frame
+  // has a variable it shadows too (lowering_diff_allow.txt, L6).
+  std::string compound_target(const peg::Ast& name) const {
+    const auto& use = res_.uses.at(&name);
+    const Slot& s = slots_[use.symbol];
+    if (read_check(use) == Check::None) return s.place();
+    return std::format("(__bound_in({}, {}, \"{}\")).{}", s.holder(), s.place(),
+                       name.token, s.member());
   }
 
   // Whether `target`, a name written to, is a slotted variable that refuses
@@ -520,15 +591,16 @@ class PromotedLocals {
     return sym != resolve::kNone && res_.frame_of(sym) == body_;
   }
 
-  // Source giving each boxed variable of `scope` a fresh box, for a scope
-  // entered again: a closure made on an earlier pass keeps that pass's
-  // variable. Empty when nothing there is boxed.
-  std::string fresh_boxes(size_t scope) const {
+  // Source giving the variables of `scope` a fresh start, for a scope entered
+  // again: each boxed one a fresh box, so a closure made on an earlier pass
+  // keeps that pass's variable, and each one that may be read ahead of its
+  // declaration the unbound sentinel, so a declaration skipped on this pass
+  // is not taken for one an earlier pass ran. Empty when neither applies.
+  std::string fresh_slots(size_t scope) const {
     std::string out;
     for (const auto& [name, sym] : res_.scopes[scope].names)
-      if (!slots_[sym].box.empty())
-        out += std::format("      self.{} = {}\n", slots_[sym].field,
-                           box_literal("nil"));
+      if (!slots_[sym].box.empty() || lazy_[sym])
+        out += set_slot(sym, initial(sym));
     return out;
   }
 
@@ -550,13 +622,15 @@ class PromotedLocals {
 
   // The state class's `new`: its slot list `_p0, _p1, ...` for `params`, the
   // arguments its call passes, and after `ctor_inits` the initializer of
-  // every slot the body got: a parameter's from its `_pN`, any other nil. A
-  // boxed slot holds the box, made once here; every later store goes into
-  // its `v` field, so the box the closures captured stays the live one.
+  // every slot the body got: a parameter's from its `_pN`, any other its
+  // `initial`. A boxed slot holds the box, made once here; every later store
+  // goes into its `v` field, so the box the closures captured stays the live
+  // one.
   void emit_ctor(std::span<const std::string_view> params,
                  std::string& ctor_params, std::string& ctor_call_args,
                  std::string& ctor_inits) const {
-    std::vector<std::string> value(slots_.size(), "nil");
+    std::vector<std::string> value(slots_.size());
+    for (size_t sym = 0; sym < slots_.size(); sym++) value[sym] = initial(sym);
     for (size_t j = 0; j < params.size(); j++) {
       auto arg = std::format("_p{}", j);
       if (j > 0) {
@@ -569,12 +643,7 @@ class PromotedLocals {
       if (auto it = names.find(params[j]); it != names.end())
         value[it->second] = arg;
     }
-    for (size_t sym : order_) {
-      const Slot& s = slots_[sym];
-      ctor_inits += std::format(
-          "      self.{} = {}\n", s.field,
-          s.box.empty() ? value[sym] : box_literal(value[sym]));
-    }
+    for (size_t sym : order_) ctor_inits += set_slot(sym, value[sym]);
   }
 
   // Source giving every box a copy of its own: a forked frame shares the
@@ -583,9 +652,7 @@ class PromotedLocals {
     std::string out;
     for (size_t sym : order_) {
       const Slot& s = slots_[sym];
-      if (!s.box.empty())
-        out += std::format("      self.{0} = {1}\n", s.field,
-                           box_literal("self." + s.field + ".v"));
+      if (!s.box.empty()) out += set_slot(sym, "self." + s.field + ".v");
     }
     return out;
   }
@@ -613,6 +680,104 @@ class PromotedLocals {
   }
 
  private:
+  // The machinery's own names, which a lowering declares before any use.
+  static bool is_machinery(std::string_view name) {
+    return name.starts_with("_g_") || name.starts_with("_eff_");
+  }
+
+  // What a slot holds before a declaration of its variable has run.
+  std::string initial(size_t sym) const {
+    return lazy_[sym] ? "__unbound()" : "nil";
+  }
+
+  // Source setting `sym`'s slot to `value`, in a fresh box when it is boxed.
+  std::string set_slot(size_t sym, const std::string& value) const {
+    const Slot& s = slots_[sym];
+    return std::format("      self.{} = {}\n", s.field,
+                       s.box.empty() ? value : box_literal(value));
+  }
+
+  // What a read at `use` asks of the slot before taking its value. Nothing
+  // when a declaration has surely run: for a variable no closure reads and no
+  // expression declares, and for a read in the body's own frame of one only
+  // statements declare, which run ahead of every read they reach.
+  enum class Check { None, Raise, Shadowed };
+  Check read_check(const resolve::Use& use) const {
+    if (!lazy_[use.symbol]) return Check::None;
+    if (res_.function_of(use.scope) != body_) return Check::Raise;
+    return in_expression_[use.symbol] ? Check::Shadowed : Check::None;
+  }
+
+  // Parenthesized, so a call or a member written after the read applies to
+  // what it reads (`(__bound(…))()`), not to the intrinsic's own name.
+  std::string read_at(const resolve::Use& use) const {
+    const auto& name = res_.symbols[use.symbol].name;
+    std::string place = slots_[use.symbol].place();
+    switch (read_check(use)) {
+      case Check::None:
+        break;
+      case Check::Raise:
+        return std::format("(__bound({}, \"{}\"))", place, name);
+      case Check::Shadowed:
+        return std::format("(__bound_or({}, {}))", place, shadowed_source(use));
+    }
+    return place;
+  }
+
+  // The variable the name of the one `use` reads meant above its
+  // declaration, as a read at `use`: a slotted variable of the body declared
+  // ahead of it, or the name itself, which the compiler resolves around the
+  // body to a variable there, a stdlib global, or the NameError of a name
+  // nothing binds. A variable of the body declared further down is not yet
+  // visible there (resolve.h), and the name goes on outward past it.
+  std::string shadowed_source(const resolve::Use& use) const {
+    const auto& sym = res_.symbols[use.symbol];
+    const char* here = first_declared(use.symbol);
+    for (size_t s = res_.scopes[sym.scope].parent; s != resolve::kNone;
+         s = res_.scopes[s].parent) {
+      auto it = res_.scopes[s].names.find(sym.name);
+      if (it == res_.scopes[s].names.end()) continue;
+      size_t outer = it->second;
+      if (res_.frame_of(outer) != body_) break;
+      const char* at = first_declared(outer);
+      if (at && here && at > here) continue;
+      if (slots_[outer].field.empty()) break;
+      return read_at({outer, use.scope, resolve::Role::Read});
+    }
+    return sym.name;
+  }
+
+  // Where `sym` is first declared, or null for a parameter (declared by its
+  // list, ahead of the body).
+  const char* first_declared(size_t sym) const {
+    return declared_[sym].empty() ? nullptr : declared_[sym].front().at;
+  }
+
+  // Every variable declared inside an expression rather than by a statement
+  // of its own (`c && (let h = 1)`, `if (let m = f())`): such a declaration
+  // may be skipped. One that always runs is caught too, which costs its reads
+  // a check that always passes.
+  void find_expression_declarations(const peg::Ast& n, EditSite site) {
+    using namespace peg::udl;
+    if (is_fn_boundary(n.tag)) return;
+    const peg::Ast* rhs = nullptr;
+    if (n.tag == "ASSIGNMENT"_)
+      rhs = view_assignment(n).rhs;
+    else if (n.tag == "DESTRUCTURE_ASSIGN"_)
+      rhs = view_destructure(n).rhs;
+    else if (n.tag == "PLACE_ASSIGN"_)
+      rhs = n.nodes.back().get();
+    for (size_t i = 0; i < n.nodes.size(); i++) {
+      const auto& c = *n.nodes[i];
+      if (rhs && site == EditSite::Expr && &c != rhs) mark_declared(c);
+      find_expression_declarations(c, child_site(n, i));
+    }
+  }
+  void mark_declared(const peg::Ast& n) {
+    if (declaring_.contains(&n)) in_expression_[res_.uses.at(&n).symbol] = true;
+    for (const auto& c : n.nodes) mark_declared(*c);
+  }
+
   // A name its own declaration reads binds to the declaration itself, not to
   // the slot the declaration is stored in: a named fn's inside its body, a
   // class's inside its members, which read it off their receiver. Through
@@ -640,6 +805,8 @@ class PromotedLocals {
   };
   std::vector<std::vector<Declared>> declared_;
   std::vector<char> mut_param_;
+  std::vector<char> in_expression_;  // by symbol: an expression declares it
+  std::vector<char> lazy_;  // by symbol: may be read before it is declared
   std::set<const peg::Ast*> declaring_;  // the name nodes that declare
   std::vector<size_t> order_;   // the slotted symbols, as they got one
   std::map<std::string, int, std::less<>> spelled_;  // slotted per name
@@ -655,11 +822,6 @@ inline bool is_flat_tuple_pattern(const peg::Ast& pattern) {
   }
   return true;
 }
-
-// Where a node sits, as far as appending to it goes: a statement can be
-// followed by `; <stmt>`, an init-clause binding by `, <binding>`, and an
-// expression by nothing.
-enum class EditSite { Expr, Stmt, InitBinding };
 
 // The plain local a promoted leaf of a destructuring pattern binds first, to
 // be copied into its slot (only a flat tuple can bind slots directly). Named
@@ -759,12 +921,15 @@ inline void collect_promoted_edits(const peg::Ast& n, const std::string& src,
   auto is_promoted = [&](const peg::Ast& id) {
     return id.tag == "IDENTIFIER"_ && id.is_token && promoted.slot(id);
   };
-  auto slot = [&](const peg::Ast& id) { return promoted.slot(id)->place(); };
-  // The `let` / `mut` keyword(s) of a declaration, up to its first target.
-  auto drop_keywords = [&](const peg::Ast& decl, size_t target) {
+  // A declaration's keywords go, up to `first`, its first target's first
+  // byte, which becomes `text` standing where the declaration was written:
+  // what the declaration raises (its annotation's check, a test's truthiness,
+  // a pattern's mismatch) reports at its `let`, as a plain fn's does.
+  auto drop_keywords = [&](const peg::Ast& decl, size_t first, size_t len,
+                           std::string text) {
     const auto& kw = decl.nodes[0]->token.empty() ? *decl.nodes[1]
                                                   : *decl.nodes[0];
-    out.push_back({at(kw), target - at(kw), ""});
+    out.push_back({at(kw), first + len - at(kw), std::move(text)});
   };
   // A store a slotted variable refuses (PromotedLocals::immutable_write) is
   // left to the compiler. The store `stmt` runs in a block where each slotted
@@ -772,11 +937,13 @@ inline void collect_promoted_edits(const peg::Ast& n, const std::string& src,
   // refuses, so the store raises as in any fn (after the right-hand side, at
   // the target, under the same message), a `mut` copied back on the way out
   // for one that takes it. Where the store is an expression the block is an
-  // `if`'s arm, which has its value. Called once the edits under `stmt` are
-  // in: a store in its right-hand side ends where it does, and closes first.
+  // `if`'s arm, which has its value. A compound store reads its target, so the
+  // local starts from that read (PromotedLocals::read), standing at the
+  // statement. Called once the edits under `stmt` are in: a store in its
+  // right-hand side ends where it does, and closes first.
   auto as_locals = [&](const peg::Ast& stmt,
                        const std::vector<const peg::Ast*>& targets,
-                       const peg::Ast& rhs) {
+                       const peg::Ast& rhs, bool compound = false) {
     bool is_stmt = site == EditSite::Stmt;
     std::string head = is_stmt ? "{ " : "(if true { ";
     std::set<const PromotedLocals::Slot*> seen;
@@ -784,11 +951,13 @@ inline void collect_promoted_edits(const peg::Ast& n, const std::string& src,
       const auto* s = promoted.slot(*t);
       if (!s || !seen.insert(s).second) continue;
       head += promoted.immutable_write(*t)
-                  ? std::format("let {} = {}; ", t->token, s->place())
+                  ? std::format("let {} = {}; ", t->token,
+                                compound ? promoted.read(*t) : s->place())
                   : std::format("mut {0} = {1}; defer {{ {1} = {0} }}; ",
                                 t->token, s->place());
     }
-    out.push_back({written_at(stmt, src), 0, head});
+    size_t at_stmt = written_at(stmt, src);
+    out.push_back({at_stmt, 0, MappedSource::standing_for(head, src, at_stmt)});
     out.push_back({rhs.position + rhs.length, 0, is_stmt ? " }" : " })"});
   };
   auto refuses = [&](const std::vector<const peg::Ast*>& targets) {
@@ -806,17 +975,37 @@ inline void collect_promoted_edits(const peg::Ast& n, const std::string& src,
   if (n.tag == "IDENTIFIER"_) {
     if (n.original_tag != "DOT"_ && n.original_tag != "SAFE_DOT"_ &&
         is_promoted(n))
-      out.push_back({at(n), n.token.size(), slot(n)});
+      out.push_back({at(n), n.token.size(), promoted.reference(n)});
     return;
   }
   if (n.tag == "ASSIGNMENT"_) {
     auto av = view_assignment(n);
     const auto* t = assign_name_target(n, av);
     if ((av.is_let || av.is_mut) && t && is_promoted(*t)) {
-      drop_keywords(n, at(*t));
-    } else if (t && refuses({t})) {
+      drop_keywords(n, at(*t), t->token.size(), promoted.slot(*t)->place());
       rewrite_but(n, {t});
-      as_locals(n, {t}, *av.rhs);
+      return;
+    }
+    if (t && refuses({t})) {
+      // A compound store a closure makes asks after its right-hand side
+      // whether the target is declared, as a plain fn's does: the right-hand
+      // side passes through the check (`??=` reads first, as it is written).
+      bool ask_after = av.compound && av.op_base != "??" &&
+                       promoted.read_raises(*t);
+      if (ask_after)
+        out.push_back({av.rhs->position, 0,
+                       MappedSource::standing_for("__bound_in((", src, at(*t))});
+      rewrite_but(n, {t});
+      if (ask_after)
+        out.push_back({av.rhs->position + av.rhs->length, 0,
+                       std::format("), {}, \"{}\")",
+                                   promoted.slot(*t)->place(), t->token)});
+      as_locals(n, {t}, *av.rhs, av.compound && !ask_after);
+      return;
+    }
+    if (av.compound && t && is_promoted(*t)) {
+      out.push_back({at(*t), t->token.size(), promoted.compound_target(*t)});
+      rewrite_but(n, {t});
       return;
     }
   } else if (n.tag == "PLACE_ASSIGN"_) {
@@ -845,7 +1034,7 @@ inline void collect_promoted_edits(const peg::Ast& n, const std::string& src,
     }
     if (any && is_flat_tuple_pattern(pat)) {
       // Dropping the keyword leaves the PLACE_ASSIGN `(<slot>, <slot>) = …`.
-      if (dv.declares) drop_keywords(n, pat.position);
+      if (dv.declares) drop_keywords(n, pat.position, 1, "(");
     } else if (any) {
       if (site == EditSite::Expr) {
         auto p = source_pos(pat, src);
@@ -864,7 +1053,9 @@ inline void collect_promoted_edits(const peg::Ast& n, const std::string& src,
   } else if (n.tag == "OBJECT_PROPERTY"_ && n.nodes.size() == 2 &&
              is_promoted(*n.nodes[1])) {
     const auto& key = *n.nodes[1];
-    out.push_back({at(key) + key.token.size(), 0, ": " + slot(key)});
+    out.push_back({at(key) + key.token.size(), 0,
+                   MappedSource::standing_for(": " + promoted.reference(key),
+                                              src, at(key))});
     return;
   } else if (auto pv = view_postfix_if(n);
              pv && pv->stmt->tag == "DESTRUCTURE_ASSIGN"_) {
@@ -883,9 +1074,6 @@ inline void collect_promoted_edits(const peg::Ast& n, const std::string& src,
       return;
     }
   }
-  auto contains = [](unsigned int tag) {
-    return tag == "STATEMENTS"_ || tag == "BLOCK"_ || tag == "LEXICAL_SCOPE"_;
-  };
   for (size_t i = 0; i < n.nodes.size(); i++) {
     const auto& c = *n.nodes[i];
     if (c.path != n.path) {
@@ -895,15 +1083,7 @@ inline void collect_promoted_edits(const peg::Ast& n, const std::string& src,
           static_cast<long>(c.line), static_cast<long>(c.column));
     }
     if (is_label_position(n, i)) continue;
-    // A block collapsed into its lone statement keeps the block's tag in
-    // original_tag.
-    EditSite cs = EditSite::Expr;
-    if (contains(n.tag) || contains(c.original_tag) ||
-        c.original_tag == "STATEMENT"_ || (n.tag == "STATEMENT"_ && i == 0))
-      cs = EditSite::Stmt;
-    else if (n.tag == "INIT_CLAUSE"_)
-      cs = EditSite::InitBinding;
-    collect_promoted_edits(c, src, promoted, out, cs);
+    collect_promoted_edits(c, src, promoted, out, child_site(n, i));
   }
 }
 

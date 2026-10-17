@@ -97,6 +97,15 @@ effect fn e() { let s = self
 let x = perform ask()
 s }
 handle { e() } with ask(resume) { resume(1) }'
+# The names the effect lowering writes for itself are reserved: in an effect
+# body a program's own would be taken for the intrinsic.
+check_eq "reserved fn name"   'fn __bound(a, b) { a }
+println(1)' "SyntaxError: '__bound' is a reserved name and cannot be declared at 1:4."
+check_eq "reserved local name" 'effect fn ask()
+effect fn e() { let __unbound = 1
+perform ask()
+__unbound }
+handle { e() } with ask(resume) { resume(1) }' "SyntaxError: '__unbound' is a reserved name and cannot be declared at 2:21."
 
 # UFCS calls to the unary global builtins (to_string/hash/type_of/to_long/
 # to_float). The JIT used to fall through to a property-get TypeError on a

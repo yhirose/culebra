@@ -562,6 +562,97 @@ assert_eq(
   nil,
 )
 
+// --- a name read before a declaration of it has run -------------------------
+// The state instance knows whether a declaration of a variable it holds has
+// run, as a plain fn's frame does: until one has, a closure's read is the
+// NameError, and a read in the body means the variable the name meant above
+// the declaration. Each pass through a loop body starts its variables afresh.
+effect fn pd_ask()
+
+effect fn pd_early() {
+  let pd_c = || x
+  let early = try { pd_c() } catch e { [e.kind, e.message] }
+  let a = perform pd_ask()
+  let x = a
+  [early, pd_c()]
+}
+assert_eq(
+  handle { pd_early() } with pd_ask(resume) { resume(7) },
+  [["NameError", "undefined variable 'x'"], 7],
+)
+
+assert_eq(
+  handle {
+  let pd_v = "outer"
+  mut seen = []
+  for i in [1, 2] {
+    (i == 1) && (let pd_v = "inner {i}")
+    perform pd_ask()
+    seen.push(pd_v)
+  }
+  seen
+} with pd_ask(resume) { resume(nil) },
+  ["inner 1", "outer"],
+)
+
+assert_eq(
+  handle {
+  false && (let pd_h = 1)
+  perform pd_ask()
+  try { pd_h } catch e { [e.kind, e.line, e.col] }
+} with pd_ask(resume) { resume(nil) },
+  ["NameError", 602, 9],
+)
+
+// a compound assignment asks before it steps
+effect fn pd_step() {
+  let pd_c = || (n += 1)
+  let pd_d = || (m ??= 3)
+  let early = [
+    try { pd_c() } catch e { e.kind },
+    try { pd_d() } catch e { e.kind },
+  ]
+  let a = perform pd_ask()
+  mut n = a
+  mut m = nil
+  [early, pd_c(), pd_d()]
+}
+assert_eq(
+  handle { pd_step() } with pd_ask(resume) { resume(10) },
+  [["NameError", "NameError"], 11, 3],
+)
+
+// what a declaration raises reports at its `let`
+effect fn pd_typed() {
+  perform pd_ask()
+  let pd_m: Long = "s"
+  pd_m
+}
+let pd_typed_at = try {
+  handle { pd_typed() } with pd_ask(resume) { resume(nil) }
+} catch e {
+  [e.kind, e.line, e.col]
+}
+assert_eq(pd_typed_at, ["TypeError", 628, 3])
+
+// a skipped declaration means what the name meant above it, not a variable
+// declared further down
+effect fn pd_later(z) {
+  mut r = nil
+  {
+    z && (let pd_a = 2)
+    perform pd_ask()
+    r = try { pd_a } catch e { e.kind }
+  }
+  let pd_a = 1
+  let pd_c = || pd_a
+  [r, pd_c()]
+}
+assert_eq(
+  handle { pd_later(false) } with pd_ask(resume) { resume(nil) },
+  ["NameError", 1],
+)
+
 // --- `self` and the two lowered bodies --------------------------------------
 // An effect fn is a named declaration that cannot be a class member, so its
 // lowering leaves no receiver and `self` in its body is refused at parse time

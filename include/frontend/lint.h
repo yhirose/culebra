@@ -985,6 +985,23 @@ inline void shadows(const resolve::Resolution& res,
   sort_by_position(diags, first);
 }
 
+// A declaration of a name the effect lowering writes for itself
+// (culebra::kLoweringIntrinsics): inside an effect body it would be taken
+// for the intrinsic, and around one the lowering's own calls for it.
+inline void reserved_declarations(const resolve::Resolution& res,
+                                  std::vector<Diagnostic>& diags) {
+  size_t first = diags.size();
+  for (const auto& d : res.declarations)
+    if (culebra::is_lowering_intrinsic(res.symbols[d.symbol].name))
+      diags.push_back(Diagnostic{
+          "SyntaxError",
+          std::format("'{}' is a reserved name and cannot be declared",
+                      res.symbols[d.symbol].name),
+          static_cast<long>(d.node->line), static_cast<long>(d.node->column),
+          Severity::Error});
+  sort_by_position(diags, first);
+}
+
 // `x = v` where the walk has passed a `let` of that variable and nothing
 // that leaves it reassignable (a `mut`, a declaring pattern): certain to
 // raise ImmutableError when it runs. A binding the callee or the construct
@@ -1784,6 +1801,7 @@ inline std::vector<Diagnostic> scope_diagnostics(const peg::Ast& authored) {
   if (const auto* globals = builtin_names())
     _detail::undefined_reads(res, *globals, diags);
   _detail::shadows(res, diags);
+  _detail::reserved_declarations(res, diags);
   return diags;
 }
 

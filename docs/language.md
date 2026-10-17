@@ -99,6 +99,10 @@ which one changes what the program means.
 
 Identifiers are case-sensitive.
 
+Four names belong to the implementation, which writes them into the
+code it makes of an effect body (§16): `__unbound`, `__bound`,
+`__bound_or` and `__bound_in`. Declaring one is a `SyntaxError`.
+
 ### Keywords
 
 Reserved words that cannot name a variable:

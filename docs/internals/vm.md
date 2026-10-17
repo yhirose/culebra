@@ -2277,8 +2277,16 @@ result which variable a name is. A
 variable gets a slot of its own on the state instance when the machine
 enters the scope that holds it, a scope whose statements end up in
 different states (`PromotedLocals`); a scope no suspension splits is
-emitted as written, its variables the locals they were. A slot holds a
-value and no more, so a store its variable refuses is handed back to
+emitted as written, its variables the locals they were. A slot whose
+variable may be read before a declaration of it has run (one a closure
+reads, one an expression declares) holds the unbound sentinel until one
+has, as a lazy binding's cell does in a plain function, and is given it
+again each time the machine enters a loop's scope. Such a read asks the
+slot first, through intrinsics the compiler compiles only in a
+lowering's fragment and no program may declare
+(`Compiler::compile_lowering_intrinsic`): a closure's read raises the
+`NameError`, and one in the body's own frame means what the name meant
+above the declaration. A store its variable refuses is handed back to
 the compiler: the store is emitted in a block where the name is a local
 again (a `let` initialized from the slot), and raises the
 `ImmutableError` any local's does. Each block

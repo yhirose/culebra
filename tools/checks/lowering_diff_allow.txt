@@ -3,14 +3,21 @@
 # count moves, or that agrees now, fails the gate, so a fix removes its line.
 # All of them are an effect body's: its lowering moves the variables of a
 # scope a suspension splits onto its state object, where a slot holds a value
-# and nothing else. A generator body keeps its frame and agrees with the
-# plain fn on every form (lowering_diff.py fails a case where it does not).
+# or, until a declaration of it has run, the sentinel that says none has. A
+# generator body keeps its frame and agrees with the plain fn on every form
+# (lowering_diff.py fails a case where it does not).
 
-# L6: a slot does not know whether its declaration has run: a closure called
-# ahead of the declaration it reads, a declaration in an expression that was
-# skipped
-binding 5 c = || x; EMIT(try { c() } catch e { e.kind }); let x = 5; EMIT(x)
-binding 1 C && (let h = 1); EMIT(h)
+# L6: a write to a name whose declaration in an expression was skipped does
+# not look at what that declaration would have meant: where it shadows a
+# variable around it, the write is to its own slot (a plain fn's is to the
+# variable it shadows) and a compound one raises the NameError (a plain fn's
+# steps from the variable it shadows), and the write takes the `mut` the
+# declaration was written with (a plain fn's declares the name then, without
+# it)
+binding 1 let a = 1; { C && (mut a = 2); EMIT(try { a = 5 } catch e { e.kind }); EMIT(a) }
+binding 1 mut a = 1; { C && (mut a = 10); EMIT(try { a += 1 } catch e { e.kind }); EMIT(a) }; EMIT(a)
+binding 1 C && (mut h = 1); h = 2; EMIT(try { h = 3 } catch e { e.kind })
 
-# L6: a declaration written as a test reports at its name, not at its `let`
-binding 2 if false { EMIT(0) } else if (let m = C) { EMIT(m) }; EMIT(m)
+# L8: a local function a closure reads comes out of its box bound to the box,
+# so it is no longer the function it was
+binding 5 let f = || f; EMIT(f() == f)

@@ -1229,17 +1229,19 @@ class EffectsLowerer {
     if (scope) rw.promote(*scope);
     int entry = cps_seq(st, stmts, cont, tail, rw);
     if (st.failed || !scope) return entry;
-    return cps_fresh_boxes(st, *scope, entry, rw);
+    return cps_fresh_slots(st, *scope, entry, rw);
   }
 
-  // Entering `scope` again swaps its boxes first (PromotedLocals::
-  // fresh_boxes).
-  int cps_fresh_boxes(CpsState& st, size_t scope, int entry,
+  // Entering `scope` again starts its variables afresh first
+  // (PromotedLocals::fresh_slots). Only a loop enters one again: the first
+  // entry finds what the state class's `new` gave every slot.
+  int cps_fresh_slots(CpsState& st, size_t scope, int entry,
                       PromotedLocals& rw) const {
-    auto boxes = rw.fresh_boxes(scope);
-    if (boxes.empty()) return entry;
+    if (st.loop_stack.empty()) return entry;
+    auto fresh = rw.fresh_slots(scope);
+    if (fresh.empty()) return entry;
     int r = st.fresh();
-    st.states[r] = boxes + std::format(
+    st.states[r] = fresh + std::format(
         "      self._eff_state = {}\n      continue\n", entry);
     return r;
   }
@@ -1255,7 +1257,7 @@ class EffectsLowerer {
     }
     int entry = cps_seq(st, init_stmts, cont, /*tail=*/false, rw);
     if (st.failed) return -1;
-    return cps_fresh_boxes(st, *rw.scope_of(init), entry, rw);
+    return cps_fresh_slots(st, *rw.scope_of(init), entry, rw);
   }
 
   int cps_while(CpsState& st, const peg::Ast* w, int cont,
@@ -1475,7 +1477,7 @@ class EffectsLowerer {
     }
 
     // Each state binds the boxes it names on entry, not `_step` once: a scope
-    // entered again swaps its boxes (cps_fresh_boxes), and a closure made in
+    // entered again swaps its boxes (cps_fresh_slots), and a closure made in
     // a state keeps the box of the pass that made it.
     std::string dispatch = "      while true {\n";
     for (size_t i = 0; i < st.states.size(); i++) {

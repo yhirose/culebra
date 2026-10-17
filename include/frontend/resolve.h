@@ -153,6 +153,7 @@ struct Options {
 struct Use {
   size_t symbol = kNone;  // kNone: nothing declares the name
   size_t scope = kNone;   // the scope the name is written in
+  Role role = Role::Read;
 };
 
 // A declaration, by its name node, and how it is written.
@@ -416,7 +417,7 @@ class Resolver {
   void add(const peg::Ast& n, std::string_view name, size_t sym, size_t scope,
            Role role, Spelling spelling) {
     if (opts_.record_nodes && spelling != Spelling::KeywordLabel)
-      r_.uses[&n] = {sym, scope};
+      r_.uses[&n] = {sym, scope, role};
     size_t off = offset_of(n, name);
     if (off == kNone) return;
     r_.occurrences.push_back({off, name.size(), sym, scope, role, spelling});
@@ -426,7 +427,7 @@ class Resolver {
   void add_unresolved(const peg::Ast& n, std::string_view name,
                       Role role = Role::Read) {
     if (opts_.record_nodes) {
-      r_.uses[&n] = {kNone, cur_};
+      r_.uses[&n] = {kNone, cur_, role};
       if (role == Role::Read) r_.unbound_reads.push_back(&n);
     }
     size_t off = offset_of(n, name);

@@ -12618,6 +12618,7 @@ class Compiler {
                      chunk_.fn_bound_slot >= 0 && ast.nodes.size() > 1 &&
                      ast.nodes[1]->original_tag == "ARGUMENTS"_;
     if (auto r = compile_lazy_ns_register(ast)) return *r;
+    if (auto r = compile_lowering_intrinsic(ast)) return *r;
     // A `@value` construction whose whole chain stays unboxed compiles as
     // slots instead of an object — head included, which is why the attempt
     // comes before the head is compiled at all. Any part failing to qualify
@@ -13440,6 +13441,61 @@ class Compiler {
     int32_t t = alloc_temp(ast);
     emit(Op::LoadConst, t, kconst({TAG_NIL, 0}));
     return ExprResult{t, true};
+  }
+
+  // What the effect lowering writes for a variable it moved onto its state
+  // instance (PromotedLocals, state_lowering.h) that may be read before a
+  // declaration of it has run. The slot holds the unbound sentinel until one
+  // has, as a lazy binding's cell does here, and a read asks it what
+  // read_binding and read_shadowing ask:
+  //   __unbound()           the sentinel
+  //   __bound(p, "x")       p, or the NameError for `x` while p is the sentinel
+  //   __bound_or(p, o)      p, or o while p is the sentinel
+  //   __bound_in(r, p, "x") r, once __bound(p, "x") has passed
+  // Only a lowering's fragment compiles them, and no program can declare
+  // their names (culebra::kLoweringIntrinsics), so none holds the sentinel.
+  std::optional<ExprResult> compile_lowering_intrinsic(const peg::Ast& ast) {
+    using namespace peg::udl;
+    const auto& head = *ast.nodes[0];
+    auto op = head.token;
+    if (head.tag != "IDENTIFIER"_ || !culebra::is_lowering_intrinsic(op) ||
+        ast.nodes.size() != 2 || ast.nodes[1]->original_tag != "ARGUMENTS"_ ||
+        !culebra::is_lowering_fragment(ast.path))
+      return std::nullopt;
+    const auto& args = ast.nodes[1]->nodes;
+    auto name = [&](size_t i) {
+      const peg::Ast* n = args[i].get();
+      while (n->nodes.size() == 1) n = n->nodes[0].get();
+      return kconst_str(std::string(n->token));
+    };
+    check_use(head, nullptr);  // the intrinsic's name binds nothing
+    StampGuard pos(*this, ast);
+    if (op == "__unbound" && args.empty()) {
+      int32_t t = alloc_temp(ast);
+      emit(Op::LoadConst, t, kconst({TAG_NO_SELF, 0}));
+      return ExprResult{t, true};
+    }
+    if (op == "__bound" && args.size() == 2) {
+      auto v = compile_expr(*args[0]);
+      emit(Op::UnboundErr, v.slot, name(1));
+      return v;
+    }
+    if (op == "__bound_or" && args.size() == 2) {
+      int32_t out = alloc_temp(ast);
+      store_into(out, compile_expr(*args[0]), /*dst_is_fresh=*/true);
+      size_t to_outer = emit(Op::JumpIfTag, out, 0, TAG_NO_SELF);
+      size_t to_join = emit(Op::Jump, 0);
+      patch_to_here(to_outer);
+      store_into(out, compile_expr(*args[1]));
+      patch_to_here(to_join);
+      return ExprResult{out, true};
+    }
+    if (op == "__bound_in" && args.size() == 3) {
+      auto holder = compile_expr(*args[0]);
+      emit(Op::UnboundErr, compile_expr(*args[1]).slot, name(2));
+      return holder;
+    }
+    return std::nullopt;
   }
 
   // A direct `fn(...)` in a receiver frame: the frame's own closure called
