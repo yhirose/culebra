@@ -383,9 +383,7 @@ struct FnAnalysis {
       // at all. So does a REPL session's top-level class, which a later
       // line may redeclare into the same session cell — and whose binding
       // never drops, so the ring costs nothing there.
-      bool all_compile_time = std::all_of(
-          node.nodes.begin(), node.nodes.begin() + i,
-          [](const auto& d) { return culebra::is_compile_time_decorator(*d); });
+      bool all_compile_time = culebra::decorators_all_compile_time(node);
       std::string_view class_own;
       if (all_compile_time && !(session_top_ && depth_ == 0))
         class_own = culebra::parse_generic_head(node.nodes[i]->token).outer;

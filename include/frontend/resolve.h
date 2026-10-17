@@ -121,6 +121,11 @@ struct Scope {
   // The symbol a function scope's function is bound to (a `fn name`, or the
   // name a literal is assigned to), else kNone.
   size_t owner = kNone;
+  // The class a member's (or field initializer's) function scope belongs to,
+  // when the class's members read its name off their receiver — every class
+  // whose decorators are all the compiler's own (decorators_all_compile_time),
+  // as FnAnalysis has it below a session's top level — else kNone.
+  size_t member_of = kNone;
   // A method of a state class the effect lowering synthesized. It
   // holds a body written in the function around the class, which is where
   // its declarations were checked against the enclosing functions'.
@@ -382,6 +387,7 @@ class Resolver {
     size_t owner;  // the symbol the function is bound to, for keyword labels
     bool initializers = false;  // `body` is a CLASS_DECL with initializers
     bool lowered = false;       // a method of a lowered state class
+    size_t member_of = kNone;   // Scope::member_of
   };
   struct Label {
     size_t callee;
@@ -572,6 +578,7 @@ class Resolver {
                       end_of(*job.body));
     r_.scopes[cur_].owner = job.owner;
     r_.scopes[cur_].lowered = job.lowered;
+    r_.scopes[cur_].member_of = job.member_of;
     if (job.initializers) {
       if (opts_.record_nodes) r_.initializer_scope[job.body] = cur_;
       for_each_value(*job.body, /*instance=*/true,
@@ -859,25 +866,29 @@ class Resolver {
       }
 
       case "CLASS_DECL"_: {
-        walk_decl_head(n, Form::Class, nullptr);
+        size_t sym = kNone;
+        walk_decl_head(n, Form::Class, &sym);
         bool initializers = false;
         size_t head = first_non_decorator_index(n);
         bool lowered =
             head < n.nodes.size() &&
             is_lowered_state_class(
                 parse_generic_head(n.nodes[head]->token).outer, n.path);
+        size_t member_of = decorators_all_compile_time(n) ? sym : kNone;
         for (size_t j = head + 1; j < n.nodes.size(); j++) {
           if (n.nodes[j]->tag != "METHOD"_) continue;
           auto mv = view_method(*n.nodes[j]);
           if (mv.body) {
             enqueue(mv.params, mv.body->get());
             jobs_.back().lowered = lowered;
+            jobs_.back().member_of = member_of;
           }
           initializers |= mv.value && mv.instance_field();
         }
         for_each_value(n, /*instance=*/false,
                        [&](const peg::Ast& v) { scoped_body(v); });
-        if (initializers) jobs_.push_back({nullptr, &n, cur_, kNone, true});
+        if (initializers)
+          jobs_.push_back({nullptr, &n, cur_, kNone, true, false, member_of});
         return;
       }
 

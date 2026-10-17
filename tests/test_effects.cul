@@ -444,6 +444,124 @@ assert_eq(
   [true, "holder"],
 )
 
+// --- a class or enum declared in a split body -------------------------------
+// Its name is promoted like any local, so the declaration has to store the
+// value into the slot every later reference reads, before the suspension and
+// after it. A named fn always did.
+effect fn td_ask()
+
+effect fn td_comp() {
+  class TdCounter {
+    new(.n) {}
+    next() {
+      TdCounter(self.n + 1)
+    }
+  }
+  let early = TdCounter(1).n
+  let a = perform td_ask()
+  [early, TdCounter(a).next().n]
+}
+assert_eq(handle { td_comp() } with td_ask(resume) { resume(5) }, [1, 6])
+
+assert_eq(
+  handle {
+  enum TdLight {
+    Red,
+    Green,
+  }
+  @derive(Eq)
+  class TdPt {
+    new(.x) {}
+  }
+  let a = perform td_ask()
+  [TdLight.Green == TdLight.Green, TdPt(a) == TdPt(a), TdPt(a).x]
+} with td_ask(resume) { resume(7) },
+  [true, true, 7],
+)
+
+// a generic named fn is stored under its name, not its head
+assert_eq(
+  handle {
+  fn td_idt<T>(x: T) {
+    x
+  }
+  let a = perform td_ask()
+  td_idt(a)
+} with td_ask(resume) { resume(6) },
+  6,
+)
+
+// a member reads its class's name off its receiver, as in plain code, so
+// nothing it captures is held back by a cycle through its own class: the
+// resource it captured is dropped when the computation ends
+let td_log = []
+class TdRes {
+  new() {}
+  drop() {
+    td_log.push("dropped")
+  }
+}
+
+fn td_plain() {
+  let r = TdRes()
+  class TdSelf {
+    new() {}
+    again() {
+      [TdSelf(), r]
+    }
+  }
+  TdSelf().again()[0] != nil
+}
+td_plain()
+
+effect fn td_cyc() {
+  let r = TdRes()
+  class TdSelf {
+    new() {}
+    again() {
+      [TdSelf(), r]
+    }
+  }
+  let _ = perform td_ask()
+  TdSelf().again()[0] != nil
+}
+handle { td_cyc() } with td_ask(resume) { resume(0) }
+assert_eq(td_log, ["dropped", "dropped"])
+
+// a member's own named fns are the member's locals, so a class holding one is
+// accepted wherever it stands in the body, a block no suspension splits too
+let td_calc = []
+effect fn td_member_fn() {
+  let base = 100
+  if true {
+    class TdCalc {
+      new(.n) {}
+      calc() {
+        fn helper(x) {
+          TdCalc(x + base).n
+        }
+        helper(self.n)
+      }
+    }
+    td_calc.push(TdCalc(1).calc())
+  }
+  let a = perform td_ask()
+  a
+}
+assert_eq(handle { td_member_fn() } with td_ask(resume) { resume(4) }, 4)
+assert_eq(td_calc, [101])
+
+// one written last is the body's value, nil, as a declaration's is elsewhere
+assert_eq(
+  handle {
+  let a = perform td_ask()
+  class TdLate {
+    new(.v) {}
+  }
+} with td_ask(resume) { resume(1) },
+  nil,
+)
+
 // --- `self` and the two lowered bodies --------------------------------------
 // An effect fn is a named declaration that cannot be a class member, so its
 // lowering leaves no receiver and `self` in its body is refused at parse time

@@ -175,10 +175,11 @@ inline const peg::Ast* find_nested_fndef(const peg::Ast& body) {
         found = c.get();
         return;
       }
-      // A nested fn VALUE keeps its own scope, and a nested `handle` opens
-      // its own computation scope (the effects pass validates fns inside it)
-      // — leave both (and their inner defs) alone.
-      if (c->tag == "FUNCTION"_ || c->tag == "LAMBDA"_ || c->tag == "HANDLE"_)
+      // A nested fn VALUE or a class or trait member keeps its own scope, and
+      // a nested `handle` opens its own computation scope (the effects pass
+      // validates fns inside it) — leave them (and their inner defs) alone.
+      if (c->tag == "FUNCTION"_ || c->tag == "LAMBDA"_ || c->tag == "HANDLE"_ ||
+          c->tag == "METHOD"_ || c->tag == "TRAIT_METHOD"_)
         continue;
       walk(*c);
     }
@@ -994,27 +995,49 @@ class EffectsLowerer {
           "body is not supported — define the class outside.",
           err_pos(*cd).line, err_pos(*cd).col);
     }
-    std::string name(decl.nodes[k]->token);
+    std::string head(decl.nodes[k]->token);
     // Rewrite only past the name token so the header keeps a plain inner name
     // (the locals rewrite would turn it into `fn <promoted spelling>(`).
     size_t after = decl.nodes[k]->position + decl.nodes[k]->length;
     std::vector<SourceEdit> edits;
     collect_promoted_edits(decl, src_, rw, edits, EditSite::Stmt);
     std::erase_if(edits, [&](const SourceEdit& e) { return e.pos < after; });
-    return anchored("fn " + name +
+    return anchored("fn " + head +
                     splice_source(src_, after, stmt_span(st, decl).second,
                                   std::move(edits))) +
-           "\n      " + rw.slot(*decl.nodes[k])->place() + " = " + name;
+           store_decl_name(decl, rw);
+  }
+
+  // A class or enum declared at the body's statement level binds its name as
+  // a named fn does: the declaration stands where it was written (its members
+  // read the name off their receiver, PromotedLocals::own_name), and its
+  // value is stored into the slot after it, which every later reference — in
+  // this state or the next — reads.
+  std::string emit_type_decl(const CpsState& st, const peg::Ast& s,
+                             const peg::Ast& decl, PromotedLocals& rw) const {
+    return anchored(stmt_rewritten(st, s, rw)) + store_decl_name(decl, rw);
+  }
+
+  // The store of a declaration's value into its name's slot (none when the
+  // name has no slot): each state block is a fresh scope.
+  std::string store_decl_name(const peg::Ast& decl,
+                              const PromotedLocals& rw) const {
+    const auto* slot = rw.slot(*decl.nodes[first_non_decorator_index(decl)]);
+    if (!slot) return {};
+    return "\n      " + slot->place() + " = " + std::string(type_decl_name(decl));
   }
 
   // Statement-level emission source: a named fn decl is emitted and stored
-  // into its slot; one buried in otherwise-verbatim control flow would silently
-  // keep state-local scope, so reject it; anything else is the rewritten slice.
+  // into its slot, as a class or enum is; a named fn buried in
+  // otherwise-verbatim control flow would silently keep state-local scope, so
+  // reject it; anything else is the rewritten slice.
   std::string stmt_src(const CpsState& st, const peg::Ast& s,
                        PromotedLocals& rw) const {
     using namespace peg::udl;
     auto* u = unwrap_stmt(&s);
     if (u->tag == "MULTIFN_DECL"_) return emit_named_fn_decl(st, *u, rw);
+    if (u->tag == "CLASS_DECL"_ || u->tag == "ENUM_DECL"_)
+      return emit_type_decl(st, s, *u, rw);
     if (auto* fd = find_nested_fndef(*u)) {
       throw CulebraError(
           "SyntaxError",
@@ -1152,10 +1175,12 @@ class EffectsLowerer {
     using namespace peg::udl;
     int s = st.fresh();
     std::string body;
-    if (u->tag == "MULTIFN_DECL"_) {
-      // A named fn decl in tail position: store it in its slot; the value is
-      // nil (as in plain culebra, where a fn decl statement evaluates to nil).
-      body = "      " + emit_named_fn_decl(st, *u, rw) + mk(*u) + "\n" +
+    if (u->tag == "MULTIFN_DECL"_ || u->tag == "CLASS_DECL"_ ||
+        u->tag == "ENUM_DECL"_ || u->tag == "TRAIT_DECL"_) {
+      // A declaration in tail position: emitted (and stored in its slot) as a
+      // statement; the value is nil, as a declaration statement's is in plain
+      // culebra.
+      body = "      " + stmt_src(st, *u, rw) + mk(*u) + "\n" +
              "      self._eff_val = nil\n";
     } else if (u->tag == "ASSIGNMENT"_) {
       body = "      " + stmt_src(st, *u, rw) + mk(*u) + "\n";
@@ -1729,7 +1754,7 @@ class EffectsLowerer {
   }
 
   // The named fn decls of the body (statement level or nested control flow),
-  // stopping at fn / HANDLE boundaries: each is a local like any other (see
+  // stopping at fn / member / HANDLE boundaries: each is a local like any other (see
   // `emit_named_fn_decl`), so calls to it from elsewhere in the body read the
   // slot. A second clause of the same name would silently overwrite it (a
   // single value can't hold a multimethod), so it is rejected symmetrically.
@@ -1751,7 +1776,9 @@ class EffectsLowerer {
         }
         return;
       }
-      if (is_fn_boundary(n.tag) || n.tag == "HANDLE"_) return;
+      if (is_fn_boundary(n.tag) || n.tag == "HANDLE"_ || n.tag == "METHOD"_ ||
+          n.tag == "TRAIT_METHOD"_)
+        return;
       for (auto& c : n.nodes) walk(*c);
     };
     walk(body);

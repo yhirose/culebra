@@ -613,13 +613,18 @@ class PromotedLocals {
   }
 
  private:
-  // A named fn's own name inside its body binds to the declaration itself,
-  // not to the slot the declaration is stored in.
+  // A name its own declaration reads binds to the declaration itself, not to
+  // the slot the declaration is stored in: a named fn's inside its body, a
+  // class's inside its members, which read it off their receiver. Through
+  // the slot a member would capture the box that holds its own class — a
+  // cycle the body never wrote.
   bool own_name(const resolve::Use& use) const {
-    if (!res_.symbols[use.symbol].declared_as(resolve::Form::Function))
-      return false;
-    for (size_t s = use.scope; s != resolve::kNone; s = res_.scopes[s].parent)
-      if (res_.scopes[s].owner == use.symbol) return true;
+    bool fn = res_.symbols[use.symbol].declared_as(resolve::Form::Function);
+    for (size_t s = use.scope; s != resolve::kNone; s = res_.scopes[s].parent) {
+      const auto& scope = res_.scopes[s];
+      if ((fn && scope.owner == use.symbol) || scope.member_of == use.symbol)
+        return true;
+    }
     return false;
   }
 

@@ -1187,6 +1187,13 @@ inline bool is_compile_time_decorator(const peg::Ast& decorator) {
   return is_packable_decorator(decorator) || is_value_decorator(decorator) ||
          !view_derive(decorator).empty();
 }
+// Every decorator of `decl` is one the compiler reads itself: none can
+// replace the declaration's value, so its name is the declaration's own.
+inline bool decorators_all_compile_time(const peg::Ast& decl) {
+  size_t head = first_non_decorator_index(decl);
+  return std::all_of(decl.nodes.begin(), decl.nodes.begin() + head,
+                     [](const auto& d) { return is_compile_time_decorator(*d); });
+}
 
 // Registry of a program's `@value` class names, so a later `@value` class can
 // declare a field of one (`a: Vec2`). Written where a declaration is first seen —
@@ -1283,8 +1290,8 @@ inline const ClassFieldClasses* class_field_classes_of(std::string_view name) {
              : &it->second.classes;
 }
 
-// A class, enum or trait declaration's own name, and whether a class
-// declaration carries `@value`.
+// A class, enum, trait or named fn declaration's own name (its Generic
+// parameters aside), and whether a class declaration carries `@value`.
 inline std::string_view type_decl_name(const peg::Ast& decl) {
   return parse_generic_head(decl.nodes[first_non_decorator_index(decl)]->token)
       .outer;

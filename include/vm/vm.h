@@ -8178,11 +8178,7 @@ class Compiler {
     // its own class resolves too, which is where the constructions in a
     // `@value` operator live.
     int32_t ctor_chunk_idx = -1;
-    if (new_asts.size() < 2 &&
-        std::all_of(ast.nodes.begin(), ast.nodes.begin() + dec_end,
-                    [](const auto& d) {
-                      return culebra::is_compile_time_decorator(*d);
-                    })) {
+    if (new_asts.size() < 2 && culebra::decorators_all_compile_time(ast)) {
       ctor_chunk_idx = static_cast<int32_t>(prog_.chunks.size());
       prog_.chunks.emplace_back();
       // The name answers for the class only where this declaration is its
