@@ -1078,6 +1078,9 @@ playing() -> Bool
 pcm.volume(v)
 pcm.pitch(p)
 pcm.pan(p)
+Audio.resonate(samples: Array, modes: Array, dry = 0.0, rate = 44100) -> Array
+Audio.pluck(seconds, tunings: Array, strikes: Array = [], rate = 44100) -> Array
+Audio.partials(seconds, freq: Array, spectrum: Array, gain: Array = [], noise = nil, rate = 44100) -> Array
 Audio.capture_available() -> Bool
 mic.ready() -> Bool
 mic.start()
