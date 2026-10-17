@@ -1176,22 +1176,23 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_slot_init(
 // put on a fresh instance in one step — each holding its type's zero,
 // mutable, in declaration order, exactly what the run of per-field
 // `self.x = zero` stores in `new`'s prologue produced, one shape
-// transition at a time. The site caches the two shapes it moves between (a
-// fresh instance's, with its `class` slot alone, and the one the field list
-// transitions it to); an instance arriving with any other shape, or with
-// any state the fast path does not reproduce, takes the per-field stores.
+// transition at a time. The site caches the two shapes it moves between (the
+// one an instance arrives with — none at all for a fresh one, the usual case
+// — and the one the field list transitions it to, whose presence says the
+// pair is set); an instance arriving with any other shape, or with any state
+// the fast path does not reproduce, takes the per-field stores.
 // `zeros[i]` is `keys[i]`'s value: a scalar, or the borrowed `''` literal.
 // `annotations[i]` is a Named field's annotation (null otherwise).
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_fields_init(
     JitObject* obj, void** shape_cache, const char* const* keys,
     int64_t n_keys, const JitValue* zeros, const uint8_t* types,
     const char* const* annotations) {
-  auto* from = static_cast<culebra::Shape*>(shape_cache[0]);
-  if (from && obj->shape == from && !obj->key_order && !obj->frozen) {
+  auto* to = static_cast<culebra::Shape*>(shape_cache[1]);
+  if (to && obj->shape == shape_cache[0] && !obj->key_order && !obj->frozen) {
     obj->slots.reserve(obj->slots.size() + static_cast<size_t>(n_keys));
     for (int64_t i = 0; i < n_keys; i++)
       obj->slots.push_back({zeros[i], /*mut=*/true});
-    obj->shape = static_cast<culebra::Shape*>(shape_cache[1]);
+    obj->shape = to;
     obj->mut_count += n_keys;
     return;
   }
@@ -1208,9 +1209,13 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_fields_init(
                              0, 0, /*is_init=*/true, type, annotation);
   }
   // Prime the cache only from a run the fast path reproduces exactly: every
-  // key appended (none existed, so no overwrite), still shaped, and no
-  // insertion-order sidecar to keep in step.
-  if (!obj->is_dict && !obj->key_order && before &&
+  // key appended (none existed, so no overwrite), shaped after it, no
+  // insertion-order sidecar to keep in step, and no `drop`, whose
+  // registration the fast path does not repeat.
+  bool drop = false;
+  for (int64_t i = 0; i < n_keys; i++)
+    if (std::string_view(keys[i]) == "drop") drop = true;
+  if (!obj->is_dict && !obj->key_order && obj->shape && !drop &&
       obj->slots.size() == n_before + static_cast<size_t>(n_keys)) {
     shape_cache[0] = before;
     shape_cache[1] = obj->shape;

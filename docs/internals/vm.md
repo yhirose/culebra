@@ -1161,9 +1161,9 @@ Float }` used to open with one `ObjectSet` per field, each a shape
 transition, on every `new`. A maximal run of
 initializer-less fields is now one `FieldsInit` over a
 `Chunk::FieldLayoutSpec` — the names, each type's zero value, and a pair
-of Shapes the site caches on its first execution (the class-only shape
-every fresh instance arrives with, and the one the run transitions it
-to). A field with an initializer keeps its own store, in place, so
+of Shapes the site caches on its first execution (the one an instance
+arrives with — none at all for a fresh instance — and the one the run
+transitions it to). A field with an initializer keeps its own store, in place, so
 declaration order and what an initializer sees of the fields below it
 (`nil`, docs/language.md §10) are unchanged — preceded, when its declared
 type is checked (a scalar, or a `FieldType::Named` annotation, which the
