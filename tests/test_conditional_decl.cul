@@ -49,6 +49,34 @@ fn cd_skipped_mut(c) {
 assert_eq(cd_skipped_mut(true), 3)
 assert_throws("ImmutableError", fn () { cd_skipped_mut(false) })
 
+// Until a declaration has run, a compound write steps the binding the name
+// still means and writes it back there, and so does a destructuring leaf:
+// each is a write, as `=` is.
+fn cd_skipped_writes(c) {
+  mut h = 1
+  let seen = []
+  {
+    c && (mut h = 10)
+    h += 1
+    (h, _) = (h * 2, 0)
+    seen.push(h)
+  }
+  seen.push(h)
+  seen
+}
+assert_eq([cd_skipped_writes(false), cd_skipped_writes(true)], [[4, 4], [22, 1]])
+
+// A stdlib global it shadows is what the name means then: a read is the
+// global, and a write refuses, as one to any stdlib global does.
+fn cd_skipped_builtin(c) {
+  c && (mut type_of = |x| "mine")
+  let read = type_of(1)
+  let wrote = try { type_of = |x| "other"; "wrote" } catch e { e.kind }
+  [read, wrote]
+}
+assert_eq(cd_skipped_builtin(false), ["Long", "ImmutableError"])
+assert_eq(cd_skipped_builtin(true), ["mine", "wrote"])
+
 // A skipped declaration does not settle a cell a closure above holds.
 fn cd_skipped_forward(c) {
   let g = || h
@@ -105,6 +133,18 @@ fn cd_mixed_mut(a) {
 }
 assert_eq(cd_mixed_mut(true), 5)
 assert_throws("ImmutableError", fn () { cd_mixed_mut(false) })
+// The same where the name shadows a binding around it.
+fn cd_shadowing_mixed_mut(a) {
+  mut m = 1
+  {
+    !a && (let m = 2)
+    a && (mut m = 3)
+    m = 5
+  }
+  m
+}
+assert_eq(cd_shadowing_mixed_mut(true), 1)
+assert_throws("ImmutableError", fn () { cd_shadowing_mixed_mut(false) })
 
 // In a loop the name is undeclared again on every pass.
 assert_throws("NameError", fn () {

@@ -256,6 +256,9 @@ BINDING_FORMS = [
     'let a = 1; { C && (mut a = 2); EMIT(try { a = 5 } catch e { e.kind }); EMIT(a) }',
     'mut a = 1; { C && (mut a = 10); EMIT(try { a += 1 } catch e { e.kind }); EMIT(a) }; EMIT(a)',
     'C && (mut h = 1); h = 2; EMIT(try { h = 3 } catch e { e.kind })',
+    'mut a = 1; { C && (mut a = 10); (a, _) = (a + 1, 0); EMIT(a) }; EMIT(a)',
+    'C && (mut type_of = 1); EMIT(try { type_of = 5; 0 } catch e { e.kind })',
+    'mut a = 1; { !C && (let a = 3); C && (mut a = 10); EMIT(try { a = 7 } catch e { e.kind }); EMIT(a) }; EMIT(a)',
     # Where a declaration reports what it raises.
     'let m: Long = C; EMIT(m)',
     'let (p, q) = C; EMIT(p)',

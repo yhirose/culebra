@@ -187,6 +187,16 @@ assert_eq(sh_mut, 7)
 }
 assert_eq(sh_mut, 9)
 
+# So does a compound one, and a destructuring leaf: each is a write as well.
+{
+  sh_mut += 1
+  (sh_mut, _) = (sh_mut * 2, 0)
+  let hold = fn () { sh_mut }
+  let sh_mut = sh_mut + 1
+  assert_eq([hold(), sh_mut], [21, 21])
+}
+assert_eq(sh_mut, 20)
+
 # A block's declaration dies with the block: the read after it is the
 # enclosing binding again, not the closed block's local.
 let after_block = fn () {
@@ -201,6 +211,14 @@ assert_eq(after_block(), 8)
   let type_of = type_of
   assert_eq(use_builtin(), 'Long')
   assert_eq(type_of('s'), 'String')
+}
+
+# A write ahead of the shadow is one to the builtin, which refuses.
+{
+  let hold = fn () { type_of }
+  let wrote = try { type_of = 5; 'wrote' } catch e { e.kind }
+  mut type_of = type_of
+  assert_eq([wrote, hold()(1)], ['ImmutableError', 'Long'])
 }
 
 # A keyword argument's label and an object pattern's key name a parameter and

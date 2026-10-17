@@ -8,15 +8,19 @@
 # (lowering_diff.py fails a case where it does not).
 
 # L6: a write to a name whose declaration in an expression was skipped does
-# not look at what that declaration would have meant: where it shadows a
-# variable around it, the write is to its own slot (a plain fn's is to the
-# variable it shadows) and a compound one raises the NameError (a plain fn's
-# steps from the variable it shadows), and the write takes the `mut` the
-# declaration was written with (a plain fn's declares the name then, without
-# it)
+# not look at what the name means until a declaration of it has run: where it
+# shadows a variable around it or a stdlib global, the write is to its own
+# slot (a plain fn's is to what it shadows, and one to a stdlib global
+# refuses) and a compound one raises the NameError (a plain fn's steps what
+# it shadows); and the write takes the `mut` of the declaration written last
+# before it (a plain fn's takes the one of the declaration that ran, and
+# where none has, the write declares the name, without it)
 binding 1 let a = 1; { C && (mut a = 2); EMIT(try { a = 5 } catch e { e.kind }); EMIT(a) }
 binding 1 mut a = 1; { C && (mut a = 10); EMIT(try { a += 1 } catch e { e.kind }); EMIT(a) }; EMIT(a)
 binding 1 C && (mut h = 1); h = 2; EMIT(try { h = 3 } catch e { e.kind })
+binding 1 mut a = 1; { C && (mut a = 10); (a, _) = (a + 1, 0); EMIT(a) }; EMIT(a)
+binding 1 C && (mut type_of = 1); EMIT(try { type_of = 5; 0 } catch e { e.kind })
+binding 1 mut a = 1; { !C && (let a = 3); C && (mut a = 10); EMIT(try { a = 7 } catch e { e.kind }); EMIT(a) }; EMIT(a)
 
 # L8: a local function a closure reads comes out of its box bound to the box,
 # so it is no longer the function it was

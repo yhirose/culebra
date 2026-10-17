@@ -622,6 +622,12 @@ is not changing.
   declares (`else if (let m = f()) > 0`) belongs to the scope around the
   `if`. An init clause (`if mut d = f(); …`) is the scope around the whole
   `if`, so its names reach every test and every arm.
+* A declaration takes effect when it runs. Until a declaration of `x` that
+  shadows a visible binding has run (it comes later in the block, or sits
+  in an operand that was skipped, as in `c && (let x = 2)`), `x` in the
+  same function still means the binding it shadows: a read, `x = v`,
+  `x += v` and `(x, y) = …` all reach that binding. A closure that reads
+  `x` before then raises `NameError`.
 
 ### Assignment targets
 

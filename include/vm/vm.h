@@ -5997,8 +5997,8 @@ class Compiler {
   }
 
   // A bare write. One to a conditional pre-declaration is that declaration
-  // when it is the first to run (emit_conditional_rebind decides at run
-  // time), so it names the variable the way a `let` would.
+  // when it is the first to run (emit_rebind decides at run time), so it
+  // names the variable the way a `let` would.
   void check_write(const peg::Ast& name, const Binding* b) {
     if (b && b->conditional)
       note_declaration(name, *lookup_name_mut(b->name));
@@ -6649,50 +6649,59 @@ class Compiler {
            !is_stdlib_global(name);
   }
 
-  // The mutability check and the store behind `x = v` on a binding already
-  // in scope. Returns false when the check is a compile-time one and already
+  // Every write to a binding already in scope: `x = v`, `x op= v`, a
+  // destructuring leaf. The write half of read_shadowing: while a lazy
+  // binding still holds the sentinel no declaration of it has run, so the
+  // write goes to what the name means until then, under that binding's own
+  // rules (a stdlib global's is that it refuses), and a conditional name
+  // that shadows nothing is declared by the write, immutably, as a bare
+  // declare is. Only one arm ever executes, so both may consume the RHS
+  // temp. Returns false when the check is a compile-time one and already
   // lost, so the caller knows its own trailing code is unreachable.
   bool emit_rebind(const peg::Ast& at, const Binding& b, ExprResult r) {
+    // A session binding's ReplBind asks for the stdlib global itself.
+    bool shadows =
+        b.lazy && (b.shadowed || (b.shadowed_builtin && !b.session));
+    if (!shadows && b.mut_slot < 0) return emit_bound_rebind(at, b, r);
+    count_dynamic();
+    // The probe belongs to the enclosing statement's temps: a scope of its
+    // own here would roll the slot number back, and the read this assignment
+    // returns would take the same number and overwrite the probe's `+1`
+    // instead of releasing it.
+    int32_t probe = lazy_probe(at, b);
+    size_t to_unbound = emit(Op::JumpIfTag, probe, 0, TAG_NO_SELF);
+    emit_bound_rebind(at, b, r);
+    size_t to_join = emit(Op::Jump, 0);
+    patch_to_here(to_unbound);
+    if (!shadows) {
+      store_binding(at, b, r);
+      emit(Op::LoadConst, b.mut_slot, kconst({TAG_BOOL, 0}));
+    } else if (b.shadowed) {
+      emit_rebind(at, *b.shadowed, r);
+    } else {
+      emit(Op::ImmutErr, kconst_str(b.name));
+    }
+    patch_to_here(to_join);
+    return true;
+  }
+
+  // emit_rebind once a declaration of the name has run: checked against its
+  // `mut`, which for a conditional name is the one the declaration that ran
+  // wrote (Binding::mut_slot).
+  bool emit_bound_rebind(const peg::Ast& at, const Binding& b, ExprResult r) {
     ensure_session_slot(b);
     if (b.session) {
       emit(Op::ReplBind, static_cast<int32_t>(ReplBindMode::Assign),
            kconst_str(b.name), b.shadowed_builtin ? 1 : 0);
-    } else if (b.conditional && b.mut_slot >= 0) {
-      return emit_conditional_rebind(at, b, r);
+    } else if (b.mut_slot >= 0) {
+      size_t to_store = emit(Op::JumpIfTrue, b.mut_slot);
+      emit(Op::ImmutErr, kconst_str(b.name));
+      patch_to_here(to_store);
     } else if (!b.is_mut) {
       emit(Op::ImmutErr, kconst_str(b.name));
       return false;
     }
     store_binding(at, b, r);
-    return true;
-  }
-
-  // A bare write to a conditionally-declared name, where "is this the
-  // declaration or a reassignment" is a runtime fact: the sentinel still in
-  // the cell means no declaration has landed and this write is one
-  // (immutably — a bare declare never carries `mut`), while a value there
-  // means a declaration that ran already bound the name and this write is
-  // checked against the mutability THAT one wrote.
-  bool emit_conditional_rebind(const peg::Ast& at, const Binding& b,
-                               ExprResult r) {
-    count_dynamic();
-    // The probe belongs to the enclosing statement's temps, as
-    // assign_shadowing's does: a scope of its own here would roll the slot
-    // number back, and the read this assignment returns would take the same
-    // number and overwrite the probe's `+1` instead of releasing it.
-    int32_t probe = lazy_probe(at, b);
-    size_t to_declare = emit(Op::JumpIfTag, probe, 0, TAG_NO_SELF);
-    // Reassignment: the declaration's own `mut` decides.
-    size_t to_immut = emit(Op::JumpIfFalse, b.mut_slot);
-    store_binding(at, b, r);
-    size_t to_join = emit(Op::Jump, 0);
-    patch_to_here(to_immut);
-    emit(Op::ImmutErr, kconst_str(b.name));
-    // Declaration: fill the binding and record that it was not a `mut` one.
-    patch_to_here(to_declare);
-    store_binding(at, b, r);
-    emit(Op::LoadConst, b.mut_slot, kconst({TAG_BOOL, 0}));
-    patch_to_here(to_join);
     return true;
   }
 
@@ -6719,35 +6728,6 @@ class Compiler {
     }
     patch_to_here(to_join);
     return {out, true};
-  }
-
-  // Write half of read_shadowing: the sentinel still in the cell means
-  // the declaration has not run, so the assignment goes to the shadowed
-  // binding under that binding's `mut`; afterwards to the cell under its
-  // own. Only one arm ever executes, so both may consume the RHS temp.
-  ExprResult assign_shadowing(const peg::Ast& ast, const peg::Ast& tgt,
-                              const Binding& b, ExprResult r) {
-    count_dynamic();
-    int32_t probe = lazy_probe(tgt, b);
-    size_t to_outer = emit(Op::JumpIfTag, probe, 0, TAG_NO_SELF);
-    if (!b.is_mut) {
-      StampGuard pos(*this, ast);
-      emit(Op::ImmutErr, kconst_str(b.name));
-    } else {
-      store_binding(tgt, b, r);
-    }
-    size_t to_join = emit(Op::Jump, 0);
-    patch_to_here(to_outer);
-    if (!b.shadowed->is_mut) {
-      StampGuard pos(*this, ast);
-      emit(Op::ImmutErr, kconst_str(b.name));
-    } else if (b.shadowed->is_cell) {
-      store_cell(tgt, b.shadowed->slot, r);
-    } else {
-      store_into(b.shadowed->slot, r);
-    }
-    patch_to_here(to_join);
-    return read_binding(tgt, b);
   }
 
   // Structure of a statement rather than an operand of it: an arm list, an
@@ -9676,10 +9656,6 @@ class Compiler {
       return {t, true};  // unreachable
     }
     auto r = compile_assign_rhs(ast, av);
-    // Before its declaration runs the name still means the binding the
-    // pre-declaration shadows, so the write lands there and is checked
-    // against that binding's own mutability.
-    if (b->lazy && b->shadowed) return assign_shadowing(ast, *tgt, *b, r);
     {
       // Runtime ImmutableError, after the RHS ran — matching the interp/JIT
       // order and keeping a never-executed assignment silent. The RHS temp
@@ -9788,7 +9764,7 @@ class Compiler {
     // nothing is rebound and the target's `mut` does not gate it: the interp
     // returns before env->assign, and the JIT branches around its rebind.
     // Only the rebinding arm consumes the step's temp; the other leaves it to
-    // the statement sweep (assign_shadowing's arms are the same shape).
+    // the statement sweep (emit_rebind's arms are the same shape).
     size_t in_place = emit(Op::JumpIfSame, cur.slot, 0, t);
     emit_rebind(tgt, *b, {t, true});
     patch_to_here(in_place);
