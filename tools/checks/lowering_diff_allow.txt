@@ -14,6 +14,3 @@ binding 1 C && (let h = 1); EMIT(h)
 
 # L6: a declaration written as a test reports at its name, not at its `let`
 binding 2 if false { EMIT(0) } else if (let m = C) { EMIT(m) }; EMIT(m)
-
-# L7: a class declared in the body is unknown after a suspension
-binding 5 class K { new() {} }; EMIT(1); EMIT(K() == nil)
