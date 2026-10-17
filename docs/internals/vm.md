@@ -1166,8 +1166,9 @@ every fresh instance arrives with, and the one the run transitions it
 to). A field with an initializer keeps its own store, in place, so
 declaration order and what an initializer sees of the fields below it
 (`nil`, docs/language.md §10) are unchanged — preceded, when its declared
-type is a scalar, by a one-field `FieldsInit` of its own, which is how
-that type reaches the slot its store then overwrites; an instance
+type is checked (a scalar, or a `FieldType::Named` annotation, which the
+spec carries beside it), by a one-field `FieldsInit` of its own, which is
+how that type reaches the slot its store then overwrites; an instance
 arriving in any other state takes the per-field stores the runtime keeps
 for it. A `String` zero is the one entry in a spec that is an address
 rather than a bit pattern, so `culebra build` re-emits it into the module
@@ -1288,10 +1289,12 @@ diagnostics.
 
 #### A declared field's type, and what a read does with it
 
-A class's *scalar* declared field types — `Float`, `Long`, `Bool` — are
-checked on every write (`docs/language.md` §10), so the type is an answer
-rather than a guess. Every other annotation is `FieldType::Any` and
-answers nothing.
+A class's declared field types are checked on every write
+(`docs/language.md` §10), so the type is an answer rather than a guess. A
+*scalar* one — `Float`, `Long`, `Bool` — answers with one tag; every other
+checked annotation is `FieldType::Named`, its slot carrying the annotation
+(`culebra::FieldAnnotation`) the write is checked against, which answers
+no one tag and so gives a read nothing to compile against.
 `Op::PropVal` carries it in `d`: the compiler fills it when the receiver
 is a name whose declared class declares that field with a scalar type —
 a parameter or a local whose annotation names the class, `self` inside
@@ -1314,8 +1317,8 @@ the one it got and calls a cold `[[noreturn]]` reject when they differ —
 one predictable branch, 0.08 ns of the 2.0. The executor asks the same
 question of the same instruction, so a forged receiver raises the same
 `TypeError` on both lanes; `tests/test_typed_fields.cul` pins that,
-along with `remove` refusing a scalar-declared field (a field that can
-vanish would be no contract at all).
+along with `remove` refusing a checked field (a field that can vanish
+would be no contract at all).
 
 The entry check compares names, so what a reader takes from an annotation
 is what the NAME promises, and more than one thing may carry a name: two

@@ -3890,36 +3890,78 @@ inline culebra::FieldType _jit_field_type_of_tag(int8_t tag) {
   return culebra::FieldType::Any;
 }
 
-inline bool _jit_tag_fits_field_type(int8_t tag, culebra::FieldType t) {
+// Whether a value may be stored in a slot declared `t`, as far as that can be
+// told without parsing an annotation or asking a trait: a scalar by its tag,
+// and a Named slot (`annotation`) by nil — such a field's zero, so its `Car`
+// reads as `Car?` — or by the one type it names: a built-in type's tag, or a
+// class or enum its instance answers to. Never throws; false only means "not
+// settled here".
+inline bool _jit_value_surely_fits_field(
+    int8_t tag, int64_t data, culebra::FieldType t,
+    const culebra::FieldAnnotation* annotation) {
   switch (t) {
     case culebra::FieldType::Float: return tag == TAG_FLOAT;
     case culebra::FieldType::Long: return tag == TAG_LONG;
     case culebra::FieldType::Bool: return tag == TAG_BOOL;
+    case culebra::FieldType::Named: {
+      if (tag == TAG_NIL || tag == annotation->tag) return true;
+      if (tag != TAG_OBJECT || !annotation->name) return false;
+      auto* sp = _jit_meta_specials(reinterpret_cast<JitObject*>(data));
+      return sp && (sp->name == annotation->name ||
+                    sp->enum_name == annotation->name);
+    }
     case culebra::FieldType::Any:
     case culebra::FieldType::Count: break;
   }
   return true;
 }
 
+// The whole answer: a Named slot not settled above takes the parameter's rule.
+inline bool _jit_value_fits_field(int8_t tag, int64_t data,
+                                  culebra::FieldType t,
+                                  const culebra::FieldAnnotation* annotation) {
+  if (_jit_value_surely_fits_field(tag, data, t, annotation)) return true;
+  return t == culebra::FieldType::Named &&
+         _culebra_value_matches_type(tag, data, annotation->text);
+}
+
 // The one wording, so the write check and the read's reject cannot drift
 // apart — `tests/test_typed_fields.cul` pins the sentence.
-[[noreturn]] inline void _jit_throw_field_type(const char* key,
-                                               culebra::FieldType t,
-                                               int64_t line, int64_t col) {
+[[noreturn]] inline void _jit_throw_field_type(
+    const char* key, culebra::FieldType t,
+    const culebra::FieldAnnotation* annotation, int64_t line, int64_t col) {
   throw culebra::CulebraError(
       "TypeError",
       culebra::format("type error: field '{}' expects {}", key,
-                      culebra::field_type_name(t)),
+                      t == culebra::FieldType::Named
+                          ? std::string_view(annotation->text)
+                          : std::string_view(culebra::field_type_name(t))),
       line, col);
 }
 
-// The refused write, which owns the value it was handed on every exit.
-[[noreturn]] inline void _jit_field_type_error(const char* key,
-                                               culebra::FieldType t, int8_t tag,
-                                               int64_t data, int64_t line,
-                                               int64_t col) {
+// A write's check against the slot's declared type: a refused value is
+// released (the write owned it) and reported in the one wording.
+inline void _jit_check_field_write(const char* key, culebra::FieldType t,
+                                   const culebra::FieldAnnotation* annotation,
+                                   int8_t tag, int64_t data, int64_t line,
+                                   int64_t col) {
+  if (_jit_value_fits_field(tag, data, t, annotation)) return;
   _culebra_value_release_impl(tag, data);
-  _jit_throw_field_type(key, t, line, col);
+  _jit_throw_field_type(key, t, annotation, line, col);
+}
+
+// The same for a write to `shape`'s existing slot `idx`, reading the slot's
+// annotation only when it has one.
+inline void _jit_check_slot_write(const char* key, const culebra::Shape* shape,
+                                  size_t idx, int8_t tag, int64_t data,
+                                  int64_t line, int64_t col) {
+  auto t = shape->type_at(idx);
+  if (t == culebra::FieldType::Any) return;
+  _jit_check_field_write(key, t,
+                         t == culebra::FieldType::Named
+                             ? shape->annotations[idx]
+                             : nullptr,
+                         tag, data, line, col);
 }
 
 // A JitHandle keeps its state in C++, so it has no field to write; consumes
@@ -3938,13 +3980,14 @@ inline void _jit_packed_view_set(JitBufView& view, const char* key,
                                  int8_t tag, int64_t data, int64_t line,
                                  int64_t col);
 
-// The write with the field's declared type in hand. Only a class's own
-// declaration has one, and it reaches here from C++ (object_fields_init);
-// culebra_runtime_object_set below is the ABI codegen names, and its
-// parameter list must stay as codegen declares it.
+// The write with the field's declared type in hand (`annotation`, interned,
+// when it is Named). Only a class's own declaration has one, and it reaches
+// here from C++ (object_fields_init); culebra_runtime_object_set below is the
+// ABI codegen names, and its parameter list must stay as codegen declares it.
 inline void _jit_object_set_declared(
     JitObject* obj, const char* key, bool mut, int8_t tag, int64_t data,
-    int64_t line, int64_t col, bool is_init, culebra::FieldType declared) {
+    int64_t line, int64_t col, bool is_init, culebra::FieldType declared,
+    const culebra::FieldAnnotation* annotation = nullptr) {
   if (auto* rec = _jit_record_view(obj))
     return _jit_packed_view_set(*rec, key, tag, data, line, col);
   if (obj->has_handle) _jit_handle_reject_write(obj, tag, data, line, col);
@@ -3963,14 +4006,11 @@ inline void _jit_object_set_declared(
   if (idx == static_cast<size_t>(-1)) {
     _jit_reject_value_add(obj, key, tag, data, line, col, is_init);
     _culebra_check_well_known_prop(key, tag, data);
-    if (!_jit_tag_fits_field_type(tag, declared))
-      _jit_field_type_error(key, declared, tag, data, line, col);
-    obj->append_slot(key, JitValue{tag, data}, mut, declared);
+    _jit_check_field_write(key, declared, annotation, tag, data, line, col);
+    obj->append_slot(key, JitValue{tag, data}, mut, declared, annotation);
   } else {
-    auto slot_type = obj->shape ? obj->shape->type_at(idx)
-                                : culebra::FieldType::Any;
-    if (!_jit_tag_fits_field_type(tag, slot_type))
-      _jit_field_type_error(key, slot_type, tag, data, line, col);
+    if (obj->shape)
+      _jit_check_slot_write(key, obj->shape, idx, tag, data, line, col);
     _jit_overwrite_slot(obj->slots[idx], key, tag, data, mut, is_init, line,
                         col, /*check_wk=*/true);
   }
@@ -3986,7 +4026,8 @@ inline void _jit_object_set_declared(
 [[noreturn]] CULEBRA_RT_KEEP CULEBRA_RT_INLINE void
 culebra_runtime_field_type_reject(int8_t want_tag, const char* key,
                                   int64_t line, int64_t col) {
-  _jit_throw_field_type(key, _jit_field_type_of_tag(want_tag), line, col);
+  _jit_throw_field_type(key, _jit_field_type_of_tag(want_tag), nullptr, line,
+                        col);
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_set(

@@ -1751,33 +1751,52 @@ Semantics:
     created via `self.x = y` in the constructor. A `@value` class (§21)
     is the exception: its instances freeze when `new` returns.
 
-  A **scalar** declared type — `Float`, `Long`, `Bool`, and the
-  fixed-width spellings of §21 (`Float32`, `Int32`, `Byte`, ...), each
-  of which stands for one of those three — is **checked on every
-  write**, the same runtime-check model parameters and `let x: T` follow
-  (§14): the field admits only its own values. The check covers every
-  way a value reaches the field: the declaration's own initializer, a
-  literal name, a computed key, the constructor's own `self.x`, a native
-  builder. That is what makes such a field's type worth reading: a
-  `Float` field holds a `Float`, so code that knows the class knows the
-  field's type without asking.
+  A declared type is **checked on every write**, the same runtime-check
+  model parameters and `let x: T` follow (§14): the field admits only
+  values of its type. A **scalar** — `Float`, `Long`, `Bool`, and the
+  fixed-width spellings of §21 (`Float32`, `Int32`, `Byte`, ...), each of
+  which stands for one of those three — admits its own values alone. Any
+  other annotation — a class, an enum, a trait, a union, an optional
+  (`T?`), `Array`, `Object`, `Function` — is checked by the rule a
+  parameter's is, except that `nil` always passes: it is such a field's
+  zero above, so a field declared `Car` admits `nil` as `Car?` would. The
+  check covers every way a value reaches the field: the declaration's own
+  initializer, a literal name, a computed key, the constructor's own
+  `self.x`, a native builder. That is what makes a field's type worth
+  reading: a `Float` field holds a `Float` and a `Car` field a `Car` (or
+  `nil`), so code that knows the class knows the field's type without
+  asking. A checked field cannot be removed (`remove` is an
+  `ImmutableError`), since a field that can vanish promises nothing.
 
-  **Every other annotation is unchecked.** It still chooses the field's
-  zero value above and still records what the code means, but the field
-  accepts whatever it is given: `String`, a class, a union, an optional
-  (`T?`), and a field with no annotation at all. The reasoning is the
-  one `@value` uses to narrow its own field types (§21) — a scalar is a
-  value a tag alone decides, with no heap body behind it and no second
-  spelling of the same thing. `String` has a second spelling:
-  `StringView` (§18.1) is also a string value, and it is what `slice`,
-  `split`, `lines` and `for` over a string hand back. A `name: String`
-  field therefore accepts a `StringView`, and a read of it asks the
-  value what it is, exactly as before.
+  ```culebra
+  class Car {
+    speed: Float
+    new(.speed) {}
+  }
+  class Garage {
+    car: Car
+  }
+  let g = Garage()
+  inspect(g.car)       # => nil
+  g.car = Car(1.5)
+  inspect(g.car.speed) # => 1.5
+  g.car = 'a string'   # !! field 'car' expects Car
+  ```
+
+  **`String` is unchecked**, and so is any annotation that admits it
+  (`String?`, `String | Long`) or admits anything (`Any?`), as is a field
+  with no annotation at all.
+  `String` has a second spelling: `StringView` (§18.1) is also a string
+  value, and it is what `slice`, `split`, `lines` and `for` over a string
+  hand back. A `name: String` field therefore accepts a `StringView` —
+  and anything else — and a read of it asks the value what it is.
 
   `@packable` classes (§21) additionally read a field's declared type to
   compute their fixed byte layout, and `@value` classes to check that
   every field is a scalar or another `@value` class, so both require
-  typed fields (`x = 7` in either is a SyntaxError).
+  typed fields (`x = 7` in either is a SyntaxError). A `@packable` field
+  of any other type than a scalar is its byte layout's: its packed view
+  checks a write to it, and an ordinary instance's write is not checked.
 * `new(.x)` declares a **field parameter**: a `new` parameter `x` that
   also stores its argument into the field `x`, so the body carries no
   assignment for it. `.x: T` and `.x = v` give it a type and a default
@@ -1807,7 +1826,7 @@ Semantics:
     initializer declared *below* the field reads what the argument
     stored (`chr_ram` above) and one declared *above* it reads `nil`,
     as ever. The store is the checked write every other store is: a
-    scalar declared type refuses a value of another type.
+    declared type refuses a value it does not admit.
   - `.x?` left out by the caller takes the declaration's own value, the
     initializer or the type's zero value, and the parameter `x` reads as
     that value in the body. Passing `nil` is passing a value, not leaving it
@@ -3798,10 +3817,9 @@ method — `self._data ??= load()` works directly (`??=` supports
   annotations on local intermediates do not add extra coverage.
 * Object property values have no annotation slot — a property an
   object grows outside a class declaration is unconstrained. A class's
-  field declared with a *scalar* type (`Float`, `Long`, `Bool`, or a
-  fixed-width spelling of one) is the exception: that annotation is
-  checked on every write (§10). Every other field annotation, `String`
-  included, is not checked.
+  declared field is the exception: its annotation is checked on every
+  write (§10), except `String` (and an annotation that admits it), which
+  is not checked.
 * Array element types are not tracked.
 * `mut x: T` on a local, or a `mut` parameter, does not re-check on
   later reassignment — the check happens once at the annotated
@@ -3857,14 +3875,15 @@ inspect(swapped('x'))            # => 'Long'
 A name whose declared class is known — a parameter or a `let` whose
 annotation names it, `self` inside that class's own members, or the next
 step of a chain through a class-typed field — is checked where it is
-bound, and that class's scalar-declared fields are checked on every write
-(§10), so a read of one of *those* fields through that name knows what it
-will find. The compiler uses that: `p.x` where `p: Point` and `Point`
-declares `x: Float` compiles as the read of a `Float`, with no question
-asked of the value. A field declared anything else is read the ordinary
-way, since nothing checked what went into it. A `mut` binding takes no
-such promise either: its reassignment is not re-checked, so there is
-nothing to read the declaration off.
+bound (a class-typed field by its own write check, §10, so the next step
+holds an instance of the class or `nil`), and that class's scalar-declared
+fields are checked on every write, so a read of one of *those* fields
+through that name knows what it will find. The compiler uses that: `p.x`
+where `p: Point` and `Point` declares `x: Float` compiles as the read of a
+`Float`, with no question asked of the value. A field declared anything
+else is read the ordinary way, since its type does not settle one tag. A
+`mut` binding takes no such promise: its reassignment is not re-checked,
+so there is nothing to read the declaration off.
 
 The entry check tests what built the value, not what it looks like: a
 class's name lives on the meta every one of its instances reaches, and an
@@ -3873,9 +3892,9 @@ names a class is refused where it is passed, before any field is read. The
 read keeps a check of its own for the receivers no entry check saw — a
 method value moved onto a foreign object reads `self.x` the same way — and
 it names the field and the type rather than answering with a value of the
-wrong kind. For the same reason `remove` refuses a scalar-declared field: a
-field that can vanish is no contract. A field declared anything else is
-removable, since nothing was promised about it.
+wrong kind. For the same reason `remove` refuses a checked field: a field
+that can vanish is no contract. A field declared `String`, or nothing at
+all, is removable, since nothing was promised about it.
 
 The entry check goes by the class's name. Where a program gives one name to more
 than one class (one at the top level and another inside a function, or its
@@ -6899,7 +6918,7 @@ observe an instance's identity:
 
 | Clause | Checked |
 |---|---|
-| Every instance field is declared, and its type is `Long`, `Float`, `Bool`, or another `@value` class | At the declaration (`SyntaxError`) |
+| Every instance field is declared, and its type is `Long`, `Float`, `Bool`, or another `@value` class | At the declaration (`SyntaxError`), and at each write in `new` (`TypeError`, §10) |
 | No member writes a field the class does not declare — two instances of one value class cannot differ in shape | At the declaration (`SyntaxError`), and while `new` runs (`ImmutableError`) |
 | No `drop` method or field — a destructor observes *which* instance died | At the declaration (`SyntaxError`) |
 | Not also `@packable` — a packed instance aliases shared bytes | At the declaration (`SyntaxError`) |

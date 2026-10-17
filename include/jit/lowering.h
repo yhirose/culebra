@@ -4637,13 +4637,20 @@ struct Lowering {
               llvm::GlobalValue::PrivateLinkage,
               llvm::ConstantArray::get(typesTy, typeBytes),
               ".fields.init.types");
+          // A Named field's annotation, null for the others.
+          std::vector<Constant*> annPtrs;
+          for (const char* a : spec.annotations)
+            annPtrs.push_back(
+                a ? j.get_or_create_global_str(a, ".fields.init.ann")
+                  : static_cast<Constant*>(ConstantPointerNull::get(ptrTy)));
+          auto annArray = j.build_str_ptr_array(annPtrs, ".fields.init.anns");
           j.emit_call(
               j.module_->getOrInsertFunction(rt::object_fields_init,
                                              b.getVoidTy(), ptrTy, ptrTy,
-                                             ptrTy, i64Ty, ptrTy, ptrTy),
+                                             ptrTy, i64Ty, ptrTy, ptrTy, ptrTy),
               {b.CreateIntToPtr(j.extract_data(load_slot(in.a)), ptrTy),
                cacheGlobal, keysArray, b.getInt64(n), zerosGlobal,
-               typesGlobal});
+               typesGlobal, annArray});
           break;
         }
         case Op::FieldInit: {

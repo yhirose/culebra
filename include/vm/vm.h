@@ -2641,8 +2641,10 @@ struct Chunk {
     std::vector<const char*> keys;
     std::vector<JitValue> zeros;
     // Each field's declared type (culebra::FieldType), which the slot the
-    // site creates carries from then on.
+    // site creates carries from then on, and a Named one's annotation (a
+    // `consts` string; null for the others).
     std::vector<uint8_t> types;
+    std::vector<const char*> annotations;
   };
   std::vector<FieldLayoutSpec> field_layout_specs;
   // Every Op::ReleaseMany site's slots end to end, each site naming its own
@@ -3574,6 +3576,9 @@ struct MemberOpts {
   // declared fields sets neither.
   const peg::Ast* field_init_owner = nullptr;
   const std::vector<const peg::Ast*>* prologue_fields = nullptr;
+  // Those fields are a `@packable` class's: only a scalar type goes on the
+  // slot, the others being its byte layout's (Compiler::field_check).
+  bool fields_packable = false;
   // The fields the class's `new` overloads take as field parameters
   // (culebra::field_param_names): the thunk's own parameter list, one slot
   // per field in declaration order (`thunk_params`), and the argument list
@@ -5272,6 +5277,9 @@ class Compiler {
   // The Generic parameters this chunk's annotations may name
   // (FnAnalysis::type_params), or null for none.
   const std::vector<std::string_view>* type_params_ = nullptr;
+  // The fields this chunk lays out are a `@packable` class's
+  // (MemberOpts::fields_packable).
+  bool fields_packable_ = false;
   // An annotation as its check reads it: each Generic parameter in scope
   // lowered (an unbounded `T` checks as Any, a bounded one as its bound).
   static std::string lower_annotation(
@@ -6343,8 +6351,7 @@ class Compiler {
         done = emit(Op::Jump);
         patch_to_here(filled);
       }
-      if (culebra::field_type_for_annotation(mv.type_annotation) !=
-          culebra::FieldType::Any)
+      if (field_check(mv.type_annotation).first != culebra::FieldType::Any)
         emit_declared_field_layout({f});
       emit(Op::ObjectSet, field_recv(), v, kconst_str(std::string(mv.name)),
            /*mut=*/1);
@@ -6367,8 +6374,7 @@ class Compiler {
     // an initializer takes its typed zero first and its own store is the
     // overwrite every later write is — checked by the same rule. Emitted
     // after the initializer, which must not see the field it defines.
-    if (culebra::field_type_for_annotation(mv.type_annotation) !=
-        culebra::FieldType::Any)
+    if (field_check(mv.type_annotation).first != culebra::FieldType::Any)
       emit_declared_field_layout({&f});
     emit(Op::ObjectSet, field_recv(), v, kconst_str(std::string(mv.name)),
          /*mut=*/1);
@@ -6383,17 +6389,36 @@ class Compiler {
   // if it has one, is the store that follows.
   void emit_declared_field_layout(const std::vector<const peg::Ast*>& fields) {
     Chunk::FieldLayoutSpec spec;
+    auto str = [&](std::string_view s) {
+      return reinterpret_cast<const char*>(chunk_.consts[kconst_str(s)].data);
+    };
     for (const auto* f : fields) {
       auto mv = culebra::view_method(*f);
-      spec.keys.push_back(reinterpret_cast<const char*>(
-          chunk_.consts[kconst_str(std::string(mv.name))].data));
+      spec.keys.push_back(str(mv.name));
       spec.zeros.push_back(chunk_.consts[zero_const(mv.type_annotation)]);
-      spec.types.push_back(static_cast<uint8_t>(
-          culebra::field_type_for_annotation(mv.type_annotation)));
+      auto [type, annotation] = field_check(mv.type_annotation);
+      spec.types.push_back(static_cast<uint8_t>(type));
+      spec.annotations.push_back(annotation.empty() ? nullptr : str(annotation));
     }
     auto idx = static_cast<int32_t>(chunk_.field_layout_specs.size());
     chunk_.field_layout_specs.push_back(std::move(spec));
     emit(Op::FieldsInit, field_recv(), idx);
+  }
+
+  // What a write to a declared field is checked against: a scalar's tag
+  // (culebra::field_type_for_annotation, read as written, as the layout's
+  // zero is), else the annotation by name — FieldType::Named, lowered against
+  // the Generic parameters in scope (culebra::field_checked_annotation) —
+  // else nothing. A `@packable` class's other types are its byte layout's
+  // (its packed views check those) and promise a reader nothing
+  // (culebra::declared_class_fields).
+  std::pair<culebra::FieldType, std::string> field_check(
+      std::string_view annotation) const {
+    auto type = culebra::field_type_for_annotation(annotation);
+    if (type != culebra::FieldType::Any || fields_packable_) return {type, {}};
+    auto checked = culebra::field_checked_annotation(lower_annotation(annotation));
+    if (checked.empty()) return {culebra::FieldType::Any, {}};
+    return {culebra::FieldType::Named, std::move(checked)};
   }
 
   // The constant a typed field with no initializer starts as (the shared
@@ -8254,6 +8279,7 @@ class Compiler {
       int32_t idx = compile_fn_chunk(ast, /*params=*/nullptr, ast,
                                      {.receiver = true,
                                       .thunk_fields = &fields,
+                                      .fields_packable = is_packable,
                                       .thunk_params = &field_params});
       int32_t t = alloc_temp(ast);
       emit(Op::MakeClosure, t, idx);
@@ -8275,6 +8301,7 @@ class Compiler {
            .field_init_owner = fields_need_a_thunk ? &ast : nullptr,
            .prologue_fields =
                (!fields.empty() && !fields_need_a_thunk) ? &fields : nullptr,
+           .fields_packable = is_packable,
            .finit_params = fields_need_a_thunk ? &field_params : nullptr,
            .owner_ctor_chunk = ctor_chunk_idx,
            .owner_fields = own_fields,
@@ -8783,6 +8810,7 @@ class Compiler {
     fc.self_fields_ = mo.owner_fields;
     fc.self_field_classes_ = mo.owner_field_classes;
     fc.type_params_ = analysis_.type_params_in(ast);
+    fc.fields_packable_ = mo.fields_packable;
     fc.repl_ = repl_;
     fc.check_ = check_;
     fc.debug_ = debug_;
@@ -12699,6 +12727,7 @@ class Compiler {
       case culebra::FieldType::Long: return TAG_LONG;
       case culebra::FieldType::Bool: return TAG_BOOL;
       case culebra::FieldType::Any:
+      case culebra::FieldType::Named:
       case culebra::FieldType::Count: break;
     }
     return 0;
@@ -17912,7 +17941,7 @@ struct Exec {
           culebra_runtime_object_fields_init(
               reinterpret_cast<JitObject*>(regs[in.a].data), spec.shape,
               spec.keys.data(), static_cast<int64_t>(spec.keys.size()),
-              spec.zeros.data(), spec.types.data());
+              spec.zeros.data(), spec.types.data(), spec.annotations.data());
           ++ip;
           break;
         } while (0);

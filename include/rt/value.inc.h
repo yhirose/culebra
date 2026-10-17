@@ -8,6 +8,9 @@
 // fragments rely on rt.h's #include block and are included by rt.h in a
 // fixed sequence (see rt.h); they are not standalone headers.
 
+// string.inc.h; declared here for FieldAnnotation's interned name.
+inline const char* _intern_str(std::string_view s);
+
 namespace culebra {
 
 // Object property layout description, V8/SpiderMonkey "hidden class"
@@ -31,6 +34,20 @@ namespace culebra {
 // not hold for an Object used as a dictionary, whose keys come from data:
 // there the shape tree is quadratic in both directions, and such an object
 // flips to a per-object hash index instead (see `DictIndex` below).
+// A Named slot's annotation, interned (ShapeRegistry::intern_annotation), so
+// the pointer is its identity: the text a write is checked against, and what
+// settles the common write without parsing it. When the text names one type
+// (its Generic args aside): a built-in type's tag, which its own values carry
+// (`Function` also admits a callable instance, which the text settles); else
+// the class or enum name, interned as a class meta's names are (_intern_str),
+// so an instance answers to it exactly when one of its meta's names is this
+// pointer.
+struct FieldAnnotation {
+  std::string text;
+  int8_t tag = -1;             // a built-in type name's tag, else -1
+  const char* name = nullptr;  // a class or enum name, else null
+};
+
 struct Shape {
   std::vector<std::string> names;          // insertion order
   // The declared type of each slot, parallel to `names`. A class's fields
@@ -39,6 +56,9 @@ struct Shape {
   // settled by the Shape a site guards on — which is what lets a write check
   // it with one compare and a read of a known class trust it outright.
   std::vector<uint8_t> types;
+  // For a slot declared FieldType::Named, its annotation; null for every
+  // other slot. Parallel to `types`.
+  std::vector<const FieldAnnotation*> annotations;
   // The Shapes one property past this one, found by that property's name
   // and declared type (the last of each a child has): adding the same name
   // with a different declared type is a different Shape. Every isolate reads
@@ -50,7 +70,9 @@ struct Shape {
     explicit Children(size_t n)
         : mask(n - 1), slots(new std::atomic<Shape*>[n]()) {}
     void place(Shape* child) {
-      size_t at = slot_of(child->names.back(), child->types.back()) & mask;
+      size_t at = slot_of(child->names.back(), child->types.back(),
+                          child->annotations.back()) &
+                  mask;
       while (slots[at].load(std::memory_order_relaxed)) at = (at + 1) & mask;
       slots[at].store(child, std::memory_order_release);
       count++;
@@ -62,20 +84,26 @@ struct Shape {
   std::atomic<Children*> children{nullptr};
   std::vector<std::unique_ptr<Children>> child_tables;  // the last is current
 
-  static size_t slot_of(std::string_view name, uint8_t type) {
-    return std::hash<std::string_view>{}(name) + type;
+  static size_t slot_of(std::string_view name, uint8_t type,
+                        const FieldAnnotation* annotation) {
+    return std::hash<std::string_view>{}(name) + type +
+           std::hash<const FieldAnnotation*>{}(annotation);
   }
-  // The child that adds `name` declared `type`, or null when there is none
-  // yet (or none this reader can see yet: the writer looks again).
-  Shape* child(std::string_view name, FieldType type) const {
+  // The child that adds `name` declared `type` (with `annotation` when it is
+  // Named), or null when there is none yet (or none this reader can see yet:
+  // the writer looks again).
+  Shape* child(std::string_view name, FieldType type,
+               const FieldAnnotation* annotation) const {
     auto* table = children.load(std::memory_order_acquire);
     if (!table) return nullptr;
     auto t = static_cast<uint8_t>(type);
-    for (size_t at = slot_of(name, t) & table->mask;;
+    for (size_t at = slot_of(name, t, annotation) & table->mask;;
          at = (at + 1) & table->mask) {
       Shape* s = table->slots[at].load(std::memory_order_acquire);
       if (!s) return nullptr;
-      if (s->types.back() == t && s->names.back() == name) return s;
+      if (s->types.back() == t && s->annotations.back() == annotation &&
+          s->names.back() == name)
+        return s;
     }
   }
   // Writer only: `child` joins the children, at most half the slots taken.
@@ -120,6 +148,10 @@ struct Shape {
     return i < types.size() ? static_cast<FieldType>(types[i])
                             : FieldType::Any;
   }
+  // Slot `i`'s annotation when it is declared Named, else null.
+  const FieldAnnotation* annotation_at(size_t i) const {
+    return i < annotations.size() ? annotations[i] : nullptr;
+  }
   // Position of `name` in `slots`, or static_cast<size_t>(-1) if absent.
   size_t offset(std::string_view name) const {
     for (size_t i = 0; i < names.size(); i++) {
@@ -161,18 +193,23 @@ struct ShapeRegistry {
   // key at a time comes through here (a message's, a parsed document's),
   // so the one that exists is returned without the lock; only the first
   // to ask for a transition takes it.
+  // `annotation` is the slot's when `type` is Named (interned), else null.
   Shape* transition_add(Shape* current, std::string_view name,
-                        FieldType type = FieldType::Any) {
-    if (auto* known = current->child(name, type)) return known;
+                        FieldType type = FieldType::Any,
+                        const FieldAnnotation* annotation = nullptr) {
+    if (auto* known = current->child(name, type, annotation)) return known;
     std::lock_guard<std::mutex> lk(mu_);
-    if (auto* known = current->child(name, type)) return known;
+    if (auto* known = current->child(name, type, annotation)) return known;
     auto next = std::make_unique<Shape>();
     next->names = current->names;
     next->names.push_back(std::string(name));
+    size_t before = next->names.size() - 1;
     next->types = current->types;
-    next->types.resize(next->names.size() - 1,
-                       static_cast<uint8_t>(FieldType::Any));
+    next->types.resize(before, static_cast<uint8_t>(FieldType::Any));
     next->types.push_back(static_cast<uint8_t>(type));
+    next->annotations = current->annotations;
+    next->annotations.resize(before, nullptr);
+    next->annotations.push_back(annotation);
     next->any_special = current->any_special || Shape::is_special_name(name);
     next->root = current->tree_root();
     auto* raw = next.get();
@@ -180,6 +217,12 @@ struct ShapeRegistry {
     current->adopt(raw);
     return raw;
   }
+
+  // The one copy of a Named slot's annotation, for the life of the process
+  // as the Shapes that point at it: the pointer is what tells two Shapes'
+  // declared types apart.
+  // Defined after _culebra_primitive_type_tag, which it reads.
+  inline const FieldAnnotation* intern_annotation(std::string_view text);
 
   ShapeRegistry()
       : root_(std::make_unique<Shape>()),
@@ -190,6 +233,7 @@ struct ShapeRegistry {
   std::unique_ptr<Shape> root_;
   std::unique_ptr<Shape> view_root_;
   std::vector<std::unique_ptr<Shape>> owned_;  // keeps non-root shapes alive
+  std::map<std::string, FieldAnnotation, std::less<>> annotations_;  // nodes stay put
 };
 
 inline ShapeRegistry& shape_registry() { return ShapeRegistry::instance(); }
@@ -750,7 +794,8 @@ struct JitObject {
   // reserve avoids the std::vector doubling chain (cap 1→2→4→8),
   // turning 4 small heap allocations into one.
   size_t append_slot(std::string_view key, JitValue value, bool mut,
-                     culebra::FieldType type = culebra::FieldType::Any) {
+                     culebra::FieldType type = culebra::FieldType::Any,
+                     const culebra::FieldAnnotation* annotation = nullptr) {
     if (is_dict) return append_dict(key, value, mut);
     if (!shape) shape = culebra::shape_registry().root();
     // A class instance keeps its proto in the shared storage, so it stays
@@ -759,9 +804,9 @@ struct JitObject {
       become_dict();
       return append_dict(key, value, mut);
     }
-    return append_slot_shaped(
-        culebra::shape_registry().transition_add(shape, key, type), value,
-        mut);
+    return append_slot_shaped(culebra::shape_registry().transition_add(
+                                  shape, key, type, annotation),
+                              value, mut);
   }
 
   // Past this many properties the shape tree costs more than it saves: each
@@ -866,9 +911,10 @@ struct JitObject {
       if (i == idx) continue;
       // Each survivor keeps its declared type: the rebuild walks a fresh
       // chain from the root, and a transition that forgot the type would
-      // leave the object's remaining scalar fields unchecked from here on.
+      // leave the object's remaining declared fields unchecked from here on.
       new_shape = culebra::shape_registry().transition_add(
-          new_shape, shape->names[i], shape->type_at(i));
+          new_shape, shape->names[i], shape->type_at(i),
+          shape->annotation_at(i));
       new_slots.push_back(std::move(slots[i]));
     }
     shape = new_shape;
@@ -1351,6 +1397,30 @@ inline std::optional<int8_t> _culebra_exact_type_tag(std::string_view tn) {
   auto tag = _culebra_primitive_type_tag(tn);
   if (tag == TAG_FUNC) return std::nullopt;
   return tag;
+}
+
+inline const culebra::FieldAnnotation*
+culebra::ShapeRegistry::intern_annotation(std::string_view text) {
+  std::lock_guard<std::mutex> lk(mu_);
+  auto [it, fresh] = annotations_.try_emplace(std::string(text));
+  if (fresh) {
+    it->second.text = it->first;
+    auto name = text;  // a field's `T?` is its `T`: nil always passes
+    if (!name.empty() && name.back() == '?') name.remove_suffix(1);
+    name = culebra::parse_generic_head(name).outer;
+    bool plain =
+        !name.empty() && std::isupper(static_cast<unsigned char>(name[0]));
+    for (char c : name)
+      if (!std::isalnum(static_cast<unsigned char>(c)) && c != '_')
+        plain = false;
+    if (plain && name != "Any") {
+      if (auto tag = _culebra_primitive_type_tag(name))
+        it->second.tag = *tag;
+      else
+        it->second.name = _intern_str(name);
+    }
+  }
+  return &it->second;
 }
 
 // Forward decl: byte-view of a TAG_STRING or TAG_STRINGVIEW payload.

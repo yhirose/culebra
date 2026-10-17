@@ -231,6 +231,33 @@ test_value_nested_stdlib = fn () {
 }
 test_value_nested_stdlib()
 
+test_value_nested_holds_a_value = fn () {
+  # A field naming another `@value` class holds one: the declaration says
+  # so, and the write in `new` is checked against it, so an ordinary
+  # instance (an identity a value could leak) or a number never gets in.
+  @value
+  class Tag {
+    n: Long
+    new(.n) {}
+  }
+  class Loose {
+    new(.s) {}
+  }
+  @value
+  class Holder {
+    t: Tag
+    new(.t) {}
+  }
+  assert_eq(Holder(Tag(1)).t.n, 1)
+  let refused = [
+    try { Holder(Loose('a')) } catch e { e.message },
+    try { Holder(42) } catch e { e.message },
+  ]
+  assert_eq(refused, ["type error: field 't' expects Tag",
+                      "type error: field 't' expects Tag"])
+}
+test_value_nested_holds_a_value()
+
 test_value_without_new = fn () {
   # No `new`: the declared fields zero-initialize and the instance freezes
   # with exactly those fields.

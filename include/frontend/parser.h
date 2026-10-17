@@ -2201,10 +2201,15 @@ inline DeclaredFields declared_instance_fields(
 // to the next step). The second is recorded as written and resolved where it
 // is used, so a forward reference works. A Generic parameter in scope
 // (`type_params`: the class's own and its enclosing declarations') names no
-// class, whatever else is called that: it is read as it lowers.
+// class, whatever else is called that: it is read as it lowers. A name is a
+// promise only because a write to the field is checked against it, which a
+// `@packable` class's is not (vm::Compiler::field_check), so its names are
+// left out.
 inline ClassFields declared_class_fields(
     const peg::Ast& cls, const std::vector<std::string_view>& type_params) {
   size_t head = first_non_decorator_index(cls);
+  bool packable = std::any_of(cls.nodes.begin(), cls.nodes.begin() + head,
+                              [](const auto& d) { return is_packable_decorator(*d); });
   ClassFields out;
   for (const auto* f : collect_instance_fields(cls, head + 1)) {
     auto mv = view_method(*f);
@@ -2214,7 +2219,7 @@ inline ClassFields declared_class_fields(
     auto t = field_type_for_annotation(mv.type_annotation);
     if (t != FieldType::Any)
       out.types.emplace(std::string(mv.name), static_cast<uint8_t>(t));
-    else
+    else if (!packable)
       out.classes.emplace(std::string(mv.name),
                           lower_type_params(mv.type_annotation, type_params));
   }

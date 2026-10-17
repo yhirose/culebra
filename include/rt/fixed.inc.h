@@ -1080,6 +1080,15 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_object_get_for_coalesce(
   return false;
 }
 
+// The annotation of the slot an update IC writes, read only when the slot
+// is Named (its shape then carries the slot; nothing else needs it).
+inline const culebra::FieldAnnotation* _jit_ic_annotation(
+    const JitPropSetIC* ic) {
+  if (static_cast<culebra::FieldType>(ic->declared) != culebra::FieldType::Named)
+    return nullptr;
+  return static_cast<culebra::Shape*>(ic->result_shape)->annotations[ic->offset];
+}
+
 // Fast path for the property-write IC. Caller (JIT-emitted IR) has
 // already verified `obj->shape == ic->expected_shape`, so this just
 // dispatches on the cached mode:
@@ -1109,10 +1118,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_set_fast(
     int64_t data, int64_t line, int64_t col, bool mut, bool is_init,
     int8_t key_kind) {
   if (ic->expected_shape == ic->result_shape) {
-    if (!_jit_tag_fits_field_type(
-            tag, static_cast<culebra::FieldType>(ic->declared)))
-      _jit_field_type_error(key, static_cast<culebra::FieldType>(ic->declared),
-                            tag, data, line, col);
+    _jit_check_field_write(key, static_cast<culebra::FieldType>(ic->declared),
+                           _jit_ic_annotation(ic), tag, data, line, col);
     _jit_overwrite_slot(obj->slots[ic->offset], key, tag, data, mut, is_init,
                         line, col, /*check_wk=*/(key_kind & 1) != 0);
   } else {
@@ -1130,14 +1137,16 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_set_fast(
 
 // object_set_fast's update alone, for a site owing neither contract check:
 // true after the store (its +1 absorbed), false and nothing touched for a
-// transition, a refused tag or an immutable slot — the caller then takes
-// object_set_fast, which words the error. The shape test comes first: a
-// transition's offset is past the end of slots. Never throws.
+// transition, a value the slot's type does not surely admit, or an immutable
+// slot — the caller then takes object_set_fast, which settles the type and
+// words the error. The shape test comes first: a transition's offset is past
+// the end of slots. Never throws.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_object_set_update(
     JitObject* obj, JitPropSetIC* ic, int8_t tag, int64_t data) {
   if (ic->expected_shape != ic->result_shape) return false;
-  if (!_jit_tag_fits_field_type(tag,
-                                static_cast<culebra::FieldType>(ic->declared)))
+  if (!_jit_value_surely_fits_field(tag, data,
+                                    static_cast<culebra::FieldType>(ic->declared),
+                                    _jit_ic_annotation(ic)))
     return false;
   auto& e = obj->slots[ic->offset];
   if (!e.mut) return false;
@@ -1172,9 +1181,11 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_slot_init(
 // transitions it to); an instance arriving with any other shape, or with
 // any state the fast path does not reproduce, takes the per-field stores.
 // `zeros[i]` is `keys[i]`'s value: a scalar, or the borrowed `''` literal.
+// `annotations[i]` is a Named field's annotation (null otherwise).
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_fields_init(
     JitObject* obj, void** shape_cache, const char* const* keys,
-    int64_t n_keys, const JitValue* zeros, const uint8_t* types) {
+    int64_t n_keys, const JitValue* zeros, const uint8_t* types,
+    const char* const* annotations) {
   auto* from = static_cast<culebra::Shape*>(shape_cache[0]);
   if (from && obj->shape == from && !obj->key_order && !obj->frozen) {
     obj->slots.reserve(obj->slots.size() + static_cast<size_t>(n_keys));
@@ -1186,11 +1197,16 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_fields_init(
   }
   auto* before = obj->shape;
   size_t n_before = obj->slots.size();
-  for (int64_t i = 0; i < n_keys; i++)
+  for (int64_t i = 0; i < n_keys; i++) {
+    auto type = static_cast<culebra::FieldType>(types[i]);
+    const culebra::FieldAnnotation* annotation =
+        type == culebra::FieldType::Named
+            ? culebra::shape_registry().intern_annotation(annotations[i])
+            : nullptr;
     _jit_object_set_declared(obj, keys[i], /*mut=*/true,
                              static_cast<int8_t>(zeros[i].tag), zeros[i].data,
-                             0, 0, /*is_init=*/true,
-                             static_cast<culebra::FieldType>(types[i]));
+                             0, 0, /*is_init=*/true, type, annotation);
+  }
   // Prime the cache only from a run the fast path reproduces exactly: every
   // key appended (none existed, so no overwrite), still shaped, and no
   // insertion-order sidecar to keep in step.
@@ -1277,8 +1293,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_set_ic(
     }
   } else {
     auto declared = before ? before->type_at(idx) : culebra::FieldType::Any;
-    if (!_jit_tag_fits_field_type(tag, declared))
-      _jit_field_type_error(key, declared, tag, data, line, col);
+    if (before) _jit_check_slot_write(key, before, idx, tag, data, line, col);
     _jit_overwrite_slot(obj->slots[idx], key, tag, data, mut, is_init, line,
                         col, /*check_wk=*/true);
     if (!obj->is_dict) {

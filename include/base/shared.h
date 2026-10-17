@@ -3245,10 +3245,10 @@ inline ZeroKind zero_kind_for_type(std::string_view type) {
 }
 
 // The declared type of an instance field, in the form a Shape stores per slot
-// and the emitter reads back. Only the scalars a tag alone decides are named
-// here; every other annotation (a class, a union, none at all) is `Any` and
-// the field behaves exactly as it always has.
-enum class FieldType : uint8_t { Any = 0, Float, Long, Bool, Count };
+// and the emitter reads back. The scalars a tag alone decides are named here;
+// `Named` is any other annotation a write is checked against, which the slot
+// carries beside it (field_checked_by_name); `Any` checks nothing.
+enum class FieldType : uint8_t { Any = 0, Float, Long, Bool, Named, Count };
 
 inline FieldType field_type_for_annotation(std::string_view type) {
   if (type.empty()) return FieldType::Any;
@@ -3268,9 +3268,32 @@ inline const char* field_type_name(FieldType t) {
     case FieldType::Long: return "Long";
     case FieldType::Bool: return "Bool";
     case FieldType::Any:
+    case FieldType::Named:
     case FieldType::Count: break;
   }
   return "Any";
+}
+
+// The annotation a write to a field declared `type` (lowered against the
+// Generic parameters in scope) is checked against by name, as an argument is
+// against its parameter's — each fixed-width spelling in it written as the
+// scalar it stands for (`Int32?` is `Long?`) — or empty: for a scalar alone
+// (its tag decides), for none, and for one that admits `Any` or `String`,
+// whose field takes the second spelling StringView as well (§10).
+inline std::string field_checked_annotation(std::string_view type) {
+  if (type.empty() || field_type_for_annotation(type) != FieldType::Any)
+    return {};
+  std::string out;
+  for (auto alt : split_union_types(type)) {
+    bool optional = !alt.empty() && alt.back() == '?';
+    if (optional) alt.remove_suffix(1);
+    if (alt == "Any" || alt == "String") return {};
+    auto scalar = field_type_for_annotation(alt);
+    if (!out.empty()) out += " | ";
+    out += scalar != FieldType::Any ? field_type_name(scalar) : alt;
+    if (optional) out += '?';
+  }
+  return out;
 }
 
 [[noreturn]] inline void throw_well_known_prop_contract_error(

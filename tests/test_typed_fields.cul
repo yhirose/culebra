@@ -1,8 +1,9 @@
-# A *scalar* declared field's type — `Float`, `Long`, `Bool` — is a contract
-# the write checks (docs/language.md §10), in the same words
-# `let x: Float = 3` has always used, and through every write surface: a
-# literal name, a computed key, a method's own `self.x`, and the
-# constructor's prologue. Every other annotation, `String` included, stays
+# A declared field's type is a contract the write checks (docs/language.md
+# §10), in the same words `let x: Float = 3` has always used, and through
+# every write surface: a literal name, a computed key, a method's own
+# `self.x`, and the constructor's prologue. A scalar — `Float`, `Long`,
+# `Bool` — is decided by the value's tag; any other annotation by the rule a
+# parameter's is, nil passing as the field's zero. `String` alone stays
 # unchecked: it picks the field's zero value and nothing more.
 #
 # Run: ./build/culebra tests/test_typed_fields.cul
@@ -133,12 +134,12 @@ class Order {
 assert_eq(Order().a, 1)
 assert_eq(Order().b, 2)
 
-# --- a non-scalar annotation picks the zero value and checks nothing ---
+# --- `String` picks the zero value and checks nothing ---
 #
-# `String` is the one that reads as if it should: it names a type the
-# annotation vocabulary knows, and the field starts as `''`. It is still
-# unchecked, because `StringView` is a second spelling of the same thing
-# and `slice` / `split` / `lines` / `for` over a string all produce it.
+# It names a type the annotation vocabulary knows, and the field starts as
+# `''`, but it is unchecked, because `StringView` is a second spelling of
+# the same thing and `slice` / `split` / `lines` / `for` over a string all
+# produce it.
 
 assert_eq(v.s, '')
 v.s = 42
@@ -149,7 +150,13 @@ assert_eq(type_of(v.s), 'StringView')
 v.s = 'plain'
 assert_eq(v.s, 'plain')
 
-# an optional names no scalar either, so it is not a narrower `Long`
+# --- any other annotation is checked as a parameter's is ---
+#
+# A class, an enum, a union, an optional, `Array`: the write is refused
+# unless the value satisfies the annotation, in the message every field
+# check words. Its zero is nil, and nil always passes, so a field's `Car`
+# admits nil as `Car?` would.
+
 class Optional {
   n: Long?
 
@@ -158,8 +165,107 @@ class Optional {
 }
 
 let opt = Optional()
-opt.n = 'not a Long'
-assert_eq(opt.n, 'not a Long')
+opt.n = 5
+assert_eq(opt.n, 5)
+opt.n = nil
+assert_eq(opt.n, nil)
+let refused_opt = try {
+  opt.n = 'not a Long'
+} catch e {
+  [e.message, e.line]
+}
+assert_eq(refused_opt, ["type error: field 'n' expects Long?", 173])
+assert_eq(opt.n, nil)
+
+class Car {
+  speed: Float
+  new(.speed) {}
+}
+
+class Bike {
+  speed: Long
+  new(.speed) {}
+}
+
+class Garage {
+  car: Car
+  kinds: Array
+  either: Car | Long
+  new() {}
+}
+
+let garage = Garage()
+assert_eq([garage.car, garage.kinds, garage.either], [nil, nil, nil])
+garage.car = Car(1.5)
+garage.kinds = ['a']
+garage.either = 3
+garage.either = Car(2.5)
+assert_eq([garage.car.speed, garage.kinds, garage.either.speed],
+          [1.5, ['a'], 2.5])
+let refused_writes = [
+  try { garage.car = Bike(3) } catch e { e.message },
+  try { garage['car'] = 'text' } catch e { e.message },
+  try { garage.kinds = {} } catch e { e.message },
+  try { garage.either = 'text' } catch e { e.message },
+]
+assert_eq(refused_writes, [
+  "type error: field 'car' expects Car",
+  "type error: field 'car' expects Car",
+  "type error: field 'kinds' expects Array",
+  "type error: field 'either' expects Car | Long",
+])
+garage.car = nil
+assert_eq(garage.car, nil)
+
+# a fixed-width spelling inside one stands for its scalar, as it does alone,
+# and an annotation that admits anything checks nothing (and can go)
+class Spelled {
+  a: Int32?
+  b: Byte | Nil
+  w: Any?
+  new() {}
+}
+
+let spelled = Spelled()
+spelled.a = 3
+spelled.b = 7
+spelled.w = 'anything'
+assert_eq([spelled.a, spelled.b, spelled.w], [3, 7, 'anything'])
+assert_eq(try { spelled.a = 1.5 } catch e { e.message },
+          "type error: field 'a' expects Long?")
+spelled.remove('w')
+assert_eq(spelled.keys(), ['a', 'b'])
+
+# a @packable class's field of a record type is its byte layout's: a write
+# to an ordinary instance is not checked, so the field promises a reader
+# nothing and a read through a local agrees with the chained one
+@packable
+class PPoint {
+  x: Float32
+  y: Float32
+}
+
+class Fake {
+  x: Long
+  new(.x) {}
+}
+
+@packable
+class PLine {
+  id: Int32
+  start: PPoint
+  via_local() {
+    let p = self.start
+    p.x
+  }
+  via_chain() {
+    self.start.x
+  }
+}
+
+let pline = PLine()
+pline.start = Fake(3)
+assert_eq([pline.via_local(), pline.via_chain()], [3, 3])
 
 # a scalar is named by its whole spelling: a class whose name only starts
 # like one is a class like any other, so its field starts as nil, takes an
@@ -353,12 +459,15 @@ assert_throws('DispatchError', fn () {
   read_f(copy)
 })
 
-# a scalar-declared field cannot be removed: a field that can vanish is no
-# contract. One declared anything else carries no promise, so it can go.
+# a checked field cannot be removed: a field that can vanish is no contract.
+# One declared `String`, or nothing at all, carries no promise, so it can go.
 assert_throws('ImmutableError', fn () {
   r.remove('f')
 })
 assert_eq(read_f(r), 1.5)
+assert_throws('ImmutableError', fn () {
+  garage.remove('car')
+})
 
 # a `mut` binding's annotation is checked once and not again (§14), so it
 # promises nothing about what its reads will find — the same answer whether
@@ -475,6 +584,17 @@ assert_throws('TypeError', fn () {
   v.engine.rpm = 'no'
 })
 
+# and the near end is checked too, so what the second step reads is what
+# the first step's class says: a vehicle given something else is refused
+# where it is given, not where a reader would have trusted it
+let swapped = try {
+  v.engine = Bike(3)
+} catch e {
+  e.message
+}
+assert_eq(swapped, "type error: field 'engine' expects Engine")
+assert_eq(v.through_local(), 12.5)
+
 
 # --- a local's own annotation carries the same promise ---
 #
@@ -507,8 +627,8 @@ assert_throws('TypeError', fn () {
   bad.x
 })
 
-# an object wearing the class's name passes the declaration check (it names
-# the class) but its property never met the write check, so the read refuses
+# an object wearing the class's name is not an instance of it, so the
+# declaration's own check refuses it
 assert_throws('TypeError', fn () {
   let forged: Pt = {class: 'Pt', x: 'no', y: 0.0}
   forged.x
@@ -572,6 +692,20 @@ assert_throws('TypeError', fn () {
   set_n(1.5)
 })
 assert_eq(warm.n, 2)
+# a field checked by its annotation's name, the same
+let set_car = fn (c) {
+  garage.car = c
+}
+for k in 0..3 {
+  set_car(Car(to_float(k)))
+}
+let late = try {
+  set_car(Bike(1))
+} catch e {
+  e.message
+}
+assert_eq([late, garage.car.speed],
+          ["type error: field 'car' expects Car", 2.0])
 let frozen = {n: 1}
 let set_frozen = fn (o) {
   o.n = 2
