@@ -1770,7 +1770,8 @@ class EffectsLowerer {
       const std::string& rv_name, const std::vector<std::string>& around,
       const std::vector<std::string_view>& mut_params) const {
     reject_named_fn_clauses(program);
-    PromotedLocals rewrite(program, param_names, around, mut_params);
+    PromotedLocals rewrite(program, param_names, around, mut_params,
+                           class_name + "_box");
 
     auto disp = build_dispatch(program, rewrite, rv_name);
 
@@ -1804,7 +1805,7 @@ class EffectsLowerer {
     // Every computation exposes `_eff_finalize()` so the driver can call it
     // uniformly on the abort path; it is empty when the body has no defers,
     // and `_eff_refork()` likewise when the body has no boxes.
-    return std::format(
+    return rewrite.box_class_decl() + std::format(
         "  class {0} {{\n"
         "    new({1}) {{\n{2}    }}\n"
         "    _step({3}) {{\n{4}    }}\n"

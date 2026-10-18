@@ -714,6 +714,17 @@ assert_eq(
 )
 assert_eq(pd_drops, ["drop side", "after"])
 
+// a local a closure reads, so one held in a box, is still the function it
+// holds: read out of the box it is no method of the box
+effect fn pd_boxed_fn() {
+  let f = || f
+  fn g() { 1 }
+  let h = || g
+  perform pd_ask()
+  [f() == f, h() == g, g()]
+}
+assert_eq(handle { pd_boxed_fn() } with pd_ask(resume) { resume(0) }, [true, true, 1])
+
 // --- `self` and the two lowered bodies --------------------------------------
 // An effect fn is a named declaration that cannot be a class member, so its
 // lowering leaves no receiver and `self` in its body is refused at parse time

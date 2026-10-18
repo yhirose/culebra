@@ -359,11 +359,6 @@ inline std::string next_fragment_label(const char* stem) {
                      counter.fetch_add(1, std::memory_order_relaxed));
 }
 
-// A box holding `value` — the one shape every box is made in.
-inline std::string box_literal(std::string_view value) {
-  return std::format("{{mut v: {}}}", value);
-}
-
 // A plain-identifier child that is a label, not a reference: OBJECT_PROPERTY
 // `{name: v}` (key at 1, after MUTABLE; the 2-child shorthand `{name}` IS a
 // reference and falls through), KWARG `f(name: v)` (key at 0) and
@@ -421,7 +416,10 @@ inline EditSite child_site(const peg::Ast& n, size_t i, EditSite site) {
 // a local too) — a reference cycle for a body that never wrote one. A closure
 // is any function scope of the resolution, a `defer` among them though these
 // transforms inline one they run themselves: an extra box costs one object, a
-// missing one restores the cycle.
+// missing one restores the cycle. A box is an instance of a class the lowering
+// declares (box_class_decl), named like the state class, so its `v` is
+// storage too (culebra::is_lowered_state_class): a function read out of it is
+// that function, not one bound to the box.
 //
 // A slotted variable that may be read before a declaration of it has run
 // holds the unbound sentinel until one has, as a plain fn's lazy binding does
@@ -450,12 +448,14 @@ class PromotedLocals {
 
   PromotedLocals() = default;  // of no body: nothing has a slot
   // `body` under parameters named `params` (`mut_params` those declared
-  // `mut`), where `around` are the names visible around the function. The
-  // body's own level is entered.
+  // `mut`), where `around` are the names visible around the function, its
+  // boxes instances of `box_class`. The body's own level is entered.
   PromotedLocals(const peg::Ast& body, std::span<const std::string_view> params,
                  std::span<const std::string> around,
-                 std::span<const std::string_view> mut_params = {})
-      : res_(resolve::resolve_body(body, params, lint::resolve_options(around))),
+                 std::span<const std::string_view> mut_params,
+                 std::string box_class)
+      : box_class_(std::move(box_class)),
+        res_(resolve::resolve_body(body, params, lint::resolve_options(around))),
         body_(res_.body_scope.at(&body)),
         slots_(res_.symbols.size()),
         captured_(res_.symbols.size()),
@@ -667,6 +667,16 @@ class PromotedLocals {
     return out;
   }
 
+  // The declaration of the class the boxes are instances of, to go beside
+  // the state class; empty when no variable got a box.
+  std::string box_class_decl() const {
+    for (size_t sym : order_)
+      if (!slots_[sym].box.empty())
+        return std::format("  class {} {{\n    new(.v) {{}}\n  }}\n",
+                           box_class_);
+    return {};
+  }
+
   // The state class's `new`: its slot list `_p0, _p1, ...` for `params`, the
   // arguments its call passes, and after `ctor_inits` the initializer of
   // every slot the body got: a parameter's from its `_pN`, any other its
@@ -738,11 +748,12 @@ class PromotedLocals {
     return lazy_[sym] ? "__unbound()" : "nil";
   }
 
-  // Source setting `sym`'s slot to `value`, in a fresh box when it is boxed.
+  // Source setting `sym`'s slot to `value`, in a fresh box when it is boxed
+  // (the one place a box is made).
   std::string set_slot(size_t sym, const std::string& value) const {
     const Slot& s = slots_[sym];
-    return std::format("      self.{} = {}\n", s.field,
-                       s.box.empty() ? value : box_literal(value));
+    if (s.box.empty()) return std::format("      self.{} = {}\n", s.field, value);
+    return std::format("      self.{} = {}({})\n", s.field, box_class_, value);
   }
 
   // Source resetting the `mut` of a conditional variable to what it is
@@ -881,6 +892,7 @@ class PromotedLocals {
     return false;
   }
 
+  std::string box_class_;  // the class every box is an instance of
   resolve::Resolution res_;
   size_t body_ = resolve::kNone;
   std::vector<Slot> slots_;     // by symbol

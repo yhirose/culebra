@@ -1,12 +1,8 @@
 # Forms of tools/checks/lowering_diff.py that are known to disagree and not
 # yet fixed: `<sweep> <cases that disagree> <form>`, under why. A form whose
 # count moves, or that agrees now, fails the gate, so a fix removes its line.
-# All of them are an effect body's: its lowering moves the variables of a
+# Only an effect body's may be listed: its lowering moves the variables of a
 # scope a suspension splits onto its state object, where a slot holds a value
 # or, until a declaration of it has run, the sentinel that says none has. A
 # generator body keeps its frame and agrees with the plain fn on every form
-# (lowering_diff.py fails a case where it does not).
-
-# L8: a local function a closure reads comes out of its box bound to the box,
-# so it is no longer the function it was
-binding 5 let f = || f; EMIT(f() == f)
+# (lowering_diff.py fails a case where it does not). None is listed today.
