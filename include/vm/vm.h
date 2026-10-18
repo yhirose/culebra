@@ -5318,6 +5318,8 @@ class Compiler {
                            // a let declared mid-statement keeps its slot
   int32_t high_water_ = 0;
   std::map<std::string, int32_t> str_const_ix_;  // kconst_str interning
+  // The statement temps still to be released, ascending: a slot is handed
+  // out only above every entry (pop_scope, alloc_raw's assert).
   std::vector<int32_t> stmt_temps_;
   // Per-slot named flag for the CURRENT generation of each slot (alloc_raw
   // rewrites it on reuse). Scope-exit releases consult this instead of a
@@ -5509,6 +5511,7 @@ class Compiler {
     // on the frame's slot budget.
     if (next_slot_ >= kMaxSlots)
       reject(at, culebra::format("frame larger than {} slots", kMaxSlots));
+    assert(live_temps_top() <= next_slot_);
     int32_t s = next_slot_++;
     if (s >= static_cast<int32_t>(chunk_.slot_names.size()))
       chunk_.slot_names.resize(s + 1);
@@ -6135,7 +6138,9 @@ class Compiler {
     // Named slots end where they did at entry: a temp the statement took
     // before the scope (a `while` condition, a `match` subject) goes back to
     // the allocator with the statement's sweep, not with the enclosing scope.
-    next_slot_ = std::max(sc.slot_watermark, pin_floor_);
+    // So does one it took inside the scope (a `match` subject under an init
+    // clause), whose slot the rest of the statement must not be handed.
+    next_slot_ = std::max({sc.slot_watermark, pin_floor_, live_temps_top()});
     named_top_ = sc.named_top;
     scopes_.pop_back();
     return segments;
@@ -6212,13 +6217,15 @@ class Compiler {
     ~TempScope() { c.sweep_temps(base, slot_base); }
   };
 
-  // Forget the consumed temp's most recent sweep-list entry — and only
-  // that one. Scope rollback lets a later match arm reuse an earlier arm's
-  // temp slot INDEX while the earlier arm's entry is still in the list, so
-  // an erase-by-value would take the outer entry with it, shrink the list
-  // below an inner TempScope's base, and the dtor's resize would then
-  // zero-fill — emitting Releases of slot 0 (a live cell slot; segfaulted).
-  // The most recent equal entry is always the one being consumed.
+  // One past the highest slot a statement temp still on the sweep list
+  // holds (the list ascends, see stmt_temps_).
+  int32_t live_temps_top() const {
+    return stmt_temps_.empty() ? 0 : stmt_temps_.back() + 1;
+  }
+
+  // Forget the consumed temp's sweep-list entry. The list holds each slot
+  // once (it ascends, see stmt_temps_); the search runs from the end, where
+  // a temp just consumed sits.
   void forget_temp(int32_t slot) {
     for (auto it = stmt_temps_.rbegin(); it != stmt_temps_.rend(); ++it) {
       if (*it == slot) {
@@ -9525,6 +9532,7 @@ class Compiler {
   // interp's extract_export does — at run time, where the read happens.
   void emit_module_export(const peg::Ast& mod) {
     StampGuard pos(*this, mod);
+    TempScope temps(*this);  // a statement of its own, after the module's
     int32_t obj = alloc_temp(mod);
     emit(Op::ObjectNew, obj);
     for_each_export(mod, [&](const peg::Ast& id) {
@@ -12006,11 +12014,9 @@ class Compiler {
     InMember env(*this, member, cls_ast, self_base, layout);
     push_scope(member, /*owned_mark=*/false);
     bind_inline_params(ps, args, check_at);
-    // The body's temps end with the body (compile_scoped_expr_into's order):
-    // the pop below hands their slots back mid-statement, and one still on
-    // the statement's sweep list would be released at its end under whatever
-    // took the slot next — the caller's next run, which a `let` may adopt as
-    // its home. Marked after the parameters are bound, since binding takes
+    // The body's temps end with the body (compile_scoped_expr_into's order),
+    // as a boxed call's end with its frame, not at the end of the caller's
+    // statement. Marked after the parameters are bound, since binding takes
     // the caller's argument temps off that list.
     const size_t temp_base = stmt_temps_.size();
     const int32_t temp_slot_base = next_slot_;
@@ -14013,12 +14019,11 @@ class Compiler {
       int32_t arm_top = next_slot_;
       pop_scope();  // the taken path's binding release
       // Arms are alternative paths but ONE statement, so they must not share
-      // slot indices: the scope rollback would hand the next arm a slot this
-      // arm still has a temp entry for (its `+1` dropped by the second write,
-      // and the statement sweep releasing it twice), and could re-declare a
-      // plain slot as a captured binding's cell — the kind a release ladder
-      // picks statically per slot. Keeping the water mark costs slots in
-      // proportion to the whole match, which kMaxSlots bounds.
+      // slot indices: the scope rollback could re-declare a plain slot as a
+      // captured binding's cell — the kind a release ladder picks statically
+      // per slot. (pop_scope itself never hands out a temp the arm left.)
+      // Keeping the water mark costs slots in proportion to the whole match,
+      // which kMaxSlots bounds.
       next_slot_ = arm_top;
       end_jumps.push_back(emit(Op::Jump));
       for (size_t ix : fail_jumps) patch_to_here(ix);

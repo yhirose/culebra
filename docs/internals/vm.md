@@ -777,14 +777,14 @@ inlined site the position is static (the argument's own expression), so
 `ChkTypeAt` is stamped there instead; the two runtime helpers share one
 format string, so the diagnostic text is identical either way.
 
-The body's temporaries end with the body, before its scope is popped. The
-pop hands the scope's slots back to the allocator in the middle of the
-caller's statement, and the next to take them is the caller's next run: the
-result of the following step, which a `let` adopts as its home with no
-copy. A temporary still on the statement's sweep list at that point would
-be released at the statement's end under the binding's field (found live:
-`let v = C.new(1.0, 0.25).scale(C.new(3.0, 4.0).len())` read `nil` for both
-fields).
+The body's temporaries end with the body, before its scope is popped, as a
+boxed call's end with its frame, not at the end of the caller's statement.
+A scope's pop never hands out the slot of a temporary still on the
+statement's sweep list, whichever construct took it: before that rule, the
+caller's next run, the result of the following step that a `let` adopts as
+its home with no copy, could land on such a slot and be released at the
+statement's end (found live: `let v = C.new(1.0, 0.25).scale(C.new(3.0,
+4.0).len())` read `nil` for both fields).
 
 A chain is only ever offered the unboxed form when it stays that way to a
 scalar leaf — a run reaching any other consumer is not something this

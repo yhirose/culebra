@@ -403,3 +403,69 @@ fn ias_clamp_loop(n) {
 }
 let ias_got = ias_clamp_loop(200)
 assert_eq(ias_got[0] * ias_got[0] + ias_got[1] * ias_got[1] <= 16.0 + 1e-9, true)
+
+// --- An init clause's scope ends before the statement does: what the
+// statement takes inside it (a match's subject, an if's condition) lives to
+// the statement's end, and what the statement allocates after the scope has
+// slots of its own, as it does when what comes next opens a scope of its own
+// (a loop over the construct, a `try`, an arm whose guard holds it). ---
+fn ias_init_match() {
+  [match let tag = "subj"; [IasNoisy.new(tag)] {
+    [r] => r.tag,
+  }, (let late = IasNoisy.new("late"))]
+  ias_log.push("end")
+  let get = || late.tag
+  get()
+}
+fn ias_init_if() {
+  let v = [if let tag = "cond"; ![IasNoisy.new(tag)].empty() {
+    1
+  } else {
+    2
+  }, [IasNoisy.new("a"), IasNoisy.new("b")]]
+  ias_log.push("end")
+  v[0]
+}
+fn ias_init_for() {
+  mut n = 0
+  for x in match let tag = "subj"; [IasNoisy.new(tag)] {
+    [r] => [1, 2],
+  } {
+    n += x
+  }
+  ias_log.push("end")
+  n
+}
+fn ias_init_try() {
+  let v = [match let tag = "subj"; [IasNoisy.new(tag)] {
+    [r] => r.tag,
+  }, try {
+    throw IasNoisy.new("thrown")
+  } catch e {
+    e.tag
+  }]
+  ias_log.push("end")
+  v
+}
+fn ias_init_guard() {
+  match 1 {
+    n if (match let tag = "subj"; [IasNoisy.new(tag)] {
+      [r] => true,
+    }) => {
+      let held = IasNoisy.new("held")
+      let get = || held.tag
+      get()
+    },
+    _ => "none",
+  }
+}
+ias_log = []
+assert_eq([ias_init_match(), ias_log], ["late", ["subj", "end", "late"]])
+ias_log = []
+assert_eq([ias_init_if(), ias_log], [1, ["cond", "end", "a", "b"]])
+ias_log = []
+assert_eq([ias_init_for(), ias_log], [3, ["subj", "end"]])
+ias_log = []
+assert_eq([ias_init_try(), ias_log], [["subj", "thrown"], ["thrown", "subj", "end"]])
+ias_log = []
+assert_eq([ias_init_guard(), ias_log], ["held", ["held", "subj"]])
