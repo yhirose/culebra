@@ -40,12 +40,13 @@ let CRASH = metal(2.5, 0.9, 4000.0, 0.5, 31).map(|s| s * 0.6)
 
 # `samples` stopped `seconds` in (nil: rung out), fading over `fade` seconds.
 fn stopped(samples, seconds, fade) {
-  let n = Math.round(fade * RATE)
-  let stop = seconds == nil ? samples.size() : Math.round(seconds * RATE)
-  iota(Math.min(
-    samples.size(),
-    stop + n,
-  )).map(|i| samples[i] * (i < stop ? 1.0 : 1.0 - (i - stop).to_float() / n))
+  return samples if seconds == nil
+  let end = Math.round((seconds + fade) * RATE)
+  Audio.envelope(
+    samples[..end],
+    [(seconds, 1.0), (seconds + fade, 0.0)],
+    rate: RATE,
+  )
 }
 
 # The open hat, closed `n.next` seconds on if its choke group hits again.

@@ -116,15 +116,6 @@ let _audio_module = fn () {
     noise = nil,
     rate: Long | Float = 44100,
   ) {
-    let pairs = |xs| xs.flat_map(fn (p) {
-      if type_of(p) != "Tuple" || p.size() != 2 {
-        __raise(
-          "TypeError",
-          "Audio.partials: an envelope is a list of (at, value), each a number",
-        )
-      }
-      [p[0], p[1]]
-    })
     for p in spectrum {
       if type_of(p) != "Tuple" || p.size() != 2 || type_of(p[1]) != "Array" {
         __raise(
@@ -142,13 +133,45 @@ let _audio_module = fn () {
     }
     _Audio.partials(
       seconds,
-      pairs(freq),
-      pairs(gain),
+      freq,
+      gain,
       spectrum.flat_map(|p| [p[0], p[1].size()]),
       spectrum.flat_map(|p| p[1]),
       quiet ? [] : [noise.low, noise.high, noise.get("seed", 1)],
-      quiet ? [] : pairs(noise.get("steady", [])),
-      quiet ? [] : pairs(noise.get("pulsed", [])),
+      quiet ? [] : noise.get("steady", []),
+      quiet ? [] : noise.get("pulsed", []),
+      rate,
+    )
+  }
+
+  # `samples` through a two-pole filter: "low" lets through what is below
+  # `cutoff` Hz, "high" what is above it, "band" what is about it. `cutoff`
+  # is a number or an envelope of (at, value), and `q` the resonance.
+  let filter = fn (
+    samples: Array,
+    kind: String,
+    cutoff: Long | Float | Array,
+    q: Long | Float = 0.707,
+    rate: Long | Float = 44100,
+  ) {
+    let at = type_of(cutoff) == "Array" ? cutoff : [(0.0, cutoff)]
+    _Audio.filter(samples, kind, at, q, rate)
+  }
+
+  # `samples` times `gain`, an envelope of (at, value) it moves between in
+  # straight lines.
+  let envelope = fn (samples: Array, gain: Array, rate: Long | Float = 44100) {
+    _Audio.envelope(samples, gain, rate)
+  }
+
+  # The `parts` added together, each samples or {samples, at, gain}: from
+  # `at` seconds on (0 if left out), times `gain` (1). The answer runs to the
+  # end of the part that ends last.
+  let mix = fn (parts: Array, rate: Long | Float = 44100) {
+    let each = parts.map(|p| type_of(p) == "Object" ? p : {samples: p})
+    _Audio.mix(
+      each.map(|p| p.get("samples", nil)),
+      each.flat_map(|p| [p.get("at", 0.0), p.get("gain", 1.0)]),
       rate,
     )
   }
@@ -324,6 +347,9 @@ let _audio_module = fn () {
     resonate: resonate,
     pluck: pluck,
     partials: partials,
+    filter: filter,
+    envelope: envelope,
+    mix: mix,
     Sound: Sound,
     Music: Music,
     PCM: PCM,

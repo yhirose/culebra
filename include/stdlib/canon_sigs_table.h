@@ -1522,6 +1522,20 @@ inline constexpr CanonParam kCanonParams_Audio_native[] = {
   // 96: _Audio.sound_samples
   {"samples", false, false, false, false, false, "Array", CanonDefault::None, 0, {}},
   {"rate", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
+  // 98: _Audio.filter
+  {"samples", false, false, false, false, false, "Array", CanonDefault::None, 0, {}},
+  {"kind", false, false, false, false, false, "String", CanonDefault::None, 0, {}},
+  {"cutoff", false, false, false, false, false, "Array", CanonDefault::None, 0, {}},
+  {"q", false, false, false, false, false, "Long|Float", CanonDefault::None, 0, {}},
+  {"rate", false, false, false, false, false, "Long|Float", CanonDefault::None, 0, {}},
+  // 103: _Audio.envelope
+  {"samples", false, false, false, false, false, "Array", CanonDefault::None, 0, {}},
+  {"gain", false, false, false, false, false, "Array", CanonDefault::None, 0, {}},
+  {"rate", false, false, false, false, false, "Long|Float", CanonDefault::None, 0, {}},
+  // 106: _Audio.mix
+  {"sounds", false, false, false, false, false, "Array", CanonDefault::None, 0, {}},
+  {"heads", false, false, false, false, false, "Array", CanonDefault::None, 0, {}},
+  {"rate", false, false, false, false, false, "Long|Float", CanonDefault::None, 0, {}},
 };
 
 inline constexpr CanonSig kCanonSigs_Audio_native[] = {
@@ -1580,6 +1594,9 @@ inline constexpr CanonSig kCanonSigs_Audio_native[] = {
   {"_Audio", "", "pluck", kCanonParams_Audio_native + 82, 5, "Array", 5, 5, false, -1, -1, -1},
   {"_Audio", "", "partials", kCanonParams_Audio_native + 87, 9, "Array", 9, 9, false, -1, -1, -1},
   {"_Audio", "", "sound_samples", kCanonParams_Audio_native + 96, 2, "Long", 2, 2, false, -1, -1, -1},
+  {"_Audio", "", "filter", kCanonParams_Audio_native + 98, 5, "Array", 5, 5, false, -1, -1, -1},
+  {"_Audio", "", "envelope", kCanonParams_Audio_native + 103, 3, "Array", 3, 3, false, -1, -1, -1},
+  {"_Audio", "", "mix", kCanonParams_Audio_native + 106, 3, "Array", 3, 3, false, -1, -1, -1},
 };
 
 inline constexpr CanonParam kCanonParams_Dir_native[] = {

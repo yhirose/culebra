@@ -44,20 +44,13 @@ fn by_line(notes, spread, play) {
       })),
     }
   })
-  let starts = iota(parts.size()).map(|k| Math.round((parts[k].t0 +
-    k * spread) *
-    RATE))
-  mut out = repeat(
-    iota(parts.size()).map(|k| starts[k] + parts[k].s.size()).max(),
-    0.0,
+  Audio.mix(
+    iota(parts.size()).map(|k| {
+      samples: parts[k].s,
+      at: parts[k].t0 + k * spread,
+    }),
+    rate: RATE,
   )
-  for k in 0..parts.size() {
-    let s = parts[k].s
-    for i in 0..s.size() {
-      out[starts[k] + i] += s[i]
-    }
-  }
-  out
 }
 
 # How much louder than its start a note `n` ({len, level, level_end}) is

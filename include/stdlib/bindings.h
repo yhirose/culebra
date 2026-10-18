@@ -5209,12 +5209,17 @@ inline void _ns_audio_numbers(JitValue v, std::vector<double>& out,
                               const char* error) {
   out.clear();
   auto* xs = _ns_adapt::take_array(v);
+  if (xs) out.reserve(xs->size);
   for (size_t i = 0; xs && i < xs->size; i++) {
     const auto& e = xs->items[i];
     if (e.tag != TAG_LONG && e.tag != TAG_FLOAT)
       culebra::throw_runtime_error_at("TypeError", error, 0, 0);
     out.push_back(_culebra_coerce_num(e.tag, e.data));
   }
+}
+// An Audio argument outside what it may be.
+[[noreturn]] inline void _ns_audio_fail(const char* message) {
+  culebra::throw_runtime_error_at("ValueError", message, 0, 0);
 }
 // A Sound from samples goes to every backend as the WAV bytes of a file; no
 // samples is a silent handle, with nothing for a decoder to refuse.
@@ -5223,8 +5228,7 @@ inline JitValue _ns_audio_sound_samples(JitValue* a, int64_t) {
   std::vector<double> xs;
   _ns_audio_numbers(a[0], xs, ad::kSamplesError);
   int64_t rate = _ns_adapt::take_long(a[1]);
-  if (!(rate >= 1 && rate <= INT32_MAX))
-    culebra::throw_runtime_error_at("ValueError", "Audio.Sound: the rate is from 1 below 2^31", 0, 0);
+  if (!(rate >= 1 && rate <= INT32_MAX)) _ns_audio_fail("Audio.Sound: the rate is from 1 below 2^31");
   culebra::narrow_or_too_large(44 + 2 * static_cast<int64_t>(xs.size()), "Audio.Sound: the sound", 0, 0);
   int64_t id = ad::alloc_id();
   if (!xs.empty()) {
@@ -5283,13 +5287,11 @@ inline JitValue _ns_audio_resonate(JitValue* a, int64_t) {
   _ns_audio_numbers(a[1], modes, ad::kResonateModesError);
   double dry = _ns_adapt::take_double(a[2]);
   double rate = _ns_adapt::take_double(a[3]);
-  if (!(rate > 0))
-    culebra::throw_runtime_error_at("ValueError", "Audio.resonate: the rate is above 0", 0, 0);
+  if (!(rate > 0)) _ns_audio_fail("Audio.resonate: the rate is above 0");
   for (size_t k = 0; k + 2 < modes.size(); k += 3) {
     if (!(modes[k] > 0 && modes[k] < rate / 2))
-      culebra::throw_runtime_error_at("ValueError", "Audio.resonate: a mode's freq is above 0 and below half the rate", 0, 0);
-    if (!(modes[k + 1] > 0))
-      culebra::throw_runtime_error_at("ValueError", "Audio.resonate: a mode's width is above 0", 0, 0);
+      _ns_audio_fail("Audio.resonate: a mode's freq is above 0 and below half the rate");
+    if (!(modes[k + 1] > 0)) _ns_audio_fail("Audio.resonate: a mode's width is above 0");
   }
   std::vector<double> out(x.size());
   ad::resonate(x.data(), static_cast<int64_t>(x.size()), modes.data(),
@@ -5300,30 +5302,27 @@ inline JitValue _ns_audio_resonate(JitValue* a, int64_t) {
 // are laid into one kick the string's loop takes in as it passes.
 inline JitValue _ns_audio_pluck(JitValue* a, int64_t) {
   namespace ad = culebra::_audio_detail;
-  auto fail = [](const char* msg) {
-    culebra::throw_runtime_error_at("ValueError", msg, 0, 0);
-  };
   double seconds = _ns_adapt::take_double(a[0]);
   std::vector<double> tunings, strikes, samples;
   _ns_audio_numbers(a[1], tunings, ad::kPluckTuningsError);
   _ns_audio_numbers(a[2], strikes, ad::kPluckStrikesError);
   _ns_audio_numbers(a[3], samples, ad::kPluckStrikesError);
   double rate = _ns_adapt::take_double(a[4]);
-  if (!(rate > 0)) fail("Audio.pluck: the rate is above 0");
-  if (!(seconds >= 0 && seconds * rate < 1e10)) fail("Audio.pluck: the seconds are 0 or more");
-  if (tunings.empty()) fail("Audio.pluck: a string has a tuning");
+  if (!(rate > 0)) _ns_audio_fail("Audio.pluck: the rate is above 0");
+  if (!(seconds >= 0 && seconds * rate < 1e10)) _ns_audio_fail("Audio.pluck: the seconds are 0 or more");
+  if (tunings.empty()) _ns_audio_fail("Audio.pluck: a string has a tuning");
   for (size_t k = 0; k + 2 < tunings.size(); k += 3) {
-    if (!(tunings[k] >= 0)) fail("Audio.pluck: a tuning's at is 0 or more");
-    if (k > 0 && tunings[k] < tunings[k - 3]) fail("Audio.pluck: the tunings come in the order they play");
+    if (!(tunings[k] >= 0)) _ns_audio_fail("Audio.pluck: a tuning's at is 0 or more");
+    if (k > 0 && tunings[k] < tunings[k - 3]) _ns_audio_fail("Audio.pluck: the tunings come in the order they play");
     if (!(tunings[k + 1] > 0 && tunings[k + 1] < rate / 2))
-      fail("Audio.pluck: a tuning's freq is above 0 and below half the rate");
-    if (!(tunings[k + 2] > 0)) fail("Audio.pluck: a tuning's ring is above 0");
+      _ns_audio_fail("Audio.pluck: a tuning's freq is above 0 and below half the rate");
+    if (!(tunings[k + 2] > 0)) _ns_audio_fail("Audio.pluck: a tuning's ring is above 0");
   }
   auto n = ad::sample_at(seconds, rate);
   std::vector<double> kick(static_cast<size_t>(n), 0.0);
   size_t from = 0;
   for (size_t j = 0; j + 1 < strikes.size(); j += 2) {
-    if (!(strikes[j] >= 0)) fail("Audio.pluck: a strike's at is 0 or more");
+    if (!(strikes[j] >= 0)) _ns_audio_fail("Audio.pluck: a strike's at is 0 or more");
     auto start = ad::sample_at(strikes[j], rate);
     auto count = static_cast<size_t>(strikes[j + 1]);
     for (size_t i = 0; i < count && from + i < samples.size(); i++)
@@ -5334,44 +5333,55 @@ inline JitValue _ns_audio_pluck(JitValue* a, int64_t) {
   ad::pluck(n, tunings.data(), static_cast<int64_t>(tunings.size() / 3), kick.data(), rate, out.data());
   return _ns_audio_samples(out, "Audio.pluck() result");
 }
-// An envelope's (at, value) pairs, end to end: times 0 or more and in order.
-inline void _ns_audio_envelope(JitValue v, std::vector<double>& out, const char* what) {
-  namespace ad = culebra::_audio_detail;
-  _ns_audio_numbers(v, out, ad::kPartialsEnvelopeError);
-  for (size_t k = 0; k + 1 < out.size(); k += 2) {
-    if (!(out[k] >= 0) || (k > 0 && out[k] < out[k - 2]))
-      culebra::throw_runtime_error_at("ValueError", what, 0, 0);
+// An envelope, a list of (at, value), as its pairs end to end: each a Tuple
+// of two numbers (a TypeError of `kind_error` otherwise), the times 0 or more
+// and in order (a ValueError of `order_error`).
+inline void _ns_audio_points(JitValue v, std::vector<double>& out,
+                             const char* kind_error, const char* order_error) {
+  out.clear();
+  auto* xs = _ns_adapt::take_array(v);
+  if (!xs) culebra::throw_runtime_error_at("TypeError", kind_error, 0, 0);
+  for (size_t i = 0; i < xs->size; i++) {
+    const auto& p = xs->items[i];
+    auto* pair = p.tag == TAG_TUPLE ? reinterpret_cast<JitArray*>(p.data) : nullptr;
+    if (!pair || pair->size != 2)
+      culebra::throw_runtime_error_at("TypeError", kind_error, 0, 0);
+    for (size_t k = 0; k < 2; k++) {
+      const auto& e = pair->items[k];
+      if (e.tag != TAG_LONG && e.tag != TAG_FLOAT)
+        culebra::throw_runtime_error_at("TypeError", kind_error, 0, 0);
+      out.push_back(_culebra_coerce_num(e.tag, e.data));
+    }
   }
+  for (size_t k = 0; k + 1 < out.size(); k += 2)
+    if (!(out[k] >= 0) || (k > 0 && out[k] < out[k - 2])) _ns_audio_fail(order_error);
 }
 // The spectra come as (at, count) pairs and their amps end to end, and the
 // noise as [low, high, seed] or nothing.
 inline JitValue _ns_audio_partials(JitValue* a, int64_t) {
   namespace ad = culebra::_audio_detail;
-  auto fail = [](const char* msg) {
-    culebra::throw_runtime_error_at("ValueError", msg, 0, 0);
-  };
   double seconds = _ns_adapt::take_double(a[0]);
   double rate = _ns_adapt::take_double(a[8]);
-  if (!(rate > 0)) fail("Audio.partials: the rate is above 0");
-  if (!(seconds >= 0 && seconds * rate < 1e10)) fail("Audio.partials: the seconds are 0 or more");
+  if (!(rate > 0)) _ns_audio_fail("Audio.partials: the rate is above 0");
+  if (!(seconds >= 0 && seconds * rate < 1e10)) _ns_audio_fail("Audio.partials: the seconds are 0 or more");
   const char* order = "Audio.partials: an envelope's times are 0 or more, in the order they come";
   std::vector<double> freq, gain, heads, amps, band, steady, pulsed;
-  _ns_audio_envelope(a[1], freq, order);
-  _ns_audio_envelope(a[2], gain, order);
+  _ns_audio_points(a[1], freq, ad::kPartialsEnvelopeError, order);
+  _ns_audio_points(a[2], gain, ad::kPartialsEnvelopeError, order);
   _ns_audio_numbers(a[3], heads, ad::kPartialsSpectrumError);
   _ns_audio_numbers(a[4], amps, ad::kPartialsSpectrumError);
   _ns_audio_numbers(a[5], band, ad::kPartialsEnvelopeError);
-  _ns_audio_envelope(a[6], steady, order);
-  _ns_audio_envelope(a[7], pulsed, order);
-  if (freq.empty()) fail("Audio.partials: a tone has a freq");
+  _ns_audio_points(a[6], steady, ad::kPartialsEnvelopeError, order);
+  _ns_audio_points(a[7], pulsed, ad::kPartialsEnvelopeError, order);
+  if (freq.empty()) _ns_audio_fail("Audio.partials: a tone has a freq");
   for (size_t k = 1; k < freq.size(); k += 2)
-    if (!(freq[k] > 0)) fail("Audio.partials: a freq is above 0");
-  if (heads.empty()) fail("Audio.partials: a tone has a spectrum");
+    if (!(freq[k] > 0)) _ns_audio_fail("Audio.partials: a freq is above 0");
+  if (heads.empty()) _ns_audio_fail("Audio.partials: a tone has a spectrum");
   ad::PartialsSpectrum sp;
   sp.amps = amps.data();
   int64_t from = 0;
   for (size_t k = 0; k + 1 < heads.size(); k += 2) {
-    if (!(heads[k] >= 0) || (k > 0 && heads[k] < heads[k - 2])) fail(order);
+    if (!(heads[k] >= 0) || (k > 0 && heads[k] < heads[k - 2])) _ns_audio_fail(order);
     sp.at.push_back(heads[k]);
     sp.from.push_back(from);
     sp.count.push_back(static_cast<int64_t>(heads[k + 1]));
@@ -5381,9 +5391,9 @@ inline JitValue _ns_audio_partials(JitValue* a, int64_t) {
   if (band.size() == 3) {
     double low = band[0], high = band[1];
     if (!(low > 0 && high > low && high < rate / 2))
-      fail("Audio.partials: the noise's low and high are above 0, in order, and below half the rate");
+      _ns_audio_fail("Audio.partials: the noise's low and high are above 0, in order, and below half the rate");
     if (!(band[2] >= 0 && band[2] < 2147483648.0 && band[2] == std::floor(band[2])))
-      fail("Audio.partials: the noise's seed is a whole number from 0 below 2^31");
+      _ns_audio_fail("Audio.partials: the noise's seed is a whole number from 0 below 2^31");
     noise.on = true;
     noise.fast = 1.0 - std::exp(-2.0 * std::numbers::pi * high / rate);
     noise.slow = 1.0 - std::exp(-2.0 * std::numbers::pi * low / rate);
@@ -5394,6 +5404,78 @@ inline JitValue _ns_audio_partials(JitValue* a, int64_t) {
   ad::partials(n, ad::Envelope(freq.data(), freq.size(), 0.0), ad::Envelope(gain.data(), gain.size(), 1.0),
                sp, noise, rate, out.data());
   return _ns_audio_samples(out, "Audio.partials() result");
+}
+// The cutoff comes as an envelope (a number is one point at 0). The answer is
+// worked out in place of the samples.
+inline JitValue _ns_audio_filter(JitValue* a, int64_t) {
+  namespace ad = culebra::_audio_detail;
+  std::vector<double> x, cutoff;
+  _ns_audio_numbers(a[0], x, ad::kSamplesError);
+  auto name = _ns_adapt::take_sv(a[1]);
+  _ns_audio_points(a[2], cutoff, ad::kFilterEnvelopeError,
+                   "Audio.filter: a cutoff's times are 0 or more, in the order they come");
+  double q = _ns_adapt::take_double(a[3]);
+  double rate = _ns_adapt::take_double(a[4]);
+  ad::FilterKind kind = ad::FilterKind::Low;
+  if (name == "high") {
+    kind = ad::FilterKind::High;
+  } else if (name == "band") {
+    kind = ad::FilterKind::Band;
+  } else if (name != "low") {
+    auto message = culebra::format("Audio.filter: a filter is \"low\", \"high\" or \"band\", not {}", name);
+    _ns_audio_fail(message.c_str());
+  }
+  if (!(rate > 0)) _ns_audio_fail("Audio.filter: the rate is above 0");
+  if (!(q > 0)) _ns_audio_fail("Audio.filter: the q is above 0");
+  if (cutoff.empty()) _ns_audio_fail("Audio.filter: a filter has a cutoff");
+  for (size_t k = 1; k < cutoff.size(); k += 2)
+    if (!(cutoff[k] > 0 && cutoff[k] < rate / 2))
+      _ns_audio_fail("Audio.filter: a cutoff is above 0 and below half the rate");
+  ad::filter(x.data(), static_cast<int64_t>(x.size()), kind,
+             ad::Envelope(cutoff.data(), cutoff.size(), 0.0), q, rate, x.data());
+  return _ns_audio_samples(x, "Audio.filter() result");
+}
+// The answer is worked out in place of the samples.
+inline JitValue _ns_audio_envelope(JitValue* a, int64_t) {
+  namespace ad = culebra::_audio_detail;
+  std::vector<double> x, gain;
+  _ns_audio_numbers(a[0], x, ad::kSamplesError);
+  _ns_audio_points(a[1], gain, ad::kEnvelopeError,
+                   "Audio.envelope: an envelope's times are 0 or more, in the order they come");
+  double rate = _ns_adapt::take_double(a[2]);
+  if (!(rate > 0)) _ns_audio_fail("Audio.envelope: the rate is above 0");
+  ad::envelope(x.data(), static_cast<int64_t>(x.size()), ad::Envelope(gain.data(), gain.size(), 1.0),
+               rate, x.data());
+  return _ns_audio_samples(x, "Audio.envelope() result");
+}
+// The parts come as their samples, an Array each, and as (at, gain) pairs end
+// to end; each is added straight from its own Array, the answer growing to
+// the end of the one that ends last.
+inline JitValue _ns_audio_mix(JitValue* a, int64_t) {
+  namespace ad = culebra::_audio_detail;
+  auto* sounds = _ns_adapt::take_array(a[0]);
+  std::vector<double> heads;
+  _ns_audio_numbers(a[1], heads, ad::kMixPartsError);
+  double rate = _ns_adapt::take_double(a[2]);
+  if (!(rate > 0)) _ns_audio_fail("Audio.mix: the rate is above 0");
+  size_t parts = sounds ? sounds->size : 0;
+  if (heads.size() != 2 * parts) culebra::throw_runtime_error_at("TypeError", ad::kMixPartsError, 0, 0);
+  std::vector<double> out;
+  for (size_t k = 0; k < parts; k++) {
+    auto* xs = _ns_adapt::take_array(sounds->items[k]);
+    if (!xs) culebra::throw_runtime_error_at("TypeError", ad::kMixPartsError, 0, 0);
+    double at = heads[2 * k], gain = heads[2 * k + 1];
+    if (!(at >= 0 && at * rate < 1e10)) _ns_audio_fail("Audio.mix: a part's at is 0 or more");
+    auto start = static_cast<size_t>(ad::sample_at(at, rate));
+    if (out.size() < start + xs->size) out.resize(start + xs->size, 0.0);
+    for (size_t i = 0; i < xs->size; i++) {
+      const auto& e = xs->items[i];
+      if (e.tag != TAG_LONG && e.tag != TAG_FLOAT)
+        culebra::throw_runtime_error_at("TypeError", ad::kMixPartsError, 0, 0);
+      out[start + i] += gain * _culebra_coerce_num(e.tag, e.data);
+    }
+  }
+  return _ns_audio_samples(out, "Audio.mix() result");
 }
 // Audio.Kauai's timed notes, kScoreStride numbers an event (stdlib/audio.h).
 inline JitValue _ns_audio_score_new(JitValue* a, int64_t) {
@@ -10739,6 +10821,9 @@ inline const NsMethod kNsRows_Audio_native[] = {
   {"_Audio", "resonate",       4, &_ns_audio_resonate},
   {"_Audio", "pluck",          5, &_ns_audio_pluck},
   {"_Audio", "partials",       9, &_ns_audio_partials},
+  {"_Audio", "filter",         5, &_ns_audio_filter},
+  {"_Audio", "envelope",       3, &_ns_audio_envelope},
+  {"_Audio", "mix",            3, &_ns_audio_mix},
   {"_Audio", "sound_samples",  2, &_ns_audio_sound_samples},
 };
 inline const NsMethod kNsRows_Canvas_native[] = {

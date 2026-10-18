@@ -214,6 +214,12 @@ inline void pluck(int64_t n, const double* tunings, int64_t nt,
 
 inline constexpr auto kPartialsEnvelopeError =
     "Audio.partials: an envelope is a list of (at, value), each a number";
+inline constexpr auto kFilterEnvelopeError =
+    "Audio.filter: a cutoff is a number, or a list of (at, value) each a number";
+inline constexpr auto kEnvelopeError =
+    "Audio.envelope: an envelope is a list of (at, value), each a number";
+inline constexpr auto kMixPartsError =
+    "Audio.mix: a part is samples, or {samples, at, gain}, its samples numbers";
 inline constexpr auto kPartialsSpectrumError =
     "Audio.partials: a spectrum is a list of (at, amps), amps a list of numbers";
 
@@ -237,6 +243,45 @@ class Envelope {
   size_t n_, i_ = 0;
   double rest_;
 };
+
+// What filter() lets through: below its cutoff, above it, or about it.
+enum class FilterKind { Low, High, Band };
+
+// `x` (`n` long) through a two-pole state-variable filter, trapezoidal as
+// Zavalishin and Simper write it, into `out` (which may be `x`): the low,
+// high or band output (a band's peak at 0 dB) of one state that stays sound
+// however fast `cutoff` moves, `q` its resonance (0.707 the flattest, 0.5
+// two one-pole stages). Each answers as the analog filter does through the
+// bilinear transform, as the RBJ cookbook's biquads do.
+inline void filter(const double* x, int64_t n, FilterKind kind, Envelope cutoff,
+                   double q, double rate, double* out) {
+  double k = 1.0 / q, a1 = 0, a2 = 0, a3 = 0, s1 = 0, s2 = 0, at = -1;
+  for (int64_t i = 0; i < n; i++) {
+    double f = cutoff.at(static_cast<double>(i) / rate);
+    if (f != at) {
+      at = f;
+      double g = std::tan(std::numbers::pi * f / rate);
+      a1 = 1.0 / (1.0 + g * (g + k));
+      a2 = g * a1;
+      a3 = g * a2;
+    }
+    double v3 = x[i] - s2;
+    double v1 = a1 * s1 + a2 * v3;
+    double v2 = s2 + a2 * s1 + a3 * v3;
+    s1 = 2.0 * v1 - s1;
+    s2 = 2.0 * v2 - s2;
+    switch (kind) {
+      case FilterKind::Low: out[i] = v2; break;
+      case FilterKind::High: out[i] = x[i] - k * v1 - v2; break;
+      case FilterKind::Band: out[i] = k * v1; break;
+    }
+  }
+}
+
+// `x` (`n` long) times `gain`, into `out` (which may be `x`).
+inline void envelope(const double* x, int64_t n, Envelope gain, double rate, double* out) {
+  for (int64_t i = 0; i < n; i++) out[i] = x[i] * gain.at(static_cast<double>(i) / rate);
+}
 
 // The same source of white noise, -1..1, from the same seed (a linear
 // congruential generator, as the examples' wave.noise is).

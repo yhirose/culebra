@@ -8735,6 +8735,9 @@ sound is built from: each runs natively over a whole Array of samples
 | `Audio.resonate(samples: Array, modes: Array, dry = 0.0, rate = 44100) -> Array` | `samples` through a bank of resonances, as a guitar's body rings with its strings: each mode `{freq, width, gain}` is a two-pole resonator ringing at `freq` Hz, its poles `width` Hz wide, its peak about `gain`; `dry` of `samples` themselves is added. The answer is as long as `samples` |
 | `Audio.pluck(seconds, tunings: Array, strikes: Array = [], rate = 44100) -> Array` | a plucked string (Karplus-Strong), `seconds` long: each tuning `{at, freq, ring}` tunes it to `freq` Hz from `at` seconds on, ringing down by 60 dB in `ring` seconds, the first from the start, in the order they come; each strike `{at, samples}` is added into the string from `at` on. A change of tuning keeps the string moving, as a finger hammering on or damping it does, and what the string answers passes no DC |
 | `Audio.partials(seconds, freq: Array, spectrum: Array, gain: Array = [], noise = nil, rate = 44100) -> Array` | a harmonic tone `seconds` long, whose phase runs on unbroken through every change: `freq` and `gain` are envelopes, lists of `(at, value)`, and `spectrum` a list of `(at, amps)`, the k-th amp the partial at k times the freq (those at or above 0.45 of the `rate` left out). `noise` `{low, high, seed, steady, pulsed}` adds band noise from `low` to `high` Hz, the same from the same `seed` (a whole number, `1` if left out), at the levels of two envelopes: `steady`, heard as it is, and `pulsed`, heard as the tone's wave rises (as air through a reed is) |
+| `Audio.filter(samples: Array, kind: String, cutoff, q = 0.707, rate = 44100) -> Array` | `samples` through a two-pole filter: `"low"` lets through what is below `cutoff` Hz, `"high"` what is above it, `"band"` what is about it (its peak at 0 dB). `cutoff` is a number or an envelope of `(at, value)`, as a filter swept open is, and may move as fast as a sample without the filter going unstable (a state-variable filter, trapezoidal as Zavalishin and Simper write it); `q` is the resonance, `0.707` the flattest and higher a peak at the cutoff (for `"band"`, the cutoff over the band's width). The answer is as long as `samples` |
+| `Audio.envelope(samples: Array, gain: Array, rate = 44100) -> Array` | `samples` times `gain`, an envelope of `(at, value)`: a sound faded in, shaped, or stopped. The answer is as long as `samples` |
+| `Audio.mix(parts: Array, rate = 44100) -> Array` | the `parts` added together, each an Array of samples or `{samples, at, gain}`: from `at` seconds on (`0` if left out), times `gain` (`1`). The answer runs to the end of the part that ends last |
 
 A mode that is not an object of three numbers, or a sample that is neither
 `Long` nor `Float`, raises `TypeError`. A `freq` that is not above 0 and below
@@ -8759,6 +8762,16 @@ not an object raises `TypeError`. No freq or no spectrum, a freq that is not
 above 0, times below 0 or out of order, a noise band that is not above 0, in
 order and below half the `rate`, or a seed that is not a whole number from 0
 below 2^31 raises `ValueError`.
+
+`filter` and `envelope` read their envelopes as `partials` does, a straight
+line from one point to the next; a curve, such as a decay, is points close
+together (every 10 ms is close enough for the ear). A `kind` other than the
+three, a cutoff that is not above 0 and below half the `rate`, a `q` that is
+not above 0, no cutoff, or times below 0 or out of order raise `ValueError`;
+a cutoff or a gain that is neither a number (for a cutoff) nor a list of
+`(at, value)` raises `TypeError`. In `mix`, a time falls on the nearest sample
+as in `pluck`; a part that is neither samples nor an object with `samples`
+raises `TypeError`, and an `at` below 0 `ValueError`.
 
 ```culebra
 let impulse = [1.0, ...repeat(44099, 0.0)]
@@ -8786,6 +8799,13 @@ let tone = Audio.partials(
   noise: {low: 300.0, high: 2500.0, steady: [(0.0, 0.01)]},
 )
 println(tone.size())                                                     # => 22050
+
+# The tone through a low-pass that opens over its first half, faded out over
+# its last tenth of a second, and the string under it from 0.1 s on.
+let opened = Audio.filter(tone, "low", [(0.0, 400.0), (0.25, 4000.0)], q: 2.0)
+let faded = Audio.envelope(opened, [(0.4, 1.0), (0.5, 0.0)])
+let both = Audio.mix([faded, {samples: string, at: 0.1, gain: 0.5}])
+println(both.size())                                                     # => 48510
 ```
 
 ### Capture

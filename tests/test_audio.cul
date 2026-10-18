@@ -174,6 +174,16 @@ fn assert_samples(got, want) {
   }
 }
 
+// What `call` raised, as (kind, message).
+fn caught(call) {
+  try {
+    call()
+    nil
+  } catch e {
+    (e.kind, e.message)
+  }
+}
+
 // resonate: a bank of two-pole resonators, natively, the same samples as the
 // same filters written out here; Longs are samples too.
 fn rings(samples, modes, dry, rate) {
@@ -206,20 +216,13 @@ for (modes, message) in [
   ([{freq: 22050.0, width: 20.0, gain: 1.0}], "a mode's freq is above 0 and below half the rate"),
   ([{freq: 440.0, width: 0.0, gain: 1.0}], "a mode's width is above 0"),
 ] {
-  let e = try {
-    Audio.resonate(struck, modes)
-  } catch e {
-    e
-  }
-  assert_eq((e.kind, e.message), ("ValueError", "Audio.resonate: " + message))
+  assert_eq(caught(|| Audio.resonate(struck, modes)), ("ValueError", "Audio.resonate: " + message))
 }
 for modes in [[440.0], [{freq: 440.0, width: 20.0}], [{freq: "440", width: 20.0, gain: 1.0}]] {
-  let e = try {
-    Audio.resonate(struck, modes)
-  } catch e {
-    e
-  }
-  assert_eq((e.kind, e.message), ("TypeError", "Audio.resonate: a mode is \{freq, width, gain}, each a number"))
+  assert_eq(
+    caught(|| Audio.resonate(struck, modes)),
+    ("TypeError", "Audio.resonate: a mode is \{freq, width, gain}, each a number"),
+  )
 }
 assert_throws("ValueError", fn () {
   Audio.resonate(struck, two, rate: 0)
@@ -289,12 +292,7 @@ for (bad, message) in [
   ([{at: -1, freq: 440.0, ring: 1.0}], "a tuning's at is 0 or more"),
   ([{at: 0.5, freq: 440.0, ring: 1.0}, {at: 0.2, freq: 440.0, ring: 1.0}], "the tunings come in the order they play"),
 ] {
-  let e = try {
-    Audio.pluck(1.0, bad)
-  } catch e {
-    e
-  }
-  assert_eq((e.kind, e.message), ("ValueError", "Audio.pluck: " + message))
+  assert_eq(caught(|| Audio.pluck(1.0, bad)), ("ValueError", "Audio.pluck: " + message))
 }
 for (bad_tunings, bad_strikes, message) in [
   ([440.0], [], "a tuning is \{at, freq, ring}, each a number"),
@@ -302,12 +300,7 @@ for (bad_tunings, bad_strikes, message) in [
   (tunings, [shape], "a strike is \{at, samples}, its samples numbers"),
   (tunings, [{at: 0, samples: [0.5, "loud"]}], "a strike is \{at, samples}, its samples numbers"),
 ] {
-  let e = try {
-    Audio.pluck(1.0, bad_tunings, bad_strikes)
-  } catch e {
-    e
-  }
-  assert_eq((e.kind, e.message), ("TypeError", "Audio.pluck: " + message))
+  assert_eq(caught(|| Audio.pluck(1.0, bad_tunings, bad_strikes)), ("TypeError", "Audio.pluck: " + message))
 }
 
 // partials: a harmonic tone whose controls move in straight lines between
@@ -401,12 +394,7 @@ for (bad_freq, bad_spectrum, bad_noise, message) in [
   (glide, colours, {low: 2500.0, high: 300.0}, "the noise's low and high are above 0, in order, and below half the rate"),
   (glide, colours, {low: 300.0, high: 2500.0, seed: 0.5}, "the noise's seed is a whole number from 0 below 2^31"),
 ] {
-  let e = try {
-    Audio.partials(0.01, bad_freq, bad_spectrum, noise: bad_noise)
-  } catch e {
-    e
-  }
-  assert_eq((e.kind, e.message), ("ValueError", "Audio.partials: " + message))
+  assert_eq(caught(|| Audio.partials(0.01, bad_freq, bad_spectrum, noise: bad_noise)), ("ValueError", "Audio.partials: " + message))
 }
 for (bad_freq, bad_spectrum, bad_noise, message) in [
   ([220.0], colours, nil, "an envelope is a list of (at, value), each a number"),
@@ -414,12 +402,108 @@ for (bad_freq, bad_spectrum, bad_noise, message) in [
   (glide, [(0.0, 1.0)], nil, "a spectrum is a list of (at, amps), amps a list of numbers"),
   (glide, colours, "loud", "the noise is \{low, high, seed, steady, pulsed}"),
 ] {
-  let e = try {
-    Audio.partials(0.01, bad_freq, bad_spectrum, noise: bad_noise)
-  } catch e {
-    e
-  }
-  assert_eq((e.kind, e.message), ("TypeError", "Audio.partials: " + message))
+  assert_eq(caught(|| Audio.partials(0.01, bad_freq, bad_spectrum, noise: bad_noise)), ("TypeError", "Audio.partials: " + message))
+}
+
+// filter: a two-pole state-variable filter, trapezoidal (Zavalishin's, as
+// Simper writes it), natively, the same samples as the same filter written
+// out here, its cutoff still or moving; one that jumps every sample leaves
+// it sound.
+fn filtered(samples, kind, cutoff, q, rate) {
+  let at = moving(type_of(cutoff) == "Array" ? cutoff : [(0.0, cutoff)], 0.0)
+  let k = 1.0 / q
+  mut last = -1.0
+  mut a1 = 0.0
+  mut a2 = 0.0
+  mut a3 = 0.0
+  mut s1 = 0.0
+  mut s2 = 0.0
+  iota(samples.size()).map(fn (i) {
+    let f = at(i.to_float() / rate)
+    if f != last {
+      last = f
+      let g = Math.tan(Math.pi * f / rate)
+      a1 = 1.0 / (1.0 + g * (g + k))
+      a2 = g * a1
+      a3 = g * a2
+    }
+    let x = samples[i]
+    let v3 = x - s2
+    let v1 = a1 * s1 + a2 * v3
+    let v2 = s2 + a2 * s1 + a3 * v3
+    s1 = 2.0 * v1 - s1
+    s2 = 2.0 * v2 - s2
+    match kind {
+      "low" => v2,
+      "high" => x - k * v1 - v2,
+      _ => k * v1,
+    }
+  })
+}
+let mixed_tones = iota(300).map(|i| Math.sin(i * 0.3) + 0.5 * Math.sin(i * 2.1))
+for kind in ["low", "high", "band"] {
+  assert_samples(
+    Audio.filter(mixed_tones, kind, 2000.0),
+    filtered(mixed_tones, kind, 2000.0, 0.707, 44100.0),
+  )
+}
+let sweep = [(0.0, 300.0), (0.003, 6000.0), (0.003, 900.0)]
+assert_samples(
+  Audio.filter(mixed_tones, "low", sweep, q: 2.0, rate: 22050),
+  filtered(mixed_tones, "low", sweep, 2.0, 22050.0),
+)
+let jumping = iota(400).map(|i| (i / 44100.0, i % 2 == 0 ? 100.0 : 18000.0))
+for kind in ["low", "high", "band"] {
+  let out = Audio.filter(mixed_tones, kind, jumping, q: 20.0)
+  assert_true(out.all(|s| Math.abs(s) < 100.0))
+}
+assert_eq(Audio.filter([], "high", 100.0), [])
+for (call, message) in [
+  (|| Audio.filter(struck, "lowpass", 1000.0), "a filter is \"low\", \"high\" or \"band\", not lowpass"),
+  (|| Audio.filter(struck, "low", 0.0), "a cutoff is above 0 and below half the rate"),
+  (|| Audio.filter(struck, "low", [(0.0, 900.0), (0.1, 22050.0)]), "a cutoff is above 0 and below half the rate"),
+  (|| Audio.filter(struck, "low", 900.0, q: 0), "the q is above 0"),
+  (|| Audio.filter(struck, "low", []), "a filter has a cutoff"),
+  (|| Audio.filter(struck, "low", [(0.1, 900.0), (0.0, 900.0)]), "a cutoff's times are 0 or more, in the order they come"),
+  (|| Audio.filter(struck, "low", 900.0, rate: 0), "the rate is above 0"),
+] {
+  assert_eq(caught(call), ("ValueError", "Audio.filter: " + message))
+}
+for cutoff in [[900.0], [(0.0, "900")]] {
+  assert_eq(caught(|| Audio.filter(struck, "low", cutoff)), ("TypeError", "Audio.filter: a cutoff is a number, or a list of (at, value) each a number"))
+}
+
+// envelope: samples times a gain moving in straight lines between its
+// points, as partials' gain does; with no points the samples as they are.
+let swelled = moving(swell, 1.0)
+assert_samples(
+  Audio.envelope(mixed_tones, swell),
+  iota(mixed_tones.size()).map(|i| mixed_tones[i] * swelled(i / 44100.0)),
+)
+assert_eq(Audio.envelope(struck, []), struck.map(|x| x.to_float()))
+assert_eq(Audio.envelope([1, 1, 1, 1], [(0.0, 0.0), (3.0, 1.0)], rate: 1), [0.0, 1.0 / 3.0, 2.0 / 3.0, 1.0])
+for (gain, kind, message) in [
+  ([1.0], "TypeError", "an envelope is a list of (at, value), each a number"),
+  ([(0.2, 1.0), (0.1, 0.0)], "ValueError", "an envelope's times are 0 or more, in the order they come"),
+] {
+  assert_eq(caught(|| Audio.envelope(struck, gain)), (kind, "Audio.envelope: " + message))
+}
+
+// mix: the parts added together, each from its own `at` and times its gain,
+// as long as the one that ends last.
+assert_eq(
+  Audio.mix([[1, 2], {samples: [1.0, 1.0], at: 2 / 44100.0, gain: 0.5}, {samples: [3.0]}]),
+  [4.0, 2.0, 0.5, 0.5],
+)
+assert_eq(Audio.mix([{samples: [1.0], at: 0.5}], rate: 4), [0.0, 0.0, 1.0])
+assert_eq(Audio.mix([]), [])
+for (parts, kind, message) in [
+  ([1.0], "TypeError", "a part is samples, or \{samples, at, gain}, its samples numbers"),
+  ([{at: 0.0}], "TypeError", "a part is samples, or \{samples, at, gain}, its samples numbers"),
+  ([["x"]], "TypeError", "a part is samples, or \{samples, at, gain}, its samples numbers"),
+  ([{samples: [1.0], at: -0.5}], "ValueError", "a part's at is 0 or more"),
+] {
+  assert_eq(caught(|| Audio.mix(parts)), (kind, "Audio.mix: " + message))
 }
 
 // Closed like the C++ namespaces: an unknown member raises.

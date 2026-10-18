@@ -8390,6 +8390,9 @@ Canvas.run(160, 160, fn () {
 | `Audio.resonate(samples: Array, modes: Array, dry = 0.0, rate = 44100) -> Array` | ギターの胴が弦と一緒に鳴るように、`samples`を共鳴の集まりに通す。モード`{freq, width, gain}`はそれぞれ2極の共鳴器で、`freq` Hzで鳴り、極の幅は`width` Hz、ピークはおよそ`gain`になる。`samples`そのものを`dry`倍して足す。返す配列の長さは`samples`と同じ |
 | `Audio.pluck(seconds, tunings: Array, strikes: Array = [], rate = 44100) -> Array` | `seconds`秒の、はじいた弦（Karplus-Strong）。チューニング`{at, freq, ring}`は、`at`秒から弦を`freq` Hzに合わせ、`ring`秒で60 dB減衰させる。最初のものは始めから効き、来る順に並べる。ストローク`{at, samples}`は、`at`秒から弦に足し込む。チューニングが変わっても弦は振動を続けるので、指のハンマリングや弦を止める動きになる。弦が返す音に直流成分は含まれない |
 | `Audio.partials(seconds, freq: Array, spectrum: Array, gain: Array = [], noise = nil, rate = 44100) -> Array` | `seconds`秒の倍音でできた音。どんな変化の間も位相は途切れない。`freq`と`gain`はエンベロープ（`(at, value)`の列）、`spectrum`は`(at, amps)`の列で、k番目のampはfreqのk倍の倍音（`rate`の0.45倍以上のものは除く）。`noise` `{low, high, seed, steady, pulsed}`は`low`から`high` Hzの帯域の雑音を足す。雑音は同じ`seed`（整数、省略すると`1`）なら同じになり、2つのエンベロープの音量で鳴る。`steady`はそのまま、`pulsed`は音の波が上がるのに合わせて脈打つ（リードを通る息のように） |
+| `Audio.filter(samples: Array, kind: String, cutoff, q = 0.707, rate = 44100) -> Array` | `samples`を2次のフィルタに通す。`"low"`は`cutoff` Hzより低い音を、`"high"`は高い音を、`"band"`はその周りの音を通す（`"band"`の山は0 dB）。`cutoff`は数か、`(at, value)`のエンベロープで、フィルタを開いていくような動きも書ける。1サンプルごとに動かしても発散しない（ZavalishinとSimperの書く、台形積分の状態変数フィルタ）。`q`は共鳴の強さで、`0.707`が最も平らで、大きいほど`cutoff`のところに山ができる（`"band"`では、`cutoff`を帯域の幅で割ったもの）。答えの長さは`samples`と同じ |
+| `Audio.envelope(samples: Array, gain: Array, rate = 44100) -> Array` | `samples`に、`(at, value)`のエンベロープ`gain`を掛ける。音をだんだん大きくする、形を付ける、止めるのに使う。答えの長さは`samples`と同じ |
+| `Audio.mix(parts: Array, rate = 44100) -> Array` | `parts`を足し合わせる。それぞれはサンプルの配列か`{samples, at, gain}`で、`at`秒から（省略すると`0`）、`gain`倍（`1`）で足す。答えは、一番遅く終わるものの終わりまで |
 
 3つの数を持つオブジェクトでないモードや、`Long`でも`Float`でもないサンプルは
 `TypeError`。0より大きく`rate`の半分より小さくない`freq`、0より大きくない
@@ -8408,6 +8411,13 @@ Canvas.run(160, 160, fn () {
 ないspectrum、オブジェクトでない`noise`は`TypeError`。次はどれも`ValueError`になる。freqやspectrumが無い。
 freqが0より大きくない。時刻が0未満か、順が逆。雑音の`low`と`high`が、0より大きく、この順に並び、`rate`の
 半分より小さい、になっていない。seedが0以上2^31未満の整数でない。
+
+`filter`と`envelope`も、エンベロープを`partials`と同じく点から次の点への直線で読む。減衰のような曲線は、
+点を細かく並べて表す（耳には10ミリ秒ごとで十分）。次はどれも`ValueError`になる。`kind`が3つのどれでもない。
+cutoffが0より大きく`rate`の半分より小さい、になっていない。`q`が0より大きくない。cutoffが無い。時刻が0未満か、
+順が逆。数（cutoffの場合）でも`(at, value)`の列でもないcutoffやgainは`TypeError`。`mix`の時刻は`pluck`と
+同じく最も近いサンプルに置かれる。サンプルの配列でも`samples`を持つオブジェクトでもない要素は`TypeError`、
+0未満の`at`は`ValueError`。
 
 ```culebra
 let impulse = [1.0, ...repeat(44099, 0.0)]
@@ -8435,6 +8445,13 @@ let tone = Audio.partials(
   noise: {low: 300.0, high: 2500.0, steady: [(0.0, 0.01)]},
 )
 println(tone.size())                                                     # => 22050
+
+# The tone through a low-pass that opens over its first half, faded out over
+# its last tenth of a second, and the string under it from 0.1 s on.
+let opened = Audio.filter(tone, "low", [(0.0, 400.0), (0.25, 4000.0)], q: 2.0)
+let faded = Audio.envelope(opened, [(0.4, 1.0), (0.5, 0.0)])
+let both = Audio.mix([faded, {samples: string, at: 0.1, gain: 0.5}])
+println(both.size())                                                     # => 48510
 ```
 
 ### Capture
