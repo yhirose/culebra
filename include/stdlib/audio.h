@@ -133,6 +133,11 @@ inline int64_t sample_at(double seconds, double rate) {
   return static_cast<int64_t>(std::nearbyint(seconds * rate));
 }
 
+// A part's state too small to hear (-600 dB) is silence. Kept, a state left
+// with nothing going in decays into subnormal numbers, which x86 works out
+// many times slower, and a part that plays on never leaves them.
+inline double settled(double x) { return std::abs(x) < 1e-30 ? 0.0 : x; }
+
 // A change scheduled for a value, `at` seconds in: from then on it is
 // `value`, or (`ramp`) it arrives there in a straight line from the change
 // before. Web Audio's setValueAtTime and linearRampToValueAtTime. A change
@@ -214,7 +219,7 @@ struct Resonator {
     b0 = (1.0 - r) * 2.0 * std::sin(w) * gain;
   }
   double step(double x) {
-    double y = b0 * x + a1 * y1 + a2 * y2;
+    double y = settled(b0 * x + a1 * y1 + a2 * y2);
     y2 = y1;
     y1 = y;
     return y;
@@ -280,12 +285,12 @@ class PluckString {
     double read = buf_[static_cast<size_t>((w_ - len_ + size) % size)];
     double v = 0.5 * (read + prev_) * loss_;
     prev_ = read;
-    double ap = c_ * v + ap_in_ - c_ * ap_out_;
+    double ap = settled(c_ * v + ap_in_ - c_ * ap_out_);
     ap_in_ = v;
     ap_out_ = ap;
     buf_[static_cast<size_t>(w_)] = ap + kick;
     w_ = (w_ + 1) % size;
-    dc_out_ = read - dc_in_ + pole_ * dc_out_;
+    dc_out_ = settled(read - dc_in_ + pole_ * dc_out_);
     dc_in_ = read;
     return dc_out_;
   }
@@ -364,8 +369,8 @@ struct Svf {
     double v3 = x - s2;
     double v1 = a1 * s1 + a2 * v3;
     double v2 = s2 + a2 * s1 + a3 * v3;
-    s1 = 2.0 * v1 - s1;
-    s2 = 2.0 * v2 - s2;
+    s1 = settled(2.0 * v1 - s1);
+    s2 = settled(2.0 * v2 - s2);
     switch (kind) {
       case FilterKind::Low: return v2;
       case FilterKind::High: return x - k * v1 - v2;
