@@ -1535,7 +1535,8 @@ inline constexpr CanonParam kCanonParams_Audio_native[] = {
   // 106: _Audio.mix
   {"sounds", false, false, false, false, false, "Array", CanonDefault::None, 0, {}},
   {"heads", false, false, false, false, false, "Array", CanonDefault::None, 0, {}},
-  {"rate", false, false, false, false, false, "Long|Float", CanonDefault::None, 0, {}},  // 109: _Audio.graph_new
+  {"rate", false, false, false, false, false, "Long|Float", CanonDefault::None, 0, {}},
+  // 109: _Audio.graph_new
   {"rate", false, false, false, false, false, "Long|Float", CanonDefault::None, 0, {}},
   // 110: _Audio.graph_part
   {"id", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
