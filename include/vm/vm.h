@@ -5084,6 +5084,7 @@ class Compiler {
     // pointer.
     std::deque<Binding> bindings;
     int32_t slot_watermark;  // next_slot_ at scope entry; pop rolls back
+    int32_t named_top = 0;   // named_top_ at scope entry; pop rolls back
     // Where the scope's current cleanup segment begins, the mark its own
     // defers stand on (-1 when it declares none), and the segments it has
     // left behind: together they are the Chunk::Cleanup entries the throw
@@ -5895,7 +5896,7 @@ class Compiler {
   };
 
   void push_scope(const peg::Ast& at, bool owned_mark = true) {
-    scopes_.push_back({{}, next_slot_,
+    scopes_.push_back({{}, next_slot_, named_top_,
                        static_cast<uint32_t>(chunk_.code.size()),
                        std::exchange(pending_scope_mark_, -1)});
     if (owned_mark) take_owned_mark(at);
@@ -6131,8 +6132,11 @@ class Compiler {
     // already died through the ordinary refcount-0 path (the JIT's
     // pop_scope order); what is left is escaped or cyclic.
     if (sc.owned_mark >= 0) emit(Op::OwnedExit, sc.owned_mark);
+    // Named slots end where they did at entry: a temp the statement took
+    // before the scope (a `while` condition, a `match` subject) goes back to
+    // the allocator with the statement's sweep, not with the enclosing scope.
     next_slot_ = std::max(sc.slot_watermark, pin_floor_);
-    named_top_ = std::min(named_top_, next_slot_);
+    named_top_ = sc.named_top;
     scopes_.pop_back();
     return segments;
   }
