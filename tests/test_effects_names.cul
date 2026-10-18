@@ -1,0 +1,316 @@
+// Conformance: algebraic effects — the names a lowered body reads: a local
+// promoted onto the state object, a name read before a declaration of it has
+// run, and `self` in the two lowered bodies (an effect fn's and a handle's).
+// Split from test_effects.cul, whose --jit compile had passed the per-file
+// budget on the Ubuntu runner.
+
+// --- promoted body locals stay values, not methods -------------------------
+// The effects lowering moves a body's locals to `self` (PromotedLocals,
+// rewrite_locals_to_self in state_lowering.h), so a local promoted onto an
+// _EffComp_ / _EffBody_ state object must read back unbound. Both backends
+// agreed while this was broken, so difftest cannot see it; these need value
+// asserts.
+fn pl_mk_plain() {
+  return fn () {
+    1
+  }
+}
+fn pl_mk_self() {
+  return fn () {
+    self
+  }
+}
+effect fn pl_ask()
+
+// _EffComp_: an effectful fn's body
+effect fn pl_comp() {
+  let f = pl_mk_plain()
+  let s = pl_mk_self()
+  let holder = { tag: "holder" }
+  holder.s = s
+  perform pl_ask()
+  [f == f, holder.s().tag]
+}
+assert_eq(
+  handle { pl_comp() } with pl_ask(resume) { resume(nil) },
+  [true, "holder"],
+)
+
+// _EffBody_: the handle body itself
+assert_eq(
+  handle {
+  let f = pl_mk_plain()
+  let s = pl_mk_self()
+  let holder = { tag: "holder" }
+  holder.s = s
+  perform pl_ask()
+  [f == f, holder.s().tag]
+} with pl_ask(resume) { resume(nil) },
+  [true, "holder"],
+)
+
+// --- a name read before a declaration of it has run -------------------------
+// The state instance knows whether a declaration of a variable it holds has
+// run, as a plain fn's frame does: until one has, a closure's read is the
+// NameError, and a read in the body means the variable the name meant above
+// the declaration. Each pass through a loop body starts its variables afresh.
+effect fn pd_ask()
+
+effect fn pd_early() {
+  let pd_c = || x
+  let early = try { pd_c() } catch e { [e.kind, e.message] }
+  let a = perform pd_ask()
+  let x = a
+  [early, pd_c()]
+}
+assert_eq(
+  handle { pd_early() } with pd_ask(resume) { resume(7) },
+  [["NameError", "undefined variable 'x'"], 7],
+)
+
+assert_eq(
+  handle {
+  let pd_v = "outer"
+  mut seen = []
+  for i in [1, 2] {
+    (i == 1) && (let pd_v = "inner {i}")
+    perform pd_ask()
+    seen.push(pd_v)
+  }
+  seen
+} with pd_ask(resume) { resume(nil) },
+  ["inner 1", "outer"],
+)
+
+assert_eq(
+  handle {
+  false && (let pd_h = 1)
+  perform pd_ask()
+  try { pd_h } catch e { [e.kind, e.line, e.col] }
+} with pd_ask(resume) { resume(nil) },
+  ["NameError", 89, 9],
+)
+
+// a compound assignment asks before it steps
+effect fn pd_step() {
+  let pd_c = || (n += 1)
+  let pd_d = || (m ??= 3)
+  let early = [
+    try { pd_c() } catch e { e.kind },
+    try { pd_d() } catch e { e.kind },
+  ]
+  let a = perform pd_ask()
+  mut n = a
+  mut m = nil
+  [early, pd_c(), pd_d()]
+}
+assert_eq(
+  handle { pd_step() } with pd_ask(resume) { resume(10) },
+  [["NameError", "NameError"], 11, 3],
+)
+
+// what a declaration raises reports at its `let`
+effect fn pd_typed() {
+  perform pd_ask()
+  let pd_m: Long = "s"
+  pd_m
+}
+let pd_typed_at = try {
+  handle { pd_typed() } with pd_ask(resume) { resume(nil) }
+} catch e {
+  [e.kind, e.line, e.col]
+}
+assert_eq(pd_typed_at, ["TypeError", 115, 3])
+
+// a skipped declaration means what the name meant above it, not a variable
+// declared further down
+effect fn pd_later(z) {
+  mut r = nil
+  {
+    z && (let pd_a = 2)
+    perform pd_ask()
+    r = try { pd_a } catch e { e.kind }
+  }
+  let pd_a = 1
+  let pd_c = || pd_a
+  [r, pd_c()]
+}
+assert_eq(
+  handle { pd_later(false) } with pd_ask(resume) { resume(nil) },
+  ["NameError", 1],
+)
+
+// every write goes where the name points until its declaration runs, and is
+// then checked against the `mut` of the declaration that ran
+effect fn pd_writes(z) {
+  mut a = 1
+  mut log = []
+  {
+    z && (mut a = 10)
+    perform pd_ask()
+    a += 1
+    (a, _) = (a * 2, 0)
+    log.push(a)
+  }
+  log.push(a)
+  !z && (let h = 1)
+  z && (mut h = 2)
+  log.push(try { h = 3; h } catch e { e.kind })
+  z && (mut k = 1)
+  let k = perform pd_ask()
+  log.push(try { k = 4 } catch e { e.kind })
+  log
+}
+assert_eq(
+  [false, true].map(|z| handle { pd_writes(z) } with pd_ask(resume) { resume(0) }),
+  [[4, 4, "ImmutableError", "ImmutableError"], [22, 1, 3, "ImmutableError"]],
+)
+
+// a destructuring's value is its right-hand side, the last of a block too
+effect fn pd_value(z) {
+  mut a = 0
+  perform pd_ask()
+  let t = try { [a, [pd_b]] = [5, [6]] } catch e { e.kind }
+  let i = if z { {a, pd_b} = {a: 7, pd_b: 8} } else { 0 }
+  [t, i, a]
+}
+assert_eq(
+  handle { pd_value(true) } with pd_ask(resume) { resume(0) },
+  [[5, [6]], {a: 7, pd_b: 8}, 7],
+)
+
+// anywhere else the right-hand side goes when the statement ends, and a store
+// in it that refuses raises as it would in a plain fn
+let pd_drops = []
+class PdRes {
+  new(.id) {}
+  drop() {
+    pd_drops.push("drop {self.id}")
+  }
+}
+effect fn pd_side(c) {
+  mut a = 0
+  perform pd_ask()
+  {a, pd_r: [pd_q]} = {a: 1, pd_r: [2], res: PdRes("side")}
+  pd_drops.push("after")
+  try { [a, [pd_q]] = c = [3, [4]] } catch e { [e.kind, a] }
+}
+assert_eq(
+  handle { pd_side(0) } with pd_ask(resume) { resume(0) },
+  ["ImmutableError", 1],
+)
+assert_eq(pd_drops, ["drop side", "after"])
+
+// a local a closure reads, so one held in a box, is still the function it
+// holds: read out of the box it is no method of the box
+effect fn pd_boxed_fn() {
+  let f = || f
+  fn g() { 1 }
+  let h = || g
+  perform pd_ask()
+  [f() == f, h() == g, g()]
+}
+assert_eq(handle { pd_boxed_fn() } with pd_ask(resume) { resume(0) }, [true, true, 1])
+
+// --- `self` and the two lowered bodies --------------------------------------
+// An effect fn is a named declaration that cannot be a class member, so its
+// lowering leaves no receiver and `self` in its body is refused at parse time
+// (jit_error_pos_test.sh). A handle body is the other case: it is spliced
+// where it was written, so the enclosing method's receiver survives and
+// reading `self` there is ordinary code.
+effect fn sf_ask()
+class SelfHolder {
+  new(v) {
+    self.v = v
+  }
+  run() {
+    return handle { self.v + perform sf_ask() } with sf_ask(resume) { resume(10) }
+  }
+  runNested() {
+    return handle { (fn () { self.v })() + perform sf_ask() }
+           with sf_ask(resume) { resume(100) }
+  }
+  runBare() {
+    return handle {
+      let me = self
+      let w = self
+        .v
+      let a = perform sf_ask()
+      [me.v, w, {self}.self.v, a]
+    } with sf_ask(resume) { resume(self?.v) }
+  }
+}
+assert_eq(SelfHolder.new(1).run(), 11)
+assert_eq(SelfHolder.new(2).runNested(), 102)
+assert_eq(SelfHolder.new(3).runBare(), [3, 3, 3, 3])
+
+// A nested handle reads the enclosing computation through its instance, but
+// the members of a class declared in its body or in a clause keep their own
+// `self`.
+effect fn sf_nested() {
+  mut n = 1
+  perform sf_ask()
+  handle {
+    class SfBox {
+      new(.m) {}
+      get() { self.m }
+    }
+    let a = perform sf_ask()
+    "{n}:{SfBox(10).get()}:{a}"
+  } with sf_ask(resume) {
+    class SfTag {
+      new(.m) {}
+      get() { self.m }
+    }
+    resume(SfTag(20).get())
+  }
+}
+assert_eq(handle { sf_nested() } with sf_ask(resume) { resume(nil) }, "1:10:20")
+
+// Neither a label nor an object literal's own method is the body's `self`,
+// and neither is a member named `self`.
+assert_eq(
+  handle {
+  let o = {self: 3, v: 5, m: fn () { self.v }}
+  let a = perform sf_ask()
+  [o.self, o.m(), a]
+} with sf_ask(resume) { resume(7) },
+  [3, 5, 7],
+)
+effect fn sf_member(o) {
+  perform sf_ask()
+  o?.self
+}
+assert_eq(handle { sf_member({self: 9}) } with sf_ask(resume) { resume(nil) }, 9)
+
+// A handle written in another's clause has clauses of its own.
+effect fn sf_tell()
+assert_eq(
+  handle {
+  perform sf_ask()
+} with sf_ask(resume) {
+    resume(handle { perform sf_tell() + 1 } with sf_tell(inner) { inner(40) })
+  },
+  41,
+)
+assert_eq(handle { perform sf_ask() } with sf_ask(k1) { k1(handle { perform sf_tell() } with sf_tell(k2) { k2(handle { perform sf_ask() } with sf_ask(k3) { k3(7) }) }) }, 7)
+assert_eq(handle { 1 } with return(v1) { handle { v1 + 1 } with return(v2) { handle { v2 + 1 } with return(v3) { v3 * 10 } } }, 30)
+
+// A function from outside, called bare in either body, is called with no
+// receiver — the same rewrite the generator lowering shares.
+effect fn sf_comp() {
+  let f = pl_mk_self()
+  let r = try { f(); "no error" } catch e { e.kind }
+  perform sf_ask()
+  r
+}
+assert_eq(handle { sf_comp() } with sf_ask(resume) { resume(nil) }, "NameError")
+assert_eq(
+  handle {
+  let f = pl_mk_self()
+  let r = try { f(); "no error" } catch e { e.kind }
+  perform sf_ask()
+  r
+} with sf_ask(resume) { resume(nil) },
+  "NameError",
+)

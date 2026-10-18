@@ -93,7 +93,9 @@
 # test_codegen_at_positional.cul into test_codegen_at.cul (subsets of them).
 # 311 since test_isolate_left_running.cul (an isolate still running at the end
 # of a program is stopped before it ends, AOT included).
-tests.cul 311
+# 312 since test_effects_names.cul (split from test_effects.cul, whose --jit
+# compile had passed the per-file budget on the Ubuntu runner).
+tests.cul 312
 
 # tests/isolate/*.cul — run on both engines, plus the over-cap modes.
 # 21 since test_xml_isolate.cul (an XML element keeps its methods across an
