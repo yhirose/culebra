@@ -46,10 +46,17 @@ fn steady(rate) {
 let (g1, amp1) = steady(10)
 amp1.gain.set(0.8, 0.5)
 amp1.gain.set(0.2, 1.0).ramp(0.6, 0.0)
-assert_eq(g1.render(1.0), [0.0, 0.0, 1.0, 0.75, 0.5, 0.25, 0.0, 0.0, 0.5, 0.5])
+assert_samples(g1.render(1.0), [0.0, 0.0, 1.0, 0.75, 0.5, 0.25, 0.0, 0.0, 0.5, 0.5])
 let (g2, amp2) = steady(10)
 amp2.gain.ramp(0.4, 1.0)
-assert_eq(g2.render(0.6), [0.0, 0.25, 0.5, 0.75, 1.0, 1.0])
+assert_samples(g2.render(0.6), [0.0, 0.25, 0.5, 0.75, 1.0, 1.0])
+// A change lands on the first sample at or after its time, as an envelope's
+// point does: 1.1 s is sample 48510, and 1.1 * 44100 in floating point is a
+// hair above it.
+let (g3, amp3) = steady(44100)
+amp3.gain.set(1.1, 1.0)
+let late = g3.render(1.11)
+assert_eq((late[48509], late[48510]), (0.0, 1.0))
 
 // The parts are the array functions' own, sample for sample.
 let saw = Audio.Graph.new()

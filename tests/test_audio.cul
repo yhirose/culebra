@@ -482,6 +482,10 @@ assert_samples(
 )
 assert_eq(Audio.envelope(struck, []), struck.map(|x| x.to_float()))
 assert_eq(Audio.envelope([1, 1, 1, 1], [(0.0, 0.0), (3.0, 1.0)], rate: 1), [0.0, 1.0 / 3.0, 2.0 / 3.0, 1.0])
+// A step lands on the first sample at or after its time: 1.1 s is sample
+// 48510, though 1.1 * 44100 in floating point is a hair above it.
+let stepped = Audio.envelope(repeat(48512, 1.0), [(1.1, 0.0), (1.1, 1.0)])
+assert_eq((stepped[48509], stepped[48510]), (0.0, 1.0))
 for (gain, kind, message) in [
   ([1.0], "TypeError", "an envelope is a list of (at, value), each a number"),
   ([(0.2, 1.0), (0.1, 0.0)], "ValueError", "an envelope's times are 0 or more, in the order they come"),

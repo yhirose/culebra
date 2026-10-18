@@ -8495,8 +8495,12 @@ println(both.size())                                                     # => 48
 どちらも値を返すので、変更はつなげて書ける。予約する順番は自由で、それぞれの
 時刻に効く。グラフは予約をすべて覚えていて、`render`するときも鳴らすときも
 始まりから計算する。鳴っている間の予約は鳴っているグラフにも届き、過ぎた時刻の
-予約はすぐに効く。Web Audioの`setValueAtTime`と`linearRampToValueAtTime`に
-あたるので、曲の音符は`Audio.Kauai`がしているように前もって予約できる。
+予約はすぐに効く。予約は、その時刻と同じかそれより後の最初のサンプルから効く。
+`Audio.filter`や`Audio.envelope`のエンベロープの点と同じ扱いである。`Audio.pluck`は
+チューニングを最も近いサンプルに置くので、2つのサンプルの間の時刻で調律を変えた
+弦は、グラフでは1サンプル遅れて変わることがある。Web Audioの`setValueAtTime`と
+`linearRampToValueAtTime`にあたるので、曲の音符は`Audio.Kauai`がしているように
+前もって予約できる。
 
 次はどれも`ValueError`になる。名前の挙がっていない種類。別のグラフの部品。
 範囲外の値（波のfreqが0未満か`rate`の半分以上、cutoffが0以下か`rate`の半分以上、

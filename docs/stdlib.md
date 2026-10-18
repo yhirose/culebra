@@ -8853,9 +8853,12 @@ Both answer the value, so changes chain, and they may be made in any order:
 each is heard at its time. A graph keeps every change made to it and works
 them out from its start whenever it renders or plays; a change made while it
 plays reaches the playing graph too, and one for a time already past takes
-effect at once. These are Web Audio's `setValueAtTime` and
-`linearRampToValueAtTime`, so a song's notes can be scheduled ahead, as
-`Audio.Kauai` schedules its own.
+effect at once. A change takes effect at the first sample at or after its
+time, as a point of `Audio.filter`'s or `Audio.envelope`'s envelope does;
+`Audio.pluck` puts a tuning on the nearest sample instead, so a string
+re-tuned between two samples can change one sample later in a graph. These
+are Web Audio's `setValueAtTime` and `linearRampToValueAtTime`, so a song's
+notes can be scheduled ahead, as `Audio.Kauai` schedules its own.
 
 A kind other than those named, a part from another graph, a value out of
 range (a wave's freq below 0 or not below half the rate, a cutoff not above

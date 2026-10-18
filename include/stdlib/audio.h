@@ -133,10 +133,11 @@ inline int64_t sample_at(double seconds, double rate) {
   return static_cast<int64_t>(std::nearbyint(seconds * rate));
 }
 
-// A change scheduled for a value, at sample `at` (which may fall between
-// samples): from then on it is `value`, or (`ramp`) it arrives there in a
-// straight line from the change before. Web Audio's setValueAtTime and
-// linearRampToValueAtTime.
+// A change scheduled for a value, `at` seconds in: from then on it is
+// `value`, or (`ramp`) it arrives there in a straight line from the change
+// before. Web Audio's setValueAtTime and linearRampToValueAtTime. A change
+// takes effect at the first sample whose time, its index over the rate, is
+// `at` or later.
 struct ParamEvent {
   double at = 0;
   bool ramp = false;
@@ -144,20 +145,20 @@ struct ParamEvent {
 };
 
 // A value a part reads, `rest` until its first change and then moved by its
-// changes; asked for at samples that only go forward.
+// changes; asked for at times that only go forward.
 class Param {
  public:
   explicit Param(double rest = 0) : rest_(rest), value_(rest), from_value_(rest) {}
   // A value through `n` numbers of (at, value) pairs, `at` in seconds: it
   // holds its first value before them and its last after, moving in straight
   // lines between; two at the same time are a step. `rest` when there are none.
-  static Param points(const double* pairs, size_t n, double rest, double rate) {
+  static Param points(const double* pairs, size_t n, double rest) {
     Param p(n >= 2 ? pairs[1] : rest);
-    for (size_t k = 0; k + 1 < n; k += 2) p.schedule({pairs[k] * rate, k > 0, pairs[k + 1]});
+    for (size_t k = 0; k + 1 < n; k += 2) p.schedule({pairs[k], k > 0, pairs[k + 1]});
     return p;
   }
 
-  // After the changes already scheduled for the same sample.
+  // After the changes already scheduled for the same time.
   void schedule(ParamEvent e) {
     auto it = std::upper_bound(events_.begin() + static_cast<std::ptrdiff_t>(next_), events_.end(),
                                e.at, [](double at, const ParamEvent& x) { return at < x.at; });
@@ -176,12 +177,12 @@ class Param {
     schedule(e);
     return true;
   }
-  double at(double pos) {
+  double at(double t) {
     while (next_ < events_.size()) {
       const ParamEvent& e = events_[next_];
-      if (e.at > pos) {
+      if (e.at > t) {
         if (!e.ramp) break;
-        return from_value_ + (e.value - from_value_) * (pos - from_at_) / (e.at - from_at_);
+        return from_value_ + (e.value - from_value_) * (t - from_at_) / (e.at - from_at_);
       }
       value_ = from_value_ = e.value;
       from_at_ = e.at;
@@ -313,14 +314,15 @@ inline void pluck(int64_t n, const double* tunings, int64_t nt,
   Param freq(tunings[1]), ring(tunings[2]);
   for (int64_t k = 0; k < nt; k++) {
     longest = std::max(longest, PluckString::loop_length(tunings[3 * k + 1], rate));
-    auto from = static_cast<double>(sample_at(tunings[3 * k], rate));
+    // The tuning's sample, as a time.
+    double from = static_cast<double>(sample_at(tunings[3 * k], rate)) / rate;
     freq.schedule({from, false, tunings[3 * k + 1]});
     ring.schedule({from, false, tunings[3 * k + 2]});
   }
   PluckString string(longest + 1, rate);
   for (int64_t i = 0; i < n; i++) {
-    auto pos = static_cast<double>(i);
-    string.tune(freq.at(pos), ring.at(pos));
+    double t = static_cast<double>(i) / rate;
+    string.tune(freq.at(t), ring.at(t));
     out[i] = string.step(kick[i]);
   }
 }
@@ -384,14 +386,14 @@ inline void filter(const double* x, int64_t n, FilterKind kind, Param cutoff,
                    double q, double rate, double* out) {
   Svf svf(kind, q);
   for (int64_t i = 0; i < n; i++) {
-    svf.tune(cutoff.at(static_cast<double>(i)), rate);
+    svf.tune(cutoff.at(static_cast<double>(i) / rate), rate);
     out[i] = svf.step(x[i]);
   }
 }
 
 // `x` (`n` long) times `gain`, into `out` (which may be `x`).
-inline void envelope(const double* x, int64_t n, Param gain, double* out) {
-  for (int64_t i = 0; i < n; i++) out[i] = x[i] * gain.at(static_cast<double>(i));
+inline void envelope(const double* x, int64_t n, Param gain, double rate, double* out) {
+  for (int64_t i = 0; i < n; i++) out[i] = x[i] * gain.at(static_cast<double>(i) / rate);
 }
 
 // The same source of white noise, -1..1, from the same seed (a linear
@@ -433,9 +435,8 @@ inline void partials(int64_t n, Param freq, Param gain, const PartialsSpectrum& 
   double limit = rate * 0.45;
   size_t j = 0;
   for (int64_t i = 0; i < n; i++) {
-    auto pos = static_cast<double>(i);
-    double t = pos / rate;
-    double f = freq.at(pos);
+    double t = static_cast<double>(i) / rate;
+    double f = freq.at(t);
     phase += 2.0 * std::numbers::pi * f / rate;
     // The spectrum between the points about `t`.
     while (j + 1 < sp.at.size() && sp.at[j + 1] <= t) j++;
@@ -456,12 +457,12 @@ inline void partials(int64_t n, Param freq, Param gain, const PartialsSpectrum& 
       cur = next;
       sum += amps[static_cast<size_t>(k)] * cur;
     }
-    double v = gain.at(pos) * sum;
+    double v = gain.at(t) * sum;
     if (noise.on) {
       double w = white.next();
       fast += noise.fast * (w - fast);
       slow += noise.slow * (w - slow);
-      v += (fast - slow) * (noise.steady.at(pos) + noise.pulsed.at(pos) * (0.5 + 0.5 * s1));
+      v += (fast - slow) * (noise.steady.at(t) + noise.pulsed.at(t) * (0.5 + 0.5 * s1));
     }
     out[i] = v;
   }
@@ -522,7 +523,7 @@ inline constexpr size_t kGraphLiveRoom = 256;
 struct GraphPart {
   PartKind kind;
   std::vector<int> inputs;  // parts made before it, added together
-  Param values[2];          // see Graph::kValueNames
+  Param values[2];          // a wave's freq, a filter's cutoff, a gain's gain, a string's freq and ring
   std::variant<std::monostate, Oscillator, Noise, Svf, Resonance, PluckString> processor;
   double out[kGraphBlock] = {};
 };
@@ -578,7 +579,7 @@ class Graph {
       std::fill(in, in + n, 0.0);
       for (int k : p.inputs)
         for (int i = 0; i < n; i++) in[i] += parts_[static_cast<size_t>(k)].out[i];
-      for (int i = 0; i < n; i++) v0[i] = p.values[0].at(static_cast<double>(pos_ + i));
+      for (int i = 0; i < n; i++) v0[i] = p.values[0].at(static_cast<double>(pos_ + i) / rate_);
       switch (p.kind) {
         case PartKind::Wave: {
           auto& w = std::get<Oscillator>(p.processor);
@@ -608,7 +609,7 @@ class Graph {
         }
         case PartKind::Pluck: {
           auto& s = std::get<PluckString>(p.processor);
-          for (int i = 0; i < n; i++) v1[i] = p.values[1].at(static_cast<double>(pos_ + i));
+          for (int i = 0; i < n; i++) v1[i] = p.values[1].at(static_cast<double>(pos_ + i) / rate_);
           for (int i = 0; i < n; i++) {
             s.tune(v0[i], v1[i]);
             p.out[i] = s.step(in[i]);
