@@ -2220,10 +2220,12 @@ inline DeclaredFields declared_instance_fields(
 // to the next step). The second is recorded as written and resolved where it
 // is used, so a forward reference works. A Generic parameter in scope
 // (`type_params`: the class's own and its enclosing declarations') names no
-// class, whatever else is called that: it is read as it lowers. A name is a
-// promise only because a write to the field is checked against it, which a
-// `@packable` class's is not (vm::Compiler::field_check), so its names are
-// left out.
+// class, whatever else is called that: the annotation is read as it lowers,
+// so a parameter bound to a scalar is that scalar (vm::Compiler::
+// field_annotation), except in a `@packable` class, whose annotations are its
+// byte layout's. A name is a promise only because a write to the field is
+// checked against it, which a `@packable` class's is not
+// (vm::Compiler::field_check), so its names are left out.
 inline ClassFields declared_class_fields(
     const peg::Ast& cls, const std::vector<std::string_view>& type_params) {
   size_t head = first_non_decorator_index(cls);
@@ -2233,14 +2235,13 @@ inline ClassFields declared_class_fields(
   for (const auto* f : collect_instance_fields(cls, head + 1)) {
     auto mv = view_method(*f);
     if (mv.type_annotation.empty()) continue;
-    // The scalar a write is checked as is the written one, which is how the
-    // layout reads it (emit_declared_field_layout): a parameter names none.
-    auto t = field_type_for_annotation(mv.type_annotation);
+    auto lowered = packable ? std::string(mv.type_annotation)
+                            : lower_type_params(mv.type_annotation, type_params);
+    auto t = field_type_for_annotation(lowered);
     if (t != FieldType::Any)
       out.types.emplace(std::string(mv.name), static_cast<uint8_t>(t));
     else if (!packable)
-      out.classes.emplace(std::string(mv.name),
-                          lower_type_params(mv.type_annotation, type_params));
+      out.classes.emplace(std::string(mv.name), std::move(lowered));
   }
   return out;
 }

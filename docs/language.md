@@ -3756,7 +3756,9 @@ lambda, a nested class's field and a `match` type pattern all read `T`
 as the parameter, lowered the same way (an unbounded `T` checks as
 `Any`, a bounded one as its bound), whatever else is called `T`. `T?`
 is `T | Nil` there as anywhere. A nested declaration's own `T` shadows
-the enclosing one.
+the enclosing one. A field's annotation reads `T` the same way, so in
+`class Box<T: Float> { v: T }` the field `v` is a `Float` field: it
+starts as `0.0`, and a write of anything but a `Float` is a `TypeError`.
 
 ```culebra
 fn pair_up<T>(a: T) {

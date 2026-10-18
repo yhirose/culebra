@@ -280,16 +280,39 @@ class Statics<Elem> {
 }
 assert_eq([Statics.held.x, Statics.picked], ['h', 'matched'])
 
-// a field typed by a parameter is no scalar field, whatever its bound names:
-// the layout reads the annotation as written, so nothing checks it
+// a field typed by a parameter is read as the parameter is: one bound to a
+// scalar is that scalar's field, its zero and its check included
 class Measure<Elem: Float> {
   v: Elem
-  new(.v) {}
+  w: Elem?
   get() {
     self.v
   }
 }
-assert_eq(Measure(nil).get(), nil)
+let measure = Measure()
+assert_eq([measure.get(), measure.w], [0.0, nil])
+measure.v = 2.5
+assert_eq(measure.get(), 2.5)
+assert_throws('TypeError', fn () { measure.v = 1 })
+assert_throws('TypeError', fn () { measure.w = 's' })
+class Count<Elem: Long> {
+  v: Elem
+}
+assert_eq(Count().v, 0)
+
+// a `@packable` class's fields are its byte layout, read as written, so a
+// parameter in scope that shares a field type's name leaves them alone
+fn packed_of<Byte: Float>() {
+  @packable
+  class Packed {
+    x: Byte
+  }
+  Packed
+}
+let Packed = packed_of()
+let packed = Packed()
+packed.x = 7
+assert_eq(String.unpack(Packed, String.pack(Packed, [packed]))[0].x, 7)
 
 // --- Generic-inner-Union must not recurse forever (depth-aware gate) ---
 fn inner_union(xs: Array<Long | Float>) -> Long {

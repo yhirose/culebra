@@ -6351,7 +6351,8 @@ class Compiler {
         done = emit(Op::Jump);
         patch_to_here(filled);
       }
-      if (field_check(mv.type_annotation).first != culebra::FieldType::Any)
+      if (field_check(field_annotation(mv.type_annotation)).first !=
+          culebra::FieldType::Any)
         emit_declared_field_layout({f});
       emit(Op::ObjectSet, field_recv(), v, kconst_str(std::string(mv.name)),
            /*mut=*/1);
@@ -6374,7 +6375,8 @@ class Compiler {
     // an initializer takes its typed zero first and its own store is the
     // overwrite every later write is — checked by the same rule. Emitted
     // after the initializer, which must not see the field it defines.
-    if (field_check(mv.type_annotation).first != culebra::FieldType::Any)
+    if (field_check(field_annotation(mv.type_annotation)).first !=
+        culebra::FieldType::Any)
       emit_declared_field_layout({&f});
     emit(Op::ObjectSet, field_recv(), v, kconst_str(std::string(mv.name)),
          /*mut=*/1);
@@ -6395,8 +6397,9 @@ class Compiler {
     for (const auto* f : fields) {
       auto mv = culebra::view_method(*f);
       spec.keys.push_back(str(mv.name));
-      spec.zeros.push_back(chunk_.consts[zero_const(mv.type_annotation)]);
-      auto [type, annotation] = field_check(mv.type_annotation);
+      auto declared = field_annotation(mv.type_annotation);
+      spec.zeros.push_back(chunk_.consts[zero_const(declared)]);
+      auto [type, annotation] = field_check(declared);
       spec.types.push_back(static_cast<uint8_t>(type));
       spec.annotations.push_back(annotation.empty() ? nullptr : str(annotation));
     }
@@ -6405,18 +6408,26 @@ class Compiler {
     emit(Op::FieldsInit, field_recv(), idx);
   }
 
-  // What a write to a declared field is checked against: a scalar's tag
-  // (culebra::field_type_for_annotation, read as written, as the layout's
-  // zero is), else the annotation by name — FieldType::Named, lowered against
-  // the Generic parameters in scope (culebra::field_checked_annotation) —
-  // else nothing. A `@packable` class's other types are its byte layout's
-  // (its packed views check those) and promise a reader nothing
-  // (culebra::declared_class_fields).
+  // A declared field's annotation as its zero and its check read it: as a
+  // parameter's is, with the Generic parameters in scope lowered (so `v: T`
+  // for a `T: Float` is a Float field), except in a `@packable` class, whose
+  // annotations are its byte layout's and read as written.
+  std::string field_annotation(std::string_view annotation) const {
+    return fields_packable_ ? std::string(annotation)
+                            : lower_annotation(annotation);
+  }
+
+  // What a write to a declared field is checked against, given its
+  // field_annotation: a scalar's tag (culebra::field_type_for_annotation),
+  // else the annotation by name (FieldType::Named,
+  // culebra::field_checked_annotation), else nothing. A `@packable` class's
+  // other types are its byte layout's (its packed views check those) and
+  // promise a reader nothing (culebra::declared_class_fields).
   std::pair<culebra::FieldType, std::string> field_check(
       std::string_view annotation) const {
     auto type = culebra::field_type_for_annotation(annotation);
     if (type != culebra::FieldType::Any || fields_packable_) return {type, {}};
-    auto checked = culebra::field_checked_annotation(lower_annotation(annotation));
+    auto checked = culebra::field_checked_annotation(annotation);
     if (checked.empty()) return {culebra::FieldType::Any, {}};
     return {culebra::FieldType::Named, std::move(checked)};
   }
