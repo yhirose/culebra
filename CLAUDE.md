@@ -130,8 +130,6 @@ assert が本当に compile-in されたかを binary 内の assert 文字列 gr
 ## その他の運用ルール
 
 - 動作確認用の一時ファイルは Bash heredoc でなく Write ツールで書く。
-- `/code-review` の指摘は全件即 fix しない。「実害確認済み」「理論的ドリフト」「誤検出」に仕分けし、failing test か実際に踏まれるコード経路がないものは保留してよい。
-- 強い設計推奨を出す前に、安い実証（spike・最小再現・小さい計測）で裏取りする。
 
 <!-- culebra:agent:begin -->
 ## Culebra
