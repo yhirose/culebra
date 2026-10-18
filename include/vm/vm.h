@@ -6506,11 +6506,23 @@ class Compiler {
   // raise the read's NameError — the JIT's optional-candidate rule.
   // The lazy cell this scope pre-declared for `name`, if the declaration
   // has not landed yet — the statement that binds the name fills that
-  // cell rather than allocating its own (see predeclare_forward_refs).
+  // cell rather than allocating its own (see predeclare_forward_refs). A
+  // capture of a binding that was lazy where the closure was made is lazy
+  // too, but its cell is the enclosing frame's variable, not this scope's
+  // pre-declaration (owns_cell).
   Binding* predeclared_here(const std::string& name) {
     for (auto& b : scopes_.back().bindings)
-      if (b.lazy && b.name == name) return &b;
+      if (b.lazy && b.name == name && (!b.is_cell || b.session || owns_cell(b)))
+        return &b;
     return nullptr;
+  }
+
+  // Whether `b`'s cell is one this frame made (slot_cell_), rather than one
+  // a capture borrows from the closure that runs, which belongs to the frame
+  // that made it.
+  bool owns_cell(const Binding& b) const {
+    return b.slot < static_cast<int32_t>(slot_cell_.size()) &&
+           slot_cell_[b.slot];
   }
 
   // The conditional pre-declaration this scope already holds for `name`.
@@ -6539,8 +6551,7 @@ class Compiler {
   Binding* captured_here(const std::string& name) {
     for (auto& b : scopes_.back().bindings)
       if (!b.lazy && !b.session && b.is_cell && b.name == name &&
-          b.slot < static_cast<int32_t>(slot_cell_.size()) &&
-          slot_cell_[b.slot])
+          owns_cell(b))
         return &b;
     return nullptr;
   }
@@ -6956,10 +6967,8 @@ class Compiler {
     const auto& post = *ast.nodes[1];
     if (post.original_tag != "ARGUMENTS"_ || has_kwargs(post)) return nullptr;
     const Binding* b = lookup_at(*ast.nodes[0]);
-    if (!b || !b->is_cell || b->shadowed || !binding_writes_once(*b))
-      return nullptr;
-    if (b->slot >= static_cast<int32_t>(slot_cell_.size()) ||
-        !slot_cell_[b->slot])
+    if (!b || !b->is_cell || b->shadowed || !binding_writes_once(*b) ||
+        !owns_cell(*b))
       return nullptr;
     return b;
   }
@@ -7443,22 +7452,25 @@ class Compiler {
 
   // predeclare_cells for the declarations a statement may skip: the names
   // this scope already pre-declared conditionally keep the cell they have
-  // (conditional_here). A name whose cell a closure here already holds is
-  // that same variable, which the declaration writes (captured_here); any
-  // other binding here is shadowed. And a forward reference's cell (a
-  // closure above already holds it) is the variable a later declaration
-  // fills, so it becomes conditional itself rather than shadowed by a second.
+  // (conditional_here). A forward reference's unfilled cell (a closure above
+  // already holds it) is the variable the declaration fills, so it becomes
+  // conditional itself rather than shadowed by a second; it comes first, as
+  // the settled cell of a parameter or a loop variable of the same name may
+  // sit beside it, which is what it shadows. Otherwise a name whose cell a
+  // closure here already holds is that same variable, which the declaration
+  // writes (captured_here), and any other binding here is shadowed.
   void predeclare_conditional_cells(const peg::Ast& ast,
                                     const DeclList& decls) {
     DeclList fresh;
     for (const auto& d : decls) {
-      if (conditional_here(d.name) || captured_here(d.name)) continue;
+      if (conditional_here(d.name)) continue;
       if (Binding* pre = predeclared_here(d.name); pre && !pre->session) {
         pre->conditional = true;
         pre->mut_slot = alloc_slot(*d.at, "(" + d.name + ".decl_mut)");
         emit(Op::LoadConst, pre->mut_slot, kconst({TAG_BOOL, 0}));
         continue;
       }
+      if (captured_here(d.name)) continue;
       fresh.push_back(d);
     }
     predeclare_cells(ast, fresh, /*conditional=*/true);
@@ -7499,116 +7511,66 @@ class Compiler {
     b.shadowed_builtin = false;
   }
 
-  // What `node` declares where it may not run: a later test of an `if` /
-  // `?:` / `cond`, an operand a short-circuit skips (`c && (let h = f())`),
-  // the rest of a chain after a `?.`. None of these opens a scope, so
-  // whether the declaration ran is a run-time fact, and the names take a
-  // conditional pre-declaration (predeclare_conditional_cells): a closure
-  // built after it captures a cell that exists either way, and a read the
-  // skipped declaration never bound finds the sentinel. A scope of its own
-  // (a block, a loop, an arm, a match, a try, an `if` with an init clause)
-  // keeps what it declares, and a function body runs elsewhere; a `while`
-  // condition and a `match` subject, compiled outside their bodies, are
-  // hoisted by compile_while and compile_match themselves. A `fn`, a class
-  // and an enum are statements, which only a scope of its own holds.
+  // What `node` declares where it may not run (resolve::walk_declaring_sites
+  // names where that is). None of those places opens a scope, so whether the
+  // declaration ran is a run-time fact, and the names take a conditional
+  // pre-declaration (predeclare_conditional_cells): a closure built after it
+  // captures a cell that exists either way, and a read the skipped
+  // declaration never bound finds the sentinel. A scope of its own keeps what
+  // it declares, and a function body runs elsewhere; a `while` condition and
+  // a `match` subject, compiled outside their bodies, are hoisted by
+  // compile_while and compile_match themselves. A `fn`, a class and an enum
+  // are statements, which only a scope of its own holds.
+  struct ConditionalDecls {
+    Compiler& c;
+    DeclList& decls;
+    void site(const peg::Ast& node, bool conditional) {
+      using namespace peg::udl;
+      if (!conditional) return;
+      // A destructuring's leaves are anchored at the statement
+      // (compile_destructure_assign's own reading of the node). A bare write
+      // declares only where nothing already answers the name.
+      bool whole = node.tag == "DESTRUCTURE_ASSIGN"_;
+      culebra::for_each_site_declaration(
+          node, [&](const peg::Ast& id, bool is_mut, bool implicit) {
+            auto name = std::string(id.token);
+            if (!implicit || c.declares_implicitly(name))
+              add_decl(decls, whole ? &node : &id, std::move(name), is_mut,
+                       implicit);
+          });
+    }
+    void scope(const peg::Ast&) {}
+  };
   void collect_conditional_decls(const peg::Ast& node, DeclList& decls,
                                  bool conditional) {
-    using namespace peg::udl;
-    auto walk = [&](const peg::Ast& n, bool c) {
-      collect_conditional_decls(n, decls, c);
-    };
-    switch (node.tag) {
-      case "FUNCTION"_:
-      case "LAMBDA"_:
-      case "DEFER"_:
-      case "TRAIT_DECL"_:
-      case "LEXICAL_SCOPE"_:
-      case "FOR"_:
-      case "WHILE"_:
-      case "MATCH"_:
-      case "TRY"_:
-      case "MULTIFN_DECL"_:
-      case "CLASS_DECL"_:
-      case "ENUM_DECL"_:
-        return;
-      case "IF"_:
-      case "CONDITIONAL"_:
-        if (!culebra::view_if(node).init)
-          collect_test_decls(node, decls, conditional);
-        return;
-      case "COND"_:
-        collect_test_decls(node, decls, conditional);
-        return;
-      case "LOGICAL_AND"_:
-      case "LOGICAL_OR"_:
-      case "NIL_COALESCE"_:
-        for (size_t i = 0; i < node.nodes.size(); i++)
-          walk(*node.nodes[i], conditional || i > 0);
-        return;
-      case "CONDITION"_:  // `a < b < c`: a link after a failed one is skipped
-        for (size_t i = 0; i < node.nodes.size(); i++)
-          walk(*node.nodes[i], conditional || i > 2);
-        return;
-      case "CALL"_: {
-        bool skippable = conditional;
-        for (const auto& c : node.nodes) {
-          auto t = c->original_tag;
-          if (t == "SAFE_INDEX"_ || t == "SAFE_DOT"_) skippable = true;
-          walk(*c, skippable);
-        }
-        return;
-      }
-      case "DESTRUCTURE_ASSIGN"_: {
-        // `let [a, b] = …`: each leaf is anchored at the statement
-        // (compile_destructure_assign's own reading of the node).
-        bool is_mut = node.nodes[1]->token == "mut";
-        if (conditional && (node.nodes[0]->token == "let" || is_mut))
-          culebra::for_each_pattern_binding(
-              *node.nodes[2], [&](std::string_view name, size_t, size_t) {
-                add_decl(decls, &node, std::string(name), is_mut);
-              });
-        walk(*node.nodes[3], conditional);
-        return;
-      }
-      case "ASSIGNMENT"_: {
-        auto av = culebra::view_assignment(node);
-        const auto* target =
-            av.compound ? nullptr : culebra::assign_name_target(node, av);
-        if (conditional && target && !culebra::is_sink_name(target->token)) {
-          bool implicit = !av.is_let && !av.is_mut;
-          // A bare write declares only where nothing already answers the name.
-          if (!implicit || declares_implicitly(std::string(target->token)))
-            add_decl(decls, target, std::string(target->token), av.is_mut,
-                     implicit);
-        }
-        for (const auto& c : node.nodes)
-          if (c.get() != target)
-            walk(*c, conditional || (av.op_token == "??=" && c.get() == av.rhs));
-        return;
-      }
-      default:
-        for (const auto& c : node.nodes) walk(*c, conditional);
-        return;
-    }
+    ConditionalDecls v{*this, decls};
+    culebra::resolve::walk_declaring_sites(node, conditional, v);
   }
 
+  // The same over a whole statement list, for its forward references: a
+  // `while` condition's and a `match` subject's too, which compile_while and
+  // compile_match pre-declare at the statement around them.
+  struct ListConditionalDecls : ConditionalDecls {
+    void scope(const peg::Ast& node) {
+      using namespace peg::udl;
+      const peg::Ast* hoisted = nullptr;
+      if (node.tag == "WHILE"_) {
+        auto wv = culebra::view_while(node);
+        if (!wv.init) hoisted = wv.cond;
+      } else if (node.tag == "MATCH"_) {
+        auto mv = culebra::view_match(node);
+        if (!mv.init) hoisted = mv.subject;
+      }
+      if (hoisted) culebra::resolve::walk_declaring_sites(*hoisted, false, *this);
+    }
+  };
+
   // What the tests of an `if` / `?:` / `cond` declare: each one past the
-  // first may not run. An arm is a scope of its own and keeps what it
-  // declares.
+  // first may not run.
   void collect_test_decls(const peg::Ast& node, DeclList& decls,
                           bool conditional) {
-    using namespace peg::udl;
-    if (node.tag == "COND"_) {
-      for (size_t a = 0; a < node.nodes.size(); a++)
-        collect_conditional_decls(*node.nodes[a]->nodes[0], decls,
-                                  conditional || a > 0);
-      return;
-    }
-    size_t first = culebra::view_if(node).arm_off;
-    for (size_t i = first; i < node.nodes.size(); i++)
-      if (!culebra::resolve::is_arm(node, i))
-        collect_conditional_decls(*node.nodes[i], decls,
-                                  conditional || i > first);
+    ConditionalDecls v{*this, decls};
+    culebra::resolve::walk_test_declaring_sites(node, conditional, v);
   }
 
   // At the head of a statement (or of an expression that is a scope of its
@@ -7646,6 +7608,17 @@ class Compiler {
       auto forward_ref = [&](const std::string& name) {
         return referenced.contains(name) || here.contains(name);
       };
+      // A declaration the statement may skip is a forward reference too when
+      // a closure ahead holds its name: the closure takes the cell made here,
+      // which the declaration's own pre-declaration then makes conditional
+      // (predeclare_conditional_cells), rather than whatever the name meant
+      // before.
+      DeclList skippable;
+      ListConditionalDecls v{{*this, skippable}};
+      culebra::resolve::walk_declaring_sites(node, false, v);
+      for (auto& d : skippable)
+        if (info_->captured_locals.contains(d.name) && forward_ref(d.name))
+          add(d.at, std::move(d.name), d.is_mut, d.implicit);
       if (node.tag == "MULTIFN_DECL"_ || node.tag == "CLASS_DECL"_ ||
           node.tag == "ENUM_DECL"_) {
         size_t i = 0;

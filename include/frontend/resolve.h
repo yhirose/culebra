@@ -161,6 +161,10 @@ struct Declaration {
   const peg::Ast* node = nullptr;
   size_t symbol = kNone;
   Form form = Form::Let;
+  // What the name meant where this declares it, until it does: the symbol
+  // visible there just before (its own, for one this scope already
+  // declares), or kNone.
+  size_t shadows = kNone;
 };
 
 // A name read or written where nothing declares it.
@@ -326,6 +330,116 @@ inline bool is_arm(const peg::Ast& parent, size_t i) {
   }
 }
 
+template <class Visitor>
+void walk_test_declaring_sites(const peg::Ast& node, bool conditional,
+                               Visitor& v);
+
+// What a statement declares where it may not run, as a plain fn pre-declares
+// it (vm.h, Compiler::predeclare_conditional_cells). `v.site(n, c)` sees each
+// ASSIGNMENT and DESTRUCTURE_ASSIGN `node` reaches without entering a scope
+// of its own, before what it holds, `c` saying whether it may be skipped
+// there: in an operand a short-circuit skips (`c && (let h = 1)`), a test of
+// an `if`, a `?:` or a `cond` past the first, a link of a chained comparison
+// after one that failed, the rest of a chain after a `?.`, the right-hand
+// side of `??=`. `v.scope(n)` sees each scope of its own reached instead (a
+// block, an arm, a loop, a match, a try, a function, a declaration, an `if`
+// with an init clause), whose statements run apart and keep what they
+// declare. A guard is compiled as a bare expression, from which nothing is
+// pre-declared, so the walk does not enter one.
+template <class Visitor>
+void walk_declaring_sites(const peg::Ast& node, bool conditional, Visitor& v) {
+  using namespace peg::udl;
+  auto walk = [&](const peg::Ast& n, bool c) {
+    walk_declaring_sites(n, c, v);
+  };
+  switch (node.tag) {
+    case "FUNCTION"_:
+    case "LAMBDA"_:
+    case "DEFER"_:
+    case "TRAIT_DECL"_:
+    case "LEXICAL_SCOPE"_:
+    case "FOR"_:
+    case "WHILE"_:
+    case "MATCH"_:
+    case "TRY"_:
+    case "MULTIFN_DECL"_:
+    case "CLASS_DECL"_:
+    case "ENUM_DECL"_:
+      v.scope(node);
+      return;
+    case "GUARD"_:
+      return;
+    case "IF"_:
+    case "CONDITIONAL"_:
+      if (view_if(node).init)
+        v.scope(node);
+      else
+        walk_test_declaring_sites(node, conditional, v);
+      return;
+    case "COND"_:
+      walk_test_declaring_sites(node, conditional, v);
+      return;
+    case "LOGICAL_AND"_:
+    case "LOGICAL_OR"_:
+    case "NIL_COALESCE"_:
+      for (size_t i = 0; i < node.nodes.size(); i++)
+        walk(*node.nodes[i], conditional || i > 0);
+      return;
+    case "CONDITION"_:  // `a < b < c`: a link after a failed one is skipped
+      for (size_t i = 0; i < node.nodes.size(); i++)
+        walk(*node.nodes[i], conditional || i > 2);
+      return;
+    case "CALL"_: {
+      bool skippable = conditional;
+      for (const auto& c : node.nodes) {
+        auto t = c->original_tag;
+        if (t == "SAFE_INDEX"_ || t == "SAFE_DOT"_) skippable = true;
+        walk(*c, skippable);
+      }
+      return;
+    }
+    case "DESTRUCTURE_ASSIGN"_:
+      v.site(node, conditional);
+      walk(*view_destructure(node).rhs, conditional);
+      return;
+    case "ASSIGNMENT"_: {
+      v.site(node, conditional);
+      auto av = view_assignment(node);
+      const auto* target = av.compound ? nullptr : assign_name_target(node, av);
+      for (const auto& c : node.nodes)
+        if (c.get() != target)
+          walk(*c, conditional || (av.op_token == "??=" && c.get() == av.rhs));
+      return;
+    }
+    default:
+      for (const auto& c : node.nodes) walk(*c, conditional);
+      return;
+  }
+}
+
+// The same over the tests of an `if`, a `?:` or a `cond`, each one past the
+// first of which may not run; an arm is a scope of its own.
+template <class Visitor>
+void walk_test_declaring_sites(const peg::Ast& node, bool conditional,
+                               Visitor& v) {
+  using namespace peg::udl;
+  if (node.tag == "COND"_) {
+    for (size_t a = 0; a < node.nodes.size(); a++) {
+      const auto& arm = *node.nodes[a];
+      walk_declaring_sites(*arm.nodes[0], conditional || a > 0, v);
+      for (size_t i = 1; i < arm.nodes.size(); i++) v.scope(*arm.nodes[i]);
+    }
+    return;
+  }
+  size_t first = view_if(node).arm_off;
+  for (size_t i = first; i < node.nodes.size(); i++) {
+    if (is_arm(node, i))
+      v.scope(*node.nodes[i]);
+    else
+      walk_declaring_sites(*node.nodes[i], conditional || i > first, v);
+  }
+}
+
 namespace _detail {
 
 using namespace peg::udl;
@@ -473,10 +587,11 @@ class Resolver {
   size_t declare(const peg::Ast& n, std::string_view name, Form form,
                  Spelling spelling = Spelling::Plain) {
     if (implicit(name)) return kNone;
+    size_t shadows = r_.lookup(cur_, name);
     size_t sym = symbol_in(cur_, name, kind_of(form), &n);
     r_.symbols[sym].declarations++;
     r_.symbols[sym].forms |= static_cast<uint16_t>(1u << static_cast<int>(form));
-    if (opts_.record_nodes) r_.declarations.push_back({&n, sym, form});
+    if (opts_.record_nodes) r_.declarations.push_back({&n, sym, form, shadows});
     add(n, name, sym, cur_, Role::Declaration, spelling);
     return sym;
   }

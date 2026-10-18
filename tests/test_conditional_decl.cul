@@ -153,6 +153,81 @@ fn cd_pattern_mut(c) {
 }
 assert_eq([cd_pattern_mut(true), cd_pattern_mut(false)], [[5, 2], "NameError"])
 
+// A module variable it shadows is what the name means until it runs, for a
+// read and for every write.
+mut cd_top = 1
+fn cd_module(c) {
+  c && (mut cd_top = 10)
+  let r = cd_top
+  cd_top = 5
+  cd_top += 1
+  [r, cd_top]
+}
+assert_eq([cd_module(false), cd_top], [[1, 6], 6])
+assert_eq([cd_module(true), cd_top], [[10, 6], 6])
+
+// One declared after the function too, and the declaration that runs is the
+// function's own, not the module's.
+fn cd_late(c) {
+  c && (mut cd_late_v = 10)
+  cd_late_v
+}
+mut cd_late_v = 2
+assert_eq([cd_late(true), cd_late_v, cd_late(false), cd_late_v], [10, 2, 2, 2])
+
+// A closure made ahead of the declaration holds the function's variable, so
+// it reads the NameError until the declaration runs.
+mut cd_held = 1
+fn cd_closure(c) {
+  let h = || cd_held
+  c && (mut cd_held = 10)
+  try { h() } catch e { e.kind }
+}
+assert_eq([cd_closure(true), cd_closure(false)], [10, "NameError"])
+
+// What it shadows is what the name means where it is written: a declaration
+// further down the function is not visible there yet.
+mut cd_ahead = 1
+fn cd_down(c) {
+  mut out = 0
+  {
+    c && (mut cd_ahead = 10)
+    out = cd_ahead
+  }
+  let cd_ahead = 5
+  [out, cd_ahead]
+}
+assert_eq([cd_down(false), cd_down(true)], [[1, 5], [10, 5]])
+
+// A parameter or a loop variable it shadows is what the name means until it
+// runs, while a closure made ahead holds the function's own variable.
+fn cd_param(c, g) {
+  let h = || g
+  c && (mut g = 2)
+  [g, try { h() } catch e { e.kind }]
+}
+assert_eq([cd_param(true, 1), cd_param(false, 1)], [[2, 2], [1, "NameError"]])
+fn cd_loop(c) {
+  mut out = []
+  for g in [1] {
+    let h = || g
+    c && (mut g = 2)
+    out.push(g)
+  }
+  out
+}
+assert_eq([cd_loop(true), cd_loop(false)], [[2], [1]])
+
+// So is one a `while` condition makes, which runs ahead of its body.
+mut cd_cond = 1
+fn cd_while(c) {
+  let h = || cd_cond
+  mut i = 0
+  while i < 1 && c && ((mut cd_cond = 10) != nil) { i += 1 }
+  [cd_cond, try { h() } catch e { e.kind }]
+}
+assert_eq([cd_while(true), cd_while(false)], [[10, 10], [1, "NameError"]])
+
 // In a loop the name is undeclared again on every pass.
 assert_throws("NameError", fn () {
   fn cd_loop_rearm() {

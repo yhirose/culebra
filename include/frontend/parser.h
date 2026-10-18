@@ -2981,4 +2981,26 @@ inline DestructureView view_destructure(const peg::Ast& d) {
       d.nodes[2].get(), d.nodes[3].get()};
 }
 
+// The names a declaring site (an ASSIGNMENT or a DESTRUCTURE_ASSIGN) binds:
+// `f(name, is_mut, implicit)` for each leaf of a `let` / `mut`, and for a
+// bare `x = v`'s target (`implicit`), which declares only where nothing
+// visible answers `x`. A bare destructuring is left out.
+template <typename F>
+inline void for_each_site_declaration(const peg::Ast& site, F&& f) {
+  using namespace peg::udl;
+  if (site.tag == "DESTRUCTURE_ASSIGN"_) {
+    auto dv = view_destructure(site);
+    bool is_mut = site.nodes[1]->token == "mut";
+    if (dv.declares)
+      for_each_pattern_leaf(*dv.pattern, [&](const peg::Ast& id, bool) {
+        f(id, is_mut, false);
+      });
+    return;
+  }
+  auto av = view_assignment(site);
+  const auto* target = av.compound ? nullptr : assign_name_target(site, av);
+  if (target && !is_sink_name(target->token))
+    f(*target, av.is_mut, !av.is_let && !av.is_mut);
+}
+
 }  // namespace culebra

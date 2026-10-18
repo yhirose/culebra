@@ -226,7 +226,7 @@ struct FnAnalysis {
     depth_ = 0;
     visit(programAst, info);
     scan_eh_defer(programAst, true, info);
-    derive_captures(info);
+    derive_captures(info, conditional_declarations(programAst));
     return info;
   }
 
@@ -564,6 +564,47 @@ struct FnAnalysis {
     f(culebra::extract_param_name_loc(p).name);
   }
 
+  // Every name node of a `let` / `mut` a statement may skip, the program
+  // over (resolve::walk_declaring_sites): what a plain fn pre-declares
+  // conditionally, from each place it pre-declares from.
+  static std::set<const peg::Ast*> conditional_declarations(
+      const peg::Ast& root) {
+    struct Visitor {
+      std::set<const peg::Ast*> names;
+      void site(const peg::Ast& node, bool conditional) {
+        if (!conditional) return;
+        culebra::for_each_site_declaration(
+            node, [&](const peg::Ast& id, bool, bool implicit) {
+              if (!implicit) names.insert(&id);
+            });
+      }
+      // A scope's statements each start afresh. An `if` with an init clause
+      // runs its tests in the clause's scope; its arms are scopes of their
+      // own, which the tests' walk hands back. A `for`'s iterable and a
+      // decorator are no statement heads (nor is a guard, which the walk
+      // never enters): the compiler pre-declares nothing from them.
+      void scope(const peg::Ast& node) {
+        using namespace peg::udl;
+        auto walk = [&](const peg::Ast& n) {
+          culebra::resolve::walk_declaring_sites(n, false, *this);
+        };
+        if (node.tag == "IF"_ || node.tag == "CONDITIONAL"_)
+          if (const auto* init = culebra::view_if(node).init) {
+            walk(*init);
+            culebra::resolve::walk_test_declaring_sites(node, false, *this);
+            return;
+          }
+        const peg::Ast* iter =
+            node.tag == "FOR"_ ? culebra::view_for(node).iter : nullptr;
+        for (const auto& c : node.nodes)
+          if (c.get() != iter && c->tag != "DECORATOR"_)
+            walk(*c);
+      }
+    } v;
+    culebra::resolve::walk_declaring_sites(root, false, v);
+    return std::move(v.names);
+  }
+
   // Every function's captures, from what resolve.h says each name means: a
   // name a function reads (or writes) whose variable another function
   // declares is a free variable of each function from the reader out to the
@@ -573,9 +614,13 @@ struct FnAnalysis {
   // unless the receiver is a stdlib namespace. In a session, a name no
   // statement of this input declares — an earlier input's, or one nothing
   // declares — is the session's: a free variable out to the top, captured by
-  // none, short of a function that declares the name itself. The receiver
-  // `self` and the field-init slot stay as the walk (visit) found them.
-  void derive_captures(FuncInfo& top) {
+  // none, short of a function that declares the name itself. A declaration a
+  // statement may skip (`conditional`) leaves the name meaning what it
+  // shadows until one runs, so a variable of another frame it shadows is
+  // reached as a read of it would be. The receiver `self` and the field-init
+  // slot stay as the walk (visit) found them.
+  void derive_captures(FuncInfo& top,
+                       const std::set<const peg::Ast*>& conditional) {
     namespace rs = culebra::resolve;
     const rs::Resolution& r = res_;
     fns_[0] = &top;
@@ -627,6 +672,11 @@ struct FnAnalysis {
     };
     for (const auto& [node, use] : r.uses)
       reach(use.symbol, node->token, use.scope, node->position, false);
+    for (const auto& d : r.declarations)
+      if (conditional.contains(d.node) && d.shadows != rs::kNone &&
+          r.frame_of(d.shadows) != r.frame_of(d.symbol))
+        reach(d.shadows, d.node->token, r.symbols[d.symbol].scope,
+              d.node->position, false);
     for (const auto& m : r.method_calls)
       if (m.symbol != rs::kNone && !namespace_receiver(*m.receiver))
         reach(m.symbol, m.node->token, m.scope, m.node->position, true);
