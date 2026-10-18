@@ -382,20 +382,28 @@ inline bool is_label_position(const peg::Ast& parent, size_t i) {
 
 // Where a node sits, as far as appending to it goes: a statement can be
 // followed by `; <stmt>`, an init-clause binding by `, <binding>`, and an
-// expression by nothing.
-enum class EditSite { Expr, Stmt, InitBinding };
+// expression by nothing. A statement that is its block's last is the block's
+// value as well (Tail).
+enum class EditSite { Expr, Stmt, Tail, InitBinding };
 
-// Where the `i`th child of `n` sits. A block collapsed into its lone
-// statement keeps the block's tag in original_tag.
-inline EditSite child_site(const peg::Ast& n, size_t i) {
+inline bool is_statement_site(EditSite site) {
+  return site == EditSite::Stmt || site == EditSite::Tail;
+}
+
+// Where the `i`th child of `n`, which sits at `site`, sits. A block collapsed
+// into its lone statement keeps the block's tag in original_tag, and a
+// statement's wrapper hands its place to the statement.
+inline EditSite child_site(const peg::Ast& n, size_t i, EditSite site) {
   using namespace peg::udl;
   auto contains = [](unsigned int tag) {
     return tag == "STATEMENTS"_ || tag == "BLOCK"_ || tag == "LEXICAL_SCOPE"_;
   };
   const auto& c = *n.nodes[i];
-  if (contains(n.tag) || contains(c.original_tag) ||
-      c.original_tag == "STATEMENT"_ || (n.tag == "STATEMENT"_ && i == 0))
-    return EditSite::Stmt;
+  if (contains(c.original_tag) || (contains(n.tag) && i + 1 == n.nodes.size()))
+    return EditSite::Tail;
+  if (n.tag == "STATEMENT"_ && i == 0)
+    return site == EditSite::Tail ? EditSite::Tail : EditSite::Stmt;
+  if (contains(n.tag) || c.original_tag == "STATEMENT"_) return EditSite::Stmt;
   return n.tag == "INIT_CLAUSE"_ ? EditSite::InitBinding : EditSite::Expr;
 }
 
@@ -850,7 +858,7 @@ class PromotedLocals {
     for (size_t i = 0; i < n.nodes.size(); i++) {
       const auto& c = *n.nodes[i];
       if (rhs && site == EditSite::Expr && &c != rhs) mark_declared(c);
-      find_expression_declarations(c, child_site(n, i));
+      find_expression_declarations(c, child_site(n, i, site));
     }
   }
   void mark_declared(const peg::Ast& n) {
@@ -1027,7 +1035,7 @@ inline void collect_promoted_edits(const peg::Ast& n, const std::string& src,
   auto as_locals = [&](const peg::Ast& stmt,
                        const std::vector<const peg::Ast*>& targets,
                        const peg::Ast& rhs, bool compound = false) {
-    bool is_stmt = site == EditSite::Stmt;
+    bool is_stmt = is_statement_site(site);
     std::string head = is_stmt ? "{ " : "(if true { ";
     std::set<const PromotedLocals::Slot*> seen;
     for (const auto* t : targets) {
@@ -1134,12 +1142,25 @@ inline void collect_promoted_edits(const peg::Ast& n, const std::string& src,
             "must be a statement of its own.",
             p.line, p.col);
       }
-      auto copies =
-          rename_pattern_leaves(pat, src, promoted, out,
-                                site == EditSite::Stmt ? ";" : ",",
-                                written_at(n, src));
-      out.push_back({dv.rhs->position + dv.rhs->length, 0, copies});
+      // A destructuring is worth its right-hand side, which the copies after
+      // it would replace as the block's value where it is the block's last
+      // statement: there the side is held in a temporary that is named last.
+      // Anywhere else nothing reads the value, and the side goes when the
+      // statement ends, as a plain fn's does. The right-hand side's own edits
+      // go in first, so a store in it closes before the copies open.
+      MappedSource tail;
+      std::string held;
+      if (site == EditSite::Tail) {
+        held = std::format("_g_dv{}", pat.position);
+        out.push_back({dv.rhs->position, 0, std::format("({} = ", held)});
+        tail += ")";
+      }
       collect_promoted_edits(*dv.rhs, src, promoted, out, EditSite::Expr);
+      tail += rename_pattern_leaves(pat, src, promoted, out,
+                                    is_statement_site(site) ? ";" : ",",
+                                    written_at(n, src));
+      if (!held.empty()) tail += "; " + held;
+      out.push_back({dv.rhs->position + dv.rhs->length, 0, std::move(tail)});
       return;
     }
   } else if (n.tag == "OBJECT_PROPERTY"_ && n.nodes.size() == 2 &&
@@ -1155,7 +1176,9 @@ inline void collect_promoted_edits(const peg::Ast& n, const std::string& src,
     // must stay under the condition, so it is written as the IF it is.
     const auto& base = *pv->stmt;
     std::vector<SourceEdit> inner;
-    collect_promoted_edits(base, src, promoted, inner, EditSite::Stmt);
+    collect_promoted_edits(
+        base, src, promoted, inner,
+        site == EditSite::Tail ? EditSite::Tail : EditSite::Stmt);
     if (!inner.empty()) {
       out.push_back({base.position, 0,
                      "if " + rewrite_locals_to_self(*n.nodes[0], src, promoted) +
@@ -1175,7 +1198,7 @@ inline void collect_promoted_edits(const peg::Ast& n, const std::string& src,
           static_cast<long>(c.line), static_cast<long>(c.column));
     }
     if (is_label_position(n, i)) continue;
-    collect_promoted_edits(c, src, promoted, out, child_site(n, i));
+    collect_promoted_edits(c, src, promoted, out, child_site(n, i, site));
   }
 }
 

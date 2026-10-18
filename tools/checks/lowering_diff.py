@@ -269,6 +269,10 @@ BINDING_FORMS = [
     'mut f = || 1; { C && (mut f = || 2); EMIT(f()) }; EMIT(f())',
     'mut o = {x: 1}; { C && (let o = {x: 2}); o.x = 5; o.x += 1; EMIT(o.x) }; EMIT(o.x)',
     'C && (mut z = 10); EMIT(try { z = 5; z } catch e { e.kind })',
+    # A destructuring is worth its right-hand side, the last of a block too.
+    'mut a = 0; EMIT(try { [a, [b]] = [5, [6]] } catch e { e.kind }); EMIT(a)',
+    'mut a = 0; EMIT(if C { {a, b} = {a: 7, b: 8} } else { 0 }); EMIT(a)',
+    'mut a = 1; b = 2; EMIT(try { [a, [q]] = b = [3, [4]] } catch e { e.kind }); EMIT(a)',
     # Where a declaration reports what it raises.
     'let m: Long = C; EMIT(m)',
     'let (p, q) = C; EMIT(p)',

@@ -679,6 +679,41 @@ assert_eq(
   [[4, 4, "ImmutableError", "ImmutableError"], [22, 1, 3, "ImmutableError"]],
 )
 
+// a destructuring's value is its right-hand side, the last of a block too
+effect fn pd_value(z) {
+  mut a = 0
+  perform pd_ask()
+  let t = try { [a, [pd_b]] = [5, [6]] } catch e { e.kind }
+  let i = if z { {a, pd_b} = {a: 7, pd_b: 8} } else { 0 }
+  [t, i, a]
+}
+assert_eq(
+  handle { pd_value(true) } with pd_ask(resume) { resume(0) },
+  [[5, [6]], {a: 7, pd_b: 8}, 7],
+)
+
+// anywhere else the right-hand side goes when the statement ends, and a store
+// in it that refuses raises as it would in a plain fn
+let pd_drops = []
+class PdRes {
+  new(.id) {}
+  drop() {
+    pd_drops.push("drop {self.id}")
+  }
+}
+effect fn pd_side(c) {
+  mut a = 0
+  perform pd_ask()
+  {a, pd_r: [pd_q]} = {a: 1, pd_r: [2], res: PdRes("side")}
+  pd_drops.push("after")
+  try { [a, [pd_q]] = c = [3, [4]] } catch e { [e.kind, a] }
+}
+assert_eq(
+  handle { pd_side(0) } with pd_ask(resume) { resume(0) },
+  ["ImmutableError", 1],
+)
+assert_eq(pd_drops, ["drop side", "after"])
+
 // --- `self` and the two lowered bodies --------------------------------------
 // An effect fn is a named declaration that cannot be a class member, so its
 // lowering leaves no receiver and `self` in its body is refused at parse time
