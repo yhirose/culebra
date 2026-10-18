@@ -705,12 +705,17 @@ class PromotedLocals {
   }
 
   // Source giving every box a copy of its own: a forked frame shares the
-  // boxes of the one it was copied from otherwise.
+  // boxes of the one it was copied from otherwise. Each box it replaces goes
+  // on `old_boxes` and its copy on `new_boxes`, for the closures the fork
+  // holds (the driver's `_fork`).
   std::string refork() const {
     std::string out;
     for (size_t sym : order_) {
       const Slot& s = slots_[sym];
-      if (!s.box.empty()) out += set_slot(sym, "self." + s.field + ".v");
+      if (s.box.empty()) continue;
+      out += std::format("      old_boxes.push(self.{})\n", s.field);
+      out += set_slot(sym, "self." + s.field + ".v");
+      out += std::format("      new_boxes.push(self.{})\n", s.field);
     }
     return out;
   }

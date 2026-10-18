@@ -6916,16 +6916,25 @@ let _eff_module = fn () {
     )
   }
 
-  # One frame of a fork: the native shallow copy, then the frame's own chance
-  # to finish it. A body local some closure reads lives in a box (so the
-  # closure captures the box rather than the frame), and the shallow copy
-  # aliases that box — every fork would then write the same one, where the
-  # scalar it replaced was copied per fork. `_eff_refork` re-boxes them, so a
-  # fork's locals are its own whether or not a closure reads them.
-  fn _fork(comp) {
-    let c = __eff_copy(comp)
-    c._eff_refork()
-    c
+  # A fork of the frames a computation suspended in: each frame's native
+  # shallow copy, then the frame's own chance to finish it. A body local some
+  # closure reads lives in a box (so the closure captures the box rather than
+  # the frame), and the shallow copy aliases that box — every fork would then
+  # write the same one, where the scalar it replaced was copied per fork.
+  # `_eff_refork` re-boxes them, so a fork's locals are its own whether or not
+  # a closure reads them, and `__eff_recapture` hands the fork copies of the
+  # closures it holds that still reach the boxes replaced. One list for the
+  # whole stack, so a closure passed down to a delegated call follows the
+  # boxes of the frame that made it.
+  fn _fork(stack) {
+    let frames = stack.map(|c| __eff_copy(c))
+    let old_boxes = []
+    let new_boxes = []
+    for f in frames {
+      f._eff_refork(old_boxes, new_boxes)
+    }
+    __eff_recapture(frames, old_boxes, new_boxes)
+    frames
   }
 
   # Run each abandoned frame's deferred cleanup, innermost (deepest) first.
@@ -7033,7 +7042,7 @@ let _eff_module = fn () {
         let is_abort = h.t == "a"
         let snapshot = stack  # frozen at the suspend point; forks clone it
         let resume = fn (v = nil) {
-          _drive(snapshot.map(fn (c) { _fork(c) }), v, ret)
+          _drive(_fork(snapshot), v, ret)
         }
         # An "a" clause never mentions `resume`, so — like the tail path — a
         # throw out of it abandons the frames: finalize. An "f" clause may

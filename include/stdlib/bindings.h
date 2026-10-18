@@ -4348,6 +4348,14 @@ inline JitValue _ns_global_eff_copy(JitValue* a, int64_t) {
   return _ns_adapt::v_object(
       culebra_runtime_eff_copy(reinterpret_cast<JitObject*>(a[0].data)));
 }
+inline JitValue _ns_global_eff_recapture(JitValue* a, int64_t) {
+  auto* old_boxes = reinterpret_cast<JitArray*>(a[1].data);
+  auto* new_boxes = reinterpret_cast<JitArray*>(a[2].data);
+  if (old_boxes->size == new_boxes->size)  // the driver pairs them
+    culebra_runtime_eff_recapture(reinterpret_cast<JitArray*>(a[0].data),
+                                  old_boxes, new_boxes);
+  return {TAG_NIL, 0};
+}
 inline JitValue _ns_global_eff_abort(JitValue* a, int64_t) {
   culebra_runtime_eff_abort(static_cast<int8_t>(a[0].tag), a[0].data);
   return {TAG_NIL, 0};  // unreachable: eff_abort always throws
@@ -11718,6 +11726,7 @@ inline const NsMethod kBuiltinFns[] = {
   {"", "to_string", 1, &_ns_global_to_string},
   {"", "hash",      1, &_ns_global_hash},
   {"", "__eff_copy", 1, &_ns_global_eff_copy},
+  {"", "__eff_recapture", 3, &_ns_global_eff_recapture},
   {"", "__eff_abort", 1, &_ns_global_eff_abort},
   {"", "__eff_catch_abort", 1, &_ns_global_eff_catch_abort},
   {"", "__for_iter", 1, &_ns_global_for_iter},
@@ -12603,6 +12612,7 @@ inline const std::unordered_set<std::string_view>& builtin_var_names() {
   static const std::unordered_set<std::string_view> names = {
       "inspect", "print",   "println",   "repeat",
       "to_long", "to_float",  "to_string", "type_of", "hash", "__eff_copy",
+      "__eff_recapture",
       "Range",   "class_of",
       "__eff_abort", "__eff_catch_abort", "__for_iter",
       "__raise", "__raise_at",

@@ -1667,6 +1667,37 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_set_callback_arg_site(
   _jit_thread.callback_col = col;
 }
 
+// A fresh registry key over `name` (see below). The suffix only has to be
+// unique within the Runtime's table map; process-wide so a table
+// deserialized from another Runtime (sendable_rt.h keeps the sender's key)
+// can't be collided into by a locally minted one.
+inline std::string _jit_multifn_fresh_key(std::string_view name) {
+  static std::atomic<uint64_t> gen{0};
+  return std::string(name) + '\x1f' +
+         std::to_string(gen.fetch_add(1, std::memory_order_relaxed));
+}
+
+// A dispatcher over a table of its own holding `dispatcher`'s overloads,
+// each body replaced by its entry in `bodies` (+1 taken for the new table),
+// which follows the copy back for its self-reference. Returns +1.
+inline JitClosure* _jit_multifn_copy(
+    JitClosure* dispatcher,
+    const std::unordered_map<JitClosure*, JitClosure*>& bodies) {
+  std::string from = _jit_dispatcher_record(dispatcher)->name;
+  std::string key = _jit_multifn_fresh_key(_jit_multifn_display(from));
+  auto* copy = _jit_multifn_new_dispatcher(key, dispatcher->arity);
+  auto& tbl = _jit_multimethods();
+  auto methods = tbl.at(from);
+  for (auto& m : methods) {
+    m.body = bodies.at(m.body);
+    m.body->refcount++;
+    _jit_multifn_uplink_set(m.body, copy);
+  }
+  tbl[key] = std::move(methods);
+  _jit_multifn_refresh_mono(copy);
+  return copy;
+}
+
 // Append a method to a multimethod table (replacing an entry with an
 // identical param-type sequence — same-declaration overload semantics).
 // `into` is the dispatcher this declaration already installed earlier in
@@ -1721,13 +1752,8 @@ culebra_runtime_multifn_register_and_install(const char* name_cstr,
     name = rec->name;
   } else {
     // A fresh activation of this declaration: its own dispatcher over its
-    // own table. The suffix only has to be unique within the Runtime's
-    // table map; process-wide so a table deserialized from another
-    // Runtime (sendable_rt.h keeps the sender's key) can't be collided
-    // into by a locally minted one.
-    static std::atomic<uint64_t> gen{0};
-    name = std::string(name_cstr) + '\x1f' +
-           std::to_string(gen.fetch_add(1, std::memory_order_relaxed));
+    // own table.
+    name = _jit_multifn_fresh_key(name_cstr);
     // closure_new returns +1; the caller becomes the owner.
     dispatcher = _jit_multifn_new_dispatcher(
         name, static_cast<size_t>(n_param_types));
@@ -1843,6 +1869,139 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitClosure* culebra_runtime_closure_new(
   c->arity = static_cast<uint32_t>(arity);
   _gc_register(c, GC_TAG_FUNC);
   return c;
+}
+
+// A fork's frames gave themselves boxes of their own (the effects driver's
+// `_fork`): each of `old_boxes` is now the same place in `new_boxes`. A
+// closure the fork holds still captures the box it was made with, so each
+// one the frames and the new boxes hold that reaches a replaced box, through
+// its cells or a closure in one, is copied onto cells reaching the fork's
+// boxes, and the copy stored in its place. A cell that reaches no replaced
+// box stays shared, as do arrays, objects and the closures they hold: a fork
+// owns the computation's own variables, not the values they hold. A named
+// fn's dispatcher is copied with every body in its table.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_eff_recapture(
+    JitArray* frames, JitArray* old_boxes, JitArray* new_boxes) {
+  assert(old_boxes->size == new_boxes->size);
+  std::unordered_map<int64_t, JitValue> box_copy;
+  for (size_t i = 0; i < old_boxes->size; i++)
+    box_copy.emplace(old_boxes->items[i].data, new_boxes->items[i]);
+  if (box_copy.empty()) return;
+  auto closure_of = [](const JitValue& v) -> JitClosure* {
+    if (v.tag != TAG_FUNC) return nullptr;
+    auto* c = reinterpret_cast<JitClosure*>(v.data);
+    return c->flags & JIT_CLOSURE_NATIVE ? nullptr : c;
+  };
+  auto each_root_slot = [&](auto&& f) {
+    for (JitArray* roots : {frames, new_boxes})
+      for (size_t i = 0; i < roots->size; i++)
+        if (roots->items[i].tag == TAG_OBJECT)
+          for (auto& e : reinterpret_cast<JitObject*>(roots->items[i].data)->slots)
+            f(e.value);
+  };
+
+  // The closures the roots reach, those reaching a replaced box themselves,
+  // and the edges a move spreads along: a closure moves with one it
+  // captures, and a dispatcher with its bodies, both ways.
+  std::unordered_map<JitClosure*, std::vector<JitClosure*>> moves_with;
+  std::unordered_set<JitClosure*> seen, moving;
+  std::vector<JitClosure*> todo, moved;
+  auto reach = [&](JitClosure* c) {
+    if (c && seen.insert(c).second) todo.push_back(c);
+  };
+  auto move = [&](JitClosure* c) {
+    if (moving.insert(c).second) moved.push_back(c);
+  };
+  each_root_slot([&](JitValue& v) { reach(closure_of(v)); });
+  while (!todo.empty()) {
+    JitClosure* c = todo.back();
+    todo.pop_back();
+    if (_jit_is_multifn_dispatcher(c)) {
+      std::vector<void*> bodies;
+      _jit_multifn_push_bodies(c, bodies);
+      for (void* p : bodies) {
+        auto* b = static_cast<JitClosure*>(p);
+        moves_with[b].push_back(c);
+        moves_with[c].push_back(b);
+        reach(b);
+      }
+      continue;
+    }
+    for (size_t i = 0; i < c->n_captures; i++) {
+      if (!c->captures[i]) continue;
+      const JitValue& v = c->captures[i]->value;
+      if (v.tag == TAG_OBJECT && box_copy.contains(v.data)) {
+        move(c);
+      } else if (JitClosure* d = closure_of(v)) {
+        moves_with[d].push_back(c);
+        reach(d);
+      }
+    }
+  }
+  for (size_t i = 0; i < moved.size(); i++)
+    if (auto it = moves_with.find(moved[i]); it != moves_with.end())
+      for (JitClosure* u : it->second) move(u);
+  if (moved.empty()) return;
+
+  // The copies, each held here (+1) until the fork holds it: the plain ones
+  // first, which a dispatcher's copy takes as its bodies, then their cells,
+  // which may hold either. No collect meanwhile, as these tables are out of
+  // the collector's sight.
+  culebra::gc::Heap::CollectPause pause(_gc_heap());
+  struct Copies {
+    std::unordered_map<JitClosure*, JitClosure*> closures;
+    std::unordered_map<JitCell*, JitCell*> cells;
+    ~Copies() {
+      for (auto [c, n] : closures)
+        culebra_runtime_value_release(TAG_FUNC, reinterpret_cast<int64_t>(n));
+      for (auto [c, n] : cells) _culebra_cell_release(n);
+    }
+  } copies;
+  for (JitClosure* c : moved)
+    if (!_jit_is_multifn_dispatcher(c))
+      copies.closures.emplace(
+          c, culebra_runtime_closure_new(c->fn_ptr, c->n_captures, c->arity,
+                                         c->flags, c->meta));
+  for (JitClosure* c : moved)
+    if (_jit_is_multifn_dispatcher(c)) {
+      JitClosure* d = _jit_multifn_copy(c, copies.closures);
+      copies.closures.emplace(c, d);
+    }
+  // What `v` is in the fork, or nothing when the fork shares it.
+  auto in_fork = [&](const JitValue& v) -> std::optional<JitValue> {
+    if (v.tag == TAG_OBJECT) {
+      if (auto it = box_copy.find(v.data); it != box_copy.end())
+        return it->second;
+    } else if (v.tag == TAG_FUNC) {
+      if (auto it = copies.closures.find(reinterpret_cast<JitClosure*>(v.data));
+          it != copies.closures.end())
+        return JitValue{TAG_FUNC, reinterpret_cast<int64_t>(it->second)};
+    }
+    return std::nullopt;
+  };
+  for (auto [c, n] : copies.closures) {
+    if (_jit_is_multifn_dispatcher(c)) continue;
+    for (size_t i = 0; i < c->n_captures; i++) {
+      JitCell* cell = c->captures[i];
+      if (!cell) continue;
+      if (auto v = in_fork(cell->value)) {
+        auto [it, fresh] = copies.cells.try_emplace(cell, nullptr);
+        if (fresh) {
+          culebra_runtime_value_retain(v->tag, v->data);
+          it->second = culebra_runtime_cell_new(v->tag, v->data);
+        }
+        cell = it->second;
+      }
+      cell->refcount++;
+      n->captures[i] = cell;
+    }
+  }
+  each_root_slot([&](JitValue& slot) {
+    if (auto v = in_fork(slot)) {
+      culebra_runtime_value_retain(v->tag, v->data);
+      _jit_replace_value(slot, v->tag, v->data);
+    }
+  });
 }
 
 // Trampoline for a bound method value (the JIT twin of interp's

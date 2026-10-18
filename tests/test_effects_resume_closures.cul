@@ -111,6 +111,86 @@ handle { nf_alias() } with nf_pick(a, b, r) {
 }
 assert_eq(nf_seen[0], [1, 2])
 
+// A closure made BEFORE the fork reads and writes the fork's own variables:
+// each of the computation's own variables is the fork's, and the closures the
+// computation holds are handed copies reaching the fork's.
+effect fn nf_choose()
+effect fn nf_before() {
+  mut n = 0
+  let inc = fn () { n += 1 }
+  let b = perform nf_choose()
+  inc()
+  [b, n]
+}
+assert_eq(
+  handle { nf_before() } with nf_choose(k) { [k(true), k(false)] },
+  [[true, 1], [false, 1]],
+)
+
+// ... through a named fn, whose self-reference follows its copy
+effect fn nf_named_before() {
+  mut n = 0
+  fn count(k) {
+    return 0 if k == 0
+    n += 1
+    count(k - 1)
+  }
+  let b = perform nf_choose()
+  count(2)
+  [b, n]
+}
+assert_eq(
+  handle { nf_named_before() } with nf_choose(k) { [k(true), k(false)] },
+  [[true, 2], [false, 2]],
+)
+
+// ... through a closure that calls one
+effect fn nf_chained() {
+  mut n = 0
+  let inc = fn () { n += 1 }
+  let twice = fn () {
+    inc()
+    inc()
+  }
+  let b = perform nf_choose()
+  twice()
+  [b, n]
+}
+assert_eq(
+  handle { nf_chained() } with nf_choose(k) { [k(true), k(false)] },
+  [[true, 2], [false, 2]],
+)
+
+// ... and passed down to a delegated effect fn, which suspends
+effect fn nf_callee(f) {
+  let b = perform nf_choose()
+  f()
+  b
+}
+effect fn nf_caller() {
+  mut n = 0
+  let b = nf_callee(fn () { n += 1 })
+  [b, n]
+}
+assert_eq(
+  handle { nf_caller() } with nf_choose(k) { [k(true), k(false)] },
+  [[true, 1], [false, 1]],
+)
+
+// A closure held in an array is a value, which the forks share like the
+// array: it reaches the variables as the continuation holds them.
+effect fn nf_in_array() {
+  mut n = 0
+  let fs = [fn () { n += 1 }]
+  let b = perform nf_choose()
+  fs[0]()
+  [b, n]
+}
+assert_eq(
+  handle { nf_in_array() } with nf_choose(k) { [k(true), k(false)] },
+  [[true, 0], [false, 1]],
+)
+
 // a closure that WRITES a body local: the write is visible to the body and to
 // the next call, across a suspension
 effect fn nf_write() {
@@ -189,4 +269,3 @@ assert_eq(handle { yg_tail() } with nf_ask(k) { k(3) }, [3])
 
 // (bare yield / a named fn buried in verbatim control flow stay parse-time
 // SyntaxErrors — verified manually on both backends, not runnable here)
-

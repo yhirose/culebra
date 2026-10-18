@@ -1799,19 +1799,19 @@ class EffectsLowerer {
 
     // Forking a suspended continuation shallow-copies the frame, which aliases
     // the boxes instead of copying them; `_eff_refork` gives each fork its own,
-    // so a boxed local stays as fork-private as the scalar it replaced (see the
-    // driver's `_fork`).
+    // so a boxed local stays as fork-private as the scalar it replaced, and
+    // lists the boxes it replaced (see the driver's `_fork`).
     std::string refork_body = rewrite.refork();
 
     // Every computation exposes `_eff_finalize()` so the driver can call it
     // uniformly on the abort path; it is empty when the body has no defers,
-    // and `_eff_refork()` likewise when the body has no boxes.
+    // and `_eff_refork` likewise when the body has no boxes.
     return rewrite.box_class_decl() + std::format(
         "  class {0} {{\n"
         "    new({1}) {{\n{2}    }}\n"
         "    _step({3}) {{\n{4}    }}\n"
         "    _eff_finalize() {{\n{5}    }}\n"
-        "    _eff_refork() {{\n{6}    }}\n"
+        "    _eff_refork(old_boxes, new_boxes) {{\n{6}    }}\n"
         "  }}\n",
         class_name, ctor_params, ctor_inits, rv_name, disp.step,
         finalize_body, refork_body);

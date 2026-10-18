@@ -1729,6 +1729,10 @@ inline constexpr CanonParam kCanonParams_Bare[] = {
   {"kind", false, false, false, false, false, "String", CanonDefault::None, 0, {}},
   {"message", false, false, false, false, false, "String", CanonDefault::None, 0, {}},
   {"at", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
+  // 52: __eff_recapture
+  {"frames", false, false, false, false, false, "Array", CanonDefault::None, 0, {}},
+  {"old_boxes", false, false, false, false, false, "Array", CanonDefault::None, 0, {}},
+  {"new_boxes", false, false, false, false, false, "Array", CanonDefault::None, 0, {}},
 };
 
 inline constexpr CanonSig kCanonSigs_Bare[] = {
@@ -1742,6 +1746,7 @@ inline constexpr CanonSig kCanonSigs_Bare[] = {
   {"", "", "to_string", kCanonParams_Bare + 7, 1, "String", 1, 1, false, -1, -1, -1},
   {"", "", "hash", kCanonParams_Bare + 8, 1, "Long", 1, 1, false, -1, -1, -1},
   {"", "", "__eff_copy", kCanonParams_Bare + 9, 1, "Object", 1, 1, false, -1, -1, -1},
+  {"", "", "__eff_recapture", kCanonParams_Bare + 52, 3, "", 3, 3, false, -1, -1, -1},
   {"", "", "__eff_abort", kCanonParams_Bare + 10, 1, "", 1, 1, false, -1, -1, -1},
   {"", "", "__eff_catch_abort", kCanonParams_Bare + 11, 1, "Array", 1, 1, false, -1, -1, -1},
   {"", "", "__for_iter", kCanonParams_Bare + 46, 1, "Object", 1, 1, false, -1, -1, -1},

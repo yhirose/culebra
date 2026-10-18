@@ -4932,8 +4932,12 @@ let all = handle {
 inspect(all)  # => [[11, 21], [12, 22]]
 ```
 
-Forks share referenced heap values (arrays, objects) — the fork is a shallow
-copy — while independent scalar state is copied per fork.
+Each fork has its own copy of the computation's variables (the handled
+block's, and those of each effect fn it suspended inside), and a closure the
+computation holds, made before the fork, reads and writes that fork's copy.
+Variables declared outside the computation, such as module variables, are
+shared by every fork, and so are the values the variables refer to: an array
+or object, and a closure held in one, is the same in every fork.
 
 ### Dynamic scope and effectful calls
 
