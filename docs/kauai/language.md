@@ -1080,8 +1080,10 @@ dynamic. Naming anything else in `hears` is a `ValueError` when the song is
 read.
 
 A song file plays without a program of one's own: `culebra play song.kau`
-plays it, and `culebra play --check song.kau` reads and checks it and plays
-nothing. The external sounds come from the module `--sounds` names
+plays it, `culebra play --check song.kau` reads and checks it and plays
+nothing, and `culebra play --watch song.kau` plays it again from the top each
+time a file is saved, for writing it by ear. The external sounds come from
+the module `--sounds` names
 ([Tooling §9](../tooling.md#9-playing-a-song-culebra-play)).
 
 ## Appendix A: Chord qualities

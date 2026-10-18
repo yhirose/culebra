@@ -2360,7 +2360,8 @@ add_test(NAME sys_argv_test
                  $<TARGET_FILE:culebra>)
 
 # `culebra play`'s streams and statuses, for a song that reads, one that does
-# not, and one whose host sounds it has or lacks. The device stays closed, so
+# not, one whose external sounds it has or lacks, and one it watches. The
+# device stays closed, so
 # what a song plays is the .cul sweeps' to check (tests/test_audio_kauai*.cul).
 add_test(NAME play_test
          COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/play_test.sh

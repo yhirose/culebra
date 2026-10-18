@@ -22,6 +22,22 @@ run() {
   out=$("$CULEBRA" play "$ENGINE" "$@" 2> "$TMP/err"); rc=$?
   err=$(cat "$TMP/err")
 }
+# seen <n> <text>: wait until a watched run's output holds <text> <n> times,
+# 30 s at most (a --jit run compiles the program again each time).
+seen() {
+  for _ in $(seq 300); do
+    (( $(grep -c -F -- "$2" "$TMP/watch.out") >= $1 )) && return 0
+    sleep 0.1
+  done
+  echo "FAIL $ENGINE watch: no [$2] x$1 in [$(cat "$TMP/watch.out")]"; fail=1
+  kill -INT "$pid" 2>/dev/null
+}
+# retempo <tempo>: the watched song at another tempo, in place at once, as an
+# editor's save does (a rename, so a read never meets half a file).
+retempo() {
+  sed "s/^  tempo .*/  tempo $1/" "$song" > "$TMP/watch/next.tmp"
+  mv "$TMP/watch/next.tmp" "$song"
+}
 # The player is a program, so it answers the same on every engine this build
 # has.
 ENGINES="--vm"
@@ -128,6 +144,26 @@ run --check --sounds "$TMP/voices_only.cul" "$TMP/external.kau"
 check "$ENGINE external, voices only: status" 1 "$rc"
 check "$ENGINE external, voices only: stderr" \
   'ValueError: Audio.Kauai: drum Kick plays `external Kick`, and drums: has no `kick`' "$err"
+
+# --watch reads the song again whenever a file in its folder changes, says
+# which, and watches on through a mistake until Ctrl+C.
+mkdir -p "$TMP/watch"
+cp "$TMP/duo.kau" "$TMP/watch/duo.kau"
+song="$TMP/watch/duo.kau"
+"$CULEBRA" play "$ENGINE" --check --watch "$song" > "$TMP/watch.out" 2>&1 &
+pid=$!
+seen 1 "$song: 0:04 once through"
+retempo 60
+seen 1 "$song: 0:08 once through"
+retempo fast
+seen 1 "KauaiError: $song:9: "
+retempo 120
+seen 2 "$song: 0:04 once through"
+kill -INT "$pid"
+wait "$pid"; rc=$?
+check "$ENGINE watch: status" 130 "$rc"
+check "$ENGINE watch: changes named" 3 "$(grep -c -F "$song changed" "$TMP/watch.out")"
+check "$ENGINE watch: last line" "interrupted" "$(tail -n 1 "$TMP/watch.out")"
 
 done
 

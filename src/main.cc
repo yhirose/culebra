@@ -2483,44 +2483,88 @@ int run_serve(int argc, const char** argv) {
 }
 #endif  // CULEBRA_HTTP_ENABLED
 
-// `culebra play`'s program, after the one line that binds `sounds`: the
-// module `--sounds` names, or nil. The clauses name the errors of a song that
-// cannot be played; an interrupt and an external sound's own error take the
-// way out a script's do.
+// `culebra play --watch`'s watching, for the program that plays and for the
+// one that waits after a song or its sounds fail to load: the .kau and .cul
+// files of the folders after `--watch` in Sys.argv, each with what it holds
+// (an mtime is whole seconds, too coarse for two saves in one), and a wait
+// until one changes, comes or goes.
+constexpr std::string_view kPlayWatch = R"cul(
+let folders = Sys.argv.contains("--watch")
+  ? Sys.argv.slice(Sys.argv.index_of("--watch") + 1, Sys.argv.size())
+  : []
+
+fn files_in(folders) {
+  folders.flat_map(fn (d) {
+    let names = try {
+      FS.list_dir(d)
+    } catch e: IOError {
+      []
+    }
+    names.filter(|f| f.ends_with(".kau") || f.ends_with(".cul")).map(|f| FS.join(d, f))
+  }).map(fn (f) {
+    let held = try {
+      FS.read(f)
+    } catch e: IOError {
+      nil
+    }
+    (f, held)
+  }).to_object()
+}
+
+fn wait_for_change(before) {
+  mut now = files_in(folders)
+  while now == before {
+    Time.sleep(0.25)
+    now = files_in(folders)
+  }
+  let changed = now.keys().find(|f| before.get(f, nil) != now[f]) ?? before.keys().find(|f| !now.has(f))
+  println("{changed.strip_prefix("./")} changed")
+}
+)cul";
+
+// `culebra play`'s program, after the one line that binds `sounds` (the
+// module `--sounds` names, or nil) and the watching above. The clauses name
+// the errors of a song that cannot be played, which end the program, or,
+// watching, wait for the next change; an interrupt and an external sound's
+// own error take the way out a script's do.
 constexpr std::string_view kPlayProgram = R"cul(
 let path = Sys.argv[0]
 let made = sounds ?? {}
+let watching = !folders.empty()
+let before = files_in(folders)
 
 fn clock(secs) {
   let s = Math.round(secs)
   "{s / 60}:{s % 60 < 10 ? "0" : ""}{s % 60}"
 }
 
-fn refuse(e) {
+fn refuse(e, hint = nil) {
   IO.eprintln("{e.kind}: {e.message}")
-  Sys.exit(1)
+  IO.eprintln(hint) if hint != nil
+  Sys.exit(1) if !watching
 }
 
-let song = try {
-  Audio.Kauai.load(path, voices: made.voices, drums: made.drums)
-} catch e: KauaiError {
-  refuse(e)
-} catch e: IOError {
-  refuse(e)
-} catch e: ValueError {
-  IO.eprintln("{e.kind}: {e.message}")
-  if sounds == nil {
-    IO.eprintln("culebra play: --sounds <file.cul> names the module that makes a song's external sounds")
+# The song, playing; nil when there is none to wait on.
+fn play() {
+  let song = try {
+    Audio.Kauai.load(path, voices: made.voices, drums: made.drums)
+  } catch e: KauaiError {
+    return refuse(e)
+  } catch e: IOError {
+    return refuse(e)
+  } catch e: ValueError {
+    let hint = "culebra play: --sounds <file.cul> names the module that makes a song's external sounds"
+    return refuse(e, sounds == nil ? hint : nil)
   }
-  Sys.exit(1)
-}
-
-if Sys.argv.contains("--check") {
-  println("{path}: {clock(song.length())} once through")
-} else if !Audio.available() {
-  IO.eprintln("{path}: no audio device, so nothing plays")
-  Sys.exit(1)
-} else {
+  if Sys.argv.contains("--check") {
+    println("{path}: {clock(song.length())} once through")
+    return nil
+  }
+  if !Audio.available() {
+    IO.eprintln("{path}: no audio device, so nothing plays")
+    Sys.exit(1) if !watching
+    return nil
+  }
   # The external sounds are built first, saying how far along that is where
   # someone watches: play() would build them all the same, only in silence.
   let watched = IO.stdout_is_terminal()
@@ -2532,10 +2576,28 @@ if Sys.argv.contains("--check") {
   print("\r") if watched
   println("playing {path} ({clock(song.length())} once through)")
   song.play()
-  while song.playing() {
-    Time.sleep(0.1)
+  song
+}
+
+# The song is this function's, so it is dropped, stopped and freed, when the
+# function returns, as a run that is watched ends.
+fn listen() {
+  let song = play()
+  if watching {
+    wait_for_change(before)
+  } else if song != nil {
+    while song.playing() {
+      Time.sleep(0.1)
+    }
   }
 }
+listen()
+)cul";
+
+// What `culebra play --watch` runs when the song or its sounds could not be
+// loaded at all: the wait alone, until the next change.
+constexpr std::string_view kPlayWait = R"cul(
+wait_for_change(files_in(folders))
 )cul";
 
 // `culebra play [--sounds FILE] [--check] <song.kau>` — play a song written
@@ -2550,12 +2612,16 @@ int run_play(int argc, const char** argv) {
                  "                       make the song's `external` sounds\n"
                  "                       (Audio.Kauai.load's arguments of those names)\n"
                  "  --check              read and check the song, and play nothing\n"
-                 "Ctrl+C stops a song that loops.");
+                 "  --watch              read it again and play it from the top whenever\n"
+                 "                       a .kau or .cul file changes in the song's folder\n"
+                 "                       or the sounds module's\n"
+                 "Ctrl+C stops a song that loops, and the watching.");
   };
   Options options;
   optional<string> song;
   optional<string> sounds;
   bool check = false;
+  bool watch = false;
   for (int i = 2; i < argc; i++) {
     string arg = argv[i];
     if (arg == "-h" || arg == "--help") {
@@ -2572,6 +2638,8 @@ int run_play(int argc, const char** argv) {
       sounds = argv[++i];
     } else if (arg == "--check") {
       check = true;
+    } else if (arg == "--watch") {
+      watch = true;
     } else if (arg == "--vm") {
       // The engines, for the lanes that must name one; a song gains nothing
       // from the choice, so --help does not offer it.
@@ -2616,6 +2684,7 @@ int run_play(int argc, const char** argv) {
     }
     program = "import sounds from '" + abs + "'";
   }
+  program += kPlayWatch;
   program += kPlayProgram;
 
   culebra::install_sigint_handler();
@@ -2623,11 +2692,56 @@ int run_play(int argc, const char** argv) {
   culebra::set_main_script("");
   culebra::sys_argv() = {*song};
   if (check) culebra::sys_argv().push_back("--check");
+  if (watch) {
+    // The folders the song and the sounds module are in, each once, as they
+    // were written, so that what changed is named the way the files were.
+    culebra::sys_argv().push_back("--watch");
+    for (const auto& file : {song, sounds}) {
+      if (!file) continue;
+      auto dir = std::filesystem::path(*file).parent_path().lexically_normal().string();
+      if (dir.empty()) dir = ".";
+      auto& argv = culebra::sys_argv();
+      if (std::find(argv.begin(), argv.end(), dir) == argv.end()) argv.push_back(dir);
+    }
+  }
   // The entry module is nowhere on disk; its path only keys it and gives
   // nothing a base, since the one import it makes is absolute.
-  return run_source(options, "culebra-play.cul", program, "culebra play")
-             ? 0
-             : culebra::kUncaughtExitStatus;
+  auto run = [&] {
+    return run_source(options, "culebra-play.cul", program, "culebra play");
+  };
+  if (!watch) return run() ? 0 : culebra::kUncaughtExitStatus;
+  // Watching, each run is a fresh one with a Runtime of its own (where the
+  // namespace caches and the class registries live, which a program that
+  // is over leaves pointing into its code), so the sounds module is read
+  // again. The program waits for a change itself while its song plays; a
+  // song or a module that does not load, or an error out of one, is reported
+  // and waited on here. Ctrl+C is an Interrupted, which leaves as it would
+  // unwatched.
+  std::string wait = std::string(kPlayWatch) + std::string(kPlayWait);
+  for (;;) {
+    bool ran = false;
+    {
+      culebra::Runtime rt;
+      culebra::RuntimeScope scope(rt);
+      culebra::install_sigint_handler();
+      try {
+        ran = run();
+      } catch (const culebra::Interrupted&) {
+        throw;
+      } catch (const culebra::CulebraError& e) {
+        std::cerr << culebra::uncaught_report(e).line << std::endl;
+      } catch (const std::exception& e) {
+        // A program's own uncaught `throw` (the engine boundary's "uncaught:").
+        std::cerr << culebra::uncaught_report(e).line << std::endl;
+      }
+    }
+    if (!ran) {
+      culebra::Runtime rt;
+      culebra::RuntimeScope scope(rt);
+      culebra::install_sigint_handler();
+      run_source(options, "culebra-play-wait.cul", wait, "culebra play");
+    }
+  }
 }
 
 // main()'s body; main() below is the catch.

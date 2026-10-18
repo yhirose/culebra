@@ -1078,7 +1078,8 @@ Kauaiは、
 
 曲のファイルは、プログラムを書かなくても再生できます。`culebra play song.kau`で
 再生し、`culebra play --check song.kau`では読んで検査するだけで何も鳴らしません。
-外部の楽器の音声は、`--sounds`で指定したモジュールが用意します
+`culebra play --watch song.kau`は、ファイルを保存するたびに頭から鳴らし直すので、
+聞きながら書くのに使えます。外部の楽器の音声は、`--sounds`で指定したモジュールが用意します
 ([ツール §9](../tooling.ja.md#9-曲の再生-culebra-play))。
 
 ## 付録 A: コードの種類

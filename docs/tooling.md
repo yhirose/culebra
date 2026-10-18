@@ -1167,6 +1167,7 @@ culebra play --sounds sounds.cul ballad.kau # a song with `external` instruments
 |---|---|
 | `--check` | reads and checks the song, prints its length, and plays nothing; it needs no audio device |
 | `--sounds <file.cul>` | the module that makes the song's `external` sounds |
+| `--watch` | reads the song and the module again, and plays from the top, whenever a `.kau` or `.cul` file changes in the song's folder or the module's |
 
 A song's mistake goes to stderr as `KauaiError: FILE:LINE: ...` and the
 exit status is `1`, as it is on a machine with no audio device. A mistake
@@ -1186,3 +1187,15 @@ export {voices, drums}
 
 A song that names an external sound the module does not make, or any
 external sound when no module is given, is refused before anything plays.
+
+`--watch` is for writing a song or its instruments while listening to them.
+The song plays as it would without it; when a `.kau` or `.cul` file in the
+song's folder or the module's is saved, the player names the file, stops
+the song, reads the song and the module again, and plays from the top. A
+mistake in either, or an error out of an instrument, is reported and the
+player waits for the next save instead of ending, and Ctrl+C ends it. With
+`--check` it checks the song again on each save, and plays nothing.
+
+```
+culebra play --watch --sounds sounds.cul ballad.kau
+```
