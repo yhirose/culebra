@@ -610,7 +610,7 @@ mut music_wait = MUSIC_DELAY
 #
 # The theme's electric piano is sampled rather than an APU channel: a chord
 # needs several notes at once, and a struck tine needs more than a pulse. The
-# band plays it as `host Ep`, and each pitch the theme uses is synthesised
+# band plays it as `external Ep`, and each pitch the theme uses is synthesised
 # here once, into a WAV kept as a `Sound`.
 let EP_RATE = 22050
 

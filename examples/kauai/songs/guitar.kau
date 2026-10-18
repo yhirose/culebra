@@ -1,12 +1,12 @@
 about {
   title  Nylon afternoon
-  note   a bossa nova on nylon-string guitars: the thumb on the bass, the fingers on the chords between the beats, and a lead plucked over the soundhole whose slurs are hammer-ons and pull-offs, on host instruments that play a phrase at a time
+  note   a bossa nova on nylon-string guitars: the thumb on the bass, the fingers on the chords between the beats, and a lead plucked over the soundhole whose slurs are hammer-ons and pull-offs, on external instruments that play a phrase at a time
 }
 
 band Trio {
-  voice Lead    host Guitar pluck=0.3  plays melody                    vol 75%
-  voice Chords  host Guitar            plays chords rootless from E3  poly  vol 40%
-  voice Thumb   host Guitar            plays roots in E2..D#3          vol 60%
+  voice Lead    external Guitar pluck=0.3  plays melody                    vol 75%
+  voice Chords  external Guitar            plays chords rootless from E3  poly  vol 40%
+  voice Thumb   external Guitar            plays roots in E2..D#3          vol 60%
 }
 
 groove Bossa {

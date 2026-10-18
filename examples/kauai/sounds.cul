@@ -1,6 +1,7 @@
-# The host sounds the songs in songs/ name, for Audio.Kauai.load's `voices:`
-# and `drums:`: `host Ep` (an electric piano, `bright=` how hard its hammer
-# bites) and the drums `host Kick`, `Snare`, `Hat`, `Ride`, `Crash` and `Tom`.
+# The external sounds the songs in songs/ name, for Audio.Kauai.load's
+# `voices:` and `drums:`: `external Ep` (an electric piano, `bright=` how hard
+# its hammer bites) and the drums `external Kick`, `Snare`, `Hat`, `Ride`,
+# `Crash` and `Tom`.
 # Each is synthesised once, as a song asks for it.
 
 let RATE = 22050

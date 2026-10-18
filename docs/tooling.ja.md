@@ -1076,19 +1076,19 @@ culebra lsp        # 標準入出力でLSPを話す
 ```
 culebra play first.kau                      # 再生する
 culebra play --check first.kau              # 読んで検査するだけで、鳴らさない
-culebra play --sounds sounds.cul ballad.kau # `host`楽器を使う曲
+culebra play --sounds sounds.cul ballad.kau # 外部の楽器を使う曲
 ```
 
 | オプション | 効果 |
 |---|---|
 | `--check` | 曲を読んで検査し、長さを表示して、何も鳴らさない。音声デバイスは不要 |
-| `--sounds <file.cul>` | 曲の`host`楽器の音声を作るモジュール |
+| `--sounds <file.cul>` | 曲の外部の楽器の音声を作るモジュール |
 
 曲の誤りは`KauaiError: FILE:LINE: ...`としてstderrに出て、終了ステータスは
 `1`です。音声デバイスが無いマシンでも`1`です。コマンドラインの誤りは`2`です。
 
-`host`楽器はプログラムが用意するもので、`culebra play`自身は1つも持って
-いません。`--sounds`には、`voices`か`drums`、または両方をexportするモジュールを
+外部の楽器（`external`）はプログラムが用意するもので、`culebra play`自身は
+1つも持っていません。`--sounds`には、`voices`か`drums`、または両方をexportするモジュールを
 指定します。`Audio.Kauai.load`が同じ名前で受け取るオブジェクトです
 ([Kauai §10](kauai/language.ja.md#10-culebra-から再生する))。
 
@@ -1099,5 +1099,5 @@ let drums = {kick: |params| Audio.Sound(kick())}
 export {voices, drums}
 ```
 
-モジュールが作らないhostの音声を使う曲と、モジュールを指定せずにhostの音声を
-使う曲は、何も鳴らす前に断ります。
+モジュールが作らない外部の楽器の音声を使う曲と、モジュールを指定せずに外部の
+楽器の音声を使う曲は、何も鳴らす前に断ります。

@@ -14,7 +14,7 @@
 #   in blocks
 # - a line of single notes plays on a chip channel (pulse, pulse2, triangle,
 #   saw) while one is free, and one with chords, or past the four, on
-#   `host Ep` (the electric piano sounds.cul supplies to play.cul and
+#   `external Ep` (the electric piano sounds.cul supplies to play.cul and
 #   jukebox.cul)
 # - the repeats become sections, played with their endings or `xN`; the
 #   rest of the score is sections between them
@@ -812,7 +812,7 @@ fn convert(path) {
   }
 
   # The band: single notes on the chip channels while they last, the lowest
-  # line on the triangle; chords and the rest on the host piano.
+  # line on the triangle; chords and the rest on the external piano.
   let channels = ["pulse", "pulse2", "saw"]
   mut chips = {}
   let singles = iota(lines.size()).filter(|li| !poly[li])
@@ -829,7 +829,7 @@ fn convert(path) {
     let plays_what = li == 0 ? "plays melody" : "plays part {l.name}"
     let source = chips.get("{li}", nil)
     source == nil
-      ? "  voice {l.name}  host Ep  {plays_what}  poly  vol 40%"
+      ? "  voice {l.name}  external Ep  {plays_what}  poly  vol 40%"
       : "  voice {l.name}  {source}  {plays_what}  vol {li == 0 ? 20 : 14}  gap 1"
   }
 

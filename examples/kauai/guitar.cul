@@ -1,14 +1,15 @@
-# Plucked strings for Audio.Kauai.load's `voices:`: `host Guitar` (nylon
-# strings on a wooden body), `host Steel` (bright strings and no body) and
-# `host Bass`, playing a phrase at a time. A string is Audio.pluck's, a loop
-# of delay that loses a little of its brightness on every pass
-# (Karplus-Strong): a pluck fills it with the shape the string is let go
-# from, and it rings down by itself. A finger draws a nylon string aside to a point, a triangle whose
-# upper harmonics are weak; a pick's scrape is noise, bright in all of them.
-# A voice's `pluck=` says how far along the string from the bridge it is
-# plucked (`host Guitar pluck=0.3`, over the soundhole and mellow). Under a slur the string
-# is not plucked again: a finger hammers on or pulls off, the loop changes
-# length with the string still moving, and only a little energy is added.
+# Plucked strings for Audio.Kauai.load's `voices:`: `external Guitar` (nylon
+# strings on a wooden body), `external Steel` (bright strings and no body)
+# and `external Bass`, playing a phrase at a time. A string is
+# Audio.pluck's, a loop of delay that loses a little of its brightness on
+# every pass (Karplus-Strong): a pluck fills it with the shape the string is
+# let go from, and it rings down by itself. A finger draws a nylon string
+# aside to a point, a triangle whose upper harmonics are weak; a pick's
+# scrape is noise, bright in all of them. A voice's `pluck=` says how far
+# along the string from the bridge it is plucked (`external Guitar pluck=0.3`,
+# over the soundhole and mellow). Under a slur the string is not plucked
+# again: a finger hammers on or pulls off, the loop changes length with the
+# string still moving, and only a little energy is added.
 # The string rings on until the hand moves to what the voice plays next, and
 # a staccato is damped where it ends. A chord is a string for each of its
 # tones, strummed from the lowest. A guitar's body

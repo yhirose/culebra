@@ -7,9 +7,9 @@ let sec = |name, body| lines(['section ' + name + ' {', body, '}'])
 let song = fn (head, sections) {
   lines([
     'band B {',
-    '  voice M   pulse     plays melody            vol 10',
-    '  voice Bs  triangle  plays roots in E2..D#3  vol 10',
-    '  voice Ch  host Ep   plays chords from C4  poly  vol 40%',
+    '  voice M   pulse        plays melody            vol 10',
+    '  voice Bs  triangle     plays roots in E2..D#3  vol 10',
+    '  voice Ch  external Ep  plays chords from C4  poly  vol 40%',
     '}',
     'song S {',
     '  tempo 100',
@@ -33,7 +33,7 @@ let with_hits = fn (body) {
     '  voice M   pulse     plays melody            vol 10',
     '  voice Bs  triangle  plays roots in E2..D#3  vol 10',
     '  voice P   saw       plays part A            vol 10',
-    '  drum Kick host Kick plays hits vol 80%',
+    '  drum Kick external Kick plays hits vol 80%',
     '}',
     'song S {',
     '  tempo 100',
@@ -197,13 +197,13 @@ fails(
   "line 20: the bar is 4.0 beats long, want 3",
 )
 fails(
-  play("  T", "C c1").replace("  voice Ch  host Ep   plays chords from C4  poly", "  voice Ch  host Ep   plays chords from C4"),
+  play("  T", "C c1").replace("  voice Ch  external Ep  plays chords from C4  poly", "  voice Ch  external Ep  plays chords from C4"),
   "line 15: Ch plays x, the whole chord, under the bar at line 18, and is not poly",
 )
 for opt in ["env 1 2 3", "gap 2", "duty 1/4"] {
   fails(
     play("  T", "C c1").replace("poly  vol 40%", "poly  vol 40%  {opt}"),
-    "line 4: a host voice plays its sound through: no env, gap or duty",
+    "line 4: an external voice plays its sound through: no env, gap or duty",
   )
 }
 
@@ -254,12 +254,12 @@ fails(play("  T", "C  c2 \\doit r2"), "line 18: \\doit marks a note, not a rest"
 fails(play("  T", "C  c2~ \\fall c2"), "line 18: a note held by a tie is not struck, and takes no marks")
 fails(play("  T", "C  c2 \\fall \\fall d2"), "line 18: \\fall is written once for its note")
 fails(play("  T", "C  c1 \\fall"), "line 18: \\fall with no note after it in its bar")
-# A choke group is a host drum's, and one name.
+# A choke group is an external drum's, and one name.
 fails(
-  with_hits("C c1").replace("drum Kick host Kick plays hits vol 80%", "drum Kick host Kick vol 80% choke A B"),
+  with_hits("C c1").replace("drum Kick external Kick plays hits vol 80%", "drum Kick external Kick vol 80% choke A B"),
   "line 5: a choke group is one name: choke Hats",
 )
 fails(
-  with_hits("C c1").replace("drum Kick host Kick plays hits vol 80%", "drum Kick noise 120 len 1 vol 20 choke Hats"),
-  "line 5: a noise drum sounds one at a time already; choke groups host drums",
+  with_hits("C c1").replace("drum Kick external Kick plays hits vol 80%", "drum Kick noise 120 len 1 vol 20 choke Hats"),
+  "line 5: a noise drum sounds one at a time already; choke groups external drums",
 )

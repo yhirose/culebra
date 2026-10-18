@@ -1,5 +1,5 @@
-# A jazz kit for Audio.Kauai.load's `drums:`: `host Ride`, `host Hat`,
-# `host OpenHat` and `host Crash`. A cymbal is six square waves at
+# A jazz kit for Audio.Kauai.load's `drums:`: `external Ride`, `external Hat`,
+# `external OpenHat` and `external Crash`. A cymbal is six square waves at
 # frequencies no harmonic series holds, with some noise, through two
 # high-pass stages: the ride rings on, the hat closed by the pedal is the
 # same metal cut short, the open hat rings until the next hit of its choke

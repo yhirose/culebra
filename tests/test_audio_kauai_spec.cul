@@ -28,7 +28,7 @@ fn chords(defs, syms) {
     defs,
     'band B {',
     '  voice M pulse plays melody vol 10',
-    '  voice Ch host Ep plays chords from C4 poly vol 40%',
+    '  voice Ch external Ep plays chords from C4 poly vol 40%',
     '}',
     'song S {',
     '  tempo 100',
@@ -57,22 +57,22 @@ let defines = |b, kind| b
   .split("\n")
   .any(|l| l.to_string().starts_with(kind + " "))
 
-# Host instruments are the program's; nothing here builds their sounds, so a
-# table that names each one is enough.
-fn hosts(text) {
+# External instruments are the program's; nothing here builds their sounds,
+# so a table that names each one is enough.
+fn externals(text) {
   mut out = {}
   for line in text.split("\n") {
     let w = words_of(line)
     for i in 0..w.size() - 1 {
-      out[w[i + 1].lower()] = |a, b = nil| nil if w[i] == "host"
+      out[w[i + 1].lower()] = |a, b = nil| nil if w[i] == "external"
     }
   }
   out
 }
 let song_of = |text| Audio.Kauai.new(
   text,
-  voices: hosts(text),
-  drums: hosts(text),
+  voices: externals(text),
+  drums: externals(text),
 )
 
 # The files of Appendix C, by what their comments call them.
@@ -112,12 +112,12 @@ fn sections_alone(b) {
   })
   let players = parts.empty()
     ? []
-    : ["  voice P host Pad plays part {parts.to_set().to_array().join(" ")} poly vol 50%"]
+    : ["  voice P external Pad plays part {parts.to_set().to_array().join(" ")} poly vol 50%"]
   mut failed = []
   for (meter, rest) in [("4/4", "r1"), ("3/4", "r2.")] {
     let text = lines([
       'band Doc {',
-      '  voice M host Lead plays melody poly vol 50%',
+      '  voice M external Lead plays melody poly vol 50%',
       ...players,
       '}',
       'song Doc {',
@@ -145,8 +145,8 @@ fn sections_alone(b) {
 
 # A band on its own plays one bar, with a melody voice of its own if it has
 # none; a groove on its own plays under run.kau's band, whose drums it names,
-# made host drums so that a fill may hit with the hats; voicings are voiced,
-# each against its intervals.
+# made external drums so that a fill may hit with the hats; voicings are
+# voiced, each against its intervals.
 let one_bar = |band, extra| lines([
   'song Doc {',
   '  tempo 100',
@@ -162,7 +162,7 @@ fn band_alone(b) {
     ? b
     : lines([
       b.slice(0, b.size() - 1) +
-        '  voice DocTune host Lead plays melody vol 50%',
+        '  voice DocTune external Lead plays melody vol 50%',
       '}',
     ])
   song_of(lines([own, one_bar(name, []), 'section T {', '  C  c1', '}']))
@@ -172,7 +172,7 @@ fn groove_alone(b) {
   let kit = run_kau.split("\n").map(fn (l) {
     let w = words_of(l)
     return l.to_string() if w.get(0, "") != "drum"
-    "  drum {w[1]} host {w[1]} vol 50%"
+    "  drum {w[1]} external {w[1]} vol 50%"
   })
   song_of(lines([
     lines(kit),
@@ -221,8 +221,8 @@ fn with_use(b) {
   let dir = {exists: |name| files.has(name), read: |name| files[name]}
   Audio.Kauai.load(
     "songs/song.kau",
-    voices: hosts(b),
-    drums: hosts(b),
+    voices: externals(b),
+    drums: externals(b),
     dir: dir,
   )
 }

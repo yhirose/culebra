@@ -8837,7 +8837,7 @@ plays it: chords and a melody, and grooves that say how the band accompanies
 them ([the Kauai specification](kauai/language.md)). A song is read and
 checked whole, then handed to the runtime, which starts each note on the
 audio stream's own clock through `tone`'s channels, and plays the sounds the
-program supplies for `host` instruments as samples mixed alongside them.
+program supplies for `external` instruments as samples mixed alongside them.
 `culebra play song.kau` plays a song file from the command line
 ([Tooling §9](tooling.md#9-playing-a-song-culebra-play)).
 

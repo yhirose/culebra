@@ -206,7 +206,7 @@ band Run {
 
 音源には、[`Audio.tone`](../stdlib.ja.md#tone)のチャンネル（`pulse`、
 `pulse2`、`triangle`、`saw`）のどれかか、プログラム側で用意する楽器を表す
-`host NAME`を指定します（[10章](#10-culebra-から再生する)）。チャンネルは
+`external NAME`を指定します（[10章](#10-culebra-から再生する)）。チャンネルは
 一度に1音しか鳴らせないので、1つのbandの中で2つの楽器が同じチャンネルを
 使うことはできません。ドラムは`noise`チャンネルを使います。
 
@@ -229,16 +229,16 @@ C4 Eb4 G4 Bb4になります。
 | オプション | 意味 | 既定値 |
 |---|---|---|
 | `duty 1/8` `1/4` `1/2` `3/4` | パルス波のデューティ比 | `1/2` |
-| `vol N` | `mf`のときの音量。`Audio.tone`と同じ`0`〜`100`で指定する。host楽器では、楽器自身の音量に対する百分率（`vol 46%`） | （必須） |
+| `vol N` | `mf`のときの音量。`Audio.tone`と同じ`0`〜`100`で指定する。外部の楽器では、楽器自身の音量に対する百分率（`vol 46%`） | （必須） |
 | `env A D R` | アタック、ディケイ、リリース（単位は1/60秒のtick） | `0 0 0` |
 | `gap N` | 各音の終わりを何tick切り詰めるか。音と音の間にすき間を作って、区切って聞かせる | `0` |
-| `poly` | 複数の音を同時に鳴らせる（host楽器のみ） | 一度に1音 |
+| `poly` | 複数の音を同時に鳴らせる（外部の楽器のみ） | 一度に1音 |
 
-host楽器は、音ごとに用意された音声を最後まで鳴らします。そのため`env`、
+外部の楽器は、音ごとに用意された音声を最後まで鳴らします。そのため`env`、
 `gap`、`duty`は書けません。音符の長さは、長さを聞く楽器（[10章](#10-culebra-から再生する)）に
 だけ効きます。名前の後ろに`name=value`の形で独自のパラメータを
-付けられます（`host Ep bright=0.8`）。このパラメータは、音ごとにKauaiから
-ホストへ渡されます。
+付けられます（`external Ep bright=0.8`）。このパラメータは、音ごとにKauaiから
+プログラムへ渡されます。
 
 ### 派生パート
 
@@ -258,31 +258,31 @@ sectionごとに選びます（[8章](#8-曲)）。
 ### ドラム
 
 `drum NAME noise FREQ[->END] len N vol V [env A D R] [plays hits]`
-`drum NAME host SOUND [name=value...] vol P% [choke GROUP] [plays hits]`
+`drum NAME external SOUND [name=value...] vol P% [choke GROUP] [plays hits]`
 
 noiseのドラムは、ノイズチャンネルで鳴らす打音です。`FREQ`は高さ（Hz）で、
 `END`を書くとそこまで音程を滑らせ、`len`のtick数だけ鳴らします。チャンネルは
 一度に1つのドラムしか鳴らせないので、noiseのドラム2つを同時に鳴らすことは
 できません。
 
-hostのドラムは、プログラム側で用意した音声（[10章](#10-culebra-から再生する)）を
+外部のドラムは、プログラム側で用意した音声（[10章](#10-culebra-から再生する)）を
 最後まで鳴らします。音量は、その音声自身の音量に対する百分率で指定します。
-hostのドラムは、ドラムセットの太鼓やシンバルと同じように、ほかのhostのドラムとも
+外部のドラムは、ドラムセットの太鼓やシンバルと同じように、ほかの外部のドラムとも
 noiseのドラムとも同時に鳴らせます。
 
 ```kauai
 band Combo {
-  voice Keys  host Ep bright=0.8  plays chords rootless from E3  poly  vol 40%
-  voice Bass  triangle            plays roots in E2..D#3            vol 30
+  voice Keys  external Ep bright=0.8  plays chords rootless from E3  poly  vol 40%
+  voice Bass  triangle                plays roots in E2..D#3            vol 30
 
-  drum Kick     host Kick     vol 80%
-  drum Ride     host Ride     vol 50%
-  drum Hat      host Hat      vol 40%  choke Hats
-  drum OpenHat  host OpenHat  vol 30%  choke Hats
+  drum Kick     external Kick     vol 80%
+  drum Ride     external Ride     vol 50%
+  drum Hat      external Hat      vol 40%  choke Hats
+  drum OpenHat  external OpenHat  vol 30%  choke Hats
 }
 ```
 
-同じ`choke`グループを書いたhostのドラムは、ペダルがオープンのハイハットを
+同じ`choke`グループを書いた外部のドラムは、ペダルがオープンのハイハットを
 閉じるように、互いの音を止めます。そのドラムを鳴らす楽器には、同じグループの
 次の打音がいつ来るかが渡され、楽器はそこで自分の音を終えます
 （[10章](#10-culebra-から再生する)）。グループを書かないドラムは、それだけで
@@ -577,7 +577,7 @@ section Tag {
 ジャズの奏法は、楽譜で音符に書き込むのと同じく1つの音に付く印で、同じ小節の
 その音の前に1つにつき1回書きます。音符の記号と一緒に使えます（`\fall !c2`）。
 バンドのキメの1打にも同じように付けられます（[キメとブレイク](#キメとブレイク)）。
-奏法を音にするのは、記号を聞くhost楽器です（[10章](#10-culebra-から再生する)）。
+奏法を音にするのは、記号を聞く外部の楽器です（[10章](#10-culebra-から再生する)）。
 チャンネルの音源は、書いたとおりの音を鳴らします。
 
 小節の行に書いた強弱は、バンド全体に効きます。コード譜の`mf`や`cresc.`を
@@ -667,7 +667,7 @@ section Theme {
 
 1打の長さは音価のとおりで（`x4`なら4分音符）、タイでつなぐと伸びます
 （`x8~ x8`）。記号は音符に付けたときと同じように効きます。`.`で半分の長さになり、
-`!`で1段階強くなります（ドラムも強くなります）。記号を聞くhost楽器には、ドラムも
+`!`で1段階強くなります（ドラムも強くなります）。記号を聞く外部の楽器には、ドラムも
 含めて、その名前も届きます。そのため、長い1打ではクラッシュを鳴らしたままにし、
 短い1打では手で止める、といった鳴らし分けができます。各打は、
 そのタイミングで鳴っているコードと、バンド全体の強弱に従います。メロディは
@@ -693,13 +693,13 @@ section Kime {
 
 ```kauai
 band Fusion {
-  voice Lead  saw                 plays melody                     vol 12
-  voice Keys  host Ep  poly       plays chords from C4             vol 40%
-  voice Bass  triangle            plays roots in E2..D#3           vol 30
+  voice Lead  saw                     plays melody                     vol 12
+  voice Keys  external Ep  poly       plays chords from C4             vol 40%
+  voice Bass  triangle                plays roots in E2..D#3           vol 30
 
-  drum Kick   host Kick   vol 80%  plays hits
-  drum Crash  host Crash  vol 60%  plays hits
-  drum Hat    host Hat    vol 40%
+  drum Kick   external Kick   vol 80%  plays hits
+  drum Crash  external Crash  vol 60%  plays hits
+  drum Hat    external Hat    vol 40%
 }
 ```
 
@@ -829,7 +829,7 @@ song JeTeVeux {
 | `part NAME in LO..HI` | パート`NAME`の音の範囲 | メロディの範囲 |
 | `swing 8` | 8分音符2つの組（`swing 16`なら16分音符）を長・短で弾く。比を書かなければ2:1（`swing 8 3:2`）（[スウィング](#スウィング)） | 書いたとおり |
 | `loop` | 最後まで演奏したら頭から繰り返す | 1回だけ |
-| `room 40%` | バンドが部屋の中で演奏する。部屋の響きを40%の強さ（1%から100%）で重ねる。チャンネルの音源にもhost楽器の音にも、曲が鳴らすすべての音に効き、響きは最後の音のあとも残る | 響きなし |
+| `room 40%` | バンドが部屋の中で演奏する。部屋の響きを40%の強さ（1%から100%）で重ねる。チャンネルの音源にも外部の楽器の音にも、曲が鳴らすすべての音に効き、響きは最後の音のあとも残る | 響きなし |
 | `mark NAME` | プログラムから到達を確かめられる位置（[10章](#10-culebra-から再生する)） | |
 
 それ以外の行は、sectionを演奏する行です。次のオプションを、順序を問わず、
@@ -900,7 +900,7 @@ section Bridge {
 - 定義されていないgroove、楽器、ドラム、section、band、ending、派生パート。2回定義された名前
 - トークンのない小節や、トークンの長さが音価にならない小節（4/4で15個）を含むgrooveの行
 - 同時に鳴るnoiseのドラム2つ。同じチャンネルを使う1つのbandの楽器2つ
-- `env`、`gap`、`duty`が付いたhost楽器。音声の名前がない、`len`や`env`が付いている、`vol`が百分率でない、または`choke`に名前が1つでないhostのドラム。noiseのドラムの`choke`
+- `env`、`gap`、`duty`が付いた外部の楽器。音声の名前がない、`len`や`env`が付いている、`vol`が百分率でない、または`choke`に名前が1つでない外部のドラム。noiseのドラムの`choke`
 - メロディを弾く楽器がない、または2つ以上ある
 - 1オクターブでない範囲。シャープやフラットの付いた音から始まる範囲
 - 1拍が音価にならない`meter`（`3/5`）
@@ -959,15 +959,15 @@ song.play()
 
 | メソッド | 動作 |
 |---|---|
-| `play()` | `prepare()`でまだ作っていないhostの音声を作ってから、頭から演奏する（演奏中なら頭から演奏し直す） |
+| `play()` | `prepare()`でまだ作っていない外部の楽器の音声を作ってから、頭から演奏する（演奏中なら頭から演奏し直す） |
 | `stop()` | 演奏を止め、鳴っている音も消す |
 | `volume(v)` | 曲全体の音量（`0.0`〜`1.0`）。次の音から反映される |
 | `playing()` | 演奏中かどうか。`play()`から`stop()`まで、`loop`しない曲なら曲の終わりまでが演奏中 |
 | `reached(NAME)` | `mark NAME`の位置まで演奏が進んだかどうか |
-| `prepare()` | hostの音声を1つ作り、残りの数を返す |
+| `prepare()` | 外部の楽器の音声を1つ作り、残りの数を返す |
 | `length()` | 1回通して演奏したときの秒数 |
 | `about()` | `about`に書いた項目をまとめたオブジェクト。例: `{title: 'Je te veux', composer: 'Erik Satie', year: 1897}`。`about`がなければ`{}` |
-| `events()` | 演奏する音を時間順に並べたもの。各要素は`{at, len, by, pitch, vol}`で、`at`と`len`は秒、`by`は楽器かドラムの名前、`pitch`はMIDIのノート番号（ドラムは`nil`）、`vol`はその音の強弱での楽器の`vol`（hostの音声では、音声自身の音量に対する割合） |
+| `events()` | 演奏する音を時間順に並べたもの。各要素は`{at, len, by, pitch, vol}`で、`at`と`len`は秒、`by`は楽器かドラムの名前、`pitch`はMIDIのノート番号（ドラムは`nil`）、`vol`はその音の強弱での楽器の`vol`（外部の楽器の音声では、音声自身の音量に対する割合） |
 
 runtimeは、すべての音を音声ストリーム自身のクロックに合わせて予約します。
 そのため、1フレームの処理が長引いてもテンポは崩れず、フレームループを持たない
@@ -980,20 +980,21 @@ runtimeは、すべての音を音声ストリーム自身のクロックに合�
 let song = Audio.Kauai.load("ballad.kau", voices: {
   ep: |pitch, params| Audio.Sound(electric_piano(pitch, params.bright)),
 })
-song.prepare()          # build one host sound; answers how many remain
+song.prepare()          # build one external sound; answers how many remain
 song.play()
 song.reached("Drive")   # has the song passed `mark Drive`?
 ```
 
-host楽器の音声は、音の高さごとに1つずつ作ります。曲で使う高さのそれぞれに
-ついて、`voices:`に渡した関数のうち、その楽器のhost名に対応するものを呼び出し
-ます。引数は、音の高さ（MIDIのノート番号。`60`が中央のド）と、その楽器の
+外部の楽器の音声は、音の高さごとに1つずつ作ります。曲で使う高さのそれぞれに
+ついて、`voices:`に渡した関数のうち、その楽器の`external`のあとの名前に
+対応するものを呼び出します。引数は、音の高さ（MIDIのノート番号。`60`が中央のド）と、その楽器の
 `name=value`パラメータをまとめたオブジェクトです。関数が返した`Audio.Sound`を
-その高さの音として鳴らします。hostのドラムの音声は1回だけ作ります。`drums:`に
+その高さの音として鳴らします。外部のドラムの音声は1回だけ作ります。`drums:`に
 渡した関数のうち、その音声の名前に対応するもの（`drums: {kick: fn (params) { ... }}`）
 を、ドラムの`name=value`パラメータを引数にして呼び出し、返された`Audio.Sound`を
-鳴らします。`voices:`と`drums:`のキーは、host名を小文字にしたものです
-（`host Ep`なら`ep:`、`host HiHat`なら`hihat:`）。対応する関数がないhostの音声が
+鳴らします。`voices:`と`drums:`のキーは、`external`のあとの名前を小文字にした
+ものです（`external Ep`なら`ep:`、`external HiHat`なら`hihat:`）。対応する関数が
+ない外部の楽器の音声が
 あると、曲を読み込んだ時点で`ValueError`になります。`prepare()`は音声を1つ作って
 残りの数を返すので、ゲームでは音声の準備を複数のフレームに分けられます。
 `play()`は、残っている音声をすべて作ってから演奏を始めます。
@@ -1048,7 +1049,7 @@ Kauaiは、
 
 曲のファイルは、プログラムを書かなくても再生できます。`culebra play song.kau`で
 再生し、`culebra play --check song.kau`では読んで検査するだけで何も鳴らしません。
-hostの音声は、`--sounds`で指定したモジュールが用意します
+外部の楽器の音声は、`--sounds`で指定したモジュールが用意します
 ([ツール §9](../tooling.ja.md#9-曲の再生-culebra-play))。
 
 ## 付録 A: コードの種類
@@ -1141,7 +1142,7 @@ AboutItem  <- 'title' / 'composer' / 'lyricist' / 'arranger' / 'year'
 Voicings   <- 'voicings' '{' EOL (!('#' / 'b') Quality Int+ EOL)* '}' EOL
 Band       <- 'band' Name '{' EOL (Voice / Drum / Derived / EOL)* '}' EOL
 Voice      <- 'voice' Name Source VoiceWord* EOL
-Source     <- 'pulse' / 'pulse2' / 'triangle' / 'saw' / 'host' Name Param*
+Source     <- 'pulse' / 'pulse2' / 'triangle' / 'saw' / 'external' Name Param*
 Param      <- Word '=' Number
 VoiceWord  <- 'plays' Plays / 'duty' Ratio / 'vol' Level / 'env' Int Int Int
             / 'gap' Int / 'poly'
@@ -1150,7 +1151,7 @@ Plays      <- 'melody' / 'roots' 'in' Range / 'chords' 'rootless'? 'from' Pitch
 Derived    <- Name 'echoes' Name 'late' Ratio 'level' Percent EOL
             / Name 'harmonizes' Name 'under' Interval EOL
 Drum       <- 'drum' Name ('noise' Int ('->' Int)? 'len' Int 'vol' Int
-              ('env' Int Int Int)? / 'host' Name Param* 'vol' Percent ('choke' Name)?)
+              ('env' Int Int Int)? / 'external' Name Param* 'vol' Percent ('choke' Name)?)
               ('plays' 'hits')? EOL
 
 Groove     <- 'groove' Name '{' EOL (Row / Edge / EOL)* '}' EOL
@@ -1511,7 +1512,7 @@ section Chorus {
 
 ### ballad.kau
 
-エンディングのテーマです。エレクトリックピアノはhost楽器（`Ep`）で、和音を弾きます。メロディも同じエレクトリックピアノで、音色を明るくして弾きます。
+エンディングのテーマです。エレクトリックピアノは外部の楽器（`Ep`）で、和音を弾きます。メロディも同じエレクトリックピアノで、音色を明るくして弾きます。
 
 ```kauai
 about {
@@ -1520,9 +1521,9 @@ about {
 }
 
 band Trio {
-  voice Piano  host Ep bright=0.8  plays chords rootless from E3  poly  vol 26%
-  voice Sing   host Ep bright=1.3  plays melody                    poly  vol 46%
-  voice Bass   triangle            plays roots in E2..D#3          vol 34  env 3 0 14  gap 3
+  voice Piano  external Ep bright=0.8  plays chords rootless from E3  poly  vol 26%
+  voice Sing   external Ep bright=1.3  plays melody                    poly  vol 46%
+  voice Bass   triangle                plays roots in E2..D#3          vol 34  env 3 0 14  gap 3
 
   drum Brush  noise 4000  len 2  vol 4  env 0 0 5
   drum Ride   noise 6000  len 1  vol 3  env 0 0 10
@@ -1621,9 +1622,9 @@ voicings {
 }
 
 band Salon {
-  voice Singer  pulse               plays melody                           duty 1/2  vol 22  env 2 2 8
-  voice Bass    triangle            plays roots in E1..D#2                           vol 32  env 0 2 6
-  voice Piano   host Ep bright=0.9  plays chords from E3  plays part Fill  poly      vol 30%
+  voice Singer  pulse                   plays melody                           duty 1/2  vol 22  env 2 2 8
+  voice Bass    triangle                plays roots in E1..D#2                           vol 32  env 0 2 6
+  voice Piano   external Ep bright=0.9  plays chords from E3  plays part Fill  poly      vol 30%
 }
 
 song JeTeVeux {

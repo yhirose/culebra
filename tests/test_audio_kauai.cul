@@ -139,7 +139,7 @@ assert_eq(error_of(song_of(['  Chorus'])), ("KauaiError", "line 15: no section C
 let band_error = |line| error_of(lines(['band B {', line, '}', 'song S {', '  tempo 100', '  band B', '}']))
 assert_eq(band_error('  voice V pulse plays melody'), ("KauaiError", "line 2: a voice needs its vol: vol 20"))
 assert_eq(band_error('  voice V noise plays melody vol 10'),
-  ("KauaiError", "line 2: a voice plays on pulse, pulse2, triangle or saw, or a host instrument; not noise"))
+  ("KauaiError", "line 2: a voice plays on pulse, pulse2, triangle or saw, or an external instrument; not noise"))
 assert_eq(error_of(lines(['band B {', '  voice V pulse plays melody vol 10', '  voice W pulse vol 10', '}'])),
   ("KauaiError", "line 3: W and V both play on pulse"))
 assert_eq(error_of(lines([DUO, 'song S {', '  tempo 100', '  band Duo', '  melody in C5..B5', '  V with echo', '}', 'section V {', '  C  c1', '}'])),
@@ -216,14 +216,14 @@ let used_about = try {
 }
 assert_eq(used_about, "songs/about.kau:1: a file that is used holds no about")
 
-# A host voice's sounds come from the program: one per pitch, built by
+# An external voice's sounds come from the program: one per pitch, built by
 # prepare() a call at a time, or by play() all at once.
 let WAV = Encoding.hex.decode("524946462800000057415645666d7420100000000100010040" +
   "1f0000401f000001000800646174610400000080c8803c")
-let HOSTED = lines([
+let EXTERNAL = lines([
   'band Keys {',
-  '  voice Piano  host Ep bright=0.8  plays melody  poly  vol 40%',
-  '  drum Ride    host Ride           vol 50%',
+  '  voice Piano  external Ep bright=0.8  plays melody  poly  vol 40%',
+  '  drum Ride    external Ride           vol 50%',
   '}',
   'groove Time {',
   '  Ride  x.x.',
@@ -232,23 +232,23 @@ let HOSTED = lines([
   'section Solo {', '  C  <c e g>2 c', '}',
 ])
 mut asked = []
-let hosted = Audio.Kauai.new(HOSTED, voices: {
+let external = Audio.Kauai.new(EXTERNAL, voices: {
   ep: fn (pitch, params) {
     asked.push((pitch, params.bright))
     Audio.Sound.new(WAV)
   },
 }, drums: {ride: |params| Audio.Sound.new(WAV)})
-assert_eq(notes(hosted, "Piano"), [(0.0, 2.0, 60, 0.4), (0.0, 2.0, 64, 0.4), (0.0, 2.0, 67, 0.4), (2.0, 2.0, 60, 0.4)])
-assert_eq(notes(hosted, "Ride").map(|n| (n[0], n[3])), [(0.0, 0.5), (2.0, 0.5)])
-assert_eq(hosted.prepare(), 3)
-hosted.play()
+assert_eq(notes(external, "Piano"), [(0.0, 2.0, 60, 0.4), (0.0, 2.0, 64, 0.4), (0.0, 2.0, 67, 0.4), (2.0, 2.0, 60, 0.4)])
+assert_eq(notes(external, "Ride").map(|n| (n[0], n[3])), [(0.0, 0.5), (2.0, 0.5)])
+assert_eq(external.prepare(), 3)
+external.play()
 assert_eq(asked.map(|a| a[0]).sorted(), [60, 64, 67])
 assert_eq(asked[0][1], 0.8)
-hosted.stop()
+external.stop()
 assert_throws("ValueError", fn () {
-  Audio.Kauai.new(HOSTED, drums: {ride: |params| Audio.Sound.new(WAV)})
+  Audio.Kauai.new(EXTERNAL, drums: {ride: |params| Audio.Sound.new(WAV)})
 })
-let not_a_sound = Audio.Kauai.new(HOSTED, voices: {ep: |pitch, params| 1}, drums: {ride: |params| 1})
+let not_a_sound = Audio.Kauai.new(EXTERNAL, voices: {ep: |pitch, params| 1}, drums: {ride: |params| 1})
 assert_throws("TypeError", fn () {
   not_a_sound.prepare()
 })
@@ -259,8 +259,8 @@ assert_throws("TypeError", fn () {
 # vol leaves it out.
 let PLAYED = lines([
   'band Strings {',
-  '  voice Fiddle  host Fiddle  plays melody  vol 50%',
-  '  drum Snare    host Snare   vol 40%',
+  '  voice Fiddle  external Fiddle  plays melody  vol 50%',
+  '  drum Snare    external Snare   vol 40%',
   '}',
   'groove Time {',
   '  Snare  x..x',
@@ -323,7 +323,7 @@ unheard.stop()
 mut chords = []
 let chorded = Audio.Kauai.new(lines([
   'band Keys {',
-  '  voice Organ  host Organ  plays melody  vol 50%  poly',
+  '  voice Organ  external Organ  plays melody  vol 50%  poly',
   '}',
   'song Hold {', '  tempo 60', '  band Keys', '  melody in C4..B4', '  Hold', '}',
   'section Hold {', '  C  (<c e>4 <d f>) g2', '}',
@@ -349,7 +349,7 @@ let phrased = fn (bar) {
   mut got = []
   let song = Audio.Kauai.new(lines([
     'band Solo {',
-    '  voice Reed  host Reed  plays melody  vol 50%',
+    '  voice Reed  external Reed  plays melody  vol 50%',
     '}',
     'song Breath {', '  tempo 60', '  band Solo', '  melody in C4..B4', '  Breath', '}',
     'section Breath {', "  C  {bar}", '}',
@@ -374,8 +374,8 @@ assert_eq(phrased('(c4 d r e)'), ['60 62', '64'])
 mut struck_together = []
 let keyed = Audio.Kauai.new(lines([
   'band Keys {',
-  '  voice Organ  host Organ  plays melody  vol 50%  poly',
-  '  voice Comp   host Organ  plays chords from C3  vol 50%  poly',
+  '  voice Organ  external Organ  plays melody  vol 50%  poly',
+  '  voice Comp   external Organ  plays chords from C3  vol 50%  poly',
   '}',
   'groove Stab {', '  Comp  x . . .', '}',
   'song Hold {', '  tempo 60', '  band Keys', '  groove Stab', '  melody in C4..B4', '  Hold', '}',
@@ -400,10 +400,10 @@ mut told = []
 mut hit_told = []
 let marked = Audio.Kauai.new(lines([
   'band Combo {',
-  '  voice Horn   host Horn   plays melody  vol 50%',
-  '  drum Open    host Hat    vol 40%  choke Hats',
-  '  drum Closed  host Hat    vol 40%  choke Hats',
-  '  drum Ride    host Ride   vol 40%',
+  '  voice Horn   external Horn   plays melody  vol 50%',
+  '  drum Open    external Hat    vol 40%  choke Hats',
+  '  drum Closed  external Hat    vol 40%  choke Hats',
+  '  drum Ride    external Ride   vol 40%',
   '}',
   'groove Time {',
   '  Open    x . . .',
@@ -454,8 +454,8 @@ mut crashed = []
 let kime = Audio.Kauai.new(lines([
   'band Duo {',
   '  voice Lead  pulse  plays melody  vol 20',
-  '  voice Bass  host Pluck  plays roots in E2..D#3  vol 50%',
-  '  drum Crash  host Crash  vol 50%  plays hits',
+  '  voice Bass  external Pluck  plays roots in E2..D#3  vol 50%',
+  '  drum Crash  external Crash  vol 50%  plays hits',
   '}',
   'groove Walk {', '  Bass  1 1 1 1', '}',
   'song Kime {', '  tempo 60', '  band Duo', '  groove Walk', '  melody in C4..B4', '  Kime', '}',
@@ -485,7 +485,7 @@ kime.stop()
 # own while the struck ones take the rest.
 mut lined = []
 let rolled = Audio.Kauai.new(lines([
-  'band Solo {', '  voice Harp  host Harp  plays melody  poly  vol 50%', '}',
+  'band Solo {', '  voice Harp  external Harp  plays melody  poly  vol 50%', '}',
   'song Roll {', '  tempo 60', '  band Solo', '  melody in C4..B4', '  Roll', '}',
   'section Roll {', '  C  ~<c~ e g>2 <c d f>2', '}',
 ]), voices: {

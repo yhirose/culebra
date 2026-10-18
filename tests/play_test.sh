@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # `culebra play`'s process contract: what it prints, on which stream, and the
 # status it leaves, for a song that reads, one that does not, and one whose
-# `host` sounds it has or lacks. The device stays closed (CULEBRA_AUDIO=off),
-# so nothing here sounds and the play path itself ends at "no audio device";
-# the .cul sweeps cover what a song plays (tests/test_audio_kauai*.cul).
+# `external` sounds it has or lacks. The device stays closed
+# (CULEBRA_AUDIO=off), so nothing here sounds and the play path itself ends
+# at "no audio device"; the .cul sweeps cover what a song plays
+# (tests/test_audio_kauai*.cul).
 # Usage: play_test.sh <path-to-culebra>
 set -u
 CULEBRA="${1:?usage: play_test.sh <culebra-binary>}"
@@ -47,12 +48,12 @@ section Verse {
   G     d4 g b g
 }
 EOF
-# A band with a `host` voice and a `host` drum.
-cat > "$TMP/host.kau" <<'EOF'
+# A band with an `external` voice and an `external` drum.
+cat > "$TMP/external.kau" <<'EOF'
 band Duo {
   voice Tune  pulse     plays melody            vol 20
-  voice Keys  host Ep bright=0.8  plays chords from C4  poly  vol 40%
-  drum Kick   host Kick  vol 80%
+  voice Keys  external Ep bright=0.8  plays chords from C4  poly  vol 40%
+  drum Kick   external Kick  vol 80%
 }
 groove Walk {
   Keys  x - x -
@@ -107,25 +108,26 @@ run --check "$TMP/absent.kau"
 check "$ENGINE absent: status" 1 "$rc"
 check "$ENGINE absent: stderr" "IOError: Audio.Kauai: no song file $TMP/absent.kau" "$err"
 
-# A host sound nobody supplies: the song's error, then where sounds come from.
-run --check "$TMP/host.kau"
-check "$ENGINE host, no sounds: status" 1 "$rc"
-[[ "$err" == "ValueError: Audio.Kauai: "*'plays `host '*$'\n'"culebra play: --sounds "* ]] || {
-  echo "FAIL $ENGINE host, no sounds: stderr [$err]"; fail=1; }
+# An external sound nobody supplies: the song's error, then where sounds come
+# from.
+run --check "$TMP/external.kau"
+check "$ENGINE external, no sounds: status" 1 "$rc"
+[[ "$err" == "ValueError: Audio.Kauai: "*'plays `external '*$'\n'"culebra play: --sounds "* ]] || {
+  echo "FAIL $ENGINE external, no sounds: stderr [$err]"; fail=1; }
 
-run --check --sounds "$TMP/sounds.cul" "$TMP/host.kau"
-check "$ENGINE host, sounds: status" 0 "$rc"
-check "$ENGINE host, sounds: stdout" "$TMP/host.kau: 0:04 once through" "$out"
-check "$ENGINE host, sounds: stderr" "" "$err"
-run --check --sounds="$TMP/sounds.cul" "$TMP/host.kau"
-check "$ENGINE host, --sounds=: status" 0 "$rc"
+run --check --sounds "$TMP/sounds.cul" "$TMP/external.kau"
+check "$ENGINE external, sounds: status" 0 "$rc"
+check "$ENGINE external, sounds: stdout" "$TMP/external.kau: 0:04 once through" "$out"
+check "$ENGINE external, sounds: stderr" "" "$err"
+run --check --sounds="$TMP/sounds.cul" "$TMP/external.kau"
+check "$ENGINE external, --sounds=: status" 0 "$rc"
 
 # A module that exports one of the two leaves the other empty, and the hint
 # is not repeated to someone who did name a module.
-run --check --sounds "$TMP/voices_only.cul" "$TMP/host.kau"
-check "$ENGINE host, voices only: status" 1 "$rc"
-check "$ENGINE host, voices only: stderr" \
-  'ValueError: Audio.Kauai: drum Kick plays `host Kick`, and drums: has no `kick`' "$err"
+run --check --sounds "$TMP/voices_only.cul" "$TMP/external.kau"
+check "$ENGINE external, voices only: status" 1 "$rc"
+check "$ENGINE external, voices only: stderr" \
+  'ValueError: Audio.Kauai: drum Kick plays `external Kick`, and drums: has no `kick`' "$err"
 
 done
 
@@ -134,7 +136,7 @@ ENGINE=--vm
 run
 check "no song: status" 2 "$rc"
 [[ "$err" == "Usage: culebra play "* ]] || { echo "FAIL no song: stderr [$err]"; fail=1; }
-run "$TMP/duo.kau" "$TMP/host.kau"
+run "$TMP/duo.kau" "$TMP/external.kau"
 check "two songs: status" 2 "$rc"
 run --loud "$TMP/duo.kau"
 check "unknown option: status" 2 "$rc"

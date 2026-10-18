@@ -850,8 +850,9 @@ let _kauai_module = fn () {
   let DUTIES = {"1/8": 0, "1/4": 1, "1/2": 2, "3/4": 3}
   let VOICE_KEYS = ["plays", "duty", "vol", "env", "gap", "poly"]
 
-  # A host instrument's own parameters, `name=value`, handed to the host as is.
-  fn host_params(words) {
+  # An external instrument's own parameters, `name=value`, handed to the
+  # program as is.
+  fn external_params(words) {
     words.filter(|x| x.contains("="))
       .map(|x| halves(x, "="))
       .map(|(pk, pv)| (pk, to_float(pv)))
@@ -860,8 +861,8 @@ let _kauai_module = fn () {
 
   fn parse_voice(words, line) {
     let name = name_at(words, 1, line, "a voice")
-    let host = words[2] == "host"
-    let params = host_params(words)
+    let external = words[2] == "external"
+    let params = external_params(words)
     # `plays part NAME` (any number of them): the voice plays that part where
     # a section writes it.
     let plain = words.filter(|x| !x.contains("="))
@@ -882,25 +883,25 @@ let _kauai_module = fn () {
         pi += 1
       }
     }
-    fail(line, "a voice plays on pulse, pulse2, triangle, saw or a host instrument") if w.size() < 3
-    let o = options(w, host ? 4 : 3, VOICE_KEYS)
+    fail(line, "a voice plays on pulse, pulse2, triangle, saw or an external instrument") if w.size() < 3
+    let o = options(w, external ? 4 : 3, VOICE_KEYS)
     let env = env_of(o, line)
     let vol = o.get("vol", nil) ?? fail(line, "a voice needs its vol: vol 20")
     fail(line, "vol takes a number: vol 20") if vol.size() != 1
-    if host {
-      fail(line, "a host voice's vol is a percentage: vol 40%") if !vol[0].ends_with("%")
-      fail(line, "a host voice plays its sound through: no env, gap or duty") if o.has("env") || o.has("gap") || o.has("duty")
+    if external {
+      fail(line, "an external voice's vol is a percentage: vol 40%") if !vol[0].ends_with("%")
+      fail(line, "an external voice plays its sound through: no env, gap or duty") if o.has("env") || o.has("gap") || o.has("duty")
     } else {
       fail(line, "a voice's vol is 0 to 100, as Audio.tone's: vol 20") if vol[0].ends_with("%")
     }
     let duty = first_of(o, "duty", "1/2")
     mut v = {
       name: name,
-      host: host ? name_at(w, 3, line, "a host instrument") : nil,
-      wave: host ? nil : (w[2] == "noise" ? nil : WAVES.get(w[2], nil)) ?? fail(line, "a voice plays on pulse, pulse2, triangle or saw, or a host instrument; not {w[2]}"),
+      external: external ? name_at(w, 3, line, "an external instrument") : nil,
+      wave: external ? nil : (w[2] == "noise" ? nil : WAVES.get(w[2], nil)) ?? fail(line, "a voice plays on pulse, pulse2, triangle or saw, or an external instrument; not {w[2]}"),
       poly: o.has("poly"),
       duty: DUTIES.get(duty, nil) ?? fail(line, "a duty is 1/8, 1/4, 1/2 or 3/4: {duty}"),
-      vol: host ? amount(vol[0]) : number_of(vol[0], line, "vol"),
+      vol: external ? amount(vol[0]) : number_of(vol[0], line, "vol"),
       attack: env[0],
       decay: env[1],
       release: env[2],
@@ -959,31 +960,32 @@ let _kauai_module = fn () {
           fail(item.line, "{v.name} and {sharing?.name} both play on {w[2]}") if sharing != nil
           voices[v.name] = v
         },
-        # `drum NAME host SOUND [name=value...] vol P% [choke GROUP]`: a sound
-        # the program supplies, played through to its end; the drums of a
-        # choke group stop each other, as an instrument that hears `next` does.
-        w[0] == "drum" && w.size() > 2 && w[2] == "host" => {
+        # `drum NAME external SOUND [name=value...] vol P% [choke GROUP]`: a
+        # sound the program supplies, played through to its end; the drums of
+        # a choke group stop each other, as an instrument that hears `next`
+        # does.
+        w[0] == "drum" && w.size() > 2 && w[2] == "external" => {
           let dn = name_at(w, 1, item.line, "a drum")
           let plain = w.filter(|x| !x.contains("="))
-          let sound = name_at(plain, 3, item.line, "a host drum's sound")
+          let sound = name_at(plain, 3, item.line, "an external drum's sound")
           let o = options(plain, 4, ["len", "vol", "env", "choke"])
-          fail(item.line, "a host drum plays its sound through: no len or env") if o.has("len") || o.has("env")
+          fail(item.line, "an external drum plays its sound through: no len or env") if o.has("len") || o.has("env")
           let choke = o.get("choke", nil)
           fail(item.line, "a choke group is one name: choke Hats") if choke != nil && (choke.size() != 1 || !is_name(choke[0]))
           let vol = o.get("vol", nil) ?? fail(item.line, "a drum needs its vol")
-          fail(item.line, "a host drum's vol is a percentage: vol 60%") if vol.size() != 1 || !vol[0].ends_with("%")
+          fail(item.line, "an external drum's vol is a percentage: vol 60%") if vol.size() != 1 || !vol[0].ends_with("%")
           drums[dn] = {
             on_hits: at_hits != nil,
-            host: sound,
-            params: host_params(w),
+            external: sound,
+            params: external_params(w),
             vol: amount(vol[0]),
             choke: choke == nil ? dn : choke[0],
           }
         },
         w[0] == "drum" => {
           let dn = name_at(w, 1, item.line, "a drum")
-          fail(item.line, "a drum plays on noise, or a host sound") if w.size() < 4 || w[2] != "noise"
-          fail(item.line, "a noise drum sounds one at a time already; choke groups host drums") if w.contains("choke")
+          fail(item.line, "a drum plays on noise, or an external sound") if w.size() < 4 || w[2] != "noise"
+          fail(item.line, "a noise drum sounds one at a time already; choke groups external drums") if w.contains("choke")
           let o = options(w, 4, ["len", "vol", "env"])
           let (f0, f1) = halves(w[3], "->") ?? (w[3], w[3])
           let env = env_of(o, item.line)
@@ -1870,13 +1872,13 @@ let _kauai_module = fn () {
     let bass_row = row_voice(bass_v)
     let chord_row = row_voice(chord_v)
     # Drum hits: a noise drum's by unit (the channel sounds one at a time), and
-    # the host drums', which sound together.
+    # the external drums', which sound together.
     mut noise_hits = {}
-    mut host_hits = []
+    mut external_hits = []
     let hit_drum = fn (dn, hit_bar, offset, line, hit_marks) {
       let step = hit_bar.at + offset
-      if band.drums[dn].has("host") {
-        host_hits.push({at: step, name: dn, marks: hit_marks})
+      if band.drums[dn].has("external") {
+        external_hits.push({at: step, name: dn, marks: hit_marks})
       } else {
         let beat = 1 + offset * 1.0 / hit_bar.beat
         fail(line, "{noise_hits[step].name} and {dn} both hit at beat {beat} of the bar at {hit_bar.line}, on the noise channel") if noise_hits.has(step)
@@ -2032,7 +2034,7 @@ let _kauai_module = fn () {
       rows: [...second, {voice: bass_v, notes: bass_row.notes}, {voice: chord_v, notes: chord_row.notes}],
       hits: [
         ...noise_hits.keys().map(|u| ({at: u, ...noise_hits[u]})),
-        ...host_hits,
+        ...external_hits,
       ],
       # Written times under a fermata, (start, length): each plays twice as
       # long, the whole band held with it.
@@ -2118,8 +2120,9 @@ let _kauai_module = fn () {
 
   # What the song plays, in order: {at, len, by, pitch, vol} for each note and
   # hit, `at` and `len` in seconds, `by` the voice or drum, `pitch` a MIDI note
-  # (nil for a drum) and `vol` its level (a host sound's as a fraction of its
-  # own). A tone carries what `Audio.tone` needs; host_sounds makes the rest.
+  # (nil for a drum) and `vol` its level (an external sound's as a fraction of
+  # its own). A tone carries what `Audio.tone` needs; external_sounds makes the
+  # rest.
   fn render(x) {
     let time = clock(x)
     let at = |unit| time(x.swung(unit))
@@ -2140,7 +2143,7 @@ let _kauai_module = fn () {
         marks.contains("marcato") => len * 3 / 4,
         _ => len,
       }
-      if v.host != nil {
+      if v.external != nil {
         # The rest is for an instrument that plays a phrase at a time.
         out.push({
           at: t0, len: len, by: v.name, pitch: pitch, mut vol: v.vol * loud / MF,
@@ -2216,7 +2219,7 @@ let _kauai_module = fn () {
       # A hit of the band's that is accented strikes a level louder, as a note does.
       let level = hit.marks.contains("accent") || hit.marks.contains("marcato") ? louder(band_level(hit.at)) : band_level(hit.at)
       let hit_vol = d.vol * level / MF
-      if d.has("host") {
+      if d.has("external") {
         out.push({
           at: at(hit.at), len: 0.0, by: hit.name, pitch: nil, mut vol: hit_vol,
           level: level / MF, marks: hit.marks,
@@ -2238,13 +2241,13 @@ let _kauai_module = fn () {
   let VOICE_HEARS = ["len", "level", "line", "marks", "next"]
   let DRUM_HEARS = ["level", "marks", "next"]
 
-  # How host sound `host` is made, from `kind.table` (the `voices:` or
+  # How external sound `name` is made, from `kind.table` (the `voices:` or
   # `drums:` given): a function, or an instrument `{phrase: ..., hears: [...]}`
   # (`hit:` for a drum). `hears` is nil for a function.
-  fn instrument(kind, host, what) {
-    let key = host.lower()
+  fn instrument(kind, name, what) {
+    let key = name.lower()
     let f = (kind.table ?? {}).get(key, nil)
-    __raise("ValueError", "Audio.Kauai: {what} plays `host {host}`, and {kind.kwarg}: has no `{key}`") if f == nil
+    __raise("ValueError", "Audio.Kauai: {what} plays `external {name}`, and {kind.kwarg}: has no `{key}`") if f == nil
     return {make: f, hears: nil} if type_of(f) == "Function"
     if type_of(f) != "Object" || type_of(f.get(kind.call, nil)) != "Function" {
       __raise("ValueError", "Audio.Kauai: {kind.kwarg}: `{key}` is a function or an object whose `{kind.call}` is one")
@@ -2258,14 +2261,14 @@ let _kauai_module = fn () {
     {make: f[kind.call], hears: hears}
   }
 
-  # The host sounds the song needs: `build`, key -> how to build one, and
+  # The external sounds the song needs: `build`, key -> how to build one, and
   # `plays`, [{at, sound, vol}] in seconds. A function makes a voice's sound
   # for each pitch it plays, and a drum's once. An instrument makes a voice's
   # sound for each phrase it hears differently (the notes a slur joins or
   # that are struck together, or a note alone), played from its first note,
   # and a drum's for each hit; a dynamic it hears is its own to sound, so the
   # notes' `vol` leaves it out.
-  fn host_sounds(x, events, voices, drums) {
+  fn external_sounds(x, events, voices, drums) {
     let VOICE = {table: voices, kwarg: "voices", call: "phrase", may: VOICE_HEARS}
     let DRUM = {table: drums, kwarg: "drums", call: "hit", may: DRUM_HEARS}
     let ms = |t| Math.round(t * 1000) / 1000.0
@@ -2288,7 +2291,7 @@ let _kauai_module = fn () {
       let player = drum ? x.drums[e.by] : x.voices[e.by]
       let ins = kinds.get_or_put(
         e.by,
-        || instrument(drum ? DRUM : VOICE, player.host, "{drum ? "drum" : "voice"} {e.by}"),
+        || instrument(drum ? DRUM : VOICE, player.external, "{drum ? "drum" : "voice"} {e.by}"),
       )
       let make = ins.make
       let params = player.params
@@ -2359,9 +2362,9 @@ let _kauai_module = fn () {
       self._room = x.song.get("room", 0.0)
       self._marks = x.marks.keys().map(|k| (k, time(x.marks[k]))).to_object()
       self._about = x.about
-      let host = host_sounds(x, self._events, voices, drums)
-      self._build = host.build
-      self._plays = host.plays
+      let external = external_sounds(x, self._events, voices, drums)
+      self._build = external.build
+      self._plays = external.plays
       self._todo = self._build.keys()
       self._sounds = {}
       self._score = nil
@@ -2369,7 +2372,7 @@ let _kauai_module = fn () {
       self._volume = 1.0
     }
 
-    # Build one host sound the song still needs; answers how many remain.
+    # Build one external sound the song still needs; answers how many remain.
     prepare() {
       if !self._todo.empty() {
         let key = self._todo.pop()
@@ -2377,7 +2380,7 @@ let _kauai_module = fn () {
         if type_of(s) != "Sound" {
           __raise(
             "TypeError",
-            "Audio.Kauai: a host instrument answers an Audio.Sound, not {type_of(s)}",
+            "Audio.Kauai: an external instrument answers an Audio.Sound, not {type_of(s)}",
           )
         }
         self._sounds[key] = s
@@ -2390,8 +2393,8 @@ let _kauai_module = fn () {
       while self.prepare() > 0 {}
       if self._score == nil {
         let tones = self._events.filter(|e| e.has("tone")).flat_map(|e| [e.at, ...e.tone])
-        let hosts = self._plays.flat_map(|p| [p.at, -1, self._sounds[p.sound]._id, p.vol, 0, 0, 0, 0, 0, 0, 0])
-        let flat = [...tones, ...hosts]
+        let sounds = self._plays.flat_map(|p| [p.at, -1, self._sounds[p.sound]._id, p.vol, 0, 0, 0, 0, 0, 0, 0])
+        let flat = [...tones, ...sounds]
         self._score = _Audio.score_new(flat, self._length, self._loop_at)
         _Audio.score_volume(self._score, self._volume)
         _Audio.score_room(self._score, self._room)

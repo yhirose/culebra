@@ -1,5 +1,6 @@
-# Bowed strings for Audio.Kauai.load's `voices:`: `host Violin`, `host Viola`
-# and `host Cello`. Each is an instrument that plays a phrase at a time, the
+# Bowed strings for Audio.Kauai.load's `voices:`: `external Violin`,
+# `external Viola` and `external Cello`. Each is an instrument that plays a
+# phrase at a time, the
 # notes a slur joins under one bow: the bow takes hold, a note swells into its
 # vibrato, a finger stops the next note with the bow still moving, and the
 # phrase fades when the bow leaves. A louder note is a brighter one.

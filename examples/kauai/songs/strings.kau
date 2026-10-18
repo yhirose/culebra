@@ -1,12 +1,12 @@
 about {
   title  Bowed trio
-  note   the trio on host instruments that hold a note as long as it is written: slurs, long notes and a few short strokes
+  note   the trio on external instruments that hold a note as long as it is written: slurs, long notes and a few short strokes
 }
 
 band Trio {
-  voice Violin  host Violin  plays melody     vol 60%
-  voice Viola   host Viola   plays part Alto  vol 45%
-  voice Cello   host Cello   plays part Cello vol 60%
+  voice Violin  external Violin  plays melody     vol 60%
+  voice Viola   external Viola   plays part Alto  vol 45%
+  voice Cello   external Cello   plays part Cello vol 60%
 }
 
 song Held {

@@ -12,7 +12,7 @@
 # time on the audio stream's own clock: this script only waits for the end
 # (Ctrl+C stops a song that loops).
 #
-# A band that plays `host` instruments names sounds that sounds.cul
+# A band that plays `external` instruments names sounds that sounds.cul
 # synthesises; jukebox.cul plays the same songs from a window, and
 # xml2kau.cul makes a song from a MusicXML score.
 
@@ -38,8 +38,8 @@ if !Audio.available() {
   println("{path}: no audio device, so nothing plays")
   Sys.exit(1)
 }
-# Build the host sounds first, saying how far along it is: play() would build
-# them all the same, only in silence.
+# Build the external sounds first, saying how far along it is: play() would
+# build them all the same, only in silence.
 mut left = song.prepare()
 while left > 0 {
   print("\rpreparing sounds: {left} left ")

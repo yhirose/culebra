@@ -8,7 +8,7 @@
 # Play (Enter or Space) plays it, Stop (Esc) stops it, and the volume follows
 # the slider, the - and + buttons, or the - and = keys.
 #
-# The songs load one a frame, so the window opens at once. A song's host
+# The songs load one a frame, so the window opens at once. A song's external
 # sounds (sounds.cul) are built one a frame too before it plays, with a bar
 # that shows how many are left.
 

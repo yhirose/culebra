@@ -1160,19 +1160,19 @@ the song, and prints its length before the first note.
 ```
 culebra play first.kau                      # play it
 culebra play --check first.kau              # read and check it, and play nothing
-culebra play --sounds sounds.cul ballad.kau # a song with `host` instruments
+culebra play --sounds sounds.cul ballad.kau # a song with `external` instruments
 ```
 
 | Option | Effect |
 |---|---|
 | `--check` | reads and checks the song, prints its length, and plays nothing; it needs no audio device |
-| `--sounds <file.cul>` | the module that makes the song's `host` sounds |
+| `--sounds <file.cul>` | the module that makes the song's `external` sounds |
 
 A song's mistake goes to stderr as `KauaiError: FILE:LINE: ...` and the
 exit status is `1`, as it is on a machine with no audio device. A mistake
 in the command line is status `2`.
 
-A `host` instrument is one the program supplies, and `culebra play` has
+An `external` instrument is one the program supplies, and `culebra play` has
 none of its own. `--sounds` names a module that exports `voices`, `drums`
 or both: the objects `Audio.Kauai.load` takes under those names
 ([Kauai §10](kauai/language.md#10-playing-from-culebra)).
@@ -1184,5 +1184,5 @@ let drums = {kick: |params| Audio.Sound(kick())}
 export {voices, drums}
 ```
 
-A song that names a host sound the module does not make, or any host sound
-when no module is given, is refused before anything plays.
+A song that names an external sound the module does not make, or any
+external sound when no module is given, is refused before anything plays.

@@ -2485,11 +2485,11 @@ int run_serve(int argc, const char** argv) {
 
 // `culebra play`'s program, after the one line that binds `sounds`: the
 // module `--sounds` names, or nil. The clauses name the errors of a song that
-// cannot be played; an interrupt and a host sound's own error take the way
-// out a script's do.
+// cannot be played; an interrupt and an external sound's own error take the
+// way out a script's do.
 constexpr std::string_view kPlayProgram = R"cul(
 let path = Sys.argv[0]
-let host = sounds ?? {}
+let made = sounds ?? {}
 
 fn clock(secs) {
   let s = Math.round(secs)
@@ -2502,7 +2502,7 @@ fn refuse(e) {
 }
 
 let song = try {
-  Audio.Kauai.load(path, voices: host.voices, drums: host.drums)
+  Audio.Kauai.load(path, voices: made.voices, drums: made.drums)
 } catch e: KauaiError {
   refuse(e)
 } catch e: IOError {
@@ -2510,7 +2510,7 @@ let song = try {
 } catch e: ValueError {
   IO.eprintln("{e.kind}: {e.message}")
   if sounds == nil {
-    IO.eprintln("culebra play: --sounds <file.cul> names the module that makes a song's host sounds")
+    IO.eprintln("culebra play: --sounds <file.cul> names the module that makes a song's external sounds")
   }
   Sys.exit(1)
 }
@@ -2521,7 +2521,7 @@ if Sys.argv.contains("--check") {
   IO.eprintln("{path}: no audio device, so nothing plays")
   Sys.exit(1)
 } else {
-  # The host sounds are built first, saying how far along that is where
+  # The external sounds are built first, saying how far along that is where
   # someone watches: play() would build them all the same, only in silence.
   let watched = IO.stdout_is_terminal()
   mut left = song.prepare()
@@ -2540,14 +2540,14 @@ if Sys.argv.contains("--check") {
 
 // `culebra play [--sounds FILE] [--check] <song.kau>` — play a song written
 // in Kauai (docs/kauai/language.md) without a script of one's own. A song's
-// `host` instruments are the program's to supply, and this program has none:
-// they come from the module `--sounds` names.
+// `external` instruments are the program's to supply, and this program has
+// none: they come from the module `--sounds` names.
 int run_play(int argc, const char** argv) {
   auto usage = [](FILE* to) {
     std::println(to,
                  "Usage: culebra play [options] <song.kau>\n"
                  "  --sounds <file.cul>  the module whose exports `voices` and `drums`\n"
-                 "                       make the song's `host` sounds\n"
+                 "                       make the song's `external` sounds\n"
                  "                       (Audio.Kauai.load's arguments of those names)\n"
                  "  --check              read and check the song, and play nothing\n"
                  "Ctrl+C stops a song that loops.");

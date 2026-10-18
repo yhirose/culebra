@@ -25,7 +25,7 @@ let played = |song, by| song
   .filter(|e| e.by == by)
   .map(|e| (e.pitch, at_64(e.at), at_64(e.len)))
 let written = |n| (to_long(n[0]), q64(n[1]), q64(n[2]))
-let hosted = |text| Audio.Kauai.new(
+let external = |text| Audio.Kauai.new(
   one_tempo(text),
   voices: {ep: |pitch, params| nil},
 )
@@ -34,8 +34,8 @@ let hosted = |text| Audio.Kauai.new(
 # piano version does.
 let voice = JSON.parse(read("jetveux.expect")).notes.map(written)
 assert_eq(voice.size(), 273)
-assert_eq(played(hosted(song_file("jetveux.kau")), "Singer"), voice)
-let piano_song = hosted(song_file("jetveux_piano.kau"))
+assert_eq(played(external(song_file("jetveux.kau")), "Singer"), voice)
+let piano_song = external(song_file("jetveux_piano.kau"))
 assert_eq(played(piano_song, "Singer"), voice)
 
 # Every piano note, as played: a rolled chord's notes a sixty-fourth apart

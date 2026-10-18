@@ -208,7 +208,7 @@ band Run {
 `voice NAME SOURCE [plays ...] OPTIONS...`
 
 The source is one of [`Audio.tone`](../stdlib.md#tones)'s channels, `pulse`,
-`pulse2`, `triangle` or `saw`, or `host NAME` for an instrument the program
+`pulse2`, `triangle` or `saw`, or `external NAME` for an instrument the program
 supplies ([section 10](#10-playing-from-culebra)). A channel plays one note at
 a time, and two voices of a band may not share one; the drums take the
 `noise` channel.
@@ -231,16 +231,16 @@ E5; with `plays chords rootless from E3`, `Abmaj9` is C4 Eb4 G4 Bb4.
 | Option | Meaning | Default |
 |---|---|---|
 | `duty 1/8` `1/4` `1/2` `3/4` | the pulse wave's duty cycle | `1/2` |
-| `vol N` | the level at `mf`: `0` to `100` as in `Audio.tone`; for a host voice, a percentage of the instrument's own level (`vol 46%`) | (required) |
+| `vol N` | the level at `mf`: `0` to `100` as in `Audio.tone`; for an external voice, a percentage of the instrument's own level (`vol 46%`) | (required) |
 | `env A D R` | attack, decay and release, in ticks of 1/60 second | `0 0 0` |
 | `gap N` | ticks cut from the end of every note, so that notes are heard apart | `0` |
-| `poly` | a host voice that sounds several notes at once | one note at a time |
+| `poly` | an external voice that sounds several notes at once | one note at a time |
 
-A host voice plays each note's sound through to its end, so it takes no
+An external voice plays each note's sound through to its end, so it takes no
 `env`, `gap` or `duty`, and the note's length applies only to an instrument
 that hears it ([section 10](#10-playing-from-culebra)). It may carry parameters
-of its own as `name=value` words after its name (`host Ep bright=0.8`);
-Kauai hands them to the host with every note.
+of its own as `name=value` words after its name (`external Ep bright=0.8`);
+Kauai hands them to the program with every note.
 
 ### Derived parts
 
@@ -260,30 +260,30 @@ notes echo its last.
 ### Drums
 
 `drum NAME noise FREQ[->END] len N vol V [env A D R] [plays hits]`
-`drum NAME host SOUND [name=value...] vol P% [choke GROUP] [plays hits]`
+`drum NAME external SOUND [name=value...] vol P% [choke GROUP] [plays hits]`
 
 A noise drum is a hit on the noise channel: `FREQ` in Hz, sliding to `END`
 if given, held for `len` ticks. The channel sounds one drum at a time, so two
 noise drums may not hit at the same moment.
 
-A host drum plays a sound the program supplies
+An external drum plays a sound the program supplies
 ([section 10](#10-playing-from-culebra)) through to its end, at a percentage
-of the sound's own level. Host drums hit together, with each other and with
+of the sound's own level. External drums hit together, with each other and with
 a noise drum, as the drums of a kit do:
 
 ```kauai
 band Combo {
-  voice Keys  host Ep bright=0.8  plays chords rootless from E3  poly  vol 40%
-  voice Bass  triangle            plays roots in E2..D#3            vol 30
+  voice Keys  external Ep bright=0.8  plays chords rootless from E3  poly  vol 40%
+  voice Bass  triangle                plays roots in E2..D#3            vol 30
 
-  drum Kick     host Kick     vol 80%
-  drum Ride     host Ride     vol 50%
-  drum Hat      host Hat      vol 40%  choke Hats
-  drum OpenHat  host OpenHat  vol 30%  choke Hats
+  drum Kick     external Kick     vol 80%
+  drum Ride     external Ride     vol 50%
+  drum Hat      external Hat      vol 40%  choke Hats
+  drum OpenHat  external OpenHat  vol 30%  choke Hats
 }
 ```
 
-Host drums that name the same `choke` group stop each other, as the pedal
+External drums that name the same `choke` group stop each other, as the pedal
 closes an open hi-hat: the instrument that sounds one is told when the next
 hit of its group comes, and ends its sound there
 ([section 10](#10-playing-from-culebra)). A drum with no group is its own,
@@ -578,7 +578,7 @@ after it.
 
 The jazz articulations mark one note, as a chart draws them on it, and are
 written once each before it in its bar; they go with its marks, `\fall !c2`,
-and mark a hit of the band's in the same way ([Hits and breaks](#hits-and-breaks)). A host
+and mark a hit of the band's in the same way ([Hits and breaks](#hits-and-breaks)). An external
 instrument that hears marks plays them
 ([section 10](#10-playing-from-culebra)); a tone channel plays the note as
 written.
@@ -670,7 +670,7 @@ In that bar the band plays the hits in place of its groove:
 
 A hit sounds for its value (`x4` a quarter), and a tie holds it on
 (`x8~ x8`). Its marks play it as they play a note: `.` half of it, `!` a level
-louder, on the drums too; a host instrument that hears marks is told them,
+louder, on the drums too; an external instrument that hears marks is told them,
 a drum's as well, so a crash can ring on under a long hit and be caught by
 the hand on a short one. Each hit takes the chord sounding at its moment, and
 the band's dynamic. The melody plays its notes,
@@ -696,13 +696,13 @@ The drums that play hits are named in the band:
 
 ```kauai
 band Fusion {
-  voice Lead  saw                 plays melody                     vol 12
-  voice Keys  host Ep  poly       plays chords from C4             vol 40%
-  voice Bass  triangle            plays roots in E2..D#3           vol 30
+  voice Lead  saw                     plays melody                     vol 12
+  voice Keys  external Ep  poly       plays chords from C4             vol 40%
+  voice Bass  triangle                plays roots in E2..D#3           vol 30
 
-  drum Kick   host Kick   vol 80%  plays hits
-  drum Crash  host Crash  vol 60%  plays hits
-  drum Hat    host Hat    vol 40%
+  drum Kick   external Kick   vol 80%  plays hits
+  drum Crash  external Crash  vol 60%  plays hits
+  drum Hat    external Hat    vol 40%
 }
 ```
 
@@ -832,7 +832,7 @@ song JeTeVeux {
 | `part NAME in LO..HI` | the range for part `NAME`'s notes | the melody's |
 | `swing 8` | pairs of eighths (`swing 16`: sixteenths) played long-short, 2:1 unless a ratio follows (`swing 8 3:2`) ([Swing](#swing)) | as written |
 | `loop` | at the end, start again from the top | play once |
-| `room 40%` | the band plays in a room, its echo heard at 40% (1% to 100%) with everything the song plays, a tone channel or a host sound, and ringing on past the last note | none |
+| `room 40%` | the band plays in a room, its echo heard at 40% (1% to 100%) with everything the song plays, a tone channel or an external sound, and ringing on past the last note | none |
 | `mark NAME` | a point the program can ask about ([section 10](#10-playing-from-culebra)) | |
 
 Any other line plays a section, with these options, in any order and each
@@ -902,7 +902,7 @@ under.
 - a groove, voice, drum, section, band, ending or derived part that is not defined, or a name defined twice
 - a groove row with a bar of no tokens, or of tokens that come to no note value (15 in 4/4)
 - two noise drums hitting at the same moment, or two voices of a band on one channel
-- a host voice with an `env`, a `gap` or a `duty`; a host drum without a sound, with a `len` or an `env`, with a `vol` that is not a percentage, or with a `choke` of other than one name; a `choke` on a noise drum
+- an external voice with an `env`, a `gap` or a `duty`; an external drum without a sound, with a `len` or an `env`, with a `vol` that is not a percentage, or with a `choke` of other than one name; a `choke` on a noise drum
 - no voice that plays melody, or more than one
 - a range that is not one octave, or that starts on a sharp or a flat
 - a `meter` whose beat is not a note value (`3/5`)
@@ -960,15 +960,15 @@ check the song and raise the first error of [section 9](#9-errors) as a
 
 | Method | What it does |
 |---|---|
-| `play()` | plays from the top (again, if it is playing), after building the host sounds `prepare()` has not |
+| `play()` | plays from the top (again, if it is playing), after building the external sounds `prepare()` has not |
 | `stop()` | stops, silencing what it was playing |
 | `volume(v)` | the level of the whole song, `0.0` to `1.0`, from its next note on |
 | `playing()` | whether it is playing: from `play()` until `stop()`, or until its end if it does not `loop` |
 | `reached(NAME)` | whether it has played as far as `mark NAME` |
-| `prepare()` | builds one host sound, and answers how many remain |
+| `prepare()` | builds one external sound, and answers how many remain |
 | `length()` | seconds once through |
 | `about()` | what its `about` says, as an object of the items written: `{title: 'Je te veux', composer: 'Erik Satie', year: 1897}`; `{}` without one |
-| `events()` | what it plays, in order: `{at, len, by, pitch, vol}`, with `at` and `len` in seconds, `by` the voice or drum, `pitch` a MIDI note (`nil` for a drum), and `vol` the voice's `vol` at the note's dynamic (a host sound's as a fraction of its own level) |
+| `events()` | what it plays, in order: `{at, len, by, pitch, vol}`, with `at` and `len` in seconds, `by` the voice or drum, `pitch` a MIDI note (`nil` for a drum), and `vol` the voice's `vol` at the note's dynamic (an external sound's as a fraction of its own level) |
 
 The runtime schedules every note on the audio stream's own clock, so the
 music keeps time through a long frame, and plays in a program with no frame
@@ -980,20 +980,21 @@ follow the clock from `play()`, whether or not a device plays it.
 let song = Audio.Kauai.load("ballad.kau", voices: {
   ep: |pitch, params| Audio.Sound(electric_piano(pitch, params.bright)),
 })
-song.prepare()          # build one host sound; answers how many remain
+song.prepare()          # build one external sound; answers how many remain
 song.play()
 song.reached("Drive")   # has the song passed `mark Drive`?
 ```
 
-A host voice is built one pitch at a time: for each pitch the song needs, the
-function given under `voices:` for the voice's host name is called with the
-pitch, a MIDI note number (`60` is middle C), and the voice's `name=value`
-parameters as an object, and returns the `Audio.Sound` to play. A host drum
-is built once: the function given for its sound under `drums:`
-(`drums: {kick: fn (params) { ... }}`) is called with the drum's
+An external voice is built one pitch at a time: for each pitch the song
+needs, the function given under `voices:` for the voice's instrument is
+called with the pitch, a MIDI note number (`60` is middle C), and the voice's
+`name=value` parameters as an object, and returns the `Audio.Sound` to play.
+An external drum is built once: the function given for its sound under
+`drums:` (`drums: {kick: fn (params) { ... }}`) is called with the drum's
 `name=value` parameters, and returns the `Audio.Sound` to play. The keys of
-`voices:` and `drums:` are the host names in lower case: `host Ep` is `ep:`,
-`host HiHat` is `hihat:`; a song whose host sound has no function is a
+`voices:` and `drums:` are the names after `external`, in lower case:
+`external Ep` is `ep:`, `external HiHat` is `hihat:`; a song whose external
+sound has no function is a
 `ValueError` when it is read. `prepare()` builds one sound and answers how
 many remain, so a game can spread the work over frames; `play()` builds
 whatever is left first.
@@ -1050,7 +1051,7 @@ read.
 
 A song file plays without a program of one's own: `culebra play song.kau`
 plays it, and `culebra play --check song.kau` reads and checks it and plays
-nothing. The host sounds come from the module `--sounds` names
+nothing. The external sounds come from the module `--sounds` names
 ([Tooling §9](../tooling.md#9-playing-a-song-culebra-play)).
 
 ## Appendix A: Chord qualities
@@ -1143,7 +1144,7 @@ AboutItem  <- 'title' / 'composer' / 'lyricist' / 'arranger' / 'year'
 Voicings   <- 'voicings' '{' EOL (!('#' / 'b') Quality Int+ EOL)* '}' EOL
 Band       <- 'band' Name '{' EOL (Voice / Drum / Derived / EOL)* '}' EOL
 Voice      <- 'voice' Name Source VoiceWord* EOL
-Source     <- 'pulse' / 'pulse2' / 'triangle' / 'saw' / 'host' Name Param*
+Source     <- 'pulse' / 'pulse2' / 'triangle' / 'saw' / 'external' Name Param*
 Param      <- Word '=' Number
 VoiceWord  <- 'plays' Plays / 'duty' Ratio / 'vol' Level / 'env' Int Int Int
             / 'gap' Int / 'poly'
@@ -1152,7 +1153,7 @@ Plays      <- 'melody' / 'roots' 'in' Range / 'chords' 'rootless'? 'from' Pitch
 Derived    <- Name 'echoes' Name 'late' Ratio 'level' Percent EOL
             / Name 'harmonizes' Name 'under' Interval EOL
 Drum       <- 'drum' Name ('noise' Int ('->' Int)? 'len' Int 'vol' Int
-              ('env' Int Int Int)? / 'host' Name Param* 'vol' Percent ('choke' Name)?)
+              ('env' Int Int Int)? / 'external' Name Param* 'vol' Percent ('choke' Name)?)
               ('plays' 'hits')? EOL
 
 Groove     <- 'groove' Name '{' EOL (Row / Edge / EOL)* '}' EOL
@@ -1513,7 +1514,7 @@ section Chorus {
 
 ### ballad.kau
 
-The ending theme. The electric piano is a host voice (`Ep`) that plays chords, and the melody is played on it too, brighter.
+The ending theme. The electric piano is an external voice (`Ep`) that plays chords, and the melody is played on it too, brighter.
 
 ```kauai
 about {
@@ -1522,9 +1523,9 @@ about {
 }
 
 band Trio {
-  voice Piano  host Ep bright=0.8  plays chords rootless from E3  poly  vol 26%
-  voice Sing   host Ep bright=1.3  plays melody                    poly  vol 46%
-  voice Bass   triangle            plays roots in E2..D#3          vol 34  env 3 0 14  gap 3
+  voice Piano  external Ep bright=0.8  plays chords rootless from E3  poly  vol 26%
+  voice Sing   external Ep bright=1.3  plays melody                    poly  vol 46%
+  voice Bass   triangle                plays roots in E2..D#3          vol 34  env 3 0 14  gap 3
 
   drum Brush  noise 4000  len 2  vol 4  env 0 0 5
   drum Ride   noise 6000  len 1  vol 3  env 0 0 10
@@ -1623,9 +1624,9 @@ voicings {
 }
 
 band Salon {
-  voice Singer  pulse               plays melody                           duty 1/2  vol 22  env 2 2 8
-  voice Bass    triangle            plays roots in E1..D#2                           vol 32  env 0 2 6
-  voice Piano   host Ep bright=0.9  plays chords from E3  plays part Fill  poly      vol 30%
+  voice Singer  pulse                   plays melody                           duty 1/2  vol 22  env 2 2 8
+  voice Bass    triangle                plays roots in E1..D#2                           vol 32  env 0 2 6
+  voice Piano   external Ep bright=0.9  plays chords from E3  plays part Fill  poly      vol 30%
 }
 
 song JeTeVeux {

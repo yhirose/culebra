@@ -1,5 +1,5 @@
-# An alto saxophone for Audio.Kauai.load's `voices:`, `host Sax`, playing a
-# phrase at a time: the tongue starts it, a breath carries it through every
+# An alto saxophone for Audio.Kauai.load's `voices:`, `external Sax`, playing
+# a phrase at a time: the tongue starts it, a breath carries it through every
 # note a slur joins, and the tongue or the breath ends it. Under the slur a
 # fingering change lands fast, and the wider the interval the deeper the
 # tone dips and the more air is heard in it. The bass is guitar.cul's and the
