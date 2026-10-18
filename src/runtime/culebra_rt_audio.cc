@@ -293,8 +293,9 @@ std::vector<std::shared_ptr<Score>> g_retired;
 // --- Graph: parts the mixer works out as they play -------------------------
 //
 // Playing a graph hands the mixer a copy of it, which the audio thread alone
-// then works out; changes scheduled after that reach the copy through
-// g_graph_posts. The main thread keeps a reference to each copy (in
+// then works out; changes scheduled after that to the values of the parts
+// it was played with reach the copy through g_graph_posts. Parts added, and
+// a new output, wait for the next play(). The main thread keeps a reference to each copy (in
 // g_live_graphs, then g_retired_graphs) so that, as with scores, the free
 // happens here. Nothing on the audio thread allocates: its list is reserved
 // for kGraphsPlaying, a copy's values have room for changes made while it
@@ -317,6 +318,7 @@ struct PlayingGraph {
 struct LiveGraph {
   std::shared_ptr<Graph> graph;
   int64_t origin = 0;
+  size_t parts = 0;  // the copy's, which a change's part must be one of
 };
 // The samples the mixer asks for at once, at most; a longer ask is split.
 constexpr unsigned kMixChunk = 4096;
@@ -939,7 +941,7 @@ void graph_play(int64_t id) {
   live->make_room();
   std::lock_guard<std::mutex> lock(g_tone_mutex);
   int64_t start = stream_now();
-  g_live_graphs[id] = LiveGraph{live, start};
+  g_live_graphs[id] = LiveGraph{live, start, def->size()};
   g_graph_inbox.push_back(GraphCommand{id, std::move(live), start});
 }
 void graph_stop(int64_t id) {
@@ -953,7 +955,7 @@ void graph_stop(int64_t id) {
 }
 void graph_post(int64_t id, int part, int value, ParamEvent e) {
   auto it = g_live_graphs.find(id);
-  if (it == g_live_graphs.end()) return;
+  if (it == g_live_graphs.end() || static_cast<size_t>(part) >= it->second.parts) return;
   std::lock_guard<std::mutex> lock(g_tone_mutex);
   g_graph_posts.push_back(GraphPost{it->second.graph, part, value, e});
 }

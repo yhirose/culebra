@@ -8853,7 +8853,9 @@ Both answer the value, so changes chain, and they may be made in any order:
 each is heard at its time. A graph keeps every change made to it and works
 them out from its start whenever it renders or plays; a change made while it
 plays reaches the playing graph too, and one for a time already past takes
-effect at once. A change takes effect at the first sample at or after its
+effect at once. What a graph plays is wired as it was at `play()`: a part
+added, or an `output` set, while it plays is heard from the next `play()`,
+and so are changes to such a part's values. A change takes effect at the first sample at or after its
 time, as a point of `Audio.filter`'s or `Audio.envelope`'s envelope does;
 `Audio.pluck` puts a tuning on the nearest sample instead, so a string
 re-tuned between two samples can change one sample later in a graph. These

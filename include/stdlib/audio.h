@@ -829,7 +829,8 @@ void score_volume(int64_t id, double v);
 // How much of the room the score plays in is heard with it, 0 for none.
 void score_room(int64_t id, double wet);
 // A graph played: a copy the mixer works out from the next sample on, the
-// changes scheduled after that sent on to it. graph_now answers where on the
+// changes scheduled after that to the copy's parts sent on to it (a part
+// added since is the next play()'s). graph_now answers where on the
 // graph's clock a change made now lands, NaN when it is not playing.
 void graph_play(int64_t id);
 void graph_stop(int64_t id);
