@@ -4398,7 +4398,13 @@ let _audio_module = fn () {
     }
     _part(family: String, kind: String, inputs: Array, options: Array) {
       for p in inputs {
-        if type_of(p) != "AudioGraphPart" || p._graph._id != self._id {
+        if class_of(p) != AudioGraphPart {
+          __raise(
+            "TypeError",
+            "type error: parameter 'inputs' expects an Array of AudioGraphPart",
+          )
+        }
+        if p._graph._id != self._id {
           __raise(
             "ValueError",
             "Audio.Graph: a part takes in parts of its own graph",

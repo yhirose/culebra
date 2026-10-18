@@ -200,5 +200,9 @@ for (
 }
 assert_eq(caught(|| g.resonate(w, [1.0]))[0], "TypeError")
 assert_eq(caught(|| g.filter("low", 5))[0], "TypeError")
+assert_eq(
+  caught(|| g.mix([w, 5])),
+  ("TypeError", "type error: parameter 'inputs' expects an Array of AudioGraphPart"),
+)
 
 print("audio graph ok\n")

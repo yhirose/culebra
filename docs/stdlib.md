@@ -8867,11 +8867,11 @@ range (a wave's freq below 0 or not below half the rate, a cutoff not above
 0 and below half the rate, a gain that is not a finite number, a string's
 freq below 20 Hz or not below half the rate, a ring not above 0), a time
 below 0, or a `q` not above 0 raises `ValueError`, and so does a mode as
-`Audio.resonate` refuses one; a mode that is not an object of three numbers
-raises `TypeError`. A graph plays at a rate of 44100, and at most 64 play at
-once (`ValueError` otherwise). With no device nothing sounds and `now()`
-follows the clock from `play()`; in the browser a graph renders but does not
-play yet.
+`Audio.resonate` refuses one; an input that is not a part of a graph, or a
+mode that is not an object of three numbers, raises `TypeError`. A graph
+plays at a rate of 44100, and at most 64 play at once (`ValueError`
+otherwise). With no device nothing sounds and `now()` follows the clock from
+`play()`; in the browser a graph renders but does not play yet.
 
 ```culebra
 # A saw through a low-pass that closes over its first 0.3 s, faded in and out.
