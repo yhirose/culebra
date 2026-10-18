@@ -169,16 +169,25 @@ class Param {
                                e.at, [](double at, const ParamEvent& x) { return at < x.at; });
     events_.insert(it, e);
   }
-  // Room for `extra` changes more without allocating.
-  void make_room(size_t extra) { events_.reserve(events_.size() + extra); }
-  // schedule() that never allocates: the changes already passed make room
-  // when there is none, and false when there is still none.
+  size_t size() const { return events_.size(); }
+  // Room for `extra` changes more without allocating; answers how many it
+  // can hold.
+  size_t make_room(size_t extra) {
+    events_.reserve(events_.size() + extra);
+    return events_.capacity();
+  }
+  // The changes still to come moved into `longer` (empty, with room for them
+  // and more), which then stands in for this one's list; `longer` is left
+  // holding the old list, for its owner to free. Never allocates.
+  void take_list(std::vector<ParamEvent>& longer) {
+    for (size_t k = next_; k < events_.size(); k++) longer.push_back(events_[k]);
+    events_.swap(longer);
+    longer.clear();
+    next_ = 0;
+  }
+  // schedule() that never allocates: false when there is no room for it.
   bool schedule_in_place(ParamEvent e) {
-    if (events_.size() == events_.capacity()) {
-      if (next_ == 0) return false;
-      events_.erase(events_.begin(), events_.begin() + static_cast<std::ptrdiff_t>(next_));
-      next_ = 0;
-    }
+    if (events_.size() == events_.capacity()) return false;
     schedule(e);
     return true;
   }
@@ -521,8 +530,8 @@ inline constexpr int kGraphBlock = 128;
 inline constexpr double kGraphPluckLowest = 20.0;
 // How many graphs play at once: the mixer's list of them never grows.
 inline constexpr size_t kGraphsPlaying = 64;
-// Changes a playing graph's value takes on top of those it was played with
-// before the audio thread drops one rather than allocate.
+// Room for changes a copy being played makes in each value at the start, on
+// top of those it was played with; more comes in a longer list (graph_post).
 inline constexpr size_t kGraphLiveRoom = 256;
 
 struct GraphPart {
@@ -555,16 +564,22 @@ class Graph {
   void schedule(int part, int value, ParamEvent e) {
     parts_[static_cast<size_t>(part)].values[value].schedule(e);
   }
+  // How many changes value `value` of `part` has been given.
+  size_t changes(int part, int value) const { return parts_[static_cast<size_t>(part)].values[value].size(); }
   // Room in every value for `kGraphLiveRoom` changes more, so a copy being
-  // played takes changes without allocating.
-  void make_room() {
+  // played takes changes without allocating; how many each can hold goes
+  // into `room`, two a part.
+  void make_room(std::vector<size_t>& room) {
+    room.clear();
     for (auto& p : parts_)
-      for (auto& v : p.values) v.make_room(kGraphLiveRoom);
+      for (auto& v : p.values) room.push_back(v.make_room(kGraphLiveRoom));
   }
-  // A change to a copy being played, on the audio thread: false when there
-  // is no room left for it.
-  bool schedule_in_place(int part, int value, ParamEvent e) {
-    return parts_[static_cast<size_t>(part)].values[value].schedule_in_place(e);
+  // A change to a copy being played, on the audio thread, into `longer` when
+  // it comes with one (Param::take_list): false when there is no room.
+  bool schedule_in_place(int part, int value, ParamEvent e, std::vector<ParamEvent>& longer) {
+    auto& v = parts_[static_cast<size_t>(part)].values[value];
+    if (longer.capacity() > 0) v.take_list(longer);
+    return v.schedule_in_place(e);
   }
 
   // The next `n` samples into `out`.

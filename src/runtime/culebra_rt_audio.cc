@@ -297,9 +297,10 @@ std::vector<std::shared_ptr<Score>> g_retired;
 // it was played with reach the copy through g_graph_posts. Parts added, and
 // a new output, wait for the next play(). The main thread keeps a reference to each copy (in
 // g_live_graphs, then g_retired_graphs) so that, as with scores, the free
-// happens here. Nothing on the audio thread allocates: its list is reserved
-// for kGraphsPlaying, a copy's values have room for changes made while it
-// plays, and the posts are only read there.
+// happens here. Nothing on the audio thread allocates or frees: its list is
+// reserved for kGraphsPlaying, a copy's values have room for the changes
+// made while it plays (graph_post sends a longer list before they could run
+// out), and the posts, and the lists they bring back, are freed here.
 struct GraphCommand {
   int64_t id = 0;
   std::shared_ptr<Graph> graph;  // play; null stops
@@ -309,6 +310,9 @@ struct GraphPost {
   std::shared_ptr<Graph> graph;
   int part = 0, value = 0;
   ParamEvent e;
+  // A longer list for the value, when its own might not hold the change; it
+  // comes back holding the old one.
+  std::vector<ParamEvent> longer;
 };
 struct PlayingGraph {
   int64_t id = 0;
@@ -319,12 +323,14 @@ struct LiveGraph {
   std::shared_ptr<Graph> graph;
   int64_t origin = 0;
   size_t parts = 0;  // the copy's, which a change's part must be one of
+  std::vector<size_t> room;  // how many changes each value of the copy holds, two a part
 };
 // The samples the mixer asks for at once, at most; a longer ask is split.
 constexpr unsigned kMixChunk = 4096;
 
 std::vector<GraphCommand> g_graph_inbox;               // guarded by g_tone_mutex
 std::vector<GraphPost> g_graph_posts;                  // guarded by g_tone_mutex
+size_t g_graph_posts_taken = 0;  // guarded by g_tone_mutex: the posts the mixer is done with
 std::vector<PlayingGraph> g_playing_graphs;            // audio thread
 double g_graph_mix[kMixChunk], g_graph_samples[kMixChunk];  // audio thread
 std::unordered_map<int64_t, LiveGraph> g_live_graphs;  // main thread
@@ -333,6 +339,12 @@ std::vector<std::shared_ptr<Graph>> g_retired_graphs;  // main thread
 // Called from the main thread's audio calls, so a freed song goes soon after
 // the mixer lets go of it.
 void release_retired() {
+  {
+    std::lock_guard<std::mutex> lock(g_tone_mutex);
+    g_graph_posts.erase(g_graph_posts.begin(),
+                        g_graph_posts.begin() + static_cast<std::ptrdiff_t>(g_graph_posts_taken));
+    g_graph_posts_taken = 0;
+  }
   std::erase_if(g_retired, [](const auto& s) { return s.use_count() == 1; });
   std::erase_if(g_retired_graphs, [](const auto& g) { return g.use_count() == 1; });
 }
@@ -490,9 +502,12 @@ void tone_callback(void* buffer_data, unsigned int frames) {
       if (cmd.graph) g_playing_graphs.push_back(PlayingGraph{cmd.id, std::move(cmd.graph), cmd.start});
     }
     g_graph_inbox.clear();
-    // A change with no room left in its copy is dropped rather than allocate.
-    for (auto& post : g_graph_posts) post.graph->schedule_in_place(post.part, post.value, post.e);
-    g_graph_posts.clear();
+    // Each change has room in its copy (graph_post sees to it).
+    for (size_t k = g_graph_posts_taken; k < g_graph_posts.size(); k++) {
+      auto& post = g_graph_posts[k];
+      post.graph->schedule_in_place(post.part, post.value, post.e, post.longer);
+    }
+    g_graph_posts_taken = g_graph_posts.size();
     g_stream_next = g_pos + frames;
     g_stream_at = std::chrono::steady_clock::now();
   }
@@ -811,6 +826,7 @@ void exit_teardown() {
   g_playing_graphs.clear();
   g_graph_inbox.clear();
   g_graph_posts.clear();
+  g_graph_posts_taken = 0;
   g_live_graphs.clear();
   g_retired_graphs.clear();
   g_scores.clear();
@@ -938,10 +954,11 @@ void graph_play(int64_t id) {
   if (!def) return;
   graph_stop(id);
   auto live = std::make_shared<Graph>(*def);
-  live->make_room();
+  std::vector<size_t> room;
+  live->make_room(room);
   std::lock_guard<std::mutex> lock(g_tone_mutex);
   int64_t start = stream_now();
-  g_live_graphs[id] = LiveGraph{live, start, def->size()};
+  g_live_graphs[id] = LiveGraph{live, start, def->size(), std::move(room)};
   g_graph_inbox.push_back(GraphCommand{id, std::move(live), start});
 }
 void graph_stop(int64_t id) {
@@ -953,11 +970,22 @@ void graph_stop(int64_t id) {
   std::lock_guard<std::mutex> lock(g_tone_mutex);
   g_graph_inbox.push_back(GraphCommand{id, nullptr, 0});
 }
+// The definition holds every change the copy does and this one too, so its
+// count bounds what the copy's list must hold; past what that list can, the
+// change brings a longer one, twice as long.
 void graph_post(int64_t id, int part, int value, ParamEvent e) {
+  release_retired();
   auto it = g_live_graphs.find(id);
   if (it == g_live_graphs.end() || static_cast<size_t>(part) >= it->second.parts) return;
+  size_t need = graph_def(id)->changes(part, value);
+  size_t& room = it->second.room[2 * static_cast<size_t>(part) + static_cast<size_t>(value)];
+  std::vector<ParamEvent> longer;
+  if (need > room) {
+    room = 2 * need + kGraphLiveRoom;
+    longer.reserve(room);
+  }
   std::lock_guard<std::mutex> lock(g_tone_mutex);
-  g_graph_posts.push_back(GraphPost{it->second.graph, part, value, e});
+  g_graph_posts.push_back(GraphPost{it->second.graph, part, value, e, std::move(longer)});
 }
 double graph_now(int64_t id) {
   auto it = g_live_graphs.find(id);
