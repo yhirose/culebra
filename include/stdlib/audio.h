@@ -153,7 +153,7 @@ struct ParamEvent {
 // changes; asked for at times that only go forward.
 class Param {
  public:
-  explicit Param(double rest = 0) : rest_(rest), value_(rest), from_value_(rest) {}
+  explicit Param(double rest = 0) : value_(rest), from_value_(rest) {}
   // A value through `n` numbers of (at, value) pairs, `at` in seconds: it
   // holds its first value before them and its last after, moving in straight
   // lines between; two at the same time are a step. `rest` when there are none.
@@ -208,7 +208,7 @@ class Param {
  private:
   std::vector<ParamEvent> events_;
   size_t next_ = 0;
-  double rest_, value_, from_value_;
+  double value_, from_value_;
   double from_at_ = 0;
 };
 
@@ -303,13 +303,6 @@ class PluckString {
     dc_in_ = read;
     return dc_out_;
   }
-  // Still, as made.
-  void reset() {
-    std::ranges::fill(buf_, 0.0);
-    prev_ = ap_in_ = ap_out_ = dc_in_ = dc_out_ = 0;
-    w_ = 0;
-    freq_ = ring_ = -1;
-  }
 
  private:
   std::vector<double> buf_;
@@ -364,7 +357,6 @@ struct Svf {
   FilterKind kind = FilterKind::Low;
   double k = 1.0 / 0.707, a1 = 0, a2 = 0, a3 = 0, s1 = 0, s2 = 0, at = -1;
 
-  Svf() = default;
   Svf(FilterKind kind, double q) : kind(kind), k(1.0 / q) {}
   void tune(double cutoff, double rate) {
     if (cutoff == at) return;
@@ -386,11 +378,6 @@ struct Svf {
       case FilterKind::Band: return k * v1;
     }
     return 0.0;
-  }
-  // Silent, as made.
-  void reset() {
-    s1 = s2 = 0;
-    at = -1;
   }
 };
 
