@@ -3579,6 +3579,9 @@ struct MemberOpts {
   // Those fields are a `@packable` class's: only a scalar type goes on the
   // slot, the others being its byte layout's (Compiler::field_check).
   bool fields_packable = false;
+  // Those fields are a `@value` class's, whose annotations read its own type
+  // parameters alone (culebra::value_field_annotation): these.
+  const std::vector<std::string_view>* fields_value_params = nullptr;
   // The fields the class's `new` overloads take as field parameters
   // (culebra::field_param_names): the thunk's own parameter list, one slot
   // per field in declaration order (`thunk_params`), and the argument list
@@ -5280,6 +5283,9 @@ class Compiler {
   // The fields this chunk lays out are a `@packable` class's
   // (MemberOpts::fields_packable).
   bool fields_packable_ = false;
+  // A `@value` class's own type parameters, which its fields read
+  // (MemberOpts::fields_value_params), or null.
+  const std::vector<std::string_view>* value_field_params_ = nullptr;
   // An annotation as its check reads it: each Generic parameter in scope
   // lowered (an unbounded `T` checks as Any, a bounded one as its bound).
   static std::string lower_annotation(
@@ -6411,10 +6417,13 @@ class Compiler {
   // A declared field's annotation as its zero and its check read it: as a
   // parameter's is, with the Generic parameters in scope lowered (so `v: T`
   // for a `T: Float` is a Float field), except in a `@packable` class, whose
-  // annotations are its byte layout's and read as written.
+  // annotations are its byte layout's and read as written, and a `@value`
+  // class, which reads its own parameters alone, as its contract does.
   std::string field_annotation(std::string_view annotation) const {
-    return fields_packable_ ? std::string(annotation)
-                            : lower_annotation(annotation);
+    if (fields_packable_) return std::string(annotation);
+    if (value_field_params_)
+      return culebra::value_field_annotation(annotation, *value_field_params_);
+    return lower_annotation(annotation);
   }
 
   // What a write to a declared field is checked against, given its
@@ -7956,15 +7965,17 @@ class Compiler {
       bool stdlib) {
     FnAnalysis::FlatLayout flat;
     bool eligible = !fields.empty();
+    auto type_params = culebra::class_type_params(ast);
     for (const auto* f : fields) {
       auto mv = culebra::view_method(*f);
-      if (mv.value || !culebra::is_flat_value_field_type(mv.type_annotation)) {
+      auto type = culebra::value_field_annotation(mv.type_annotation, type_params);
+      if (mv.value || !culebra::is_flat_value_field_type(type)) {
         eligible = false;
         break;
       }
       flat.fields.emplace_back(mv.name);
-      flat.types.push_back(static_cast<uint8_t>(
-          culebra::field_type_for_annotation(mv.type_annotation)));
+      flat.types.push_back(
+          static_cast<uint8_t>(culebra::field_type_for_annotation(type)));
     }
     if (!eligible) return;
     analysis.value_layouts.insert_or_assign(&ast, std::move(flat));
@@ -8046,11 +8057,13 @@ class Compiler {
             : no_names;
     // Declared (name, type) pairs in field order — the @packable layout spec.
     std::vector<std::pair<std::string, std::string>> packable_fields;
+    auto type_params = culebra::class_type_params(ast);
     for (const auto* f : fields) {
       auto mv = culebra::view_method(*f);
       if (is_packable && mv.is_field)
         culebra::require_typed_packable_field(mv, class_name);
-      if (is_value) culebra::require_value_member(mv, class_name, declared);
+      if (is_value)
+        culebra::require_value_member(mv, class_name, declared, type_params);
       if (is_packable && mv.is_typed_field)
         packable_fields.emplace_back(mv.name, mv.type_annotation);
     }
@@ -8065,7 +8078,8 @@ class Compiler {
         static_fields.push_back(&m);
         continue;
       }
-      if (is_value) culebra::require_value_member(mv, class_name, declared);
+      if (is_value)
+        culebra::require_value_member(mv, class_name, declared, type_params);
       if (mv.is_static) {
         static_names.emplace_back(mv.name);
         static_asts.push_back(&m);
@@ -8273,6 +8287,8 @@ class Compiler {
                                      {.receiver = true,
                                       .thunk_fields = &fields,
                                       .fields_packable = is_packable,
+                                      .fields_value_params =
+                                          is_value ? &type_params : nullptr,
                                       .thunk_params = &field_params});
       int32_t t = alloc_temp(ast);
       emit(Op::MakeClosure, t, idx);
@@ -8295,6 +8311,7 @@ class Compiler {
            .prologue_fields =
                (!fields.empty() && !fields_need_a_thunk) ? &fields : nullptr,
            .fields_packable = is_packable,
+           .fields_value_params = is_value ? &type_params : nullptr,
            .finit_params = fields_need_a_thunk ? &field_params : nullptr,
            .owner_ctor_chunk = ctor_chunk_idx,
            .owner_fields = own_fields,
@@ -8804,6 +8821,7 @@ class Compiler {
     fc.self_field_classes_ = mo.owner_field_classes;
     fc.type_params_ = analysis_.type_params_in(ast);
     fc.fields_packable_ = mo.fields_packable;
+    fc.value_field_params_ = mo.fields_value_params;
     fc.repl_ = repl_;
     fc.check_ = check_;
     fc.debug_ = debug_;

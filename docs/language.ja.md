@@ -6635,7 +6635,7 @@ contractは5条項からなり、それぞれがインスタンスの同一性�
 
 | 条項 | 検査 |
 |---|---|
-| 全インスタンスフィールドが宣言済みで、型は`Long`/`Float`/`Bool`または別の`@value`クラス | 宣言時（`SyntaxError`）と、`new`内の各書き込み（`TypeError`、§10） |
+| 全インスタンスフィールドが宣言済みで、型は`Long`/`Float`/`Bool`または別の`@value`クラス（クラスの型パラメータはその境界として読むので、`T: Float`の`x: T`は`Float`） | 宣言時（`SyntaxError`）と、`new`内の各書き込み（`TypeError`、§10） |
 | どのメンバも宣言にないフィールドを書かない — 同じ値クラスの2つのインスタンスが違う形を持つことはない | 宣言時（`SyntaxError`）と`new`の実行中（`ImmutableError`） |
 | `drop`メソッド・フィールドを持たない — デストラクタは*どの*インスタンスが死んだかを観測する | 宣言時（`SyntaxError`） |
 | `@packable`と併用しない — packedインスタンスは共有バイト列をaliasする | 宣言時（`SyntaxError`） |

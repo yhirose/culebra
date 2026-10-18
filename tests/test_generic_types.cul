@@ -314,6 +314,33 @@ let packed = Packed()
 packed.x = 7
 assert_eq(String.unpack(Packed, String.pack(Packed, [packed]))[0].x, 7)
 
+// a `@value` class's field reads its class's own parameter as its bound, as
+// `Count`'s does
+@value
+class Meter<Elem: Float> {
+  x: Elem
+  new(.x) {}
+  doubled() {
+    Meter(self.x * 2.0)
+  }
+}
+assert_eq(Meter(1.5).doubled().x, 3.0)
+assert_throws('TypeError', fn () { Meter(1) })
+
+// and its own alone: an enclosing function's parameter of a value class's
+// name does not rename the field, so what its contract admitted is what each
+// write is checked against
+fn wrapped_in<Meter>(v) {
+  @value
+  class Wrapped {
+    m: Meter
+    new(.m) {}
+  }
+  Wrapped(v)
+}
+assert_eq(wrapped_in(Meter(2.0)).m.x, 2.0)
+assert_throws('TypeError', fn () { wrapped_in('not a value') })
+
 // --- Generic-inner-Union must not recurse forever (depth-aware gate) ---
 fn inner_union(xs: Array<Long | Float>) -> Long {
   xs.size()

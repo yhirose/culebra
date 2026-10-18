@@ -447,6 +447,7 @@ inline void RuleWalker::walk(const peg::Ast& node) {
       // position (the layout calc in eval/compile is then only a safety net).
       auto class_name =
           culebra::parse_generic_head(node.nodes[i]->token).outer;
+      auto type_params = culebra::class_type_params(node);
       // The instance fields in declaration order (the body's and the ones
       // the `new` field parameters declare), gathered up front: a `new`
       // may sit above the fields its parameters name.
@@ -618,11 +619,13 @@ inline void RuleWalker::walk(const peg::Ast& node) {
           check_named(inst_fields, inst_methods, mv, /*is_field_member=*/true);
         {
           // A value's field set is fixed at the declaration, and each field
-          // holds a scalar or another value.
+          // holds a scalar or another value, read through the class's own
+          // type parameters (culebra::value_field_annotation).
           if (is_value && mv.is_typed_field &&
-              !culebra::is_flat_value_field_type(mv.type_annotation) &&
-              !culebra::is_value_field_type(mv.type_annotation,
-                                            declared_types())) {
+              !culebra::is_value_field_type(
+                  culebra::value_field_annotation(mv.type_annotation,
+                                                  type_params),
+                  declared_types())) {
             diags_.push_back(Diagnostic{
                 "SyntaxError",
                 culebra::value_field_type_message(class_name, mv.name,

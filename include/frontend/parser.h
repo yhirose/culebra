@@ -1376,6 +1376,26 @@ inline bool is_value_field_type(std::string_view t,
          !declared.others.contains(t);
 }
 
+// The type parameters a class declares (`class V<T: Float>`), as
+// lower_type_params takes them.
+inline std::vector<std::string_view> class_type_params(const peg::Ast& cls) {
+  const auto& head = *cls.nodes[first_non_decorator_index(cls)];
+  return split_generic_args(parse_generic_head(head.token).args);
+}
+
+// A `@value` field's annotation as everything reads it, its contract at the
+// declaration and the check of each write (vm::Compiler::field_annotation):
+// through its class's own type parameters alone, so `x: T` for a `T: Float`
+// is a Float field. An enclosing declaration's are not read: the
+// declaration's check, in lint, sees no scope around the class, and a write
+// checked against another reading could store what the contract refused.
+inline std::string value_field_annotation(
+    std::string_view annotation,
+    const std::vector<std::string_view>& type_params) {
+  if (type_params.empty()) return std::string(annotation);
+  return lower_type_params(annotation, type_params);
+}
+
 // The machine-scalar half of the above: a field an unboxed layout can give
 // exactly one slot. A nested `@value` field is a legal value field but needs
 // its own fields flattened in, which is a later step — so it answers no here
@@ -1556,9 +1576,10 @@ inline bool value_body_writes_self(const peg::Ast& body) {
 // member lives on the class object, outside the instance protocol and its
 // field set, so it is exempt. Throws the canonical SyntaxError at the
 // member's name, matching what lint reports pre-eval.
-inline void require_value_member(const MethodView& mv,
-                                 std::string_view class_name,
-                                 const DeclaredTypeNames& declared) {
+inline void require_value_member(
+    const MethodView& mv, std::string_view class_name,
+    const DeclaredTypeNames& declared,
+    const std::vector<std::string_view>& type_params) {
   if (mv.is_static) return;
   auto at = [&](std::string msg) {
     return CulebraError("SyntaxError", std::move(msg),
@@ -1566,7 +1587,9 @@ inline void require_value_member(const MethodView& mv,
                         static_cast<long>(mv.name_col));
   };
   if (mv.name == "drop") throw at(value_drop_message(class_name));
-  if (mv.is_typed_field && !is_value_field_type(mv.type_annotation, declared))
+  if (mv.is_typed_field &&
+      !is_value_field_type(value_field_annotation(mv.type_annotation, type_params),
+                           declared))
     throw at(value_field_type_message(class_name, mv.name,
                                       mv.type_annotation));
   if (mv.is_field) throw at(value_untyped_field_message(mv.name, class_name));
@@ -2223,7 +2246,8 @@ inline DeclaredFields declared_instance_fields(
 // class, whatever else is called that: the annotation is read as it lowers,
 // so a parameter bound to a scalar is that scalar (vm::Compiler::
 // field_annotation), except in a `@packable` class, whose annotations are its
-// byte layout's. A name is a promise only because a write to the field is
+// byte layout's, and a `@value` class, which reads its own parameters alone
+// (value_field_annotation). A name is a promise only because a write to the field is
 // checked against it, which a `@packable` class's is not
 // (vm::Compiler::field_check), so its names are left out.
 inline ClassFields declared_class_fields(
@@ -2231,12 +2255,17 @@ inline ClassFields declared_class_fields(
   size_t head = first_non_decorator_index(cls);
   bool packable = std::any_of(cls.nodes.begin(), cls.nodes.begin() + head,
                               [](const auto& d) { return is_packable_decorator(*d); });
+  bool value = std::any_of(cls.nodes.begin(), cls.nodes.begin() + head,
+                           [](const auto& d) { return is_value_decorator(*d); });
+  auto own = value ? class_type_params(cls) : std::vector<std::string_view>{};
   ClassFields out;
   for (const auto* f : collect_instance_fields(cls, head + 1)) {
     auto mv = view_method(*f);
     if (mv.type_annotation.empty()) continue;
-    auto lowered = packable ? std::string(mv.type_annotation)
-                            : lower_type_params(mv.type_annotation, type_params);
+    auto lowered =
+        packable ? std::string(mv.type_annotation)
+        : value  ? value_field_annotation(mv.type_annotation, own)
+                 : lower_type_params(mv.type_annotation, type_params);
     auto t = field_type_for_annotation(lowered);
     if (t != FieldType::Any)
       out.types.emplace(std::string(mv.name), static_cast<uint8_t>(t));

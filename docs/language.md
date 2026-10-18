@@ -6931,7 +6931,7 @@ observe an instance's identity:
 
 | Clause | Checked |
 |---|---|
-| Every instance field is declared, and its type is `Long`, `Float`, `Bool`, or another `@value` class | At the declaration (`SyntaxError`), and at each write in `new` (`TypeError`, §10) |
+| Every instance field is declared, and its type is `Long`, `Float`, `Bool`, or another `@value` class (a type parameter of the class reads as its bound, so `x: T` for a `T: Float` is a `Float`) | At the declaration (`SyntaxError`), and at each write in `new` (`TypeError`, §10) |
 | No member writes a field the class does not declare — two instances of one value class cannot differ in shape | At the declaration (`SyntaxError`), and while `new` runs (`ImmutableError`) |
 | No `drop` method or field — a destructor observes *which* instance died | At the declaration (`SyntaxError`) |
 | Not also `@packable` — a packed instance aliases shared bytes | At the declaration (`SyntaxError`) |
