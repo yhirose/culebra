@@ -164,6 +164,16 @@ assert_throws("TypeError", fn () {
   mic.read("all")
 })
 
+// A part's samples against the same computation written out here: the same
+// but for the last bits of rounding, where a machine that fuses a multiply
+// and an add into one step (clang on arm64) rounds once and the script twice.
+fn assert_samples(got, want) {
+  assert_eq(got.size(), want.size())
+  for i in 0..got.size() {
+    assert_close(got[i], want[i], 1e-9)
+  }
+}
+
 // resonate: a bank of two-pole resonators, natively, the same samples as the
 // same filters written out here; Longs are samples too.
 fn rings(samples, modes, dry, rate) {
@@ -187,8 +197,8 @@ fn rings(samples, modes, dry, rate) {
 }
 let struck = [1, 0.5, -0.25, ...repeat(200, 0.0), 0.75, ...repeat(100, 0.0)]
 let two = [{freq: 440.0, width: 20.0, gain: 1.0}, {freq: 1250, width: 90, gain: 0.3}]
-assert_eq(Audio.resonate(struck, two), rings(struck, two, 0.0, 44100.0))
-assert_eq(Audio.resonate(struck, two, dry: 0.4, rate: 22050), rings(struck, two, 0.4, 22050.0))
+assert_samples(Audio.resonate(struck, two), rings(struck, two, 0.0, 44100.0))
+assert_samples(Audio.resonate(struck, two, dry: 0.4, rate: 22050), rings(struck, two, 0.4, 22050.0))
 assert_eq(Audio.resonate(struck, [], dry: 0.5), struck.map(|x| 0.5 * x))
 assert_eq(Audio.resonate([], two), [])
 for (modes, message) in [
@@ -268,8 +278,8 @@ fn plucked(seconds, tunings, strikes, rate) {
 let shape = [0.0, 0.25, 0.5, 0.25, 0, -0.25, -0.5, -0.25]
 let tunings = [{at: 0, freq: 196.0, ring: 2.0}, {at: 0.05, freq: 220.0, ring: 2.0}, {at: 0.08, freq: 220, ring: 0.1}]
 let strikes = [{at: 0.0, samples: shape}, {at: 0.05, samples: shape.map(|x| 0.3 * x)}, {at: 0.0999, samples: shape}]
-assert_eq(Audio.pluck(0.1, tunings, strikes), plucked(0.1, tunings, strikes, 44100.0))
-assert_eq(Audio.pluck(0.1, tunings, strikes, rate: 22050), plucked(0.1, tunings, strikes, 22050.0))
+assert_samples(Audio.pluck(0.1, tunings, strikes), plucked(0.1, tunings, strikes, 44100.0))
+assert_samples(Audio.pluck(0.1, tunings, strikes, rate: 22050), plucked(0.1, tunings, strikes, 22050.0))
 assert_eq(Audio.pluck(0.01, [{at: 0, freq: 440.0, ring: 1.0}]), repeat(441, 0.0))
 assert_eq(Audio.pluck(0, tunings, strikes), [])
 for (bad, message) in [
@@ -372,12 +382,12 @@ let glide = [(0.0, 220.0), (0.01, 330.0), (0.01, 9000.0)]
 let colours = [(0.0, [1.0, 0.5]), (0.005, [0.8, 0.3, 0.2, 0.1])]
 let swell = [(0.0, 0.0), (0.002, 1.0), (0.015, 0.5)]
 let breath = {low: 300.0, high: 2500.0, seed: 7, steady: [(0.0, 0.1), (0.01, 0.0)], pulsed: [(0.0, 0.05)]}
-assert_eq(Audio.partials(0.02, glide, colours), toned(0.02, glide, colours, [], nil, 44100.0))
-assert_eq(
+assert_samples(Audio.partials(0.02, glide, colours), toned(0.02, glide, colours, [], nil, 44100.0))
+assert_samples(
   Audio.partials(0.02, glide, colours, gain: swell, noise: breath),
   toned(0.02, glide, colours, swell, breath, 44100.0),
 )
-assert_eq(
+assert_samples(
   Audio.partials(0.02, glide, colours, gain: swell, noise: breath, rate: 22050),
   toned(0.02, glide, colours, swell, breath, 22050.0),
 )
