@@ -146,6 +146,13 @@ fn cd_shadowing_mixed_mut(a) {
 assert_eq(cd_shadowing_mixed_mut(true), 1)
 assert_throws("ImmutableError", fn () { cd_shadowing_mixed_mut(false) })
 
+// A destructuring declaration that ran decides the `mut` as `let x = v` does.
+fn cd_pattern_mut(c) {
+  c && (mut (p, q) = (1, 2))
+  try { p = 5; [p, q] } catch e { e.kind }
+}
+assert_eq([cd_pattern_mut(true), cd_pattern_mut(false)], [[5, 2], "NameError"])
+
 // In a loop the name is undeclared again on every pass.
 assert_throws("NameError", fn () {
   fn cd_loop_rearm() {

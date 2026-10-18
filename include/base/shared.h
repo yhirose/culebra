@@ -3200,7 +3200,7 @@ inline bool is_lowering_fragment(std::string_view parse_path) {
 // re-parses the user's own text under the same label, so the names are
 // reserved: no program declares one (lint::scope_diagnostics).
 inline constexpr std::string_view kLoweringIntrinsics[] = {
-    "__unbound", "__bound", "__bound_or", "__bound_in"};
+    "__unbound", "__bound", "__bound_in", "__var", "__let", "__declare"};
 inline bool is_lowering_intrinsic(std::string_view name) {
   for (auto n : kLoweringIntrinsics)
     if (n == name) return true;

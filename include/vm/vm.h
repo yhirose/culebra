@@ -6711,21 +6711,35 @@ class Compiler {
   // environment chain answers.
   ExprResult read_shadowing(const peg::Ast& at, const Binding& b) {
     count_dynamic();
+    return read_until_declared(
+        at,
+        [&](int32_t out) {
+          if (b.is_cell) {
+            emit(Op::CellGet, out, b.slot);
+          } else {
+            emit(Op::MoveRetain, out, b.slot);
+          }
+        },
+        [&](int32_t out) {
+          if (b.shadowed) {
+            store_into(out, read_binding(at, *b.shadowed));
+          } else {
+            emit(Op::Release, out);
+            emit(Op::NsGet, out, kconst_str(b.name));
+          }
+        });
+  }
+
+  // A value that holds the unbound sentinel until a declaration has run,
+  // read into a fresh temp: `load` fills it, and `outer` replaces the
+  // sentinel with what the name means above the declaration.
+  ExprResult read_until_declared(const peg::Ast& at, auto load, auto outer) {
     int32_t out = alloc_temp(at);
-    if (b.is_cell) {
-      emit(Op::CellGet, out, b.slot);
-    } else {
-      emit(Op::MoveRetain, out, b.slot);
-    }
+    load(out);
     size_t to_outer = emit(Op::JumpIfTag, out, 0, TAG_NO_SELF);
     size_t to_join = emit(Op::Jump, 0);
     patch_to_here(to_outer);
-    if (b.shadowed) {
-      store_into(out, read_binding(at, *b.shadowed));
-    } else {
-      emit(Op::Release, out);
-      emit(Op::NsGet, out, kconst_str(b.name));
-    }
+    outer(out);
     patch_to_here(to_join);
     return {out, true};
   }
@@ -7437,6 +7451,25 @@ class Compiler {
       fresh.push_back(d);
     }
     predeclare_cells(ast, fresh, /*conditional=*/true);
+  }
+
+  // A declaration of `name` (a `let` / `mut` or a leaf of one) filling the
+  // cell a pre-declaration minted for it. A conditional binding is shared by
+  // every declaration of the name that may be skipped, so its mutability is
+  // whatever the one that RAN said — recorded where a later write can read
+  // it rather than in `is_mut`, which the last one compiled would otherwise
+  // answer for all of them.
+  void fill_predeclared(const peg::Ast& at, const peg::Ast& name, Binding& pre,
+                        ExprResult v, bool is_mut) {
+    note_declaration(name, pre);
+    store_binding(at, pre, v);
+    slot_rank_[pre.slot] = next_rank_++;  // released as declared here
+    emit_session_decl_bind(pre, is_mut);
+    if (pre.mut_slot >= 0)
+      emit(Op::LoadConst, pre.mut_slot, kconst({TAG_BOOL, is_mut}));
+    else
+      pre.is_mut = is_mut;
+    settle_predeclared(pre);
   }
 
   // A declaration filling a pre-declared cell settles the binding — unless
@@ -9524,6 +9557,10 @@ class Compiler {
     auto av = culebra::view_assignment(ast);
     auto* tgt = culebra::assign_name_target(ast, av);
     if (!tgt) {
+      if (av.lvalcnt == 2)
+        if (auto v = lowered_target(*ast.nodes[av.lvaloff],
+                                    *ast.nodes[av.lvaloff + 1]))
+          return compile_lowered_assign(ast, av, *v);
       if (av.lvalcnt > 1) return compile_assign_index(ast, av);
       reject(ast, "non-identifier assignment target");
     }
@@ -9549,19 +9586,7 @@ class Compiler {
       // of minting a second one, and the binding stops being lazy.
       if (Binding* pre = predeclared_here(name)) {
         auto rhs = compile_assign_rhs(ast, av);
-        note_declaration(*tgt, *pre);
-        store_binding(*tgt, *pre, rhs);
-        slot_rank_[pre->slot] = next_rank_++;  // released as declared here
-        emit_session_decl_bind(*pre, decl_mut);
-        // A conditional binding is shared by every arm that declares the
-        // name, so its mutability is whatever the arm that RAN said — recorded
-        // where a later write can read it rather than in `is_mut`, which the
-        // last arm compiled would otherwise answer for all of them.
-        if (pre->mut_slot >= 0)
-          emit(Op::LoadConst, pre->mut_slot, kconst({TAG_BOOL, decl_mut}));
-        else
-          pre->is_mut = decl_mut;
-        settle_predeclared(*pre);
+        fill_predeclared(*tgt, *tgt, *pre, rhs, decl_mut);
         grant_known_chunk(*pre, rhs.chunk);
         grant_known_const(*pre, *av.rhs);
         return read_binding(*tgt, *pre);
@@ -9724,51 +9749,57 @@ class Compiler {
       return store_unboxed_home(*b, *r);
     }
 
-    if (base == "??") {
-      if (!b) {
+    if (!b) {
+      if (base == "??") {
         // A builtin global never reads nil, so `??=` keeps it and the RHS
         // never runs (the JIT's builtin-compound arm).
         int32_t t = alloc_temp(tgt);
         emit(Op::NsGet, t, kconst_str(tgt.token));
         return {t, true};
       }
-      auto cur = read_binding(tgt, *b);
-      size_t skip = emit(Op::JumpIfNotNil, cur.slot);
+      Op op = compound_op(ast, base);
       auto rhs = compile_assign_rhs(ast, av);
-      emit_rebind(tgt, *b, rhs);
-      patch_to_here(skip);
-      return read_binding(tgt, *b);
-    }
-
-    Op op = compound_op(ast, base);
-
-    auto rhs = compile_assign_rhs(ast, av);
-    ExprResult cur;
-    if (b) {
-      cur = read_binding(tgt, *b);
-    } else {
-      int32_t t = alloc_temp(tgt);
-      emit(Op::NsGet, t, kconst_str(tgt.token));
-      cur = {t, true};
-    }
-    int32_t t = alloc_temp(ast);
-    emit(op, t, cur.slot, rhs.slot, /*inplace=*/1);
-    if (!b) {
+      int32_t cur = alloc_temp(tgt);
+      emit(Op::NsGet, cur, kconst_str(tgt.token));
+      int32_t t = alloc_temp(ast);
+      emit(op, t, cur, rhs.slot, /*inplace=*/1);
       // Runtime ImmutableError after the step ran (builtins are immutable
       // root bindings); the step result strands like any throw-abandoned
       // temp (conservative backstop).
       emit(Op::ImmutErr, kconst_str(tgt.token));
       return {t, false};  // unreachable
     }
+    return compile_compound_steps(
+        ast, av, [&] { return read_binding(tgt, *b); },
+        [&](ExprResult r) { emit_rebind(tgt, *b, r); });
+  }
+
+  // The steps of `x op= e` / `x ??= e` on a target that holds a value: `read`
+  // loads it, and `rebind` writes a value back under the target's own rules.
+  ExprResult compile_compound_steps(const peg::Ast& ast,
+                                    const culebra::AssignmentView& av,
+                                    auto read, auto rebind) {
+    if (av.op_base == "??") {
+      auto cur = read();
+      size_t skip = emit(Op::JumpIfNotNil, cur.slot);
+      rebind(compile_assign_rhs(ast, av));
+      patch_to_here(skip);
+      return read();
+    }
+    Op op = compound_op(ast, av.op_base);
+    auto rhs = compile_assign_rhs(ast, av);
+    auto cur = read();
+    int32_t t = alloc_temp(ast);
+    emit(op, t, cur.slot, rhs.slot, /*inplace=*/1);
     // A Tensor step mutates its receiver and hands back that same handle, so
     // nothing is rebound and the target's `mut` does not gate it: the interp
     // returns before env->assign, and the JIT branches around its rebind.
     // Only the rebinding arm consumes the step's temp; the other leaves it to
     // the statement sweep (emit_rebind's arms are the same shape).
     size_t in_place = emit(Op::JumpIfSame, cur.slot, 0, t);
-    emit_rebind(tgt, *b, {t, true});
+    rebind(ExprResult{t, true});
     patch_to_here(in_place);
-    return read_binding(tgt, *b);
+    return read();
   }
 
   // The binary-operator token table the fold and compound assignment share,
@@ -10054,6 +10085,9 @@ class Compiler {
   // retain-feed); the statement sweep frees it.
   void compile_place_target(const peg::Ast& place, int32_t val) {
     using namespace peg::udl;
+    if (place.nodes.size() == 2)
+      if (auto v = lowered_target(*place.nodes[0], *place.nodes[1]))
+        return store_lowered(place, *v, val);
     size_t end = place.nodes.size() - 1;
     const auto& fin = *place.nodes[end];
     if (fin.original_tag == "ARGUMENTS"_) {
@@ -13408,15 +13442,21 @@ class Compiler {
       return std::nullopt;
     const auto& args = *ast.nodes[1];
     if (args.nodes.size() != 2) return std::nullopt;
-    const peg::Ast* nameNode = args.nodes[0].get();
-    while (nameNode->nodes.size() == 1) nameNode = nameNode->nodes[0].get();
     StampGuard pos(*this, ast);
     auto builder = compile_expr(*args.nodes[1]);
     emit(Op::LazyNsReg, 0, builder.slot,
-         kconst_str(std::string(nameNode->token)));
+         kconst_str(literal_text(*args.nodes[0])));
     int32_t t = alloc_temp(ast);
     emit(Op::LoadConst, t, kconst({TAG_NIL, 0}));
     return ExprResult{t, true};
+  }
+
+  // The text of a literal argument a lowering or a splice writes (`"x"`,
+  // `true`): the token under its single-child wrappers.
+  static std::string literal_text(const peg::Ast& arg) {
+    const peg::Ast* n = &arg;
+    while (n->nodes.size() == 1) n = n->nodes[0].get();
+    return std::string(n->token);
   }
 
   // What the effect lowering writes for a variable it moved onto its state
@@ -13426,8 +13466,8 @@ class Compiler {
   // read_binding and read_shadowing ask:
   //   __unbound()           the sentinel
   //   __bound(p, "x")       p, or the NameError for `x` while p is the sentinel
-  //   __bound_or(p, o)      p, or o while p is the sentinel
   //   __bound_in(r, p, "x") r, once __bound(p, "x") has passed
+  //   __var(…), __let(…)    the variable they name (LoweredTarget)
   // Only a lowering's fragment compiles them, and no program can declare
   // their names (culebra::kLoweringIntrinsics), so none holds the sentinel.
   std::optional<ExprResult> compile_lowering_intrinsic(const peg::Ast& ast) {
@@ -13439,11 +13479,7 @@ class Compiler {
         !culebra::is_lowering_fragment(ast.path))
       return std::nullopt;
     const auto& args = ast.nodes[1]->nodes;
-    auto name = [&](size_t i) {
-      const peg::Ast* n = args[i].get();
-      while (n->nodes.size() == 1) n = n->nodes[0].get();
-      return kconst_str(std::string(n->token));
-    };
+    auto name = [&](size_t i) { return kconst_str(literal_text(*args[i])); };
     check_use(head, nullptr);  // the intrinsic's name binds nothing
     StampGuard pos(*this, ast);
     if (op == "__unbound" && args.empty()) {
@@ -13456,22 +13492,140 @@ class Compiler {
       emit(Op::UnboundErr, v.slot, name(1));
       return v;
     }
-    if (op == "__bound_or" && args.size() == 2) {
-      int32_t out = alloc_temp(ast);
-      store_into(out, compile_expr(*args[0]), /*dst_is_fresh=*/true);
-      size_t to_outer = emit(Op::JumpIfTag, out, 0, TAG_NO_SELF);
-      size_t to_join = emit(Op::Jump, 0);
-      patch_to_here(to_outer);
-      store_into(out, compile_expr(*args[1]));
-      patch_to_here(to_join);
-      return ExprResult{out, true};
-    }
     if (op == "__bound_in" && args.size() == 3) {
       auto holder = compile_expr(*args[0]);
       emit(Op::UnboundErr, compile_expr(*args[1]).slot, name(2));
       return holder;
     }
+    if (auto v = lowered_target(head, *ast.nodes[1]);
+        v && v->kind != LoweredTarget::Declare)
+      return read_lowered(ast, *v);
     return std::nullopt;
+  }
+
+  // A variable the effect lowering names by what it is rather than by its
+  // name (PromotedLocals::reference), which reads and writes as the binding
+  // it would be in a plain fn:
+  //   __var(p, "x", m, o)   a conditional one (Binding::conditional): its
+  //                         slot p holds the sentinel until a declaration of
+  //                         it has run, and the name means o until then;
+  //                         once one has, the Bool in m is its `mut`
+  //   __let(p, "x")         one that refuses a write
+  //   __declare(p, m, mut)  the target of a `let` / `mut` of a conditional one
+  // p is the variable's place (a field of the state instance, or its box's
+  // `v`) and m a field of the instance; o is another of these, a place, or
+  // the name itself, resolved here as a name is.
+  struct LoweredTarget {
+    enum Kind { Var, Let, Declare } kind;
+    const peg::Ast* place;
+    const peg::Ast* mut = nullptr;
+    const peg::Ast* outer = nullptr;
+    int32_t name = -1;      // kconst_str of "x", for the ImmutableError
+    bool decl_mut = false;  // __declare's own `mut`
+  };
+  std::optional<LoweredTarget> lowered_target(const peg::Ast& head,
+                                              const peg::Ast& args) {
+    using namespace peg::udl;
+    if (!culebra::names_lowered_variable(head) ||
+        args.original_tag != "ARGUMENTS"_)
+      return std::nullopt;
+    check_use(head, nullptr);  // the intrinsic's name binds nothing
+    const auto& a = args.nodes;
+    if (head.token == "__var" && a.size() == 4)
+      return LoweredTarget{LoweredTarget::Var, a[0].get(), a[2].get(),
+                           a[3].get(), kconst_str(literal_text(*a[1]))};
+    if (head.token == "__let" && a.size() == 2)
+      return LoweredTarget{LoweredTarget::Let, a[0].get(), nullptr, nullptr,
+                           kconst_str(literal_text(*a[1]))};
+    if (head.token == "__declare" && a.size() == 3)
+      return LoweredTarget{LoweredTarget::Declare, a[0].get(), a[1].get(),
+                           nullptr, -1, literal_text(*a[2]) == "true"};
+    return std::nullopt;
+  }
+
+  // A lowered variable's value, as read_binding gives a name's: until a
+  // declaration of it has run, what the name means above it.
+  ExprResult read_lowered(const peg::Ast& at, const LoweredTarget& v) {
+    if (v.kind != LoweredTarget::Var) return compile_expr(*v.place);
+    return read_until_declared(
+        at,
+        [&](int32_t out) {
+          store_into(out, compile_expr(*v.place), /*dst_is_fresh=*/true);
+        },
+        [&](int32_t out) { store_into(out, compile_expr(*v.outer)); });
+  }
+
+  // A write of `val` to a lowered variable: emit_rebind's arms, over places.
+  // `val` keeps its +1 through every arm, and the statement sweep frees it,
+  // as compile_place_target's does.
+  void store_lowered(const peg::Ast& at, const LoweredTarget& v, int32_t val) {
+    if (v.kind == LoweredTarget::Let) {
+      emit(Op::ImmutErr, v.name);
+      return;
+    }
+    if (v.kind == LoweredTarget::Declare) {
+      declare_lowered(at, v, val, v.decl_mut);
+      return;
+    }
+    size_t to_unbound =
+        emit(Op::JumpIfTag, compile_expr(*v.place).slot, 0, TAG_NO_SELF);
+    size_t to_store = emit(Op::JumpIfTrue, compile_expr(*v.mut).slot);
+    emit(Op::ImmutErr, v.name);
+    patch_to_here(to_store);
+    compile_place_target(*v.place, val);
+    size_t to_join = emit(Op::Jump, 0);
+    patch_to_here(to_unbound);
+    store_outer(at, v, val);
+    patch_to_here(to_join);
+  }
+
+  // The unbound arm: the write goes to what the name means until a
+  // declaration has run, under that one's own rules (a stdlib global's is
+  // that it refuses), and where it means nothing the write declares the
+  // variable, immutably.
+  void store_outer(const peg::Ast& at, const LoweredTarget& v, int32_t val) {
+    using namespace peg::udl;
+    const peg::Ast& o = *v.outer;
+    if (o.nodes.size() == 2)
+      if (auto ov = lowered_target(*o.nodes[0], *o.nodes[1]))
+        return store_lowered(at, *ov, val);
+    if (o.tag != "IDENTIFIER"_) return compile_place_target(o, val);
+    const Binding* b = lookup_name(std::string(o.token));
+    check_use(o, b);
+    if (b) {
+      emit_rebind(at, *b, {val, /*owned=*/false});
+    } else if (is_stdlib_global(o.token)) {
+      emit(Op::ImmutErr, kconst_str(o.token));
+    } else {
+      declare_lowered(at, v, val, /*is_mut=*/false);
+    }
+  }
+
+  // Fill a conditional variable's slot and record its declaration's `mut`.
+  void declare_lowered(const peg::Ast& at, const LoweredTarget& v, int32_t val,
+                       bool is_mut) {
+    compile_place_target(*v.place, val);
+    int32_t m = alloc_temp(at);
+    emit(Op::LoadConst, m, kconst({TAG_BOOL, is_mut}));
+    compile_place_target(*v.mut, m);
+  }
+
+  // `__var(…) = v`, `__var(…) op= v`, `__declare(…) = v`: a lowered target,
+  // in compile_assignment's and compile_compound_assign's order.
+  ExprResult compile_lowered_assign(const peg::Ast& ast,
+                                    const culebra::AssignmentView& av,
+                                    const LoweredTarget& v) {
+    const auto& tgt = *ast.nodes[av.lvaloff];
+    if (av.compound) {
+      StampGuard pos(*this, ast);
+      return compile_compound_steps(
+          ast, av, [&] { return read_lowered(tgt, v); },
+          [&](ExprResult r) { store_lowered(tgt, v, r.slot); });
+    }
+    auto rhs = compile_assign_rhs(ast, av);
+    StampGuard pos(*this, ast);
+    store_lowered(tgt, v, rhs.slot);
+    return rhs;
   }
 
   // A direct `fn(...)` in a receiver frame: the frame's own closure called
@@ -13976,12 +14130,7 @@ class Compiler {
       // A leaf whose name was pre-declared here fills that cell instead of
       // minting a second one — compile_assign_var's rule.
       if (Binding* pre = predeclared_here(name)) {
-        note_declaration(ident, *pre);
-        store_binding(at, *pre, v);
-        slot_rank_[pre->slot] = next_rank_++;
-        emit_session_decl_bind(*pre, is_mut);
-        pre->is_mut = is_mut;
-        settle_predeclared(*pre);
+        fill_predeclared(at, ident, *pre, v, is_mut);
         return;
       }
       if (Binding* held = captured_here(name)) {

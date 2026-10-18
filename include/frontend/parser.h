@@ -1635,6 +1635,18 @@ inline bool is_assignable_name(const peg::Ast& node) {
   return node.tag == "IDENTIFIER"_ && !is_keyword(node.token);
 }
 
+// The head of the call the effect lowering writes for a variable it names by
+// what it is (state_lowering.h, PromotedLocals::reference). Such a call is
+// assignable, as the name it stands for is, in a lowering's fragment only
+// (Compiler::lowered_target).
+inline bool names_lowered_variable(const peg::Ast& head) {
+  using namespace peg::udl;
+  return head.tag == "IDENTIFIER"_ &&
+         (head.token == "__var" || head.token == "__let" ||
+          head.token == "__declare") &&
+         is_lowering_fragment(head.path);
+}
+
 // A malformed call argument list, detected purely from the AST: a positional
 // argument after a keyword/`**` splat (SyntaxError) or a duplicate keyword
 // (TypeError). Single source of these two rules, shared by the interpreter and

@@ -419,12 +419,18 @@ inline EditSite child_site(const peg::Ast& n, size_t i) {
 // holds the unbound sentinel until one has, as a plain fn's lazy binding does
 // (vm.h, Compiler::Binding::lazy), and is given it again whenever its scope is
 // entered. Such a read asks the slot whether a declaration ran, through the
-// compiler's lowering intrinsics (Compiler::compile_lowering_intrinsic).
+// compiler's lowering intrinsics (Compiler::compile_lowering_intrinsic). One
+// an expression declares is a conditional binding there, and the body's own
+// frame names it by what it is (`variable`), so the compiler reads and writes
+// it as it does that binding.
 class PromotedLocals {
  public:
   struct Slot {
     std::string field;  // on the instance; empty while the variable has none
     std::string box;    // the plain local its box is reached through, if boxed
+    // On the instance, for a variable an expression declares: whether the
+    // declaration that ran was a `mut` (Compiler::Binding::mut_slot).
+    std::string mut_field;
     // Where the variable lives, as source: `holder.member`. Each piece of
     // emitted code binds the box locals it names on entry (box_prologue), so
     // one spelling serves both inside a closure (which captures the local)
@@ -457,9 +463,10 @@ class PromotedLocals {
     for (const auto& d : res_.declarations) {
       declaring_.insert(d.node);
       declared_[d.symbol].push_back(
-          {d.node->token.data(), d.form == Form::Mut ||
-                                     d.form == Form::Pattern ||
-                                     d.form == Form::Catch});
+          {d.node->token.data(),
+           d.form == Form::Mut || d.form == Form::Pattern ||
+               d.form == Form::Catch,
+           d.form == Form::Let || d.form == Form::Mut});
     }
     for (auto& ds : declared_)
       std::sort(ds.begin(), ds.end(),
@@ -497,16 +504,20 @@ class PromotedLocals {
       Slot& s = slots_[sym];
       if (!s.field.empty()) continue;
       int k = spelled_[name]++;
+      auto spelled = [&](std::string_view prefix) {
+        return k ? std::format("{}{}_{}", prefix, k, name)
+                 : std::format("{}_{}", prefix, name);
+      };
       if (is_machinery(name)) {
         if (k)
           throw CulebraError("InternalError",
                              "a lowering declared `" + name + "` twice", 0, 0);
         s.field = name;
       } else {
-        s.field = k ? std::format("_l{}_{}", k, name) : "_l_" + name;
+        s.field = spelled("_l");
       }
-      if (captured_[sym])
-        s.box = k ? std::format("_bx{}_{}", k, name) : "_bx_" + name;
+      if (captured_[sym]) s.box = spelled("_bx");
+      if (conditional(sym)) s.mut_field = spelled("_m");
       order_.push_back(sym);
     }
   }
@@ -522,22 +533,34 @@ class PromotedLocals {
     return s.field.empty() || own_name(it->second) ? nullptr : &s;
   }
 
-  // `name`, a slotted variable, as source. A write is to its place; a read
-  // asks the place first whether a declaration of it has run, when one may
-  // not have. Until one has, a closure's read is the NameError a plain fn's
-  // is, and a read in the body's own frame means the variable the name meant
-  // above the declaration (Compiler::read_shadowing): one around it, a stdlib
-  // global, or nothing, which is that NameError again.
+  // `name`, a slotted variable, as source. A read asks the place first
+  // whether a declaration of it has run, when one may not have: until one
+  // has, a closure's read is the NameError a plain fn's is. A write is to its
+  // place, or to what the variable is, which the compiler checks it against:
+  // in the body's own frame a variable an expression declares (`variable`,
+  // and `__declare` for a `let` / `mut` of it), and `__let(p, "x")` for one
+  // that refuses the store.
   std::string reference(const peg::Ast& name) const {
     const auto& use = res_.uses.at(&name);
-    if (use.role != resolve::Role::Read) return slots_[use.symbol].place();
-    return read_at(use);
+    const char* at = name.token.data();
+    if (use.role == resolve::Role::Read) return read_at(use, at);
+    const Slot& s = slots_[use.symbol];
+    if (read_check(use) == Check::Shadowed) {
+      for (const auto& d : declared_[use.symbol])
+        if (d.at == at && d.keyword)
+          return std::format("__declare({}, self.{}, {})", s.place(),
+                             s.mut_field, d.mut);
+      return variable(use, at);
+    }
+    if (immutable_write(name))
+      return std::format("__let({}, \"{}\")", s.place(), name.token);
+    return s.place();
   }
 
   // `name` read where it is written, whatever the occurrence is: the value a
   // compound assignment to it steps from.
   std::string read(const peg::Ast& name) const {
-    return read_at(res_.uses.at(&name));
+    return read_at(res_.uses.at(&name), name.token.data());
   }
 
   // Whether that read raises the NameError while no declaration of `name`
@@ -546,37 +569,53 @@ class PromotedLocals {
     return read_check(res_.uses.at(&name)) == Check::Raise;
   }
 
-  // The target of a compound assignment `name op= e`, as a place asked first
-  // whether a declaration of it has run: after the right-hand side and before
-  // the step reads it, which is when a plain fn's compound assignment reads.
-  // Until one has, the step raises the NameError, where the body's own frame
-  // has a variable it shadows too (lowering_diff_allow.txt, L6).
+  // The target of a compound assignment `name op= e`. A closure's is a place
+  // asked first whether a declaration of it has run: after the right-hand
+  // side and before the step reads it, which is when a plain fn's compound
+  // assignment reads, and until one has the step raises the NameError.
   std::string compound_target(const peg::Ast& name) const {
     const auto& use = res_.uses.at(&name);
     const Slot& s = slots_[use.symbol];
-    if (read_check(use) == Check::None) return s.place();
+    switch (read_check(use)) {
+      case Check::None:
+        return s.place();
+      case Check::Shadowed:
+        return variable(use, name.token.data());
+      case Check::Raise:
+        break;
+    }
     return std::format("(__bound_in({}, {}, \"{}\")).{}", s.holder(), s.place(),
                        name.token, s.member());
+  }
+
+  // Whether `name` is named by what it is (`variable`), which the compiler
+  // checks a write to when it runs.
+  bool named_as_variable(const peg::Ast& name) const {
+    return slot(name) && read_check(res_.uses.at(&name)) == Check::Shadowed;
   }
 
   // Whether `target`, a name written to, is a slotted variable that refuses
   // the store: the declaration written last before it made the variable
   // immutable, as the compiler has it for a local. A name that declares is
-  // no such store, and one with no slot is the compiler's to refuse.
+  // no such store, and one with no slot, or one named as a variable, is the
+  // compiler's to refuse.
   bool immutable_write(const peg::Ast& target) const {
-    auto it = res_.uses.find(&target);
-    if (it == res_.uses.end() || it->second.symbol == resolve::kNone ||
-        declaring_.contains(&target))
+    if (!slot(target) || declaring_.contains(&target) ||
+        named_as_variable(target))
       return false;
-    size_t sym = it->second.symbol;
-    if (slots_[sym].field.empty() || own_name(it->second)) return false;
+    return immutable_at(res_.uses.at(&target).symbol, target.token.data());
+  }
+
+  // Whether the declaration of `sym` written last before `at` made it
+  // immutable.
+  bool immutable_at(size_t sym, const char* at) const {
     const auto& ds = declared_[sym];
     // A parameter is declared by its list, ahead of everything.
     std::optional<bool> mut;
     if (res_.symbols[sym].declared_as(resolve::Form::Parameter))
       mut = mut_param_[sym];
     for (const auto& d : ds)
-      if (d.at < target.token.data()) mut = d.mut;
+      if (d.at < at) mut = d.mut;
     // A store written above every declaration (in a loop, in a closure made
     // first) is refused when no declaration lets it through.
     if (!mut)
@@ -600,7 +639,7 @@ class PromotedLocals {
     std::string out;
     for (const auto& [name, sym] : res_.scopes[scope].names)
       if (!slots_[sym].box.empty() || lazy_[sym])
-        out += set_slot(sym, initial(sym));
+        out += set_slot(sym, initial(sym)) + set_immutable(sym);
     return out;
   }
 
@@ -643,7 +682,8 @@ class PromotedLocals {
       if (auto it = names.find(params[j]); it != names.end())
         value[it->second] = arg;
     }
-    for (size_t sym : order_) ctor_inits += set_slot(sym, value[sym]);
+    for (size_t sym : order_)
+      ctor_inits += set_slot(sym, value[sym]) + set_immutable(sym);
   }
 
   // Source giving every box a copy of its own: a forked frame shares the
@@ -697,20 +737,41 @@ class PromotedLocals {
                        s.box.empty() ? value : box_literal(value));
   }
 
+  // Source resetting the `mut` of a conditional variable to what it is
+  // before any of its declarations has run: none, or a parameter's own, as a
+  // plain fn's pre-declaration has it (empty for any other variable).
+  std::string set_immutable(size_t sym) const {
+    const Slot& s = slots_[sym];
+    if (s.mut_field.empty()) return {};
+    return std::format("      self.{} = {}\n", s.mut_field,
+                       static_cast<bool>(mut_param_[sym]));
+  }
+
+  // A variable an expression declares, whose `mut` is that of the
+  // declaration that ran (Compiler::Binding::conditional). Unless it is a
+  // parameter, which its list declares first, it may also be read or
+  // written before any has.
+  bool conditional(size_t sym) const {
+    return in_expression_[sym] &&
+           (lazy_[sym] || res_.symbols[sym].declared_as(resolve::Form::Parameter));
+  }
+
   // What a read at `use` asks of the slot before taking its value. Nothing
   // when a declaration has surely run: for a variable no closure reads and no
   // expression declares, and for a read in the body's own frame of one only
-  // statements declare, which run ahead of every read they reach.
+  // statements declare, which run ahead of every read they reach. The body's
+  // own frame names a conditional variable by what it is.
   enum class Check { None, Raise, Shadowed };
   Check read_check(const resolve::Use& use) const {
-    if (!lazy_[use.symbol]) return Check::None;
-    if (res_.function_of(use.scope) != body_) return Check::Raise;
-    return in_expression_[use.symbol] ? Check::Shadowed : Check::None;
+    bool in_body = res_.function_of(use.scope) == body_;
+    if (in_body && conditional(use.symbol)) return Check::Shadowed;
+    if (!in_body && lazy_[use.symbol]) return Check::Raise;
+    return Check::None;
   }
 
   // Parenthesized, so a call or a member written after the read applies to
   // what it reads (`(__bound(…))()`), not to the intrinsic's own name.
-  std::string read_at(const resolve::Use& use) const {
+  std::string read_at(const resolve::Use& use, const char* at) const {
     const auto& name = res_.symbols[use.symbol].name;
     std::string place = slots_[use.symbol].place();
     switch (read_check(use)) {
@@ -719,18 +780,32 @@ class PromotedLocals {
       case Check::Raise:
         return std::format("(__bound({}, \"{}\"))", place, name);
       case Check::Shadowed:
-        return std::format("(__bound_or({}, {}))", place, shadowed_source(use));
+        return "(" + variable(use, at) + ")";
     }
     return place;
   }
 
-  // The variable the name of the one `use` reads meant above its
-  // declaration, as a read at `use`: a slotted variable of the body declared
-  // ahead of it, or the name itself, which the compiler resolves around the
-  // body to a variable there, a stdlib global, or the NameError of a name
-  // nothing binds. A variable of the body declared further down is not yet
-  // visible there (resolve.h), and the name goes on outward past it.
-  std::string shadowed_source(const resolve::Use& use) const {
+  // `__var(p, "x", m, o)`: the variable `use` names, written at `at` in the
+  // body's own frame, which an expression declares. The compiler reads and
+  // writes it as the conditional binding it would be in a plain fn
+  // (Compiler::store_lowered): until a declaration of it has run its slot
+  // `p` holds the unbound sentinel and the name means `o`, and once one has,
+  // a write takes the `mut` that declaration wrote into `m`.
+  std::string variable(const resolve::Use& use, const char* at) const {
+    const Slot& s = slots_[use.symbol];
+    return std::format("__var({}, \"{}\", self.{}, {})", s.place(),
+                       res_.symbols[use.symbol].name, s.mut_field,
+                       shadowed_source(use, at));
+  }
+
+  // What the name of the one `use` names meant above its declaration, as an
+  // occurrence at `at`: a slotted variable of the body declared ahead of it
+  // (`__let(p, "x")` where it refuses a write there), or the name itself,
+  // which the compiler resolves around the body to a variable there, a
+  // stdlib global, or nothing. A variable of the body declared further down
+  // is not yet visible there (resolve.h), and the name goes on outward past
+  // it.
+  std::string shadowed_source(const resolve::Use& use, const char* at) const {
     const auto& sym = res_.symbols[use.symbol];
     const char* here = first_declared(use.symbol);
     for (size_t s = res_.scopes[sym.scope].parent; s != resolve::kNone;
@@ -739,10 +814,15 @@ class PromotedLocals {
       if (it == res_.scopes[s].names.end()) continue;
       size_t outer = it->second;
       if (res_.frame_of(outer) != body_) break;
-      const char* at = first_declared(outer);
-      if (at && here && at > here) continue;
+      const char* decl = first_declared(outer);
+      if (decl && here && decl > here) continue;
       if (slots_[outer].field.empty()) break;
-      return read_at({outer, use.scope, resolve::Role::Read});
+      resolve::Use above{outer, use.scope, resolve::Role::Read};
+      if (read_check(above) == Check::Shadowed) return variable(above, at);
+      std::string place = slots_[outer].place();
+      if (immutable_at(outer, at))
+        return std::format("__let({}, \"{}\")", place, sym.name);
+      return place;
     }
     return sym.name;
   }
@@ -797,11 +877,13 @@ class PromotedLocals {
   size_t body_ = resolve::kNone;
   std::vector<Slot> slots_;     // by symbol
   std::vector<char> captured_;  // by symbol: some closure names it
-  // By symbol, its declarations in the order they are written: where, and
-  // whether one leaves the variable reassignable. A parameter's is its list.
+  // By symbol, its declarations in the order they are written: where,
+  // whether one leaves the variable reassignable, and whether it is a `let`
+  // or a `mut` (rather than a bare write). A parameter's is its list.
   struct Declared {
     const char* at;
     bool mut;
+    bool keyword;
   };
   std::vector<std::vector<Declared>> declared_;
   std::vector<char> mut_param_;
@@ -833,13 +915,15 @@ inline std::string destructure_temp(const peg::Ast& pat, std::string_view name) 
 }
 
 // Bind `pat`'s promoted leaves to temporaries (destructure_temp): push the
-// edits that rename them, and return the copies into their slots, each after
-// `sep`.
+// edits that rename them, and return the copies through their targets
+// (PromotedLocals::reference), each after `sep`, left to right as a plain
+// fn's leaves bind. A copy that refuses raises at `stmt_at`, the statement,
+// where a plain fn's leaf does.
 inline MappedSource rename_pattern_leaves(const peg::Ast& pat,
                                          const std::string& src,
                                          const PromotedLocals& promoted,
                                          std::vector<SourceEdit>& out,
-                                         std::string_view sep) {
+                                         std::string_view sep, size_t stmt_at) {
   MappedSource copies;
   for_each_pattern_leaf(pat, [&](const peg::Ast& id, bool shorthand) {
     const auto* slot = promoted.slot(id);
@@ -849,10 +933,9 @@ inline MappedSource rename_pattern_leaves(const peg::Ast& pat,
     auto pos = static_cast<size_t>(id.token.data() - src.data());
     out.push_back({pos, id.token.size(),
                    shorthand ? std::format("{}: {}", name, temp) : temp});
-    // A copy that fails (a slot that cannot take the value) is the leaf's.
     copies += std::format("{} ", sep);
     copies += MappedSource::standing_for(
-        std::format("{} = {}", slot->place(), temp), src, pos);
+        std::format("{} = {}", promoted.reference(id), temp), src, stmt_at);
   });
   return copies;
 }
@@ -982,7 +1065,7 @@ inline void collect_promoted_edits(const peg::Ast& n, const std::string& src,
     auto av = view_assignment(n);
     const auto* t = assign_name_target(n, av);
     if ((av.is_let || av.is_mut) && t && is_promoted(*t)) {
-      drop_keywords(n, at(*t), t->token.size(), promoted.slot(*t)->place());
+      drop_keywords(n, at(*t), t->token.size(), promoted.reference(*t));
       rewrite_but(n, {t});
       return;
     }
@@ -1009,10 +1092,12 @@ inline void collect_promoted_edits(const peg::Ast& n, const std::string& src,
       return;
     }
   } else if (n.tag == "PLACE_ASSIGN"_) {
+    // A name named as a variable is written as one, and checks itself.
     std::vector<const peg::Ast*> names;
     for_each_place_target(
-        n, [](const peg::Ast&) {},
-        [&](const peg::Ast& name) { names.push_back(&name); });
+        n, [](const peg::Ast&) {}, [&](const peg::Ast& name) {
+          if (!promoted.named_as_variable(name)) names.push_back(&name);
+        });
     if (refuses(names)) {
       rewrite_but(n, names);
       as_locals(n, names, *n.nodes.back());
@@ -1027,12 +1112,17 @@ inline void collect_promoted_edits(const peg::Ast& n, const std::string& src,
       any = any || is_promoted(id);
       leaves.push_back(&id);
     });
-    if (refuses(leaves)) {
+    // Each leaf is written through its target (PromotedLocals::reference),
+    // which refuses a store the variable does: a flat tuple's directly, any
+    // other pattern's by a copy after it. Only an expression has nowhere to
+    // put the copies, and there a leaf that refuses makes the leaves locals.
+    bool flat = is_flat_tuple_pattern(pat);
+    if (site == EditSite::Expr && !flat && refuses(leaves)) {
       collect_promoted_edits(*dv.rhs, src, promoted, out, EditSite::Expr);
       as_locals(n, leaves, *dv.rhs);
       return;
     }
-    if (any && is_flat_tuple_pattern(pat)) {
+    if (any && flat) {
       // Dropping the keyword leaves the PLACE_ASSIGN `(<slot>, <slot>) = …`.
       if (dv.declares) drop_keywords(n, pat.position, 1, "(");
     } else if (any) {
@@ -1044,8 +1134,10 @@ inline void collect_promoted_edits(const peg::Ast& n, const std::string& src,
             "must be a statement of its own.",
             p.line, p.col);
       }
-      auto copies = rename_pattern_leaves(
-          pat, src, promoted, out, site == EditSite::Stmt ? ";" : ",");
+      auto copies =
+          rename_pattern_leaves(pat, src, promoted, out,
+                                site == EditSite::Stmt ? ";" : ",",
+                                written_at(n, src));
       out.push_back({dv.rhs->position + dv.rhs->length, 0, copies});
       collect_promoted_edits(*dv.rhs, src, promoted, out, EditSite::Expr);
       return;

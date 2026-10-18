@@ -875,7 +875,8 @@ inline void RuleWalker::walk(const peg::Ast& node) {
         syntax("left-hand side is invalid variable name.");
       } else if (av.lvalcnt > 1 &&
                  node.nodes[av.lvaloff + av.lvalcnt - 1]->original_tag ==
-                     "ARGUMENTS"_) {
+                     "ARGUMENTS"_ &&
+                 !culebra::names_lowered_variable(*node.nodes[av.lvaloff])) {
         // `f() = v`: the final postfix is a call, which has no storage. Both
         // backends fell through their lvalue switch's default and aborted
         // with a non-CulebraError (interp `logic_error`, JIT `runtime_error`).
@@ -901,7 +902,8 @@ inline void RuleWalker::walk(const peg::Ast& node) {
           [&](const peg::Ast& chain) {
             // Same certain-to-fail shape the ASSIGNMENT case rejects: a call
             // has no storage to write.
-            if (chain.nodes.back()->original_tag == "ARGUMENTS"_) {
+            if (chain.nodes.back()->original_tag == "ARGUMENTS"_ &&
+                !culebra::names_lowered_variable(*chain.nodes[0])) {
               diags_.push_back(Diagnostic{
                   "SyntaxError", "cannot assign to a function call result.",
                   static_cast<long>(node.line),

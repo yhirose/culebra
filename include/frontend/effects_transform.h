@@ -1088,7 +1088,8 @@ class EffectsLowerer {
       std::string b;
       // `let _ = …` binds nothing: the resumed value is dropped.
       const auto* slot = su.binds ? rw.slot(*su.target) : nullptr;
-      if (slot) b += std::format("      {} = {}\n", slot->place(), st.rv);
+      if (slot)
+        b += std::format("      {} = {}\n", rw.reference(*su.target), st.rv);
       if (tail) {
         std::string v = slot ? slot->place() : st.rv;
         b += std::format("      self._eff_val = {}\n", v);
@@ -1189,9 +1190,9 @@ class EffectsLowerer {
         const auto& lval = *u->nodes[av.lvaloff];
         if (lval.tag == "IDENTIFIER"_) {
           // A name around the body has no slot: it is read as it is written.
-          const auto* slot = rw.slot(lval);
-          body += std::format("      self._eff_val = {}\n",
-                              slot ? slot->place() : std::string(lval.token));
+          body += std::format(
+              "      self._eff_val = {}\n",
+              rw.slot(lval) ? rw.read(lval) : std::string(lval.token));
         }
       }
     } else if (u->tag == "DESTRUCTURE_ASSIGN"_) {
