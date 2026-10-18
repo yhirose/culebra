@@ -5395,7 +5395,8 @@ inline JitValue _ns_audio_partials(JitValue* a, int64_t) {
     sp.count.push_back(static_cast<int64_t>(heads[k + 1]));
     from += static_cast<int64_t>(heads[k + 1]);
   }
-  ad::PartialsNoise noise{false, 0, 0, 0, steady.data(), pulsed.data(), steady.size(), pulsed.size()};
+  ad::PartialsNoise noise{false, 0, 0, 0, ad::Param::points(steady.data(), steady.size(), 0.0, rate),
+                          ad::Param::points(pulsed.data(), pulsed.size(), 0.0, rate)};
   if (band.size() == 3) {
     double low = band[0], high = band[1];
     if (!(low > 0 && high > low && high < rate / 2))
@@ -5409,8 +5410,8 @@ inline JitValue _ns_audio_partials(JitValue* a, int64_t) {
   }
   auto n = ad::sample_at(seconds, rate);
   std::vector<double> out(static_cast<size_t>(n));
-  ad::partials(n, ad::Envelope(freq.data(), freq.size(), 0.0), ad::Envelope(gain.data(), gain.size(), 1.0),
-               sp, noise, rate, out.data());
+  ad::partials(n, ad::Param::points(freq.data(), freq.size(), 0.0, rate),
+               ad::Param::points(gain.data(), gain.size(), 1.0, rate), sp, std::move(noise), rate, out.data());
   return _ns_audio_samples(out, "Audio.partials() result");
 }
 // The cutoff comes as an envelope (a number is one point at 0). The answer is
@@ -5440,7 +5441,7 @@ inline JitValue _ns_audio_filter(JitValue* a, int64_t) {
     if (!(cutoff[k] > 0 && cutoff[k] < rate / 2))
       _ns_audio_fail("Audio.filter: a cutoff is above 0 and below half the rate");
   ad::filter(x.data(), static_cast<int64_t>(x.size()), kind,
-             ad::Envelope(cutoff.data(), cutoff.size(), 0.0), q, rate, x.data());
+             ad::Param::points(cutoff.data(), cutoff.size(), 0.0, rate), q, rate, x.data());
   return _ns_audio_samples(x, "Audio.filter() result");
 }
 // The answer is worked out in place of the samples.
@@ -5452,8 +5453,8 @@ inline JitValue _ns_audio_envelope(JitValue* a, int64_t) {
                    "Audio.envelope: an envelope's times are 0 or more, in the order they come");
   double rate = _ns_adapt::take_double(a[2]);
   if (!(rate > 0)) _ns_audio_fail("Audio.envelope: the rate is above 0");
-  ad::envelope(x.data(), static_cast<int64_t>(x.size()), ad::Envelope(gain.data(), gain.size(), 1.0),
-               rate, x.data());
+  ad::envelope(x.data(), static_cast<int64_t>(x.size()), ad::Param::points(gain.data(), gain.size(), 1.0, rate),
+               x.data());
   return _ns_audio_samples(x, "Audio.envelope() result");
 }
 // The parts come as their samples, an Array each, and as (at, gain) pairs end

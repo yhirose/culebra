@@ -115,43 +115,12 @@ inline int64_t alloc_id() {
 inline constexpr int64_t kScoreStride = 11;
 
 // --- Parts an instrument builds its sound from, the same on every backend ---
-
-inline constexpr auto kResonateModesError =
-    "Audio.resonate: a mode is {freq, width, gain}, each a number";
-
-// `x` through a bank of resonances, `modes` three numbers each (freq and
-// width in Hz, gain), plus `dry` of `x` itself, into `out` (as long as `x`).
-// Each is a two-pole resonator, its poles `width` wide about `freq`, scaled
-// so its peak is about `gain`.
-inline void resonate(const double* x, int64_t n, const double* modes,
-                     int64_t m, double dry, double rate, double* out) {
-  struct Ring {
-    double a1, a2, b0, y1 = 0, y2 = 0;
-  };
-  std::vector<Ring> rings;
-  rings.reserve(static_cast<size_t>(m));
-  for (int64_t k = 0; k < m; k++) {
-    double freq = modes[3 * k], width = modes[3 * k + 1], gain = modes[3 * k + 2];
-    double r = std::exp(-std::numbers::pi * width / rate);
-    double w = 2.0 * std::numbers::pi * freq / rate;
-    rings.push_back({2.0 * r * std::cos(w), -r * r, (1.0 - r) * 2.0 * std::sin(w) * gain});
-  }
-  for (int64_t i = 0; i < n; i++) {
-    double v = dry * x[i];
-    for (auto& g : rings) {
-      double y = g.b0 * x[i] + g.a1 * g.y1 + g.a2 * g.y2;
-      g.y2 = g.y1;
-      g.y1 = y;
-      v += y;
-    }
-    out[i] = v;
-  }
-}
-
-inline constexpr auto kPluckTuningsError =
-    "Audio.pluck: a tuning is {at, freq, ring}, each a number";
-inline constexpr auto kPluckStrikesError =
-    "Audio.pluck: a strike is {at, samples}, its samples numbers";
+//
+// Each part is a processor: its state, and a step that takes it one sample
+// on. The functions that work out a whole array at once (resonate, pluck,
+// filter, envelope, partials) run them in a loop, and so does a Graph as it
+// plays, so a part sounds the same either way. What a part reads that moves
+// over time is a Param.
 
 // The sample nearest `seconds` in, a tie going to the even one as Math.round
 // has it, so a part and the script that times it agree on the sample.
@@ -159,56 +128,188 @@ inline int64_t sample_at(double seconds, double rate) {
   return static_cast<int64_t>(std::nearbyint(seconds * rate));
 }
 
-// A plucked string's loop at `freq` Hz, ringing down 60 dB in `ring`
-// seconds: a whole-sample delay, an allpass for the fraction (Jaffe and
-// Smith), and the loss each pass.
-struct PluckLoop {
-  int64_t len;
-  double c, loss;
+// A change scheduled for a value, at sample `at` (which may fall between
+// samples): from then on it is `value`, or (`ramp`) it arrives there in a
+// straight line from the change before. Web Audio's setValueAtTime and
+// linearRampToValueAtTime.
+struct ParamEvent {
+  double at = 0;
+  bool ramp = false;
+  double value = 0;
 };
-inline PluckLoop pluck_loop(double freq, double ring, double rate) {
-  double period = rate / freq;
-  double whole = std::floor(period - 0.6);
-  double frac = period - 0.5 - whole;
-  return {static_cast<int64_t>(whole), (1.0 - frac) / (1.0 + frac),
-          std::pow(10.0, -3.0 / (ring * freq))};
+
+// A value a part reads, `rest` until its first change and then moved by its
+// changes; asked for at samples that only go forward.
+class Param {
+ public:
+  explicit Param(double rest = 0) : rest_(rest), value_(rest), from_value_(rest) {}
+  // A value through `n` numbers of (at, value) pairs, `at` in seconds: it
+  // holds its first value before them and its last after, moving in straight
+  // lines between; two at the same time are a step. `rest` when there are none.
+  static Param points(const double* pairs, size_t n, double rest, double rate) {
+    Param p(n >= 2 ? pairs[1] : rest);
+    for (size_t k = 0; k + 1 < n; k += 2) p.schedule({pairs[k] * rate, k > 0, pairs[k + 1]});
+    return p;
+  }
+
+  // After the changes already scheduled for the same sample.
+  void schedule(ParamEvent e) {
+    auto it = std::upper_bound(events_.begin() + static_cast<std::ptrdiff_t>(next_), events_.end(),
+                               e.at, [](double at, const ParamEvent& x) { return at < x.at; });
+    events_.insert(it, e);
+  }
+  // As before its first change, for a part worked out from the start again.
+  void rewind() {
+    value_ = from_value_ = rest_;
+    from_at_ = 0;
+    next_ = 0;
+  }
+  double at(double pos) {
+    while (next_ < events_.size()) {
+      const ParamEvent& e = events_[next_];
+      if (e.at > pos) {
+        if (!e.ramp) break;
+        return from_value_ + (e.value - from_value_) * (pos - from_at_) / (e.at - from_at_);
+      }
+      value_ = from_value_ = e.value;
+      from_at_ = e.at;
+      next_++;
+    }
+    return value_;
+  }
+
+ private:
+  std::vector<ParamEvent> events_;
+  size_t next_ = 0;
+  double rest_, value_, from_value_;
+  double from_at_ = 0;
+};
+
+inline constexpr auto kResonateModesError =
+    "Audio.resonate: a mode is {freq, width, gain}, each a number";
+
+// A two-pole resonator, its poles `width` Hz wide about `freq` Hz, scaled so
+// its peak is about `gain`.
+struct Resonator {
+  double a1, a2, b0, y1 = 0, y2 = 0;
+
+  Resonator(double freq, double width, double gain, double rate) {
+    double r = std::exp(-std::numbers::pi * width / rate);
+    double w = 2.0 * std::numbers::pi * freq / rate;
+    a1 = 2.0 * r * std::cos(w);
+    a2 = -r * r;
+    b0 = (1.0 - r) * 2.0 * std::sin(w) * gain;
+  }
+  double step(double x) {
+    double y = b0 * x + a1 * y1 + a2 * y2;
+    y2 = y1;
+    y1 = y;
+    return y;
+  }
+};
+
+// A bank of resonances, `modes` three numbers each (freq and width in Hz,
+// gain), plus `dry` of what goes in.
+struct Resonance {
+  std::vector<Resonator> modes;
+  double dry = 0;
+
+  Resonance(const double* m, int64_t count, double dry, double rate) : dry(dry) {
+    modes.reserve(static_cast<size_t>(count));
+    for (int64_t k = 0; k < count; k++) modes.emplace_back(m[3 * k], m[3 * k + 1], m[3 * k + 2], rate);
+  }
+  double step(double x) {
+    double v = dry * x;
+    for (auto& r : modes) v += r.step(x);
+    return v;
+  }
+};
+
+// `x` through a Resonance, into `out` (as long as `x`).
+inline void resonate(const double* x, int64_t n, const double* modes,
+                     int64_t m, double dry, double rate, double* out) {
+  Resonance bank(modes, m, dry, rate);
+  for (int64_t i = 0; i < n; i++) out[i] = bank.step(x[i]);
 }
 
-// `n` samples of a string (Karplus-Strong): `tunings` three numbers each (at
-// in seconds, freq in Hz, ring in seconds), in the order they come, each
-// holding until the next and the first from the start; `kick` (n long) is
-// added into the loop as it passes, the string moving on from what it holds
-// whenever its tuning changes. What the string answers passes no DC.
+inline constexpr auto kPluckTuningsError =
+    "Audio.pluck: a tuning is {at, freq, ring}, each a number";
+inline constexpr auto kPluckStrikesError =
+    "Audio.pluck: a strike is {at, samples}, its samples numbers";
+
+// A plucked string (Karplus-Strong), tuned to `freq` Hz and ringing down 60 dB
+// in `ring` seconds: a whole-sample delay, an allpass for the fraction (Jaffe
+// and Smith), and the loss each pass, its loop no longer than `size` - 1
+// samples. What goes in is added into the loop as it passes, and the string
+// moves on from what it holds whenever its tuning changes. What it answers
+// passes no DC.
+class PluckString {
+ public:
+  PluckString(int64_t size, double rate)
+      : buf_(static_cast<size_t>(size), 0.0), rate_(rate), pole_(std::pow(0.995, 44100.0 / rate)) {}
+  // The loop a string at `freq` Hz needs.
+  static int64_t loop_length(double freq, double rate) {
+    return static_cast<int64_t>(std::floor(rate / freq - 0.6));
+  }
+  void tune(double freq, double ring) {
+    if (freq == freq_ && ring == ring_) return;
+    freq_ = freq;
+    ring_ = ring;
+    double period = rate_ / freq;
+    double whole = std::floor(period - 0.6);
+    double frac = period - 0.5 - whole;
+    len_ = static_cast<int64_t>(whole);
+    c_ = (1.0 - frac) / (1.0 + frac);
+    loss_ = std::pow(10.0, -3.0 / (ring * freq));
+  }
+  double step(double kick) {
+    auto size = static_cast<int64_t>(buf_.size());
+    double read = buf_[static_cast<size_t>((w_ - len_ + size) % size)];
+    double v = 0.5 * (read + prev_) * loss_;
+    prev_ = read;
+    double ap = c_ * v + ap_in_ - c_ * ap_out_;
+    ap_in_ = v;
+    ap_out_ = ap;
+    buf_[static_cast<size_t>(w_)] = ap + kick;
+    w_ = (w_ + 1) % size;
+    dc_out_ = read - dc_in_ + pole_ * dc_out_;
+    dc_in_ = read;
+    return dc_out_;
+  }
+  // Still, as made.
+  void reset() {
+    std::ranges::fill(buf_, 0.0);
+    prev_ = ap_in_ = ap_out_ = dc_in_ = dc_out_ = 0;
+    w_ = 0;
+    freq_ = ring_ = -1;
+  }
+
+ private:
+  std::vector<double> buf_;
+  double rate_, pole_;
+  double freq_ = -1, ring_ = -1, c_ = 0, loss_ = 0;
+  int64_t len_ = 1, w_ = 0;
+  double prev_ = 0, ap_in_ = 0, ap_out_ = 0, dc_in_ = 0, dc_out_ = 0;
+};
+
+// `n` samples of a PluckString: `tunings` three numbers each (at in seconds,
+// freq in Hz, ring in seconds), in the order they come, each from its sample
+// on and the first from the start; `kick` (n long) goes in.
 inline void pluck(int64_t n, const double* tunings, int64_t nt,
                   const double* kick, double rate, double* out) {
-  std::vector<PluckLoop> loops;
-  std::vector<int64_t> from;
   int64_t longest = 1;
+  Param freq(tunings[1]), ring(tunings[2]);
   for (int64_t k = 0; k < nt; k++) {
-    loops.push_back(pluck_loop(tunings[3 * k + 1], tunings[3 * k + 2], rate));
-    from.push_back(sample_at(tunings[3 * k], rate));
-    longest = std::max(longest, loops.back().len);
+    longest = std::max(longest, PluckString::loop_length(tunings[3 * k + 1], rate));
+    auto from = static_cast<double>(sample_at(tunings[3 * k], rate));
+    freq.schedule({from, false, tunings[3 * k + 1]});
+    ring.schedule({from, false, tunings[3 * k + 2]});
   }
-  int64_t size = longest + 1;
-  std::vector<double> buf(static_cast<size_t>(size), 0.0);
-  double pole = std::pow(0.995, 44100.0 / rate);
-  double prev = 0, ap_in = 0, ap_out = 0, dc_in = 0, dc_out = 0;
-  int64_t w = 0;
-  size_t at = 0;
+  PluckString string(longest + 1, rate);
   for (int64_t i = 0; i < n; i++) {
-    while (at + 1 < loops.size() && i >= from[at + 1]) at++;
-    const PluckLoop& lp = loops[at];
-    double read = buf[static_cast<size_t>((w - lp.len + size) % size)];
-    double v = 0.5 * (read + prev) * lp.loss;
-    prev = read;
-    double ap = lp.c * v + ap_in - lp.c * ap_out;
-    ap_in = v;
-    ap_out = ap;
-    buf[static_cast<size_t>(w)] = ap + kick[i];
-    w = (w + 1) % size;
-    dc_out = read - dc_in + pole * dc_out;
-    dc_in = read;
-    out[i] = dc_out;
+    auto pos = static_cast<double>(i);
+    string.tune(freq.at(pos), ring.at(pos));
+    out[i] = string.step(kick[i]);
   }
 }
 
@@ -223,64 +324,62 @@ inline constexpr auto kMixPartsError =
 inline constexpr auto kPartialsSpectrumError =
     "Audio.partials: a spectrum is a list of (at, amps), amps a list of numbers";
 
-// A value that moves in straight lines between its points, (at, value) pairs
-// in the order they come, holding its first value before them and its last
-// after; asked for at times that only go forward.
-class Envelope {
- public:
-  Envelope(const double* pairs, size_t n, double rest) : p_(pairs), n_(n / 2), rest_(rest) {}
-  double at(double t) {
-    if (n_ == 0) return rest_;
-    while (i_ + 1 < n_ && p_[2 * (i_ + 1)] <= t) i_++;
-    double t0 = p_[2 * i_], v0 = p_[2 * i_ + 1];
-    if (t <= t0 || i_ + 1 == n_) return v0;
-    double t1 = p_[2 * (i_ + 1)], v1 = p_[2 * (i_ + 1) + 1];
-    return t1 > t0 ? v0 + (v1 - v0) * (t - t0) / (t1 - t0) : v1;
-  }
-
- private:
-  const double* p_;
-  size_t n_, i_ = 0;
-  double rest_;
-};
-
-// What filter() lets through: below its cutoff, above it, or about it.
+// What a filter lets through: below its cutoff, above it, or about it.
 enum class FilterKind { Low, High, Band };
 
-// `x` (`n` long) through a two-pole state-variable filter, trapezoidal as
-// Zavalishin and Simper write it, into `out` (which may be `x`): the low,
-// high or band output (a band's peak at 0 dB) of one state that stays sound
-// however fast `cutoff` moves, `q` its resonance (0.707 the flattest, 0.5
-// two one-pole stages). Each answers as the analog filter does through the
-// bilinear transform, as the RBJ cookbook's biquads do.
-inline void filter(const double* x, int64_t n, FilterKind kind, Envelope cutoff,
-                   double q, double rate, double* out) {
-  double k = 1.0 / q, a1 = 0, a2 = 0, a3 = 0, s1 = 0, s2 = 0, at = -1;
-  for (int64_t i = 0; i < n; i++) {
-    double f = cutoff.at(static_cast<double>(i) / rate);
-    if (f != at) {
-      at = f;
-      double g = std::tan(std::numbers::pi * f / rate);
-      a1 = 1.0 / (1.0 + g * (g + k));
-      a2 = g * a1;
-      a3 = g * a2;
-    }
-    double v3 = x[i] - s2;
+// A two-pole state-variable filter, trapezoidal as Zavalishin and Simper
+// write it: the low, high or band output (a band's peak at 0 dB) of one state
+// that stays sound however fast its cutoff moves, `q` its resonance (0.707
+// the flattest, 0.5 two one-pole stages). Each answers as the analog filter
+// does through the bilinear transform, as the RBJ cookbook's biquads do.
+struct Svf {
+  FilterKind kind = FilterKind::Low;
+  double k = 1.0 / 0.707, a1 = 0, a2 = 0, a3 = 0, s1 = 0, s2 = 0, at = -1;
+
+  Svf() = default;
+  Svf(FilterKind kind, double q) : kind(kind), k(1.0 / q) {}
+  void tune(double cutoff, double rate) {
+    if (cutoff == at) return;
+    at = cutoff;
+    double g = std::tan(std::numbers::pi * cutoff / rate);
+    a1 = 1.0 / (1.0 + g * (g + k));
+    a2 = g * a1;
+    a3 = g * a2;
+  }
+  double step(double x) {
+    double v3 = x - s2;
     double v1 = a1 * s1 + a2 * v3;
     double v2 = s2 + a2 * s1 + a3 * v3;
     s1 = 2.0 * v1 - s1;
     s2 = 2.0 * v2 - s2;
     switch (kind) {
-      case FilterKind::Low: out[i] = v2; break;
-      case FilterKind::High: out[i] = x[i] - k * v1 - v2; break;
-      case FilterKind::Band: out[i] = k * v1; break;
+      case FilterKind::Low: return v2;
+      case FilterKind::High: return x - k * v1 - v2;
+      case FilterKind::Band: return k * v1;
     }
+    return 0.0;
+  }
+  // Silent, as made.
+  void reset() {
+    s1 = s2 = 0;
+    at = -1;
+  }
+};
+
+// `x` (`n` long) through an Svf whose cutoff follows `cutoff`, into `out`
+// (which may be `x`).
+inline void filter(const double* x, int64_t n, FilterKind kind, Param cutoff,
+                   double q, double rate, double* out) {
+  Svf svf(kind, q);
+  for (int64_t i = 0; i < n; i++) {
+    svf.tune(cutoff.at(static_cast<double>(i)), rate);
+    out[i] = svf.step(x[i]);
   }
 }
 
 // `x` (`n` long) times `gain`, into `out` (which may be `x`).
-inline void envelope(const double* x, int64_t n, Envelope gain, double rate, double* out) {
-  for (int64_t i = 0; i < n; i++) out[i] = x[i] * gain.at(static_cast<double>(i) / rate);
+inline void envelope(const double* x, int64_t n, Param gain, double* out) {
+  for (int64_t i = 0; i < n; i++) out[i] = x[i] * gain.at(static_cast<double>(i));
 }
 
 // The same source of white noise, -1..1, from the same seed (a linear
@@ -304,28 +403,27 @@ struct PartialsNoise {
   bool on;
   double fast, slow;  // one-pole coefficients at the band's top and bottom
   int64_t seed;
-  const double *steady, *pulsed;
-  size_t n_steady, n_pulsed;
+  Param steady, pulsed;
 };
 
-// `n` samples of a harmonic tone: its frequency and gain envelopes, its
-// spectrum moving in straight lines between the amps given at their times
-// (the k-th of them at k times the frequency, those at or above 0.45 of the
-// rate left out), and band noise heard steadily and pulsing with the tone's
-// wave (0.5 + 0.5 sin of its phase), as air through a reed is.
-inline void partials(int64_t n, Envelope freq, Envelope gain, const PartialsSpectrum& sp,
+// `n` samples of a harmonic tone: its frequency and gain, its spectrum moving
+// in straight lines between the amps given at their times (the k-th of them
+// at k times the frequency, those at or above 0.45 of the rate left out), and
+// band noise heard steadily and pulsing with the tone's wave (0.5 + 0.5 sin
+// of its phase), as air through a reed is.
+inline void partials(int64_t n, Param freq, Param gain, const PartialsSpectrum& sp,
                      PartialsNoise noise, double rate, double* out) {
   int64_t widest = 0;
   for (int64_t c : sp.count) widest = std::max(widest, c);
   std::vector<double> amps(static_cast<size_t>(widest), 0.0);
-  Envelope steady(noise.steady, noise.n_steady, 0.0), pulsed(noise.pulsed, noise.n_pulsed, 0.0);
   Noise white{noise.seed};
   double fast = 0, slow = 0, phase = 0;
   double limit = rate * 0.45;
   size_t j = 0;
   for (int64_t i = 0; i < n; i++) {
-    double t = static_cast<double>(i) / rate;
-    double f = freq.at(t);
+    auto pos = static_cast<double>(i);
+    double t = pos / rate;
+    double f = freq.at(pos);
     phase += 2.0 * std::numbers::pi * f / rate;
     // The spectrum between the points about `t`.
     while (j + 1 < sp.at.size() && sp.at[j + 1] <= t) j++;
@@ -346,12 +444,12 @@ inline void partials(int64_t n, Envelope freq, Envelope gain, const PartialsSpec
       cur = next;
       sum += amps[static_cast<size_t>(k)] * cur;
     }
-    double v = gain.at(t) * sum;
+    double v = gain.at(pos) * sum;
     if (noise.on) {
       double w = white.next();
       fast += noise.fast * (w - fast);
       slow += noise.slow * (w - slow);
-      v += (fast - slow) * (steady.at(t) + pulsed.at(t) * (0.5 + 0.5 * s1));
+      v += (fast - slow) * (noise.steady.at(pos) + noise.pulsed.at(pos) * (0.5 + 0.5 * s1));
     }
     out[i] = v;
   }
