@@ -5229,6 +5229,38 @@ inline void _ns_audio_numbers(JitValue v, std::vector<double>& out,
 [[noreturn]] inline void _ns_audio_fail(const char* message) {
   culebra::throw_runtime_error_at("ValueError", message, 0, 0);
 }
+// The checks a part's arguments share wherever the part is made (an array
+// function or a graph), `who` starting the message.
+inline culebra::_audio_detail::FilterKind _ns_audio_filter_kind(std::string_view name, const char* who) {
+  namespace ad = culebra::_audio_detail;
+  if (name == "low") return ad::FilterKind::Low;
+  if (name == "high") return ad::FilterKind::High;
+  if (name == "band") return ad::FilterKind::Band;
+  auto message = culebra::format("{}: a filter is \"low\", \"high\" or \"band\", not {}", who, name);
+  _ns_audio_fail(message.c_str());
+}
+// `count` modes, three numbers each: a freq above 0 and below half the
+// rate, and a width above 0.
+inline void _ns_audio_check_modes(const double* modes, size_t count, double rate, const char* who) {
+  for (size_t k = 0; k < count; k++) {
+    if (!(modes[3 * k] > 0 && modes[3 * k] < rate / 2)) {
+      auto message = culebra::format("{}: a mode's freq is above 0 and below half the rate", who);
+      _ns_audio_fail(message.c_str());
+    }
+    if (!(modes[3 * k + 1] > 0)) {
+      auto message = culebra::format("{}: a mode's width is above 0", who);
+      _ns_audio_fail(message.c_str());
+    }
+  }
+}
+// A noise's seed, a whole number from 0 below 2^31; `what` names it.
+inline int64_t _ns_audio_seed(double x, const char* what) {
+  if (!(x >= 0 && x < 2147483648.0 && x == std::floor(x))) {
+    auto message = culebra::format("{} is a whole number from 0 below 2^31", what);
+    _ns_audio_fail(message.c_str());
+  }
+  return static_cast<int64_t>(x);
+}
 // A Sound from samples goes to every backend as the WAV bytes of a file; no
 // samples is a silent handle, with nothing for a decoder to refuse.
 inline JitValue _ns_audio_sound_samples(JitValue* a, int64_t) {
@@ -5296,11 +5328,7 @@ inline JitValue _ns_audio_resonate(JitValue* a, int64_t) {
   double dry = _ns_adapt::take_double(a[2]);
   double rate = _ns_adapt::take_double(a[3]);
   if (!(rate > 0)) _ns_audio_fail("Audio.resonate: the rate is above 0");
-  for (size_t k = 0; k + 2 < modes.size(); k += 3) {
-    if (!(modes[k] > 0 && modes[k] < rate / 2))
-      _ns_audio_fail("Audio.resonate: a mode's freq is above 0 and below half the rate");
-    if (!(modes[k + 1] > 0)) _ns_audio_fail("Audio.resonate: a mode's width is above 0");
-  }
+  _ns_audio_check_modes(modes.data(), modes.size() / 3, rate, "Audio.resonate");
   std::vector<double> out(x.size());
   ad::resonate(x.data(), static_cast<int64_t>(x.size()), modes.data(),
                static_cast<int64_t>(modes.size() / 3), dry, rate, out.data());
@@ -5401,12 +5429,10 @@ inline JitValue _ns_audio_partials(JitValue* a, int64_t) {
     double low = band[0], high = band[1];
     if (!(low > 0 && high > low && high < rate / 2))
       _ns_audio_fail("Audio.partials: the noise's low and high are above 0, in order, and below half the rate");
-    if (!(band[2] >= 0 && band[2] < 2147483648.0 && band[2] == std::floor(band[2])))
-      _ns_audio_fail("Audio.partials: the noise's seed is a whole number from 0 below 2^31");
+    noise.seed = _ns_audio_seed(band[2], "Audio.partials: the noise's seed");
     noise.on = true;
     noise.fast = 1.0 - std::exp(-2.0 * std::numbers::pi * high / rate);
     noise.slow = 1.0 - std::exp(-2.0 * std::numbers::pi * low / rate);
-    noise.seed = static_cast<int64_t>(band[2]);
   }
   auto n = ad::sample_at(seconds, rate);
   std::vector<double> out(static_cast<size_t>(n));
@@ -5425,15 +5451,7 @@ inline JitValue _ns_audio_filter(JitValue* a, int64_t) {
                    "Audio.filter: a cutoff's times are 0 or more, in the order they come");
   double q = _ns_adapt::take_double(a[3]);
   double rate = _ns_adapt::take_double(a[4]);
-  ad::FilterKind kind = ad::FilterKind::Low;
-  if (name == "high") {
-    kind = ad::FilterKind::High;
-  } else if (name == "band") {
-    kind = ad::FilterKind::Band;
-  } else if (name != "low") {
-    auto message = culebra::format("Audio.filter: a filter is \"low\", \"high\" or \"band\", not {}", name);
-    _ns_audio_fail(message.c_str());
-  }
+  ad::FilterKind kind = _ns_audio_filter_kind(name, "Audio.filter");
   if (!(rate > 0)) _ns_audio_fail("Audio.filter: the rate is above 0");
   if (!(q > 0)) _ns_audio_fail("Audio.filter: the q is above 0");
   if (cutoff.empty()) _ns_audio_fail("Audio.filter: a filter has a cutoff");
@@ -5575,30 +5593,16 @@ inline JitValue _ns_audio_graph_part(JitValue* a, int64_t) {
     _ns_audio_fail(message.c_str());
   }
   if (family == "noise") {
-    if (!(opt[0] >= 0 && opt[0] < 2147483648.0 && opt[0] == std::floor(opt[0])))
-      _ns_audio_fail("Audio.Graph: a noise's seed is a whole number from 0 below 2^31");
-    return made(ad::PartKind::Noise, ad::Noise{static_cast<int64_t>(opt[0])});
+    return made(ad::PartKind::Noise, ad::Noise{_ns_audio_seed(opt[0], "Audio.Graph: a noise's seed")});
   }
   if (family == "filter") {
-    ad::FilterKind f = ad::FilterKind::Low;
-    if (kind == "high") {
-      f = ad::FilterKind::High;
-    } else if (kind == "band") {
-      f = ad::FilterKind::Band;
-    } else if (kind != "low") {
-      auto message = culebra::format("Audio.Graph: a filter is \"low\", \"high\" or \"band\", not {}", kind);
-      _ns_audio_fail(message.c_str());
-    }
+    ad::FilterKind f = _ns_audio_filter_kind(kind, "Audio.Graph");
     if (!(opt[1] > 0)) _ns_audio_fail("Audio.Graph: the q is above 0");
     return made(ad::PartKind::Filter, ad::Svf(f, opt[1]), opt[0]);
   }
   if (family == "gain") return made(ad::PartKind::Gain, std::monostate{}, opt[0]);
   if (family == "resonate") {
-    for (size_t k = 1; k + 2 < opt.size(); k += 3) {
-      if (!(opt[k] > 0 && opt[k] < rate / 2))
-        _ns_audio_fail("Audio.Graph: a mode's freq is above 0 and below half the rate");
-      if (!(opt[k + 1] > 0)) _ns_audio_fail("Audio.Graph: a mode's width is above 0");
-    }
+    _ns_audio_check_modes(opt.data() + 1, (opt.size() - 1) / 3, rate, "Audio.Graph");
     return made(ad::PartKind::Resonate,
                 ad::Resonance(opt.data() + 1, static_cast<int64_t>((opt.size() - 1) / 3), opt[0], rate));
   }
