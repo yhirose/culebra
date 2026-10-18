@@ -750,6 +750,19 @@ effect fn sf_member(o) {
 }
 assert_eq(handle { sf_member({self: 9}) } with sf_ask(resume) { resume(nil) }, 9)
 
+// A handle written in another's clause has clauses of its own.
+effect fn sf_tell()
+assert_eq(
+  handle {
+  perform sf_ask()
+} with sf_ask(resume) {
+    resume(handle { perform sf_tell() + 1 } with sf_tell(inner) { inner(40) })
+  },
+  41,
+)
+assert_eq(handle { perform sf_ask() } with sf_ask(k1) { k1(handle { perform sf_tell() } with sf_tell(k2) { k2(handle { perform sf_ask() } with sf_ask(k3) { k3(7) }) }) }, 7)
+assert_eq(handle { 1 } with return(v1) { handle { v1 + 1 } with return(v2) { handle { v2 + 1 } with return(v3) { v3 * 10 } } }, 30)
+
 // A function from outside, called bare in either body, is called with no
 // receiver — the same rewrite the generator lowering shares.
 effect fn sf_comp() {

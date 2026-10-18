@@ -1927,12 +1927,15 @@ class EffectsLowerer {
   // `handle { BODY } with op1(params) { H1 } … with return(v) { R }` ->
   //   __Eff.handle(
   //     (fn() { class _EffBody…; _EffBody….new() })(),
-  //     { op1: fn(_eh_args, _eh_resume) { <bind op-args>; let <resume> =
-  //             _eh_resume; H1 }, op2: … },
-  //     fn(_eh_val) { let v = _eh_val; R })   // the return-clause map, or nil
+  //     { op1: fn(_eh_args…, _eh_resume…) { <bind op-args>; let <resume> =
+  //             _eh_resume…; H1 }, op2: … },
+  //     fn(_eh_val…) { let v = _eh_val…; R })  // the return-clause map, or nil
   // Each op `with` clause becomes one entry of the handler frame; `_find` (in
   // effects.cul) looks an operation up in the dynamically-scoped frame stack.
-  // The optional `with return` clause maps the normal-completion value.
+  // The optional `with return` clause maps the normal-completion value. Every
+  // name the lowering synthesizes for a handle carries the handle's position
+  // in the user's source (`…` above), so a handle written inside another's
+  // clause declares its own rather than shadowing the enclosing one's.
   std::shared_ptr<peg::Ast> lower_handle(std::shared_ptr<peg::Ast> ast) {
     using namespace peg::udl;
     const auto& body = *ast->nodes[0];
@@ -1951,11 +1954,19 @@ class EffectsLowerer {
     // box (hand the nested computation the boxes it names) would leave one
     // mechanism; it has not been done.
     bool captures = captures_outer(*ast);
-    auto self_name = std::format("_eff_self_{}_{}", ast->line, ast->column);
-
-    auto class_name = std::format("{}{}_{}", culebra::kEffectBodyClassPrefix,
-                                  ast->line, ast->column);
-    auto rv_name = std::format("_rv_{}_{}", ast->line, ast->column);
+    // Named for the handle's place in the user's source, not in the fragment
+    // it was re-parsed from: a fragment can put a nested handle exactly where
+    // the enclosing one sat in its own.
+    auto at = err_pos(*ast);
+    auto named = [&](std::string_view stem) {
+      return std::format("{}{}_{}", stem, at.line, at.col);
+    };
+    auto self_name = named("_eff_self_");
+    auto class_name = named(culebra::kEffectBodyClassPrefix);
+    auto rv_name = named("_rv_");
+    auto args_name = named("_eh_args_");
+    auto resume_param = named("_eh_resume_");
+    auto val_name = named("_eh_val_");
     std::vector<std::string_view> body_params;
     if (captures) body_params.push_back("_eff_outer");
     std::string cls =
@@ -1964,7 +1975,7 @@ class EffectsLowerer {
 
     // Build the handler frame `{ op: adapter, … }` over every op `with` clause,
     // plus an optional `with return(v) { … }` that maps the normal-completion
-    // value. An adapter binds the operation's args from _eh_args[i], then names
+    // value. An adapter binds the operation's args from its args list, then names
     // the last parameter as the one-shot resume continuation.
     std::string frame = "{";
     std::string return_fn = "nil";  // the return-clause adapter, or nil
@@ -1991,9 +2002,8 @@ class EffectsLowerer {
         reject_yield_in_clause(*clause.nodes[1]);
         auto vn = view_parameter(*params.nodes[0]).name;
         std::string ret_src = clause_source(*clause.nodes[1], captures, self_name);
-        return_fn = std::format(
-            "fn(_eh_val) {{\n      let {} = _eh_val\n      {}\n    }}",
-            std::string(vn), ret_src);
+        return_fn = std::format("fn({0}) {{\n      let {1} = {0}\n      {2}\n    }}",
+                                val_name, std::string(vn), ret_src);
         continue;
       }
 
@@ -2019,17 +2029,20 @@ class EffectsLowerer {
       size_t nparams = params.nodes.size();
       for (size_t i = 0; i + 1 < nparams; i++) {
         auto pn = view_parameter(*params.nodes[i]).name;
-        binds += std::format("      let {} = _eh_args[{}]\n", std::string(pn), i);
+        binds += std::format("      let {} = {}[{}]\n", std::string(pn),
+                             args_name, i);
       }
       auto resume_name = view_parameter(*params.nodes[nparams - 1]).name;
-      binds += std::format("      let {} = _eh_resume\n", std::string(resume_name));
+      binds += std::format("      let {} = {}\n", std::string(resume_name),
+                           resume_param);
       reject_yield_in_clause(handler_body);
       std::string handler_src = clause_source(handler_body, captures, self_name);
       if (!first_op) frame += ",";
       first_op = false;
       frame += std::format(
-          "\n    {0}: {{t: \"{3}\", f: fn(_eh_args, _eh_resume) {{\n{1}      {2}\n    }}}}",
-          op, binds, handler_src, classify_clause(handler_body, resume_name));
+          "\n    {0}: {{t: \"{3}\", f: fn({4}, {5}) {{\n{1}      {2}\n    }}}}",
+          op, binds, handler_src, classify_clause(handler_body, resume_name),
+          args_name, resume_param);
     }
     frame += "}";
 
