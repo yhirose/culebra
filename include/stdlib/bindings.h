@@ -5561,8 +5561,7 @@ inline JitValue _ns_audio_graph_part(JitValue* a, int64_t) {
   if (!counted)
     culebra::throw_runtime_error_at("TypeError", "type error: an Audio.Graph part is set up by numbers", 0, 0);
   auto made = [&](ad::PartKind k, decltype(ad::GraphPart::processor) proc, double v0 = 0, double v1 = 0) {
-    int count = k == ad::PartKind::Pluck ? 2 : k == ad::PartKind::Noise || k == ad::PartKind::Resonate ? 0 : 1;
-    for (int value = 0; value < count; value++)
+    for (int value = 0; value < ad::value_count(k); value++)
       if (auto* bad = _ns_audio_graph_bad_value(k, rate, value, value == 0 ? v0 : v1)) _ns_audio_fail(bad);
     return _ns_adapt::v_long(g.add(k, std::move(inputs), std::move(proc), v0, v1));
   };

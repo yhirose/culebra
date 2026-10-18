@@ -525,6 +525,17 @@ struct Oscillator {
 
 enum class PartKind { Wave, Noise, Filter, Gain, Resonate, Pluck };
 
+// How many values a part of `kind` reads: a wave's freq, a filter's cutoff,
+// a gain's gain, a string's freq and ring.
+inline int value_count(PartKind kind) {
+  switch (kind) {
+    case PartKind::Noise:
+    case PartKind::Resonate: return 0;
+    case PartKind::Pluck: return 2;
+    default: return 1;
+  }
+}
+
 inline constexpr int kGraphBlock = 128;
 // The lowest a graph's string is tuned, which sizes its loop.
 inline constexpr double kGraphPluckLowest = 20.0;
@@ -572,7 +583,7 @@ class Graph {
   void make_room(std::vector<size_t>& room) {
     room.clear();
     for (auto& p : parts_)
-      for (auto& v : p.values) room.push_back(v.make_room(kGraphLiveRoom));
+      for (int k = 0; k < 2; k++) room.push_back(k < value_count(p.kind) ? p.values[k].make_room(kGraphLiveRoom) : 0);
   }
   // A change to a copy being played, on the audio thread, into `longer` when
   // it comes with one (Param::take_list): false when there is no room.
@@ -599,7 +610,8 @@ class Graph {
       std::fill(in, in + n, 0.0);
       for (int k : p.inputs)
         for (int i = 0; i < n; i++) in[i] += parts_[static_cast<size_t>(k)].out[i];
-      for (int i = 0; i < n; i++) v0[i] = p.values[0].at(static_cast<double>(pos_ + i) / rate_);
+      if (value_count(p.kind) > 0)
+        for (int i = 0; i < n; i++) v0[i] = p.values[0].at(static_cast<double>(pos_ + i) / rate_);
       switch (p.kind) {
         case PartKind::Wave: {
           auto& w = std::get<Oscillator>(p.processor);
