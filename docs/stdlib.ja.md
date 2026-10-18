@@ -8215,7 +8215,7 @@ isolateごとに別の索引を持たせる。
 ## 40. `Audio`
 
 どのプログラムでも使える音: WASM-4流のtone、ワンショットのサンプル、ストリーム
-再生の音楽、スクリプトが合成するPCMとそれを組み立てるネイティブの部品、マイク、Kauaiで書いた曲。`Audio`は音声デバイスを単独で持ち、
+再生の音楽、スクリプトが合成するPCMとそれを組み立てるネイティブの部品、部品をつないで鳴らしながら計算するグラフ、マイク、Kauaiで書いた曲。`Audio`は音声デバイスを単独で持ち、
 ウィンドウを必要としないので、`Canvas`で描くプログラムでも、`Scene`で描く
 プログラムでも、何も描かないプログラムでも同じように動く。デバイスは初回使用時に
 開き、何も鳴らさないプログラムはデバイスを開かない。
@@ -8452,6 +8452,79 @@ let opened = Audio.filter(tone, "low", [(0.0, 400.0), (0.25, 4000.0)], q: 2.0)
 let faded = Audio.envelope(opened, [(0.4, 1.0), (0.5, 0.0)])
 let both = Audio.mix([faded, {samples: string, at: 0.1, gain: 0.5}])
 println(both.size())                                                     # => 48510
+```
+
+### グラフ
+
+上の関数は、鳴らす前に音を全部計算する。`Audio.Graph`は部品をつないでおき、
+鳴っている間にruntimeが音声スレッドでブロックごとに計算する。そのため、音は
+どれだけ長くてもすぐに鳴り始め、鳴っている間に値を変えると、デバイスのバッファ
+の分だけ遅れて聞こえる。部品は上の関数と同じもので、サンプルまで同じ音になる。
+`render(seconds)`は`play()`が鳴らす音を返す。
+
+グラフの下のメソッドは、それぞれ部品を1つ足し、それを`GraphPart`として返す。
+部品は、渡された部品を足し合わせたものを受け取る。グラフが鳴らす部品は
+`output(part)`で決める。グラフは、グラフ自身とその部品・値への最後の参照が
+なくなったときに止まり、解放される。
+
+| 関数・メソッド | 効果 |
+| --- | --- |
+| `Audio.Graph.new(rate = 44100)` | 空のグラフ |
+| `g.wave(kind = "sine", freq = 440.0)` | `freq` Hzの-1から1の波。`"sine"`、`"saw"`、`"square"`（この2つは段差をなめらかにして、`rate`の半分より上からの折り返しを抑えてある）、`"triangle"` |
+| `g.noise(seed = 1)` | -1から1の白色雑音。同じ`seed`なら同じになる |
+| `g.filter(kind, input, cutoff = 1000.0, q = 0.707)` | `input`を`Audio.filter`と同じフィルタに通す |
+| `g.gain(input, gain = 1.0)` | `input`を`gain`倍する |
+| `g.mix(inputs: Array, gain = 1.0)` | `inputs`を足し合わせて`gain`倍する |
+| `g.resonate(input, modes: Array, dry = 0.0)` | `input`を`Audio.resonate`と同じ共鳴の集まりに通す |
+| `g.pluck(input, freq = 220.0, ring = 2.0)` | `Audio.pluck`と同じ弦。`input`をストロークと同じように弦に足し込む |
+| `g.output(part)` | グラフが鳴らす部品（決めるまでは無音） |
+| `g.render(seconds) -> Array` | グラフの最初の`seconds`秒を、始まりから今計算する |
+| `g.play()` | グラフを始まりから鳴らす（鳴っていれば始まりからやり直す） |
+| `g.stop()` | 止める |
+| `g.now() -> Float` | 今行った変更が、グラフの時計のどこに入るか。鳴っていなければ`0.0` |
+
+部品の中で動くものは値と呼び、波の`freq`、フィルタの`cutoff`、gainの`gain`、
+弦の`freq`と`ring`が、それぞれ部品のフィールドになっている。値は最初の変更まで
+部品を作ったときの値のままで、変更はグラフの時計（始まりからの秒）の上に予約する。
+
+| メソッド | 効果 |
+| --- | --- |
+| `value.set(at, v)` | `at`から値を`v`にする |
+| `value.ramp(at, v)` | 1つ前の変更（無ければ始まり）から直線で動かし、`at`で`v`にする |
+
+どちらも値を返すので、変更はつなげて書ける。予約する順番は自由で、それぞれの
+時刻に効く。グラフは予約をすべて覚えていて、`render`するときも鳴らすときも
+始まりから計算する。鳴っている間の予約は鳴っているグラフにも届き、過ぎた時刻の
+予約はすぐに効く。Web Audioの`setValueAtTime`と`linearRampToValueAtTime`に
+あたるので、曲の音符は`Audio.Kauai`がしているように前もって予約できる。
+
+次はどれも`ValueError`になる。名前の挙がっていない種類。別のグラフの部品。
+範囲外の値（波のfreqが0未満か`rate`の半分以上、cutoffが0以下か`rate`の半分以上、
+gainが有限の数でない、弦のfreqが20 Hz未満か`rate`の半分以上、ringが0以下）。
+0未満の時刻。0以下の`q`。`Audio.resonate`が受け付けないモード。3つの数を持つ
+オブジェクトでないモードは`TypeError`。グラフは`rate`が44100のときだけ鳴らせ、
+同時に鳴らせるのは64個まで（超えると`ValueError`）。デバイスが無いときは何も
+鳴らず、`now()`は`play()`からの時間を返す。ブラウザではグラフは`render`できるが、
+まだ鳴らせない。
+
+```culebra
+# A saw through a low-pass that closes over its first 0.3 s, faded in and out.
+let g = Audio.Graph.new()
+let lp = g.filter("low", g.wave("saw", freq: 110.0), cutoff: 3000.0, q: 2.0)
+let amp = g.gain(lp, 0.0)
+g.output(amp)
+lp.cutoff.ramp(0.3, 500.0)
+amp.gain.ramp(0.01, 0.5).ramp(0.4, 0.4).ramp(0.5, 0.0)
+let sound = g.render(0.5)
+println(sound.size())  # => 22050
+g.play()
+
+# The saw alone, through Audio.filter: the same samples.
+let saw = Audio.Graph.new()
+saw.output(saw.wave("saw", freq: 110.0))
+let swept = Audio.filter(saw.render(0.5), "low", [(0.0, 3000.0), (0.3, 500.0)], q: 2.0)
+let faded = Audio.envelope(swept, [(0.0, 0.0), (0.01, 0.5), (0.4, 0.4), (0.5, 0.0)])
+println(iota(22050).all(|i| Math.abs(sound[i] - faded[i]) < 1e-9))  # => true
 ```
 
 ### Capture

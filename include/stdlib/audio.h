@@ -22,12 +22,14 @@
 #include <stdlib/pcm_block.h>
 
 #include <algorithm>
+#include <chrono>
 #include <climits>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <numbers>
 #include <unordered_map>
+#include <variant>
 #include <vector>
 
 // The table above, decided once.
@@ -111,6 +113,9 @@ inline int64_t alloc_id() {
   return ++n;
 }
 
+// The rate the mixer runs at, which a graph played must have.
+inline constexpr double kMixerRate = 44100;
+
 // Numbers an event takes in a score's flat list (score_new).
 inline constexpr int64_t kScoreStride = 11;
 
@@ -158,11 +163,18 @@ class Param {
                                e.at, [](double at, const ParamEvent& x) { return at < x.at; });
     events_.insert(it, e);
   }
-  // As before its first change, for a part worked out from the start again.
-  void rewind() {
-    value_ = from_value_ = rest_;
-    from_at_ = 0;
-    next_ = 0;
+  // Room for `extra` changes more without allocating.
+  void make_room(size_t extra) { events_.reserve(events_.size() + extra); }
+  // schedule() that never allocates: the changes already passed make room
+  // when there is none, and false when there is still none.
+  bool schedule_in_place(ParamEvent e) {
+    if (events_.size() == events_.capacity()) {
+      if (next_ == 0) return false;
+      events_.erase(events_.begin(), events_.begin() + static_cast<std::ptrdiff_t>(next_));
+      next_ = 0;
+    }
+    schedule(e);
+    return true;
   }
   double at(double pos) {
     while (next_ < events_.size()) {
@@ -455,6 +467,182 @@ inline void partials(int64_t n, Param freq, Param gain, const PartialsSpectrum& 
   }
 }
 
+// --- Graph: parts wired together, worked out as they play or ahead ---------
+
+enum class WaveKind { Sine, Saw, Square, Triangle };
+
+// The step a band-limited saw or square smooths at its jump (polyBLEP), `t`
+// the phase 0..1 and `dt` its step a sample.
+inline double poly_blep(double t, double dt) {
+  if (t < dt) {
+    t /= dt;
+    return t + t - t * t - 1.0;
+  }
+  if (t > 1.0 - dt) {
+    t = (t - 1.0) / dt;
+    return t * t + t + t + 1.0;
+  }
+  return 0.0;
+}
+
+// A wave from -1 to 1: a sine, a saw or a square whose jumps are smoothed so
+// little of it folds back from above half the rate (polyBLEP), or a triangle.
+struct Oscillator {
+  WaveKind kind;
+  double phase = 0;
+
+  double step(double freq, double rate) {
+    double t = phase, dt = freq / rate, y;
+    switch (kind) {
+      case WaveKind::Sine: y = std::sin(2.0 * std::numbers::pi * t); break;
+      case WaveKind::Saw: y = 2.0 * t - 1.0 - poly_blep(t, dt); break;
+      case WaveKind::Square: {
+        double half = t + 0.5 - std::floor(t + 0.5);
+        y = (t < 0.5 ? 1.0 : -1.0) + poly_blep(t, dt) - poly_blep(half, dt);
+        break;
+      }
+      default: y = 4.0 * std::abs(t - std::floor(t + 0.5)) - 1.0; break;
+    }
+    phase = t + dt - std::floor(t + dt);
+    return y;
+  }
+};
+
+enum class PartKind { Wave, Noise, Filter, Gain, Resonate, Pluck };
+
+inline constexpr int kGraphBlock = 128;
+// The lowest a graph's string is tuned, which sizes its loop.
+inline constexpr double kGraphPluckLowest = 20.0;
+// How many graphs play at once: the mixer's list of them never grows.
+inline constexpr size_t kGraphsPlaying = 64;
+// Changes a playing graph's value takes on top of those it was played with
+// before the audio thread drops one rather than allocate.
+inline constexpr size_t kGraphLiveRoom = 256;
+
+struct GraphPart {
+  PartKind kind;
+  std::vector<int> inputs;  // parts made before it, added together
+  Param values[2];          // see Graph::kValueNames
+  std::variant<std::monostate, Oscillator, Noise, Svf, Resonance, PluckString> processor;
+  double out[kGraphBlock] = {};
+};
+
+// Parts wired together, each reading the sum of the parts it takes in (made
+// before it); what the graph answers is one part's. Every part and value is
+// worked out a sample at a time, in blocks that fall at the same samples
+// however the samples are asked for, so a graph played and a graph rendered
+// answer the same. The graph a program builds is never worked out itself:
+// rendering or playing one works out a copy, from the start.
+class Graph {
+ public:
+  explicit Graph(double rate) : rate_(rate) {}
+  double rate() const { return rate_; }
+  size_t size() const { return parts_.size(); }
+  PartKind kind(int part) const { return parts_[static_cast<size_t>(part)].kind; }
+
+  int add(PartKind kind, std::vector<int> inputs, decltype(GraphPart::processor) processor,
+          double rest0 = 0, double rest1 = 0) {
+    parts_.push_back(GraphPart{kind, std::move(inputs), {Param(rest0), Param(rest1)}, std::move(processor)});
+    return static_cast<int>(parts_.size()) - 1;
+  }
+  void output(int part) { out_ = part; }
+  void schedule(int part, int value, ParamEvent e) {
+    parts_[static_cast<size_t>(part)].values[value].schedule(e);
+  }
+  // Room in every value for `kGraphLiveRoom` changes more, so a copy being
+  // played takes changes without allocating.
+  void make_room() {
+    for (auto& p : parts_)
+      for (auto& v : p.values) v.make_room(kGraphLiveRoom);
+  }
+  // A change to a copy being played, on the audio thread: false when there
+  // is no room left for it.
+  bool schedule_in_place(int part, int value, ParamEvent e) {
+    return parts_[static_cast<size_t>(part)].values[value].schedule_in_place(e);
+  }
+
+  // The next `n` samples into `out`.
+  void render(double* out, int64_t n) {
+    for (int64_t done = 0; done < n;) {
+      int m = static_cast<int>(std::min<int64_t>(kGraphBlock - pos_ % kGraphBlock, n - done));
+      block(m);
+      for (int i = 0; i < m; i++) out[done + i] = out_ >= 0 ? parts_[static_cast<size_t>(out_)].out[i] : 0.0;
+      done += m;
+    }
+  }
+
+ private:
+  void block(int n) {
+    double in[kGraphBlock], v0[kGraphBlock], v1[kGraphBlock];
+    for (auto& p : parts_) {
+      std::fill(in, in + n, 0.0);
+      for (int k : p.inputs)
+        for (int i = 0; i < n; i++) in[i] += parts_[static_cast<size_t>(k)].out[i];
+      for (int i = 0; i < n; i++) v0[i] = p.values[0].at(static_cast<double>(pos_ + i));
+      switch (p.kind) {
+        case PartKind::Wave: {
+          auto& w = std::get<Oscillator>(p.processor);
+          for (int i = 0; i < n; i++) p.out[i] = w.step(v0[i], rate_);
+          break;
+        }
+        case PartKind::Noise: {
+          auto& z = std::get<Noise>(p.processor);
+          for (int i = 0; i < n; i++) p.out[i] = z.next();
+          break;
+        }
+        case PartKind::Filter: {
+          auto& f = std::get<Svf>(p.processor);
+          for (int i = 0; i < n; i++) {
+            f.tune(v0[i], rate_);
+            p.out[i] = f.step(in[i]);
+          }
+          break;
+        }
+        case PartKind::Gain:
+          for (int i = 0; i < n; i++) p.out[i] = in[i] * v0[i];
+          break;
+        case PartKind::Resonate: {
+          auto& r = std::get<Resonance>(p.processor);
+          for (int i = 0; i < n; i++) p.out[i] = r.step(in[i]);
+          break;
+        }
+        case PartKind::Pluck: {
+          auto& s = std::get<PluckString>(p.processor);
+          for (int i = 0; i < n; i++) v1[i] = p.values[1].at(static_cast<double>(pos_ + i));
+          for (int i = 0; i < n; i++) {
+            s.tune(v0[i], v1[i]);
+            p.out[i] = s.step(in[i]);
+          }
+          break;
+        }
+      }
+    }
+    pos_ += n;
+  }
+
+  double rate_;
+  std::vector<GraphPart> parts_;
+  int out_ = -1;
+  int64_t pos_ = 0;
+};
+
+// The graphs a program has made, by handle: the same on every backend, so one
+// renders anywhere. Main thread only.
+inline std::unordered_map<int64_t, Graph>& graph_defs() {
+  static std::unordered_map<int64_t, Graph> defs;
+  return defs;
+}
+inline Graph* graph_def(int64_t id) {
+  auto it = graph_defs().find(id);
+  return it == graph_defs().end() ? nullptr : &it->second;
+}
+// The graphs playing, by handle, and when each started on the monotonic
+// clock: what graph_now answers with no device to keep time.
+inline std::unordered_map<int64_t, std::chrono::steady_clock::time_point>& graphs_playing() {
+  static std::unordered_map<int64_t, std::chrono::steady_clock::time_point> playing;
+  return playing;
+}
+
 #if defined(CULEBRA_AUDIO_BROWSER)
 
 // The page owns WebAudio and each handle's settings; these post commands to it
@@ -634,6 +822,13 @@ void score_stop(int64_t id);
 void score_volume(int64_t id, double v);
 // How much of the room the score plays in is heard with it, 0 for none.
 void score_room(int64_t id, double wet);
+// A graph played: a copy the mixer works out from the next sample on, the
+// changes scheduled after that sent on to it. graph_now answers where on the
+// graph's clock a change made now lands, NaN when it is not playing.
+void graph_play(int64_t id);
+void graph_stop(int64_t id);
+void graph_post(int64_t id, int part, int value, ParamEvent e);
+double graph_now(int64_t id);
 
 #endif
 
@@ -735,6 +930,15 @@ CULEBRA_RT_AUDIO_LINKAGE bool capture_running(int64_t) { return false; }
 CULEBRA_RT_AUDIO_LINKAGE int64_t capture_waiting(int64_t) { return 0; }
 CULEBRA_RT_AUDIO_LINKAGE void capture_read(int64_t, int64_t,
                                            std::vector<float>&) {}
+#endif
+
+// A graph renders everywhere, and plays on a device alone: the browser has no
+// backend for one yet.
+#if !defined(CULEBRA_AUDIO_DEVICE)
+CULEBRA_RT_AUDIO_LINKAGE void graph_play(int64_t) {}
+CULEBRA_RT_AUDIO_LINKAGE void graph_stop(int64_t) {}
+CULEBRA_RT_AUDIO_LINKAGE void graph_post(int64_t, int, int, ParamEvent) {}
+CULEBRA_RT_AUDIO_LINKAGE double graph_now(int64_t) { return std::nan(""); }
 #endif
 
 #undef CULEBRA_RT_AUDIO_LINKAGE

@@ -1347,7 +1347,8 @@ inline bool is_stdlib_type_name(std::string_view name) {
   static constexpr std::string_view kNames[] = {
       "Any",       "Capture",  "ChannelResult", "Closed",       "Comparable",
       "Deque",     "Dir",      "DiskDir",       "Duration",     "EmbedDir",
-      "Empty",     "Eq",       "Font",          "Generator",    "Hashable",
+      "Empty",     "Eq",       "Font",          "Generator",    "Graph",
+      "GraphPart", "GraphValue", "Hashable",
       "IndexMap",  "Input",    "Instant",       "Iterable",     "Iterator",
       "Map",       "MemoryDir", "Message",      "Music",        "PCM",
       "PEG",       "Path",     "PriorityQueue", "Range",        "Regex",

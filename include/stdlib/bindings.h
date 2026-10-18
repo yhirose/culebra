@@ -5486,6 +5486,198 @@ inline JitValue _ns_audio_mix(JitValue* a, int64_t) {
   }
   return _ns_audio_samples(out, "Audio.mix() result");
 }
+// --- Audio.Graph ---
+inline culebra::_audio_detail::Graph& _ns_audio_graph(JitValue v) {
+  auto* g = culebra::_audio_detail::graph_def(_ns_adapt::take_long(v));
+  if (!g) _ns_audio_fail("Audio.Graph: the graph was freed");
+  return *g;
+}
+// What is wrong with `v` as value `value` of a part of `kind` in a graph of
+// `rate`, or nullptr.
+inline const char* _ns_audio_graph_bad_value(culebra::_audio_detail::PartKind kind, double rate,
+                                             int value, double v) {
+  namespace ad = culebra::_audio_detail;
+  double half = rate / 2;
+  switch (kind) {
+    case ad::PartKind::Wave:
+      return value == 0 && v >= 0 && v < half ? nullptr
+                                              : "Audio.Graph: a wave's freq is 0 or more and below half the rate";
+    case ad::PartKind::Filter:
+      return value == 0 && v > 0 && v < half ? nullptr
+                                             : "Audio.Graph: a cutoff is above 0 and below half the rate";
+    case ad::PartKind::Gain:
+      return value == 0 && std::isfinite(v) ? nullptr : "Audio.Graph: a gain is a finite number";
+    case ad::PartKind::Pluck:
+      if (value == 0)
+        return v >= ad::kGraphPluckLowest && v < half
+                   ? nullptr
+                   : "Audio.Graph: a string's freq is 20 or more and below half the rate";
+      return value == 1 && v > 0 && std::isfinite(v) ? nullptr : "Audio.Graph: a string's ring is above 0";
+    default:
+      return "Audio.Graph: that part has no value to change";
+  }
+}
+// A part of the graph, by its number.
+inline int _ns_audio_graph_index(const culebra::_audio_detail::Graph& g, double part) {
+  if (!(part >= 0 && part < static_cast<double>(g.size()) && part == std::floor(part)))
+    _ns_audio_fail("Audio.Graph: a part is one of its graph's");
+  return static_cast<int>(part);
+}
+inline JitValue _ns_audio_graph_new(JitValue* a, int64_t) {
+  namespace ad = culebra::_audio_detail;
+  double rate = _ns_adapt::take_double(a[0]);
+  if (!(rate > 0 && rate < 1e7)) _ns_audio_fail("Audio.Graph: the rate is above 0");
+  int64_t id = ad::alloc_id();
+  ad::graph_defs().try_emplace(id, rate);
+  return _ns_adapt::v_long(id);
+}
+// A part of `family` ("wave", "noise", "filter", "gain", "resonate" or
+// "pluck"), `kind` naming the wave or the filter, taking in `inputs` (parts
+// made before it), set up by the numbers `options`: a wave's freq, a noise's
+// seed, a filter's cutoff and q, a gain's gain, a resonance's dry and modes,
+// a string's freq and ring.
+inline JitValue _ns_audio_graph_part(JitValue* a, int64_t) {
+  namespace ad = culebra::_audio_detail;
+  auto& g = _ns_audio_graph(a[0]);
+  auto family = _ns_adapt::take_sv(a[1]);
+  auto kind = _ns_adapt::take_sv(a[2]);
+  std::vector<double> ins, opt;
+  _ns_audio_numbers(a[3], ins, "type error: an Audio.Graph part takes in parts of its graph");
+  _ns_audio_numbers(a[4], opt, "type error: an Audio.Graph part is set up by numbers");
+  std::vector<int> inputs;
+  for (double k : ins) inputs.push_back(_ns_audio_graph_index(g, k));
+  double rate = g.rate();
+  // Each family and the options it takes, in number; a resonance takes its
+  // dry and then three a mode (-1 here).
+  static constexpr std::pair<std::string_view, int> kFamilies[] = {
+      {"wave", 1}, {"noise", 1}, {"filter", 2}, {"gain", 1}, {"resonate", -1}, {"pluck", 2}};
+  auto fam = std::ranges::find(kFamilies, family, &std::pair<std::string_view, int>::first);
+  if (fam == std::end(kFamilies)) {
+    auto message = culebra::format("Audio.Graph: no part {}", family);
+    _ns_audio_fail(message.c_str());
+  }
+  bool counted = fam->second < 0 ? !opt.empty() && (opt.size() - 1) % 3 == 0
+                                 : opt.size() == static_cast<size_t>(fam->second);
+  if (!counted)
+    culebra::throw_runtime_error_at("TypeError", "type error: an Audio.Graph part is set up by numbers", 0, 0);
+  auto made = [&](ad::PartKind k, decltype(ad::GraphPart::processor) proc, double v0 = 0, double v1 = 0) {
+    int count = k == ad::PartKind::Pluck ? 2 : k == ad::PartKind::Noise || k == ad::PartKind::Resonate ? 0 : 1;
+    for (int value = 0; value < count; value++)
+      if (auto* bad = _ns_audio_graph_bad_value(k, rate, value, value == 0 ? v0 : v1)) _ns_audio_fail(bad);
+    return _ns_adapt::v_long(g.add(k, std::move(inputs), std::move(proc), v0, v1));
+  };
+  if (family == "wave") {
+    static constexpr std::pair<std::string_view, ad::WaveKind> kWaves[] = {
+        {"sine", ad::WaveKind::Sine}, {"saw", ad::WaveKind::Saw},
+        {"square", ad::WaveKind::Square}, {"triangle", ad::WaveKind::Triangle}};
+    for (auto [name, w] : kWaves)
+      if (kind == name) return made(ad::PartKind::Wave, ad::Oscillator{w}, opt[0]);
+    auto message = culebra::format("Audio.Graph: a wave is \"sine\", \"saw\", \"square\" or \"triangle\", not {}", kind);
+    _ns_audio_fail(message.c_str());
+  }
+  if (family == "noise") {
+    if (!(opt[0] >= 0 && opt[0] < 2147483648.0 && opt[0] == std::floor(opt[0])))
+      _ns_audio_fail("Audio.Graph: a noise's seed is a whole number from 0 below 2^31");
+    return made(ad::PartKind::Noise, ad::Noise{static_cast<int64_t>(opt[0])});
+  }
+  if (family == "filter") {
+    ad::FilterKind f = ad::FilterKind::Low;
+    if (kind == "high") {
+      f = ad::FilterKind::High;
+    } else if (kind == "band") {
+      f = ad::FilterKind::Band;
+    } else if (kind != "low") {
+      auto message = culebra::format("Audio.Graph: a filter is \"low\", \"high\" or \"band\", not {}", kind);
+      _ns_audio_fail(message.c_str());
+    }
+    if (!(opt[1] > 0)) _ns_audio_fail("Audio.Graph: the q is above 0");
+    return made(ad::PartKind::Filter, ad::Svf(f, opt[1]), opt[0]);
+  }
+  if (family == "gain") return made(ad::PartKind::Gain, std::monostate{}, opt[0]);
+  if (family == "resonate") {
+    for (size_t k = 1; k + 2 < opt.size(); k += 3) {
+      if (!(opt[k] > 0 && opt[k] < rate / 2))
+        _ns_audio_fail("Audio.Graph: a mode's freq is above 0 and below half the rate");
+      if (!(opt[k + 1] > 0)) _ns_audio_fail("Audio.Graph: a mode's width is above 0");
+    }
+    return made(ad::PartKind::Resonate,
+                ad::Resonance(opt.data() + 1, static_cast<int64_t>((opt.size() - 1) / 3), opt[0], rate));
+  }
+  // pluck
+  int64_t size = ad::PluckString::loop_length(ad::kGraphPluckLowest, rate) + 1;
+  return made(ad::PartKind::Pluck, ad::PluckString(size, rate), opt[0], opt[1]);
+}
+inline JitValue _ns_audio_graph_output(JitValue* a, int64_t) {
+  auto& g = _ns_audio_graph(a[0]);
+  g.output(_ns_audio_graph_index(g, static_cast<double>(_ns_adapt::take_long(a[1]))));
+  return _ns_adapt::v_nil();
+}
+// The changes come as [part, value, ramp, at, to] end to end, all checked
+// before any is made; a graph playing hears them too.
+inline JitValue _ns_audio_graph_schedule(JitValue* a, int64_t) {
+  namespace ad = culebra::_audio_detail;
+  int64_t id = _ns_adapt::take_long(a[0]);
+  auto& g = _ns_audio_graph(a[0]);
+  std::vector<double> xs;
+  _ns_audio_numbers(a[1], xs, "type error: an Audio.Graph change is numbers");
+  for (size_t k = 0; k + 4 < xs.size(); k += 5) {
+    if (!(xs[k + 3] >= 0 && xs[k + 3] * g.rate() < 1e12))
+      _ns_audio_fail("Audio.Graph: a change's time is 0 or more");
+    int part = _ns_audio_graph_index(g, xs[k]);
+    if (!(xs[k + 1] == 0 || xs[k + 1] == 1)) _ns_audio_fail("Audio.Graph: a part's value is one of its own");
+    if (auto* bad = _ns_audio_graph_bad_value(g.kind(part), g.rate(), static_cast<int>(xs[k + 1]), xs[k + 4]))
+      _ns_audio_fail(bad);
+  }
+  for (size_t k = 0; k + 4 < xs.size(); k += 5) {
+    int part = static_cast<int>(xs[k]), value = static_cast<int>(xs[k + 1]);
+    ad::ParamEvent e{xs[k + 3] * g.rate(), xs[k + 2] != 0, xs[k + 4]};
+    g.schedule(part, value, e);
+    ad::graph_post(id, part, value, e);
+  }
+  return _ns_adapt::v_nil();
+}
+// The graph's first `seconds`, worked out from a copy.
+inline JitValue _ns_audio_graph_render(JitValue* a, int64_t) {
+  namespace ad = culebra::_audio_detail;
+  ad::Graph g = _ns_audio_graph(a[0]);
+  double seconds = _ns_adapt::take_double(a[1]);
+  if (!(seconds >= 0 && seconds * g.rate() < 1e10)) _ns_audio_fail("Audio.Graph: the seconds are 0 or more");
+  std::vector<double> out(static_cast<size_t>(ad::sample_at(seconds, g.rate())));
+  g.render(out.data(), static_cast<int64_t>(out.size()));
+  return _ns_audio_samples(out, "Audio.Graph.render() result");
+}
+// Checked here, so a program answers the same with or without a device.
+inline JitValue _ns_audio_graph_play(JitValue* a, int64_t) {
+  namespace ad = culebra::_audio_detail;
+  int64_t id = _ns_adapt::take_long(a[0]);
+  auto& g = _ns_audio_graph(a[0]);
+  if (g.rate() != ad::kMixerRate) _ns_audio_fail("Audio.Graph: a graph plays at a rate of 44100");
+  auto& playing = ad::graphs_playing();
+  if (!playing.contains(id) && playing.size() >= ad::kGraphsPlaying)
+    _ns_audio_fail("Audio.Graph: 64 graphs play at once at most");
+  playing[id] = std::chrono::steady_clock::now();
+  ad::graph_play(id);
+  return _ns_adapt::v_nil();
+}
+inline void _ns_audio_graph_stop_id(int64_t id) {
+  culebra::_audio_detail::graphs_playing().erase(id);
+  culebra::_audio_detail::graph_stop(id);
+}
+inline void _ns_audio_graph_free(int64_t id) {
+  _ns_audio_graph_stop_id(id);
+  culebra::_audio_detail::graph_defs().erase(id);
+}
+// The device's clock while it plays the graph; the monotonic clock since
+// play() when nothing does.
+inline JitValue _ns_audio_graph_now(JitValue* a, int64_t) {
+  namespace ad = culebra::_audio_detail;
+  int64_t id = _ns_adapt::take_long(a[0]);
+  auto it = ad::graphs_playing().find(id);
+  if (it == ad::graphs_playing().end()) return _ns_adapt::v_float(0.0);
+  double t = ad::graph_now(id);
+  if (std::isnan(t)) t = std::chrono::duration<double>(std::chrono::steady_clock::now() - it->second).count();
+  return _ns_adapt::v_float(t);
+}
 // Audio.Kauai's timed notes, kScoreStride numbers an event (stdlib/audio.h).
 inline JitValue _ns_audio_score_new(JitValue* a, int64_t) {
   namespace ad = culebra::_audio_detail;
@@ -10834,6 +11026,15 @@ inline const NsMethod kNsRows_Audio_native[] = {
   {"_Audio", "envelope",       3, &_ns_audio_envelope},
   {"_Audio", "mix",            3, &_ns_audio_mix},
   {"_Audio", "sound_samples",  2, &_ns_audio_sound_samples},
+  {"_Audio", "graph_new",      1, &_ns_audio_graph_new},
+  {"_Audio", "graph_part",     5, &_ns_audio_graph_part},
+  {"_Audio", "graph_output",   2, &_ns_audio_graph_output},
+  {"_Audio", "graph_schedule", 2, &_ns_audio_graph_schedule},
+  {"_Audio", "graph_render",   2, &_ns_audio_graph_render},
+  {"_Audio", "graph_play",     1, &_ns_audio_graph_play},
+  {"_Audio", "graph_stop",     1, &_ns_audio_on<_ns_audio_graph_stop_id>},
+  {"_Audio", "graph_free",     1, &_ns_audio_on<_ns_audio_graph_free>},
+  {"_Audio", "graph_now",      1, &_ns_audio_graph_now},
 };
 inline const NsMethod kNsRows_Canvas_native[] = {
   {"_Canvas", "init",            2,  &_ns_canvas_init},

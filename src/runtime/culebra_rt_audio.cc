@@ -105,6 +105,7 @@ AudioStream load_stream(int rate, int channels, int buffer_frames) {
 // on a channel cuts whatever was still playing there, like the real APU. Times
 // arrive in frames at ~60 fps and become sample counts once, at note-start.
 constexpr int kSampleRate = 44100;
+static_assert(kSampleRate == kMixerRate);
 // Channel numbers match src/preambles/audio.cul's PULSE/PULSE2/TRIANGLE/
 // NOISE/SAWTOOTH. 0 and 1 (the two pulse channels) fall to oscillate()'s
 // default case: only their duty cycle differs, not their shape.
@@ -289,10 +290,49 @@ std::unordered_map<int64_t, std::shared_ptr<Score>> g_scores;
 // reference, so that the free happens here.
 std::vector<std::shared_ptr<Score>> g_retired;
 
+// --- Graph: parts the mixer works out as they play -------------------------
+//
+// Playing a graph hands the mixer a copy of it, which the audio thread alone
+// then works out; changes scheduled after that reach the copy through
+// g_graph_posts. The main thread keeps a reference to each copy (in
+// g_live_graphs, then g_retired_graphs) so that, as with scores, the free
+// happens here. Nothing on the audio thread allocates: its list is reserved
+// for kGraphsPlaying, a copy's values have room for changes made while it
+// plays, and the posts are only read there.
+struct GraphCommand {
+  int64_t id = 0;
+  std::shared_ptr<Graph> graph;  // play; null stops
+  int64_t start = 0;             // play: the stream sample it starts on
+};
+struct GraphPost {
+  std::shared_ptr<Graph> graph;
+  int part = 0, value = 0;
+  ParamEvent e;
+};
+struct PlayingGraph {
+  int64_t id = 0;
+  std::shared_ptr<Graph> graph;
+  int64_t origin = 0;  // the stream sample it starts on
+};
+struct LiveGraph {
+  std::shared_ptr<Graph> graph;
+  int64_t origin = 0;
+};
+// The samples the mixer asks for at once, at most; a longer ask is split.
+constexpr unsigned kMixChunk = 4096;
+
+std::vector<GraphCommand> g_graph_inbox;               // guarded by g_tone_mutex
+std::vector<GraphPost> g_graph_posts;                  // guarded by g_tone_mutex
+std::vector<PlayingGraph> g_playing_graphs;            // audio thread
+double g_graph_mix[kMixChunk], g_graph_samples[kMixChunk];  // audio thread
+std::unordered_map<int64_t, LiveGraph> g_live_graphs;  // main thread
+std::vector<std::shared_ptr<Graph>> g_retired_graphs;  // main thread
+
 // Called from the main thread's audio calls, so a freed song goes soon after
 // the mixer lets go of it.
 void release_retired() {
   std::erase_if(g_retired, [](const auto& s) { return s.use_count() == 1; });
+  std::erase_if(g_retired_graphs, [](const auto& g) { return g.use_count() == 1; });
 }
 std::unordered_map<int64_t, std::shared_ptr<const std::vector<float>>> g_sound_pcm;
 
@@ -413,6 +453,11 @@ double noise_sample(Note& n, double cutoff) {
 // that belongs to this thread alone.
 void tone_callback(void* buffer_data, unsigned int frames) {
   float* out = static_cast<float*>(buffer_data);
+  if (frames > kMixChunk) {
+    tone_callback(out, kMixChunk);
+    tone_callback(out + kMixChunk, frames - kMixChunk);
+    return;
+  }
   {
     std::lock_guard<std::mutex> lock(g_tone_mutex);
     // Losing the oldest keeps the newest, which is what a channel would be
@@ -437,8 +482,25 @@ void tone_callback(void* buffer_data, unsigned int frames) {
       }
     }
     g_score_inbox.clear();
+    // A graph played again starts over; one stopped goes silent at once.
+    for (auto& cmd : g_graph_inbox) {
+      std::erase_if(g_playing_graphs, [&](const PlayingGraph& pg) { return pg.id == cmd.id; });
+      if (cmd.graph) g_playing_graphs.push_back(PlayingGraph{cmd.id, std::move(cmd.graph), cmd.start});
+    }
+    g_graph_inbox.clear();
+    // A change with no room left in its copy is dropped rather than allocate.
+    for (auto& post : g_graph_posts) post.graph->schedule_in_place(post.part, post.value, post.e);
+    g_graph_posts.clear();
     g_stream_next = g_pos + frames;
     g_stream_at = std::chrono::steady_clock::now();
+  }
+
+  // The graphs, each from the sample it starts on.
+  std::fill(g_graph_mix, g_graph_mix + frames, 0.0);
+  for (auto& pg : g_playing_graphs) {
+    int64_t skip = std::clamp<int64_t>(pg.origin - g_pos, 0, frames);
+    pg.graph->render(g_graph_samples, frames - skip);
+    for (int64_t i = skip; i < frames; i++) g_graph_mix[i] += g_graph_samples[i - skip];
   }
 
   int head = 0;   // g_pending is ordered by start, so only the head can be due
@@ -475,6 +537,7 @@ void tone_callback(void* buffer_data, unsigned int frames) {
       if (n.room) n.room->send += raw * g;
       n.elapsed++;
     }
+    mixed += g_graph_mix[i];
     for (auto& ps : g_playing) mixed += ps.score->room->step();
     out[i] = static_cast<float>(std::clamp(mixed, -1.0, 1.0));
   }
@@ -491,6 +554,7 @@ void ensure_tone_stream() {
   // The mixer adds to these as notes start, and must not allocate to do it.
   g_playing.reserve(16);
   g_samplers.reserve(kMaxSamplers);
+  g_playing_graphs.reserve(kGraphsPlaying);
   SetAudioStreamCallback(g_tone_stream, tone_callback);
   // Date the stream clock before the device can call back: a tone() issued
   // ahead of the first buffer would otherwise be measured from the epoch and
@@ -742,6 +806,11 @@ void exit_teardown() {
   g_playing.clear();
   g_samplers.clear();
   g_score_inbox.clear();
+  g_playing_graphs.clear();
+  g_graph_inbox.clear();
+  g_graph_posts.clear();
+  g_live_graphs.clear();
+  g_retired_graphs.clear();
   g_scores.clear();
   g_retired.clear();
   g_sound_pcm.clear();
@@ -857,6 +926,42 @@ void score_volume(int64_t id, double v) {
 void score_room(int64_t id, double wet) {
   auto it = g_scores.find(id);
   if (it != g_scores.end()) it->second->room->wet.store(std::max(0.0, wet));
+}
+
+// The copy plays from the next sample the stream can start it on.
+void graph_play(int64_t id) {
+  ensure_tone_stream();
+  if (!g_tone_ready) return;
+  const Graph* def = graph_def(id);
+  if (!def) return;
+  graph_stop(id);
+  auto live = std::make_shared<Graph>(*def);
+  live->make_room();
+  std::lock_guard<std::mutex> lock(g_tone_mutex);
+  int64_t start = stream_now();
+  g_live_graphs[id] = LiveGraph{live, start};
+  g_graph_inbox.push_back(GraphCommand{id, std::move(live), start});
+}
+void graph_stop(int64_t id) {
+  release_retired();
+  auto it = g_live_graphs.find(id);
+  if (it == g_live_graphs.end()) return;
+  g_retired_graphs.push_back(std::move(it->second.graph));
+  g_live_graphs.erase(it);
+  std::lock_guard<std::mutex> lock(g_tone_mutex);
+  g_graph_inbox.push_back(GraphCommand{id, nullptr, 0});
+}
+void graph_post(int64_t id, int part, int value, ParamEvent e) {
+  auto it = g_live_graphs.find(id);
+  if (it == g_live_graphs.end()) return;
+  std::lock_guard<std::mutex> lock(g_tone_mutex);
+  g_graph_posts.push_back(GraphPost{it->second.graph, part, value, e});
+}
+double graph_now(int64_t id) {
+  auto it = g_live_graphs.find(id);
+  if (it == g_live_graphs.end()) return std::nan("");
+  std::lock_guard<std::mutex> lock(g_tone_mutex);
+  return static_cast<double>(stream_now() - it->second.origin) / kSampleRate;
 }
 
 // The format sniff (and its ValueError) has already run in the backend-neutral

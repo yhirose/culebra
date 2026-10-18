@@ -1084,6 +1084,21 @@ Audio.partials(seconds, freq: Array, spectrum: Array, gain: Array = [], noise = 
 Audio.filter(samples: Array, kind: String, cutoff, q = 0.707, rate = 44100) -> Array
 Audio.envelope(samples: Array, gain: Array, rate = 44100) -> Array
 Audio.mix(parts: Array, rate = 44100) -> Array
+Audio.Graph.new(rate = 44100)
+g.wave(kind = "sine", freq = 440.0)
+g.noise(seed = 1)
+g.filter(kind, input, cutoff = 1000.0, q = 0.707)
+g.gain(input, gain = 1.0)
+g.mix(inputs: Array, gain = 1.0)
+g.resonate(input, modes: Array, dry = 0.0)
+g.pluck(input, freq = 220.0, ring = 2.0)
+g.output(part)
+g.render(seconds) -> Array
+g.play()
+g.stop()
+g.now() -> Float
+value.set(at, v)
+value.ramp(at, v)
 Audio.capture_available() -> Bool
 mic.ready() -> Bool
 mic.start()

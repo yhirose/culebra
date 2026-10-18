@@ -95,7 +95,9 @@
 # of a program is stopped before it ends, AOT included).
 # 312 since test_effects_names.cul (split from test_effects.cul, whose --jit
 # compile had passed the per-file budget on the Ubuntu runner).
-tests.cul 312
+# 313 since test_audio_graph.cul (Audio.Graph: its parts against the array
+# functions, its values' changes, play with no device, what it refuses).
+tests.cul 313
 
 # tests/isolate/*.cul — run on both engines, plus the over-cap modes.
 # 21 since test_xml_isolate.cul (an XML element keeps its methods across an
@@ -184,7 +186,8 @@ ctest.entries 36
 # 1068 since Kauai §10 shows a host instrument that plays a phrase at a time
 # and names what it hears of each note, in en and ja.
 # 1070 since stdlib §40 shows Audio.resonate ringing an impulse, in en and ja.
-docs.blocks 1070
+# 1072 since stdlib §40 shows an Audio.Graph rendered and played, in en and ja.
+docs.blocks 1072
 
 # The samples the language front ends are run over (examples/languages/*).
 languages.samples 130

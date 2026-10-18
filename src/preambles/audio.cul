@@ -43,6 +43,19 @@ let _audio_module = fn () {
     _Audio.tone(freq, ef, attack, decay, dur, release, vol, pk, wave, duty)
   }
 
+  # A mode list as resonate's natives take it, three numbers a mode.
+  let flat_modes = fn (modes: Array, who: String) {
+    modes.flat_map(fn (m) {
+      if type_of(m) != "Object" {
+        __raise(
+          "TypeError",
+          "{who}: a mode is \{freq, width, gain}, each a number",
+        )
+      }
+      [m.freq, m.width, m.gain]
+    })
+  }
+
   # `samples` through a bank of resonances, as a guitar's body rings with its
   # strings: each mode {freq, width, gain} is a two-pole resonator ringing at
   # `freq` Hz, `width` Hz wide, its peak about `gain`; `dry` of the samples
@@ -53,16 +66,7 @@ let _audio_module = fn () {
     dry: Long | Float = 0.0,
     rate: Long | Float = 44100,
   ) {
-    let flat = modes.flat_map(fn (m) {
-      if type_of(m) != "Object" {
-        __raise(
-          "TypeError",
-          "Audio.resonate: a mode is \{freq, width, gain}, each a number",
-        )
-      }
-      [m.freq, m.width, m.gain]
-    })
-    _Audio.resonate(samples, flat, dry, rate)
+    _Audio.resonate(samples, flat_modes(modes, "Audio.resonate"), dry, rate)
   }
 
   # A plucked string (Karplus-Strong), `seconds` long: `tunings` say what it
@@ -174,6 +178,146 @@ let _audio_module = fn () {
       each.flat_map(|p| [p.get("at", 0.0), p.get("gain", 1.0)]),
       rate,
     )
+  }
+
+  # One value a part of a graph reads, moved by changes scheduled on the
+  # graph's clock, in seconds from its start: set(at, value) jumps to
+  # `value` at `at`; ramp(at, value) arrives there in a straight line from
+  # the change before. Each answers the value, so changes chain.
+  class GraphValue {
+    new(graph, part: Long, index: Long) {
+      self._graph = graph
+      self._part = part
+      self._index = index
+    }
+    set(at: Long | Float, value: Long | Float) {
+      _Audio.graph_schedule(
+        self._graph._id,
+        [self._part, self._index, 0, at, value],
+      )
+      self
+    }
+    ramp(at: Long | Float, value: Long | Float) {
+      _Audio.graph_schedule(
+        self._graph._id,
+        [self._part, self._index, 1, at, value],
+      )
+      self
+    }
+  }
+
+  # A part of a graph, which keeps its graph as a GraphValue does. What
+  # moves in it is a GraphValue: a wave's freq, a filter's cutoff, a gain's
+  # gain, a string's freq and ring.
+  class GraphPart {
+    freq = nil
+    cutoff = nil
+    gain = nil
+    ring = nil
+    new(graph, index: Long) {
+      self._graph = graph
+      self._index = index
+    }
+  }
+
+  # Parts wired together, which the runtime works out as they play (play)
+  # or ahead of time (render), the same either way. It is freed, and stops,
+  # with the last reference to it or to any of its parts and values.
+  class Graph {
+    new(rate: Long | Float = 44100) {
+      self._id = _Audio.graph_new(rate)
+    }
+    _part(family: String, kind: String, inputs: Array, options: Array) {
+      for p in inputs {
+        if type_of(p) != "GraphPart" || p._graph._id != self._id {
+          __raise(
+            "ValueError",
+            "Audio.Graph: a part takes in parts of its own graph",
+          )
+        }
+      }
+      let n = _Audio.graph_part(
+        self._id,
+        family,
+        kind,
+        inputs.map(|p| p._index),
+        options,
+      )
+      GraphPart.new(self, n)
+    }
+    _value(part: GraphPart, index: Long) {
+      GraphValue.new(self, part._index, index)
+    }
+    wave(kind: String = "sine", freq: Long | Float = 440.0) {
+      let p = self._part("wave", kind, [], [freq])
+      p.freq = self._value(p, 0)
+      p
+    }
+    noise(seed: Long = 1) {
+      self._part("noise", "", [], [seed])
+    }
+    filter(
+      kind: String,
+      input: GraphPart,
+      cutoff: Long | Float = 1000.0,
+      q: Long | Float = 0.707,
+    ) {
+      let p = self._part("filter", kind, [input], [cutoff, q])
+      p.cutoff = self._value(p, 0)
+      p
+    }
+    gain(input: GraphPart, gain: Long | Float = 1.0) {
+      let p = self._part("gain", "", [input], [gain])
+      p.gain = self._value(p, 0)
+      p
+    }
+    mix(inputs: Array, gain: Long | Float = 1.0) {
+      let p = self._part("gain", "", inputs, [gain])
+      p.gain = self._value(p, 0)
+      p
+    }
+    resonate(input: GraphPart, modes: Array, dry: Long | Float = 0.0) {
+      self._part(
+        "resonate",
+        "",
+        [input],
+        [dry, ...flat_modes(modes, "Audio.Graph.resonate")],
+      )
+    }
+    pluck(
+      input: GraphPart,
+      freq: Long | Float = 220.0,
+      ring: Long | Float = 2.0,
+    ) {
+      let p = self._part("pluck", "", [input], [freq, ring])
+      p.freq = self._value(p, 0)
+      p.ring = self._value(p, 1)
+      p
+    }
+    output(part: GraphPart) {
+      if part._graph._id != self._id {
+        __raise(
+          "ValueError",
+          "Audio.Graph: the output is a part of its own graph",
+        )
+      }
+      _Audio.graph_output(self._id, part._index)
+    }
+    render(seconds: Long | Float) {
+      _Audio.graph_render(self._id, seconds)
+    }
+    play() {
+      _Audio.graph_play(self._id)
+    }
+    stop() {
+      _Audio.graph_stop(self._id)
+    }
+    now() {
+      _Audio.graph_now(self._id)
+    }
+    drop() {
+      _Audio.graph_free(self._id) if self._id != nil
+    }
   }
 
   # A one-shot sample decoded once from WAV, MP3 or Ogg bytes (a String, e.g.
@@ -350,6 +494,7 @@ let _audio_module = fn () {
     filter: filter,
     envelope: envelope,
     mix: mix,
+    Graph: Graph,
     Sound: Sound,
     Music: Music,
     PCM: PCM,

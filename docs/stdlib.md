@@ -8552,7 +8552,7 @@ built it. Give each isolate its own.
 ## 40. `Audio`
 
 Sound for any program: WASM-4-style tones, one-shot samples, streamed music,
-PCM the script synthesises and native parts to build it from, the microphone, and songs written in Kauai. `Audio` owns the sound device on its own and
+PCM the script synthesises, native parts to build a sound from and graphs of them worked out as they play, the microphone, and songs written in Kauai. `Audio` owns the sound device on its own and
 needs no window, so it works the same whether a program draws with `Canvas`,
 with `Scene`, or not at all. The device opens on first use; a program that
 never plays anything never opens it.
@@ -8806,6 +8806,86 @@ let opened = Audio.filter(tone, "low", [(0.0, 400.0), (0.25, 4000.0)], q: 2.0)
 let faded = Audio.envelope(opened, [(0.4, 1.0), (0.5, 0.0)])
 let both = Audio.mix([faded, {samples: string, at: 0.1, gain: 0.5}])
 println(both.size())                                                     # => 48510
+```
+
+### Graphs
+
+The parts above work out a whole sound before anything plays it.
+`Audio.Graph` wires parts together instead, and the runtime works them out as
+they play, a block at a time on the audio thread: a sound starts at once
+however long it is, and a value changed while it plays is heard as soon as
+the device's buffer has played out. The parts are the ones the functions
+above run, sample for sample, so `render(seconds)` answers what `play()`
+plays.
+
+Each method below on a graph adds a part, which takes in the sum of the
+parts given to it, and answers it as a `GraphPart`; `output(part)` says which
+part the graph plays. A graph stops, and is freed, with the last reference to
+it or to any of its parts and values.
+
+| Function / method | Effect |
+| --- | --- |
+| `Audio.Graph.new(rate = 44100)` | an empty graph |
+| `g.wave(kind = "sine", freq = 440.0)` | a wave from -1 to 1 at `freq` Hz: `"sine"`, `"saw"` or `"square"` (their jumps smoothed, so little folds back from above half the rate), or `"triangle"` |
+| `g.noise(seed = 1)` | white noise from -1 to 1, the same from the same `seed` |
+| `g.filter(kind, input, cutoff = 1000.0, q = 0.707)` | `input` through `Audio.filter`'s filter |
+| `g.gain(input, gain = 1.0)` | `input` times `gain` |
+| `g.mix(inputs: Array, gain = 1.0)` | the `inputs` added together, times `gain` |
+| `g.resonate(input, modes: Array, dry = 0.0)` | `input` through `Audio.resonate`'s bank of resonances |
+| `g.pluck(input, freq = 220.0, ring = 2.0)` | `Audio.pluck`'s string, `input` added into it as a strike is |
+| `g.output(part)` | the part the graph plays (silence until there is one) |
+| `g.render(seconds) -> Array` | the graph's first `seconds`, worked out now from its start |
+| `g.play()` | play the graph from its start (again, if it is playing) |
+| `g.stop()` | silence it |
+| `g.now() -> Float` | where on the graph's clock a change made now lands; `0.0` when it is not playing |
+
+What moves in a part is a value: a wave's `freq`, a filter's `cutoff`, a
+gain's `gain`, and a string's `freq` and `ring`, each a field of the part. A
+value is what the part was made with until its first change, and changes are
+scheduled on the graph's clock, in seconds from its start:
+
+| Method | Effect |
+| --- | --- |
+| `value.set(at, v)` | from `at` on, the value is `v` |
+| `value.ramp(at, v)` | the value arrives at `v` at `at`, in a straight line from the change before (or from the start) |
+
+Both answer the value, so changes chain, and they may be made in any order:
+each is heard at its time. A graph keeps every change made to it and works
+them out from its start whenever it renders or plays; a change made while it
+plays reaches the playing graph too, and one for a time already past takes
+effect at once. These are Web Audio's `setValueAtTime` and
+`linearRampToValueAtTime`, so a song's notes can be scheduled ahead, as
+`Audio.Kauai` schedules its own.
+
+A kind other than those named, a part from another graph, a value out of
+range (a wave's freq below 0 or not below half the rate, a cutoff not above
+0 and below half the rate, a gain that is not a finite number, a string's
+freq below 20 Hz or not below half the rate, a ring not above 0), a time
+below 0, or a `q` not above 0 raises `ValueError`, and so does a mode as
+`Audio.resonate` refuses one; a mode that is not an object of three numbers
+raises `TypeError`. A graph plays at a rate of 44100, and at most 64 play at
+once (`ValueError` otherwise). With no device nothing sounds and `now()`
+follows the clock from `play()`; in the browser a graph renders but does not
+play yet.
+
+```culebra
+# A saw through a low-pass that closes over its first 0.3 s, faded in and out.
+let g = Audio.Graph.new()
+let lp = g.filter("low", g.wave("saw", freq: 110.0), cutoff: 3000.0, q: 2.0)
+let amp = g.gain(lp, 0.0)
+g.output(amp)
+lp.cutoff.ramp(0.3, 500.0)
+amp.gain.ramp(0.01, 0.5).ramp(0.4, 0.4).ramp(0.5, 0.0)
+let sound = g.render(0.5)
+println(sound.size())  # => 22050
+g.play()
+
+# The saw alone, through Audio.filter: the same samples.
+let saw = Audio.Graph.new()
+saw.output(saw.wave("saw", freq: 110.0))
+let swept = Audio.filter(saw.render(0.5), "low", [(0.0, 3000.0), (0.3, 500.0)], q: 2.0)
+let faded = Audio.envelope(swept, [(0.0, 0.0), (0.01, 0.5), (0.4, 0.4), (0.5, 0.0)])
+println(iota(22050).all(|i| Math.abs(sound[i] - faded[i]) < 1e-9))  # => true
 ```
 
 ### Capture

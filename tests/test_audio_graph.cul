@@ -1,0 +1,185 @@
+// Audio.Graph: parts wired together, worked out as they play or ahead of
+// time. The harness keeps the device closed (CULEBRA_AUDIO=off), so play()
+// sounds nothing and now() follows the clock; what a graph would play is its
+// render(), worked out by the same parts as the array functions.
+
+// A part's samples against the same computation done another way: the same
+// but for the last bits of rounding (see test_audio.cul).
+fn assert_samples(got, want) {
+  assert_eq(got.size(), want.size())
+  for i in 0..got.size() {
+    assert_close(got[i], want[i], 1e-9)
+  }
+}
+
+// What `call` raised, as (kind, message).
+fn caught(call) {
+  try {
+    call()
+    nil
+  } catch e {
+    (e.kind, e.message)
+  }
+}
+
+// A wave alone: a sine is the sine.
+let sine = Audio.Graph.new(rate: 8000)
+sine.output(sine.wave("sine", freq: 1000.0))
+assert_samples(
+  sine.render(0.001),
+  iota(8).map(|i| Math.sin(2.0 * Math.pi * i / 8.0)),
+)
+// Rendering starts from the start every time.
+assert_eq(sine.render(0.0005), sine.render(0.001)[..4])
+assert_eq(Audio.Graph.new().render(0.001), repeat(44, 0.0))
+
+// A value is its start until its first change; set jumps, ramp arrives in a
+// straight line from the change before (or from the start), and changes
+// made in any order are heard in the order of their times. A square at 0 Hz
+// is a steady 1.0, so the gain shows through.
+fn steady(rate) {
+  let g = Audio.Graph.new(rate: rate)
+  let amp = g.gain(g.wave("square", freq: 0.0), 0.0)
+  g.output(amp)
+  (g, amp)
+}
+let (g1, amp1) = steady(10)
+amp1.gain.set(0.8, 0.5)
+amp1.gain.set(0.2, 1.0).ramp(0.6, 0.0)
+assert_eq(g1.render(1.0), [0.0, 0.0, 1.0, 0.75, 0.5, 0.25, 0.0, 0.0, 0.5, 0.5])
+let (g2, amp2) = steady(10)
+amp2.gain.ramp(0.4, 1.0)
+assert_eq(g2.render(0.6), [0.0, 0.25, 0.5, 0.75, 1.0, 1.0])
+
+// The parts are the array functions' own, sample for sample.
+let saw = Audio.Graph.new()
+saw.output(saw.wave("saw", freq: 110.0))
+let dry = saw.render(0.2)
+
+let lp = Audio.Graph.new()
+let swept = lp.filter(
+  "low",
+  lp.wave("saw", freq: 110.0),
+  cutoff: 3000.0,
+  q: 2.0,
+)
+swept.cutoff.ramp(0.15, 500.0)
+lp.output(swept)
+assert_samples(
+  lp.render(0.2),
+  Audio.filter(dry, "low", [(0.0, 3000.0), (0.15, 500.0)], q: 2.0),
+)
+
+let modes = [
+  {freq: 300.0, width: 40.0, gain: 1.0},
+  {freq: 1250.0, width: 90.0, gain: 0.3},
+]
+let body = Audio.Graph.new()
+body.output(body.resonate(body.wave("saw", freq: 110.0), modes, dry: 0.2))
+assert_samples(body.render(0.2), Audio.resonate(dry, modes, dry: 0.2))
+
+let faded = Audio.Graph.new()
+let fade = faded.gain(faded.wave("saw", freq: 110.0))
+fade.gain.set(0.05, 1.0).ramp(0.15, 0.25)
+faded.output(fade)
+assert_samples(
+  faded.render(0.2),
+  Audio.envelope(dry, [(0.05, 1.0), (0.15, 0.25)]),
+)
+
+// A string struck by a burst of noise, hammered on to E 50 ms in: Audio.pluck
+// with the burst as its strike.
+fn burst(g) {
+  let b = g.gain(g.noise(seed: 3), 1.0)
+  b.gain.set(0.002, 0.0)
+  b
+}
+let strike = Audio.Graph.new()
+strike.output(burst(strike))
+let kick = strike.render(0.1)
+let string = Audio.Graph.new()
+let plucked = string.pluck(burst(string), freq: 220.0, ring: 1.5)
+plucked.freq.set(0.05, 330.0)
+string.output(plucked)
+assert_samples(
+  string.render(0.1),
+  Audio.pluck(
+    0.1,
+    [{at: 0.0, freq: 220.0, ring: 1.5}, {at: 0.05, freq: 330.0, ring: 1.5}],
+    [{at: 0.0, samples: kick}],
+  ),
+)
+
+// Noise is the same from the same seed, -1 to 1; a mix adds its parts.
+let noisy = Audio.Graph.new()
+let n1 = noisy.noise(seed: 3)
+let n2 = noisy.noise(seed: 4)
+noisy.output(n1)
+let heard = noisy.render(0.01)
+assert_true(heard.all(|x| x >= -1.0 && x <= 1.0))
+assert_eq(heard, noisy.render(0.01))
+noisy.output(n2)
+assert_true(noisy.render(0.01) != heard)
+noisy.output(noisy.mix([n1, n2], gain: 0.5))
+let both = noisy.render(0.01)
+noisy.output(n2)
+let other = noisy.render(0.01)
+assert_samples(both, iota(heard.size()).map(|i| 0.5 * (heard[i] + other[i])))
+
+// Played with no device: nothing sounds, and now() follows the clock, 0 when
+// it is not playing. A change while it plays is taken like any other.
+let live = Audio.Graph.new()
+let tone = live.wave()
+live.output(live.gain(tone, 0.1))
+assert_eq(live.now(), 0.0)
+live.play()
+Time.sleep(0.05)
+assert_true(live.now() >= 0.03)
+tone.freq.set(live.now(), 880.0)
+live.play()
+assert_true(live.now() < 0.03)
+live.stop()
+assert_eq(live.now(), 0.0)
+
+// At most 64 graphs play at once.
+let many = iota(64).map(fn (_) {
+  let g = Audio.Graph.new()
+  g.output(g.gain(g.wave(), 0.0))
+  g.play()
+  g
+})
+let one_more = Audio.Graph.new()
+assert_eq(
+  caught(|| one_more.play()),
+  ("ValueError", "Audio.Graph: 64 graphs play at once at most"),
+)
+many[0].play()
+many.for_each(|g| g.stop())
+one_more.play()
+one_more.stop()
+
+// A part keeps its graph: the graph lives on after the variable that held it.
+fn lone_wave() {
+  let g = Audio.Graph.new()
+  let w = g.wave("sine", freq: 1000.0)
+  g.output(w)
+  w
+}
+let kept = lone_wave()
+assert_eq(kept.freq.set(0.1, 500.0).ramp(0.2, 700.0), kept.freq)
+
+// What a graph refuses.
+let g = Audio.Graph.new()
+let w = g.wave()
+let elsewhere = Audio.Graph.new().wave()
+for (
+  call,
+  kind,
+  message,
+) in [(|| Audio.Graph.new(rate: 0), "ValueError", "the rate is above 0"), (|| g.wave("zigzag"), "ValueError", "a wave is \"sine\", \"saw\", \"square\" or \"triangle\", not zigzag"), (|| g.wave(freq: 30000.0), "ValueError", "a wave's freq is 0 or more and below half the rate"), (|| g.noise(seed: -1), "ValueError", "a noise's seed is a whole number from 0 below 2^31"), (|| g.filter("notch", w), "ValueError", "a filter is \"low\", \"high\" or \"band\", not notch"), (|| g.filter("low", w, cutoff: 0.0), "ValueError", "a cutoff is above 0 and below half the rate"), (|| g.filter("low", w, q: 0.0), "ValueError", "the q is above 0"), (|| g.gain(w, Math.nan), "ValueError", "a gain is a finite number"), (|| g.pluck(w, freq: 10.0), "ValueError", "a string's freq is 20 or more and below half the rate"), (|| g.pluck(w, ring: 0.0), "ValueError", "a string's ring is above 0"), (|| g.resonate(w, [{freq: 0.0, width: 10.0, gain: 1.0}]), "ValueError", "a mode's freq is above 0 and below half the rate"), (|| g.resonate(w, [{freq: 300.0, width: 0.0, gain: 1.0}]), "ValueError", "a mode's width is above 0"), (|| g.filter("low", elsewhere), "ValueError", "a part takes in parts of its own graph"), (|| g.mix([w, elsewhere]), "ValueError", "a part takes in parts of its own graph"), (|| g.output(elsewhere), "ValueError", "the output is a part of its own graph"), (|| w.freq.set(-0.5, 220.0), "ValueError", "a change's time is 0 or more"), (|| w.freq.ramp(0.5, -220.0), "ValueError", "a wave's freq is 0 or more and below half the rate"), (|| Audio.Graph.new(rate: 22050).play(), "ValueError", "a graph plays at a rate of 44100"), (|| g.render(-1.0), "ValueError", "the seconds are 0 or more")] {
+  assert_eq(caught(call), (kind, "Audio.Graph: " + message))
+}
+assert_eq(caught(|| g.resonate(w, [1.0]))[0], "TypeError")
+assert_eq(caught(|| g.filter("low", 5))[0], "TypeError")
+
+print("audio graph ok\n")

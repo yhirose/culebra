@@ -1,0 +1,70 @@
+# Audio.Graph: the melody pcm_synth.cul plays, as parts the runtime works out
+# while they play. The script schedules what each note changes and is done;
+# none of it runs per sample, so the song starts at once.
+#
+#   culebra examples/audio/graph_synth.cul
+
+let BPM = 132
+let BEAT = 60.0 / BPM
+
+# The melody: (MIDI note, beats); nil is a rest.
+let SONG = [
+  (67, 0.5),
+  (72, 0.5),
+  (76, 0.5),
+  (79, 1.5),
+  (76, 0.5),
+  (79, 2.0),
+  (nil, 0.5),
+  (74, 0.5),
+  (77, 0.5),
+  (81, 1.5),
+  (77, 0.5),
+  (74, 2.0),
+  (nil, 0.5),
+  (72, 0.5),
+  (76, 0.5),
+  (79, 0.5),
+  (84, 1.0),
+  (79, 0.5),
+  (76, 0.5),
+  (72, 2.0),
+]
+
+fn hz(midi) {
+  440.0 * 2.0 ** ((midi - 69) / 12.0)
+}
+
+# A voice: a sine and a quieter octave, at a gain that shapes each note.
+fn voice(g) {
+  let low = g.wave("sine")
+  let high = g.wave("sine")
+  let amp = g.gain(g.mix([low, g.gain(high, 0.3)]), 0.0)
+  {low: low, high: high, amp: amp}
+}
+
+# Two voices taking turns, so a note dies away while the next one starts.
+let g = Audio.Graph.new()
+let voices = [voice(g), voice(g)]
+g.output(g.mix(voices.map(|v| v.amp)))
+
+mut at = 0.0
+for i, (midi, beats) in SONG.enumerate() {
+  let len = beats * BEAT
+  if midi != nil {
+    let v = voices[i % 2]
+    v.low.freq.set(at, hz(midi))
+    v.high.freq.set(at, 2.0 * hz(midi))
+    let gain = v.amp.gain
+    gain
+      .set(at, 0.0)
+      .ramp(at + 0.005, 0.3)
+      .ramp(at + len, 0.3 * Math.exp(-3.0 * len))
+      .ramp(at + len + 0.02, 0.0)
+  }
+  at += len
+}
+
+println("{SONG.size()} notes, {at:.1f} s")
+g.play()
+Time.sleep(at + 0.3)
