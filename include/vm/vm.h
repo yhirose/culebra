@@ -7530,9 +7530,10 @@ class Compiler {
   // pre-declaration (predeclare_conditional_cells): a closure built after it
   // captures a cell that exists either way, and a read the skipped
   // declaration never bound finds the sentinel. A scope of its own keeps what
-  // it declares, and a function body runs elsewhere; a `while` condition and
-  // a `match` subject, compiled outside their bodies, are hoisted by
-  // compile_while and compile_match themselves. A `fn`, a class and an enum
+  // it declares, and a function body runs elsewhere; a `while` condition, a
+  // `match` subject and a `for` iterable, compiled outside their bodies, are
+  // hoisted by compile_while, compile_match and compile_for themselves, and
+  // a guard by compile_arm_head in its arm. A `fn`, a class and an enum
   // are statements, which only a scope of its own holds.
   struct ConditionalDecls {
     Compiler& c;
@@ -7561,8 +7562,9 @@ class Compiler {
   }
 
   // The same over a whole statement list, for its forward references: a
-  // `while` condition's and a `match` subject's too, which compile_while and
-  // compile_match pre-declare at the statement around them.
+  // `while` condition's, a `match` subject's and a `for` iterable's too,
+  // which compile_while, compile_match and compile_for pre-declare at the
+  // statement around them.
   struct ListConditionalDecls : ConditionalDecls {
     void scope(const peg::Ast& node) {
       using namespace peg::udl;
@@ -7570,6 +7572,8 @@ class Compiler {
       if (node.tag == "WHILE"_) {
         auto wv = culebra::view_while(node);
         if (!wv.init) hoisted = wv.cond;
+      } else if (node.tag == "FOR"_) {
+        hoisted = culebra::view_for(node).iter;
       } else if (node.tag == "MATCH"_) {
         auto mv = culebra::view_match(node);
         if (!mv.init) hoisted = mv.subject;
@@ -10117,6 +10121,8 @@ class Compiler {
     using namespace peg::udl;
     auto fv = culebra::view_for(ast);
     const auto& id = *fv.binding;
+    // The iterable runs on the level around the loop (resolve.h).
+    predeclare_conditional_decls(*fv.iter);
     // Fast path: `for <ident> in <a>..<b>` walks a Long counter, as the JIT's
     // compile_for_counted_range does — a sink included, which is the same
     // loop binding nothing. Everything else — a pattern binding, an
@@ -10225,6 +10231,10 @@ class Compiler {
   };
 
   ForCursor open_for_cursor(const peg::Ast& ast, const peg::Ast& iter) {
+    // The iterable is evaluated once, before the loop, on the level around
+    // it (a declaration in it outlives the loop), and both the not-iterable
+    // error and a broken protocol report there.
+    ExprResult iterable = compile_expr(iter);
     push_scope(ast);
     int32_t base = alloc_slot(ast, "(for.disposed)");
     alloc_slot(ast, "(for.iterable)");
@@ -10240,11 +10250,8 @@ class Compiler {
     alloc_slot(ast, "(for.next)");
     scopes_.back().dispose_base = base;
     for_bases_.push_back(base);
-
-    // The iterable is evaluated once, before the loop, and both the
-    // not-iterable error and a broken protocol report there.
+    store_into(base + kForIterable, iterable, /*dst_is_fresh=*/true);
     stamp(iter);
-    store_into(base + kForIterable, compile_expr(iter), /*dst_is_fresh=*/true);
     emit(Op::ForOpen, base);
     return {base};
   }
@@ -10311,6 +10318,30 @@ class Compiler {
     bool cell = !sink && info_->captured_locals.contains(std::string(id.token));
 
     int32_t broke = alloc_broke_slot(ast, fv.nobreak);
+
+    // Endpoints evaluate before the binding exists, on the level around the
+    // loop (a declaration in one outlives it), in source order, with errors
+    // attributed to the range expression — same as both backends. Each is
+    // ChkLong'd right after it compiles (compile_range's order): the counter
+    // is a Long, and a Float bound is a TypeError rather than something to
+    // truncate (`for i in 1.5..3` ran no iterations here, and `by 0.5`
+    // walked a step of its own invention). A variable's value is copied out,
+    // as a later endpoint may rebind it.
+    stamp(*fv.iter);
+    auto endpoint = [&](const peg::Ast& e) {
+      ExprResult r = compile_expr(e);
+      if (!r.owned) {
+        int32_t t = alloc_temp(e);
+        emit(Op::MoveRetain, t, r.slot);
+        r = {t, true};
+      }
+      emit(Op::ChkLong, r.slot);
+      return r;
+    };
+    ExprResult start = endpoint(*lay.start);
+    ExprResult end = endpoint(*lay.end);
+    ExprResult step = lay.step ? endpoint(*lay.step) : ExprResult{-1, false};
+
     push_scope(ast);
     int32_t base = alloc_slot(ast, "(for.cur)");
     alloc_slot(ast, "(for.end)");
@@ -10320,24 +10351,12 @@ class Compiler {
                                               : std::string(id.token));
     int32_t bind = var;
     if (cell) bind = alloc_cell_slot(id, std::string(id.token));
-
-    // Endpoints evaluate before the binding exists, in source order, with
-    // errors attributed to the range expression — same as both backends. Each
-    // is ChkLong'd right after it compiles (compile_range's order): the
-    // counter is a Long, and a Float bound is a TypeError rather than
-    // something to truncate (`for i in 1.5..3` ran no
-    // iterations here, and `by 0.5` walked a step of its own invention).
-    stamp(*fv.iter);
-    store_into(base + 0, compile_expr(*lay.start), /*dst_is_fresh=*/true);
-    emit(Op::ChkLong, base + 0);
-    store_into(base + 1, compile_expr(*lay.end), /*dst_is_fresh=*/true);
-    emit(Op::ChkLong, base + 1);
-    if (lay.step) {
-      store_into(base + 2, compile_expr(*lay.step), /*dst_is_fresh=*/true);
-      emit(Op::ChkLong, base + 2);
-    } else {
+    store_into(base + 0, start, /*dst_is_fresh=*/true);
+    store_into(base + 1, end, /*dst_is_fresh=*/true);
+    if (lay.step)
+      store_into(base + 2, step, /*dst_is_fresh=*/true);
+    else
       emit(Op::LoadConst, base + 2, kconst_long(1));
-    }
     size_t prep = emit(Op::ForPrep, base);
 
     if (!sink) push_binding(id, {std::string(id.token), bind, false, cell});
@@ -13955,6 +13974,7 @@ class Compiler {
     compile_pattern_bind(pat, subj, /*subj_owned=*/false, fail,
                          /*is_mut=*/true, /*declares=*/true);
     if (!guard) return;
+    predeclare_conditional_decls(*guard);
     auto g = compile_expr(*guard);
     // Branch on the guard being TAKEN, so the failing path is the fall
     // through and its release ladder is emitted here — with the arm's

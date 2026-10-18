@@ -344,8 +344,7 @@ void walk_test_declaring_sites(const peg::Ast& node, bool conditional,
 // side of `??=`. `v.scope(n)` sees each scope of its own reached instead (a
 // block, an arm, a loop, a match, a try, a function, a declaration, an `if`
 // with an init clause), whose statements run apart and keep what they
-// declare. A guard is compiled as a bare expression, from which nothing is
-// pre-declared, so the walk does not enter one.
+// declare.
 template <class Visitor>
 void walk_declaring_sites(const peg::Ast& node, bool conditional, Visitor& v) {
   using namespace peg::udl;
@@ -366,8 +365,6 @@ void walk_declaring_sites(const peg::Ast& node, bool conditional, Visitor& v) {
     case "CLASS_DECL"_:
     case "ENUM_DECL"_:
       v.scope(node);
-      return;
-    case "GUARD"_:
       return;
     case "IF"_:
     case "CONDITIONAL"_:

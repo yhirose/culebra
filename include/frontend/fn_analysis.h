@@ -580,9 +580,8 @@ struct FnAnalysis {
       }
       // A scope's statements each start afresh. An `if` with an init clause
       // runs its tests in the clause's scope; its arms are scopes of their
-      // own, which the tests' walk hands back. A `for`'s iterable and a
-      // decorator are no statement heads (nor is a guard, which the walk
-      // never enters): the compiler pre-declares nothing from them.
+      // own, which the tests' walk hands back. A decorator is no statement
+      // head: the compiler pre-declares nothing from it.
       void scope(const peg::Ast& node) {
         using namespace peg::udl;
         auto walk = [&](const peg::Ast& n) {
@@ -594,11 +593,8 @@ struct FnAnalysis {
             culebra::resolve::walk_test_declaring_sites(node, false, *this);
             return;
           }
-        const peg::Ast* iter =
-            node.tag == "FOR"_ ? culebra::view_for(node).iter : nullptr;
         for (const auto& c : node.nodes)
-          if (c.get() != iter && c->tag != "DECORATOR"_)
-            walk(*c);
+          if (c->tag != "DECORATOR"_) walk(*c);
       }
     } v;
     culebra::resolve::walk_declaring_sites(root, false, v);

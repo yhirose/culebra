@@ -252,3 +252,46 @@ fn cd_arm_forward(c) {
   g()
 }
 assert_eq([cd_arm_forward(true), cd_arm_forward(false)], [[1], [1]])
+
+// A `for` iterable is evaluated on the level around the loop: what it
+// declares outlives the loop, and one it may skip means what the name meant
+// above it until it runs.
+fn cd_for_decl() {
+  for _ in [(mut w = 10)] {}
+  mut s = 0
+  for i in 0..(mut n = 3) {
+    s += i
+  }
+  [w, n, s]
+}
+assert_eq(cd_for_decl(), [10, 3, 3])
+mut cd_it = 1
+fn cd_for_skip(c) {
+  for _ in [c && ((mut cd_it = 10) != nil)] {}
+  cd_it
+}
+assert_eq([cd_for_skip(false), cd_for_skip(true)], [1, 10])
+fn cd_range_skip(c) {
+  mut s = 0
+  for _ in 0..((c && ((mut cd_it = 2) != nil)) ? 2 : 1) {
+    s += 1
+  }
+  [s, cd_it]
+}
+assert_eq([cd_range_skip(false), cd_range_skip(true)], [[1, 1], [2, 2]])
+// `yield from` evaluates its source the same way.
+fn cd_yield_from() {
+  yield from (let src = [1, 2])
+  yield src.size()
+}
+assert_eq(cd_yield_from().collect(), [1, 2, 2])
+
+// So does a guard, in its arm: a declaration it skips leaves the name what it
+// was around the match.
+let cd_gz = "outer"
+fn cd_guard(c) {
+  match 1 {
+    _ if c || ((let cd_gz = "guard") != nil) => cd_gz
+  }
+}
+assert_eq([cd_guard(false), cd_guard(true)], ["guard", "outer"])
