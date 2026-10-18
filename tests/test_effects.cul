@@ -697,9 +697,58 @@ class SelfHolder {
     return handle { (fn () { self.v })() + perform sf_ask() }
            with sf_ask(resume) { resume(100) }
   }
+  runBare() {
+    return handle {
+      let me = self
+      let w = self
+        .v
+      let a = perform sf_ask()
+      [me.v, w, {self}.self.v, a]
+    } with sf_ask(resume) { resume(self?.v) }
+  }
 }
 assert_eq(SelfHolder.new(1).run(), 11)
 assert_eq(SelfHolder.new(2).runNested(), 102)
+assert_eq(SelfHolder.new(3).runBare(), [3, 3, 3, 3])
+
+// A nested handle reads the enclosing computation through its instance, but
+// the members of a class declared in its body or in a clause keep their own
+// `self`.
+effect fn sf_nested() {
+  mut n = 1
+  perform sf_ask()
+  handle {
+    class SfBox {
+      new(.m) {}
+      get() { self.m }
+    }
+    let a = perform sf_ask()
+    "{n}:{SfBox(10).get()}:{a}"
+  } with sf_ask(resume) {
+    class SfTag {
+      new(.m) {}
+      get() { self.m }
+    }
+    resume(SfTag(20).get())
+  }
+}
+assert_eq(handle { sf_nested() } with sf_ask(resume) { resume(nil) }, "1:10:20")
+
+// Neither a label nor an object literal's own method is the body's `self`,
+// and neither is a member named `self`.
+assert_eq(
+  handle {
+  let o = {self: 3, v: 5, m: fn () { self.v }}
+  let a = perform sf_ask()
+  [o.self, o.m(), a]
+} with sf_ask(resume) { resume(7) },
+  [3, 5, 7],
+)
+effect fn sf_member(o) {
+  perform sf_ask()
+  o?.self
+}
+assert_eq(handle { sf_member({self: 9}) } with sf_ask(resume) { resume(nil) }, 9)
 
 // A function from outside, called bare in either body, is called with no
 // receiver — the same rewrite the generator lowering shares.

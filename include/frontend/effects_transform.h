@@ -47,7 +47,6 @@
 #include <functional>
 #include <memory>
 #include <optional>
-#include <regex>
 #include <set>
 #include <string>
 #include <string_view>
@@ -116,31 +115,46 @@ struct EffStmtClass {
   EffSuspension susp;  // when kind == Suspend
 };
 
-// First bare `self` reference in an effect fn's body (reject_self_in_body
-// below states the rule). An effect body becomes methods of a synthesized
-// state class, so `self` there could only ever name that internal object,
-// never the enclosing receiver the user means. Nested functions are searched
-// too: a closure defined in the body reads the body's own `self`.
+// Each bare `self` reference under `node` that is the body's own, in source
+// order, until `f(ref, shorthand)` returns true (and then this does);
+// `shorthand` says the ref is an object literal's `{self}`, its key too. An
+// effect fn's body may not hold one (reject_self_in_body); in a handle body,
+// each is the instance the handle sits in (EffectsLowerer::captures_outer).
+// Nested functions are searched too: a closure defined in the body reads the
+// body's own `self`.
 //
 // Two things stop the walk. A function WRITTEN as an object-literal property
 // (`{m: fn () { self.x }}`) takes its `self` from whatever object it is
-// called on — ordinary code, so it stays legal. A class/trait declaration has
-// a `self` of its own in its methods. Non-reference identifiers are skipped
-// too: property names (`x.self`) and the label positions `is_label_position`
+// called on — ordinary code. A class/trait declaration has a `self` of its
+// own in its methods. Non-reference identifiers are skipped too: member
+// names (`x.self`, `x?.self`) and the label positions `is_label_position`
 // names.
-inline const peg::Ast* find_self_ref_in_fn_body(const peg::Ast& node) {
+template <class F>
+inline bool for_each_self_ref(const peg::Ast& node, F&& f,
+                              bool shorthand = false) {
   using namespace peg::udl;
-  if (node.tag == "CLASS_DECL"_ || node.tag == "TRAIT_DECL"_) return nullptr;
+  if (node.tag == "CLASS_DECL"_ || node.tag == "TRAIT_DECL"_) return false;
   if (node.tag == "IDENTIFIER"_ && node.original_tag != "DOT"_ &&
-      node.token == "self")
-    return &node;
+      node.original_tag != "SAFE_DOT"_ && node.token == "self")
+    return f(node, shorthand);
   for (size_t i = 0; i < node.nodes.size(); i++) {
     const auto& c = *node.nodes[i];
     if (is_label_position(node, i)) continue;
     if (node.tag == "OBJECT_PROPERTY"_ && is_fn_boundary(c.tag)) continue;
-    if (auto* s = find_self_ref_in_fn_body(c)) return s;
+    bool key_too = node.tag == "OBJECT_PROPERTY"_ && node.nodes.size() == 2;
+    if (for_each_self_ref(c, f, key_too)) return true;
   }
-  return nullptr;
+  return false;
+}
+
+// The first of them, or null.
+inline const peg::Ast* find_self_ref_in_fn_body(const peg::Ast& node) {
+  const peg::Ast* first = nullptr;
+  for_each_self_ref(node, [&](const peg::Ast& s, bool) {
+    first = &s;
+    return true;
+  });
+  return first;
 }
 
 // The refusal of `self` in a body. `what` names the body in the message; the
@@ -299,8 +313,8 @@ class EffectsLowerer {
     return splice_source(src_, begin, end, std::move(edits));
   }
 
-  // First CLASS_DECL anywhere under `n` (including nested fn values — the
-  // textual `self.` redirect reaches them all). nullptr when absent.
+  // First CLASS_DECL anywhere under `n`, nested fn values included. nullptr
+  // when absent.
   static const peg::Ast* find_class_decl(const peg::Ast& n) {
     using namespace peg::udl;
     if (n.tag == "CLASS_DECL"_) return &n;
@@ -1608,73 +1622,36 @@ class EffectsLowerer {
     return rewrite_edits(body, src_, std::move(edits));
   }
 
-  // A `self.` field access, boundary-guarded so `foo.self.` / `aself.` don't
-  // match. Shared by the two redirects (their detection twin `captures_outer`
-  // walks the AST instead, so it never fires on `self.` text in a string).
-  static const std::regex& self_field_access() {
-    static const std::regex pat(R"((^|[^.A-Za-z0-9_])self\.)");
-    return pat;
-  }
-  // The offset of each `self` of a `self.` field access in the code of bytes
-  // [begin, end) of `src`.
-  static std::vector<size_t> self_accesses(const std::string& src,
-                                           size_t begin, size_t end) {
-    std::vector<size_t> out;
-    auto text = std::string_view(src).substr(begin, end - begin);
-    for (auto [b, e] : code_spans(text, begin)) {
-      auto code = std::string_view(src).substr(b, e - b);
-      using It = std::string_view::const_iterator;
-      for (std::regex_iterator<It> m(code.begin(), code.end(),
-                                     self_field_access()),
-           done;
-           m != done; ++m)
-        out.push_back(b + static_cast<size_t>(m->position(0) + m->length(1)));
-    }
-    return out;
-  }
-  // Redirect an enclosing-computation field access `self.x` to `self._eff_outer.x`
-  // so a nested handle's own computation reaches the captured binding through the
-  // outer instance passed to its ctor. Idempotent per nesting level: a second
-  // pass over `self._eff_outer.x` lengthens the chain (`self._eff_outer._eff_outer.x`),
-  // which is exactly the walk a doubly-nested capture needs.
-  static std::vector<SourceEdit> redirect_self_to_outer(const std::string& src,
-                                                        size_t begin,
-                                                        size_t end) {
-    std::vector<SourceEdit> out;
-    for (size_t at : self_accesses(src, begin, end))
-      out.push_back({at + 5, 0, "_eff_outer."});
-    return out;
-  }
-  // Redirect `self.x` to `<self>.x` for a handler-clause body: the adapter is a
-  // closure inside the `<self>` IIFE, so it captures the enclosing instance as a
-  // plain local (both backends), not via lexical `self`. `<self>` is unique per
-  // handle so nested handles' IIFE params don't shadow one another.
-  static std::vector<SourceEdit> redirect_self_to_local(
-      const std::string& src, size_t begin, size_t end,
-      const std::string& local) {
-    std::vector<SourceEdit> out;
-    for (size_t at : self_accesses(src, begin, end))
-      out.push_back({at, 4, local});
-    return out;
-  }
-  // True when the handle reads an enclosing-computation binding: a genuine
-  // `self` receiver node somewhere in its subtree. Walk the AST (not the raw
-  // slice) so `self.` inside a string literal or comment is never mistaken for
-  // a capture — otherwise a top-level handle carrying such text would synthesize
-  // a `_eff_self` wrapper over a nonexistent `self`. `self` only enters an
-  // effect body via the outer locals-to-`self` rewrite, so any `self` node is a
-  // real capture; an interpolation's `"{self.x}"` is a node too and is redirected.
-  // Stops at CLASS_DECL: `self` inside a class's methods is that class's own
-  // instance (e.g. a class declared in the body), never an
-  // enclosing-computation read.
+  // True when the handle reads the instance it sits in: the enclosing
+  // computation, whose locals the outer rewrite spells `self.x`, or the
+  // receiver of the method it is written in. Each of the body's own `self`
+  // references (for_each_self_ref) is one. The AST is walked, not the text,
+  // so `self` in a string or a comment is none, and an interpolation's
+  // `"{self.x}"` is one.
   static bool captures_outer(const peg::Ast& node) {
-    using namespace peg::udl;
-    if (node.tag == "IDENTIFIER"_ && node.token == "self") return true;
-    if (node.tag == "CLASS_DECL"_) return false;
-    for (auto& c : node.nodes) {
-      if (captures_outer(*c)) return true;
-    }
-    return false;
+    return for_each_self_ref(node, [](const peg::Ast&, bool) { return true; });
+  }
+  // Each of those references under `node` replaced by `to`, how the lowered
+  // code reaches that instance (a shorthand `{self}` keeps its key): a
+  // nested handle's own computation through the outer instance passed to its
+  // ctor (`self._eff_outer`), and a handler clause, a closure inside the
+  // `<self>` IIFE, through that plain local, not lexical `self` (both
+  // backends; `<self>` is unique per handle so nested handles' IIFE params
+  // don't shadow one another). A second pass over `self._eff_outer.x`
+  // lengthens the chain (`self._eff_outer._eff_outer.x`), which is exactly
+  // the walk a doubly-nested capture needs. The token is replaced, not
+  // appended to, so a line marker inserted after a `self` that ends a line
+  // stays after the code.
+  static std::vector<SourceEdit> redirect_self(const peg::Ast& node,
+                                               const std::string& src,
+                                               const std::string& to) {
+    std::vector<SourceEdit> out;
+    for_each_self_ref(node, [&](const peg::Ast& s, bool shorthand) {
+      auto at = static_cast<size_t>(s.token.data() - src.data());
+      out.push_back({at, 4, shorthand ? "self: " + to : to});
+      return false;
+    });
+    return out;
   }
 
   // Build the whole computation class source (ctor + _step) for a body node.
@@ -1711,7 +1688,7 @@ class EffectsLowerer {
     std::vector<SourceEdit> edits;
     if (src_is_original_) edits = line_marker_edits(src_, begin, end);
     if (capture_outer) {
-      auto redirect = redirect_self_to_outer(src_, begin, end);
+      auto redirect = redirect_self(body_node, src_, "self._eff_outer");
       edits.insert(edits.end(), redirect.begin(), redirect.end());
     }
     // The trailing newline ends a line marker comment the body may end in.
@@ -1936,13 +1913,12 @@ class EffectsLowerer {
                : "f";
   }
 
-  // A handler clause's statements, anchored, reading a captured enclosing
-  // binding through `self_name` (redirect_self_to_local).
+  // A handler clause's statements, anchored, reading the instance the handle
+  // sits in through `self_name` (redirect_self).
   std::string clause_source(const peg::Ast& block, bool captures,
                             const std::string& self_name) const {
-    auto [begin, end] = block_inner_span(block, src_);
     std::vector<SourceEdit> edits;
-    if (captures) edits = redirect_self_to_local(src_, begin, end, self_name);
+    if (captures) edits = redirect_self(block, src_, self_name);
     auto out = inner_source(block, std::move(edits));
     reattach_marker(out, block);
     return anchored(out);
