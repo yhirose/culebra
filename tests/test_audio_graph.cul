@@ -46,7 +46,10 @@ fn steady(rate) {
 let (g1, amp1) = steady(10)
 amp1.gain.set(0.8, 0.5)
 amp1.gain.set(0.2, 1.0).ramp(0.6, 0.0)
-assert_samples(g1.render(1.0), [0.0, 0.0, 1.0, 0.75, 0.5, 0.25, 0.0, 0.0, 0.5, 0.5])
+assert_samples(
+  g1.render(1.0),
+  [0.0, 0.0, 1.0, 0.75, 0.5, 0.25, 0.0, 0.0, 0.5, 0.5],
+)
 let (g2, amp2) = steady(10)
 amp2.gain.ramp(0.4, 1.0)
 assert_samples(g2.render(0.6), [0.0, 0.25, 0.5, 0.75, 1.0, 1.0])
@@ -174,6 +177,15 @@ fn lone_wave() {
 }
 let kept = lone_wave()
 assert_eq(kept.freq.set(0.1, 500.0).ramp(0.2, 700.0), kept.freq)
+
+// A program's own class Graph is its own; the audio graph is AudioGraph.
+class Graph {
+  new(.nodes) {}
+}
+assert_eq(
+  (type_of(Graph([1, 2])), type_of(Audio.Graph.new())),
+  ("Graph", "AudioGraph"),
+)
 
 // What a graph refuses.
 let g = Audio.Graph.new()

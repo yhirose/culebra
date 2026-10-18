@@ -8819,7 +8819,7 @@ above run, sample for sample, so `render(seconds)` answers what `play()`
 plays.
 
 Each method below on a graph adds a part, which takes in the sum of the
-parts given to it, and answers it as a `GraphPart`; `output(part)` says which
+parts given to it, and answers it as an `AudioGraphPart`; `output(part)` says which
 part the graph plays. A graph stops, and is freed, with the last reference to
 it or to any of its parts and values.
 

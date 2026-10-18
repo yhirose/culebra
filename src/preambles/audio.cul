@@ -184,7 +184,7 @@ let _audio_module = fn () {
   # graph's clock, in seconds from its start: set(at, value) jumps to
   # `value` at `at`; ramp(at, value) arrives there in a straight line from
   # the change before. Each answers the value, so changes chain.
-  class GraphValue {
+  class AudioGraphValue {
     new(graph, part: Long, index: Long) {
       self._graph = graph
       self._part = part
@@ -206,10 +206,10 @@ let _audio_module = fn () {
     }
   }
 
-  # A part of a graph, which keeps its graph as a GraphValue does. What
-  # moves in it is a GraphValue: a wave's freq, a filter's cutoff, a gain's
-  # gain, a string's freq and ring.
-  class GraphPart {
+  # A part of a graph, which keeps its graph as an AudioGraphValue does.
+  # What moves in it is an AudioGraphValue: a wave's freq, a filter's
+  # cutoff, a gain's gain, a string's freq and ring.
+  class AudioGraphPart {
     freq = nil
     cutoff = nil
     gain = nil
@@ -223,13 +223,13 @@ let _audio_module = fn () {
   # Parts wired together, which the runtime works out as they play (play)
   # or ahead of time (render), the same either way. It is freed, and stops,
   # with the last reference to it or to any of its parts and values.
-  class Graph {
+  class AudioGraph {
     new(rate: Long | Float = 44100) {
       self._id = _Audio.graph_new(rate)
     }
     _part(family: String, kind: String, inputs: Array, options: Array) {
       for p in inputs {
-        if type_of(p) != "GraphPart" || p._graph._id != self._id {
+        if type_of(p) != "AudioGraphPart" || p._graph._id != self._id {
           __raise(
             "ValueError",
             "Audio.Graph: a part takes in parts of its own graph",
@@ -243,10 +243,10 @@ let _audio_module = fn () {
         inputs.map(|p| p._index),
         options,
       )
-      GraphPart.new(self, n)
+      AudioGraphPart.new(self, n)
     }
-    _value(part: GraphPart, index: Long) {
-      GraphValue.new(self, part._index, index)
+    _value(part: AudioGraphPart, index: Long) {
+      AudioGraphValue.new(self, part._index, index)
     }
     wave(kind: String = "sine", freq: Long | Float = 440.0) {
       let p = self._part("wave", kind, [], [freq])
@@ -258,7 +258,7 @@ let _audio_module = fn () {
     }
     filter(
       kind: String,
-      input: GraphPart,
+      input: AudioGraphPart,
       cutoff: Long | Float = 1000.0,
       q: Long | Float = 0.707,
     ) {
@@ -266,7 +266,7 @@ let _audio_module = fn () {
       p.cutoff = self._value(p, 0)
       p
     }
-    gain(input: GraphPart, gain: Long | Float = 1.0) {
+    gain(input: AudioGraphPart, gain: Long | Float = 1.0) {
       let p = self._part("gain", "", [input], [gain])
       p.gain = self._value(p, 0)
       p
@@ -276,7 +276,7 @@ let _audio_module = fn () {
       p.gain = self._value(p, 0)
       p
     }
-    resonate(input: GraphPart, modes: Array, dry: Long | Float = 0.0) {
+    resonate(input: AudioGraphPart, modes: Array, dry: Long | Float = 0.0) {
       self._part(
         "resonate",
         "",
@@ -285,7 +285,7 @@ let _audio_module = fn () {
       )
     }
     pluck(
-      input: GraphPart,
+      input: AudioGraphPart,
       freq: Long | Float = 220.0,
       ring: Long | Float = 2.0,
     ) {
@@ -294,7 +294,7 @@ let _audio_module = fn () {
       p.ring = self._value(p, 1)
       p
     }
-    output(part: GraphPart) {
+    output(part: AudioGraphPart) {
       if part._graph._id != self._id {
         __raise(
           "ValueError",
@@ -494,7 +494,7 @@ let _audio_module = fn () {
     filter: filter,
     envelope: envelope,
     mix: mix,
-    Graph: Graph,
+    Graph: AudioGraph,
     Sound: Sound,
     Music: Music,
     PCM: PCM,
