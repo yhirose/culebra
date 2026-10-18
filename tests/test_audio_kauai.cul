@@ -503,6 +503,52 @@ assert_eq(lined.sorted(), [
   "pitch 60, at 0.0, line 0 / pitch 64, at 0.062, line 1 / pitch 67, at 0.125, line 2",
   "pitch 62, at 0.0, line 1 / pitch 65, at 0.0, line 2",
 ])
+
+# A parameter a line sets, `\bright=1.3`, holds for that line's notes from
+# the next one until it is set again, over the band's own: a function is
+# asked for each pitch at each setting it plays it at, and an instrument is
+# given them as they stand at a phrase's first note, and at each note when it
+# hears them. A bar line's are the melody's, and a part's line sets its own.
+let settings = |p| p.keys().sorted().map(|k| "{k}={p[k]}").join(" ")
+mut keyed = []
+let set = Audio.Kauai.new(lines([
+  'band Duo {',
+  '  voice Lead  external Ep bright=0.8     plays melody     vol 50%',
+  '  voice Alto  external Reed breath=0.2  plays part Alto  vol 50%',
+  '}',
+  'song Set {', '  tempo 60', '  band Duo', '  melody in C4..B4', '  Set', '}',
+  'section Set {',
+  '  C  c4 \bright=1.3 e g \bright=0.5 c',
+  '    Alto:  (c4 \breath=0.4 d) e2',
+  '  C  c4 e \bright=1.3 g c',
+  '    Alto:  c1',
+  '}',
+]), voices: {
+  ep: fn (pitch, params) {
+    keyed.push("{pitch} {settings(params)}")
+    Audio.Sound.new(WAV)
+  },
+  reed: {
+    phrase: fn (notes, params) {
+      keyed.push("{notes.map(|n| "{n.pitch} {settings(n.params)}").join(" / ")} | {settings(params)}")
+      Audio.Sound.new(WAV)
+    },
+    hears: ["params"],
+  },
+})
+set.play()
+set.stop()
+assert_eq(keyed.sorted(), [
+  "60 breath=0.2 / 62 breath=0.4 | breath=0.2",
+  "60 breath=0.4 | breath=0.4",
+  "60 bright=0.5",
+  "60 bright=0.8",
+  "60 bright=1.3",
+  "64 breath=0.4 | breath=0.4",
+  "64 bright=0.5",
+  "64 bright=1.3",
+  "67 bright=1.3",
+])
 assert_eq(plucked.sorted(), [
   "pitch 48, at 0.0, len 0.5, marks ['staccato']",
   "pitch 48, at 0.0, len 0.75, marks ['marcato']",
@@ -563,7 +609,7 @@ let snare = {snare: |params| Audio.Sound.new(WAV)}
 let fiddle = {fiddle: |pitch, params| Audio.Sound.new(WAV)}
 assert_eq(
   refused({fiddle: {phrase: |notes, params| nil, hears: ["slur"]}}, snare),
-  "Audio.Kauai: voices: `fiddle` hears slur; it can hear len, level, line, marks, next",
+  "Audio.Kauai: voices: `fiddle` hears slur; it can hear len, level, line, marks, next, params",
 )
 assert_eq(
   refused(fiddle, {snare: {hit: |n, params| nil, hears: ["len"]}}),

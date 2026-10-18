@@ -1,6 +1,6 @@
 about {
   title  Nylon afternoon
-  note   a bossa nova on nylon-string guitars: the thumb on the bass, the fingers on the chords between the beats, and a lead plucked over the soundhole whose slurs are hammer-ons and pull-offs, on external instruments that play a phrase at a time
+  note   a bossa nova on nylon-string guitars: the thumb on the bass, the fingers on the chords between the beats, and a lead plucked over the soundhole, and by the bridge for the climb in the middle, whose slurs are hammer-ons and pull-offs, on external instruments that play a phrase at a time
 }
 
 band Trio {
@@ -35,9 +35,9 @@ section Bossa {
   Cmaj7    b2 r4 (a8 b)
   D9       c4. (b8 a4) f#
   D9       e2. r4
-  Dm7      (f8 e) f a c4 b
+  Dm7      \pluck=0.12 (f8 e) f a c4 b
   G7       (a8 g) f d b,2
-  Em7 A7   (e8 f#) g b (d c#) a4
+  Em7 A7   \pluck=0.3 (e8 f#) g b (d c#) a4
   Dm7 G7   (f8 e) d c# d4 (f8 g)
 }
 

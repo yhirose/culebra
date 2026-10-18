@@ -7,7 +7,8 @@
 # aside to a point, a triangle whose upper harmonics are weak; a pick's
 # scrape is noise, bright in all of them. A voice's `pluck=` says how far
 # along the string from the bridge it is plucked (`external Guitar pluck=0.3`,
-# over the soundhole and mellow). Under a slur the string is not plucked
+# over the soundhole and mellow), and a score's `\pluck=0.12` moves the hand
+# toward the bridge from a note on. Under a slur the string is not plucked
 # again: a finger hammers on or pulls off, the loop changes length with the
 # string still moving, and only a little energy is added.
 # The string rings on until the hand moves to what the voice plays next, and

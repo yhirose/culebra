@@ -239,8 +239,9 @@ E5; with `plays chords rootless from E3`, `Abmaj9` is C4 Eb4 G4 Bb4.
 An external voice plays each note's sound through to its end, so it takes no
 `env`, `gap` or `duty`, and the note's length applies only to an instrument
 that hears it ([section 10](#10-playing-from-culebra)). It may carry parameters
-of its own as `name=value` words after its name (`external Ep bright=0.8`);
-Kauai hands them to the program with every note.
+of its own as `name=value` words after its name (`external Ep bright=0.8`), a
+word and a number; Kauai hands them to the program with every note, and a
+score can change them from a note on ([Directions](#directions)).
 
 ### Derived parts
 
@@ -575,6 +576,7 @@ after it.
 | `\rit 104` / `\accel 140` | slower / faster, evenly, reaching the tempo at the next tempo direction |
 | `\tempo` | back to the song's tempo |
 | `\scoop` `\plop` `\doit` `\fall` | the next note's jazz articulation: into it from below, into it from above, out of it upward, out of it falling away |
+| `\bright=1.3` | a parameter for the line's external instruments, a word and a number, from here until the line sets it again |
 
 The jazz articulations mark one note, as a chart draws them on it, and are
 written once each before it in its bar; they go with its marks, `\fall !c2`,
@@ -595,6 +597,28 @@ A `cresc` that ends at a dynamic ends with it, and needs no `\!`: from `p`,
 `\cresc a b c \f d` rises through the `a`, `b` and `c` to `f` at the `d`. A
 `\!` ends it one level from where it began, so from `p`,
 `\cresc a b c \! \f d` rises only to `mp`, and the `d` jumps to `f`.
+
+A parameter direction changes how an external instrument plays the notes of
+the line it is written in, as the `name=value` words on a voice do for all of
+them: `\bright=1.3` gives the next note and the ones after it `bright` 1.3, in
+place of the band's value, until the line writes `\bright=` again. It holds
+across bars and into the next section the song plays, so a passage takes one
+setting and a single note takes its own and the one to go back to:
+
+```kauai
+section Verse {
+  C             \bright=0.6 e4 g c'2
+  F             a4 c' f'2
+  G7            \bright=1.3 g4 \bright=0.6 b d'2
+    Lead:       \pluck=0.1 c8 d e f g a b c'
+}
+```
+
+A parameter belongs to an instrument, not to the band, so unlike a dynamic it
+is not read by everyone: one in a bar line is the melody's, and one in a
+part's line is that part's. The derived parts play with their own voice's
+parameters, and a tone channel plays as written. What the instrument is
+given is described in [section 10](#10-playing-from-culebra).
 
 Tempo directions apply to the whole band. `\rit N` and `\accel N` change the
 tempo evenly from where they are written to the next tempo direction the song
@@ -898,6 +922,7 @@ under.
 - a pickup over notes of the bar before it, or longer than that bar; at the start of a song that loops, a pickup over notes of the song's last bar
 - a `\scoop`, `\plop`, `\doit` or `\fall` before a rest or a note a tie holds on, written twice before one note, or with no note after it in its bar
 - a `\!` with no `cresc` or `dim` going, a `cresc` or `dim` still going when the song ends, or a `\rit` or `\accel` without its tempo (`\rit 104`)
+- a parameter, on a voice or in a direction, that is not a word and a number (`bright=0.8`)
 - a tempo counted in what is no note value (`tempo 3=60`)
 - a groove, voice, drum, section, band, ending or derived part that is not defined, or a name defined twice
 - a groove row with a bar of no tokens, or of tokens that come to no note value (15 in 4/4)
@@ -988,7 +1013,10 @@ song.reached("Drive")   # has the song passed `mark Drive`?
 An external voice is built one pitch at a time: for each pitch the song
 needs, the function given under `voices:` for the voice's instrument is
 called with the pitch, a MIDI note number (`60` is middle C), and the voice's
-`name=value` parameters as an object, and returns the `Audio.Sound` to play.
+parameters as an object, and returns the `Audio.Sound` to play. The
+parameters are the voice's `name=value` words with what the score's
+directions set over them, as they stand at the note, so a pitch the score
+plays at two settings is built once for each.
 An external drum is built once: the function given for its sound under
 `drums:` (`drums: {kick: fn (params) { ... }}`) is called with the drum's
 `name=value` parameters, and returns the `Audio.Sound` to play. The keys of
@@ -1003,7 +1031,8 @@ A sound built once for each pitch suits an instrument that is struck and
 dies away, as a piano or a drum does. An instrument whose sound follows how
 it is played, as a bowed string or a horn does, is given instead as an
 object: `phrase` is its function, called with a phrase and the voice's
-parameters, and `hears` names what of each note it is told. A phrase is the
+parameters as they stand at the phrase's first note, and `hears` names what
+of each note it is told. A phrase is the
 notes a slur joins, in the order they start, grace notes among them; the
 notes struck together, a chord written or one a groove plays; or a note
 alone. A rest under a slur ends the phrase so far. So the instrument shapes
@@ -1026,6 +1055,7 @@ let song = Audio.Kauai.load("trio.kau", voices: {
 | `"line"` | `line`, the line the note moves in through the phrase, `0` the lowest: the k-th lowest of notes struck together is in line k, and a note a tie holds keeps its line while the others take the rest in turn | a voice |
 | `"marks"` | `marks`, the names of what is written on the note: `staccato` `accent` `tenuto` `marcato` `fermata` `arpeggio` `scoop` `plop` `doit` `fall`; for a drum, what is written on the band's hit it strikes, and none on a groove's | a voice or a drum |
 | `"next"` | `next`, seconds from the phrase's first note until the voice's next phrase starts; for a drum, from the hit until the drum, or its choke group, hits next; `nil` when nothing comes, to the millisecond | a voice or a drum |
+| `"params"` | `params`, the voice's parameters as they stand at the note, for a setting that changes inside a phrase | a voice |
 
 Notes struck together are each a note of the phrase, at the same `at`, from
 the lowest; a rolled chord's start a sixty-fourth apart, so `line`, not `at`,
@@ -1196,7 +1226,7 @@ Octave     <- "'" / ','
 Value      <- ('1' / '2' / '4' / '8' / '16' / '32') '.'*
 Direction  <- '\\' ('pp' / 'p' / 'mp' / 'mf' / 'f' / 'ff' / 'cresc' / 'dim'
               / 'rit' Tempo / 'accel' Tempo / 'tempo' (Tempo !'[')? / '!'
-              / 'scoop' / 'plop' / 'doit' / 'fall')
+              / 'scoop' / 'plop' / 'doit' / 'fall' / Param)
 Tempo      <- (Value '=')? Number                 # quarter notes a minute, or Value's
 
 Song       <- 'song' Name '{' EOL SongLine* '}' EOL

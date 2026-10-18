@@ -206,6 +206,14 @@ for opt in ["env 1 2 3", "gap 2", "duty 1/4"] {
     "line 4: an external voice plays its sound through: no env, gap or duty",
   )
 }
+# A parameter is a word and a number, on a voice and in a score alike.
+for bad in ["bright=", "Bright=1", "bright=x", "=1", "bright=1.", "bright=.5"] {
+  fails(
+    play("  T", "C c1").replace("external Ep", "external Ep {bad}"),
+    "line 4: a parameter is a word and a number, bright=0.8: {bad}",
+  )
+  fails(play("  T", "C \\{bad} c1"), "line 18: a parameter is a word and a number, bright=0.8: {bad}")
+}
 
 # Later times, hits and the song's lines.
 fails(

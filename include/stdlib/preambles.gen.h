@@ -2202,6 +2202,22 @@ let _kauai_module = fn () {
     !t.empty() && all_of(t, "0123456789.")
   }
 
+  # An external instrument's parameter, `name=value`, as a voice in the band
+  # and a direction in a score write it: a word and a number.
+  fn param_of(text, line) {
+    let (k, v) = halves(text, "=") ?? ("", "")
+    let (whole, frac) = halves(v, ".") ?? (v, "0")
+    let word = !k.empty() && all_of(k.slice(0, 1).to_string(), "abcdefghijklmnopqrstuvwxyz") && all_of(k, "abcdefghijklmnopqrstuvwxyz0123456789")
+    let number = !whole.empty() && !frac.empty() && all_of(whole, "0123456789") && all_of(frac, "0123456789")
+    fail(line, "a parameter is a word and a number, bright=0.8: {text}") if !word || !number
+    (k, to_float(v))
+  }
+
+  # The parameters as a key, the same whatever order they were set in.
+  fn params_key(params) {
+    params.keys().sorted().map(|k| "{k}={params[k]}").join(" ")
+  }
+
   let TEMPO_FORM = "a tempo is N, or a value and N: 4.=64"
 
   # A tempo as quarter notes a minute: `96`, or `4.=64` for a value's beats a
@@ -2247,6 +2263,13 @@ let _kauai_module = fn () {
         },
         t == "(" || t == ")" => {
           items.push({slur: t})
+          i += 1
+        },
+        # `\bright=0.8`: the line's external instruments take the parameter
+        # from the next note.
+        t.starts_with('\') && t.contains("=") => {
+          let (name, value) = param_of(t.slice(1, t.size()).to_string(), line)
+          items.push({param: name, value: value})
           i += 1
         },
         t.starts_with('\') => {
@@ -2368,7 +2391,8 @@ let _kauai_module = fn () {
   # Writes `events` from unit `at` into `state`: its notes, each with how it
   # is played, the melody's top line as {at, pitch, len} (what the derived
   # parts follow), and its dynamics; tempo changes go into `tempos`. `state`
-  # carries a tie, a slur and the dynamics from one bar to the next.
+  # carries a tie, a slur, the dynamics and the parameters from one bar to the
+  # next.
   fn write_melody(events, low, shift, line, at, tempos, song_tempo, state) {
     mut pos = at
     for it in events {
@@ -2415,6 +2439,12 @@ let _kauai_module = fn () {
             _ => fail(line, "not a direction: \\{w}"),
           }
         },
+        # A parameter holds for the line's notes after it, until it is set again.
+        it.has("param") => {
+          mut params = {...state.params}
+          params[it.param] = it.value
+          state.params = params
+        },
         it.rest => {
           state.holds.push((pos, it.length)) if it.marks.contains("fermata")
           fail(line, "a tie into a rest") if !state.ties.empty()
@@ -2439,7 +2469,7 @@ let _kauai_module = fn () {
           fail(line, "the note is too short for its grace notes or its arpeggio") if struck.any(|p| late(p) >= it.length)
           for k, nm in it.graces.enumerate() {
             let g = melody_note(nm, low, line) + shift
-            state.notes.push({pitch: g, start: pos + k * GRACE, mut len: GRACE, line: line, shift: 0, grace: true, span: state.span, legato: nil, phrase: state.slur ? state.phrase : nil, marks: [], rank: 0})
+            state.notes.push({pitch: g, start: pos + k * GRACE, mut len: GRACE, line: line, shift: 0, grace: true, span: state.span, legato: nil, phrase: state.slur ? state.phrase : nil, marks: [], rank: 0, params: state.params})
           }
           # The notes a slur joins are a phrase, and so are notes struck together.
           let phrase = cond {
@@ -2470,7 +2500,7 @@ let _kauai_module = fn () {
             if state.ties.has(p) {
               state.notes[state.ties[p]].len += it.length
             } else {
-              state.notes.push({pitch: p, start: pos + late(p), mut len: it.length - late(p), line: line, shift: late(p), grace: false, span: state.span, legato: legato, phrase: phrase, marks: marks, rank: ranks[p]})
+              state.notes.push({pitch: p, start: pos + late(p), mut len: it.length - late(p), line: line, shift: late(p), grace: false, span: state.span, legato: legato, phrase: phrase, marks: marks, rank: ranks[p], params: state.params})
             }
             let idx = state.ties.has(p) ? state.ties[p] : state.notes.size() - 1
             ties_now[p] = idx if it.tie || it.ties[k]
@@ -2502,17 +2532,14 @@ let _kauai_module = fn () {
 
   # An external instrument's own parameters, `name=value`, handed to the
   # program as is.
-  fn external_params(words) {
-    words.filter(|x| x.contains("="))
-      .map(|x| halves(x, "="))
-      .map(|(pk, pv)| (pk, to_float(pv)))
-      .to_object()
+  fn external_params(words, line) {
+    words.filter(|x| x.contains("=")).map(|x| param_of(x, line)).to_object()
   }
 
   fn parse_voice(words, line) {
     let name = name_at(words, 1, line, "a voice")
     let external = words[2] == "external"
-    let params = external_params(words)
+    let params = external_params(words, line)
     # `plays part NAME` (any number of them): the voice plays that part where
     # a section writes it.
     let plain = words.filter(|x| !x.contains("="))
@@ -2627,7 +2654,7 @@ let _kauai_module = fn () {
           drums[dn] = {
             on_hits: at_hits != nil,
             external: sound,
-            params: external_params(w),
+            params: external_params(w, item.line),
             vol: amount(vol[0]),
             choke: choke == nil ? dn : choke[0],
           }
@@ -3185,7 +3212,7 @@ let _kauai_module = fn () {
     let opened = {mut n: 0}
     let fresh_state = fn () {
       return {
-        mut ties: {}, notes: [], mut slur: false, mut slur_line: 0, mut phrase: nil, opened: opened, mut level: "mf", mut swell: false, mut swell_dir: nil, mut swell_line: 0, mut last: nil, mut tuplet_depth: 0, mut span: nil, holds: [], points: [], lead: [], mut open: nil,
+        mut ties: {}, notes: [], mut slur: false, mut slur_line: 0, mut phrase: nil, opened: opened, mut level: "mf", mut swell: false, mut swell_dir: nil, mut swell_line: 0, mut last: nil, mut tuplet_depth: 0, mut span: nil, holds: [], points: [], lead: [], mut open: nil, mut params: {},
       }
     }
     let voice_state = fresh_state()
@@ -3781,8 +3808,9 @@ let _kauai_module = fn () {
     # Voice `v`'s note, heard from `t0` to `t1` seconds, as `how` says: its
     # dynamic where it starts and where it ends (`level`, `level_end`), the
     # `marks` written on it, whether a slur joins it to the next (`legato`),
-    # its `phrase` (the notes it sounds with; nil for none) and its `rank`
-    # there, the line it moves in from the lowest.
+    # its `phrase` (the notes it sounds with; nil for none), its `rank`
+    # there, the line it moves in from the lowest, and the `params` its line
+    # set for an external instrument.
     let note = fn (v, pitch, t0, t1, how) {
       let marks = how.marks
       let level = how.level
@@ -3799,6 +3827,7 @@ let _kauai_module = fn () {
           at: t0, len: len, by: v.name, pitch: pitch, mut vol: v.vol * loud / MF,
           level: loud / MF, level_end: how.level_end / MF, sounded: sounded,
           phrase: how.phrase, marks: marks, rank: how.rank,
+          params: how.get("params", {}),
         })
         return nil
       }
@@ -3825,6 +3854,7 @@ let _kauai_module = fn () {
         legato: nt.legato != nil && nt.legato.on,
         phrase: nt.phrase == nil ? nil : "{v.name} {nt.phrase} {shift}",
         rank: nt.rank,
+        params: nt.params,
       })
     }
     let melody = x.melody
@@ -3885,10 +3915,10 @@ let _kauai_module = fn () {
   }
 
   # What an instrument may hear of a note: a voice its length, its dynamic,
-  # its marks, its line in the phrase and when the voice plays next; a drum
-  # its dynamic, the marks on the band's hit it strikes, and when it, or its
-  # choke group, hits next.
-  let VOICE_HEARS = ["len", "level", "line", "marks", "next"]
+  # its marks, its line in the phrase, when the voice plays next and the
+  # parameters it is played with; a drum its dynamic, the marks on the band's
+  # hit it strikes, and when it, or its choke group, hits next.
+  let VOICE_HEARS = ["len", "level", "line", "marks", "next", "params"]
   let DRUM_HEARS = ["level", "marks", "next"]
 
   # How external sound `name` is made, from `kind.table` (the `voices:` or
@@ -3917,7 +3947,10 @@ let _kauai_module = fn () {
   # sound for each phrase it hears differently (the notes a slur joins or
   # that are struck together, or a note alone), played from its first note,
   # and a drum's for each hit; a dynamic it hears is its own to sound, so the
-  # notes' `vol` leaves it out.
+  # notes' `vol` leaves it out. A voice's parameters are the band's with what
+  # its line set over them: a function's as they stand at the note, an
+  # instrument's as they stand at the phrase's first note (and at each note,
+  # for one that hears them).
   fn external_sounds(x, events, voices, drums) {
     let VOICE = {table: voices, kwarg: "voices", call: "phrase", may: VOICE_HEARS}
     let DRUM = {table: drums, kwarg: "drums", call: "hit", may: DRUM_HEARS}
@@ -3946,9 +3979,11 @@ let _kauai_module = fn () {
       let make = ins.make
       let params = player.params
       cond {
+        ins.hears == nil && drum => sound(e.by, e.at, e.vol, || make(params)),
         ins.hears == nil => {
           let p = e.pitch
-          sound(drum ? e.by : "{e.by} {p}", e.at, e.vol, drum ? || make(params) : || make(p, params))
+          let own = {...params, ...e.params}
+          sound("{e.by} {p} {params_key(e.params)}", e.at, e.vol, || make(p, own))
         },
         drum => {
           e.vol = player.vol if ins.hears.contains("level")
@@ -3986,6 +4021,7 @@ let _kauai_module = fn () {
       let head = members[0]
       let hears = kinds[head.by].hears
       let after = next("voice {head.by}", head.at)
+      let band = x.voices[head.by].params
       let notes = members.map(|e| ({
         pitch: e.pitch,
         at: ms(e.at - head.at),
@@ -3994,10 +4030,11 @@ let _kauai_module = fn () {
         ...(hears.contains("line") ? {line: e.rank} : {}),
         ...(hears.contains("marks") ? {marks: e.marks} : {}),
         ...(hears.contains("next") ? {next: after} : {}),
+        ...(hears.contains("params") ? {params: {...band, ...e.params}} : {}),
       }))
       let make = kinds[head.by].make
-      let params = x.voices[head.by].params
-      sound("{head.by} {notes}", head.at, head.vol, || make(notes, params))
+      let params = {...band, ...head.params}
+      sound("{head.by} {notes} {params_key(head.params)}", head.at, head.vol, || make(notes, params))
     }
     {build: build, plays: plays}
   }
