@@ -1654,7 +1654,8 @@ class EffectsLowerer {
     return out;
   }
 
-  // Build the whole computation class source (ctor + _step) for a body node.
+  // Build the whole computation class source (ctor + _step), after its box
+  // class when the body boxes a variable, for a body node.
   // `param_names` are the enclosing fn's params (empty for a handle body);
   // `rv_name` is the per-class resume parameter (unique so a nested computation
   // doesn't shadow an enclosing one). Two source pre-passes run first over the

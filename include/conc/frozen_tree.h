@@ -46,6 +46,7 @@ struct FrozenShape {
   uint32_t mut = kFrozenNone;   // in `index`: a bit a key (an Object's)
   uint32_t meta = kFrozenNone;  // a class instance: its class's node
   int8_t dir_kind = 0;          // a class meta's (JitSpecialTable::dir_kind)
+  bool lowered_state = false;   // a class meta's (JitObject::is_lowered_state)
   bool is_error = false;
   bool has_drop = false;        // a class instance's drop gate
 };

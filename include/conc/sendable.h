@@ -344,7 +344,10 @@ inline sendable::SendNode jit_serialize(JitValue v, JitSerCtx& ctx) {
       // eq/show thunks, a method capturing the class object and thus its
       // ctor) rejects exactly like the interp's body==nullptr check.
       n.s = _jit_class_meta_names(o);
-      if (!n.s.empty()) n.dir_kind = o->specials->dir_kind;
+      if (!n.s.empty()) {
+        n.dir_kind = o->specials->dir_kind;
+        n.lowered_state = o->is_lowered_state;
+      }
       if (o->proto()) {
         // Carry the instance's own drop gate rather than re-deriving it
         // from the meta on the other side: a nested instance can relink
@@ -459,10 +462,12 @@ inline JitValue _jit_shared_val_root(const culebra::SharedValCore* core,
 // A class meta crosses as an ordinary Object plus its names (`Name`, or
 // `Name/Enum` for a variant's). Restore what makes it a meta: the flag, the
 // special-method table (refilled from the methods just rebuilt, since it is
-// a cache of them), and the interned names its instances read.
+// a cache of them), the interned names its instances read, and whether it
+// is a lowering's.
 inline void _jit_restore_class_meta(JitObject* o, std::string_view names,
-                                    int8_t dir_kind) {
+                                    int8_t dir_kind, bool lowered_state) {
   o->is_class_meta = true;
+  o->is_lowered_state = lowered_state;
   o->specials = new JitSpecialTable();
   auto sep = names.find('/');
   o->specials->name = _intern_str(names.substr(0, sep));
@@ -552,7 +557,8 @@ inline JitOwnedVal jit_deserialize(const sendable::SendNode& n, JitDeCtx& ctx) {
                                          v.data, 0, 0, /*is_init=*/true);
         }
       }
-      if (!n.s.empty()) _jit_restore_class_meta(o, n.s, n.dir_kind);
+      if (!n.s.empty())
+        _jit_restore_class_meta(o, n.s, n.dir_kind, n.lowered_state);
       // Class instance: elems[0] = the rebuilt class meta, which the link
       // takes a reference of its own on.
       if (!n.elems.empty()) {
@@ -1712,7 +1718,8 @@ struct JitSvFreezer {
     if (shared) {
       mix(h, s.meta);
       mix(h, static_cast<size_t>(s.name));
-      mix(h, (s.is_error ? 1u : 0u) | (s.has_drop ? 4u : 0u) |
+      mix(h, (s.is_error ? 1u : 0u) | (s.lowered_state ? 2u : 0u) |
+                 (s.has_drop ? 4u : 0u) |
                  (static_cast<size_t>(static_cast<uint8_t>(s.dir_kind)) << 8));
       for (size_t i = base; i < keys.size(); i++) {
         mix(h, static_cast<size_t>(keys[i].tag));
@@ -1737,8 +1744,8 @@ struct JitSvFreezer {
   bool same(const culebra::FrozenShape& a, const culebra::FrozenShape& s,
             size_t base) const {
     if (a.count != s.count || a.meta != s.meta || a.name != s.name ||
-        a.dir_kind != s.dir_kind || a.is_error != s.is_error ||
-        a.has_drop != s.has_drop)
+        a.dir_kind != s.dir_kind || a.lowered_state != s.lowered_state ||
+        a.is_error != s.is_error || a.has_drop != s.has_drop)
       return false;
     const auto* theirs = t.keys_of(a);
     for (uint32_t i = 0; i < s.count; i++) {
@@ -1863,6 +1870,7 @@ struct JitSvFreezer {
     if (auto names = _jit_class_meta_names(o); !names.empty()) {
       s.name = key_str(names);
       s.dir_kind = o->specials->dir_kind;
+      s.lowered_state = o->is_lowered_state;
     }
     if (auto* meta = o->proto()) {
       // The instance's own drop gate, not one derived again from the meta.
@@ -1979,7 +1987,8 @@ struct JitSvThaw {
       }
     }
     if (shape.name >= 0)
-      _jit_restore_class_meta(o, t.str(shape.name), shape.dir_kind);
+      _jit_restore_class_meta(o, t.str(shape.name), shape.dir_kind,
+                              shape.lowered_state);
     if (shape.meta != culebra::kFrozenNone) {
       auto it = metas.find(shape.meta);
       _jit_link_instance(

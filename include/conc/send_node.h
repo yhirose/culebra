@@ -87,6 +87,9 @@ struct SendNode {
   // Object, a class meta: which Dir module class it is (JitSpecialTable::
   // dir_kind), a fact of the meta's C++ side that the entries cannot carry.
   int8_t dir_kind = 0;
+  // Object, a class meta: a lowering's (JitObject::is_lowered_state), whose
+  // instances' own slots hand a function back unbound; the same kind of fact.
+  bool lowered_state = false;
 
   // Declared here, defaulted below the class, for the reason toml::Node's are
   // (toml.h): the self-referential vector<pair<SendNode, SendNode>> makes

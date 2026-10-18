@@ -62,4 +62,15 @@ let boundary = handle {
 } with other(k) { k(999) }
 assert_eq(boundary, "EffectError")
 
+# --- a closure sent from an effect body still reads its locals' functions as
+#     themselves: the box it holds them in arrives as the lowering's class ---
+effect fn sent_ask()
+effect fn sent_fn() {
+  let g = || 5
+  let h = || g
+  perform sent_ask()
+  [Isolate.spawn(|| g == g).join(), Parallel.map([1], |x| h() == g), g == g]
+}
+assert_eq(handle { sent_fn() } with sent_ask(k) { k(0) }, [true, [true], true])
+
 inspect("test_effects_isolate: all assertions passed")
