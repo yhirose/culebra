@@ -1553,8 +1553,13 @@ inline constexpr CanonParam kCanonParams_Audio_native[] = {
   // 119: _Audio.graph_render
   {"id", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
   {"seconds", false, false, false, false, false, "Long|Float", CanonDefault::None, 0, {}},
-  // 121: _Audio.graph_play / graph_stop / graph_free / graph_now
+  // 121: _Audio.graph_play / graph_stop / graph_free / graph_now / sound_loudness
   {"id", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
+  // 122: _Audio.loudness
+  {"samples", false, false, false, false, false, "Array", CanonDefault::None, 0, {}},
+  {"rate", false, false, false, false, false, "Long|Float", CanonDefault::None, 0, {}},
+  // 124: _Audio.tone_loudness
+  {"freq", false, false, false, false, false, "Long|Float", CanonDefault::None, 0, {}},
 };
 
 inline constexpr CanonSig kCanonSigs_Audio_native[] = {
@@ -1625,6 +1630,9 @@ inline constexpr CanonSig kCanonSigs_Audio_native[] = {
   {"_Audio", "", "graph_stop", kCanonParams_Audio_native + 121, 1, "", 1, 1, false, -1, -1, -1},
   {"_Audio", "", "graph_free", kCanonParams_Audio_native + 121, 1, "", 1, 1, false, -1, -1, -1},
   {"_Audio", "", "graph_now", kCanonParams_Audio_native + 121, 1, "Float", 1, 1, false, -1, -1, -1},
+  {"_Audio", "", "sound_loudness", kCanonParams_Audio_native + 121, 1, "Float?", 1, 1, false, -1, -1, -1},
+  {"_Audio", "", "loudness", kCanonParams_Audio_native + 122, 2, "Float?", 2, 2, false, -1, -1, -1},
+  {"_Audio", "", "tone_loudness", kCanonParams_Audio_native + 124, 1, "Float?", 1, 1, false, -1, -1, -1},
 };
 
 inline constexpr CanonParam kCanonParams_Dir_native[] = {

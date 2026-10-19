@@ -27,7 +27,9 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <numbers>
+#include <string_view>
 #include <unordered_map>
 #include <variant>
 #include <vector>
@@ -101,6 +103,137 @@ inline std::vector<uint8_t> wav16(const double* x, size_t n, uint32_t rate) {
   return out;
 }
 
+// --- How loud a sound is, the same on every backend ---
+//
+// ITU-R BS.1770's momentary loudness, its largest: the samples K-weighted (a
+// shelf of about +4 dB above 1.7 kHz for the head, a high-pass at 38 Hz),
+// their mean square over 400 ms stepped by 100 ms (a sound shorter than that
+// heard over 400 ms, silence after it), in LUFS. NaN under BS.1770's absolute
+// gate of -70 LUFS, which is silence. A Kauai song weighs an instrument it is
+// handed against its own tones with it. The filters are BS.1770's pair made
+// for the sound's own rate as libebur128 makes them (at 48 kHz they are the
+// standard's own coefficients).
+
+struct LoudnessBiquad {
+  double b0, b1, b2, a1, a2;
+  double z1 = 0, z2 = 0;
+  double step(double x) {
+    double y = b0 * x + z1;
+    z1 = b1 * x - a1 * y + z2;
+    z2 = b2 * x - a2 * y;
+    return y;
+  }
+};
+
+inline LoudnessBiquad k_shelf(double rate) {
+  double q = 0.7071752369554196;
+  double k = std::tan(std::numbers::pi * 1681.974450955533 / rate);
+  double vh = std::pow(10.0, 3.999843853973347 / 20.0);
+  double vb = std::pow(vh, 0.4996667741545416);
+  double a0 = 1.0 + k / q + k * k;
+  return {(vh + vb * k / q + k * k) / a0, 2.0 * (k * k - vh) / a0, (vh - vb * k / q + k * k) / a0,
+          2.0 * (k * k - 1.0) / a0, (1.0 - k / q + k * k) / a0};
+}
+
+inline LoudnessBiquad k_highpass(double rate) {
+  double q = 0.5003270373238773;
+  double k = std::tan(std::numbers::pi * 38.13547087602444 / rate);
+  double a0 = 1.0 + k / q + k * k;
+  return {1.0, -2.0, 1.0, 2.0 * (k * k - 1.0) / a0, (1.0 - k / q + k * k) / a0};
+}
+
+inline double loudness(const double* x, size_t n, double rate) {
+  auto shelf = k_shelf(rate);
+  auto high = k_highpass(rate);
+  // The running sum of the weighted signal's squares, for any window's power.
+  std::vector<double> sum(n + 1, 0.0);
+  for (size_t i = 0; i < n; i++) {
+    double v = std::isnan(x[i]) ? 0.0 : std::clamp(x[i], -1.0, 1.0);
+    double y = high.step(shelf.step(v));
+    sum[i + 1] = sum[i] + y * y;
+  }
+  auto window = static_cast<size_t>(std::llround(0.4 * rate));
+  auto hop = std::max<size_t>(1, static_cast<size_t>(std::llround(0.1 * rate)));
+  double most = 0.0;
+  if (n <= window) {
+    most = sum[n] / static_cast<double>(window);
+  } else {
+    for (size_t s = 0;; s += hop) {
+      size_t e = std::min(n, s + window);
+      most = std::max(most, (sum[e] - sum[e - window]) / static_cast<double>(window));
+      if (e == n) break;
+    }
+  }
+  double lufs = most > 0 ? -0.691 + 10.0 * std::log10(most) : -INFINITY;
+  return lufs < -70.0 ? std::nan("") : lufs;
+}
+
+// The samples of a WAV file as mono -1..1 and its rate: PCM of 8, 16, 24 or
+// 32 bits or floats of 32 or 64, its channels averaged. False for one it
+// does not read, whose loudness is then not known.
+inline bool wav_samples(const uint8_t* p, size_t n, std::vector<double>& out, double& rate) {
+  auto u16 = [&](size_t at) { return static_cast<uint32_t>(p[at] | p[at + 1] << 8); };
+  auto u32 = [&](size_t at) { return u16(at) | u16(at + 2) << 16; };
+  if (n < 12 || std::string_view(reinterpret_cast<const char*>(p), 4) != "RIFF" ||
+      std::string_view(reinterpret_cast<const char*>(p + 8), 4) != "WAVE")
+    return false;
+  uint32_t format = 0, channels = 0, bits = 0;
+  for (size_t at = 12; at + 8 <= n;) {
+    std::string_view id(reinterpret_cast<const char*>(p + at), 4);
+    size_t len = u32(at + 4), body = at + 8;
+    if (len > n - body) return false;
+    if (id == "fmt " && len >= 16) {
+      format = u16(body);
+      channels = u16(body + 2);
+      rate = u32(body + 4);
+      bits = u16(body + 14);
+      if (format == 0xfffe && len >= 26) format = u16(body + 24);  // extensible
+    } else if (id == "data") {
+      size_t width = bits / 8;
+      bool pcm = format == 1 && (bits == 8 || bits == 16 || bits == 24 || bits == 32);
+      bool floats = format == 3 && (bits == 32 || bits == 64);
+      if ((!pcm && !floats) || channels == 0 || rate <= 0) return false;
+      size_t frames = len / (width * channels);
+      out.assign(frames, 0.0);
+      for (size_t f = 0; f < frames; f++) {
+        double v = 0;
+        for (size_t c = 0; c < channels; c++) {
+          const uint8_t* s = p + body + (f * channels + c) * width;
+          if (floats) {
+            if (bits == 32) {
+              float x;
+              std::memcpy(&x, s, 4);
+              v += x;
+            } else {
+              double x;
+              std::memcpy(&x, s, 8);
+              v += x;
+            }
+          } else if (bits == 8) {
+            v += (s[0] - 128) / 128.0;
+          } else {
+            uint32_t raw = 0;
+            for (size_t b = 0; b < width; b++) raw |= static_cast<uint32_t>(s[b]) << (8 * b);
+            int shift = 32 - static_cast<int>(bits);
+            v += static_cast<int32_t>(raw << shift) / 2147483648.0;
+          }
+        }
+        out[f] = v / channels;
+      }
+      return true;
+    }
+    at = body + len + (len & 1);
+  }
+  return false;
+}
+
+// What each Sound weighs, by handle: kept as it is made, as the browser
+// decodes a file's bytes only later, and dropped as it is freed.
+inline std::unordered_map<int64_t, double>& sound_loudness_table() {
+  static std::unordered_map<int64_t, double> table;
+  return table;
+}
+
 inline constexpr auto kSamplesError =
     "type error: parameter 'samples' expects an Array of Long|Float";
 inline constexpr auto kScoreEventsError =
@@ -115,6 +248,25 @@ inline int64_t alloc_id() {
 
 // The rate the mixer runs at, which a graph played must have.
 inline constexpr double kMixerRate = 44100;
+
+// A tone at vol 100 is a raw wave at a fifth of full scale, as up to four
+// channels stack (the browser's app.js keeps the same 0.2).
+inline constexpr double kToneLevel = 0.2;
+
+// How loud a tone of `freq` Hz is at vol 100 on a pulse at a half's duty, in
+// LUFS: a second of the mixer's own square. A Kauai song plays an external
+// sound at vol N as loud as this tone at vol N.
+inline double tone_loudness(double freq) {
+  auto n = static_cast<size_t>(kMixerRate);
+  std::vector<double> x(n);
+  double phase = 0;
+  for (size_t i = 0; i < n; i++) {
+    x[i] = phase < 0.5 ? kToneLevel : -kToneLevel;
+    phase += freq / kMixerRate;
+    if (phase >= 1.0) phase -= std::floor(phase);
+  }
+  return loudness(x.data(), n, kMixerRate);
+}
 
 // Numbers an event takes in a score's flat list (score_new).
 inline constexpr int64_t kScoreStride = 11;

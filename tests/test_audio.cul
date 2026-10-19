@@ -64,6 +64,39 @@ assert_throws("ValueError", fn () {
 assert_throws("ValueError", fn () {
   Audio.Sound.new([0.0], rate: 2147483648)
 })
+
+// How loud a sound is, as a song weighs an instrument against its tones: the
+// loudest 400 ms, K-weighted, in LUFS (ITU-R BS.1770's momentary loudness);
+// nil for silence. A full-scale 997 Hz sine reads -3.01, as BS.1770 sets it.
+let sine = |amp, secs, rate| iota(Math.round(secs * rate)).map(|i| amp * Math.sin(2.0 * Math.pi * 997.0 * i / rate))
+let near = |a, b| Math.abs(a - b) < 0.05
+assert_true(near(_Audio.loudness(sine(1.0, 1.0, 48000), 48000), -3.01))
+assert_true(near(_Audio.loudness(sine(0.5, 1.0, 44100), 44100), -9.03))
+// A sound shorter than 400 ms is heard over 400 ms: a tenth of a second of it
+// a quarter of the power of the same 400 ms.
+assert_true(near(_Audio.loudness(sine(1.0, 0.1, 44100), 44100) - _Audio.loudness(sine(1.0, 0.4, 44100), 44100), -6.02))
+assert_eq(_Audio.loudness(repeat(4410, 0.0), 44100), nil)
+assert_eq(_Audio.loudness([], 44100), nil)
+// A tone at vol 100 on a pulse at a half's duty: a fifth of full scale, a
+// second of it; what a song weighs an external sound against.
+let square = iota(44100).map(|i| (i * 440.0 / 44100.0) % 1.0 < 0.5 ? 0.2 : -0.2)
+assert_true(near(_Audio.tone_loudness(440), _Audio.loudness(square, 44100)))
+assert_throws("ValueError", fn () {
+  _Audio.tone_loudness(0)
+})
+// A Sound keeps how loud it is, made from samples or from WAV bytes (16-bit
+// here, quantized as a file is); compressed audio is not decoded before it
+// plays, so its loudness is not known.
+let tone = sine(0.5, 0.5, 44100)
+let pcm16 = String.pack("i16", tone.map(|v| Math.round(v * 32767)))
+let wav16 = "RIFF" + String.pack("u32", [36 + pcm16.size()]) + "WAVEfmt " + String.pack("u32", [16]) +
+  String.pack("u16", [1, 1]) + String.pack("u32", [44100, 88200]) + String.pack("u16", [2, 16]) +
+  "data" + String.pack("u32", [pcm16.size()]) + pcm16
+assert_eq(_Audio.sound_loudness(Audio.Sound.new(tone)._id), _Audio.loudness(tone, 44100))
+assert_true(near(_Audio.sound_loudness(Audio.Sound.new(wav16)._id), _Audio.loudness(tone, 44100)))
+assert_true(_Audio.sound_loudness(Audio.Sound.new(WAV)._id) != nil)
+assert_eq(_Audio.sound_loudness(Audio.Sound.new(MP3)._id), nil)
+assert_eq(_Audio.sound_loudness(Audio.Sound.new([])._id), nil)
 assert_throws("TypeError", fn () {
   snd.volume("loud")
 })

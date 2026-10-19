@@ -5190,12 +5190,36 @@ inline _AudioBytes _ns_audio_bytes(JitValue v,
   if (fmt == nullptr) culebra::throw_runtime_error_at("ValueError", error, 0, 0);
   return {p, static_cast<int64_t>(sv.size()), fmt};
 }
+// How loud a Sound is, kept by its handle where it can be known.
+inline void _ns_audio_keep_loudness(int64_t id, const double* xs, size_t n, double rate) {
+  double l = culebra::_audio_detail::loudness(xs, n, rate);
+  if (!std::isnan(l)) culebra::_audio_detail::sound_loudness_table()[id] = l;
+}
 inline JitValue _ns_audio_sound_load(JitValue* a, int64_t) {
   namespace ad = culebra::_audio_detail;
   auto b = _ns_audio_bytes(a[0], ad::sound_format, ad::kSoundFormatError);
   int64_t id = ad::alloc_id();
   ad::sound_load(id, b.p, b.n, b.fmt);
+  // A WAV's samples are read here, for every backend; compressed audio is
+  // decoded only as it plays (the browser's decoder answers later), so its
+  // loudness is not known.
+  std::vector<double> xs;
+  double rate = 0;
+  if (std::string_view(b.fmt) == ".wav" && ad::wav_samples(b.p, static_cast<size_t>(b.n), xs, rate))
+    _ns_audio_keep_loudness(id, xs.data(), xs.size(), rate);
   return _ns_adapt::v_long(id);
+}
+inline JitValue _ns_audio_sound_free(JitValue* a, int64_t) {
+  int64_t id = _ns_adapt::take_long(a[0]);
+  culebra::_audio_detail::sound_loudness_table().erase(id);
+  culebra::_audio_detail::sound_free(id);
+  return _ns_adapt::v_nil();
+}
+// A Sound's loudness in LUFS, nil where it is silence or not known.
+inline JitValue _ns_audio_sound_loudness(JitValue* a, int64_t) {
+  auto& table = culebra::_audio_detail::sound_loudness_table();
+  auto it = table.find(_ns_adapt::take_long(a[0]));
+  return it == table.end() ? _ns_adapt::v_nil() : _ns_adapt::v_float(it->second);
 }
 inline JitValue _ns_audio_music_load(JitValue* a, int64_t) {
   namespace ad = culebra::_audio_detail;
@@ -5274,8 +5298,28 @@ inline JitValue _ns_audio_sound_samples(JitValue* a, int64_t) {
   if (!xs.empty()) {
     auto wav = ad::wav16(xs.data(), xs.size(), static_cast<uint32_t>(rate));
     ad::sound_load(id, wav.data(), static_cast<int64_t>(wav.size()), ".wav");
+    _ns_audio_keep_loudness(id, xs.data(), xs.size(), static_cast<double>(rate));
   }
   return _ns_adapt::v_long(id);
+}
+// How loud a tone of `freq` Hz is at vol 100 on a pulse at a half's duty, in
+// LUFS: what a Kauai song makes an external sound at vol 100 as loud as.
+inline JitValue _ns_audio_tone_loudness(JitValue* a, int64_t) {
+  namespace ad = culebra::_audio_detail;
+  double freq = _ns_adapt::take_double(a[0]);
+  if (!(freq > 0 && freq < ad::kMixerRate / 2)) _ns_audio_fail("Audio: a tone's freq is above 0 and below half the rate");
+  double l = ad::tone_loudness(freq);
+  return std::isnan(l) ? _ns_adapt::v_nil() : _ns_adapt::v_float(l);
+}
+// The loudness of samples a program made, in LUFS (nil for silence): what a
+// Sound made from them keeps.
+inline JitValue _ns_audio_loudness(JitValue* a, int64_t) {
+  std::vector<double> xs;
+  _ns_audio_numbers(a[0], xs, culebra::_audio_detail::kSamplesError);
+  double rate = _ns_adapt::take_double(a[1]);
+  if (!(rate >= 1 && rate <= INT32_MAX)) _ns_audio_fail("Audio: the rate is from 1 below 2^31");
+  double l = culebra::_audio_detail::loudness(xs.data(), xs.size(), rate);
+  return std::isnan(l) ? _ns_adapt::v_nil() : _ns_adapt::v_float(l);
 }
 inline JitValue _ns_audio_pcm_push(JitValue* a, int64_t) {
   thread_local std::vector<double> scratch;  // a block a frame: no allocation
@@ -10974,7 +11018,7 @@ inline const NsMethod kNsRows_Audio_native[] = {
   {"_Audio", "available",      0, &_ns_audio_query<culebra::_audio_detail::available>},
   {"_Audio", "tone",          10, &_ns_audio_tone},
   {"_Audio", "sound_load",     1, &_ns_audio_sound_load},
-  {"_Audio", "sound_free",     1, &_ns_audio_on<culebra::_audio_detail::sound_free>},
+  {"_Audio", "sound_free",     1, &_ns_audio_sound_free},
   {"_Audio", "sound_play",     1, &_ns_audio_on<culebra::_audio_detail::sound_play>},
   {"_Audio", "sound_stop",     1, &_ns_audio_on<culebra::_audio_detail::sound_stop>},
   {"_Audio", "sound_playing",  1, &_ns_audio_ask<culebra::_audio_detail::sound_playing>},
@@ -11029,6 +11073,9 @@ inline const NsMethod kNsRows_Audio_native[] = {
   {"_Audio", "envelope",       3, &_ns_audio_envelope},
   {"_Audio", "mix",            3, &_ns_audio_mix},
   {"_Audio", "sound_samples",  2, &_ns_audio_sound_samples},
+  {"_Audio", "sound_loudness", 1, &_ns_audio_sound_loudness},
+  {"_Audio", "loudness",       2, &_ns_audio_loudness},
+  {"_Audio", "tone_loudness",  1, &_ns_audio_tone_loudness},
   {"_Audio", "graph_new",      1, &_ns_audio_graph_new},
   {"_Audio", "graph_part",     5, &_ns_audio_graph_part},
   {"_Audio", "graph_output",   2, &_ns_audio_graph_output},

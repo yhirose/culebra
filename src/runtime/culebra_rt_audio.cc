@@ -396,9 +396,9 @@ bool g_tone_ready = false;
 
 // tone's vol/peak arrive as WASM-4's 0..100. A synthesised waveform is raw and
 // up to four channels stack, so tone keeps a headroom the file paths don't
-// need: the browser's "keep it gentle" 0.2.
+// need: kToneLevel, the browser's "keep it gentle" 0.2.
 double tone_gain_of(double v) {
-  return std::clamp(v, 0.0, 100.0) / 100.0 * 0.2;
+  return std::clamp(v, 0.0, 100.0) / 100.0 * kToneLevel;
 }
 
 // The ADSR envelope's gain at `elapsed` samples into a note of the given phase
