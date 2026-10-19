@@ -4,9 +4,9 @@ about {
 }
 
 band Trio {
-  voice Violin  external Violin  plays melody     vol 60%
-  voice Viola   external Viola   plays part Alto  vol 45%
-  voice Cello   external Cello   plays part Cello vol 60%
+  voice Violin  external Violin  plays melody     vol 46
+  voice Viola   external Viola   plays part Alto  vol 33
+  voice Cello   external Cello   plays part Cello vol 52
 }
 
 song Held {

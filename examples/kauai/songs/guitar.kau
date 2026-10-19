@@ -4,9 +4,9 @@ about {
 }
 
 band Trio {
-  voice Lead    external Guitar pluck=0.3  plays melody                    vol 75%
-  voice Chords  external Guitar            plays chords rootless from E3  poly  vol 40%
-  voice Thumb   external Guitar            plays roots in E2..D#3          vol 60%
+  voice Lead    external Guitar pluck=0.3  plays melody                    vol 12
+  voice Chords  external Guitar            plays chords rootless from E3  poly  vol 8
+  voice Thumb   external Guitar            plays roots in E2..D#3          vol 17
 }
 
 groove Bossa {

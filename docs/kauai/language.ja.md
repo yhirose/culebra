@@ -229,7 +229,7 @@ C4 Eb4 G4 Bb4になります。
 | オプション | 意味 | 既定値 |
 |---|---|---|
 | `duty 1/8` `1/4` `1/2` `3/4` | パルス波のデューティ比 | `1/2` |
-| `vol N` | `mf`のときの音量。`Audio.tone`と同じ`0`〜`100`で指定する。外部の楽器では、楽器自身の音量に対する百分率（`vol 46%`） | （必須） |
+| `vol N` | `mf`のときの音量。`Audio.tone`と同じ`0`〜`100`で指定する。外部の楽器も同じ（楽器の音量の合わせ方は[10章](#10-culebra-から再生する)） | （必須） |
 | `env A D R` | アタック、ディケイ、リリース（単位は1/60秒のtick） | `0 0 0` |
 | `gap N` | 各音の終わりを何tick切り詰めるか。音と音の間にすき間を作って、区切って聞かせる | `0` |
 | `poly` | 複数の音を同時に鳴らせる（外部の楽器のみ） | 一度に1音 |
@@ -259,7 +259,7 @@ sectionごとに選びます（[8章](#8-曲)）。
 ### ドラム
 
 `drum NAME noise FREQ[->END] len N vol V [env A D R] [plays hits]`
-`drum NAME external SOUND [name=value...] vol P% [choke GROUP] [plays hits]`
+`drum NAME external SOUND [name=value...] vol V [choke GROUP] [plays hits]`
 
 noiseのドラムは、ノイズチャンネルで鳴らす打音です。`FREQ`は高さ（Hz）で、
 `END`を書くとそこまで音程を滑らせ、`len`のtick数だけ鳴らします。チャンネルは
@@ -267,19 +267,19 @@ noiseのドラムは、ノイズチャンネルで鳴らす打音です。`FREQ`
 できません。
 
 外部のドラムは、プログラム側で用意した音声（[10章](#10-culebra-から再生する)）を
-最後まで鳴らします。音量は、その音声自身の音量に対する百分率で指定します。
+最後まで鳴らします。音量は、外部の楽器と同じく、チャンネルの音と同じ尺度の`vol`で指定します。
 外部のドラムは、ドラムセットの太鼓やシンバルと同じように、ほかの外部のドラムとも
 noiseのドラムとも同時に鳴らせます。
 
 ```kauai
 band Combo {
-  voice Keys  external Ep bright=0.8  plays chords rootless from E3  poly  vol 40%
+  voice Keys  external Ep bright=0.8  plays chords rootless from E3  poly  vol 40
   voice Bass  triangle                plays roots in E2..D#3            vol 30
 
-  drum Kick     external Kick     vol 80%
-  drum Ride     external Ride     vol 50%
-  drum Hat      external Hat      vol 40%  choke Hats
-  drum OpenHat  external OpenHat  vol 30%  choke Hats
+  drum Kick     external Kick     vol 64
+  drum Ride     external Ride     vol 20
+  drum Hat      external Hat      vol 7   choke Hats
+  drum OpenHat  external OpenHat  vol 10  choke Hats
 }
 ```
 
@@ -718,12 +718,12 @@ section Kime {
 ```kauai
 band Fusion {
   voice Lead  saw                     plays melody                     vol 12
-  voice Keys  external Ep  poly       plays chords from C4             vol 40%
+  voice Keys  external Ep  poly       plays chords from C4             vol 38
   voice Bass  triangle                plays roots in E2..D#3           vol 30
 
-  drum Kick   external Kick   vol 80%  plays hits
-  drum Crash  external Crash  vol 60%  plays hits
-  drum Hat    external Hat    vol 40%
+  drum Kick   external Kick   vol 64  plays hits
+  drum Crash  external Crash  vol 56  plays hits
+  drum Hat    external Hat    vol 7
 }
 ```
 
@@ -925,7 +925,7 @@ section Bridge {
 - 定義されていないgroove、楽器、ドラム、section、band、ending、派生パート。2回定義された名前
 - トークンのない小節や、トークンの長さが音価にならない小節（4/4で15個）を含むgrooveの行
 - 同時に鳴るnoiseのドラム2つ。同じチャンネルを使う1つのbandの楽器2つ
-- `env`、`gap`、`duty`が付いた外部の楽器。音声の名前がない、`len`や`env`が付いている、`vol`が百分率でない、または`choke`に名前が1つでない外部のドラム。noiseのドラムの`choke`
+- `env`、`gap`、`duty`が付いた外部の楽器。音声の名前がない、`len`や`env`が付いている、または`choke`に名前が1つでない外部のドラム。noiseのドラムの`choke`。百分率で書いた楽器やドラムの`vol`
 - メロディを弾く楽器がない、または2つ以上ある
 - 1オクターブでない範囲。シャープやフラットの付いた音から始まる範囲
 - 1拍が音価にならない`meter`（`3/5`）
@@ -992,7 +992,7 @@ song.play()
 | `prepare()` | 外部の楽器の音声を1つ作り、残りの数を返す |
 | `length()` | 1回通して演奏したときの秒数 |
 | `about()` | `about`に書いた項目をまとめたオブジェクト。例: `{title: 'Je te veux', composer: 'Erik Satie', year: 1897}`。`about`がなければ`{}` |
-| `events()` | 演奏する音を時間順に並べたもの。各要素は`{at, len, by, pitch, vol}`で、`at`と`len`は秒、`by`は楽器かドラムの名前、`pitch`はMIDIのノート番号（ドラムは`nil`）、`vol`はその音の強弱での楽器の`vol`（外部の楽器の音声では、音声自身の音量に対する割合） |
+| `events()` | 演奏する音を時間順に並べたもの。各要素は`{at, len, by, pitch, vol}`で、`at`と`len`は秒、`by`は楽器かドラムの名前、`pitch`はMIDIのノート番号（ドラムは`nil`）、`vol`はその音の強弱での楽器やドラムの`vol`（外部の楽器の音声も、チャンネルの音と同じ`0`〜`100`） |
 
 runtimeは、すべての音を音声ストリーム自身のクロックに合わせて予約します。
 そのため、1フレームの処理が長引いてもテンポは崩れず、フレームループを持たない
@@ -1075,6 +1075,16 @@ Kauaiは、
 このとき音符の`vol`はボイスの`vol`だけになり、聞かない場合はKauaiが強弱に
 応じて音声の音量を変えます。`hears`にほかの名前を書くと、曲を読み込んだ時点で
 `ValueError`になります。
+
+外部の楽器やドラムは、チャンネルの音と同じ尺度の`vol`で鳴ります。`vol 20`なら、
+外部のサックスも矩形波と同じ大きさに聞こえます。Kauaiは鳴らす前に楽器ごとに
+音量を合わせます。楽器に音声をもう1つ頼み（楽器なら、その楽器が弾く音の高さの
+中央の音を`mf`で1秒、楽器が聞くものを付けて。ドラムなら`mf`の1打）、その音声の
+一番大きい所の大きさ（ITU-R BS.1770の400msの大きさ）を測って、`vol 100`で同じ
+高さのデューティ比1/2の矩形波（ドラムはA4）と同じ大きさになるよう、その楽器の
+すべての音声の音量を上げ下げします。曲がすでに使う音声なら、改めて頼みません。
+鳴らす前に大きさが分からない音声（無音や、バックエンドが鳴らすときに初めて
+デコードするMP3とOgg）は、その音声自身の音量の`vol / 100`で鳴らします。
 
 曲のファイルは、プログラムを書かなくても再生できます。`culebra play song.kau`で
 再生し、`culebra play --check song.kau`では読んで検査するだけで何も鳴らしません。
@@ -1174,14 +1184,14 @@ Band       <- 'band' Name '{' EOL (Voice / Drum / Derived / EOL)* '}' EOL
 Voice      <- 'voice' Name Source VoiceWord* EOL
 Source     <- 'pulse' / 'pulse2' / 'triangle' / 'saw' / 'external' Name Param*
 Param      <- Word '=' Number
-VoiceWord  <- 'plays' Plays / 'duty' Ratio / 'vol' Level / 'env' Int Int Int
+VoiceWord  <- 'plays' Plays / 'duty' Ratio / 'vol' Int / 'env' Int Int Int
             / 'gap' Int / 'poly'
 Plays      <- 'melody' / 'roots' 'in' Range / 'chords' 'rootless'? 'from' Pitch
             / 'part' Name+
 Derived    <- Name 'echoes' Name 'late' Ratio 'level' Percent EOL
             / Name 'harmonizes' Name 'under' Interval EOL
 Drum       <- 'drum' Name ('noise' Int ('->' Int)? 'len' Int 'vol' Int
-              ('env' Int Int Int)? / 'external' Name Param* 'vol' Percent ('choke' Name)?)
+              ('env' Int Int Int)? / 'external' Name Param* 'vol' Int ('choke' Name)?)
               ('plays' 'hits')? EOL
 
 Groove     <- 'groove' Name '{' EOL (Row / Edge / EOL)* '}' EOL
@@ -1254,7 +1264,6 @@ Int        <- [0-9]+
 Number     <- [0-9]+ ('.' [0-9]+)?
 Ratio      <- Int '/' Int
 Percent    <- Int '%'
-Level      <- Int / Percent
 Interval   <- 'm2' / 'M2' / 'm3' / 'M3' / 'P4' / 'TT' / 'P5' / 'm6' / 'M6'
             / 'm7' / 'M7' / 'P8'
 Quoted     <- "'" [^']* "'"
@@ -1551,8 +1560,8 @@ about {
 }
 
 band Trio {
-  voice Piano  external Ep bright=0.8  plays chords rootless from E3  poly  vol 26%
-  voice Sing   external Ep bright=1.3  plays melody                    poly  vol 46%
+  voice Piano  external Ep bright=0.8  plays chords rootless from E3  poly  vol 11
+  voice Sing   external Ep bright=1.3  plays melody                    poly  vol 14
   voice Bass   triangle                plays roots in E2..D#3          vol 34  env 3 0 14  gap 3
 
   drum Brush  noise 4000  len 2  vol 4  env 0 0 5
@@ -1654,7 +1663,7 @@ voicings {
 band Salon {
   voice Singer  pulse                   plays melody                           duty 1/2  vol 22  env 2 2 8
   voice Bass    triangle                plays roots in E1..D#2                           vol 32  env 0 2 6
-  voice Piano   external Ep bright=0.9  plays chords from E3  plays part Fill  poly      vol 30%
+  voice Piano   external Ep bright=0.9  plays chords from E3  plays part Fill  poly      vol 29
 }
 
 song JeTeVeux {

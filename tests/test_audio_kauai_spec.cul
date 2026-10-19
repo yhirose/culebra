@@ -28,7 +28,7 @@ fn chords(defs, syms) {
     defs,
     'band B {',
     '  voice M pulse plays melody vol 10',
-    '  voice Ch external Ep plays chords from C4 poly vol 40%',
+    '  voice Ch external Ep plays chords from C4 poly vol 40',
     '}',
     'song S {',
     '  tempo 100',
@@ -112,12 +112,12 @@ fn sections_alone(b) {
   })
   let players = parts.empty()
     ? []
-    : ["  voice P external Pad plays part {parts.to_set().to_array().join(" ")} poly vol 50%"]
+    : ["  voice P external Pad plays part {parts.to_set().to_array().join(" ")} poly vol 50"]
   mut failed = []
   for (meter, rest) in [("4/4", "r1"), ("3/4", "r2.")] {
     let text = lines([
       'band Doc {',
-      '  voice M external Lead plays melody poly vol 50%',
+      '  voice M external Lead plays melody poly vol 50',
       ...players,
       '}',
       'song Doc {',
@@ -162,7 +162,7 @@ fn band_alone(b) {
     ? b
     : lines([
       b.slice(0, b.size() - 1) +
-        '  voice DocTune external Lead plays melody vol 50%',
+        '  voice DocTune external Lead plays melody vol 50',
       '}',
     ])
   song_of(lines([own, one_bar(name, []), 'section T {', '  C  c1', '}']))
@@ -172,7 +172,7 @@ fn groove_alone(b) {
   let kit = run_kau.split("\n").map(fn (l) {
     let w = words_of(l)
     return l.to_string() if w.get(0, "") != "drum"
-    "  drum {w[1]} external {w[1]} vol 50%"
+    "  drum {w[1]} external {w[1]} vol 50"
   })
   song_of(lines([
     lines(kit),

@@ -9,7 +9,7 @@ let song = fn (head, sections) {
     'band B {',
     '  voice M   pulse        plays melody            vol 10',
     '  voice Bs  triangle     plays roots in E2..D#3  vol 10',
-    '  voice Ch  external Ep  plays chords from C4  poly  vol 40%',
+    '  voice Ch  external Ep  plays chords from C4  poly  vol 40',
     '}',
     'song S {',
     '  tempo 100',
@@ -33,7 +33,7 @@ let with_hits = fn (body) {
     '  voice M   pulse     plays melody            vol 10',
     '  voice Bs  triangle  plays roots in E2..D#3  vol 10',
     '  voice P   saw       plays part A            vol 10',
-    '  drum Kick external Kick plays hits vol 80%',
+    '  drum Kick external Kick plays hits vol 80',
     '}',
     'song S {',
     '  tempo 100',
@@ -202,10 +202,18 @@ fails(
 )
 for opt in ["env 1 2 3", "gap 2", "duty 1/4"] {
   fails(
-    play("  T", "C c1").replace("poly  vol 40%", "poly  vol 40%  {opt}"),
+    play("  T", "C c1").replace("poly  vol 40", "poly  vol 40  {opt}"),
     "line 4: an external voice plays its sound through: no env, gap or duty",
   )
 }
+# A vol is the tones' 0 to 100, an external voice's and drum's too: a
+# percentage is none.
+fails(play("  T", "C c1").replace("poly  vol 40", "poly  vol 40%"), "line 4: a voice's vol is 0 to 100, as Audio.tone's: vol 20")
+fails(play("  T", "C c1").replace("roots in E2..D#3  vol 10", "roots in E2..D#3  vol 10%"), "line 3: a voice's vol is 0 to 100, as Audio.tone's: vol 20")
+fails(
+  with_hits("C c1").replace("plays hits vol 80", "plays hits vol 80%"),
+  "line 5: a drum's vol is 0 to 100, as Audio.tone's: vol 20",
+)
 # A parameter is a word and a number, on a voice and in a score alike.
 for bad in ["bright=", "Bright=1", "bright=x", "=1", "bright=1.", "bright=.5"] {
   fails(
@@ -264,10 +272,10 @@ fails(play("  T", "C  c2 \\fall \\fall d2"), "line 18: \\fall is written once fo
 fails(play("  T", "C  c1 \\fall"), "line 18: \\fall with no note after it in its bar")
 # A choke group is an external drum's, and one name.
 fails(
-  with_hits("C c1").replace("drum Kick external Kick plays hits vol 80%", "drum Kick external Kick vol 80% choke A B"),
+  with_hits("C c1").replace("drum Kick external Kick plays hits vol 80", "drum Kick external Kick vol 80 choke A B"),
   "line 5: a choke group is one name: choke Hats",
 )
 fails(
-  with_hits("C c1").replace("drum Kick external Kick plays hits vol 80%", "drum Kick noise 120 len 1 vol 20 choke Hats"),
+  with_hits("C c1").replace("drum Kick external Kick plays hits vol 80", "drum Kick noise 120 len 1 vol 20 choke Hats"),
   "line 5: a noise drum sounds one at a time already; choke groups external drums",
 )

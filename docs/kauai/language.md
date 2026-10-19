@@ -231,7 +231,7 @@ E5; with `plays chords rootless from E3`, `Abmaj9` is C4 Eb4 G4 Bb4.
 | Option | Meaning | Default |
 |---|---|---|
 | `duty 1/8` `1/4` `1/2` `3/4` | the pulse wave's duty cycle | `1/2` |
-| `vol N` | the level at `mf`: `0` to `100` as in `Audio.tone`; for an external voice, a percentage of the instrument's own level (`vol 46%`) | (required) |
+| `vol N` | the level at `mf`: `0` to `100` as in `Audio.tone`, an external voice's too ([section 10](#10-playing-from-culebra) says how its instrument is weighed) | (required) |
 | `env A D R` | attack, decay and release, in ticks of 1/60 second | `0 0 0` |
 | `gap N` | ticks cut from the end of every note, so that notes are heard apart | `0` |
 | `poly` | an external voice that sounds several notes at once | one note at a time |
@@ -261,26 +261,26 @@ notes echo its last.
 ### Drums
 
 `drum NAME noise FREQ[->END] len N vol V [env A D R] [plays hits]`
-`drum NAME external SOUND [name=value...] vol P% [choke GROUP] [plays hits]`
+`drum NAME external SOUND [name=value...] vol V [choke GROUP] [plays hits]`
 
 A noise drum is a hit on the noise channel: `FREQ` in Hz, sliding to `END`
 if given, held for `len` ticks. The channel sounds one drum at a time, so two
 noise drums may not hit at the same moment.
 
 An external drum plays a sound the program supplies
-([section 10](#10-playing-from-culebra)) through to its end, at a percentage
-of the sound's own level. External drums hit together, with each other and with
-a noise drum, as the drums of a kit do:
+([section 10](#10-playing-from-culebra)) through to its end, at its `vol` on
+the tones' scale, as an external voice does. External drums hit together, with
+each other and with a noise drum, as the drums of a kit do:
 
 ```kauai
 band Combo {
-  voice Keys  external Ep bright=0.8  plays chords rootless from E3  poly  vol 40%
+  voice Keys  external Ep bright=0.8  plays chords rootless from E3  poly  vol 40
   voice Bass  triangle                plays roots in E2..D#3            vol 30
 
-  drum Kick     external Kick     vol 80%
-  drum Ride     external Ride     vol 50%
-  drum Hat      external Hat      vol 40%  choke Hats
-  drum OpenHat  external OpenHat  vol 30%  choke Hats
+  drum Kick     external Kick     vol 64
+  drum Ride     external Ride     vol 20
+  drum Hat      external Hat      vol 7   choke Hats
+  drum OpenHat  external OpenHat  vol 10  choke Hats
 }
 ```
 
@@ -721,12 +721,12 @@ The drums that play hits are named in the band:
 ```kauai
 band Fusion {
   voice Lead  saw                     plays melody                     vol 12
-  voice Keys  external Ep  poly       plays chords from C4             vol 40%
+  voice Keys  external Ep  poly       plays chords from C4             vol 38
   voice Bass  triangle                plays roots in E2..D#3           vol 30
 
-  drum Kick   external Kick   vol 80%  plays hits
-  drum Crash  external Crash  vol 60%  plays hits
-  drum Hat    external Hat    vol 40%
+  drum Kick   external Kick   vol 64  plays hits
+  drum Crash  external Crash  vol 56  plays hits
+  drum Hat    external Hat    vol 7
 }
 ```
 
@@ -927,7 +927,7 @@ under.
 - a groove, voice, drum, section, band, ending or derived part that is not defined, or a name defined twice
 - a groove row with a bar of no tokens, or of tokens that come to no note value (15 in 4/4)
 - two noise drums hitting at the same moment, or two voices of a band on one channel
-- an external voice with an `env`, a `gap` or a `duty`; an external drum without a sound, with a `len` or an `env`, with a `vol` that is not a percentage, or with a `choke` of other than one name; a `choke` on a noise drum
+- an external voice with an `env`, a `gap` or a `duty`; an external drum without a sound, with a `len` or an `env`, or with a `choke` of other than one name; a `choke` on a noise drum; a voice's or a drum's `vol` written as a percentage
 - no voice that plays melody, or more than one
 - a range that is not one octave, or that starts on a sharp or a flat
 - a `meter` whose beat is not a note value (`3/5`)
@@ -993,7 +993,7 @@ check the song and raise the first error of [section 9](#9-errors) as a
 | `prepare()` | builds one external sound, and answers how many remain |
 | `length()` | seconds once through |
 | `about()` | what its `about` says, as an object of the items written: `{title: 'Je te veux', composer: 'Erik Satie', year: 1897}`; `{}` without one |
-| `events()` | what it plays, in order: `{at, len, by, pitch, vol}`, with `at` and `len` in seconds, `by` the voice or drum, `pitch` a MIDI note (`nil` for a drum), and `vol` the voice's `vol` at the note's dynamic (an external sound's as a fraction of its own level) |
+| `events()` | what it plays, in order: `{at, len, by, pitch, vol}`, with `at` and `len` in seconds, `by` the voice or drum, `pitch` a MIDI note (`nil` for a drum), and `vol` the voice's or drum's `vol` at the note's dynamic, on the tones' `0` to `100` for an external sound too |
 
 The runtime schedules every note on the audio stream's own clock, so the
 music keeps time through a long frame, and plays in a program with no frame
@@ -1078,6 +1078,19 @@ go. A dynamic the instrument hears is its own to sound: the notes' `vol` is
 then the voice's `vol` alone, where otherwise Kauai scales the sound by the
 dynamic. Naming anything else in `hears` is a `ValueError` when the song is
 read.
+
+An external voice or drum plays at its `vol` on the scale the tone channels
+use, so `vol 20` is as loud from an external saxophone as from a pulse. Kauai
+weighs each before it plays: it asks the instrument for one sound more, a
+voice's note at the middle of the pitches the voice plays (at `mf`, a second
+long, told what the instrument hears) and a drum's hit at `mf`, measures how
+loud that sound is at its loudest (ITU-R BS.1770's loudness over 400 ms), and
+plays every sound of the instrument as much louder or softer as makes that one
+as loud as a pulse at a half's duty at `vol 100` and the same pitch (a drum's
+against A4). A sound the song plays already is not asked for again. A sound
+whose loudness cannot be known before it plays (silence, or an MP3 or Ogg,
+which a backend decodes only as it plays) plays at `vol / 100` of its own
+level.
 
 A song file plays without a program of one's own: `culebra play song.kau`
 plays it, `culebra play --check song.kau` reads and checks it and plays
@@ -1178,14 +1191,14 @@ Band       <- 'band' Name '{' EOL (Voice / Drum / Derived / EOL)* '}' EOL
 Voice      <- 'voice' Name Source VoiceWord* EOL
 Source     <- 'pulse' / 'pulse2' / 'triangle' / 'saw' / 'external' Name Param*
 Param      <- Word '=' Number
-VoiceWord  <- 'plays' Plays / 'duty' Ratio / 'vol' Level / 'env' Int Int Int
+VoiceWord  <- 'plays' Plays / 'duty' Ratio / 'vol' Int / 'env' Int Int Int
             / 'gap' Int / 'poly'
 Plays      <- 'melody' / 'roots' 'in' Range / 'chords' 'rootless'? 'from' Pitch
             / 'part' Name+
 Derived    <- Name 'echoes' Name 'late' Ratio 'level' Percent EOL
             / Name 'harmonizes' Name 'under' Interval EOL
 Drum       <- 'drum' Name ('noise' Int ('->' Int)? 'len' Int 'vol' Int
-              ('env' Int Int Int)? / 'external' Name Param* 'vol' Percent ('choke' Name)?)
+              ('env' Int Int Int)? / 'external' Name Param* 'vol' Int ('choke' Name)?)
               ('plays' 'hits')? EOL
 
 Groove     <- 'groove' Name '{' EOL (Row / Edge / EOL)* '}' EOL
@@ -1258,7 +1271,6 @@ Int        <- [0-9]+
 Number     <- [0-9]+ ('.' [0-9]+)?
 Ratio      <- Int '/' Int
 Percent    <- Int '%'
-Level      <- Int / Percent
 Interval   <- 'm2' / 'M2' / 'm3' / 'M3' / 'P4' / 'TT' / 'P5' / 'm6' / 'M6'
             / 'm7' / 'M7' / 'P8'
 Quoted     <- "'" [^']* "'"
@@ -1555,8 +1567,8 @@ about {
 }
 
 band Trio {
-  voice Piano  external Ep bright=0.8  plays chords rootless from E3  poly  vol 26%
-  voice Sing   external Ep bright=1.3  plays melody                    poly  vol 46%
+  voice Piano  external Ep bright=0.8  plays chords rootless from E3  poly  vol 11
+  voice Sing   external Ep bright=1.3  plays melody                    poly  vol 14
   voice Bass   triangle                plays roots in E2..D#3          vol 34  env 3 0 14  gap 3
 
   drum Brush  noise 4000  len 2  vol 4  env 0 0 5
@@ -1658,7 +1670,7 @@ voicings {
 band Salon {
   voice Singer  pulse                   plays melody                           duty 1/2  vol 22  env 2 2 8
   voice Bass    triangle                plays roots in E1..D#2                           vol 32  env 0 2 6
-  voice Piano   external Ep bright=0.9  plays chords from E3  plays part Fill  poly      vol 30%
+  voice Piano   external Ep bright=0.9  plays chords from E3  plays part Fill  poly      vol 29
 }
 
 song JeTeVeux {

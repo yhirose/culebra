@@ -222,8 +222,8 @@ let WAV = Encoding.hex.decode("524946462800000057415645666d742010000000010001004
   "1f0000401f000001000800646174610400000080c8803c")
 let EXTERNAL = lines([
   'band Keys {',
-  '  voice Piano  external Ep bright=0.8  plays melody  poly  vol 40%',
-  '  drum Ride    external Ride           vol 50%',
+  '  voice Piano  external Ep bright=0.8  plays melody  poly  vol 40',
+  '  drum Ride    external Ride           vol 50',
   '}',
   'groove Time {',
   '  Ride  x.x.',
@@ -238,8 +238,8 @@ let external = Audio.Kauai.new(EXTERNAL, voices: {
     Audio.Sound.new(WAV)
   },
 }, drums: {ride: |params| Audio.Sound.new(WAV)})
-assert_eq(notes(external, "Piano"), [(0.0, 2.0, 60, 0.4), (0.0, 2.0, 64, 0.4), (0.0, 2.0, 67, 0.4), (2.0, 2.0, 60, 0.4)])
-assert_eq(notes(external, "Ride").map(|n| (n[0], n[3])), [(0.0, 0.5), (2.0, 0.5)])
+assert_eq(notes(external, "Piano"), [(0.0, 2.0, 60, 40.0), (0.0, 2.0, 64, 40.0), (0.0, 2.0, 67, 40.0), (2.0, 2.0, 60, 40.0)])
+assert_eq(notes(external, "Ride").map(|n| (n[0], n[3])), [(0.0, 50.0), (2.0, 50.0)])
 assert_eq(external.prepare(), 3)
 external.play()
 assert_eq(asked.map(|a| a[0]).sorted(), [60, 64, 67])
@@ -256,11 +256,13 @@ assert_throws("TypeError", fn () {
 # An instrument plays a phrase at a time: the notes a slur joins, or a note
 # alone. It hears what it names of each, and a sound is made for each phrase
 # it hears differently; a dynamic it hears is its own to sound, so the notes'
-# vol leaves it out.
+# vol leaves it out. It is asked for one more, which it is weighed by: a note
+# at the middle of the voice's pitches, a second long at mf (the drum's hit
+# at mf is one the song plays already).
 let PLAYED = lines([
   'band Strings {',
-  '  voice Fiddle  external Fiddle  plays melody  vol 50%',
-  '  drum Snare    external Snare   vol 40%',
+  '  voice Fiddle  external Fiddle  plays melody  vol 50',
+  '  drum Snare    external Snare   vol 40',
   '}',
   'groove Time {',
   '  Snare  x..x',
@@ -289,13 +291,14 @@ let played = Audio.Kauai.new(PLAYED, voices: {
     hears: ["level"],
   },
 })
-assert_eq(notes(played, "Fiddle").map(|n| n[3]), [0.5, 0.5, 0.5, 0.5])
-assert_eq(notes(played, "Snare").map(|n| n[3]), [0.4, 0.4])
-assert_eq(played.prepare(), 4)
+assert_eq(notes(played, "Fiddle").map(|n| n[3]), [50.0, 50.0, 50.0, 50.0])
+assert_eq(notes(played, "Snare").map(|n| n[3]), [40.0, 40.0])
+assert_eq(played.prepare(), 5)
 played.play()
 assert_eq(heard.map(phrase_said).sorted(), [
   'pitch 60, at 0.0, len 1.0, level 1.0, level_end 1.0 / pitch 62, at 1.0, len 1.0, level 1.0, level_end 1.0',
   'pitch 64, at 0.0, len 0.5, level 1.0, level_end 1.0',
+  'pitch 64, at 0.0, len 1.0, level 1.0, level_end 1.0',
   'pitch 64, at 0.0, len 1.0, level 1.18, level_end 1.18',
 ])
 assert_eq(struck.map(said).sorted(), ['level 1.0', 'level 1.18'])
@@ -313,17 +316,43 @@ let unheard = Audio.Kauai.new(PLAYED, voices: {
     hears: [],
   },
 }, drums: {snare: |params| Audio.Sound.new(WAV)})
-assert_eq(notes(unheard, "Fiddle").map(|n| n[3]), [0.5, 0.5, 0.5, 0.588])
+assert_eq(notes(unheard, "Fiddle").map(|n| n[3]), [50.0, 50.0, 50.0, 58.824])
 assert_eq(unheard.prepare(), 2)
 unheard.play()
 assert_eq(plain.map(phrase_said).sorted(), ['pitch 60, at 0.0 / pitch 62, at 1.0', 'pitch 64, at 0.0'])
 unheard.stop()
 
+# An external voice or drum plays at its vol on the tones' scale: weighed by
+# its note at the middle of its pitches (a drum by its hit), it is played as
+# loud as a pulse at a half's duty at vol 100 and that pitch would be. A sound
+# that is that pulse keeps its level (a weight of 1), one twice as loud is
+# played at half, and silence, whose loudness is not known, keeps its own.
+# Half a second of it: a steady wave is as loud over any 400 ms.
+let pulse_at = fn (pitch, amp) {
+  let f = 440.0 * 2.0 ** ((pitch - 69) / 12.0)
+  iota(22050).map(|i| (i * f / 44100.0) % 1.0 < 0.5 ? amp : -amp)
+}
+let weight_of = fn (amp) {
+  let song = Audio.Kauai.new(lines([
+    'band Solo {', '  voice Lead  external Square  plays melody  vol 50', '  drum Tick  external Tick  vol 50', '}',
+    'groove Time {', '  Tick  x...', '}',
+    'song Weigh {', '  tempo 60', '  band Solo', '  groove Time', '  melody in C4..B4', '  Weigh', '}',
+    'section Weigh {', "  C  c4 e g c'", '}',
+  ]), voices: {square: |pitch, params| Audio.Sound.new(pulse_at(pitch, amp))}, drums: {tick: |params| Audio.Sound.new(pulse_at(69, amp))})
+  song.play()
+  song.stop()
+  song._weights
+}
+let close = |a, b| Math.abs(a - b) < 0.01
+assert_true(close(weight_of(0.2).Lead, 1.0) && close(weight_of(0.2).Tick, 1.0))
+assert_true(close(weight_of(0.4).Lead, 0.5) && close(weight_of(0.4).Tick, 0.5))
+assert_eq(weight_of(0.0), {Lead: 1.0, Tick: 1.0})
+
 # A slur from one chord to the next is one phrase of all their tones.
 mut chords = []
 let chorded = Audio.Kauai.new(lines([
   'band Keys {',
-  '  voice Organ  external Organ  plays melody  vol 50%  poly',
+  '  voice Organ  external Organ  plays melody  vol 50  poly',
   '}',
   'song Hold {', '  tempo 60', '  band Keys', '  melody in C4..B4', '  Hold', '}',
   'section Hold {', '  C  (<c e>4 <d f>) g2', '}',
@@ -339,17 +368,19 @@ let chorded = Audio.Kauai.new(lines([
 chorded.play()
 assert_eq(chords.map(phrase_said).sorted(), [
   'pitch 60, at 0.0, len 1.0 / pitch 64, at 0.0, len 1.0 / pitch 62, at 1.0, len 1.0 / pitch 65, at 1.0, len 1.0',
+  'pitch 64, at 0.0, len 1.0',
   'pitch 67, at 0.0, len 2.0',
 ])
 chorded.stop()
 
 # A phrase is what the slur is written around: a grace note under it is in
-# it, and a rest under it ends the phrase so far.
+# it, and a rest under it ends the phrase so far. (The note alone at the
+# middle of the pitches is the one the instrument is weighed by.)
 let phrased = fn (bar) {
   mut got = []
   let song = Audio.Kauai.new(lines([
     'band Solo {',
-    '  voice Reed  external Reed  plays melody  vol 50%',
+    '  voice Reed  external Reed  plays melody  vol 50',
     '}',
     'song Breath {', '  tempo 60', '  band Solo', '  melody in C4..B4', '  Breath', '}',
     'section Breath {', "  C  {bar}", '}',
@@ -366,16 +397,16 @@ let phrased = fn (bar) {
   song.stop()
   got.map(|notes| notes.map(|n| "{n.pitch}").join(" ")).sorted()
 }
-assert_eq(phrased('(c4 {e}d e f)'), ['60 64 62 64 65'])
-assert_eq(phrased('(c4 d r e)'), ['60 62', '64'])
+assert_eq(phrased('(c4 {e}d e f)'), ['60 64 62 64 65', '64'])
+assert_eq(phrased('(c4 d r e)'), ['60 62', '62', '64'])
 
 # Notes struck together are a phrase too, a chord in a part or in a groove,
 # its tones in order from the lowest.
 mut struck_together = []
 let keyed = Audio.Kauai.new(lines([
   'band Keys {',
-  '  voice Organ  external Organ  plays melody  vol 50%  poly',
-  '  voice Comp   external Organ  plays chords from C3  vol 50%  poly',
+  '  voice Organ  external Organ  plays melody  vol 50  poly',
+  '  voice Comp   external Organ  plays chords from C3  vol 50  poly',
   '}',
   'groove Stab {', '  Comp  x . . .', '}',
   'song Hold {', '  tempo 60', '  band Keys', '  groove Stab', '  melody in C4..B4', '  Hold', '}',
@@ -391,7 +422,8 @@ let keyed = Audio.Kauai.new(lines([
 })
 keyed.play()
 keyed.stop()
-assert_eq(struck_together.sorted(), ['48@0.0 52@0.0 55@0.0 60@0.0', '60@0.0 64@0.0', '62@0.0 65@0.0', '67@0.0'])
+# Each voice is weighed on its own: Comp by 55, Organ by 64.
+assert_eq(struck_together.sorted(), ['48@0.0 52@0.0 55@0.0 60@0.0', '55@0.0', '60@0.0 64@0.0', '62@0.0 65@0.0', '64@0.0', '67@0.0'])
 
 # What an instrument hears of a phrase: the marks written on each note, the
 # jazz bends among them, the dynamic where the note ends, and when its voice
@@ -400,10 +432,10 @@ mut told = []
 mut hit_told = []
 let marked = Audio.Kauai.new(lines([
   'band Combo {',
-  '  voice Horn   external Horn   plays melody  vol 50%',
-  '  drum Open    external Hat    vol 40%  choke Hats',
-  '  drum Closed  external Hat    vol 40%  choke Hats',
-  '  drum Ride    external Ride   vol 40%',
+  '  voice Horn   external Horn   plays melody  vol 50',
+  '  drum Open    external Hat    vol 40  choke Hats',
+  '  drum Closed  external Hat    vol 40  choke Hats',
+  '  drum Ride    external Ride   vol 40',
   '}',
   'groove Time {',
   '  Open    x . . .',
@@ -440,10 +472,12 @@ marked.play()
 marked.stop()
 assert_eq(told.sorted(), [
   "pitch 60, at 0.0, level 0.65, level_end 1.18, marks ['scoop'], next 2.0",
+  "pitch 62, at 0.0, level 1.0, level_end 1.0, marks [], next nil",
   "pitch 62, at 0.0, level 1.35, level_end 1.18, marks ['staccato', 'accent'], next 1.0",
   "pitch 64, at 0.0, level 1.18, level_end 1.18, marks ['fall'], next nil",
 ])
-assert_eq(hit_told.sorted(), ['next 2.0', 'next nil', 'ride next 1.0', 'ride next nil'])
+# One hat's hit at mf with nothing after it is the one it is weighed by.
+assert_eq(hit_told.sorted(), ['next 2.0', 'next nil', 'next nil', 'ride next 1.0', 'ride next nil'])
 
 # The band's hits carry their marks as written notes do: a staccato hit is
 # let go at half its length, a marcato at three quarters, an accent strikes
@@ -454,8 +488,8 @@ mut crashed = []
 let kime = Audio.Kauai.new(lines([
   'band Duo {',
   '  voice Lead  pulse  plays melody  vol 20',
-  '  voice Bass  external Pluck  plays roots in E2..D#3  vol 50%',
-  '  drum Crash  external Crash  vol 50%  plays hits',
+  '  voice Bass  external Pluck  plays roots in E2..D#3  vol 50',
+  '  drum Crash  external Crash  vol 50  plays hits',
   '}',
   'groove Walk {', '  Bass  1 1 1 1', '}',
   'song Kime {', '  tempo 60', '  band Duo', '  groove Walk', '  melody in C4..B4', '  Kime', '}',
@@ -485,7 +519,7 @@ kime.stop()
 # own while the struck ones take the rest.
 mut lined = []
 let rolled = Audio.Kauai.new(lines([
-  'band Solo {', '  voice Harp  external Harp  plays melody  poly  vol 50%', '}',
+  'band Solo {', '  voice Harp  external Harp  plays melody  poly  vol 50', '}',
   'song Roll {', '  tempo 60', '  band Solo', '  melody in C4..B4', '  Roll', '}',
   'section Roll {', '  C  ~<c~ e g>2 <c d f>2', '}',
 ]), voices: {
@@ -502,6 +536,7 @@ rolled.stop()
 assert_eq(lined.sorted(), [
   "pitch 60, at 0.0, line 0 / pitch 64, at 0.062, line 1 / pitch 67, at 0.125, line 2",
   "pitch 62, at 0.0, line 1 / pitch 65, at 0.0, line 2",
+  "pitch 64, at 0.0, line 0",
 ])
 
 # A parameter a line sets, `\bright=1.3`, holds for that line's notes from
@@ -509,12 +544,14 @@ assert_eq(lined.sorted(), [
 # asked for each pitch at each setting it plays it at, and an instrument is
 # given them as they stand at a phrase's first note, and at each note when it
 # hears them. A bar line's are the melody's, and a part's line sets its own.
+# Each voice is weighed at the band's own (Lead at 64 with bright=0.8, Alto
+# at 62 with breath=0.2).
 let settings = |p| p.keys().sorted().map(|k| "{k}={p[k]}").join(" ")
 mut keyed = []
 let set = Audio.Kauai.new(lines([
   'band Duo {',
-  '  voice Lead  external Ep bright=0.8     plays melody     vol 50%',
-  '  voice Alto  external Reed breath=0.2  plays part Alto  vol 50%',
+  '  voice Lead  external Ep bright=0.8     plays melody     vol 50',
+  '  voice Alto  external Reed breath=0.2  plays part Alto  vol 50',
   '}',
   'song Set {', '  tempo 60', '  band Duo', '  melody in C4..B4', '  Set', '}',
   'section Set {',
@@ -544,8 +581,10 @@ assert_eq(keyed.sorted(), [
   "60 bright=0.5",
   "60 bright=0.8",
   "60 bright=1.3",
+  "62 breath=0.2 | breath=0.2",
   "64 breath=0.4 | breath=0.4",
   "64 bright=0.5",
+  "64 bright=0.8",
   "64 bright=1.3",
   "67 bright=1.3",
 ])
@@ -554,10 +593,13 @@ assert_eq(plucked.sorted(), [
   "pitch 48, at 0.0, len 0.75, marks ['marcato']",
   "pitch 48, at 0.0, len 1.0, marks ['accent', 'fall']",
   "pitch 48, at 0.0, len 1.0, marks ['tenuto']",
+  "pitch 48, at 0.0, len 1.0, marks []",
 ])
+# Each is weighed by its note or hit at mf with no marks.
 assert_eq(crashed.sorted(), [
   "level 1.0, marks ['staccato']",
   "level 1.0, marks ['tenuto']",
+  "level 1.0, marks []",
   "level 1.18, marks ['accent', 'fall']",
   "level 1.18, marks ['marcato']",
 ])

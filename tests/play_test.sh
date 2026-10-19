@@ -68,8 +68,8 @@ EOF
 cat > "$TMP/external.kau" <<'EOF'
 band Duo {
   voice Tune  pulse     plays melody            vol 20
-  voice Keys  external Ep bright=0.8  plays chords from C4  poly  vol 40%
-  drum Kick   external Kick  vol 80%
+  voice Keys  external Ep bright=0.8  plays chords from C4  poly  vol 40
+  drum Kick   external Kick  vol 64
 }
 groove Walk {
   Keys  x - x -

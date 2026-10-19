@@ -13,7 +13,7 @@ voicings {
 
 band Salon {
   voice Singer  pulse                   plays melody  duty 1/2  vol 22  env 2 2 8
-  voice Piano   external Ep bright=0.9  poly  vol 30%  plays part RightUpper RightLower LeftUpper LeftLower
+  voice Piano   external Ep bright=0.9  poly  vol 33  plays part RightUpper RightLower LeftUpper LeftLower
 }
 
 song JeTeVeux {
