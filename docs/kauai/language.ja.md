@@ -992,6 +992,7 @@ song.play()
 | `playing()` | 演奏中かどうか。`play()`から`stop()`まで、`loop`しない曲なら曲の終わりまでが演奏中 |
 | `reached(NAME)` | `mark NAME`の位置まで演奏が進んだかどうか |
 | `prepare()` | 外部の楽器の音声を1つ作り、残りの数を返す |
+| `render()` | `play()`で鳴る音そのものを、曲を1回通して最後の音と残響が消えるまで作り、モノラルのサンプル（1秒`44100`個）の`Array`で返す。同じ混ぜ合わせ処理を使い、音声デバイスは要らない。`loop`する曲も1回だけ。`FS.write("song.wav", Audio.Sound(song.render()).data())`で保存できる。ブラウザでは曲をページが鳴らすので使えない（`ValueError`） |
 | `length()` | 1回通して演奏したときの秒数 |
 | `about()` | `about`に書いた項目をまとめたオブジェクト。例: `{title: 'Je te veux', composer: 'Erik Satie', year: 1897}`。`about`がなければ`{}` |
 | `events()` | 演奏する音を時間順に並べたもの。各要素は`{at, len, by, pitch, vol}`で、`at`と`len`は秒、`by`は楽器かドラムの名前、`pitch`はMIDIのノート番号（ドラムは`nil`）、`vol`はその音の強弱での楽器やドラムの`vol`（外部の楽器の音声も、チャンネルの音と同じ`0`〜`100`） |

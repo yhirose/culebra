@@ -153,9 +153,8 @@ int64_t g_stream_next = 0;
 std::chrono::steady_clock::time_point g_stream_at{};
 int64_t g_last_start = 0;    // notes are queued in order, never behind
 
-// The mixer's own state: the voice sounding on each channel, and the notes
-// still waiting for their sample. Read and written only on the audio thread.
-Note g_voice[5];
+// The notes still waiting for their sample (the voices they start on are
+// g_mix's, below). Read and written only on the audio thread.
 Queued g_pending[kQueueCap];
 int g_pending_count = 0;
 int64_t g_pos = 0;           // samples rendered so far
@@ -278,9 +277,31 @@ struct Sampler {
 };
 constexpr size_t kMaxSamplers = 64;  // the oldest goes, as a channel's note would
 
+// The mixing: the voice sounding on each channel, the scores playing and the
+// samples they started, and the noise channel's generator. The stream has
+// one, g_mix, which the audio thread alone touches; a score rendered to
+// samples (score_render) gets one of its own, so it renders as it plays, and
+// the same every time.
+struct Mixer {
+  Note voice[5];
+  std::vector<PlayingScore> playing;
+  std::vector<Sampler> samplers;
+  uint32_t rng = 0x9e3779b9u;
+
+  // Start what score `ps` has due at sample `p`, and go round again at its
+  // end if it loops; false once it has played through and its sounds ended.
+  bool advance(PlayingScore& ps, int64_t p);
+  // Silence what score `id` started: its tones on their channels, its samples.
+  void cut(int64_t id);
+  // Sample `p`: the scores' notes due then started, the samples and the
+  // channels sounding, `extra`, and the rooms' echoes. Not yet clamped.
+  double sample(int64_t p, double extra);
+  // The noise channel's next sample, from the mixer's own generator.
+  double noise(Note& n, double cutoff);
+};
+
 std::vector<ScoreCommand> g_score_inbox;  // guarded by g_tone_mutex
-std::vector<PlayingScore> g_playing;      // audio thread
-std::vector<Sampler> g_samplers;          // audio thread
+Mixer g_mix;                              // audio thread
 
 // The scores and the samples they can play, by handle. Main thread only; a
 // score holds its samples' PCM itself, so a Sound freed while a song plays
@@ -350,9 +371,7 @@ void release_retired() {
 }
 std::unordered_map<int64_t, std::shared_ptr<const std::vector<float>>> g_sound_pcm;
 
-// Start what score `ps` has due at stream sample `p`, and go round again at
-// its end if it loops; false once it has played through and its samples ended.
-bool advance_score(PlayingScore& ps, int64_t p, Note* voices) {
+bool Mixer::advance(PlayingScore& ps, int64_t p) {
   const Score& s = *ps.score;
   for (;;) {
     while (ps.next < s.events.size() && ps.origin + s.events[ps.next].at <= p) {
@@ -364,18 +383,18 @@ bool advance_score(PlayingScore& ps, int64_t p, Note* voices) {
         n.peak *= v;
         n.owner = ps.id;
         n.room = s.room.get();
-        voices[e.channel] = n;
+        voice[e.channel] = n;
       } else {
-        if (g_samplers.size() == kMaxSamplers) g_samplers.erase(g_samplers.begin());
-        g_samplers.push_back(Sampler{ps.id, *e.pcm, 0, e.gain * v, s.room.get()});
+        if (samplers.size() == kMaxSamplers) samplers.erase(samplers.begin());
+        samplers.push_back(Sampler{ps.id, *e.pcm, 0, e.gain * v, s.room.get()});
       }
     }
     if (p < ps.origin + s.length) return true;
     if (s.loop_at < 0 || s.length <= s.loop_at) {
       // Played through, it goes once nothing it started sounds, its room too.
       return s.room->ringing() ||
-             std::ranges::any_of(g_samplers, [&](const Sampler& x) { return x.owner == ps.id; }) ||
-             std::any_of(voices, voices + 5, [&](const Note& n) { return n.active && n.owner == ps.id; });
+             std::ranges::any_of(samplers, [&](const Sampler& x) { return x.owner == ps.id; }) ||
+             std::any_of(voice, voice + 5, [&](const Note& n) { return n.active && n.owner == ps.id; });
     }
     ps.origin += s.length - s.loop_at;
     ps.next = std::lower_bound(s.events.begin(), s.events.end(), s.loop_at,
@@ -384,11 +403,10 @@ bool advance_score(PlayingScore& ps, int64_t p, Note* voices) {
   }
 }
 
-// Silence what score `id` started: its tones on their channels, its samples.
-void cut_score(int64_t id, Note* voices) {
+void Mixer::cut(int64_t id) {
   for (int c = 0; c < 5; c++)
-    if (voices[c].owner == id) voices[c].active = false;
-  std::erase_if(g_samplers, [id](const Sampler& s) { return s.owner == id; });
+    if (voice[c].owner == id) voice[c].active = false;
+  std::erase_if(samplers, [id](const Sampler& s) { return s.owner == id; });
 }
 
 AudioStream g_tone_stream;
@@ -448,9 +466,9 @@ double oscillate(Note& n, int channel, double freq) {
 
 // Noise: a cheap xorshift PRNG through a one-pole lowpass that sweeps
 // start->end (times 8, matching the browser's filter sweep), so it reads as a
-// pitched hiss rather than flat static.
-double noise_sample(Note& n, double cutoff) {
-  static thread_local uint32_t rng = 0x9e3779b9u;
+// pitched hiss rather than flat static. The generator is the mixer's, so a
+// rendered score's noise is the same every time.
+double Mixer::noise(Note& n, double cutoff) {
   rng ^= rng << 13;
   rng ^= rng >> 17;
   rng ^= rng << 5;
@@ -459,6 +477,36 @@ double noise_sample(Note& n, double cutoff) {
   double alpha = 1.0 - std::exp(-2.0 * std::numbers::pi * std::min(cutoff, nyq * 0.99) / kSampleRate);
   n.lp_state += alpha * (white - n.lp_state);
   return n.lp_state;
+}
+
+double Mixer::sample(int64_t p, double extra) {
+  std::erase_if(playing, [&](PlayingScore& ps) { return !advance(ps, p); });
+  double mixed = 0.0;
+  for (auto& s : samplers) {
+    if (s.pos >= s.pcm.size()) continue;
+    double v = s.pcm[s.pos++] * s.gain;
+    mixed += v;
+    if (s.room) s.room->send += v;
+  }
+  std::erase_if(samplers, [](const Sampler& s) { return s.pos >= s.pcm.size(); });
+  for (int c = 0; c < 5; c++) {
+    Note& n = voice[c];
+    if (!n.active || n.elapsed >= n.total) {
+      n.active = false;
+      continue;
+    }
+    double t = n.total > 0 ? static_cast<double>(n.elapsed) / n.total : 1.0;
+    double freq = n.start_freq + (n.end_freq - n.start_freq) * t;
+    double g = envelope(n.elapsed, n.attack, n.decay, n.sustain, n.release, n.peak, n.vol);
+    double raw = c == kNoise ? noise(n, std::max(1.0, freq * 8.0))
+                              : oscillate(n, c, std::max(1.0, freq));
+    mixed += raw * g;
+    if (n.room) n.room->send += raw * g;
+    n.elapsed++;
+  }
+  mixed += extra;
+  for (auto& ps : playing) mixed += ps.score->room->step();
+  return mixed;
 }
 
 // raylib's audio thread callback: fill `frames` mono float samples. The lock
@@ -488,11 +536,11 @@ void tone_callback(void* buffer_data, unsigned int frames) {
     g_inbox_count = 0;
     // A score played again starts over; one stopped goes silent at once.
     for (auto& cmd : g_score_inbox) {
-      std::erase_if(g_playing, [&](const PlayingScore& ps) { return ps.id == cmd.id; });
-      cut_score(cmd.id, g_voice);
+      std::erase_if(g_mix.playing, [&](const PlayingScore& ps) { return ps.id == cmd.id; });
+      g_mix.cut(cmd.id);
       if (cmd.score) {
         cmd.score->room->reset();
-        g_playing.push_back(PlayingScore{cmd.id, std::move(cmd.score), cmd.start, 0});
+        g_mix.playing.push_back(PlayingScore{cmd.id, std::move(cmd.score), cmd.start, 0});
       }
     }
     g_score_inbox.clear();
@@ -527,36 +575,10 @@ void tone_callback(void* buffer_data, unsigned int frames) {
     // was sounding there. One already behind (the device fell back) starts
     // here rather than being dropped.
     while (head < g_pending_count && g_pending[head].start <= p) {
-      g_voice[g_pending[head].channel] = g_pending[head].note;
+      g_mix.voice[g_pending[head].channel] = g_pending[head].note;
       head++;
     }
-    std::erase_if(g_playing, [&](PlayingScore& ps) { return !advance_score(ps, p, g_voice); });
-    double mixed = 0.0;
-    for (auto& s : g_samplers) {
-      if (s.pos >= s.pcm.size()) continue;
-      double v = s.pcm[s.pos++] * s.gain;
-      mixed += v;
-      if (s.room) s.room->send += v;
-    }
-    std::erase_if(g_samplers, [](const Sampler& s) { return s.pos >= s.pcm.size(); });
-    for (int c = 0; c < 5; c++) {
-      Note& n = g_voice[c];
-      if (!n.active || n.elapsed >= n.total) {
-        n.active = false;
-        continue;
-      }
-      double t = n.total > 0 ? static_cast<double>(n.elapsed) / n.total : 1.0;
-      double freq = n.start_freq + (n.end_freq - n.start_freq) * t;
-      double g = envelope(n.elapsed, n.attack, n.decay, n.sustain, n.release, n.peak, n.vol);
-      double raw = c == kNoise ? noise_sample(n, std::max(1.0, freq * 8.0))
-                                : oscillate(n, c, std::max(1.0, freq));
-      mixed += raw * g;
-      if (n.room) n.room->send += raw * g;
-      n.elapsed++;
-    }
-    mixed += g_graph_mix[i];
-    for (auto& ps : g_playing) mixed += ps.score->room->step();
-    out[i] = static_cast<float>(std::clamp(mixed, -1.0, 1.0));
+    out[i] = static_cast<float>(std::clamp(g_mix.sample(p, g_graph_mix[i]), -1.0, 1.0));
   }
 
   std::move(g_pending + head, g_pending + g_pending_count, g_pending);
@@ -569,8 +591,8 @@ void ensure_tone_stream() {
   if (!g_ready || g_tone_ready) return;
   g_tone_stream = load_stream(kSampleRate, 1, 0);  // 32-bit float, mono
   // The mixer adds to these as notes start, and must not allocate to do it.
-  g_playing.reserve(16);
-  g_samplers.reserve(kMaxSamplers);
+  g_mix.playing.reserve(16);
+  g_mix.samplers.reserve(kMaxSamplers);
   g_playing_graphs.reserve(kGraphsPlaying);
   SetAudioStreamCallback(g_tone_stream, tone_callback);
   // Date the stream clock before the device can call back: a tone() issued
@@ -820,8 +842,8 @@ void exit_teardown() {
     UnloadAudioStream(g_tone_stream);
     g_tone_ready = false;
   }
-  g_playing.clear();
-  g_samplers.clear();
+  g_mix.playing.clear();
+  g_mix.samplers.clear();
   g_score_inbox.clear();
   g_playing_graphs.clear();
   g_graph_inbox.clear();
@@ -885,12 +907,24 @@ void tone(int64_t start_freq, int64_t end_freq, int64_t attack, int64_t decay,
 // time in seconds, then a tone's channel, start and end frequency, attack,
 // decay, sustain and release in seconds, vol, peak and duty; or -1 and a
 // Sound's handle and gain. A Sound the device could not decode is left out.
-void score_new(int64_t id, const double* events, int64_t count, double length,
-               double loop_at) {
-  ensure_tone_stream();
-  if (!g_tone_ready) return;
-  release_retired();
-  auto samples =[](double seconds) {
+// A decoded sample as a score mixes it, mono floats at the mixer's rate
+// (converting `w` so); nullptr when it has none. Playing a Sound and
+// rendering a score both decode through it.
+std::shared_ptr<const std::vector<float>> mixer_samples(Wave& w) {
+  WaveFormat(&w, kSampleRate, 32, 1);
+  float* f = LoadWaveSamples(w);
+  if (f == nullptr) return nullptr;
+  auto pcm = std::make_shared<const std::vector<float>>(f, f + w.frameCount);
+  UnloadWaveSamples(f);
+  return pcm;
+}
+
+// A score from Audio.Kauai's list, a Sound's samples found by its handle in
+// `pcm` (one it does not hold is left out).
+using PcmByHandle = std::unordered_map<int64_t, std::shared_ptr<const std::vector<float>>>;
+std::shared_ptr<Score> build_score(const double* events, int64_t count, double length,
+                                   double loop_at, const PcmByHandle& pcm) {
+  auto samples = [](double seconds) {
     return static_cast<int64_t>(std::max(0.0, seconds) * kSampleRate);
   };
   auto s = std::make_shared<Score>();
@@ -900,8 +934,8 @@ void score_new(int64_t id, const double* events, int64_t count, double length,
     ev.at = samples(e[0]);
     ev.channel = static_cast<int>(e[1]);
     if (ev.channel < 0) {
-      auto it = g_sound_pcm.find(static_cast<int64_t>(e[2]));
-      if (it == g_sound_pcm.end()) continue;
+      auto it = pcm.find(static_cast<int64_t>(e[2]));
+      if (it == pcm.end()) continue;
       ev.pcm = it->second;
       ev.gain = std::max(0.0, e[3]);
     } else {
@@ -915,7 +949,39 @@ void score_new(int64_t id, const double* events, int64_t count, double length,
                    [](const ScoreEvent& a, const ScoreEvent& b) { return a.at < b.at; });
   s->length = samples(length);
   s->loop_at = loop_at < 0 ? -1 : samples(loop_at);
-  g_scores[id] = std::move(s);
+  return s;
+}
+
+void score_new(int64_t id, const double* events, int64_t count, double length,
+               double loop_at) {
+  ensure_tone_stream();
+  if (!g_tone_ready) return;
+  release_retired();
+  g_scores[id] = build_score(events, count, length, loop_at, g_sound_pcm);
+}
+
+// A mixer of its own plays the score once through, from sample 0 until it
+// lets go of it (its last sound and its room's echoes over), as the stream
+// would; its Sounds decoded here as sound_load decodes them, so no device is
+// needed.
+bool score_render(const double* events, int64_t count, double length, double wet,
+                  double volume, const std::vector<SoundBytes>& sounds,
+                  std::vector<float>& out) {
+  PcmByHandle pcm;
+  for (const SoundBytes& b : sounds) {
+    Wave w = LoadWaveFromMemory(b.fmt, b.data, static_cast<int>(b.len));
+    if (w.data == nullptr) continue;
+    if (auto p = mixer_samples(w)) pcm[b.handle] = std::move(p);
+    UnloadWave(w);
+  }
+  auto score = build_score(events, count, length, -1, pcm);
+  score->volume.store(std::max(0.0, volume));
+  score->room->wet.store(std::max(0.0, wet));
+  Mixer m;
+  m.playing.push_back(PlayingScore{1, std::move(score), 0, 0});
+  for (int64_t p = 0; !m.playing.empty(); p++)
+    out.push_back(static_cast<float>(std::clamp(m.sample(p, 0.0), -1.0, 1.0)));
+  return true;
 }
 void score_free(int64_t id) {
   auto it = g_scores.find(id);
@@ -1005,11 +1071,7 @@ void sound_load(int64_t id, const uint8_t* data, int64_t len, const char* fmt) {
   Sound s = LoadSoundFromWave(w);
   g_sounds[id] = s;
   // A score mixes the sample itself, so it keeps it as the mixer's samples.
-  WaveFormat(&w, kSampleRate, 32, 1);
-  if (float* f = LoadWaveSamples(w)) {
-    g_sound_pcm[id] = std::make_shared<const std::vector<float>>(f, f + w.frameCount);
-    UnloadWaveSamples(f);
-  }
+  if (auto pcm = mixer_samples(w)) g_sound_pcm[id] = std::move(pcm);
   UnloadWave(w);
 }
 void sound_free(int64_t id) {

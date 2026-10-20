@@ -39,6 +39,25 @@ assert_eq(notes(first, "Bass"), [(0.0, 1.0, 48, 30.0), (1.0, 1.0, 55, 35.294)])
 assert_eq(notes(first, "Kick"), [(0.0, 0.017, nil, 20.0)])
 assert_eq(first.length(), 2.0)
 
+# render(): the song once through as the mixer that plays it would sound it,
+# with no device: as long as the song, the same each time, half as loud at
+# volume 0.5, and longer in a room, whose echoes ring on.
+let dry = first.render()
+assert_true(dry.size() >= Math.round(first.length() * 44100))
+assert_true(dry.size() < Math.round((first.length() + 0.1) * 44100))
+assert_true(dry.map(|v| Math.abs(v)).max() > 0.01)
+assert_eq(first.render(), dry)
+first.volume(0.5)
+assert_eq(first.render(), dry.map(|v| v * 0.5))
+first.volume(1)
+let roomy = Audio.Kauai.new(lines([
+  song_of(['  room 40%', '  Verse']),
+  'section Verse {',
+  "  C     e4 .g \\f !c'2",
+  '}',
+]))
+assert_true(roomy.render().size() > dry.size() + 22050)
+
 # Playing keeps the song's own time, device or not; stop() ends it.
 assert_eq(first.playing(), false)
 assert_eq(first.reached("End"), false)
@@ -279,6 +298,15 @@ external.stop()
 assert_throws("ValueError", fn () {
   Audio.Kauai.new(EXTERNAL, drums: {ride: |params| Audio.Sound.new(WAV)})
 })
+# An external sound renders where it starts, as loud each time it plays: the
+# ride's second hit, two seconds (two beats at tempo 60) after its first, is
+# the first one again, sample for sample.
+let tick = Audio.Sound(iota(2205).map(|i| 0.3 * Math.sin(i * 0.2)))
+let ticked = Audio.Kauai.new(EXTERNAL, voices: {ep: |pitch, params| Audio.Sound([0.0])}, drums: {ride: |params| tick})
+let heard = ticked.render()
+assert_true(heard.slice(0, 2205).map(|v| Math.abs(v)).max() > 0.01)
+assert_eq(heard.slice(88200, 88200 + 2205), heard.slice(0, 2205))
+assert_eq(heard.slice(2205, 88200).map(|v| Math.abs(v)).max(), 0.0)
 let not_a_sound = Audio.Kauai.new(EXTERNAL, voices: {ep: |pitch, params| 1}, drums: {ride: |params| 1})
 assert_throws("TypeError", fn () {
   not_a_sound.prepare()

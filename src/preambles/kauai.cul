@@ -2503,29 +2503,53 @@ let _kauai_module = fn () {
       self._todo.size()
     }
 
-    # Play from the top (again, if it is playing), after building what is left.
-    # An external sound plays at its vol on the tones' scale: a voice or a
+    # The song as the mixer takes it, after building what is left: every tone,
+    # and every external sound at its vol on the tones' scale. A voice or a
     # drum is weighed by its sound (the loudness of the loudest 400 ms), and
-    # played as loud as a pulse at a half's duty would be at that vol and
-    # the pitch it was weighed at; one whose loudness is not known (silence,
-    # or compressed audio not yet decoded) at vol / 100 of its own level.
-    play() {
+    # played as loud as a pulse at a half's duty would be at that vol and the
+    # pitch it was weighed at; one whose loudness is not known (silence, or
+    # compressed audio not yet decoded) at vol / 100 of its own level.
+    _list() {
       while self.prepare() > 0 {}
-      if self._score == nil {
+      if self._weights == nil {
         self._weights = self._weighed.keys().map(fn (by) {
           let w = self._weighed[by]
           let l = _Audio.sound_loudness(self._sounds[w.sound]._id)
           (by, l == nil ? 1.0 : 10.0 ** ((tone_loudness(w.pitch) - l) / 20.0))
         }).to_object()
-        let tones = self._events.filter(|e| e.has("tone")).flat_map(|e| [e.at, ...e.tone])
-        let sounds = self._plays.flat_map(|p| [p.at, -1, self._sounds[p.sound]._id, p.vol / 100.0 * self._weights[p.by], 0, 0, 0, 0, 0, 0, 0])
-        let flat = [...tones, ...sounds]
-        self._score = _Audio.score_new(flat, self._length, self._loop_at)
+      }
+      let tones = self._events.filter(|e| e.has("tone")).flat_map(|e| [e.at, ...e.tone])
+      let sounds = self._plays.flat_map(|p| [p.at, -1, self._sounds[p.sound]._id, p.vol / 100.0 * self._weights[p.by], 0, 0, 0, 0, 0, 0, 0])
+      [...tones, ...sounds]
+    }
+
+    # Play from the top (again, if it is playing), after building what is left.
+    play() {
+      if self._score == nil {
+        self._score = _Audio.score_new(self._list(), self._length, self._loop_at)
         _Audio.score_volume(self._score, self._volume)
         _Audio.score_room(self._score, self._room)
       }
       _Audio.score_play(self._score)
       self._started = _Time.monotonic()
+    }
+
+    # The song once through as play() sounds it, until its last sound and its
+    # room's echoes end: mono samples, 44100 a second, from the mixer that
+    # plays it, with no device. A song that loops is heard once.
+    render() {
+      let list = self._list()
+      let used = Set()
+      for p in self._plays {
+        used.add(p.sound)
+      }
+      let sounds = []
+      for key in used {
+        let s = self._sounds[key]
+        sounds.push(s._id)
+        sounds.push(s.data())
+      }
+      _Audio.score_render(list, sounds, self._length, self._room, self._volume)
     }
 
     stop() {

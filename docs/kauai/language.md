@@ -994,6 +994,7 @@ check the song and raise the first error of [section 9](#9-errors) as a
 | `playing()` | whether it is playing: from `play()` until `stop()`, or until its end if it does not `loop` |
 | `reached(NAME)` | whether it has played as far as `mark NAME` |
 | `prepare()` | builds one external sound, and answers how many remain |
+| `render()` | the song once through as `play()` would sound it, until its last sound and its room's echoes end: an `Array` of mono samples, `44100` a second, from the same mixer, with no audio device; a song that loops is heard once. `FS.write("song.wav", Audio.Sound(song.render()).data())` saves it. Not in the browser, where the page plays a song (`ValueError`) |
 | `length()` | seconds once through |
 | `about()` | what its `about` says, as an object of the items written: `{title: 'Je te veux', composer: 'Erik Satie', year: 1897}`; `{}` without one |
 | `events()` | what it plays, in order: `{at, len, by, pitch, vol}`, with `at` and `len` in seconds, `by` the voice or drum, `pitch` a MIDI note (`nil` for a drum), and `vol` the voice's or drum's `vol` at the note's dynamic, on the tones' `0` to `100` for an external sound too |

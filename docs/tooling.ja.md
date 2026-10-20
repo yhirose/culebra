@@ -1076,12 +1076,14 @@ culebra lsp        # 標準入出力でLSPを話す
 ```
 culebra play first.kau                      # 再生する
 culebra play --check first.kau              # 読んで検査するだけで、鳴らさない
+culebra play --wav first.wav first.kau      # WAVファイルに書き出すだけで、鳴らさない
 culebra play --sounds sounds.cul ballad.kau # 外部の楽器を使う曲
 ```
 
 | オプション | 効果 |
 |---|---|
 | `--check` | 曲を読んで検査し、長さを表示して、何も鳴らさない。音声デバイスは不要 |
+| `--wav <file.wav>` | 曲を1回通して、鳴らしたときの音そのまま16ビットのWAVファイルに書き出し、何も鳴らさない（`render()`、[Kauai §10](kauai/language.ja.md#10-culebra-から再生する)）。音声デバイスは不要 |
 | `--sounds <file.cul>` | 曲の外部の楽器の音声を作るモジュール。フォルダならその中の`main.cul` |
 | `--watch` | 曲のフォルダかモジュールのフォルダの`.kau`や`.cul`のファイルが変わるたびに、曲とモジュールを読み直して頭から鳴らす |
 

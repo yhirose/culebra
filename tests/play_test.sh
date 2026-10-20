@@ -123,6 +123,20 @@ check "$ENGINE no device: status" 1 "$rc"
 check "$ENGINE no device: stdout" "" "$out"
 check "$ENGINE no device: stderr" "$TMP/duo.kau: no audio device, so nothing plays" "$err"
 
+# --wav writes the song as it would sound, and needs no device: four seconds
+# of 16-bit mono at 44100 a second, and a little more.
+rm -f "$TMP/duo.wav"
+run --wav "$TMP/duo.wav" "$TMP/duo.kau"
+check "$ENGINE wav: status" 0 "$rc"
+check "$ENGINE wav: stdout" "$TMP/duo.kau: 0:04 written to $TMP/duo.wav" "$out"
+check "$ENGINE wav: stderr" "" "$err"
+check "$ENGINE wav: format" "RIFF" "$(head -c 4 "$TMP/duo.wav")"
+size=$(wc -c < "$TMP/duo.wav" | tr -d ' ')
+(( size >= 44 + 2 * 4 * 44100 && size < 44 + 2 * 5 * 44100 )) || {
+  echo "FAIL $ENGINE wav: size $size"; fail=1; }
+run --wav="$TMP/duo2.wav" "$TMP/duo.kau"
+check "$ENGINE wav=: same bytes" "$(od -An -tx1 "$TMP/duo.wav" | md5sum)" "$(od -An -tx1 "$TMP/duo2.wav" | md5sum)"
+
 # A song's mistake names its file and line, on stderr.
 sed 's/tempo 120/tempo fast/' "$TMP/duo.kau" > "$TMP/bad.kau"
 run --check "$TMP/bad.kau"
@@ -194,6 +208,12 @@ check "two songs: status" 2 "$rc"
 run --loud "$TMP/duo.kau"
 check "unknown option: status" 2 "$rc"
 check "unknown option: stderr" "culebra play: unknown option '--loud'" "$err"
+run "$TMP/duo.kau" --wav
+check "wav, no file: status" 2 "$rc"
+check "wav, no file: stderr" "culebra play: --wav needs a file to write" "$err"
+run --wav "$TMP/x.wav" --check "$TMP/duo.kau"
+check "wav and check: status" 2 "$rc"
+check "wav and check: stderr" "culebra play: --wav writes the song and plays nothing, so not with --check" "$err"
 run "$TMP/duo.kau" --sounds
 check "sounds, no file: status" 2 "$rc"
 check "sounds, no file: stderr" "culebra play: --sounds needs a file or a folder" "$err"

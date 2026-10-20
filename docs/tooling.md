@@ -1160,12 +1160,14 @@ the song, and prints its length before the first note.
 ```
 culebra play first.kau                      # play it
 culebra play --check first.kau              # read and check it, and play nothing
+culebra play --wav first.wav first.kau      # write it to a WAV file, and play nothing
 culebra play --sounds sounds.cul ballad.kau # a song with `external` instruments
 ```
 
 | Option | Effect |
 |---|---|
 | `--check` | reads and checks the song, prints its length, and plays nothing; it needs no audio device |
+| `--wav <file.wav>` | writes the song once through to a 16-bit WAV file as it would sound (`render()`, [Kauai §10](kauai/language.md#10-playing-from-culebra)), and plays nothing; it needs no audio device |
 | `--sounds <file.cul>` | the module that makes the song's `external` sounds; a folder names its `main.cul` |
 | `--watch` | reads the song and the module again, and plays from the top, whenever a `.kau` or `.cul` file changes in the song's folder or the module's |
 

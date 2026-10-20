@@ -2561,7 +2561,9 @@ fn play() {
     println("{path}: {clock(song.length())} once through")
     return nil
   }
-  if !Audio.available() {
+  # Written to a WAV file, the song needs no device.
+  let wav = Sys.argv.contains("--wav") ? Sys.argv[Sys.argv.index_of("--wav") + 1] : nil
+  if wav == nil && !Audio.available() {
     IO.eprintln("{path}: no audio device, so nothing plays")
     Sys.exit(1) if !watching
     return nil
@@ -2575,6 +2577,16 @@ fn play() {
     left = song.prepare()
   }
   print("\r") if watched
+  if wav != nil {
+    let samples = song.render()
+    try {
+      FS.write(wav, Audio.Sound(samples).data())
+    } catch e: IOError {
+      return refuse(e)
+    }
+    println("{path}: {clock(samples.size() / 44100.0)} written to {wav}")
+    return nil
+  }
   println("playing {path} ({clock(song.length())} once through)")
   song.play()
   song
@@ -2601,7 +2613,7 @@ constexpr std::string_view kPlayWait = R"cul(
 wait_for_change(files_in(folders))
 )cul";
 
-// `culebra play [--sounds FILE] [--check] <song.kau>` — play a song written
+// `culebra play [--sounds FILE] [--check | --wav FILE] <song.kau>` — play a song written
 // in Kauai (docs/kauai/language.md) without a script of one's own. A song's
 // `external` instruments are the program's to supply, and this program has
 // none: they come from the module `--sounds` names.
@@ -2614,6 +2626,8 @@ int run_play(int argc, const char** argv) {
                  "                       (Audio.Kauai.load's arguments of those names);\n"
                  "                       a folder names its main.cul\n"
                  "  --check              read and check the song, and play nothing\n"
+                 "  --wav <file.wav>     write the song once through to a WAV file, as it\n"
+                 "                       would sound, and play nothing; no device needed\n"
                  "  --watch              read it again and play it from the top whenever\n"
                  "                       a .kau or .cul file changes in the song's folder\n"
                  "                       or the sounds module's\n"
@@ -2622,6 +2636,7 @@ int run_play(int argc, const char** argv) {
   Options options;
   optional<string> song;
   optional<string> sounds;
+  optional<string> wav;
   bool check = false;
   bool watch = false;
   for (int i = 2; i < argc; i++) {
@@ -2638,6 +2653,14 @@ int run_play(int argc, const char** argv) {
         return 2;
       }
       sounds = argv[++i];
+    } else if (arg.starts_with("--wav=")) {
+      wav = arg.substr(6);
+    } else if (arg == "--wav") {
+      if (i + 1 >= argc) {
+        std::println(stderr, "culebra play: --wav needs a file to write");
+        return 2;
+      }
+      wav = argv[++i];
     } else if (arg == "--check") {
       check = true;
     } else if (arg == "--watch") {
@@ -2663,6 +2686,11 @@ int run_play(int argc, const char** argv) {
   }
   if (!song) {
     usage(stderr);
+    return 2;
+  }
+  if (wav && (check || watch)) {
+    std::println(stderr, "culebra play: --wav writes the song and plays nothing, so not with {}",
+                 check ? "--check" : "--watch");
     return 2;
   }
   options.engine_named = options.jit || options.vm != Options::Vm::Off;
@@ -2698,6 +2726,10 @@ int run_play(int argc, const char** argv) {
   culebra::set_main_script("");
   culebra::sys_argv() = {*song};
   if (check) culebra::sys_argv().push_back("--check");
+  if (wav) {
+    culebra::sys_argv().push_back("--wav");
+    culebra::sys_argv().push_back(*wav);
+  }
   if (watch) {
     // The folders the song and the sounds module are in, each once, as they
     // were written, so that what changed is named the way the files were.

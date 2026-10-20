@@ -5741,6 +5741,32 @@ inline JitValue _ns_audio_score_new(JitValue* a, int64_t) {
   return _ns_adapt::v_long(id);
 }
 
+// A score rendered to samples as it would play (score_render): Audio.Kauai's
+// list, the bytes of each Sound it plays as [handle, data, handle, data, ...],
+// its length, its room's wet and its volume.
+inline JitValue _ns_audio_score_render(JitValue* a, int64_t) {
+  namespace ad = culebra::_audio_detail;
+  std::vector<double> events;
+  _ns_audio_numbers(a[0], events, ad::kScoreEventsError);
+  ::JitArray* list = _ns_adapt::take_array(a[1]);
+  std::vector<ad::SoundBytes> sounds;
+  for (size_t i = 0; i + 1 < list->size; i += 2) {
+    auto sv = _ns_adapt::require_sv(list->items[i + 1], "data");
+    auto p = reinterpret_cast<const uint8_t*>(sv.data());
+    if (const char* fmt = ad::sound_format(p, sv.size()))
+      sounds.push_back({_ns_adapt::take_long(list->items[i]), p, static_cast<int64_t>(sv.size()), fmt});
+  }
+  std::vector<float> out;
+  if (!ad::score_render(events.data(), static_cast<int64_t>(events.size()),
+                        _ns_adapt::take_double(a[2]), _ns_adapt::take_double(a[3]),
+                        _ns_adapt::take_double(a[4]), sounds, out))
+    culebra::throw_runtime_error_at("ValueError", "Audio.Kauai: render() is not available in this build", 0, 0);
+  auto* r = _jit_array_new_reserved(static_cast<int64_t>(out.size()), "Audio.Kauai render() result");
+  for (float f : out)
+    culebra_runtime_array_push(r, TAG_FLOAT, _culebra_double_to_bits(static_cast<double>(f)));
+  return _ns_adapt::v_array(r);
+}
+
 inline JitValue _ns_canvas_width(JitValue*, int64_t) {
   return _ns_adapt::v_long(culebra_runtime_canvas_width());
 }
@@ -11071,6 +11097,7 @@ inline const NsMethod kNsRows_Audio_native[] = {
   {"_Audio", "score_stop",     1, &_ns_audio_on<culebra::_audio_detail::score_stop>},
   {"_Audio", "score_volume",   2, &_ns_audio_set<culebra::_audio_detail::score_volume>},
   {"_Audio", "score_room",     2, &_ns_audio_set<culebra::_audio_detail::score_room>},
+  {"_Audio", "score_render",   5, &_ns_audio_score_render},
   {"_Audio", "resonate",       4, &_ns_audio_resonate},
   {"_Audio", "pluck",          5, &_ns_audio_pluck},
   {"_Audio", "partials",       9, &_ns_audio_partials},

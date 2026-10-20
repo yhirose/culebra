@@ -271,6 +271,15 @@ inline double tone_loudness(double freq) {
 // Numbers an event takes in a score's flat list (score_new).
 inline constexpr int64_t kScoreStride = 11;
 
+// A Sound a score plays, by the bytes it was made from, for score_render: the
+// handle the score's list names it by, and its format (sound_format's).
+struct SoundBytes {
+  int64_t handle = 0;
+  const uint8_t* data = nullptr;
+  int64_t len = 0;
+  const char* fmt = nullptr;
+};
+
 // --- Parts an instrument builds its sound from, the same on every backend ---
 //
 // Each part is a processor: its state, and a step that takes it one sample
@@ -931,6 +940,11 @@ inline void score_stop(int64_t id) { _wasm_audio_score(1, static_cast<int>(id), 
 inline void score_free(int64_t id) { _wasm_audio_score(2, static_cast<int>(id), 0); }
 inline void score_volume(int64_t id, double x) { _wasm_audio_score(3, static_cast<int>(id), x); }
 inline void score_room(int64_t id, double x) { _wasm_audio_score(4, static_cast<int>(id), x); }
+// The page mixes a score in WebAudio, which renders nothing back to the program.
+inline bool score_render(const double*, int64_t, double, double, double,
+                         const std::vector<SoundBytes>&, std::vector<float>&) {
+  return false;
+}
 
 #elif defined(CULEBRA_AUDIO_DEVICE)
 
@@ -994,6 +1008,14 @@ void score_stop(int64_t id);
 void score_volume(int64_t id, double v);
 // How much of the room the score plays in is heard with it, 0 for none.
 void score_room(int64_t id, double wet);
+// A score (score_new's list and length) rendered into `out`, which arrives
+// empty, as the stream would play it once through at `volume` in a room heard
+// `wet` strong: mono at kMixerRate, until its last sound and its room's echoes
+// end. Its Sounds are decoded from `sounds` as sound_load decodes them, so it
+// needs no device. False where there is no mixer to render with.
+bool score_render(const double* events, int64_t count, double length, double wet,
+                  double volume, const std::vector<SoundBytes>& sounds,
+                  std::vector<float>& out);
 // A graph played: a copy the mixer works out from the next sample on, the
 // changes scheduled after that to the copy's parts sent on to it (a part
 // added since is the next play()'s). graph_now answers where on the
@@ -1045,6 +1067,11 @@ CULEBRA_RT_AUDIO_LINKAGE void score_play(int64_t) {}
 CULEBRA_RT_AUDIO_LINKAGE void score_stop(int64_t) {}
 CULEBRA_RT_AUDIO_LINKAGE void score_volume(int64_t, double) {}
 CULEBRA_RT_AUDIO_LINKAGE void score_room(int64_t, double) {}
+CULEBRA_RT_AUDIO_LINKAGE bool score_render(const double*, int64_t, double, double,
+                                           double, const std::vector<SoundBytes>&,
+                                           std::vector<float>&) {
+  return false;
+}
 #endif
 
 #if !defined(CULEBRA_AUDIO_DEVICE)
