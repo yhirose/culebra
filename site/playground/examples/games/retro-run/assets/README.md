@@ -9,7 +9,9 @@ the palette and `to_png` writes the files.
 Nothing here is lifted from anywhere. Upstream javascript-racer's `sprites.png`
 is taken from OutRun and its music may not be redistributed, so none of it is
 vendored; these are original drawings in the same spirit — a coast road, a red
-convertible with two riders, billboards, palms. Redraw any of them by hand and
+convertible with two riders, billboards, palms. The saxophone's phrases are
+the one thing made from recordings: `kauai/sounds/soprano_sax` plays them from
+notes of public-domain (CC0) takes, its `README.md` says whose. Redraw any of them by hand and
 the game will not notice, as long as the sizes below stay exactly as they are.
 
 | file | size | contents |
@@ -21,11 +23,19 @@ the game will not notice, as long as the sizes below stay exactly as they are.
 | `background_yuugure.png` | 1290×1470 | dusk |
 | `background_twilight.png` | 1290×1470 | twilight |
 | `cruise.kau`, `sprint.kau`, `run.kau` | | the laps' music in Kauai, and the band they share |
+| `run_sax.kau` | | that band with the saxophone leading, an octave under the chip |
+| `sax.bin`, `sax.json` | | the saxophone's phrases for the laps, made beforehand, and which is which |
 | `ballad.kau` | | the ending theme |
 
 The music is written, not generated: songs in Kauai (`docs/kauai/language.md`),
 which any text editor changes. The game plays whatever these files say, with
 the one fixed part that the theme has a `mark Drive`, where the car drives off.
+The saxophone plays only the phrases made for the songs as they are: an edited
+lap plays its lead on the chip until its phrases are made again with
+`kauai/sounds/soprano_sax`. `sax.json` says what the instrument hears of a note
+and, song by song, where each phrase is in `sax.bin`, by the JSON of what Kauai
+hands the instrument; the phrases are Ogg Vorbis, but for the one Kauai weighs
+the voice by, a WAV, so that every backend weighs it the same.
 
 ## What is fixed and what is free
 

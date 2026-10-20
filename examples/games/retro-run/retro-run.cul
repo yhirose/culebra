@@ -20,6 +20,8 @@
 # fraction of the window rather than an absolute distance (also v4's formula),
 # so it very slightly shifts on segments that stay in view either way.
 
+import sax_tunes from './sax_tunes.cul'
+
 # --- configuration ---------------------------------------------------------
 let W = 640
 let H = 480
@@ -40,6 +42,12 @@ let ARGS_SPEC = {
   args: [
     {name: 'assets', type: 'String', default: nil, doc: 'asset directory'},
     {name: 'cars', type: 'Long', default: 200, doc: 'number of cars'},
+    {
+      name: 'chiptune',
+      type: 'Bool',
+      default: false,
+      doc: "the laps' lead on the chip, not the saxophone",
+    },
     {
       name: 'distance',
       type: 'Long',
@@ -587,9 +595,9 @@ mut finished = false
 
 # --- BGM ---------------------------------------------------------------
 # A music.ogg / music.mp3 next to the art (upstream's own soundtrack, say)
-# loops under the run instead of the chiptune; the generated assets ship no
-# recording, so the songs below are the default. It sits under the engine and the
-# chiptune's own level, loud enough to carry on laptop speakers.
+# loops under the run instead of the songs below; the generated assets ship
+# none, so the songs are the default. It sits under the engine and the songs'
+# own level, loud enough to carry on laptop speakers.
 let MUSIC_FILE = ["music.ogg", "music.mp3"].find(|n| ART.exists(n))
 let MUSIC_VOL = 0.6
 let music = if MUSIC_FILE == nil {
@@ -603,10 +611,10 @@ let MUSIC_DELAY = GO_BEEP + FPS  # frames from the green light to the music
 mut music_on = false
 mut music_wait = MUSIC_DELAY
 
-# The chiptune fallback: a song per lap and the ending theme, written in the
-# Kauai language (assets/*.kau; docs/kauai/language.md has them all). Each is
-# handed to the runtime whole, which keeps time on the audio stream's own
-# clock, so a frame that runs long never drags the music.
+# Otherwise a song per lap and the ending theme, written in the Kauai language
+# (assets/*.kau; docs/kauai/language.md has them all). Each is handed to the
+# runtime whole, which keeps time on the audio stream's own clock, so a frame
+# that runs long never drags the music.
 #
 # The theme's electric piano is sampled rather than an APU channel: a chord
 # needs several notes at once, and a struck tine needs more than a pulse. The
@@ -671,12 +679,13 @@ let ep_samples = fn (pitch, bark) {
 # The songs come with the art; a `--assets` directory without them keeps the
 # built-in ones.
 let SONGS = ART.exists("cruise.kau") ? ART : Dir.embedded("assets")
-let kauai = fn (name) {
-  Audio.Kauai.load(name, dir: SONGS, voices: {
-    ep: |pitch, params| Audio.Sound(pcm_wav(ep_samples(pitch, params.bright))),
-  })
-}
-let LAP_TUNES = [kauai("cruise.kau"), kauai("sprint.kau")]
+let ep = |pitch, params| Audio.Sound(pcm_wav(ep_samples(pitch, params.bright)))
+let kauai = |name| Audio.Kauai.load(name, dir: SONGS, voices: {ep: ep})
+
+# The laps' lead is a soprano saxophone (sax_tunes.cul) where the songs have
+# its phrases made; on the chip where they do not, and with --chiptune.
+let lap_tune = |name| (args.chiptune ? nil : sax_tunes.load(name, SONGS, {ep: ep})) ?? kauai(name)
+let LAP_TUNES = [lap_tune("cruise.kau"), lap_tune("sprint.kau")]
 let THEME = kauai("ballad.kau")
 mut playing = LAP_TUNES[0]
 

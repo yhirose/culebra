@@ -1,0 +1,43 @@
+# The laps' songs with a soprano saxophone leading, an octave under the chip:
+# the band of run_sax.kau in place of run.kau's, and each phrase the
+# saxophone plays made beforehand (by kauai/sounds/soprano_sax in this
+# repository), looked up by what Kauai hands the instrument. sax.json says
+# what the saxophone hears and, song by song, where in sax.bin each phrase's
+# bytes are: Ogg, but for the note Kauai weighs the voice by, a WAV, whose
+# loudness it reads on every backend.
+
+# `name` from `songs` (a Dir) with the saxophone leading, the band's other
+# external voices from `voices`; its sounds built. nil when `songs` has no
+# phrases for it, or a phrase it plays was not made (an edited song), which
+# it says on stderr.
+fn load(name, songs, voices) {
+  return nil if !songs.exists("sax.json")
+  let index = JSON.parse(songs.read("sax.json"))
+  let made = index.songs.get(name, nil)
+  return nil if made == nil
+  let bytes = songs.read("sax.bin")
+  let missing = []
+  let sax = {phrase: fn (notes, params) {
+    let at = made.get(JSON.stringify([notes, params]), nil)
+    if at == nil {
+      missing.push(notes)
+      return Audio.Sound([0.0])
+    }
+    Audio.Sound(bytes.slice(at[0], at[0] + at[1]).to_string())
+  }, hears: index.hears}
+  let as_sax = |n| n == "run.kau" ? "run_sax.kau" : n
+  let dir = {
+    exists: |n| songs.exists(as_sax(n)),
+    read: |n| songs.read(as_sax(n)),
+  }
+  let tune = Audio.Kauai.load(name, dir: dir, voices: {...voices, sax: sax})
+  while tune.prepare() > 0 {
+  }
+  if !missing.empty() {
+    IO.eprintln("retro-run: {missing.size()} of {name}'s phrases were not made for the saxophone, so its lead is the chip's")
+    return nil
+  }
+  tune
+}
+
+export {load}

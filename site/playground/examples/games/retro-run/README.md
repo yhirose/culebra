@@ -26,8 +26,9 @@ non-secure and breaks WebGPU.
 
 Controls are arrow keys or WASD, and space starts another race from the
 results screen. A bare number overrides the draw distance
-(default 300, matching v4's own default; its tweak UI allows 100..500), and
-`--assets <dir>` reads the art from somewhere else:
+(default 300, matching v4's own default; its tweak UI allows 100..500),
+`--assets <dir>` reads the art from somewhere else, and `--chiptune` gives the
+laps' lead back to the chip:
 
 ```sh
 culebra --jit examples/games/retro-run/retro-run.cul 150
@@ -66,22 +67,30 @@ at its art leaves the day cycle to the road, fog and sky colours while the
 picture behind them stays put.
 
 A `music.ogg` or `music.mp3` in the directory (looked for in that order) loops
-under the run as an `Audio.Music`, replacing the built-in chiptune —
-upstream's own soundtrack, if you have it. It plays at `MUSIC_VOL` (0.6), under
-the engine but clearly audible; edit the constant to taste. The generated set
-ships no recording, so the chiptune is the default: a tune a lap, breezy for
-the first and a sprint for the second.
+under the run as an `Audio.Music`, replacing the built-in songs — upstream's
+own soundtrack, if you have it. It plays at `MUSIC_VOL` (0.6), under the
+engine but clearly audible; edit the constant to taste. The generated set ships
+none, so the songs are the default: a tune a lap, breezy for the first and a
+sprint for the second, a soprano saxophone leading the chip band.
 
 Either way the flag ends it: the music fades out over a couple of seconds, a
 few more pass in silence, and a slow chiptune theme plays once over the frozen
 finish; when it is done, the sea comes in and stays until the restart.
 
-The chiptunes are songs written in Kauai, a language for music as a band plays
-it (`docs/kauai/language.md`): `assets/cruise.kau` and `assets/sprint.kau` for
-the laps, which share the band in `assets/run.kau`, and `assets/ballad.kau` for
-the theme. `Audio.Kauai` reads them from the same directory as the art, so a
+The songs are written in Kauai, a language for music as a band plays it
+(`docs/kauai/language.md`): `assets/cruise.kau` and `assets/sprint.kau` for the
+laps, which share the band in `assets/run.kau`, and `assets/ballad.kau` for the
+theme. `Audio.Kauai` reads them from the same directory as the art, so a
 `--assets` directory can bring songs of its own, and plays them on the audio
-stream's own clock. To hear one alone:
+stream's own clock.
+
+The saxophone plays the laps with the band in `assets/run_sax.kau` in place of
+`run.kau`'s: the same band, the lead an octave under the chip's. Its phrases
+are made beforehand, from these songs, by the instrument in
+`kauai/sounds/soprano_sax` (`assets/sax.bin`, with `assets/sax.json` saying
+which is which), so the game starts at once and the Playground plays them too.
+A song with a phrase that was not made, one edited since, plays its lead on
+the chip, and says so. To hear a chip version alone:
 
 ```sh
 culebra examples/kauai/play.cul examples/games/retro-run/assets/cruise.kau

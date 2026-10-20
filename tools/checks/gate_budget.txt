@@ -195,5 +195,7 @@ languages.samples 130
 # The suites under examples/, swept by run_examples_sweep. They were in no gate
 # until the sweep was added; the count is here so that stays visible. 31 since
 # kauai/sounds/soprano_sax/test_soprano_sax.cul (the instrument loads its data
-# from beside it, voices a phrase, and plays a song through Kauai).
-examples.suites 31
+# from beside it, voices a phrase, and plays a song through Kauai). 32 since
+# examples/games/retro-run/test_sax_tunes.cul (every phrase the laps'
+# saxophone plays is made, under what Kauai hands an instrument today).
+examples.suites 32
