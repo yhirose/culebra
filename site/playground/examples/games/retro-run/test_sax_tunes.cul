@@ -5,6 +5,7 @@ let ASSETS = Dir.embedded('assets')
 # Every phrase the laps' saxophone plays was made, under what Kauai hands an
 # instrument today: a change to that (or to a song) that leaves the phrases
 # behind shows here, not as a game that quietly gives the lead to the chip.
+# tools/gen_music.cul makes them again.
 @test
 fn every_lap_phrase_is_made() {
   for name in ["cruise.kau", "sprint.kau"] {
@@ -12,16 +13,21 @@ fn every_lap_phrase_is_made() {
   }
 }
 
-# A song with a phrase that was not made, or none at all, plays on the chip.
+# A song with a phrase that was not made, or songs with none, play on the
+# chip.
 @test
 fn a_song_without_its_phrases_is_nil() {
   let index = JSON.parse(ASSETS.read("sax.json"))
-  let cruise = index.songs["cruise.kau"]
-  cruise.remove(cruise.keys()[0])
+  let sounds = index.voices.sax.sounds
+  sounds.remove(sounds.keys()[0])
   let short = {
     exists: |n| ASSETS.exists(n),
     read: |n| n == "sax.json" ? JSON.stringify(index) : ASSETS.read(n),
   }
   assert_eq(sax_tunes.load("cruise.kau", short, {}), nil)
-  assert_eq(sax_tunes.load("ballad.kau", ASSETS, {}), nil)
+  let none = {
+    exists: |n| n != "sax.json" && ASSETS.exists(n),
+    read: |n| ASSETS.read(n),
+  }
+  assert_eq(sax_tunes.load("cruise.kau", none, {}), nil)
 }

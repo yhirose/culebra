@@ -175,6 +175,7 @@
             "examples/games/retro-run/tools/atlas.cul",
             "examples/games/retro-run/tools/check_assets.cul",
             "examples/games/retro-run/tools/gen_assets.cul",
+            "examples/games/retro-run/tools/gen_music.cul",
             "examples/games/retro-run/tools/gen_templates.cul"
           ]
         }

@@ -1,0 +1,31 @@
+# Make the laps' saxophone phrases again: assets/sax.bin and assets/sax.json,
+# every phrase cruise.kau and sprint.kau ask the saxophone for, with the band
+# of run_sax.kau in place of run.kau's. kauai/tools/make_sounds.cul makes
+# them with kauai/sounds/soprano_sax; ffmpeg encodes them as Ogg Vorbis. Run
+# it after editing a lap's song, or the game plays that lap's lead on the chip.
+#
+# Run: culebra examples/games/retro-run/tools/gen_music.cul   (twenty seconds)
+
+let here = FS.dirname(FS.abspath(Sys.script))
+let repo = FS.join(here, "../../../..")
+let assets = FS.join(here, "../assets")
+let r = Proc.run([
+  Sys.executable,
+  "--vm",
+  FS.join(repo, "kauai/tools/make_sounds.cul"),
+  "--sounds",
+  FS.join(repo, "kauai/sounds/soprano_sax"),
+  "--out",
+  assets,
+  "--name",
+  "sax",
+  "--use",
+  "run.kau=run_sax.kau",
+  "--ogg",
+  "--pack",
+  FS.join(assets, "cruise.kau"),
+  FS.join(assets, "sprint.kau"),
+])
+IO.print(r.stdout)
+IO.eprint(r.stderr)
+Sys.exit(r.code)

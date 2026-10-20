@@ -1,30 +1,29 @@
 # The laps' songs with a soprano saxophone leading, an octave under the chip:
 # the band of run_sax.kau in place of run.kau's, and each phrase the
-# saxophone plays made beforehand (by kauai/sounds/soprano_sax in this
-# repository), looked up by what Kauai hands the instrument. sax.json says
-# what the saxophone hears and, song by song, where in sax.bin each phrase's
-# bytes are: Ogg, but for the note Kauai weighs the voice by, a WAV, whose
-# loudness it reads on every backend.
+# saxophone plays made beforehand from the songs (tools/gen_music.cul, by
+# kauai/tools/make_sounds.cul and kauai/sounds/soprano_sax in this
+# repository). sax.json says what the saxophone hears and, by the JSON of
+# what Kauai hands it, where in sax.bin each phrase's bytes are: Ogg, but for
+# the note Kauai weighs the voice by, a WAV, whose loudness it reads on every
+# backend.
 
 # `name` from `songs` (a Dir) with the saxophone leading, the band's other
 # external voices from `voices`; its sounds built. nil when `songs` has no
-# phrases for it, or a phrase it plays was not made (an edited song), which
-# it says on stderr.
+# phrases made, or a phrase the song plays was not made (an edited song),
+# which it says on stderr.
 fn load(name, songs, voices) {
   return nil if !songs.exists("sax.json")
-  let index = JSON.parse(songs.read("sax.json"))
-  let made = index.songs.get(name, nil)
-  return nil if made == nil
+  let made = JSON.parse(songs.read("sax.json")).voices.sax
   let bytes = songs.read("sax.bin")
   let missing = []
   let sax = {phrase: fn (notes, params) {
-    let at = made.get(JSON.stringify([notes, params]), nil)
+    let at = made.sounds.get(JSON.stringify([notes, params]), nil)
     if at == nil {
       missing.push(notes)
       return Audio.Sound([0.0])
     }
     Audio.Sound(bytes.slice(at[0], at[0] + at[1]).to_string())
-  }, hears: index.hears}
+  }, hears: made.hears}
   let as_sax = |n| n == "run.kau" ? "run_sax.kau" : n
   let dir = {
     exists: |n| songs.exists(as_sax(n)),

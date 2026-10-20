@@ -31,11 +31,12 @@ The music is written, not generated: songs in Kauai (`docs/kauai/language.md`),
 which any text editor changes. The game plays whatever these files say, with
 the one fixed part that the theme has a `mark Drive`, where the car drives off.
 The saxophone plays only the phrases made for the songs as they are: an edited
-lap plays its lead on the chip until its phrases are made again with
-`kauai/sounds/soprano_sax`. `sax.json` says what the instrument hears of a note
-and, song by song, where each phrase is in `sax.bin`, by the JSON of what Kauai
-hands the instrument; the phrases are Ogg Vorbis, but for the one Kauai weighs
-the voice by, a WAV, so that every backend weighs it the same.
+lap plays its lead on the chip until `../tools/gen_music.cul` makes its phrases
+again. `sax.json` says what the instrument hears of a note and where each
+phrase is in `sax.bin`, by the JSON of what Kauai hands the instrument
+(`kauai/tools/README.md` has the format); the phrases are Ogg Vorbis, but for
+the one Kauai weighs the voice by, a WAV, so that every backend weighs it the
+same.
 
 ## What is fixed and what is free
 

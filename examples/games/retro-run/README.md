@@ -90,7 +90,9 @@ are made beforehand, from these songs, by the instrument in
 `kauai/sounds/soprano_sax` (`assets/sax.bin`, with `assets/sax.json` saying
 which is which), so the game starts at once and the Playground plays them too.
 A song with a phrase that was not made, one edited since, plays its lead on
-the chip, and says so. To hear a chip version alone:
+the chip, and says so; `culebra examples/games/retro-run/tools/gen_music.cul`
+makes them again, with `kauai/tools/make_sounds.cul` (it needs `ffmpeg`). To
+hear a chip version alone:
 
 ```sh
 culebra examples/kauai/play.cul examples/games/retro-run/assets/cruise.kau
