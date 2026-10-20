@@ -1,7 +1,6 @@
 import msg from '../core/message.cul'
 import clean from '../core/clean_messages.cul'
 import err from '../core/errors.cul'
-import sse from '../core/sse.cul'
 import api_error from './api_error.cul'
 
 # Ported from upstream's `src/providers/openai.ts`.
@@ -50,15 +49,14 @@ class OpenAIModel {
   # is what interprets it either way.
   do_stream(params, on_text) {
     let turn = OpenAIStream(on_text)
-    let stream = sse.EventStream(|e| turn.take(e))
     let res = self.http.post('/chat/completions',
                              json: self.body_for(params, true),
-                             into: stream.sink())
+                             events: |e| turn.take(e))
     if !res.ok {
       throw err.llm_api_error(res.status, PROVIDER,
-                              api_error.explain(PROVIDER, stream.failure(res)))
+                              api_error.explain(PROVIDER, res))
     }
-    if stream.events == 0 {
+    if turn.events == 0 {
       throw err.llm_api_error(res.status, PROVIDER,
         "{PROVIDER} wire: the stream closed without sending an event")
     }
@@ -202,6 +200,7 @@ let DONE = '[DONE]'
 
 class OpenAIStream {
   new(.on_text) {
+    self.events = 0
     self.content = ''
     self.reasoning = ''
     self.calls = []
@@ -211,6 +210,7 @@ class OpenAIStream {
   }
 
   take(event) {
+    self.events += 1
     return nil if event.data == DONE
     let payload = try {
       JSON.parse(event.data)

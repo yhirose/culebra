@@ -1,7 +1,6 @@
 import msg from '../core/message.cul'
 import clean from '../core/clean_messages.cul'
 import err from '../core/errors.cul'
-import sse from '../core/sse.cul'
 import api_error from './api_error.cul'
 
 # Ported from upstream's `src/providers/anthropic.ts`.
@@ -58,19 +57,17 @@ class AnthropicModel {
   # is what reads it either way.
   do_stream(params, on_text) {
     let turn = AnthropicStream(on_text)
-    let stream = sse.EventStream(|e| turn.take(e))
     let res = self.http.post('/messages', json: self.body_for(params, true),
-                             into: stream.sink())
+                             events: |e| turn.take(e))
+    # A refusal is not an event stream, so its body is still in `res.body`.
     if !res.ok {
-      # `into:` took the body, so what the refusal said is in the stream's own
-      # buffer rather than in `res.body`.
       throw err.llm_api_error(res.status, PROVIDER,
-                              api_error.explain(PROVIDER, stream.failure(res)))
+                              api_error.explain(PROVIDER, res))
     }
     # A 200 that carried no event at all. Read as a finished turn this is a
     # model with nothing to say, and the run ends in silence — the same reason
     # `read_reply` raises on a failure carried inside a 200.
-    if stream.events == 0 {
+    if turn.events == 0 {
       throw err.llm_api_error(res.status, PROVIDER,
         "{PROVIDER} wire: the stream closed without sending an event")
     }
@@ -227,6 +224,7 @@ fn call_of(b) {
 # non-streaming body.
 class AnthropicStream {
   new(.on_text) {
+    self.events = 0
     self.blocks = []
     self.stop_reason = nil
     self.sent = 0
@@ -235,6 +233,7 @@ class AnthropicStream {
   }
 
   take(event) {
+    self.events += 1
     # A frame that will not parse is not worth ending the turn over: the next
     # one usually carries the same content, and the stream says when it broke.
     let payload = try {

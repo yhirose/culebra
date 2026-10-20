@@ -200,5 +200,7 @@ languages.samples 130
 # saxophone plays is made, under what Kauai hands an instrument today). 33
 # since kauai/tools/test_make_sounds.cul (every sound songs ask an instrument
 # of each kind for is kept and indexed, and the one Kauai weighs it by is
-# found).
-examples.suites 33
+# found). 32 since examples/agents/nano-code/test_sse.cul went with the
+# decoder it tested: the agent's stream is read with Http's events:, which
+# test_http_server.cul covers.
+examples.suites 32

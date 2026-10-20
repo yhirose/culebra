@@ -13,27 +13,31 @@ import msg from './core/message.cul'
 # that body and read by the same `read_reply`, so a difference would be a bug
 # in the assembly rather than a difference of interpretation.
 
-# A client whose POST streams: it hands the canned chunks to the `into:` sink
-# the way the socket would, and answers with an empty body as `into:` leaves it.
+# A client whose POST streams: it hands the canned events to the `events:`
+# callback the way `Http` does, and answers with the empty body a streamed 2xx
+# leaves. A failure is not an event stream, so its body is kept.
 class StreamStub {
-  new(.chunks) {
+  new(.events) {
     self.status = 200
+    self.body = ''
     self.sent = []
   }
 
   failing(status, body) {
     self.status = status
-    self.chunks = [body]
+    self.events = []
+    self.body = body
     self
   }
 
-  post(path, json, into = nil) {
+  post(path, json, events = nil) {
     self.sent.push({path: path, body: json})
-    for chunk in self.chunks {
-      into(chunk)
+    for e in self.events {
+      events(e)
     }
+    let body = self.body
     {ok: self.status >= 200 && self.status < 300, status: self.status,
-     body: '', json: fn () { JSON.parse('') }}
+     body: body, json: fn () { JSON.parse(body) }}
   }
 
   last_body() {
@@ -41,14 +45,9 @@ class StreamStub {
   }
 }
 
-# One event, framed as the wire frames it.
+# One event, as `Http` hands it to `events:`.
 fn event(kind, payload) {
-  "event: {kind}\ndata: {JSON.stringify(payload)}\n\n"
-}
-
-fn said(chunks) {
-  mut heard = []
-  {chunks: chunks, heard: heard}
+  {event: kind, data: JSON.stringify(payload), id: ''}
 }
 
 # --- the Messages format ----------------------------------------------------
@@ -98,8 +97,8 @@ fn anthropic_whole() {
   }
 }
 
-fn anthropic_stream(chunks, on_text) {
-  let http = StreamStub(chunks)
+fn anthropic_stream(events, on_text) {
+  let http = StreamStub(events)
   let out = anthropic.AnthropicModel(http, 'a-model')
     .do_stream({messages: [msg.user('read a.txt')]}, on_text)
   {out: out, http: http}
@@ -227,9 +226,9 @@ fn asks_for_a_stream_and_sends_the_same_body_otherwise() {
 }
 
 @test
-fn a_refusal_is_read_out_of_the_stream_rather_than_the_empty_body() {
-  # `into:` takes the body, so `res.body` is empty by the time the status is
-  # known. Without the stream's own copy there is nothing to quote.
+fn a_refusal_is_read_out_of_the_body_it_came_in() {
+  # A refusal is not an event stream: no event arrives, and what it said is
+  # the body, which `Http` leaves in the response.
   let http = StreamStub([]).failing(429,
     JSON.stringify({error: {type: 'rate_limit_error',
                             message: 'slow down please'}}))
@@ -264,8 +263,13 @@ fn a_stream_that_says_nothing_at_all_is_a_failure() {
 # The same turn again, in the other format's spelling: a partial turn per
 # frame rather than numbered blocks, and a `[DONE]` sentinel to close.
 
+# This format names no event type, so every frame is a "message".
+fn raw(data) {
+  {event: 'message', data: data, id: ''}
+}
+
 fn frame(payload) {
-  "data: {JSON.stringify(payload)}\n\n"
+  raw(JSON.stringify(payload))
 }
 
 fn openai_events() {
@@ -283,7 +287,7 @@ fn openai_events() {
     frame({choices: [{index: 0, delta: {}, finish_reason: 'tool_calls'}]}),
     frame({choices: [], usage: {prompt_tokens: 11, completion_tokens: 7,
                                 total_tokens: 18}}),
-    "data: [DONE]\n\n",
+    raw('[DONE]'),
   ]
 }
 
@@ -302,8 +306,8 @@ fn openai_whole() {
   }
 }
 
-fn openai_stream(chunks, on_text) {
-  let http = StreamStub(chunks)
+fn openai_stream(events, on_text) {
+  let http = StreamStub(events)
   let out = openai.OpenAIModel(http, 'a-model')
     .do_stream({messages: [msg.user('read a.txt')]}, on_text)
   {out: out, http: http}
@@ -332,7 +336,7 @@ fn the_sentinel_that_closes_the_stream_is_not_a_frame() {
   # last frame of a stream that otherwise worked.
   let out = openai_stream([
     frame({choices: [{delta: {content: 'done'}, finish_reason: 'stop'}]}),
-    "data: [DONE]\n\n",
+    raw('[DONE]'),
   ], nil).out
   assert_eq(out.text, 'done')
   assert_eq(out.finish_reason, 'stop')

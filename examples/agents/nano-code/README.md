@@ -72,7 +72,6 @@ and `createOpenAI({ baseURL })` is in its own signature.
 | `core/prompt.cul`, `core/prompt.md` | `src/core/prompt.ts`, `src/core/prompt.md` |
 | `core/security.cul` | `src/core/security.ts` |
 | `core/clean_messages.cul` | the copy each provider carries upstream |
-| `core/sse.cul` | what upstream's SDKs decode for it (appendix A) |
 | `core/workspace.cul` | the containment check all four tools share |
 | `tools/read_file.cul` … | `src/tools/readFile.ts` … |
 | `providers/openai.cul` | `src/providers/openai.ts` |
@@ -119,28 +118,18 @@ It is a trait of its own (`StreamingLanguageModel`), because a model is allowed
 not to have it: conformance is structural, so a provider with both methods
 satisfies both traits, and a scripted model in a test satisfies only the first.
 
-Three things about the wire are worth knowing:
+Two things about the wire are worth knowing:
 
-- **`Http.sse` is not what opens the stream.** The stdlib decodes this exact
-  format (stdlib.md §15), but it opens the stream itself with a `GET`, and both
-  of these endpoints are a `POST` carrying the conversation as a JSON body. So
-  the body arrives through `into:` a chunk at a time and `core/sse.cul` decodes
-  it. A `POST` that streams back is the shape a streaming LLM API has, so this
-  is the one part of the port that a stdlib with `Http.sse` in it still has to
-  write by hand.
-- **A chunk is not an event, and a line is not a chunk.** A delta can be split
-  across two reads of the socket, and a multi-byte character with it. Whatever
-  follows the last newline waits in the buffer for the rest of it, which makes
-  those two the same case; `test_sse.cul` checks every split point of the same
-  bytes.
+- **The stream is a `POST`'s answer.** Both endpoints take the conversation as
+  a JSON body and answer with Server-Sent Events, which is what upstream's SDKs
+  decode for it. Here the stdlib does: `events:` (stdlib.md §15) reads any
+  request's body as events, so `do_stream` is the same `post` as `do_generate`
+  with `events:` added. A refusal is not an event stream, and its body stays
+  in `res.body` to be quoted.
 - **The arguments of a tool call arrive as a document written a few characters
   at a time**, so they cannot be read until the block ends. A turn cut off in
   the middle of one leaves it unparseable, which is answered with an empty call
   rather than a raised error — the tool is what says what was missing.
-
-`into:` also takes the body away from `res.body`, so a refusal has nothing left
-to quote by the time the status is known. The stream keeps its first bytes back
-for that.
 
 ## Where this differs from upstream
 
