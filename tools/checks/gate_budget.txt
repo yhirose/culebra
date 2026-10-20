@@ -193,5 +193,7 @@ docs.blocks 1072
 languages.samples 130
 
 # The suites under examples/, swept by run_examples_sweep. They were in no gate
-# until the sweep was added; the count is here so that stays visible.
-examples.suites 30
+# until the sweep was added; the count is here so that stays visible. 31 since
+# kauai/sounds/soprano_sax/test_soprano_sax.cul (the instrument loads its data
+# from beside it, voices a phrase, and plays a song through Kauai).
+examples.suites 31

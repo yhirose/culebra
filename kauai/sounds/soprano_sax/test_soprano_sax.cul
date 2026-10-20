@@ -1,0 +1,85 @@
+import sax from './main.cul'
+
+# A phrase as Kauai hands it to the instrument: two notes slurred, then one
+# held.
+let PHRASE = [
+  {
+    pitch: 72,
+    at: 0.0,
+    len: 0.3,
+    level: 1.0,
+    level_end: 1.0,
+    marks: [],
+    next: nil,
+    params: {},
+  },
+  {
+    pitch: 74,
+    at: 0.3,
+    len: 0.3,
+    level: 1.0,
+    level_end: 1.0,
+    marks: [],
+    next: nil,
+    params: {},
+  },
+  {
+    pitch: 76,
+    at: 0.6,
+    len: 0.9,
+    level: 1.0,
+    level_end: 1.0,
+    marks: [],
+    next: nil,
+    params: {},
+  },
+]
+
+@test
+fn a_phrase_sounds_as_long_as_it_is_written() {
+  let s = sax.phrase_samples(PHRASE, {})
+  # 1.5 s written, placed a few milliseconds late.
+  assert_true(s.size() >= 1.5 * sax.RATE)
+  assert_true(s.size() <= 1.6 * sax.RATE)
+  let peak = s.map(|v| Math.abs(v)).max()
+  assert_true(peak > 0.01)
+  assert_true(peak < 1.0)
+}
+
+@test
+fn kauai_plays_a_song_with_it() {
+  let song_text = 'band Solo {
+  voice Lead  external Sax  plays melody octave down  vol 60
+}
+song Tune {
+  tempo 120
+  band Solo
+  melody in C5..B5
+  Verse
+}
+section Verse {
+  C     c4 e g e
+  G     d4 g b g
+}
+'
+
+  # The pitches Kauai hands the saxophone: the tune an octave below C5..B5.
+  let heard = Set()
+  let voices = {sax: {phrase: fn (notes, params) {
+    for n in notes {
+      heard.add(n.pitch)
+    }
+    sax.voices.sax.phrase(notes, params)
+  }, hears: sax.voices.sax.hears}}
+  let song = Audio.Kauai.load(
+    "tune.kau",
+    voices: voices,
+    dir: Dir.memory({"tune.kau": song_text}),
+  )
+  mut left = song.prepare()
+  while left > 0 {
+    left = song.prepare()
+  }
+  assert_eq(song.length(), 4.0)
+  assert_eq(heard, Set(60, 62, 64, 67, 71))
+}

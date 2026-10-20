@@ -1245,7 +1245,8 @@ _run-tests BACKEND:
         }
     }
 
-    # The suites under examples/: 30 files and 328 assertions that no gate ran.
+    # The suites under examples/ (and kauai/'s instruments since): 30 files and
+    # 328 assertions that no gate ran.
     # The vm2gol-v2 suite had not run since the unit runner moved to the VM —
     # `culebra test` was rejecting every file with an `import` — and nothing
     # said so, because examples/ was wired into no gate at all (996a1957).
@@ -1254,17 +1255,17 @@ _run-tests BACKEND:
     # (check_tests_optional_ns.sh), since they run on every lane.
     run_examples_sweep() {
         local out rc=0 want
-        want=$(find examples -name 'test_*.cul' | wc -l | tr -d ' ')
-        out=$(cul test --vm --reporter json examples 2>&1 < /dev/null) || rc=$?
+        want=$(find examples kauai -name 'test_*.cul' | wc -l | tr -d ' ')
+        out=$(cul test --vm --reporter json examples kauai 2>&1 < /dev/null) || rc=$?
         if [[ "$rc" != 0 ]]; then
-            echo "culebra test: the examples/ sweep failed (rc $rc)" >&2
+            echo "culebra test: the examples/ and kauai/ sweep failed (rc $rc)" >&2
             printf '%s\n' "$out" | grep -E '"event":"(file_error|test_fail)"' | tail -20 >&2 || true
             printf '%s\n' "$out" | tail -3 >&2
             exit 1
         fi
         case "${out##*$'\n'}" in
             *'"files":'"$want"',"errored_files":0'*) ;;
-            *) echo "culebra test: the examples/ sweep ran the wrong file count (want $want)" >&2
+            *) echo "culebra test: the examples/ and kauai/ sweep ran the wrong file count (want $want)" >&2
                printf '%s\n' "$out" | tail -1 >&2; exit 1 ;;
         esac
         echo "examples sweep OK ($want suites)"
@@ -1709,7 +1710,7 @@ _run-tests BACKEND:
       "run_culebra_test_self|culebra-test self|binary|check,dev,test|light|-|0"
       "run_unit_runner_sweep sliced|culebra-test sweep (tests/*.cul as session units, twenty to a process)|binary|check|-|-|8"
       "run_unit_runner_sweep|culebra-test sweep (tests/*.cul as session units)|binary|dev,test|light|-|11"
-      "run_examples_sweep|examples sweep (the suites under examples/)|binary|check,dev,test|light|-|3"
+      "run_examples_sweep|examples sweep (the suites under examples/ and kauai/)|binary|check,dev,test|light|-|3"
       "run_isolate|isolate (jit + VM)|binary|dev,test|light|-|5"
       "run_aot_hygiene|AOT hygiene (CULEBRA_HOME, cache prune, TMPDIR, webview link)|binary|test|aot|-|6"
       "run_aot_sweep sample|AOT (== vm, every tenth file)|binary|test|-|local|25"
