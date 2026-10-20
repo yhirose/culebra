@@ -8998,7 +8998,7 @@ inspect(d.is_dir('img'))      # => true
 | --- | --- |
 | `Dir.disk(path: String \| Path) -> Dir` | the directory `path` on disk, read live; `IOError` when it is not a directory |
 | `Dir.memory(files: Object) -> Dir` | the files of `files`: one key per file, `"sub/name.txt"`, to its contents (a `String`, binary-safe) |
-| `Dir.embedded(name: String) -> Dir` | the directory `name` next to the entry script — baked into the executable by `culebra build` ([below](#embedded-assets)) |
+| `Dir.embedded(name: String) -> Dir` | the directory `name` next to the file that calls it — baked into the executable by `culebra build` ([below](#embedded-assets)) |
 | `Dir.zip(path: String \| Path = nil, *, bytes: String = nil) -> Dir` | the entries of a ZIP archive: the one in the file `path`, or the one held in `bytes` — give one of the two ([below](#zip-archives)) |
 
 `Dir.memory` takes a flat Object: a file in a subdirectory is a key with a
@@ -9142,8 +9142,9 @@ objects, so what it reads depends on the kind:
 `Dir.embedded(name)` resolves *per backend*, with no code change:
 
 - **Run from source** (VM / JIT): it reads the live on-disk directory `name`,
-  resolved relative to the entry script — so editing a file and running again
-  shows the change immediately (a real dev loop).
+  resolved relative to the file that calls `Dir.embedded` (the entry script,
+  or a module it imports, as `import` resolves a path) — so editing a file and
+  running again shows the change immediately (a real dev loop).
 - **`culebra build`** (AOT): the directory is walked at build time and its bytes
   are baked into the executable; the binary reads them with no external files.
   The build prints what it embedded (`embedded N file(s) (… bytes) from '…'`).
@@ -9167,6 +9168,11 @@ srv.get("/api/ping", fn (req) {
 })
 srv.listen(8080)
 ```
+
+A module reads the files beside it the same way, whichever program imports
+it and wherever that program is: an instrument kept as a folder, its
+`main.cul` beside the data it plays, reads `Dir.embedded("data")`, and a
+program built with it has that folder baked in too.
 
 `name` must be a string literal so the AOT build can find and bake it; a
 computed name still works from source but isn't embedded. How `srv.static`

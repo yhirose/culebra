@@ -6938,9 +6938,11 @@ let _dir_module = fn () {
     }
   }
 
-  # A directory next to the entry script, baked into the binary by
+  # A directory next to the file that names it, baked into the binary by
   # `culebra build` when `name` is a string literal; read live from disk
-  # otherwise. Only the name is held, so it crosses an Isolate as it is.
+  # otherwise. The name is held as the entry script's directory sees it (the
+  # loader rebases another module's: frontend/embed_paths.h), so it crosses
+  # an Isolate as it is.
   class EmbedDir {
     new(name) {
       _Dir.mark(self, 'embedded')
@@ -7047,6 +7049,13 @@ let _dir_module = fn () {
     },
     embedded: fn (name) {
       EmbedDir(name)
+    },
+    # What a `Dir.embedded(...)` whose name is not a literal becomes in a
+    # module other than the entry script, as the module is read: the
+    # directory `name` next to the module, which is at `module_dir` from the
+    # entry script's directory.
+    _embedded_in: fn (module_dir, name) {
+      EmbedDir(module_dir + '/' + _string_arg('Dir.embedded', name))
     },
     zip: fn (path = nil, *, bytes = nil) {
       ZipArchive(path, bytes)

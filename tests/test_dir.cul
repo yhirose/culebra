@@ -5,6 +5,8 @@
 # size, copy_to — runs from the trait). Same across the executor, --jit and
 # an AOT binary.
 
+import reader from './embed_module/reader.cul'
+
 let FILES = {
   'a.txt': 'alpha',
   'b-c.txt': 'bc',
@@ -234,6 +236,27 @@ assert_eq(
   "TypeError: type error: parameter 'path' expects StringLike",
 )
 assert_eq(caught(|| emb.exists()), "ArityError: missing required argument 'path'")
+
+# Dir.embedded names the directory next to the file that calls it, as import
+# names a module: tests/embed_module/reader.cul reads the data/ beside it,
+# wherever the program was started from, run from source or built.
+let HELLO = "beside the module\n"
+assert_eq(reader.data().read('hello.txt'), HELLO)
+assert_eq(reader.here().read('data/hello.txt'), HELLO)
+assert_eq(reader.up_and_back().read('hello.txt'), HELLO)
+assert_eq(reader.from_below().read('hello.txt'), HELLO)
+assert_eq(reader.by_keyword().read('hello.txt'), HELLO)
+# The entry script's own names are from its own directory.
+assert_eq(Dir.embedded('embed_module/data').read('hello.txt'), HELLO)
+# A name worked out when the module runs is from the module's directory too
+# (built, it is the directory reader.data() baked), however it is passed,
+assert_eq(reader.computed('da' + 'ta').read('hello.txt'), HELLO)
+assert_eq(reader.added().read('hello.txt'), HELLO)
+assert_eq(reader.interpolated('a').read('hello.txt'), HELLO)
+assert_eq(reader.splatted({name: 'data'}).read('hello.txt'), HELLO)
+# and fails as Dir.embedded fails.
+assert_eq(caught(|| reader.computed(5)), caught(|| Dir.embedded(5)))
+assert_eq(caught(|| reader.unnamed()), caught(|| Dir.embedded()))
 
 # --- Dir.zip ---
 # The same files, packed by Compress.zip: read from bytes, and from a file.

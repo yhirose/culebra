@@ -417,14 +417,19 @@ inline std::string& main_script_dir() {
   return s;
 }
 
-// The `Dir` behind `Dir.embedded(name)`: the baked asset table when this
-// binary was built with that directory embedded, else the live on-disk
-// directory — the choice that makes `Dir.embedded` resolve per backend with no
-// code change.
+// The `Dir` behind `Dir.embedded(name)` (`name` as the entry script's directory
+// sees it: the loader rebases every other module's names,
+// frontend/embed_paths.h): the baked asset table when this binary was built
+// with that directory embedded, else the live on-disk directory — the choice
+// that makes `Dir.embedded` resolve per backend with no code change.
 inline std::unique_ptr<Dir> open_embed_dir(const std::string& name) {
   auto& tables = _asset_tables();
   if (auto it = tables.find(name); it != tables.end())
     return std::make_unique<EmbeddedDir>(it->second.first, it->second.second);
+  // A module the entry script has no relative path to (another drive) names
+  // its directory from the root.
+  if (std::filesystem::path(name).is_absolute())
+    return std::make_unique<LiveDir>(name);
   std::string base = main_script_dir();
   if (!base.empty() && base.back() != '/') base += '/';
   base += name;

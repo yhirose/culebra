@@ -207,8 +207,8 @@ code is `0` when all tests pass, `1` when any fail.
 **Each file is its own program.** A file gets its own scope, and the
 runner runs that file's tests before it loads the next one. What a file
 writes at the top level is the file's — a `mut range = 5` leaves `range`
-a function everywhere else — and so are its classes, its overloads, its
-`Sys.script`, and the directory `Dir.embedded(...)` resolves against. A
+a function everywhere else — and so are its classes, its overloads and its
+`Sys.script`. A
 fixture declared in one file is not visible from another; pass it through
 a parameter, or declare it in each file that wants it. A file may
 `import`, and its modules run as one unit the way they do in a script.
@@ -1166,7 +1166,7 @@ culebra play --sounds sounds.cul ballad.kau # a song with `external` instruments
 | Option | Effect |
 |---|---|
 | `--check` | reads and checks the song, prints its length, and plays nothing; it needs no audio device |
-| `--sounds <file.cul>` | the module that makes the song's `external` sounds |
+| `--sounds <file.cul>` | the module that makes the song's `external` sounds; a folder names its `main.cul` |
 | `--watch` | reads the song and the module again, and plays from the top, whenever a `.kau` or `.cul` file changes in the song's folder or the module's |
 
 A song's mistake goes to stderr as `KauaiError: FILE:LINE: ...` and the
@@ -1184,6 +1184,12 @@ let voices = {ep: |pitch, params| Audio.Sound(electric_piano(pitch, params.brigh
 let drums = {kick: |params| Audio.Sound(kick())}
 export {voices, drums}
 ```
+
+An instrument that brings files of its own (the recordings it plays, say) is
+a folder: its `main.cul` is the module, and it reads the files beside it with
+`Dir.embedded`, which resolves from the file that calls it
+([stdlib §41](stdlib.md#embedded-assets)), so
+`culebra play --sounds path/to/instrument song.kau` plays it from anywhere.
 
 A song that names an external sound the module does not make, or any
 external sound when no module is given, is refused before anything plays.

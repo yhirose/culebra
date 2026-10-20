@@ -1054,8 +1054,9 @@ int run_build(const BuildOptions& opts) {
   // time; at runtime `open_embed_dir` finds the baked table and `srv.static` serves
   // from it instead of disk — so the binary needs no external asset files. Dirs
   // are resolved relative to the entry script (the same base the dev disk path
-  // uses). A non-literal `Dir.embedded(expr)` is skipped here and falls back to
-  // live disk at runtime.
+  // uses; the loader has rebased every other module's names onto it,
+  // frontend/embed_paths.h). A non-literal `Dir.embedded(expr)` is skipped here
+  // and falls back to live disk at runtime.
   std::string assets_obj;
   {
     std::vector<std::string> embed_dirs;
@@ -2610,7 +2611,8 @@ int run_play(int argc, const char** argv) {
                  "Usage: culebra play [options] <song.kau>\n"
                  "  --sounds <file.cul>  the module whose exports `voices` and `drums`\n"
                  "                       make the song's `external` sounds\n"
-                 "                       (Audio.Kauai.load's arguments of those names)\n"
+                 "                       (Audio.Kauai.load's arguments of those names);\n"
+                 "                       a folder names its main.cul\n"
                  "  --check              read and check the song, and play nothing\n"
                  "  --watch              read it again and play it from the top whenever\n"
                  "                       a .kau or .cul file changes in the song's folder\n"
@@ -2632,7 +2634,7 @@ int run_play(int argc, const char** argv) {
       sounds = arg.substr(9);
     } else if (arg == "--sounds") {
       if (i + 1 >= argc) {
-        std::println(stderr, "culebra play: --sounds needs a file");
+        std::println(stderr, "culebra play: --sounds needs a file or a folder");
         return 2;
       }
       sounds = argv[++i];
@@ -2669,6 +2671,10 @@ int run_play(int argc, const char** argv) {
   string program = "let sounds = nil";
   if (sounds) {
     std::error_code ec;
+    // An instrument that brings files of its own is a folder, its module
+    // the folder's main.cul (which names its files with `Dir.embedded`).
+    if (std::filesystem::is_directory(*sounds, ec))
+      sounds = (std::filesystem::path(*sounds) / "main.cul").string();
     if (!std::filesystem::is_regular_file(*sounds, ec)) {
       std::println(stderr, "culebra play: no sounds file '{}'", *sounds);
       return 2;

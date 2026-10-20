@@ -207,7 +207,7 @@ culebra test --doc --jit --jobs 8 docs  # ... を 8 プロセスで
 与えられ、ランナーは次のファイルを読み込む前にそのファイルのテストを走らせ
 ます。トップレベルに書いたものはそのファイルのもので（`mut range = 5`と
 書いても他のファイルでは`range`は関数のまま）、クラス・オーバーロード・
-`Sys.script`・`Dir.embedded(...)`が基準にするディレクトリも同様です。ある
+`Sys.script`も同様です。ある
 ファイルで宣言したフィクスチャは別のファイルからは見えません。パラメータ
 経由で渡すか、必要なファイルごとに宣言してください。`import`も使えて、
 スクリプトのときと同じくモジュール一式が1つの単位として走ります。
@@ -1082,7 +1082,7 @@ culebra play --sounds sounds.cul ballad.kau # 外部の楽器を使う曲
 | オプション | 効果 |
 |---|---|
 | `--check` | 曲を読んで検査し、長さを表示して、何も鳴らさない。音声デバイスは不要 |
-| `--sounds <file.cul>` | 曲の外部の楽器の音声を作るモジュール |
+| `--sounds <file.cul>` | 曲の外部の楽器の音声を作るモジュール。フォルダならその中の`main.cul` |
 | `--watch` | 曲のフォルダかモジュールのフォルダの`.kau`や`.cul`のファイルが変わるたびに、曲とモジュールを読み直して頭から鳴らす |
 
 曲の誤りは`KauaiError: FILE:LINE: ...`としてstderrに出て、終了ステータスは
@@ -1099,6 +1099,11 @@ let voices = {ep: |pitch, params| Audio.Sound(electric_piano(pitch, params.brigh
 let drums = {kick: |params| Audio.Sound(kick())}
 export {voices, drums}
 ```
+
+自分のファイル（鳴らす録音など）を伴う楽器はフォルダにします。その中の`main.cul`が
+モジュールで、隣のファイルを`Dir.embedded`で読みます。`Dir.embedded`は呼んだ
+ファイルを基準に解決するので（[stdlib §41](stdlib.ja.md#埋め込みアセット)）、
+`culebra play --sounds path/to/instrument song.kau`はどこからでもその楽器を鳴らせます。
 
 モジュールが作らない外部の楽器の音声を使う曲と、モジュールを指定せずに外部の
 楽器の音声を使う曲は、何も鳴らす前に断ります。

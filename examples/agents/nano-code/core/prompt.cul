@@ -2,22 +2,21 @@
 # workspace says about itself.
 #
 # Upstream finds the base beside its own source through `__dirname`, which its
-# own comment warns is undefined under ESM. `Dir.embedded` needs no path guess and
-# resolves per backend: run from source it reads the live file, and `culebra
-# build` bakes it into the executable — so a built agent still has its prompt
-# with no files to ship beside it.
+# own comment warns is undefined under ESM. `Dir.embedded('.')` names this
+# file's own directory, needs no path guess and resolves per backend: run from
+# source it reads the live file, and `culebra build` bakes it into the
+# executable — so a built agent still has its prompt with no files to ship
+# beside it.
 #
-# It does need an entry script to resolve against, and under `culebra test`
-# there is none (`Sys.script` is nil there). That is why reading the base and
-# composing the instructions are two functions: the composition — the part
-# with a decision in it — is reachable from a test, and `load_instructions` is
-# the one line that joins them.
+# Reading the base and composing the instructions are two functions: the
+# composition — the part with a decision in it — is tested with a base of the
+# test's own, and `load_instructions` is the one line that joins them.
 #
 # AGENTS.md is the other way round. It belongs to the workspace, changes while
 # the agent runs, and is optional, so it stays an ordinary read.
 
 fn base_instructions() {
-  Dir.embedded('core').read('prompt.md')
+  Dir.embedded('.').read('prompt.md')
 }
 
 fn with_project_instructions(base, workspace_root) {

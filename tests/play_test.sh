@@ -97,6 +97,17 @@ cat > "$TMP/voices_only.cul" <<'EOF'
 let voices = {ep: |pitch, params| nil}
 export {voices}
 EOF
+# An instrument that brings files of its own: a folder, its main.cul the
+# module, which reads what lies beside it (here, before it makes a sound).
+mkdir -p "$TMP/instrument"
+printf 'tines\n' > "$TMP/instrument/kind.txt"
+cat > "$TMP/instrument/main.cul" <<'EOF'
+let kind = Dir.embedded('.').read('kind.txt')
+let sound = || Audio.Sound(String.from_bytes([]))
+let voices = {ep: |pitch, params| kind == "tines\n" ? sound() : nil}
+let drums = {kick: |params| sound()}
+export {voices, drums}
+EOF
 
 for ENGINE in $ENGINES; do
 
@@ -137,6 +148,12 @@ check "$ENGINE external, sounds: stdout" "$TMP/external.kau: 0:04 once through" 
 check "$ENGINE external, sounds: stderr" "" "$err"
 run --check --sounds="$TMP/sounds.cul" "$TMP/external.kau"
 check "$ENGINE external, --sounds=: status" 0 "$rc"
+# A folder names its main.cul, which finds its own files from wherever the
+# player was started.
+run --check --sounds "$TMP/instrument" "$TMP/external.kau"
+check "$ENGINE external, a folder: status" 0 "$rc"
+check "$ENGINE external, a folder: stdout" "$TMP/external.kau: 0:04 once through" "$out"
+check "$ENGINE external, a folder: stderr" "" "$err"
 
 # A module that exports one of the two leaves the other empty, and the hint
 # is not repeated to someone who did name a module.
@@ -179,7 +196,7 @@ check "unknown option: status" 2 "$rc"
 check "unknown option: stderr" "culebra play: unknown option '--loud'" "$err"
 run "$TMP/duo.kau" --sounds
 check "sounds, no file: status" 2 "$rc"
-check "sounds, no file: stderr" "culebra play: --sounds needs a file" "$err"
+check "sounds, no file: stderr" "culebra play: --sounds needs a file or a folder" "$err"
 run --sounds "$TMP/absent.cul" "$TMP/duo.kau"
 check "absent sounds: status" 2 "$rc"
 check "absent sounds: stderr" "culebra play: no sounds file '$TMP/absent.cul'" "$err"

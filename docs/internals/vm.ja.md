@@ -96,7 +96,11 @@ includeし、他のどこからもincludeしない。
    読み取り（§10.6）、そのあと変換がASTに対して走る
    （`apply_transforms`）: effectsの変換（§11）と、generatorの検査
    （`yield`を書ける場所の検査、§5.7）である。
-   検査の結果は全モジュールを読み終えてから報告する。
+   検査の結果は全モジュールを読み終えてから報告する。エントリ以外の
+   モジュールでは、`Dir.embedded`に渡す名前をエントリスクリプトの
+   ディレクトリからのパスに書き換える（`frontend/embed_paths.h`）。
+   リテラルはリテラルのまま、計算した名前は`Dir._embedded_in(base, name)`
+   になるので、実行時もAOTの走査も、名前を解決する基準は1つで済む。
 2. **stdlib preambleを差し込む。** `splice_stdlib_preamble`がAST群の
    トークンをスキャンしてstdlib名（`Time`、`Regex`、`Path`、
    `assert_*`ファミリー、…）を探し、プログラムが名指ししている遅延

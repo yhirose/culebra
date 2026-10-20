@@ -1,0 +1,20 @@
+# A module that names directories next to itself with Dir.embedded, for
+# tests/test_dir.cul: data/ beside it, its own directory, a
+# way up and back, a module a level down naming the same data/ from there,
+# and names worked out when it runs, literals among them.
+
+import inner from './deeper/inner.cul'
+
+let data = || Dir.embedded('data')
+let here = || Dir.embedded('.')
+let up_and_back = || Dir.embedded('../embed_module/data')
+let from_below = || inner.data()
+let by_keyword = || Dir.embedded(name: 'data')
+let computed = |name| Dir.embedded(name)
+let added = || Dir.embedded('da' + 'ta')
+let interpolated = |a| Dir.embedded("d{a}ta")
+let splatted = |args| Dir.embedded(**args)
+let unnamed = || Dir.embedded()
+
+export {data, here, up_and_back, from_below, by_keyword}
+export {computed, added, interpolated, splatted, unnamed}

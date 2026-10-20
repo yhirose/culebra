@@ -97,7 +97,12 @@ includes them in a fixed order and nothing else includes them at all.
    checks are read off it as written (§10.6), and then the transforms
    run on the AST (`apply_transforms`): the effects lowering (§11), and
    the generator check, which holds a `yield` to where one may be written
-   (§5.7). The checks are reported once every module is read.
+   (§5.7). The checks are reported once every module is read. A module
+   other than the entry has the names it passes `Dir.embedded` rewritten
+   as paths from the entry script's directory (`frontend/embed_paths.h`):
+   a literal stays a literal, a computed name becomes
+   `Dir._embedded_in(base, name)`, so the runtime and the AOT scan resolve
+   every name from one directory.
 2. **Splice the stdlib preamble.** `splice_stdlib_preamble` scans the
    ASTs' tokens for stdlib names (`Time`, `Regex`, `Path`, the `assert_*`
    family, …) and prepends a synthesized `<stdlib>` module holding the

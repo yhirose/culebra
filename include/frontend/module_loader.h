@@ -11,6 +11,7 @@
 
 #include "frontend/effects_transform.h"
 #include "frontend/lint.h"
+#include "frontend/embed_paths.h"
 #include "frontend/parser.h"
 #include "base/shared.h"
 
@@ -105,6 +106,9 @@ class ModuleLoader {
   std::unordered_map<std::string, size_t> index_;  // abs path → loaded_ idx
   std::vector<LoadedModule> loaded_;               // in load (post-order)
   std::vector<std::filesystem::path> stack_;       // for cycle detection
+  // The entry script, whose directory every other module's `Dir.embedded`
+  // names are rebased onto (frontend/embed_paths.h).
+  std::filesystem::path entry_abs_;
 
   size_t load_recursive(const std::filesystem::path& abs_path,
                         std::optional<std::string_view> source,
@@ -135,6 +139,7 @@ inline std::vector<LoadedModule> ModuleLoader::load_program(
   std::error_code ec;
   auto entry_abs = std::filesystem::weakly_canonical(entry_path, ec);
   if (ec) entry_abs = std::filesystem::absolute(entry_path);
+  entry_abs_ = entry_abs;
   load_recursive(entry_abs, entry_source, parse_msgs);
   // Static lint pass: shared by interp / JIT / AOT (all backends share
   // this loader), so a sound diagnostic aborts before any of them eval.
@@ -190,6 +195,12 @@ inline size_t ModuleLoader::load_recursive(
   // The scope checks read the module as written, so before the lowerings.
   auto scope = lint::scope_diagnostics(*ast);
   ast = culebra::apply_transforms(ast, abs_path.string(), *src_buf);
+  // A module's `Dir.embedded` names the directory next to it, as its imports
+  // name modules next to it; the runtime and the build resolve a name from
+  // the entry script's directory.
+  if (abs_path != entry_abs_ && !is_library_path(abs_path.string()))
+    rebase_embedded_calls(
+        *ast, embed_base(abs_path.parent_path(), entry_abs_.parent_path()));
   validate_module(*ast);
   auto deps = extract_imports(*ast, abs_path.parent_path());
 

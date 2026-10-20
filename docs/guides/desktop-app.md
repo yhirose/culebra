@@ -65,7 +65,7 @@ Desktop.run({title: "My App", size: [720, 560], assets: Dir.embedded("dist")})
 ```
 
 `Dir.embedded("dist")` resolves *per backend* with no code change: run from
-source and it reads the live directory on disk next to the entry script (edit
+source and it reads the live directory on disk next to the file that calls it (edit
 `dist/index.html`, reload the window, see the change); `culebra build` walks
 the directory at build time and bakes its bytes into the executable instead.
 More on the second half in [§6](#6-shipping-one-binary). `assets:` takes any

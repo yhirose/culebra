@@ -1,0 +1,5 @@
+# A module a level below tests/embed_module/reader.cul, naming its data/.
+
+let data = || Dir.embedded('../data')
+
+export {data}

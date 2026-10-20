@@ -8635,7 +8635,7 @@ inspect(d.is_dir('img'))      # => true
 | --- | --- |
 | `Dir.disk(path: String \| Path) -> Dir` | ディスク上のディレクトリ`path`。その都度ディスクから読む。ディレクトリでなければ`IOError` |
 | `Dir.memory(files: Object) -> Dir` | `files`のファイル。キーは1ファイルにつき1つ（`"sub/name.txt"`）、値は中身（`String`、バイナリセーフ） |
-| `Dir.embedded(name: String) -> Dir` | エントリスクリプトの隣のディレクトリ`name`。`culebra build`が実行ファイルに焼き込む（[後述](#埋め込みアセット)） |
+| `Dir.embedded(name: String) -> Dir` | 呼んだファイルの隣のディレクトリ`name`。`culebra build`が実行ファイルに焼き込む（[後述](#埋め込みアセット)） |
 | `Dir.zip(path: String \| Path = nil, *, bytes: String = nil) -> Dir` | ZIPアーカイブのエントリ。ファイル`path`にあるもの、または`bytes`が持つもので、どちらか1つを渡す（[後述](#zipアーカイブ)） |
 
 `Dir.memory`に渡すObjectは平らにします。サブディレクトリのファイルは`/`を含む
@@ -8777,8 +8777,9 @@ srv.listen(8080)
 `Dir.embedded(name)`は**バックエンドごとに**（コード変更なしで）解決されます:
 
 - **ソース実行**（VM / JIT）: `name`のディスク上ディレクトリをライブに
-  読む（エントリスクリプト相対で解決）。ファイルを編集して実行し直せば即反映
-  ＝開発ループ。
+  読む（`Dir.embedded`を呼んだファイルからの相対で解決。エントリスクリプトでも、
+  それがimportするモジュールでも、`import`がパスを解決するのと同じ）。ファイルを
+  編集して実行し直せば即反映＝開発ループ。
 - **`culebra build`**（AOT）: ビルド時にディレクトリを走査してバイト列をバイナリ
   に焼き込み、外部ファイル無しで読む。焼き込んだ内容はビルドが表示する
   （`embedded N file(s) (… bytes) from '…'`）。
@@ -8802,6 +8803,11 @@ srv.get("/api/ping", fn (req) {
 })
 srv.listen(8080)
 ```
+
+モジュールも同じやり方で自分の隣のファイルを読める。どのプログラムがimportしても、
+そのプログラムがどこにあっても変わらない。フォルダにまとめた楽器なら、演奏する
+データの隣にある`main.cul`が`Dir.embedded("data")`を読み、それを使うプログラムを
+ビルドすればそのフォルダも焼き込まれる。
 
 `name`はAOTビルドが探して焼き込めるよう**文字列リテラル**であること（計算した
 名前はソース実行では動くが焼き込まれない）。`srv.static`での配信のされ方は
