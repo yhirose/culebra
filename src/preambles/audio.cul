@@ -332,11 +332,19 @@ let _audio_module = fn () {
   class Sound {
     new(data: String) {
       self._id = _Audio.sound_load(data)
+      self._data = data
     }
     # One from samples the program made: -1.0..1.0, mono, `rate` a second,
     # kept as 16 bits as a WAV file keeps them.
     new(samples: Array, rate: Long = 44100) {
-      self._id = _Audio.sound_samples(samples, rate)
+      let made = _Audio.sound_samples(samples, rate)
+      self._id = made[0]
+      self._data = made[1]
+    }
+    # The bytes it was made from: the WAV, MP3 or Ogg it was given, or the
+    # 16-bit WAV of the samples. Audio.Sound.new(s.data()) is the same sound.
+    data() {
+      self._data
     }
     play() {
       _Audio.sound_play(self._id)

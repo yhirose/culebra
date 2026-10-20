@@ -8620,6 +8620,7 @@ them a second, kept as 16 bits as a WAV file keeps them (a sample past
 | `sound.stop()` | stop the voice |
 | `sound.playing() -> Bool` | still audible? |
 | `sound.volume(v)` / `sound.pitch(p)` / `sound.pan(p)` | as above; they apply from the next `play` and to the voice now sounding |
+| `sound.data() -> String` | the bytes it was made from: the WAV, MP3 or Ogg it was given, or a 16-bit WAV of its samples; `Audio.Sound.new(s.data())` is the same sound again, and `FS.write("note.wav", s.data())` saves one a program made |
 
 Each `Sound` is one voice, and the decoded sample is freed with the last
 reference, which also stops it: keep the handle for as long as it should be

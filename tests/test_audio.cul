@@ -97,6 +97,14 @@ assert_true(near(_Audio.sound_loudness(Audio.Sound.new(wav16)._id), _Audio.loudn
 assert_true(_Audio.sound_loudness(Audio.Sound.new(WAV)._id) != nil)
 assert_eq(_Audio.sound_loudness(Audio.Sound.new(MP3)._id), nil)
 assert_eq(_Audio.sound_loudness(Audio.Sound.new([])._id), nil)
+// A Sound gives back the bytes it was made from: those it was given, or the
+// 16-bit WAV of its samples, which make the same sound again.
+assert_eq(Audio.Sound.new(WAV).data(), WAV)
+assert_eq(Audio.Sound.new(MP3).data(), MP3)
+assert_eq(Audio.Sound.new(tone).data(), wav16)
+assert_true(near(_Audio.sound_loudness(Audio.Sound.new(Audio.Sound.new(tone).data())._id), _Audio.loudness(tone, 44100)))
+assert_eq(Audio.Sound.new([0.25, -0.25], rate: 8000).data().slice(24, 28).to_string(), String.pack("u32", [8000]))
+assert_eq(Audio.Sound.new([]).data().size(), 44)
 assert_throws("TypeError", fn () {
   snd.volume("loud")
 })

@@ -1617,7 +1617,7 @@ inline constexpr CanonSig kCanonSigs_Audio_native[] = {
   {"_Audio", "", "resonate", kCanonParams_Audio_native + 78, 4, "Array", 4, 4, false, -1, -1, -1},
   {"_Audio", "", "pluck", kCanonParams_Audio_native + 82, 5, "Array", 5, 5, false, -1, -1, -1},
   {"_Audio", "", "partials", kCanonParams_Audio_native + 87, 9, "Array", 9, 9, false, -1, -1, -1},
-  {"_Audio", "", "sound_samples", kCanonParams_Audio_native + 96, 2, "Long", 2, 2, false, -1, -1, -1},
+  {"_Audio", "", "sound_samples", kCanonParams_Audio_native + 96, 2, "Array", 2, 2, false, -1, -1, -1},
   {"_Audio", "", "filter", kCanonParams_Audio_native + 98, 5, "Array", 5, 5, false, -1, -1, -1},
   {"_Audio", "", "envelope", kCanonParams_Audio_native + 103, 3, "Array", 3, 3, false, -1, -1, -1},
   {"_Audio", "", "mix", kCanonParams_Audio_native + 106, 3, "Array", 3, 3, false, -1, -1, -1},

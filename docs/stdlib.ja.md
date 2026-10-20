@@ -8280,6 +8280,7 @@ Ogg Vorbisの`String`。`FS.read`や`Dir`から、あるいはプログラムが
 | `sound.stop()` | 停止 |
 | `sound.playing() -> Bool` | まだ鳴っているか |
 | `sound.volume(v)` / `sound.pitch(p)` / `sound.pan(p)` | 上記の単位。次の`play`から、および鳴っている音にも効く |
+| `sound.data() -> String` | 作った元のバイト列。渡されたWAV・MP3・Oggそのもの、サンプルから作ったものはその16ビットWAV。`Audio.Sound.new(s.data())`で同じ音がもう1つ作れ、`FS.write("note.wav", s.data())`でプログラムが作った音を保存できる |
 
 各`Sound`は1ボイスで、デコード済みサンプルは最後の参照とともに解放され、
 そのとき音も止まる: 鳴らしたい間はハンドルを持ち続ける。3形式のどれでもない

@@ -5286,7 +5286,8 @@ inline int64_t _ns_audio_seed(double x, const char* what) {
   return static_cast<int64_t>(x);
 }
 // A Sound from samples goes to every backend as the WAV bytes of a file; no
-// samples is a silent handle, with nothing for a decoder to refuse.
+// samples is a silent handle, with nothing for a decoder to refuse. Answers
+// [handle, the WAV's bytes]: the Sound keeps the bytes as its data().
 inline JitValue _ns_audio_sound_samples(JitValue* a, int64_t) {
   namespace ad = culebra::_audio_detail;
   std::vector<double> xs;
@@ -5295,12 +5296,16 @@ inline JitValue _ns_audio_sound_samples(JitValue* a, int64_t) {
   if (!(rate >= 1 && rate <= INT32_MAX)) _ns_audio_fail("Audio.Sound: the rate is from 1 below 2^31");
   culebra::narrow_or_too_large(44 + 2 * static_cast<int64_t>(xs.size()), "Audio.Sound: the sound", 0, 0);
   int64_t id = ad::alloc_id();
+  auto wav = ad::wav16(xs.data(), xs.size(), static_cast<uint32_t>(rate));
   if (!xs.empty()) {
-    auto wav = ad::wav16(xs.data(), xs.size(), static_cast<uint32_t>(rate));
     ad::sound_load(id, wav.data(), static_cast<int64_t>(wav.size()), ".wav");
     _ns_audio_keep_loudness(id, xs.data(), xs.size(), static_cast<double>(rate));
   }
-  return _ns_adapt::v_long(id);
+  auto* r = culebra_runtime_array_new_reserved(2);
+  culebra_runtime_array_push(r, TAG_LONG, id);
+  auto bytes = _ns_adapt::str(std::string_view(reinterpret_cast<const char*>(wav.data()), wav.size()));
+  culebra_runtime_array_push(r, bytes.tag, bytes.data);
+  return _ns_adapt::v_array(r);
 }
 // How loud a tone of `freq` Hz is at vol 100 on a pulse at a half's duty, in
 // LUFS: what a Kauai song makes an external sound at vol 100 as loud as.
