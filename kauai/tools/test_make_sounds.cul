@@ -1,0 +1,174 @@
+import tool from './make_sounds_lib.cul'
+
+# Instruments of every kind, each a short beep: a voice given as a function
+# (a sound a pitch) and as a phrase instrument, a drum given as a function
+# (its one sound) and as a hit instrument.
+let INSTRUMENTS = "
+let hz = |p| 440.0 * 2.0 ** ((p - 69) / 12.0)
+let beep = |f, secs| Audio.Sound(iota(Math.round(secs * 8000)).map(|i| 0.3 * Math.sin(2.0 * Math.pi * f * i / 8000)), rate: 8000)
+let voices = \{
+  keys: |pitch, params| beep(hz(pitch), 0.2),
+  lead: \{phrase: |notes, params| beep(hz(notes[0].pitch), notes.map(|n| n.len).sum()), hears: ['len', 'level', 'next']},
+}
+let drums = \{
+  kick: |params| beep(60.0, 0.1),
+  snare: \{hit: |n, params| beep(200.0, 0.1), hears: ['level']},
+}
+export \{voices, drums}
+"
+
+# A song that uses a band of chip voices, and the band of the instruments
+# that `use` reads in its place.
+let SONG = "use 'band.kau'
+groove Walk \{
+  Keys   x - x -
+  Kick   x... x...
+  Snare  .... x...
+}
+song First \{
+  tempo 120
+  band Duo
+  groove Walk
+  melody in C5..B5
+  Verse
+}
+section Verse \{
+  C     c4 e g e
+  G     d4 g b g
+}
+"
+
+let CHIP_BAND = "band Duo \{
+  voice Lead  pulse     plays melody         vol 20
+  voice Keys  triangle  plays chords from C4  vol 20
+  drum Kick   noise 120  len 1  vol 20
+  drum Snare  noise 800  len 3  vol 13
+}
+"
+
+let BAND = "band Duo \{
+  voice Lead  external Lead  plays melody         vol 20
+  voice Keys  external Keys  plays chords from C4  poly  vol 20
+  drum Kick   external Kick   vol 20
+  drum Snare  external Snare  vol 13
+}
+"
+
+# The names in an index's table (`keys` is an instrument's name here, so not
+# the method).
+let names = fn (table) {
+  let ns = []
+  for n, _ in table {
+    ns.push(n)
+  }
+  ns.sorted()
+}
+
+# A directory of its own, with the song, both bands and the instruments.
+let scratch = fn () {
+  let dir = FS.join(FS.temp_dir(), "kauai-make-sounds-test-{UUID.v4()}")
+  FS.mkdir(dir)
+  FS.write(FS.join(dir, "first.kau"), SONG)
+  FS.write(FS.join(dir, "band.kau"), CHIP_BAND)
+  FS.write(FS.join(dir, "band_ext.kau"), BAND)
+  FS.write(FS.join(dir, "instruments.cul"), INSTRUMENTS)
+  dir
+}
+
+# The instruments themselves, for make() in this process.
+let hz = |p| 440.0 * 2.0 ** ((p - 69) / 12.0)
+let beep = |f, secs| Audio.Sound(
+  iota(Math.round(secs *
+    8000)).map(|i| 0.3 * Math.sin(2.0 * Math.pi * f * i / 8000)),
+  rate: 8000,
+)
+let SOUNDS = {
+  voices: {
+    keys: |pitch, params| beep(hz(pitch), 0.2),
+    lead: {
+      phrase: |notes, params| beep(
+        hz(notes[0].pitch),
+        notes.map(|n| n.len).sum(),
+      ),
+      hears: ['len', 'level', 'next'],
+    },
+  },
+  drums: {
+    kick: |params| beep(60.0, 0.1),
+    snare: {hit: |n, params| beep(200.0, 0.1), hears: ['level']},
+  },
+}
+
+@test
+fn every_sound_is_kept_and_indexed_by_what_kauai_handed() {
+  let dir = scratch()
+  defer {
+    FS.remove(dir, recursive: true)
+  }
+  let song = FS.join(dir, "first.kau")
+  let index = tool.make(
+    [song],
+    SOUNDS,
+    dir,
+    {name: "made", use: {"band.kau": "band_ext.kau"}},
+  )
+  assert_eq(names(index.voices), ["keys", "lead"])
+  assert_eq(names(index.drums), ["kick", "snare"])
+  # What an instrument given as an object hears; a function hears nothing.
+  assert_eq(index.voices.lead.hears, ['len', 'level', 'next'])
+  assert_eq(index.voices.keys.has("hears"), false)
+  # Each sound is the file the index names, the bytes the instrument made.
+  for kind, instruments in index {
+    for ins, it in instruments {
+      for key, file in it.sounds {
+        let bytes = FS.read(FS.join(dir, file))
+        assert_true(bytes.starts_with("RIFF"))
+        assert_true(file.starts_with("made/{ins}_"))
+      }
+    }
+  }
+  # Keyed by the JSON of what Kauai handed the instrument: the lead's phrases
+  # are its notes, the melody in C5..B5.
+  for key, _ in index.voices.lead.sounds {
+    let (notes, params) = JSON.parse(key)
+    assert_true(notes.all(|n| n.pitch >= 72 && n.pitch <= 83))
+  }
+  # Packed, the same sounds one after another in made.bin.
+  let packed = tool.make(
+    [song],
+    SOUNDS,
+    dir,
+    {name: "packed", use: {"band.kau": "band_ext.kau"}, pack: true},
+  )
+  let bin = FS.read(FS.join(dir, "packed.bin"))
+  for key, at in packed.voices.lead.sounds {
+    assert_eq(
+      bin.slice(at[0], at[0] + at[1]).to_string(),
+      FS.read(FS.join(dir, index.voices.lead.sounds[key])),
+    )
+  }
+}
+
+@test
+fn the_command_takes_an_instrument_module_by_its_path() {
+  let dir = scratch()
+  defer {
+    FS.remove(dir, recursive: true)
+  }
+  let r = Proc.run([
+    Sys.executable,
+    "--vm",
+    FS.join(FS.dirname(FS.abspath(Sys.script)), "make_sounds.cul"),
+    "--sounds",
+    FS.join(dir, "instruments.cul"),
+    "--out",
+    dir,
+    "--use",
+    "band.kau=band_ext.kau",
+    FS.join(dir, "first.kau"),
+  ])
+  assert_eq((r.code, r.stderr), (0, ""))
+  let index = JSON.parse(FS.read(FS.join(dir, "sounds.json")))
+  assert_eq(names(index.voices), ["keys", "lead"])
+  assert_eq(names(index.drums), ["kick", "snare"])
+}

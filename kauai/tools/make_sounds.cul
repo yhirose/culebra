@@ -1,0 +1,123 @@
+# Make every sound Kauai songs ask an instrument module for, beforehand, as
+# files and an index of them (make_sounds_lib.cul says what is in it).
+#
+#   culebra kauai/tools/make_sounds.cul --sounds kauai/sounds/soprano_sax \
+#     --out assets --name sax --use run.kau=run_sax.kau --ogg --pack \
+#     assets/cruise.kau assets/sprint.kau
+#
+# The module is a .cul file, or a folder whose main.cul it is, as for
+# `culebra play --sounds`. An import names its module when the program is
+# written, so this writes a program that imports the one given and runs it.
+
+let SPEC = {
+  name: 'make_sounds.cul',
+  args: [
+    {
+      name: 'sounds',
+      type: 'String',
+      default: nil,
+      doc: 'the instrument module: a .cul file, or a folder and its main.cul',
+    },
+    {
+      name: 'out',
+      type: 'String',
+      default: nil,
+      doc: 'the directory the index and the sounds go in',
+    },
+    {
+      name: 'name',
+      type: 'String',
+      default: 'sounds',
+      doc: 'the name of the index (NAME.json) and of what holds the sounds',
+    },
+    {
+      name: 'use',
+      type: 'String',
+      default: [],
+      repeated: true,
+      doc: 'FILE=OTHER: where the songs use FILE, read OTHER beside it',
+    },
+    {
+      name: 'ogg',
+      type: 'Bool',
+      default: false,
+      doc: 'keep the sounds as Ogg Vorbis (by ffmpeg), but the ones Kauai weighs by',
+    },
+    {
+      name: 'quality',
+      type: 'Long',
+      default: 5,
+      doc: "ffmpeg's Vorbis quality, 0 to 10",
+    },
+    {
+      name: 'pack',
+      type: 'Bool',
+      default: false,
+      doc: 'all the sounds in one file, NAME.bin',
+    },
+    {
+      name: 'songs',
+      type: 'String',
+      positional: true,
+      repeated: true,
+      doc: 'the .kau files',
+    },
+  ],
+}
+let args = Args.parse(Sys.argv, SPEC)
+for need in ['sounds', 'out'] {
+  if args[need] == nil {
+    IO.eprintln("make_sounds: --{need} is needed (--help says what each is)")
+    Sys.exit(2)
+  }
+}
+
+let absolute = |p| FS.abspath(p)
+let module = FS.is_dir(args.sounds)
+  ? FS.join(args.sounds, "main.cul")
+  : args.sounds
+if !FS.exists(module) {
+  IO.eprintln("make_sounds: no instrument module {module}")
+  Sys.exit(2)
+}
+let use = args.use.map(fn (u) {
+  let at = u.index_of("=")
+  if at <= 0 {
+    IO.eprintln("make_sounds: --use is FILE=OTHER, not {u}")
+    Sys.exit(2)
+  }
+  (u.slice(0, at).to_string(), u.slice(at + 1, u.size()).to_string())
+}).to_object()
+let opts = {
+  name: args.name,
+  use: use,
+  ogg: args.ogg,
+  quality: args.quality,
+  pack: args.pack,
+}
+
+# The program: the module and this tool's library imported, and the call,
+# as JSON, its argument.
+let lib = FS.join(FS.dirname(absolute(Sys.script)), "make_sounds_lib.cul")
+for path in [absolute(module), lib] {
+  if path.contains("'") {
+    IO.eprintln("make_sounds: a path with a ' in it cannot be imported: {path}")
+    Sys.exit(2)
+  }
+}
+let program = "import sounds from '{absolute(module)}'\nimport lib from '{lib}'\nlib.run(sounds, Sys.argv[0])\n"
+let call = JSON.stringify({
+  songs: args.songs.map(absolute),
+  out: absolute(args.out),
+  opts: opts,
+})
+FS.mkdir(args.out) if !FS.exists(args.out)
+let entry = FS.join(FS.temp_dir(), "kauai-make-sounds-{UUID.v4()}.cul")
+FS.write(entry, program)
+# On the VM: an instrument that makes its sounds slowly is a large program,
+# and the JIT would spend longer compiling it than the VM takes to run it.
+let r = Proc.run([Sys.executable, "--vm", entry, call])
+FS.remove(entry)
+IO.print(r.stdout)
+IO.eprint(r.stderr)
+Sys.exit(r.code)

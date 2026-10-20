@@ -1,0 +1,256 @@
+# Every sound Kauai songs ask their external instruments for, made beforehand
+# and kept as files, with an index a program looks each one up in when it
+# plays the songs: an instrument slow to make its sounds (one played from
+# recorded notes, say) then plays at once, and in a browser. make_sounds.cul
+# is the command; README.md says how a program plays what it makes.
+#
+# The index (NAME.json) holds, under `voices` and `drums`, each instrument
+# the songs asked: what it hears (one given as `{phrase:}` or `{hit:}`) and
+# its sounds, keyed by the JSON of what Kauai handed it ([notes, params],
+# [pitch, params], [n, params] or [params]), each the file beside the index
+# that holds it (NAME/<instrument>_<n>.wav, .ogg, ...) or, packed, where its
+# bytes are in NAME.bin ([offset, size]).
+#
+# Kauai weighs an instrument by one sound before it plays (a voice's note at
+# the middle of the pitches the voice plays, at mf, a second long; a drum's
+# hit at mf) and reads the loudness of a WAV on every backend, of an Ogg or an
+# MP3 on none. That sound is kept as the WAV it is, so the songs play their
+# made sounds as loud as the instrument's own.
+
+# What a sound's bytes are, by their first ones.
+let kind_of = fn (bytes) {
+  cond {
+    bytes.starts_with("RIFF") => "wav",
+    bytes.starts_with("OggS") => "ogg",
+    _ => "mp3",
+  }
+}
+
+# Whether Kauai could weigh an instrument by the sound it asked for with
+# `args`: a drum's at mf (a function drum's one sound), a voice's one note a
+# second long at mf and at `middles`, the middle pitches of the song's voices.
+let weighs_by = fn (drum, call, args, middles) {
+  return true if drum && call == nil
+  if drum {
+    let n = args[0]
+    return n.get("level", 1.0) == 1.0 &&
+      n.get("marks", []).empty() &&
+      n.get("next", nil) == nil
+  }
+  return middles.contains(args[0]) if call == nil
+  let notes = args[0]
+  return false if notes.size() != 1
+  let n = notes[0]
+  n.at == 0.0 &&
+    middles.contains(n.pitch) &&
+    n.get("len", 1.0) == 1.0 &&
+    n.get("level", 1.0) == 1.0 &&
+    n.get("level_end", 1.0) == 1.0 &&
+    n.get("marks", []).empty() &&
+    n.get("next", nil) == nil
+}
+
+# A WAV's bytes encoded as Ogg Vorbis by ffmpeg, the same for the same sound
+# every time.
+let to_ogg = fn (wav, quality) {
+  let base = FS.join(FS.temp_dir(), "kauai-make-sounds-{UUID.v4()}")
+  let src = "{base}.wav"
+  let dst = "{base}.ogg"
+  FS.write(src, wav)
+  defer {
+    FS.remove(src) if FS.exists(src)
+    FS.remove(dst) if FS.exists(dst)
+  }
+  let r = Proc.run([
+    "ffmpeg",
+    "-v",
+    "error",
+    "-y",
+    "-i",
+    src,
+    "-c:a",
+    "libvorbis",
+    "-q:a",
+    "{quality}",
+    "-map_metadata",
+    "-1",
+    "-fflags",
+    "+bitexact",
+    "-flags:a",
+    "+bitexact",
+    dst,
+  ])
+  if r.code != 0 {
+    throw "make_sounds: ffmpeg could not encode a sound as Ogg: {r.stderr.strip()}"
+  }
+  FS.read(dst)
+}
+
+# The middle pitch of each voice of a song, as Kauai weighs its instrument.
+let middles_of = fn (song) {
+  let events = song.events().filter(|e| e.pitch != nil)
+  let voices = Set()
+  for e in events {
+    voices.add(e.by)
+  }
+  let middles = Set()
+  for by in voices {
+    let ps = events.filter(|e| e.by == by).map(|e| e.pitch).sorted()
+    middles.add(ps[ps.size() / 2])
+  }
+  middles
+}
+
+# Make the sounds `songs` (paths of .kau files) ask the instruments of
+# `sounds` (an instrument module's exports, `voices` and `drums`) for, into
+# directory `out`. `opts`: `name`, of the index and of what holds the sounds
+# ("sounds"); `use`, {file: other}, a file the songs use read from another
+# beside it (a band with an external lead in place of the one they name);
+# `ogg`, keep them (but for the WAVs Kauai weighs by) as Ogg Vorbis at
+# `quality` (5) by ffmpeg; `pack`, all in NAME.bin. Writes NAME.json and
+# answers it.
+fn make(songs, sounds, out, opts = {}) {
+  let name = opts.get("name", "sounds")
+  let use = opts.get("use", {})
+  let ogg = opts.get("ogg", false)
+  let quality = opts.get("quality", 5)
+  let pack = opts.get("pack", false)
+  # Each instrument, by "kind:name" (a name may be an Object method's, `keys`
+  # say, and no method's has a colon in it): its kind and name, what it
+  # hears, how Kauai calls it, and the sounds it made, {bytes, args, weighs},
+  # by key (the JSON of what it was handed).
+  let made = {}
+  let order = []
+  # The keys the song being made asked each instrument for.
+  mut asked = {}
+  let keep = fn (id, args, make_one) {
+    let key = JSON.stringify(args)
+    asked[id] = [...asked.get(id, []), key]
+    let have = made[id].sounds.get(key, nil)
+    return Audio.Sound.new(have.bytes) if have != nil
+    let sound = make_one()
+    made[id].sounds[key] = {bytes: sound.data(), args: args, mut weighs: false}
+    order.push({id: id, key: key})
+    sound
+  }
+  let wrap = fn (kind, ins, f) {
+    let id = "{kind}:{ins}"
+    let drum = kind == "drums"
+    let call = type_of(f) == "Function" ? nil : drum ? "hit" : "phrase"
+    made[id] = {
+      kind: kind,
+      ins: ins,
+      hears: call == nil ? nil : f.get("hears", []),
+      call: call,
+      sounds: {},
+    }
+    cond {
+      call == nil && drum => |params| keep(id, [params], || f(params)),
+      call ==
+        nil => |pitch, params| keep(id, [pitch, params], || f(pitch, params)),
+      drum => {
+        ...f,
+        hit: |n, params| keep(id, [n, params], || f.hit(n, params)),
+      },
+      _ => {
+        ...f,
+        phrase: |notes, params| keep(
+          id,
+          [notes, params],
+          || f.phrase(notes, params),
+        ),
+      },
+    }
+  }
+  let wrapped = fn (kind, table) {
+    let out_table = {}
+    for ins, f in table ?? {} {
+      out_table[ins] = wrap(kind, ins, f)
+    }
+    out_table
+  }
+  let voices = wrapped("voices", sounds.voices)
+  let drums = wrapped("drums", sounds.drums)
+  for path in songs {
+    let disk = Dir.disk(FS.dirname(path))
+    let file = |n| use.get(n, n)
+    let dir = {exists: |n| disk.exists(file(n)), read: |n| disk.read(file(n))}
+    asked = {}
+    let song = Audio.Kauai.load(
+      FS.basename(path),
+      voices: voices,
+      drums: drums,
+      dir: dir,
+    )
+    while song.prepare() > 0 {
+    }
+    # Each instrument the song asked: the sound Kauai weighs it by.
+    let middles = middles_of(song)
+    for id, keys in asked {
+      let it = made[id]
+      let weighed = keys.filter(|k| weighs_by(
+        it.kind == "drums",
+        it.call,
+        it.sounds[k].args,
+        middles,
+      ))
+      if weighed.empty() {
+        throw "make_sounds: {path}: none of the sounds Kauai asked {it.ins} for is the one the Kauai docs say it weighs an instrument by, so the sounds made would not play as loud as the instrument's own"
+      }
+      for k in weighed {
+        it.sounds[k].weighs = true
+      }
+    }
+  }
+  # The files, and the index: built by subscript, which reads and writes an
+  # Object's own entries only.
+  let index = {}
+  let blob = []
+  mut at = 0
+  let folder = FS.join(out, name)
+  FS.remove(folder, recursive: true) if !pack && FS.exists(folder)
+  FS.mkdir(folder) if !pack
+  let counts = {}
+  for o in order {
+    let it = made[o.id]
+    let s = it.sounds[o.key]
+    let bytes = ogg && !s.weighs && kind_of(s.bytes) == "wav"
+      ? to_ogg(s.bytes, quality)
+      : s.bytes
+    let n = counts.get(o.id, 0)
+    counts[o.id] = n + 1
+    let entry = if pack {
+      blob.push(bytes)
+      at += bytes.size()
+      [at - bytes.size(), bytes.size()]
+    } else {
+      let rel = "{name}/{it.ins}_{n}.{kind_of(bytes)}"
+      FS.write(FS.join(out, rel), bytes)
+      rel
+    }
+    if n == 0 {
+      index[it.kind] = index.get(it.kind, {})
+      index[it.kind][it.ins] = it.hears == nil
+        ? {sounds: {}}
+        : {hears: it.hears, sounds: {}}
+    }
+    index[it.kind][it.ins].sounds[o.key] = entry
+  }
+  FS.write(FS.join(out, "{name}.bin"), blob.join("")) if pack
+  FS.write(FS.join(out, "{name}.json"), JSON.stringify(index) + "\n")
+  index
+}
+
+# make() for make_sounds.cul: `call` is the JSON of {songs, out, opts}; says
+# how many sounds each instrument has.
+fn run(sounds, call) {
+  let c = JSON.parse(call)
+  let index = make(c.songs, sounds, c.out, c.opts)
+  for kind, instruments in index {
+    for ins, it in instruments {
+      println("{kind} {ins}: {it.sounds.size()} sounds")
+    }
+  }
+}
+
+export {make, run}

@@ -197,5 +197,8 @@ languages.samples 130
 # kauai/sounds/soprano_sax/test_soprano_sax.cul (the instrument loads its data
 # from beside it, voices a phrase, and plays a song through Kauai). 32 since
 # examples/games/retro-run/test_sax_tunes.cul (every phrase the laps'
-# saxophone plays is made, under what Kauai hands an instrument today).
-examples.suites 32
+# saxophone plays is made, under what Kauai hands an instrument today). 33
+# since kauai/tools/test_make_sounds.cul (every sound songs ask an instrument
+# of each kind for is kept and indexed, and the one Kauai weighs it by is
+# found).
+examples.suites 33
