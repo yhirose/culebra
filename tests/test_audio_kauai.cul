@@ -120,6 +120,31 @@ assert_eq(notes(combo, "Kick").map(|n| n[0]), [0.0, 1.0, 4.0])
 assert_eq(notes(combo, "Hat").map(|n| n[0]), [4.5, 5.5])
 assert_eq(notes(combo, "Echo"), [(0.25, 2.0, 72, 5.0)])
 
+# A voice plays the melody octaves from where it is written, and what echoes
+# or harmonizes it follows.
+let at_octaves = fn (how) {
+  let song = Audio.Kauai.new(lines([
+    'band Trio {',
+    "  voice Lead   pulse     plays melody {how}  vol 20",
+    '  voice Echo   pulse2                     vol 10',
+    '  voice Under  triangle                   vol 10',
+    '  Echo echoes Lead  late 1/8  level 50%',
+    '  Under harmonizes Lead  under m3',
+    '}',
+    'song Trio {', '  tempo 120', '  band Trio', '  melody in C5..B5', '  Tune with echo', '  Tune with harmony', '}',
+    'section Tune {',
+    "  C  c4 \{d}e g c'",
+    '}',
+  ]))
+  ["Lead", "Echo", "Under"].map(|by| notes(song, by))
+}
+let written = at_octaves('')
+let moved = |by| written.map(|ns| ns.map(|n| (n[0], n[1], n[2] + by, n[3])))
+assert_eq(written[0].map(|n| n[2]), [72, 74, 76, 79, 84, 72, 74, 76, 79, 84])
+assert_eq(at_octaves('octave down'), moved(-12))
+assert_eq(at_octaves('octave up'), moved(12))
+assert_eq(at_octaves('2 octaves down'), moved(-24))
+
 # Mistakes are found before anything plays, and name their line.
 let error_of = fn (text) {
   try {
@@ -140,6 +165,12 @@ let band_error = |line| error_of(lines(['band B {', line, '}', 'song S {', '  te
 assert_eq(band_error('  voice V pulse plays melody'), ("KauaiError", "line 2: a voice needs its vol: vol 20"))
 assert_eq(band_error('  voice V noise plays melody vol 10'),
   ("KauaiError", "line 2: a voice plays on pulse, pulse2, triangle or saw, or an external instrument; not noise"))
+let octave_error = |how| band_error("  voice V pulse plays melody {how} vol 10")
+let OCTAVES = "line 2: a voice plays the melody as written, an `octave up` or `down`, or `2 octaves up` or `down`"
+assert_eq(octave_error('octave sideways'), ("KauaiError", "{OCTAVES}: octave sideways"))
+assert_eq(octave_error('1 octaves down'), ("KauaiError", "{OCTAVES}: 1 octaves down"))
+assert_eq(octave_error('octaves down'), ("KauaiError", "{OCTAVES}: octaves down"))
+assert_eq(octave_error('loud'), ("KauaiError", "{OCTAVES}: loud"))
 assert_eq(error_of(lines(['band B {', '  voice V pulse plays melody vol 10', '  voice W pulse vol 10', '}'])),
   ("KauaiError", "line 3: W and V both play on pulse"))
 assert_eq(error_of(lines([DUO, 'song S {', '  tempo 100', '  band Duo', '  melody in C5..B5', '  V with echo', '}', 'section V {', '  C  c1', '}'])),

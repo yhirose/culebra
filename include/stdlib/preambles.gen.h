@@ -2536,6 +2536,22 @@ let _kauai_module = fn () {
     words.filter(|x| x.contains("=")).map(|x| param_of(x, line)).to_object()
   }
 
+  # How many octaves from where it is written a voice plays the melody, from
+  # the words after `plays melody`: none, `octave up` or `down`, or `N
+  # octaves up` or `down` for N of 2 or more.
+  fn melody_octaves(w, line) {
+    let way = {up: 1, down: -1}
+    let many = w.size() == 3 && all_of(w[0], "0123456789") && to_long(w[0]) >= 2
+    let n = cond {
+      w.empty() => 0,
+      w.size() == 2 && w[0] == "octave" && way.has(w[1]) => way[w[1]],
+      many && w[1] == "octaves" && way.has(w[2]) => to_long(w[0]) * way[w[2]],
+      _ => nil,
+    }
+    fail(line, "a voice plays the melody as written, an `octave up` or `down`, or `2 octaves up` or `down`: {w.join(" ")}") if n == nil
+    n
+  }
+
   fn parse_voice(words, line) {
     let name = name_at(words, 1, line, "a voice")
     let external = words[2] == "external"
@@ -2589,7 +2605,10 @@ let _kauai_module = fn () {
     let plays = o.get("plays", nil) ?? ["nothing"]
     match plays[0] {
       "nothing" => nil,
-      "melody" => v.role = "melody",
+      "melody" => {
+        v.role = "melody"
+        v.octaves = melody_octaves(plays.slice(1, plays.size()), line)
+      },
       "roots" => {
         fail(line, "`plays roots in LO..HI`") if plays.size() != 3 || plays[1] != "in"
         v.role = "bass"
@@ -3190,6 +3209,9 @@ let _kauai_module = fn () {
     let bass_v = role("bass") ?? {name: nil}
     let chord_v = role("chords") ?? {name: nil}
     let melody_v = role("melody") ?? fail(song.line, "no voice of {band.name} plays melody")
+    # The melody's voice sounds it octaves from where it is written (`plays
+    # melody octave down`), so what echoes or harmonizes it does too.
+    let octave_shift = 12 * melody_v.octaves
     let singers = voices.values().filter(|v| v.role == "melody").map(|v| v.name).collect()
     fail(song.line, "one voice of {band.name} plays melody, not {singers.join(" and ")}") if singers.size() > 1
     # The voices that play a derived part, which follow the melody's voice.
@@ -3250,7 +3272,7 @@ let _kauai_module = fn () {
           if bars.empty() {
             # At the very start the song begins with the pickup: a bar of its
             # own length, before the first, that the band does not play in.
-            write_melody(events, low_of(pk), shift, pk.line, 0, tempos, song_tempo, voice_state)
+            write_melody(events, low_of(pk), shift + octave_shift, pk.line, 0, tempos, song_tempo, voice_state)
             bars.push({lead_in: true, at: 0, len: len, beats: 0, beat: into.beat, chords: [nil], parts: {}, line: pk.line, first: false, last: false, swing: nil})
             pos = len
           } else {
@@ -3258,7 +3280,7 @@ let _kauai_module = fn () {
             fail(pk.line, "the pickup is longer than the bar before it") if len > before.len
             let from_at = pos - len
             fail(pk.line, "the bar before the pickup has to rest where the pickup plays") if !rests(from_at, len) || !voice_state.ties.empty()
-            write_melody(events, low_of(pk), shift, pk.line, from_at, tempos, song_tempo, voice_state)
+            write_melody(events, low_of(pk), shift + octave_shift, pk.line, from_at, tempos, song_tempo, voice_state)
           }
         }
         for i, written_bar in rows.enumerate() {
@@ -3276,7 +3298,7 @@ let _kauai_module = fn () {
           if len != blen {
             fail(r.line, "the bar is {len * 1.0 / m.beat} beats long, want {m.beats}")
           }
-          write_melody(events, low_of(r), n, r.line, base, tempos, song_tempo, voice_state)
+          write_melody(events, low_of(r), n + octave_shift, r.line, base, tempos, song_tempo, voice_state)
           for pname, pt in r.parts {
             if !part_states.has(pname) {
               part_states[pname] = fresh_state()

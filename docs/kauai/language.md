@@ -218,6 +218,7 @@ a time, and two voices of a band may not share one; the drums take the
 | Words | The voice plays |
 |---|---|
 | `plays melody` | the sections' melody; exactly one voice of a band plays it |
+| `plays melody octave down` | the melody an octave below where it is written; `octave up`, and `2 octaves down` or `up` and so on, likewise |
 | `plays roots in LO..HI` | a bass line in chord degrees ([Bass rows](#bass-rows)); `LO..HI` is one octave, where each chord's bass note is placed |
 | `plays chords from NOTE` | places in the chord ([Chord rows](#chord-rows)), voiced from `NOTE` up; `plays chords rootless from NOTE` leaves out the root |
 | `plays part NAME...` | the parts named (one or more: `plays part Upper Lower`) where a section writes them ([Parts](#parts)), instead of its groove row in those bars; it may come with another `plays` |
@@ -256,7 +257,9 @@ song chooses which one plays, section by section ([section 8](#8-songs)).
 
 Intervals are written `m2 M2 m3 M3 P4 TT P5 m6 M6 m7 M7 P8`. An echo reads
 its source across section boundaries, and in a looping song the song's first
-notes echo its last.
+notes echo its last. A part follows its source as it sounds: when the
+melody's voice plays it an octave down, its echo and its harmony are an
+octave down too.
 
 ### Drums
 
@@ -928,7 +931,7 @@ under.
 - a groove row with a bar of no tokens, or of tokens that come to no note value (15 in 4/4)
 - two noise drums hitting at the same moment, or two voices of a band on one channel
 - an external voice with an `env`, a `gap` or a `duty`; an external drum without a sound, with a `len` or an `env`, or with a `choke` of other than one name; a `choke` on a noise drum; a voice's or a drum's `vol` written as a percentage
-- no voice that plays melody, or more than one
+- no voice that plays melody, or more than one; `plays melody` followed by other than `octave up` or `down`, or `N octaves up` or `down` for N of 2 or more
 - a range that is not one octave, or that starts on a sharp or a flat
 - a `meter` whose beat is not a note value (`3/5`)
 - `>` or `<` before `N.C.`
@@ -1193,8 +1196,9 @@ Source     <- 'pulse' / 'pulse2' / 'triangle' / 'saw' / 'external' Name Param*
 Param      <- Word '=' Number
 VoiceWord  <- 'plays' Plays / 'duty' Ratio / 'vol' Int / 'env' Int Int Int
             / 'gap' Int / 'poly'
-Plays      <- 'melody' / 'roots' 'in' Range / 'chords' 'rootless'? 'from' Pitch
+Plays      <- 'melody' Octaves? / 'roots' 'in' Range / 'chords' 'rootless'? 'from' Pitch
             / 'part' Name+
+Octaves    <- ('octave' / Int 'octaves') ('up' / 'down')   # Int: 2 or more
 Derived    <- Name 'echoes' Name 'late' Ratio 'level' Percent EOL
             / Name 'harmonizes' Name 'under' Interval EOL
 Drum       <- 'drum' Name ('noise' Int ('->' Int)? 'len' Int 'vol' Int

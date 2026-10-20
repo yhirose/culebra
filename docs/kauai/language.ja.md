@@ -215,6 +215,7 @@ band Run {
 | 書き方 | その楽器が弾くもの |
 |---|---|
 | `plays melody` | sectionのメロディ。bandの中でちょうど1つの楽器に指定する |
+| `plays melody octave down` | メロディを、書かれた高さより1オクターブ下で弾く。`octave up`、`2 octaves down`や`up`なども同じように書ける |
 | `plays roots in LO..HI` | コードの度数で書いたベースライン（[ベースの行](#ベースの行)）。`LO..HI`は、各コードのベース音を置く1オクターブの範囲 |
 | `plays chords from NOTE` | コードの構成音を、下から何番目かで指定したもの（[和音の行](#和音の行)）。和音は`NOTE`から上に積む。`plays chords rootless from NOTE`はルートを省く |
 | `plays part NAME...` | sectionに書いたパート。名前は複数書ける（`plays part Upper Lower`、[パート](#パート)）。パートのある小節では、grooveの行の代わりにパートを弾く。ほかの`plays`と併用できる |
@@ -254,7 +255,8 @@ sectionごとに選びます（[8章](#8-曲)）。
 
 音程は`m2 M2 m3 M3 P4 TT P5 m6 M6 m7 M7 P8`で書きます。echoはsectionの境界を
 またいで元の音を追います。ループする曲では、曲の頭のechoが曲の終わりの音を
-鳴らします。
+鳴らします。派生パートは元の楽器が実際に鳴らす高さに従います。メロディの楽器が
+1オクターブ下で弾くなら、そのechoもharmonyも1オクターブ下になります。
 
 ### ドラム
 
@@ -926,7 +928,7 @@ section Bridge {
 - トークンのない小節や、トークンの長さが音価にならない小節（4/4で15個）を含むgrooveの行
 - 同時に鳴るnoiseのドラム2つ。同じチャンネルを使う1つのbandの楽器2つ
 - `env`、`gap`、`duty`が付いた外部の楽器。音声の名前がない、`len`や`env`が付いている、または`choke`に名前が1つでない外部のドラム。noiseのドラムの`choke`。百分率で書いた楽器やドラムの`vol`
-- メロディを弾く楽器がない、または2つ以上ある
+- メロディを弾く楽器がない、または2つ以上ある。`plays melody`の後ろが`octave up`や`down`、`N octaves up`や`down`（Nは2以上）以外
 - 1オクターブでない範囲。シャープやフラットの付いた音から始まる範囲
 - 1拍が音価にならない`meter`（`3/5`）
 - `N.C.`の前にある`>`や`<`
@@ -1186,8 +1188,9 @@ Source     <- 'pulse' / 'pulse2' / 'triangle' / 'saw' / 'external' Name Param*
 Param      <- Word '=' Number
 VoiceWord  <- 'plays' Plays / 'duty' Ratio / 'vol' Int / 'env' Int Int Int
             / 'gap' Int / 'poly'
-Plays      <- 'melody' / 'roots' 'in' Range / 'chords' 'rootless'? 'from' Pitch
+Plays      <- 'melody' Octaves? / 'roots' 'in' Range / 'chords' 'rootless'? 'from' Pitch
             / 'part' Name+
+Octaves    <- ('octave' / Int 'octaves') ('up' / 'down')   # Int: 2 or more
 Derived    <- Name 'echoes' Name 'late' Ratio 'level' Percent EOL
             / Name 'harmonizes' Name 'under' Interval EOL
 Drum       <- 'drum' Name ('noise' Int ('->' Int)? 'len' Int 'vol' Int
