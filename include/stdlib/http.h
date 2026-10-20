@@ -197,6 +197,8 @@ struct HttpRequest {
                                    // must not go through a proxy.
   bool follow_redirects = true;    // 3xx Location chasing.
   BodySink body_sink = nullptr;    // set → stream the response body (no buffer).
+  bool sink_success_only = false;  // body_sink gets a 2xx body only; any other
+                                   // status buffers into HttpResult::body.
   BodySource body_source = nullptr;// set → stream the request body (chunked).
   std::vector<MultipartPart> multipart;  // non-empty → multipart/form-data body.
 };
@@ -396,15 +398,24 @@ inline std::string _http_join_path(const std::string& base_path,
   return base_path + "/" + rel;
 }
 
+// Where a streamed response body goes once its status is known: to
+// req.body_sink, or — a non-2xx under sink_success_only — into `held`, which
+// _http_send returns as HttpResult::body.
+struct _HttpBodyRoute {
+  bool to_sink = true;
+  std::string held;
+};
+
 // Build the httplib::Request (method, path, headers, body/multipart/streaming
 // source, response sink) from `req` and the already-resolved `headers`/`path`.
 // Shared by the one-off http_request and the persistent http_client_request so
 // all body logic (params already folded into `path`) lives in one place. The
-// body_sink lambda captures `req` by reference — the caller keeps `req` alive
-// across the send.
+// sink lambdas capture `req` and `route` by reference — the caller keeps both
+// alive across the send.
 inline void _http_build_request(const HttpRequest& req, const std::string& path,
                                 const HeaderList& headers,
-                                httplib::Request& hreq) {
+                                httplib::Request& hreq,
+                                _HttpBodyRoute& route) {
   hreq.method = req.method.str();
   hreq.path = path;
   bool has_ct = false;
@@ -518,10 +529,21 @@ inline void _http_build_request(const HttpRequest& req, const std::string& path,
     }
   }
   // Streaming: route the response body to the sink as it arrives instead of
-  // buffering it into res->body (which then stays empty).
+  // buffering it into res->body (which then stays empty). httplib calls the
+  // response handler once, for the final response (not a followed redirect).
   if (req.body_sink) {
-    hreq.content_receiver = [&req](const char* data, size_t len, uint64_t,
-                                   uint64_t) { return req.body_sink(data, len); };
+    if (req.sink_success_only) {
+      hreq.response_handler = [&route](const httplib::Response& r) {
+        route.to_sink = r.status >= 200 && r.status < 300;
+        return true;
+      };
+    }
+    hreq.content_receiver = [&req, &route](const char* data, size_t len,
+                                           uint64_t, uint64_t) {
+      if (route.to_sink) return req.body_sink(data, len);
+      route.held.append(data, len);
+      return true;
+    };
   }
 }
 
@@ -625,7 +647,8 @@ class _InterruptWatcher {
 // thread that owns the interpreter/JIT state. The watcher only reads the flag;
 // throw_if_interrupted() afterwards raises the same cooperative Interrupted
 // the loop safepoint does.
-inline HttpResult _http_send(httplib::Client& cli, httplib::Request& hreq) {
+inline HttpResult _http_send(httplib::Client& cli, httplib::Request& hreq,
+                             _HttpBodyRoute& route) {
   HttpResult out;
   _InterruptWatcher::Guard watch(cli, current_runtime().interrupt_flag);
   auto res = cli.send(hreq);
@@ -638,7 +661,8 @@ inline HttpResult _http_send(httplib::Client& cli, httplib::Request& hreq) {
   out.ok = true;
   out.status = res->status;
   out.reason = res->reason;
-  out.body = std::move(res->body);
+  // Empty when the body streamed to a sink, unless the route held it back.
+  out.body = route.held.empty() ? std::move(res->body) : std::move(route.held);
   out.headers.reserve(res->headers.size());
   for (const auto& [k, v] : res->headers) {
     out.headers.emplace_back(k, v);
@@ -723,8 +747,9 @@ CULEBRA_RT_HTTP_LINKAGE HttpResult http_request(const HttpRequest& req) {
                   req.proxy_port);
 
   httplib::Request hreq;
-  _http_build_request(req, path, req.headers, hreq);
-  return _http_send(cli, hreq);
+  _HttpBodyRoute route;
+  _http_build_request(req, path, req.headers, hreq, route);
+  return _http_send(cli, hreq, route);
 #endif  // CULEBRA_RT_HTTP_REQUEST_WEAK
 }
 
@@ -855,9 +880,10 @@ CULEBRA_RT_HTTP_LINKAGE HttpResult http_client_request(int64_t id,
   _http_append_params(path, req.params);
   HeaderList headers = merge_headers(c->default_headers, req.headers);
   httplib::Request hreq;
-  _http_build_request(req, path, headers, hreq);
+  _HttpBodyRoute route;
+  _http_build_request(req, path, headers, hreq, route);
   std::lock_guard<std::mutex> lk(c->m);
-  return _http_send(c->cli, hreq);
+  return _http_send(c->cli, hreq, route);
 #endif
 }
 

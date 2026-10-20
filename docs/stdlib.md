@@ -3907,8 +3907,9 @@ model and resource limits are documented in the vendored engine,
 Synchronous HTTP/HTTPS client (engine: vendored `cpp-httplib` + OpenSSL,
 statically linked). Each call **blocks** until the response arrives — there is
 no async/await. The same namespace also serves: `Http.server()` below carries
-routes, static files, and WebSocket, and `Http.sse` / `Http.ws` speak the two
-streaming protocols as a client. TLS is automatic for `https://` URLs; the system trust store is
+routes, static files, and WebSocket, and the `events:` argument (with its
+`GET` shorthand `Http.sse`) and `Http.ws` speak the two streaming protocols as
+a client. TLS is automatic for `https://` URLs; the system trust store is
 used to verify server certificates (macOS keychain / the platform CA bundle on
 Linux). `gzip` / `deflate` responses are decompressed transparently — `body`
 is always the decoded content.
@@ -3955,6 +3956,9 @@ Keyword arguments (shared by every method):
 - `follow_redirects: Bool` — chase `3xx` `Location` headers (default: `true`).
 - `into: String | Function` — stream the response body to a sink instead of
   buffering it; see Streaming below (default: `nil` = buffer into `body`).
+- `events: Function` — read the response body as Server-Sent Events, calling
+  the function with each event; see Event streams below (default: `nil`). At
+  most one of `into` / `events` may be given (else `TypeError`).
 - `json: Any` (`post` / `put` / `request` only) — serialize the value to JSON
   and send it as the body with `Content-Type: application/json`.
 - `form: Object` (`post` / `put` / `request` only) — an `Object` of `String`
@@ -4023,6 +4027,49 @@ Http.post(
   into: fn (chunk) { handle(chunk) },
 )
 ```
+
+**Event streams — the `events:` argument.** Pass a `Function` as `events:` to
+read the response body as
+[Server-Sent Events](https://developer.mozilla.org/docs/Web/API/Server-sent_events)
+(`text/event-stream`). The call blocks for the life of the stream, calls the
+function once per event as it arrives, and returns the response Object after
+the server closes it. It works on any method and on an `Http.client` handle,
+so a `POST` that streams its answer back — the shape of a streaming LLM API —
+reads the same way as a `GET`:
+
+```culebra
+# doctest: skip
+let on_event = fn (e) {
+  IO.print(JSON.parse(e.data).text) if e.event == "delta"
+}
+let res = Http.post(
+  "https://api.example/v1/chat",
+  json: {model: model, messages: messages, stream: true},
+  headers: {Authorization: "Bearer " + key},
+  events: on_event,
+)
+IO.println(res.body) unless res.ok
+```
+
+Each event is an Object with three String fields:
+
+| field   | meaning |
+|---------|---------|
+| `event` | the `event:` type, or `"message"` when the server sends none |
+| `data`  | the `data:` payload; multiple `data:` lines are joined with `\n` |
+| `id`    | the last `id:` field seen, or `""` |
+
+Only a `2xx` response is read as events. Any other status is not an event
+stream: the function is never called and the body stays in `body`, so an error
+the server explains (a rate limit, a malformed request) can still be read —
+check `ok` afterwards. A `2xx` leaves `body` empty, as `into:` does.
+
+`Accept: text/event-stream` is sent unless the request's own `headers` set
+`Accept`. Comment lines (`: ...`) and the `retry:` field are ignored, and a
+chunk boundary can fall anywhere (mid-line, or mid-character) without splitting
+an event. The function runs on the calling thread (it may mutate captured
+state); returning ends handling of that event, and throwing aborts the stream
+and propagates the error. A transport failure is an `HttpError`.
 
 **Streaming (upload).** Symmetrically, pass a `Function` as `body:` (on
 `post` / `put` / `request`) to stream the request body chunked, so a large
@@ -4110,24 +4157,10 @@ an `IOError`.
 
 ### `Http.sse(url, on_event, headers=nil, timeout=0, follow_redirects=true) -> Object`
 
-Open a [Server-Sent Events](https://developer.mozilla.org/docs/Web/API/Server-sent_events)
-(`text/event-stream`) stream — a long-lived `GET` whose `on_event` callback is
-invoked once per event as it arrives. The call blocks for the life of the
-stream and returns the final response Object after the server closes it.
-
-**It opens a `GET`, and only a `GET`**, as the protocol does — a browser's
-`EventSource` cannot POST either. Streaming LLM and chat APIs speak this same
-wire format but ask for it over a **`POST`** carrying the request as a JSON
-body, which puts them out of reach here: stream those with the `into:` argument
-above and decode the frames yourself (below).
-
-Each event is an Object with three String fields:
-
-| field   | meaning |
-|---------|---------|
-| `event` | the `event:` type, or `"message"` when the server sends none |
-| `data`  | the `data:` payload; multiple `data:` lines are joined with `\n` |
-| `id`    | the last `id:` field seen, or `""` |
+Open a Server-Sent Events stream with a `GET`, as a browser's `EventSource`
+does, and call `on_event` with each event. It is
+`Http.get(url, events: on_event)`: the event fields, the `2xx` rule, the
+`Accept` header and the error model are those of the `events:` argument above.
 
 ```culebra
 # doctest: skip
@@ -4137,26 +4170,6 @@ Http.sse("https://api.example/v1/events", fn (e) {
   }
 })
 ```
-
-A `POST` that streams its answer back — which is what every LLM API is — takes
-the other route. `into:` hands you the body a chunk at a time, and the frames
-are yours to split: `field: value` lines, one blank line between events, and a
-chunk boundary that can fall anywhere (mid-line, or mid-character).
-
-```culebra
-# doctest: skip
-Http.post(
-  "https://api.example/v1/chat",
-  json: {model: model, messages: messages, stream: true},
-  into: fn (chunk) { decoder.feed(chunk) },
-)
-```
-
-`Accept: text/event-stream` is sent automatically unless you set `Accept`
-yourself. Comment lines (`: ...`) and the `retry:` field are ignored. The
-callback runs on the calling thread (it may mutate captured state); returning
-ends handling of that event, and throwing aborts the stream and propagates the
-error. A transport failure is an `HttpError`.
 
 ### `Http.client(base_url, headers=nil, timeout=0, follow_redirects=true) -> Object`
 

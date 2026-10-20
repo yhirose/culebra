@@ -202,6 +202,34 @@ assert_throws("HttpError", fn () {
   })
 })
 
+// --- `events:` (any request's body read as Server-Sent Events): the error
+//     model, per slab layout. The stream itself is in test_http_server.cul. ---
+
+// events must be a Function (checked before any I/O).
+assert_eq(
+  failure(|| Http.get("http://127.0.0.1:1/x", events: 1)),
+  'TypeError: Http.get: events must be a Function',
+)
+assert_eq(
+  failure(|| Http.post("http://127.0.0.1:1/x", json: {}, events: 'x')),
+  'TypeError: Http.post: events must be a Function',
+)
+assert_eq(
+  failure(|| Http.request("PATCH", "http://127.0.0.1:1/x", events: 1)),
+  'TypeError: Http.request: events must be a Function',
+)
+
+// into and events both claim the body: at most one, before the file opens.
+assert_eq(
+  failure(|| Http.get("http://127.0.0.1:1/x", into: "tmp/_no_such_dir_/f", events: |e| nil)),
+  'TypeError: Http.get: pass at most one of into, events',
+)
+
+// with a Function, a transport failure is still an HttpError.
+assert_throws("HttpError", fn () {
+  Http.post("http://127.0.0.1:1/x", json: {}, events: |e| nil)
+})
+
 // --- `Http.client` (persistent connection-reusing client): offline error
 //     paths. The base_url join / header merge / reuse round-trips need a server
 //     (covered by the in-process loopback test http_test.cc); here, the error
@@ -239,6 +267,20 @@ assert_eq(
 assert_eq(
   failure(|| cl.post("/x", body: "y", json: {a: 1})),
   'TypeError: client.post: pass at most one of body, json, form, files',
+)
+
+// events on each client method shape (client.* ctx).
+assert_eq(
+  failure(|| cl.get("/x", events: 1)),
+  'TypeError: client.get: events must be a Function',
+)
+assert_eq(
+  failure(|| cl.post("/x", into: |c| nil, events: |e| nil)),
+  'TypeError: client.post: pass at most one of into, events',
+)
+assert_eq(
+  failure(|| cl.request("PATCH", "/x", events: 1)),
+  'TypeError: client.request: events must be a Function',
 )
 
 // `path` is a typed String param: a StringView (e.g. a slice) is rejected, the

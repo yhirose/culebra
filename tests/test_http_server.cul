@@ -93,6 +93,21 @@ iso = Isolate.spawn(fn () {
       }
     }}
   })
+  # An event stream answering a POST, the shape of a streaming LLM API: the
+  # posted body and the request's Accept come back as events.
+  srv.post("/events", fn (req) {
+    {content_type: "text/event-stream", stream: fn (sink) {
+      sink.write("event: echo\ndata: " + req.body + "\n\n")
+      sink.write("data: " + req.headers["Accept"] + "\n\n")
+    }}
+  })
+  # The same endpoint refusing: not 2xx, so its body is not an event stream.
+  srv.post("/events_refused", fn (req) {
+    {status: 429, content_type: "application/json", body: '{"error":"slow down"}'}
+  })
+  srv.get("/busy", fn (req) {
+    {status: 503, body: "busy"}
+  })
   srv.get("/stream_both", fn (req) {
     {body: "x", stream: fn (sink) {
       sink.write("y")
@@ -187,6 +202,52 @@ assert_eq(rs.status.to_string() +
   rs.headers["Cache-Control"] +
   " | bytes=" +
   rs.body.size().to_string(), '202 | ct=text/event-stream | cc=no-cache | bytes=27')
+
+# `events:` reads any request's body as Server-Sent Events, and sends
+# `Accept: text/event-stream` unless the request sets Accept itself.
+let echoed = []
+let ev_resp = Http.post(BASE + "/events", json: {q: 1}, events: fn (e) {
+  echoed.push("{e.event}: {e.data}")
+})
+assert_eq(echoed, ['echo: {"q":1}', 'message: text/event-stream'])
+assert_eq("{ev_resp.status} | {ev_resp.body.size()}", '200 | 0')
+
+let own_accept = []
+Http.post(BASE + "/events", headers: {Accept: "text/plain"}, events: |e| own_accept.push(e.data))
+assert_eq(own_accept, ['', 'text/plain'])
+
+# Not 2xx is not an event stream: events is never called, and the body (the
+# error a caller has to read) stays in the response.
+let refused = []
+let rr = Http.post(BASE + "/events_refused", json: {}, events: |e| refused.push(e.data))
+assert_eq("{refused.size()} | {rr.status} | {rr.body}", '0 | 429 | {"error":"slow down"}')
+
+# A throw from the callback ends the stream and propagates as it is.
+assert_throws("ValueError", fn () {
+  Http.post(BASE + "/events", events: fn (e) {
+    throw {kind: "ValueError", message: "stop"}
+  })
+})
+
+# Through a client, one kept-alive connection serves every streamed turn.
+let api = Http.client(BASE)
+let turns = [1, 2].map(fn (t) {
+  let got = []
+  api.post("/events", json: {turn: t}, events: |e| got.push(e.data))
+  got[0]
+})
+assert_eq(turns, ['{"turn":1}', '{"turn":2}'])
+api.close()
+
+# Http.sse is Http.get(url, events:): the same events, and the same rule for a
+# status that is not 2xx.
+let sse_data = []
+let rs2 = Http.sse(BASE + "/sse", |e| sse_data.push(e.data))
+assert_eq(sse_data, ['0', '1', '2'])
+assert_eq("{rs2.status} | {rs2.body.size()}", '202 | 0')
+let busy = []
+let rb = Http.sse(BASE + "/busy", |e| busy.push(e.data))
+assert_eq("{busy.size()} | {rb.status} | {rb.body}", '0 | 503 | busy')
 
 let stream_answers = ["/stream_both", "/stream_bad"].map(fn (sb) {
   let rsb = Http.get(BASE + sb)

@@ -588,33 +588,24 @@ inline constexpr CanonParam kCanonParams_Http[] = {
   {"follow_redirects", true, false, false, false, false, "", CanonDefault::Bool, 1, {}},
   {"into", true, false, false, false, false, "", CanonDefault::Nil, 0, {}},
   {"params", true, false, false, false, false, "", CanonDefault::Nil, 0, {}},
-  // 6: Http.delete
+  {"events", true, false, false, false, false, "", CanonDefault::Nil, 0, {}},
+  // 7: Http.delete
   {"url", false, false, false, false, false, "String", CanonDefault::None, 0, {}},
   {"headers", true, false, false, false, false, "", CanonDefault::Nil, 0, {}},
   {"timeout", true, false, false, false, false, "", CanonDefault::Long, 0, {}},
   {"follow_redirects", true, false, false, false, false, "", CanonDefault::Bool, 1, {}},
   {"into", true, false, false, false, false, "", CanonDefault::Nil, 0, {}},
   {"params", true, false, false, false, false, "", CanonDefault::Nil, 0, {}},
-  // 12: Http.head
+  {"events", true, false, false, false, false, "", CanonDefault::Nil, 0, {}},
+  // 14: Http.head
   {"url", false, false, false, false, false, "String", CanonDefault::None, 0, {}},
   {"headers", true, false, false, false, false, "", CanonDefault::Nil, 0, {}},
   {"timeout", true, false, false, false, false, "", CanonDefault::Long, 0, {}},
   {"follow_redirects", true, false, false, false, false, "", CanonDefault::Bool, 1, {}},
   {"into", true, false, false, false, false, "", CanonDefault::Nil, 0, {}},
   {"params", true, false, false, false, false, "", CanonDefault::Nil, 0, {}},
-  // 18: Http.post
-  {"url", false, false, false, false, false, "String", CanonDefault::None, 0, {}},
-  {"body", true, false, false, false, false, "", CanonDefault::Str, 0, ""},
-  {"content_type", true, false, false, false, false, "", CanonDefault::Str, 0, "text/plain"},
-  {"headers", true, false, false, false, false, "", CanonDefault::Nil, 0, {}},
-  {"timeout", true, false, false, false, false, "", CanonDefault::Long, 0, {}},
-  {"follow_redirects", true, false, false, false, false, "", CanonDefault::Bool, 1, {}},
-  {"into", true, false, false, false, false, "", CanonDefault::Nil, 0, {}},
-  {"params", true, false, false, false, false, "", CanonDefault::Nil, 0, {}},
-  {"json", true, false, false, false, false, "", CanonDefault::Nil, 0, {}},
-  {"form", true, false, false, false, false, "", CanonDefault::Nil, 0, {}},
-  {"files", true, false, false, false, false, "", CanonDefault::Nil, 0, {}},
-  // 29: Http.put
+  {"events", true, false, false, false, false, "", CanonDefault::Nil, 0, {}},
+  // 21: Http.post
   {"url", false, false, false, false, false, "String", CanonDefault::None, 0, {}},
   {"body", true, false, false, false, false, "", CanonDefault::Str, 0, ""},
   {"content_type", true, false, false, false, false, "", CanonDefault::Str, 0, "text/plain"},
@@ -626,7 +617,21 @@ inline constexpr CanonParam kCanonParams_Http[] = {
   {"json", true, false, false, false, false, "", CanonDefault::Nil, 0, {}},
   {"form", true, false, false, false, false, "", CanonDefault::Nil, 0, {}},
   {"files", true, false, false, false, false, "", CanonDefault::Nil, 0, {}},
-  // 40: Http.request
+  {"events", true, false, false, false, false, "", CanonDefault::Nil, 0, {}},
+  // 33: Http.put
+  {"url", false, false, false, false, false, "String", CanonDefault::None, 0, {}},
+  {"body", true, false, false, false, false, "", CanonDefault::Str, 0, ""},
+  {"content_type", true, false, false, false, false, "", CanonDefault::Str, 0, "text/plain"},
+  {"headers", true, false, false, false, false, "", CanonDefault::Nil, 0, {}},
+  {"timeout", true, false, false, false, false, "", CanonDefault::Long, 0, {}},
+  {"follow_redirects", true, false, false, false, false, "", CanonDefault::Bool, 1, {}},
+  {"into", true, false, false, false, false, "", CanonDefault::Nil, 0, {}},
+  {"params", true, false, false, false, false, "", CanonDefault::Nil, 0, {}},
+  {"json", true, false, false, false, false, "", CanonDefault::Nil, 0, {}},
+  {"form", true, false, false, false, false, "", CanonDefault::Nil, 0, {}},
+  {"files", true, false, false, false, false, "", CanonDefault::Nil, 0, {}},
+  {"events", true, false, false, false, false, "", CanonDefault::Nil, 0, {}},
+  // 45: Http.request
   {"method", false, false, false, false, false, "String", CanonDefault::None, 0, {}},
   {"url", false, false, false, false, false, "String", CanonDefault::None, 0, {}},
   {"body", true, false, false, false, false, "", CanonDefault::Str, 0, ""},
@@ -639,32 +644,33 @@ inline constexpr CanonParam kCanonParams_Http[] = {
   {"json", true, false, false, false, false, "", CanonDefault::Nil, 0, {}},
   {"form", true, false, false, false, false, "", CanonDefault::Nil, 0, {}},
   {"files", true, false, false, false, false, "", CanonDefault::Nil, 0, {}},
-  // 52: Http.sse
+  {"events", true, false, false, false, false, "", CanonDefault::Nil, 0, {}},
+  // 58: Http.sse
   {"url", false, false, false, false, false, "String", CanonDefault::None, 0, {}},
   {"on_event", false, false, false, false, false, "Function", CanonDefault::None, 0, {}},
   {"headers", true, false, false, false, false, "", CanonDefault::Nil, 0, {}},
   {"timeout", true, false, false, false, false, "", CanonDefault::Long, 0, {}},
   {"follow_redirects", true, false, false, false, false, "", CanonDefault::Bool, 1, {}},
-  // 57: Http.client
+  // 63: Http.client
   {"base_url", false, false, false, false, false, "String", CanonDefault::None, 0, {}},
   {"headers", true, false, false, false, false, "", CanonDefault::Nil, 0, {}},
   {"timeout", true, false, false, false, false, "", CanonDefault::Long, 0, {}},
   {"follow_redirects", true, false, false, false, false, "", CanonDefault::Bool, 1, {}},
-  // 61: Http.ws
+  // 67: Http.ws
   {"url", false, false, false, false, false, "String", CanonDefault::None, 0, {}},
 };
 
 inline constexpr CanonSig kCanonSigs_Http[] = {
-  {"Http", "", "get", kCanonParams_Http + 0, 6, "Object", 1, 6, false, -1, -1, -1},
-  {"Http", "", "delete", kCanonParams_Http + 6, 6, "Object", 1, 6, false, -1, -1, -1},
-  {"Http", "", "head", kCanonParams_Http + 12, 6, "Object", 1, 6, false, -1, -1, -1},
-  {"Http", "", "post", kCanonParams_Http + 18, 11, "Object", 1, 11, false, -1, -1, -1},
-  {"Http", "", "put", kCanonParams_Http + 29, 11, "Object", 1, 11, false, -1, -1, -1},
-  {"Http", "", "request", kCanonParams_Http + 40, 12, "Object", 2, 12, false, -1, -1, -1},
-  {"Http", "", "sse", kCanonParams_Http + 52, 5, "Object", 2, 5, false, -1, -1, -1},
-  {"Http", "", "client", kCanonParams_Http + 57, 4, "Object", 1, 4, false, -1, -1, -1},
+  {"Http", "", "get", kCanonParams_Http + 0, 7, "Object", 1, 7, false, -1, -1, -1},
+  {"Http", "", "delete", kCanonParams_Http + 7, 7, "Object", 1, 7, false, -1, -1, -1},
+  {"Http", "", "head", kCanonParams_Http + 14, 7, "Object", 1, 7, false, -1, -1, -1},
+  {"Http", "", "post", kCanonParams_Http + 21, 12, "Object", 1, 12, false, -1, -1, -1},
+  {"Http", "", "put", kCanonParams_Http + 33, 12, "Object", 1, 12, false, -1, -1, -1},
+  {"Http", "", "request", kCanonParams_Http + 45, 13, "Object", 2, 13, false, -1, -1, -1},
+  {"Http", "", "sse", kCanonParams_Http + 58, 5, "Object", 2, 5, false, -1, -1, -1},
+  {"Http", "", "client", kCanonParams_Http + 63, 4, "Object", 1, 4, false, -1, -1, -1},
   {"Http", "", "server", nullptr, 0, "Object", 0, 0, false, -1, -1, -1},
-  {"Http", "", "ws", kCanonParams_Http + 61, 1, "Object", 1, 1, false, -1, -1, -1},
+  {"Http", "", "ws", kCanonParams_Http + 67, 1, "Object", 1, 1, false, -1, -1, -1},
 };
 
 inline constexpr CanonParam kCanonParams_Isolate[] = {

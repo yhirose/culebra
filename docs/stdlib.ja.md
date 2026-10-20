@@ -3794,8 +3794,8 @@ inspect(Regex.escape("a.b(c)"))                         # => 'a\.b\(c\)'
 同期HTTP/HTTPSクライアント（エンジン: vendorの`cpp-httplib` + OpenSSLを
 静的リンク）。各呼び出しはレスポンスが返るまで **blocking** で、async/awaitは
 ありません。この名前空間は提供側も兼ねていて、後述の`Http.server()`が
-ルーティング・静的ファイル・WebSocketを担い、`Http.sse` / `Http.ws`が
-クライアントとして2つのストリーミングプロトコルを話します。
+ルーティング・静的ファイル・WebSocketを担い、`events:`引数（`GET`用の短縮形が
+`Http.sse`）と`Http.ws`がクライアントとして2つのストリーミングプロトコルを話します。
 `https://` URLではTLSが自動で有効になり、サーバ証明書の検証には
 システムの信頼ストア（macOSはkeychain、LinuxはプラットフォームのCAバンドル）
 を使います。`gzip` / `deflate`のレスポンスは透過的に展開され、`body`は常に
@@ -3843,6 +3843,9 @@ inspect(Regex.escape("a.b(c)"))                         # => 'a\.b\(c\)'
 - `follow_redirects: Bool` — `3xx`の`Location`を追跡する（デフォルト: `true`）。
 - `into: String | Function` — レスポンスボディをバッファせずsinkへストリーム
   する（下記ストリーミング参照。デフォルト: `nil`＝`body`にバッファ）。
+- `events: Function` — レスポンスボディをServer-Sent Eventsとして読み、
+  イベントごとにこの関数を呼ぶ（下記イベントストリーム参照。デフォルト: `nil`）。
+  `into` / `events`は最大1つ（両方指定は`TypeError`）。
 - `json: Any`（`post` / `put` / `request`のみ）— 値をJSONにシリアライズし、
   `Content-Type: application/json`でボディとして送信。
 - `form: Object`（`post` / `put` / `request`のみ）— `String`値の`Object`を
@@ -3909,6 +3912,48 @@ Http.post(
   into: fn (chunk) { handle(chunk) },
 )
 ```
+
+**イベントストリーム — `events:`引数。** `events:`に`Function`を渡すと、
+レスポンスボディを
+[Server-Sent Events](https://developer.mozilla.org/docs/Web/API/Server-sent_events)
+（`text/event-stream`）として読みます。呼び出しはストリームが続く間blockingで、
+イベントが届くたびに関数を1回ずつ呼び、サーバが閉じた後にレスポンスObjectを返します。
+任意のメソッドと`Http.client`のハンドルで使えるので、回答をストリームで返す`POST`
+（ストリーミングするLLM APIの形）も`GET`と同じように読めます:
+
+```culebra
+# doctest: skip
+let on_event = fn (e) {
+  IO.print(JSON.parse(e.data).text) if e.event == "delta"
+}
+let res = Http.post(
+  "https://api.example/v1/chat",
+  json: {model: model, messages: messages, stream: true},
+  headers: {Authorization: "Bearer " + key},
+  events: on_event,
+)
+IO.println(res.body) unless res.ok
+```
+
+各イベントは3つのStringフィールドを持つObjectです:
+
+| フィールド | 意味 |
+|---------|---------|
+| `event` | `event:`タイプ。サーバが送らない場合は`"message"` |
+| `data`  | `data:`ペイロード。複数の`data:`行は`\n`で連結 |
+| `id`    | 最後に見た`id:`フィールド。無ければ`""` |
+
+イベントとして読むのは`2xx`の応答だけです。それ以外のステータスはイベントストリーム
+ではないので、関数は呼ばれず、ボディは`body`に残ります。サーバが説明するエラー
+（レート制限、不正なリクエストなど）を読めるように、終わったら`ok`を確かめます。
+`2xx`のときは`into:`と同じく`body`は空です。
+
+リクエスト自身の`headers`が`Accept`を設定しない限り`Accept: text/event-stream`を
+送ります。コメント行（`: ...`）と`retry:`フィールドは無視し、チャンク境界が
+どこに落ちても（行の途中でも、文字の途中でも）イベントは分かれません。関数は
+呼び出しスレッド上で実行され（捕捉した状態を書き換えてよい）、returnでその
+イベントの処理を終え、throwするとストリームを中断してエラーを伝播します。
+トランスポート失敗は`HttpError`です。
 
 **ストリーミング（アップロード）。** 対称に、`body:`（`post` / `put` /
 `request`）へ`Function`を渡すとリクエストボディをchunkedでストリームします
@@ -3993,23 +4038,10 @@ partの値が`String` / `Object` / `Array`以外、`Object`が`content` / `path`
 
 ### `Http.sse(url, on_event, headers=nil, timeout=0, follow_redirects=true) -> Object`
 
-[Server-Sent Events](https://developer.mozilla.org/docs/Web/API/Server-sent_events)
-（`text/event-stream`）ストリームを開きます — 長寿命の`GET`で、イベントが届くたびに
-`on_event`コールバックを1回ずつ呼びます。呼び出しはストリームが続く間blockingで、
-サーバが閉じた後に最終的なレスポンスObjectを返します。
-
-**開くのは`GET`だけです。** プロトコル自体がそうなっており（ブラウザの`EventSource`も
-POSTできません）、ストリーミングLLM/チャットAPIは同じワイヤ形式をリクエストをJSON
-bodyに載せた**`POST`**で要求するため、この関数では届きません。それらは上記の`into:`で
-レスポンスbodyを受け取り、フレームを自分でデコードします（後述）。
-
-各イベントは3つのStringフィールドを持つObjectです:
-
-| フィールド | 意味 |
-|---------|---------|
-| `event` | `event:`タイプ。サーバが送らない場合は`"message"` |
-| `data`  | `data:`ペイロード。複数の`data:`行は`\n`で連結 |
-| `id`    | 最後に見た`id:`フィールド。無ければ`""` |
+ブラウザの`EventSource`と同じく`GET`でServer-Sent Eventsのストリームを開き、
+イベントごとに`on_event`を呼びます。`Http.get(url, events: on_event)`と同じで、
+イベントのフィールド、`2xx`の規則、`Accept`ヘッダ、エラーの扱いは上記の
+`events:`引数のとおりです。
 
 ```culebra
 # doctest: skip
@@ -4019,26 +4051,6 @@ Http.sse("https://api.example/v1/events", fn (e) {
   }
 })
 ```
-
-回答をストリームで返す`POST`——LLM APIはすべてこれ——はもう一方の経路を使います。
-`into:`がbodyをチャンク単位で渡すので、フレームの分割は自分で行います:
-`field: value`の行、イベントの区切りは空行1つ、そしてチャンク境界はどこにでも
-（行の途中にも、文字の途中にも）落ちます。
-
-```culebra
-# doctest: skip
-Http.post(
-  "https://api.example/v1/chat",
-  json: {model: model, messages: messages, stream: true},
-  into: fn (chunk) { decoder.feed(chunk) },
-)
-```
-
-`Accept`を自分で設定しない限り`Accept: text/event-stream`は自動で送られます。
-コメント行（`: ...`）と`retry:`フィールドは無視されます。コールバックは呼び出し
-スレッド上で実行され（捕捉状態をmutableに扱える）、returnでそのイベントの処理を
-終え、throwするとストリームを中断してエラーを伝播します。トランスポート失敗は
-`HttpError`です。
 
 ### `Http.client(base_url, headers=nil, timeout=0, follow_redirects=true) -> Object`
 
