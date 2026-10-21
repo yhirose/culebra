@@ -64,6 +64,8 @@ section Verse {
   G     d4 g b g
 }
 EOF
+# The same two bars twice, with a mark between: eight seconds.
+awk '{ print } /^  Verse$/ { print "  mark Again"; print "  Verse" }' "$TMP/duo.kau" > "$TMP/marked.kau"
 # A band with an `external` voice and an `external` drum.
 cat > "$TMP/external.kau" <<'EOF'
 band Duo {
@@ -137,6 +139,12 @@ size=$(wc -c < "$TMP/duo.wav" | tr -d ' ')
 run --wav="$TMP/duo2.wav" "$TMP/duo.kau"
 check "$ENGINE wav=: same bytes" "$(od -An -tx1 "$TMP/duo.wav" | md5sum)" "$(od -An -tx1 "$TMP/duo2.wav" | md5sum)"
 
+# --from and --to write a part, from a second before --from.
+run --wav "$TMP/part.wav" --from Again --to 6 "$TMP/marked.kau"
+check "$ENGINE part: status" 0 "$rc"
+check "$ENGINE part: stdout" "$TMP/marked.kau: 0:03 written to $TMP/part.wav" "$out"
+check "$ENGINE part: stderr" "" "$err"
+
 # A song's mistake names its file and line, on stderr.
 sed 's/tempo 120/tempo fast/' "$TMP/duo.kau" > "$TMP/bad.kau"
 run --check "$TMP/bad.kau"
@@ -198,8 +206,21 @@ check "$ENGINE watch: last line" "interrupted" "$(tail -n 1 "$TMP/watch.out")"
 
 done
 
-# The command line's own mistakes are status 2 and reach no engine.
+# A mark's name, seconds, or minutes and seconds name the same point; a
+# part that is not in the song is the song's mistake, status 1. What reads
+# them is the same program on every engine, so one runs it.
 ENGINE=--vm
+run --wav "$TMP/part2.wav" --from=0:04 --to=6.0 "$TMP/marked.kau"
+check "part, 0:04: same bytes" "$(od -An -tx1 "$TMP/part.wav" | md5sum)" "$(od -An -tx1 "$TMP/part2.wav" | md5sum)"
+run --wav "$TMP/part.wav" --from Twice "$TMP/marked.kau"
+check "part, no mark: status" 1 "$rc"
+check "part, no mark: stderr" "culebra play: $TMP/marked.kau has no mark Twice (it has Again)" "$err"
+run --wav "$TMP/part.wav" --from 8 "$TMP/marked.kau"
+check "part, past the end: stderr" "culebra play: --from 8 is past the song's end (0:08)" "$err"
+run --wav "$TMP/part.wav" --from 0:05 --to Again "$TMP/marked.kau"
+check "part, backwards: stderr" "culebra play: --to Again is not after --from 0:05" "$err"
+
+# The command line's own mistakes are status 2 and reach no engine.
 run
 check "no song: status" 2 "$rc"
 [[ "$err" == "Usage: culebra play "* ]] || { echo "FAIL no song: stderr [$err]"; fail=1; }
@@ -214,6 +235,14 @@ check "wav, no file: stderr" "culebra play: --wav needs a file to write" "$err"
 run --wav "$TMP/x.wav" --check "$TMP/duo.kau"
 check "wav and check: status" 2 "$rc"
 check "wav and check: stderr" "culebra play: --wav writes the song and plays nothing, so not with --check" "$err"
+run --to 2 "$TMP/duo.kau"
+check "part, no wav: status" 2 "$rc"
+check "part, no wav: stderr" "culebra play: --to chooses the part --wav writes, so it needs --wav" "$err"
+run --wav "$TMP/x.wav" --from 1:5 "$TMP/duo.kau"
+check "part, 1:5: status" 2 "$rc"
+check "part, 1:5: stderr" "culebra play: --from takes seconds (83.5), minutes and seconds (1:23.5) or a mark's name, not '1:5'" "$err"
+run --wav "$TMP/x.wav" "$TMP/duo.kau" --to
+check "part, no point: stderr" "culebra play: --to takes seconds (83.5), minutes and seconds (1:23.5) or a mark's name" "$err"
 run "$TMP/duo.kau" --sounds
 check "sounds, no file: status" 2 "$rc"
 check "sounds, no file: stderr" "culebra play: --sounds needs a file or a folder" "$err"

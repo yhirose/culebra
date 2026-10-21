@@ -1,0 +1,92 @@
+# Audio.Kauai's render(from:, to:): a part of a song, as the whole song
+# sounds there (docs/kauai/language.md, section 10), built from only the
+# external sounds the part plays. Rendering needs no device, and the test
+# harness keeps it closed (CULEBRA_AUDIO=off).
+
+let lines = |xs| xs.join("\n")
+let DUO = lines([
+  'band Duo {',
+  '  voice Tune  pulse     plays melody            vol 20  gap 2',
+  '  voice Bass  triangle  plays roots in E2..D#3  vol 30',
+  '  drum Kick   noise 120  len 1  vol 20',
+  '}',
+  'groove Walk {',
+  '  Bass  1 - 5 -',
+  '  Kick  x... ....',
+  '}',
+])
+
+# A part of the song, each end a mark's name or seconds, heard from a second
+# before `from`, rising from silence over it as half a cosine, until what
+# starts before `to` ends. The song is mixed from its top all the same, so
+# from `from` until `to` it is the whole song's samples. Three bars of two
+# seconds, with a mark before the second and the third.
+let parted = Audio.Kauai.new(lines([
+  DUO,
+  'song First {', '  tempo 120', '  band Duo', '  groove Walk', '  melody in C5..B5',
+  '  Verse', '  mark Second', '  Verse', '  mark Third', '  Verse', '}',
+  'section Verse {',
+  "  C     e4 .g \\f !c'2",
+  '}',
+]))
+assert_eq(parted.marks(), {Second: 2.0, Third: 4.0})
+let whole = parted.render()
+let part = parted.render(from: "Second", to: "Third")
+assert_eq(parted.render(from: 2, to: 4.0), part)
+assert_eq(part.slice(44100, 3 * 44100), whole.slice(2 * 44100, 4 * 44100))
+let lead = part.slice(0, 44100)
+assert_eq(lead, iota(44100).map(|i| whole[44100 + i] * (0.5 - 0.5 * Math.cos(Math.pi * i / 44100))))
+assert_true(part.size() >= 3 * 44100 && part.size() < 3.1 * 44100)
+# A second before the top is the top; without `from` there is no lead, and
+# past the end `to` is the end.
+let early = parted.render(from: 0.5)
+assert_eq(early.size(), whole.size())
+assert_eq(early.slice(22050, whole.size()), whole.slice(22050, whole.size()))
+assert_eq(early[0], 0.0)
+assert_eq(parted.render(to: "Second").slice(0, 2 * 44100), whole.slice(0, 2 * 44100))
+assert_eq(parted.render(to: 60), whole)
+assert_throws("ValueError", fn () { parted.render(from: "Fourth") })
+assert_throws("ValueError", fn () { parted.render(from: -1) })
+assert_throws("ValueError", fn () { parted.render(from: 6) })
+assert_throws("ValueError", fn () { parted.render(from: "Third", to: "Second") })
+assert_throws("ValueError", fn () { parted.render(to: 0) })
+
+# A part builds only the external sounds it plays: those that start before
+# `to` and play notes from a second before `from` on, a phrase that runs into
+# it whole, and the note each voice is weighed by (65, the middle of the
+# fiddle's pitches). What prepare() has left is the rest.
+let WAV = Encoding.hex.decode("524946462800000057415645666d7420100000000100010040" +
+  "1f0000401f000001000800646174610400000080c8803c")
+let said = |n| n.keys().map(|k| "{k} {n[k]}").join(", ")
+let phrase_said = |notes| notes.map(said).join(" / ")
+let SPREAD = lines([
+  'band Strings {',
+  '  voice Fiddle  external Fiddle  plays melody  vol 50',
+  '}',
+  'song Bow {', '  tempo 60', '  band Strings', '  melody in C4..B4',
+  '  First', '  mark Second', '  Second', '  mark Third', '  Third', '}',
+  'section First {', '  C  (c4 d) e8 r8 r4', '}',
+  'section Second {', '  C  (f4 g) a r', '}',
+  'section Third {', '  C  b4 r r r', '}',
+])
+let bowed = fn () {
+  let asked = []
+  let fiddle = {
+    phrase: fn (notes, params) {
+      asked.push(phrase_said(notes))
+      Audio.Sound.new(WAV)
+    },
+    hears: [],
+  }
+  (Audio.Kauai.new(SPREAD, voices: {fiddle: fiddle}), asked)
+}
+let second_only = ['pitch 65, at 0.0', 'pitch 65, at 0.0 / pitch 67, at 1.0', 'pitch 69, at 0.0']
+let (bowing, bowed_notes) = bowed()
+bowing.render(from: "Second", to: "Third")
+assert_eq(bowed_notes.sorted(), second_only)
+assert_eq(bowing.prepare(), 2)
+let (crossing, crossed_notes) = bowed()
+crossing.render(from: 6.0, to: 7.5)
+assert_eq(crossed_notes.sorted(), second_only)
+
+print("audio kauai render ok\n")

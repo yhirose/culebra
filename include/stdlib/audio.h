@@ -1072,7 +1072,7 @@ inline void score_free(int64_t id) { _wasm_audio_score(2, static_cast<int>(id), 
 inline void score_volume(int64_t id, double x) { _wasm_audio_score(3, static_cast<int>(id), x); }
 inline void score_room(int64_t id, double x) { _wasm_audio_score(4, static_cast<int>(id), x); }
 // The page mixes a score in WebAudio, which renders nothing back to the program.
-inline bool score_render(const double*, int64_t, double, double, double,
+inline bool score_render(const double*, int64_t, double, double, double, double,
                          const std::vector<SoundBytes>&, std::vector<float>&) {
   return false;
 }
@@ -1145,11 +1145,13 @@ void score_volume(int64_t id, double v);
 void score_room(int64_t id, double wet);
 // A score (score_new's list and length) rendered into `out`, which arrives
 // empty, as the stream would play it once through at `volume` in a room heard
-// `wet` strong: mono at kMixerRate, until its last sound and its room's echoes
-// end. Its Sounds are decoded from `sounds` as sound_load decodes them, so it
-// needs no device. False where there is no mixer to render with.
+// `wet` strong: mono at kMixerRate, from `from` seconds on until its last
+// sound and its room's echoes end. It is mixed from the top all the same, so
+// what sounds from `from` on is what the whole score sounds there. Its Sounds
+// are decoded from `sounds` as sound_load decodes them, so it needs no
+// device. False where there is no mixer to render with.
 bool score_render(const double* events, int64_t count, double length, double wet,
-                  double volume, const std::vector<SoundBytes>& sounds,
+                  double volume, double from, const std::vector<SoundBytes>& sounds,
                   std::vector<float>& out);
 // A recording's bytes (`fmt` sound_format's) read with the decoders a Sound
 // plays through, as floats at its own rate and channels. Needs no device.
@@ -1206,7 +1208,7 @@ CULEBRA_RT_AUDIO_LINKAGE void score_stop(int64_t) {}
 CULEBRA_RT_AUDIO_LINKAGE void score_volume(int64_t, double) {}
 CULEBRA_RT_AUDIO_LINKAGE void score_room(int64_t, double) {}
 CULEBRA_RT_AUDIO_LINKAGE bool score_render(const double*, int64_t, double, double,
-                                           double, const std::vector<SoundBytes>&,
+                                           double, double, const std::vector<SoundBytes>&,
                                            std::vector<float>&) {
   return false;
 }

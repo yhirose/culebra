@@ -1572,13 +1572,14 @@ inline constexpr CanonParam kCanonParams_Audio_native[] = {
   {"length", false, false, false, false, false, "Long|Float", CanonDefault::None, 0, {}},
   {"wet", false, false, false, false, false, "Long|Float", CanonDefault::None, 0, {}},
   {"volume", false, false, false, false, false, "Long|Float", CanonDefault::None, 0, {}},
-  // 130: _Audio.decode
+  {"from", false, false, false, false, false, "Long|Float", CanonDefault::None, 0, {}},
+  // 131: _Audio.decode
   {"data", false, false, false, false, false, "String", CanonDefault::None, 0, {}},
-  // 131: _Audio.spectrum
+  // 132: _Audio.spectrum
   {"samples", false, false, false, false, false, "Array", CanonDefault::None, 0, {}},
   {"size", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
   {"hop", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
-  // 134: _Audio.resample
+  // 135: _Audio.resample
   {"samples", false, false, false, false, false, "Array", CanonDefault::None, 0, {}},
   {"from", false, false, false, false, false, "Long|Float", CanonDefault::None, 0, {}},
   {"to", false, false, false, false, false, "Long|Float", CanonDefault::None, 0, {}},
@@ -1655,10 +1656,10 @@ inline constexpr CanonSig kCanonSigs_Audio_native[] = {
   {"_Audio", "", "sound_loudness", kCanonParams_Audio_native + 121, 1, "Float?", 1, 1, false, -1, -1, -1},
   {"_Audio", "", "loudness", kCanonParams_Audio_native + 122, 2, "Float?", 2, 2, false, -1, -1, -1},
   {"_Audio", "", "tone_loudness", kCanonParams_Audio_native + 124, 1, "Float?", 1, 1, false, -1, -1, -1},
-  {"_Audio", "", "score_render", kCanonParams_Audio_native + 125, 5, "Array", 5, 5, false, -1, -1, -1},
-  {"_Audio", "", "decode", kCanonParams_Audio_native + 130, 1, "Array", 1, 1, false, -1, -1, -1},
-  {"_Audio", "", "spectrum", kCanonParams_Audio_native + 131, 3, "Array", 3, 3, false, -1, -1, -1},
-  {"_Audio", "", "resample", kCanonParams_Audio_native + 134, 3, "Array", 3, 3, false, -1, -1, -1},
+  {"_Audio", "", "score_render", kCanonParams_Audio_native + 125, 6, "Array", 6, 6, false, -1, -1, -1},
+  {"_Audio", "", "decode", kCanonParams_Audio_native + 131, 1, "Array", 1, 1, false, -1, -1, -1},
+  {"_Audio", "", "spectrum", kCanonParams_Audio_native + 132, 3, "Array", 3, 3, false, -1, -1, -1},
+  {"_Audio", "", "resample", kCanonParams_Audio_native + 135, 3, "Array", 3, 3, false, -1, -1, -1},
 };
 
 inline constexpr CanonParam kCanonParams_Dir_native[] = {

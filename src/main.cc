@@ -2539,6 +2539,11 @@ fn clock(secs) {
   "{s / 60}:{s % 60 < 10 ? "0" : ""}{s % 60}"
 }
 
+# The word after option `name` on the command line, nil without it.
+fn option(name) {
+  Sys.argv.contains(name) ? Sys.argv[Sys.argv.index_of(name) + 1] : nil
+}
+
 fn refuse(e, hint = nil) {
   IO.eprintln("{e.kind}: {e.message}")
   IO.eprintln(hint) if hint != nil
@@ -2562,23 +2567,53 @@ fn play() {
     return nil
   }
   # Written to a WAV file, the song needs no device.
-  let wav = Sys.argv.contains("--wav") ? Sys.argv[Sys.argv.index_of("--wav") + 1] : nil
+  let wav = option("--wav")
   if wav == nil && !Audio.available() {
     IO.eprintln("{path}: no audio device, so nothing plays")
     Sys.exit(1) if !watching
     return nil
   }
+  # The part --from and --to choose, in seconds: each is seconds, minutes and
+  # seconds (1:23) or a mark's name. They come with --wav alone, so a mistake
+  # ends the program.
+  let marks = song.marks()
+  let at = fn (name) {
+    let s = option(name)
+    return nil if s == nil
+    if "0123456789".contains(s.slice(0, 1).to_string()) {
+      let m = s.split(":")
+      return m.size() == 1 ? to_float(s) : to_long(m[0]) * 60 + to_float(m[1])
+    }
+    if !marks.has(s) {
+      let has = marks.empty() ? "none" : marks.keys().join(", ")
+      IO.eprintln("culebra play: {path} has no mark {s} (it has {has})")
+      Sys.exit(1)
+    }
+    marks[s]
+  }
+  let from = at("--from")
+  let to = at("--to")
+  if from != nil && from >= song.length() {
+    IO.eprintln("culebra play: --from {option("--from")} is past the song's end ({clock(song.length())})")
+    Sys.exit(1)
+  }
+  if to != nil && to <= (from ?? 0.0) {
+    let after = from == nil ? "the song's start" : "--from {option("--from")}"
+    IO.eprintln("culebra play: --to {option("--to")} is not after {after}")
+    Sys.exit(1)
+  }
   # The external sounds are built first, saying how far along that is where
   # someone watches: play() would build them all the same, only in silence.
+  # A part builds only its own, as it renders.
   let watched = IO.stdout_is_terminal()
-  mut left = song.prepare()
+  mut left = from == nil && to == nil ? song.prepare() : 0
   while left > 0 {
     print("\rpreparing sounds: {left} left ") if watched
     left = song.prepare()
   }
   print("\r") if watched
   if wav != nil {
-    let samples = song.render()
+    let samples = song.render(from: from, to: to)
     try {
       FS.write(wav, Audio.Sound(samples).data())
     } catch e: IOError {
@@ -2613,10 +2648,29 @@ constexpr std::string_view kPlayWait = R"cul(
 wait_for_change(files_in(folders))
 )cul";
 
-// `culebra play [--sounds FILE] [--check | --wav FILE] <song.kau>` — play a song written
-// in Kauai (docs/kauai/language.md) without a script of one's own. A song's
-// `external` instruments are the program's to supply, and this program has
-// none: they come from the module `--sounds` names.
+// Whether `s` is a point in a song as --from and --to take it: seconds (83,
+// 83.5), minutes and seconds (1:23, 1:23.5), or a mark's name, which starts
+// with a capital letter.
+static bool is_song_point(std::string_view s) {
+  auto digits = [](std::string_view d) {
+    return !d.empty() && std::ranges::all_of(d, [](char c) { return c >= '0' && c <= '9'; });
+  };
+  auto seconds = [&](std::string_view t) {
+    auto dot = t.find('.');
+    return digits(t.substr(0, dot)) && (dot == std::string_view::npos || digits(t.substr(dot + 1)));
+  };
+  if (!s.empty() && s[0] >= 'A' && s[0] <= 'Z') return true;
+  auto colon = s.find(':');
+  if (colon == std::string_view::npos) return seconds(s);
+  auto secs = s.substr(colon + 1);
+  auto whole = secs.substr(0, secs.find('.'));
+  return digits(s.substr(0, colon)) && seconds(secs) && whole.size() == 2 && whole < "60";
+}
+
+// `culebra play [--sounds FILE] [--check | --wav FILE [--from AT] [--to AT]] <song.kau>`
+// — play a song written in Kauai (docs/kauai/language.md) without a script of
+// one's own. A song's `external` instruments are the program's to supply, and
+// this program has none: they come from the module `--sounds` names.
 int run_play(int argc, const char** argv) {
   auto usage = [](FILE* to) {
     std::println(to,
@@ -2628,6 +2682,11 @@ int run_play(int argc, const char** argv) {
                  "  --check              read and check the song, and play nothing\n"
                  "  --wav <file.wav>     write the song once through to a WAV file, as it\n"
                  "                       would sound, and play nothing; no device needed\n"
+                 "  --from <at>          with --wav, write the part from <at> on, heard\n"
+                 "                       from a second before it: seconds (83.5),\n"
+                 "                       minutes and seconds (1:23.5) or a mark's name\n"
+                 "  --to <at>            with --wav, write the part until <at>, and what\n"
+                 "                       starts before it ringing on\n"
                  "  --watch              read it again and play it from the top whenever\n"
                  "                       a .kau or .cul file changes in the song's folder\n"
                  "                       or the sounds module's\n"
@@ -2637,6 +2696,8 @@ int run_play(int argc, const char** argv) {
   optional<string> song;
   optional<string> sounds;
   optional<string> wav;
+  optional<string> from;
+  optional<string> to;
   bool check = false;
   bool watch = false;
   for (int i = 2; i < argc; i++) {
@@ -2644,6 +2705,23 @@ int run_play(int argc, const char** argv) {
     if (arg == "-h" || arg == "--help") {
       usage(stdout);
       return 0;
+    }
+    if (auto name = arg.substr(0, arg.find('=')); name == "--from" || name == "--to") {
+      string at;
+      if (name.size() < arg.size()) {
+        at = arg.substr(name.size() + 1);
+      } else if (i + 1 < argc) {
+        at = argv[++i];
+      }
+      if (!is_song_point(at)) {
+        std::println(stderr,
+                     "culebra play: {} takes seconds (83.5), minutes and seconds (1:23.5) "
+                     "or a mark's name{}",
+                     name, at.empty() ? "" : ", not '" + at + "'");
+        return 2;
+      }
+      (name == "--from" ? from : to) = std::move(at);
+      continue;
     }
     if (arg.starts_with("--sounds=")) {
       sounds = arg.substr(9);
@@ -2693,6 +2771,11 @@ int run_play(int argc, const char** argv) {
                  check ? "--check" : "--watch");
     return 2;
   }
+  if ((from || to) && !wav) {
+    std::println(stderr, "culebra play: {} chooses the part --wav writes, so it needs --wav",
+                 from ? "--from" : "--to");
+    return 2;
+  }
   options.engine_named = options.jit || options.vm != Options::Vm::Off;
   if (!options.jit) options.vm = Options::Vm::Exec;
 
@@ -2729,6 +2812,11 @@ int run_play(int argc, const char** argv) {
   if (wav) {
     culebra::sys_argv().push_back("--wav");
     culebra::sys_argv().push_back(*wav);
+  }
+  for (auto [name, at] : {std::pair{"--from", &from}, std::pair{"--to", &to}}) {
+    if (!*at) continue;
+    culebra::sys_argv().push_back(name);
+    culebra::sys_argv().push_back(**at);
   }
   if (watch) {
     // The folders the song and the sounds module are in, each once, as they

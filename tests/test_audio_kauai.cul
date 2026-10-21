@@ -320,7 +320,7 @@ let mixed = Audio.Kauai.new(lines([
   'song Mixed {', '  tempo 60', '  band Mixed', '  groove Time', '  melody in C4..B4', '  Solo', '}',
   'section Solo {', '  C  c4 d e f', '}',
 ]), drums: {ride: |params| tick})
-let events = mixed._list().iter().chunks(11).collect()
+let events = mixed._list(mixed._plays, nil).iter().chunks(11).collect()
 let times = events.map(|e| e[0])
 assert_eq(events.map(|e| e[1] < 0 ? "sound" : "tone").sorted(), ["sound", "sound", "tone", "tone", "tone", "tone"])
 assert_eq(times, times.sorted())
@@ -335,7 +335,7 @@ let refused = fn (f) {
 }
 let out_of_order = "Audio.Kauai: a song's events are out of time order"
 assert_eq(refused(fn () { _Audio.score_new(backwards, 2.0, -1.0) }), out_of_order)
-assert_eq(refused(fn () { _Audio.score_render(backwards, [], 2.0, 0.0, 1.0) }), out_of_order)
+assert_eq(refused(fn () { _Audio.score_render(backwards, [], 2.0, 0.0, 1.0, 0.0) }), out_of_order)
 let not_a_sound = Audio.Kauai.new(EXTERNAL, voices: {ep: |pitch, params| 1}, drums: {ride: |params| 1})
 assert_throws("TypeError", fn () {
   not_a_sound.prepare()

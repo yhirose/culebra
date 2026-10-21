@@ -5861,7 +5861,7 @@ inline JitValue _ns_audio_score_new(JitValue* a, int64_t) {
 
 // A score rendered to samples as it would play (score_render): Audio.Kauai's
 // list, the bytes of each Sound it plays as [handle, data, handle, data, ...],
-// its length, its room's wet and its volume.
+// its length, its room's wet, its volume, and the second the samples start at.
 inline JitValue _ns_audio_score_render(JitValue* a, int64_t) {
   namespace ad = culebra::_audio_detail;
   std::vector<double> events;
@@ -5877,7 +5877,8 @@ inline JitValue _ns_audio_score_render(JitValue* a, int64_t) {
   std::vector<float> out;
   if (!ad::score_render(events.data(), static_cast<int64_t>(events.size()),
                         _ns_adapt::take_double(a[2]), _ns_adapt::take_double(a[3]),
-                        _ns_adapt::take_double(a[4]), sounds, out))
+                        _ns_adapt::take_double(a[4]), _ns_adapt::take_double(a[5]), sounds,
+                        out))
     culebra::throw_runtime_error_at("ValueError", "Audio.Kauai: render() is not available in this build", 0, 0);
   return _ns_adapt::v_array(_ns_audio_floats(out.data(), out.size(), "Audio.Kauai render() result"));
 }
@@ -11183,7 +11184,7 @@ inline const NsMethod kNsRows_Audio_native[] = {
   {"_Audio", "score_stop",     1, &_ns_audio_on<culebra::_audio_detail::score_stop>},
   {"_Audio", "score_volume",   2, &_ns_audio_set<culebra::_audio_detail::score_volume>},
   {"_Audio", "score_room",     2, &_ns_audio_set<culebra::_audio_detail::score_room>},
-  {"_Audio", "score_render",   5, &_ns_audio_score_render},
+  {"_Audio", "score_render",   6, &_ns_audio_score_render},
   {"_Audio", "resonate",       4, &_ns_audio_resonate},
   {"_Audio", "pluck",          5, &_ns_audio_pluck},
   {"_Audio", "partials",       9, &_ns_audio_partials},

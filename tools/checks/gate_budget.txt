@@ -100,7 +100,9 @@
 # 315 since test_llm.cul (LLM: a tool's schema and what is refused before any
 # request, in a file that names only LLM) and test_llm_server.cul (LLM
 # against a stand-in for the Messages API).
-tests.cul 315
+# 316 since test_audio_kauai_render.cul (a part of a song is the whole song's
+# samples there, and builds only the external sounds it plays).
+tests.cul 316
 
 # tests/isolate/*.cul — run on both engines, plus the over-cap modes.
 # 21 since test_xml_isolate.cul (an XML element keeps its methods across an
@@ -207,7 +209,9 @@ ctest.entries 36
 # with a tool and a request as it is, in en and ja.
 # 1082 since stdlib §40 measures a recording (decode, resample, spectrum,
 # loudness), in en and ja.
-docs.blocks 1082
+# 1084 since Kauai §10 renders a part of a song and lists its marks, in en and
+# ja.
+docs.blocks 1084
 
 # The samples the language front ends are run over (examples/languages/*).
 languages.samples 130

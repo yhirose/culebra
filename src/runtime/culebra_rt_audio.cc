@@ -958,10 +958,10 @@ void score_new(int64_t id, const double* events, int64_t count, double length,
 
 // A mixer of its own plays the score once through, from sample 0 until it
 // lets go of it (its last sound and its room's echoes over), as the stream
-// would; its Sounds decoded here as sound_load decodes them, so no device is
-// needed.
+// would, and keeps the samples from `from` seconds on; its Sounds decoded here
+// as sound_load decodes them, so no device is needed.
 bool score_render(const double* events, int64_t count, double length, double wet,
-                  double volume, const std::vector<SoundBytes>& sounds,
+                  double volume, double from, const std::vector<SoundBytes>& sounds,
                   std::vector<float>& out) {
   PcmByHandle pcm;
   for (const SoundBytes& b : sounds) {
@@ -975,8 +975,11 @@ bool score_render(const double* events, int64_t count, double length, double wet
   score->room->wet.store(std::max(0.0, wet));
   Mixer m;
   m.playing.push_back(PlayingScore{1, std::move(score), 0, 0});
-  for (int64_t p = 0; !m.playing.empty(); p++)
-    out.push_back(static_cast<float>(std::clamp(m.sample(p, 0.0), -1.0, 1.0)));
+  const int64_t first = std::llround(std::max(0.0, from) * kSampleRate);
+  for (int64_t p = 0; !m.playing.empty(); p++) {
+    double v = m.sample(p, 0.0);
+    if (p >= first) out.push_back(static_cast<float>(std::clamp(v, -1.0, 1.0)));
+  }
   return true;
 }
 DecodeResult decode(const uint8_t* data, int64_t len, const char* fmt, Recording& out) {

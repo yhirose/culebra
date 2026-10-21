@@ -993,8 +993,9 @@ check the song and raise the first error of [section 9](#9-errors) as a
 | `volume(v)` | the level of the whole song, `0.0` to `1.0`, from its next note on |
 | `playing()` | whether it is playing: from `play()` until `stop()`, or until its end if it does not `loop` |
 | `reached(NAME)` | whether it has played as far as `mark NAME` |
+| `marks()` | where each `mark NAME` is, as an object of seconds from the start in the song's order: `{Drive: 32.0, Peak: 64.0}` |
 | `prepare()` | builds one external sound, and answers how many remain |
-| `render()` | the song once through as `play()` would sound it, until its last sound and its room's echoes end: an `Array` of mono samples, `44100` a second, from the same mixer, with no audio device; a song that loops is heard once. `FS.write("song.wav", Audio.Sound(song.render()).data())` saves it. Not in the browser, where the page plays a song (`ValueError`) |
+| `render(from:, to:)` | the song once through as `play()` would sound it, until its last sound and its room's echoes end: an `Array` of mono samples, `44100` a second, from the same mixer, with no audio device; a song that loops is heard once. `FS.write("song.wav", Audio.Sound(song.render()).data())` saves it. With `from:` or `to:`, each a mark's name or seconds, only that part of the song (below). Not in the browser, where the page plays a song (`ValueError`) |
 | `length()` | seconds once through |
 | `about()` | what its `about` says, as an object of the items written: `{title: 'Je te veux', composer: 'Erik Satie', year: 1897}`; `{}` without one |
 | `events()` | what it plays, in order: `{at, len, by, pitch, vol}`, with `at` and `len` in seconds, `by` the voice or drum, `pitch` a MIDI note (`nil` for a drum), and `vol` the voice's or drum's `vol` at the note's dynamic, on the tones' `0` to `100` for an external sound too |
@@ -1012,6 +1013,26 @@ let song = Audio.Kauai.load("ballad.kau", voices: {
 song.prepare()          # build one external sound; answers how many remain
 song.play()
 song.reached("Drive")   # has the song passed `mark Drive`?
+```
+
+`render(from:, to:)` renders a part of the song, to hear one passage
+without waiting for the whole song. `from:` and `to:` are each a mark's
+name or seconds from the start, and either can be left out for the top or
+the end. The samples start a second before `from:` (or at the top, if it
+is nearer), rising from silence over that second, so the part is heard at
+its full level from `from:` on. Notes that start before `to:` play to
+their end, and the room's echoes after them. The song is mixed from its top
+all the same, so from `from:` until `to:` the samples are the whole
+song's. Of its external sounds, only the ones played in the part are
+built: those that start before `to:` and play notes in the second before
+`from:` or later, a phrase that runs into the part included whole.
+
+```culebra
+# doctest: skip (reads ballad.kau)
+let song = Audio.Kauai.load("ballad.kau")
+song.marks()                                   # => {Drive: 32.0, Peak: 64.0}
+let drive = song.render(from: "Drive", to: "Peak")
+let bars = song.render(from: 40.5, to: 48.0)   # seconds from the start
 ```
 
 An external voice is built one pitch at a time: for each pitch the song
