@@ -30,6 +30,7 @@
 #include <vector>
 
 #include "culebra_capture.h"
+#include "culebra_decode.h"
 #include "raudio.h"
 
 namespace culebra {
@@ -977,6 +978,17 @@ bool score_render(const double* events, int64_t count, double length, double wet
   for (int64_t p = 0; !m.playing.empty(); p++)
     out.push_back(static_cast<float>(std::clamp(m.sample(p, 0.0), -1.0, 1.0)));
   return true;
+}
+DecodeResult decode(const uint8_t* data, int64_t len, const char* fmt, Recording& out) {
+  auto sink = [](void* ctx, unsigned rate, unsigned channels, const float* frames,
+                 unsigned long long count) {
+    auto& r = *static_cast<Recording*>(ctx);
+    r.rate = static_cast<int>(rate);
+    r.channels = static_cast<int>(channels);
+    r.frames.assign(frames, frames + count * channels);
+  };
+  return culebra_decode(fmt, data, static_cast<size_t>(len), sink, &out) ? DecodeResult::Decoded
+                                                                          : DecodeResult::Undecodable;
 }
 void score_free(int64_t id) {
   auto it = g_scores.find(id);

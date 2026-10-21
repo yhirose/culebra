@@ -70,13 +70,13 @@ assert_throws("ValueError", fn () {
 // nil for silence. A full-scale 997 Hz sine reads -3.01, as BS.1770 sets it.
 let sine = |amp, secs, rate| iota(Math.round(secs * rate)).map(|i| amp * Math.sin(2.0 * Math.pi * 997.0 * i / rate))
 let near = |a, b| Math.abs(a - b) < 0.05
-assert_true(near(_Audio.loudness(sine(1.0, 1.0, 48000), 48000), -3.01))
-assert_true(near(_Audio.loudness(sine(0.5, 1.0, 44100), 44100), -9.03))
+assert_true(near(Audio.loudness(sine(1.0, 1.0, 48000), 48000), -3.01))
+assert_true(near(Audio.loudness(sine(0.5, 1.0, 44100)), -9.03))
 // A sound shorter than 400 ms is heard over 400 ms: a tenth of a second of it
 // a quarter of the power of the same 400 ms.
-assert_true(near(_Audio.loudness(sine(1.0, 0.1, 44100), 44100) - _Audio.loudness(sine(1.0, 0.4, 44100), 44100), -6.02))
-assert_eq(_Audio.loudness(repeat(4410, 0.0), 44100), nil)
-assert_eq(_Audio.loudness([], 44100), nil)
+assert_true(near(Audio.loudness(sine(1.0, 0.1, 44100)) - Audio.loudness(sine(1.0, 0.4, 44100)), -6.02))
+assert_eq(Audio.loudness(repeat(4410, 0.0)), nil)
+assert_eq(Audio.loudness([]), nil)
 // A tone at vol 100 on a pulse at a half's duty: a fifth of full scale, a
 // second of it; what a song weighs an external sound against.
 let square = iota(44100).map(|i| (i * 440.0 / 44100.0) % 1.0 < 0.5 ? 0.2 : -0.2)
@@ -88,10 +88,15 @@ assert_throws("ValueError", fn () {
 // here, quantized as a file is); compressed audio is not decoded before it
 // plays, so its loudness is not known.
 let tone = sine(0.5, 0.5, 44100)
+// A PCM WAV file around `pcm`, its frames `bits` deep.
+let wav_of = fn (pcm, channels, rate, bits) {
+  let align = channels * bits / 8
+  "RIFF" + String.pack("u32", [36 + pcm.size()]) + "WAVEfmt " + String.pack("u32", [16]) +
+    String.pack("u16", [1, channels]) + String.pack("u32", [rate, rate * align]) +
+    String.pack("u16", [align, bits]) + "data" + String.pack("u32", [pcm.size()]) + pcm
+}
 let pcm16 = String.pack("i16", tone.map(|v| Math.round(v * 32767)))
-let wav16 = "RIFF" + String.pack("u32", [36 + pcm16.size()]) + "WAVEfmt " + String.pack("u32", [16]) +
-  String.pack("u16", [1, 1]) + String.pack("u32", [44100, 88200]) + String.pack("u16", [2, 16]) +
-  "data" + String.pack("u32", [pcm16.size()]) + pcm16
+let wav16 = wav_of(pcm16, 1, 44100, 16)
 assert_eq(_Audio.sound_loudness(Audio.Sound.new(tone)._id), _Audio.loudness(tone, 44100))
 assert_true(near(_Audio.sound_loudness(Audio.Sound.new(wav16)._id), _Audio.loudness(tone, 44100)))
 assert_true(_Audio.sound_loudness(Audio.Sound.new(WAV)._id) != nil)
@@ -550,6 +555,60 @@ for (parts, kind, message) in [
 ] {
   assert_eq(caught(|| Audio.mix(parts)), (kind, "Audio.mix: " + message))
 }
+
+// A recording read as it is: its rate, and each channel's samples at the
+// depth it was made in. A Sound's 16-bit WAV gives its samples back; a
+// 24-bit one keeps what 16 bits cannot; a stereo one its two channels apart.
+let read = Audio.decode(Audio.Sound.new([0.0, 0.25, -0.5], rate: 22050).data())
+assert_eq(read.rate, 22050)
+assert_eq(read.channels, [[0.0, 0.25, -0.5]])
+let pcm24 = String.pack("u8", [4194304, 1, -8388608].flat_map(|v| [v & 255, (v >> 8) & 255, (v >> 16) & 255]))
+assert_eq(Audio.decode(wav_of(pcm24, 1, 48000, 24)).channels, [[0.5, 1.0 / 8388608, -1.0]])
+let both_sides = Audio.decode(wav_of(String.pack("i16", [16384, -8192, -16384, 0]), 2, 8000, 16))
+assert_eq(both_sides, {rate: 8000, channels: [[0.5, -0.5], [-0.25, 0.0]]})
+let mp3 = Audio.decode(MP3)
+assert_eq((mp3.rate, mp3.channels.size(), mp3.channels[0].size()), (8000, 1, 2880))
+assert_true(mp3.channels[0].all(|v| Math.abs(v) <= 1.0))
+assert_throws("ValueError", fn () {
+  Audio.decode("not audio")
+})
+assert_throws("ValueError", fn () {
+  Audio.decode(wav16.slice(0, 12).to_string())
+})
+
+// A spectrum, a frame of `size` from every `hop`-th sample: |X_k| of the
+// frame through a periodic Hann window, as numpy's rfft gives it. A constant
+// is bins 0 and 1 (size/2 and size/4); a sine on a bin peaks there at a
+// quarter of the size times its amplitude.
+let at_rate = |freq, n, rate| iota(n).map(|i| 0.5 * Math.sin(2.0 * Math.pi * freq * i / rate))
+assert_samples(Audio.spectrum(repeat(8, 1.0), size: 8, hop: 8)[0], [4.0, 2.0, 0.0, 0.0, 0.0])
+let frames = Audio.spectrum(at_rate(8.0, 400, 64), size: 64, hop: 32)
+assert_eq((frames.size(), frames[0].size()), (13, 33))
+assert_eq(frames[0].index_of(frames[0].max()), 8)
+assert_close(frames[0][8], 8.0, 1e-9)
+assert_eq(Audio.spectrum([]), [])
+assert_eq(Audio.spectrum([1.0]).size(), 1)
+assert_throws("ValueError", fn () {
+  Audio.spectrum([1.0], size: 48)
+})
+assert_throws("ValueError", fn () {
+  Audio.spectrum([1.0], hop: 0)
+})
+
+// Samples at another rate: ceil(n * to / from) of them, a tone kept to within
+// 1e-5, one above the new rate's half gone; the same at the same rate.
+let to44 = Audio.resample(at_rate(1000.0, 2400, 48000), 48000, 44100)
+assert_eq(to44.size(), 2205)
+let kept = at_rate(1000.0, 2205, 44100)
+assert_true(iota(200, 2005).all(|i| Math.abs(to44[i] - kept[i]) < 1e-5))
+let folded = Audio.resample(at_rate(30000.0, 4800, 96000), 96000, 44100)
+assert_true(iota(200, folded.size() - 200).all(|i| Math.abs(folded[i]) < 1e-5))
+assert_eq(Audio.resample([0.1, 0.2, 0.3], 8000, 16000).size(), 6)
+assert_eq(Audio.resample([0.1, 0.2], 44100, 44100), [0.1, 0.2])
+assert_eq(Audio.resample([], 8000, 16000), [])
+assert_throws("ValueError", fn () {
+  Audio.resample([0.1], 0, 44100)
+})
 
 // Closed like the C++ namespaces: an unknown member raises.
 assert_throws("AttributeError", fn () {

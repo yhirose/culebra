@@ -142,3 +142,47 @@ size_t culebra_capture_read(CulebraCapture* c, float* out, size_t frames) {
 }
 
 void culebra_capture_shutdown(void) { ma_context_uninit(&g_capture_ctx); }
+
+// --- a recording read as floats (culebra_decode.h) ---------------------------
+
+#include "culebra_decode.h"
+
+#include <limits.h>
+
+int culebra_decode(const char* fmt, const unsigned char* data, size_t len,
+                   void (*sink)(void* ctx, unsigned rate, unsigned channels,
+                                const float* frames, unsigned long long count),
+                   void* ctx) {
+  unsigned rate = 0, channels = 0;
+  unsigned long long count = 0;
+  float* frames = NULL;
+  if (strcmp(fmt, ".wav") == 0) {
+    drwav_uint64 n = 0;
+    frames = drwav_open_memory_and_read_pcm_frames_f32(data, len, &channels, &rate, &n, NULL);
+    count = n;
+  } else if (strcmp(fmt, ".mp3") == 0) {
+    drmp3_config config = {0};
+    drmp3_uint64 n = 0;
+    frames = drmp3_open_memory_and_read_pcm_frames_f32(data, len, &config, &n, NULL);
+    rate = config.sampleRate;
+    channels = config.channels;
+    count = n;
+  } else if (strcmp(fmt, ".ogg") == 0 && len <= INT_MAX) {
+    int error = 0;
+    stb_vorbis* v = stb_vorbis_open_memory(data, (int)len, &error, NULL);
+    if (v == NULL) return 0;
+    stb_vorbis_info info = stb_vorbis_get_info(v);
+    size_t floats = (size_t)stb_vorbis_stream_length_in_samples(v) * (size_t)info.channels;
+    rate = info.sample_rate;
+    channels = (unsigned)info.channels;
+    frames = floats <= INT_MAX ? RL_MALLOC(floats * sizeof(float)) : NULL;
+    if (frames != NULL)
+      count = (unsigned long long)stb_vorbis_get_samples_float_interleaved(
+          v, info.channels, frames, (int)floats);
+    stb_vorbis_close(v);
+  }
+  if (frames == NULL) return 0;
+  sink(ctx, rate, channels, frames, count);
+  RL_FREE(frames);
+  return 1;
+}

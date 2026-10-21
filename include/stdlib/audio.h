@@ -17,14 +17,17 @@
 //
 // Silent means what a native build answers on a machine with no audio device:
 // nothing plays, a PCM's block counts pushes all the same, and a Capture
-// hears nothing.
+// hears nothing. What needs raudio's code but no device (score_render,
+// decode) answers there, and in the browser, that it is not available.
 
 #include <stdlib/pcm_block.h>
 
 #include <algorithm>
+#include <bit>
 #include <chrono>
 #include <climits>
 #include <cmath>
+#include <complex>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -284,6 +287,15 @@ struct SoundBytes {
   int64_t len = 0;
   const char* fmt = nullptr;
 };
+
+// A recording as decode() reads it: its rate, its channels, and its frames
+// with their channels interleaved, -1..1.
+struct Recording {
+  int rate = 0;
+  int channels = 0;
+  std::vector<float> frames;
+};
+enum class DecodeResult { Decoded, Undecodable, Unavailable };
 
 // --- Parts an instrument builds its sound from, the same on every backend ---
 //
@@ -635,6 +647,120 @@ inline void partials(int64_t n, Param freq, Param gain, const PartialsSpectrum& 
   }
 }
 
+// --- Measuring: a sound's spectrum, its samples at another rate ------------
+
+// The spectrum of a frame of `size` (a power of 2) samples: through a
+// periodic Hann window, then the magnitude |X_k| of bins 0 to size/2, as
+// numpy's rfft gives it (bin k is k * rate / size Hz). An iterative radix-2
+// FFT, its window, input order and twiddles worked out once for every frame.
+class Spectrum {
+ public:
+  explicit Spectrum(size_t size)
+      : size_(size), window_(size), order_(size), twiddle_(size / 2), a_(size) {
+    const double tau = 2.0 * std::numbers::pi, n = static_cast<double>(size);
+    const int bits = std::countr_zero(size);
+    for (size_t i = 0; i < size; i++) {
+      window_[i] = 0.5 - 0.5 * std::cos(tau * static_cast<double>(i) / n);
+      order_[i] = (order_[i >> 1] >> 1) | ((i & 1) << (bits - 1));  // i's bits reversed
+    }
+    for (size_t k = 0; k < size / 2; k++)
+      twiddle_[k] = std::polar(1.0, -tau * static_cast<double>(k) / n);
+  }
+  // Frame t starts at sample t * hop, so `n` samples are ceil(n / hop) frames.
+  static size_t frames(size_t n, size_t hop) { return n == 0 ? 0 : (n - 1) / hop + 1; }
+  size_t bins() const { return size_ / 2 + 1; }
+  // The frame of `x` (`n` long) from `start`, those past the end taken as 0,
+  // into `out` (bins() long).
+  void frame(const double* x, size_t n, size_t start, double* out) {
+    for (size_t i = 0; i < size_; i++)
+      a_[order_[i]] = start + i < n ? x[start + i] * window_[i] : 0.0;
+    for (size_t len = 2; len <= size_; len *= 2) {
+      const size_t half = len / 2, step = size_ / len;
+      for (size_t s = 0; s < size_; s += len)
+        for (size_t j = 0; j < half; j++) {
+          auto t = twiddle_[j * step] * a_[s + j + half];
+          a_[s + j + half] = a_[s + j] - t;
+          a_[s + j] += t;
+        }
+    }
+    for (size_t k = 0; k < bins(); k++) out[k] = std::sqrt(std::norm(a_[k]));
+  }
+
+ private:
+  size_t size_;
+  std::vector<double> window_;
+  std::vector<size_t> order_;
+  std::vector<std::complex<double>> twiddle_, a_;
+};
+
+// I0, the Kaiser window's Bessel function, by its series (std::cyl_bessel_i
+// is not in every standard library).
+inline double bessel_i0(double x) {
+  double sum = 1.0, term = 1.0;
+  const double q = x * x / 4.0;
+  for (int k = 1; term > sum * 1e-17; k++) {
+    term *= q / (static_cast<double>(k) * k);
+    sum += term;
+  }
+  return sum;
+}
+
+// One side of the band-limited interpolation filter resample() reads: a
+// sinc rolled off below the band's edge under a Kaiser window, 64 zero
+// crossings long at 512 points each, the shape of resampy's kaiser_best.
+struct ResampleFilter {
+  static constexpr size_t kZeros = 64;
+  static constexpr size_t kPerZero = 512;
+  std::vector<double> win;  // its kZeros * kPerZero + 1 points, then a 0
+  ResampleFilter() {
+    constexpr double rolloff = 0.9475937167399596, beta = 14.769656459379492;
+    const size_t n = kZeros * kPerZero;
+    const double pi = std::numbers::pi, edge = bessel_i0(beta);
+    win.assign(n + 2, 0.0);
+    for (size_t i = 0; i <= n; i++) {
+      double x = rolloff * static_cast<double>(i) / kPerZero;
+      double sinc = i == 0 ? 1.0 : std::sin(pi * x) / (pi * x);
+      double r = static_cast<double>(i) / static_cast<double>(n);
+      win[i] = rolloff * sinc * bessel_i0(beta * std::sqrt(1.0 - r * r)) / edge;
+    }
+  }
+  // The filter `pos` points from its middle (0 to its last point), between
+  // the two points about it.
+  double at(double pos) const {
+    auto w = static_cast<int64_t>(pos);
+    return win[w] + (pos - static_cast<double>(w)) * (win[w + 1] - win[w]);
+  }
+};
+
+// `x` (`n` long), sampled `from` times a second, as it is sampled `to` times
+// a second into `out`: ceil(n * to / from) samples, each the filter's sum over
+// the samples it reaches about its time (Smith's band-limited interpolation),
+// the band cut below the lower rate's half. The filter is read at each
+// sample's exact distance: rounding the step to its points, as resampy does,
+// leaves an error of -70 dB from 48000 to 44100. The same samples when the
+// rates are equal.
+inline void resample(const double* x, size_t n, double from, double to, std::vector<double>& out) {
+  if (from == to) {
+    out.assign(x, x + n);
+    return;
+  }
+  static const ResampleFilter filter;
+  const double ratio = to / from, scale = std::min(1.0, ratio);
+  const double stride = scale * ResampleFilter::kPerZero;  // filter points a sample apart
+  const double reach = ResampleFilter::kZeros / scale;     // samples it reaches either side
+  const size_t m = n == 0 ? 0 : static_cast<size_t>(std::ceil(static_cast<double>(n) * ratio - 1e-9));
+  out.assign(m, 0.0);
+  for (size_t t = 0; t < m; t++) {
+    const double time = static_cast<double>(t) / ratio;
+    const auto first = static_cast<int64_t>(std::max(0.0, std::ceil(time - reach)));
+    const auto last = static_cast<int64_t>(std::min(static_cast<double>(n - 1), std::floor(time + reach)));
+    double sum = 0.0;
+    for (int64_t j = first; j <= last; j++)
+      sum += filter.at(std::abs(time - static_cast<double>(j)) * stride) * x[j];
+    out[t] = scale * sum;
+  }
+}
+
 // --- Graph: parts wired together, worked out as they play or ahead ---------
 
 enum class WaveKind { Sine, Saw, Square, Triangle };
@@ -950,6 +1076,10 @@ inline bool score_render(const double*, int64_t, double, double, double,
                          const std::vector<SoundBytes>&, std::vector<float>&) {
   return false;
 }
+// The page's decoder answers later, and to the page.
+inline DecodeResult decode(const uint8_t*, int64_t, const char*, Recording&) {
+  return DecodeResult::Unavailable;
+}
 
 #elif defined(CULEBRA_AUDIO_DEVICE)
 
@@ -1021,6 +1151,9 @@ void score_room(int64_t id, double wet);
 bool score_render(const double* events, int64_t count, double length, double wet,
                   double volume, const std::vector<SoundBytes>& sounds,
                   std::vector<float>& out);
+// A recording's bytes (`fmt` sound_format's) read with the decoders a Sound
+// plays through, as floats at its own rate and channels. Needs no device.
+DecodeResult decode(const uint8_t* data, int64_t len, const char* fmt, Recording& out);
 // A graph played: a copy the mixer works out from the next sample on, the
 // changes scheduled after that to the copy's parts sent on to it (a part
 // added since is the next play()'s). graph_now answers where on the
@@ -1076,6 +1209,10 @@ CULEBRA_RT_AUDIO_LINKAGE bool score_render(const double*, int64_t, double, doubl
                                            double, const std::vector<SoundBytes>&,
                                            std::vector<float>&) {
   return false;
+}
+CULEBRA_RT_AUDIO_LINKAGE DecodeResult decode(const uint8_t*, int64_t, const char*,
+                                             Recording&) {
+  return DecodeResult::Unavailable;
 }
 #endif
 

@@ -8848,6 +8848,42 @@ let both = Audio.mix([faded, {samples: string, at: 0.1, gain: 0.5}])
 println(both.size())                                                     # => 48510
 ```
 
+### Measuring a sound
+
+These read sound rather than make it: a recording's samples, what
+frequencies are in them, the same samples at another rate, and how loud
+they are.
+
+| Function | Answer |
+|---|---|
+| `Audio.decode(data: String) -> Object` | a recording's bytes (WAV, MP3 or Ogg) as it is: `{rate, channels}`, `rate` the samples a second it was made at and `channels` an Array of each channel's samples, -1.0..1.0, at the depth it was made in (a 24-bit WAV keeps its 24 bits) |
+| `Audio.spectrum(samples: Array, size = 2048, hop = 512) -> Array` | the magnitudes a frame at a time: frame `t` is the `size` samples from `t * hop` on (past the end taken as 0) through a periodic Hann window, and `frames[t][k]` is the magnitude of bin `k`, `0` to `size / 2`, as numpy's `rfft` gives it. Bin `k` is `k * rate / size` Hz. There are `ceil(samples.size() / hop)` frames |
+| `Audio.resample(samples: Array, from, to) -> Array` | `samples` taken `from` times a second, as they would be taken `to` times: `ceil(n * to / from)` of them, band-limited (a windowed sinc 64 zero crossings wide) so that nothing above half the lower rate folds back. The same samples when the rates are equal |
+| `Audio.loudness(samples: Array, rate = 44100) -> Float?` | how loud `samples` are at their loudest, in LUFS: the loudest 400 ms, K-weighted (ITU-R BS.1770's momentary loudness), the measure Kauai weighs an instrument by. `nil` for silence |
+
+Bytes that are not a recording raise `ValueError`, and so do a `size` that
+is not a power of 2 from 2 to 2^24, a `hop` below 1, and a rate that is
+not from 1 below 2^31. In the browser, `decode` raises `ValueError`: the
+page decodes audio only to play it. The other three work there as natively.
+
+```culebra
+# A second of A at 48000, as a recording would hand it over.
+let a = iota(48000).map(|i| 0.5 * Math.sin(2.0 * Math.pi * 440.0 * i / 48000))
+let made = Audio.decode(Audio.Sound(a, rate: 48000).data())
+println(made.rate)                                                       # => 48000
+println(made.channels.size())                                            # => 1
+
+let xs = Audio.resample(made.channels[0], 48000, 44100)
+println(xs.size())                                                       # => 44100
+
+# The strongest bin of the middle frame, and the frequency it stands for.
+let frames = Audio.spectrum(xs, size: 4096, hop: 1024)
+let mid = frames[frames.size() / 2]
+let peak = mid.index_of(mid.max())
+println(Math.round(peak * 44100 / 4096))                                 # => 441
+println(Math.round(Audio.loudness(xs)))                                  # => -10
+```
+
 ### Graphs
 
 The parts above work out a whole sound before anything plays it.

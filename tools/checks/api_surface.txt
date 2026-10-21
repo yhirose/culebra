@@ -1085,6 +1085,10 @@ Audio.partials(seconds, freq: Array, spectrum: Array, gain: Array = [], noise = 
 Audio.filter(samples: Array, kind: String, cutoff, q = 0.707, rate = 44100) -> Array
 Audio.envelope(samples: Array, gain: Array, rate = 44100) -> Array
 Audio.mix(parts: Array, rate = 44100) -> Array
+Audio.decode(data: String) -> Object
+Audio.spectrum(samples: Array, size = 2048, hop = 512) -> Array
+Audio.resample(samples: Array, from, to) -> Array
+Audio.loudness(samples: Array, rate = 44100) -> Float?
 Audio.Graph.new(rate = 44100)
 g.wave(kind = "sine", freq = 440.0)
 g.noise(seed = 1)

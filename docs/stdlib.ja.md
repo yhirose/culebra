@@ -8490,6 +8490,41 @@ let both = Audio.mix([faded, {samples: string, at: 0.1, gain: 0.5}])
 println(both.size())                                                     # => 48510
 ```
 
+### 音を測る
+
+ここに挙げる関数は、音を作るのではなく調べる。録音のサンプル、そこに含まれる
+周波数、別の速さで取り直したサンプル、音の大きさを返す。
+
+| 関数 | 答え |
+| --- | --- |
+| `Audio.decode(data: String) -> Object` | 録音のバイト列（WAV、MP3、Ogg）を、そのままの形で返す。`{rate, channels}`の`rate`は録音された1秒あたりのサンプル数、`channels`はチャンネルごとのサンプル（-1.0〜1.0）の配列。録音されたときの精度のまま読む（24ビットのWAVは24ビットのまま） |
+| `Audio.spectrum(samples: Array, size = 2048, hop = 512) -> Array` | 区間ごとの周波数の強さ。区間`t`は`t * hop`番目から`size`個のサンプル（終わりより先は0）に周期的なHann窓を掛けたもので、`frames[t][k]`はその`k`番目（`0`から`size / 2`まで）の大きさ。numpyの`rfft`と同じ尺度。`k`番目は`k * rate / size` Hzにあたる。区間の数は`ceil(samples.size() / hop)` |
+| `Audio.resample(samples: Array, from, to) -> Array` | 1秒に`from`個取った`samples`を、1秒に`to`個取ったものに直す。数は`ceil(n * to / from)`。帯域を制限する（窓を掛けたsinc、零点64個分）ので、低いほうの速さの半分より上の音は折り返さない。速さが同じなら同じサンプルを返す |
+| `Audio.loudness(samples: Array, rate = 44100) -> Float?` | `samples`の最も大きいところの音量（LUFS）。K特性を掛けた400ミリ秒のうち最も大きいもの（ITU-R BS.1770のmomentary loudness）で、Kauaiが楽器の音量をそろえるのと同じ物差し。無音なら`nil` |
+
+録音でないバイト列、2から2^24までの2のべき乗でない`size`、1より小さい`hop`、
+1以上2^31未満でない速さは`ValueError`。ブラウザでは`decode`は`ValueError`に
+なる（ページは音を鳴らすためにしか復号しない）。残りの3つはネイティブと同じく
+動く。
+
+```culebra
+# A second of A at 48000, as a recording would hand it over.
+let a = iota(48000).map(|i| 0.5 * Math.sin(2.0 * Math.pi * 440.0 * i / 48000))
+let made = Audio.decode(Audio.Sound(a, rate: 48000).data())
+println(made.rate)                                                       # => 48000
+println(made.channels.size())                                            # => 1
+
+let xs = Audio.resample(made.channels[0], 48000, 44100)
+println(xs.size())                                                       # => 44100
+
+# The strongest bin of the middle frame, and the frequency it stands for.
+let frames = Audio.spectrum(xs, size: 4096, hop: 1024)
+let mid = frames[frames.size() / 2]
+let peak = mid.index_of(mid.max())
+println(Math.round(peak * 44100 / 4096))                                 # => 441
+println(Math.round(Audio.loudness(xs)))                                  # => -10
+```
+
 ### グラフ
 
 上の関数は、鳴らす前に音を全部計算する。`Audio.Graph`は部品をつないでおき、

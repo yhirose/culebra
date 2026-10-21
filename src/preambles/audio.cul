@@ -508,6 +508,25 @@ let _audio_module = fn () {
     filter: filter,
     envelope: envelope,
     mix: mix,
+    # A recording's bytes (WAV, MP3 or Ogg) as it is: {rate, channels}, each
+    # channel its samples, -1.0..1.0.
+    decode: fn (data: String) {
+      let made = _Audio.decode(data)
+      {rate: made[0], channels: made.slice(1, made.size())}
+    },
+    # The magnitudes of `samples` a frame at a time: frames[t][k] is bin k
+    # (k * rate / size Hz) of the `size` samples from t * hop on.
+    spectrum: fn (samples: Array, size: Long = 2048, hop: Long = 512) {
+      _Audio.spectrum(samples, size, hop)
+    },
+    # `samples` taken `from` times a second, as they are taken `to` times.
+    resample: fn (samples: Array, from: Long | Float, to: Long | Float) {
+      _Audio.resample(samples, from, to)
+    },
+    # How loud `samples` are at their loudest, in LUFS; nil when silent.
+    loudness: fn (samples: Array, rate: Long | Float = 44100) {
+      _Audio.loudness(samples, rate)
+    },
     Graph: AudioGraph,
     Sound: Sound,
     Music: Music,

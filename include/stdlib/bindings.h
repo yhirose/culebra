@@ -5403,25 +5403,77 @@ inline JitValue _ns_audio_capture_new(JitValue* a, int64_t) {
   ad::capture_new(id, rate, channels);
   return _ns_adapt::v_long(id);
 }
+// `n` numbers from `p`, every `stride`-th, as an Array of Floats.
+template <class T>
+inline JitArray* _ns_audio_floats(const T* p, size_t n, const char* what, size_t stride = 1) {
+  auto* r = _jit_array_new_reserved(static_cast<int64_t>(n), what);
+  for (size_t i = 0; i < n; i++)
+    culebra_runtime_array_push(r, TAG_FLOAT, _culebra_double_to_bits(static_cast<double>(p[i * stride])));
+  return r;
+}
 inline JitValue _ns_audio_capture_read(JitValue* a, int64_t) {
   thread_local std::vector<float> scratch;  // a block a frame: no allocation
   scratch.clear();
   culebra::_audio_detail::capture_read(_ns_adapt::take_long(a[0]),
                                        _ns_adapt::take_long(a[1]), scratch);
-  auto* r = _jit_array_new_reserved(static_cast<int64_t>(scratch.size()),
-                                    "Audio.Capture.read() result");
-  for (float f : scratch)
-    culebra_runtime_array_push(r, TAG_FLOAT,
-                               _culebra_double_to_bits(static_cast<double>(f)));
-  return _ns_adapt::v_array(r);
+  return _ns_adapt::v_array(_ns_audio_floats(scratch.data(), scratch.size(), "Audio.Capture.read() result"));
 }
 // A samples Array as Floats.
 inline JitValue _ns_audio_samples(const std::vector<double>& xs,
                                   const char* what) {
-  auto* r = _jit_array_new_reserved(static_cast<int64_t>(xs.size()), what);
-  for (double x : xs)
-    culebra_runtime_array_push(r, TAG_FLOAT, _culebra_double_to_bits(x));
+  return _ns_adapt::v_array(_ns_audio_floats(xs.data(), xs.size(), what));
+}
+// A recording's bytes as [rate, channel 0's samples, channel 1's, ...].
+inline JitValue _ns_audio_decode(JitValue* a, int64_t) {
+  namespace ad = culebra::_audio_detail;
+  auto b = _ns_audio_bytes(a[0], ad::sound_format, ad::kSoundFormatError);
+  ad::Recording rec;
+  switch (ad::decode(b.p, b.n, b.fmt, rec)) {
+    case ad::DecodeResult::Unavailable: _ns_audio_fail("Audio.decode: not available in this build");
+    case ad::DecodeResult::Undecodable: _ns_audio_fail(ad::kSoundFormatError);
+    case ad::DecodeResult::Decoded: break;
+  }
+  const auto channels = static_cast<size_t>(rec.channels);
+  const size_t frames = channels == 0 ? 0 : rec.frames.size() / channels;
+  auto* r = _jit_array_new_reserved(static_cast<int64_t>(channels + 1), "Audio.decode() result");
+  culebra_runtime_array_push(r, TAG_LONG, rec.rate);
+  for (size_t c = 0; c < channels; c++) {
+    auto* xs = _ns_audio_floats(rec.frames.data() + c, frames, "Audio.decode() result", channels);
+    culebra_runtime_array_push(r, TAG_ARRAY, reinterpret_cast<int64_t>(xs));
+  }
   return _ns_adapt::v_array(r);
+}
+inline JitValue _ns_audio_spectrum(JitValue* a, int64_t) {
+  namespace ad = culebra::_audio_detail;
+  std::vector<double> xs;
+  _ns_audio_numbers(a[0], xs, ad::kSamplesError);
+  int64_t size = _ns_adapt::take_long(a[1]);
+  int64_t hop = _ns_adapt::take_long(a[2]);
+  if (!(size >= 2 && size <= (1 << 24) && std::has_single_bit(static_cast<uint64_t>(size))))
+    _ns_audio_fail("Audio.spectrum: the size is a power of 2 from 2 to 2^24");
+  if (!(hop >= 1)) _ns_audio_fail("Audio.spectrum: the hop is 1 or more");
+  ad::Spectrum spectrum(static_cast<size_t>(size));
+  std::vector<double> row(spectrum.bins());
+  const size_t frames = ad::Spectrum::frames(xs.size(), static_cast<size_t>(hop));
+  auto* r = _jit_array_new_reserved(static_cast<int64_t>(frames), "Audio.spectrum() result");
+  for (size_t f = 0; f < frames; f++) {
+    spectrum.frame(xs.data(), xs.size(), f * static_cast<size_t>(hop), row.data());
+    auto* mags = _ns_audio_floats(row.data(), row.size(), "Audio.spectrum() result");
+    culebra_runtime_array_push(r, TAG_ARRAY, reinterpret_cast<int64_t>(mags));
+  }
+  return _ns_adapt::v_array(r);
+}
+inline JitValue _ns_audio_resample(JitValue* a, int64_t) {
+  namespace ad = culebra::_audio_detail;
+  std::vector<double> xs, out;
+  _ns_audio_numbers(a[0], xs, ad::kSamplesError);
+  double from = _ns_adapt::take_double(a[1]);
+  double to = _ns_adapt::take_double(a[2]);
+  if (!(from >= 1 && from <= INT32_MAX && to >= 1 && to <= INT32_MAX))
+    _ns_audio_fail("Audio.resample: a rate is from 1 below 2^31");
+  culebra::alloc_or_too_large("Audio.resample: the samples", 0, 0,
+                              [&] { ad::resample(xs.data(), xs.size(), from, to, out); });
+  return _ns_audio_samples(out, "Audio.resample() result");
 }
 // Checked here, before any samples are touched: a rate above zero, and each
 // mode a freq inside (0, rate/2) and a width above zero.
@@ -5827,10 +5879,7 @@ inline JitValue _ns_audio_score_render(JitValue* a, int64_t) {
                         _ns_adapt::take_double(a[2]), _ns_adapt::take_double(a[3]),
                         _ns_adapt::take_double(a[4]), sounds, out))
     culebra::throw_runtime_error_at("ValueError", "Audio.Kauai: render() is not available in this build", 0, 0);
-  auto* r = _jit_array_new_reserved(static_cast<int64_t>(out.size()), "Audio.Kauai render() result");
-  for (float f : out)
-    culebra_runtime_array_push(r, TAG_FLOAT, _culebra_double_to_bits(static_cast<double>(f)));
-  return _ns_adapt::v_array(r);
+  return _ns_adapt::v_array(_ns_audio_floats(out.data(), out.size(), "Audio.Kauai render() result"));
 }
 
 inline JitValue _ns_canvas_width(JitValue*, int64_t) {
@@ -11144,6 +11193,9 @@ inline const NsMethod kNsRows_Audio_native[] = {
   {"_Audio", "sound_samples",  2, &_ns_audio_sound_samples},
   {"_Audio", "sound_loudness", 1, &_ns_audio_sound_loudness},
   {"_Audio", "loudness",       2, &_ns_audio_loudness},
+  {"_Audio", "decode",         1, &_ns_audio_decode},
+  {"_Audio", "spectrum",       3, &_ns_audio_spectrum},
+  {"_Audio", "resample",       3, &_ns_audio_resample},
   {"_Audio", "tone_loudness",  1, &_ns_audio_tone_loudness},
   {"_Audio", "graph_new",      1, &_ns_audio_graph_new},
   {"_Audio", "graph_part",     5, &_ns_audio_graph_part},
