@@ -379,7 +379,9 @@ inline void _jit_derived_cmp_thunk(JitValue* __ret, JitClosure*, int8_t self_tag
 }
 
 // Build a derived-method closure. `kind`: 0=eq, 1=hash, 2=show, 3=cmp.
-// Returns +1 (the class meta slot takes ownership).
+// Returns +1 (the class meta slot takes ownership). Portable: the thunks
+// capture nothing and read only `self` and their argument, so a meta holding
+// them (every @value class's, every @derive one's) can cross an Isolate.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitClosure*
 culebra_runtime_make_derived_method(int64_t kind) {
   void* thunk = nullptr;
@@ -390,9 +392,10 @@ culebra_runtime_make_derived_method(int64_t kind) {
     case 2: thunk = reinterpret_cast<void*>(&_jit_derived_show_thunk); arity = 0; break;
     case 3: thunk = reinterpret_cast<void*>(&_jit_derived_cmp_thunk); arity = 1; break;
   }
-  return culebra_runtime_closure_new(thunk, /*n_captures=*/0, arity,
-                                     JIT_CLOSURE_NATIVE | JIT_CLOSURE_DERIVED,
-                                     /*meta=*/nullptr);
+  return culebra_runtime_closure_new(
+      thunk, /*n_captures=*/0, arity,
+      JIT_CLOSURE_NATIVE | JIT_CLOSURE_DERIVED | JIT_CLOSURE_PORTABLE,
+      /*meta=*/nullptr);
 }
 
 // What a function body declares, in the form the runtime reads it back: one

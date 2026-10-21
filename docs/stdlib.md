@@ -2653,7 +2653,7 @@ A violation throws `SendError` at the `spawn` site (never a silent copy):
 |---|---|
 | numbers, `String`, `Bool`, `nil` | a native handle (`Proc` / `File` / isolate handle) |
 | `Array` / `Object` / `Set` / `Tuple` of Sendable values | a `Tensor` (share via a buffer instead — planned) |
-| `enum` / data-class instances | a closure that captures a `mut` variable |
+| `enum` / class instances, `@value` and `@derive` ones included | a closure that captures a `mut` variable |
 | a closure capturing only Sendable values | a value that refers to itself (a cycle) |
 | a free function (`fn name(...)`), captured by reference | a generator (send what it yields, or call the generator function on the other side) |
 
@@ -2692,6 +2692,11 @@ is copied at the spawn, as the sent closure's captures are, and rebuilt in the
 worker only when it calls that default. A class value itself
 (`Isolate.spawn(|| Sq(1))` naming a top-level `Sq`) is not Sendable; pass an
 instance in, or declare the class inside the closure.
+
+A `@value` instance arrives as a value: frozen as it was, and equal to the
+one that was sent, compared and hashed by its fields. It is Sendable once
+its `new` has returned; sending one from inside its own `new`, before it is
+frozen, is a `SendError`.
 
 ### Parallelism cap
 

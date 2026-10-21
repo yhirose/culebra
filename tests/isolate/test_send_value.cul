@@ -1,0 +1,119 @@
+# A `@value` or `@derive` instance crosses an isolate boundary, and a value
+# stays one on the other side. Their derived `eq` / `hash` / `to_s` / `cmp`
+# are C++ helpers that read only `self` and their argument, but were refused
+# as any C++-bodied function is, so no such instance could be sent at all.
+# Runs under both engines.
+
+fn caught(thunk) {
+  try {
+    thunk()
+  } catch e {
+    "{e.kind}: {e.message}"
+  }
+}
+
+@value
+class V {
+  x: Long
+  y: Float
+  new(.x, .y) {}
+  sum() {
+    to_float(self.x) + self.y
+  }
+}
+
+@value
+class Pair {
+  a: V
+  b: V
+  new(.a, .b) {}
+}
+
+# --- methods, == and hash work in the worker, without naming the class ------
+let v = V(1, 2.5)
+let u = V(1, 2.5)
+let in_child = Isolate.spawn(fn () {
+  [v.sum(), v == u, v.hash() == u.hash(), Set(v).contains(u), match v {
+    w: V => "V",
+    _ => "other",
+  }]
+}).join()
+assert_eq(in_child, [3.5, true, true, true, "V"])
+
+# --- what comes back is equal to what went, and still a value ---------------
+let back = Isolate.spawn(|p| p, v).join()
+assert_eq(back == v, true)
+assert_eq(back.hash(), v.hash())
+let local_write = caught(fn () {
+  let w = V(1, 2.5)
+  w.x = 3
+})
+let local_add = caught(fn () {
+  let w = V(1, 2.5)
+  w.z = 9
+})
+let local_add_entry = caught(fn () {
+  let w = V(1, 2.5)
+  w[(1, 2)] = 1
+})
+let local_remove = caught(|| V(1, 2.5).remove("x"))
+assert_eq(caught(fn () {
+  back.x = 3
+}), local_write)
+assert_eq(caught(fn () {
+  back.z = 9
+}), local_add)
+assert_eq(caught(fn () {
+  back[(1, 2)] = 1
+}), local_add_entry)
+assert_eq(caught(|| back.remove("x")), local_remove)
+
+# --- a nested value, and one through a channel ------------------------------
+let (tx, rx) = Channel.new(2)
+tx.send(Pair(V(1, 1.0), V(2, 2.0)))
+let pr = rx.recv()
+assert_eq(pr.b.sum(), 4.0)
+assert_eq(caught(fn () {
+  pr.b.z = 1
+}), local_add)
+tx.send(Set(V(1, 1.0), V(1, 1.0), V(2, 1.0)))
+assert_eq(rx.recv().size(), 2)
+
+# --- values from two messages are one value ---------------------------------
+let (tx2, rx2) = Channel.new(2)
+tx2.send(V(7, 0.5))
+tx2.send(V(7, 0.5))
+let m1 = rx2.recv()
+let m2 = rx2.recv()
+assert_eq(
+  [m1 == m2, m1.hash() == m2.hash(), Set(m1, m2).size()],
+  [true, true, 1],
+)
+
+# --- a @derive class crosses with its derived methods -----------------------
+@derive(Eq, Hash, Show)
+class D {
+  new(.x) {}
+}
+let d = D(7)
+let d2 = D(7)
+assert_eq(
+  Isolate.spawn(|| [d == d2, d.to_s(), d.hash() == d2.hash()]).join(),
+  [true, "D(7)", true],
+)
+
+# --- not before its `new` returns: a copy made then would never freeze -----
+let (etx, erx) = Channel.new(1)
+@value
+class Early {
+  x: Long
+  new(.x) {
+    etx.send(self)
+  }
+}
+assert_eq(
+  caught(|| Early(1)),
+  "SendError: a @value instance is not Sendable until its `new` returns",
+)
+
+inspect("test_send_value: all assertions passed")

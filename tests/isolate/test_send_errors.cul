@@ -152,9 +152,8 @@ let (stx, srx) = Channel.new(1)
 stx.send(SendP.new(5))
 assert_eq(srx.recv().get(), 5)
 
-# A class object (its ctor is native on the interp side) and a `C.new`
-# value reject on both backends — and so does a @derive class instance,
-# whose meta carries native derived thunks.
+# A class object (its ctor is flagged native) and a `C.new` value reject on
+# both backends.
 let kls = caught(fn () {
   Isolate.spawn(fn () {
     SendP.new(1)

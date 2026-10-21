@@ -6993,6 +6993,9 @@ is not a field read, a same-class operand or a reassignment — passing `v`
 to an untyped function, storing it in an array — puts that binding on the
 ordinary path for its whole scope.
 
+An instance crosses an isolate boundary as a value: it arrives frozen and
+equal to the one that was sent ([stdlib §12](stdlib.md#12-isolate)).
+
 ### Built-in decorator: `@packable`
 
 `@packable` is not a callable — it marks a class as a **fixed-layout

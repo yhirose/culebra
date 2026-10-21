@@ -373,6 +373,11 @@ inline sendable::SendNode jit_serialize(JitValue v, JitSerCtx& ctx) {
           sendable::send_error("a native handle is not Sendable");
         case JitHandleKind::None: break;
       }
+      // A @value instance freezes when its `new` returns, and a copy made
+      // before then never would.
+      if (o->fields_closed && !o->frozen)
+        sendable::send_error(
+            "a @value instance is not Sendable until its `new` returns");
       if (!ctx.visiting.insert(o).second)
         sendable::send_error("a cyclic value cannot be sent");
       culebra::ValueWalkFrame walk;
@@ -409,9 +414,9 @@ inline sendable::SendNode jit_serialize(JitValue v, JitSerCtx& ctx) {
       // side — the interp gets the same effect from methods being own
       // props. Many instances share one meta, so it is memoized (same id
       // space as closures; the pointers never collide) and a repeat ships
-      // as a backref. A meta whose methods reach a native closure (derived
-      // eq/show thunks, a method capturing the class object and thus its
-      // ctor) rejects exactly like the interp's body==nullptr check.
+      // as a backref. A meta whose methods reach a native closure that is
+      // not portable (a method capturing the class object and thus its
+      // ctor) is refused there.
       n.s = _jit_class_meta_names(o);
       if (o->proto()) {
         if (auto it = ctx.proto_ids.find(o->proto());

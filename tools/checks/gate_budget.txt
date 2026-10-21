@@ -112,7 +112,9 @@ tests.cul 313
 # 23 since test_send_object_facts.cul (what a message rebuilds is the Object
 # that was sent: its typed fields, its drop gate, a Regex match, a layout of
 # more than 64 fields).
-tests.isolate 23
+# 24 since test_send_value.cul (a @value or @derive instance crosses, and a
+# value stays one on the other side).
+tests.isolate 24
 
 # tests/gen_frames/*.cul: the generator probes held to frozen outputs, on both
 # engines in the landing gate and under the collector's axes and `culebra

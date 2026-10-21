@@ -308,4 +308,21 @@ test_value_statics_are_not_frozen_fields = fn () {
 }
 test_value_statics_are_not_frozen_fields()
 
+# A value crosses an isolate boundary as a value: what comes back is equal
+# to what went, and is frozen as it was.
+fn test_value_crosses_an_isolate() {
+  @value
+  class Sent {
+    x: Long
+    new(.x) {}
+  }
+  let sent = Sent(4)
+  let back = Isolate.spawn(|s| s, sent).join()
+  assert_eq(back == sent, true)
+  assert_throws('ImmutableError', fn () {
+    back.y = 1
+  })
+}
+test_value_crosses_an_isolate()
+
 inspect('value-class OK')

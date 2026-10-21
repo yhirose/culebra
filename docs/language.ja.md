@@ -6697,6 +6697,9 @@ v.remove('x')    # ImmutableError: cannot remove property 'x' from a @value inst
 — untypedな関数に`v`を渡す、配列に入れる、など — その束縛はスコープ
 全体で通常の経路に戻る。
 
+インスタンスはisolateの境界を値として越える。凍結されたまま、送ったものと
+等しい値として届く（[stdlib §12](stdlib.ja.md#12-isolate)）。
+
 ### 組み込みデコレータ: `@packable`
 
 `@packable`は呼び出し可能値ではなく、クラスを**固定レイアウトの構造体**
