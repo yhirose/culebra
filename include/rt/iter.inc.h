@@ -4065,9 +4065,11 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_object_get_or_put(
     // (`d.get_or_put(k, |a| a)`), or a throwing body — and a tail release
     // would sit past that edge. RAII so the closure dies exactly once either
     // way.
+    // No receiver, as the higher-order helpers call theirs: a thunk written
+    // in a method reads that method's `self`.
     JitOwnedVal init_guard(JitValue{it_tag, it_data});
     v = culebra_runtime_call_with_kwargs(
-        reinterpret_cast<JitClosure*>(it_data), int8_t{TAG_NIL}, int64_t{0}, 0,
+        reinterpret_cast<JitClosure*>(it_data), TAG_NO_SELF, int64_t{0}, 0,
         nullptr, 0, nullptr, nullptr, 0, nullptr, line, col);
   } else {
     v = JitValue{it_tag, it_data};  // use as-is (already +1)

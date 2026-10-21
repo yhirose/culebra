@@ -110,3 +110,22 @@ try {
   native_init_msg = "{e.kind}: {e.message}"
 }
 assert_eq(native_init_msg, "ArityError: expected 1 positional argument, got 0")
+
+// A thunk written in a method reads the method's `self`, as one handed to
+// map does: the dict it fills is not its receiver.
+class Cache {
+  new() {
+    self.made = 0
+    self.store = {}
+  }
+  get(k) {
+    self.store.get_or_put(k, fn () {
+      self.made += 1
+      "{k}{self.made}"
+    })
+  }
+}
+cache = Cache()
+assert_eq(cache.get("a"), "a1")
+assert_eq(cache.get("a"), "a1")
+assert_eq(cache.get("b"), "b2")
