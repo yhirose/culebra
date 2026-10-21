@@ -113,7 +113,23 @@ class Early {
 }
 assert_eq(
   caught(|| Early(1)),
-  "SendError: a @value instance is not Sendable until its `new` returns",
+  "SendError: a @value instance whose `new` has not returned is not Sendable",
+)
+# ... nor one a `new` that threw left behind, which never returns.
+mut leaked = nil
+@value
+class Thrown {
+  x: Long
+  new(.x) {
+    leaked = self
+    throw {kind: 'ValueError', message: 'refused'}
+  }
+}
+assert_eq(caught(|| Thrown(1)), "ValueError: refused")
+let (ltx, lrx) = Channel.new(1)
+assert_eq(
+  caught(|| ltx.send(leaked)),
+  "SendError: a @value instance whose `new` has not returned is not Sendable",
 )
 
 inspect("test_send_value: all assertions passed")

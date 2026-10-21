@@ -308,9 +308,10 @@ test_value_statics_are_not_frozen_fields = fn () {
 }
 test_value_statics_are_not_frozen_fields()
 
-# A value crosses an isolate boundary as a value: what comes back is equal
-# to what went, and is frozen as it was.
-fn test_value_crosses_an_isolate() {
+test_value_crosses_an_isolate = fn () {
+  # A value crosses an isolate boundary as a value: what comes back is
+  # equal to what went, and is frozen as it was. Here as well as in
+  # tests/isolate, which the AOT and collector lanes do not run.
   @value
   class Sent {
     x: Long

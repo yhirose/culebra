@@ -134,6 +134,13 @@ assert_eq(shared_refusal(fn () { [|x| x, cyc] }), refused_cycle)
 assert_eq(shared_refusal(fn () { [cyc, |x| x] }), refused_cycle)
 assert_eq(shared_refusal(fn () { [|x| x, println] }),
   'SendError: Shared.new: a native/builtin function is not Sendable')
+# A @value instance can be sent, and its class's methods are functions.
+@value
+class SharedValue {
+  x: Long
+  new(.x) {}
+}
+assert_eq(shared_refusal(fn () { SharedValue(1) }), refused_fn)
 refused_inner.drop()
 assert_eq(shared_refusal(fn () { [refused_inner] }),
   'ClosedError: Shared.new: Shared value has been dropped')

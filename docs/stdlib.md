@@ -2695,8 +2695,9 @@ instance in, or declare the class inside the closure.
 
 A `@value` instance arrives as a value: frozen as it was, and equal to the
 one that was sent, compared and hashed by its fields. It is Sendable once
-its `new` has returned; sending one from inside its own `new`, before it is
-frozen, is a `SendError`.
+its `new` has returned: one whose `new` has not, sent from inside that
+`new` or left behind by a `new` that threw, is never frozen, and sending it
+is a `SendError`.
 
 ### Parallelism cap
 

@@ -374,10 +374,11 @@ inline sendable::SendNode jit_serialize(JitValue v, JitSerCtx& ctx) {
         case JitHandleKind::None: break;
       }
       // A @value instance freezes when its `new` returns, and a copy made
-      // before then never would.
+      // before then never would: sent from inside it, or left behind by one
+      // that threw.
       if (o->fields_closed && !o->frozen)
         sendable::send_error(
-            "a @value instance is not Sendable until its `new` returns");
+            "a @value instance whose `new` has not returned is not Sendable");
       if (!ctx.visiting.insert(o).second)
         sendable::send_error("a cyclic value cannot be sent");
       culebra::ValueWalkFrame walk;
