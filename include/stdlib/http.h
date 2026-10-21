@@ -197,8 +197,9 @@ struct HttpRequest {
                                    // must not go through a proxy.
   bool follow_redirects = true;    // 3xx Location chasing.
   BodySink body_sink = nullptr;    // set → stream the response body (no buffer).
-  bool sink_success_only = false;  // body_sink gets a 2xx body only; any other
-                                   // status buffers into HttpResult::body.
+  std::string sink_media_type;     // set → body_sink gets only a 2xx response
+                                   // of this Content-Type; any other buffers
+                                   // into HttpResult::body.
   BodySource body_source = nullptr;// set → stream the request body (chunked).
   std::vector<MultipartPart> multipart;  // non-empty → multipart/form-data body.
 };
@@ -221,6 +222,18 @@ inline bool _iequals(std::string_view a, std::string_view b) {
     }
   }
   return true;
+}
+
+// True when a Content-Type value names `type`: parameters (`; charset=...`)
+// and surrounding whitespace aside, compared case-insensitively (RFC 9110
+// §8.3.1).
+inline bool _http_media_type_is(std::string_view content_type,
+                                std::string_view type) {
+  auto mt = content_type.substr(0, content_type.find(';'));
+  auto ws = [](char c) { return c == ' ' || c == '\t'; };
+  while (!mt.empty() && ws(mt.front())) mt.remove_prefix(1);
+  while (!mt.empty() && ws(mt.back())) mt.remove_suffix(1);
+  return _iequals(mt, type);
 }
 
 // Split "scheme://host:port/path?query#frag" into the origin the Client ctor
@@ -399,8 +412,8 @@ inline std::string _http_join_path(const std::string& base_path,
 }
 
 // Where a streamed response body goes once its status is known: to
-// req.body_sink, or — a non-2xx under sink_success_only — into `held`, which
-// _http_send returns as HttpResult::body.
+// req.body_sink, or — a response sink_media_type does not admit — into
+// `held`, which _http_send returns as HttpResult::body.
 struct _HttpBodyRoute {
   bool to_sink = true;
   std::string held;
@@ -532,9 +545,11 @@ inline void _http_build_request(const HttpRequest& req, const std::string& path,
   // buffering it into res->body (which then stays empty). httplib calls the
   // response handler once, for the final response (not a followed redirect).
   if (req.body_sink) {
-    if (req.sink_success_only) {
-      hreq.response_handler = [&route](const httplib::Response& r) {
-        route.to_sink = r.status >= 200 && r.status < 300;
+    if (!req.sink_media_type.empty()) {
+      hreq.response_handler = [&req, &route](const httplib::Response& r) {
+        route.to_sink = r.status >= 200 && r.status < 300 &&
+                        _http_media_type_is(r.get_header_value("Content-Type"),
+                                            req.sink_media_type);
         return true;
       };
     }

@@ -4059,10 +4059,14 @@ Each event is an Object with three String fields:
 | `data`  | the `data:` payload; multiple `data:` lines are joined with `\n` |
 | `id`    | the last `id:` field seen, or `""` |
 
-Only a `2xx` response is read as events. Any other status is not an event
-stream: the function is never called and the body stays in `body`, so an error
-the server explains (a rate limit, a malformed request) can still be read —
-check `ok` afterwards. A `2xx` leaves `body` empty, as `into:` does.
+Only an event stream is read as events: a `2xx` response whose `Content-Type`
+is `text/event-stream`, compared ignoring case and without parameters such as
+`charset`. Anything else is not a stream, so the function is never called and
+the body stays in `body`. An error the server explains (a rate limit, a
+malformed request) can still be read, and so can a `2xx` that answered with
+something other than a stream; that one leaves `ok` true, so a caller that
+needs events checks that some arrived. A stream leaves `body` empty, as
+`into:` does.
 
 `Accept: text/event-stream` is sent unless the request's own `headers` set
 `Accept`. Comment lines (`: ...`) and the `retry:` field are ignored, and a
@@ -4159,8 +4163,9 @@ an `IOError`.
 
 Open a Server-Sent Events stream with a `GET`, as a browser's `EventSource`
 does, and call `on_event` with each event. It is
-`Http.get(url, events: on_event)`: the event fields, the `2xx` rule, the
-`Accept` header and the error model are those of the `events:` argument above.
+`Http.get(url, events: on_event)`: the event fields, what is read as a stream,
+the `Accept` header and the error model are those of the `events:` argument
+above.
 
 ```culebra
 # doctest: skip

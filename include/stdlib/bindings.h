@@ -2326,8 +2326,9 @@ inline void _http_setup_into(JitValue into, culebra::http::HttpRequest& req,
 }
 
 // Configure `req.body_sink` to decode the body as Server-Sent Events and call
-// `events` with each {event, data, id}. Only a 2xx body is read as events; any
-// other status keeps its body in the response, so an error stays readable.
+// `events` with each {event, data, id}. Only an event stream (a 2xx of
+// text/event-stream) is read as events; any other response keeps its body, so
+// an error, or an answer that did not stream, stays readable.
 inline void _http_setup_events(JitValue events, culebra::http::HttpRequest& req,
                                JitHttpSink& st, const char* ctx) {
   if (events.tag != TAG_FUNC) {
@@ -2360,7 +2361,7 @@ inline void _http_setup_events(JitValue events, culebra::http::HttpRequest& req,
     }
   };
   req.body_sink = [&st](const char* d, size_t n) { return st.sse.feed(d, n); };
-  req.sink_success_only = true;
+  req.sink_media_type = "text/event-stream";
 }
 
 // The response sink of every Http request: `into` or `events`, at most one.

@@ -108,6 +108,16 @@ iso = Isolate.spawn(fn () {
   srv.get("/busy", fn (req) {
     {status: 503, body: "busy"}
   })
+  # A 2xx that did not stream: JSON where events were asked for.
+  srv.post("/events_json", fn (req) {
+    {content_type: "application/json", body: '{"id":"msg_1"}'}
+  })
+  # A stream whose media type is spelled with another case and a parameter.
+  srv.post("/events_charset", fn (req) {
+    {content_type: "Text/Event-Stream; charset=utf-8", stream: fn (sink) {
+      sink.write("data: ok\n\n")
+    }}
+  })
   srv.get("/stream_both", fn (req) {
     {body: "x", stream: fn (sink) {
       sink.write("y")
@@ -221,6 +231,17 @@ assert_eq(own_accept, ['', 'text/plain'])
 let refused = []
 let rr = Http.post(BASE + "/events_refused", json: {}, events: |e| refused.push(e.data))
 assert_eq("{refused.size()} | {rr.status} | {rr.body}", '0 | 429 | {"error":"slow down"}')
+
+# Nor is a 2xx of another media type: it is an answer that did not stream, so
+# events is never called and the body stays in the response, `ok` and all.
+let unstreamed = []
+let rj = Http.post(BASE + "/events_json", json: {}, events: |e| unstreamed.push(e.data))
+assert_eq("{unstreamed.size()} | {rj.ok} | {rj.body}", '0 | true | {"id":"msg_1"}')
+
+# The media type is matched whatever its case, and its parameters aside.
+let charset = []
+Http.post(BASE + "/events_charset", events: |e| charset.push(e.data))
+assert_eq(charset, ['ok'])
 
 # A throw from the callback ends the stream and propagates as it is.
 assert_throws("ValueError", fn () {
