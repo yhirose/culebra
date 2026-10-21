@@ -2029,6 +2029,14 @@ enable_testing()
 # so signal handlers / thread_locals / GC state stay isolated per test.
 add_executable(smoke_suite tests/embedding/smoke_suite.cc)
 target_compile_features(smoke_suite PRIVATE cxx_std_23)
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+  # The largest TU of the tree (6.4 GB at -O3, GCC letting its heap double
+  # between collections); collecting sooner holds it to 4.0 GB for 20 s more,
+  # spent off the build's critical path.
+  target_compile_options(smoke_suite PRIVATE
+                         --param=ggc-min-expand=20
+                         --param=ggc-min-heapsize=131072)
+endif()
 if(APPLE)
   # cpp-tensorlib backends (in-process embedding uses tensors directly)
   target_link_libraries(smoke_suite
