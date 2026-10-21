@@ -268,7 +268,8 @@ inline double tone_loudness(double freq) {
   return loudness(x.data(), n, kMixerRate);
 }
 
-// Numbers an event takes in a score's flat list (score_new).
+// Numbers an event takes in a score's flat list (score_new), which Audio.Kauai
+// hands over in time order: the mixers read it from the head.
 inline constexpr int64_t kScoreStride = 11;
 
 // A Sound a score plays, by the bytes it was made from, for score_render: the

@@ -307,6 +307,25 @@ let heard = ticked.render()
 assert_true(heard.slice(0, 2205).map(|v| Math.abs(v)).max() > 0.01)
 assert_eq(heard.slice(88200, 88200 + 2205), heard.slice(0, 2205))
 assert_eq(heard.slice(2205, 88200).map(|v| Math.abs(v)).max(), 0.0)
+# The mixers read a song's list from its head (the page schedules ahead from
+# there), so tones and external sounds come in one time order: a sound is
+# not left behind every tone.
+let mixed = Audio.Kauai.new(lines([
+  'band Mixed {',
+  '  voice Tune  pulse  plays melody  vol 20',
+  '  drum Ride   external Ride        vol 50',
+  '}',
+  'groove Time {',
+  '  Ride  x.x.',
+  '}',
+  'song Mixed {', '  tempo 60', '  band Mixed', '  groove Time', '  melody in C4..B4', '  Solo', '}',
+  'section Solo {', '  C  c4 d e f', '}',
+]), drums: {ride: |params| tick})
+let list = mixed._list()
+let times = iota(list.size() / 11).map(|k| list[k * 11])
+let kinds = iota(list.size() / 11).map(|k| list[k * 11 + 1] < 0 ? "sound" : "tone")
+assert_eq(kinds.sorted(), ["sound", "sound", "tone", "tone", "tone", "tone"])
+assert_eq(times, times.sorted())
 let not_a_sound = Audio.Kauai.new(EXTERNAL, voices: {ep: |pitch, params| 1}, drums: {ride: |params| 1})
 assert_throws("TypeError", fn () {
   not_a_sound.prepare()

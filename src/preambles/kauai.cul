@@ -2518,9 +2518,11 @@ let _kauai_module = fn () {
           (by, l == nil ? 1.0 : 10.0 ** ((tone_loudness(w.pitch) - l) / 20.0))
         }).to_object()
       }
-      let tones = self._events.filter(|e| e.has("tone")).flat_map(|e| [e.at, ...e.tone])
-      let sounds = self._plays.flat_map(|p| [p.at, -1, self._sounds[p.sound]._id, p.vol / 100.0 * self._weights[p.by], 0, 0, 0, 0, 0, 0, 0])
-      [...tones, ...sounds]
+      let tones = self._events.filter(|e| e.has("tone")).map(|e| [e.at, ...e.tone])
+      let sounds = self._plays.map(|p| [p.at, -1, self._sounds[p.sound]._id, p.vol / 100.0 * self._weights[p.by], 0, 0, 0, 0, 0, 0, 0])
+      # In time order, as both mixers read it (the page schedules ahead from
+      # the head of the list): at one time, the tones first.
+      [...tones, ...sounds].sorted_by(|e| e[0]).flat_map(|e| e)
     }
 
     # Play from the top (again, if it is playing), after building what is left.

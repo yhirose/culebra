@@ -14,6 +14,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cassert>
 #include <chrono>
 #include <cmath>
 #include <condition_variable>
@@ -903,10 +904,6 @@ void tone(int64_t start_freq, int64_t end_freq, int64_t attack, int64_t decay,
   g_inbox[g_inbox_count++] = Queued{start, static_cast<int>(channel), n};
 }
 
-// `events` is Audio.Kauai's flat list, kScoreStride numbers an event: its
-// time in seconds, then a tone's channel, start and end frequency, attack,
-// decay, sustain and release in seconds, vol, peak and duty; or -1 and a
-// Sound's handle and gain. A Sound the device could not decode is left out.
 // A decoded sample as a score mixes it, mono floats at the mixer's rate
 // (converting `w` so); nullptr when it has none. Playing a Sound and
 // rendering a score both decode through it.
@@ -919,8 +916,12 @@ std::shared_ptr<const std::vector<float>> mixer_samples(Wave& w) {
   return pcm;
 }
 
-// A score from Audio.Kauai's list, a Sound's samples found by its handle in
-// `pcm` (one it does not hold is left out).
+// A score from Audio.Kauai's flat list, in time order (as the page reads it
+// too), kScoreStride numbers an event: its time in seconds, then a tone's
+// channel, start and end frequency, attack, decay, sustain and release in
+// seconds, vol, peak and duty; or -1 and a Sound's handle and gain. A
+// Sound's samples are found by its handle in `pcm`; one it does not hold
+// (the device could not decode it) is left out.
 using PcmByHandle = std::unordered_map<int64_t, std::shared_ptr<const std::vector<float>>>;
 std::shared_ptr<Score> build_score(const double* events, int64_t count, double length,
                                    double loop_at, const PcmByHandle& pcm) {
@@ -945,8 +946,7 @@ std::shared_ptr<Score> build_score(const double* events, int64_t count, double l
     }
     s->events.push_back(std::move(ev));
   }
-  std::stable_sort(s->events.begin(), s->events.end(),
-                   [](const ScoreEvent& a, const ScoreEvent& b) { return a.at < b.at; });
+  assert(std::ranges::is_sorted(s->events, {}, &ScoreEvent::at));
   s->length = samples(length);
   s->loop_at = loop_at < 0 ? -1 : samples(loop_at);
   return s;
