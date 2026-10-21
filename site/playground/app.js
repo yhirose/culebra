@@ -1173,11 +1173,12 @@ function startTrack(id, t, offset) {
 }
 
 // --- Audio.Kauai: a song's notes, each started on the context's own clock ---
-// A score arrives whole (stdlib/audio.h's kScoreStride numbers an event: its
-// time, then a tone's channel, frequencies, phases in seconds, vol, peak and
-// duty; or -1, a Sound's handle and a gain), and a timer puts each note on
-// the context's clock a little ahead of when it sounds, the usual WebAudio
-// lookahead: the notes keep time however the page's own timers jitter.
+// A score arrives whole and in time order (stdlib/audio.h's kScoreStride
+// numbers an event: its time, then a tone's channel, frequencies, phases in
+// seconds, vol, peak and duty; or -1, a Sound's handle and a gain), and a
+// timer puts each note on the context's clock a little ahead of when it
+// sounds, the usual WebAudio lookahead: the notes keep time however the
+// page's own timers jitter.
 const SCORE_STRIDE = 11;
 const SCORE_AHEAD = 0.2;  // seconds of notes scheduled ahead of the clock
 const scores = new Map();  // id -> { events, length, loopAt, volume, room, run }
