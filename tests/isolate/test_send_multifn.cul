@@ -113,7 +113,7 @@ let one = Isolate.spawn(fn (m) {
 }, [one_kind, one_kind]).join()
 assert_eq(one, [true, "long", "str"])
 
-# --- a dispatch error names the function, never the registry key -------------
+# --- a dispatch error names the function as it was declared -----------------
 fn msg_kind(x: Long) {
   "long"
 }
