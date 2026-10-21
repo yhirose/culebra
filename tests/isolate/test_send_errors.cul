@@ -152,17 +152,8 @@ let (stx, srx) = Channel.new(1)
 stx.send(SendP.new(5))
 assert_eq(srx.recv().get(), 5)
 
-# A class object (its ctor is flagged native) and a `C.new` value reject on
-# both backends.
-let kls = caught(fn () {
-  Isolate.spawn(fn () {
-    SendP.new(1)
-  }).join()
-})
-assert_eq(
-  kls,
-  "SendError: Isolate.spawn: a native/builtin function is not Sendable",
-)
+# A `C.new` value, bound to its class by a C++ wrapper, is refused on both
+# backends (the class itself crosses: test_send_class.cul).
 let mk = SendP.new
 let mkr = caught(fn () {
   Isolate.spawn(fn () {

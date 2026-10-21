@@ -4672,7 +4672,7 @@ builds (unless noted).
 | `ShadowError` | Static shadow analyzer (§6) detected a binding that shadows a captured outer name. Fires before any user `try` block can observe it. | **no** (pre-eval analyzer) |
 | `IOError` | `FS` / `File` / stdlib file ops failing (missing path, permission, closed handle); `Tensor.from_csv` failure. | yes |
 | `ProcessError` | `Proc.run` spawn failure (e.g. the executable doesn't exist), or a non-zero exit / signal death under `check: true`. | yes |
-| `SendError` | A value that is not Sendable was passed across an isolate boundary (`Isolate.spawn` / `tx.send`) — a native handle, a `Tensor`, a closure capturing a `mut`, or a cyclic value. | yes |
+| `SendError` | A value that is not Sendable was passed across an isolate boundary (`Isolate.spawn` / `tx.send`) — a native handle, a `Tensor`, a closure capturing a `mut`, a `@packable` class, or a cyclic value. | yes |
 | `ChannelError` | `tx.send` on a channel whose receivers/senders have all gone (closed). | yes |
 | `ParallelError` | A `Parallel.map` / `Parallel.each` element threw; carries the failing element's index and cause (fail-fast). | yes |
 | `DropContractError` | `drop` / `iter` / `has_next` / `next` property bound to a function that takes arguments. | yes |
@@ -6222,9 +6222,11 @@ A variant names its enum without keeping it alive, so once nothing else
 holds the enum — one declared inside a function that has returned, and
 handed out none of its constructors (a constructor read off the enum
 holds it) — its variants answer `nil`. So does a variant rebuilt elsewhere, received from
-a `Channel` or read back from a `SharedBuffer`, as a class instance
-received from a `Channel` does. Either way it still prints and compares
-as its variant.
+a `Channel` or read back from a `SharedBuffer`. Either way it still prints
+and compares as its variant. A class instance takes its class along when
+its methods name the class, so one received from a `Channel` answers with a
+copy of its class then, and `nil` otherwise
+([stdlib §12](stdlib.md#12-isolate)).
 
 Everything with no class object of its own answers `nil`, which is more
 than it sounds: a plain Object, a primitive, and a `Range`. So

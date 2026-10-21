@@ -367,7 +367,7 @@ for v in disp_vals {
 }
 
 # --- Dimension 6: class / enum construction x arity -----------------------
-# Constructors are synthesized native closures (no source body), so they
+# Constructors are synthesized closures (no source body), so they
 # can diverge from the interpreter on arity the way builtin functions did.
 # The decl lives inside the case thunk, so each `E`/`C` is fresh.
 # Single-quote raw strings: the decl braces must not be read as `"{...}"`

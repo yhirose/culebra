@@ -2656,6 +2656,7 @@ A violation throws `SendError` at the `spawn` site (never a silent copy):
 | `enum` / class instances, `@value` and `@derive` ones included | a closure that captures a `mut` variable |
 | a closure capturing only Sendable values | a value that refers to itself (a cycle) |
 | a free function (`fn name(...)`), captured by reference | a generator (send what it yields, or call the generator function on the other side) |
+| a class, as a copy (its statics included) | a `@packable` class |
 
 What arrives is a copy that reads as the original does: an Object keeps
 its entries in the order it held them, whatever their keys.
@@ -2684,14 +2685,26 @@ Isolate.spawn(|| total)      # SendError: captures the mutable variable 'total'
 Isolate.spawn(|t| t, total)  # ok — passed by value
 ```
 
-A class instance crosses with its class, so its methods work on the other
-side — and so do the default methods of the traits it conforms to (`neq` from
-`Eq`, `lt` from `Comparable`, a user trait's defaults): a worker starts with
-the traits as they were declared when it was spawned. What a default captures
-is copied at the spawn, as the sent closure's captures are, and rebuilt in the
-worker only when it calls that default. A class value itself
-(`Isolate.spawn(|| Sq(1))` naming a top-level `Sq`) is not Sendable; pass an
-instance in, or declare the class inside the closure.
+A class instance crosses with its methods, so they work on the other side —
+and so do the default methods of the traits it conforms to (`neq` from `Eq`,
+`lt` from `Comparable`, a user trait's defaults): a worker starts with the
+traits as they were declared when it was spawned. What a default captures is
+copied at the spawn, as the sent closure's captures are, and rebuilt in the
+worker only when it calls that default.
+
+A class crosses too: named by a closure (`Isolate.spawn(|| Sq(1))` with a
+top-level `Sq`), passed as an argument, or returned. What arrives is a copy,
+its statics as they were when it was sent: a change to one stays on the side
+that made it, and each message carries a copy of its own. An instance takes
+its class along when its methods name the class, so a method that builds a
+new instance (`update() { Player(self.x + 1) }`) works on the other side, and
+`class_of` answers with the copy; any other instance leaves its class behind,
+and `class_of` of what arrives is `nil`. A method that reads its class only
+through `class_of(self)` does not count as naming it. A member of the class
+that cannot be sent (its `new`, a static method or a static) is a `SendError`
+that names it as `Class.member`. A `@packable` class is
+not Sendable, as its byte layout stays with the isolate that declared it;
+an instance of one crosses as long as its methods do not name the class.
 
 A `@value` instance arrives as a value: frozen as it was, and equal to the
 one that was sent, compared and hashed by its fields. It is Sendable once

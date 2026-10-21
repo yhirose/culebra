@@ -686,8 +686,7 @@ struct JitObject {
   bool is_lowered_state = false;
   // Set on a CLASS META whose methods name their class (FuncInfo::own_name
   // read through the receiver): the send path ships the class object with
-  // such an instance — and so refuses it, exactly as the cell capture it
-  // replaced did — and leaves it behind otherwise. Never GEP'd.
+  // such an instance, and leaves it behind otherwise. Never GEP'd.
   bool names_class = false;
   // Set on a CLASS META whose class is `@value`. build_class_instance reads
   // it through the meta it is handed and freezes the instance it built.
@@ -746,6 +745,18 @@ struct JitObject {
   // keeps this.
   JitObject* built_by() const {
     return proto() && !is_gen_frame && !has_handle ? cls : nullptr;
+  }
+
+  // Link an instance to its class's meta and to the class object that built
+  // it (or none): a +1 on each, which the destructor gives back.
+  void link_class(JitObject* meta, JitObject* by) {
+    assert(meta || !by);
+    set_proto(meta);
+    if (meta) meta->refcount++;
+    if (by) {
+      cls = by;
+      by->refcount++;
+    }
   }
 
   // A handle's C++ half, or null: not a handle.
@@ -1137,11 +1148,11 @@ static_assert(sizeof(JitClosure) <= 48 && !std::is_polymorphic_v<JitClosure>);
 // no call parens) resolving to one invokes it 0-arg instead of yielding a
 // bound method. The interp's FunctionValue::is_getter.
 //
-// NATIVE — a C++-bodied closure, or the synthesized constructor thunk a class
-// declaration builds. Not Sendable: it cannot be rebuilt on another Runtime,
-// and its captures may hold raw same-heap pointers (the iterator wrappers
-// cache upstream closure pointers, the ns-method closure an NsMethod*) that
-// would silently cross the heap boundary. The interp's body == nullptr.
+// NATIVE — a C++-bodied closure. Not Sendable: it cannot be rebuilt on
+// another Runtime, and its captures may hold raw same-heap pointers (the
+// iterator wrappers cache upstream closure pointers, the ns-method closure an
+// NsMethod*) that would silently cross the heap boundary. The interp's
+// body == nullptr.
 inline constexpr uint64_t JIT_CLOSURE_GETTER = 1ull << 0;
 inline constexpr uint64_t JIT_CLOSURE_NATIVE = 1ull << 1;
 // DERIVED — a method `@derive` supplied rather than one the class wrote.

@@ -329,12 +329,19 @@ archive. A signature change edits that table.
 
 `Isolate.spawn`, `Channel` and `Parallel` are built on `isolate_core.h`
 (the channel core, fan-in, the worker pool, teardown joins — all
-engine-neutral, speaking `SendNode`) and `sendable_rt.h` (the value
+engine-neutral, speaking `SendNode`) and `conc/sendable.h` (the value
 serializer). A closure crosses a thread boundary as its code reference
 plus positionally copied captures: the child rebuilds the cells in the
 same order on a `Runtime` of its own. A closure that captures a `mut`
 binding is refused (`Chunk::mut_capture_names` carries the name for the
-message), as is one whose descriptor names a native constructor.
+message). A class object and a meta are one node per message however
+often they are reached, numbered before their own walk
+(`JitSerCtx::first`). An Object's node carries what it is (a class's meta;
+an instance's meta and the class it takes along) ahead of what it holds,
+walked before the Object counts as visited: an instance that a static of
+its own class holds is copied there rather than read as a cycle, and the
+receiver marks a class one before its meta's methods can reach an
+instance that links it.
 
 ## 4. The shared front end
 
@@ -1605,20 +1612,14 @@ isolate, the lazy-namespace registry) already copies `fn_ptr`, flags and
 `meta`, which is all of it. The captures are the body's own and nothing
 else, the same array a lowered closure has.
 
-What a closure *is* takes no hook and no second entry point. A getter
-body and a constructor thunk are properties of the chunk, so
-`MakeClosure` reads them off it (`chunk_closure_flags`) and passes them
-to the closure constructor, in both lanes: the closure carries
-`JIT_CLOSURE_GETTER` / `JIT_CLOSURE_NATIVE` from birth. They used to be
-side tables keyed by the compiled body's address, which cost this lane a
-second trampoline — one `fn_ptr` per interpreted chunk means an address
-cannot tell two kinds of chunk apart — and cost every lane the
-assumption that an address means the same thing for as long as anyone
-holds it. It does not: a JIT arena is freed with its `Runtime`, the next
-one is handed the same pages, and an entry made under the first answers
-for whatever lands there next. On the closure the answers also cross an
-isolate boundary with the value they describe, which a table on the
-receiving `Runtime` could not do.
+What a closure *is* takes no hook and no second entry point. That a body
+is a getter is a property of the chunk, so `MakeClosure` reads it off it
+(`chunk_closure_flags`) and passes it to the closure constructor, in both
+lanes: the closure carries `JIT_CLOSURE_GETTER` from birth. A code
+address could not answer it: one `fn_ptr` serves every interpreted chunk,
+and a JIT arena freed with its `Runtime` is handed to the next. On the
+closure, the answer also crosses an isolate boundary with the value it
+describes.
 
 The descriptor used to ride in a cell at `captures[0]`, one per
 `MakeClosure` (a cell shared by every closure of a chunk is wrong:

@@ -29,10 +29,22 @@ namespace culebra {
 // --- JitValue <-> SendNode ---------------------------------------------------
 
 struct JitSerCtx {
-  std::map<const void*, int> closure_ids;  // JitClosure* -> ref id (recursion)
-  std::map<const void*, int> proto_ids;    // class meta JitObject* -> ref id
+  // A closure, a class object or a meta -> its ref id: one node per message
+  // however often it is reached.
+  std::map<const void*, int> ids;
   int next_id = 0;
   std::set<const void*> visiting;          // container cycle guard
+
+  // Numbers `n` for `p` on its first reach, before its walk, so a reach
+  // from inside that walk refers back (true); a later reach makes `n` a
+  // backref (false). The receiver's twin is JitDeCtx::remember / recall.
+  bool first(const void* p, sendable::SendNode& n) {
+    auto [it, fresh] = ids.try_emplace(p, next_id);
+    n.ref_id = it->second;
+    n.is_backref = !fresh;
+    if (fresh) next_id++;
+    return fresh;
+  }
 };
 // One Runtime's hold on a frozen tree: what a view's kSvHoldSlot points at
 // (rt/string.inc.h), shared by a view the Runtime was handed (Shared.new's,
@@ -139,9 +151,8 @@ struct JitChanIter final : JitHandle {
   bool same(const JitHandle&) const override { return false; }
 };
 
-// What one message's rebuild remembers. A closure or class meta can be in a
-// message more than once: its first node rebuilds it, and each later one is a
-// backref to it (the sender numbers both kinds from one counter).
+// What one message's rebuild remembers: the node JitSerCtx::first numbered,
+// which each later backref names.
 struct JitDeCtx {
   std::map<int, JitValue> rebuilt;  // ref id -> the value
   // A reference on each until the message is rebuilt: the node that carried
@@ -161,6 +172,7 @@ struct JitDeCtx {
   }
   // A reference of its own, like any other node's.
   JitOwnedVal recall(int id) const {
+    assert(rebuilt.contains(id) && "a backref ahead of its node");
     return JitOwnedVal::from_borrowed(rebuilt.at(id));
   }
 };
@@ -230,9 +242,11 @@ inline std::string _jit_class_meta_names(const JitObject* o) {
 //   gc_slot           the receiver's own
 //   mut_count         the receiver's own
 //   owned_idx         the receiver's own owned stack
-//   cls               left behind: a received instance names no class object
-//   is_class          left behind: a class object is refused (its constructor)
-//   instance_meta     left behind: likewise
+//   cls               restored: an instance's class, when it takes it along
+//                     (_jit_class_along); else none
+//   is_class          restored: a class node (SendNode::is_class); a Shared
+//                     tree refuses a class
+//   instance_meta     restored: a class node's meta
 //   is_enum           left behind: an enum object crosses as a plain Object
 //   enum_ref          left behind: a received variant names no enum object
 //   is_namespace      left behind: a namespace's members are native functions
@@ -292,6 +306,144 @@ inline JitHandleKind _jit_handle_kind(JitObject* o) {
   return JitHandleKind::None;
 }
 
+inline sendable::SendNode jit_serialize(JitValue v, JitSerCtx& ctx);
+
+// The class object an instance takes along to the other side, or null: the
+// one its methods name (names_class), which they read through the instance.
+inline JitObject* _jit_class_along(const JitObject* o) {
+  auto* meta = o->proto();
+  return meta && meta->names_class ? o->built_by() : nullptr;
+}
+
+// An Object's node. A class object and a meta (what an instance's methods
+// live on: a class meta, or one a native module keeps, reached `as_meta`
+// through an instance) are one node per message.
+inline sendable::SendNode _jit_object_node(JitObject* o, JitSerCtx& ctx,
+                                           bool as_meta) {
+  using K = sendable::SendNode::K;
+  sendable::SendNode n;
+  switch (_jit_handle_kind(o)) {
+    // Channel endpoint — the Sendable exception: ship its channel + role,
+    // and a count of the node's own on it. A dropped end ships as one.
+    case JitHandleKind::Channel: {
+      auto* end = _jit_chan_end(o);
+      if (end->core) chan_bump(end->core, end->role);
+      return chan_node(end->core, end->role);
+    }
+    // SharedBuffer — the other shared-reference exception: the node holds
+    // a ref of its own on the bytes. A dropped buffer ships as one.
+    case JitHandleKind::SharedBuffer: {
+      n.kind = K::SharedBuffer;
+      n.held = _jit_shared_buf(o)->core;
+      return n;
+    }
+    // A view of a SharedBuffer: the buffer, as above, and where in its
+    // bytes the view reads what (a field's type; a record of the
+    // buffer's class has none).
+    case JitHandleKind::BufView: {
+      auto* view = _jit_buf_view(o);
+      n.kind = K::BufView;
+      n.i = view->off;
+      n.s = std::string(view->type());
+      n.elems.push_back(jit_serialize(view->buf, ctx));
+      return n;
+    }
+    // Shared.new view: ship the frozen tree by (id, node) reference, with
+    // a count of the node's own on it (the receiver's view takes another
+    // at rebuild).
+    case JitHandleKind::SharedVal: {
+      auto* hold = _jit_sv_hold(o);
+      if (!hold) {
+        throw culebra::CulebraError("ClosedError",
+                                    "Shared value has been dropped");
+      }
+      n.held = culebra::shared_val_held(*hold->core, hold->id);
+      n.kind = K::SharedVal;
+      n.i = hold->id;
+      n.ref_id = static_cast<int>(o->slots[kSvNodeSlot].value.data);
+      return n;
+    }
+    // A generator is a frame of this thread's, part-way through its body.
+    case JitHandleKind::Generator:
+      sendable::send_error("a generator is not Sendable");
+    case JitHandleKind::Native:
+      sendable::send_error("a native handle is not Sendable");
+    case JitHandleKind::None: break;
+  }
+  // A @value instance freezes when its `new` returns, and a copy made
+  // before then never would: sent from inside it, or left behind by one
+  // that threw.
+  if (o->fields_closed && !o->frozen)
+    sendable::send_error(
+        "a @value instance whose `new` has not returned is not Sendable");
+  n.kind = K::Object;
+  if ((as_meta || o->is_class_meta || o->class_meta_of()) && !ctx.first(o, n))
+    return n;
+  culebra::ValueWalkFrame walk;
+  // What the Object is (SendNode::elems) goes ahead of what it holds, and
+  // before it counts as visited: an instance a static of its own class
+  // holds is reached again from there, and copied there as any second
+  // reach of an Object is.
+  const char* cls_name = nullptr;
+  if (auto* meta = o->class_meta_of()) {
+    cls_name = meta->specials->name;
+    // A record type's byte layout (JitRecordInfo) is its declaring
+    // Runtime's.
+    if (meta->specials->record)
+      sendable::send_error(std::string(cls_name) +
+                           ": a @packable class is not Sendable");
+    n.is_class = true;
+    n.elems.push_back(_jit_object_node(meta, ctx, /*as_meta=*/true));
+  } else if (auto* meta = o->proto()) {
+    n.elems.push_back(_jit_object_node(meta, ctx, /*as_meta=*/true));
+    if (auto* cls = _jit_class_along(o))
+      n.elems.push_back(_jit_object_node(cls, ctx, /*as_meta=*/false));
+  }
+  if (!ctx.visiting.insert(o).second)
+    sendable::send_error("a cyclic value cannot be sent");
+  // The Object's own facts (the object-facts table above), the instance's
+  // drop gate among them: carried rather than re-derived from the meta on
+  // the other side, since a nested instance can relink while its meta is
+  // still mid-fill (the memo registers before the entries land).
+  n.facts = _jit_object_facts(o);
+  n.s = _jit_class_meta_names(o);
+  // A member of a class that cannot cross says which, as `Class.member`:
+  // the class may have gone along with an instance, unseen by the sender.
+  auto member = [&](std::string_view key, JitValue v) {
+    try {
+      return jit_serialize(v, ctx);
+    } catch (const culebra::CulebraError& e) {
+      if (!cls_name) throw;
+      sendable::rethrow_send_error_in(
+          e, std::string(cls_name) + "." + std::string(key));
+    }
+  };
+  // Every entry, in the order the Object holds them: the receiver stores
+  // them as they arrive, and that is the order it then iterates in. A key
+  // that is no String serializes as a value node.
+  _jit_each_entry(
+      o,
+      [&](std::string_view name, const JitObjectEntry& entry) {
+        sendable::SendNode key;
+        key.kind = K::Str;
+        key.s = std::string(name);
+        n.entries.emplace_back(std::move(key),
+                               member(name, entry.value));
+        n.entry_mut.push_back(entry.mut);
+      },
+      [&](const JitHashedKey& k, const JitObjectEntry& entry) {
+        // The value before its key, as the receiver rebuilds them: the
+        // first of two instances of a class carries the class, and the
+        // other refers back to it.
+        auto val = jit_serialize(entry.value, ctx);
+        auto key = jit_serialize(k.value(), ctx);
+        n.entries.emplace_back(std::move(key), std::move(val));
+        n.entry_mut.push_back(entry.mut);
+      });
+  ctx.visiting.erase(o);
+  return n;
+}
+
 inline sendable::SendNode jit_serialize(JitValue v, JitSerCtx& ctx) {
   using K = sendable::SendNode::K;
   sendable::SendNode n;
@@ -323,142 +475,16 @@ inline sendable::SendNode jit_serialize(JitValue v, JitSerCtx& ctx) {
       ctx.visiting.erase(s);
       return n;
     }
-    case TAG_OBJECT: {
-      auto* o = reinterpret_cast<JitObject*>(v.data);
-      switch (_jit_handle_kind(o)) {
-        // Channel endpoint — the Sendable exception: ship its channel + role,
-        // and a count of the node's own on it. A dropped end ships as one.
-        case JitHandleKind::Channel: {
-          auto* end = _jit_chan_end(o);
-          if (end->core) chan_bump(end->core, end->role);
-          return chan_node(end->core, end->role);
-        }
-        // SharedBuffer — the other shared-reference exception: the node holds
-        // a ref of its own on the bytes. A dropped buffer ships as one.
-        case JitHandleKind::SharedBuffer: {
-          n.kind = K::SharedBuffer;
-          n.held = _jit_shared_buf(o)->core;
-          return n;
-        }
-        // A view of a SharedBuffer: the buffer, as above, and where in its
-        // bytes the view reads what (a field's type; a record of the
-        // buffer's class has none).
-        case JitHandleKind::BufView: {
-          auto* view = _jit_buf_view(o);
-          n.kind = K::BufView;
-          n.i = view->off;
-          n.s = std::string(view->type());
-          n.elems.push_back(jit_serialize(view->buf, ctx));
-          return n;
-        }
-        // Shared.new view: ship the frozen tree by (id, node) reference, with
-        // a count of the node's own on it (the receiver's view takes another
-        // at rebuild).
-        case JitHandleKind::SharedVal: {
-          auto* hold = _jit_sv_hold(o);
-          if (!hold) {
-            throw culebra::CulebraError("ClosedError",
-                                        "Shared value has been dropped");
-          }
-          n.held = culebra::shared_val_held(*hold->core, hold->id);
-          n.kind = K::SharedVal;
-          n.i = hold->id;
-          n.ref_id = static_cast<int>(o->slots[kSvNodeSlot].value.data);
-          return n;
-        }
-        // A generator is a frame of this thread's, part-way through its body.
-        case JitHandleKind::Generator:
-          sendable::send_error("a generator is not Sendable");
-        case JitHandleKind::Native:
-          sendable::send_error("a native handle is not Sendable");
-        case JitHandleKind::None: break;
-      }
-      // A @value instance freezes when its `new` returns, and a copy made
-      // before then never would: sent from inside it, or left behind by one
-      // that threw.
-      if (o->fields_closed && !o->frozen)
-        sendable::send_error(
-            "a @value instance whose `new` has not returned is not Sendable");
-      if (!ctx.visiting.insert(o).second)
-        sendable::send_error("a cyclic value cannot be sent");
-      culebra::ValueWalkFrame walk;
-      n.kind = K::Object;
-      // The Object's own facts (the object-facts table above), the instance's
-      // drop gate among them: carried rather than re-derived from the meta on
-      // the other side, since a nested instance can relink while its meta is
-      // still mid-fill (the memo registers before the entries land).
-      n.facts = _jit_object_facts(o);
-      // Every entry, in the order the Object holds them: the receiver stores
-      // them as they arrive, and that is the order it then iterates in. A key
-      // that is no String serializes as a value node.
-      _jit_each_entry(
-          o,
-          [&](std::string_view name, const JitObjectEntry& entry) {
-            sendable::SendNode key;
-            key.kind = K::Str;
-            key.s = std::string(name);
-            n.entries.emplace_back(std::move(key),
-                                   jit_serialize(entry.value, ctx));
-            n.entry_mut.push_back(entry.mut);
-          },
-          [&](const JitHashedKey& k, const JitObjectEntry& entry) {
-            // The value before its key, as the receiver rebuilds them: the
-            // first of two instances of a class carries the class, and the
-            // other refers back to it.
-            auto val = jit_serialize(entry.value, ctx);
-            auto key = jit_serialize(k.value(), ctx);
-            n.entries.emplace_back(std::move(key), std::move(val));
-            n.entry_mut.push_back(entry.mut);
-          });
-      // Class instance: ship the proto (the per-class meta holding the
-      // method closures) as elems[0], so a method call works on the other
-      // side — the interp gets the same effect from methods being own
-      // props. Many instances share one meta, so it is memoized (same id
-      // space as closures; the pointers never collide) and a repeat ships
-      // as a backref. A meta whose methods reach a native closure that is
-      // not portable (a method capturing the class object and thus its
-      // ctor) is refused there.
-      n.s = _jit_class_meta_names(o);
-      if (o->proto()) {
-        if (auto it = ctx.proto_ids.find(o->proto());
-            it != ctx.proto_ids.end()) {
-          sendable::SendNode ref;
-          ref.kind = K::Object;
-          ref.is_backref = true;
-          ref.ref_id = it->second;
-          n.elems.push_back(std::move(ref));
-        } else {
-          int proto_ref = ctx.next_id++;
-          ctx.proto_ids.emplace(o->proto(), proto_ref);
-          n.elems.push_back(jit_serialize(
-              {TAG_OBJECT, reinterpret_cast<int64_t>(o->proto())}, ctx));
-          n.elems.back().ref_id = proto_ref;
-        }
-        // A method that names its class reads the class object through the
-        // instance (JitObject::cls), so the instance needs it along — and
-        // the class object carries its constructor, a native closure, so
-        // the walk refuses exactly where the method's cell capture used to.
-        // Every other instance leaves its class behind, as before.
-        if (auto* cls = o->built_by(); cls && o->proto()->names_class)
-          n.elems.push_back(jit_serialize(
-              {TAG_OBJECT, reinterpret_cast<int64_t>(cls)}, ctx));
-      }
-      ctx.visiting.erase(o);
-      return n;
-    }
+    case TAG_OBJECT:
+      return _jit_object_node(reinterpret_cast<JitObject*>(v.data), ctx,
+                              /*as_meta=*/false);
     case TAG_FUNC: {
       auto* c = reinterpret_cast<JitClosure*>(v.data);
       n.kind = K::Closure;
-      if (auto it = ctx.closure_ids.find(c); it != ctx.closure_ids.end()) {
-        n.is_backref = true;
-        n.ref_id = it->second;
-        return n;
-      }
+      if (!ctx.first(c, n)) return n;  // a recursive fn refers back to itself
       // Closure chains nest through captures, not containers, so the
       // Function node counts a level too (mirrors the interp serializer).
       culebra::ValueWalkFrame walk;
-      n.ref_id = ctx.next_id++;
-      ctx.closure_ids.emplace(c, n.ref_id);  // before recursing (fib recursion)
       n.jit_fn = c->fn_ptr;
       n.jit_flags = c->flags;
       // The body's metadata is a constant of the module both Runtimes run
@@ -552,11 +578,11 @@ inline void _jit_rebuilt_put(JitObject* o, const culebra::ObjectFacts& f,
 
 // What the rebuilt Object is besides its entries, once they are in: a meta
 // sealed as its declaration sealed it (`names` is `Name` or `Name/Enum`,
-// empty for no meta), an instance linked to its class's meta (+1, released
-// by the JitObject destructor), and its facts last, so a freeze closes over
-// the entries already stored.
+// empty for no meta), an instance linked to its class's meta and, when it
+// came along, its class, and its facts last, so a freeze closes over the
+// entries already stored.
 inline void _jit_rebuilt_object_done(JitObject* o, std::string_view names,
-                                     JitObject* proto,
+                                     JitObject* meta, JitObject* cls,
                                      const culebra::ObjectFacts& f) {
   if (!names.empty()) {
     auto sep = names.find('/');
@@ -566,10 +592,8 @@ inline void _jit_rebuilt_object_done(JitObject* o, std::string_view names,
                                       : names.substr(sep + 1),
         f.meta_flags, f.dir_kind);
   }
-  if (proto) {
-    o->set_proto(proto);
-    proto->refcount++;
-  }
+  assert(!cls || cls->is_class);
+  if (meta) o->link_class(meta, cls);
   for (size_t i = 0; i < std::size(kCarriedFacts); i++)
     o->*kCarriedFacts[i] = ((f.bits >> i) & 1u) != 0;
   // An instance's drop (a plain Object's registered at its key already).
@@ -621,10 +645,20 @@ inline JitOwnedVal jit_deserialize(const sendable::SendNode& n, JitDeCtx& ctx) {
     case K::Object: {
       auto* o = culebra_runtime_object_new();
       JitOwnedVal out(TAG_OBJECT, reinterpret_cast<int64_t>(o));
-      // Register a shared class meta BEFORE filling entries so a backref
-      // inside its own subtree (a method capturing another instance of
-      // the same class) resolves — mirrors the closure memo below.
       if (n.ref_id >= 0) ctx.remember(n.ref_id, out.borrow());
+      // What it is, ahead of what it holds (SendNode::elems). A class is one
+      // from the start, since its meta's methods may reach an instance that
+      // links it; the mark then takes the meta's +1. An instance links its
+      // meta and class once its entries are in.
+      JitOwnedVal meta(TAG_NIL, 0), cls(TAG_NIL, 0);
+      if (n.is_class) {
+        o->is_class = true;
+        JitValue m = jit_deserialize(n.elems[0], ctx).consume();
+        culebra_runtime_mark_class(o, reinterpret_cast<JitObject*>(m.data));
+      } else if (!n.elems.empty()) {
+        meta = jit_deserialize(n.elems[0], ctx);
+        if (n.elems.size() > 1) cls = jit_deserialize(n.elems[1], ctx);
+      }
       size_t nth = 0;
       for (size_t k = 0; k < n.entries.size(); k++) {
         JitOwnedVal val = jit_deserialize(n.entries[k].second, ctx);
@@ -641,15 +675,10 @@ inline JitOwnedVal jit_deserialize(const sendable::SendNode& n, JitDeCtx& ctx) {
                                          v.data, 0, 0, /*is_init=*/true);
         }
       }
-      // Class instance: elems[0] = the rebuilt class meta, which the link
-      // takes a reference of its own on.
-      JitOwnedVal proto(TAG_NIL, 0);
-      JitObject* meta = nullptr;
-      if (!n.elems.empty()) {
-        proto = jit_deserialize(n.elems[0], ctx);
-        meta = reinterpret_cast<JitObject*>(proto.borrow().data);
-      }
-      _jit_rebuilt_object_done(o, n.s, meta, n.facts);
+      // The link takes a reference of its own on each.
+      _jit_rebuilt_object_done(
+          o, n.s, reinterpret_cast<JitObject*>(meta.borrow().data),
+          reinterpret_cast<JitObject*>(cls.borrow().data), n.facts);
       return out;
     }
     case K::Closure: {
@@ -1034,19 +1063,14 @@ inline JitValue culebra_jit_isolate_spawn(int8_t fn_tag, int64_t fn_data,
   JitSerCtx sc;
   sendable::SendNode sclo;
   std::vector<sendable::SendNode> sargs;
-  // Prefix the operation + carry the spawn-site location, mirroring the interp
-  // (isolate.h). Keeps the SendError message byte-identical across backends.
+  // A SendError names the operation and the spawn site.
   try {
     sclo = jit_serialize({fn_tag, fn_data}, sc);
     sargs.reserve(n_args);
     for (int64_t i = 0; i < n_args; i++)
       sargs.push_back(jit_serialize(args[i], sc));
-  } catch (culebra::CulebraError& e) {
-    if (e.kind == "SendError" && e.line == 0) {
-      throw culebra::CulebraError(
-          "SendError", std::string("Isolate.spawn: ") + e.what(), line, col);
-    }
-    throw;
+  } catch (const culebra::CulebraError& e) {
+    sendable::rethrow_send_error_in(e, "Isolate.spawn", line, col);
   }
 
   auto defaults = jit_snapshot_trait_defaults();
@@ -1922,9 +1946,11 @@ struct JitSvFreezer {
 
   // An Object, a class instance or (`is_meta`) the class meta of one, which
   // is registered ahead of its entries: one may hold an instance of the class
-  // it is. Any other Object is a handle of some kind, and no data.
+  // it is. Any other Object is a handle of some kind, or a class, and no
+  // data.
   uint32_t object(JitObject* o, bool is_meta) {
-    if (_jit_handle_kind(o) != JitHandleKind::None) refuse();
+    if (_jit_handle_kind(o) != JitHandleKind::None || o->class_meta_of())
+      refuse();
     Enter in(*this, o);
     uint32_t at = open(culebra::FrozenKind::Object);
     if (is_meta) metas.emplace(o, at);
@@ -1955,9 +1981,9 @@ struct JitSvFreezer {
     if (auto* meta = o->proto()) {
       auto it = metas.find(meta);
       s.meta = it != metas.end() ? it->second : object(meta, true);
-      // A method that names its class reads the class object through the
-      // instance, and the class object carries its constructor: no data.
-      if (o->built_by() && meta->names_class) refuse();
+      // An instance that takes its class along is no data, as its class is
+      // not.
+      if (_jit_class_along(o)) refuse();
     }
     close(at, base);
     t.nodes[at].shape = shape(s, key_base, shared);
@@ -2068,9 +2094,11 @@ struct JitSvThaw {
       auto it = metas.find(shape.meta);
       proto = it != metas.end() ? it->second : object(shape.meta, true);
     }
+    // A Shared tree holds no class (the freeze refuses one), so no instance
+    // in it links one.
     _jit_rebuilt_object_done(
         o, shape.name >= 0 ? t.str(shape.name) : std::string_view{}, proto,
-        shape.facts);
+        /*cls=*/nullptr, shape.facts);
     return o;
   }
 };
@@ -2647,11 +2675,8 @@ inline JitValue culebra_jit_channel_fan_in(int64_t n, JitValue* args,
   auto with_fan_in_context = [&](auto&& send) {
     try {
       send();
-    } catch (culebra::CulebraError& e) {
-      if (e.kind == "SendError" && e.line == 0)
-        throw culebra::CulebraError(
-            "SendError", std::string("Channel.fan_in: ") + e.what(), line, col);
-      throw;
+    } catch (const culebra::CulebraError& e) {
+      sendable::rethrow_send_error_in(e, "Channel.fan_in", line, col);
     }
   };
   with_fan_in_context([&] {

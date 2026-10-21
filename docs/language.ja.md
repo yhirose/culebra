@@ -4436,7 +4436,7 @@ unionとしての順位で、`Object`より下です。
 | `ShadowError` | §6のシャドウ解析でキャプチャ済み外側名と衝突する束縛を検出。ユーザの`try`が走る前に発火 | **いいえ**（eval前のanalyzer） |
 | `IOError` | `FS` / `File`等stdlibファイル操作の失敗（パス不在・権限・クローズ済みハンドル）；`Tensor.from_csv`失敗 | はい |
 | `ProcessError` | `Proc.run`の起動失敗（実行ファイルが存在しない等）、または`check: true`での非0終了 / シグナル死 | はい |
-| `SendError` | Sendableでない値をisolate境界（`Isolate.spawn` / `tx.send`）で渡した — ネイティブハンドル、`Tensor`、`mut`を捕獲したクロージャ、循環参照 | はい |
+| `SendError` | Sendableでない値をisolate境界（`Isolate.spawn` / `tx.send`）で渡した — ネイティブハンドル、`Tensor`、`mut`を捕獲したクロージャ、`@packable`のクラス、循環参照 | はい |
 | `ChannelError` | 全endpointが消えた（closed）channelへの`tx.send` | はい |
 | `ParallelError` | `Parallel.map` / `Parallel.each`の要素が例外を投げた。失敗要素のindexと原因を保持（fail-fast） | はい |
 | `DropContractError` | `drop` / `iter` / `has_next` / `next`プロパティに引数を取るFunctionを束縛した | はい |
@@ -5943,9 +5943,11 @@ inspect(type_of(Shape.Circle(1.0)))                 # => 'Circle'
 いないenumなど。enumから読み出したコンストラクタはenumを持ち続けます）、
 そのバリアントは
 `nil`を答えます。別の場所で作り直されたバリアント（`Channel`で受け取った
-もの、`SharedBuffer`から読み戻したもの）も`nil`で、`Channel`で受け取った
-classインスタンスと同じです。どちらの場合も、表示と比較は元のバリアントの
-ままです。
+もの、`SharedBuffer`から読み戻したもの）も`nil`です。どちらの場合も、表示と
+比較は元のバリアントのままです。`Channel`で受け取ったclassインスタンスは、
+一緒に届いたクラスのコピーを答えます。クラスを連れて行くのはメソッドが
+クラスを名指すときで、それ以外は`nil`です
+（[stdlib §12](stdlib.ja.md#12-isolate)）。
 
 自分のクラスオブジェクトを持たない値は`nil`で、これは見た目より広い範囲を
 指します: 普通のObject、プリミティブ、そして`Range`。つまり

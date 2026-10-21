@@ -5,7 +5,7 @@
 // fan_in merge machinery, Signal.notify delivery, the Parallel worker-pool
 // state, and the teardown join helpers. Everything here speaks SendNode and
 // plain C++ — no Value / Environment / JitValue — so the compiled lanes
-// (sendable_rt.h) include this alone. Moved verbatim from isolate.h
+// (conc/sendable.h) include this alone. Moved verbatim from isolate.h
 // (Phase 4 B7-b), whose tree-walker half retired with the engine (B7-f).
 
 #include <conc/send_node.h>      // SendNode

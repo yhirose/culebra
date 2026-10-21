@@ -134,15 +134,19 @@ fn decorated() {
 }
 assert_eq(decorated(), true)
 
-# Sending: an instance whose methods name the class needs the class object
-# along, whose constructor is native — refused exactly as its cell capture
-# was. One whose methods do not still travels.
+# Sending: an instance whose methods name the class takes the class along,
+# so the name reads on the other side, and on this one again when an
+# instance built there comes back. One whose methods do not leaves its class
+# behind. Here as well as in tests/isolate, which the AOT lane does not run.
 fn sends() {
   class Named {
     new() {
     }
     m() {
       Named
+    }
+    again() {
+      Named()
     }
   }
   class Plain {
@@ -155,14 +159,10 @@ fn sends() {
   }
   let n = Named.new()
   let p = Plain.new()
-  let refused = try {
-    Isolate.spawn(|| n.m()).join()
-    'shipped'
-  } catch e {
-    e.kind
-  }
-  [refused, Isolate.spawn(|| p.m()).join()]
+  let back = Isolate.spawn(|| n.again()).join()
+  [Isolate.spawn(|| n.m().name).join(), back.m().name,
+   Isolate.spawn(|| p.m()).join(), class_of(Isolate.spawn(|| p).join())]
 }
-assert_eq(sends(), ['SendError', 3])
+assert_eq(sends(), ['Named', 'Named', 3, nil])
 
 inspect('class own-name: ok')

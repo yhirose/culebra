@@ -141,6 +141,14 @@ class SharedValue {
   new(.x) {}
 }
 assert_eq(shared_refusal(fn () { SharedValue(1) }), refused_fn)
+# A class is no data either, with its `new` or without it.
+let refused_class =
+  'SendError: Shared.new: classes cannot be shared (Shared values are data only)'
+assert_eq(shared_refusal(fn () { SharedValue }), refused_class)
+class SharedBare {
+}
+SharedBare.remove('new')
+assert_eq(shared_refusal(fn () { [SharedBare] }), refused_class)
 refused_inner.drop()
 assert_eq(shared_refusal(fn () { [refused_inner] }),
   'ClosedError: Shared.new: Shared value has been dropped')

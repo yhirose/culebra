@@ -1934,12 +1934,7 @@ inline JitObject* _jit_class_instance_alloc(JitObject* class_meta,
   // through a computed key or an alias any more than through `self.z = v`,
   // which the declaration refuses outright.
   inst->fields_closed = class_meta && class_meta->is_value;
-  inst->set_proto(class_meta);
-  if (class_meta) class_meta->refcount++;
-  if (cls) {
-    inst->cls = cls;
-    cls->refcount++;
-  }
+  inst->link_class(class_meta, cls);
   // Mirror inherited `drop` so the destructor's `has_drop` gate fires.
   if (class_meta && class_meta->methods_drop) _jit_owned_bind_drop(inst);
   return inst;

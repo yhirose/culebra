@@ -328,13 +328,19 @@ keyword-onlyおよびrestマーカー・arity境界 — は1つの生成テー�
 
 `Isolate.spawn`、`Channel`、`Parallel`は`isolate_core.h`（channel
 の本体、fan-in、worker pool、teardownのjoin — すべてエンジン
-非依存で`SendNode`を語る）と`sendable_rt.h`（値シリアライザ）の
+非依存で`SendNode`を語る）と`conc/sendable.h`（値シリアライザ）の
 上に構築されている。クロージャはスレッド境界を、自分のコード参照
 に位置ベースでコピーされたcaptureを添えて越える: 子は同じ順序で
 cellを自分の`Runtime`上に再構築する。`mut`束縛をcaptureしている
-クロージャは拒否され（`Chunk::mut_capture_names`がメッセージ用に
-名前を運ぶ）、descriptorがネイティブコンストラクタを名指す
-クロージャも同様に拒否される。
+クロージャは拒否される（`Chunk::mut_capture_names`がメッセージ用に
+名前を運ぶ）。クラスオブジェクトとメタは、何度たどり着いても1通の
+メッセージの中で1つのノードで、自身をたどる前に番号を振られる
+（`JitSerCtx::first`）。Objectのノードは、それが何であるか（クラスなら
+メタ、インスタンスならメタと連れて行くクラス）を中身より先に運び、
+それらはObjectをたどり中にする前にたどる。そのため、そのクラスの
+インスタンスを持つstaticの中では、インスタンスは循環ではなくコピーに
+なる。受け手は、メタのメソッドがそのクラスを指すインスタンスに届く前に、
+クラスの印を付けておける。
 
 ## 4. 共有フロントエンド
 
@@ -1558,20 +1564,13 @@ captureは本体自身のものだけで、loweringされたクロージャと�
 なる。
 
 そのクロージャが何であるかを知るのに、フックも第二の入口も要らない。
-getter本体であることも構築子thunkであることもchunkの性質なので、
-`MakeClosure`がchunkから読み取り（`chunk_closure_flags`）、両レーン
-ともクロージャの構築子に渡す。クロージャは`JIT_CLOSURE_GETTER`/
-`JIT_CLOSURE_NATIVE`を生まれた時から持っている。
-
-以前はどちらもコンパイル済み本体の番地をキーとする横表だった。
-そのためこのレーンはtrampolineをもう1つ持たされていた — 解釈実行の
-chunkは`fn_ptr`が1つしかなく、番地では2種類のchunkを区別できない。
-そして全レーンが「番地は誰かが握っている限り同じものを指す」という
-前提の上に立っていた。実際にはそうならない。JITのアリーナは
-`Runtime`と一緒に解放され、次の`Runtime`が同じページを受け取るので、
-前の`Runtime`で作った項目が、後からそこに載った別物の答えになって
-しまう。クロージャ自身が持てば答えは値と一緒にisolate境界も越える。
-受け取り側の`Runtime`にある表では、そこまでは追えない。
+getter本体であることはchunkの性質なので、`MakeClosure`がchunkから
+読み取り（`chunk_closure_flags`）、両レーンともクロージャの構築子に
+渡す。クロージャは`JIT_CLOSURE_GETTER`を生まれた時から持っている。
+コードの番地ではこれに答えられない。解釈実行のchunkはすべて1つの
+`fn_ptr`を使い、`Runtime`と一緒に解放されたJITのアリーナは次の
+`Runtime`に渡されるからである。クロージャが持つので、答えは値と一緒に
+isolate境界も越える。
 
 descriptorは以前`captures[0]`のcellに載っていて、`MakeClosure`ごとに
 1つあった（chunkのすべてのクロージャで1つのcellを共有するのは誤り:

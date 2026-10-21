@@ -323,6 +323,9 @@ test_value_crosses_an_isolate = fn () {
   assert_throws('ImmutableError', fn () {
     back.y = 1
   })
+  # Vec2's `__add__` names its class, which goes along with the value.
+  let v = Vec2.new(1, 2)
+  assert_eq(Isolate.spawn(|| v + v).join() == Vec2.new(2, 4), true)
 }
 test_value_crosses_an_isolate()
 

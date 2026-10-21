@@ -5,9 +5,8 @@
 # builtin traits (Eq.neq, Comparable.lt) and user traits alike. Same across
 # the executor, --jit and an AOT binary.
 #
-# (A closure that names a class is not Sendable — the class value carries
-# native members — so the workers below receive instances, or declare their
-# own class; both conform to the parent's traits.)
+# (The workers below receive instances, or declare their own class; both
+# conform to the parent's traits.)
 
 trait Shape {
   area()

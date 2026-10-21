@@ -1,11 +1,10 @@
 #pragma once
 
-// The neutral transfer representation (SendNode) plus the one helper every
-// backend's serializer shares: send_error (one SendError spelling). Owns no
-// GC-heap pointer and no engine type, so
-// the compiled lanes' serializer (sendable_rt.h) and the isolate/channel
-// core (isolate_core.h) can include it without the interp. Moved verbatim
-// from sendable.h (Phase 4 B7-b).
+// The neutral transfer representation (SendNode) plus the helpers every
+// serializer shares: send_error (one SendError spelling) and
+// rethrow_send_error_in. Owns no GC-heap pointer and no engine type, so the
+// serializer (conc/sendable.h) and the isolate/channel core
+// (isolate_core.h) can include it.
 
 #include <peglib.h>
 #include <base/shared.h>  // CulebraError
@@ -44,7 +43,10 @@ struct SendNode {
   std::shared_ptr<void> held;
   std::string s;   // Str; also a BufView's field type (empty: `buf[i]`)
 
-  std::vector<SendNode> elems;  // Array / Set / Tuple; a BufView's buffer
+  // Array / Set / Tuple; a BufView's buffer. An Object's: what it is, ahead
+  // of what it holds — a class object's instances' meta; an instance's meta,
+  // then the class it takes along (its methods name it).
+  std::vector<SendNode> elems;
 
   // Object: ordered (key, value) pairs + parallel mutability flags. Keys are
   // themselves SendNodes (String keys → K::Str; non-String keys serialize as
@@ -81,10 +83,11 @@ struct SendNode {
   std::vector<std::vector<std::string>> mf_param_names;
   std::vector<bool> mf_variadic;
   std::vector<size_t> mf_min_params;
-  int ref_id = -1;          // closure identity (for back-references)
+  int ref_id = -1;          // identity, for backrefs; a SharedVal's node
   bool is_backref = false;  // true ⇒ this node is just a ref to ref_id
   // Object: what it is beyond its entries.
   ObjectFacts facts;
+  bool is_class = false;    // Object: a class object (see elems)
 
   // Declared here, defaulted below the class, for the reason toml::Node's are
   // (toml.h): the self-referential vector<pair<SendNode, SendNode>> makes
@@ -118,6 +121,16 @@ using TraitDefaults = std::vector<TraitDefaultNode>;
 
 [[noreturn]] inline void send_error(const std::string& what) {
   throw culebra::CulebraError("SendError", what);
+}
+
+// From a catch of `e`: a SendError the serializer raised (it has no position
+// yet) again, as raised in `where` and at line:col; any other error as it was.
+[[noreturn]] inline void rethrow_send_error_in(const culebra::CulebraError& e,
+                                               const std::string& where,
+                                               int64_t line = 0,
+                                               int64_t col = 0) {
+  if (e.kind != "SendError" || e.line != 0) throw;
+  throw culebra::CulebraError("SendError", where + ": " + e.what(), line, col);
 }
 
 }  // namespace culebra::sendable

@@ -1,0 +1,245 @@
+# A class crosses an isolate boundary: named by a closure, passed or returned
+# as a value, or taken along by an instance whose methods name it. What
+# arrives is a copy of the class, its statics included. Its constructor was
+# refused as a C++-bodied function, which it is not, so none of these could
+# be sent at all. Runs under both engines.
+
+fn caught(thunk) {
+  try {
+    thunk()
+  } catch e {
+    "{e.kind}: {e.message}"
+  }
+}
+
+# A method that builds an instance of its own class: the class goes with the
+# instance, there and back.
+class Player {
+  new(x) {
+    self.x = x
+  }
+  update() {
+    Player(self.x + 1)
+  }
+}
+let p = Player(1)
+assert_eq(Isolate.spawn(|| p.update().x).join(), 2)
+let back = Isolate.spawn(|| p.update()).join()
+assert_eq([back.x, back.update().x], [2, 3])
+let (ptx, prx) = Channel.new(1)
+ptx.send(p)
+let got = prx.recv()
+assert_eq(got.update().x, 2)
+let got_class = class_of(got)
+assert_eq([got_class.name, got_class(7).x], ['Player', 7])
+assert_eq(class_of(got_class(7)) == got_class, true)
+
+# A closure naming a top-level class, its statics and static methods, and a
+# class as an argument and as a result.
+class Sq {
+  new(n) {
+    self.n = n
+  }
+  area() {
+    self.n * self.n
+  }
+  static unit() {
+    Sq(1)
+  }
+  static count = 7
+}
+assert_eq(Isolate.spawn(|| [Sq(3).area(), Sq.unit().area(), Sq.count]).join(),
+  [9, 1, 7])
+assert_eq(Isolate.spawn(|c| c(4).area(), Sq).join(), 16)
+let sq = Isolate.spawn(|| Sq).join()
+assert_eq([type_of(sq), sq.name, sq(5).area()], ['Class', 'Sq', 25])
+assert_eq(class_of(sq(5)) == sq, true)
+
+# The statics arrive as they were sent, and stay what they were: a copy's
+# change is its own, and a static is no more writable there than here.
+Sq.cache = [1]
+let there = Isolate.spawn(fn () {
+  Sq.cache.push(2)
+  Sq.cache.size()
+}).join()
+assert_eq([there, Sq.cache.size()], [2, 1])
+assert_eq(caught(|| Isolate.spawn(fn () {
+  Sq.count = 8
+}).join()), "ImmutableError: immutable property 'count'")
+
+# Overloaded `new`, in two messages into one Runtime: each copy constructs
+# through a table of its own.
+class Pt {
+  new(x: Long) {
+    self.x = x
+  }
+  new(x: String) {
+    self.x = x.size()
+  }
+  twice() {
+    Pt(self.x * 2)
+  }
+}
+let pt = Pt(3)
+assert_eq(Isolate.spawn(|| [pt.twice().x, Pt('abcd').x]).join(), [6, 4])
+let (otx, orx) = Channel.new(2)
+otx.send(pt)
+otx.send(pt)
+let pa = orx.recv()
+let pb = orx.recv()
+assert_eq([pa.twice().x, pb.twice().x], [6, 6])
+
+# A static holding an instance of its own class: one class per message,
+# which the instance names as its own. That instance sent itself is no
+# cycle: what the class holds arrives as a copy of its own.
+Pt.origin = Pt(0)
+assert_eq(Isolate.spawn(|| [Pt.origin.twice().x, class_of(Pt.origin) == Pt])
+  .join(), [0, true])
+let origin = Pt.origin
+assert_eq(Isolate.spawn(|| origin.twice().x).join(), 0)
+
+# A class whose `new` keeps every instance it builds: each one sent takes the
+# class, and so the others, along.
+class Node {
+  new(v) {
+    self.v = v
+    Node.all.push(self)
+  }
+  succ() {
+    Node(self.v + 1)
+  }
+  static all = []
+}
+let node = Node(1)
+let nodes_there = Isolate.spawn(|| [node.succ().v, Node.all.size()]).join()
+assert_eq([nodes_there, Node.all.size()], [[2, 2], 1])
+
+# Two classes that name each other, the second reached first: an instance
+# met inside the first one's walk links a class still being rebuilt.
+class Maker {
+  new() {
+  }
+}
+class Made {
+  new(v) {
+    self.v = v
+  }
+  maker() {
+    Maker()
+  }
+  again() {
+    Made(self.v + 1)
+  }
+}
+Maker.made = Made(1)
+assert_eq(Isolate.spawn(|c| c(5).again().v, Made).join(), 6)
+
+# A decorated class: its methods read the binding, which holds what the
+# decorator returned, and name the class through it.
+let wrap = fn (c) { {inner: c} }
+@wrap class Wrapped {
+  new() {
+    self.v = 5
+  }
+  m() {
+    Wrapped.inner.new().v + 1
+  }
+}
+let wrapped = Wrapped.inner.new()
+assert_eq(Isolate.spawn(|| [wrapped.m(), class_of(wrapped) == Wrapped.inner])
+  .join(), [6, true])
+let (wtx, wrx) = Channel.new(1)
+wtx.send(wrapped)
+assert_eq(class_of(wrx.recv()).name, 'Wrapped')
+
+# A class declared in a function, gone with it on this side.
+fn local_class() {
+  class Local {
+    new(v) {
+      self.v = v
+    }
+    bump() {
+      Local(self.v + 1)
+    }
+  }
+  Local(1)
+}
+let local = local_class()
+assert_eq(Isolate.spawn(|| local.bump().bump().v).join(), 3)
+let local_back = Isolate.spawn(|| local.bump()).join()
+assert_eq([local_back.bump().v, type_of(local_back)], [3, 'Local'])
+
+# The stdlib's Vector2, a @value whose operators name it.
+let v2 = Vector2(1.0, 2.0)
+assert_eq(Isolate.spawn(|| (v2 + v2).x).join(), 2.0)
+let v4 = Isolate.spawn(|| v2 + v2).join()
+assert_eq([v4 == Vector2(2.0, 4.0), (v4 + v2).y], [true, 6.0])
+
+# A static `next` that takes an argument and a static `drop` are ordinary
+# functions on the copy, as on the class: no contract checked, no drop run.
+let (dtx, drx) = Channel.new(4)
+class Statics {
+  new(v) {
+    self.v = v
+  }
+  again() {
+    Statics(self.v)
+  }
+  static next(x) {
+    x + 1
+  }
+  static drop() {
+    dtx.send('a static drop ran')
+  }
+}
+let st = Statics(1)
+let st_there = Isolate.spawn(|| [st.again().v, Statics.next(3)]).join()
+assert_eq([st_there, drx.drain()], [[1, 4], []])
+
+# A @packable class is refused, and a member of a class that cannot cross
+# says which member it is.
+@packable
+class Rec {
+  x: Int32
+  moved() {
+    let r = Rec()
+    r.x = self.x + 1
+    r
+  }
+}
+@packable
+class Plain {
+  x: Int32
+}
+let rec = Rec()
+let plain = Plain()
+plain.x = 3
+assert_eq(caught(|| Isolate.spawn(|| rec.moved().x).join()),
+  "SendError: Isolate.spawn: Rec: a @packable class is not Sendable")
+assert_eq(Isolate.spawn(|| plain.x).join(), 3)
+
+mut hits = 0
+class Counted {
+  new() {
+    hits += 1
+  }
+}
+assert_eq(caught(|| Isolate.spawn(|| Counted).join()),
+  "SendError: Isolate.spawn: Counted.new: closure captures the mutable " +
+  "variable 'hits' (mutable captures are not Sendable — pass it as an " +
+  "argument instead)")
+class Seen {
+  new() {
+  }
+  again() {
+    Seen()
+  }
+  static seen = fn () { hits }
+}
+let seen = Seen()
+assert_eq(caught(|| Isolate.spawn(|| seen.again()).join()),
+  "SendError: Isolate.spawn: Seen.seen: closure captures the mutable " +
+  "variable 'hits' (mutable captures are not Sendable — pass it as an " +
+  "argument instead)")
+
+inspect("test_send_class: all assertions passed")

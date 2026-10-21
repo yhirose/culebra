@@ -76,13 +76,17 @@ inline std::shared_ptr<void> shared_val_held(const SharedValCore& core,
 }
 
 // Why a value that can be sent still cannot be frozen, or null: Shared
-// narrows what the serializer accepts to data alone. No functions, and no
-// handle references (a frozen tree must not own channel / SharedBuffer /
-// Shared refcounts).
+// narrows what the serializer accepts to data alone. No functions or
+// classes, and no handle references (a frozen tree must not own channel /
+// SharedBuffer / Shared refcounts).
 inline const char* _shared_val_reject_reason(const SendNode& n) {
   switch (n.kind) {
     case SendNode::K::Closure:
       return "functions cannot be shared (Shared values are data only)";
+    case SendNode::K::Object:
+      if (n.is_class)
+        return "classes cannot be shared (Shared values are data only)";
+      break;
     case SendNode::K::Channel:
     case SendNode::K::SharedBuffer:
     case SendNode::K::SharedVal:

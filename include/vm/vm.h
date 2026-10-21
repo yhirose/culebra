@@ -2995,8 +2995,7 @@ struct Chunk {
 // so the answer cannot depend on which of them is running — nor on where the
 // body's code happened to land.
 inline uint64_t chunk_closure_flags(const Chunk& c) {
-  return (c.is_getter ? JIT_CLOSURE_GETTER : 0u) |
-         (c.forwards_args ? JIT_CLOSURE_NATIVE : 0u);
+  return c.is_getter ? JIT_CLOSURE_GETTER : 0u;
 }
 
 // The argument positions the call at `ix` published, or null when it has
@@ -8357,12 +8356,16 @@ class Compiler {
       chunk_.name_tables.push_back(std::move(names));
       // A method that names its class (in its body, or in a closure it
       // builds) needs the class object with it: the send path ships the
-      // two together, which is where such an instance is refused.
+      // two together. It reads the class through its receiver (own_name),
+      // or, where a decorator decides what the name binds, through that
+      // binding.
       bool names_class = false;
       for (auto* m : method_asts) {
         const auto& mi = analysis_.func_info.at(m);
-        if (!mi.own_name.empty() &&
-            (mi.own_name_used || mi.captured_locals.contains(mi.own_name)))
+        if (mi.own_name.empty()
+                ? std::find(mi.free_vars.begin(), mi.free_vars.end(),
+                            class_name) != mi.free_vars.end()
+                : mi.own_name_used || mi.captured_locals.contains(mi.own_name))
           names_class = true;
       }
       chunk_.name_table_class.push_back(class_name);

@@ -177,6 +177,24 @@ assert_eq(
   [[true, 1], [false, 1]],
 )
 
+// ... and through a constructor taken off its class, a closure like the rest
+effect fn nf_ctor() {
+  mut n = 0
+  class Bump {
+    new() {
+      n += 1
+    }
+  }
+  let make = Bump['new']
+  let b = perform nf_choose()
+  make()
+  [b, n]
+}
+assert_eq(
+  handle { nf_ctor() } with nf_choose(k) { [k(true), k(false)] },
+  [[true, 1], [false, 1]],
+)
+
 // A closure held in an array is a value, which the forks share like the
 // array: it reaches the variables as the continuation holds them.
 effect fn nf_in_array() {

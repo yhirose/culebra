@@ -114,7 +114,9 @@ tests.cul 313
 # more than 64 fields).
 # 24 since test_send_value.cul (a @value or @derive instance crosses, and a
 # value stays one on the other side).
-tests.isolate 24
+# 25 since test_send_class.cul (a class crosses, as a value or with an
+# instance whose methods name it, and what cannot says which class it was in).
+tests.isolate 25
 
 # tests/gen_frames/*.cul: the generator probes held to frozen outputs, on both
 # engines in the landing gate and under the collector's axes and `culebra

@@ -3669,12 +3669,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_eff_copy(
     JitObject* src) {
   auto* o = new JitObject();
   o->refcount = 1;
-  o->set_proto(src->proto());   // shared class meta (methods)
-  if (o->proto()) {
-    o->proto()->refcount++;   // each instance holds a +1 (see dtor)
-    o->cls = src->built_by();  // and one on its class object
-    if (o->cls) o->cls->refcount++;
-  }
+  o->link_class(src->proto(), src->built_by());  // the shared meta, its class
   o->shape = src->shape;   // interned, immortal
   o->slots = src->slots;   // per-field value copy
   if (src->is_dict) {
@@ -4232,7 +4227,7 @@ inline JitValue _jit_make_buf_view(JitBufView* view) {
 }
 
 inline bool _jit_is_shared_val(JitObject* obj) { return obj->is_shared_val; }
-// Shared.new view readers. The bodies live in sendable_rt.h and are reached
+// Shared.new view readers. The bodies live in conc/sendable.h and are reached
 // through these hooks rather than by symbol: the generic get/index paths
 // would otherwise name the SharedVal reader, and through it the whole
 // SendNode / channel / serialize graph, in every binary — a hello-world AOT
