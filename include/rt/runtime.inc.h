@@ -3520,15 +3520,26 @@ inline JitObject* _jit_view_new(bool JitObject::* flag) {
 // account for it. A side table would not be: it is invisible to the
 // trial-deletion pass, which then condemns the meta out from under live
 // instances.
+// What makes an Object a meta at all, a variant's or a class's: the flag and
+// the names its instances read. Interned, not borrowed: a meta outlives the
+// chunk or module global a declaration's name points into (a REPL session
+// frees chunks while instances built from them are still bound). A class's
+// meta goes on to _jit_seal_class_meta. `enum_name` is empty but a variant's.
+inline void _jit_name_class_meta(JitObject* meta, std::string_view name,
+                                 std::string_view enum_name) {
+  meta->is_class_meta = true;
+  meta->specials = new JitSpecialTable();
+  meta->specials->name = _intern_str(name);
+  if (!enum_name.empty()) meta->specials->enum_name = _intern_str(enum_name);
+}
+
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject*
 culebra_runtime_make_variant_meta(const char* variant_name,
                                   const char* enum_name) {
   auto* meta = culebra_runtime_object_new();
-  meta->is_class_meta = true;
-  meta->specials = new JitSpecialTable();
-  meta->specials->name = _intern_str(std::string_view(variant_name));
-  if (enum_name)
-    meta->specials->enum_name = _intern_str(std::string_view(enum_name));
+  _jit_name_class_meta(meta, variant_name,
+                       enum_name ? std::string_view(enum_name)
+                                 : std::string_view{});
   return meta;
 }
 

@@ -33,6 +33,20 @@ struct FrozenNode {
   uint32_t shape = kFrozenNone;  // an Object's, a Set's
 };
 
+// What an Object is besides its entries, carried with it by a message's node
+// (sendable::SendNode) and a Shared tree's shape alike, and put back on the
+// Object the receiver rebuilds (the object-facts table, conc/sendable.h).
+struct ObjectFacts {
+  uint32_t bits = 0;        // its own flags (kCarriedFacts, has_drop)
+  uint32_t meta_flags = 0;  // a class meta's kClassMeta* flags
+  // The Shape its String keys were declared in: process-wide and never
+  // freed, so it means the same in every Runtime. Null for an Object in
+  // dictionary mode, whose keys declare nothing.
+  const void* decl = nullptr;
+  int8_t dir_kind = 0;      // a class meta's JitSpecialTable::dir_kind
+  bool operator==(const ObjectFacts&) const = default;
+};
+
 // What the Objects with one sequence of keys share, and what a Set's members
 // are found through (a Set's keys are its own cells).
 struct FrozenShape {
@@ -45,10 +59,7 @@ struct FrozenShape {
   uint32_t n_others;
   uint32_t mut = kFrozenNone;   // in `index`: a bit a key (an Object's)
   uint32_t meta = kFrozenNone;  // a class instance: its class's node
-  int8_t dir_kind = 0;          // a class meta's (JitSpecialTable::dir_kind)
-  bool lowered_state = false;   // a class meta's (JitObject::is_lowered_state)
-  bool is_error = false;
-  bool has_drop = false;        // a class instance's drop gate
+  ObjectFacts facts;
 };
 
 struct FrozenTree {

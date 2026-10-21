@@ -188,7 +188,7 @@ inline bool _jit_scalar_node(const JitValue& v, sendable::SendNode& n) {
 // A class meta holds its class's name (and, for a variant, its enum's) in C++
 // fields rather than slots, so a walk of its entries cannot carry them. They
 // go along as one String, separated by '/' (no identifier contains one),
-// which _jit_restore_class_meta reads back. Without it the receiver rebuilds
+// which _jit_rebuilt_object_done reads back. Without it the receiver rebuilds
 // a nameless meta and every instance behind it loses the one thing that says
 // what it is. Empty for an Object that is no meta.
 inline std::string _jit_class_meta_names(const JitObject* o) {
@@ -199,6 +199,71 @@ inline std::string _jit_class_meta_names(const JitObject* o) {
     names += o->specials->enum_name;
   }
   return names;
+}
+
+// object-facts: begin
+// What an Object is, member by member, when a message or a Shared tree
+// rebuilds it on another heap. A member the rebuild knew nothing of was lost
+// without a sound (a received typed field took any value, a meta ran its own
+// `drop`), so tools/checks/check_object_facts.sh holds every data member of
+// JitObject to a row here.
+//   slots             entries: stored in the sender's order
+//   non_string_props  entries: the ones a non-String key holds
+//   key_order         entries: their order, kept by storing them in it
+//   shape             entries: the sender's (ObjectFacts::decl), types and all
+//   is_dict           entries: a dictionary where the sender's was one
+//   dict_             entries: a dictionary's index, built as it fills
+//   has_drop          carried: registered where the sender's was
+//   dropped           carried: a drop that ran does not run again
+//   is_error          carried: a re-throw still reports the error it was
+//   is_match          carried: a Regex match reads its groups by `m[i]`
+//   frozen            carried: a @value instance's fields stay as they are
+//   fields_closed     carried: and none is added
+//   proto_            restored: an instance's class meta, the node after it
+//   is_class_meta     restored: a meta is sealed as declared
+//   specials          restored: by the seal
+//   is_lowered_state  restored: with the meta's flags (meta_flags)
+//   names_class       restored: with the meta's flags
+//   is_value          restored: with the meta's flags
+//   methods_drop      restored: the seal recounts it from the methods
+//   refcount          the receiver's own
+//   gc_slot           the receiver's own
+//   mut_count         the receiver's own
+//   owned_idx         the receiver's own owned stack
+//   cls               left behind: a received instance names no class object
+//   is_class          left behind: a class object is refused (its constructor)
+//   instance_meta     left behind: likewise
+//   is_enum           left behind: an enum object crosses as a plain Object
+//   enum_ref          left behind: a received variant names no enum object
+//   is_namespace      left behind: a namespace's members are native functions
+//   ns_name           left behind: likewise
+//   has_handle        left behind: a handle is refused or is a node of its own
+//   handle            left behind: likewise
+//   is_gen_frame      left behind: a generator is refused
+//   gen_frame         left behind: likewise
+//   fast_next_fn      left behind: an iterator's, and an iterator is refused
+//   is_shared_buffer  left behind: a node of its own (SharedBuffer)
+//   is_shared_val     left behind: a node of its own (SharedVal)
+// object-facts: end
+
+// The flags the table says are carried, by position in ObjectFacts::bits.
+// has_drop takes the bit after them: putting it back registers a drop.
+inline constexpr bool JitObject::* const kCarriedFacts[] = {
+    &JitObject::dropped, &JitObject::is_error, &JitObject::is_match,
+    &JitObject::frozen,  &JitObject::fields_closed};
+inline constexpr uint32_t kFactHasDrop = 1u << std::size(kCarriedFacts);
+
+inline culebra::ObjectFacts _jit_object_facts(const JitObject* o) {
+  culebra::ObjectFacts f;
+  for (size_t i = 0; i < std::size(kCarriedFacts); i++)
+    if (o->*kCarriedFacts[i]) f.bits |= 1u << i;
+  if (o->has_drop) f.bits |= kFactHasDrop;
+  f.decl = o->is_dict ? nullptr : o->shape;
+  if (o->is_class_meta && o->specials) {
+    f.meta_flags = static_cast<uint32_t>(_jit_class_meta_flags(o));
+    f.dir_kind = o->specials->dir_kind;
+  }
+  return f;
 }
 
 // The handle an Object is, if it is one: a thing a message carries by
@@ -312,7 +377,11 @@ inline sendable::SendNode jit_serialize(JitValue v, JitSerCtx& ctx) {
         sendable::send_error("a cyclic value cannot be sent");
       culebra::ValueWalkFrame walk;
       n.kind = K::Object;
-      n.is_error = o->is_error;
+      // The Object's own facts (the object-facts table above), the instance's
+      // drop gate among them: carried rather than re-derived from the meta on
+      // the other side, since a nested instance can relink while its meta is
+      // still mid-fill (the memo registers before the entries land).
+      n.facts = _jit_object_facts(o);
       // Every entry, in the order the Object holds them: the receiver stores
       // them as they arrive, and that is the order it then iterates in. A key
       // that is no String serializes as a value node.
@@ -344,17 +413,7 @@ inline sendable::SendNode jit_serialize(JitValue v, JitSerCtx& ctx) {
       // eq/show thunks, a method capturing the class object and thus its
       // ctor) rejects exactly like the interp's body==nullptr check.
       n.s = _jit_class_meta_names(o);
-      if (!n.s.empty()) {
-        n.dir_kind = o->specials->dir_kind;
-        n.lowered_state = o->is_lowered_state;
-      }
       if (o->proto()) {
-        // Carry the instance's own drop gate rather than re-deriving it
-        // from the meta on the other side: a nested instance can relink
-        // while its meta is still mid-fill (the memo registers before the
-        // entries land), so probing the meta there would depend on the
-        // class's member declaration order.
-        n.b = o->has_drop;
         if (auto it = ctx.proto_ids.find(o->proto());
             it != ctx.proto_ids.end()) {
           sendable::SendNode ref;
@@ -458,33 +517,57 @@ inline JitValue _jit_make_shared_val_view(JitSvHold* hold,
 inline JitValue _jit_shared_val_root(const culebra::SharedValCore* core,
                                      int64_t id, int64_t node);  // fwd
 
-// A class meta crosses as an ordinary Object plus its names (`Name`, or
-// `Name/Enum` for a variant's). Restore what makes it a meta: the flag, the
-// special-method table (refilled from the methods just rebuilt, since it is
-// a cache of them), the interned names its instances read, and whether it
-// is a lowering's.
-inline void _jit_restore_class_meta(JitObject* o, std::string_view names,
-                                    int8_t dir_kind, bool lowered_state) {
-  o->is_class_meta = true;
-  o->is_lowered_state = lowered_state;
-  o->specials = new JitSpecialTable();
-  auto sep = names.find('/');
-  o->specials->name = _intern_str(names.substr(0, sep));
-  if (sep != std::string_view::npos)
-    o->specials->enum_name = _intern_str(names.substr(sep + 1));
-  o->specials->dir_kind = dir_kind;
-  _jit_fill_specials(o);
+// A rebuilt Object (jit_deserialize's, JitSvThaw's) is put back as the
+// sender held it, not by replaying a program's writes: those passed their
+// checks where they were made, and what they left behind is in its facts.
+// One String-keyed entry, typed as the sender's Shape typed its `nth` String
+// key, which this is (an Object holds them in its Shape's order). A shaped
+// sender's Object stays shaped however many keys it has: an instance's proto
+// is linked after its entries and shares a dictionary's storage. Takes the +1.
+inline void _jit_rebuilt_put(JitObject* o, const culebra::ObjectFacts& f,
+                             size_t& nth, std::string_view key, JitValue v,
+                             bool mut) {
+  if (auto* decl = static_cast<const culebra::Shape*>(f.decl)) {
+    assert(nth < decl->names.size() && decl->names[nth] == key);
+    auto& shapes = culebra::shape_registry();
+    if (!o->shape) o->shape = shapes.root();
+    o->append_slot_shaped(
+        shapes.transition_add(o->shape, key, decl->type_at(nth),
+                              decl->annotation_at(nth)),
+        v, mut);
+  } else {
+    o->append_slot(key, v, mut);
+  }
+  ++nth;
+  // A plain Object's `drop` registers it where the sender's key did, so the
+  // copies' drops run in the sender's order.
+  if ((f.bits & kFactHasDrop) && key == "drop") _jit_owned_bind_drop(o);
 }
 
-// A rebuilt class instance takes its class, mirroring build_class_instance:
-// the proto pointer holds one retain (released by the JitObject destructor),
-// and an inherited `drop` is mirrored so the destructor gate and the owned
-// stack see it. `has_drop` is the sender instance's own gate, carried over:
-// the meta may still be mid-fill for a nested instance, so it is not probed.
-inline void _jit_link_instance(JitObject* o, JitObject* meta, bool has_drop) {
-  o->set_proto(meta);
-  meta->refcount++;
-  if (has_drop) _jit_owned_bind_drop(o);
+// What the rebuilt Object is besides its entries, once they are in: a meta
+// sealed as its declaration sealed it (`names` is `Name` or `Name/Enum`,
+// empty for no meta), an instance linked to its class's meta (+1, released
+// by the JitObject destructor), and its facts last, so a freeze closes over
+// the entries already stored.
+inline void _jit_rebuilt_object_done(JitObject* o, std::string_view names,
+                                     JitObject* proto,
+                                     const culebra::ObjectFacts& f) {
+  if (!names.empty()) {
+    auto sep = names.find('/');
+    _jit_seal_class_meta(
+        o, names.substr(0, sep),
+        sep == std::string_view::npos ? std::string_view{}
+                                      : names.substr(sep + 1),
+        f.meta_flags, f.dir_kind);
+  }
+  if (proto) {
+    o->set_proto(proto);
+    proto->refcount++;
+  }
+  for (size_t i = 0; i < std::size(kCarriedFacts); i++)
+    o->*kCarriedFacts[i] = ((f.bits >> i) & 1u) != 0;
+  // An instance's drop (a plain Object's registered at its key already).
+  if (f.bits & kFactHasDrop) _jit_owned_bind_drop(o);
 }
 
 // A field of type `type` in `layout`, or in a record nested in it, or null.
@@ -532,21 +615,17 @@ inline JitOwnedVal jit_deserialize(const sendable::SendNode& n, JitDeCtx& ctx) {
     case K::Object: {
       auto* o = culebra_runtime_object_new();
       JitOwnedVal out(TAG_OBJECT, reinterpret_cast<int64_t>(o));
-      o->is_error = n.is_error;
       // Register a shared class meta BEFORE filling entries so a backref
       // inside its own subtree (a method capturing another instance of
       // the same class) resolves — mirrors the closure memo below.
       if (n.ref_id >= 0) ctx.remember(n.ref_id, out.borrow());
+      size_t nth = 0;
       for (size_t k = 0; k < n.entries.size(); k++) {
         JitOwnedVal val = jit_deserialize(n.entries[k].second, ctx);
         bool mut = k < n.entry_mut.size() ? n.entry_mut[k] : true;
         if (n.entries[k].first.kind == sendable::SendNode::K::Str) {
-          // Through the chokepoint, not set_or_append: mirrors the interp's
-          // `initialize` (well-known contract check + owned `drop`
-          // registration for a plain object's own slot).
-          JitValue v = val.consume();
-          culebra_runtime_object_set(o, n.entries[k].first.s.c_str(), mut,
-                                     v.tag, v.data, 0, 0, /*is_init=*/true);
+          _jit_rebuilt_put(o, n.facts, nth, n.entries[k].first.s, val.consume(),
+                           mut);
         } else {
           // Non-string key: rebuilt after its value, as it was sent, and
           // stored via the value-key path (consumes both +1s).
@@ -556,15 +635,15 @@ inline JitOwnedVal jit_deserialize(const sendable::SendNode& n, JitDeCtx& ctx) {
                                          v.data, 0, 0, /*is_init=*/true);
         }
       }
-      if (!n.s.empty())
-        _jit_restore_class_meta(o, n.s, n.dir_kind, n.lowered_state);
       // Class instance: elems[0] = the rebuilt class meta, which the link
       // takes a reference of its own on.
+      JitOwnedVal proto(TAG_NIL, 0);
+      JitObject* meta = nullptr;
       if (!n.elems.empty()) {
-        JitOwnedVal proto = jit_deserialize(n.elems[0], ctx);
-        _jit_link_instance(o, reinterpret_cast<JitObject*>(proto.borrow().data),
-                           n.b);
+        proto = jit_deserialize(n.elems[0], ctx);
+        meta = reinterpret_cast<JitObject*>(proto.borrow().data);
       }
+      _jit_rebuilt_object_done(o, n.s, meta, n.facts);
       return out;
     }
     case K::Closure: {
@@ -1716,9 +1795,10 @@ struct JitSvFreezer {
     if (shared) {
       mix(h, s.meta);
       mix(h, static_cast<size_t>(s.name));
-      mix(h, (s.is_error ? 1u : 0u) | (s.lowered_state ? 2u : 0u) |
-                 (s.has_drop ? 4u : 0u) |
-                 (static_cast<size_t>(static_cast<uint8_t>(s.dir_kind)) << 8));
+      mix(h, s.facts.bits | (static_cast<size_t>(s.facts.meta_flags) << 16) |
+                 (static_cast<size_t>(static_cast<uint8_t>(s.facts.dir_kind))
+                  << 8));
+      mix(h, reinterpret_cast<size_t>(s.facts.decl));
       for (size_t i = base; i < keys.size(); i++) {
         mix(h, static_cast<size_t>(keys[i].tag));
         mix(h, static_cast<size_t>(keys[i].data));
@@ -1742,8 +1822,7 @@ struct JitSvFreezer {
   bool same(const culebra::FrozenShape& a, const culebra::FrozenShape& s,
             size_t base) const {
     if (a.count != s.count || a.meta != s.meta || a.name != s.name ||
-        a.dir_kind != s.dir_kind || a.lowered_state != s.lowered_state ||
-        a.is_error != s.is_error || a.has_drop != s.has_drop)
+        a.facts != s.facts)
       return false;
     const auto* theirs = t.keys_of(a);
     for (uint32_t i = 0; i < s.count; i++) {
@@ -1864,15 +1943,10 @@ struct JitSvFreezer {
           muts.push_back(entry.mut);
         });
     culebra::FrozenShape s{};
-    s.is_error = o->is_error;
-    if (auto names = _jit_class_meta_names(o); !names.empty()) {
+    s.facts = _jit_object_facts(o);
+    if (auto names = _jit_class_meta_names(o); !names.empty())
       s.name = key_str(names);
-      s.dir_kind = o->specials->dir_kind;
-      s.lowered_state = o->is_lowered_state;
-    }
     if (auto* meta = o->proto()) {
-      // The instance's own drop gate, not one derived again from the meta.
-      s.has_drop = o->has_drop;
       auto it = metas.find(meta);
       s.meta = it != metas.end() ? it->second : object(meta, true);
       // A method that names its class reads the class object through the
@@ -1968,31 +2042,29 @@ struct JitSvThaw {
     const auto& n = t.nodes[at];
     const auto& shape = t.shapes[n.shape];
     auto* o = culebra_runtime_object_new();
-    o->is_error = shape.is_error;
     if (is_meta) metas.emplace(at, o);
     const auto* keys = t.keys_of(shape);
     const auto* values = t.cells_of(n);
+    size_t nth = 0;
     for (uint32_t i = 0; i < n.count; i++) {
       JitValue val = cell(values[i]);
       bool mut = t.mut_at(shape, i);
       if (keys[i].tag == TAG_STRING) {
-        culebra_runtime_object_set(o, t.c_str(keys[i].data), mut, val.tag,
-                                   val.data, 0, 0, /*is_init=*/true);
+        _jit_rebuilt_put(o, shape.facts, nth, t.str(keys[i].data), val, mut);
       } else {
         JitValue key = cell(keys[i]);
         culebra_runtime_object_set_any(o, key.tag, key.data, mut, val.tag,
                                        val.data, 0, 0, /*is_init=*/true);
       }
     }
-    if (shape.name >= 0)
-      _jit_restore_class_meta(o, t.str(shape.name), shape.dir_kind,
-                              shape.lowered_state);
+    JitObject* proto = nullptr;
     if (shape.meta != culebra::kFrozenNone) {
       auto it = metas.find(shape.meta);
-      _jit_link_instance(
-          o, it != metas.end() ? it->second : object(shape.meta, true),
-          shape.has_drop);
+      proto = it != metas.end() ? it->second : object(shape.meta, true);
     }
+    _jit_rebuilt_object_done(
+        o, shape.name >= 0 ? t.str(shape.name) : std::string_view{}, proto,
+        shape.facts);
     return o;
   }
 };

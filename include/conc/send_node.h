@@ -9,6 +9,7 @@
 
 #include <peglib.h>
 #include <base/shared.h>  // CulebraError
+#include <conc/frozen_tree.h>  // ObjectFacts
 
 #include <cstdint>
 #include <memory>
@@ -82,15 +83,8 @@ struct SendNode {
   std::vector<size_t> mf_min_params;
   int ref_id = -1;          // closure identity (for back-references)
   bool is_backref = false;  // true ⇒ this node is just a ref to ref_id
-  // Object: the Error Object a catch built (JitObject::is_error), which a
-  // re-throw on the receiving side still reports as that error.
-  bool is_error = false;
-  // Object, a class meta: which Dir module class it is (JitSpecialTable::
-  // dir_kind), a fact of the meta's C++ side that the entries cannot carry.
-  int8_t dir_kind = 0;
-  // Object, a class meta: a lowering's (JitObject::is_lowered_state), whose
-  // instances' own slots hand a function back unbound; the same kind of fact.
-  bool lowered_state = false;
+  // Object: what it is beyond its entries.
+  ObjectFacts facts;
 
   // Declared here, defaulted below the class, for the reason toml::Node's are
   // (toml.h): the self-referential vector<pair<SendNode, SendNode>> makes

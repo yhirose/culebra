@@ -82,4 +82,27 @@ assert_eq(rx3.recv(), 'box1box2box3')
 assert_eq(rx3.recv(), nil)
 assert_eq(sender3.join(), 'done')
 
+# An argument is rebuilt as the Object it was, not by writing its fields one
+# by one: a typed field still refuses another type, and its class's `drop`
+# runs on the worker's copy alone, never on the class's methods.
+let (tx4, rx4) = Channel.new(4)
+class Typed {
+  n: Long
+  new(.n) {}
+  drop() {
+    tx4.send(self.keys())
+  }
+}
+let typed = Typed(1)
+let typed_write = Isolate.spawn(fn (t) {
+  try {
+    t.n = 'two'
+    'written'
+  } catch e {
+    e.kind
+  }
+}, typed).join()
+assert_eq(typed_write, 'TypeError')
+assert_eq(rx4.drain(), [['n']])
+
 inspect('isolate arguments ok')

@@ -1812,6 +1812,30 @@ inline void _jit_fill_specials(JitObject* meta) {
   meta->methods_drop = _protocol_member(meta, "drop") != nullptr;
 }
 
+// The kClassMeta* flags a meta was made with, read back off it.
+inline int64_t _jit_class_meta_flags(const JitObject* meta) {
+  return (meta->is_lowered_state ? kClassMetaLoweredState : 0) |
+         (meta->names_class ? kClassMetaNamesClass : 0) |
+         (meta->is_value ? kClassMetaValue : 0);
+}
+
+// What makes an Object holding a class's methods its meta, once they are in
+// place. A declaration (culebra_runtime_build_class_meta) and a meta rebuilt
+// from a message or a Shared tree (conc/sendable.h) both end here, so a
+// rebuilt meta is one its declaration could have made.
+inline void _jit_seal_class_meta(JitObject* meta, std::string_view name,
+                                 std::string_view enum_name, int64_t flags,
+                                 int8_t dir_kind) {
+  meta->is_lowered_state = (flags & kClassMetaLoweredState) != 0;
+  meta->names_class = (flags & kClassMetaNamesClass) != 0;
+  meta->is_value = (flags & kClassMetaValue) != 0;
+  _jit_name_class_meta(meta, name, enum_name);
+  meta->specials->dir_kind = dir_kind;
+  // The method set is fixed from here on, so the questions every
+  // construction and every operator ask of it are answered once.
+  _jit_fill_specials(meta);
+}
+
 // Build a "class meta" object that holds shared method closures for
 // proto delegation, plus the class's name. Called once per class
 // declaration (compile-time emission, runtime allocation), captured in the
@@ -1832,9 +1856,6 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_build_class_meta(
     const char* class_name, const char* const* method_names,
     const JitValue* method_vals, int64_t n_methods, int64_t flags) {
   auto* meta = culebra_runtime_object_new();
-  meta->is_lowered_state = (flags & kClassMetaLoweredState) != 0;
-  meta->names_class = (flags & kClassMetaNamesClass) != 0;
-  meta->is_value = (flags & kClassMetaValue) != 0;
   int64_t i = 0;
   try {
     for (; i < n_methods; i++) {
@@ -1857,15 +1878,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_build_class_meta(
   // owned-stack registration) that `culebra_runtime_object_set` applied
   // when binding the "drop" method.
   _jit_owned_unbind_drop(meta);
-  // The method set is fixed from here on, so the two questions every
-  // construction and every operator ask of it are answered once.
-  meta->is_class_meta = true;
-  meta->specials = new JitSpecialTable();
-  // Interned, not borrowed: a meta outlives the chunk or module global the
-  // caller's `class_name` points into (a REPL session frees chunks while
-  // instances built from them are still bound).
-  meta->specials->name = _intern_str(std::string_view(class_name));
-  _jit_fill_specials(meta);
+  _jit_seal_class_meta(meta, class_name, {}, flags, /*dir_kind=*/0);
   return meta;
 }
 

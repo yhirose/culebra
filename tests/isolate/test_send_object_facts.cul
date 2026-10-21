@@ -1,0 +1,100 @@
+# What a message rebuilds is the Object that was sent: the facts the runtime
+# keeps beside an Object's entries cross with it, and the receiver adds none of
+# its own. It used to rebuild each Object by writing its entries one by one, so
+# the declared types of a typed field were lost, a meta registered the `drop`
+# method it holds as its own, and a drop that had run ran again. Each case
+# declares its own classes. Runs under both engines.
+
+fn caught(thunk) {
+  try {
+    thunk()
+  } catch e {
+    "{e.kind}: {e.message}"
+  }
+}
+
+# (That a class's `drop` runs on the received instance alone, never on the
+# class's methods, is in test_isolate_args.cul, which every lane runs.)
+
+# --- a drop that already ran does not run again on the other side ------------
+let (dd_tx, dd_rx) = Channel.new(16)
+class DdRes {
+  new(.name) {}
+  drop() {
+    dd_tx.send(self.name)
+  }
+}
+let dd = DdRes("once")
+dd.drop()
+assert_eq(dd_rx.drain(), ["once"])
+assert_eq(Isolate.spawn(|r| r.name, dd).join(), "once")
+assert_eq(dd_rx.drain(), [])
+
+# --- a plain Object holding a `drop` is still a resource there ---------------
+let (od_tx, od_rx) = Channel.new(16)
+let od = {name: "obj", drop: fn () {
+  od_tx.send("dropped")
+}}
+Isolate.spawn(|o| o.name, od).join()
+assert_eq(od_rx.drain(), ["dropped"])
+
+# --- a received instance keeps its fields' declared types --------------------
+class TyP {
+  x: Long
+  new(.x) {}
+}
+let local_write = caught(fn () {
+  let p = TyP(1)
+  p.x = "str"
+})
+let local_remove = caught(|| TyP(1).remove("x"))
+let (ty_tx, ty_rx) = Channel.new(2)
+ty_tx.send(TyP(1))
+ty_tx.send(TyP(1))
+let ty_a = ty_rx.recv()
+let ty_b = ty_rx.recv()
+assert_eq(caught(fn () {
+  ty_a.x = "str"
+}), local_write)
+assert_eq(caught(|| ty_b.remove("x")), local_remove)
+
+# --- a received Regex match reads its groups ---------------------------------
+let m = re'(\d+)-(\d+)'.match('12-34')
+assert_eq(
+  Isolate.spawn(|mm| [mm[0], mm[1], mm[2]], m).join(),
+  ["12-34", "12", "34"],
+)
+
+# --- a Shared copy of a typed instance keeps its types -----------------------
+class ShP {
+  x: Long
+  new(.x) {}
+}
+let sh = Shared.new([ShP(1)])
+let sh_copy = sh.copy()
+assert_eq(caught(fn () {
+  sh_copy[0].x = "str"
+}), local_write)
+sh.drop()
+
+# --- an instance with more fields than a plain Object's layout holds ---------
+# It stays shaped where the sender's did: rebuilt into a dictionary, its
+# fields were read through its class's link and the receiver freed the class
+# as if it were the dictionary. Last, since that crashed the run.
+class WideP {
+  new() {
+    for i in 0..70 {
+      self["f{i}"] = i
+    }
+  }
+}
+let (wd_tx, wd_rx) = Channel.new(1)
+wd_tx.send(WideP())
+let wd = wd_rx.recv()
+assert_eq([wd.keys().size(), wd.f0, wd.f69], [70, 0, 69])
+let wd_sh = Shared.new(WideP())
+let wd_copy = wd_sh.copy()
+assert_eq([wd_copy.keys().size(), wd_copy.f69], [70, 69])
+wd_sh.drop()
+
+inspect("test_send_object_facts: all assertions passed")

@@ -109,7 +109,10 @@ tests.cul 313
 # 22 since test_send_multifn.cul and test_send_multifn_freed.cul (a `fn name`
 # that crosses a message dispatches over a table of its own; the shapes that
 # read freed memory are a file apart, so a crash there hides no assertion).
-tests.isolate 22
+# 23 since test_send_object_facts.cul (what a message rebuilds is the Object
+# that was sent: its typed fields, its drop gate, a Regex match, a layout of
+# more than 64 fields).
+tests.isolate 23
 
 # tests/gen_frames/*.cul: the generator probes held to frozen outputs, on both
 # engines in the landing gate and under the collector's axes and `culebra
