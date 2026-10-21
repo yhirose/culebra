@@ -229,11 +229,8 @@ inline bool _iequals(std::string_view a, std::string_view b) {
 // §8.3.1).
 inline bool _http_media_type_is(std::string_view content_type,
                                 std::string_view type) {
-  auto mt = content_type.substr(0, content_type.find(';'));
-  auto ws = [](char c) { return c == ' ' || c == '\t'; };
-  while (!mt.empty() && ws(mt.front())) mt.remove_prefix(1);
-  while (!mt.empty() && ws(mt.back())) mt.remove_suffix(1);
-  return _iequals(mt, type);
+  return _iequals(trim_ascii(content_type.substr(0, content_type.find(';'))),
+                  type);
 }
 
 // Split "scheme://host:port/path?query#frag" into the origin the Client ctor
@@ -411,24 +408,13 @@ inline std::string _http_join_path(const std::string& base_path,
   return base_path + "/" + rel;
 }
 
-// Where a streamed response body goes once its status is known: to
-// req.body_sink, or — a response sink_media_type does not admit — into
-// `held`, which _http_send returns as HttpResult::body.
-struct _HttpBodyRoute {
-  bool to_sink = true;
-  std::string held;
-};
-
 // Build the httplib::Request (method, path, headers, body/multipart/streaming
-// source, response sink) from `req` and the already-resolved `headers`/`path`.
-// Shared by the one-off http_request and the persistent http_client_request so
-// all body logic (params already folded into `path`) lives in one place. The
-// sink lambdas capture `req` and `route` by reference — the caller keeps both
-// alive across the send.
+// source) from `req` and the already-resolved `headers`/`path`. Shared by the
+// one-off http_request and the persistent http_client_request so all body
+// logic (params already folded into `path`) lives in one place.
 inline void _http_build_request(const HttpRequest& req, const std::string& path,
                                 const HeaderList& headers,
-                                httplib::Request& hreq,
-                                _HttpBodyRoute& route) {
+                                httplib::Request& hreq) {
   hreq.method = req.method.str();
   hreq.path = path;
   bool has_ct = false;
@@ -541,25 +527,6 @@ inline void _http_build_request(const HttpRequest& req, const std::string& path,
       hreq.headers.emplace("Content-Type", req.content_type);
     }
   }
-  // Streaming: route the response body to the sink as it arrives instead of
-  // buffering it into res->body (which then stays empty). httplib calls the
-  // response handler once, for the final response (not a followed redirect).
-  if (req.body_sink) {
-    if (!req.sink_media_type.empty()) {
-      hreq.response_handler = [&req, &route](const httplib::Response& r) {
-        route.to_sink = r.status >= 200 && r.status < 300 &&
-                        _http_media_type_is(r.get_header_value("Content-Type"),
-                                            req.sink_media_type);
-        return true;
-      };
-    }
-    hreq.content_receiver = [&req, &route](const char* data, size_t len,
-                                           uint64_t, uint64_t) {
-      if (route.to_sink) return req.body_sink(data, len);
-      route.held.append(data, len);
-      return true;
-    };
-  }
 }
 
 // One watcher for the process, not one per request: the work is identical for
@@ -662,9 +629,32 @@ class _InterruptWatcher {
 // thread that owns the interpreter/JIT state. The watcher only reads the flag;
 // throw_if_interrupted() afterwards raises the same cooperative Interrupted
 // the loop safepoint does.
+//
+// A streamed response (req.body_sink) is routed here as it arrives: to the
+// sink, leaving res->body empty, or — one sink_media_type does not admit — into
+// the result's body as if no sink were set. httplib calls the response handler
+// once, for the final response (not a followed redirect).
 inline HttpResult _http_send(httplib::Client& cli, httplib::Request& hreq,
-                             _HttpBodyRoute& route) {
+                             const HttpRequest& req) {
   HttpResult out;
+  bool to_sink = true;
+  std::string held;
+  if (req.body_sink) {
+    if (!req.sink_media_type.empty()) {
+      hreq.response_handler = [&](const httplib::Response& r) {
+        to_sink = r.status >= 200 && r.status < 300 &&
+                  _http_media_type_is(r.get_header_value("Content-Type"),
+                                      req.sink_media_type);
+        return true;
+      };
+    }
+    hreq.content_receiver = [&](const char* data, size_t len, uint64_t,
+                                uint64_t) {
+      if (to_sink) return req.body_sink(data, len);
+      held.append(data, len);
+      return true;
+    };
+  }
   _InterruptWatcher::Guard watch(cli, current_runtime().interrupt_flag);
   auto res = cli.send(hreq);
   throw_if_interrupted();  // pending Ctrl+C / cancel → cooperative Interrupted
@@ -676,8 +666,7 @@ inline HttpResult _http_send(httplib::Client& cli, httplib::Request& hreq,
   out.ok = true;
   out.status = res->status;
   out.reason = res->reason;
-  // Empty when the body streamed to a sink, unless the route held it back.
-  out.body = route.held.empty() ? std::move(res->body) : std::move(route.held);
+  out.body = to_sink ? std::move(res->body) : std::move(held);
   out.headers.reserve(res->headers.size());
   for (const auto& [k, v] : res->headers) {
     out.headers.emplace_back(k, v);
@@ -762,9 +751,8 @@ CULEBRA_RT_HTTP_LINKAGE HttpResult http_request(const HttpRequest& req) {
                   req.proxy_port);
 
   httplib::Request hreq;
-  _HttpBodyRoute route;
-  _http_build_request(req, path, req.headers, hreq, route);
-  return _http_send(cli, hreq, route);
+  _http_build_request(req, path, req.headers, hreq);
+  return _http_send(cli, hreq, req);
 #endif  // CULEBRA_RT_HTTP_REQUEST_WEAK
 }
 
@@ -895,10 +883,9 @@ CULEBRA_RT_HTTP_LINKAGE HttpResult http_client_request(int64_t id,
   _http_append_params(path, req.params);
   HeaderList headers = merge_headers(c->default_headers, req.headers);
   httplib::Request hreq;
-  _HttpBodyRoute route;
-  _http_build_request(req, path, headers, hreq, route);
+  _http_build_request(req, path, headers, hreq);
   std::lock_guard<std::mutex> lk(c->m);
-  return _http_send(c->cli, hreq, route);
+  return _http_send(c->cli, hreq, req);
 #endif
 }
 

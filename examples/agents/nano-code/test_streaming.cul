@@ -264,13 +264,12 @@ fn a_stream_that_says_nothing_at_all_is_a_failure() {
 # frame rather than numbered blocks, and a `[DONE]` sentinel to close.
 
 # This format names no event type, so every frame is a "message".
-fn raw(data) {
-  {event: 'message', data: data, id: ''}
+fn frame(payload) {
+  event('message', payload)
 }
 
-fn frame(payload) {
-  raw(JSON.stringify(payload))
-}
+# The sentinel is not JSON, so it is written out as it arrives.
+let DONE_FRAME = {event: 'message', data: '[DONE]', id: ''}
 
 fn openai_events() {
   [
@@ -287,7 +286,7 @@ fn openai_events() {
     frame({choices: [{index: 0, delta: {}, finish_reason: 'tool_calls'}]}),
     frame({choices: [], usage: {prompt_tokens: 11, completion_tokens: 7,
                                 total_tokens: 18}}),
-    raw('[DONE]'),
+    DONE_FRAME,
   ]
 }
 
@@ -336,7 +335,7 @@ fn the_sentinel_that_closes_the_stream_is_not_a_frame() {
   # last frame of a stream that otherwise worked.
   let out = openai_stream([
     frame({choices: [{delta: {content: 'done'}, finish_reason: 'stop'}]}),
-    raw('[DONE]'),
+    DONE_FRAME,
   ], nil).out
   assert_eq(out.text, 'done')
   assert_eq(out.finish_reason, 'stop')

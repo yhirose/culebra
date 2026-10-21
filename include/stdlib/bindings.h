@@ -2250,7 +2250,7 @@ inline void _jit_http_json(JitValue* __ret, JitClosure*, int8_t self_tag, int64_
 
 // Build the `{status, ok, body, headers}` response Object from an HttpResult,
 // plus a `json()` method. `ok` is 2xx; a 4xx/5xx is a completed round-trip
-// (ok:false). Transport failures never reach here — _culebra_http_run throws
+// (ok:false). Transport failures never reach here — _http_run throws
 // HttpError first.
 inline JitObject* _culebra_http_result_to_object(
     culebra::http::HttpResult& r, int64_t line, int64_t col) {
@@ -2284,9 +2284,25 @@ struct JitHttpSink {
   std::exception_ptr eptr;
 };
 
+// Call a sink's culebra callback with the value `make_arg` builds (consumed).
+// A throw from either is kept in `st.eptr` and returns false, which aborts the
+// transfer; the request's runner rethrows it as it is once the send is over.
+extern "C++" template <class MakeArg>
+inline bool _http_sink_call(JitClosure* cb, MakeArg make_arg, JitHttpSink& st) {
+  try {
+    JitValue r = _culebra_invoke1(cb, make_arg());
+    _culebra_value_release_impl(r.tag, r.data);
+    return true;
+  } catch (...) {
+    // thrown value: kept, and thrown again as it is after the send.
+    st.eptr = std::current_exception();
+    return false;
+  }
+}
+
 // Configure `req.body_sink` from the `into` slab value: nil → buffer the body;
 // TAG_STRING → write to that file path; TAG_FUNC → call per chunk. Else →
-// TypeError. Mirrors interp http_setup_into.
+// TypeError.
 inline void _http_setup_into(JitValue into, culebra::http::HttpRequest& req,
                              JitHttpSink& st, const char* ctx) {
   if (into.tag == TAG_NIL) return;
@@ -2304,19 +2320,11 @@ inline void _http_setup_into(JitValue into, culebra::http::HttpRequest& req,
     };
   } else if (into.tag == TAG_FUNC) {
     auto* cb = reinterpret_cast<JitClosure*>(into.data);
-    req.body_sink = [cb, &st](const char* d, size_t n) -> bool {
-      try {
-        JitValue chunk{TAG_STRING, reinterpret_cast<int64_t>(
-                                       _culebra_heap_str(std::string(d, n)))};
-        JitValue r = _culebra_invoke1(cb, chunk);  // consumes chunk's +1
-        _culebra_value_release_impl(r.tag, r.data);
-        return true;
-      } catch (...) {
-        // thrown value: kept with any other failure, and thrown again as it
-        // is once the request is over.
-        st.eptr = std::current_exception();  // abort; rethrown after send
-        return false;
-      }
+    req.body_sink = [cb, &st](const char* d, size_t n) {
+      return _http_sink_call(cb, [&] {
+        return JitValue{TAG_STRING, reinterpret_cast<int64_t>(
+                                        _culebra_heap_str(std::string(d, n)))};
+      }, st);
     };
   } else {
     throw culebra::CulebraError(
@@ -2326,23 +2334,20 @@ inline void _http_setup_into(JitValue into, culebra::http::HttpRequest& req,
 }
 
 // Configure `req.body_sink` to decode the body as Server-Sent Events and call
-// `events` with each {event, data, id}. Only an event stream (a 2xx of
+// `cb` with each {event, data, id}. Only an event stream (a 2xx of
 // text/event-stream) is read as events; any other response keeps its body, so
-// an error, or an answer that did not stream, stays readable.
-inline void _http_setup_events(JitValue events, culebra::http::HttpRequest& req,
-                               JitHttpSink& st, const char* ctx) {
-  if (events.tag != TAG_FUNC) {
-    throw culebra::CulebraError(
-        "TypeError", culebra::format("{}: events must be a Function", ctx), 0, 0);
-  }
+// an error, or an answer that did not stream, stays readable. The request's
+// own Accept wins over the one this asks for.
+inline void _http_setup_events(JitClosure* cb, culebra::http::HttpRequest& req,
+                               JitHttpSink& st) {
+  req.sink_media_type = "text/event-stream";
   bool has_accept = false;
   for (auto& [k, v] : req.headers) {
     if (culebra::http::_iequals(k, "Accept")) has_accept = true;
   }
-  if (!has_accept) req.headers.emplace_back("Accept", "text/event-stream");
-  auto* cb = reinterpret_cast<JitClosure*>(events.data);
-  st.sse.handler = [cb, &st](const culebra::http::SseEvent& e) -> bool {
-    try {
+  if (!has_accept) req.headers.emplace_back("Accept", req.sink_media_type);
+  st.sse.handler = [cb, &st](const culebra::http::SseEvent& e) {
+    return _http_sink_call(cb, [&] {
       auto* ev = culebra_runtime_object_new();
       culebra_runtime_object_set(ev, "event", false, TAG_STRING,
           reinterpret_cast<int64_t>(_culebra_heap_str(e.type)), 0, 0);
@@ -2350,18 +2355,10 @@ inline void _http_setup_events(JitValue events, culebra::http::HttpRequest& req,
           reinterpret_cast<int64_t>(_culebra_heap_str(e.data)), 0, 0);
       culebra_runtime_object_set(ev, "id", false, TAG_STRING,
           reinterpret_cast<int64_t>(_culebra_heap_str(e.id)), 0, 0);
-      JitValue r = _culebra_invoke1(cb, {TAG_OBJECT,
-                                         reinterpret_cast<int64_t>(ev)});
-      _culebra_value_release_impl(r.tag, r.data);
-      return true;
-    } catch (...) {
-      // thrown value: kept, and thrown again as it is after the send.
-      st.eptr = std::current_exception();  // abort; rethrown after send
-      return false;
-    }
+      return JitValue{TAG_OBJECT, reinterpret_cast<int64_t>(ev)};
+    }, st);
   };
   req.body_sink = [&st](const char* d, size_t n) { return st.sse.feed(d, n); };
-  req.sink_media_type = "text/event-stream";
 }
 
 // The response sink of every Http request: `into` or `events`, at most one.
@@ -2377,14 +2374,18 @@ inline void _http_setup_sink(JitValue into, JitValue events,
         "TypeError",
         culebra::format("{}: pass at most one of into, events", ctx), 0, 0);
   }
-  _http_setup_events(events, req, st, ctx);
+  if (events.tag != TAG_FUNC) {
+    throw culebra::CulebraError(
+        "TypeError", culebra::format("{}: events must be a Function", ctx), 0, 0);
+  }
+  _http_setup_events(reinterpret_cast<JitClosure*>(events.data), req, st);
 }
 
 // Run a request (whose sink may have been set by _http_setup_sink): rethrow a
 // callback exception first, then map a transport failure to HttpError, else
 // return the response Object. Shared by every Http.* adapter.
-inline JitValue _http_run_into(culebra::http::HttpRequest& req,
-                               JitHttpSink& st, const char* ctx) {
+inline JitValue _http_run(culebra::http::HttpRequest& req, JitHttpSink& st,
+                          const char* ctx) {
   auto r = culebra::http::http_request(req);
   if (st.eptr) std::rethrow_exception(st.eptr);
   if (!r.ok) {
@@ -2395,10 +2396,9 @@ inline JitValue _http_run_into(culebra::http::HttpRequest& req,
           reinterpret_cast<int64_t>(_culebra_http_result_to_object(r, 0, 0))};
 }
 
-// As _http_run_into, but against a persistent Http.client (id). Mirrors interp
-// http_run_client_into.
-inline JitValue _http_run_client_into(int64_t id, culebra::http::HttpRequest& req,
-                                      JitHttpSink& st, const char* ctx) {
+// As _http_run, but against a persistent Http.client (id).
+inline JitValue _http_run_client(int64_t id, culebra::http::HttpRequest& req,
+                                 JitHttpSink& st, const char* ctx) {
   auto r = culebra::http::http_client_request(id, req);
   if (st.eptr) std::rethrow_exception(st.eptr);
   if (!r.ok) {
@@ -6381,7 +6381,7 @@ inline JitValue _ns_http_bodyless(JitValue* a, int64_t n,
   JitHttpSink st;
   _http_setup_sink(_proc_adapt::at(a, n, 4), _proc_adapt::at(a, n, 6), req,
                    st, ctx);
-  return _http_run_into(req, st, ctx);
+  return _http_run(req, st, ctx);
 }
 inline JitValue _ns_http_get(JitValue* a, int64_t n) {
   return _ns_http_bodyless(a, n, culebra::HttpMethod::get(), "Http.get");
@@ -6407,7 +6407,7 @@ inline JitValue _ns_http_withbody(JitValue* a, int64_t n,
                    _proc_adapt::at(a, n, 2), req, st, ctx);
   _http_setup_sink(_proc_adapt::at(a, n, 6), _proc_adapt::at(a, n, 11), req,
                    st, ctx);
-  return _http_run_into(req, st, ctx);
+  return _http_run(req, st, ctx);
 }
 inline JitValue _ns_http_post(JitValue* a, int64_t n) {
   return _ns_http_withbody(a, n, culebra::HttpMethod::post(), "Http.post");
@@ -6430,7 +6430,7 @@ inline JitValue _ns_http_request(JitValue* a, int64_t n) {
                    _proc_adapt::at(a, n, 3), req, st, "Http.request");
   _http_setup_sink(_proc_adapt::at(a, n, 7), _proc_adapt::at(a, n, 12), req,
                    st, "Http.request");
-  return _http_run_into(req, st, "Http.request");
+  return _http_run(req, st, "Http.request");
 }
 
 // sse — slab: url, on_event, headers, timeout, follow_redirects. A GET read
@@ -6440,11 +6440,11 @@ inline JitValue _ns_http_sse(JitValue* a, int64_t n) {
   const char* ctx = "Http.sse";
   culebra::http::HttpRequest req;  // GET, the HttpRequest default
   req.url = _ns_adapt::require_sv(a[0], "url");
-  _ns_adapt::require_func(a[1], "on_event");  // a typed Function param
+  auto* cb = _ns_adapt::require_func(a[1], "on_event");  // a typed param
   _http_adapt::common(a, n, 2, req, ctx);
   JitHttpSink st;
-  _http_setup_events(a[1], req, st, ctx);
-  return _http_run_into(req, st, ctx);
+  _http_setup_events(cb, req, st);
+  return _http_run(req, st, ctx);
 }
 
 // --- Http.client persistent-client handle (JIT) ---
@@ -6496,7 +6496,7 @@ inline JitValue _jit_http_client_bodyless(JitValue self, int64_t n,
     _jit_http_client_strobj(at(2), req.params, ctx, "params", "param");
     JitHttpSink st;
     _http_setup_sink(at(3), at(4), req, st, ctx);
-    return _http_run_client_into(id, req, st, ctx);
+    return _http_run_client(id, req, st, ctx);
   });
 }
 
@@ -6523,7 +6523,7 @@ inline JitValue _jit_http_client_withbody(JitValue self, int64_t n,
     JitHttpSink st;
     _http_setup_body(at(1), at(6), at(7), at(8), at(2), req, st, ctx);
     _http_setup_sink(at(5), at(9), req, st, ctx);
-    return _http_run_client_into(id, req, st, ctx);
+    return _http_run_client(id, req, st, ctx);
   });
 }
 
@@ -6580,7 +6580,7 @@ inline void _jit_http_client_request(JitValue* __ret, JitClosure*, int8_t self_t
     _http_setup_body(at(2), at(7), at(8), at(9), at(3), req, st,
                      "client.request");
     _http_setup_sink(at(6), at(10), req, st, "client.request");
-    return _http_run_client_into(id, req, st, "client.request");
+    return _http_run_client(id, req, st, "client.request");
   });
 }
 inline void _jit_http_client_close(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
