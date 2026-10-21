@@ -11,8 +11,9 @@ nice_cmd := "nice -n " + env_var_or_default("CULEBRA_NICE", "10")
 # Serialize the heavy lanes machine-wide. `nice` above shares the cores kindly
 # but does not stop two full gates from thrashing the same 15 GB box; this puts
 # them in a queue, which finishes the same work sooner and keeps only one
-# session blocked. Wraps the -O3 build, the gate build and the gate itself —
-# never `dev`/`test-dev`, which must stay responsive while a gate runs.
+# session blocked. Wraps every build but `dev` (each compiles translation
+# units of 4-7 GB), the C++ docs examples and the gate itself — never
+# `dev`/`test-dev`, which must stay responsive while a gate runs.
 # CULEBRA_GATE_LOCK=0 opts out (see misc/one_at_a_time.sh).
 lock_cmd := justfile_directory() / "misc/one_at_a_time.sh"
 
@@ -320,12 +321,13 @@ check-docs-cpp-includes:
     tools/checks/check_docs_cpp.sh --fast
 
 # The rest of it: every docs example that is a complete program compiles with
-# the flags deployment.md tells a reader to type. ~25s with the blocks built in
-# parallel, so it rides `doctest` rather than the always-on lane.
+# the flags deployment.md tells a reader to type. Each block parses the whole
+# header set (2-4 GB), so CI runs it (doctest-ubuntu, docs-cpp-macos) and a
+# local run takes the machine lock.
 [group("docs")]
 [doc("Compile the complete C++ examples in docs with the documented flags")]
 check-docs-cpp:
-    tools/checks/check_docs_cpp.sh
+    {{lock_cmd}} tools/checks/check_docs_cpp.sh
 
 # Every committed file a generator produces, checked against its source, plus
 # the workflow-coverage ratchet. Cheap enough to gate both test recipes:
@@ -347,7 +349,7 @@ build-no-jit:
     # LTO off: this lane proves the no-LLVM build compiles and links, and
     # a whole-driver relink proves nothing more than the link it already does.
     cd build-no-jit && cmake -DCMAKE_BUILD_TYPE=Release -DCULEBRA_ENABLE_JIT=OFF -DCULEBRA_LTO=OFF .. > /dev/null
-    cd build-no-jit && {{nice_cmd}} make -j{{build_jobs}} culebra
+    cd build-no-jit && {{lock_cmd}} {{nice_cmd}} make -j{{build_jobs}} culebra
 
 # A link is not the gate here: the point of keeping the VM out of the LLVM
 # guard is that a no-LLVM binary HAS a working engine, and a binary whose one
@@ -388,13 +390,13 @@ test-no-jit: build-no-jit
 # ever runs an assert — rt_slab.h's cross-allocator free guard sat dead while
 # exactly that corruption shipped. -O1 keeps rebuilds in inner-loop range; its
 # own build-assert/ dir keeps the NDEBUG flag flip out of the other lanes'
-# ccache keys, which also means this lane is always ccache-cold on first use —
-# hence the CULEBRA_BUILD_JOBS cap, since it doesn't take the machine lock.
+# ccache keys, which also means this lane is always ccache-cold on first use.
+# CI's linux-assert job runs it on every push.
 [group("build")]
 build-assert *extra:
     mkdir -p build-assert
     cd build-assert && cmake -DCMAKE_BUILD_TYPE=Release -DCULEBRA_ENABLE_JIT=ON -DCULEBRA_LTO=OFF -DCULEBRA_DEV_NO_RT=ON -DCMAKE_CXX_FLAGS_RELEASE="-O1" {{extra}} .. > /dev/null
-    cd build-assert && {{nice_cmd}} make -j{{build_jobs}} culebra
+    cd build-assert && {{lock_cmd}} {{nice_cmd}} make -j{{build_jobs}} culebra
 
 # The Scene render lane's build. Scene follows the Canvas window's default, so
 # a plain `just build` carries it too; this spells it ON so a
@@ -410,7 +412,7 @@ build-assert *extra:
 build-scene *extra:
     mkdir -p build-scene
     cd build-scene && cmake -DCMAKE_BUILD_TYPE=Release -DCULEBRA_ENABLE_JIT=ON -DCULEBRA_LTO=OFF -DCULEBRA_ENABLE_SCENE=ON {{extra}} .. > /dev/null
-    cd build-scene && {{nice_cmd}} make -j{{build_jobs}} culebra
+    cd build-scene && {{lock_cmd}} {{nice_cmd}} make -j{{build_jobs}} culebra
 
 # Install the Release binary (`just build`) into PREFIX/bin, with sudo only when
 # that directory isn't already writable. PREFIX defaults to /usr/local: on macOS
@@ -450,7 +452,7 @@ coverage-build *extra:
     mkdir -p build-cov
     cd build-cov && cmake -DCMAKE_BUILD_TYPE=Release -DCULEBRA_ENABLE_JIT=ON \
         -DCULEBRA_DEV_NO_RT=ON -DCULEBRA_COVERAGE=ON {{extra}} .. > /dev/null
-    cd build-cov && {{nice_cmd}} make -j{{build_jobs}} culebra
+    cd build-cov && {{lock_cmd}} {{nice_cmd}} make -j{{build_jobs}} culebra
 
 # Which of the surface the two compiled engines share does only the generated
 # corpus reach? Runs the durable suites, then the corpus, on the instrumented
@@ -480,7 +482,7 @@ asan:
         -DCULEBRA_LTO=OFF -DCULEBRA_DEV_NO_RT=ON \
         -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer" \
         -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined" .. > /dev/null \
-      && make -j{{build_jobs}} culebra )
+      && {{lock_cmd}} make -j{{build_jobs}} culebra )
     bin=build-asan/culebra
     fail=0
     for f in tests/test_forin_codegen.cul tests/test_value_equality.cul \
@@ -1896,19 +1898,19 @@ _run-tests BACKEND:
 # Run the doctest examples in the public docs on both engines. Both en
 # and ja are run — their code blocks are mostly shared but a few string
 # literals are localized, so ja needs its own pass. Not part of `just test` —
-# run on demand / before publishing docs. The self-test fixture under
-# tests/doctest/ guards the runner itself. LANE=vm|jit|all (default
-# all); the JIT lane costs ~1 min (one LLVM module per block) against ~2s for
-# the VM lane, and every block is an example a reader will run, so both
-# have to agree on what it prints.
+# run it when docs change. The self-test fixture under tests/doctest/ guards
+# the runner itself. LANE=vm|jit|all (default all); every block is an example
+# a reader will run, so both engines have to agree on what it prints. The dev
+# binary runs them in seconds and under 2 GB; CI runs them again on a release
+# binary (doctest-ubuntu), with the C++ examples (`check-docs-cpp`).
 [doc("Run ` ```culebra ` doctest blocks in docs/ (VM + JIT)")]
 [group("test")]
-doctest LANE="all": build check-docs-cpp
-    @BIN=./build/culebra just _doctest {{LANE}}
+doctest LANE="all": dev
+    @BIN=./build-dev/culebra just _doctest {{LANE}}
 
 # The lanes alone, against $BIN. Split out so CI can run them against a
-# downloaded binary without the `build` prerequisite above rebuilding a tree
-# it already has — the same BIN= seam `_run-tests` uses.
+# downloaded binary without the prerequisite above building a tree of its
+# own — the same BIN= seam `_run-tests` uses.
 [private]
 _doctest LANE="all":
     #!/usr/bin/env bash

@@ -452,8 +452,8 @@ fi
 
 # --- F. `culebra embed-flags` says the same thing, and its output builds -----
 
-# `just doctest` builds build/ first, so that driver is the fresh one; a
-# build-dev/ left over from an inner loop would otherwise answer for it, and a
+# The release driver (build/, what CI builds before this) over a build-dev/
+# left over from an inner loop; set BIN when that one is the fresh one, as a
 # stale answer is the drift this stage is looking for.
 EF_BIN="${BIN:-}"
 [[ -n $EF_BIN && -x $EF_BIN ]] || EF_BIN=build/culebra

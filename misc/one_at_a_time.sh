@@ -3,12 +3,13 @@
 # the gate build, the full test gate) never run two at a time on one box.
 #
 # Several sessions work in several worktrees of this repo at once. They share
-# one machine, and the heavy lanes each want every core: `just build-gate` is
-# -j<ncpu> at ~11 GB peak on a 15 GB box, and the gate's own phases fan out to
-# $JOBS. Two of them together do not go twice as fast — they swap and fight for
-# cache, measured at 2.4-2.8x slower per run, and they make the desktop
-# unusable meanwhile. Queueing is strictly better than overlapping: the same
-# work finishes sooner and only one session is blocked at a time.
+# one machine, and the heavy lanes each want most of it: a full-tree build
+# peaks at ~11 GB on a 16 GB box (misc/jobs_within.sh), and the gate's own
+# phases fan out to $JOBS. Two of them together do not go twice as fast —
+# they swap and fight for cache, measured at 2.4-2.8x slower per run, and they
+# make the desktop unusable meanwhile. Queueing is strictly better than
+# overlapping: the same work finishes sooner and only one session is blocked
+# at a time.
 #
 # The lock is advisory. By default it's one file in TMPDIR, shared by every
 # worktree; CULEBRA_LOCK_PATH overrides the path (`just land` points it at a

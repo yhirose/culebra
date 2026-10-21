@@ -32,11 +32,11 @@ culebra は個人の趣味プロジェクト（プログラミング言語処理
 
 ## ビルド
 
-- inner loop（修正→実行→修正）は **`just dev`**（LTO off、`-O1`、AOT archive スキップ、`main.cc` 単体 rebuild）。ヘッダを実質変更した場合の再ビルドは約 1 分半（stdlib preamble の焼き直し ~15s を含む。`-j20` では main.cc の裏に隠れ、`CULEBRA_BUILD_JOBS=8` では表に出る。dev でも焼き込むのは、無いと `just test-dev` の sweep が名前で呼ぶモジュールを毎回ソースから lowering し、gate/CI と別のプログラムを比べることになるため）。
+- inner loop（修正→実行→修正）は **`just dev`**（LTO off、`-O1`、AOT archive スキップ、`main.cc` 単体 rebuild）。`preamble_cc.cc` と `main.cc` の両方が読むヘッダを実質変更した場合の再ビルドは実測 278s（`preamble_cc.cc` 88s → stdlib preamble の焼き直し ~70s → `main.cc` 111s → リンク、の直列で、並列数では縮まない）。dev でも焼き込むのは、無いと `just test-dev` の sweep が名前で呼ぶモジュールを毎回ソースから lowering し、gate/CI と別のプログラムを比べることになるため。
 - ccache は既定の `~/.cache/ccache` をそのまま使う（`CCACHE_DIR` を設定しない）。justfile が `CCACHE_BASEDIR` を worktree root に export するので、同じ commit なら別 worktree の初回ビルドがキャッシュに当たる（実測 90s → 32s）。**絶対パスを焼き込む define を `main.cc` 側に足さないこと** — worktree 間共有が壊れる（`src/source_dir.cc` に隔離してある）。
 - ゲートの JIT はコンパイル結果を `~/.cache/culebra/gate-jit`（macOS は `~/Library/Caches/culebra/gate-jit`）に残し、全 worktree で共有する。鍵は最適化後の IR とバックエンドなので、ビルドし直しても IR が同じファイルはコード生成を飛ばす（コーパスで JIT の CPU 882s → 413s）。`CULEBRA_GATE_JIT_CACHE=<絶対パス>` で場所を変え、`off` で実行ごとのディレクトリに戻す。書き込めない場合（sandbox）は `jit cache: cannot write …` と 1 行出して実行ごとに落ちる。**やり直しても説明のつかない JIT の失敗は、まず `CULEBRA_GATE_JIT_CACHE=off` で回し直す**（オブジェクトが作った実行より長く残るため）。
-- **`just build`** はコミット前の最終確認、または AOT runtime archive 自体を触った変更のときのみ。**性能計測は必ず `just build`（`-O3` + LTO）で**。`build-dev/` は `-O1` なので数字が出ない。
-- このマシンは 20 スレッド / 15 GB。`just build-gate` は `-j20` でピーク約 11 GB 使うので、**別 worktree セッションと build を同時に走らせるとスワップする** — これは `misc/one_at_a_time.sh` のロックで直列化済み（下記「並走時のマシン占有」）。ロックを外して並走させるなら片方を `CULEBRA_BUILD_JOBS=8` 程度に絞る。
+- **`just build`** は性能計測とリリースバイナリが要るときだけ。**性能計測は必ず `just build`（`-O3` + LTO）で**。`build-dev/` は `-O1` なので数字が出ない。コミット前の確認や AOT runtime archive の確認は CI に任せる（下記「どこまで回すか」）。
+- このマシンは 20 スレッド / 15.9 GB。ビルドの並列数は既定で物理メモリ 2 GB あたり 1 本（`misc/jobs_within.sh`、ここでは 8）で、`CULEBRA_BUILD_JOBS` で上書きできる。所要時間は直列の鎖（preamble ツール → 焼き込み → runtime archive → driver → リンク）で決まり、一からのリリースビルドは 8 本でも 20 本でも約 400s。メモリを食うのはテストではなくビルド: 1 本 4〜7 GB の翻訳単位（`main.cc`、`preamble_cc.cc`、`culebra_rt.cc`、`smoke_suite.cc`）があり、全ツリーのビルドは約 11 GB、`just dev` は 6.9 GB（`main.cc`）、`just test-dev` のテスト部分は 1.3 GB。全ツリーのビルドは `misc/one_at_a_time.sh` のロックで直列化済み（下記「並走時のマシン占有」）。
 - `build`/`dev`/`build-gate`/`build-no-jit` の make、および `_run-tests`（`test`/`test-dev` 共通）の culebra 実行・ctest はデフォルトで `nice -n 10` 経由。複数 worktree セッション並走時の CPU 専有で通常の Mac 操作が詰まる問題への対処（単独実行時は速度低下なし、競合時のみ譲る）。`CULEBRA_NICE=0` で無効化可。
 
 ## テスト（速い順に段階的に）
@@ -45,8 +45,8 @@ culebra は個人の趣味プロジェクト（プログラミング言語処理
 2. 触った領域だけ: **`just phase <語>…`** — ゲート表の行を関数名かラベルの部分一致で選んで `build-dev/` に対して回す（`just phase scope`、`just phase vm_cases sweep`）。書いている最中の反復はこれと単発実行で足りる
 3. 編集ごとの確認: **`just check`**（実測 20s）— 開発中はここまで。source/IR の ratchet と `tests/*.cul` 全体の assertion（executor、20 ファイルごとに 1 プロセス。全ファイルを 1 セッションで通すのは `just test-dev` から）と examples
 4. 着地ゲート **`just test-dev`**（実測 ~125s、no-LTO）— `just land`（`/ff-merge`）が回すので、開発中に自分で回さない。JIT 対称（op 被覆の部分集合）・codegen 軸・ctest の CLI 半分・isolate など。生成物ゲート `check-generated`（grammar sync / preamble / blob / site version）を前段で回すので、生成物のずれは着地前にここで落ちる
-5. フルゲート **`just test`**（実測 450〜880s、うち 95% は difftest + leak 系 + AOT）
-6. **docs を触ったら必ず `just doctest`**（`just test` には含まれない別ステップ）
+5. フルゲート **`just test`**（実測 450〜880s、うち 95% は difftest + leak 系 + AOT）— ローカルでは回さない（下記）
+6. **docs を触ったら必ず `just doctest`**（`just test` には含まれない別ステップ）。dev 用バイナリで 743 件×2 レーン、7s・2 GB 未満。C++ の埋め込み例のコンパイル（`check-docs-cpp`）は CI の doctest-ubuntu / docs-cpp-macos が回す
 
 `tests/*.cul` は全レーンが回すので、**CMake オプションで消える namespace（`Scene` / `Webview` /
 `Desktop`）を名指ししない**。ローカルはその軸を build しているので緑になり、軸の無いレーンだけが
@@ -56,18 +56,23 @@ culebra は個人の趣味プロジェクト（プログラミング言語処理
 
 ### どこまで回すか（変更内容に比例させる）
 
-**ローカル全ゲートは既定にしない。** Ubuntu CI が `just test` を skip なしで回すので、
-difftest・AOT・leak 系・wrap はそこで必ず走る。ローカルで全ゲートを回す価値があるのは、
-**CI が構造的に見られない部分に触ったとき**だけ:
+**全ツリーのビルドを伴う重い手順はローカルで回さない。** 複数のセッションが同じマシンで同時に
+作業できることを優先する。重い手順は CI が同じものを回している: Ubuntu の `just test`（skip なし。
+difftest・AOT・leak 系・wrap）、`linux-assert` の `test-assert`、doctest-ubuntu / docs-cpp-macos の
+C++ 埋め込み例、各 OS のリリース構成。ローカルで回す価値は「先に結果が分かる」ことだけで、
+それは `ci/<topic>` ブランチの push で得られる（master に触れずに CI の全ジョブが走る）:
 
-| 変更 / 状況 | ローカルで回すもの |
+| 変更 / 状況 | 回すもの |
 |---|---|
-| 通常のコード変更（開発中） | `just check` + 触った箇所の単発実行（`--jit` も） |
+| 通常のコード変更（開発中） | `just check` + 触った箇所の単発実行（`--jit` も）、`just phase <語>` |
 | 着地・rebase 後の再検証 | `just test-dev`（`just land` が回す） |
-| **Canvas/Scene の window backend、AOT gating、runtime archive** | **`just test`**（+ CMakeLists/wrap なら `just test wrap`） |
-| **`Runtime` の teardown、GC heap、slab allocator** | **`just test-assert`** — 全レーンが `Release`（`-DNDEBUG`）で木の assert は 1 度も走らない。これだけが `NDEBUG` なしでビルドして同じスイープを回す |
-| docs | `just doctest` |
+| docs | `just doctest`（dev 用バイナリ） |
+| **Canvas/Scene の window backend、AOT gating、runtime archive、CMakeLists/wrap** | **CI**（push 前に知りたければ `ci/<topic>` ブランチ） |
+| **`Runtime` の teardown、GC heap、slab allocator** | **CI の `linux-assert`**（全レーンが `Release`（`-DNDEBUG`）で、`NDEBUG` なしでビルドして同じスイープを回すのはここだけ）。assert で落ちる形を見つけたら `tests/` に足して CI に見せる |
 | push 後 | **CI の両 OS を確認**（toolchain 差異はここでしか出ない） |
+
+ローカルで重い手順を回すのは、下の「CI の穴」（どれも macOS）に触ったときだけで、それは Mac で、
+ロックの下で 1 本ずつ回す。
 
 **CI の穴（ローカルでしか塞げない点）**:
 - macOS CI は `CULEBRA_TEST_SKIP_HEAVY=1`。**macOS の difftest は走らない**（Ubuntu で代替）。
@@ -93,10 +98,12 @@ assert が本当に compile-in されたかを binary 内の assert 文字列 gr
 
 ### 並走時のマシン占有
 
-`just build` / `just build-gate` / `just test` は **machine-wide ロックで直列化**される
-（`misc/one_at_a_time.sh`）。2 本目は "waiting: another culebra build/gate holds this machine…" と
-出して待つ。重いレーンの並走は実測 2.4〜2.8 倍遅くなるので、待つほうが速く終わる。
-`just dev` / `just test-dev` は**ロックしない**（他人のゲート中でも即動く）。`CULEBRA_GATE_LOCK=0` で解除可。
+`dev` 以外のビルド（`build`／`build-gate`／`build-assert`／`build-scene`／`build-no-jit`／
+`coverage-build`／`asan`）、C++ 埋め込み例のコンパイル（`check-docs-cpp`）、`just test` は
+**machine-wide ロックで直列化**される（`misc/one_at_a_time.sh`）。2 本目は "waiting: another culebra
+build/gate holds this machine…" と出して待つ。重いレーンの並走は実測 2.4〜2.8 倍遅くなるので、待つほうが
+速く終わる。`just dev` / `just test-dev` / `just doctest` は**ロックしない**（他人のゲート中でも即動く）。
+`CULEBRA_GATE_LOCK=0` で解除可。
 
 ## 最重要要件
 
