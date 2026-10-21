@@ -5786,11 +5786,21 @@ inline JitValue _ns_audio_graph_now(JitValue* a, int64_t) {
   if (std::isnan(t)) t = std::chrono::duration<double>(std::chrono::steady_clock::now() - it->second).count();
   return _ns_adapt::v_float(t);
 }
-// Audio.Kauai's timed notes, kScoreStride numbers an event (stdlib/audio.h).
+// Audio.Kauai's song as both mixers take it (kScoreStride, stdlib/audio.h),
+// refused out of time order.
+inline void _ns_audio_score_events(JitValue v, std::vector<double>& out) {
+  namespace ad = culebra::_audio_detail;
+  _ns_audio_numbers(v, out, ad::kScoreEventsError);
+  constexpr size_t stride = ad::kScoreStride;
+  for (size_t i = stride; i < out.size(); i += stride)
+    if (out[i] < out[i - stride]) _ns_audio_fail("Audio.Kauai: a song's events are out of time order");
+}
+
+// Audio.Kauai's timed notes.
 inline JitValue _ns_audio_score_new(JitValue* a, int64_t) {
   namespace ad = culebra::_audio_detail;
   std::vector<double> events;
-  _ns_audio_numbers(a[0], events, ad::kScoreEventsError);
+  _ns_audio_score_events(a[0], events);
   int64_t id = ad::alloc_id();
   ad::score_new(id, events.data(), static_cast<int64_t>(events.size()),
                 _ns_adapt::take_double(a[1]), _ns_adapt::take_double(a[2]));
@@ -5803,7 +5813,7 @@ inline JitValue _ns_audio_score_new(JitValue* a, int64_t) {
 inline JitValue _ns_audio_score_render(JitValue* a, int64_t) {
   namespace ad = culebra::_audio_detail;
   std::vector<double> events;
-  _ns_audio_numbers(a[0], events, ad::kScoreEventsError);
+  _ns_audio_score_events(a[0], events);
   ::JitArray* list = _ns_adapt::take_array(a[1]);
   std::vector<ad::SoundBytes> sounds;
   for (size_t i = 0; i + 1 < list->size; i += 2) {

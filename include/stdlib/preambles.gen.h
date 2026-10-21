@@ -4170,8 +4170,7 @@ let _kauai_module = fn () {
       }
       let tones = self._events.filter(|e| e.has("tone")).map(|e| [e.at, ...e.tone])
       let sounds = self._plays.map(|p| [p.at, -1, self._sounds[p.sound]._id, p.vol / 100.0 * self._weights[p.by], 0, 0, 0, 0, 0, 0, 0])
-      # In time order, as both mixers read it (the page schedules ahead from
-      # the head of the list): at one time, the tones first.
+      # In time order: the mixers read it from the head.
       [...tones, ...sounds].sorted_by(|e| e[0]).flat_map(|e| e)
     }
 

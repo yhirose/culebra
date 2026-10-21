@@ -14,7 +14,6 @@
 
 #include <algorithm>
 #include <atomic>
-#include <cassert>
 #include <chrono>
 #include <cmath>
 #include <condition_variable>
@@ -916,12 +915,9 @@ std::shared_ptr<const std::vector<float>> mixer_samples(Wave& w) {
   return pcm;
 }
 
-// A score from Audio.Kauai's flat list, in time order (as the page reads it
-// too), kScoreStride numbers an event: its time in seconds, then a tone's
-// channel, start and end frequency, attack, decay, sustain and release in
-// seconds, vol, peak and duty; or -1 and a Sound's handle and gain. A
-// Sound's samples are found by its handle in `pcm`; one it does not hold
-// (the device could not decode it) is left out.
+// A score from Audio.Kauai's list (kScoreStride), a Sound's samples found by
+// its handle in `pcm` (one it does not hold, which the device could not
+// decode, is left out).
 using PcmByHandle = std::unordered_map<int64_t, std::shared_ptr<const std::vector<float>>>;
 std::shared_ptr<Score> build_score(const double* events, int64_t count, double length,
                                    double loop_at, const PcmByHandle& pcm) {
@@ -946,7 +942,6 @@ std::shared_ptr<Score> build_score(const double* events, int64_t count, double l
     }
     s->events.push_back(std::move(ev));
   }
-  assert(std::ranges::is_sorted(s->events, {}, &ScoreEvent::at));
   s->length = samples(length);
   s->loop_at = loop_at < 0 ? -1 : samples(loop_at);
   return s;
