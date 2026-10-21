@@ -71,9 +71,11 @@ struct SendNode {
   // owned: it outlives every closure over that body.
   void* jit_meta = nullptr;
   // Closure — JIT multifn dispatcher (`fn name`): the dispatcher thunk shares
-  // fn_ptr, but its overload methods live in a thread_local table, so they are
+  // fn_ptr, but its overload methods live in a per-Runtime table, so they are
   // shipped explicitly (method bodies in `elems`, types/variadic parallel) and
-  // re-registered on the child. mf_name non-empty selects this form.
+  // registered on the receiver over a table of its own. mf_name is the
+  // user-facing name (never the sender's registry key); non-empty selects
+  // this form.
   std::string mf_name;
   std::vector<std::vector<std::string>> mf_param_types;
   std::vector<std::vector<std::string>> mf_param_names;

@@ -1096,18 +1096,29 @@ inline JitClosure* _jit_dispatcher_mono_body(JitClosure* c) {
       c->captures[kMultifnMonoCapture]->value.data);
 }
 
-// Mint a dispatcher over `name`'s table: the closure, its record, and the
-// cells that tie them. Both places a dispatcher comes into existence use it
-// — a `fn name` declaration executing, and one rebuilt from an isolate
-// message — so a dispatcher without its cells is not a state that exists.
-// Returns +1 (the caller's binding owns it).
-inline JitClosure* _jit_multifn_new_dispatcher(const std::string& name,
+// A fresh registry key over `name`, the user-facing name. Minted only by
+// _jit_multifn_new_dispatcher below, and process-wide, so no two
+// dispatchers in any Runtime ever share one.
+inline std::string _jit_multifn_fresh_key(std::string_view name) {
+  static std::atomic<uint64_t> gen{0};
+  return std::string(name) + '\x1f' +
+         std::to_string(gen.fetch_add(1, std::memory_order_relaxed));
+}
+
+// Mint a dispatcher named `name` over a table of its own: the closure, its
+// record, the cells that tie them, and a key no other dispatcher has. Every
+// place a dispatcher comes into existence uses it — a `fn name` declaration
+// executing, an effects fork's copy, and one rebuilt from a message — so a
+// dispatcher without its cells, or over another's table, is not a state
+// that exists. Returns +1 (the caller's binding owns it).
+inline JitClosure* _jit_multifn_new_dispatcher(std::string_view name,
                                                size_t arity) {
   auto* c = culebra_runtime_closure_new(
       reinterpret_cast<void*>(&_jit_multifn_dispatcher_thunk),
       /*n_captures=*/2, arity, /*flags=*/0, /*meta=*/nullptr);
   auto& rec = _jit_multifn_dispatchers()[c];
-  rec.name = name;
+  rec.name = _jit_multifn_fresh_key(name);
+  assert(!_jit_multimethods().contains(rec.name));
   c->captures[kMultifnRecordCapture] = culebra_runtime_cell_new(
       TAG_LONG, reinterpret_cast<int64_t>(&rec));
   c->captures[kMultifnMonoCapture] = culebra_runtime_cell_new(TAG_NIL, 0);
@@ -1667,16 +1678,6 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_set_callback_arg_site(
   _jit_thread.callback_col = col;
 }
 
-// A fresh registry key over `name` (see below). The suffix only has to be
-// unique within the Runtime's table map; process-wide so a table
-// deserialized from another Runtime (sendable_rt.h keeps the sender's key)
-// can't be collided into by a locally minted one.
-inline std::string _jit_multifn_fresh_key(std::string_view name) {
-  static std::atomic<uint64_t> gen{0};
-  return std::string(name) + '\x1f' +
-         std::to_string(gen.fetch_add(1, std::memory_order_relaxed));
-}
-
 // A dispatcher over a table of its own holding `dispatcher`'s overloads,
 // each body replaced by its entry in `bodies` (+1 taken for the new table),
 // which follows the copy back for its self-reference. Returns +1.
@@ -1684,8 +1685,9 @@ inline JitClosure* _jit_multifn_copy(
     JitClosure* dispatcher,
     const std::unordered_map<JitClosure*, JitClosure*>& bodies) {
   std::string from = _jit_dispatcher_record(dispatcher)->name;
-  std::string key = _jit_multifn_fresh_key(_jit_multifn_display(from));
-  auto* copy = _jit_multifn_new_dispatcher(key, dispatcher->arity);
+  auto* copy =
+      _jit_multifn_new_dispatcher(_jit_multifn_display(from), dispatcher->arity);
+  const std::string& key = _jit_dispatcher_record(copy)->name;
   auto& tbl = _jit_multimethods();
   auto methods = tbl.at(from);
   for (auto& m : methods) {
@@ -1752,12 +1754,11 @@ culebra_runtime_multifn_register_and_install(const char* name_cstr,
     name = rec->name;
   } else {
     // A fresh activation of this declaration: its own dispatcher over its
-    // own table.
-    name = _jit_multifn_fresh_key(name_cstr);
-    // closure_new returns +1; the caller becomes the owner.
+    // own table. closure_new returns +1; the caller becomes the owner.
     dispatcher = _jit_multifn_new_dispatcher(
-        name, static_cast<size_t>(n_param_types));
+        name_cstr, static_cast<size_t>(n_param_types));
     rec = _jit_dispatcher_record(dispatcher);
+    name = rec->name;
   }
 
   auto& tbl = _jit_multimethods();

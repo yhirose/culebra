@@ -106,7 +106,10 @@ tests.cul 313
 # test_isolate.cul and test_parallel.cul, which every engine runs too.
 # 20 since test_fanin_teardown.cul (a run that ends with a fan_in producer
 # still running, in a file with no Isolate.spawn to arrange its join).
-tests.isolate 20
+# 22 since test_send_multifn.cul and test_send_multifn_freed.cul (a `fn name`
+# that crosses a message dispatches over a table of its own; the shapes that
+# read freed memory are a file apart, so a crash there hides no assertion).
+tests.isolate 22
 
 # tests/gen_frames/*.cul: the generator probes held to frozen outputs, on both
 # engines in the landing gate and under the collector's axes and `culebra

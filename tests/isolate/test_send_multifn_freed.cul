@@ -1,0 +1,57 @@
+# The shapes in which a rebuilt dispatcher that shared its original's overload
+# table read freed memory: the copy's death released the bodies the original
+# still dispatched to, and a second arrival's push_back moved the vector the
+# first copy's shortcut pointed into. Kept apart from test_send_multifn.cul so
+# a crash here cannot hide that file's assertions, and each call is caught, so
+# a failing one does not stop the run before the calls that read freed memory.
+# Runs under both engines.
+
+fn caught(thunk) {
+  try {
+    thunk()
+  } catch e {
+    "{e.kind}: {e.message}"
+  }
+}
+
+# A plain `fn` back from a child, then the original read as a value.
+fn rt_g(x) {
+  x + 1
+}
+let rt_back = Isolate.spawn(|| rt_g).join()
+assert_eq(caught(|| rt_back(1)), 2)
+let rt_gg = rt_g
+assert_eq(caught(|| rt_gg(2)), 3)
+assert_eq(caught(|| [1, 2].map(rt_g)), [2, 3])
+
+# A child given one `fn` twice calls the first copy after the second arrived.
+fn twice_g(x) {
+  x + 1
+}
+let (tw_tx, tw_rx) = Channel.new(2)
+let tw_h = Isolate.spawn(fn () {
+  let a = tw_rx.recv()
+  let b = tw_rx.recv()
+  [caught(|| b(10)), caught(|| a(20))]
+})
+tw_tx.send(twice_g)
+tw_tx.send(twice_g)
+assert_eq(tw_h.join(), [11, 21])
+
+# A copy made within one Runtime dies; the original is called after.
+fn same_g(x) {
+  x + 1
+}
+let same_once = fn () {
+  let (tx, rx) = Channel.new(1)
+  tx.send(same_g)
+  let h = rx.recv()
+  h(1)
+}
+assert_eq(caught(same_once), 2)
+GC.stat()
+assert_eq(caught(|| same_g(2)), 3)
+let same_gg = same_g
+assert_eq(caught(|| same_gg(3)), 4)
+
+inspect("test_send_multifn_freed: all assertions passed")

@@ -1,0 +1,130 @@
+# A `fn name` dispatcher that crosses a message is rebuilt over an overload
+# table of its own. It used to be rebuilt under the sender's registry key, so a
+# second arrival in one Runtime -- a round trip, two messages, a send within
+# one Runtime -- shared one table: dispatch turned ambiguous, and the copy's
+# death emptied the original's. Each case declares its own functions, so a
+# failure stays in its case. Runs under both engines.
+
+# --- a round trip: what comes back, and the original after it ---------------
+fn rt_kind(x: Long) {
+  "long"
+}
+fn rt_kind(x: String) {
+  "str"
+}
+let rt_back = Isolate.spawn(|| rt_kind).join()
+assert_eq(rt_back(1), "long")
+assert_eq(rt_kind("s"), "str")
+
+class RtP {
+  new(.v) {}
+  f(x: Long) {
+    "long"
+  }
+  f(x: String) {
+    "str"
+  }
+}
+let rt_p = RtP(1)
+let rt_pb = Isolate.spawn(|| rt_p).join()
+assert_eq(rt_pb.f(1), "long")
+assert_eq(rt_p.f("s"), "str")
+
+# --- one child, the same dispatcher in two messages --------------------------
+fn two_kind(x: Long) {
+  "long"
+}
+fn two_kind(x: String) {
+  "str"
+}
+let (two_tx, two_rx) = Channel.new(2)
+let two_h = Isolate.spawn(fn () {
+  let a = two_rx.recv()
+  let b = two_rx.recv()
+  [a(1), b("s")]
+})
+two_tx.send(two_kind)
+two_tx.send(two_kind)
+assert_eq(two_h.join(), ["long", "str"])
+
+# --- two closures over one helper, each its own message (the way an
+# Http.serve worker receives its routes) -------------------------------------
+fn helper_render(x) {
+  "<{x}>"
+}
+let route_a = |r| "a " + helper_render(r)
+let route_b = |r| "b " + helper_render(r)
+let (hr_tx, hr_rx) = Channel.new(2)
+let hr_h = Isolate.spawn(fn () {
+  let a = hr_rx.recv()
+  let b = hr_rx.recv()
+  [b("x"), a("y")]
+})
+hr_tx.send(route_a)
+hr_tx.send(route_b)
+assert_eq(hr_h.join(), ["b <x>", "a <y>"])
+
+# --- a send within one Runtime, and the original once the copy is gone -------
+fn same_kind(x: Long) {
+  "long"
+}
+fn same_kind(x: String) {
+  "str"
+}
+let same_once = fn () {
+  let (tx, rx) = Channel.new(1)
+  tx.send(same_kind)
+  let copy = rx.recv()
+  copy(1)
+}
+assert_eq(same_once(), "long")
+assert_eq(same_kind("s"), "str")
+
+# --- Parallel: the function and every item into one worker -------------------
+class PlP {
+  new(.v) {}
+  f(x: Long) {
+    "long"
+  }
+  f(x: String) {
+    "str"
+  }
+}
+let pl_p0 = PlP(0)
+let pl = Parallel.map_settled(
+  [PlP(1), PlP(2)],
+  |p| [p.f(1), pl_p0.f("s")],
+  limit: 1,
+)
+assert_eq(
+  pl.map(|r| r.ok ? r.value : r.error),
+  [["long", "str"], ["long", "str"]],
+)
+
+# --- one message reaching one dispatcher twice still rebuilds it once --------
+fn one_kind(x: Long) {
+  "long"
+}
+fn one_kind(x: String) {
+  "str"
+}
+let one = Isolate.spawn(fn (m) {
+  [m[0] == m[1], m[0](1), m[1]("s")]
+}, [one_kind, one_kind]).join()
+assert_eq(one, [true, "long", "str"])
+
+# --- a dispatch error names the function, never the registry key -------------
+fn msg_kind(x: Long) {
+  "long"
+}
+let msg = Isolate.spawn(fn () {
+  try {
+    msg_kind(1.5)
+  } catch e {
+    "{e.kind}: {e.message}"
+  }
+}).join()
+assert_true(msg.starts_with("DispatchError: "))
+assert_true(msg.contains("`msg_kind`"))
+
+inspect("test_send_multifn: all assertions passed")

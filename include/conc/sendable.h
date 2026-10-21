@@ -401,19 +401,21 @@ inline sendable::SendNode jit_serialize(JitValue v, JitSerCtx& ctx) {
       // closure points at the same one rather than losing it.
       n.jit_meta = const_cast<void*>(static_cast<const void*>(c->meta));
       n.i = static_cast<int64_t>(c->arity);
-      // `fn name` is a dispatcher thunk: its overloads live in a thread_local
-      // table, so ship each method body + its dispatch types explicitly.
+      // `fn name` is a dispatcher thunk: its overloads live in a per-Runtime
+      // table, so ship each method body + its dispatch types explicitly,
+      // under the user-facing name: the registry key is this Runtime's.
       if (const auto* rec = _jit_dispatcher_record(c)) {
-        n.mf_name = rec->name;
-        const auto& methods = _jit_multimethods()[n.mf_name];
-        for (const auto& mth : methods) {
-          n.mf_param_types.push_back(mth.param_types);
-          n.mf_param_names.push_back(mth.param_names);
-          n.mf_variadic.push_back(mth.variadic);
-          n.mf_min_params.push_back(mth.min_params);
-          n.elems.push_back(jit_serialize(
-              JitValue{TAG_FUNC, reinterpret_cast<int64_t>(mth.body)}, ctx));
-        }
+        n.mf_name = std::string(_jit_multifn_display(rec->name));
+        auto& tbl = _jit_multimethods();
+        if (auto mit = tbl.find(rec->name); mit != tbl.end())
+          for (const auto& mth : mit->second) {
+            n.mf_param_types.push_back(mth.param_types);
+            n.mf_param_names.push_back(mth.param_names);
+            n.mf_variadic.push_back(mth.variadic);
+            n.mf_min_params.push_back(mth.min_params);
+            n.elems.push_back(jit_serialize(
+                JitValue{TAG_FUNC, reinterpret_cast<int64_t>(mth.body)}, ctx));
+          }
         return n;
       }
       // A native (C++-bodied) closure is not Sendable: it can't be rebuilt
@@ -569,15 +571,17 @@ inline JitOwnedVal jit_deserialize(const sendable::SendNode& n, JitDeCtx& ctx) {
       return out;
     }
     case K::Closure: {
-      // Multifn dispatcher: rebuild the thunk closure and re-register its name
-      // + overload methods in this thread's tables (recursion resolves because
-      // the dispatcher is memoized before its method bodies are rebuilt).
+      // Multifn dispatcher: rebuild the thunk closure over a table of its own
+      // (a key this Runtime mints, so a second arrival, or one in the
+      // sender's own Runtime, never shares the original's) and register the
+      // overload methods there (recursion resolves because the dispatcher is
+      // memoized before its method bodies are rebuilt).
       if (!n.mf_name.empty()) {
         auto* c = _jit_multifn_new_dispatcher(n.mf_name,
                                               static_cast<size_t>(n.i));
         JitOwnedVal out(TAG_FUNC, reinterpret_cast<int64_t>(c));
         ctx.remember(n.ref_id, out.borrow());
-        auto& methods = _jit_multimethods()[n.mf_name];
+        auto& methods = _jit_multimethods()[_jit_dispatcher_record(c)->name];
         for (size_t i = 0; i < n.elems.size(); i++) {
           // The table holds the body's +1.
           auto* body_cls = reinterpret_cast<JitClosure*>(

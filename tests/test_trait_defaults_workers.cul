@@ -214,4 +214,29 @@ gone.drop()
 assert_eq(Isolate.spawn(|| 42).join(), 42)
 assert_eq(Parallel.map([1, 2], |x| x * 10), [10, 20])
 
+# A default is shipped as a message of its own, so the `fn` it calls reaches
+# the worker twice — with it and with the spawned closure — and each copy
+# dispatches over a table of its own.
+fn tag_of(x: Long) {
+  "long"
+}
+fn tag_of(x: String) {
+  "str"
+}
+trait Tagged {
+  raw()
+  tagged() {
+    tag_of(self.raw())
+  }
+}
+class Tg {
+  new(.x) {}
+  raw() {
+    self.x
+  }
+}
+assert_eq(Isolate.spawn(fn (t) {
+  [tag_of(1), t.tagged(), tag_of("s")]
+}, Tg(1)).join(), ['long', 'long', 'str'])
+
 inspect('trait defaults reach workers')
