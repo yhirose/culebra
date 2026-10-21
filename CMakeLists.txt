@@ -2424,6 +2424,9 @@ if(CULEBRA_ENABLE_JIT)
                    Vector3
                    Deque PriorityQueue StateMachine Dir __Eff __Matchers
                    __StringFns)
+  if(CULEBRA_ENABLE_HTTP)
+    list(APPEND _baked_names LLM)
+  endif()
   if(CULEBRA_ENABLE_WEBVIEW)
     list(APPEND _baked_names Desktop)
   endif()

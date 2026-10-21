@@ -154,6 +154,10 @@ inline std::span<const LazyNsModule> lazy_ns_modules() {
       // effect construct into `__Eff.*` calls by the time we see the AST, so
       // that one token is the exact marker (see effects_transform.h).
       {"__Eff", EFFECTS_MODULE_SOURCE, "_eff_module"},
+#if defined(CULEBRA_HTTP_ENABLED)
+      // Written over Http, so only where Http is built in.
+      {"LLM", LLM_MODULE_SOURCE, "_llm_module"},
+#endif
 #ifdef CULEBRA_ENABLE_WEBVIEW
       // `Desktop.run` facade — only when the Webview namespace it drives is
       // built in.

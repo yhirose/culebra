@@ -81,8 +81,9 @@ Conventions used below:
 39. [`Search`](#39-search) — full-text index over your own documents, ranked
 40. [`Audio`](#40-audio) — sound for any program, with or without a window: WASM-4 tones, samples, streamed music, synthesised PCM, the microphone
 41. [`Dir`](#41-dir) — a read-only set of files on disk, in memory, baked into the binary or in a ZIP archive, read one way (`Dir.disk` / `Dir.memory` / `Dir.embedded` / `Dir.zip`, and the `Dir` trait)
-42. [Design notes](#42-design-notes)
-43. [Not included (yet)](#43-not-included-yet)
+42. [`LLM`](#42-llm) — a client for large language models: one question, a conversation that runs your functions as tools, or a request as it is (the Messages format)
+43. [Design notes](#43-design-notes)
+44. [Not included (yet)](#44-not-included-yet)
 
 **Where to find what**
 
@@ -137,6 +138,7 @@ Conventions used below:
 | Model a workflow, protocol or UI mode as states and events | [§37 `StateMachine`](#37-statemachine) — `StateMachine.parse(text)`, or a description `Object` |
 | Autocomplete / prefix lookup over a large fixed word list | [§38 FST](#38-fst) — `FST.Set.new(FST.compile_set(words))` → `.predictive_search("hel")` |
 | Spelling correction, fuzzy lookup | [§38 FST](#38-fst) — `.edit_distance_search(word, 1)` / `.suggest(word)` |
+| Ask a language model a question, or let it call your functions | [§42 LLM](#42-llm) — `LLM.ask(prompt, model:)` / `LLM.chat(model:, tools: [LLM.tool(f, "...")])` |
 | Search many documents by keyword, ranked | [§39 Search](#39-search) — `Search.Index.new()` → `.add(key, text)` → `.search("quick -dog")` |
 | String / Array / Object methods | [language spec §18](language.md) |
 | Integer sequences (`range`, `iota`) | [language spec §19](language.md) |
@@ -9277,7 +9279,126 @@ playground has no ZIP support: `Dir.zip` and `Compress.zip` raise there.
 
 ---
 
-## 42. Design notes
+## 42. `LLM`
+
+A client for large language models, written in Culebra over [`Http`](#15-http)
+and [`JSON`](#9-json). It speaks the Messages format (Anthropic's Claude API).
+There are three ways in: one question, a conversation that keeps its history
+and runs the tools the model asks for, and a request body sent as it is.
+
+```culebra
+# doctest: skip
+IO.println(LLM.ask("Name three prime numbers.", model: "claude-haiku-5-5"))
+```
+
+The key is read from `ANTHROPIC_API_KEY` and the server from
+`ANTHROPIC_BASE_URL` (default `https://api.anthropic.com`); `api_key:` and
+`base_url:` override them on any call. Every call names its model: model IDs
+change and differ in price, so there is no default. Like `Http`, `LLM` is
+absent from a build configured without `Http`.
+
+### `LLM.ask(prompt, model:, system=nil, max_tokens=16000, on_text=nil, api_key=nil, base_url=nil) -> String`
+
+One question, one answer: the text of the reply. `system` is the system
+prompt. `on_text` streams the answer: it is called with each piece of the
+text as it is written, and the return value is still the whole text.
+
+```culebra
+# doctest: skip
+LLM.ask("Write a haiku about rain.", model: "claude-haiku-5-5",
+        on_text: |t| IO.print(t))
+```
+
+A text answer cut off at `max_tokens` is returned as far as it got; a
+conversation's `last.stop_reason` says `"max_tokens"`. A server that answers a
+streamed request whole is read whole, and `on_text` is called once with the
+text.
+
+### `LLM.chat(model:, system=nil, tools=[], max_tokens=16000, max_turns=10, api_key=nil, base_url=nil) -> LLMChat`
+
+A conversation. `chat.ask(prompt, on_text=nil)` adds a turn and returns the
+text of the answer. `chat.messages` holds the history in the API's own
+`{role, content}` shapes, and `chat.last` the last response whole
+(`stop_reason`, `usage`, ...).
+
+When the model asks for a tool, `ask` runs it, sends the result back and asks
+again, up to `max_turns` round trips; the answer is the text of the last turn.
+
+```culebra
+# doctest: skip
+fn weather(city: String) {
+  "{city}: sunny, 18°C"
+}
+let chat = LLM.chat(
+  model: "claude-haiku-5-5",
+  tools: [LLM.tool(weather, "Current weather in a city", city: "a city name")],
+)
+IO.println(chat.ask("What is the weather in Tokyo?"))
+IO.println(chat.ask("And in Osaka?"))
+```
+
+What a tool throws goes back to the model as an error result
+(`is_error: true`), so the model can correct itself or explain; a Ctrl+C
+(`Interrupted`) is not caught. A tool the model names that does not exist is
+answered the same way.
+
+The history only grows. An assistant turn is kept exactly as it arrived, which
+is what a thinking model needs (its thinking blocks are checked when they go
+back), and an `ask` that fails takes back what it added, so the conversation
+is still one the API accepts.
+
+### `LLM.tool(f, description, **params) -> LLMTool`
+
+A tool made of a function declared with `fn name(...)`; the function's name is
+the tool's. The schema the model sees is read off the parameters'
+annotations:
+
+| Annotation | Schema |
+|---|---|
+| `String` / `Long` / `Float` / `Bool` / `Object` | `string` / `integer` / `number` / `boolean` / `object` |
+| `Array`, `Array<T>` | an array (of `T`) |
+| `A \| B` | any of the members |
+| none | any value |
+
+A parameter with a default, or whose type admits `Nil` (`T?`), is optional;
+the rest are required. A parameter's description is given by name, as in the
+example above (`city: "a city name"`); a name that is not a parameter is a
+`ValueError`. The model's arguments arrive as keywords, so the function is
+called as `weather(city: "Tokyo")`. What it returns goes back to the model: a
+`String` as it is, anything else as JSON.
+
+`tool.name`, `tool.description` and `tool.input_schema` can be read;
+`tool.spec()` is what goes out with a request.
+
+### `LLM.request(body, headers=nil, api_key=nil, base_url=nil) -> Object`
+
+The request body as it is, posted to `/v1/messages`, and the response as it is
+(the parsed JSON), for what `ask` and `chat` do not set. `headers` carries
+what a body cannot, such as `anthropic-beta` for a beta feature.
+
+```culebra
+# doctest: skip
+let res = LLM.request({
+  model: "claude-haiku-5-5",
+  max_tokens: 1000,
+  messages: [{role: "user", content: "Hello"}],
+})
+IO.println(res.content[0].text)
+```
+
+### Errors
+
+| Situation | Error |
+|---|---|
+| No key (checked before any request) | `LLMError` |
+| The API answers with a status that is not 2xx | `LLMError`: `LLM: 429 rate_limit_error: ...` (the status, then the error's type and message) |
+| The model declines to answer (`stop_reason` `"refusal"`) | `LLMError` |
+| A tool call cut off at `max_tokens` (the tool is not run) | `LLMError` |
+| No answer within `max_turns` | `LLMError` |
+| A transport failure (DNS, connection refused, TLS) | `HttpError`, as from `Http` |
+| An argument of the wrong type | `TypeError` |
+
+## 43. Design notes
 
 ### Namespace-first, with three global shortcuts
 
@@ -9333,7 +9454,7 @@ sentinel values for "found or not" predicates (`IO.input()` returns
 
 ---
 
-## 43. Not included (yet)
+## 44. Not included (yet)
 
 ### Heavier data structures
 

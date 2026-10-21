@@ -7521,3 +7521,407 @@ let parametrize = fn (cases) {
 }
 )=culpre=";
 
+inline constexpr const char* LLM_MODULE_SOURCE = R"=culpre=(# LLM — a client for large language models, written over Http and JSON.
+# docs/stdlib.md carries the reference; this header is the why.
+#
+# One conversation shape, three ways in: `LLM.ask` for a single question,
+# `LLM.chat` for a conversation that keeps its history and runs its tools, and
+# `LLM.request` for a request body sent as it is, so a new API feature does not
+# wait for a release. The Messages format (Anthropic) is the one spoken today;
+# the names say what is done, not who serves it, so another format can be added
+# behind them.
+#
+# The history is append-only. A thinking model's blocks are checked when they
+# go back, so an assistant turn is kept exactly as it arrived, and an `ask`
+# that fails takes back everything it added rather than leaving half a turn.
+#
+# A tool is an ordinary function. Its schema is read off its parameters'
+# annotations, and the model's arguments arrive as keywords, so nothing about
+# it is written twice.
+let _llm_module = fn () {
+  let API_VERSION = "2023-06-01"
+  let DEFAULT_BASE = "https://api.anthropic.com"
+  let MAX_TOKENS = 16000
+  let MAX_TURNS = 10
+
+  fn _fail(msg) {
+    __raise("LLMError", msg)
+  }
+
+  # A wrong argument gets the TypeError a typed parameter raises.
+  fn _type_error(name, want) {
+    __raise("TypeError", "type error: parameter '{name}' expects {want}")
+  }
+
+  # A String argument as a String: a slice is copied, since JSON writes only
+  # a String.
+  fn _string(name, v) {
+    let t = type_of(v)
+    cond {
+      t == "String" => v,
+      t == "StringView" => to_string(v),
+      _ => _type_error(name, "String"),
+    }
+  }
+
+  fn _optional_string(name, v) {
+    cond {
+      v == nil => nil,
+      type_of(v) == "String" || type_of(v) == "StringView" => _string(name, v),
+      _ => _type_error(name, "String | Nil"),
+    }
+  }
+
+  fn _long(name, v) {
+    type_of(v) == "Long" ? v : _type_error(name, "Long")
+  }
+
+  # --- tools ------------------------------------------------------------------
+
+  # The JSON Schema for one annotation: `String | Nil` is a string that may be
+  # left out, a union is any of its members, `Array<T>` says what it holds, and
+  # no annotation takes any value.
+  fn _schema_of(annotation) {
+    let members = _union_members(annotation).filter(|m| m != "Nil")
+    cond {
+      members.empty() => {},
+      members.size() > 1 => {anyOf: members.map(_schema_of)},
+      _ => _schema_of_type(members[0]),
+    }
+  }
+
+  fn _schema_of_type(t) {
+    cond {
+      t == "String" => {type: "string"},
+      t == "Long" => {type: "integer"},
+      t == "Float" => {type: "number"},
+      t == "Bool" => {type: "boolean"},
+      t == "Object" => {type: "object"},
+      t == "Array" => {type: "array"},
+      t.starts_with("Array<") && t.ends_with(">") =>
+        {type: "array", items: _schema_of(t.slice(6, t.size() - 1))},
+      _ => {},
+    }
+  }
+
+  # The members of a top-level union; the `|` inside `Array<Long | Nil>`
+  # belongs to the element type.
+  fn _union_members(annotation) {
+    mut out = []
+    mut pending = ""
+    for piece in annotation.split(" | ") {
+      pending = pending.empty() ? to_string(piece) : "{pending} | {piece}"
+      if pending.count("<") == pending.count(">") {
+        out.push(pending) if !pending.empty()
+        pending = ""
+      }
+    }
+    out
+  }
+
+  class LLMTool {
+    new(.name, .description, .input_schema, .f) {}
+
+    # What the request names: everything but the function itself.
+    spec() {
+      {name: self.name, description: self.description,
+       input_schema: self.input_schema}
+    }
+  }
+
+  fn tool(f, description, **params) {
+    _type_error("f", "Function") if type_of(f) != "Function"
+    let summary = _string("description", description)
+    let name = f.name
+    if name.empty() {
+      __raise("ValueError",
+        "LLM.tool: the function has no name; declare it with `fn name(...)`")
+    }
+    let declared = f.params.filter(|p| !p.kwargs_rest)
+    for k in params.keys() {
+      if !declared.any(|p| p.name == k) {
+        __raise("ValueError", "LLM.tool: {name} has no parameter '{k}'")
+      }
+    }
+    let properties = {}
+    let required = []
+    for p in declared {
+      let schema = _schema_of(p.type)
+      if params.has(p.name) {
+        schema.description = _string(p.name, params[p.name])
+      }
+      properties[p.name] = schema
+      required.push(p.name) if !p.has_default && !_union_members(p.type).contains("Nil")
+    }
+    let input_schema = {type: "object", properties: properties}
+    input_schema.required = required if !required.empty()
+    LLMTool(name, summary, input_schema, f)
+  }
+
+  # What a tool's value becomes in a tool_result: a String as it is, anything
+  # else as JSON.
+  fn _content_of(v) {
+    cond {
+      type_of(v) == "String" => v,
+      type_of(v) == "StringView" => to_string(v),
+      _ => JSON.stringify(v),
+    }
+  }
+
+  fn _describe(e) {
+    type_of(e) == "Object" && e.has("kind") ? "{e.kind}: {e.message}" : "{e}"
+  }
+
+  # --- the wire -----------------------------------------------------------------
+
+  fn _connect(api_key, base_url) {
+    let key = (api_key ?? Sys.env("ANTHROPIC_API_KEY")).presence()
+    _fail("LLM: no API key: set ANTHROPIC_API_KEY or pass api_key:") if key == nil
+    let base = base_url ?? Sys.env("ANTHROPIC_BASE_URL").presence() ?? DEFAULT_BASE
+    Http.client(base, headers: {"x-api-key": key, "anthropic-version": API_VERSION})
+  }
+
+  # A failed request explains itself in its body, `{error: {type, message}}`
+  # in this format; a gateway's page that is not JSON is quoted as it is.
+  fn _api_error(res) {
+    let parsed = try {
+      JSON.parse(res.body)
+    } catch _e: ValueError {
+      nil
+    }
+    let err = type_of(parsed) == "Object" ? parsed.get("error", nil) : nil
+    let detail = type_of(err) == "Object"
+      ? "{err.get('type', 'error')}: {err.get('message', '')}"
+      : res.body.truncate(500)
+    _fail("LLM: {res.status} {detail}")
+  }
+
+  fn _send(http, body, headers = nil) {
+    let res = http.post("/v1/messages", json: body, headers: headers)
+    _api_error(res) unless res.ok
+    res.json()
+  }
+
+  # A streamed message, put back together into the body the non-streaming
+  # request would have answered with, so one reader serves both. Pieces are
+  # collected and joined once, not appended to a growing String.
+  class LLMStream {
+    new(.on_text) {
+      self.events = 0
+      self.message = nil
+      self.blocks = []
+      self.pieces = []
+      self.failure = nil
+    }
+
+    take(e) {
+      self.events += 1
+      let ev = try {
+        JSON.parse(e.data)
+      } catch _e: ValueError {
+        nil
+      }
+      return nil if type_of(ev) != "Object"
+      let kind = ev.get("type", "")
+      if kind == "message_start" {
+        self.message = ev.message
+      } else if kind == "content_block_start" {
+        while self.blocks.size() <= ev.index {
+          self.blocks.push(nil)
+          self.pieces.push([])
+        }
+        self.blocks[ev.index] = ev.content_block
+      } else if kind == "content_block_delta" {
+        self.grow(ev.index, ev.delta)
+      } else if kind == "content_block_stop" {
+        self.close(ev.index)
+      } else if kind == "message_delta" {
+        # A parsed Object's fields are fixed, so each change is a new Object.
+        self.message = {...self.message,
+          stop_reason: ev.delta.get("stop_reason", nil),
+          stop_sequence: ev.delta.get("stop_sequence", nil),
+          usage: {...self.message.get("usage", {}), ...ev.get("usage", {})}}
+      } else if kind == "error" {
+        self.failure = ev.get("error", {})
+      }
+    }
+
+    grow(i, d) {
+      let kind = d.get("type", "")
+      if kind == "text_delta" {
+        self.pieces[i].push(d.text)
+        self.on_text(d.text) if self.on_text != nil
+      } else if kind == "thinking_delta" {
+        self.pieces[i].push(d.thinking)
+      } else if kind == "input_json_delta" {
+        self.pieces[i].push(d.partial_json)
+      } else if kind == "signature_delta" {
+        self.blocks[i] = {...self.blocks[i], signature: d.signature}
+      } else if kind == "citations_delta" {
+        let b = self.blocks[i]
+        self.blocks[i] = {...b, citations: [...b.get("citations", []), d.citation]}
+      }
+    }
+
+    # A block's pieces become its field once it is whole. A tool's arguments
+    # are one JSON document written a few characters at a time; one cut off
+    # mid-document stays empty, and the stop reason says why.
+    close(i) {
+      let b = self.blocks[i]
+      let joined = self.pieces[i].join("")
+      let kind = b.get("type", "")
+      if kind == "text" {
+        self.blocks[i] = {...b, text: joined}
+      } else if kind == "thinking" {
+        self.blocks[i] = {...b, thinking: joined}
+      } else if b.has("input") && !joined.empty() {
+        let input = try {
+          JSON.parse(joined)
+        } catch _e: ValueError {
+          {}
+        }
+        self.blocks[i] = {...b, input: input}
+      }
+    }
+
+    finish() {
+      if self.failure != nil {
+        _fail("LLM: {self.failure.get('type', 'error')}: {self.failure.get('message', '')}")
+      }
+      _fail("LLM: the stream ended before the message began") if self.message == nil
+      {...self.message, content: self.blocks}
+    }
+  }
+
+  fn _text_of(message) {
+    message.content.filter(|b| b.get("type", "") == "text").map(|b| b.text).join("")
+  }
+
+  fn _stream(http, body, on_text) {
+    let turn = LLMStream(on_text)
+    let res = http.post("/v1/messages", json: {...body, stream: true},
+                        events: |e| turn.take(e))
+    _api_error(res) unless res.ok
+    if turn.events == 0 {
+      # A 2xx that did not stream is the whole answer: a server that ignores
+      # `stream` sends the message the plain request would have.
+      _fail("LLM: {res.status}: the stream closed without an event") if res.body.empty()
+      let message = res.json()
+      on_text(_text_of(message))
+      return message
+    }
+    turn.finish()
+  }
+
+  # --- conversations ------------------------------------------------------------
+
+  class LLMChat {
+    new(.http, .model, .system, .tools, .max_tokens, .max_turns) {
+      self.messages = []
+      self.last = nil
+    }
+
+    # The answer's text. The tools the model asks for run on the way there, up
+    # to `max_turns` round trips; `last` holds the final response whole.
+    ask(prompt, on_text = nil) {
+      let content = _string("prompt", prompt)
+      if on_text != nil && type_of(on_text) != "Function" {
+        _type_error("on_text", "Function | Nil")
+      }
+      let start = self.messages.size()
+      try {
+        self.messages.push({role: "user", content: content})
+        for _turn in 0..self.max_turns {
+          let message = self.send(on_text)
+          self.last = message
+          let stop = message.get("stop_reason", nil)
+          if stop == "refusal" {
+            let details = message.get("stop_details", nil)
+            let why = type_of(details) == "Object"
+              ? details.get("explanation", nil) ?? details.get("category", nil)
+              : nil
+            _fail("LLM: the model declined to answer" + (why == nil ? "" : ": {why}"))
+          }
+          self.messages.push({role: "assistant", content: message.content})
+          let calls = message.content.filter(|b| b.get("type", "") == "tool_use")
+          if stop == "max_tokens" && !calls.empty() {
+            _fail("LLM: a tool call was cut off at max_tokens ({self.max_tokens})")
+          }
+          if stop == "tool_use" {
+            self.messages.push({role: "user", content: calls.map(|c| self.run(c))})
+          } else if stop != "pause_turn" {
+            return _text_of(message)
+          }
+        }
+        _fail("LLM: no answer within max_turns ({self.max_turns})")
+      } catch e {
+        # Take back this ask's turns, so the history stays one the API accepts.
+        self.messages = self.messages.slice(0, start)
+        throw e
+      }
+    }
+
+    send(on_text) {
+      let body = {model: self.model, max_tokens: self.max_tokens,
+                  messages: self.messages}
+      body.system = self.system if self.system != nil
+      body.tools = self.tools.map(|t| t.spec()) if !self.tools.empty()
+      on_text == nil ? _send(self.http, body) : _stream(self.http, body, on_text)
+    }
+
+    # One tool call, answered. What a tool throws goes back to the model as an
+    # error it can correct; an interrupt is the user's, and goes on up.
+    run(call) {
+      let chosen = self.tools.find(|t| t.name == call.name)
+      let answer = if chosen == nil {
+        {content: "no tool named '{call.name}'", is_error: true}
+      } else {
+        try {
+          {content: _content_of(chosen.f(**call.input)), is_error: false}
+        } catch e: Interrupted {
+          throw e
+        } catch e {
+          {content: _describe(e), is_error: true}
+        }
+      }
+      {type: "tool_result", tool_use_id: call.id, ...answer}
+    }
+  }
+
+  fn chat(*, model, system = nil, tools = [], max_tokens = MAX_TOKENS,
+          max_turns = MAX_TURNS, api_key = nil, base_url = nil) {
+    let model_id = _string("model", model)
+    let instructions = _optional_string("system", system)
+    _type_error("tools", "Array") if type_of(tools) != "Array"
+    for t in tools {
+      if type_of(t) != "LLMTool" {
+        __raise("TypeError",
+          "LLM.chat: tools takes what LLM.tool makes, got {type_of(t)}")
+      }
+    }
+    let http = _connect(_optional_string("api_key", api_key),
+                        _optional_string("base_url", base_url))
+    LLMChat(http, model_id, instructions, tools, _long("max_tokens", max_tokens),
+            _long("max_turns", max_turns))
+  }
+
+  fn ask(prompt, *, model, system = nil, max_tokens = MAX_TOKENS, on_text = nil,
+         api_key = nil, base_url = nil) {
+    chat(model: model, system: system, max_tokens: max_tokens,
+         api_key: api_key, base_url: base_url).ask(prompt, on_text: on_text)
+  }
+
+  # The body as it is, the response as it is: a failure is still an LLMError.
+  # `headers` carries what a body cannot, such as a beta's `anthropic-beta`.
+  fn request(body, *, headers = nil, api_key = nil, base_url = nil) {
+    _type_error("body", "Object") if type_of(body) != "Object"
+    _type_error("headers", "Object | Nil") if headers != nil && type_of(headers) != "Object"
+    _send(_connect(_optional_string("api_key", api_key),
+                   _optional_string("base_url", base_url)), body, headers)
+  }
+
+  {ask: ask, chat: chat, tool: tool, request: request}
+}
+let LLM = _llm_module()
+)=culpre=";
+

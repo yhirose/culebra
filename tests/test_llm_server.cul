@@ -1,0 +1,279 @@
+# LLM against a stand-in for the Messages API: an Http.server in an Isolate
+# that answers by `model`, so each case is one request away, and that sends a
+# streamed request the same message as events. No network, no key.
+
+# --- the stand-in -------------------------------------------------------------
+
+fn text(t) {
+  {type: "text", text: t}
+}
+
+fn call(name, input) {
+  {type: "tool_use", id: "toolu_1", name: name, input: input}
+}
+
+fn message(content, stop) {
+  {id: "msg_1", type: "message", role: "assistant", model: "stand-in",
+   content: content, stop_reason: stop, stop_sequence: nil,
+   usage: {input_tokens: 3, output_tokens: 5}}
+}
+
+fn halves(s) {
+  let cut = s.size() / 2
+  [to_string(s.slice(0, cut)), to_string(s.slice(cut, s.size()))]
+}
+
+fn frame(kind, data) {
+  "event: {kind}\ndata: {JSON.stringify(data)}\n\n"
+}
+
+fn delta(i, d) {
+  frame("content_block_delta", {type: "content_block_delta", index: i, delta: d})
+}
+
+# A message as the stream says it: every text and argument in two pieces, and
+# a thinking block's signature in a delta of its own.
+fn events_of(msg) {
+  mut out = [frame("message_start", {type: "message_start",
+    message: {...msg, content: [], stop_reason: nil,
+              usage: {input_tokens: 3, output_tokens: 1}}})]
+  for i, b in msg.content.enumerate() {
+    let t = b.type
+    let start = cond {
+      t == "text" => {type: "text", text: ""},
+      t == "thinking" => {type: "thinking", thinking: "", signature: ""},
+      t == "tool_use" => {...b, input: {}},
+      _ => b,
+    }
+    out.push(frame("content_block_start",
+      {type: "content_block_start", index: i, content_block: start}))
+    if t == "text" {
+      for piece in halves(b.text) {
+        out.push(delta(i, {type: "text_delta", text: piece}))
+      }
+    } else if t == "thinking" {
+      for piece in halves(b.thinking) {
+        out.push(delta(i, {type: "thinking_delta", thinking: piece}))
+      }
+      out.push(delta(i, {type: "signature_delta", signature: b.signature}))
+    } else if t == "tool_use" {
+      for piece in halves(JSON.stringify(b.input)) {
+        out.push(delta(i, {type: "input_json_delta", partial_json: piece}))
+      }
+    }
+    out.push(frame("content_block_stop", {type: "content_block_stop", index: i}))
+  }
+  out.push(frame("message_delta", {type: "message_delta",
+    delta: {stop_reason: msg.stop_reason, stop_sequence: nil},
+    usage: {output_tokens: 5}}))
+  out.push(frame("message_stop", {type: "message_stop"}))
+  out
+}
+
+fn tool_results(m) {
+  type_of(m.content) == "Array"
+    ? m.content.filter(|b| b.get("type", "") == "tool_result")
+    : []
+}
+
+# What each model answers. A tool model calls the first tool it was handed,
+# and once a result comes back says what the result was.
+fn reply(body, headers) {
+  let m = body.model
+  let last = body.messages[body.messages.size() - 1]
+  let results = tool_results(last)
+  let first_tool = body.has("tools") ? body.tools[0].name : "none"
+  cond {
+    m == "echo" => message([text(JSON.stringify({
+      system: body.get("system", nil), max_tokens: body.max_tokens,
+      turns: body.messages.size(), key: headers["x-api-key"],
+      version: headers["anthropic-version"], beta: headers.get("anthropic-beta", nil),
+      tools: body.get("tools", []).map(|t| t.name)}))], "end_turn"),
+    m == "story" => message([text("once upon a time")], "end_turn"),
+    (m == "tool" || m == "unknown") && !results.empty() => {
+      let r = results[0]
+      message([text("done: {r.content}" + (r.get("is_error", false) ? " (error)" : ""))],
+              "end_turn")
+    },
+    m == "tool" => message([text("checking "), call(first_tool, {city: "Tokyo"})], "tool_use"),
+    m == "unknown" => message([call("nope", {})], "tool_use"),
+    m == "loop" => message([call(first_tool, {city: "Tokyo"})], "tool_use"),
+    m == "cut" => message([call(first_tool, {city: "To"})], "max_tokens"),
+    m == "long" => message([text("half an ans")], "max_tokens"),
+    m == "refuse" => {...message([], "refusal"),
+      stop_details: {type: "refusal", category: "cyber", explanation: "not this"}},
+    m == "think" && body.messages.size() == 1 =>
+      message([{type: "thinking", thinking: "let me see", signature: "sig-1"},
+               text("first")], "end_turn"),
+    m == "think" => {
+      let kept = body.messages[1].content[0]
+      message([text(kept == {type: "thinking", thinking: "let me see",
+                             signature: "sig-1"} ? "kept" : "lost")], "end_turn")
+    },
+    _ => message([text("model {m}")], "end_turn"),
+  }
+}
+
+let (tx, rx) = Channel.new(1)
+let iso = Isolate.spawn(fn () {
+  let srv = Http.server()
+  srv.post("/v1/messages", fn (req) {
+    let body = JSON.parse(req.body)
+    let m = body.model
+    if m == "busy" {
+      return {status: 529, content_type: "application/json",
+              body: '{"type":"error","error":{"type":"overloaded_error","message":"busy"}}'}
+    }
+    if m == "gateway" {
+      return {status: 502, content_type: "text/html", body: "<h1>bad gateway</h1>"}
+    }
+    let msg = reply(body, req.headers)
+    # `nostream` answers whole even when asked to stream, as a server that
+    # ignores the flag does.
+    if body.get("stream", false) && m != "nostream" {
+      return {content_type: "text/event-stream", stream: fn (sink) {
+        for f in events_of(msg) {
+          sink.write(f)
+        }
+      }}
+    }
+    {content_type: "application/json", body: JSON.stringify(msg)}
+  })
+  tx.send(srv.bind(0))
+  tx.drop()
+  srv.serve()
+})
+tx.drop()
+let BASE = "http://127.0.0.1:{rx.recv()}"
+
+fn opts(model) {
+  {model: model, api_key: "test-key", base_url: BASE}
+}
+
+# What a call raised, as "Kind: message".
+fn failure(thunk) {
+  try {
+    thunk()
+    "no error"
+  } catch e {
+    "{e.kind}: {e.message}"
+  }
+}
+
+# --- one question ---------------------------------------------------------------
+
+# The request carries the model, the default max_tokens, the key and the
+# version header; system goes in a field of its own.
+assert_eq(LLM.ask("hi", **opts("echo")),
+  '{"system":null,"max_tokens":16000,"turns":1,"key":"test-key","version":"2023-06-01","beta":null,"tools":[]}')
+assert_eq(JSON.parse(LLM.ask("hi", system: "be brief", max_tokens: 100, **opts("echo"))).system,
+          "be brief")
+
+# Streamed, the answer arrives in pieces and adds up to the same text.
+let pieces = []
+let streamed = LLM.ask("hi", on_text: |t| pieces.push(t), **opts("story"))
+assert_eq(streamed, "once upon a time")
+assert_eq(pieces, ["once upo", "n a time"])
+
+# A server that answers whole when asked to stream: the whole answer, heard once.
+let whole = []
+assert_eq(LLM.ask("hi", on_text: |t| whole.push(t), **opts("nostream")), "model nostream")
+assert_eq(whole, ["model nostream"])
+
+# Cut off at max_tokens, the text is still the answer; `last` says why.
+let long = LLM.chat(**opts("long"))
+assert_eq(long.ask("go"), "half an ans")
+assert_eq(long.last.stop_reason, "max_tokens")
+
+# --- tools ------------------------------------------------------------------------
+
+mut asked = []
+fn weather(city: String, days: Long = 1) {
+  asked.push(city)
+  "{city}: sunny"
+}
+let weather_tool = LLM.tool(weather, "the weather in a city", city: "a city name")
+
+# The model asks, the tool runs with the arguments as keywords, the result goes
+# back, and the answer is the last turn's text. Every turn is in the history.
+for on_text in [nil, |t| nil] {
+  asked = []
+  let c = LLM.chat(tools: [weather_tool], **opts("tool"))
+  assert_eq(c.ask("weather?", on_text: on_text), "done: Tokyo: sunny")
+  assert_eq(asked, ["Tokyo"])
+  assert_eq(c.messages.map(|m| m.role), ["user", "assistant", "user", "assistant"])
+  assert_eq(c.messages[1].content[1], {type: "tool_use", id: "toolu_1", name: "weather",
+                                        input: {city: "Tokyo"}})
+  assert_eq(c.last.stop_reason, "end_turn")
+}
+
+# The tools go out by name, description and schema.
+assert_eq(JSON.parse(LLM.chat(tools: [weather_tool], **opts("echo")).ask("hi")).tools,
+          ["weather"])
+
+# What a tool throws goes back to the model as an error it can act on.
+fn broken(city: String) {
+  __raise("ValueError", "no data for {city}")
+}
+let broken_chat = LLM.chat(tools: [LLM.tool(broken, "fails")], **opts("tool"))
+assert_eq(broken_chat.ask("weather?"), "done: ValueError: no data for Tokyo (error)")
+
+# A tool the model names that does not exist is answered the same way.
+let unknown = LLM.chat(tools: [weather_tool], **opts("unknown"))
+assert_eq(unknown.ask("weather?"), "done: no tool named 'nope' (error)")
+
+# --- failures leave the conversation as it was ------------------------------------
+
+asked = []
+let cut = LLM.chat(tools: [weather_tool], **opts("cut"))
+assert_eq(failure(|| cut.ask("weather?")),
+          "LLMError: LLM: a tool call was cut off at max_tokens (16000)")
+assert_eq(asked, [])
+assert_eq(cut.messages, [])
+
+let loop = LLM.chat(tools: [weather_tool], max_turns: 2, **opts("loop"))
+assert_eq(failure(|| loop.ask("weather?")), "LLMError: LLM: no answer within max_turns (2)")
+assert_eq(loop.messages, [])
+
+assert_eq(failure(|| LLM.ask("hi", **opts("refuse"))),
+          "LLMError: LLM: the model declined to answer: not this")
+assert_eq(failure(|| LLM.ask("hi", **opts("busy"))),
+          "LLMError: LLM: 529 overloaded_error: busy")
+assert_eq(failure(|| LLM.ask("hi", on_text: |t| nil, **opts("busy"))),
+          "LLMError: LLM: 529 overloaded_error: busy")
+assert_eq(failure(|| LLM.ask("hi", **opts("gateway"))),
+          "LLMError: LLM: 502 <h1>bad gateway</h1>")
+
+# A failed ask after a good one keeps the good one.
+let mixed = LLM.chat(**opts("story"))
+mixed.ask("first")
+mixed.model = "busy"
+assert_throws("LLMError", || mixed.ask("second"))
+assert_eq(mixed.messages.size(), 2)
+
+# An LLMError is caught by its kind.
+assert_eq(try { LLM.ask("hi", **opts("busy")) } catch LLMError { "caught" }, "caught")
+
+# --- thinking goes back as it came -------------------------------------------------
+
+for on_text in [nil, |t| nil] {
+  let thinker = LLM.chat(**opts("think"))
+  assert_eq(thinker.ask("one", on_text: on_text), "first")
+  assert_eq(thinker.ask("two", on_text: on_text), "kept")
+}
+
+# --- the request as it is ----------------------------------------------------------
+
+let raw = LLM.request({model: "story", max_tokens: 10,
+                       messages: [{role: "user", content: "hi"}]},
+                      api_key: "test-key", base_url: BASE)
+assert_eq([raw.id, raw.content[0].text], ["msg_1", "once upon a time"])
+
+# A header a body cannot carry, such as a beta's, rides along.
+let with_beta = LLM.request({model: "echo", max_tokens: 10,
+                             messages: [{role: "user", content: "hi"}]},
+                            headers: {"anthropic-beta": "some-beta-2026-01-01"},
+                            api_key: "test-key", base_url: BASE)
+assert_eq(JSON.parse(with_beta.content[0].text).beta, "some-beta-2026-01-01")
+
+iso.drop()

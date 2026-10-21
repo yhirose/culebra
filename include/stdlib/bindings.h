@@ -12962,7 +12962,7 @@ inline const std::unordered_set<std::string_view>& builtin_var_names() {
       // The bare function globals from those same source modules (assert_*,
       // `replace`) are listed by lazy_fn_group_of below, not here.
 #if defined(CULEBRA_HTTP_ENABLED)
-      "Http",
+      "Http",    "LLM",
 #endif
 #if defined(CULEBRA_ENABLE_WEBVIEW)
       "Desktop",

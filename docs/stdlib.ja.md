@@ -79,8 +79,9 @@
 39. [`Search`](#39-search) — 自分の文書を全文検索して順位をつける
 40. [`Audio`](#40-audio) — ウィンドウの有無によらず使える音: WASM-4のtone、効果音、ストリーム再生の音楽、合成するPCM、マイク
 41. [`Dir`](#41-dir) — ディスク・メモリ・バイナリへの焼き込み・ZIPアーカイブのどこにあるファイルの集まりも、同じ読み方で（`Dir.disk` / `Dir.memory` / `Dir.embedded` / `Dir.zip`と`Dir` trait）
-42. [設計上の注記](#42-設計上の注記)
-43. [未収録（将来検討）](#43-未収録将来検討)
+42. [`LLM`](#42-llm) — 大規模言語モデルのクライアント。1回の質問、関数をツールとして使う会話、リクエストの素通し（Messages形式）
+43. [設計上の注記](#43-設計上の注記)
+44. [未収録（将来検討）](#44-未収録将来検討)
 
 **目的別索引**
 
@@ -134,6 +135,7 @@
 | 手順・通信手順・画面のモードを状態とイベントで表す | [§37 `StateMachine`](#37-statemachine) — `StateMachine.parse(text)`、または記述用の`Object` |
 | 変わらない大きな語彙から前方一致で補完する | [§38 FST](#38-fst) — `FST.Set.new(FST.compile_set(words))` → `.predictive_search("hel")` |
 | 綴りの直し・あいまい検索 | [§38 FST](#38-fst) — `.edit_distance_search(word, 1)`／`.suggest(word)` |
+| 言語モデルに質問する、自分の関数を呼ばせる | [§42 LLM](#42-llm) — `LLM.ask(prompt, model:)` / `LLM.chat(model:, tools: [LLM.tool(f, "...")])` |
 | たくさんの文書を語で検索して順位をつける | [§39 Search](#39-search) — `Search.Index.new()` → `.add(key, text)` → `.search("quick -dog")` |
 | 行列・テンソル演算（BLAS対応） | [§8 Tensor](#8-tensor) |
 | String / Array / Objectのメソッド | [言語仕様 §18](language.ja.md) |
@@ -8908,7 +8910,120 @@ Windowsでは開いているファイルを削除も置き換えもできない�
 
 ---
 
-## 42. 設計上の注記
+## 42. `LLM`
+
+大規模言語モデルのクライアントです。Culebraで書かれていて、[`Http`](#15-http)と
+[`JSON`](#9-json)の上に作られています。Messages形式（AnthropicのClaude API）を
+話します。使い方は3つあります。1回の質問、履歴を持ちモデルが求めるツールを実行する
+会話、そしてリクエスト本文をそのまま送る素通しです。
+
+```culebra
+# doctest: skip
+IO.println(LLM.ask("Name three prime numbers.", model: "claude-haiku-5-5"))
+```
+
+キーは`ANTHROPIC_API_KEY`から、接続先は`ANTHROPIC_BASE_URL`（既定は
+`https://api.anthropic.com`）から読みます。どの呼び出しでも`api_key:`と`base_url:`で
+上書きできます。モデルは呼び出しごとに必ず指定します。モデルIDは入れ替わり、
+価格も違うので、既定値はありません。`Http`を含めずに構成したビルドには、`Http`と
+同じく`LLM`もありません。
+
+### `LLM.ask(prompt, model:, system=nil, max_tokens=16000, on_text=nil, api_key=nil, base_url=nil) -> String`
+
+1回の質問に1回答え、その本文を返します。`system`はシステムプロンプトです。
+`on_text`を渡すと回答をストリーミングで受け取れます。本文が書かれるそばから
+断片ごとに呼ばれ、戻り値は変わらず本文全体です。
+
+```culebra
+# doctest: skip
+LLM.ask("Write a haiku about rain.", model: "claude-haiku-5-5",
+        on_text: |t| IO.print(t))
+```
+
+`max_tokens`で途中で切れた本文は、切れたところまでを返します。会話なら
+`last.stop_reason`が`"max_tokens"`になります。ストリーミングを求めたのにサーバが
+まとめて返した場合はそのまま読み、`on_text`は本文全体で1回呼ばれます。
+
+### `LLM.chat(model:, system=nil, tools=[], max_tokens=16000, max_turns=10, api_key=nil, base_url=nil) -> LLMChat`
+
+会話です。`chat.ask(prompt, on_text=nil)`はターンを1つ足し、回答の本文を返します。
+`chat.messages`にはAPIのままの`{role, content}`の形で履歴が、`chat.last`には
+最後の応答がそのまま（`stop_reason`、`usage`など）入っています。
+
+モデルがツールを求めると、`ask`はそれを実行して結果を返し、もう一度尋ねます。
+これを最大`max_turns`往復まで繰り返し、最後のターンの本文を回答として返します。
+
+```culebra
+# doctest: skip
+fn weather(city: String) {
+  "{city}: sunny, 18°C"
+}
+let chat = LLM.chat(
+  model: "claude-haiku-5-5",
+  tools: [LLM.tool(weather, "Current weather in a city", city: "a city name")],
+)
+IO.println(chat.ask("What is the weather in Tokyo?"))
+IO.println(chat.ask("And in Osaka?"))
+```
+
+ツールが投げた例外は、エラーの結果（`is_error: true`）としてモデルに返します。
+モデルはそれを見て直したり説明したりできます。Ctrl+C（`Interrupted`）は捕まえません。
+モデルが存在しないツールを名指した場合も同じように答えます。
+
+履歴は増えるだけです。アシスタントのターンは届いたとおりに残します。考えるモデル
+にはこれが必要です（思考ブロックは返すときに検査されます）。失敗した`ask`は自分が
+足したものを取り消すので、会話はAPIが受け付ける形のままです。
+
+### `LLM.tool(f, description, **params) -> LLMTool`
+
+`fn name(...)`で宣言した関数からツールを作ります。関数名がツール名になります。
+モデルに見せるスキーマは、引数の型注釈から作ります:
+
+| 型注釈 | スキーマ |
+|---|---|
+| `String` / `Long` / `Float` / `Bool` / `Object` | `string` / `integer` / `number` / `boolean` / `object` |
+| `Array`、`Array<T>` | 配列（要素は`T`） |
+| `A \| B` | いずれかのメンバー |
+| なし | 任意の値 |
+
+既定値を持つ引数と、型が`Nil`を許す（`T?`）引数は省略可能で、残りは必須です。
+引数の説明は、上の例（`city: "a city name"`）のように引数名で渡します。引数に
+無い名前は`ValueError`です。モデルの引数はキーワード引数として届くので、関数は
+`weather(city: "Tokyo")`の形で呼ばれます。戻り値はモデルに返され、`String`は
+そのまま、それ以外はJSONになります。
+
+`tool.name`、`tool.description`、`tool.input_schema`を読めます。リクエストで
+送られるのは`tool.spec()`です。
+
+### `LLM.request(body, headers=nil, api_key=nil, base_url=nil) -> Object`
+
+リクエスト本文をそのまま`/v1/messages`へ送り、応答をそのまま（JSONを読んだ
+Objectで）返します。`ask`と`chat`が設定しないものを使うためのものです。
+`headers`には、ベータ機能の`anthropic-beta`のように本文に書けないものを渡します。
+
+```culebra
+# doctest: skip
+let res = LLM.request({
+  model: "claude-haiku-5-5",
+  max_tokens: 1000,
+  messages: [{role: "user", content: "Hello"}],
+})
+IO.println(res.content[0].text)
+```
+
+### エラー
+
+| 状況 | エラー |
+|---|---|
+| キーが無い（リクエストの前に確かめる） | `LLMError` |
+| APIが2xx以外のステータスで答えた | `LLMError`: `LLM: 429 rate_limit_error: ...`（ステータス、エラーの種類と説明） |
+| モデルが回答を断った（`stop_reason`が`"refusal"`） | `LLMError` |
+| ツール呼び出しが`max_tokens`で切れた（ツールは実行しない） | `LLMError` |
+| `max_turns`以内に回答が無い | `LLMError` |
+| 通信の失敗（名前解決、接続拒否、TLS） | `Http`と同じく`HttpError` |
+| 引数の型の誤り | `TypeError` |
+
+## 43. 設計上の注記
 
 ### 名前空間ファースト、グローバルは出力の3つだけ
 
@@ -8965,7 +9080,7 @@ run_with(IO, "via parameter")
 
 ---
 
-## 43. 未収録（将来検討）
+## 44. 未収録（将来検討）
 
 ### 重量級データ構造
 

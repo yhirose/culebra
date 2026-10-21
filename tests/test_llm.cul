@@ -1,0 +1,114 @@
+# LLM without a server: the schema a tool is given, and what is refused before
+# any request. The conversation itself is in test_llm_server.cul.
+#
+# This file names only LLM. Under `culebra build` that has to be enough to link
+# what LLM is written over, which the last check below proves.
+
+# What a call raised, as "Kind: message".
+fn failure(thunk) {
+  try {
+    thunk()
+    "no error"
+  } catch e {
+    "{e.kind}: {e.message}"
+  }
+}
+
+# --- a tool's schema comes from its annotations ---------------------------------
+
+fn weather(note, city: String, days: Long = 1, unit: String? = nil, ok: Bool = true) {
+  "{city}: sunny"
+}
+let w = LLM.tool(weather, "the weather in a city", city: "a city name")
+assert_eq(type_of(w), "LLMTool")
+assert_eq([w.name, w.description], ["weather", "the weather in a city"])
+# Unannotated takes any value; a default or `?` makes it optional; a
+# description given by name goes on that parameter.
+assert_eq(JSON.stringify(w.input_schema),
+  '{"type":"object","properties":{"note":{},"city":{"type":"string","description":"a city name"},' +
+  '"days":{"type":"integer"},"unit":{"type":"string"},"ok":{"type":"boolean"}},' +
+  '"required":["note","city"]}')
+# What goes out is everything but the function.
+assert_eq(w.spec().keys(), ["name", "description", "input_schema"])
+
+fn shapes(xs: Array<Long | String>, ratio: Float, o: Object, any: Long | String) {
+  nil
+}
+assert_eq(JSON.stringify(LLM.tool(shapes, "s").input_schema.properties),
+  '{"xs":{"type":"array","items":{"anyOf":[{"type":"integer"},{"type":"string"}]}},' +
+  '"ratio":{"type":"number"},"o":{"type":"object"},' +
+  '"any":{"anyOf":[{"type":"integer"},{"type":"string"}]}}')
+
+# Only a top-level Nil makes a parameter optional; one inside `Array<...>` is
+# what the elements may be.
+fn holes(xs: Array<Long | Nil>, y: Long?) {
+  nil
+}
+assert_eq(LLM.tool(holes, "h").input_schema.required, ["xs"])
+
+# A function of no parameters has nothing required.
+fn now() {
+  "noon"
+}
+assert_eq(JSON.stringify(LLM.tool(now, "the time").input_schema),
+          '{"type":"object","properties":{}}')
+
+# --- refused before any request -----------------------------------------------------
+
+assert_eq(failure(|| LLM.tool(weather, "w", cty: "typo")),
+          "ValueError: LLM.tool: weather has no parameter 'cty'")
+assert_eq(failure(|| LLM.tool(|x| x, "anonymous")),
+          "ValueError: LLM.tool: the function has no name; declare it with `fn name(...)`")
+assert_eq(failure(|| LLM.tool("weather", "w")),
+          "TypeError: type error: parameter 'f' expects Function")
+assert_eq(failure(|| LLM.chat()), "ArityError: missing required argument 'model'")
+assert_eq(failure(|| LLM.chat(model: "m", api_key: "k", tools: [weather])),
+          "TypeError: LLM.chat: tools takes what LLM.tool makes, got Function")
+assert_eq(failure(|| LLM.ask("hi", model: "m", api_key: "")),
+          "LLMError: LLM: no API key: set ANTHROPIC_API_KEY or pass api_key:")
+
+# A wrong argument is the TypeError a typed parameter raises.
+let nowhere = {api_key: "k", base_url: "http://127.0.0.1:1"}
+assert_eq(failure(|| LLM.chat(model: 3, **nowhere)),
+          "TypeError: type error: parameter 'model' expects String")
+assert_eq(failure(|| LLM.chat(model: "m", system: 3, **nowhere)),
+          "TypeError: type error: parameter 'system' expects String | Nil")
+assert_eq(failure(|| LLM.chat(model: "m", max_turns: "9", **nowhere)),
+          "TypeError: type error: parameter 'max_turns' expects Long")
+assert_eq(failure(|| LLM.ask(3, model: "m", **nowhere)),
+          "TypeError: type error: parameter 'prompt' expects String")
+assert_eq(failure(|| LLM.ask("hi", model: "m", on_text: 3, **nowhere)),
+          "TypeError: type error: parameter 'on_text' expects Function | Nil")
+assert_eq(failure(|| LLM.request([], **nowhere)),
+          "TypeError: type error: parameter 'body' expects Object")
+assert_eq(failure(|| LLM.request({}, headers: "x", **nowhere)),
+          "TypeError: type error: parameter 'headers' expects Object | Nil")
+# A slice is taken as the String it reads as.
+assert_eq(LLM.tool(weather, "the weather in a city".slice(0, 11)).description,
+          "the weather")
+
+# The error points at the call into the library, not into it: the same line
+# as an error raised beside it.
+fn line_of(thunk) {
+  try {
+    thunk()
+    0
+  } catch e {
+    e.line
+  }
+}
+let lines = [line_of(|| LLM.ask("hi", model: "m", api_key: "")), line_of(|| [][1])]
+assert_eq(lines[0], lines[1])
+
+# --- a transport failure is the transport's ----------------------------------------
+
+# Nothing listens on port 1. The failure is the connection's, which also says
+# the HTTP runtime is linked into a binary that never named it.
+let refused = try {
+  LLM.ask("hi", model: "m", api_key: "k", base_url: "http://127.0.0.1:1")
+  nil
+} catch e {
+  e
+}
+assert_eq(refused.kind, "HttpError")
+assert_true(!refused.message.contains("not linked"))
