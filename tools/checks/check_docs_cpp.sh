@@ -269,17 +269,8 @@ fi
 # GB, so those take one per 5 GB. On an 8-core 16 GB machine a plain -P nproc
 # swapped and the gate took 208 s where -P 4 takes 60 s, and on a 16 GB one
 # five host builds at once ran it out of memory and a compiler was killed.
-jobs_cpu=$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)
-mem_bytes=$(sysctl -n hw.memsize 2>/dev/null \
-  || echo $(( $(getconf _PHYS_PAGES 2>/dev/null || echo 0) * $(getconf PAGE_SIZE 2>/dev/null || echo 4096) )))
-# Jobs of `$1` bytes each that the RAM holds, at least one and at most a core each.
-jobs_within() {
-  local n=$(( mem_bytes / $1 ))
-  (( n >= 1 )) || n=1
-  (( n < jobs_cpu )) && echo "$n" || echo "$jobs_cpu"
-}
-JOBS="${JOBS:-$(jobs_within 3000000000)}"
-build_jobs=$(jobs_within 5000000000)
+JOBS="${JOBS:-$(misc/jobs_within.sh 3000000000)}"
+build_jobs=$(misc/jobs_within.sh 5000000000)
 (( build_jobs < JOBS )) || build_jobs=$JOBS
 export CXXBIN llvm_inc TMP
 export INCS="${INC[*]}"

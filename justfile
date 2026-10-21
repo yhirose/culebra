@@ -16,6 +16,11 @@ nice_cmd := "nice -n " + env_var_or_default("CULEBRA_NICE", "10")
 # CULEBRA_GATE_LOCK=0 opts out (see misc/one_at_a_time.sh).
 lock_cmd := justfile_directory() / "misc/one_at_a_time.sh"
 
+# Parallel compile jobs for every build recipe: one per 2 GB of RAM, at most
+# one per core (misc/jobs_within.sh says why). CULEBRA_BUILD_JOBS overrides
+# it; CI caps the memory-tight macOS runner that way.
+build_jobs := "${CULEBRA_BUILD_JOBS:-$(" + justfile_directory() / "misc/jobs_within.sh" + " 2000000000)}"
+
 # Compiler for the one tool built outside CMake (tools/gen_grammar_blob.cc).
 blob_cxx := if path_exists("/opt/homebrew/opt/llvm/bin/clang++") == "true" { "/opt/homebrew/opt/llvm/bin/clang++" } else { env_var_or_default("CXX", "c++") }
 
@@ -54,12 +59,9 @@ default:
 build *extra:
     mkdir -p build
     cd build && cmake -DCMAKE_BUILD_TYPE=Release -DCULEBRA_ENABLE_JIT=ON {{extra}} .. > /dev/null
-    # CULEBRA_BUILD_JOBS overrides the parallel job count (defaults to all
-    # cores). CI sets it to cap RAM on the memory-tight macOS runner — an
-    # LLVM-header-heavy TU peaks at ~3 GB, so too many at once swap.
     # make.log keeps the whole output: a parallel failure's own error line
     # sits far above the "Error 2" it ends on.
-    cd build && set -o pipefail && {{lock_cmd}} {{nice_cmd}} make -j${CULEBRA_BUILD_JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 8)} 2>&1 | tee make.log
+    cd build && set -o pipefail && {{lock_cmd}} {{nice_cmd}} make -j{{build_jobs}} 2>&1 | tee make.log
 
 # Fast dev build: LTO off and -O1, still Release + JIT,
 # uses a separate `build-dev/` so it doesn't fight `just build`'s cache.
@@ -74,7 +76,7 @@ build *extra:
 dev *extra:
     mkdir -p build-dev
     cd build-dev && cmake -DCMAKE_BUILD_TYPE=Release -DCULEBRA_ENABLE_JIT=ON -DCULEBRA_LTO=OFF -DCULEBRA_DEV_NO_RT=ON -DCULEBRA_DEV_O1=ON {{extra}} .. > /dev/null
-    cd build-dev && {{nice_cmd}} make -j$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 8) culebra
+    cd build-dev && {{nice_cmd}} make -j{{build_jobs}} culebra
 
 # Gate build for `just test`: Release + JIT like `just build`, but LTO OFF.
 # LTO is a pure link-time optimization — every test phase's output is identical
@@ -88,7 +90,7 @@ dev *extra:
 build-gate *extra:
     mkdir -p build-gate
     cd build-gate && cmake -DCMAKE_BUILD_TYPE=Release -DCULEBRA_ENABLE_JIT=ON -DCULEBRA_LTO=OFF {{extra}} .. > /dev/null
-    cd build-gate && set -o pipefail && {{lock_cmd}} {{nice_cmd}} make -j${CULEBRA_BUILD_JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 8)} 2>&1 | tee make.log
+    cd build-gate && set -o pipefail && {{lock_cmd}} {{nice_cmd}} make -j{{build_jobs}} 2>&1 | tee make.log
 
 # Compile and link separately: ccache passes a combined compile+link command
 # through uncached (`called_for_link`). Keying on the preprocessed source also
@@ -345,7 +347,7 @@ build-no-jit:
     # LTO off: this lane proves the no-LLVM build compiles and links, and
     # a whole-driver relink proves nothing more than the link it already does.
     cd build-no-jit && cmake -DCMAKE_BUILD_TYPE=Release -DCULEBRA_ENABLE_JIT=OFF -DCULEBRA_LTO=OFF .. > /dev/null
-    cd build-no-jit && {{nice_cmd}} make -j$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 8) culebra
+    cd build-no-jit && {{nice_cmd}} make -j{{build_jobs}} culebra
 
 # A link is not the gate here: the point of keeping the VM out of the LLVM
 # guard is that a no-LLVM binary HAS a working engine, and a binary whose one
@@ -392,7 +394,7 @@ test-no-jit: build-no-jit
 build-assert *extra:
     mkdir -p build-assert
     cd build-assert && cmake -DCMAKE_BUILD_TYPE=Release -DCULEBRA_ENABLE_JIT=ON -DCULEBRA_LTO=OFF -DCULEBRA_DEV_NO_RT=ON -DCMAKE_CXX_FLAGS_RELEASE="-O1" {{extra}} .. > /dev/null
-    cd build-assert && {{nice_cmd}} make -j${CULEBRA_BUILD_JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 8)} culebra
+    cd build-assert && {{nice_cmd}} make -j{{build_jobs}} culebra
 
 # The Scene render lane's build. Scene follows the Canvas window's default, so
 # a plain `just build` carries it too; this spells it ON so a
@@ -408,7 +410,7 @@ build-assert *extra:
 build-scene *extra:
     mkdir -p build-scene
     cd build-scene && cmake -DCMAKE_BUILD_TYPE=Release -DCULEBRA_ENABLE_JIT=ON -DCULEBRA_LTO=OFF -DCULEBRA_ENABLE_SCENE=ON {{extra}} .. > /dev/null
-    cd build-scene && {{nice_cmd}} make -j${CULEBRA_BUILD_JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 8)} culebra
+    cd build-scene && {{nice_cmd}} make -j{{build_jobs}} culebra
 
 # Install the Release binary (`just build`) into PREFIX/bin, with sudo only when
 # that directory isn't already writable. PREFIX defaults to /usr/local: on macOS
@@ -448,7 +450,7 @@ coverage-build *extra:
     mkdir -p build-cov
     cd build-cov && cmake -DCMAKE_BUILD_TYPE=Release -DCULEBRA_ENABLE_JIT=ON \
         -DCULEBRA_DEV_NO_RT=ON -DCULEBRA_COVERAGE=ON {{extra}} .. > /dev/null
-    cd build-cov && {{nice_cmd}} make -j${CULEBRA_BUILD_JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 8)} culebra
+    cd build-cov && {{nice_cmd}} make -j{{build_jobs}} culebra
 
 # Which of the surface the two compiled engines share does only the generated
 # corpus reach? Runs the durable suites, then the corpus, on the instrumented
@@ -473,13 +475,12 @@ coverage: coverage-build
 asan:
     #!/usr/bin/env bash
     set -euo pipefail
-    NCPU=$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 8)
     mkdir -p build-asan
     ( cd build-asan && cmake -DCMAKE_BUILD_TYPE=Release -DCULEBRA_ENABLE_JIT=ON \
         -DCULEBRA_LTO=OFF -DCULEBRA_DEV_NO_RT=ON \
         -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer" \
         -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined" .. > /dev/null \
-      && make -j"$NCPU" culebra )
+      && make -j{{build_jobs}} culebra )
     bin=build-asan/culebra
     fail=0
     for f in tests/test_forin_codegen.cul tests/test_value_equality.cul \
