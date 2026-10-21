@@ -231,3 +231,23 @@ assert_true(closes_after(fn (end) {
   srv.listen_async(0)
   srv.close()
 }))
+
+# --- a value a child throws that cannot cross back fails the join with its
+#     SendError, as a result that cannot does, and ends nothing else: it used
+#     to end the whole process from the child's thread ---
+assert_eq(caught(fn () {
+  Isolate.spawn(fn () {
+    throw [println]
+  }).join()
+}), "SendError: a native/builtin function is not Sendable")
+let (thrown_tx, thrown_rx) = Channel.new(1)
+thrown_tx.send(1)
+thrown_tx.drop()
+let thrown_fanned = Channel.fan_in([thrown_rx], fn (x) {
+  throw [println, x]
+})
+assert_eq(caught(fn () {
+  for v in thrown_fanned {
+  }
+  thrown_fanned.join()
+}), "SendError: a native/builtin function is not Sendable")

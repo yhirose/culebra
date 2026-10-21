@@ -966,17 +966,24 @@ inline void run_isolate_child_jit(IsolateCore& core,
     core.error = e;
     core.finished = true;
   } catch (CulebraException& e) {
-    // A raw user `throw <value>` (not a structured error). Serialize the value
-    // so it crosses the isolate boundary; _jit_isolate_settle re-raises it as a
-    // CulebraException on the parent. Mirrors the interp child's `catch (Value&)`.
-    JitValue tv;
-    tv.tag = e.tag;
-    tv.data = e.data;
-    JitSerCtx sc;
-    sendable::SendNode tn = jit_serialize(tv, sc);
+    // A raw user `throw <value>` (not a structured error): the value crosses,
+    // and _jit_isolate_settle re-raises it as a CulebraException on the
+    // parent. One that cannot cross fails the join with its SendError, as a
+    // result that cannot does; the throw is let go either way.
+    std::optional<sendable::SendNode> tn;
+    std::optional<culebra::CulebraError> unsent;
+    try {
+      JitSerCtx sc;
+      tn = jit_serialize({e.tag, e.data}, sc);
+    } catch (culebra::CulebraError& se) {
+      unsent = std::move(se);
+    } catch (std::exception& se) {  // as the handler below reports one
+      unsent = culebra::CulebraError("RuntimeError", se.what());
+    }
     culebra_runtime_consume_throw(e);
     std::lock_guard<std::mutex> lk(core.m);
-    core.thrown = std::move(tn);
+    if (tn) core.thrown = std::move(*tn);
+    else core.error = std::move(*unsent);
     core.finished = true;
   } catch (std::exception& e) {
     std::lock_guard<std::mutex> lk(core.m);
