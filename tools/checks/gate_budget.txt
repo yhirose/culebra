@@ -119,7 +119,10 @@ tests.cul 315
 # value stays one on the other side).
 # 25 since test_send_class.cul (a class crosses, as a value or with an
 # instance whose methods name it, and what cannot says which class it was in).
-tests.isolate 25
+# 26 since test_send_hashed.cul (a rebuild runs no program code: keys keep
+# the hash they were sent with; a file apart, as its classes' JIT compile
+# made test_send_object_facts.cul five times slower).
+tests.isolate 26
 
 # tests/gen_frames/*.cul: the generator probes held to frozen outputs, on both
 # engines in the landing gate and under the collector's axes and `culebra

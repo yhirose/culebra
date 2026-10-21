@@ -2661,7 +2661,11 @@ A violation throws `SendError` at the `spawn` site (never a silent copy):
 | a class, as a copy (its statics included) | a `@packable` class |
 
 What arrives is a copy that reads as the original does: an Object keeps
-its entries in the order it held them, whatever their keys.
+its entries in the order it held them, whatever their keys, and a Set
+member or a key that is no `String` keeps the hash it was stored under.
+Rebuilding the copy runs none of the program's code: no `hash()` or
+`eq()` is called on the receiving side, where the class of a key may
+itself still be arriving.
 
 Because captures are copied, a closure that mutates a captured collection
 mutates **its own copy** — the parent's value is untouched:
@@ -2875,11 +2879,10 @@ for ev in rx.drain(16) { world.apply(ev) }   # at most 16 this frame
 The rest stays queued for the next call. `max` must be a `Long` (a count) or
 `nil` for no limit; a negative value raises `ValueError`.
 
-Taken in one step, a batch also goes as one. A value can fail to rebuild on
-the receiving side (a `Set` member whose `hash()` throws there, its fields
-changed since it was added): `recv()`, `try_recv()` and `for v in rx` throw
-that error with the value taken, and `drain()` throws it with the rest of its
-batch taken too.
+Receiving a value runs none of the program's code (no `hash()` or `eq()`:
+see the Sendable rules in [§12](#12-isolate)), so a value that was sent is
+received as it was held, even a `Set` member whose `hash()` has thrown since
+it was added.
 
 Neither method is available on a `Channel.fan_in` receiver yet; both are only
 on a plain `rx`.

@@ -161,9 +161,9 @@ ptx.drop()
 prx.drop()
 qrx.drop()
 
-# --- a value that fails to rebuild here (a Set member's hash() throws once
-#     its field changed) is taken all the same, as recv() takes it: the
-#     cursor goes on to the next ---
+# --- a Set member whose hash() throws once its field changed arrives as it
+#     was held: the receiving side runs no hash() to rebuild it, and a lookup
+#     by it hashes it again, as on the sending side. The cursor goes on ---
 class HashedByX {
   new(.x) {}
   hash() {
@@ -183,19 +183,24 @@ stx.send('after')
 stx.drop()
 let scursor = srx.iter()
 assert_eq(scursor.has_next(), true)
-assert_throws('HashError', fn () { scursor.next() })
+let hgot = scursor.next()
+assert_eq(hgot.size(), 1)
+assert_throws('HashError', fn () {
+  for m in hgot {
+    hgot.contains(m)
+  }
+})
 assert_eq(scursor.has_next(), true)
 assert_eq(scursor.next(), 'after')
 assert_eq(scursor.has_next(), false)
 srx.drop()
 
-# --- and what was rebuilt of it before the throw goes, whichever way it was
-#     received ---
-let rebuild_fails = fn (receive) {
+# --- and receiving it keeps nothing behind, whichever way it was received ---
+let receives_clean = fn (receive) {
   let (tx, rx) = Channel.new(1)
   let round = fn () {
-    tx.send([[1, 2], hset])  # the Arrays are rebuilt before the Set fails
-    assert_throws('HashError', fn () { receive(rx) })
+    tx.send([[1, 2], hset])
+    receive(rx)
   }
   round()
   let before = GC.stat().rc_objects
@@ -207,21 +212,23 @@ let rebuild_fails = fn (receive) {
   rx.drop()
   grew
 }
-assert_eq(rebuild_fails(|rx| rx.recv()), 0)
-assert_eq(rebuild_fails(|rx| rx.try_recv()), 0)
-assert_eq(rebuild_fails(|rx| rx.drain()), 0)
-assert_eq(rebuild_fails(fn (rx) {
+assert_eq(receives_clean(|rx| rx.recv()), 0)
+assert_eq(receives_clean(|rx| rx.try_recv()), 0)
+assert_eq(receives_clean(|rx| rx.drain()), 0)
+assert_eq(receives_clean(fn (rx) {
   for v in rx {
     return v
   }
 }), 0)
 
-# --- a drain's batch, taken in one step, goes as one ---
+# --- a drain's batch, taken in one step, comes as one ---
 let (btx, brx) = Channel.new(3)
 btx.send('before')
 btx.send(hset)
 btx.send('after')
-assert_throws('HashError', fn () { brx.drain() })
+let batch = brx.drain()
+assert_eq([batch.size(), batch[0], batch[1].size(), batch[2]],
+          [3, 'before', 1, 'after'])
 assert_eq("{brx.try_recv()}", 'ChannelResult.Empty')
 btx.drop()
 brx.drop()
@@ -234,8 +241,8 @@ wtx.send([twice, twice])
 let pair = wrx.recv()
 assert_eq(GC.refcount(pair[0]), GC.refcount(twice) + 1)
 
-# --- even when the first place it was in is gone before the second is
-#     rebuilt: a Set member that comes out equal to an earlier one here ---
+# --- and a Set holding two members its class now calls equal arrives with
+#     both, each under the hash it was stored under, as it was held ---
 class SameByX {
   new(.x, .f) {}
   hash() {
@@ -247,12 +254,12 @@ class SameByX {
 }
 let plus100 = |y| y + 100
 let kept = SameByX(1, nil)
-let dropped = SameByX(2, plus100)  # plus100 is rebuilt here first
-let colliding = Set(kept, dropped)
+let other = SameByX(2, plus100)
+let colliding = Set(kept, other)
 kept.x = 2
 wtx.send([colliding, plus100])
 let after = wrx.recv()
-assert_eq(after[0].size(), 1)
+assert_eq([colliding.size(), after[0].size()], [2, 2])
 assert_eq(after[1](1), 101)
 wtx.drop()
 wrx.drop()

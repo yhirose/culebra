@@ -3874,7 +3874,10 @@ keyのhashは、keyがObjectやSetに入るときに計算して、keyと一緒�
 間はhashが変わらないこと。格納した後は保存したhashを使うので、
 反復・`{...obj}`でのコピー・`==`・表示・Setの演算 (`union` /
 `intersect` / `diff` / `sym_diff` / `subset` / `superset`) は、
-格納済みのkeyの`hash()`を呼ばない。格納中のkeyを書き換えてhashが
+格納済みのkeyの`hash()`を呼ばない。コンテナを別のisolateへ送るときも
+同じで、届いたコンテナは各keyの保存したhashを持ち、受け取る側は組み立て
+直すために`hash()`も`eq()`も呼ばない（[stdlib §12](stdlib.ja.md#12-isolate)）。
+格納中のkeyを書き換えてhashが
 変わった場合、entryは残るので`size()`・`keys()`・`for`には現れる。
 一方、そのkeyで引く (`obj[k]` / `has` / `contains` / `remove`) と
 hashを計算し直すので、見つからない:

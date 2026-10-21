@@ -36,6 +36,9 @@ struct SendNode {
   bool b = false;  // Bool; also Channel role (false = tx, true = rx)
   int64_t i = 0;   // Long; also a Channel word, a BufView's first byte
   double d = 0.0;
+  // A Set member's or a non-String key's: the hash its sender stored it
+  // under, which the receiver stores it under too (JitHashedKey).
+  uint64_t hash = 0;
   // What a node carrying a handle by reference (a Channel end, a SharedBuffer,
   // a Shared tree) holds on it in flight: the count serialize took, given
   // back when the last copy of the node goes, consumed or not. Empty for a

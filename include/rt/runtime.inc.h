@@ -380,8 +380,14 @@ struct JitThreadState {
 
   // The innermost `==` walk open on this thread (JitEqWalk).
   struct JitEqWalk* eq_walk = nullptr;
+
+  // Open while a message's rebuild puts a key in (JitDeCtx::put_member,
+  // conc/sendable.h): key equality then asks no program code.
+  int keys_distinct = 0;
 };
 inline constinit thread_local JitThreadState _jit_thread;
+
+inline bool _jit_keys_distinct() { return _jit_thread.keys_distinct > 0; }
 static_assert(offsetof(JitThreadState, depth) == 0 &&
                   offsetof(JitThreadState, owned) == 8,
               "compiled code GEPs these two fields directly");

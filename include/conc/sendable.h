@@ -155,10 +155,9 @@ struct JitChanIter final : JitHandle {
 // which each later backref names.
 struct JitDeCtx {
   std::map<int, JitValue> rebuilt;  // ref id -> the value
-  // A reference on each until the message is rebuilt: the node that carried
-  // one can go first (a Set member that comes out equal to an earlier one
-  // here) while a later backref still names it. A heap Array, which a
-  // collection reaches from this frame, as it does not a map's nodes.
+  // A reference on each until the message is rebuilt, so a later backref
+  // finds it whatever becomes of the node that carried it. A heap Array,
+  // which a collection reaches from this frame, as it does not a map's nodes.
   JitOwnedVal held{TAG_NIL, 0};
 
   void remember(int id, JitValue v) {
@@ -175,6 +174,35 @@ struct JitDeCtx {
     assert(rebuilt.contains(id) && "a backref ahead of its node");
     return JitOwnedVal::from_borrowed(rebuilt.at(id));
   }
+  // A Set member, and an entry under a key that is no String, put where its
+  // sender held it: under the hash the sender stored the key under
+  // (SendNode::hash), with no hash() run on this side, whose class and
+  // statics may still be mid-rebuild, and no eq() either, as the sender's
+  // keys were apart from each other. Each takes the +1s it is handed.
+  static void put_member(JitSet* s, JitValue m, uint64_t hash) {
+    DistinctKeys distinct;
+    [[maybe_unused]] bool added = _jit_set_insert(
+        s, JitHashedKey::restore(m, static_cast<size_t>(hash)));
+    assert(added && "a member its sender held apart");
+  }
+  static void put_entry(JitObject* o, JitValue key, uint64_t hash,
+                        JitValue val, bool mut) {
+    DistinctKeys distinct;
+    [[maybe_unused]] bool added = _jit_object_set_hashed(
+        o, JitHashedKey::restore(key, static_cast<size_t>(hash)), mut, val, 0,
+        0, /*is_init=*/true);
+    assert(added && "a key its sender held apart");
+  }
+
+ private:
+  // Open while a key is put: two Objects are one key only if they are one
+  // Object (JitValueEq), and no program code runs (_jit_invoke_rooted).
+  struct DistinctKeys {
+    DistinctKeys() { ++_jit_thread.keys_distinct; }
+    ~DistinctKeys() { --_jit_thread.keys_distinct; }
+    DistinctKeys(const DistinctKeys&) = delete;
+    DistinctKeys& operator=(const DistinctKeys&) = delete;
+  };
 };
 
 // The node of a value that holds no other value; false for one that does.
@@ -437,6 +465,7 @@ inline sendable::SendNode _jit_object_node(JitObject* o, JitSerCtx& ctx,
         // other refers back to it.
         auto val = jit_serialize(entry.value, ctx);
         auto key = jit_serialize(k.value(), ctx);
+        key.hash = k.hash();
         n.entries.emplace_back(std::move(key), std::move(val));
         n.entry_mut.push_back(entry.mut);
       });
@@ -470,8 +499,10 @@ inline sendable::SendNode jit_serialize(JitValue v, JitSerCtx& ctx) {
       culebra::ValueWalkFrame walk;
       n.kind = K::Set;
       n.elems.reserve(s->members.size());
-      for (const auto& m : s->members)
+      for (const auto& m : s->members) {
         n.elems.push_back(jit_serialize(m.value(), ctx));
+        n.elems.back().hash = m.hash();
+      }
       ctx.visiting.erase(s);
       return n;
     }
@@ -614,8 +645,10 @@ inline const culebra::PackableField* _jit_field_of_type(
 // The value `n` describes, rebuilt on this Runtime's heap and owned from the
 // moment it exists. A container is owned before its members are rebuilt, and
 // each member goes into it with its +1 (the runtime's adds consume it on every
-// exit), so a rebuild that throws part-way (a Set member's hash(), run again
-// on this side) lets go of everything it built.
+// exit), so a rebuild that throws part-way lets go of everything it built.
+// It runs no program code, as it may meet a class whose meta and statics are
+// still being rebuilt: a Set member or a non-String key goes in under the
+// hash it was sent with, with no eq() asked (JitDeCtx::put_member).
 inline JitOwnedVal jit_deserialize(const sendable::SendNode& n, JitDeCtx& ctx) {
   using K = sendable::SendNode::K;
   if (n.is_backref) return ctx.recall(n.ref_id);
@@ -638,10 +671,14 @@ inline JitOwnedVal jit_deserialize(const sendable::SendNode& n, JitDeCtx& ctx) {
                          reinterpret_cast<int64_t>(_culebra_heap_str(n.s)));
     case K::Array: return fill(culebra_runtime_array_new(), TAG_ARRAY, push);
     case K::Tuple: return fill(culebra_runtime_tuple_new(), TAG_TUPLE, push);
-    case K::Set:
-      return fill(culebra_runtime_set_new(), TAG_SET, [](JitSet* s, JitValue v) {
-        culebra_runtime_set_add(s, v.tag, v.data);
-      });
+    case K::Set: {
+      JitOwnedVal out(TAG_SET,
+                      reinterpret_cast<int64_t>(culebra_runtime_set_new()));
+      auto* s = reinterpret_cast<JitSet*>(out.borrow().data);
+      for (const auto& e : n.elems)
+        JitDeCtx::put_member(s, jit_deserialize(e, ctx).consume(), e.hash);
+      return out;
+    }
     case K::Object: {
       auto* o = culebra_runtime_object_new();
       JitOwnedVal out(TAG_OBJECT, reinterpret_cast<int64_t>(o));
@@ -668,11 +705,11 @@ inline JitOwnedVal jit_deserialize(const sendable::SendNode& n, JitDeCtx& ctx) {
                            mut);
         } else {
           // Non-string key: rebuilt after its value, as it was sent, and
-          // stored via the value-key path (consumes both +1s).
-          JitValue kv = jit_deserialize(n.entries[k].first, ctx).consume();
-          JitValue v = val.consume();
-          culebra_runtime_object_set_any(o, kv.tag, kv.data, mut, v.tag,
-                                         v.data, 0, 0, /*is_init=*/true);
+          // put as the runtime stores a key already hashed, never through
+          // a program's write.
+          const auto& key = n.entries[k].first;
+          JitValue kv = jit_deserialize(key, ctx).consume();
+          JitDeCtx::put_entry(o, kv, key.hash, val.consume(), mut);
         }
       }
       // The link takes a reference of its own on each.
@@ -1200,8 +1237,7 @@ inline void _jit_chan_drain(JitValue* __ret, JitClosure*, int8_t self_tag, int64
   });
   auto taken = end->core ? chan_take_queued(*end->core, max)
                          : std::deque<sendable::SendNode>{};
-  // Taken in one step, the batch goes as one: a value that fails to rebuild
-  // fails the drain, and the values taken with it go with it.
+  // Taken in one step, the batch is rebuilt as one Array.
   { *__ret = jit_deserialize_each(taken).consume(); return; }
 }
 
@@ -1247,7 +1283,7 @@ inline void _jit_chan_iter_next(JitValue* __ret, JitClosure*, int8_t self_tag, i
   auto* it = _jit_self_chan_iter(self);
   JitValue ret{TAG_NIL, 0};
   // Taken before it is rebuilt, as recv() takes it: a rebuild that throws
-  // (a member's hash()) has still consumed the value.
+  // has still consumed the value.
   if (auto node = std::exchange(it->taken, std::nullopt))
     ret = jit_deserialize(*node).consume();
   { *__ret = ret; return; }

@@ -1,0 +1,147 @@
+# A message's rebuild runs no program code: a Set member and a key that is
+# no String go in under the hash their sender stored them under, with no
+# hash() or eq() run on the receiving side, where the key's class, its meta
+# and its statics may still be arriving in the same message. Runs under both
+# engines.
+
+# Every key of a class whose hash() and eq() say so when they run, all hashed
+# alike: none runs on the receiving side, and lookups there find each one.
+let (pc_tx, pc_rx) = Channel.new(64)
+class PCount {
+  new(.x) {}
+  hash() {
+    pc_tx.send('hash')
+    0
+  }
+  eq(o) {
+    pc_tx.send('eq')
+    self.x == o.x
+  }
+}
+let pc_bag = Set(PCount(1), PCount(2), PCount(3))
+let pc_keyed = {}
+pc_keyed[PCount(4)] = 'four'
+pc_keyed[PCount(5)] = 'five'
+pc_rx.drain()
+let pc_sizes = Isolate.spawn(|| [pc_bag.size(), pc_keyed.size()]).join()
+assert_eq([pc_sizes, pc_rx.drain()], [[3, 2], []])
+assert_eq(Isolate.spawn(|| [pc_bag.contains(PCount(2)), pc_keyed[PCount(5)]])
+  .join(), [true, 'five'])
+
+# A method that captures a Set of its own class's instances, which the class
+# arrives with.
+let hs_reg = []
+class HSet {
+  new(.x) {}
+  all() {
+    hs_reg[0]
+  }
+  hash() {
+    self.x
+  }
+  eq(o) {
+    self.x == o.x
+  }
+}
+hs_reg.push(Set(HSet(1), HSet(2)))
+let hs = HSet(5)
+assert_eq(Isolate.spawn(|| [hs.all().size(), hs.all().contains(HSet(2))])
+  .join(), [2, true])
+
+# ... and an Object keyed by one, whose keys keep the order they were in.
+let hk_reg = []
+class HKey {
+  new(.x) {}
+  all() {
+    hk_reg[0]
+  }
+  hash() {
+    self.x
+  }
+  eq(o) {
+    self.x == o.x
+  }
+}
+let hk_map = {a: 1}
+hk_map[HKey(1)] = 'one'
+hk_map['b'] = 2
+hk_map[(1, 2)] = 'pair'
+hk_reg.push(hk_map)
+let hk = HKey(5)
+assert_eq(Isolate.spawn(|| [hk.all()[HKey(1)], hk.all().keys().size(),
+                            hk.all().keys()[2], hk.all().keys()[3]])
+  .join(), ['one', 4, 'b', (1, 2)])
+
+# ... and a hash() reading a static the class stores after the Set it hashes
+# into.
+class HSalt {
+  new(.x) {}
+  hash() {
+    HSalt.salt + self.x
+  }
+  eq(o) {
+    self.x == o.x
+  }
+}
+HSalt.salt = 10
+HSalt.bag = Set(HSalt(1), HSalt(2))
+HSalt.remove('salt')
+HSalt.salt = 10
+let hsalt = HSalt(3)
+assert_eq(Isolate.spawn(|| [hsalt.hash(), HSalt.bag.contains(HSalt(1))])
+  .join(), [13, true])
+
+# ... and a decorated class, whose methods reach it through its binding, so
+# its statics are rebuilt inside its own meta's walk.
+let hd_names = []
+let hd_register = fn (c) {
+  hd_names.push(c.name)
+  c
+}
+@hd_register
+class HDeco {
+  new(.x) {}
+  again() {
+    HDeco(self.x + 1)
+  }
+  hash() {
+    self.x
+  }
+  eq(o) {
+    self.x == o.x
+  }
+}
+HDeco.known = Set(HDeco(1), HDeco(2))
+let hdeco = HDeco(5)
+assert_eq(Isolate.spawn(|| [hdeco.again().x, HDeco.known.contains(HDeco(1))])
+  .join(), [6, true])
+
+# ... and a hash() reading a Set its class captures, in a class a decorator
+# hands back.
+let hc_allowed = Set(1, 2, 3)
+let hc_register = fn (c) {
+  c
+}
+@hc_register
+class HCapt {
+  new(.x) {}
+  all() {
+    HCapt.bag
+  }
+  hash() {
+    if hc_allowed.contains(self.x) {
+      self.x
+    } else {
+      0
+    }
+  }
+  eq(o) {
+    self.x == o.x
+  }
+}
+HCapt.bag = Set(HCapt(1), HCapt(2), HCapt(3))
+let hcapt = HCapt(2)
+assert_eq(Isolate.spawn(|| [hcapt.all().contains(HCapt(1)),
+                            hcapt.all().contains(HCapt(3))]).join(), [true, true])
+
+inspect("test_send_hashed: all assertions passed")

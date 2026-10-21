@@ -152,6 +152,27 @@ zeros[0.0] = "a"
 zeros[-0.0] = "b"
 assert_eq(zeros.size(), 1)
 
+// A Set of a class's instances that one of its own methods captures crosses
+// an isolate: its members keep the hash they were sent with, and none is
+// hashed while the class is still arriving. Here as well as in tests/isolate,
+// which the AOT lane does not run.
+let sent_reg = []
+class Sent {
+  new(.x) {}
+  all() {
+    sent_reg[0]
+  }
+  hash() {
+    self.x
+  }
+  eq(o) {
+    self.x == o.x
+  }
+}
+sent_reg.push(Set(Sent(1), Sent(2)))
+let sent = Sent(5)
+assert_eq(Isolate.spawn(|| sent.all().contains(Sent(2))).join(), true)
+
 // (Cross-flavor Object key unification: String and StringView still
 // land in different slots due to the dual Shape/sidecar Object storage.
 // See `docs/language.md` / project memory `string-stringview` for the

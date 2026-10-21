@@ -356,6 +356,10 @@ struct JitObjectEntry {
   bool mut;
 };
 
+namespace culebra {
+struct JitDeCtx;
+}
+
 // A key with its hash. The hash is computed once, as the key enters a lookup
 // or a container, and a stored key carries it from then on: iterating,
 // copying, comparing and the Set operations reuse it and never hash again
@@ -373,12 +377,14 @@ class JitHashedKey {
  private:
   friend struct JitObject;
   friend struct JitKeySnapshot;
+  friend struct culebra::JitDeCtx;  // a message's rebuild (conc/sendable.h)
   JitHashedKey(JitValue v, size_t h) : value_(v), hash_(h) {}
   // A String key's key_order entry. A String is found by its name, never by
   // a hash, so none is computed.
   static JitHashedKey name(JitValue v) { return JitHashedKey(v, 0); }
   // A hash `of` / `try_of` computed earlier, carried apart from its key by an
-  // iterator's key snapshot.
+  // iterator's key snapshot, or by a message to another Runtime of this
+  // process, whose copy of the key is stored under it as the sender's was.
   static JitHashedKey restore(JitValue v, size_t h) { return JitHashedKey(v, h); }
   JitValue value_;
   size_t hash_;
@@ -1205,8 +1211,11 @@ static constexpr int8_t TAG_NO_SELF = 126;
 // to a live object in unscannable wasm locals is on the stack, so no
 // collection may run beneath this call. Native builds: the guard is a no-op
 // (the machine-stack scan sees helper frames).
+inline bool _jit_keys_distinct();
 inline JitValue _jit_invoke_rooted(JitClosure* fn, JitValue recv,
                                    int64_t n_args, JitValue* args) {
+  // A message's rebuild runs no program code (JitDeCtx::put_member).
+  assert(!_jit_keys_distinct());
   JitValue __ret;
   reinterpret_cast<JitFn>(fn->fn_ptr)(
       &__ret, fn, static_cast<int8_t>(recv.tag), recv.data, n_args, args);
@@ -1567,6 +1576,9 @@ struct JitValueEq {
       }
       case TAG_OBJECT: {
         if (a.data == b.data) return true;
+        // A message's rebuild puts keys its sender held apart, each a fresh
+        // copy: two Objects there are one key only if they are one Object.
+        if (_jit_keys_distinct()) return false;
         auto* oa = reinterpret_cast<JitObject*>(a.data);
         auto* ob = reinterpret_cast<JitObject*>(b.data);
         if (auto e = _jit_object_user_eq(oa, ob)) return *e;

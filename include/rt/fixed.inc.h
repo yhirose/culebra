@@ -625,9 +625,10 @@ inline bool _jit_setindex_first(JitObject* obj, const char* name) {
 }
 
 // The sidecar store for a key already hashed: insert, or overwrite the value
-// of an equal stored key. Consumes the key's +1 and the value's on every exit:
-// on insert the key's +1 becomes the map's, and key_order takes a second.
-inline void _jit_object_set_hashed(JitObject* obj, const JitHashedKey& key,
+// of an equal stored key; whether it inserted. Consumes the key's +1 and the
+// value's on every exit: on insert the key's +1 becomes the map's, and
+// key_order takes a second.
+inline bool _jit_object_set_hashed(JitObject* obj, const JitHashedKey& key,
                                    bool mut, JitValue val, int64_t line,
                                    int64_t col, bool is_init) {
   JitUnwindRelease g{key.value(), val};
@@ -650,7 +651,7 @@ inline void _jit_object_set_hashed(JitObject* obj, const JitHashedKey& key,
   if (inserted) {
     culebra_runtime_value_retain(key.value().tag, key.value().data);
     obj->key_order->push_back(key);
-    return;
+    return true;
   }
   // Object-literal construction (`is_init`) overwrites a duplicate key
   // last-wins like the interp's `initialize`; only a post-construction
@@ -661,6 +662,7 @@ inline void _jit_object_set_hashed(JitObject* obj, const JitHashedKey& key,
   if (is_init) it->second.mut = mut;
   _jit_replace_value(it->second.value, val.tag, val.data);
   _culebra_value_release_impl(key.value().tag, key.value().data);
+  return false;
 }
 
 // Hashable-key access into an Object. String keys unify with the

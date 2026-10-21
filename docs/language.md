@@ -4143,7 +4143,10 @@ stored with it. That puts two promises on a key's class: keys equal by
 it is stored. From then on the container works from the stored hash —
 iterating, copying with `{...obj}`, `==`, display and the Set
 operations (`union`, `intersect`, `diff`, `sym_diff`, `subset`,
-`superset`) never call `hash()` on a stored key. A key changed while
+`superset`) never call `hash()` on a stored key. Neither does sending
+the container to another isolate: what arrives keeps each key's stored
+hash, and the receiving side calls no `hash()` or `eq()` to rebuild it
+([stdlib §12](stdlib.md#12-isolate)). A key changed while
 stored, so that its hash changes, keeps its entry: `size()`, `keys()`
 and `for` still see it. A lookup with that key (`obj[k]`, `has`,
 `contains`, `remove`) hashes it again, and no longer finds it:
