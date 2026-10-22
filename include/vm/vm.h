@@ -543,11 +543,12 @@ enum class Op : uint8_t {
                // (run_field_init; both borrowed). Emitted at the top of a
                // `new` body, after parameter binding — interp's timing, so
                // an arity error fires with no field side effects.
-  SelfMerge,   // regs[a] = the frame's `self`: the ABI receiver when the
-               // call supplied one, else the value in the captured cell
-               // regs[b] (rt::self_merge, +1 either way). Only a frame that
-               // captured an enclosing `self` emits it — a method's own
-               // receiver arrives through the chunk's self_slot.
+  SelfMerge,   // regs[a] = the frame's `self`: the ABI receiver regs[b]
+               // when the call supplied one, else the value in the captured
+               // cell regs[c] (rt::self_merge, +1 either way; regs[b] keeps
+               // its own). Only a frame that captured an enclosing `self`
+               // emits it — a method's own receiver arrives through the
+               // chunk's self_slot.
   TraitReset,  // drop every registered default of trait consts[a]
                // (culebra_runtime_trait_defaults_reset). First instruction
                // of a trait declaration, so a re-declaration that drops a
@@ -2783,7 +2784,9 @@ struct Chunk {
   // does the same with the class object it is called on). A frame that
   // captured an enclosing `self` also takes the slot, but raw: SelfMerge
   // needs to see the NO_SELF sentinel to know a plain call from a receiver
-  // call, so the prologue skips the nil rewrite there.
+  // call, so the prologue skips the nil rewrite there. Either way the slot
+  // holds what the call delivered for the whole frame: a promotion to a
+  // cell and a SelfMerge take copies, never the slot's own +1.
   int32_t self_slot = -1;
   bool self_raw = false;
   // A getter body (`get x() { … }`): a bare `obj.x` read invokes a closure
@@ -5268,14 +5271,6 @@ class Compiler {
   // What the enclosing class declares about its fields, for a member's own
   // `self.x` reads (MemberOpts::owner_fields).
   const culebra::ClassFieldTypes* self_fields_ = nullptr;
-  // The register the declared-field stores write the instance through: the
-  // ABI receiver slot, unless a closure in the frame captured `self` and
-  // the prologue moved it into a cell (draining that slot), in which case a
-  // slot holding the cell's value (compile_fn_chunk_impl).
-  int32_t field_recv_ = -1;
-  int32_t field_recv() const {
-    return field_recv_ >= 0 ? field_recv_ : chunk_.self_slot;
-  }
   const culebra::ClassFieldClasses* self_field_classes_ = nullptr;
   // The Generic parameters this chunk's annotations may name
   // (FnAnalysis::type_params), or null for none.
@@ -6335,7 +6330,7 @@ class Compiler {
           skip = emit(Op::Jump);  // left out: the zero already laid out
           patch_to_here(filled);
         }
-        emit(Op::ObjectSet, field_recv(), v,
+        emit(Op::ObjectSet, chunk_.self_slot, v,
              kconst_str(std::string(culebra::view_method(*f).name)),
              /*mut=*/1);
         if (pf->optional) patch_to_here(skip);
@@ -6370,7 +6365,7 @@ class Compiler {
       if (field_check(field_annotation(mv.type_annotation)).first !=
           culebra::FieldType::Any)
         emit_declared_field_layout({f});
-      emit(Op::ObjectSet, field_recv(), v, kconst_str(std::string(mv.name)),
+      emit(Op::ObjectSet, chunk_.self_slot, v, kconst_str(std::string(mv.name)),
            /*mut=*/1);
       if (pf->second.optional) patch_to_here(done);
     }
@@ -6394,7 +6389,7 @@ class Compiler {
     if (field_check(field_annotation(mv.type_annotation)).first !=
         culebra::FieldType::Any)
       emit_declared_field_layout({&f});
-    emit(Op::ObjectSet, field_recv(), v, kconst_str(std::string(mv.name)),
+    emit(Op::ObjectSet, chunk_.self_slot, v, kconst_str(std::string(mv.name)),
          /*mut=*/1);
     forget_temp(v);  // ObjectSet absorbed the +1
   }
@@ -6421,7 +6416,7 @@ class Compiler {
     }
     auto idx = static_cast<int32_t>(chunk_.field_layout_specs.size());
     chunk_.field_layout_specs.push_back(std::move(spec));
-    emit(Op::FieldsInit, field_recv(), idx);
+    emit(Op::FieldsInit, chunk_.self_slot, idx);
   }
 
   // A declared field's annotation as its zero and its check read it: as a
@@ -8854,9 +8849,7 @@ class Compiler {
     fc.chunk_.capture_src_slots = std::move(caps.slots);
     for (size_t i = 0; i < caps.muts.size() && i < info.free_vars.size(); ++i)
       if (caps.muts[i]) fc.chunk_.mut_capture_names.push_back(info.free_vars[i]);
-    // Params occupy the ABI slots [0, arity). A captured param moves into a
-    // fresh cell right after; the ABI slot stays behind as an anonymous
-    // drained slot.
+    // A captured receiver gets a cell of its own, copied from self_slot.
     struct CellPromo {
       std::string name;
       int32_t abi_slot;
@@ -9092,8 +9085,7 @@ class Compiler {
     // escaped-past-its-owner corners read as the undeclared name's
     // NameError; a literal's is the closure the prologue already put in
     // fn_slot. Each becomes a cell when a nested closure captures it, like
-    // any local's. Ahead of the promotions below, which move a captured
-    // `self` out of the receiver slot the class member's read wants.
+    // any local's.
     if (own_name_live) {
       using Src = FuncInfo::OwnNameSource;
       bool captured = info.captured_locals.contains(info.own_name);
@@ -9166,9 +9158,12 @@ class Compiler {
         ob->declaration_compiled = true;
       }
     }
+    // The cell takes a copy: self_slot keeps the receiver the call
+    // delivered for the whole frame, which is what the `fn` handle, a direct
+    // `fn(...)`, and the field stores read.
     for (const auto& pr : promos) {
       int32_t cslot = fc.alloc_cell_slot(*pr.at, pr.name);
-      fc.emit(Op::CellNew, cslot, pr.abi_slot);
+      fc.store_new_cell(*pr.at, cslot, {pr.abi_slot, /*owned=*/false});
       fc.push_unnamed_binding({pr.name, cslot, pr.is_mut, true});
     }
     // Bind the captures: borrowed cell pointers out of the closure. The
@@ -9382,15 +9377,6 @@ class Compiler {
       provided[pl.name] = {b->slot, b->is_cell, pl.optional};
       if (pl.optional) optional_fields.push_back(&pl);
     }
-    // A `self` some closure in this frame captures was moved into a cell
-    // above, leaving the ABI receiver slot drained: the field stores reach
-    // the instance through the cell's value instead.
-    if (mo.field_init_owner || mo.prologue_fields || mo.thunk_fields) {
-      if (const Binding* sb = fc.lookup_name("self"); sb && sb->is_cell) {
-        fc.field_recv_ = fc.alloc_slot(ast, "(self.fields)");
-        fc.emit(Op::CellGet, fc.field_recv_, sb->slot);
-      }
-    }
     // A `new` body runs the class's field initializers here — after the
     // parameters bound, before the first body statement (interp's
     // init_instance_fields timing: an arity error leaves no field behind).
@@ -9406,7 +9392,7 @@ class Compiler {
         // value per thunk parameter — the argument where this `new` has
         // one, the unfilled sentinel where it does not.
         int32_t base = fc.next_slot_;
-        fc.owned_src(ast, {fc.field_recv(), /*owned=*/false});
+        fc.owned_src(ast, {fc.chunk_.self_slot, /*owned=*/false});
         for (const auto& n : *mo.finit_params) {
           auto it = provided.find(n);
           if (it != provided.end()) {
@@ -9420,7 +9406,7 @@ class Compiler {
         fc.emit(Op::CallM, r, t, base,
                 static_cast<int32_t>(mo.finit_params->size()));
       } else {
-        fc.emit(Op::FieldInit, t, fc.field_recv());
+        fc.emit(Op::FieldInit, t, fc.chunk_.self_slot);
       }
     } else if (mo.prologue_fields) {
       // The same stores, in this frame instead of a thunk's. A declaration
@@ -9437,7 +9423,7 @@ class Compiler {
       TempScope fts(fc);
       size_t filled = fc.emit(Op::JumpIfFilled, fc.lazy_probe(*pl->at, *b));
       int32_t v = fc.alloc_temp(*pl->at);
-      fc.emit(Op::PropVal, v, fc.field_recv(), fc.kconst_str(pl->name),
+      fc.emit(Op::PropVal, v, fc.chunk_.self_slot, fc.kconst_str(pl->name),
               fc.self_field_read_tag(pl->name));
       fc.store_binding(*pl->at, *b, {v, true});
       fc.patch_to_here(filled);
@@ -18170,12 +18156,10 @@ struct Exec {
       L_SelfMerge:
         do {
           [[maybe_unused]] const Insn& in = *ip;
-          // A receiver's +1 transfers straight through, so the raw slot is
-          // emptied rather than released; with none it holds the sentinel.
-          JitValue abi = regs[in.b];
-          regs[in.b] = JitValue{TAG_NIL, 0};
+          // The raw slot keeps what the call delivered (a receiver, or the
+          // sentinel); the merge is a +1 of its own.
           regs[in.a] = culebra_runtime_self_merge(
-              static_cast<int8_t>(abi.tag), abi.data,
+              static_cast<int8_t>(regs[in.b].tag), regs[in.b].data,
               reinterpret_cast<JitCell*>(regs[in.c].data));
           ++ip;
           break;

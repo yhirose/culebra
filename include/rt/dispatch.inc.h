@@ -2130,7 +2130,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_bind_method_value(
 }
 
 // Value-read of the `fn` recursion handle (see compile_identifier). With a
-// receiver (or lexical fallback) in `self`, the handle is the bound wrapper
+// receiver the call delivered (the ABI slot, never a lexical fallback a
+// SelfMerge supplied), the handle is the bound wrapper
 // — interp parity: a method call's `fn` IS the wrapper, so recursion and
 // escapees keep the original receiver, and a later dynamic receiver does
 // NOT override it (the thunk ignores the incoming self). Cached per frame
@@ -2152,14 +2153,15 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_fn_handle(
 }
 
 // Frame-prologue lexical merge for `self` (see compile_fn_common): a
-// dynamic receiver wins (its +1 transfers straight through); with none,
-// fall back to the captured enclosing frame's self cell, minting the
-// slot's +1 here. NO_SELF in both means the frame keeps the sentinel and
-// a read raises the interp's NameError via the read guard.
+// dynamic receiver wins; with none, fall back to the captured enclosing
+// frame's self cell. The result is a +1 of its own either way — the ABI
+// slot keeps the receiver the call delivered (Chunk::self_slot). NO_SELF in
+// both means the frame keeps the sentinel and a read raises the interp's
+// NameError via the read guard.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_self_merge(
     int8_t self_tag, int64_t self_data, JitCell* lex_cell) {
-  if (self_tag != TAG_NO_SELF) return {self_tag, self_data};
-  JitValue v = lex_cell->value;
+  JitValue v = self_tag != TAG_NO_SELF ? JitValue{self_tag, self_data}
+                                       : lex_cell->value;
   culebra_runtime_value_retain(v.tag, v.data);
   return v;
 }

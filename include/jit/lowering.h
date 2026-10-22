@@ -4663,8 +4663,7 @@ struct Lowering {
           break;
         }
         case Op::SelfMerge: {
-          auto abi = load_slot(in.b);
-          b.CreateStore(j.make_nil(), slots[in.b]);  // the +1 transfers
+          auto abi = load_slot(in.b);  // kept: the merge is a +1 of its own
           auto merged = j.emit_value_call(
               j.module_->getOrInsertFunction(rt::self_merge, j.valueType_,
                                              b.getInt8Ty(), i64Ty, ptrTy),

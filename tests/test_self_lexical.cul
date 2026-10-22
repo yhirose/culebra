@@ -181,6 +181,59 @@ let other = {n: 100, h: rm}
 assert_eq(other.h(1), 5)
 assert_eq(rm(1), 5)
 
+// --- the handle where a closure captures `self` -----------------------------
+// The handle and a direct `fn(...)` see the receiver the call delivered:
+// also in a method a closure takes `self` from, and in that closure.
+class RCap {
+  new(.v) {}
+  recurse(k) {
+    let g = || self.v
+    if k == 0 { return g() }
+    fn(k - 1)
+  }
+  recurse_by_value(k) {
+    let g = || self.v
+    if k == 0 { return g() }
+    let me = fn
+    me(k - 1)
+  }
+  inner_recurse() {
+    let g = fn (k) { if k == 0 { self.v } else { fn(k - 1) } }
+    g(2)
+  }
+  inner_by_value() {
+    let g = fn (k) {
+      if k == 0 { return self.v }
+      let me = fn
+      me(k - 1)
+    }
+    g(2)
+  }
+  recursing_closure() {
+    fn (k) { if k == 0 { self.v } else { fn(k - 1) } }
+  }
+  inner_handle() {
+    let g = fn () {
+      let s = self
+      fn
+    }
+    g() == g
+  }
+}
+let rcap = RCap.new(7)
+assert_eq(rcap.recurse(2), 7)
+assert_eq(rcap.recurse_by_value(2), 7)
+assert_eq(rcap.inner_recurse(), 7)
+assert_eq(rcap.inner_by_value(), 7)
+assert_true(rcap.inner_handle())
+// Called with a receiver of its own, that closure re-passes it, and the
+// frame keeps no reference to it.
+let rcap_host = {v: 20, h: rcap.recursing_closure()}
+assert_eq(rcap_host.h(2), 20)
+let rcap_refs = GC.refcount(rcap_host)
+rcap_host.h(2)
+assert_eq(GC.refcount(rcap_host) - rcap_refs, 0)
+
 // --- bound-method value reads (own slot / static / ctor) --------------------
 class K {
   new(v) {
