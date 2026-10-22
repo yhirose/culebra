@@ -14888,10 +14888,13 @@ class Compiler {
         // The exception is a session that already holds a `self`: only a
         // debugger builds one, and it does so from a paused method frame,
         // where `self` is exactly the receiver that frame is running on.
-        if (ast.token == "self" && !session_declared("self")) {
+        // `fn` is the same: every function binds it, so unresolved it is a
+        // read outside any function.
+        if ((ast.token == "self" || ast.token == "fn") &&
+            !session_declared(ast.token)) {
           int32_t t = alloc_temp(ast);
           emit(Op::LoadConst, t, kconst({TAG_NO_SELF, 0}));
-          emit(Op::UnboundErr, t, kconst_str("self"));
+          emit(Op::UnboundErr, t, kconst_str(ast.token));
           return {t, true};
         }
         // A REPL line's unresolved names belong to the session, and its cell

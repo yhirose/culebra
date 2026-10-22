@@ -950,3 +950,14 @@ let r_shared_first = try {
   e
 }
 assert_eq(r_shared_first.kind, 'ImmutableError')
+
+# --- `fn` outside any function ---
+# The NameError of the read, where it stands, as `self` is.
+let r_topfn = try {
+  let _ = [1,
+    fn]
+  nil
+} catch e {
+  [e.kind, e.message, e.line, e.col]
+}
+assert_eq(r_topfn, ['NameError', "undefined variable 'fn'", 958, 5])
