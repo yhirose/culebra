@@ -1,0 +1,69 @@
+// Audio.stft and Audio.istft: a sound's frames of bins as they are, and the
+// sound those frames stand for.
+let rate = 44100
+Random.seed(5)
+let noise = iota(3000).map(|_| Random.uniform(-0.5, 0.5))
+
+// The frames Audio.spectrum takes the magnitudes of: as many, size / 2 + 1
+// bins each, the same magnitudes.
+let s = Audio.stft(noise, size: 512, hop: 128)
+let mags = Audio.spectrum(noise, size: 512, hop: 128)
+assert_eq((s.re.size(), s.im.size(), s.re[0].size()), (mags.size(), mags.size(), 257))
+assert_true(iota(mags.size()).all(|t| iota(257).all(|k| Math.abs(Math.sqrt(s.re[t][k] ** 2 + s.im[t][k] ** 2) - mags[t][k]) < 1e-9)))
+assert_eq(Audio.stft(noise).re.size(), Audio.spectrum(noise).size())
+
+// The frames of a sound give it back: (frames - 1) * hop + size samples, the
+// sound's own where a window reaches (all but the first, where the window is
+// 0), 0 past its end.
+for hop in [64, 128, 256] {
+  let f = Audio.stft(noise, size: 512, hop: hop)
+  let back = Audio.istft(f.re, f.im, size: 512, hop: hop)
+  assert_eq(back.size(), (f.re.size() - 1) * hop + 512)
+  assert_eq(back[0], 0.0)
+  assert_true(iota(1, 3000).all(|i| Math.abs(back[i] - noise[i]) < 1e-12))
+  assert_true(back.slice(3000, back.size()).all(|v| Math.abs(v) < 1e-12))
+}
+
+// As numpy's irfft, the 0th and the last bin's imaginary parts are not read.
+let bent = s.im.map(|row| [5.0, ...row.slice(1, 256), -3.0])
+assert_eq(Audio.istft(s.re, bent, size: 512, hop: 128), Audio.istft(s.re, s.im, size: 512, hop: 128))
+
+// A Hilbert transform on the frames: each bin turned a quarter turn back
+// (-i), the 0th and last emptied. A cosine comes back a sine.
+let freq = 40 * rate / 1024.0
+let cosine = iota(8192).map(|i| Math.cos(2.0 * Math.pi * freq * i / rate))
+let c = Audio.stft(cosine, size: 1024, hop: 256)
+let last = 512
+let turned_re = c.im.map(|row| iota(513).map(|k| k == 0 || k == last ? 0.0 : row[k]))
+let turned_im = c.re.map(|row| iota(513).map(|k| k == 0 || k == last ? 0.0 : -row[k]))
+let sine = Audio.istft(turned_re, turned_im, size: 1024, hop: 256)
+assert_true(iota(1024, 7168).all(|i| Math.abs(sine[i] - Math.sin(2.0 * Math.pi * freq * i / rate)) < 1e-9))
+
+assert_eq(Audio.stft([]), {re: [], im: []})
+assert_eq(Audio.istft([], []), [])
+assert_throws("TypeError", fn () {
+  Audio.stft(["0.5"])
+})
+assert_throws("TypeError", fn () {
+  Audio.istft([[0.0, 0.0]], [0.0], size: 2, hop: 1)
+})
+assert_throws("TypeError", fn () {
+  Audio.istft([[0.0, "0"]], [[0.0, 0.0]], size: 2, hop: 1)
+})
+for (size, hop) in [(3, 1), (1, 1), (2 ** 25, 1), (4, 0)] {
+  assert_throws("ValueError", fn () {
+    Audio.stft([0.0], size, hop)
+  })
+  assert_throws("ValueError", fn () {
+    Audio.istft([], [], size, hop)
+  })
+}
+// A frame of the wrong length, or re and im with different numbers of frames.
+assert_throws("ValueError", fn () {
+  Audio.istft([[0.0, 0.0]], [[0.0, 0.0]], size: 4, hop: 1)
+})
+assert_throws("ValueError", fn () {
+  Audio.istft([[0.0, 0.0, 0.0]], [], size: 4, hop: 1)
+})
+
+print("audio stft ok\n")

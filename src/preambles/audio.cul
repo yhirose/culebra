@@ -519,6 +519,18 @@ let _audio_module = fn () {
     spectrum: fn (samples: Array, size: Long = 2048, hop: Long = 512) {
       _Audio.spectrum(samples, size, hop)
     },
+    # The same frames' bins as they are: {re, im}, re[t][k] and im[t][k]
+    # bin k's real and imaginary parts.
+    stft: fn (samples: Array, size: Long = 2048, hop: Long = 512) {
+      let read = _Audio.stft(samples, size, hop)
+      {re: read[0], im: read[1]}
+    },
+    # The samples frames of bins stand for, as Audio.stft answers them: each
+    # frame's inverse through the window, overlap-added and divided by the
+    # window's squares there.
+    istft: fn (re: Array, im: Array, size: Long = 2048, hop: Long = 512) {
+      _Audio.istft(re, im, size, hop)
+    },
     # `samples` taken `from` times a second, as they are taken `to` times.
     resample: fn (samples: Array, from: Long | Float, to: Long | Float) {
       _Audio.resample(samples, from, to)

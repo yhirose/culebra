@@ -5386,15 +5386,25 @@ inline JitValue _ns_audio_decode(JitValue* a, int64_t) {
   }
   return _ns_adapt::v_array(r);
 }
+// The checks Audio.spectrum, Audio.stft and Audio.istft share: `size` a power
+// of 2 from 2 to 2^24 and `hop` 1 or more.
+inline void _ns_audio_frame_args(int64_t size, int64_t hop, const char* who) {
+  if (!(size >= 2 && size <= (1 << 24) && std::has_single_bit(static_cast<uint64_t>(size)))) {
+    auto message = culebra::format("{}: the size is a power of 2 from 2 to 2^24", who);
+    _ns_audio_fail(message.c_str());
+  }
+  if (!(hop >= 1)) {
+    auto message = culebra::format("{}: the hop is 1 or more", who);
+    _ns_audio_fail(message.c_str());
+  }
+}
 inline JitValue _ns_audio_spectrum(JitValue* a, int64_t) {
   namespace ad = culebra::_audio_detail;
   std::vector<double> xs;
   _ns_audio_numbers(a[0], xs, ad::kSamplesError);
   int64_t size = _ns_adapt::take_long(a[1]);
   int64_t hop = _ns_adapt::take_long(a[2]);
-  if (!(size >= 2 && size <= (1 << 24) && std::has_single_bit(static_cast<uint64_t>(size))))
-    _ns_audio_fail("Audio.spectrum: the size is a power of 2 from 2 to 2^24");
-  if (!(hop >= 1)) _ns_audio_fail("Audio.spectrum: the hop is 1 or more");
+  _ns_audio_frame_args(size, hop, "Audio.spectrum");
   ad::Spectrum spectrum(static_cast<size_t>(size));
   std::vector<double> row(spectrum.bins());
   const size_t frames = ad::Spectrum::frames(xs.size(), static_cast<size_t>(hop));
@@ -5405,6 +5415,65 @@ inline JitValue _ns_audio_spectrum(JitValue* a, int64_t) {
     culebra_runtime_array_push(r, TAG_ARRAY, reinterpret_cast<int64_t>(mags));
   }
   return _ns_adapt::v_array(r);
+}
+// [re, im], each frame's bins (as Audio.spectrum frames them) a row.
+inline JitValue _ns_audio_stft(JitValue* a, int64_t) {
+  namespace ad = culebra::_audio_detail;
+  std::vector<double> xs;
+  _ns_audio_numbers(a[0], xs, ad::kSamplesError);
+  int64_t size = _ns_adapt::take_long(a[1]);
+  int64_t hop = _ns_adapt::take_long(a[2]);
+  _ns_audio_frame_args(size, hop, "Audio.stft");
+  ad::Spectrum spectrum(static_cast<size_t>(size));
+  std::vector<double> re(spectrum.bins()), im(spectrum.bins());
+  const size_t frames = ad::Spectrum::frames(xs.size(), static_cast<size_t>(hop));
+  auto* res = _jit_array_new_reserved(static_cast<int64_t>(frames), "Audio.stft() result");
+  auto* ims = _jit_array_new_reserved(static_cast<int64_t>(frames), "Audio.stft() result");
+  for (size_t f = 0; f < frames; f++) {
+    spectrum.complex_frame(xs.data(), xs.size(), f * static_cast<size_t>(hop), re.data(), im.data());
+    culebra_runtime_array_push(res, TAG_ARRAY,
+                               reinterpret_cast<int64_t>(_ns_audio_floats(re.data(), re.size(), "Audio.stft() result")));
+    culebra_runtime_array_push(ims, TAG_ARRAY,
+                               reinterpret_cast<int64_t>(_ns_audio_floats(im.data(), im.size(), "Audio.stft() result")));
+  }
+  auto* r = _jit_array_new_reserved(2, "Audio.stft() result");
+  culebra_runtime_array_push(r, TAG_ARRAY, reinterpret_cast<int64_t>(res));
+  culebra_runtime_array_push(r, TAG_ARRAY, reinterpret_cast<int64_t>(ims));
+  return _ns_adapt::v_array(r);
+}
+// The samples frames of bins `re` and `im` (as Audio.stft answers them)
+// stand for.
+inline JitValue _ns_audio_istft(JitValue* a, int64_t) {
+  namespace ad = culebra::_audio_detail;
+  int64_t size = _ns_adapt::take_long(a[2]);
+  int64_t hop = _ns_adapt::take_long(a[3]);
+  _ns_audio_frame_args(size, hop, "Audio.istft");
+  const size_t bins = static_cast<size_t>(size) / 2 + 1;
+  // Each frame a row of `bins` numbers, the rows read whole into `flat`.
+  auto rows = [&](JitValue v, const char* param, std::vector<double>& flat) {
+    auto* xs = _ns_adapt::take_array(v);
+    auto error = culebra::format("type error: parameter '{}' expects an Array of Arrays of Long|Float", param);
+    std::vector<double> row;
+    flat.clear();
+    for (size_t t = 0; xs && t < xs->size; t++) {
+      if (xs->items[t].tag != TAG_ARRAY) culebra::throw_runtime_error_at("TypeError", error.c_str(), 0, 0);
+      _ns_audio_numbers(xs->items[t], row, error.c_str());
+      if (row.size() != bins) {
+        auto message = culebra::format("Audio.istft: a frame holds size / 2 + 1 ({}) bins, not {}", bins, row.size());
+        _ns_audio_fail(message.c_str());
+      }
+      flat.insert(flat.end(), row.begin(), row.end());
+    }
+    return xs ? xs->size : 0;
+  };
+  std::vector<double> re, im;
+  const size_t frames = rows(a[0], "re", re);
+  if (rows(a[1], "im", im) != frames) _ns_audio_fail("Audio.istft: re and im hold as many frames");
+  std::vector<double> out;
+  culebra::alloc_or_too_large("Audio.istft: the samples", 0, 0, [&] {
+    out = ad::inverse_spectrum(re, im, frames, static_cast<size_t>(size), static_cast<size_t>(hop));
+  });
+  return _ns_adapt::v_array(_ns_audio_floats(out.data(), out.size(), "Audio.istft() result"));
 }
 inline JitValue _ns_audio_resample(JitValue* a, int64_t) {
   namespace ad = culebra::_audio_detail;
@@ -11170,6 +11239,8 @@ inline const NsMethod kNsRows_Audio_native[] = {
   {"_Audio", "integrated_loudness", 2, &_ns_audio_integrated_loudness},
   {"_Audio", "decode",         1, &_ns_audio_decode},
   {"_Audio", "spectrum",       3, &_ns_audio_spectrum},
+  {"_Audio", "stft",           3, &_ns_audio_stft},
+  {"_Audio", "istft",          4, &_ns_audio_istft},
   {"_Audio", "resample",       3, &_ns_audio_resample},
   {"_Audio", "pitch",          4, &_ns_audio_pitch},
   {"_Audio", "harmonics",      4, &_ns_audio_harmonics},

@@ -743,17 +743,63 @@ class Spectrum {
   // The frame of `x` (`n` long) from `start`, those past the end taken as 0,
   // into `out` (bins() long).
   void frame(const double* x, size_t n, size_t start, double* out) {
-    for (size_t i = 0; i < fft_.size(); i++)
-      a_[fft_.order(i)] = start + i < n ? x[start + i] * window_[i] : 0.0;
-    fft_.transform(a_.data());
+    transform(x, n, start);
     for (size_t k = 0; k < bins(); k++) out[k] = std::sqrt(std::norm(a_[k]));
+  }
+  // The same frame's bins as they are, real and imaginary parts.
+  void complex_frame(const double* x, size_t n, size_t start, double* re, double* im) {
+    transform(x, n, start);
+    for (size_t k = 0; k < bins(); k++) re[k] = a_[k].real(), im[k] = a_[k].imag();
+  }
+  // The samples a frame's bins (`re`, `im`, bins() each) stand for, through
+  // the window again, added into `out` from `start`, and the window's square
+  // into `weight` (numpy's irfft: the 0th and the last bin's imaginary parts
+  // are not read).
+  void add_inverse(const double* re, const double* im, size_t start, double* out, double* weight) {
+    const size_t n = fft_.size(), last = bins() - 1;
+    for (size_t k = 0; k < n; k++) {
+      std::complex<double> v;
+      if (k == 0 || k == last) v = re[k];
+      else if (k < last) v = {re[k], im[k]};
+      else v = {re[n - k], -im[n - k]};
+      a_[fft_.order(k)] = std::conj(v);  // the inverse as the conjugate of the transform of the conjugate
+    }
+    fft_.transform(a_.data());
+    for (size_t i = 0; i < n; i++) {
+      out[start + i] += a_[i].real() / static_cast<double>(n) * window_[i];
+      weight[start + i] += window_[i] * window_[i];
+    }
   }
 
  private:
+  void transform(const double* x, size_t n, size_t start) {
+    for (size_t i = 0; i < fft_.size(); i++)
+      a_[fft_.order(i)] = start + i < n ? x[start + i] * window_[i] : 0.0;
+    fft_.transform(a_.data());
+  }
+
   Fft fft_;
   std::vector<double> window_;
   std::vector<std::complex<double>> a_;
 };
+
+// The samples `frames` frames of bins stand for (`re` and `im` a frame's
+// bins after another, as Spectrum::complex_frame gives them, frame t from
+// t * hop): each frame's inverse through the window, added together and
+// divided by the window's squares there, so that the frames of a sound give
+// that sound back. (frames - 1) * hop + size samples; 0 where no window
+// reaches.
+inline std::vector<double> inverse_spectrum(const std::vector<double>& re, const std::vector<double>& im,
+                                            size_t frames, size_t size, size_t hop) {
+  Spectrum spectrum(size);
+  const size_t bins = spectrum.bins();
+  const size_t n = frames == 0 ? 0 : (frames - 1) * hop + size;
+  std::vector<double> out(n, 0.0), weight(n, 0.0);
+  for (size_t t = 0; t < frames; t++)
+    spectrum.add_inverse(re.data() + t * bins, im.data() + t * bins, t * hop, out.data(), weight.data());
+  for (size_t i = 0; i < n; i++) out[i] = weight[i] > 1e-30 ? out[i] / weight[i] : 0.0;
+  return out;
+}
 
 // I0, the Kaiser window's Bessel function, by its series (std::cyl_bessel_i
 // is not in every standard library).
