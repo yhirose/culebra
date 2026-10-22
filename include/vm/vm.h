@@ -9163,7 +9163,12 @@ class Compiler {
     // `fn(...)`, and the field stores read.
     for (const auto& pr : promos) {
       int32_t cslot = fc.alloc_cell_slot(*pr.at, pr.name);
-      fc.store_new_cell(*pr.at, cslot, {pr.abi_slot, /*owned=*/false});
+      {
+        TempScope pts(fc);  // the copy's temp is free again right after
+        int32_t src = fc.owned_src(*pr.at, {pr.abi_slot, /*owned=*/false});
+        fc.emit(Op::CellNew, cslot, src);
+        fc.forget_temp(src);  // CellNew absorbed the +1
+      }
       fc.push_unnamed_binding({pr.name, cslot, pr.is_mut, true});
     }
     // Bind the captures: borrowed cell pointers out of the closure. The
