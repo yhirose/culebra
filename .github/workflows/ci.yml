@@ -52,17 +52,23 @@ env:
   # needs more than a few of those.
   CCACHE_MAXSIZE: 300M
 
+# Every Linux job, here and in release.yml, names its Ubuntu. When the
+# "latest" label became 26.04 (2026-10), its CMake 4.2 linked the static
+# OpenSSL with libjitterentropy.a, which the runner did not have and which
+# the AOT runtime, embedding that OpenSSL for `culebra build`, would need too.
+# Moving to another version is a change made on purpose:
+# tools/checks/check_runner_pins.sh holds every workflow to one.
 jobs:
   # Ubuntu used to be one job (build + `_run-tests all`), and on the 4-core
   # standard runner that serialized ~24 min of test phases behind the build,
   # making it the workflow's ~34 min critical path. It is now this build job
   # plus the parallel test-ubuntu lanes below: most test phases need only the
-  # built binary, so they fan out across free ubuntu-latest jobs instead of
+  # built binary, so they fan out across free Ubuntu jobs instead of
   # queueing behind each other. This job builds, uploads the binary the lanes
   # download, and runs the phases that need the CMake build tree itself
   # (`_run-tests ci-buildtree`).
   build-ubuntu:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
       # Linux defaults the Canvas desktop window ON; a runner has no display,
@@ -154,7 +160,7 @@ jobs:
       - name: Upload the binary for the test lanes and manual testing
         uses: actions/upload-artifact@v4
         with:
-          name: culebra-ubuntu-latest
+          name: culebra-ubuntu
           path: build/culebra
           retention-days: 1
           compression-level: 1  # ~5x faster than the default, 12% larger
@@ -171,7 +177,7 @@ jobs:
       - name: Smoke test microgpt (5 steps, both backends)
         run: just smoke-microgpt
 
-  # The heavy test phases, fanned out one lane per free ubuntu-latest job.
+  # The heavy test phases, fanned out one lane per free Ubuntu job.
   # Every lane needs only the binary build-ubuntu uploaded (LLVM is statically
   # linked into it) plus the checkout; the aot and wrap lanes additionally
   # compile and link, so they install the toolchain, and wrap reuses
@@ -182,7 +188,7 @@ jobs:
   test-ubuntu:
     name: test-ubuntu (${{ matrix.lane }})
     needs: build-ubuntu
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     strategy:
       # One lane failing must not cancel the others' results.
@@ -279,7 +285,7 @@ jobs:
   # downloads — so this shortens the wait for every consumer, not just itself.
   doctest-ubuntu:
     needs: build-ubuntu
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       # Recursive: the cpp half compiles and links against seven vendored
@@ -322,7 +328,7 @@ jobs:
   # nothing with build-ubuntu's cache and would only churn it from inside
   # that job.
   build-no-jit:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
       CULEBRA_CANVAS_WINDOW_DEFAULT: OFF
@@ -376,7 +382,7 @@ jobs:
   release-diff:
     if: github.event_name == 'push' && github.ref == 'refs/heads/master'
     needs: build-ubuntu
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -416,7 +422,7 @@ jobs:
   # build-ubuntu's artifact, the way release-diff takes it.
   playground-smoke:
     needs: build-ubuntu
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v5
@@ -620,7 +626,7 @@ jobs:
   # compiles and links, that the headless path still works inside it, that the
   # AOT weak choke resolves, and that a window really opens (under Xvfb).
   linux-canvas-window:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     env:
       # Deliberately no CULEBRA_CANVAS_WINDOW_DEFAULT — this job wants CMake's
@@ -871,7 +877,7 @@ jobs:
   # build, the archive, the AOT link) passes on a binary whose raylib bodies
   # are never entered.
   linux-scene:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     env:
       CCACHE_DIR: ${{ github.workspace }}/.ccache
@@ -968,7 +974,7 @@ jobs:
   # window, the event loop, the AOT force-load — proved only by hand on a
   # developer's machine. This job is that coverage.
   linux-webview:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     env:
       CCACHE_DIR: ${{ github.workspace }}/.ccache
@@ -1122,7 +1128,7 @@ jobs:
   # backend-neutral invariants (Runtime teardown, the GC heap, the slab), so a
   # second OS would buy runner time and no coverage.
   linux-assert:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 40
     env:
       CULEBRA_CANVAS_WINDOW_DEFAULT: OFF
@@ -2195,7 +2201,7 @@ jobs:
   # features OFF keep it a narrow, fast check of the link step alone —
   # not a full-feature Arch gate.
   arch-jit-build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     container: archlinux:base-devel
     timeout-minutes: 30
     steps:

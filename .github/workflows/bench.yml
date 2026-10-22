@@ -15,7 +15,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-24.04, macos-latest]
     runs-on: ${{ matrix.os }}
     env:
       # No display on a runner, and the benchmarks never open a window: keep the
@@ -29,7 +29,7 @@ jobs:
           submodules: recursive
 
       - name: Install dependencies (Ubuntu)
-        if: matrix.os == 'ubuntu-latest'
+        if: matrix.os == 'ubuntu-24.04'
         run: |
           sudo apt-get update
           # lua5.4 and guile-3.0 are `just bench-langs`' only apt-installable

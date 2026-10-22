@@ -15,7 +15,7 @@ runs:
         # that script fetches anyway: that host 403s the shared runner IPs
         # often enough to exhaust a three-attempt retry loop and take a whole
         # run down with it. Pinned to its published checksum, so every lane
-        # installs the same binary. Every caller runs on x86_64 ubuntu-latest.
+        # installs the same binary. Every caller runs on x86_64 Ubuntu.
         ver=1.58.0
         sha=4a5cc2f53e6f0f8c59092a6cc38291eb729d46a7dd95d3ae582008881b84931d
         base=https://github.com/casey/just/releases/download

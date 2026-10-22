@@ -49,7 +49,7 @@ jobs:
   # it. Idempotent on purpose: `/release` may have created the draft already,
   # and a workflow_dispatch re-run finds a published release.
   prepare:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       # No checkout: this job only talks to the releases API, so `gh` is pointed
       # at the repo by GH_REPO rather than by a git remote.
@@ -140,7 +140,7 @@ jobs:
 
   linux-x64:
     needs: prepare
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     env:
       CCACHE_DIR: ${{ github.workspace }}/.ccache
@@ -397,7 +397,7 @@ jobs:
   # which also proves each upload actually landed.
   finalize:
     needs: [macos-arm64, linux-x64, windows-x64]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Aggregate SHA256SUMS
         env:
