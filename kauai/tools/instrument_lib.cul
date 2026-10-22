@@ -71,4 +71,48 @@ fn instruments(sounds, wrap) {
   out
 }
 
-export {module_at, program, calls_through, instruments}
+# Parameters NAME=VALUE (--set's words), as Kauai reads them on a band's
+# line.
+fn params_of(words) {
+  let form = re'^[a-z][a-z0-9]*=[0-9]+(\.[0-9]+)?$'
+  let params = {}
+  for w in words {
+    throw "--set is a word and a number, breath=0.5: {w}" if !form.test(w)
+    let at = w.index_of("=")
+    params[w
+      .slice(0, at)
+      .to_string()] = to_float(w.slice(at + 1, w.size()).to_string())
+  }
+  params
+}
+
+# What Kauai handed an instrument (calls_through's `args`) with parameters
+# `set` over the song's own: the call's, and, where a phrase's notes carry
+# their own (an instrument that hears "params"), each note's.
+fn with_set(args, set) {
+  let last = args.size() - 1
+  let own = |n| n.has("params") ? {...n, params: {...n.params, ...set}} : n
+  iota(args.size()).map(|i| cond {
+    i == last => {...args[i], ...set},
+    type_of(args[i]) == "Array" => args[i].map(own),
+    _ => args[i],
+  })
+}
+
+# The `voices` and `drums` of module `sounds`, each instrument told
+# parameters `set` over the song's (`{}` leaves them as they are), and made
+# by `wrap(kind, name, f)` (as it is, by default).
+fn told(sounds, set, wrap = |kind, name, f| f) {
+  instruments(sounds, fn (kind, name, f) {
+    let g = set.empty()
+      ? f
+      : calls_through(
+        f,
+        kind == "drums",
+        |args, make| make(with_set(args, set)),
+      )
+    wrap(kind, name, g)
+  })
+}
+
+export {module_at, program, calls_through, instruments, params_of, with_set, told}

@@ -18,38 +18,18 @@ import instrument from './instrument_lib.cul'
 
 let RATE = 44100
 
-# What Kauai handed an instrument (instrument_lib's `args`) with parameters
-# `set` over the song's own: the call's, and, where a phrase's notes carry
-# their own (an instrument that hears "params"), each note's.
-fn with_set(args, set) {
-  let last = args.size() - 1
-  let own = |n| n.has("params") ? {...n, params: {...n.params, ...set}} : n
-  iota(args.size()).map(|i| cond {
-    i == last => {...args[i], ...set},
-    type_of(args[i]) == "Array" => args[i].map(own),
-    _ => args[i],
-  })
-}
-
 # The passage of way `w`'s song from `from` to `to` (each a point as
 # render() takes one, or nil), played by the instruments of module `sounds`
 # told `w.set` over the song's parameters: {samples, lead}.
 fn passage(sounds, w, from, to) {
-  let made = instrument.instruments(
-    sounds,
-    |kind, name, f| w.set.empty()
-      ? f
-      : instrument.calls_through(
-        f,
-        kind == "drums",
-        |args, make| make(with_set(args, w.set)),
-      ),
-  )
+  let made = instrument.told(sounds, w.set)
   let song = Audio.Kauai.load(w.song, voices: made.voices, drums: made.drums)
   let samples = song.render(from: from, to: to)
   {
     samples: samples,
-    lead: from == nil ? 0 : Math.round(Math.min(1.0, song.seconds(from)) * RATE),
+    lead: from == nil
+      ? 0
+      : Math.round(Math.min(1.0, song.seconds(from)) * RATE),
   }
 }
 
@@ -142,20 +122,6 @@ fn way_of(song, sounds, set) {
   {song: FS.abspath(song), sounds: module, set: set}
 }
 
-# Parameters NAME=VALUE, as Kauai reads them on a band's line.
-fn params_of(words) {
-  let form = re'^[a-z][a-z0-9]*=[0-9]+(\.[0-9]+)?$'
-  let params = {}
-  for w in words {
-    throw "--set is a word and a number, breath=0.5: {w}" if !form.test(w)
-    let at = w.index_of("=")
-    params[w
-      .slice(0, at)
-      .to_string()] = to_float(w.slice(at + 1, w.size()).to_string())
-  }
-  params
-}
-
 # Comparison `o.name` in folder `o.out`: where its record and its WAVs are.
 fn files_of(o) {
   throw "a name is letters, digits, _ and -: {o.name}" if !re'^[A-Za-z0-9_-]+$'.test(o.name)
@@ -237,12 +203,17 @@ fn start(o, render) {
   throw "--sounds is given once or twice" if o.sounds.size() > 2
   let module = |k| o.sounds.empty() ? nil : o.sounds[k]
   let held = way_of(o.songs[0], module(0), {})
-  let fresh = way_of(o.songs[-1], module(-1), params_of(o.set))
+  let fresh = way_of(o.songs[-1], module(-1), instrument.params_of(o.set))
   if same_way(held, fresh) {
     throw "the two ways are the same: give --song or --sounds twice, or --set"
   }
   let made = render([held, fresh], o.from, o.to)
-  let record = {from: o.from, to: o.to, same_gain: o.same_gain, lead: made[0].lead}
+  let record = {
+    from: o.from,
+    to: o.to,
+    same_gain: o.same_gain,
+    lead: made[0].lead,
+  }
   let r = write_round(
     o,
     files,
@@ -294,7 +265,7 @@ fn next_round(o, render) {
   let fresh = way_of(
     o.song ?? held.song,
     o.sounds ?? held.sounds,
-    {...held.set, ...params_of(o.set)},
+    {...held.set, ...instrument.params_of(o.set)},
   )
   throw "the new way is the one kept: give --song, --sounds or --set" if same_way(
     held,
@@ -315,4 +286,4 @@ fn next_round(o, render) {
   r.lines
 }
 
-export {with_set, passage, render, renderer, levels, start, pick, next_round}
+export {passage, render, renderer, levels, start, pick, next_round}

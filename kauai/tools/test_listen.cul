@@ -1,3 +1,4 @@
+import instrument from './instrument_lib.cul'
 import lib from './listen_lib.cul'
 
 let TOOL = FS.join(FS.dirname(FS.abspath(Sys.script)), "listen.cul")
@@ -79,15 +80,21 @@ fn the_parameters_set_reach_the_call_and_each_note_that_carries_its_own() {
   # sound.
   let notes = [{pitch: 84, params: {top: 1.0, soft: 1.0}}, {pitch: 86}]
   assert_eq(
-    lib.with_set([notes, {top: 1.0, soft: 1.0}], set),
+    instrument.with_set([notes, {top: 1.0, soft: 1.0}], set),
     [
       [{pitch: 84, params: {top: 2.0, soft: 1.0}}, {pitch: 86}],
       {top: 2.0, soft: 1.0},
     ],
   )
-  assert_eq(lib.with_set([84, {soft: 1.0}], set), [84, {soft: 1.0, top: 2.0}])
-  assert_eq(lib.with_set([{level: 1.0}, {}], set), [{level: 1.0}, {top: 2.0}])
-  assert_eq(lib.with_set([{}], set), [{top: 2.0}])
+  assert_eq(
+    instrument.with_set([84, {soft: 1.0}], set),
+    [84, {soft: 1.0, top: 2.0}],
+  )
+  assert_eq(
+    instrument.with_set([{level: 1.0}, {}], set),
+    [{level: 1.0}, {top: 2.0}],
+  )
+  assert_eq(instrument.with_set([{}], set), [{top: 2.0}])
 }
 
 @test
