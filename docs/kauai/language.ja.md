@@ -992,6 +992,7 @@ song.play()
 | `playing()` | 演奏中かどうか。`play()`から`stop()`まで、`loop`しない曲なら曲の終わりまでが演奏中 |
 | `reached(NAME)` | `mark NAME`の位置まで演奏が進んだかどうか |
 | `marks()` | 各`mark NAME`の位置。曲の頭からの秒数を、曲に書いた順に並べたオブジェクト。例: `{Drive: 32.0, Peak: 64.0}` |
+| `external_sounds(from:, to:)` | `render(from:, to:)`が作る外部の楽器の音を、鳴り始める順に返す。各要素は`{at, until, by, external, args}`で、`at`はその音を鳴らし始める曲の頭からの秒数、`until`はその音符が終わる秒数（打楽器の打撃は打つ時刻）、`by`は声部か打楽器の名前、`external`は`voices:`か`drums:`の中の楽器のキー、`args`はその音のために楽器に渡すもの（楽器の渡し方に応じて`[notes, params]`、`[pitch, params]`、`[n, params]`、`[params]`。下で説明）。`from:`と`to:`を省くと、曲で鳴るものすべて。Kauaiが楽器の音量を量るための音は含まない |
 | `seconds(at)` | 曲の中の位置が、曲の頭から何秒かを返す。位置はマーク名か秒数か、秒数（`"83.5"`）か分と秒（`"1:23.5"`）を書いた`String`で、`render(from:, to:)`に渡すのと同じ。曲に無いマークや、どちらの形でもない`String`（`"1:5"`）は`ValueError` |
 | `prepare()` | 外部の楽器の音声を1つ作り、残りの数を返す |
 | `render(from:, to:)` | `play()`で鳴る音そのものを、曲を1回通して最後の音と残響が消えるまで作り、モノラルのサンプル（1秒`44100`個）の`Array`で返す。同じ混ぜ合わせ処理を使い、音声デバイスは要らない。`loop`する曲も1回だけ。`FS.write("song.wav", Audio.Sound(song.render()).data())`で保存できる。`from:`や`to:`（`seconds(at)`が読むのと同じ位置）を渡すと、曲のその区間だけを作る（下で説明）。ブラウザでは曲をページが鳴らすので使えない（`ValueError`） |

@@ -111,4 +111,34 @@ let (crossing, crossed_notes) = bowed()
 crossing.render(from: 6.0, to: 7.5)
 assert_eq(crossed_notes.sorted(), second_only)
 
+# external_sounds() lists the sounds render() builds for the part, in the
+# order they start: where each starts and its notes end, who plays it, its
+# instrument, and what the instrument is handed, which is what it is called
+# with (and the note it is weighed by besides).
+let handed = []
+let listing = Audio.Kauai.new(SPREAD, voices: {
+  fiddle: {
+    phrase: fn (notes, params) {
+      handed.push(JSON.stringify([notes, params]))
+      Audio.Sound.new(WAV)
+    },
+    hears: ["len"],
+  },
+})
+let listed = listing.external_sounds(from: "Second", to: "Third")
+assert_eq(
+  listed.map(|s| [s.at, s.until, s.by, s.external]),
+  [[4.0, 6.0, "Fiddle", "fiddle"], [6.0, 7.0, "Fiddle", "fiddle"]],
+)
+assert_eq(listed.map(|s| s.args[0].map(|n| n.pitch)), [[65, 67], [69]])
+assert_eq(listing.external_sounds().map(|s| s.at), [0.0, 2.0, 4.0, 6.0, 8.0])
+# Its own copy: changing it changes nothing Kauai builds.
+listed[0].args[1]["bow"] = 1.0
+listing.render(from: "Second", to: "Third")
+assert_eq(handed.size(), 3)
+assert_true(handed.all(|h| !h.contains("bow")))
+assert_true(listing.external_sounds(from: "Second", to: "Third").all(|s| handed.contains(JSON.stringify(s.args))))
+assert_throws("ValueError", fn () { listing.external_sounds(from: "Fourth") })
+assert_throws("ValueError", fn () { listing.external_sounds(from: 2, to: 1) })
+
 print("audio kauai render ok\n")

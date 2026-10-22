@@ -2212,6 +2212,18 @@ let _kauai_module = fn () {
     all_digits(whole) && all_digits(frac) ? to_float(t) : nil
   }
 
+  # `v` with each Array and Object in it made anew, an Object's entries read
+  # and written by subscript (a parameter may be named `keys`).
+  fn copied(v) {
+    return v.map(copied) if type_of(v) == "Array"
+    return v if type_of(v) != "Object"
+    let out = {}
+    for k, x in v {
+      out[k] = copied(x)
+    }
+    out
+  }
+
   # An external instrument's parameter, `name=value`, as a voice in the band
   # and a direction in a score write it: a word and a number.
   fn param_of(text, line) {
@@ -3952,12 +3964,13 @@ let _kauai_module = fn () {
 
   # How external sound `name` is made, from `kind.table` (the `voices:` or
   # `drums:` given): a function, or an instrument `{phrase: ..., hears: [...]}`
-  # (`hit:` for a drum). `hears` is nil for a function.
+  # (`hit:` for a drum), under `key` in the table. `hears` is nil for a
+  # function.
   fn instrument(kind, name, what) {
     let key = name.lower()
     let f = (kind.table ?? {}).get(key, nil)
     __raise("ValueError", "Audio.Kauai: {what} plays `external {name}`, and {kind.kwarg}: has no `{key}`") if f == nil
-    return {make: f, hears: nil} if type_of(f) == "Function"
+    return {make: f, hears: nil, key: key} if type_of(f) == "Function"
     if type_of(f) != "Object" || type_of(f.get(kind.call, nil)) != "Function" {
       __raise("ValueError", "Audio.Kauai: {kind.kwarg}: `{key}` is a function or an object whose `{kind.call}` is one")
     }
@@ -3967,12 +3980,14 @@ let _kauai_module = fn () {
     if !heard.empty() {
       __raise("ValueError", "Audio.Kauai: {kind.kwarg}: `{key}` hears {heard[0]}; it can hear {kind.may.join(", ")}")
     }
-    {make: f[kind.call], hears: hears}
+    {make: f[kind.call], hears: hears, key: key}
   }
 
   # The external sounds the song needs: `build`, key -> how to build one;
-  # `plays`, [{at, until, sound, by, vol}] in seconds, `until` when the notes
-  # it plays end (a hit's when it strikes); and `weighed`, for each voice
+  # `plays`, [{at, until, sound, by, vol, external, args}] in seconds, `until`
+  # when the notes it plays end (a hit's when it strikes), `external` the
+  # instrument's key in `voices:` or `drums:` and `args` what it is handed;
+  # and `weighed`, for each voice
   # or drum, the sound it is weighed by (`sound`, its key in `build`) and the
   # pitch of the tone it is weighed against. A function makes a voice's sound
   # for each pitch it plays, and a drum's once. An instrument makes a voice's
@@ -3995,11 +4010,14 @@ let _kauai_module = fn () {
     mut hits = []
     # When each voice starts a phrase and each choke group is hit, in order.
     mut starts = {}
-    # A sound `by` plays from `at` for notes that end at `until`, which `made`
-    # builds unless it is built already.
-    let sound = fn (key, by, at, until, vol, made) {
-      build[key] = made if !build.has(key)
-      plays.push({at: at, until: until, sound: key, by: by, vol: vol})
+    # A sound `by` plays from `at` for notes that end at `until`, which
+    # instrument `ins` makes from `args` unless it is made already.
+    let sound = fn (key, by, at, until, vol, ins, args) {
+      if !build.has(key) {
+        let make = ins.make
+        build[key] = args.size() == 1 ? || make(args[0]) : || make(args[0], args[1])
+      }
+      plays.push({at: at, until: until, sound: key, by: by, vol: vol, external: ins.key, args: args})
     }
     for i, e in events.enumerate() {
       continue if e.has("tone")
@@ -4009,20 +4027,23 @@ let _kauai_module = fn () {
         e.by,
         || instrument(drum ? DRUM : VOICE, player.external, "{drum ? "drum" : "voice"} {e.by}"),
       )
-      let make = ins.make
       let params = player.params
       cond {
-        ins.hears == nil && drum => sound(e.by, e.by, e.at, e.at, e.vol, || make(params)),
-        ins.hears == nil => {
-          let p = e.pitch
-          let own = {...params, ...e.params}
-          sound("{e.by} {p} {params_key(e.params)}", e.by, e.at, e.at + e.len, e.vol, || make(p, own))
-        },
+        ins.hears == nil && drum => sound(e.by, e.by, e.at, e.at, e.vol, ins, [params]),
+        ins.hears == nil => sound(
+          "{e.by} {e.pitch} {params_key(e.params)}",
+          e.by,
+          e.at,
+          e.at + e.len,
+          e.vol,
+          ins,
+          [e.pitch, {...params, ...e.params}],
+        ),
         drum => {
           e.vol = player.vol if ins.hears.contains("level")
           let group = "drums {player.choke}"
           starts.get_or_put(group, || []).push(e.at)
-          hits.push({e: e, hears: ins.hears, make: make, params: params, group: group})
+          hits.push({e: e, ins: ins, params: params, group: group})
         },
         _ => {
           e.vol = player.vol if ins.hears.contains("level")
@@ -4041,14 +4062,13 @@ let _kauai_module = fn () {
     }
     for h in hits {
       let e = h.e
+      let hears = h.ins.hears
       let n = {
-        ...(h.hears.contains("level") ? {level: hundredths(e.level)} : {}),
-        ...(h.hears.contains("marks") ? {marks: e.marks} : {}),
-        ...(h.hears.contains("next") ? {next: next(h.group, e.at)} : {}),
+        ...(hears.contains("level") ? {level: hundredths(e.level)} : {}),
+        ...(hears.contains("marks") ? {marks: e.marks} : {}),
+        ...(hears.contains("next") ? {next: next(h.group, e.at)} : {}),
       }
-      let make = h.make
-      let params = h.params
-      sound("{e.by} {n}", e.by, e.at, e.at, e.vol, || make(n, params))
+      sound("{e.by} {n}", e.by, e.at, e.at, e.vol, h.ins, [n, h.params])
     }
     for members in heads {
       let head = members[0]
@@ -4065,10 +4085,9 @@ let _kauai_module = fn () {
         ...(hears.contains("next") ? {next: after} : {}),
         ...(hears.contains("params") ? {params: {...band, ...e.params}} : {}),
       }))
-      let make = kinds[head.by].make
       let params = {...band, ...head.params}
       let until = members.map(|e| e.at + e.len).max()
-      sound("{head.by} {notes} {params_key(head.params)}", head.by, head.at, until, head.vol, || make(notes, params))
+      sound("{head.by} {notes} {params_key(head.params)}", head.by, head.at, until, head.vol, kinds[head.by], [notes, params])
     }
     # What each is weighed by: a voice's note at the middle of the pitches it
     # plays, a second long at mf, and a drum's hit at mf, each as the song
@@ -4255,16 +4274,8 @@ let _kauai_module = fn () {
     # only those that start before `to` and play notes LEAD seconds before
     # `from` or later are built.
     render(from: String | Long | Float | Nil = nil, to: String | Long | Float | Nil = nil) {
-      let first = from == nil ? 0.0 : self._point(from)
-      let last = to == nil ? nil : self._point(to)
-      if first < 0 || first >= self._length {
-        __raise("ValueError", "Audio.Kauai: render(from:) is at {first} seconds, outside the song's 0 to {self._length}")
-      }
-      if last != nil && last <= first {
-        __raise("ValueError", "Audio.Kauai: render(to:) is at {last} seconds, not after from: at {first}")
-      }
-      let start = Math.max(0.0, first - LEAD)
-      let plays = self._plays.filter(|p| (last == nil || p.at < last) && p.until >= start)
+      let part = self._part("render", from, to)
+      let (first, last, start, plays) = (part.first, part.last, part.start, part.plays)
       let list = self._list(plays, last)
       let used = Set()
       for p in plays {
@@ -4316,6 +4327,42 @@ let _kauai_module = fn () {
     # Seconds into the song at `at`, a point as render() takes one.
     seconds(at: String | Long | Float) {
       self._point(at)
+    }
+
+    # The part from point `from` until `to` (nil for the top or the end) as
+    # method `what` takes it: {first, last} in seconds, `start` LEAD seconds
+    # before `first` (or the top), and `plays`, the external sounds that
+    # start before `last` and play notes from `start` on.
+    _part(what, from, to) {
+      let first = from == nil ? 0.0 : self._point(from)
+      let last = to == nil ? nil : self._point(to)
+      if first < 0 || first >= self._length {
+        __raise("ValueError", "Audio.Kauai: {what}(from:) is at {first} seconds, outside the song's 0 to {self._length}")
+      }
+      if last != nil && last <= first {
+        __raise("ValueError", "Audio.Kauai: {what}(to:) is at {last} seconds, not after from: at {first}")
+      }
+      let start = Math.max(0.0, first - LEAD)
+      {
+        first: first,
+        last: last,
+        start: start,
+        plays: self._plays.filter(|p| (last == nil || p.at < last) && p.until >= start),
+      }
+    }
+
+    # The external sounds render(from:, to:) builds, in the order they start:
+    # where each starts and its notes end, the voice or drum that plays it,
+    # its instrument's key in `voices:` or `drums:`, and what the instrument
+    # is handed for it.
+    external_sounds(from: String | Long | Float | Nil = nil, to: String | Long | Float | Nil = nil) {
+      self._part("external_sounds", from, to).plays.sorted_by(|p| p.at).map(|p| {
+        at: p.at,
+        until: p.until,
+        by: p.by,
+        external: p.external,
+        args: copied(p.args),
+      })
     }
 
     # Seconds once through.
