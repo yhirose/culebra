@@ -163,6 +163,24 @@ fn a_performance_is_written_down_as_its_notes() {
 }
 
 @test
+fn the_harmonics_are_read_along_the_pitch_held_across_a_stop() {
+  # A stop of the tongue 4 frames long, inside it 2 frames read an octave up
+  # (too short to keep): the harmonics are read along the pitch held across
+  # it, and within a stretch along each frame's pitch as read.
+  let raw = [
+    ...iota(10).map(|i| 440.0 + i % 3),
+    nil,
+    880.0,
+    880.0,
+    nil,
+    ...repeat(10, 441.0),
+  ]
+  let tidy = lib.tidied(raw, raw.map(|v| v == nil ? -60.0 : -20.0))
+  assert_eq(tidy.along.slice(10, 14), repeat(4, 441.0))
+  assert_eq(tidy.along.slice(0, 10), raw.slice(0, 10))
+}
+
+@test
 fn the_breath_is_what_is_left_without_the_harmonics_against_them() {
   # A4 at a quarter of full scale, with band noise from 4 to 8 kHz.
   let reed = [(0.0, REED.map(|a| a * 0.25))]
@@ -176,8 +194,9 @@ fn the_breath_is_what_is_left_without_the_harmonics_against_them() {
   let (of_hiss, of_tone) = (frames_of(hiss), frames_of(tone))
   let median = |xs| xs.sorted()[xs.size() / 2]
   let mid = iota(20, 100)
+  let spectra = mid.map(|t| (of_hiss(t), of_tone(t)))
   for b in 0..5 {
-    let truth = median(mid.map(|t| band_db(of_hiss(t), of_tone(t), b)))
+    let truth = median(spectra.map(|(y, t)| band_db(y, t, b)))
     let read = median(mid.map(|t| m.breath[t][b])) - truth
     assert_true(read <= 0.5 && read > -1.5)
   }
@@ -248,11 +267,7 @@ fn the_command_writes_the_frames_and_the_notes_of_each_recording() {
           "hz",
           "db",
           ...iota(1, 41).map(|k| "h{k}"),
-          "b1",
-          "b2",
-          "b3",
-          "b4",
-          "b5",
+          ...iota(1, 6).map(|b| "b{b}"),
         ],
         file: "take 1.f32",
       },
@@ -267,18 +282,19 @@ fn the_command_writes_the_frames_and_the_notes_of_each_recording() {
     "f32",
     FS.read(FS.join(dir, "measured", "take 1.f32")),
   )
-  let row = |t| frames.slice(47 * t, 47 * (t + 1))
-  assert_eq(frames.size(), 47 * 460)
+  let width = 2 + 40 + 5
+  let row = |t| frames.slice(width * t, width * (t + 1))
+  assert_eq(frames.size(), width * 460)
   let wav = Audio.decode(FS.read(FS.join(dir, "take 1.wav"))).channels[0]
   let around = wav.slice(40 * 441 - 220, 40 * 441 + 221)
   let db = 10.0 * Math.log(around.map(|v| v * v).sum() / 441) / Math.log(10.0)
   assert_eq((row(10)[0], row(40)[0] > 400.0, row(10)[1]), (0.0, true, -120.0))
   assert_true(Math.abs(row(40)[1] - db) < 0.001)
-  assert_true(row(10).slice(2, 47).all(|v| v == 0.0))
+  assert_true(row(10).slice(2, width).all(|v| v == 0.0))
   assert_true(iota(8).all(|k| Math.abs(row(40)[2 + k] / (0.25 * REED[k]) -
     1.0) <
     0.01) &&
-    row(40).slice(42, 47).all(|v| v < -50.0))
+    row(40).slice(42, width).all(|v| v < -50.0))
   # It names what it could not do.
   let bad = Proc.run(
     [

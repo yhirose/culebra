@@ -5,6 +5,9 @@
 # for each recording; README.md says more.
 
 let STEP = 0.01  # seconds a frame
+
+# The sample frame t is about, as Audio.pitch and Audio.harmonics have it.
+let centre = |t, rate| Math.round(t * rate / 100.0)
 let S = {
   scrap: 4,            # frames: a stretch with a pitch shorter than this is dropped
   bridge: 6,           # frames: a gap shorter than this between two is the tongue's
@@ -68,8 +71,10 @@ fn runs(track) {
 # with a pitch shorter than `scrap` dropped; within each, the median of five
 # frames; a gap shorter than `bridge` between two held through, each side's
 # pitch up to the gap's quietest frame, so a note's pitch never glides across
-# a stop of the tongue. Answers {hz, stops}, stops the frames where the
-# second side of such a gap starts.
+# a stop of the tongue. Answers {hz, along, stops}: along the pitch the
+# harmonics are read along, each frame's as read where a stretch has one and
+# the pitch held across a gap; stops the frames where the second side of such
+# a gap starts.
 fn tidied(raw, db) {
   let hz = raw.map(|v| v)
   for (s, e) in runs(hz) {
@@ -98,7 +103,7 @@ fn tidied(raw, db) {
       stops.push(q)
     }
   }
-  {hz: hz, stops: stops}
+  {hz: hz, along: iota(hz.size()).map(|t| kept[t] ?? hz[t]), stops: stops}
 }
 
 # Within frames s until e, the notes legato: the pitch moving `legato`
@@ -337,9 +342,14 @@ let sum_squares = |xs| xs.map(|v| v * v).sum()
 # window of the power of 2 samples nearest 46 ms about the frame's middle.
 fn breath(xs, rest, f0, rate) {
   let size = 2 ** Math.round(Math.log(0.0464 * rate) / Math.log(2.0))
-  let pad = repeat(size / 2, 0.0)
-  let left = pad + rest + pad
-  let tone = pad + Audio.mix([xs, {samples: rest, gain: -1.0}]) + pad
+  # What is left and the harmonics, each half a window late, so that the
+  # window about frame t is the `size` samples from its middle on.
+  let lead = size / 2 / to_float(rate)
+  let left = Audio.mix([{samples: rest, at: lead}], rate: rate)
+  let tone = Audio.mix(
+    [{samples: xs, at: lead}, {samples: rest, at: lead, gain: -1.0}],
+    rate: rate,
+  )
   # Each band's bins, those whose frequency (k * rate / size) is in it.
   let bins = S.breath_bands.map(|b| (
     Math.ceil(b[0] * size / to_float(rate)),
@@ -352,7 +362,7 @@ fn breath(xs, rest, f0, rate) {
   )[0]
   iota(f0.size()).map(fn (t) {
     return nil if f0[t] == nil
-    let c = Math.round(t * rate / 100.0)
+    let c = centre(t, rate)
     let ls = at(left, c)
     let whole = Math.max(sum_squares(at(tone, c)), 1e-20)
     bins.map(|(a, b)| db_of(sum_squares(ls.slice(a, b)) / whole))
@@ -372,15 +382,12 @@ fn measure(xs, rate, low, high) {
   let sum = squares(xs)
   let half = Math.floor(rate / 200.0)
   let db = iota(read.hz.size()).map(fn (t) {
-    let c = Math.round(t * rate / 100.0)
+    let c = centre(t, rate)
     db_of(power(sum, c - half, c + half + 1))
   })
   let tidy = tidied(read.hz, db)
   let hz = tidy.hz
-  # The harmonics are read along the pitch as read, where the notes have
-  # one, and through a stop of the tongue along the pitch held across it.
-  let along = iota(hz.size()).map(|t| hz[t] == nil ? nil : read.hz[t] ?? hz[t])
-  let h = Audio.harmonics(xs, along, S.harmonics, rate)
+  let h = Audio.harmonics(xs, tidy.along, S.harmonics, rate)
   let w = transcribe(hz, tidy.stops)
   let pitched = iota(hz.size()).filter(|t| hz[t] != nil).map(|t| db[t]).sorted()
   let reference = pitched.empty() ? 0.0 : pitched[pitched.size() * 95 / 100]
@@ -406,7 +413,7 @@ fn measure(xs, rate, low, high) {
     hz: hz,
     db: db,
     harmonics: h.harmonics,
-    breath: breath(xs, h.rest, along, rate),
+    breath: breath(xs, h.rest, tidy.along, rate),
     notes: written,
     tuning: round_to(100.0 * w.tuning, 2),
     reference: round_to(reference, 2),
@@ -454,4 +461,4 @@ fn write(m, dir, name, about, low, high) {
   )
 }
 
-export {STEP, S, measure, breath, write}
+export {STEP, S, tidied, measure, breath, write}
