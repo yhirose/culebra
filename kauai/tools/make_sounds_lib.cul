@@ -81,7 +81,7 @@ let to_ogg = fn (wav, quality) {
     dst,
   ])
   if r.code != 0 {
-    throw "make_sounds: ffmpeg could not encode a sound as Ogg: {r.stderr.strip()}"
+    throw "make_sounds: ffmpeg could not encode a sound as Ogg: {r.stderr.trim()}"
   }
   FS.read(dst)
 }
