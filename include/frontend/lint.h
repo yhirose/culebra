@@ -207,20 +207,16 @@ class RuleWalker {
     }
   }
 
-  // Reject `fn` / `self` as a parameter name. Both are language-core
-  // identifiers the callee binds unconditionally — `fn` is the implicit
-  // recursion handle, `self` the method receiver (see always_bound) — so a
-  // same-named parameter shadows that binding. Rejecting pre-eval keeps the
-  // reserved names reserved on every backend: the interpreter and JIT
-  // previously accepted such a parameter and silently let it shadow (a real
-  // divergence risk, and on the JIT the overwritten implicit slot leaked its
-  // ref every call). Pattern params carry no simple name, so skipping them is
-  // sound.
+  // Reject `self` as a parameter name: the callee binds the receiver
+  // unconditionally, so a same-named parameter would shadow it (a `let self`
+  // in the body is a variable like any other). `fn` is refused wherever it is
+  // declared, a parameter included (reserved_declarations). Pattern params
+  // carry no simple name, so skipping them is sound.
   void check_reserved_params(const peg::Ast& params) {
     for (const auto& p : params.nodes) {
       if (culebra::is_kw_only_sep(*p) || culebra::is_pattern_param(*p)) continue;
       auto loc = culebra::extract_param_name_loc(*p);
-      if (loc.name == "fn" || loc.name == "self") {
+      if (loc.name == "self") {
         diags_.push_back(Diagnostic{
             "SyntaxError",
             std::format("'{}' is a reserved name and cannot be used as a "
@@ -990,20 +986,34 @@ inline void shadows(const resolve::Resolution& res,
   sort_by_position(diags, first);
 }
 
-// A declaration of a name the effect lowering writes for itself
-// (culebra::kLoweringIntrinsics): inside an effect body it would be taken
-// for the intrinsic, and around one the lowering's own calls for it.
+inline void reserved_name(const peg::Ast& at, std::string_view name,
+                          std::vector<Diagnostic>& diags) {
+  diags.push_back(Diagnostic{
+      "SyntaxError",
+      std::format("'{}' is a reserved name and cannot be declared", name),
+      static_cast<long>(at.line), static_cast<long>(at.column),
+      Severity::Error});
+}
+
+// A declaration of `fn`, however it is written: a
+// pattern, a loop's or a catch's variable, a parameter
+// (Resolution::reserved_binds). The callers put the diagnostics in order.
+inline void reserved_binds(const resolve::Resolution& res,
+                           std::vector<Diagnostic>& diags) {
+  for (const auto* n : res.reserved_binds) reserved_name(*n, n->token, diags);
+}
+
+// A declaration of a reserved name: one the effect lowering writes for
+// itself (culebra::kLoweringIntrinsics), which inside an effect body would be
+// taken for the intrinsic and around one for the lowering's own calls, and
+// one reserved_binds refuses.
 inline void reserved_declarations(const resolve::Resolution& res,
                                   std::vector<Diagnostic>& diags) {
   size_t first = diags.size();
   for (const auto& d : res.declarations)
     if (culebra::is_lowering_intrinsic(res.symbols[d.symbol].name))
-      diags.push_back(Diagnostic{
-          "SyntaxError",
-          std::format("'{}' is a reserved name and cannot be declared",
-                      res.symbols[d.symbol].name),
-          static_cast<long>(d.node->line), static_cast<long>(d.node->column),
-          Severity::Error});
+      reserved_name(*d.node, res.symbols[d.symbol].name, diags);
+  reserved_binds(res, diags);
   sort_by_position(diags, first);
 }
 
@@ -1800,13 +1810,15 @@ inline resolve::Options resolve_options(
 inline std::vector<Diagnostic> scope_diagnostics(const peg::Ast& authored) {
   auto res = resolve::resolve_module(authored, {}, resolve_options());
   std::vector<Diagnostic> diags;
+  // A reserved name declares nothing, so its reads read nothing: the refused
+  // declaration is the error to report, ahead of the NameError it leads to.
+  _detail::reserved_declarations(res, diags);
   _detail::LetRule(res, diags).run(authored);
   // Run only when the builtin-name provider is installed: without it every
   // stdlib name would read as undefined.
   if (const auto* globals = builtin_names())
     _detail::undefined_reads(res, *globals, diags);
   _detail::shadows(res, diags);
-  _detail::reserved_declarations(res, diags);
   return diags;
 }
 
@@ -1892,13 +1904,16 @@ inline std::set<long> removable_import_lines(const peg::Ast& root) {
   return out;
 }
 
-// The shadow check over a resolved module, before it is compiled: throws a
-// `ShadowError` CulebraError for the first violation. The compiler calls it
-// (FnAnalysis::analyze_program) on the resolution it compiles from, so every
-// lane rejects the same programs, dead code included.
-inline void check_shadow(const resolve::Resolution& res) {
+// The checks over a resolved module before it is compiled, throwing the first
+// violation: a `ShadowError`, and a declaration of `fn` (reserved_binds). The
+// compiler calls it (FnAnalysis::analyze_program) on the resolution it
+// compiles from, so every lane rejects the same programs, dead code included,
+// a REPL line and an embedder's source too, which no lint pass reads.
+inline void check_resolution(const resolve::Resolution& res) {
   std::vector<Diagnostic> diags;
   _detail::shadows(res, diags);
+  _detail::reserved_binds(res, diags);
+  _detail::sort_by_position(diags, 0);
   if (!diags.empty())
     throw culebra::CulebraError(diags[0].kind, diags[0].message, diags[0].line,
                                 diags[0].col);

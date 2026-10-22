@@ -4835,7 +4835,7 @@ class Compiler {
       for (const auto* d : *opts.deps)
         dep_infos.push_back(analysis.analyze_program(*d));
     }
-    // lint::check_shadow (parity) + the per-fn FuncInfo compile_fn_chunk
+    // lint::check_resolution (parity) + the per-fn FuncInfo compile_fn_chunk
     // reads; the returned top-level info carries chunk 0's captured_locals.
     auto session = opts.repl ? repl_session().declared_names()
                              : std::vector<std::string>{};

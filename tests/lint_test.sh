@@ -298,10 +298,11 @@ expect_accept "args-rest distinct"      'fn f(x, *args) { x }'
 expect_accept "destructuring param"     'fn f({a, b}) { a }'
 expect_accept "param shadowed by let"   'fn f(x) { let mut x = 1 }'
 
-# Reserved parameter names: `self` / `fn` are language-core identifiers the
-# callee binds unconditionally, so a same-named parameter shadows that binding
-# (and on the JIT the overwritten implicit slot leaked a ref every call). Abort
-# before eval with "SyntaxError: '<name>' is a reserved name".
+# Reserved parameter names: the callee binds `self` (the receiver) and `fn`
+# (itself) unconditionally, so a same-named parameter would shadow that
+# binding. Abort before eval with "SyntaxError: '<name>' is a reserved name":
+# `self` by the parameter check, `fn` as the name no declaration may take
+# (resolve.h's reserved_binds; every binding form in jit_error_pos_test.sh).
 expect_reserved_reject() {
   printf 'inspect("RAN")\n%s\n' "$2" > "$TMP/t.cul"
   out=$("$CULEBRA" --vm "$TMP/t.cul" 2>&1)
@@ -492,7 +493,7 @@ o[0] = 9'
 # enclosing function (not the top level) that is visible where the nested
 # function is written; every declaring form counts (parameters, let,
 # destructuring, parameter defaults, class field initializers). A name from a
-# closed or sibling scope is not visible, so it is no error. Single-sourced in lint.h (lint::check_shadow); the JIT now routes
+# closed or sibling scope is not visible, so it is no error. Single-sourced in lint.h (lint::check_resolution); the JIT now routes
 # through it instead of its own collect_fn_locals pass, so assert BOTH backends
 # reject before eval. For-loop variables are block-scoped to the body and are
 # captured by closures there — shadowing one was previously missed by the interp.

@@ -106,6 +106,19 @@ effect fn e() { let __unbound = 1
 perform ask()
 __unbound }
 handle { e() } with ask(resume) { resume(1) }' "SyntaxError: '__unbound' is a reserved name and cannot be declared at 2:21."
+# `fn` is every function's, so nothing declares it: not a pattern, a loop's
+# or a catch's variable, a match arm, nor a parameter, a pattern one included.
+check_eq "fn for var"      'for fn in [1] { 1 }' "SyntaxError: 'fn' is a reserved name and cannot be declared at 1:5."
+check_eq "fn for pair"     'for k, fn in {a: 1} { 1 }' "SyntaxError: 'fn' is a reserved name and cannot be declared at 1:8."
+check_eq "fn array pat"    'let [fn] = [2]' "SyntaxError: 'fn' is a reserved name and cannot be declared at 1:6."
+check_eq "fn object pat"   'let {fn} = {fn: 3}' "SyntaxError: 'fn' is a reserved name and cannot be declared at 1:6."
+check_eq "fn rest pat"     'let [a, ...fn] = [1, 2]' "SyntaxError: 'fn' is a reserved name and cannot be declared at 1:12."
+check_eq "fn bare pat"     'mut a = 0
+[a, fn] = [1, 2]' "SyntaxError: 'fn' is a reserved name and cannot be declared at 2:5."
+check_eq "fn match arm"    'match 4 { fn => 1 }' "SyntaxError: 'fn' is a reserved name and cannot be declared at 1:11."
+check_eq "fn catch var"    'try { throw 5 } catch fn { 1 }' "SyntaxError: 'fn' is a reserved name and cannot be declared at 1:23."
+check_eq "fn pattern param" 'fn t([fn]) { 1 }' "SyntaxError: 'fn' is a reserved name and cannot be declared at 1:7."
+check_eq "fn param"        'fn t(fn) { 1 }' "SyntaxError: 'fn' is a reserved name and cannot be declared at 1:6."
 
 # UFCS calls to the unary global builtins (to_string/hash/type_of/to_long/
 # to_float). The JIT used to fall through to a property-get TypeError on a

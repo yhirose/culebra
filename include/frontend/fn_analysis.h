@@ -232,7 +232,7 @@ struct FnAnalysis {
     session_top_ = session_top;
     res_ = resolve::resolve_module(programAst, {},
                                    compiler_resolve_options(session));
-    lint::check_shadow(res_);
+    lint::check_resolution(res_);
     fns_.clear();
     FuncInfo info;
     depth_ = 0;

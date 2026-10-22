@@ -144,6 +144,11 @@ out=$(session "fn f(a, b) { a + b }" \
               "let g = f" "let f = 5" "g(3)")
 [[ "$out" == *$'\n'"'done'" ]] || { echo "FAIL own name across lines: $out"; fail=1; }
 
+# A line declaring `fn` is refused as a file's is, and the session goes on.
+out=$(session "for fn in [1] { 1 }" "1 + 1")
+[[ "$out" == *"'fn' is a reserved name and cannot be declared"*$'\n'"2" ]] ||
+  { echo "FAIL fn declared on a line: $out"; fail=1; }
+
 # Out of the VM's slice is a report the session survives, not a crash.
 out=$(session "let t = Tensor.from([[1.0]])" "1 + 1")
 [[ "$out" == *$'\n'"2" ]] || { echo "FAIL slice recovery: $out"; fail=1; }

@@ -256,6 +256,10 @@ struct Resolution {
   // body around it): every declaration, and every read nothing declares.
   std::vector<Declaration> declarations;
   std::vector<const peg::Ast*> unbound_reads;
+  // With Options::record_nodes: each name node a declaration gives `fn`,
+  // which nothing may declare: lint::reserved_binds refuses them, on every
+  // compile (lint::check_resolution) and in the lint pass.
+  std::vector<const peg::Ast*> reserved_binds;
 
   // What a name node resolves to: kNone when nothing declares it, or when
   // the walk never looked it up.
@@ -581,9 +585,20 @@ class Resolver {
     }
   }
 
+  // A name the runtime binds in every function and the grammar reserves
+  // (`fn`) is never a variable, however a declaration spells it (a pattern, a
+  // loop's or a catch's variable, a parameter): such a name node is recorded
+  // for the refusal (reserved_binds) and declares nothing. Another keyword
+  // may still name a parameter (`fn take(unless)`).
+  bool declares_reserved(const peg::Ast& n, std::string_view name) {
+    if (!implicit(name) || !is_keyword(name)) return false;
+    if (opts_.record_nodes) r_.reserved_binds.push_back(&n);
+    return true;
+  }
+
   size_t declare(const peg::Ast& n, std::string_view name, Form form,
                  Spelling spelling = Spelling::Plain) {
-    if (implicit(name)) return kNone;
+    if (declares_reserved(n, name) || implicit(name)) return kNone;
     size_t shadows = r_.lookup(cur_, name);
     size_t sym = symbol_in(cur_, name, kind_of(form), &n);
     r_.symbols[sym].declarations++;
@@ -620,7 +635,7 @@ class Resolver {
   // the global, which refuses it.
   size_t bare_write(const peg::Ast& n, std::string_view name,
                     Spelling spelling = Spelling::Plain) {
-    if (implicit(name)) return kNone;
+    if (declares_reserved(n, name) || implicit(name)) return kNone;
     size_t sym = r_.lookup(cur_, name);
     if (sym == kNone && receiver(name)) return kNone;  // the receiver refuses it
     if (sym == kNone && global(name)) {
