@@ -280,6 +280,8 @@ inline std::unordered_map<int64_t, double>& sound_loudness_table() {
 
 inline constexpr auto kSamplesError =
     "type error: parameter 'samples' expects an Array of Long|Float";
+inline constexpr auto kF0Error =
+    "type error: parameter 'f0' expects an Array of Long|Float|Nil";
 inline constexpr auto kScoreEventsError =
     "type error: parameter 'events' expects an Array of Long|Float";
 
@@ -640,9 +642,13 @@ struct PartialsNoise {
   Param steady, pulsed;
 };
 
+// How many harmonics of `f` are at most 0.45 of the rate: those a harmonic
+// tone sounds and those its pitch is read and measured from.
+inline double harmonics_under(double f, double rate) { return std::floor(0.45 * rate / f); }
+
 // `n` samples of a harmonic tone: its frequency and gain, its spectrum moving
 // in straight lines between the amps given at their times (the k-th of them
-// at k times the frequency, those at or above 0.45 of the rate left out), and
+// at k times the frequency, those above 0.45 of the rate left out), and
 // band noise heard steadily and pulsing with the tone's wave (0.5 + 0.5 sin
 // of its phase), as air through a reed is.
 inline void partials(int64_t n, Param freq, Param gain, const PartialsSpectrum& sp,
@@ -652,7 +658,6 @@ inline void partials(int64_t n, Param freq, Param gain, const PartialsSpectrum& 
   std::vector<double> amps(static_cast<size_t>(widest), 0.0);
   Noise white{noise.seed};
   double fast = 0, slow = 0, phase = 0;
-  double limit = rate * 0.45;
   size_t j = 0;
   for (int64_t i = 0; i < n; i++) {
     double t = static_cast<double>(i) / rate;
@@ -668,7 +673,7 @@ inline void partials(int64_t n, Param freq, Param gain, const PartialsSpectrum& 
       amps[static_cast<size_t>(k)] = a0 + (a1 - a0) * x;
     }
     double s1 = std::sin(phase), c2 = 2.0 * std::cos(phase);
-    double below = std::floor(limit / f);
+    double below = harmonics_under(f, rate);
     int64_t top = below >= static_cast<double>(widest) ? widest : static_cast<int64_t>(below);
     double prev = 0, cur = s1, sum = top > 0 ? amps[0] * s1 : 0.0;
     for (int64_t k = 1; k < top; k++) {
@@ -818,6 +823,16 @@ inline void resample(const double* x, size_t n, double from, double to, std::vec
   }
 }
 
+// The sample a measure every 10 ms has frame t about (t may run past either
+// end), so that Audio.pitch's frames and Audio.harmonics' line up.
+inline int64_t frame_centre(int64_t t, double rate) { return std::llround(static_cast<double>(t) * rate / 100.0); }
+
+// Sample j of `x` (`n` long), 0 outside it or where it is not a number.
+inline double sample_at(const double* x, size_t n, int64_t j) {
+  if (j < 0 || j >= static_cast<int64_t>(n)) return 0.0;
+  return std::isfinite(x[j]) ? x[j] : 0.0;
+}
+
 // The pitch every 10 ms, read as pYIN reads it but with the candidates scored
 // by their harmonics as SWIPE' scores a pitch. YIN alone takes two, three or
 // four periods for one where a tone is weak or its attack rough, and half a
@@ -917,11 +932,6 @@ class PitchReader {
   // The highest frequency a candidate is scored to.
   static constexpr double kScoreTop = 5000.0;
 
-  static double at(const double* x, size_t n, int64_t j) {
-    if (j < 0 || j >= static_cast<int64_t>(n)) return 0.0;
-    return std::isfinite(x[j]) ? x[j] : 0.0;
-  }
-
   // YIN's cumulative-mean-normalized difference of the n_ samples about `c`
   // into cmnd_, and the raw difference into d_ (the frame's overlap with
   // itself shrinking as the lag grows); false where they are near silent, a
@@ -930,7 +940,7 @@ class PitchReader {
     const int64_t start = c - static_cast<int64_t>(n_ / 2);
     energy_[0] = 0.0;
     for (size_t i = 0; i < n_; i++) {
-      frame_[i] = at(x, n, start + static_cast<int64_t>(i));
+      frame_[i] = sample_at(x, n, start + static_cast<int64_t>(i));
       energy_[i + 1] = energy_[i] + frame_[i] * frame_[i];
     }
     if (energy_[n_] / static_cast<double>(n_) < 1e-6) return false;
@@ -971,7 +981,7 @@ class PitchReader {
     const size_t w = window.size();
     const int64_t start = c - static_cast<int64_t>(w / 2);
     for (size_t i = 0; i < 4 * n_; i++)
-      b_[spec_.order(i)] = i < w ? at(x, n, start + static_cast<int64_t>(i)) * window[i] : 0.0;
+      b_[spec_.order(i)] = i < w ? sample_at(x, n, start + static_cast<int64_t>(i)) * window[i] : 0.0;
     spec_.transform(b_.data());
     for (size_t k = 0; k < mag_.size(); k++) mag_[k] = std::sqrt(std::norm(b_[k]));
   }
@@ -1044,7 +1054,7 @@ class PitchReader {
         strongest = e;
       }
     }
-    const int tops[] = {8, static_cast<int>(0.45 * rate_ / f0)};
+    const int tops[] = {8, static_cast<int>(harmonics_under(f0, rate_))};
     for (int top : tops) {
       double num = 0.0, den = 0.0;
       for (int k = 1; k <= std::max(2, top); k++) {
@@ -1135,7 +1145,7 @@ inline PitchTrack pitch_track(const double* x, size_t n, double rate, double low
   PitchReader reader(rate, low, high);
   std::vector<PitchReader::Frame> listed(frames);
   for (size_t t = 0; t < frames; t++) {
-    listed[t] = reader.read(x, n, std::llround(static_cast<double>(t) * rate / 100.0));
+    listed[t] = reader.read(x, n, frame_centre(static_cast<int64_t>(t), rate));
     out.clarity[t] = listed[t].clarity;
   }
   for (size_t i = 0; i < frames;) {
@@ -1162,19 +1172,16 @@ inline PitchTrack pitch_track(const double* x, size_t n, double rate, double low
 
 // The harmonics of a sound along its pitch every 10 ms, and what is left of
 // it without them, as a harmonic-plus-residual analysis (Serra's SMS) splits
-// a sound. Frame t is about sample c(t) = round(t * rate / 100) and reaches
-// to its neighbours' middles through a raised cosine, 0 there; across it the
-// pitch moves in a straight line to each pitched neighbour's (held where the
-// neighbour has none). Harmonic k, counted while k times the pitch is at
-// most 0.45 of the rate, is the frame's projection on a sine and a cosine at
-// k times that pitch's phase, twice it over the window's sum: for a steady
-// tone, the peak Audio.partials sounds it at. Put back together, each
-// frame's harmonics faded into its neighbours' through the same raised
-// cosine (two pitched frames' sum to 1 between their middles, and the last
-// frame's hold past its middle), they are taken from the sound to leave the
-// rest. Held across the frame instead, the pitch of a vibrato of 30 cents
-// leaves its harmonics 30 dB under them in the rest, as loud as a
-// saxophone's breath; moving, 63.
+// a sound. Frame t, about frame_centre(t), reaches to its neighbours' middles
+// through a raised cosine, 0 there, and across it the pitch moves in a
+// straight line to each pitched neighbour's (held, a vibrato leaves its
+// harmonics in the rest about as loud as a saxophone's breath). Harmonic k is
+// the frame's projection on a sine and a cosine at k times that pitch's
+// phase, twice it over the window's sum: for a steady tone, the peak
+// Audio.partials sounds it at. Put back together, each frame's harmonics
+// faded into its neighbours' through the same raised cosine (two pitched
+// frames' sum to 1 between their middles, and the last frame's hold past its
+// middle), they are taken from the sound to leave the rest.
 struct HarmonicsTrack {
   std::vector<double> amps;  // `count` a frame, frame after frame; 0 where unpitched
   std::vector<double> rest;
@@ -1188,18 +1195,18 @@ inline HarmonicsTrack harmonics_track(const double* x, size_t n, const std::vect
   HarmonicsTrack out{std::vector<double>(frames * count, 0.0), std::vector<double>(n, 0.0)};
   std::vector<double> weight;
   std::vector<std::complex<double>> turn, coef(count);
-  auto centre = [&](int64_t t) { return std::llround(static_cast<double>(t) * rate / 100.0); };
-  auto at = [&](int64_t j) { return j < 0 || j >= static_cast<int64_t>(n) || !std::isfinite(x[j]) ? 0.0 : x[j]; };
   for (size_t t = 0; t < frames; t++) {
     const double f = f0[t];
     if (!std::isfinite(f)) continue;
-    const auto top = std::min(count, static_cast<size_t>(std::floor(0.45 * rate / f)));
+    const auto top = static_cast<size_t>(std::min(static_cast<double>(count), harmonics_under(f, rate)));
     if (top == 0) continue;
     const auto ti = static_cast<int64_t>(t);
-    const int64_t c = centre(ti), back = c - centre(ti - 1), ahead = centre(ti + 1) - c;
+    const int64_t c = frame_centre(ti, rate), back = c - frame_centre(ti - 1, rate),
+                  ahead = frame_centre(ti + 1, rate) - c;
     const double before = t > 0 ? f0[t - 1] : NAN, after = t + 1 < frames ? f0[t + 1] : NAN;
-    weight.assign(static_cast<size_t>(back + ahead - 1), 0.0);
-    turn.assign(weight.size(), {});
+    weight.resize(static_cast<size_t>(back + ahead - 1));
+    turn.resize(weight.size());
+    std::fill(coef.begin(), coef.end(), std::complex<double>{});
     double sum = 0.0;
     for (int64_t d = 1 - back; d < ahead; d++) {
       const auto i = static_cast<size_t>(d + back - 1);
@@ -1211,11 +1218,7 @@ inline HarmonicsTrack harmonics_track(const double* x, size_t n, const std::vect
       const double g = d < 0 ? before : after;
       if (std::isfinite(g)) cycles += (g - f) * dd * std::abs(dd) / (2.0 * reach);
       turn[i] = std::polar(1.0, 2.0 * std::numbers::pi * cycles / rate);
-    }
-    std::fill(coef.begin(), coef.end(), std::complex<double>{});
-    for (int64_t d = 1 - back; d < ahead; d++) {
-      const auto i = static_cast<size_t>(d + back - 1);
-      const double wy = weight[i] * at(c + d);
+      const double wy = weight[i] * sample_at(x, n, c + d);
       const auto step = std::conj(turn[i]);
       auto z = step;
       for (size_t k = 0; k < top; k++) {

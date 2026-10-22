@@ -5464,8 +5464,7 @@ inline JitValue _ns_audio_harmonics(JitValue* a, int64_t) {
       continue;
     }
     if (e.tag != TAG_LONG && e.tag != TAG_FLOAT)
-      culebra::throw_runtime_error_at("TypeError", "type error: parameter 'f0' expects an Array of Long|Float|Nil",
-                                      0, 0);
+      culebra::throw_runtime_error_at("TypeError", ad::kF0Error, 0, 0);
     const double f = _culebra_coerce_num(e.tag, e.data);
     if (!(f >= 20 && f < rate / 2)) _ns_audio_fail("Audio.harmonics: a pitch is nil or from 20 Hz below half the rate");
     f0.push_back(f);
