@@ -1,0 +1,469 @@
+# What check.cul looks for in a passage of a song as an instrument module
+# plays it. Each external sound is checked against the notes it was asked
+# for: how far off their pitch is, where the sound drops out or dips, where
+# it starts or stops abruptly or jumps, and where it is clipped. The passage
+# as the song mixes it is checked for clipping and for silence where notes
+# should sound, and its loudness is measured. check.cul is the command.
+#
+# A finding is {at, what, by, external, note, detail, value, small, sound,
+# in}: `at` seconds into the song, `what` one of pitch, dropout, dip, edge,
+# jump, clipping, silent and silence, `by` the voice or drum and `external`
+# its instrument (both nil for the mix), `note` the note's name or nil,
+# `value` how much (cents, dB, a share of the peak in percent, samples or
+# seconds, by `what`), `small` whether it is under what is a problem, and,
+# for a sound, `sound` which of the passage's sounds it is (the same for
+# each place the same sound plays) and `in` seconds into it.
+
+import instrument from './instrument_lib.cul'
+
+let RATE = 44100
+
+# How far a finding is from what is wanted: cents off the score's pitch, dB
+# a dip and a dropout fall below the sound around them, the share of its
+# peak a sound starting or ending there, or a step between two samples of
+# that size, is a problem from, how many times the steps around it a step
+# is to be a jump, and how many seconds of silence where notes sound.
+let LIMITS = {
+  pitch: 25.0,
+  dip: 6.0,
+  dropout: 30.0,
+  edge: 0.2,
+  step: 0.1,
+  jump: 8.0,
+  silence: 1.0,
+}
+
+# The share of its peak an edge or a jump is found small from: the soprano
+# saxophone starts some sounds at 2% (the noise before a recorded attack),
+# and at up to 14% where an attack is taken from inside a recording.
+let SMALL = {edge: 0.05, step: 0.01}
+
+let NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
+
+let name_of = |p| "{NAMES[p % 12]}{p / 12 - 1}"
+
+let db_of = |r| r > 0.0 ? 20.0 * Math.log(r) / Math.log(10.0) : -200.0
+
+let peak_of = |xs| xs.reduce(0.0, |m, v| Math.max(m, Math.abs(v)))
+
+let median = |xs| xs.sorted()[xs.size() / 2]
+
+# The running sums of `xs`'s squares, for any stretch's power.
+fn squares(xs) {
+  let sum = repeat(xs.size() + 1, 0.0)
+  for i in 0..xs.size() {
+    sum[i + 1] = sum[i] + xs[i] * xs[i]
+  }
+  sum
+}
+
+# Runs of `hit(i)` over 0..n as [first, last] pairs: hits at most `gap`
+# apart (1, next to each other) are one run.
+fn runs(n, gap, hit) {
+  let out = []
+  mut open = nil
+  mut last = -1
+  for i in 0..n {
+    continue if !hit(i)
+    if open != nil && i - last > gap {
+      out.push([open, last])
+      open = nil
+    }
+    open = open ?? i
+    last = i
+  }
+  out.push([open, last]) if open != nil
+  out
+}
+
+# A recording's samples as one channel, and its rate.
+fn mono(data) {
+  let made = Audio.decode(data)
+  let chs = made.channels
+  let xs = chs.size() == 1
+    ? chs[0]
+    : iota(chs[0].size()).map(|i| chs.map(|c| c[i]).sum() / chs.size())
+  {samples: xs, rate: made.rate}
+}
+
+# The notes external sound `s` plays, {pitch, at, len, chord, moves} with
+# `at` and `len` in seconds into the sound: a phrase's notes (a note that
+# does not hear its length lasts until the next starts, or the phrase's
+# notes end), or a voice's one pitch. A drum plays none.
+fn notes_of(s) {
+  let first = s.args[0]
+  if type_of(first) == "Long" {
+    return [{
+      pitch: first,
+      at: 0.0,
+      len: s.until - s.at,
+      chord: false,
+      moves: false,
+    }]
+  }
+  return [] if type_of(first) != "Array"
+  let ends = s.until - s.at
+  let moving = ["scoop", "plop", "doit", "fall"]
+  iota(first.size()).map(fn (i) {
+    let n = first[i]
+    let later = first.filter(|m| m.at > n.at).map(|m| m.at)
+    {
+      pitch: n.pitch,
+      at: n.at,
+      len: n.get("len", nil) ??
+        (later.empty() ? ends - n.at : later.min() - n.at),
+      chord: first.filter(|m| m.at == n.at).size() > 1,
+      moves: n.get("marks", []).any(|k| moving.contains(k)),
+    }
+  })
+}
+
+# How far note `n` is from its pitch, in cents, from where the sound repeats
+# itself in the middle of the note (the period searched three semitones
+# either way of the score's, so a strong harmonic is not taken for the
+# note); nil where there is too little sound, and "far" where the sound
+# repeats at none of those periods.
+fn cents_off(xs, rate, n) {
+  let period = rate / (440.0 * 2.0 ** ((n.pitch - 69) / 12.0))
+  let lo = Math.max(2, Math.round(period * 2.0 ** (-3.0 / 12.0)))
+  let hi = Math.round(period * 2.0 ** (3.0 / 12.0))
+  let w = 4 * hi
+  let found = []
+  for part in [0.3, 0.4, 0.5, 0.6, 0.7] {
+    let c = Math.round((n.at + part * n.len) * rate) - w / 2
+    continue if c < 0 || c + w + hi >= xs.size()
+    mut best = nil
+    mut at = 0
+    let d = repeat(hi + 2, 1.0)
+    for tau in lo - 1..hi + 2 {
+      mut r = 0.0
+      mut m = 0.0
+      for j in c..c + w {
+        r += xs[j] * xs[j + tau]
+        m += xs[j] * xs[j] + xs[j + tau] * xs[j + tau]
+      }
+      d[tau] = m > 1e-12 ? 1.0 - 2.0 * r / m : 1.0
+    }
+    for tau in lo..hi + 1 {
+      if best == nil || d[tau] < best {
+        best = d[tau]
+        at = tau
+      }
+    }
+    continue if best == nil || best > 0.5
+    # Between the lags, where a parabola through the three is lowest.
+    let (a, b, e) = (d[at - 1], d[at], d[at + 1])
+    let shift = a + e - 2.0 * b > 1e-12
+      ? 0.5 * (a - e) / (a + e - 2.0 * b)
+      : 0.0
+    let edge = at == lo || at == hi
+    found.push(edge
+      ? "far"
+      : 1200.0 * Math.log(period / (at + shift)) / Math.log(2.0))
+  }
+  return nil if found.empty()
+  return "far" if found.filter(|f| f == "far").size() * 2 > found.size()
+  median(found.filter(|f| f != "far"))
+}
+
+# What is wrong with external sound `s` (one of song.external_sounds()) as
+# `sound` made it: findings with `at` in seconds into the song.
+fn sound_findings(s, sound, limits) {
+  let heard = mono(sound.data())
+  let (xs, rate) = (heard.samples, heard.rate)
+  let found = []
+  let say = |i, what, note, detail, value, small| found.push({
+    at: s.at + i / (rate * 1.0),
+    what: what,
+    by: s.by,
+    external: s.external,
+    note: note,
+    detail: detail,
+    value: value,
+    small: small,
+    in: i / (rate * 1.0),
+  })
+  let peak = peak_of(xs)
+  if peak == 0.0 {
+    say(0, "silent", nil, "the sound is silent", 0, false)
+    return found
+  }
+  let n = xs.size()
+  let percent = |v| Math.round(100.0 * Math.abs(v) / peak)
+  # Abrupt ends: the first or last sample far from silence.
+  for end in [{i: 0, way: "starts"}, {i: n - 1, way: "ends"}] {
+    let v = xs[end.i]
+    let share = Math.abs(v) / peak
+    if share > SMALL.edge {
+      say(
+        end.i,
+        "edge",
+        nil,
+        "{end.way} at {percent(v)}% of its peak",
+        percent(v),
+        share < limits.edge,
+      )
+    }
+  }
+  # Clipped: three samples in a row at full scale, or more.
+  let full = |i| Math.abs(xs[i]) >= 0.9999
+  for r in runs(n, Math.round(0.05 * rate), |i| i >= 2 && full(i) && full(i - 1) && full(i - 2)) {
+    let count = xs
+      .slice(r[0], r[1] + 1)
+      .filter(|v| Math.abs(v) >= 0.9999)
+      .size()
+    say(r[0], "clipping", nil, "{count} samples at full scale", count, false)
+  }
+  # Jumps: a step between two samples many times the steps around it, and
+  # three times the largest a period before and after, where the note
+  # sounding then (or the nearest) repeats: a tone's own steep edge recurs
+  # every period, a click does not. A drum plays no note, and is not checked.
+  let notes = notes_of(s)
+  let period = fn (i) {
+    let t = i / (rate * 1.0)
+    let near = notes.find(|m| m.at <= t && t < m.at + m.len) ??
+      notes.min_by(|m| Math.abs(m.at - t))
+    rate / (440.0 * 2.0 ** ((near.pitch - 69) / 12.0))
+  }
+  let steps = iota(n).map(|i| i == 0 ? 0.0 : xs[i] - xs[i - 1])
+  let s2 = squares(steps)
+  let half = Math.round(0.01 * rate)
+  let largest = |a, b| steps
+    .slice(Math.max(1, a), Math.min(n, b))
+    .reduce(0.0, |m, v| Math.max(m, Math.abs(v)))
+  let jumped = fn (i) {
+    let d = Math.abs(steps[i])
+    return false if i == 0 || d <= SMALL.step * peak || notes.empty()
+    let (a, b) = (Math.max(1, i - half), Math.min(n, i + half + 1))
+    let around = (s2[b] - s2[a] - d * d) / Math.max(1, b - a - 1)
+    return false if d * d <= limits.jump * limits.jump * around
+    let p = period(i)
+    let w = Math.max(2, Math.round(0.03 * p))
+    let (back, on) = (Math.round(i - p), Math.round(i + p))
+    d >
+      3.0 *
+        Math.max(largest(back - w, back + w + 1), largest(on - w, on + w + 1))
+  }
+  for r in runs(n, Math.round(0.02 * rate), jumped) {
+    let d = steps
+      .slice(r[0], r[1] + 1)
+      .reduce(0.0, |m, v| Math.max(m, Math.abs(v)))
+    say(
+      r[0],
+      "jump",
+      nil,
+      "a step of {percent(d)}% of its peak",
+      percent(d),
+      d < limits.step * peak,
+    )
+  }
+  # The level every 5 ms over 10 ms, for the notes' dips and dropouts.
+  let x2 = squares(xs)
+  let frame = Math.round(0.01 * rate)
+  let hop = Math.round(0.005 * rate)
+  let frames = Math.max(0, (n - frame) / hop + 1)
+  let level = iota(frames).map(|k| db_of(Math.sqrt((x2[k * hop + frame] -
+    x2[k * hop]) /
+    frame)))
+  for note in notes_of(s) {
+    let name = name_of(note.pitch)
+    # Its steady part: past its attack, before its release.
+    let (
+      k0,
+      k1,
+    ) = (
+      Math.round((note.at + 0.04) * rate / hop),
+      Math.round((note.at + note.len - 0.03) * rate / hop) - frame / hop,
+    )
+    if k1 - k0 >= 12 && k1 < frames {
+      let around = 20
+      let ref = iota(k1 -
+        k0 +
+        1).map(|j| median(level.slice(
+        Math.max(k0, k0 + j - around),
+        Math.min(k1, k0 + j + around) + 1,
+      )))
+      # Stretches more than `depth` dB under the level around them, at least
+      # `least` seconds long.
+      let under = |depth, least| runs(
+        k1 - k0 + 1,
+        1,
+        |j| level[k0 + j] < ref[j] - depth,
+      ).filter(|r| (r[1] - r[0] + 1) * hop >= least * rate)
+      let tell = fn (what, r) {
+        let fell = Math.round(iota(r[1] - r[0] + 1)
+          .map(|j| ref[r[0] + j] - level[k0 + r[0] + j])
+          .max())
+        let ms = Math.round((r[1] - r[0] + 1) * hop * 1000.0 / rate)
+        say(
+          (k0 + r[0]) * hop + frame / 2,
+          what,
+          name,
+          "-{fell} dB for {ms} ms",
+          fell,
+          false,
+        )
+      }
+      # A dip comes back up, to within 3 dB of the level in the 30 ms before
+      # it: a note fading toward its end, or swelling from its start, does
+      # not. A dropout's shallower edges are no dip of their own.
+      let loudest = |a, b| a > b
+        ? -200.0
+        : level.slice(k0 + a, k0 + b + 1).max()
+      let back = |r| r[0] > 0 &&
+        r[1] < k1 - k0 &&
+        loudest(r[1] + 1, Math.min(k1 - k0, r[1] + 6)) >=
+          loudest(Math.max(0, r[0] - 6), r[0] - 1) - 3.0
+      let outs = under(limits.dropout, 0.02)
+      for r in outs {
+        tell("dropout", r)
+      }
+      for r in under(limits.dip, 0.03) {
+        tell("dip", r) if back(r) && !outs.any(|o| o[0] <= r[1] && r[0] <= o[1])
+      }
+    }
+    if note.len >= 0.1 && !note.chord && !note.moves {
+      let off = cents_off(xs, rate, note)
+      let mid = Math.round((note.at + note.len / 2) * rate)
+      if off == "far" {
+        say(
+          mid,
+          "pitch",
+          name,
+          "not within 3 semitones of the score's {name}",
+          nil,
+          false,
+        )
+      } else if off != nil && Math.abs(off) > limits.pitch {
+        let cents = Math.round(off)
+        say(
+          mid,
+          "pitch",
+          name,
+          "{cents >= 0 ? "+" : ""}{cents} cents (score {name})",
+          cents,
+          false,
+        )
+      }
+    }
+  }
+  found
+}
+
+# What is wrong with the passage as the song mixes it: `mix` its samples
+# from `start` seconds into the song, `lead` of them before the passage.
+fn mix_findings(song, mix, start, lead, limits) {
+  let found = []
+  let say = |i, what, detail, value| found.push({
+    at: start + i / (RATE * 1.0),
+    what: what,
+    by: nil,
+    external: nil,
+    note: nil,
+    detail: detail,
+    value: value,
+    small: false,
+    sound: nil,
+    in: nil,
+  })
+  for r in runs(mix.size(), Math.round(0.05 * RATE), |i| Math.abs(mix[i]) > 1.0) {
+    let count = mix.slice(r[0], r[1] + 1).filter(|v| Math.abs(v) > 1.0).size()
+    say(r[0], "clipping", "{count} samples past full scale", count)
+  }
+  # Silence where the score has notes sounding, every 100 ms.
+  let notes = song.events().map(|e| [e.at, e.at + e.len])
+  let frame = RATE / 10
+  let x2 = squares(mix)
+  let quiet = fn (k) {
+    let t = start + (k + 0.5) * frame / (RATE * 1.0)
+    let i = k * frame
+    i >= lead &&
+      db_of(Math.sqrt((x2[i + frame] - x2[i]) / frame)) < -60.0 &&
+      notes.any(|e| e[0] <= t && t < e[1])
+  }
+  for r in runs(mix.size() / frame, 1, quiet) {
+    let secs = (r[1] - r[0] + 1) * frame / (RATE * 1.0)
+    say(
+      r[0] * frame,
+      "silence",
+      "{secs:.1f} s silent where notes sound",
+      secs,
+    ) if secs >= limits.silence
+  }
+  found
+}
+
+# The passage of `w.song` from `from` to `to` (points as render() takes
+# them, or nil), played by the instruments of module `sounds` told `w.set`
+# over the song's parameters, checked against `limits` (LIMITS where it
+# says nothing): {sounds, seconds, loudness, peak, found}, `found` in the
+# order of the song. A sound that plays in several places (the instrument
+# handed the same each time) is checked once, and what is found in it is
+# found in each place.
+fn findings(sounds, w, from, to, limits = {}) {
+  let lim = {...LIMITS, ...limits}
+  # Each sound an instrument made, by its key and what it was handed.
+  let made = {}
+  let key_of = |name, args| "{name} {JSON.stringify(args)}"
+  let kept = |kind, name, f| instrument.calls_through(f, kind ==
+    "drums", fn (args, make) {
+    let key = key_of(name, args)
+    made[key] = made.get(key, nil) ?? make(args)
+    made[key]
+  })
+  let played = instrument.told(sounds, w.set, kept)
+  let song = Audio.Kauai.load(
+    w.song,
+    voices: played.voices,
+    drums: played.drums,
+  )
+  let mix = song.render(from: from, to: to)
+  let first = from == nil ? 0.0 : song.seconds(from)
+  let start = Math.max(0.0, first - 1.0)
+  let lead = Math.round((first - start) * RATE)
+  let listed = song.external_sounds(from: from, to: to)
+  mut found = mix_findings(song, mix, start, lead, lim)
+  mut seconds = 0.0
+  # Which sound each is, numbered as they first play, and what is in it.
+  let ids = {}
+  let inside = {}
+  mut next = 0
+  for s in listed {
+    let key = key_of(s.external, s.args)
+    if !ids.has(key) {
+      inside[key] = sound_findings(s, made[key], lim)
+      ids[key] = next
+      next += 1
+    }
+    seconds += s.until - s.at
+    found += inside[key].map(|f| {
+      ...f,
+      at: s.at + f.in,
+      by: s.by,
+      sound: ids[key],
+    })
+  }
+  let heard = mix.slice(lead, mix.size())
+  {
+    sounds: listed.size(),
+    seconds: seconds,
+    loudness: Audio.integrated_loudness(heard),
+    peak: db_of(peak_of(heard)),
+    found: found.sorted_by(|f| f.at),
+  }
+}
+
+# findings() for check.cul's program: `call` is the JSON of {song, set,
+# from, to, limits}; prints what it found as JSON.
+fn inspect(sounds, call) {
+  let c = JSON.parse(call)
+  println(JSON.stringify(findings(
+    sounds,
+    {song: c.song, set: c.set},
+    c.from,
+    c.to,
+    c.limits,
+  )))
+}
+
+export {LIMITS, SMALL, name_of, notes_of, cents_off, sound_findings, mix_findings, findings, inspect}

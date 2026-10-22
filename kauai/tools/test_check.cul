@@ -1,0 +1,261 @@
+import lib from './check_lib.cul'
+
+let TOOL = FS.join(FS.dirname(FS.abspath(Sys.script)), "check.cul")
+
+# An instrument that plays each pitch as a quarter of a second of a tone and
+# its harmonic, faded in and out over 10 ms, and plays some pitches with the
+# fault a parameter names: C5 `sharp` cents off, D5 silent for 30 ms
+# (`gap`), F5 10 dB down for 50 ms (`dip`), G5 from its full level at once
+# with an offset (`edge`), A5 with a sample out of place (`jump`), B5 three
+# times too loud (`clip`), C6 silent (`mute`). A gap or a dip ramps over
+# 2 ms, so it is no step. With `steep`, every pitch is a sawtooth, which
+# falls from its top to its bottom in one sample every period, as a chip's
+# wave does; with `fade`, every pitch falls 12 dB over 60 ms from 0.13 s and
+# stays there to its end; with `lift`, every pitch starts on an offset that
+# dies away over 10 ms, at a few percent of its peak; with `nudge`, every
+# pitch has a sample 0.03 out of place at 0.125 s. As a module, for the
+# command, and as its exports, for the library here.
+let TONE = "
+let gain = |i, a, b, low| low + (1.0 - low) * Math.min(1.0, Math.max(0.0, Math.max(a - i, i - b) / 88.0))
+let tone = fn (pitch, params) \{
+  let faulty = |p, name| pitch == p && params.get(name, 0.0) > 0.0
+  let hz = 440.0 * 2.0 ** ((pitch - 69 + (pitch == 72 ? params.get('sharp', 0.0) / 100.0 : 0.0)) / 12.0)
+  let n = 11025
+  let edge = faulty(79, 'edge')
+  let xs = iota(n).map(fn (i) \{
+    let ramp = edge ? 1.0 : Math.min(1.0, Math.min(i, n - 1 - i) / 441.0)
+    let w = 2.0 * Math.pi * hz * i / 44100.0
+    let wave = params.get('steep', 0.0) > 0.0 ? 2.0 * (hz * i / 44100.0 - Math.floor(hz * i / 44100.0)) - 1.0 : Math.sin(w) + 0.3 * Math.sin(2.0 * w)
+    let x = 0.3 * ramp * (wave + (edge ? 1.0 : 0.0))
+    cond \{
+      faulty(84, 'mute') => 0.0,
+      faulty(74, 'gap') => x * gain(i, 4410, 5733, 0.0),
+      faulty(77, 'dip') => x * gain(i, 3528, 5733, 0.3),
+      faulty(81, 'jump') && i == 5512 => x + 0.4,
+      faulty(83, 'clip') => 3.0 * x,
+      params.get('fade', 0.0) > 0.0 => x * Math.max(0.25, Math.min(1.0, 1.0 - (i - 5733) * 0.75 / 2646.0)),
+      params.get('lift', 0.0) > 0.0 => x + 0.03 * Math.max(0.0, 1.0 - i / 441.0),
+      params.get('nudge', 0.0) > 0.0 && i == 5512 => x + 0.03,
+      _ => x,
+    }
+  })
+  Audio.Sound(xs)
+}
+let voices = \{tone: tone}
+export \{voices}
+"
+
+let gain = |i, a, b, low| low +
+  (1.0 - low) * Math.min(1.0, Math.max(0.0, Math.max(a - i, i - b) / 88.0))
+let SOUNDS = {voices: {tone: fn (pitch, params) {
+  let faulty = |p, name| pitch == p && params.get(name, 0.0) > 0.0
+  let hz = 440.0 *
+    2.0 **
+      ((pitch - 69 + (pitch == 72 ? params.get('sharp', 0.0) / 100.0 : 0.0)) /
+        12.0)
+  let n = 11025
+  let edge = faulty(79, 'edge')
+  let xs = iota(n).map(fn (i) {
+    let ramp = edge ? 1.0 : Math.min(1.0, Math.min(i, n - 1 - i) / 441.0)
+    let w = 2.0 * Math.pi * hz * i / 44100.0
+    let wave = params.get('steep', 0.0) > 0.0
+      ? 2.0 * (hz * i / 44100.0 - Math.floor(hz * i / 44100.0)) - 1.0
+      : Math.sin(w) + 0.3 * Math.sin(2.0 * w)
+    let x = 0.3 * ramp * (wave + (edge ? 1.0 : 0.0))
+    cond {
+      faulty(84, 'mute') => 0.0,
+      faulty(74, 'gap') => x * gain(i, 4410, 5733, 0.0),
+      faulty(77, 'dip') => x * gain(i, 3528, 5733, 0.3),
+      faulty(81, 'jump') && i == 5512 => x + 0.4,
+      faulty(83, 'clip') => 3.0 * x,
+      params.get('fade', 0.0) >
+        0.0 => x *
+        Math.max(0.25, Math.min(1.0, 1.0 - (i - 5733) * 0.75 / 2646.0)),
+      params.get('lift', 0.0) >
+        0.0 => x + 0.03 * Math.max(0.0, 1.0 - i / 441.0),
+      params.get('nudge', 0.0) > 0.0 && i == 5512 => x + 0.03,
+      _ => x,
+    }
+  })
+  Audio.Sound(xs)
+}}}
+
+# A note every quarter of a second, C5 to C6.
+let SONG = "band Solo \{
+  voice Lead  external Tone  plays melody  vol 60
+}
+song Line \{
+  tempo 240
+  band Solo
+  melody in C5..B5
+  Verse
+}
+section Verse \{
+  C  c4 d e f
+  G  g4 a b c'
+}
+"
+
+let scratch = fn () {
+  let dir = FS.join(FS.temp_dir(), "kauai-check-test-{UUID.v4()}")
+  FS.mkdir(dir)
+  FS.write(FS.join(dir, "line.kau"), SONG)
+  FS.write(FS.join(dir, "tone.cul"), TONE)
+  dir
+}
+
+let checked = |dir, set, limits| lib.findings(
+  SOUNDS,
+  {song: FS.join(dir, "line.kau"), set: set},
+  nil,
+  nil,
+  limits,
+)
+
+# What is found in the one sound of `pitch` with `params`, as the song's
+# quarter note at its top.
+let alone = |pitch, params, limits| lib.sound_findings(
+  {at: 0.0, until: 0.25, by: "Lead", external: "tone", args: [pitch, params]},
+  SOUNDS.voices.tone(pitch, params),
+  limits,
+)
+
+@test
+fn a_clean_instrument_has_nothing_found() {
+  let dir = scratch()
+  defer {
+    FS.remove(dir, recursive: true)
+  }
+  let got = checked(dir, {}, {})
+  assert_eq(got.found, [])
+  assert_eq((got.sounds, got.seconds), (8, 2.0))
+  assert_true(got.loudness > -40.0 && got.peak < 0.0)
+  # A tone whose wave falls in one sample every period has no jump: the
+  # step recurs a period before and after.
+  assert_eq(alone(72, {steep: 1.0}, lib.LIMITS), [])
+  # Nor is a note that fades 12 dB toward its end a dip: it does not come
+  # back up.
+  assert_eq(alone(72, {fade: 1.0}, lib.LIMITS), [])
+  # A sound that starts at a few percent of its peak starts abruptly, but
+  # less than is a problem: small.
+  assert_eq(
+    alone(72, {lift: 1.0}, lib.LIMITS).map(|f| [f.what, f.small]),
+    [["edge", true]],
+  )
+  # So is a step of a few percent in a low note, whose own steps are small.
+  assert_eq(
+    alone(40, {nudge: 1.0}, lib.LIMITS).map(|f| [f.what, f.small]),
+    [["jump", true]],
+  )
+}
+
+@test
+fn each_fault_is_found_at_its_note() {
+  let dir = scratch()
+  defer {
+    FS.remove(dir, recursive: true)
+  }
+  let faults = {
+    sharp: 40.0,
+    gap: 1.0,
+    dip: 1.0,
+    edge: 1.0,
+    jump: 1.0,
+    clip: 1.0,
+    mute: 1.0,
+  }
+  let got = checked(dir, faults, {silence: 0.15}).found
+  # What, at which note, and when: the middle of C5, D5's dropout and F5's
+  # dip from 0.1 and 0.08 s in, G5's start and end, A5's sample at 0.125 s,
+  # B5 from where it first reaches full scale, and C6 (and where it should
+  # sound, a little later in the mix, which is checked every 100 ms).
+  let said = got.map(|f| [f.what, f.note, f.at])
+  assert_eq(
+    said.map(|f| f.slice(0, 2)),
+    [
+      ["pitch", "C5"],
+      ["dropout", "D5"],
+      ["dip", "F5"],
+      ["edge", nil],
+      ["edge", nil],
+      ["jump", nil],
+      ["clipping", nil],
+      ["silent", nil],
+      ["silence", nil],
+    ],
+  )
+  let near = |a, b| Math.abs(a - b) < 0.006
+  assert_true(near(said[0][2], 0.125) &&
+    near(said[3][2], 1.0) &&
+    near(said[4][2], 1.25) &&
+    near(said[5][2], 1.375))
+  assert_true(got[1].at > 0.35 &&
+    got[1].at < 0.38 &&
+    got[2].at > 0.83 &&
+    got[2].at < 0.88)
+  assert_true(got[0].detail.starts_with("+40 cents"))
+  # A tighter limit finds what the default leaves: 20 cents off.
+  assert_eq(
+    alone(72, {sharp: 20.0}, {...lib.LIMITS, pitch: 10.0}).map(|f| f.detail),
+    ["+20 cents (score C5)"],
+  )
+}
+
+@test
+fn the_command_says_each_on_a_line_and_fails() {
+  let dir = scratch()
+  defer {
+    FS.remove(dir, recursive: true)
+  }
+  # C5 twice, the same sound, 40 cents sharp and starting a little abruptly.
+  FS.write(
+    FS.join(dir, "twice.kau"),
+    SONG.replace("c4 d e f", "c4 c r r").replace("g4 a b c'", "r1"),
+  )
+  let r = Proc.run(
+    [
+      Sys.executable,
+      "--vm",
+      TOOL,
+      "--sounds",
+      "tone.cul",
+      "--set",
+      "sharp=40",
+      "--set",
+      "lift=1",
+      "--json",
+      "found.json",
+      "twice.kau",
+    ],
+    cwd: dir,
+  )
+  assert_eq((r.code, r.stderr), (1, ""))
+  let lines = r.stdout.trim().split("\n").map(|l| l.to_string())
+  # What a sound has is one line, wherever it plays; a small thing is
+  # counted, not listed, and is not what is found.
+  assert_eq(
+    lines[0],
+    "0:00.12  C5  tone  pitch  +40 cents (score C5)  (also 0:00.37, 2 places)",
+  )
+  assert_true(lines[1].starts_with("small: 2 edges (") &&
+    lines[1].ends_with(") in 1 sound; --all lists them"))
+  assert_eq(lines[-1], "1 found in 2 sounds (0.5 s)")
+  # The JSON has each place.
+  let json = JSON.parse(FS.read(FS.join(dir, "found.json")))
+  assert_eq(
+    json.found.map(|f| [
+      f.what,
+      f.small,
+      Math.round(f.at * 1000) / 1000.0,
+      f.sound,
+      f.external,
+      f.by,
+    ]),
+    [
+      ["edge", true, 0.0, 0, "tone", "Lead"],
+      ["pitch", false, 0.125, 0, "tone", "Lead"],
+      ["edge", true, 0.25, 0, "tone", "Lead"],
+      ["pitch", false, 0.375, 0, "tone", "Lead"],
+    ],
+  )
+}

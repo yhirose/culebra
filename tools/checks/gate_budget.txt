@@ -230,5 +230,7 @@ languages.samples 130
 # decoder it tested: the agent's stream is read with Http's events:, which
 # test_http_server.cul covers. 33 since kauai/tools/test_listen.cul (two
 # ways of a passage are heard as 1 and 2 at the same loudness, and the one
-# kept goes on to the next round).
-examples.suites 33
+# kept goes on to the next round). 34 since kauai/tools/test_check.cul (each
+# fault an instrument's sound can have is found at its note, and nothing in
+# a clean one).
+examples.suites 34

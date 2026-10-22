@@ -54,6 +54,58 @@ sound already, so what is evened out is how the passage plays. Where either
 would then pass full scale, both are lowered alike. A song is rendered as
 `culebra play --wav` renders it, on the VM, the two side by side.
 
+## check.cul: what is wrong, measured before listening
+
+`check.cul` plays a passage of a song with an instrument module and looks
+for what can be found by measuring, so that listening is spent on what
+cannot. Each external sound the passage plays is checked against the notes
+it was asked for; the passage as the song mixes it is checked as a whole.
+
+```sh
+culebra kauai/tools/check.cul --sounds kauai/sounds/soprano_sax \
+  --from Theme --to Bridge song.kau
+```
+
+```
+0:12.40  E5  sax  pitch  +31 cents (score E5)
+0:18.05  G5  sax  dropout  -34 dB for 25 ms  (also 0:42.05, 2 places)
+0:21.98  -  sax  edge  starts at 40% of its peak
+0:33.10  -  mix  clipping  12 samples past full scale
+small: 13 edges (5-14%), 24 steps (2-5%) in 11 sounds; --all lists them
+mix: -16.2 LUFS, peak -0.3 dBFS
+4 found in 23 sounds (11.2 s)
+```
+
+| Found | In | When |
+|---|---|---|
+| `pitch` | a note | its middle repeats at a period more than `--pitch` cents (25) off the score's, searched three semitones either way so a harmonic is not taken for the note; a note under 100 ms, in a chord, or marked to slide (scoop, plop, doit, fall) is not measured |
+| `dropout` | a note | its level falls `--dropout` dB (30) under the level around it for 20 ms or more, past its first 40 ms and before its last 30 ms |
+| `dip` | a note | the same, `--dip` dB (6) for 30 ms or more, coming back to within 3 dB of where it was (a note fading toward its end is no dip), where it is no dropout |
+| `edge` | a sound | its first or last sample is `--edge` (0.2) of its peak or more: it starts or stops abruptly; small from 0.05 |
+| `jump` | a sound | a step between two samples `--step` (0.1) of its peak or more, `--jump` times (8) the steps in the 10 ms around it, and three times the largest a period of its note before and after (a wave's own steep edge recurs every period, a click does not); small from 0.01. A drum's sound is not checked |
+| `clipping` | a sound, the mix | three samples in a row at full scale in a sound; samples past full scale in the mix |
+| `silent` | a sound | nothing in it at all |
+| `silence` | the mix | `--silence` seconds (1) under -60 dBFS where the score has notes sounding |
+
+The small edges and jumps are counted on one line, and `--all` lists them
+too: they were found in the soprano saxophone, whose sounds start at up to
+14% where an attack is taken from inside a recording, and where the noise
+before a recorded attack gives way to its silence. A sound that plays in
+several places (Kauai hands the instrument the same each time, and plays
+the one sound it makes) is checked once, and what is found in it is one
+line, at the first place, with the others after it.
+
+`--sounds`, `--set`, `--from` and `--to` are `listen.cul`'s. `--json FILE`
+writes what is found in every place as JSON: `found` (each `{at, what, by,
+external, note, detail, value, small, sound, in}`, `at` seconds into the
+song, `value` how much, `sound` which sound it is in and `in` how far into
+it), `sounds` and `seconds` (how many external sounds were checked, and for
+how long they play), and the mix's `loudness` (`Audio.integrated_loudness`)
+and `peak` (dBFS). The exit status is 1 when something that is not small
+is found. A sound is checked as the instrument made it, before the song
+weighs it and mixes it in; what Kauai hands the instrument for each, and
+where it plays, is `song.external_sounds()`.
+
 ## make_sounds.cul: an instrument's sounds made beforehand
 
 `make_sounds.cul` asks an instrument module for every sound Kauai songs need

@@ -1,0 +1,210 @@
+# What is wrong with a passage of a song as an instrument module plays it,
+# found by measuring, before anyone listens: each external sound against the
+# notes it was asked for (pitch, dropouts and dips, abrupt ends and jumps,
+# clipping), and the passage as the song mixes it (clipping, silence where
+# notes sound, and how loud it is). README.md says more.
+#
+#   culebra kauai/tools/check.cul --sounds kauai/sounds/soprano_sax \
+#     --from Theme --to Bridge song.kau
+#
+# A line for each thing found, in the song's order, and a summary; the exit
+# status is 1 when something is found.
+
+import instrument from './instrument_lib.cul'
+import lib from './check_lib.cul'
+
+let L = lib.LIMITS
+let SPEC = {
+  name: 'check.cul',
+  doc: "what is wrong with a passage of a song as an instrument module plays it",
+  args: [
+    {
+      name: 'sounds',
+      type: 'String',
+      default: nil,
+      doc: 'the instrument module, as for culebra play --sounds',
+    },
+    {
+      name: 'set',
+      type: 'String',
+      default: [],
+      repeated: true,
+      doc: "NAME=VALUE: the instruments play with the parameter NAME at VALUE, over the song's",
+    },
+    {
+      name: 'from',
+      type: 'String',
+      default: nil,
+      doc: "where the passage starts: a mark's name, seconds, or minutes and seconds (1:23.5)",
+    },
+    {
+      name: 'to',
+      type: 'String',
+      default: nil,
+      doc: "where it ends: a mark's name, seconds, or minutes and seconds",
+    },
+    {
+      name: 'json',
+      type: 'String',
+      default: nil,
+      doc: 'also write what is found to this file, as JSON',
+    },
+    {
+      name: 'pitch',
+      type: 'Float',
+      default: L.pitch,
+      doc: "cents off the score's pitch a note may be ({L.pitch})",
+    },
+    {
+      name: 'dip',
+      type: 'Float',
+      default: L.dip,
+      doc: "dB a note may dip under the sound around it for 30 ms ({L.dip})",
+    },
+    {
+      name: 'dropout',
+      type: 'Float',
+      default: L.dropout,
+      doc: "dB under the sound around it that is a dropout for 20 ms ({L.dropout})",
+    },
+    {
+      name: 'edge',
+      type: 'Float',
+      default: L.edge,
+      doc: "the share of its peak a sound starting or ending there is a problem from ({L.edge}; small from {lib.SMALL.edge})",
+    },
+    {
+      name: 'step',
+      type: 'Float',
+      default: L.step,
+      doc: "the share of its peak a jump's step is a problem from ({L.step}; small from {lib.SMALL.step})",
+    },
+    {
+      name: 'jump',
+      type: 'Float',
+      default: L.jump,
+      doc: "how many times the steps around it a step between two samples is to be a jump ({L.jump})",
+    },
+    {
+      name: 'silence',
+      type: 'Float',
+      default: L.silence,
+      doc: "seconds of silence where notes sound that are found ({L.silence})",
+    },
+    {
+      name: 'all',
+      type: 'Bool',
+      default: false,
+      doc: 'list the small edges and jumps too, not only how many',
+    },
+    {name: 'song', type: 'String', positional: true, doc: 'the song (.kau)'},
+  ],
+}
+
+fn fail(message) {
+  IO.eprintln("check: {message}")
+  Sys.exit(2)
+}
+
+let args = Args.parse(Sys.argv, SPEC)
+fail("no song {args.song}") if !FS.exists(args.song)
+let module = args.sounds == nil ? nil : instrument.module_at(args.sounds)
+fail("no instrument module at {args.sounds}") if args.sounds != nil &&
+  module == nil
+let set = try {
+  instrument.params_of(args.set)
+} catch e: String {
+  fail(e)
+}
+let limits = {
+  pitch: args.pitch,
+  dip: args.dip,
+  dropout: args.dropout,
+  edge: args.edge,
+  step: args.step,
+  jump: args.jump,
+  silence: args.silence,
+}
+let call = JSON.stringify({
+  song: FS.abspath(args.song),
+  set: set,
+  from: args.from,
+  to: args.to,
+  limits: limits,
+})
+let run = try {
+  instrument.program(
+    module,
+    FS.join(FS.dirname(FS.abspath(Sys.script)), "check_lib.cul"),
+    "inspect",
+    call,
+  )
+} catch e: String {
+  fail(e)
+}
+let r = Proc.run(run.cmd)
+FS.remove(run.entry)
+if r.code != 0 {
+  IO.eprint(r.stderr)
+  fail("{args.song} could not be checked")
+}
+let got = JSON.parse(r.stdout.trim().split("\n")[-1].to_string())
+
+fn clock(t) {
+  let m = to_long(Math.floor(t / 60.0))
+  let s = t - m * 60
+  "{m}:{s < 10 ? "0" : ""}{s:.2f}"
+}
+
+# What is found, a line for each: the same thing found in the same sound in
+# several places is one line, at the first, with the others after it.
+fn grouped(found) {
+  let order = []
+  let places = {}
+  for f in found {
+    let key = f.sound == nil
+      ? "mix {order.size()}"
+      : "{f.sound} {f.what} {f.in} {f.detail}"
+    if !places.has(key) {
+      order.push(key)
+      places[key] = {f: f, at: []}
+    }
+    places[key].at.push(f.at)
+  }
+  order.map(|k| places[k])
+}
+
+fn line(g) {
+  let f = g.f
+  let what = f.small ? "{f.what} (small)" : f.what
+  let n = g.at.size()
+  let others = g.at.slice(1, Math.min(n, 5)).map(clock).join(" ")
+  let also = n == 1 ? "" : "  (also {others}{n > 5 ? " ..." : ""}, {n} places)"
+  "{clock(f.at)}  {f.note ?? "-"}  {f.external ?? "mix"}  {what}  {f.detail}{also}"
+}
+
+let problems = grouped(got.found.filter(|f| !f.small))
+let small = got.found.filter(|f| f.small)
+let shown = args.all ? grouped(got.found) : problems
+for g in shown {
+  println(line(g))
+}
+if !small.empty() {
+  let counted = |n, one| "{n} {one}{n == 1 ? "" : "s"}"
+  let kinds = [
+    {what: "edge", name: "edge"},
+    {what: "jump", name: "step"},
+  ].map(fn (k) {
+    let vs = small.filter(|f| f.what == k.what).map(|f| f.value)
+    vs.empty() ? nil : "{counted(vs.size(), k.name)} ({vs.min()}-{vs.max()}%)"
+  }).filter(|p| p != nil)
+  let sounds = counted(small.map(|f| f.sound).to_set().size(), "sound")
+  println("small: {kinds.join(", ")} in {sounds}{args.all ? "" : "; --all lists them"}")
+}
+let loud = got.loudness == nil
+  ? "silent"
+  : "{got.loudness:.1f} LUFS, peak {got.peak:.1f} dBFS"
+println("mix: {loud}")
+println("{problems.size()} found in {got.sounds} sounds ({got.seconds:.1f} s)")
+FS.write(args.json, JSON.stringify(got) + "\n") if args.json != nil
+Sys.exit(problems.empty() ? 0 : 1)
