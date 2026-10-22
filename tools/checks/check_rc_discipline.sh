@@ -103,16 +103,16 @@ brw=$(grep "emit_borrow_to_owned(" include/jit/jit.h \
       | grep -v "llvm::Value\* emit_borrow_to_owned" | grep -vc "^[[:space:]]*//")
 ratchet borrow "borrow->owned conversions (jit.h)" "$brw" 5
 
-# Native-method endpoints consume self via RAII (JitMethodSelf at entry), not
-# a tail release a throw would skip. sendable_rt.h is fully converted; keep
-# it at zero.
+# A native method's body borrows `self`: the entry it runs behind
+# (_jit_native_entry) releases it on every exit, so a tail release would be a
+# second one. sendable_rt.h is fully converted; keep it at zero.
 tail_self=$(grep -c "culebra_runtime_value_release(self\.tag, self\.data)" \
             include/conc/sendable.h || true)
 ratchet tail-self "tail self-releases (sendable_rt.h)" "$tail_self" 0
 
 # Helper-side (runtime C++) bare RC calls per file (GAP3-ENFORCE ratchet). A
 # helper that owns a value across a may-throw region uses the RAII forms
-# (JitOwnedVal / JitMethodSelf / JitMethodArgs / JitUnwindRelease); a
+# (JitOwnedVal / JitUnwindRelease); a
 # new bare call is either a normal-path consume that belongs in one of those
 # or fresh migration debt — justify it in review before raising a ceiling.
 count_bare() { # file
@@ -152,7 +152,10 @@ count_bare() { # file
 # that holds every value in JitOwnedVal, so the slab path's hand-placed
 # releases and its splat retain are gone, and the kwarg hook no longer takes
 # the receiver (a throw out of the resolver used to strand it).
-ratchet stdlib "bare RC calls (stdlib_rt.h)" "$(count_bare include/stdlib/bindings.h)" 82
+# 82 -> 56 (2026-10-22): the handle methods borrow `self` and their arguments
+# behind one entry (_jit_native_entry), so the tail releases of `self` in each
+# body and in the argument-check helpers are gone.
+ratchet stdlib "bare RC calls (stdlib_rt.h)" "$(count_bare include/stdlib/bindings.h)" 56
 # 17 -> 12 (2026-08-01): the isolate/parallel child entries hold the rebuilt
 # closure, its args and the call result in JitOwnedVal, so their tail releases
 # are gone — and with them the hang a throwing child caused by never dropping a

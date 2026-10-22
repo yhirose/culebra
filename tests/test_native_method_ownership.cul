@@ -1,0 +1,51 @@
+# A native method borrows its receiver and its arguments, and lets go of them
+# when it returns or throws, as a function written in culebra does. Each value
+# below is held by nothing but the call it was handed to, so its drop runs
+# before the next line. They used to stay held until the collector ran.
+mut dropped = []
+class Held {
+  new(.name) {
+  }
+  drop() {
+    dropped.push(self.name)
+  }
+}
+# A function that keeps a Held alive for as long as the function is.
+fn holding(name) {
+  let h = Held(name)
+  return fn () {
+    h.name
+  }
+}
+
+let db = SQLite.open(':memory:')
+let scratch = FS.mkdtemp('culebra_native_method_test_')
+let f = File.open(FS.join(scratch, 'out.txt'), 'w')
+
+# An argument the method calls.
+db.transaction(holding('transaction'))
+assert_eq(dropped, ['transaction'])
+
+# An argument the method refuses.
+dropped = []
+try {
+  db.execute('select ?', [Held('execute')])
+} catch e {
+  assert_eq(e.kind, 'TypeError')
+}
+try {
+  f.write(Held('write'))
+} catch e {
+  assert_eq(e.kind, 'TypeError')
+}
+assert_eq(dropped, ['execute', 'write'])
+
+# An argument beyond the ones the method takes.
+dropped = []
+f.flush(Held('flush'))
+[1, 2].iter().next(Held('next'))
+assert_eq(dropped, ['flush', 'next'])
+
+f.close()
+db.close()
+FS.remove(scratch, recursive: true)

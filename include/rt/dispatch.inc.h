@@ -322,15 +322,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_derived_cmp(
   return result;
 }
 
-// JitFn-ABI thunks installed as `fn_ptr` on each derived-method closure.
-// The ABI is callee-consumes on EVERY exit: the invoker (_culebra_invoke_method*,
-// or a codegen call site) hands `self` and each arg at +1 and never gives them
-// back, exactly as a compiled frame's slots release on a normal return and
-// through its cleanup pad on a throw. So these hold theirs in the same
-// JitMethodSelf / JitMethodArgs pair every other native endpoint uses — a
-// nested user `eq`/`cmp` throwing out of a derived body would strand them
-// otherwise, and without the release at all every derived
-// `==`/`!=`/`cmp`/`hash`/`show` leaks its operand(s).
+// The native bodies of the derived-method closures (they borrow `self` and
+// their argument, see _jit_native_entry).
 // `eq(other)` / `cmp(other)` declare a required parameter on the interp side
 // (a native FunctionValue with one param), so calling either with no argument
 // is the ordinary missing-required ArityError — raised before the body, as any
@@ -345,8 +338,6 @@ inline void _jit_derived_require_other(int64_t n) {
 inline void _jit_derived_eq_thunk(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t n,
                                        JitValue* args) {
   JitValue self{self_tag, self_data};
-  JitMethodArgs _a{n, args};
-  JitMethodSelf _s{self};
   _jit_derived_require_other(n);
   JitValue r{TAG_BOOL, 0};
   // The thunk ABI carries no line/col; backfill the walker's positionless
@@ -361,8 +352,6 @@ inline void _jit_derived_eq_thunk(JitValue* __ret, JitClosure*, int8_t self_tag,
 inline void _jit_derived_hash_thunk(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t n,
                                          JitValue* args) {
   JitValue self{self_tag, self_data};
-  JitMethodArgs _a{n, args};
-  JitMethodSelf _s{self};
   JitValue r{TAG_LONG, 0};
   if (self.tag == TAG_OBJECT)
     r = {TAG_LONG, _jit_at_call_site([&] {
@@ -374,8 +363,6 @@ inline void _jit_derived_hash_thunk(JitValue* __ret, JitClosure*, int8_t self_ta
 inline void _jit_derived_show_thunk(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t n,
                                          JitValue* args) {
   JitValue self{self_tag, self_data};
-  JitMethodArgs _a{n, args};
-  JitMethodSelf _s{self};
   const char* s = (self.tag == TAG_OBJECT)
                       ? _jit_at_call_site([&] {
                           return culebra_runtime_derived_show(
@@ -387,8 +374,6 @@ inline void _jit_derived_show_thunk(JitValue* __ret, JitClosure*, int8_t self_ta
 inline void _jit_derived_cmp_thunk(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t n,
                                         JitValue* args) {
   JitValue self{self_tag, self_data};
-  JitMethodArgs _a{n, args};
-  JitMethodSelf _s{self};
   _jit_derived_require_other(n);
   JitValue r{TAG_LONG, 0};
   if (self.tag == TAG_OBJECT)
@@ -405,18 +390,17 @@ inline void _jit_derived_cmp_thunk(JitValue* __ret, JitClosure*, int8_t self_tag
 // them (every @value class's, every @derive one's) can cross an Isolate.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitClosure*
 culebra_runtime_make_derived_method(int64_t kind) {
-  void* thunk = nullptr;
-  size_t arity = 0;
+  auto make = [](JitNativeFn thunk, size_t arity) {
+    return _jit_native_closure(thunk, /*n_captures=*/0, arity,
+                               JIT_CLOSURE_DERIVED | JIT_CLOSURE_PORTABLE);
+  };
   switch (kind) {
-    case 0: thunk = reinterpret_cast<void*>(&_jit_derived_eq_thunk); arity = 1; break;
-    case 1: thunk = reinterpret_cast<void*>(&_jit_derived_hash_thunk); arity = 0; break;
-    case 2: thunk = reinterpret_cast<void*>(&_jit_derived_show_thunk); arity = 0; break;
-    case 3: thunk = reinterpret_cast<void*>(&_jit_derived_cmp_thunk); arity = 1; break;
+    case 0: return make(_jit_native<_jit_derived_eq_thunk>, 1);
+    case 1: return make(_jit_native<_jit_derived_hash_thunk>, 0);
+    case 2: return make(_jit_native<_jit_derived_show_thunk>, 0);
+    case 3: return make(_jit_native<_jit_derived_cmp_thunk>, 1);
   }
-  return culebra_runtime_closure_new(
-      thunk, /*n_captures=*/0, arity,
-      JIT_CLOSURE_NATIVE | JIT_CLOSURE_DERIVED | JIT_CLOSURE_PORTABLE,
-      /*meta=*/nullptr);
+  std::abort();  // a kind the compiler never emits
 }
 
 // What a function body declares, in the form the runtime reads it back: one
@@ -1993,7 +1977,7 @@ inline void _jit_bound_method_thunk(JitValue* __ret,
   // repeated invocations don't drain the wrapper's single held reference.
   // The callee consumes that +1 on EVERY exit — a compiled frame's self slot
   // releases on a normal return AND via its fn-level cleanup pad on a throw,
-  // and native endpoints hold self in RAII (JitMethodSelf) — so no throw
+  // and a native one's entry holds self in RAII (_jit_native_entry) — so no throw
   // guard belongs here. (Same contract as _culebra_callable_adapter, where
   // an extra guard release was an ASan-confirmed use-after-free.)
   culebra_runtime_value_retain(receiver.tag, receiver.data);

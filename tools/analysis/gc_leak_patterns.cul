@@ -23,6 +23,12 @@ let N = if Sys.argv.size() > 1 {
   50000
 }
 
+# A record with an array field, for a view iterator.
+@packable
+class LeakVoxel {
+  pos: FixedArray<Int16, 3>
+}
+
 # A class whose `eq` throws, for the terminals that compare.
 class EqThrows {
   new(n) {
@@ -407,6 +413,47 @@ fn pat_iter_terminal_throw(N) {
   }
 }
 
+fn pat_native_method_args(N) {
+  # A native method lets go of its arguments, the ones it takes and any it
+  # does not, whether it returns or throws. Each used to leak per call.
+  let db = SQLite.open(':memory:')
+  let dir = FS.mkdtemp('culebra_leak_native_')
+  let f = File.open(FS.join(dir, 'out.txt'), 'w')
+  for i in 0..N {
+    db.execute('select ?', [i])
+    db.transaction(|| i)
+    f.flush([i])
+    [i].iter().next([i])
+    try {
+      f.write([i])
+    } catch e {
+    }
+  }
+  f.close()
+  db.close()
+  FS.remove(dir, recursive: true)
+}
+
+fn pat_native_method_self(N) {
+  # A native method lets go of its receiver when it throws, and a view
+  # iterator's `iter()` hands itself back without taking a second count.
+  let dir = FS.mkdtemp('culebra_leak_native_')
+  let path = FS.join(dir, 'out.txt')
+  FS.write(path, 'x')
+  let grid = SharedBuffer.new(1, LeakVoxel)
+  for i in 0..N {
+    let f = File.open(path, 'r')
+    f.close()
+    try {
+      f.read()
+    } catch e {
+    }
+    let it = grid[0].pos.iter()
+    let _ = it.iter()
+  }
+  FS.remove(dir, recursive: true)
+}
+
 fn pat_array_sized_default(N) {
   # `[](n, heapDefault)`: array_resize retains one alias ref per slot and
   # the literal releases its own +1 (n=0 exercises the unused-default path).
@@ -532,6 +579,8 @@ let PATTERNS = [
   ["iter_find_driver", pat_iter_find_driver],
   ["iter_any_driver", pat_iter_any_driver],
   ["iter_terminal_throw", pat_iter_terminal_throw],
+  ["native_method_args", pat_native_method_args],
+  ["native_method_self", pat_native_method_self],
   ["array_sized_default", pat_array_sized_default],
   ["deco_let", pat_deco_let],
   ["conditional_decl", pat_conditional_decl],

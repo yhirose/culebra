@@ -264,7 +264,6 @@ inline JitGenFrame* _jit_gen_of(int8_t st, int64_t sd) {
 }
 inline void _jit_gen_has_next_fn(JitValue* ret, JitClosure*, int8_t st,
                                  int64_t sd, int64_t, JitValue*) {
-  JitMethodSelf _s{JitValue{st, sd}};
   *ret = {TAG_BOOL, _jit_gen_fill(_jit_gen_of(st, sd)) ? 1 : 0};
 }
 // A value in hand, handed over: the lookahead's +1 goes to the caller.
@@ -276,7 +275,6 @@ inline bool _jit_gen_pull(JitGenFrame* g, JitValue& out) {
 }
 inline void _jit_gen_next_fn(JitValue* ret, JitClosure*, int8_t st,
                              int64_t sd, int64_t, JitValue*) {
-  JitMethodSelf _s{JitValue{st, sd}};
   if (!_jit_gen_pull(_jit_gen_of(st, sd), *ret)) *ret = {TAG_NIL, 0};
 }
 // The step a for-in (or a lazy combinator) takes over a generator, which
@@ -285,8 +283,10 @@ inline void _jit_gen_next_fn(JitValue* ret, JitClosure*, int8_t st,
 // a generator whose `has_next` / `next` were replaced is still walked through
 // what it carries.
 inline bool _jit_gen_walks(const JitClosure* has_next, const JitClosure* next) {
-  return has_next->fn_ptr == reinterpret_cast<void*>(&_jit_gen_has_next_fn) &&
-         next->fn_ptr == reinterpret_cast<void*>(&_jit_gen_next_fn);
+  return has_next->fn_ptr ==
+             reinterpret_cast<void*>(_jit_native<_jit_gen_has_next_fn>.entry()) &&
+         next->fn_ptr ==
+             reinterpret_cast<void*>(_jit_native<_jit_gen_next_fn>.entry());
 }
 inline bool _jit_gen_advance(JitGenFrame* g, int8_t* tag, int64_t* data) {
   culebra::gc::SafepointUnsafeScope unsafe;  // as _jit_invoke holds it
@@ -301,7 +301,6 @@ inline bool _jit_gen_advance(JitGenFrame* g, int8_t* tag, int64_t* data) {
 // object.
 inline void _jit_gen_dispose_fn(JitValue* ret, JitClosure*, int8_t st,
                                 int64_t sd, int64_t, JitValue*) {
-  JitMethodSelf _s{JitValue{st, sd}};
   *ret = {TAG_NIL, 0};
   _jit_gen_close(*_jit_gen_of(st, sd));
 }
@@ -311,11 +310,13 @@ inline void _jit_gen_dispose_fn(JitValue* ret, JitClosure*, int8_t st,
 inline JitObject* _jit_gen_meta() {
   static const char* const kName = _intern_str("Generator");
   return _jit_native_meta(kName, nullptr, [](JitObject* meta) {
-    _jit_handle_bind_method(meta, "iter", &_iter_self_iter_fn, 0);
-    _jit_handle_bind_method(meta, "has_next", &_jit_gen_has_next_fn, 0);
-    _jit_handle_bind_method(meta, "next", &_jit_gen_next_fn, 0);
-    _jit_handle_bind_method(meta, "dispose", &_jit_gen_dispose_fn, 0);
-    _jit_handle_bind_method(meta, "drop", &_jit_gen_dispose_fn, 0);
+    _jit_handle_bind_method(meta, "iter", _jit_native<_jit_iter_self>, 0);
+    _jit_handle_bind_method(meta, "has_next", _jit_native<_jit_gen_has_next_fn>,
+                            0);
+    _jit_handle_bind_method(meta, "next", _jit_native<_jit_gen_next_fn>, 0);
+    _jit_handle_bind_method(meta, "dispose", _jit_native<_jit_gen_dispose_fn>,
+                            0);
+    _jit_handle_bind_method(meta, "drop", _jit_native<_jit_gen_dispose_fn>, 0);
     _jit_fill_specials(meta);
   });
 }

@@ -257,14 +257,11 @@ inline std::vector<wrap_param> pin_wrap_params(std::vector<wrap_param> params,
 // against other TUs' initializers.
 template <class T>
 struct jit_class_info {
-  // The uniform closure ABI every method thunk conforms to, named once so a
-  // hand-written thunk's declaration and ClassBinder's own signatures cannot
-  // drift from the row that stores it.
-  using MethodThunk = void (*)(JitValue*, JitClosure*, int8_t, int64_t, int64_t,
-                               JitValue*);
+  // A method's thunk, behind the native entry that holds its `self` and
+  // arguments (_jit_native_entry): the thunk only borrows them.
   struct Method {
     std::string name;
-    MethodThunk thunk;
+    JitNativeFn thunk;
     size_t arity;
     const JitParamMeta* meta;
   };
@@ -358,13 +355,11 @@ inline JitValue jit_lower_return(R r) {
   }
 }
 
-// The drop event. `self` arrives +1 and is released here, as in every
-// method thunk (_culebra_call_drop_if_present makes an ordinary call).
+// The drop event (_culebra_call_drop_if_present makes an ordinary call).
 template <class T>
 void jit_drop_thunk(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                         int64_t, JitValue*) {
   JitValue self{self_tag, self_data};
-  JitMethodSelf _s{self};
   auto* h = reinterpret_cast<JitObject*>(self.data);
   foreign::table<T>().erase(_jit_handle_long(h, "_id"));
   { *__ret = {TAG_NIL, 0}; return; }
@@ -391,7 +386,6 @@ template <class T2>
 void jit_borrow_drop_thunk(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                int64_t, JitValue*) {
   JitValue self{self_tag, self_data};
-  JitMethodSelf _s{self};
   auto* h = reinterpret_cast<JitObject*>(self.data);
   foreign::borrow_erase(_jit_handle_long(h, "_bid"));
   { *__ret = {TAG_NIL, 0}; return; }
@@ -417,8 +411,10 @@ JitObject* jit_wrapped_meta(bool borrow) {
       _jit_handle_bind_method(m, method.name.c_str(), method.thunk,
                               method.arity, method.meta);
     }
-    _jit_handle_bind_method(
-        m, "drop", borrow ? &jit_borrow_drop_thunk<T> : &jit_drop_thunk<T>, 0);
+    _jit_handle_bind_method(m, "drop",
+                            borrow ? _jit_native<&jit_borrow_drop_thunk<T>>
+                                   : _jit_native<&jit_drop_thunk<T>>,
+                            0);
     // What is true of the class rather than of one instance of it.
     m->specials->opaque_instances = true;  // state is in C++, not in slots
     m->specials->nonsendable_instances = true;  // it reaches this thread
@@ -608,10 +604,9 @@ inline void jit_bump_arg_handles(int64_t n, JitValue* args) {
 
 // Binder-order param checks shared by the method and borrowed thunks:
 // a missing required argument is an ArityError at the call site, a
-// wrong-typed one a TypeError at the argument's threaded position —
-// both released `fn` first.
+// wrong-typed one a TypeError at the argument's threaded position.
 template <class T, auto Mf, class... Args>
-inline void jit_check_args(JitValue self, int64_t n, JitValue* args) {
+inline void jit_check_args(int64_t n, JitValue* args) {
   const auto& params = jit_method_info<T, Mf>::params;
   size_t bad = sizeof...(Args);
   bool missing = false;
@@ -636,7 +631,6 @@ inline void jit_check_args(JitValue self, int64_t n, JitValue* args) {
      ...);
   }
   if (bad < sizeof...(Args)) {
-    culebra_runtime_value_release(self.tag, self.data);
     if (missing) {
       throw culebra::CulebraError(
           "ArityError",
@@ -679,27 +673,16 @@ auto surface_native_error_at_call_site(F&& f) -> decltype(f()) {
   }
 }
 
-// One handle method thunk per (T, member fn). Self and every argument arrive
-// +1 (callee-consumes, same ABI JitMethodArgs documents): self is released on
-// every exit by the guard below — an early release on a temp receiver would
-// fire its drop and erase the table entry under our feet, so the guard runs at
-// scope exit, after the body. `jit_check_args` still owns its own binder-throw
-// release of self (it runs before the guard is armed); the guard closes the
-// previously leaking ClosedError (jit_handle_self) and body-throw paths.
-// Args are guarded from the top, before jit_check_args even runs: a handle
-// argument (Gap A) is itself a +1 reference, and nothing here forwards or
-// stores it, so without this it leaked on every call — most visibly a
-// temporary (`c.merge(Counter.new(5))`) whose only reference was the
-// argument slot.
+// One handle method thunk per (T, member fn). It borrows self and the
+// arguments: the native entry holds them until after the body, so a temporary
+// receiver's drop cannot erase the table entry under it.
 // `Bump` (a non-const method without preserves_borrows) increments the
 // generation after validation, BEFORE the call.
 template <class T, auto Mf, class R, bool Bump, class... Args>
 void jit_method_thunk(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                           int64_t n, JitValue* args) {
   JitValue self{self_tag, self_data};
-  JitMethodArgs _a{n, args};
-  jit_check_args<T, Mf, Args...>(self, n, args);
-  JitMethodSelf _s{self};
+  jit_check_args<T, Mf, Args...>(n, args);
   T* obj = jit_handle_self<T>(self);
   jit_resolve_arg_handles<Args...>(n, args);  // order-fixing; see its own comment
   if constexpr (Bump) jit_bump_handle_gen<T>(self);
@@ -725,13 +708,8 @@ template <class T, auto Mf, class T2, class... Args>
 void jit_borrowed_thunk(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                             int64_t n, JitValue* args) {
   JitValue self{self_tag, self_data};
-  JitMethodArgs _a{n, args};  // see jit_method_thunk
-  jit_check_args<T, Mf, Args...>(self, n, args);
-  // Release self on every exit (see jit_method_thunk). The borrow handle keeps
-  // its own reference to self as its parent, so the scope-exit release — after
-  // the handle is built and returned — leaves the borrow valid while closing
-  // the ClosedError / body-throw strand.
-  JitMethodSelf _s{self};
+  jit_check_args<T, Mf, Args...>(n, args);
+  // The borrow handle keeps its own reference to self as its parent.
   T* obj = jit_handle_self<T>(self);
   jit_resolve_arg_handles<Args...>(n, args);  // see jit_method_thunk
   jit_bump_arg_handles<Args...>(n, args);
@@ -883,16 +861,16 @@ class ClassBinder {
   // registration around it, so the method still gets parameter names,
   // keyword arguments and defaults.
   //
-  // The thunk owns its whole ABI contract in exchange: resolving self
-  // (jit_handle_self<T>), reading args (TAG_UNFILLED means the caller
-  // omitted an optional one), and writing *__ret. `params` declares the
-  // arity and the names, exactly as method() does.
-  ClassBinder& raw_method(
-      std::string name,
-      typename wrap_detail::jit_class_info<T>::MethodThunk thunk,
-      std::vector<wrap_detail::wrap_param> params = {}) {
+  // The thunk does by hand what the deduced ones get for free: resolving
+  // self (jit_handle_self<T>), reading args (TAG_UNFILLED means the caller
+  // omitted an optional one), and writing *__ret. It borrows self and the
+  // arguments, as every native body does (_jit_native_entry). `params`
+  // declares the arity and the names, exactly as method() does.
+  template <JitFn Thunk>
+  ClassBinder& raw_method(std::string name,
+                          std::vector<wrap_detail::wrap_param> params = {}) {
     const size_t arity = params.size();
-    push_method_row(std::move(name), thunk, arity,
+    push_method_row(std::move(name), _jit_native<Thunk>, arity,
                     wrap_detail::pin_wrap_params(std::move(params), arity));
     return *this;
   }
@@ -942,10 +920,8 @@ class ClassBinder {
 
   // The registration tail all three method forms share: the parameter meta a
   // keyword call binds against, then one row in the class's method table.
-  void push_method_row(
-      std::string name,
-      typename wrap_detail::jit_class_info<T>::MethodThunk thunk, size_t arity,
-      const std::vector<wrap_detail::wrap_param>& pinned) {
+  void push_method_row(std::string name, JitNativeFn thunk, size_t arity,
+                       const std::vector<wrap_detail::wrap_param>& pinned) {
     auto [names, has_default] = split_wrap_params(pinned);
     const JitParamMeta* meta =
         arity == 0 ? nullptr
@@ -965,10 +941,12 @@ class ClassBinder {
     auto pinned =
         wrap_detail::pin_wrap_params(std::move(params), sizeof...(Args));
     assert_defaults_declarable<Args...>(pinned);
-    push_method_row(std::move(name),
-                    bump ? &wrap_detail::jit_method_thunk<T, Mf, R, true, Args...>
-                         : &wrap_detail::jit_method_thunk<T, Mf, R, false, Args...>,
-                    sizeof...(Args), pinned);
+    push_method_row(
+        std::move(name),
+        bump ? _jit_native<&wrap_detail::jit_method_thunk<T, Mf, R, true, Args...>>
+             : _jit_native<
+                   &wrap_detail::jit_method_thunk<T, Mf, R, false, Args...>>,
+        sizeof...(Args), pinned);
     wrap_detail::jit_method_info<T, Mf>::params = std::move(pinned);
     return *this;
   }
@@ -980,9 +958,10 @@ class ClassBinder {
     auto pinned =
         wrap_detail::pin_wrap_params(std::move(params), sizeof...(Args));
     assert_defaults_declarable<Args...>(pinned);
-    push_method_row(std::move(name),
-                    &wrap_detail::jit_borrowed_thunk<T, Mf, T2, Args...>,
-                    sizeof...(Args), pinned);
+    push_method_row(
+        std::move(name),
+        _jit_native<&wrap_detail::jit_borrowed_thunk<T, Mf, T2, Args...>>,
+        sizeof...(Args), pinned);
     wrap_detail::jit_method_info<T, Mf>::params = std::move(pinned);
     return *this;
   }

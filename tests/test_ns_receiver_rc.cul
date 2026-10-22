@@ -1,8 +1,8 @@
 // The receiver a native namespace method is handed gets released.
 //
 // The method ABI passes `self` at +1 and the callee consumes it — a compiled
-// closure at its frame epilogue, a wrapped handle method through
-// JitMethodSelf. An ns method takes its receiver as a positional instead, so
+// closure at its frame epilogue, a wrapped handle method through the
+// native entry. An ns method takes its receiver as a positional instead, so
 // its trampoline never reads `self`; it still has to release it.
 //
 // Without that, every call reached as a two-step member chain — a wrapped

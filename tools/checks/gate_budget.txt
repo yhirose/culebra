@@ -104,7 +104,9 @@
 # samples there, and builds only the external sounds it plays).
 # 317 since test_audio_pitch.cul (Audio.pitch on tones whose pitch is known:
 # each a note read as itself rather than at a fraction or a multiple of it).
-tests.cul 317
+# 318 since test_native_method_ownership.cul (a native method lets go of its
+# arguments, the ones it takes and any beyond them, as it returns or throws).
+tests.cul 318
 
 # tests/isolate/*.cul — run on both engines, plus the over-cap modes.
 # 21 since test_xml_isolate.cul (an XML element keeps its methods across an

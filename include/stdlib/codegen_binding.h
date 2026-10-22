@@ -34,17 +34,13 @@ inline JitValue codegen_raw_arg(int64_t n, JitValue* args, int64_t i,
 // Program.run's own thunk. `natives` is an Object of culebra Functions,
 // which .method<>()'s deduced marshalling has no branch for (jit_arg_get
 // reads handles and scalars, never a raw value), so this reads the three
-// arguments itself -- the door wrap.h's raw_method opens. A raw thunk owes
-// the whole ABI contract the deduced ones get for free: the ownership
-// guards, the argument type checks, and the error surfacing.
+// arguments itself -- the door wrap.h's raw_method opens. A raw thunk does by
+// hand what the deduced ones get for free: the argument type checks and the
+// error surfacing.
 inline void codegen_program_run_thunk(JitValue* __ret, JitClosure*,
                                       int8_t self_tag, int64_t self_data,
                                       int64_t n, JitValue* args) {
   JitValue self{self_tag, self_data};
-  // The method ABI is callee-consumes: self and every argument arrive at +1
-  // and are ours to release on every exit, including an unwinding one.
-  JitMethodArgs _a{n, args};
-  JitMethodSelf _s{self};
   auto* prog = wrap_detail::jit_handle_self<codegen::Program>(self);
   const JitValue rt_v =
       codegen_raw_arg<codegen::Runtime*>(n, args, 0, "rt");
@@ -244,10 +240,10 @@ inline bool register_codegen_binding() {
       // The depth bound's default is cpp-vmlib's own, read from it rather
       // than copied: a submodule bump that changes it must not leave this
       // behind naming the old one.
-      .raw_method("run", &codegen_program_run_thunk,
-                  {{"rt", nullptr},
-                   {"max_call_depth", ::vm::RunOptions{}.max_call_depth},
-                   {"natives", nullptr}})
+      .raw_method<&codegen_program_run_thunk>(
+          "run", {{"rt", nullptr},
+                  {"max_call_depth", ::vm::RunOptions{}.max_call_depth},
+                  {"natives", nullptr}})
       .method<&codegen::Program::dump_bc>("dump_bc");
   wrap<codegen::Runtime>("CodeGen", "Runtime")
       .ctor<>()

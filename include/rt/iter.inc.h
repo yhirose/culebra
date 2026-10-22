@@ -75,21 +75,6 @@ struct JitHofCallback {
 extern "C" CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray*
 culebra_runtime_object_keys(JitObject* obj);
 
-// Generic "iter returns self" — used by every wrapper we build.
-inline void _iter_self_iter_fn(JitValue* __ret, JitClosure*, int8_t self_val_tag, int64_t self_val_data,
-                                   int64_t, JitValue*) {
-  JitValue self_val{self_val_tag, self_val_data};
-  // iter() on a wrapped iterator returns self. The Iterator-protocol calling
-  // convention (see compile_for_protocol_loop / _iter_coerce_iterable /
-  // object_iter_dispatch) has every caller retain `self` before the call so a
-  // script method body can consume it via its frame and return a fresh +1.
-  // A native fn has no frame, so it must consume that retain itself: return
-  // `self` directly, transferring the caller's +1 to the result. (A stray
-  // `retain` here instead of the transfer leaked one ref per `.iter()` on
-  // every native wrapped iterator — the for-in protocol loop's ref B.)
-  { *__ret = self_val; return; }
-}
-
 // Look up a 0-arg method closure on an iterator Object. Returns nullptr
 // if the receiver isn't a TAG_OBJECT or doesn't expose `method` as a
 // Function. Used once at walk entry so each step skips the per-iteration
@@ -114,11 +99,7 @@ inline JitClosure* _iter_next_closure(JitValue iter_val) {
 // Its captures are exactly those upstreams (see _iter_wrap_new); the interp
 // twin is the forwarding dispose _make_iterator attaches.
 inline void _iter_dispose_upstreams_fn(JitValue* __ret, JitClosure* cls,
-                                       int8_t self_tag, int64_t self_data,
-                                       int64_t, JitValue*) {
-  // Native iterator method: `self` arrives +1-owned (callee-consumes), like
-  // _iter_self_iter_fn and the has_next/next trampolines.
-  JitOwnedVal self_guard(JitValue{self_tag, self_data});
+                                       int8_t, int64_t, int64_t, JitValue*) {
   // Close every upstream even if one throws (zip/chain hold two); the first
   // error is the one the caller sees.
   std::exception_ptr first;
@@ -319,10 +300,9 @@ CULEBRA_RT_KEEP void culebra_runtime_cell_retain(JitCell* c);
 // forwarding `dispose`, since from the consumer's side a lazy chain is one
 // iterator: closing it must close its source, or `for x in gen().map(f)
 // { break }` would skip gen()'s defers (§18.5).
-inline JitObject* _iter_wrap_new(
-    void (*has_next_fn)(JitValue*, JitClosure*, int8_t, int64_t, int64_t, JitValue*),
-    void (*next_fn)(JitValue*, JitClosure*, int8_t, int64_t, int64_t, JitValue*),
-    std::initializer_list<JitCell*> captures, size_t n_upstreams = 0) {
+inline JitObject* _iter_wrap_new(JitNativeFn has_next_fn, JitNativeFn next_fn,
+                                 std::initializer_list<JitCell*> captures,
+                                 size_t n_upstreams = 0) {
   auto* state_cell = culebra_runtime_cell_new(TAG_LONG, _ITER_LA_EMPTY);
   auto* value_cell = culebra_runtime_cell_new(TAG_NIL, 0);
   size_t total = captures.size() + 2;
@@ -337,16 +317,10 @@ inline JitObject* _iter_wrap_new(
     culebra_runtime_cell_retain(value_cell);
     cls->captures[i++] = value_cell;
   };
-  auto* iter_cls = culebra_runtime_closure_new(
-      reinterpret_cast<void*>(&_iter_self_iter_fn), 0, 0, JIT_CLOSURE_NATIVE,
-      /*meta=*/nullptr);
-  auto* has_next_cls = culebra_runtime_closure_new(
-      reinterpret_cast<void*>(has_next_fn), total, 0, JIT_CLOSURE_NATIVE,
-      /*meta=*/nullptr);
+  auto* iter_cls = _jit_native_closure(_jit_native<_jit_iter_self>, 0, 0);
+  auto* has_next_cls = _jit_native_closure(has_next_fn, total, 0);
   write_captures(has_next_cls);
-  auto* next_cls = culebra_runtime_closure_new(
-      reinterpret_cast<void*>(next_fn), total, 0, JIT_CLOSURE_NATIVE,
-      /*meta=*/nullptr);
+  auto* next_cls = _jit_native_closure(next_fn, total, 0);
   write_captures(next_cls);
   // Only attach the forwarding dispose when something upstream actually has
   // one, so a built-in chain keeps a dispose-free wrapper (and the for-in exit
@@ -355,9 +329,8 @@ inline JitObject* _iter_wrap_new(
   size_t n_up = n_upstreams < captures.size() ? n_upstreams : captures.size();
   for (size_t i = 0; i < n_up && !dispose_cls; i++) {
     if (_iter_method_closure(captures.begin()[i]->value, "dispose")) {
-      dispose_cls = culebra_runtime_closure_new(
-          reinterpret_cast<void*>(&_iter_dispose_upstreams_fn), n_up, 0,
-          JIT_CLOSURE_NATIVE, /*meta=*/nullptr);
+      dispose_cls = _jit_native_closure(
+          _jit_native<_iter_dispose_upstreams_fn>, n_up, 0);
       for (size_t j = 0; j < n_up; j++) {
         culebra_runtime_cell_retain(captures.begin()[j]);
         dispose_cls->captures[j] = captures.begin()[j];
@@ -393,15 +366,6 @@ inline void _iter_trampoline_has_next_fn(JitValue* __ret, JitClosure* cls, int8_
                                               int64_t iv_data, int64_t,
                                               JitValue*) {
   JitValue iv{iv_tag, iv_data};
-  // Native iterator method: the caller hands `self` (the iterator Object)
-  // +1-owned (callee-consumes, like _iter_self_iter_fn and the retain-before-
-  // call in _iter_advance_raw's slow path). This releases it on every exit —
-  // after the body's use of `cls` (whose captures `iv` keeps alive) — so an
-  // explicit `it.has_next()` / `it.next()` (or a generator's for-in, which
-  // drives its iterator that way) doesn't strand the iterator. Without it the
-  // iterator (and its transitively-held source + closures) leaked once per
-  // drained iterator.
-  JitOwnedVal self_guard(iv);
   size_t n = cls->n_captures;
   JitCell* state_cell = cls->captures[n - 2];
   JitCell* value_cell = cls->captures[n - 1];
@@ -429,10 +393,6 @@ inline void _iter_trampoline_next_fn(JitValue* __ret, JitClosure* cls, int8_t iv
                                           int64_t iv_data, int64_t,
                                           JitValue*) {
   JitValue iv{iv_tag, iv_data};
-  // Consume the caller's `self` +1 on every exit — see the note on
-  // _iter_trampoline_has_next_fn. Released after the lookahead value is copied
-  // out (the returned +1 is independent of `iv`'s captures).
-  JitOwnedVal self_guard(iv);
   size_t n = cls->n_captures;
   JitCell* state_cell = cls->captures[n - 2];
   JitCell* value_cell = cls->captures[n - 1];
@@ -461,21 +421,17 @@ inline void _iter_trampoline_next_fn(JitValue* __ret, JitClosure* cls, int8_t iv
 template <JitIterFastFn FastFn>
 inline JitObject* _iter_wrap_fast(std::initializer_list<JitCell*> captures,
                                   size_t n_upstreams = 0) {
-  auto* obj = _iter_wrap_new(&_iter_trampoline_has_next_fn<FastFn>,
-                              &_iter_trampoline_next_fn<FastFn>, captures,
-                              n_upstreams);
+  auto* obj = _iter_wrap_new(_jit_native<_iter_trampoline_has_next_fn<FastFn>>,
+                              _jit_native<_iter_trampoline_next_fn<FastFn>>,
+                              captures, n_upstreams);
   obj->fast_next_fn = FastFn;
   return obj;
 }
 
 // Give a source iterator the `dispose` that closes what it reads: `fn` runs
 // with `cell` (shared with the iterator's own closures) as its one capture.
-inline void _iter_set_dispose(
-    JitObject* it,
-    void (*fn)(JitValue*, JitClosure*, int8_t, int64_t, int64_t, JitValue*),
-    JitCell* cell) {
-  auto* dispose_cls = culebra_runtime_closure_new(
-      reinterpret_cast<void*>(fn), 1, 0, JIT_CLOSURE_NATIVE, /*meta=*/nullptr);
+inline void _iter_set_dispose(JitObject* it, JitNativeFn fn, JitCell* cell) {
+  auto* dispose_cls = _jit_native_closure(fn, 1, 0);
   culebra_runtime_cell_retain(cell);
   dispose_cls->captures[0] = cell;
   it->set_or_append("dispose",

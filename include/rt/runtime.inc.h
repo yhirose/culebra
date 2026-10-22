@@ -99,7 +99,7 @@ inline void _arith_guard_numeric(const char* op, int8_t lt, int8_t rt,
 // `_culebra_invoke*` and leaked on the throw path (leak-fuzzer P0); wrapping
 // a helper's owned locals in this makes the throw path release for free. Also
 // the single chokepoint for callee-consumes contracts (a @packable store, a
-// native method's `self`/args — see `JitMethodSelf`/`JitMethodArgs`).
+// native method's `self`/args — see `_jit_native_entry`).
 struct JitOwnedVal {
   JitValue v;
   bool owned;

@@ -40,6 +40,54 @@ def sites(src, match):
     return out
 
 
+# A quote right after a digit or a letter is a digit separator (1'000), not
+# the start of a character literal.
+_LEXEME = re.compile(r'//[^\n]*|/\*.*?\*/|R"([^(\s]*)\(.*?\)\1"|"(?:\\.|[^"\\\n])*"'
+                     r"|(?<!\w)'(?:\\.|[^'\\\n])*'", re.S)
+
+
+def blank(src):
+    """`src` with comments and string/char literals turned into spaces, so a
+    brace or a name inside one is not code. Lengths and newlines are kept, so
+    offsets and line numbers still point into `src`."""
+    return _LEXEME.sub(lambda m: re.sub(r'[^\n]', ' ', m.group(0)), src)
+
+
+def _close(code, at, open_ch, close_ch):
+    """The index just past the bracket that closes the one at `at`."""
+    depth = 0
+    for i in range(at, len(code)):
+        if code[i] == open_ch:
+            depth += 1
+        elif code[i] == close_ch:
+            depth -= 1
+            if depth == 0:
+                return i + 1
+    return len(code)
+
+
+def function_spans(code, name):
+    """[(first line, last line, parameter text, body offset, body end)] for
+    each definition of the function `name` in `code` (a blank()ed source), at
+    any indentation: a declaration or a call is not one, since what follows
+    its parameter list is not a body."""
+    head = re.compile(r'^[ \t]*(?:[\w:<>*&,]+[ \t]+)*' + re.escape(name) +
+                      r'\s*\(', re.M)
+    out = []
+    for m in head.finditer(code):
+        params_end = _close(code, m.end() - 1, '(', ')')
+        tail = re.match(r'(?:\s|const\b|noexcept\b|override\b)*\{',
+                        code[params_end:])
+        if not tail:
+            continue
+        open_at = params_end + tail.end() - 1
+        end = _close(code, open_at, '{', '}')
+        out.append((code.count('\n', 0, m.start()) + 1,
+                    code.count('\n', 0, end) + 1,
+                    code[m.end():params_end - 1], open_at, end))
+    return out
+
+
 def require_scanner(label, match, planted):
     """The scanner has to be able to fail, or a green run proves nothing."""
     if not sites(planted, match):

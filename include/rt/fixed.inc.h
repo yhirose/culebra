@@ -36,12 +36,61 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitClosure* culebra_runtime_closure_new(
 inline const JitParamMeta* _jit_make_handle_meta(
     std::vector<std::string> names, std::vector<bool> has_default);
 
-inline JitClosure* _jit_make_handle_method(
-    void (*fn)(JitValue*, JitClosure*, int8_t, int64_t, int64_t, JitValue*), size_t arity,
-    const JitParamMeta* meta = nullptr, uint64_t extra_flags = 0) {
-  return culebra_runtime_closure_new(reinterpret_cast<void*>(fn),
-                                     /*n_captures=*/0, arity,
+extern "C++" {
+// The closure ABI is callee-consumes: `self` and every argument arrive at +1,
+// on every call, however many arguments the caller passed, and the caller does
+// not clean them on unwind. A native body borrows them instead, and this
+// entry, the code a native closure runs, holds both for it and lets them go on
+// every exit. So a body keeps what it stores with a retain of its own, and
+// never releases what it was handed.
+template <JitFn F>
+void _jit_native_entry(JitValue* ret, JitClosure* cls, int8_t self_tag,
+                       int64_t self_data, int64_t n, JitValue* args) {
+  JitOwnedVal self{JitValue{self_tag, self_data}};
+  struct Args {
+    int64_t n;
+    JitValue* args;
+    ~Args() {
+      for (int64_t i = 0; i < n; i++)
+        culebra_runtime_value_release(args[i].tag, args[i].data);
+    }
+  } held{n, args};
+  F(ret, cls, self_tag, self_data, n, args);
+}
+
+// A native body behind that entry (`_jit_native<F>`): what it holds is always
+// an instance of the entry, and the closure constructors below take nothing
+// else, so no native closure runs a body that has not been put behind it.
+class JitNativeFn {
+ public:
+  template <JitFn F>
+  static constexpr JitNativeFn of() {
+    return JitNativeFn(&_jit_native_entry<F>);
+  }
+  // The closure's fn_ptr, for a caller that recognizes a body by it.
+  constexpr JitFn entry() const { return entry_; }
+
+ private:
+  constexpr explicit JitNativeFn(JitFn entry) : entry_(entry) {}
+  JitFn entry_;
+};
+template <JitFn F>
+inline constexpr JitNativeFn _jit_native = JitNativeFn::of<F>();
+}  // extern "C++"
+
+// The one constructor of a closure over a native body.
+inline JitClosure* _jit_native_closure(JitNativeFn f, size_t n_captures,
+                                       size_t arity, uint64_t extra_flags = 0,
+                                       const JitParamMeta* meta = nullptr) {
+  return culebra_runtime_closure_new(reinterpret_cast<void*>(f.entry()),
+                                     n_captures, arity,
                                      JIT_CLOSURE_NATIVE | extra_flags, meta);
+}
+
+inline JitClosure* _jit_make_handle_method(JitNativeFn f, size_t arity,
+                                           const JitParamMeta* meta = nullptr,
+                                           uint64_t extra_flags = 0) {
+  return _jit_native_closure(f, /*n_captures=*/0, arity, extra_flags, meta);
 }
 
 // Slot a handle method onto `h` — shared by every native-handle builder
@@ -56,10 +105,10 @@ inline JitClosure* _jit_make_handle_method(
 // surface_native_error_at_call_site for every wrapped C++ class).
 // Not done here for all of them: a `drop` runs from the drop protocol at scope
 // exit, where the published call site belongs to some unrelated earlier call.
-inline void _jit_handle_bind_method(
-    JitObject* h, const char* name,
-    void (*f)(JitValue*, JitClosure*, int8_t, int64_t, int64_t, JitValue*), size_t ar,
-    const JitParamMeta* meta = nullptr, uint64_t extra_flags = 0) {
+inline void _jit_handle_bind_method(JitObject* h, const char* name,
+                                    JitNativeFn f, size_t ar,
+                                    const JitParamMeta* meta = nullptr,
+                                    uint64_t extra_flags = 0) {
   h->set_or_append(name,
       JitValue{TAG_FUNC, reinterpret_cast<int64_t>(
           _jit_make_handle_method(f, ar, meta, extra_flags))}, false);
@@ -69,31 +118,16 @@ inline void _jit_handle_bind_method(
 // (JIT_CLOSURE_PORTABLE): the body must read nothing but `self` and its args,
 // and `meta` must outlive every Runtime (a function-local static), since the
 // receiver rebuilds the closure over the same raw pointer.
-inline void _jit_bind_portable_method(
-    JitObject* h, const char* name,
-    void (*f)(JitValue*, JitClosure*, int8_t, int64_t, int64_t, JitValue*), size_t ar,
-    const JitParamMeta* meta = nullptr) {
+inline void _jit_bind_portable_method(JitObject* h, const char* name,
+                                      JitNativeFn f, size_t ar,
+                                      const JitParamMeta* meta = nullptr) {
   _jit_handle_bind_method(h, name, f, ar, meta, JIT_CLOSURE_PORTABLE);
-}
-
-
-// A captureless native method closure (reads its state from `self`), for the
-// metas the runtime's handles share.
-inline JitClosure* _jit_native_method(
-    void (*fn)(JitValue*, JitClosure*, int8_t, int64_t, int64_t, JitValue*)) {
-  return culebra_runtime_closure_new(reinterpret_cast<void*>(fn),
-                                     /*n_captures=*/0, /*arity=*/0,
-                                     JIT_CLOSURE_NATIVE, /*meta=*/nullptr);
 }
 
 // Bind the captureless native method `fn` as `nm` on a handle's meta (an
 // immutable slot).
-inline void _jit_view_method(
-    JitObject* o, const char* nm,
-    void (*fn)(JitValue*, JitClosure*, int8_t, int64_t, int64_t, JitValue*)) {
-  o->set_or_append(
-      nm, JitValue{TAG_FUNC, reinterpret_cast<int64_t>(_jit_native_method(fn))},
-      false);
+inline void _jit_view_method(JitObject* o, const char* nm, JitNativeFn fn) {
+  _jit_handle_bind_method(o, nm, fn, 0);
 }
 
 // --- View methods + iterators (native, captureless) ------------------------
@@ -106,28 +140,9 @@ inline int64_t _jit_view_index(int8_t tag, int64_t data, int64_t line, int64_t c
   throw culebra::CulebraError("TypeError", "type error: expected Long or Float",
                               line, col);
 }
-// Releases the bound `self` (the native-method ABI passes it +1) on scope
-// exit — success or exception — so a throwing native method can't leak it.
-// An alias: the semantics are exactly an owned value never consumed; the name
-// records the ABI contract at each method's entry.
-using JitMethodSelf = JitOwnedVal;
-// Releases every argument the method ABI passed at +1 (callee-consumes) on scope
-// exit — success or exception — mirroring JitMethodSelf for `self`. For native
-// methods that neither forward nor manually release their args, this is the
-// throw-safe consume: the caller does NOT clean a native method's operands on
-// unwind, so the callee must (channel send, with_lock's callback). Guarding the
-// whole args span also closes the direct-error throw path a manual per-branch
-// release would miss.
-struct JitMethodArgs {
-  int64_t n;
-  JitValue* args;
-  ~JitMethodArgs() {
-    for (int64_t i = 0; i < n; i++)
-      culebra_runtime_value_release(args[i].tag, args[i].data);
-  }
-};
 
-// `for x in it`'s `it.iter()` on an iterator: the iterator itself.
+// `it.iter()` on an iterator: the iterator itself. Every native iterator's
+// `iter` (a wrapper's, a generator's, a view's or a channel's cursor).
 inline void _jit_iter_self(JitValue* __ret, JitClosure*, int8_t self_tag,
                            int64_t self_data, int64_t, JitValue*) {
   culebra_runtime_value_retain(self_tag, self_data);
@@ -165,18 +180,14 @@ inline JitBufViewIter& _jit_self_view_iter(JitValue self) {
 }
 
 extern "C++" {
-// The native-method ABI around a view's method `F`: `self` and the args come
-// at +1 and go on every exit, `F` sees them borrowed, and a call with fewer
-// arguments than `Need` names is the missing-required ArityError. What `F`
-// raises without a position reports at the call, as on every lane.
+// A view's method `F` as a native body: a call with fewer arguments than
+// `Need` names is the missing-required ArityError, and what `F` raises without
+// a position reports at the call, as on every lane.
 template <JitValue (*F)(JitBufView&, JitValue*),
           const char* const* Need = nullptr>
 void _jit_view_native(JitValue* ret, JitClosure*, int8_t self_tag,
                       int64_t self_data, int64_t n, JitValue* args) {
-  JitValue self{self_tag, self_data};
-  JitMethodSelf _s{self};
-  JitMethodArgs _a{n, args};
-  auto& v = _jit_self_view(self);
+  auto& v = _jit_self_view(JitValue{self_tag, self_data});
   if constexpr (Need != nullptr) {
     int64_t need = 0;
     while (Need[need]) need++;
@@ -186,11 +197,8 @@ void _jit_view_native(JitValue* ret, JitClosure*, int8_t self_tag,
 }
 template <JitValue (*F)(JitBufViewIter&)>
 void _jit_view_iter_native(JitValue* ret, JitClosure*, int8_t self_tag,
-                           int64_t self_data, int64_t n, JitValue* args) {
-  JitValue self{self_tag, self_data};
-  JitMethodSelf _s{self};
-  JitMethodArgs _a{n, args};
-  auto& it = _jit_self_view_iter(self);
+                           int64_t self_data, int64_t, JitValue*) {
+  auto& it = _jit_self_view_iter(JitValue{self_tag, self_data});
   *ret = _jit_at_call_site([&] { return F(it); });
 }
 inline constexpr const char* kViewIndex[] = {"index", nullptr};
@@ -210,7 +218,6 @@ inline JitValue _jit_view_capacity(JitBufView& v, JitValue*) {
 inline void _jit_view_iter(JitValue* __ret, JitClosure*, int8_t self_tag,
                            int64_t self_data, int64_t, JitValue*) {
   JitValue self{self_tag, self_data};
-  JitMethodSelf _s{self};
   auto& v = _jit_self_view(self);
   *__ret = _jit_make_handle(
       new JitBufViewIter(reinterpret_cast<JitObject*>(self.data)),
@@ -410,45 +417,60 @@ inline JitObject* _jit_buf_view_meta(JitBufView::Of of, bool fixed,
   return _jit_pinned_meta(culebra::kSlotBufViewMetas, key, [&] {
     auto* m = culebra_runtime_object_new();
     if (iter) {
-      _jit_view_method(m, "iter", _jit_iter_self);
-      _jit_view_method(m, "has_next",
-                       of == Of::Array
-                           ? _jit_view_iter_native<_jit_fa_iter_has_next>
-                           : _jit_view_iter_native<_jit_table_iter_has_next>);
-      _jit_view_method(m, "next",
-                       of == Of::Array ? _jit_view_iter_native<_jit_fa_iter_next>
-                       : of == Of::Set ? _jit_view_iter_native<_jit_fs_iter_next>
-                                       : _jit_view_iter_native<_jit_fm_iter_next>);
+      _jit_view_method(m, "iter", _jit_native<_jit_iter_self>);
+      _jit_view_method(
+          m, "has_next",
+          of == Of::Array
+              ? _jit_native<_jit_view_iter_native<_jit_fa_iter_has_next>>
+              : _jit_native<_jit_view_iter_native<_jit_table_iter_has_next>>);
+      _jit_view_method(
+          m, "next",
+          of == Of::Array
+              ? _jit_native<_jit_view_iter_native<_jit_fa_iter_next>>
+          : of == Of::Set
+              ? _jit_native<_jit_view_iter_native<_jit_fs_iter_next>>
+              : _jit_native<_jit_view_iter_native<_jit_fm_iter_next>>);
       return m;
     }
     if (of == Of::Record) return m;
-    _jit_view_method(m, "size", _jit_view_native<_jit_view_size>);
-    _jit_view_method(m, "capacity", _jit_view_native<_jit_view_capacity>);
-    _jit_view_method(m, "iter", _jit_view_iter);
+    _jit_view_method(m, "size", _jit_native<_jit_view_native<_jit_view_size>>);
+    _jit_view_method(m, "capacity",
+                     _jit_native<_jit_view_native<_jit_view_capacity>>);
+    _jit_view_method(m, "iter", _jit_native<_jit_view_iter>);
     switch (of) {
       case Of::Record: break;
       case Of::Array:
         if (!fixed)
-          _jit_view_method(m, "push", _jit_view_native<_jit_fa_push, kViewValue>);
-        _jit_view_method(m, "get", _jit_view_native<_jit_fa_get_m, kViewIndex>);
-        _jit_view_method(m, "set",
-                         _jit_view_native<_jit_fa_set_m, kViewIndexValue>);
+          _jit_view_method(
+              m, "push", _jit_native<_jit_view_native<_jit_fa_push, kViewValue>>);
+        _jit_view_method(
+            m, "get", _jit_native<_jit_view_native<_jit_fa_get_m, kViewIndex>>);
+        _jit_view_method(
+            m, "set",
+            _jit_native<_jit_view_native<_jit_fa_set_m, kViewIndexValue>>);
         break;
       case Of::Set:
-        _jit_view_method(m, "contains",
-                         _jit_view_native<_jit_table_contains, kViewValue>);
-        _jit_view_method(m, "add", _jit_view_native<_jit_fs_add, kViewValue>);
-        _jit_view_method(m, "remove",
-                         _jit_view_native<_jit_table_remove, kViewValue>);
+        _jit_view_method(
+            m, "contains",
+            _jit_native<_jit_view_native<_jit_table_contains, kViewValue>>);
+        _jit_view_method(
+            m, "add", _jit_native<_jit_view_native<_jit_fs_add, kViewValue>>);
+        _jit_view_method(
+            m, "remove",
+            _jit_native<_jit_view_native<_jit_table_remove, kViewValue>>);
         break;
       case Of::Map:
-        _jit_view_method(m, "contains",
-                         _jit_view_native<_jit_table_contains, kViewKey>);
-        _jit_view_method(m, "get", _jit_view_native<_jit_fm_get, kViewKey>);
-        _jit_view_method(m, "set", _jit_view_native<_jit_fm_set, kViewKeyValue>);
-        _jit_view_method(m, "remove",
-                         _jit_view_native<_jit_table_remove, kViewKey>);
-        _jit_view_method(m, "keys", _jit_view_native<_jit_fm_keys>);
+        _jit_view_method(
+            m, "contains",
+            _jit_native<_jit_view_native<_jit_table_contains, kViewKey>>);
+        _jit_view_method(
+            m, "get", _jit_native<_jit_view_native<_jit_fm_get, kViewKey>>);
+        _jit_view_method(
+            m, "set", _jit_native<_jit_view_native<_jit_fm_set, kViewKeyValue>>);
+        _jit_view_method(
+            m, "remove",
+            _jit_native<_jit_view_native<_jit_table_remove, kViewKey>>);
+        _jit_view_method(m, "keys", _jit_native<_jit_view_native<_jit_fm_keys>>);
         break;
     }
     return m;

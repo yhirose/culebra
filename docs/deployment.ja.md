@@ -1222,9 +1222,9 @@ optional引数は末尾に連続していなければならず、この2つの�
 `.method`/`.borrowed_method`限定です — `.ctor`/`.static_method`の引数は
 常に必須で、まだラップ済みクラスを名指せません。
 
-コンテナ（`std::vector`/`std::map`）とコールバックは自動ではマーシャルされません。それらが要るメソッド —— 呼び返す`Function`や、読み取る任意の`Object`を取るもの —— は`.raw_method(name, thunk, params)`で宣言し、thunkを手で書きます。宣言的な部分はそのまま効くので、パラメータ名・キーワード引数・既定値は変わりません。引き換えにthunkが負うのは、deducedな側がただで得ているABI契約の全てです:
+コンテナ（`std::vector`/`std::map`）とコールバックは自動ではマーシャルされません。それらが要るメソッド —— 呼び返す`Function`や、読み取る任意の`Object`を取るもの —— は`.raw_method<&thunk>(name, params)`で宣言し、thunkを手で書きます。宣言的な部分はそのまま効くので、パラメータ名・キーワード引数・既定値は変わりません。引き換えにthunkが自分で行うのは、deducedな側がただで得ている次のことです:
 
-- selfと引数を解放する（`JitMethodSelf`/`JitMethodArgs`）。ABIはcallee-consumesなので、これが無いと呼び出しごとに参照が漏れます。
+- selfと引数は借りるだけにする。メソッドはselfと引数を持つ入口の後ろで動き、thunkが戻るか投げたときに入口が解放するので、thunkは解放しません。呼び出しの後も持ち続ける値はretainします。
 - 引数を使う前に型検査する。`jit_check_args`はdeducedな経路にしかなく、`jit_handle_self`は渡されたものをそのまま解釈するので、ハンドルのスロットに未検査のスカラーが入ると`TypeError`ではなく野良ポインタになります。
 - レシーバを`wrap_detail::jit_handle_self<T>`で解決し、引数を読み（`TAG_UNFILLED`のスロットは呼び出し側が省略したもの）、結果は`surface_native_error_at_call_site`を通して`__ret`へ書く。こうすると本体からのC++例外がプロセスを抜けず、呼び出し位置で捕まえられるエラーになります。
 

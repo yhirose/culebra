@@ -350,14 +350,12 @@ inline std::deque<HostFn>& host_fns() {
   return fns;
 }
 
-// The closure ABI (see _jit_invoke): args arrive OWNED by the callee, the
-// result leaves owned. The adapter consumes the args; a C++ exception from
-// the host body converts at this boundary the way wrap.h's
-// surface_native_error does, so the script sees a catchable RuntimeError.
-inline void trampoline(JitValue* __ret, JitClosure* self, int8_t self_tag,
-                       int64_t self_data, int64_t n, JitValue* args) {
-  _culebra_value_release_impl(self_tag, self_data);  // bound-self, unused
-  JitMethodArgs _a{n, args};  // releases the +1 args on every exit path
+// Every host function's native body (it borrows the args, see
+// _jit_native_entry); the result leaves owned. A C++ exception from the host
+// body converts at this boundary the way wrap.h's surface_native_error does,
+// so the script sees a catchable RuntimeError.
+inline void trampoline(JitValue* __ret, JitClosure* self, int8_t, int64_t,
+                       int64_t n, JitValue* args) {
   auto idx = static_cast<size_t>(self->captures[0]->value.data);
   try {
     *__ret = host_fns()[idx](n, args);
@@ -819,9 +817,8 @@ class Embed {
         std::forward<Fn>(fn), std::string(name), std::move(param_names),
         static_cast<Args*>(nullptr)));
     auto idx = static_cast<int64_t>(fns.size() - 1);
-    auto* cls = culebra_runtime_closure_new(
-        reinterpret_cast<void*>(&_embed_detail::trampoline), 1, arity,
-        JIT_CLOSURE_NATIVE, /*meta=*/nullptr);
+    auto* cls = _jit_native_closure(_jit_native<&_embed_detail::trampoline>,
+                                    1, arity);
     cls->captures[0] = culebra_runtime_cell_new(TAG_LONG, idx);
     auto* cell = cells_.cell(name);
     _jit_replace_value(cell->value, TAG_FUNC, reinterpret_cast<int64_t>(cls));

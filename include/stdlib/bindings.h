@@ -2229,8 +2229,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_proc_race_kw(
 }
 
 #if defined(CULEBRA_HTTP_ENABLED)
-// `r.json()` — parse the response body as JSON. Method ABI: self arrives +1
-// (release before returning), mirroring the proc/file handle methods.
+// `r.json()` — parse the response body as JSON.
 inline void _jit_http_json(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t,
                                           JitValue*) {
   JitValue self{self_tag, self_data};
@@ -2244,7 +2243,6 @@ inline void _jit_http_json(JitValue* __ret, JitClosure*, int8_t self_tag, int64_
     }
   }
   JitValue r = culebra_runtime_json_parse(body.c_str(), "auto", 0, 0);
-  culebra_runtime_value_release(self.tag, self.data);
   { *__ret = r; return; }
 }
 
@@ -2270,7 +2268,7 @@ inline JitObject* _culebra_http_result_to_object(
   culebra_runtime_object_set(o, "headers", false, TAG_OBJECT,
       reinterpret_cast<int64_t>(headers), line, col);
   culebra_runtime_object_set(o, "json", false, TAG_FUNC,
-      reinterpret_cast<int64_t>(_jit_make_handle_method(_jit_http_json, 0)),
+      reinterpret_cast<int64_t>(_jit_make_handle_method(_jit_native<_jit_http_json>, 0)),
       line, col);
   return o;
 }
@@ -2670,13 +2668,10 @@ inline JitValue _jit_handle_finish(JitObject* h, JitObject* res_obj) {
   return res;
 }
 
-// wait/poll/kill/drop are invoked via the method ABI, which hands `self` over
-// at +1; the callee must consume it. Each releases `self` before returning.
 inline void _jit_handle_wait(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                             int64_t, JitValue*) {
   JitValue self{self_tag, self_data};
   auto* h = reinterpret_cast<JitObject*>(self.data);
-  _JitValueGuard self_guard{static_cast<int8_t>(self.tag), self.data};
   JitValue ret;
   if (_jit_handle_done(h)) {
     ret = _jit_handle_cached(h);
@@ -2719,7 +2714,6 @@ inline void _jit_handle_poll(JitValue* __ret, JitClosure*, int8_t self_tag, int6
           h, _culebra_proc_result_to_object(std::move(pr), 0, 0));
     }
   }
-  culebra_runtime_value_release(self.tag, self.data);
   { *__ret = ret; return; }
 }
 inline void _jit_handle_kill(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
@@ -2732,13 +2726,11 @@ inline void _jit_handle_kill(JitValue* __ret, JitClosure*, int8_t self_tag, int6
     culebra::proc::kill_pid(_jit_handle_long(h, "_pid"), sig,
                             _jit_handle_own_pgroup(h));
   }
-  culebra_runtime_value_release(self.tag, self.data);
   { *__ret = {TAG_NIL, 0}; return; }
 }
 inline void _jit_handle_drop(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                             int64_t, JitValue*) {
   JitValue self{self_tag, self_data};
-  JitMethodSelf _s{self};
   auto* h = reinterpret_cast<JitObject*>(self.data);
   if (_jit_handle_done(h)) { *__ret = {TAG_NIL, 0}; return; }
   int out_fd = static_cast<int>(_jit_handle_long(h, "_out"));
@@ -2764,10 +2756,10 @@ inline JitValue _culebra_proc_build_handle(int64_t pid, int out_fd,
   // A native handle is not Sendable — reject it at the serialize boundary
   // (jit_serialize checks __nonsendable__), mirroring the interp handle.
   h->set_or_append("__nonsendable__", JitValue{TAG_BOOL, 1}, false);
-  _jit_handle_bind_method(h, "wait", _jit_handle_wait, 0);
-  _jit_handle_bind_method(h, "poll", _jit_handle_poll, 0);
-  _jit_handle_bind_method(h, "kill", _jit_handle_kill, 0);
-  _jit_handle_bind_method(h, "drop", _jit_handle_drop, 0);
+  _jit_handle_bind_method(h, "wait", _jit_native<_jit_handle_wait>, 0);
+  _jit_handle_bind_method(h, "poll", _jit_native<_jit_handle_poll>, 0);
+  _jit_handle_bind_method(h, "kill", _jit_native<_jit_handle_kill>, 0);
+  _jit_handle_bind_method(h, "drop", _jit_native<_jit_handle_drop>, 0);
   // Bind chokepoint (has_drop + owned-stack registration) — see the
   // File handle note below.
   _jit_owned_bind_drop(h);
@@ -2776,10 +2768,7 @@ inline JitValue _culebra_proc_build_handle(int64_t pid, int out_fd,
 
 // --- File handle (JIT) ---
 // Methods read `_id` (Long) from the handle and operate on the shared
-// side table (culebra::_file_* helpers, stdlib_kernels.h). Same
-// method ABI as the Proc handle: self arrives +1 and is released here,
-// by `drop` like the rest (_culebra_call_drop_if_present calls it as it
-// would any method).
+// side table (culebra::_file_* helpers, stdlib_kernels.h).
 
 // Binder-order argument checks, the same convention as wrap.h's
 // jit_check_args (interp parity): a missing required argument is an
@@ -2790,16 +2779,14 @@ inline bool _jit_file_arg_present(int64_t n, JitValue* args,
                                              size_t i) {
   return static_cast<int64_t>(i) < n && args[i].tag != TAG_UNFILLED;
 }
-[[noreturn]] inline void _jit_file_missing_arg(JitValue self,
-                                                          const char* pname) {
-  culebra_runtime_value_release(self.tag, self.data);
+[[noreturn]] inline void _jit_file_missing_arg(const char* pname) {
   throw culebra::CulebraError(
       "ArityError", culebra::missing_required_arg_message(pname),
       _jit_thread.call_line, _jit_thread.call_col);
 }
-[[noreturn]] inline void _jit_file_param_type_error(
-    JitValue self, const char* pname, const char* expected, size_t i) {
-  culebra_runtime_value_release(self.tag, self.data);
+[[noreturn]] inline void _jit_file_param_type_error(const char* pname,
+                                                    const char* expected,
+                                                    size_t i) {
   auto pos = _jit_arg_pos(static_cast<int>(i));
   throw culebra::CulebraError(
       "TypeError",
@@ -2810,19 +2797,17 @@ inline bool _jit_file_arg_present(int64_t n, JitValue* args,
 // Arity first, then type, so a handle method reports the two the same way
 // every other one does. Only valid for the duration of the call: `args` is
 // the caller's frame.
-inline std::string_view _jit_handle_req_string(JitValue self, int64_t n,
-                                               JitValue* args, size_t i,
-                                               const char* pname) {
-  if (!_jit_file_arg_present(n, args, i)) _jit_file_missing_arg(self, pname);
+inline std::string_view _jit_handle_req_string(int64_t n, JitValue* args,
+                                               size_t i, const char* pname) {
+  if (!_jit_file_arg_present(n, args, i)) _jit_file_missing_arg(pname);
   if (args[i].tag != TAG_STRING)
-    _jit_file_param_type_error(self, pname, "String", i);
+    _jit_file_param_type_error(pname, "String", i);
   return _culebra_str_view(args[i].tag, args[i].data);
 }
 // Untyped-param body check ("expected X, got Y" at the call site), the
 // shape the interp's to_long()/to_string() conversions produce.
-[[noreturn]] inline void _jit_file_body_type_error(
-    JitValue self, const char* expected, int8_t got_tag) {
-  culebra_runtime_value_release(self.tag, self.data);
+[[noreturn]] inline void _jit_file_body_type_error(const char* expected,
+                                                   int8_t got_tag) {
   culebra_runtime_type_error_typed(_jit_thread.call_line, _jit_thread.call_col,
                                    expected, got_tag);
 }
@@ -2837,13 +2822,12 @@ inline void _jit_file_read(JitValue* __ret, JitClosure*, int8_t self_tag, int64_
   const bool has_n = _jit_file_arg_present(n, args, 0) &&
                      args[0].tag != TAG_NIL;
   if (has_n && args[0].tag != TAG_LONG)
-    _jit_file_body_type_error(self, "Long", args[0].tag);
+    _jit_file_body_type_error("Long", args[0].tag);
   std::string out = has_n ? culebra::_file_read_n(id, args[0].data,
                                                   _jit_thread.call_line,
                                                   _jit_thread.call_col)
                           : culebra::_file_read_all(id, _jit_thread.call_line,
                                                     _jit_thread.call_col);
-  culebra_runtime_value_release(self.tag, self.data);
   { *__ret = {TAG_STRING, reinterpret_cast<int64_t>(_culebra_heap_str(out))}; return; }
 }
 inline void _jit_file_write(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
@@ -2851,14 +2835,13 @@ inline void _jit_file_write(JitValue* __ret, JitClosure*, int8_t self_tag, int64
   JitValue self{self_tag, self_data};
   auto* h = reinterpret_cast<JitObject*>(self.data);
   int64_t id = _jit_handle_long(h, "_id");
-  if (!_jit_file_arg_present(n, args, 0)) _jit_file_missing_arg(self, "data");
+  if (!_jit_file_arg_present(n, args, 0)) _jit_file_missing_arg("data");
   // A `String` param rejects a StringView slice on every path (wrap.h's
   // jit_check_args predicate; interp type_matches) — same here.
   if (args[0].tag != TAG_STRING)
-    _jit_file_param_type_error(self, "data", "String", 0);
+    _jit_file_param_type_error("data", "String", 0);
   auto sv = _culebra_str_view(args[0].tag, args[0].data);
   culebra::_file_write(id, sv, _jit_thread.call_line, _jit_thread.call_col);
-  culebra_runtime_value_release(self.tag, self.data);
   { *__ret = {TAG_NIL, 0}; return; }
 }
 inline void _jit_file_flush(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
@@ -2867,7 +2850,6 @@ inline void _jit_file_flush(JitValue* __ret, JitClosure*, int8_t self_tag, int64
   culebra::_file_flush(_jit_handle_long(reinterpret_cast<JitObject*>(self.data),
                                         "_id"),
                        _jit_thread.call_line, _jit_thread.call_col);
-  culebra_runtime_value_release(self.tag, self.data);
   { *__ret = {TAG_NIL, 0}; return; }
 }
 inline void _jit_file_seek(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
@@ -2876,21 +2858,20 @@ inline void _jit_file_seek(JitValue* __ret, JitClosure*, int8_t self_tag, int64_
   auto* h = reinterpret_cast<JitObject*>(self.data);
   int64_t id = _jit_handle_long(h, "_id");
   if (!_jit_file_arg_present(n, args, 0))
-    _jit_file_missing_arg(self, "offset");
+    _jit_file_missing_arg("offset");
   if (args[0].tag != TAG_LONG)
-    _jit_file_param_type_error(self, "offset", "Long", 0);
+    _jit_file_param_type_error("offset", "Long", 0);
   int64_t off = args[0].data;
   // `whence` is untyped with default "set" — a non-String is the interp's
   // to_string() body error.
   std::string_view whence = "set";
   if (_jit_file_arg_present(n, args, 1)) {
     if (args[1].tag != TAG_STRING && args[1].tag != TAG_STRINGVIEW)
-      _jit_file_body_type_error(self, "String", args[1].tag);
+      _jit_file_body_type_error("String", args[1].tag);
     whence = _culebra_str_view(args[1].tag, args[1].data);
   }
   culebra::_file_seek(id, off, whence, _jit_thread.call_line,
                       _jit_thread.call_col);
-  culebra_runtime_value_release(self.tag, self.data);
   { *__ret = {TAG_NIL, 0}; return; }
 }
 inline void _jit_file_tell(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
@@ -2899,7 +2880,6 @@ inline void _jit_file_tell(JitValue* __ret, JitClosure*, int8_t self_tag, int64_
   int64_t pos = culebra::_file_tell(
       _jit_handle_long(reinterpret_cast<JitObject*>(self.data), "_id"),
       _jit_thread.call_line, _jit_thread.call_col);
-  culebra_runtime_value_release(self.tag, self.data);
   { *__ret = {TAG_LONG, pos}; return; }
 }
 inline void _jit_file_close(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
@@ -2907,13 +2887,11 @@ inline void _jit_file_close(JitValue* __ret, JitClosure*, int8_t self_tag, int64
   JitValue self{self_tag, self_data};
   culebra::_file_close(_jit_handle_long(reinterpret_cast<JitObject*>(self.data),
                                         "_id"));
-  culebra_runtime_value_release(self.tag, self.data);
   { *__ret = {TAG_NIL, 0}; return; }
 }
 inline void _jit_file_drop(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                           int64_t, JitValue*) {
   JitValue self{self_tag, self_data};
-  JitMethodSelf _s{self};
   culebra::_file_close(_jit_handle_long(reinterpret_cast<JitObject*>(self.data),
                                         "_id"));
   { *__ret = {TAG_NIL, 0}; return; }
@@ -2953,11 +2931,8 @@ inline void _file_chunks_fast_fn(JitClosure* cls, JitValue, bool* done,
 // held in a capture cell. `self` here is the iterator wrapper (no `_id`
 // property), so a handle-method thunk reading `self._id` silently no-ops —
 // the interp twin captures the id in its dispose closure the same way.
-inline void _file_iter_dispose_fn(JitValue* __ret, JitClosure* cls,
-                                  int8_t self_tag, int64_t self_data,
-                                  int64_t, JitValue*) {
-  // Native iterator method: self arrives +1-owned (callee-consumes).
-  JitOwnedVal self_guard(JitValue{self_tag, self_data});
+inline void _file_iter_dispose_fn(JitValue* __ret, JitClosure* cls, int8_t,
+                                  int64_t, int64_t, JitValue*) {
   culebra::_file_close(cls->captures[0]->value.data);
   *__ret = {TAG_NIL, 0};
 }
@@ -2982,26 +2957,23 @@ inline JitObject* _file_iter_build(JitValue self, bool chunks, int64_t n) {
     it = _iter_wrap_fast<&_file_lines_fast_fn>(
         {handle_cell, id_cell, line_cell, col_cell});
   }
-  _iter_set_dispose(it, &_file_iter_dispose_fn, id_cell);
+  _iter_set_dispose(it, _jit_native<_file_iter_dispose_fn>, id_cell);
   return it;
 }
 inline void _jit_file_lines(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                            int64_t, JitValue*) {
   JitValue self{self_tag, self_data};
-  // dispose's close needs the handle; transfer self's +1 into the iterator
-  // build (it retains again), then the iterator owns the keep-alive ref.
+  // dispose's close needs the handle: the iterator keeps a reference to it.
   auto* it = _file_iter_build(self, /*chunks=*/false, 0);
-  culebra_runtime_value_release(self.tag, self.data);
   { *__ret = {TAG_OBJECT, reinterpret_cast<int64_t>(it)}; return; }
 }
 inline void _jit_file_chunks(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                             int64_t n, JitValue* args) {
   JitValue self{self_tag, self_data};
-  if (!_jit_file_arg_present(n, args, 0)) _jit_file_missing_arg(self, "n");
+  if (!_jit_file_arg_present(n, args, 0)) _jit_file_missing_arg("n");
   if (args[0].tag != TAG_LONG)
-    _jit_file_param_type_error(self, "n", "Long", 0);
+    _jit_file_param_type_error("n", "Long", 0);
   auto* it = _file_iter_build(self, /*chunks=*/true, args[0].data);
-  culebra_runtime_value_release(self.tag, self.data);
   { *__ret = {TAG_OBJECT, reinterpret_cast<int64_t>(it)}; return; }
 }
 
@@ -3024,15 +2996,15 @@ inline JitValue _culebra_file_build_handle(int64_t id) {
       _jit_make_handle_meta({"offset", "whence"}, {false, true});
   static const JitParamMeta* chunks_meta =
       _jit_make_handle_meta({"n"}, {false});
-  _jit_handle_bind_method(h, "read", _jit_file_read, 0, read_meta);
-  _jit_handle_bind_method(h, "write", _jit_file_write, 1, write_meta);
-  _jit_handle_bind_method(h, "flush", _jit_file_flush, 0);
-  _jit_handle_bind_method(h, "seek", _jit_file_seek, 1, seek_meta);
-  _jit_handle_bind_method(h, "tell", _jit_file_tell, 0);
-  _jit_handle_bind_method(h, "lines", _jit_file_lines, 0);
-  _jit_handle_bind_method(h, "chunks", _jit_file_chunks, 1, chunks_meta);
-  _jit_handle_bind_method(h, "close", _jit_file_close, 0);
-  _jit_handle_bind_method(h, "drop", _jit_file_drop, 0);
+  _jit_handle_bind_method(h, "read", _jit_native<_jit_file_read>, 0, read_meta);
+  _jit_handle_bind_method(h, "write", _jit_native<_jit_file_write>, 1, write_meta);
+  _jit_handle_bind_method(h, "flush", _jit_native<_jit_file_flush>, 0);
+  _jit_handle_bind_method(h, "seek", _jit_native<_jit_file_seek>, 1, seek_meta);
+  _jit_handle_bind_method(h, "tell", _jit_native<_jit_file_tell>, 0);
+  _jit_handle_bind_method(h, "lines", _jit_native<_jit_file_lines>, 0);
+  _jit_handle_bind_method(h, "chunks", _jit_native<_jit_file_chunks>, 1, chunks_meta);
+  _jit_handle_bind_method(h, "close", _jit_native<_jit_file_close>, 0);
+  _jit_handle_bind_method(h, "drop", _jit_native<_jit_file_drop>, 0);
   // Through the bind chokepoint, not a bare `has_drop = true`: the
   // handle must also register on the owned stack, or a cycle-held File
   // would miss its deterministic scope-exit drop (the interp's handle
@@ -3072,11 +3044,7 @@ inline void _watch_events_fast_fn(JitClosure* cls, JitValue, bool* done,
 
 inline void _jit_watch_iter(JitValue* __ret, JitClosure*, int8_t self_tag,
                                            int64_t self_data, int64_t, JitValue*) {
-  // self arrives +1-owned (callee-consumes); the guard releases it on every
-  // path, including the throw out of a failed iterator build.
-  JitOwnedVal self(JitValue{self_tag, self_data});
-  int64_t id =
-      _jit_handle_long(reinterpret_cast<JitObject*>(self.borrow().data), "_id");
+  int64_t id = _jit_handle_long(reinterpret_cast<JitObject*>(self_data), "_id");
   auto* id_cell = culebra_runtime_cell_new(TAG_LONG, id);
   // No dispose: the handle owns the close, so `break` leaves a named handle
   // usable and an anonymous one is stopped by its own drop (interp twin).
@@ -3085,15 +3053,13 @@ inline void _jit_watch_iter(JitValue* __ret, JitClosure*, int8_t self_tag,
 }
 inline void _jit_watch_close(JitValue* __ret, JitClosure*, int8_t self_tag,
                                             int64_t self_data, int64_t, JitValue*) {
-  JitOwnedVal self(JitValue{self_tag, self_data});
   culebra::fswatch::fs_watch_close(
-      _jit_handle_long(reinterpret_cast<JitObject*>(self.borrow().data), "_id"));
+      _jit_handle_long(reinterpret_cast<JitObject*>(self_data), "_id"));
   { *__ret = {TAG_NIL, 0}; return; }
 }
 inline void _jit_watch_drop(JitValue* __ret, JitClosure*, int8_t self_tag,
                                            int64_t self_data, int64_t, JitValue*) {
   JitValue self{self_tag, self_data};
-  JitMethodSelf _s{self};
   culebra::fswatch::fs_watch_close(
       _jit_handle_long(reinterpret_cast<JitObject*>(self.data), "_id"));
   { *__ret = {TAG_NIL, 0}; return; }
@@ -3103,9 +3069,9 @@ inline JitValue _culebra_watch_build_handle(int64_t id) {
   auto* h = culebra_runtime_object_new();
   h->set_or_append("_id", JitValue{TAG_LONG, id}, false);
   h->set_or_append("__nonsendable__", JitValue{TAG_BOOL, 1}, false);
-  _jit_handle_bind_method(h, "iter", _jit_watch_iter, 0);
-  _jit_handle_bind_method(h, "close", _jit_watch_close, 0);
-  _jit_handle_bind_method(h, "drop", _jit_watch_drop, 0);
+  _jit_handle_bind_method(h, "iter", _jit_native<_jit_watch_iter>, 0);
+  _jit_handle_bind_method(h, "close", _jit_native<_jit_watch_close>, 0);
+  _jit_handle_bind_method(h, "drop", _jit_native<_jit_watch_drop>, 0);
   _jit_owned_bind_drop(h);
   return {TAG_OBJECT, reinterpret_cast<int64_t>(h)};
 }
@@ -3126,11 +3092,9 @@ inline void _stdin_lines_fast_fn(JitClosure*, JitValue, bool* done,
 }
 inline void _jit_stdin_lines(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t,
                                             JitValue*) {
-  JitValue self{self_tag, self_data};
   // The iterator reads the thread-local stdin buffer, not the handle, so no
-  // keep-alive capture is needed — just consume the method ABI's +1 on self.
+  // keep-alive capture is needed.
   auto* it = _iter_wrap_fast<&_stdin_lines_fast_fn>({});
-  culebra_runtime_value_release(self.tag, self.data);
   { *__ret = {TAG_OBJECT, reinterpret_cast<int64_t>(it)}; return; }
 }
 // read(n=nil): nil → rest of stdin, Long → up to n bytes. A non-Long n is the
@@ -3141,19 +3105,18 @@ inline void _jit_stdin_read(JitValue* __ret, JitClosure*, int8_t self_tag, int64
   const bool has_n = _jit_file_arg_present(n, args, 0) &&
                      args[0].tag != TAG_NIL;
   if (has_n && args[0].tag != TAG_LONG)
-    _jit_file_body_type_error(self, "Long", args[0].tag);
+    _jit_file_body_type_error("Long", args[0].tag);
   std::string out = has_n ? culebra::read_stdin_n_interruptible(
                                 static_cast<size_t>(args[0].data))
                           : culebra::read_stdin_all_interruptible();
-  culebra_runtime_value_release(self.tag, self.data);  // method ABI: self is +1
   { *__ret = {TAG_STRING, reinterpret_cast<int64_t>(_culebra_heap_str(out))}; return; }
 }
 inline JitValue _culebra_stdin_build_handle() {
   auto* h = culebra_runtime_object_new();
   h->set_or_append("__nonsendable__", JitValue{TAG_BOOL, 1}, false);
   static const JitParamMeta* read_meta = _jit_make_handle_meta({"n"}, {true});
-  _jit_handle_bind_method(h, "read", _jit_stdin_read, 0, read_meta);
-  _jit_handle_bind_method(h, "lines", _jit_stdin_lines, 0);
+  _jit_handle_bind_method(h, "read", _jit_native<_jit_stdin_read>, 0, read_meta);
+  _jit_handle_bind_method(h, "lines", _jit_native<_jit_stdin_lines>, 0);
   return {TAG_OBJECT, reinterpret_cast<int64_t>(h)};
 }
 
@@ -3337,7 +3300,7 @@ inline JitValue _jit_sqlite_query(int64_t db_id, const std::string& sql,
   return rows;
 }
 
-// --- Statement handle methods (self arrives +1; released before return). ----
+// --- Statement handle methods ----------------------------------------------
 
 inline int64_t _jit_sqlite_stmt_id(JitValue self) {
   return _jit_handle_long(reinterpret_cast<JitObject*>(self.data), "_id");
@@ -3356,7 +3319,6 @@ inline void _jit_sqlite_stmt_run(JitValue* __ret, JitClosure*, int8_t self_tag, 
   JitValue self{self_tag, self_data};
   int64_t st = _jit_sqlite_stmt_id(self);
   int64_t db = _jit_sqlite_stmt_db_id(self);
-  _JitValueGuard self_guard{static_cast<int8_t>(self.tag), self.data};  // method ABI: self is +1
   JitValue params = _jit_file_arg_present(n, args, 0) ? args[0] : JitValue{TAG_NIL, 0};
   culebra::sqlite::reset(st);
   _jit_sqlite_bind_params(st, params, _jit_thread.call_line, _jit_thread.call_col);
@@ -3367,7 +3329,6 @@ inline void _jit_sqlite_stmt_query(JitValue* __ret, JitClosure*, int8_t self_tag
                                                   int64_t n, JitValue* args) {
   JitValue self{self_tag, self_data};
   int64_t st = _jit_sqlite_stmt_id(self);
-  _JitValueGuard self_guard{static_cast<int8_t>(self.tag), self.data};  // method ABI: self is +1
   JitValue params = _jit_file_arg_present(n, args, 0) ? args[0] : JitValue{TAG_NIL, 0};
   culebra::sqlite::reset(st);
   _jit_sqlite_bind_params(st, params, _jit_thread.call_line, _jit_thread.call_col);
@@ -3377,13 +3338,11 @@ inline void _jit_sqlite_stmt_finalize(JitValue* __ret, JitClosure*, int8_t self_
                                                      int64_t, JitValue*) {
   JitValue self{self_tag, self_data};
   culebra::sqlite::finalize(_jit_sqlite_stmt_id(self));
-  culebra_runtime_value_release(self.tag, self.data);
   { *__ret = {TAG_NIL, 0}; return; }
 }
 inline void _jit_sqlite_stmt_drop(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                                  int64_t, JitValue*) {
   JitValue self{self_tag, self_data};
-  JitMethodSelf _s{self};
   culebra::sqlite::finalize(_jit_sqlite_stmt_id(self));
   { *__ret = {TAG_NIL, 0}; return; }
 }
@@ -3399,10 +3358,10 @@ inline JitValue _culebra_sqlite_build_stmt_handle(int64_t stmt_id,
   h->set_or_append("__parent__", db_handle, false);
   static const JitParamMeta* params_meta =
       _jit_make_handle_meta({"params"}, {true});
-  _jit_handle_bind_method(h, "run", _jit_sqlite_stmt_run, 0, params_meta);
-  _jit_handle_bind_method(h, "query", _jit_sqlite_stmt_query, 0, params_meta);
-  _jit_handle_bind_method(h, "finalize", _jit_sqlite_stmt_finalize, 0);
-  _jit_handle_bind_method(h, "drop", _jit_sqlite_stmt_drop, 0);
+  _jit_handle_bind_method(h, "run", _jit_native<_jit_sqlite_stmt_run>, 0, params_meta);
+  _jit_handle_bind_method(h, "query", _jit_native<_jit_sqlite_stmt_query>, 0, params_meta);
+  _jit_handle_bind_method(h, "finalize", _jit_native<_jit_sqlite_stmt_finalize>, 0);
+  _jit_handle_bind_method(h, "drop", _jit_native<_jit_sqlite_stmt_drop>, 0);
   _jit_owned_bind_drop(h);
   return {TAG_OBJECT, reinterpret_cast<int64_t>(h)};
 }
@@ -3413,13 +3372,12 @@ inline int64_t _jit_sqlite_db_id(JitValue self) {
   return _jit_handle_long(reinterpret_cast<JitObject*>(self.data), "_id");
 }
 
-// Reads the required `sql` String arg (arity-checks + type-checks, releasing
-// self on error like the File thunks), returning it by value.
-inline std::string _jit_sqlite_take_sql(JitValue self, int64_t n,
-                                                   JitValue* args) {
-  if (!_jit_file_arg_present(n, args, 0)) _jit_file_missing_arg(self, "sql");
+// Reads the required `sql` String arg (arity-checks + type-checks, like the
+// File thunks), returning it by value.
+inline std::string _jit_sqlite_take_sql(int64_t n, JitValue* args) {
+  if (!_jit_file_arg_present(n, args, 0)) _jit_file_missing_arg("sql");
   if (args[0].tag != TAG_STRING)
-    _jit_file_param_type_error(self, "sql", "String", 0);
+    _jit_file_param_type_error("sql", "String", 0);
   return std::string(_culebra_str_view(args[0].tag, args[0].data));
 }
 
@@ -3427,8 +3385,7 @@ inline void _jit_sqlite_db_execute(JitValue* __ret, JitClosure*, int8_t self_tag
                                                   int64_t n, JitValue* args) {
   JitValue self{self_tag, self_data};
   int64_t db = _jit_sqlite_db_id(self);
-  std::string sql = _jit_sqlite_take_sql(self, n, args);  // releases self on error
-  _JitValueGuard self_guard{static_cast<int8_t>(self.tag), self.data};
+  std::string sql = _jit_sqlite_take_sql(n, args);
   JitValue params = _jit_file_arg_present(n, args, 1) ? args[1] : JitValue{TAG_NIL, 0};
   { *__ret = _jit_sqlite_execute(db, sql, params, _jit_thread.call_line,
                              _jit_thread.call_col); return; }
@@ -3437,8 +3394,7 @@ inline void _jit_sqlite_db_query(JitValue* __ret, JitClosure*, int8_t self_tag, 
                                                 int64_t n, JitValue* args) {
   JitValue self{self_tag, self_data};
   int64_t db = _jit_sqlite_db_id(self);
-  std::string sql = _jit_sqlite_take_sql(self, n, args);  // releases self on error
-  _JitValueGuard self_guard{static_cast<int8_t>(self.tag), self.data};
+  std::string sql = _jit_sqlite_take_sql(n, args);
   JitValue params = _jit_file_arg_present(n, args, 1) ? args[1] : JitValue{TAG_NIL, 0};
   { *__ret = _jit_sqlite_query(db, sql, params, _jit_thread.call_line,
                            _jit_thread.call_col); return; }
@@ -3447,24 +3403,21 @@ inline void _jit_sqlite_db_prepare(JitValue* __ret, JitClosure*, int8_t self_tag
                                                   int64_t n, JitValue* args) {
   JitValue self{self_tag, self_data};
   int64_t db = _jit_sqlite_db_id(self);
-  std::string sql = _jit_sqlite_take_sql(self, n, args);  // releases self on error
-  _JitValueGuard self_guard{static_cast<int8_t>(self.tag), self.data};
+  std::string sql = _jit_sqlite_take_sql(n, args);
   std::string err;
   int64_t st = culebra::sqlite::prepare(db, sql, &err);
   if (st < 0) _jit_sqlite_throw(err, _jit_thread.call_line, _jit_thread.call_col);
-  // build_stmt_handle retains self into the Statement's __parent__; the guard
-  // still releases this method's +1.
+  // build_stmt_handle retains self into the Statement's __parent__.
   { *__ret = _culebra_sqlite_build_stmt_handle(st, self); return; }
 }
 inline void _jit_sqlite_db_transaction(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                                       int64_t n, JitValue* args) {
   JitValue self{self_tag, self_data};
   int64_t db = _jit_sqlite_db_id(self);
-  if (!_jit_file_arg_present(n, args, 0)) _jit_file_missing_arg(self, "fn");
+  if (!_jit_file_arg_present(n, args, 0)) _jit_file_missing_arg("fn");
   if (args[0].tag != TAG_FUNC)
-    _jit_file_param_type_error(self, "fn", "Function", 0);
+    _jit_file_param_type_error("fn", "Function", 0);
   auto* fn = reinterpret_cast<JitClosure*>(args[0].data);
-  _JitValueGuard self_guard{static_cast<int8_t>(self.tag), self.data};
   _jit_sqlite_execute(db, "BEGIN", JitValue{TAG_NIL, 0}, _jit_thread.call_line,
                       _jit_thread.call_col);
   try {
@@ -3484,13 +3437,11 @@ inline void _jit_sqlite_db_close(JitValue* __ret, JitClosure*, int8_t self_tag, 
                                                 int64_t, JitValue*) {
   JitValue self{self_tag, self_data};
   culebra::sqlite::close_db(_jit_sqlite_db_id(self));
-  culebra_runtime_value_release(self.tag, self.data);
   { *__ret = {TAG_NIL, 0}; return; }
 }
 inline void _jit_sqlite_db_drop(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                                int64_t, JitValue*) {
   JitValue self{self_tag, self_data};
-  JitMethodSelf _s{self};
   culebra::sqlite::close_db(_jit_sqlite_db_id(self));
   { *__ret = {TAG_NIL, 0}; return; }
 }
@@ -3504,13 +3455,13 @@ inline JitValue _culebra_sqlite_build_db_handle(int64_t db_id) {
   static const JitParamMeta* sql_meta =
       _jit_make_handle_meta({"sql"}, {false});
   static const JitParamMeta* fn_meta = _jit_make_handle_meta({"fn"}, {false});
-  _jit_handle_bind_method(h, "execute", _jit_sqlite_db_execute, 1, exec_meta);
-  _jit_handle_bind_method(h, "query", _jit_sqlite_db_query, 1, exec_meta);
-  _jit_handle_bind_method(h, "prepare", _jit_sqlite_db_prepare, 1, sql_meta);
-  _jit_handle_bind_method(h, "transaction", _jit_sqlite_db_transaction, 1,
+  _jit_handle_bind_method(h, "execute", _jit_native<_jit_sqlite_db_execute>, 1, exec_meta);
+  _jit_handle_bind_method(h, "query", _jit_native<_jit_sqlite_db_query>, 1, exec_meta);
+  _jit_handle_bind_method(h, "prepare", _jit_native<_jit_sqlite_db_prepare>, 1, sql_meta);
+  _jit_handle_bind_method(h, "transaction", _jit_native<_jit_sqlite_db_transaction>, 1,
                           fn_meta);
-  _jit_handle_bind_method(h, "close", _jit_sqlite_db_close, 0);
-  _jit_handle_bind_method(h, "drop", _jit_sqlite_db_drop, 0);
+  _jit_handle_bind_method(h, "close", _jit_native<_jit_sqlite_db_close>, 0);
+  _jit_handle_bind_method(h, "drop", _jit_native<_jit_sqlite_db_drop>, 0);
   _jit_owned_bind_drop(h);
   return {TAG_OBJECT, reinterpret_cast<int64_t>(h)};
 }
@@ -3561,10 +3512,9 @@ inline JitValue _jit_net_addr_object(const std::string& host,
 inline void _jit_net_set_timeout(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                                 int64_t n, JitValue* args) {
   JitValue self{self_tag, self_data};
-  if (!_jit_file_arg_present(n, args, 0)) _jit_file_missing_arg(self, "ms");
+  if (!_jit_file_arg_present(n, args, 0)) _jit_file_missing_arg("ms");
   if (args[0].tag != TAG_LONG)
-    _jit_file_param_type_error(self, "ms", "Long", 0);
-  _JitValueGuard self_guard{static_cast<int8_t>(self.tag), self.data};
+    _jit_file_param_type_error("ms", "Long", 0);
   std::string err;
   if (!culebra::net::set_timeout(_jit_net_id(self), args[0].data, &err))
     _jit_net_throw("Net.set_timeout", err, _jit_thread.call_line,
@@ -3574,21 +3524,18 @@ inline void _jit_net_set_timeout(JitValue* __ret, JitClosure*, int8_t self_tag, 
 inline void _jit_net_is_open(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                             int64_t, JitValue*) {
   JitValue self{self_tag, self_data};
-  _JitValueGuard self_guard{static_cast<int8_t>(self.tag), self.data};
   bool open = culebra::net::is_open(_jit_net_id(self));
   { *__ret = {TAG_BOOL, open ? 1 : 0}; return; }
 }
 inline void _jit_net_close(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                           int64_t, JitValue*) {
   JitValue self{self_tag, self_data};
-  _JitValueGuard self_guard{static_cast<int8_t>(self.tag), self.data};
   culebra::net::close_handle(_jit_net_id(self));
   { *__ret = {TAG_NIL, 0}; return; }
 }
 inline void _jit_net_drop(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                          int64_t, JitValue*) {
   JitValue self{self_tag, self_data};
-  JitMethodSelf _s{self};
   culebra::net::close_handle(_jit_net_id(self));
   { *__ret = {TAG_NIL, 0}; return; }
 }
@@ -3600,10 +3547,10 @@ inline void _jit_net_bind_common(JitObject* h, int64_t id) {
   // (jit_serialize checks __nonsendable__), mirroring the interp handle.
   h->set_or_append("__nonsendable__", JitValue{TAG_BOOL, 1}, false);
   static const JitParamMeta* ms_meta = _jit_make_handle_meta({"ms"}, {false});
-  _jit_handle_bind_method(h, "set_timeout", _jit_net_set_timeout, 1, ms_meta);
-  _jit_handle_bind_method(h, "is_open", _jit_net_is_open, 0);
-  _jit_handle_bind_method(h, "close", _jit_net_close, 0);
-  _jit_handle_bind_method(h, "drop", _jit_net_drop, 0);
+  _jit_handle_bind_method(h, "set_timeout", _jit_native<_jit_net_set_timeout>, 1, ms_meta);
+  _jit_handle_bind_method(h, "is_open", _jit_native<_jit_net_is_open>, 0);
+  _jit_handle_bind_method(h, "close", _jit_native<_jit_net_close>, 0);
+  _jit_handle_bind_method(h, "drop", _jit_native<_jit_net_drop>, 0);
   // Through the bind chokepoint, not a bare `has_drop`: the handle must also
   // register on the owned stack or a cycle-held socket would miss its
   // deterministic scope-exit drop.
@@ -3619,8 +3566,7 @@ inline void _jit_net_sock_read(JitValue* __ret, JitClosure*, int8_t self_tag, in
   JitValue self{self_tag, self_data};
   const bool has_n = _jit_file_arg_present(n, args, 0) && args[0].tag != TAG_NIL;
   if (has_n && args[0].tag != TAG_LONG)
-    _jit_file_body_type_error(self, "Long", args[0].tag);
-  _JitValueGuard self_guard{static_cast<int8_t>(self.tag), self.data};
+    _jit_file_body_type_error("Long", args[0].tag);
   std::string out, err;
   culebra::net::IoStatus st;
   if (has_n) {
@@ -3636,7 +3582,6 @@ inline void _jit_net_sock_read(JitValue* __ret, JitClosure*, int8_t self_tag, in
 inline void _jit_net_sock_read_line(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                                    int64_t, JitValue*) {
   JitValue self{self_tag, self_data};
-  _JitValueGuard self_guard{static_cast<int8_t>(self.tag), self.data};
   std::string out, err;
   auto st = culebra::net::read_line(_jit_net_id(self), out, &err);
   if (st == culebra::net::IoStatus::Eof) { *__ret = {TAG_NIL, 0}; return; }
@@ -3647,9 +3592,8 @@ inline void _jit_net_sock_read_line(JitValue* __ret, JitClosure*, int8_t self_ta
 inline void _jit_net_sock_read_exact(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                                     int64_t n, JitValue* args) {
   JitValue self{self_tag, self_data};
-  if (!_jit_file_arg_present(n, args, 0)) _jit_file_missing_arg(self, "n");
-  if (args[0].tag != TAG_LONG) _jit_file_param_type_error(self, "n", "Long", 0);
-  _JitValueGuard self_guard{static_cast<int8_t>(self.tag), self.data};
+  if (!_jit_file_arg_present(n, args, 0)) _jit_file_missing_arg("n");
+  if (args[0].tag != TAG_LONG) _jit_file_param_type_error("n", "Long", 0);
   int64_t want = args[0].data;
   if (want < 0) want = 0;
   std::string out, err;
@@ -3686,10 +3630,10 @@ inline void _jit_net_sock_lines(JitValue* __ret, JitClosure*, int8_t self_tag, i
                                                int64_t, JitValue*) {
   JitValue self{self_tag, self_data};
   int64_t id = _jit_net_id(self);
-  // The method ABI hands self at +1; that reference moves straight into the
-  // iterator's keep-alive cell (no retain/release pair needed, and no dispose
-  // to close it — unlike File.lines a socket is usually written to after the
-  // loop, mirroring the interp handle).
+  // The iterator keeps the socket alive, with no dispose to close it — unlike
+  // File.lines a socket is usually written to after the loop, mirroring the
+  // interp handle.
+  culebra_runtime_value_retain(self.tag, self.data);
   auto* handle_cell = culebra_runtime_cell_new(self.tag, self.data);
   auto* id_cell = culebra_runtime_cell_new(TAG_LONG, id);
   auto* line_cell = culebra_runtime_cell_new(TAG_LONG, _jit_thread.call_line);
@@ -3702,10 +3646,9 @@ inline void _jit_net_sock_lines(JitValue* __ret, JitClosure*, int8_t self_tag, i
 inline void _jit_net_sock_write(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                                int64_t n, JitValue* args) {
   JitValue self{self_tag, self_data};
-  if (!_jit_file_arg_present(n, args, 0)) _jit_file_missing_arg(self, "data");
+  if (!_jit_file_arg_present(n, args, 0)) _jit_file_missing_arg("data");
   if (args[0].tag != TAG_STRING && args[0].tag != TAG_STRINGVIEW)
-    _jit_file_param_type_error(self, "data", "String", 0);
-  _JitValueGuard self_guard{static_cast<int8_t>(self.tag), self.data};
+    _jit_file_param_type_error("data", "String", 0);
   std::string_view data = _culebra_str_view(args[0].tag, args[0].data);
   std::string err;
   auto st = culebra::net::write_all(_jit_net_id(self), data.data(), data.size(),
@@ -3716,7 +3659,6 @@ inline void _jit_net_sock_write(JitValue* __ret, JitClosure*, int8_t self_tag, i
 inline void _jit_net_sock_shutdown_write(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                                         int64_t, JitValue*) {
   JitValue self{self_tag, self_data};
-  _JitValueGuard self_guard{static_cast<int8_t>(self.tag), self.data};
   std::string err;
   if (!culebra::net::shutdown_write(_jit_net_id(self), &err))
     _jit_net_throw("Net.shutdown_write", err, _jit_thread.call_line,
@@ -3728,8 +3670,7 @@ inline void _jit_net_sock_set_nodelay(JitValue* __ret, JitClosure*, int8_t self_
   JitValue self{self_tag, self_data};
   const bool has_on = _jit_file_arg_present(n, args, 0);
   if (has_on && args[0].tag != TAG_BOOL)
-    _jit_file_param_type_error(self, "on", "Bool", 0);
-  _JitValueGuard self_guard{static_cast<int8_t>(self.tag), self.data};
+    _jit_file_param_type_error("on", "Bool", 0);
   std::string err;
   if (!culebra::net::set_nodelay(_jit_net_id(self),
                                  has_on ? args[0].data != 0 : true, &err))
@@ -3740,7 +3681,6 @@ inline void _jit_net_sock_set_nodelay(JitValue* __ret, JitClosure*, int8_t self_
 inline void _jit_net_sock_local_addr(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                                     int64_t, JitValue*) {
   JitValue self{self_tag, self_data};
-  _JitValueGuard self_guard{static_cast<int8_t>(self.tag), self.data};
   std::string host, err;
   int port = 0;
   if (!culebra::net::local_addr(_jit_net_id(self), host, port, &err))
@@ -3751,7 +3691,6 @@ inline void _jit_net_sock_local_addr(JitValue* __ret, JitClosure*, int8_t self_t
 inline void _jit_net_sock_peer_addr(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                                    int64_t, JitValue*) {
   JitValue self{self_tag, self_data};
-  _JitValueGuard self_guard{static_cast<int8_t>(self.tag), self.data};
   std::string host, err;
   int port = 0;
   if (!culebra::net::peer_addr(_jit_net_id(self), host, port, &err))
@@ -3768,17 +3707,17 @@ inline JitValue _culebra_net_build_socket_handle(int64_t id) {
   static const JitParamMeta* write_meta =
       _jit_make_handle_meta({"data"}, {false});
   static const JitParamMeta* on_meta = _jit_make_handle_meta({"on"}, {true});
-  _jit_handle_bind_method(h, "read", _jit_net_sock_read, 0, read_meta);
-  _jit_handle_bind_method(h, "read_line", _jit_net_sock_read_line, 0);
-  _jit_handle_bind_method(h, "read_exact", _jit_net_sock_read_exact, 1,
+  _jit_handle_bind_method(h, "read", _jit_native<_jit_net_sock_read>, 0, read_meta);
+  _jit_handle_bind_method(h, "read_line", _jit_native<_jit_net_sock_read_line>, 0);
+  _jit_handle_bind_method(h, "read_exact", _jit_native<_jit_net_sock_read_exact>, 1,
                           exact_meta);
-  _jit_handle_bind_method(h, "lines", _jit_net_sock_lines, 0);
-  _jit_handle_bind_method(h, "write", _jit_net_sock_write, 1, write_meta);
-  _jit_handle_bind_method(h, "shutdown_write", _jit_net_sock_shutdown_write, 0);
-  _jit_handle_bind_method(h, "set_nodelay", _jit_net_sock_set_nodelay, 0,
+  _jit_handle_bind_method(h, "lines", _jit_native<_jit_net_sock_lines>, 0);
+  _jit_handle_bind_method(h, "write", _jit_native<_jit_net_sock_write>, 1, write_meta);
+  _jit_handle_bind_method(h, "shutdown_write", _jit_native<_jit_net_sock_shutdown_write>, 0);
+  _jit_handle_bind_method(h, "set_nodelay", _jit_native<_jit_net_sock_set_nodelay>, 0,
                           on_meta);
-  _jit_handle_bind_method(h, "local_addr", _jit_net_sock_local_addr, 0);
-  _jit_handle_bind_method(h, "peer_addr", _jit_net_sock_peer_addr, 0);
+  _jit_handle_bind_method(h, "local_addr", _jit_native<_jit_net_sock_local_addr>, 0);
+  _jit_handle_bind_method(h, "peer_addr", _jit_native<_jit_net_sock_peer_addr>, 0);
   return {TAG_OBJECT, reinterpret_cast<int64_t>(h)};
 }
 
@@ -3787,7 +3726,6 @@ inline JitValue _culebra_net_build_socket_handle(int64_t id) {
 inline void _jit_net_listener_accept(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                                     int64_t, JitValue*) {
   JitValue self{self_tag, self_data};
-  _JitValueGuard self_guard{static_cast<int8_t>(self.tag), self.data};
   int64_t cid = -1;
   std::string err;
   auto st = culebra::net::accept(_jit_net_id(self), &cid, &err);
@@ -3814,7 +3752,8 @@ inline void _jit_net_listener_iter(JitValue* __ret, JitClosure*, int8_t self_tag
                                                   int64_t, JitValue*) {
   JitValue self{self_tag, self_data};
   int64_t id = _jit_net_id(self);
-  // self's +1 moves into the keep-alive cell, as in lines() above.
+  // The iterator keeps the listener alive, as in lines() above.
+  culebra_runtime_value_retain(self.tag, self.data);
   auto* handle_cell = culebra_runtime_cell_new(self.tag, self.data);
   auto* id_cell = culebra_runtime_cell_new(TAG_LONG, id);
   auto* line_cell = culebra_runtime_cell_new(TAG_LONG, _jit_thread.call_line);
@@ -3833,13 +3772,12 @@ inline thread_local std::optional<JitOwnedVal> g_jit_net_w_handler;
 inline void _jit_net_listener_serve(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                                    int64_t n, JitValue* args) {
   JitValue self{self_tag, self_data};
-  if (!_jit_file_arg_present(n, args, 0)) _jit_file_missing_arg(self, "handler");
+  if (!_jit_file_arg_present(n, args, 0)) _jit_file_missing_arg("handler");
   if (args[0].tag != TAG_FUNC)
-    _jit_file_param_type_error(self, "handler", "Function", 0);
+    _jit_file_param_type_error("handler", "Function", 0);
   const bool has_workers = _jit_file_arg_present(n, args, 1);
   if (has_workers && args[1].tag != TAG_LONG)
-    _jit_file_param_type_error(self, "workers", "Long", 1);
-  _JitValueGuard self_guard{static_cast<int8_t>(self.tag), self.data};
+    _jit_file_param_type_error("workers", "Long", 1);
   int64_t id = _jit_net_id(self);
   int64_t workers = has_workers ? args[1].data : 0;
 
@@ -3893,9 +3831,9 @@ inline JitValue _culebra_net_build_listener_handle(
   h->set_or_append("port", JitValue{TAG_LONG, port}, false);
   static const JitParamMeta* serve_meta =
       _jit_make_handle_meta({"handler", "workers"}, {false, true});
-  _jit_handle_bind_method(h, "accept", _jit_net_listener_accept, 0);
-  _jit_handle_bind_method(h, "serve", _jit_net_listener_serve, 1, serve_meta);
-  _jit_handle_bind_method(h, "iter", _jit_net_listener_iter, 0);
+  _jit_handle_bind_method(h, "accept", _jit_native<_jit_net_listener_accept>, 0);
+  _jit_handle_bind_method(h, "serve", _jit_native<_jit_net_listener_serve>, 1, serve_meta);
+  _jit_handle_bind_method(h, "iter", _jit_native<_jit_net_listener_iter>, 0);
   return {TAG_OBJECT, reinterpret_cast<int64_t>(h)};
 }
 
@@ -3904,16 +3842,15 @@ inline JitValue _culebra_net_build_listener_handle(
 inline void _jit_net_udp_send_to(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                                 int64_t n, JitValue* args) {
   JitValue self{self_tag, self_data};
-  if (!_jit_file_arg_present(n, args, 0)) _jit_file_missing_arg(self, "data");
+  if (!_jit_file_arg_present(n, args, 0)) _jit_file_missing_arg("data");
   if (args[0].tag != TAG_STRING && args[0].tag != TAG_STRINGVIEW)
-    _jit_file_param_type_error(self, "data", "String", 0);
-  if (!_jit_file_arg_present(n, args, 1)) _jit_file_missing_arg(self, "host");
+    _jit_file_param_type_error("data", "String", 0);
+  if (!_jit_file_arg_present(n, args, 1)) _jit_file_missing_arg("host");
   if (args[1].tag != TAG_STRING && args[1].tag != TAG_STRINGVIEW)
-    _jit_file_param_type_error(self, "host", "String", 1);
-  if (!_jit_file_arg_present(n, args, 2)) _jit_file_missing_arg(self, "port");
+    _jit_file_param_type_error("host", "String", 1);
+  if (!_jit_file_arg_present(n, args, 2)) _jit_file_missing_arg("port");
   if (args[2].tag != TAG_LONG)
-    _jit_file_param_type_error(self, "port", "Long", 2);
-  _JitValueGuard self_guard{static_cast<int8_t>(self.tag), self.data};
+    _jit_file_param_type_error("port", "Long", 2);
   auto port = culebra::Port::checked(args[2].data, "Net.send_to",
                                      _jit_thread.call_line,
                                      _jit_thread.call_col);
@@ -3931,8 +3868,7 @@ inline void _jit_net_udp_recv_from(JitValue* __ret, JitClosure*, int8_t self_tag
   JitValue self{self_tag, self_data};
   const bool has_max = _jit_file_arg_present(n, args, 0);
   if (has_max && args[0].tag != TAG_LONG)
-    _jit_file_param_type_error(self, "max", "Long", 0);
-  _JitValueGuard self_guard{static_cast<int8_t>(self.tag), self.data};
+    _jit_file_param_type_error("max", "Long", 0);
   int64_t max = has_max ? args[0].data : 65536;
   if (max < 0) max = 0;
   std::string data, host, err;
@@ -3953,8 +3889,7 @@ inline void _jit_net_udp_set_broadcast(JitValue* __ret, JitClosure*, int8_t self
   JitValue self{self_tag, self_data};
   const bool has_on = _jit_file_arg_present(n, args, 0);
   if (has_on && args[0].tag != TAG_BOOL)
-    _jit_file_param_type_error(self, "on", "Bool", 0);
-  _JitValueGuard self_guard{static_cast<int8_t>(self.tag), self.data};
+    _jit_file_param_type_error("on", "Bool", 0);
   std::string err;
   if (!culebra::net::set_broadcast(_jit_net_id(self),
                                    has_on ? args[0].data != 0 : true, &err))
@@ -3974,9 +3909,9 @@ inline JitValue _culebra_net_build_udp_handle(int64_t id,
       _jit_make_handle_meta({"data", "host", "port"}, {false, false, false});
   static const JitParamMeta* recv_meta = _jit_make_handle_meta({"max"}, {true});
   static const JitParamMeta* on_meta = _jit_make_handle_meta({"on"}, {true});
-  _jit_handle_bind_method(h, "send_to", _jit_net_udp_send_to, 3, send_meta);
-  _jit_handle_bind_method(h, "recv_from", _jit_net_udp_recv_from, 0, recv_meta);
-  _jit_handle_bind_method(h, "set_broadcast", _jit_net_udp_set_broadcast, 0,
+  _jit_handle_bind_method(h, "send_to", _jit_native<_jit_net_udp_send_to>, 3, send_meta);
+  _jit_handle_bind_method(h, "recv_from", _jit_native<_jit_net_udp_recv_from>, 0, recv_meta);
+  _jit_handle_bind_method(h, "set_broadcast", _jit_native<_jit_net_udp_set_broadcast>, 0,
                           on_meta);
   return {TAG_OBJECT, reinterpret_cast<int64_t>(h)};
 }
@@ -6545,16 +6480,13 @@ inline JitValue _ns_http_sse(JitValue* a, int64_t n) {
 // --- Http.client persistent-client handle (JIT) ---
 // Mirrors interp make_http_client_handle: methods take a base-url-relative path
 // (no per-request timeout/follow), reuse the client's connection, and layer its
-// default headers under each request. The handle owns a +1 on `self`; the
-// required-arg checks release it on error (file-thunk convention), then a
-// _JitValueGuard releases it on every later exit (normal or throw).
+// default headers under each request.
 inline int64_t _jit_http_client_id(JitValue self) {
   return _jit_handle_long(reinterpret_cast<JitObject*>(self.data), "_id");
 }
 
 // Parse an Object-of-String slab value (headers/params) into `out`, matching
-// interp http_parse_headers/params messages. No self release — the caller's
-// _JitValueGuard covers the throw.
+// interp http_parse_headers/params messages.
 inline void _jit_http_client_strobj(JitValue v, culebra::http::HeaderList& out,
                                     const char* ctx, const char* container,
                                     const char* valueword) {
@@ -6574,12 +6506,11 @@ inline JitValue _jit_http_client_bodyless(JitValue self, int64_t n,
                                           culebra::HttpMethod method,
                                           const char* ctx) {
   int64_t id = _jit_http_client_id(self);
-  if (!_jit_file_arg_present(n, args, 0)) _jit_file_missing_arg(self, "path");
+  if (!_jit_file_arg_present(n, args, 0)) _jit_file_missing_arg("path");
   // typed `String` param: reject StringView too (matches interp type_matches,
   // which only accepts "String" for a plain String annotation).
   if (args[0].tag != TAG_STRING)
-    _jit_file_param_type_error(self, "path", "String", 0);
-  _JitValueGuard self_guard{static_cast<int8_t>(self.tag), self.data};
+    _jit_file_param_type_error("path", "String", 0);
   auto at = [&](size_t i) {
     return _jit_file_arg_present(n, args, i) ? args[i] : JitValue{TAG_NIL, 0};
   };
@@ -6600,12 +6531,11 @@ inline JitValue _jit_http_client_withbody(JitValue self, int64_t n,
                                           culebra::HttpMethod method,
                                           const char* ctx) {
   int64_t id = _jit_http_client_id(self);
-  if (!_jit_file_arg_present(n, args, 0)) _jit_file_missing_arg(self, "path");
+  if (!_jit_file_arg_present(n, args, 0)) _jit_file_missing_arg("path");
   // typed `String` param: reject StringView too (matches interp type_matches,
   // which only accepts "String" for a plain String annotation).
   if (args[0].tag != TAG_STRING)
-    _jit_file_param_type_error(self, "path", "String", 0);
-  _JitValueGuard self_guard{static_cast<int8_t>(self.tag), self.data};
+    _jit_file_param_type_error("path", "String", 0);
   auto at = [&](size_t i) {
     return _jit_file_arg_present(n, args, i) ? args[i] : JitValue{TAG_NIL, 0};
   };
@@ -6651,14 +6581,13 @@ inline void _jit_http_client_request(JitValue* __ret, JitClosure*, int8_t self_t
                                                     int64_t n, JitValue* args) {
   JitValue self{self_tag, self_data};
   int64_t id = _jit_http_client_id(self);
-  if (!_jit_file_arg_present(n, args, 0)) _jit_file_missing_arg(self, "method");
+  if (!_jit_file_arg_present(n, args, 0)) _jit_file_missing_arg("method");
   // typed `String` params: reject StringView too (matches interp type_matches).
   if (args[0].tag != TAG_STRING)
-    _jit_file_param_type_error(self, "method", "String", 0);
-  if (!_jit_file_arg_present(n, args, 1)) _jit_file_missing_arg(self, "path");
+    _jit_file_param_type_error("method", "String", 0);
+  if (!_jit_file_arg_present(n, args, 1)) _jit_file_missing_arg("path");
   if (args[1].tag != TAG_STRING)
-    _jit_file_param_type_error(self, "path", "String", 1);
-  _JitValueGuard self_guard{static_cast<int8_t>(self.tag), self.data};
+    _jit_file_param_type_error("path", "String", 1);
   auto at = [&](size_t i) {
     return _jit_file_arg_present(n, args, i) ? args[i] : JitValue{TAG_NIL, 0};
   };
@@ -6682,13 +6611,11 @@ inline void _jit_http_client_close(JitValue* __ret, JitClosure*, int8_t self_tag
                                                   int64_t, JitValue*) {
   JitValue self{self_tag, self_data};
   culebra::http::http_client_close(_jit_http_client_id(self));
-  culebra_runtime_value_release(self.tag, self.data);
   { *__ret = {TAG_NIL, 0}; return; }
 }
 inline void _jit_http_client_drop(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                                  int64_t, JitValue*) {
   JitValue self{self_tag, self_data};
-  JitMethodSelf _s{self};
   culebra::http::http_client_close(_jit_http_client_id(self));
   { *__ret = {TAG_NIL, 0}; return; }
 }
@@ -6708,16 +6635,16 @@ inline JitValue _culebra_http_build_client_handle(int64_t id) {
       {"method", "path", "body", "content_type", "headers", "params", "into",
        "json", "form", "files", "events"},
       {false, false, true, true, true, true, true, true, true, true, true});
-  _jit_handle_bind_method(h, "get", _jit_http_client_get, 1, bodyless_meta);
-  _jit_handle_bind_method(h, "delete", _jit_http_client_delete, 1,
+  _jit_handle_bind_method(h, "get", _jit_native<_jit_http_client_get>, 1, bodyless_meta);
+  _jit_handle_bind_method(h, "delete", _jit_native<_jit_http_client_delete>, 1,
                           bodyless_meta);
-  _jit_handle_bind_method(h, "head", _jit_http_client_head, 1, bodyless_meta);
-  _jit_handle_bind_method(h, "post", _jit_http_client_post, 1, withbody_meta);
-  _jit_handle_bind_method(h, "put", _jit_http_client_put, 1, withbody_meta);
-  _jit_handle_bind_method(h, "request", _jit_http_client_request, 2,
+  _jit_handle_bind_method(h, "head", _jit_native<_jit_http_client_head>, 1, bodyless_meta);
+  _jit_handle_bind_method(h, "post", _jit_native<_jit_http_client_post>, 1, withbody_meta);
+  _jit_handle_bind_method(h, "put", _jit_native<_jit_http_client_put>, 1, withbody_meta);
+  _jit_handle_bind_method(h, "request", _jit_native<_jit_http_client_request>, 2,
                           request_meta);
-  _jit_handle_bind_method(h, "close", _jit_http_client_close, 0);
-  _jit_handle_bind_method(h, "drop", _jit_http_client_drop, 0);
+  _jit_handle_bind_method(h, "close", _jit_native<_jit_http_client_close>, 0);
+  _jit_handle_bind_method(h, "drop", _jit_native<_jit_http_client_drop>, 0);
   _jit_owned_bind_drop(h);
   return {TAG_OBJECT, reinterpret_cast<int64_t>(h)};
 }
@@ -6889,12 +6816,11 @@ inline void _jit_http_sink_write(JitValue* __ret, JitClosure*, int8_t self_tag, 
   JitValue self{self_tag, self_data};
   auto* h = reinterpret_cast<JitObject*>(self.data);
   int64_t sid = _jit_handle_long(h, "_sink");
-  if (!_jit_file_arg_present(n, args, 0)) _jit_file_missing_arg(self, "data");
+  if (!_jit_file_arg_present(n, args, 0)) _jit_file_missing_arg("data");
   if (args[0].tag != TAG_STRING)
-    _jit_file_param_type_error(self, "data", "String", 0);
+    _jit_file_param_type_error("data", "String", 0);
   auto sv = _culebra_str_view(args[0].tag, args[0].data);
   bool ok = culebra::http::http_sink_write(sid, sv.data(), sv.size());
-  culebra_runtime_value_release(self.tag, self.data);
   { *__ret = {TAG_BOOL, ok ? 1 : 0}; return; }
 }
 // Build the `sink` handle (mirrors interp make_http_sink_handle): a thin
@@ -6905,7 +6831,7 @@ inline JitObject* _jit_make_http_sink_handle(int64_t sink_id) {
   h->set_or_append("__nonsendable__", JitValue{TAG_BOOL, 1}, false);
   static const JitParamMeta* write_meta =
       _jit_make_handle_meta({"data"}, {false});
-  _jit_handle_bind_method(h, "write", _jit_http_sink_write, 1, write_meta);
+  _jit_handle_bind_method(h, "write", _jit_native<_jit_http_sink_write>, 1, write_meta);
   return h;
 }
 
@@ -7007,18 +6933,16 @@ inline void _jit_ws_send(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t 
   JitValue self{self_tag, self_data};
   auto* h = reinterpret_cast<JitObject*>(self.data);
   int64_t id = _jit_handle_long(h, "_ws");
-  if (!_jit_file_arg_present(n, args, 0)) _jit_file_missing_arg(self, "data");
+  if (!_jit_file_arg_present(n, args, 0)) _jit_file_missing_arg("data");
   if (args[0].tag != TAG_STRING)
-    _jit_file_param_type_error(self, "data", "String", 0);
+    _jit_file_param_type_error("data", "String", 0);
   auto sv = _culebra_str_view(args[0].tag, args[0].data);
   bool ok = culebra::http::ws_send(id, sv.data(), sv.size());
-  culebra_runtime_value_release(self.tag, self.data);
   { *__ret = {TAG_BOOL, ok ? 1 : 0}; return; }
 }
 inline void _jit_ws_receive(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t,
                                            JitValue*) {
   JitValue self{self_tag, self_data};
-  JitMethodSelf _s{self};
   int64_t id = _jit_handle_long(reinterpret_cast<JitObject*>(self.data), "_ws");
   std::string out;
   int got = _ws_receive_blocking(id, out);
@@ -7030,7 +6954,6 @@ inline void _jit_ws_receive(JitValue* __ret, JitClosure*, int8_t self_tag, int64
 inline void _jit_ws_try_receive(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t,
                                                JitValue*) {
   JitValue self{self_tag, self_data};
-  JitMethodSelf _s{self};
   int64_t id = _jit_handle_long(reinterpret_cast<JitObject*>(self.data), "_ws");
   std::string out;
   int got = culebra::http::ws_receive(id, out);
@@ -7042,10 +6965,9 @@ inline void _jit_ws_try_receive(JitValue* __ret, JitClosure*, int8_t self_tag, i
 inline void _jit_ws_set_timeout(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                                int64_t n, JitValue* args) {
   JitValue self{self_tag, self_data};
-  if (!_jit_file_arg_present(n, args, 0)) _jit_file_missing_arg(self, "ms");
+  if (!_jit_file_arg_present(n, args, 0)) _jit_file_missing_arg("ms");
   if (args[0].tag != TAG_LONG)
-    _jit_file_param_type_error(self, "ms", "Long", 0);
-  JitMethodSelf _s{self};
+    _jit_file_param_type_error("ms", "Long", 0);
   culebra::http::ws_set_timeout(
       _jit_handle_long(reinterpret_cast<JitObject*>(self.data), "_ws"),
       args[0].data);
@@ -7056,7 +6978,6 @@ inline void _jit_ws_close(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t
   JitValue self{self_tag, self_data};
   culebra::http::ws_close(
       _jit_handle_long(reinterpret_cast<JitObject*>(self.data), "_ws"));
-  culebra_runtime_value_release(self.tag, self.data);
   { *__ret = {TAG_NIL, 0}; return; }
 }
 inline void _jit_ws_is_open(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t,
@@ -7064,7 +6985,6 @@ inline void _jit_ws_is_open(JitValue* __ret, JitClosure*, int8_t self_tag, int64
   JitValue self{self_tag, self_data};
   bool open = culebra::http::ws_is_open(
       _jit_handle_long(reinterpret_cast<JitObject*>(self.data), "_ws"));
-  culebra_runtime_value_release(self.tag, self.data);
   { *__ret = {TAG_BOOL, open ? 1 : 0}; return; }
 }
 inline void _jit_ws_iter(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t,
@@ -7073,13 +6993,11 @@ inline void _jit_ws_iter(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t 
   int64_t id = _jit_handle_long(reinterpret_cast<JitObject*>(self.data), "_ws");
   auto* id_cell = culebra_runtime_cell_new(TAG_LONG, id);
   auto* it = _iter_wrap_fast<&_ws_messages_fast_fn>({id_cell});
-  culebra_runtime_value_release(self.tag, self.data);
   { *__ret = {TAG_OBJECT, reinterpret_cast<int64_t>(it)}; return; }
 }
 inline void _jit_ws_drop(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t,
                                         JitValue*) {
   JitValue self{self_tag, self_data};
-  JitMethodSelf _s{self};
   // client drop: close + free the owned connection. A server ws has no drop
   // (the trampoline frees it).
   culebra::http::ws_unregister(
@@ -7094,15 +7012,15 @@ inline JitObject* _jit_make_http_ws_handle(int64_t ws_id, bool is_client) {
   static const JitParamMeta* send_meta =
       _jit_make_handle_meta({"data"}, {false});
   static const JitParamMeta* ms_meta = _jit_make_handle_meta({"ms"}, {false});
-  _jit_handle_bind_method(h, "send", _jit_ws_send, 1, send_meta);
-  _jit_handle_bind_method(h, "receive", _jit_ws_receive, 0);
-  _jit_handle_bind_method(h, "try_receive", _jit_ws_try_receive, 0);
-  _jit_handle_bind_method(h, "set_timeout", _jit_ws_set_timeout, 1, ms_meta);
-  _jit_handle_bind_method(h, "close", _jit_ws_close, 0);
-  _jit_handle_bind_method(h, "is_open", _jit_ws_is_open, 0);
-  _jit_handle_bind_method(h, "iter", _jit_ws_iter, 0);
+  _jit_handle_bind_method(h, "send", _jit_native<_jit_ws_send>, 1, send_meta);
+  _jit_handle_bind_method(h, "receive", _jit_native<_jit_ws_receive>, 0);
+  _jit_handle_bind_method(h, "try_receive", _jit_native<_jit_ws_try_receive>, 0);
+  _jit_handle_bind_method(h, "set_timeout", _jit_native<_jit_ws_set_timeout>, 1, ms_meta);
+  _jit_handle_bind_method(h, "close", _jit_native<_jit_ws_close>, 0);
+  _jit_handle_bind_method(h, "is_open", _jit_native<_jit_ws_is_open>, 0);
+  _jit_handle_bind_method(h, "iter", _jit_native<_jit_ws_iter>, 0);
   if (is_client) {
-    _jit_handle_bind_method(h, "drop", _jit_ws_drop, 0);
+    _jit_handle_bind_method(h, "drop", _jit_native<_jit_ws_drop>, 0);
     _jit_owned_bind_drop(h);
   }
   return h;
@@ -7212,13 +7130,12 @@ inline JitValue _jit_http_server_route(JitValue self, int64_t n, JitValue* args,
                                        const char* method) {
   int64_t id =
       _jit_handle_long(reinterpret_cast<JitObject*>(self.data), "_id");
-  if (!_jit_file_arg_present(n, args, 0)) _jit_file_missing_arg(self, "pattern");
+  if (!_jit_file_arg_present(n, args, 0)) _jit_file_missing_arg("pattern");
   if (args[0].tag != TAG_STRING)
-    _jit_file_param_type_error(self, "pattern", "String", 0);
-  if (!_jit_file_arg_present(n, args, 1)) _jit_file_missing_arg(self, "handler");
+    _jit_file_param_type_error("pattern", "String", 0);
+  if (!_jit_file_arg_present(n, args, 1)) _jit_file_missing_arg("handler");
   if (args[1].tag != TAG_FUNC)
-    _jit_file_param_type_error(self, "handler", "Function", 1);
-  _JitValueGuard self_guard{static_cast<int8_t>(self.tag), self.data};
+    _jit_file_param_type_error("handler", "Function", 1);
   _jit_http_server_record(
       id, method, std::string(_culebra_str_view(args[0].tag, args[0].data)),
       args[1]);
@@ -7270,11 +7187,10 @@ inline void _jit_http_server_static(JitValue* __ret, JitClosure*, int8_t self_ta
                                                    int64_t n, JitValue* args) {
   JitValue self{self_tag, self_data};
   int64_t id = _jit_handle_long(reinterpret_cast<JitObject*>(self.data), "_id");
-  if (!_jit_file_arg_present(n, args, 0)) _jit_file_missing_arg(self, "mount");
+  if (!_jit_file_arg_present(n, args, 0)) _jit_file_missing_arg("mount");
   if (args[0].tag != TAG_STRING)
-    _jit_file_param_type_error(self, "mount", "String", 0);
-  if (!_jit_file_arg_present(n, args, 1)) _jit_file_missing_arg(self, "dir");
-  _JitValueGuard self_guard{static_cast<int8_t>(self.tag), self.data};
+    _jit_file_param_type_error("mount", "String", 0);
+  if (!_jit_file_arg_present(n, args, 1)) _jit_file_missing_arg("dir");
   *__ret = _jit_at_call_site([&] {
     std::string mount(_culebra_str_view(args[0].tag, args[0].data));
     std::string err;
@@ -7435,8 +7351,7 @@ inline int64_t _jit_http_server_id(JitValue self) {
 }
 
 // args[0] = port, args[1] = host. Shared by bind and listen. The caller has
-// already checked that port is present (that check must run before the self
-// guard exists — _jit_file_missing_arg releases self itself).
+// already checked that port is present.
 inline int64_t _jit_http_server_bind_args(int64_t id, int64_t n, JitValue* args,
                                           const char* ctx) {
   if (args[0].tag != TAG_LONG)
@@ -7466,8 +7381,7 @@ inline int64_t _jit_http_server_workers_arg(int64_t n, JitValue* args,
 inline void _jit_http_server_bind(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                                  int64_t n, JitValue* args) {
   JitValue self{self_tag, self_data};
-  if (!_jit_file_arg_present(n, args, 0)) _jit_file_missing_arg(self, "port");
-  _JitValueGuard self_guard{static_cast<int8_t>(self.tag), self.data};
+  if (!_jit_file_arg_present(n, args, 0)) _jit_file_missing_arg("port");
   *__ret = _jit_at_call_site([&] {
     return JitValue{TAG_LONG,
                     _jit_http_server_bind_args(_jit_http_server_id(self), n,
@@ -7479,7 +7393,6 @@ inline void _jit_http_server_bind(JitValue* __ret, JitClosure*, int8_t self_tag,
 inline JitValue _jit_http_server_serve_impl(JitValue self, int64_t n,
                                             JitValue* args, bool async) {
   int64_t id = _jit_http_server_id(self);
-  _JitValueGuard self_guard{static_cast<int8_t>(self.tag), self.data};
   return _jit_at_call_site([&] {
     return _jit_http_server_do_serve(
         id, _jit_http_server_workers_arg(n, args, 0), async,
@@ -7503,8 +7416,7 @@ inline void _jit_http_server_serve_async(JitValue* __ret, JitClosure*,
 inline JitValue _jit_http_server_listen_impl(JitValue self, int64_t n,
                                              JitValue* args, bool async) {
   int64_t id = _jit_http_server_id(self);
-  if (!_jit_file_arg_present(n, args, 0)) _jit_file_missing_arg(self, "port");
-  _JitValueGuard self_guard{static_cast<int8_t>(self.tag), self.data};
+  if (!_jit_file_arg_present(n, args, 0)) _jit_file_missing_arg("port");
   return _jit_at_call_site([&] {
     const char* ctx = async ? "server.listen_async" : "server.listen";
     int64_t bound = _jit_http_server_bind_args(id, n, args, ctx);
@@ -7530,7 +7442,6 @@ inline void _jit_http_server_stop(JitValue* __ret, JitClosure*, int8_t self_tag,
   JitValue self{self_tag, self_data};
   culebra::http::http_server_stop(
       _jit_handle_long(reinterpret_cast<JitObject*>(self.data), "_id"));
-  culebra_runtime_value_release(self.tag, self.data);
   { *__ret = {TAG_NIL, 0}; return; }
 }
 
@@ -7549,13 +7460,11 @@ inline void _jit_http_server_close(JitValue* __ret, JitClosure*, int8_t self_tag
   int64_t id = _jit_handle_long(reinterpret_cast<JitObject*>(self.data), "_id");
   _jit_http_server_clear_routes(id);
   culebra::http::http_server_close(id);
-  culebra_runtime_value_release(self.tag, self.data);
   { *__ret = {TAG_NIL, 0}; return; }
 }
 inline void _jit_http_server_drop(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                                  int64_t, JitValue*) {
   JitValue self{self_tag, self_data};
-  JitMethodSelf _s{self};
   int64_t id = _jit_handle_long(reinterpret_cast<JitObject*>(self.data), "_id");
   _jit_http_server_clear_routes(id);
   culebra::http::http_server_close(id);
@@ -7576,25 +7485,25 @@ inline JitValue _culebra_http_build_server_handle(int64_t id) {
       _jit_make_handle_meta({"workers"}, {true});
   static const JitParamMeta* listen_meta =
       _jit_make_handle_meta({"port", "host", "workers"}, {false, true, true});
-  _jit_handle_bind_method(h, "get", _jit_http_server_get, 2, route_meta);
-  _jit_handle_bind_method(h, "post", _jit_http_server_post, 2, route_meta);
-  _jit_handle_bind_method(h, "put", _jit_http_server_put, 2, route_meta);
-  _jit_handle_bind_method(h, "delete", _jit_http_server_delete, 2, route_meta);
-  _jit_handle_bind_method(h, "patch", _jit_http_server_patch, 2, route_meta);
-  _jit_handle_bind_method(h, "options", _jit_http_server_options, 2,
+  _jit_handle_bind_method(h, "get", _jit_native<_jit_http_server_get>, 2, route_meta);
+  _jit_handle_bind_method(h, "post", _jit_native<_jit_http_server_post>, 2, route_meta);
+  _jit_handle_bind_method(h, "put", _jit_native<_jit_http_server_put>, 2, route_meta);
+  _jit_handle_bind_method(h, "delete", _jit_native<_jit_http_server_delete>, 2, route_meta);
+  _jit_handle_bind_method(h, "patch", _jit_native<_jit_http_server_patch>, 2, route_meta);
+  _jit_handle_bind_method(h, "options", _jit_native<_jit_http_server_options>, 2,
                           route_meta);
-  _jit_handle_bind_method(h, "ws", _jit_http_server_ws, 2, route_meta);
-  _jit_handle_bind_method(h, "static", _jit_http_server_static, 2, static_meta);
-  _jit_handle_bind_method(h, "bind", _jit_http_server_bind, 1, bind_meta);
-  _jit_handle_bind_method(h, "serve", _jit_http_server_serve, 0, serve_meta);
-  _jit_handle_bind_method(h, "serve_async", _jit_http_server_serve_async, 0,
+  _jit_handle_bind_method(h, "ws", _jit_native<_jit_http_server_ws>, 2, route_meta);
+  _jit_handle_bind_method(h, "static", _jit_native<_jit_http_server_static>, 2, static_meta);
+  _jit_handle_bind_method(h, "bind", _jit_native<_jit_http_server_bind>, 1, bind_meta);
+  _jit_handle_bind_method(h, "serve", _jit_native<_jit_http_server_serve>, 0, serve_meta);
+  _jit_handle_bind_method(h, "serve_async", _jit_native<_jit_http_server_serve_async>, 0,
                           serve_meta);
-  _jit_handle_bind_method(h, "listen", _jit_http_server_listen, 1, listen_meta);
-  _jit_handle_bind_method(h, "listen_async", _jit_http_server_listen_async, 1,
+  _jit_handle_bind_method(h, "listen", _jit_native<_jit_http_server_listen>, 1, listen_meta);
+  _jit_handle_bind_method(h, "listen_async", _jit_native<_jit_http_server_listen_async>, 1,
                           listen_meta);
-  _jit_handle_bind_method(h, "stop", _jit_http_server_stop, 0);
-  _jit_handle_bind_method(h, "close", _jit_http_server_close, 0);
-  _jit_handle_bind_method(h, "drop", _jit_http_server_drop, 0);
+  _jit_handle_bind_method(h, "stop", _jit_native<_jit_http_server_stop>, 0);
+  _jit_handle_bind_method(h, "close", _jit_native<_jit_http_server_close>, 0);
+  _jit_handle_bind_method(h, "drop", _jit_native<_jit_http_server_drop>, 0);
   _jit_owned_bind_drop(h);
   return {TAG_OBJECT, reinterpret_cast<int64_t>(h)};
 }
@@ -8536,15 +8445,12 @@ inline JitValue _ns_xml_stringify(JitValue* a, int64_t n) {
 // The element methods: `el.find(path)` is `XML.find(el, path)`, and so on.
 // Parsed elements reach them through `proto`, one meta per Runtime whose
 // methods are captureless; a hand-built Object has none and uses the
-// functions. The method ABI hands `self` and each argument at +1 (callee-
-// consumes); the adapter only borrows them, so they are released here.
+// functions.
 inline void _xml_elem_call(JitValue* ret, int8_t self_tag, int64_t self_data,
                            int64_t n, JitValue* args,
                            JitValue (*fn)(JitValue*, int64_t),
                            std::initializer_list<JitValue> defaults,
                            const char* required = nullptr) {
-  JitMethodArgs held_args{n, args};
-  JitMethodSelf self(JitValue{self_tag, self_data});
   if (n > static_cast<int64_t>(defaults.size())) {
     _ns_adapt::arity_error("XML", "", static_cast<int>(defaults.size()), n,
                            _jit_thread.call_line, _jit_thread.call_col);
@@ -8553,7 +8459,7 @@ inline void _xml_elem_call(JitValue* ret, int8_t self_tag, int64_t self_data,
     culebra::throw_missing_required_arg_at(required, _jit_thread.call_line,
                                            _jit_thread.call_col);
   }
-  JitValue a[3] = {self.borrow()};  // self + the widest method's two params
+  JitValue a[3] = {{self_tag, self_data}};  // self + the widest two params
   assert(defaults.size() < std::size(a));
   size_t k = 1;
   for (auto d : defaults) {
@@ -8599,15 +8505,15 @@ inline JitObject* _xml_element_meta() {
     static const JitParamMeta* stringify_meta =
         _jit_make_handle_meta({"indent", "declaration"}, {true, true});
     _jit_bind_portable_method(
-        meta, "find", _xml_elem_path_method<&_ns_xml_find>, 1, find_meta);
+        meta, "find", _jit_native<_xml_elem_path_method<&_ns_xml_find>>, 1, find_meta);
     _jit_bind_portable_method(meta, "find_all",
-                              _xml_elem_path_method<&_ns_xml_find_all>, 1,
+                              _jit_native<_xml_elem_path_method<&_ns_xml_find_all>>, 1,
                               find_meta);
     _jit_bind_portable_method(meta, "find_iter",
-                              _xml_elem_path_method<&_ns_xml_find_iter>, 1,
+                              _jit_native<_xml_elem_path_method<&_ns_xml_find_iter>>, 1,
                               find_meta);
-    _jit_bind_portable_method(meta, "text", _xml_elem_text, 0, text_meta);
-    _jit_bind_portable_method(meta, "stringify", _xml_elem_stringify, 0,
+    _jit_bind_portable_method(meta, "text", _jit_native<_xml_elem_text>, 0, text_meta);
+    _jit_bind_portable_method(meta, "stringify", _jit_native<_xml_elem_stringify>, 0,
                               stringify_meta);
     return meta;
   });
@@ -8675,17 +8581,13 @@ inline void _xml_events_fast_fn(JitClosure* cls, JitValue, bool* done,
   *out_data = reinterpret_cast<int64_t>(o);
 }
 
-inline void _xml_events_dispose_fn(JitValue* __ret, JitClosure* cls,
-                                   int8_t self_tag, int64_t self_data, int64_t,
-                                   JitValue*) {
-  // Native iterator method: self arrives +1-owned (callee-consumes).
-  JitOwnedVal self_guard(JitValue{self_tag, self_data});
+inline void _xml_events_dispose_fn(JitValue* __ret, JitClosure* cls, int8_t,
+                                   int64_t, int64_t, JitValue*) {
   _xml_events_free(_xml_events_holder(cls));
   *__ret = {TAG_NIL, 0};
 }
-inline void _xml_events_drop_fn(JitValue* __ret, JitClosure*, int8_t self_tag,
+inline void _xml_events_drop_fn(JitValue* __ret, JitClosure*, int8_t,
                                 int64_t self_data, int64_t, JitValue*) {
-  JitMethodSelf _s{JitValue{self_tag, self_data}};
   _xml_events_free(reinterpret_cast<JitObject*>(self_data));
   *__ret = {TAG_NIL, 0};
 }
@@ -8700,12 +8602,12 @@ inline JitValue _ns_xml_events(JitValue* a, int64_t n) {
                              new _XmlEventsState(text, keep_space))},
       false);
   holder->set_or_append("__nonsendable__", JitValue{TAG_BOOL, 1}, false);
-  _jit_handle_bind_method(holder, "drop", _xml_events_drop_fn, 0);
+  _jit_handle_bind_method(holder, "drop", _jit_native<_xml_events_drop_fn>, 0);
   _jit_owned_bind_drop(holder);
   auto* holder_cell = culebra_runtime_cell_new(
       TAG_OBJECT, reinterpret_cast<int64_t>(holder));
   auto* it = _iter_wrap_fast<&_xml_events_fast_fn>({holder_cell});
-  _iter_set_dispose(it, &_xml_events_dispose_fn, holder_cell);
+  _iter_set_dispose(it, _jit_native<_xml_events_dispose_fn>, holder_cell);
   return _ns_adapt::v_object(it);
 }
 
@@ -10438,9 +10340,8 @@ inline void _jit_search_add(JitValue* __ret, JitClosure*, int8_t self_tag, int64
   // Strings only, deliberately: the key comes back out of `search`, so
   // accepting a Long and answering with "1" would change its type between the
   // two calls (Elasticsearch's `_id` is a string for the same reason).
-  auto key = _jit_handle_req_string(self, n, args, 0, "key");
-  auto text = _jit_handle_req_string(self, n, args, 1, "text");
-  _JitValueGuard self_guard{static_cast<int8_t>(self.tag), self.data};
+  auto key = _jit_handle_req_string(n, args, 0, "key");
+  auto text = _jit_handle_req_string(n, args, 1, "text");
   culebra::search::index_add(ix, key, text);
   { *__ret = {TAG_NIL, 0}; return; }
 }
@@ -10449,8 +10350,7 @@ inline void _jit_search_remove(JitValue* __ret, JitClosure*, int8_t self_tag, in
                                                int64_t n, JitValue* args) {
   JitValue self{self_tag, self_data};
   int64_t ix = _search_adapt::id(self);
-  auto key = _jit_handle_req_string(self, n, args, 0, "key");
-  _JitValueGuard self_guard{static_cast<int8_t>(self.tag), self.data};
+  auto key = _jit_handle_req_string(n, args, 0, "key");
   culebra::search::index_remove(ix, key);
   { *__ret = {TAG_NIL, 0}; return; }
 }
@@ -10459,18 +10359,17 @@ inline void _jit_search_search(JitValue* __ret, JitClosure*, int8_t self_tag, in
                                                int64_t n, JitValue* args) {
   JitValue self{self_tag, self_data};
   int64_t ix = _search_adapt::id(self);
-  auto query = _jit_handle_req_string(self, n, args, 0, "query");
+  auto query = _jit_handle_req_string(n, args, 0, "query");
   int64_t limit = 10;
   if (_jit_file_arg_present(n, args, 1)) {
     if (args[1].tag != TAG_LONG)
-      _jit_file_param_type_error(self, "limit", "Long", 1);
+      _jit_file_param_type_error("limit", "Long", 1);
     limit = args[1].data;
     if (limit < 0) {
       throw culebra::CulebraError("ValueError", "Search: limit must be >= 0",
                                   _jit_thread.call_line, _jit_thread.call_col);
     }
   }
-  _JitValueGuard self_guard{static_cast<int8_t>(self.tag), self.data};
   // The whole result is materialized inside this call: a searchlib result is a
   // view over the index, so nothing of it may outlive the native frame.
   auto found = culebra::search::index_search(ix, query,
@@ -10482,8 +10381,7 @@ inline void _jit_search_save(JitValue* __ret, JitClosure*, int8_t self_tag, int6
                                              int64_t n, JitValue* args) {
   JitValue self{self_tag, self_data};
   int64_t ix = _search_adapt::id(self);
-  auto path = _jit_handle_req_string(self, n, args, 0, "path");
-  _JitValueGuard self_guard{static_cast<int8_t>(self.tag), self.data};
+  auto path = _jit_handle_req_string(n, args, 0, "path");
   culebra::search::index_save(ix, path);
   { *__ret = {TAG_NIL, 0}; return; }
 }
@@ -10491,7 +10389,6 @@ inline void _jit_search_save(JitValue* __ret, JitClosure*, int8_t self_tag, int6
 inline void _jit_search_close(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                               int64_t, JitValue*) {
   JitValue self{self_tag, self_data};
-  _JitValueGuard self_guard{static_cast<int8_t>(self.tag), self.data};
   culebra::search::index_drop(_search_adapt::id(self));
   { *__ret = {TAG_NIL, 0}; return; }
 }
@@ -10499,7 +10396,6 @@ inline void _jit_search_close(JitValue* __ret, JitClosure*, int8_t self_tag, int
 inline void _jit_search_drop(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                              int64_t, JitValue*) {
   JitValue self{self_tag, self_data};
-  JitMethodSelf _s{self};
   culebra::search::index_drop(_search_adapt::id(self));
   { *__ret = {TAG_NIL, 0}; return; }
 }
@@ -10508,7 +10404,6 @@ inline void _jit_search_segmenter_close(JitValue* __ret, JitClosure*,
                                         int8_t self_tag, int64_t self_data,
                                         int64_t, JitValue*) {
   JitValue self{self_tag, self_data};
-  _JitValueGuard self_guard{static_cast<int8_t>(self.tag), self.data};
   culebra::search::segmenter_drop(_search_adapt::id(self));
   { *__ret = {TAG_NIL, 0}; return; }
 }
@@ -10517,7 +10412,6 @@ inline void _jit_search_segmenter_drop(JitValue* __ret, JitClosure*,
                                        int8_t self_tag, int64_t self_data,
                                        int64_t, JitValue*) {
   JitValue self{self_tag, self_data};
-  JitMethodSelf _s{self};
   culebra::search::segmenter_drop(_search_adapt::id(self));
   { *__ret = {TAG_NIL, 0}; return; }
 }
@@ -10536,8 +10430,8 @@ inline JitValue _ns_search_segmenter(JitValue* a, int64_t) {
   h->set_or_append("_segmenter", JitValue{TAG_BOOL, 1}, false);
   // Its registry is per-thread, like an index's, so it stays on this thread.
   h->set_or_append("__nonsendable__", JitValue{TAG_BOOL, 1}, false);
-  _jit_handle_bind_method(h, "close", _jit_search_segmenter_close, 0);
-  _jit_handle_bind_method(h, "drop", _jit_search_segmenter_drop, 0);
+  _jit_handle_bind_method(h, "close", _jit_native<_jit_search_segmenter_close>, 0);
+  _jit_handle_bind_method(h, "drop", _jit_native<_jit_search_segmenter_drop>, 0);
   _jit_owned_bind_drop(h);
   return {TAG_OBJECT, reinterpret_cast<int64_t>(h)};
 }
@@ -10566,12 +10460,12 @@ inline JitValue _culebra_search_build_index_handle(int64_t id,
       _jit_make_handle_meta({"query", "limit"}, {false, true});
   static const JitParamMeta* path_meta =
       _jit_make_handle_meta({"path"}, {false});
-  _jit_handle_bind_method(h, "add", _jit_search_add, 2, add_meta);
-  _jit_handle_bind_method(h, "remove", _jit_search_remove, 1, key_meta);
-  _jit_handle_bind_method(h, "search", _jit_search_search, 1, search_meta);
-  _jit_handle_bind_method(h, "save", _jit_search_save, 1, path_meta);
-  _jit_handle_bind_method(h, "close", _jit_search_close, 0);
-  _jit_handle_bind_method(h, "drop", _jit_search_drop, 0);
+  _jit_handle_bind_method(h, "add", _jit_native<_jit_search_add>, 2, add_meta);
+  _jit_handle_bind_method(h, "remove", _jit_native<_jit_search_remove>, 1, key_meta);
+  _jit_handle_bind_method(h, "search", _jit_native<_jit_search_search>, 1, search_meta);
+  _jit_handle_bind_method(h, "save", _jit_native<_jit_search_save>, 1, path_meta);
+  _jit_handle_bind_method(h, "close", _jit_native<_jit_search_close>, 0);
+  _jit_handle_bind_method(h, "drop", _jit_native<_jit_search_drop>, 0);
   // Through the bind chokepoint so the handle also registers on the owned
   // stack — a cycle-held index would otherwise miss its scope-exit drop.
   _jit_owned_bind_drop(h);
@@ -11691,13 +11585,13 @@ inline void _jit_ns_method_trampoline(
     JitValue* __ret, JitClosure* cls, int8_t self_tag, int64_t self_data,
     int64_t n_args, JitValue* args) {
   // The method ABI passes the receiver at +1 and the callee consumes it
-  // (JitMethodSelf, fixed.inc.h). An ns method takes its receiver as args[0]
+  // (as _jit_native_entry does, fixed.inc.h). An ns method takes its receiver as args[0]
   // when it has one, so `self` is unused here — but it still has to be
   // released, on every exit including a throw below. Reaching this with a
   // receiver at all is the two-step member call (`Ns.Class.new(...)`, a
   // wrapped static): the `Ns.fn(...)` peephole passes none, and a nil is a
   // no-op release.
-  JitMethodSelf _s{JitValue{self_tag, self_data}};
+  JitOwnedVal _s{JitValue{self_tag, self_data}};
   // A dunder the native calls enters at this call (JitBorrowedCallSite).
   culebra_runtime_set_op_pos(_jit_thread.call_line, _jit_thread.call_col);
   const auto* m = reinterpret_cast<const NsMethod*>(
