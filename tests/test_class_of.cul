@@ -96,7 +96,8 @@ condemned()
 assert_eq(dying.size(), 2)
 assert_eq(dying[1], nil)
 
-# A variant rebuilt from a Channel has no declaration to answer with.
+# A variant rebuilt from a Channel without its enum has no declaration to
+# answer with.
 let (tx, rx) = Channel()
 tx.send(R.Ok(3))
 let got = rx.recv()

@@ -62,12 +62,10 @@ assert_eq(
   caught(|| tx.send(Math.abs)),
   'SendError: a native/builtin function is not Sendable',
 )
-# A method read off an element is bound to it, a closure with a capture, so it
-# stays behind too; the element itself is what crosses.
-assert_eq(
-  caught(|| tx.send(doc.find)),
-  'SendError: a native/builtin function is not Sendable',
-)
+# A method read off an element is bound to it, and crosses with a copy of it.
+let find = doc.find
+assert_eq(Isolate.spawn(|| find('book[2]').attrs.lang).join(), 'fr')
+assert_eq(Isolate.spawn(|| find).join()('book').attrs.lang, 'en')
 
 # Shared.new: a parsed element is refused, since its methods are functions
 # and Shared values are data only; a hand-built element-shaped Object is

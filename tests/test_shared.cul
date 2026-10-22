@@ -134,6 +134,13 @@ assert_eq(shared_refusal(fn () { [|x| x, cyc] }), refused_cycle)
 assert_eq(shared_refusal(fn () { [cyc, |x| x] }), refused_cycle)
 assert_eq(shared_refusal(fn () { [|x| x, println] }),
   'SendError: Shared.new: a native/builtin function is not Sendable')
+# An enum's constructor can be sent, so it is refused as the function it is.
+enum SharedOpt {
+  Has(Long),
+  Nothing,
+}
+assert_eq(shared_refusal(fn () { [SharedOpt] }), refused_fn)
+assert_eq(shared_refusal(fn () { [SharedOpt.Has] }), refused_fn)
 # A @value instance can be sent, and its class's methods are functions.
 @value
 class SharedValue {

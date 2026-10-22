@@ -83,16 +83,15 @@ assert_eq(bf(9), 10)
 let mk = C.new
 assert_eq(mk(7).get(), 7)
 
-// A bound method is NOT Sendable (like the interp's wrapper) — capturing one
-// into an isolate must raise the same SendError on both backends, rather than
-// the JIT silently shipping it without its `self`.
+// A bound method crosses an isolate with a copy of its `self`, so it runs
+// there as here; so does an enum's constructor, bound to the enum.
 let bm = C.new(5).get
-let sent = try {
-  Isolate.spawn(|| bm()).join()
-  "shipped"
-} catch e {
-  e.kind
+assert_eq(Isolate.spawn(|| bm()).join(), 5)
+enum Wrap {
+  Some(Long),
+  Empty,
 }
-assert_eq(sent, "SendError")
+let wrap_some = Wrap.Some
+assert_eq(Isolate.spawn(|| wrap_some(2)).join(), Wrap.Some(2))
 
 inspect("bound method value: ok")

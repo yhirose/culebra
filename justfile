@@ -303,6 +303,15 @@ check-value-order-door:
 check-object-facts:
     tools/checks/check_object_facts.sh
 
+# A native closure crosses an isolate only as code plus copies of its
+# captures, which is right only when those are values of its own. An iterator
+# wrapper's captures point into the heap that built it, and a child that
+# rebuilt one read the parent's heap and hung.
+[group("test")]
+[doc("Verify only the listed constructors mark a native closure portable (ratchet)")]
+check-portable-closure-door:
+    tools/checks/check_portable_closure_door.sh
+
 # The generator and effects transforms re-parse text they built out of a
 # body's source, so only the record of each copy leads an error back to where
 # it was written. A copy made as a plain string reports the lowering's column.
@@ -333,7 +342,7 @@ check-docs-cpp:
 # the workflow-coverage ratchet. Cheap enough to gate both test recipes:
 # well under a second once the grammar-blob tool is ccache-warm.
 [private]
-check-generated: check-grammar-sync check-preambles check-blob check-site-version check-site-playground-sync check-difftest-coverage check-gate-budget check-release-coverage check-spec-examples check-api-coverage check-canon-return-types check-registrar-rooted check-pe-exports-gen check-interrupt-discipline check-thrown-value-discipline check-docs-cpp-includes check-header-naming check-pipefail-readers check-error-kinds check-search-splitter check-layering check-codegen-enums check-vm-dispatch-table check-protocol-member-door check-value-equal-door check-value-order-door check-source-anchor-door check-object-facts
+check-generated: check-grammar-sync check-preambles check-blob check-site-version check-site-playground-sync check-difftest-coverage check-gate-budget check-release-coverage check-spec-examples check-api-coverage check-canon-return-types check-registrar-rooted check-pe-exports-gen check-interrupt-discipline check-thrown-value-discipline check-docs-cpp-includes check-header-naming check-pipefail-readers check-error-kinds check-search-splitter check-layering check-codegen-enums check-vm-dispatch-table check-protocol-member-door check-value-equal-door check-value-order-door check-source-anchor-door check-object-facts check-portable-closure-door
 
 # Such a build still runs programs — everything below the LLVM lowering
 # (rt.h, vm.h) is LLVM-free, so the bytecode VM's executor is intact; what it

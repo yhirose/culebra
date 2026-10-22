@@ -108,7 +108,8 @@ inline void _jit_variant_ctor_thunk(JitValue* __ret, JitClosure* cls, int8_t sel
   // hands `self` (the enum namespace) at +1 for the callee to consume. This
   // thunk builds a fresh variant instead of forwarding `self` to a body, so
   // it must drop that +1 or the namespace strands one reference per call.
-  // (An indirect `let f = E.V; f(x)` passes nil — a no-op release.)
+  // (`let f = E.V; f(x)` is a bound method, so it hands over E the same way;
+  // a constructor taken out raw, as `E['V']`, passes nil, a no-op release.)
   _culebra_value_release_impl(self_val.tag, self_val.data);
   assert(cls->n_captures == 1 && cls->captures);
   auto* meta = reinterpret_cast<JitObject*>(cls->captures[0]->value.data);
@@ -125,13 +126,13 @@ inline void _jit_variant_ctor_thunk(JitValue* __ret, JitClosure* cls, int8_t sel
 // the shared thunk capturing the variant's meta. Each piece is owned by the
 // enum's slot, so it is reachable from the enum like everything else the
 // declaration built. The meta names the enum back only weakly (JitEnumRef),
-// which is what `class_of` reads.
+// which is what `class_of` reads. The constructor is portable: its capture
+// is the meta, which a message copies as it copies an instance's.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_enum_define_variant(
     JitObject* enum_obj, const char* variant_name, const char* enum_name,
     int64_t arity, int64_t line, int64_t col) {
   auto* meta = culebra_runtime_make_variant_meta(variant_name, enum_name);
-  meta->specials->enum_ref = _jit_enum_ref_of(enum_obj);
-  meta->specials->enum_ref->refs++;
+  _jit_enum_declare(enum_obj, meta);
   JitValue v;
   if (arity == 0) {
     v = culebra_runtime_build_variant(meta, variant_name, enum_name, 0,
@@ -139,13 +140,33 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_enum_define_variant(
   } else {
     auto* ctor = culebra_runtime_closure_new(
         reinterpret_cast<void*>(&_jit_variant_ctor_thunk), /*n_captures=*/1,
-        static_cast<size_t>(arity), JIT_CLOSURE_NATIVE, /*meta=*/nullptr);
+        static_cast<size_t>(arity), JIT_CLOSURE_NATIVE | JIT_CLOSURE_PORTABLE,
+        /*meta=*/nullptr);
     ctor->captures[0] = culebra_runtime_cell_new(
         TAG_OBJECT, reinterpret_cast<int64_t>(meta));  // transferred
     v = JitValue{TAG_FUNC, reinterpret_cast<int64_t>(ctor)};
   }
   culebra_runtime_object_set(enum_obj, variant_name, /*mut=*/false, v.tag,
                              v.data, line, col, /*is_init=*/true);
+}
+
+// The meta of the variant the enum object `enum_obj` declared, when its slot
+// `key` is the one the declaration bound (above): the singleton, or the
+// constructor. Null for any other slot, since a program may add to an enum.
+inline JitObject* _jit_declared_variant(JitObject* enum_obj,
+                                        std::string_view key, JitValue v) {
+  JitObject* meta = nullptr;
+  if (v.tag == TAG_OBJECT) {
+    meta = reinterpret_cast<JitObject*>(v.data)->proto();
+  } else if (v.tag == TAG_FUNC) {
+    auto* c = reinterpret_cast<JitClosure*>(v.data);
+    if (c->fn_ptr == reinterpret_cast<void*>(&_jit_variant_ctor_thunk))
+      meta = reinterpret_cast<JitObject*>(c->captures[0]->value.data);
+  }
+  if (!meta || !meta->is_class_meta) return nullptr;
+  auto* ref = meta->specials->enum_ref;
+  return ref && ref->obj == enum_obj && key == meta->specials->name ? meta
+                                                                    : nullptr;
 }
 
 // --- @derive reflective methods ---------------------------------------
@@ -2028,15 +2049,13 @@ extern "C" CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_ufcs_takes(
   return takes(meta->type_names[0]);
 }
 
-// Resolve a property read AS A VALUE (`obj.name`, not `obj.name(...)`). When it
-// is a class method — a TAG_FUNC reached through the proto, NOT an own slot —
-// bind `self`=receiver into a wrapper so a later call sees the right receiver
-// (interp's _wrap_method_with_this). Own-slot functions (namespace methods,
-// constructors, lambda fields) and builtins keep their raw value; the own/proto
-// split is decided by an own-slot lookup on `key` (a lambda stored in a field
-// is an own slot, a method lives only on the proto). Returns a +1-owned value
-// in every case (retaining the view, or the receiver+method into the wrapper's
-// cells); the caller releases the receiver separately.
+// Resolve a property read AS A VALUE (`obj.name`, not `obj.name(...)`). A
+// function there — own slot or proto method alike — is bound to the receiver
+// in a wrapper, so a later call sees the right receiver; a promoted body
+// local stays raw and a getter runs (culebra_runtime_bind_method_value).
+// Returns a +1-owned value in every case (retaining the view, or the
+// receiver+method into the wrapper's cells); the caller releases the
+// receiver separately.
 // Invoke a getter body 0-arg with `self`=receiver, returning its +1-owned
 // result. The receiver is only borrowed (_culebra_invoke_method0 mints the
 // callee's own +1), so a throwing getter leaves the caller's ref intact.
@@ -2048,15 +2067,23 @@ inline JitValue _jit_invoke_getter(JitClosure* method,
 }
 
 // Build the [receiver, method] bound wrapper (shared by property value
-// reads and the `fn` handle). Registers the thunk as native so
-// sendable_jit rejects an escapee with the interp's SendError (a bound
-// method has no params_ast there). Returns a +1-owned TAG_FUNC value.
+// reads and the `fn` handle). Portable: a message copies the receiver and
+// the method as it copies any closure's captures, and refuses the wrapper
+// when either cannot cross. Not when the receiver is a namespace, which is
+// the Runtime's own rather than a value: a standard library function read
+// off one stays behind, the ones written in culebra as the native ones do.
+// Returns a +1-owned TAG_FUNC value.
 inline JitValue _jit_make_bound_method(int8_t recv_tag,
                                                   int64_t recv_data,
                                                   JitClosure* method) {
+  const bool on_namespace =
+      recv_tag == TAG_OBJECT &&
+      reinterpret_cast<JitObject*>(recv_data)->is_namespace;
   auto* bound = culebra_runtime_closure_new(
       reinterpret_cast<void*>(&_jit_bound_method_thunk), 2, method->arity,
-      JIT_CLOSURE_NATIVE, /*meta=*/nullptr);
+      on_namespace ? JIT_CLOSURE_NATIVE
+                   : JIT_CLOSURE_NATIVE | JIT_CLOSURE_PORTABLE,
+      /*meta=*/nullptr);
   culebra_runtime_value_retain(recv_tag, recv_data);
   bound->captures[0] = culebra_runtime_cell_new(recv_tag, recv_data);
   JitValue mval{TAG_FUNC, reinterpret_cast<int64_t>(method)};

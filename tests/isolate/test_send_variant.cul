@@ -1,0 +1,103 @@
+# An enum's payload constructor crosses an isolate boundary, as a value
+# (`Shape.Circle`) or through the enum a closure names, and so does the enum
+# object itself. A constructor was refused as a C++-bodied function, so a
+# closure naming an enum with a payload variant could not be sent at all.
+# What arrives is a copy of the enum, and the variants it declared name that
+# copy: `class_of` answers it for a variant built from it on the other side
+# and for one that came in the same message. Runs under both engines.
+
+fn caught(thunk) {
+  try {
+    thunk()
+  } catch e {
+    "{e.kind}: {e.message}"
+  }
+}
+
+enum Shape {
+  Circle(Long),
+  Rect(Long, Long),
+  Dot,
+}
+
+# A constructor read as a value, called on the other side and sent back.
+let circle = Shape.Circle
+assert_eq(Isolate.spawn(|| circle(2)).join(), Shape.Circle(2))
+assert_eq(Isolate.spawn(|r| circle(r), 3).join(), Shape.Circle(3))
+
+# A closure naming the enum builds its variants there, and they match there.
+assert_eq(
+  Isolate.spawn(|| [Shape.Circle(1), Shape.Rect(2, 3), Shape.Dot]).join(),
+  [Shape.Circle(1), Shape.Rect(2, 3), Shape.Dot],
+)
+let areas = Isolate.spawn(fn () {
+  [Shape.Circle(2), Shape.Rect(2, 3), Shape.Dot].map(fn (s) {
+    match s {
+      Circle(r) => r * r,
+      Rect(w, h) => w * h,
+      Dot => 0,
+    }
+  })
+}).join()
+assert_eq(areas, [4, 6, 0])
+
+# The variants name the copy of their enum: one built there, one that came
+# with it, and one built from a constructor the same message carried.
+let c1 = Shape.Circle(1)
+assert_eq(Isolate.spawn(|| [
+  class_of(Shape.Circle(1)) == Shape,
+  class_of(Shape.Dot) == Shape,
+  class_of(c1) == Shape,
+  class_of(circle(1)) == Shape,
+]).join(), [true, true, true, true])
+# ...and so on the way back, with the copy the child sends.
+let [shape_back, circle_back] = Isolate.spawn(|| [Shape, Shape.Circle(4)]).join()
+assert_eq([type_of(shape_back), class_of(circle_back) == shape_back],
+  ['Object', true])
+assert_eq(shape_back.Rect(1, 2), Shape.Rect(1, 2))
+# A variant that came without its enum names none, as before.
+assert_eq(Isolate.spawn(|v| class_of(v), Shape.Circle(1)).join(), nil)
+
+# A program may add to an enum object; what it adds is no variant of it.
+enum Size {
+  Big(Long),
+  Small,
+}
+enum Hue {
+  Red,
+  Blue,
+}
+Size.tint = Hue.Red
+Size.small_too = Size.Small
+assert_eq(Isolate.spawn(|| [
+  class_of(Size.tint),
+  class_of(Size.small_too) == Size,
+  class_of(Size.Big(1)) == Size,
+]).join(), [nil, true, true])
+
+# Through a Channel, within one Runtime: a copy, built from as the original.
+let (tx, rx) = Channel.new(1)
+tx.send(Shape.Rect)
+let rect = rx.recv()
+assert_eq(rect(2, 5), Shape.Rect(2, 5))
+
+# A constructor's enum must itself cross: one holding a handle stays behind,
+# and says which member held it, as a class does.
+enum Held {
+  Of(Long),
+}
+Held.log = File.open("README.md", "r")
+let held_of = Held.Of
+assert_eq(
+  caught(|| Isolate.spawn(|| held_of(1)).join()),
+  "SendError: Isolate.spawn: Held.log: a native handle is not Sendable",
+)
+Held.log.close()
+
+# An enum is one node per message, as a class is, so one that refers to
+# itself is no cycle.
+Hue.me = Hue
+assert_eq(Isolate.spawn(|| [Hue.me == Hue, class_of(Hue.me.Red) == Hue]).join(),
+  [true, true])
+
+inspect("test_send_variant: all assertions passed")

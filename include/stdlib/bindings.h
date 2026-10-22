@@ -4363,9 +4363,10 @@ inline JitValue _ns_global_type_of(JitValue* a, int64_t) {
 // A declared enum variant answers with its enum, which its meta names weakly
 // (JitEnumRef) — nil once that enum is freed. Nil for everything with no class
 // object of its own: a plain Object, and the values the runtime builds with a
-// meta but no class behind it — `1..3`, and a variant rebuilt from bytes or a
-// Channel among them. So `class_of(v).name` is not a second spelling of
-// `type_of(v)`: only the class-sugar half has both.
+// meta but no class behind it — `1..3`, and a variant rebuilt from bytes, or
+// from a message that did not carry its enum, among them. So
+// `class_of(v).name` is not a second spelling of `type_of(v)`: only the
+// class-sugar half has both.
 inline JitValue _ns_global_class_of(JitValue* a, int64_t) {
   if (a[0].tag == TAG_OBJECT) {
     if (auto* e = _jit_variant_enum(reinterpret_cast<JitObject*>(a[0].data))) {

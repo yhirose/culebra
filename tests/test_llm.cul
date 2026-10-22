@@ -102,8 +102,12 @@ assert_eq(lines[0], lines[1])
 
 # --- LLM is a namespace, as Time and Log are ---------------------------------------
 
-# A member it does not have is an error, not nil.
+# A member it does not have is an error, not nil, and a function read off it
+# stays in the isolate that read it, as every library function does.
 assert_eq(failure(|| LLM.asks), "AttributeError: namespace 'LLM' has no member 'asks'")
+let llm_ask = LLM.ask
+assert_eq(failure(|| Isolate.spawn(|| llm_ask("hi", model: "m")).join()),
+  "SendError: Isolate.spawn: a native/builtin function is not Sendable")
 
 # --- a transport failure is the transport's ----------------------------------------
 

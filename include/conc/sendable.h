@@ -29,8 +29,8 @@ namespace culebra {
 // --- JitValue <-> SendNode ---------------------------------------------------
 
 struct JitSerCtx {
-  // A closure, a class object or a meta -> its ref id: one node per message
-  // however often it is reached.
+  // A closure, a class object, an enum object or a meta -> its ref id: one
+  // node per message however often it is reached.
   std::map<const void*, int> ids;
   int next_id = 0;
   std::set<const void*> visiting;          // container cycle guard
@@ -275,8 +275,11 @@ inline std::string _jit_class_meta_names(const JitObject* o) {
 //   is_class          restored: a class node (SendNode::is_class); a Shared
 //                     tree refuses a class
 //   instance_meta     restored: a class node's meta
-//   is_enum           left behind: an enum object crosses as a plain Object
-//   enum_ref          left behind: a received variant names no enum object
+//   is_enum           restored: an enum node (SendNode::is_enum); a Shared
+//                     tree keeps an enum object as a plain Object
+//   enum_ref          restored: the rebuilt enum's, named by the variants it
+//                     declared (the node's elems); a variant that came
+//                     without its enum names none
 //   is_namespace      left behind: a namespace's members are native functions
 //   ns_name           left behind: likewise
 //   has_handle        left behind: a handle is refused or is a node of its own
@@ -343,9 +346,10 @@ inline JitObject* _jit_class_along(const JitObject* o) {
   return meta && meta->names_class ? o->built_by() : nullptr;
 }
 
-// An Object's node. A class object and a meta (what an instance's methods
-// live on: a class meta, or one a native module keeps, reached `as_meta`
-// through an instance) are one node per message.
+// An Object's node. A class object, an enum object and a meta (what an
+// instance's methods live on: a class meta, or one a native module keeps,
+// reached `as_meta` through an instance) are one node per message: a
+// variant's meta names one enum, so a second copy of its enum is no enum.
 inline sendable::SendNode _jit_object_node(JitObject* o, JitSerCtx& ctx,
                                            bool as_meta) {
   using K = sendable::SendNode::K;
@@ -405,7 +409,8 @@ inline sendable::SendNode _jit_object_node(JitObject* o, JitSerCtx& ctx,
     sendable::send_error(
         "a @value instance whose `new` has not returned is not Sendable");
   n.kind = K::Object;
-  if ((as_meta || o->is_class_meta || o->class_meta_of()) && !ctx.first(o, n))
+  if ((as_meta || o->is_class_meta || o->class_meta_of() || o->is_enum) &&
+      !ctx.first(o, n))
     return n;
   culebra::ValueWalkFrame walk;
   // What the Object is (SendNode::elems) goes ahead of what it holds, and
@@ -426,6 +431,15 @@ inline sendable::SendNode _jit_object_node(JitObject* o, JitSerCtx& ctx,
     n.elems.push_back(_jit_object_node(meta, ctx, /*as_meta=*/true));
     if (auto* cls = _jit_class_along(o))
       n.elems.push_back(_jit_object_node(cls, ctx, /*as_meta=*/false));
+  } else if (o->is_enum) {
+    // The variants it declared, which name it back on the other side.
+    n.is_enum = true;
+    o->for_each([&](std::string_view key, const JitObjectEntry& entry) {
+      if (auto* m = _jit_declared_variant(o, key, entry.value)) {
+        cls_name = m->specials->enum_name;
+        n.elems.push_back(_jit_object_node(m, ctx, /*as_meta=*/true));
+      }
+    });
   }
   if (!ctx.visiting.insert(o).second)
     sendable::send_error("a cyclic value cannot be sent");
@@ -435,8 +449,9 @@ inline sendable::SendNode _jit_object_node(JitObject* o, JitSerCtx& ctx,
   // still mid-fill (the memo registers before the entries land).
   n.facts = _jit_object_facts(o);
   n.s = _jit_class_meta_names(o);
-  // A member of a class that cannot cross says which, as `Class.member`:
-  // the class may have gone along with an instance, unseen by the sender.
+  // A member of a class or an enum that cannot cross says which, as
+  // `Class.member`: the class may have gone along with an instance, and the
+  // enum with a constructor, unseen by the sender.
   auto member = [&](std::string_view key, JitValue v) {
     try {
       return jit_serialize(v, ctx);
@@ -537,19 +552,12 @@ inline sendable::SendNode jit_serialize(JitValue v, JitSerCtx& ctx) {
         }
         return n;
       }
-      // A native (C++-bodied) closure is not Sendable: it can't be rebuilt
-      // on another Runtime and its captures may hold raw same-heap pointers
-      // (iterator wrappers, ns-method NsMethod*). Without this the child
-      // dereferences parent-heap state and hangs or crashes. A PORTABLE one
-      // is the exception: it has no captures, so no same-heap pointer; its
-      // fn_ptr and param meta are process-wide constants every Isolate of
-      // the process shares; and fn_ptr, flags, arity and meta, recorded
-      // above, are all the receiver needs.
-      if ((c->flags & JIT_CLOSURE_NATIVE) &&
-          !((c->flags & JIT_CLOSURE_PORTABLE) && c->n_captures == 0))
+      // A native (C++-bodied) closure crosses only when PORTABLE (see the
+      // flag): its captures are then copied below as any closure's are.
+      if ((c->flags & JIT_CLOSURE_NATIVE) && !(c->flags & JIT_CLOSURE_PORTABLE))
         sendable::send_error("a native/builtin function is not Sendable");
       // A `mut` capture is not Sendable: the value would silently diverge from
-      // the parent's. Reject at the boundary, matching the interp (sendable.h).
+      // the parent's. Reject at the boundary.
       if (const char* nm = _jit_first_mut_capture_of(c))
         sendable::send_error(
             "closure captures the mutable variable '" + std::string(nm) +
@@ -692,6 +700,15 @@ inline JitOwnedVal jit_deserialize(const sendable::SendNode& n, JitDeCtx& ctx) {
         o->is_class = true;
         JitValue m = jit_deserialize(n.elems[0], ctx).consume();
         culebra_runtime_mark_class(o, reinterpret_cast<JitObject*>(m.data));
+      } else if (n.is_enum) {
+        // An enum even when no variant it declared is left in its slots;
+        // each that is names it, as the declaration did. A variant's meta
+        // holds no entries, so each is sealed when its rebuild returns.
+        _jit_enum_ref_of(o);
+        for (const auto& e : n.elems) {
+          JitOwnedVal m = jit_deserialize(e, ctx);
+          _jit_enum_declare(o, reinterpret_cast<JitObject*>(m.borrow().data));
+        }
       } else if (!n.elems.empty()) {
         meta = jit_deserialize(n.elems[0], ctx);
         if (n.elems.size() > 1) cls = jit_deserialize(n.elems[1], ctx);

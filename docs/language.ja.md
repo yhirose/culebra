@@ -1502,6 +1502,8 @@ variable 'self'`になります。送出されるのは本体に入った時点�
 暗黙の再帰ハンドル`fn`は「その呼出が経由した値」を指すため、
 メソッドとして呼ばれたフレームの`fn`は束縛ラッパです ——
 `fn(...)`での再帰や`fn`の返却は現在のレシーバを保持します。
+束縛メソッドは、レシーバが渡せるならレシーバのコピーと一緒にisolateを
+越えます（[stdlib §12](stdlib.ja.md#12-isolate)）。
 
 **JIT**: UFCSは`--jit`でもサポートされます。解決は実行時に行われ、
 レシーバが同名プロパティを持っていればメソッド経路が勝ち、そうで
@@ -4439,7 +4441,7 @@ unionとしての順位で、`Object`より下です。
 | `ShadowError` | §6のシャドウ解析でキャプチャ済み外側名と衝突する束縛を検出。ユーザの`try`が走る前に発火 | **いいえ**（eval前のanalyzer） |
 | `IOError` | `FS` / `File`等stdlibファイル操作の失敗（パス不在・権限・クローズ済みハンドル）；`Tensor.from_csv`失敗 | はい |
 | `ProcessError` | `Proc.run`の起動失敗（実行ファイルが存在しない等）、または`check: true`での非0終了 / シグナル死 | はい |
-| `SendError` | Sendableでない値をisolate境界（`Isolate.spawn` / `tx.send`）で渡した — ネイティブハンドル、`Tensor`、`mut`を捕獲したクロージャ、`@packable`のクラス、循環参照 | はい |
+| `SendError` | Sendableでない値をisolate境界（`Isolate.spawn` / `tx.send`）で渡した — ネイティブハンドル、`Tensor`、`mut`を捕獲したクロージャ、値として取り出した標準ライブラリの関数、`@packable`のクラス、循環参照 | はい |
 | `ChannelError` | 全endpointが消えた（closed）channelへの`tx.send` | はい |
 | `ParallelError` | `Parallel.map` / `Parallel.each`の要素が例外を投げた。失敗要素のindexと原因を保持（fail-fast） | はい |
 | `DropContractError` | `drop` / `iter` / `has_next` / `next`プロパティに引数を取るFunctionを束縛した | はい |
@@ -5945,10 +5947,11 @@ inspect(type_of(Shape.Circle(1.0)))                 # => 'Circle'
 持っていなければ（戻り済みの関数の中で宣言し、コンストラクタを外に渡して
 いないenumなど。enumから読み出したコンストラクタはenumを持ち続けます）、
 そのバリアントは
-`nil`を答えます。別の場所で作り直されたバリアント（`Channel`で受け取った
-もの、`SharedBuffer`から読み戻したもの）も`nil`です。どちらの場合も、表示と
-比較は元のバリアントのままです。`Channel`で受け取ったclassインスタンスは、
-一緒に届いたクラスのコピーを答えます。クラスを連れて行くのはメソッドが
+`nil`を答えます。別の場所で作り直されたバリアント（`SharedBuffer`から読み戻した
+もの、enumと一緒でなく`Channel`で受け取ったもの）も`nil`です。どちらの場合も、
+表示と比較は元のバリアントのままです。enumと同じメッセージで届いたもの、
+届いたenumから向こう側で作ったものは、届いたenumのコピーを答えます。
+`Channel`で受け取ったclassインスタンスは、一緒に届いたクラスのコピーを答えます。クラスを連れて行くのはメソッドが
 クラスを名指すときで、それ以外は`nil`です
 （[stdlib §12](stdlib.ja.md#12-isolate)）。
 

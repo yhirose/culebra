@@ -452,7 +452,8 @@ struct JitSpecialTable {
   const char* enum_name = nullptr;
   // The enum object that declared this variant, weakly (see JitEnumRef).
   // Null on a class's meta and on a variant with no declaration behind it —
-  // a native one, or one rebuilt from bytes or a Channel.
+  // a native one, or one rebuilt from bytes or from a message that did not
+  // carry its enum.
   JitEnumRef* enum_ref = nullptr;
   // Which traits this class conforms to (culebra::TraitConformance): resolved
   // on first ask and reached from a value through `proto`, so two classes that
@@ -1031,6 +1032,14 @@ inline JitEnumRef* _jit_enum_ref_of(JitObject* obj) {
   }
   return obj->enum_ref;
 }
+// The enum object `obj` declares the variant whose meta is `meta`, which
+// names it back. A declaration and an enum rebuilt from a message both end
+// here, so a rebuilt variant names its enum as a declared one does.
+inline void _jit_enum_declare(JitObject* obj, JitObject* meta) {
+  assert(meta->specials && !meta->specials->enum_ref);
+  meta->specials->enum_ref = _jit_enum_ref_of(obj);
+  meta->specials->enum_ref->refs++;
+}
 // An enum tells the variants that outlive it that it is gone. Called as an
 // object is condemned, before any `drop` runs, so a drop body cannot reach the
 // dying enum through `class_of` (the order CPython's collector clears weakrefs
@@ -1154,18 +1163,21 @@ static_assert(sizeof(JitClosure) <= 48 && !std::is_polymorphic_v<JitClosure>);
 // no call parens) resolving to one invokes it 0-arg instead of yielding a
 // bound method. The interp's FunctionValue::is_getter.
 //
-// NATIVE — a C++-bodied closure. Not Sendable: it cannot be rebuilt on
-// another Runtime, and its captures may hold raw same-heap pointers (the
-// iterator wrappers cache upstream closure pointers, the ns-method closure an
-// NsMethod*) that would silently cross the heap boundary. The interp's
-// body == nullptr.
+// NATIVE — a C++-bodied closure. Not Sendable unless PORTABLE: its captures
+// may hold raw same-heap pointers (the iterator wrappers cache upstream
+// closure pointers, the ns-method closure an NsMethod*) that would silently
+// cross the heap boundary, and a child that rebuilt one hung or crashed.
 inline constexpr uint64_t JIT_CLOSURE_GETTER = 1ull << 0;
 inline constexpr uint64_t JIT_CLOSURE_NATIVE = 1ull << 1;
 // DERIVED — a method `@derive` supplied rather than one the class wrote.
 inline constexpr uint64_t JIT_CLOSURE_DERIVED = 1ull << 2;
-// PORTABLE — a NATIVE closure that may still cross an Isolate: it has no
-// captures and its body reads state only from `self` and its arguments, so the
-// receiver rebuilds it from fn_ptr / arity / meta alone (see jit_serialize).
+// PORTABLE — a NATIVE closure that may still cross an Isolate: its body and
+// param meta are the process's, its body reads state only from `self`, its
+// arguments and its captures, and each capture is a cell of its own holding
+// an ordinary value, shared with no variable. So the receiver rebuilds it as
+// any closure, from fn_ptr / arity / meta and copies of the captures (see
+// jit_serialize). tools/checks/check_portable_closure_door.sh holds the mark
+// to the few constructors that build such closures.
 inline constexpr uint64_t JIT_CLOSURE_PORTABLE = 1ull << 3;
 
 // Sentinel `arity` for a variadic closure (a builtin ns-method that accepts a

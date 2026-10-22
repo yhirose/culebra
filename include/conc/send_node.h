@@ -47,8 +47,9 @@ struct SendNode {
   std::string s;   // Str; also a BufView's field type (empty: `buf[i]`)
 
   // Array / Set / Tuple; a BufView's buffer. An Object's: what it is, ahead
-  // of what it holds — a class object's instances' meta; an instance's meta,
-  // then the class it takes along (its methods name it).
+  // of what it holds — a class object's instances' meta; an enum object's,
+  // the metas of the variants it declared; an instance's meta, then the
+  // class it takes along (its methods name it).
   std::vector<SendNode> elems;
 
   // Object: ordered (key, value) pairs + parallel mutability flags. Keys are
@@ -91,6 +92,7 @@ struct SendNode {
   // Object: what it is beyond its entries.
   ObjectFacts facts;
   bool is_class = false;    // Object: a class object (see elems)
+  bool is_enum = false;     // Object: an enum object (see elems)
 
   // Declared here, defaulted below the class, for the reason toml::Node's are
   // (toml.h): the self-referential vector<pair<SendNode, SendNode>> makes

@@ -68,10 +68,11 @@ let r = caught(fn () {
 assert_eq(r, "SendError: a native handle is not Sendable")
 
 # A native (C++-bodied) closure is not Sendable: an iterator's wrapper
-# closures, an ns-method as a value, and a variant constructor all carry
-# state that cannot cross the heap boundary. The JIT used to ship the raw
-# fn_ptr + captures — a captured lazy iterator then hung or crashed the
-# child when it pulled from parent-heap cells.
+# closures and an ns-method as a value carry state that cannot cross the heap
+# boundary. The JIT used to ship the raw fn_ptr + captures — a captured lazy
+# iterator then hung or crashed the child when it pulled from parent-heap
+# cells. A variant constructor is one too, but its capture is plain data, so
+# it crosses (test_send_variant.cul).
 let it = [1, 2].iter().map(|x| x)
 let i1 = caught(fn () {
   Isolate.spawn(fn () {
@@ -93,20 +94,15 @@ assert_eq(
   i2,
   "SendError: Isolate.spawn: a native/builtin function is not Sendable",
 )
-
-enum SendShape {
-  Circle(Long),
-  Dot,
-}
-let ctor = SendShape.Circle
-let i3 = caught(fn () {
-  Isolate.spawn(fn () {
-    ctor(2)
-  }).join()
-})
+# So is a library function written in culebra, read off its namespace: the
+# namespace is each isolate's own, not a value a message copies.
+let tnow = Time.now
+let loginfo = Log.info
 assert_eq(
-  i3,
-  "SendError: Isolate.spawn: a native/builtin function is not Sendable",
+  [caught(|| Isolate.spawn(|| tnow()).join()),
+   caught(|| Isolate.spawn(|| loginfo('x')).join())],
+  ["SendError: Isolate.spawn: a native/builtin function is not Sendable",
+   "SendError: Isolate.spawn: a native/builtin function is not Sendable"],
 )
 
 # User closures and multimethods still cross fine.
@@ -152,18 +148,35 @@ let (stx, srx) = Channel.new(1)
 stx.send(SendP.new(5))
 assert_eq(srx.recv().get(), 5)
 
-# A `C.new` value, bound to its class by a C++ wrapper, is refused on both
-# backends (the class itself crosses: test_send_class.cul).
+# A method read as a value is bound to its receiver, and crosses with a copy
+# of it: a `C.new` value with its class (test_send_class.cul), an instance's
+# method with the instance, whose changes there stay there. One whose
+# receiver cannot cross stays behind with it.
 let mk = SendP.new
-let mkr = caught(fn () {
-  Isolate.spawn(fn () {
-    mk(1)
-  }).join()
-})
+let mkr = Isolate.spawn(fn () {
+  mk(1).get()
+}).join()
+assert_eq(mkr, 1)
+class SendAcc {
+  new() {
+    self.xs = []
+  }
+  add(x) {
+    self.xs.push(x)
+    self.xs.size()
+  }
+}
+let acc = SendAcc()
+let acc_add = acc.add
+let acc_there = Isolate.spawn(|| [acc_add(1), acc_add(2)]).join()
+assert_eq([acc_there, acc.xs], [[1, 2], []])
+let readme = File.open("README.md", "r")
+let read_some = readme.read
 assert_eq(
-  mkr,
-  "SendError: Isolate.spawn: a native/builtin function is not Sendable",
+  caught(|| Isolate.spawn(|| read_some(4)).join()),
+  "SendError: Isolate.spawn: a native handle is not Sendable",
 )
+readme.close()
 
 inspect("test_send_errors: instance-send assertions passed")
 

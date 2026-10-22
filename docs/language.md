@@ -1605,7 +1605,8 @@ methods, statics, and constructors (`let mk = C.new`). Inside a body,
 the implicit recursion handle `fn` refers to the value the call was
 made through, so in a method-invoked frame `fn` is the bound wrapper —
 recursing through `fn(...)` or returning `fn` keeps the current
-receiver.
+receiver. A bound method crosses an isolate with a copy of its receiver,
+when the receiver can cross ([stdlib §12](stdlib.md#12-isolate)).
 
 **JIT**: UFCS is supported under `--jit`. Resolution happens at
 runtime: if the receiver carries a property by that name the method
@@ -4675,7 +4676,7 @@ builds (unless noted).
 | `ShadowError` | Static shadow analyzer (§6) detected a binding that shadows a captured outer name. Fires before any user `try` block can observe it. | **no** (pre-eval analyzer) |
 | `IOError` | `FS` / `File` / stdlib file ops failing (missing path, permission, closed handle); `Tensor.from_csv` failure. | yes |
 | `ProcessError` | `Proc.run` spawn failure (e.g. the executable doesn't exist), or a non-zero exit / signal death under `check: true`. | yes |
-| `SendError` | A value that is not Sendable was passed across an isolate boundary (`Isolate.spawn` / `tx.send`) — a native handle, a `Tensor`, a closure capturing a `mut`, a `@packable` class, or a cyclic value. | yes |
+| `SendError` | A value that is not Sendable was passed across an isolate boundary (`Isolate.spawn` / `tx.send`) — a native handle, a `Tensor`, a closure capturing a `mut`, a standard library function as a value, a `@packable` class, or a cyclic value. | yes |
 | `ChannelError` | `tx.send` on a channel whose receivers/senders have all gone (closed). | yes |
 | `ParallelError` | A `Parallel.map` / `Parallel.each` element threw; carries the failing element's index and cause (fail-fast). | yes |
 | `DropContractError` | `drop` / `iter` / `has_next` / `next` property bound to a function that takes arguments. | yes |
@@ -6224,11 +6225,13 @@ inspect(type_of(Shape.Circle(1.0)))                 # => 'Circle'
 A variant names its enum without keeping it alive, so once nothing else
 holds the enum — one declared inside a function that has returned, and
 handed out none of its constructors (a constructor read off the enum
-holds it) — its variants answer `nil`. So does a variant rebuilt elsewhere, received from
-a `Channel` or read back from a `SharedBuffer`. Either way it still prints
-and compares as its variant. A class instance takes its class along when
-its methods name the class, so one received from a `Channel` answers with a
-copy of its class then, and `nil` otherwise
+holds it) — its variants answer `nil`. So does a variant rebuilt elsewhere:
+read back from a `SharedBuffer`, or received from a `Channel` without its
+enum. Either way it still prints and compares as its variant. One that came
+in the same message as its enum, or was built from that enum there, answers
+with the copy of the enum that came. A class instance takes its class along
+when its methods name the class, so one received from a `Channel` answers
+with a copy of its class then, and `nil` otherwise
 ([stdlib §12](stdlib.md#12-isolate)).
 
 Everything with no class object of its own answers `nil`, which is more

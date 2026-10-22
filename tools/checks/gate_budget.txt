@@ -124,7 +124,9 @@ tests.cul 316
 # 26 since test_send_hashed.cul (a rebuild runs no program code: keys keep
 # the hash they were sent with; a file apart, as its classes' JIT compile
 # made test_send_object_facts.cul five times slower).
-tests.isolate 26
+# 27 since test_send_variant.cul (an enum's constructor and the enum itself
+# cross, and the variants it declared name the copy there).
+tests.isolate 27
 
 # tests/gen_frames/*.cul: the generator probes held to frozen outputs, on both
 # engines in the landing gate and under the collector's axes and `culebra
