@@ -246,5 +246,7 @@ languages.samples 130
 # kept goes on to the next round). 34 since kauai/tools/test_check.cul (each
 # fault an instrument's sound can have is found at its note, and nothing in
 # a clean one). 35 since kauai/tools/test_measure.cul (a performance whose
-# notes are known is written down as them).
-examples.suites 35
+# notes are known is written down as them). 36 since
+# kauai/sounds/soprano_sax/test_data_format.cul (the numbers data/ keeps
+# read back as the values they were made from).
+examples.suites 36

@@ -43,8 +43,10 @@
 # data/ holds the notes as 16-bit numbers (notes.i16, each note's place in it
 # and what it is in notes.json) and the attacks as 16-bit samples
 # (attacks.i16 and attacks.json); breath.json says how the breath pulses with
-# the tone in each band. The numbers are kept as their bytes and each note's
-# read out the first time it is wanted.
+# the tone in each band. data_format.cul lays them out. The numbers are kept
+# as their bytes and each note's read out the first time it is wanted.
+
+import format from './data_format.cul'
 
 let RATE = 44100
 
@@ -74,17 +76,8 @@ let LH = LIB.harmonics
 
 let NB = BREATH.bands.size()
 
-# A packed number for silence.
-let SILENT = -32768
-
-let packed = |a, n| String.unpack("i16", PACKED, at: 2 * a, count: n)
-
-let hundredths = |a, n| packed(a, n).map(|v| v * 0.01)
-
 # Attack e's samples.
-let attack_samples = |e| String
-  .unpack("i16", ATTACK_BYTES, at: 2 * e.at, count: e.len)
-  .map(|v| v / ATTACKS.scale)
+let attack_samples = |e| format.attack_samples(ATTACK_BYTES, e, ATTACKS.scale)
 
 let NOTE_DB = LIB.notes.map(|_| nil)
 
@@ -95,10 +88,7 @@ let NOTE_SHAPES = LIB.notes.map(|_| nil)
 # Note i's loudness (dB) frame by frame (read for every note as the
 # library loads, so on its own).
 let note_db = fn (i) {
-  if NOTE_DB[i] == nil {
-    let e = LIB.notes[i]
-    NOTE_DB[i] = hundredths(e.at + e.frames, e.frames)
-  }
+  NOTE_DB[i] = NOTE_DB[i] ?? format.note_db(PACKED, LIB.notes[i])
   NOTE_DB[i]
 }
 
@@ -106,52 +96,21 @@ let note_db = fn (i) {
 # frame's bands, dB) and its fine gain every millisecond.
 let note_parts = fn (i) {
   if NOTE_PARTS[i] == nil {
-    let e = LIB.notes[i]
-    let (m, p) = (e.frames, e.at)
-    let breath = hundredths(p + 2 * m, m * NB)
-    let g0 = p + 2 * m + m * NB
+    let p = format.note_parts(PACKED, LIB.notes[i], NB)
     NOTE_PARTS[i] = {
-      cents: hundredths(p, m),
+      cents: p.cents,
       db: note_db(i),
-      breath: iota(m).map(|j| breath[j * NB..(j + 1) * NB]),
-      gains: packed(
-        g0,
-        e.gains,
-      ).map(|v| v == SILENT ? 0.0 : 10.0 ** (v * 0.0005)),
+      breath: p.breath,
+      gains: p.gains,
     }
   }
   NOTE_PARTS[i]
 }
 
-# Note i's harmonics' shapes, frame by frame: its kept frames' (every
-# LIB.key-th and the last) dB on a straight line between them; a harmonic
-# silent at either kept frame, silent.
+# Note i's harmonics' shapes, frame by frame.
 let note_shapes = fn (i) {
-  if NOTE_SHAPES[i] == nil {
-    let e = LIB.notes[i]
-    let (m, k) = (e.frames, e.harms)
-    let at = e.at + 2 * m + m * NB + e.gains
-    let steps = range(m, step: LIB.key).collect()
-    let keys = steps[-1] == m - 1 ? steps : [...steps, m - 1]
-    let kept = packed(at, keys.size() * k)
-    NOTE_SHAPES[i] = iota(m).map(fn (j) {
-      let q = j / LIB.key
-      let (a, b) = (keys[q], keys[Math.min(q + 1, keys.size() - 1)])
-      let f = b > a ? (j - a) * 1.0 / (b - a) : 0.0
-      iota(LH).map(fn (h) {
-        if h >= k {
-          return 0.0
-        }
-        let (
-          va,
-          vb,
-        ) = (kept[q * k + h], kept[Math.min(q + 1, keys.size() - 1) * k + h])
-        va == SILENT || vb == SILENT
-          ? 0.0
-          : 10.0 ** ((va * (1.0 - f) + vb * f) * 0.0005)
-      })
-    })
-  }
+  NOTE_SHAPES[i] = NOTE_SHAPES[i] ??
+    format.note_shapes(PACKED, LIB.notes[i], NB, LH)
   NOTE_SHAPES[i]
 }
 

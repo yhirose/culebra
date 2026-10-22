@@ -1,0 +1,130 @@
+# How data/ lays out the notes and attacks as 16-bit numbers: written by
+# the tools that make the instrument, read by main.cul. Both go through this
+# file, so the two cannot drift apart.
+#
+# notes.i16 holds each note in turn: its pitch (cents against the note it
+# plays) and its loudness (dB) a frame (10 ms) at a time and its breath a
+# frame and a band at a time, all in hundredths; its fine gain every
+# millisecond in hundredths of a dB; and its harmonics' shapes in hundredths
+# of a dB at every KEY-th frame and its last, as many harmonics as any of its
+# frames has (`harms`). SILENT stands for nothing in a gain or a shape.
+# notes.json says where each note starts (`at`, in numbers) and how long its
+# parts are (`frames`, `gains`, `harms`).
+#
+# attacks.i16 holds each attack's samples from ATTACK_PRE before its onset to
+# ATTACK_POST after, the loudest sample of them all at full scale: a number
+# over attacks.json's `scale` is the sample.
+
+let KEY = 3
+let SILENT = -32768
+let ATTACK_PRE = 0.015
+let ATTACK_POST = 0.1
+
+let LN10 = Math.log(10.0)
+
+# A number in the 16 bits a note keeps: the nearest, ties to even, within
+# +-32767 (SILENT is kept for nothing).
+fn i16(v) {
+  Math.clamp(Math.round(v), -32767, 32767)
+}
+
+# A positive amplitude in hundredths of a dB; SILENT for none.
+fn centibels(v) {
+  v > 0.0 ? i16(2000.0 * Math.log(v) / LN10) : SILENT
+}
+
+# The frames of an `m`-frame note whose shapes are kept.
+fn kept_frames(m) {
+  let steps = range(m, step: KEY).collect()
+  steps[-1] == m - 1 ? steps : [...steps, m - 1]
+}
+
+# Note `n` as numbers: `n` holds `cents` and `db` (a value a frame),
+# `breath` (a frame's bands, dB), `gains` (every millisecond, as amplitudes)
+# and `shapes` (a frame's harmonics, as amplitudes). Answers the numbers and
+# how many harmonics are kept.
+fn pack_note(n) {
+  let m = n.cents.size()
+  let harms = Math.max(
+    1,
+    n.shapes.map(|row| row.filter(|v| v > 0.0).size()).max(),
+  )
+  let shapes = kept_frames(m).flat_map(|j| n
+    .shapes[j]
+    .slice(0, harms)
+    .map(|v| centibels(v)))
+  let numbers = [
+    ...n.cents.map(|v| i16(100.0 * v)),
+    ...n.db.map(|v| i16(100.0 * v)),
+    ...n.breath.flat_map(|row| row.map(|v| i16(100.0 * v))),
+    ...n.gains.map(|v| centibels(v)),
+    ...shapes,
+  ]
+  {numbers: numbers, harms: harms}
+}
+
+# Note `e`'s numbers (as notes.json describes it) out of `bytes`, `nb`
+# breath bands a frame.
+let numbers = |bytes, at, n| String.unpack("i16", bytes, at: 2 * at, count: n)
+
+let hundredths = |bytes, at, n| numbers(bytes, at, n).map(|v| v * 0.01)
+
+# Note e's loudness (dB) frame by frame.
+fn note_db(bytes, e) {
+  hundredths(bytes, e.at + e.frames, e.frames)
+}
+
+# Note e's pitch (cents) frame by frame, its breath (each frame's bands, dB)
+# and its fine gain every millisecond (amplitudes).
+fn note_parts(bytes, e, nb) {
+  let (m, p) = (e.frames, e.at)
+  let breath = hundredths(bytes, p + 2 * m, m * nb)
+  {
+    cents: hundredths(bytes, p, m),
+    breath: iota(m).map(|j| breath[j * nb..(j + 1) * nb]),
+    gains: numbers(
+      bytes,
+      p + 2 * m + m * nb,
+      e.gains,
+    ).map(|v| v == SILENT ? 0.0 : 10.0 ** (v * 0.0005)),
+  }
+}
+
+# Note e's harmonics' shapes frame by frame (`lh` harmonics a frame): its
+# kept frames' dB on a straight line between them; a harmonic silent at
+# either kept frame, silent.
+fn note_shapes(bytes, e, nb, lh) {
+  let (m, k) = (e.frames, e.harms)
+  let keys = kept_frames(m)
+  let kept = numbers(bytes, e.at + 2 * m + m * nb + e.gains, keys.size() * k)
+  iota(m).map(fn (j) {
+    let q = j / KEY
+    let (a, b) = (keys[q], keys[Math.min(q + 1, keys.size() - 1)])
+    let f = b > a ? (j - a) * 1.0 / (b - a) : 0.0
+    iota(lh).map(fn (h) {
+      if h >= k {
+        return 0.0
+      }
+      let (
+        va,
+        vb,
+      ) = (kept[q * k + h], kept[Math.min(q + 1, keys.size() - 1) * k + h])
+      va == SILENT || vb == SILENT
+        ? 0.0
+        : 10.0 ** ((va * (1.0 - f) + vb * f) * 0.0005)
+    })
+  })
+}
+
+# Attack `samples` as numbers, `scale` the factor that puts the loudest
+# attack at full scale.
+fn pack_attack(samples, scale) {
+  samples.map(|v| i16(v * scale))
+}
+
+# Attack a's samples out of `bytes`.
+fn attack_samples(bytes, a, scale) {
+  String.unpack("i16", bytes, at: 2 * a.at, count: a.len).map(|v| v / scale)
+}
+
+export {KEY, SILENT, ATTACK_PRE, ATTACK_POST, kept_frames, pack_note, note_db, note_parts, note_shapes, pack_attack, attack_samples}
