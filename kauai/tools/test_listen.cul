@@ -1,0 +1,241 @@
+import lib from './listen_lib.cul'
+
+let TOOL = FS.join(FS.dirname(FS.abspath(Sys.script)), "listen.cul")
+
+# An instrument that beeps each pitch, `top` times as loud from C6 (84) up.
+# Kauai weighs it by the middle of the pitches it plays, below C6, so `top`
+# makes the passage louder and leaves how Kauai weighs it as it is. As a
+# module, for the command, and as its exports, for the library here.
+let BEEP = "
+let beep = |pitch, params| Audio.Sound(
+  iota(4000).map(|i| (pitch >= 84 ? params.get('top', 1.0) : 1.0) * 0.3 * Math.sin(2.0 * Math.pi * 440.0 * 2.0 ** ((pitch - 69) / 12.0) * i / 8000)),
+  rate: 8000,
+)
+let voices = \{beep: beep}
+export \{voices}
+"
+
+let SOUNDS = {voices: {beep: |pitch, params| Audio.Sound(
+  iota(4000).map(|i| (pitch >= 84 ? params.get('top', 1.0) : 1.0) *
+    0.3 *
+    Math.sin(2.0 * Math.pi * 440.0 * 2.0 ** ((pitch - 69) / 12.0) * i / 8000)),
+  rate: 8000,
+)}}
+
+# Two bars of two seconds, a mark before the second; the band's line sets
+# top=3.
+let SONG = "band Duo \{
+  voice Lead  external Beep top=3  plays melody  vol 100
+}
+song First \{
+  tempo 120
+  band Duo
+  melody in C5..B5
+  Verse
+  mark Second
+  Verse
+}
+section Verse \{
+  C  c4 e g c'
+}
+"
+
+# A directory of its own, with the song and the instrument.
+let scratch = fn () {
+  let dir = FS.join(FS.temp_dir(), "kauai-listen-test-{UUID.v4()}")
+  FS.mkdir(dir)
+  FS.write(FS.join(dir, "first.kau"), SONG)
+  FS.write(FS.join(dir, "beep.cul"), BEEP)
+  dir
+}
+
+let samples_of = |path| Audio.decode(FS.read(path)).channels[0]
+
+let louder = |a, b| Audio.integrated_loudness(a) - Audio.integrated_loudness(b)
+
+let tone = |amp, secs| iota(Math.round(secs *
+  44100)).map(|i| amp * Math.sin(2.0 * Math.pi * 997.0 * i / 44100))
+
+let way_in = |round, slot| slot == 1 ? round.one : round.two
+
+# The song and the module of the ways in `dir`, as said from outside it.
+let described_way = |dir| "{FS.join(dir, "first.kau")}, {FS.join(dir, "beep.cul")}"
+
+# The mistake `f` throws, nil where it throws none.
+let refused = fn (f) {
+  try {
+    f()
+    nil
+  } catch e: String {
+    e
+  }
+}
+
+@test
+fn the_parameters_set_reach_the_call_and_each_note_that_carries_its_own() {
+  let set = {top: 2.0}
+  # A phrase, whose notes carry their parameters when the instrument hears
+  # "params"; a voice given as a function; a drum's hit and a drum's one
+  # sound.
+  let notes = [{pitch: 84, params: {top: 1.0, soft: 1.0}}, {pitch: 86}]
+  assert_eq(
+    lib.with_set([notes, {top: 1.0, soft: 1.0}], set),
+    [
+      [{pitch: 84, params: {top: 2.0, soft: 1.0}}, {pitch: 86}],
+      {top: 2.0, soft: 1.0},
+    ],
+  )
+  assert_eq(lib.with_set([84, {soft: 1.0}], set), [84, {soft: 1.0, top: 2.0}])
+  assert_eq(lib.with_set([{level: 1.0}, {}], set), [{level: 1.0}, {top: 2.0}])
+  assert_eq(lib.with_set([{}], set), [{top: 2.0}])
+}
+
+@test
+fn the_new_way_is_heard_as_loud_as_the_one_before() {
+  # 6 dB louder, made as loud; with same_gain, heard as made.
+  let held = tone(0.25, 1.0)
+  let fresh = tone(0.5, 1.0)
+  let lv = lib.levels(held, fresh, 0, false)
+  assert_true(Math.abs(lv.differ - 6.02) < 0.05)
+  assert_eq(lv.held, 1.0)
+  assert_true(Math.abs(louder(fresh.map(|v| v * lv.fresh), held)) < 0.05)
+  let as_made = lib.levels(held, fresh, 0, true)
+  assert_eq((as_made.held, as_made.fresh), (1.0, 1.0))
+  assert_true(Math.abs(as_made.differ - 6.02) < 0.05)
+  # What comes before `lead` (the second a passage rises from silence over)
+  # is not measured.
+  let lv_lead = lib.levels(
+    tone(0.05, 1.0) + held,
+    tone(0.5, 1.0) + held,
+    44100,
+    false,
+  )
+  assert_true(Math.abs(lv_lead.differ) < 0.05)
+  # Both lowered alike where a sample would pass full scale.
+  let loud = lib.levels(tone(0.5, 1.0), tone(0.25, 1.0) + [1.5], 0, false)
+  assert_true(Math.abs(loud.held * 1.5 * 2.0 - 1.0) < 0.01)
+  assert_true(loud.lowered > 0.0)
+  # A silent one is heard as made.
+  let silent = lib.levels(held, repeat(44100, 0.0), 0, false)
+  assert_eq((silent.differ, silent.fresh), (nil, 1.0))
+}
+
+@test
+fn two_ways_are_heard_as_1_and_2_and_the_one_kept_goes_on() {
+  let dir = scratch()
+  defer {
+    FS.remove(dir, recursive: true)
+  }
+  let out = FS.join(dir, "listen")
+  let wav = |round, k| FS.join(out, "top-{round}-{k}.wav")
+  let record = || JSON.parse(FS.read(FS.join(out, "top.json")))
+  # The passages rendered here, by the instrument's exports.
+  let render = |ways, from, to| ways.map(|w| lib.passage(SOUNDS, w, from, to))
+  let o = {
+    name: "top",
+    out: out,
+    songs: [FS.join(dir, "first.kau")],
+    sounds: [FS.join(dir, "beep.cul")],
+    set: [],
+    from: "Second",
+    to: nil,
+    same_gain: false,
+  }
+  assert_true(refused(|| lib.start(o, render)).contains("the same"))
+  let no_value = refused(|| lib.start({...o, set: ["top"]}, render))
+  assert_true(no_value.contains("a word and a number"))
+
+  let said = lib.start({...o, set: ["top=1"]}, render)
+  assert_eq(said[0], wav(1, 1))
+  let one = record().rounds[0]
+  let before = one.before
+  let fresh = 3 - before
+  assert_eq(record().from, "Second")
+  # The one before is the song as it is, as Kauai renders it.
+  let made = Audio
+    .Kauai
+    .load(o.songs[0], voices: SOUNDS.voices)
+    .render(from: "Second")
+  let heard = samples_of(wav(1, before))
+  assert_eq(heard.size(), made.size())
+  assert_true(iota(made.size()).all(|i| Math.abs(heard[i] - made[i]) < 0.0001))
+  # The new one plays its C6s a third as loud, and is heard as loud as the
+  # one before from the mark on.
+  assert_true(one.differ < -1.0)
+  let lead = record().lead
+  assert_eq(lead, 44100)
+  let measured = |xs| xs.slice(lead, made.size())
+  let apart = louder(measured(samples_of(wav(1, fresh))), measured(heard))
+  assert_true(Math.abs(apart) < 0.05)
+  let again = refused(|| lib.start({...o, set: ["top=2"]}, render))
+  assert_true(again.contains("is there already"))
+
+  # Not picked yet, there is no next round; picked, it says which was which.
+  let go_on = {name: "top", out: out, song: nil, sounds: nil, set: ["top=2"]}
+  let early = refused(|| lib.next_round(go_on, render))
+  assert_true(early.contains("not picked yet"))
+  let answer = |a| {name: "top", out: out, answer: a}
+  assert_true(refused(|| lib.pick(answer("3"))).contains("1, 2 or same"))
+  let p = lib.pick(answer("{before}"))
+  assert_true(p.contains("{fresh}: the new one ({described_way(dir)}, top=1.0)"))
+  assert_eq(p[-1], "top round 1: kept {before}, the one before")
+
+  # The next round hears the one kept as it was heard, the same bytes (a WAV
+  # read and written again loses a step on samples past half scale), against
+  # it with one more change.
+  assert_true(heard.reduce(0.0, |m, v| Math.max(m, v)) > 0.5)
+  lib.next_round(go_on, render)
+  let two = record().rounds[1]
+  assert_eq(FS.read(wav(2, two.before)), FS.read(wav(1, before)))
+  assert_eq(way_in(two, 3 - two.before).set, {top: 2.0})
+  assert_true(two.differ < -0.5)
+  # `same` keeps the one before.
+  let s = lib.pick(answer("same"))
+  assert_eq(s[-1], "top round 2: kept {two.before}, the one before")
+  assert_eq(record().rounds[1].picked, "same")
+}
+
+@test
+fn the_command_renders_each_way_with_its_module_in_a_culebra_of_its_own() {
+  let dir = scratch()
+  defer {
+    FS.remove(dir, recursive: true)
+  }
+  let start = [
+    Sys.executable,
+    "--vm",
+    TOOL,
+    "start",
+    "top",
+    "--song",
+    "first.kau",
+    "--sounds",
+    "beep.cul",
+    "--set",
+    "top=1",
+    "--from",
+    "Second",
+  ]
+  let r = Proc.run(start, cwd: dir)
+  assert_eq((r.code, r.stderr), (0, ""))
+  assert_eq(
+    r.stdout.split("\n").slice(0, 2),
+    ["listen/top-1-1.wav", "listen/top-1-2.wav"],
+  )
+  # The one before as rendered here; the new one told top=1 in its own
+  # culebra.
+  let round = JSON.parse(FS.read(FS.join(dir, "listen", "top.json"))).rounds[0]
+  let heard = samples_of(FS.join(dir, "listen", "top-1-{round.before}.wav"))
+  let made = lib.passage(
+    SOUNDS,
+    way_in(round, round.before),
+    "Second",
+    nil,
+  ).samples
+  assert_true(iota(made.size()).all(|i| Math.abs(heard[i] - made[i]) < 0.0001))
+  assert_true(round.differ < -1.0)
+  # A mistake is said, and the status is 2.
+  let again = Proc.run(start, cwd: dir)
+  assert_eq(again.code, 2)
+  assert_true(again.stderr.starts_with("listen: listen/top.json is there already"))
+}

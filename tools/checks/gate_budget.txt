@@ -228,5 +228,7 @@ languages.samples 130
 # of each kind for is kept and indexed, and the one Kauai weighs it by is
 # found). 32 since examples/agents/nano-code/test_sse.cul went with the
 # decoder it tested: the agent's stream is read with Http's events:, which
-# test_http_server.cul covers.
-examples.suites 32
+# test_http_server.cul covers. 33 since kauai/tools/test_listen.cul (two
+# ways of a passage are heard as 1 and 2 at the same loudness, and the one
+# kept goes on to the next round).
+examples.suites 33

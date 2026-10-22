@@ -1,0 +1,335 @@
+# Two ways of playing one passage of a song, heard as 1 and 2 at the same
+# loudness, round after round: what listen.cul does, and what it renders
+# with. A way is {song, sounds, set}: the song and the instrument module
+# that makes its external sounds (absolute paths, sounds nil for none), and
+# the parameters set over the song's. Each command answers the lines it says
+# and throws a String for a mistake in what it was asked.
+#
+# A comparison NAME in folder `out` is the record NAME.json and the WAVs of
+# each round R, NAME-R-1.wav and NAME-R-2.wav. The record holds the passage
+# (`from`, `to`, and `lead`, the samples before `from`, the second they rise
+# from silence over), whether they are heard as made (`same_gain`), and the
+# rounds: the two ways in slots `one` and `two`, which holds the one there
+# before (`before`), how many dB louder than it the new one was before they
+# were evened out (`differ`), and the answer (`picked`, "1", "2", "same"
+# or nil).
+
+import instrument from './instrument_lib.cul'
+
+let RATE = 44100
+
+# What Kauai handed an instrument (instrument_lib's `args`) with parameters
+# `set` over the song's own: the call's, and, where a phrase's notes carry
+# their own (an instrument that hears "params"), each note's.
+fn with_set(args, set) {
+  let last = args.size() - 1
+  let own = |n| n.has("params") ? {...n, params: {...n.params, ...set}} : n
+  iota(args.size()).map(|i| cond {
+    i == last => {...args[i], ...set},
+    type_of(args[i]) == "Array" => args[i].map(own),
+    _ => args[i],
+  })
+}
+
+# Where `at` is in `song`, in seconds: a mark's name or seconds, as
+# render() takes it; nil for none.
+fn seconds_at(song, path, at) {
+  return at if at == nil || type_of(at) != "String"
+  let marks = song.marks()
+  if !marks.has(at) {
+    let has = marks.empty() ? "none" : marks.keys().join(", ")
+    throw "{path} has no mark {at} (it has {has})"
+  }
+  marks[at]
+}
+
+# The passage of way `w`'s song from `from` to `to`, played by the
+# instruments of module `sounds` told `w.set` over the song's parameters:
+# {samples, lead}.
+fn passage(sounds, w, from, to) {
+  let made = instrument.instruments(
+    sounds,
+    |kind, name, f| w.set.empty()
+      ? f
+      : instrument.calls_through(
+        f,
+        kind == "drums",
+        |args, make| make(with_set(args, w.set)),
+      ),
+  )
+  let song = Audio.Kauai.load(w.song, voices: made.voices, drums: made.drums)
+  let at = seconds_at(song, w.song, from)
+  seconds_at(song, w.song, to)
+  {
+    samples: song.render(from: from, to: to),
+    lead: at == nil ? 0 : Math.round(Math.min(1.0, at) * RATE),
+  }
+}
+
+# The program the renderer runs for each way: `call` is the JSON of {way,
+# from, to, out}. Writes the passage's samples to `out` as 32-bit floats and
+# prints its `lead` as JSON.
+fn render(sounds, call) {
+  let c = JSON.parse(call)
+  let p = passage(sounds, c.way, c.from, c.to)
+  FS.write(c.out, String.pack("f32", p.samples))
+  println(JSON.stringify({lead: p.lead}))
+}
+
+# The renderer start() and next_round() are given: each way's passage, made
+# by its module in a culebra of its own (instrument_lib's program, calling
+# render() of this library, at `lib`), side by side.
+fn renderer(lib) {
+  fn (ways, from, to) {
+    rendered(lib, ways, from, to)
+  }
+}
+
+fn rendered(lib, ways, from, to) {
+  let runs = ways.map(fn (w) {
+    let out = FS.join(FS.temp_dir(), "kauai-listen-{UUID.v4()}.f32")
+    let call = JSON.stringify({way: w, from: from, to: to, out: out})
+    {...instrument.program(w.sounds, lib, "render", call), out: out}
+  })
+  let results = Proc.all(runs.map(|r| r.cmd))
+  let made = iota(runs.size()).map(|i| results[i].code != 0
+    ? nil
+    : {
+      samples: String.unpack("f32", FS.read(runs[i].out)),
+      lead: JSON.parse(results[i].stdout.trim()).lead,
+    })
+  for r in runs {
+    FS.remove(r.entry)
+    FS.remove(r.out) if FS.exists(r.out)
+  }
+  for i in iota(runs.size()) {
+    if made[i] == nil {
+      throw "{results[i].stderr.trim()}\n{described(ways[i])} could not be rendered"
+    }
+  }
+  made
+}
+
+let peak_of = |xs| xs.reduce(0.0, |m, v| Math.max(m, Math.abs(v)))
+
+let db_of = |r| 20.0 * Math.log(r) / Math.log(10.0)
+
+# The gains two renderings are heard at: `held` (the one there before) as it
+# is, and `fresh` at its integrated loudness from sample `lead` on, unless
+# `same_gain`; both lowered alike where that would take a sample past full
+# scale. {held, fresh, differ, lowered}: `differ` is how many dB louder
+# `fresh` was (nil where either is silent), `lowered` how many dB both were
+# lowered by.
+fn levels(held, fresh, lead, same_gain) {
+  let a = Audio.integrated_loudness(held.slice(lead, held.size()))
+  let b = Audio.integrated_loudness(fresh.slice(lead, fresh.size()))
+  let differ = a == nil || b == nil ? nil : b - a
+  let even = same_gain || differ == nil ? 1.0 : 10.0 ** (-differ / 20.0)
+  let peak = Math.max(peak_of(held), peak_of(fresh) * even)
+  let down = peak > 1.0 ? 1.0 / peak : 1.0
+  {held: down, fresh: even * down, differ: differ, lowered: -db_of(down)}
+}
+
+# A path as it is said: from the current directory where it is under it.
+fn shown(path) {
+  let cwd = FS.abspath(".")
+  path.strip_prefix(cwd.ends_with("/") || cwd.ends_with("\\") ? cwd : cwd + "/")
+}
+
+fn described(way) {
+  let set = way.set.keys().sorted().map(|k| "{k}={way.set[k]}")
+  [
+    shown(way.song),
+    ...(way.sounds == nil ? [] : [shown(way.sounds)]),
+    ...set,
+  ].join(", ")
+}
+
+let same_way = |a, b| described(a) == described(b)
+
+# A way to play the passage, from the paths a command was given.
+fn way_of(song, sounds, set) {
+  throw "no song {song}" if !FS.exists(song)
+  let module = sounds == nil ? nil : instrument.module_at(sounds)
+  throw "no instrument module at {sounds}" if sounds != nil && module == nil
+  {song: FS.abspath(song), sounds: module, set: set}
+}
+
+# Parameters NAME=VALUE, as Kauai reads them on a band's line.
+fn params_of(words) {
+  let form = re'^[a-z][a-z0-9]*=[0-9]+(\.[0-9]+)?$'
+  let params = {}
+  for w in words {
+    throw "--set is a word and a number, breath=0.5: {w}" if !form.test(w)
+    let at = w.index_of("=")
+    params[w
+      .slice(0, at)
+      .to_string()] = to_float(w.slice(at + 1, w.size()).to_string())
+  }
+  params
+}
+
+# Comparison `o.name` in folder `o.out`: where its record and its WAVs are.
+fn files_of(o) {
+  throw "a name is letters, digits, _ and -: {o.name}" if !re'^[A-Za-z0-9_-]+$'.test(o.name)
+  {
+    record: FS.join(o.out, "{o.name}.json"),
+    wav: |round, slot| FS.join(o.out, "{o.name}-{round}-{slot}.wav"),
+  }
+}
+
+fn load(o, files) {
+  throw "no {files.record}: `start {o.name}` begins one" if !FS.exists(files.record)
+  JSON.parse(FS.read(files.record))
+}
+
+fn save(files, record) {
+  FS.write(files.record, JSON.stringify(record) + "\n")
+}
+
+let way_in = |round, slot| slot == 1 ? round.one : round.two
+
+let kept_of = |round| round.picked == "same"
+  ? round.before
+  : to_long(round.picked)
+
+# Round `n` of comparison `o`: `held` (the samples of the one there before,
+# and the bytes of the WAV it was heard as the round before, nil in the
+# first) and `fresh` (the new way's samples), in slots 1 and 2 at random, at
+# the levels levels() sets. The one kept is written as the bytes it was
+# heard as: a WAV read and written again loses a step on samples past half
+# scale. Answers the round as the record keeps it, and the lines said.
+fn write_round(o, files, record, n, held, fresh, ways) {
+  let lv = levels(held.samples, fresh, record.lead, record.same_gain)
+  let before = Random.int(1, 3)
+  FS.mkdir(o.out) if !FS.exists(o.out)
+  for k in [1, 2] {
+    FS.write(files.wav(n, k), cond {
+      k != before => Audio.Sound(fresh.map(|v| v * lv.fresh)).data(),
+      held.wav != nil && lv.held == 1.0 => held.wav,
+      _ => Audio.Sound(held.samples.map(|v| v * lv.held)).data(),
+    })
+  }
+  let differ = cond {
+    lv.differ == nil => "one is silent, so they are heard as they are made",
+    record.same_gain => "heard as they are made, {Math.abs(lv.differ):.1f} dB apart",
+    _ => "evened out a difference of {Math.abs(lv.differ):.1f} dB",
+  }
+  let lowered = lv.lowered > 0.05
+    ? "; both {lv.lowered:.1f} dB down, so neither clips"
+    : ""
+  {
+    round: {
+      one: before == 1 ? ways.held : ways.fresh,
+      two: before == 1 ? ways.fresh : ways.held,
+      before: before,
+      differ: lv.differ,
+      picked: nil,
+    },
+    lines: [
+      files.wav(n, 1),
+      files.wav(n, 2),
+      "{o.name} round {n}: {differ}{lowered}",
+    ],
+  }
+}
+
+# Starts comparison `o`: {name, out, songs, sounds, set, from, to,
+# same_gain}. `songs` and `sounds` hold one path (both ways') or two (the
+# one before's and the new one's), `sounds` none for a song without
+# external sounds; `set` the NAME=VALUE words of the new one; `from` and
+# `to` a mark's name or seconds, or nil. `render` (a renderer()) makes the
+# passages.
+fn start(o, render) {
+  let files = files_of(o)
+  if FS.exists(files.record) {
+    throw "{files.record} is there already: `next {o.name}` goes on with it, and removing it starts over"
+  }
+  throw "--song is needed, once or twice" if o.songs.empty() ||
+    o.songs.size() > 2
+  throw "--sounds is given once or twice" if o.sounds.size() > 2
+  let module = |k| o.sounds.empty() ? nil : o.sounds[k]
+  let held = way_of(o.songs[0], module(0), {})
+  let fresh = way_of(o.songs[-1], module(-1), params_of(o.set))
+  if same_way(held, fresh) {
+    throw "the two ways are the same: give --song or --sounds twice, or --set"
+  }
+  let at = |s| s == nil || !"0123456789".contains(s.slice(0, 1).to_string())
+    ? s
+    : to_float(s)
+  let (from, to) = (at(o.from), at(o.to))
+  let made = render([held, fresh], from, to)
+  let record = {from: from, to: to, same_gain: o.same_gain, lead: made[0].lead}
+  let r = write_round(
+    o,
+    files,
+    record,
+    1,
+    {samples: made[0].samples, wav: nil},
+    made[1].samples,
+    {held: held, fresh: fresh},
+  )
+  save(files, {...record, rounds: [r.round]})
+  r.lines
+}
+
+# Picks the one that sounds better in the last round of comparison `o`:
+# {name, out, answer}, 1, 2 or "same" (the one before kept); says which was
+# which.
+fn pick(o) {
+  let files = files_of(o)
+  let record = load(o, files)
+  throw "the answer is 1, 2 or same: {o.answer}" if ![
+    "1",
+    "2",
+    "same",
+  ].contains(o.answer)
+  let n = record.rounds.size()
+  let round = {...record.rounds[-1], picked: o.answer}
+  save(files, {...record, rounds: [...record.rounds.slice(0, n - 1), round]})
+  let who = |k| k == round.before ? "the one before" : "the new one"
+  let kept = kept_of(round)
+  [
+    ...[1, 2].map(|k| "{k}: {who(k)} ({described(way_in(round, k))})"),
+    "{o.name} round {n}: kept {kept}, {who(kept)}",
+  ]
+}
+
+# The next round of comparison `o`: {name, out, song, sounds, set}, the one
+# kept with the song or the module in place of its own (nil keeps it) and
+# the NAME=VALUE words set on top of its parameters, heard against the one
+# kept as it was heard.
+fn next_round(o, render) {
+  let files = files_of(o)
+  let record = load(o, files)
+  let n = record.rounds.size()
+  let last = record.rounds[-1]
+  throw "round {n} is not picked yet: `pick {o.name} 1`, `2` or `same`" if last.picked ==
+    nil
+  let kept = kept_of(last)
+  let held = way_in(last, kept)
+  let fresh = way_of(
+    o.song ?? held.song,
+    o.sounds ?? held.sounds,
+    {...held.set, ...params_of(o.set)},
+  )
+  throw "the new way is the one kept: give --song, --sounds or --set" if same_way(
+    held,
+    fresh,
+  )
+  let wav = FS.read(files.wav(n, kept))
+  let made = render([fresh], record.from, record.to)
+  let r = write_round(
+    o,
+    files,
+    record,
+    n + 1,
+    {samples: Audio.decode(wav).channels[0], wav: wav},
+    made[0].samples,
+    {held: held, fresh: fresh},
+  )
+  save(files, {...record, rounds: [...record.rounds, r.round]})
+  r.lines
+}
+
+export {with_set, passage, render, renderer, levels, start, pick, next_round}

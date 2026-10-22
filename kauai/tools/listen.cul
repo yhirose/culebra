@@ -1,0 +1,155 @@
+# Two ways of playing one passage of a song, to listen to told apart only as
+# 1 and 2: two songs, two instrument modules, or one with parameters set over
+# the song's, rendered and heard at the same loudness. The one picked is kept
+# and heard against the next way to try, round after round, as an optician
+# keeps the lens that reads better. README.md says more.
+#
+#   culebra kauai/tools/listen.cul start breath --song cruise.kau \
+#     --from Theme --to Bridge --sounds kauai/sounds/soprano_sax --set breath=0.5
+#   culebra kauai/tools/listen.cul pick breath 2
+#   culebra kauai/tools/listen.cul next breath --set breath=1
+#
+# The WAVs go in --out (listen/), NAME-ROUND-1.wav and NAME-ROUND-2.wav,
+# and the record of the rounds in NAME.json: which is which, written there
+# and not on the screen until `pick` says it.
+
+import lib from './listen_lib.cul'
+
+let NAME = {
+  name: 'name',
+  type: 'String',
+  positional: true,
+  doc: 'what is compared: NAME.json, and NAME-ROUND-1.wav and -2.wav',
+}
+let OUT = {
+  name: 'out',
+  type: 'String',
+  default: 'listen',
+  doc: 'the folder the WAVs and the record are in',
+}
+let SET = {
+  name: 'set',
+  type: 'String',
+  default: [],
+  repeated: true,
+  doc: "NAME=VALUE: the new way plays its instruments with the parameter NAME at VALUE, over the song's",
+}
+let SPEC = {
+  name: 'listen.cul',
+  doc: 'two ways of playing a passage, heard as 1 and 2 at the same loudness',
+  subcommands: [
+    {
+      name: 'start',
+      doc: 'renders the two ways: --song or --sounds twice (the first is the one before), or --set',
+      args: [
+        NAME,
+        {
+          name: 'song',
+          type: 'String',
+          default: [],
+          repeated: true,
+          doc: 'the song (.kau); twice, the one before and the new one',
+        },
+        {
+          name: 'sounds',
+          type: 'String',
+          default: [],
+          repeated: true,
+          doc: 'the instrument module, as for culebra play --sounds; twice, the one before and the new one',
+        },
+        SET,
+        {
+          name: 'from',
+          type: 'String',
+          default: nil,
+          doc: "where the passage starts: a mark's name or seconds",
+        },
+        {
+          name: 'to',
+          type: 'String',
+          default: nil,
+          doc: "where it ends: a mark's name or seconds",
+        },
+        {
+          name: 'same-gain',
+          type: 'Bool',
+          default: false,
+          doc: 'hear them as they are made, not at the same loudness',
+        },
+        OUT,
+      ],
+    },
+    {
+      name: 'pick',
+      doc: 'the one that sounds better, 1 or 2, or same; says which was which',
+      args: [
+        NAME,
+        {name: 'answer', type: 'String', positional: true, doc: '1, 2 or same'},
+        OUT,
+      ],
+    },
+    {
+      name: 'next',
+      doc: 'renders the one kept with one more change, and hears it against the one kept',
+      args: [
+        NAME,
+        {
+          name: 'song',
+          type: 'String',
+          default: nil,
+          doc: "the song, in place of the one kept's",
+        },
+        {
+          name: 'sounds',
+          type: 'String',
+          default: nil,
+          doc: "the instrument module, in place of the one kept's",
+        },
+        SET,
+        OUT,
+      ],
+    },
+  ],
+}
+
+let args = Args.parse(Sys.argv, SPEC)
+# Each way rendered by its module in a culebra of its own, which calls the
+# library beside this file.
+let render = lib.renderer(FS.join(
+  FS.dirname(FS.abspath(Sys.script)),
+  "listen_lib.cul",
+))
+let lines = try {
+  match args.subcommand {
+    "start" => lib.start(
+      {
+        name: args.name,
+        out: args.out,
+        songs: args.song,
+        sounds: args.sounds,
+        set: args.set,
+        from: args.from,
+        to: args.to,
+        same_gain: args["same-gain"],
+      },
+      render,
+    ),
+    "pick" => lib.pick({name: args.name, out: args.out, answer: args.answer}),
+    "next" => lib.next_round(
+      {
+        name: args.name,
+        out: args.out,
+        song: args.song,
+        sounds: args.sounds,
+        set: args.set,
+      },
+      render,
+    ),
+  }
+} catch e: String {
+  IO.eprintln("listen: {e}")
+  Sys.exit(2)
+}
+for line in lines {
+  println(line)
+}

@@ -12,6 +12,8 @@ program imports its `main.cul` and hands Kauai the module's `voices` (and
 |---|---|---|
 | [`sounds/soprano_sax`](sounds/soprano_sax) | `Sax` | a soprano saxophone played from real notes |
 
-`tools/` holds what works with them: [`tools/make_sounds.cul`](tools) makes
-every sound songs ask an instrument for beforehand, as files a program plays
-in its place.
+`tools/` holds what works with them: [`tools/listen.cul`](tools) renders a
+passage of a song two ways, heard as 1 and 2 at the same loudness, to keep
+the better of the two and try the next against it, and
+[`tools/make_sounds.cul`](tools) makes every sound songs ask an instrument
+for beforehand, as files a program plays in its place.
