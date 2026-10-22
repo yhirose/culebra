@@ -314,3 +314,14 @@ assert_eq(
 } with sf_ask(resume) { resume(nil) },
   "NameError",
 )
+
+// --- an effect fn read in an effect body is not a call to it ---------------
+// `f.name` is the same two-part postfix chain as `f(args)`, with a member in
+// place of the arguments, so a read of an effect fn there was taken for a
+// call and its value for the computation the call makes.
+effect fn en_ask()
+effect fn en_named() {
+  perform en_ask()
+  en_named.name
+}
+assert_eq(handle { en_named() } with en_ask(resume) { resume(nil) }, 'en_named')

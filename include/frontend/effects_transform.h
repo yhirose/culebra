@@ -332,9 +332,12 @@ class EffectsLowerer {
     using namespace peg::udl;
     // A plain `name(args)` call is a CALL with exactly two children: the
     // callee IDENTIFIER and its argument list (ARGUMENTS collapses to ARG_LIST
-    // after optimization). A method chain / indexed callee has more children.
+    // after optimization). A method chain / indexed callee has more children,
+    // and `name.member` / `name[i]` have the same two with another postfix,
+    // which reads the effect fn rather than calling it.
     if (n.tag != "CALL"_ || n.nodes.size() != 2) return false;
     if (n.nodes[0]->tag != "IDENTIFIER"_) return false;
+    if (n.nodes[1]->original_tag != "ARGUMENTS"_) return false;
     return effect_fns_.count(std::string(n.nodes[0]->token)) > 0;
   }
 
