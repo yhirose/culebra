@@ -1,0 +1,74 @@
+# What the Kauai tools share about the instrument module they are given:
+# where it is, a program that imports it, and its instruments made to call
+# through a function of the tool's own.
+
+# The module at `path`: a .cul file, or a folder and its main.cul, as for
+# `culebra play --sounds`; its absolute path, nil where there is none.
+fn module_at(path) {
+  let file = FS.is_dir(path) ? FS.join(path, "main.cul") : path
+  FS.exists(file) ? FS.abspath(file) : nil
+}
+
+# A program, in a file of its own, that imports instrument module `module`
+# (nil for none) as `sounds` and the tool's library `lib`, and calls
+# `lib.<name>(sounds, Sys.argv[0])`: an import names its module when the
+# program is written. Answers the command that runs it with `arg`, and the
+# file, for the caller to remove. On the VM: an instrument that makes its
+# sounds slowly is a large program, and the JIT would spend longer compiling
+# it than the VM takes to run it.
+fn program(module, lib, name, arg) {
+  for path in [module, lib] {
+    if path != nil && path.contains("'") {
+      throw "a path with a ' in it cannot be imported: {path}"
+    }
+  }
+  let sounds = module == nil
+    ? "let sounds = \{}\n"
+    : "import sounds from '{module}'\n"
+  let entry = FS.join(FS.temp_dir(), "kauai-tool-{UUID.v4()}.cul")
+  FS.write(
+    entry,
+    "{sounds}import lib from '{lib}'\nlib.{name}(sounds, Sys.argv[0])\n",
+  )
+  {cmd: [Sys.executable, "--vm", entry, arg], entry: entry}
+}
+
+# Instrument `f` of a module (a drum when `drum`) made to hand each sound
+# Kauai asks it for to `through(args, make)`: `args` is what Kauai handed it,
+# [params], [pitch, params], [n, params] or [notes, params] by how it is
+# given (a function, or an object with `hit` or `phrase`), and `make(args)`
+# the instrument's sound for those.
+fn calls_through(f, drum, through) {
+  let function = type_of(f) == "Function"
+  cond {
+    function && drum => |params| through([params], |a| f(a[0])),
+    function => |pitch, params| through([pitch, params], |a| f(a[0], a[1])),
+    drum => {
+      ...f,
+      hit: |n, params| through([n, params], |a| f.hit(a[0], a[1])),
+    },
+    _ => {
+      ...f,
+      phrase: |notes, params| through(
+        [notes, params],
+        |a| f.phrase(a[0], a[1]),
+      ),
+    },
+  }
+}
+
+# The `voices` and `drums` of module `sounds`, each instrument as
+# `wrap(kind, name, f)` makes it. Built by subscript, which reads and writes
+# an Object's own entries only (an instrument's name may be an Object
+# method's, `keys` say).
+fn instruments(sounds, wrap) {
+  let out = {voices: {}, drums: {}}
+  for kind, table in {voices: sounds.voices, drums: sounds.drums} {
+    for name, f in table ?? {} {
+      out[kind][name] = wrap(kind, name, f)
+    }
+  }
+  out
+}
+
+export {module_at, program, calls_through, instruments}

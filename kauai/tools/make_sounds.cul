@@ -9,6 +9,8 @@
 # `culebra play --sounds`. An import names its module when the program is
 # written, so this writes a program that imports the one given and runs it.
 
+import instrument from './instrument_lib.cul'
+
 let SPEC = {
   name: 'make_sounds.cul',
   args: [
@@ -73,11 +75,9 @@ for need in ['sounds', 'out'] {
 }
 
 let absolute = |p| FS.abspath(p)
-let module = FS.is_dir(args.sounds)
-  ? FS.join(args.sounds, "main.cul")
-  : args.sounds
-if !FS.exists(module) {
-  IO.eprintln("make_sounds: no instrument module {module}")
+let module = instrument.module_at(args.sounds)
+if module == nil {
+  IO.eprintln("make_sounds: no instrument module at {args.sounds}")
   Sys.exit(2)
 }
 let use = args.use.map(fn (u) {
@@ -99,25 +99,20 @@ let opts = {
 # The program: the module and this tool's library imported, and the call,
 # as JSON, its argument.
 let lib = FS.join(FS.dirname(absolute(Sys.script)), "make_sounds_lib.cul")
-for path in [absolute(module), lib] {
-  if path.contains("'") {
-    IO.eprintln("make_sounds: a path with a ' in it cannot be imported: {path}")
-    Sys.exit(2)
-  }
-}
-let program = "import sounds from '{absolute(module)}'\nimport lib from '{lib}'\nlib.run(sounds, Sys.argv[0])\n"
 let call = JSON.stringify({
   songs: args.songs.map(absolute),
   out: absolute(args.out),
   opts: opts,
 })
+let run = try {
+  instrument.program(module, lib, "run", call)
+} catch e: String {
+  IO.eprintln("make_sounds: {e}")
+  Sys.exit(2)
+}
 FS.mkdir(args.out) if !FS.exists(args.out)
-let entry = FS.join(FS.temp_dir(), "kauai-make-sounds-{UUID.v4()}.cul")
-FS.write(entry, program)
-# On the VM: an instrument that makes its sounds slowly is a large program,
-# and the JIT would spend longer compiling it than the VM takes to run it.
-let r = Proc.run([Sys.executable, "--vm", entry, call])
-FS.remove(entry)
+let r = Proc.run(run.cmd)
+FS.remove(run.entry)
 IO.print(r.stdout)
 IO.eprint(r.stderr)
 Sys.exit(r.code)

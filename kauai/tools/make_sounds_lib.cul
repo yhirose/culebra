@@ -17,6 +17,8 @@
 # MP3 on none. That sound is kept as the WAV it is, so the songs play their
 # made sounds as loud as the instrument's own.
 
+import instrument from './instrument_lib.cul'
+
 # What a sound's bytes are, by their first ones.
 let kind_of = fn (bytes) {
   cond {
@@ -144,33 +146,15 @@ fn make(songs, sounds, out, opts = {}) {
       call: call,
       sounds: {},
     }
-    cond {
-      call == nil && drum => |params| keep(id, [params], || f(params)),
-      call ==
-        nil => |pitch, params| keep(id, [pitch, params], || f(pitch, params)),
-      drum => {
-        ...f,
-        hit: |n, params| keep(id, [n, params], || f.hit(n, params)),
-      },
-      _ => {
-        ...f,
-        phrase: |notes, params| keep(
-          id,
-          [notes, params],
-          || f.phrase(notes, params),
-        ),
-      },
-    }
+    instrument.calls_through(
+      f,
+      drum,
+      |args, make| keep(id, args, || make(args)),
+    )
   }
-  let wrapped = fn (kind, table) {
-    let out_table = {}
-    for ins, f in table ?? {} {
-      out_table[ins] = wrap(kind, ins, f)
-    }
-    out_table
-  }
-  let voices = wrapped("voices", sounds.voices)
-  let drums = wrapped("drums", sounds.drums)
+  let wrapped = instrument.instruments(sounds, wrap)
+  let voices = wrapped.voices
+  let drums = wrapped.drums
   for path in songs {
     let disk = Dir.disk(FS.dirname(path))
     let file = |n| use.get(n, n)
