@@ -100,6 +100,11 @@ fn line_of(thunk) {
 let lines = [line_of(|| LLM.ask("hi", model: "m", api_key: "")), line_of(|| [][1])]
 assert_eq(lines[0], lines[1])
 
+# --- LLM is a namespace, as Time and Log are ---------------------------------------
+
+# A member it does not have is an error, not nil.
+assert_eq(failure(|| LLM.asks), "AttributeError: namespace 'LLM' has no member 'asks'")
+
 # --- a transport failure is the transport's ----------------------------------------
 
 # Nothing listens on port 1. The failure is the connection's, which also says

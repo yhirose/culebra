@@ -132,7 +132,7 @@ inline bool is_object_builtin_method_name(std::string_view name) {
 inline const char* lazy_namespace_static_name(std::string_view name) {
   static constexpr const char* kNames[] = {"Time",  "Term", "Canvas",  "Audio",
                                            "Args",  "Regex", "PEG",    "FST",
-                                           "Log",   "Desktop", "Dir",
+                                           "Log",   "LLM",   "Desktop", "Dir",
                                            "__Eff"};
   for (const char* n : kNames)
     if (name == n) return n;
