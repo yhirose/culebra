@@ -106,6 +106,20 @@ effect fn e() { let __unbound = 1
 perform ask()
 __unbound }
 handle { e() } with ask(resume) { resume(1) }' "SyntaxError: '__unbound' is a reserved name and cannot be declared at 2:21."
+# A call in an effect fn's body that no overload takes names the effect fn,
+# through `fn` as by its name, not the lowering's maker of its computation.
+check_eq "effect fn arity by fn" 'effect fn ask()
+effect fn e(k) {
+  perform ask()
+  fn(1, 2)
+}
+handle { e(0) } with ask(resume) { resume(nil) }' "DispatchError: no matching method for \`e\` at 4:3."
+check_eq "effect fn arity by name" 'effect fn ask()
+effect fn e(k) {
+  perform ask()
+  e(1, 2)
+}
+handle { e(0) } with ask(resume) { resume(nil) }' "DispatchError: no matching method for \`e\` at 4:3."
 # `fn` is every function's, so nothing declares it: not a pattern, a loop's
 # or a catch's variable, a match arm, nor a parameter, a pattern one included.
 check_eq "fn for var"      'for fn in [1] { 1 }' "SyntaxError: 'fn' is a reserved name and cannot be declared at 1:5."

@@ -2772,7 +2772,8 @@ struct Chunk {
   // Source name of an overload body (`fn name`, a class member, `new`), read
   // by MultifnReg: it is the user-facing half of the registry key, so a
   // DispatchError names the declaration rather than the internal id. It is
-  // also what `f.name` reports, so a plain `fn f` carries it too.
+  // also what `f.name` reports, so a plain `fn f` carries it too. An effect
+  // fn's maker carries the effect fn's name (FuncInfo::fn_from).
   std::string multifn_name;
   // What `f.params[i].mut` and `f.return_type` report, parallel to
   // param_names for the first (a declared type is param_types').
@@ -7745,7 +7746,9 @@ class Compiler {
     }
     int32_t idx = compile_fn_chunk(ast, ast.nodes[1].get(),
                                    *ast.nodes.back(), mo);
-    prog_.chunks[idx].multifn_name = name;
+    // An effect fn's maker is named as the effect fn (Chunk::multifn_name).
+    const auto& fn_from = analysis_.func_info.at(&ast).fn_from;
+    prog_.chunks[idx].multifn_name = fn_from.empty() ? name : fn_from;
     int32_t cls = alloc_temp(ast);
     emit(Op::MakeClosure, cls, idx);
     if (!b || !b->is_cell)
