@@ -1,8 +1,8 @@
 # What a recording of one instrument plays, measured to make the instrument
-# from: its pitch and loudness every 10 ms, and the notes read from them,
-# each with how it starts and how it ends (after a rest, with the tongue, or
-# legato from the note before). measure.cul writes it for each recording;
-# README.md says more.
+# from: its pitch, loudness, harmonics and breath every 10 ms, and the notes
+# read from them, each with how it starts and how it ends (after a rest,
+# with the tongue, or legato from the note before). measure.cul writes it
+# for each recording; README.md says more.
 
 let STEP = 0.01  # seconds a frame
 let S = {
@@ -13,6 +13,16 @@ let S = {
   short: 8,            # frames: a note shorter than this joins the one beside it
   short_semitones: 2,  #   within this many semitones, as its scoop or fall
   dip: 6.0,            # dB a note's level falls where it is played again
+  harmonics: 40,       # harmonics measured a frame
+  # Hz: the bands the breath is measured in, each the power of what is left
+  # without the harmonics against the harmonics' own
+  breath_bands: [
+    [500, 1000],
+    [1000, 2000],
+    [2000, 4000],
+    [4000, 8000],
+    [8000, 16000],
+  ],
 }
 
 let median = |xs| xs.sorted()[xs.size() / 2]
@@ -319,12 +329,44 @@ fn described(v, q, db, reference, onset) {
   }
 }
 
+let sum_squares = |xs| xs.map(|v| v * v).sum()
+
+# The breath of each frame with a pitch in `f0` (nil where none): for each
+# of the breath bands, the power there of `rest` (the samples without their
+# harmonics) against the power of the harmonics, in dB, both through a Hann
+# window of the power of 2 samples nearest 46 ms about the frame's middle.
+fn breath(xs, rest, f0, rate) {
+  let size = 2 ** Math.round(Math.log(0.0464 * rate) / Math.log(2.0))
+  let pad = repeat(size / 2, 0.0)
+  let left = pad + rest + pad
+  let tone = pad + Audio.mix([xs, {samples: rest, gain: -1.0}]) + pad
+  # Each band's bins, those whose frequency (k * rate / size) is in it.
+  let bins = S.breath_bands.map(|b| (
+    Math.ceil(b[0] * size / to_float(rate)),
+    Math.ceil(b[1] * size / to_float(rate)),
+  ))
+  let at = |ys, c| Audio.spectrum(
+    ys.slice(c, c + size),
+    size: size,
+    hop: size,
+  )[0]
+  iota(f0.size()).map(fn (t) {
+    return nil if f0[t] == nil
+    let c = Math.round(t * rate / 100.0)
+    let ls = at(left, c)
+    let whole = Math.max(sum_squares(at(tone, c)), 1e-20)
+    bins.map(|(a, b)| db_of(sum_squares(ls.slice(a, b)) / whole))
+  })
+}
+
 # A recording's samples `xs` (`rate` a second), its pitch searched from `low`
-# to `high` Hz, measured: {hz, db, notes, tuning, reference}. Frame t is t *
-# 10 ms: hz[t] its pitch as the notes are read (nil where none) and db[t] its
-# loudness, the mean square over 10 ms in dBFS. tuning is in cents from A =
-# 440 Hz, and reference the dBFS the notes' levels are counted from: the
-# loudest 5% of the frames with a pitch.
+# to `high` Hz, measured: {hz, db, harmonics, breath, notes, tuning,
+# reference}. Frame t is t * 10 ms: hz[t] its pitch as the notes are read
+# (nil where none), db[t] its loudness, the mean square over 10 ms in dBFS,
+# harmonics[t] its harmonics' amplitudes (as Audio.harmonics reads them along
+# the pitch, nil where none) and breath[t] its breath in each band. tuning is
+# in cents from A = 440 Hz, and reference the dBFS the notes' levels are
+# counted from: the loudest 5% of the frames with a pitch.
 fn measure(xs, rate, low, high) {
   let read = Audio.pitch(xs, low, high, rate)
   let sum = squares(xs)
@@ -335,6 +377,10 @@ fn measure(xs, rate, low, high) {
   })
   let tidy = tidied(read.hz, db)
   let hz = tidy.hz
+  # The harmonics are read along the pitch as read, where the notes have
+  # one, and through a stop of the tongue along the pitch held across it.
+  let along = iota(hz.size()).map(|t| hz[t] == nil ? nil : read.hz[t] ?? hz[t])
+  let h = Audio.harmonics(xs, along, S.harmonics, rate)
   let w = transcribe(hz, tidy.stops)
   let pitched = iota(hz.size()).filter(|t| hz[t] != nil).map(|t| db[t]).sorted()
   let reference = pitched.empty() ? 0.0 : pitched[pitched.size() * 95 / 100]
@@ -359,25 +405,39 @@ fn measure(xs, rate, low, high) {
   {
     hz: hz,
     db: db,
+    harmonics: h.harmonics,
+    breath: breath(xs, h.rest, along, rate),
     notes: written,
     tuning: round_to(100.0 * w.tuning, 2),
     reference: round_to(reference, 2),
   }
 }
 
+# The columns a frame is written as: its pitch and loudness, its harmonics'
+# amplitudes and its breath in each band.
+let COLUMNS = [
+  "hz",
+  "db",
+  ...iota(1, S.harmonics + 1).map(|k| "h{k}"),
+  ...iota(1, S.breath_bands.size() + 1).map(|b| "b{b}"),
+]
+
 # `m` written into folder `dir` as NAME.json and NAME.f32: the JSON holds
 # `about` (where the recording came from and its rate and length), the
 # settings, the tuning and reference, how the frames are laid out, and the
-# notes one a line; the f32 the frames' numbers, each frame's hz (0 where
-# none) and db, as little-endian 32-bit floats.
+# notes one a line; the f32 the frames' numbers, as little-endian 32-bit
+# floats: each frame's COLUMNS, those after db all 0 where hz is 0 (no pitch).
 fn write(m, dir, name, about, low, high) {
   FS.mkdir(dir)
   let data = "{name}.f32"
+  let none = repeat(COLUMNS.size() - 2, 0.0)
   FS.write(
     FS.join(dir, data),
     String.pack(
       "f32",
-      iota(m.hz.size()).flat_map(|t| [m.hz[t] ?? 0.0, m.db[t]]),
+      iota(m.hz.size()).flat_map(|t| m.hz[t] == nil
+        ? [0.0, m.db[t], ...none]
+        : [m.hz[t], m.db[t], ...m.harmonics[t], ...m.breath[t]]),
     ),
   )
   let head = JSON.stringify({
@@ -385,7 +445,7 @@ fn write(m, dir, name, about, low, high) {
     settings: {low: low, high: high, ...S},
     tuning: m.tuning,
     reference: m.reference,
-    frames: {count: m.hz.size(), step: STEP, columns: ["hz", "db"], file: data},
+    frames: {count: m.hz.size(), step: STEP, columns: COLUMNS, file: data},
   })
   let notes = m.notes.map(|v| JSON.stringify(v)).join(",\n")
   FS.write(
@@ -394,4 +454,4 @@ fn write(m, dir, name, about, low, high) {
   )
 }
 
-export {STEP, S, measure, write}
+export {STEP, S, measure, breath, write}

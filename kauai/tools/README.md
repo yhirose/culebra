@@ -109,8 +109,8 @@ where it plays, is `song.external_sounds()`.
 ## measure.cul: what a recording plays, measured
 
 `measure.cul` measures recordings of one instrument, as an instrument is
-made from them: each one's pitch and loudness every 10 ms, and the notes
-read from them, each with how it starts and how it ends.
+made from them: each one's pitch, loudness, harmonics and breath every 10
+ms, and the notes read from them, each with how it starts and how it ends.
 
 ```sh
 culebra kauai/tools/measure.cul --low 200 --high 1400 \
@@ -158,10 +158,22 @@ file}`), and the `notes`, one a line:
 | `vib` | its vibrato's depth in cents, over the part 180 ms in from either end (0 for a note under 360 ms) |
 | `onset` | when a note entered after a rest or with the tongue starts to sound: from the quietest 2 ms within 120 ms before its first frame and 40 ms after, the first moment its level (over 2 ms) comes within 10 dB of its steady level. `null` for a legato note, one under 150 ms, and one that does not rise 6 dB |
 
+The harmonics are `Audio.harmonics`' along the pitch where the notes have
+one: the pitch as `Audio.pitch` read it, and across a stop of the tongue,
+where it read none, the pitch held across it. The breath is what is left
+without them (`Audio.harmonics`' `rest`): in each of five octave bands from
+500 Hz to 16 kHz, its power against the harmonics' own, in dB, both through
+a Hann window of 2048 samples (46 ms at 44100) about the frame. So the
+noise right at a harmonic's frequency counts as the harmonic: band noise
+reads about 1 dB under its power against the tone.
+
 NAME.f32 is each frame's numbers, little-endian 32-bit floats, frame after
-frame: `hz`, the pitch the notes are read from (0 where none), and `db`,
-the loudness over the 10 ms about it in dBFS (-120 for silence). Frame `t`
-is `t * 10 ms`. A 192 s recording takes about 3 s.
+frame, in the order `frames.columns` names them: `hz`, the pitch the notes
+are read from (0 where none); `db`, the loudness over the 10 ms about it in
+dBFS (-120 for silence); `h1` to `h40`, the harmonics' amplitudes, as
+`Audio.partials` takes them; and `b1` to `b5`, the breath in each band
+(`settings.breath_bands`). Where `hz` is 0 the harmonics and the breath are
+0 too. Frame `t` is `t * 10 ms`. A 192 s recording takes about 8 s.
 
 ## make_sounds.cul: an instrument's sounds made beforehand
 

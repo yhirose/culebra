@@ -5,6 +5,27 @@ let RATE = 44100
 let hz = |semi| 440.0 * 2.0 ** ((semi + 0.1 - 69.0) / 12.0)  # 10 cents sharp
 let REED = [0.3, 0.45, 0.25, 0.2, 0.15, 0.1, 0.08, 0.05]
 
+# Frame t of `xs` through a Hann window of 2048 samples about it, as the
+# breath is read: its bins' magnitudes.
+fn frames_of(xs) {
+  let pad = repeat(1024, 0.0)
+  let padded = pad + xs + pad
+  let at = |c| Audio.spectrum(padded.slice(c, c + 2048), size: 2048, hop: 2048)
+  |t| at(Math.round(t * RATE / 100.0))[0]
+}
+
+# The power of frame `y` in breath band b against the whole power of frame
+# `tone`, in dB: the band's bins are those whose frequency is in it.
+fn band_db(y, tone, b) {
+  let (lo, hi) = (lib.S.breath_bands[b][0], lib.S.breath_bands[b][1])
+  let inside = fn (k) {
+    let hz = k * RATE / 2048.0
+    hz >= lo && hz < hi
+  }
+  let band = iota(1025).filter(inside).map(|k| y[k] * y[k]).sum()
+  10.0 * Math.log(band / tone.map(|v| v * v).sum()) / Math.log(10.0)
+}
+
 # A performance whose notes are known, 4.6 s, every note at a quarter of
 # full scale but F5 at a half:
 #   A4 from a rest, rising over 30 ms; a slur to C5 (a glide of 30 ms, as a
@@ -121,6 +142,62 @@ fn a_performance_is_written_down_as_its_notes() {
   ].all(|k| Math.abs(onsets[k] - [0.0, 0.0, 1.0316, 1.7, 0.0, 2.6, 3.9][k]) <=
     0.003))
   assert_true(onsets[4] > 2.04 && onsets[4] < 2.08)
+  # The harmonics are read along the pitch: A4's and the F5's, through its
+  # vibrato, as they were made, within 0.05 dB; with no noise in the tone,
+  # what is left of them is 50 dB under them in every band. A frame without
+  # a pitch has neither.
+  let off = |ts, g| ts
+    .map(|t| iota(8)
+      .map(|k| Math.abs(20.0 *
+        Math.log(m.harmonics[t][k] / (g * REED[k])) /
+        Math.log(10.0)))
+      .max())
+    .max()
+  assert_true(off(iota(30, 56), 0.25) < 0.05 && off(iota(280, 341), 0.5) < 0.05)
+  assert_true([
+    ...iota(30, 56),
+    ...iota(280, 341),
+  ].all(|t| m.breath[t].max() < -50.0))
+  assert_true(iota(460).all(|t| (m.hz[t] == nil) == (m.harmonics[t] == nil) &&
+    (m.hz[t] == nil) == (m.breath[t] == nil)))
+}
+
+@test
+fn the_breath_is_what_is_left_without_the_harmonics_against_them() {
+  # A4 at a quarter of full scale, with band noise from 4 to 8 kHz.
+  let reed = [(0.0, REED.map(|a| a * 0.25))]
+  let tone = Audio.partials(1.2, [(0.0, 440.0)], reed)
+  let noise = {low: 4000, high: 8000, steady: [(0.0, 0.1)]}
+  let hiss = Audio.partials(1.2, [(0.0, 440.0)], [(0.0, [0.0])], noise: noise)
+  let m = lib.measure(Audio.mix([tone, hiss]), RATE, 200, 1400)
+  # Each band's breath is the noise's power there against the tone's, through
+  # the same window, up to 1.5 dB under it: the noise within each of the 40
+  # harmonics' windows is read as the harmonic's own.
+  let (of_hiss, of_tone) = (frames_of(hiss), frames_of(tone))
+  let median = |xs| xs.sorted()[xs.size() / 2]
+  let mid = iota(20, 100)
+  for b in 0..5 {
+    let truth = median(mid.map(|t| band_db(of_hiss(t), of_tone(t), b)))
+    let read = median(mid.map(|t| m.breath[t][b])) - truth
+    assert_true(read <= 0.5 && read > -1.5)
+  }
+}
+
+@test
+fn a_band_holds_the_bins_whose_frequency_is_in_it() {
+  # What is left is a sine at the frequency of the bin just under 500 Hz (23
+  # of 2048 at 44100, 495 Hz), beside a tone at 2 kHz: the first band holds
+  # its neighbour above it (6 dB down), not that bin.
+  let f = 23 * RATE / 2048.0
+  let rest = iota(8820).map(|i| 0.1 * Math.sin(2.0 * Math.pi * f * i / RATE))
+  let tone = iota(8820).map(|i| 0.5 *
+    Math.sin(2.0 * Math.pi * 2000.0 * i / RATE))
+  let read = lib.breath(Audio.mix([tone, rest]), rest, repeat(20, 2000.0), RATE)
+  let (of_rest, of_tone) = (frames_of(rest), frames_of(tone))
+  assert_true(iota(
+    5,
+    15,
+  ).all(|t| Math.abs(read[t][0] - band_db(of_rest(t), of_tone(t), 0)) < 0.01))
 }
 
 @test
@@ -164,25 +241,44 @@ fn the_command_writes_the_frames_and_the_notes_of_each_recording() {
       RATE,
       200.0,
       1400.0,
-      {count: 460, step: 0.01, columns: ["hz", "db"], file: "take 1.f32"},
+      {
+        count: 460,
+        step: 0.01,
+        columns: [
+          "hz",
+          "db",
+          ...iota(1, 41).map(|k| "h{k}"),
+          "b1",
+          "b2",
+          "b3",
+          "b4",
+          "b5",
+        ],
+        file: "take 1.f32",
+      },
     ],
   )
   assert_eq(json.notes.size(), 7)
-  # Each frame's pitch (0 where none) and loudness (the mean square of the
-  # 10 ms about it, in dBFS; -120 for silence), as 32-bit floats.
+  # Each frame's pitch (0 where none), loudness (the mean square of the 10
+  # ms about it, in dBFS; -120 for silence), 40 harmonics' amplitudes and
+  # breath in 5 bands, as 32-bit floats; all 0 after the loudness where
+  # there is no pitch.
   let frames = String.unpack(
     "f32",
     FS.read(FS.join(dir, "measured", "take 1.f32")),
   )
-  assert_eq(frames.size(), 2 * 460)
+  let row = |t| frames.slice(47 * t, 47 * (t + 1))
+  assert_eq(frames.size(), 47 * 460)
   let wav = Audio.decode(FS.read(FS.join(dir, "take 1.wav"))).channels[0]
   let around = wav.slice(40 * 441 - 220, 40 * 441 + 221)
   let db = 10.0 * Math.log(around.map(|v| v * v).sum() / 441) / Math.log(10.0)
-  assert_eq(
-    (frames[2 * 10], frames[2 * 40] > 400.0, frames[2 * 10 + 1]),
-    (0.0, true, -120.0),
-  )
-  assert_true(Math.abs(frames[2 * 40 + 1] - db) < 0.001)
+  assert_eq((row(10)[0], row(40)[0] > 400.0, row(10)[1]), (0.0, true, -120.0))
+  assert_true(Math.abs(row(40)[1] - db) < 0.001)
+  assert_true(row(10).slice(2, 47).all(|v| v == 0.0))
+  assert_true(iota(8).all(|k| Math.abs(row(40)[2 + k] / (0.25 * REED[k]) -
+    1.0) <
+    0.01) &&
+    row(40).slice(42, 47).all(|v| v < -50.0))
   # It names what it could not do.
   let bad = Proc.run(
     [

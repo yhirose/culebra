@@ -1,7 +1,8 @@
 # What recordings of one instrument play, measured to make the instrument
-# from: for each, its pitch and loudness every 10 ms and the notes read from
-# them, written as NAME.json and NAME.f32 into a folder (NAME the
-# recording's file name without its extension). README.md says more.
+# from: for each, its pitch, loudness, harmonics and breath every 10 ms and
+# the notes read from them, written as NAME.json and NAME.f32 into a folder
+# (NAME the recording's file name without its extension). README.md says
+# more.
 #
 #   culebra kauai/tools/measure.cul --low 200 --high 1400 \
 #     --out work/measured work/sources/*.wav
@@ -13,7 +14,7 @@ import lib from './measure_lib.cul'
 
 let SPEC = {
   name: 'measure.cul',
-  doc: "what recordings of one instrument play: pitch, loudness and notes",
+  doc: "what recordings of one instrument play: pitch, loudness, harmonics, breath and notes",
   args: [
     {
       name: 'low',

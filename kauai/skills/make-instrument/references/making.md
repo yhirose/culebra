@@ -17,7 +17,17 @@ a pitch reading easily takes for a note at a fraction of the pitch: check
 the highest notes of a new instrument against the spectrum
 (`Audio.spectrum`), the pitch read the lowest of its strong peaks.
 
-To be written: its harmonics' shape and the breath between them.
+It also reads each frame's 40 harmonics along the pitch
+(`Audio.harmonics`) and the breath, what is left without them, in five
+octave bands from 500 Hz, against the harmonics' power: the soprano's notes
+hold the same numbers, measured the same way. The harmonics are read with
+the pitch moving across each 20 ms window as it moves between frames;
+held, a vibrato of 30 cents leaves its own harmonics in the rest 30 dB
+under them, about as loud as a saxophone's breath (in the soprano's
+recordings, whose breath is louder, it read the vibrato notes' lowest band
+about 1 dB high). The soprano keeps each harmonic's level as its log averaged over 150
+ms, scaled to unit power: a weak harmonic's level wavers from frame to
+frame, and that average sits a dB or so under the frames' median.
 
 ## Playing from recorded notes
 
