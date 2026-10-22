@@ -88,6 +88,21 @@ let e4 = try {
   e
 }
 assert_true(e4.kind == 'ValueError' && e4.message == "Shared.new: {deep_msg}")
+# What a child throws goes back as what it returns does, so a value too deep
+# for that fails the join; it used to end the process from the child's thread.
+let e5 = try {
+  Isolate.spawn(fn () {
+    mut v = [1]
+    for i in 0..1000 {
+      v = [v]
+    }
+    throw v
+  }).join()
+  nil
+} catch e {
+  e
+}
+assert_true(e5.kind == 'ValueError' && e5.message == deep_msg)
 
 # a deep chain of sendable closures nests through captures, not
 # containers; the serializer counts those levels too.

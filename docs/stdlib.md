@@ -2648,8 +2648,10 @@ after `drop()`), has no fields, and is not Sendable.
 
 ### Sendable: what can cross the boundary
 
-The closure and its arguments — and the value it returns — must be **Sendable**.
-A violation throws `SendError` at the `spawn` site (never a silent copy):
+The closure and its arguments — and the value it returns or throws — must be
+**Sendable**. A violation throws `SendError` (never a silent copy): at the
+`spawn` site for the closure and its arguments, and from `join()` for what the
+closure returns or throws:
 
 | Sendable | Not Sendable |
 |---|---|
