@@ -95,3 +95,7 @@ examples/games/retro-run/assets-*/
 
 # `culebra build`ing the example in place, as its README shows
 examples/games/retro-run/retro-run
+
+# An instrument's work in progress: its recordings, measurements, test songs and
+# listening files (kauai/skills/make-instrument)
+kauai/sounds/*/work/

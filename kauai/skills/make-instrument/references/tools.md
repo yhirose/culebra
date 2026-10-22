@@ -1,0 +1,82 @@
+# The tools, as this work uses them
+
+`culebra docs -g '<name>'` prints the reference for a Culebra name; look a
+signature up there rather than guessing it. Each tool below has its own
+README section (`kauai/tools/README.md`) with every option.
+
+## Rendering a song or a passage
+
+```sh
+culebra play --sounds kauai/sounds/alto_sax --wav out.wav song.kau
+culebra play --sounds kauai/sounds/alto_sax --wav part.wav --from Theme --to Bridge song.kau
+```
+
+`--from` and `--to` are a mark's name, seconds (`83.5`), or minutes and
+seconds (`1:23.5`). A part starts a second before `--from`, rising from
+silence over it, and runs until what started before `--to` has rung out;
+from `--from` on it is sample for sample the whole song's. Only the
+external sounds the part plays are made, so a passage renders much faster
+than the song.
+
+From a program, `song.render(from:, to:)` gives the samples, `song.marks()`
+where each mark is, `song.seconds(at)` a point in seconds, and
+`song.external_sounds(from:, to:)` what each instrument is asked for in
+the passage and where it plays.
+
+## Checking before listening
+
+```sh
+culebra kauai/tools/check.cul --sounds kauai/sounds/alto_sax --from Theme song.kau
+```
+
+Each external sound is checked against its notes: pitch off the score,
+dropouts, dips that come back up, abrupt starts and ends, clicks that are
+not the wave's own steep edges, clipping. The mix is checked for clipping
+and silence where notes sound. A sound heard in several places is one line.
+Small edges and steps (a few percent of a sound's peak) are counted on one
+line; `--all` lists them. The exit status is 1 when something that is not
+small is found, so a script can stop on it. `--json FILE` gives every
+place, for comparing two versions' findings.
+
+The finished soprano saxophone, over a minute of an upbeat test song, gives
+one finding (a sharp swing inside a recorded attack, which may be the
+tongue itself) and a few dozen small edges and steps: that is the level to
+expect from an instrument the person is happy with, not zero.
+
+## Listening blind
+
+```sh
+culebra kauai/tools/listen.cul start NAME --out work/listen --song S --from A --to B \
+  --sounds before.cul --sounds after.cul     # two modules
+culebra kauai/tools/listen.cul start NAME --out work/listen --song S \
+  --sounds pkg --set breath=0.5               # a parameter set on the new one
+culebra kauai/tools/listen.cul pick NAME 1    # or 2, or same
+culebra kauai/tools/listen.cul next NAME --out work/listen --set breath=0.8
+```
+
+`references/listening.md` says how to use it with the person.
+
+## Making the sounds beforehand
+
+```sh
+culebra kauai/tools/make_sounds.cul --sounds kauai/sounds/alto_sax --out made song.kau
+```
+
+For a program (a game) that cannot wait while a slow instrument makes its
+phrases, and for the browser, where only the program's own folder is
+served. It keeps the sound Kauai weighs the instrument by, so the made
+sounds play as loud as the instrument's own.
+
+## Measuring in Culebra
+
+| Function | Gives |
+|---|---|
+| `Audio.decode(bytes)` | a recording's samples as recorded: `{rate, channels}` |
+| `Audio.resample(xs, from, to)` | the samples at another rate, band-limited |
+| `Audio.spectrum(xs, size:, hop:)` | the magnitudes frame by frame (an STFT) |
+| `Audio.loudness(xs, rate)` | the loudest 400 ms (BS.1770 momentary), the measure Kauai weighs an instrument by |
+| `Audio.integrated_loudness(xs, rate)` | the whole, gated (BS.1770 integrated) |
+
+Measuring pitch, harmonics, breath, and where notes start in a recording
+is still to be written in Culebra (the soprano's was measured with Python
+first); `references/making.md` keeps what is known about it.

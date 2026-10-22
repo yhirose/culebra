@@ -20,3 +20,8 @@ dropouts, abrupt ends, clipping, silence),
 against it, and
 [`tools/make_sounds.cul`](tools) makes every sound songs ask an instrument
 for beforehand, as files a program plays in its place.
+
+`skills/` holds skills for Claude Code:
+[`skills/make-instrument`](skills/make-instrument) is how a new instrument is
+made with these tools, from royalty-free recordings, with the person who
+will play it listening.
