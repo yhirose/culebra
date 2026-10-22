@@ -23,7 +23,8 @@ both ways'; given twice, the first is the one before and the second the
 new one. `--set NAME=VALUE` is the new one's: every instrument of its
 module plays with the parameter at that value, whatever the song's band
 line and directions set it to. `--from` and `--to` choose the passage, each
-a mark's name or seconds, as `song.render(from:, to:)` takes them.
+a mark's name, seconds, or minutes and seconds (`1:23.5`), as
+`culebra play --from` and `song.render(from:, to:)` take them.
 
 | Command | What it does |
 |---|---|

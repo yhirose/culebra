@@ -31,21 +31,9 @@ fn with_set(args, set) {
   })
 }
 
-# Where `at` is in `song`, in seconds: a mark's name or seconds, as
-# render() takes it; nil for none.
-fn seconds_at(song, path, at) {
-  return at if at == nil || type_of(at) != "String"
-  let marks = song.marks()
-  if !marks.has(at) {
-    let has = marks.empty() ? "none" : marks.keys().join(", ")
-    throw "{path} has no mark {at} (it has {has})"
-  }
-  marks[at]
-}
-
-# The passage of way `w`'s song from `from` to `to`, played by the
-# instruments of module `sounds` told `w.set` over the song's parameters:
-# {samples, lead}.
+# The passage of way `w`'s song from `from` to `to` (each a point as
+# render() takes one, or nil), played by the instruments of module `sounds`
+# told `w.set` over the song's parameters: {samples, lead}.
 fn passage(sounds, w, from, to) {
   let made = instrument.instruments(
     sounds,
@@ -58,11 +46,10 @@ fn passage(sounds, w, from, to) {
       ),
   )
   let song = Audio.Kauai.load(w.song, voices: made.voices, drums: made.drums)
-  let at = seconds_at(song, w.song, from)
-  seconds_at(song, w.song, to)
+  let samples = song.render(from: from, to: to)
   {
-    samples: song.render(from: from, to: to),
-    lead: at == nil ? 0 : Math.round(Math.min(1.0, at) * RATE),
+    samples: samples,
+    lead: from == nil ? 0 : Math.round(Math.min(1.0, song.seconds(from)) * RATE),
   }
 }
 
@@ -238,8 +225,8 @@ fn write_round(o, files, record, n, held, fresh, ways) {
 # same_gain}. `songs` and `sounds` hold one path (both ways') or two (the
 # one before's and the new one's), `sounds` none for a song without
 # external sounds; `set` the NAME=VALUE words of the new one; `from` and
-# `to` a mark's name or seconds, or nil. `render` (a renderer()) makes the
-# passages.
+# `to` points as render() takes them (a mark's name, seconds, or minutes and
+# seconds, 1:23.5), or nil. `render` (a renderer()) makes the passages.
 fn start(o, render) {
   let files = files_of(o)
   if FS.exists(files.record) {
@@ -254,12 +241,8 @@ fn start(o, render) {
   if same_way(held, fresh) {
     throw "the two ways are the same: give --song or --sounds twice, or --set"
   }
-  let at = |s| s == nil || !"0123456789".contains(s.slice(0, 1).to_string())
-    ? s
-    : to_float(s)
-  let (from, to) = (at(o.from), at(o.to))
-  let made = render([held, fresh], from, to)
-  let record = {from: from, to: to, same_gain: o.same_gain, lead: made[0].lead}
+  let made = render([held, fresh], o.from, o.to)
+  let record = {from: o.from, to: o.to, same_gain: o.same_gain, lead: made[0].lead}
   let r = write_round(
     o,
     files,

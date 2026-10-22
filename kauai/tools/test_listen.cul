@@ -214,7 +214,7 @@ fn the_command_renders_each_way_with_its_module_in_a_culebra_of_its_own() {
     "--set",
     "top=1",
     "--from",
-    "Second",
+    "0:02",
   ]
   let r = Proc.run(start, cwd: dir)
   assert_eq((r.code, r.stderr), (0, ""))
@@ -222,14 +222,14 @@ fn the_command_renders_each_way_with_its_module_in_a_culebra_of_its_own() {
     r.stdout.split("\n").slice(0, 2),
     ["listen/top-1-1.wav", "listen/top-1-2.wav"],
   )
-  # The one before as rendered here; the new one told top=1 in its own
-  # culebra.
+  # The one before as rendered here, from 0:02 (the mark Second); the new
+  # one told top=1 in its own culebra.
   let round = JSON.parse(FS.read(FS.join(dir, "listen", "top.json"))).rounds[0]
   let heard = samples_of(FS.join(dir, "listen", "top-1-{round.before}.wav"))
   let made = lib.passage(
     SOUNDS,
     way_in(round, round.before),
-    "Second",
+    "0:02",
     nil,
   ).samples
   assert_true(iota(made.size()).all(|i| Math.abs(heard[i] - made[i]) < 0.0001))

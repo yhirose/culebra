@@ -62,13 +62,13 @@ let SPEC = {
           name: 'from',
           type: 'String',
           default: nil,
-          doc: "where the passage starts: a mark's name or seconds",
+          doc: "where the passage starts: a mark's name, seconds, or minutes and seconds (1:23.5)",
         },
         {
           name: 'to',
           type: 'String',
           default: nil,
-          doc: "where it ends: a mark's name or seconds",
+          doc: "where it ends: a mark's name, seconds, or minutes and seconds",
         },
         {
           name: 'same-gain',
