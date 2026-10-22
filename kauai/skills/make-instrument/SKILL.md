@@ -113,7 +113,8 @@ person says. Read it before the first comparison.
 | `culebra kauai/tools/check.cul --sounds <pkg> song.kau` | what measuring finds: pitch off the score, dropouts, dips, abrupt edges, clicks, clipping, silence |
 | `culebra kauai/tools/listen.cul start/pick/next` | two versions of a passage heard blind, round after round |
 | `culebra kauai/tools/make_sounds.cul` | every sound songs need, made beforehand, for a program or the browser |
-| `Audio.decode`, `Audio.spectrum`, `Audio.resample`, `Audio.loudness`, `Audio.integrated_loudness` | reading and measuring recordings in Culebra |
+| `culebra kauai/tools/measure.cul --low HZ --high HZ --out work/measured work/sources/*` | each recording's pitch and loudness every 10 ms, and its notes with how each starts and ends |
+| `Audio.decode`, `Audio.spectrum`, `Audio.pitch`, `Audio.resample`, `Audio.loudness`, `Audio.integrated_loudness` | reading and measuring recordings in Culebra |
 | `song.marks()`, `song.seconds(at)`, `song.external_sounds()`, `song.render(from:, to:)` | where passages are, and what an instrument is asked for |
 
 `references/tools.md` has how each is used in this work, with the options

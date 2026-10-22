@@ -1,0 +1,79 @@
+# What recordings of one instrument play, measured to make the instrument
+# from: for each, its pitch and loudness every 10 ms and the notes read from
+# them, written as NAME.json and NAME.f32 into a folder (NAME the
+# recording's file name without its extension). README.md says more.
+#
+#   culebra kauai/tools/measure.cul --low 200 --high 1400 \
+#     --out work/measured work/sources/*.wav
+#
+# `--low` and `--high` bound the pitch searched (Hz): the instrument's lowest
+# and highest notes with a little room, so a note is not read an octave off.
+
+import lib from './measure_lib.cul'
+
+let SPEC = {
+  name: 'measure.cul',
+  doc: "what recordings of one instrument play: pitch, loudness and notes",
+  args: [
+    {
+      name: 'low',
+      type: 'Float',
+      positional: false,
+      doc: 'the lowest pitch searched, Hz',
+    },
+    {
+      name: 'high',
+      type: 'Float',
+      positional: false,
+      doc: 'the highest pitch searched, Hz',
+    },
+    {
+      name: 'out',
+      type: 'String',
+      default: 'measured',
+      doc: 'the folder written to (measured)',
+    },
+    {
+      name: 'recordings',
+      type: 'String',
+      repeated: true,
+      doc: 'WAV, MP3 or Ogg files',
+    },
+  ],
+}
+
+fn fail(message) {
+  IO.eprintln("measure: {message}")
+  Sys.exit(2)
+}
+
+let args = Args.parse(Sys.argv, SPEC)
+fail("no recordings named") if args.recordings.empty()
+for path in args.recordings {
+  fail("no recording {path}") if !FS.exists(path)
+}
+for path in args.recordings {
+  let made = try {
+    Audio.decode(FS.read(path))
+  } catch e {
+    fail("{path} could not be read: {e.message}")
+  }
+  let chs = made.channels
+  let xs = chs.size() == 1
+    ? chs[0]
+    : iota(chs[0].size()).map(|i| chs.map(|c| c[i]).sum() / chs.size())
+  let m = try {
+    lib.measure(xs, made.rate, args.low, args.high)
+  } catch e {
+    fail("{path}: {e.message}")
+  }
+  let name = FS.stem(path)
+  let about = {
+    source: FS.basename(path),
+    rate: made.rate,
+    seconds: xs.size() / to_float(made.rate),
+  }
+  lib.write(m, args.out, name, about, args.low, args.high)
+  let count = |how| m.notes.filter(|v| v.from == how).size()
+  println("{name}: {m.notes.size()} notes (after a rest {count("rest")}, tongued {count("tongue")}, legato {count("legato")}), tuning {m.tuning:+.0f} cents -> {FS.join(args.out, name)}.json")
+}

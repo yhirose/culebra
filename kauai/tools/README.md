@@ -106,6 +106,63 @@ is found. A sound is checked as the instrument made it, before the song
 weighs it and mixes it in; what Kauai hands the instrument for each, and
 where it plays, is `song.external_sounds()`.
 
+## measure.cul: what a recording plays, measured
+
+`measure.cul` measures recordings of one instrument, as an instrument is
+made from them: each one's pitch and loudness every 10 ms, and the notes
+read from them, each with how it starts and how it ends.
+
+```sh
+culebra kauai/tools/measure.cul --low 200 --high 1400 \
+  --out work/measured work/sources/*.wav
+```
+
+```
+freesound_734969: 565 notes (after a rest 99, tongued 186, legato 280), tuning +10 cents -> work/measured/freesound_734969.json
+```
+
+`--low` and `--high` bound the pitch searched, in Hz: the instrument's
+lowest and highest notes with a little room (a soprano saxophone 200 to
+1400), so that a note is not read an octave off. Each recording (WAV, MP3
+or Ogg, its channels averaged) is written into `--out` (`measured`) as
+NAME.json and NAME.f32, NAME its file's name without the extension.
+
+The pitch is `Audio.pitch`'s, tidied as the notes are read from it:
+stretches with a pitch shorter than 40 ms are dropped, each frame is the
+median of the five about it, and a gap under 60 ms between two stretches is
+the tongue's: each side's pitch is held up to the gap's quietest frame,
+where the second note starts. A stretch starts after a rest; it is split
+where the tongue stops it, and where the pitch moves 0.6 of a semitone or
+more to another semitone and stays there 40 ms (legato), so a vibrato does
+not split a note. A note under 80 ms within 2 semitones of the one beside it
+is that note's scoop or fall, and joins it. A note whose level (over two
+periods of its pitch, every millisecond) falls 6 dB under the highest it
+reaches within 100 ms on either side, 40 ms or more from its ends, is one
+pitch played twice with the tongue, and is cut there.
+
+NAME.json holds where the recording came from (`source`, `rate`,
+`seconds`), the `settings` it was measured with, its `tuning` (cents from
+A = 440 Hz, the median of how far its frames stand from the nearest
+semitone), `reference` (the dBFS of the loudest 5% of the frames with a
+pitch), how the frames are laid out (`frames`: `{count, step, columns,
+file}`), and the `notes`, one a line:
+
+| Field | What it is |
+|---|---|
+| `t0` | its first frame's time, seconds |
+| `frames` | how many frames (10 ms) it lasts |
+| `semi` | its semitone (MIDI, 69 is A4), with the tuning taken off: the nearest to its middle (30% to 90% of the way through) |
+| `own` | its middle's pitch, cents from `semi` |
+| `from`, `to` | how it starts and ends: `rest`, `tongue` or `legato` |
+| `level` | its middle's loudness, dB from `reference` |
+| `vib` | its vibrato's depth in cents, over the part 180 ms in from either end (0 for a note under 360 ms) |
+| `onset` | when a note entered after a rest or with the tongue starts to sound: from the quietest 2 ms within 120 ms before its first frame and 40 ms after, the first moment its level (over 2 ms) comes within 10 dB of its steady level. `null` for a legato note, one under 150 ms, and one that does not rise 6 dB |
+
+NAME.f32 is each frame's numbers, little-endian 32-bit floats, frame after
+frame: `hz`, the pitch the notes are read from (0 where none), and `db`,
+the loudness over the 10 ms about it in dBFS (-120 for silence). Frame `t`
+is `t * 10 ms`. A 192 s recording takes about 3 s.
+
 ## make_sounds.cul: an instrument's sounds made beforehand
 
 `make_sounds.cul` asks an instrument module for every sound Kauai songs need

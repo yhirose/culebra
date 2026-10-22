@@ -7,11 +7,17 @@ new instrument shows what carries over.
 
 ## Measuring the recordings
 
-To be written: reading each note's pitch every 10 ms (choosing among
-candidate periods by the harmonics' power, so a strong harmonic is not
-taken for the note), its loudness, its harmonics' shape, the breath between
-them, and where each note starts and how it is entered (after a rest,
-tongued, or slurred).
+`kauai/tools/measure.cul` reads each note's pitch every 10 ms
+(`Audio.pitch`: candidate periods scored by how the spectrum matches their
+harmonics and chosen along each run, so a strong harmonic is not taken for
+the note), its loudness, where it starts and how it is entered and left
+(after a rest, tongued, or slurred). A reed's top notes can have their
+fundamental 15 dB under their 2nd harmonic, or few harmonics at all, which
+a pitch reading easily takes for a note at a fraction of the pitch: check
+the highest notes of a new instrument against the spectrum
+(`Audio.spectrum`), the pitch read the lowest of its strong peaks.
+
+To be written: its harmonics' shape and the breath between them.
 
 ## Playing from recorded notes
 

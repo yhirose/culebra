@@ -1,0 +1,397 @@
+# What a recording of one instrument plays, measured to make the instrument
+# from: its pitch and loudness every 10 ms, and the notes read from them,
+# each with how it starts and how it ends (after a rest, with the tongue, or
+# legato from the note before). measure.cul writes it for each recording;
+# README.md says more.
+
+let STEP = 0.01  # seconds a frame
+let S = {
+  scrap: 4,            # frames: a stretch with a pitch shorter than this is dropped
+  bridge: 6,           # frames: a gap shorter than this between two is the tongue's
+  legato: 0.6,         # semitones from a note that start the next one, legato,
+  legato_frames: 4,    #   when the pitch stays there this many frames
+  short: 8,            # frames: a note shorter than this joins the one beside it
+  short_semitones: 2,  #   within this many semitones, as its scoop or fall
+  dip: 6.0,            # dB a note's level falls where it is played again
+}
+
+let median = |xs| xs.sorted()[xs.size() / 2]
+let mean = |xs| xs.empty() ? 0.0 : xs.sum() / xs.size()
+let db_of = |p| p > 1e-12 ? 10.0 * Math.log(p) / Math.log(10.0) : -120.0
+let round_to = |x, places| Math.round(x * 10.0 ** places) / 10.0 ** places
+
+# The running sums of `xs`'s squares, for any stretch's power.
+fn squares(xs) {
+  let sum = repeat(xs.size() + 1, 0.0)
+  for i in 0..xs.size() {
+    sum[i + 1] = sum[i] + xs[i] * xs[i]
+  }
+  sum
+}
+
+# The mean square of samples a until b, those outside the recording left out.
+fn power(sum, a, b) {
+  let lo = Math.max(0, a)
+  let hi = Math.min(sum.size() - 1, b)
+  hi > lo ? (sum[hi] - sum[lo]) / (hi - lo) : 0.0
+}
+
+# Stretches of frames that are not nil, as (first, past the last).
+fn runs(track) {
+  let found = []
+  mut i = 0
+  while i < track.size() {
+    if track[i] == nil {
+      i += 1
+      continue
+    }
+    let s = i
+    while i < track.size() && track[i] != nil {
+      i += 1
+    }
+    found.push((s, i))
+  }
+  found
+}
+
+# The pitch the notes are read from, and where the tongue stops it: stretches
+# with a pitch shorter than `scrap` dropped; within each, the median of five
+# frames; a gap shorter than `bridge` between two held through, each side's
+# pitch up to the gap's quietest frame, so a note's pitch never glides across
+# a stop of the tongue. Answers {hz, stops}, stops the frames where the
+# second side of such a gap starts.
+fn tidied(raw, db) {
+  let hz = raw.map(|v| v)
+  for (s, e) in runs(hz) {
+    if e - s < S.scrap {
+      for i in s..e {
+        hz[i] = nil
+      }
+    }
+  }
+  let kept = hz.map(|v| v)
+  let stretches = runs(kept)
+  for (s, e) in stretches {
+    for i in s..e {
+      hz[i] = median(kept.slice(Math.max(s, i - 2), Math.min(e, i + 3)))
+    }
+  }
+  let stops = []
+  for k in 1..stretches.size() {
+    let e0 = stretches[k - 1][1]
+    let s1 = stretches[k][0]
+    if s1 - e0 < S.bridge {
+      let q = iota(e0, s1 + 1).min_by(|i| db[i])
+      for i in e0..s1 {
+        hz[i] = hz[i < q ? e0 - 1 : s1]
+      }
+      stops.push(q)
+    }
+  }
+  {hz: hz, stops: stops}
+}
+
+# Within frames s until e, the notes legato: the pitch moving `legato`
+# semitones or more from the note's own and staying near another semitone
+# `legato_frames` frames, so a vibrato does not split a note.
+fn split_legato(q, s, e) {
+  let notes = []
+  mut start = s
+  mut label = Math.round(median(q.slice(s, Math.min(e, s + 5))))
+  mut i = s
+  while i < e {
+    if Math.abs(q[i] - label) <= S.legato {
+      i += 1
+      continue
+    }
+    let other = Math.round(q[i])
+    mut j = i
+    while j < e && Math.abs(q[j] - other) <= S.legato {
+      j += 1
+    }
+    if j - i >= S.legato_frames {
+      notes.push({s: start, e: i, semi: label})
+      start = i
+      label = Math.round(median(q.slice(i, j)))
+      i = j
+    } else {
+      i += 1
+    }
+  }
+  notes.push({s: start, e: e, semi: label})
+  notes
+}
+
+# A note shorter than `short` frames within `short_semitones` of the one after
+# it (or else the one before) joins that one, as its scoop or fall.
+fn merge_short(notes) {
+  let out = notes.map(|v| v)
+  mut changed = true
+  while changed {
+    changed = false
+    for k in 0..out.size() {
+      let v = out[k]
+      continue if v.e - v.s >= S.short || out.size() == 1
+      let near = |j| j >= 0 &&
+        j < out.size() &&
+        Math.abs(out[j].semi - v.semi) <= S.short_semitones
+      let into = near(k + 1) ? k + 1 : near(k - 1) ? k - 1 : nil
+      if into != nil {
+        let w = out[into]
+        out[into] = {s: Math.min(v.s, w.s), e: Math.max(v.e, w.e), semi: w.semi}
+        out.remove_at(k)
+        changed = true
+        break
+      }
+    }
+  }
+  out
+}
+
+# The notes in the tidied pitch, each {s, e, semi, from, to} over frames s
+# until e: a stretch with a pitch starts after a rest; it is split where the
+# tongue stops it, and within those where the pitch moves legato. Semitones
+# are counted with the recording's tuning taken off: the median of how far
+# its frames stand from the nearest semitone. Answers {notes, tuning, q},
+# q[t] the semitone of frame t (nil where none) and tuning in semitones.
+fn transcribe(hz, stops) {
+  let semis = hz.map(|v| v == nil
+    ? nil
+    : 69.0 + 12.0 * Math.log(v / 440.0) / Math.log(2.0))
+  let offsets = semis.filter(|v| v != nil).map(|v| v - Math.round(v))
+  let tuning = offsets.empty() ? 0.0 : median(offsets)
+  let q = semis.map(|v| v == nil ? nil : v - tuning)
+  let at_stop = stops.to_set()
+  let notes = []
+  for (s, e) in runs(hz) {
+    mut a = s
+    let pieces = []
+    for i in s + 1..e {
+      if at_stop.contains(i) {
+        pieces.push({
+          s: a,
+          e: i,
+          from: a == s ? "rest" : "tongue",
+          to: "tongue",
+        })
+        a = i
+      }
+    }
+    pieces.push({s: a, e: e, from: a == s ? "rest" : "tongue", to: "rest"})
+    for p in pieces {
+      let inner = merge_short(split_legato(q, p.s, p.e))
+      for k in 0..inner.size() {
+        let v = inner[k]
+        notes.push({
+          s: v.s,
+          e: v.e,
+          semi: v.semi,
+          from: k == 0 ? p.from : "legato",
+          to: k == inner.size() - 1 ? p.to : "legato",
+        })
+      }
+    }
+  }
+  {notes: notes, tuning: tuning, q: q}
+}
+
+# A note's level every millisecond from 5 ms before its first frame to its
+# last: the mean square over two periods of its pitch `f0`, in dB, averaged
+# over 5 ms.
+fn level_ms(sum, rate, v, f0) {
+  let g0 = v.s * STEP - 0.005
+  let count = Math.round(((v.e - 1) * STEP - g0) * 1000.0) + 1
+  let half = Math.round(rate / Math.max(f0, 100.0))
+  let raw = iota(count).map(fn (k) {
+    let c = Math.round((g0 + k * 0.001) * rate)
+    db_of(power(sum, c - half, c + half))
+  })
+  iota(count).map(|k| mean(raw.slice(
+    Math.max(0, k - 2),
+    Math.min(count, k + 3),
+  )))
+}
+
+# Where (ms into level_ms) a note is first played again at one pitch with the
+# tongue: its level falls `dip` dB under the highest it reaches within 100 ms
+# on either side, at its lowest within 10 ms, 40 ms or more from either end.
+# Nil where it is not.
+fn first_dip(lv) {
+  let g = lv.size()
+  for k in 40..Math.max(40, g - 40) {
+    continue if lv[k] > lv.slice(k - 10, Math.min(g, k + 11)).min()
+    let before = lv.slice(Math.max(0, k - 100), k).max()
+    let after = lv.slice(k + 1, Math.min(g, k + 101)).max()
+    return k if Math.min(before, after) - lv[k] >= S.dip
+  }
+  nil
+}
+
+# Note `v` cut where it is played again, and each part again.
+fn played_again(sum, rate, v, f0) {
+  let k = first_dip(level_ms(sum, rate, v, f0))
+  return [v] if k == nil
+  let j = Math.round((k - 5) / 10.0)
+  [
+    ...played_again(sum, rate, {s: v.s, e: v.s + j, semi: v.semi, from: v.from, to: "tongue"}, f0),
+    ...played_again(sum, rate, {s: v.s + j, e: v.e, semi: v.semi, from: "tongue", to: v.to}, f0),
+  ]
+}
+
+# When a note entered after a rest or with the tongue starts to sound: from
+# the quietest 2 ms between 120 ms before its first frame (and 5 ms after the
+# note before ends) and 40 ms after it, the first moment its level (the mean
+# square over 2 ms, every 0.5 ms) comes within 10 dB of its steady level (the
+# median from 60 ms in to 100 ms before its end). Nil for a legato note, one
+# under 150 ms, and one that does not rise 6 dB.
+fn onset_of(sum, rate, v, prev_end) {
+  let t0 = v.s * STEP
+  let t1 = (v.e - 1) * STEP
+  return nil if v.from == "legato" || t1 - t0 < 0.15
+  let h = Math.floor(0.001 * rate)
+  let level = fn (t) {
+    let c = Math.floor(t * rate)
+    db_of(power(sum, c - h, c + h))
+  }
+  let lo = Math.max(t0 - 0.12, prev_end + 0.005)
+  let ts = iota(Math.max(
+    0,
+    Math.ceil((t0 + 0.12 - lo) / 0.0005),
+  )).map(|i| lo + i * 0.0005)
+  return nil if ts.size() < 10
+  let lv = ts.map(level)
+  let early = iota(ts.size()).filter(|i| ts[i] <= t0 + 0.04)
+  return nil if early.empty()
+  let quietest = early.min_by(|i| lv[i])
+  let until = Math.max(t0 + 0.07, t1 - 0.1)
+  let steady = iota(Math.ceil((until - t0 - 0.06) /
+    0.002)).map(|i| level(t0 + 0.06 + i * 0.002))
+  return nil if steady.size() < 5
+  let held = median(steady)
+  return nil if held - lv[quietest] < 6.0
+  let rise = iota(quietest, ts.size()).find(|i| lv[i] >= held - 10.0)
+  rise == nil ? nil : ts[rise]
+}
+
+# Note `v` as it is written out: its first frame's time `t0` and how many
+# `frames`; its semitone `semi` and its own pitch `own`, cents from it (both
+# from its middle, 30% to 90% of the way through); `from` and `to`; its
+# `level`, the median of its middle's loudness in dB from `reference`; its
+# vibrato's depth `vib` in cents over the part 180 ms in from either end;
+# and its `onset`.
+fn described(v, q, db, reference, onset) {
+  let m = v.e - v.s
+  let a = v.s + m * 3 / 10
+  let mid = iota(a, Math.max(a + 1, v.s + m * 9 / 10))
+  let heard = mid.filter(|u| q[u] != nil).map(|u| 100.0 * (q[u] - v.semi))
+  let near = heard.empty() ? 0.0 : median(heard)
+  let shift = Math.round(near / 100.0)
+  let semi = v.semi + shift
+  let cents = []
+  mut held = near - 100.0 * shift
+  for u in v.s..v.e {
+    held = q[u] == nil ? held : 100.0 * (q[u] - semi)
+    cents.push(held)
+  }
+  let around = |j, r| mean(cents.slice(
+    Math.max(0, j - r),
+    Math.min(m, j + r + 1),
+  ))
+  let swing = iota(
+    18,
+    Math.max(18, m - 18),
+  ).map(|j| around(j, 1) - around(j, 10))
+  {
+    t0: round_to(v.s * STEP, 2),
+    frames: m,
+    semi: semi,
+    own: round_to(near - 100.0 * shift, 2),
+    from: v.from,
+    to: v.to,
+    level: round_to(median(mid.map(|u| db[u])) - reference, 2),
+    vib: round_to(
+      swing.empty()
+        ? 0.0
+        : Math.sqrt(mean(swing.map(|z| z * z))) * Math.sqrt(2.0),
+      2,
+    ),
+    onset: onset == nil ? nil : round_to(onset, 4),
+  }
+}
+
+# A recording's samples `xs` (`rate` a second), its pitch searched from `low`
+# to `high` Hz, measured: {hz, db, notes, tuning, reference}. Frame t is t *
+# 10 ms: hz[t] its pitch as the notes are read (nil where none) and db[t] its
+# loudness, the mean square over 10 ms in dBFS. tuning is in cents from A =
+# 440 Hz, and reference the dBFS the notes' levels are counted from: the
+# loudest 5% of the frames with a pitch.
+fn measure(xs, rate, low, high) {
+  let read = Audio.pitch(xs, low, high, rate)
+  let sum = squares(xs)
+  let half = Math.floor(rate / 200.0)
+  let db = iota(read.hz.size()).map(fn (t) {
+    let c = Math.round(t * rate / 100.0)
+    db_of(power(sum, c - half, c + half + 1))
+  })
+  let tidy = tidied(read.hz, db)
+  let hz = tidy.hz
+  let w = transcribe(hz, tidy.stops)
+  let pitched = iota(hz.size()).filter(|t| hz[t] != nil).map(|t| db[t]).sorted()
+  let reference = pitched.empty() ? 0.0 : pitched[pitched.size() * 95 / 100]
+  let notes = w.notes.flat_map(|v| played_again(
+    sum,
+    rate,
+    v,
+    median(hz.slice(v.s, v.e)),
+  ))
+  let written = []
+  mut prev_end = 0.0
+  for v in notes {
+    written.push(described(
+      v,
+      w.q,
+      db,
+      reference,
+      onset_of(sum, rate, v, prev_end),
+    ))
+    prev_end = (v.e - 1) * STEP
+  }
+  {
+    hz: hz,
+    db: db,
+    notes: written,
+    tuning: round_to(100.0 * w.tuning, 2),
+    reference: round_to(reference, 2),
+  }
+}
+
+# `m` written into folder `dir` as NAME.json and NAME.f32: the JSON holds
+# `about` (where the recording came from and its rate and length), the
+# settings, the tuning and reference, how the frames are laid out, and the
+# notes one a line; the f32 the frames' numbers, each frame's hz (0 where
+# none) and db, as little-endian 32-bit floats.
+fn write(m, dir, name, about, low, high) {
+  FS.mkdir(dir)
+  let data = "{name}.f32"
+  FS.write(
+    FS.join(dir, data),
+    String.pack(
+      "f32",
+      iota(m.hz.size()).flat_map(|t| [m.hz[t] ?? 0.0, m.db[t]]),
+    ),
+  )
+  let head = JSON.stringify({
+    ...about,
+    settings: {low: low, high: high, ...S},
+    tuning: m.tuning,
+    reference: m.reference,
+    frames: {count: m.hz.size(), step: STEP, columns: ["hz", "db"], file: data},
+  })
+  let notes = m.notes.map(|v| JSON.stringify(v)).join(",\n")
+  FS.write(
+    FS.join(dir, "{name}.json"),
+    "{head.slice(0, head.size() - 1)},\"notes\":[\n{notes}\n]}\n",
+  )
+}
+
+export {STEP, S, measure, write}

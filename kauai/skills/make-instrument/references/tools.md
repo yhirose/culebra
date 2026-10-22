@@ -67,6 +67,21 @@ phrases, and for the browser, where only the program's own folder is
 served. It keeps the sound Kauai weighs the instrument by, so the made
 sounds play as loud as the instrument's own.
 
+## measure.cul
+
+```sh
+culebra kauai/tools/measure.cul --low 200 --high 1400 --out work/measured work/sources/*.wav
+```
+
+Each recording's pitch and loudness every 10 ms (NAME.f32) and the notes
+read from them (NAME.json: each note's start, length, semitone and own
+pitch, how it starts and ends, level, vibrato depth and onset).
+`kauai/tools/README.md` has every field. `--low` and `--high` are the
+instrument's lowest and highest notes with a little room; the narrower,
+the fewer notes read an octave off. Look at the notes' count and how they
+start before building on them: a recording whose notes are mostly `rest`
+was read with gaps (too quiet, or the range wrong).
+
 ## Measuring in Culebra
 
 | Function | Gives |
@@ -74,9 +89,10 @@ sounds play as loud as the instrument's own.
 | `Audio.decode(bytes)` | a recording's samples as recorded: `{rate, channels}` |
 | `Audio.resample(xs, from, to)` | the samples at another rate, band-limited |
 | `Audio.spectrum(xs, size:, hop:)` | the magnitudes frame by frame (an STFT) |
+| `Audio.pitch(xs, low:, high:, rate:)` | the pitch every 10 ms, `{hz, clarity}`, `nil` where there is none |
 | `Audio.loudness(xs, rate)` | the loudest 400 ms (BS.1770 momentary), the measure Kauai weighs an instrument by |
 | `Audio.integrated_loudness(xs, rate)` | the whole, gated (BS.1770 integrated) |
 
-Measuring pitch, harmonics, breath, and where notes start in a recording
-is still to be written in Culebra (the soprano's was measured with Python
-first); `references/making.md` keeps what is known about it.
+Measuring the harmonics and the breath is still to be written in Culebra
+(the soprano's were measured with Python first); `references/making.md`
+keeps what is known about it.
