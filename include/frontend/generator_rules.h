@@ -42,18 +42,28 @@ inline bool can_be_generator(unsigned int tag) {
          tag == "TRAIT_METHOD"_;
 }
 
-// A node that owns the yields written inside it.
-inline bool opens_yield_scope(unsigned int tag) {
+// A node that opens a body of its own: what is written in it belongs to that
+// function rather than the one around it (its yields, its `fn`, the effects
+// it performs), and runs when it is called. A `fn name`, a `fn (...) { ... }`
+// expression, a `|...|` lambda, a class method (an instance field's
+// initializer too, which runs per instance), a trait method's default body.
+// A static field is the class member that does not: its value runs where the
+// class is declared, in the body around it.
+inline bool opens_own_body(const peg::Ast& n) {
   using namespace peg::udl;
-  return can_be_generator(tag) || tag == "LAMBDA"_;
+  if (n.tag == "METHOD"_) {
+    auto mv = view_method(n);
+    return !(mv.is_field && mv.is_static);
+  }
+  return is_fn_boundary(n.tag) || n.tag == "TRAIT_METHOD"_;
 }
 
 // First YIELD or YIELD_FROM belonging to this fn body, stopping at the
-// functions inside it (see `opens_yield_scope`) — a nested generator's yields
+// functions inside it (see `opens_own_body`) — a nested generator's yields
 // are its own. nullptr when absent.
 inline const peg::Ast* find_yield_in_fn_body(const peg::Ast& node) {
   if (is_yield(node.tag)) return &node;
-  if (opens_yield_scope(node.tag)) return nullptr;
+  if (opens_own_body(node)) return nullptr;
   for (auto& c : node.nodes) {
     if (auto* y = find_yield_in_fn_body(*c)) return y;
   }
@@ -103,7 +113,7 @@ inline const peg::Ast* find_yield_inside_defer(const peg::Ast& body) {
   std::function<void(const peg::Ast&, bool)> walk =
       [&](const peg::Ast& n, bool inside_defer) {
         if (found) return;
-        if (opens_yield_scope(n.tag)) return;
+        if (opens_own_body(n)) return;
         if (inside_defer && is_yield(n.tag)) {
           found = &n;
           return;

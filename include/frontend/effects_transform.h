@@ -66,6 +66,15 @@ inline constexpr int EFF_DELEGATE = 2;
 // `effect_fn_has_body` (EFFECT_FN_DECL shape) lives in parser.h alongside the
 // other AST-layout helpers, shared with the lint pass.
 
+// Where a walk over an effect body stops: at a body of its own
+// (opens_own_body), whose code runs when it is called, as ordinary code, and
+// at a nested `handle`, a computation of its own. What lies past either is
+// none of this body's — not its suspensions, its defers, its named fns.
+inline bool ends_effect_body(const peg::Ast& n) {
+  using namespace peg::udl;
+  return opens_own_body(n) || n.tag == "HANDLE"_;
+}
+
 // The declared name — CLASS_HEAD's token, trimmed of any generic head
 // (`<...>`) the thin slice never emits but the grammar admits.
 inline std::string effect_fn_name(const peg::Ast& decl) {
@@ -192,9 +201,7 @@ inline const peg::Ast* find_nested_fndef(const peg::Ast& body) {
       // A nested fn VALUE or a class or trait member keeps its own scope, and
       // a nested `handle` opens its own computation scope (the effects pass
       // validates fns inside it) — leave them (and their inner defs) alone.
-      if (c->tag == "FUNCTION"_ || c->tag == "LAMBDA"_ || c->tag == "HANDLE"_ ||
-          c->tag == "METHOD"_ || c->tag == "TRAIT_METHOD"_)
-        continue;
+      if (ends_effect_body(*c)) continue;
       walk(*c);
     }
   };
@@ -255,13 +262,43 @@ class EffectsLowerer {
           op, args, err_at(*ast)));
       return reparse_expr(synth, line, names_.visible());
     }
+    std::optional<InEffectFn> frame;
+    if (auto own = frame_effect_fn(*ast)) frame.emplace(*this, std::move(*own));
+    return transform_children(ast);
+  }
+
+ private:
+  std::shared_ptr<peg::Ast> transform_children(std::shared_ptr<peg::Ast> ast) {
     names_.walk_children(*ast, [&](std::shared_ptr<peg::Ast>& child) {
       return transform(child);
     });
     return ast;
   }
 
- private:
+  // While a body is lowered, which effect fn it is (own_effect_fn_).
+  struct InEffectFn {
+    EffectsLowerer& l;
+    std::string saved;
+    InEffectFn(EffectsLowerer& l_, std::string name)
+        : l(l_), saved(std::exchange(l_.own_effect_fn_, std::move(name))) {}
+    ~InEffectFn() { l.own_effect_fn_ = std::move(saved); }
+    InEffectFn(const InEffectFn&) = delete;
+    InEffectFn& operator=(const InEffectFn&) = delete;
+  };
+  // What own_effect_fn_ becomes inside `n`, when `n` is a function: a frame
+  // the lowering wrote around user code keeps it (an effect fn's maker names
+  // it), and a function the user wrote has a `fn` of its own.
+  static std::optional<std::string> frame_effect_fn(const peg::Ast& n) {
+    using namespace peg::udl;
+    if (!opens_own_body(n)) return std::nullopt;
+    const peg::Ast* marker =
+        n.nodes.empty() ? nullptr : lowered_frame_marker(*n.nodes.back());
+    if (!marker) return std::string();
+    if (auto f = lowered_frame_fn_from(*marker); !f.empty())
+      return std::string(f);
+    return std::nullopt;
+  }
+
   const std::string& src_;
   const std::set<std::string>& effect_fns_;
   bool src_is_original_ = false;
@@ -270,10 +307,25 @@ class EffectsLowerer {
   mutable LineMarkers markers_;
   mutable SourceResolver resolver_;
 
-  // A lowerer over another buffer, at the same place in the program.
+  // The effect fn whose body is being lowered, where `fn` is that effect
+  // fn: a `fn(…)` there delegates as a call by its name does. Empty outside
+  // one, and inside a function the user wrote in one (transform()).
+  std::string own_effect_fn_;
+
+  // A lowerer over another buffer for the same body: every lowerer this one
+  // makes comes from here, so each knows which effect fn it is in. It starts
+  // with no names around it (names_); sub_lowerer also hands it this one's.
+  EffectsLowerer lowerer_over(const std::string& src,
+                              bool src_is_original = false,
+                              std::string path = "") const {
+    EffectsLowerer sub(src, effect_fns_, src_is_original, std::move(path));
+    sub.own_effect_fn_ = own_effect_fn_;
+    return sub;
+  }
+  // lowerer_over, at the same place in the program (names_ too).
   EffectsLowerer sub_lowerer(const std::string& src, bool src_is_original = false,
                              std::string path = "") const {
-    EffectsLowerer sub(src, effect_fns_, src_is_original, std::move(path));
+    EffectsLowerer sub = lowerer_over(src, src_is_original, std::move(path));
     sub.names_ = names_;
     return sub;
   }
@@ -338,7 +390,14 @@ class EffectsLowerer {
     if (n.tag != "CALL"_ || n.nodes.size() != 2) return false;
     if (n.nodes[0]->tag != "IDENTIFIER"_) return false;
     if (n.nodes[1]->original_tag != "ARGUMENTS"_) return false;
-    return effect_fns_.count(std::string(n.nodes[0]->token)) > 0;
+    return !effect_callee(*n.nodes[0]).empty();
+  }
+  // The effect fn a call's head names: itself, or for `fn` the effect fn
+  // whose body this is. Empty for anything else.
+  std::string effect_callee(const peg::Ast& head) const {
+    std::string name(head.token);
+    if (name == "fn") return own_effect_fn_;
+    return effect_fns_.count(name) ? name : std::string();
   }
 
   // True if a perform/effect-call is reachable inside `n` (used to reject
@@ -347,7 +406,7 @@ class EffectsLowerer {
   // handle re-establishes its own effect scope).
   bool has_suspension(const peg::Ast& n) const {
     using namespace peg::udl;
-    if (is_fn_boundary(n.tag) || n.tag == "HANDLE"_) return false;
+    if (ends_effect_body(n)) return false;
     if (n.tag == "PERFORM"_) return true;
     if (is_effect_call(n)) return true;
     for (auto& c : n.nodes)
@@ -474,7 +533,7 @@ class EffectsLowerer {
     // visible wherever `f` is. A local binding shadowing the effect-fn name
     // must not be silently redirected to the global maker (`is_effect_call`
     // is name-set based), so reject the shadow at lower time.
-    std::string callee(call.nodes[0]->token);
+    std::string callee = effect_callee(*call.nodes[0]);
     if (rewrite.declares(*call.nodes[0])) {
       throw CulebraError(
           "SyntaxError",
@@ -487,7 +546,8 @@ class EffectsLowerer {
     std::vector<SourceEdit> edits;
     collect_promoted_edits(call, src_, rewrite, edits, EditSite::Expr);
     auto name_at = static_cast<size_t>(call.nodes[0]->token.data() - src_.data());
-    edits.push_back({name_at, callee.size(), "__eff_comp_" + callee});
+    edits.push_back(
+        {name_at, call.nodes[0]->token.size(), "__eff_comp_" + callee});
     su.call_src = anchored(splice_source(
         src_, name_at, call.position + call.length, std::move(edits)));
     su.prov = mk(call);
@@ -606,7 +666,7 @@ class EffectsLowerer {
       walk(*prog);
     }
     if (!expr) reject_unsupported_expr(context);
-    EffectsLowerer sub(*buf, effect_fns_);
+    EffectsLowerer sub = lowerer_over(*buf);
     return sub.anf(*expr, ctr, hoists);
   }
 
@@ -919,7 +979,7 @@ class EffectsLowerer {
       throw CulebraError("InternalError",
                          "effects ANF could not re-parse a block body", 0, 0);
     }
-    EffectsLowerer sub(*buf, effect_fns_);
+    EffectsLowerer sub = lowerer_over(*buf);
     auto norm = sub.anf_program(*prog, ctr);
     return "{\n" + (norm ? *norm : inner) + "\n}";
   }
@@ -1537,7 +1597,7 @@ class EffectsLowerer {
   const peg::Ast* find_nested_defer(const peg::Ast& n) const {
     using namespace peg::udl;
     if (n.tag == "DEFER"_) return &n;
-    if (is_fn_boundary(n.tag) || n.tag == "HANDLE"_) return nullptr;
+    if (ends_effect_body(n)) return nullptr;
     for (auto& c : n.nodes)
       if (auto* d = find_nested_defer(*c)) return d;
     return nullptr;
@@ -1568,7 +1628,7 @@ class EffectsLowerer {
     using namespace peg::udl;
     std::vector<const peg::Ast*> out;
     std::function<void(const peg::Ast&)> walk = [&](const peg::Ast& n) {
-      if (is_fn_boundary(n.tag) || n.tag == "HANDLE"_) return;
+      if (ends_effect_body(n)) return;
       if (n.tag == "FOR"_ && has_suspension(n)) { out.push_back(&n); return; }
       for (auto& c : n.nodes) walk(*c);
     };
@@ -1707,7 +1767,7 @@ class EffectsLowerer {
     // for-in desugar to a fixpoint (a nested for-in surfaces as outermost on
     // the next pass).
     while (true) {
-      EffectsLowerer fl(*src, effect_fns_);
+      EffectsLowerer fl = lowerer_over(*src);
       auto desugared = fl.rewrite_suspending_fors(*prog);
       if (!desugared) break;
       src = std::make_shared<std::string>(anchored(*desugared));
@@ -1720,7 +1780,7 @@ class EffectsLowerer {
     }
 
     // A-normalization.
-    EffectsLowerer anf_pass(*src, effect_fns_);
+    EffectsLowerer anf_pass = lowerer_over(*src);
     int ctr = 0;
     if (auto normalized = anf_pass.anf_program(*prog, ctr)) {
       auto src2 = std::make_shared<std::string>(anchored(*normalized));
@@ -1760,9 +1820,7 @@ class EffectsLowerer {
         }
         return;
       }
-      if (is_fn_boundary(n.tag) || n.tag == "HANDLE"_ || n.tag == "METHOD"_ ||
-          n.tag == "TRAIT_METHOD"_)
-        return;
+      if (ends_effect_body(n)) return;
       for (auto& c : n.nodes) walk(*c);
     };
     walk(body);
@@ -1806,6 +1864,13 @@ class EffectsLowerer {
     // lists the boxes it replaced (see the driver's `_fork`).
     std::string refork_body = rewrite.refork();
 
+    // The two methods user code runs in are the frames of the function it was
+    // written in (parser.h's lowered-frame marker): `fn` there is that
+    // function's. An empty finalizer holds none.
+    std::string step_body = "      __lowered_frame()\n" + disp.step;
+    if (!disp.finalize_body.empty())
+      finalize_body = "      __lowered_frame()\n" + finalize_body;
+
     // Every computation exposes `_eff_finalize()` so the driver can call it
     // uniformly on the abort path; it is empty when the body has no defers,
     // and `_eff_refork` likewise when the body has no boxes.
@@ -1816,7 +1881,7 @@ class EffectsLowerer {
         "    _eff_finalize() {{\n{5}    }}\n"
         "    _eff_refork(old_boxes, new_boxes) {{\n{6}    }}\n"
         "  }}\n",
-        class_name, ctor_params, ctor_inits, rv_name, disp.step,
+        class_name, ctor_params, ctor_inits, rv_name, step_body,
         finalize_body, refork_body);
   }
 
@@ -1856,10 +1921,13 @@ class EffectsLowerer {
                                   culebra::kEffectComputationClassPrefix, name,
                                   ast->line, ast->column);
     auto rv_name = std::format("_rv_{}_{}", ast->line, ast->column);
-    std::string cls =
-        build_computation_class(class_name, body, param_names, rv_name, around,
-                                /*capture_outer=*/false,
-                                collect_mut_param_names(params_ast));
+    std::string cls;
+    {
+      InEffectFn in(*this, name);
+      cls = build_computation_class(class_name, body, param_names, rv_name,
+                                    around, /*capture_outer=*/false,
+                                    collect_mut_param_names(params_ast));
+    }
 
     std::string call_args;
     for (size_t j = 0; j < param_names.size(); j++) {
@@ -1874,9 +1942,11 @@ class EffectsLowerer {
     // what lets ordinary code call an effect fn — including through
     // first-class uses like `.map(f)`.
     auto params = anchored(source_of(params_ast));
+    // The body is the maker's computation, so the maker's `fn` is the effect
+    // fn (parser.h's lowered-frame marker).
     auto synth = std::make_shared<std::string>(std::format(
         "fn __eff_decls__() {{\n"
-        "fn __eff_comp_{0}{1} {{\n{2}  {3}.new({4})\n}}\n"
+        "fn __eff_comp_{0}{1} {{\n__lowered_frame('{0}')\n{2}  {3}.new({4})\n}}\n"
         "fn {0}{1} {{ __Eff.run_comp(__eff_comp_{0}({4})) }}\n"
         "}}\n",
         name, params, cls, class_name, call_args));
@@ -1902,7 +1972,7 @@ class EffectsLowerer {
                                                           bool in_fn) {
       if (n.tag == "IDENTIFIER"_ && n.token == resume_name) uses.push_back(&n);
       if (n.tag == "RETURN"_ && !in_fn) early_ret = true;
-      for (auto& c : n.nodes) walk(*c, in_fn || is_fn_boundary(c->tag));
+      for (auto& c : n.nodes) walk(*c, in_fn || opens_own_body(*c));
     };
     walk(body, false);
     if (uses.empty()) return "a";
@@ -2007,7 +2077,9 @@ class EffectsLowerer {
         reject_yield_in_clause(*clause.nodes[1]);
         auto vn = view_parameter(*params.nodes[0]).name;
         std::string ret_src = clause_source(*clause.nodes[1], captures, self_name);
-        return_fn = std::format("fn({0}) {{\n      let {1} = {0}\n      {2}\n    }}",
+        return_fn = std::format(
+            "fn({0}) {{\n      __lowered_frame()\n      let {1} = {0}\n"
+            "      {2}\n    }}",
                                 val_name, std::string(vn), ret_src);
         continue;
       }
@@ -2045,7 +2117,8 @@ class EffectsLowerer {
       if (!first_op) frame += ",";
       first_op = false;
       frame += std::format(
-          "\n    {0}: {{t: \"{3}\", f: fn({4}, {5}) {{\n{1}      {2}\n    }}}}",
+          "\n    {0}: {{t: \"{3}\", f: fn({4}, {5}) {{\n"
+          "      __lowered_frame()\n{1}      {2}\n    }}}}",
           op, binds, handler_src, classify_clause(handler_body, resume_name),
           args_name, resume_param);
     }
@@ -2059,8 +2132,10 @@ class EffectsLowerer {
       synth = std::make_shared<std::string>(std::format(
           "fn __eff_handle_wrapper__() {{\n"
           "  (fn({4}) {{\n"
+          "    __lowered_frame()\n"
           "    __Eff.handle(\n"
-          "      (fn() {{\n{0}      {1}.new({4})\n      }})(),\n"
+          "      (fn() {{\n      __lowered_frame()\n{0}      {1}.new({4})\n"
+          "      }})(),\n"
           "      {2},\n"
           "      {3})\n"
           "  }})(self)\n"
@@ -2070,7 +2145,7 @@ class EffectsLowerer {
       synth = std::make_shared<std::string>(std::format(
           "fn __eff_handle_wrapper__() {{\n"
           "  __Eff.handle(\n"
-          "    (fn() {{\n{0}    {1}.new()\n    }})(),\n"
+          "    (fn() {{\n    __lowered_frame()\n{0}    {1}.new()\n    }})(),\n"
           "    {2},\n"
           "    {3})\n"
           "}}\n",
@@ -2132,7 +2207,8 @@ class EffectsLowerer {
     check_generators_in(*fn, synth);
     auto sub = sub_lowerer(synth, false, label);
     sub.names_ = Surroundings{fn.get(), std::move(around)};
-    return sub.transform(fn);
+    // The wrapper is no frame: what it holds goes where the construct was.
+    return sub.transform_children(fn);
   }
 
   // Re-parse a synthesized `fn __wrapper__() { <expr> }` and return the single

@@ -1672,6 +1672,37 @@ inline bool names_lowered_variable(const peg::Ast& head) {
          is_lowering_fragment(head.path);
 }
 
+// The statement the effect lowering writes first in the body of a function
+// it synthesized around user code (effects_transform.h). `__lowered_frame()`:
+// the frame has no `fn` of its own, a read of `fn` in it is the enclosing
+// function's. `__lowered_frame('f')`: the frame's `fn` is the `f` its
+// declaration sees, which no parameter of the frame hides (an effect fn's
+// maker) — a name, not a read, so the frame captures `f` only when something
+// reads its `fn` (FnAnalysis). It compiles to nothing.
+inline bool is_lowered_frame_marker(const peg::Ast& stmt) {
+  using namespace peg::udl;
+  return stmt.tag == "CALL"_ && stmt.nodes.size() == 2 &&
+         stmt.nodes[0]->tag == "IDENTIFIER"_ &&
+         stmt.nodes[0]->token == "__lowered_frame" &&
+         stmt.nodes[1]->original_tag == "ARGUMENTS"_ &&
+         stmt.nodes[1]->nodes.size() <= 1 &&
+         is_lowering_fragment(stmt.path);
+}
+// A function body's marker, or nullptr.
+inline const peg::Ast* lowered_frame_marker(const peg::Ast& body) {
+  using namespace peg::udl;
+  const peg::Ast& first =
+      body.tag == "STATEMENTS"_ && !body.nodes.empty() ? *body.nodes[0] : body;
+  return is_lowered_frame_marker(first) ? &first : nullptr;
+}
+// The name `__lowered_frame('f')` gives, empty for `()`.
+inline std::string_view lowered_frame_fn_from(const peg::Ast& marker) {
+  using namespace peg::udl;
+  const auto& args = marker.nodes[1]->nodes;
+  return args.size() == 1 && args[0]->tag == "STRING"_ ? args[0]->token
+                                                        : std::string_view{};
+}
+
 // A malformed call argument list, detected purely from the AST: a positional
 // argument after a keyword/`**` splat (SyntaxError) or a duplicate keyword
 // (TypeError). Single source of these two rules, shared by the interpreter and

@@ -4608,6 +4608,30 @@ available inside an effect fn body`）。渡したい値はパラメータで渡
 まったく同じくreceiverを渡さず、渡した先では後続の呼び出し方がreceiverを
 決めます（`holder.f = f`のあとの`holder.f()`は`holder`を見ます）。
 
+`fn`は、ほかの場所と同じく、そのコードが書かれた関数です。`handle`本体と
+`with`節（`return`節も）では`handle`を囲む関数で、メソッドの中なら束縛済みの
+メソッドです。エフェクトフル関数の本体と引数の既定値ではそのeffect fn自身なので、
+そこでの`fn(…)`は名前で呼んだときとまったく同じ呼び出しで、行うoperationは
+同じハンドラに届きます。トップレベルでは、`handle`の外と同じく、`fn`を読むと
+読んだ位置で`NameError`になります。
+
+```culebra
+effect fn tick()
+effect fn countdown(n) {
+  if n == 0 {
+    return fn.name
+  }
+  perform tick()
+  fn(n - 1)
+}
+mut ticks = 0
+inspect(handle { countdown(3) } with tick(k) {
+  ticks += 1
+  k(nil)
+})               # => 'countdown'
+inspect(ticks)   # => 3
+```
+
 ### 操作の perform
 
 `perform op(args)`は現在の計算を中断し、`op`に対する最も内側の外側ハンドラへ

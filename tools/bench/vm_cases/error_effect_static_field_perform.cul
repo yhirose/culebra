@@ -1,0 +1,13 @@
+# A static field's value runs where its class is declared: in an effect fn's
+# body, as part of that body, where a `perform` in an expression is the one
+# the lowering cannot split yet. A method has a body of its own, a static
+# field does not, so the field is refused as such a perform anywhere else in
+# the body is, not handed on as one in ordinary code.
+effect fn ask()
+effect fn sf(k) {
+  class C {
+    static x = perform ask()
+  }
+  C.x
+}
+print(handle { sf(1) } with ask(resume) { resume(41) + 1 })

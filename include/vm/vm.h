@@ -7170,12 +7170,20 @@ class Compiler {
   }
 
   void compile_statement(const peg::Ast& ast) {
+    if (culebra::is_lowered_frame_marker(ast))
+      return compile_lowered_frame_marker(ast);
     stamp(ast);
     emit_dbg_stmt(ast);
     predeclare_conditional_decls(ast);
     TempScope ts(*this);
     StatementWrites sw(*this, ast);
     compile_statement_inner(ast);
+  }
+
+  // A lowered frame's marker (parser.h): what it says the prologue already
+  // did, so it compiles to nothing.
+  void compile_lowered_frame_marker(const peg::Ast& ast) {
+    check_use(*ast.nodes[0], nullptr);  // the marker's name binds nothing
   }
 
   void compile_statement_inner(const peg::Ast& ast) {
@@ -8663,12 +8671,13 @@ class Compiler {
     // The resolve.h symbol each capture holds (the scope agreement check).
     std::vector<size_t> symbols;
 
-    // A capture with nothing behind it (a sentinel cell): every flag off.
-    void push(int32_t slot) {
+    // A capture with nothing behind it (a sentinel cell): every flag off but
+    // `lazy`, when reading it is the NameError.
+    void push(int32_t slot, bool lazy = false) {
       symbols.push_back(culebra::resolve::kNone);
       slots.push_back(slot);
       muts.push_back(false);
-      lazys.push_back(false);
+      lazys.push_back(lazy);
       shadowed_builtins.push_back(false);
       knowns.emplace_back();
     }
@@ -8690,6 +8699,7 @@ class Compiler {
   // created on the path that captures it.
   int32_t self_none_slot_ = -1;
   int32_t ufcs_none_slot_ = -1;
+
   int32_t none_cell(const peg::Ast& at, JitValue v, int32_t& slot,
                     const char* name) {
     if (slot < 0) slot = alloc_cell_slot(at, name);
@@ -8717,6 +8727,14 @@ class Compiler {
       if (!b && fv == "self") {
         caps.push(none_cell(ast, {TAG_NO_SELF, 0}, self_none_slot_,
                             "(self.none)"));
+        continue;
+      }
+      // A lowered frame's `fn` with no function around it, as `fn` at the
+      // top level: the same sentinel, read as the NameError where it is read.
+      if (!b && fv == "fn" && !session_declared("fn")) {
+        caps.push(none_cell(ast, {TAG_NO_SELF, 0}, self_none_slot_,
+                            "(self.none)"),
+                  /*lazy=*/true);
         continue;
       }
       // A REPL line's free variable that nothing here binds is the session's.
@@ -9052,6 +9070,28 @@ class Compiler {
       // instead — compile_call resolves the direct `fn(...)` call itself.
       if (fc.chunk_.fn_bound_slot < 0) fc.grant_known_chunk(fnb, idx);
     }
+    // A lowered frame inside reads this frame's `fn` (FnAnalysis::
+    // propagate_fn): the value a read here yields, in a cell like any
+    // captured local's, made once per call. The bound wrapper is no closure
+    // over this chunk, so only the raw closure's chunk is known.
+    if (info.uses_fn && info.captured_locals.contains("fn")) {
+      int32_t cslot = fc.alloc_cell_slot(ast, "fn");
+      {
+        TempScope fts(fc);
+        int32_t t = -1;
+        if (fc.chunk_.fn_bound_slot >= 0) {
+          t = fc.alloc_temp(ast);
+          fc.emit(Op::FnHandle, t, fc.chunk_.self_slot, fc.chunk_.fn_slot,
+                  fc.chunk_.fn_bound_slot);
+        } else {
+          t = fc.owned_src(ast, {fc.chunk_.fn_slot, /*owned=*/false});
+        }
+        fc.emit(Op::CellNew, cslot, t);
+        fc.forget_temp(t);  // CellNew absorbed the +1
+      }
+      Binding& cb = fc.push_unnamed_binding({"fn", cslot, false, true});
+      if (fc.chunk_.fn_bound_slot < 0) fc.grant_known_chunk(cb, idx);
+    }
     fc.establish_frame_defer_mark(ast, info);
     fc.establish_frame_owned_mark(ast);
     // A library function keeps its entering call site (vm.md §6.2), taken
@@ -9190,8 +9230,20 @@ class Compiler {
       cap.declaration_compiled = true;
       cap.shadowed_builtin = caps.shadowed_builtins[i];
       cap.known = caps.knowns[i];
+      // An effect fn's maker: its `fn` is this capture (FuncInfo::fn_from),
+      // looked up by name where the maker is made — the statement list the
+      // lowering wrote the maker and `f` into side by side, where the name is
+      // that `f`, whatever the maker's own parameters are called.
+      if (info.free_vars[i] == info.fn_from) {
+        Binding as_fn = cap;
+        as_fn.name = "fn";
+        fc.push_unnamed_binding(std::move(as_fn));
+      }
       fc.push_unnamed_binding(std::move(cap));
     }
+    assert(!info.fn_from_read ||
+           std::find(info.free_vars.begin(), info.free_vars.end(),
+                     info.fn_from) != info.free_vars.end());
     if (self_cap >= 0) {
       int32_t s = fc.alloc_slot(ast, "self");
       fc.emit(Op::SelfMerge, s, fc.chunk_.self_slot, self_cap);
@@ -13506,6 +13558,8 @@ class Compiler {
     const auto& args = ast.nodes[1]->nodes;
     auto name = [&](size_t i) { return kconst_str(literal_text(*args[i])); };
     check_use(head, nullptr);  // the intrinsic's name binds nothing
+    if (op == "__lowered_frame")  // a statement (compile_lowered_frame_marker)
+      reject(ast, "a lowered frame's marker read as a value");
     StampGuard pos(*this, ast);
     if (op == "__unbound" && args.empty()) {
       int32_t t = alloc_temp(ast);

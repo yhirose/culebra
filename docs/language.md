@@ -4857,6 +4857,32 @@ calling it (`f()`) passes no receiver exactly as it would in a plain fn, and
 passing it on leaves the receiver to whatever call follows (`holder.f = f`,
 then `holder.f()` sees `holder`).
 
+`fn` is the function the code was written in, as anywhere else. In a
+`handle` body and its `with` clauses (the `return` clause too) it is the
+function around the `handle` (in a method, the bound method). In an
+effectful function's body and its parameters' defaults it is that effect
+fn, so `fn(…)` there is a call to it exactly as a call by its name is, and
+the operations it performs reach the same handlers. At the top level,
+reading `fn` is a `NameError` where it is read, as it is outside a
+`handle`.
+
+```culebra
+effect fn tick()
+effect fn countdown(n) {
+  if n == 0 {
+    return fn.name
+  }
+  perform tick()
+  fn(n - 1)
+}
+mut ticks = 0
+inspect(handle { countdown(3) } with tick(k) {
+  ticks += 1
+  k(nil)
+})               # => 'countdown'
+inspect(ticks)   # => 3
+```
+
 ### Performing an operation
 
 `perform op(args)` suspends the current computation and transfers to the

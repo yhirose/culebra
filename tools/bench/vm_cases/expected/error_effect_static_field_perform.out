@@ -1,0 +1,1 @@
+SyntaxError: a `perform` in this expression position is not supported yet — bind it first (`let x = perform …`). at 8:3.

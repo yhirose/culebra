@@ -108,7 +108,9 @@
 # arguments, the ones it takes and any beyond them, as it returns or throws).
 # 319 since test_audio_harmonics.cul (Audio.harmonics on tones whose harmonics
 # are known: through a vibrato they leave little of themselves in the rest).
-tests.cul 319
+# 320 since test_effects_fn.cul (`fn` in a handle's body and clauses is the
+# function around it, and in an effect fn's body that effect fn).
+tests.cul 320
 
 # tests/isolate/*.cul — run on both engines, plus the over-cap modes.
 # 21 since test_xml_isolate.cul (an XML element keeps its methods across an
@@ -145,7 +147,9 @@ tests.gen_frames 7
 # error_catch_passes.cul (what no clause takes is uncaught where it was
 # raised) and error_catch_passes_held.cul (what a guard hung on a runtime
 # error it declined is dropped where the error leaves the program).
-vm_cases 190
+# 191 since error_effect_static_field_perform.cul (a static field's value is
+# part of the effect body its class is declared in).
+vm_cases 191
 
 # ctest entries. The shell-driven ones also make up the landing gate's CLI
 # phase (tools/checks/ctest_shell_driven.py names them).
@@ -219,7 +223,9 @@ ctest.entries 36
 # loudness), in en and ja.
 # 1084 since Kauai §10 renders a part of a song and lists its marks, in en and
 # ja.
-docs.blocks 1084
+# 1086 since language §Declaring an effect shows `fn` in an effect fn's body,
+# in en and ja.
+docs.blocks 1086
 
 # The samples the language front ends are run over (examples/languages/*).
 languages.samples 130

@@ -12,6 +12,7 @@
 #include <base/shared.h>
 
 #include <algorithm>
+#include <cassert>
 #include <cstdint>
 #include <format>
 #include <map>
@@ -56,6 +57,17 @@ struct FuncInfo {
   // per-frame bound-handle cache slot (see compile_identifier's `fn`
   // path); frames that never mention `fn` pay nothing.
   bool uses_fn = false;
+  // A frame the effect lowering wrote around user code (parser.h's
+  // lowered-frame marker): it has no `fn` of its own, so `fn` in it is a free
+  // variable, the enclosing function's, carried like `self`.
+  bool lowered_frame = false;
+  // `__lowered_frame('f')`: the frame's `fn` is `f`, captured from where the
+  // frame is declared once something reads it (fn_from_read) — then a
+  // free variable like any other, and the declaring frame's
+  // fn_from_captures keeps `f` in a cell for it.
+  std::string fn_from;
+  bool fn_from_read = false;
+  std::set<std::string> fn_from_captures;
   // The body's own name: for an undecorated `fn name` (MULTIFN_DECL) the
   // declared name, for a `let name = fn …` literal the binding it
   // initializes. The body sees it as a prologue-bound local delivered by
@@ -288,6 +300,33 @@ struct FnAnalysis {
     add_free_var(info, "self");
   }
 
+  // A nested lowered frame reading `fn` reads this frame's: pass it on out
+  // when this is one too, or bind it here, the frame it means, as a cell.
+  // Nothing at the top level binds it (a read there is the NameError).
+  void propagate_fn(const FuncInfo& nested, FuncInfo& info) const {
+    if (std::find(nested.free_vars.begin(), nested.free_vars.end(), "fn") ==
+        nested.free_vars.end())
+      return;
+    if (!info.fn_from.empty()) {
+      info.fn_from_read = true;
+      return;
+    }
+    if (depth_ == 0) return;
+    if (info.lowered_frame) return add_free_var(info, "fn");
+    info.uses_fn = true;
+    info.captured_locals.insert("fn");
+  }
+  // Both of a nested function's reads of the frame around it, and the `f` a
+  // nested maker's `fn` reads.
+  void propagate(const FuncInfo& nested, FuncInfo& info) const {
+    propagate_self(nested, info);
+    propagate_fn(nested, info);
+    if (nested.fn_from_read) {
+      info.captured_locals.insert(nested.fn_from);
+      info.fn_from_captures.insert(nested.fn_from);
+    }
+  }
+
   // What a name node resolves to, kNone when nothing declares it.
   size_t symbol_of(const peg::Ast& name) const { return res_.symbol_of(name); }
 
@@ -321,17 +360,17 @@ struct FnAnalysis {
         }
       }
       if (node.tag == "DEFER"_) {
-        propagate_self(analyze_fn_common(&node, nullptr, *node.nodes[0]), info);
+        propagate(analyze_fn_common(&node, nullptr, *node.nodes[0]), info);
       } else if (node.tag == "MULTIFN_DECL"_) {
-        propagate_self(analyze_multifn(node), info);
+        propagate(analyze_multifn(node), info);
       } else {
         std::string_view own_name;
         if (auto it = literal_own_names_.find(&node);
             it != literal_own_names_.end())
           own_name = it->second;
         auto fv = culebra::view_function(node);
-        propagate_self(analyze_fn_common(&node, fv.params, *fv.body, own_name),
-                       info);
+        propagate(analyze_fn_common(&node, fv.params, *fv.body, own_name),
+                  info);
       }
       return;
     }
@@ -428,8 +467,11 @@ struct FnAnalysis {
           continue;
         }
         if (!mv.is_static && mv.name == "new") new_method_asts.push_back(&method);
-        analyze_fn_common(&method, mv.params, **mv.body, class_own,
-                          FuncInfo::OwnNameSource::Receiver);
+        // A lowered state class's methods are lowered frames, whose `fn`
+        // this frame answers; any other method has its own.
+        propagate_fn(analyze_fn_common(&method, mv.params, **mv.body, class_own,
+                                       FuncInfo::OwnNameSource::Receiver),
+                     info);
       }
       // The field-init frame is a receiver frame (build_class_instance /
       // the `new` body always invoke it with the instance as `self`), so
@@ -492,8 +534,17 @@ struct FnAnalysis {
       // `__ARGS__` is auto-bound by the function prologue; flag use so
       // the prologue can skip the Array allocation when nothing reads it.
       if (node.token == "__ARGS__") info.uses_args = true;
-      // Reading the `fn` handle allocates the bound-handle cache slot.
-      if (node.token == "fn") info.uses_fn = true;
+      // Reading the `fn` handle allocates the bound-handle cache slot; in a
+      // lowered frame it is the enclosing function's, and a maker's is a
+      // capture already.
+      if (node.token == "fn") {
+        if (info.lowered_frame)
+          add_free_var(info, "fn");
+        else if (!info.fn_from.empty())
+          info.fn_from_read = true;
+        else
+          info.uses_fn = true;
+      }
       // Any mention of the body's own name turns on its prologue bind.
       if (node.token == info.own_name) info.own_name_used = true;
       // `self` is always capturable: every frame defines a self slot (the
@@ -681,7 +732,9 @@ struct FnAnalysis {
       auto& here = found[f];
       std::vector<std::string> free;
       for (const auto& n : info->free_vars)
-        if (n == "self" || is_field_init_slot_name(n)) free.push_back(n);
+        if (n == "self" || n == "fn" || n == info->fn_from ||
+            is_field_init_slot_name(n))
+          free.push_back(n);
       std::vector<std::pair<size_t, std::string_view>> by_position;
       for (const auto& [n, pos] : here.free) by_position.emplace_back(pos, n);
       std::sort(by_position.begin(), by_position.end());
@@ -693,9 +746,13 @@ struct FnAnalysis {
       for (const auto& n : here.optional)
         if (!here.read.contains(n)) info->optional_free_vars.emplace(n);
       bool self = info->captured_locals.contains("self");
+      bool fn = info->captured_locals.contains("fn");
       info->captured_locals.clear();
       for (const auto& n : here.captured) info->captured_locals.emplace(n);
       if (self) info->captured_locals.insert("self");
+      if (fn) info->captured_locals.insert("fn");
+      for (const auto& n : info->fn_from_captures)
+        info->captured_locals.insert(n);
     }
   }
 
@@ -865,6 +922,10 @@ struct FnAnalysis {
       info.own_name = std::string(own_name);
       info.own_name_source = own_name_source;
     }
+    if (const peg::Ast* marker = culebra::lowered_frame_marker(body_ast)) {
+      info.fn_from = culebra::lowered_frame_fn_from(*marker);
+      info.lowered_frame = info.fn_from.empty();
+    }
     depth_++;
     if (params_ast)
       for (auto& p : params_ast->nodes)
@@ -881,6 +942,9 @@ struct FnAnalysis {
     // closure inside the method still cell-captures the receiver slot.
     if (info_key->tag == "METHOD"_ || info_key->tag == "TRAIT_METHOD"_)
       std::erase(info.free_vars, "self");
+    if (info.fn_from_read) add_free_var(info, info.fn_from);
+    // A lowered frame binds no `fn`: the one it reads is a capture.
+    assert(!info.uses_fn || (!info.lowered_frame && info.fn_from.empty()));
     return record(info_key, res_.body_scope, &body_ast, std::move(info));
   }
 

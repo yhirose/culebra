@@ -1,0 +1,337 @@
+// Conformance: algebraic effects — `fn` in the bodies the lowering writes
+// around user code: a handle's body and clauses, and an effect fn's body.
+// Kept apart from test_effects_names.cul, whose --jit compile time grows
+// faster than its length.
+
+// --- `fn` in the two lowered bodies ----------------------------------------
+// `fn` names the function it is written in. A handle's body and clauses run
+// as functions of the lowering's own, and an effect fn's body as a method of
+// its computation, so each `fn` there is pointed back at the function the
+// user wrote it in: the one around the handle, and the effect fn itself.
+effect fn fh_ask()
+fn fh_names(k) {
+  handle {
+    let before = fn.name
+    perform fh_ask()
+    let own = || fn.name  // a function defined in the body has its own
+    [before, fn.name, own()]
+  } with fh_ask(resume) {
+    resume(nil)
+  }
+}
+assert_eq(fh_names(0), ['fh_names', 'fh_names', ''])
+fn fh_count(k) {
+  if k == 0 {
+    return 0
+  }
+  handle {
+    perform fh_ask()
+    fn(k - 1) + 1
+  } with fh_ask(resume) {
+    resume(nil)
+  }
+}
+assert_eq(fh_count(3), 3)
+fn fh_clause(k) {
+  handle { perform fh_ask() } with fh_ask(resume) { resume(fn.name) }
+}
+assert_eq(fh_clause(0), 'fh_clause')
+fn fh_return_clause(k) {
+  handle { 1 } with return(v) { [v, fn.name] }
+}
+assert_eq(fh_return_clause(0), [1, 'fh_return_clause'])
+fn fh_nested(k) {
+  handle {
+    handle {
+      perform fh_ask()
+      fn.name
+    } with fh_ask(resume) {
+      resume(nil)
+    }
+  } with fh_ask(resume) {
+    resume(nil)
+  }
+}
+assert_eq(fh_nested(0), 'fh_nested')
+
+// In a method, `fn` is the bound method: recursing through it keeps `self`.
+class FhCounter {
+  new(.base) {
+  }
+  down(k) {
+    if k == 0 {
+      return self.base
+    }
+    handle {
+      perform fh_ask()
+      fn(k - 1) + 1
+    } with fh_ask(resume) {
+      resume(nil)
+    }
+  }
+}
+assert_eq(FhCounter(10).down(3), 13)
+
+// An effect fn's `fn` is the effect fn: a call through it is a call to an
+// effect fn, so the performs of every level reach the handler.
+effect fn fh_countdown(k) {
+  if k == 0 {
+    return fn.name
+  }
+  perform fh_ask()
+  fn(k - 1)
+}
+mut fh_asked = 0
+assert_eq(handle { fh_countdown(3) } with fh_ask(resume) {
+  fh_asked += 1
+  resume(nil)
+}, 'fh_countdown')
+assert_eq(fh_asked, 3)
+
+// Whatever the body binds, its `fn` stays the effect fn: a clause's local or
+// resume parameter of that name, a local in an inner block, a parameter.
+effect fn fh_walk(k) {
+  handle {
+    perform fh_ask()
+  } with fh_ask(resume) {
+    let fh_walk = 42
+    resume(fn)
+  }
+}
+assert_true(handle { fh_walk(0) } with fh_ask(resume) { resume(nil) } == fh_walk)
+effect fn fh_walk2(k) {
+  handle {
+    perform fh_ask()
+  } with fh_ask(fh_walk2) {
+    fh_walk2(fn)
+  }
+}
+assert_true(handle { fh_walk2(0) } with fh_ask(resume) { resume(nil) } == fh_walk2)
+effect fn fh_inner(k) {
+  if k > 0 {
+    let fh_inner = 1
+  }
+  perform fh_ask()
+  fn.name
+}
+assert_eq(handle { fh_inner(1) } with fh_ask(resume) { resume(nil) }, 'fh_inner')
+effect fn fh_param(fh_param) {
+  perform fh_ask()
+  [fh_param, fn.name]
+}
+assert_eq(handle { fh_param(1) } with fh_ask(resume) { resume(nil) },
+          [1, 'fh_param'])
+// A parameter's default reads it too.
+effect fn fh_default(k, f = fn) {
+  perform fh_ask()
+  f.name
+}
+assert_eq(handle { fh_default(1) } with fh_ask(resume) { resume(nil) }, 'fh_default')
+// And a call through `fn` is still a call to the effect fn when a local takes
+// its name.
+effect fn fh_shadowed(k) {
+  let fh_shadowed = 'shadow'
+  if k == 0 {
+    return fh_shadowed
+  }
+  perform fh_ask()
+  fn(k - 1)
+}
+mut fh_asked2 = 0
+assert_eq(handle { fh_shadowed(3) } with fh_ask(resume) {
+  fh_asked2 += 1
+  resume(nil)
+}, 'shadow')
+assert_eq(fh_asked2, 3)
+
+// With no function around the handle, reading `fn` is the NameError it is
+// anywhere outside a function, raised when it is read: one never read is none.
+assert_eq(handle {
+  if false {
+    fn
+  }
+  perform fh_ask()
+  'ran'
+} with fh_ask(resume) {
+  resume(nil)
+}, 'ran')
+mut fh_kind = nil
+try {
+  handle {
+    perform fh_ask()
+    fn
+  } with fh_ask(resume) {
+    resume(nil)
+  }
+} catch e {
+  fh_kind = e.kind
+}
+assert_eq(fh_kind, 'NameError')
+
+// Wherever the lowering's frames come from, `fn` is the function the user
+// wrote: a decorated one, a static method, a perform's argument, a literal's
+// shorthand key.
+fn fh_deco(f) {
+  f
+}
+@fh_deco
+fn fh_decorated(k) {
+  handle {
+    perform fh_ask()
+    fn.name
+  } with fh_ask(resume) {
+    resume(nil)
+  }
+}
+assert_eq(fh_decorated(0), 'fh_decorated')
+class FhStatic {
+  static named() {
+    handle {
+      perform fh_ask()
+      fn.name
+    } with fh_ask(resume) {
+      resume(nil)
+    }
+  }
+}
+assert_eq(FhStatic.named(), 'named')
+effect fn fh_echo(v)
+fn fh_args() {
+  let v = handle {
+    perform fh_echo(fn.name)
+  } with fh_echo(w, resume) {
+    resume(w)
+  }
+  let o = handle {
+    perform fh_ask()
+    let r = {fn}
+    r
+  } with fh_ask(resume) {
+    resume(nil)
+  }
+  [v, o['fn'] == fn]
+}
+assert_eq(fh_args(), ['fh_args', true])
+
+// A call through an effect fn's `fn` passes what a call by its name passes.
+effect fn fh_kw(k, *, tag = 'x', **kw) {
+  if k == 0 {
+    return [tag, kw]
+  }
+  perform fh_ask()
+  fn(k - 1, tag: tag, **kw)
+}
+assert_eq(handle { fh_kw(2, tag: 'y', z: 3) } with fh_ask(resume) { resume(nil) },
+          ['y', {z: 3}])
+effect fn fh_rest(k, *rest) {
+  if k == 0 {
+    return rest
+  }
+  perform fh_ask()
+  fn(k - 1, k, 9)
+}
+assert_eq(handle { fh_rest(2, 5) } with fh_ask(resume) { resume(nil) }, [1, 9])
+
+// A method's `fn` is one bound method in its body, its clauses and itself;
+// a closure's that captured `self` and was called plainly is the closure.
+class FhBound {
+  new(.v) {
+  }
+  same() {
+    let a = handle {
+      perform fh_ask()
+      fn
+    } with fh_ask(resume) {
+      resume(fn)
+    }
+    [a == fn, fn == fn]
+  }
+  make() {
+    fn () {
+      let s = self.v
+      handle {
+        perform fh_ask()
+        fn
+      } with fh_ask(resume) {
+        resume(nil)
+      }
+    }
+  }
+}
+assert_eq(FhBound(1).same(), [true, true])
+let fh_made = FhBound(5).make()
+assert_true(fh_made() == fh_made)
+
+// A method of a class declared in an effect fn's body has a body of its own:
+// its `fn` is itself, and a call there is an ordinary one, by `fn` or by an
+// effect fn's name — also in a handle's body inside one.
+effect fn fh_other(j) {
+  perform fh_ask()
+  j
+}
+effect fn fh_methods(k) {
+  class FhInner {
+    by_fn(j) {
+      let r = if j == 0 { 0 } else { fn(j - 1) + 1 }
+      r
+    }
+    by_name(j) {
+      let r = if j == 0 { 0 } else { fh_other(j) + 1 }
+      r
+    }
+  }
+  perform fh_ask()
+  [FhInner().by_fn(k), FhInner().by_name(k)]
+}
+assert_eq(handle { fh_methods(3) } with fh_ask(resume) { resume(nil) }, [3, 4])
+effect fn fh_methods_in_handle(k) {
+  handle {
+    class FhInner2 {
+      by_fn(j) {
+        let r = if j == 0 { 0 } else { fn(j - 1) + 1 }
+        r
+      }
+    }
+    perform fh_ask()
+    FhInner2().by_fn(k)
+  } with fh_ask(resume) {
+    resume(nil)
+  }
+}
+assert_eq(handle { fh_methods_in_handle(2) } with fh_ask(resume) { resume(nil) }, 2)
+
+// A frame's `fn` is let go of on every way out of it: thrown out of a block
+// after another block's handle read it, the method leaves its receiver to be
+// dropped.
+mut fh_dropped = 0
+class FhDrop {
+  new() {
+  }
+  drop() {
+    fh_dropped += 1
+  }
+  run(k) {
+    if k > 0 {
+      let g = handle {
+        perform fh_ask()
+        fn
+      } with fh_ask(resume) {
+        resume(nil)
+      }
+    }
+    if k > 0 {
+      let n = handle {
+        perform fh_ask()
+        fn.name
+      } with fh_ask(resume) {
+        resume(nil)
+      }
+      throw 'boom'
+    }
+  }
+}
+try {
+  FhDrop().run(1)
+} catch e {
+}
+assert_eq(fh_dropped, 1)

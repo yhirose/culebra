@@ -59,6 +59,7 @@ error_destructure_immutable	1
 error_destructure_nested	1
 error_destructure_object	1
 error_div_zero	1
+error_effect_static_field_perform	1
 error_fn_arity	1
 error_fn_pattern_arity	1
 error_fn_pattern_immutable	1
