@@ -5483,6 +5483,33 @@ inline JitValue _ns_audio_resample(JitValue* a, int64_t) {
                               [&] { ad::resample(xs.data(), xs.size(), from, to, out); });
   return _ns_audio_samples(out, "Audio.resample() result");
 }
+// [the pitch every 10 ms (nil where none), the clarity of each].
+inline JitValue _ns_audio_pitch(JitValue* a, int64_t) {
+  namespace ad = culebra::_audio_detail;
+  std::vector<double> xs;
+  _ns_audio_numbers(a[0], xs, ad::kSamplesError);
+  double low = _ns_adapt::take_double(a[1]);
+  double high = _ns_adapt::take_double(a[2]);
+  double rate = _ns_adapt::take_double(a[3]);
+  if (!(rate >= 1 && rate <= INT32_MAX)) _ns_audio_fail("Audio.pitch: the rate is from 1 below 2^31");
+  if (!(low >= 20 && low < high && high < rate / 2))
+    _ns_audio_fail("Audio.pitch: low is 20 Hz or more, below high, and high below half the rate");
+  ad::PitchTrack track;
+  culebra::alloc_or_too_large("Audio.pitch: the samples", 0, 0,
+                              [&] { track = ad::pitch_track(xs.data(), xs.size(), rate, low, high); });
+  auto* hz = _jit_array_new_reserved(static_cast<int64_t>(track.hz.size()), "Audio.pitch() result");
+  for (double v : track.hz) {
+    if (std::isnan(v))
+      culebra_runtime_array_push(hz, TAG_NIL, 0);
+    else
+      culebra_runtime_array_push(hz, TAG_FLOAT, _culebra_double_to_bits(v));
+  }
+  auto* clarity = _ns_audio_floats(track.clarity.data(), track.clarity.size(), "Audio.pitch() result");
+  auto* r = _jit_array_new_reserved(2, "Audio.pitch() result");
+  culebra_runtime_array_push(r, TAG_ARRAY, reinterpret_cast<int64_t>(hz));
+  culebra_runtime_array_push(r, TAG_ARRAY, reinterpret_cast<int64_t>(clarity));
+  return _ns_adapt::v_array(r);
+}
 // Checked here, before any samples are touched: a rate above zero, and each
 // mode a freq inside (0, rate/2) and a width above zero.
 inline JitValue _ns_audio_resonate(JitValue* a, int64_t) {
@@ -11206,6 +11233,7 @@ inline const NsMethod kNsRows_Audio_native[] = {
   {"_Audio", "decode",         1, &_ns_audio_decode},
   {"_Audio", "spectrum",       3, &_ns_audio_spectrum},
   {"_Audio", "resample",       3, &_ns_audio_resample},
+  {"_Audio", "pitch",          4, &_ns_audio_pitch},
   {"_Audio", "tone_loudness",  1, &_ns_audio_tone_loudness},
   {"_Audio", "graph_new",      1, &_ns_audio_graph_new},
   {"_Audio", "graph_part",     5, &_ns_audio_graph_part},

@@ -102,7 +102,9 @@
 # against a stand-in for the Messages API).
 # 316 since test_audio_kauai_render.cul (a part of a song is the whole song's
 # samples there, and builds only the external sounds it plays).
-tests.cul 316
+# 317 since test_audio_pitch.cul (Audio.pitch on tones whose pitch is known:
+# each a note read as itself rather than at a fraction or a multiple of it).
+tests.cul 317
 
 # tests/isolate/*.cul — run on both engines, plus the over-cap modes.
 # 21 since test_xml_isolate.cul (an XML element keeps its methods across an

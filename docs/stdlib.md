@@ -8869,20 +8869,22 @@ println(both.size())                                                     # => 48
 ### Measuring a sound
 
 These read sound rather than make it: a recording's samples, what
-frequencies are in them, the same samples at another rate, and how loud
-they are.
+frequencies are in them, its pitch, the same samples at another rate, and
+how loud they are.
 
 | Function | Answer |
 |---|---|
 | `Audio.decode(data: String) -> Object` | a recording's bytes (WAV, MP3 or Ogg) as it is: `{rate, channels}`, `rate` the samples a second it was made at and `channels` an Array of each channel's samples, -1.0..1.0, at the depth it was made in (a 24-bit WAV keeps its 24 bits) |
 | `Audio.spectrum(samples: Array, size = 2048, hop = 512) -> Array` | the magnitudes a frame at a time: frame `t` is the `size` samples from `t * hop` on (past the end taken as 0) through a periodic Hann window, and `frames[t][k]` is the magnitude of bin `k`, `0` to `size / 2`, as numpy's `rfft` gives it. Bin `k` is `k * rate / size` Hz. There are `ceil(samples.size() / hop)` frames |
+| `Audio.pitch(samples: Array, low, high, rate = 44100) -> Object` | the pitch every 10 ms, searched from `low` to `high` Hz (an instrument's lowest and highest notes with a little room: the narrower, the fewer readings an octave off): `{hz, clarity}`, `hz[t]` the pitch in Hz of the samples about `t * 0.01` s, `nil` where there is none, and `clarity[t]` how periodic they are, `0.0` to `1.0` (1 less YIN's normalized difference at the period it finds). `hz[t]` is `nil` where the clarity is under `0.7`, and silence is `0.0`. There are `ceil(seconds * 100)` frames, each reading the smallest power of 2 samples that holds 3 periods of `low` (1024 for 200 Hz at 44100). Each frame's candidates (YIN's period, it times and divided by 2, 3 and 4, and YIN's other dips) are scored by how the spectrum matches their 1st and prime harmonics (as SWIPE' scores a pitch), and the pitch is chosen along each run of frames as pYIN chooses, so a note held through a weak frame keeps its pitch; the one chosen is then read finely from its harmonics' peaks |
 | `Audio.resample(samples: Array, from, to) -> Array` | `samples` taken `from` times a second, as they would be taken `to` times: `ceil(n * to / from)` of them, band-limited (a windowed sinc 64 zero crossings wide) so that nothing above half the lower rate folds back. The same samples when the rates are equal |
 | `Audio.loudness(samples: Array, rate = 44100) -> Float?` | how loud `samples` are at their loudest, in LUFS: the loudest 400 ms, K-weighted (ITU-R BS.1770's momentary loudness), the measure Kauai weighs an instrument by. `nil` for silence |
 | `Audio.integrated_loudness(samples: Array, rate = 44100) -> Float?` | how loud `samples` are over their whole length, in LUFS: the mean power of their 400 ms blocks stepped by 100 ms, K-weighted, leaving out the blocks under -70 LUFS and then those more than 10 LU under the mean of the rest (ITU-R BS.1770's integrated loudness, EBU R128's programme loudness), so a passage's quiet ends and gaps do not count. A sound shorter than 400 ms is one block. `nil` for silence |
 
 Bytes that are not a recording raise `ValueError`, and so do a `size` that
-is not a power of 2 from 2 to 2^24, a `hop` below 1, and a rate that is
-not from 1 below 2^31. In the browser, `decode` raises `ValueError`: the
+is not a power of 2 from 2 to 2^24, a `hop` below 1, a rate that is not
+from 1 below 2^31, a `low` under 20 Hz or not under `high`, and a `high`
+not under half the rate. In the browser, `decode` raises `ValueError`: the
 page decodes audio only to play it. The others work there as natively.
 
 ```culebra
@@ -8901,6 +8903,12 @@ let mid = frames[frames.size() / 2]
 let peak = mid.index_of(mid.max())
 println(Math.round(peak * 44100 / 4096))                                 # => 441
 println(Math.round(Audio.loudness(xs)))                                  # => -10
+
+# Its pitch every 10 ms, searched from 200 to 1400 Hz.
+let p = Audio.pitch(xs, low: 200, high: 1400)
+println(p.hz.size())                                                     # => 100
+println(Math.round(p.hz[50]))                                            # => 440
+println(p.clarity[50] > 0.99)                                            # => true
 
 # The second again at half the amplitude: as loud at its loudest, and over
 # the whole the mean of a power and its quarter, 2 dB down.

@@ -23,6 +23,7 @@
 #include <stdlib/pcm_block.h>
 
 #include <algorithm>
+#include <cassert>
 #include <bit>
 #include <chrono>
 #include <climits>
@@ -687,50 +688,66 @@ inline void partials(int64_t n, Param freq, Param gain, const PartialsSpectrum& 
   }
 }
 
-// --- Measuring: a sound's spectrum, its samples at another rate ------------
+// --- Measuring: a sound's spectrum, its pitch, its samples at another rate --
 
-// The spectrum of a frame of `size` (a power of 2) samples: through a
-// periodic Hann window, then the magnitude |X_k| of bins 0 to size/2, as
-// numpy's rfft gives it (bin k is k * rate / size Hz). An iterative radix-2
-// FFT, its window, input order and twiddles worked out once for every frame.
-class Spectrum {
+// An iterative radix-2 FFT of `size` (a power of 2, 2 or more) points, its
+// input order and twiddles worked out once for every frame: the caller puts
+// point i at a[order(i)], and transform() leaves X_k at a[k].
+class Fft {
  public:
-  explicit Spectrum(size_t size)
-      : size_(size), window_(size), order_(size), twiddle_(size / 2), a_(size) {
+  explicit Fft(size_t size) : size_(size), order_(size), twiddle_(size / 2) {
     const double tau = 2.0 * std::numbers::pi, n = static_cast<double>(size);
     const int bits = std::countr_zero(size);
-    for (size_t i = 0; i < size; i++) {
-      window_[i] = 0.5 - 0.5 * std::cos(tau * static_cast<double>(i) / n);
+    for (size_t i = 0; i < size; i++)
       order_[i] = (order_[i >> 1] >> 1) | ((i & 1) << (bits - 1));  // i's bits reversed
-    }
     for (size_t k = 0; k < size / 2; k++)
       twiddle_[k] = std::polar(1.0, -tau * static_cast<double>(k) / n);
   }
-  // Frame t starts at sample t * hop, so `n` samples are ceil(n / hop) frames.
-  static size_t frames(size_t n, size_t hop) { return n == 0 ? 0 : (n - 1) / hop + 1; }
-  size_t bins() const { return size_ / 2 + 1; }
-  // The frame of `x` (`n` long) from `start`, those past the end taken as 0,
-  // into `out` (bins() long).
-  void frame(const double* x, size_t n, size_t start, double* out) {
-    for (size_t i = 0; i < size_; i++)
-      a_[order_[i]] = start + i < n ? x[start + i] * window_[i] : 0.0;
+  size_t size() const { return size_; }
+  size_t order(size_t i) const { return order_[i]; }
+  void transform(std::complex<double>* a) const {
     for (size_t len = 2; len <= size_; len *= 2) {
       const size_t half = len / 2, step = size_ / len;
       for (size_t s = 0; s < size_; s += len)
         for (size_t j = 0; j < half; j++) {
-          auto t = twiddle_[j * step] * a_[s + j + half];
-          a_[s + j + half] = a_[s + j] - t;
-          a_[s + j] += t;
+          auto t = twiddle_[j * step] * a[s + j + half];
+          a[s + j + half] = a[s + j] - t;
+          a[s + j] += t;
         }
     }
-    for (size_t k = 0; k < bins(); k++) out[k] = std::sqrt(std::norm(a_[k]));
   }
 
  private:
   size_t size_;
-  std::vector<double> window_;
   std::vector<size_t> order_;
-  std::vector<std::complex<double>> twiddle_, a_;
+  std::vector<std::complex<double>> twiddle_;
+};
+
+// The spectrum of a frame of `size` (a power of 2) samples: through a
+// periodic Hann window, then the magnitude |X_k| of bins 0 to size/2, as
+// numpy's rfft gives it (bin k is k * rate / size Hz).
+class Spectrum {
+ public:
+  explicit Spectrum(size_t size) : fft_(size), window_(size), a_(size) {
+    const double tau = 2.0 * std::numbers::pi, n = static_cast<double>(size);
+    for (size_t i = 0; i < size; i++) window_[i] = 0.5 - 0.5 * std::cos(tau * static_cast<double>(i) / n);
+  }
+  // Frame t starts at sample t * hop, so `n` samples are ceil(n / hop) frames.
+  static size_t frames(size_t n, size_t hop) { return n == 0 ? 0 : (n - 1) / hop + 1; }
+  size_t bins() const { return fft_.size() / 2 + 1; }
+  // The frame of `x` (`n` long) from `start`, those past the end taken as 0,
+  // into `out` (bins() long).
+  void frame(const double* x, size_t n, size_t start, double* out) {
+    for (size_t i = 0; i < fft_.size(); i++)
+      a_[fft_.order(i)] = start + i < n ? x[start + i] * window_[i] : 0.0;
+    fft_.transform(a_.data());
+    for (size_t k = 0; k < bins(); k++) out[k] = std::sqrt(std::norm(a_[k]));
+  }
+
+ private:
+  Fft fft_;
+  std::vector<double> window_;
+  std::vector<std::complex<double>> a_;
 };
 
 // I0, the Kaiser window's Bessel function, by its series (std::cyl_bessel_i
@@ -799,6 +816,348 @@ inline void resample(const double* x, size_t n, double from, double to, std::vec
       sum += filter.at(std::abs(time - static_cast<double>(j)) * stride) * x[j];
     out[t] = scale * sum;
   }
+}
+
+// The pitch every 10 ms, read as pYIN reads it but with the candidates scored
+// by their harmonics as SWIPE' scores a pitch. YIN alone takes two, three or
+// four periods for one where a tone is weak or its attack rough, and half a
+// period where its even harmonics are strong; so each frame lists candidates
+// (YIN's own pick, that pick times and divided by 2, 3 and 4, and each other
+// dip of YIN's normalized difference under 0.5) and scores each against the
+// frame's spectrum. Along each run of frames with candidates, a gap under 6
+// frames not ending it, one is chosen for each frame (Viterbi) against the
+// cost of each jump between frames, so a note held through a weak frame keeps
+// its pitch. The one chosen is then read finely from its harmonics' peaks,
+// through a window as long as YIN's: a longer one reads a slur's
+// neighbouring note into the frames about it.
+struct PitchTrack {
+  std::vector<double> hz;       // NaN where a frame has no pitch
+  std::vector<double> clarity;  // 0 to 1
+};
+
+class PitchReader {
+ public:
+  // A frame's candidates, each with its cost and its pitch read finely (none
+  // where the frame has no pitch), and how periodic the frame is: 1 less
+  // YIN's normalized difference at the period it picks, 0 where silent.
+  struct Frame {
+    std::vector<double> cands, costs, fine;
+    double clarity = 0.0;
+  };
+
+  // YIN reads n_ samples, the smallest power of 2 holding 3 periods of `low`.
+  // The scores read the harmonics through a Hann window twice that, the fine
+  // reading through one as long; both padded to 4 n_.
+  PitchReader(double rate, double low, double high)
+      : rate_(rate),
+        low_(low),
+        high_(high),
+        lo_(static_cast<size_t>(std::floor(rate / high))),
+        hi_(static_cast<size_t>(std::ceil(rate / low))),
+        n_(std::bit_ceil(static_cast<size_t>(std::ceil(3.0 * rate / low)))),
+        yin_(2 * n_),
+        spec_(4 * n_),
+        frame_(n_),
+        energy_(n_ + 1),
+        d_(hi_ + 2),
+        cmnd_(hi_ + 2),
+        power_(2 * n_),
+        a_(2 * n_),
+        long_(hann(2 * n_)),
+        short_(hann(n_)),
+        b_(4 * n_),
+        mag_(2 * n_ + 1),
+        bin_hz_(rate / static_cast<double>(4 * n_)) {}
+
+  // The frame of `x` (`n` long) about sample `c`, those outside it taken as 0.
+  Frame read(const double* x, size_t n, int64_t c) {
+    Frame f;
+    if (!yin(x, n, c)) return f;
+    // YIN's pick: the first dip under 0.12, else the least, if under 0.3.
+    size_t best = lo_;
+    bool dipped = false;
+    for (size_t t = lo_; t <= hi_ && !dipped; t++) {
+      if (cmnd_[t] < 0.12) {
+        best = t;
+        while (best < hi_ && cmnd_[best + 1] < cmnd_[best]) best++;
+        dipped = true;
+      }
+    }
+    if (!dipped)
+      for (size_t t = lo_; t <= hi_; t++)
+        if (cmnd_[t] < cmnd_[best]) best = t;
+    f.clarity = std::clamp(1.0 - cmnd_[best], 0.0, 1.0);
+    if (cmnd_[best] > 0.3) return f;
+    const double pick = dip_hz(best);
+    std::vector<double> wanted{pick};
+    for (double m : {2.0, 3.0, 4.0}) {
+      wanted.push_back(pick * m);
+      wanted.push_back(pick / m);
+    }
+    for (size_t t = lo_; t <= hi_; t++)
+      if (t != best && cmnd_[t] < 0.5 && cmnd_[t] < cmnd_[t - 1] && cmnd_[t] <= cmnd_[t + 1])
+        wanted.push_back(dip_hz(t));
+    for (double hz : wanted) {
+      if (hz < low_ || hz > high_) continue;
+      if (std::any_of(f.cands.begin(), f.cands.end(), [&](double g) { return cents_between(hz, g) <= 30.0; }))
+        continue;
+      f.cands.push_back(hz);
+    }
+    if (f.cands.empty()) return f;
+    spectrum(x, n, c, long_);
+    for (double hz : f.cands) f.costs.push_back(1.0 - score(hz));
+    spectrum(x, n, c, short_);
+    for (double hz : f.cands) f.fine.push_back(fine(hz));
+    return f;
+  }
+
+  static double cents_between(double f, double g) { return std::abs(1200.0 * std::log2(f / g)); }
+
+ private:
+  // The highest frequency a candidate is scored to.
+  static constexpr double kScoreTop = 5000.0;
+
+  static double at(const double* x, size_t n, int64_t j) {
+    if (j < 0 || j >= static_cast<int64_t>(n)) return 0.0;
+    return std::isfinite(x[j]) ? x[j] : 0.0;
+  }
+
+  // YIN's cumulative-mean-normalized difference of the n_ samples about `c`
+  // into cmnd_, and the raw difference into d_ (the frame's overlap with
+  // itself shrinking as the lag grows); false where they are near silent, a
+  // mean square under 1e-6 (-60 dBFS).
+  bool yin(const double* x, size_t n, int64_t c) {
+    const int64_t start = c - static_cast<int64_t>(n_ / 2);
+    energy_[0] = 0.0;
+    for (size_t i = 0; i < n_; i++) {
+      frame_[i] = at(x, n, start + static_cast<int64_t>(i));
+      energy_[i + 1] = energy_[i] + frame_[i] * frame_[i];
+    }
+    if (energy_[n_] / static_cast<double>(n_) < 1e-6) return false;
+    // The autocorrelation, the transform of the padded frame's power spectrum.
+    const size_t m = 2 * n_;
+    for (size_t i = 0; i < m; i++) a_[yin_.order(i)] = i < n_ ? frame_[i] : 0.0;
+    yin_.transform(a_.data());
+    for (size_t k = 0; k < m; k++) power_[k] = std::norm(a_[k]);
+    for (size_t k = 0; k < m; k++) a_[yin_.order(k)] = power_[k];
+    yin_.transform(a_.data());
+    double running = 0.0;
+    cmnd_[0] = 1.0;
+    for (size_t t = 0; t <= hi_ + 1; t++) {
+      d_[t] = energy_[n_ - t] + (energy_[n_] - energy_[t]) - 2.0 * a_[t].real() / static_cast<double>(m);
+      if (t == 0) continue;
+      running += d_[t];
+      cmnd_[t] = running > 0 ? d_[t] * static_cast<double>(t) / running : 1.0;
+    }
+    return true;
+  }
+
+  // The frequency of the dip at lag `t`, between lags by a parabola.
+  double dip_hz(size_t t) const {
+    const double a = d_[t - 1], b = d_[t], c = d_[t + 1], den = a - 2.0 * b + c;
+    const double shift = den != 0.0 ? 0.5 * (a - c) / den : 0.0;
+    return rate_ / (static_cast<double>(t) + std::clamp(shift, -1.0, 1.0));
+  }
+
+  static std::vector<double> hann(size_t size) {
+    std::vector<double> w(size);
+    const double tau = 2.0 * std::numbers::pi, n = static_cast<double>(size);
+    for (size_t i = 0; i < size; i++) w[i] = 0.5 - 0.5 * std::cos(tau * static_cast<double>(i) / n);
+    return w;
+  }
+
+  // The magnitudes of the frame about `c` through `window` into mag_.
+  void spectrum(const double* x, size_t n, int64_t c, const std::vector<double>& window) {
+    const size_t w = window.size();
+    const int64_t start = c - static_cast<int64_t>(w / 2);
+    for (size_t i = 0; i < 4 * n_; i++)
+      b_[spec_.order(i)] = i < w ? at(x, n, start + static_cast<int64_t>(i)) * window[i] : 0.0;
+    spec_.transform(b_.data());
+    for (size_t k = 0; k < mag_.size(); k++) mag_[k] = std::sqrt(std::norm(b_[k]));
+  }
+
+  // How well the frame's magnitudes match a kernel of the candidate's 1st and
+  // prime harmonics, as SWIPE' (Camacho and Harris, 2008) scores a pitch:
+  // each a cosine's lobe, positive at the harmonic and negative half a
+  // harmonic either side, weighed by 1 over the root of its frequency, from a
+  // quarter of `low` to 5 kHz; their normalized inner product, -1 to 1. A
+  // reading at 1/m of the pitch finds the pitch's harmonics at its own 2nd,
+  // 4th, 6th, which the primes past the 2nd leave out; one at 2/5 of it finds
+  // the pitch half a harmonic off its own 2nd and 3rd; one at twice it finds
+  // the pitch half a harmonic under its own 1st. (SWIPE' scores the
+  // magnitudes' square roots; the magnitudes themselves misread fewer of a
+  // soprano saxophone's notes.)
+  double score(double hz) {
+    const auto lo = std::max<size_t>(1, static_cast<size_t>(std::ceil(0.25 * low_ / bin_hz_)));
+    const auto hi = std::min(mag_.size() - 1, static_cast<size_t>(std::floor(kScoreTop / bin_hz_)));
+    if (lo > hi) return 0.0;
+    kernel_.assign(hi - lo + 1, 0.0);
+    for (int p : kPrimes) {
+      if ((p - 0.75) * hz >= kScoreTop) break;
+      const auto a = std::max(lo, static_cast<size_t>(std::ceil((p - 0.75) * hz / bin_hz_)));
+      const auto b = std::min(hi, static_cast<size_t>(std::floor((p + 0.75) * hz / bin_hz_)));
+      for (size_t u = a; u <= b; u++) {
+        const double freq = static_cast<double>(u) * bin_hz_;
+        kernel_[u - lo] += std::cos(2.0 * std::numbers::pi * (freq / hz - p)) / std::sqrt(freq);
+      }
+    }
+    double dot = 0.0, kk = 0.0, ss = 0.0;
+    for (size_t u = lo; u <= hi; u++) {
+      const double k = kernel_[u - lo];
+      dot += k * mag_[u];
+      kk += k * k;
+      ss += mag_[u] * mag_[u];
+    }
+    return kk > 0.0 && ss > 0.0 ? dot / std::sqrt(kk * ss) : 0.0;
+  }
+
+  // 1 and the primes, enough for a 5 kHz kernel over 20 Hz.
+  static constexpr int kPrimes[] = {1,   2,   3,   5,   7,   11,  13,  17,  19,  23,  29,  31,  37,  41,
+                                    43,  47,  53,  59,  61,  67,  71,  73,  79,  83,  89,  97,  101, 103,
+                                    107, 109, 113, 127, 131, 137, 139, 149, 151, 157, 163, 167, 173, 179,
+                                    181, 191, 193, 197, 199, 211, 223, 227, 229, 233, 239, 241, 251};
+
+  // A candidate read finely: first where its first eight harmonics are
+  // strongest within 60 cents (in steps of 5), then from where its
+  // harmonics' peaks are (each found within a quarter of the spacing and
+  // placed between bins by a parabola through the log), each one's pitch
+  // weighed by its amplitude and its number, a higher harmonic placing the
+  // pitch more finely: with the first eight, then with all below 0.45 of the
+  // rate.
+  double fine(double guess) const {
+    const double per_hz = 1.0 / bin_hz_;
+    const size_t last = mag_.size() - 1;
+    auto mag_at = [&](double hz) {
+      const double pos = hz * per_hz;
+      if (pos <= 0.0) return mag_[0];
+      if (pos >= static_cast<double>(last)) return mag_[last];
+      const auto i = static_cast<size_t>(pos);
+      return mag_[i] + (pos - static_cast<double>(i)) * (mag_[i + 1] - mag_[i]);
+    };
+    double f0 = guess, strongest = -1.0;
+    for (int cents = -60; cents <= 60; cents += 5) {
+      const double f = guess * std::exp2(cents / 1200.0);
+      double e = 0.0;
+      for (int k = 1; k <= 8; k++) e += mag_at(k * f);
+      if (e > strongest) {
+        f0 = f;
+        strongest = e;
+      }
+    }
+    const int tops[] = {8, static_cast<int>(0.45 * rate_ / f0)};
+    for (int top : tops) {
+      double num = 0.0, den = 0.0;
+      for (int k = 1; k <= std::max(2, top); k++) {
+        const auto lo = static_cast<int64_t>((k - 0.25) * f0 * per_hz);
+        const auto hi = static_cast<int64_t>((k + 0.25) * f0 * per_hz) + 1;
+        if (hi >= static_cast<int64_t>(last) || lo < 1) break;
+        auto i = static_cast<size_t>(lo);
+        for (auto u = static_cast<size_t>(lo); u < static_cast<size_t>(hi); u++)
+          if (mag_[u] > mag_[i]) i = u;
+        // Strongest at the edge of where it is looked for, rising past it, is
+        // not this harmonic's peak; at a peak the parabola stays within half
+        // a bin of it.
+        if (i == 0 || i >= last || mag_[i] < mag_[i - 1] || mag_[i] < mag_[i + 1]) continue;
+        const double a = std::log(std::max(mag_[i - 1], 1e-12)), b = std::log(std::max(mag_[i], 1e-12));
+        const double c = std::log(std::max(mag_[i + 1], 1e-12)), curve = a - 2.0 * b + c;
+        const double shift = curve < 0.0 ? 0.5 * (a - c) / curve : 0.0;
+        assert(std::abs(shift) <= 0.5 + 1e-9 && "a peak's parabola stays within half a bin of it");
+        const double w = mag_[i] * k;
+        num += w * (static_cast<double>(i) + shift) * bin_hz_ / k;
+        den += w;
+      }
+      if (den > 0.0) f0 = num / den;
+    }
+    return f0;
+  }
+
+  double rate_, low_, high_;
+  size_t lo_, hi_, n_;  // the lags YIN searches, and its frame
+  Fft yin_, spec_;
+  std::vector<double> frame_, energy_, d_, cmnd_, power_;
+  std::vector<std::complex<double>> a_;
+  std::vector<double> long_, short_;  // the Hann windows the harmonics are read through
+  std::vector<std::complex<double>> b_;
+  std::vector<double> mag_;
+  double bin_hz_;
+  std::vector<double> kernel_;  // score()'s, a bin each
+};
+
+// The cost of a jump between frames: |cents| / 200, and 6 more within 50
+// cents of a whole ratio (2, 3, 4; an octave costs 12). Those are the jumps
+// a reading makes in error, and the ones an attack invites: its first
+// frames can cost a whole fraction of the note least (a reed's first cycles
+// alternate), while the note heard is the one held. A real leap by an octave
+// pays it once against every frame of the new note.
+inline double pitch_jump_cost(double f, double g) {
+  const double c = PitchReader::cents_between(f, g);
+  bool whole = false;
+  for (double m : {2.0, 3.0, 4.0}) whole = whole || std::abs(c - 1200.0 * std::log2(m)) < 50.0;
+  return c / 200.0 + (whole ? 6.0 : 0.0);
+}
+
+// Along a run of frames with candidates, the index of the one chosen in each.
+inline std::vector<size_t> choose_pitches(const std::vector<const PitchReader::Frame*>& run) {
+  const size_t n = run.size();
+  std::vector<double> cost = run[0]->costs;
+  std::vector<std::vector<size_t>> back(n);
+  for (size_t i = 1; i < n; i++) {
+    const auto& prev = run[i - 1]->cands;
+    const auto& here = *run[i];
+    std::vector<double> next(here.cands.size());
+    back[i].resize(here.cands.size());
+    for (size_t c = 0; c < here.cands.size(); c++) {
+      double least = INFINITY;
+      for (size_t p = 0; p < prev.size(); p++) {
+        const double v = cost[p] + pitch_jump_cost(prev[p], here.cands[c]);
+        if (v < least) {
+          least = v;
+          back[i][c] = p;
+        }
+      }
+      next[c] = least + here.costs[c];
+    }
+    cost = std::move(next);
+  }
+  std::vector<size_t> path(n);
+  path[n - 1] = static_cast<size_t>(std::min_element(cost.begin(), cost.end()) - cost.begin());
+  for (size_t i = n - 1; i > 0; i--) path[i - 1] = back[i][path[i]];
+  return path;
+}
+
+// The pitch of `x` (`n` long, `rate` a second, 20 <= low < high < rate / 2)
+// every 10 ms: frame t about sample round(t * rate / 100), ceil(n * 100 /
+// rate) frames.
+inline PitchTrack pitch_track(const double* x, size_t n, double rate, double low, double high) {
+  const size_t frames =
+      n == 0 ? 0 : static_cast<size_t>(std::ceil(static_cast<double>(n) * 100.0 / rate - 1e-9));
+  PitchTrack out{std::vector<double>(frames, std::nan("")), std::vector<double>(frames, 0.0)};
+  PitchReader reader(rate, low, high);
+  std::vector<PitchReader::Frame> listed(frames);
+  for (size_t t = 0; t < frames; t++) {
+    listed[t] = reader.read(x, n, std::llround(static_cast<double>(t) * rate / 100.0));
+    out.clarity[t] = listed[t].clarity;
+  }
+  for (size_t i = 0; i < frames;) {
+    if (listed[i].cands.empty()) {
+      i++;
+      continue;
+    }
+    std::vector<size_t> pitched;
+    for (size_t gap = 0; i < frames && gap < 6; i++) {
+      if (listed[i].cands.empty()) {
+        gap++;
+      } else {
+        pitched.push_back(i);
+        gap = 0;
+      }
+    }
+    std::vector<const PitchReader::Frame*> run;
+    for (size_t u : pitched) run.push_back(&listed[u]);
+    auto path = choose_pitches(run);
+    for (size_t j = 0; j < pitched.size(); j++) out.hz[pitched[j]] = listed[pitched[j]].fine[path[j]];
+  }
+  return out;
 }
 
 // --- Graph: parts wired together, worked out as they play or ahead ---------

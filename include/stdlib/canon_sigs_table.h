@@ -1583,6 +1583,11 @@ inline constexpr CanonParam kCanonParams_Audio_native[] = {
   {"samples", false, false, false, false, false, "Array", CanonDefault::None, 0, {}},
   {"from", false, false, false, false, false, "Long|Float", CanonDefault::None, 0, {}},
   {"to", false, false, false, false, false, "Long|Float", CanonDefault::None, 0, {}},
+  // 138: _Audio.pitch
+  {"samples", false, false, false, false, false, "Array", CanonDefault::None, 0, {}},
+  {"low", false, false, false, false, false, "Long|Float", CanonDefault::None, 0, {}},
+  {"high", false, false, false, false, false, "Long|Float", CanonDefault::None, 0, {}},
+  {"rate", false, false, false, false, false, "Long|Float", CanonDefault::None, 0, {}},
 };
 
 inline constexpr CanonSig kCanonSigs_Audio_native[] = {
@@ -1661,6 +1666,7 @@ inline constexpr CanonSig kCanonSigs_Audio_native[] = {
   {"_Audio", "", "decode", kCanonParams_Audio_native + 131, 1, "Array", 1, 1, false, -1, -1, -1},
   {"_Audio", "", "spectrum", kCanonParams_Audio_native + 132, 3, "Array", 3, 3, false, -1, -1, -1},
   {"_Audio", "", "resample", kCanonParams_Audio_native + 135, 3, "Array", 3, 3, false, -1, -1, -1},
+  {"_Audio", "", "pitch", kCanonParams_Audio_native + 138, 4, "Array", 4, 4, false, -1, -1, -1},
 };
 
 inline constexpr CanonParam kCanonParams_Dir_native[] = {

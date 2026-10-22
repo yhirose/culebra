@@ -523,6 +523,13 @@ let _audio_module = fn () {
     resample: fn (samples: Array, from: Long | Float, to: Long | Float) {
       _Audio.resample(samples, from, to)
     },
+    # The pitch of `samples` every 10 ms, searched from `low` to `high` Hz:
+    # {hz, clarity}, hz[t] the pitch about t * 0.01 s (nil where there is
+    # none) and clarity[t] how periodic the sound is there, 0 to 1.
+    pitch: fn (samples: Array, low: Long | Float, high: Long | Float, rate: Long | Float = 44100) {
+      let read = _Audio.pitch(samples, low, high, rate)
+      {hz: read[0], clarity: read[1]}
+    },
     # How loud `samples` are at their loudest, in LUFS; nil when silent.
     loudness: fn (samples: Array, rate: Long | Float = 44100) {
       _Audio.loudness(samples, rate)

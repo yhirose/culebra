@@ -1,0 +1,89 @@
+// Audio.pitch: the pitch every 10 ms, on tones whose pitch is known.
+let cents = |a, b| 1200.0 * Math.log(a / b) / Math.log(2.0)
+let rate = 44100
+
+// A tone `seconds` long at freq(t) (a point every 5 ms), its harmonics `amps`.
+fn tone(seconds, freq, amps, r = rate) {
+  let points = iota(Math.round(seconds / 0.005) + 1).map(|i| (i * 0.005, freq(i * 0.005)))
+  Audio.partials(seconds, points, [(0.0, amps)], rate: r)
+}
+let REED = [0.3, 0.45, 0.25, 0.2, 0.15, 0.1, 0.08, 0.05]
+
+// Frame t is about t * 10 ms, ceil(seconds * 100) of them; a steady tone with
+// a strong 2nd harmonic reads as its own pitch to a tenth of a cent, clearly
+// periodic.
+let held = Audio.pitch(tone(1.0, |_| 523.25, REED), low: 200, high: 1400)
+assert_eq((held.hz.size(), held.clarity.size()), (100, 100))
+assert_eq(Audio.pitch(repeat(44320, 0.0), 200, 1400).hz.size(), 101)
+assert_true(iota(5, 95).all(|t| Math.abs(cents(held.hz[t], 523.25)) < 0.1))
+assert_true(iota(5, 95).all(|t| held.clarity[t] > 0.95))
+
+// Silence has none, and no clarity, nor has a tone under -60 dBFS; noise
+// has none either, and a pitch is nil exactly where the clarity is under
+// 0.7. A tone from 0.5 s to 1 s reads about its own frames (low sets the
+// window: 2048 samples for 100 Hz).
+let silence = Audio.pitch(repeat(4410, 0.0), 200, 1400)
+assert_true(silence.hz.all(|v| v == nil) && silence.clarity.all(|c| c == 0.0))
+let faint = Audio.pitch(tone(0.5, |_| 440.0, REED.map(|a| a * 0.001)), 200, 1400)
+assert_true(faint.hz.all(|v| v == nil) && faint.clarity.all(|c| c == 0.0))
+let hiss = Audio.partials(1.0, [(0.0, 300.0)], [(0.0, [0.0])], noise: {low: 50, high: 15000, steady: [(0.0, 0.2)]})
+let noisy = Audio.pitch(hiss, 200, 1400)
+assert_true(noisy.hz.all(|v| v == nil) && noisy.clarity.all(|c| c > 0.0 && c < 0.7))
+let middle = Audio.pitch([...repeat(22050, 0.0), ...tone(0.5, |_| 440.0, REED), ...repeat(22050, 0.0)], 100, 1400)
+let voiced = iota(150).filter(|t| middle.hz[t] != nil)
+assert_true(Math.abs((voiced[0] + voiced[-1]) / 2.0 - 75.0) <= 0.5)
+assert_true(iota(150).all(|t| (middle.hz[t] == nil) == (middle.clarity[t] < 0.7)))
+
+// A slur's frames 10 ms or more from the middle of its move read the pitch
+// there to 4 cents: the harmonics are read through a window as short as
+// YIN's.
+let slur = |t| 587.33 * 2.0 ** (3.0 / 12.0 / (1.0 + Math.exp(-(t - 0.5) / 0.006)))
+let slurred = Audio.pitch(tone(1.0, slur, REED), 200, 1400)
+let off = iota(10, 90).filter(|t| t != 50).map(|t| Math.abs(cents(slurred.hz[t], slur(t * 0.01))))
+assert_true(off.max() < 4.0)
+
+// A few frames whose own best reading is an octave down (the reed's cycles
+// alternating, as at an attack) keep the pitch held about them.
+let wobble = Audio.partials(
+  1.0,
+  [(0.0, 220.0)],
+  [(0.0, [0.0, 0.5, 0.0, 0.3, 0.0, 0.2]), (0.48, [0.0, 0.5, 0.0, 0.3, 0.0, 0.2]), (0.48, [0.5, 0.5, 0.4, 0.3, 0.3, 0.2]),
+   (0.52, [0.5, 0.5, 0.4, 0.3, 0.3, 0.2]), (0.52, [0.0, 0.5, 0.0, 0.3, 0.0, 0.2])],
+)
+let kept = Audio.pitch(wobble, 200, 1400)
+assert_true(iota(5, 95).all(|t| Math.abs(cents(kept.hz[t], 440.0)) < 50.0))
+
+// Each reads as itself, not as a candidate that takes its harmonics for its
+// own: a high note whose fundamental is 14 dB under its 2nd harmonic, as a
+// reed's top notes can be, not at 2/5 of it (whose 5th harmonic is its 2nd);
+// a note under a faint subharmonic (16 dB under its fundamental), not an
+// octave down, whose even harmonics are all the note's (the candidates are
+// scored on the 1st and prime harmonics); a note whose 2nd and 4th
+// harmonics outweigh its odd ones, not an octave up, which finds the odd
+// ones half a harmonic off its own (scored down); a high note with few
+// harmonics (E6, as a soprano's is recorded), not at 1/5 of it, whose empty
+// low harmonics weigh most (each scored by 1 over the root of its
+// frequency).
+let itself = fn (xs, hz, low = 200) {
+  let read = Audio.pitch(xs, low, 1400)
+  iota(5, read.hz.size() - 5).all(|t| Math.abs(cents(read.hz[t], hz)) < 1.0)
+}
+assert_true(itself(tone(0.5, |_| 940.0, [0.2, 1.0, 0.056, 0.04, 0.0056]), 940.0))
+let subharmonic = [0.08, 0.5, 0.0, 0.3, 0.0, 0.2, 0.0, 0.1]
+assert_true(itself(Audio.partials(0.5, [(0.0, 300.0)], [(0.0, subharmonic)]), 600.0, low: 100))
+assert_true(itself(tone(0.5, |_| 500.0, [0.2, 1.0, 0.06, 0.5, 0.04, 0.3]), 500.0))
+assert_true(itself(tone(0.5, |_| 1320.0, [0.3, 0.057, 0.026, 0.012, 0.002]), 1320.0))
+
+// The rate is the samples'.
+let at48 = Audio.pitch(tone(0.5, |_| 330.0, REED, r: 48000), 200, 1400, rate: 48000)
+assert_eq(at48.hz.size(), 50)
+assert_true(Math.abs(cents(at48.hz[25], 330.0)) < 0.1)
+
+assert_eq(Audio.pitch([], 200, 1400), {hz: [], clarity: []})
+for (low, high, r) in [(19.9, 1400, rate), (500, 500, rate), (200, 22050, rate), (200, 1400, 0)] {
+  assert_throws("ValueError", fn () {
+    Audio.pitch([0.0], low, high, r)
+  })
+}
+
+print("audio pitch ok\n")
