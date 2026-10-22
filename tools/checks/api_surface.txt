@@ -1088,6 +1088,7 @@ Audio.mix(parts: Array, rate = 44100) -> Array
 Audio.decode(data: String) -> Object
 Audio.spectrum(samples: Array, size = 2048, hop = 512) -> Array
 Audio.pitch(samples: Array, low, high, rate = 44100) -> Object
+Audio.harmonics(samples: Array, f0: Array, count = 40, rate = 44100) -> Object
 Audio.resample(samples: Array, from, to) -> Array
 Audio.loudness(samples: Array, rate = 44100) -> Float?
 Audio.integrated_loudness(samples: Array, rate = 44100) -> Float?

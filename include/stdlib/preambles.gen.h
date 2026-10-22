@@ -4951,6 +4951,14 @@ let _audio_module = fn () {
       let read = _Audio.pitch(samples, low, high, rate)
       {hz: read[0], clarity: read[1]}
     },
+    # The harmonics of `samples` along their pitch every 10 ms (`f0`, as
+    # Audio.pitch's hz: nil where there is none): {harmonics, rest},
+    # harmonics[t] the amplitudes of frame t's `count` harmonics (nil where
+    # it has no pitch) and rest the samples with the harmonics taken out.
+    harmonics: fn (samples: Array, f0: Array, count: Long = 40, rate: Long | Float = 44100) {
+      let read = _Audio.harmonics(samples, f0, count, rate)
+      {harmonics: read[0], rest: read[1]}
+    },
     # How loud `samples` are at their loudest, in LUFS; nil when silent.
     loudness: fn (samples: Array, rate: Long | Float = 44100) {
       _Audio.loudness(samples, rate)

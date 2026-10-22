@@ -8508,20 +8508,22 @@ println(both.size())                                                     # => 48
 ### 音を測る
 
 ここに挙げる関数は、音を作るのではなく調べる。録音のサンプル、そこに含まれる
-周波数、音の高さ、別の速さで取り直したサンプル、音の大きさを返す。
+周波数、音の高さと倍音、別の速さで取り直したサンプル、音の大きさを返す。
 
 | 関数 | 答え |
 | --- | --- |
 | `Audio.decode(data: String) -> Object` | 録音のバイト列（WAV、MP3、Ogg）を、そのままの形で返す。`{rate, channels}`の`rate`は録音された1秒あたりのサンプル数、`channels`はチャンネルごとのサンプル（-1.0〜1.0）の配列。録音されたときの精度のまま読む（24ビットのWAVは24ビットのまま） |
 | `Audio.spectrum(samples: Array, size = 2048, hop = 512) -> Array` | 区間ごとの周波数の強さ。区間`t`は`t * hop`番目から`size`個のサンプル（終わりより先は0）に周期的なHann窓を掛けたもので、`frames[t][k]`はその`k`番目（`0`から`size / 2`まで）の大きさ。numpyの`rfft`と同じ尺度。`k`番目は`k * rate / size` Hzにあたる。区間の数は`ceil(samples.size() / hop)` |
 | `Audio.pitch(samples: Array, low, high, rate = 44100) -> Object` | 10ミリ秒ごとの音の高さ。`low`から`high` Hzの間で探す（楽器のいちばん低い音と高い音に少し余裕を持たせた範囲。狭いほど1オクターブずれた読み違いが減る）。`{hz, clarity}`を返し、`hz[t]`は`t * 0.01`秒あたりのサンプルの高さ（Hz）で、高さが無ければ`nil`。`clarity[t]`はそこがどれだけ周期的かを`0.0`〜`1.0`で表す（YINが見つけた周期での正規化した差を1から引いたもの）。clarityが`0.7`未満なら`hz[t]`は`nil`で、無音のclarityは`0.0`。区間の数は`ceil(秒数 * 100)`で、各区間は`low`の周期が3つ入る最小の2のべき乗個のサンプルを読む（44100で200 Hzなら1024個）。区間ごとに候補（YINの周期、その2・3・4倍と2・3・4分の1、YINの他の谷）を挙げ、それぞれの1番目と素数番目の倍音がスペクトルにどれだけ合うかで採点し（SWIPE'の採点のしかた）、続いた区間の並びの中でpYINと同じように選ぶ。そのため弱い区間をまたいで伸ばした音は高さを保つ。選んだ候補は、最後に倍音の山の位置から細かく読み直す |
+| `Audio.harmonics(samples: Array, f0: Array, count = 40, rate = 44100) -> Object` | 10ミリ秒ごとの音の高さに沿って`samples`の倍音を測り、倍音を除いた残りと一緒に返す（SMSが音を倍音と残りに分けるのと同じ分け方）。`{harmonics, rest}`を返す。`f0[t]`は`t * 0.01`秒あたりの高さ（Hz）で、高さが無ければ`nil`（`Audio.pitch`の`hz`と同じ形）。`harmonics[t]`は、`f0[t]`が`nil`なら`nil`、それ以外は`count`個の振幅で、k番目は高さのk倍にある倍音の山の高さ（`Audio.partials`が受け取るのと同じ尺度。速さの0.45倍を超える倍音は`0.0`）。`rest`は`samples`から倍音を除いたもので、長さは同じ。区間`t`は、隣の区間の中心で0になるHann窓（全体で20ミリ秒）を通して読む。窓の中では、高さが隣の区間の高さへ直線で動くとみなすので、ビブラートやスラーでも倍音が残りにほとんど漏れない。倍音は、区間の中心から次の区間の中心へなだらかに移しながら組み直す（最後の区間の倍音は、その中心より後ろでも保つ）。区間の数は`f0`と同じ |
 | `Audio.resample(samples: Array, from, to) -> Array` | 1秒に`from`個取った`samples`を、1秒に`to`個取ったものに直す。数は`ceil(n * to / from)`。帯域を制限する（窓を掛けたsinc、零点64個分）ので、低いほうの速さの半分より上の音は折り返さない。速さが同じなら同じサンプルを返す |
 | `Audio.loudness(samples: Array, rate = 44100) -> Float?` | `samples`の最も大きいところの音量（LUFS）。K特性を掛けた400ミリ秒のうち最も大きいもの（ITU-R BS.1770のmomentary loudness）で、Kauaiが楽器の音量をそろえるのと同じ物差し。無音なら`nil` |
 | `Audio.integrated_loudness(samples: Array, rate = 44100) -> Float?` | `samples`全体の音量（LUFS）。K特性を掛けた400ミリ秒の区間を100ミリ秒ずつずらして取り、-70 LUFSに満たない区間と、残りの平均より10 LU以上小さい区間を除いて、残りの平均を取る（ITU-R BS.1770のintegrated loudness、EBU R128の番組の音量と同じ）。曲の一部の静かな端や途切れは数に入らない。400ミリ秒より短い音は1つの区間として測る。無音なら`nil` |
 
 録音でないバイト列、2から2^24までの2のべき乗でない`size`、1より小さい`hop`、
-1以上2^31未満でない速さ、20 Hz未満か`high`以上の`low`、速さの半分以上の`high`は
-`ValueError`。ブラウザでは`decode`は`ValueError`に
+1以上2^31未満でない速さ、20 Hz未満か`high`以上の`low`、速さの半分以上の`high`、
+`f0`の中の`nil`でも20 Hz以上で速さの半分未満でもない高さ、1から2^16まででない`count`は
+`ValueError`。`f0`に数と`nil`以外が入っていれば`TypeError`。ブラウザでは`decode`は`ValueError`に
 なる（ページは音を鳴らすためにしか復号しない）。残りはネイティブと同じく動く。
 
 ```culebra
@@ -8546,6 +8548,12 @@ let p = Audio.pitch(xs, low: 200, high: 1400)
 println(p.hz.size())                                                     # => 100
 println(Math.round(p.hz[50]))                                            # => 440
 println(p.clarity[50] > 0.99)                                            # => true
+
+# Its harmonics along that pitch: the sine's own at its amplitude and no
+# other, and next to nothing left without it.
+let h = Audio.harmonics(xs, p.hz, count: 3)
+println(h.harmonics[50].map(|a| Math.round(a * 100) / 100.0))           # => [0.5, 0.0, 0.0]
+println(h.rest.slice(4410, 39690).all(|v| Math.abs(v) < 0.001))         # => true
 
 # The second again at half the amplitude: as loud at its loudest, and over
 # the whole the mean of a power and its quarter, 2 dB down.

@@ -5445,6 +5445,51 @@ inline JitValue _ns_audio_pitch(JitValue* a, int64_t) {
   culebra_runtime_array_push(r, TAG_ARRAY, reinterpret_cast<int64_t>(clarity));
   return _ns_adapt::v_array(r);
 }
+// [each frame's harmonics (nil where it has no pitch), the rest].
+inline JitValue _ns_audio_harmonics(JitValue* a, int64_t) {
+  namespace ad = culebra::_audio_detail;
+  std::vector<double> xs;
+  _ns_audio_numbers(a[0], xs, ad::kSamplesError);
+  auto* given = _ns_adapt::take_array(a[1]);
+  int64_t count = _ns_adapt::take_long(a[2]);
+  double rate = _ns_adapt::take_double(a[3]);
+  if (!(rate >= 1 && rate <= INT32_MAX)) _ns_audio_fail("Audio.harmonics: the rate is from 1 below 2^31");
+  if (!(count >= 1 && count <= (1 << 16))) _ns_audio_fail("Audio.harmonics: the count is from 1 to 2^16");
+  std::vector<double> f0;
+  if (given) f0.reserve(given->size);
+  for (size_t i = 0; given && i < given->size; i++) {
+    const auto& e = given->items[i];
+    if (e.tag == TAG_NIL) {
+      f0.push_back(std::nan(""));
+      continue;
+    }
+    if (e.tag != TAG_LONG && e.tag != TAG_FLOAT)
+      culebra::throw_runtime_error_at("TypeError", "type error: parameter 'f0' expects an Array of Long|Float|Nil",
+                                      0, 0);
+    const double f = _culebra_coerce_num(e.tag, e.data);
+    if (!(f >= 20 && f < rate / 2)) _ns_audio_fail("Audio.harmonics: a pitch is nil or from 20 Hz below half the rate");
+    f0.push_back(f);
+  }
+  ad::HarmonicsTrack track;
+  culebra::alloc_or_too_large("Audio.harmonics: the samples", 0, 0, [&] {
+    track = ad::harmonics_track(xs.data(), xs.size(), f0, static_cast<size_t>(count), rate);
+  });
+  auto* rows = _jit_array_new_reserved(static_cast<int64_t>(f0.size()), "Audio.harmonics() result");
+  for (size_t t = 0; t < f0.size(); t++) {
+    if (std::isnan(f0[t])) {
+      culebra_runtime_array_push(rows, TAG_NIL, 0);
+      continue;
+    }
+    auto* row = _ns_audio_floats(track.amps.data() + t * static_cast<size_t>(count), static_cast<size_t>(count),
+                                 "Audio.harmonics() result");
+    culebra_runtime_array_push(rows, TAG_ARRAY, reinterpret_cast<int64_t>(row));
+  }
+  auto* rest = _ns_audio_floats(track.rest.data(), track.rest.size(), "Audio.harmonics() result");
+  auto* r = _jit_array_new_reserved(2, "Audio.harmonics() result");
+  culebra_runtime_array_push(r, TAG_ARRAY, reinterpret_cast<int64_t>(rows));
+  culebra_runtime_array_push(r, TAG_ARRAY, reinterpret_cast<int64_t>(rest));
+  return _ns_adapt::v_array(r);
+}
 // Checked here, before any samples are touched: a rate above zero, and each
 // mode a freq inside (0, rate/2) and a width above zero.
 inline JitValue _ns_audio_resonate(JitValue* a, int64_t) {
@@ -11128,6 +11173,7 @@ inline const NsMethod kNsRows_Audio_native[] = {
   {"_Audio", "spectrum",       3, &_ns_audio_spectrum},
   {"_Audio", "resample",       3, &_ns_audio_resample},
   {"_Audio", "pitch",          4, &_ns_audio_pitch},
+  {"_Audio", "harmonics",      4, &_ns_audio_harmonics},
   {"_Audio", "tone_loudness",  1, &_ns_audio_tone_loudness},
   {"_Audio", "graph_new",      1, &_ns_audio_graph_new},
   {"_Audio", "graph_part",     5, &_ns_audio_graph_part},

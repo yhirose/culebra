@@ -1160,6 +1160,92 @@ inline PitchTrack pitch_track(const double* x, size_t n, double rate, double low
   return out;
 }
 
+// The harmonics of a sound along its pitch every 10 ms, and what is left of
+// it without them, as a harmonic-plus-residual analysis (Serra's SMS) splits
+// a sound. Frame t is about sample c(t) = round(t * rate / 100) and reaches
+// to its neighbours' middles through a raised cosine, 0 there; across it the
+// pitch moves in a straight line to each pitched neighbour's (held where the
+// neighbour has none). Harmonic k, counted while k times the pitch is at
+// most 0.45 of the rate, is the frame's projection on a sine and a cosine at
+// k times that pitch's phase, twice it over the window's sum: for a steady
+// tone, the peak Audio.partials sounds it at. Put back together, each
+// frame's harmonics faded into its neighbours' through the same raised
+// cosine (two pitched frames' sum to 1 between their middles, and the last
+// frame's hold past its middle), they are taken from the sound to leave the
+// rest. Held across the frame instead, the pitch of a vibrato of 30 cents
+// leaves its harmonics 30 dB under them in the rest, as loud as a
+// saxophone's breath; moving, 63.
+struct HarmonicsTrack {
+  std::vector<double> amps;  // `count` a frame, frame after frame; 0 where unpitched
+  std::vector<double> rest;
+};
+
+// `f0` the pitch of each frame, NaN where there is none.
+inline HarmonicsTrack harmonics_track(const double* x, size_t n, const std::vector<double>& f0, size_t count,
+                                      double rate) {
+  const size_t frames = f0.size();
+  // The harmonics are put back together in `rest`, then taken from x there.
+  HarmonicsTrack out{std::vector<double>(frames * count, 0.0), std::vector<double>(n, 0.0)};
+  std::vector<double> weight;
+  std::vector<std::complex<double>> turn, coef(count);
+  auto centre = [&](int64_t t) { return std::llround(static_cast<double>(t) * rate / 100.0); };
+  auto at = [&](int64_t j) { return j < 0 || j >= static_cast<int64_t>(n) || !std::isfinite(x[j]) ? 0.0 : x[j]; };
+  for (size_t t = 0; t < frames; t++) {
+    const double f = f0[t];
+    if (!std::isfinite(f)) continue;
+    const auto top = std::min(count, static_cast<size_t>(std::floor(0.45 * rate / f)));
+    if (top == 0) continue;
+    const auto ti = static_cast<int64_t>(t);
+    const int64_t c = centre(ti), back = c - centre(ti - 1), ahead = centre(ti + 1) - c;
+    const double before = t > 0 ? f0[t - 1] : NAN, after = t + 1 < frames ? f0[t + 1] : NAN;
+    weight.assign(static_cast<size_t>(back + ahead - 1), 0.0);
+    turn.assign(weight.size(), {});
+    double sum = 0.0;
+    for (int64_t d = 1 - back; d < ahead; d++) {
+      const auto i = static_cast<size_t>(d + back - 1);
+      const double reach = static_cast<double>(d < 0 ? back : ahead), dd = static_cast<double>(d);
+      weight[i] = 0.5 + 0.5 * std::cos(std::numbers::pi * dd / reach);
+      sum += weight[i];
+      // The fundamental's cycles from the middle, its pitch moving to g.
+      double cycles = f * dd;
+      const double g = d < 0 ? before : after;
+      if (std::isfinite(g)) cycles += (g - f) * dd * std::abs(dd) / (2.0 * reach);
+      turn[i] = std::polar(1.0, 2.0 * std::numbers::pi * cycles / rate);
+    }
+    std::fill(coef.begin(), coef.end(), std::complex<double>{});
+    for (int64_t d = 1 - back; d < ahead; d++) {
+      const auto i = static_cast<size_t>(d + back - 1);
+      const double wy = weight[i] * at(c + d);
+      const auto step = std::conj(turn[i]);
+      auto z = step;
+      for (size_t k = 0; k < top; k++) {
+        coef[k] += wy * z;
+        z *= step;
+      }
+    }
+    for (size_t k = 0; k < top; k++) {
+      coef[k] *= 2.0 / sum;
+      out.amps[t * count + k] = std::abs(coef[k]);
+    }
+    // Past the last frame's middle no frame takes over: it holds.
+    const bool last = t + 1 == frames;
+    for (int64_t d = 1 - back; d < ahead; d++) {
+      const int64_t j = c + d;
+      if (j < 0 || j >= static_cast<int64_t>(n)) continue;
+      const auto i = static_cast<size_t>(d + back - 1);
+      auto z = turn[i];
+      double v = 0.0;
+      for (size_t k = 0; k < top; k++) {
+        v += (coef[k] * z).real();
+        z *= turn[i];
+      }
+      out.rest[static_cast<size_t>(j)] += (last && d > 0 ? 1.0 : weight[i]) * v;
+    }
+  }
+  for (size_t j = 0; j < n; j++) out.rest[j] = x[j] - out.rest[j];
+  return out;
+}
+
 // --- Graph: parts wired together, worked out as they play or ahead ---------
 
 enum class WaveKind { Sine, Saw, Square, Triangle };

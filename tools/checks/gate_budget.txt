@@ -106,7 +106,9 @@
 # each a note read as itself rather than at a fraction or a multiple of it).
 # 318 since test_native_method_ownership.cul (a native method lets go of its
 # arguments, the ones it takes and any beyond them, as it returns or throws).
-tests.cul 318
+# 319 since test_audio_harmonics.cul (Audio.harmonics on tones whose harmonics
+# are known: through a vibrato they leave little of themselves in the rest).
+tests.cul 319
 
 # tests/isolate/*.cul — run on both engines, plus the over-cap modes.
 # 21 since test_xml_isolate.cul (an XML element keeps its methods across an
