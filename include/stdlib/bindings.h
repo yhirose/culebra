@@ -5373,15 +5373,22 @@ inline JitValue _ns_audio_tone_loudness(JitValue* a, int64_t) {
   double l = ad::tone_loudness(freq);
   return std::isnan(l) ? _ns_adapt::v_nil() : _ns_adapt::v_float(l);
 }
-// The loudness of samples a program made, in LUFS (nil for silence): what a
-// Sound made from them keeps.
-inline JitValue _ns_audio_loudness(JitValue* a, int64_t) {
+// How loud samples a program made are by `measure`, in LUFS (nil for
+// silence).
+inline JitValue _ns_audio_lufs(JitValue* a, double (*measure)(const double*, size_t, double)) {
   std::vector<double> xs;
   _ns_audio_numbers(a[0], xs, culebra::_audio_detail::kSamplesError);
   double rate = _ns_adapt::take_double(a[1]);
   if (!(rate >= 1 && rate <= INT32_MAX)) _ns_audio_fail("Audio: the rate is from 1 below 2^31");
-  double l = culebra::_audio_detail::loudness(xs.data(), xs.size(), rate);
+  double l = measure(xs.data(), xs.size(), rate);
   return std::isnan(l) ? _ns_adapt::v_nil() : _ns_adapt::v_float(l);
+}
+// At their loudest: what a Sound made from them keeps.
+inline JitValue _ns_audio_loudness(JitValue* a, int64_t) {
+  return _ns_audio_lufs(a, culebra::_audio_detail::loudness);
+}
+inline JitValue _ns_audio_integrated_loudness(JitValue* a, int64_t) {
+  return _ns_audio_lufs(a, culebra::_audio_detail::integrated_loudness);
 }
 inline JitValue _ns_audio_pcm_push(JitValue* a, int64_t) {
   thread_local std::vector<double> scratch;  // a block a frame: no allocation
@@ -11195,6 +11202,7 @@ inline const NsMethod kNsRows_Audio_native[] = {
   {"_Audio", "sound_samples",  2, &_ns_audio_sound_samples},
   {"_Audio", "sound_loudness", 1, &_ns_audio_sound_loudness},
   {"_Audio", "loudness",       2, &_ns_audio_loudness},
+  {"_Audio", "integrated_loudness", 2, &_ns_audio_integrated_loudness},
   {"_Audio", "decode",         1, &_ns_audio_decode},
   {"_Audio", "spectrum",       3, &_ns_audio_spectrum},
   {"_Audio", "resample",       3, &_ns_audio_resample},

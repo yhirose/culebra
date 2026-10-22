@@ -77,6 +77,28 @@ assert_true(near(Audio.loudness(sine(0.5, 1.0, 44100)), -9.03))
 assert_true(near(Audio.loudness(sine(1.0, 0.1, 44100)) - Audio.loudness(sine(1.0, 0.4, 44100)), -6.02))
 assert_eq(Audio.loudness(repeat(4410, 0.0)), nil)
 assert_eq(Audio.loudness([]), nil)
+// Over their whole length, BS.1770's integrated loudness: the mean power of
+// the 400 ms blocks, leaving out those under -70 LUFS and then those 10 LU
+// under the mean of the rest. A steady tone reads as its loudest 400 ms.
+assert_true(near(Audio.integrated_loudness(sine(1.0, 1.0, 48000), 48000), -3.01))
+let loud = sine(1.0, 1.0, 44100)
+let silence = |secs| repeat(Math.round(secs * 44100), 0.0)
+// A second 6 dB down after it is within 10 LU and counts: the whole is the
+// mean of a power and its quarter.
+let to_db = |r| 10.0 * Math.log(r) / Math.log(10.0)
+assert_true(near(Audio.integrated_loudness(loud + sine(0.5, 1.0, 44100)) - Audio.loudness(loud), to_db(0.625)))
+// 20 dB down is under the gate, and left out as silence is.
+assert_true(near(Audio.integrated_loudness(loud + sine(0.1, 1.0, 44100)), Audio.integrated_loudness(loud + silence(1.0))))
+// Silence is left out however long it is, and a sound all under -70 LUFS is
+// silence.
+assert_eq(Audio.integrated_loudness(loud + silence(1.0)), Audio.integrated_loudness(loud + silence(3.0)))
+assert_eq(Audio.integrated_loudness(sine(0.0001, 1.0, 44100)), nil)
+// A sound shorter than 400 ms is one block, heard over 400 ms.
+assert_eq(Audio.integrated_loudness(sine(1.0, 0.1, 44100)), Audio.loudness(sine(1.0, 0.1, 44100)))
+assert_eq(Audio.integrated_loudness([]), nil)
+assert_throws("ValueError", fn () {
+  Audio.integrated_loudness([0.5], 0)
+})
 // A tone at vol 100 on a pulse at a half's duty: a fifth of full scale, a
 // second of it; what a song weighs an external sound against.
 let square = iota(44100).map(|i| (i * 440.0 / 44100.0) % 1.0 < 0.5 ? 0.2 : -0.2)

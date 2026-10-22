@@ -4876,6 +4876,11 @@ let _audio_module = fn () {
     loudness: fn (samples: Array, rate: Long | Float = 44100) {
       _Audio.loudness(samples, rate)
     },
+    # How loud `samples` are over their whole length, in LUFS (BS.1770's
+    # integrated loudness, gated); nil when silent.
+    integrated_loudness: fn (samples: Array, rate: Long | Float = 44100) {
+      _Audio.integrated_loudness(samples, rate)
+    },
     Graph: AudioGraph,
     Sound: Sound,
     Music: Music,

@@ -8516,11 +8516,11 @@ println(both.size())                                                     # => 48
 | `Audio.spectrum(samples: Array, size = 2048, hop = 512) -> Array` | 区間ごとの周波数の強さ。区間`t`は`t * hop`番目から`size`個のサンプル（終わりより先は0）に周期的なHann窓を掛けたもので、`frames[t][k]`はその`k`番目（`0`から`size / 2`まで）の大きさ。numpyの`rfft`と同じ尺度。`k`番目は`k * rate / size` Hzにあたる。区間の数は`ceil(samples.size() / hop)` |
 | `Audio.resample(samples: Array, from, to) -> Array` | 1秒に`from`個取った`samples`を、1秒に`to`個取ったものに直す。数は`ceil(n * to / from)`。帯域を制限する（窓を掛けたsinc、零点64個分）ので、低いほうの速さの半分より上の音は折り返さない。速さが同じなら同じサンプルを返す |
 | `Audio.loudness(samples: Array, rate = 44100) -> Float?` | `samples`の最も大きいところの音量（LUFS）。K特性を掛けた400ミリ秒のうち最も大きいもの（ITU-R BS.1770のmomentary loudness）で、Kauaiが楽器の音量をそろえるのと同じ物差し。無音なら`nil` |
+| `Audio.integrated_loudness(samples: Array, rate = 44100) -> Float?` | `samples`全体の音量（LUFS）。K特性を掛けた400ミリ秒の区間を100ミリ秒ずつずらして取り、-70 LUFSに満たない区間と、残りの平均より10 LU以上小さい区間を除いて、残りの平均を取る（ITU-R BS.1770のintegrated loudness、EBU R128の番組の音量と同じ）。曲の一部の静かな端や途切れは数に入らない。400ミリ秒より短い音は1つの区間として測る。無音なら`nil` |
 
 録音でないバイト列、2から2^24までの2のべき乗でない`size`、1より小さい`hop`、
 1以上2^31未満でない速さは`ValueError`。ブラウザでは`decode`は`ValueError`に
-なる（ページは音を鳴らすためにしか復号しない）。残りの3つはネイティブと同じく
-動く。
+なる（ページは音を鳴らすためにしか復号しない）。残りはネイティブと同じく動く。
 
 ```culebra
 # A second of A at 48000, as a recording would hand it over.
@@ -8538,6 +8538,12 @@ let mid = frames[frames.size() / 2]
 let peak = mid.index_of(mid.max())
 println(Math.round(peak * 44100 / 4096))                                 # => 441
 println(Math.round(Audio.loudness(xs)))                                  # => -10
+
+# The second again at half the amplitude: as loud at its loudest, and over
+# the whole the mean of a power and its quarter, 2 dB down.
+let both = xs + xs.map(|v| v / 2)
+println(Math.round(Audio.loudness(both)))                                # => -10
+println(Math.round(Audio.integrated_loudness(both)))                     # => -12
 ```
 
 ### グラフ

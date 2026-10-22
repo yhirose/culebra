@@ -1089,6 +1089,7 @@ Audio.decode(data: String) -> Object
 Audio.spectrum(samples: Array, size = 2048, hop = 512) -> Array
 Audio.resample(samples: Array, from, to) -> Array
 Audio.loudness(samples: Array, rate = 44100) -> Float?
+Audio.integrated_loudness(samples: Array, rate = 44100) -> Float?
 Audio.Graph.new(rate = 44100)
 g.wave(kind = "sine", freq = 440.0)
 g.noise(seed = 1)

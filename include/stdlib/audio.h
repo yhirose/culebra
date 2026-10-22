@@ -145,16 +145,23 @@ inline LoudnessBiquad k_highpass(double rate) {
   return {1.0, -2.0, 1.0, 2.0 * (k * k - 1.0) / a0, (1.0 - k / q + k * k) / a0};
 }
 
-inline double loudness(const double* x, size_t n, double rate) {
+// The running sum of the K-weighted signal's squares, for any window's power.
+inline std::vector<double> k_weighted_sums(const double* x, size_t n, double rate) {
   auto shelf = k_shelf(rate);
   auto high = k_highpass(rate);
-  // The running sum of the weighted signal's squares, for any window's power.
   std::vector<double> sum(n + 1, 0.0);
   for (size_t i = 0; i < n; i++) {
     double v = std::isnan(x[i]) ? 0.0 : std::clamp(x[i], -1.0, 1.0);
     double y = high.step(shelf.step(v));
     sum[i + 1] = sum[i] + y * y;
   }
+  return sum;
+}
+
+inline double lufs_of(double power) { return power > 0 ? -0.691 + 10.0 * std::log10(power) : -INFINITY; }
+
+inline double loudness(const double* x, size_t n, double rate) {
+  auto sum = k_weighted_sums(x, n, rate);
   auto window = static_cast<size_t>(std::llround(0.4 * rate));
   auto hop = std::max<size_t>(1, static_cast<size_t>(std::llround(0.1 * rate)));
   double most = 0.0;
@@ -167,8 +174,41 @@ inline double loudness(const double* x, size_t n, double rate) {
       if (e == n) break;
     }
   }
-  double lufs = most > 0 ? -0.691 + 10.0 * std::log10(most) : -INFINITY;
+  double lufs = lufs_of(most);
   return lufs < -70.0 ? std::nan("") : lufs;
+}
+
+// BS.1770's integrated loudness: the mean power of the 400 ms blocks stepped
+// by 100 ms that lie wholly in the samples (one over 400 ms, silence after,
+// for a sound shorter than that), leaving out the blocks under the absolute
+// gate of -70 LUFS and then those 10 LU under the mean of the rest. NaN when
+// no block is left, which is silence.
+inline double integrated_loudness(const double* x, size_t n, double rate) {
+  auto sum = k_weighted_sums(x, n, rate);
+  auto window = static_cast<size_t>(std::llround(0.4 * rate));
+  auto hop = std::max<size_t>(1, static_cast<size_t>(std::llround(0.1 * rate)));
+  std::vector<double> blocks;
+  if (n <= window) {
+    blocks.push_back(sum[n] / static_cast<double>(window));
+  } else {
+    for (size_t s = 0; s + window <= n; s += hop) {
+      blocks.push_back((sum[s + window] - sum[s]) / static_cast<double>(window));
+    }
+  }
+  auto mean_above = [&](double gate) {
+    double total = 0.0;
+    size_t count = 0;
+    for (double z : blocks) {
+      if (lufs_of(z) > gate) {
+        total += z;
+        count++;
+      }
+    }
+    return count == 0 ? 0.0 : total / static_cast<double>(count);
+  };
+  double ungated = mean_above(-70.0);
+  if (ungated == 0.0) return std::nan("");
+  return lufs_of(mean_above(std::max(-70.0, lufs_of(ungated) - 10.0)));
 }
 
 // The samples of a WAV file as mono -1..1 and its rate: PCM of 8, 16, 24 or

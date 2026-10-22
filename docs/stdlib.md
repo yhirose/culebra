@@ -8878,11 +8878,12 @@ they are.
 | `Audio.spectrum(samples: Array, size = 2048, hop = 512) -> Array` | the magnitudes a frame at a time: frame `t` is the `size` samples from `t * hop` on (past the end taken as 0) through a periodic Hann window, and `frames[t][k]` is the magnitude of bin `k`, `0` to `size / 2`, as numpy's `rfft` gives it. Bin `k` is `k * rate / size` Hz. There are `ceil(samples.size() / hop)` frames |
 | `Audio.resample(samples: Array, from, to) -> Array` | `samples` taken `from` times a second, as they would be taken `to` times: `ceil(n * to / from)` of them, band-limited (a windowed sinc 64 zero crossings wide) so that nothing above half the lower rate folds back. The same samples when the rates are equal |
 | `Audio.loudness(samples: Array, rate = 44100) -> Float?` | how loud `samples` are at their loudest, in LUFS: the loudest 400 ms, K-weighted (ITU-R BS.1770's momentary loudness), the measure Kauai weighs an instrument by. `nil` for silence |
+| `Audio.integrated_loudness(samples: Array, rate = 44100) -> Float?` | how loud `samples` are over their whole length, in LUFS: the mean power of their 400 ms blocks stepped by 100 ms, K-weighted, leaving out the blocks under -70 LUFS and then those more than 10 LU under the mean of the rest (ITU-R BS.1770's integrated loudness, EBU R128's programme loudness), so a passage's quiet ends and gaps do not count. A sound shorter than 400 ms is one block. `nil` for silence |
 
 Bytes that are not a recording raise `ValueError`, and so do a `size` that
 is not a power of 2 from 2 to 2^24, a `hop` below 1, and a rate that is
 not from 1 below 2^31. In the browser, `decode` raises `ValueError`: the
-page decodes audio only to play it. The other three work there as natively.
+page decodes audio only to play it. The others work there as natively.
 
 ```culebra
 # A second of A at 48000, as a recording would hand it over.
@@ -8900,6 +8901,12 @@ let mid = frames[frames.size() / 2]
 let peak = mid.index_of(mid.max())
 println(Math.round(peak * 44100 / 4096))                                 # => 441
 println(Math.round(Audio.loudness(xs)))                                  # => -10
+
+# The second again at half the amplitude: as loud at its loudest, and over
+# the whole the mean of a power and its quarter, 2 dB down.
+let both = xs + xs.map(|v| v / 2)
+println(Math.round(Audio.loudness(both)))                                # => -10
+println(Math.round(Audio.integrated_loudness(both)))                     # => -12
 ```
 
 ### Graphs
