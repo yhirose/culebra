@@ -23,6 +23,16 @@ let N = if Sys.argv.size() > 1 {
   50000
 }
 
+# A class whose `eq` throws, for the terminals that compare.
+class EqThrows {
+  new(n) {
+    self.n = n
+  }
+  eq(o) {
+    throw 'no eq'
+  }
+}
+
 # A small class exercising constructors, defaults, operators, and methods.
 class V {
   new(data, children = [], grads = []) {
@@ -373,6 +383,30 @@ fn pat_iter_any_driver(N) {
   }
 }
 
+fn pat_iter_terminal_throw(N) {
+  # A terminal whose step throws still lets go of the element it pulled:
+  # `join` printing one too deep to print, `contains` asking an `eq` that
+  # throws. Both used to strand it.
+  mut deep = [1]
+  for d in 0..999 {
+    deep = [deep]
+  }
+  for i in 0..N {
+    # One stranded element is enough for the audit; the walk down to the
+    # depth limit is what costs, so it runs on a few rounds only.
+    if i % 100 == 0 {
+      try {
+        [[deep]].iter().join(',')
+      } catch e {
+      }
+    }
+    try {
+      [EqThrows.new(i)].iter().contains(EqThrows.new(i))
+    } catch e {
+    }
+  }
+}
+
 fn pat_array_sized_default(N) {
   # `[](n, heapDefault)`: array_resize retains one alias ref per slot and
   # the literal releases its own +1 (n=0 exercises the unused-default path).
@@ -497,6 +531,7 @@ let PATTERNS = [
   ["iter_flat_map", pat_iter_flat_map],
   ["iter_find_driver", pat_iter_find_driver],
   ["iter_any_driver", pat_iter_any_driver],
+  ["iter_terminal_throw", pat_iter_terminal_throw],
   ["array_sized_default", pat_array_sized_default],
   ["deco_let", pat_deco_let],
   ["conditional_decl", pat_conditional_decl],

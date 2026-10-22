@@ -161,3 +161,32 @@ for _ in {iter: fn () {
   break
 }
 inspect(ran)
+
+# A terminal whose step throws lets go of the element it pulled, as one that
+# returns does: `join` printing an element too deep to print, `contains`
+# asking an `eq` that throws. Each element's drop runs; it used not to.
+mut too_deep = [1]
+for i in 0..1000 {
+  too_deep = [too_deep]
+}
+mut term_dropped = []
+class TermHeld {
+  new(.name) {
+    self.payload = too_deep
+  }
+  eq(o) {
+    throw 'no eq'
+  }
+  drop() {
+    term_dropped.push(self.name)
+  }
+}
+try {
+  [1].iter().map(|_| TermHeld('join')).join(',')
+} catch e {
+}
+try {
+  [1].iter().map(|_| TermHeld('contains')).contains(TermHeld('needle'))
+} catch e {
+}
+assert_eq(term_dropped.sorted(), ['contains', 'join', 'needle'])

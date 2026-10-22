@@ -499,7 +499,7 @@ inline void _culebra_callback_type_precheck(int8_t fn_tag, int64_t fn_data,
 }
 
 // Owns one terminal drain over an iterator (docs §18.5): resolves the
-// protocol closures once, pulls via `pull()`, and guarantees the iterator's
+// protocol closures once, pulls via `next()`, and guarantees the iterator's
 // dispose() runs exactly once on every exit — drain, early exit, or unwind.
 // Every terminal goes through this (the ratchet in tools/checks/check_iter_wiring.sh
 // pins raw `_iter_pull` loops to the audited set), so the runtime helper is
@@ -524,8 +524,13 @@ class JitIterDrive {
   JitIterDrive(const JitIterDrive&) = delete;
   JitIterDrive& operator=(const JitIterDrive&) = delete;
 
-  bool pull(JitValue& out_v) {
-    return _iter_pull(has_next_cls_, next_cls_, iter_, out_v);
+  // The next value, owned from the moment it is pulled, or none once the
+  // iterator is drained. A terminal hands it on with consume() or lets it go
+  // at the end of the loop body, so a step that throws never strands it.
+  std::optional<JitOwnedVal> next() {
+    JitValue v;
+    if (!_iter_pull(has_next_cls_, next_cls_, iter_, v)) return std::nullopt;
+    return JitOwnedVal(v);
   }
 
   // Dispose eagerly on the normal path (drain or early exit); a throw here
@@ -593,9 +598,9 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_iter_collect(
   // while pulling, this frees `out` (and the elements collected so far) on the
   // unwind edge instead of stranding it. Same shape as array_map's out_guard.
   JitOwnedVal out_guard(JitValue{TAG_ARRAY, reinterpret_cast<int64_t>(out)});
-  JitValue v;
-  while (drive.pull(v)) {
-    culebra_runtime_array_push(out, v.tag, v.data);  // consumes +1
+  while (auto v = drive.next()) {
+    JitValue e = v->consume();
+    culebra_runtime_array_push(out, e.tag, e.data);  // consumes +1
   }
   drive.finish();
   out_guard.consume();
@@ -604,22 +609,21 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_iter_collect(
 
 // Terminal join: drain the iterator, concatenating elements with `sep`,
 // mirroring culebra_runtime_array_join so an iterator `.join(sep)` needs no
-// intermediate `.collect()`. Each pulled value carries a +1 ref we release.
+// intermediate `.collect()`.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_iter_join(
     int8_t it, int64_t id, const char* sep) {
   JitIterDrive drive{it, id};
   std::string out;
   bool first = true;
-  JitValue v;
-  while (drive.pull(v)) {
+  while (auto v = drive.next()) {
     if (!first) out += sep;
     first = false;
-    if (v.tag == TAG_STRING || v.tag == TAG_STRINGVIEW) {
-      out += _culebra_str_view(v.tag, v.data);
+    JitValue e = v->borrow();
+    if (e.tag == TAG_STRING || e.tag == TAG_STRINGVIEW) {
+      out += _culebra_str_view(e.tag, e.data);
     } else {
-      out += _culebra_value_to_str_impl(v.tag, v.data);
+      out += _culebra_value_to_str_impl(e.tag, e.data);
     }
-    _culebra_value_release_impl(v.tag, v.data);
   }
   drive.finish();
   return _culebra_heap_str(out);
@@ -629,11 +633,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_iter_count(
     int8_t it, int64_t id) {
   JitIterDrive drive{it, id};
   int64_t n = 0;
-  JitValue v;
-  while (drive.pull(v)) {
-    _culebra_value_release_impl(v.tag, v.data);
-    n++;
-  }
+  while (drive.next()) n++;
   drive.finish();
   return n;
 }
@@ -647,9 +647,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_iter_for_each(
   _culebra_callback_type_precheck(ft, fd, "f");
   JitIterDrive drive{it, id};
   JitHofCallback fn(ft, fd, 1, "for_each", "f", line, col);
-  JitValue v;
-  while (drive.pull(v)) {
-    auto r = _culebra_invoke1_at(fn, v, line, col);
+  while (auto v = drive.next()) {
+    auto r = _culebra_invoke1_at(fn, v->consume(), line, col);
     _culebra_value_release_impl(r.tag, r.data);
   }
   drive.finish();
@@ -667,9 +666,9 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_iter_reduce(
   _culebra_callback_type_precheck(ft, fd, "f");
   JitIterDrive drive{it, id};
   JitHofCallback fn(ft, fd, 2, "reduce", "f", line, col);
-  JitValue v;
-  while (drive.pull(v)) {
-    acc = JitOwnedVal(_culebra_invoke2_at(fn, acc.consume(), v, line, col));
+  while (auto v = drive.next()) {
+    acc = JitOwnedVal(
+        _culebra_invoke2_at(fn, acc.consume(), v->consume(), line, col));
   }
   drive.finish();
   auto out = acc.consume();
@@ -683,22 +682,20 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_iter_find(
   _culebra_callback_type_precheck(ft, fd, "p");
   JitIterDrive drive{it, id};
   JitHofCallback fn(ft, fd, 1, "find", "p", line, col);
-  JitValue v;
   // Holds the match across finish(): the dispose runs before the +1 handoff
   // to the out-params, and a throwing dispose releases the match via this
   // guard instead of stranding it. Nil doubles as the no-match answer.
   JitOwnedVal found(TAG_NIL, 0);
-  while (drive.pull(v)) {
-    JitOwnedVal owned(v);                          // v's original +1 (POC: RAII)
-    culebra_runtime_value_retain(v.tag, v.data);   // an extra +1 for the call
-    auto r = _culebra_invoke1_at(fn, v, line, col);  // consumes the extra +1
+  while (auto v = drive.next()) {
+    JitValue e = v->borrow();
+    culebra_runtime_value_retain(e.tag, e.data);   // an extra +1 for the call
+    auto r = _culebra_invoke1_at(fn, e, line, col);  // consumes the extra +1
     JitOwnedVal rg(r);                             // result +1
     bool keep = (r.tag == TAG_BOOL || r.tag == TAG_LONG) ? (r.data != 0) : false;
     if (keep) {
-      found = std::move(owned);
+      found = std::move(*v);
       break;
     }
-    // owned releases v, rg releases r on loop-body scope exit (incl. throw)
   }
   drive.finish();
   auto kept = found.consume();
@@ -713,14 +710,14 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_iter_position(
   _culebra_callback_type_precheck(ft, fd, "p");
   JitIterDrive drive{it, id};
   JitHofCallback fn(ft, fd, 1, "position", "p", line, col);
-  JitValue v;
   int64_t i = 0;
   bool hit = false;
-  while (!hit && drive.pull(v)) {
-    auto r = _culebra_invoke1_at(fn, v, line, col);
+  while (auto v = drive.next()) {
+    auto r = _culebra_invoke1_at(fn, v->consume(), line, col);
     hit = (r.tag == TAG_BOOL || r.tag == TAG_LONG) ? (r.data != 0) : false;
     _culebra_value_release_impl(r.tag, r.data);
-    if (!hit) i++;
+    if (hit) break;
+    i++;
   }
   drive.finish();
   *out_tag = hit ? TAG_LONG : 0;
@@ -732,11 +729,11 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_iter_position(
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_iter_contains(
     int8_t it, int64_t id, int8_t nt, int64_t nd) {
   JitIterDrive drive{it, id};
-  JitValue v;
   bool hit = false;
-  while (!hit && drive.pull(v)) {
-    hit = _culebra_value_equal(v.tag, v.data, nt, nd);
-    _culebra_value_release_impl(v.tag, v.data);
+  while (auto v = drive.next()) {
+    JitValue e = v->borrow();
+    hit = _culebra_value_equal(e.tag, e.data, nt, nd);
+    if (hit) break;
   }
   drive.finish();
   return hit ? 1 : 0;
@@ -747,10 +744,9 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_iter_contains(
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_iter_first(
     int8_t it, int64_t id, int8_t* out_tag, int64_t* out_data) {
   JitIterDrive drive{it, id};
-  JitValue v;
   // Guard the result across finish() — dispose runs before the +1 handoff.
   JitOwnedVal found(TAG_NIL, 0);
-  if (drive.pull(v)) found = JitOwnedVal(v);
+  if (auto v = drive.next()) found = std::move(*v);
   drive.finish();
   auto kept = found.consume();
   *out_tag = kept.tag;
@@ -760,13 +756,10 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_iter_first(
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_iter_last(
     int8_t it, int64_t id, int8_t* out_tag, int64_t* out_data) {
   JitIterDrive drive{it, id};
-  JitValue v;
   // Holds the newest pulled value; each replacement releases the previous one,
   // and an unwind out of the pull frees whatever is held.
   JitOwnedVal best(TAG_NIL, 0);
-  while (drive.pull(v)) {
-    best = JitOwnedVal(v);
-  }
+  while (auto v = drive.next()) best = std::move(*v);
   drive.finish();
   auto kept = best.consume();
   *out_tag = kept.tag;
@@ -783,17 +776,13 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_iter_nth(
     throw culebra::CulebraError("ValueError", "nth() n must not be negative",
                                 line, col);
   }
-  JitValue v;
   JitOwnedVal found(TAG_NIL, 0);
-  bool short_input = false;
-  for (int64_t i = 0; i < n && !short_input; i++) {
-    if (!drive.pull(v)) {
-      short_input = true;
-    } else {
-      _culebra_value_release_impl(v.tag, v.data);
+  for (int64_t i = 0; auto v = drive.next(); i++) {
+    if (i == n) {
+      found = std::move(*v);
+      break;
     }
   }
-  if (!short_input && drive.pull(v)) found = JitOwnedVal(v);
   drive.finish();
   auto kept = found.consume();
   *out_tag = kept.tag;
@@ -805,12 +794,12 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_iter_any(
   _culebra_callback_type_precheck(ft, fd, "p");
   JitIterDrive drive{it, id};
   JitHofCallback fn(ft, fd, 1, "any", "p", line, col);
-  JitValue v;
   bool hit = false;
-  while (!hit && drive.pull(v)) {
-    auto r = _culebra_invoke1_at(fn, v, line, col);
+  while (auto v = drive.next()) {
+    auto r = _culebra_invoke1_at(fn, v->consume(), line, col);
     hit = (r.tag == TAG_BOOL || r.tag == TAG_LONG) ? (r.data != 0) : false;
     _culebra_value_release_impl(r.tag, r.data);
+    if (hit) break;
   }
   drive.finish();
   return hit ? 1 : 0;
@@ -821,13 +810,12 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_iter_all(
   _culebra_callback_type_precheck(ft, fd, "p");
   JitIterDrive drive{it, id};
   JitHofCallback fn(ft, fd, 1, "all", "p", line, col);
-  JitValue v;
   bool miss = false;
-  while (!miss && drive.pull(v)) {
-    auto r = _culebra_invoke1_at(fn, v, line, col);
-    bool keep = (r.tag == TAG_BOOL || r.tag == TAG_LONG) ? (r.data != 0) : false;
+  while (auto v = drive.next()) {
+    auto r = _culebra_invoke1_at(fn, v->consume(), line, col);
+    miss = !((r.tag == TAG_BOOL || r.tag == TAG_LONG) ? (r.data != 0) : false);
     _culebra_value_release_impl(r.tag, r.data);
-    miss = !keep;
+    if (miss) break;
   }
   drive.finish();
   return miss ? 0 : 1;
@@ -869,27 +857,24 @@ inline bool _beats(JitValue cand, JitValue best, bool want_max, int64_t line,
   return _culebra_value_less(lo, hi, line, col);
 }
 
-// Coerce one aggregate element to double, reporting a non-numeric like the
-// interp's Value::to_double_coerce ("expected Long or Float, got X"). The
-// element's +1 is released before throwing, so the unwind edge strands
-// nothing.
-inline double _iter_agg_num(JitValue v, int64_t line, int64_t col) {
-  if (v.tag == TAG_LONG) return static_cast<double>(v.data);
-  if (v.tag == TAG_FLOAT) return _culebra_float_to_double(v.data);
-  auto tag = v.tag;
-  _culebra_value_release_impl(v.tag, v.data);
-  culebra_runtime_type_error_typed(line, col, "Long or Float", tag);
-  return 0;  // unreachable
-}
-
-// Fold one element into a sum/product accumulator. `mul` selects product.
-inline void _iter_agg_step(_JitNumAcc& acc, JitValue v, bool mul,
-                           int64_t line, int64_t col) {
+// Fold one element into a sum/product accumulator (`mul` selects product),
+// for an iterator's terminal and an Array's alike. The element is borrowed.
+// A non-numeric reports like the interp's Value::to_double_coerce
+// ("expected Long or Float, got X").
+inline void _agg_step(_JitNumAcc& acc, JitValue v, bool mul, int64_t line,
+                      int64_t col) {
   if (v.tag == TAG_LONG && !acc.is_float) {
     if (mul) acc.i *= v.data; else acc.i += v.data;
     return;
   }
-  double x = _iter_agg_num(v, line, col);
+  double x = 0;
+  if (v.tag == TAG_LONG) {
+    x = static_cast<double>(v.data);
+  } else if (v.tag == TAG_FLOAT) {
+    x = _culebra_float_to_double(v.data);
+  } else {
+    culebra_runtime_type_error_typed(line, col, "Long or Float", v.tag);
+  }
   acc.promote();
   if (mul) acc.d *= x; else acc.d += x;
 }
@@ -898,10 +883,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_iter_sum(
     int8_t it, int64_t id, int64_t line, int64_t col) {
   JitIterDrive drive{it, id};
   _JitNumAcc acc(0);
-  JitValue v;
-  while (drive.pull(v)) {
-    _iter_agg_step(acc, v, false, line, col);
-  }
+  while (auto v = drive.next()) _agg_step(acc, v->borrow(), false, line, col);
   drive.finish();
   return acc.value();
 }
@@ -910,10 +892,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_iter_product(
     int8_t it, int64_t id, int64_t line, int64_t col) {
   JitIterDrive drive{it, id};
   _JitNumAcc acc(1);
-  JitValue v;
-  while (drive.pull(v)) {
-    _iter_agg_step(acc, v, true, line, col);
-  }
+  while (auto v = drive.next()) _agg_step(acc, v->borrow(), true, line, col);
   drive.finish();
   return acc.value();
 }
@@ -925,17 +904,16 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_iter_product(
 inline JitValue _iter_minmax(int8_t it, int64_t id, bool want_max,
                              const char* what, int64_t line, int64_t col) {
   JitIterDrive drive{it, id};
-  JitValue v;
-  if (!drive.pull(v)) {
+  auto first = drive.next();
+  if (!first) {
     // The dtor disposes on this unwind (interp raises inside the wrapper).
     throw culebra::CulebraError(
         "ValueError", std::string(what) + " of empty Iterator", line, col);
   }
-  JitOwnedVal best(v);
-  while (drive.pull(v)) {
-    JitOwnedVal cand(v);
-    if (_beats(cand.borrow(), best.borrow(), want_max, line, col))
-      best = std::move(cand);   // releases the old best
+  JitOwnedVal best = std::move(*first);
+  while (auto cand = drive.next()) {
+    if (_beats(cand->borrow(), best.borrow(), want_max, line, col))
+      best = std::move(*cand);   // releases the old best
   }
   drive.finish();
   return best.consume();
@@ -960,28 +938,27 @@ inline JitOwnedVal _minmax_key(JitHofCallback& fn, JitValue e, int64_t line,
 }
 
 // Keyed min/max: the callback supplies the ordering key, the ELEMENT is
-// returned. `f` runs once per element. The pulled value carries a +1 that
-// the callback call consumes, so the winner is retained explicitly and the
-// loser released -- mirroring culebra_runtime_iter_find's handling.
+// returned. `f` runs once per element, on a +1 of its own (_minmax_key); the
+// pulled +1 stays with the element, so the winner moves into `best` and a
+// loser goes at the end of its loop body.
 inline JitValue _iter_minmax_by(int8_t it, int64_t id, int8_t ft, int64_t fd,
                                 bool want_max, const char* what,
                                 int64_t line, int64_t col) {
   _culebra_callback_type_precheck(ft, fd, "f");
   JitIterDrive drive{it, id};
   JitHofCallback fn(ft, fd, 1, what, "f", line, col);
-  JitValue v;
-  if (!drive.pull(v)) {
+  auto first = drive.next();
+  if (!first) {
     // The dtor disposes on this unwind (interp raises inside the wrapper).
     throw culebra::CulebraError(
         "ValueError", std::string(what) + " of empty Iterator", line, col);
   }
-  JitOwnedVal best(v);
+  JitOwnedVal best = std::move(*first);
   JitOwnedVal bestk = _minmax_key(fn, best.borrow(), line, col);
-  while (drive.pull(v)) {
-    JitOwnedVal cand(v);
-    JitOwnedVal k = _minmax_key(fn, cand.borrow(), line, col);
+  while (auto cand = drive.next()) {
+    JitOwnedVal k = _minmax_key(fn, cand->borrow(), line, col);
     if (_beats(k.borrow(), bestk.borrow(), want_max, line, col)) {
-      best = std::move(cand);   // releases the old best
+      best = std::move(*cand);   // releases the old best
       bestk = std::move(k);
     }
   }
@@ -3385,29 +3362,13 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_array_reduce(
 // Eager Array variants of sum/product/min/max. Same semantics as the
 // iterator methods above (Long stays Long, a Float promotes the result,
 // min/max return the winning element); empty min/max raise ValueError.
-// Elements are borrowed from the Array, so a non-numeric throws without
-// any release.
-
-inline double _arr_agg_num(JitValue v, int64_t line, int64_t col) {
-  if (v.tag == TAG_LONG) return static_cast<double>(v.data);
-  if (v.tag == TAG_FLOAT) return _culebra_float_to_double(v.data);
-  culebra_runtime_type_error_typed(line, col, "Long or Float", v.tag);
-  return 0;  // unreachable
-}
+// Elements are borrowed from the Array.
 
 inline JitValue _arr_sum_product(JitArray* arr, bool mul, int64_t line,
                                  int64_t col) {
   _JitNumAcc acc(mul ? 1 : 0);
-  for (size_t i = 0; i < arr->size; i++) {
-    auto& e = arr->items[i];
-    if (e.tag == TAG_LONG && !acc.is_float) {
-      if (mul) acc.i *= e.data; else acc.i += e.data;
-      continue;
-    }
-    double x = _arr_agg_num(e, line, col);
-    acc.promote();
-    if (mul) acc.d *= x; else acc.d += x;
-  }
+  for (size_t i = 0; i < arr->size; i++)
+    _agg_step(acc, arr->items[i], mul, line, col);
   return acc.value();
 }
 
@@ -4154,8 +4115,7 @@ inline void _each_of_jit_array(JitArray* arr, Emit emit) {
 // disposes via the drive's dtor.
 template <typename Emit>
 inline void _each_of_jit_iter(JitIterDrive& drive, Emit emit) {
-  JitValue v;
-  while (drive.pull(v)) emit(v);
+  while (auto v = drive.next()) emit(v->consume());
   // finish() before returning into the sink's consume/handoff: the sink's
   // own accumulator guard is still armed, so a throwing dispose frees it.
   drive.finish();

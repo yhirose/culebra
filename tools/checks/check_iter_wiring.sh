@@ -56,7 +56,7 @@ ratchet() { # name actual ceiling
 
 # --- 1. terminal drive discipline -----------------------------------------
 
-# _iter_pull outside JitIterDrive::pull (its only caller) and its own
+# _iter_pull outside JitIterDrive::next (its only caller) and its own
 # definition: hard zero.
 pull=$(grep -rn "_iter_pull(" include/ \
        | grep -v "inline bool _iter_pull(" \
