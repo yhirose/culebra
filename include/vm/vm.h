@@ -9520,15 +9520,9 @@ class Compiler {
   // like any return and defer_run_to releases it right after the invoke).
   // `return` inside exits only the thunk (interp's flow_discard, the JIT
   // thunk's local ret) — in_function_=true gives exactly that.
+  // Its `fn` is the enclosing function's, a free variable like any other
+  // (FuncInfo::lowered_frame).
   int32_t compile_defer_chunk(const peg::Ast& ast) {
-    // The JIT thunk binds only free vars, so an enclosing fn's recursion
-    // handle is not reachable from a defer body there; keep the lanes
-    // symmetric by rejecting instead of quietly diverging. The rejection
-    // rides the thunk like any other (compile_fn_chunk's poison window).
-    if (analysis_.func_info.at(&ast).uses_fn)
-      return emit_poison_chunk(
-          ast, Unsupported{"recursion handle `fn` inside defer", ast.line,
-                           ast.column});
     return compile_fn_chunk(ast, /*params=*/nullptr, *ast.nodes[0]);
   }
 

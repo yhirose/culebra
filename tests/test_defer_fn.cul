@@ -1,0 +1,90 @@
+// Conformance: `fn` in a `defer` body is the function the defer is written
+// in (language.md §defer). Kept apart from test_effects_fn.cul, whose --jit
+// compile time grows faster than its length.
+effect fn fh_ask()
+
+// --- `fn` in a `defer` body ------------------------------------------------
+// A defer's body is code of the function it is written in, run on the way
+// out: its `fn` is that function, a method's the bound method, also through a
+// handle inside the defer and a defer inside a handle.
+fn fd_plain(seen) {
+  defer {
+    seen.push(fn.name)
+  }
+  seen
+}
+assert_eq(fd_plain([]), ['fd_plain'])
+fn fd_recurse(k, seen) {
+  defer {
+    if k > 0 {
+      fn(k - 1, seen)
+    }
+  }
+  seen.push(k)
+}
+let fd_order = []
+fd_recurse(2, fd_order)
+assert_eq(fd_order, [2, 1, 0])
+class FdBox {
+  new(.v) {
+  }
+  m() {
+    mut out = nil
+    {
+      defer {
+        out = fn == fn
+      }
+    }
+    [out, fn.name]
+  }
+}
+assert_eq(FdBox(1).m(), [true, 'm'])
+fn fd_handle_in_defer() {
+  mut got = nil
+  {
+    defer {
+      got = handle {
+        perform fh_ask()
+        fn.name
+      } with fh_ask(resume) {
+        resume(nil)
+      }
+    }
+  }
+  got
+}
+assert_eq(fd_handle_in_defer(), 'fd_handle_in_defer')
+fn fd_defer_in_handle() {
+  mut got = nil
+  handle {
+    defer {
+      got = fn.name
+    }
+    perform fh_ask()
+  } with fh_ask(resume) {
+    resume(nil)
+  }
+  got
+}
+assert_eq(fd_defer_in_handle(), 'fd_defer_in_handle')
+fn fd_gen(seen) {
+  defer {
+    seen.push(fn.name)
+  }
+  yield 1
+}
+let fd_gen_seen = []
+let fd_gen_out = fd_gen(fd_gen_seen).collect()
+assert_eq([fd_gen_out, fd_gen_seen], [[1], ['fd_gen']])
+// With no function around it, reading `fn` in a defer is the NameError.
+mut fd_kind = nil
+{
+  defer {
+    try {
+      fn
+    } catch e {
+      fd_kind = e.kind
+    }
+  }
+}
+assert_eq(fd_kind, 'NameError')

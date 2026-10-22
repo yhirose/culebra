@@ -109,8 +109,9 @@
 # 319 since test_audio_harmonics.cul (Audio.harmonics on tones whose harmonics
 # are known: through a vibrato they leave little of themselves in the rest).
 # 320 since test_effects_fn.cul (`fn` in a handle's body and clauses is the
-# function around it, and in an effect fn's body that effect fn).
-tests.cul 320
+# function around it, and in an effect fn's body that effect fn). 321 since
+# test_defer_fn.cul (`fn` in a defer body is the function it is written in).
+tests.cul 321
 
 # tests/isolate/*.cul — run on both engines, plus the over-cap modes.
 # 21 since test_xml_isolate.cul (an XML element keeps its methods across an

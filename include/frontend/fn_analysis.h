@@ -926,6 +926,9 @@ struct FnAnalysis {
       info.fn_from = culebra::lowered_frame_fn_from(*marker);
       info.lowered_frame = info.fn_from.empty();
     }
+    // A `defer` body is code of the function it is written in, which its
+    // thunk runs on the way out: its `fn` is that function's.
+    if (info_key->tag == "DEFER"_) info.lowered_frame = true;
     depth_++;
     if (params_ast)
       for (auto& p : params_ast->nodes)

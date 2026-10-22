@@ -4243,7 +4243,9 @@ inspect(try { try { throw 'other' } catch ApiError { 'http' } } catch e { e })
   モジュールのトップレベルの`defer`も同じで、エントリモジュールのものの
   後に走る
 
-defer本体内の`return`は**defer閉包のみ**を抜けます（外側の
+defer本体は、それが書かれた関数のコードです。そこでの`self`と`fn`は
+その関数のもので（メソッドの中なら`fn`は束縛済みのメソッド）、トップレベル
+で`fn`を読むと`NameError`になります。defer本体内の`return`は**defer閉包のみ**を抜けます（外側の
 関数を抜けません）。defer本体内の`throw`はdeferを中断して
 通常の例外として伝播します。ただし伝播するのは、同じスコープでまだ
 走っていないdeferが後入れ先出しの順のまま全部走った後です —

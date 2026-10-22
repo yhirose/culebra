@@ -4475,8 +4475,10 @@ Block scope (not function scope) means:
 * Top-level `defer` runs when the program exits — an imported module's
   top-level `defer` too, after the entry module's.
 
-A `return` inside a defer body exits only the defer closure, not the
-enclosing function. `throw` inside a defer body aborts that defer and
+A defer body is code of the function it is written in: `self` and `fn`
+there are that function's (in a method, `fn` is the bound method), and
+at the top level reading `fn` is a `NameError`. A `return` inside a
+defer body exits only the defer closure, not the enclosing function. `throw` inside a defer body aborts that defer and
 propagates as a regular exception — after the defers still pending in
 the same scope have run, in the same last-in-first-out order: a defer
 always runs, whatever the ones registered after it did. If more than one
