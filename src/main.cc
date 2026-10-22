@@ -2574,22 +2574,18 @@ fn play() {
     return nil
   }
   # The part --from and --to choose, in seconds: each is seconds, minutes and
-  # seconds (1:23) or a mark's name. They come with --wav alone, so a mistake
-  # ends the program.
+  # seconds (1:23) or a mark's name, as the song reads a point. They come
+  # with --wav alone, so a mistake ends the program.
   let marks = song.marks()
   let at = fn (name) {
     let s = option(name)
     return nil if s == nil
-    if "0123456789".contains(s.slice(0, 1).to_string()) {
-      let m = s.split(":")
-      return m.size() == 1 ? to_float(s) : to_long(m[0]) * 60 + to_float(m[1])
-    }
-    if !marks.has(s) {
+    if !"0123456789".contains(s.slice(0, 1).to_string()) && !marks.has(s) {
       let has = marks.empty() ? "none" : marks.keys().join(", ")
       IO.eprintln("culebra play: {path} has no mark {s} (it has {has})")
       Sys.exit(1)
     }
-    marks[s]
+    song.seconds(s)
   }
   let from = at("--from")
   let to = at("--to")

@@ -37,6 +37,22 @@ let parts = fn () {
   let whole = parted.render()
   let part = parted.render(from: "Second", to: "Third")
   assert_eq(parted.render(from: 2, to: 4.0), part)
+  # A point is a mark's name or seconds, or a String of seconds or of minutes
+  # and seconds, as `culebra play --from` takes it; seconds() reads one.
+  assert_eq(
+    [parted.seconds("Third"), parted.seconds("0:02.5"), parted.seconds("3"), parted.seconds(1)],
+    [4.0, 2.5, 3.0, 1.0],
+  )
+  assert_eq(parted.render(from: "0:02", to: "4"), part)
+  for bad in ["1:5", "0:60", "2.", "1:", ":30"] {
+    assert_throws("ValueError", fn () { parted.seconds(bad) })
+  }
+  let unmarked = try {
+    parted.seconds("Fourth")
+  } catch e: ValueError {
+    e.message
+  }
+  assert_eq(unmarked, "Audio.Kauai: the song has no mark Fourth (it has Second, Third)")
   assert_eq(part.slice(44100, 3 * 44100), whole.slice(2 * 44100, 4 * 44100))
   let lead = part.slice(0, 44100)
   assert_eq(lead, iota(44100).map(|i| whole[44100 + i] * (0.5 - 0.5 * Math.cos(Math.pi * i / 44100))))

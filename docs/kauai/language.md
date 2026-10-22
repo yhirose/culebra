@@ -994,8 +994,9 @@ check the song and raise the first error of [section 9](#9-errors) as a
 | `playing()` | whether it is playing: from `play()` until `stop()`, or until its end if it does not `loop` |
 | `reached(NAME)` | whether it has played as far as `mark NAME` |
 | `marks()` | where each `mark NAME` is, as an object of seconds from the start in the song's order: `{Drive: 32.0, Peak: 64.0}` |
+| `seconds(at)` | how many seconds from the start a point in the song is: a mark's name, seconds, or a `String` of seconds (`"83.5"`) or of minutes and seconds (`"1:23.5"`), as `render(from:, to:)` takes it; a mark the song does not have, or a `String` of neither form (`"1:5"`), is a `ValueError` |
 | `prepare()` | builds one external sound, and answers how many remain |
-| `render(from:, to:)` | the song once through as `play()` would sound it, until its last sound and its room's echoes end: an `Array` of mono samples, `44100` a second, from the same mixer, with no audio device; a song that loops is heard once. `FS.write("song.wav", Audio.Sound(song.render()).data())` saves it. With `from:` or `to:`, each a mark's name or seconds, only that part of the song (below). Not in the browser, where the page plays a song (`ValueError`) |
+| `render(from:, to:)` | the song once through as `play()` would sound it, until its last sound and its room's echoes end: an `Array` of mono samples, `44100` a second, from the same mixer, with no audio device; a song that loops is heard once. `FS.write("song.wav", Audio.Sound(song.render()).data())` saves it. With `from:` or `to:`, each a point as `seconds(at)` reads one, only that part of the song (below). Not in the browser, where the page plays a song (`ValueError`) |
 | `length()` | seconds once through |
 | `about()` | what its `about` says, as an object of the items written: `{title: 'Je te veux', composer: 'Erik Satie', year: 1897}`; `{}` without one |
 | `events()` | what it plays, in order: `{at, len, by, pitch, vol}`, with `at` and `len` in seconds, `by` the voice or drum, `pitch` a MIDI note (`nil` for a drum), and `vol` the voice's or drum's `vol` at the note's dynamic, on the tones' `0` to `100` for an external sound too |
@@ -1017,8 +1018,9 @@ song.reached("Drive")   # has the song passed `mark Drive`?
 
 `render(from:, to:)` renders a part of the song, to hear one passage
 without waiting for the whole song. `from:` and `to:` are each a mark's
-name or seconds from the start, and either can be left out for the top or
-the end. The samples start a second before `from:` (or at the top, if it
+name or seconds from the start, the seconds a number or a `String`, of
+seconds or of minutes and seconds (`"1:23.5"`), as `culebra play --from`
+takes them; either can be left out for the top or the end. The samples start a second before `from:` (or at the top, if it
 is nearer), rising from silence over that second, so the part is heard at
 its full level from `from:` on. Notes that start before `to:` play to
 their end, and the room's echoes after them. The song is mixed from its top
@@ -1033,6 +1035,8 @@ let song = Audio.Kauai.load("ballad.kau")
 song.marks()                                   # => {Drive: 32.0, Peak: 64.0}
 let drive = song.render(from: "Drive", to: "Peak")
 let bars = song.render(from: 40.5, to: 48.0)   # seconds from the start
+let more = song.render(from: "0:40.5", to: "Peak")
+song.seconds("1:04")                           # => 64.0
 ```
 
 An external voice is built one pitch at a time: for each pitch the song

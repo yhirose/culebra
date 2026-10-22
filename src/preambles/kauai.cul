@@ -552,6 +552,16 @@ let _kauai_module = fn () {
     !t.empty() && all_of(t, "0123456789.")
   }
 
+  fn all_digits(t) {
+    !t.empty() && all_of(t, "0123456789")
+  }
+
+  # `t` as seconds, written 83 or 83.5; nil where it is not.
+  fn seconds_of(t) {
+    let (whole, frac) = halves(t, ".") ?? (t, "0")
+    all_digits(whole) && all_digits(frac) ? to_float(t) : nil
+  }
+
   # An external instrument's parameter, `name=value`, as a voice in the band
   # and a direction in a score write it: a word and a number.
   fn param_of(text, line) {
@@ -2557,12 +2567,22 @@ let _kauai_module = fn () {
 
     # Seconds into the song at mark `name`.
     _mark(name) {
-      self._marks.get(name, nil) ?? __raise("ValueError", "Audio.Kauai: the song has no mark {name}")
+      let has = self._marks.empty() ? "none" : self._marks.keys().join(", ")
+      self._marks.get(name, nil) ?? __raise("ValueError", "Audio.Kauai: the song has no mark {name} (it has {has})")
     }
 
-    # Seconds into the song at `p`: a mark's name, or seconds.
+    # Seconds into the song at `p`: seconds, or a String of a mark's name, of
+    # seconds (83.5), or of minutes and seconds (1:23.5).
     _point(p) {
-      type_of(p) == "String" ? self._mark(p) : p * 1.0
+      return p * 1.0 if type_of(p) != "String"
+      return self._mark(p) if !p.empty() && !"0123456789".contains(p.slice(0, 1).to_string())
+      let (m, s) = halves(p, ":") ?? (nil, p)
+      let secs = seconds_of(s)
+      let whole = (halves(s, ".") ?? (s, ""))[0]
+      if secs == nil || (m != nil && !(all_digits(m) && whole.size() == 2 && to_long(whole) < 60)) {
+        __raise("ValueError", "Audio.Kauai: a point in a song is seconds (83.5), minutes and seconds (1:23.5) or a mark's name, not '{p}'")
+      }
+      (m == nil ? 0 : to_long(m) * 60) + secs
     }
 
     # Play from the top (again, if it is playing), after building what is left.
@@ -2579,11 +2599,11 @@ let _kauai_module = fn () {
     # The song once through as play() sounds it, until its last sound and its
     # room's echoes end: mono samples, 44100 a second, from the mixer that
     # plays it, with no device. A song that loops is heard once. From `from`
-    # until `to` (each a mark's name or seconds), it is that part of the song,
-    # heard from LEAD seconds before `from` (rising from silence over them)
-    # until what starts before `to` ends: of the external sounds, only those
-    # that start before `to` and play notes LEAD seconds before `from` or
-    # later are built.
+    # until `to` (each a point, as seconds() reads one), it is that part of
+    # the song, heard from LEAD seconds before `from` (rising from silence
+    # over them) until what starts before `to` ends: of the external sounds,
+    # only those that start before `to` and play notes LEAD seconds before
+    # `from` or later are built.
     render(from: String | Long | Float | Nil = nil, to: String | Long | Float | Nil = nil) {
       let first = from == nil ? 0.0 : self._point(from)
       let last = to == nil ? nil : self._point(to)
@@ -2641,6 +2661,11 @@ let _kauai_module = fn () {
     # Where each `mark NAME` is: {NAME: seconds into the song}, in its order.
     marks() {
       {...self._marks}
+    }
+
+    # Seconds into the song at `at`, a point as render() takes one.
+    seconds(at: String | Long | Float) {
+      self._point(at)
     }
 
     # Seconds once through.
