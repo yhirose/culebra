@@ -24,6 +24,15 @@ let ATTACK_PRE = 0.015
 let ATTACK_POST = 0.1
 let BREATH_NOISE = [20.0, 20000.0]
 
+# The notes the tools leave out of data/ (dB): one `brighter` than the
+# median of the notes within a semitone of it (its harmonics from 3 kHz up
+# against all of theirs), a harsh take, not the instrument's tone; and one
+# whose odd harmonics are `odd_under` its even ones, measured along half its
+# pitch. For the soprano, 9 dB left out 57 of 1689 notes; heard blind, a
+# cruise borrowing none of them played rounder than one leaving out only
+# those 12 dB over (17, among them one heard as cracked).
+let LEFT_OUT = {brighter: 9.0, odd_under: 12.0}
+
 let LN10 = Math.log(10.0)
 
 # A number in the 16 bits a note keeps: the nearest, ties to even, within
@@ -208,4 +217,4 @@ fn write(dir, harmonics, notes, attacks, pre, rate, breath) {
   }
 }
 
-export {write, kept_frames, pack_note, note_db, note_parts, note_shapes, pack_attack, attack_samples}
+export {LEFT_OUT, write, kept_frames, pack_note, note_db, note_parts, note_shapes, pack_attack, attack_samples}

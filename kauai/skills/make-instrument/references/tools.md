@@ -95,7 +95,10 @@ the attacks (cleaned of the air on the microphone) and how the breath
 pulses with the wave. The recordings are read again from `work/sources`
 (`--sources` says otherwise). The package's own `data_format.cul` lays the
 numbers out and its `main.cul` reads them through it, so a new instrument
-copies both from the soprano's and changes them together. Three 192 s
+copies both from the soprano's and changes them together. `data_format.cul`
+also sets which notes are left out (`LEFT_OUT`: a harsh take, a note
+measured along half its pitch); the soprano's limits were set by ear, so
+check them against the new instrument's recordings. Three 192 s
 recordings take about a minute. `kauai/tools/README.md` says how each part
 is made.
 

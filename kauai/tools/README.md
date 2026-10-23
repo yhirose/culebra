@@ -222,8 +222,9 @@ Each note, frame by frame (10 ms) from its first frame for as many as
   the recording's RMS over a period either side of its pitch against its
   harmonics' level there, at most 4.
 
-Two kinds of note are left out, with their attacks: a harsh take, whose
-harmonics from 3 kHz up are 9 dB or more brighter (against all its
+Two kinds of note are left out, with their attacks, by limits the
+package's `data_format.cul` sets (`LEFT_OUT`; the soprano's below): a harsh
+take, whose harmonics from 3 kHz up are 9 dB or more brighter (against all its
 harmonics, in its median frame) than the median of the notes within a
 semitone of it; and a note whose odd harmonics (1st, 3rd, 5th, 7th) are 12
 dB or more under its even ones, its harmonics measured along half its

@@ -595,18 +595,6 @@ fn pulsed_of(notes, recordings, bands, rate) {
 
 # --- Notes left out ---------------------------------------------------------------
 
-# How far over its neighbours a note may be bright (dB): one this much
-# brighter than the median of the notes within a semitone of it is a harsh
-# take of the note, not the instrument's tone. For the soprano, 57 of 1689
-# notes; heard blind, a cruise borrowing none of them played rounder than
-# one leaving out only those 12 dB over (17, among them one heard as
-# cracked).
-let BRIGHTER = 9.0
-
-# How far under its even harmonics a note's odd ones may be (dB): further,
-# its harmonics were measured along half its pitch (read an octave low).
-let ODD_UNDER = 12.0
-
 let db_ratio = |a, b| 10.0 *
   Math.log(Math.max(a, 1e-30) / Math.max(b, 1e-30)) /
   LN10
@@ -637,11 +625,13 @@ let odd_over_even = |n| over_frames(
   ),
 )
 
-# `notes` without the ones not to borrow: those BRIGHTER over the notes
-# within a semitone of them, and those whose odd harmonics are ODD_UNDER
-# their even ones. Answers {kept, bright, halved}, the last two how many
-# were left out for each.
-fn kept_notes(notes, brighter = BRIGHTER) {
+# `notes` without the ones not to borrow (`limits`, data_format's LEFT_OUT):
+# those `brighter` over the notes within a semitone of them, and those whose
+# odd harmonics are `odd_under` their even ones (measured along half their
+# pitch). Answers {kept, bright, halved}, the last two how many were left
+# out for each.
+fn kept_notes(notes, limits) {
+  let brighter = limits.brighter
   let bright = notes.map(|n| brightness(n))
   let by_semi = {}
   for i in 0..notes.size() {
@@ -654,7 +644,7 @@ fn kept_notes(notes, brighter = BRIGHTER) {
       .filter(|k| k != i)
     near.empty() ? 0.0 : bright[i] - middle(near.map(|k| bright[k]))
   })
-  let halved = notes.map(|n| odd_over_even(n) < -ODD_UNDER)
+  let halved = notes.map(|n| odd_over_even(n) < -limits.odd_under)
   let keep = iota(notes.size()).map(|i| over[i] < brighter && !halved[i])
   {
     kept: iota(notes.size()).filter(|i| keep[i]).map(|i| notes[i]),
@@ -666,9 +656,9 @@ fn kept_notes(notes, brighter = BRIGHTER) {
 # --- The whole of it -----------------------------------------------------------
 
 # What data/ holds, made from `a` (run's argument, parsed): {harmonics, notes,
-# attacks, breath}, the notes not to borrow left out (kept_notes,
-# `brighter`) and their attacks with them.
-fn made_of(a, brighter = BRIGHTER) {
+# attacks, breath}, the notes not to borrow left out (kept_notes, `limits`)
+# and their attacks with them.
+fn made_of(a, limits) {
   let notes = []
   let recordings = {}
   mut bands = nil
@@ -690,8 +680,8 @@ fn made_of(a, brighter = BRIGHTER) {
     notes.extend(these)
     println("{rec}: {these.size()} notes")
   }
-  let k = kept_notes(notes, brighter)
-  println("left out: {k.bright} notes {brighter} dB or more brighter than those within a semitone, {k.halved} measured along half their pitch")
+  let k = kept_notes(notes, limits)
+  println("left out: {k.bright} notes {limits.brighter} dB or more brighter than those within a semitone, {k.halved} measured along half their pitch")
   let attacks = recordings
     .keys()
     .flat_map(|rec| attacks_of(
@@ -712,7 +702,7 @@ fn made_of(a, brighter = BRIGHTER) {
 # recordings are in, out: the folder data/ is written to}.
 fn run(format, arg) {
   let a = JSON.parse(arg)
-  let m = made_of(a)
+  let m = made_of(a, format.LEFT_OUT)
   let wrote = format.write(
     a.out,
     m.harmonics,
@@ -725,4 +715,4 @@ fn run(format, arg) {
   println("{a.out}: {wrote.notes} notes ({2 * wrote.numbers} bytes), {wrote.attacks} attacks ({2 * wrote.samples} bytes), breath pulsed {m.breath.pulsed}")
 }
 
-export {BRIGHTER, run, kept_notes, brightness, median, despiked, harmonics_despiked, pchip, pitch_of, quantile, noise_floor, cleaned}
+export {run, kept_notes, brightness, median, despiked, harmonics_despiked, pchip, pitch_of, quantile, noise_floor, cleaned}
