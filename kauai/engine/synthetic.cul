@@ -9,12 +9,12 @@ let REED = [0.3, 0.45, 0.25, 0.2, 0.15, 0.1, 0.08, 0.05]
 
 # A style: the numbers here are only there to be read.
 let STYLE = {
-  mf_db: -24.7,
-  db_per_octave: 7.0,
-  lib_louder: 13.7,
-  vibrato: {depth: 20.0, straight: 0.6},
-  onset_from_t0: {rest: 0.0, tongue: 0.03},
-  overtone_from: 82,
+  mf_db: -20.0,
+  db_per_octave: 5.0,
+  lib_louder: 9.0,
+  vibrato: {depth: 15.0, straight: 0.5},
+  onset_from_t0: {rest: 0.01, tongue: 0.02},
+  overtone_from: 80,
 }
 
 # A performance, 3.2 s: A4 from a rest (0.3 to 1.5 s), the tongue's stop, C5

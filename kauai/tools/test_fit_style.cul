@@ -57,7 +57,7 @@ fn a_first_style_is_read_off_the_recordings() {
 @test
 fn a_number_a_song_shows_is_found_from_a_start_far_off() {
   let made = MADE
-  # The target is the song played in STYLE (loudness grows 7 dB an octave up
+  # The target is the song played in STYLE (loudness grows 5 dB an octave up
   # the range); the start has it growing not at all.
   let target = lib.rendered(made.inst, "sax", "tune.kau", 2.2, FILES)
   let pairs = [{
