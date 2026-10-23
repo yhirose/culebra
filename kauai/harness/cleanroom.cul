@@ -25,6 +25,19 @@ let SPEC = {
       default: nil,
       doc: 'the folder to make (outside the repo, not there yet)',
     },
+    {
+      name: 'keep-package',
+      type: 'Bool',
+      default: false,
+      doc: "keep the case's instrument package: for work on the engine, not the instrument",
+    },
+    {
+      name: 'stub',
+      type: 'String',
+      positional: false,
+      repeated: true,
+      doc: 'FILE=STUB: a file of the repo put in place by a stub, to be written again',
+    },
   ],
 }
 
@@ -58,7 +71,7 @@ sh("cd '{repo}' && git archive HEAD | tar -x -C '{dest}'")
 # The answer: the instrument's package, the other cases, the eval songs, and
 # the case's `hide` (files that hold it in another shape).
 let package = FS.join(dest, "kauai", "sounds", args.case)
-FS.remove(package, recursive: true) if FS.exists(package)
+FS.remove(package, recursive: true) if FS.exists(package) && !args.keep_package
 for other in FS.list_dir(FS.join(dest, "kauai", "harness", "cases")) {
   continue if other == args.case
   FS.remove(FS.join(dest, "kauai", "harness", "cases", other), recursive: true)
@@ -69,6 +82,14 @@ for s in spec.get("eval", []) {
 }
 for path in spec.get("hide", []) {
   FS.remove(FS.join(dest, path)) if FS.exists(FS.join(dest, path))
+}
+for spec_arg in args.stub {
+  let at = spec_arg.index_of("=")
+  fail("{spec_arg}: write FILE=STUB") if at < 0
+  let file = spec_arg.slice(0, at).to_string()
+  let stub = spec_arg.slice(at + 1, spec_arg.size()).to_string()
+  fail("no stub {stub}") if !FS.exists(FS.join(repo, stub))
+  FS.write(FS.join(dest, file), FS.read(FS.join(repo, stub)))
 }
 let hidden = {...spec}
 hidden.remove("eval")
@@ -84,4 +105,4 @@ sh("ln -s '{binary}' '{dest}/build-dev/culebra'")
 println("clean room for {args.case} at {dest}")
 println("  culebra: {dest}/build-dev/culebra")
 println("  case:    {dest}/kauai/harness/cases/{args.case}/case.json (without `eval`)")
-println("  removed: kauai/sounds/{args.case}, the other cases, {spec.get("eval", []).size()} eval songs")
+println("  removed: {args.keep_package ? "" : "kauai/sounds/{args.case}, "}the other cases, {spec.get("eval", []).size()} eval songs; stubbed: {args.stub.size()}")

@@ -1,0 +1,31 @@
+# Which recorded note a note of a phrase borrows: the engine's choice,
+# kept in a module of its own so that a choice can be made on its own.
+#
+# THIS FILE IS A STUB. Write `borrow_for`.
+#
+# `inst` is the Instrument: `inst.lib.notes[i]` each recorded note ({semi,
+# frames (10 ms), level (dB), vib (cents peak to peak), from, to, ...}),
+# `inst.lib_in[i]` and `inst.lib_out[i]` how it is entered and left ("rest",
+# "tongue", or a slur's kind: "up leap", "up step", "down leap", "down step",
+# "same", "legato"), `inst.lib_dip[i]` how far its loudness falls inside it
+# (dB), `inst.attack_of[i]` its attack (or nil), `inst.lib_louder` how much
+# louder the recorded notes' levels read than a note's asked for,
+# `inst.vibrato_wanted(v)` the vibrato (cents peak to peak) a note asks of
+# the note it borrows (or nil), `inst.slur_kind(semitones)` a slur's kind.
+# `notes` are the phrase's notes ({s, e (frames), semi, from, to ("rest",
+# "tongue" or "legato"), level, soft, ...}), `k` the one asked for, `before`
+# the recorded note index borrowed for the note before it (or nil).
+#
+# Answers the index of the recorded note note `k` borrows, or nil where there
+# is none to borrow. The note keeps that recording's own moves of pitch and
+# loudness, its timbre, and (for a phrase's first note or one the tongue
+# starts) its attack: so the one chosen should be played the way the note is
+# asked for (its pitch, length, loudness, how it is entered and left, how much
+# vibrato it has), and where the note before slurs into this one, the take
+# that followed the one before in the recording sounds like one player.
+
+fn borrow_for(inst, notes, k, before) {
+  throw "choose.cul is a stub: write borrow_for"
+}
+
+export {borrow_for}
