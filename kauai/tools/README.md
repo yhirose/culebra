@@ -253,6 +253,47 @@ harmonics in each band, its envelope fitted against the phase of the first
 harmonic as c0 + c1 sin(phase - shift); the median of c1 / c0, as the share
 of the breath pulsed, `2 m / (1 + m)`.
 
+## compare.cul: how far one rendering is from another
+
+`compare.cul` measures how far a candidate rendering of a score is from a
+reference one of the same score, in numbers a listener can weigh, so that a
+change can be judged without listening first, and a build of an instrument
+can be set against a target.
+
+```sh
+culebra kauai/tools/compare.cul --low 200 --high 1400 ref.wav cand.wav
+culebra kauai/tools/compare.cul --low 200 --high 1400 --yardstick \
+  --json work/compare.json ref.wav cand.wav
+```
+
+Both are read every 10 ms (the frames line up when the score is the same,
+so render both with `culebra play --wav`), and the distance is taken over
+the frames where either sounds (within 50 dB of its loudest). `--low` and
+`--high` bound the pitch searched, as `measure.cul`'s do.
+
+| Number | What it is | Limit |
+|---|---|---|
+| `spectral_db` | the log spectrum over 48 bands from 100 Hz to 16 kHz, rms over the bands, mean over the frames: the timbre as a whole | 3.0 |
+| `loudness_db` | the level of the frame, mean absolute difference | 1.0 |
+| `integrated_lu` | the programme loudness (BS.1770), absolute difference | 0.5 |
+| `pitch_median_cents`, `pitch_p95_cents` | the pitch where both have one: the median and the 95th percentile of the absolute difference | 5, 30 |
+| `voicing` | the share of frames where only one has a pitch | 0.03 |
+| `centroid_cents` | where the spectrum's centre of mass lies: brightness | 60 |
+| `breath_db` | the noise against the harmonics where both have a pitch (`Audio.harmonics` along each one's own pitch) | 3.0 |
+
+The limits are a starting point, about where a listener stops telling the
+two apart; the exit status is 1 when a number is over its limit, and the
+person has the last word. `worst` lists the five whole seconds where the
+spectrum differs most, to cut out and listen to.
+
+`--yardstick` also prints what four known degradations of the reference
+score over its first 20 seconds (1 dB quieter, a 6 kHz low pass, noise at
+-45 dB of the peak, 10 ms late), to read the candidate against: a 10 ms
+delay already moves `voicing` and `centroid_cents`, so a build whose notes
+start a few milliseconds off is not wrong for that alone. `--json FILE`
+writes every number, what is over, and the yardstick. A minute of music
+takes about 4 s.
+
 ## make_sounds.cul: an instrument's sounds made beforehand
 
 `make_sounds.cul` asks an instrument module for every sound Kauai songs need

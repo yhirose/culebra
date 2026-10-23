@@ -1,0 +1,226 @@
+# Two renderings of the same score compared: how far a candidate sound is
+# from a reference one, in units a listener can weigh. Both are read every
+# 10 ms (the frames align when the score is the same) and the distance is
+# taken over the frames where either sounds:
+#
+#   spectral_db         the log spectrum over 48 bands from 100 Hz, rms over
+#                       the bands, mean over the frames (the timbre as a whole)
+#   loudness_db         the level of the frame, mean absolute difference
+#   integrated_lu       the programme loudness (BS.1770), absolute difference
+#   pitch_median_cents  the pitch, where both have one: the median and the
+#   pitch_p95_cents       95th percentile of the absolute difference
+#   voicing             the share of frames where only one has a pitch
+#   centroid_cents      where the spectrum's centre of mass lies (brightness)
+#   breath_db           the noise against the harmonics, where both have a
+#                       pitch (Audio.harmonics along each one's own pitch)
+#
+# `compare.cul` is the program; README.md says more.
+
+let STEP = 0.01
+
+let BANDS = 48
+
+let LN10 = Math.log(10.0)
+
+let db_power = |p| 10.0 * Math.log(Math.max(p, 1e-20)) / LN10
+
+let cents_of = |a, b| 1200.0 * Math.log(a / b) / Math.log(2.0)
+
+let mean = |xs| xs.empty() ? 0.0 : xs.sum() / xs.size()
+
+# A frame sounds when its level is within this (dB) of the loudest, and a
+# band counts when it is within BAND_RANGE of the loudest band.
+let ACTIVE = 50.0
+
+let BAND_RANGE = 70.0
+
+# What a candidate may differ by and still be taken for the reference: about
+# where a listener stops telling them apart. A starting point, not a law;
+# the person hears the last word.
+let LIMITS = {
+  spectral_db: 3.0,
+  loudness_db: 1.0,
+  integrated_lu: 0.5,
+  pitch_median_cents: 5.0,
+  pitch_p95_cents: 30.0,
+  voicing: 0.03,
+  centroid_cents: 60.0,
+  breath_db: 3.0,
+}
+
+# The bins of a 2048 frame at `rate` that belong to each of the BANDS bands,
+# log spaced from 100 Hz to 16 kHz (or 0.45 of the rate): band_of[k], -1
+# outside.
+fn band_map(size, rate) {
+  let top = Math.min(16000.0, 0.45 * rate)
+  let width = rate / to_float(size)
+  let step = Math.log(top / 100.0) / BANDS
+  iota(size / 2 + 1).map(fn (k) {
+    let f = k * width
+    return -1 if f < 100.0 || f >= top
+    Math.min(BANDS - 1, Math.floor(Math.log(f / 100.0) / step))
+  })
+}
+
+# Everything a comparison reads of `samples` at `rate`: per 10 ms frame the
+# bands' dB, the level, the spectral centroid (Hz), the pitch (Hz or nil)
+# searched from `low` to `high`, and the breath (dB, noise against
+# harmonics, nil where no pitch); and the programme loudness.
+fn features(samples, rate, low, high) {
+  let size = 2048
+  let hop = Math.round(rate * STEP)
+  let spec = Audio.spectrum(samples, size: size, hop: hop)
+  let map = band_map(size, rate)
+  let width = rate / to_float(size)
+  let n = spec.size()
+  let bands = []
+  let level = []
+  let centroid = []
+  for t in 0..n {
+    let row = spec[t]
+    let acc = repeat(BANDS, 0.0)
+    mut total = 0.0
+    mut weighted = 0.0
+    for k in 1..size / 2 + 1 {
+      let p = row[k] * row[k]
+      total += p
+      weighted += k * width * p
+      let b = map[k]
+      if b >= 0 {
+        acc[b] += p
+      }
+    }
+    bands.push(acc.map(|p| db_power(p)))
+    level.push(db_power(total))
+    centroid.push(total > 1e-20 ? weighted / total : 0.0)
+  }
+  let hz = Audio.pitch(samples, low, high, rate).hz
+  let split = Audio.harmonics(samples, hz, 40, rate)
+  let sum = repeat(samples.size() + 1, 0.0)
+  for i in 0..split.rest.size() {
+    sum[i + 1] = sum[i] + split.rest[i] * split.rest[i]
+  }
+  let breath = iota(hz.size()).map(fn (t) {
+    return nil if hz[t] == nil || split.harmonics[t] == nil
+    let harm = split.harmonics[t].map(|a| a * a / 2.0).sum()
+    let lo = Math.min(sum.size() - 1, t * hop)
+    let hi = Math.min(sum.size() - 1, (t + 1) * hop)
+    let rest = hi > lo ? (sum[hi] - sum[lo]) / (hi - lo) : 0.0
+    db_power(rest) - db_power(harm)
+  })
+  {
+    rate: rate,
+    seconds: samples.size() / to_float(rate),
+    bands: bands,
+    level: level,
+    centroid: centroid,
+    hz: hz,
+    breath: breath,
+    lufs: Audio.integrated_loudness(samples, rate),
+  }
+}
+
+let rounded = |x, places| Math.round(x * 10.0 ** places) / 10.0 ** places
+
+# How far `b` (the candidate) is from `a` (the reference), over their common
+# frames: the numbers LIMITS names, and the `worst` seconds (whole seconds,
+# the five where the spectrum differs most).
+fn distance(a, b) {
+  let n = Math.min(a.level.size(), b.level.size())
+  let peak_a = a.level.max()
+  let peak_b = b.level.max()
+  let floor = Math.max(
+    a.bands.map(|r| r.max()).max(),
+    b.bands.map(|r| r.max()).max(),
+  ) -
+    BAND_RANGE
+  let active = iota(n).filter(|t| a.level[t] > peak_a - ACTIVE ||
+    b.level[t] > peak_b - ACTIVE)
+  let spectral = {}
+  for t in active {
+    mut sq = 0.0
+    mut count = 0
+    for k in 0..BANDS {
+      continue if Math.max(a.bands[t][k], b.bands[t][k]) < floor
+      let d = a.bands[t][k] - b.bands[t][k]
+      sq += d * d
+      count += 1
+    }
+    spectral[t] = count > 0 ? Math.sqrt(sq / count) : 0.0
+  }
+  let loud = active.map(|t| Math.abs(a.level[t] - b.level[t]))
+  let both = active.filter(|t| a.hz[t] != nil && b.hz[t] != nil)
+  let cents = both.map(|t| Math.abs(cents_of(a.hz[t], b.hz[t]))).sorted()
+  let one = active.filter(|t| (a.hz[t] == nil) != (b.hz[t] == nil))
+  let bright = active
+    .filter(|t| a.level[t] > peak_a - 40.0 && b.level[t] > peak_b - 40.0)
+    .map(|t| Math.abs(cents_of(a.centroid[t], b.centroid[t])))
+  let air = both
+    .filter(|t| a.breath[t] != nil && b.breath[t] != nil)
+    .map(|t| Math.abs(a.breath[t] - b.breath[t]))
+  let seconds = Math.floor(n * STEP)
+  let windows = iota(seconds).map(fn (w) {
+    let ts = active.filter(|t| t >= w * 100 && t < (w + 1) * 100)
+    {at: w, spectral_db: mean(ts.map(|t| spectral[t]))}
+  })
+  let worst = windows
+    .filter(|w| w.spectral_db > 0.0)
+    .sorted_by(|w| -w.spectral_db)
+    .slice(0, 5)
+  {
+    frames: n,
+    active: active.size(),
+    spectral_db: rounded(mean(active.map(|t| spectral[t])), 2),
+    loudness_db: rounded(mean(loud), 2),
+    integrated_lu: a.lufs == nil || b.lufs == nil
+      ? 0.0
+      : rounded(Math.abs(a.lufs - b.lufs), 2),
+    pitch_median_cents: rounded(
+      cents.empty() ? 0.0 : cents[cents.size() / 2],
+      1,
+    ),
+    pitch_p95_cents: rounded(
+      cents.empty() ? 0.0 : cents[cents.size() * 95 / 100],
+      1,
+    ),
+    voicing: rounded(
+      active.empty() ? 0.0 : one.size() / to_float(active.size()),
+      3,
+    ),
+    centroid_cents: rounded(mean(bright), 1),
+    breath_db: rounded(mean(air), 2),
+    worst: worst.map(|w| {at: w.at, spectral_db: rounded(w.spectral_db, 2)}),
+  }
+}
+
+# The numbers of `d` (distance's) over their LIMITS, as [name, value, limit].
+fn over(d, limits = LIMITS) {
+  limits.keys().filter(|k| d[k] > limits[k]).map(|k| [k, d[k], limits[k]])
+}
+
+# `samples` made worse in one known way, for reading a distance against a
+# yardstick: "gain" 1 dB quieter, "lowpass" at 6 kHz, "noise" at -45 dB of
+# the peak, "delay" 10 ms late.
+fn degraded(samples, rate, kind) {
+  if kind == "gain" {
+    return samples.map(|v| v * 10.0 ** (-1.0 / 20.0))
+  }
+  if kind == "lowpass" {
+    return Audio.filter(samples, "low", 6000.0, rate: rate)
+  }
+  if kind == "noise" {
+    let peak = samples.map(|v| Math.abs(v)).max()
+    let amp = peak * 10.0 ** (-45.0 / 20.0)
+    Random.seed(7)
+    return samples.map(|v| v + Random.uniform(-amp, amp))
+  }
+  if kind == "delay" {
+    let shift = Math.round(0.01 * rate)
+    return [...repeat(shift, 0.0), ...samples].slice(0, samples.size())
+  }
+  throw "unknown degradation {kind}"
+}
+
+let KINDS = ["gain", "lowpass", "noise", "delay"]
+
+export {STEP, LIMITS, KINDS, features, distance, over, degraded}

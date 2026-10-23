@@ -1,0 +1,140 @@
+import lib from './compare_lib.cul'
+
+let RATE = 44100
+let REED = [0.3, 0.45, 0.25, 0.2, 0.15, 0.1, 0.08, 0.05]
+
+# A, then C a minor third up, 0.8 s each, `cents` sharp.
+fn tones(cents) {
+  let k = 2.0 ** (cents / 1200.0)
+  let freq = [
+    (0.0, 440.0 * k),
+    (0.8, 440.0 * k),
+    (0.8, 523.25 * k),
+    (1.6, 523.25 * k),
+  ]
+  let gain = [
+    (0.0, 0.0),
+    (0.05, 0.4),
+    (0.75, 0.4),
+    (0.85, 0.4),
+    (1.55, 0.4),
+    (1.6, 0.0),
+  ]
+  Audio.partials(1.6, freq, [(0.0, REED)], gain: gain)
+}
+
+let ref_samples = tones(0.0)
+let ref = lib.features(ref_samples, RATE, 200.0, 1400.0)
+
+let against = |samples| lib.distance(
+  ref,
+  lib.features(samples, RATE, 200.0, 1400.0),
+)
+
+@test
+fn the_same_sound_is_no_distance_at_all() {
+  let d = against(ref_samples)
+  for k in lib.LIMITS.keys() {
+    assert_eq(d[k], 0.0)
+  }
+  assert_true(lib.over(d).empty())
+  assert_true(d.active > 100)
+}
+
+@test
+fn a_quieter_sound_is_that_much_off_in_loudness_and_nothing_else() {
+  let d = against(ref_samples.map(|v| v * 10.0 ** (-3.0 / 20.0)))
+  assert_true(Math.abs(d.loudness_db - 3.0) < 0.3)
+  assert_true(Math.abs(d.integrated_lu - 3.0) < 0.3)
+  assert_eq(d.pitch_median_cents, 0.0)
+  assert_eq(d.voicing, 0.0)
+  assert_true(d.centroid_cents < 20.0)
+  assert_true(lib.over(d).map(|o| o[0]).contains("loudness_db"))
+}
+
+@test
+fn a_louder_sound_is_as_far_off_as_a_quieter_one() {
+  let louder = against(ref_samples.map(|v| v * 10.0 ** (3.0 / 20.0)))
+  assert_true(Math.abs(louder.loudness_db - 3.0) < 0.3, louder.loudness_db)
+  assert_true(Math.abs(louder.integrated_lu - 3.0) < 0.3)
+}
+
+@test
+fn a_sharper_sound_is_that_much_off_in_pitch() {
+  let d = against(tones(30.0))
+  assert_true(Math.abs(d.pitch_median_cents - 30.0) < 4.0, d.pitch_median_cents)
+  assert_true(Math.abs(d.loudness_db) < 0.5)
+  assert_true(lib.over(d).map(|o| o[0]).contains("pitch_median_cents"))
+}
+
+@test
+fn a_duller_sound_is_off_in_spectrum_and_brightness_not_pitch() {
+  let d = against(Audio.filter(ref_samples, "low", 1000.0, rate: RATE))
+  assert_true(d.spectral_db > 3.0, d.spectral_db)
+  assert_true(d.centroid_cents > 60.0, d.centroid_cents)
+  assert_true(d.pitch_median_cents < 5.0, d.pitch_median_cents)
+}
+
+@test
+fn a_breathier_sound_is_off_in_breath() {
+  Random.seed(5)
+  let noisy = ref_samples.map(|v| v + Random.uniform(-0.03, 0.03))
+  let d = against(noisy)
+  assert_true(d.breath_db > 3.0, d.breath_db)
+  assert_true(d.pitch_median_cents < 5.0, d.pitch_median_cents)
+}
+
+@test
+fn a_sound_late_by_a_tenth_of_a_second_is_off_in_voicing_and_spectrum() {
+  let late = [...repeat(4410, 0.0), ...ref_samples].slice(0, ref_samples.size())
+  let d = against(late)
+  assert_true(d.spectral_db > 3.0, d.spectral_db)
+  assert_true(d.voicing > 0.03, d.voicing)
+}
+
+@test
+fn the_yardstick_degradations_each_move_the_number_they_name() {
+  let gain = against(lib.degraded(ref_samples, RATE, "gain"))
+  assert_true(Math.abs(gain.loudness_db - 1.0) < 0.2)
+  let low = against(lib.degraded(ref_samples, RATE, "lowpass"))
+  assert_true(low.centroid_cents > gain.centroid_cents)
+  assert_eq(lib.KINDS.size(), 4)
+  let said = try {
+    lib.degraded(ref_samples, RATE, "nope")
+    nil
+  } catch e {
+    e
+  }
+  assert_eq(said, "unknown degradation nope")
+}
+
+@test
+fn the_program_exits_0_for_the_same_sound_and_1_for_one_over_a_limit() {
+  let dir = FS.join(FS.temp_dir(), "compare-test-{UUID.v4()}")
+  defer {
+    FS.remove(dir, recursive: true) if FS.exists(dir)
+  }
+  FS.mkdir(dir)
+  let tool = FS.join(FS.dirname(FS.abspath(Sys.script)), "compare.cul")
+  FS.write(FS.join(dir, "ref.wav"), Audio.Sound(ref_samples, rate: RATE).data())
+  let quiet = ref_samples.map(|v| v * 10.0 ** (-3.0 / 20.0))
+  FS.write(FS.join(dir, "quiet.wav"), Audio.Sound(quiet, rate: RATE).data())
+  let run = |cand| Proc.run([
+    Sys.executable,
+    "--vm",
+    tool,
+    "--low",
+    "200",
+    "--high",
+    "1400",
+    "--json",
+    FS.join(dir, "out.json"),
+    FS.join(dir, "ref.wav"),
+    FS.join(dir, cand),
+  ])
+  assert_eq(run("ref.wav").code, 0)
+  let r = run("quiet.wav")
+  assert_eq(r.code, 1)
+  let out = JSON.parse(FS.read(FS.join(dir, "out.json")))
+  assert_true(out.over.map(|o| o[0]).contains("loudness_db"))
+}

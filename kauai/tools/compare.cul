@@ -1,0 +1,121 @@
+# How far a candidate rendering is from a reference one of the same score,
+# in numbers a listener can weigh (compare_lib.cul says which). Exits 1 when
+# a number is over its limit, so a script can stop on it.
+#
+#   culebra kauai/tools/compare.cul --low 200 --high 1400 ref.wav cand.wav
+#   culebra kauai/tools/compare.cul --low 200 --high 1400 --yardstick \
+#     ref.wav cand.wav
+#
+# `--low` and `--high` bound the pitch searched (Hz), as measure.cul's do.
+# `--yardstick` also prints what four known degradations of the reference
+# (1 dB quieter, a 6 kHz low pass, noise at -45 dB, 10 ms late) score, over
+# the reference's first 20 seconds, to read the candidate's numbers against.
+
+import lib from './compare_lib.cul'
+
+let SPEC = {
+  name: 'compare.cul',
+  doc: 'how far a candidate rendering is from a reference one of the same score',
+  args: [
+    {
+      name: 'low',
+      type: 'Float',
+      positional: false,
+      doc: 'the lowest pitch searched, Hz',
+    },
+    {
+      name: 'high',
+      type: 'Float',
+      positional: false,
+      doc: 'the highest pitch searched, Hz',
+    },
+    {
+      name: 'json',
+      type: 'String',
+      default: nil,
+      doc: 'also write the numbers here, as JSON',
+    },
+    {
+      name: 'yardstick',
+      type: 'Bool',
+      default: false,
+      doc: 'also print what known degradations of the reference score',
+    },
+    {
+      name: 'files',
+      type: 'String',
+      repeated: true,
+      doc: 'the reference and then the candidate (WAV, MP3 or Ogg)',
+    },
+  ],
+}
+
+fn fail(message) {
+  IO.eprintln("compare: {message}")
+  Sys.exit(2)
+}
+
+fn mono(path) {
+  fail("no file {path}") if !FS.exists(path)
+  let made = Audio.decode(FS.read(path))
+  let chs = made.channels
+  let xs = chs.size() == 1
+    ? chs[0]
+    : iota(chs[0].size()).map(|i| chs.map(|c| c[i]).sum() / chs.size())
+  {samples: xs, rate: made.rate}
+}
+
+let args = Args.parse(Sys.argv, SPEC)
+fail("name the reference and the candidate") if args.files.size() != 2
+let ref = mono(args.files[0])
+let cand = mono(args.files[1])
+fail("the rates differ: {ref.rate} and {cand.rate}") if ref.rate != cand.rate
+
+let a = lib.features(ref.samples, ref.rate, args.low, args.high)
+let b = lib.features(cand.samples, cand.rate, args.low, args.high)
+let d = lib.distance(a, b)
+
+fn show(name, d) {
+  println("{name}")
+  for k in lib.LIMITS.keys() {
+    let flag = d[k] > lib.LIMITS[k] ? "  over {lib.LIMITS[k]}" : ""
+    println("  {k}: {d[k]}{flag}")
+  }
+}
+
+println("{args.files[0]} ({a.seconds:.1f} s) against {args.files[1]} ({b.seconds:.1f} s): {d.active} of {d.frames} frames sound")
+show("candidate", d)
+println("  worst seconds: {d.worst.map(|w| "{w.at}s {w.spectral_db} dB").join(", ")}")
+
+mut yard = nil
+if args.yardstick {
+  let head = Math.min(ref.samples.size(), 20 * ref.rate)
+  let cut = ref.samples.slice(0, head)
+  let fa = lib.features(cut, ref.rate, args.low, args.high)
+  yard = {}
+  for kind in lib.KINDS {
+    let fb = lib.features(
+      lib.degraded(cut, ref.rate, kind),
+      ref.rate,
+      args.low,
+      args.high,
+    )
+    yard[kind] = lib.distance(fa, fb)
+    show("yardstick: {kind}", yard[kind])
+  }
+}
+
+if args.json != nil {
+  FS.write(
+    args.json,
+    JSON.stringify({
+      reference: args.files[0],
+      candidate: args.files[1],
+      distance: d,
+      over: lib.over(d),
+      yardstick: yard,
+    }) +
+      "\n",
+  )
+}
+Sys.exit(lib.over(d).empty() ? 0 : 1)

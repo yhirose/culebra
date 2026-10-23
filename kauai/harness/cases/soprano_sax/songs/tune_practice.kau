@@ -1,0 +1,81 @@
+about {
+  title  Practice
+  note   a practice piece for one saxophone: scales tongued and slurred, leaps, long tones, fast runs and short notes, to find the weak spots quickly
+}
+
+band Solo {
+  voice Lead  external Sax  plays melody  vol 40
+}
+
+song Practice {
+  tempo 100
+  key C
+  band Solo
+  melody in F4..E5
+
+  mark Scales
+  Scales
+  mark Leaps
+  Leaps
+  mark Long
+  Long
+  mark Runs
+  Runs
+  mark Short
+  Short
+}
+
+section Scales {
+  C   c4 d e f
+  C   g a b c'
+  C   c'4 b a g
+  C   f e d c
+  C   (c4 d e f)
+  C   (g a b c')
+  C   (c'4 b a g)
+  C   (f e d c)
+}
+
+section Leaps {
+  C   c4 g c' g
+  C   e4 b e' b
+  C   c4 c' c c'
+  C   g4 d' g d'
+  C   (c4 g c' g)
+  C   (e4 b e' b)
+  C   c4 e g c'
+  C   c'4 g e c
+}
+
+section Long {
+  C   c1
+  C   e1~
+  C   e2 d
+  C   g1
+  C   a2. g4
+  C   c'1
+  C   b2 a
+  C   g1
+}
+
+section Runs {
+  C   c8 d e f g a b c'
+  C   c'8 b a g f e d c
+  C   (c16 d e f g a b c' c' b a g f e d c)
+  C   c8 e g c' g e c e
+  C   g8 a b c' d' e' d' c'
+  C   (c'16 b a g f e d c d e f g a b c' d')
+  C   c8 g c' g e g c r
+  C   c1
+}
+
+section Short {
+  C   c8 r d r e r f r
+  C   g8 r a r b r c' r
+  C   c'8. b16 a8. g16 f8. e16 d8. c16
+  C   c4 r c r
+  C   c8 c c c c c c c
+  C   g4. g8 g4 r
+  C   c4 e g r
+  C   c1
+}
