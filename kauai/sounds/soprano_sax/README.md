@@ -47,8 +47,8 @@ made beforehand instead.
 |---|---|
 | `main.cul` | the instrument |
 | `data_format.cul` | how `data/` lays out the notes and attacks as 16-bit numbers, for `main.cul` reading them and the tools writing them |
-| `data/notes.i16`, `data/notes.json` | 1718 recorded notes, 10 ms frames: pitch, loudness, the breath in five bands, the harmonics' shapes, and the fine gain every millisecond, as 16-bit numbers, and where each note's are |
-| `data/attacks.i16`, `data/attacks.json` | 506 attacks, 16-bit samples from 15 ms before each onset to 100 ms after |
+| `data/notes.i16`, `data/notes.json` | 1689 recorded notes, 10 ms frames: pitch, loudness, the breath in five bands, the harmonics' shapes, and the fine gain every millisecond, as 16-bit numbers, and where each note's are |
+| `data/attacks.i16`, `data/attacks.json` | 512 attacks, 16-bit samples from 15 ms before each onset to 100 ms after |
 | `data/breath.json` | how the breath pulses with the tone in each band |
 
 ## Sources
@@ -62,6 +62,9 @@ saxophonist sketching a tune, released into the public domain:
   <https://freesound.org/s/734970/>, CC0 1.0
 - "Sax_soprano_3_Cmin_60(120) BPM" by Kataguruma,
   <https://freesound.org/s/734971/>, CC0 1.0
+
+`data/` is made from them by `kauai/tools/measure.cul` (`--low 200 --high
+1400`) and then `kauai/tools/make_data.cul`.
 
 A few numbers in `main.cul` (the shape of a written scoop, how much vibrato
 a long note asks for, how a note's loudness grows up the range) were
