@@ -189,10 +189,11 @@ culebra kauai/tools/make_data.cul --sounds kauai/sounds/alto_sax \
 ```
 
 ```
-freesound_734969: 565 notes, 179 attacks
-freesound_734970: 575 notes, 186 attacks
-freesound_734971: 549 notes, 147 attacks
-kauai/sounds/alto_sax/data: 1689 notes (2421316 bytes), 512 attacks (5193728 bytes), breath pulsed [0.022, 0.207, 0.501, 0.612, 0.547]
+freesound_734969: 565 notes
+freesound_734970: 575 notes
+freesound_734971: 549 notes
+left out: 57 notes 9.0 dB or more brighter than those within a semitone, 7 measured along half their pitch
+kauai/sounds/alto_sax/data: 1629 notes (2353300 bytes), 496 attacks (5031424 bytes), breath pulsed [0.029, 0.231, 0.517, 0.615, 0.548]
 ```
 
 The recordings are read again (the fine gains, the attacks and the breath
@@ -220,6 +221,15 @@ Each note, frame by frame (10 ms) from its first frame for as many as
 - and its fine gain every millisecond from 5 ms before its first frame:
   the recording's RMS over a period either side of its pitch against its
   harmonics' level there, at most 4.
+
+Two kinds of note are left out, with their attacks: a harsh take, whose
+harmonics from 3 kHz up are 9 dB or more brighter (against all its
+harmonics, in its median frame) than the median of the notes within a
+semitone of it; and a note whose odd harmonics (1st, 3rd, 5th, 7th) are 12
+dB or more under its even ones, its harmonics measured along half its
+pitch (the pitch read an octave low). Either, borrowed, sounds cracked
+rather than like the instrument; leaving out those 12 dB brighter instead
+was heard as less round.
 
 A spike (a value further from the median of the 7 about it than a floor
 and five times what is usual for the note) is filled with that median in

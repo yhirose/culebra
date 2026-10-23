@@ -134,6 +134,35 @@ fn the_recordings_steady_noise_is_taken_out_where_the_comb_lets_through() {
   assert_true(db(hum(spec(clean)), hum(spec(seg))) < -10.0)
 }
 
+# Notes at about one pitch, each a few frames of one shape: a harsh take
+# (much brighter than the rest) and one measured along half its pitch (its
+# odd harmonics silent) are left out; one a little brighter is kept.
+@test
+fn a_harsh_take_and_a_note_read_an_octave_low_are_left_out() {
+  let shape = |hi, odd| iota(40).map(|k| (k % 2 == 0 ? odd : 1.0) *
+    (k < 8 ? 1.0 / (k + 1) : hi))
+  let note = |semi, row| {
+    note: {semi: semi, own: 0.0},
+    parts: {shapes: repeat(5, row)},
+  }
+  let plain = iota(6).map(|i| note(69 + i % 2, shape(0.001, 1.0)))
+  let notes = [
+    ...plain,
+    note(69, shape(0.01, 1.0)),
+    note(70, shape(0.2, 1.0)),
+    note(69, shape(0.001, 0.0)),
+  ]
+  let left = lib.kept_notes(notes)
+  assert_eq((left.kept.size(), left.bright, left.halved), (7, 1, 1))
+  assert_true(lib.brightness(notes[7]) - lib.brightness(notes[0]) >
+    lib.BRIGHTER)
+  assert_true(lib.brightness(notes[6]) - lib.brightness(notes[0]) <
+    lib.BRIGHTER)
+  assert_true(left.kept.all(|n| n.parts.shapes[0][0] > 0.0))
+  # The threshold is the caller's to move.
+  assert_eq(lib.kept_notes(notes, brighter: 100.0).kept.size(), 8)
+}
+
 # A performance, 3.2 s, 15 cents sharp: A4 from a rest (0.3 to 1.5 s, 6 dB
 # softer), the tongue's stop, C5 (1.55 to 2.5 s) with a vibrato; a breath of
 # noise under both.

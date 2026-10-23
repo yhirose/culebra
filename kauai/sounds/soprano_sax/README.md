@@ -47,8 +47,8 @@ made beforehand instead.
 |---|---|
 | `main.cul` | the instrument |
 | `data_format.cul` | how `data/` lays out the notes and attacks as 16-bit numbers, for `main.cul` reading them and the tools writing them |
-| `data/notes.i16`, `data/notes.json` | 1689 recorded notes, 10 ms frames: pitch, loudness, the breath in five bands, the harmonics' shapes, and the fine gain every millisecond, as 16-bit numbers, and where each note's are |
-| `data/attacks.i16`, `data/attacks.json` | 512 attacks, 16-bit samples from 15 ms before each onset to 100 ms after |
+| `data/notes.i16`, `data/notes.json` | 1629 recorded notes, 10 ms frames: pitch, loudness, the breath in five bands, the harmonics' shapes, and the fine gain every millisecond, as 16-bit numbers, and where each note's are |
+| `data/attacks.i16`, `data/attacks.json` | 496 attacks, 16-bit samples from 15 ms before each onset to 100 ms after |
 | `data/breath.json` | how the breath pulses with the tone in each band |
 
 ## Sources
