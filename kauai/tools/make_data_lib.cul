@@ -1,0 +1,627 @@
+# An instrument's data/ made from what measure.cul wrote of its recordings:
+# the notes it borrows (their pitch, loudness, harmonics, breath and fine
+# gain, frame by frame), the attacks it grafts, and how its breath pulses.
+# make_data.cul runs it; the package's data_format.cul lays the numbers out.
+
+let STEP = 0.01  # seconds a frame, as measure.cul writes them
+
+let LN10 = Math.log(10.0)
+let db_of_power = |p| 10.0 * Math.log(Math.max(p, 1e-20)) / LN10
+
+# The median as numpy has it: the middle value, or the mean of the two
+# middle ones.
+fn median(xs) {
+  let s = xs.sorted()
+  let n = s.size()
+  n % 2 == 1 ? s[n / 2] : (s[n / 2 - 1] + s[n / 2]) / 2.0
+}
+
+# The upper middle value (the sorted values' [n / 2]), as the levels are
+# read.
+let middle = |xs| xs.sorted()[xs.size() / 2]
+
+# The running sums of `xs`'s squares, and the mean square of samples a until
+# b, those outside left out.
+fn squares(xs) {
+  let sum = repeat(xs.size() + 1, 0.0)
+  for i in 0..xs.size() {
+    sum[i + 1] = sum[i] + xs[i] * xs[i]
+  }
+  sum
+}
+
+fn power(sum, a, b) {
+  let lo = Math.max(0, a)
+  let hi = Math.min(sum.size() - 1, b)
+  hi > lo ? (sum[hi] - sum[lo]) / (hi - lo) : 0.0
+}
+
+# --- A recording as measure.cul wrote it ---------------------------------------
+
+# The measure at `path` (NAME.json beside NAME.f32): the JSON as it is, and
+# each frame's pitch (Hz, nil where none), harmonics' amplitudes and breath
+# (dB a band, nil where no pitch).
+fn measured(path) {
+  let head = JSON.parse(FS.read(path))
+  let columns = head.frames.columns
+  let c = columns.size()
+  let h = head.settings.harmonics
+  let nb = head.settings.breath_bands.size()
+  let first_h = columns.index_of("h1")
+  let first_b = columns.index_of("b1")
+  let values = String.unpack(
+    "f32",
+    FS.read(FS.join(FS.dirname(path), head.frames.file)),
+  )
+  let n = head.frames.count
+  let hz = iota(n).map(|t| values[t * c] > 0.0 ? values[t * c] : nil)
+  {
+    head: head,
+    hz: hz,
+    amps: iota(n).map(|t| values.slice(t * c + first_h, t * c + first_h + h)),
+    breath: iota(n).map(|t| hz[t] == nil
+      ? nil
+      : values.slice(t * c + first_b, t * c + first_b + nb)),
+  }
+}
+
+# --- Spikes ------------------------------------------------------------------
+
+# `xs` with its spikes replaced by the median over `reach` values on either
+# side: a value further from that median than both `floor` and five times
+# the note's usual distance (the median distance, scaled as a standard
+# deviation). The first and last `keep` values are left as they are (a
+# slur's move, a scoop, an onset, a release, not noise).
+fn despiked(xs, reach, floor, keep) {
+  let n = xs.size()
+  return xs if n < 2 * reach + 1
+  let med = iota(n).map(|i| median(xs.slice(
+    Math.max(0, i - reach),
+    Math.min(n, i + reach + 1),
+  )))
+  let dev = iota(n).map(|i| Math.abs(xs[i] - med[i]))
+  let usual = 1.4826 * median(dev) + 1e-9
+  let limit = Math.max(floor, 5.0 * usual)
+  iota(n).map(|i| i >= keep && i < Math.max(keep, n - keep) && dev[i] > limit
+    ? med[i]
+    : xs[i])
+}
+
+# A frame's harmonics with one (the 6th and up) standing more than 10 dB
+# over the median of the five about it brought down to that median, the
+# frame scaled back to unit power.
+fn harmonics_despiked(row) {
+  let h = row.size()
+  let logs = row.map(|v| 20.0 * Math.log(Math.max(v, 1e-9)) / LN10)
+  let med = iota(h).map(|k| median(logs.slice(
+    Math.max(0, k - 2),
+    Math.min(h, k + 3),
+  )))
+  let marks = iota(h).filter(|k| k >= 5 && logs[k] - med[k] > 10.0)
+  return row if marks.empty()
+  let out = iota(h).map(|k| marks.contains(k)
+    ? 10.0 ** (med[k] / 20.0)
+    : row[k])
+  let norm = Math.sqrt(out.map(|v| v * v).sum())
+  out.map(|v| v / norm)
+}
+
+# --- A note's parts ------------------------------------------------------------
+
+# A monotone cubic (Fritsch and Carlson) through points (xs, ys), xs
+# increasing, read at each of `at`; held past the ends.
+fn pchip(xs, ys, at) {
+  let n = xs.size()
+  return at.map(|_| ys[0]) if n == 1
+  let h = iota(n - 1).map(|i| xs[i + 1] - xs[i])
+  let d = iota(n - 1).map(|i| (ys[i + 1] - ys[i]) / h[i])
+  let m = iota(n).map(fn (i) {
+    return d[0] if i == 0
+    return d[n - 2] if i == n - 1
+    return 0.0 if d[i - 1] * d[i] <= 0.0
+    let w1 = 2.0 * h[i] + h[i - 1]
+    let w2 = h[i] + 2.0 * h[i - 1]
+    (w1 + w2) / (w1 / d[i - 1] + w2 / d[i])
+  })
+  mut seg = 0
+  at.map(fn (t) {
+    return ys[0] if t <= xs[0]
+    return ys[n - 1] if t >= xs[n - 1]
+    while xs[seg + 1] < t {
+      seg += 1
+    }
+    while seg > 0 && xs[seg] > t {
+      seg -= 1
+    }
+    let k = seg
+    let u = (t - xs[k]) / h[k]
+    let (u2, u3) = (u * u, u * u * u)
+    (2.0 * u3 - 3.0 * u2 + 1.0) * ys[k] +
+      (u3 - 2.0 * u2 + u) * h[k] * m[k] +
+      (-2.0 * u3 + 3.0 * u2) * ys[k + 1] +
+      (u3 - u2) * h[k] * m[k + 1]
+  })
+}
+
+# The shapes of a note's frames `ks` (frames of the recording): each pitched
+# frame's harmonics, each one's log a mean over the pitched frames within
+# 70 ms of it in the note (150 ms in all), a harmonic not measured in the
+# frame itself left silent, scaled to unit power; a frame with no pitch takes
+# the nearest pitched frame's.
+fn shapes_of(r, ks) {
+  let m = ks.size()
+  let h = r.amps[0].size()
+  let ok = iota(m).filter(|j| r.hz[ks[j]] != nil)
+  let logs = ks.map(|k| r.amps[k].map(|a| Math.log(Math.max(a, 1e-12))))
+  let own = iota(m).map(fn (j) {
+    return nil if r.hz[ks[j]] == nil
+    let near = ok.filter(|i| i >= j - 7 && i <= j + 7)
+    let sh = iota(h).map(fn (q) {
+      r.amps[ks[j]][q] <= 0.0
+        ? 0.0
+        : Math.exp(near.map(|i| logs[i][q]).sum() / near.size())
+    })
+    let norm = Math.max(Math.sqrt(sh.map(|v| v * v).sum()), 1e-20)
+    sh.map(|v| v / norm)
+  })
+  iota(m).map(fn (j) {
+    return own[j] if own[j] != nil
+    return repeat(h, 0.0) if ok.empty()
+    let nearest = ok.min_by(|i| Math.abs(i - j))
+    own[nearest]
+  })
+}
+
+# A note's breath, frame by frame: each band's dB where the frame has a
+# pitch, a monotone cubic through those elsewhere (-30 dB where none has),
+# then a median over 3 frames, no higher than +3 dB.
+fn breath_of(r, ks) {
+  let m = ks.size()
+  let nb = r.head.settings.breath_bands.size()
+  let good = iota(m).filter(|j| r.breath[ks[j]] != nil)
+  let cols = iota(nb).map(fn (b) {
+    let filled = good.empty()
+      ? repeat(m, -30.0)
+      : pchip(
+        good.map(|j| to_float(j)),
+        good.map(|j| r.breath[ks[j]][b]),
+        iota(m).map(|j| to_float(j)),
+      )
+    iota(m).map(|j| Math.min(
+      3.0,
+      median(filled.slice(Math.max(0, j - 1), Math.min(m, j + 2))),
+    ))
+  })
+  iota(m).map(|j| cols.map(|col| col[j]))
+}
+
+# How loud the harmonics of frame position `u` (in frames, between frames on
+# a straight line) are: the RMS of their sum.
+fn harmonics_level(r, u) {
+  let n = r.amps.size()
+  let x = Math.clamp(u, 0.0, n - 1.001)
+  let i = Math.floor(x)
+  let f = x - i
+  let a = Math.sqrt(r.amps[i].map(|z| z * z / 2.0).sum())
+  let b = Math.sqrt(r.amps[i + 1].map(|z| z * z / 2.0).sum())
+  a + (b - a) * f
+}
+
+# A note's fine gain every millisecond from 5 ms before its first frame to
+# its last: the recording's RMS over a period either side of its pitch `f0`
+# against its harmonics' level there, at most 4 (0 where they are silent).
+fn gains_of(r, sum, rate, t0, m, f0) {
+  let g0 = t0 - 0.005
+  let count = Math.round(((m - 1) * STEP + 0.005) * 1000.0) + 1
+  let half = Math.round(rate / Math.max(f0, 100.0))
+  iota(count).map(fn (k) {
+    let t = g0 + k * 0.001
+    let c = Math.round(t * rate)
+    let rms = Math.sqrt(power(sum, c - half, c + half))
+    let level = harmonics_level(r, t / STEP)
+    level > 1e-6 ? Math.min(4.0, rms / level) : 0.0
+  })
+}
+
+# The notes of recording `r` (measured) with `samples` (its samples, mono,
+# at `rate`), named `rec`: each note's description as notes.json keeps it
+# and its parts, frame by frame, as data_format's pack_note takes them. The
+# loudness is the harmonics' power in dB against the recording's 95th
+# percentile of it where it has a pitch; the cents are the note's pitch
+# against its semitone, held where it has none.
+fn notes_of(r, samples, rate, rec) {
+  let pdb = r.amps.map(|row| db_of_power(row.map(|a| a * a).sum()))
+  let voiced = iota(r.hz.size())
+    .filter(|t| r.hz[t] != nil && r.amps[t].map(|a| a * a).sum() > 1e-8)
+    .map(|t| pdb[t])
+  let reference = voiced.sorted()[voiced.size() * 95 / 100]
+  let tuning = r.head.tuning / 100.0
+  let sum = squares(samples)
+  r.head.notes.map(fn (v) {
+    let s = Math.round(v.t0 / STEP)
+    let m = v.frames
+    let ks = iota(s, s + m)
+    mut held = v.own
+    let cents = ks.map(fn (k) {
+      if r.hz[k] != nil {
+        held = 100.0 *
+          (69.0 +
+            12.0 * Math.log(r.hz[k] / 440.0) / Math.log(2.0) -
+            tuning -
+            v.semi)
+      }
+      held
+    })
+    let db = despiked(ks.map(|k| pdb[k] - reference), 3, 4.0, 3)
+    let f0 = 440.0 * 2.0 ** ((v.semi + v.own / 100.0 - 69.0) / 12.0)
+    let gain_db = gains_of(
+      r,
+      sum,
+      rate,
+      v.t0,
+      m,
+      f0,
+    ).map(|g| 20.0 * Math.log(Math.max(g, 1e-6)) / LN10)
+    let gains = despiked(gain_db, 3, 3.0, 35).map(|g| 10.0 ** (g / 20.0))
+    let a = m * 3 / 10
+    let mid = iota(a, Math.max(a + 1, m * 9 / 10))
+    {
+      note: {
+        rec: rec,
+        t0: v.t0,
+        frames: m,
+        gains: gains.size(),
+        semi: v.semi,
+        own: v.own,
+        from: v.from,
+        to: v.to,
+        level: middle(mid.map(|j| db[j])),
+        vib: v.vib,
+        onset: v.onset,
+      },
+      parts: {
+        cents: despiked(cents, 3, 25.0, 3),
+        db: db,
+        breath: breath_of(r, ks),
+        gains: gains,
+        shapes: shapes_of(r, ks).map(|row| harmonics_despiked(row)),
+      },
+    }
+  })
+}
+
+# --- Attacks -------------------------------------------------------------------
+
+# The pitch (Hz) of a frame whose magnitudes `mag` (an rfft of `n` samples
+# at `rate`) hold a harmonic tone near `guess`: first where its first eight
+# harmonics are strongest within `reach` cents of `guess` (in 5-cent steps),
+# then from where its harmonics' peaks are (each within a quarter of the
+# spacing, placed between bins by a parabola through the log), each one's
+# pitch weighed by its amplitude and its number: with the first eight, then
+# with all below 0.45 of the rate.
+fn pitch_of(mag, guess, n, rate, reach = 60) {
+  let bin = rate / to_float(n)
+  let last = mag.size() - 1
+  let at = fn (hz) {
+    let pos = hz / bin
+    return mag[last] if pos >= last
+    let i = Math.floor(pos)
+    mag[i] + (pos - i) * (mag[i + 1] - mag[i])
+  }
+  mut f0 = guess
+  mut best = -1.0
+  for c in range(-reach, reach + 1, step: 5) {
+    let f = guess * 2.0 ** (c / 1200.0)
+    let e = iota(1, 9).map(|k| at(k * f)).sum()
+    if e > best {
+      f0 = f
+      best = e
+    }
+  }
+  let lm = mag.map(|v| Math.log(Math.max(v, 1e-12)))
+  for top in [8, Math.floor(0.45 * rate / f0)] {
+    mut num = 0.0
+    mut den = 0.0
+    for k in 1..Math.max(2, top) + 1 {
+      let lo = to_long((k - 0.25) * f0 / bin)
+      let hi = to_long((k + 0.25) * f0 / bin) + 1
+      break if hi >= last || lo < 1
+      let i = lo + mag.slice(lo, hi).index_of(mag.slice(lo, hi).max())
+      continue if i <= 0 || i >= last
+      let (a, b, c) = (lm[i - 1], lm[i], lm[i + 1])
+      let d = a - 2.0 * b + c < 0.0 ? 0.5 * (a - c) / (a - 2.0 * b + c) : 0.0
+      let w = mag[i] * k
+      num += w * (i + d) * bin / k
+      den += w
+    }
+    f0 = den > 0.0 ? num / den : f0
+  }
+  f0
+}
+
+# The value a share `q` of the way up `xs` sorted, between neighbours on a
+# straight line (numpy's percentile).
+fn quantile(xs, q) {
+  let s = xs.sorted()
+  let pos = q * (s.size() - 1)
+  let i = Math.floor(pos)
+  i + 1 < s.size() ? s[i] + (pos - i) * (s[i + 1] - s[i]) : s[i]
+}
+
+# A recording's steady noise: each bin's 10th percentile of power over
+# frames of 512 samples every 128.
+fn noise_floor(samples) {
+  let frames = Audio.spectrum(samples, size: 512, hop: 128)
+  iota(257).map(|k| quantile(frames.map(|row| row[k] * row[k]), 0.1))
+}
+
+let (CLEAN_N, CLEAN_HOP) = (1024, 64)
+
+# An attack's samples with the air's noise taken out: first the recording's
+# steady `noise` (each bin's power less twice the noise's, as a gain on its
+# amplitude, never more than 20 dB down; frames of 512 every 128), then, in
+# frames of 1024 every 64, each bin kept near a harmonic of the frame's own
+# pitch (found within 200 cents of the note's `f0`, a median over 9
+# frames): within a fifth of the spacing (or the window's main lobe, 2
+# bins, where wider), falling to 0.2 (-14 dB) over the next tenth, nothing
+# under 0.8 of the pitch; above the harmonic the pitch's move over a frame
+# shifts by a tenth of the spacing, left as it is.
+fn cleaned(seg, f0, noise, rate) {
+  let n = CLEAN_N
+  let pad = [...repeat(n, 0.0), ...seg, ...repeat(n, 0.0)]
+  let s = Audio.stft(pad, size: 512, hop: 128)
+  let gain = |re, im, k| Math.sqrt(Math.max(
+    1.0 - 2.0 * noise[k] / Math.max(re * re + im * im, 1e-20),
+    0.01,
+  ))
+  let qr = iota(s.re.size()).map(|t| iota(257).map(|k| s.re[t][k] *
+    gain(s.re[t][k], s.im[t][k], k)))
+  let qi = iota(s.re.size()).map(|t| iota(257).map(|k| s.im[t][k] *
+    gain(s.re[t][k], s.im[t][k], k)))
+  let quiet = Audio.istft(qr, qi, size: 512, hop: 128).slice(0, pad.size())
+  let f = Audio.stft(quiet, size: n, hop: CLEAN_HOP)
+  let frames = f.re.size()
+  let found = iota(frames).map(|t| pitch_of(
+    iota(n / 2 + 1).map(|k| Math.sqrt(f.re[t][k] ** 2 + f.im[t][k] ** 2)),
+    f0,
+    n,
+    rate,
+    reach: 200,
+  ))
+  let pitch = iota(frames).map(|t| median(found.slice(
+    Math.max(0, t - 4),
+    Math.min(frames, t + 5),
+  )))
+  let span = n / CLEAN_HOP / 2
+  let bin = rate / to_float(n)
+  let gains = iota(frames).map(fn (t) {
+    let p = pitch[t]
+    let near = pitch.slice(
+      Math.max(0, t - span),
+      Math.min(frames, t + span + 1),
+    )
+    let moved = near.max() - near.min()
+    let top = moved > 0.0 ? 0.1 * p / moved : 1e300
+    let keep = Math.max(0.2, 2.0 * bin / p)
+    iota(n / 2 + 1).map(fn (k) {
+      let h = k * bin / p
+      return 0.0 if h < 0.8
+      return 1.0 if h > top + 0.5
+      let d = Math.abs(h - Math.round(h))
+      d <= keep ? 1.0 : d >= keep + 0.1 ? 0.2 : 1.0 - 0.8 * (d - keep) / 0.1
+    })
+  })
+  let back = Audio.istft(
+    iota(frames).map(|t| iota(n / 2 + 1).map(|k| f.re[t][k] * gains[t][k])),
+    iota(frames).map(|t| iota(n / 2 + 1).map(|k| f.im[t][k] * gains[t][k])),
+    size: n,
+    hop: CLEAN_HOP,
+  )
+  back.slice(n, n + seg.size())
+}
+
+# The attacks of recording `r`'s notes (as notes_of answers them): each note
+# measure found an onset for, its samples from 30 ms before the onset for
+# 150 ms, cleaned, and its pitch 60 to 80 ms after the onset (`f0_fade`,
+# where it is faded into the borrowed note: the median of pitch_of at 60, 70
+# and 80 ms through 2048 samples).
+fn attacks_of(notes, samples, rate) {
+  let noise = noise_floor(samples)
+  notes.filter(|n| n.note.onset != nil).map(fn (n) {
+    let v = n.note
+    let f0 = 440.0 * 2.0 ** ((v.semi + v.own / 100.0 - 69.0) / 12.0)
+    let start = Math.floor((v.onset - 0.03) * rate)
+    return nil if start < 0
+    let seg = samples.slice(
+      start,
+      Math.min(samples.size(), start + to_long(0.15 * rate)),
+    )
+    let fade = [0.06, 0.07, 0.08].map(fn (dt) {
+      let c = Math.floor((v.onset + dt) * rate)
+      let frame = Audio.spectrum(
+        samples.slice(Math.max(0, c - 1024), c + 1024),
+        size: 2048,
+        hop: 2048,
+      )[0]
+      pitch_of(frame, f0, 2048, rate, reach: 200)
+    })
+    {
+      rec: v.rec,
+      t0: v.t0,
+      onset: v.onset,
+      f0_fade: median(fade),
+      samples: cleaned(seg, f0, noise, rate),
+    }
+  }).filter(|a| a != nil)
+}
+
+# --- How the breath pulses -------------------------------------------------------
+
+let (PULSE_N, PULSE_HOP) = (2048, 256)
+
+# The frames `f` (Audio.stft's) with the bins whose frequency `keep(k)`
+# refuses emptied, and the samples they stand for and those of their
+# Hilbert transform (each bin turned a quarter turn back, the 0th and last
+# emptied): a signal's analytic pair.
+fn analytic(f, keep, length) {
+  let bins = PULSE_N / 2 + 1
+  let frames = f.re.size()
+  let on = iota(bins).map(|k| keep(k) && k > 0 && k < bins - 1)
+  let re = iota(frames).map(|t| iota(bins).map(|k| on[k] ? f.re[t][k] : 0.0))
+  let im = iota(frames).map(|t| iota(bins).map(|k| on[k] ? f.im[t][k] : 0.0))
+  {
+    x: Audio.istft(re, im, size: PULSE_N, hop: PULSE_HOP).slice(0, length),
+    y: Audio
+      .istft(im, re.map(|row| row.map(|v| -v)), size: PULSE_N, hop: PULSE_HOP)
+      .slice(0, length),
+  }
+}
+
+# The least-squares c0, a, b of ys ~ c0 + a sin(ph) + b cos(ph).
+fn fit_pulse(ys, ph) {
+  let cols = [ph.map(|_| 1.0), ph.map(|p| Math.sin(p)), ph.map(|p| Math.cos(p))]
+  let m = iota(3).map(|i| iota(3).map(|j| iota(ys.size())
+    .map(|u| cols[i][u] * cols[j][u])
+    .sum()))
+  let v = iota(3).map(|i| iota(ys.size()).map(|u| cols[i][u] * ys[u]).sum())
+  # Gaussian elimination, the 3 by 3 normal equations.
+  let a = iota(3).map(|i| [...m[i], v[i]])
+  for c in 0..3 {
+    let p = iota(c, 3).max_by(|r| Math.abs(a[r][c]))
+    let (row_c, row_p) = (a[c], a[p])
+    a[c] = row_p
+    a[p] = row_c
+    for r in 0..3 {
+      continue if r == c
+      let k = a[r][c] / a[c][c]
+      a[r] = iota(4).map(|j| a[r][j] - k * a[c][j])
+    }
+  }
+  iota(3).map(|i| a[i][3] / a[i][i])
+}
+
+# How much of the breath pulses with the tone's wave in each band: over
+# 0.3 s in the middle of each note of 0.8 s or more, what lies between the
+# harmonics (each bin within 0.3 of the spacing from a harmonic of the
+# frame's pitch, or under 0.8 of it, emptied), in each band, its analytic
+# amplitude fitted against the phase of the tone's first harmonic (its band
+# 0.7 to 1.3 of the pitch) as c0 + c1 sin(phase - shift); the median of
+# c1 / c0 over the notes, as the share pulsed that gives it, 2 m / (1 + m)
+# (Audio.partials' noise is steady + pulsed (0.5 + 0.5 sin(phase))).
+fn pulsed_of(notes, recordings, bands, rate) {
+  let n = PULSE_N
+  let bin = rate / to_float(n)
+  let ratios = notes.filter(|e| e.note.frames >= 80).map(fn (e) {
+    let v = e.note
+    let x = recordings[v.rec]
+    let mid = v.t0 + v.frames * 0.005
+    let a = Math.floor((mid - 0.15) * rate) - n
+    let b = Math.floor((mid + 0.15) * rate) + n
+    return nil if a < 0 || b > x.size()
+    let seg = x.slice(a, b)
+    let f_note = 440.0 * 2.0 ** ((v.semi + v.own / 100.0 - 69.0) / 12.0)
+    let f = Audio.stft(seg, size: n, hop: PULSE_HOP)
+    let frames = f.re.size()
+    let pitches = iota(frames).map(|t| pitch_of(
+      iota(n / 2 + 1).map(|k| Math.sqrt(f.re[t][k] ** 2 + f.im[t][k] ** 2)),
+      f_note,
+      n,
+      rate,
+    ))
+    let between = iota(frames).map(fn (t) {
+      iota(n / 2 + 1).map(fn (k) {
+        let h = k * bin / pitches[t]
+        h >= 0.8 && Math.abs(h - Math.round(h)) >= 0.3
+      })
+    })
+    let rre = iota(frames).map(|t| iota(n / 2 +
+      1).map(|k| between[t][k] ? f.re[t][k] : 0.0))
+    let rim = iota(frames).map(|t| iota(n / 2 +
+      1).map(|k| between[t][k] ? f.im[t][k] : 0.0))
+    let rest = Audio
+      .istft(rre, rim, size: n, hop: PULSE_HOP)
+      .slice(0, seg.size())
+    let f0 = median(pitches.slice(0, Math.max(1, frames - n / PULSE_HOP)))
+    let tone = analytic(
+      f,
+      |k| k * bin >= 0.7 * f0 && k * bin < 1.3 * f0,
+      seg.size(),
+    )
+    let keep = iota(n, seg.size() - n)
+    let phase = keep.map(|u| Math.atan2(tone.y[u], tone.x[u]))
+    let fr = Audio.stft(rest, size: n, hop: PULSE_HOP)
+    bands.map(fn (band) {
+      let s = analytic(
+        fr,
+        |k| k * bin >= band[0] && k * bin < band[1],
+        seg.size(),
+      )
+      let amp = keep.map(|u| Math.sqrt(s.x[u] ** 2 + s.y[u] ** 2))
+      let c = fit_pulse(amp, phase)
+      Math.sqrt(c[1] ** 2 + c[2] ** 2) / c[0]
+    })
+  }).filter(|r| r != nil)
+  iota(bands.size()).map(fn (b) {
+    let m = median(ratios.map(|r| r[b]))
+    Math.round(1000.0 * 2.0 * m / (1.0 + m)) / 1000.0
+  })
+}
+
+# --- The whole of it -----------------------------------------------------------
+
+# The noise Audio.partials makes the breath from (Hz), as the instrument
+# reads breath.json.
+let BREATH_NOISE = [20.0, 20000.0]
+
+# A recording's samples, its channels averaged as measure.cul hears it.
+fn mono(made) {
+  let chs = made.channels
+  chs.size() == 1
+    ? chs[0]
+    : iota(chs[0].size()).map(|i| chs.map(|c| c[i]).sum() / chs.size())
+}
+
+# make_data.cul's work, run with the package's data_format.cul as `format`:
+# `arg` a JSON {measured: [NAME.json paths], sources: the folder the
+# recordings are in, out: the folder data/ is written to}.
+fn run(format, arg) {
+  let a = JSON.parse(arg)
+  let notes = []
+  let attacks = []
+  let recordings = {}
+  mut bands = nil
+  mut harmonics = nil
+  for path in a.measured {
+    let r = measured(path)
+    let rec = FS.stem(path)
+    let made = Audio.decode(FS.read(FS.join(a.sources, r.head.source)))
+    let xs = mono(made)
+    let rate = made.rate
+    bands = bands ?? r.head.settings.breath_bands
+    harmonics = harmonics ?? r.head.settings.harmonics
+    if r.head.settings.breath_bands != bands ||
+        r.head.settings.harmonics != harmonics ||
+        rate != 44100 {
+      throw "{path}: measured with other settings or at another rate than the others (44100)"
+    }
+    let these = notes_of(r, xs, rate, rec)
+    let found = attacks_of(these, xs, rate)
+    recordings[rec] = xs
+    notes.extend(these)
+    attacks.extend(found)
+    println("{rec}: {these.size()} notes, {found.size()} attacks")
+  }
+  let pulsed = pulsed_of(notes, recordings, bands, 44100)
+  let wrote = format.write(
+    a.out,
+    harmonics,
+    notes,
+    attacks,
+    0.03,
+    44100,
+    {bands: bands, noise: BREATH_NOISE, pulsed: pulsed},
+  )
+  println("{a.out}: {wrote.notes} notes ({2 * wrote.numbers} bytes), {wrote.attacks} attacks ({2 * wrote.samples} bytes), breath pulsed {pulsed}")
+}
+
+export {STEP, run, mono, pulsed_of, median, despiked, harmonics_despiked, pchip, measured, notes_of, shapes_of, breath_of, gains_of, pitch_of, quantile, noise_floor, cleaned, attacks_of}

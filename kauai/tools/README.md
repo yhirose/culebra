@@ -175,6 +175,73 @@ dBFS (-120 for silence); `h1` to `h40`, the harmonics' amplitudes, as
 (`settings.breath_bands`). Where `hz` is 0 the harmonics and the breath are
 0 too. Frame `t` is `t * 10 ms`. A 192 s recording takes about 8 s.
 
+## make_data.cul: an instrument's data/ from what was measured
+
+`make_data.cul` makes the `data/` an instrument plays from, out of what
+`measure.cul` wrote of its recordings: the notes it borrows, the attacks
+it grafts, and how its breath pulses. The instrument's own
+`data_format.cul` lays the numbers out, and its `main.cul` reads them
+through the same file.
+
+```sh
+culebra kauai/tools/make_data.cul --sounds kauai/sounds/alto_sax \
+  work/measured/*.json
+```
+
+```
+freesound_734969: 565 notes, 179 attacks
+freesound_734970: 575 notes, 186 attacks
+freesound_734971: 549 notes, 147 attacks
+kauai/sounds/alto_sax/data: 1689 notes (2421316 bytes), 512 attacks (5193728 bytes), breath pulsed [0.022, 0.207, 0.501, 0.612, 0.547]
+```
+
+The recordings are read again (the fine gains, the attacks and the breath
+need their samples) from `--sources`, by default the folder `sources`
+beside the measured one (`work/measured` -> `work/sources`); `data/` goes
+in the instrument's folder unless `--out` says. The three recordings above
+(192 s each) take about a minute.
+
+Each note, frame by frame (10 ms) from its first frame for as many as
+`measure.cul` gave it:
+
+- its pitch in cents from its semitone (the recording's tuning taken off),
+  held through a frame without one;
+- its loudness: the harmonics' power in dB against the recording's 95th
+  percentile of it where it has a pitch, so the level a note borrows is
+  the harmonics' and not the breath's;
+- its harmonics' shapes: each harmonic's log a mean over the pitched frames
+  within 70 ms of the frame in the note (150 ms in all), scaled to unit
+  power (a frame without a pitch takes the nearest one's); a harmonic from
+  the 6th on standing more than 10 dB over the median of the five about it
+  brought down to it;
+- its breath in each band: where it has a pitch, as measured; elsewhere a
+  monotone cubic through those; then a median over 3 frames, no higher than
+  +3 dB;
+- and its fine gain every millisecond from 5 ms before its first frame:
+  the recording's RMS over a period either side of its pitch against its
+  harmonics' level there, at most 4.
+
+A spike (a value further from the median of the 7 about it than a floor
+and five times what is usual for the note) is filled with that median in
+the pitch (floor 25 cents), the loudness (4 dB) and the fine gain (3 dB),
+leaving a note's first and last 3 frames (35 ms of gain) as they are: what
+leaps there is a slur's move, an onset or a release. A note's `level` is
+its middle's loudness (30% to 90% of the way through).
+
+Each note `measure.cul` found an onset for gives an attack: its samples
+from 30 ms before the onset for 150 ms, cleaned of the air that strikes the
+microphone (first the recording's steady noise, each bin's 10th percentile
+taken out twice over, at most 20 dB; then, in frames of 1024 samples every
+64, each bin kept within a fifth of the spacing of a harmonic of the
+frame's own pitch, falling to -14 dB between them, nothing under 0.8 of the
+pitch, the bins left as they are above the harmonic the pitch's move shifts
+by a tenth of the spacing), and its pitch 60 to 80 ms in (`f0_fade`, where
+it is faded into the borrowed note). How the breath pulses is read from
+every note of 0.8 s or more: over its middle 0.3 s, what lies between the
+harmonics in each band, its envelope fitted against the phase of the first
+harmonic as c0 + c1 sin(phase - shift); the median of c1 / c0, as the share
+of the breath pulsed, `2 m / (1 + m)`.
+
 ## make_sounds.cul: an instrument's sounds made beforehand
 
 `make_sounds.cul` asks an instrument module for every sound Kauai songs need

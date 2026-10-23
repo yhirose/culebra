@@ -48,9 +48,18 @@ recorded speech are smoothed). Its slow wander of pitch and loudness (the
 
 ## Attacks and breath
 
-To be written: starting a note with the recording's own attack, cleaned of
-the air that strikes the microphone; how much breath to hear with the tone,
-and how it pulses with the wave.
+`kauai/tools/make_data.cul` keeps each tongued or rested note's attack, 150
+ms of the recording from 30 ms before its onset, cleaned of the air that
+strikes the microphone: the recording's steady noise taken out, then each
+frame's bins kept only about the harmonics of its own pitch (an attack can
+start far from its note's pitch, so the pitch is read frame by frame). The
+air left in was heard as a rushing "zah-zah" at each tongued note of the
+soprano. It also reads how the breath pulses with the tone's wave in each
+band (the noise between the harmonics swells and fades once a period, more
+in the high bands), which the soprano makes its breath with.
+
+To be written: grafting the attack onto the borrowed note; how much breath
+to hear with the tone.
 
 ## The top of the range
 

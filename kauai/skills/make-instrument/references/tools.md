@@ -83,6 +83,22 @@ the fewer notes read an octave off. Look at the notes' count and how they
 start before building on them: a recording whose notes are mostly `rest`
 was read with gaps (too quiet, or the range wrong).
 
+## make_data.cul
+
+```sh
+culebra kauai/tools/make_data.cul --sounds kauai/sounds/alto_sax work/measured/*.json
+```
+
+The package's `data/` from what `measure.cul` wrote: the notes it borrows
+(pitch, loudness, harmonics' shapes, breath and fine gain, frame by frame),
+the attacks (cleaned of the air on the microphone) and how the breath
+pulses with the wave. The recordings are read again from `work/sources`
+(`--sources` says otherwise). The package's own `data_format.cul` lays the
+numbers out and its `main.cul` reads them through it, so a new instrument
+copies both from the soprano's and changes them together. Three 192 s
+recordings take about a minute. `kauai/tools/README.md` says how each part
+is made.
+
 ## Measuring in Culebra
 
 | Function | Gives |
@@ -90,6 +106,7 @@ was read with gaps (too quiet, or the range wrong).
 | `Audio.decode(bytes)` | a recording's samples as recorded: `{rate, channels}` |
 | `Audio.resample(xs, from, to)` | the samples at another rate, band-limited |
 | `Audio.spectrum(xs, size:, hop:)` | the magnitudes frame by frame (an STFT) |
+| `Audio.stft(xs, size:, hop:)`, `Audio.istft(re, im, size:, hop:)` | the same frames' bins as they are (`{re, im}`), and the sound frames of bins stand for: work on a sound bin by bin (a mask, a band, a Hilbert transform) and put it back |
 | `Audio.pitch(xs, low:, high:, rate:)` | the pitch every 10 ms, `{hz, clarity}`, `nil` where there is none |
 | `Audio.harmonics(xs, hz, count:, rate:)` | the harmonics' amplitudes along that pitch, as `Audio.partials` takes them, and the `rest` without them |
 | `Audio.loudness(xs, rate)` | the loudest 400 ms (BS.1770 momentary), the measure Kauai weighs an instrument by |

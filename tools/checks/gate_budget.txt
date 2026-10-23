@@ -250,5 +250,8 @@ languages.samples 130
 # a clean one). 35 since kauai/tools/test_measure.cul (a performance whose
 # notes are known is written down as them). 36 since
 # kauai/sounds/soprano_sax/test_data_format.cul (the numbers data/ keeps
-# read back as the values they were made from).
-examples.suites 36
+# read back as the values they were made from). 37 since
+# kauai/tools/test_make_data.cul (a performance measured and made into
+# data/ reads back as its notes, and each step that makes them does what
+# the soprano's were made with).
+examples.suites 37

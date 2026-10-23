@@ -114,7 +114,8 @@ person says. Read it before the first comparison.
 | `culebra kauai/tools/listen.cul start/pick/next` | two versions of a passage heard blind, round after round |
 | `culebra kauai/tools/make_sounds.cul` | every sound songs need, made beforehand, for a program or the browser |
 | `culebra kauai/tools/measure.cul --low HZ --high HZ --out work/measured work/sources/*` | each recording's pitch and loudness every 10 ms, and its notes with how each starts and ends |
-| `Audio.decode`, `Audio.spectrum`, `Audio.pitch`, `Audio.resample`, `Audio.loudness`, `Audio.integrated_loudness` | reading and measuring recordings in Culebra |
+| `culebra kauai/tools/make_data.cul --sounds <pkg> work/measured/*.json` | the package's `data/` from what was measured: the notes it borrows, the attacks, how the breath pulses |
+| `Audio.decode`, `Audio.spectrum`, `Audio.stft`, `Audio.istft`, `Audio.pitch`, `Audio.harmonics`, `Audio.resample`, `Audio.loudness`, `Audio.integrated_loudness` | reading and measuring recordings in Culebra |
 | `song.marks()`, `song.seconds(at)`, `song.external_sounds()`, `song.render(from:, to:)` | where passages are, and what an instrument is asked for |
 
 `references/tools.md` has how each is used in this work, with the options

@@ -127,4 +127,74 @@ fn attack_samples(bytes, a, scale) {
   String.unpack("i16", bytes, at: 2 * a.at, count: a.len).map(|v| v / scale)
 }
 
-export {KEY, SILENT, ATTACK_PRE, ATTACK_POST, kept_frames, pack_note, note_db, note_parts, note_shapes, pack_attack, attack_samples}
+let NOTE_KEYS = [
+  "rec",
+  "at",
+  "frames",
+  "gains",
+  "t0",
+  "semi",
+  "own",
+  "from",
+  "to",
+  "level",
+  "vib",
+  "harms",
+]
+let ATTACK_KEYS = ["rec", "at", "t0", "onset", "len", "f0_fade"]
+
+# data/ written into folder `dir`: `notes` (each {note, parts}: notes.json's
+# description, its keys NOTE_KEYS but `at` and `harms`, and pack_note's
+# parts), `harmonics` a frame, `attacks` (each {rec, t0, onset, f0_fade,
+# samples}, its samples from `pre` seconds before its onset, at `rate`),
+# and `breath` (breath.json as it is: bands, noise, pulsed).
+fn write(dir, harmonics, notes, attacks, pre, rate, breath) {
+  FS.mkdir(dir)
+  mut at = 0
+  let numbers = []
+  let index = notes.map(fn (n) {
+    let p = pack_note(n.parts)
+    let e = {...n.note, at: at, harms: p.harms}
+    numbers.extend(p.numbers)
+    at += p.numbers.size()
+    NOTE_KEYS.reduce({}, fn (o, k) {
+      o[k] = e[k]
+      o
+    })
+  })
+  FS.write(FS.join(dir, "notes.i16"), String.pack("i16", numbers))
+  FS.write(
+    FS.join(dir, "notes.json"),
+    JSON.stringify({harmonics: harmonics, notes: index}) + "\n",
+  )
+  let loudest = attacks.map(|a| a.samples.map(|v| Math.abs(v)).max()).max()
+  let scale = 32767.0 / loudest
+  let skip = Math.round((pre - ATTACK_PRE) * rate)
+  let len = Math.round((ATTACK_PRE + ATTACK_POST) * rate)
+  mut at_a = 0
+  let samples = []
+  let kept = attacks.map(fn (a) {
+    let nums = pack_attack(a.samples.slice(skip, skip + len), scale)
+    samples.extend(nums)
+    let e = {...a, at: at_a, len: nums.size()}
+    at_a += nums.size()
+    ATTACK_KEYS.reduce({}, fn (o, k) {
+      o[k] = e[k]
+      o
+    })
+  })
+  FS.write(FS.join(dir, "attacks.i16"), String.pack("i16", samples))
+  FS.write(
+    FS.join(dir, "attacks.json"),
+    JSON.stringify({pre: ATTACK_PRE, scale: scale, attacks: kept}) + "\n",
+  )
+  FS.write(FS.join(dir, "breath.json"), JSON.stringify(breath) + "\n")
+  {
+    notes: index.size(),
+    numbers: numbers.size(),
+    attacks: kept.size(),
+    samples: samples.size(),
+  }
+}
+
+export {write, KEY, SILENT, ATTACK_PRE, ATTACK_POST, kept_frames, pack_note, note_db, note_parts, note_shapes, pack_attack, attack_samples}
