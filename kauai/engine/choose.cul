@@ -13,74 +13,126 @@
 # `notes` are the phrase's notes ({s, e (frames), semi, from, to ("rest",
 # "tongue" or "legato"), level, soft, ...}), `k` the one asked for, `before`
 # the recorded note index borrowed for the note before it (or nil).
+#
+# Answers the index of the recorded note note `k` borrows, or nil where there
+# is none to borrow. The note keeps that recording's own moves of pitch and
+# loudness, its timbre, and (for a phrase's first note or one the tongue
+# starts) its attack: so the one chosen should be played the way the note is
+# asked for (its pitch, length, loudness, how it is entered and left, how much
+# vibrato it has), and where the note before slurs into this one, the take
+# that followed the one before in the recording sounds like one player.
+#
+# The choice is the recorded note of least cost. Every weight is read from
+# the style's `choice` (`inst.choice`), with the defaults in CHOICE:
+#
+#   pitch        per semitone off: a note a semitone away is another
+#                fingering's timbre; none further than `reach` semitones
+#   squeeze,     per doubling between the lengths, a longer recording (it
+#   stretch      loses its middle) and a shorter one (its middle is filled
+#                from other notes)
+#   level_db     the dB between the level recorded and the one asked that
+#                cost 1: the timbre brightens with the breath
+#   slur_other,  for a slur, a slur of another kind and a tongue or a rest
+#   slur_none    (a slur of the same kind costs nothing)
+#   tongue_slur  for a tongued note or a rest, a slur
+#   rest_tongue  for a tongued note, a recording out of or into a rest, and
+#                the reverse (one that fades to a rest stops short of a note
+#                tongued after it); a phrase's first note may follow either
+#   no_attack    a phrase's first note or a tongued one without an attack of
+#                its own
+#   dip_from,    a dip inside it (a breath or the tongue): the dB it may fall,
+#   dip_db       and beyond that the dB that cost 1
+#   vib_cents    the cents (peak to peak) off what the note asks that cost 1
+#   same_take    taken off for the note the recording played straight after
+#                the one borrowed before, where this note is slurred into
 
-# The library note for note k of `notes`, given the one borrowed for the
-# note before (an index, or nil).
-fn borrow_for(inst, notes, k, before) {
-  let v = notes[k]
-  let m = v.e - v.s
-  let want_level = v.level + inst.lib_louder
-  let want_in = v.from == "legato" && k > 0
-    ? inst.slur_kind(v.semi - notes[k - 1].semi)
-    : "start"
-  let want_out = v.to == "legato" && k + 1 < notes.size()
-    ? inst.slur_kind(notes[k + 1].semi - v.semi)
-    : v.to
-  let want_vib = inst.vibrato_wanted(v)
-  let shift_before = before == nil
-    ? nil
-    : notes[k - 1].semi - inst.lib.notes[before].semi
-  let near = iota(inst.lib.notes.size()).filter(|i| Math.abs(inst.lib.notes[i].semi -
-    v.semi) <=
-    2 &&
-    inst.lib.notes[i].frames >= 4)
-  # (Past the library's range, up to 5 semitones away.)
-  let pool = !near.empty()
-    ? near
-    : iota(inst.lib.notes.size()).filter(|i| Math.abs(inst.lib.notes[i].semi -
-      v.semi) <=
-      5 &&
-      inst.lib.notes[i].frames >= 4)
-  let starts = |i| want_in == "start"
-    ? inst.lib_in[i] == "rest" || inst.lib_in[i] == "tongue"
-    : inst.lib_in[i] == want_in
-  let strict = pool.filter(|i| starts(i) && inst.lib_out[i] == want_out)
-  let loose = pool.filter(|i| starts(i))
-  let cands = !strict.empty() ? strict : !loose.empty() ? loose : pool
-  if cands.empty() {
-    return nil
-  }
-  cands.min_by(fn (i) {
-    let e = inst.lib.notes[i]
-    let ratio = e.frames * 1.0 / m
-    let length_cost = ratio >= 1.0
-      ? Math.log(ratio)
-      : 3.0 * Math.log(1.0 / ratio)
-    let follows = before != nil &&
-      i == before + 1 &&
-      v.from == "legato" &&
-      v.semi - e.semi == shift_before
-    let vib_cost = want_vib == nil ? 0.0 : Math.abs(e.vib - want_vib) / 4.0
-    # A phrase's first note: tongued by default; with `soft=1`, the soft way
-    # in a note after a rest has (breath first).
-    let kind_cost = want_in != "start"
-      ? 0.0
-      : v.soft >= 1.0
-        ? inst.lib_in[i] == "tongue" ? 1.0 : 0.0
-        : inst.lib_in[i] == "rest" ? 0.5 : 0.0
-    let dip_cost = Math.max(0.0, inst.lib_dip[i] - 6.0) / 2.0
-    # A phrase's first note would rather borrow one the library has a real
-    # attack for (else its onset is synthesized).
-    let attack_cost = want_in == "start" && inst.attack_of[i] == nil ? 2.0 : 0.0
-    2.0 * Math.abs(e.semi - v.semi) +
-      2.0 * length_cost +
-      Math.abs(e.level - want_level) / 6.0 +
-      vib_cost +
-      kind_cost +
-      dip_cost +
-      attack_cost +
-      (follows ? -6.0 : 0.0)
-  })
+let CHOICE = {
+  join_db: 0.0,
+  pitch: 1.0,
+  reach: 2.0,
+  squeeze: 0.5,
+  stretch: 2.0,
+  level_db: 12.0,
+  slur_other: 1.0,
+  slur_none: 2.0,
+  tongue_slur: 3.0,
+  rest_tongue: 2.0,
+  no_attack: 1.5,
+  dip_from: 3.0,
+  dip_db: 3.0,
+  vib_cents: 9.0,
+  same_take: 2.0,
 }
 
-export {borrow_for}
+# Recorded note i follows recorded note b in the same take, from where b ends.
+fn follows(inst, b, i) {
+  let a = inst.lib.notes[b]
+  let e = inst.lib.notes[i]
+  a.rec == e.rec && Math.abs(a.t0 + a.frames * 0.01 - e.t0) < 0.015
+}
+
+let is_slur = |kind| kind != "rest" && kind != "tongue"
+
+# What a recorded way in or out (`got`) costs for one asked (`want`: "rest",
+# "tongue", a slur's kind, or nil for a rest or a tongue alike), by weights
+# `w`.
+fn way_cost(w, got, want) {
+  if want != nil && is_slur(want) {
+    return got == want ? 0.0 : is_slur(got) ? w.slur_other : w.slur_none
+  }
+  is_slur(got)
+    ? w.tongue_slur
+    : want != nil && got != want ? w.rest_tongue : 0.0
+}
+
+fn borrow_for(inst, notes, k, before) {
+  let w = {...CHOICE, ...inst.choice}
+  let v = notes[k]
+  let mt = Math.max(1, v.e - v.s)
+  let want_level = v.level + inst.lib_louder
+  let want_vib = inst.vibrato_wanted(v)
+  let slurred_in = v.from == "legato" && k > 0
+  let way_in = slurred_in
+    ? inst.slur_kind(v.semi - notes[k - 1].semi)
+    : k == 0 ? nil : "tongue"
+  let way_out = v.to == "legato" && k + 1 < notes.size()
+    ? inst.slur_kind(notes[k + 1].semi - v.semi)
+    : v.to
+  let cost = fn (i) {
+    let e = inst.lib.notes[i]
+    let ratio = Math.log(e.frames * 1.0 / mt) / Math.log(2.0)
+    mut c = w.pitch * Math.abs(e.semi - v.semi) +
+      (ratio >= 0.0 ? w.squeeze * ratio : -w.stretch * ratio) +
+      Math.abs(e.level - want_level) / w.level_db +
+      way_cost(w, inst.lib_in[i], way_in) +
+      way_cost(w, inst.lib_out[i], way_out) +
+      Math.max(0.0, inst.lib_dip[i] - w.dip_from) / w.dip_db
+    if !slurred_in && inst.attack_of[i] == nil {
+      c += w.no_attack
+    }
+    if want_vib != nil {
+      c += Math.abs(e.vib - want_vib) / w.vib_cents
+    }
+    if before != nil && slurred_in && follows(inst, before, i) {
+      c -= w.same_take
+    }
+    # Across a slur the loudness step between the two borrowed notes should be
+    # the one asked for: a recording that jumps against its neighbour is heard.
+    if before != nil && slurred_in {
+      let asked = v.level - notes[k - 1].level
+      let got = e.level - inst.lib.notes[before].level
+      c += w.join_db * Math.abs(got - asked) / w.level_db
+    }
+    c
+  }
+  let near = iota(inst.lib.notes.size()).filter(|i| Math.abs(inst.lib.notes[i].semi -
+    v.semi) <=
+    w.reach)
+  # Past the library's range, the nearest in pitch: a phrase always has a note
+  # to borrow (a library with none is a library with no notes).
+  let all = iota(inst.lib.notes.size())
+  let pool = near.empty() ? all : near
+  pool.empty() ? nil : pool.min_by(cost)
+}
+
+export {CHOICE, borrow_for}

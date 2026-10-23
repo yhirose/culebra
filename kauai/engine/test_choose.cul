@@ -1,0 +1,57 @@
+import engine from './borrow.cul'
+import choose from './choose.cul'
+import synthetic from './synthetic.cul'
+
+# A note as Instrument.notes_of gives one: frames s to e, MIDI pitch semi.
+fn note(s, e, semi, from = "tongue", to = "rest") {
+  {
+    s: s,
+    e: e,
+    semi: semi,
+    from: from,
+    to: to,
+    level: synthetic.STYLE.mf_db,
+    level_end: synthetic.STYLE.mf_db,
+    marks: [],
+    vibrato: synthetic.STYLE.vibrato,
+    soft: 0.0,
+  }
+}
+
+@test
+fn a_note_borrows_a_recorded_note_near_its_pitch_or_none() {
+  let dir = FS.join(FS.temp_dir(), "choose-test-{UUID.v4()}")
+  defer {
+    FS.remove(dir, recursive: true) if FS.exists(dir)
+  }
+  FS.mkdir(dir)
+  let inst = engine.Instrument.new(
+    synthetic.made_into(dir).data,
+    synthetic.STYLE,
+  )
+  let semi_of = |i| inst.lib.notes[i].semi
+
+  # The performance holds an A4 (69) and a C5 (72): each is its own.
+  assert_eq(semi_of(choose.borrow_for(inst, [note(0, 80, 69)], 0, nil)), 69)
+  assert_eq(semi_of(choose.borrow_for(inst, [note(0, 80, 72)], 0, nil)), 72)
+  # A Bb4 (70) has no recording of its own: the A4 a semitone off.
+  assert_eq(semi_of(choose.borrow_for(inst, [note(0, 80, 70)], 0, nil)), 69)
+  # Nothing within two semitones of C4 or of E5: the nearest recording
+  # (the A4 for C4, the C5 for E5), so that a phrase always has a note to borrow.
+  assert_eq(semi_of(choose.borrow_for(inst, [note(0, 80, 60)], 0, nil)), 69)
+  assert_eq(semi_of(choose.borrow_for(inst, [note(0, 80, 75)], 0, nil)), 72)
+
+  # A slur from the A4 to the C5: the second note is the C5 too, whether
+  # the note before borrowed anything or not.
+  let slur = [note(0, 60, 69, to: "legato"), note(60, 120, 72, from: "legato")]
+  let first = choose.borrow_for(inst, slur, 0, nil)
+  assert_eq(semi_of(first), 69)
+  assert_eq(semi_of(choose.borrow_for(inst, slur, 1, first)), 72)
+  assert_eq(semi_of(choose.borrow_for(inst, slur, 1, nil)), 72)
+
+  # The style's `choice` overrides a weight: a reach of none leaves the Bb4
+  # to the nearest recording (the A4), and the A4 still its own.
+  inst.restyle({...synthetic.STYLE, choice: {reach: 0.0}})
+  assert_eq(semi_of(choose.borrow_for(inst, [note(0, 80, 70)], 0, nil)), 69)
+  assert_eq(semi_of(choose.borrow_for(inst, [note(0, 80, 69)], 0, nil)), 69)
+}
