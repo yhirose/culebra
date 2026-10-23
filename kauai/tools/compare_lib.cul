@@ -19,7 +19,11 @@
 #                       percentile of that difference
 #   loud_p95_db         the 95th percentile of the level difference (a few
 #                       notes far louder or softer than the reference's)
-#   vibrato_cents       how much the pitch moves about its slow course (rms
+#   click_db            a short spike in the level that the reference lacks (a
+#                       click or pop inside a note): the most a frame stands
+#                       above the louder of the frames 5 before and after it,
+#                       candidate against reference
+#   vibrato_cents      how much the pitch moves about its slow course (rms
 #                       of its quick moves, cents), per second of music where
 #                       both hold a pitch, the mean absolute difference
 #
@@ -58,6 +62,7 @@ let LIMITS = {
   vibrato_cents: 3.0,
   step_db: 3.0,
   loud_p95_db: 3.0,
+  click_db: 3.0,
 }
 
 # A frame step counts for smoothness when both frames sound (within ACTIVE of
@@ -211,6 +216,11 @@ fn distance(a, b) {
     .map(|t| Math.abs(b.level[t] -
       b.level[t - 1] -
       (a.level[t] - a.level[t - 1])))
+  # How far a frame stands above the louder of those 5 frames either side.
+  let pop = |f, t| f.level[t] - Math.max(f.level[t - 5], f.level[t + 5])
+  let clicks = iota(5, n - 5)
+    .filter(|t| a.level[t] > peak_a - ACTIVE || b.level[t] > peak_b - ACTIVE)
+    .map(|t| Math.max(0.0, pop(b, t) - pop(a, t)))
   let both = active.filter(|t| a.hz[t] != nil && b.hz[t] != nil)
   let cents = both.map(|t| Math.abs(cents_of(a.hz[t], b.hz[t]))).sorted()
   let one = active.filter(|t| (a.hz[t] == nil) != (b.hz[t] == nil))
@@ -265,6 +275,7 @@ fn distance(a, b) {
     vibrato_cents: rounded(mean(vibrato), 2),
     step_db: rounded(at_pct(steps, 99), 2),
     loud_p95_db: rounded(at_pct(loud, 95), 2),
+    click_db: rounded(clicks.empty() ? 0.0 : clicks.max(), 2),
     worst: worst.map(|w| {at: w.at, spectral_db: rounded(w.spectral_db, 2)}),
   }
 }

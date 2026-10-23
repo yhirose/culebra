@@ -140,6 +140,22 @@ fn a_note_that_jumps_in_level_is_off_in_steps_and_in_the_louder_percentile() {
 }
 
 @test
+fn a_click_inside_a_note_is_off_in_click_db_and_the_same_note_without_it_is_not() {
+  # A 3 ms burst of full-scale noise in the middle of the first note.
+  Random.seed(3)
+  let at = 17640
+  let clicked = iota(ref_samples.size()).map(|i| i >= at && i < at + 130
+    ? Random.uniform(-1.0, 1.0)
+    : ref_samples[i])
+  let d = against(clicked)
+  assert_true(d.click_db > lib.LIMITS.click_db, d.click_db)
+  assert_true(lib.over(d).map(|o| o[0]).contains("click_db"))
+  let clean = against(ref_samples.map(|v| v * 0.9))
+  assert_true(clean.click_db < lib.LIMITS.click_db, clean.click_db)
+  assert_true(against(tones(30.0)).click_db < lib.LIMITS.click_db)
+}
+
+@test
 fn a_duller_sound_is_off_in_spectrum_and_brightness_not_pitch() {
   let d = against(Audio.filter(ref_samples, "low", 1000.0, rate: RATE))
   assert_true(d.spectral_db > 3.0, d.spectral_db)

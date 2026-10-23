@@ -286,6 +286,7 @@ the frames where either sounds (within 50 dB of its loudest). `--low` and
 | `vibrato_cents` | how much the pitch moves about its slow course inside a note (the rms of its quick moves; a jump of more than 60 cents between frames is a new note), per second where both hold a pitch, the mean absolute difference | 3.0 |
 | `step_db` | where the two differ in how the level steps from one frame to the next (a join that jumps, a note starting louder than the reference's): the 99th percentile of that difference | 3.0 |
 | `loud_p95_db` | the 95th percentile of the level difference: a few notes far louder or softer than the reference's, which the mean of `loudness_db` hides | 3.0 |
+| `click_db` | a short spike in the level that the reference lacks (a click or pop inside a note): the most a frame stands above the louder of the frames 5 before and after it, candidate against reference | 3.0 |
 
 The limits are a starting point, about where a listener stops telling the
 two apart (`step_db` and `loud_p95_db` were added after a person heard a
