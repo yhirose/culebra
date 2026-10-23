@@ -1,0 +1,86 @@
+# Which recorded note a note of a phrase borrows: the engine's choice,
+# kept in a module of its own so that a choice can be made on its own.
+#
+# `inst` is the Instrument: `inst.lib.notes[i]` each recorded note ({semi,
+# frames (10 ms), level (dB), vib (cents peak to peak), from, to, ...}),
+# `inst.lib_in[i]` and `inst.lib_out[i]` how it is entered and left ("rest",
+# "tongue", or a slur's kind: "up leap", "up step", "down leap", "down step",
+# "same", "legato"), `inst.lib_dip[i]` how far its loudness falls inside it
+# (dB), `inst.attack_of[i]` its attack (or nil), `inst.lib_louder` how much
+# louder the recorded notes' levels read than a note's asked for,
+# `inst.vibrato_wanted(v)` the vibrato (cents peak to peak) a note asks of
+# the note it borrows (or nil), `inst.slur_kind(semitones)` a slur's kind.
+# `notes` are the phrase's notes ({s, e (frames), semi, from, to ("rest",
+# "tongue" or "legato"), level, soft, ...}), `k` the one asked for, `before`
+# the recorded note index borrowed for the note before it (or nil).
+
+# The library note for note k of `notes`, given the one borrowed for the
+# note before (an index, or nil).
+fn borrow_for(inst, notes, k, before) {
+  let v = notes[k]
+  let m = v.e - v.s
+  let want_level = v.level + inst.lib_louder
+  let want_in = v.from == "legato" && k > 0
+    ? inst.slur_kind(v.semi - notes[k - 1].semi)
+    : "start"
+  let want_out = v.to == "legato" && k + 1 < notes.size()
+    ? inst.slur_kind(notes[k + 1].semi - v.semi)
+    : v.to
+  let want_vib = inst.vibrato_wanted(v)
+  let shift_before = before == nil
+    ? nil
+    : notes[k - 1].semi - inst.lib.notes[before].semi
+  let near = iota(inst.lib.notes.size()).filter(|i| Math.abs(inst.lib.notes[i].semi -
+    v.semi) <=
+    2 &&
+    inst.lib.notes[i].frames >= 4)
+  # (Past the library's range, up to 5 semitones away.)
+  let pool = !near.empty()
+    ? near
+    : iota(inst.lib.notes.size()).filter(|i| Math.abs(inst.lib.notes[i].semi -
+      v.semi) <=
+      5 &&
+      inst.lib.notes[i].frames >= 4)
+  let starts = |i| want_in == "start"
+    ? inst.lib_in[i] == "rest" || inst.lib_in[i] == "tongue"
+    : inst.lib_in[i] == want_in
+  let strict = pool.filter(|i| starts(i) && inst.lib_out[i] == want_out)
+  let loose = pool.filter(|i| starts(i))
+  let cands = !strict.empty() ? strict : !loose.empty() ? loose : pool
+  if cands.empty() {
+    return nil
+  }
+  cands.min_by(fn (i) {
+    let e = inst.lib.notes[i]
+    let ratio = e.frames * 1.0 / m
+    let length_cost = ratio >= 1.0
+      ? Math.log(ratio)
+      : 3.0 * Math.log(1.0 / ratio)
+    let follows = before != nil &&
+      i == before + 1 &&
+      v.from == "legato" &&
+      v.semi - e.semi == shift_before
+    let vib_cost = want_vib == nil ? 0.0 : Math.abs(e.vib - want_vib) / 4.0
+    # A phrase's first note: tongued by default; with `soft=1`, the soft way
+    # in a note after a rest has (breath first).
+    let kind_cost = want_in != "start"
+      ? 0.0
+      : v.soft >= 1.0
+        ? inst.lib_in[i] == "tongue" ? 1.0 : 0.0
+        : inst.lib_in[i] == "rest" ? 0.5 : 0.0
+    let dip_cost = Math.max(0.0, inst.lib_dip[i] - 6.0) / 2.0
+    # A phrase's first note would rather borrow one the library has a real
+    # attack for (else its onset is synthesized).
+    let attack_cost = want_in == "start" && inst.attack_of[i] == nil ? 2.0 : 0.0
+    2.0 * Math.abs(e.semi - v.semi) +
+      2.0 * length_cost +
+      Math.abs(e.level - want_level) / 6.0 +
+      vib_cost +
+      kind_cost +
+      dip_cost +
+      attack_cost +
+      (follows ? -6.0 : 0.0)
+  })
+}
+
+export {borrow_for}
