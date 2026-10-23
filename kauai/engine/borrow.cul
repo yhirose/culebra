@@ -915,8 +915,7 @@ class Instrument {
     # 140 ms on each side (as far as the pieces reach), an S
     # (6p^5 - 15p^4 + 10p^3) with a little of the gradient noise on it,
     # nothing at either end, so no two joins are taken up alike.
-    let way = fn (b) {
-      let reach = 6 + Math.round(8.0 * hash01(b, total))
+    let way = fn (b, reach) {
       let pl = piece[b - 1]
       let pr = piece[b]
       let left = iota(Math.max(0, b - reach), b).filter(|w| piece[w] == pl)
@@ -939,9 +938,7 @@ class Instrument {
         )),
       }
     }
-    let ways = {}
-    let ease = fn (xs, b) {
-      let w = ways["{b}"]
+    let ease = fn (xs, b, w) {
       if w.left.empty() || w.right.empty() {
         return xs
       }
@@ -955,17 +952,22 @@ class Instrument {
       }
       out
     }
+    # At a slur the timbre is eased over 20 ms each side only: the harmonics
+    # are numbered from the pitch, which moves there, so easing them by
+    # number as long as the level would carry the bore's resonances along
+    # with the pitch (a vowel gliding), where a saxophone's stay put and
+    # change with the fingering, within the pitch's move.
     for b in joins {
-      ways["{b}"] = way(b)
-    }
-    for b in joins {
-      if note_at[b] == note_at[b - 1] {
-        cents = ease(cents, b)
+      let w = way(b, 6 + Math.round(8.0 * hash01(b, total)))
+      let inside = note_at[b] == note_at[b - 1]
+      let tw = inside ? w : way(b, 2)
+      if inside {
+        cents = ease(cents, b, w)
       }
-      db = ease(db, b)
-      let per_h = iota(self.lh).map(|h| ease(logs.map(|l| l[h]), b))
+      db = ease(db, b, w)
+      let per_h = iota(self.lh).map(|h| ease(logs.map(|l| l[h]), b, tw))
       logs = iota(total).map(|u| iota(self.lh).map(|h| per_h[h][u]))
-      let per_b = iota(self.nb).map(|q| ease(breath.map(|r| r[q]), b))
+      let per_b = iota(self.nb).map(|q| ease(breath.map(|r| r[q]), b, tw))
       breath = iota(total).map(|u| iota(self.nb).map(|q| per_b[q][u]))
     }
     # Every note pulled to its written pitch: its slow course (its pitch's
