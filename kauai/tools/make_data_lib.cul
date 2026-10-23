@@ -245,17 +245,13 @@ fn gains_of(levels, sum, rate, t0, m, f0) {
 # The notes of recording `r` (measured) with `samples` (its samples, mono,
 # at `rate`), named `rec`: each note's description as notes.json keeps it
 # and its parts, frame by frame, as data_format's pack_note takes them. The
-# loudness is the harmonics' power in dB against the recording's 95th
-# percentile of it where it has a pitch; the cents are the note's pitch
-# against its semitone, held where it has none.
-fn notes_of(r, samples, rate, rec) {
+# loudness is the harmonics' power in dB against `reference` (the recording's
+# 95th percentile of it where it has a pitch, or the group's, see made_of);
+# the cents are the note's pitch against its semitone, held where it has none.
+fn notes_of(r, samples, rate, rec, reference) {
   let powers = r.amps.map(|row| row.map(|a| a * a).sum())
   let pdb = powers.map(|p| db_of_power(p))
   let levels = powers.map(|p| Math.sqrt(p / 2.0))
-  let voiced = iota(r.hz.size())
-    .filter(|t| r.hz[t] != nil && powers[t] > 1e-8)
-    .map(|t| pdb[t])
-  let reference = voiced.sorted()[voiced.size() * 95 / 100]
   let tuning = r.head.tuning / 100.0
   let sum = measure.squares(samples)
   r.head.notes.map(fn (v) {
@@ -657,15 +653,33 @@ fn kept_notes(notes, limits) {
 
 # --- The whole of it -----------------------------------------------------------
 
+# The 95th percentile of the loudest voiced frames: a recording's reference.
+let reference_of = |levels| levels.sorted()[levels.size() * 95 / 100]
+
+# A recording's voiced frames' loudness (dB), the frames it has a pitch in.
+fn voiced_db(r) {
+  let powers = r.amps.map(|row| row.map(|a| a * a).sum())
+  iota(r.hz.size())
+    .filter(|t| r.hz[t] != nil && powers[t] > 1e-8)
+    .map(|t| db_of_power(powers[t]))
+}
+
 # What data/ holds, made from `a` (run's argument): {harmonics, notes,
 # attacks, breath}, the notes not to borrow left out (kept_notes, the
 # instrument's `make.left_out`) and their attacks with them.
+#
+# A recording's loudness is against its own reference (its 95th percentile),
+# unless the instrument's `make.reference_groups` puts it in a group (an
+# object: group name to the recording names in it): then the group shares one
+# reference, the 95th percentile over all its recordings' voiced frames. That
+# keeps the dynamics of recordings made at pp, mf and ff apart.
 fn made_of(a) {
   let limits = a.make.left_out
   let notes = []
   let recordings = {}
   mut bands = nil
   mut harmonics = nil
+  let takes = []
   for path in a.measured {
     let r = measured(path)
     let rec = FS.stem(path)
@@ -678,10 +692,31 @@ fn made_of(a) {
         made.rate != RATE {
       throw "{path}: measured with other settings or at another rate than the others ({RATE})"
     }
-    let these = notes_of(r, xs, RATE, rec)
-    recordings[rec] = xs
+    takes.push({r: r, rec: rec, xs: xs, voiced: voiced_db(r)})
+  }
+  let groups = a.make.get("reference_groups", {})
+  let group_of = {}
+  for g in groups.keys() {
+    for rec in groups[g] {
+      group_of[rec] = g
+    }
+  }
+  let shared = {}
+  for g in groups.keys() {
+    let pooled = takes
+      .filter(|t| group_of.get(t.rec, nil) == g)
+      .flat_map(|t| t.voiced)
+    shared[g] = pooled.empty() ? nil : reference_of(pooled)
+  }
+  for t in takes {
+    let g = group_of.get(t.rec, nil)
+    let reference = g != nil && shared[g] != nil
+      ? shared[g]
+      : reference_of(t.voiced)
+    let these = notes_of(t.r, t.xs, RATE, t.rec, reference)
+    recordings[t.rec] = t.xs
     notes.extend(these)
-    println("{rec}: {these.size()} notes")
+    println("{t.rec}: {these.size()} notes")
   }
   let k = kept_notes(notes, limits)
   println("left out: {k.bright} notes {limits.brighter} dB or more brighter than those within a semitone, {k.halved} measured along half their pitch")
@@ -721,4 +756,4 @@ fn run(a) {
   println("{a.out}: {wrote.notes} notes ({2 * wrote.numbers} bytes), {wrote.attacks} attacks ({2 * wrote.samples} bytes), breath pulsed {m.breath.pulsed}")
 }
 
-export {run, kept_notes, brightness, median, despiked, harmonics_despiked, pchip, pitch_of, quantile, noise_floor, cleaned}
+export {run, made_of, kept_notes, brightness, median, despiked, harmonics_despiked, pchip, pitch_of, quantile, noise_floor, cleaned}

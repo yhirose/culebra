@@ -282,3 +282,66 @@ fn a_missing_package_or_measure_is_said_so() {
   ])
   assert_true(missing.stderr.contains("no measure /nonexistent/x.json"))
 }
+
+# Two takes of one performance, the second 10 dB quieter: made as one group,
+# they keep that difference in their notes' levels; each on its own, they do
+# not (each is brought to its own reference).
+@test
+fn a_group_keeps_the_difference_between_takes_made_quieter() {
+  let dir = FS.join(FS.temp_dir(), "make-group-test-{UUID.v4()}")
+  defer {
+    FS.remove(dir, recursive: true) if FS.exists(dir)
+  }
+  FS.mkdir(dir)
+  let sources = FS.join(dir, "sources")
+  let measured = FS.join(dir, "measured")
+  FS.mkdir(sources)
+  FS.mkdir(measured)
+  let loud = synthetic.performance(0.0)
+  let quiet = loud.map(|v| v * 10.0 ** (-10.0 / 20.0))
+  for pair in [["loud", loud], ["quiet", quiet]] {
+    FS.write(
+      FS.join(sources, "{pair[0]}.wav"),
+      Audio.Sound(pair[1], rate: RATE).data(),
+    )
+    let heard = Audio.decode(FS.read(FS.join(sources, "{pair[0]}.wav")))
+    let m = measure.measure(heard.channels[0], RATE, 200.0, 1400.0)
+    measure.write(
+      m,
+      measured,
+      pair[0],
+      {source: "{pair[0]}.wav", rate: RATE, seconds: 3.2},
+      200.0,
+      1400.0,
+    )
+  }
+  let made = fn (groups) {
+    lib.made_of({
+      measured: [
+        FS.join(measured, "loud.json"),
+        FS.join(measured, "quiet.json"),
+      ],
+      sources: sources,
+      make: {
+        left_out: {brighter: 99.0, odd_under: 99.0},
+        breath_noise: [20.0, 20000.0],
+        reference_groups: groups,
+      },
+    })
+  }
+  let median_level = |m, rec| {
+    let ls = m
+      .notes
+      .filter(|n| n.note.rec == rec)
+      .map(|n| n.note.level)
+      .sorted()
+    ls[ls.size() / 2]
+  }
+  let alone = made({})
+  let grouped = made({both: ["loud", "quiet"]})
+  let gap_alone = median_level(alone, "loud") - median_level(alone, "quiet")
+  let gap_grouped = median_level(grouped, "loud") -
+    median_level(grouped, "quiet")
+  assert_true(Math.abs(gap_alone) < 1.0, gap_alone)
+  assert_true(Math.abs(gap_grouped - 10.0) < 1.5, gap_grouped)
+}
