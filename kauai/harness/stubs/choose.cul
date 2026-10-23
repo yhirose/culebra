@@ -11,7 +11,10 @@
 # (dB), `inst.attack_of[i]` its attack (or nil), `inst.lib_louder` how much
 # louder the recorded notes' levels read than a note's asked for,
 # `inst.vibrato_wanted(v)` the vibrato (cents peak to peak) a note asks of
-# the note it borrows (or nil), `inst.slur_kind(semitones)` a slur's kind.
+# the note it borrows (or nil), `inst.slur_kind(semitones)` a slur's kind,
+# `inst.choice` an Object of numbers the style gives this module (read each
+# with a default of its own: `inst.choice.get("pitch", 2.0)`), so that they can
+# be tried and fitted without editing the file.
 # `notes` are the phrase's notes ({s, e (frames), semi, from, to ("rest",
 # "tongue" or "legato"), level, soft, ...}), `k` the one asked for, `before`
 # the recorded note index borrowed for the note before it (or nil).

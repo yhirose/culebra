@@ -38,7 +38,8 @@
 #
 # and these, each with the default DEFAULTS has (a style need not say them):
 # scoop, own_kept, drift_kept, gain_range, onset_at, min_lead and
-# wander_style.
+# wander_style, and `choice`: an Object of numbers for choose.cul, which
+# reads them (with defaults of its own) as `inst.choice`.
 
 # The voice's parameters, on the band's line (`external Sax breath=0.5`)
 # or in the score from a note on (`\vibrato=12`):
@@ -210,6 +211,7 @@ let DEFAULTS = {
   onset_at: ONSET_AT,
   min_lead: MIN_LEAD,
   wander_style: WANDER,
+  choice: {},
 }
 
 let REQUIRED = [
@@ -333,6 +335,7 @@ class Instrument {
     self.onset_at = s.onset_at
     self.min_lead = s.min_lead
     self.wander_style = s.wander_style
+    self.choice = s.choice
     # Where a recorded note's onset is depends on `onset_from_t0`.
     self.lib_onset_cache = self.lib.notes.map(|_| nil)
     # Each phrase its own noise: the n-th phrase voiced gets seed n.

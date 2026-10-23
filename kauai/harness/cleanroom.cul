@@ -71,7 +71,10 @@ sh("cd '{repo}' && git archive HEAD | tar -x -C '{dest}'")
 # The answer: the instrument's package, the other cases, the eval songs, and
 # the case's `hide` (files that hold it in another shape).
 let package = FS.join(dest, "kauai", "sounds", args.case)
-FS.remove(package, recursive: true) if FS.exists(package) && !args.keep_package
+FS.remove(
+  package,
+  recursive: true,
+) if FS.exists(package) && !args["keep-package"]
 for other in FS.list_dir(FS.join(dest, "kauai", "harness", "cases")) {
   continue if other == args.case
   FS.remove(FS.join(dest, "kauai", "harness", "cases", other), recursive: true)
@@ -105,4 +108,4 @@ sh("ln -s '{binary}' '{dest}/build-dev/culebra'")
 println("clean room for {args.case} at {dest}")
 println("  culebra: {dest}/build-dev/culebra")
 println("  case:    {dest}/kauai/harness/cases/{args.case}/case.json (without `eval`)")
-println("  removed: {args.keep_package ? "" : "kauai/sounds/{args.case}, "}the other cases, {spec.get("eval", []).size()} eval songs; stubbed: {args.stub.size()}")
+println("  removed: {args["keep-package"] ? "" : "kauai/sounds/{args.case}, "}the other cases, {spec.get("eval", []).size()} eval songs; stubbed: {args.stub.size()}")
