@@ -47,6 +47,12 @@ case's `needs` when there is a case) states:
   made at pp, mf and ff are one reference group in `make.reference_groups`
   (`make_data.cul` gives them one loudness reference), or the dynamics vanish.
 - **Playing**: slurred runs, tongued notes, long tones, and vibrato or none.
+  Slurs are a need of their own: a slur in the song is heard only if a
+  recording has the same kind of join (interval, direction, length), since
+  borrowing one note at a time from different takes breaks a slur into two
+  halves. Count the slurs the songs use by interval and direction, and find
+  recordings that have them. A design without slurs is a design for a
+  different instrument's music, and the pieces will sound tongued.
 - **Quality**: no clipping, no accompaniment, a dry or known room.
 
 Then search, and for each candidate recording say which of the design's

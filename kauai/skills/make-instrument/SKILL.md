@@ -37,7 +37,9 @@ change at a time, and hear it in a passage short enough to judge.
   README as the soprano's does.
 - **Design before search.** Write what the recordings must cover (range,
   notes per semitone, long notes per octave, loud, middle and quiet notes)
-  before looking for any: `workflow.md` step 1b. Check each candidate
+  before looking for any: `workflow.md` step 1b. The design includes the slurs
+  the songs use, by interval and direction (a slur is not in a recording
+  unless a recording plays it). Check each candidate
   against the design, and check coverage with `kauai/tools/coverage.cul`.
 - **One place for the work.** Everything that is not the package goes in
   the instrument's `work/` folder (`kauai/sounds/<name>/work/`, which git
