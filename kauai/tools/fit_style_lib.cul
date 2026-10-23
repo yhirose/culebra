@@ -24,6 +24,8 @@ let WEIGHT = {
   centroid_cents: 1.0,
   breath_db: 1.0,
   vibrato_cents: 2.0,
+  step_db: 2.0,
+  loud_p95_db: 1.0,
 }
 
 let median = |xs| xs.empty() ? nil : xs.sorted()[xs.size() / 2]

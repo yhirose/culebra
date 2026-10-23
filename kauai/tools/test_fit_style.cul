@@ -118,6 +118,8 @@ fn the_cost_counts_what_is_over_its_limit_and_no_more_than_five_limits() {
     centroid_cents: 0.0,
     breath_db: 0.0,
     vibrato_cents: 0.0,
+    step_db: 0.0,
+    loud_p95_db: 0.0,
   })
   assert_eq(zero, 0.0)
   let huge = lib.cost({
@@ -130,6 +132,8 @@ fn the_cost_counts_what_is_over_its_limit_and_no_more_than_five_limits() {
     centroid_cents: 1000.0,
     breath_db: 1000.0,
     vibrato_cents: 1000.0,
+    step_db: 1000.0,
+    loud_p95_db: 1000.0,
   })
   assert_eq(huge, 5.0)
 }

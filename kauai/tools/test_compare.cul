@@ -121,6 +121,25 @@ fn a_vibrato_is_a_distance_a_detune_is_not() {
 }
 
 @test
+fn a_note_that_jumps_in_level_is_off_in_steps_and_in_the_louder_percentile() {
+  # The second note four times as loud (12 dB): a step at the join and half
+  # the frames far off; the same change made over a second is no step.
+  let half = ref_samples.size() / 2
+  let jumps = against(iota(ref_samples.size()).map(|i| i < half
+    ? ref_samples[i]
+    : 4.0 * ref_samples[i]))
+  assert_true(jumps.step_db > 1.5, jumps.step_db)
+  assert_true(jumps.loud_p95_db > 8.0, jumps.loud_p95_db)
+  let ramps = against(iota(ref_samples.size()).map(|i| ref_samples[i] *
+    (1.0 + 3.0 * Math.clamp((i - half + RATE / 2) / (1.0 * RATE), 0.0, 1.0))))
+  assert_true(ramps.step_db < 0.5, ramps.step_db)
+  # A quieter sound, all of it, is a level difference and no step.
+  let quiet = against(ref_samples.map(|v| v * 0.5))
+  assert_true(quiet.step_db < 0.5, quiet.step_db)
+  assert_true(quiet.loud_p95_db > 5.0, quiet.loud_p95_db)
+}
+
+@test
 fn a_duller_sound_is_off_in_spectrum_and_brightness_not_pitch() {
   let d = against(Audio.filter(ref_samples, "low", 1000.0, rate: RATE))
   assert_true(d.spectral_db > 3.0, d.spectral_db)

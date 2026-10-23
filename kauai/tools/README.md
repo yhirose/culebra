@@ -284,9 +284,13 @@ the frames where either sounds (within 50 dB of its loudest). `--low` and
 | `centroid_cents` | where the spectrum's centre of mass lies: brightness | 60 |
 | `breath_db` | the noise against the harmonics where both have a pitch (`Audio.harmonics` along each one's own pitch) | 3.0 |
 | `vibrato_cents` | how much the pitch moves about its slow course inside a note (the rms of its quick moves; a jump of more than 60 cents between frames is a new note), per second where both hold a pitch, the mean absolute difference | 3.0 |
+| `step_db` | where the two differ in how the level steps from one frame to the next (a join that jumps, a note starting louder than the reference's): the 99th percentile of that difference | 3.0 |
+| `loud_p95_db` | the 95th percentile of the level difference: a few notes far louder or softer than the reference's, which the mean of `loudness_db` hides | 3.0 |
 
 The limits are a starting point, about where a listener stops telling the
-two apart; the exit status is 1 when a number is over its limit, and the
+two apart (`step_db` and `loud_p95_db` were added after a person heard a
+choice of recorded notes lose "smoothness" at the joins while the means
+(`spectral_db`, `loudness_db`) said it had improved); the exit status is 1 when a number is over its limit, and the
 person has the last word. `worst` lists the five whole seconds where the
 spectrum differs most, to cut out and listen to.
 
