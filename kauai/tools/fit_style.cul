@@ -5,7 +5,7 @@
 # sound like; compare_lib.cul says how far a rendering is from one.
 #
 #   culebra kauai/tools/fit_style.cul --sounds work/pkg \
-#     --measured work/measured --seconds 30 \
+#     --seconds 30 \
 #     --tune songs/tune_a.kau=targets/tune_a.wav \
 #     --tune songs/tune_b.kau=targets/tune_b.wav
 #
@@ -26,12 +26,6 @@ let SPEC = {
       type: 'String',
       default: nil,
       doc: 'the instrument: a folder holding data/ with instrument.json',
-    },
-    {
-      name: 'measured',
-      type: 'String',
-      default: nil,
-      doc: "the folder of measure.cul's NAME.json files for its recordings",
     },
     {
       name: 'tune',
@@ -86,8 +80,6 @@ fn fail(message) {
 
 let args = Args.parse(Sys.argv, SPEC)
 fail("--sounds is needed (--help says what each is)") if args.sounds == nil
-fail("--measured is needed (the folder of measure.cul's output)") if args.measured ==
-  nil
 fail("name at least one --tune SONG=TARGET.wav") if args.tune.empty()
 let config_path = FS.join(args.sounds, "data", "instrument.json")
 fail("no data/instrument.json in {args.sounds}") if !FS.exists(config_path)
@@ -97,11 +89,6 @@ fail("{config_path} has no `make.measure` (the pitch range)") if config
   ?.get("measure", nil) ==
   nil
 let range = config.make.measure
-
-let measured = FS
-  .glob(FS.join(args.measured, "*.json"))
-  .map(|p| JSON.parse(FS.read(p)))
-fail("no measures in {args.measured}") if measured.empty()
 
 let pairs = args.tune.map(fn (spec) {
   let at = spec.index_of("=")
@@ -131,7 +118,7 @@ let inst = engine.Instrument.new(
   placeholder,
 )
 let from_data = args.derive || config.get("play", nil) == nil
-let base = from_data ? lib.derived(inst, measured) : config.play
+let base = from_data ? lib.derived(inst) : config.play
 println(from_data
   ? "style read off the recordings"
   : "style from {config_path}")
@@ -158,6 +145,12 @@ println("cost {result.log[0].cost:.3f} -> {result.cost:.3f} after {result.log.si
 for k in 0..pairs.size() {
   let d = result.distances[k]
   println("{pairs[k].song}: spectral {d.spectral_db} dB, loudness {d.loudness_db} dB, programme {d.integrated_lu} LU, pitch {d.pitch_median_cents} cents (p95 {d.pitch_p95_cents}), voicing {d.voicing}, centroid {d.centroid_cents} cents, breath {d.breath_db} dB")
+}
+for line in lib.blind(result.pitches, inst.lib.notes.map(|e| e.semi).min(), inst.steady.map(|i| inst.lib.notes[i].semi).max()) {
+  println("warning: {line}")
+}
+for name in result.unseen {
+  println("warning: {name} is heard by none of the songs (every value sounded the same): it stays as it was derived")
 }
 let final = {...result.style, lib_louder: lib.LIB_MF - result.style.mf_db}
 println(JSON.stringify(final))

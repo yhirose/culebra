@@ -40,7 +40,7 @@ let MADE = fn () {
 @test
 fn a_first_style_is_read_off_the_recordings() {
   let made = MADE
-  let d = lib.derived(made.inst, made.measured)
+  let d = lib.derived(made.inst)
   # The performance plays A4 and C5, both long: the overtones begin a
   # semitone over the top one.
   assert_eq(d.overtone_from, 73)
@@ -93,9 +93,24 @@ fn a_number_at_its_bound_stays_in_it() {
   }]
   # The right number is out of the range the fit may use.
   let start = {...STYLE, db_per_octave: 0.0}
-  let params = [{path: ["db_per_octave"], step: 3.0, lo: 0.0, hi: 3.0}]
+  let params = [
+    {path: ["db_per_octave"], step: 3.0, lo: 0.0, hi: 3.0},
+    {path: ["overtone_from"], step: 1.0, lo: 60.0, hi: 100.0},
+  ]
   let r = lib.fit(made.inst, "sax", start, pairs, 2.2, params, 1)
   assert_true(r.style.db_per_octave <= 3.0)
+  # The tune asks for A4 to E5; an overtone from 80 is heard by none of it.
+  assert_eq(r.pitches, [69, 72, 76])
+  assert_eq(r.unseen, ["overtone_from"])
+}
+
+@test
+fn the_songs_are_said_to_be_blind_where_they_do_not_reach() {
+  # Steady notes up to 81, the library from 55: songs over 62 to 79 leave the
+  # top (and the bottom) unseen; songs over 55 to 86 leave nothing.
+  assert_eq(lib.blind([62, 70, 79], 55, 81).size(), 2)
+  assert_eq(lib.blind([55, 70, 86], 55, 81), [])
+  assert_eq(lib.blind([], 55, 81).size(), 1)
 }
 
 @test

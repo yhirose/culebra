@@ -13,10 +13,13 @@ from earlier rounds.
 2. Runs `kauai/tools/make_data.cul --sounds kauai/sounds/<name> --sources
    work/sources work/measured/*.json`, which writes `data/` beside it.
 3. Copies the template to the package as `main.cul`, with the voice's name.
-4. Runs `kauai/tools/fit_style.cul --sounds kauai/sounds/<name> --measured
-   work/measured --tune SONG=TARGET ... --log work/fit.json`, which reads a
-   first `play` off the recordings and moves the numbers they cannot say
-   until the `tune` songs are as close to their targets as they get.
+4. Runs `kauai/tools/fit_style.cul --sounds kauai/sounds/<name> --tune
+   SONG=TARGET ... --log work/fit.json`, which reads a first `play` off the
+   recordings and moves the numbers they cannot say until the `tune` songs
+   are as close to their targets as they get. **Reads its warnings**: "the
+   songs ask for nothing above N" and "X is heard by none of the songs" mean
+   the songs cannot decide that number; says so in the journal, and asks the
+   composer for a song that goes there, rather than leaving the guess.
 5. Changes **one** thing the judge named (`left_out`, a pitch range, a
    style number), and does 2 and 4 again as it needs.
 

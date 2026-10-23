@@ -40,19 +40,22 @@ fn cost(d) {
     total
 }
 
-# A first style read off the instrument `inst` (made with any style) and the
-# measures of its recordings (`measured`, each NAME.json parsed): where a
-# note's onset lies for each way in, the first note played as an overtone and
-# the vibrato of long notes, all of the recordings themselves. The level
-# numbers are a guess `fit` moves.
-fn derived(inst, measured) {
-  let own = measured.flat_map(|m| m.notes)
-  let onset = |kind| median(own
-    .filter(|v| v.from == kind && v.onset != nil)
-    .map(|v| v.onset - v.t0)) ??
-    0.0
+# A first style read off the instrument `inst` (made with any style) and
+# nothing else: where a note's onset lies for each way in (the median of what
+# the notes' loudness says), the first note played as an overtone (the top of
+# the steady notes, plus one) and the vibrato of long notes, all of the
+# recordings themselves. The level numbers are a guess `fit` leaves be.
+fn derived(inst) {
   let notes = inst.lib.notes
-  let long = notes.filter(|e| e.frames >= 40)
+  let onset = fn (kind) {
+    let found = []
+    for i in 0..notes.size() {
+      continue if notes[i].from != kind
+      let at = inst.onset_by_loudness(i)
+      found.push(at) if at != nil
+    }
+    median(found) ?? 0.0
+  }
   let vib = median(notes.filter(|e| e.frames >= 60).map(|e| e.vib)) ?? 20.0
   {
     mf_db: -24.0,
@@ -60,29 +63,36 @@ fn derived(inst, measured) {
     lib_louder: LIB_MF + 24.0,
     vibrato: {depth: Math.round(vib / 0.24), straight: 0.6},
     onset_from_t0: {rest: onset("rest"), tongue: onset("tongue")},
-    overtone_from: long.empty() ? 0 : long.map(|e| e.semi).max() + 1,
+    overtone_from: inst.steady.empty()
+      ? 0
+      : inst.steady.map(|i| notes[i].semi).max() + 1,
     own_kept: engine.OWN_KEPT,
     drift_kept: engine.DRIFT_KEPT,
   }
 }
 
 # The voices Kauai calls an instrument by: `external Voice`, as `name` (its
-# lower-case key).
-fn voices_of(inst, name) {
+# lower-case key). `seen`, an Object, gets a key for each pitch asked for.
+fn voices_of(inst, name, seen = nil) {
   let voices = {}
-  voices[name] = {
-    phrase: |notes, params| Audio.Sound(
-      inst.phrase_samples(notes, params),
-      rate: RATE,
-    ),
-    hears: ["len", "level", "marks", "next", "params"],
-  }
+  voices[name] = {phrase: fn (notes, params) {
+    if seen != nil {
+      for n in notes {
+        seen[n.pitch] = true
+      }
+    }
+    Audio.Sound(inst.phrase_samples(notes, params), rate: RATE)
+  }, hears: ["len", "level", "marks", "next", "params"]}
   voices
 }
 
 # The first `seconds` of song `path` (or `dir`'s) as `inst` plays it.
-fn rendered(inst, name, path, seconds, dir = nil) {
-  let song = Audio.Kauai.load(path, voices: voices_of(inst, name), dir: dir)
+fn rendered(inst, name, path, seconds, dir = nil, seen = nil) {
+  let song = Audio.Kauai.load(
+    path,
+    voices: voices_of(inst, name, seen),
+    dir: dir,
+  )
   song.render(to: seconds)
 }
 
@@ -102,10 +112,10 @@ fn value_at(style, path) {
 # The style tried: what `inst` plays like in `style` on each of `pairs` (each
 # {song, target: the target's features, low, high, dir}), as the mean cost
 # and the distances. `lib_louder` follows `mf_db`.
-fn tried(inst, name, style, pairs, seconds) {
+fn tried(inst, name, style, pairs, seconds, seen = nil) {
   inst.restyle({...style, lib_louder: LIB_MF - style.mf_db})
   let ds = pairs.map(fn (p) {
-    let samples = rendered(inst, name, p.song, seconds, p.dir)
+    let samples = rendered(inst, name, p.song, seconds, p.dir, seen)
     compare.distance(p.target, compare.features(samples, RATE, p.low, p.high))
   })
   {cost: ds.map(|d| cost(d)).sum() / ds.size(), distances: ds}
@@ -130,10 +140,14 @@ fn prepared(pairs, seconds) {
 # {style, cost, distances, log}: the log each style tried and its cost.
 fn fit(inst, name, style0, pairs, seconds, params, rounds = 3) {
   let ready = prepared(pairs, seconds)
+  let seen = {}
   mut style = style0
-  mut best = tried(inst, name, style, ready, seconds)
+  mut best = tried(inst, name, style, ready, seconds, seen)
   let log = [{what: "start", cost: best.cost, style: style}]
   mut steps = params.map(|q| q.step)
+  # The numbers every trial of which cost what the style did: no song of the
+  # pairs hears them.
+  let changed = params.map(|_| false)
   for round in 0..rounds {
     mut moved = false
     for q in 0..params.size() {
@@ -148,7 +162,9 @@ fn fit(inst, name, style0, pairs, seconds, params, rounds = 3) {
           with_value(style, p.path, v),
           ready,
           seconds,
+          seen,
         )
+        changed[q] = true if Math.abs(trial.cost - best.cost) > 1e-9
         if trial.cost < best.cost {
           style = with_value(style, p.path, v)
           best = trial
@@ -162,7 +178,33 @@ fn fit(inst, name, style0, pairs, seconds, params, rounds = 3) {
       steps = steps.map(|x| x / 2.0)
     }
   }
-  {style: style, cost: best.cost, distances: best.distances, log: log}
+  {
+    style: style,
+    cost: best.cost,
+    distances: best.distances,
+    log: log,
+    pitches: seen.keys().map(|k| to_long(k)).sorted(),
+    unseen: iota(params.size())
+      .filter(|q| !changed[q])
+      .map(|q| params[q].path.join(".")),
+  }
 }
 
-export {LIB_MF, WEIGHT, cost, derived, voices_of, rendered, with_value, tried, prepared, fit}
+# What the songs of a fit do not show of an instrument whose steady notes
+# reach `top` and whose notes begin at `bottom` (MIDI): pitches the songs
+# never ask for in the range (above `top` by up to 3 semitones, where the
+# instrument plays overtones or thins out, and below `bottom`), as a list of
+# warning lines.
+fn blind(pitches, bottom, top) {
+  let warn = []
+  return ["the songs ask for no note at all"] if pitches.empty()
+  if pitches.max() < top + 3 {
+    warn.push("the songs ask for nothing above {pitches.max()}, and the recordings' steady notes reach {top}: whatever is decided from {top - 1} up is a guess")
+  }
+  if pitches.min() > bottom + 1 {
+    warn.push("the songs ask for nothing below {pitches.min()}, and the recordings begin at {bottom}")
+  }
+  warn
+}
+
+export {LIB_MF, WEIGHT, cost, derived, voices_of, rendered, with_value, tried, prepared, fit, blind}

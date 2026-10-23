@@ -11,7 +11,9 @@ Then looks for what a number can hide:
   to the songs, not to the sound);
 - a song that passes by a hair, so another would not;
 - a style number at its bound, or a fit that moved it from the first value
-  to the edge;
+  to the edge; a number fit_style said no song hears;
+- pitches the `eval` songs ask for that no `tune` song does (list them: that
+  is where an unseen number shows);
 - anything in the package that came from somewhere it should not (a file
   copied from another package, data not made by the tools).
 Plays the worst second of each `eval` song and says what it is.

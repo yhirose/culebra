@@ -37,6 +37,10 @@
     {
       "song": "songs/tune_practice.kau",
       "target": "tune_practice.wav"
+    },
+    {
+      "song": "songs/tune_top.kau",
+      "target": "tune_top.wav"
     }
   ],
   "eval": [

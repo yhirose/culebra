@@ -307,7 +307,7 @@ instrument should sound like.
 
 ```sh
 culebra kauai/tools/fit_style.cul --sounds kauai/sounds/alto_sax \
-  --measured work/measured --seconds 30 \
+  --seconds 30 \
   --tune work/songs/tune_a.kau=work/targets/tune_a.wav \
   --tune work/songs/tune_b.kau=work/targets/tune_b.wav --log work/fit.json
 ```
@@ -325,6 +325,10 @@ are moved one at a time by a step while that lowers the cost (compare's
 numbers over their limits, weighted), halving the step after a round that
 moved nothing. `lib_louder` follows `mf_db`, so the notes borrowed do not
 change when the level does. The style is written back unless `--dry`; `--log` keeps every style tried and its cost.
+It says what its songs cannot show: a number every trial of which sounded the
+same ("heard by none of the songs"), and a range of pitches the songs never
+ask for (above the recordings' steady notes, or below the lowest), where
+whatever is decided from the first value stands as a guess.
 A 20 s excerpt of a song, one round, takes about a minute.
 
 ## evaluate.cul: does an instrument sound like its targets

@@ -344,26 +344,31 @@ class Instrument {
     self.note_shapes_cache[i]
   }
 
-  # Where library note i's onset is against its first frame (seconds): the
-  # first millisecond within 80 ms whose level comes within 10 dB of the
-  # note's median, or the median for how it starts.
+  # Where library note i's onset is against its first frame (seconds), as its
+  # loudness says: the first millisecond within 80 ms whose level comes within
+  # 10 dB of the note's median; nil where none does.
+  onset_by_loudness(i) {
+    let e = self.lib.notes[i]
+    let m = e.frames
+    let dbs = self.note_parts(i).db
+    let med = dbs.sorted()[m / 2]
+    let at = iota(Math.min(e.gains, 80)).find(fn (k) {
+      let x = Math.clamp((k - 5) / 10.0, 0.0, m - 1.0)
+      let j = Math.floor(x)
+      let f = x - j
+      let db = dbs[j] * (1.0 - f) + dbs[Math.min(m - 1, j + 1)] * f
+      let g = self.note_parts(i).gains[k]
+      db + 20.0 * Math.log(Math.max(g, 1e-6)) / Math.log(10.0) >= med - 10.0
+    })
+    at == nil ? nil : (at - 5) * 0.001
+  }
+
+  # Where library note i's onset is against its first frame (seconds): as its
+  # loudness says, or the median for how it starts.
   lib_onset(i) {
     if self.lib_onset_cache[i] == nil {
-      let e = self.lib.notes[i]
-      let m = e.frames
-      let dbs = self.note_parts(i).db
-      let med = dbs.sorted()[m / 2]
-      let at = iota(Math.min(e.gains, 80)).find(fn (k) {
-        let x = Math.clamp((k - 5) / 10.0, 0.0, m - 1.0)
-        let j = Math.floor(x)
-        let f = x - j
-        let db = dbs[j] * (1.0 - f) + dbs[Math.min(m - 1, j + 1)] * f
-        let g = self.note_parts(i).gains[k]
-        db + 20.0 * Math.log(Math.max(g, 1e-6)) / Math.log(10.0) >= med - 10.0
-      })
-      self.lib_onset_cache[i] = at == nil
-        ? self.onset_from_t0.get(e.from, 0.0)
-        : (at - 5) * 0.001
+      self.lib_onset_cache[i] = self.onset_by_loudness(i) ??
+        self.onset_from_t0.get(self.lib.notes[i].from, 0.0)
     }
     self.lib_onset_cache[i]
   }
