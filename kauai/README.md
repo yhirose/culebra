@@ -2,6 +2,10 @@
 
 Things to play Kauai songs with, beyond the instruments Kauai has built in.
 
+`engine/` holds the playing code instruments made from recordings share
+([`engine/borrow.cul`](engine)): an instrument is its recordings and a style,
+and `Instrument.new(data, style)` voices a phrase at a time.
+
 `sounds/` holds `external` instruments. Each is a folder: its `main.cul` is
 the module that makes the sounds, and the data it plays from lies beside it.
 `culebra play --sounds <folder> song.kau` plays a song with one, and a
@@ -12,7 +16,9 @@ program imports its `main.cul` and hands Kauai the module's `voices` (and
 |---|---|---|
 | [`sounds/soprano_sax`](sounds/soprano_sax) | `Sax` | a soprano saxophone played from real notes |
 
-`tools/` holds what works with them: [`tools/check.cul`](tools) finds what
+`tools/` holds what works with them: [`tools/compare.cul`](tools) measures
+how far one rendering of a score is from another,
+[`tools/check.cul`](tools) finds what
 measuring can in a passage as an instrument plays it (pitch off the score,
 dropouts, abrupt ends, clipping, silence),
 [`tools/listen.cul`](tools) renders a passage of a song two ways, heard as

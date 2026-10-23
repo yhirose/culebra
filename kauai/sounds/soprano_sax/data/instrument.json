@@ -1,0 +1,47 @@
+{
+  "play": {
+    "mf_db": -24.711038758225744,
+    "db_per_octave": 7.0,
+    "lib_louder": 13.659952105624681,
+    "vibrato": {
+      "depth": 20.0,
+      "straight": 0.6
+    },
+    "scoop": {
+      "tongue": [
+        -39.0,
+        -18.0,
+        -3.0,
+        -1.0,
+        0.0
+      ],
+      "legato": [
+        -66.0,
+        -37.0,
+        -20.0,
+        -9.0,
+        -1.0,
+        0.0
+      ]
+    },
+    "onset_from_t0": {
+      "rest": 0.0,
+      "tongue": 0.03
+    },
+    "overtone_from": 82
+  },
+  "make": {
+    "measure": {
+      "low": 200.0,
+      "high": 1400.0
+    },
+    "left_out": {
+      "brighter": 9.0,
+      "odd_under": 12.0
+    },
+    "breath_noise": [
+      20.0,
+      20000.0
+    ]
+  }
+}

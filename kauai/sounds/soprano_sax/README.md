@@ -45,8 +45,8 @@ made beforehand instead.
 
 | File | What it holds |
 |---|---|
-| `main.cul` | the instrument |
-| `data_format.cul` | how `data/` lays out the notes and attacks as 16-bit numbers, for `main.cul` reading them and the tools writing them |
+| `main.cul` | the instrument: the engine (`kauai/engine/borrow.cul`) given this package's recordings and style |
+| `data/instrument.json` | the style the engine plays them in (`play`) and what `make_data.cul` makes them with (`make`) |
 | `data/notes.i16`, `data/notes.json` | 1629 recorded notes, 10 ms frames: pitch, loudness, the breath in five bands, the harmonics' shapes, and the fine gain every millisecond, as 16-bit numbers, and where each note's are |
 | `data/attacks.i16`, `data/attacks.json` | 496 attacks, 16-bit samples from 15 ms before each onset to 100 ms after |
 | `data/breath.json` | how the breath pulses with the tone in each band |

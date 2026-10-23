@@ -1,6 +1,6 @@
 import lib from './make_data_lib.cul'
 import measure from './measure_lib.cul'
-import format from '../sounds/soprano_sax/data_format.cul'
+import format from '../engine/data_format.cul'
 
 let TOOL = FS.join(FS.dirname(FS.abspath(Sys.script)), "make_data.cul")
 let SOUNDS = FS.join(
@@ -8,6 +8,12 @@ let SOUNDS = FS.join(
   "sounds",
   "soprano_sax",
 )
+# The soprano's limits for the notes left out, as its instrument.json has them.
+let LIMITS = JSON.parse(FS.read(FS.join(
+  SOUNDS,
+  "data",
+  "instrument.json",
+))).make.left_out
 let RATE = 44100
 let REED = [0.3, 0.45, 0.25, 0.2, 0.15, 0.1, 0.08, 0.05]
 let db = |a, b| 10.0 * Math.log(a / b) / Math.log(10.0)
@@ -152,15 +158,15 @@ fn a_harsh_take_and_a_note_read_an_octave_low_are_left_out() {
     note(70, shape(0.2, 1.0)),
     note(69, shape(0.001, 0.0)),
   ]
-  let left = lib.kept_notes(notes, format.LEFT_OUT)
+  let left = lib.kept_notes(notes, LIMITS)
   assert_eq((left.kept.size(), left.bright, left.halved), (7, 1, 1))
   assert_true(lib.brightness(notes[7]) - lib.brightness(notes[0]) >
-    format.LEFT_OUT.brighter)
+    LIMITS.brighter)
   assert_true(lib.brightness(notes[6]) - lib.brightness(notes[0]) <
-    format.LEFT_OUT.brighter)
+    LIMITS.brighter)
   assert_true(left.kept.all(|n| n.parts.shapes[0][0] > 0.0))
   # The limits are the package's to move.
-  let loose = {...format.LEFT_OUT, brighter: 100.0}
+  let loose = {...LIMITS, brighter: 100.0}
   assert_eq(lib.kept_notes(notes, loose).kept.size(), 8)
 }
 
@@ -278,7 +284,7 @@ fn a_missing_package_or_measure_is_said_so() {
     "x.json",
   ])
   assert_eq(none.code, 2)
-  assert_true(none.stderr.contains("no data_format.cul"))
+  assert_true(none.stderr.contains("no data/instrument.json"))
   let missing = Proc.run([
     Sys.executable,
     "--vm",

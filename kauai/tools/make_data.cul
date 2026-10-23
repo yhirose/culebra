@@ -1,7 +1,7 @@
 # Make an instrument's data/ from what measure.cul wrote of its recordings:
 # the notes it borrows, the attacks it grafts and how its breath pulses,
-# laid out by the instrument's own data_format.cul (make_data_lib.cul says
-# how each is made).
+# laid out by the engine's data_format.cul (make_data_lib.cul says how each
+# is made).
 #
 #   culebra kauai/tools/make_data.cul --sounds kauai/sounds/alto_sax \
 #     work/measured/*.json
@@ -9,11 +9,11 @@
 # The recordings are read again (the fine gains, the attacks and the breath
 # need their samples): from --sources, by default the folder `sources` beside
 # the measured one (work/measured -> work/sources). data/ goes in the
-# instrument's folder unless --out says. An import names its module when the
-# program is written, so this writes a program that imports the instrument's
-# data_format.cul and runs it.
+# instrument's folder unless --out says. What the instrument is made with
+# (which notes to leave out, the noise its breath is made from) is its
+# data/instrument.json's `make`.
 
-import instrument from './instrument_lib.cul'
+import lib from './make_data_lib.cul'
 
 let SPEC = {
   name: 'make_data.cul',
@@ -23,7 +23,7 @@ let SPEC = {
       name: 'sounds',
       type: 'String',
       default: nil,
-      doc: 'the instrument: a folder holding main.cul and data_format.cul',
+      doc: 'the instrument: a folder holding main.cul and data/instrument.json',
     },
     {
       name: 'sources',
@@ -55,8 +55,8 @@ fn fail(message) {
 let args = Args.parse(Sys.argv, SPEC)
 fail("--sounds is needed (--help says what each is)") if args.sounds == nil
 fail("no measures named") if args.measured.empty()
-let format = FS.join(args.sounds, "data_format.cul")
-fail("no data_format.cul in {args.sounds}") if !FS.exists(format)
+let config = FS.join(args.sounds, "data", "instrument.json")
+fail("no data/instrument.json in {args.sounds}") if !FS.exists(config)
 for path in args.measured {
   fail("no measure {path}") if !FS.exists(path)
 }
@@ -64,19 +64,12 @@ let sources = args.sources ??
   FS.join(FS.dirname(FS.dirname(FS.abspath(args.measured[0]))), "sources")
 fail("no folder {sources} for the recordings (--sources says where)") if !FS.is_dir(sources)
 
-let lib = FS.join(FS.dirname(FS.abspath(Sys.script)), "make_data_lib.cul")
-let call = JSON.stringify({
+let make = JSON.parse(FS.read(config)).make
+fail("{config} has no `make`") if make == nil
+
+lib.run({
   measured: args.measured.map(|p| FS.abspath(p)),
   sources: FS.abspath(sources),
   out: FS.abspath(args.out ?? FS.join(args.sounds, "data")),
+  make: make,
 })
-let run = try {
-  instrument.program(FS.abspath(format), lib, "run", call)
-} catch e: String {
-  fail(e)
-}
-let r = Proc.run(run.cmd)
-FS.remove(run.entry)
-IO.print(r.stdout)
-IO.eprint(r.stderr)
-Sys.exit(r.code)

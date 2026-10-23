@@ -1,0 +1,1393 @@
+# The engine every borrowed-note instrument plays through: an instrument is
+# its recordings (data/, as data_format.cul lays them out) and a style (the
+# numbers that make it that instrument), and `Instrument.new(data, style)` is
+# the instrument ready to voice a phrase at a time. It is the soprano
+# saxophone's playing code, taken out of that package so that a new
+# instrument is data and a style rather than a copy of this file.
+#
+# Each note of a phrase borrows the recorded note nearest it (in pitch,
+# length, loudness, how it is entered and left, how much vibrato it has),
+# keeps that note's own moves of pitch and loudness and its timbre frame by
+# frame, and sounds them as harmonics with the breath between them; a note
+# longer than the one it borrows is filled out with steady stretches of long
+# notes near it, and a note that starts the phrase or is tongued begins with
+# the recording's own attack.
+#
+# The style (an Object, the instrument.json's `play`):
+#
+#   mf_db            a note's loudness (dB) at mf, A4
+#   db_per_octave    how much louder a note is an octave up
+#   lib_louder       how much louder the recorded notes' levels read than
+#                    the loudness asked for
+#   vibrato          {depth, straight}: how much vibrato a long note asks
+#                    for (cents at its deepest), held straight for this
+#                    share of its length first
+#   scoop            {tongue, legato}: a scoop's pitch against its note
+#                    (cents) every 30 ms from its start, out of a rest or
+#                    the tongue and out of a slur
+#   onset_from_t0    {rest, tongue}: where a recorded note's onset is
+#                    against its first frame (s) when its loudness does not
+#                    say
+#   overtone_from    the lowest note played as an overtone of the fingering
+#                    an octave down (0: none)
+#
+# and these, each with the default below: own_kept, drift_kept, gain_range,
+# onset_at, min_lead and wander_style.
+
+# The voice's parameters, on the band's line (`external Sax breath=0.5`)
+# or in the score from a note on (`\vibrato=12`):
+#
+#   breath         the breath heard with the tone: 0 none, 1 as recorded
+#                  (0.25)
+#   wander         a slow wander of the pitch and the loudness: 0 none (0)
+#   vibrato        how much vibrato a long note asks for, cents at its
+#                  deepest (20), held
+#   straight       straight for this share of the note first (0.6): the
+#                  note borrowed has about as much
+#   vibcap         the deepest vibrato a borrowed note keeps, cents peak to
+#                  peak: 0 any (0)
+#   overtone       the lowest note played as an overtone of the fingering
+#                  an octave down: 0 none (82)
+#   overtonequiet  dB quieter those notes are than that makes them (0)
+#   soft           1: a phrase begins softly, breath first, not tongued (0)
+#
+# breath, wander, vibcap and the overtone's two are read at a phrase's first
+# note; the rest at each note. A band that has the saxophone play the melody
+# an octave below where it is written says so: `plays melody octave down`.
+
+import format from './data_format.cul'
+
+let RATE = 44100
+
+# How a slur moves, by the semitones it goes.
+let slur_kind = fn (d) {
+  cond {
+    d >= 3 => "up leap",
+    d >= 1 => "up step",
+    d <= -3 => "down leap",
+    d <= -1 => "down step",
+    _ => "same",
+  }
+}
+
+# Two recorded notes one slur joins: in the same take, the second from
+# where the first ends.
+let joined = |a, b| a.rec == b.rec &&
+  Math.abs(a.t0 + a.frames * 0.01 - b.t0) < 0.015
+
+# The share of a legato move covered o frames after the boundary.
+let move_share = |o| 1.0 / (1.0 + Math.exp(-(o + 0.6) / 0.5))
+
+# Note k's written pitch at frame u, moving into and out of the notes a
+# slur joins it to over the frames about the join.
+fn base_pitch(notes, k, u) {
+  let v = notes[k]
+  mut b = v.semi * 1.0
+  if v.from == "legato" && k > 0 && notes[k - 1].e == v.s && u - v.s < 3 {
+    let p = notes[k - 1].semi
+    b = p + (v.semi - p) * move_share(u - v.s)
+  }
+  if v.to == "legato" &&
+      k + 1 < notes.size() &&
+      notes[k + 1].s == v.e &&
+      v.e - u <= 3 {
+    let nx = notes[k + 1].semi
+    b = v.semi + (nx - v.semi) * move_share(u - v.e)
+  }
+  b
+}
+
+# A note's own number in 0..1 for its `i`th irregular choice or swing, from
+# where it starts and its pitch: the same note in the same phrase gets the
+# same.
+fn note_seed(v, i) {
+  let x = v.s * 0.618034 + v.semi * 0.381966 + i * 0.137
+  x - Math.floor(x)
+}
+
+# A number from 0 to 1 for whole number i and a seed.
+let hash01 = |i, seed| Math.abs((Math.sin(i * 12.9898 + seed * 78.233) *
+  43758.5453) %
+  1.0)
+
+# A wander that never repeats and has no corners: 1-D gradient noise
+# (Perlin's: a random slope at each whole number, eased between them by
+# 6t^5 - 15t^4 + 10t^3) at 1.5, 3, 6 and 12 per second, each half the one
+# below, scaled to a spread (standard deviation) of 1.
+let WANDER_SPREAD = 0.1623
+
+let perlin = fn (x, seed) {
+  let i = Math.floor(x)
+  let f = x - i
+  let u = f * f * f * (f * (f * 6.0 - 15.0) + 10.0)
+  let a = (2.0 * hash01(i, seed) - 1.0) * f
+  let b = (2.0 * hash01(i + 1, seed) - 1.0) * (f - 1.0)
+  a + u * (b - a)
+}
+
+let wander_at = |t, seed| iota(4)
+  .map(|o| perlin(t * 1.5 * 2.0 ** o + 7.31 * hash01(o, seed), seed * 17 + o) *
+    0.5 ** o)
+  .sum() /
+  WANDER_SPREAD
+
+# A note's frame j of mt in a borrowed one of ml: its first 150 ms and last
+# 100 ms as they were, the middle stretched or squeezed.
+fn borrow_warp(j, mt, ml) {
+  if mt <= 25 || ml <= 25 {
+    return Math.min(ml - 1.0, j * (ml - 1.0) / Math.max(1, mt - 1))
+  }
+  if j < 15 {
+    return j * 1.0
+  }
+  if j >= mt - 10 {
+    return ml - (mt - j) * 1.0
+  }
+  15.0 + (j - 15) * (ml - 25.0) / (mt - 25.0)
+}
+
+# The value at x of xs, between its two nearest.
+fn lib_at(xs, x) {
+  let n = xs.size()
+  let i = Math.clamp(Math.floor(x), 0, n - 1)
+  let i2 = Math.min(n - 1, i + 1)
+  let f = Math.clamp(x - i, 0.0, 1.0)
+  xs[i] * (1.0 - f) + xs[i2] * f
+}
+
+# A borrowed note keeps this much of its own intonation (its pitch against
+# its semitone): borrowed from many places, the notes' own leanings would
+# not agree with each other as one player's do.
+let OWN_KEPT = 0.3
+
+# And this much of each note's slow course (its pitch's mean, weighed over
+# 600 ms): a held note that wanders a few cents from the written one beats
+# against an accompaniment held in tune (a slow wah); the vibrato and the
+# quick moves stay as they were.
+let DRIFT_KEPT = 0.15
+
+# The fine gain is kept within these between a note's first 40 ms and its
+# last 60 ms: its quick flutter stays, a gap in the note it came from does
+# not, and the way into and out of the note (a real fade) is left whole.
+let GAIN_RANGE = (0.6, 1.6)
+
+# --- A phrase's curves -------------------------------------------------------
+
+# Where a phrase's first onset goes (seconds after the written time), and
+# the least a phrase is made later (for its fade in).
+let ONSET_AT = 0.005
+
+let MIN_LEAD = 0.008
+
+# --- A phrase sounded --------------------------------------------------------
+
+# How far the wander moves the pitch (cents) and the loudness (dB) at a
+# spread of 1, and how much brighter the harmonics get with the loudness
+# (dB per doubling of the harmonic's number), as more breath pressure gives.
+let WANDER = {cents: 0.8, db: 0.25, bright: 0.3}
+
+class Instrument {
+  # `data`: the Dir of notes.json, notes.i16, attacks.json, attacks.i16 and
+  # breath.json; `style`: see above.
+  new(dir, style) {
+    self.mf_db = style.mf_db
+    self.db_per_octave = style.db_per_octave
+    self.lib_louder = style.lib_louder
+    self.vibrato = style.vibrato
+    self.scoop = style.scoop
+    self.onset_from_t0 = style.onset_from_t0
+    self.overtone_from = style.overtone_from
+    self.own_kept = style.get("own_kept", OWN_KEPT)
+    self.drift_kept = style.get("drift_kept", DRIFT_KEPT)
+    self.gain_range = style.get("gain_range", GAIN_RANGE)
+    self.onset_at = style.get("onset_at", ONSET_AT)
+    self.min_lead = style.get("min_lead", MIN_LEAD)
+    self.wander_style = style.get("wander_style", WANDER)
+
+    # The recorded notes: for each, where its numbers are, its recording and
+    # time in it, its pitch (a MIDI note) and how far off it is played (`own`,
+    # cents), its loudness (dB), its vibrato (cents peak to peak), how it is
+    # entered and left (rest, tongue or legato), and how many frames (10 ms),
+    # fine gains (1 ms) and harmonics it has.
+    self.lib = JSON.parse(dir.read('notes.json'))
+
+    self.packed = dir.read('notes.i16')
+
+    # The attacks: 16-bit samples from 15 ms before each onset to 100 ms
+    # after, the loudest at full scale (`scale`).
+    self.attacks = JSON.parse(dir.read('attacks.json'))
+
+    self.attack_bytes = dir.read('attacks.i16')
+
+    # The breath's bands (Hz), the noise it is made from, and how much of it
+    # pulses with the tone's wave in each band.
+    self.breath_info = JSON.parse(dir.read('breath.json'))
+
+    # Harmonics a frame holds, and breath bands.
+    self.lh = self.lib.harmonics
+
+    self.nb = self.breath_info.bands.size()
+
+    self.note_db_cache = self.lib.notes.map(|_| nil)
+
+    self.note_parts_cache = self.lib.notes.map(|_| nil)
+
+    self.note_shapes_cache = self.lib.notes.map(|_| nil)
+
+    self.lib_onset_cache = self.lib.notes.map(|_| nil)
+
+    # How each recorded note is entered and left: from or to a rest, the
+    # tongue, or a slur of its kind (legato where the take does not say).
+    self.lib_in = iota(self.lib.notes.size()).map(fn (i) {
+      let e = self.lib.notes[i]
+      e.from != "legato"
+        ? e.from
+        : i > 0 && joined(self.lib.notes[i - 1], e)
+          ? slur_kind(e.semi - self.lib.notes[i - 1].semi)
+          : "legato"
+    })
+
+    self.lib_out = iota(self.lib.notes.size()).map(fn (i) {
+      let e = self.lib.notes[i]
+      e.to != "legato"
+        ? e.to
+        : i + 1 < self.lib.notes.size() && joined(e, self.lib.notes[i + 1])
+          ? slur_kind(self.lib.notes[i + 1].semi - e.semi)
+          : "legato"
+    })
+
+    # Each recorded note's attack, if it has one.
+    self.attack_of = self.lib.notes.map(|e| self.attacks.attacks.find(|a| a.rec ==
+      e.rec &&
+      Math.abs(a.t0 - e.t0) < 0.006))
+
+    # How far each library note's loudness falls under its median away from its
+    # first and last 60 ms (a breath or the tongue inside it, as written down).
+    self.lib_dip = iota(self.lib.notes.size()).map(fn (i) {
+      let e = self.lib.notes[i]
+      let ds = self.note_db(i)
+      let med = ds.sorted()[ds.size() / 2]
+      let inner = iota(6, e.frames - 6)
+      inner.empty() ? 0.0 : inner.map(|j| med - ds[j]).max()
+    })
+
+    # Long notes' steady parts, for a note longer than the one it borrows: the
+    # frames from 150 ms in to 100 ms before the end, cut at the vibrato's
+    # upward zero crossings (its pitch's mean over 30 ms less its mean over
+    # 210 ms), so pieces join where their vibratos are in step.
+    self.steady = iota(self.lib.notes.size()).filter(|i| self.lib.notes[i].frames >=
+      40 &&
+      self.lib_dip[i] <= 6.0)
+
+    self.ups_cache = self.lib.notes.map(|_| nil)
+
+    # A library note's own average over its steady part (from 150 ms in to
+    # 100 ms before its end, or its middle half when short): the loudness (dB)
+    # and each harmonic's log. A piece of another note filling a note's middle
+    # keeps its own moves but takes the borrowed note's averages: the note keeps
+    # one timbre and one level through its pieces, rather than changing vowel
+    # at every join.
+    self.steady_means_cache = self.lib.notes.map(|_| nil)
+
+    # Each phrase its own noise: the n-th phrase voiced gets seed n, so a song
+    # sounds the same every time it is made.
+    self.phrase_seed = 0
+  }
+
+  # Attack e's samples.
+  attack_samples(e) {
+    format.attack_samples(self.attack_bytes, e, self.attacks.scale)
+  }
+
+  # Note i's loudness (dB) frame by frame (read for every note as the
+  # library loads, so on its own).
+  note_db(i) {
+    self.note_db_cache[i] = self.note_db_cache[i] ??
+      format.note_db(self.packed, self.lib.notes[i])
+    self.note_db_cache[i]
+  }
+
+  # Note i's pitch (cents) and loudness frame by frame, its breath (each
+  # frame's bands, dB) and its fine gain every millisecond.
+  note_parts(i) {
+    if self.note_parts_cache[i] == nil {
+      let p = format.note_parts(self.packed, self.lib.notes[i], self.nb)
+      self.note_parts_cache[i] = {
+        cents: p.cents,
+        db: self.note_db(i),
+        breath: p.breath,
+        gains: p.gains,
+      }
+    }
+    self.note_parts_cache[i]
+  }
+
+  # Note i's harmonics' shapes, frame by frame.
+  note_shapes(i) {
+    self.note_shapes_cache[i] = self.note_shapes_cache[i] ??
+      format.note_shapes(self.packed, self.lib.notes[i], self.nb, self.lh)
+    self.note_shapes_cache[i]
+  }
+
+  # Where library note i's onset is against its first frame (seconds): the
+  # first millisecond within 80 ms whose level comes within 10 dB of the
+  # note's median, or the median for how it starts.
+  lib_onset(i) {
+    if self.lib_onset_cache[i] == nil {
+      let e = self.lib.notes[i]
+      let m = e.frames
+      let dbs = self.note_parts(i).db
+      let med = dbs.sorted()[m / 2]
+      let at = iota(Math.min(e.gains, 80)).find(fn (k) {
+        let x = Math.clamp((k - 5) / 10.0, 0.0, m - 1.0)
+        let j = Math.floor(x)
+        let f = x - j
+        let db = dbs[j] * (1.0 - f) + dbs[Math.min(m - 1, j + 1)] * f
+        let g = self.note_parts(i).gains[k]
+        db + 20.0 * Math.log(Math.max(g, 1e-6)) / Math.log(10.0) >= med - 10.0
+      })
+      self.lib_onset_cache[i] = at == nil
+        ? self.onset_from_t0.get(e.from, 0.0)
+        : (at - 5) * 0.001
+    }
+    self.lib_onset_cache[i]
+  }
+
+  swing_ups(i) {
+    let e = self.lib.notes[i]
+    let m = e.frames
+    let c = self.note_parts(i).cents
+    let mean_of = |a, b| c[Math.max(0, a)..Math.min(m, b)].sum() /
+      Math.max(1, Math.min(m, b) - Math.max(0, a))
+    let sw = iota(m).map(|j| mean_of(j - 1, j + 2) - mean_of(j - 10, j + 11))
+    iota(16, m - 10).filter(|j| sw[j - 1] < 0.0 && sw[j] >= 0.0)
+  }
+
+  ups_of(i) {
+    self.ups_cache[i] = self.ups_cache[i] ?? self.swing_ups(i)
+    self.ups_cache[i]
+  }
+
+  steady_means(i) {
+    if self.steady_means_cache[i] == nil {
+      let e = self.lib.notes[i]
+      let a = e.frames > 25 ? 15 : e.frames / 4
+      let b = e.frames > 25 ? e.frames - 10 : Math.max(a + 1, e.frames * 3 / 4)
+      let js = iota(a, b)
+      let dbs = self.note_parts(i).db
+      let shapes = self.note_shapes(i)
+      let db = js.map(|j| dbs[j]).sum() / js.size()
+      let logs = iota(self.lh).map(fn (h) {
+        js.map(|j| Math.log(Math.max(shapes[j][h], 1e-9))).sum() / js.size()
+      })
+      self.steady_means_cache[i] = {db: db, logs: logs}
+    }
+    self.steady_means_cache[i]
+  }
+
+  # A note's vibrato from the parameters in effect at it (the band's, then the
+  # score's \name=value): `vibrato` cents deep, `straight` of the note held
+  # straight first; VIBRATO's where none is given.
+  vibrato_style(p) {
+    let s = {
+      depth: p.get("vibrato", self.vibrato.depth),
+      straight: p.get("straight", self.vibrato.straight),
+    }
+    if s.straight > 1.0 {
+      throw "straight is a share of the note, 0 to 1: straight={s.straight}"
+    }
+    s
+  }
+
+  # The vibrato note v asks of the note it borrows (cents peak to peak, as a
+  # recorded note's is read: the swing a note held straight for `straight` of
+  # its length and deepest after averages), or nil for a note under 600 ms.
+  vibrato_wanted(v) {
+    let style = v.vibrato
+    let deep = v.to == "rest" ? style.depth : style.depth / 2.0
+    v.e - v.s >= 60 ? 0.6 * deep * (1.0 - style.straight) : nil
+  }
+
+  # A phrase's notes as Kauai hears them, the top one where several start
+  # together, in frames: where each starts and ends, its pitch, how it is
+  # entered and left, its loudness (dB) at its start and its end, what is
+  # written on it, and its vibrato.
+  notes_of(phrase) {
+    let ats = phrase.map(|x| x.at).sorted()
+    let starts = iota(ats.size())
+      .filter(|j| j == 0 || ats[j] != ats[j - 1])
+      .map(|j| ats[j])
+    let top = starts.map(fn (t) {
+      phrase.filter(|x| x.at == t).max_by(|x| x.pitch)
+    })
+    let level_db = |lv, pitch| self.mf_db +
+      20.0 * Math.log(Math.max(lv, 0.05)) / Math.log(10.0) +
+      self.db_per_octave * (pitch - 69) / 12.0
+    let last = top.size() - 1
+    let frames = top.map(fn (x) {
+      let s = Math.round(x.at * 100.0)
+      (s, Math.max(s + 3, Math.round((x.at + x.len) * 100.0)))
+    })
+    iota(top.size()).map(fn (k) {
+      let x = top[k]
+      let (s, e) = frames[k]
+      let end = k < last ? Math.min(e, frames[k + 1][0]) : e
+      let next_at = x.get("next", nil)
+      let to = if k < last {
+        frames[k + 1][0] - end <= 1 ? "legato" : "tongue"
+      } else {
+        next_at == nil || next_at * 100.0 - end > 6.0 ? "rest" : "tongue"
+      }
+      {
+        s: s,
+        e: end,
+        semi: x.pitch,
+        from: k > 0 && frames[k - 1][1] >= s - 1 ? "legato" : "tongue",
+        to: to,
+        level: level_db(x.get("level", 1.0), x.pitch),
+        level_end: level_db(x.get("level_end", x.get("level", 1.0)), x.pitch),
+        marks: x.get("marks", []),
+        vibrato: self.vibrato_style(x.get("params", nil) ?? {}),
+        soft: (x.get("params", nil) ?? {}).get("soft", 0.0),
+      }
+    })
+  }
+
+  # The scoop into a note entered `from` a slur or not, `t` seconds in
+  # (cents): the measured one, or one of its shape `depth` cents deep.
+  scoop_cents(from, t, depth = nil) {
+    let curve = self.scoop[from == "legato" ? "legato" : "tongue"]
+    let x = t / 0.03
+    let i = Math.floor(x)
+    let c = i >= curve.size() - 1
+      ? curve[-1]
+      : curve[i] + (curve[i + 1] - curve[i]) * (x - i)
+    depth == nil ? c : c * depth / -curve[0]
+  }
+
+  # The jazz articulations written on a note: how far they bend its pitch
+  # (semitones) and its level (a gain), `since` seconds into the note entered
+  # `from` a slur or not and `left` before its end. A scoop and a plop at its
+  # start, from below (the measured scoop's shape, a semitone deep) and from
+  # above; a doit and a fall at its end, up and down as the breath gives out.
+  bend(marks, from, since, left) {
+    mut semis = 0.0
+    mut gain = 1.0
+    if marks.contains("scoop") {
+      semis += self.scoop_cents(from, since, 100.0) / 100.0
+    }
+    if marks.contains("plop") && since < 0.09 {
+      let u = since / 0.09
+      semis += 4.0 * (1.0 - u) ** 2
+      gain *= 0.4 + 0.6 * u
+    }
+    if marks.contains("doit") && left < 0.18 {
+      let u = 1.0 - left / 0.18
+      semis += 5.0 * u * u
+      gain *= 1.0 - 0.7 * u * u
+    }
+    if marks.contains("fall") && left < 0.3 {
+      let u = 1.0 - left / 0.3
+      semis -= 9.0 * u * u
+      gain *= 1.0 - 0.85 * u * u
+    }
+    (semis, gain)
+  }
+
+  # --- A note borrowed ---------------------------------------------------------
+
+  # The library note for note k of `notes`, given the one borrowed for the
+  # note before (an index, or nil).
+  borrow_for(notes, k, before) {
+    let v = notes[k]
+    let m = v.e - v.s
+    let want_level = v.level + self.lib_louder
+    let want_in = v.from == "legato" && k > 0
+      ? slur_kind(v.semi - notes[k - 1].semi)
+      : "start"
+    let want_out = v.to == "legato" && k + 1 < notes.size()
+      ? slur_kind(notes[k + 1].semi - v.semi)
+      : v.to
+    let want_vib = self.vibrato_wanted(v)
+    let shift_before = before == nil
+      ? nil
+      : notes[k - 1].semi - self.lib.notes[before].semi
+    let near = iota(self.lib.notes.size()).filter(|i| Math.abs(self.lib.notes[i].semi -
+      v.semi) <=
+      2 &&
+      self.lib.notes[i].frames >= 4)
+    # (Past the library's range, up to 5 semitones away.)
+    let pool = !near.empty()
+      ? near
+      : iota(self.lib.notes.size()).filter(|i| Math.abs(self.lib.notes[i].semi -
+        v.semi) <=
+        5 &&
+        self.lib.notes[i].frames >= 4)
+    let starts = |i| want_in == "start"
+      ? self.lib_in[i] == "rest" || self.lib_in[i] == "tongue"
+      : self.lib_in[i] == want_in
+    let strict = pool.filter(|i| starts(i) && self.lib_out[i] == want_out)
+    let loose = pool.filter(|i| starts(i))
+    let cands = !strict.empty() ? strict : !loose.empty() ? loose : pool
+    if cands.empty() {
+      return nil
+    }
+    cands.min_by(fn (i) {
+      let e = self.lib.notes[i]
+      let ratio = e.frames * 1.0 / m
+      let length_cost = ratio >= 1.0
+        ? Math.log(ratio)
+        : 3.0 * Math.log(1.0 / ratio)
+      let follows = before != nil &&
+        i == before + 1 &&
+        v.from == "legato" &&
+        v.semi - e.semi == shift_before
+      let vib_cost = want_vib == nil ? 0.0 : Math.abs(e.vib - want_vib) / 4.0
+      # A phrase's first note: tongued by default; with `soft=1`, the soft way
+      # in a note after a rest has (breath first).
+      let kind_cost = want_in != "start"
+        ? 0.0
+        : v.soft >= 1.0
+          ? self.lib_in[i] == "tongue" ? 1.0 : 0.0
+          : self.lib_in[i] == "rest" ? 0.5 : 0.0
+      let dip_cost = Math.max(0.0, self.lib_dip[i] - 6.0) / 2.0
+      # A phrase's first note would rather borrow one the library has a real
+      # attack for (else its onset is synthesized).
+      let attack_cost = want_in == "start" && self.attack_of[i] == nil
+        ? 2.0
+        : 0.0
+      2.0 * Math.abs(e.semi - v.semi) +
+        2.0 * length_cost +
+        Math.abs(e.level - want_level) / 6.0 +
+        vib_cost +
+        kind_cost +
+        dip_cost +
+        attack_cost +
+        (follows ? -6.0 : 0.0)
+    })
+  }
+
+  # Where each of a note's mt frames comes from, borrowing note `i`: a list of
+  # {i, x} (a library note and a frame in it, maybe between frames), and for
+  # a frame where one piece joins the next, the one it comes from as {from}
+  # and how far over it is, `w`. A note no longer than the borrowed one, or
+  # short, is stretched or squeezed as borrow_warp says; a longer one keeps
+  # the borrowed one's head and tail and fills its middle with steady pieces
+  # of long notes near its pitch (a semitone), level and vibrato, joined at
+  # their vibratos' upward crossings and faded over 30 ms. (A borrowed note
+  # of 250 ms or less gives a head of up to 150 ms and a tail of up to 100 ms,
+  # half of it each at most, and no middle of its own.)
+  borrow_frames(i, mt, want_vib, seed) {
+    let a = self.lib.notes[i]
+    let ml = a.frames
+    # A note no longer than the borrowed one: its head as it was, then its
+    # tail (up to 100 ms, a third of the note at most), the frames between
+    # left out and the cut faded over 20 ms.
+    if mt <= ml {
+      let tail = Math.min(10, mt / 3)
+      let head = mt - tail
+      return [
+        ...iota(head).map(|j| {i: i, x: j * 1.0, w: 1.0}),
+        ...iota(tail).map(fn (j) {
+          let x = (ml - tail + j) * 1.0
+          j < 2 && head > 0 ? {i: i, x: x, w: (j + 1) / 3.0, from: {i: i, x: Math.min(ml - 1.0, head + j * 1.0)}} : {i: i, x: x, w: 1.0}
+        }),
+      ]
+    }
+    if mt <= 25 {
+      return iota(mt).map(|j| {i: i, x: borrow_warp(j, mt, ml), w: 1.0})
+    }
+    let head = Math.min(15, ml / 2)
+    let tail = Math.min(10, ml - head)
+    let need = mt - head - tail
+    mut middle = []
+    mut used = {}
+    # The borrowed note's own middle, up to its last upward crossing.
+    if ml > 25 {
+      let own_ups = self.ups_of(i)
+      let own_end = own_ups.empty() ? ml - 10 : own_ups[-1]
+      for x in 15..own_end {
+        middle.push({i: i, x: x * 1.0, w: 1.0})
+      }
+      used["{i}"] = [[0, ml]]
+    }
+    # Pieces of long notes near the note (a semitone and 6 dB, widened to two
+    # semitones where that gives fewer than 4), each from one of its
+    # vibrato's upward crossings to another 2 to 4 later (or, a note with
+    # none, 20 to 40 frames of its steady part): the cheapest by pitch, level
+    # and vibrato against the note's, with a little chance, and dearer the
+    # more of it this note has played already (a stretch heard again is
+    # heard as a loop) and the more often its note has been used. Each is
+    # read on at a pace that wanders (gradient noise, 6% either way), so its
+    # vibrato's rate moves as a player's does and no stretch sounds twice
+    # the same.
+    let near = self.steady.filter(|p| Math.abs(self.lib.notes[p].semi -
+      a.semi) <=
+      1 &&
+      Math.abs(self.lib.notes[p].level - a.level) <= 6.0)
+    let wider = self.steady.filter(|p| Math.abs(self.lib.notes[p].semi -
+      a.semi) <=
+      2)
+    let pieces = near.size() >= 4 ? near : !wider.empty() ? wider : self.steady
+    let spans_of = fn (p) {
+      let ups = self.ups_of(p)
+      let e = self.lib.notes[p]
+      if ups.size() >= 3 {
+        return iota(ups.size()).flat_map(|u0| iota(2, 5)
+          .filter(|n| u0 + n < ups.size())
+          .map(|n| (ups[u0], ups[u0 + n])))
+      }
+      let (lo, hi) = (15, e.frames - 10)
+      let cuts = range(lo, Math.max(lo + 1, hi - 20), step: 5)
+        .collect()
+        .flat_map(|s0| [20, 30, 40]
+          .filter(|n| s0 + n <= hi)
+          .map(|n| (s0, s0 + n)))
+      cuts.empty() ? [(lo, Math.max(lo + 1, hi))] : cuts
+    }
+    mut uses = {}
+    mut turn = 0
+    while middle.size() < need {
+      let pick = pieces.flat_map(|p| spans_of(p).map(|sp| (
+        p,
+        sp,
+      ))).min_by(fn (cand) {
+        let (p, sp) = cand
+        let e = self.lib.notes[p]
+        let rx = p * 0.000731 + sp[0] * 0.0137 + seed + turn * 0.377
+        let seen = used
+          .get("{p}", [])
+          .map(|r| Math.max(0, Math.min(r[1], sp[1]) - Math.max(r[0], sp[0])))
+          .sum() *
+          1.0 /
+          (sp[1] - sp[0])
+        2.0 * Math.abs(e.semi - a.semi) +
+          Math.abs(e.level - a.level) / 6.0 +
+          (want_vib == nil
+            ? Math.abs(e.vib - a.vib)
+            : Math.abs(e.vib - want_vib)) /
+            4.0 +
+          0.5 * (rx - Math.floor(rx)) +
+          6.0 * seen +
+          0.7 * uses.get("{p}", 0)
+      })
+      let (got, span) = pick
+      used["{got}"] = [...used.get("{got}", []), [span[0], span[1]]]
+      uses["{got}"] = uses.get("{got}", 0) + 1
+      let before = middle.empty() ? nil : middle[-1]
+      mut x = span[0] * 1.0
+      mut k = 0
+      while x < span[1] {
+        let over = before != nil && k < 3
+        middle.push(over
+          ? {i: got, x: x, w: (k + 1) / 4.0, from: before}
+          : {i: got, x: x, w: 1.0})
+        x += 1.0 +
+          0.06 *
+            wander_at(
+              (middle.size() + k) * 0.01,
+              Math.round(seed * 1000.0) + turn,
+            )
+        k += 1
+      }
+      turn += 1
+    }
+    [
+      ...iota(head).map(|j| {i: i, x: j * 1.0, w: 1.0}),
+      ...middle[..need],
+      ...iota(tail).map(|j| {i: i, x: (ml - tail + j) * 1.0, w: 1.0}),
+    ]
+  }
+
+  # A frame source's values (a source: library note `i` and frame `x` in it,
+  # maybe between frames): its pitch in cents, against the borrowed note's
+  # own pitch plus OWN_KEPT of `own`, and its harmonics' shape.
+  lib_cents(src, own) {
+    let e = self.lib.notes[src.i]
+    lib_at(self.note_parts(src.i).cents, src.x) - e.own + self.own_kept * own
+  }
+
+  lib_shape(src) {
+    let e = self.lib.notes[src.i]
+    self.note_shapes(src.i)[Math.clamp(Math.round(src.x), 0, e.frames - 1)]
+  }
+
+  # A frame source's loudness (dB against the borrowed note `own`'s level)
+  # and harmonics' logs, a piece of another note brought to `own`'s averages.
+  src_db(src, own) {
+    let e = self.lib.notes[src.i]
+    let raw = lib_at(self.note_parts(src.i).db, src.x)
+    src.i == own
+      ? raw - e.level
+      : raw -
+        self.steady_means(src.i).db +
+        self.steady_means(own).db -
+        self.lib.notes[own].level
+  }
+
+  src_logs(src, own) {
+    let raw = self.lib_shape(src).map(|z| Math.log(Math.max(z, 1e-9)))
+    if src.i == own {
+      return raw
+    }
+    let a = self.steady_means(src.i).logs
+    let b = self.steady_means(own).logs
+    iota(self.lh).map(|h| raw[h] - a[h] + b[h])
+  }
+
+  # A frame source's breath, band by band (dB against the harmonics, as
+  # measured in the recording), between its two nearest frames.
+  lib_breath(src) {
+    let e = self.lib.notes[src.i]
+    let rows = self.note_parts(src.i).breath
+    let x = Math.clamp(src.x, 0.0, e.frames - 1.0)
+    let j = Math.floor(x)
+    let j2 = Math.min(e.frames - 1, j + 1)
+    let f = x - j
+    iota(self.nb).map(|b| rows[j][b] * (1.0 - f) + rows[j2][b] * f)
+  }
+
+  # f of a frame source, or where one piece is faded into the next, of the
+  # two weighed.
+  mixed(f, src) {
+    src.get("from", nil) == nil
+      ? f(src)
+      : (1.0 - src.w) * f(src.from) + src.w * f(src)
+  }
+
+  # A phrase's curves, frame by frame: the notes' written pitch (`base`,
+  # semitones, with the slurs' moves and the bends written on them) and,
+  # borrowed, the pitch's own moves (cents), the loudness (dB), the breath
+  # and the timbre (each harmonic's log); the fine gain every millisecond; and
+  # how much later than written the phrase is placed (`lead`). Each join (of
+  # two pieces in a note, or two notes at a slur) loses its step and nothing
+  # else: the step between the frames on either side is taken up half by each
+  # side, eased in over up to 140 ms, so every move the borrowed notes make is
+  # kept and only a slow slope is added (as joins of recorded speech are
+  # smoothed). The pitch's own moves are eased only within a note: at a slur
+  # both sides are let down to nothing.
+  borrowed_curves(phrase, vibcap, overtone, overtone_db) {
+    let notes = self.notes_of(phrase)
+    # A note at `overtone` or above (0: none) is played as a saxophonist plays
+    # a high note as an overtone of the fingering an octave down: borrowed
+    # from a note an octave down, its even harmonics sounding as the note's
+    # (the 2nd as its 1st, the 4th as its 2nd, ...), so it keeps the low
+    # note's resonances, round and full, not a note moved up and thin; as
+    # much quieter as the odd harmonics carried, and `overtone_db` more (the
+    # voice's `overtonequiet`, in dB).
+    let over = notes.map(|v| overtone > 0 && v.semi >= overtone)
+    let sources = iota(notes.size()).map(|k| over[k]
+      ? {...notes[k], semi: notes[k].semi - 12}
+      : notes[k])
+    let total = notes.map(|v| v.e).max() + 2
+    mut chosen = []
+    mut last = nil
+    for k in 0..notes.size() {
+      let before = k > 0 && notes[k].from == "legato" ? last : nil
+      let i = self.borrow_for(sources, k, before)
+      chosen.push(i)
+      last = i
+    }
+    mut base = repeat(total, nil)
+    mut cents = repeat(total, 0.0)
+    mut db = repeat(total, -200.0)
+    mut logs = iota(total).map(|_| repeat(self.lh, Math.log(1e-9)))
+    mut breath = iota(total).map(|_| repeat(self.nb, -80.0))
+    mut piece = repeat(total, nil)
+    mut note_at = repeat(total, nil)
+    # The phrase's lead (how much later than written its frames are placed)
+    # and how many frames of its first borrowed note are left out.
+    let head_i = chosen.empty() ? nil : chosen[0]
+    let onset_d = head_i == nil ? 0.0 : self.lib_onset(head_i)
+    let lead = Math.max(self.min_lead, self.onset_at - onset_d)
+    let skip = (lead - (self.onset_at - onset_d)) / 0.01
+    let gains_n = Math.round((total * 0.01 + lead) * 1000.0) + 1
+    mut gain = repeat(gains_n, 1.0)
+    mut pieces = 0
+    for k in 0..notes.size() {
+      continue if chosen[k] == nil
+      let v = notes[k]
+      let e = self.lib.notes[chosen[k]]
+      let mt = v.e - v.s
+      let prev = k > 0 && v.from == "legato" && notes[k - 1].e == v.s
+        ? notes[k - 1]
+        : nil
+      let next = k + 1 < notes.size() &&
+        notes[k + 1].from == "legato" &&
+        notes[k + 1].s == v.e
+        ? notes[k + 1]
+        : nil
+      let plan0 = self.borrow_frames(
+        chosen[k],
+        mt,
+        self.vibrato_wanted(v),
+        note_seed(v, 40),
+      )
+      let shift = k == 0 ? skip : 0.0
+      let plan = shift == 0.0 ? plan0 : iota(mt).map(fn (j) {
+        let p = plan0[j]
+        j < Math.min(15, mt) && p.i == chosen[k] && p.get("from", nil) == nil
+          ? {
+            i: p.i,
+            x: Math.min(self.lib.notes[p.i].frames - 1.0, p.x + shift),
+            w: 1.0,
+          }
+          : p
+      })
+      for j in 0..mt {
+        let u = v.s + j
+        let src = plan[j]
+        let fresh = j == 0 ||
+          src.i != plan[j - 1].i ||
+          Math.abs(src.x - plan[j - 1].x - 1.0) > 0.5
+        if fresh {
+          pieces += 1
+        }
+        piece[u] = pieces
+        note_at[u] = k
+        let fade_in = prev == nil ? 1.0 : Math.clamp(j / 3.0, 0.0, 1.0)
+        let fade_out = next == nil
+          ? 1.0
+          : Math.clamp((mt - 1 - j) / 2.0, 0.0, 1.0)
+        cents[u] = self.mixed(|s| self.lib_cents(s, e.own), src) *
+          fade_in *
+          fade_out
+        let (
+          bent,
+          bend_gain,
+        ) = v.marks.empty()
+          ? (0.0, 1.0)
+          : self.bend(v.marks, v.from, j * 0.01, (v.e - u) * 0.01)
+        base[u] = base_pitch(notes, k, u) + bent
+        let swell = (v.level_end - v.level) * j / Math.max(1, mt)
+        let own_i = chosen[k]
+        db[u] = self.mixed(|s| self.src_db(s, own_i), src) +
+          v.level +
+          swell +
+          20.0 * Math.log(Math.max(bend_gain, 1e-3)) / Math.log(10.0)
+        if src.get("from", nil) == nil {
+          breath[u] = self.lib_breath(src)
+        } else {
+          let ba = self.lib_breath(src.from)
+          let bb = self.lib_breath(src)
+          breath[u] = iota(self.nb).map(|b| (1.0 - src.w) * ba[b] +
+            src.w * bb[b])
+        }
+        if src.get("from", nil) == nil {
+          logs[u] = self.src_logs(src, own_i)
+        } else {
+          let la = self.src_logs(src.from, own_i)
+          let lb = self.src_logs(src, own_i)
+          logs[u] = iota(self.lh).map(|h| (1.0 - src.w) * la[h] + src.w * lb[h])
+        }
+        if over[k] {
+          let all = logs[u].map(|l| Math.exp(2.0 * l)).sum()
+          logs[u] = iota(self.lh).map(|h| 2 * h + 1 < self.lh
+            ? logs[u][2 * h + 1]
+            : Math.log(1e-9))
+          let even = logs[u].map(|l| Math.exp(2.0 * l)).sum()
+          db[u] += 10.0 *
+            Math.log(Math.max(even, 1e-20) / Math.max(all, 1e-20)) /
+            Math.log(10.0) +
+            overtone_db
+        }
+      }
+      # The borrowed note's fine gain, every millisecond, through the same plan.
+      let t0 = v.s * 0.01 + lead
+      for kms in Math.max(0, Math.round((t0 - 0.005) * 1000.0))..Math.min(gains_n, Math.round((v.e * 0.01 + lead) * 1000.0)) {
+        let j = (kms * 0.001 - t0) / 0.01
+        let jf = Math.clamp(Math.floor(j), 0, mt - 1)
+        let src = j < 0.0 ? {i: chosen[k], x: j + shift} : plan[jf]
+        let es = self.lib.notes[src.i]
+        let x = j < 0.0 ? j + shift : src.x + (j - jf)
+        let kl = Math.clamp(Math.round(x * 10.0 + 5.0), 0, es.gains - 1)
+        let raw = self.note_parts(src.i).gains[kl]
+        gain[kms] = j < 4.0 || j > mt - 6.0
+          ? raw
+          : Math.clamp(raw, self.gain_range[0], self.gain_range[1])
+      }
+    }
+    # A frame and the one before it sound on together: in one note, or across
+    # a slur.
+    let joined_to_last = |u| u > 0 &&
+      note_at[u] != nil &&
+      note_at[u - 1] != nil &&
+      (note_at[u] == note_at[u - 1] || notes[note_at[u]].from == "legato")
+    # The joins: frames whose piece differs from the one before's, where the
+    # two sound on together.
+    let joins = iota(
+      1,
+      total,
+    ).filter(|u| joined_to_last(u) && piece[u] != piece[u - 1])
+    # Each join's way across, the same for every curve at it: over 60 to
+    # 140 ms on each side (as far as the pieces reach), an S
+    # (6p^5 - 15p^4 + 10p^3) with a little of the gradient noise on it,
+    # nothing at either end, so no two joins are taken up alike.
+    let way = fn (b) {
+      let reach = 6 + Math.round(8.0 * hash01(b, total))
+      let pl = piece[b - 1]
+      let pr = piece[b]
+      let left = iota(Math.max(0, b - reach), b).filter(|w| piece[w] == pl)
+      let right = iota(b, Math.min(total, b + reach)).filter(|w| piece[w] == pr)
+      let shape = fn (pos, side) {
+        let s = pos * pos * pos * (pos * (pos * 6.0 - 15.0) + 10.0)
+        s +
+          0.12 *
+            Math.sin(Math.pi * pos) *
+            Math.clamp(wander_at(pos * 0.5 + side, b + 31 * total), -2.0, 2.0) /
+            2.0
+      }
+      {
+        left: left,
+        right: right,
+        wl: iota(left.size()).map(|q| shape((q + 1) * 1.0 / left.size(), 0.0)),
+        wr: iota(right.size()).map(|q| shape(
+          (right.size() - q) * 1.0 / right.size(),
+          3.0,
+        )),
+      }
+    }
+    let ways = {}
+    let ease = fn (xs, b) {
+      let w = ways["{b}"]
+      if w.left.empty() || w.right.empty() {
+        return xs
+      }
+      let delta = xs[b] - xs[b - 1]
+      mut out = xs.map(|x| x)
+      for q in 0..w.left.size() {
+        out[w.left[q]] += delta / 2.0 * w.wl[q]
+      }
+      for q in 0..w.right.size() {
+        out[w.right[q]] -= delta / 2.0 * w.wr[q]
+      }
+      out
+    }
+    for b in joins {
+      ways["{b}"] = way(b)
+    }
+    for b in joins {
+      if note_at[b] == note_at[b - 1] {
+        cents = ease(cents, b)
+      }
+      db = ease(db, b)
+      let per_h = iota(self.lh).map(|h| ease(logs.map(|l| l[h]), b))
+      logs = iota(total).map(|u| iota(self.lh).map(|h| per_h[h][u]))
+      let per_b = iota(self.nb).map(|q| ease(breath.map(|r| r[q]), b))
+      breath = iota(total).map(|u| iota(self.nb).map(|q| per_b[q][u]))
+    }
+    # Every note pulled to its written pitch: its slow course (its pitch's
+    # mean within its steady part, 150 ms in to 100 ms before its end,
+    # weighed by a raised cosine 600 ms wide, which a vibrato's swing does not
+    # get through as a plain mean over 310 ms did: it deepened the vibrato by
+    # a sixth; a short note's mean over its middle half), carried flat to its
+    # head and tail, so a scoop or a fall keeps its shape and the note is in
+    # tune with an accompaniment, and with its own echo (notes a few cents
+    # apart beat against each other's echo). Toward a slur the pull eases off
+    # over the last 3 frames, so the join keeps no step.
+    for k in 0..notes.size() {
+      continue if chosen[k] == nil
+      let v = notes[k]
+      let m = v.e - v.s
+      let long = m > 25
+      let a = long ? Math.min(15, m / 3) : m / 4
+      let b = long
+        ? Math.max(a + 1, m - Math.min(10, m / 3))
+        : Math.max(a + 1, 3 * m / 4)
+      let own = iota(v.s, v.e).map(|u| cents[u])
+      let flat = own[a..b].sum() / (b - a)
+      let slow_at = fn (j) {
+        if b - a < 10 {
+          return flat
+        }
+        let jj = Math.clamp(j, a, b - 1)
+        let lo = Math.max(a, jj - 30)
+        let hi = Math.min(b, jj + 31)
+        let ws = iota(
+          lo,
+          hi,
+        ).map(|w| 0.5 * (1.0 + Math.cos(Math.pi * (w - jj) / 31.0)))
+        iota(lo, hi).map(|w| own[w] * ws[w - lo]).sum() / ws.sum()
+      }
+      let slur_in = k > 0 && v.from == "legato" && notes[k - 1].e == v.s
+      let slur_out = k + 1 < notes.size() &&
+        notes[k + 1].from == "legato" &&
+        notes[k + 1].s == v.e
+      for j in 0..m {
+        let taper_in = slur_in ? Math.min(1.0, j / 3.0) : 1.0
+        let taper_out = slur_out ? Math.min(1.0, (m - 1 - j) / 3.0) : 1.0
+        cents[v.s +
+          j] = own[j] -
+          (1.0 - self.drift_kept) * slow_at(j) * taper_in * taper_out
+      }
+    }
+    # With `vibcap`, a note's vibrato no deeper than that (cents, peak to
+    # peak, as 2.83 times the spread of the pitch about its slow course over
+    # the steady part): a deeper one is scaled down whole, its shape kept, as
+    # a player gives less of the same vibrato.
+    if vibcap > 0.0 {
+      for k in 0..notes.size() {
+        continue if chosen[k] == nil
+        let v = notes[k]
+        let m = v.e - v.s
+        continue if m < 40
+        let own = iota(v.s, v.e).map(|u| cents[u])
+        let slow = iota(m).map(fn (j) {
+          let lo = Math.max(0, j - 30)
+          let hi = Math.min(m, j + 31)
+          let ws = iota(
+            lo,
+            hi,
+          ).map(|w| 0.5 * (1.0 + Math.cos(Math.pi * (w - j) / 31.0)))
+          iota(lo, hi).map(|w| own[w] * ws[w - lo]).sum() / ws.sum()
+        })
+        let mid = iota(15, m - 10)
+        let mean_fast = mid.map(|j| own[j] - slow[j]).sum() / mid.size()
+        let pp = 2.83 *
+          Math.sqrt(mid.map(|j| (own[j] - slow[j] - mean_fast) ** 2).sum() /
+            mid.size())
+        continue if pp <= vibcap
+        let keep = vibcap / pp
+        for j in 0..m {
+          cents[v.s + j] = slow[j] + (own[j] - slow[j]) * keep
+        }
+      }
+    }
+    {
+      lead: lead,
+      skip: skip,
+      notes: notes,
+      total: total,
+      chosen: chosen,
+      base: base,
+      cents: cents,
+      db: db,
+      logs: logs,
+      breath: breath,
+      over: over,
+      gain: gain,
+      gains_n: gains_n,
+    }
+  }
+
+  # A phrase's samples, mono, RATE a second: the phrase as Kauai hands it to
+  # an instrument (each note's `pitch` and `at`, and what `hears` asks for),
+  # with the voice's parameters as they stand at its first note.
+  phrase_samples(phrase, params) {
+    let asked = params ?? {}
+    let breath = asked.get("breath", 0.25)
+    let wander = asked.get("wander", 0.0)
+    let c = self.borrowed_curves(
+      phrase,
+      asked.get("vibcap", 0.0),
+      Math.round(asked.get("overtone", self.overtone_from)),
+      -asked.get("overtonequiet", 0.0),
+    )
+    let notes = c.notes
+    let total = c.total
+    let chosen = c.chosen
+    let gains_n = c.gains_n
+    let gain = c.gain
+    self.phrase_seed += 1
+    let seed = self.phrase_seed
+    # The wander, subtle: the pitch's on its own, the loudness's and the
+    # brightness's together (the breath's pressure).
+    let pitch_w = iota(total).map(|u| wander *
+      self.wander_style.cents *
+      wander_at(u * 0.01, seed * 2))
+    let press_w = iota(total).map(|u| wander *
+      wander_at(u * 0.01, seed * 2 + 1))
+    let f0 = iota(total).map(|u| c.base[u] == nil
+      ? nil
+      : 440.0 *
+        2.0 ** ((c.base[u] + (c.cents[u] + pitch_w[u]) / 100.0 - 69.0) / 12.0))
+    let amps = iota(total).map(fn (u) {
+      if c.base[u] == nil {
+        return repeat(self.lh, 0.0)
+      }
+      let sh = iota(self.lh).map(|h| Math.exp(c.logs[u][h] +
+        self.wander_style.bright *
+          press_w[u] *
+          Math.log(h + 1.0) /
+          Math.log(2.0) /
+          8.686))
+      let ps = sh.map(|z| z * z).sum()
+      let p = 10.0 ** ((c.db[u] + self.wander_style.db * press_w[u]) / 10.0)
+      sh.map(|z| z * Math.sqrt(p / ps))
+    })
+    mut held = f0.find(|f| f != nil) ?? 440.0
+    mut points = []
+    for u in 0..total {
+      held = f0[u] ?? held
+      points.push((u * 0.01 + c.lead, held))
+    }
+    let seconds = total * 0.01 + c.lead
+    # Silent until 10 ms before the first frame (Audio.partials holds its
+    # first point's value before it, which would sound the first frame through
+    # the lead), rising to the first frame's harmonics over 8 ms on a raised
+    # cosine; the fine gain then carries the real onset.
+    let quiet = repeat(self.lh, 0.0)
+    let rise_at = Math.max(0.0, c.lead - 0.01)
+    let rise = iota(5).map(fn (q) {
+      let w = 0.5 * (1.0 - Math.cos(Math.pi * q / 4.0))
+      (rise_at + q * 0.002, amps[0].map(|z| z * w))
+    })
+    let spectrum = [
+      (0.0, quiet),
+      ...rise,
+      ...iota(total).map(|u| (u * 0.01 + c.lead, amps[u])).filter(|p| p[0] > rise_at + 0.008),
+    ]
+    let gain_points = iota(gains_n).map(|k| (k * 0.001, gain[k]))
+    mut out = Audio.partials(
+      seconds,
+      points,
+      spectrum,
+      gain: gain_points,
+      rate: RATE,
+    )
+    # The breath: noise about each harmonic, a band as wide as the spacing
+    # (Audio.filter "band" twice, on the harmonic's freq, each a q of its
+    # number times 0.6436 so the two are 3 dB down half a spacing away; their
+    # skirts 12 dB an octave, so a harmonic's noise stays near it), so the
+    # bands fill the gaps between the harmonics evenly, as the recordings'
+    # does, and take the harmonics' own colour (the bore's resonances shape
+    # both); as loud against them as in the borrowed frames, band by band
+    # (each band's share of the harmonics' power: BREATH's bands read against
+    # each harmonic in a band, between the bands' middles on a log scale),
+    # times `breath` in amplitude; from a noise pulsing with the tone's wave
+    # as the recordings' does in that band (Audio.partials' noise with no
+    # harmonics, on the tone's own freq); from nothing 10 ms before the first
+    # frame, through the fine gain.
+    mut air = repeat(out.size(), 0.0)
+    if breath > 0.0 {
+      let mids = self.breath_info.bands.map(|bd| Math.log(Math.sqrt(bd[0] *
+        bd[1])) /
+        Math.log(2.0))
+      let band_of = |f| iota(self.nb).find(|q| f >=
+        self.breath_info.bands[q][0] &&
+        f < self.breath_info.bands[q][1]) ??
+        (f < self.breath_info.bands[0][0] ? 0 : self.nb - 1)
+      # Each frame's noise against the harmonics in each band (power).
+      let share = iota(total).map(fn (u) {
+        if f0[u] == nil {
+          return repeat(self.nb, 0.0)
+        }
+        let all = amps[u].map(|z| z * z / 2.0).sum()
+        let in_band = iota(self.nb).map(|q| iota(self.lh)
+          .filter(|h| band_of((h + 1) * f0[u]) == q)
+          .map(|h| amps[u][h] * amps[u][h] / 2.0)
+          .sum())
+        iota(self.nb).map(|q| in_band[q] > 0.0
+          ? breath * breath * 10.0 ** (c.breath[u][q] / 10.0) * all / in_band[q]
+          : 0.0)
+      })
+      let share_at = fn (u, f) {
+        let lf = Math.log(f) / Math.log(2.0)
+        let q = iota(self.nb).find(|i| mids[i] > lf) ?? self.nb
+        let at_q = |i| share[u][Math.clamp(i, 0, self.nb - 1)]
+        if q == 0 || q == self.nb {
+          return at_q(q == 0 ? 0 : self.nb - 1)
+        }
+        let (d0, d1) = (at_q(q - 1), at_q(q))
+        if d0 <= 0.0 || d1 <= 0.0 {
+          return Math.max(d0, d1)
+        }
+        let x = (lf - mids[q - 1]) / (mids[q] - mids[q - 1])
+        Math.exp(Math.log(d0) * (1.0 - x) + Math.log(d1) * x)
+      }
+      let mid_f0 = f0
+        .filter(|f| f != nil)
+        .sorted()[f0.filter(|f| f != nil).size() / 2]
+      let at_frames = iota(total).map(|u| u * 0.01 + c.lead)
+      let sources = iota(self.nb).map(fn (q) {
+        let sigma = self.breath_info.pulsed[q]
+        let kappa = 1.0 /
+          Math.sqrt((1.0 - sigma / 2.0) ** 2 + sigma * sigma / 8.0)
+        Audio.partials(
+          seconds,
+          points,
+          [(0.0, [0.0])],
+          noise: {low: self.breath_info.noise[0], high: self.breath_info.noise[1], seed: seed * 7 + q, steady: [(0.0, kappa * (1.0 - sigma))], pulsed: [(0.0, kappa * sigma)]},
+          rate: RATE,
+        )
+      })
+      # A unit noise's power a hertz (uniform, -1 to 1: a variance of 1/3),
+      # and two two-pole bands' width for noise (pi / 4 the width of each:
+      # the spacing over 0.6436).
+      let density = 2.0 / 3.0 / RATE
+      let narrow = 0.6436
+      for h in 0..self.lh {
+        let k = h + 1
+        continue if k * mid_f0 >= self.breath_info.bands[self.nb - 1][1]
+        let q = band_of(k * mid_f0)
+        let level = [
+          (0.0, 0.0),
+          (rise_at, 0.0),
+          ...iota(total).map(fn (u) {
+          if f0[u] == nil || k * f0[u] >= 0.45 * RATE {
+            return (at_frames[u], 0.0)
+          }
+          let want = amps[u][h] * amps[u][h] / 2.0 * share_at(u, k * f0[u])
+          (at_frames[u], Math.sqrt(want / (density * Math.pi / 4.0 * f0[u] / narrow)))
+        }),
+        ]
+        let centre = points.map(|pt| (pt[0], Math.min(0.45 * RATE, k * pt[1])))
+        let one = Audio.filter(
+          sources[q],
+          "band",
+          centre,
+          q: k * narrow,
+          rate: RATE,
+        )
+        let band = Audio.envelope(
+          Audio.filter(one, "band", centre, q: k * narrow, rate: RATE),
+          level,
+          rate: RATE,
+        )
+        for i in 0..Math.min(air.size(), band.size()) {
+          air[i] += band[i]
+        }
+      }
+      air = Audio.envelope(air, gain_points, rate: RATE)
+    }
+    # The real attack of each borrowed note that starts the phrase or follows
+    # the tongue, faded into the sound from 60 to 80 ms after its onset.
+    for k in 0..notes.size() {
+      let v = notes[k]
+      continue if chosen[k] == nil ||
+        v.from == "legato" ||
+        v.e - v.s < 10 ||
+        c.over[k]
+      let a = self.attack_of[chosen[k]]
+      continue if a == nil
+      # Moved to the sound's pitch where the two are faded into each other
+      # (60-80 ms after the onset), against the attack's own pitch there: its
+      # note's pitch would count the way in's lean twice, as the borrowed
+      # note's sound has it too.
+      let t0_at = v.s * 0.01 + c.lead - (k == 0 ? c.skip * 0.01 : 0.0)
+      let fade_u = Math.clamp(
+        Math.round((t0_at + a.onset - a.t0 + 0.07 - c.lead) / 0.01),
+        v.s,
+        v.e - 1,
+      )
+      let near = iota(Math.max(v.s, fade_u - 1), Math.min(v.e, fade_u + 2))
+        .map(|u| f0[u])
+        .filter(|f| f != nil)
+      let hz = near.empty()
+        ? f0[Math.min(total - 1, v.s + 8)] ?? 440.0
+        : near.sum() / near.size()
+      let ratio = hz / a.f0_fade
+      # (An attack read faster than it was kept for: none, rather than one
+      # that runs out inside the fade.)
+      continue if (self.attacks.pre + 0.08) * RATE * ratio + RATE / hz + 4.0 >
+        a.len
+      let n = Math.floor((a.len - 2) / ratio)
+      # The attack at the note's pitch (read between samples on a cubic
+      # through four), without what lies under its own pitch (the thump of a
+      # key or of the breath under the tone: two filters, 24 dB an octave,
+      # from 0.8 of it), and of what comes before its onset only the last
+      # 12 ms (the tongue's touch), rising from nothing over them (earlier
+      # than that, the breath and the recording's own noise).
+      let own = self.attack_samples(a)
+      let sample_at = |j| own[Math.clamp(j, 0, a.len - 1)]
+      let onset_q = self.attacks.pre * RATE / ratio
+      let lead_in = 0.012 * RATE
+      let raw = iota(n).map(fn (q) {
+        let xq = q * ratio
+        let jq = Math.floor(xq)
+        let t = xq - jq
+        let (
+          p0,
+          p1,
+          p2,
+          p3,
+        ) = (
+          sample_at(jq - 1),
+          sample_at(jq),
+          sample_at(jq + 1),
+          sample_at(jq + 2),
+        )
+        p1 +
+          0.5 *
+            t *
+            (p2 -
+              p0 +
+              t *
+                (2.0 * p0 -
+                  5.0 * p1 +
+                  4.0 * p2 -
+                  p3 +
+                  t * (3.0 * (p1 - p2) + p3 - p0)))
+      })
+      let filtered = Audio.filter(
+        Audio.filter(raw, "high", 0.8 * hz, rate: RATE),
+        "high",
+        0.8 * hz,
+        rate: RATE,
+      )
+      let seg = iota(n).map(fn (q) {
+        let into = (q - (onset_q - lead_in)) / lead_in
+        into >= 1.0
+          ? filtered[q]
+          : into <= 0.0
+            ? 0.0
+            : filtered[q] * 0.5 * (1.0 - Math.cos(Math.pi * into))
+      })
+      let on = Math.round((t0_at + (a.onset - a.t0) / ratio) * RATE)
+      let pre = Math.round(self.attacks.pre * RATE / ratio)
+      let c0 = on + Math.round(0.06 * RATE)
+      let c1 = on + Math.round(0.08 * RATE)
+      continue if c1 >= out.size() || c0 <= 0
+      let at = fn (q, shift) {
+        let jj = q - on + pre - shift
+        jj >= 0 && jj < seg.size() ? seg[jj] : 0.0
+      }
+      let period = Math.round(RATE / hz)
+      let d = iota(
+        -period / 2,
+        period / 2 + 1,
+      ).max_by(|shift| iota(c0, c1).map(|q| out[q] * at(q, shift)).sum())
+      let tone = Math.sqrt(iota(c0, c1).map(|q| out[q] * out[q]).sum() /
+        (c1 - c0))
+      let real = Math.sqrt(iota(c0, c1).map(|q| at(q, d) * at(q, d)).sum() /
+        (c1 - c0))
+      continue if real <= 0.0
+      let g = tone / real
+      let tone_part = out[c0..c1]
+      for q in Math.max(0, on - pre + d)..c1 {
+        let wq = q < c0
+          ? 1.0
+          : 0.5 * (1.0 + Math.cos(Math.pi * (q - c0) / (c1 - c0)))
+        out[q] = out[q] * (1.0 - wq) + g * at(q, d) * wq
+        air[q] = air[q] * (1.0 - wq)
+      }
+      # Where the two waves partly cancel in the fade, the level brought back
+      # up to what their powers add to: worked out every 2 ms (never turned
+      # down, at most doubled) and moved smoothly from one to the next.
+      let step = Math.round(0.002 * RATE)
+      let starts = range(c0, c1, step: step).collect()
+      let lifts = starts.map(fn (q0) {
+        let q1 = Math.min(c1, q0 + step)
+        let wq = 0.5 *
+          (1.0 + Math.cos(Math.pi * ((q0 + q1) / 2.0 - c0) / (c1 - c0)))
+        let p_tone = iota(q0, q1)
+          .map(|q| tone_part[q - c0] * tone_part[q - c0])
+          .sum()
+        let p_real = iota(q0, q1).map(|q| g * at(q, d) * g * at(q, d)).sum()
+        let want = Math.sqrt((1.0 - wq) * p_tone + wq * p_real)
+        let have = Math.sqrt(iota(q0, q1).map(|q| out[q] * out[q]).sum())
+        have > 0.0 ? Math.clamp(want / have, 1.0, 2.0) : 1.0
+      })
+      for q in c0..c1 {
+        let xq = (q - c0) * 1.0 / step - 0.5
+        let i = Math.clamp(Math.floor(xq), 0, lifts.size() - 1)
+        let i2 = Math.min(lifts.size() - 1, i + 1)
+        let f = Math.clamp(xq - i, 0.0, 1.0)
+        out[q] = out[q] * (lifts[i] * (1.0 - f) + lifts[i2] * f)
+      }
+    }
+    iota(out.size()).map(|i| out[i] + air[i])
+  }
+}
+
+export {Instrument, RATE}

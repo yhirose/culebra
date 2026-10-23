@@ -1,6 +1,6 @@
 # How data/ lays out the notes and attacks as 16-bit numbers: written by
-# the tools that make the instrument, read by main.cul. Both go through this
-# file, so the two cannot drift apart.
+# the tools that make the instrument, read by the engine (borrow.cul). Both go
+# through this file, so the two cannot drift apart.
 #
 # notes.i16 holds each note in turn: its pitch (cents against the note it
 # plays) and its loudness (dB) a frame (10 ms) at a time and its breath a
@@ -16,22 +16,12 @@
 # over attacks.json's `scale` is the sample.
 #
 # breath.json says the breath's bands (Hz), the noise Audio.partials makes it
-# from (BREATH_NOISE) and how much of each band pulses with the tone.
+# from and how much of each band pulses with the tone.
 
 let KEY = 3
 let SILENT = -32768
 let ATTACK_PRE = 0.015
 let ATTACK_POST = 0.1
-let BREATH_NOISE = [20.0, 20000.0]
-
-# The notes the tools leave out of data/ (dB): one `brighter` than the
-# median of the notes within a semitone of it (its harmonics from 3 kHz up
-# against all of theirs), a harsh take, not the instrument's tone; and one
-# whose odd harmonics are `odd_under` its even ones, measured along half its
-# pitch. For the soprano, 9 dB left out 57 of 1689 notes; heard blind, a
-# cruise borrowing none of them played rounder than one leaving out only
-# those 12 dB over (17, among them one heard as cracked).
-let LEFT_OUT = {brighter: 9.0, odd_under: 12.0}
 
 let LN10 = Math.log(10.0)
 
@@ -165,7 +155,7 @@ fn picked(o, keys) {
 # description, its keys NOTE_KEYS but `at` and `harms`, and pack_note's
 # parts), `harmonics` a frame, `attacks` (each {rec, t0, onset, f0_fade,
 # samples}, its samples from `pre` seconds before its onset, at `rate`),
-# and `breath` ({bands, pulsed}, breath.json's).
+# and `breath` ({bands, noise, pulsed}, breath.json as it is).
 fn write(dir, harmonics, notes, attacks, pre, rate, breath) {
   FS.mkdir(dir)
   mut at = 0
@@ -204,7 +194,7 @@ fn write(dir, harmonics, notes, attacks, pre, rate, breath) {
     FS.join(dir, "breath.json"),
     JSON.stringify({
       bands: breath.bands,
-      noise: BREATH_NOISE,
+      noise: breath.noise,
       pulsed: breath.pulsed,
     }) +
       "\n",
@@ -217,4 +207,4 @@ fn write(dir, harmonics, notes, attacks, pre, rate, breath) {
   }
 }
 
-export {LEFT_OUT, write, kept_frames, pack_note, note_db, note_parts, note_shapes, pack_attack, attack_samples}
+export {write, kept_frames, pack_note, note_db, note_parts, note_shapes, pack_attack, attack_samples}

@@ -179,9 +179,11 @@ dBFS (-120 for silence); `h1` to `h40`, the harmonics' amplitudes, as
 
 `make_data.cul` makes the `data/` an instrument plays from, out of what
 `measure.cul` wrote of its recordings: the notes it borrows, the attacks
-it grafts, and how its breath pulses. The instrument's own
-`data_format.cul` lays the numbers out, and its `main.cul` reads them
-through the same file.
+it grafts, and how its breath pulses. The engine's `data_format.cul`
+(`kauai/engine/`) lays the numbers out, and the engine reads them through
+the same file. What the instrument is made with is its `data/instrument.json`'s
+`make`: `left_out` (which notes are left out) and `breath_noise` (the noise
+its breath is made from).
 
 ```sh
 culebra kauai/tools/make_data.cul --sounds kauai/sounds/alto_sax \
@@ -223,7 +225,8 @@ Each note, frame by frame (10 ms) from its first frame for as many as
   harmonics' level there, at most 4.
 
 Two kinds of note are left out, with their attacks, by limits the
-package's `data_format.cul` sets (`LEFT_OUT`; the soprano's below): a harsh
+package's `data/instrument.json` sets (`make.left_out`; the soprano's
+below): a harsh
 take, whose harmonics from 3 kHz up are 9 dB or more brighter (against all its
 harmonics, in its median frame) than the median of the notes within a
 semitone of it; and a note whose odd harmonics (1st, 3rd, 5th, 7th) are 12

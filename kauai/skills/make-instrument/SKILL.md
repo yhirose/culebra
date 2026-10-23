@@ -9,11 +9,14 @@ An external instrument is a Culebra module that Kauai hands each phrase (or
 pitch, or hit) of a song and that answers with an `Audio.Sound`. A finished
 one is a package: a folder under `kauai/sounds/` whose `main.cul` exports
 `voices` (and `drums`), with the data it plays from in `data/` beside it,
-a README that credits its sources, and a test. The soprano saxophone in
-`kauai/sounds/soprano_sax/` is the first one made from recordings (its
-recordings were measured with Python then; this skill does it in Culebra).
-Read its README and the top of its `main.cul` before starting, as the model
-of what a package holds.
+a README that credits its sources, and a test. An instrument made from
+recordings plays through the shared engine (`kauai/engine/borrow.cul`): its
+`main.cul` is a few lines that give the engine its recordings and its style
+(`data/instrument.json`), so a new instrument is data and a style, not a copy
+of the playing code. The soprano saxophone in `kauai/sounds/soprano_sax/` is
+the first one made from recordings (its recordings were measured with Python
+then; this skill does it in Culebra). Read its README and `main.cul` before
+starting, as the model of what a package holds.
 
 The work is a loop between measuring, making, and listening, and the
 listener is the person you work with. Your job is to make each round of
@@ -47,7 +50,8 @@ change at a time, and hear it in a passage short enough to judge.
 ```
 kauai/sounds/<name>/
   main.cul            the instrument (committed)
-  data/               what it plays from (committed)
+  data/               what it plays from, and instrument.json: its style
+                      and what it is made with (committed)
   README.md           how to use it, and its sources (committed)
   test_<name>.cul     its test (committed)
   work/               not committed

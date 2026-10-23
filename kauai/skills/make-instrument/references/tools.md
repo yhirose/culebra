@@ -93,12 +93,13 @@ The package's `data/` from what `measure.cul` wrote: the notes it borrows
 (pitch, loudness, harmonics' shapes, breath and fine gain, frame by frame),
 the attacks (cleaned of the air on the microphone) and how the breath
 pulses with the wave. The recordings are read again from `work/sources`
-(`--sources` says otherwise). The package's own `data_format.cul` lays the
-numbers out and its `main.cul` reads them through it, so a new instrument
-copies both from the soprano's and changes them together. `data_format.cul`
-also sets which notes are left out (`LEFT_OUT`: a harsh take, a note
-measured along half its pitch); the soprano's limits were set by ear, so
-check them against the new instrument's recordings. Three 192 s
+(`--sources` says otherwise). The engine's `data_format.cul` lays the
+numbers out, the same for every instrument. The package's
+`data/instrument.json` holds what is the instrument's own: `make` (which
+notes are left out, `left_out`: a harsh take, a note measured along half its
+pitch; the noise its breath is made from) and `play` (the style the engine
+plays the data in). The soprano's limits were set by ear, so check them
+against the new instrument's recordings. Three 192 s
 recordings take about a minute. `kauai/tools/README.md` says how each part
 is made.
 

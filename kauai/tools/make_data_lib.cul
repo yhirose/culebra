@@ -1,9 +1,10 @@
 # An instrument's data/ made from what measure.cul wrote of its recordings:
 # the notes it borrows (their pitch, loudness, harmonics, breath and fine
 # gain, frame by frame), the attacks it grafts, and how its breath pulses.
-# make_data.cul runs it; the package's data_format.cul lays the numbers out.
+# make_data.cul runs it; the engine's data_format.cul lays the numbers out.
 
 import measure from './measure_lib.cul'
+import format from '../engine/data_format.cul'
 
 let STEP = measure.STEP
 let RATE = 44100  # the recordings', as the instrument plays them
@@ -625,7 +626,8 @@ let odd_over_even = |n| over_frames(
   ),
 )
 
-# `notes` without the ones not to borrow (`limits`, data_format's LEFT_OUT):
+# `notes` without the ones not to borrow (`limits`, the instrument's
+# `make.left_out`):
 # those `brighter` over the notes within a semitone of them, and those whose
 # odd harmonics are `odd_under` their even ones (measured along half their
 # pitch). Answers {kept, bright, halved}, the last two how many were left
@@ -655,10 +657,11 @@ fn kept_notes(notes, limits) {
 
 # --- The whole of it -----------------------------------------------------------
 
-# What data/ holds, made from `a` (run's argument, parsed): {harmonics, notes,
-# attacks, breath}, the notes not to borrow left out (kept_notes, `limits`)
-# and their attacks with them.
-fn made_of(a, limits) {
+# What data/ holds, made from `a` (run's argument): {harmonics, notes,
+# attacks, breath}, the notes not to borrow left out (kept_notes, the
+# instrument's `make.left_out`) and their attacks with them.
+fn made_of(a) {
+  let limits = a.make.left_out
   let notes = []
   let recordings = {}
   mut bands = nil
@@ -693,16 +696,19 @@ fn made_of(a, limits) {
     harmonics: harmonics,
     notes: k.kept,
     attacks: attacks,
-    breath: {bands: bands, pulsed: pulsed_of(k.kept, recordings, bands, RATE)},
+    breath: {
+      bands: bands,
+      noise: a.make.breath_noise,
+      pulsed: pulsed_of(k.kept, recordings, bands, RATE),
+    },
   }
 }
 
-# make_data.cul's work, run with the package's data_format.cul as `format`:
-# `arg` a JSON {measured: [NAME.json paths], sources: the folder the
-# recordings are in, out: the folder data/ is written to}.
-fn run(format, arg) {
-  let a = JSON.parse(arg)
-  let m = made_of(a, format.LEFT_OUT)
+# make_data.cul's work: `a` is {measured: [NAME.json paths], sources: the
+# folder the recordings are in, out: the folder data/ is written to, make:
+# the instrument's `make` (left_out, breath_noise)}.
+fn run(a) {
+  let m = made_of(a)
   let wrote = format.write(
     a.out,
     m.harmonics,
