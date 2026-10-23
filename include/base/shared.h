@@ -3175,15 +3175,8 @@ inline int8_t prop_key_kind(std::string_view name) {
 // The effects transform (effects_transform.h) rewrites a body into a
 // synthesized class and moves the variables of every scope a suspension
 // splits to fields on the instance (PromotedLocals, state_lowering.h). These
-// are the class names it emits.
-//
-// Such an instance's own slots are compiler storage, not user object slots,
-// so a value read of one must NOT bind `self` the way `o.f` does. Binding
-// would leave a promoted local holding a function permanently bound to the
-// state object: `f == f` false, and a later `holder.f()` unable to take its
-// own receiver. The class's own methods live on the proto, are not own slots,
-// and keep binding normally. Both backends test this once per class
-// declaration and flag the class meta.
+// are the class names it emits; what tells such a class apart is not its
+// name but its mark (is_lowered_state_class, parser.h).
 inline constexpr std::string_view kEffectComputationClassPrefix = "_EffComp_";
 inline constexpr std::string_view kEffectBodyClassPrefix = "_EffBody_";
 
@@ -3201,20 +3194,11 @@ inline bool is_lowering_fragment(std::string_view parse_path) {
 // reserved: no program declares one (lint::scope_diagnostics).
 inline constexpr std::string_view kLoweringIntrinsics[] = {
     "__unbound", "__bound",   "__bound_in",     "__var",
-    "__let",     "__declare", "__lowered_frame"};
+    "__let",     "__declare", "__lowered_frame", "__lowered_storage"};
 inline bool is_lowering_intrinsic(std::string_view name) {
   for (auto n : kLoweringIntrinsics)
     if (n == name) return true;
   return false;
-}
-
-// Requiring a lowering's parse label keeps a user class that happens to be
-// spelled `_EffBody_x` on ordinary binding semantics.
-inline bool is_lowered_state_class(std::string_view class_name,
-                                   std::string_view parse_path) {
-  return is_lowering_fragment(parse_path) &&
-         (class_name.starts_with(kEffectComputationClassPrefix) ||
-          class_name.starts_with(kEffectBodyClassPrefix));
 }
 
 // The packable scalars: each one's spellings and the fixed-width scalar its

@@ -998,10 +998,7 @@ class Resolver {
         walk_decl_head(n, Form::Class, &sym);
         bool initializers = false;
         size_t head = first_non_decorator_index(n);
-        bool lowered =
-            head < n.nodes.size() &&
-            is_lowered_state_class(
-                parse_generic_head(n.nodes[head]->token).outer, n.path);
+        bool lowered = is_lowered_state_class(n);
         size_t member_of = decorators_all_compile_time(n) ? sym : kNone;
         for (size_t j = head + 1; j < n.nodes.size(); j++) {
           if (n.nodes[j]->tag != "METHOD"_) continue;

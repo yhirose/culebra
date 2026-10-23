@@ -120,6 +120,11 @@ effect fn e(k) {
   e(1, 2)
 }
 handle { e(0) } with ask(resume) { resume(nil) }' "DispatchError: no matching method for \`e\` at 4:3."
+# The lowering marks the classes it declares for its own storage; a program's
+# class may not take the mark.
+check_eq "reserved storage mark" '@__lowered_storage
+class Fake {
+}' "SyntaxError: '__lowered_storage' is a reserved name and cannot be used as a decorator at 1:1."
 # `fn` is every function's, so nothing declares it: not a pattern, a loop's
 # or a catch's variable, a match arm, nor a parameter, a pattern one included.
 check_eq "fn for var"      'for fn in [1] { 1 }' "SyntaxError: 'fn' is a reserved name and cannot be declared at 1:5."

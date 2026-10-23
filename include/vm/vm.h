@@ -8376,7 +8376,7 @@ class Compiler {
       }
       chunk_.name_table_class.push_back(class_name);
       chunk_.name_table_flags.push_back(static_cast<uint8_t>(
-          (culebra::is_lowered_state_class(class_name, ast.path)
+          (culebra::is_lowered_state_class(ast)
                ? kClassMetaLoweredState
                : 0) |
           (names_class ? kClassMetaNamesClass : 0) |

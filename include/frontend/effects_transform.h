@@ -1875,6 +1875,7 @@ class EffectsLowerer {
     // uniformly on the abort path; it is empty when the body has no defers,
     // and `_eff_refork` likewise when the body has no boxes.
     return rewrite.box_class_decl() + std::format(
+        "  @__lowered_storage\n"
         "  class {0} {{\n"
         "    new({1}) {{\n{2}    }}\n"
         "    _step({3}) {{\n{4}    }}\n"
@@ -1915,8 +1916,8 @@ class EffectsLowerer {
     reject_self_in_body(body, src_, "an effect fn body");
 
     auto param_names = collect_positional_param_names(params_ast);
-    // Prefix from the shared constant: both backends recognize the state
-    // class by it (culebra::is_lowered_state_class).
+    // Named from the prefix; both backends recognize the state class by the
+    // mark build_computation_class writes (culebra::is_lowered_state_class).
     auto class_name = std::format("{}{}_{}_{}",
                                   culebra::kEffectComputationClassPrefix, name,
                                   ast->line, ast->column);

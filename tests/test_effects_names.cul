@@ -325,3 +325,25 @@ effect fn en_named() {
   en_named.name
 }
 assert_eq(handle { en_named() } with en_ask(resume) { resume(nil) }, 'en_named')
+
+// --- a class of the user's is no state class, whatever it is called --------
+// What marks the lowering's own classes is how it writes their methods, not
+// their names: a user's class spelled like one, declared in a handle's body,
+// is an ordinary class, and a function stored on its instance is called on it.
+effect fn sc_ask()
+let sc_getv = fn () { self.v }
+fn sc_run() {
+  handle {
+    class _EffBody_inner {
+      new(.v) {
+      }
+    }
+    perform sc_ask()
+    let o = _EffBody_inner(7)
+    o.f = sc_getv
+    o.f()
+  } with sc_ask(resume) {
+    resume(nil)
+  }
+}
+assert_eq(sc_run(), 7)

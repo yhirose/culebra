@@ -1179,12 +1179,18 @@ inline bool is_packable_decorator(const peg::Ast& decorator) {
 inline bool is_value_decorator(const peg::Ast& decorator) {
   return is_directive_decorator(decorator, "value");
 }
+// `@__lowered_storage`: a class the effect lowering declares for its own
+// storage (is_lowered_state_class).
+inline bool is_lowered_storage_decorator(const peg::Ast& decorator) {
+  return is_directive_decorator(decorator, "__lowered_storage");
+}
 // The three the compiler reads itself rather than calls. apply_decorators
 // skips them, so a declaration carrying only these is one whose value no
 // decorator can replace — which is what lets a construction site name the
 // constructor it reaches.
 inline bool is_compile_time_decorator(const peg::Ast& decorator) {
   return is_packable_decorator(decorator) || is_value_decorator(decorator) ||
+         is_lowered_storage_decorator(decorator) ||
          !view_derive(decorator).empty();
 }
 // Every decorator of `decl` is one the compiler reads itself: none can
@@ -1695,6 +1701,27 @@ inline const peg::Ast* lowered_frame_marker(const peg::Ast& body) {
       body.tag == "STATEMENTS"_ && !body.nodes.empty() ? *body.nodes[0] : body;
   return is_lowered_frame_marker(first) ? &first : nullptr;
 }
+// A class the effect lowering declares for its own storage: a body's state
+// (PromotedLocals, state_lowering.h) or a box for a captured local. The
+// lowering writes `@__lowered_storage` on it, a directive no program may write
+// (lint::reserved_decorators), so a class the user wrote is never one,
+// whatever it is called.
+//
+// Such an instance's own slots are compiler storage, not user object slots,
+// so a value read of one must NOT bind `self` the way `o.f` does. Binding
+// would leave a promoted local holding a function permanently bound to the
+// state object: `f == f` false, and a later `holder.f()` unable to take its
+// own receiver. The class's own methods live on the proto, are not own slots,
+// and keep binding normally. Both backends test this once per class
+// declaration and flag the class meta.
+inline bool is_lowered_state_class(const peg::Ast& class_decl) {
+  if (!is_lowering_fragment(class_decl.path)) return false;
+  size_t head = first_non_decorator_index(class_decl);
+  return std::any_of(
+      class_decl.nodes.begin(), class_decl.nodes.begin() + head,
+      [](const auto& d) { return is_lowered_storage_decorator(*d); });
+}
+
 // The name `__lowered_frame('f')` gives, empty for `()`.
 inline std::string_view lowered_frame_fn_from(const peg::Ast& marker) {
   using namespace peg::udl;

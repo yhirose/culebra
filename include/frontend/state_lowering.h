@@ -417,7 +417,7 @@ inline EditSite child_site(const peg::Ast& n, size_t i, EditSite site) {
 // is any function scope of the resolution, a `defer` among them though these
 // transforms inline one they run themselves: an extra box costs one object, a
 // missing one restores the cycle. A box is an instance of a class the lowering
-// declares (box_class_decl), named like the state class, so its `v` is
+// declares (box_class_decl), marked like the state class, so its `v` is
 // storage too (culebra::is_lowered_state_class): a function read out of it is
 // that function, not one bound to the box.
 //
@@ -672,8 +672,9 @@ class PromotedLocals {
   std::string box_class_decl() const {
     for (size_t sym : order_)
       if (!slots_[sym].box.empty())
-        return std::format("  class {} {{\n    new(.v) {{}}\n  }}\n",
-                           box_class_);
+        return std::format(
+            "  @__lowered_storage\n  class {} {{\n    new(.v) {{}}\n  }}\n",
+            box_class_);
     return {};
   }
 

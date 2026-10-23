@@ -1003,6 +1003,31 @@ inline void reserved_binds(const resolve::Resolution& res,
   for (const auto* n : res.reserved_binds) reserved_name(*n, n->token, diags);
 }
 
+// A decorator the effect lowering writes for itself (`@__lowered_storage`,
+// is_lowered_state_class), written in a program's own source: it would make
+// the class the lowering's storage. The compiler reads it rather than
+// resolving it, so no NameError catches it as one catches a lowering
+// intrinsic's call.
+inline void reserved_decorators(const peg::Ast& authored,
+                                std::vector<Diagnostic>& diags) {
+  using namespace peg::udl;
+  size_t first = diags.size();
+  std::vector<const peg::Ast*> stack{&authored};
+  while (!stack.empty()) {
+    const peg::Ast* n = stack.back();
+    stack.pop_back();
+    if (n->tag == "DECORATOR"_ && culebra::is_lowered_storage_decorator(*n))
+      diags.push_back(Diagnostic{
+          "SyntaxError",
+          "'__lowered_storage' is a reserved name and cannot be used as a "
+          "decorator",
+          static_cast<long>(n->line), static_cast<long>(n->column),
+          Severity::Error});
+    for (const auto& c : n->nodes) stack.push_back(c.get());
+  }
+  sort_by_position(diags, first);
+}
+
 // A declaration of a reserved name: one the effect lowering writes for
 // itself (culebra::kLoweringIntrinsics), which inside an effect body would be
 // taken for the intrinsic and around one for the lowering's own calls, and
@@ -1810,6 +1835,7 @@ inline resolve::Options resolve_options(
 inline std::vector<Diagnostic> scope_diagnostics(const peg::Ast& authored) {
   auto res = resolve::resolve_module(authored, {}, resolve_options());
   std::vector<Diagnostic> diags;
+  _detail::reserved_decorators(authored, diags);
   // A reserved name declares nothing, so its reads read nothing: the refused
   // declaration is the error to report, ahead of the NameError it leads to.
   _detail::reserved_declarations(res, diags);

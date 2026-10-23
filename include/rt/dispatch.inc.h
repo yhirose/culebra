@@ -2100,7 +2100,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_bind_method_value(
     const char* key) {
   if (view_tag == TAG_FUNC && recv_tag == TAG_OBJECT) {
     auto* method = reinterpret_cast<JitClosure*>(view_data);
-    // A promoted body local is storage, not a method — hand the raw function
+    // A promoted local's or a box's slot is storage, not a method — hand the raw function
     // back unbound (culebra::is_lowered_state_class). Own slots only: the
     // state class's own methods live on the proto and bind as usual. Twin of
     // the interp's eval_property branch.
