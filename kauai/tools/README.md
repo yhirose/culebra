@@ -424,3 +424,22 @@ let song = Audio.Kauai.load("song.kau", dir: dir, voices: {sax: sax})
 A key that is not there is a song changed since its sounds were made: make
 them again. `examples/games/retro-run` plays its laps' saxophone this way,
 and falls back to its chip lead when a phrase is missing.
+
+## coverage.cul: how well recordings cover an instrument
+
+`coverage.cul` counts what the recordings of an instrument cover, against the
+needs of its design (`kauai/skills/make-instrument/references/workflow.md`,
+step 1b): the notes in each semitone of the range, the long notes (1 s or
+more) in each octave, and the loud, middle and quiet notes (by how far each
+sits from the median level, 6 dB either side). It prints what is short and
+exits 1 when anything is.
+
+```sh
+culebra kauai/tools/coverage.cul --low 200 --high 1400 work/measured/*.json
+```
+
+The needs are a first guess: 5 notes per semitone, 10 long notes per octave,
+30 notes per dynamic (`--per-semitone`, `--long-per-octave`, `--per-dynamic`
+change them). They are to be tuned against what a listener hears, as the
+soprano's were not: the soprano's three takes were short of long notes
+(21 against the 10 per octave) and had no notes at 55, 56, 57 or 84 to 90.

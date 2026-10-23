@@ -39,7 +39,11 @@ A case with none (a request for an alto saxophone) is a job: the `tune` and
 
 ## The flow
 
-1. **scout** finds recordings (CC0 or CC BY) and writes `sources`.
+0. **design** writes what the recordings must cover (`design.md`: the range,
+   notes per semitone, long notes per octave, loud, middle and quiet notes,
+   the playing), before any search. `kauai/tools/coverage.cul` checks it.
+1. **scout** finds recordings that meet the design (free licences, or a
+   collection that says so, quoted in the manifest) and writes `sources`.
 2. **composer** writes the songs the instrument is tuned and judged by.
 3. **measurer** measures the recordings (`measure.cul`), choosing the range.
 4. **builder** makes `data/` (`make_data.cul`), writes `data/instrument.json`

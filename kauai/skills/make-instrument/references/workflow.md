@@ -3,6 +3,7 @@
 ## Contents
 
 1. Turn the request into a sound to aim for
+1b. Design the recordings before looking for them
 2. Find the sources
 3. Write the test songs
 4. The loop: measure, make, check, listen
@@ -29,9 +30,35 @@ not material: do not use those recordings as sources.
 
 Write the confirmed aim at the top of `work/notes.md`.
 
+## 1b. Design the recordings before looking for them
+
+Decide what the recordings must cover, write it down, and only then search.
+Searching first finds whatever is free; designing first finds what the
+instrument needs, and a search that cannot meet the design says so early.
+
+The design (`kauai/sounds/<name>/work/design.md`, the same numbers as the
+case's `needs` when there is a case) states:
+
+- **Range**: the lowest and highest notes, in Hz (`make.measure`).
+- **Notes per semitone**: at least 5 across the range (`coverage.cul`).
+- **Long notes**: at least 10 per octave of 1 s or more. The long notes are
+  what the instrument plays best and what a recording of short tones lacks.
+- **Dynamics**: loud, middle and quiet notes, at least 30 each. Recordings
+  made at pp, mf and ff are one reference group in `make.reference_groups`
+  (`make_data.cul` gives them one loudness reference), or the dynamics vanish.
+- **Playing**: slurred runs, tongued notes, long tones, and vibrato or none.
+- **Quality**: no clipping, no accompaniment, a dry or known room.
+
+Then search, and for each candidate recording say which of the design's
+needs it meets (`culebra kauai/tools/measure.cul` and `coverage.cul` say how
+many notes and long notes it adds). A recording that adds nothing the design
+lacks is left out. When the design cannot be met, the person hears what is
+missing and decides: a different range, a recording to make, or no instrument.
+
 ## 2. Find the sources
 
-Look for recordings released as CC0 or CC BY (Freesound, university sample
+Look for the recordings the design (step 1b) asks for: the ones that add
+notes, long notes and dynamics it lacks. Look for recordings released as CC0 or CC BY (Freesound, university sample
 libraries); leave out anything NC or ND. Prefer:
 
 - a dry room, or at least one you can tell apart from the tone

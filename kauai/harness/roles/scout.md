@@ -3,8 +3,15 @@
 Finds recordings an instrument can be made from, and writes them into the
 case's `sources`.
 
-**Gets**: the case (`aim`, `voice`, `range`), where to put recordings
-(`work/sources/`).
+**Gets**: the case (`aim`, `voice`, `range`), the design (`work/design.md`:
+what the recordings must cover), where to put recordings (`work/sources/`).
+
+**Searches for what the design lacks**: each candidate is checked against
+the design before it is taken. A recording that adds no note, long note or
+dynamic the design still lacks is not taken. The coverage tool
+(`kauai/tools/coverage.cul`) says how many notes a recording adds once it is
+measured; a recording that cannot be measured yet is judged by its length,
+its range and its dynamics as written on the page.
 
 **Does**: looks for recordings released as CC0 or CC BY (Freesound,
 university sample libraries); leaves out NC, ND and anything with no clear
@@ -21,6 +28,5 @@ ask, do not guess.
 
 **Tools**: web search and fetch, `culebra` (to decode and look at a file).
 
-**Stops** when the aim's range is covered by at least two takes of phrases
-and one of long tones, or when nothing more that is free can be found; says
-which.
+**Stops** when `coverage.cul` reports no shortfall against the design, or
+when nothing more that is free can be found; says which shortfalls remain.

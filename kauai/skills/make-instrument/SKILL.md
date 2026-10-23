@@ -30,8 +30,15 @@ change at a time, and hear it in a passage short enough to judge.
   outside tool is `ffmpeg`, to keep made sounds as Ogg Vorbis. This keeps
   the instrument something anyone with the `culebra` binary can rebuild.
 - **Royalty-free sources.** Use recordings released as CC0 or CC BY (never
-  NC or ND). Note each source's URL, author, and license when you take it,
-  and credit them in the package README as the soprano's does.
+  NC or ND), or a collection that says it is free to use with a credit and a
+  notice to its maker (the University of Iowa's is one: quote its statement
+  in the manifest, and ask the person before using it). Note each source's
+  URL, author, and license when you take it, and credit them in the package
+  README as the soprano's does.
+- **Design before search.** Write what the recordings must cover (range,
+  notes per semitone, long notes per octave, loud, middle and quiet notes)
+  before looking for any: `workflow.md` step 1b. Check each candidate
+  against the design, and check coverage with `kauai/tools/coverage.cul`.
 - **One place for the work.** Everything that is not the package goes in
   the instrument's `work/` folder (`kauai/sounds/<name>/work/`, which git
   ignores): the recordings, what was measured, the test songs, the
