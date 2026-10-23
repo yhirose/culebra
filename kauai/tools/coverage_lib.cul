@@ -1,0 +1,65 @@
+# How well a set of measured notes covers an instrument: per semitone of its
+# range, how many notes there are; how many of them are long; and whether the
+# loud, middle and quiet dynamics each have enough notes. Works on the notes
+# measure.cul wrote (NAME.json's `notes`, each {semi, frames (10 ms), level
+# (dB), from, to, ...}); coverage.cul is the program.
+#
+# The needs are a first guess, to be tuned against what a listener hears
+# (kauai/tools/README.md says how): NEEDS below.
+
+let NEEDS = {per_semitone: 5, long_per_octave: 10, per_dynamic: 30}
+
+# A note of at least this many frames (10 ms each) is long: 1 s.
+let LONG = 100
+
+# A note's dynamic: loud, middle or quiet, by how far its level sits from
+# the median of all the notes (6 dB either side).
+fn dynamic_of(level, median) {
+  level > median + 6.0 ? "loud" : level < median - 6.0 ? "quiet" : "middle"
+}
+
+# The coverage of `notes` over the semitones lo..hi (inclusive). Answers
+# {per_semitone: [count per semitone], long_per_octave: [count per octave from
+# lo], per_dynamic: {loud, middle, quiet}, shortfalls: [strings]}.
+fn coverage(notes, lo, hi, needs = NEEDS) {
+  let counts = iota(hi -
+    lo +
+    1).map(|k| notes.filter(|n| n.semi == lo + k).size())
+  let octaves = iota(Math.ceil((hi - lo + 1) /
+    12.0)).map(|o| notes
+    .filter(|n| n.semi >= lo + 12 * o &&
+      n.semi < lo + 12 * (o + 1) &&
+      n.frames >= LONG)
+    .size())
+  let levels = notes.map(|n| n.level).sorted()
+  let median = levels.empty() ? 0.0 : levels[levels.size() / 2]
+  let dyn = {mut loud: 0, mut middle: 0, mut quiet: 0}
+  for n in notes {
+    let d = dynamic_of(n.level, median)
+    dyn[d] = dyn[d] + 1
+  }
+  let shortfalls = []
+  for k in 0..counts.size() {
+    if counts[k] < needs.per_semitone {
+      shortfalls.push("{lo + k}: {counts[k]} of {needs.per_semitone} notes")
+    }
+  }
+  for o in 0..octaves.size() {
+    if octaves[o] < needs.long_per_octave {
+      shortfalls.push("octave from {lo + 12 * o}: {octaves[o]} of {needs.long_per_octave} long notes (1 s or more)")
+    }
+  }
+  for d in ["loud", "middle", "quiet"] {
+    if dyn[d] < needs.per_dynamic {
+      shortfalls.push("{d}: {dyn[d]} of {needs.per_dynamic} notes")
+    }
+  }
+  {
+    per_semitone: counts,
+    long_per_octave: octaves,
+    per_dynamic: dyn,
+    shortfalls: shortfalls,
+  }
+}
+
+export {NEEDS, LONG, dynamic_of, coverage}

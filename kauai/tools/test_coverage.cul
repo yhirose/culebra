@@ -1,0 +1,79 @@
+import lib from './coverage_lib.cul'
+
+# Notes at one semitone: `n` of them, `long` of them 1 s or more, at `level`.
+fn notes_at(semi, n, long, level) {
+  iota(n).map(|i| {
+    semi: semi,
+    frames: i < long ? 120 : 30,
+    level: level,
+    from: "tongue",
+    to: "rest",
+  })
+}
+
+@test
+fn a_semitone_with_too_few_notes_and_an_octave_without_long_ones_are_short() {
+  let notes = [
+    ...notes_at(60, 6, 0, -20.0),
+    ...notes_at(61, 2, 0, -20.0),
+    ...notes_at(62, 6, 6, -20.0),
+    ...notes_at(63, 6, 6, -20.0),
+  ]
+  let c = lib.coverage(
+    notes,
+    60,
+    63,
+    {per_semitone: 5, long_per_octave: 10, per_dynamic: 1},
+  )
+  assert_eq(c.per_semitone, [6, 2, 6, 6])
+  assert_eq(c.long_per_octave, [12])
+  assert_true(c.shortfalls.contains("61: 2 of 5 notes"))
+  # Twelve long notes in the octave meet its need of ten.
+  assert_true(!c.shortfalls.any(|s| s.contains("octave")))
+}
+
+@test
+fn a_range_with_no_long_notes_in_an_octave_is_short_there() {
+  let notes = [...notes_at(60, 8, 0, -20.0), ...notes_at(72, 8, 8, -20.0)]
+  let c = lib.coverage(
+    notes,
+    60,
+    72,
+    {per_semitone: 1, long_per_octave: 5, per_dynamic: 1},
+  )
+  assert_eq(c.long_per_octave, [0, 8])
+  assert_true(c.shortfalls.contains("octave from 60: 0 of 5 long notes (1 s or more)"))
+}
+
+@test
+fn the_dynamics_are_loud_middle_and_quiet_by_the_median() {
+  let notes = [
+    ...notes_at(60, 4, 0, -10.0),
+    ...notes_at(60, 4, 0, -20.0),
+    ...notes_at(60, 4, 0, -30.0),
+  ]
+  assert_eq(lib.dynamic_of(-10.0, -20.0), "loud")
+  assert_eq(lib.dynamic_of(-30.0, -20.0), "quiet")
+  assert_eq(lib.dynamic_of(-22.0, -20.0), "middle")
+  let c = lib.coverage(
+    notes,
+    60,
+    60,
+    {per_semitone: 1, long_per_octave: 0, per_dynamic: 5},
+  )
+  assert_eq(c.per_dynamic, {loud: 4, middle: 4, quiet: 4})
+  assert_true(c.shortfalls.any(|s| s.contains("loud: 4 of 5")))
+}
+
+@test
+fn enough_notes_everywhere_is_no_shortfall() {
+  let notes = [...notes_at(60, 5, 2, -20.0), ...notes_at(61, 5, 2, -20.0)]
+  let c = lib.coverage(
+    notes,
+    60,
+    61,
+    // All at one level: the dynamics are not what this checks.
+    {per_semitone: 5, long_per_octave: 4, per_dynamic: 0},
+  )
+  assert_eq(c.shortfalls, [])
+}

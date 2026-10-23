@@ -1,0 +1,94 @@
+# How well measured recordings cover an instrument's range: the notes per
+# semitone, the long notes per octave, and the loud, middle and quiet notes.
+# Prints what is short, and exits 1 when anything is, so a script can stop on
+# it. coverage_lib.cul says what the needs are.
+#
+#   culebra kauai/tools/coverage.cul --low 200 --high 1400 work/measured/*.json
+#
+# `--low` and `--high` are the instrument's range (Hz), as measure.cul takes
+# them. The notes of every file count together.
+
+import lib from './coverage_lib.cul'
+
+let SPEC = {
+  name: 'coverage.cul',
+  doc: 'how well measured recordings cover an instrument: notes per semitone, long notes per octave, dynamics',
+  args: [
+    {
+      name: 'low',
+      type: 'Float',
+      positional: false,
+      doc: 'the lowest pitch of the instrument, Hz',
+    },
+    {
+      name: 'high',
+      type: 'Float',
+      positional: false,
+      doc: 'the highest pitch of the instrument, Hz',
+    },
+    {
+      name: 'per-semitone',
+      type: 'Long',
+      default: lib.NEEDS.per_semitone,
+      doc: 'notes needed for each semitone',
+    },
+    {
+      name: 'long-per-octave',
+      type: 'Long',
+      default: lib.NEEDS.long_per_octave,
+      doc: 'long notes (1 s or more) needed for each octave',
+    },
+    {
+      name: 'per-dynamic',
+      type: 'Long',
+      default: lib.NEEDS.per_dynamic,
+      doc: 'notes needed in each of the loud, middle and quiet dynamics',
+    },
+    {
+      name: 'measured',
+      type: 'String',
+      positional: true,
+      repeated: true,
+      doc: 'the NAME.json files measure.cul wrote',
+    },
+  ],
+}
+
+fn fail(message) {
+  IO.eprintln("coverage: {message}")
+  Sys.exit(2)
+}
+
+let args = Args.parse(Sys.argv, SPEC)
+fail("--low and --high are needed (the instrument's range, Hz)") if args.low ==
+  nil ||
+  args.high == nil
+fail("no measures named") if args.measured.empty()
+fail("--low must be below --high") if args.low >= args.high
+
+let notes = args.measured.flat_map(|path| {
+  fail("no measure {path}") if !FS.exists(path)
+  JSON.parse(FS.read(path)).notes
+})
+let lo = Math.floor(12.0 * Math.log(args.low / 440.0) / Math.log(2.0) + 69.0)
+let hi = Math.ceil(12.0 * Math.log(args.high / 440.0) / Math.log(2.0) + 69.0)
+let needs = {
+  per_semitone: args["per-semitone"],
+  long_per_octave: args["long-per-octave"],
+  per_dynamic: args["per-dynamic"],
+}
+let c = lib.coverage(notes, lo, hi, needs)
+
+println("{notes.size()} notes over MIDI {lo}..{hi}; long (1 s or more): {notes.filter(|n| n.frames >= lib.LONG).size()}")
+println("per semitone: {c.per_semitone.map(|k| "{k}").join(" ")}")
+println("long per octave from {lo}: {c.long_per_octave.map(|k| "{k}").join(" ")}")
+println("dynamics: loud {c.per_dynamic.loud}, middle {c.per_dynamic.middle}, quiet {c.per_dynamic.quiet}")
+if c.shortfalls.empty() {
+  println("enough: every semitone, octave and dynamic is covered")
+  Sys.exit(0)
+}
+println("short:")
+for line in c.shortfalls {
+  println("  {line}")
+}
+Sys.exit(1)
