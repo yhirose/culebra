@@ -66,6 +66,9 @@ fail("no folder {sources} for the recordings (--sources says where)") if !FS.is_
 
 let make = JSON.parse(FS.read(config)).make
 fail("{config} has no `make`") if make == nil
+for key in ["left_out", "breath_noise"] {
+  fail("{config}'s `make` has no `{key}`") if make.get(key, nil) == nil
+}
 
 lib.run({
   measured: args.measured.map(|p| FS.abspath(p)),

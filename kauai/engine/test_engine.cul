@@ -57,6 +57,15 @@ fn an_instrument_made_from_one_performance_plays_a_phrase_in_tune() {
   assert_true(rms(one.phrase_samples(PHRASE, {})) > 2.0 * rms(s))
   one.restyle(STYLE)
   assert_eq(one.phrase_samples(PHRASE, {}), s)
+
+  # A style says what it must and may leave out what has a default.
+  let lacking = try {
+    one.restyle({db_per_octave: 5.0})
+    nil
+  } catch e {
+    e
+  }
+  assert_eq(lacking, "style lacks `mf_db`")
 }
 
 @test
@@ -68,4 +77,5 @@ fn a_style_without_a_number_it_needs_is_said_so() {
     e
   }
   assert_true(said != nil)
+  assert_true(engine.DEFAULTS.keys().contains("scoop"))
 }

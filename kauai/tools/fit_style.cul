@@ -16,6 +16,8 @@
 
 import lib from './fit_style_lib.cul'
 import engine from '../engine/borrow.cul'
+import measure from './measure_lib.cul'
+import compare from './compare_lib.cul'
 
 let SPEC = {
   name: 'fit_style.cul',
@@ -98,17 +100,19 @@ let pairs = args.tune.map(fn (spec) {
   fail("no song {song}") if !FS.exists(song)
   fail("no target {target}") if !FS.exists(target)
   let made = Audio.decode(FS.read(target))
-  let chs = made.channels
-  let xs = chs.size() == 1
-    ? chs[0]
-    : iota(chs[0].size()).map(|i| chs.map(|c| c[i]).sum() / chs.size())
+  # Only what is played is mixed down.
+  let keep = Math.round(args.seconds * made.rate)
+  let xs = measure.mono({channels: made.channels.map(|c| c.slice(
+    0,
+    Math.min(c.size(), keep),
+  ))})
   {song: song, target: xs, low: range.low, high: range.high, dir: nil}
 })
 
 let placeholder = {
   mf_db: 0.0,
   db_per_octave: 0.0,
-  lib_louder: 0.0,
+  lib_level_mf: 0.0,
   vibrato: {depth: 0.0, straight: 0.6},
   onset_from_t0: {rest: 0.0, tongue: 0.0},
   overtone_from: 0,
@@ -144,7 +148,7 @@ let result = lib.fit(
 println("cost {result.log[0].cost:.3f} -> {result.cost:.3f} after {result.log.size() - 1} moves")
 for k in 0..pairs.size() {
   let d = result.distances[k]
-  println("{pairs[k].song}: spectral {d.spectral_db} dB, loudness {d.loudness_db} dB, programme {d.integrated_lu} LU, pitch {d.pitch_median_cents} cents (p95 {d.pitch_p95_cents}), voicing {d.voicing}, centroid {d.centroid_cents} cents, breath {d.breath_db} dB")
+  println("{pairs[k].song}: {compare.summary(d)}")
 }
 for line in lib.blind(result.pitches, inst.lib.notes.map(|e| e.semi).min(), inst.steady.map(|i| inst.lib.notes[i].semi).max()) {
   println("warning: {line}")
@@ -152,14 +156,13 @@ for line in lib.blind(result.pitches, inst.lib.notes.map(|e| e.semi).min(), inst
 for name in result.unseen {
   println("warning: {name} is heard by none of the songs (every value sounded the same): it stays as it was derived")
 }
-let final = {...result.style, lib_louder: lib.LIB_MF - result.style.mf_db}
-println(JSON.stringify(final))
+println(JSON.stringify(result.style))
 
 if args.log != nil {
   FS.write(args.log, JSON.stringify(result.log) + "\n")
 }
 if !args.dry {
-  let written = {...config, play: final}
+  let written = {...config, play: result.style}
   FS.write(config_path, JSON.stringify(written, indent: 2) + "\n")
   println("wrote {config_path}")
 }

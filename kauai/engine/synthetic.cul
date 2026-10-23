@@ -11,23 +11,27 @@ let REED = [0.3, 0.45, 0.25, 0.2, 0.15, 0.1, 0.08, 0.05]
 let STYLE = {
   mf_db: -20.0,
   db_per_octave: 5.0,
-  lib_louder: 9.0,
+  lib_level_mf: -11.0,
   vibrato: {depth: 15.0, straight: 0.5},
   onset_from_t0: {rest: 0.01, tongue: 0.02},
   overtone_from: 80,
 }
 
-# A performance, 3.2 s: A4 from a rest (0.3 to 1.5 s), the tongue's stop, C5
-# (1.55 to 2.5 s) with a vibrato; a breath of noise under both.
-fn performance() {
+# A performance, 3.2 s, `cents` sharp: A4 from a rest (0.3 to 1.5 s), the
+# tongue's stop, C5 (1.55 to 2.5 s) with a vibrato; a breath of noise under
+# both.
+fn performance(cents = 0.0) {
   Random.seed(3)
+  let sharp = 2.0 ** (cents / 1200.0)
   let freq = [
-    (0.0, 440.0),
-    (1.52, 440.0),
-    (1.52, 523.25),
+    (0.0, sharp * 440.0),
+    (1.52, sharp * 440.0),
+    (1.52, sharp * 523.25),
     ...iota(1, 191).map(|i| (
       1.55 + i * 0.005,
-      523.25 * 2.0 ** (0.25 / 12.0 * Math.sin(2.0 * Math.pi * 5.0 * i * 0.005)),
+      sharp *
+        523.25 *
+        2.0 ** (0.25 / 12.0 * Math.sin(2.0 * Math.pi * 5.0 * i * 0.005)),
     )),
   ]
   let gain = [
@@ -47,13 +51,13 @@ fn performance() {
 
 # The performance made into an instrument in folder `dir`: {data: its Dir,
 # measured: the measure's path}.
-fn made_into(dir) {
+fn made_into(dir, cents = 0.0) {
   let sources = FS.join(dir, "sources")
   let measured = FS.join(dir, "measured")
   FS.mkdir(sources)
   FS.write(
     FS.join(sources, "take.wav"),
-    Audio.Sound(performance(), rate: RATE).data(),
+    Audio.Sound(performance(cents), rate: RATE).data(),
   )
   let heard = Audio.decode(FS.read(FS.join(sources, "take.wav")))
   let m = measure.measure(heard.channels[0], RATE, 200.0, 1400.0)

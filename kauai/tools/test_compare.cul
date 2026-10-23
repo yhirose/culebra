@@ -104,7 +104,8 @@ fn a_sharper_sound_is_that_much_off_in_pitch() {
 
 @test
 fn a_vibrato_is_a_distance_a_detune_is_not() {
-  let wavering = against(vibrato_tones(0.0, 30.0))
+  let waver = lib.features(vibrato_tones(0.0, 30.0), RATE, 200.0, 1400.0)
+  let wavering = lib.distance(ref, waver)
   assert_true(wavering.vibrato_cents > 10.0, wavering.vibrato_cents)
   assert_true(wavering.vibrato_cents < 30.0, wavering.vibrato_cents)
   let sharp = against(tones(30.0))
@@ -116,11 +117,7 @@ fn a_vibrato_is_a_distance_a_detune_is_not() {
   )
   assert_true(busy.vibrato_cents < 3.0, busy.vibrato_cents)
   # The same vibrato against itself is no distance.
-  let same = lib.distance(
-    lib.features(vibrato_tones(0.0, 30.0), RATE, 200.0, 1400.0),
-    lib.features(vibrato_tones(0.0, 30.0), RATE, 200.0, 1400.0),
-  )
-  assert_eq(same.vibrato_cents, 0.0)
+  assert_eq(lib.distance(waver, waver).vibrato_cents, 0.0)
 }
 
 @test

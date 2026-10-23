@@ -13,6 +13,7 @@
 # listed as `tune` instead, the ones an instrument is adjusted on.
 
 import compare from './compare_lib.cul'
+import measure from './measure_lib.cul'
 
 let SPEC = {
   name: 'evaluate.cul',
@@ -72,13 +73,7 @@ FS.mkdir(out) if !FS.exists(out)
 
 fn mono(path) {
   let made = Audio.decode(FS.read(path))
-  let chs = made.channels
-  {
-    samples: chs.size() == 1
-      ? chs[0]
-      : iota(chs[0].size()).map(|i| chs.map(|c| c[i]).sum() / chs.size()),
-    rate: made.rate,
-  }
+  {samples: measure.mono(made), rate: made.rate}
 }
 
 let rows = []
@@ -106,7 +101,7 @@ for s in songs {
   )
   let over = compare.over(d)
   rows.push({song: s.song, distance: d, over: over})
-  println("{s.song}: {over.empty() ? "within limits" : "over"} (spectral {d.spectral_db} dB, loudness {d.loudness_db} dB, programme {d.integrated_lu} LU, pitch {d.pitch_median_cents} cents, voicing {d.voicing}, centroid {d.centroid_cents} cents, breath {d.breath_db} dB, vibrato {d.vibrato_cents} cents)")
+  println("{s.song}: {over.empty() ? "within limits" : "over"} ({compare.summary(d)})")
   for o in over {
     println("  {o[0]} {o[1]} is over {o[2]}")
   }

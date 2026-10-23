@@ -10,8 +10,7 @@ import compare from './compare_lib.cul'
 let RATE = 44100
 
 # A recorded mf A4 sits about this far under the recording's 95th percentile
-# (dB): the library level a note at mf asks for, so `lib_louder` follows from
-# `mf_db`.
+# (dB): the library level a note at mf asks to borrow (`lib_level_mf`).
 let LIB_MF = -11.0
 
 # How much each of compare's numbers counts, against its own limit.
@@ -44,7 +43,9 @@ fn cost(d) {
 # nothing else: where a note's onset lies for each way in (the median of what
 # the notes' loudness says), the first note played as an overtone (the top of
 # the steady notes, plus one) and the vibrato of long notes, all of the
-# recordings themselves. The level numbers are a guess `fit` leaves be.
+# recordings themselves. `mf_db` and `lib_level_mf` are a guess: `mf_db` does
+# not reach a song (Kauai weighs an instrument by the loudness of its sounds),
+# and `fit` leaves both be.
 fn derived(inst) {
   let notes = inst.lib.notes
   let onset = fn (kind) {
@@ -60,40 +61,27 @@ fn derived(inst) {
   {
     mf_db: -24.0,
     db_per_octave: 7.0,
-    lib_louder: LIB_MF + 24.0,
+    lib_level_mf: LIB_MF,
     vibrato: {depth: Math.round(vib / 0.24), straight: 0.6},
     onset_from_t0: {rest: onset("rest"), tongue: onset("tongue")},
     overtone_from: inst.steady.empty()
       ? 0
       : inst.steady.map(|i| notes[i].semi).max() + 1,
-    own_kept: engine.OWN_KEPT,
-    drift_kept: engine.DRIFT_KEPT,
   }
 }
 
-# The voices Kauai calls an instrument by: `external Voice`, as `name` (its
-# lower-case key). `seen`, an Object, gets a key for each pitch asked for.
-fn voices_of(inst, name, seen = nil) {
+# The first `seconds` of song `path` (or `dir`'s) as `inst` plays it, as the
+# voice `name` (its lower-case key in the song's `external Name`). `seen`, an
+# Object, gets a key for each pitch asked for.
+fn rendered(inst, name, path, seconds, dir = nil, seen = {}) {
   let voices = {}
   voices[name] = {phrase: fn (notes, params) {
-    if seen != nil {
-      for n in notes {
-        seen[n.pitch] = true
-      }
+    for n in notes {
+      seen[n.pitch] = true
     }
     Audio.Sound(inst.phrase_samples(notes, params), rate: RATE)
   }, hears: ["len", "level", "marks", "next", "params"]}
-  voices
-}
-
-# The first `seconds` of song `path` (or `dir`'s) as `inst` plays it.
-fn rendered(inst, name, path, seconds, dir = nil, seen = nil) {
-  let song = Audio.Kauai.load(
-    path,
-    voices: voices_of(inst, name, seen),
-    dir: dir,
-  )
-  song.render(to: seconds)
+  Audio.Kauai.load(path, voices: voices, dir: dir).render(to: seconds)
 }
 
 # `style` with the number at `path` (names, from the style down) set to `v`.
@@ -111,9 +99,9 @@ fn value_at(style, path) {
 
 # The style tried: what `inst` plays like in `style` on each of `pairs` (each
 # {song, target: the target's features, low, high, dir}), as the mean cost
-# and the distances. `lib_louder` follows `mf_db`.
-fn tried(inst, name, style, pairs, seconds, seen = nil) {
-  inst.restyle({...style, lib_louder: LIB_MF - style.mf_db})
+# and the distances.
+fn tried(inst, name, style, pairs, seconds, seen) {
+  inst.restyle(style)
   let ds = pairs.map(fn (p) {
     let samples = rendered(inst, name, p.song, seconds, p.dir, seen)
     compare.distance(p.target, compare.features(samples, RATE, p.low, p.high))
@@ -141,7 +129,7 @@ fn prepared(pairs, seconds) {
 fn fit(inst, name, style0, pairs, seconds, params, rounds = 3) {
   let ready = prepared(pairs, seconds)
   let seen = {}
-  mut style = style0
+  mut style = {...engine.DEFAULTS, ...style0}
   mut best = tried(inst, name, style, ready, seconds, seen)
   let log = [{what: "start", cost: best.cost, style: style}]
   mut steps = params.map(|q| q.step)
@@ -152,6 +140,8 @@ fn fit(inst, name, style0, pairs, seconds, params, rounds = 3) {
     mut moved = false
     for q in 0..params.size() {
       let p = params[q]
+      # A number no song heard in the first round is not tried again.
+      continue if round > 0 && !changed[q]
       let here = value_at(style, p.path)
       for dir in [1.0, -1.0] {
         let v = Math.clamp(here + dir * steps[q], p.lo, p.hi)
@@ -207,4 +197,4 @@ fn blind(pitches, bottom, top) {
   warn
 }
 
-export {LIB_MF, WEIGHT, cost, derived, voices_of, rendered, with_value, tried, prepared, fit, blind}
+export {LIB_MF, WEIGHT, cost, derived, rendered, fit, blind}

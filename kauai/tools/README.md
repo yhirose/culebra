@@ -317,14 +317,16 @@ The package's `data/` must be made and hold `instrument.json` with a `make`
 a first style is read off the recordings themselves: where a note's onset
 lies for each way in (the medians over the notes measure found an onset for),
 the first note played as an overtone (the top of the long notes, plus one),
-the vibrato of long notes. The level numbers are a guess (and stay one: Kauai
-weighs an instrument by the loudness of its sounds, so how loud a note is
-asked for, absolutely, does not reach a song). Then `db_per_octave`, the
+the vibrato of long notes. `mf_db` and `lib_level_mf` (the library level a
+note at mf asks to borrow) are a guess, and stay one: Kauai weighs an
+instrument by the loudness of its sounds, so how loud a note is asked for,
+absolutely, does not reach a song. Then `db_per_octave`, the
 vibrato's `depth` and `straight`, `own_kept`, `drift_kept` and `overtone_from`
 are moved one at a time by a step while that lowers the cost (compare's
 numbers over their limits, weighted), halving the step after a round that
-moved nothing. `lib_louder` follows `mf_db`, so the notes borrowed do not
-change when the level does. The style is written back unless `--dry`; `--log` keeps every style tried and its cost.
+moved nothing; a number no song heard in the first round is not tried again.
+The style (with the engine's defaults for what it does not say) is written
+back unless `--dry`; `--log` keeps every style tried and its cost.
 It says what its songs cannot show: a number every trial of which sounded the
 same ("heard by none of the songs"), and a range of pitches the songs never
 ask for (above the recordings' steady notes, or below the lowest), where

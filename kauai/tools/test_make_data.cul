@@ -1,6 +1,7 @@
 import lib from './make_data_lib.cul'
 import measure from './measure_lib.cul'
 import format from '../engine/data_format.cul'
+import synthetic from '../engine/synthetic.cul'
 
 let TOOL = FS.join(FS.dirname(FS.abspath(Sys.script)), "make_data.cul")
 # What an instrument is made with (its data/instrument.json's `make`).
@@ -178,33 +179,6 @@ fn a_harsh_take_and_a_note_read_an_octave_low_are_left_out() {
   assert_eq(lib.kept_notes(notes, loose).kept.size(), 8)
 }
 
-# A performance, 3.2 s, 15 cents sharp: A4 from a rest (0.3 to 1.5 s, 6 dB
-# softer), the tongue's stop, C5 (1.55 to 2.5 s) with a vibrato; a breath of
-# noise under both.
-let SHARP = 2.0 ** (0.15 / 12.0)
-fn performance() {
-  Random.seed(3)
-  let freq = [
-    (0.0, SHARP * 440.0),
-    (1.52, SHARP * 440.0),
-    (1.52, SHARP * 523.25),
-    ...iota(1, 191).map(|i| (1.55 + i * 0.005, SHARP * 523.25 * 2.0 ** (0.25 / 12.0 * Math.sin(2.0 * Math.pi * 5.0 * i * 0.005)))),
-  ]
-  let gain = [
-    (0.0, 0.0),
-    (0.29, 0.0),
-    (0.32, 0.5),
-    (1.48, 0.5),
-    (1.5, 0.0),
-    (1.55, 0.0),
-    (1.58, 1.0),
-    (2.48, 1.0),
-    (2.5, 0.0),
-  ]
-  let tone = Audio.partials(3.2, freq, [(0.0, REED)], gain: gain)
-  iota(tone.size()).map(|i| 0.25 * tone[i] + Random.uniform(-0.002, 0.002))
-}
-
 @test
 fn the_data_of_a_performance_reads_back_as_its_notes() {
   let dir = FS.join(FS.temp_dir(), "make-data-test-{UUID.v4()}")
@@ -216,7 +190,7 @@ fn the_data_of_a_performance_reads_back_as_its_notes() {
   FS.mkdir(sources)
   FS.write(
     FS.join(sources, "take.wav"),
-    Audio.Sound(performance(), rate: RATE).data(),
+    Audio.Sound(synthetic.performance(15.0), rate: RATE).data(),
   )
   let made = Audio.decode(FS.read(FS.join(sources, "take.wav")))
   let m = measure.measure(made.channels[0], RATE, 200.0, 1400.0)

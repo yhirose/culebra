@@ -110,9 +110,7 @@ fn features(samples, rate, low, high) {
   for i in 0..split.rest.size() {
     sum[i + 1] = sum[i] + split.rest[i] * split.rest[i]
   }
-  let cents = hz.map(|h| h == nil
-    ? nil
-    : 1200.0 * Math.log(h / 440.0) / Math.log(2.0))
+  let cents = hz.map(|h| h == nil ? nil : cents_of(h, 440.0))
   # The pitch's quick moves inside a note: its cents against their mean over
   # COURSE frames either side, within the stretch of frames that pitch does
   # not jump (more than JUMP cents) between; a stretch under 20 frames, or
@@ -249,8 +247,13 @@ fn distance(a, b) {
 }
 
 # The numbers of `d` (distance's) over their LIMITS, as [name, value, limit].
-fn over(d, limits = LIMITS) {
-  limits.keys().filter(|k| d[k] > limits[k]).map(|k| [k, d[k], limits[k]])
+fn over(d) {
+  LIMITS.keys().filter(|k| d[k] > LIMITS[k]).map(|k| [k, d[k], LIMITS[k]])
+}
+
+# A distance on one line: each of LIMITS' numbers.
+fn summary(d) {
+  LIMITS.keys().map(|k| "{k} {d[k]}").join(", ")
 }
 
 # `samples` made worse in one known way, for reading a distance against a
@@ -278,4 +281,4 @@ fn degraded(samples, rate, kind) {
 
 let KINDS = ["gain", "lowpass", "noise", "delay"]
 
-export {STEP, LIMITS, KINDS, features, distance, over, degraded}
+export {LIMITS, KINDS, features, distance, over, summary, degraded}

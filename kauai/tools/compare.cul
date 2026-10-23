@@ -12,6 +12,7 @@
 # the reference's first 20 seconds, to read the candidate's numbers against.
 
 import lib from './compare_lib.cul'
+import measure from './measure_lib.cul'
 
 let SPEC = {
   name: 'compare.cul',
@@ -58,11 +59,7 @@ fn fail(message) {
 fn mono(path) {
   fail("no file {path}") if !FS.exists(path)
   let made = Audio.decode(FS.read(path))
-  let chs = made.channels
-  let xs = chs.size() == 1
-    ? chs[0]
-    : iota(chs[0].size()).map(|i| chs.map(|c| c[i]).sum() / chs.size())
-  {samples: xs, rate: made.rate}
+  {samples: measure.mono(made), rate: made.rate}
 }
 
 let args = Args.parse(Sys.argv, SPEC)

@@ -17,8 +17,12 @@
 #
 #   mf_db            a note's loudness (dB) at mf, A4
 #   db_per_octave    how much louder a note is an octave up
-#   lib_louder       how much louder the recorded notes' levels read than
-#                    the loudness asked for
+#   lib_level_mf     the library level (dB, against each recording's loudest)
+#                    a note at mf asks to borrow: the recorded note chosen
+#                    for a note is the one nearest this plus the note's own
+#                    level against mf. (The recorded notes' levels read
+#                    louder than the loudness asked for by `lib_level_mf -
+#                    mf_db`.)
 #   vibrato          {depth, straight}: how much vibrato a long note asks
 #                    for (cents at its deepest), held straight for this
 #                    share of its length first
@@ -32,8 +36,9 @@
 #   overtone_from    the lowest note played as an overtone of the fingering
 #                    an octave down (0: none)
 #
-# and these, each with the default below: scoop, own_kept, drift_kept, gain_range,
-# onset_at, min_lead and wander_style.
+# and these, each with the default DEFAULTS has (a style need not say them):
+# scoop, own_kept, drift_kept, gain_range, onset_at, min_lead and
+# wander_style.
 
 # The voice's parameters, on the band's line (`external Sax breath=0.5`)
 # or in the score from a note on (`\vibrato=12`):
@@ -195,6 +200,26 @@ let SCOOP = {
   legato: [-66.0, -37.0, -20.0, -9.0, -1.0, 0.0],
 }
 
+# The numbers of a style that have a default, and those it must say.
+let DEFAULTS = {
+  scoop: SCOOP,
+  own_kept: OWN_KEPT,
+  drift_kept: DRIFT_KEPT,
+  gain_range: GAIN_RANGE,
+  onset_at: ONSET_AT,
+  min_lead: MIN_LEAD,
+  wander_style: WANDER,
+}
+
+let REQUIRED = [
+  "mf_db",
+  "db_per_octave",
+  "lib_level_mf",
+  "vibrato",
+  "onset_from_t0",
+  "overtone_from",
+]
+
 class Instrument {
   # `data`: the Dir of notes.json, notes.i16, attacks.json, attacks.i16 and
   # breath.json; `style`: see above.
@@ -290,19 +315,23 @@ class Instrument {
   # time it is made. The recordings stay loaded: a style is tried, and tried
   # again, without reading them.
   restyle(style) {
-    self.mf_db = style.mf_db
-    self.db_per_octave = style.db_per_octave
-    self.lib_louder = style.lib_louder
-    self.vibrato = style.vibrato
-    self.scoop = style.get("scoop", SCOOP)
-    self.onset_from_t0 = style.onset_from_t0
-    self.overtone_from = style.overtone_from
-    self.own_kept = style.get("own_kept", OWN_KEPT)
-    self.drift_kept = style.get("drift_kept", DRIFT_KEPT)
-    self.gain_range = style.get("gain_range", GAIN_RANGE)
-    self.onset_at = style.get("onset_at", ONSET_AT)
-    self.min_lead = style.get("min_lead", MIN_LEAD)
-    self.wander_style = style.get("wander_style", WANDER)
+    for key in REQUIRED {
+      throw "style lacks `{key}`" if !style.has(key)
+    }
+    let s = {...DEFAULTS, ...style}
+    self.mf_db = s.mf_db
+    self.db_per_octave = s.db_per_octave
+    self.lib_louder = s.lib_level_mf - s.mf_db
+    self.vibrato = s.vibrato
+    self.scoop = s.scoop
+    self.onset_from_t0 = s.onset_from_t0
+    self.overtone_from = s.overtone_from
+    self.own_kept = s.own_kept
+    self.drift_kept = s.drift_kept
+    self.gain_range = s.gain_range
+    self.onset_at = s.onset_at
+    self.min_lead = s.min_lead
+    self.wander_style = s.wander_style
     # Where a recorded note's onset is depends on `onset_from_t0`.
     self.lib_onset_cache = self.lib.notes.map(|_| nil)
     # Each phrase its own noise: the n-th phrase voiced gets seed n.
@@ -1410,4 +1439,4 @@ class Instrument {
   }
 }
 
-export {Instrument, RATE, OWN_KEPT, DRIFT_KEPT}
+export {Instrument, RATE, DEFAULTS}

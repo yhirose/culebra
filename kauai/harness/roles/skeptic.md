@@ -21,9 +21,9 @@ Plays the worst second of each `eval` song and says what it is.
 A second far off (8 dB) in a song whose numbers are all within their limits
 is most often **a different take of one note**: the engine borrows the
 recorded note with the least cost (pitch, length, level, how it starts and
-ends), and a hair of difference in a style number (`mf_db` + `lib_louder`,
-the level the notes borrowed are asked to have) moves a cliff so another take
-wins. Check by nudging `lib_louder` by 0.5 dB and rendering the second
+ends), and a hair of difference in a style number (`lib_level_mf`, the
+level the notes borrowed are asked to have) moves a cliff so another take
+wins. Check by nudging `lib_level_mf` by 0.5 dB and rendering the second
 again: if the difference moves or goes, it is a choice at a cliff, not a
 fault; say so, and leave it to the person's ear (`listen.cul`).
 

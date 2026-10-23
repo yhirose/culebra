@@ -2,7 +2,7 @@
   "play": {
     "mf_db": -24.711038758225744,
     "db_per_octave": 7.0,
-    "lib_louder": 13.659952105624681,
+    "lib_level_mf": -11.051086652601063,
     "vibrato": {
       "depth": 20.0,
       "straight": 0.6

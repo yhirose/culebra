@@ -1,5 +1,6 @@
 import lib from './fit_style_lib.cul'
 import engine from '../engine/borrow.cul'
+import compare from './compare_lib.cul'
 import synthetic from '../engine/synthetic.cul'
 
 let RATE = synthetic.RATE
@@ -37,6 +38,15 @@ let MADE = fn () {
   }
 }()
 
+# The song of the two fits, as the instrument plays it in STYLE.
+let PAIRS = [{
+  song: "tune.kau",
+  target: lib.rendered(MADE.inst, "sax", "tune.kau", 2.2, FILES),
+  low: 200.0,
+  high: 1400.0,
+  dir: FILES,
+}]
+
 @test
 fn a_first_style_is_read_off_the_recordings() {
   let made = MADE
@@ -49,9 +59,8 @@ fn a_first_style_is_read_off_the_recordings() {
   assert_true(d.onset_from_t0.rest >= 0.0 && d.onset_from_t0.rest < 0.1)
   assert_true(d.onset_from_t0.tongue >= 0.0 && d.onset_from_t0.tongue < 0.1)
   assert_true(d.vibrato.depth >= 0.0)
-  # The level follows the library's own: lib_louder and mf_db add to LIB_MF.
-  assert_eq(d.lib_louder + d.mf_db, lib.LIB_MF)
-  assert_true(d.keys().contains("own_kept"))
+  # The level a note at mf asks to borrow is the library's own.
+  assert_eq(d.lib_level_mf, lib.LIB_MF)
 }
 
 @test
@@ -59,17 +68,9 @@ fn a_number_a_song_shows_is_found_from_a_start_far_off() {
   let made = MADE
   # The target is the song played in STYLE (loudness grows 5 dB an octave up
   # the range); the start has it growing not at all.
-  let target = lib.rendered(made.inst, "sax", "tune.kau", 2.2, FILES)
-  let pairs = [{
-    song: "tune.kau",
-    target: target,
-    low: 200.0,
-    high: 1400.0,
-    dir: FILES,
-  }]
   let start = {...STYLE, db_per_octave: 0.0}
   let params = [{path: ["db_per_octave"], step: 4.0, lo: 0.0, hi: 14.0}]
-  let r = lib.fit(made.inst, "sax", start, pairs, 2.2, params, 2)
+  let r = lib.fit(made.inst, "sax", start, PAIRS, 2.2, params, 1)
   assert_true(
     Math.abs(r.style.db_per_octave - 7.0) <= 3.0,
     r.style.db_per_octave,
@@ -83,21 +84,13 @@ fn a_number_a_song_shows_is_found_from_a_start_far_off() {
 @test
 fn a_number_at_its_bound_stays_in_it() {
   let made = MADE
-  let target = lib.rendered(made.inst, "sax", "tune.kau", 2.2, FILES)
-  let pairs = [{
-    song: "tune.kau",
-    target: target,
-    low: 200.0,
-    high: 1400.0,
-    dir: FILES,
-  }]
   # The right number is out of the range the fit may use.
   let start = {...STYLE, db_per_octave: 0.0}
   let params = [
     {path: ["db_per_octave"], step: 3.0, lo: 0.0, hi: 3.0},
     {path: ["overtone_from"], step: 1.0, lo: 60.0, hi: 100.0},
   ]
-  let r = lib.fit(made.inst, "sax", start, pairs, 2.2, params, 1)
+  let r = lib.fit(made.inst, "sax", start, PAIRS, 2.2, params, 1)
   assert_true(r.style.db_per_octave <= 3.0)
   # The tune asks for A4 to E5; an overtone from 80 is heard by none of it.
   assert_eq(r.pitches, [69, 72, 76])
@@ -147,4 +140,9 @@ fn the_program_says_what_it_is_missing() {
   let none = Proc.run([Sys.executable, "--vm", tool])
   assert_eq(none.code, 2)
   assert_true(none.stderr.contains("--sounds is needed"))
+}
+
+@test
+fn every_number_compare_limits_has_a_weight_and_the_other_way() {
+  assert_eq(lib.WEIGHT.keys().sorted(), compare.LIMITS.keys().sorted())
 }
