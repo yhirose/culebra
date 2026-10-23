@@ -13,6 +13,9 @@
 #   centroid_cents      where the spectrum's centre of mass lies (brightness)
 #   breath_db           the noise against the harmonics, where both have a
 #                       pitch (Audio.harmonics along each one's own pitch)
+#   vibrato_cents       how much the pitch moves about its slow course (rms
+#                       of its quick moves, cents), per second of music where
+#                       both hold a pitch, the mean absolute difference
 #
 # `compare.cul` is the program; README.md says more.
 
@@ -46,7 +49,14 @@ let LIMITS = {
   voicing: 0.03,
   centroid_cents: 60.0,
   breath_db: 3.0,
+  vibrato_cents: 3.0,
 }
+
+# The pitch's slow course is its mean over this many frames either side, and
+# a move of more than JUMP cents between two frames is a new note.
+let COURSE = 15
+
+let JUMP = 60.0
 
 # The bins of a 2048 frame at `rate` that belong to each of the BANDS bands,
 # log spaced from 100 Hz to 16 kHz (or 0.45 of the rate): band_of[k], -1
@@ -100,6 +110,38 @@ fn features(samples, rate, low, high) {
   for i in 0..split.rest.size() {
     sum[i + 1] = sum[i] + split.rest[i] * split.rest[i]
   }
+  let cents = hz.map(|h| h == nil
+    ? nil
+    : 1200.0 * Math.log(h / 440.0) / Math.log(2.0))
+  # The pitch's quick moves inside a note: its cents against their mean over
+  # COURSE frames either side, within the stretch of frames that pitch does
+  # not jump (more than JUMP cents) between; a stretch under 20 frames, or
+  # without a pitch, has none.
+  let run = []
+  mut id = 0
+  for t in 0..hz.size() {
+    if cents[t] == nil {
+      run.push(nil)
+      continue
+    }
+    if t == 0 ||
+        cents[t - 1] == nil ||
+        Math.abs(cents[t] - cents[t - 1]) > JUMP {
+      id += 1
+    }
+    run.push(id)
+  }
+  let length = {}
+  for r in run {
+    length[r] = length.get(r, 0) + 1 if r != nil
+  }
+  let wobble = iota(hz.size()).map(fn (t) {
+    return nil if run[t] == nil || length[run[t]] < 20
+    let from = Math.max(0, t - COURSE)
+    let to = Math.min(cents.size(), t + COURSE + 1)
+    let near = iota(from, to).filter(|k| run[k] == run[t]).map(|k| cents[k])
+    cents[t] - near.sum() / near.size()
+  })
   let breath = iota(hz.size()).map(fn (t) {
     return nil if hz[t] == nil || split.harmonics[t] == nil
     let harm = split.harmonics[t].map(|a| a * a / 2.0).sum()
@@ -115,6 +157,7 @@ fn features(samples, rate, low, high) {
     level: level,
     centroid: centroid,
     hz: hz,
+    wobble: wobble,
     breath: breath,
     lufs: Audio.integrated_loudness(samples, rate),
   }
@@ -159,6 +202,17 @@ fn distance(a, b) {
     .filter(|t| a.breath[t] != nil && b.breath[t] != nil)
     .map(|t| Math.abs(a.breath[t] - b.breath[t]))
   let seconds = Math.floor(n * STEP)
+  # The rms of the quick moves in each second where both hold a pitch for
+  # most of it.
+  let moves = |f, ts| Math.sqrt(ts.map(|t| f.wobble[t] * f.wobble[t]).sum() /
+    ts.size())
+  let vibrato = iota(seconds).map(fn (w) {
+    let ts = iota(
+      w * 100,
+      (w + 1) * 100,
+    ).filter(|t| a.wobble[t] != nil && b.wobble[t] != nil)
+    ts.size() >= 60 ? Math.abs(moves(a, ts) - moves(b, ts)) : nil
+  }).filter(|v| v != nil)
   let windows = iota(seconds).map(fn (w) {
     let ts = active.filter(|t| t >= w * 100 && t < (w + 1) * 100)
     {at: w, spectral_db: mean(ts.map(|t| spectral[t]))}
@@ -189,6 +243,7 @@ fn distance(a, b) {
     ),
     centroid_cents: rounded(mean(bright), 1),
     breath_db: rounded(mean(air), 2),
+    vibrato_cents: rounded(mean(vibrato), 2),
     worst: worst.map(|w| {at: w.at, spectral_db: rounded(w.spectral_db, 2)}),
   }
 }

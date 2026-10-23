@@ -1,79 +1,8 @@
 import engine from './borrow.cul'
-import measure from '../tools/measure_lib.cul'
-import make from '../tools/make_data_lib.cul'
+import synthetic from './synthetic.cul'
 
-let RATE = 44100
-let REED = [0.3, 0.45, 0.25, 0.2, 0.15, 0.1, 0.08, 0.05]
-
-# The soprano's style, whatever instrument is made: the numbers are only
-# there to be read.
-let STYLE = JSON.parse(FS.read(FS.join(
-  FS.dirname(FS.dirname(FS.abspath(Sys.script))),
-  "sounds",
-  "soprano_sax",
-  "data",
-  "instrument.json",
-))).play
-
-# A performance, 3.2 s: A4 from a rest (0.3 to 1.5 s), the tongue's stop, C5
-# (1.55 to 2.5 s) with a vibrato; a breath of noise under both.
-fn performance() {
-  Random.seed(3)
-  let freq = [
-    (0.0, 440.0),
-    (1.52, 440.0),
-    (1.52, 523.25),
-    ...iota(1, 191).map(|i| (
-      1.55 + i * 0.005,
-      523.25 * 2.0 ** (0.25 / 12.0 * Math.sin(2.0 * Math.pi * 5.0 * i * 0.005)),
-    )),
-  ]
-  let gain = [
-    (0.0, 0.0),
-    (0.29, 0.0),
-    (0.32, 0.5),
-    (1.48, 0.5),
-    (1.5, 0.0),
-    (1.55, 0.0),
-    (1.58, 1.0),
-    (2.48, 1.0),
-    (2.5, 0.0),
-  ]
-  let tone = Audio.partials(3.2, freq, [(0.0, REED)], gain: gain)
-  iota(tone.size()).map(|i| 0.25 * tone[i] + Random.uniform(-0.002, 0.002))
-}
-
-# An instrument made from nothing but that performance: measured, made into
-# data/, and given to the engine.
-fn made_into(dir) {
-  let sources = FS.join(dir, "sources")
-  let measured = FS.join(dir, "measured")
-  FS.mkdir(sources)
-  FS.write(
-    FS.join(sources, "take.wav"),
-    Audio.Sound(performance(), rate: RATE).data(),
-  )
-  let heard = Audio.decode(FS.read(FS.join(sources, "take.wav")))
-  let m = measure.measure(heard.channels[0], RATE, 200.0, 1400.0)
-  measure.write(
-    m,
-    measured,
-    "take",
-    {source: "take.wav", rate: RATE, seconds: 3.2},
-    200.0,
-    1400.0,
-  )
-  make.run({
-    measured: [FS.join(measured, "take.json")],
-    sources: sources,
-    out: FS.join(dir, "data"),
-    make: {
-      left_out: {brighter: 9.0, odd_under: 12.0},
-      breath_noise: [20.0, 20000.0],
-    },
-  })
-  Dir.disk(FS.join(dir, "data"))
-}
+let RATE = synthetic.RATE
+let STYLE = synthetic.STYLE
 
 let PHRASE = [{
   pitch: 72,
@@ -95,7 +24,7 @@ fn an_instrument_made_from_one_performance_plays_a_phrase_in_tune() {
     FS.remove(dir, recursive: true) if FS.exists(dir)
   }
   FS.mkdir(dir)
-  let data = made_into(dir)
+  let data = synthetic.made_into(dir).data
   let one = engine.Instrument.new(data, STYLE)
   let s = one.phrase_samples(PHRASE, {})
   assert_true(s.size() >= 0.8 * RATE)
@@ -121,6 +50,13 @@ fn an_instrument_made_from_one_performance_plays_a_phrase_in_tune() {
   # instrument's first phrase is the first one's, whatever was voiced between.
   let again = engine.Instrument.new(data, STYLE)
   assert_eq(again.phrase_samples(PHRASE, {}), s)
+
+  # A style put on an instrument that has played is the style's sound again
+  # from the first phrase, as a new instrument's.
+  one.restyle({...STYLE, mf_db: STYLE.mf_db + 10.0})
+  assert_true(rms(one.phrase_samples(PHRASE, {})) > 2.0 * rms(s))
+  one.restyle(STYLE)
+  assert_eq(one.phrase_samples(PHRASE, {}), s)
 }
 
 @test

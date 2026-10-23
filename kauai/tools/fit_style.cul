@@ -1,0 +1,172 @@
+# An instrument's style (data/instrument.json's `play`) found for it: read
+# off its own recordings first, then the numbers they cannot say moved until
+# songs it plays sound like the targets they are set against. The targets
+# are renderings of the same songs (WAV) by whatever the instrument should
+# sound like; compare_lib.cul says how far a rendering is from one.
+#
+#   culebra kauai/tools/fit_style.cul --sounds work/pkg \
+#     --measured work/measured --seconds 30 \
+#     --tune songs/tune_a.kau=targets/tune_a.wav \
+#     --tune songs/tune_b.kau=targets/tune_b.wav
+#
+# The package's data/ must be made (make_data.cul) and hold instrument.json
+# with a `make`; its `play` is written back (unless --dry), or made from the
+# recordings where there is none (or --derive). --log writes every style
+# tried and its cost as JSON.
+
+import lib from './fit_style_lib.cul'
+import engine from '../engine/borrow.cul'
+
+let SPEC = {
+  name: 'fit_style.cul',
+  doc: "an instrument's style found from its recordings and the targets it should sound like",
+  args: [
+    {
+      name: 'sounds',
+      type: 'String',
+      default: nil,
+      doc: 'the instrument: a folder holding data/ with instrument.json',
+    },
+    {
+      name: 'measured',
+      type: 'String',
+      default: nil,
+      doc: "the folder of measure.cul's NAME.json files for its recordings",
+    },
+    {
+      name: 'tune',
+      type: 'String',
+      positional: false,
+      repeated: true,
+      doc: 'SONG.kau=TARGET.wav: a song and what it should sound like',
+    },
+    {
+      name: 'seconds',
+      type: 'Float',
+      default: 30.0,
+      doc: 'how much of each song to play (30)',
+    },
+    {
+      name: 'rounds',
+      type: 'Long',
+      default: 3,
+      doc: 'rounds over the numbers (3)',
+    },
+    {
+      name: 'voice',
+      type: 'String',
+      default: 'sax',
+      doc: "the instrument's name in the songs, lower case (`external Sax` is sax)",
+    },
+    {
+      name: 'log',
+      type: 'String',
+      default: nil,
+      doc: 'also write every style tried, as JSON',
+    },
+    {
+      name: 'derive',
+      type: 'Bool',
+      default: false,
+      doc: 'start from a style read off the recordings even if there is one',
+    },
+    {
+      name: 'dry',
+      type: 'Bool',
+      default: false,
+      doc: 'do not write the style back',
+    },
+  ],
+}
+
+fn fail(message) {
+  IO.eprintln("fit_style: {message}")
+  Sys.exit(2)
+}
+
+let args = Args.parse(Sys.argv, SPEC)
+fail("--sounds is needed (--help says what each is)") if args.sounds == nil
+fail("--measured is needed (the folder of measure.cul's output)") if args.measured ==
+  nil
+fail("name at least one --tune SONG=TARGET.wav") if args.tune.empty()
+let config_path = FS.join(args.sounds, "data", "instrument.json")
+fail("no data/instrument.json in {args.sounds}") if !FS.exists(config_path)
+let config = JSON.parse(FS.read(config_path))
+fail("{config_path} has no `make.measure` (the pitch range)") if config
+  .get("make", nil)
+  ?.get("measure", nil) ==
+  nil
+let range = config.make.measure
+
+let measured = FS
+  .glob(FS.join(args.measured, "*.json"))
+  .map(|p| JSON.parse(FS.read(p)))
+fail("no measures in {args.measured}") if measured.empty()
+
+let pairs = args.tune.map(fn (spec) {
+  let at = spec.index_of("=")
+  fail("{spec}: write SONG.kau=TARGET.wav") if at < 0
+  let song = spec.slice(0, at).to_string()
+  let target = spec.slice(at + 1, spec.size()).to_string()
+  fail("no song {song}") if !FS.exists(song)
+  fail("no target {target}") if !FS.exists(target)
+  let made = Audio.decode(FS.read(target))
+  let chs = made.channels
+  let xs = chs.size() == 1
+    ? chs[0]
+    : iota(chs[0].size()).map(|i| chs.map(|c| c[i]).sum() / chs.size())
+  {song: song, target: xs, low: range.low, high: range.high, dir: nil}
+})
+
+let placeholder = {
+  mf_db: 0.0,
+  db_per_octave: 0.0,
+  lib_louder: 0.0,
+  vibrato: {depth: 0.0, straight: 0.6},
+  onset_from_t0: {rest: 0.0, tongue: 0.0},
+  overtone_from: 0,
+}
+let inst = engine.Instrument.new(
+  Dir.disk(FS.join(args.sounds, "data")),
+  placeholder,
+)
+let from_data = args.derive || config.get("play", nil) == nil
+let base = from_data ? lib.derived(inst, measured) : config.play
+println(from_data
+  ? "style read off the recordings"
+  : "style from {config_path}")
+
+let params = [
+  {path: ["db_per_octave"], step: 2.0, lo: 0.0, hi: 14.0},
+  {path: ["vibrato", "depth"], step: 6.0, lo: 0.0, hi: 60.0},
+  {path: ["vibrato", "straight"], step: 0.15, lo: 0.0, hi: 0.95},
+  {path: ["own_kept"], step: 0.2, lo: 0.0, hi: 1.0},
+  {path: ["drift_kept"], step: 0.1, lo: 0.0, hi: 0.6},
+  {path: ["overtone_from"], step: 1.0, lo: 60.0, hi: 100.0},
+]
+let result = lib.fit(
+  inst,
+  args.voice,
+  base,
+  pairs,
+  args.seconds,
+  params,
+  args.rounds,
+)
+
+println("cost {result.log[0].cost:.3f} -> {result.cost:.3f} after {result.log.size() - 1} moves")
+for k in 0..pairs.size() {
+  let d = result.distances[k]
+  println("{pairs[k].song}: spectral {d.spectral_db} dB, loudness {d.loudness_db} dB, programme {d.integrated_lu} LU, pitch {d.pitch_median_cents} cents (p95 {d.pitch_p95_cents}), voicing {d.voicing}, centroid {d.centroid_cents} cents, breath {d.breath_db} dB")
+}
+let final = {...result.style, lib_louder: lib.LIB_MF - result.style.mf_db}
+println(JSON.stringify(final))
+
+if args.log != nil {
+  FS.write(args.log, JSON.stringify(result.log) + "\n")
+}
+if !args.dry {
+  let written = {...config, play: final}
+  FS.write(config_path, JSON.stringify(written, indent: 2) + "\n")
+  println("wrote {config_path}")
+}

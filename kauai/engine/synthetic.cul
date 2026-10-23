@@ -1,0 +1,83 @@
+# A small instrument made from nothing but a synthetic performance, for tests:
+# the performance, measured, made into data/, and its data as a Dir.
+
+import measure from '../tools/measure_lib.cul'
+import make from '../tools/make_data_lib.cul'
+
+let RATE = 44100
+let REED = [0.3, 0.45, 0.25, 0.2, 0.15, 0.1, 0.08, 0.05]
+
+# A style: the numbers here are only there to be read.
+let STYLE = {
+  mf_db: -24.7,
+  db_per_octave: 7.0,
+  lib_louder: 13.7,
+  vibrato: {depth: 20.0, straight: 0.6},
+  onset_from_t0: {rest: 0.0, tongue: 0.03},
+  overtone_from: 82,
+}
+
+# A performance, 3.2 s: A4 from a rest (0.3 to 1.5 s), the tongue's stop, C5
+# (1.55 to 2.5 s) with a vibrato; a breath of noise under both.
+fn performance() {
+  Random.seed(3)
+  let freq = [
+    (0.0, 440.0),
+    (1.52, 440.0),
+    (1.52, 523.25),
+    ...iota(1, 191).map(|i| (
+      1.55 + i * 0.005,
+      523.25 * 2.0 ** (0.25 / 12.0 * Math.sin(2.0 * Math.pi * 5.0 * i * 0.005)),
+    )),
+  ]
+  let gain = [
+    (0.0, 0.0),
+    (0.29, 0.0),
+    (0.32, 0.5),
+    (1.48, 0.5),
+    (1.5, 0.0),
+    (1.55, 0.0),
+    (1.58, 1.0),
+    (2.48, 1.0),
+    (2.5, 0.0),
+  ]
+  let tone = Audio.partials(3.2, freq, [(0.0, REED)], gain: gain)
+  iota(tone.size()).map(|i| 0.25 * tone[i] + Random.uniform(-0.002, 0.002))
+}
+
+# The performance made into an instrument in folder `dir`: {data: its Dir,
+# measured: the measure's path}.
+fn made_into(dir) {
+  let sources = FS.join(dir, "sources")
+  let measured = FS.join(dir, "measured")
+  FS.mkdir(sources)
+  FS.write(
+    FS.join(sources, "take.wav"),
+    Audio.Sound(performance(), rate: RATE).data(),
+  )
+  let heard = Audio.decode(FS.read(FS.join(sources, "take.wav")))
+  let m = measure.measure(heard.channels[0], RATE, 200.0, 1400.0)
+  measure.write(
+    m,
+    measured,
+    "take",
+    {source: "take.wav", rate: RATE, seconds: 3.2},
+    200.0,
+    1400.0,
+  )
+  make.run({
+    measured: [FS.join(measured, "take.json")],
+    sources: sources,
+    out: FS.join(dir, "data"),
+    make: {
+      left_out: {brighter: 9.0, odd_under: 12.0},
+      breath_noise: [20.0, 20000.0],
+    },
+  })
+  {
+    data: Dir.disk(FS.join(dir, "data")),
+    measured: FS.join(measured, "take.json"),
+  }
+}
+
+export {RATE, STYLE, performance, made_into}

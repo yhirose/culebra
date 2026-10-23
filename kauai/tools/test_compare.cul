@@ -3,6 +3,41 @@ import lib from './compare_lib.cul'
 let RATE = 44100
 let REED = [0.3, 0.45, 0.25, 0.2, 0.15, 0.1, 0.08, 0.05]
 
+# A, then C a minor third up, 0.8 s each, `cents` sharp, with a vibrato of
+# `vib` cents either way at 5.5 Hz.
+fn vibrato_tones(cents, vib) {
+  let k = |t| 2.0 **
+    ((cents + vib * Math.sin(2.0 * Math.pi * 5.5 * t)) / 1200.0)
+  let freq = iota(321).map(|i| (
+    i * 0.005,
+    (i * 0.005 < 0.8 ? 440.0 : 523.25) * k(i * 0.005),
+  ))
+  let gain = [
+    (0.0, 0.0),
+    (0.05, 0.4),
+    (0.75, 0.4),
+    (0.85, 0.4),
+    (1.55, 0.4),
+    (1.6, 0.0),
+  ]
+  Audio.partials(1.6, freq, [(0.0, REED)], gain: gain)
+}
+
+# A and C a minor third up in turn, slurred: the notes changing at `ats`
+# seconds, over 20 ms.
+fn tones_changing_at(ats) {
+  mut freq = [(0.0, 440.0)]
+  mut now = 440.0
+  for at in ats {
+    freq.push((at - 0.01, now))
+    now = now == 440.0 ? 523.25 : 440.0
+    freq.push((at + 0.01, now))
+  }
+  freq.push((1.6, now))
+  let gain = [(0.0, 0.0), (0.05, 0.4), (1.55, 0.4), (1.6, 0.0)]
+  Audio.partials(1.6, freq, [(0.0, REED)], gain: gain)
+}
+
 # A, then C a minor third up, 0.8 s each, `cents` sharp.
 fn tones(cents) {
   let k = 2.0 ** (cents / 1200.0)
@@ -65,6 +100,27 @@ fn a_sharper_sound_is_that_much_off_in_pitch() {
   assert_true(Math.abs(d.pitch_median_cents - 30.0) < 4.0, d.pitch_median_cents)
   assert_true(Math.abs(d.loudness_db) < 0.5)
   assert_true(lib.over(d).map(|o| o[0]).contains("pitch_median_cents"))
+}
+
+@test
+fn a_vibrato_is_a_distance_a_detune_is_not() {
+  let wavering = against(vibrato_tones(0.0, 30.0))
+  assert_true(wavering.vibrato_cents > 10.0, wavering.vibrato_cents)
+  assert_true(wavering.vibrato_cents < 30.0, wavering.vibrato_cents)
+  let sharp = against(tones(30.0))
+  assert_true(sharp.vibrato_cents < 1.0, sharp.vibrato_cents)
+  # Notes that change more often are not a vibrato.
+  let busy = lib.distance(
+    lib.features(tones_changing_at([0.8]), RATE, 200.0, 1400.0),
+    lib.features(tones_changing_at([0.3, 0.55, 0.8]), RATE, 200.0, 1400.0),
+  )
+  assert_true(busy.vibrato_cents < 3.0, busy.vibrato_cents)
+  # The same vibrato against itself is no distance.
+  let same = lib.distance(
+    lib.features(vibrato_tones(0.0, 30.0), RATE, 200.0, 1400.0),
+    lib.features(vibrato_tones(0.0, 30.0), RATE, 200.0, 1400.0),
+  )
+  assert_eq(same.vibrato_cents, 0.0)
 }
 
 @test

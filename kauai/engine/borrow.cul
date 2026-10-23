@@ -24,14 +24,15 @@
 #                    share of its length first
 #   scoop            {tongue, legato}: a scoop's pitch against its note
 #                    (cents) every 30 ms from its start, out of a rest or
-#                    the tongue and out of a slur
+#                    the tongue and out of a slur (optional: SCOOP, a
+#                    saxophone solo's)
 #   onset_from_t0    {rest, tongue}: where a recorded note's onset is
 #                    against its first frame (s) when its loudness does not
 #                    say
 #   overtone_from    the lowest note played as an overtone of the fingering
 #                    an octave down (0: none)
 #
-# and these, each with the default below: own_kept, drift_kept, gain_range,
+# and these, each with the default below: scoop, own_kept, drift_kept, gain_range,
 # onset_at, min_lead and wander_style.
 
 # The voice's parameters, on the band's line (`external Sax breath=0.5`)
@@ -186,24 +187,18 @@ let MIN_LEAD = 0.008
 # (dB per doubling of the harmonic's number), as more breath pressure gives.
 let WANDER = {cents: 0.8, db: 0.25, bright: 0.3}
 
+# A scoop into a note, in cents every 30 ms from its start, as a soprano
+# saxophone solo plays them (against each note's own middle): out of a rest or
+# the tongue up in 60 ms, out of a slur deeper and up in 120 ms.
+let SCOOP = {
+  tongue: [-39.0, -18.0, -3.0, -1.0, 0.0],
+  legato: [-66.0, -37.0, -20.0, -9.0, -1.0, 0.0],
+}
+
 class Instrument {
   # `data`: the Dir of notes.json, notes.i16, attacks.json, attacks.i16 and
   # breath.json; `style`: see above.
   new(dir, style) {
-    self.mf_db = style.mf_db
-    self.db_per_octave = style.db_per_octave
-    self.lib_louder = style.lib_louder
-    self.vibrato = style.vibrato
-    self.scoop = style.scoop
-    self.onset_from_t0 = style.onset_from_t0
-    self.overtone_from = style.overtone_from
-    self.own_kept = style.get("own_kept", OWN_KEPT)
-    self.drift_kept = style.get("drift_kept", DRIFT_KEPT)
-    self.gain_range = style.get("gain_range", GAIN_RANGE)
-    self.onset_at = style.get("onset_at", ONSET_AT)
-    self.min_lead = style.get("min_lead", MIN_LEAD)
-    self.wander_style = style.get("wander_style", WANDER)
-
     # The recorded notes: for each, where its numbers are, its recording and
     # time in it, its pitch (a MIDI note) and how far off it is played (`own`,
     # cents), its loudness (dB), its vibrato (cents peak to peak), how it is
@@ -233,8 +228,6 @@ class Instrument {
     self.note_parts_cache = self.lib.notes.map(|_| nil)
 
     self.note_shapes_cache = self.lib.notes.map(|_| nil)
-
-    self.lib_onset_cache = self.lib.notes.map(|_| nil)
 
     # How each recorded note is entered and left: from or to a rest, the
     # tongue, or a slur of its kind (legato where the take does not say).
@@ -289,8 +282,30 @@ class Instrument {
     # at every join.
     self.steady_means_cache = self.lib.notes.map(|_| nil)
 
-    # Each phrase its own noise: the n-th phrase voiced gets seed n, so a song
-    # sounds the same every time it is made.
+    self.restyle(style)
+  }
+
+  # The instrument played in `style` (see above) from here on, its phrases'
+  # noise numbered from the first again, so that a song sounds the same every
+  # time it is made. The recordings stay loaded: a style is tried, and tried
+  # again, without reading them.
+  restyle(style) {
+    self.mf_db = style.mf_db
+    self.db_per_octave = style.db_per_octave
+    self.lib_louder = style.lib_louder
+    self.vibrato = style.vibrato
+    self.scoop = style.get("scoop", SCOOP)
+    self.onset_from_t0 = style.onset_from_t0
+    self.overtone_from = style.overtone_from
+    self.own_kept = style.get("own_kept", OWN_KEPT)
+    self.drift_kept = style.get("drift_kept", DRIFT_KEPT)
+    self.gain_range = style.get("gain_range", GAIN_RANGE)
+    self.onset_at = style.get("onset_at", ONSET_AT)
+    self.min_lead = style.get("min_lead", MIN_LEAD)
+    self.wander_style = style.get("wander_style", WANDER)
+    # Where a recorded note's onset is depends on `onset_from_t0`.
+    self.lib_onset_cache = self.lib.notes.map(|_| nil)
+    # Each phrase its own noise: the n-th phrase voiced gets seed n.
     self.phrase_seed = 0
   }
 
@@ -1390,4 +1405,4 @@ class Instrument {
   }
 }
 
-export {Instrument, RATE}
+export {Instrument, RATE, OWN_KEPT, DRIFT_KEPT}

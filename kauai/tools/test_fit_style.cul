@@ -1,0 +1,135 @@
+import lib from './fit_style_lib.cul'
+import engine from '../engine/borrow.cul'
+import synthetic from '../engine/synthetic.cul'
+
+let RATE = synthetic.RATE
+let STYLE = synthetic.STYLE
+
+# A tune over the range the synthetic performance plays: A, C and E above.
+let SONG = 'band Solo {
+  voice Lead  external Sax  plays melody  vol 60
+}
+song Tune {
+  tempo 120
+  band Solo
+  melody in A4..G#5
+  Verse
+}
+section Verse {
+  A     a4 c e a
+}
+'
+
+let FILES = Dir.memory({"tune.kau": SONG})
+
+# The instrument made from the synthetic performance, once: it is read into
+# memory, so its folder can go at once.
+let MADE = fn () {
+  let dir = FS.join(FS.temp_dir(), "fit-test-{UUID.v4()}")
+  FS.mkdir(dir)
+  defer {
+    FS.remove(dir, recursive: true)
+  }
+  let made = synthetic.made_into(dir)
+  {
+    inst: engine.Instrument.new(made.data, STYLE),
+    measured: [JSON.parse(FS.read(made.measured))],
+  }
+}()
+
+@test
+fn a_first_style_is_read_off_the_recordings() {
+  let made = MADE
+  let d = lib.derived(made.inst, made.measured)
+  # The performance plays A4 and C5, both long: the overtones begin a
+  # semitone over the top one.
+  assert_eq(d.overtone_from, 73)
+  # An onset after a rest and after the tongue, a few hundredths of a second
+  # after the first frame at most.
+  assert_true(d.onset_from_t0.rest >= 0.0 && d.onset_from_t0.rest < 0.1)
+  assert_true(d.onset_from_t0.tongue >= 0.0 && d.onset_from_t0.tongue < 0.1)
+  assert_true(d.vibrato.depth >= 0.0)
+  # The level follows the library's own: lib_louder and mf_db add to LIB_MF.
+  assert_eq(d.lib_louder + d.mf_db, lib.LIB_MF)
+  assert_true(d.keys().contains("own_kept"))
+}
+
+@test
+fn a_number_a_song_shows_is_found_from_a_start_far_off() {
+  let made = MADE
+  # The target is the song played in STYLE (loudness grows 7 dB an octave up
+  # the range); the start has it growing not at all.
+  let target = lib.rendered(made.inst, "sax", "tune.kau", 2.2, FILES)
+  let pairs = [{
+    song: "tune.kau",
+    target: target,
+    low: 200.0,
+    high: 1400.0,
+    dir: FILES,
+  }]
+  let start = {...STYLE, db_per_octave: 0.0}
+  let params = [{path: ["db_per_octave"], step: 4.0, lo: 0.0, hi: 14.0}]
+  let r = lib.fit(made.inst, "sax", start, pairs, 2.2, params, 2)
+  assert_true(
+    Math.abs(r.style.db_per_octave - 7.0) <= 3.0,
+    r.style.db_per_octave,
+  )
+  assert_true(r.cost < 0.5 * r.log[0].cost, r.cost)
+  # Every style logged is one that was better than the one before it.
+  let costs = r.log.map(|e| e.cost)
+  assert_true(iota(1, costs.size()).all(|i| costs[i] < costs[i - 1]))
+}
+
+@test
+fn a_number_at_its_bound_stays_in_it() {
+  let made = MADE
+  let target = lib.rendered(made.inst, "sax", "tune.kau", 2.2, FILES)
+  let pairs = [{
+    song: "tune.kau",
+    target: target,
+    low: 200.0,
+    high: 1400.0,
+    dir: FILES,
+  }]
+  # The right number is out of the range the fit may use.
+  let start = {...STYLE, db_per_octave: 0.0}
+  let params = [{path: ["db_per_octave"], step: 3.0, lo: 0.0, hi: 3.0}]
+  let r = lib.fit(made.inst, "sax", start, pairs, 2.2, params, 1)
+  assert_true(r.style.db_per_octave <= 3.0)
+}
+
+@test
+fn the_cost_counts_what_is_over_its_limit_and_no_more_than_five_limits() {
+  let zero = lib.cost({
+    spectral_db: 0.0,
+    loudness_db: 0.0,
+    integrated_lu: 0.0,
+    pitch_median_cents: 0.0,
+    pitch_p95_cents: 0.0,
+    voicing: 0.0,
+    centroid_cents: 0.0,
+    breath_db: 0.0,
+    vibrato_cents: 0.0,
+  })
+  assert_eq(zero, 0.0)
+  let huge = lib.cost({
+    spectral_db: 1000.0,
+    loudness_db: 1000.0,
+    integrated_lu: 1000.0,
+    pitch_median_cents: 1000.0,
+    pitch_p95_cents: 1000.0,
+    voicing: 1000.0,
+    centroid_cents: 1000.0,
+    breath_db: 1000.0,
+    vibrato_cents: 1000.0,
+  })
+  assert_eq(huge, 5.0)
+}
+
+@test
+fn the_program_says_what_it_is_missing() {
+  let tool = FS.join(FS.dirname(FS.abspath(Sys.script)), "fit_style.cul")
+  let none = Proc.run([Sys.executable, "--vm", tool])
+  assert_eq(none.code, 2)
+  assert_true(none.stderr.contains("--sounds is needed"))
+}

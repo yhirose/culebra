@@ -1,0 +1,168 @@
+# An instrument's style (data/instrument.json's `play`) found for it: a
+# first style read off its own recordings, then the few numbers the
+# recordings cannot say moved until songs it plays sound like the targets
+# they are set against (compare_lib.cul's distance). fit_style.cul is the
+# program; README.md says more.
+
+import engine from '../engine/borrow.cul'
+import compare from './compare_lib.cul'
+
+let RATE = 44100
+
+# A recorded mf A4 sits about this far under the recording's 95th percentile
+# (dB): the library level a note at mf asks for, so `lib_louder` follows from
+# `mf_db`.
+let LIB_MF = -11.0
+
+# How much each of compare's numbers counts, against its own limit.
+let WEIGHT = {
+  spectral_db: 2.0,
+  loudness_db: 2.0,
+  integrated_lu: 2.0,
+  pitch_median_cents: 1.0,
+  pitch_p95_cents: 1.0,
+  voicing: 1.0,
+  centroid_cents: 1.0,
+  breath_db: 1.0,
+  vibrato_cents: 2.0,
+}
+
+let median = |xs| xs.empty() ? nil : xs.sorted()[xs.size() / 2]
+
+# One number for a distance: the numbers over their limits, weighted, none
+# counting for more than 5 limits.
+fn cost(d) {
+  let total = WEIGHT.keys().map(|k| WEIGHT[k]).sum()
+  WEIGHT
+    .keys()
+    .map(|k| WEIGHT[k] * Math.min(5.0, d[k] / compare.LIMITS[k]))
+    .sum() /
+    total
+}
+
+# A first style read off the instrument `inst` (made with any style) and the
+# measures of its recordings (`measured`, each NAME.json parsed): where a
+# note's onset lies for each way in, the first note played as an overtone and
+# the vibrato of long notes, all of the recordings themselves. The level
+# numbers are a guess `fit` moves.
+fn derived(inst, measured) {
+  let own = measured.flat_map(|m| m.notes)
+  let onset = |kind| median(own
+    .filter(|v| v.from == kind && v.onset != nil)
+    .map(|v| v.onset - v.t0)) ??
+    0.0
+  let notes = inst.lib.notes
+  let long = notes.filter(|e| e.frames >= 40)
+  let vib = median(notes.filter(|e| e.frames >= 60).map(|e| e.vib)) ?? 20.0
+  {
+    mf_db: -24.0,
+    db_per_octave: 7.0,
+    lib_louder: LIB_MF + 24.0,
+    vibrato: {depth: Math.round(vib / 0.24), straight: 0.6},
+    onset_from_t0: {rest: onset("rest"), tongue: onset("tongue")},
+    overtone_from: long.empty() ? 0 : long.map(|e| e.semi).max() + 1,
+    own_kept: engine.OWN_KEPT,
+    drift_kept: engine.DRIFT_KEPT,
+  }
+}
+
+# The voices Kauai calls an instrument by: `external Voice`, as `name` (its
+# lower-case key).
+fn voices_of(inst, name) {
+  let voices = {}
+  voices[name] = {
+    phrase: |notes, params| Audio.Sound(
+      inst.phrase_samples(notes, params),
+      rate: RATE,
+    ),
+    hears: ["len", "level", "marks", "next", "params"],
+  }
+  voices
+}
+
+# The first `seconds` of song `path` (or `dir`'s) as `inst` plays it.
+fn rendered(inst, name, path, seconds, dir = nil) {
+  let song = Audio.Kauai.load(path, voices: voices_of(inst, name), dir: dir)
+  song.render(to: seconds)
+}
+
+# `style` with the number at `path` (names, from the style down) set to `v`.
+fn with_value(style, path, v) {
+  let out = {...style}
+  out[path[0]] = path.size() == 1
+    ? v
+    : with_value(style[path[0]], path.slice(1, path.size()), v)
+  out
+}
+
+fn value_at(style, path) {
+  path.reduce(style, |s, k| s[k])
+}
+
+# The style tried: what `inst` plays like in `style` on each of `pairs` (each
+# {song, target: the target's features, low, high, dir}), as the mean cost
+# and the distances. `lib_louder` follows `mf_db`.
+fn tried(inst, name, style, pairs, seconds) {
+  inst.restyle({...style, lib_louder: LIB_MF - style.mf_db})
+  let ds = pairs.map(fn (p) {
+    let samples = rendered(inst, name, p.song, seconds, p.dir)
+    compare.distance(p.target, compare.features(samples, RATE, p.low, p.high))
+  })
+  {cost: ds.map(|d| cost(d)).sum() / ds.size(), distances: ds}
+}
+
+# Make `pairs` ({song, target samples, low, high, dir}) ready: the targets'
+# features, over the first `seconds`.
+fn prepared(pairs, seconds) {
+  pairs.map(fn (p) {
+    let cut = p.target.slice(
+      0,
+      Math.min(p.target.size(), Math.round(seconds * RATE)),
+    )
+    {...p, target: compare.features(cut, RATE, p.low, p.high)}
+  })
+}
+
+# Each number of `params` ({path, step, lo, hi}) moved by its step while that
+# lowers the cost, the step halved after a round that moved nothing. (Not
+# `mf_db`: Kauai weighs an instrument by the loudness of its sounds, so how
+# loud a note is asked for, absolutely, does not reach a song.) Answers
+# {style, cost, distances, log}: the log each style tried and its cost.
+fn fit(inst, name, style0, pairs, seconds, params, rounds = 3) {
+  let ready = prepared(pairs, seconds)
+  mut style = style0
+  mut best = tried(inst, name, style, ready, seconds)
+  let log = [{what: "start", cost: best.cost, style: style}]
+  mut steps = params.map(|q| q.step)
+  for round in 0..rounds {
+    mut moved = false
+    for q in 0..params.size() {
+      let p = params[q]
+      let here = value_at(style, p.path)
+      for dir in [1.0, -1.0] {
+        let v = Math.clamp(here + dir * steps[q], p.lo, p.hi)
+        continue if v == here
+        let trial = tried(
+          inst,
+          name,
+          with_value(style, p.path, v),
+          ready,
+          seconds,
+        )
+        if trial.cost < best.cost {
+          style = with_value(style, p.path, v)
+          best = trial
+          moved = true
+          log.push({what: p.path.join("."), cost: best.cost, style: style})
+          break
+        }
+      }
+    }
+    if !moved {
+      steps = steps.map(|x| x / 2.0)
+    }
+  }
+  {style: style, cost: best.cost, distances: best.distances, log: log}
+}
+
+export {LIB_MF, WEIGHT, cost, derived, voices_of, rendered, with_value, tried, prepared, fit}

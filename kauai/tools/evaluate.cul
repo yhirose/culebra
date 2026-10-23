@@ -1,0 +1,118 @@
+# Whether an instrument sounds like its target: each song of a case played
+# by the instrument (`culebra play --wav`, so any package, however it makes
+# its sounds) and set against the target rendering of the same song with
+# compare_lib.cul's distance. Prints a table, and exits 1 when a song is over
+# a limit, so a script can stop on it.
+#
+#   culebra kauai/tools/evaluate.cul --sounds kauai/sounds/alto_sax \
+#     --case kauai/harness/cases/alto_sax/case.json --targets work/targets
+#
+# The case (JSON) names the pitch range (`range`: low, high, Hz) and the
+# songs to judge by (`eval`: each {song, target}, `song` relative to the
+# case's folder, `target` a WAV in --targets). `--set tune` judges the songs
+# listed as `tune` instead, the ones an instrument is adjusted on.
+
+import compare from './compare_lib.cul'
+
+let SPEC = {
+  name: 'evaluate.cul',
+  doc: 'whether an instrument sounds like its targets, song by song',
+  args: [
+    {
+      name: 'sounds',
+      type: 'String',
+      default: nil,
+      doc: 'the instrument: a folder holding main.cul',
+    },
+    {
+      name: 'case',
+      type: 'String',
+      default: nil,
+      doc: 'the case: a JSON file naming the range and the songs',
+    },
+    {
+      name: 'targets',
+      type: 'String',
+      default: nil,
+      doc: 'the folder the targets (WAV) are in',
+    },
+    {
+      name: 'set',
+      type: 'String',
+      default: 'eval',
+      doc: 'which songs of the case: eval (default) or tune',
+    },
+    {
+      name: 'out',
+      type: 'String',
+      default: nil,
+      doc: 'a folder to keep the renderings and numbers (JSON) in',
+    },
+  ],
+}
+
+fn fail(message) {
+  IO.eprintln("evaluate: {message}")
+  Sys.exit(2)
+}
+
+let args = Args.parse(Sys.argv, SPEC)
+fail("--sounds, --case and --targets are needed (--help says what each is)") if args.sounds ==
+  nil ||
+  args.case == nil ||
+  args.targets == nil
+fail("--set is eval or tune") if args.set != "eval" && args.set != "tune"
+fail("no case {args.case}") if !FS.exists(args.case)
+let spec = JSON.parse(FS.read(args.case))
+let songs = spec.get(args.set, [])
+fail("the case has no `{args.set}` songs") if songs.empty()
+let folder = FS.dirname(FS.abspath(args.case))
+let out = args.out ?? FS.join(FS.temp_dir(), "evaluate-{UUID.v4()}")
+FS.mkdir(out) if !FS.exists(out)
+
+fn mono(path) {
+  let made = Audio.decode(FS.read(path))
+  let chs = made.channels
+  {
+    samples: chs.size() == 1
+      ? chs[0]
+      : iota(chs[0].size()).map(|i| chs.map(|c| c[i]).sum() / chs.size()),
+    rate: made.rate,
+  }
+}
+
+let rows = []
+for s in songs {
+  let song = FS.join(folder, s.song)
+  let target = FS.join(args.targets, s.target)
+  fail("no song {song}") if !FS.exists(song)
+  fail("no target {target}") if !FS.exists(target)
+  let wav = FS.join(out, "{FS.stem(song)}.wav")
+  let r = Proc.run([
+    Sys.executable,
+    "play",
+    "--sounds",
+    args.sounds,
+    "--wav",
+    wav,
+    song,
+  ])
+  fail("{song} could not be played: {r.stderr}") if r.code != 0
+  let want = mono(target)
+  let got = mono(wav)
+  let d = compare.distance(
+    compare.features(want.samples, want.rate, spec.range.low, spec.range.high),
+    compare.features(got.samples, got.rate, spec.range.low, spec.range.high),
+  )
+  let over = compare.over(d)
+  rows.push({song: s.song, distance: d, over: over})
+  println("{s.song}: {over.empty() ? "within limits" : "over"} (spectral {d.spectral_db} dB, loudness {d.loudness_db} dB, programme {d.integrated_lu} LU, pitch {d.pitch_median_cents} cents, voicing {d.voicing}, centroid {d.centroid_cents} cents, breath {d.breath_db} dB, vibrato {d.vibrato_cents} cents)")
+  for o in over {
+    println("  {o[0]} {o[1]} is over {o[2]}")
+  }
+  println("  worst seconds: {d.worst.map(|w| "{w.at}s {w.spectral_db} dB").join(", ")}") if !d.worst.empty()
+}
+FS.write(FS.join(out, "evaluate.json"), JSON.stringify(rows) + "\n")
+let bad = rows.filter(|r| !r.over.empty()).size()
+println("{rows.size() - bad} of {rows.size()} songs within limits; renderings and numbers in {out}")
+Sys.exit(bad == 0 ? 0 : 1)

@@ -1,0 +1,87 @@
+# A copy of this repo to build a case's instrument in without seeing the
+# answer: the repo as committed (no history), with the case's instrument
+# package, its eval songs and every other case taken out, and the case's
+# `eval` and its targets not in it. The agents work there, and the answer is
+# judged outside it (evaluate.cul on the repo's own files).
+#
+#   culebra kauai/harness/cleanroom.cul --case soprano_sax --dest ../runs/soprano-1
+#
+# `--dest` must not exist yet, and has to lie outside the repo, so the
+# agents cannot step up into it.
+
+let SPEC = {
+  name: 'cleanroom.cul',
+  doc: "a copy of the repo to build a case's instrument in without seeing the answer",
+  args: [
+    {
+      name: 'case',
+      type: 'String',
+      default: nil,
+      doc: 'the case: its folder name under kauai/harness/cases',
+    },
+    {
+      name: 'dest',
+      type: 'String',
+      default: nil,
+      doc: 'the folder to make (outside the repo, not there yet)',
+    },
+  ],
+}
+
+fn fail(message) {
+  IO.eprintln("cleanroom: {message}")
+  Sys.exit(2)
+}
+
+fn sh(command) {
+  let r = Proc.run(["sh", "-c", command])
+  fail("{command}: {r.stderr}") if r.code != 0
+  r.stdout
+}
+
+let args = Args.parse(Sys.argv, SPEC)
+fail("--case and --dest are needed (--help says what each is)") if args.case ==
+  nil ||
+  args.dest == nil
+let repo = FS.abspath(FS.join(FS.dirname(FS.abspath(Sys.script)), "..", ".."))
+let case_dir = FS.join(repo, "kauai", "harness", "cases", args.case)
+fail("no case {args.case}") if !FS.exists(FS.join(case_dir, "case.json"))
+let dest = FS.abspath(args.dest)
+fail("{dest} is there already") if FS.exists(dest)
+fail("{dest} lies inside the repo {repo}") if dest.size() >= repo.size() &&
+  dest.slice(0, repo.size()).to_string() == repo
+
+let spec = JSON.parse(FS.read(FS.join(case_dir, "case.json")))
+FS.mkdir(dest)
+sh("cd '{repo}' && git archive HEAD | tar -x -C '{dest}'")
+
+# The answer: the instrument's package, the other cases, the eval songs, and
+# the case's `hide` (files that hold it in another shape).
+let package = FS.join(dest, "kauai", "sounds", args.case)
+FS.remove(package, recursive: true) if FS.exists(package)
+for other in FS.list_dir(FS.join(dest, "kauai", "harness", "cases")) {
+  continue if other == args.case
+  FS.remove(FS.join(dest, "kauai", "harness", "cases", other), recursive: true)
+}
+for s in spec.get("eval", []) {
+  let song = FS.join(dest, "kauai", "harness", "cases", args.case, s.song)
+  FS.remove(song) if FS.exists(song)
+}
+for path in spec.get("hide", []) {
+  FS.remove(FS.join(dest, path)) if FS.exists(FS.join(dest, path))
+}
+let hidden = {...spec}
+hidden.remove("eval")
+FS.write(
+  FS.join(dest, "kauai", "harness", "cases", args.case, "case.json"),
+  JSON.stringify(hidden, indent: 2) + "\n",
+)
+
+# The culebra the agents run: this build, linked in.
+let binary = Sys.executable
+FS.mkdir(FS.join(dest, "build-dev"))
+sh("ln -s '{binary}' '{dest}/build-dev/culebra'")
+println("clean room for {args.case} at {dest}")
+println("  culebra: {dest}/build-dev/culebra")
+println("  case:    {dest}/kauai/harness/cases/{args.case}/case.json (without `eval`)")
+println("  removed: kauai/sounds/{args.case}, the other cases, {spec.get("eval", []).size()} eval songs")

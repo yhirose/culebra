@@ -3,17 +3,25 @@ import measure from './measure_lib.cul'
 import format from '../engine/data_format.cul'
 
 let TOOL = FS.join(FS.dirname(FS.abspath(Sys.script)), "make_data.cul")
-let SOUNDS = FS.join(
-  FS.dirname(FS.dirname(FS.abspath(Sys.script))),
-  "sounds",
-  "soprano_sax",
-)
-# The soprano's limits for the notes left out, as its instrument.json has them.
-let LIMITS = JSON.parse(FS.read(FS.join(
-  SOUNDS,
-  "data",
-  "instrument.json",
-))).make.left_out
+# What an instrument is made with (its data/instrument.json's `make`).
+let MAKE = {
+  left_out: {brighter: 9.0, odd_under: 12.0},
+  breath_noise: [20.0, 20000.0],
+  measure: {low: 200.0, high: 1400.0},
+}
+let LIMITS = MAKE.left_out
+
+# A package folder holding only that, in `dir`.
+fn package_in(dir) {
+  let pkg = FS.join(dir, "pkg")
+  FS.mkdir(FS.join(dir, "pkg"))
+  FS.mkdir(FS.join(pkg, "data"))
+  FS.write(
+    FS.join(pkg, "data", "instrument.json"),
+    JSON.stringify({make: MAKE}) + "\n",
+  )
+  pkg
+}
 let RATE = 44100
 let REED = [0.3, 0.45, 0.25, 0.2, 0.15, 0.1, 0.08, 0.05]
 let db = |a, b| 10.0 * Math.log(a / b) / Math.log(10.0)
@@ -225,7 +233,7 @@ fn the_data_of_a_performance_reads_back_as_its_notes() {
     "--vm",
     TOOL,
     "--sounds",
-    SOUNDS,
+    package_in(dir),
     "--out",
     FS.join(dir, "data"),
     FS.join(measured, "take.json"),
@@ -285,12 +293,17 @@ fn a_missing_package_or_measure_is_said_so() {
   ])
   assert_eq(none.code, 2)
   assert_true(none.stderr.contains("no data/instrument.json"))
+  let dir = FS.join(FS.temp_dir(), "make-data-test-{UUID.v4()}")
+  defer {
+    FS.remove(dir, recursive: true) if FS.exists(dir)
+  }
+  FS.mkdir(dir)
   let missing = Proc.run([
     Sys.executable,
     "--vm",
     TOOL,
     "--sounds",
-    SOUNDS,
+    package_in(dir),
     "/nonexistent/x.json",
   ])
   assert_true(missing.stderr.contains("no measure /nonexistent/x.json"))

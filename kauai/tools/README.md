@@ -283,6 +283,7 @@ the frames where either sounds (within 50 dB of its loudest). `--low` and
 | `voicing` | the share of frames where only one has a pitch | 0.03 |
 | `centroid_cents` | where the spectrum's centre of mass lies: brightness | 60 |
 | `breath_db` | the noise against the harmonics where both have a pitch (`Audio.harmonics` along each one's own pitch) | 3.0 |
+| `vibrato_cents` | how much the pitch moves about its slow course inside a note (the rms of its quick moves; a jump of more than 60 cents between frames is a new note), per second where both hold a pitch, the mean absolute difference | 3.0 |
 
 The limits are a starting point, about where a listener stops telling the
 two apart; the exit status is 1 when a number is over its limit, and the
@@ -296,6 +297,52 @@ delay already moves `voicing` and `centroid_cents`, so a build whose notes
 start a few milliseconds off is not wrong for that alone. `--json FILE`
 writes every number, what is over, and the yardstick. A minute of music
 takes about 4 s.
+
+## fit_style.cul: an instrument's style found from targets
+
+`fit_style.cul` finds an instrument's style (`data/instrument.json`'s
+`play`, the numbers the engine plays its recordings in) so that songs it
+plays sound like targets: renderings of the same songs by whatever the
+instrument should sound like.
+
+```sh
+culebra kauai/tools/fit_style.cul --sounds kauai/sounds/alto_sax \
+  --measured work/measured --seconds 30 \
+  --tune work/songs/tune_a.kau=work/targets/tune_a.wav \
+  --tune work/songs/tune_b.kau=work/targets/tune_b.wav --log work/fit.json
+```
+
+The package's `data/` must be made and hold `instrument.json` with a `make`
+(its `make.measure` is the pitch range). With no `play`, or with `--derive`,
+a first style is read off the recordings themselves: where a note's onset
+lies for each way in (the medians over the notes measure found an onset for),
+the first note played as an overtone (the top of the long notes, plus one),
+the vibrato of long notes. The level numbers are a guess (and stay one: Kauai
+weighs an instrument by the loudness of its sounds, so how loud a note is
+asked for, absolutely, does not reach a song). Then `db_per_octave`, the
+vibrato's `depth` and `straight`, `own_kept`, `drift_kept` and `overtone_from`
+are moved one at a time by a step while that lowers the cost (compare's
+numbers over their limits, weighted), halving the step after a round that
+moved nothing. `lib_louder` follows `mf_db`, so the notes borrowed do not
+change when the level does. The style is written back unless `--dry`; `--log` keeps every style tried and its cost.
+A 20 s excerpt of a song, one round, takes about a minute.
+
+## evaluate.cul: does an instrument sound like its targets
+
+`evaluate.cul` plays each song of a case with an instrument
+(`culebra play --wav`, so any package, however it makes its sounds) and sets
+it against the target rendering with `compare.cul`'s distance. The case is
+`kauai/harness/cases/<name>/case.json` (its `range`, and the songs of `eval`
+or, with `--set tune`, `tune`).
+
+```sh
+culebra kauai/tools/evaluate.cul --sounds kauai/sounds/alto_sax \
+  --case kauai/harness/cases/alto_sax/case.json --targets work/targets
+```
+
+It prints a line a song and what is over its limit, keeps the renderings and
+the numbers (`evaluate.json`) in `--out`, and exits 1 when a song is over a
+limit. Two songs take about 25 s.
 
 ## make_sounds.cul: an instrument's sounds made beforehand
 
