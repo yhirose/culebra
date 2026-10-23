@@ -36,7 +36,6 @@
 11. Functions and closures > Lambda sugar `|x| ...`
 11. Functions and closures > Methods: `self`
 11. Functions and closures > Parameters
-11. Functions and closures > Recursion: `fn`
 11. Functions and closures > Return
 12. Control flow > Diverging expressions
 12. Control flow > `debugger`

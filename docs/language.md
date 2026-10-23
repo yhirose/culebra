@@ -1602,8 +1602,8 @@ another object and calling it as a method still runs with the original
 receiver — and each read mints a new wrapper, so `o.f == o.f` is
 `false`. This applies uniformly to object-literal properties, class
 methods, statics, and constructors (`let mk = C.new`). Inside a body,
-the implicit recursion handle `fn` refers to the value the call was
-made through, so in a method-invoked frame `fn` is the bound wrapper —
+the implicit recursion handle `fn` keeps the receiver the call came
+with: in a method-invoked frame `fn` is the bound wrapper, so
 recursing through `fn(...)` or returning `fn` keeps the current
 receiver. A bound method crosses an isolate with a copy of its receiver,
 when the receiver can cross ([stdlib §12](stdlib.md#12-isolate)).
@@ -1754,6 +1754,8 @@ Semantics:
   - **Each initializer is a scope of its own**: what one declares
     (`area = (let side = 3) * side`) ends with it, and the next
     field's initializer does not see it.
+  - **No `fn`**: an initializer is no function of its own, so reading
+    `fn` in one is a `SyntaxError` (a function written in it has its own).
   - A typed field without an initializer (`name: String` above) takes
     its type's zero value: `0` / `0.0` / `''` / `false`; reference
     types (`Array`, `Object`, ...) default to `nil`. The untyped form
@@ -2524,6 +2526,18 @@ Within a function body, `fn` refers to the function value currently
 being executed. Recursion without giving the function a name:
 
     fib = fn (x) { if x < 2 { x } else { fn(x - 1) + fn(x - 2) } }
+
+In a `fn name` declaration, `fn` is the body that is running: one
+overload of `name`, while the name itself is the dispatcher over all of
+them, a different value. So `fn(...)` calls that same body again; call
+the function by its name to choose among its overloads anew.
+
+```culebra
+let g = fn (k) { fn }
+fn h(k) { fn }
+inspect(g(0) == g)   # => true
+inspect(h(0) == h)   # => false
+```
 
 ### Methods: `self`
 

@@ -120,6 +120,22 @@ effect fn e(k) {
   e(1, 2)
 }
 handle { e(0) } with ask(resume) { resume(nil) }' "DispatchError: no matching method for \`e\` at 4:3."
+# A field initializer has no `fn`.
+check_eq "fn in field initializer" 'class P {
+  x: Any = fn
+}' "SyntaxError: \`fn\` cannot appear in a field initializer. at 2:12."
+check_eq "fn in field initializer handle" 'effect fn ask()
+class P {
+  x: Any = handle {
+    perform ask()
+    fn
+  } with ask(resume) { resume(nil) }
+}' "SyntaxError: \`fn\` cannot appear in a field initializer. at 5:5."
+# ...but a function written in one has its own, as `new`'s defaults do.
+check_eq "fn in field initializer lambda" 'class P {
+  x: Any = fn (k) { if k == 0 { 0 } else { fn(k - 1) + 1 } }
+}
+println(P().x(3))' "3"
 # Control leaves a handle's body only through its value.
 check_eq "return in handle body" 'effect fn ask()
 fn find() {

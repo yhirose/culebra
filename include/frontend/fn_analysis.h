@@ -68,6 +68,9 @@ struct FuncInfo {
   std::string fn_from;
   bool fn_from_read = false;
   std::set<std::string> fn_from_captures;
+  // The first `fn` this frame reads, itself or through a lowered frame
+  // inside it (where an error about that read points).
+  const peg::Ast* fn_read = nullptr;
   // The body's own name: for an undecorated `fn name` (MULTIFN_DECL) the
   // declared name, for a `let name = fn …` literal the binding it
   // initializes. The body sees it as a prologue-bound local delivered by
@@ -307,6 +310,7 @@ struct FnAnalysis {
     if (std::find(nested.free_vars.begin(), nested.free_vars.end(), "fn") ==
         nested.free_vars.end())
       return;
+    if (!info.fn_read) info.fn_read = nested.fn_read;
     if (!info.fn_from.empty()) {
       info.fn_from_read = true;
       return;
@@ -473,6 +477,13 @@ struct FnAnalysis {
                                        FuncInfo::OwnNameSource::Receiver),
                      info);
       }
+      // `fn` in a field initializer names nothing: its frame is the
+      // compiler's. Reported where it is read (FuncInfo::fn_read).
+      if (field_info.uses_fn)
+        throw CulebraError("SyntaxError",
+                           "`fn` cannot appear in a field initializer.",
+                           static_cast<long>(field_info.fn_read->line),
+                           static_cast<long>(field_info.fn_read->column));
       // The field-init frame is a receiver frame (build_class_instance /
       // the `new` body always invoke it with the instance as `self`), so
       // its lexical-fallback capture is dead weight.
@@ -538,6 +549,7 @@ struct FnAnalysis {
       // lowered frame it is the enclosing function's, and a maker's is a
       // capture already.
       if (node.token == "fn") {
+        if (!info.fn_read) info.fn_read = &node;
         if (info.lowered_frame)
           add_free_var(info, "fn");
         else if (!info.fn_from.empty())

@@ -228,7 +228,9 @@ ctest.entries 36
 # ja.
 # 1086 since language §Declaring an effect shows `fn` in an effect fn's body,
 # in en and ja.
-docs.blocks 1086
+# 1088 since language §Recursion shows `fn` in a `fn name` declaration is the
+# running overload, not the dispatcher, in en and ja.
+docs.blocks 1088
 
 # The samples the language front ends are run over (examples/languages/*).
 languages.samples 130
