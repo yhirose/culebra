@@ -120,6 +120,22 @@ effect fn e(k) {
   e(1, 2)
 }
 handle { e(0) } with ask(resume) { resume(nil) }' "DispatchError: no matching method for \`e\` at 4:3."
+# Control leaves a handle's body only through its value.
+check_eq "return in handle body" 'effect fn ask()
+fn find() {
+  handle {
+    perform ask()
+    return 1
+  } with ask(resume) { resume(nil) }
+}
+find()' "SyntaxError: \`return\` cannot appear in a \`handle\` body: it would end only the handle, not the function around it; give the value as the body's last expression. at 5:5."
+check_eq "break out of handle body" 'effect fn ask()
+while true {
+  handle {
+    perform ask()
+    break
+  } with ask(resume) { resume(nil) }
+}' "SyntaxError: \`break\` cannot leave a \`handle\` body: it would end only the handle, not the loop around it. at 5:5."
 # The lowering marks the classes it declares for its own storage; a program's
 # class may not take the mark.
 check_eq "reserved storage mark" '@__lowered_storage

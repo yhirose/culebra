@@ -186,6 +186,18 @@ let er_tail = handle { er_plain2() } with er_ask(resume) {
   resume(f())
 }
 assert_eq(er_tail, 9)
+// A nested handle's clause is a function of its own: its `return` ends that
+// clause, inside a body that performs too.
+fn er_nested() {
+  handle {
+    let x = handle { perform er_ask() } with er_ask(resume) { return 5 }
+    perform er_ask()
+    x
+  } with er_ask(resume) {
+    resume(nil)
+  }
+}
+assert_eq(er_nested(), 5)
 
 // (a local binding shadowing an effect-fn name at a call site inside an
 // effect body is a parse-time SyntaxError — verified manually on both

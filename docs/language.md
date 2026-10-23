@@ -5092,6 +5092,12 @@ inspect(doubled().collect())  # => [20, 7]
   continuation runs its defers when a resumed fork completes. A `defer`
   nested in control flow, or a `perform` inside a `defer`, is rejected at
   parse time.
+* A `return` in a **handler clause** ends the clause, and its value is the
+  `handle`'s (an abort). A `return` in a **`handle` body**, or a `break` /
+  `continue` to a loop around it, is rejected at parse time: it would end
+  only the `handle`, not the function or loop around it, so give the value as
+  the body's last expression instead. In an `effect fn` body, `return`
+  returns from the effect fn, as in any fn.
 * A **named fn** declared in an effect body must sit at the body's statement
   level (one buried in nested control flow is rejected at parse time); it may
   be a generator and may reference the body's locals.

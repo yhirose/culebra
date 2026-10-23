@@ -1382,26 +1382,31 @@ inline std::shared_ptr<peg::Ast> parse_wrapper_fn(
   return wrapper_fn;
 }
 
-// True if `node` contains a break/continue that targets an *enclosing*
-// loop (i.e. not nested inside a while/for within `node`), or a return
-// anywhere. Such statements can't be emitted verbatim into the dispatch
-// loop — break/continue/return must become state jumps. A self-contained
-// inner loop with its own internal break stays verbatim-safe (the break
-// binds to that real inner loop). Stops at fn boundaries.
+// The first break/continue in `node` that targets an *enclosing* loop (i.e.
+// not nested inside a while/for within `node`), or the first return, else
+// nullptr. Such statements can't be emitted verbatim into the dispatch loop —
+// break/continue/return must become state jumps. A self-contained inner loop
+// with its own internal break stays verbatim-safe (the break binds to that
+// real inner loop). Stops where control has a frame of its own: a function or
+// a method (opens_own_body), a nested `handle` (its body a computation of its
+// own, its clauses functions) and a `defer` (whose `return` ends the defer).
 //
 // `open` is the labels of the loops within `node` that enclose the walk,
 // innermost last (empty for an unlabelled one), so a labelled break escapes
 // exactly when no loop inside `node` carries its label — `break outer` inside
 // a nested loop is escaping even though its depth is not 0.
-inline bool escaping_loop_ctrl(const peg::Ast& node,
-                               std::vector<std::string_view>& open) {
+inline const peg::Ast* escaping_loop_ctrl(const peg::Ast& node,
+                                          std::vector<std::string_view>& open) {
   using namespace peg::udl;
-  if (is_fn_boundary(node.tag)) return false;
-  if (node.tag == "RETURN"_) return true;
+  if (opens_own_body(node) || node.tag == "HANDLE"_ || node.tag == "DEFER"_)
+    return nullptr;
+  if (node.tag == "RETURN"_) return &node;
   if (node.tag == "BREAK"_ || node.tag == "CONTINUE"_) {
     auto label = culebra::break_label_of(node);
-    if (label.empty()) return open.empty();
-    return std::find(open.begin(), open.end(), label) == open.end();
+    bool escapes = label.empty()
+                       ? open.empty()
+                       : std::find(open.begin(), open.end(), label) == open.end();
+    return escapes ? &node : nullptr;
   }
   bool is_loop = node.tag == "WHILE"_ || node.tag == "FOR"_;
   const peg::Ast* label = is_loop ? culebra::loop_label_of(node) : nullptr;
@@ -1410,20 +1415,23 @@ inline bool escaping_loop_ctrl(const peg::Ast& node,
     // a trailing `nobreak { … }` runs *outside* the loop, so its break/continue
     // escape to an enclosing loop — walk it at the current depth.
     if (!is_loop || c->tag == "NOBREAK_CLAUSE"_) {
-      if (escaping_loop_ctrl(*c, open)) return true;
+      if (const auto* e = escaping_loop_ctrl(*c, open)) return e;
       continue;
     }
     open.push_back(label ? label->token : std::string_view{});
-    bool escapes = escaping_loop_ctrl(*c, open);
+    const auto* escapes = escaping_loop_ctrl(*c, open);
     open.pop_back();
-    if (escapes) return true;
+    if (escapes) return escapes;
   }
-  return false;
+  return nullptr;
 }
 
-inline bool has_escaping_loop_ctrl(const peg::Ast& node) {
+inline const peg::Ast* first_escaping_loop_ctrl(const peg::Ast& node) {
   std::vector<std::string_view> open;
   return escaping_loop_ctrl(node, open);
+}
+inline bool has_escaping_loop_ctrl(const peg::Ast& node) {
+  return first_escaping_loop_ctrl(node) != nullptr;
 }
 
 // One enclosing CPS-managed loop: its header and exit states, plus the label

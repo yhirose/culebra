@@ -1603,6 +1603,23 @@ class EffectsLowerer {
     return nullptr;
   }
 
+  // Control leaves a handle's body only through its value: a `return`, or a
+  // `break`/`continue` to a loop around the handle, would end only the handle.
+  void reject_escape_from_handle_body(const peg::Ast& body) const {
+    using namespace peg::udl;
+    const auto* e = first_escaping_loop_ctrl(body);
+    if (!e) return;
+    std::string msg =
+        e->tag == "RETURN"_
+            ? "`return` cannot appear in a `handle` body: it would end only "
+              "the handle, not the function around it; give the value as the "
+              "body's last expression."
+            : std::format("`{}` cannot leave a `handle` body: it would end "
+                          "only the handle, not the loop around it.",
+                          e->tag == "BREAK"_ ? "break" : "continue");
+    throw CulebraError("SyntaxError", msg, err_pos(*e).line, err_pos(*e).col);
+  }
+
   // A handler clause becomes a function of its own, which a `yield` in it
   // would make a generator handing the `handle` an iterator. The clause is
   // not a place to yield from, whatever generator the `handle` sits in.
@@ -2049,6 +2066,7 @@ class EffectsLowerer {
     auto val_name = named("_eh_val_");
     std::vector<std::string_view> body_params;
     if (captures) body_params.push_back("_eff_outer");
+    reject_escape_from_handle_body(body);
     std::string cls =
         build_computation_class(class_name, body, body_params, rv_name, around,
                                 captures);
