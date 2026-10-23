@@ -42,6 +42,34 @@
     "breath_noise": [
       20.0,
       20000.0
-    ]
+    ],
+    "reference_groups": {
+      "iowa_1997": [
+        "SopSax.NoVib.ff.Ab3B3",
+        "SopSax.NoVib.ff.C4B4",
+        "SopSax.NoVib.ff.C5B5",
+        "SopSax.NoVib.ff.C6Eb6",
+        "SopSax.NoVib.mf.Ab3B3",
+        "SopSax.NoVib.mf.C4B4",
+        "SopSax.NoVib.mf.C5B5",
+        "SopSax.NoVib.mf.C6Eb6",
+        "SopSax.NoVib.pp.Ab3B3",
+        "SopSax.NoVib.pp.C4B4",
+        "SopSax.NoVib.pp.C5B5",
+        "SopSax.NoVib.pp.C6Eb6",
+        "SopSax.Vib.ff.Ab3B3",
+        "SopSax.Vib.ff.C4B4",
+        "SopSax.Vib.ff.C5B5",
+        "SopSax.Vib.ff.C6Eb6",
+        "SopSax.Vib.mf.Ab3B3",
+        "SopSax.Vib.mf.C4B4",
+        "SopSax.Vib.mf.C5B5",
+        "SopSax.Vib.mf.C6Eb6",
+        "SopSax.Vib.pp.Ab3B3",
+        "SopSax.Vib.pp.C4B4",
+        "SopSax.Vib.pp.C5B5",
+        "SopSax.Vib.pp.C6Eb6"
+      ]
+    }
   }
 }

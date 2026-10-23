@@ -54,7 +54,21 @@ made beforehand instead.
 ## Sources
 
 The recorded notes and attacks were measured from three takes of a soprano
-saxophonist sketching a tune, released into the public domain:
+saxophonist sketching a tune, released into the public domain, and from the
+University of Iowa's soprano saxophone samples (1997, Michael Giles, recorded
+in the Anechoic Chamber), which their makers offer for any project without
+restriction, asking that the collection be cited and the maker told how the
+samples are used:
+
+- "Musical Instrument Samples", University of Iowa Electronic Music Studios,
+  <https://theremin.music.uiowa.edu/MISsopranosaxophone.html>: the 24 files
+  of the soprano saxophone with and without vibrato, at pp, mf and ff. Their
+  loudness shares one reference (`make.reference_groups` in `data/instrument.json`)
+  so that the dynamics are kept apart.
+
+
+The three takes of a soprano saxophonist sketching a tune, released into the
+public domain:
 
 - "Sax_soprano_1_Cmin_60(120) BPM" by Kataguruma,
   <https://freesound.org/s/734969/>, CC0 1.0
@@ -64,7 +78,9 @@ saxophonist sketching a tune, released into the public domain:
   <https://freesound.org/s/734971/>, CC0 1.0
 
 `data/` is made from them by `kauai/tools/measure.cul` (`--low 200 --high
-1400`) and then `kauai/tools/make_data.cul`.
+1400`; the Iowa files `--low 190 --high 1400`, their lowest notes being Ab3)
+and then `kauai/tools/make_data.cul` with all of them as `--sources` and the
+measures as its arguments.
 
 A few numbers in `main.cul` (the shape of a written scoop, how much vibrato
 a long note asks for, how a note's loudness grows up the range) were
