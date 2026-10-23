@@ -27,7 +27,8 @@ fn a_note_reads_back_to_its_hundredths() {
 
 @test
 fn gains_read_back_within_a_hundredth_of_a_db_and_silence_as_nothing() {
-  let parts = format.note_parts(packed(NOTE).bytes, packed(NOTE).e, 3)
+  let t = packed(NOTE)
+  let parts = format.note_parts(t.bytes, t.e, 3)
   assert_eq(parts.gains[2], 0.0)
   for k in [0, 1, 3, 11] {
     let db = 20.0 * Math.log(parts.gains[k] / NOTE.gains[k]) / Math.log(10.0)

@@ -167,7 +167,7 @@ fn a_harsh_take_and_a_note_read_an_octave_low_are_left_out() {
 # softer), the tongue's stop, C5 (1.55 to 2.5 s) with a vibrato; a breath of
 # noise under both.
 let SHARP = 2.0 ** (0.15 / 12.0)
-let PERFORMANCE = fn () {
+fn performance() {
   Random.seed(3)
   let freq = [
     (0.0, SHARP * 440.0),
@@ -188,7 +188,7 @@ let PERFORMANCE = fn () {
   ]
   let tone = Audio.partials(3.2, freq, [(0.0, REED)], gain: gain)
   iota(tone.size()).map(|i| 0.25 * tone[i] + Random.uniform(-0.002, 0.002))
-}()
+}
 
 @test
 fn the_data_of_a_performance_reads_back_as_its_notes() {
@@ -201,7 +201,7 @@ fn the_data_of_a_performance_reads_back_as_its_notes() {
   FS.mkdir(sources)
   FS.write(
     FS.join(sources, "take.wav"),
-    Audio.Sound(PERFORMANCE, rate: RATE).data(),
+    Audio.Sound(performance(), rate: RATE).data(),
   )
   let made = Audio.decode(FS.read(FS.join(sources, "take.wav")))
   let m = measure.measure(made.channels[0], RATE, 200.0, 1400.0)

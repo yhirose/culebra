@@ -14,11 +14,15 @@
 # attacks.i16 holds each attack's samples from ATTACK_PRE before its onset to
 # ATTACK_POST after, the loudest sample of them all at full scale: a number
 # over attacks.json's `scale` is the sample.
+#
+# breath.json says the breath's bands (Hz), the noise Audio.partials makes it
+# from (BREATH_NOISE) and how much of each band pulses with the tone.
 
 let KEY = 3
 let SILENT = -32768
 let ATTACK_PRE = 0.015
 let ATTACK_POST = 0.1
+let BREATH_NOISE = [20.0, 20000.0]
 
 let LN10 = Math.log(10.0)
 
@@ -63,8 +67,7 @@ fn pack_note(n) {
   {numbers: numbers, harms: harms}
 }
 
-# Note `e`'s numbers (as notes.json describes it) out of `bytes`, `nb`
-# breath bands a frame.
+# `n` numbers out of `bytes`, from the `at`-th.
 let numbers = |bytes, at, n| String.unpack("i16", bytes, at: 2 * at, count: n)
 
 let hundredths = |bytes, at, n| numbers(bytes, at, n).map(|v| v * 0.01)
@@ -99,16 +102,14 @@ fn note_shapes(bytes, e, nb, lh) {
   let kept = numbers(bytes, e.at + 2 * m + m * nb + e.gains, keys.size() * k)
   iota(m).map(fn (j) {
     let q = j / KEY
-    let (a, b) = (keys[q], keys[Math.min(q + 1, keys.size() - 1)])
+    let qb = Math.min(q + 1, keys.size() - 1)
+    let (a, b) = (keys[q], keys[qb])
     let f = b > a ? (j - a) * 1.0 / (b - a) : 0.0
     iota(lh).map(fn (h) {
       if h >= k {
         return 0.0
       }
-      let (
-        va,
-        vb,
-      ) = (kept[q * k + h], kept[Math.min(q + 1, keys.size() - 1) * k + h])
+      let (va, vb) = (kept[q * k + h], kept[qb * k + h])
       va == SILENT || vb == SILENT
         ? 0.0
         : 10.0 ** ((va * (1.0 - f) + vb * f) * 0.0005)
@@ -143,26 +144,31 @@ let NOTE_KEYS = [
 ]
 let ATTACK_KEYS = ["rec", "at", "t0", "onset", "len", "f0_fade"]
 
+# Object `o`'s entries for `keys`, in their order.
+fn picked(o, keys) {
+  keys.reduce({}, fn (out, k) {
+    out[k] = o[k]
+    out
+  })
+}
+
 # data/ written into folder `dir`: `notes` (each {note, parts}: notes.json's
 # description, its keys NOTE_KEYS but `at` and `harms`, and pack_note's
 # parts), `harmonics` a frame, `attacks` (each {rec, t0, onset, f0_fade,
 # samples}, its samples from `pre` seconds before its onset, at `rate`),
-# and `breath` (breath.json as it is: bands, noise, pulsed).
+# and `breath` ({bands, pulsed}, breath.json's).
 fn write(dir, harmonics, notes, attacks, pre, rate, breath) {
   FS.mkdir(dir)
   mut at = 0
-  let numbers = []
+  let all = []
   let index = notes.map(fn (n) {
     let p = pack_note(n.parts)
     let e = {...n.note, at: at, harms: p.harms}
-    numbers.extend(p.numbers)
+    all.extend(p.numbers)
     at += p.numbers.size()
-    NOTE_KEYS.reduce({}, fn (o, k) {
-      o[k] = e[k]
-      o
-    })
+    picked(e, NOTE_KEYS)
   })
-  FS.write(FS.join(dir, "notes.i16"), String.pack("i16", numbers))
+  FS.write(FS.join(dir, "notes.i16"), String.pack("i16", all))
   FS.write(
     FS.join(dir, "notes.json"),
     JSON.stringify({harmonics: harmonics, notes: index}) + "\n",
@@ -178,23 +184,28 @@ fn write(dir, harmonics, notes, attacks, pre, rate, breath) {
     samples.extend(nums)
     let e = {...a, at: at_a, len: nums.size()}
     at_a += nums.size()
-    ATTACK_KEYS.reduce({}, fn (o, k) {
-      o[k] = e[k]
-      o
-    })
+    picked(e, ATTACK_KEYS)
   })
   FS.write(FS.join(dir, "attacks.i16"), String.pack("i16", samples))
   FS.write(
     FS.join(dir, "attacks.json"),
     JSON.stringify({pre: ATTACK_PRE, scale: scale, attacks: kept}) + "\n",
   )
-  FS.write(FS.join(dir, "breath.json"), JSON.stringify(breath) + "\n")
+  FS.write(
+    FS.join(dir, "breath.json"),
+    JSON.stringify({
+      bands: breath.bands,
+      noise: BREATH_NOISE,
+      pulsed: breath.pulsed,
+    }) +
+      "\n",
+  )
   {
     notes: index.size(),
-    numbers: numbers.size(),
+    numbers: all.size(),
     attacks: kept.size(),
     samples: samples.size(),
   }
 }
 
-export {write, KEY, SILENT, ATTACK_PRE, ATTACK_POST, kept_frames, pack_note, note_db, note_parts, note_shapes, pack_attack, attack_samples}
+export {write, kept_frames, pack_note, note_db, note_parts, note_shapes, pack_attack, attack_samples}

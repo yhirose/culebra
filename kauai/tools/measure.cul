@@ -59,10 +59,7 @@ for path in args.recordings {
   } catch e {
     fail("{path} could not be read: {e.message}")
   }
-  let chs = made.channels
-  let xs = chs.size() == 1
-    ? chs[0]
-    : iota(chs[0].size()).map(|i| chs.map(|c| c[i]).sum() / chs.size())
+  let xs = lib.mono(made)
   let m = try {
     lib.measure(xs, made.rate, args.low, args.high)
   } catch e {

@@ -33,6 +33,15 @@ let mean = |xs| xs.empty() ? 0.0 : xs.sum() / xs.size()
 let db_of = |p| p > 1e-12 ? 10.0 * Math.log(p) / Math.log(10.0) : -120.0
 let round_to = |x, places| Math.round(x * 10.0 ** places) / 10.0 ** places
 
+# A decoded recording's samples, its channels averaged: as it is measured,
+# and as make_data reads it again.
+fn mono(made) {
+  let chs = made.channels
+  chs.size() == 1
+    ? chs[0]
+    : iota(chs[0].size()).map(|i| chs.map(|c| c[i]).sum() / chs.size())
+}
+
 # The running sums of `xs`'s squares, for any stretch's power.
 fn squares(xs) {
   let sum = repeat(xs.size() + 1, 0.0)
@@ -461,4 +470,4 @@ fn write(m, dir, name, about, low, high) {
   )
 }
 
-export {STEP, S, tidied, measure, breath, write}
+export {STEP, S, tidied, measure, breath, write, mono, squares, power}
