@@ -1992,6 +1992,10 @@ class EffectsLowerer {
   // sits in through `self_name` (redirect_self).
   std::string clause_source(const peg::Ast& block, bool captures,
                             const std::string& self_name) const {
+    using namespace peg::udl;
+    // An empty clause is nil, as an empty fn is (else the lets written
+    // ahead of it would be its value).
+    if (block.tag == "STATEMENTS"_ && block.nodes.empty()) return "nil";
     std::vector<SourceEdit> edits;
     if (captures) edits = redirect_self(block, src_, self_name);
     auto out = inner_source(block, std::move(edits));

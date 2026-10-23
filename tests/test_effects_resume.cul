@@ -98,3 +98,8 @@ assert_eq(ms4, [101, 102])
 effect fn ms_ab() { let x = perform ms_choose(1, 2); x }
 let ms5 = handle { ms_ab() } with ms_choose(a, b, r) { 99 }
 assert_eq(ms5, 99)
+
+// --- an empty clause is nil, as an empty function is ---
+effect fn em_ask()
+assert_eq(handle { perform em_ask() } with em_ask(resume) {}, nil)
+assert_eq(handle { 5 } with return(v) {}, nil)
