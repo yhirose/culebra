@@ -91,6 +91,22 @@ fn a_note_longer_than_every_recording_plays_with_no_steady_one() {
 }
 
 @test
+fn a_bend_keeps_the_instruments_resonances_where_they_were_in_hz() {
+  # A tone whose strongest harmonic is the 10th (index 9). Sounded an octave
+  # lower, its resonance stays at the same frequency, which is now the 20th
+  # harmonic; an octave higher, the 5th.
+  let logs = iota(40).map(|h| -Math.abs(h - 9.0))
+  let peak = |xs| iota(xs.size()).max_by(|h| xs[h])
+  assert_eq(peak(engine.reshaped(logs, 1.0)), 9)
+  assert_eq(peak(engine.reshaped(logs, 0.5)), 19)
+  assert_eq(peak(engine.reshaped(logs, 2.0)), 4)
+  # Between two harmonics it is the line between them, and below the first
+  # harmonic it is the first's.
+  let two = engine.reshaped([0.0, -4.0, -8.0], 0.75)
+  assert_eq(two, [0.0, -2.0, -5.0])
+}
+
+@test
 fn a_style_without_a_number_it_needs_is_said_so() {
   let said = try {
     engine.Instrument.new(Dir.memory({}), {})

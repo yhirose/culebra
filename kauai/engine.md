@@ -20,6 +20,11 @@ engine's entry point is `Instrument.new(dir, style)`, where `dir` is the
    of long notes near it.
 4. **A slur joins two takes** with a 20 ms crossfade of timbre, so the join
    does not click.
+5. **A bend keeps the resonances.** `\scoop`, `\plop`, `\doit` and `\fall` bend
+   the pitch of the borrowed note. The instrument's resonances do not move with
+   it, so each harmonic takes the level the borrowed tone had at its own
+   frequency (`reshaped` in `engine/borrow.cul`); moved by harmonic number, a
+   fall of nine semitones dragged the resonances down with it and went dull.
 
 ## The style
 

@@ -163,6 +163,17 @@ fn lib_at(xs, x) {
   xs[i] * (1.0 - f) + xs[i2] * f
 }
 
+# A tone's harmonics (their logs, the first up) as they sound when the pitch is
+# bent to `ratio` times where it was: the instrument's resonances stay at their
+# frequencies, so each harmonic takes the level the old tone had at its own
+# frequency (between its two nearest harmonics, the first's below the first and
+# the last's above the last). Moved by number instead, a fall drags the
+# resonances down with the pitch and the tone goes dull and vowel-like.
+fn reshaped(logs, ratio) {
+  let n = logs.size()
+  iota(n).map(|h| lib_at(logs, Math.clamp((h + 1) * ratio - 1.0, 0.0, n - 1.0)))
+}
+
 # A borrowed note keeps this much of its own intonation (its pitch against
 # its semitone): borrowed from many places, the notes' own leanings would
 # not agree with each other as one player's do.
@@ -876,6 +887,9 @@ class Instrument {
           let lb = self.src_logs(src, own_i)
           logs[u] = iota(self.lh).map(|h| (1.0 - src.w) * la[h] + src.w * lb[h])
         }
+        if bent != 0.0 {
+          logs[u] = reshaped(logs[u], 2.0 ** (bent / 12.0))
+        }
         if over[k] {
           let all = logs[u].map(|l| Math.exp(2.0 * l)).sum()
           logs[u] = iota(self.lh).map(|h| 2 * h + 1 < self.lh
@@ -1388,4 +1402,4 @@ class Instrument {
   }
 }
 
-export {Instrument, RATE, DEFAULTS}
+export {Instrument, RATE, DEFAULTS, reshaped}
