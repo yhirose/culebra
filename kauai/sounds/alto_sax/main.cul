@@ -1,9 +1,10 @@
 # An alto saxophone for Kauai, synthesized rather than recorded. Its numbers
-# are measured from a jazz alto (the IBCC Digital Archive's recordings, CC
-# BY-NC 4.0; README.md says more): the harmonics follow the spectral envelope
-# of its body in Hz, so the timbre changes with the pitch as an instrument's
-# does; a breath of noise sits under the tone at the level measured against
-# it; a tongued note rises in about 10 ms. A slur is one phrase: its notes
+# are measured with kauai/tools/measure.cul from a jazz alto's improvisations
+# (DieRechnug's on Freesound, CC0 and CC BY 4.0; README.md says more): the
+# harmonics follow the spectral envelope of its body in Hz, so the timbre
+# changes with the pitch as an instrument's does; a breath of noise sits under
+# the tone at the level measured against it, in each band; a tongued note
+# rises in about 12 ms. A slur is one phrase: its notes
 # glide into one another with no break in the sound, and only a gap or the
 # phrase's end lets the sound go. The jazz articulations (`\scoop`, `\plop`,
 # `\doit`, `\fall`) bend the pitch at a note's start or end.
@@ -28,10 +29,11 @@ let HARMONICS = 30
 # (Hz), measured on the recordings' pitched frames and smoothed; between the
 # points it is a straight line in log frequency.
 let ENVELOPE = [
-  (150.0, 0.0), (600.0, -2.0), (700.0, -5.0), (850.0, -11.0),
-  (1050.0, -20.0), (1350.0, -18.0), (1550.0, -23.0), (1900.0, -30.0),
-  (2400.0, -33.0), (3000.0, -37.5), (3800.0, -42.0), (4800.0, -47.0),
-  (6000.0, -54.0), (10000.0, -56.0),
+  (150.0, 0.0), (400.0, -2.0), (550.0, -6.0), (700.0, -8.0),
+  (850.0, -12.0), (1050.0, -13.5), (1350.0, -10.5), (1550.0, -14.5),
+  (1900.0, -20.0), (2300.0, -17.0), (2700.0, -21.0), (3200.0, -23.5),
+  (3800.0, -26.0), (4300.0, -32.0), (4800.0, -37.0), (5400.0, -44.0),
+  (6800.0, -46.0), (8500.0, -55.0), (10000.0, -55.0),
 ]
 
 # The harmonics brighten with the dynamic: each one up by this many dB per
@@ -39,10 +41,12 @@ let ENVELOPE = [
 let BRIGHTEN = 0.8
 
 # The breath against the tone (an amplitude ratio, as the noise band from
-# BREATH_LOW to BREATH_HIGH Hz), and the tongue's burst of it at an attack.
-let BREATH = 0.25
+# BREATH_LOW to BREATH_HIGH Hz, falling above BREATH_TILT), and the tongue's
+# burst of it at an attack.
+let BREATH = 0.33
 let BREATH_LOW = 250.0
-let BREATH_HIGH = 2200.0
+let BREATH_HIGH = 2600.0
+let BREATH_TILT = 5500.0
 let TONGUE = 0.25
 
 let ATTACK = 0.012
@@ -214,11 +218,20 @@ fn tone(notes, seconds) {
 fn phrase_samples(notes) {
   let seconds = phrase_end(notes) + RELEASE + 0.05
   let parts = tone(notes, seconds)
-  let samples = Audio.partials(
+  let harmonics = Audio.partials(
     seconds,
     freq: parts.freq,
     spectrum: parts.spectrum,
     gain: parts.gain,
+    rate: RATE,
+  )
+  # The breath on its own (no harmonics), so that it is tilted down above
+  # its band as the measured breath falls, while the harmonics keep theirs.
+  let breath = Audio.partials(
+    seconds,
+    freq: parts.freq,
+    spectrum: [(0.0, [0.0])],
+    gain: [(0.0, 0.0), (seconds, 0.0)],
     noise: {
       low: BREATH_LOW,
       high: BREATH_HIGH,
@@ -228,10 +241,7 @@ fn phrase_samples(notes) {
     },
     rate: RATE,
   )
-  # The breath noise is flat in its band; a gentle low-pass tilts it down
-  # as the measured breath falls, and leaves the harmonics, already far
-  # below there, as they are.
-  Audio.filter(samples, "low", 7000.0, q: 0.6, rate: RATE)
+  Audio.mix([harmonics, Audio.filter(breath, "low", BREATH_TILT, q: 0.6, rate: RATE)], rate: RATE)
 }
 
 # The instrument, as Audio.Kauai takes it: `external Alto`. A phrase is handed

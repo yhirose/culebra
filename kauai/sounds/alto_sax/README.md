@@ -4,10 +4,11 @@ An alto saxophone made from a model of the sound, with no recordings in it. Its
 numbers are measured from a jazz alto (see Sources):
 
 - the harmonics follow the instrument's spectral envelope in Hz (flat to about
-  600 Hz, a small rise near 1.35 kHz, falling to -43 dB at 4.3 kHz), so the
+  400 Hz, rises near 1.35 kHz and 2.3 kHz, falling to -32 dB at 4.3 kHz), so the
   timbre changes with the pitch as a real instrument's does, and brightens with
   the dynamic;
-- a breath of noise sits under the tone, with a burst of it at a tongued start;
+- a breath of noise sits under the tone at the level measured in each band, with
+  a burst of it at a tongued start;
 - a tongued note rises in about 12 ms;
 - a long note's vibrato is small (about 3 cents at its widest) and comes in late.
 
@@ -37,18 +38,15 @@ band Smooth {
 ## Sources
 
 Every sound is computed by `Audio.partials`, `Audio.filter` and the envelopes in
-`main.cul`. The spectral envelope, the breath and the attack are measured with
-`kauai/tools/measure.cul` from two alto saxophone recordings in the IBCC Digital
-Archive (University of Lincoln, Bob Burns collection, dated 2022, "Alto
-saxophone Jazz. One" and "Two"), licensed under CC BY-NC 4.0
-(<https://creativecommons.org/licenses/by-nc/4.0/>). The recordings name no
-performer or tune, and the archive publishes them as is. Only the measured
+`main.cul`. The spectral envelope and the breath are measured with
+`kauai/tools/measure.cul` from the seven solo alto improvisations by
+DieRechnug on Freesound that `kauai/sounds/alto_sax_recorded` plays from (one
+CC0, six CC BY 4.0; that package's README lists them). Only the measured
 numbers are in this package, not the recordings.
 
 ## How close it is
 
-Measured with the same tool on a scale of held notes, against the recordings:
-the envelope is within about 3 dB up to 6 kHz; the breath is within 2 dB from
-2 to 4 kHz and from 8 to 16 kHz, and about 10 dB under it from 0.5 to 1 kHz,
-where the recordings' fast lines put the changes between notes into the
-measure as well.
+Measured with the same tool on every semitone from D3 to A5 held at mf, against
+the recordings: the envelope is within about 3.5 dB from 150 Hz to 10 kHz, and
+the breath within 1 dB in each band from 0.5 to 4 kHz and from 8 to 16 kHz, and
+3.4 dB over it from 4 to 8 kHz.
