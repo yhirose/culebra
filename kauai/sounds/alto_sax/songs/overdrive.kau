@@ -1,0 +1,136 @@
+about {
+  title "Overdrive"
+}
+
+band Engine {
+  voice Alto  external Alto  plays melody                         vol 60
+  voice Twin  pulse2                                              duty 1/4  vol 10  env 1 3 6  gap 1
+  voice Bass  saw            plays roots in E1..D#2                         vol 32  env 0 3 3  gap 1
+  voice Keys  triangle       plays chords rootless from D4                  vol 12  env 1 3 5  gap 2
+  voice Pad   pulse          plays chords rootless from B3        duty 1/8  vol 6   env 4 4 10
+
+  Twin harmonizes Alto  under m3
+
+  drum Kick   noise 120->42    len 4   vol 38  env 0 3 2
+  drum Snare  noise 1900       len 3   vol 26  env 0 2 3
+  drum Hat    noise 8500       len 1   vol 7
+  drum Crash  noise 6000->3000 len 20  vol 11  env 0 4 20
+}
+
+// One noise channel plays one drum at a time, so the kick, the snare and the
+// hats sit on different sixteenths of the bar.
+groove Intro {
+  Bass   1 . 1 1 . 1 . 1 1 . 1 1 . 8 1 .
+  Keys   1 3 2 3 1 3 2 3 1 3 2 3 1 3 2 3
+  Pad    3 - - -
+  Kick   x..x..x...x.....
+  Snare  ....x.......x...
+  Hat    .xx..x.xxx.x.xxx
+  first {
+    Kick   ...x..x...x.....
+    Crash  x...............
+  }
+}
+
+groove Riff {
+  Bass   1 . 1 1 . 1 . 1 1 . 1 1 . 8 1 .
+  Keys   1 3 2 3 1 3 2 3 1 3 2 3 1 3 2 3
+  Pad    3 - - -
+  Kick   x..x..x...x.....
+  Snare  ....x.......x...
+  Hat    .xx..x.xxx.x.xxx
+}
+
+groove Chorus {
+  Bass   1 . 1 . 1 1 . 1 5 . 1 . 8 . > .
+  Keys   1 3 2 3 1 3 2 3 1 3 2 3 1 3 2 3
+  Pad    3 - - -
+  Kick   x..x..x...x...x.
+  Snare  ....x.......x...
+  Hat    .xx..x.xxx.x.x.x
+  first {
+    Kick   ...x..x...x...x.
+    Crash  x...............
+  }
+}
+
+groove Bridge {
+  Bass   1 - - - - - - - 5 - - - - - > -
+  Keys   1 2 3 2 1 2 3 2 1 2 3 2 1 2 3 2
+  Pad    3 - - -
+  Kick   x.......x.......
+  Snare  ............x...
+  Hat    ..x...x...x...x.
+  last {
+    Snare  ....x...x..xxxxx
+    Kick   x...............
+    Hat    ................
+  }
+}
+
+song Overdrive {
+  tempo 154
+  meter 4/4
+  key Em
+  band Engine
+  groove Riff
+  melody in E4..D#5
+  room 25%
+
+  Intro
+  Riff
+  Riff with harmony
+  Chorus with harmony
+  Bridge
+  Riff
+  Chorus with harmony
+  Chorus with harmony
+  Outro
+}
+
+section Intro {
+  Em7         \f e8 e8 r4 r2
+  Em7         e8 e8 r4 r2
+  Cmaj7       g8 g8 r4 r2
+  B7          b8 b8 r4 e'8 d#8 b8 a8
+}
+
+section Riff {
+  Em7         \mf e8 e8 r8 g8 a8 g8 e8 r8
+  Em7         e8 g8 a8 b8~ b4 a8 g8
+  Cmaj7       g8 g8 e8 g8 b4 c8 b8
+  D           a8 a8 f#8 a8 d4 c8 a8
+  Em7         e8 e8 r8 g8 a8 g8 e8 r8
+  Em7         e8 g8 a8 b8~ b4 a8 g8
+  Cmaj7       g8 g8 e8 g8 b4 c8 b8
+  B7sus4 B7   b2 f#4 g4
+}
+
+section Chorus {
+  Cmaj7       \f e'4. d8 c4 b4
+  D           a4 d4 f#'4. e'8
+  Bm7         d4 f#'4 e'4 d4
+  Em7         e'2 r4 b8 c8
+  Cmaj7       e'4. d8 c4 g4
+  D           a4 d4 g'4. f#'8
+  Gmaj7       g'2 f#'4 d4
+  B7          e'4 d#4 b2
+}
+
+section Bridge {
+  Am7         \mp a2 c2
+  D7          d4 c4 a2
+  Gmaj7       b2 d4 g'4
+  Cmaj7       e'2 d4 c4
+  F#m7b5      c2 a4 f#4
+  B7b9        b2 d#4 f#'4
+  Em7         \scoop e'1~
+  Em7         e'2 r4 b8 c8
+}
+
+section Outro {
+  Em7         \ff e8 e8 r8 g8 a8 g8 e8 r8
+  Cmaj7       g8 g8 e8 g8 b4 c8 b8
+  D           a8 a8 f#8 a8 d4 c8 a8
+  Em7         \fall e'1
+}

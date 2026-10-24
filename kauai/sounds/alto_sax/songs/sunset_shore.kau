@@ -1,0 +1,95 @@
+about {
+  title "Sunset Shore"
+}
+
+band Twilight {
+  voice Alto  external Alto  plays melody                         vol 60
+  voice Keys  triangle       plays chords rootless from E4        vol 13  env 2 4 10  gap 0
+  voice Pad   pulse2         plays chords rootless from G3  duty 1/4  vol 6   env 14 8 24
+  voice Bass  pulse          plays roots in A1..G#2   duty 1/2  vol 24  env 1 4 8  gap 2
+
+  drum Kick   noise 100->40  len 3  vol 16  env 0 3 2
+  drum Snare  noise 1500     len 2  vol 8   env 0 2 3
+  drum Hat    noise 9000     len 1  vol 3
+}
+
+// Soft: a kick on one and three, a rim on four, the hat on the offbeats.
+// They sit on different sixteenths, since one noise channel plays one drum
+// at a time.
+groove Intro {
+  Bass   1 - - - - - - - 5 - - - - - - -
+  Keys   1 2 3 2 1 2 3 2
+  Pad    3 - - - - - - -
+  Kick   x...............
+}
+
+groove Verse {
+  Bass   1 - - - - - 5 - 1 - - - 8 - 5 -
+  Keys   1 2 3 2 1 2 3 2
+  Pad    3 - - - - - - -
+  Kick   x.......x.......
+  Snare  ............x...
+  Hat    ..x...x...x...x.
+}
+
+groove Bridge {
+  Bass   1 - - 1 - - 5 - 1 - - 1 - - 5 >
+  Keys   1 2 3 2 1 2 3 2
+  Pad    3 - - - - - - -
+  Kick   x.......x.......
+  Snare  ....x.......x...
+  Hat    ..x...x...x...x.
+}
+
+song SunsetShore {
+  tempo 66
+  meter 4/4
+  key F
+  band Twilight
+  groove Verse
+  melody in C4..B4
+  room 40%
+
+  Intro
+  Verse
+  Verse
+  Bridge
+  Verse
+  Outro
+}
+
+section Intro {
+  Fmaj9       \pp r1
+  Bbmaj7      r1
+  Am7 D7b9    r1
+  Gm7 C7sus4  r2 r4 c4
+}
+
+section Verse {
+  Fmaj9       \p r4 c4 f4 a4
+  Em7 A7sus4  c'4. b8 a2
+  Dm9         r8 a8 d'4 c'4 a4
+  Gm9 C7      g2 e4 f4
+  Fmaj7       a4. c'8 f'2
+  Bbmaj7      d'4. c'8 bb2
+  Am7 D7b9    a4 c'4 f#4 g4
+  Gm7 C7      g2 bb4 g4
+}
+
+section Bridge {
+  Bbmaj9      \mp d'2. c'4
+  Am7 D7#9    c'4 a4 bb4. a8
+  Gm9         g2 bb2
+  C13 C7b9    a4. g8 e2
+  Am7         r4 c'4 e'2
+  D7b9        f#'4 e'4 d'4. c'8
+  Gm7 C7      bb4 g4 e4 g4
+  Fmaj7 C7sus4 f2 r4 c4
+}
+
+section Outro {
+  Fmaj9       \p a2 c'2
+  Bbmaj7      d'2 c'4 bb4
+  Gm7 C7      a4 g4 e2
+  Fmaj9       \fall f1
+}

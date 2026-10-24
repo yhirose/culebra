@@ -36,10 +36,18 @@ band Smooth {
 
 - `main.cul`: the model. `voices` gives the song the `Alto` instrument as a phrase
   (`hears`: `len`, `level` and `marks`).
-- `songs/breeze.kau`: "Coast Road", a fusion tune in D (126 BPM, straight
-  sixteenths, a room's echo): an intro, a verse on IVmaj7-III7-vi7, a chorus on
-  IVmaj7-V/IV-iii7-vi7 with a harmony line under the alto, the chorus again a
-  half step up, and an outro on bVI-bVII-I.
+- `songs/seaside_drive.kau`: "Seaside Drive", a bright fusion tune in A (132
+  BPM, a sixteenth-note pocket): an intro, a verse, a bridge that builds, a
+  chorus on a motif that comes back, an interlude, and a last chorus.
+- `songs/sunset_shore.kau`: "Sunset Shore", a ballad in F (66 BPM): long
+  phrases, maj9 and m9 chords, soft drums, a bridge that rises and a last
+  note that falls away.
+- `songs/overdrive.kau`: "Overdrive", a driving E minor tune (154 BPM): a
+  riff, a chorus that climbs, a quiet bridge, and a rock backbeat.
+
+The melodies stay inside A4 to G#5 (the alto package's data and the
+synthesized model's best range). The drums share one noise channel, so the
+kick, the snare, the hats and the crash sit on different sixteenths.
 
 ## Sources
 
