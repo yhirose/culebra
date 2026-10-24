@@ -1,7 +1,7 @@
 # An alto saxophone for Kauai, synthesized rather than recorded: a harmonic
-# tone with a reed's odd-heavy spectrum that brightens with the loudness, a
-# breath of band noise, and a slow vibrato on the long notes. A slur is one
-# phrase, so its notes glide into one another.
+# tone whose spectrum follows a measured alto's and brightens with the
+# loudness, a breath of band noise, and a slow vibrato on the long notes. A
+# slur is one phrase, so its notes glide into one another.
 #
 #   band Smooth {
 #     voice Lead  external Alto  plays melody  vol 60
@@ -23,13 +23,18 @@ fn freq_of(pitch) {
   440.0 * Math.exp((pitch - 69) * Math.log(2.0) / 12)
 }
 
-# The amplitude of each harmonic at a level: a reed's odd harmonics strong,
-# the even ones weaker, and the higher ones growing with the level.
+# The amplitude of each harmonic at a level: the measured shape, and the
+# higher harmonics growing with the level.
+# The harmonics' levels in dB against the first, measured on a 200 to 800 Hz
+# alto (the IBCC Digital Archive's recordings, CC BY-NC 4.0); above the table
+# each falls 2.5 dB more.
+let REL_DB = [0.0, -7.8, -18.6, -24.0, -29.0, -33.0, -35.0, -37.5, -39.5, -41.8]
+
 fn spectrum_at(level) {
   range(HARMONICS).map(|i| {
     let k = i + 1
-    let base = if k % 2 == 1 { 1.0 / k } else { 0.4 / k }
-    base * Math.exp(Math.log(level) * 0.15 * k)
+    let db = if k <= 10 { REL_DB[i] } else { -41.8 - 2.5 * (k - 10) }
+    Math.exp(db * Math.log(10.0) / 20) * Math.exp(Math.log(level) * 0.15 * k)
   }).collect()
 }
 
@@ -61,7 +66,7 @@ fn tone(notes, seconds) {
     let t = i * STEP
     let n = note_at(notes, t)
     let x = t - n.at
-    let vib = if x > 0.3 { 1.0 + 0.006 * Math.sin(2.0 * Math.pi * 5.5 * (x - 0.3)) } else { 1.0 }
+    let vib = if x > 0.3 { 1.0 + 0.0015 * Math.sin(2.0 * Math.pi * 5.5 * (x - 0.3)) } else { 1.0 }
     let target = freq_of(n.pitch) * vib
     smooth = smooth + (target - smooth) * (1.0 - Math.exp(-STEP / 0.02))
     freq.push((t, smooth))
