@@ -37,7 +37,7 @@
 #                    an octave down (0: none)
 #
 # and these, each with the default DEFAULTS has (a style need not say them):
-# scoop, own_kept, drift_kept, gain_range, onset_at, min_lead and
+# scoop, own_kept, drift_kept, slow_kept, gain_range, onset_at, min_lead and
 # wander_style, and `choice`: an Object of numbers for choose.cul, which
 # reads them (with defaults of its own) as `inst.choice`.
 
@@ -214,6 +214,35 @@ let OWN_KEPT = 0.3
 # quick moves stay as they were.
 let DRIFT_KEPT = 0.15
 
+# A long note is pieced from stretches of several recorded notes, each with a
+# slow loudness and timbre of its own, and heard together they swell and sag
+# every half second where a real long note leans one way or holds. A note keeps
+# this much of the slow course (a raised cosine 600 ms wide) of its loudness and
+# of each harmonic about its mean: 1 for none taken out (the default), under 1
+# for the pieces' unrelated courses mostly taken out, as DRIFT_KEPT does for the
+# pitch.
+let SLOW_KEPT = {db: 1.0, timbre: 1.0}
+
+# The slow course of xs: its mean about each frame, weighed by a raised cosine
+# 61 frames wide, within frames a until b and carried flat beyond them.
+fn slow_course(xs, a, b) {
+  iota(xs.size()).map(fn (j) {
+    let jj = Math.clamp(j, a, b - 1)
+    let lo = Math.max(a, jj - 30)
+    let hi = Math.min(b, jj + 31)
+    let ws = iota(lo, hi).map(|w| 0.5 * (1.0 + Math.cos(Math.pi * (w - jj) / 31.0)))
+    iota(lo, hi).map(|w| xs[w] * ws[w - lo]).sum() / ws.sum()
+  })
+}
+
+# xs with the part of its slow course (within frames a until b) that is not
+# `kept` taken out, its mean through a until b unchanged.
+fn slow_eased(xs, a, b, kept) {
+  let slow = slow_course(xs, a, b)
+  let mean = xs[a..b].sum() / (b - a)
+  iota(xs.size()).map(|j| xs[j] - (1.0 - kept) * (slow[j] - mean))
+}
+
 # The fine gain is kept within these between a note's first 40 ms and its
 # last 60 ms: its quick flutter stays, a gap in the note it came from does
 # not, and the way into and out of the note (a real fade) is left whole.
@@ -247,6 +276,7 @@ let DEFAULTS = {
   scoop: SCOOP,
   own_kept: OWN_KEPT,
   drift_kept: DRIFT_KEPT,
+  slow_kept: SLOW_KEPT,
   gain_range: GAIN_RANGE,
   onset_at: ONSET_AT,
   min_lead: MIN_LEAD,
@@ -378,6 +408,7 @@ class Instrument {
     self.overtone_from = s.overtone_from
     self.own_kept = s.own_kept
     self.drift_kept = s.drift_kept
+    self.slow_kept = s.slow_kept
     self.gain_range = s.gain_range
     self.onset_at = s.onset_at
     self.min_lead = s.min_lead
@@ -1039,6 +1070,33 @@ class Instrument {
       logs = iota(total).map(|u| iota(self.lh).map(|h| per_h[h][u]))
       let per_b = iota(self.nb).map(|q| ease(breath.map(|r| r[q]), b, tw))
       breath = iota(total).map(|u| iota(self.nb).map(|q| per_b[q][u]))
+    }
+    # A long note's slow loudness and timbre: the pieces' own courses mostly
+    # taken out (slow_kept), so it holds or leans one way as a real one does.
+    if self.slow_kept.db < 1.0 || self.slow_kept.timbre < 1.0 {
+      for k in 0..notes.size() {
+        continue if chosen[k] == nil
+        let v = notes[k]
+        let m = v.e - v.s
+        continue if m <= 25
+        let a = Math.min(15, m / 3)
+        let b = Math.max(a + 1, m - Math.min(10, m / 3))
+        continue if b - a < 10
+        if self.slow_kept.db < 1.0 {
+          let eased = slow_eased(db.slice(v.s, v.e), a, b, self.slow_kept.db)
+          for j in 0..m {
+            db[v.s + j] = eased[j]
+          }
+        }
+        if self.slow_kept.timbre < 1.0 {
+          for h in 0..self.lh {
+            let eased = slow_eased(iota(v.s, v.e).map(|u| logs[u][h]), a, b, self.slow_kept.timbre)
+            for j in 0..m {
+              logs[v.s + j][h] = eased[j]
+            }
+          }
+        }
+      }
     }
     # Every note pulled to its written pitch: its slow course (its pitch's
     # mean within its steady part, 150 ms in to 100 ms before its end,

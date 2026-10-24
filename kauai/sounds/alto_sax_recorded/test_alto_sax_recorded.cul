@@ -97,3 +97,25 @@ fn the_same_note_is_as_loud_with_or_without_a_next() {
   let followed = voiced(0.195)
   assert_true(alone < 2.5 * followed && followed < 2.5 * alone, [alone, followed])
 }
+
+# A long note is pieced from stretches of several recorded notes, each with a
+# slow loudness and timbre of its own; heard together they swell and sag every
+# half second (a real long note leans one way, or holds). The slow course of
+# the pieces is mostly taken out.
+@test
+fn a_long_tone_does_not_swell_and_sag() {
+  let note = [{pitch: 69, at: 0.0, len: 3.0, level: 0.85, level_end: 0.85, marks: [], next: nil, params: {}}]
+  let s = alto.phrase_samples(note, {})
+  let level = iota(2, 30).map(fn (q) {
+    let win = s.slice(Math.round(q * 0.1 * alto.RATE), Math.round(q * 0.1 * alto.RATE) + 2048)
+    10.0 * Math.log(win.map(|v| v * v).sum() / win.size() + 1e-12) / Math.log(10.0)
+  })
+  # The scatter of the level about its straight-line course, in dB.
+  let n = level.size() * 1.0
+  let xs = iota(level.size()).map(|i| i * 1.0)
+  let mx = xs.sum() / n
+  let my = level.sum() / n
+  let slope = iota(level.size()).map(|i| (xs[i] - mx) * (level[i] - my)).sum() / xs.map(|x| (x - mx) * (x - mx)).sum()
+  let scatter = Math.sqrt(iota(level.size()).map(|i| (level[i] - my - slope * (xs[i] - mx)) ** 2).sum() / n)
+  assert_true(scatter < 1.3, scatter)
+}

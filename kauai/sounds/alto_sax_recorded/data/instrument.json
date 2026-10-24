@@ -28,7 +28,11 @@
       "rest": 0.0,
       "tongue": 0.03
     },
-    "overtone_from": 82
+    "overtone_from": 82,
+    "slow_kept": {
+      "db": 0.35,
+      "timbre": 0.35
+    }
   },
   "make": {
     "measure": {
