@@ -42,6 +42,10 @@
 #                its own
 #   dip_from,    a dip inside it (a breath or the tongue): the dB it may fall,
 #   dip_db       and beyond that the dB that cost 1
+#   crest_from,  a peak inside it (a puff of breath or a thump at its start):
+#   crest_db     the dB its loudest frame may stand over its level, and
+#                beyond that the dB that cost 1; the level asked is set by
+#                the note's middle, so a peak plays that much over it
 #   vib_cents    the cents (peak to peak) off what the note asks that cost 1
 #   same_take    taken off for the note the recording played straight after
 #                the one borrowed before, where this note is slurred into
@@ -60,6 +64,8 @@ let CHOICE = {
   no_attack: 1.5,
   dip_from: 3.0,
   dip_db: 3.0,
+  crest_from: 8.0,
+  crest_db: 3.0,
   vib_cents: 9.0,
   same_take: 2.0,
 }
@@ -106,7 +112,8 @@ fn borrow_for(inst, notes, k, before) {
       Math.abs(e.level - want_level) / w.level_db +
       way_cost(w, inst.lib_in[i], way_in) +
       way_cost(w, inst.lib_out[i], way_out) +
-      Math.max(0.0, inst.lib_dip[i] - w.dip_from) / w.dip_db
+      Math.max(0.0, inst.lib_dip[i] - w.dip_from) / w.dip_db +
+      Math.max(0.0, inst.lib_crest[i] - w.crest_from) / w.crest_db
     if !slurred_in && inst.attack_of[i] == nil {
       c += w.no_attack
     }

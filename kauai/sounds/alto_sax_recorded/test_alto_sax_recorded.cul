@@ -81,3 +81,19 @@ fn a_note_starts_from_silence() {
     assert_true(s.slice(0, 4).map(|v| Math.abs(v)).max() < 0.03 * peak, [pitch, len])
   }
 }
+
+# The same note is as loud whether another follows it at once or not. A note
+# borrowed from a take could start with a puff of breath 20 dB over its level;
+# the engine set the level by the note's middle, so a song's first note was a
+# loud "buh" beside the next.
+@test
+fn the_same_note_is_as_loud_with_or_without_a_next() {
+  let voiced = fn (next) {
+    let note = [{pitch: 64, at: 0.0, len: 0.195, level: 1.15, level_end: 1.15, marks: [], next: next, params: {}}]
+    let s = alto.phrase_samples(note, {})
+    s.map(|v| Math.abs(v)).max()
+  }
+  let alone = voiced(nil)
+  let followed = voiced(0.195)
+  assert_true(alone < 2.5 * followed && followed < 2.5 * alone, [alone, followed])
+}

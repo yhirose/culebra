@@ -332,6 +332,13 @@ class Instrument {
       inner.empty() ? 0.0 : inner.map(|j| med - ds[j]).max()
     })
 
+    # How far each library note's loudest frame stands over its level (the
+    # median of its middle, which the loudness asked is set to): a puff of
+    # breath or a thump at its start, 20 dB over, would play 20 dB over what
+    # the song asked.
+    self.lib_crest = iota(self.lib.notes.size()).map(|i| self.note_db(i).max() -
+      self.lib.notes[i].level)
+
     # Long notes' steady parts, for a note longer than the one it borrows: the
     # frames from 150 ms in to 100 ms before the end, cut at the vibrato's
     # upward zero crossings (its pitch's mean over 30 ms less its mean over
