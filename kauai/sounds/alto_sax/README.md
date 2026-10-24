@@ -12,12 +12,14 @@ numbers are measured from a jazz alto (see Sources):
 - a tongued note rises in about 12 ms;
 - a long note's vibrato is small (about 3 cents at its widest) and comes in late.
 
-A slur is one phrase: its notes glide into one another with no break in the
-sound, and only a gap or the phrase's end lets the sound go. `\scoop`, `\plop`,
+A slur is one phrase: the sound goes on through it, the pitch changes in a few
+milliseconds as a change of fingering does (a glide is a siren), with a brief dip
+of the air, and only a gap or the phrase's end lets the sound go. `\scoop`, `\plop`,
 `\doit` and `\fall` bend the pitch at a note's start or end; the timbre is
 drawn again every 20 ms while it is bent, from the pitch it has reached, so the
 resonances stay where they are in Hz, and a fall (0.36 s, nine semitones) ends
-airy, the breath going out more slowly than the tone.
+airy, the breath going out more slowly than the tone, the higher harmonics
+fading first and the pitch shaking more the further it has been bent.
 
 ```
 culebra play --sounds kauai/sounds/alto_sax song.kau

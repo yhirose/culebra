@@ -63,5 +63,5 @@ fn a_fall_slides_the_pitch_down_but_not_the_resonances() {
     hz[hz.size() / 2]
   }
   assert_true(pitch(0.95) < 0.8 * pitch(0.3), [pitch(0.95), pitch(0.3)])
-  assert_true(centroid(0.95) > 0.9 * centroid(0.3), [centroid(0.95), centroid(0.3)])
+  assert_true(centroid(0.95) > 0.8 * centroid(0.3), [centroid(0.95), centroid(0.3)])
 }

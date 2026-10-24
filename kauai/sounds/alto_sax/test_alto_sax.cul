@@ -69,6 +69,26 @@ fn a_fall_slides_the_pitch_down_but_not_the_resonances() {
   let (at, amps) = drawn.spectrum[-1]
   let f0 = drawn.freq.min_by(|p| Math.abs(p[0] - at))[1]
   assert_true(f0 < 0.8 * alto.freq_of(72), f0)
-  let expected = alto.spectrum_at(f0, 1.0)
-  assert_true(iota(amps.size()).all(|h| Math.abs(amps[h] - expected[h]) < 1e-9))
+  # The envelope at the pitch it has reached, as dim as the fall has made it.
+  let matches = fn (level) {
+    let expected = alto.spectrum_at(f0, level)
+    iota(amps.size()).all(|h| Math.abs(amps[h] - expected[h]) < 1e-9)
+  }
+  assert_true(iota(101).any(|q| matches(0.01 * q)))
+}
+
+# A slur between two notes: the pitch changes as the fingers do, within a few
+# milliseconds (a glide would be heard as a siren), and the sound dips for an
+# instant as the air does at a change of fingering.
+@test
+fn a_slur_changes_pitch_at_once_with_a_dip() {
+  let two = [
+    {pitch: 72, at: 0.0, len: 0.5, level: 1.0, level_end: 1.0, marks: [], next: nil, params: {}},
+    {pitch: 74, at: 0.5, len: 0.5, level: 1.0, level_end: 1.0, marks: [], next: nil, params: {}},
+  ]
+  let drawn = alto.tone(two, 1.2)
+  let near = |series, t| series.min_by(|p| Math.abs(p[0] - t))[1]
+  let cents_off = |t| 1200.0 * Math.log(near(drawn.freq, t) / alto.freq_of(74)) / Math.log(2.0)
+  assert_true(Math.abs(cents_off(0.52)) < 15.0, cents_off(0.52))
+  assert_true(near(drawn.gain, 0.5 + 0.012) < 0.9 * near(drawn.gain, 0.45), [near(drawn.gain, 0.512), near(drawn.gain, 0.45)])
 }
