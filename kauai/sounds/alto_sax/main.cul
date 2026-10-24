@@ -63,7 +63,7 @@ let VIBRATO = {delay: 0.35, rate: 5.2, depth: 3.0}
 let BEND_STEP = 0.03
 let SCOOP = [-150.0, -90.0, -45.0, -15.0, 0.0]
 let PLOP = [300.0, 150.0, 50.0, 0.0]
-let FALL = [0.0, -40.0, -120.0, -250.0, -420.0, -600.0]
+let FALL = [0.0, -6.0, -25.0, -56.0, -100.0, -156.0, -225.0, -306.0, -400.0, -506.0, -625.0, -756.0, -900.0]
 let DOIT = [0.0, 40.0, 120.0, 250.0, 400.0]
 
 fn freq_of(pitch) {
@@ -170,22 +170,23 @@ fn tone(notes, seconds) {
     # The pitch: the note's, bent by its articulations, wandering a little,
     # with vibrato on a long note; gliding from the note before.
     mut c = wander_cents(t)
+    mut bend_c = 0.0
     if x > VIBRATO.delay && n.len > VIBRATO.delay + 0.2 {
       let depth = VIBRATO.depth * Math.min(1.0, (x - VIBRATO.delay) / VIBRATO.delay)
       c = c + depth * Math.sin(2.0 * Math.pi * VIBRATO.rate * (x - VIBRATO.delay))
     }
     if marks.contains("scoop") && x < bend_len(SCOOP) {
-      c = c + bend_at(SCOOP, x)
+      bend_c += bend_at(SCOOP, x)
     }
     if marks.contains("plop") && x < bend_len(PLOP) {
-      c = c + bend_at(PLOP, x)
+      bend_c += bend_at(PLOP, x)
     }
     let bent_end = if marks.contains("fall") { bend_len(FALL) } else if marks.contains("doit") { bend_len(DOIT) } else { 0.0 }
     let into_end = x - (n.len - bent_end)
     if bent_end > 0.0 && into_end > 0.0 {
-      c = c + bend_at(if marks.contains("fall") { FALL } else { DOIT }, into_end)
+      bend_c += bend_at(if marks.contains("fall") { FALL } else { DOIT }, into_end)
     }
-    let target = freq_of(n.pitch) * cents(c)
+    let target = freq_of(n.pitch) * cents(c + bend_c)
     if s == 0 || (starts_sound(notes, i) && x < STEP) {
       smooth = target
     } else {
@@ -200,15 +201,21 @@ fn tone(notes, seconds) {
     let rise = if starts_sound(notes, i) { Math.min(1.0, x / ATTACK) } else { 1.0 }
     let fall = if ends_sound(notes, i) && t > end { Math.max(0.0, 1.0 - (t - end) / RELEASE) } else { 1.0 }
     let fade = if bent_end > 0.0 && into_end > 0.0 { Math.max(0.0, 1.0 - into_end / bent_end) } else { 1.0 }
-    let g = 0.3 * lvl * rise * fall * fade * wander_gain(t)
-    gain.push((t, g))
+    let held = 0.3 * lvl * rise * fall * wander_gain(t)
+    gain.push((t, held * fade))
 
     # The breath: under the tone throughout, and a burst at a tongued start.
+    # In a bend that fades the tone the breath goes slower, so the sound ends
+    # airy as a fall-off does.
     let burst = if starts_sound(notes, i) && x < 0.04 { TONGUE * (1.0 - x / 0.04) } else { 0.0 }
-    steady.push((t, g * BREATH + 0.3 * lvl * burst * fall))
-  }
-  for n in notes {
-    spectrum.push((n.at, spectrum_at(freq_of(n.pitch), n.level)))
+    steady.push((t, held * Math.sqrt(fade) * BREATH + 0.3 * lvl * burst * fall))
+
+    # The timbre: drawn at each note's start, and again every 20 ms while the
+    # pitch is bent, from the pitch it is at, so that the resonances stay
+    # where they are in Hz while the harmonics slide through them.
+    if x < STEP || (Math.abs(bend_c) > 15.0 && s % 4 == 0) {
+      spectrum.push((t, spectrum_at(smooth, lvl)))
+    }
   }
   {freq: freq, gain: gain, steady: steady, spectrum: spectrum}
 }
@@ -251,4 +258,4 @@ let voices = {alto: {
   hears: ["len", "level", "marks"],
 }}
 
-export {voices, phrase_samples, RATE}
+export {voices, phrase_samples, tone, spectrum_at, freq_of, RATE}

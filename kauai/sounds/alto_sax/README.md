@@ -14,7 +14,10 @@ numbers are measured from a jazz alto (see Sources):
 
 A slur is one phrase: its notes glide into one another with no break in the
 sound, and only a gap or the phrase's end lets the sound go. `\scoop`, `\plop`,
-`\doit` and `\fall` bend the pitch at a note's start or end.
+`\doit` and `\fall` bend the pitch at a note's start or end; the timbre is
+drawn again every 20 ms while it is bent, from the pitch it has reached, so the
+resonances stay where they are in Hz, and a fall (0.36 s, nine semitones) ends
+airy, the breath going out more slowly than the tone.
 
 ```
 culebra play --sounds kauai/sounds/alto_sax song.kau

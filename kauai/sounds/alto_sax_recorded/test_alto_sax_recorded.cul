@@ -45,3 +45,23 @@ section Verse {
   }
   assert_true(song.length() > 3.0)
 }
+
+# A pitch held 1 s with a fall: the resonances stay where they are in Hz while
+# the pitch slides down, so the spectrum's centroid (Hz) does not follow it.
+@test
+fn a_fall_slides_the_pitch_down_but_not_the_resonances() {
+  let note = [{pitch: 72, at: 0.0, len: 1.0, level: 1.0, level_end: 1.0, marks: ["fall"], next: nil, params: {}}]
+  let s = alto.phrase_samples(note, {})
+  let centroid = fn (t) {
+    let a = Math.round(t * alto.RATE)
+    let spec = Audio.spectrum(s.slice(a, a + 2048), 2048, 2048)[0]
+    iota(spec.size()).map(|k| k * alto.RATE / 2048.0 * spec[k]).sum() / spec.sum()
+  }
+  let pitch = fn (t) {
+    let a = Math.round(t * alto.RATE)
+    let hz = Audio.pitch(s.slice(a - 1024, a + 3072), 100.0, 1400.0, alto.RATE).hz.filter(|h| h != nil).sorted()
+    hz[hz.size() / 2]
+  }
+  assert_true(pitch(0.95) < 0.8 * pitch(0.3), [pitch(0.95), pitch(0.3)])
+  assert_true(centroid(0.95) > 0.9 * centroid(0.3), [centroid(0.95), centroid(0.3)])
+}
