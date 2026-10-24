@@ -1,0 +1,109 @@
+# An alto saxophone for Kauai, synthesized rather than recorded: a harmonic
+# tone with a reed's odd-heavy spectrum that brightens with the loudness, a
+# breath of band noise, and a slow vibrato on the long notes. A slur is one
+# phrase, so its notes glide into one another.
+#
+#   band Smooth {
+#     voice Lead  external Alto  plays melody  vol 60
+#   }
+#
+#   culebra play --sounds kauai/sounds/alto_sax song.kau
+
+let RATE = 44100
+
+# One control point every STEP seconds: the pitch, the gain and the spectrum
+# change at that rate, which is fast enough for a melody.
+let STEP = 0.01
+
+# The harmonics the spectrum is drawn with (those above 0.45 of the rate are
+# left out by Audio.partials).
+let HARMONICS = 24
+
+fn freq_of(pitch) {
+  440.0 * Math.exp((pitch - 69) * Math.log(2.0) / 12)
+}
+
+# The amplitude of each harmonic at a level: a reed's odd harmonics strong,
+# the even ones weaker, and the higher ones growing with the level.
+fn spectrum_at(level) {
+  range(HARMONICS).map(|i| {
+    let k = i + 1
+    let base = if k % 2 == 1 { 1.0 / k } else { 0.4 / k }
+    base * Math.exp(Math.log(level) * 0.15 * k)
+  }).collect()
+}
+
+# The note sounding at time `t`: the last one that has started, so a note
+# that has ended holds its pitch until the next one starts.
+fn note_at(notes, t) {
+  mut cur = notes[0]
+  for n in notes {
+    if n.at <= t {
+      cur = n
+    }
+  }
+  cur
+}
+
+fn phrase_end(notes) {
+  notes.map(|n| n.at + n.len).reduce(0.0, |a, x| if x > a { x } else { a })
+}
+
+# The notes of a phrase as Audio.partials takes them: the pitch glides into
+# each note over about 20 ms, a long note vibrates after its first 0.3 s, and
+# the gain rises at each note's start and falls before its end.
+fn tone(notes, seconds) {
+  mut freq = []
+  mut gain = []
+  mut spectrum = []
+  mut smooth = freq_of(notes[0].pitch)
+  for i in range(Math.ceil(seconds / STEP)) {
+    let t = i * STEP
+    let n = note_at(notes, t)
+    let x = t - n.at
+    let vib = if x > 0.3 { 1.0 + 0.006 * Math.sin(2.0 * Math.pi * 5.5 * (x - 0.3)) } else { 1.0 }
+    let target = freq_of(n.pitch) * vib
+    smooth = smooth + (target - smooth) * (1.0 - Math.exp(-STEP / 0.02))
+    freq.push((t, smooth))
+    let rise = if x < 0.03 { x / 0.03 } else { 1.0 }
+    let fall = if n.at + n.len - t < 0.05 { Math.max(0.0, (n.at + n.len - t) / 0.05) } else { 1.0 }
+    gain.push((t, 0.35 * n.level * rise * fall))
+  }
+  for n in notes {
+    spectrum.push((n.at, spectrum_at(n.level)))
+  }
+  {freq: freq, gain: gain, spectrum: spectrum}
+}
+
+# The gain is scaled so that a note at mf stays below full scale, as the
+# partials' sum alone would not.
+# A phrase's samples, mono, RATE a second, from its start to a short tail
+# after its last note.
+fn phrase_samples(notes) {
+  let seconds = phrase_end(notes) + 0.3
+  let parts = tone(notes, seconds)
+  let breath = {
+    low: 3000.0,
+    high: 7000.0,
+    seed: 5,
+    steady: [(0.0, 0.0), (seconds, 0.0)],
+    pulsed: [(0.0, 0.01), (seconds, 0.01)],
+  }
+  Audio.partials(
+    seconds,
+    freq: parts.freq,
+    spectrum: parts.spectrum,
+    gain: parts.gain,
+    noise: breath,
+    rate: RATE,
+  )
+}
+
+# The instrument, as Audio.Kauai takes it: `external Alto`. A phrase is handed
+# over with each note's `pitch`, `at`, `len` and `level`.
+let voices = {alto: {
+  phrase: |notes, params| Audio.Sound(phrase_samples(notes), rate: RATE),
+  hears: ["len", "level"],
+}}
+
+export {voices, phrase_samples, RATE}

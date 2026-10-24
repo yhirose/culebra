@@ -1,0 +1,53 @@
+band Quartet {
+  voice Alto  external Alto  plays melody              vol 60
+  voice Bass  saw            plays roots in F2..E3     vol 40
+  voice Arp   triangle       plays chords from F4      vol 14  env 1 2 4  gap 2
+
+  drum Kick   noise 110->45  len 4  vol 40  env 0 3 2
+  drum Snare  noise 1800     len 3  vol 26  env 0 2 3
+  drum Hat    noise 8000     len 1  vol 8
+}
+
+groove Breeze {
+  Bass   1 - 5 -
+  Arp    1 3 5 3 1 3 5 3
+  Kick   x...x...
+  Snare  ..x...x.
+  Hat    .x.x.x.x
+}
+
+song Breeze {
+  tempo 116
+  meter 4/4
+  key F
+  band Quartet
+  groove Breeze
+  melody in C5..B5
+
+  Head
+  Head
+  Bridge
+  Head
+}
+
+section Head {
+  Fmaj7  (a8 g f e) d2
+  Em7    e4 g b2
+  A7     (c#8 e g a) c#2
+  Dm7    d4 f (a8 g f e)
+  G7     g2 (b8 a g f)
+  Cm7    c4 e g e
+  F7     (f8 g a c) a2
+  Fmaj7  f1
+}
+
+section Bridge {
+  Bbmaj7  (d8 f a c) bb2
+  Am7     a4 c e2
+  D7      (d8 e f# a) d2
+  Gm7     g4 bb d2
+  C7      (e8 g bb c) e2
+  Fmaj7   a4 f c2
+  Dm7     d4 f a e4
+  G7      (g8 f e d) g2
+}
