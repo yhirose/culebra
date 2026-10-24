@@ -11,6 +11,8 @@ language (draft, with a Japanese version):
 
 - [`docs/kauai/language.md`](../docs/kauai/language.md), or in Japanese
   [`docs/kauai/language.ja.md`](../docs/kauai/language.ja.md)
+- [`docs/guides/kauai-songs.md`](../docs/guides/kauai-songs.md): a walkthrough
+  of writing a song, with the English and Japanese versions beside it
 
 Its section 2 is a first song. Play it with `culebra play song.kau`, or write
 it to a WAV file with `culebra play --wav out.wav song.kau`.
@@ -26,8 +28,15 @@ it to a WAV file with `culebra play --wav out.wav song.kau`.
   | Instrument | `external` | What it is |
   |---|---|---|
   | [`sounds/soprano_sax`](sounds/soprano_sax) | `Sax` | a soprano saxophone, from royalty-free recordings |
+  | [`sounds/alto_sax`](sounds/alto_sax) | `Alto` | an alto saxophone, synthesized (no recordings) |
+  | [`sounds/alto_sax_recorded`](sounds/alto_sax_recorded) | `Alto` | an alto saxophone, from the University of Iowa's 1997 recordings |
 
   Play a song with it: `culebra play --sounds kauai/sounds/soprano_sax song.kau`.
+  The two alto packages share the `Alto` name, so the same song plays either
+  one by naming its folder with `--sounds`.
+- [`docs/guides/kauai-sounds.md`](../docs/guides/kauai-sounds.md): the sounds a
+  song plays, shaping them, supplying an `external` instrument, a model, and a
+  recorded instrument made with the harness.
   Its README lists the parameters (`breath`, `wander`, `vibrato`).
 
 ## I want to make a new instrument
