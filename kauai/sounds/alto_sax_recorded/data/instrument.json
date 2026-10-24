@@ -1,8 +1,8 @@
 {
   "play": {
-    "mf_db": -15.3,
+    "mf_db": -23.5,
     "db_per_octave": 7.0,
-    "lib_level_mf": -9.2,
+    "lib_level_mf": -13.1,
     "vibrato": {
       "depth": 20.0,
       "straight": 0.6
@@ -33,7 +33,7 @@
   "make": {
     "measure": {
       "low": 120.0,
-      "high": 950.0
+      "high": 1000.0
     },
     "left_out": {
       "brighter": 9.0,
@@ -44,10 +44,13 @@
       20000.0
     ],
     "reference_groups": {
-      "iowa_1997": [
-        "iowa_db3b3",
-        "iowa_c4b4",
-        "iowa_c5ab5"
+      "autumn_leaves_2022": [
+        "freesound_632028",
+        "freesound_632029",
+        "freesound_632030",
+        "freesound_632031",
+        "freesound_632032",
+        "freesound_632033"
       ]
     }
   }

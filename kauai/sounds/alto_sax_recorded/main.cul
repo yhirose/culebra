@@ -1,10 +1,10 @@
 # An alto saxophone for Kauai, played a phrase at a time from real notes.
 # Each note of a phrase borrows the recorded note nearest it (in pitch,
 # length, loudness, how it is entered and left, how much vibrato it has)
-# from the University of Iowa's alto saxophone (Michael Giles, 1997, the
-# Musical Instrument Samples collection, freely usable), keeps that note's own
-# moves of pitch and loudness and its timbre frame by frame, and sounds them
-# as harmonics with the breath between them. README.md says more.
+# from seven jazz improvisations by DieRechnug (Freesound, CC0 and CC BY 4.0),
+# keeps that note's own moves of pitch and loudness and its timbre frame by
+# frame, and sounds them as harmonics with the breath between them. README.md
+# says more.
 #
 #   band Smooth {
 #     voice Lead  external Alto  plays melody  vol 60
