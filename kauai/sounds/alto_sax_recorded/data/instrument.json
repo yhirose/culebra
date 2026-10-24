@@ -32,6 +32,9 @@
     "slow_kept": {
       "db": 0.35,
       "timbre": 0.35
+    },
+    "choice": {
+      "crisp": 1.0
     }
   },
   "make": {

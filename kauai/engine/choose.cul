@@ -42,6 +42,15 @@
 #                its own
 #   dip_from,    a dip inside it (a breath or the tongue): the dB it may fall,
 #   dip_db       and beyond that the dB that cost 1
+#   crisp,       how much a start that is not crisp costs, for a note not
+#                asked to begin softly (0, off: a soprano's "poa", a soft
+#                start that fills out, is its own; an alto's tongued note
+#                begins crisply, 1);
+#   rise_from,   a start that is not crisp:
+#   rise_frames  the frames it may take to come within 3 dB of its level,
+#   round_from,  and beyond that the frames that cost 1; and how round its
+#   round_db     attack may be (dB under the same harmonics 70 ms on), and
+#                beyond that the dB that cost 1
 #   crest_from,  a peak inside it (a puff of breath or a thump at its start):
 #   crest_db     the dB its loudest frame may stand over its level, and
 #                beyond that the dB that cost 1; the level asked is set by
@@ -66,6 +75,11 @@ let CHOICE = {
   dip_db: 3.0,
   crest_from: 8.0,
   crest_db: 3.0,
+  crisp: 0.0,
+  rise_from: 2.0,
+  rise_frames: 2.0,
+  round_from: 3.0,
+  round_db: 3.0,
   vib_cents: 9.0,
   same_take: 2.0,
 }
@@ -116,6 +130,13 @@ fn borrow_for(inst, notes, k, before) {
       Math.max(0.0, inst.lib_crest[i] - w.crest_from) / w.crest_db
     if !slurred_in && inst.attack_of[i] == nil {
       c += w.no_attack
+    }
+    # A note not asked to begin softly begins crisply.
+    if w.crisp > 0.0 && !slurred_in && v.soft == 0.0 {
+      let start = inst.start_softness(i)
+      c += w.crisp *
+        (Math.max(0.0, start.rise - w.rise_from) / w.rise_frames +
+          Math.max(0.0, -start.round - w.round_from) / w.round_db)
     }
     if want_vib != nil {
       c += Math.abs(e.vib - want_vib) / w.vib_cents

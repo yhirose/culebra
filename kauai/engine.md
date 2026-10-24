@@ -63,6 +63,8 @@ These six are required. The rest have defaults (`DEFAULTS` in
 - `level_db`: the cost of loudness that differs from the one asked
 - `slur_other`, `slur_none`, `tongue_slur`, `rest_tongue`: the cost of a join that does not match the note's entry and exit
 - `same_take`: a bonus for the take that followed the previous borrowed note in the recording, so one player sounds through a slur
+- `crest_from`, `crest_db`: the cost of a note whose loudest frame stands far over its level (a puff of breath at its start), since the loudness asked is set by its middle
+- `crisp` (0, off): the cost of a start that is not crisp (frames to come within 3 dB of its level, and how round its attack is), for a note not asked to begin softly. The soprano's soft start, its "poa", is its own and stays off; the alto's tongued notes begin crisply (`1`)
 
 The weights were fitted on the soprano's targets. Changing them moves every
 song.

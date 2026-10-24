@@ -188,6 +188,34 @@ let BEND = {
   shake_max: 20.0,
 }
 
+# How fast a recorded note rises: the frames before its loudness `ds` (dB a
+# frame) stands within 3 dB of its steady loudness (the median of frames 10 to
+# 25, or of what it has).
+fn rise_frames(ds) {
+  let steady = ds.slice(Math.min(10, ds.size() / 2), Math.min(ds.size(), 25)).sorted()
+  let target = steady[steady.size() / 2]
+  iota(ds.size()).find(|j| ds[j] >= target - 3.0) ?? ds.size()
+}
+
+# How round a recorded attack is: the upper harmonics' power (2nd to 6th)
+# against the first, in dB, in the 10 to 50 ms after its onset less the same 70
+# to 110 ms after it (`own`: its samples, `pre` s before the onset, `f0` its
+# pitch). Near 0 or above, the timbre is there from the start; well under, it
+# is round at first and fills in, as a soprano's "poa" does.
+fn attack_roundness(own, pre, f0) {
+  let bright = fn (from) {
+    let a = Math.round((pre + from) * RATE)
+    let spec = Audio.spectrum(own.slice(a, a + 1024), 1024, 1024)[0]
+    let at = fn (f) {
+      let k = Math.round(f * 1024 / RATE)
+      iota(k - 2, k + 3).map(|j| spec[j]).max()
+    }
+    let up = iota(2, 7).map(|h| at(h * f0) ** 2).sum()
+    10.0 * Math.log(Math.max(up, 1e-18) / Math.max(at(f0) ** 2, 1e-18)) / Math.log(10.0)
+  }
+  bright(0.01) - bright(0.07)
+}
+
 # A tone's harmonics (their logs) after the tone has lost `loss` dB to a bend:
 # the higher the harmonic the more it has lost, the first not at all. A
 # negative loss (a push) brightens in the same measure.
@@ -379,6 +407,8 @@ class Instrument {
 
     self.ups_cache = self.lib.notes.map(|_| nil)
 
+    self.start_cache = self.lib.notes.map(|_| nil)
+
     # A library note's own average over its steady part (from 150 ms in to
     # 100 ms before its end, or its middle half when short): the loudness (dB)
     # and each harmonic's log. A piece of another note filling a note's middle
@@ -472,6 +502,23 @@ class Instrument {
       db + 20.0 * Math.log(Math.max(g, 1e-6)) / Math.log(10.0) >= med - 10.0
     })
     at == nil ? nil : (at - 5) * 0.001
+  }
+
+  # How softly library note i begins: `rise`, the frames it takes to come within
+  # 3 dB of its level, and `round`, how round its recorded attack is (dB; 0 where
+  # it has none). A note that begins softly is a "poa", right for the soprano
+  # where its song asks for one and not for an alto's tongued note.
+  start_softness(i) {
+    if self.start_cache[i] == nil {
+      let a = self.attack_of[i]
+      self.start_cache[i] = {
+        rise: rise_frames(self.note_db(i)),
+        round: a == nil
+          ? 0.0
+          : attack_roundness(self.attack_samples(a), self.attacks.pre, a.f0_fade),
+      }
+    }
+    self.start_cache[i]
   }
 
   # Where library note i's onset is against its first frame (seconds): as its

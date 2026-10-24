@@ -1,4 +1,5 @@
 import alto from './main.cul'
+import engine from '../../engine/borrow.cul'
 
 # A phrase as Kauai hands it to the instrument: two notes slurred, then one
 # held.
@@ -118,4 +119,22 @@ fn a_long_tone_does_not_swell_and_sag() {
   let slope = iota(level.size()).map(|i| (xs[i] - mx) * (level[i] - my)).sum() / xs.map(|x| (x - mx) * (x - mx)).sum()
   let scatter = Math.sqrt(iota(level.size()).map(|i| (level[i] - my - slope * (xs[i] - mx)) ** 2).sum() / n)
   assert_true(scatter < 1.3, scatter)
+}
+
+# A tongued note of the alto begins crisply: a soft, rounded start (a "poa", the
+# soprano's gift) is wrong for an alto, and the engine borrowed one for an A4
+# eighth that a note followed at once. The start of the note it borrows, the
+# frames it takes to come within 3 dB of its level and how rounded its attack
+# is, must be as the alto's usual.
+@test
+fn a_tongued_note_begins_crisply() {
+  let data = Dir.embedded('data')
+  let inst = engine.Instrument.new(data, JSON.parse(data.read('instrument.json')).play)
+  for (pitch, len, next) in [(69, 0.45, 0.46), (67, 0.45, 0.46), (72, 0.9, 0.9)] {
+    let note = [{pitch: pitch, at: 0.0, len: len, level: 0.55, level_end: 0.55, marks: [], next: next, params: {}}]
+    let chosen = inst.borrowed_curves(note, 0.0, 0, 0.0).chosen[0]
+    let start = inst.start_softness(chosen)
+    assert_true(start.rise <= 2, [pitch, chosen, start])
+    assert_true(start.round > -4.0, [pitch, chosen, start])
+  }
 }
