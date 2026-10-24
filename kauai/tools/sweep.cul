@@ -1,0 +1,83 @@
+# Sweeps single notes over an instrument's range, the lengths and levels a song
+# uses and the next phrase (none, or at once), and measures each sound: it
+# starts from nothing, does not clip and is in tune. Prints what it finds,
+# the worst first, and exits 1 when anything is found. sweep_lib.cul says the
+# limits.
+#
+#   culebra kauai/tools/sweep.cul --sounds kauai/sounds/alto_sax_recorded \
+#     --low 55 --high 80
+#
+# A fault that needs a particular pitch, length and level shows only where a
+# song happens to go; check.cul plays the songs there are, and this is the
+# proof that a fault is gone. The alto's borrowed attack once began before its
+# sound did for seven such combinations, up to 66% of the peak.
+
+import instrument from './instrument_lib.cul'
+
+let SPEC = {
+  name: 'sweep.cul',
+  doc: 'sweep single notes over the range, the lengths, the levels and the next phrase; measure each sound',
+  args: [
+    {
+      name: 'sounds',
+      type: 'String',
+      positional: false,
+      doc: 'the instrument module: a .cul file, or a folder and its main.cul',
+    },
+    {
+      name: 'voice',
+      type: 'String',
+      default: "",
+      positional: false,
+      doc: "the voice to sweep (the module's first by name when left out)",
+    },
+    {
+      name: 'low',
+      type: 'Long',
+      positional: false,
+      doc: 'the lowest pitch to sweep, MIDI',
+    },
+    {
+      name: 'high',
+      type: 'Long',
+      positional: false,
+      doc: 'the highest pitch to sweep, MIDI',
+    },
+    {
+      name: 'step',
+      type: 'Long',
+      default: 3,
+      doc: 'semitones between the pitches swept',
+    },
+  ],
+}
+
+fn fail(message) {
+  IO.eprintln("sweep: {message}")
+  Sys.exit(2)
+}
+
+let args = Args.parse(Sys.argv, SPEC)
+fail("--sounds, --low and --high are needed") if args.sounds == nil ||
+  args.low == nil ||
+  args.high == nil
+fail("--low must not be above --high") if args.low > args.high
+let module = instrument.module_at(args.sounds)
+fail("no instrument module at {args.sounds}") if module == nil
+let lib = FS.join(FS.dirname(FS.abspath(Sys.script)), "sweep_lib.cul")
+let call = JSON.stringify({
+  voice: args.voice.empty() ? nil : args.voice,
+  low: args.low,
+  high: args.high,
+  step: args.step,
+})
+let run = try {
+  instrument.program(module, lib, "run", call)
+} catch e: String {
+  fail(e)
+}
+let r = Proc.run(run.cmd)
+FS.remove(run.entry)
+IO.print(r.stdout)
+IO.eprint(r.stderr)
+Sys.exit(r.code)

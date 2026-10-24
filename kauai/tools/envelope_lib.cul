@@ -1,0 +1,85 @@
+# What measure.cul wrote of some recordings, as an instrument modelled from
+# them needs it: the spectral envelope in Hz (how strong each harmonic stands
+# against the frame's strongest, averaged in sixth-octave bands) and the
+# breath against the harmonics in each of measure.cul's bands. Measuring the
+# recordings and the instrument's own sound with the same function is how a
+# model is set and then judged.
+
+let log10 = |x| Math.log(x) / Math.log(10.0)
+
+# The band edges, a sixth of an octave apart from 100 Hz to about 10.7 kHz.
+let EDGES = iota(41).map(|i| 100.0 * 2.0 ** (i / 6.0))
+
+# A measure: NAME.json as measure.cul wrote it, and its NAME.f32 beside it.
+# Answers {cols, values, n}: the columns' names, every frame's values one
+# after another, the frames.
+fn read(path) {
+  let head = JSON.parse(FS.read(path))
+  let values = String.unpack(
+    "f32",
+    FS.read(FS.join(FS.dirname(path), head.frames.file)),
+  )
+  {cols: head.frames.columns, values: values, n: head.frames.count}
+}
+
+# The envelope and the breath over the pitched frames from `low` to `high` Hz
+# that are louder than the median of those in their measure (the notes, not
+# the gaps and the tails), of `measures` (each {cols, values, n}). A band
+# needs `min_frames` harmonics to be answered. Answers {envelope: [(Hz, dB)],
+# breath: [dB a band, the median], frames: how many frames counted}.
+fn profile(measures, low = 150.0, high = 900.0, min_frames = 30) {
+  let sums = EDGES.map(|_| 0.0)
+  let counts = EDGES.map(|_| 0)
+  let breath = []
+  mut frames = 0
+  for m in measures {
+    let c = m.cols.size()
+    let ihz = m.cols.index_of("hz")
+    let idb = m.cols.index_of("db")
+    let ih = m.cols.index_of("h1")
+    let ib = m.cols.index_of("b1")
+    let nh = m.cols.filter(|name| name.starts_with("h")).size()
+    let nb = m.cols.filter(|name| name.starts_with("b")).size()
+    while breath.size() < nb {
+      breath.push([])
+    }
+    let pitched = iota(m.n)
+      .filter(|t| m.values[t * c + ihz] > 0.0)
+      .map(|t| m.values[t * c + idb])
+      .sorted()
+    continue if pitched.empty()
+    let floor = pitched[pitched.size() / 2]
+    for t in range(m.n) {
+      let hz = m.values[t * c + ihz]
+      continue if hz < low || hz > high || m.values[t * c + idb] <= floor
+      let amps = m.values.slice(t * c + ih, t * c + ih + nh)
+      let top = amps.reduce(0.0, |a, x| Math.max(a, x))
+      continue if top <= 0.0
+      frames += 1
+      for k in range(nh) {
+        let f = (k + 1) * hz
+        continue if f >= EDGES[-1] || amps[k] <= 0.0
+        let b = Math.floor(6.0 * Math.log(f / 100.0) / Math.log(2.0))
+        sums[b] = sums[b] + 20.0 * log10(amps[k] / top)
+        counts[b] = counts[b] + 1
+      }
+      for j in range(nb) {
+        breath[j].push(m.values[t * c + ib + j])
+      }
+    }
+  }
+  let envelope = iota(EDGES.size() - 1)
+    .filter(|b| counts[b] >= min_frames)
+    .map(|b| (
+      Math.round(Math.sqrt(EDGES[b] * EDGES[b + 1])),
+      Math.round(10.0 * sums[b] / counts[b]) / 10.0,
+    ))
+  let median = |xs| xs.sorted()[xs.size() / 2]
+  {
+    envelope: envelope,
+    breath: breath.map(|xs| xs.empty() ? nil : Math.round(10.0 * median(xs)) / 10.0),
+    frames: frames,
+  }
+}
+
+export {EDGES, read, profile}

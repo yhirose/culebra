@@ -121,19 +121,22 @@ is made.
 `check.cul` plays the songs there are. A fault that needs a particular
 pitch, length and level shows only where a song happens to go: the alto's
 borrowed attack began before its sound for a note of 0.195 s at F#5, and for
-six other combinations, while two songs asked for one of them. To find all of
-them, play single notes over the range, the lengths a tune uses (0.1, 0.2,
-0.3, 0.6 s), the levels (0.7, 1.0, 1.35) and what the song hands over (`next`:
-none, at once, later; the marks) and the note that follows (none, or a leap
-either way: the same note must sound the same whatever comes after it) in a
-throwaway file, and measure
-each: the size of the first samples against the peak (a sound starts from
-nothing: under 3%), its pitch against the written one, its peak against full
-scale. Put what the sweep finds into one place that holds it for every
-sound (the alto's exit fades the first 3 ms in, whatever the pieces did),
-and the sweep's three worst cases into the instrument's test, which must fail
-before the change. A song's `check.cul` finding is a lead; the sweep is the
-proof that it is gone.
+six other combinations, while two songs asked for one of them. `sweep.cul`
+(`kauai/tools/README.md`) plays single notes over the range, the lengths a
+tune uses, the levels and the next phrase (none, or at once), and measures
+each: a sound starts from nothing (under 3% of its peak in its first
+samples), does not clip and is in tune. Run it on a new instrument and again
+after a fix. When it finds something, put the fix in one place that holds it
+for every sound (the alto's exit fades the first 3 ms in, whatever the pieces
+did), and the worst cases into the instrument's test, which must fail before
+the change. A song's `check.cul` finding is a lead; the sweep is the proof
+that it is gone. Vary also the note that follows (none, or a leap either way):
+the same note must sound the same whatever comes after it.
+
+To set a modelled instrument from recordings, or to judge it, measure both
+with the same tool: `envelope.cul` gives the spectral envelope in Hz and the
+breath of what `measure.cul` measured, of the recordings and of the
+instrument's own sound written to a WAV.
 
 One thing to read off the data before a sweep: how far each recorded note's
 loudest frame stands over its level (the median of its middle, which the

@@ -1,0 +1,44 @@
+import lib from './sweep_lib.cul'
+
+let RATE = 44100
+
+# A sine at the written pitch, `len` and a tail long; `abrupt` starts it at
+# full strength (a click), otherwise it rises over 5 ms; `loud` is its peak.
+fn tone(pitch, len, abrupt, loud) {
+  let hz = 440.0 * 2.0 ** ((pitch - 69) / 12.0)
+  let n = Math.round((len + 0.1) * RATE)
+  let rise = Math.round(0.005 * RATE)
+  iota(n).map(fn (i) {
+    let env = abrupt || i >= rise ? 1.0 : i / rise
+    loud * env * Math.sin(2.0 * Math.pi * hz * i / RATE)
+  })
+}
+
+# A voice that clicks at pitch 60 only (a sine from the first sample), clips at
+# 66 only, and is otherwise clean.
+let FAKE = {voices: {t: {phrase: fn (notes, params) {
+  let n = notes[0]
+  Audio.Sound(tone(n.pitch, n.len, n.pitch == 60, n.pitch == 66 ? 2.0 : 0.5), rate: RATE)
+}}}}
+
+@test
+fn a_sweep_finds_the_pitch_that_clicks_and_the_one_that_clips_and_no_other() {
+  let r = lib.sweep(FAKE, "t", 57, 69, step: 3)
+  assert_eq(r.count, 5 * 4 * 3 * 2)
+  let kinds = r.findings.map(|b| "{b.what} {b.pitch}").to_set()
+  assert_eq(kinds, ["start 60", "clip 66"].to_set())
+  # Every length, level and next of that pitch shows it.
+  assert_eq(r.findings.filter(|b| b.what == "start").size(), 4 * 3 * 2)
+}
+
+@test
+fn a_clean_voice_finds_nothing_and_a_note_out_of_tune_is_found() {
+  let clean = {voices: {t: {phrase: |notes, params| Audio.Sound(tone(notes[0].pitch, notes[0].len, false, 0.5), rate: RATE)}}}
+  assert_true(lib.sweep(clean, "t", 60, 66, step: 3).findings.empty())
+  # A tone a quarter-tone (50 cents) sharp is out of tune.
+  let sharp = {voices: {t: {phrase: |notes, params| Audio.Sound(tone(notes[0].pitch + 0.5, notes[0].len, false, 0.5), rate: RATE)}}}
+  let r = lib.sweep(sharp, "t", 60, 60, step: 3)
+  assert_true(r.findings.all(|b| b.what == "pitch") && !r.findings.empty(), r.findings.slice(0, 2))
+  # A short note's pitch is not judged.
+  assert_true(r.findings.all(|b| b.len >= 0.15))
+}

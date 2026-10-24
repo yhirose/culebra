@@ -443,3 +443,57 @@ The needs are a first guess: 5 notes per semitone, 10 long notes per octave,
 change them). They are to be tuned against what a listener hears, as the
 soprano's were not: the soprano's three takes were short of long notes
 (21 against the 10 per octave) and had no notes at 55, 56, 57 or 84 to 90.
+
+## envelope.cul: the spectral envelope and the breath of recordings
+
+`envelope.cul` reads what `measure.cul` wrote and gives what an instrument
+modelled from the recordings needs: how strong each harmonic stands against
+the frame's strongest, by frequency (sixth-octave bands from 100 Hz), and the
+breath against the harmonics in each of `measure.cul`'s bands. Only the
+pitched frames from `--low` to `--high` Hz (150 to 900) that are louder than
+their measure's median count, the notes and not the gaps; a band needs
+`--min-frames` harmonics (30) to be answered.
+
+```sh
+culebra kauai/tools/envelope.cul work/measured/*.json
+```
+
+```
+10837 frames from 150.0 to 900.0 Hz
+envelope (Hz, dB against the frame's strongest harmonic):
+  168 -0.6
+  189 -2.3
+  ...
+breath (dB against the harmonics, measure.cul's bands): [-34.2, -32.9, -31.5, -39.5, -46.5]
+```
+
+Measure a recording, and what the instrument plays (a scale, every semitone
+held, written to a WAV and measured by `measure.cul`), with this one tool,
+and the two lists side by side say where the model is far from the real
+sound. The synthesized alto's spectral envelope and breath were set this
+way.
+
+## sweep.cul: single notes over what a song can hand an instrument
+
+`sweep.cul` plays single notes of an instrument over `--low` to `--high` (MIDI,
+every `--step` semitones, 3), the lengths (0.1, 0.2, 0.3, 0.6 s), the levels
+(0.7, 1.0, 1.35) and the next phrase (none, or at once), and measures each
+sound: it starts from nothing (its first four samples under 3% of its peak), it
+does not clip, and a note of 0.15 s or more is within 40 cents of the written
+pitch. It prints what it finds, the worst first, and exits 1 when anything is.
+
+```sh
+culebra kauai/tools/sweep.cul --sounds kauai/sounds/alto_sax_recorded \
+  --low 55 --high 80
+```
+
+```
+alto: 144 notes swept, MIDI 55 to 80 every 5
+0 found
+```
+
+`check.cul` plays the songs there are; a fault that needs a particular pitch,
+length and level shows only where a song happens to go. The alto's borrowed
+attack began before its sound did for seven such combinations (up to 66% of
+the peak), and a song reached one of them.
+

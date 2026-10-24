@@ -1,0 +1,40 @@
+import lib from './envelope_lib.cul'
+
+# A measure of `n` frames at 440 Hz whose harmonic k stands `slope` dB under
+# the first, every fourth frame louder (the others are the quiet rest that is
+# left out), with the breath bands at `breath`.
+fn measure_of(n, slope, breath) {
+  let cols = ["hz", "db", ...iota(1, 41).map(|k| "h{k}"), "b1", "b2"]
+  let values = []
+  for t in range(n) {
+    values.push(440.0)
+    values.push(t % 4 == 0 ? -10.0 : -30.0)
+    for k in range(1, 41) {
+      values.push(10.0 ** (-(k - 1) * slope / 20.0))
+    }
+    values.push(breath[0])
+    values.push(breath[1])
+  }
+  {cols: cols, values: values, n: n}
+}
+
+@test
+fn the_envelope_is_each_harmonics_level_against_the_strongest_by_its_frequency() {
+  let p = lib.profile([measure_of(200, 6.0, [-25.0, -40.0])])
+  # Only the louder quarter of the frames counts.
+  assert_eq(p.frames, 50)
+  # The 2nd harmonic (880 Hz) 6 dB under the first, the 3rd (1320 Hz) 12.
+  let near = |hz| p.envelope.min_by(|e| Math.abs(Math.log(e[0] / hz)))
+  assert_true(Math.abs(near(440.0)[1]) < 0.1, near(440.0))
+  assert_true(Math.abs(near(880.0)[1] + 6.0) < 1.0, near(880.0))
+  assert_true(Math.abs(near(1320.0)[1] + 12.0) < 1.0, near(1320.0))
+  assert_eq(p.breath, [-25.0, -40.0])
+}
+
+@test
+fn a_band_with_too_few_harmonics_is_left_out_and_a_pitch_outside_the_range_not_counted() {
+  let p = lib.profile([measure_of(20, 6.0, [-25.0, -40.0])], min_frames = 30)
+  assert_true(p.envelope.empty(), p.envelope)
+  let q = lib.profile([measure_of(200, 6.0, [-25.0, -40.0])], low = 500.0, high = 900.0)
+  assert_eq(q.frames, 0)
+}

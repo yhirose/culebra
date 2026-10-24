@@ -1,0 +1,62 @@
+# The spectral envelope and the breath of recordings (or of an instrument's
+# own sound, written to a WAV and measured by measure.cul): how strong each
+# harmonic stands against the frame's strongest, by frequency, and the breath
+# against the harmonics in each band. envelope_lib.cul says how.
+#
+#   culebra kauai/tools/envelope.cul work/measured/*.json
+#
+# Measuring a recording and what the instrument plays with the same tool, the
+# two lists side by side, is how a modelled instrument is set and then judged.
+
+import lib from './envelope_lib.cul'
+
+let SPEC = {
+  name: 'envelope.cul',
+  doc: 'the spectral envelope (dB by Hz) and the breath (dB a band) of measured recordings',
+  args: [
+    {
+      name: 'low',
+      type: 'Float',
+      default: 150.0,
+      doc: 'the lowest pitch of the frames counted, Hz',
+    },
+    {
+      name: 'high',
+      type: 'Float',
+      default: 900.0,
+      doc: 'the highest pitch of the frames counted, Hz',
+    },
+    {
+      name: 'min-frames',
+      type: 'Long',
+      default: 30,
+      doc: 'harmonics a band needs to be answered',
+    },
+    {
+      name: 'measured',
+      type: 'String',
+      positional: true,
+      repeated: true,
+      doc: 'the NAME.json files measure.cul wrote',
+    },
+  ],
+}
+
+fn fail(message) {
+  IO.eprintln("envelope: {message}")
+  Sys.exit(2)
+}
+
+let args = Args.parse(Sys.argv, SPEC)
+fail("no measures named") if args.measured.empty()
+let measures = args.measured.map(fn (path) {
+  fail("no measure {path}") if !FS.exists(path)
+  lib.read(path)
+})
+let p = lib.profile(measures, args.low, args.high, args["min-frames"])
+println("{p.frames} frames from {args.low} to {args.high} Hz")
+println("envelope (Hz, dB against the frame's strongest harmonic):")
+for (hz, db) in p.envelope {
+  println("  {hz} {db}")
+}
+println("breath (dB against the harmonics, measure.cul's bands): {p.breath}")

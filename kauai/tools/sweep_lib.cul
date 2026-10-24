@@ -1,0 +1,105 @@
+# A sweep of single notes over what a song can hand an instrument: the pitch,
+# the length, the level and the next phrase (none, or at once). check.cul plays
+# the songs there are; a fault that needs a particular combination shows only
+# where a song happens to go. Each sound is measured for three things that a
+# sound should always have: it starts from nothing, it does not clip, and it
+# is in tune.
+
+# What a sound may do. `start`: its first four samples against its peak.
+# `peak`: at or over it is clipped. `cents`: how far its pitch is from the written
+# one (a note of 0.15 s or more).
+let LIMITS = {start: 0.03, peak: 0.999, cents: 40.0}
+
+# The lengths, levels and nexts (nil, or 1 for "at once") swept unless asked
+# otherwise.
+let LENGTHS = [0.1, 0.2, 0.3, 0.6]
+let LEVELS = [0.7, 1.0, 1.35]
+let NEXTS = [nil, 1]
+
+# A sound as {samples, rate}: what an instrument answered, `Audio.Sound` or an
+# Array of samples at `rate`.
+fn samples_of(sound, rate) {
+  if type_of(sound) == "Array" {
+    return {samples: sound, rate: rate}
+  }
+  let d = Audio.decode(sound.data())
+  {samples: d.channels[0], rate: d.rate}
+}
+
+# The measures of a sound for a note of `pitch` (MIDI) and `len` seconds:
+# {start, peak, cents}, `cents` nil where no pitch is found or the note is short.
+fn measures(sound, pitch, len, rate) {
+  let (s, r) = (samples_of(sound, rate).samples, samples_of(sound, rate).rate)
+  let peak = s.map(|v| Math.abs(v)).max()
+  let start = peak > 0.0 ? s.slice(0, 4).map(|v| Math.abs(v)).max() / peak : 0.0
+  mut cents = nil
+  if len >= 0.15 {
+    let body = s.slice(Math.round(0.05 * r), Math.round((len - 0.02) * r))
+    let hz = Audio.pitch(body, 100.0, 1400.0, r).hz.filter(|h| h != nil).sorted()
+    if !hz.empty() {
+      let want = 440.0 * 2.0 ** ((pitch - 69) / 12.0)
+      cents = 1200.0 * Math.log(hz[hz.size() / 2] / want) / Math.log(2.0)
+    }
+  }
+  {start: start, peak: peak, cents: cents}
+}
+
+# What a measure breaks, as a list of {what, value}.
+fn broken(m, limits) {
+  let out = []
+  out.push({what: "start", value: m.start}) if m.start > limits.start
+  out.push({what: "clip", value: m.peak}) if m.peak >= limits.peak
+  out.push({what: "pitch", value: m.cents}) if m.cents != nil && Math.abs(m.cents) > limits.cents
+  out
+}
+
+# The sweep of voice `name` of `sounds` (a module's `voices`), pitches `low` to
+# `high` every `step` semitones. Answers {count, findings: [{what, value,
+# pitch, len, level, next}]}, the worst of each kind first.
+fn sweep(sounds, name, low, high, step = 3, limits = LIMITS, rate = 44100) {
+  let f = sounds.voices[name]
+  let phrase = type_of(f) == "Function" ? nil : f.phrase
+  mut count = 0
+  let findings = []
+  for pitch in range(low, high + 1, step: step) {
+    for len in LENGTHS {
+      for level in LEVELS {
+        for next in NEXTS {
+          let note = {
+            pitch: pitch,
+            at: 0.0,
+            len: len,
+            level: level,
+            level_end: level,
+            marks: [],
+            next: next == nil ? nil : len * next,
+            params: {},
+          }
+          let sound = phrase == nil ? f(pitch, {}) : phrase([note], {})
+          count += 1
+          for b in broken(measures(sound, pitch, len, rate), limits) {
+            findings.push({...b, pitch: pitch, len: len, level: level, next: note.next})
+          }
+        }
+      }
+    }
+  }
+  {count: count, findings: findings.sorted_by(|b| -Math.abs(b.value))}
+}
+
+# The program's entry (see instrument_lib.program): `sounds` the module,
+# `arg` the call as JSON {voice, low, high, step}. Prints and exits 1 where
+# anything was found.
+fn run(sounds, arg) {
+  let a = JSON.parse(arg)
+  let name = a.voice ?? sounds.voices.keys().sorted()[0]
+  let r = sweep(sounds, name, a.low, a.high, a.step)
+  println("{name}: {r.count} notes swept, MIDI {a.low} to {a.high} every {a.step}")
+  for b in r.findings.slice(0, 12) {
+    println("  {b.what} {Math.round(100.0 * b.value) / 100.0}: pitch {b.pitch}, len {b.len}, level {b.level}, next {b.next}")
+  }
+  println("{r.findings.size()} found")
+  Sys.exit(r.findings.empty() ? 0 : 1)
+}
+
+export {LIMITS, measures, broken, sweep, run}
