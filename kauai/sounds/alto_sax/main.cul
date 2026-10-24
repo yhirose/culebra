@@ -1,7 +1,12 @@
-# An alto saxophone for Kauai, synthesized rather than recorded: a harmonic
-# tone whose spectrum follows a measured alto's and brightens with the
-# loudness, a breath of band noise, and a slow vibrato on the long notes. A
-# slur is one phrase, so its notes glide into one another.
+# An alto saxophone for Kauai, synthesized rather than recorded. Its numbers
+# are measured from a jazz alto (the IBCC Digital Archive's recordings, CC
+# BY-NC 4.0; README.md says more): the harmonics follow the spectral envelope
+# of its body in Hz, so the timbre changes with the pitch as an instrument's
+# does; a breath of noise sits under the tone at the level measured against
+# it; a tongued note rises in about 10 ms. A slur is one phrase: its notes
+# glide into one another with no break in the sound, and only a gap or the
+# phrase's end lets the sound go. The jazz articulations (`\scoop`, `\plop`,
+# `\doit`, `\fall`) bend the pitch at a note's start or end.
 #
 #   band Smooth {
 #     voice Lead  external Alto  plays melody  vol 60
@@ -11,104 +16,229 @@
 
 let RATE = 44100
 
-# One control point every STEP seconds: the pitch, the gain and the spectrum
+# One control point every STEP seconds: the pitch, the gain and the breath
 # change at that rate, which is fast enough for a melody.
-let STEP = 0.01
+let STEP = 0.005
 
 # The harmonics the spectrum is drawn with (those above 0.45 of the rate are
 # left out by Audio.partials).
-let HARMONICS = 24
+let HARMONICS = 30
+
+# The spectral envelope: dB against the strongest harmonic at each frequency
+# (Hz), measured on the recordings' pitched frames and smoothed; between the
+# points it is a straight line in log frequency.
+let ENVELOPE = [
+  (150.0, 0.0), (600.0, -2.0), (700.0, -5.0), (850.0, -11.0),
+  (1050.0, -20.0), (1350.0, -18.0), (1550.0, -23.0), (1900.0, -30.0),
+  (2400.0, -33.0), (3000.0, -37.5), (3800.0, -42.0), (4800.0, -47.0),
+  (6000.0, -54.0), (10000.0, -56.0),
+]
+
+# The harmonics brighten with the dynamic: each one up by this many dB per
+# step of `level` (1.0 at mf) times its number, as a reed blown harder does.
+let BRIGHTEN = 0.8
+
+# The breath against the tone (an amplitude ratio, as the noise band from
+# BREATH_LOW to BREATH_HIGH Hz), and the tongue's burst of it at an attack.
+let BREATH = 0.25
+let BREATH_LOW = 250.0
+let BREATH_HIGH = 2200.0
+let TONGUE = 0.25
+
+let ATTACK = 0.012
+let RELEASE = 0.08
+let GLIDE = 0.025
+
+# Vibrato on a long note: after `delay` seconds, reaching its depth over as
+# many again; `rate` a second, `depth` cents at its widest.
+let VIBRATO = {delay: 0.35, rate: 5.2, depth: 3.0}
+
+# The bends the jazz articulations make, in cents against the note, one value
+# every BEND_STEP seconds: a scoop and a plop from the note's start, a fall
+# and a doit up to its end.
+let BEND_STEP = 0.03
+let SCOOP = [-150.0, -90.0, -45.0, -15.0, 0.0]
+let PLOP = [300.0, 150.0, 50.0, 0.0]
+let FALL = [0.0, -40.0, -120.0, -250.0, -420.0, -600.0]
+let DOIT = [0.0, 40.0, 120.0, 250.0, 400.0]
 
 fn freq_of(pitch) {
   440.0 * Math.exp((pitch - 69) * Math.log(2.0) / 12)
 }
 
-# The amplitude of each harmonic at a level: the measured shape, and the
-# higher harmonics growing with the level.
-# The harmonics' levels in dB against the first, measured on a 200 to 800 Hz
-# alto (the IBCC Digital Archive's recordings, CC BY-NC 4.0); above the table
-# each falls 2.5 dB more.
-let REL_DB = [0.0, -7.8, -18.6, -24.0, -29.0, -33.0, -35.0, -37.5, -39.5, -41.8]
-
-fn spectrum_at(level) {
-  range(HARMONICS).map(|i| {
-    let k = i + 1
-    let db = if k <= 10 { REL_DB[i] } else { -41.8 - 2.5 * (k - 10) }
-    Math.exp(db * Math.log(10.0) / 20) * Math.exp(Math.log(level) * 0.15 * k)
-  }).collect()
+fn cents(c) {
+  Math.exp(c * Math.log(2.0) / 1200)
 }
 
-# The note sounding at time `t`: the last one that has started, so a note
-# that has ended holds its pitch until the next one starts.
-fn note_at(notes, t) {
-  mut cur = notes[0]
-  for n in notes {
-    if n.at <= t {
-      cur = n
+fn amp_of_db(db) {
+  Math.exp(db * Math.log(10.0) / 20)
+}
+
+fn envelope_db(f) {
+  if f <= ENVELOPE[0][0] {
+    return ENVELOPE[0][1]
+  }
+  for i in range(1, ENVELOPE.size()) {
+    let (f1, d1) = ENVELOPE[i]
+    if f <= f1 {
+      let (f0, d0) = ENVELOPE[i - 1]
+      let x = Math.log(f / f0) / Math.log(f1 / f0)
+      return d0 + (d1 - d0) * x
     }
   }
-  cur
+  ENVELOPE[ENVELOPE.size() - 1][1]
+}
+
+# The amplitude of each harmonic of a note at `f0` Hz played at `level`: the
+# envelope at each harmonic's frequency, brightened by the level, scaled so
+# the strongest is 1.
+fn spectrum_at(f0, level) {
+  let tilt = BRIGHTEN * (level - 1.0)
+  let amps = range(HARMONICS).map(|i| amp_of_db(envelope_db((i + 1) * f0) + tilt * i)).collect()
+  let top = amps.reduce(0.0, |a, x| Math.max(a, x))
+  amps.map(|a| a / top)
+}
+
+# A bend's cents at `x` seconds into its table.
+fn bend_at(table, x) {
+  let pos = x / BEND_STEP
+  let i = Math.min(Math.floor(pos), table.size() - 1)
+  if i >= table.size() - 1 {
+    return table[table.size() - 1]
+  }
+  table[i] + (table[i + 1] - table[i]) * (pos - i)
+}
+
+fn bend_len(table) {
+  (table.size() - 1) * BEND_STEP
+}
+
+# The note sounding at time `t`: the last one that has started.
+fn index_at(notes, t) {
+  mut k = 0
+  for i in range(notes.size()) {
+    if notes[i].at <= t {
+      k = i
+    }
+  }
+  k
 }
 
 fn phrase_end(notes) {
-  notes.map(|n| n.at + n.len).reduce(0.0, |a, x| if x > a { x } else { a })
+  notes.map(|n| n.at + n.len).reduce(0.0, |a, x| Math.max(a, x))
 }
 
-# The notes of a phrase as Audio.partials takes them: the pitch glides into
-# each note over about 20 ms, a long note vibrates after its first 0.3 s, and
-# the gain rises at each note's start and falls before its end.
+# Whether the note at `i` starts the sound (the phrase's first, or one after a
+# gap), and whether the sound stops after it (the last, or one before a gap).
+fn starts_sound(notes, i) {
+  i == 0 || notes[i].at > notes[i - 1].at + notes[i - 1].len + 0.005
+}
+
+fn ends_sound(notes, i) {
+  i == notes.size() - 1 || notes[i + 1].at > notes[i].at + notes[i].len + 0.005
+}
+
+# A slow, small unsteadiness of the pitch (cents) and the level (a factor),
+# as a player's breath gives: a sum of slow sines, the same every time.
+fn wander_cents(t) {
+  1.5 * Math.sin(2.0 * Math.pi * 0.7 * t + 0.4) + 1.0 * Math.sin(2.0 * Math.pi * 1.9 * t + 1.7)
+}
+
+fn wander_gain(t) {
+  1.0 + 0.025 * Math.sin(2.0 * Math.pi * 2.3 * t) + 0.015 * Math.sin(2.0 * Math.pi * 5.9 * t + 1.3)
+}
+
+# The notes of a phrase as Audio.partials takes them, every STEP seconds.
 fn tone(notes, seconds) {
   mut freq = []
   mut gain = []
+  mut steady = []
   mut spectrum = []
-  mut smooth = freq_of(notes[0].pitch)
-  for i in range(Math.ceil(seconds / STEP)) {
-    let t = i * STEP
-    let n = note_at(notes, t)
+  mut smooth = 0.0
+  for s in range(Math.ceil(seconds / STEP)) {
+    let t = s * STEP
+    let i = index_at(notes, t)
+    let n = notes[i]
     let x = t - n.at
-    let vib = if x > 0.3 { 1.0 + 0.0015 * Math.sin(2.0 * Math.pi * 5.5 * (x - 0.3)) } else { 1.0 }
-    let target = freq_of(n.pitch) * vib
-    smooth = smooth + (target - smooth) * (1.0 - Math.exp(-STEP / 0.02))
+    let end = n.at + n.len
+    let marks = n.marks ?? []
+
+    # The pitch: the note's, bent by its articulations, wandering a little,
+    # with vibrato on a long note; gliding from the note before.
+    mut c = wander_cents(t)
+    if x > VIBRATO.delay && n.len > VIBRATO.delay + 0.2 {
+      let depth = VIBRATO.depth * Math.min(1.0, (x - VIBRATO.delay) / VIBRATO.delay)
+      c = c + depth * Math.sin(2.0 * Math.pi * VIBRATO.rate * (x - VIBRATO.delay))
+    }
+    if marks.contains("scoop") && x < bend_len(SCOOP) {
+      c = c + bend_at(SCOOP, x)
+    }
+    if marks.contains("plop") && x < bend_len(PLOP) {
+      c = c + bend_at(PLOP, x)
+    }
+    let bent_end = if marks.contains("fall") { bend_len(FALL) } else if marks.contains("doit") { bend_len(DOIT) } else { 0.0 }
+    let into_end = x - (n.len - bent_end)
+    if bent_end > 0.0 && into_end > 0.0 {
+      c = c + bend_at(if marks.contains("fall") { FALL } else { DOIT }, into_end)
+    }
+    let target = freq_of(n.pitch) * cents(c)
+    if s == 0 || (starts_sound(notes, i) && x < STEP) {
+      smooth = target
+    } else {
+      smooth = smooth + (target - smooth) * (1.0 - Math.exp(-STEP / GLIDE))
+    }
     freq.push((t, smooth))
-    let rise = if x < 0.03 { x / 0.03 } else { 1.0 }
-    let fall = if n.at + n.len - t < 0.05 { Math.max(0.0, (n.at + n.len - t) / 0.05) } else { 1.0 }
-    gain.push((t, 0.35 * n.level * rise * fall))
+
+    # The gain: rising where the sound starts, held through a slur, let go
+    # where it stops; a bend at the end fades with it.
+    let level_end = n.level_end ?? n.level
+    let lvl = n.level + (level_end - n.level) * Math.min(1.0, Math.max(0.0, x / n.len))
+    let rise = if starts_sound(notes, i) { Math.min(1.0, x / ATTACK) } else { 1.0 }
+    let fall = if ends_sound(notes, i) && t > end { Math.max(0.0, 1.0 - (t - end) / RELEASE) } else { 1.0 }
+    let fade = if bent_end > 0.0 && into_end > 0.0 { Math.max(0.0, 1.0 - into_end / bent_end) } else { 1.0 }
+    let g = 0.3 * lvl * rise * fall * fade * wander_gain(t)
+    gain.push((t, g))
+
+    # The breath: under the tone throughout, and a burst at a tongued start.
+    let burst = if starts_sound(notes, i) && x < 0.04 { TONGUE * (1.0 - x / 0.04) } else { 0.0 }
+    steady.push((t, g * BREATH + 0.3 * lvl * burst * fall))
   }
   for n in notes {
-    spectrum.push((n.at, spectrum_at(n.level)))
+    spectrum.push((n.at, spectrum_at(freq_of(n.pitch), n.level)))
   }
-  {freq: freq, gain: gain, spectrum: spectrum}
+  {freq: freq, gain: gain, steady: steady, spectrum: spectrum}
 }
 
-# The gain is scaled so that a note at mf stays below full scale, as the
-# partials' sum alone would not.
-# A phrase's samples, mono, RATE a second, from its start to a short tail
+# A phrase's samples, mono, RATE a second, from its start to the release
 # after its last note.
 fn phrase_samples(notes) {
-  let seconds = phrase_end(notes) + 0.3
+  let seconds = phrase_end(notes) + RELEASE + 0.05
   let parts = tone(notes, seconds)
-  let breath = {
-    low: 3000.0,
-    high: 7000.0,
-    seed: 5,
-    steady: [(0.0, 0.0), (seconds, 0.0)],
-    pulsed: [(0.0, 0.01), (seconds, 0.01)],
-  }
-  Audio.partials(
+  let samples = Audio.partials(
     seconds,
     freq: parts.freq,
     spectrum: parts.spectrum,
     gain: parts.gain,
-    noise: breath,
+    noise: {
+      low: BREATH_LOW,
+      high: BREATH_HIGH,
+      seed: notes[0].pitch,
+      steady: parts.steady,
+      pulsed: [(0.0, 0.0), (seconds, 0.0)],
+    },
     rate: RATE,
   )
+  # The breath noise is flat in its band; a gentle low-pass tilts it down
+  # as the measured breath falls, and leaves the harmonics, already far
+  # below there, as they are.
+  Audio.filter(samples, "low", 7000.0, q: 0.6, rate: RATE)
 }
 
 # The instrument, as Audio.Kauai takes it: `external Alto`. A phrase is handed
-# over with each note's `pitch`, `at`, `len` and `level`.
+# over with each note's `pitch`, `at`, `len`, `level` and `marks`.
 let voices = {alto: {
   phrase: |notes, params| Audio.Sound(phrase_samples(notes), rate: RATE),
-  hears: ["len", "level"],
+  hears: ["len", "level", "marks"],
 }}
 
 export {voices, phrase_samples, RATE}
