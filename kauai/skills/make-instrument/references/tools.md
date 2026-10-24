@@ -123,7 +123,8 @@ pitch, length and level shows only where a song happens to go: the alto's
 borrowed attack began before its sound for a note of 0.195 s at F#5, and for
 six other combinations, while two songs asked for one of them. To find all of
 them, play single notes over the range, the lengths a tune uses (0.1, 0.2,
-0.3, 0.6 s) and the levels (0.7, 1.0, 1.35) in a throwaway file, and measure
+0.3, 0.6 s), the levels (0.7, 1.0, 1.35) and what the song hands over (`next`:
+none, at once, later; the marks) in a throwaway file, and measure
 each: the size of the first samples against the peak (a sound starts from
 nothing: under 3%), its pitch against the written one, its peak against full
 scale. Put what the sweep finds into one place that holds it for every
@@ -131,4 +132,12 @@ sound (the alto's exit fades the first 3 ms in, whatever the pieces did),
 and the sweep's three worst cases into the instrument's test, which must fail
 before the change. A song's `check.cul` finding is a lead; the sweep is the
 proof that it is gone.
+
+One thing to read off the data before a sweep: how far each recorded note's
+loudest frame stands over its level (the median of its middle, which the
+engine sets to the loudness asked). A take that opens with a puff of breath
+20 dB over its middle plays 20 dB over what the song asked. The alto's data
+had 334 such notes of 2520 (over 8 dB); the soprano's, 43 of 1809. The
+choice costs them (`crest_from`, `crest_db`), and a count of them is worth
+having when the recordings are chosen.
 

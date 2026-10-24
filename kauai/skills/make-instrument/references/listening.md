@@ -79,6 +79,7 @@ the words turned out to be, making the soprano saxophone:
 | "buuun", a siren at every interval of a slur (the alto) | the pitch glided between slurred notes with a 25 ms time constant; a change of fingering moves it in about 4 ms, with a brief dip of the air |
 | "the EWI's glide", a downbend (the alto) | the pitch and the loudness slid down on one curve; a fall's loudness is greatest at the start and thins out softly while the pitch gathers speed |
 | "bu..." (a blunt knock), a fall (the alto) | the measured landing of eight falls, a push of 8 dB and a collapse in 0.1 s, put in at full strength; the measure said what changes, not how hard |
+| "buforh", an ugly loud burst as a tune starts (the alto) | a note borrowed from a take that opens with a puff of breath 20 dB over its middle: the engine sets the loudness asked by the middle, so the puff played 20 dB over it; found by measuring the first second in bands over time (one note 13 dB over the next, the same note), then by changing what the song hands the instrument (`next`) |
 | "flat", "nopperi", after the rest is fixed | what is still the same everywhere: the slur's join, the breath, small moves of level and pitch |
 | the soprano lacks its "poa" | the soft-then-full start of a soprano's note, which, once named, was the biggest single step forward |
 
