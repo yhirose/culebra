@@ -523,11 +523,20 @@ asan:
     [[ "$fail" == 0 ]] || { echo "asan FAIL" >&2; exit 1; }
     echo "asan OK (JIT GC paths clean under ASan+UBSan)"
 
-# Clean build directories + local editor/cache scratch (all regenerable)
+# Remove every temporary file: the build directories, an instrument's work folder,
+# scratch, editor config and caches (all regenerable). What .gitignore leaves out
+# that a person put there (local settings, private notes) stays: it is listed, with
+# its reason, in tools/checks/clean_keeps.txt, and check_clean_covers_ignored.sh
+# fails until each ignored pattern is either removed here or listed there.
 [group("build")]
 clean:
-    rm -rf build build-dev build-gate build-asan build-assert build-no-jit build-cov build-wrap
+    rm -rf build*/ raylib_ext_build
+    rm -rf Makefile CMakeFiles CMakeCache.txt
     rm -rf .cache-ccache .zed .vscode .vimspector.json misc/*/.zed
+    rm -rf tmp scratchpad kauai/sounds/*/work
+    rm -rf culebra-wrapped webview-culebra webview-app visits.db examples/webview/visits.db examples/games/retro-run/retro-run
+    find . -path ./vendor -prune -o -type d -name __pycache__ -prune -exec rm -rf {} +
+    find . -path ./vendor -prune -o -type f -name '*.pyc' -exec rm -f {} +
 
 # Regenerate misc/culebra.peg + the Vim/VSCode AUTO-KEYWORDS from include/frontend/parser.h
 [group("build")]
@@ -1561,6 +1570,12 @@ _run-tests BACKEND:
     # only shows up on the lanes that lack the axis.
     run_optional_ns() { bash tools/checks/check_tests_optional_ns.sh; }
 
+    # `just clean` removes every temporary file: each pattern of .gitignore is
+    # either named in the clean recipe or kept on purpose, with its reason, in
+    # tools/checks/clean_keeps.txt, so a new kind of temporary file (an
+    # instrument's work folder, once) is not left behind. Source-only.
+    run_clean_covers_ignored() { bash tools/checks/check_clean_covers_ignored.sh; }
+
     # Runtime-archive ownership: a dynamically-initialized namespace-scope
     # thread_local — and any symbol the core archive defines strongly — must
     # come from one archive, never both. mingw's ld rejects the duplicate and
@@ -1712,6 +1727,7 @@ _run-tests BACKEND:
       "run_iter_wiring|iter wiring (JitIterDrive + upstream forwarding ratchet)|static|check,dev,test|buildtree|-|0"
       "run_rt_keep_scope|rt-keep scope (CULEBRA_RT_KEEP is culebra_runtime_*-only)|static|check,dev,test|buildtree|-|0"
       "run_optional_ns|optional ns (the tests/*.cul sweep names no optional namespace)|static|check,dev,test|buildtree|-|0"
+      "run_clean_covers_ignored|clean covers ignored (each .gitignore pattern is cleaned or kept on purpose)|static|check,dev,test|buildtree|-|0"
       "run_jit_host_symbols|jit host symbols (driver defines what codegen names)|binary|dev,test|light|-|0"
       "run_standalone_macho|standalone macho (the macOS driver loads only system libraries)|binary|dev,test|light|-|0"
       "run_eh_balance|eh balance (every begin_catch is closed)|binary|dev,test|light|-|2"

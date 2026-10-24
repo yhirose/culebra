@@ -1,0 +1,31 @@
+# The patterns in .gitignore that `just clean` leaves alone, and why. Every other
+# pattern must be named in the clean recipe (tools/checks/check_clean_covers_ignored.sh):
+# a new ignored thing is either cleaned or kept here on purpose, never forgotten.
+#
+# pattern<TAB>reason
+
+*.slo	compiled output: only built inside build*/, removed with it
+*.lo	compiled output: only built inside build*/, removed with it
+*.o	compiled output: only built inside build*/, removed with it
+*.obj	compiled output: only built inside build*/, removed with it
+*.gch	compiled output: only built inside build*/, removed with it
+*.pch	compiled output: only built inside build*/, removed with it
+*.so	compiled output: only built inside build*/, removed with it
+*.dylib	compiled output: only built inside build*/, removed with it
+*.dll	compiled output: only built inside build*/, removed with it
+*.lai	compiled output: only built inside build*/, removed with it
+*.la	compiled output: only built inside build*/, removed with it
+*.a	compiled output: only built inside build*/, removed with it
+*.lib	compiled output: only built inside build*/, removed with it
+*.exe	compiled output: only built inside build*/, removed with it
+*.out	compiled output: only built inside build*/, removed with it
+*.app	compiled output: only built inside build*/, removed with it
+*.dSYM	compiled output: only built inside build*/, removed with it
+*.swp	an editor's open file: the editor's to remove, not ours
+.DS_Store	macOS's own metadata
+.claude/*	a person's local settings and the session's state: not regenerable
+docs/_history.md	private development history: not regenerable
+docs/_history.ja.md	private development history: not regenerable
+docs/_internals.md	private dev notes: not regenerable
+docs/_internals.ja.md	private dev notes: not regenerable
+examples/games/retro-run/assets-*/	upstream art dropped in locally: not regenerable and not redistributable
