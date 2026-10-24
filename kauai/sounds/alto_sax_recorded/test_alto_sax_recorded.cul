@@ -68,3 +68,16 @@ fn a_fall_slides_the_pitch_down_but_not_the_resonances() {
   assert_true(pitch(0.9) < 0.85 * pitch(0.3), [pitch(0.9), pitch(0.3)])
   assert_true(centroid(0.9) > 0.62 * centroid(0.3), [centroid(0.9), centroid(0.3)])
 }
+
+# A note starts from nothing: the borrowed attack can begin before the sound
+# does, so the engine fades the first milliseconds in. These three began at 26
+# to 66% of their peak.
+@test
+fn a_note_starts_from_silence() {
+  for (pitch, len) in [(55, 0.195), (78, 0.195), (59, 0.6)] {
+    let note = [{pitch: pitch, at: 0.0, len: len, level: 1.0, level_end: 1.0, marks: [], next: nil, params: {}}]
+    let s = alto.phrase_samples(note, {})
+    let peak = s.map(|v| Math.abs(v)).max()
+    assert_true(s.slice(0, 4).map(|v| Math.abs(v)).max() < 0.03 * peak, [pitch, len])
+  }
+}

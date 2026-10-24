@@ -1443,7 +1443,14 @@ class Instrument {
         out[q] = out[q] * (lifts[i] * (1.0 - f) + lifts[i2] * f)
       }
     }
-    iota(out.size()).map(|i| out[i] + air[i])
+    # A sound starts from nothing, whatever the pieces did: the borrowed attack
+    # can begin before the sound does (its first samples cut off, mid-rise), so
+    # the first 3 ms are faded in on a raised cosine.
+    let ramp = Math.round(0.003 * RATE)
+    iota(out.size()).map(fn (i) {
+      let v = out[i] + air[i]
+      i < ramp ? v * 0.5 * (1.0 - Math.cos(Math.pi * i / ramp)) : v
+    })
   }
 }
 
