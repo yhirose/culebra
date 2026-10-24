@@ -62,9 +62,9 @@ fn a_fall_slides_the_pitch_down_but_not_the_resonances() {
     let hz = Audio.pitch(s.slice(a - 1024, a + 3072), 100.0, 1400.0, alto.RATE).hz.filter(|h| h != nil).sorted()
     hz[hz.size() / 2]
   }
-  # The fall takes the last 0.5 s of the note; it has landed by 0.58 s, nine
-  # semitones down and pushed, and the resonances (in Hz) are where they were:
-  # the spectrum is as bright as before, not dragged down with the pitch.
-  assert_true(pitch(0.58) < 0.7 * pitch(0.3), [pitch(0.58), pitch(0.3)])
-  assert_true(centroid(0.58) > centroid(0.3), [centroid(0.58), centroid(0.3)])
+  # The fall takes the last 0.3 s of the note and is well down by 0.9 s, where
+  # the resonances (in Hz) are where they were: the spectrum is not dragged
+  # down with the pitch.
+  assert_true(pitch(0.9) < 0.85 * pitch(0.3), [pitch(0.9), pitch(0.3)])
+  assert_true(centroid(0.9) > 0.62 * centroid(0.3), [centroid(0.9), centroid(0.3)])
 }

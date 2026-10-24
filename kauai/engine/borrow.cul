@@ -181,9 +181,9 @@ fn reshaped(logs, ratio) {
 # pitch less steadily the further it has gone. `loss` is the tone's loss (dB),
 # `bent` the pitch's move (semitones).
 let BEND = {
-  breath_db: 0.6,      # dB the breath gains against the tone per dB it gains or loses
-  dark_db: 1.0,        # dB per octave of harmonic number lost per dB of loss
-  loss_max: 30.0,      # dB: past this the breath and the dimming stop growing
+  breath_db: 0.8,      # dB the breath gains against the tone per dB it gains or loses
+  dark_db: 0.4,        # dB per octave of harmonic number lost per dB of loss
+  loss_max: 20.0,      # dB: past this the breath and the dimming stop growing
   shake_cents: 0.025,  # cents of shake per cent bent (at most SHAKE_MAX)
   shake_max: 20.0,
 }

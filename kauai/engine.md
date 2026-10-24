@@ -30,13 +30,13 @@ engine's entry point is `Instrument.new(dir, style)`, where `dir` is the
    against the tone either way (`BEND.breath_db`), and the pitch shakes the
    further it has been bent (`bend_shake`).
 6. **A fall has a course of its own** (`engine/bend.cul`, shared with the
-   synthesized alto), measured on eight falls of a jazz alto: the pitch drops
-   about nine semitones in 0.1 s in a step or two; the note it lands on is the
-   loudest of the fall, 8 dB louder and brighter than the one it left; within
-   0.1 s the level has fallen 18 dB and the harmonics are gone to breath; a
-   tail of breath fades softly to nothing over 0.3 s more. The pitch and the
-   loudness are not on one curve: when they slid down together the fall sounded
-   like a wind controller's glide.
+   synthesized alto): the pitch gathers speed (slow at first, nine semitones
+   down in 0.3 s), while the loudness is greatest at the start, falls at once
+   and thins out softly to nothing. The two are not on one curve; when they
+   slid down together the fall sounded like a wind controller's glide. A fall
+   shaped as a jazz alto's measured falls are (a hard push on landing, then a
+   collapse to breath) was heard as a blunt "buh" and given up: the
+   measure says what changes (the tone dims and goes to breath), not how hard.
 
 ## The style
 

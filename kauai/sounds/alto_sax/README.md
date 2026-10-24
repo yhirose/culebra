@@ -17,9 +17,10 @@ milliseconds as a change of fingering does (a glide is a siren), with a brief di
 of the air, and only a gap or the phrase's end lets the sound go. `\scoop`,
 `\plop` and `\doit` bend the pitch at a note's start or end, and the timbre is
 drawn again every 20 ms while it is bent, from the pitch it has reached, so the
-resonances stay where they are in Hz. `\fall` follows the course measured on a
-jazz alto's falls (`engine/bend.cul`): nine semitones down in 0.1 s, landing
-pushed and brighter, collapsing to breath, and fading over 0.3 s more.
+resonances stay where they are in Hz. `\fall` takes the course in
+`engine/bend.cul`: the pitch gathers speed (nine semitones in 0.3 s) while the
+loudness falls from the start and thins out softly, and the tone dims into
+breath as it goes.
 
 ```
 culebra play --sounds kauai/sounds/alto_sax song.kau

@@ -124,8 +124,8 @@ fn a_fall_ends_airy_dim_and_unsteady() {
   let dim = engine.dimmed(iota(8).map(|_| 0.0), 12.0)
   assert_eq(dim[0], 0.0)
   assert_true(iota(1, 8).all(|h| dim[h] < dim[h - 1]), dim)
-  # Each doubling of the harmonic's number loses 1 dB per dB of loss.
-  assert_true(Math.abs(dim[7] - dim[3] - (-1.0 * 12.0 * 0.115)) < 1e-9, dim)
+  # Each doubling of the harmonic's number loses 0.4 dB per dB of loss.
+  assert_true(Math.abs(dim[7] - dim[3] - (-0.4 * 12.0 * 0.115)) < 1e-9, dim)
   # A push is the other way: the higher the harmonic the more it gains.
   let push = engine.dimmed(iota(8).map(|_| 0.0), -6.0)
   assert_true(iota(1, 8).all(|h| push[h] > push[h - 1]), push)
@@ -149,13 +149,13 @@ fn a_bent_frames_harmonics_are_the_unbent_ones_reshaped_and_dimmed() {
   let inst = engine.Instrument.new(synthetic.made_into(dir).data, STYLE)
   let held = inst.borrowed_curves([{...PHRASE[0], len: 1.0}], 0.0, 0, 0.0)
   let fall = inst.borrowed_curves([{...PHRASE[0], len: 1.0, marks: ["fall"]}], 0.0, 0, 0.0)
-  # Frame 56, 0.06 s into the fall: the bend's pitch and loss, and so the
-  # harmonics the frame should have.
-  let (bent, gain) = inst.bend(["fall"], "rest", 0.56, 0.44)
+  # Frame 85, 0.15 s into the fall of the last 0.3 s: the bend's pitch and
+  # loss, and so the harmonics the frame should have.
+  let (bent, gain) = inst.bend(["fall"], "rest", 0.85, 0.15)
   let loss = -20.0 * Math.log(gain) / Math.log(10.0)
-  let expected = engine.dimmed(engine.reshaped(held.logs[56], 2.0 ** (bent / 12.0)), loss)
-  assert_true(bent < -3.0, bent)
-  assert_true(iota(expected.size()).all(|h| Math.abs(fall.logs[56][h] - expected[h]) < 1e-6), [fall.logs[56].slice(0, 6), expected.slice(0, 6)])
+  let expected = engine.dimmed(engine.reshaped(held.logs[85], 2.0 ** (bent / 12.0)), loss)
+  assert_true(bent < -1.5, bent)
+  assert_true(iota(expected.size()).all(|h| Math.abs(fall.logs[85][h] - expected[h]) < 1e-6), [fall.logs[85].slice(0, 6), expected.slice(0, 6)])
 }
 
 @test
@@ -166,19 +166,17 @@ fn a_fall_in_a_note_follows_the_falls_course() {
   }
   FS.mkdir(dir)
   let inst = engine.Instrument.new(synthetic.made_into(dir).data, STYLE)
-  # In a note of 1 s the fall takes its last 0.5 s: 0.4 s left is the fifth of
-  # the way through, where the pitch has dropped nine semitones and the tone
-  # is pushed; 0.3 s left, where it has collapsed to breath.
-  let (semis, gain) = inst.bend(["fall"], "rest", 0.6, 0.4)
-  assert_true(semis < -8.5 && gain > 2.2, [semis, gain])
-  let (low, dim) = inst.bend(["fall"], "rest", 0.8, 0.2)
-  assert_true(low < -9.0 && dim < 0.1, [low, dim])
+  # In a note of 1 s the fall takes its last 0.3 s: at half way (0.15 s left)
+  # the pitch gathering speed is a quarter of the way down while the loudness
+  # has fallen to under half.
+  let (semis, gain) = inst.bend(["fall"], "rest", 0.85, 0.15)
+  assert_true(semis > -2.5 && semis < -2.0 && gain < 0.5, [semis, gain])
   # Before the fall the note is as it was.
-  assert_eq(inst.bend(["fall"], "rest", 0.4, 0.6), (0.0, 1.0))
-  # A note shorter than the fall takes it whole in the time it has: 0.02 s in
-  # a note of 0.2 s is a tenth of the way through.
-  let (short_semis, short_gain) = inst.bend(["fall"], "rest", 0.02, 0.18)
-  assert_true(short_semis < -6.0 && short_gain > 1.5, [short_semis, short_gain])
+  assert_eq(inst.bend(["fall"], "rest", 0.5, 0.5), (0.0, 1.0))
+  # A note shorter than the fall takes it whole in the time it has: 0.1 s in a
+  # note of 0.2 s is half way through, as above.
+  let (short_semis, short_gain) = inst.bend(["fall"], "rest", 0.1, 0.1)
+  assert_eq((short_semis, short_gain), (semis, gain))
 }
 
 @test

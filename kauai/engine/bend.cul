@@ -1,42 +1,25 @@
-# What a saxophone fall is, in the course it takes: shared by the engine
-# (borrow.cul) and the synthesized alto, so the two fall alike.
+# The course a saxophone fall takes, shared by the engine (borrow.cul) and the
+# synthesized alto, so the two fall alike.
 #
-# Measured on eight falls of a jazz alto (the recordings alto_sax_recorded
-# plays from): the pitch drops 3 to 9 semitones in about 0.1 s, in a step or
-# two, and lands on the loudest note of the fall, 8 to 13 dB louder and
-# brighter than the note it left; within 0.1 s the level has fallen 16 to 23 dB
-# and the harmonics are gone to breath; a tail of breath fades over 0.3 to
-# 0.5 s. Pitch and loudness are not on one curve: a fall whose two slid down
-# together was a wind controller's glide.
+# The pitch and the loudness are not on one curve. The pitch gathers speed
+# (slow at first, quicker as it goes); the loudness is greatest at the start,
+# begins to fall at once, and thins out softly, with no step, to nothing.
+# When both slid down together on one curve the fall sounded like a wind
+# controller's glide. A fall shaped as eight falls of a jazz alto measure (a
+# hard push on landing 8 dB up and a collapse to breath) was heard as a blunt
+# "buh" and given up: the measure is a guide to what changes (the tone dims
+# and goes to breath: borrow.cul's BEND), not to how hard.
 
 # How long a fall takes, from where it leaves the note to silence (seconds).
-let LENGTH = 0.5
+let LENGTH = 0.3
 
-# How much louder the note it lands on is than the one it left, as a factor
-# (the measured landings are 8 to 13 dB: 2.5 is 8 dB).
-let PUSH = 2.5
-
-# The fall's course at `u`, 0 where it leaves the note to 1 at silence:
+# The fall's course at `at`, 0 where it leaves the note to 1 at silence:
 # `semis`, the pitch against the note (semitones), and `gain`, the loudness
 # against the note (a factor).
 fn fall_course(at) {
-  # Past the end of the fall (u past 1) it is over: silent, where it landed.
+  # Past the end of the fall it is over: silent, where it landed.
   let u = Math.clamp(at, 0.0, 1.0)
-  # The drop: nine semitones in the first fifth, fast at first, then a sag.
-  let d = Math.min(1.0, u / 0.2)
-  let semis = -9.0 * (1.0 - (1.0 - d) ** 2) - 0.8 * Math.max(0.0, (u - 0.2) / 0.8)
-  # The push as it lands, the collapse (to 0.12 of the note, -18 dB, in the
-  # next fifth), and the tail, falling softly to nothing.
-  let gain = if u < 0.2 {
-    1.0 + (PUSH - 1.0) * Math.sin(Math.pi * 0.5 * u / 0.2)
-  } else if u < 0.4 {
-    let v = (u - 0.2) / 0.2
-    PUSH * (0.12 / PUSH) ** (v * v * (3.0 - 2.0 * v))
-  } else {
-    let v = (u - 0.4) / 0.6
-    0.12 * 10.0 ** (-1.2 * v) * (1.0 - v ** 4)
-  }
-  {semis: semis, gain: gain}
+  {semis: -9.0 * u * u, gain: (1.0 - u) ** 1.4}
 }
 
 export {LENGTH, fall_course}
