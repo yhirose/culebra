@@ -35,6 +35,11 @@ change at a time, and hear it in a passage short enough to judge.
   in the manifest, and ask the person before using it). Note each source's
   URL, author, and license when you take it, and credit them in the package
   README as the soprano's does.
+- **The recordings are the quality.** An instrument is only as natural as
+  what it borrows from. Spend the effort on finding good free recordings of
+  real performances (slurs, attacks, scoops and falls, not single notes)
+  before spending it on numbers: `workflow.md` step 2 says where and how.
+  Ask the person for a download when only a preview is reachable.
 - **Design before search.** Write what the recordings must cover (range,
   notes per semitone, long notes per octave, loud, middle and quiet notes)
   before looking for any: `workflow.md` step 1b. The design includes the slurs

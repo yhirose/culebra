@@ -1,7 +1,12 @@
 # Scout
 
 Finds recordings an instrument can be made from, and writes them into the
-case's `sources`.
+case's `sources`. This is the role that decides how good the instrument can
+be: the engine borrows what is recorded, with its own moves, and cannot be
+more natural than that. A library of single notes made an alto sound like a
+wind controller; seven solo improvisations made it sound like a player. Keep
+searching while the design has a shortfall, and do not stop at the first
+recordings that are merely free.
 
 **Gets**: the case (`aim`, `voice`, `range`), the design (`work/design.md`:
 what the recordings must cover), where to put recordings (`work/sources/`).
@@ -13,11 +18,17 @@ dynamic the design still lacks is not taken. The coverage tool
 measured; a recording that cannot be measured yet is judged by its length,
 its range and its dynamics as written on the page.
 
-**Does**: looks for recordings released as CC0 or CC BY (Freesound,
-university sample libraries); leaves out NC, ND and anything with no clear
-licence. Prefers a dry room, the instrument alone, the range the aim needs
-played as the aim plays it (phrases and long tones, not only single notes),
-no clipping, a quiet floor. Checks each before relying on it: its range (a
+**Does**: looks for recordings released as CC0 or CC BY (Freesound with its
+licence filter, then the uploader's other takes; academic multitrack datasets
+on Zenodo; university sample libraries); leaves out NC, ND and anything with
+no clear licence, and reads the licence on the item's own page. Prefers
+real performances (a player's improvisations or tunes, with their slurs,
+attacks, scoops and falls) over single-note libraries, a dry room, the
+instrument alone (the gaps between notes at least 14 dB under the notes), the
+range the aim needs played as the aim plays it, no clipping, a quiet floor.
+After the first measure it lists the articulations the songs ask for and
+counts how many the recordings have; for one with none (a fall, a scoop) it
+searches again for a recording that has it. Checks each before relying on it: its range (a
 "soprano" that plays below a soprano's lowest note is not one), clipping,
 room. Downloads each into `work/sources/` and records its URL, author,
 licence and what was found in a manifest.

@@ -63,20 +63,68 @@ missing and decides: a different range, a recording to make, or no instrument.
 
 ## 2. Find the sources
 
-Look for the recordings the design (step 1b) asks for: the ones that add
-notes, long notes and dynamics it lacks. Look for recordings released as CC0 or CC BY (Freesound, university sample
-libraries); leave out anything NC or ND. Prefer:
+**The recordings decide how good the instrument can be.** The engine borrows
+a recorded note with its own moves of pitch, loudness and timbre, so it can
+only be as natural as what it borrows. The alto's first recordings were a
+university's single notes in an anechoic chamber (32 notes, no vibrato, no
+join between notes), and it sounded like a wind controller; with seven solo
+improvisations in its place (2520 notes with real slurs and attacks) it
+sounded like a player. The soprano went the same way. Spend the effort here
+before spending it on style numbers, engine changes or listening rounds, and
+go on searching while the design still has a shortfall.
 
-- a dry room, or at least one you can tell apart from the tone
-- the instrument alone, with no accompaniment bleeding in
-- the range the aim needs, played as the aim plays it (long tones and
-  phrases, not only single notes)
-- no clipping, and a quiet noise floor
+Look for the recordings the design (step 1b) asks for: the ones that add
+notes, long notes, dynamics and the playing it lacks. Only recordings that
+are free to reuse:
+
+- released as **CC0 or CC BY** (never NC or ND: CC BY-NC items looked ideal
+  and had to be thrown out), or a collection that says it is free to use with
+  a credit (quote its statement in the manifest, and ask the person first);
+- with the licence read **from the item's own page**, not from a search
+  snippet or an aggregator's summary.
+
+**Real performances beat sample libraries.** What the aim needs is the
+instrument played as music, with slurs, tongued attacks, scoops and falls,
+vibrato that comes and goes, and breath. A library of single notes, however
+clean, has none of it. Prefer, in this order:
+
+1. solo improvisations or tunes by one player, dry, with no accompaniment;
+2. multitrack or stem datasets with the instrument isolated (read their
+   licences: many are research-only);
+3. single-note libraries, only to fill a range the performances lack.
+
+Where to look, with what worked:
+
+- **Freesound** search with the licence filter in the URL
+  (`/search/?q=alto+sax+solo&f=license:"Creative Commons 0"`, and
+  `license:"Attribution"`); then the uploader's other sounds and packs, since
+  one player often posted many takes. The page source carries the HQ preview
+  (`cdn.freesound.org/previews/...-hq.mp3`) that can be fetched without a
+  login; the original WAV needs one, so ask the person to download it when
+  quality is the limit.
+- **Academic datasets** (Zenodo, ISMIR papers): isolated wind and string
+  parts under CC BY exist. Check the instrument, the register (a chorale
+  dataset has no high notes) and the licence text.
+- Public-domain archives, with care: a recording's date and country decide
+  whether it is free, and old transfers are poor.
 
 Check each candidate before relying on it: its range (a "soprano" sax that
-plays below the soprano's lowest note is not one), whether it clips, how
-much room it has. Keep every recording in `work/sources/` with a manifest
-of its URL, author, license, and what you found in it.
+plays below the soprano's lowest note is not one), whether it clips, how much
+room it has, and whether it is alone: the level of the gaps between notes
+against the notes says it (a backing track under the instrument leaves the
+gaps nearly as loud; alone, they fall 14 dB or more). Measure it
+(`measure.cul`) and read `coverage.cul` before taking it: the count of notes,
+slurs and tongued attacks is what the recording is worth, not its length.
+
+**Look for what is missing, by name.** After the first measure, list the
+articulations the songs will ask for (a fall at a phrase's end, a scoop up
+into a note, a slur up a fourth) and count how many the recordings have. An
+articulation with no recording is played by the engine's rule, which bends
+the pitch and nothing else, and it is the sound heard as electronic. Search
+again for a recording that has it, rather than tuning the rule.
+
+Keep every recording in `work/sources/` with a manifest of its URL, author,
+license, and what you found in it.
 
 ## 3. Write the test songs
 
