@@ -579,7 +579,9 @@ class Instrument {
     if marks.contains("fall") && left < 0.3 {
       let u = 1.0 - left / 0.3
       semis -= 9.0 * u * u
-      gain *= 1.0 - 0.85 * u * u
+      # The loudness is not the pitch's course: it is loudest at the start and
+      # falls at once, and thins out softly (no step) to nothing.
+      gain *= (1.0 - u) ** 1.4
     }
     (semis, gain)
   }
@@ -918,7 +920,9 @@ class Instrument {
           cents[u] += bend_shake(bent, u * 0.01)
         }
         if bend_gain < 1.0 {
-          let loss = -20.0 * Math.log(Math.max(bend_gain, 1e-3)) / Math.log(10.0)
+          # The breath and the dimming stop growing at 15 dB lost, so that a tone
+          # fading to nothing does not leave its breath to stop short.
+          let loss = Math.min(15.0, -20.0 * Math.log(Math.max(bend_gain, 1e-3)) / Math.log(10.0))
           logs[u] = dimmed(logs[u], loss)
           breath[u] = breath[u].map(|b| b + BEND.breath_db * loss)
         }

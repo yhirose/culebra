@@ -28,7 +28,11 @@ engine's entry point is `Instrument.new(dir, style)`, where `dir` is the
    A bend that fades the tone is the breath giving out, so while it fades the
    breath is louder against the tone (`BEND.breath_db`), the higher harmonics
    go first (`dimmed`), and the pitch shakes the further it has been bent
-   (`bend_shake`); a clean slide of a perfectly steady tone is a siren.
+   (`bend_shake`); a clean slide of a perfectly steady tone is a siren. A
+   fall's loudness is not its pitch's course: the pitch gathers speed, while
+   the loudness is greatest at the start, falls at once and thins out softly
+   (`(1 - u) ** 1.4`); when the two moved together it sounded like a wind
+   controller's glide.
 
 ## The style
 

@@ -137,6 +137,31 @@ fn a_fall_ends_airy_dim_and_unsteady() {
 }
 
 @test
+fn a_falls_loudness_and_pitch_do_not_move_together() {
+  let dir = FS.join(FS.temp_dir(), "engine-test-{UUID.v4()}")
+  defer {
+    FS.remove(dir, recursive: true) if FS.exists(dir)
+  }
+  FS.mkdir(dir)
+  let inst = engine.Instrument.new(synthetic.made_into(dir).data, STYLE)
+  # A fall's pitch gathers speed (slow at first), and its loudness is the
+  # other way about: loudest at the start, it begins to fall at once, and thins
+  # out softly to nothing at the end.
+  let at = |left| inst.bend(["fall"], "rest", 1.0, left)
+  let pitch = |left| -at(left)[0]
+  let gain = |left| at(left)[1]
+  # Half way through the fall (0.15 s left) the pitch has gone a quarter of
+  # the way down but the loudness has gone a good part of the way.
+  assert_true(pitch(0.15) < 0.35 * pitch(0.0), [pitch(0.15), pitch(0.0)])
+  assert_true(gain(0.15) < 0.5, gain(0.15))
+  # It falls from the start, and the end has no step: the loudness is nearly
+  # flat as it reaches nothing.
+  assert_true(gain(0.3) > gain(0.2) && gain(0.2) > gain(0.1) && gain(0.1) > gain(0.02))
+  assert_true(gain(0.01) < 0.02, gain(0.01))
+  assert_true(gain(0.01) - gain(0.0) < 0.01, [gain(0.01), gain(0.0)])
+}
+
+@test
 fn a_style_without_a_number_it_needs_is_said_so() {
   let said = try {
     engine.Instrument.new(Dir.memory({}), {})
