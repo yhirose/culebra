@@ -174,6 +174,32 @@ fn reshaped(logs, ratio) {
   iota(n).map(|h| lib_at(logs, Math.clamp((h + 1) * ratio - 1.0, 0.0, n - 1.0)))
 }
 
+# What a bend does besides moving the pitch. A bend that fades the tone (a
+# fall, a doit, a plop's start) is the breath giving out: the breath is
+# louder against the tone, the higher harmonics go first, and the lip holds the
+# pitch less steadily the further it has gone. `loss` is the tone's loss (dB),
+# `bent` the pitch's move (semitones).
+let BEND = {
+  breath_db: 0.6,      # dB the breath gains against the tone per dB it loses
+  dark_db: 0.25,       # dB per octave of harmonic number lost per dB of loss
+  shake_cents: 0.025,  # cents of shake per cent bent (at most SHAKE_MAX)
+  shake_max: 20.0,
+}
+
+# A tone's harmonics (their logs) after the tone has lost `loss` dB to a bend:
+# the higher the harmonic the more it has lost, the first not at all.
+fn dimmed(logs, loss) {
+  let per_octave = BEND.dark_db * loss * 0.115 / Math.log(2.0)
+  iota(logs.size()).map(|h| logs[h] - per_octave * Math.log(h + 1.0))
+}
+
+# The pitch's shake in a bend at `t` seconds (cents): two slow waves, the same
+# every time, scaled to `bent`.
+fn bend_shake(bent, t) {
+  Math.min(BEND.shake_max, BEND.shake_cents * 100.0 * Math.abs(bent)) *
+    (Math.sin(2.0 * Math.pi * 6.7 * t) + 0.7 * Math.sin(2.0 * Math.pi * 11.3 * t + 1.0))
+}
+
 # A borrowed note keeps this much of its own intonation (its pitch against
 # its semitone): borrowed from many places, the notes' own leanings would
 # not agree with each other as one player's do.
@@ -889,6 +915,12 @@ class Instrument {
         }
         if bent != 0.0 {
           logs[u] = reshaped(logs[u], 2.0 ** (bent / 12.0))
+          cents[u] += bend_shake(bent, u * 0.01)
+        }
+        if bend_gain < 1.0 {
+          let loss = -20.0 * Math.log(Math.max(bend_gain, 1e-3)) / Math.log(10.0)
+          logs[u] = dimmed(logs[u], loss)
+          breath[u] = breath[u].map(|b| b + BEND.breath_db * loss)
         }
         if over[k] {
           let all = logs[u].map(|l| Math.exp(2.0 * l)).sum()
@@ -1402,4 +1434,4 @@ class Instrument {
   }
 }
 
-export {Instrument, RATE, DEFAULTS, reshaped}
+export {Instrument, RATE, DEFAULTS, reshaped, dimmed, bend_shake}

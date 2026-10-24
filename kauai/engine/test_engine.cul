@@ -107,6 +107,36 @@ fn a_bend_keeps_the_instruments_resonances_where_they_were_in_hz() {
 }
 
 @test
+fn a_fall_ends_airy_dim_and_unsteady() {
+  let dir = FS.join(FS.temp_dir(), "engine-test-{UUID.v4()}")
+  defer {
+    FS.remove(dir, recursive: true) if FS.exists(dir)
+  }
+  FS.mkdir(dir)
+  let inst = engine.Instrument.new(synthetic.made_into(dir).data, STYLE)
+  let held = inst.borrowed_curves([{...PHRASE[0], len: 1.0}], 0.0, 0, 0.0)
+  let fall = inst.borrowed_curves([{...PHRASE[0], len: 1.0, marks: ["fall"]}], 0.0, 0, 0.0)
+  let mean = |xs| xs.sum() / xs.size()
+  let breath = |c, u| mean(c.breath[u])
+  # Where the tone has faded the breath is louder against it, and the higher
+  # harmonics are weaker against the first.
+  assert_true(breath(fall, 95) > breath(held, 95) + 3.0, [breath(fall, 95), breath(held, 95)])
+  let dim = engine.dimmed(iota(8).map(|_| 0.0), 12.0)
+  assert_eq(dim[0], 0.0)
+  assert_true(iota(1, 8).all(|h| dim[h] < dim[h - 1]), dim)
+  # Each doubling of the harmonic's number loses 0.25 dB per dB of loss.
+  assert_true(Math.abs(dim[7] - dim[3] - (-0.25 * 12.0 * 0.115)) < 1e-9, dim)
+  # The pitch is not a clean slide: the further it is bent the more it shakes,
+  # up to a limit, and an unbent pitch not at all.
+  let wave = |bent| iota(100).map(|u| engine.bend_shake(bent, u * 0.01))
+  let reach = |xs| xs.map(|v| Math.abs(v)).max()
+  assert_eq(reach(wave(0.0)), 0.0)
+  assert_true(reach(wave(-2.0)) > 2.0 && reach(wave(-2.0)) < reach(wave(-6.0)))
+  assert_true(reach(wave(-9.0)) <= 1.7 * 20.0, reach(wave(-9.0)))
+  assert_true(reach(wave(-20.0)) > 10.0)
+}
+
+@test
 fn a_style_without_a_number_it_needs_is_said_so() {
   let said = try {
     engine.Instrument.new(Dir.memory({}), {})

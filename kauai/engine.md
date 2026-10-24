@@ -25,6 +25,10 @@ engine's entry point is `Instrument.new(dir, style)`, where `dir` is the
    it, so each harmonic takes the level the borrowed tone had at its own
    frequency (`reshaped` in `engine/borrow.cul`); moved by harmonic number, a
    fall of nine semitones dragged the resonances down with it and went dull.
+   A bend that fades the tone is the breath giving out, so while it fades the
+   breath is louder against the tone (`BEND.breath_db`), the higher harmonics
+   go first (`dimmed`), and the pitch shakes the further it has been bent
+   (`bend_shake`); a clean slide of a perfectly steady tone is a siren.
 
 ## The style
 
