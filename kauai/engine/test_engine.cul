@@ -69,6 +69,28 @@ fn an_instrument_made_from_one_performance_plays_a_phrase_in_tune() {
 }
 
 @test
+fn a_note_longer_than_every_recording_plays_with_no_steady_one() {
+  let dir = FS.join(FS.temp_dir(), "engine-test-{UUID.v4()}")
+  defer {
+    FS.remove(dir, recursive: true) if FS.exists(dir)
+  }
+  FS.mkdir(dir)
+  let one = engine.Instrument.new(synthetic.made_into(dir).data, STYLE)
+  # Recordings of single notes that each swell or fade inside are none of
+  # them steady; the note is filled out from the one it borrows.
+  one.steady = []
+  let long = [{...PHRASE[0], len: 3.0}]
+  let s = one.phrase_samples(long, {})
+  assert_true(s.size() >= 3.0 * RATE)
+  let hz = Audio.pitch(s, 200.0, 1400.0, RATE).hz.filter(|h| h != nil).sorted()
+  let middle = hz[hz.size() / 2]
+  assert_true(
+    Math.abs(1200.0 * Math.log(middle / 523.25) / Math.log(2.0)) < 40.0,
+    middle,
+  )
+}
+
+@test
 fn a_style_without_a_number_it_needs_is_said_so() {
   let said = try {
     engine.Instrument.new(Dir.memory({}), {})

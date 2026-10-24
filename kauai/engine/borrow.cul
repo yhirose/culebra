@@ -620,7 +620,11 @@ class Instrument {
     let wider = self.steady.filter(|p| Math.abs(self.lib.notes[p].semi -
       a.semi) <=
       2)
-    let pieces = near.size() >= 4 ? near : !wider.empty() ? wider : self.steady
+    # With no steady note in the library (single notes that each swell or
+    # fade inside), the borrowed note fills itself out.
+    let pieces = near.size() >= 4
+      ? near
+      : !wider.empty() ? wider : !self.steady.empty() ? self.steady : [i]
     let spans_of = fn (p) {
       let ups = self.ups_of(p)
       let e = self.lib.notes[p]
