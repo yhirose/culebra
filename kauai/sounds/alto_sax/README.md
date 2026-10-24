@@ -14,12 +14,12 @@ numbers are measured from a jazz alto (see Sources):
 
 A slur is one phrase: the sound goes on through it, the pitch changes in a few
 milliseconds as a change of fingering does (a glide is a siren), with a brief dip
-of the air, and only a gap or the phrase's end lets the sound go. `\scoop`, `\plop`,
-`\doit` and `\fall` bend the pitch at a note's start or end; the timbre is
+of the air, and only a gap or the phrase's end lets the sound go. `\scoop`,
+`\plop` and `\doit` bend the pitch at a note's start or end, and the timbre is
 drawn again every 20 ms while it is bent, from the pitch it has reached, so the
-resonances stay where they are in Hz, and a fall (0.36 s, nine semitones) ends
-airy, the breath going out more slowly than the tone, the higher harmonics
-fading first and the pitch shaking more the further it has been bent.
+resonances stay where they are in Hz. `\fall` follows the course measured on a
+jazz alto's falls (`engine/bend.cul`): nine semitones down in 0.1 s, landing
+pushed and brighter, collapsing to breath, and fading over 0.3 s more.
 
 ```
 culebra play --sounds kauai/sounds/alto_sax song.kau

@@ -25,14 +25,18 @@ engine's entry point is `Instrument.new(dir, style)`, where `dir` is the
    it, so each harmonic takes the level the borrowed tone had at its own
    frequency (`reshaped` in `engine/borrow.cul`); moved by harmonic number, a
    fall of nine semitones dragged the resonances down with it and went dull.
-   A bend that fades the tone is the breath giving out, so while it fades the
-   breath is louder against the tone (`BEND.breath_db`), the higher harmonics
-   go first (`dimmed`), and the pitch shakes the further it has been bent
-   (`bend_shake`); a clean slide of a perfectly steady tone is a siren. A
-   fall's loudness is not its pitch's course: the pitch gathers speed, while
-   the loudness is greatest at the start, falls at once and thins out softly
-   (`(1 - u) ** 1.4`); when the two moved together it sounded like a wind
-   controller's glide.
+   A bend that changes the tone's level is the breath at work: the harmonics
+   brighten with a push and dim with a loss (`dimmed`), the breath is louder
+   against the tone either way (`BEND.breath_db`), and the pitch shakes the
+   further it has been bent (`bend_shake`).
+6. **A fall has a course of its own** (`engine/bend.cul`, shared with the
+   synthesized alto), measured on eight falls of a jazz alto: the pitch drops
+   about nine semitones in 0.1 s in a step or two; the note it lands on is the
+   loudest of the fall, 8 dB louder and brighter than the one it left; within
+   0.1 s the level has fallen 18 dB and the harmonics are gone to breath; a
+   tail of breath fades softly to nothing over 0.3 s more. The pitch and the
+   loudness are not on one curve: when they slid down together the fall sounded
+   like a wind controller's glide.
 
 ## The style
 

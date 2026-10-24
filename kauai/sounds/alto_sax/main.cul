@@ -15,6 +15,8 @@
 #
 #   culebra play --sounds kauai/sounds/alto_sax song.kau
 
+import bend from '../../engine/bend.cul'
+
 let RATE = 44100
 
 # One control point every STEP seconds: the pitch, the gain and the breath
@@ -49,6 +51,10 @@ let BREATH_HIGH = 2600.0
 let BREATH_TILT = 5500.0
 let TONGUE = 0.25
 
+# The level of a note at mf, as a factor of full scale before the harmonics
+# are summed: low enough that the push of a fall (2.5 times) stays under it.
+let LEVEL = 0.2
+
 let ATTACK = 0.012
 let RELEASE = 0.08
 
@@ -62,13 +68,13 @@ let JOIN = {len: 0.03, dip: 0.25}
 let VIBRATO = {delay: 0.35, rate: 5.2, depth: 3.0}
 
 # The bends the jazz articulations make, in cents against the note, one value
-# every BEND_STEP seconds: a scoop and a plop from the note's start, a fall
-# and a doit up to its end.
+# every BEND_STEP seconds: a scoop and a plop from the note's start and a doit
+# up to its end; a fall has its own course (engine/bend.cul, shared with the
+# recorded alto).
 let BEND_STEP = 0.03
 let JITTER = 20.0
 let SCOOP = [-150.0, -90.0, -45.0, -15.0, 0.0]
 let PLOP = [300.0, 150.0, 50.0, 0.0]
-let FALL = [0.0, -6.0, -25.0, -56.0, -100.0, -156.0, -225.0, -306.0, -400.0, -506.0, -625.0, -756.0, -900.0]
 let DOIT = [0.0, 40.0, 120.0, 250.0, 400.0]
 
 fn freq_of(pitch) {
@@ -186,10 +192,17 @@ fn tone(notes, seconds) {
     if marks.contains("plop") && x < bend_len(PLOP) {
       bend_c += bend_at(PLOP, x)
     }
-    let bent_end = if marks.contains("fall") { bend_len(FALL) } else if marks.contains("doit") { bend_len(DOIT) } else { 0.0 }
-    let into_end = x - (n.len - bent_end)
-    if bent_end > 0.0 && into_end > 0.0 {
-      bend_c += bend_at(if marks.contains("fall") { FALL } else { DOIT }, into_end)
+    let doit_end = if marks.contains("doit") { bend_len(DOIT) } else { 0.0 }
+    let into_end = x - (n.len - doit_end)
+    if doit_end > 0.0 && into_end > 0.0 {
+      bend_c += bend_at(DOIT, into_end)
+    }
+    # A fall takes the last LENGTH seconds of the note (the note, if shorter).
+    let fall_len = Math.min(bend.LENGTH, n.len)
+    let into_fall = x - (n.len - fall_len)
+    let course = if marks.contains("fall") && into_fall >= 0.0 { bend.fall_course(into_fall / fall_len) } else { nil }
+    if course != nil {
+      bend_c += 100.0 * course.semis
     }
     # A bend is not a clean slide: the further it goes, the less steady the
     # lip holds the pitch (up to JITTER cents at nine semitones).
@@ -208,22 +221,28 @@ fn tone(notes, seconds) {
     let lvl = n.level + (level_end - n.level) * Math.min(1.0, Math.max(0.0, x / n.len))
     let rise = if starts_sound(notes, i) { Math.min(1.0, x / ATTACK) } else { 1.0 }
     let fall = if ends_sound(notes, i) && t > end { Math.max(0.0, 1.0 - (t - end) / RELEASE) } else { 1.0 }
-    let fade = if bent_end > 0.0 && into_end > 0.0 { Math.max(0.0, 1.0 - into_end / bent_end) } else { 1.0 }
+    let fade = if course != nil {
+      course.gain
+    } else if doit_end > 0.0 && into_end > 0.0 {
+      Math.max(0.0, 1.0 - into_end / doit_end)
+    } else {
+      1.0
+    }
     let join = if !starts_sound(notes, i) && x < JOIN.len { 1.0 - JOIN.dip * Math.sin(Math.pi * x / JOIN.len) } else { 1.0 }
-    let held = 0.3 * lvl * rise * fall * join * wander_gain(t)
+    let held = LEVEL * lvl * rise * fall * join * wander_gain(t)
     gain.push((t, held * fade))
 
     # The breath: under the tone throughout, and a burst at a tongued start.
     # In a bend that fades the tone the breath goes slower, so the sound ends
     # airy as a fall-off does.
     let burst = if starts_sound(notes, i) && x < 0.04 { TONGUE * (1.0 - x / 0.04) } else { 0.0 }
-    steady.push((t, held * Math.sqrt(fade) * BREATH + 0.3 * lvl * burst * fall))
+    steady.push((t, held * Math.sqrt(fade) * BREATH + LEVEL * lvl * burst * fall))
 
     # The timbre: drawn at each note's start, and again every 20 ms while the
     # pitch is bent, from the pitch it is at, so that the resonances stay
     # where they are in Hz while the harmonics slide through them.
-    if x < STEP || (Math.abs(bend_c) > 15.0 && s % 4 == 0) {
-      spectrum.push((t, spectrum_at(smooth, lvl * Math.sqrt(fade))))
+    if x < STEP || ((Math.abs(bend_c) > 15.0 || fade != 1.0) && s % 4 == 0) {
+      spectrum.push((t, spectrum_at(smooth, lvl * fade ** 0.7)))
     }
   }
   {freq: freq, gain: gain, steady: steady, spectrum: spectrum}

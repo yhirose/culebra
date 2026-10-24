@@ -64,6 +64,7 @@
 
 import format from './data_format.cul'
 import choose from './choose.cul'
+import bendcourse from './bend.cul'
 
 let RATE = 44100
 
@@ -180,14 +181,16 @@ fn reshaped(logs, ratio) {
 # pitch less steadily the further it has gone. `loss` is the tone's loss (dB),
 # `bent` the pitch's move (semitones).
 let BEND = {
-  breath_db: 0.6,      # dB the breath gains against the tone per dB it loses
-  dark_db: 0.25,       # dB per octave of harmonic number lost per dB of loss
+  breath_db: 0.6,      # dB the breath gains against the tone per dB it gains or loses
+  dark_db: 1.0,        # dB per octave of harmonic number lost per dB of loss
+  loss_max: 30.0,      # dB: past this the breath and the dimming stop growing
   shake_cents: 0.025,  # cents of shake per cent bent (at most SHAKE_MAX)
   shake_max: 20.0,
 }
 
 # A tone's harmonics (their logs) after the tone has lost `loss` dB to a bend:
-# the higher the harmonic the more it has lost, the first not at all.
+# the higher the harmonic the more it has lost, the first not at all. A
+# negative loss (a push) brightens in the same measure.
 fn dimmed(logs, loss) {
   let per_octave = BEND.dark_db * loss * 0.115 / Math.log(2.0)
   iota(logs.size()).map(|h| logs[h] - per_octave * Math.log(h + 1.0))
@@ -576,12 +579,12 @@ class Instrument {
       semis += 5.0 * u * u
       gain *= 1.0 - 0.7 * u * u
     }
-    if marks.contains("fall") && left < 0.3 {
-      let u = 1.0 - left / 0.3
-      semis -= 9.0 * u * u
-      # The loudness is not the pitch's course: it is loudest at the start and
-      # falls at once, and thins out softly (no step) to nothing.
-      gain *= (1.0 - u) ** 1.4
+    # A fall takes bend.cul's course over its length (or the note's, if shorter).
+    let fall_len = Math.min(bendcourse.LENGTH, since + left)
+    if marks.contains("fall") && left < fall_len {
+      let course = bendcourse.fall_course(1.0 - left / fall_len)
+      semis += course.semis
+      gain *= course.gain
     }
     (semis, gain)
   }
@@ -919,12 +922,18 @@ class Instrument {
           logs[u] = reshaped(logs[u], 2.0 ** (bent / 12.0))
           cents[u] += bend_shake(bent, u * 0.01)
         }
-        if bend_gain < 1.0 {
-          # The breath and the dimming stop growing at 15 dB lost, so that a tone
-          # fading to nothing does not leave its breath to stop short.
-          let loss = Math.min(15.0, -20.0 * Math.log(Math.max(bend_gain, 1e-3)) / Math.log(10.0))
+        if bend_gain != 1.0 {
+          # The tone's loss (a gain, as a push, is a negative loss): a tone that
+          # loses dims, a tone that gains is brighter, and either way the
+          # breath is louder against it. They stop growing at loss_max dB, so
+          # that a tone fading to nothing does not leave its breath to stop short.
+          let loss = Math.clamp(
+            -20.0 * Math.log(Math.max(bend_gain, 1e-3)) / Math.log(10.0),
+            -BEND.loss_max,
+            BEND.loss_max,
+          )
           logs[u] = dimmed(logs[u], loss)
-          breath[u] = breath[u].map(|b| b + BEND.breath_db * loss)
+          breath[u] = breath[u].map(|b| b + BEND.breath_db * Math.abs(loss))
         }
         if over[k] {
           let all = logs[u].map(|l| Math.exp(2.0 * l)).sum()

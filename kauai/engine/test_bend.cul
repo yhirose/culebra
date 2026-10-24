@@ -1,0 +1,40 @@
+import bend from './bend.cul'
+
+# The measured fall (a jazz alto's, eight of them): the pitch drops 3 to 9
+# semitones in about 0.1 s and lands on a note that is the loudest of the fall,
+# brighter, by 8 to 13 dB; within 0.1 s the level has fallen 16 to 23 dB, the
+# harmonics gone to breath; and a tail of breath fades over 0.3 to 0.5 s.
+
+@test
+fn the_pitch_drops_fast_and_settles() {
+  let semis = |u| bend.fall_course(u).semis
+  assert_eq(semis(0.0), 0.0)
+  # Nine semitones in the first fifth, most of it in the first tenth.
+  assert_true(semis(0.2) < -8.5, semis(0.2))
+  assert_true(semis(0.1) < -6.0, semis(0.1))
+  # Then it sags a little further, not a slide.
+  assert_true(semis(1.0) < semis(0.2) && semis(1.0) > semis(0.2) - 1.5)
+}
+
+@test
+fn the_landing_is_pushed_then_collapses_and_fades_away() {
+  let gain = |u| bend.fall_course(u).gain
+  assert_eq(gain(0.0), 1.0)
+  # Louder on landing (a rise of 8 dB, the measured landings are 8 to 13),
+  # loudest of the fall.
+  assert_true(gain(0.2) > 2.2 && gain(0.2) < 3.5, gain(0.2))
+  assert_true(iota(101).all(|q| gain(0.01 * q) <= gain(0.2) + 1e-9))
+  # Down by 16 dB or more within 0.1 s (a fifth of the fall) after it.
+  assert_true(gain(0.4) < gain(0.2) * 0.16, [gain(0.4), gain(0.2)])
+  # The tail only falls, softly, to nothing: no step at the end.
+  assert_true(iota(41, 100).all(|q| gain(0.01 * q) >= gain(0.01 * (q + 1))))
+  assert_eq(gain(1.0), 0.0)
+  assert_true(gain(0.99) < 0.001, gain(0.99))
+}
+
+@test
+fn past_its_end_the_fall_is_over() {
+  assert_eq(bend.fall_course(1.4).gain, 0.0)
+  assert_eq(bend.fall_course(1.4).semis, bend.fall_course(1.0).semis)
+  assert_eq(bend.fall_course(-0.2).semis, 0.0)
+}

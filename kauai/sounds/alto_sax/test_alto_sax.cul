@@ -59,12 +59,13 @@ fn a_fall_slides_the_pitch_down_but_not_the_resonances() {
     let hz = Audio.pitch(s.slice(a - 1024, a + 3072), 100.0, 1400.0, alto.RATE).hz.filter(|h| h != nil).sorted()
     hz[hz.size() / 2]
   }
-  assert_true(pitch(0.95) < 0.8 * pitch(0.3), [pitch(0.95), pitch(0.3)])
+  # The fall takes the last 0.5 s and has landed, nine semitones down, by 0.6 s.
+  assert_true(pitch(0.6) < 0.7 * pitch(0.3), [pitch(0.6), pitch(0.3)])
 
   let drawn = alto.tone(note, 1.1)
   # Drawn at the note's start and again in the fall, not before it.
   assert_true(drawn.spectrum.size() > 3, drawn.spectrum.size())
-  assert_true(drawn.spectrum.filter(|p| p[0] < 0.6).size() == 1)
+  assert_true(drawn.spectrum.filter(|p| p[0] < 0.45).size() == 1)
   # The last drawing is the timbre of the pitch the fall has reached.
   let (at, amps) = drawn.spectrum[-1]
   let f0 = drawn.freq.min_by(|p| Math.abs(p[0] - at))[1]
