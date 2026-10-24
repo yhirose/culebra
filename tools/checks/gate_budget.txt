@@ -256,4 +256,7 @@ languages.samples 130
 # kauai/tools/test_make_data.cul (a performance measured and made into
 # data/ reads back as its notes, and each step that makes them does what
 # the soprano's were made with).
-examples.suites 37
+# 42 since the kauai tools and engine gained their own tests (compare,
+# fit_style, coverage, engine and choose): the instrument-making tools each
+# check their numbers on synthetic input, which the gate now sweeps.
+examples.suites 42
