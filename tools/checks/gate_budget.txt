@@ -230,7 +230,10 @@ ctest.entries 36
 # in en and ja.
 # 1088 since language §Recursion shows `fn` in a `fn name` declaration is the
 # running overload, not the dispatcher, in en and ja.
-docs.blocks 1088
+# 1100 since docs/guides/kauai-songs and kauai-sounds, en and ja (a first
+# song, a program playing it, the built-in voices, an external voice and a
+# model of a sound, each run as it is written).
+docs.blocks 1100
 
 # The samples the language front ends are run over (examples/languages/*).
 languages.samples 130
@@ -259,4 +262,6 @@ languages.samples 130
 # 42 since the kauai tools and engine gained their own tests (compare,
 # fit_style, coverage, engine and choose): the instrument-making tools each
 # check their numbers on synthetic input, which the gate now sweeps.
-examples.suites 42
+# 44 since kauai/sounds/alto_sax and alto_sax_recorded (each package plays a
+# phrase as long as it is written, and a song with it).
+examples.suites 44
