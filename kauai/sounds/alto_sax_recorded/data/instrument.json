@@ -1,0 +1,54 @@
+{
+  "play": {
+    "mf_db": -15.3,
+    "db_per_octave": 7.0,
+    "lib_level_mf": -9.2,
+    "vibrato": {
+      "depth": 20.0,
+      "straight": 0.6
+    },
+    "scoop": {
+      "tongue": [
+        -39.0,
+        -18.0,
+        -3.0,
+        -1.0,
+        0.0
+      ],
+      "legato": [
+        -66.0,
+        -37.0,
+        -20.0,
+        -9.0,
+        -1.0,
+        0.0
+      ]
+    },
+    "onset_from_t0": {
+      "rest": 0.0,
+      "tongue": 0.03
+    },
+    "overtone_from": 82
+  },
+  "make": {
+    "measure": {
+      "low": 120.0,
+      "high": 950.0
+    },
+    "left_out": {
+      "brighter": 9.0,
+      "odd_under": 12.0
+    },
+    "breath_noise": [
+      20.0,
+      20000.0
+    ],
+    "reference_groups": {
+      "iowa_1997": [
+        "iowa_db3b3",
+        "iowa_c4b4",
+        "iowa_c5ab5"
+      ]
+    }
+  }
+}

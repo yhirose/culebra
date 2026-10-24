@@ -1,0 +1,47 @@
+import alto from './main.cul'
+
+# A phrase as Kauai hands it to the instrument: two notes slurred, then one
+# held.
+let PHRASE = [
+  {pitch: 72, at: 0.0, len: 0.3, level: 1.0, level_end: 1.0, marks: [], next: nil, params: {}},
+  {pitch: 74, at: 0.3, len: 0.3, level: 1.0, level_end: 1.0, marks: [], next: nil, params: {}},
+  {pitch: 76, at: 0.6, len: 0.9, level: 1.0, level_end: 1.0, marks: [], next: nil, params: {}},
+]
+
+@test
+fn a_phrase_sounds_as_long_as_it_is_written() {
+  let s = alto.phrase_samples(PHRASE, {})
+  assert_true(s.size() >= 1.5 * alto.RATE)
+  assert_true(s.size() <= 2.5 * alto.RATE)
+  let peak = s.map(|v| Math.abs(v)).max()
+  assert_true(peak > 0.01)
+  assert_true(peak < 1.0)
+}
+
+@test
+fn kauai_plays_a_song_with_it() {
+  let song_text = 'band Solo {
+  voice Lead  external Alto  plays melody  vol 60
+}
+song Tune {
+  tempo 120
+  band Solo
+  melody in C5..B5
+  Verse
+}
+section Verse {
+  C     c4 e g e
+  G     d4 g b g
+}
+'
+  let song = Audio.Kauai.load(
+    "tune.kau",
+    voices: alto.voices,
+    dir: Dir.memory({"tune.kau": song_text}),
+  )
+  mut left = song.prepare()
+  while left > 0 {
+    left = song.prepare()
+  }
+  assert_true(song.length() > 3.0)
+}

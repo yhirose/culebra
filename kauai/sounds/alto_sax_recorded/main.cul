@@ -1,0 +1,45 @@
+# An alto saxophone for Kauai, played a phrase at a time from real notes.
+# Each note of a phrase borrows the recorded note nearest it (in pitch,
+# length, loudness, how it is entered and left, how much vibrato it has)
+# from the University of Iowa's alto saxophone (Michael Giles, 1997, the
+# Musical Instrument Samples collection, freely usable), keeps that note's own
+# moves of pitch and loudness and its timbre frame by frame, and sounds them
+# as harmonics with the breath between them. README.md says more.
+#
+#   band Smooth {
+#     voice Lead  external Alto  plays melody  vol 60
+#   }
+#
+#   culebra play --sounds kauai/sounds/alto_sax_recorded song.kau
+#
+# The playing is the engine's (kauai/engine/borrow.cul, which lists the
+# voice's parameters); this package is its recordings and its style, both in
+# data/: notes.i16 and notes.json, attacks.i16 and attacks.json, breath.json,
+# and instrument.json, whose `play` is the style the engine plays them in and
+# whose `make` is what kauai/tools/make_data.cul makes them with.
+
+import engine from '../../engine/borrow.cul'
+
+let RATE = engine.RATE
+
+let DATA = Dir.embedded('data')
+
+let CONFIG = JSON.parse(DATA.read('instrument.json'))
+
+let ALTO = engine.Instrument.new(DATA, CONFIG.play)
+
+# A phrase's samples, mono, RATE a second: the phrase as Kauai hands it to
+# an instrument (each note's `pitch` and `at`, and what `hears` asks for),
+# with the voice's parameters as they stand at its first note.
+let phrase_samples = |phrase, params| ALTO.phrase_samples(phrase, params)
+
+# The instrument, as Audio.Kauai.load's `voices:` takes it: `external Alto`.
+let voices = {alto: {
+  phrase: |notes, params| Audio.Sound(
+    phrase_samples(notes, params),
+    rate: RATE,
+  ),
+  hears: ["len", "level", "marks", "next", "params"],
+}}
+
+export {voices, phrase_samples, RATE}
