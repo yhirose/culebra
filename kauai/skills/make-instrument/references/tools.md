@@ -124,7 +124,9 @@ borrowed attack began before its sound for a note of 0.195 s at F#5, and for
 six other combinations, while two songs asked for one of them. To find all of
 them, play single notes over the range, the lengths a tune uses (0.1, 0.2,
 0.3, 0.6 s), the levels (0.7, 1.0, 1.35) and what the song hands over (`next`:
-none, at once, later; the marks) in a throwaway file, and measure
+none, at once, later; the marks) and the note that follows (none, or a leap
+either way: the same note must sound the same whatever comes after it) in a
+throwaway file, and measure
 each: the size of the first samples against the peak (a sound starts from
 nothing: under 3%), its pitch against the written one, its peak against full
 scale. Put what the sweep finds into one place that holds it for every
