@@ -93,3 +93,22 @@ fn a_slur_changes_pitch_at_once_with_a_dip() {
   assert_true(Math.abs(cents_off(0.52)) < 15.0, cents_off(0.52))
   assert_true(near(drawn.gain, 0.5 + 0.012) < 0.9 * near(drawn.gain, 0.45), [near(drawn.gain, 0.512), near(drawn.gain, 0.45)])
 }
+
+# A held note keeps its timbre until the next note begins: the spectrum was
+# drawn at each note's start only, so with a note after it the timbre slid
+# toward the next one all through the note (a bigger drift for a bigger leap).
+@test
+fn a_held_note_does_not_drift_toward_the_next() {
+  let centroid_at = fn (s, t) {
+    let a = Math.round(t * alto.RATE)
+    let spec = Audio.spectrum(s.slice(a, a + 2048), 2048, 2048)[0]
+    iota(spec.size()).map(|k| k * alto.RATE / 2048.0 * spec[k] * spec[k]).sum() / spec.map(|m| m * m).sum()
+  }
+  let first = {pitch: 62, at: 0.0, len: 0.8, level: 1.0, level_end: 1.0, marks: [], next: nil, params: {}}
+  let alone = centroid_at(alto.phrase_samples([first]), 0.7)
+  for leap in [12, -12] {
+    let two = [first, {...first, pitch: 62 + leap, at: 0.8}]
+    let with_next = centroid_at(alto.phrase_samples(two), 0.7)
+    assert_true(with_next > 0.93 * alone && with_next < 1.07 * alone, [leap, with_next, alone])
+  }
+}

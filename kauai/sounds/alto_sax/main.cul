@@ -63,6 +63,9 @@ let RELEASE = 0.08
 let GLIDE = 0.004
 let JOIN = {len: 0.03, dip: 0.25}
 
+# The timbre changes over this long at a change of fingering (seconds).
+let JOIN_TIMBRE = 0.012
+
 # Vibrato on a long note: after `delay` seconds, reaching its depth over as
 # many again; `rate` a second, `depth` cents at its widest.
 let VIBRATO = {delay: 0.35, rate: 5.2, depth: 3.0}
@@ -169,6 +172,8 @@ fn tone(notes, seconds) {
   mut gain = []
   mut steady = []
   mut spectrum = []
+  mut held_amps = nil
+  mut held_at = -1.0
   mut smooth = 0.0
   for s in range(Math.ceil(seconds / STEP)) {
     let t = s * STEP
@@ -241,8 +246,17 @@ fn tone(notes, seconds) {
     # The timbre: drawn at each note's start, and again every 20 ms while the
     # pitch is bent, from the pitch it is at, so that the resonances stay
     # where they are in Hz while the harmonics slide through them.
+    # At a note's start the one before is held until just then (Audio.partials
+    # draws a straight line between two timbres, which would otherwise slide
+    # the held note's toward the next all through it) and changes over JOIN_TIMBRE.
     if x < STEP || ((Math.abs(bend_c) > 15.0 || fade != 1.0) && s % 4 == 0) {
-      spectrum.push((t, spectrum_at(smooth, lvl * fade ** 0.7)))
+      let amps = spectrum_at(smooth, lvl * fade ** 0.7)
+      if x < STEP && held_amps != nil && t - JOIN_TIMBRE > held_at {
+        spectrum.push((t - JOIN_TIMBRE, held_amps))
+      }
+      spectrum.push((t, amps))
+      held_amps = amps
+      held_at = t
     }
   }
   {freq: freq, gain: gain, steady: steady, spectrum: spectrum}
