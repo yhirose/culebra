@@ -470,7 +470,7 @@ breath (dB against the harmonics, measure.cul's bands): [-34.2, -32.9, -31.5, -3
 Measure a recording, and what the instrument plays (a scale, every semitone
 held, written to a WAV and measured by `measure.cul`), with this one tool,
 and the two lists side by side say where the model is far from the real
-sound. The synthesized alto's spectral envelope and breath were set this
+sound. A synthesized instrument's spectral envelope and breath are set this
 way.
 
 ## sweep.cul: single notes over what a song can hand an instrument
@@ -483,7 +483,7 @@ does not clip, and a note of 0.15 s or more is within 40 cents of the written
 pitch. It prints what it finds, the worst first, and exits 1 when anything is.
 
 ```sh
-culebra kauai/tools/sweep.cul --sounds kauai/sounds/alto_sax_recorded \
+culebra kauai/tools/sweep.cul --sounds kauai/sounds/alto_sax \
   --low 55 --high 80
 ```
 

@@ -29,8 +29,7 @@ engine's entry point is `Instrument.new(dir, style)`, where `dir` is the
    brighten with a push and dim with a loss (`dimmed`), the breath is louder
    against the tone either way (`BEND.breath_db`), and the pitch shakes the
    further it has been bent (`bend_shake`).
-6. **A fall has a course of its own** (`engine/bend.cul`, shared with the
-   synthesized alto): the pitch gathers speed (slow at first, nine semitones
+6. **A fall has a course of its own** (`engine/bend.cul`): the pitch gathers speed (slow at first, nine semitones
    down in 0.3 s), while the loudness is greatest at the start, falls at once
    and thins out softly to nothing. The two are not on one curve; when they
    slid down together the fall sounded like a wind controller's glide. A fall

@@ -28,8 +28,7 @@ it to a WAV file with `culebra play --wav out.wav song.kau`.
   | Instrument | `external` | What it is |
   |---|---|---|
   | [`sounds/soprano_sax`](sounds/soprano_sax) | `Sax` | a soprano saxophone, from royalty-free recordings |
-  | [`sounds/alto_sax`](sounds/alto_sax) | `Alto` | an alto saxophone, synthesized (no recordings) |
-  | [`sounds/alto_sax_recorded`](sounds/alto_sax_recorded) | `Alto` | an alto saxophone, from a jazz player's improvisations (CC0 and CC BY) |
+  | [`sounds/alto_sax`](sounds/alto_sax) | `Alto` | an alto saxophone, from a jazz player's improvisations (CC0 and CC BY) |
 
   Play a song with it: `culebra play --sounds kauai/sounds/soprano_sax song.kau`.
   The two alto packages share the `Alto` name, so the same song plays either

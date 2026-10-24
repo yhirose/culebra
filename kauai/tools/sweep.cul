@@ -4,7 +4,7 @@
 # the worst first, and exits 1 when anything is found. sweep_lib.cul says the
 # limits.
 #
-#   culebra kauai/tools/sweep.cul --sounds kauai/sounds/alto_sax_recorded \
+#   culebra kauai/tools/sweep.cul --sounds kauai/sounds/alto_sax \
 #     --low 55 --high 80
 #
 # A fault that needs a particular pitch, length and level shows only where a

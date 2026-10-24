@@ -1,5 +1,4 @@
-# The course a saxophone fall takes, shared by the engine (borrow.cul) and the
-# synthesized alto, so the two fall alike.
+# The course a saxophone fall takes, as the engine (borrow.cul) draws it.
 #
 # The pitch and the loudness are not on one curve. The pitch gathers speed
 # (slow at first, quicker as it goes); the loudness is greatest at the start,

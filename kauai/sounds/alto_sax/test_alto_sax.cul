@@ -1,4 +1,5 @@
 import alto from './main.cul'
+import engine from '../../engine/borrow.cul'
 
 # A phrase as Kauai hands it to the instrument: two notes slurred, then one
 # held.
@@ -10,10 +11,9 @@ let PHRASE = [
 
 @test
 fn a_phrase_sounds_as_long_as_it_is_written() {
-  let s = alto.phrase_samples(PHRASE)
-  # 1.5 s written, and a 0.3 s tail after the last note.
+  let s = alto.phrase_samples(PHRASE, {})
   assert_true(s.size() >= 1.5 * alto.RATE)
-  assert_true(s.size() <= 1.9 * alto.RATE)
+  assert_true(s.size() <= 2.5 * alto.RATE)
   let peak = s.map(|v| Math.abs(v)).max()
   assert_true(peak > 0.01)
   assert_true(peak < 1.0)
@@ -47,68 +47,94 @@ section Verse {
   assert_true(song.length() > 3.0)
 }
 
-# A pitch held 1 s with a fall: the pitch slides down, and the timbre is drawn
-# again as it goes from the pitch it is at, so that the resonances stay where
-# they are in Hz while the harmonics slide through them.
+# A pitch held 1 s with a fall: the resonances stay where they are in Hz while
+# the pitch slides down, so the spectrum's centroid (Hz) does not follow it.
 @test
 fn a_fall_slides_the_pitch_down_but_not_the_resonances() {
   let note = [{pitch: 72, at: 0.0, len: 1.0, level: 1.0, level_end: 1.0, marks: ["fall"], next: nil, params: {}}]
-  let s = alto.phrase_samples(note)
+  let s = alto.phrase_samples(note, {})
+  let centroid = fn (t) {
+    let a = Math.round(t * alto.RATE)
+    let spec = Audio.spectrum(s.slice(a, a + 2048), 2048, 2048)[0]
+    iota(spec.size()).map(|k| k * alto.RATE / 2048.0 * spec[k]).sum() / spec.sum()
+  }
   let pitch = fn (t) {
     let a = Math.round(t * alto.RATE)
     let hz = Audio.pitch(s.slice(a - 1024, a + 3072), 100.0, 1400.0, alto.RATE).hz.filter(|h| h != nil).sorted()
     hz[hz.size() / 2]
   }
-  # The fall takes the last 0.3 s and is well down by 0.9 s.
+  # The fall takes the last 0.3 s of the note and is well down by 0.9 s, where
+  # the resonances (in Hz) are where they were: the spectrum is not dragged
+  # down with the pitch.
   assert_true(pitch(0.9) < 0.85 * pitch(0.3), [pitch(0.9), pitch(0.3)])
-
-  let drawn = alto.tone(note, 1.1)
-  # Drawn at the note's start and again in the fall, not before it.
-  assert_true(drawn.spectrum.size() > 3, drawn.spectrum.size())
-  assert_true(drawn.spectrum.filter(|p| p[0] < 0.65).size() == 1)
-  # The last drawing is the timbre of the pitch the fall has reached.
-  let (at, amps) = drawn.spectrum[-1]
-  let f0 = drawn.freq.min_by(|p| Math.abs(p[0] - at))[1]
-  assert_true(f0 < 0.8 * alto.freq_of(72), f0)
-  # The envelope at the pitch it has reached, as dim as the fall has made it.
-  let matches = fn (level) {
-    let expected = alto.spectrum_at(f0, level)
-    iota(amps.size()).all(|h| Math.abs(amps[h] - expected[h]) < 1e-9)
-  }
-  assert_true(iota(101).any(|q| matches(0.01 * q)))
+  assert_true(centroid(0.9) > 0.62 * centroid(0.3), [centroid(0.9), centroid(0.3)])
 }
 
-# A slur between two notes: the pitch changes as the fingers do, within a few
-# milliseconds (a glide would be heard as a siren), and the sound dips for an
-# instant as the air does at a change of fingering.
+# A note starts from nothing: the borrowed attack can begin before the sound
+# does, so the engine fades the first milliseconds in. These three began at 26
+# to 66% of their peak.
 @test
-fn a_slur_changes_pitch_at_once_with_a_dip() {
-  let two = [
-    {pitch: 72, at: 0.0, len: 0.5, level: 1.0, level_end: 1.0, marks: [], next: nil, params: {}},
-    {pitch: 74, at: 0.5, len: 0.5, level: 1.0, level_end: 1.0, marks: [], next: nil, params: {}},
-  ]
-  let drawn = alto.tone(two, 1.2)
-  let near = |series, t| series.min_by(|p| Math.abs(p[0] - t))[1]
-  let cents_off = |t| 1200.0 * Math.log(near(drawn.freq, t) / alto.freq_of(74)) / Math.log(2.0)
-  assert_true(Math.abs(cents_off(0.52)) < 15.0, cents_off(0.52))
-  assert_true(near(drawn.gain, 0.5 + 0.012) < 0.9 * near(drawn.gain, 0.45), [near(drawn.gain, 0.512), near(drawn.gain, 0.45)])
+fn a_note_starts_from_silence() {
+  for (pitch, len) in [(55, 0.195), (78, 0.195), (59, 0.6)] {
+    let note = [{pitch: pitch, at: 0.0, len: len, level: 1.0, level_end: 1.0, marks: [], next: nil, params: {}}]
+    let s = alto.phrase_samples(note, {})
+    let peak = s.map(|v| Math.abs(v)).max()
+    assert_true(s.slice(0, 4).map(|v| Math.abs(v)).max() < 0.03 * peak, [pitch, len])
+  }
 }
 
-# A held note keeps its timbre until the next note begins: the spectrum was
-# drawn at each note's start only, so with a note after it the timbre slid
-# toward the next one all through the note (a bigger drift for a bigger leap).
+# The same note is as loud whether another follows it at once or not. A note
+# borrowed from a take could start with a puff of breath 20 dB over its level;
+# the engine set the level by the note's middle, so a song's first note was a
+# loud "buh" beside the next.
 @test
-fn a_held_note_does_not_drift_toward_the_next() {
-  let centroid_at = fn (s, t) {
-    let a = Math.round(t * alto.RATE)
-    let spec = Audio.spectrum(s.slice(a, a + 2048), 2048, 2048)[0]
-    iota(spec.size()).map(|k| k * alto.RATE / 2048.0 * spec[k] * spec[k]).sum() / spec.map(|m| m * m).sum()
+fn the_same_note_is_as_loud_with_or_without_a_next() {
+  let voiced = fn (next) {
+    let note = [{pitch: 64, at: 0.0, len: 0.195, level: 1.15, level_end: 1.15, marks: [], next: next, params: {}}]
+    let s = alto.phrase_samples(note, {})
+    s.map(|v| Math.abs(v)).max()
   }
-  let first = {pitch: 62, at: 0.0, len: 0.8, level: 1.0, level_end: 1.0, marks: [], next: nil, params: {}}
-  let alone = centroid_at(alto.phrase_samples([first]), 0.7)
-  for leap in [12, -12] {
-    let two = [first, {...first, pitch: 62 + leap, at: 0.8}]
-    let with_next = centroid_at(alto.phrase_samples(two), 0.7)
-    assert_true(with_next > 0.93 * alone && with_next < 1.07 * alone, [leap, with_next, alone])
+  let alone = voiced(nil)
+  let followed = voiced(0.195)
+  assert_true(alone < 2.5 * followed && followed < 2.5 * alone, [alone, followed])
+}
+
+# A long note is pieced from stretches of several recorded notes, each with a
+# slow loudness and timbre of its own; heard together they swell and sag every
+# half second (a real long note leans one way, or holds). The slow course of
+# the pieces is mostly taken out.
+@test
+fn a_long_tone_does_not_swell_and_sag() {
+  let note = [{pitch: 69, at: 0.0, len: 3.0, level: 0.85, level_end: 0.85, marks: [], next: nil, params: {}}]
+  let s = alto.phrase_samples(note, {})
+  let level = iota(2, 30).map(fn (q) {
+    let win = s.slice(Math.round(q * 0.1 * alto.RATE), Math.round(q * 0.1 * alto.RATE) + 2048)
+    10.0 * Math.log(win.map(|v| v * v).sum() / win.size() + 1e-12) / Math.log(10.0)
+  })
+  # The scatter of the level about its straight-line course, in dB.
+  let n = level.size() * 1.0
+  let xs = iota(level.size()).map(|i| i * 1.0)
+  let mx = xs.sum() / n
+  let my = level.sum() / n
+  let slope = iota(level.size()).map(|i| (xs[i] - mx) * (level[i] - my)).sum() / xs.map(|x| (x - mx) * (x - mx)).sum()
+  let scatter = Math.sqrt(iota(level.size()).map(|i| (level[i] - my - slope * (xs[i] - mx)) ** 2).sum() / n)
+  assert_true(scatter < 1.3, scatter)
+}
+
+# A tongued note of the alto begins crisply: a soft, rounded start (a "poa", the
+# soprano's gift) is wrong for an alto, and the engine borrowed one for an A4
+# eighth that a note followed at once. The start of the note it borrows, the
+# frames it takes to come within 3 dB of its level and how rounded its attack
+# is, must be as the alto's usual.
+@test
+fn a_tongued_note_begins_crisply() {
+  let data = Dir.embedded('data')
+  let inst = engine.Instrument.new(data, JSON.parse(data.read('instrument.json')).play)
+  for (pitch, len, next) in [(69, 0.45, 0.46), (67, 0.45, 0.46), (72, 0.9, 0.9)] {
+    let note = [{pitch: pitch, at: 0.0, len: len, level: 0.55, level_end: 0.55, marks: [], next: next, params: {}}]
+    let chosen = inst.borrowed_curves(note, 0.0, 0, 0.0).chosen[0]
+    let start = inst.start_softness(chosen)
+    assert_true(start.rise <= 2, [pitch, chosen, start])
+    assert_true(start.round > -4.0, [pitch, chosen, start])
   }
 }

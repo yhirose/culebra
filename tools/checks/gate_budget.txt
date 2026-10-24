@@ -262,10 +262,10 @@ languages.samples 130
 # 42 since the kauai tools and engine gained their own tests (compare,
 # fit_style, coverage, engine and choose): the instrument-making tools each
 # check their numbers on synthetic input, which the gate now sweeps.
-# 44 since kauai/sounds/alto_sax and alto_sax_recorded (each package plays a
-# phrase as long as it is written, and a song with it).
-# 45 since kauai/engine/test_bend.cul (the course a fall takes, shared by the
-# engine and the synthesized alto).
+# 44 since kauai/sounds/alto_sax (it plays a phrase as long as it is written,
+# and a song with it).
+# 45 since kauai/engine/test_bend.cul (the course a fall takes).
 # 47 since kauai/tools/test_envelope.cul and test_sweep.cul (the spectral
-# envelope of measured recordings, and the sweep of single notes).
-examples.suites 47
+# envelope of measured recordings, and the sweep of single notes); 46 once the
+# synthesized alto and its test were removed.
+examples.suites 46
