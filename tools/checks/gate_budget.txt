@@ -264,4 +264,6 @@ languages.samples 130
 # check their numbers on synthetic input, which the gate now sweeps.
 # 44 since kauai/sounds/alto_sax and alto_sax_recorded (each package plays a
 # phrase as long as it is written, and a song with it).
-examples.suites 44
+# 45 since kauai/engine/test_bend.cul (the course a fall takes, shared by the
+# engine and the synthesized alto).
+examples.suites 45
