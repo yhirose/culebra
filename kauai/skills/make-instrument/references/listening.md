@@ -76,7 +76,43 @@ the words turned out to be, making the soprano saxophone:
 | "ton", a knock between notes | dips inside borrowed notes and steps in level at their joins; the smaller ones, a limit on the fine gain that stopped notes fading naturally before a rest |
 | "electronic", "an EWI" | long notes too regular, as far as it was found: little wander in pitch, the same vibrato every cycle, harmonics that never flicker, too little breath, and the score's exact timing and dynamics |
 | "the high notes are hysterical" | most likely a high note made quieter without being made softer in timbre: in a real player, loudness and brightness move together |
+| "buuun", a siren at every interval of a slur (the alto) | the pitch glided between slurred notes with a 25 ms time constant; a change of fingering moves it in about 4 ms, with a brief dip of the air |
+| "the EWI's glide", a downbend (the alto) | the pitch and the loudness slid down on one curve; a fall's loudness is greatest at the start and thins out softly while the pitch gathers speed |
+| "bu..." (a blunt knock), a fall (the alto) | the measured landing of eight falls, a push of 8 dB and a collapse in 0.1 s, put in at full strength; the measure said what changes, not how hard |
+| "flat", "nopperi", after the rest is fixed | what is still the same everywhere: the slur's join, the breath, small moves of level and pitch |
 | the soprano lacks its "poa" | the soft-then-full start of a soprano's note, which, once named, was the biggest single step forward |
 
 Words for what the instrument *is* help as much as words for what is
 wrong: naming the soprano's "poa" did more than any measurement.
+
+## From a word to a number, and back to the ear
+
+When the person's word does not say what is wrong, this found it, and kept
+the next change from being worse than the last (the alto's downbend took five
+tries to make right; the method is what shortened them):
+
+1. **Ask where.** The time in the file ("0:30 and 1:00"), not the feeling
+   alone. A passage is found by counting bars; `check.cul --from --to --all`
+   lists what measuring finds in a stretch.
+2. **Play that note alone.** One note with the articulation (a C5 held 1 s
+   with `\fall`) in a throwaway file, so that a change can be seen without
+   the song around it.
+3. **Measure the real thing and ours with the same tool.** `measure.cul` on
+   the recordings and on what the instrument plays (a scale, every semitone
+   held, the one note). Compare what a word can mean: the spectrum in Hz
+   (band by band), the breath against the tone in each band, the attack
+   (how many ms to within 3 dB), the level over time at chosen points, the
+   centroid. Where a recorded fall lands, how loud, how bright, how long its
+   tail: read it off the recording rather than guess.
+4. **Change one thing, at the strength the person last called good, not
+   the measured one.** A tendency measured on one player is a hint of what
+   changes, not of how hard: the alto's fall shaped on eight measured falls
+   was a blunt "buh" and had to be given up. Keep the version the person
+   called good in a commit, so that going back is one step, and write the
+   change's strength in a constant that can be turned.
+5. **Hear it, and say what was heard** ("better, the timbre is still too
+   flat"), then go back to 1 with the next word.
+
+A number that moved is not a sound that improved: the ear decides, and
+the measuring is for finding where to look and for telling that a change did
+what it was meant to.

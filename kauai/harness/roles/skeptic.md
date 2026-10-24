@@ -16,6 +16,9 @@ Then looks for what a number can hide:
   is where an unseen number shows);
 - anything in the package that came from somewhere it should not (a file
   copied from another package, data not made by the tools).
+- a fault that only some pitch, length and level reaches: sweep single notes
+  over the range, the lengths and the levels (`references/tools.md`, "Sweeping
+  single notes"), since the `eval` songs go to a few of them;
 Plays the worst second of each `eval` song and says what it is.
 
 A second far off (8 dB) in a song whose numbers are all within their limits

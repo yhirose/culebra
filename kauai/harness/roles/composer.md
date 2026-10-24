@@ -21,6 +21,21 @@ now says so, but only a song can fix it). Plays each with an instrument that exi
 anything. Splits them into `tune` songs (adjusted on) and `eval` songs
 (never adjusted on): at least one of each character in each.
 
+**Writes what the instrument can play**, which a song can get wrong before
+anything is heard: the melody's range inside the range of the instrument's
+data (`coverage.cul` prints it; a tune whose top note was a whole tone above
+the alto's highest recorded note played it from a note a tone down, shifted,
+and sounded out of reach), and its main register where the instrument sings
+(the alto's A4 to G#5). A bar that does not add up, a chord the table lacks,
+a drum that hits with another on the one noise channel (kick, snare, hats
+and crash on different sixteenths of a bar, in a `first` and a `last` too),
+and a `#` comment (Kauai's are `//`) are all found by `culebra play --check`
+or `--wav`; run it after every section, not after the song. Gives the song a
+shape that can be heard as music: a motif a bar or two long that comes back
+and is varied (a sequence, a step higher, a different ending), a section
+that builds (`\cresc`) into the one that is loudest, drums that change with
+the section (a crash on its first bar, a fill on its last), and an ending.
+
 **Gives**: the `.kau` files under the case's `songs/` and `tune` / `eval` in
 `case.json`.
 

@@ -158,6 +158,12 @@ Each round:
 5. **Write down** in `notes.md` what changed, what was heard, and what it
    turned out to be.
 
+When a word of the person's does not say where the fault is, or a change
+made it worse, work from the word to a number and back to the ear
+(`listening.md`, "From a word to a number"): the time, the note alone, the
+real thing and ours measured with one tool, one change at the strength the
+person last called good.
+
 Now and then, have a whole song heard (`culebra play --wav` without
 `--from`): some things are only heard in context, as a phrase sounding
 mechanical when it repeats, or a level that is right alone and wrong in
