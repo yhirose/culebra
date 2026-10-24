@@ -1,53 +1,52 @@
 band Quartet {
-  voice Alto  external Alto  plays melody              vol 60
-  voice Bass  saw            plays roots in F2..E3     vol 40
-  voice Arp   triangle       plays chords from F4      vol 14  env 1 2 4  gap 2
+  voice Alto  external Alto  plays melody                 vol 60
+  voice Bass  saw            plays roots in A1..G#2        vol 36
+  voice Comp  triangle       plays chords from C4          vol 12  env 1 2 4  gap 2
 
-  drum Kick   noise 110->45  len 4  vol 40  env 0 3 2
-  drum Snare  noise 1800     len 3  vol 26  env 0 2 3
-  drum Hat    noise 8000     len 1  vol 8
+  drum Kick   noise 120->42  len 4  vol 36  env 0 3 2
+  drum Snare  noise 1900     len 3  vol 24  env 0 2 3
+  drum Hat    noise 8500     len 1  vol 7
 }
 
-groove Breeze {
-  Bass   1 - 5 -
-  Arp    1 3 5 3 1 3 5 3
-  Kick   x...x...
-  Snare  ..x...x.
-  Hat    .x.x.x.x
+groove Pocket {
+  Bass   1 . 5 . 8 . 5 3
+  Comp   1 3 5 7 1 3 5 3
+  Kick   x.x.....x.x...x.
+  Snare  ....x.......x...
+  Hat    .x.x.x.x.x.x.x.x
 }
 
-song Breeze {
-  tempo 116
+song Pocket {
+  tempo 108
   meter 4/4
-  key F
+  key Bb
   band Quartet
-  groove Breeze
+  groove Pocket
   melody in C5..B5
 
   Head
-  Head
-  Bridge
+  Lift
   Head
 }
 
 section Head {
-  Fmaj7  (a8 g f e) d2
-  Em7    e4 g b2
-  A7     (c#8 e g a) c#2
-  Dm7    d4 f (a8 g f e)
-  G7     g2 (b8 a g f)
-  Cm7    c4 e g e
-  F7     (f8 g a c) a2
-  Fmaj7  f1
+  Gm7    (d8 f bb a) g2
+  C7     g4 e8 (c d e) f4
+  F7     a4 bb (c8 d c bb)
+  Bbmaj7 d2 (c8 bb a g)
+  Dm7    f4 a c2
+  G7     (b8 a g f) e2
+  Cm7    eb4 g (bb8 a g f)
+  F7     f1
 }
 
-section Bridge {
-  Bbmaj7  (d8 f a c) bb2
-  Am7     a4 c e2
-  D7      (d8 e f# a) d2
-  Gm7     g4 bb d2
-  C7      (e8 g bb c) e2
-  Fmaj7   a4 f c2
-  Dm7     d4 f a e4
-  G7      (g8 f e d) g2
+section Lift {
+  Ebmaj7 \mf (bb8 g f eb) d2
+  Cm7    c4 eb g2
+  Fm7    f4 ab c2
+  Bb7    (d8 f ab g) f2
+  Ebmaj7 eb4 g bb2
+  Am7    a4 c e2
+  Dm7    (d8 f a c) d2
+  G7     \cresc g1 \f
 }
