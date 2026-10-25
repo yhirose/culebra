@@ -1,31 +1,38 @@
-# Make the laps' saxophone phrases again: assets/sax.bin and assets/sax.json,
-# every phrase cruise.kau and sprint.kau ask the saxophone for, with the band
-# of run_sax.kau in place of run.kau's. kauai/tools/make_sounds.cul makes
-# them with kauai/sounds/soprano_sax; ffmpeg encodes them as Ogg Vorbis. Run
-# it after editing a lap's song, or the game plays that lap's lead on the chip.
+# Make the laps' saxophone phrases again: every phrase cruise.kau asks the
+# soprano for, with the band of run_sax.kau in place of run.kau's
+# (assets/sax.bin and assets/sax.json), and every one sprint.kau asks the alto
+# for, with run_alto.kau's (assets/alto.bin and assets/alto.json), as
+# sax_tunes.cul's LEADS says. kauai/tools/make_sounds.cul makes them with
+# kauai/sounds/soprano_sax and alto_sax; ffmpeg encodes them as Ogg Vorbis.
+# Run it after editing a lap's song, or the game plays that lap's lead on the
+# chip.
 #
-# Run: culebra examples/games/retro-run/tools/gen_music.cul   (twenty seconds)
+# Run: culebra examples/games/retro-run/tools/gen_music.cul   (a minute)
+
+import sax_tunes from '../sax_tunes.cul'
 
 let here = FS.dirname(FS.abspath(Sys.script))
 let repo = FS.join(here, "../../../..")
 let assets = FS.join(here, "../assets")
-let r = Proc.run([
-  Sys.executable,
-  "--vm",
-  FS.join(repo, "kauai/tools/make_sounds.cul"),
-  "--sounds",
-  FS.join(repo, "kauai/sounds/soprano_sax"),
-  "--out",
-  assets,
-  "--name",
-  "sax",
-  "--use",
-  "run.kau=run_sax.kau",
-  "--ogg",
-  "--pack",
-  FS.join(assets, "cruise.kau"),
-  FS.join(assets, "sprint.kau"),
-])
-IO.print(r.stdout)
-IO.eprint(r.stderr)
-Sys.exit(r.code)
+
+for song, lead in sax_tunes.LEADS {
+  let r = Proc.run([
+    Sys.executable,
+    "--vm",
+    FS.join(repo, "kauai/tools/make_sounds.cul"),
+    "--sounds",
+    FS.join(repo, "kauai/sounds", lead.package),
+    "--out",
+    assets,
+    "--name",
+    lead.made,
+    "--use",
+    "run.kau={lead.band}",
+    "--ogg",
+    "--pack",
+    FS.join(assets, song),
+  ])
+  IO.print(r.stdout)
+  IO.eprint(r.stderr)
+  Sys.exit(r.code) if r.code != 0
+}

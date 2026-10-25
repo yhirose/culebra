@@ -71,7 +71,8 @@ under the run as an `Audio.Music`, replacing the built-in songs — upstream's
 own soundtrack, if you have it. It plays at `MUSIC_VOL` (0.6), under the
 engine but clearly audible; edit the constant to taste. The generated set ships
 none, so the songs are the default: a tune a lap, breezy for the first and a
-sprint for the second, a soprano saxophone leading the chip band.
+sprint for the second, a saxophone leading the chip band (a soprano, then an
+alto).
 
 Either way the flag ends it: the music fades out over a couple of seconds, a
 few more pass in silence, and a slow chiptune theme plays once over the frozen
@@ -84,11 +85,16 @@ theme. `Audio.Kauai` reads them from the same directory as the art, so a
 `--assets` directory can bring songs of its own, and plays them on the audio
 stream's own clock.
 
-The saxophone plays the laps with the band in `assets/run_sax.kau` in place of
-`run.kau`'s: the same band, the lead an octave under the chip's. Its phrases
-are made beforehand, from these songs, by the instrument in
-`kauai/sounds/soprano_sax` (`assets/sax.bin`, with `assets/sax.json` saying
-which is which), so the game starts at once and the Playground plays them too.
+The saxophones play the laps with the band in `assets/run_sax.kau` (the
+soprano, for the first) or `assets/run_alto.kau` (the alto, for the second) in
+place of `run.kau`'s: the same band, the lead an octave under the chip's.
+`sax_tunes.cul` says which lap has which. Their phrases are made beforehand,
+from these songs, by the instruments in `kauai/sounds/soprano_sax` and
+`kauai/sounds/alto_sax` (`assets/sax.bin` and `assets/alto.bin`, with a `.json`
+beside each saying which is which), so the game starts at once and the
+Playground plays them too. The sprint is written in D and played in Eb, its
+last chorus in F, for the alto: its recordings, in G minor and F minor, hold
+few of D major's sharps and none of them held.
 A song with a phrase that was not made, one edited since, plays its lead on
 the chip, and says so; `culebra examples/games/retro-run/tools/gen_music.cul`
 makes them again, with `kauai/tools/make_sounds.cul` (it needs `ffmpeg`). To

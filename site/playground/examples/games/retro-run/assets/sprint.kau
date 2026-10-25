@@ -1,6 +1,6 @@
 about {
   title  Sprint
-  note   lap two of the racing game: 150 bpm in D, after the Japanese fusion bands of the 80s
+  note   lap two of the racing game: 150 bpm in Eb, after the Japanese fusion bands of the 80s
 }
 
 use 'run.kau'
@@ -12,11 +12,14 @@ song Sprint {
   melody in A5..G#6
   loop
 
-  Riff     with harmony
-  Verse
-  Lift     with echo
-  Chorus   with echo ending 1
-  Chorus   with harmony ending 2 in E
+  // Written in D, played a semitone up, in Eb, and the last chorus in F: the
+  // alto saxophone leading it plays from recordings in G minor and F minor,
+  // which hold few E, B and F# and none of them held.
+  Riff     with harmony in Eb
+  Verse    in Eb
+  Lift     with echo in Eb
+  Chorus   with echo ending 1 in Eb
+  Chorus   with harmony ending 2 in F
 }
 
 groove Riff {
@@ -110,7 +113,7 @@ section Chorus {
     Cmaj7 D/E   a g,8 b d8. e f#8
   }
   ending 2 as written {
-    Amaj7/B     g# a'8 g# f# e c# a~
-    Bbmaj7 C    a d8 f a' g e c
+    Bbmaj7/C    a' bb'8 a' g f d bb~
+    Bmaj7 C#    bb eb8 f# bb' g# f c#
   }
 }

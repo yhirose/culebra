@@ -13,21 +13,28 @@ fn every_lap_phrase_is_made() {
   }
 }
 
-# A song with a phrase that was not made, or songs with none, play on the
-# chip.
+# A song with a phrase that was not made, or songs with none made for its
+# lead, play on the chip: each lap's phrases are its own saxophone's (the
+# soprano's for the first, the alto's for the second), and a song with no
+# saxophone (the theme) has none.
 @test
 fn a_song_without_its_phrases_is_nil() {
-  let index = JSON.parse(ASSETS.read("sax.json"))
-  let sounds = index.voices.sax.sounds
-  sounds.remove(sounds.keys()[0])
-  let short = {
-    exists: |n| ASSETS.exists(n),
-    read: |n| n == "sax.json" ? JSON.stringify(index) : ASSETS.read(n),
+  for name, lead in sax_tunes.LEADS {
+    let file = "{lead.made}.json"
+    let index = JSON.parse(ASSETS.read(file))
+    let sounds = index.voices[lead.voice].sounds
+    sounds.remove(sounds.keys()[0])
+    let short = {
+      exists: |n| ASSETS.exists(n),
+      read: |n| n == file ? JSON.stringify(index) : ASSETS.read(n),
+    }
+    assert_eq(sax_tunes.load(name, short, {}), nil)
+    let none = {
+      exists: |n| n != file && ASSETS.exists(n),
+      read: |n| ASSETS.read(n),
+    }
+    assert_eq(sax_tunes.load(name, none, {}), nil)
   }
-  assert_eq(sax_tunes.load("cruise.kau", short, {}), nil)
-  let none = {
-    exists: |n| n != "sax.json" && ASSETS.exists(n),
-    read: |n| ASSETS.read(n),
-  }
-  assert_eq(sax_tunes.load("cruise.kau", none, {}), nil)
+  assert_eq(sax_tunes.LEADS["sprint.kau"].voice, "alto")
+  assert_eq(sax_tunes.load("ballad.kau", ASSETS, {}), nil)
 }

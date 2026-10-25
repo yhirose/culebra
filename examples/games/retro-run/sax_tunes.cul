@@ -1,20 +1,29 @@
-# The laps' songs with a soprano saxophone leading, an octave under the chip:
-# the band of run_sax.kau in place of run.kau's, and each phrase the
-# saxophone plays made beforehand from the songs (tools/gen_music.cul, by
-# kauai/tools/make_sounds.cul and kauai/sounds/soprano_sax in this
-# repository). sax.json says what the saxophone hears and, by the JSON of
-# what Kauai hands it, where in sax.bin each phrase's bytes are: Ogg, but for
-# the note Kauai weighs the voice by, a WAV, whose loudness it reads on every
-# backend.
+# The laps' songs with a saxophone leading, an octave under the chip: a
+# soprano for the first lap and an alto for the second, each with the band of
+# its own file in place of run.kau's, and each phrase it plays made beforehand
+# from the songs (tools/gen_music.cul, by kauai/tools/make_sounds.cul and
+# kauai/sounds/soprano_sax and alto_sax in this repository). NAME.json says
+# what the saxophone hears and, by the JSON of what Kauai hands it, where in
+# NAME.bin each phrase's bytes are: Ogg, but for the note Kauai weighs the
+# voice by, a WAV, whose loudness it reads on every backend.
 
-# `name` from `songs` (a Dir) with the saxophone leading, the band's other
-# external voices from `voices`; its sounds built. nil when `songs` has no
-# phrases made, or a phrase the song plays was not made (an edited song),
-# which it says on stderr.
+# Each lap's saxophone: the band that has it lead, the phrases made for it
+# (`made`.json and .bin), its key under the band's `external`, and the
+# instrument under kauai/sounds/ the phrases are made with.
+let LEADS = {
+  "cruise.kau": {band: "run_sax.kau", made: "sax", voice: "sax", package: "soprano_sax"},
+  "sprint.kau": {band: "run_alto.kau", made: "alto", voice: "alto", package: "alto_sax"},
+}
+
+# `name` from `songs` (a Dir) with its saxophone leading, the band's other
+# external voices from `voices`; its sounds built. nil for a song with no
+# saxophone, when `songs` has no phrases made for it, or a phrase the song
+# plays was not made (an edited song), which it says on stderr.
 fn load(name, songs, voices) {
-  return nil if !songs.exists("sax.json")
-  let made = JSON.parse(songs.read("sax.json")).voices.sax
-  let bytes = songs.read("sax.bin")
+  let lead = LEADS.get(name, nil)
+  return nil if lead == nil || !songs.exists("{lead.made}.json")
+  let made = JSON.parse(songs.read("{lead.made}.json")).voices[lead.voice]
+  let bytes = songs.read("{lead.made}.bin")
   let missing = []
   let sax = {phrase: fn (notes, params) {
     let at = made.sounds.get(JSON.stringify([notes, params]), nil)
@@ -24,12 +33,14 @@ fn load(name, songs, voices) {
     }
     Audio.Sound(bytes.slice(at[0], at[0] + at[1]).to_string())
   }, hears: made.hears}
-  let as_sax = |n| n == "run.kau" ? "run_sax.kau" : n
+  let as_led = |n| n == "run.kau" ? lead.band : n
   let dir = {
-    exists: |n| songs.exists(as_sax(n)),
-    read: |n| songs.read(as_sax(n)),
+    exists: |n| songs.exists(as_led(n)),
+    read: |n| songs.read(as_led(n)),
   }
-  let tune = Audio.Kauai.load(name, dir: dir, voices: {...voices, sax: sax})
+  let led = {...voices}
+  led[lead.voice] = sax
+  let tune = Audio.Kauai.load(name, dir: dir, voices: led)
   while tune.prepare() > 0 {
   }
   if !missing.empty() {
@@ -39,4 +50,4 @@ fn load(name, songs, voices) {
   tune
 }
 
-export {load}
+export {LEADS, load}

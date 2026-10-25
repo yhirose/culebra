@@ -155,6 +155,8 @@
           "assets": [
             "examples/games/retro-run/README.md",
             "examples/games/retro-run/assets/README.md",
+            "examples/games/retro-run/assets/alto.bin",
+            "examples/games/retro-run/assets/alto.json",
             "examples/games/retro-run/assets/background-template.png",
             "examples/games/retro-run/assets/background_asayake.png",
             "examples/games/retro-run/assets/background_hiru.png",
@@ -164,6 +166,7 @@
             "examples/games/retro-run/assets/ballad.kau",
             "examples/games/retro-run/assets/cruise.kau",
             "examples/games/retro-run/assets/run.kau",
+            "examples/games/retro-run/assets/run_alto.kau",
             "examples/games/retro-run/assets/run_sax.kau",
             "examples/games/retro-run/assets/sax.bin",
             "examples/games/retro-run/assets/sax.json",

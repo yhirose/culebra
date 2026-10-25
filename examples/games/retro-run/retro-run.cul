@@ -682,8 +682,9 @@ let SONGS = ART.exists("cruise.kau") ? ART : Dir.embedded("assets")
 let ep = |pitch, params| Audio.Sound(pcm_wav(ep_samples(pitch, params.bright)))
 let kauai = |name| Audio.Kauai.load(name, dir: SONGS, voices: {ep: ep})
 
-# The laps' lead is a soprano saxophone (sax_tunes.cul) where the songs have
-# its phrases made; on the chip where they do not, and with --chiptune.
+# The laps' lead is a saxophone (sax_tunes.cul: a soprano for the first lap,
+# an alto for the second) where the songs have its phrases made; on the chip
+# where they do not, and with --chiptune.
 let lap_tune = |name| (args.chiptune ? nil : sax_tunes.load(name, SONGS, {ep: ep})) ?? kauai(name)
 let LAP_TUNES = [lap_tune("cruise.kau"), lap_tune("sprint.kau")]
 let THEME = kauai("ballad.kau")
