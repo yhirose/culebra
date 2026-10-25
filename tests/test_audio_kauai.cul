@@ -41,22 +41,27 @@ assert_eq(first.length(), 2.0)
 
 # render(): the song once through as the mixer that plays it would sound it,
 # with no device: as long as the song, the same each time, half as loud at
-# volume 0.5, and longer in a room, whose echoes ring on.
-let dry = first.render()
-assert_true(dry.size() >= Math.round(first.length() * 44100))
-assert_true(dry.size() < Math.round((first.length() + 0.1) * 44100))
-assert_true(dry.map(|v| Math.abs(v)).max() > 0.01)
-assert_eq(first.render(), dry)
-first.volume(0.5)
-assert_eq(first.render(), dry.map(|v| v * 0.5))
-first.volume(1)
-let roomy = Audio.Kauai.new(lines([
-  song_of(['  room 40%', '  Verse']),
-  'section Verse {',
-  "  C     e4 .g \\f !c'2",
-  '}',
-]))
-assert_true(roomy.render().size() > dry.size() + 22050)
+# volume 0.5, and longer in a room, whose echoes ring on. In a function of its
+# own, so that the samples do not stay for the rest of the file: every
+# collection under a collection at every allocation walks what is kept.
+let rendered = fn () {
+  let dry = first.render()
+  assert_true(dry.size() >= Math.round(first.length() * 44100))
+  assert_true(dry.size() < Math.round((first.length() + 0.1) * 44100))
+  assert_true(dry.map(|v| Math.abs(v)).max() > 0.01)
+  assert_eq(first.render(), dry)
+  first.volume(0.5)
+  assert_eq(first.render(), dry.map(|v| v * 0.5))
+  first.volume(1)
+  let roomy = Audio.Kauai.new(lines([
+    song_of(['  room 40%', '  Verse']),
+    'section Verse {',
+    "  C     e4 .g \\f !c'2",
+    '}',
+  ]))
+  assert_true(roomy.render().size() > dry.size() + 22050)
+}
+rendered()
 
 # Playing keeps the song's own time, device or not; stop() ends it.
 assert_eq(first.playing(), false)
@@ -303,10 +308,13 @@ assert_throws("ValueError", fn () {
 # the first one again, sample for sample.
 let tick = Audio.Sound(iota(2205).map(|i| 0.3 * Math.sin(i * 0.2)))
 let ticked = Audio.Kauai.new(EXTERNAL, voices: {ep: |pitch, params| Audio.Sound([0.0])}, drums: {ride: |params| tick})
-let heard = ticked.render()
-assert_true(heard.slice(0, 2205).map(|v| Math.abs(v)).max() > 0.01)
-assert_eq(heard.slice(88200, 88200 + 2205), heard.slice(0, 2205))
-assert_eq(heard.slice(2205, 88200).map(|v| Math.abs(v)).max(), 0.0)
+let ticks = fn () {
+  let heard = ticked.render()
+  assert_true(heard.slice(0, 2205).map(|v| Math.abs(v)).max() > 0.01)
+  assert_eq(heard.slice(88200, 88200 + 2205), heard.slice(0, 2205))
+  assert_eq(heard.slice(2205, 88200).map(|v| Math.abs(v)).max(), 0.0)
+}
+ticks()
 # Tones and external sounds go to the mixers in one time order: a sound is
 # not left behind every tone. A list out of order is refused on the way in.
 let mixed = Audio.Kauai.new(lines([
