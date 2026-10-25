@@ -1,0 +1,218 @@
+about {
+  title  Ocean Highway
+  note   bright fusion for a drive along the sea; the last chorus a tone higher
+}
+
+// The recorded alto has many notes of the flat keys' pitches (it plays from
+// improvisations in G minor and F minor) and few of E, B, F#, C# and A5, so
+// the tune keeps to Eb major's, and the last chorus, in F, to F major's
+// without its E.
+band Highway {
+  voice Alto   external Alto  plays melody                              vol 60
+  voice Bass   saw            plays roots in F1..E2                     vol 28  env 0 3 2  gap 1
+  voice Keys   pulse          plays chords rootless from G3  duty 1/4   vol 10  env 0 4 6  gap 1
+  voice Keys2  pulse2         plays chords rootless from G3  duty 1/8   vol 8   env 0 4 6  gap 1
+  voice Bell   triangle       plays chords from C5                      vol 9   env 0 2 6  gap 1
+
+  drum Kick   noise 110->40    len 4   vol 34  env 0 3 2
+  drum Snare  noise 2000       len 3   vol 20  env 0 2 3
+  drum Ghost  noise 2200       len 1   vol 7
+  drum Hat    noise 8500       len 1   vol 6
+  drum Tom    noise 600->250   len 5   vol 18  env 0 2 4
+  drum Crash  noise 6000->3000 len 20  vol 9   env 0 4 20
+  drum Hit    noise 5000->2500 len 12  vol 12  env 0 3 12  plays hits
+}
+
+// One noise channel plays one drum at a time, so the kick, the snare, the
+// ghost notes and the hats sit on different sixteenths of the bar.
+groove Drive {
+  Bass   1 - . 1 - . 8 . . 1 - 5 8 . > .
+  Keys   . . 1 - . . 1 . . . 1 - . 1 . .
+  Keys2  . . 3 - . . 3 . . . 3 - . 3 . .
+  Kick   x.....x...x.....
+  Snare  ....x.......x...
+  Ghost  .........x....x.
+  Hat    .xxx.x.xx..x.x.x
+  first {
+    Kick   ......x...x.....
+    Crash  x...............
+  }
+  last {
+    Kick   x.......x.......
+    Snare  ....x.....xx..xx
+    Tom    ............xx..
+    Ghost  ................
+    Hat    ................
+  }
+}
+
+groove Shine {
+  Bass   1 - . 1 - . 8 . . 1 - 5 8 . > .
+  Keys   . . 1 - . . 1 . . . 1 - . 1 . .
+  Keys2  . . 3 - . . 3 . . . 3 - . 3 . .
+  Bell   1 2 3 4 2 3 4 3
+  Kick   x.....x...x.....
+  Snare  ....x.......x...
+  Ghost  .........x....x.
+  Hat    .xxx.x.xx..x.x.x
+  first {
+    Kick   ......x...x.....
+    Crash  x...............
+  }
+  last {
+    Kick   x.......x.......
+    Snare  ....x.....xx..xx
+    Tom    ............xx..
+    Ghost  ................
+    Hat    ................
+  }
+}
+
+groove Cruise {
+  Bass   1 - - . . 1 . . 5 - - . 8 . > .
+  Keys   . . 1 - . . 1 . . . 1 - . . . .
+  Keys2  . . 3 - . . 3 . . . 3 - . . . .
+  Kick   x.......x.x.....
+  Snare  ....x.......x...
+  Ghost  .............x..
+  Hat    ..x...x.......x.
+  last {
+    Kick   x.......x.......
+    Snare  ....x.......x.xx
+    Ghost  ................
+    Hat    ..x...x...x.....
+  }
+}
+
+groove Rise {
+  Bass   1 - 1 - 8 - 1 - 1 - 1 - 8 - > -
+  Keys   1
+  Keys2  3
+  Kick   x.......x.......
+  Snare  ....x.......x...
+  Ghost  .......x.......x
+  Hat    ..x...x...x...x.
+  last {
+    Kick   x.......x.......
+    Snare  ....x.....x.x.xx
+    Tom    ...........x.x..
+    Ghost  ................
+    Hat    ..x...x.........
+  }
+}
+
+song OceanHighway {
+  tempo 136
+  meter 4/4
+  key Eb
+  band Highway
+  groove Drive
+  melody in F4..E5
+  room 30%
+
+  Kime
+  Theme
+  mark Verse
+  Verse
+  Pre
+  mark Chorus
+  Chorus
+  Kime
+  Verse
+  Pre
+  Chorus
+  mark Solo
+  Solo
+  Lift
+  mark Last
+  Chorus in F
+  Outro
+}
+
+// The band strikes with the alto, and the last bar runs down into the groove.
+section Kime {
+  Abmaj7        \f ^eb8. ^c8. ^eb8 r8 ^f'8 ^eb8 r8
+    hits:       !x8. x8. x8 r8 x8 x8 r8
+  Bb/Ab         ^d8. ^bb8. ^d8 r8 ^f'8 ^d8 r8
+    hits:       !x8. x8. x8 r8 x8 x8 r8
+  Gm7           ^bb8. ^g8. ^bb8 r8 ^d8 ^c8 r8
+    hits:       !x8. x8. x8 r8 x8 x8 r8
+  Fm7 Bb7sus4   (f'8 eb8 d8 c8 bb8 ab8 g8 f8)
+    hits:       !x2 x2
+}
+
+// The chorus's first four bars, heard first here.
+section Theme {
+  groove Shine
+  Abmaj7        \mf g8 bb8 c8 eb8~ eb4. f'16 eb16
+  Bb/Ab         c8 bb8~ bb2.
+  Gm7           f8 g8 bb8 c8~ c4. eb16 c16
+  Fm7 Bb7sus4   bb8 g8~ g2 r4
+}
+
+section Verse {
+  groove Cruise
+  Ebmaj7        \mp r8 bb8 g8 f8 \scoop g4 bb8 c8~
+  Dm7b5 G7      c4 bb8 ab8~ ab4 g8 f8
+  Cm7           \scoop g4. eb,8~ eb,4 f8 g8
+  Bbm7 Eb7      f8 g8 ab8 bb8~ bb4 db8 bb8
+  Abmaj7        c4 r8 c8 eb8 c8 bb8 ab8~
+  Abm6 Db7      ab4 r4 f8 ab8 bb8 ab8
+  Gm7 C7        {f}g4 f8 g8~ g8 bb8 a8 g8
+  Fm7 Bb7sus4   f2 r2
+}
+
+section Pre {
+  groove Rise
+  Cm7           r8 g8 bb8 c8~ c8 bb8 g8 bb8~
+  Bbm7 Eb7      bb4 ab8 g8~ g4 f8 g8
+  Abmaj7        r8 ab8 c8 eb8~ eb8 c8 ab8 c8~
+  Gm7 C7        c4 bb8 a8~ a4 g8 a8
+  Fm7           \cresc r8 ab8 bb8 c8 eb8 c8 eb8 f'8~
+  Gm7           f'4 eb8 c8~ c4 bb8 c8
+  Abmaj7        eb8 c8 eb8 f'8~ f'4 g'8 f'8
+  Bb7sus4 Bb7   f'2 r2
+}
+
+section Chorus {
+  Abmaj7        \f g8 bb8 c8 eb8~ eb4. f'16 eb16
+  Bb/Ab         c8 bb8~ bb2.
+  Gm7           f8 g8 bb8 c8~ c4. eb16 c16
+  Cm7           bb8 g8~ g2.
+  Fm7           ab8 c8 eb8 f'8~ f'4 eb8 f'8
+  Gm7 C7        \scoop f'4. eb8 c8 bb8 c8 eb8
+  Fm7 Bb7sus4   c4 bb8 c8~ c8 eb8 f'8 eb8~
+  Ebmaj7        eb2. r4
+}
+
+section Solo {
+  groove Shine
+  Cm7           \mf r4 \scoop g4. f8 eb,8 f8
+  Cm7           (g8 bb8 c8 eb8) c8 bb8 g8 bb8~
+  Abmaj7        bb4 c8 eb8~ eb4 \fall c4
+  Bb7sus4       r8 (f16 g16 bb8 c8) eb8 f'8 eb8 c8
+  Cm7           \scoop eb4. c8 bb8 g8 bb8 c8~
+  Cm7           c8 (eb16 f'16 g'8 f'8) eb8 c8 bb8 c8
+  Abmaj7        \cresc eb4 f'8 g'8~ g'4 f'8 eb8
+  Bb7sus4 Bb7   f'2 \fall eb4 r4
+}
+
+// Up a tone, to F, by its dominant.
+section Lift {
+  Bbmaj7/C      \f ^f'8. ^d8. ^f'8 r8 ^g'8 ^f'8 r8
+    hits:       !x8. x8. x8 r8 x8 x8 r8
+  C7sus4        (bb8 c8 d8 f'8) g'4 r4
+}
+
+section Outro key F {
+  Bbmaj7        a8 c8 d8 f'8~ f'4. g'16 f'16
+  C/Bb          d8 c8~ c2.
+  Am7           g8 a8 c8 d8~ d4. f'16 d16
+  Dm7           c8 a8~ a2.
+  Gm7           bb8 d8 f'8 g'8~ g'4 f'8 g'8
+  C7sus4        \scoop g'2 f'8 d8 c8 d8
+  Bbmaj7/C      ^f'8. ^d8. ^f'8 r8 ^g'8 ^f'8 r8
+    hits:       !x8. x8. x8 r8 x8 x8 r8
+  Fmaj7         !f'1
+    hits:       !x1
+}

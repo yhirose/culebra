@@ -1,0 +1,141 @@
+about {
+  title  Harbor Lights
+  note   a calm ballad for the shore road at dusk
+}
+
+// Bb major, whose seven pitches the recorded alto has many long notes of.
+band Evening {
+  voice Alto   external Alto  plays melody                                vol 60
+  voice Bass   triangle       plays roots in A1..G#2                      vol 32  env 1 4 8
+  voice Arp    pulse          plays chords rootless from Bb3  duty 1/8    vol 9   env 1 6 10  gap 2
+  voice Pad    pulse2         plays chords rootless from G3   duty 1/8    vol 5   env 12 8 20
+  voice Str    saw            plays chords rootless from D4               vol 4   env 20 10 30
+
+  drum Kick   noise 90->40     len 4   vol 26  env 0 3 3
+  drum Rim    noise 3200       len 1   vol 10
+  drum Hat    noise 9000       len 1   vol 4
+  drum Swell  noise 4000->2000 len 30  vol 6   env 10 6 24
+}
+
+groove Dawn {
+  Bass   1 - - - - - - - 5 - - - - - - -
+  Arp    1 3 2 3 1 3 2 3
+  Pad    3
+  last {
+    Swell  ............x...
+  }
+}
+
+groove Dusk {
+  Bass   1 - - - - - - - 5 - - - - - - -
+  Arp    1 3 2 3 1 3 2 3
+  Pad    3
+}
+
+groove Glow {
+  Bass   1 - - - - - 1 5 8 - - - 5 - > -
+  Arp    1 3 2 3 1 3 2 3
+  Pad    3
+  Kick   x.........x.....
+  Rim    ....x.......x...
+  Hat    ..x...x.x.....x.
+}
+
+groove Tide {
+  Bass   1 - - - - - 1 - 5 - - - 8 - > -
+  Arp    1 3 2 3 4 3 2 3
+  Pad    3
+  Str    1
+  Kick   x.........x.....
+  Rim    ....x.......x...
+  Hat    .xxx.xxxxx.x.xxx
+  first {
+    Kick   ..........x.....
+    Swell  x...............
+  }
+}
+
+song HarborLights {
+  tempo 72
+  meter 4/4
+  key Bb
+  band Evening
+  groove Glow
+  melody in F4..E5
+  room 40%
+
+  Intro
+  mark Verse
+  Verse
+  Verse2
+  mark Chorus
+  Chorus ending 1
+  Interlude
+  mark Last
+  Chorus ending 2
+  Outro
+}
+
+section Intro {
+  groove Dawn
+  Ebmaj7        \mp r1
+  F/Eb          r1
+  Dm7           r8 a8 c8 d8~ d4 f'8 d8
+  Cm7 F7sus4    c2 r2
+}
+
+section Verse {
+  Bbmaj7        r8 f8 bb8 c8 \scoop d4. c8
+  Gm9           bb2 r8 a8 bb8 c8
+  Ebmaj7        d4. bb8 g4 f8 g8~
+  Cm7 F7sus4    g2 r4 r8 f8
+  Dm7           a4. f8 a8 c8 d8 f'8~
+  Gm7           f'4. d8 c4 bb8 a8
+  Cm9           bb4. g8 eb4 d8 c8
+  F7sus4 F7     c2 r2
+}
+
+section Verse2 {
+  Bbmaj7        r8 f8 bb8 c8 d4. f'8
+  Am7b5 D7      \scoop eb4. d8 c4 a8 bb8
+  Gm9           bb2 r8 g8 a8 bb8
+  Fm7 Bb7       c4 ab8 g8~ g4 f8 ab8
+  Ebmaj7        g4. f8 g8 bb8 d8 c8~
+  Ebm6          c4 bb8 gb8~ gb4 f8 eb,8
+  Dm7 G7        f4 a8 c8~ c4 d8 c8
+  Cm7 F7sus4    \cresc c4. bb8 c4 r4
+}
+
+section Chorus {
+  groove Tide
+  Ebmaj7        \mf \scoop g'2 f'8 d8 bb8 c8~
+  F/Eb          c4 d8 f'8~ f'2
+  Dm7           r8 a8 c8 d8~ d4 f'8 d8
+  Gm7           c4 bb8 g8~ g2
+  Cm7           r8 c8 eb8 g'8~ g'4 f'8 eb8
+  Dm7           \scoop f'2 d8 c8 a8 c8~
+  ending 1 {
+    Ebmaj7      c4 d8 eb8~ eb4 f'8 g'8~
+    F7sus4 F7   g'2 f'4 r4
+  }
+  ending 2 {
+    Ebmaj7 F/Eb c4 d8 eb8~ eb8 f'8 d8 c8
+    Bbmaj7      d1
+  }
+}
+
+section Interlude {
+  groove Dawn
+  Ebmaj7        \mp r2 r8 g8 bb8 d8
+  F/Eb          \scoop c2 bb8 a8 f8 a8~
+  Dm7           a2 r2
+  Cm7 F7sus4    \cresc r1
+}
+
+section Outro {
+  groove Dusk
+  Ebmaj7        \mp r4 g4. f8 d8 c8
+  F/Eb          d2 r2
+  Gm7 Cm7/F     r8 bb8 c8 d8~ d4 f'8 d8
+  Bbmaj7        @d1
+}

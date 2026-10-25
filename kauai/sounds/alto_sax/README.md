@@ -17,6 +17,22 @@ band Smooth {
 }
 ```
 
+## Songs
+
+Three tunes in `songs/`, for the alto over a band of the tone channels:
+
+| Song | What it is |
+|---|---|
+| `ocean_highway.kau` | bright fusion, Eb major, 136 BPM: a kime intro, a syncopated 16-beat groove, a solo, and the last chorus a tone higher, in F |
+| `harbor_lights.kau` | a calm ballad, Bb major, 72 BPM: long notes over broken chords |
+| `fast_lane.kau` | driving minor-key fusion, G minor, 156 BPM: a riff the alto and the guitar play an octave apart |
+
+Their melodies keep to the pitches the recordings hold many notes of (the
+flat keys': the takes are in G minor and F minor). E, B, F#, C# and A5 have
+few, and few or no long ones, so a tune that asks for them is played from a
+semitone away. `kauai/tools/coverage.cul --song` says, pitch by pitch, what a
+song asks against what is recorded.
+
 ## Sources
 
 Seven solo alto saxophone improvisations by **DieRechnug** on Freesound, used
