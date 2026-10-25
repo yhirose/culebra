@@ -6,7 +6,8 @@
 # `inst.lib_in[i]` and `inst.lib_out[i]` how it is entered and left ("rest",
 # "tongue", or a slur's kind: "up leap", "up step", "down leap", "down step",
 # "same", "legato"), `inst.lib_dip[i]` how far its loudness falls inside it
-# (dB), `inst.attack_of[i]` its attack (or nil), `inst.lib_louder` how much
+# (dB), `inst.lib_head_dip[i]` and `inst.lib_tail_dip[i]` at its start and its
+# end, `inst.attack_of[i]` its attack (or nil), `inst.lib_louder` how much
 # louder the recorded notes' levels read than a note's asked for,
 # `inst.vibrato_wanted(v)` the vibrato (cents peak to peak) a note asks of
 # the note it borrows (or nil), `inst.slur_kind(semitones)` a slur's kind.
@@ -55,6 +56,11 @@
 #   crest_db     the dB its loudest frame may stand over its level, and
 #                beyond that the dB that cost 1; the level asked is set by
 #                the note's middle, so a peak plays that much over it
+#   edge_from,   for a slur in or out, a recording that dips at its start or
+#   edge_db      at its end (`inst.lib_head_dip[i]`, `inst.lib_tail_dip[i]`:
+#                one that began after a break, or faded): the dB it may fall,
+#                a slur's own small dip, and beyond that the dB that cost 1;
+#                the dip stays in the note, heard as a gap in the slur
 #   vib_cents    the cents (peak to peak) off what the note asks that cost 1
 #   same_take    taken off for the note the recording played straight after
 #                the one borrowed before, where this note is slurred into
@@ -75,6 +81,8 @@ let CHOICE = {
   dip_db: 3.0,
   crest_from: 8.0,
   crest_db: 3.0,
+  edge_from: 10.0,
+  edge_db: 3.0,
   crisp: 0.0,
   rise_from: 2.0,
   rise_frames: 2.0,
@@ -115,7 +123,8 @@ fn borrow_for(inst, notes, k, before) {
   let way_in = slurred_in
     ? inst.slur_kind(v.semi - notes[k - 1].semi)
     : k == 0 ? nil : "tongue"
-  let way_out = v.to == "legato" && k + 1 < notes.size()
+  let slurred_out = v.to == "legato" && k + 1 < notes.size()
+  let way_out = slurred_out
     ? inst.slur_kind(notes[k + 1].semi - v.semi)
     : v.to
   let cost = fn (i) {
@@ -128,6 +137,12 @@ fn borrow_for(inst, notes, k, before) {
       way_cost(w, inst.lib_out[i], way_out) +
       Math.max(0.0, inst.lib_dip[i] - w.dip_from) / w.dip_db +
       Math.max(0.0, inst.lib_crest[i] - w.crest_from) / w.crest_db
+    if slurred_in {
+      c += Math.max(0.0, inst.lib_head_dip[i] - w.edge_from) / w.edge_db
+    }
+    if slurred_out {
+      c += Math.max(0.0, inst.lib_tail_dip[i] - w.edge_from) / w.edge_db
+    }
     if !slurred_in && inst.attack_of[i] == nil {
       c += w.no_attack
     }

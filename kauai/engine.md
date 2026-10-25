@@ -19,7 +19,12 @@ engine's entry point is `Instrument.new(dir, style)`, where `dir` is the
 3. **A note longer than its borrowed note** is filled out with steady stretches
    of long notes near it.
 4. **A slur joins two takes** with a 20 ms crossfade of timbre, so the join
-   does not click.
+   does not click. The step between the two (in loudness, timbre and breath)
+   is taken up half by each side, read where each side stands at its level
+   (`join_reads`): a dip right at the join, a recorded onset or release, is
+   the borrowed note's own move and stays. Read across a dip, the step was
+   the dip's depth, and half of it went on the frames beside it, a note 14 dB
+   over what was asked.
 5. **A bend keeps the resonances.** `\scoop`, `\plop`, `\doit` and `\fall` bend
    the pitch of the borrowed note. The instrument's resonances do not move with
    it, so each harmonic takes the level the borrowed tone had at its own
@@ -63,6 +68,7 @@ These six are required. The rest have defaults (`DEFAULTS` in
 - `slur_other`, `slur_none`, `tongue_slur`, `rest_tongue`: the cost of a join that does not match the note's entry and exit
 - `same_take`: a bonus for the take that followed the previous borrowed note in the recording, so one player sounds through a slur
 - `crest_from`, `crest_db`: the cost of a note whose loudest frame stands far over its level (a puff of breath at its start), since the loudness asked is set by its middle
+- `edge_from`, `edge_db`: for a slur in or out, the cost of a recording that dips far at its start or its end (one that began after a break, or faded); the dip stays in the note and is heard as a gap in the slur, while a slur's own small dip (up to 10 dB) costs nothing
 - `crisp` (0, off): the cost of a start that is not crisp (frames to come within 3 dB of its level, and how round its attack is), for a note not asked to begin softly. The soprano's soft start, its "poa", is its own and stays off; the alto's tongued notes begin crisply (`1`)
 
 The weights were fitted on the soprano's targets. Changing them moves every

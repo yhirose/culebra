@@ -231,6 +231,48 @@ fn bend_shake(bent, t) {
     (Math.sin(2.0 * Math.pi * 6.7 * t) + 0.7 * Math.sin(2.0 * Math.pi * 11.3 * t + 1.0))
 }
 
+# Where a join's step is read, given the loudness `db` (a frame) and the
+# frames either side it is eased over (`left` up to the join, `right` from
+# it): at the two frames that meet there, unless one side dips at the join (a
+# recorded onset or release, or a note that began after a break). Walking out
+# from the join over its JOIN_NEAR nearest frames, a side passes a frame that
+# stands more than JOIN_LEVEL_DB under both the loudest of them and the other
+# side's frame at the join. The dip is the borrowed note's own move and stays;
+# read across it, the step was its depth, and half of it was put on the other
+# side's frames (14 dB over what was asked). A side that falls away from the
+# join (a release that goes on) or swells after it is read at the join.
+let JOIN_NEAR = 4
+
+let JOIN_LEVEL_DB = 4.0
+
+fn join_reads(db, left, right) {
+  let at = fn (side, across) {
+    let near = side.slice(0, Math.min(JOIN_NEAR, side.size()))
+    let top = near.map(|u| db[u]).max()
+    near.find(|u| db[u] >= top - JOIN_LEVEL_DB || db[u] >= across - JOIN_LEVEL_DB)
+  }
+  let outward = iota(left.size()).map(|q| left[left.size() - 1 - q])
+  (at(outward, db[right[0]]), at(right, db[left[-1]]))
+}
+
+# A curve `xs` with a join's step taken up, half by each side: `w` the frames
+# either side and their weights (`left`, `wl`, `right`, `wr`), `reads` the two
+# frames the step is read between (join_reads).
+fn eased(xs, w, reads) {
+  if w.left.empty() || w.right.empty() {
+    return xs
+  }
+  let delta = xs[reads[1]] - xs[reads[0]]
+  mut out = xs.map(|x| x)
+  for q in 0..w.left.size() {
+    out[w.left[q]] += delta / 2.0 * w.wl[q]
+  }
+  for q in 0..w.right.size() {
+    out[w.right[q]] -= delta / 2.0 * w.wr[q]
+  }
+  out
+}
+
 # A borrowed note keeps this much of its own intonation (its pitch against
 # its semitone): borrowed from many places, the notes' own leanings would
 # not agree with each other as one player's do.
@@ -396,6 +438,19 @@ class Instrument {
     # the song asked.
     self.lib_crest = iota(self.lib.notes.size()).map(|i| self.note_db(i).max() -
       self.lib.notes[i].level)
+
+    # How far each library note's first and last JOIN_NEAR frames fall under
+    # its level: a slur into a recording that began after a break, or out of
+    # one that faded, keeps that dip (join_reads leaves it), heard as a gap.
+    self.lib_head_dip = iota(self.lib.notes.size()).map(fn (i) {
+      let ds = self.note_db(i)
+      self.lib.notes[i].level - ds.slice(0, Math.min(JOIN_NEAR, ds.size())).min()
+    })
+
+    self.lib_tail_dip = iota(self.lib.notes.size()).map(fn (i) {
+      let ds = self.note_db(i)
+      self.lib.notes[i].level - ds.slice(Math.max(0, ds.size() - JOIN_NEAR), ds.size()).min()
+    })
 
     # Long notes' steady parts, for a note longer than the one it borrows: the
     # frames from 150 ms in to 100 ms before the end, cut at the vibrato's
@@ -1086,36 +1141,26 @@ class Instrument {
         )),
       }
     }
-    let ease = fn (xs, b, w) {
-      if w.left.empty() || w.right.empty() {
-        return xs
-      }
-      let delta = xs[b] - xs[b - 1]
-      mut out = xs.map(|x| x)
-      for q in 0..w.left.size() {
-        out[w.left[q]] += delta / 2.0 * w.wl[q]
-      }
-      for q in 0..w.right.size() {
-        out[w.right[q]] -= delta / 2.0 * w.wr[q]
-      }
-      out
-    }
     # At a slur the timbre is eased over 20 ms each side only: the harmonics
     # are numbered from the pitch, which moves there, so easing them by
     # number as long as the level would carry the bore's resonances along
     # with the pitch (a vowel gliding), where a saxophone's stay put and
-    # change with the fingering, within the pitch's move.
+    # change with the fingering, within the pitch's move. Every curve's step
+    # is read between the same two frames (join_reads).
     for b in joins {
       let w = way(b, 6 + Math.round(8.0 * hash01(b, total)))
       let inside = note_at[b] == note_at[b - 1]
       let tw = inside ? w : way(b, 2)
+      let reads = w.left.empty() || w.right.empty()
+        ? (b - 1, b)
+        : join_reads(db, w.left, w.right)
       if inside {
-        cents = ease(cents, b, w)
+        cents = eased(cents, w, reads)
       }
-      db = ease(db, b, w)
-      let per_h = iota(self.lh).map(|h| ease(logs.map(|l| l[h]), b, tw))
+      db = eased(db, w, reads)
+      let per_h = iota(self.lh).map(|h| eased(logs.map(|l| l[h]), tw, reads))
       logs = iota(total).map(|u| iota(self.lh).map(|h| per_h[h][u]))
-      let per_b = iota(self.nb).map(|q| ease(breath.map(|r| r[q]), b, tw))
+      let per_b = iota(self.nb).map(|q| eased(breath.map(|r| r[q]), tw, reads))
       breath = iota(total).map(|u| iota(self.nb).map(|q| per_b[q][u]))
     }
     # A long note's slow loudness and timbre: the pieces' own courses mostly
@@ -1566,4 +1611,4 @@ class Instrument {
   }
 }
 
-export {Instrument, RATE, DEFAULTS, reshaped, dimmed, bend_shake}
+export {Instrument, RATE, DEFAULTS, reshaped, dimmed, bend_shake, join_reads, eased}

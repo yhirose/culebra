@@ -1,0 +1,78 @@
+import engine from './borrow.cul'
+
+# How a join of two pieces at frame `b` is eased: `left_n` frames before it and
+# `right_n` from it, weighed to nothing at the far ends.
+fn way(left_n, right_n, b) {
+  {
+    left: iota(b - left_n, b),
+    right: iota(b, b + right_n),
+    wl: iota(left_n).map(|q| (q + 1.0) / left_n),
+    wr: iota(right_n).map(|q| (right_n - q) * 1.0 / right_n),
+  }
+}
+
+# A slur into a recorded note that starts from a gap (-50 and -30 dB, then its
+# level): the step at the join is the two pieces' 2 dB, and the gap is the
+# note's own move. Read at the two frames either side of the join, the step
+# was the gap's 30 dB, half of it put on the note after the gap (14 dB over
+# what was asked) and half taken off the note before.
+@test
+fn a_join_reads_its_step_past_a_recorded_onset_at_it() {
+  let db = [...repeat(10, -20.0), -50.0, -30.0, ...repeat(8, -18.0)]
+  let w = way(8, 10, 10)
+  let reads = engine.join_reads(db, w.left, w.right)
+  assert_eq(reads, (9, 12))
+  let out = engine.eased(db, w, reads)
+  assert_true(out.slice(12, 20).all(|x| x <= -18.0 + 1e-9), out)
+  assert_true(out.slice(0, 10).all(|x| x >= -20.0 - 1e-9 && x <= -19.0 + 1e-9), out)
+  assert_true(out[10] < -45.0, out)
+}
+
+# A release at the end of the note before (falling to -40 dB in its last two
+# frames) is its own as well: read across it, the note before was raised to
+# meet the note after.
+@test
+fn a_join_reads_its_step_before_a_recorded_release_at_it() {
+  let db = [...repeat(8, -20.0), -32.0, -40.0, ...repeat(10, -21.0)]
+  let w = way(8, 10, 10)
+  let reads = engine.join_reads(db, w.left, w.right)
+  assert_eq(reads, (7, 10))
+  let out = engine.eased(db, w, reads)
+  assert_true(out.slice(0, 8).all(|x| x <= -20.0 + 1e-9), out)
+  assert_true(out.slice(10, 20).all(|x| x >= -21.0 - 1e-9 && x <= -20.5 + 1e-9), out)
+}
+
+# A release that goes on past the join (a short note's tail, which comes from
+# the end of the recorded note) is read at the join: read where it has fallen
+# to, the note's body was lowered 10 dB and its tail raised as much.
+@test
+fn a_release_that_goes_on_past_the_join_is_read_at_it() {
+  let db = [...repeat(10, -20.0), -20.4, -20.9, -26.4, -41.1, -42.0, -43.0, -44.0, -45.0]
+  let w = way(8, 8, 10)
+  let reads = engine.join_reads(db, w.left, w.right)
+  assert_eq(reads, (9, 10))
+  let out = engine.eased(db, w, reads)
+  assert_true(out.all(|x| x <= -19.9), out)
+  assert_true(out.slice(0, 10).all(|x| x >= -20.3), out)
+}
+
+# A swell just after the join (a push into the note slurred to) is the note's
+# own, and the step is read at the join.
+@test
+fn a_swell_after_the_join_is_read_at_it() {
+  let db = [...repeat(10, -20.0), -21.0, -16.0, -18.0, -19.0, ...repeat(6, -19.0)]
+  let w = way(8, 10, 10)
+  assert_eq(engine.join_reads(db, w.left, w.right), (9, 10))
+}
+
+# Where the frames at the join stand at their pieces' level, the step is read
+# there and taken up whole: the two frames meet.
+@test
+fn a_join_of_two_steady_pieces_loses_its_step() {
+  let db = [...repeat(10, -20.0), ...repeat(10, -16.0)]
+  let w = way(8, 10, 10)
+  let reads = engine.join_reads(db, w.left, w.right)
+  assert_eq(reads, (9, 10))
+  let out = engine.eased(db, w, reads)
+  assert_true(Math.abs(out[10] - out[9]) < 0.6, out)
+}

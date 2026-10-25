@@ -268,4 +268,6 @@ languages.samples 130
 # 47 since kauai/tools/test_envelope.cul and test_sweep.cul (the spectral
 # envelope of measured recordings, and the sweep of single notes); 46 once the
 # synthesized alto and its test were removed.
-examples.suites 46
+# 47 since kauai/engine/test_join.cul (where a join's step is read, past a
+# recorded onset or release at it).
+examples.suites 47
