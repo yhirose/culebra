@@ -83,7 +83,7 @@ mix: -16.2 LUFS, peak -0.3 dBFS
 | `dip` | a note | the same, `--dip` dB (6) for 30 ms or more, coming back to within 3 dB of where it was (a note fading toward its end is no dip), where it is no dropout |
 | `bump` | a note | its level rises `--bump` dB (6) over the level around it for 20 ms or more, in the same part of it (a join that put a dip's depth on the frames beside it played a G5 12 dB over its neighbours) |
 | `edge` | a sound | its first or last sample is `--edge` (0.2) of its peak or more: it starts or stops abruptly; small from 0.05 |
-| `jump` | a sound | a step between two samples `--step` (0.1) of its peak or more, `--jump` times (8) the steps in the 10 ms around it, and three times the largest a period of its note before and after (a wave's own steep edge recurs every period, a click does not); small from 0.01. A drum's sound is not checked |
+| `jump` | a sound | a step between two samples `--step` (0.1) of its peak or more, `--jump` times (8) the steps in the 10 ms either side of it, and three times the largest a period of its note before and after (a wave's own steep edge recurs every period, a click does not); small from 0.01. A drum's sound is not checked |
 | `clipping` | a sound, the mix | three samples in a row at full scale in a sound; samples past full scale in the mix |
 | `silent` | a sound | nothing in it at all |
 | `silence` | the mix | `--silence` seconds (1) under -60 dBFS where the score has notes sounding (of the notes that start before `--to`, which are the ones the passage plays) |

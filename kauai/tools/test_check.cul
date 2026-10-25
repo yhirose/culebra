@@ -285,3 +285,40 @@ fn the_command_says_each_on_a_line_and_fails() {
     ],
   )
 }
+
+# Two A4s of a quarter second, the second from `second` s, and a stretch 9 dB
+# over the rest from 10 ms into the second for 30 ms: inside the 40 ms a
+# note's attack is given.
+fn two_notes(second) {
+  let rate = 44100
+  let n = Math.round((second + 0.25) * rate)
+  let a = Math.round((second + 0.01) * rate)
+  let b = Math.round((second + 0.04) * rate)
+  let xs = iota(n).map(fn (i) {
+    let t = i / (rate * 1.0)
+    let sounding = t < 0.25 || t >= second
+    let loud = i >= a && i < b ? 0.3 * 2.82 : 0.3
+    sounding ? loud * Math.sin(2.0 * Math.pi * 440.0 * t) : 0.0
+  })
+  let notes = [
+    {pitch: 69, at: 0.0, len: 0.25},
+    {pitch: 69, at: second, len: 0.25},
+  ]
+  {
+    s: {at: 0.0, until: second + 0.25, by: "Lead", external: "tone", args: [notes, {}]},
+    sound: Audio.Sound(xs),
+  }
+}
+
+# A note a slur joins to the one before is looked at from its start: its first
+# 40 ms are no attack but where one recording meets another. A note the
+# tongue starts after a gap keeps them as its attack.
+@test
+fn a_bump_at_a_slurs_join_is_found_and_one_in_an_attack_is_not() {
+  let bumps = fn (second) {
+    let t = two_notes(second)
+    lib.sound_findings(t.s, t.sound, lib.LIMITS).filter(|f| f.what == "bump").map(|f| f.note)
+  }
+  assert_eq(bumps(0.25), ["A4"])
+  assert_eq(bumps(0.3), [])
+}
