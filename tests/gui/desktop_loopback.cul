@@ -1,0 +1,62 @@
+# Desktop.run serves its app to the window on this machine, and to nothing
+# else: its server is on the loopback, not on every interface. The app's routes
+# (and /__quit) are for the WebView, and listen_async binds all interfaces
+# unless it is told a host.
+#
+# The window is ended from another thread once the server answers, so this is
+# the shape Desktop.run runs in. Not under tests/*.cul: it opens a real window
+# (see webview_probe.cul, which it follows). A machine with no display is a
+# legitimate outcome (Desktop.run then fails to create its window); a machine
+# with no address but the loopback cannot show the difference, and says so.
+
+# The first non-loopback IPv4 address of this machine, or nil.
+let lan_address = fn () {
+  let r = Proc.run(["sh", "-c", "hostname -I 2>/dev/null || ipconfig getifaddr en0 2>/dev/null || true"])
+  let found = r.stdout.split_whitespace().filter(|a| a.contains(".") && !a.starts_with("127."))
+  found.empty() ? nil : found[0]
+}
+
+let lan = lan_address()
+let port = 38731
+
+let probe = Isolate.spawn(fn () {
+  let get = fn (addr) {
+    try {
+      Http.get("http://{addr}:{port}/ping").body
+    } catch e {
+      "no answer"
+    }
+  }
+  # Wait for the server (the window is built after it is listening).
+  mut up = false
+  mut tries = 0
+  while !up && tries < 100 {
+    up = get("127.0.0.1") == "pong"
+    Time.sleep(0.05) if !up
+    tries += 1
+  }
+  let seen = {loopback: get("127.0.0.1"), lan: lan == nil ? nil : get(lan)}
+  # Wait for the loop, then end it: a quit that lands first is held and run()
+  # skips the loop (see webview_probe.cul).
+  tries = 0
+  while !Webview.Window.is_running() && tries < 100 {
+    Time.sleep(0.05)
+    tries += 1
+  }
+  try { Http.post("http://127.0.0.1:{port}/__quit", "") } catch e { nil }
+  seen
+})
+
+Desktop.run({
+  port: port,
+  routes: fn (srv) { srv.get("/ping", fn (req) { "pong" }) },
+})
+let seen = probe.join()
+
+assert_eq(seen.loopback, "pong")
+if lan == nil {
+  println("DESKTOP_LOOPBACK_NO_LAN_ADDRESS")
+} else {
+  assert_eq(seen.lan, "no answer")
+  println("DESKTOP_LOOPBACK_OK")
+}

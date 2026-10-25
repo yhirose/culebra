@@ -19,7 +19,6 @@
 # exists so the next one shows up here instead of by accident.
 Canvas.buttons
 Canvas.present
-Desktop.run
 IO.input
 Regex.interp
 Signal.reset

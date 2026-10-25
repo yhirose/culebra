@@ -23,8 +23,11 @@ fail=0
 # One window per process, like Desktop.run — several in one process is not a
 # supported shape. Each probe's marker is checked against its own name so a
 # script printing the other one's cannot pass.
+# desktop_loopback prints a second marker where the machine has no address but
+# the loopback (nothing to tell the two apart by): both are a pass.
 for pair in "webview_probe:WEBVIEW_PROBE_OK" \
-            "webview_pending_quit:WEBVIEW_PROBE_PENDING_QUIT_OK"; do
+            "webview_pending_quit:WEBVIEW_PROBE_PENDING_QUIT_OK" \
+            "desktop_loopback:DESKTOP_LOOPBACK"; do
   probe=${pair%%:*}
   want=${pair#*:}
   for mode in "--vm" "--jit"; do
