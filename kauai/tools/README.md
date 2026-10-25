@@ -187,16 +187,17 @@ the same file. What the instrument is made with is its `data/instrument.json`'s
 its breath is made from).
 
 ```sh
-culebra kauai/tools/make_data.cul --sounds kauai/sounds/alto_sax \
+culebra kauai/tools/make_data.cul --sounds kauai/sounds/soprano_sax \
   work/measured/*.json
 ```
 
 ```
+# the soprano's first build, from its three takes (it has since been added to)
 freesound_734969: 565 notes
 freesound_734970: 575 notes
 freesound_734971: 549 notes
 left out: 57 notes 9.0 dB or more brighter than those within a semitone, 7 measured along half their pitch
-kauai/sounds/alto_sax/data: 1629 notes (2353300 bytes), 496 attacks (5031424 bytes), breath pulsed [0.029, 0.231, 0.517, 0.615, 0.548]
+kauai/sounds/soprano_sax/data: 1629 notes (2353300 bytes), 496 attacks (5031424 bytes), breath pulsed [0.029, 0.231, 0.517, 0.615, 0.548]
 ```
 
 The recordings are read again (the fine gains, the attacks and the breath
@@ -313,12 +314,14 @@ instrument should sound like.
 
 ```sh
 culebra kauai/tools/fit_style.cul --sounds kauai/sounds/alto_sax \
-  --seconds 30 \
+  --voice alto --seconds 30 \
   --tune work/songs/tune_a.kau=work/targets/tune_a.wav \
   --tune work/songs/tune_b.kau=work/targets/tune_b.wav --log work/fit.json
 ```
 
-The package's `data/` must be made and hold `instrument.json` with a `make`
+`--voice` is the instrument's name in the songs, lower case (`external Alto`
+is `alto`; the default is `sax`), and `--rounds` (3) the rounds over the
+numbers. The package's `data/` must be made and hold `instrument.json` with a `make`
 (its `make.measure` is the pitch range). With no `play`, or with `--derive`,
 a first style is read off the recordings themselves: where a note's onset
 lies for each way in (the medians over the notes measure found an onset for),

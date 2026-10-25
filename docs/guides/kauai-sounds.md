@@ -253,7 +253,6 @@ made from its data and a style set by hand, as the engine's defaults allow, but
 the numbers cannot then be tuned, and the listening step carries all the
 judgment. Say so in the package's README.
 
-A package made this way is a folder under the `sounds` directory of the
-culebra repository, with a `main.cul` that passes its data to the shared
-engine, the `data/` folder, and a README that names every source and its
-licence. The shape of such a package is in the repository's `sounds` folder.
+A package made this way is a folder of its own, with a `main.cul` that passes
+its data to the shared engine, the `data/` folder, and a README that names
+every source and its licence.

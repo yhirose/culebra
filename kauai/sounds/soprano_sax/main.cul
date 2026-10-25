@@ -2,7 +2,8 @@
 # Each note of a phrase borrows the recorded note nearest it (in pitch,
 # length, loudness, how it is entered and left, how much vibrato it has)
 # from three takes of a soprano saxophonist sketching a tune (Kataguruma,
-# Freesound 734969-71, CC0), keeps that note's own moves of pitch and
+# Freesound 734969-71, CC0) and the University of Iowa's soprano saxophone
+# samples (credited in README.md), keeps that note's own moves of pitch and
 # loudness and its timbre frame by frame, and sounds them as harmonics with
 # the breath between them; a note longer than the one it borrows is filled
 # out with steady stretches of long notes near it, and a note that starts

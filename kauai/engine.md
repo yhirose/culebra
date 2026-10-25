@@ -57,7 +57,7 @@ The style is an object, the `play` in `data/instrument.json`. Its keys:
 
 These six are required. The rest have defaults (`DEFAULTS` in
 [`engine/borrow.cul`](engine/borrow.cul)): `scoop`, `own_kept`, `drift_kept`,
-`gain_range`, `onset_at`, `min_lead`, `wander_style`, and `choice`.
+`gain_range`, `onset_at`, `min_lead`, `wander_style`, `slow_kept` and `choice`.
 
 `choice` is an object of weights for `choose.cul`. The defaults are in
 `CHOICE` there. The ones to know:

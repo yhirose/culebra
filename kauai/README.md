@@ -23,20 +23,18 @@ it to a WAV file with `culebra play --wav out.wav song.kau`.
   `triangle`, `saw` and the rest) need nothing else. See the language
   specification's section on voices.
 - **External sounds**: an instrument made from recordings, given to a song as
-  `external NAME`. Today there is one:
+  `external NAME`. Today there are two:
 
   | Instrument | `external` | What it is |
   |---|---|---|
   | [`sounds/soprano_sax`](sounds/soprano_sax) | `Sax` | a soprano saxophone, from royalty-free recordings |
   | [`sounds/alto_sax`](sounds/alto_sax) | `Alto` | an alto saxophone, from a jazz player's improvisations (CC0 and CC BY) |
 
-  Play a song with it: `culebra play --sounds kauai/sounds/soprano_sax song.kau`.
-  The two alto packages share the `Alto` name, so the same song plays either
-  one by naming its folder with `--sounds`.
+  Play a song with one: `culebra play --sounds kauai/sounds/soprano_sax song.kau`.
 - [`docs/guides/kauai-sounds.md`](../docs/guides/kauai-sounds.md): the sounds a
   song plays, shaping them, supplying an `external` instrument, a model, and a
   recorded instrument made with the harness.
-  Its README lists the parameters (`breath`, `wander`, `vibrato`).
+  [`engine.md`](engine.md) lists the voice parameters (`breath`, `wander`, `vibrato`).
 
 ## I want to make a new instrument
 
@@ -65,4 +63,4 @@ result by ear. Start with the route:
 | `tools/` | the tools for measuring, checking and comparing |
 | `sounds/` | the finished external instruments, one folder each |
 | `skills/make-instrument/` | the skill for making an instrument with Claude |
-| `harness/` | the agents' roles and case files, for building without the answer |
+| `harness/` | the agents' roles and the `main.cul` template, for building with one job to an agent |

@@ -30,8 +30,12 @@ What is being made is written down as a case, `case.json`, in the instrument's
 | `sources` | the recordings (file, title, author, licence, link) |
 | `tune`, `eval` | the songs the instrument is adjusted on, and the songs it is judged by and never adjusted on |
 
-There are no targets to match: the composer writes the `tune` and `eval`
-songs, and the person's ear is the target.
+A case may have targets: renderings of the same songs by whatever the
+instrument should sound like, one for each `tune` and `eval` song
+(`{song, target}`, `target` a WAV). `fit_style.cul` and `compare.cul` need
+them. A request for an alto saxophone has none: the composer writes the
+`tune` and `eval` songs, and the person's ear is the target. The flow below
+says what each step does in either case.
 
 ## The flow
 
@@ -48,13 +52,21 @@ songs, and the person's ear is the target.
 3. **measurer** measures the recordings (`measure.cul`), choosing the range.
 4. **builder** makes `data/` (`make_data.cul`), writes `data/instrument.json`
    (the `make` it is made with and a first `play`), adds `main.cul` from the
-   template, and finds `play` by `fit_style.cul` against the `tune` targets.
-5. **judge** plays the `tune` songs, reads `compare.cul`'s numbers and its
-   worst seconds, and says what to change; the builder changes one thing.
-   Steps 4 and 5 repeat until the distance stops falling.
+   template, and sets `play`. With targets, `fit_style.cul` finds it against
+   the `tune` targets. Without, the builder writes `play` by hand from the
+   recordings and from the style of an instrument already made (the alto's was
+   set from the soprano's relations), and the ear tunes it from there.
+5. **judge** plays the `tune` songs and says what to change; the builder
+   changes one thing. With targets it reads `compare.cul`'s numbers and its
+   worst seconds, and steps 4 and 5 repeat until the distance stops falling.
+   Without, it reads `check.cul`'s findings and `sweep.cul`, and has the
+   person hear two renderings of a passage (`listen.cul`); the round ends
+   when the person keeps the version they hear.
 6. **skeptic** plays the `eval` songs (`culebra play --wav`), which nothing was
    adjusted on, looks for ways the result is not what it seems (a number met
-   by a trick, a song it only just passes), and reports pass or fail.
+   by a trick, a song it only just passes), and reports pass or fail. Without
+   targets, nothing is a number to pass: it runs `check.cul` and `sweep.cul`
+   on them and asks the person to hear them.
 7. **the person** listens to what the numbers cannot judge (`listen.cul`) and
    decides.
 
@@ -74,7 +86,7 @@ journal, so that the table moves toward what is cheapest.
 ## Context
 
 Nothing is carried by an agent's memory. A run keeps a journal
-(`work/journal.md` in the clean room): what was decided and why, the
+(`work/journal.md` in the instrument's folder): what was decided and why, the
 distances after each round, what was tried and put aside, what is next. An
 agent is given one job, the journal, and the files it needs; it ends by
 writing what it tried, what it found and what to do next, and a new agent

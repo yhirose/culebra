@@ -56,8 +56,8 @@ recordings in that form.
 
 ## Measured
 
-2520 notes from C3 to A5 (every semitone of the alto's range), 146 of them a
-second or longer, and loud, middle and quiet notes in each register
+2520 notes from C3 to A#5 (the lowest and the highest few semitones have a
+handful each), 145 of them a second or longer, and loud, middle and quiet notes in each register
 (`kauai/tools/coverage.cul`). The six Autumn Leaves takes share one loudness
 reference (`make.reference_groups`), so their dynamics stay as played.
 

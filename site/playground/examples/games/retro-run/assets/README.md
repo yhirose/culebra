@@ -11,7 +11,8 @@ is taken from OutRun and its music may not be redistributed, so none of it is
 vendored; these are original drawings in the same spirit — a coast road, a red
 convertible with two riders, billboards, palms. The saxophones' phrases are
 the one thing made from recordings: `kauai/sounds/soprano_sax` plays the first
-lap's from notes of public-domain (CC0) takes, its `README.md` says whose, and
+lap's from notes of public-domain (CC0) takes and the University of Iowa's
+soprano saxophone samples, its `README.md` says whose, and
 `kauai/sounds/alto_sax` the second lap's from notes measured from seven solo
 alto saxophone improvisations by DieRechnug on Freesound: "sax solo dry"
 (https://freesound.org/s/607303/, CC0 1.0) and "autumn leaves" 1 to 6

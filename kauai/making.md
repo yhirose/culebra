@@ -25,11 +25,15 @@ not a copy of the playing code.
    shares one loudness reference (`make.reference_groups`), or their dynamics
    come out equal.
 5. **Set the style.** `data/instrument.json` holds the style (`play`) and what
-   `make_data` is made with (`make`). `fit_style` finds the numbers the
-   recordings cannot say, from target renderings of tune songs.
-6. **Judge.** `compare` gives the distance from the targets. The numbers do not always
-   match the ear: a listener's pick is the last word, and the ear found the
-   click at a join that the numbers had not.
+   `make_data` is made with (`make`). With target renderings of tune songs,
+   `fit_style` finds the numbers the recordings cannot say. Without targets
+   (an alto saxophone nobody played the songs on), it has nothing to fit to:
+   write `play` by hand from an instrument already made, and say in the
+   README that it is not fitted.
+6. **Judge.** With targets, `compare` gives the distance from them. Without,
+   `check` and `sweep` find what measuring can, and the listening step carries
+   the rest. The numbers do not always match the ear: a listener's pick is the
+   last word, and the ear found the click at a join that the numbers had not.
 7. **Listen.** `listen` renders two versions of a passage, hidden as 1 and 2,
    at the same loudness. Keep the one the person picks.
 8. **Finish the package.** `main.cul` (from `harness/template/main.cul`),

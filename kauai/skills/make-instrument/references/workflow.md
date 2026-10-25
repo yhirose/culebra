@@ -36,8 +36,7 @@ Decide what the recordings must cover, write it down, and only then search.
 Searching first finds whatever is free; designing first finds what the
 instrument needs, and a search that cannot meet the design says so early.
 
-The design (`kauai/sounds/<name>/work/design.md`, the same numbers as the
-case's `needs` when there is a case) states:
+The design (`kauai/sounds/<name>/work/design.md`) states:
 
 - **Range**: the lowest and highest notes, in Hz (`make.measure`).
 - **Notes per semitone**: at least 5 across the range (`coverage.cul`).
