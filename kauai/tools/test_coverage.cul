@@ -113,3 +113,71 @@ fn the_notes_asked_are_read_from_what_kauai_hands_the_instruments() {
   assert_eq(lib.asked_of(song, "ep"), [{semi: 60, frames: 25}])
 }
 
+# A phrase note that does not say how long it is lasts until the next starts
+# (the last until the sound ends), as check.cul reads it.
+@test
+fn a_note_without_a_length_lasts_until_the_next() {
+  let song = {external_sounds: || [
+    {at: 1.0, until: 3.0, external: "x", args: [[{pitch: 72, at: 0.0}, {pitch: 74, at: 0.5}, {pitch: 76, at: 1.0}], {}]},
+  ]}
+  assert_eq(lib.asked_of(song), [{semi: 72, frames: 50}, {semi: 74, frames: 50}, {semi: 76, frames: 100}])
+}
+
+fn scratch() {
+  let dir = FS.join(FS.temp_dir(), "kauai-coverage-test-{UUID.v4()}")
+  FS.mkdir(dir)
+  FS.write(FS.join(dir, "tone.cul"), "let voices = \{tone: |pitch, params| Audio.Sound([0.0, 0.1])}\nexport \{voices}\n")
+  FS.write(FS.join(dir, "line.kau"), "band Solo \{
+  voice Lead  external Tone  plays melody  vol 60
+}
+song Line \{
+  tempo 240
+  band Solo
+  melody in C5..B5
+  Verse
+}
+section Verse \{
+  C  c4 d e f
+}
+")
+  FS.write(FS.join(dir, "notes.json"), JSON.stringify({notes: iota(8).map(|i| {semi: 72, frames: 20, level: -20.0, from: "tongue", to: "rest"})}))
+  dir
+}
+
+let TOOL = FS.join(FS.dirname(FS.abspath(Sys.script)), "coverage.cul")
+
+# Nothing asked is no pass: an instrument key the song does not play (a typo)
+# covers nothing, and a script stopping on the status must not go on.
+@test
+fn a_song_that_asks_nothing_is_not_covered() {
+  let dir = scratch()
+  defer {
+    FS.remove(dir, recursive: true)
+  }
+  let run = |external| Proc.run(
+    [Sys.executable, "--vm", TOOL, "--sounds", "tone.cul", "--song", "line.kau", "--external", external, "notes.json"],
+    cwd: dir,
+  )
+  let typo = run("nope")
+  assert_eq(typo.code, 1)
+  assert_true(typo.stdout.contains("nothing asked"), typo.stdout)
+  let real = run("tone")
+  assert_true(real.stdout.contains("pitches asked"), real.stdout)
+  assert_true(!real.stdout.contains("nothing asked"), real.stdout)
+}
+
+# A program that fails is not a verdict: an unreadable measure is "could not"
+# (2), where "short" is 1.
+@test
+fn a_song_that_cannot_be_read_is_could_not() {
+  let dir = scratch()
+  defer {
+    FS.remove(dir, recursive: true)
+  }
+  let r = Proc.run(
+    [Sys.executable, "--vm", TOOL, "--sounds", "tone.cul", "--song", "line.kau", "missing.json"],
+    cwd: dir,
+  )
+  assert_eq(r.code, 2)
+  assert_true(r.stderr.contains("could not be covered"), r.stderr)
+}

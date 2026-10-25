@@ -453,7 +453,9 @@ short:
 
 A pitch with fewer than `--per-semitone` notes is borrowed from a semitone
 away, and one asked held with none held is filled from another pitch's long
-notes. The key of a tune decides most of it: that tune, in A major, asked the
+notes. A song that asks nothing (an `--external` that names no voice of its
+own, a song of drums) is not covered: it says so and exits 1, and exits 2
+when it could not read the song or the measures. The key of a tune decides most of it: that tune, in A major, asked the
 alto for E5 73 times, where its recordings (improvisations over Autumn Leaves,
 in G minor) held 9.
 
@@ -492,8 +494,11 @@ way.
 every `--step` semitones, 3), the lengths (0.1, 0.2, 0.3, 0.6 s), the levels
 (0.7, 1.0, 1.35) and the next phrase (none, or at once), and measures each
 sound: it starts from nothing (its first four samples under 3% of its peak), it
-does not clip, and a note of 0.15 s or more is within 40 cents of the written
-pitch. It prints what it finds, the worst first, and exits 1 when anything is.
+does not clip, is not silent, and a note of 0.15 s or more is within 40 cents
+of the written pitch (searched an octave either side of it). It prints what it
+finds by kind, the worst four of each, and exits 1 when anything is, and 2 when
+it could not sweep (an unknown `--voice`, a module that fails). `--voice` names
+the voice to sweep (the module's first by name when left out).
 
 ```sh
 culebra kauai/tools/sweep.cul --sounds kauai/sounds/alto_sax \
@@ -501,7 +506,7 @@ culebra kauai/tools/sweep.cul --sounds kauai/sounds/alto_sax \
 ```
 
 ```
-alto: 144 notes swept, MIDI 55 to 80 every 5
+alto: 216 notes swept, MIDI 55 to 80 every 3
 0 found
 ```
 

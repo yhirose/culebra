@@ -78,6 +78,10 @@ let run = try {
 }
 let r = Proc.run(run.cmd)
 FS.remove(run.entry)
-IO.print(r.stdout)
-IO.eprint(r.stderr)
-Sys.exit(r.code)
+if r.code != 0 {
+  IO.eprint(r.stderr)
+  fail("{args.sounds} could not be swept")
+}
+let got = JSON.parse(r.stdout.trim().split("\n")[-1].to_string())
+println(got.text)
+Sys.exit(got.bad ? 1 : 0)

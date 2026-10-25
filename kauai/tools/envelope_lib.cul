@@ -38,8 +38,11 @@ fn profile(measures, low = 150.0, high = 900.0, min_frames = 30) {
     let idb = m.cols.index_of("db")
     let ih = m.cols.index_of("h1")
     let ib = m.cols.index_of("b1")
-    let nh = m.cols.filter(|name| name.starts_with("h")).size()
-    let nb = m.cols.filter(|name| name.starts_with("b")).size()
+    let numbered = |name, letter| name.size() > 1 &&
+      name.starts_with(letter) &&
+      name.slice(1, name.size()).is_digit()
+    let nh = m.cols.filter(|name| numbered(name, "h")).size()
+    let nb = m.cols.filter(|name| numbered(name, "b")).size()
     while breath.size() < nb {
       breath.push([])
     }
@@ -58,7 +61,7 @@ fn profile(measures, low = 150.0, high = 900.0, min_frames = 30) {
       frames += 1
       for k in range(nh) {
         let f = (k + 1) * hz
-        continue if f >= EDGES[-1] || amps[k] <= 0.0
+        continue if f < EDGES[0] || f >= EDGES[-1] || amps[k] <= 0.0
         let b = Math.floor(6.0 * Math.log(f / 100.0) / Math.log(2.0))
         sums[b] = sums[b] + 20.0 * log10(amps[k] / top)
         counts[b] = counts[b] + 1

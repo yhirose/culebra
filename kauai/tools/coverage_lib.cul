@@ -108,9 +108,13 @@ fn asked_of(song, only = nil) {
       let first = s.args[0]
       cond {
         type_of(first) == "Long" => [{semi: first, frames: Math.round((s.until - s.at) * 100.0)}],
-        type_of(first) == "Array" => first.map(|n| {
-          semi: n.pitch,
-          frames: Math.round(n.get("len", s.until - s.at - n.at) * 100.0),
+        type_of(first) == "Array" => first.map(fn (n) {
+          let later = first.filter(|m| m.at > n.at).map(|m| m.at)
+          let ends = later.empty() ? s.until - s.at : later.min()
+          {
+            semi: n.pitch,
+            frames: Math.round((n.get("len", nil) ?? ends - n.at) * 100.0),
+          }
         }),
         _ => [],
       }
@@ -118,27 +122,32 @@ fn asked_of(song, only = nil) {
 }
 
 # The program's entry for a song (see instrument_lib.program): `sounds` the
-# module, `arg` the call as JSON {song, external, measured, needs}. Prints a
-# line a pitch and what is short, and exits 1 when anything is.
+# module, `arg` the call as JSON {song, external, measured, needs}. Prints, as
+# JSON on one line, {text: a line a pitch and what is short, bad: whether
+# anything is, or nothing was asked}; the command turns that into its exit
+# status, and anything else the program does (an error) into "could not".
 fn run(sounds, arg) {
   let c = JSON.parse(arg)
   let song = Audio.Kauai.load(c.song, voices: sounds.voices ?? {}, drums: sounds.drums ?? {})
   let notes = c.measured.flat_map(|path| JSON.parse(FS.read(path)).notes)
   let got = song_coverage(notes, asked_of(song, c.external), c.needs)
   let names = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
-  println("{FS.basename(c.song)}: {got.pitches.size()} pitches asked; recorded {notes.size()} notes")
+  let lines = ["{FS.basename(c.song)}: {got.pitches.size()} pitches asked; recorded {notes.size()} notes"]
   for p in got.pitches {
-    println("  {names[p.semi % 12]}{p.semi / 12 - 1} ({p.semi}): asked {p.asked} ({p.asked_held} held), recorded {p.has} ({p.has_held} held)")
+    lines.push("  {names[p.semi % 12]}{p.semi / 12 - 1} ({p.semi}): asked {p.asked} ({p.asked_held} held), recorded {p.has} ({p.has_held} held)")
   }
-  if got.shortfalls.empty() {
-    println("enough: every pitch asked is recorded, and every one asked held has held notes")
-    Sys.exit(0)
+  let nothing = got.pitches.empty()
+  if nothing {
+    lines.push("nothing asked: the song plays no note on {c.external == nil ? "an external voice" : "`{c.external}`"}")
+  } else if got.shortfalls.empty() {
+    lines.push("enough: every pitch asked is recorded, and every one asked held has held notes")
+  } else {
+    lines.push("short:")
+    for line in got.shortfalls {
+      lines.push("  {line}")
+    }
   }
-  println("short:")
-  for line in got.shortfalls {
-    println("  {line}")
-  }
-  Sys.exit(1)
+  println(JSON.stringify({text: lines.join("\n"), bad: nothing || !got.shortfalls.empty()}))
 }
 
 export {NEEDS, LONG, HELD, dynamic_of, coverage, song_coverage, asked_of, run}

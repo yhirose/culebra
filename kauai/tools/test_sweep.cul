@@ -42,3 +42,30 @@ fn a_clean_voice_finds_nothing_and_a_note_out_of_tune_is_found() {
   # A short note's pitch is not judged.
   assert_true(r.findings.all(|b| b.len >= 0.15))
 }
+
+@test
+fn a_silent_sound_is_found() {
+  let mute = {voices: {t: {phrase: |notes, params| Audio.Sound(repeat(4410, 0.0), rate: RATE)}}}
+  let r = lib.sweep(mute, "t", 60, 60, step: 3)
+  assert_true(!r.findings.empty() && r.findings.all(|b| b.what == "silent"), r.findings.slice(0, 2))
+}
+
+# The pitch is searched about the note's own, so a clean tone far below or
+# above 100 to 1400 Hz is in tune.
+@test
+fn a_clean_tone_outside_100_to_1400_hz_is_in_tune() {
+  let clean = {voices: {t: {phrase: |notes, params| Audio.Sound(tone(notes[0].pitch, notes[0].len, false, 0.5), rate: RATE)}}}
+  assert_eq(lib.sweep(clean, "t", 36, 48, step: 6).findings, [])
+  assert_eq(lib.sweep(clean, "t", 88, 96, step: 4).findings, [])
+}
+
+# Findings are by kind, whatever their values: a voice 50 cents sharp that
+# also clicks at one pitch lists its click before its many pitch findings.
+@test
+fn findings_are_listed_by_kind_not_by_value() {
+  let both = {voices: {t: {phrase: |notes, params| Audio.Sound(tone(notes[0].pitch + 0.5, notes[0].len, notes[0].pitch == 60, 0.5), rate: RATE)}}}
+  let kinds = lib.sweep(both, "t", 57, 63, step: 3).findings.map(|b| b.what)
+  assert_true(kinds.contains("start") && kinds.contains("pitch"), kinds)
+  assert_eq(kinds.index_of("pitch") > kinds.index_of("start"), true)
+  assert_eq(kinds.slice(0, kinds.index_of("pitch")).all(|k| k == "start"), true)
+}

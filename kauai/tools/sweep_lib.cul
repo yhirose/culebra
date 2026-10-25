@@ -33,20 +33,25 @@ fn measures(sound, pitch, len, rate) {
   let peak = s.map(|v| Math.abs(v)).max()
   let start = peak > 0.0 ? s.slice(0, 4).map(|v| Math.abs(v)).max() / peak : 0.0
   mut cents = nil
-  if len >= 0.15 {
+  if len >= 0.15 && peak > 0.0 {
+    let want = 440.0 * 2.0 ** ((pitch - 69) / 12.0)
     let body = s.slice(Math.round(0.05 * r), Math.round((len - 0.02) * r))
-    let hz = Audio.pitch(body, 100.0, 1400.0, r).hz.filter(|h| h != nil).sorted()
+    let found = Audio.pitch(body, Math.max(30.0, want / 2.0), Math.min(r / 3.0, want * 2.0), r)
+    let hz = found.hz.filter(|h| h != nil).sorted()
     if !hz.empty() {
-      let want = 440.0 * 2.0 ** ((pitch - 69) / 12.0)
       cents = 1200.0 * Math.log(hz[hz.size() / 2] / want) / Math.log(2.0)
     }
   }
   {start: start, peak: peak, cents: cents}
 }
 
+# The kinds of finding, in the order they are listed.
+let KINDS = ["silent", "start", "clip", "pitch"]
+
 # What a measure breaks, as a list of {what, value}.
 fn broken(m, limits) {
   let out = []
+  out.push({what: "silent", value: 0.0}) if m.peak == 0.0
   out.push({what: "start", value: m.start}) if m.start > limits.start
   out.push({what: "clip", value: m.peak}) if m.peak >= limits.peak
   out.push({what: "pitch", value: m.cents}) if m.cents != nil && Math.abs(m.cents) > limits.cents
@@ -55,7 +60,7 @@ fn broken(m, limits) {
 
 # The sweep of voice `name` of `sounds` (a module's `voices`), pitches `low` to
 # `high` every `step` semitones. Answers {count, findings: [{what, value,
-# pitch, len, level, next}]}, the worst of each kind first.
+# pitch, len, level, next}]}, by kind (KINDS' order), the worst of each first.
 fn sweep(sounds, name, low, high, step = 3, limits = LIMITS, rate = 44100) {
   let f = sounds.voices[name]
   let phrase = type_of(f) == "Function" ? nil : f.phrase
@@ -84,22 +89,28 @@ fn sweep(sounds, name, low, high, step = 3, limits = LIMITS, rate = 44100) {
       }
     }
   }
-  {count: count, findings: findings.sorted_by(|b| -Math.abs(b.value))}
+  let worst = findings.sorted_by(|b| -Math.abs(b.value))
+  {count: count, findings: KINDS.flat_map(|k| worst.filter(|b| b.what == k))}
 }
 
 # The program's entry (see instrument_lib.program): `sounds` the module,
-# `arg` the call as JSON {voice, low, high, step}. Prints and exits 1 where
-# anything was found.
+# `arg` the call as JSON {voice, low, high, step}. Prints, as JSON on one
+# line, {text: the findings (the worst few of each kind), bad: whether there
+# are any}; the command turns that into its exit status.
 fn run(sounds, arg) {
   let a = JSON.parse(arg)
   let name = a.voice ?? sounds.voices.keys().sorted()[0]
   let r = sweep(sounds, name, a.low, a.high, a.step)
-  println("{name}: {r.count} notes swept, MIDI {a.low} to {a.high} every {a.step}")
-  for b in r.findings.slice(0, 12) {
-    println("  {b.what} {Math.round(100.0 * b.value) / 100.0}: pitch {b.pitch}, len {b.len}, level {b.level}, next {b.next}")
+  let lines = ["{name}: {r.count} notes swept, MIDI {a.low} to {a.high} every {a.step}"]
+  for kind in KINDS {
+    let of_kind = r.findings.filter(|b| b.what == kind)
+    for b in of_kind.slice(0, 4) {
+      lines.push("  {b.what} {Math.round(100.0 * b.value) / 100.0}: pitch {b.pitch}, len {b.len}, level {b.level}, next {b.next}")
+    }
+    lines.push("  ... {of_kind.size() - 4} more {kind}") if of_kind.size() > 4
   }
-  println("{r.findings.size()} found")
-  Sys.exit(r.findings.empty() ? 0 : 1)
+  lines.push("{r.findings.size()} found")
+  println(JSON.stringify({text: lines.join("\n"), bad: !r.findings.empty()}))
 }
 
 export {LIMITS, measures, broken, sweep, run}
