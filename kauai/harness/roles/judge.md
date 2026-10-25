@@ -19,7 +19,7 @@ not (a click, a thump), says so and asks the person to listen with
 **Gives**: a paragraph in `work/journal.md` and a verdict: *change X* or
 *done*.
 
-**Tools**: `compare.cul`, `evaluate.cul --set tune`, `check.cul`,
+**Tools**: `compare.cul`, `check.cul`,
 `listen.cul`.
 
 **Stops** after giving a verdict.

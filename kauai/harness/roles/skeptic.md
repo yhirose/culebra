@@ -2,10 +2,11 @@
 
 Tries to show the result is not what it seems, then says pass or fail.
 
-**Gets**: the package, the case with its `eval` songs and targets (which
+**Gets**: the package, the case with its `eval` songs (which
 nothing was adjusted on), `work/journal.md`.
 
-**Does**: runs `kauai/tools/evaluate.cul --set eval` and reads every number.
+**Does**: plays the `eval` songs (`culebra play --wav`) and reads `check.cul`'s findings
+and, where a target rendering exists, `compare.cul`'s numbers.
 Then looks for what a number can hide:
 - a `tune` number that is met and an `eval` number that is not (it was fitted
   to the songs, not to the sound);
@@ -32,6 +33,6 @@ fault; say so, and leave it to the person's ear (`listen.cul`).
 
 **Gives**: *pass*, or *fail* with the first thing to change, in the journal.
 
-**Tools**: `evaluate.cul`, `compare.cul`, `check.cul`.
+**Tools**: `compare.cul`, `check.cul`.
 
 **Stops** after the verdict. It does not change the package.

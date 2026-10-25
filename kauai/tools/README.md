@@ -338,23 +338,6 @@ ask for (above the recordings' steady notes, or below the lowest), where
 whatever is decided from the first value stands as a guess.
 A 20 s excerpt of a song, one round, takes about a minute.
 
-## evaluate.cul: does an instrument sound like its targets
-
-`evaluate.cul` plays each song of a case with an instrument
-(`culebra play --wav`, so any package, however it makes its sounds) and sets
-it against the target rendering with `compare.cul`'s distance. The case is
-`kauai/harness/cases/<name>/case.json` (its `range`, and the songs of `eval`
-or, with `--set tune`, `tune`).
-
-```sh
-culebra kauai/tools/evaluate.cul --sounds kauai/sounds/alto_sax \
-  --case kauai/harness/cases/alto_sax/case.json --targets work/targets
-```
-
-It prints a line a song and what is over its limit, keeps the renderings and
-the numbers (`evaluate.json`) in `--out`, and exits 1 when a song is over a
-limit. Two songs take about 25 s.
-
 ## make_sounds.cul: an instrument's sounds made beforehand
 
 `make_sounds.cul` asks an instrument module for every sound Kauai songs need

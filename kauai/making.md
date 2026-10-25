@@ -27,8 +27,7 @@ not a copy of the playing code.
 5. **Set the style.** `data/instrument.json` holds the style (`play`) and what
    `make_data` is made with (`make`). `fit_style` finds the numbers the
    recordings cannot say, from target renderings of tune songs.
-6. **Judge.** `compare` gives the distance from the targets; `evaluate` runs
-   the eval songs, which were not used to tune. The numbers do not always
+6. **Judge.** `compare` gives the distance from the targets. The numbers do not always
    match the ear: a listener's pick is the last word, and the ear found the
    click at a join that the numbers had not.
 7. **Listen.** `listen` renders two versions of a passage, hidden as 1 and 2,

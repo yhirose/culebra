@@ -1,7 +1,6 @@
 # Composer
 
-Writes the songs an instrument is tuned and judged by, where the case has
-none. (A case with targets brings its songs; this role is then not used.)
+Writes the songs an instrument is tuned and judged by.
 
 **Gets**: the case (`aim`, `range`), `docs/kauai/language.md`.
 
