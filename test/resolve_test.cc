@@ -822,11 +822,13 @@ void test_lint_shadow() {
 // `x = v` after a `let x` of that variable.
 // A state class a lowering synthesized holds, in its methods, a body written
 // in the function around the class: what it declares there was held to the
-// shadow rule as written, and is no declaration of the method's own.
+// shadow rule as written, and is no declaration of the method's own. Such a
+// class is the one the lowering marks `@__lowered_storage`
+// (is_lowered_state_class), whatever it is called.
 void test_lint_lowered_class() {
-  auto shadows_in = [](const char* cls) {
+  auto shadows_in = [](const char* head) {
     std::string src = std::format(
-        "fn g(z) {{\n  class {} {{\n    step() {{ let z = 9 }}\n  }}\n}}\n", cls);
+        "fn g(z) {{\n  {} {{\n    step() {{ let z = 9 }}\n  }}\n}}\n", head);
     std::vector<culebra::ParseFailure> failures;
     auto ast = culebra::parse("<gen#0>", src, failures);
     if (!ast) return size_t{99};
@@ -835,10 +837,12 @@ void test_lint_lowered_class() {
     culebra::lint::_detail::shadows(res, diags);
     return diags.size();
   };
-  check(shadows_in("K") == 1,
+  check(shadows_in("class K") == 1,
         "ShadowError [a method over the enclosing function's parameter]");
-  check(shadows_in("_EffBody_g_1_1") == 0,
+  check(shadows_in("@__lowered_storage\n  class _EffBody_g_1_1") == 0,
         "ShadowError [a lowered state class's method holds the body's own]");
+  check(shadows_in("class _EffBody_g_1_1") == 1,
+        "ShadowError [a class named as the lowering's, without its mark, is not one]");
 }
 
 void test_lint_let() {
