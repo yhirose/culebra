@@ -96,7 +96,13 @@ be. It is what a later session, or a later instrument, learns from.
    on its own. Render them first with an instrument that already exists (a
    built-in voice, or the soprano saxophone) and have the person hear them:
    a weak song makes every later judgment about the instrument unreliable.
-   Songs the person brings are welcome too.
+   Songs the person brings are welcome too. Write them in the keys the
+   recordings hold: improvisations in G minor have many Bb, C, D, F and G and
+   few E, B or F#, and a tune in A major asked such an alto for E5 73 times
+   where 9 were recorded, so each was borrowed from a semitone away and
+   sounded wrong for reasons no change to the instrument could reach.
+   `coverage.cul --song` says, pitch by pitch, what a song asks against what
+   is recorded.
 3. **Loop: measure, make, check, listen.**
    - Measure the sources (pitch, loudness, harmonics, breath, attacks) and
      make the instrument from what was measured.
@@ -128,7 +134,9 @@ person says. Read it before the first comparison.
 | Tool | For |
 |---|---|
 | `culebra play --sounds <pkg> --wav F --from A --to B song.kau` | render a song, or a passage of it, to a WAV |
-| `culebra kauai/tools/check.cul --sounds <pkg> song.kau` | what measuring finds: pitch off the score, dropouts, dips, abrupt edges, clicks, clipping, silence |
+| `culebra kauai/tools/check.cul --sounds <pkg> song.kau` | what measuring finds: pitch off the score, dropouts, dips, bumps, abrupt edges, clicks, clipping, silence |
+| `culebra kauai/tools/coverage.cul --sounds <pkg> --song song.kau <pkg>/data/notes.json` | what a song asks of the recordings, pitch by pitch, and where they are short |
+| `culebra kauai/tools/sweep.cul --sounds <pkg> --low N --high N` | single notes over the range, the lengths and the levels, each measured |
 | `culebra kauai/tools/listen.cul start/pick/next` | two versions of a passage heard blind, round after round |
 | `culebra kauai/tools/make_sounds.cul` | every sound songs need, made beforehand, for a program or the browser |
 | `culebra kauai/tools/measure.cul --low HZ --high HZ --out work/measured work/sources/*` | each recording's pitch and loudness every 10 ms, and its notes with how each starts and ends |

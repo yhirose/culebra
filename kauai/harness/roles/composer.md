@@ -21,11 +21,13 @@ anything. Splits them into `tune` songs (adjusted on) and `eval` songs
 (never adjusted on): at least one of each character in each.
 
 **Writes what the instrument can play**, which a song can get wrong before
-anything is heard: the melody's range inside the range of the instrument's
-data (`coverage.cul` prints it; a tune whose top note was a whole tone above
-the alto's highest recorded note played it from a note a tone down, shifted,
-and sounded out of reach), and its main register where the instrument sings
-(the alto's A4 to G#5). A bar that does not add up, a chord the table lacks,
+anything is heard: in a key whose pitches the recordings hold, many of each
+and some held (`coverage.cul --song` lists them, pitch by pitch, and what is
+short). The alto's first tunes, in A major and E minor, asked for E5 73 times
+where its recordings (in G minor and F minor) held 9 and none held; a tune
+whose top note was a whole tone above its highest recorded note played it
+from a note a tone down, shifted, and sounded out of reach. A last chorus
+moved up a tone must keep to the new key's covered pitches as well. A bar that does not add up, a chord the table lacks,
 a drum that hits with another on the one noise channel (kick, snare, hats
 and crash on different sixteenths of a bar, in a `first` and a `last` too),
 and a `#` comment (Kauai's are `//`) are all found by `culebra play --check`
@@ -38,7 +40,8 @@ the section (a crash on its first bar, a fill on its last), and an ending.
 **Gives**: the `.kau` files under the case's `songs/` and `tune` / `eval` in
 `case.json`.
 
-**Stops** when every song reads (`culebra play --check`), the `tune` songs
-together ask for every semitone from the lowest to the highest the aim needs
-(a list of the pitches asked for, checked against the range), and the person
-has heard them to be music, once.
+**Stops** when every song reads (`culebra play --check`), `coverage.cul
+--song` finds nothing short in it, the `tune` songs together ask for every
+semitone from the lowest to the highest the aim needs (a list of the pitches
+asked for, checked against the range), and the person has heard them to be
+music, once.

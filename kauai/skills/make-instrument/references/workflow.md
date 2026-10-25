@@ -138,6 +138,17 @@ The songs are how every later judgment is made, so make them first:
   every way of starting and joining notes the songs use. It finds the
   weak spots quickly.
 
+Write them in the keys the recordings hold. Recordings of a few takes hold
+their own keys' pitches many times and the others a few: the alto's
+improvisations, in G minor and F minor, hold 144 Bb4s and 9 E5s, and no E5,
+F#5 or B4 of 0.4 s or more. Its first tunes, in A major and E minor, asked
+for E5 73 times, 33 of them held, and each was borrowed from a semitone away
+or filled from another pitch's long notes: an artificial tone that no change
+to the engine could reach. Run `coverage.cul --song` on each song before
+rendering it, and move the tune (or the passage, with `in`) until nothing is
+short; a last chorus a tone up must keep to its new key's covered pitches
+too.
+
 Put `mark NAME` before each passage worth hearing alone (a long tone, a
 fast run, the top of the range), so `listen.cul --from NAME` can cut it
 out. Render the songs with an instrument that exists already and have the

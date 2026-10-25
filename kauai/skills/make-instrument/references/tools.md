@@ -30,9 +30,14 @@ culebra kauai/tools/check.cul --sounds kauai/sounds/alto_sax --from Theme song.k
 ```
 
 Each external sound is checked against its notes: pitch off the score,
-dropouts, dips that come back up, abrupt starts and ends, clicks that are
-not the wave's own steep edges, clipping. The mix is checked for clipping
-and silence where notes sound. A sound heard in several places is one line.
+dropouts, dips that come back up, bumps over the level around them, abrupt
+starts and ends, clicks that are not the wave's own steep edges, clipping. A
+note is looked at past its attack and before its release, and from its start
+or to its end where a slur joins it to its neighbour (a join is where one
+recording meets another, and where the engine once put half a dip's depth on
+the next note: a G5 12 dB over its neighbours, heard as a sudden loud note
+in a fast run). The mix is checked for clipping and silence where notes
+sound. A sound heard in several places is one line.
 Small edges and steps (a few percent of a sound's peak) are counted on one
 line; `--all` lists them. The exit status is 1 when something that is not
 small is found, so a script can stop on it. `--json FILE` gives every
