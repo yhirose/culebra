@@ -14,14 +14,16 @@ assert_eq(Audio.stft(noise).re.size(), Audio.spectrum(noise).size())
 
 // The frames of a sound give it back: (frames - 1) * hop + size samples, the
 // sound's own where a window reaches (all but the first, where the window is
-// 0), 0 past its end.
+// 0), 0 past its end. To within the transforms' rounding, which depends on
+// the platform's sines and cosines: 7e-13 on Linux, over 1e-12 on Windows,
+// where a wrong window or scale is off by a tenth.
 for hop in [64, 128, 256] {
   let f = Audio.stft(noise, size: 512, hop: hop)
   let back = Audio.istft(f.re, f.im, size: 512, hop: hop)
   assert_eq(back.size(), (f.re.size() - 1) * hop + 512)
   assert_eq(back[0], 0.0)
-  assert_true(iota(1, 3000).all(|i| Math.abs(back[i] - noise[i]) < 1e-12))
-  assert_true(back.slice(3000, back.size()).all(|v| Math.abs(v) < 1e-12))
+  assert_true(iota(1, 3000).all(|i| Math.abs(back[i] - noise[i]) < 1e-9))
+  assert_true(back.slice(3000, back.size()).all(|v| Math.abs(v) < 1e-9))
 }
 
 // As numpy's irfft, the 0th and the last bin's imaginary parts are not read.
