@@ -62,6 +62,12 @@ let SPEC = {
       doc: "dB a note may dip under the sound around it for 30 ms ({L.dip})",
     },
     {
+      name: 'bump',
+      type: 'Float',
+      default: L.bump,
+      doc: "dB a note may rise over the sound around it for 20 ms ({L.bump})",
+    },
+    {
       name: 'dropout',
       type: 'Float',
       default: L.dropout,
@@ -119,6 +125,7 @@ let set = try {
 let limits = {
   pitch: args.pitch,
   dip: args.dip,
+  bump: args.bump,
   dropout: args.dropout,
   edge: args.edge,
   step: args.step,

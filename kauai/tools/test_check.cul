@@ -5,7 +5,8 @@ let TOOL = FS.join(FS.dirname(FS.abspath(Sys.script)), "check.cul")
 # An instrument that plays each pitch as a quarter of a second of a tone and
 # its harmonic, faded in and out over 10 ms, and plays some pitches with the
 # fault a parameter names: C5 `sharp` cents off, D5 silent for 30 ms
-# (`gap`), F5 10 dB down for 50 ms (`dip`), G5 from its full level at once
+# (`gap`), E5 9 dB up for 40 ms (`bump`), F5 10 dB down for 50 ms (`dip`),
+# G5 from its full level at once
 # with an offset (`edge`), A5 with a sample out of place (`jump`), B5 three
 # times too loud (`clip`), C6 silent (`mute`). A gap or a dip ramps over
 # 2 ms, so it is no step. With `steep`, every pitch is a sawtooth, which
@@ -30,6 +31,7 @@ let tone = fn (pitch, params) \{
     cond \{
       faulty(84, 'mute') => 0.0,
       faulty(74, 'gap') => x * gain(i, 4410, 5733, 0.0),
+      faulty(76, 'bump') => x * 0.35 * gain(i, 3528, 5292, 1.0 / 0.35),
       faulty(77, 'dip') => x * gain(i, 3528, 5733, 0.3),
       faulty(81, 'jump') && i == 5512 => x + 0.4,
       faulty(83, 'clip') => 3.0 * x,
@@ -65,6 +67,7 @@ let SOUNDS = {voices: {tone: fn (pitch, params) {
     cond {
       faulty(84, 'mute') => 0.0,
       faulty(74, 'gap') => x * gain(i, 4410, 5733, 0.0),
+      faulty(76, 'bump') => x * 0.35 * gain(i, 3528, 5292, 1.0 / 0.35),
       faulty(77, 'dip') => x * gain(i, 3528, 5733, 0.3),
       faulty(81, 'jump') && i == 5512 => x + 0.4,
       faulty(83, 'clip') => 3.0 * x,
@@ -149,6 +152,24 @@ fn a_clean_instrument_has_nothing_found() {
   )
 }
 
+# A passage that ends inside the song plays no note that starts after it: a
+# mix that rings on past its end (a long note, the room) is not silent where
+# those would sound, and is where the notes it plays do.
+@test
+fn a_passage_that_ends_early_is_not_silent_after_it() {
+  let dir = scratch()
+  defer {
+    FS.remove(dir, recursive: true)
+  }
+  let song = Audio.Kauai.load(FS.join(dir, "line.kau"), voices: SOUNDS.voices)
+  let quiet = repeat(2 * 44100, 0.0)
+  assert_eq(lib.mix_findings(song, quiet, 0.0, 0, lib.LIMITS, until: 0.5), [])
+  assert_eq(
+    lib.mix_findings(song, quiet, 0.0, 0, lib.LIMITS).map(|f| f.what),
+    ["silence"],
+  )
+}
+
 @test
 fn each_fault_is_found_at_its_note() {
   let dir = scratch()
@@ -158,6 +179,7 @@ fn each_fault_is_found_at_its_note() {
   let faults = {
     sharp: 40.0,
     gap: 1.0,
+    bump: 1.0,
     dip: 1.0,
     edge: 1.0,
     jump: 1.0,
@@ -175,6 +197,7 @@ fn each_fault_is_found_at_its_note() {
     [
       ["pitch", "C5"],
       ["dropout", "D5"],
+      ["bump", "E5"],
       ["dip", "F5"],
       ["edge", nil],
       ["edge", nil],
@@ -186,13 +209,16 @@ fn each_fault_is_found_at_its_note() {
   )
   let near = |a, b| Math.abs(a - b) < 0.006
   assert_true(near(said[0][2], 0.125) &&
-    near(said[3][2], 1.0) &&
-    near(said[4][2], 1.25) &&
-    near(said[5][2], 1.375))
+    near(said[4][2], 1.0) &&
+    near(said[5][2], 1.25) &&
+    near(said[6][2], 1.375))
   assert_true(got[1].at > 0.35 &&
     got[1].at < 0.38 &&
-    got[2].at > 0.83 &&
-    got[2].at < 0.88)
+    got[2].at > 0.57 &&
+    got[2].at < 0.6 &&
+    got[3].at > 0.83 &&
+    got[3].at < 0.88)
+  assert_eq(got[2].detail, "+9 dB for 45 ms")
   assert_true(got[0].detail.starts_with("+40 cents"))
   # A tighter limit finds what the default leaves: 20 cents off.
   assert_eq(

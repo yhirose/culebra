@@ -1,13 +1,14 @@
 # What check.cul looks for in a passage of a song as an instrument module
 # plays it. Each external sound is checked against the notes it was asked
-# for: how far off their pitch is, where the sound drops out or dips, where
-# it starts or stops abruptly or jumps, and where it is clipped. The passage
+# for: how far off their pitch is, where the sound drops out or dips or
+# bumps up, where it starts or stops abruptly or jumps, and where it is
+# clipped. The passage
 # as the song mixes it is checked for clipping and for silence where notes
 # should sound, and its loudness is measured. check.cul is the command.
 #
 # A finding is {at, what, by, external, note, detail, value, small, sound,
-# in}: `at` seconds into the song, `what` one of pitch, dropout, dip, edge,
-# jump, clipping, silent and silence, `by` the voice or drum and `external`
+# in}: `at` seconds into the song, `what` one of pitch, dropout, dip, bump,
+# edge, jump, clipping, silent and silence, `by` the voice or drum and `external`
 # its instrument (both nil for the mix), `note` the note's name or nil,
 # `value` how much (cents, dB, a share of the peak in percent, samples or
 # seconds, by `what`), `small` whether it is under what is a problem, and,
@@ -19,13 +20,15 @@ import instrument from './instrument_lib.cul'
 let RATE = 44100
 
 # How far a finding is from what is wanted: cents off the score's pitch, dB
-# a dip and a dropout fall below the sound around them, the share of its
+# a dip and a dropout fall below the sound around them and a bump rises over
+# it, the share of its
 # peak a sound starting or ending there, or a step between two samples of
 # that size, is a problem from, how many times the steps around it a step
 # is to be a jump, and how many seconds of silence where notes sound.
 let LIMITS = {
   pitch: 25.0,
   dip: 6.0,
+  bump: 6.0,
   dropout: 30.0,
   edge: 0.2,
   step: 0.1,
@@ -86,10 +89,12 @@ fn mono(data) {
   {samples: xs, rate: made.rate}
 }
 
-# The notes external sound `s` plays, {pitch, at, len, chord, moves} with
-# `at` and `len` in seconds into the sound: a phrase's notes (a note that
-# does not hear its length lasts until the next starts, or the phrase's
-# notes end), or a voice's one pitch. A drum plays none.
+# The notes external sound `s` plays, {pitch, at, len, chord, moves, joined_in,
+# joined_out} with `at` and `len` in seconds into the sound: a phrase's notes
+# (a note that does not hear its length lasts until the next starts, or the
+# phrase's notes end), or a voice's one pitch; `joined_in` and `joined_out`
+# whether a note of its phrase sounds up to its start, or from its end (a
+# slur's join, which is no attack and no release). A drum plays none.
 fn notes_of(s) {
   let first = s.args[0]
   if type_of(first) == "Long" {
@@ -99,12 +104,14 @@ fn notes_of(s) {
       len: s.until - s.at,
       chord: false,
       moves: false,
+      joined_in: false,
+      joined_out: false,
     }]
   }
   return [] if type_of(first) != "Array"
   let ends = s.until - s.at
   let moving = ["scoop", "plop", "doit", "fall"]
-  iota(first.size()).map(fn (i) {
+  let notes = iota(first.size()).map(fn (i) {
     let n = first[i]
     let later = first.filter(|m| m.at > n.at).map(|m| m.at)
     {
@@ -115,6 +122,12 @@ fn notes_of(s) {
       chord: first.filter(|m| m.at == n.at).size() > 1,
       moves: n.get("marks", []).any(|k| moving.contains(k)),
     }
+  })
+  let meets = |a, b| Math.abs(a.at + a.len - b.at) < 0.005
+  notes.map(|n| {
+    ...n,
+    joined_in: !n.chord && notes.any(|m| !m.chord && meets(m, n)),
+    joined_out: !n.chord && notes.any(|m| !m.chord && meets(n, m)),
   })
 }
 
@@ -267,13 +280,14 @@ fn sound_findings(s, sound, limits) {
     frame)))
   for note in notes_of(s) {
     let name = name_of(note.pitch)
-    # Its steady part: past its attack, before its release.
+    # Its steady part: past its attack, before its release (a slur's join is
+    # neither, and is where one recorded note meets another).
     let (
       k0,
       k1,
     ) = (
-      Math.round((note.at + 0.04) * rate / hop),
-      Math.round((note.at + note.len - 0.03) * rate / hop) - frame / hop,
+      Math.round((note.at + (note.joined_in ? 0.0 : 0.04)) * rate / hop),
+      Math.round((note.at + note.len - (note.joined_out ? 0.0 : 0.03)) * rate / hop) - frame / hop,
     )
     if k1 - k0 >= 12 && k1 < frames {
       let around = 20
@@ -290,17 +304,18 @@ fn sound_findings(s, sound, limits) {
         1,
         |j| level[k0 + j] < ref[j] - depth,
       ).filter(|r| (r[1] - r[0] + 1) * hop >= least * rate)
-      let tell = fn (what, r) {
-        let fell = Math.round(iota(r[1] - r[0] + 1)
-          .map(|j| ref[r[0] + j] - level[k0 + r[0] + j])
+      let tell = fn (what, r, up = false) {
+        let sign = up ? -1.0 : 1.0
+        let moved = Math.round(iota(r[1] - r[0] + 1)
+          .map(|j| sign * (ref[r[0] + j] - level[k0 + r[0] + j]))
           .max())
         let ms = Math.round((r[1] - r[0] + 1) * hop * 1000.0 / rate)
         say(
           (k0 + r[0]) * hop + frame / 2,
           what,
           name,
-          "-{fell} dB for {ms} ms",
-          fell,
+          "{up ? "+" : "-"}{moved} dB for {ms} ms",
+          moved,
           false,
         )
       }
@@ -320,6 +335,13 @@ fn sound_findings(s, sound, limits) {
       }
       for r in under(limits.dip, 0.03) {
         tell("dip", r) if back(r) && !outs.any(|o| o[0] <= r[1] && r[0] <= o[1])
+      }
+      # A bump: a stretch more than `bump` dB over the level around it, at
+      # least 20 ms (a join that put a dip's depth on the frames beside it).
+      let over = runs(k1 - k0 + 1, 1, |j| level[k0 + j] > ref[j] + limits.bump)
+        .filter(|r| (r[1] - r[0] + 1) * hop >= 0.02 * rate)
+      for r in over {
+        tell("bump", r, up: true)
       }
     }
     if note.len >= 0.1 && !note.chord && !note.moves {
@@ -351,8 +373,10 @@ fn sound_findings(s, sound, limits) {
 }
 
 # What is wrong with the passage as the song mixes it: `mix` its samples
-# from `start` seconds into the song, `lead` of them before the passage.
-fn mix_findings(song, mix, start, lead, limits) {
+# from `start` seconds into the song, `lead` of them before the passage, and
+# `until` the seconds it ends at (nil: the song's end), past which no note
+# starts in it.
+fn mix_findings(song, mix, start, lead, limits, until = nil) {
   let found = []
   let say = |i, what, detail, value| found.push({
     at: start + i / (RATE * 1.0),
@@ -371,7 +395,9 @@ fn mix_findings(song, mix, start, lead, limits) {
     say(r[0], "clipping", "{count} samples past full scale", count)
   }
   # Silence where the score has notes sounding, every 100 ms.
-  let notes = song.events().map(|e| [e.at, e.at + e.len])
+  let notes = song.events()
+    .filter(|e| until == nil || e.at < until)
+    .map(|e| [e.at, e.at + e.len])
   let frame = RATE / 10
   let x2 = squares(mix)
   let quiet = fn (k) {
@@ -422,7 +448,8 @@ fn findings(sounds, w, from, to, limits = {}) {
   let start = Math.max(0.0, first - 1.0)
   let lead = Math.round((first - start) * RATE)
   let listed = song.external_sounds(from: from, to: to)
-  mut found = mix_findings(song, mix, start, lead, lim)
+  let until = to == nil ? nil : song.seconds(to)
+  mut found = mix_findings(song, mix, start, lead, lim, until: until)
   mut seconds = 0.0
   # Which sound each is, numbered as they first play, and what is in it.
   let ids = {}
