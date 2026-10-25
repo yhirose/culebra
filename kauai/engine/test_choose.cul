@@ -57,8 +57,10 @@ fn a_note_borrows_a_recorded_note_near_its_pitch_or_none() {
 }
 
 # A library of two C5s, alike but for their ends: the first dips 35 dB at its
-# start and 30 at its end (it began after a break, and faded), the second
-# 2 and 1, a slur's own; each slurred, held 40 frames, with its attack.
+# start (it began after a break) and 1 at its end, the second 2 at its start
+# and 30 at its end (it faded); each slurred, held 40 frames, with its attack.
+# A slur in wants the second and a slur out the first, so the start and the
+# end are not taken for each other.
 fn two_ends() {
   let rec = |i| {semi: 72, frames: 40, level: -20.0, vib: 0.0, from: "legato", to: "legato", rec: "take", t0: i * 1.0}
   {
@@ -68,7 +70,7 @@ fn two_ends() {
     lib_dip: [0.0, 0.0],
     lib_crest: [0.0, 0.0],
     lib_head_dip: [35.0, 2.0],
-    lib_tail_dip: [30.0, 1.0],
+    lib_tail_dip: [1.0, 30.0],
     attack_of: [{}, {}],
     lib_louder: 0.0,
     choice: {},
@@ -84,8 +86,8 @@ fn a_slur_borrows_no_recording_that_dips_where_it_joins() {
   # Slurred into: the second, whose start is at its level.
   let into = [at(0, 40, "tongue", "legato"), at(40, 80, "legato", "rest")]
   assert_eq(choose.borrow_for(inst, into, 1, nil), 1)
-  # Slurred out of: the second, whose end is.
-  assert_eq(choose.borrow_for(inst, into, 0, nil), 1)
+  # Slurred out of: the first, whose end is at its level.
+  assert_eq(choose.borrow_for(inst, into, 0, nil), 0)
   # A note on its own is not joined at either end: the two cost the same,
   # and the first is taken.
   assert_eq(choose.borrow_for(inst, [at(0, 40, "tongue", "rest")], 0, nil), 0)
