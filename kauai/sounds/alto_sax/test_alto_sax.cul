@@ -138,3 +138,23 @@ fn a_tongued_note_begins_crisply() {
     assert_true(start.round > -4.0, [pitch, chosen, start])
   }
 }
+
+# Two held notes slurred meet with no step. slow_kept takes the pieces' slow
+# course out of each note before the joins are eased; taken out after, it
+# moved each note's head and tail by its own amount and left a step of up to
+# 2 dB at the slur. (A recording's own dip at a join, which join_reads keeps,
+# is not a step, and these pairs have none.)
+@test
+fn slurred_held_notes_meet_with_no_step() {
+  let data = Dir.embedded('data')
+  let inst = engine.Instrument.new(data, JSON.parse(data.read('instrument.json')).play)
+  for (from, to, level) in [(72, 74, 1.0), (69, 71, 0.4), (70, 72, 0.7)] {
+    let phrase = [
+      {pitch: from, at: 0.0, len: 1.5, level: level, level_end: 1.0, marks: [], next: nil, params: {}},
+      {pitch: to, at: 1.5, len: 1.5, level: 1.0, level_end: 1.0, marks: [], next: nil, params: {}},
+    ]
+    let c = inst.borrowed_curves(phrase, 0.0, 0, 0.0)
+    let b = c.notes[1].s
+    assert_true(Math.abs(c.db[b] - c.db[b - 1]) < 0.5, [from, to, c.db[b] - c.db[b - 1]])
+  }
+}

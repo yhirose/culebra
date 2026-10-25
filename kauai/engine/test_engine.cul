@@ -190,3 +190,39 @@ fn a_style_without_a_number_it_needs_is_said_so() {
   assert_true(said != nil)
   assert_true(engine.DEFAULTS.keys().contains("scoop"))
 }
+
+# A long note's slow course is taken out of what it borrowed (slow_kept), not
+# out of what the score writes on it: a crescendo and a fall move a note's
+# loudness as much with it as without it. Taken out of the whole, it flattened
+# a crescendo by two thirds and lifted a fall's tail.
+@test
+fn slow_kept_leaves_a_crescendo_and_a_fall_as_written() {
+  let dir = FS.join(FS.temp_dir(), "engine-test-{UUID.v4()}")
+  defer {
+    FS.remove(dir, recursive: true) if FS.exists(dir)
+  }
+  FS.mkdir(dir)
+  let inst = engine.Instrument.new(synthetic.made_into(dir).data, STYLE)
+  let held = {...PHRASE[0], len: 2.0, level: 0.7, level_end: 0.7}
+  # What a note's marks and swell move its loudness by, a frame at a time,
+  # with the slow course kept whole or mostly taken out (the borrowed note is
+  # the same, chosen by the level the note starts at).
+  let moved_by = fn (written, kept) {
+    inst.restyle({...STYLE, slow_kept: {db: kept, timbre: kept}})
+    let plain = inst.borrowed_curves([held], 0.0, 0, 0.0).db
+    let with = inst.borrowed_curves([{...held, ...written}], 0.0, 0, 0.0).db
+    iota(plain.size()).map(|u| with[u] - plain[u])
+  }
+  for written in [{level_end: 1.0}, {marks: ["fall"]}] {
+    let whole = moved_by(written, 1.0)
+    let out = moved_by(written, 0.35)
+    for j in [20, 60, 100, 140, 180, 190, 195] {
+      assert_true(Math.abs(out[j] - whole[j]) < 0.05, [written, j, out[j], whole[j]])
+    }
+  }
+  # And it is what was written: the crescendo's rise from mp to f.
+  let rise = moved_by({level_end: 1.0}, 0.35)
+  let n = rise.size() - 2
+  assert_true(Math.abs(rise[100] - 20.0 * Math.log(1.0 / 0.7) / Math.log(10.0) * 100 / n) < 0.05, rise[100])
+}
+

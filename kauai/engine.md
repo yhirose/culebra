@@ -17,7 +17,10 @@ engine's entry point is `Instrument.new(dir, style)`, where `dir` is the
    between them. Its attack is kept for a note that starts a phrase or is
    tongued.
 3. **A note longer than its borrowed note** is filled out with steady stretches
-   of long notes near it.
+   of long notes near it. With `slow_kept` under 1 (the alto's 0.35), most of
+   each long note's slow loudness and timbre is taken out of what it borrowed,
+   so the pieces do not swell and sag; what the score writes on the note (its
+   level, a crescendo, a bend) is put over it afterwards, whole.
 4. **A slur joins two takes** with a 20 ms crossfade of timbre, so the join
    does not click. The step between the two (in loudness, timbre and breath)
    is taken up half by each side, read where each side stands at its level

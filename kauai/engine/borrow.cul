@@ -973,6 +973,9 @@ class Instrument {
     mut breath = iota(total).map(|_| repeat(self.nb, -80.0))
     mut piece = repeat(total, nil)
     mut note_at = repeat(total, nil)
+    # What the score writes on each frame, put over the borrowed part once the
+    # slow course is out of it (below): the level asked, its swell, a bend.
+    mut written = repeat(total, nil)
     # The phrase's lead (how much later than written its frames are placed)
     # and how many frames of its first borrowed note are left out.
     let head_i = chosen.empty() ? nil : chosen[0]
@@ -1037,12 +1040,15 @@ class Instrument {
           ? (0.0, 1.0)
           : self.bend(v.marks, v.from, j * 0.01, (v.e - u) * 0.01)
         base[u] = base_pitch(notes, k, u) + bent
-        let swell = (v.level_end - v.level) * j / Math.max(1, mt)
         let own_i = chosen[k]
-        db[u] = self.mixed(|s| self.src_db(s, own_i), src) +
-          v.level +
-          swell +
-          20.0 * Math.log(Math.max(bend_gain, 1e-3)) / Math.log(10.0)
+        db[u] = self.mixed(|s| self.src_db(s, own_i), src)
+        written[u] = {
+          level: v.level,
+          swell: (v.level_end - v.level) * j / Math.max(1, mt),
+          bent: bent,
+          gain: bend_gain,
+          over: over[k],
+        }
         if src.get("from", nil) == nil {
           breath[u] = self.lib_breath(src)
         } else {
@@ -1058,34 +1064,6 @@ class Instrument {
           let lb = self.src_logs(src, own_i)
           logs[u] = iota(self.lh).map(|h| (1.0 - src.w) * la[h] + src.w * lb[h])
         }
-        if bent != 0.0 {
-          logs[u] = reshaped(logs[u], 2.0 ** (bent / 12.0))
-          cents[u] += bend_shake(bent, u * 0.01)
-        }
-        if bend_gain != 1.0 {
-          # The tone's loss (a gain, as a push, is a negative loss): a tone that
-          # loses dims, a tone that gains is brighter, and either way the
-          # breath is louder against it. They stop growing at loss_max dB, so
-          # that a tone fading to nothing does not leave its breath to stop short.
-          let loss = Math.clamp(
-            -20.0 * Math.log(Math.max(bend_gain, 1e-3)) / Math.log(10.0),
-            -BEND.loss_max,
-            BEND.loss_max,
-          )
-          logs[u] = dimmed(logs[u], loss)
-          breath[u] = breath[u].map(|b| b + BEND.breath_db * Math.abs(loss))
-        }
-        if over[k] {
-          let all = logs[u].map(|l| Math.exp(2.0 * l)).sum()
-          logs[u] = iota(self.lh).map(|h| 2 * h + 1 < self.lh
-            ? logs[u][2 * h + 1]
-            : Math.log(1e-9))
-          let even = logs[u].map(|l| Math.exp(2.0 * l)).sum()
-          db[u] += 10.0 *
-            Math.log(Math.max(even, 1e-20) / Math.max(all, 1e-20)) /
-            Math.log(10.0) +
-            overtone_db
-        }
       }
       # The borrowed note's fine gain, every millisecond, through the same plan.
       let t0 = v.s * 0.01 + lead
@@ -1100,6 +1078,74 @@ class Instrument {
         gain[kms] = j < 4.0 || j > mt - 6.0
           ? raw
           : Math.clamp(raw, self.gain_range[0], self.gain_range[1])
+      }
+    }
+    # A long note's slow loudness and timbre: the pieces' own courses mostly
+    # taken out (slow_kept), so it holds or leans one way as a real one does.
+    # Of the borrowed part only: taken out of the whole, it flattened a
+    # crescendo written on the note and lifted a fall's tail. And before the
+    # joins are eased, which take up the step it leaves at a slur.
+    if self.slow_kept.db < 1.0 || self.slow_kept.timbre < 1.0 {
+      for k in 0..notes.size() {
+        continue if chosen[k] == nil
+        let v = notes[k]
+        let m = v.e - v.s
+        continue if m <= 25
+        let a = Math.min(15, m / 3)
+        let b = Math.max(a + 1, m - Math.min(10, m / 3))
+        continue if b - a < 10
+        if self.slow_kept.db < 1.0 {
+          let eased = slow_eased(db.slice(v.s, v.e), a, b, self.slow_kept.db)
+          for j in 0..m {
+            db[v.s + j] = eased[j]
+          }
+        }
+        if self.slow_kept.timbre < 1.0 {
+          for h in 0..self.lh {
+            let eased = slow_eased(iota(v.s, v.e).map(|u| logs[u][h]), a, b, self.slow_kept.timbre)
+            for j in 0..m {
+              logs[v.s + j][h] = eased[j]
+            }
+          }
+        }
+      }
+    }
+    # What the score writes, over what was borrowed: the level asked and its
+    # swell, and a bend's pitch, loudness and timbre.
+    for u in 0..total {
+      let wr = written[u]
+      continue if wr == nil
+      db[u] = db[u] +
+        wr.level +
+        wr.swell +
+        20.0 * Math.log(Math.max(wr.gain, 1e-3)) / Math.log(10.0)
+      if wr.bent != 0.0 {
+        logs[u] = reshaped(logs[u], 2.0 ** (wr.bent / 12.0))
+        cents[u] += bend_shake(wr.bent, u * 0.01)
+      }
+      if wr.gain != 1.0 {
+        # The tone's loss (a gain, as a push, is a negative loss): a tone that
+        # loses dims, a tone that gains is brighter, and either way the
+        # breath is louder against it. They stop growing at loss_max dB, so
+        # that a tone fading to nothing does not leave its breath to stop short.
+        let loss = Math.clamp(
+          -20.0 * Math.log(Math.max(wr.gain, 1e-3)) / Math.log(10.0),
+          -BEND.loss_max,
+          BEND.loss_max,
+        )
+        logs[u] = dimmed(logs[u], loss)
+        breath[u] = breath[u].map(|b| b + BEND.breath_db * Math.abs(loss))
+      }
+      if wr.over {
+        let all = logs[u].map(|l| Math.exp(2.0 * l)).sum()
+        logs[u] = iota(self.lh).map(|h| 2 * h + 1 < self.lh
+          ? logs[u][2 * h + 1]
+          : Math.log(1e-9))
+        let even = logs[u].map(|l| Math.exp(2.0 * l)).sum()
+        db[u] += 10.0 *
+          Math.log(Math.max(even, 1e-20) / Math.max(all, 1e-20)) /
+          Math.log(10.0) +
+          overtone_db
       }
     }
     # A frame and the one before it sound on together: in one note, or across
@@ -1162,33 +1208,6 @@ class Instrument {
       logs = iota(total).map(|u| iota(self.lh).map(|h| per_h[h][u]))
       let per_b = iota(self.nb).map(|q| eased(breath.map(|r| r[q]), tw, reads))
       breath = iota(total).map(|u| iota(self.nb).map(|q| per_b[q][u]))
-    }
-    # A long note's slow loudness and timbre: the pieces' own courses mostly
-    # taken out (slow_kept), so it holds or leans one way as a real one does.
-    if self.slow_kept.db < 1.0 || self.slow_kept.timbre < 1.0 {
-      for k in 0..notes.size() {
-        continue if chosen[k] == nil
-        let v = notes[k]
-        let m = v.e - v.s
-        continue if m <= 25
-        let a = Math.min(15, m / 3)
-        let b = Math.max(a + 1, m - Math.min(10, m / 3))
-        continue if b - a < 10
-        if self.slow_kept.db < 1.0 {
-          let eased = slow_eased(db.slice(v.s, v.e), a, b, self.slow_kept.db)
-          for j in 0..m {
-            db[v.s + j] = eased[j]
-          }
-        }
-        if self.slow_kept.timbre < 1.0 {
-          for h in 0..self.lh {
-            let eased = slow_eased(iota(v.s, v.e).map(|u| logs[u][h]), a, b, self.slow_kept.timbre)
-            for j in 0..m {
-              logs[v.s + j][h] = eased[j]
-            }
-          }
-        }
-      }
     }
     # Every note pulled to its written pitch: its slow course (its pitch's
     # mean within its steady part, 150 ms in to 100 ms before its end,
