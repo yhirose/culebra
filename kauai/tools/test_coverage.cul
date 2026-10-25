@@ -77,3 +77,39 @@ fn enough_notes_everywhere_is_no_shortfall() {
   )
   assert_eq(c.shortfalls, [])
 }
+
+# A song asking for E5 (76) held and short, A4 (69) short, and B4 (71) held,
+# of recordings with many short E5s and no held one, many A4s, and two B4s.
+@test
+fn a_song_is_short_where_it_asks_a_pitch_held_or_often_that_is_not_recorded() {
+  let notes = [...notes_at(76, 9, 0, -20.0), ...notes_at(69, 20, 3, -20.0), ...notes_at(71, 2, 2, -20.0)]
+  let held = |semi| {semi: semi, frames: 60}
+  let short = |semi| {semi: semi, frames: 20}
+  let asked = [held(76), short(76), short(76), short(69), short(69), held(71)]
+  let c = lib.song_coverage(notes, asked, {per_semitone: 5, long_per_octave: 0, per_dynamic: 0})
+  assert_eq(c.pitches.map(|p| [p.semi, p.asked, p.asked_held, p.has, p.has_held]), [
+    [69, 2, 0, 20, 3],
+    [71, 1, 1, 2, 2],
+    [76, 3, 1, 9, 0],
+  ])
+  # B4: two notes recorded; E5: asked held, none held recorded. A4 is enough.
+  assert_eq(c.shortfalls, [
+    "71: 2 of 5 notes recorded, for 1 asked",
+    "76: no note of 0.4 s or more recorded, for 1 asked held",
+  ])
+}
+
+# What Kauai hands an instrument, as the notes asked: a phrase's notes by
+# their length (or, where the instrument does not hear it, until the next or
+# the sound's end), a voice's one pitch for its sound's length; a drum none.
+@test
+fn the_notes_asked_are_read_from_what_kauai_hands_the_instruments() {
+  let song = {external_sounds: || [
+    {at: 1.0, until: 2.0, external: "alto", args: [[{pitch: 72, at: 0.0, len: 0.5}, {pitch: 74, at: 0.5}], {}]},
+    {at: 3.0, until: 3.25, external: "ep", args: [60, {}]},
+    {at: 4.0, until: 4.1, external: "kick", args: [{}]},
+  ]}
+  assert_eq(lib.asked_of(song), [{semi: 72, frames: 50}, {semi: 74, frames: 50}, {semi: 60, frames: 25}])
+  assert_eq(lib.asked_of(song, "ep"), [{semi: 60, frames: 25}])
+}
+

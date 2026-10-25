@@ -428,6 +428,35 @@ change them). They are to be tuned against what a listener hears, as the
 soprano's were not: the soprano's three takes were short of long notes
 (21 against the 10 per octave) and had no notes at 55, 56, 57 or 84 to 90.
 
+With `--song`, it counts what a song asks of the recordings instead, pitch by
+pitch: the notes the song's external voices play at each pitch and how many
+of them are held (0.4 s or more, the length of the recorded notes a longer
+note is filled from), against the recordings'. It reads what Kauai hands the
+instruments, so it needs the module (`--sounds`), and builds no sound; the
+recordings may be a package's `data/notes.json`. `--external` keeps to one
+instrument (`alto` for `external Alto`).
+
+```sh
+culebra kauai/tools/coverage.cul --sounds kauai/sounds/alto_sax \
+  --song song.kau kauai/sounds/alto_sax/data/notes.json
+```
+
+```
+song.kau: 8 pitches asked; recorded 2520 notes
+  B4 (71): asked 15 (6 held), recorded 33 (0 held)
+  E5 (76): asked 73 (33 held), recorded 9 (0 held)
+  ...
+short:
+  71: no note of 0.4 s or more recorded, for 6 asked held
+  76: no note of 0.4 s or more recorded, for 33 asked held
+```
+
+A pitch with fewer than `--per-semitone` notes is borrowed from a semitone
+away, and one asked held with none held is filled from another pitch's long
+notes. The key of a tune decides most of it: that tune, in A major, asked the
+alto for E5 73 times, where its recordings (improvisations over Autumn Leaves,
+in G minor) held 9.
+
 ## envelope.cul: the spectral envelope and the breath of recordings
 
 `envelope.cul` reads what `measure.cul` wrote and gives what an instrument

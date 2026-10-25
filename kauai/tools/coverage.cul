@@ -7,7 +7,17 @@
 #
 # `--low` and `--high` are the instrument's range (Hz), as measure.cul takes
 # them. The notes of every file count together.
+#
+# With `--song`, what a song asks of them instead, pitch by pitch: how many
+# notes its external voices play at each pitch and how many of those are held
+# (0.4 s or more), against how many the recordings hold. A tune's key decides
+# this: a melody in A major asked the alto for E5 73 times, 33 of them held,
+# where its recordings (Autumn Leaves, in G minor) had 9 and none held.
+#
+#   culebra kauai/tools/coverage.cul --sounds kauai/sounds/alto_sax \
+#     --song song.kau kauai/sounds/alto_sax/data/notes.json
 
+import instrument from './instrument_lib.cul'
 import lib from './coverage_lib.cul'
 
 let SPEC = {
@@ -17,12 +27,14 @@ let SPEC = {
     {
       name: 'low',
       type: 'Float',
+      default: nil,
       positional: false,
       doc: 'the lowest pitch of the instrument, Hz',
     },
     {
       name: 'high',
       type: 'Float',
+      default: nil,
       positional: false,
       doc: 'the highest pitch of the instrument, Hz',
     },
@@ -45,11 +57,32 @@ let SPEC = {
       doc: 'notes needed in each of the loud, middle and quiet dynamics',
     },
     {
+      name: 'song',
+      type: 'String',
+      default: "",
+      positional: false,
+      doc: 'a song (.kau) whose external voices are to be covered, pitch by pitch, instead of a range',
+    },
+    {
+      name: 'sounds',
+      type: 'String',
+      default: "",
+      positional: false,
+      doc: "with --song, the instrument module the song's external voices play from",
+    },
+    {
+      name: 'external',
+      type: 'String',
+      default: "",
+      positional: false,
+      doc: "with --song, the one instrument to cover (its key, `alto` for `external Alto`); all when left out",
+    },
+    {
       name: 'measured',
       type: 'String',
       positional: true,
       repeated: true,
-      doc: 'the NAME.json files measure.cul wrote',
+      doc: "the NAME.json files measure.cul wrote, or a package's data/notes.json",
     },
   ],
 }
@@ -60,10 +93,38 @@ fn fail(message) {
 }
 
 let args = Args.parse(Sys.argv, SPEC)
+fail("no measures named") if args.measured.empty()
+let needs = {
+  per_semitone: args["per-semitone"],
+  long_per_octave: args["long-per-octave"],
+  per_dynamic: args["per-dynamic"],
+}
+if !args.song.empty() {
+  fail("no song {args.song}") if !FS.exists(args.song)
+  fail("--song needs --sounds, the module its external voices play from") if args.sounds.empty()
+  let module = instrument.module_at(args.sounds)
+  fail("no instrument module at {args.sounds}") if module == nil
+  let call = JSON.stringify({
+    song: FS.abspath(args.song),
+    external: args.external.empty() ? nil : args.external,
+    measured: args.measured.map(|p| FS.abspath(p)),
+    needs: needs,
+  })
+  let lib_path = FS.join(FS.dirname(FS.abspath(Sys.script)), "coverage_lib.cul")
+  let run = try {
+    instrument.program(module, lib_path, "run", call)
+  } catch e: String {
+    fail(e)
+  }
+  let r = Proc.run(run.cmd)
+  FS.remove(run.entry)
+  IO.print(r.stdout)
+  IO.eprint(r.stderr)
+  Sys.exit(r.code)
+}
 fail("--low and --high are needed (the instrument's range, Hz)") if args.low ==
   nil ||
   args.high == nil
-fail("no measures named") if args.measured.empty()
 fail("--low must be below --high") if args.low >= args.high
 
 let notes = args.measured.flat_map(|path| {
@@ -72,11 +133,6 @@ let notes = args.measured.flat_map(|path| {
 })
 let lo = Math.floor(12.0 * Math.log(args.low / 440.0) / Math.log(2.0) + 69.0)
 let hi = Math.ceil(12.0 * Math.log(args.high / 440.0) / Math.log(2.0) + 69.0)
-let needs = {
-  per_semitone: args["per-semitone"],
-  long_per_octave: args["long-per-octave"],
-  per_dynamic: args["per-dynamic"],
-}
 let c = lib.coverage(notes, lo, hi, needs)
 
 println("{notes.size()} notes over MIDI {lo}..{hi}; long (1 s or more): {notes.filter(|n| n.frames >= lib.LONG).size()}")

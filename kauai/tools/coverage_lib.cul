@@ -62,4 +62,83 @@ fn coverage(notes, lo, hi, needs = NEEDS) {
   }
 }
 
-export {NEEDS, LONG, dynamic_of, coverage}
+# A note asked for this many frames or more is held, and so is a recorded one:
+# a note longer than the one it borrows is filled from the steady parts of
+# recorded notes of 0.4 s or more near its pitch (the engine's `steady`), so a
+# pitch asked held with none of its own is filled from another pitch's.
+let HELD = 40
+
+# What a song asks of the recordings, pitch by pitch: `asked` the notes its
+# external voices play ({semi, frames}), `notes` the measured ones. Answers
+# {pitches: [{semi, asked, asked_held, has, has_held}], shortfalls}: a pitch
+# with fewer than `needs.per_semitone` notes recorded is borrowed from its
+# neighbours, and one asked held with none held is filled from them.
+fn song_coverage(notes, asked, needs = NEEDS) {
+  let semis = asked.map(|a| a.semi).to_set().to_array().sorted()
+  let pitches = semis.map(fn (semi) {
+    let here = notes.filter(|n| n.semi == semi)
+    let wanted = asked.filter(|a| a.semi == semi)
+    {
+      semi: semi,
+      asked: wanted.size(),
+      asked_held: wanted.filter(|a| a.frames >= HELD).size(),
+      has: here.size(),
+      has_held: here.filter(|n| n.frames >= HELD).size(),
+    }
+  })
+  let shortfalls = []
+  for p in pitches {
+    if p.has < needs.per_semitone {
+      shortfalls.push("{p.semi}: {p.has} of {needs.per_semitone} notes recorded, for {p.asked} asked")
+    } else if p.asked_held > 0 && p.has_held == 0 {
+      shortfalls.push("{p.semi}: no note of 0.4 s or more recorded, for {p.asked_held} asked held")
+    }
+  }
+  {pitches: pitches, shortfalls: shortfalls}
+}
+
+# The notes a song's external voices play: each {semi, frames}, from what
+# Kauai hands the instruments (`song.external_sounds()`, which builds none),
+# a phrase's notes or a voice's one pitch, of the instrument `only` (its key,
+# or nil for all). A drum plays none.
+fn asked_of(song, only = nil) {
+  song.external_sounds()
+    .filter(|s| only == nil || s.external == only)
+    .flat_map(fn (s) {
+      let first = s.args[0]
+      cond {
+        type_of(first) == "Long" => [{semi: first, frames: Math.round((s.until - s.at) * 100.0)}],
+        type_of(first) == "Array" => first.map(|n| {
+          semi: n.pitch,
+          frames: Math.round(n.get("len", s.until - s.at - n.at) * 100.0),
+        }),
+        _ => [],
+      }
+    })
+}
+
+# The program's entry for a song (see instrument_lib.program): `sounds` the
+# module, `arg` the call as JSON {song, external, measured, needs}. Prints a
+# line a pitch and what is short, and exits 1 when anything is.
+fn run(sounds, arg) {
+  let c = JSON.parse(arg)
+  let song = Audio.Kauai.load(c.song, voices: sounds.voices ?? {}, drums: sounds.drums ?? {})
+  let notes = c.measured.flat_map(|path| JSON.parse(FS.read(path)).notes)
+  let got = song_coverage(notes, asked_of(song, c.external), c.needs)
+  let names = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
+  println("{FS.basename(c.song)}: {got.pitches.size()} pitches asked; recorded {notes.size()} notes")
+  for p in got.pitches {
+    println("  {names[p.semi % 12]}{p.semi / 12 - 1} ({p.semi}): asked {p.asked} ({p.asked_held} held), recorded {p.has} ({p.has_held} held)")
+  }
+  if got.shortfalls.empty() {
+    println("enough: every pitch asked is recorded, and every one asked held has held notes")
+    Sys.exit(0)
+  }
+  println("short:")
+  for line in got.shortfalls {
+    println("  {line}")
+  }
+  Sys.exit(1)
+}
+
+export {NEEDS, LONG, HELD, dynamic_of, coverage, song_coverage, asked_of, run}
