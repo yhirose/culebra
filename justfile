@@ -535,8 +535,8 @@ clean:
     rm -rf .cache-ccache .zed .vscode .vimspector.json misc/*/.zed
     rm -rf tmp scratchpad kauai/sounds/*/work
     rm -rf culebra-wrapped webview-culebra webview-app visits.db examples/webview/visits.db examples/games/retro-run/retro-run
-    find . -path ./vendor -prune -o -type d -name __pycache__ -prune -exec rm -rf {} +
-    find . -path ./vendor -prune -o -type f -name '*.pyc' -exec rm -f {} +
+    find . \( -path ./vendor -o -path ./.claude \) -prune -o -type d -name __pycache__ -prune -exec rm -rf {} +
+    find . \( -path ./vendor -o -path ./.claude \) -prune -o -type f -name '*.pyc' -exec rm -f {} +
 
 # Regenerate misc/culebra.peg + the Vim/VSCode AUTO-KEYWORDS from include/frontend/parser.h
 [group("build")]
