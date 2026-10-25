@@ -65,6 +65,22 @@ fn a_swell_after_the_join_is_read_at_it() {
   assert_eq(engine.join_reads(db, w.left, w.right), (9, 10))
 }
 
+# A release at the end of the note before and an onset at the start of the
+# note after, both at the join: each side is read past its own dip, and the
+# step taken up is the two bodies' 2 dB. Read against the other side's frame
+# at the join (itself in a dip), the left side's -32 dB was read as its level,
+# a 10 dB step, half of it put on the note after.
+@test
+fn a_join_with_a_dip_on_both_sides_reads_each_past_its_own() {
+  let db = [...repeat(8, -20.0), -32.0, -40.0, -50.0, -30.0, ...repeat(8, -18.0)]
+  let w = way(8, 10, 10)
+  let reads = engine.join_reads(db, w.left, w.right)
+  assert_eq(reads, (7, 12))
+  let out = engine.eased(db, w, reads)
+  assert_true(out.slice(12, 20).all(|x| x <= -18.0 + 1e-9 && x >= -19.0 - 1e-9), out)
+  assert_true(out.slice(0, 8).all(|x| x >= -20.0 - 1e-9 && x <= -19.0 + 1e-9), out)
+}
+
 # Where the frames at the join stand at their pieces' level, the step is read
 # there and taken up whole: the two frames meet.
 @test

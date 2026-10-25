@@ -236,23 +236,26 @@ fn bend_shake(bent, t) {
 # it): at the two frames that meet there, unless one side dips at the join (a
 # recorded onset or release, or a note that began after a break). Walking out
 # from the join over its JOIN_NEAR nearest frames, a side passes a frame that
-# stands more than JOIN_LEVEL_DB under both the loudest of them and the other
-# side's frame at the join. The dip is the borrowed note's own move and stays;
-# read across it, the step was its depth, and half of it was put on the other
-# side's frames (14 dB over what was asked). A side that falls away from the
-# join (a release that goes on) or swells after it is read at the join.
+# stands more than JOIN_LEVEL_DB under both the loudest of them and the
+# loudest of the other side's (its level, past a dip of its own: measured
+# against the other side's frame at the join, a dip on both sides read the
+# shallower one as the step). The dip is the borrowed note's own move and
+# stays; read across it, the step was its depth, and half of it was put on the
+# other side's frames (14 dB over what was asked). A side that falls away from
+# the join (a release that goes on) or swells after it is read at the join.
 let JOIN_NEAR = 4
 
 let JOIN_LEVEL_DB = 4.0
 
 fn join_reads(db, left, right) {
-  let at = fn (side, across) {
-    let near = side.slice(0, Math.min(JOIN_NEAR, side.size()))
-    let top = near.map(|u| db[u]).max()
-    near.find(|u| db[u] >= top - JOIN_LEVEL_DB || db[u] >= across - JOIN_LEVEL_DB)
-  }
   let outward = iota(left.size()).map(|q| left[left.size() - 1 - q])
-  (at(outward, db[right[0]]), at(right, db[left[-1]]))
+  let near = |side| side.slice(0, Math.min(JOIN_NEAR, side.size()))
+  let top = |side| near(side).map(|u| db[u]).max()
+  let at = fn (side, across) {
+    let own = top(side)
+    near(side).find(|u| db[u] >= own - JOIN_LEVEL_DB || db[u] >= across - JOIN_LEVEL_DB)
+  }
+  (at(outward, top(right)), at(right, top(outward)))
 }
 
 # A curve `xs` with a join's step taken up, half by each side: `w` the frames
