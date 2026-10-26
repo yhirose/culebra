@@ -1266,7 +1266,8 @@ Fisher–Yatesによるインプレース置換。`nil`を返し、引数は破�
 
 対応する`weights`に比例する確率で`pop`から1要素を取り出します。
 `weights`はすべて数値かつ`pop`と同じ長さである必要があります。
-空または長さ不一致は`type error`。重み`0`は選ばれません。
+空または長さ不一致は`type error`。重み`0`は選ばれません。負または
+有限でない重み、およびすべてが`0`の重みは`ValueError`です。
 
 ```culebra
 Random.weighted_choice(['hit', 'miss'], [1, 9])  # ~10% 'hit'
@@ -2094,6 +2095,9 @@ JSON文字列をCulebraの値に変換します。
   既存の設定ファイル（`tsconfig.json`、VSCodeの`settings.json`等）を
   事前に除去せず読めます。既定は厳格なJSONで、コメントや末尾カンマは
   `ValueError`で拒否します。
+
+オブジェクト内で同じキーが2回現れたときは、最初のキーの位置のまま最後の
+値が残ります。
 
 不正な入力には`ValueError`が投げられ、構造化Errorの
 `e.line` / `e.col`（共に1-based、エラー位置の文字）にJSON内部の

@@ -1301,7 +1301,8 @@ mutated.
 Draw a single element from `pop` with probability proportional to the
 matching `weights` entry. Weights must all be numeric and of the same
 length as `pop`; empty or mismatched inputs raise `type error`.
-Weights of `0` are never selected.
+Weights of `0` are never selected. A negative or non-finite weight, or
+weights that are all `0`, raise `ValueError`.
 
 ```culebra
 Random.weighted_choice(['hit', 'miss'], [1, 9])  # ~10% 'hit'
@@ -2151,6 +2152,9 @@ Parse a JSON string into a Culebra value.
   reading existing config files (`tsconfig.json`, VSCode `settings.json`)
   without stripping them first. The default is strict JSON, which rejects
   comments and trailing commas with a `ValueError`.
+
+A key that appears twice in an object keeps its last value, at the
+position the first one had.
 
 Malformed input raises `ValueError` and the structured Error Object
 exposes the JSON-internal position via `e.line` / `e.col` (both
