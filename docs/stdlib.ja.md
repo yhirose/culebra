@@ -62,7 +62,7 @@
 22. [`Term`](#22-term) — TUI向けの端末の色・カーソル制御・サイズ・キー/マウス入力
 23. [`Log`](#23-log) — stderrへのレベル付き構造化ログ（text / JSON、child logger）
 24. [`TOML`](#24-toml) — TOML設定をparse / stringify
-25. [`XML`](#25-xml): XMLをparse / 検索（XPathの部分集合） / stringify。大きな文書向けの遅延イベント列
+25. [`XML`](#25-xml) — XMLをparse / 検索（XPathの部分集合） / stringify。大きな文書向けの遅延イベント列
 26. [`SQLite`](#26-sqlite) — 組み込みSQLデータベース（query / execute / プリペアド文 / トランザクション）
 27. [`Canvas`](#27-canvas) — ゲーム向けイミディエイトモード2Dフレームバッファ（図形 / スプライト / オフスクリーン描画先 / テキスト / キー・マウス・ゲームパッド / ウィンドウ制御）
 28. [`Scene`](#28-scene) — 手続きジオメトリ向けのretained-mode 3Dレンダラ
@@ -1503,7 +1503,7 @@ inspect(GC.refcount(obj) - base)  # => 0
 
 N次元数値テンソル。lazy計算グラフを構築し、`Tensor.eval(...)`で
 BLAS / vDSP経由のカーネルを起動して値を確定します。dtypeは
-`Float32`（デフォルト）と`Float64`、形状はvariadicか`[m, n]`
+`Float32`のみ、形状はvariadicか`[m, n]`
 配列で指定。`transpose` / `slice` / `reshape`はzero-copy view。
 
 ```culebra
@@ -1698,7 +1698,7 @@ let m = z.clamp(-1.0, 1.0)  # elementwise clip、[lo, hi]に収める
 | `.permute(axes: Array) -> Tensor` | view | 任意軸並べ替え。`axes[i]`が結果の軸`i`に対応する自分自身の軸を指定 |
 | `.slice(start, end) -> Tensor` | view | 軸0を`[start, end)`で切り出し |
 | `.narrow(params: Array) -> Tensor` | view | `[axis, start, end]`。`.slice()`を任意軸に一般化 |
-| `.reshape(dims: Array) -> Tensor` | view | 連続入力のみ。新形状 |
+| `.reshape(dims: Array) -> Tensor` | view / new buffer | 新形状。連続入力ならview、そうでなければ連続なコピー |
 | `.unfold(params: Array) -> Tensor` | view | `[axis, win, step]`。`axis`沿いのスライディングウィンドウ、末尾に長さ`win`の軸を追加 |
 | `.pad(params: Array) -> Tensor` | new buffer | `[axis, before, after]`。`axis`沿いにゼロパディング |
 | `.fold(params: Array) -> Tensor` | new buffer | `[axis, orig_size, step]`。`.unfold()`の逆——重なる窓をscatter-addで`axis`へ戻す |
@@ -1720,7 +1720,8 @@ lossなど単一要素の結果をreshapeせず読むのに使う。`loss.item()
 
 クラス方向のsoftmaxと`targets`に対するcross-entropyを1つのopに融合したもの。
 `self`は`[N, C]`のlogits、`targets`は行あたり1つのクラスid（`[N]`、
-`.index_select()`のindicesと同じくFloat値。要素値の範囲検査をしない点も同じ）。
+`.index_select()`のindicesと同じくFloat値。`[0, C)`の外のidは`.index_select()`の
+範囲外indexと同じく`ValueError`）。
 結果は行ごとのlossなので、どう畳むかは呼び手が決めます:
 
 ```culebra
@@ -1804,10 +1805,12 @@ op自身がvector-Jacobian productを知っています。tapeが記録される
 | メソッド | 戻り値 | 説明 |
 |---|---|---|
 | `.requires_grad() -> Tensor` | self | 葉に勾配累積を要求。チェーン可 |
-| `.backward() -> Nil` | — | `dL/dself = 1`を起点に全葉へ伝播 |
+| `.backward() -> Tensor` | self | `dL/dself = 1`を起点に全葉へ伝播 |
 | `.grad() -> Tensor` | Tensor | 累積勾配（`backward`前はzeros） |
-| `.zero_grad() -> Nil` | — | 次ステップ前に勾配をクリア |
+| `.zero_grad() -> Tensor` | self | 次ステップ前に勾配をクリア |
 | `.detach() -> Tensor` | Tensor | グラフも勾配も持たないmaterializedコピー |
+| `.clone() -> Tensor` | Tensor | ディープコピー。materialized、グラフも勾配追跡も持たない |
+| `Tensor.no_grad(fn) -> Any` | Any | 勾配追跡を抑制して`fn`を実行し、`fn`の戻り値を返す（下記） |
 
 `requires_grad`はforwardに伝播します — 勾配追跡する入力を持つop
 の出力も勾配を追跡します。微分可能なopは`+ - * /`、`.pow()`（底に
@@ -2285,10 +2288,10 @@ Arguments:
   input    input file
 
 Options:
-  -l, --lines        count lines
-  -w, --words        count words
+  -l, --lines    count lines
+  -w, --words    count words
       --encoding
-  -h, --help         show this help and exit
+  -h, --help    show this help and exit
 ```
 
 ### サブコマンド
@@ -2652,9 +2655,11 @@ enumもクラスと同じように渡せます。クロージャが名指した�
 ### 並列度の上限
 
 同時に生きているisolateには上限があります（既定はマシンのコア数、環境変数
-`CULEBRA_ISOLATE_LIMIT`で上書き可）。上限を超えるspawnは新しいスレッドを
-起こさず**現在のスレッド上で同期実行**されます — これにより再帰的並列が数千
-スレッドに爆発しません。`join()`は同じ結果を返し、変わるのはタイミングだけです。
+`CULEBRA_ISOLATE_LIMIT`で上書き可）。上限を超えるspawnは**その場でjoin**
+されます。専用のスレッドとヒープで走りますが、呼び出し側が終わるまで待つので、
+再帰的並列が数千スレッドに爆発しません。`join()`は同じ結果を返し、変わるのは
+タイミングだけです。channelを持つクロージャや引数は、待つとデッドロックし得る
+ので、常に専用のスレッドで走ります。
 
 ```culebra
 # doctest: skip
@@ -2676,7 +2681,8 @@ total  # => 45
 isolateは協調的にキャンセル可能です。`join()`せずにハンドルをdropする（または
 GCが回収する）とisolateに停止が伝わり、次の文境界またはchannelのブロッキング
 境界で巻き戻ります。暴走中・待機中のisolateがプログラムをハングさせることは
-ありません。
+ありません。実行中の`Time.sleep`は最後まで待ってから巻き戻るので、dropはその
+間待たされます。
 
 ### Channel — `Channel.new(cap = 1) -> (tx, rx)`
 
@@ -3146,9 +3152,10 @@ grid.drop()
 
 `receive`は名前と`@packable`型だけを取る — 要素数は親由来（なので
 `grid.count`が一致する）。子は同じ`@packable`クラスを宣言し、`receive`は
-レコードサイズの一致を確認して、レイアウト不一致・未知の名前・
-`SharedBuffer.shared(...)`でないbufferのときは`ValueError`を投げる（ヒープと
-ファイルのbufferはこの方法では渡せない — ファイルbufferは`path`を開き直して
+レコードサイズの一致を確認して、レイアウト不一致・未知の名前のときは
+`ValueError`を投げる。ヒープbufferやファイルbufferを`share:`に渡すと、子を
+起動する前に`Proc.run`自身が`ValueError`で拒否する（この方法で渡せるのは
+`SharedBuffer.shared(...)`のbufferだけ。ファイルbufferは`path`を開き直して
 共有する）。`Sys.executable`は実行中のculebraバイナリのパスで、culebraの
 ワーカーコピーを起動するのに使う。
 
@@ -3661,9 +3668,9 @@ assert_close(3.14, 3.1415, 0.01)
 
 ### 実装ノート
 
-matcher一族はculebraソース (cppではなく) で定義されており、
-lazy module機構で3 backend (VM / JIT / AOT) に共通でbind
-されます。matcher内部の`==` / `<`等の演算子dispatchは各
+比較系・真偽系のmatcherはネイティブの組み込みで、`assert_throws`だけが
+culebraソースで定義されlazy module機構でbindされます。どちらも
+3 backend (VM / JIT / AOT) で同じ実装を共有します。matcher内部の`==` / `<`等の演算子dispatchは各
 backendが既に実装している演算子dispatchそのもので、matcher専用
 のdrift防止ロジックは不要です。
 
@@ -3675,7 +3682,7 @@ backendが既に実装している演算子dispatchそのもので、matcher専�
 Unicodeの **extended grapheme cluster** 単位でマッチし、コードポイント単位では
 ありません — `.`は1つのユーザー知覚文字を消費します（`/./`が`🇯🇵`に1要素として
 マッチ）。マッチは**線形時間**（Thompson NFA / Pike VM + lazy DFA fast path）で、
-catastrophic backtrackingが原理的に起きないためbackreferenceはありません。
+そのためcatastrophic backtrackingは起きず、backreferenceもありません。
 オフセットは**バイトオフセット**（Go流）で常にgrapheme境界上です。
 
 `Regex`は **`Regex.compile`で一度コンパイルして再利用**します（コンパイル済み
@@ -3737,8 +3744,8 @@ inspect(Regex.find('x', "y")?.value ?? "none")  # => 'none'
 | `re.match(s)` | `Match`または`nil` — 先頭anchoredマッチ |
 | `re.find_all(s)` | `[Match]` — 全ての非重複マッチ |
 | `re.find_all_str(s)` | `[String]` — マッチ文字列のみ（`Match`を作らない。match-denseで約12倍速） |
-| `re.find_all_index(s)` | `[Int]` — flatなバイトspan `[s0, e0, s1, e1, …]`（位置のみ・確保は配列1個） |
-| `re.count(s)` | `Int` — 非重複マッチ数（オブジェクト確保なし） |
+| `re.find_all_index(s)` | `[Long]` — flatなバイトspan `[s0, e0, s1, e1, …]`（位置のみ・確保は配列1個） |
+| `re.count(s)` | `Long` — 非重複マッチ数（オブジェクト確保なし） |
 | `re.find_iter(s)` | `Iterator<Match>` — 遅延。途中終了可（`.take(n)`） |
 | `re.replace_all(s, repl)` | `String` — `repl`はテンプレート（`$1` / `$<name>` / `$$`）**または** `fn (Match) -> String`、全マッチ置換 |
 | `re.replace_first(s, repl)` | `String` — `repl`の文法は同じ、最左マッチのみ置換。マッチなしなら`s`をそのまま返す |
@@ -4168,7 +4175,7 @@ srv.get("/json", fn (req) {
     status: 201,
     body: '{"ok":true}',
     content_type: "application/json",
-    headers: {"X-Trace": req.headers["X-Request-Id"]},
+    headers: {"X-Trace": req.headers.get("X-Request-Id", "")},
   }
 })
 srv.static("/assets", "./public")
@@ -4191,7 +4198,10 @@ srv.listen(8080)  # ブロックする。Ctrl+C で停止
 **リクエスト`req`** は`method`・`path`・`body`（String）と、`headers`・`query`
 （解析済みクエリ文字列）・`params`（マッチしたルートのパスパラメータ。例: `:id` →
 `req.params["id"]`）をStringのObjectとして持つオブジェクトです（Express流の
-名前）。存在しないキーは`nil`を返します。
+名前）。存在しないキーはドット参照（`req.query.page`）なら`nil`ですが、
+添字（`req.headers["X-Id"]`）は`KeyError`を投げ、サーバは`500`で応えます。
+無いかもしれないヘッダやパラメータは`.get(name, default)`で読みます
+（ハイフンを含むヘッダ名はドット参照できません）。
 
 **ハンドラの戻り値**がレスポンスになります:
 
@@ -4843,7 +4853,7 @@ let st = Term.style(fg: (255, 128, 0), bold: true)  # Screen セル用
 
 `Term.attach_tty() -> Bool`はstdinを制御端末へ再接続する（現在のstdinが
 パイプでもリダイレクトされたファイルでも上書きする）。raw modeとキー読み取り
-（`Term.app`・`Term.poll`・`Term.read_key`）は本物のttyでしか機能しないため、
+（`Term.app`・`Term.poll`）は本物のttyでしか機能しないため、
 stdinに内容を流し込まれたスクリプト（`some-command | script.cul`）は先に
 そのパイプを読み切ってから`Term.attach_tty()`を呼んで対話的なキー入力へ
 切り替えられる —— `less`と同じパターン。制御端末が一切無い場合（完全に
@@ -4953,23 +4963,24 @@ Term.app(fn (s) {
 各呼び出しはメッセージと省略可能な構造化フィールド`Object`を取る。しきい値以上の
 レコードだけが出力される（既定`info`なので`debug`は落ちる）。しきい値とフォーマットは
 `LOG_LEVEL` / `LOG_FORMAT`環境変数を既定値とし、`set_level` / `set_format`で上書き可能
-（不明なレベル・フォーマットは`ValueError`）。タイムスタンプ（ISO 8601 UTC）は常に付与。
+（不明なレベル・フォーマットは`ValueError`）。タイムスタンプ（ISO 8601 UTC、ナノ秒まで）は常に付与。
 
 `text`は人間可読（stderrが端末ならlevelに色が付く）:
 
 ```
-2026-06-24T21:30:01Z info request done method=GET status=200 ms=12.4
+2026-06-24T21:30:01.123456789Z info request done method=GET status=200 ms=12.4
 ```
 
 `json`は1行1オブジェクト（JSON Lines — `jq`やログシッパーへ）:
 
 ```json
-{"time":"2026-06-24T21:30:01Z","level":"info","msg":"request done","method":"GET","status":200,"ms":12.4}
+{"method":"GET","status":200,"ms":12.4,"time":"2026-06-24T21:30:01.123456789Z","level":"info","msg":"request done"}
 ```
 
 `Log.with(fields)`は **child logger** を返し、`fields`を全行に乗せる
 （リクエスト/ジョブ単位の文脈を毎回でなく一度だけ束縛）。childは親のレベル/フォーマットを
-共有し、ネスト可能。予約キー`time`・`level`・`msg`は同名フィールドより常に優先される。
+共有し、ネスト可能。`json`では予約キー`time`・`level`・`msg`が同名フィールドより優先される。
+`text`では同名のフィールドも普通の`key=value`として出力される。
 
 ```culebra
 # doctest: skip
@@ -5462,7 +5473,7 @@ raylib + SDL3を使い）**実際のデスクトップウィンドウを開く**
 ただのキー（`Canvas.key`参照）であり、組み込みの終了操作ではない。
 **ヘッドレスは宣言するもので、推測されるものではない**:
 ウィンドウバックエンド無しのビルド、および`CULEBRA_CANVAS_HEADLESS`が
-`0` / `off`以外に設定された実行では**ヘッドレス**: ピクセル / スプライト操作は同一に
+空・`0`・`off`以外に設定された実行では**ヘッドレス**: ピクセル / スプライト操作は同一に
 動く（振る舞いはVM / JIT / AOTで一致し`Canvas.get_pixel`で検証可能）が、
 何も表示されず、入力は「ボタンなし」を返す。この環境変数が、
 ディスプレイの無いサーバや（`just`の全レシピがexportするので）テストスイートが
@@ -5546,7 +5557,9 @@ isolate（描画でも`width`/`get_pixel`のような読み取りでも）が持
 0列目に吸着せず範囲外のままになる。非有限値と範囲外の値は例外を投げず飽和し、
 `Math.nan`は0になる。これにより、位置を浮動小数で計算するプログラム（投影、
 スクロールオフセット）は1つずつ丸めずそのまま渡せる。色 / blitフラグ /
-アルファ / スプライトハンドルは`Long`のまま。
+アルファ / スプライトハンドル、フレームバッファとスプライトの寸法
+（`Canvas.init`、`Canvas.run`、`Sprite.new` / `blank`）、`Canvas.text`の
+`scale`は`Long`のまま。
 
 `Canvas.polygon`の`points`は平坦な`[x0, y0, x1, y1, …]`の頂点列（3頂点
 以上、他の座標と同じくLongかFloat）で、輪郭は自動で閉じる。末尾の半端な1個
@@ -5653,7 +5666,7 @@ Canvas.draw_to(bgd, fn () {
   # 背景は一度だけ描く…
   Canvas.clear(sky)
   for i in 0..50 {
-    Canvas.circle(Random.below(320), Random.below(240), 2, star)
+    Canvas.circle(Random.int(0, 320), Random.int(0, 240), 2, star)
   }
 })
 Canvas.run(320, 240, fn () {
@@ -5662,8 +5675,10 @@ Canvas.run(320, 240, fn () {
 })
 ```
 
-`ValueError`になるのは2つ: スプライトを自分自身に描くこと（blitが自分の
-書き込みを読んでしまう）と、いま描画先になっているスプライトを解放すること。
+スプライトを自分自身に描くこと（blitが自分の書き込みを読んでしまう）は
+`ValueError`になる。いま描画先になっているスプライトの解放も拒否されるが、
+`drop`のエラーは投げられずログに出るので、プログラムには標準エラーへの
+`drop: cannot free the sprite currently drawn to`が見え、呼び出しは`nil`を返す。
 どちらも他のCanvasエラーと同じくbackend対称。
 
 ### 画像の保存
@@ -5795,7 +5810,7 @@ Canvas.run(320, 240, fn () {
 | `input.down(btn) -> Bool` | 今押されている |
 | `input.pressed(btn) -> Bool` | **このフレーム**に押された（フラップのトリガ） |
 
-6ボタンの外側は`Canvas.key`が任意のキーを名前で報告する — **`Term.read_key`
+6ボタンの外側は`Canvas.key`が任意のキーを名前で報告する — **`Term.poll`
 と同じ語彙**なので、キー処理コードは2つのnamespace間をそのまま移動できる:
 印字可能文字（`"a"`、`" "`、`"-"`）か特殊キー名（`"up"` / `"down"` / `"left"` /
 `"right"`、`"enter"`、`"escape"`、`"tab"`、`"backspace"`、`"insert"`、
@@ -6153,8 +6168,8 @@ canvasはGPUでテクスチャを描く方法（`canvas()`と`canvas_end()`の�
 | `img.copy() -> Image` / `img.save_png(path) -> Bool` / `img.to_png() -> String` | コピー / PNGに書く / PNGのバイト列 |
 | `img.fill(r, g, b, a = 255)` | 全ピクセル |
 | `img.pixel(x, y, r, g, b, a = 255)` | 1ピクセル |
-| `img.rect(x, y, w, h, r, g, b, a = 255)` / `img.rect_line(x, y, w, h, r, g, b, a = 255)` | 塗り / 枝線の矩形 |
-| `img.circle(x, y, radius, r, g, b, a = 255)` / `img.circle_line(x, y, radius, r, g, b, a = 255)` | 塗り / 枝線の円 |
+| `img.rect(x, y, w, h, r, g, b, a = 255)` / `img.rect_line(x, y, w, h, r, g, b, a = 255)` | 塗り / 枠線の矩形 |
+| `img.circle(x, y, radius, r, g, b, a = 255)` / `img.circle_line(x, y, radius, r, g, b, a = 255)` | 塗り / 枠線の円 |
 | `img.line(x0, y0, x1, y1, thick, r, g, b, a = 255)` | 線 |
 | `img.triangle(x0, y0, x1, y1, x2, y2, r, g, b, a = 255)` | 塗り三角形 |
 | `img.text(s, x, y, size, r, g, b, a = 255, font = nil, spacing = 0.0)` | `Font`でテキスト。組み込みフォント（`nil`）はウィンドウがあってはじめて存在する |
@@ -6165,7 +6180,7 @@ canvasはGPUでテクスチャを描く方法（`canvas()`と`canvas_end()`の�
 | `img.blit(src, x, y, r = 255, g = 255, b = 255, a = 255)` | 別の画像を色を掛けて重ねる |
 | `img.blit_rot(src, x, y, rot = 0.0, scale = 1.0)` | 同じく、中心を`(x, y)`に置いて回転・拡縮 |
 | `img.blur(radius)` / `img.tint(r, g, b)` / `img.invert()` / `img.grayscale()` / `img.brightness(k)` | 画像全体のパス |
-| `img.flip_v()` / `img.flip_h()` / `img.rotate(degrees)` / `img.resize(w, h)` / `img.crop(x, y, w, h)` | 幾何 |
+| `img.flip_v()` / `img.flip_h()` / `img.rotate(degrees: Long)` / `img.resize(w, h)` / `img.crop(x, y, w, h)` | 幾何（`rotate`は整数の度） |
 | `img.to_normal(strength = 1.0)` | 高さ（赤チャンネル）をタンジェント空間の法線マップに。+Yが上、端はラップするのでタイルの法線もタイルする |
 
 描画呼び出しはfluentなので、テクスチャ1枚が1式になる:
@@ -6201,10 +6216,10 @@ let road = view.add_material().texture(view.texture(asphalt)).pbr(0.0, 0.9)
 | `view.alpha(a)` | 以降の2D描画の不透明度（0–255） |
 | `view.text(s, x, y, size, r, g, b, font = nil, spacing = 0.0, rot = 0.0)` | `Font`で、`font`が`nil`なら組み込みビットマップフォントでテキスト描画。`rot`は`(x, y)`まわりの回転 |
 | `view.text_width(s, size, font = nil, spacing = 0.0) -> Float` / `view.text_height(s, size, font = nil, spacing = 0.0) -> Float` | `text`が占める矩形（右寄せ・中央寄せ用） |
-| `view.rect(x, y, w, h, r, g, b)` / `view.rect_line(x, y, w, h, thick, r, g, b)` | 塗り / 枝線の矩形 |
+| `view.rect(x, y, w, h, r, g, b)` / `view.rect_line(x, y, w, h, thick, r, g, b)` | 塗り / 枠線の矩形 |
 | `view.rect_round(x, y, w, h, roundness, r, g, b)` / `view.rect_round_line(x, y, w, h, roundness, thick, r, g, b)` | 丸角（`roundness`は0–1） |
 | `view.rect_gradient(x, y, w, h, r1,g1,b1, r2,g2,b2, horizontal = false)` | 上 → 下（または左 → 右）のグラデーション |
-| `view.circle(x, y, radius, r, g, b)` / `view.circle_line(x, y, radius, r, g, b)` | 塗り / 枝線の円 |
+| `view.circle(x, y, radius, r, g, b)` / `view.circle_line(x, y, radius, r, g, b)` | 塗り / 枠線の円 |
 | `view.circle_gradient(x, y, radius, r1,g1,b1, r2,g2,b2)` | 中心 → 外周のグラデーション（ランプ） |
 | `view.ring(x, y, r_in, r_out, a0, a1, r, g, b)` | 2つの半径の間の弧帯、`a0`から`a1`まで（ゲージ） |
 | `view.line(x0, y0, x1, y1, thick, r, g, b)` | 線 |
@@ -6240,7 +6255,7 @@ ASCII）: 数字と数語のHUDはそれだけ列挙して小さなアトラス�
 ### 入力
 
 入力は毎フレームviewからポーリングする。キーは名前で指す — **`Canvas.key`と
-`Term.read_key`と同じ語彙**: 印字可能な1文字（`"a"`、`" "`、`"-"`）か特殊キー名
+`Term.poll`と同じ語彙**: 印字可能な1文字（`"a"`、`" "`、`"-"`）か特殊キー名
 （`"up"` / `"down"` / `"left"` / `"right"`、`"enter"`、`"escape"`、`"tab"`、
 `"backspace"`、`"insert"`、`"delete"`、`"home"`、`"end"`、`"pageup"`、
 `"pagedown"`、`"f1"`…`"f12"`。`"space"`は`" "`の読みやすい別名）。未知の名前は
@@ -7315,7 +7330,7 @@ C++のシグネチャをそのまま持ち込めないもの:
 閉じた中間表現(IR)と、それを実行するレジスタ方式のbytecodeコンパイラ・実行器 ——
 [cpp-vmlib](https://github.com/yhirose/cpp-vmlib)。`PEG`がcpp-peglibを取り込むのと
 同じ形でvendorしている。`PEG`が構文木を返すのに対して、`CodeGen`はその構文木で
-何をするかを置く場所を提供する: `PEG.parse`が返した木を`match`で辿りながら、
+何をするかを置く場所を提供する: `parser.parse`が返した木を`match`で辿りながら、
 小さな言語のIRを手で組み立てて実行する。
 
 ```culebra
@@ -7366,7 +7381,7 @@ let body = m.block(stmts: [m.intrinsic(name: 'print', args: args, line: 1, col: 
 ### 位置は`line:`/`col:`でなく`at:`
 
 builderの呼び出しはどれも、そのノードがどこから来たかを記録する。`line`と
-`column`を持つObjectなら何でも`at:`に渡せる —— `PEG.parse`のノードでも、
+`column`を持つObjectなら何でも`at:`に渡せる —— `parser.parse`のノードでも、
 フロントエンドが自分で作ったコードのために用意したものでもよい。2つの数値を
 自分で取り出す必要はない:
 
@@ -8861,7 +8876,8 @@ trait注釈が受け付けるのはクラスのインスタンスで、Objectリ
 
 `srv.static(mount, dir)`（[§15](#15-http)）と`Desktop.run(assets: dir)`は、
 どの`Dir`でも配信します。Content-Typeは各ファイルの拡張子から決まり、
-ディレクトリ（やマウント位置そのもの）へのリクエストにはその`index.html`を返し、
+末尾にスラッシュのあるディレクトリ（やマウント位置そのもの）へのリクエストにはその
+`index.html`を返し（スラッシュ無しだとDirのマウントは`404`）、
 ファイルでないパスは登録ルートにフォールスルーします（APIルートが常に優先）。
 
 ```culebra

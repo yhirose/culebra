@@ -64,7 +64,7 @@ Conventions used below:
 22. [`Term`](#22-term) — terminal color, cursor control, size, and key/mouse input for TUIs
 23. [`Log`](#23-log) — leveled, structured logging to stderr (text / JSON, child loggers)
 24. [`TOML`](#24-toml) — parse / stringify TOML configuration
-25. [`XML`](#25-xml): parse / search (an XPath subset) / stringify XML; a lazy event stream for large documents
+25. [`XML`](#25-xml) — parse / search (an XPath subset) / stringify XML; a lazy event stream for large documents
 26. [`SQLite`](#26-sqlite) — embedded SQL database (query / execute / prepared statements / transactions)
 27. [`Canvas`](#27-canvas) — immediate-mode 2D framebuffer for games (shapes, sprites, offscreen targets, text, keys/mouse/gamepad, window controls)
 28. [`Scene`](#28-scene) — retained-mode 3D renderer for procedural geometry
@@ -1545,7 +1545,7 @@ what the program can see.
 
 N-dimensional numeric tensor. Builds a lazy computation graph and
 launches BLAS / vDSP kernels through `Tensor.eval(...)` to materialize
-values. Supported dtypes are `Float32` (default) and `Float64`.
+values. The dtype is `Float32` only.
 Shapes can be supplied as variadic args or as an `[m, n]` Array.
 `transpose`, `slice`, and `reshape` produce zero-copy views.
 
@@ -1742,7 +1742,7 @@ Shape ops, linear algebra, and reductions use method syntax:
 | `.permute(axes: Array) -> Tensor` | view | general axis reorder; `axes[i]` names which of self's axes becomes result axis `i` |
 | `.slice(start, end) -> Tensor` | view | take axis 0 in `[start, end)` |
 | `.narrow(params: Array) -> Tensor` | view | `[axis, start, end]`; `.slice()` generalized to any axis |
-| `.reshape(dims: Array) -> Tensor` | view | contiguous input only; new shape |
+| `.reshape(dims: Array) -> Tensor` | view / new buffer | new shape; a view of contiguous input, a contiguous copy otherwise |
 | `.unfold(params: Array) -> Tensor` | view | `[axis, win, step]`; sliding window along `axis`, adds a trailing size-`win` axis |
 | `.pad(params: Array) -> Tensor` | new buffer | `[axis, before, after]`; zero-pad along `axis` |
 | `.fold(params: Array) -> Tensor` | new buffer | `[axis, orig_size, step]`; `.unfold()`'s inverse — scatter-add every window overlap back onto `axis` |
@@ -1764,8 +1764,8 @@ reshaping. `loss.item()` replaces `to_float(loss.to_array()[0])`.
 
 Softmax over the classes and cross-entropy against `targets`, fused into one
 op. `self` is `[N, C]` logits; `targets` holds one class id per row (`[N]`,
-Float-valued like `.index_select()`'s indices, whose element values are
-likewise not range-checked). The result is one loss per row, so the caller
+Float-valued like `.index_select()`'s indices; an id outside `[0, C)` raises
+a `ValueError`, as an out-of-range `.index_select()` index does). The result is one loss per row, so the caller
 picks the reduction:
 
 ```culebra
@@ -1850,10 +1850,12 @@ the underlying tensor library.
 | Method | Returns | Description |
 |---|---|---|
 | `.requires_grad() -> Tensor` | self | mark a leaf to accumulate grad; chainable |
-| `.backward() -> Nil` | — | seed `dL/dself = 1` and propagate to every leaf |
+| `.backward() -> Tensor` | self | seed `dL/dself = 1` and propagate to every leaf |
 | `.grad() -> Tensor` | Tensor | the accumulated gradient (zeros until `backward`) |
-| `.zero_grad() -> Nil` | — | clear the gradient before the next step |
+| `.zero_grad() -> Tensor` | self | clear the gradient before the next step |
 | `.detach() -> Tensor` | Tensor | a materialized copy with no graph and no grad |
+| `.clone() -> Tensor` | Tensor | a deep copy: materialized, no graph, no grad tracking |
+| `Tensor.no_grad(fn) -> Any` | Any | run `fn` with grad tracking suppressed; returns what `fn` returns (below) |
 
 `requires_grad` propagates forward: any op with a grad-tracking input
 produces a grad-tracking output. Differentiable ops include `+ - * /`,
@@ -2347,10 +2349,10 @@ Arguments:
   input    input file
 
 Options:
-  -l, --lines        count lines
-  -w, --words        count words
+  -l, --lines    count lines
+  -w, --words    count words
       --encoding
-  -h, --help         show this help and exit
+  -h, --help    show this help and exit
 ```
 
 ### Subcommands
@@ -2736,10 +2738,12 @@ is a `SendError`.
 ### Parallelism cap
 
 Live isolates are capped (default: the machine's core count; override with the
-`CULEBRA_ISOLATE_LIMIT` environment variable). A spawn beyond the cap runs
-**synchronously on the current thread** instead of starting a new one — so
-recursive parallelism can't explode into thousands of threads. `join()` still
-returns the same result; only the timing differs.
+`CULEBRA_ISOLATE_LIMIT` environment variable). A spawn beyond the cap is
+**joined at once**: it still runs on a thread and heap of its own, but the
+caller waits for it, so recursive parallelism can't explode into thousands of
+threads. `join()` still returns the same result; only the timing differs. A
+closure or argument that carries a channel always gets its own thread, because
+waiting for it could deadlock.
 
 ```culebra
 # doctest: skip
@@ -2761,7 +2765,8 @@ total  # => 45
 An isolate is cooperatively cancellable. Dropping its handle without `join()`
 (or letting the GC collect it) signals the isolate to stop; it unwinds at its
 next statement or blocking-channel boundary, so a runaway or idle isolate never
-hangs the program.
+hangs the program. A `Time.sleep` already in progress runs to its end first, so
+dropping the handle waits for it.
 
 ### Channels — `Channel.new(cap = 1) -> (tx, rx)`
 
@@ -3243,9 +3248,10 @@ grid.drop()
 `receive` takes only the name and the `@packable` type — the element count comes
 from the parent (so `grid.count` matches). The child declares the same
 `@packable` class; `receive` checks the record sizes agree and raises a
-`ValueError` on a layout mismatch, an unknown name, or a buffer that wasn't a
-`SharedBuffer.shared(...)` (heap and file buffers don't cross this way — a file
-buffer is shared by re-opening its `path`). `Sys.executable` is the path to the
+`ValueError` on a layout mismatch or an unknown name. A heap or file buffer
+passed in `share:` is refused with a `ValueError` by `Proc.run` itself, before
+the child starts (only a `SharedBuffer.shared(...)` buffer crosses this way; a
+file buffer is shared by re-opening its `path`). `Sys.executable` is the path to the
 running culebra binary, for launching a worker copy of culebra.
 
 `Proc.run` blocks until the child exits, so its writes are complete on return.
@@ -3771,9 +3777,10 @@ assert_close(3.14, 3.1415, 0.01)
 
 ### Implementation note
 
-The matcher family is defined in culebra source (not native C++) and
-bound via the lazy module mechanism so that all three backends
-(VM / JIT / AOT) share one implementation. Operator dispatch
+The comparison and truthiness matchers are native builtins, and
+`assert_throws` is defined in culebra source and bound via the lazy module
+mechanism, so that all three backends (VM / JIT / AOT) share one
+implementation of each. Operator dispatch
 (`==`, `<` etc.) inside the matchers is the same operator dispatch
 each backend already implements, so `__eq__` / `__lt__` semantics
 agree without any matcher-specific drift logic.
@@ -3851,8 +3858,8 @@ inspect(Regex.find('x', "y")?.value ?? "none")  # => 'none'
 | `re.match(s)` | `Match` or `nil` — match anchored at the start |
 | `re.find_all(s)` | `[Match]` — all non-overlapping matches |
 | `re.find_all_str(s)` | `[String]` — just the matched texts (no `Match` objects; ~12× faster on match-dense input) |
-| `re.find_all_index(s)` | `[Int]` — flat byte spans `[s0, e0, s1, e1, …]` (positions only, one allocation total) |
-| `re.count(s)` | `Int` — number of non-overlapping matches (no objects allocated) |
+| `re.find_all_index(s)` | `[Long]` — flat byte spans `[s0, e0, s1, e1, …]` (positions only, one allocation total) |
+| `re.count(s)` | `Long` — number of non-overlapping matches (no objects allocated) |
 | `re.find_iter(s)` | `Iterator<Match>` — lazy; supports early exit (`.take(n)`) |
 | `re.replace_all(s, repl)` | `String` — `repl` is a template (`$1` / `$<name>` / `$$`) **or** a `fn (Match) -> String`, every match |
 | `re.replace_first(s, repl)` | `String` — same `repl` grammar, only the leftmost match; unchanged if there is no match |
@@ -4295,7 +4302,7 @@ srv.get("/json", fn (req) {
     status: 201,
     body: '{"ok":true}',
     content_type: "application/json",
-    headers: {"X-Trace": req.headers["X-Request-Id"]},
+    headers: {"X-Trace": req.headers.get("X-Request-Id", "")},
   }
 })
 srv.static("/assets", "./public")
@@ -4318,7 +4325,10 @@ srv.listen(8080)  # blocks; Ctrl+C to stop
 **The request `req`** is an object with `method`, `path`, and `body` (Strings), and
 `headers`, `query` (the parsed query string), and `params` (matched route path
 parameters, e.g. `:id` → `req.params["id"]`) as objects of String — Express-style
-names. A missing key reads as `nil`.
+names. A missing key reads as `nil` with dot access (`req.query.page`), but
+a subscript (`req.headers["X-Id"]`) raises a `KeyError`,
+which the server answers as `500`; use `.get(name, default)` for a header
+or parameter that may be absent (a hyphenated header name cannot use dot access).
 
 **The handler's return value** becomes the response:
 
@@ -5000,7 +5010,7 @@ let st = Term.style(fg: (255, 128, 0), bold: true)  # for a Screen cell
 
 `Term.attach_tty() -> Bool` reattaches stdin to the controlling terminal,
 replacing whatever stdin currently is (a pipe, a redirected file). Raw mode
-and key reads (`Term.app`, `Term.poll`, `Term.read_key`) only work off a real
+and key reads (`Term.app`, `Term.poll`) only work off a real
 tty, so a script fed content on stdin (`some-command | script.cul`) can drain
 that pipe first, then call `Term.attach_tty()` to switch to interactive key
 input — the same pattern `less` uses. Returns `false` (stdin is left
@@ -5113,24 +5123,25 @@ Each call takes a message and an optional `Object` of structured fields. Only
 records at or above the threshold are emitted (default `info`, so `debug` is
 dropped). The threshold and format default from the `LOG_LEVEL` / `LOG_FORMAT`
 environment variables and can be overridden with `set_level` / `set_format`; an
-unknown level or format raises `ValueError`. A timestamp (ISO 8601 UTC) is always included.
+unknown level or format raises `ValueError`. A timestamp (ISO 8601 UTC, to the nanosecond) is always included.
 
 `text` is human-readable (the level is colored when stderr is a terminal):
 
 ```
-2026-06-24T21:30:01Z info request done method=GET status=200 ms=12.4
+2026-06-24T21:30:01.123456789Z info request done method=GET status=200 ms=12.4
 ```
 
 `json` emits one object per line (JSON Lines — pipe to `jq` or a log shipper):
 
 ```json
-{"time":"2026-06-24T21:30:01Z","level":"info","msg":"request done","method":"GET","status":200,"ms":12.4}
+{"method":"GET","status":200,"ms":12.4,"time":"2026-06-24T21:30:01.123456789Z","level":"info","msg":"request done"}
 ```
 
 `Log.with(fields)` returns a **child logger** that carries `fields` on every
 line, so request- or job-scoped context is bound once instead of repeated.
-Children share the global level/format and can nest. The reserved keys `time`,
-`level`, and `msg` always win over a field of the same name.
+Children share the global level/format and can nest. In `json` mode the
+reserved keys `time`, `level`, and `msg` win over a field of the same name; in
+`text` mode a field with such a name is printed as an ordinary `key=value`.
 
 ```culebra
 # doctest: skip
@@ -5647,7 +5658,7 @@ window (its close box, or a script's own `Canvas.quit()`) ends the `run`
 loop — Esc is an ordinary key here (see `Canvas.key`), not a built-in quit.
 **Headless is declared, never inferred**:
 in a build without the window backend — or in any run with
-`CULEBRA_CANVAS_HEADLESS` set to anything but `0`/`off` — the backend is
+`CULEBRA_CANVAS_HEADLESS` set to anything but empty, `0` or `off` — the backend is
 **headless**: the pixel and sprite ops run identically (so behaviour is the same
 across VM / JIT / AOT and testable via `Canvas.get_pixel`), but nothing
 is displayed and input reads as "no button". That variable is
@@ -5735,7 +5746,9 @@ negative coordinate stays off-buffer instead of snapping onto column 0.
 Non-finite and out-of-range values saturate rather than trap, and `Math.nan`
 reads as 0. This lets a program that computes positions in floating point — a
 projection, a scroll offset — pass them straight in instead of rounding each
-one itself. Colors, blit flags, alpha and sprite handles remain `Long`.
+one itself. Colors, blit flags, alpha, sprite handles, the framebuffer and
+sprite dimensions (`Canvas.init`, `Canvas.run`, `Sprite.new`/`blank`) and
+`Canvas.text`'s `scale` remain `Long`.
 
 `Canvas.polygon` takes `points` as a flat `[x0, y0, x1, y1, …]` list of at
 least three vertices — Longs or Floats, like every other coordinate — and
@@ -5849,7 +5862,7 @@ Canvas.draw_to(bgd, fn () {
   # render the backdrop once…
   Canvas.clear(sky)
   for i in 0..50 {
-    Canvas.circle(Random.below(320), Random.below(240), 2, star)
+    Canvas.circle(Random.int(0, 320), Random.int(0, 240), 2, star)
   }
 })
 Canvas.run(320, 240, fn () {
@@ -5858,9 +5871,11 @@ Canvas.run(320, 240, fn () {
 })
 ```
 
-Two things refuse with a `ValueError`: drawing a sprite onto itself (a blit
-would read its own writes), and freeing the sprite currently drawn to. Both
-are backend-symmetric, like every Canvas error.
+Drawing a sprite onto itself (a blit would read its own writes) raises a
+`ValueError`. Freeing the sprite currently drawn to is refused too, but `drop`
+errors are logged rather than raised, so the program sees
+`drop: cannot free the sprite currently drawn to` on stderr and the call returns
+`nil`. Both are backend-symmetric, like every Canvas error.
 
 ### Saving an image
 
@@ -5997,7 +6012,7 @@ detection, `Canvas.Input.new()` tracks the previous frame:
 | `input.pressed(btn) -> Bool` | button went down **this** frame (the flap trigger) |
 
 Beyond the six buttons, `Canvas.key` reports any key by name — **the same
-vocabulary `Term.read_key` uses**, so key handling code moves between the two
+vocabulary `Term.poll` uses**, so key handling code moves between the two
 namespaces unchanged: a printable character (`"a"`, `" "`, `"-"`) or a
 special-key name (`"up"` / `"down"` / `"left"` / `"right"`, `"enter"`,
 `"escape"`, `"tab"`, `"backspace"`, `"insert"`, `"delete"`, `"home"`,
@@ -6380,7 +6395,7 @@ when the text drawn at its `size` would be.
 | `img.blit(src, x, y, r = 255, g = 255, b = 255, a = 255)` | another image onto this one, tinted |
 | `img.blit_rot(src, x, y, rot = 0.0, scale = 1.0)` | the same, turned and scaled about its centre at `(x, y)` |
 | `img.blur(radius)` / `img.tint(r, g, b)` / `img.invert()` / `img.grayscale()` / `img.brightness(k)` | whole-image passes |
-| `img.flip_v()` / `img.flip_h()` / `img.rotate(degrees)` / `img.resize(w, h)` / `img.crop(x, y, w, h)` | geometry |
+| `img.flip_v()` / `img.flip_h()` / `img.rotate(degrees: Long)` / `img.resize(w, h)` / `img.crop(x, y, w, h)` | geometry (`rotate` takes whole degrees) |
 | `img.to_normal(strength = 1.0)` | height (the red channel) to a tangent-space normal map, +Y up, edges wrapping so a tile's normals tile |
 
 The drawing calls are fluent, so a texture is one expression:
@@ -6456,7 +6471,7 @@ what was made. Like a texture, a font belongs to the view that made it.
 ### Input
 
 Input is polled from the view each frame. Keys are named — **the same
-vocabulary `Canvas.key` and `Term.read_key` use**: a printable character
+vocabulary `Canvas.key` and `Term.poll` use**: a printable character
 (`"a"`, `" "`, `"-"`) or a special-key name (`"up"` / `"down"` / `"left"` /
 `"right"`, `"enter"`, `"escape"`, `"tab"`, `"backspace"`, `"insert"`,
 `"delete"`, `"home"`, `"end"`, `"pageup"`, `"pagedown"`, `"f1"`…`"f12"`;
@@ -6897,8 +6912,7 @@ inspect(a + Vector3.new(1, 1, 1))  # => (2.0, 3.0, 4.0)
 
 ## 33. `Deque`
 
-A double-ended queue — an ordinary culebra class
-, not a language builtin. Backed by a
+A double-ended queue — an ordinary culebra class, not a language builtin. Backed by a
 growable ring buffer (array + head index + count), so `push`/`pop` at
 either end are O(1) amortized. `Array` (language spec §18) only ever
 grows or shrinks at its end (`push`/`pop`); a FIFO queue built on
@@ -6940,8 +6954,7 @@ ambiguity `Array.pop()` already accepts (a pushed `nil` and an empty
 
 ## 34. `PriorityQueue`
 
-A binary min-heap over an `Array` — an ordinary culebra class
-, not a language builtin.
+A binary min-heap over an `Array` — an ordinary culebra class, not a language builtin.
 `push`/`pop` are O(log n); the naive alternative — an `Array` kept
 sorted, or scanned for the minimum on every pop — is O(n log n) or
 O(n) per operation.
@@ -7574,7 +7587,7 @@ A closed intermediate representation and the register-bytecode compiler and
 executor that run it — [cpp-vmlib](https://github.com/yhirose/cpp-vmlib),
 vendored the same way `PEG` vendors cpp-peglib. Where `PEG` gets you a syntax
 tree, `CodeGen` gets you a place to put what you do with one: build a small
-language's IR by hand, from a `match` over the tree `PEG.parse` returned, and
+language's IR by hand, from a `match` over the tree `parser.parse` returned, and
 run it.
 
 ```culebra
@@ -7628,7 +7641,7 @@ that the array goes straight in.
 ### Positions: `at:` instead of `line:` and `col:`
 
 Every builder call records where the node came from. Pass `at:` any Object
-with `line` and `column` — a `PEG.parse` node, or one a front end made up
+with `line` and `column` — a `parser.parse` node, or one a front end made up
 for code it invented — instead of picking the two numbers out yourself:
 
 ```culebra
@@ -9237,7 +9250,8 @@ its bytes, when it is first used: an archive whose file is gone by then raises
 
 `srv.static(mount, dir)` ([§15](#15-http)) and `Desktop.run(assets: dir)`
 serve any Dir. The Content-Type comes from each file's extension, a request
-for a directory (or for the mount itself) serves its `index.html`, and a path
+for a directory with a trailing slash (or for the mount itself) serves its
+`index.html` (without the slash a Dir mount answers `404`), and a path
 that is no file falls through to the registered routes, so an API route always
 wins.
 
