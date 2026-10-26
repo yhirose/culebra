@@ -283,9 +283,10 @@ by paying a different cost, dynamic checking — the deep, transitive,
 inescapable immutability that C# still doesn't have after fifteen-plus
 years.
 
-And the traversal that does the freezing uses exactly the same code as the
-serialization used to cross an isolate boundary. So "being immutable" and
-"being safe to share" line up by definition. It's a cruder approach than
+And the freeze accepts exactly what the serialization used to cross an
+isolate boundary accepts: the same Sendable rule, the same refusal of
+anything that is not data, though it writes its own flat tree. So "being
+immutable" and "being safe to share" line up by definition. It's a cruder approach than
 Rust's, which splits Send and Sync into separate traits, but it's a
 reasonably coherent single principle.
 
@@ -304,7 +305,7 @@ all of this. Hejlsberg's proposals, on the whole, started from the premise
 of keeping the imperative, shared-heap language as it is and layering a
 compiler and an API on top to make it safe — a natural premise, presumably,
 for the designer of a widely used language like C#. culebra, being
-unreleased, has the freedom to pick largely the opposite move at every one
+young and with few users, has the freedom to pick largely the opposite move at every one
 of these points: instead of analyzing, it removes sharing entirely; instead
 of writing immutability into the type, it freezes the value; instead of
 abstracting the lock away, it constrains the whole structure that would

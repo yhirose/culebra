@@ -143,7 +143,7 @@ refcount would be, and are reclaimed by the tracing collector alone
 (§6). Nil, Bool, Long and Float are immediates.
 
 Objects are allocated from a per-`Runtime` slab allocator
-(`rt_slab.h`): size-segregated, carving 64 KB chunks, non-moving, and
+(`rt/slab.h`): size-segregated, carving 64 KB chunks, non-moving, and
 lock-free because a `Runtime` — and with it the heap, the collector, the
 defer stack and the exception carrier — is one per thread. The
 collector's own per-object metadata lives outside the object in an
@@ -153,7 +153,7 @@ a header it does not own.
 Deterministic `drop` rides on the same count: an object whose refcount
 reaches zero runs its `drop` before its children are released. Objects
 that have a `drop` are also registered on a per-`Runtime` *owned stack*
-(`rt_owned.inc.h`) from the moment `drop` is bound; a scope exit resolves
+(`rt/owned.inc.h`) from the moment `drop` is bound; a scope exit resolves
 the entries above its mark, so a drop-having object that escaped into a
 cycle inside the scope is still dropped at the scope boundary
 (`culebra_runtime_owned_scope_exit`). The full contract — timing, order,
@@ -242,9 +242,10 @@ accident.
 
 **Uniform convention.** Every function that lowers an expression
 returns a value the caller owns one reference to (a `+1` value). A
-parameter or a method receiver is *borrowed* (`+0`): the caller retains
+parameter or a method receiver arrives at `+1`: the caller retains
 before the call, and the callee consumes the reference it is handed
-rather than retaining its own copy. A value stored into a scope slot is
+rather than retaining its own copy (a native body borrows it from
+`_jit_native_entry`, §4.3). A value stored into a scope slot is
 owned by that slot from that point on.
 
 **A move-only handle for transient values (`JIT::Owned`).** A `+1`
@@ -355,10 +356,9 @@ minted the `+1`, never to the shared dispatch helper.
 
 **A bare reference is confined to the block where it was produced
 (`Pinned`).** The last escape hatch is the moment a reference leaves
-its handle. Reading a value out of an `Owned` used to yield a bare LLVM
-value that could cross basic-block boundaries with nothing tracking it
-— every leak found in that era had exactly this shape. The rule
-adopted instead: a bare reference may only be used inside the basic
+its handle. A bare LLVM value read out of an `Owned` could cross
+basic-block boundaries with nothing tracking it, which is the shape of
+this kind of leak. So a bare reference may only be used inside the basic
 block in which it was produced. This is sound and complete because
 every call that might throw is compiled as an `invoke`, which always
 terminates its containing block — so "still in the same block" already
@@ -432,7 +432,7 @@ where one arm consumes a value and a different arm releases it.
 - **Dispatch is resolved at runtime.** Method and operator targets are
   not known statically, so ownership contracts are enforced at the
   call boundary dynamically, not by the static type of a callee.
-- **A whole-function IR verifier was evaluated and rejected.** Such a
+- **There is no whole-function IR verifier.** Such a
   verifier would be blind to the interior of C++ helper functions,
   and "every retain is matched by a release" does not imply "every
   value was alive for exactly as long as it needed to be" — an
@@ -440,7 +440,7 @@ where one arm consumes a value and a different arm releases it.
   window. The block-confinement rule in §4.3 is deliberately narrower
   in scope: it reasons only about this discipline's own handles, not
   about heap aliasing or object lifetime in general, which is
-  precisely what lets it sidestep the objections that sank the
+  precisely what lets it sidestep the objections to a
   whole-function verifier.
 
 ## 5. Detecting reference-counting bugs
@@ -530,9 +530,8 @@ reference cycles; no RC discipline can, by construction (Rust's `Rc`
 has the identical limitation). Without a reclaiming mechanism for
 cycles, a leak of this shape is permanent: a single long-running
 program that repeatedly builds and discards cyclic structures grows
-without bound. Pure tracing (discarding manual RC entirely) was
-considered and rejected for the reason given in §1: it would give up
-deterministic `drop`. So RC stays primary, and this collector's only
+without bound. Pure tracing (discarding manual RC entirely) would
+give up deterministic `drop`, for the reason given in §1. So RC stays primary, and this collector's only
 job is reclaiming what RC structurally cannot — plus strings, which are
 traced-only (§3).
 
@@ -584,7 +583,7 @@ produces a **false root** — the object it points at is kept alive
 though nothing actually references it. This is a bounded
 over-retention, not a correctness problem: soundness (§6.3) only
 requires that nothing *live* is ever freed, and over-retention cannot
-violate that. One detail cost real debugging time to get right: root
+violate that. Root
 scanning must begin at the stack **pointer**, not the frame pointer —
 under `-O2` and higher, locals and register spills living below the
 frame pointer would otherwise be missed entirely.
@@ -595,15 +594,13 @@ frame pointer would otherwise be missed entirely.
 refcount` at offset zero — the retain/release code is untouched by
 any of this. The collector's own bookkeeping (mark bit, type tag,
 size) lives in a separate registry, `gc::GcRegistry`, an
-open-addressing address→header map with no per-entry heap allocation;
-the `std::unordered_map` it replaced accounted for the entire
-allocation-churn overhead the collector added on object-heavy
-workloads. It is linear-probed and kept at most 5/8 full. A probe walks
+open-addressing address→header map with no per-entry heap allocation,
+so it adds no allocation churn on object-heavy workloads. It is
+linear-probed and kept at most 5/8 full. A probe walks
 to the end of the run of used slots its key falls in, and those runs
 lengthen fast as the table fills; the allocator hands the same
-addresses out again and again, so at 7/8 an address that fell in a long
-run made a short-lived object cost several times its usual at some
-live counts. Variable-length payloads (an array's backing storage, an
+addresses out again and again, so a fuller table would make a
+short-lived object cost several times its usual at some live counts. Variable-length payloads (an array's backing storage, an
 object's property slots, a closure's captures) remain owned by
 ordinary C++ containers inside the struct and are released by the
 struct's own destructor at sweep time, so sweep cleanup is C++
@@ -704,8 +701,8 @@ only frees the frame, its references being the sweep's own to reclaim.
 
 ### 6.4 Why not a moving or fully precise collector
 
-A moving collector was evaluated and rejected outright, not merely
-deferred, because two of its hard prerequisites are unmet:
+The collector is non-moving, because two of a moving collector's hard
+prerequisites are unmet:
 
 1. **Precise rooting.** A conservative root is, definitionally, "a
    word that might be a pointer" — such a root cannot be updated to
@@ -725,8 +722,8 @@ The throughput advantage moving *uniquely* provides — compaction, and
 collection cost proportional to the number of survivors rather than
 the size of the heap — is a second-order concern for Culebra today;
 the slab allocator (§3) recovers most of a non-moving collector's
-achievable throughput without paying either prerequisite. Revisiting
-this decision would require either measuring that heap fragmentation
+achievable throughput without paying either prerequisite. Moving
+would require either measuring that heap fragmentation
 is a real, material cost, or a separate redesign of raw-pointer
 interop behind handles or pinning.
 
@@ -752,7 +749,7 @@ the move: a helper suspended *between* two VM frames (an iterator op
 whose callback is running) may hold the only reference in its own
 locals. The invariant is **no collection while any such frame is on
 the stack**, enforced at one choke point: every helper-to-user call
-passes through `_jit_invoke` (`rt_value.inc.h`), whose
+passes through `_jit_invoke` (`rt/value.inc.h`), whose
 `SafepointUnsafeScope` defers the poll for the call's duration. The
 dispatch sites audited to keep callee, receiver and arguments in
 registers for the whole call use `_jit_invoke_rooted` and stay

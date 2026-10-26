@@ -8,7 +8,7 @@ syntax tree a second time, deciding every rule of the language again in its
 own way. That arrangement lasted about three months. In August 2026 both
 were replaced by a single front end — a compiler to bytecode — with two
 consumers: an executor, and a lowering to LLVM IR. The interpreter was
-deleted four days after the switch shipped.
+deleted two days after the switch shipped.
 
 This essay is about why that seemed worth doing, what it cost, and what had
 to be true before deleting 24,000 lines of working code was a defensible

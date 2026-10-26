@@ -26,7 +26,6 @@ Contents
 9. [Build configurations](#9-build-configurations)
 10. [Verification](#10-verification)
 11. [Design decisions](#11-design-decisions)
-12. [History](#12-history)
 
 ---
 
@@ -51,7 +50,7 @@ for ahead-of-time binaries).
       │
       ├──► vm::Exec        interpreter loop (default, `--vm`)          vm.h
       │
-      └──► vm::Lowering    LLVM IR → ORC JIT (`--jit`)                 vm_lowering.h
+      └──► vm::Lowering    LLVM IR → ORC JIT (`--jit`)                 jit/lowering.h
                            LLVM IR → object file (`culebra build`)
 ```
 
@@ -69,15 +68,15 @@ Where things live:
 
 | Component | Header | Notes |
 |---|---|---|
-| Runtime value model and helpers | `rt.h` and the `rt_*.inc.h` fragments it includes | LLVM-free; the whole stdlib sits on it (`stdlib_rt.h`) |
+| Runtime value model and helpers | `rt.h` and the `rt_*.inc.h` fragments it includes | LLVM-free; the whole stdlib sits on it (`stdlib/bindings.h`) |
 | Front-end analysis | `fn_analysis.h` | `FuncInfo` / `FnAnalysis`, shared by both consumers |
 | Bytecode format, compiler, executor | `vm.h` | `Op`, `Chunk`, `VmProgram`, `vm::Compiler`, `vm::Exec` |
-| LLVM lowering, `--jit`, AOT | `vm_lowering.h` | the only VM header that needs LLVM |
+| LLVM lowering, `--jit`, AOT | `jit/lowering.h` | the only VM header that needs LLVM |
 | LLVM codegen context | `jit.h` | `struct JIT`: emitters, ownership handles, ORC/`exec`, object cache |
-| Sessions (REPL, `culebra test`, embedding) | `vm_session.h`, `vm_repl.h`, `test_engine.h`, `vm_embed.h` | top-level bindings that outlive a program |
-| Debugger | `debug_engine.h`, `vm_debug.h`, `dap.h` | the DAP protocol over a six-question engine interface |
+| Sessions (REPL, `culebra test`, embedding) | `vm/session.h`, `cli/repl.h`, `cli/test_engine.h`, `vm/embed.h` | top-level bindings that outlive a program |
+| Debugger | `cli/debug_engine.h`, `vm/debug.h`, `cli/dap.h` | the DAP protocol over a six-question engine interface |
 | Canonical stdlib signatures | `canon_sigs.h`, `canon_sigs_table.h` | parameter names/types/defaults every lane binds against |
-| Collector, slab | `rt_gc.h`, `rt_slab.h` | see [`memory.md`](memory.md) |
+| Collector, slab | `rt/gc.h`, `rt/slab.h` | see [`memory.md`](memory.md) |
 
 Names carry the boundary. `jit` means LLVM is involved — `jit.h` and
 nothing else in that layer — while the runtime both engines share is
@@ -107,7 +106,7 @@ includes them in a fixed order and nothing else includes them at all.
    ASTs' tokens for stdlib names (`Time`, `Regex`, `Path`, the `assert_*`
    family, …) and prepends a synthesized `<stdlib>` module holding the
    builders of exactly the lazy modules the program names
-   (`stdlib_preamble.h`, sources in `stdlib_preambles.gen.h`). A stdlib
+   (`stdlib/preamble.h`, sources in `stdlib/preambles.gen.h`). A stdlib
    name therefore resolves at compile time, when the compiler sees it.
    The two lowering lanes then take the modules this binary has **baked**
    out of the preamble again (`resolve_baked_preamble`): the build compiled
@@ -120,12 +119,11 @@ includes them in a fixed order and nothing else includes them at all.
    The built-in traits (`Stringer`, `Eq`, `Comparable`, …) are baked the
    same way, under the name `__Traits`, but they reach the entry list by a
    different route: every program registers them whatever it names, so they
-   are never part of the splice and a compiled lane used to lower them as a
-   prologue of its own. That prologue dominated a small program's IR — the
-   five default bodies (`Eq.neq`, `Comparable.lt/le/gt/ge`) were ~4.8k of
-   the ~6.2k lines `let x = 1` lowered, none of them reachable from the
-   program's own code, and a `--jit` start-up spent ~75 ms of its ~82 ms on
-   them. `with_baked_traits` puts the entry ahead of the stdlib ones and
+   are never part of the splice, and a compiled lane does not lower them as a
+   prologue of its own: the five default bodies (`Eq.neq`,
+   `Comparable.lt/le/gt/ge`) would be most of a small program's IR, and
+   none of them is reachable from the program's own code.
+   `with_baked_traits` puts the entry ahead of the stdlib ones and
    tells the compiler to leave the prologue out (`BakedLane::traits`);
    the two have to move together, since emitting the call without dropping
    the source would register twice.
@@ -179,12 +177,12 @@ whose subject *is* the default.
 ## 3. The runtime layer
 
 `rt.h` is what both consumers stand on. It includes, in a fixed order,
-the value model (`rt_value.inc.h`), the owned-resource stack for
-deterministic `drop` (`rt_owned.inc.h`), strings (`rt_string.inc.h`), the core
-`extern "C"` helpers (`rt_runtime.inc.h`), fixed-layout views and class
-construction (`rt_fixed.inc.h`), multimethod dispatch and the keyword-call
-machinery (`rt_dispatch.inc.h`), the iterator protocol (`rt_iter.inc.h`),
-the reference-counting implementation (`rt_mem.inc.h`), and the frame a
+the value model (`rt/value.inc.h`), the owned-resource stack for
+deterministic `drop` (`rt/owned.inc.h`), strings (`rt/string.inc.h`), the core
+`extern "C"` helpers (`rt/runtime.inc.h`), fixed-layout views and class
+construction (`rt/fixed.inc.h`), multimethod dispatch and the keyword-call
+machinery (`rt/dispatch.inc.h`), the iterator protocol (`rt/iter.inc.h`),
+the reference-counting implementation (`rt/mem.inc.h`), and the frame a
 generator keeps between resumes (`rt/gen.inc.h`, §5.7). None of it names
 LLVM.
 
@@ -239,7 +237,7 @@ The heap objects a VM needs are the runtime's existing ones:
 - `JitArray`, `JitSet`, tuples, `JitTensor`.
 
 Objects are allocated from a per-`Runtime` slab allocator
-(`rt_slab.h`): size-segregated, non-moving, no locking, because a
+(`rt/slab.h`): size-segregated, non-moving, no locking, because a
 `Runtime` — the thread-local root of the heap, the namespace caches, the
 class and overload registries, the defer stack and the exception carrier
 — is one per isolate. Two isolates share code and nothing else (§3.4).
@@ -270,20 +268,17 @@ tabulates them. Two RAII forms recur in the helpers' own C++:
 `JitUnwindRelease` (release only if the helper throws).
 
 The per-thread state a call frame touches sits in two objects:
-`_jit_thread` (`rt_runtime.inc.h`) holds every source position a call
+`_jit_thread` (`rt/runtime.inc.h`) holds every source position a call
 publishes and the recursion depth, and `_culebra_rt` (`shared.h`) holds
 this thread's current `Runtime` alongside a cache of its default. The
 grouping is not tidiness. Mach-O has no initial-exec TLS model, so every
 `thread_local` variable a helper touches costs its own call into dyld's
-`_tlv_get_addr` — and publishing a call site used to touch twelve. On a
-one-line function called in a loop, three quarters of the time went
-there; collecting the variables into these two objects, changing no
-value either holds, halved what a culebra call costs.
+`_tlv_get_addr`, so the variables a call site publishes live in these two
+objects instead of twelve thread-locals.
 
-What remained after that was one `_tlv_get_addr` per helper — and a
-call still reached four of them: the caller's position publisher, the
-callee's recursion enter and leave, and the owned stack's hot pointer.
-A compiled frame now fetches `_jit_thread`'s address once, in its entry
+A call would still reach one `_tlv_get_addr` per helper (four): the
+caller's position publisher, the callee's recursion enter and leave, and
+the owned stack's hot pointer. A compiled frame fetches `_jit_thread`'s address once, in its entry
 block (`culebra_runtime_thread_state`, the JIT's `thread_state_ptr`), and
 does the rest through it: the recursion guard is a load, a compare
 against the limit and a store, with the helper kept only for the throw
@@ -293,13 +288,12 @@ take the pointer (`culebra_runtime_set_call_site_at`,
 `Runtime`'s owned stack, dropped on every `RuntimeScope` switch
 (`RuntimeTls::on_switch`) and re-resolved by the next frame's fetch. The
 executor and the runtime's own callbacks into user code keep the
-pointer-free forms, which resolve the same object themselves. One lookup
-per frame instead of four, and the one-line call above went from 14.7 to
-about 11 ns.
+pointer-free forms, which resolve the same object themselves. That is one
+lookup per frame instead of four.
 
 ### 3.3 The standard library
 
-`stdlib_rt.h` binds the standard library: native namespaces (`Math`,
+`stdlib/bindings.h` binds the standard library: native namespaces (`Math`,
 `IO`, `Random`, `FS`, `Net`, `Canvas`, …) as one `kNsRows_*` table each
 that the runtime resolves by name — grouped per namespace so an AOT
 binary links only the namespaces its source names (`ns_groups()`,
@@ -380,7 +374,7 @@ module top level included — before it is compiled, and produces a
 
 The analysis is injected with one predicate, `is_builtin_var`, so it
 stays independent of the stdlib machinery; shadowing is checked by
-`lint::check_shadow` on the same resolution, single-sourced with
+`lint::scope_diagnostics` on the same resolution, single-sourced with
 `culebra lint`.
 
 ### 4.1 Declaration semantics
@@ -558,7 +552,7 @@ all: two thirds of every `Take` is the second half of `<producer> X ;
 Take Y, X` — an expression computes into the temp the compiler minted for
 it, and the very next instruction moves that temp where the value
 belongs. The producer can write `Y` itself. What changes is what `X`
-holds afterwards: the `Take` used to leave it nil, and now the producer
+holds afterwards: the `Take` would leave it nil, and now the producer
 never touches it, so it keeps what it had. Both halves of that are
 covered — the liveness pass says nothing reads it, and nothing releases a
 stale value out of it either, since the producer overwrote `X` without
@@ -605,7 +599,7 @@ of almost every scope.
 
 ### 5.3 The opcode families
 
-157 opcodes, grouped:
+155 opcodes, grouped:
 
 | family | ops | notes |
 |---|---|---|
@@ -798,11 +792,10 @@ format string, so the diagnostic text is identical either way.
 The body's temporaries end with the body, before its scope is popped, as a
 boxed call's end with its frame, not at the end of the caller's statement.
 A scope's pop never hands out the slot of a temporary still on the
-statement's sweep list, whichever construct took it: before that rule, the
+statement's sweep list, whichever construct took it: otherwise the
 caller's next run, the result of the following step that a `let` adopts as
 its home with no copy, could land on such a slot and be released at the
-statement's end (found live: `let v = C.new(1.0, 0.25).scale(C.new(3.0,
-4.0).len())` read `nil` for both fields).
+statement's end.
 
 A chain is only ever offered the unboxed form when it stays that way to a
 scalar leaf — a run reaching any other consumer is not something this
@@ -824,10 +817,8 @@ write. The emitter is told which of the two its caller takes
 (`try_inline_value_chain(ast, want)`: a postfix chain anywhere in the
 program wants a scalar), and `chain_resolves_to_class`, the lookahead every
 run consumer asks, hands back a class for the run answer only. Answering both with one "the chain
-qualifies" let a scalar-ended chain be read as a run of the class it had
-built on the way (found live: `let d = C.new(3.0, 4.0).len()` laid `d` out
-as `C`'s fields, and printing it boxed the neighbouring local as the second
-one).
+qualifies" would let a scalar-ended chain be read as a run of the class it
+had built on the way.
 
 ### 5.3.2 An operator on that value also splices
 
@@ -870,9 +861,8 @@ tail is a construction chain of the member's own class that ends *in a
 run*. Naming the class is not enough: `C.new(...).x` builds one and yields a
 scalar. Sizing the result on the construction alone leaves every slot past
 the first holding whatever the run's zero-init left there, with only the
-first slot ever written (found live: `getx() { C.new(self.x, 1.0).x }`,
-then `C.new(5.0, 6.0).getx().y` read 0.0 where the boxed class raises a
-TypeError). One walk of the body gives both answers, so a tail that chains
+first slot ever written (`C.new(5.0, 6.0).getx().y` would read 0.0 where
+the boxed class raises a TypeError). One walk of the body gives both answers, so a tail that chains
 through other members is walked once per member; asking "does it splice"
 and "what does it leave" separately walks the tail twice at every level,
 which is exponential in how deep such a tail goes.
@@ -904,8 +894,8 @@ binding form the operand ends up taking. With both halves unboxed, a
 `v = v + C.new(...)` step allocates nothing at all, and the loop body it
 sits in reduces to its arithmetic.
 
-Two consumer rules were tightened after this landed, both by finding a
-live escape rather than by review:
+Two consumer rules keep a run from reaching code that expects a tagged
+Value:
 
 - **Every dunder a fold would splice must itself leave a run
   (`inline_body_end`)**,
@@ -913,34 +903,30 @@ live escape rather than by review:
   operator's result — the fold's own accumulator, a reassignment's
   copy-back, a trailing chain's field read — treats it as an N-slot run,
   and a dunder returning a scalar hands them one slot with N assumed
-  (found live: a scalar-returning `__add__` under `(a + b).x` read the
-  slot *before* the result). A class with such a dunder never splices
+  (a scalar-returning `__add__` under `(a + b).x` would read the slot
+  *before* the result). A class with such a dunder never splices
   through it, and the boxed path answers — including the TypeError a
   field read on its scalar result raises.
 - **A bare `self + o` or `-self` inside a member body never classifies.**
-  `receiver_refs_stay_unboxed` used to accept a fold or negation with the
-  receiver as its operand wherever it appeared; but inside a body there is
+  `receiver_refs_stay_unboxed` accepts a fold or negation with the
+  receiver as its operand only outside a body, because inside one there is
   no consumer for the run it produces — a member's out slot is a run only
   for a `C.new(...)` tail, a body-internal fold-headed chain has no
   lookahead to consume it (`try_inline_fold_chain` resolves operand[0]
   through a `Binding`, which `self` never has), and anything else expects
-  a tagged Value. Found live as four different wrong behaviors from one
-  cause: `addp(o) { self + o }` returned its own first *field*, `-self`
-  reached `Op::Neg` on one, `println(self + o)` printed one, and
-  `(self + o).len()` raised a TypeError. Such a member now declines whole
+  a tagged Value. Accepting one gives four different wrong behaviors from one
+  cause: `addp(o) { self + o }` returns its own first *field*, `-self`
+  reaches `Op::Neg` on one, `println(self + o)` prints one, and
+  `(self + o).len()` raises a TypeError. Such a member declines whole
   and every consumer of it compiles boxed.
 
-One correctness precondition this exposed, unrelated to the mechanism
-itself: a class's own name inside its methods (`FuncInfo::own_name`, read
-off the receiver rather than a captured cell) was gated off for *any*
-decorated class, when the real distinction is between a compile-time marker
-(`@value`/`@packable`/`@derive`, which the compiler reads itself) and an
-actual decorator (whose binding is that decorator's return value, possibly
-not the class at all). A `@value` method could not hygienically reference
-its own class's name until this was fixed — which means the same-class
-tail recursion §5.3.1 already documents (`V2.__add__` returning
-`V2.new(...)`) could not have been inlining either, before this fix,
-despite compiling and running correctly through the boxed fallback.
+A class's own name inside its methods (`FuncInfo::own_name`, read off the
+receiver rather than a captured cell) is gated off only for an actual
+decorator, whose binding is that decorator's return value, possibly not
+the class at all. A compile-time marker (`@value` / `@packable` /
+`@derive`, which the compiler reads itself) does not gate it. That is
+what lets the same-class tail recursion §5.3.1 documents (`V2.__add__`
+returning `V2.new(...)`) inline.
 
 ### 5.3.3 A local can stay unboxed for its whole scope
 
@@ -981,7 +967,7 @@ scalar, or — since §5.3.2's operand rule — an operator's own operand
 inside a step that keeps *another* binding of the same class unboxed.
 Anywhere else (`println(v + g)`, an array element) the run would reach
 code expecting a tagged Value, so the occurrence declines the binding —
-found live as §5.3.2's own escape list, one level up.
+§5.3.2's own escape list, one level up.
 
 That third context is what makes the bindings of one scope a *graph*
 rather than a list. Whether `v` may be the operand in `p = p + v * DT`
@@ -1028,8 +1014,8 @@ proven unboxed. Two things follow from that:
   question name-based instead (`value_run_ok`), and only falls through
   to `chain_resolves_to_class`/`fold_resolves_to_class` for a shape that is
   provably *not* `v` reading itself (a fresh construction, or a chain
-  rooted at some other, already-real binding) — found live: routing every
-  fold RHS through the ordinary lookahead first made `v = v + g * DT`
+  rooted at some other, already-real binding): routing every
+  fold RHS through the ordinary lookahead first would make `v = v + g * DT`
   decline unconditionally, since `v`'s binding cannot exist yet at the
   point that would have to answer for it.
 
@@ -1069,8 +1055,8 @@ the binding's home.
 
 Measured (`tools/bench/value_inline.cul`'s `mut, reused` row against `mut,
 boxed`, same arithmetic through a non-nameable construction): with §5.3.2's
-operand rule holding for the other half of the step, both of the two
-allocations an iteration used to pay are gone, and what is left in the loop
+operand rule holding for the other half of the step, neither of the two
+allocations a boxed iteration pays happens, and what is left in the loop
 body is the arithmetic. The `mut, compound` row is the same loop written
 `v += …`, and matching `mut, reused` is its point.
 
@@ -1159,7 +1145,8 @@ Everything above unboxes; this is about the boxed path being no slower
 than it has to be, because most objects a program builds — a literal, a
 class instance whose fields it keeps in an array — never qualify for a
 run. Three things about such an object are known at the declaration and
-used to be re-derived, by name, on every construction.
+stay known at runtime, so nothing re-derives them, by name, on every
+construction.
 
 **A literal's slots are indices.** `{class: 'V', x: a, y: b}` already
 allocated its final Shape in one step (`ObjectNewShaped`), but then
@@ -1175,9 +1162,9 @@ is_init path was, minus the lookup — a duplicate key still resolves to
 its first occurrence and still overwrites last-wins.
 
 **A class's declared fields are one layout.** `class C { x: Float; y:
-Float }` used to open with one `ObjectSet` per field, each a shape
+Float }` does not open with one `ObjectSet` per field, each a shape
 transition, on every `new`. A maximal run of
-initializer-less fields is now one `FieldsInit` over a
+initializer-less fields is one `FieldsInit` over a
 `Chunk::FieldLayoutSpec` — the names, each type's zero value, and a pair
 of Shapes the site caches on its first execution (the one an instance
 arrives with — none at all for a fresh instance — and the one the run
@@ -1195,21 +1182,18 @@ built binary's own run.
 
 **A class meta answers its special methods from a table.** An operator
 on an instance (`v + w`, `a == b`, `str(x)`) reaches the class's dunder
-through `_lookup_special`, which walked the instance's own names and then
-the meta's on every evaluation. `build_class_meta` now resolves the whole
+through `_lookup_special`. `build_class_meta` resolves the whole
 `Special` set once — the operator dunders, `hash`/`cmp`/`eq`, `__str__`,
 `__call__`, `__index__`/`__setindex__` — into a `JitSpecialTable` the meta
-owns, and whether the class binds a `drop` (`methods_drop`), which every
-construction used to ask by scanning the method names. The instance side
+owns, and whether the class binds a `drop` (`methods_drop`), so neither a
+dunder lookup nor a construction scans the method names. The instance side
 keeps its precedence: a Shape records whether any of its names is a
 special (`Shape::any_special`), and only an instance whose own Shape
 carries one, or a dictionary-mode object, takes the name walk — so
-`c.__add__ = f` on one instance still shadows the class's, as it always
-did. The same reasoning gives a member's own class name a plain slot
+`c.__add__ = f` on one instance shadows the class's. The same reasoning gives a member's own class name a plain slot
 instead of a cell (`ClsSelf` into the frame, guarded by `UnboundErr` as
 any lazy slot is) whenever no closure in the body captures it: a
-`Name.new(...)` inside an operator body no longer allocates a cell per
-call.
+`Name.new(...)` inside an operator body allocates no cell per call.
 
 All three are decide-once, no-fallback shapes on the compile side, in the
 sense §5.3.1 uses: the runtime never has to re-derive from the name what
@@ -1223,9 +1207,8 @@ either side, then an `eq` both sides state, then structure:
 that means "equal" — `contains`, `index_of`, a derived `cmp`, `chunk_by`'s
 run boundaries — and so does the structural walk behind it, for each pair
 of elements. That last part is what makes `[a] == [b]` follow from
-`a == b`; the walk used to recurse into itself, so the first two steps
-stopped at the top level while Set members and Object keys (which always
-went through `eq`) disagreed with the containers holding them. Nothing
+`a == b`: Set members and Object keys (which go through `eq`) agree with
+the containers holding them. Nothing
 outside the walk may name it, and `check_value_equal_door.sh` holds that.
 Two costs were kept off the programs that define no `eq`: a single
 question decides whether an Object can run a user method for `==` at all
@@ -1243,10 +1226,8 @@ everything else as a scalar: `_culebra_value_order`, taking the operator
 as a parameter. The four operators ask it, and so does everything
 else that means "ordered before" — `sort` / `sorted`, the keys of
 `sort_by` / `sorted_by`, `min` / `max` and the keys of `min_by` / `max_by`,
-the fields of a derived `cmp`. The last three used to call the scalar step
-directly, so a key or a field that was itself Comparable raised
-`cannot compare Object and Object` where `<` on the same pair answered.
-Nothing outside the rule may name its last step (`_culebra_scalar_order`),
+the fields of a derived `cmp`, so a key or a field that is itself
+Comparable orders as `<` on the same pair does. Nothing outside the rule may name its last step (`_culebra_scalar_order`),
 and `check_value_order_door.sh` holds that. A Tuple's walk links through
 the same `JitEqWalk` chain as `==`'s, so an element's `cmp` finds the
 Tuples it came from retained.
@@ -1299,7 +1280,7 @@ numeric tag test — the LLVM intrinsic where one exists, which is the
 very libm call the helper makes — so a known tag folds the call to one
 instruction. `min`, `max`, `clamp` and `f32` have arms too, both-Long and
 any-Float, spelling out the helper's rule (`reduce_min_max`, `clamp`,
-`_culebra_f32_round`) as compares and selects; `tests/test_math_inline_arms.cul`
+`scalar_bytes::round_f32`) as compares and selects; `tests/test_math_inline_arms.cul`
 pins them to the helper bit for bit through operands whose tags the
 emitter cannot see. Every other spelling (`Math?.f`, `let m = Math`,
 `Math.f` as a value, a keyword) keeps the generic route and its
@@ -1406,14 +1387,13 @@ structurally, so it names no single tag) and so is a `mut` parameter
 pins the fold in emitted IR and carries its own unannotated control, so
 it cannot pass by measuring nothing.
 
-Its own limit is worth recording, since the obvious next step does not
-work: a *chain* folds only when its head's tag is known. `trim` already
+Its limit: a *chain* folds only when its head's tag is known. `trim`
 builds its result with `make_string`, so every built-in method's return
 tag is in the lowering already, more precisely than `CanonSig` could say
 it. When the head is unknown the first call carries a miss arm and its
 result is a phi, and a phi of a constant and a non-constant is not a
-constant — which is why filling `CanonSig::return_type` buys nothing
-here, and why the head is the only place worth attacking.
+constant, so `CanonSig::return_type` does not widen the fold and the head
+is the only place it can be attacked.
 
 ### 5.5 Exceptions, `defer`, and unwinding
 
@@ -1495,8 +1475,6 @@ the prologue and returns an iterator, and the body runs in a frame that
 leaves the stack at every `yield` and comes back at the next resume.
 An effect body is lowered ahead of the compiler instead (§11).
 
-Generators were lowered the same way, each to a state class, up to v0.7.0
-(§12).
 
 Two opcodes carry it. `GenStart` follows the prologue — parameters
 bound, defaults evaluated, types checked, `RecEnter` run — so what the
@@ -1550,8 +1528,7 @@ receiver in its frame, and a `@value` method that yields is called
 rather than spliced into its caller (`is_straightline_body`).
 
 A body compiled as written binds names and runs statements as a plain
-`fn` does, which §10.7 holds it to. What a program sees that the lowered
-class answered differently is listed in §12.
+`fn` does, which §10.7 holds it to.
 
 ## 6. The executor
 
@@ -1627,15 +1604,13 @@ and a JIT arena freed with its `Runtime` is handed to the next. On the
 closure, the answer also crosses an isolate boundary with the value it
 describes.
 
-The descriptor used to ride in a cell at `captures[0]`, one per
-`MakeClosure` (a cell shared by every closure of a chunk is wrong:
+The descriptor is immutable and belongs to the program, so it needs no
+count and no owner per closure, and it rides in the closure's `meta`, not
+in a cell (a cell shared by every closure of a chunk would be wrong:
 closures of one program run on several isolates at once, and a
-`JitCell`'s refcount is a plain `int64_t`). That cell was an object the
-lowered lanes do not have, so `GC.stat().rc_objects` read one higher per
-live closure on the executor. The descriptor is immutable and belongs to
-the program, so it needs no count and no owner per closure: the two
-lanes now allocate the same objects for a closure, and the refcount-lane
-difftest's allowlist is empty.
+`JitCell`'s refcount is a plain `int64_t`). The two lanes therefore
+allocate the same objects for a closure, `GC.stat().rc_objects` agrees,
+and the refcount-lane difftest's allowlist is empty.
 
 ### 6.2 Throws
 
@@ -1644,9 +1619,8 @@ walks the tables of §5.5 and either resumes at a handler or re-raises
 with the frame uncounted. The inline frames above it unwind in the same
 handler, top first (`unwind_frames`), each popped as it goes. A `defer`
 that throws while its scope unwinds replaces the exception in flight for
-the frames below, which the nesting of `run_frame` catches used to give
-for free; `unwind_frames` recurses from inside its own handler, which is
-the same nesting. Uncaught errors are formatted at the engine
+for the frames below: `unwind_frames` recurses from inside its own
+handler, so the replacement is what the next `run_frame` catch sees. Uncaught errors are formatted at the engine
 boundary (`run_prepared`): a user `throw` becomes the same `uncaught: …`
 line every lane prints, and a positionless `CulebraError` is backfilled
 from the last published op position. An interrupt reaches neither: it is
@@ -1763,7 +1737,7 @@ where only how a frame is resumed differs (§7.3).
 
 ## 7. The LLVM lowering
 
-`vm::Lowering` (`vm_lowering.h`) lowers a `VmProgram` chunk by chunk:
+`vm::Lowering` (`jit/lowering.h`) lowers a `VmProgram` chunk by chunk:
 each chunk becomes one LLVM function with the JitFn ABI, each register
 an entry-block `alloca` that mem2reg promotes to SSA, each `Insn` a few
 IR instructions or a call into the runtime. Where the executor calls a
@@ -1819,8 +1793,8 @@ faststart nor the cache is what makes a cold `--jit` start-up cheap:
 the stdlib modules a program names, and the built-in traits every
 program registers, are not in the module at all (§2, the baked
 preamble), so what gets lowered is the user's code. That is most of the
-distance — `let x = 1` lowers 758 lines of IR rather than 6,167, and
-starts in 7 ms rather than 82.
+distance — `let x = 1` lowers 21 lines of IR at the default `-O2`
+(`--jit --emit-llvm`).
 `Lowering::build_preamble_object` is the same lowering
 under a per-module entry name, run by `culebra_preamble_cc` at build;
 `lower_program` opens `__culebra_main` with a call to each baked entry
@@ -1836,15 +1810,15 @@ when the object key did — and `codegen` is then the object's link.
 Execution is a few
 milliseconds on any file of `tests/`; the backend is the larger half of
 the rest, and a flat script — one function, its top-level slots and the
-thread-state pointer live across all of it — used to spend most of that
+thread-state pointer live across all of it — spends most of that
 in the register coalescer, joining every call site's copy of those
 against the whole interval. `JIT::tune_backend` bounds that with LLVM's
-`large-interval-freq-threshold` (16, from 256); the throughput rows of
+`large-interval-freq-threshold` (16; LLVM's default is 256); the throughput rows of
 `tools/bench/` do not move, since a hot loop's own copies are joined
 first. The bound is sensitive to the shape of the refcount guards:
-folding the sentinel tags under `& 31` in `emit_tag_is_refcounted` — two
-instructions fewer per site, a 5% smaller module — took the same file's
-coalescer from 1.2 s back to 9.2 s, so the range test stays.
+folding the sentinel tags under `& 31` in `emit_tag_is_refcounted` would
+save two instructions per site and give a 5% smaller module, but takes
+the same file's coalescer from 1.2 s to 9.2 s, so the range test stays.
 
 One pass of that pipeline is the lowering's own. The four refcount
 helpers each open with a guard — the value pair against
@@ -1866,9 +1840,9 @@ asserts that none survive (§10.2).
 
 That covers the tags a constant settles. The tags that stay a run-time
 question are the common case on the frame path — a released parameter, a
-receiver, a slot a scope tears down — and each of those used to be a call
+receiver, a slot a scope tears down — and each of those would be a call
 into the opaque helper to be told the value owns nothing. So the release
-emitter (`emit_value_release`) now opens with the helper's own test in
+emitter (`emit_value_release`) opens with the helper's own test in
 IR: the refcounted tags all fit a 32-bit mask, so membership is one shift
 out of it, and the call sits behind it. The helper keeps its copy of the
 test — this is a fast path, not the contract — and a tag the emitter
@@ -1959,14 +1933,10 @@ on unclassified.
 
 A value live into a landing pad must be spilled — the unwinder restores
 callee-saved registers and nothing else — so a function with many
-throwing calls pays register pressure at `-O2` that the retired AST
-codegen did not (its scope slots were never SSA). That is the same fact
-as the lowered code running 2–4.5× faster on loops: the bytecode
-register file is promoted to SSA. Measured on `tests/test_core.cul`, the
-`-O2` compile is about 1.2× the old codegen's and the `-O0` compile is
-not slower; four pad shapes were tried and the one in the tree is the
-best of them (a single per-scope pad minimizes IR but produces
-700-wide phis that take `llc` 30 s).
+throwing calls pays register pressure at `-O2`: the bytecode register file
+is promoted to SSA, which is also why the lowered code runs fast on loops.
+A single pad per scope would minimize IR but produces 700-wide phis that
+take `llc` 30 s, so the lowering does not use one.
 
 ### 7.3 Generator bodies
 
@@ -2025,7 +1995,7 @@ the binding is scope-wide, the instruction is not, and a name first
 mentioned inside one `if` arm must still be loaded when a different arm
 runs.
 
-`vm::Session` (`vm_session.h`) adds what both session consumers need:
+`vm::Session` (`vm/session.h`) adds what both session consumers need:
 the retained programs (a closure reaches its bytecode through a
 descriptor pointing into its program, so a program a session ran must
 stay alive), the one-time built-in-traits prologue, and the **stdlib
@@ -2052,7 +2022,7 @@ reaches its bytecode through a descriptor pointing into a program.
 `release_all` drains its map rather than walking it, since a `drop` can
 mint a cell behind the cursor.
 
-The REPL (`vm_repl.h`) is one `Session` fed line by line, with the last
+The REPL (`cli/repl.h`) is one `Session` fed line by line, with the last
 statement's value echoed from the session's result cell.
 
 ### 8.2 `culebra test`
@@ -2060,7 +2030,7 @@ statement's value echoed from the session's result cell.
 The unit-test runner (`test_runner.h`) is engine-neutral above a small
 `TestHost` interface — run a file, read a global, walk an Array or an
 Object, call a function, describe the current throw — and `VmTestHost`
-(`test_engine.h`) answers it from a `Session` of its own. `test` and `parametrize` are Culebra source
+(`cli/test_engine.h`) answers it from a `Session` of its own. `test` and `parametrize` are Culebra source
 (`src/preambles/test_ambient.cul`), so the registry the host reads back
 is an ordinary Array the program built. Each file compiles as a session
 unit, which is what lets the runner call back into it after it has
@@ -2090,9 +2060,9 @@ supplies one per engine, giving every block a fresh `Runtime`.
 
 ### 8.3 The debugger
 
-`dap.h` keeps the DAP protocol, breakpoint tables, the pause/resume state
+`cli/dap.h` keeps the DAP protocol, breakpoint tables, the pause/resume state
 machine and output forwarding, and asks the engine six questions through
-`DebugEngine` (`debug_engine.h`): run, frames, variables, has_name,
+`DebugEngine` (`cli/debug_engine.h`): run, frames, variables, has_name,
 evaluate, set_variable. `VmDebugEngine` compiles with `Debug::Step` and
 answers from the chunks' tables: `slot_debug` live ranges say which names
 a frame stopped at `pc` can see and where their values are (a slot alone
@@ -2103,7 +2073,7 @@ Every query runs *on the parked debuggee thread*, from inside the stop
 hook: a frame's register window is that thread's machine stack, and the
 `Runtime` and the collector are per-thread. `evaluate` and
 `set_variable` compile the expression as a REPL line against the frame's
-bindings (`vm_debug.h`), which is how `set_variable`'s `ImmutableError`
+bindings (`vm/debug.h`), which is how `set_variable`'s `ImmutableError`
 comes free.
 
 ### 8.4 Embedding
@@ -2129,7 +2099,7 @@ flattens kind and position into one line.
 ## 9. Build configurations
 
 `CULEBRA_JIT_ENABLED` means "LLVM is linked". It guards `jit.h`,
-`vm_lowering.h`, the `declare_runtime` member of `stdlib_rt.h`, and the
+`jit/lowering.h`, the `declare_runtime` member of `stdlib/bindings.h`, and the
 AOT bootstrap. Everything else — the runtime layer, the compiler, the
 executor, the stdlib, the sessions — builds without it, so a build
 without LLVM (`cmake` with the JIT option off, `just build-no-jit`) is a
@@ -2171,13 +2141,13 @@ folds the exit code in — stdout alone lets a segfault read as agreement.
 
 | gate | what it compares | where |
 |---|---|---|
-| vm/jit symmetry | every `tests/*.cul` on `--vm` and `--jit`, stdout + exit code | `just test-dev`, `just test` |
-| isolate suite | `tests/isolate/*.cul` on both lanes | same |
-| `vm_cases` | `tools/bench/vm_cases/`: both lanes against frozen `expected/` outputs and exit codes, then again under `CULEBRA_GC_STRESS=1` | same (`compare.sh`; `--freeze` re-records an intended change) |
+| vm/jit symmetry | `tests/*.cul` on `--vm` and `--jit`, stdout + exit code: the op cover in `tools/checks/jit_shape_set.txt` plus the files the branch touched, or every file | `just test-dev` (the op cover), `just test` (every file) |
+| isolate suite | `tests/isolate/*.cul` on both lanes | `just test-dev`, `just test` |
+| `vm_cases` | `tools/bench/vm_cases/`: both lanes against frozen `expected/` outputs and exit codes, then again under `CULEBRA_GC_STRESS=1` | `just test` (`compare.sh`; `--freeze` re-records an intended change) |
 | doctest | every documentation block on both lanes | `just doctest` |
-| difftest | the generated template-combinator corpus (`tools/difftest/gen.cul`, ~17k cases), `--vm` against `--jit` byte for byte | `just test` (`tools/difftest/run.sh`) |
-| AOT | `culebra build` output == `--jit` output per test | `just test` |
-| codegen backends | `-O0` and `--jit-faststart` against `--vm` | `just test` |
+| difftest | the generated template-combinator corpus (`tools/difftest/gen.cul`, ~21k cases), `--vm` against `--jit` byte for byte | `just test` (`tools/difftest/run.sh`) |
+| AOT | `culebra build` output == `--vm` output per test | `just test` (every tenth file), CI's aot shard (every file) |
+| codegen backends | `-O0` and `--jit-faststart` against `--vm` | `just test-dev`, `just test` |
 
 `misc/run_all_backends.sh` is the single-script form of the symmetry
 check, used by the Windows CI jobs.
@@ -2204,12 +2174,13 @@ check, used by the Windows CI jobs.
   `fcsel`, so AArch64's early if-conversion is still off — a knob the IR
   cannot show, checked only where that codegen exists),
   `tools/checks/check_rc_discipline.sh` (the count of hand-placed
-  retain/release sites in `jit.h` may only shrink).
+  retain/release sites in `jit/jit.h`, `stdlib/bindings.h` and
+  `conc/sendable.h` may only shrink).
 - **Asserts.** Three invariants no output can betray ride the assert
   lane (`just test-assert`, CI's `linux-assert`), which runs the whole
   sweep with `NDEBUG` off: the resolved call's predicted chunk is the
-  closure that turns up (§5.4), a borrowed callee's cell still holds the
-  same value when its call is over (§5.4), and no settled refcount call
+  closure that turns up (§5.3), a borrowed callee's cell still holds the
+  same value when its call is over (§5.3), and no settled refcount call
   survives the pipeline (§7).
 
 ### 10.3 The previous release as oracle
@@ -2359,19 +2330,14 @@ row in `just test` runs them under `CULEBRA_GC_STRESS`,
   `effects_transform.h` rewrites `effect fn` / `perform` / `handle`
   into plain source over the `__Eff` runtime, lowering control flow
   through a flat-dispatch CPS state machine with the variables of
-  every scope a suspension splits on the state instance. The engines
-  need no effect-specific support, so they agree by construction.
-  Generators were lowered the same way, each `yield`ing function into
-  a class implementing the iterator protocol, until the engines
-  learned to suspend a frame (§5.7). The lowering made a slot of every
-  variable a `yield` splits from its scope, and a slot holds a value
-  and nothing else, so a lowered body differed from the same
-  statements in a plain function in a list of forms (§10.7); a body
-  compiled as written has no such list, and is less bytecode
-  (`tests/test_generator.cul` is 5,714 instructions where the lowering
-  made 24,364). An effect's continuation can be resumed more than
-  once, which a frame that moves between the heap and the stack does
-  not serve, and effects stay transforms.
+  every scope a suspension splits on the state instance. The compiler
+  marks the state class (`@__lowered_storage`) and compiles a few
+  intrinsics of the lowering (`__lowered_frame`, `__bound`, `__unbound`),
+  and the runtime reads the mark in method dispatch; both are code the
+  lanes share, so they agree by construction. A generator keeps its frame
+  (§5.7), which moves between the heap and the stack. An effect's
+  continuation can be resumed more than once, which such a frame does
+  not serve, so effects stay transforms.
 - **Built-in methods are data.** A table row per `(name, argc)` keeps the
   reject decision, the executor and the lowering on one definition
   (§5.4).
@@ -2398,61 +2364,4 @@ row in `just test` runs them under `CULEBRA_GC_STRESS`,
   runtime value model is documented in `memory.md` §3–4, with its design
   lineage in `memory.md` §7.
 
-Known costs, accepted: `--jit` compiles about 1.2× slower than the
-retired AST codegen at `-O2` for the reason in §7.2; a script that names
-several lazy stdlib modules and then does nothing starts ~7 ms later on
-the executor than the tree-walker did, because the preamble is compiled
-rather than walked (real programs come out ahead — the preamble
-bytecode is not cached for that reason); the lowering lane has no REPL
-or debugger.
-
-## 12. History
-
-The bytecode VM replaced a tree-walking interpreter in 2026. The VM
-entered as a third engine beside the interpreter and the AST-walking
-JIT, was diffed against both until the generated corpus found no
-divergence, then became the front end of the JIT (the AST codegen was
-deleted), then the default engine (v0.3.0), and finally the only engine
-once the interpreter and its oracles were retired (v0.3.1 is the last
-release carrying both). The release-diff gate of §10.3 is what replaced
-the interpreter as the independent second opinion. The commit history
-of `include/vm/vm.h`, `include/jit/lowering.h` and `include/rt/rt.h` records
-the migration; the design proposal that started it and the per-phase
-findings live in that history rather than here.
-
-Generators were once lowered like effect bodies: each `yield`ing `fn name`
-was rewritten, in source, to a class implementing the iterator protocol
-(`iter` / `has_next` / `next` / `dispose`) over a flat-dispatch state
-machine, the variables a `yield` splits living on the instance. That was
-the only implementation up to v0.7.0. The generators of §5.7 replaced it
-in three steps: the frame runtime and the compiler and engine paths
-behind an environment variable, the switch of the default (the old path
-stayed one environment variable away, `CULEBRA_GEN_LOWERED`, for
-comparing the two), and the deletion of the lowering, with `yield from`,
-until then a source rewrite to `for v in (e) { yield v }`, moving into
-the compiler. What a body that keeps its frame does differently from the
-lowered class, as a program sees it:
-
-- `type_of(g)` is `'Generator'`, the value prints as `Generator {}` and
-  has no properties of its own (lowered: one class per generator
-  function, whose state fields show), and `==` is identity (lowered:
-  field by field, so two fresh `count(3)` are equal);
-- a generator is not Sendable: sending one raises `SendError: a
-  generator is not Sendable` (a lowered one is copied, state and all);
-- a value `has_next()` pulled ahead is released by `dispose()`
-  (lowered: `next()` still returns it);
-- a local with a `drop` is dropped when its scope ends (lowered: when
-  the generator dies);
-- a throw out of the body runs its defers and finishes the generator
-  (lowered: the defers wait for `dispose()`, and the next `has_next()`
-  runs the throwing state again);
-- resuming a generator from inside its own body raises `ValueError:
-  generator already running` (lowered: it recurses to a
-  RecursionError);
-- a statement block inside an expression may yield (lowered: a
-  SyntaxError, "unsupported control flow").
-
-`--jit` compiled `tests/test_generator.cul` in 35.1 s of CPU lowered and
-in 9.5 s with frames, and its bytecode went from 24,364 to 5,714
-instructions. `tools/difftest/release_diff_allow.txt` lists the cases of
-the list above that the release-diff gate saw against v0.7.0.
+Known cost, accepted: the lowering lane has no REPL or debugger.

@@ -73,7 +73,7 @@ The table above is maintained by hand and points at chapters. Two
 finer questions are held by ratchets instead.
 
 Whether an individual section states a rule that nothing executes:
-`tools/checks/check_spec_examples.sh` counts the sections of this document
+`tools/checks/check_spec_examples.sh` counts the sections of `docs/language.md`
 with no runnable ` ```culebra ` block (one not marked
 `# doctest: skip`, since `just doctest` runs the rest on both
 engines) and compares them against
@@ -102,10 +102,10 @@ carry them.
 
 Every check above costs a population times a per-item price, and the two
 lanes an engine check can run on are not close to each other in price:
-the 279 files of `tests/` cost 17 CPU seconds under the executor and 610
-under `--jit`, because what the JIT lane pays for is LLVM rather than
-execution (a heavy file spends 8.5 s in the IR pipeline and 13.5 s in the
-backend, and 3 ms running). An axis applied to the whole corpus on that
+the files of `tests/` (322, recorded in `gate_budget.txt`) cost far more
+under `--jit` than under the executor, because what the JIT lane pays for
+is LLVM rather than execution (a heavy file spends seconds in the IR
+pipeline and in the backend, and milliseconds running). An axis applied to the whole corpus on that
 lane therefore costs about as much as everything else here put together,
 which is why where a check runs is part of what it is.
 
@@ -120,7 +120,7 @@ phase riding a binary-only shard, and a lane that selects nothing.
 
 | tier | question it answers | what it holds |
 |---|---|---|
-| `just check` | did this edit break what the tree already asserts | the source and IR ratchets, and all 8,539 assertions on the executor, twenty files to a process |
+| `just check` | did this edit break what the tree already asserts | the source and IR ratchets, and every assertion on the executor, twenty files to a process |
 | `just test-dev` | may this reach master (`just land` runs this and nothing else) | the above, plus the JIT lane over the op cover, the `-O0` and faststart codegen axes, the CLI half of `ctest`, the language front ends, isolate |
 | `just test` | may this be pushed | every axis over every corpus, AOT included |
 | CI | both operating systems, and what a laptop cannot see | the full sweeps, the refcount and leak lanes, the platform and window builds |
@@ -139,17 +139,16 @@ corpus — runs once, in `just test` and in CI.
 sweeps: the smallest set of test files that still lowers every bytecode op
 the executor implements, seeded with the files
 `tools/checks/codegen_sensitive.txt` names, plus whatever test files the
-branch touches. It is 34 files covering 147 of the 151 ops for 71 of those
-610 CPU seconds; the four it cannot reach are filed in the set with the
-reason, and that list may only shrink.
+branch touches. It is 31 files covering 152 of the 155 ops; the three it cannot reach
+are filed in the set with the reason, and that list may only shrink.
 `tools/checks/check_jit_shape_set.sh` recomputes the coverage from the
 compiled bytecode on every run of the gate, so a new op fails the gate
 until a test reaches it.
 
 What the cover does not hold is op *combinations* — an unwind edge inside
 a loop inside a closure. That is what the codegen seeds carry by hand, what
-the generated corpus (`tools/difftest`, ~17k cases on both lanes) covers by
-construction, and why the full 279-file sweep still runs in `just test` and
+the generated corpus (`tools/difftest`, ~21k cases on both lanes) covers by
+construction, and why the full sweep still runs in `just test` and
 in CI's `ci-gc` on every push.
 
 CI's macOS job sweeps the cover as well, in place of the full sweep: the
@@ -163,9 +162,8 @@ both the arm64 backend and a file outside the cover is seen when
 `tools/checks/gate_budget.txt` records each swept population — the corpus,
 the isolate files, the generator probes, the `vm_cases`, the ctest
 entries, the doc blocks, the language samples — and `check-gate-budget` holds them exactly. Growth is
-normal and is made here, in the commit that grows it: the corpus went from
-203 files to 279 in six weeks, which is 174 of the JIT sweep's 610 CPU
-seconds, and nothing said so until the gate felt slow. Seconds are
+normal and is made here, in the commit that grows it, so that a gate that
+has become slow shows where its time went. Seconds are
 deliberately not the ratchet — the same lane varies by 1.5–2× on a loaded
 machine — so the table's per-phase costs are reported against the measured
 budget at the end of a lane and gate nothing.
@@ -199,29 +197,23 @@ A check that does not run is a check that cannot fail, and two of the ways
 this tree lost coverage were exemptions nobody was holding:
 
 **`# doctest: skip`.** A skipped block is never executed, so a documented
-form that stopped working stays documented — which happened twice, to the
-`test("name", fn)` form and to the formatting examples, both found by
-reading. A skip is now justified one of two ways: the block cannot run at
+form that stops working stays documented. A skip is justified one of two
+ways: the block cannot run at
 all, or it says why it must not run here (`# doctest: skip — opens a
 window`). `check_doctest_skips.sh` runs the skips that give no reason on the
 executor, and a block that runs cleanly fails the gate — un-skip it, or give
-it the reason a reader wants anyway. Of the 338 skips this found, 92 turned
-out to be windows, servers, watchers, stdin, the network, external programs
-or this machine's own paths, and 14 were illustrations that simply run; those
-now run, which is how §12's `nobreak` example became the first executed one
-for that section.
+it the reason a reader wants anyway. Blocks that need a window, a server, a watcher, stdin, the network, an
+external program or this machine's own paths carry a reason; an
+illustration that simply runs has no skip.
 
-Six of the 92 were found by CI rather than here, and they are the reason the
-lane runs on every platform: an example that cannot run on one machine can
-run on another. `Net.listen(7000)` and its accept loop hang on a runner and
+Some skips hold on one machine and not on another, which is why the lane
+runs on every platform: an example that cannot run on one machine can run
+on another. `Net.listen(7000)` and its accept loop hang on a runner and
 failed on this laptop; `Proc.spawn(["python", ...])` runs where `python` is
 on PATH and fails where only `python3` is. A skip that holds for the machine
 you are on is not a skip that holds.
 
-**`examples/`.** The 30 suites and 328 assertions under `examples/` were
-wired into no gate at all: the `vm2gol-v2` suite had not run since the unit
-runner moved to the VM, because `culebra test` was rejecting every file with
-an `import`, and nothing said so. `run_examples_sweep` runs them in one
-executor process in three seconds, and they are held to the
-optional-namespace rule alongside `tests/*.cul`, since they now run on every
-lane too.
+**`examples/`.** The suites under `examples/` (47, recorded in
+`gate_budget.txt`) run in every lane: `run_examples_sweep` runs them in one
+executor process, and they are held to the optional-namespace rule
+alongside `tests/*.cul`.

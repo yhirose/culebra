@@ -25,7 +25,6 @@ backstop — は別の文書[`memory.md`](memory.ja.md)にある。以下の各�
 9. [ビルド構成](#9-ビルド構成)
 10. [検証](#10-検証)
 11. [設計判断](#11-設計判断)
-12. [経緯](#12-経緯)
 
 ---
 
@@ -50,7 +49,7 @@ backstop — は別の文書[`memory.md`](memory.ja.md)にある。以下の各�
       │
       ├──► vm::Exec        インタプリタループ (既定、`--vm`)         vm.h
       │
-      └──► vm::Lowering    LLVM IR → ORC JIT (`--jit`)               vm_lowering.h
+      └──► vm::Lowering    LLVM IR → ORC JIT (`--jit`)               jit/lowering.h
                            LLVM IR → オブジェクトファイル (`culebra build`)
 ```
 
@@ -67,15 +66,15 @@ loweringはそれらへの呼び出しを生成する。2つのレーンが同�
 
 | 要素 | ヘッダ | 備考 |
 |---|---|---|
-| ランタイム値表現とヘルパー | `rt.h`とそれがincludeする`rt_*.inc.h`断片 | LLVM非依存。stdlib全体がこの上に載る（`stdlib_rt.h`） |
+| ランタイム値表現とヘルパー | `rt.h`とそれがincludeする`rt_*.inc.h`断片 | LLVM非依存。stdlib全体がこの上に載る（`stdlib/bindings.h`） |
 | フロントエンド解析 | `fn_analysis.h` | `FuncInfo` / `FnAnalysis`。両消費者が共有 |
 | バイトコード形式・コンパイラ・executor | `vm.h` | `Op`、`Chunk`、`VmProgram`、`vm::Compiler`、`vm::Exec` |
-| LLVM lowering、`--jit`、AOT | `vm_lowering.h` | LLVMを必要とする唯一のVMヘッダ |
+| LLVM lowering、`--jit`、AOT | `jit/lowering.h` | LLVMを必要とする唯一のVMヘッダ |
 | LLVM codegenコンテキスト | `jit.h` | `struct JIT`: emitter群、所有権ハンドル、ORC/`exec`、object cache |
-| セッション（REPL、`culebra test`、embedding） | `vm_session.h`、`vm_repl.h`、`test_engine.h`、`vm_embed.h` | プログラムより長生きするトップレベル束縛 |
-| デバッガ | `debug_engine.h`、`vm_debug.h`、`dap.h` | 6問のエンジンインターフェースの上のDAPプロトコル |
+| セッション（REPL、`culebra test`、embedding） | `vm/session.h`、`cli/repl.h`、`cli/test_engine.h`、`vm/embed.h` | プログラムより長生きするトップレベル束縛 |
+| デバッガ | `cli/debug_engine.h`、`vm/debug.h`、`cli/dap.h` | 6問のエンジンインターフェースの上のDAPプロトコル |
 | 正典stdlibシグネチャ | `canon_sigs.h`、`canon_sigs_table.h` | 全レーンが束縛の根拠にするパラメータ名/型/デフォルト |
-| コレクタ、スラブ | `rt_gc.h`、`rt_slab.h` | [`memory.md`](memory.ja.md)参照 |
+| コレクタ、スラブ | `rt/gc.h`、`rt/slab.h` | [`memory.md`](memory.ja.md)参照 |
 
 名前が境界を表す。`jit`はLLVMが絡むことを意味し、その層に属するのは
 `jit.h`だけである。両エンジンが共有するランタイムは`rt.h`と、それが
@@ -105,7 +104,7 @@ includeし、他のどこからもincludeしない。
    トークンをスキャンしてstdlib名（`Time`、`Regex`、`Path`、
    `assert_*`ファミリー、…）を探し、プログラムが名指ししている遅延
    モジュールだけのビルダーを持つ合成`<stdlib>`モジュールを先頭に
-   付け加える（`stdlib_preamble.h`、ソースは`stdlib_preambles.gen.h`）。
+   付け加える（`stdlib/preamble.h`、ソースは`stdlib/preambles.gen.h`）。
    したがってstdlib名はコンパイル時に、コンパイラがその名前を見た
    時点で解決される。
    2つのloweringレーンは、このバイナリが**bake**したモジュールを
@@ -119,12 +118,11 @@ includeし、他のどこからもincludeしない。
    組み込みtrait（`Stringer`、`Eq`、`Comparable`、…）も`__Traits`と
    いう名前で同じようにbakeされるが、エントリ一覧への入り方が違う。
    どのプログラムも名指しせずに登録するものなので、そもそもspliceの
-   対象ではなく、コンパイルするレーンは自前のprologueとしてlowering
-   していた。このprologueが小さなプログラムのIRの大半を占めていた —
-   `let x = 1`がloweringする約6,200行のうち約4,800行が5つのデフォルト
-   本体（`Eq.neq`と`Comparable.lt/le/gt/ge`）で、プログラム自身の
-   コードからはどれも到達しない。`--jit`の起動82msのうち約75msが
-   これだった。`with_baked_traits`がこのエントリをstdlibのエントリ
+   対象ではなく、コンパイルするレーンは自前のprologueとしてはlowering
+   しない。5つのデフォルト本体（`Eq.neq`と`Comparable.lt/le/gt/ge`）が
+   小さなプログラムのIRの大半を占めることになり、プログラム自身の
+   コードからはどれも到達しないからである。
+   `with_baked_traits`がこのエントリをstdlibのエントリ
    より前に置き、同時にコンパイラへprologueを省くよう伝える
    （`BakedLane::traits`）。呼び出しを出しつつソースも残すと二重に
    登録してしまうので、この2つは必ず一緒に動かす。
@@ -179,12 +177,12 @@ release-diffゲート（§10.3）で、そこでは既定そのものが対象�
 ## 3. ランタイム層
 
 `rt.h`は両消費者が立つ土台である。固定順で、値表現
-（`rt_value.inc.h`）、決定的な`drop`のためのowned-resourceスタック
-（`rt_owned.inc.h`）、文字列（`rt_string.inc.h`）、中核の`extern "C"`
-ヘルパー（`rt_runtime.inc.h`）、固定レイアウトのビューとクラス構築
-（`rt_fixed.inc.h`）、マルチメソッドdispatchとキーワード呼び出し機構
-（`rt_dispatch.inc.h`）、イテレータプロトコル（`rt_iter.inc.h`）、参照
-カウント実装（`rt_mem.inc.h`）、generatorがresumeの間に保持するフレーム
+（`rt/value.inc.h`）、決定的な`drop`のためのowned-resourceスタック
+（`rt/owned.inc.h`）、文字列（`rt/string.inc.h`）、中核の`extern "C"`
+ヘルパー（`rt/runtime.inc.h`）、固定レイアウトのビューとクラス構築
+（`rt/fixed.inc.h`）、マルチメソッドdispatchとキーワード呼び出し機構
+（`rt/dispatch.inc.h`）、イテレータプロトコル（`rt/iter.inc.h`）、参照
+カウント実装（`rt/mem.inc.h`）、generatorがresumeの間に保持するフレーム
 （`rt/gen.inc.h`、§5.7）をincludeする。どれもLLVMを名指しない。
 
 ### 3.1 値表現
@@ -238,7 +236,7 @@ VMが必要とするヒープオブジェクトはランタイムの既存のも
   サイトのキャッシュを温めるのは、`prop_wr`が扱う普通のObjectだけである。
 - `JitArray`、`JitSet`、タプル、`JitTensor`。
 
-オブジェクトはper-`Runtime`のスラブアロケータ（`rt_slab.h`）から
+オブジェクトはper-`Runtime`のスラブアロケータ（`rt/slab.h`）から
 割り当てられる: サイズ別に分離され、moveせず、ロックしない —
 なぜなら`Runtime`（ヒープ、名前空間キャッシュ、クラス・オーバー
 ロードレジストリ、deferスタック、例外キャリアのスレッドローカルな
@@ -270,20 +268,18 @@ consume-on-every-exit、transfer）に従う。`memory.md` §4.3が一覧に
 `JitUnwindRelease`（ヘルパーがthrowしたときだけ解放する）。
 
 呼び出しフレームが触るスレッドローカルな状態は、2つのオブジェクトに
-まとめてある: `_jit_thread`（`rt_runtime.inc.h`）が呼び出しの発行する
+まとめてある: `_jit_thread`（`rt/runtime.inc.h`）が呼び出しの発行する
 ソース位置すべてと再帰深さを持ち、`_culebra_rt`（`shared.h`）が
 このスレッドの現在の`Runtime`と既定`Runtime`のキャッシュを持つ。
 これは整頓ではない。Mach-Oにはinitial-exec TLSモデルが無く、
 ヘルパーが触る`thread_local`変数は1つごとにdyldの`_tlv_get_addr`
-呼び出しを払う — 呼び出し位置の発行だけで12個に触っていた。
-1行の関数をループで呼ぶと時間の4分の3がそこへ行っていた。
-2つのオブジェクトにまとめる（どちらの持つ値も変えない）ことで、
-culebraの呼び出しコストは半分になった。
+呼び出しを払う。そこで呼び出し位置の発行が触る変数は、12個の
+スレッドローカルでなくこの2つのオブジェクトに置く。
 
-その後に残っていたのはヘルパーごとの`_tlv_get_addr`1回で、呼び出し1つは
-なおそれを4つ踏んでいた: 呼び出し側の位置発行、呼ばれた側の再帰ガードの
-enterとleave、owned stackのホットポインタである。コンパイルされたフレームは
-いま、エントリブロックで`_jit_thread`のアドレスを1度だけ取り
+それでもヘルパーごとの`_tlv_get_addr`が1回あり、呼び出し1つはそれを4つ
+踏む: 呼び出し側の位置発行、呼ばれた側の再帰ガードのenterとleave、
+owned stackのホットポインタである。コンパイルされたフレームは
+エントリブロックで`_jit_thread`のアドレスを1度だけ取り
 （`culebra_runtime_thread_state`、JIT側は`thread_state_ptr`）、残りは
 そのポインタ経由で済ませる: 再帰ガードはload・上限との比較・storeで、
 ヘルパーはthrowのためだけに残す（`RecursionError`はexecutorとバイト単位で
@@ -293,11 +289,11 @@ owned stackをキャッシュして、`RuntimeScope`の切り替えごとに捨�
 （`RuntimeTls::on_switch`）、次のフレームの取得で解決し直される。
 executorとランタイム自身からユーザーコードへの呼び戻しはポインタ無しの
 形のままで、同じオブジェクトを自分で解決する。フレームあたりの参照は
-4回から1回になり、上の1行関数の呼び出しは14.7nsから約11nsになった。
+4回でなく1回である。
 
 ### 3.3 標準ライブラリ
 
-`stdlib_rt.h`が標準ライブラリを束縛する: ネイティブ名前空間
+`stdlib/bindings.h`が標準ライブラリを束縛する: ネイティブ名前空間
 （`Math`、`IO`、`Random`、`FS`、`Net`、`Canvas`、…）を実行時が名前
 で解決する名前空間ごとの`kNsRows_*`テーブルとして — 名前空間単位に
 まとめてあるのは、AOTバイナリがソースの名指しした名前空間だけをlink
@@ -380,7 +376,7 @@ variantのコンストラクタ、束縛メソッドがそれで、
 
 この解析は`is_builtin_var`という1つの述語で注入されており、stdlib
 機構から独立している。shadowingは同じ解決結果の上で
-`lint::check_shadow`がチェックし、`culebra lint`と単一のソースを共有する。
+`lint::scope_diagnostics`がチェックし、`culebra lint`と単一のソースを共有する。
 
 ### 4.1 宣言の意味論
 
@@ -554,7 +550,7 @@ dropできる循環を返しうる）が一切ないこと。そしてその`Own
 3分の2は`<producer> X ; Take Y, X`の後半である — 式がコンパイラの
 用意した一時スロットへ計算し、その次の命令がそれを値の本来の居場所へ
 移すだけ、という形だ。producerが直接`Y`へ書けばよい。変わるのは以降
-`X`が何を持つかで、`Take`はそこをnilにしていたが、今やproducerが触ら
+`X`が何を持つかで、`Take`ならそこをnilにするところ、producerは触ら
 ないので以前の値を持ったままになる。その両面とも押さえてある —
 liveness解析が「誰も読まない」と言い、かつ古い値が解放されることも
 ない（producerは`X`を解放せずに上書きしていたのだから、そこに生きた
@@ -596,7 +592,7 @@ testsと言語front endを合わせたコーパス全体では、4つのpassが
 
 ### 5.3 opcodeのファミリー
 
-157個のopcodeを分類すると:
+155個のopcodeを分類すると:
 
 | ファミリー | op | 備考 |
 |---|---|---|
@@ -776,11 +772,9 @@ spliceそのもの(`emit_inline_body`)は普通の文コンパイラ
 boxedな呼び出しの一時スロットがそのフレームと一緒に終わるのと同じで、
 呼び出し側の文の終わりまでは残らない。スコープのpopは、文のsweep
 リストに残っている一時スロットのスロットを、どの構文が取ったもので
-あっても手放さない。この規則ができる前は、呼び出し側の次のrun(続く
+あっても手放さない。手放すと、呼び出し側の次のrun(続く
 ステップの結果で、`let`がコピーなしで自分のホームにするもの)がそうした
-スロットに載り、文の終わりでreleaseされることがあった(実際に踏んだ例:
-`let v = C.new(1.0, 0.25).scale(C.new(3.0, 4.0).len())`が両方の
-フィールドで`nil`を読んだ)。
+スロットに載り、文の終わりでreleaseされることがあるからである。
 
 連鎖はスカラーの末端までunboxの形を保つときにしかそのマーカーを
 渡されない — runが他の消費者に届く形はそもそも構築対象外なので、
@@ -886,43 +880,39 @@ boxedパラメータでdunderがspliceすることを既に証明済みなので
 `v = v + C.new(...)`のステップは確保をまったく行わず、それが載る
 ループ本体は自身の算術に還元される。
 
-この着地後に、consumer側の規則が2つ、レビューではなく実際の
-escapeの発見によって厳格化された:
+consumer側の規則が2つ、runがtagged Valueを期待するコードに届くのを
+防いでいる:
 
 - **foldがspliceしようとする全dunderは、それ自体がrunを残さねば
   ならない(`inline_body_end`)**。正しいarityで存在するだけでは足りない。
   spliceされた演算子の結果のあらゆるconsumer——fold自身の
   accumulator、再代入のcopy-back、後続連鎖のフィールド読み——は
   結果をNスロットのrunとして扱うが、スカラーを返すdunderは
-  1スロットしか渡さない（実機で発見: スカラーを返す`__add__`の
-  `(a + b).x`は結果の**手前**のスロットを読んでいた）。そのような
+  1スロットしか渡さない（スカラーを返す`__add__`の`(a + b).x`は
+  結果の**手前**のスロットを読むことになる）。そのような
   dunderを持つクラスはその演算子を決してspliceせず、boxed経路が
   答える——スカラー結果へのフィールド読みが投げるTypeErrorも含めて。
 - **メンバ本体内の裸の`self + o`や`-self`は決して分類されない。**
-  `receiver_refs_stay_unboxed`は以前、receiverをオペランドに持つ
-  foldや否定を出現場所を問わず受理していた。しかし本体の内側には
+  `receiver_refs_stay_unboxed`は、receiverをオペランドに持つ
+  foldや否定を本体の外でだけ受理する。本体の内側には
   それが生むrunのconsumerが存在しない——メンバのoutスロットがrun
   になるのは`C.new(...)`末尾の場合だけであり、本体内のfold起点連鎖
   にはそれを消費する先読みがなく（`try_inline_fold_chain`は
   operand[0]を`Binding`経由で解決するが、`self`はBindingを持たない）、
-  それ以外の場所はすべてtagged Valueを期待する。1つの原因から
-  4通りの誤動作として実機で発見: `addp(o) { self + o }`は自分の
+  それ以外の場所はすべてtagged Valueを期待する。受理すると1つの原因から
+  4通りの誤動作になる: `addp(o) { self + o }`は自分の
   第1**フィールド**を返し、`-self`は生フィールドに`Op::Neg`を
   かけ、`println(self + o)`はそれを印字し、`(self + o).len()`は
-  TypeErrorを投げた。そのようなメンバは今は丸ごと却下され、その
+  TypeErrorを投げる。そのようなメンバは丸ごと却下され、その
   全consumerはboxedでコンパイルされる。
 
-この過程で露呈した、機構そのものとは別の正当性前提が1つある:
 メソッド内でのクラス自身の名前(`FuncInfo::own_name`。captureした
-cellではなくreceiver経由で読む)は、decoratorが付いた**どのクラス
-でも**無効化されていたが、本来区別すべきなのはコンパイラ自身が
-読むcompile-time marker(`@value`/`@packable`/`@derive`)と、実際の
-decorator(そのbindingはdecoratorの返り値であり、クラスそのもので
-ない場合すらある)である。この修正以前は`@value`のメソッドは自分の
-クラス名を衛生的に参照できず、つまり§5.3.1が既に説明している
-同クラス末尾再帰(`V2.__add__`が`V2.new(...)`を返す形)も、この修正
-前にはinlineされ得なかった — boxedフォールバック経由で正しく
-コンパイル・実行されてはいたにもかかわらず。
+cellではなくreceiver経由で読む)が無効化されるのは、実際のdecorator
+(そのbindingはdecoratorの返り値であり、クラスそのものでない場合すらある)
+が付いたクラスだけである。コンパイラ自身が読むcompile-time marker
+(`@value`/`@packable`/`@derive`)は無効化しない。これによって、§5.3.1が
+説明している同クラス末尾再帰(`V2.__add__`が`V2.new(...)`を返す形)も
+inlineされる。
 
 ### 5.3.3 ローカルはスコープ全体でunboxedのままでいられる
 
@@ -1013,8 +1003,8 @@ bindingの出現を区別できないからで、shadowが却下されるのと�
   `chain_resolves_to_class`/`fold_resolves_to_class`
   に処理を委ねるのは、その形が明らかに「`v`が自分自身を読む」の
   **ではない**場合（新規construction、あるいは既に実在する別の
-  bindingを起点とする連鎖）に限られる——実機で発見: 全てのfold RHS
-  を通常の先読み経由にすると`v = v + g * DT`が常に却下された。
+  bindingを起点とする連鎖）に限られる。全てのfold RHS
+  を通常の先読み経由にすると`v = v + g * DT`が常に却下される。
   `v`のbindingはこの問いに答えるべき時点でまだ存在し得ないからだ。
 
 **循環だけでなく順序も重要になる。** `@value class`の登録
@@ -1054,8 +1044,8 @@ index 1から問う）。再代入（`compile_assignment`）と複合
 
 計測（`tools/bench/value_inline.cul`の`mut, reused`行を、名前を
 辿れないconstruction経由で同じ算術を行う`mut, boxed`行と比較）:
-ステップのもう半分に§5.3.2のオペランド規則が効くので、1反復が
-かつて支払っていた2つの確保はどちらも消え、ループ本体に残るのは
+ステップのもう半分に§5.3.2のオペランド規則が効くので、boxedな1反復が
+払う2つの確保はどちらも起きず、ループ本体に残るのは
 算術だけになる。`mut, compound`行は同じループを`v += …`で書いた
 もので、`mut, reused`と一致することがその行の眼目である。
 
@@ -1139,8 +1129,8 @@ runに評価される。文ならそれで正しい。その値は誰も読ま�
 ここまでは値をunboxする話だった。この節はboxed経路そのものを、必要以上に
 遅くしないための話である。プログラムが作るオブジェクトの大半（リテラル、
 配列に保持されるクラスインスタンス）はrunの資格を満たさない。そうした
-オブジェクトについて、宣言時点で分かっているのに構築のたびに名前から
-導き直していたことが3つあった。
+オブジェクトについて、宣言時点で分かっているので、構築のたびに名前から
+導き直さないことが3つある。
 
 **リテラルのスロットは番号である。** `{class: 'V', x: a, y: b}`は最終
 Shapeを一度に確保していた（`ObjectNewShaped`）が、各プロパティの格納は
@@ -1155,8 +1145,8 @@ Shapeを構築したキー列そのものが各キーの番号を与えるので
 
 **クラスの宣言フィールドは1つのレイアウトである。** `class C { x: Float;
 y: Float }`は`new`のたびに、フィールドごとに1つの`ObjectSet`、すなわち
-shape遷移を1回ずつ払っていた。初期化子を持たない
-フィールドの極大な連続区間は、いま1つの`FieldsInit`である
+shape遷移を1回ずつ払うことはしない。初期化子を持たない
+フィールドの極大な連続区間は1つの`FieldsInit`である
 （`Chunk::FieldLayoutSpec`: 名前、各型のゼロ値、そしてサイトが初回実行時に
 キャッシュするShapeの対、すなわちインスタンスが持ってくるShape（新しい
 インスタンスならShapeなし）と、その区間が遷移させる先のShape）。初期化子を持つ
@@ -1174,19 +1164,18 @@ shape遷移を1回ずつ払っていた。初期化子を持たない
 
 **クラスのmetaは特殊メソッドを表で答える。** インスタンスへの演算子
 （`v + w`、`a == b`、`str(x)`）は`_lookup_special`を通ってクラスのdunderに
-達するが、これは評価のたびにインスタンス自身の名前列とmetaの名前列を
-歩いていた。`build_class_meta`はいま`Special`の全集合（演算子dunder、
+達する。`build_class_meta`は`Special`の全集合（演算子dunder、
 `hash`/`cmp`/`eq`、`__str__`、`__call__`、`__index__`/`__setindex__`）をmetaが
 所有する`JitSpecialTable`に一度だけ解決し、クラスが`drop`を束縛しているか
-（`methods_drop`）も同時に答える。後者は構築のたびにメソッド名を走査して
-訊いていた。インスタンス側の優先順位は保たれる: Shapeは自分の名前列に
+（`methods_drop`）も同時に答える。これで、dunderの検索も構築も
+メソッド名を走査しない。インスタンス側の優先順位は保たれる: Shapeは自分の名前列に
 特殊名が含まれるかを記録し（`Shape::any_special`）、自分のShapeがそれを
 含むインスタンスか辞書モードのオブジェクトだけが名前の走査を取るので、
-あるインスタンスへの`c.__add__ = f`は従来どおりクラス側を隠す。同じ理屈で、
+あるインスタンスへの`c.__add__ = f`はクラス側を隠す。同じ理屈で、
 メンバが自分のクラス名を読む束縛は、本体内のclosureがそれを捕獲しない限り
 cellでなくフレームの素のslotになる（`ClsSelf`でフレームに読み、lazyなslot
 同様`UnboundErr`で守る）: 演算子本体の中の`Name.new(...)`は呼び出しごとの
-cell確保を払わなくなった。
+cell確保を払わない。
 
 3つとも、§5.3.1の意味でコンパイル側の「一度決めたら戻らない」形である:
 命令が既に言っていることをランタイムが名前から導き直すことはなく、両
@@ -1197,10 +1186,9 @@ cell確保を払わなくなった。
 次に両側が宣言した`eq`、最後に構造: `_culebra_value_equal`。演算子がこれを
 呼び、「等しい」を意味する他の全て — `contains`、`index_of`、導出された
 `cmp`、`chunk_by`の区切り — も、その裏にある構造の走査も要素の対ごとに
-これを呼ぶ。最後の点が`a == b`から`[a] == [b]`を導く。以前は走査が
-自分自身へ再帰していたので、最初の2段は最上位で止まり、Setのメンバーと
-Objectのキー（こちらは常に`eq`を通っていた）が、それを入れたコンテナと
-食い違っていた。走査の名前は走査の外に現れてはならず、
+これを呼ぶ。最後の点が`a == b`から`[a] == [b]`を導く:
+Setのメンバーとobjectのキー（こちらは`eq`を通る）は、それを入れた
+コンテナと一致する。走査の名前は走査の外に現れてはならず、
 `check_value_equal_door.sh`がそれを保つ。`eq`を定義しないプログラムに
 払わせない代償が2つある: あるObjectが`==`でユーザーメソッドを走らせうるかは
 1つの問いで決まり（クラスの特殊メソッド表の2スロット、またはShapeの
@@ -1216,9 +1204,8 @@ Objectのキー（こちらは常に`eq`を通っていた）が、それを入�
 `_culebra_value_order`（演算子を引数に取る）。4つの演算子がこれを
 呼び、「前に並ぶ」を意味する他の全て — `sort` / `sorted`、`sort_by` /
 `sorted_by`のキー、`min` / `max`と`min_by` / `max_by`のキー、導出された
-`cmp`のフィールド — もこれを呼ぶ。後ろの3つは以前スカラーの段を直接呼んで
-いたので、キーやフィールドがそれ自体Comparableだと、同じ対に`<`が答える
-ところで`cannot compare Object and Object`になっていた。規則の最後の段
+`cmp`のフィールド — もこれを呼ぶので、キーやフィールドがそれ自体
+Comparableなら、同じ対に`<`が答えるのと同じ順序になる。規則の最後の段
 （`_culebra_scalar_order`）の名前は規則の外に現れてはならず、
 `check_value_order_door.sh`がそれを保つ。Tupleの走査は`==`と同じ
 `JitEqWalk`の連結に繋がるので、要素の`cmp`が走るとき、その要素を持つ
@@ -1268,7 +1255,7 @@ namespace closureのadapterが届いたであろうhelperへ1つのdispatch
 これはhelperが呼ぶlibmの当の呼び出しに落ちる — ので、タグが既知なら
 呼び出しは1命令に畳まれる。`min`、`max`、`clamp`、`f32`にも腕がある
 （両方Longと、いずれかFloat）: helperの規則（`reduce_min_max`、`clamp`、
-`_culebra_f32_round`）を比較とselectで綴ったもので、
+`scalar_bytes::round_f32`）を比較とselectで綴ったもので、
 `tests/test_math_inline_arms.cul`が、emitterにタグの見えないオペランドを
 通してhelperとビット単位で一致することを固定する。それ以外の綴り
 （`Math?.f`、`let m = Math`、値としての`Math.f`、keyword）は汎用経路と
@@ -1368,12 +1355,11 @@ tagを名指さない）。`mut`パラメータも除外する（再代入は再
 `tools/checks/check_param_tag_fold.sh`が生成IRで畳み込みを固定し、無注釈の
 対照を自分で持つので、何も測っていない状態では通らない。
 
-限界も記しておく。次の一手として明らかに見える案が効かないからである:
-**連鎖が畳まれるのは頭のtagが分かっているときだけ**。`trim`は既に結果を
+限界: **連鎖が畳まれるのは頭のtagが分かっているときだけ**。`trim`は既に結果を
 `make_string`で作っているので、組み込みメソッドの戻りtagはloweringの側に、
 `CanonSig`が言えるより正確に既にある。頭が不明だと最初の呼び出しがmiss腕を
 持ち、その結果はphiになる。定数と非定数のphiは定数ではない。だから
-`CanonSig::return_type`を埋めてもここでは何も買えず、攻めるべきは頭だけである。
+`CanonSig::return_type`を埋めても畳み込みは広がらず、攻められるのは頭だけである。
 
 ### 5.5 例外、`defer`、unwind
 
@@ -1454,9 +1440,6 @@ generatorになる（`Chunk::is_generator`）: 呼び出しはプロローグを
 戻るフレームの中で走る。effectの本体はそうではなく、コンパイラの手前で
 変換される（§11）。
 
-generatorもv0.7.0までは同じように、それぞれ状態クラスへ変換されていた
-（§12）。
-
 これを運ぶopcodeは2つ。`GenStart`はプロローグ — パラメータの束縛、
 既定値の評価、型検査、`RecEnter` — の後に置かれるので、プロローグが
 raiseするものは呼び出しがraiseする。`Yield a`はフレームを中断し、
@@ -1505,8 +1488,7 @@ pc範囲で、resumeは同じpcからそこへ戻り、closeは`return`と同じ
 呼ばれる（`is_straightline_body`）。
 
 書かれたままコンパイルされた本体は、名前の束縛も文の実行も普通の
-`fn`と同じで、§10.7がそれを保つ。変換されたクラスが別の答えを返して
-いて、プログラムから見えるものは§12にある。
+`fn`と同じで、§10.7がそれを保つ。
 
 ## 6. executor
 
@@ -1579,15 +1561,13 @@ getter本体であることはchunkの性質なので、`MakeClosure`がchunkか
 `Runtime`に渡されるからである。クロージャが持つので、答えは値と一緒に
 isolate境界も越える。
 
-descriptorは以前`captures[0]`のcellに載っていて、`MakeClosure`ごとに
-1つあった（chunkのすべてのクロージャで1つのcellを共有するのは誤り:
-1つのプログラムのクロージャは複数のisolateで同時に実行されることが
-あり、`JitCell`の参照カウントは単なる`int64_t`である）。そのcellは
-loweringのレーンには無いオブジェクトだったので、executorでは
-`GC.stat().rc_objects`が生きているクロージャ1つにつき1多かった。
 descriptorは不変でプログラムのものなので、クロージャごとのカウントも
-持ち主も要らない。いまは両レーンがクロージャに同じオブジェクトを確保し、
-refcountレーンのdifftestの許可リストは空である。
+持ち主も要らず、cellでなくクロージャの`meta`に載る（chunkのすべての
+クロージャで1つのcellを共有するのは誤り: 1つのプログラムのクロージャは
+複数のisolateで同時に実行されることがあり、`JitCell`の参照カウントは
+単なる`int64_t`である）。だから両レーンはクロージャに同じオブジェクトを
+確保し、`GC.stat().rc_objects`は一致し、refcountレーンのdifftestの
+許可リストは空である。
 
 ### 6.2 throw
 
@@ -1596,9 +1576,8 @@ refcountレーンのdifftestの許可リストは空である。
 してre-raiseする。その上に積まれたインラインのフレームも同じhandlerの
 中で、上から順に巻き戻され（`unwind_frames`）、1つずつ降ろされる。
 スコープの巻き戻し中に`defer`がthrowすると、その例外が下のフレームに
-とっての進行中の例外に置き換わる。かつては`run_frame`の`catch`の入れ子が
-これをただで与えていたが、`unwind_frames`は自分のhandlerの内側から
-再帰することで同じ入れ子を保つ。捕捉されなかったエラーはエンジン境界
+とっての進行中の例外に置き換わる。`unwind_frames`は自分のhandlerの内側から
+再帰するので、置き換えた例外が次の`run_frame`の`catch`が見るものになる。捕捉されなかったエラーはエンジン境界
 （`run_prepared`）でフォーマットされる: ユーザーの`throw`はどの
 レーンも表示する同じ`uncaught: …`の行になり、位置を持たない
 `CulebraError`は最後に公開されたop位置から埋め戻される。interruptは
@@ -1713,7 +1692,7 @@ generatorが共有する1つのmeta（`_jit_gen_meta`）上のnativeで、それ
 
 ## 7. LLVM lowering
 
-`vm::Lowering`（`vm_lowering.h`）は`VmProgram`をchunkごとにlowering
+`vm::Lowering`（`jit/lowering.h`）は`VmProgram`をchunkごとにlowering
 する: 各chunkはJitFn ABIを持つ1つのLLVM関数になり、各レジスタは
 mem2regがSSAに昇格させるエントリブロックの`alloca`になり、各`Insn`
 はいくつかのIR命令かランタイムへの呼び出しになる。executorがヘルパー
@@ -1772,7 +1751,7 @@ startの実行と同じであることを、2つのバイナリにまたがっ�
 どのプログラムも登録する組み込みtraitも、そもそもモジュールの中に
 無い（§2、焼き込みpreamble）ので、loweringされるのはユーザーの
 コードである。距離のほとんどはこれで稼いでいる — `let x = 1`が
-loweringするIRは6,167行ではなく758行、起動は82msではなく7msになる。
+loweringするIRは既定の`-O2`で21行である（`--jit --emit-llvm`）。
 `Lowering::build_preamble_object`
 は同じloweringをモジュールごとのエントリ名で走らせたもので、ビルド時
 に`culebra_preamble_cc`が実行する。`lower_program`は`__culebra_main`を
@@ -1790,15 +1769,15 @@ cacheのヒットは`cached`と報告される — ソースキーが答えた�
 `tests/`のどのファイルでも実行は数msで、残りの大きい方の半分は
 バックエンドにある。フラットなスクリプト — 1つの関数で、トップ
 レベルのスロットとthread-stateポインタがその全体にわたって生きて
-いる — はそのほとんどをregister coalescerに使っていた。呼び出し
+いる — はそのほとんどをregister coalescerに使う。呼び出し
 サイトごとのそれらのコピーを、interval全体に対して1つずつjoinする
 からである。`JIT::tune_backend`はこれをLLVMの
-`large-interval-freq-threshold`（256から16へ）で抑える。`tools/bench/`
+`large-interval-freq-threshold`（16。LLVMの既定は256）で抑える。`tools/bench/`
 のthroughputの行は動かない。ホットループ自身のコピーが先にjoin
 されるからである。この上限はrefcountガードの形に敏感で、
 `emit_tag_is_refcounted`でsentinelタグを`& 31`で畳む形（サイトごとに
 2命令少なく、モジュールは5%小さい）にすると同じファイルのcoalescerが
-1.2sから9.2sに戻る。範囲テストはそのために残している。
+1.2sから9.2sになる。範囲テストはそのために残している。
 
 このパイプラインのうち1つのパスはlowering自身のものである。
 4つのrefcountヘルパーはそれぞれガードで始まる — 値の2つは
@@ -1821,7 +1800,7 @@ nullのcellである。そこで`JIT::DropSettledRefcounts`はパイプライン
 これは定数で確定するタグの話である。実行時まで分からないタグこそが
 フレーム経路の常態で — 解放される仮引数、レシーバ、スコープが畳む
 slot — そのどれもが「この値は何も所有していない」と教わるためだけに
-不透明なヘルパーを呼んでいた。そこで解放のemitter
+不透明なヘルパーを呼ぶことになる。そこで解放のemitter
 （`emit_value_release`）はヘルパー自身の検査をIRで先に置く:
 参照カウントするタグはすべて32bitのマスクに収まるので、所属判定は
 シフト1回であり、呼び出しはその後ろに入る。ヘルパーは自分の検査を
@@ -1910,15 +1889,11 @@ phiで読み、自分のdeferが投げた置き換えは分類せずに先へ渡
 
 landing padに生きたまま入る値はspillされなければならない —
 unwinderはcallee-savedレジスタしか復元しないので — したがって
-throwする可能性のある呼び出しを多く持つ関数は、`-O2`で退役した
-ASTコードジェンにはなかったレジスタ圧を払う（そのスコープslotは
-決してSSAではなかった）。これはloweringされたコードがループで
-2〜4.5倍速く走るのと同じ事実である: バイトコードのレジスタファイル
-がSSAに昇格されている。`tests/test_core.cul`での実測では、`-O2`の
-コンパイルは旧コードジェンの約1.2倍で、`-O0`のコンパイルは遅くなら
-ない。4通りのpadの形が試され、木にあるものがその中で最良である
-（スコープごとに1つのpadはIRを最小化するが、`llc`に30秒かかる
-幅700のphiを生む）。
+throwする可能性のある呼び出しを多く持つ関数は、`-O2`でレジスタ圧を払う:
+バイトコードのレジスタファイルはSSAに昇格されており、loweringされた
+コードがループで速く走るのも同じ事実による。スコープごとに1つのpadは
+IRを最小化するが、`llc`に30秒かかる幅700のphiを生むので、loweringは
+それを使わない。
 
 ### 7.3 generatorの本体
 
@@ -1975,7 +1950,7 @@ mutabilityモードで宣言/代入する）を通じて束縛する。これに
 ある`if`の腕の内側で最初に言及された名前は、別の腕が実行されても
 なおロードされなければならないからである。
 
-`vm::Session`（`vm_session.h`）は両方のセッション消費者が必要と
+`vm::Session`（`vm/session.h`）は両方のセッション消費者が必要と
 するものを加える: 保持されたプログラム群（クロージャは自分の
 プログラムを指すdescriptorを通じてそのバイトコードに到達するので、
 セッションが実行したプログラムは生き続けなければならない）、
@@ -2001,7 +1976,7 @@ mutabilityモードで宣言/代入する）を通じて束縛する。これに
 に到達するからである。`release_all`はマップを走査せずdrainする。`drop`が
 カーソルの手前にcellを鋳造し得るためである。
 
-REPL（`vm_repl.h`）は1行ずつ`Session`に送り込まれるものであり、
+REPL（`cli/repl.h`）は1行ずつ`Session`に送り込まれるものであり、
 最後の文の値はセッションの結果cellから反響される。
 
 ### 8.2 `culebra test`
@@ -2009,7 +1984,7 @@ REPL（`vm_repl.h`）は1行ずつ`Session`に送り込まれるものであり�
 ユニットテストランナー（`test_runner.h`）は9個のメソッドからなる
 `TestHost`インターフェースの上でエンジン非依存である — ファイルを
 実行する、グローバルを読む、ArrayやObjectを歩く、関数を呼ぶ、現在の
-throwを説明する。そして`VmTestHost`（`test_engine.h`）は自分の
+throwを説明する。そして`VmTestHost`（`cli/test_engine.h`）は自分の
 `Session`からそれらに答える。`test`と`parametrize`はculebraソース
 （`src/preambles/test_ambient.cul`）であり、したがってホストが読み
 戻すレジストリはプログラムが構築した普通のArrayである。各ファイルは
@@ -2043,8 +2018,8 @@ doctestランナー（`doctest_runner.h`）はセッションを必要としな�
 
 ### 8.3 デバッガ
 
-`dap.h`はDAPプロトコル、ブレークポイントテーブル、pause/resumeの
-状態機械、出力の転送を保持し、`DebugEngine`（`debug_engine.h`）を
+`cli/dap.h`はDAPプロトコル、ブレークポイントテーブル、pause/resumeの
+状態機械、出力の転送を保持し、`DebugEngine`（`cli/debug_engine.h`）を
 通じてエンジンに6つの質問をする: run、frames、variables、has_name、
 evaluate、set_variable。`VmDebugEngine`は`Debug::Step`でコンパイル
 し、chunkのテーブルから答える: `slot_debug`の生存区間は、`pc`で
@@ -2057,7 +2032,7 @@ evaluate、set_variable。`VmDebugEngine`は`Debug::Step`でコンパイル
 内側から実行される: フレームのレジスタウィンドウはそのスレッドの
 機械スタックであり、`Runtime`とコレクタはスレッドごとだからである。
 `evaluate`と`set_variable`は式をフレームの束縛に対するREPLの1行
-としてコンパイルする（`vm_debug.h`）。これが`set_variable`の
+としてコンパイルする（`vm/debug.h`）。これが`set_variable`の
 `ImmutableError`がただで手に入る理由である。
 
 ### 8.4 embedding
@@ -2083,7 +2058,7 @@ evaluate、set_variable。`VmDebugEngine`は`Debug::Step`でコンパイル
 ## 9. ビルド構成
 
 `CULEBRA_JIT_ENABLED`は「LLVMがリンクされている」ことを意味する。
-これは`jit.h`、`vm_lowering.h`、`stdlib_rt.h`の`declare_runtime`
+これは`jit.h`、`jit/lowering.h`、`stdlib/bindings.h`の`declare_runtime`
 メンバ、AOT bootstrapをガードする。それ以外 — ランタイム層、
 コンパイラ、executor、stdlib、セッション — はこれなしでビルド
 できるので、LLVMなしのビルド（JITオプションoffの`cmake`、
@@ -2130,13 +2105,13 @@ helper-to-userのすべての呼び出しは`_jit_invoke`を通り、その
 
 | ゲート | 何を比較するか | どこで |
 |---|---|---|
-| vm/jit対称性 | すべての`tests/*.cul`を`--vm`と`--jit`で、stdout + exit code | `just test-dev`、`just test` |
-| isolateスイート | `tests/isolate/*.cul`を両レーンで | 同上 |
-| `vm_cases` | `tools/bench/vm_cases/`: 両レーンをfrozenな`expected/`の出力とexit codeに対して、さらに`CULEBRA_GC_STRESS=1`下でも | 同上（`compare.sh`。`--freeze`が意図的な変更を再記録する） |
+| vm/jit対称性 | `tests/*.cul`を`--vm`と`--jit`で、stdout + exit code。`tools/checks/jit_shape_set.txt`のop被覆とブランチが触ったファイル、または全ファイル | `just test-dev`（op被覆）、`just test`（全ファイル） |
+| isolateスイート | `tests/isolate/*.cul`を両レーンで | `just test-dev`、`just test` |
+| `vm_cases` | `tools/bench/vm_cases/`: 両レーンをfrozenな`expected/`の出力とexit codeに対して、さらに`CULEBRA_GC_STRESS=1`下でも | `just test`（`compare.sh`。`--freeze`が意図的な変更を再記録する） |
 | doctest | すべてのドキュメントブロックを両レーンで | `just doctest` |
-| difftest | 生成されたtemplate-combinatorコーパス（`tools/difftest/gen.cul`、約1万7千ケース）を`--vm`対`--jit`でバイト単位一致 | `just test`（`tools/difftest/run.sh`） |
-| AOT | `culebra build`の出力 == テストごとの`--jit`の出力 | `just test` |
-| codegenバックエンド | `-O0`と`--jit-faststart`を`--vm`に対して | `just test` |
+| difftest | 生成されたtemplate-combinatorコーパス（`tools/difftest/gen.cul`、約2万1千ケース）を`--vm`対`--jit`でバイト単位一致 | `just test`（`tools/difftest/run.sh`） |
+| AOT | `culebra build`の出力 == テストごとの`--vm`の出力 | `just test`（10ファイルごとに1つ）、CIのaotシャード（全ファイル） |
+| codegenバックエンド | `-O0`と`--jit-faststart`を`--vm`に対して | `just test-dev`、`just test` |
 
 `misc/run_all_backends.sh`は対称性チェックの単一スクリプト版で
 あり、Windows CIジョブが使う。
@@ -2162,13 +2137,14 @@ helper-to-userのすべての呼び出しは`_jit_invoke`を通り、その
   `CULEBRA_JIT_CACHE`と`objdump`で読み戻し、ループに`fcsel`が無いこと
   でAArch64のearly if-conversionが切れたままだと確かめる — IRには
   現れないノブなので、そのcodegenがあるホストでだけ検査する）、
-  `tools/checks/check_rc_discipline.sh`（`jit.h`内の
-  手書きretain/releaseサイトの数は減る一方であるべき）。
+  `tools/checks/check_rc_discipline.sh`（`jit/jit.h`、
+  `stdlib/bindings.h`、`conc/sendable.h`内の手書きretain/releaseサイトの
+  数は減る一方であるべき）。
 - **assert。** 出力からは決して分からない3つの不変条件がassert
   レーン（`just test-assert`、CIの`linux-assert`。`NDEBUG`なしで
   同じスイープを回す）に乗っている: 解決済み呼び出しの予測chunkが
-  実際に現れるクロージャと一致すること（§5.4）、借用された呼び先の
-  cellが呼び出し終了時にも同じ値を持っていること（§5.4）、そして
+  実際に現れるクロージャと一致すること（§5.3）、借用された呼び先の
+  cellが呼び出し終了時にも同じ値を持っていること（§5.3）、そして
   確定したrefcount呼び出しがパイプラインを通ったあとに1つも
   残っていないこと（§7）。
 
@@ -2311,17 +2287,13 @@ yieldする`tests/*.cul`のファイルは他と同じコーパスで、上の�
   `effects_transform.h`は`effect fn` / `perform` / `handle`を`__Eff`
   ランタイム上の普通のソースに書き換える。制御フローをflat-dispatchの
   CPS状態機械を通じてloweringし、中断で割られるスコープの変数をstate
-  instance上に持つ。エンジンはeffect固有の対応を一切必要としないので、
-  構造的に一致する。generatorも以前は同じように、`yield`する関数を
-  イテレータプロトコルを実装するクラスへ変換していた。エンジンが
-  フレームを中断できるようになって、それをやめた（§5.7）。変換は
-  `yield`がスコープから切り離す変数をすべてslotにし、slotは値しか
-  持てないので、変換された本体は、同じ文を普通の関数に書いたものと
-  いくつかの形で異なっていた（§10.7）。書かれたままコンパイルされた
-  本体にはその一覧がなく、bytecodeも少ない（`tests/test_generator.cul`は
-  変換では24,364命令だったものが5,714命令になる）。effectの継続は
-  複数回resumeできるが、ヒープとスタックの間を移るフレームはそれに
-  応えられないので、effectは変換のままである。
+  instance上に持つ。コンパイラは状態クラスに印（`@__lowered_storage`）を
+  付け、変換用の組み込み（`__lowered_frame`、`__bound`、`__unbound`）を
+  コンパイルし、ランタイムはメソッドdispatchでその印を読む。どちらも
+  レーンが共有するコードなので、構造的に一致する。generatorはフレームを
+  保持し（§5.7）、そのフレームはヒープとスタックの間を移る。effectの継続は
+  複数回resumeできるが、そのようなフレームはそれに応えられないので、
+  effectは変換のままである。
 - **組み込みメソッドはデータである。** `(name, argc)`ごとの
   テーブル行が、拒否の判断、executor、loweringを1つの定義の上に
   保つ（§5.4）。
@@ -2349,60 +2321,4 @@ yieldする`tests/*.cul`のファイルは他と同じコーパスで、上の�
   SpiderMonkey。ランタイム値表現は`memory.md` §3〜4に記載されて
   おり、その設計の系譜は`memory.md` §7にある。
 
-受け入れられている既知のコスト: `--jit`は§7.2の理由により`-O2`で
-退役したASTコードジェンの約1.2倍の時間でコンパイルする。複数の
-遅延stdlibモジュールを名指ししてから何もしないスクリプトは、
-tree-walkerより約7ms遅くexecutor上で起動する — preambleが歩かれる
-のでなくコンパイルされるからである（実プログラムはそれを上回る —
-だからこそpreambleのバイトコードはキャッシュされない）。lowering
-レーンにはREPLもデバッガもない。
-
-## 12. 経緯
-
-バイトコードVMは2026年にtree-walkingインタプリタを置き換えた。VM
-はインタプリタとAST-walkingなJITと並ぶ第3のエンジンとして参入し、
-生成コーパスが乖離を見つけなくなるまで両方に対して差分を取られ、
-その後JITのフロントエンドになり（ASTコードジェンは削除された）、
-次に既定エンジンになり（v0.3.0）、最終的にインタプリタとその
-オラクル群が退役して唯一のエンジンになった（v0.3.1が両エンジンを
-持つ最後のリリースである）。§10.3のrelease-diffゲートが、独立した
-第二の意見としてインタプリタに代わるものである。`include/vm/vm.h`、
-`include/jit/lowering.h`、`include/rt/rt.h`のコミット履歴が移行の記録
-を残している。それを始めた設計提案とフェーズごとの知見は、ここで
-なくその履歴の中に生きている。
-
-generatorもかつてはeffectの本体と同じように変換されていた: `yield`する
-`fn name`は、ソース上で、イテレータプロトコル（`iter` / `has_next` /
-`next` / `dispose`）を実装するクラスと、flat-dispatchの状態機械に書き
-換えられ、`yield`で割られる変数はインスタンスに置かれた。v0.7.0まで
-はそれが唯一の実装だった。§5.7のgeneratorはそれを3段階で置き換えた:
-フレームのランタイムとコンパイラ・エンジン側の経路を環境変数の裏に
-置く段階、既定を切り替える段階（古い経路は環境変数
-`CULEBRA_GEN_LOWERED`1つ分の距離に残し、2つを比べるために使った）、
-そして変換の削除である。最後の段階で、それまでソースを
-`for v in (e) { yield v }`に書き換えていた`yield from`もコンパイラへ
-移った。フレームを保持する本体が、変換されたクラスと違うこと
-（プログラムから見えるもの）:
-
-- `type_of(g)`は`'Generator'`で、値は`Generator {}`と表示され、自前の
-  プロパティを持たない（変換版: generator関数ごとに1クラスで、状態の
-  フィールドが見える）。`==`は同一性である（変換版: フィールドごとの
-  比較なので、作りたての`count(3)`2つは等しい）
-- generatorはSendableでない: 送ると`SendError: a generator is not
-  Sendable`になる（変換版は状態ごとコピーされる）
-- `has_next()`が先読みした値は`dispose()`で解放される（変換版:
-  `next()`がまだそれを返す）
-- `drop`を持つローカルは、そのスコープの終わりでdropされる（変換版:
-  generatorが死ぬとき）
-- 本体からのthrowはdeferを走らせてgeneratorを終わらせる（変換版:
-  deferは`dispose()`を待ち、次の`has_next()`はthrowした状態をもう一度
-  実行する）
-- 本体の中から自分自身をresumeすると`ValueError: generator already
-  running`になる（変換版: 再帰してRecursionErrorに至る）
-- 式の中の文ブロックがyieldしてよい（変換版: SyntaxError
-  「unsupported control flow」）
-
-`tests/test_generator.cul`を`--jit`でコンパイルするCPU時間は、変換版の
-35.1秒に対してフレーム版は9.5秒で、バイトコードは24,364命令から
-5,714命令になった。上の一覧のうち、v0.7.0に対するrelease-diffゲートが
-見たケースは`tools/difftest/release_diff_allow.txt`にある。
+受け入れられている既知のコスト: loweringレーンにはREPLもデバッガもない。

@@ -174,7 +174,7 @@ on both; §17 lists them.
 
 It was not always arranged this way, and the part that changed is worth
 recording, because the discipline below is the answer to a problem the
-earlier design did not have. Until 2026 the default engine was a
+earlier design did not have. Until v0.3.0 (August 2026) the default engine was a
 tree-walking interpreter that represented heap values as C++ `shared_ptr`.
 Its reference counts were therefore strict **by construction**: increments
 and decrements were written by the compiler rather than a human, and a
@@ -231,7 +231,8 @@ ones (internals §4.3 has the full stack):
 
 - **A single convention.** Every function that compiles an expression
   returns a value the caller owns one reference to (a `+1` value).
-  Parameters and receivers are *borrowed* (`+0`). Rather than judging the
+  Parameters and receivers arrive at `+1` and the callee consumes
+  them. Rather than judging the
   placement of each retain and release individually, the placement is
   **derived** from one convention — an idea borrowed from Swift ARC.
 - **A move-only handle.** A `+1` value lives in a move-only RAII handle, not
@@ -284,7 +285,7 @@ mechanism is the opposite of the retired interpreter's. Hand-placed RC has
 none of `shared_ptr`'s strictness, so a precise collector is off the table.
 Root finding is **conservative** instead.
 
-At the moment of collection, every mutator thread's machine stack and its
+At the moment of collection, the mutator thread's machine stack and its
 callee-saved registers are scanned uniformly, eight bytes at a time, and any
 word landing on a valid object's start address is treated as a root. Tags
 are not consulted — a heap pointer hidden inside a tagged integer is found
@@ -390,7 +391,7 @@ above.
 The collector also has a stress mode. Instead of the adaptive schedule it
 collects **on every allocation**, so bugs that otherwise appear at the whim
 of timing surface deterministically (the same idea as SpiderMonkey's
-`gcZeal`). The full conformance suite runs green under it.
+`gcZeal`). Every test file except a few marked `# gc-stress: skip` runs green under it.
 
 ## What this costs
 
@@ -415,9 +416,9 @@ on cycles, which it takes on itself.
 formed only by closures with no back-reference from the resource (a
 recursive local `fn` capturing it, say) falls outside the deterministic
 window and fires on the backstop's timing — collection-driven, forceable
-with `GC.stat()`. The same applies to the excess when a single scope
-releases thousands of cycle-owned objects at once, since the cascade has a
-size cap tuned to keep ordinary programs synchronous. Finalization order is
+with `GC.stat()`. The same applies to the whole batch when a single scope
+releases more cycle-owned objects at once than the scope-exit check's size
+cap (tuned to keep ordinary programs synchronous) allows. Finalization order is
 unspecified for both, and an orphan that survives to program exit has its
 memory reclaimed without `drop` running at all. Determinism comes with a
 footnote naming the shapes in this section.
@@ -460,7 +461,7 @@ and are not allowed to grow.
 ## Lineage
 
 None of this is any one system adopted whole: culebra's codegen has no
-borrow checker of its own, and it lowers a dynamic AST rather than a
+borrow checker of its own, and it lowers a dynamically typed bytecode rather than a
 functional IR with whole-program type inference, so none of the systems
 below transfers as-is. It borrows one structural idea from each.
 
