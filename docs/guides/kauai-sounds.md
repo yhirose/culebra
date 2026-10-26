@@ -36,7 +36,7 @@ A voice takes these options. `vol` is required.
 | `vol N` | the level at `mf`, from `0` to `100` | (required) |
 | `env A D R` | attack, decay and release, in ticks of 1/60 second | `0 0 0` |
 | `gap N` | ticks cut from the end of every note, so notes sound apart | `0` |
-| `poly` | for an external voice that sounds several notes at once | one note at a time |
+| `poly` | for a voice that sounds several notes at once, a tone voice or an external one | one note at a time |
 
 A channel plays one note at a time, and two voices of a band cannot share a
 channel. A voice that says `plays melody` plays the melody, `plays roots`

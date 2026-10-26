@@ -235,7 +235,7 @@ E5; with `plays chords rootless from E3`, `Abmaj9` is C4 Eb4 G4 Bb4.
 | `vol N` | the level at `mf`: `0` to `100` as in `Audio.tone`, an external voice's too ([section 10](#10-playing-from-culebra) says how its instrument is weighed) | (required) |
 | `env A D R` | attack, decay and release, in ticks of 1/60 second | `0 0 0` |
 | `gap N` | ticks cut from the end of every note, so that notes are heard apart | `0` |
-| `poly` | an external voice that sounds several notes at once | one note at a time |
+| `poly` | the voice sounds several notes at once: a chord in the melody, a chord row's `x`. Any voice may carry it, a tone voice as well as an external one | one note at a time |
 
 An external voice plays each note's sound through to its end, so it takes no
 `env`, `gap` or `duty`, and the note's length applies only to an instrument
@@ -254,6 +254,8 @@ song chooses which one plays, section by section ([section 8](#8-songs)).
 |---|---|
 | `V echoes SOURCE late 3/16 level 70%` | SOURCE's notes, a length later (here three sixteenths), at a percentage of V's `vol` |
 | `V harmonizes SOURCE under m3` | for each SOURCE note, the highest tone of the chord under it (in any octave) at least the interval below it, for as long |
+
+An echo's `level` is a whole percent with its `%`: `70%`, `100%`, `150%` (louder than V's `vol`). A number without the `%`, or a fraction (`0.7`, `70.5%`), is an error.
 
 Intervals are written `m2 M2 m3 M3 P4 TT P5 m6 M6 m7 M7 P8`. An echo reads
 its source across section boundaries, and in a looping song the song's first
