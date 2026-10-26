@@ -646,6 +646,9 @@ test_random = fn () {
   assert_throws('ValueError', fn () {
     Random.weighted_choice(['a', 'b'], [Math.nan, 1])
   })
+  assert_throws('ValueError', fn () {
+    Random.weighted_choice(['a', 'b'], [1e308, 1e308])
+  })
 
   // choice: always draws a member of pop, single-element pop is exact.
   Random.seed(0)

@@ -1764,6 +1764,10 @@ let _kauai_module = fn () {
     n
   }
 
+  fn vol_of(word, line, who) {
+    level_in_range(number_of(word, line, "vol"), line, who)
+  }
+
   # An option's one number, or `dflt` when the option is not there.
   fn option_number(o, key, line, dflt) {
     return dflt if !o.has(key)
@@ -2622,7 +2626,7 @@ let _kauai_module = fn () {
       wave: external ? nil : (w[2] == "noise" ? nil : WAVES.get(w[2], nil)) ?? fail(line, "a voice plays on pulse, pulse2, triangle or saw, or an external instrument; not {w[2]}"),
       poly: o.has("poly"),
       duty: DUTIES.get(duty, nil) ?? fail(line, "a duty is 1/8, 1/4, 1/2 or 3/4: {duty}"),
-      vol: level_in_range(number_of(vol[0], line, "vol"), line, "a voice"),
+      vol: vol_of(vol[0], line, "a voice"),
       attack: env[0],
       decay: env[1],
       release: env[2],
@@ -2702,7 +2706,7 @@ let _kauai_module = fn () {
             on_hits: at_hits != nil,
             external: sound,
             params: external_params(w, item.line),
-            vol: level_in_range(number_of(vol[0], item.line, "vol"), item.line, "a drum"),
+            vol: vol_of(vol[0], item.line, "a drum"),
             choke: choke == nil ? dn : choke[0],
           }
         },
@@ -3630,7 +3634,7 @@ let _kauai_module = fn () {
       }
       # A row for something the band does not have would never be read; say so
       # instead of leaving it in the file doing nothing.
-      let gkey = g.has("name") ? g.name : ""
+      let gkey = g.get("name", "")
       if !grooves_checked.has(gkey) {
         grooves_checked[gkey] = true
         for table in [g.rows, g.first, g.last] {
@@ -6092,7 +6096,7 @@ inline constexpr const char* DESKTOP_MODULE_SOURCE = R"=culpre=(let _desktop_mod
         srv.listen_async(0, LOOPBACK, workers: workers)
       }
     }
-    let base = "http://127.0.0.1:" + port.to_string()
+    let base = "http://" + LOOPBACK + ":" + port.to_string()
 
     let w = Webview.Window.new()
     w.set_title(config.get("title", "culebra"))

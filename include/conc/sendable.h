@@ -1348,7 +1348,7 @@ inline void _jit_merged_join(JitValue* __ret, JitClosure*, int8_t self_tag, int6
       // re-raise below, which takes it over (culebra_runtime_throw hands the
       // carrier the payload's +1): the throw is over, so only the flag is
       // cleared here. Any later value is let go fully.
-      culebra::current_runtime().is_throw = 0;
+      culebra_runtime_clear_is_throw();
       if (!first_err && !have_thrown && !interrupted) {
         have_thrown = true;
         tt = e.tag;

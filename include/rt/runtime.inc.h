@@ -1027,7 +1027,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_get_thrown_pos() {
 // defer's, or the next call into the same Runtime — would bind this spent
 // payload instead of translating its own error.
 inline void culebra_runtime_consume_throw(const CulebraException& e) {
-  culebra::current_runtime().is_throw = 0;
+  culebra_runtime_clear_is_throw();
   _culebra_value_release_impl(e.tag, e.data);
 }
 

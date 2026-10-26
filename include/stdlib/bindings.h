@@ -401,13 +401,18 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_random_weighted_choic
   // sum of zero, undefined; the draw would be a silent wrong answer.
   double total = 0;
   for (double w : scratch) {
-    if (!(w >= 0) || std::isinf(w)) {
+    if (!(w >= 0 && std::isfinite(w))) {
       throw culebra::CulebraError(
           "ValueError",
           "Random.weighted_choice: weights must be finite and not negative",
           line, col);
     }
     total += w;
+  }
+  if (!std::isfinite(total)) {  // finite weights that overflow when summed
+    throw culebra::CulebraError(
+        "ValueError", "Random.weighted_choice: the weights sum past what a Float holds",
+        line, col);
   }
   if (!(total > 0)) {
     throw culebra::CulebraError(

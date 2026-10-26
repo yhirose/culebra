@@ -36,7 +36,7 @@ let _desktop_module = fn () {
         srv.listen_async(0, LOOPBACK, workers: workers)
       }
     }
-    let base = "http://127.0.0.1:" + port.to_string()
+    let base = "http://" + LOOPBACK + ":" + port.to_string()
 
     let w = Webview.Window.new()
     w.set_title(config.get("title", "culebra"))
