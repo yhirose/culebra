@@ -1757,6 +1757,13 @@ let _kauai_module = fn () {
     word.contains(".") ? to_float(word) : to_long(word)
   }
 
+  # A `vol` is a level on the tones' 0 to 100: a louder one would sound as 100
+  # does, and say it did not.
+  fn level_in_range(n, line, who) {
+    fail(line, "{who}'s vol is 0 to 100, as Audio.tone's: vol 20") if n < 0 || n > 100
+    n
+  }
+
   # An option's one number, or `dflt` when the option is not there.
   fn option_number(o, key, line, dflt) {
     return dflt if !o.has(key)
@@ -2615,7 +2622,7 @@ let _kauai_module = fn () {
       wave: external ? nil : (w[2] == "noise" ? nil : WAVES.get(w[2], nil)) ?? fail(line, "a voice plays on pulse, pulse2, triangle or saw, or an external instrument; not {w[2]}"),
       poly: o.has("poly"),
       duty: DUTIES.get(duty, nil) ?? fail(line, "a duty is 1/8, 1/4, 1/2 or 3/4: {duty}"),
-      vol: number_of(vol[0], line, "vol"),
+      vol: level_in_range(number_of(vol[0], line, "vol"), line, "a voice"),
       attack: env[0],
       decay: env[1],
       release: env[2],
@@ -2695,7 +2702,7 @@ let _kauai_module = fn () {
             on_hits: at_hits != nil,
             external: sound,
             params: external_params(w, item.line),
-            vol: number_of(vol[0], item.line, "vol"),
+            vol: level_in_range(number_of(vol[0], item.line, "vol"), item.line, "a drum"),
             choke: choke == nil ? dn : choke[0],
           }
         },
@@ -2712,7 +2719,7 @@ let _kauai_module = fn () {
             freq: number_of(f0, item.line, "a drum's frequency"),
             end_freq: number_of(f1, item.line, "a drum's frequency"),
             dur: option_number(o, "len", item.line, 0),
-            vol: option_number(o, "vol", item.line, 0),
+            vol: level_in_range(option_number(o, "vol", item.line, 0), item.line, "a drum"),
             attack: env[0],
             decay: env[1],
             release: env[2],

@@ -195,7 +195,12 @@ assert_eq(band_error('  voice V pulse plays melody plays roots in E2..D#3 vol 10
   ("KauaiError", "line 2: `plays` is said once a line"))
 assert_eq(band_error('  voice V pulse plays melody vol 10 vol 20'),
   ("KauaiError", "line 2: `vol` is said once a line"))
-let groove_row_error = |row| error_of(lines([DUO, 'groove Extra {', row, '}',
+assert_eq(band_error('  voice V pulse plays melody vol 150'),
+  ("KauaiError", "line 2: a voice's vol is 0 to 100, as Audio.tone's: vol 20"))
+assert_eq(band_error('  drum K noise 120 len 1 vol 101'),
+  ("KauaiError", "line 2: a drum's vol is 0 to 100, as Audio.tone's: vol 20"))
+assert_eq(band_error('  voice V pulse plays melody vol 100'), nil)
+let groove_row_error =|row| error_of(lines([DUO, 'groove Extra {', row, '}',
   'song S {', '  tempo 120', '  band Duo', '  groove Extra', '  melody in C5..B5', '  Verse', '}',
   'section Verse {', '  C  c1', '}']))
 assert_eq(groove_row_error('  Snare  x...'),
