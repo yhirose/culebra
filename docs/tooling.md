@@ -18,7 +18,9 @@ is the reference for those development subcommands.
 | `culebra serve [-p PORT] [-d DIR]` | serve a directory of static files | [§6](#6-serving-static-files-culebra-serve) |
 | `culebra play <song.kau>` | play a song written in Kauai | [§9](#9-playing-a-song-culebra-play) |
 | `culebra build <in.cul> -o <out>` | compile ahead-of-time into a standalone executable | [`deployment.md` §1](deployment.md#1-standalone-binary-build-culebra-build) |
+| `culebra toolchain [status]` | report, install or remove what `build` needs to link on this host | [`deployment.md` §1](deployment.md#culebra-toolchain) |
 | `culebra wrap` | build an extended binary exposing your own C++ classes | [`deployment.md` §3](deployment.md#3-wrapping-c-libraries-culebra-wrap) |
+| `culebra embed-flags` | print the flags a C++ host needs to embed the engine | [`deployment.md` §2](deployment.md#2-embedding-culebra-in-a-c-host) |
 
 The plain `culebra [flags] script.cul` form — `--jit`, `-O0`..`-O3`,
 `--ast`, `--shell` and the rest — is specified in
@@ -251,7 +253,9 @@ output against the markers below. Every block in `handbook.md`,
 - `# => |` followed by `# <line>` lines — expected multi-line stdout
 - `# !! <pattern>` — expected `throw`, matched as substring
 - `# doctest: <directive>` (block-leading line) — modes:
-  - `skip` — illustration only, do not run (e.g. *Planned* features)
+  - `skip` — illustration only, do not run (e.g. *Planned* features). A
+    reason may follow, set off by a dash, a colon or a parenthesis
+    (`# doctest: skip — opens a window`)
   - `compile-only` — syntax check only
   - `jit-only` / `aot-only` — backend filter
 
@@ -277,6 +281,11 @@ on its own prints nothing, so a checked example has to go through
 `inspect(...)` or `println(...)`. And `//` opens a line comment in
 Culebra just as `#` does, so a `// => value` marker parses fine but is
 **not** recognized as an expectation — the block then runs unchecked.
+
+`--only-skipped` runs the `skip` blocks that give no reason, and nothing
+else (executor only). A skip with no reason claims the block cannot run,
+and a block that runs cleanly shows the claim is empty: un-skip it, or
+say why it must not run.
 
 **Still planned**: an explicit `import { test } from "std/test"` for code
 that doesn't run under `culebra test`; and an AOT doctest lane beside
@@ -871,9 +880,9 @@ culebra docs agent >> AGENTS.md                        # Codex, Cursor
 ```
 
 The destinations are listed on stderr, not stdout, so a redirect gets
-the markdown alone. Neither `agent` nor `llm` takes part in a
-corpus-wide search — both condense the other topics, and would report
-the same API twice — but naming one searches it: `culebra docs agent -g …`.
+the markdown alone. `agent` does not take part in a corpus-wide search: it
+condenses the other topics, and would report the same API twice. Naming
+it searches it: `culebra docs agent -g …`.
 
 `culebra init` does this append for you — it detects which of the three
 files above already exist (creating `AGENTS.md` if none do) and keeps
@@ -1175,7 +1184,8 @@ culebra play --sounds sounds.cul ballad.kau # a song with `external` instruments
 
 A song's mistake goes to stderr as `KauaiError: FILE:LINE: ...` and the
 exit status is `1`, as it is on a machine with no audio device. A mistake
-in the command line is status `2`.
+in the command line is status `2`, except a `--to` that is not after
+`--from`, which is status `1`.
 
 An `external` instrument is one the program supplies, and `culebra play` has
 none of its own. `--sounds` names a module that exports `voices`, `drums`

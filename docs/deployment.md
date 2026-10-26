@@ -529,7 +529,7 @@ is whichever one is first on `PATH`, which is not necessarily that one:
 name the version's own binary (`llvm-config-20`, or the one under the
 prefix you built culebra against) rather than trusting the plain name.
 
-Without `-DCULEBRA_JIT_ENABLED`, `jit.h` and `vm_lowering.h` preprocess
+Without `-DCULEBRA_JIT_ENABLED`, `jit.h` and `jit/lowering.h` preprocess
 to nothing: `culebra.h` still compiles, the VM still runs, and no part of
 the host refers to LLVM. It is the same switch a no-JIT build of culebra
 itself uses.

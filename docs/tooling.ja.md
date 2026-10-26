@@ -17,7 +17,9 @@
 | `culebra serve [-p PORT] [-d DIR]` | ディレクトリを静的ファイルとして配信する | [§6](#6-静的ファイルの配信-culebra-serve) |
 | `culebra play <song.kau>` | Kauaiで書いた曲を再生する | [§9](#9-曲の再生-culebra-play) |
 | `culebra build <in.cul> -o <out>` | AOTコンパイルして単体実行ファイルを作る | [`deployment.ja.md` §1](deployment.ja.md#1-standalone-バイナリビルドculebra-build) |
-| `culebra wrap` | 自前のC++ クラスを組み込んだ拡張バイナリを作る | [`deployment.ja.md` §3](deployment.ja.md#3-c-ライブラリのラッピングculebra-wrap) |
+| `culebra toolchain [status]` | `build`がこのホストでリンクするのに要るものを確認・導入・削除する | [`deployment.ja.md` §1](deployment.ja.md#culebra-toolchain) |
+| `culebra wrap` | 自前のC++クラスを組み込んだ拡張バイナリを作る | [`deployment.ja.md` §3](deployment.ja.md#3-c-ライブラリのラッピングculebra-wrap) |
+| `culebra embed-flags` | C++ホストにエンジンを埋め込むのに要るフラグを出力する | [`deployment.ja.md` §2](deployment.ja.md#2-c-ホストへの-culebra-埋め込み) |
 
 素の`culebra [flags] script.cul`形式 — `--jit`・`-O0`..`-O3`・`--ast`・
 `--shell`など — は
@@ -249,7 +251,9 @@ culebra test --doc --jit --jobs 8 docs  # ... を 8 プロセスで
 - `# => |`に続く`# <line>`行 — 複数行の期待値
 - `# !! <pattern>` — `throw`の期待値（部分一致）
 - `# doctest: <directive>`（ブロック先頭行）— モード:
-  - `skip` — 説明用。実行しない（*Planned* 機能など）
+  - `skip` — 説明用。実行しない（*Planned* 機能など）。理由を続けて書けます。
+    区切りはダッシュ、コロン、丸括弧のどれか
+    （`# doctest: skip — opens a window`）
   - `compile-only` — 構文検査のみ
   - `jit-only` / `aot-only` — バックエンド指定
 
@@ -275,6 +279,11 @@ LLVMモジュールをコンパイルするため、このフラグはそこを�
 通す必要があります。そしてCulebraでは`#`と同様に`//`も行コメントを
 開始するため、`// => 値`というマーカーは構文としては通っても**期待値として
 認識されず**、そのブロックは無検証で実行されます。
+
+`--only-skipped`は、理由を書いていない`skip`のブロックだけを実行します
+（executorのみ）。理由のない`skip`は「このブロックは実行できない」と言って
+いることになるので、問題なく実行できるブロックはその主張が空だという
+ことです。`skip`を外すか、実行しない理由を書いてください。
 
 **予定**: `culebra test`経由で走らないコード向けの明示的な
 `import { test } from "std/test"`、`--jit` / `--vm`に並ぶAOTのdoctest
@@ -818,8 +827,8 @@ culebra docs agent >> AGENTS.md                        # Codex, Cursor
 ```
 
 追記先の一覧はstdoutではなくstderrに出るので、リダイレクトには
-markdownだけが入ります。`agent`も`llm`も横断検索には参加しません
-（どちらも他のトピックを凝縮したもので、同じAPIが二重に出ます）。
+markdownだけが入ります。`agent`は横断検索には参加しません
+（他のトピックを凝縮したもので、同じAPIが二重に出ます）。
 名前を指定すれば検索できます: `culebra docs agent -g …`。
 
 `culebra init`はこの追記を代わりにやってくれます — 上記3ファイルの
@@ -1090,7 +1099,8 @@ culebra play --sounds sounds.cul ballad.kau # 外部の楽器を使う曲
 | `--watch` | 曲のフォルダかモジュールのフォルダの`.kau`や`.cul`のファイルが変わるたびに、曲とモジュールを読み直して頭から鳴らす |
 
 曲の誤りは`KauaiError: FILE:LINE: ...`としてstderrに出て、終了ステータスは
-`1`です。音声デバイスが無いマシンでも`1`です。コマンドラインの誤りは`2`です。
+`1`です。音声デバイスが無いマシンでも`1`です。コマンドラインの誤りは`2`です。ただし`--to`が`--from`より後ろでない
+場合は`1`です。
 
 外部の楽器（`external`）はプログラムが用意するもので、`culebra play`自身は
 1つも持っていません。`--sounds`には、`voices`か`drums`、または両方をexportするモジュールを

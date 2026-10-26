@@ -44,7 +44,7 @@ cat hello.cul | culebra -                    # stdin (curl ... | culebra - also 
 ```
 
 Optional — this one also touches your editor's config
-(VSCode/Vim/Neovim) and writes `AGENTS.md`/`CLAUDE.md` into the
+(VSCode/Vim/Neovim/Zed) and writes `AGENTS.md`/`CLAUDE.md` into the
 current directory, so it isn't bundled into the block above:
 
 ```bash
@@ -52,15 +52,18 @@ culebra init
 ```
 
 `culebra init` installs syntax highlighting and the debug adapter for
-whichever of VSCode, Vim, or Neovim it finds on this machine, and adds
+whichever of VSCode, Vim, Neovim, or Zed it finds on this machine, and adds
 coding-agent instructions to `AGENTS.md` (or
 `CLAUDE.md`/`.github/copilot-instructions.md` if one already exists) —
 reopen `hello.cul` afterward and the highlighting is already on, and
 Claude Code or another agent reading `AGENTS.md` already knows the
 conventions.
 
-For Linux (x86-64), swap the first line for `culebra-linux-x64.tar.gz`;
-Windows and a permanent, system-wide install are below.
+The first line, `install.sh`, downloads the archive for your OS and
+architecture, verifies its checksum, and installs `culebra` into
+`/usr/local/bin` (macOS Apple Silicon and Linux x86-64 only; set
+`CULEBRA_INSTALL_DIR` to change the destination). On Windows, or to
+install by hand, download the archive for your platform:
 
 | Platform | Download |
 |---|---|
@@ -76,15 +79,6 @@ of just for this shell:
 
 ```bash
 sudo mv culebra-*/culebra /usr/local/bin/
-```
-
-Or skip the manual steps — `install.sh` downloads the right archive for
-your OS/arch, verifies its checksum, and installs it to `/usr/local/bin`
-(macOS Apple Silicon and Linux x86-64 only; use `CULEBRA_INSTALL_DIR` to
-change the destination):
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/yhirose/culebra/master/install.sh | sh
 ```
 
 macOS also installs through a package manager:
@@ -151,9 +145,8 @@ package manager, no lockfile:
   and key/mouse input for TUIs, downsampled to whatever the terminal
   supports (and silent under `NO_COLOR`).
 - **3D.** `Scene` — a retained-mode 3D renderer for procedural geometry
-  with physically based lighting. Experimental: opt-in
-  (`-DCULEBRA_ENABLE_SCENE=ON`) and not in the released binaries. It
-  builds on all three platforms; the window is exercised on macOS and
+  with physically based lighting. Experimental. It is in the released
+  binaries on all three platforms; the window is exercised on macOS and
   Linux.
 
 ### Built-in Tensor
@@ -273,7 +266,11 @@ Every subcommand below is part of the executable that runs a program.
 | `culebra docs [topic]` | read and search the embedded reference docs |
 | `culebra init` | set up this directory's AI agent instructions and this machine's editors |
 | `culebra build <in.cul> -o <out>` | compile ahead-of-time into a standalone executable |
+| `culebra toolchain` | report, install or remove what `build` needs to link on this host |
 | `culebra wrap` | build an extended binary exposing your own C++ classes |
+| `culebra embed-flags` | print the compiler and linker flags a C++ host needs to embed the engine |
+| `culebra play <song.kau>` | play a song written in Kauai, or write it to a WAV file |
+| `culebra serve` | serve a directory of static files |
 
 Details are in [`docs/tooling.md`](docs/tooling.md).
 
@@ -359,7 +356,9 @@ Design choices
 
 - **Two backends, one compiler.** The bytecode VM and the JIT share
   one parser, AST, and bytecode compiler; both maintained, no plan to
-  consolidate.
+  consolidate. What retiring the earlier tree-walking interpreter gained
+  and cost is written out in
+  [`docs/essays/one-front-end.md`](docs/essays/one-front-end.md).
 - **Predictable threaded concurrency.** No `async`/`await`. Stack
   traces stay readable, the debugger sees every frame, and library
   authors don't write a colored version of every function. Targeted
@@ -429,8 +428,10 @@ Documentation
 * Guides — task-oriented how-tos for building specific things with
   culebra:
   [`docs/guides/`](docs/guides/) — currently
-  [parsing with PEG](docs/guides/parsing-with-peg.md) and
-  [building a desktop app](docs/guides/desktop-app.md)
+  [parsing with PEG](docs/guides/parsing-with-peg.md),
+  [building a desktop app](docs/guides/desktop-app.md),
+  [writing a song in Kauai](docs/guides/kauai-songs.md) and
+  [writing a sound in Kauai](docs/guides/kauai-sounds.md)
 * Quick guide — the syntax, the carried-over mistakes and the stdlib
   signatures a program reaches for unprompted, condensed into one file;
   written for an LLM prompt, and short enough for a human to read start

@@ -13,6 +13,7 @@ AOTビルドです。スクリプト、CLIツール、機械学習、デスク�
 標準ライブラリ、テストランナー、linter、formatter、デバッガ、ドキュメント
 まで、すべてその1つの実行ファイルに入っています。ほかにインストールする
 ものはありません！
+まずブラウザで試すなら[Playground](https://yhirose.github.io/culebra/playground/)があります。
 
 Quickstart
 ----------
@@ -42,7 +43,7 @@ culebra build hello.cul -o hello && ./hello  # AOT: 一度コンパイルして�
 cat hello.cul | culebra -                    # stdin（curl ... | culebra - も同様）
 ```
 
-これは任意です。エディタの設定（VSCode・Vim・Neovim）を書き換え、
+これは任意です。エディタの設定（VSCode・Vim・Neovim・Zed）を書き換え、
 カレントディレクトリに`AGENTS.md`か`CLAUDE.md`も書き出すので、上の
 ブロックには入れていません:
 
@@ -50,15 +51,18 @@ cat hello.cul | culebra -                    # stdin（curl ... | culebra - も�
 culebra init
 ```
 
-`culebra init`は、このマシンにあるVSCode・Vim・Neovimのうち見つかった
+`culebra init`は、このマシンにあるVSCode・Vim・Neovim・Zedのうち見つかった
 ものにシンタックスハイライトとデバッグアダプタを導入し、`AGENTS.md`
 （既に`CLAUDE.md`か`.github/copilot-instructions.md`があればそちら）に
 コーディングエージェント向けの指示を追加します。実行したあと
 `hello.cul`を開き直せば、もうハイライトが効いています。`AGENTS.md`を
 読むClaude Codeなどのエージェントも、これで書き方を把握できます。
 
-Linux（x86-64）では1行目を`culebra-linux-x64.tar.gz`に差し替えてください。
-Windowsと恒久的なシステム全体へのインストールは以下です。
+1行目の`install.sh`は、OSとアーキテクチャに合ったアーカイブをダウンロードし、
+チェックサムを検証してから`culebra`を`/usr/local/bin`にインストールします
+（macOS Apple SiliconとLinux x86-64のみ対応。インストール先を変えるには
+`CULEBRA_INSTALL_DIR`を使います）。Windowsの場合や手動でインストールする
+場合は、プラットフォームに合ったアーカイブをダウンロードしてください:
 
 | プラットフォーム | ダウンロード |
 |---|---|
@@ -73,15 +77,6 @@ macOSが付ける検疫フラグ（バイナリは署名していません）を
 
 ```bash
 sudo mv culebra-*/culebra /usr/local/bin/
-```
-
-または手順を飛ばして`install.sh`を使う。OS/archに合ったアーカイブを
-ダウンロードし、チェックサムを検証してから`/usr/local/bin`にインストール
-する（macOS Apple SiliconとLinux x86-64のみ対応、インストール先を変える
-には`CULEBRA_INSTALL_DIR`を使う）:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/yhirose/culebra/master/install.sh | sh
 ```
 
 macOSはパッケージマネージャからも入れられる:
@@ -145,9 +140,8 @@ WindowsとLinux向けのパッケージはまだ無いので、上のダウン�
   入力。端末が対応している範囲まで自動で落とします（`NO_COLOR`が
   設定されていれば何も出しません）。
 - **3D。** `Scene` — 手続き的に構築したジオメトリを物理ベースライティングで
-  描く保持モードの3Dレンダラ。experimentalで、オプトイン
-  （`-DCULEBRA_ENABLE_SCENE=ON`）。リリースバイナリには入っていません。
-  3 OSともビルドでき、ウィンドウまで確認しているのはmacOSとLinuxです。
+  描く保持モードの3Dレンダラ。experimentalです。リリースバイナリには
+  3 OSとも入っていて、ウィンドウまで確認しているのはmacOSとLinuxです。
 
 ### 組み込みのTensor
 
@@ -200,9 +194,11 @@ Desktop.run({
 ### 2D Canvas
 
 即時モードの2Dフレームバッファです。描いて`present`し、入力を読んで、
-また描く、という形で使います。スプライト、テキスト、トーンと音楽も
-あります。macOS・Linux・Windowsで実際のウィンドウを開きます。ヘッドレス
-を宣言して実行した場合は、ピクセルの処理は同じまま表示だけしないので、
+また描く、という形で使います。スプライトとテキストがあり、音は`Audio`
+名前空間（トーン、サンプル、音楽、合成したPCM）が受け持ちます。こちらは
+ウィンドウが要りません。macOS・Linux・Windowsで実際のウィンドウを
+開きます。ヘッドレスを宣言して実行した場合は、ピクセルの処理は同じまま
+表示だけしないので、
 テストや画面のないサーバーでも同じプログラムが動きます。
 
 ```culebra
@@ -265,8 +261,13 @@ Canvas.run(160, 160, fn () {
 | `culebra dap` | 標準入出力でDebug Adapter Protocolを話す（VSCode / Vim / Zed） |
 | `culebra lsp` | 標準入出力でエディタに診断・ホバー・整形を提供する |
 | `culebra docs [topic]` | 埋め込みのリファレンスを読む・検索する |
+| `culebra init` | このディレクトリのAIエージェント向け指示と、このマシンのエディタを設定する |
 | `culebra build <in.cul> -o <out>` | 事前コンパイルして単体実行ファイルにする |
+| `culebra toolchain` | `build`がこのホストでリンクするのに要るものを確認・導入・削除する |
 | `culebra wrap` | 自前のC++クラスを公開する拡張バイナリをビルドする |
+| `culebra embed-flags` | C++ホストにエンジンを埋め込むためのコンパイラ・リンカのフラグを出力する |
+| `culebra play <song.kau>` | Kauaiで書いた曲を再生する、またはWAVファイルに書き出す |
+| `culebra serve` | 静的ファイルのディレクトリを配信する |
 
 詳細は[`docs/tooling.ja.md`](docs/tooling.ja.md)にあります。
 
@@ -421,8 +422,10 @@ BLAS級の数値計算です。
   / [English](docs/deployment.md)
 * ガイド — culebraで特定のものを作るための、目的別の手引き:
   [`docs/guides/`](docs/guides/) — 現在は
-  [PEGで解析する](docs/guides/parsing-with-peg.ja.md)と
-  [デスクトップアプリを作る](docs/guides/desktop-app.ja.md)
+  [PEGで解析する](docs/guides/parsing-with-peg.ja.md)、
+  [デスクトップアプリを作る](docs/guides/desktop-app.ja.md)、
+  [Kauaiで曲を書く](docs/guides/kauai-songs.ja.md)、
+  [Kauaiで音を作る](docs/guides/kauai-sounds.ja.md)
 * クイックガイド — 構文、間違えやすい点、言われなくても手が伸びる範囲の
   標準ライブラリのシグネチャを1ファイルに凝縮したもの。LLMのプロンプト用に
   書いていますが、人が最初から最後まで読み切れる分量でもあります:

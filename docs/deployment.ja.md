@@ -517,7 +517,7 @@ LLVMは20以降が要ります（`CMakeLists.txt`がculebra自身のビルドに
 `llvm-config-20`のようにバージョン付きの名前か、culebraをビルドした
 prefix配下のものを名指ししてください。
 
-`-DCULEBRA_JIT_ENABLED`が無ければ`jit.h`と`vm_lowering.h`は
+`-DCULEBRA_JIT_ENABLED`が無ければ`jit.h`と`jit/lowering.h`は
 プリプロセスの結果が空になります。`culebra.h`はそのままコンパイルでき、
 VMも動き、ホストのどこもLLVMを参照しません。culebra自身のno-JITビルドが
 使っているのと同じスイッチです。
