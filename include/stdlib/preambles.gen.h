@@ -5002,10 +5002,21 @@ let Audio = _audio_module()
 )=culpre=";
 
 inline constexpr const char* ARGS_MODULE_SOURCE = R"=culpre=(let _args_module = fn () {
+  # A spec that only routes to `subcommands` has no `args` of its own.
+  let _args_of = fn (spec) {
+    spec.has("args") ? spec.args : []
+  }
+  let _number = fn (convert, raw, type, name) {
+    try {
+      convert(raw)
+    } catch _ {
+      __raise("ArgParseError", "argument '{name}' expects {type}, got '{raw}'")
+    }
+  }
   let _coerce = fn (raw, type, name) {
     return raw if type == "String"
-    return to_long(raw) if type == "Long"
-    return to_float(raw) if type == "Float"
+    return _number(to_long, raw, type, name) if type == "Long"
+    return _number(to_float, raw, type, name) if type == "Float"
     if type == "Bool" {
       return true if raw == "true" || raw == "1"
       return false if raw == "false" || raw == "0"
@@ -5069,8 +5080,8 @@ inline constexpr const char* ARGS_MODULE_SOURCE = R"=culpre=(let _args_module = 
     if doc != "" {
       parts.push("{name} - {doc}\n\n")
     }
-    let pos_args = spec.args.filter(_is_positional)
-    let opt_args = spec.args.filter(_is_option)
+    let pos_args = _args_of(spec).filter(_is_positional)
+    let opt_args = _args_of(spec).filter(_is_option)
     parts.push("Usage: {name}")
     parts.push(" [options]") if !opt_args.empty()
     let mut j = 0
@@ -5159,7 +5170,7 @@ inline constexpr const char* ARGS_MODULE_SOURCE = R"=culpre=(let _args_module = 
     let parts = argv[i].slice(dash.size(), argv[i].size()).split("=")
     let name = parts[0]
     let has_value = parts.size() > 1
-    let spec_a = _find_by_name(spec.args, name)
+    let spec_a = _find_by_name(_args_of(spec), name)
     if spec_a == nil {
       __raise("ArgParseError", "unknown option '{dash}{name}'")
     }
@@ -5215,7 +5226,7 @@ inline constexpr const char* ARGS_MODULE_SOURCE = R"=culpre=(let _args_module = 
     # takes a token when more are left than the required ones after it still
     # need. That is what makes `<files>... <dest>` hand `dest` the last token
     # instead of swallowing it, and `[from] <to>` fill `to` from a lone token.
-    let pos_specs = spec.args.filter(_is_positional)
+    let pos_specs = _args_of(spec).filter(_is_positional)
     let mut required_after = pos_specs.filter(|s| !_is_optional(s)).size()
     let mut taken = 0
     for a in pos_specs {
@@ -5238,8 +5249,8 @@ inline constexpr const char* ARGS_MODULE_SOURCE = R"=culpre=(let _args_module = 
       )
     }
     let mut k = 0
-    while k < spec.args.size() {
-      let a = spec.args[k]
+    while k < _args_of(spec).size() {
+      let a = _args_of(spec)[k]
       if !result.has(a.name) {
         if !_is_optional(a) {
           __raise("ArgParseError", "missing required argument '{a.name}'")

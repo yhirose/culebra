@@ -233,3 +233,34 @@ assert_true(h.help.contains("Usage: demo"))
 assert_throws("AttributeError", fn () {
   Args.typo
 })
+
+# --- A spec that only routes to `subcommands` has no `args` of its own: help
+# and --help work on it, and a subcommand still parses.
+let routing = {
+  name: "git-lite",
+  subcommands: [{name: "add", args: [{name: "file", positional: true}]}],
+}
+assert_true(Args.help(routing).contains("Usage: git-lite"))
+let rh = try {
+  Args.try_parse(["--help"], routing)
+} catch e {
+  e
+}
+assert_eq(rh.kind, "ArgParseHelp")
+assert_eq(Args.try_parse(["add", "a.txt"], routing).file, "a.txt")
+
+# --- A value that is not a number is the user's mistake, reported as one.
+let nums = {name: "n", args: [{name: "n", type: "Long", short: "n"}, {name: "f", type: "Float", default: 1.5}]}
+let bad_long = try {
+  Args.try_parse(["-n", "x"], nums)
+} catch e {
+  e
+}
+assert_eq(bad_long.kind, "ArgParseError")
+assert_eq(bad_long.message, "argument 'n' expects Long, got 'x'")
+let bad_float = try {
+  Args.try_parse(["-n", "1", "--f=abc"], nums)
+} catch e {
+  e
+}
+assert_eq(bad_float.kind, "ArgParseError")
