@@ -72,7 +72,7 @@ APIリファレンスは [`stdlib.ja.md`](stdlib.ja.md) を参照してくださ
 - **batteries-included、ティア制。** コア
   (Math/IO/FS/File/Sys/Random/String/Time/Args) とTier 1
   (Regex/Http/Hash/Encoding/Compress/JSON/CSV/TOML/XML/SQLite/UUID/
-  PEG/FST/Log/Term/Canvas) はどちらも出荷済み。Tier 2/3 (Crypto、Sockets)
+  PEG/FST/Log/Term/Canvas) はどちらも出荷済み。Tier 2/3 (Crypto)
   は需要次第 — Ch.14参照。
 - **1.0前。** ソース・APIは変わる可能性。tag付きリリースには3プラット
   フォームのビルド済みバイナリが付く (§1.1)。CHANGELOGは無く、各
@@ -236,8 +236,8 @@ bare代入は外側スコープへ向かって検索し、最も近い同名束�
 パターン (Ch.9) はこの挙動で成立しています。
 
 > **注意:** 束縛はデフォルトで不変なので、裸の`x = 1`の後に同一
-> スコープで`x = 2`と書くとエラーになります (`immutable variable
-> 'x'`)。再代入したい変数には`mut`を付けます (`mut x = 1; x = 2`)。
+> スコープで`x = 2`と書くとエラーになります (`ImmutableError:
+> cannot reassign 'x' (declared without 'mut')`)。再代入したい変数には`mut`を付けます (`mut x = 1; x = 2`)。
 > `let`は任意で、(元から不変の) 意図を明示し、かつ外側束縛のシャドウ
 > を禁止するマーカーです。
 
@@ -852,7 +852,7 @@ inspect(is_even(7))   # => false
 
 静的型システム無しでObjectのshapeを網羅性検査するには、節約
 以上のランタイムコストがかかる。`_`節 (またはガード付き最終
-パターン) で意図を明示する方針。詳細とUnion型の例外は
+パターン) で意図を明示する方針。詳細は
 [language.ja.md §13](language.ja.md)。
 
 ## 7. エラー処理と RAII
@@ -1205,7 +1205,7 @@ inspect(Color(1, 2, 3, a: 0).a)  # => 0
 
 パラメータがフィールドを宣言することもできる (クラス本体に`x`、`y`を
 宣言せず`new(.x: Float, .y: Float) {}`と書く)。小さなレコード的なクラス
-ならこれだけで済む。規則の全体は[language.md §10](language.md)
+ならこれだけで済む。規則の全体は[language.ja.md §10](language.ja.md)
 「`class` sugar」を参照。
 
 ### 9.2 クロージャベースの別解
@@ -1479,9 +1479,9 @@ inspect(c.go('a'))  # => 'string'
 ### Why 自由関数から先か
 
 自由関数のマルチメソッドはUFCSやimportされたnamespaceと無
-理なく合成できる (暗黙のサブタイピングが入らない)。メソッドマル
-チメソッドはown-class vs UFCS vs freeの優先順序を決める必要が
-あり、推測より実ワークロードで決めたい。
+理なく合成できる (暗黙のサブタイピングが入らない)。インスタンス
+メソッドもオーバーロードできる (§10.2) が、オーバーロード集合は
+クラスごとに持ち、自由関数のものとは別になる。
 
 ## 11. デコレータ
 
@@ -1642,8 +1642,10 @@ AOTビルドが推測なしにバンドルできるのも同じ理由。
 
 ### 13.1 現状: オプショナル注釈 + `Any`
 
-注釈は3つの境界での**ランタイム**チェック: 変数代入、関数パラ
-メータ渡し、関数戻り値。静的なnarrowingは無い。完全な注釈仕様は
+注釈は4つの境界での**ランタイム**チェック: 変数代入、関数パラ
+メータ渡し、関数戻り値、クラスの宣言フィールドへの書き込み
+(Stringを許す注釈は除く)。`mut`ローカルへの再代入は再検査しない。
+静的なnarrowingは無い。完全な注釈仕様は
 [language.ja.md §14](language.ja.md)。
 
 ```culebra
@@ -1779,7 +1781,7 @@ inspect(Point.new(1, 2).to_s())               # => 'Point(1, 2)'
 ```
 
 `enum`のvariantは何も導出せずに`Eq`かつ`Hashable`: variantはそのまま
-Object / Setのkeyになる（[language.md §14](language.md)「Sum type」）。
+Object / Setのkeyになる（[language.ja.md §14](language.ja.md)「Sum type」）。
 
 ### 13.4 Generic
 
@@ -1808,10 +1810,9 @@ inspect(first([1, 2, 3]))  # => 1
 
 ## 14. 標準ライブラリ
 
-以下の名前空間はすべて`import`なしで使えます。CLIドライバはさらに
-`inspect` / `print` / `println`を`IO.inspect` / `IO.print` /
-`IO.println`の別名として入れます。自前で環境を組む埋め込み側には
-名前空間だけが見え、この裸の別名は入りません。
+以下の名前空間はすべて`import`なしで使えます。`inspect` / `print` /
+`println`も`IO.inspect` / `IO.print` / `IO.println`の別名として
+グローバルに束縛されます。スクリプトでも埋め込み側でも同じです。
 
 ```culebra
 inspect(to_long('42'))              # => 42

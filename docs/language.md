@@ -44,7 +44,6 @@ For an introductory tour with runnable examples, see
 23. [Known limitations](#23-known-limitations)
 24. [Modules](#24-modules)
 25. [Appendix: VM ↔ JIT divergence](#25-appendix-vm--jit-divergence)
-26. [Appendix: conformance test mapping](#26-appendix-conformance-test-mapping)
 
 ---
 
@@ -115,7 +114,8 @@ Reserved words that cannot name a variable:
 Assigning to one is a `SyntaxError` (`let class = 1`). The reservation
 covers the assignment target only: a parameter, a `for` variable, an
 object key, and a property name are all positions where no keyword can
-start, so they accept any of these words.
+start, so they accept any of these words. The one exception is `fn`,
+which cannot be declared in any position (§11, Recursion).
 
 Four of them — `return`, `throw`, `break`, `continue` — are the
 exception when *read* rather than bound. They are expressions (§12), so
@@ -310,7 +310,9 @@ Most constructs are expressions that yield a value:
 
 ## 4. Types
 
-Culebra has exactly twelve types — the names `type_of` can return:
+These are the built-in value types. `type_of` also answers `'Range'`,
+`'Class'` and the class name of an instance, so its set of names is open
+(§19):
 
 | Type         | Description                                                                          |
 |--------------|--------------------------------------------------------------------------------------|
@@ -469,7 +471,7 @@ that owns its storage and the result fits the LHS's shape, `+=`, `-=`,
 `*=`, `/=`, and `**=` write the result back into the existing buffer
 instead of allocating a fresh Tensor. (`%=` has no Tensor semantics
 and `@=` changes the output shape, so neither is in-place.) Other references to the same
-Tensor see the update — this matches NumPy semantics:
+Tensor see the update:
 
     mut W = Tensor.randn('f32', 1024, 256)
     let alias = W
@@ -595,7 +597,8 @@ state is mutated via bare `x = v`, and a new local is declared with
 ### Mutability
 
 Bindings are immutable by default. Reassignment without `let` to an
-immutable binding raises `immutable variable 'x'...`.
+immutable binding raises `ImmutableError: cannot reassign 'x' (declared
+without 'mut')`.
 
 `mut` on the binding allows reassignment, but it does not make the
 underlying object immutable or vice versa: you can push to an
@@ -831,8 +834,7 @@ intermediate IR but must preserve the observable effect order.
   keyword arguments are interleaved.
 * **Array, object, and tuple literals.** Element/property
   expressions evaluate in source order. For `{a: v1, b: v2}` it is
-  `v1` then `v2`. For `[n; default]` (the size-prefixed form) the
-  count expression evaluates before the default expression.
+  `v1` then `v2`.
 * **Binary operators `+`, `-`, `*`, `/`, `%`, `==`, etc.** Left
   operand first, then right operand, then the operation. An operand
   keeps the value it had when it was evaluated, even if a later operand
@@ -934,7 +936,7 @@ escape for a literal dollar), which also suppresses interpolation:
 pattern with `Regex.compile(...)`:
 
     let n = 4
-    Regex.compile('\d{' + n.to_s() + '}')
+    Regex.compile('\d{' + to_string(n) + '}')
 
 Optional trailing flag letters (`i` case-insensitive, `m` multi-line, `s`
 dot-matches-newline) follow the closing quote: `re"^b"m`. There is no
@@ -1032,8 +1034,8 @@ formats Longs and Floats as floating-point, an integer type
 (`d`/`x`/`o`/`b`) formats as an integer. Other values format their
 display string (so width / alignment apply). An invalid spec for the
 value's type raises `ValueError`. `std::format` is followed exactly, so
-`,` digit grouping is not supported (the locale `L` option covers that
-case instead).
+`,` digit grouping is not supported (the `L` option does not group
+either).
 
 A spec may itself carry `{expr}` fields, so a width or a precision can be
 computed rather than written out:
@@ -1261,11 +1263,11 @@ its fields into a plain Object, which is not an instance of anything:
 
     class P { new() { self.a = 1 }  m() { 2 } }
     let p = P()
-    p.keys()                  # ['class', 'a']
-    p.size()                  # 2
+    p.keys()                  # ['a']
+    p.size()                  # 1
     p.to_string()             # 'P {mut a: 1}'  (class hoisted to the prefix)
-    JSON.stringify(p)         # '{"class":"P","a":1}'
-    {...p}.keys()             # ['class', 'a'] — a plain Object, no methods
+    JSON.stringify(p)         # '{"a":1}'
+    {...p}.keys()             # ['a'] — a plain Object, no methods
 
 `has(key)` is the exception: it answers the *lookup* question, so it also
 sees class methods — but not dict builtins:
@@ -1376,7 +1378,7 @@ without an explicit `mut`):
       tally[w] ??= 0    # insert 0 on the first sighting (§7, nil-coalescing assignment)
       tally[w] += 1
     }
-    inspect(tally)                      # {a: 2, b: 1}
+    inspect(tally)                      # {mut a: 2, mut b: 1}
 
 Existing slots honor their `mut` flag, regardless of which form the
 write uses; `obj[k] = v` on an immutable slot raises `ImmutableError`.
@@ -1629,7 +1631,8 @@ is a lightweight alternative that desugars to the same runtime shape:
 
 Semantics:
 
-* The decl binds `Car` to an `Object` with a single `new` property.
+* The decl binds `Car` to a class object (`type_of(Car)` is `'Class'`)
+  that carries `new`.
 * `Car.new(...)` returns a fresh `Object` holding the fields the
   constructor sets. `self` is bound to that object for the duration of the
   constructor body. Neither the class name nor the methods are copied onto
@@ -1646,8 +1649,7 @@ Semantics:
   What it does not reach is a plain `Object` with a `new` key: that stays
   inert, so a dict cannot be made callable by naming a field.
 * Fields created via `self.x = y` inside constructors and methods are
-  **mutable by default** (unlike bare `o.x = y`, which creates an
-  immutable property). This matches the idiom of classes whose methods
+  **mutable by default**. This matches the idiom of classes whose methods
   routinely mutate instance state.
 * The `new` method is optional; without it the class accepts no
   arguments and returns an instance with no fields at all.
@@ -2104,10 +2106,9 @@ For those, the LHS must be an Object carrying the matching special method.
 Every class instance gains a 0-arg `parameters()` method that returns a
 flat `Array` of every class-instance value reachable from its own
 fields. The walker descends through `Array` elements and plain `Object`
-dicts (no `class:` tag), and collects each class instance it encounters
-as a leaf without recursing into it. Skipped during the walk: the
-`class:` tag itself, and any field whose name starts with `_` (treated
-as private/cache state). Iteration is in insertion order on both
+dicts (not class instances), and collects each class instance it
+encounters as a leaf without recursing into it. Skipped during the walk:
+any field whose name starts with `_` (treated as private/cache state). Iteration is in insertion order on both
 backends.
 
     class Value { new(x) { self.x = x } }
@@ -2125,8 +2126,8 @@ backends.
     model.parameters().size()    # 40 — every Value collected as a leaf
 
 A class instance is a leaf: the walker stops at it rather than
-recursing into its fields. Use plain Object dicts (no `class:` tag)
-for intermediate grouping that should be transparent to the
+recursing into its fields. Use plain Object dicts (not class
+instances) for intermediate grouping that should be transparent to the
 enumeration, and reserve class instances for the leaves you want to
 treat as the actual parameters.
 
@@ -2348,10 +2349,10 @@ and Arrays (§9). A `Set` has no `+` — `to_array()` first, or `union`.
 Functions are first-class values and the only way to define a reusable
 piece of code. Bind a literal like any other value
 (`name = fn (...) { ... }`), or use the declaration form
-`fn name(...) { ... }`. Only the declaration form can be a
-[generator](#generators-yield) or take part in [multimethod
-dispatch](#20-multimethods), and only it gives `fn.name` a source-level
-name.
+`fn name(...) { ... }`. Only the declaration form can take part in
+[multimethod dispatch](#20-multimethods), and only it gives `fn.name` a
+source-level name. A `fn` literal can be a [generator](#generators-yield);
+a `|...|` lambda cannot.
 
 ### Lambda sugar `|x| ...`
 
@@ -2397,7 +2398,7 @@ an expression).
 
 * `mut` on a parameter makes that parameter binding mutable inside
   the body. Without `mut`, reassigning the parameter raises
-  `immutable variable`.
+  `ImmutableError: cannot reassign 'x' (declared without 'mut')`.
 * Optional type annotations are enforced on entry (§14).
 * A parameter may have a default value via `name = expr`. When the
   caller omits the argument, the default is evaluated on each call in
@@ -2507,9 +2508,10 @@ rejects a keyword with a `TypeError`. The methods of the built-in value
 types bind by position instead (see "Built-in methods bind
 positionally").
 
-Compile-time errors (e.g. `positional argument follows keyword
-argument`) are detected during compilation and bypass `try/catch` on
-every engine.
+`positional argument follows keyword argument` is raised when the call
+runs, not at load, so `try/catch` catches it like any runtime error. The
+checks that run at load and that `try` cannot catch are listed under
+"Compile-time errors" in §15.
 
 ### Return
 
@@ -2538,6 +2540,11 @@ fn h(k) { fn }
 inspect(g(0) == g)   # => true
 inspect(h(0) == h)   # => false
 ```
+
+Reading `fn` outside any function body raises `NameError: undefined
+variable 'fn'` where it is read. `fn` cannot be declared under any
+spelling (`fn (fn) {}`, `for fn in xs {}`): that is a `SyntaxError`
+(`'fn' is a reserved name and cannot be declared`).
 
 ### Methods: `self`
 
@@ -3553,7 +3560,7 @@ behavior — `Long` and `Long|` are not equivalent (the latter is a
 parse error).
 
 `Object` inside a Union is a **catch-all for class instances**
-(any value carrying a `class:` tag), not for every value: primitives
+(any value a class built), not for every value: primitives
 fall through it. So `Long | Object` accepts a Long *and* any class
 instance, but a String still fails. Use `Any` if you want to accept
 everything.
@@ -4691,6 +4698,8 @@ builds (unless noted).
 | `SyntaxError` | Structural errors raised during AST lowering: `**rest` not last param, duplicate `*` separator, non-default param after default, `compound let`, `break` / `continue` outside loop. Surfaces at function decl evaluation, before that function runs. | yes |
 | `ShadowError` | Static shadow analyzer (§6) detected a binding that shadows a captured outer name. Fires before any user `try` block can observe it. | **no** (pre-eval analyzer) |
 | `IOError` | `FS` / `File` / stdlib file ops failing (missing path, permission, closed handle); `Tensor.from_csv` failure. | yes |
+| `ImportError` | A circular `import` (A imports B which imports A). Reported while the program loads, with no position, so no `try` can observe it (§24). | **no** (load time) |
+| `EffectError` | A `perform` reaches no handler, or a full-control handler clause from ordinary code (§16). Carries the perform's `e.line` / `e.col`. | yes |
 | `ProcessError` | `Proc.run` spawn failure (e.g. the executable doesn't exist), or a non-zero exit / signal death under `check: true`. | yes |
 | `SendError` | A value that is not Sendable was passed across an isolate boundary (`Isolate.spawn` / `tx.send`) — a native handle, a `Tensor`, a closure capturing a `mut`, a standard library function as a value, a `@packable` class, or a cyclic value. | yes |
 | `ChannelError` | `tx.send` on a channel whose receivers/senders have all gone (closed). | yes |
@@ -5443,7 +5452,7 @@ receiver is never mutated.
 | `s.rsplit_once(sep: StringLike) -> Tuple \| Nil` | The halves around the *last* `sep`, or `nil`. |
 | `s.split_iter(sep: StringLike) -> Iterator<StringView>` | Lazy variant of `split`. Short-circuits with `.take(n)` over huge inputs. |
 | `s.lines() -> Array<StringView>`                | Split on `\n`, `\r\n`, or `\r`. The terminator is dropped and a trailing one yields no final empty element, so `"a\nb\n".lines()` is `["a", "b"]` — the same line boundaries as `File.lines()`. Eager like `split`. |
-| `s.replace(pat: String \| Regex, repl: String \| Function) -> String` | Replace **every** occurrence; chains. `pat` a `String` → literal; `pat` a `Regex` (incl. `re'…'`) → regex, so `repl` may be a `$1` / `$<name>` template or a `fn (Match) -> String`. A stdlib helper reached by UFCS — `s.replace(p, r)` is `replace(s, p, r)`. |
+| `s.replace(pat: String \| Regex, repl: String \| Function) -> String` | Replace **every** occurrence; chains. `pat` a `String` → literal (`repl` must then be a `String`; a `Function` `repl` raises `TypeError`); `pat` a `Regex` (incl. `re'…'`) → regex, so `repl` may be a `$1` / `$<name>` template or a `fn (Match) -> String`. A stdlib helper reached by UFCS — `s.replace(p, r)` is `replace(s, p, r)`. |
 | `s.contains(sub: StringLike) -> Bool`           | Whether `sub` appears anywhere. Empty `sub` → `true`. |
 | `s.count(sub: StringLike) -> Long`              | Non-overlapping occurrences of `sub`, so `"aaaa".count("aa")` is `2`. Empty `sub` → `0`, matching `split("")` yielding the receiver whole. Literal only — a compiled `Regex` counts its own matches. |
 | `s.starts_with(prefix: StringLike) -> Bool`     | Whether `s` begins with `prefix`.    |
@@ -5467,7 +5476,7 @@ receiver is never mutated.
 | `s.words() -> Iterator<Tuple>`                  | Lazy walk yielding **UAX #29 word boundary** segments as `(text, is_word)` pairs — every run between two boundaries is its own segment, including whitespace/punctuation runs; `is_word` is `true` when the segment holds at least one alphabetic or numeric scalar. Filter to real words: `s.words().filter(\|(_, w)\| w).map(\|(t, _)\| t)`. |
 | `s.sentences() -> Iterator<StringView>`         | Lazy walk yielding **UAX #29 sentence boundary** segments — one sentence per step, trailing whitespace stays attached to the sentence before it. |
 | `s.bytes() -> Iterator<Long>`                   | Lazy walk yielding the receiver's **raw UTF-8 bytes** as `Long` (`0`–`255`), one byte per step — no decoding, unlike `code_points`. For when the encoding itself is wanted (hashing, tokenizer vocabularies, wire formats). |
-| `String.from_code_point(cp: Long) -> String`    | The inverse of `code_points()`: one Unicode scalar value in, a one-character `String` out. Raises `ValueError` for `cp` above `U+10FFFF` or in the surrogate range `U+D800`–`U+DFFF` — the same boundary the `\u`/`\U` literal escapes (§4.1) reject at parse time. |
+| `String.from_code_point(cp: Long) -> String`    | The inverse of `code_points()`: one Unicode scalar value in, a one-character `String` out. Raises `ValueError` for `cp` above `U+10FFFF` or in the surrogate range `U+D800`–`U+DFFF` — the same boundary the `\u`/`\U` literal escapes (§2, Literals) reject at parse time. |
 | `String.from_code_points(cps: Array) -> String` | The plural inverse of `code_points()`: an `Array` of Unicode scalar values in, a `String` out. Each element passes through the same gate as `from_code_point`, so `String.from_code_points([cp]) == String.from_code_point(cp)`; a non-`Long` element is a `TypeError`, an out-of-range one a `ValueError`. |
 | `String.from_bytes(bytes: Array) -> String`     | The inverse of `bytes()`: an `Array` of raw byte values (`0`–`255`) in, a `String` out. **No UTF-8 validation**, and no error on malformed input: culebra `String`s tolerate invalid UTF-8 (same as `iter()`), so `String.from_bytes(s.bytes().collect()) == s` holds for every `String`, including ones with invalid sequences. A non-`Long` element is a `TypeError`, an out-of-range one (outside `0`–`255`) a `ValueError`. |
 | `String.pack(type: String \| Class, values: Array, endian: String = "little") -> String` | Each element of `values` as one fixed-width scalar of `type` — or one record of a `@packable` class — laid end to end: the bytes a binary file or protocol stores. See [Binary data](#binary-data-stringpack--stringunpack) below. |
@@ -5931,11 +5940,11 @@ Iterable wrapper.
 |---|---|---|
 | `Array` | elements | index order (0..size-1) |
 | `Object` | `(key, value)` tuples | insertion order (matches `o.keys()`) |
-| `String` | one-scalar `String` per UTF-8 code point | byte order |
+| `String` | one-scalar `StringView` per UTF-8 code point | byte order |
 
 `String` iteration walks the UTF-8 buffer lazily, so iterating a
 100 MB string with `break` after a few steps does not materialize the
-rest. The yielded values are 1-scalar `String`s, not integer code
+rest. The yielded values are 1-scalar `StringView`s, not integer code
 points — use `.map` on the iterator to project into whatever shape
 you need.
 
@@ -6130,8 +6139,9 @@ when you want eager materialization and maximum throughput; use
 ## 19. Core built-in functions
 
 The functions below are part of the language proper: they are bound
-into every execution environment as global names and cannot be
-replaced. The first group (`to_long` / `to_float` / `to_string`,
+into every execution environment as global names. A bare `type_of = 1`
+is an `ImmutableError`, but a program's own declaration of the name
+(`fn type_of(x) {...}`, `let range = 5`) takes its place. The first group (`to_long` / `to_float` / `to_string`,
 `type_of`) is tied to language semantics — source-position errors,
 type introspection, and the display convention. The second group
 (`range`, `iota`, `grid`) provides the canonical integer-sequence
@@ -6145,7 +6155,7 @@ group of globals — see
 [`docs/stdlib.md`](stdlib.md) for the full reference. The broader
 standard library (namespaced under `Math`, `IO`, `Sys`) is also
 documented in `stdlib.md`. Output primitives `inspect`, `print`, and
-`println` are CLI-installed globals (§22).
+`println` are globals aliased to the `IO` functions (§22).
 
 All of these globals are **first-class values**: bind one to a variable
 or hand it to a higher-order function and it behaves like any closure,
@@ -6481,7 +6491,7 @@ appear).
 
 ## 20. Multimethods
 
-Multiple top-level `fn name(params) body` declarations sharing a name
+Multiple `fn name(params) body` declarations sharing a name in one scope
 form a **multimethod** when their parameters have differing type
 annotations (§14). At a call site, the most specifically matching
 method is selected based on the runtime types of the arguments.
@@ -6497,7 +6507,7 @@ area("hello")  # → 5      (String)
 ```
 
 Anonymous function expressions `let f = fn(...) {...}` are unaffected.
-Multimethods only apply to **top-level `fn name(...)` declarations**.
+Multimethods only apply to **`fn name(...)` declarations**.
 
 The overloads of a name belong to the scope that declares them. An `if`
 or `cond` arm is a scope of its own (§6), so a `fn name` written in one is
@@ -6604,9 +6614,9 @@ shape_area(Square.new(4))  # → 16
 shape_area(Circle.new(2))  # → 12.56
 ```
 
-This relies on the `class:` String property that class sugar attaches
-to each instance (§10). The `Object` annotation is looser and matches
-any class instance.
+Dispatch reads the class the instance was built by (§14); an Object that
+merely carries a `class` key is not an instance. The `Object` annotation
+is looser and matches any class instance.
 
 ### Same-name, same-signature redeclaration
 
@@ -6648,17 +6658,16 @@ let b = make("B")
 
 ### Constraints
 
-* **Top-level / free functions only.** Nested declarations inside a
-  block, and class methods, are not subject to this mechanism.
+* **Same-scope declarations.** Overloads are formed by `fn name(...)`
+  declarations in the same scope (any scope, §6), and by class methods
+  (see above).
 * **Errors.** With no matching method the runtime raises
   `no matching method`; with a tie in specificity it raises
-  `ambiguous dispatch`. Both halt the program immediately rather than
-  surfacing as catchable runtime exceptions (§15, §24).
+  `ambiguous dispatch`. Both raise a catchable `DispatchError` (§15).
 
 ### Keyword arguments and multimethods
 
-Dispatch picks on the **positional** argument types only (Julia-style
-kwsorter). Keyword arguments and `**` splats flow through dispatch
+Dispatch picks on the **positional** argument types only. Keyword arguments and `**` splats flow through dispatch
 into the picked method's signature, where they bind via the regular
 kwargs rules (§11).
 
@@ -7160,14 +7169,16 @@ three names a script does.
 * No big integers or bignums; `Long` overflow wraps.
 * Single-quoted `'...'` strings are raw (no escapes, no interpolation,
   no embedded apostrophes). Double-quoted `"..."` strings recognize a
-  fixed escape set (`\n \r \t \\ \" \{`); the `{{` / `}}` form for
-  literal braces is not supported.
+  fixed escape set (`\n \r \t \\ \" \{`, plus `\xHH`, `\uXXXX` and
+  `\UXXXXXXXX`, §2); the `{{` / `}}` form for literal braces is not
+  supported.
 * `String` is byte-indexed (`size` / `slice` count bytes); Unicode
   work goes through `code_points()` / `graphemes()` iterators.
 * `Array` / `Object` / `Tuple` / `Set` equality is structural (by value);
   only `Function` / `Tensor` compare by reference identity.
-* Type annotations are enforced only at function boundaries and
-  annotated assignments; they do not make the language static.
+* Type annotations are enforced only at function boundaries, annotated
+  assignments and writes to a class's declared fields (§10, §14); they
+  do not make the language static.
 * Pattern matching has no exhaustiveness check.
 * Dot-form property names are identifiers only (`obj.foo`). Non-String
   hashable keys (`Long`, `Float`, `Bool`, `Nil`, `Tuple`, enum variants)
@@ -7265,7 +7276,7 @@ for both bundled AOT builds and tree-shaking analysis.
 ### Exports
 
 * A module without any `export` statement produces an empty
-  Object. `import x from "..."` still succeeds; missing members
+  Object. `import x from '...'` still succeeds; missing members
   read back as `nil` per the standard Object property rule
   (§10). Useful for side-effect-only modules.
 * Multiple `export { ... }` statements in a single file are
@@ -7291,10 +7302,12 @@ for both bundled AOT builds and tree-shaking analysis.
 error — `mod.unknown` returns `nil`, matching the rule for
 plain Objects in §10.)
 
-All errors carry `kind` / `message` / `line` / `col` and are
-surfaced identically by both backends. `IOError`, `SyntaxError`,
-and `NameError` join the existing catalog in §15; `ImportError`
-is added for the circular-dependency case (catchable).
+Both backends surface these errors identically. Module resolution
+(a missing file, a circular import) is reported while the program loads,
+before any code runs, and without a `line` / `col`. Imports are top-level
+only, so no `try` can wrap one: those two errors cannot be caught.
+`ImportError` (the circular-dependency case) is listed with the other
+kinds in §15.
 
 ### Backend equivalence
 

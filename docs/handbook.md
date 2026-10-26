@@ -77,7 +77,7 @@ Read this once; the rest of the guide assumes these choices.
 - **Batteries-included, tiered.** The core (Math/IO/FS/File/Sys/
   Random/String/Time/Args) and Tier 1 (Regex/Http/Hash/Encoding/
   Compress/JSON/CSV/TOML/XML/SQLite/UUID/PEG/FST/Log/Term/Canvas) both ship
-  today; Tier 2/3 (Crypto, Sockets) follows demand — see Ch.14.
+  today; Tier 2/3 (Crypto) follows demand — see Ch.14.
 - **Pre-1.0.** Source and APIs may change. Tagged releases carry
   prebuilt binaries for the three platforms (§1.1); there is no
   CHANGELOG — each release's notes on GitHub are the record.
@@ -248,8 +248,8 @@ a new binding in the current scope. This is what makes the
 closure-based object pattern work (Ch.9).
 
 > **Heads-up:** Bindings are immutable by default, so a bare `x = 1`
-> followed by `x = 2` in the same scope is an error (`immutable variable
-> 'x'`). Add `mut` when you intend to reassign (`mut x = 1; x = 2`).
+> followed by `x = 2` in the same scope is an error (`ImmutableError:
+> cannot reassign 'x' (declared without 'mut')`). Add `mut` when you intend to reassign (`mut x = 1; x = 2`).
 > `let` is optional — it makes the (already immutable) intent explicit and
 > forbids shadowing an outer binding.
 
@@ -871,8 +871,8 @@ inspect(is_even(7))   # => false
 
 Without a static type system, exhaustiveness on `Object` shape would
 cost more to track than it saves; the `_` arm (or a guarded final
-pattern) makes intent explicit instead. Details and the Union-type
-exception: [language.md §13](language.md).
+pattern) makes intent explicit instead. Details:
+[language.md §13](language.md).
 
 ## 7. Error handling and RAII
 
@@ -1506,9 +1506,9 @@ inspect(c.go('a'))  # => 'string'
 ### Why free functions first?
 
 Multimethods on free functions compose with UFCS and with imported
-namespaces without surprises (no implicit subtyping). Method
-multimethods need a precedence story (own-class vs UFCS vs free)
-that we'd rather lock down with a real workload than guess.
+namespaces without surprises (no implicit subtyping). Instance methods
+can be overloaded too (§10.2), but each class keeps its own overload
+set, apart from the free functions.
 
 ## 11. Decorators
 
@@ -1671,8 +1671,10 @@ Part III — Types and libraries
 
 ### 13.1 Today: optional annotations + `Any`
 
-Annotations are *runtime* checks at three boundaries: variable
-assignment, function parameter passing, and function return. There is
+Annotations are *runtime* checks at four boundaries: variable
+assignment, function parameter passing, function return, and every write
+to a declared class field (annotations that admit String excepted).
+Reassigning a `mut` local is not re-checked. There is
 no static narrowing. Full annotation semantics: [language.md
 §14](language.md).
 
@@ -1840,10 +1842,9 @@ program would express, a runtime check expresses more directly.
 
 ## 14. Standard library
 
-Every namespace below is available without an `import`. The CLI driver
-additionally installs `inspect` / `print` / `println` as aliases for
-`IO.inspect` / `IO.print` / `IO.println`; embedders that build their own
-environment get the namespaces but not the bare aliases.
+Every namespace below is available without an `import`. `inspect` / `print` /
+`println` are also bound as global aliases for `IO.inspect` /
+`IO.print` / `IO.println`, in a script and in an embedding host alike.
 
 ```culebra
 inspect(to_long('42'))              # => 42

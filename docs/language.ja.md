@@ -43,7 +43,6 @@ APIリファレンスは [`stdlib.ja.md`](stdlib.ja.md)
 23. [既知の制約](#23-既知の制約)
 24. [モジュール](#24-モジュール)
 25. [付録: VM ↔ JIT の差分](#25-付録-vm--jit-の差分)
-26. [付録: conformance test 対応表](#26-付録-conformance-test-対応表)
 
 ---
 
@@ -59,8 +58,8 @@ Culebraは動的型付けスクリプト言語です。設計上の優先事項:
 * **予測可能なメモリ管理。** 両エンジンで参照カウントを採用。
   循環参照はサイクルコレクタが回収します。
 
-言語の核は動的型付けです。型注釈は任意で、実行時の境界（関数呼出、
-注釈付き代入）でのみ検査されます。Culebraを静的型付け言語にするもの
+言語の核は動的型付けです。型注釈は任意で、実行時の境界でのみ
+検査されます。Culebraを静的型付け言語にするもの
 ではありません。
 
 ---
@@ -99,6 +98,8 @@ CRLFのcheckoutはLFのものと完全に同じに振る舞う — 三重引用�
 処理系が使います。effect本体から作るコードの中に処理系が書く名前です（§16）。
 これらを宣言すると`SyntaxError`になります。
 
+### キーワード
+
 変数名にできない予約語:
 
     nil  true  false  mut  debugger  return  while  for  in  if  unless  else
@@ -108,6 +109,7 @@ CRLFのcheckoutはLFのものと完全に同じに振る舞う — 三重引用�
 これらへの代入は`SyntaxError`です（`let class = 1`）。予約が効くのは
 代入ターゲットの位置だけで、パラメータ名・`for`変数・オブジェクトのキー・
 プロパティ名はキーワードが始まりえない位置なので、これらの語も受け付けます。
+ただし`fn`だけは例外で、どの位置でも宣言できません（§11「再帰」）。
 
 ただし`return`・`throw`・`break`・`continue`の4語は、束縛ではなく**読み
 出す**ときだけ例外です。これらは式なので (§12)、式の位置に現れた時点で
@@ -152,8 +154,12 @@ CRLFのcheckoutはLFのものと完全に同じに振る舞う — 三重引用�
 * 補間文字列: `"...{expr}..."`。`{expr}`は任意の式を埋め込めます。
   対応エスケープ: `\n` `\r` `\t` `\\` `\"` `\{`（`\{`で補間を起動
   しない素の`{`を埋め込み。`}`は補間終端でしか特別ではないので
-  生で書いてOK）。未知の`\X`はバックスラッシュ + 文字の2文字
-  としてそのまま残ります。
+  生で書いてOK）、`\xHH`（16進2桁ちょうど → 生のバイト1つ、
+  `0x00`〜`0xFF`）、`\uXXXX`（16進4桁ちょうど → BMPのUnicodeスカラー値、
+  UTF-8で符号化）、`\UXXXXXXXX`（16進8桁ちょうど → Unicodeスカラー値、
+  UTF-8で符号化。BMPの外に届くのはこの形だけ）。後ろの2つは`U+10FFFF`
+  を超える値とサロゲート範囲を拒否します。未知の`\X`はバックスラッシュ
+  + 文字の2文字としてそのまま残ります。
 * 真偽値: `true`, `false`。
 * Nil: `nil`。
 
@@ -174,6 +180,7 @@ CRLFのcheckoutはLFのものと完全に同じに振る舞う — 三重引用�
     &&  ||                      # 論理AND/OR（短絡）
     ??                          # nilコアレス（`||`より低い優先順位）
     ?.  ?[ ]                    # オプショナルチェイン / オプショナル添字
+    ? :                         # 三項条件 `c ? a : b`（右結合）
     !!                          # 非nullアサーション（後置）
     ..  ..=                     # 範囲リテラル（開区間 / 閉区間）
     =                           # 代入
@@ -230,7 +237,10 @@ CRLFのcheckoutはLFのものと完全に同じに振る舞う — 三重引用�
 
 ### 演算子の優先順位
 
-低い順:
+低い順。項目1の下に、代入（`=`、最も低い）、次に三項`c ? a : b`
+（右結合。`a ? b : c ? d : e`は`a ? b : (c ? d : e)`）、次に`??`が
+あります。したがって`a ?? b ? c : d`は`(a ?? b) ? c : d`、
+`x = c ? a : b`は`x = (c ? a : b)`です。
 
 1. `||`
 2. `&&`
@@ -288,7 +298,9 @@ _ = -N(2) * N(3)
 
 ## 4. 型
 
-Culebraの型は厳密に12種類 — `type_of`が返しうる名前がすべてです:
+組み込みの値の型は次のとおりです。`type_of`は`'Range'`、`'Class'`、
+インスタンスのクラス名も返すので、返す名前の集合は閉じていません
+（§19）:
 
 | 型           | 説明                                                          |
 |-------------|--------------------------------------------------------------|
@@ -438,7 +450,7 @@ LLVM ORC JITのどちらでも完全にサポートされています。Longの�
 結果と一致する場合、`+=` `-=` `*=` `/=` `**=`は新しいTensorを
 割り当てず既存バッファを直接書き換えます（`%=`はTensorで意味づけ
 されておらず、`@=`は出力形状が変わるのでin-place対象外）。同じTensorを別名で参照
-していると、その別名でも変更が見えます（NumPyと同じセマンティクス）。
+していると、その別名でも変更が見えます。
 
     mut W = Tensor.randn('f32', 1024, 256)
     let alias = W
@@ -448,7 +460,7 @@ LLVM ORC JITのどちらでも完全にサポートされています。Longの�
 `W = W - grad * lr`と書くと毎ステップ新しいTensorを確保するので、
 SGDの重み更新のような巨大テンソルのループでは`-=`のほうが大きく
 速くなります（in-placeなら1ステップあたりWのサイズ分の確保が
-消える）。`W`がビューや評価前のグラフノードの場合はin-place条件を
+消える）。`W`がビューや評価前のグラフノードの場合、または右辺がbroadcastで`W`の形に収まらない場合はin-place条件を
 満たさないので、その場合は新規Tensorを作る通常経路に自動でフォール
 バックします（観測可能な挙動の差はありません）。
 
@@ -558,7 +570,7 @@ enclosing function)`です。
 ### 可変性
 
 束縛はデフォルトでイミュータブルです。`let`なしでイミュータブルな
-束縛に再代入すると`immutable variable 'x'...`になります。
+束縛に再代入すると`ImmutableError: cannot reassign 'x' (declared without 'mut')`になります。
 
 `mut`は束縛の可変性を指定するだけで、値そのものの可変性とは
 無関係です。例えば`let arr = [1,2,3]`でも`arr.push(4)`は合法で、
@@ -629,7 +641,7 @@ Culebraはシャドウを3つの軸で独立に扱います:
 
 結果として、この規則は設計意図どおりのバグクラス — 「新規ローカル」
 と「外側再代入」の取り違え — を捕捉しつつ、シャドウが自然な
-2つのシチュエーションには干渉しません。先行技術との対比:
+2つのシチュエーションには干渉しません。
 
 
 ---
@@ -781,7 +793,6 @@ backendで規範的なルール。JITは中間IRを並べ替えてよいが、�
   keywordが混ざっていてもコールサイトの並び順に従う。
 * **配列・オブジェクト・タプルリテラル.** 要素式
   / プロパティ式はソース順。`{a: v1, b: v2}`なら`v1` → `v2`。
-  サイズ指定形式`[n; default]`はcount → defaultの順。
 * **2項演算子`+`, `-`, `*`, `/`, `%`, `==`等.** 左辺式 → 右辺式
   → 演算。オペランドの値は評価した時点のもので、あとのオペランドが
   その変数を代入し直しても変わらない（`n = 1`なら`n + (n = 10)`は
@@ -878,7 +889,7 @@ re"id=${digits};".test("id=123;")         # => true — 合成
 `Regex.compile(...)`で組み立ててください:
 
     let n = 4
-    Regex.compile('\d{' + n.to_s() + '}')
+    Regex.compile('\d{' + to_string(n) + '}')
 
 末尾のフラグ文字（`i`大文字小文字無視 / `m`複数行 / `s`ドットが改行に
 マッチ）は閉じクォートの直後: `re"^b"m`。`/.../ `形式はありません —
@@ -971,7 +982,7 @@ specはC++ `std::format`のミニ言語:
 浮動小数で、整数型（`d`/`x`/`o`/`b`）は整数で整形。その他の値は表示
 文字列を整形（幅・寄せが効く）。型に不正なspecは`ValueError`。
 `std::format`にそのまま従うので`,`の桁区切りは非対応です
-（その用途はロケール`L`オプションが担当）。
+（`L`オプションでも桁区切りは付きません）。
 
 spec自身も`{expr}`フィールドを持てるので、幅や精度をソースに直書き
 せず計算できます:
@@ -1001,6 +1012,8 @@ inspect(["a", "bb"].map(|s| "{s:>{w}}"))  # => ['     a', '    bb']
 * `Nil` → `nil`
 * `Bool` → `true`または`false`
 * `Long` → 10進表記
+* `Float` → 往復できる最短の10進表記。`Long`と区別できるよう必ず`.`か
+  指数を含む: `1.0`, `0.5`, `-2.5`, `1e-05`, `nan`, `inf`, `-inf`
 * `Array` → `[v1, v2, ...]`（`inspect`形式。内部の文字列は引用符付き）
 * `Object` → `{key: val, mut key2: val2, ...}`（挿入順）
 * `Function` → `[function]`
@@ -1182,11 +1195,11 @@ Objectに写し、その結果は何のインスタンスでもありません:
 
     class P { new() { self.a = 1 }  m() { 2 } }
     let p = P()
-    p.keys()                  # ['class', 'a']
-    p.size()                  # 2
+    p.keys()                  # ['a']
+    p.size()                  # 1
     p.to_string()             # 'P {mut a: 1}'（classは接頭辞に持ち上げ）
-    JSON.stringify(p)         # '{"class":"P","a":1}'
-    {...p}.keys()             # ['class', 'a'] — 普通のObject、メソッド無し
+    JSON.stringify(p)         # '{"a":1}'
+    {...p}.keys()             # ['a'] — 普通のObject、メソッド無し
 
 `has(key)`だけは例外で、*lookup*の問いに答えるためクラスメソッドも
 見えます。ただしdictの組み込みメソッドは見えません:
@@ -1209,7 +1222,12 @@ fallbackを返し、`p['m']`は`KeyError`を投げます。メソッド名への
     obj.remove(key)      # `key`の項目を削除（任意のハッシュ可能キー）。なければno-op
 
 `mut`指定なしで既存プロパティに代入すると
-`immutable property 'key' at L:C`になります。
+`immutable property 'key' at L:C`になります。実行時に`obj.key = v`
+（や`obj[k] = v`・`get_or_put`・`to_object`・`group_by`）で作ったプロパティは
+デフォルトでmutableです。これは`{...spread}`のマージ（「取り込んだ
+エントリは可変」）と同じ規則で、デフォルトでimmutableなのはObject
+*リテラル*自身のキー（`{key: v}`。`mut key: v`でリテラルのキーを
+mutableにできます。上の「構築」を参照）だけです。
 
 ドット形式の名前（`obj.key`）は識別子（`[A-Za-z_][A-Za-z0-9_]*`）で、
 shape経由の高速パスを通ります。識別子でないキーは下記の添字アクセス
@@ -1278,6 +1296,16 @@ Stringキーはshapeベースの`obj.foo`パスと統合されます — どち�
     inspect(o.x)                       # 1
     o.y = 2
     inspect(o['y'])                    # 2
+
+実行時に作ったキーはmutableなので、もう一度書き込めます（同名の
+Objectの*リテラル*キーは、明示的な`mut`がなければimmutableのままです）:
+
+    mut tally = {}
+    for w in ['a', 'b', 'a'] {
+      tally[w] ??= 0    # 最初に見たとき0を入れる（§7、nilコアレス代入）
+      tally[w] += 1
+    }
+    inspect(tally)                      # {mut a: 2, mut b: 1}
 
 既存スロットはどちらの書き込み形式でも`mut`フラグを尊重し、
 immutableなスロットへの`obj[k] = v`は`ImmutableError`を投げます。
@@ -1525,7 +1553,8 @@ variable 'self'`になります。送出されるのは本体に入った時点�
 
 セマンティクス:
 
-* 宣言は`Car`を`new`プロパティのみを持つ`Object`に束縛します。
+* 宣言は`Car`を`new`を持つクラスオブジェクト（`type_of(Car)`は
+  `'Class'`）に束縛します。
 * `Car.new(...)`はコンストラクタが設定したフィールドを持つ新しい
   `Object`を返します。コンストラクタ本体の実行中は`self`がその新
   オブジェクトに束縛されます。クラス名もメソッドもインスタンスには
@@ -1544,8 +1573,7 @@ variable 'self'`になります。送出されるのは本体に入った時点�
   ただの`Object`で、こちらは呼び出し不可のままです。fieldに名前を
   付けただけでdictを呼び出し可能にはできません。
 * コンストラクタ/メソッド内で`self.x = y`で作られるフィールドは
-  **デフォルトで可変**です（通常の`o.x = y`は不変プロパティを作る
-  のと異なります）。メソッドが頻繁にインスタンス状態を書き換える
+  **デフォルトで可変**です。メソッドが頻繁にインスタンス状態を書き換える
   クラスの慣習に合わせています。
 * `new`メソッドは省略可能で、省略時は無引数・フィールドを1つも
   持たないインスタンスを返します。
@@ -1757,6 +1785,7 @@ variable 'self'`になります。送出されるのは本体に入った時点�
       class Circle {
         new (r)      { self.radius = r }
         get area ()  { self.radius * self.radius * 3.14 }
+        get name ()  { "circle" }
       }
       let c = Circle.new(4)
       inspect(c.area)          # 50.24  — fieldのように読める
@@ -1986,10 +2015,10 @@ LHSが対応する特殊メソッドを持つ`Object`である必要がありま
 すべてのclassインスタンスは、引数なしの`parameters()`メソッドを
 自動的に得ます。これは自身のフィールドから到達可能なすべてのclass
 インスタンス値をフラットな`Array`として返します。ウォーカーは
-`Array`の要素と、`class:`タグを持たない通常の`Object`の値を
+`Array`の要素と、classインスタンスではない通常の`Object`の値を
 再帰的に降下し、出会ったclassインスタンスはleafとして収集して
-それ以上は降下しません。スキップされるもの: `class:`タグそのもの、
-および名前が`_`で始まるフィールド (private/キャッシュ用とみなす)。
+それ以上は降下しません。スキップされるもの: 名前が`_`で始まる
+フィールド (private/キャッシュ用とみなす)。
 反復順序は挿入順で、両バックエンドで揃います。
 
     class Value { new(x) { self.x = x } }
@@ -2008,7 +2037,7 @@ LHSが対応する特殊メソッドを持つ`Object`である必要がありま
 
 classインスタンスはleaf扱いで、ウォーカーはそこで停止し、内部の
 フィールドへは降下しません。列挙にとって透過的にしたい中間グルーピン
-グには通常のObject dict (`class:`タグなし) を使い、実際にパラメータ
+グには通常のObject dict (classインスタンスではないもの) を使い、実際にパラメータ
 として扱いたい葉だけをclassインスタンスにする、というのが基本パター
 ンです。
 
@@ -2224,9 +2253,9 @@ Tensor、`__add__`等でoverloadしたuser numeric class) 専用ですが、
 関数は第一級の値で、再利用可能なコードを定義する唯一の方法です。
 リテラルは他の値と同じように束縛でき (`name = fn (...) { ... }`)、
 宣言形の`fn name(...) { ... }`も使えます。
-[ジェネレータ](#ジェネレータ-yield)になれるのも
-[多重ディスパッチ](#20-多重ディスパッチ)に参加できるのも宣言形だけで、
-`fn.name`にソース上の名前が付くのも宣言形だけです。
+[多重ディスパッチ](#20-多重ディスパッチ)に参加できるのは宣言形だけで、
+`fn.name`にソース上の名前が付くのも宣言形だけです。`fn`リテラルは
+[ジェネレータ](#ジェネレータ-yield)になれますが、`|...|`ラムダはなれません。
 
 ### ラムダ構文 `|x| ...`
 
@@ -2268,7 +2297,7 @@ Tensor、`__add__`等でoverloadしたuser numeric class) 専用ですが、
 ### パラメータ
 
 * `mut`付きパラメータは関数本体内で束縛が可変になります。なしでは
-  再代入で`immutable variable`になります。
+  再代入で`ImmutableError: cannot reassign 'x' (declared without 'mut')`になります。
 * オプショナル型注釈は関数エントリで検査されます（§14）。
 * パラメータは`name = expr`の形でデフォルト値を持てます。呼び出し側
   が引数を省略した場合、デフォルト式は**呼び出しごとに**、関数の
@@ -2377,9 +2406,10 @@ kwargsをObjectとして受け取ります。位置はパラメータリスト�
 値型のメソッドは位置で受け取ります（「組み込みメソッドは位置引数で
 バインドする」を参照）。
 
-コンパイル時エラー（例: `positional argument follows keyword
-argument`）はどのエンジンでもコンパイル段階で検出され、
-`try/catch`ではキャッチできません。
+`positional argument follows keyword argument`は呼び出しの実行時に
+発生し、ロード時には検出されないので、他の実行時エラーと同じく
+`try/catch`でキャッチできます。ロード時に走り`try`でキャッチできない
+検査は§15の「コンパイル時エラー」にまとめてあります。
 
 ### 戻り値
 
@@ -2406,6 +2436,11 @@ fn h(k) { fn }
 inspect(g(0) == g)   # => true
 inspect(h(0) == h)   # => false
 ```
+
+関数本体の外で`fn`を読むと、読んだ箇所で`NameError: undefined variable
+'fn'`になります。`fn`はどんな書き方でも宣言できず（`fn (fn) {}`、
+`for fn in xs {}`）、`SyntaxError`（`'fn' is a reserved name and cannot
+be declared`）になります。
 
 ### メソッド: `self`
 
@@ -3383,7 +3418,7 @@ Union注釈は単一型注釈が使える場所ならどこでも使えます �
 ません (後者はパースエラー)。
 
 Union内の`Object`は **クラスインスタンスのcatch-all**
-(`class:`タグを持つ値) であって、すべての値のcatch-allではあり
+(クラスが作った値) であって、すべての値のcatch-allではあり
 ません。プリミティブはそこを素通りします。`Long | Object`はLongと
 任意のクラスインスタンスを受け取りますが、Stringは依然fail。
 全部受けたい場合は`Any`を使ってください。
@@ -4456,6 +4491,8 @@ unionとしての順位で、`Object`より下です。
 | `SyntaxError` | AST loweringで検出される構造エラー：`**rest`が末尾でない、`*`区切りの重複、デフォルト値後に非デフォルト、`let`付きcompound、ループ外の`break` / `continue`等。該当functionの宣言評価時に発火 | はい |
 | `ShadowError` | §6のシャドウ解析でキャプチャ済み外側名と衝突する束縛を検出。ユーザの`try`が走る前に発火 | **いいえ**（eval前のanalyzer） |
 | `IOError` | `FS` / `File`等stdlibファイル操作の失敗（パス不在・権限・クローズ済みハンドル）；`Tensor.from_csv`失敗 | はい |
+| `ImportError` | `import`の循環（AがBをimportし、BがAをimport）。プログラムのロード中に位置なしで報告されるので、どの`try`も観測できない（§24） | **いいえ**（ロード時） |
+| `EffectError` | `perform`がどのhandlerにも届かない、またはordinaryなコードからfull-controlのhandler節に届く（§16）。performの位置を`e.line` / `e.col`に持つ | はい |
 | `ProcessError` | `Proc.run`の起動失敗（実行ファイルが存在しない等）、または`check: true`での非0終了 / シグナル死 | はい |
 | `SendError` | Sendableでない値をisolate境界（`Isolate.spawn` / `tx.send`）で渡した — ネイティブハンドル、`Tensor`、`mut`を捕獲したクロージャ、値として取り出した標準ライブラリの関数、`@packable`のクラス、循環参照 | はい |
 | `ChannelError` | 全endpointが消えた（closed）channelへの`tx.send` | はい |
@@ -5175,7 +5212,7 @@ matcher一族`assert_true` / `assert_eq`等）は
 | `s.rsplit_once(sep: StringLike) -> Tuple \| Nil` | **最後**の`sep`の前後2つに分割。なければ`nil` |
 | `s.split_iter(sep: StringLike) -> Iterator<StringView>` | `split`の遅延版。巨大入力で`.take(n)`する場合の早期終了に |
 | `s.lines() -> Array<StringView>`                | `\n` / `\r\n` / `\r`で分割。終端記号は落とし、末尾の終端は空要素を生まないので`"a\nb\n".lines()`は`["a", "b"]` — `File.lines()`と同じ行境界。`split`と同じくeager |
-| `s.replace(pat: String \| Regex, repl: String \| Function) -> String` | **全**出現を置換。連鎖可。`pat`が`String` → リテラル置換、`Regex`（`re'…'`含む）→ 正規表現置換で`repl`は`$1` / `$<name>`テンプレートか`fn (Match) -> String`。UFCSで呼ぶstdlibヘルパ — `s.replace(p, r)`は`replace(s, p, r)`。 |
+| `s.replace(pat: String \| Regex, repl: String \| Function) -> String` | **全**出現を置換。連鎖可。`pat`が`String` → リテラル置換（このとき`repl`は`String`のみで、`Function`は`TypeError`）、`Regex`（`re'…'`含む）→ 正規表現置換で`repl`は`$1` / `$<name>`テンプレートか`fn (Match) -> String`。UFCSで呼ぶstdlibヘルパ — `s.replace(p, r)`は`replace(s, p, r)`。 |
 | `s.contains(sub: StringLike) -> Bool`           | `sub`がどこかに現れるか。空の`sub`は`true` |
 | `s.count(sub: StringLike) -> Long`              | `sub`の重ならない出現数。`"aaaa".count("aa")`は`2`。空の`sub`は`0`（`split("")`がレシーバ全体を返すのに合わせた）。リテラルのみ — パターンはコンパイル済み`Regex`側が数える |
 | `s.starts_with(prefix: StringLike) -> Bool`     | `prefix`で始まるか                   |
@@ -5199,7 +5236,7 @@ matcher一族`assert_true` / `assert_eq`等）は
 | `s.words() -> Iterator<Tuple>`                  | **UAX #29の単語境界**でセグメントに分け、`(text, is_word)`のペアを1つずつyield。境界と境界の間は全部1セグメントになるので、空白や句読点の並びもセグメントとして出てくる。`is_word`はそのセグメントに英数字が1文字でも含まれていれば`true`。単語だけ欲しいときは`s.words().filter(\|(_, w)\| w).map(\|(t, _)\| t)`のようにfilterで絞り込む |
 | `s.sentences() -> Iterator<StringView>`         | **UAX #29の文境界**でセグメントに分けて1つずつyield。1ステップが1文になり、末尾の空白は直前の文にそのままくっつく |
 | `s.bytes() -> Iterator<Long>`                   | レシーバの**生UTF-8バイト**を`Long`（`0`–`255`）として1バイトずつyield — `code_points`と違いデコードしない。エンコーディングそのものが欲しい場面向け（ハッシュ計算、tokenizerの語彙、ワイヤーフォーマット等） |
-| `String.from_code_point(cp: Long) -> String`    | `code_points()`の逆演算: Unicodeスカラー値1つを受け取り1文字の`String`を返す。`cp`が`U+10FFFF`超過またはサロゲート範囲`U+D800`–`U+DFFF`の場合`ValueError`（`\u`/`\U`リテラルエスケープ §4.1がパース時に拒否するのと同じ境界） |
+| `String.from_code_point(cp: Long) -> String`    | `code_points()`の逆演算: Unicodeスカラー値1つを受け取り1文字の`String`を返す。`cp`が`U+10FFFF`超過またはサロゲート範囲`U+D800`–`U+DFFF`の場合`ValueError`（`\u`/`\U`リテラルエスケープ（§2、リテラル）がパース時に拒否するのと同じ境界） |
 | `String.from_code_points(cps: Array) -> String` | `code_points()`の複数形の逆演算: Unicodeスカラー値の`Array`を受け取り`String`を返す。各要素は`from_code_point`と同じゲートを通るので`String.from_code_points([cp]) == String.from_code_point(cp)`。要素が`Long`でなければ`TypeError`、範囲外なら`ValueError` |
 | `String.from_bytes(bytes: Array) -> String`     | `bytes()`の逆演算: 生バイト値（`0`–`255`）の`Array`を受け取り`String`を返す。**UTF-8の検証は行わず**、不正入力でも例外を投げない: culebraの`String`は不正なUTF-8を許容する（`iter()`と同様）ため、不正なバイト列を含むあらゆる`String`について`String.from_bytes(s.bytes().collect()) == s`が成立する。要素が`Long`でなければ`TypeError`、範囲外（`0`–`255`の外）なら`ValueError` |
 | `String.pack(type: String \| Class, values: Array, endian: String = "little") -> String` | `values`の各要素を`type`の固定幅の値1つ（`@packable`クラスならレコード1件）として、順に並べたバイト列。二進のファイル形式や通信で使うバイト列を作る。下の[バイナリデータ](#バイナリデータ-stringpack--stringunpack)を参照 |
@@ -5656,11 +5693,11 @@ Iterableラッパなしで動作します。
 |---|---|---|
 | `Array` | 要素 | インデックス順 (0..size-1) |
 | `Object` | `(key, value)`タプル | 挿入順（`o.keys()`と一致） |
-| `String` | UTF-8スカラ1つ分の`String` | バイト順 |
+| `String` | UTF-8スカラ1つ分の`StringView` | バイト順 |
 
 `String`の反復はUTF-8バッファを遅延walkするため、100 MBの文字列
 を数ステップで`break`しても残りはメモリ化されません。yieldされる
-値は1-scalarの`String`で、整数のcode pointではありません。
+値は1-scalarの`StringView`で、整数のcode pointではありません。
 `.map`で必要な形に変換してください。
 
 `Object`の反復は`(key, value)`ペアをyieldします。なので
@@ -5854,7 +5891,8 @@ iterator chainで不可避）。eagerに実体化して最大スループット�
 ## 19. コア組み込み関数
 
 以下の関数は言語本体の一部で、すべての実行環境にグローバル名として
-バインドされ、置き換えはできません。第1グループ（`to_long`
+バインドされます。裸の`type_of = 1`は`ImmutableError`ですが、プログラム自身の
+その名前の宣言（`fn type_of(x) {...}`、`let range = 5`）が置き換えます。第1グループ（`to_long`
 / `to_float` / `to_string`、`type_of`）は言語セマンティクス（ソース位置に
 紐付くエラー、型の内省、表示規則）に結びついています。第2グループ
 （`range`、`iota`、`grid`）は標準的な整数列ファクトリで、`range`
@@ -5866,8 +5904,8 @@ iterator chainで不可避）。eagerに実体化して最大スループット�
 — 全referenceは
 [`docs/stdlib.ja.md`](stdlib.ja.md) を参照。`Math` / `IO` / `Sys`
 といったネームスペース付きの標準ライブラリも同じく`stdlib.ja.md`を
-参照。出力プリミティブ`inspect` / `print` / `println`はCLIが追加する
-グローバルです（§22）。
+参照。出力プリミティブ`inspect` / `print` / `println`は`IO`の関数の
+別名のグローバルです（§22）。
 
 これらのグローバルはすべて **first-class value** です。変数に束縛したり
 高階関数へ渡したりすると、両バックエンドでクロージャと同じように振る舞います。
@@ -6192,7 +6230,7 @@ inspect(ps[1].has_default)  # => true
 
 ## 20. 多重ディスパッチ
 
-トップレベルで`fn name(params) body`形式の名前付き関数宣言を
+同じスコープに`fn name(params) body`形式の名前付き関数宣言を
 複数書き、パラメータの型注釈（§14）を変えると、それらは1つの
 **マルチメソッド** を構成します。呼び出し側では引数の動的型に基づき、
 最も特異的に一致するメソッドが選ばれます。
@@ -6208,7 +6246,7 @@ area("hello")  # → 5      (String 版)
 ```
 
 無名関数式`let f = fn(...) {...}`の挙動は変わりません。
-マルチメソッドはあくまで **トップレベルの`fn name(...)`宣言** に
+マルチメソッドはあくまで **`fn name(...)`宣言** に
 だけ作用します。
 
 ある名前のオーバーロードは、それを宣言したスコープに属します。`if`や
@@ -6312,9 +6350,9 @@ shape_area(Square.new(4))  # → 16
 shape_area(Circle.new(2))  # → 12.56
 ```
 
-これはクラスシュガーが各インスタンスに付与する`class:` String
-プロパティを利用しています（§10）。`Object`注釈はこれより緩く、
-任意のクラスインスタンスにマッチします。
+ディスパッチはインスタンスを作ったクラスを読みます（§14）。`class`キーを
+持つだけのObjectはインスタンスではありません。`Object`注釈はこれより
+緩く、任意のクラスインスタンスにマッチします。
 
 ### 同名・同シグネチャの再宣言
 
@@ -6356,17 +6394,15 @@ let b = make("B")
 
 ### 制約
 
-* **トップレベル / フリー関数のみ.** ブロック内ネスト宣言や
-  クラスメソッドはこの仕組みの対象外です。
+* **同じスコープの宣言.** オーバーロードは、同じスコープ（どのスコープでも
+  よい。§6）にある`fn name(...)`宣言と、クラスメソッド（前述）で作られます。
 * **エラー.** 一致するメソッドが無い場合は`no matching method`、
   特異度が完全に並んだ場合は`ambiguous dispatch`を投げます。
-  どちらもランタイム例外ではなく即座にプログラムを中断します
-  （§15、§24）。
+  どちらもキャッチできる`DispatchError`です（§15）。
 
 ### キーワード引数とマルチメソッド
 
-ディスパッチは**位置引数**の型だけで行われます（Julia風の
-kwsorter）。キーワード引数や`**` splatはディスパッチには
+ディスパッチは**位置引数**の型だけで行われます。キーワード引数や`**` splatはディスパッチには
 参加せず、選ばれたメソッドのシグネチャに対して通常のkwargsルール
 （§11）でbindされます。
 
@@ -6857,13 +6893,14 @@ CLIバイナリはユーザコード実行前に、以下3つのグローバル�
 * 多倍長整数（bignum）はなし。`Long`のオーバーフローはラップする。
 * シングルクォート`'...'`はRaw（エスケープなし、補間なし、
   アポストロフィを含められない）。`"..."`側のエスケープは限定的で、
-  `\n \r \t \\ \" \{`のみ（`{{` / `}}`形式は未サポート）。
+  `\n \r \t \\ \" \{`と`\xHH`・`\uXXXX`・`\UXXXXXXXX`のみ（§2。`{{` /
+  `}}`形式は未サポート）。
 * `String`はバイト単位のインデックス（`size` / `slice`はバイト数）。
   Unicode処理は`code_points()` / `graphemes()`イテレータを使う。
 * `Array` / `Object` / `Tuple` / `Set`の等価比較は構造的（値）比較。
   参照同一性で比較するのは`Function` / `Tensor`のみ。
-* 型注釈は関数境界と注釈付き代入でのみ検査され、言語を静的にする
-  ものではない。
+* 型注釈は関数境界・注釈付き代入・クラスの宣言フィールドへの書き込み
+  （§10、§14）でのみ検査され、言語を静的にするものではない。
 * パターンマッチに網羅性検査はない。
 * ドット形式のプロパティ名は識別子のみ（`obj.foo`）。非Stringの
   ハッシュ可能キー（`Long`, `Float`, `Bool`, `Nil`, `Tuple`, enum
@@ -6951,7 +6988,7 @@ AOTバンドリングとtree-shaking解析が成り立つ前提になります�
 ### export について
 
 * `export`文が無いモジュールは空のObjectを返します。`import x
-  from "..."`は成功し、存在しないメンバ参照は通常のObject規則
+  from '...'`は成功し、存在しないメンバ参照は通常のObject規則
   (§10) に従って`nil`を返します。side-effectのみのモジュールに
   有用。
 * 1ファイルに複数の`export { ... }`を書くとマージされます。
@@ -6976,9 +7013,11 @@ AOTバンドリングとtree-shaking解析が成り立つ前提になります�
 ありません — `mod.unknown`は通常のObject規則 §10と同じく
 `nil`を返します。）
 
-全エラーは`kind` / `message` / `line` / `col`を持ち、両backend
-で同一に発生します。`ImportError` (循環依存) は §15のカタログに
-追加されたcatchable kindです。
+これらのエラーは両backendで同一に発生します。モジュール解決
+（ファイルが無い、循環import）はプログラムのロード中、コードが走る前に
+`line` / `col`なしで報告されます。importはトップレベルにしか書けず
+`try`で囲めないので、この2つはキャッチできません。`ImportError`
+（循環依存）は§15のほかのkindと並べて載せています。
 
 ### 両 backend で同一動作
 
