@@ -1727,11 +1727,12 @@ let _kauai_module = fn () {
 
   # The words after each of `keys` in `words` (past the first `skip`), up to
   # the next key. A key with nothing after it is a flag: an empty list.
-  fn options(words, skip, keys) {
+  fn options(words, skip, keys, line) {
     mut out = {}
     mut key = nil
     for w in words.slice(skip, words.size()) {
       if keys.contains(w) {
+        fail(line, "`{w}` is said once a line") if out.has(w)
         key = w
         out[w] = []
       } else if key != nil {
@@ -2599,7 +2600,7 @@ let _kauai_module = fn () {
       }
     }
     fail(line, "a voice plays on pulse, pulse2, triangle, saw or an external instrument") if w.size() < 3
-    let o = options(w, external ? 4 : 3, VOICE_KEYS)
+    let o = options(w, external ? 4 : 3, VOICE_KEYS, line)
     let env = env_of(o, line)
     let vol = o.get("vol", nil) ?? fail(line, "a voice needs its vol: vol 20")
     fail(line, "vol takes a number: vol 20") if vol.size() != 1
@@ -2684,7 +2685,7 @@ let _kauai_module = fn () {
           let dn = name_at(w, 1, item.line, "a drum")
           let plain = w.filter(|x| !x.contains("="))
           let sound = name_at(plain, 3, item.line, "an external drum's sound")
-          let o = options(plain, 4, ["len", "vol", "env", "choke"])
+          let o = options(plain, 4, ["len", "vol", "env", "choke"], item.line)
           fail(item.line, "an external drum plays its sound through: no len or env") if o.has("len") || o.has("env")
           let choke = o.get("choke", nil)
           fail(item.line, "a choke group is one name: choke Hats") if choke != nil && (choke.size() != 1 || !is_name(choke[0]))
@@ -2702,7 +2703,7 @@ let _kauai_module = fn () {
           let dn = name_at(w, 1, item.line, "a drum")
           fail(item.line, "a drum plays on noise, or an external sound") if w.size() < 4 || w[2] != "noise"
           fail(item.line, "a noise drum sounds one at a time already; choke groups external drums") if w.contains("choke")
-          let o = options(w, 4, ["len", "vol", "env"])
+          let o = options(w, 4, ["len", "vol", "env"], item.line)
           let (f0, f1) = halves(w[3], "->") ?? (w[3], w[3])
           let env = env_of(o, item.line)
           fail(item.line, "a noise drum needs its len and its vol: len 1  vol 20") if !o.has("len") || !o.has("vol")
@@ -2719,7 +2720,7 @@ let _kauai_module = fn () {
         },
         verb == "echoes" => {
           fail(item.line, "`V echoes SOURCE late N/D level P%`") if w.size() < 3
-          let o = options(w, 3, ["late", "level"])
+          let o = options(w, 3, ["late", "level"], item.line)
           fail(item.line, "an echo says how late and how loud: late 3/16  level 70%") if o.get("late", []).size() != 1 || o.get("level", []).size() != 1
           fail(item.line, "no voice {w[0]} to echo") if !voices.has(w[0])
           voices[w[0]].echo = {
@@ -3101,10 +3102,7 @@ let _kauai_module = fn () {
         _ => {
           let sname = name_at(w, 0, it.line, "a section to play")
           let keys = ["with", "ending", "in"]
-          let o = options(w, 1, keys)
-          for key in keys {
-            fail(it.line, "`{key}` is said once a line") if w.filter(|t| t == key).size() > 1
-          }
+          let o = options(w, 1, keys, it.line)
           fail(it.line, "`xN` is said once a line") if w.filter(|t| t.starts_with("x") && t.size() > 1).size() > 1
           let times = w.find(|t| t.starts_with("x") && t.size() > 1)
           song.plays.push({
@@ -3611,6 +3609,7 @@ let _kauai_module = fn () {
         fail(b.with_line, "`with {w}` needs a voice that {w == "echo" ? "echoes" : "harmonizes"} the melody")
       }
     }
+    mut grooves_checked = {}
     for bi, b in bars.enumerate() {
       # A bar plays the groove its section names; else the groove of the
       # section's own name; else the song's; else no accompaniment.
@@ -3621,6 +3620,18 @@ let _kauai_module = fn () {
         s.grooves.has(b.groove) => s.grooves[b.groove],
         song.get("groove", nil) != nil => s.grooves.get(song.groove, nil) ?? fail(song.line, "no groove {song.groove}"),
         _ => {rows: {}, first: {}, last: {}},
+      }
+      # A row for something the band does not have would never be read; say so
+      # instead of leaving it in the file doing nothing.
+      let gkey = g.has("name") ? g.name : ""
+      if !grooves_checked.has(gkey) {
+        grooves_checked[gkey] = true
+        for table in [g.rows, g.first, g.last] {
+          for rname in table.keys() {
+            let own = table[rname]
+            fail(own.line, "the band {band.name} has no drum or voice {rname} to play this row") if !band.drums.has(rname) && !band.voices.has(rname)
+          }
+        }
       }
       # In a bar with hits the band plays them instead of its grooves: the bass
       # the chord's bass note, the chord voice the whole chord, and the drums

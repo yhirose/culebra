@@ -189,6 +189,18 @@ let band_error = |line| error_of(lines(['band B {', line, '}', 'song S {', '  te
 assert_eq(band_error('  voice V pulse plays melody'), ("KauaiError", "line 2: a voice needs its vol: vol 20"))
 assert_eq(band_error('  voice V noise plays melody vol 10'),
   ("KauaiError", "line 2: a voice plays on pulse, pulse2, triangle or saw, or an external instrument; not noise"))
+# A key said twice would silently drop the first; a groove row the band has no
+# drum or voice for would never be read.
+assert_eq(band_error('  voice V pulse plays melody plays roots in E2..D#3 vol 10'),
+  ("KauaiError", "line 2: `plays` is said once a line"))
+assert_eq(band_error('  voice V pulse plays melody vol 10 vol 20'),
+  ("KauaiError", "line 2: `vol` is said once a line"))
+let groove_row_error = |row| error_of(lines([DUO, 'groove Extra {', row, '}',
+  'song S {', '  tempo 120', '  band Duo', '  groove Extra', '  melody in C5..B5', '  Verse', '}',
+  'section Verse {', '  C  c1', '}']))
+assert_eq(groove_row_error('  Snare  x...'),
+  ("KauaiError", "line 11: the band Duo has no drum or voice Snare to play this row"))
+assert_eq(groove_row_error('  Kick  x...'), nil)
 let octave_error = |how| band_error("  voice V pulse plays melody {how} vol 10")
 let OCTAVES = "line 2: a voice plays the melody as written, an `octave up` or `down`, or `2 octaves up` or `down`"
 assert_eq(octave_error('octave sideways'), ("KauaiError", "{OCTAVES}: octave sideways"))

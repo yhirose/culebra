@@ -64,6 +64,8 @@ Read it this way:
   range `C5..B5`. A comma moves it down.
 - **The groove is the accompaniment.** `1` is the chord's root, `5` its fifth,
   and `-` holds the last note. The groove plays under every bar of the song.
+  A row names a drum or a voice of the band, and a name the band does not
+  have is an error.
 - **`Verse x2`** plays the section twice.
 
 ## Marks, dynamics and tempo
