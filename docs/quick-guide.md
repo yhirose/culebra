@@ -34,6 +34,7 @@ Contents
 culebra prog.cul                 # the bytecode VM (default)
 culebra --jit prog.cul           # LLVM ORC JIT — identical output
 culebra build prog.cul -o prog   # AOT, self-contained binary
+culebra play song.kau            # play a Kauai song (`culebra docs tooling`)
 culebra test                     # run every test_*.cul below the cwd
 culebra fmt -i .                 # format in place (no style options)
 culebra lint .                   # static checks; exit 1 warn, 2 error

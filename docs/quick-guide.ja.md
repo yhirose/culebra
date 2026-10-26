@@ -33,6 +33,7 @@ Culebraクイックガイド
 culebra prog.cul                 # バイトコードVM (既定)
 culebra --jit prog.cul           # LLVM ORC JIT — 出力は同一
 culebra build prog.cul -o prog   # AOT、自己完結バイナリ
+culebra play song.kau            # Kauaiの曲を再生 (`culebra docs tooling`)
 culebra test                     # cwd以下のtest_*.culを全実行
 culebra fmt -i .                 # その場で整形 (スタイル指定は無し)
 culebra lint .                   # 静的検査; 警告1 / エラー2でexit
