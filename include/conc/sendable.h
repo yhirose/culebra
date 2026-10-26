@@ -1344,10 +1344,11 @@ inline void _jit_merged_join(JitValue* __ret, JitClosure*, int8_t self_tag, int6
     } catch (culebra::CulebraError& e) {
       if (!first_err && !have_thrown && !interrupted) first_err = e;
     } catch (CulebraException& e) {
-      // We are the matching catch, so we owe the throw's balancing release
-      // (a compiled `catch` would do it). Keep the first value's origin ref for
-      // the re-raise below; drop any later ones fully.
-      culebra_runtime_consume_throw(e);
+      // We are the matching catch. The first value's reference goes to the
+      // re-raise below, which takes it over (culebra_runtime_throw hands the
+      // carrier the payload's +1): the throw is over, so only the flag is
+      // cleared here. Any later value is let go fully.
+      culebra::current_runtime().is_throw = 0;
       if (!first_err && !have_thrown && !interrupted) {
         have_thrown = true;
         tt = e.tag;

@@ -199,4 +199,46 @@ fn join_leaked() {
 }
 assert_eq(join_leaked(), 0)
 
+# A producer that throws an Object: join() re-raises it whole. It used to hand
+# the value back with its carrier's reference already let go, so the Object's
+# first field read as nil (a kind of "ValueError" came back as nil) and the
+# next spawn died on the freed value.
+let mo = Channel.fan_in([2], fn (w, tx) {
+  throw {kind: "ValueError", message: "w{w}"}
+})
+let thrown = try {
+  mo.join()
+  nil
+} catch e {
+  e
+}
+assert_eq(thrown.kind, "ValueError")
+assert_eq(thrown.message, "w2")
+assert_eq(Isolate.spawn(fn () { 40 + 2 }).join(), 42)
+
+# With several producers throwing, join() re-raises the first and lets the
+# others go: what it did not keep is released, not leaked.
+fn join_threw() {
+  let m = Channel.fan_in([1, 2, 3], fn (w, tx) {
+    throw {kind: "ValueError", message: "w{w}"}
+  })
+  let r = try {
+    m.join()
+    nil
+  } catch e {
+    e
+  }
+  r.kind
+}
+fn join_threw_leaked() {
+  join_threw()
+  let before = GC.stat().rc_objects
+  for _ in 0..5 {
+    join_threw()
+  }
+  GC.stat().rc_objects - before
+}
+assert_eq(join_threw(), "ValueError")
+assert_eq(join_threw_leaked(), 0)
+
 inspect("test_fanin: all assertions passed")
