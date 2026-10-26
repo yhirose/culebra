@@ -200,6 +200,14 @@ assert_eq(band_error('  voice V pulse plays melody vol 150'),
 assert_eq(band_error('  drum K noise 120 len 1 vol 101'),
   ("KauaiError", "line 2: a drum's vol is 0 to 100, as Audio.tone's: vol 20"))
 assert_eq(band_error('  voice V pulse plays melody vol 100'), nil)
+# An echo's level is a whole percent: a bare 70 would have meant 70 times the
+# voice's vol, and 70.5% or 0.7 failed with a bare TypeError.
+let level_error = |lvl| error_of(lines(['band B {', '  voice Lead pulse plays melody vol 20', '  voice Echo pulse2 vol 10',
+  "  Echo echoes Lead late 1/8 level {lvl}", '}', 'song S {', '  tempo 100', '  band B', '}']))
+for lvl in ['70', '0.7', '70.5%', 'x', '%'] {
+  assert_eq(level_error(lvl), ("KauaiError", "line 4: a level is a whole percent: level 70%"))
+}
+assert_eq(level_error('70%'), nil)
 let groove_row_error =|row| error_of(lines([DUO, 'groove Extra {', row, '}',
   'song S {', '  tempo 120', '  band Duo', '  groove Extra', '  melody in C5..B5', '  Verse', '}',
   'section Verse {', '  C  c1', '}']))

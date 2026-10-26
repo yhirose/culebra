@@ -96,9 +96,11 @@ let _kauai_module = fn () {
     (o.get(key, nil) ?? [dflt])[0]
   }
 
-  # "46%" is 0.46, "34" is 34.
-  fn amount(s) {
-    s.ends_with("%") ? to_long(s.strip_suffix("%")) / 100.0 : to_long(s)
+  # "46%" is 0.46; an echo's level is a whole percent and nothing else.
+  fn amount(s, line) {
+    let digits = s.strip_suffix("%")
+    fail(line, "a level is a whole percent: level 70%") if digits == s || digits.empty() || !digits.is_digit()
+    to_long(digits) / 100.0
   }
 
   # The number `word` is, for option `what`.
@@ -1087,7 +1089,7 @@ let _kauai_module = fn () {
           voices[w[0]].echo = {
             of: w[2],
             late: whole_fraction(o.late[0], item.line),
-            level: amount(o.level[0]),
+            level: amount(o.level[0], item.line),
           }
         },
         verb == "harmonizes" => {
