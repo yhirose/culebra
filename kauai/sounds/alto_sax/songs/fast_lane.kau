@@ -6,7 +6,7 @@ about {
 // G minor, whose pitches the recorded alto has many notes of (the D7's F#
 // is left to the band).
 band Turbo {
-  voice Alto   external Alto  plays melody                                         vol 60
+  voice Alto   external AltoSax  plays melody                                         vol 60
   voice Bass   saw            plays roots in G1..F#2                               vol 28  env 0 3 2  gap 1
   voice Gtr    pulse2         plays chords from G3  plays part Unison  duty 1/4    vol 9   env 0 3 4  gap 1
   voice Brass  pulse          plays chords rootless from Bb3           duty 1/2    vol 8   env 1 4 6  gap 1

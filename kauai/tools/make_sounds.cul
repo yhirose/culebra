@@ -2,7 +2,7 @@
 # files and an index of them (make_sounds_lib.cul says what is in it).
 #
 #   culebra kauai/tools/make_sounds.cul --sounds kauai/sounds/soprano_sax \
-#     --out assets --name sax --use run.kau=run_sax.kau --ogg --pack \
+#     --out assets --name soprano_sax --use run.kau=run_soprano_sax.kau --ogg --pack \
 #     assets/cruise.kau assets/sprint.kau
 #
 # The module is a .cul file, or a folder whose main.cul it is, as for

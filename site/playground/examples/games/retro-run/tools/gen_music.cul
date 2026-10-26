@@ -1,7 +1,7 @@
 # Make the laps' saxophone phrases again: every phrase cruise.kau asks the
-# soprano for, with the band of run_sax.kau in place of run.kau's
-# (assets/sax.bin and assets/sax.json), and every one sprint.kau asks the alto
-# for, with run_alto.kau's (assets/alto.bin and assets/alto.json), as
+# soprano for, with the band of run_soprano_sax.kau in place of run.kau's
+# (assets/soprano_sax.bin and assets/soprano_sax.json), and every one sprint.kau asks the alto
+# for, with run_alto_sax.kau's (assets/alto_sax.bin and assets/alto_sax.json), as
 # sax_tunes.cul's LEADS says. kauai/tools/make_sounds.cul makes them with
 # kauai/sounds/soprano_sax and alto_sax; ffmpeg encodes them as Ogg Vorbis.
 # Run it after editing a lap's song, or the game plays that lap's lead on the

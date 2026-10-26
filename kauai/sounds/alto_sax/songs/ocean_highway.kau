@@ -8,7 +8,7 @@ about {
 // the tune keeps to Eb major's, and the last chorus, in F, to F major's
 // without its E.
 band Highway {
-  voice Alto   external Alto  plays melody                              vol 60
+  voice Alto   external AltoSax  plays melody                              vol 60
   voice Bass   saw            plays roots in F1..E2                     vol 28  env 0 3 2  gap 1
   voice Keys   pulse          plays chords rootless from G3  duty 1/4   vol 10  env 0 4 6  gap 1
   voice Keys2  pulse2         plays chords rootless from G3  duty 1/8   vol 8   env 0 4 6  gap 1

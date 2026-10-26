@@ -35,6 +35,6 @@ fn a_song_without_its_phrases_is_nil() {
     }
     assert_eq(sax_tunes.load(name, none, {}), nil)
   }
-  assert_eq(sax_tunes.LEADS["sprint.kau"].voice, "alto")
+  assert_eq(sax_tunes.LEADS["sprint.kau"].voice, "altosax")
   assert_eq(sax_tunes.load("ballad.kau", ASSETS, {}), nil)
 }

@@ -7,7 +7,7 @@
 # says more.
 #
 #   band Smooth {
-#     voice Lead  external Alto  plays melody  vol 60
+#     voice Lead  external AltoSax  plays melody  vol 60
 #   }
 #
 #   culebra play --sounds kauai/sounds/alto_sax song.kau
@@ -33,8 +33,8 @@ let ALTO = engine.Instrument.new(DATA, CONFIG.play)
 # with the voice's parameters as they stand at its first note.
 let phrase_samples = |phrase, params| ALTO.phrase_samples(phrase, params)
 
-# The instrument, as Audio.Kauai.load's `voices:` takes it: `external Alto`.
-let voices = {alto: {
+# The instrument, as Audio.Kauai.load's `voices:` takes it: `external AltoSax`.
+let voices = {altosax: {
   phrase: |notes, params| Audio.Sound(
     phrase_samples(notes, params),
     rate: RATE,

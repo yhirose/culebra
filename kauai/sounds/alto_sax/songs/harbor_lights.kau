@@ -5,7 +5,7 @@ about {
 
 // Bb major, whose seven pitches the recorded alto has many long notes of.
 band Evening {
-  voice Alto   external Alto  plays melody                                vol 60
+  voice Alto   external AltoSax  plays melody                                vol 60
   voice Bass   triangle       plays roots in A1..G#2                      vol 32  env 1 4 8
   voice Arp    pulse          plays chords rootless from Bb3  duty 1/8    vol 9   env 1 6 10  gap 2
   voice Pad    pulse2         plays chords rootless from G3   duty 1/8    vol 5   env 12 8 20

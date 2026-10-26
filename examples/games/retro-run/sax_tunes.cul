@@ -11,8 +11,8 @@
 # (`made`.json and .bin), its key under the band's `external`, and the
 # instrument under kauai/sounds/ the phrases are made with.
 let LEADS = {
-  "cruise.kau": {band: "run_sax.kau", made: "sax", voice: "sax", package: "soprano_sax"},
-  "sprint.kau": {band: "run_alto.kau", made: "alto", voice: "alto", package: "alto_sax"},
+  "cruise.kau": {band: "run_soprano_sax.kau", made: "soprano_sax", voice: "sopranosax", package: "soprano_sax"},
+  "sprint.kau": {band: "run_alto_sax.kau", made: "alto_sax", voice: "altosax", package: "alto_sax"},
 }
 
 # `name` from `songs` (a Dir) with its saxophone leading, the band's other

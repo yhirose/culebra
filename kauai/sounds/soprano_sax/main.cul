@@ -13,7 +13,7 @@
 # saxophone solo (Freesound 171197, CC BY 3.0). README.md says more.
 #
 #   band Smooth {
-#     voice Lead  external Sax  plays melody  vol 60
+#     voice Lead  external SopranoSax  plays melody  vol 60
 #   }
 #
 #   culebra play --sounds kauai/sounds/soprano_sax song.kau
@@ -39,8 +39,8 @@ let SAX = engine.Instrument.new(DATA, CONFIG.play)
 # with the voice's parameters as they stand at its first note.
 let phrase_samples = |phrase, params| SAX.phrase_samples(phrase, params)
 
-# The instrument, as Audio.Kauai.load's `voices:` takes it: `external Sax`.
-let voices = {sax: {
+# The instrument, as Audio.Kauai.load's `voices:` takes it: `external SopranoSax`.
+let voices = {sopranosax: {
   phrase: |notes, params| Audio.Sound(
     phrase_samples(notes, params),
     rate: RATE,

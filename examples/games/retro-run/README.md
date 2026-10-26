@@ -85,12 +85,12 @@ theme. `Audio.Kauai` reads them from the same directory as the art, so a
 `--assets` directory can bring songs of its own, and plays them on the audio
 stream's own clock.
 
-The saxophones play the laps with the band in `assets/run_sax.kau` (the
-soprano, for the first) or `assets/run_alto.kau` (the alto, for the second) in
+The saxophones play the laps with the band in `assets/run_soprano_sax.kau` (the
+soprano, for the first) or `assets/run_alto_sax.kau` (the alto, for the second) in
 place of `run.kau`'s: the same band, the lead an octave under the chip's.
 `sax_tunes.cul` says which lap has which. Their phrases are made beforehand,
 from these songs, by the instruments in `kauai/sounds/soprano_sax` and
-`kauai/sounds/alto_sax` (`assets/sax.bin` and `assets/alto.bin`, with a `.json`
+`kauai/sounds/alto_sax` (`assets/soprano_sax.bin` and `assets/alto_sax.bin`, with a `.json`
 beside each saying which is which), so the game starts at once and the
 Playground plays them too. The sprint is written in D and played in Eb, its
 last chorus in F, for the alto: its recordings, in G minor and F minor, hold

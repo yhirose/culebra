@@ -49,7 +49,7 @@ fn a_phrase_sounds_as_long_as_it_is_written() {
 @test
 fn kauai_plays_a_song_with_it() {
   let song_text = 'band Solo {
-  voice Lead  external Sax  plays melody octave down  vol 60
+  voice Lead  external SopranoSax  plays melody octave down  vol 60
 }
 song Tune {
   tempo 120
@@ -65,12 +65,12 @@ section Verse {
 
   # The pitches Kauai hands the saxophone: the tune an octave below C5..B5.
   let heard = Set()
-  let voices = {sax: {phrase: fn (notes, params) {
+  let voices = {sopranosax: {phrase: fn (notes, params) {
     for n in notes {
       heard.add(n.pitch)
     }
-    sax.voices.sax.phrase(notes, params)
-  }, hears: sax.voices.sax.hears}}
+    sax.voices.sopranosax.phrase(notes, params)
+  }, hears: sax.voices.sopranosax.hears}}
   let song = Audio.Kauai.load(
     "tune.kau",
     voices: voices,

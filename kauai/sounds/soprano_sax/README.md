@@ -17,7 +17,7 @@ culebra play --sounds kauai/sounds/soprano_sax song.kau
 
 ```kau
 band Smooth {
-  voice Lead  external Sax  plays melody  vol 60
+  voice Lead  external SopranoSax  plays melody  vol 60
 }
 ```
 

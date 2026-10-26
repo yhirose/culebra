@@ -30,9 +30,9 @@ the game will not notice, as long as the sizes below stay exactly as they are.
 | `background_yuugure.png` | 1290×1470 | dusk |
 | `background_twilight.png` | 1290×1470 | twilight |
 | `cruise.kau`, `sprint.kau`, `run.kau` | | the laps' music in Kauai, and the band they share |
-| `run_sax.kau`, `run_alto.kau` | | that band with the soprano or the alto saxophone leading, an octave under the chip |
-| `sax.bin`, `sax.json` | | the soprano's phrases for the first lap, made beforehand, and which is which |
-| `alto.bin`, `alto.json` | | the alto's phrases for the second lap, the same way |
+| `run_soprano_sax.kau`, `run_alto_sax.kau` | | that band with the soprano or the alto saxophone leading, an octave under the chip |
+| `soprano_sax.bin`, `soprano_sax.json` | | the soprano's phrases for the first lap, made beforehand, and which is which |
+| `alto_sax.bin`, `alto_sax.json` | | the alto's phrases for the second lap, the same way |
 | `ballad.kau` | | the ending theme |
 
 The music is written, not generated: songs in Kauai (`docs/kauai/language.md`),
@@ -40,8 +40,8 @@ which any text editor changes. The game plays whatever these files say, with
 the one fixed part that the theme has a `mark Drive`, where the car drives off.
 The saxophones play only the phrases made for the songs as they are: an edited
 lap plays its lead on the chip until `../tools/gen_music.cul` makes its phrases
-again. `sax.json` (and `alto.json`) says what the instrument hears of a note and
-where each phrase is in `sax.bin` (`alto.bin`), by the JSON of what Kauai hands the instrument
+again. `soprano_sax.json` (and `alto_sax.json`) says what the instrument hears of a note and
+where each phrase is in `soprano_sax.bin` (`alto_sax.bin`), by the JSON of what Kauai hands the instrument
 (`kauai/tools/README.md` has the format); the phrases are Ogg Vorbis, but for
 the one Kauai weighs the voice by, a WAV, so that every backend weighs it the
 same.
