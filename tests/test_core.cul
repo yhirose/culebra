@@ -633,6 +633,19 @@ test_random = fn () {
   }
   // All weight on one element.
   assert_eq(Random.weighted_choice(['only'], [1.0]), 'only')
+  // A weight the draw cannot honour is an error, not a silent pick.
+  assert_throws('ValueError', fn () {
+    Random.weighted_choice(['a', 'b'], [-1, 2])
+  })
+  assert_throws('ValueError', fn () {
+    Random.weighted_choice(['a', 'b'], [0, 0])
+  })
+  assert_throws('ValueError', fn () {
+    Random.weighted_choice(['a', 'b'], [Math.inf, 1])
+  })
+  assert_throws('ValueError', fn () {
+    Random.weighted_choice(['a', 'b'], [Math.nan, 1])
+  })
 
   // choice: always draws a member of pop, single-element pop is exact.
   Random.seed(0)

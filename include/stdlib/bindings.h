@@ -397,6 +397,23 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_random_weighted_choic
     }
     scratch.push_back(_culebra_coerce_num(v.tag, v.data));
   }
+  // std::discrete_distribution leaves a negative or non-finite weight, and a
+  // sum of zero, undefined; the draw would be a silent wrong answer.
+  double total = 0;
+  for (double w : scratch) {
+    if (!(w >= 0) || std::isinf(w)) {
+      throw culebra::CulebraError(
+          "ValueError",
+          "Random.weighted_choice: weights must be finite and not negative",
+          line, col);
+    }
+    total += w;
+  }
+  if (!(total > 0)) {
+    throw culebra::CulebraError(
+        "ValueError", "Random.weighted_choice: weights are all zero", line,
+        col);
+  }
   std::discrete_distribution<size_t> d(scratch.begin(), scratch.end());
   auto picked = pop->items[d(culebra::random_engine())];
   culebra_runtime_value_retain(picked.tag, picked.data);
