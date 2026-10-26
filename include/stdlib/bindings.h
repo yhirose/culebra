@@ -1631,7 +1631,9 @@ struct _JitJsonBuilder {
   }
   static JitObject* object_new() { return culebra_runtime_object_new(); }
   static void object_set(JitObject*& o, const std::string& key, JitValue&& v) {
-    culebra_runtime_object_set(o, key.c_str(), false, v.tag, v.data, 0, 0);
+    // is_init: a repeated key replaces the earlier one, as in an object literal.
+    culebra_runtime_object_set(o, key.c_str(), false, v.tag, v.data, 0, 0,
+                               /*is_init=*/true);
   }
   static JitValue object_done(JitObject*&& o) {
     return {TAG_OBJECT, reinterpret_cast<int64_t>(o)};

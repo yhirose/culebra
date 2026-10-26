@@ -379,4 +379,11 @@ for bad in ['1.', '01', '1e', '1.5e+', '-'] {
 assert_eq(JSON.parse('-0'), 0)
 assert_eq(JSON.parse('1.5E-3'), 0.0015)
 
+// A repeated key is not an error: the last one wins, in the order the Object
+// keeps for the first.
+dup = JSON.parse('{"a": 1, "b": 2, "a": 3}')
+assert_eq(dup.a, 3)
+assert_eq(dup.keys(), ["a", "b"])
+assert_eq(JSON.parse('{"k": {"x": 1}, "k": {"y": 2}}').k.has("x"), false)
+
 IO.inspect("test_json OK")
