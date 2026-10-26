@@ -8,10 +8,10 @@ it condenses ([`handbook.md`](handbook.md),
 [`language.md`](language.md), [`stdlib.md`](stdlib.md)) is around 150k
 tokens; this is the part that fits in a prompt.
 
-The subsystems it leaves out — 3D, 2D, sockets, parsers, full-text
-search — are named in section 4 with the one command that prints each
-one whole, because a signature list is not enough to drive them and
-reading the chapter is.
+The subsystems and less common namespaces it leaves out (3D, 2D, audio,
+sockets, parsers, full-text search, tensors) are named in section 4 with
+the one command that prints each whole: a signature list is not enough
+to drive them, and the chapter is.
 
 Every ` ```culebra ` block below is executed by `culebra test --doc
 docs`, so it cannot drift from the implementation. A line ending in
@@ -59,10 +59,10 @@ survive `lint` and fail when the line runs, and a missing property is
 `nil` rather than an error. So run what you write — a program that has
 only been linted has not been checked.
 
-The whole reference set is inside the binary, always matching the build
-being run. `culebra docs -g <pattern>` prints the sections that match
-and exits 1 when none do, which settles whether an API exists without
-reading the output. Patterns are identifiers or phrases, not questions.
+The reference is inside the binary and matches the build being run.
+`culebra docs -g <pattern>` prints the sections that match and exits 1
+when none do, which settles whether an API exists. Patterns are
+identifiers or phrases, not questions.
 
 ## 2. Syntax
 
@@ -73,7 +73,7 @@ introduces a binding, or reassigns the nearest enclosing one.
 
 ```culebra
 x = 1       # immutable binding, or reassign an outer one
-let y = 2   # immutable; must not shadow an outer binding
+let y = 2   # immutable
 mut z = 3   # mutable
 z = 4       # bare reassignment
 z += 1      # also -= *= /= %= **= @= &= |= ^= <<= >>=
@@ -115,9 +115,10 @@ inspect(type_of(fn () {
 inspect(type_of((1, 'a')))             # => 'Tuple'
 inspect(type_of(Set(1, 2)))            # => 'Set'
 inspect(type_of('hello'.slice(1, 3)))  # => 'StringView'
+inspect(type_of(0..3))                 # => 'Range'
 ```
 
-`Tensor` is the twelfth (section 4). `Object` is the substrate for
+`Tensor` is the thirteenth (section 4). `Object` is the substrate for
 classes, modules and errors.
 
 ### 2.3 Control flow
@@ -231,12 +232,12 @@ the declaration form `fn name(...) { ... }`. Pass a callback inline as
 `fn (x) { ... }`.
 
 For a named function — one you are going to call by name, especially a
-recursive one — prefer the declaration form. Only it can be a
-[generator](#26-iterators) or take part in [multimethod
-dispatch](#29-classes-ufcs-multimethods-traits), and only it gives
-`fn.name` a source-level name; the two forms are otherwise
-interchangeable, and inside either one a bare `fn` in the body calls
-the function itself:
+recursive one — prefer the declaration form. Only it takes part in
+[multimethod dispatch](#29-classes-ufcs-multimethods-traits) and only it
+gives `fn.name` a source-level name; the two forms are otherwise
+interchangeable (a bound literal can be a [generator](#26-iterators)
+too). Inside either one a bare `fn` in the body calls the function
+itself, but inside a `|x|` lambda in that body it is the lambda:
 
 ```culebra
 fn fib(x) {
@@ -634,8 +635,8 @@ file. Each module is evaluated once; a cycle is an `ImportError`.
 
 ### 2.12 Optional type annotations
 
-Annotations are checked at three boundaries — assignment, parameter
-passing, and return — and nowhere else. `Long | String` is a union,
+Annotations are checked at four boundaries — assignment, parameter
+passing, return, and a field write — and nowhere else. `Long | String` is a union,
 `T?` is `T | Nil`, and `Array<Long>` documents the element type
 without checking it elementwise.
 
@@ -680,6 +681,9 @@ produces something else, in Culebra.
 | `s.split()` with no argument, splitting on whitespace | `s.split_whitespace()`. `split` always takes a separator |
 | assigning to a parameter | parameters are immutable — `ImmutableError` |
 | `x = 1` twice in one scope | `ImmutableError`. Declare `mut x = 1` |
+| `stats = {n: 0}` then `stats.n += 1` | `ImmutableError`: an Object literal's keys are immutable even when the binding is `mut`. Write `{mut n: 0}` |
+| `Random.int(1, 6)` rolling a die | the upper bound is exclusive: `Random.int(1, 7)` |
+| `for i, v in xs` | `ValueError`. Index and value together: `for i, v in xs.enumerate()` |
 | `and` / `or` / `not` | `&&` / `\|\|` / `!` |
 | `elif` | `else if` |
 | `#` only, or `//` only, for comments | both work, plus `/* ... */` |
@@ -744,11 +748,9 @@ single most common transfer mistake.
 `cond { a > 1 => …, b < 2 => …, _ => … }`. A loop that must report
 whether it finished takes a `nobreak` block instead of a flag.
 
-This holds for every constructor the library documents, not just the
-types written in Culebra: `Scene.Image(4, 4)` and `Channel()` are the
-same calls as `Scene.Image.new(4, 4)` and `Channel.new()`. The index in
-section 4 still spells each one `.new(...)`, since that is the method
-being described.
+This holds for every documented constructor: `Scene.Image(4, 4)` and
+`Channel()` are the same calls as `Scene.Image.new(4, 4)` and
+`Channel.new()`. The index in section 4 spells each one `.new(...)`.
 
 ## 4. Signature index
 
@@ -760,13 +762,12 @@ marked **(experimental)** is opt-in at build time and may be missing from
 a released binary; its section in [`stdlib.md`](stdlib.md) says so.
 
 The namespaces in the table at the end are named, not listed.
-Each drives a stateful subsystem — a view and a frame loop, an open
-connection, a grammar, an emitter — where the signatures say what to
-call but not in what order, against what, or what owns the result.
-`culebra docs stdlib <name>` prints one of those chapters whole, intro
-and subsections together. Read it before writing against the namespace;
-guessing from a signature there produces code that lints and does not
-run.
+`culebra docs stdlib <name>` prints one chapter whole, intro and
+subsections together. For the stateful subsystems among them (a view and
+a frame loop, an open connection, a grammar, an emitter) the signatures
+say what to call but not in what order, against what, or what owns the
+result: read the chapter before writing against one, because guessing
+from a signature produces code that lints and does not run.
 
 <!-- BEGIN GENERATED: signature index -->
 
@@ -796,8 +797,6 @@ run.
 
 **Sys** — Sys.exit(code: Long) -> Nil; Sys.env(name: String, fallback = '') -> Any; Sys.set_env(name: String, value: String) -> Nil; Sys.getcwd() -> String; Sys.chdir(path: String) -> Nil; Sys.data_dir(app: String) -> String; Sys.time() -> Float
 
-**Tensor** — Tensor.zeros(...) -> Tensor; Tensor.ones(...); Tensor.randn(...); Tensor.from(arr: Array) -> Tensor; Tensor.concat(parts: Array, axis: Long = 0) -> Tensor; Tensor.where(cond: Tensor, a, b) -> Tensor; Tensor.adam_step(p, m, v, g, lr, beta1, beta2, eps, step) -> Nil; Tensor.index_add(indices: Tensor, values: Tensor, target_shape: Array) -> Tensor; Tensor.scatter_to_axis(indices: Tensor, values: Tensor, size: Long) -> Tensor; Tensor.from_csv(path: String) -> Tensor; Tensor.eval(t1, t2, ...) -> Nil; .shape() -> Array; .dot(other: Tensor) -> Tensor; .linear_sigmoid(x, b) -> Tensor; .pow(exp) -> Tensor; .gt(other) / .lt(other) / .ge(other) / .le(other) / .eq(other) / .ne(other) -> Tensor; .tanh() / .sin() / .cos() -> Tensor; .clamp(lo, hi) -> Tensor; .rope(pos: Long, base) -> Tensor; .causal_attention(k, v) -> Tensor; .layer_norm(gamma, beta) -> Tensor; .transpose() -> Tensor; .permute(axes: Array) -> Tensor; .slice(start, end) -> Tensor; .narrow(params: Array) -> Tensor; .reshape(dims: Array) -> Tensor; .unfold(params: Array) -> Tensor; .pad(params: Array) -> Tensor; .fold(params: Array) -> Tensor; .sum() -> Float; .sum(axis: Long?, keepdims: Bool = false) -> Tensor; .mean() / .mean(axis, keepdims:); .max() / .max(axis, keepdims:); .argmax(axis: Long, keepdims: Bool = false) -> Tensor; .index_select(indices: Tensor) -> Tensor; .softmax_cross_entropy(targets: Tensor) -> Tensor; .to_array() -> Array; .item() -> Float; .requires_grad() -> Tensor; .backward() -> Nil; .grad() -> Tensor; .zero_grad() -> Nil; .detach() -> Tensor; Tensor.use_cpu() -> Nil; Tensor.use_gpu() -> Nil; Tensor.use_auto() -> Nil; Tensor.gpu_available() -> Bool; Tensor.device() -> String; Tensor.profile(fn) -> Array; Tensor.profile_scope(label, fn) -> Any
-
 **JSON** — JSON.stringify(v, indent=0, sort_keys=false, lines=false) -> String; JSON.parse(s, lines=false, number_mode='auto', jsonc=false) -> Any
 
 **Args** — Args.parse(argv: Array<String>, spec: Object) -> Object; Args.try_parse(argv, spec) -> Object; Args.help(spec: Object) -> String
@@ -808,9 +807,9 @@ run.
 
 **Matchers** — assert_true(x: Bool, label: String? = nil) -> Nil; assert_false(x: Bool, label: String? = nil) -> Nil; assert_eq(a, b, label: String? = nil) -> Nil; assert_ne(a, b, label: String? = nil) -> Nil; assert_lt(a, b, label: String? = nil) -> Nil; assert_le(a, b, label: String? = nil) -> Nil; assert_gt(a, b, label: String? = nil) -> Nil; assert_ge(a, b, label: String? = nil) -> Nil; assert_throws(kind: String, f: Function) -> Nil; assert_close(a: Float, b: Float, tol: Float, label: String? = nil) -> Nil
 
-**Regex** — Regex.compile(pattern) -> Regex; Regex.compile(pattern, flags) -> Regex; Regex.escape(s) -> String; Regex.interp(x) -> String; Regex.find(pattern, s); Regex.match(pattern, s); Regex.find_all(pattern, s); Regex.test(pattern, s); Regex.split(pattern, s); Regex.replace_all(pattern, s, repl) -> String; Regex.replace_first(pattern, s, repl) -> String; re.test(s) -> Bool; re.find(s); re.match(s); re.find_all(s) -> [Match]; re.find_all_str(s) -> [String]; re.find_all_index(s) -> [Int]; re.count(s) -> Int; re.find_iter(s) -> Iterator<Match>; re.replace_all(s, repl) -> String; re.replace_first(s, repl) -> String; re.split(s) -> [String]
+**Regex** — Regex.compile(pattern) -> Regex; Regex.compile(pattern, flags) -> Regex; Regex.escape(s) -> String; Regex.interp(x) -> String; Regex.find(pattern, s); Regex.match(pattern, s); Regex.find_all(pattern, s); Regex.test(pattern, s); Regex.split(pattern, s); Regex.replace_all(pattern, s, repl) -> String; Regex.replace_first(pattern, s, repl) -> String; re.test(s) -> Bool; re.find(s); re.match(s); re.find_all(s) -> [Match]; re.find_all_str(s) -> [String]; re.find_all_index(s) -> [Long]; re.count(s) -> Long; re.find_iter(s) -> Iterator<Match>; re.replace_all(s, repl) -> String; re.replace_first(s, repl) -> String; re.split(s) -> [String]
 
-**Http** — json(); Http.get(url, headers=nil, timeout=0, follow_redirects=true); Http.delete(url, headers=nil, timeout=0, follow_redirects=true); Http.head(url, headers=nil, timeout=0, follow_redirects=true); Http.post(url, body="", content_type="text/plain", headers=nil, timeout=0, follow_redirects=true); Http.put(url, body="", content_type="text/plain", headers=nil, timeout=0, follow_redirects=true); Http.request(method, url, body="", content_type="text/plain", headers=nil, timeout=0, follow_redirects=true); Http.sse(url, on_event, headers=nil, timeout=0, follow_redirects=true); Http.client(base_url, headers=nil, timeout=0, follow_redirects=true); Http.server(); Http.ws(url); Http.sse(url, on_event, headers=nil, timeout=0, follow_redirects=true) -> Object; Http.client(base_url, headers=nil, timeout=0, follow_redirects=true) -> Object; Http.server() -> Object; static(mount, dir); sink.write(chunk); bind(port, host="0.0.0.0") -> Long; serve(workers=0); serve_async(workers=0); listen(port, host="0.0.0.0", workers=0); listen_async(port, host="0.0.0.0", workers=0) -> Long; stop(); close(); ws.receive(); ws.try_receive(); ws.send(msg); ws.set_timeout(ms); ws.close(); ws.is_open(); Http.ws(url) -> Object
+**Http** — json(); Http.get(url, headers=nil, timeout=0, follow_redirects=true); Http.delete(url, headers=nil, timeout=0, follow_redirects=true); Http.head(url, headers=nil, timeout=0, follow_redirects=true); Http.post(url, body="", content_type="text/plain", headers=nil, timeout=0, follow_redirects=true); Http.put(url, body="", content_type="text/plain", headers=nil, timeout=0, follow_redirects=true); Http.request(method, url, body="", content_type="text/plain", headers=nil, timeout=0, follow_redirects=true); Http.sse(url, on_event, headers=nil, timeout=0, follow_redirects=true) -> Object; Http.client(base_url, headers=nil, timeout=0, follow_redirects=true) -> Object; Http.server() -> Object; Http.ws(url) -> Object; static(mount, dir); sink.write(chunk); bind(port, host="0.0.0.0") -> Long; serve(workers=0); serve_async(workers=0); listen(port, host="0.0.0.0", workers=0); listen_async(port, host="0.0.0.0", workers=0) -> Long; stop(); close(); ws.receive(); ws.try_receive(); ws.send(msg); ws.set_timeout(ms); ws.close(); ws.is_open()
 
 **Encoding** — Encoding.html; Encoding.html.escape(s) -> String; Encoding.html.unescape(s) -> String; Encoding.base64; Encoding.base64.encode(s) -> String; Encoding.base64.decode(s) -> String; Encoding.hex; Encoding.hex.encode(s) -> String; Encoding.hex.decode(s) -> String; Encoding.url; Encoding.url.encode(s) -> String; Encoding.url.decode(s) -> String; Encoding.utf16; Encoding.utf16.encode(s: String, bom: Bool = false) -> String; Encoding.utf16.decode(bytes: String) -> String
 
@@ -824,23 +823,13 @@ run.
 
 **UUID** — UUID.v4() -> String; UUID.v7() -> String
 
-**Term** — Term.fg(s, n) -> String; Term.bg(s, n) -> String; Term.rgb(s, r, g, b) -> String; Term.red(s); Term.bold(s); Term.dim(s); Term.underline(s); Term.reverse(s); Term.style(fg = nil, bg = nil, bold = false, dim = false, underline = false, reverse = false) -> String; Term.clear() -> String; Term.move(x, y) -> String; Term.hide(); Term.show(); Term.cols(); Term.rows() -> Long; Term.size() -> (Long, Long); Term.width(s) -> Long; Term.flush(); screen.size(); cols(); rows(); screen.clear(); screen.set(x, y, glyph, style = ""); screen.put(x, y, s, style = ""); screen.render() -> String; screen.flush(); screen.poll(timeout) -> Object?
-
 **Log** — Log.debug(msg: String, fields: Object = {}); Log.info(msg, fields = {}); Log.warn(msg, fields = {}); Log.error(msg, fields = {}); Log.with(fields: Object) -> logger; Log.set_level(level: String) -> Nil; Log.set_format(format: String) -> Nil
 
 **TOML** — TOML.parse(text: String) -> Object; TOML.stringify(v: Object, sort_keys: Bool = false) -> String
 
-**XML** — XML.parse(text, keep_space=false) -> Object; XML.events(text, keep_space=false) -> Iterator; el.find(path, namespaces={}) -> Object | Nil; el.find_all(path, namespaces={}) -> Array; el.find_iter(path, namespaces={}) -> Iterator; el.text(path=".", namespaces={}) -> String | Nil; el.stringify(indent=0, declaration=false) -> String; XML.find(el, path, namespaces={}) -> Object | Nil; XML.find_all(el, path, namespaces={}) -> Array; XML.find_iter(el, path, namespaces={}) -> Iterator; XML.text(el, path=".", namespaces={}) -> String | Nil; XML.stringify(el, indent=0, declaration=false) -> String
-
-**Vector2** — Vector2.new(x, y); a.hash() -> Long; a.dot(other); a.length(); a.length_squared(); a.normalized(); a.distance_to(other); a.distance_squared_to(other) -> Float; to_string(a) -> String
-
-**Vector3** — Vector3.new(x, y, z); a.hash() -> Long; a.dot(other); a.length(); a.length_squared(); a.normalized(); a.distance_to(other); a.distance_squared_to(other) -> Float; to_string(a) -> String
-
 **Deque** — Deque.new(); d.push_back(x); d.push_front(x); d.pop_back() -> Any; d.pop_front() -> Any; d.peek_back() -> Any; d.peek_front() -> Any; d.size(); d.empty(); d.to_array() -> Array; d.iter() -> Iterator; to_string(d)
 
 **PriorityQueue** — PriorityQueue.new(*, key: Function | Nil = nil, reverse: Bool = false); pq.push(x); pq.pop() -> Any; pq.peek() -> Any; pq.size(); pq.empty(); to_string(pq) -> String
-
-**Audio** — Audio.available() -> Bool; sound.play(); sound.stop(); sound.playing() -> Bool; sound.volume(v); sound.pitch(p); sound.pan(p); sound.data() -> String; music.play(); music.stop(); music.pause(); music.resume(); music.seek(seconds); music.playing() -> Bool; music.volume(v); music.pitch(p); music.pan(p); pcm.ready() -> Bool; pcm.needed() -> Long; pcm.push(samples: Array) -> Long; pcm.submit() -> Long; pcm.latency() -> Float; pcm.play(); stop(); pause(); resume(); playing() -> Bool; pcm.volume(v); pcm.pitch(p); pcm.pan(p); Audio.resonate(samples: Array, modes: Array, dry = 0.0, rate = 44100) -> Array; Audio.pluck(seconds, tunings: Array, strikes: Array = [], rate = 44100) -> Array; Audio.partials(seconds, freq: Array, spectrum: Array, gain: Array = [], noise = nil, rate = 44100) -> Array; Audio.filter(samples: Array, kind: String, cutoff, q = 0.707, rate = 44100) -> Array; Audio.envelope(samples: Array, gain: Array, rate = 44100) -> Array; Audio.mix(parts: Array, rate = 44100) -> Array; Audio.decode(data: String) -> Object; Audio.spectrum(samples: Array, size = 2048, hop = 512) -> Array; Audio.stft(samples: Array, size = 2048, hop = 512) -> Object; Audio.istft(re: Array, im: Array, size = 2048, hop = 512) -> Array; Audio.pitch(samples: Array, low, high, rate = 44100) -> Object; Audio.harmonics(samples: Array, f0: Array, count = 40, rate = 44100) -> Object; Audio.resample(samples: Array, from, to) -> Array; Audio.loudness(samples: Array, rate = 44100) -> Float?; Audio.integrated_loudness(samples: Array, rate = 44100) -> Float?; Audio.Graph.new(rate = 44100); g.wave(kind = "sine", freq = 440.0); g.noise(seed = 1); g.filter(kind, input, cutoff = 1000.0, q = 0.707); g.gain(input, gain = 1.0); g.mix(inputs: Array, gain = 1.0); g.resonate(input, modes: Array, dry = 0.0); g.pluck(input, freq = 220.0, ring = 2.0); g.output(part); g.render(seconds) -> Array; g.play(); g.stop(); g.now() -> Float; value.set(at, v); value.ramp(at, v); Audio.capture_available() -> Bool; mic.ready() -> Bool; mic.start(); running() -> Bool; mic.waiting() -> Long; mic.read(frames = nil) -> Array; Audio.Kauai.new(text: String, voices = nil, drums = nil); Audio.Kauai.load(path: String, voices = nil, drums = nil, dir = nil)
 
 **Dir** — Dir.disk(path: String | Path) -> Dir; Dir.memory(files: Object) -> Dir; Dir.embedded(name: String) -> Dir; Dir.zip(path: String | Path = nil, *, bytes: String = nil) -> Dir; d.read(path); d.list_dir(path); d.exists(path); d.is_file(path); d.is_dir(path); d.size(path); d.files(); d.glob(pattern); d.copy_to(dest)
 
@@ -850,16 +839,22 @@ run.
 
 | Namespace | Signatures | What it is |
 |---|---:|---|
+| `Tensor` | 52 | N-dimensional numeric tensor with a BLAS-backed lazy graph |
+| `Term` | 27 | terminal color, cursor control, size, and key/mouse input for TUIs |
+| `XML` | 12 | parse / search (an XPath subset) / stringify XML; a lazy event stream for large documents |
 | `SQLite` | 10 | embedded SQL database (query / execute / prepared statements / transactions) |
 | `Canvas` | 61 | immediate-mode 2D framebuffer for games (shapes, sprites, offscreen targets, text, keys/mouse/gamepad, window controls) |
 | `Scene` | 178 | retained-mode 3D renderer for procedural geometry |
 | `Net` | 22 | raw TCP / UDP sockets and name resolution (the layer under `Http`) |
 | `Desktop` / `Webview` | 10 | native WebView desktop app: local HTTP server + window, one call |
-| `PEG` | 33 | PEG parser generator: write a grammar, get a syntax tree |
+| `Vector2` | 9 | minimal 2D float vector for graphics/game code (also stands in for a "Point") |
+| `Vector3` | 9 | the 3D counterpart of `Vector2` |
+| `PEG` | 32 | PEG parser generator: write a grammar, get a syntax tree |
 | `CodeGen` | 144 | build a small language's IR by hand and run it |
 | `StateMachine` | 8 | hierarchical state machine, with a text DSL |
 | `FST` | 14 | compiled read-only dictionary: prefix, predictive and fuzzy search |
 | `Search` | 9 | full-text index over your own documents, ranked |
+| `Audio` | 68 | sound for any program, with or without a window: WASM-4 tones, samples, streamed music, synthesised PCM, the microphone |
 
 <!-- END GENERATED -->
 

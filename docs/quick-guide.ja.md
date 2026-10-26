@@ -8,9 +8,10 @@ Culebraクイックガイド
 [`stdlib.ja.md`](stdlib.ja.md)) は合計15万トークン規模で、これは
 そのうちプロンプトに載る部分です。
 
-ここに載せていないもの — 3D、2D、ソケット、パーサ、全文検索 — は
-§4で名前だけを挙げ、その章をまるごと出すコマンドを添えてあります。
-署名の一覧だけでは動かし方が分からず、章を読めば分かるからです。
+ここに載せていないもの (3D、2D、音声、ソケット、パーサ、全文検索、
+テンソルなど) は§4で名前だけを挙げ、その章をまるごと出すコマンドを
+添えてあります。署名の一覧だけでは動かし方が分からず、章を読めば
+分かるからです。
 
 以下の` ```culebra `ブロックはすべて`culebra test --doc docs`が
 実行するので、実装から乖離することはありません。行末の
@@ -58,10 +59,10 @@ puts('hi')
 存在しないプロパティはエラーでなく`nil`です。書いたら実行すること
 — lintを通しただけのプログラムは検査されていません。
 
-リファレンス一式はバイナリの中にあり、実行中のビルドと常に一致します。
+リファレンスはバイナリの中にあり、実行中のビルドと一致します。
 `culebra docs -g <パターン>`は一致したセクションを表示し、無ければ
-exit 1になるので、出力を読まずにAPIの実在を判定できます。パターン
-は識別子か語句であって、質問文ではありません。
+exit 1になるので、APIの実在を判定できます。パターンは識別子か語句で
+あって、質問文ではありません。
 
 ## 2. 構文
 
@@ -72,7 +73,7 @@ exit 1になるので、出力を読まずにAPIの実在を判定できます�
 
 ```culebra
 x = 1       # 新規不変束縛、または外側を再代入
-let y = 2   # 不変; 外側のシャドウは不可
+let y = 2   # 不変
 mut z = 3   # 可変
 z = 4       # bare再代入
 z += 1      # -= *= /= %= **= @= &= |= ^= <<= >>= も同様
@@ -112,9 +113,10 @@ inspect(type_of(fn () {
 inspect(type_of((1, 'a')))             # => 'Tuple'
 inspect(type_of(Set(1, 2)))            # => 'Set'
 inspect(type_of('hello'.slice(1, 3)))  # => 'StringView'
+inspect(type_of(0..3))                 # => 'Range'
 ```
 
-12番目が`Tensor`です (§4)。クラス・モジュール・エラーはいずれも
+13番目が`Tensor`です (§4)。クラス・モジュール・エラーはいずれも
 `Object`の上に構築されています。
 
 ### 2.3 制御フロー
@@ -227,10 +229,11 @@ inspect([[1, 2]].map(fn ((a, b)) {
 受け付ける。
 
 **名前を付けて呼ぶ関数**、特に再帰関数には宣言形式を使うこと。
-[ジェネレータ](#26-イテレータ)になれる、[多重ディスパッチ](#29-クラスufcs多重ディスパッチtrait)
-に参加できる、`fn.name`にソースレベルの名前が入るのはいずれも宣言形式
-だけだが、それ以外の点では2つの形式は等価で、どちらのbodyでも裸の
-`fn`はその関数自身を呼ぶ:
+[多重ディスパッチ](#29-クラスufcs多重ディスパッチtrait)に参加できる、
+`fn.name`にソースレベルの名前が入るのはいずれも宣言形式だけだが、それ
+以外の点では2つの形式は等価 (束縛したリテラルも[ジェネレータ](#26-イテレータ)
+になれる)。どちらのbodyでも裸の`fn`はその関数自身を呼ぶが、そのbody内の
+`|x|`ラムダの中ではラムダ自身になる:
 
 ```culebra
 fn fib(x) {
@@ -624,8 +627,8 @@ inspect(lib.greet('world'))  # => 'hello, world'
 
 ### 2.12 オプショナル型注釈
 
-注釈が検査されるのは代入・引数渡し・戻り値の3境界だけで、それ以外
-では検査されません。`Long | String`はUnion、`T?`は`T | Nil`、
+注釈が検査されるのは代入・引数渡し・戻り値・フィールドへの書き込みの
+4境界だけで、それ以外では検査されません。`Long | String`はUnion、`T?`は`T | Nil`、
 `Array<Long>`は要素型を**文書化**しますが要素ごとの検査はしません。
 
 ```culebra
@@ -669,6 +672,9 @@ inspect(show('hi'))  # => 'hi'
 | 引数なしの`s.split()`（空白で分割） | `s.split_whitespace()`。`split`は必ず区切りを取る |
 | 引数への代入 | 引数は不変 — `ImmutableError` |
 | 同一スコープで`x = 1`を2回 | `ImmutableError`。`mut x = 1`と宣言する |
+| `stats = {n: 0}`のあと`stats.n += 1` | `ImmutableError`。Objectリテラルのキーは束縛が`mut`でも不変。`{mut n: 0}`と書く |
+| サイコロに`Random.int(1, 6)` | 上限は含まれない。`Random.int(1, 7)` |
+| `for i, v in xs` | `ValueError`。添字と値は`for i, v in xs.enumerate()` |
 | `and` / `or` / `not` | `&&` / `\|\|` / `!` |
 | `elif` | `else if` |
 | コメントが`#`だけ、または`//`だけ | 両方使える。加えて`/* ... */` |
@@ -731,10 +737,9 @@ inspect(match 9 {
 `cond { a > 1 => …, b < 2 => …, _ => … }`になる。完走したかどうかを
 知りたいループはフラグでなく`nobreak`ブロックを使う。
 
-これはCulebraで書かれた型に限らず、ライブラリが載せているコンストラクタ
-すべてに当てはまる。`Scene.Image(4, 4)`は`Scene.Image.new(4, 4)`と、
-`Channel()`は`Channel.new()`と同じ呼び出しになる。§4の索引が`.new(...)`と
-表記しているのは、説明対象がそのメソッド自体だからである。
+これは載せているコンストラクタすべてに当てはまる。`Scene.Image(4, 4)`は
+`Scene.Image.new(4, 4)`と、`Channel()`は`Channel.new()`と同じ呼び出しに
+なる。§4の索引はそれぞれを`.new(...)`と表記している。
 
 ## 4. シグネチャ索引
 
@@ -746,13 +751,12 @@ inspect(match 9 {
 には入っていないことがあります（[`stdlib.ja.md`](stdlib.ja.md)の該当節に
 書いてあります）。
 
-末尾の表にある名前空間は、一覧にせず名前だけを挙げてあります。どれも状態を
-持つ仕組み — viewとフレームループ、開いた接続、文法、エミッタ — を
-動かすもので、署名は「何を呼ぶか」は言っても「どの順で、何に対して、
-結果は誰のものか」を言いません。`culebra docs stdlib <名前>`でその章が
-まるごと（前書きも小節も込みで）出ます。その名前空間を使う前に読んで
-ください。署名から推測して書くと、lintは通るのに動かないコードになり
-ます。
+末尾の表にある名前空間は、一覧にせず名前だけを挙げてあります。
+`culebra docs stdlib <名前>`でその章がまるごと（前書きも小節も込みで）
+出ます。そのうち状態を持つ仕組み — viewとフレームループ、開いた接続、
+文法、エミッタ — は、署名が「何を呼ぶか」は言っても「どの順で、何に
+対して、結果は誰のものか」を言いません。使う前に章を読んでください。
+署名から推測して書くと、lintは通るのに動かないコードになります。
 
 <!-- BEGIN GENERATED: signature index -->
 
@@ -782,8 +786,6 @@ inspect(match 9 {
 
 **Sys** — Sys.exit(code: Long) -> Nil; Sys.env(name: String, fallback = '') -> Any; Sys.set_env(name: String, value: String) -> Nil; Sys.getcwd() -> String; Sys.chdir(path: String) -> Nil; Sys.data_dir(app: String) -> String; Sys.time() -> Float
 
-**Tensor** — Tensor.zeros(...) -> Tensor; Tensor.ones(...); Tensor.randn(...); Tensor.from(arr: Array) -> Tensor; Tensor.concat(parts: Array, axis: Long = 0) -> Tensor; Tensor.where(cond: Tensor, a, b) -> Tensor; Tensor.adam_step(p, m, v, g, lr, beta1, beta2, eps, step) -> Nil; Tensor.index_add(indices: Tensor, values: Tensor, target_shape: Array) -> Tensor; Tensor.scatter_to_axis(indices: Tensor, values: Tensor, size: Long) -> Tensor; Tensor.from_csv(path: String) -> Tensor; Tensor.eval(t1, t2, ...) -> Nil; .shape() -> Array; .dot(other: Tensor) -> Tensor; .linear_sigmoid(x, b) -> Tensor; .pow(exp) -> Tensor; .gt(other) / .lt(other) / .ge(other) / .le(other) / .eq(other) / .ne(other) -> Tensor; .tanh() / .sin() / .cos() -> Tensor; .clamp(lo, hi) -> Tensor; .rope(pos: Long, base) -> Tensor; .causal_attention(k, v) -> Tensor; .layer_norm(gamma, beta) -> Tensor; .transpose() -> Tensor; .permute(axes: Array) -> Tensor; .slice(start, end) -> Tensor; .narrow(params: Array) -> Tensor; .reshape(dims: Array) -> Tensor; .unfold(params: Array) -> Tensor; .pad(params: Array) -> Tensor; .fold(params: Array) -> Tensor; .sum() -> Float; .sum(axis: Long?, keepdims: Bool = false) -> Tensor; .mean() / .mean(axis, keepdims:); .max() / .max(axis, keepdims:); .argmax(axis: Long, keepdims: Bool = false) -> Tensor; .index_select(indices: Tensor) -> Tensor; .softmax_cross_entropy(targets: Tensor) -> Tensor; .to_array() -> Array; .item() -> Float; .requires_grad() -> Tensor; .backward() -> Nil; .grad() -> Tensor; .zero_grad() -> Nil; .detach() -> Tensor; Tensor.use_cpu() -> Nil; Tensor.use_gpu() -> Nil; Tensor.use_auto() -> Nil; Tensor.gpu_available() -> Bool; Tensor.device() -> String; Tensor.profile(fn) -> Array; Tensor.profile_scope(label, fn) -> Any
-
 **JSON** — JSON.stringify(v, indent=0, sort_keys=false, lines=false) -> String; JSON.parse(s, lines=false, number_mode='auto', jsonc=false) -> Any
 
 **Args** — Args.parse(argv: Array<String>, spec: Object) -> Object; Args.try_parse(argv, spec) -> Object; Args.help(spec: Object) -> String
@@ -794,9 +796,9 @@ inspect(match 9 {
 
 **Matchers** — assert_true(x: Bool, label: String? = nil) -> Nil; assert_false(x: Bool, label: String? = nil) -> Nil; assert_eq(a, b, label: String? = nil) -> Nil; assert_ne(a, b, label: String? = nil) -> Nil; assert_lt(a, b, label: String? = nil) -> Nil; assert_le(a, b, label: String? = nil) -> Nil; assert_gt(a, b, label: String? = nil) -> Nil; assert_ge(a, b, label: String? = nil) -> Nil; assert_throws(kind: String, f: Function) -> Nil; assert_close(a: Float, b: Float, tol: Float, label: String? = nil) -> Nil
 
-**Regex** — Regex.compile(pattern) -> Regex; Regex.compile(pattern, flags) -> Regex; Regex.escape(s) -> String; Regex.interp(x) -> String; Regex.find(pattern, s); Regex.match(pattern, s); Regex.find_all(pattern, s); Regex.test(pattern, s); Regex.split(pattern, s); Regex.replace_all(pattern, s, repl) -> String; Regex.replace_first(pattern, s, repl) -> String; re.test(s) -> Bool; re.find(s); re.match(s); re.find_all(s) -> [Match]; re.find_all_str(s) -> [String]; re.find_all_index(s) -> [Int]; re.count(s) -> Int; re.find_iter(s) -> Iterator<Match>; re.replace_all(s, repl) -> String; re.replace_first(s, repl) -> String; re.split(s) -> [String]
+**Regex** — Regex.compile(pattern) -> Regex; Regex.compile(pattern, flags) -> Regex; Regex.escape(s) -> String; Regex.interp(x) -> String; Regex.find(pattern, s); Regex.match(pattern, s); Regex.find_all(pattern, s); Regex.test(pattern, s); Regex.split(pattern, s); Regex.replace_all(pattern, s, repl) -> String; Regex.replace_first(pattern, s, repl) -> String; re.test(s) -> Bool; re.find(s); re.match(s); re.find_all(s) -> [Match]; re.find_all_str(s) -> [String]; re.find_all_index(s) -> [Long]; re.count(s) -> Long; re.find_iter(s) -> Iterator<Match>; re.replace_all(s, repl) -> String; re.replace_first(s, repl) -> String; re.split(s) -> [String]
 
-**Http** — json(); Http.get(url, headers=nil, timeout=0, follow_redirects=true); Http.delete(url, headers=nil, timeout=0, follow_redirects=true); Http.head(url, headers=nil, timeout=0, follow_redirects=true); Http.post(url, body="", content_type="text/plain", headers=nil, timeout=0, follow_redirects=true); Http.put(url, body="", content_type="text/plain", headers=nil, timeout=0, follow_redirects=true); Http.request(method, url, body="", content_type="text/plain", headers=nil, timeout=0, follow_redirects=true); Http.sse(url, on_event, headers=nil, timeout=0, follow_redirects=true); Http.client(base_url, headers=nil, timeout=0, follow_redirects=true); Http.server(); Http.ws(url); Http.sse(url, on_event, headers=nil, timeout=0, follow_redirects=true) -> Object; Http.client(base_url, headers=nil, timeout=0, follow_redirects=true) -> Object; Http.server() -> Object; static(mount, dir); sink.write(chunk); bind(port, host="0.0.0.0") -> Long; serve(workers=0); serve_async(workers=0); listen(port, host="0.0.0.0", workers=0); listen_async(port, host="0.0.0.0", workers=0) -> Long; stop(); close(); ws.receive(); ws.try_receive(); ws.send(msg); ws.set_timeout(ms); ws.close(); ws.is_open(); Http.ws(url) -> Object
+**Http** — json(); Http.get(url, headers=nil, timeout=0, follow_redirects=true); Http.delete(url, headers=nil, timeout=0, follow_redirects=true); Http.head(url, headers=nil, timeout=0, follow_redirects=true); Http.post(url, body="", content_type="text/plain", headers=nil, timeout=0, follow_redirects=true); Http.put(url, body="", content_type="text/plain", headers=nil, timeout=0, follow_redirects=true); Http.request(method, url, body="", content_type="text/plain", headers=nil, timeout=0, follow_redirects=true); Http.sse(url, on_event, headers=nil, timeout=0, follow_redirects=true) -> Object; Http.client(base_url, headers=nil, timeout=0, follow_redirects=true) -> Object; Http.server() -> Object; Http.ws(url) -> Object; static(mount, dir); sink.write(chunk); bind(port, host="0.0.0.0") -> Long; serve(workers=0); serve_async(workers=0); listen(port, host="0.0.0.0", workers=0); listen_async(port, host="0.0.0.0", workers=0) -> Long; stop(); close(); ws.receive(); ws.try_receive(); ws.send(msg); ws.set_timeout(ms); ws.close(); ws.is_open()
 
 **Encoding** — Encoding.html; Encoding.html.escape(s) -> String; Encoding.html.unescape(s) -> String; Encoding.base64; Encoding.base64.encode(s) -> String; Encoding.base64.decode(s) -> String; Encoding.hex; Encoding.hex.encode(s) -> String; Encoding.hex.decode(s) -> String; Encoding.url; Encoding.url.encode(s) -> String; Encoding.url.decode(s) -> String; Encoding.utf16; Encoding.utf16.encode(s: String, bom: Bool = false) -> String; Encoding.utf16.decode(bytes: String) -> String
 
@@ -810,23 +812,13 @@ inspect(match 9 {
 
 **UUID** — UUID.v4() -> String; UUID.v7() -> String
 
-**Term** — Term.fg(s, n) -> String; Term.bg(s, n) -> String; Term.rgb(s, r, g, b) -> String; Term.red(s); Term.bold(s); Term.dim(s); Term.underline(s); Term.reverse(s); Term.style(fg = nil, bg = nil, bold = false, dim = false, underline = false, reverse = false) -> String; Term.clear() -> String; Term.move(x, y) -> String; Term.hide(); Term.show(); Term.cols(); Term.rows() -> Long; Term.size() -> (Long, Long); Term.width(s) -> Long; Term.flush(); screen.size(); cols(); rows(); screen.clear(); screen.set(x, y, glyph, style = ""); screen.put(x, y, s, style = ""); screen.render() -> String; screen.flush(); screen.poll(timeout) -> Object?
-
 **Log** — Log.debug(msg: String, fields: Object = {}); Log.info(msg, fields = {}); Log.warn(msg, fields = {}); Log.error(msg, fields = {}); Log.with(fields: Object) -> logger; Log.set_level(level: String) -> Nil; Log.set_format(format: String) -> Nil
 
 **TOML** — TOML.parse(text: String) -> Object; TOML.stringify(v: Object, sort_keys: Bool = false) -> String
 
-**XML** — XML.parse(text, keep_space=false) -> Object; XML.events(text, keep_space=false) -> Iterator; el.find(path, namespaces={}) -> Object | Nil; el.find_all(path, namespaces={}) -> Array; el.find_iter(path, namespaces={}) -> Iterator; el.text(path=".", namespaces={}) -> String | Nil; el.stringify(indent=0, declaration=false) -> String; XML.find(el, path, namespaces={}) -> Object | Nil; XML.find_all(el, path, namespaces={}) -> Array; XML.find_iter(el, path, namespaces={}) -> Iterator; XML.text(el, path=".", namespaces={}) -> String | Nil; XML.stringify(el, indent=0, declaration=false) -> String
-
-**Vector2** — Vector2.new(x, y); a.hash() -> Long; a.dot(other); a.length(); a.length_squared(); a.normalized(); a.distance_to(other); a.distance_squared_to(other) -> Float; to_string(a) -> String
-
-**Vector3** — Vector3.new(x, y, z); a.hash() -> Long; a.dot(other); a.length(); a.length_squared(); a.normalized(); a.distance_to(other); a.distance_squared_to(other) -> Float; to_string(a) -> String
-
 **Deque** — Deque.new(); d.push_back(x); d.push_front(x); d.pop_back() -> Any; d.pop_front() -> Any; d.peek_back() -> Any; d.peek_front() -> Any; d.size(); d.empty(); d.to_array() -> Array; d.iter() -> Iterator; to_string(d)
 
 **PriorityQueue** — PriorityQueue.new(*, key: Function | Nil = nil, reverse: Bool = false); pq.push(x); pq.pop() -> Any; pq.peek() -> Any; pq.size(); pq.empty(); to_string(pq) -> String
-
-**Audio** — Audio.available() -> Bool; sound.play(); sound.stop(); sound.playing() -> Bool; sound.volume(v); sound.pitch(p); sound.pan(p); sound.data() -> String; music.play(); music.stop(); music.pause(); music.resume(); music.seek(seconds); music.playing() -> Bool; music.volume(v); music.pitch(p); music.pan(p); pcm.ready() -> Bool; pcm.needed() -> Long; pcm.push(samples: Array) -> Long; pcm.submit() -> Long; pcm.latency() -> Float; pcm.play(); stop(); pause(); resume(); playing() -> Bool; pcm.volume(v); pcm.pitch(p); pcm.pan(p); Audio.resonate(samples: Array, modes: Array, dry = 0.0, rate = 44100) -> Array; Audio.pluck(seconds, tunings: Array, strikes: Array = [], rate = 44100) -> Array; Audio.partials(seconds, freq: Array, spectrum: Array, gain: Array = [], noise = nil, rate = 44100) -> Array; Audio.filter(samples: Array, kind: String, cutoff, q = 0.707, rate = 44100) -> Array; Audio.envelope(samples: Array, gain: Array, rate = 44100) -> Array; Audio.mix(parts: Array, rate = 44100) -> Array; Audio.decode(data: String) -> Object; Audio.spectrum(samples: Array, size = 2048, hop = 512) -> Array; Audio.stft(samples: Array, size = 2048, hop = 512) -> Object; Audio.istft(re: Array, im: Array, size = 2048, hop = 512) -> Array; Audio.pitch(samples: Array, low, high, rate = 44100) -> Object; Audio.harmonics(samples: Array, f0: Array, count = 40, rate = 44100) -> Object; Audio.resample(samples: Array, from, to) -> Array; Audio.loudness(samples: Array, rate = 44100) -> Float?; Audio.integrated_loudness(samples: Array, rate = 44100) -> Float?; Audio.Graph.new(rate = 44100); g.wave(kind = "sine", freq = 440.0); g.noise(seed = 1); g.filter(kind, input, cutoff = 1000.0, q = 0.707); g.gain(input, gain = 1.0); g.mix(inputs: Array, gain = 1.0); g.resonate(input, modes: Array, dry = 0.0); g.pluck(input, freq = 220.0, ring = 2.0); g.output(part); g.render(seconds) -> Array; g.play(); g.stop(); g.now() -> Float; value.set(at, v); value.ramp(at, v); Audio.capture_available() -> Bool; mic.ready() -> Bool; mic.start(); running() -> Bool; mic.waiting() -> Long; mic.read(frames = nil) -> Array; Audio.Kauai.new(text: String, voices = nil, drums = nil); Audio.Kauai.load(path: String, voices = nil, drums = nil, dir = nil)
 
 **Dir** — Dir.disk(path: String | Path) -> Dir; Dir.memory(files: Object) -> Dir; Dir.embedded(name: String) -> Dir; Dir.zip(path: String | Path = nil, *, bytes: String = nil) -> Dir; d.read(path); d.list_dir(path); d.exists(path); d.is_file(path); d.is_dir(path); d.size(path); d.files(); d.glob(pattern); d.copy_to(dest)
 
@@ -836,16 +828,22 @@ inspect(match 9 {
 
 | 名前空間 | 署名 | 何をするもの |
 |---|---:|---|
+| `Tensor` | 52 | N次元数値テンソル、BLAS対応lazy graph |
+| `Term` | 27 | TUI向けの端末の色・カーソル制御・サイズ・キー/マウス入力 |
+| `XML` | 12 | XMLをparse / 検索（XPathの部分集合） / stringify。大きな文書向けの遅延イベント列 |
 | `SQLite` | 10 | 組み込みSQLデータベース（query / execute / プリペアド文 / トランザクション） |
 | `Canvas` | 61 | ゲーム向けイミディエイトモード2Dフレームバッファ（図形 / スプライト / オフスクリーン描画先 / テキスト / キー・マウス・ゲームパッド / ウィンドウ制御） |
 | `Scene` | 178 | 手続きジオメトリ向けのretained-mode 3Dレンダラ |
 | `Net` | 22 | 生のTCP / UDPソケットと名前解決（`Http`の下位レイヤ） |
 | `Desktop` / `Webview` | 10 | ネイティブWebViewのデスクトップアプリ: ローカルHTTPサーバ + ウィンドウを1呼び出しで |
-| `PEG` | 33 | PEGパーサジェネレータ。文法を書くと構文木が返る |
+| `Vector2` | 9 | グラフィックス/ゲーム向けの最小限の2D floatベクトル（「Point」の代わりも兼ねる） |
+| `Vector3` | 9 | `Vector2`の3D版 |
+| `PEG` | 32 | PEGパーサジェネレータ。文法を書くと構文木が返る |
 | `CodeGen` | 144 | 小さな言語のIRを手で組み立てて実行する |
 | `StateMachine` | 8 | 入れ子にできる状態機械。テキストでも書ける |
 | `FST` | 14 | 書き換えない辞書を圧縮して持つ。前方一致・補完・あいまい検索 |
 | `Search` | 9 | 自分の文書を全文検索して順位をつける |
+| `Audio` | 68 | ウィンドウの有無によらず使える音: WASM-4のtone、効果音、ストリーム再生の音楽、合成するPCM、マイク |
 
 <!-- END GENERATED -->
 

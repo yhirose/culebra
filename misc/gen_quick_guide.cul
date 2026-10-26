@@ -43,25 +43,26 @@ NS_HEADING = re'^## \d+\. (.+)$'
 # still one place to edit when a namespace changes.
 INDEX_ROW = re'^\d+\. \[([^\]]+)\]\([^)]+\)\s+—\s+(.+)$'
 
-# These namespaces are named rather than listed signature by signature. Each
-# drives a stateful subsystem -- a view and a frame loop, an open connection,
-# a grammar, an emitter -- where the signatures alone do not say how to drive
-# it, so a reader holding only them writes code that lints and does not run.
-# They are also half of every signature here, spent on whichever subsystem the
-# task at hand is not about. `culebra docs stdlib <name>` prints one whole.
-# Membership only: the table keeps stdlib.md's chapter order.
-BY_NAME = Set(
-  'SQLite',
-  'Canvas',
-  'Scene',
-  'Net',
-  'Desktop / Webview',
-  'PEG',
-  'CodeGen',
-  'StateMachine',
-  'FST',
-  'Search',
+# Only these namespaces are listed signature by signature; every other one is
+# named, with a line saying what it is, and `culebra docs stdlib <name>`
+# prints it whole. The list is the everyday surface, and a namespace added to
+# stdlib.md is named until someone decides it belongs here -- the other way
+# round, each new chapter grew the one file written to fit in a prompt without
+# anyone choosing it. The stateful subsystems (a view and a frame loop, an
+# open connection, a grammar, an emitter) stay named whatever their size: the
+# signatures alone do not say how to drive them, so a reader holding only
+# those writes code that lints and does not run. Membership only: the table
+# keeps stdlib.md's chapter order.
+INLINE = Set(
+  'Math', 'IO', 'FS', 'File', 'Time', 'Random', 'Sys', 'JSON', 'Args', 'Proc',
+  'Isolate', 'Matchers', 'Regex', 'Http', 'Encoding', 'Compress', 'Hash', 'CSV',
+  'Env', 'UUID', 'Log', 'TOML', 'Deque', 'PriorityQueue', 'Dir', 'LLM',
 )
+
+# What each quick guide may weigh, in bytes, as a file. A guide meant to be
+# read whole by a model is paid for on every prompt it is in, so growth has to
+# be a decision: raise the number here in the commit that needs the room.
+BUDGET = {'docs/quick-guide.md': 42500, 'docs/quick-guide.ja.md': 46000}
 
 # The six built-in-type groups live in language.md; every other group is one
 # stdlib.md namespace. Only the Set anchor differs between en and ja — the
@@ -173,9 +174,17 @@ fn harvest(lines) {
       }
     }
     for sig in cands {
-      if SIG_SHAPE.test(sig) && !sig.contains('…') && !seen.has(sig) {
-        seen[sig] = true
-        out.push(sig)
+      if SIG_SHAPE.test(sig) && !sig.contains('…') {
+        # The reference often shows one signature twice, once in a summary
+        # table and once under its own heading with the return type. They are
+        # one entry, and the one with the type wins.
+        key = sig.split(' -> ')[0].to_string()
+        if !seen.has(key) {
+          seen[key] = out.size()
+          out.push(sig)
+        } else if sig.contains(' -> ') && !out[seen[key]].contains(' -> ') {
+          out[seen[key]] = sig
+        }
       }
     }
   }
@@ -219,7 +228,7 @@ fn ns_group(title, buf, summaries) {
   {
     ...group(title, harvest(buf)),
     experimental: buf.any(|line| line.contains('**experimental**')),
-    by_name: BY_NAME.contains(title),
+    by_name: !INLINE.contains(title),
     summary: summaries.get(title, ''),
   }
 }
@@ -278,7 +287,9 @@ fn render(groups, ja) {
   for g in groups.filter(|g| !g.by_name && g.sigs.size() > 0) {
     out.push('**' + g.title + mark(g) + '** — ' + g.sigs.join('; '))
   }
-  rows_for = groups.filter(|g| g.by_name)
+  # A chapter with no signature (design notes, what is not included) has
+  # nothing to be read before writing against it.
+  rows_for = groups.filter(|g| g.by_name && g.sigs.size() > 0)
   if rows_for.size() > 0 {
     out.push(ja
       ? '### 一覧ではなく章を読むもの'
@@ -363,6 +374,14 @@ fn settle(check, stale, path, want, label) {
 for ja in [false, true] {
   path = ja ? 'docs/quick-guide.ja.md' : 'docs/quick-guide.md'
   groups = collect(ja)
+  # A name that is in INLINE but in no chapter is a typo or a renamed
+  # namespace, and would silently put nothing in the guide.
+  for name in INLINE {
+    if !groups.any(|g| g.title == name) {
+      IO.eprintln("INLINE names '{name}', which is no chapter of stdlib")
+      Sys.exit(1)
+    }
+  }
   want = splice(FS.read(path), render(groups, ja))
   listed = count(groups, false)
   named = count(groups, true)
@@ -383,6 +402,17 @@ for ja in [false, true] {
       "{listed + named} signatures",
     )
   }
+}
+
+mut heavy = []
+for path in BUDGET.keys() {
+  size = FS.read(path).size()
+  heavy.push("{path} is {size} bytes, over its budget of {BUDGET[path]}") if size > BUDGET[path]
+}
+if heavy.size() > 0 {
+  IO.eprintln(heavy.join("\n"))
+  IO.eprintln("trim the guide, or raise BUDGET in misc/gen_quick_guide.cul if the room is needed")
+  Sys.exit(1)
 }
 
 if stale.size() > 0 {
