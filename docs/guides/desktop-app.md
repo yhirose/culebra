@@ -83,7 +83,8 @@ dist/
 ```
 
 [`examples/webview/dist/`](../../examples/webview/dist/) has the finished
-three files this guide builds toward.
+files this guide builds toward: the three it builds, plus `about.html`
+from [Multiple pages in one window](#multiple-pages-in-one-window).
 
 ### 3. Adding an API route
 
@@ -195,7 +196,7 @@ stdlib reference for the exact sequencing.
 
 ```sh
 culebra build examples/webview/desktop_app.cul -o app
-# culebra build: embedded 3 file(s) (...) from 'dist'
+# culebra build: embedded 4 file(s) (...) from 'dist'
 ./app
 ```
 

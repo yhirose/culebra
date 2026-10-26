@@ -42,7 +42,7 @@ A channel plays one note at a time, and two voices of a band cannot share a
 channel. A voice that says `plays melody` plays the melody, `plays roots`
 plays the bass line under each chord, and `plays chords from NOTE` plays the
 chord itself, voiced from that note up. Give a voice no `plays` and it plays
-only what the grooves and sections ask of it.
+only what it echoes or harmonizes (a derived part).
 
 Play the band in a program, and check what it sounds like:
 
@@ -205,8 +205,8 @@ The pieces, in the order a model needs them:
   where the k-th amplitude is the partial at k times the frequency.
 - **`Audio.partials(seconds, ...)`** takes the length first. It leaves out the
   partials above 0.45 of the sample rate on its own.
-- **`Math.pow` takes whole numbers only**, so a fractional power is written
-  with `Math.exp` and `Math.log`.
+- **`Math.pow` takes whole numbers only**; a fractional power is
+  `x ** y` with a Float operand.
 - **`range(n).map(...)` is lazy**: call `.collect()` to get an array to pass on.
 - The model's own changes over a phrase, such as a glide or a vibrato, are
   written as points in the envelopes: for example, one point every 10 ms.

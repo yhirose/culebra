@@ -247,8 +247,9 @@ for line in lines.lines() {
 # text=plain  url=https://y/z
 ```
 
-`[^\]]*` stops at the first `]`, so the first link comes out as
-`the [inner` with a URL of nothing; `[^)]*` truncates the URL at `a(b`.
+`[^\]]*` stops at the first `]`, which is not followed by `(`, so the
+first link is not found at all; and if its text had no brackets, `[^)]*`
+would truncate the URL at `a(b`.
 Both are the same mistake — a character class cannot count — and both are
 fixed by one self-referring rule.
 
@@ -524,7 +525,7 @@ list rather than as its single statement.
 
 **The flat list again.** `INFIX <- CALL (InfixOperator CALL)*` is §2's
 repetition shape, so `a - b - c` arrives as five children and the
-evaluator folds it left, in the same six lines §2 used. Written the other
+evaluator folds it left, the fold §2 described for `Expr <- Term (AddOp Term)*`. Written the other
 way — `INFIX <- INFIX InfixOperator CALL / CALL` — it would arrive
 already nested and the arm would be three children wide. Both are here
 so you can see them side by side.

@@ -88,7 +88,8 @@ dist/
 ```
 
 [`examples/webview/dist/`](../../examples/webview/dist/)に、このガイドで
-組み立てる最終形の3ファイルが置いてあります。
+組み立てる最終形が置いてあります。ガイドで作る3ファイルに、
+[1つのウィンドウで複数ページを扱う](#1つのウィンドウで複数ページを扱う)の`about.html`が加わります。
 
 ### 3. APIルートを追加する
 
@@ -206,7 +207,7 @@ stdlibリファレンスの
 
 ```sh
 culebra build examples/webview/desktop_app.cul -o app
-# culebra build: embedded 3 file(s) (...) from 'dist'
+# culebra build: embedded 4 file(s) (...) from 'dist'
 ./app
 ```
 

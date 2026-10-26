@@ -87,6 +87,11 @@ These are set on the band's line (`external Sax breath=0.5`) or in the score
 | `breath` | the breath heard with the tone: 0 none, 1 as recorded |
 | `wander` | a slow wander of pitch and loudness: 0 none |
 | `vibrato` | the vibrato a long note asks for, in cents at its deepest |
+| `straight` | the share of a note held straight before the vibrato starts (0.6) |
+| `vibcap` | the deepest vibrato a borrowed note keeps, in cents peak to peak: 0 any |
+| `overtone` | the lowest note played as an overtone of the fingering an octave down: 0 none |
+| `overtonequiet` | how many dB quieter those notes are than that makes them |
+| `soft` | 1: a phrase begins softly, breath first, not tongued |
 
 ## What the engine does not do yet
 

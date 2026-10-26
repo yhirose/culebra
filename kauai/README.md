@@ -34,7 +34,7 @@ it to a WAV file with `culebra play --wav out.wav song.kau`.
 - [`docs/guides/kauai-sounds.md`](../docs/guides/kauai-sounds.md): the sounds a
   song plays, shaping them, supplying an `external` instrument, a model, and a
   recorded instrument made with the harness.
-  [`engine.md`](engine.md) lists the voice parameters (`breath`, `wander`, `vibrato`).
+  [`engine.md`](engine.md) lists the voice parameters (`breath`, `wander`, `vibrato` and five more).
 
 ## I want to make a new instrument
 
