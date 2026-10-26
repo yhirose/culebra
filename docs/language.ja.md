@@ -768,7 +768,7 @@ Culebraはシャドウを3つの軸で独立に扱います:
 
 ### 単項
 
-`+x`は恒等（数値必須）。`-x`は`Long`または`Float`の符号反転。
+`+x`は型を問わず`x`をそのまま返します。`-x`は`Long`または`Float`の符号反転。
 
 ### 括弧
 
@@ -4485,7 +4485,7 @@ unionとしての順位で、`Object`より下です。
 | `IndexError` | Array / String / Tensorの範囲外index；Tensor slice範囲外；Tensor reduction axis範囲外 | はい |
 | `ValueError` | Destructure pattern mismatch；Tensorのshape / dtype不一致；`[].min()`等空コレクションへのreduce；不正な数値文字列；JSON parse失敗；1000段を超えてネストした値のwalk（下記「値ネストの上限」参照） | はい |
 | `AttributeError` | compound代入（`o.x += ...`）で`x`が存在しない；組み込み名前空間が持たないメンバーの読み取り・書き込み（`=`/`??=`）（名前空間は閉じている — クラスやプレーンなdictは自由に読み書きできる） | はい |
-| `ArityError` | 必須引数の欠如 — 関数やclass constructorへのpositional不足；**組み込み**・名前空間関数が受け取れる数を超えたpositional。**ユーザ定義**関数への余分なpositionalはエラーではなく`__ARGS__`（§19）に溢れる | はい |
+| `ArityError` | 必須引数の欠如 — 関数やclass constructorへのpositional不足；**組み込み**・名前空間関数が受け取れる数を超えたpositional。**ユーザ定義**関数への余分なpositionalはエラーではなく`__ARGS__`（§19）に溢れる。class constructorは`new`の無いclassも含めて無視する | はい |
 | `DispatchError` | 多重ディスパッチ（§20）でマッチなし、またはspecificity同点 | はい |
 | `AssertionError` | matcherの失敗 (`assert_true` / `assert_eq`等) もしくはユーザ`throw {kind: "AssertionError", ...}`。比較系matcherは両辺をmessageに含めます | はい |
 | `SyntaxError` | AST loweringで検出される構造エラー：`**rest`が末尾でない、`*`区切りの重複、デフォルト値後に非デフォルト、`let`付きcompound、ループ外の`break` / `continue`等。該当functionの宣言評価時に発火 | はい |

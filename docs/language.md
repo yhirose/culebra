@@ -808,7 +808,7 @@ Only `Bool`, `Long`, and `Float` are convertible to bool:
 
 ### Unary
 
-`+x` is a no-op (must be numeric). `-x` negates a `Long` or `Float`.
+`+x` is `x` unchanged, of any type. `-x` negates a `Long` or `Float`.
 
 ### Parentheses
 
@@ -4692,7 +4692,7 @@ builds (unless noted).
 | `IndexError` | Array / String / Tensor index out of range; Tensor slice out of bounds; Tensor reduction axis out of range. | yes |
 | `ValueError` | Destructure pattern mismatch (`[a, b] = ...` shape mismatch); Tensor shape / dtype mismatch; `[].min()` or other empty-collection reductions; numeric conversion of malformed string; JSON parse failure; walking a value nested deeper than 1000 levels (see the value-nesting bound below). | yes |
 | `AttributeError` | Compound assignment (`o.x += ...`) on a missing property; reading or writing (`=`/`??=`) a member a builtin namespace doesn't have (namespaces are closed — a class or plain dict still reads/writes freely). | yes |
-| `ArityError` | Call missing a required argument — too few positional args to a function or a class constructor; more positional args than a *built-in* or namespace function accepts. Surplus positionals to a **user** function are not an error: they overflow into `__ARGS__` (§19). | yes |
+| `ArityError` | Call missing a required argument — too few positional args to a function or a class constructor; more positional args than a *built-in* or namespace function accepts. Surplus positionals to a **user** function are not an error: they overflow into `__ARGS__` (§19). A class constructor ignores them, and so does a class with no `new`. | yes |
 | `DispatchError` | Multimethod call with no matching method or with ambiguous specificity tie (§20). | yes |
 | `AssertionError` | Matcher failure (`assert_true` / `assert_eq` / etc.) or user `throw {kind: "AssertionError", ...}`. Message names both operands for comparison matchers. | yes |
 | `SyntaxError` | Structural errors raised during AST lowering: `**rest` not last param, duplicate `*` separator, non-default param after default, `compound let`, `break` / `continue` outside loop. Surfaces at function decl evaluation, before that function runs. | yes |
