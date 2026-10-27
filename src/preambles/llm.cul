@@ -138,6 +138,17 @@ let _llm_module = fn () {
     LLMTool(name, summary, input_schema, f)
   }
 
+  # A tool whose schema is given, not read off a function's parameters: one that
+  # arrives as data, or whose function takes `**args`.
+  fn tool_from_schema(name, description, schema, f) {
+    let id = _string("name", name)
+    __raise("ValueError", "LLM.tool_from_schema: the name is empty") if id.empty()
+    let summary = _string("description", description)
+    _type_error("schema", "Object") if type_of(schema) != "Object"
+    _type_error("f", "Function") if type_of(f) != "Function"
+    LLMTool(id, summary, schema, f)
+  }
+
   # What a tool's value becomes in a tool_result: a String as it is, anything
   # else as JSON.
   fn _content_of(v) {
@@ -833,6 +844,6 @@ let _llm_module = fn () {
   }
 
   {ask: ask, chat: chat, tool: tool, request: request, repair: repair, turn: turn,
-   anthropic: anthropic, run_tools: run_tools}
+   anthropic: anthropic, run_tools: run_tools, tool_from_schema: tool_from_schema}
 }
 let LLM = _llm_module()

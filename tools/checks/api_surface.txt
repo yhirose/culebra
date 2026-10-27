@@ -1130,6 +1130,7 @@ d.copy_to(dest)
 LLM.ask(prompt, provider:, model=nil, system=nil, max_tokens=nil, on_text=nil) -> String
 LLM.chat(provider:, model=nil, system=nil, tools=[], max_tokens=nil, max_turns=10, approve=nil) -> LLMChat
 LLM.tool(f, description, **params) -> LLMTool
+LLM.tool_from_schema(name, description, schema, f) -> LLMTool
 LLM.run_tools(tools, calls, approve=nil) -> Object
 LLM.request(body, provider:, headers=nil) -> Object
 LLM.repair(messages) -> Array

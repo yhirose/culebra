@@ -9097,6 +9097,28 @@ IO.println(chat.ask("And in Osaka?"))
 `tool.name`、`tool.description`、`tool.input_schema`を読めます。リクエストで
 送られるのは`tool.spec()`です。
 
+`f`や`description`という名前の引数には、名前で説明を付けられません。この2つは
+`LLM.tool`自身の引数だからです（`TypeError`になります）。そうした関数には
+`LLM.tool_from_schema`を使ってください。
+
+### `LLM.tool_from_schema(name, description, schema, f) -> LLMTool`
+
+関数の引数から読むのではなく、スキーマを渡して作るツールです。データとして届くもの
+（ツールサーバーや、ファイルのもの）や、注釈がなく`**args`を取る関数のために使います。
+`schema`は引数のJSON SchemaをObjectで渡し、そのまま送られます。モデルの引数は
+`LLM.tool`と同じくキーワードで届き、`f`の戻り値の扱いも同じです。
+
+```culebra
+let search = LLM.tool_from_schema("search", "Search the notes", {
+  type: "object",
+  properties: {query: {type: "string"}},
+  required: ["query"],
+}, fn (**args) { "found: {args.query}" })
+inspect(search.name)  # => 'search'
+let call = {id: "c1", name: "search", args: {query: "tea"}}
+inspect(LLM.run_tools([search], [call]).content[0].content)  # => 'found: tea'
+```
+
 ### `LLM.run_tools(tools, calls, approve=nil) -> Object`
 
 `calls`、つまり応答が求めたツール（`reply.tool_calls`、各要素は`{id:, name:, args:}`）に

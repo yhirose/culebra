@@ -357,6 +357,11 @@ fn an_cases() {
       title: "t", encrypted_content: "enc"}]}},
     {type: "text", text: "found"}]}]), AN_BODIES.server_tool)
 
+  # A tool made from a schema goes out with the schema as it is.
+  let an_search = LLM.tool_from_schema("search", "Search the notes", {type: "object"}, fn (**args) { "x" })
+  assert_eq(JSON.parse(an_sent([an_user("q")], tools: [an_search])).tools,
+            [{name: "search", description: "Search the notes", input_schema: {type: "object"}}])
+
   # What the API is asked beyond the history.
   let an_options = JSON.parse(an_sent([an_user("hi")], max_tokens: 50, stop: ["x"], temperature: 0.5,
     extra: {thinking: {type: "enabled", budget_tokens: 1024}}))

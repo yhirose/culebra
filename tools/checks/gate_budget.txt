@@ -243,8 +243,8 @@ ctest.entries 36
 # en and ja. 1104 since §42 shows LLM.turn with a provider written in the
 # program, in en and ja. 1106 since §42 shows LLM.anthropic asking one
 # question, in en and ja. 1108 since §42 shows LLM.run_tools answering a call,
-# in en and ja.
-docs.blocks 1108
+# in en and ja. 1110 since §42 shows LLM.tool_from_schema, in en and ja.
+docs.blocks 1110
 
 # The samples the language front ends are run over (examples/languages/*).
 languages.samples 130

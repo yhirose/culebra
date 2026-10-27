@@ -1,6 +1,6 @@
 # LLM.run_tools and the approve: callback: the message that answers the calls a
 # model asked for, what is asked before a tool runs, and what a chat does with
-# the answer. No network; the provider is a script.
+# the answer; and a tool made from a schema. No network; the provider is a script.
 
 # What a call raised, as "Kind: message".
 fn failure(thunk) {
@@ -143,6 +143,31 @@ assert_eq(failure(|| LLM.run_tools([w], [{id: "a", name: "weather", args: 3}])),
 assert_eq(failure(|| LLM.run_tools([w], [call("a", "weather", {})], approve: 3)),
           "TypeError: type error: parameter 'approve' expects Function | Nil")
 assert_eq(failure(|| LLM.run_tools([w], [])), "LLMError: LLM.run_tools: no calls")
+
+# --- a tool whose schema is given ---------------------------------------------------------------------
+
+# The schema is the one given, as it is, and the function takes whatever the model sent.
+let search_schema = {type: "object", properties: {query: {type: "string"}}, required: ["query"]}
+let search = LLM.tool_from_schema("search", "Search the notes", search_schema,
+                                  fn (**args) { "found: {args.query}" })
+assert_eq(type_of(search), "LLMTool")
+assert_eq([search.name, search.description, search.input_schema], ["search", "Search the notes", search_schema])
+assert_eq(search.spec(), {name: "search", description: "Search the notes", input_schema: search_schema})
+assert_eq(LLM.run_tools([search], [call("a", "search", {query: "tea"})]).content[0], result("a", "found: tea"))
+# A function with parameters of its own gets them as keywords as well.
+assert_eq(LLM.run_tools([LLM.tool_from_schema("w", "weather", {type: "object"}, weather)],
+                        [call("a", "w", {city: "Tokyo"})]).content[0], result("a", "Tokyo: sunny"))
+
+assert_eq(failure(|| LLM.tool_from_schema("", "d", {}, weather)),
+          "ValueError: LLM.tool_from_schema: the name is empty")
+assert_eq(failure(|| LLM.tool_from_schema(3, "d", {}, weather)),
+          "TypeError: type error: parameter 'name' expects String")
+assert_eq(failure(|| LLM.tool_from_schema("n", 3, {}, weather)),
+          "TypeError: type error: parameter 'description' expects String")
+assert_eq(failure(|| LLM.tool_from_schema("n", "d", [], weather)),
+          "TypeError: type error: parameter 'schema' expects Object")
+assert_eq(failure(|| LLM.tool_from_schema("n", "d", {}, 3)),
+          "TypeError: type error: parameter 'f' expects Function")
 
 # --- in a chat ---------------------------------------------------------------------------------------
 

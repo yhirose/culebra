@@ -9478,6 +9478,29 @@ called as `weather(city: "Tokyo")`. What it returns goes back to the model: a
 `tool.name`, `tool.description` and `tool.input_schema` can be read;
 `tool.spec()` is what goes out with a request.
 
+A parameter named `f` or `description` cannot be given a description by name,
+since those are `LLM.tool`'s own parameters (it is a `TypeError`); use
+`LLM.tool_from_schema` for such a function.
+
+### `LLM.tool_from_schema(name, description, schema, f) -> LLMTool`
+
+A tool whose schema is given, not read off the function: one that arrives as
+data (a tool server's, a file's), or whose function takes `**args` and has no
+annotations to read. `schema` is the JSON Schema of the arguments as an Object,
+and goes out as it is. The model's arguments arrive as keywords, as for
+`LLM.tool`, and what `f` returns goes back as there.
+
+```culebra
+let search = LLM.tool_from_schema("search", "Search the notes", {
+  type: "object",
+  properties: {query: {type: "string"}},
+  required: ["query"],
+}, fn (**args) { "found: {args.query}" })
+inspect(search.name)  # => 'search'
+let call = {id: "c1", name: "search", args: {query: "tea"}}
+inspect(LLM.run_tools([search], [call]).content[0].content)  # => 'found: tea'
+```
+
 ### `LLM.run_tools(tools, calls, approve=nil) -> Object`
 
 The `tool` message that answers `calls`, the tools a reply asked for
