@@ -1,16 +1,19 @@
 # LLM — a client for large language models, written over Http and JSON.
 # docs/stdlib.md carries the reference; this header is the why.
 #
-# One conversation shape, three ways in: `LLM.ask` for a single question,
-# `LLM.chat` for a conversation that keeps its history and runs its tools, and
-# `LLM.request` for a request body sent as it is, so a new API feature does not
-# wait for a release. The Messages format (Anthropic) is the one spoken today;
-# the names say what is done, not who serves it, so another format can be added
-# behind them.
+# What it asks is a provider: anything with a `turn(request, on_text)` method.
+# `LLM.turn` checks a request once and asks a provider one step; `LLM.chat` and
+# `LLM.ask` are loops over it, and `LLM.request` sends a body as it is, so a new
+# API feature does not wait for a release. `LLM.anthropic` is the Messages API
+# as a provider. The names say what is done, not who serves it, so another
+# format is another provider behind them.
 #
-# The history is append-only. A thinking model's blocks are checked when they
-# go back, so an assistant turn is kept exactly as it arrived, and an `ask`
-# that fails takes back everything it added rather than leaving half a turn.
+# A history is messages of one shape whichever provider answers: parts of text,
+# tool calls, tool results and reasoning, where a part a provider must have
+# back as it wrote it (a thinking block with its signature) carries that
+# provider's own block in `opaque`. During an `ask` the history is append-only,
+# and an `ask` that fails takes back everything it added rather than leaving
+# half a turn.
 #
 # A tool is an ordinary function. Its schema is read off its parameters'
 # annotations, and the model's arguments arrive as keywords, so nothing about
@@ -333,22 +336,34 @@ let _llm_module = fn () {
     }
   }
 
+  fn _check_provider(p) {
+    if !_is_provider(p) {
+      _type_error("provider", "a provider (an object with a turn method)")
+    }
+  }
+
+  fn _provider_name(p) {
+    to_string(p.name ?? "provider")
+  }
+
+  # The model a call names, or else the provider's own.
+  fn _model_for(provider, model) {
+    let id = _optional_string("model", model) ?? provider.default_model
+    _fail("LLM: model: is required for {_provider_name(provider)}") if id == nil
+    id
+  }
+
   # One step: what the provider is asked is checked here once, so a provider
   # sees a request that is whole, and runs no tool. A provider is anything with a
   # `turn(request, on_text)` method, `name`, `capabilities` and `default_model`
   # fields.
   fn turn(provider, *, messages, model = nil, system = nil, tools = [], max_tokens = nil,
           stop = nil, temperature = nil, extra = nil, on_text = nil) {
-    if !_is_provider(provider) {
-      _type_error("provider", "a provider (an object with a turn method)")
-    }
-    let name = to_string(provider.name ?? "provider")
+    _check_provider(provider)
+    let name = _provider_name(provider)
     let caps = provider.capabilities ?? {}
 
-    let model_id = _optional_string("model", model) ?? provider.default_model
-    if model_id == nil {
-      _fail("LLM: model: is required for {name}")
-    }
+    let model_id = _model_for(provider, model)
     let prompt = _optional_string("system", system)
     _type_error("messages", "Array") if type_of(messages) != "Array"
     _type_error("tools", "Array") if type_of(tools) != "Array"
@@ -669,57 +684,48 @@ let _llm_module = fn () {
   # --- conversations ------------------------------------------------------------
 
   class LLMChat {
-    new(.http, .model, .system, .tools, .max_tokens, .max_turns) {
+    new(.provider, .model, .system, .tools, .max_tokens, .max_turns) {
       self.messages = []
       self.last = nil
     }
 
     # The answer's text. The tools the model asks for run on the way there, up
-    # to `max_turns` round trips; `last` holds the final response whole.
+    # to `max_turns` round trips; `last` holds the final reply whole.
     ask(prompt, on_text = nil) {
       let content = _string("prompt", prompt)
-      if on_text != nil && type_of(on_text) != "Function" {
-        _type_error("on_text", "Function | Nil")
-      }
       let start = self.messages.size()
       try {
         self.messages.push({role: "user", content: content})
-        for _turn in 0..self.max_turns {
-          let message = self.send(on_text)
-          self.last = message
-          let stop = message.get("stop_reason", nil)
-          if stop == "refusal" {
-            let details = message.get("stop_details", nil)
+        for _step in 0..self.max_turns {
+          let reply = turn(self.provider, model: self.model, messages: self.messages,
+                           system: self.system, tools: self.tools,
+                           max_tokens: self.max_tokens, on_text: on_text)
+          self.last = reply
+          if reply.stop == "refusal" {
+            # The Messages API says why in stop_details.
+            let raw = reply.raw
+            let details = type_of(raw) == "Object" ? raw.get("stop_details", nil) : nil
             let why = type_of(details) == "Object"
               ? details.get("explanation", nil) ?? details.get("category", nil)
               : nil
             _fail("LLM: the model declined to answer" + (why == nil ? "" : ": {why}"))
           }
-          self.messages.push({role: "assistant", content: message.content})
-          let calls = message.content.filter(|b| b.get("type", "") == "tool_use")
-          if stop == "max_tokens" && !calls.empty() {
-            _fail("LLM: a tool call was cut off at max_tokens ({self.max_tokens})")
+          self.messages.push(reply.message)
+          if reply.stop == "length" && !reply.tool_calls.empty() {
+            _fail("LLM: a tool call was cut off at max_tokens")
           }
-          if stop == "tool_use" {
-            self.messages.push({role: "user", content: calls.map(|c| self.run(c))})
-          } else if stop != "pause_turn" {
-            return _text_of(message)
+          if !reply.tool_calls.empty() {
+            self.messages.push({role: "tool", content: reply.tool_calls.map(|c| self.run(c))})
+          } else if reply.stop != "pause" {
+            return reply.text
           }
         }
         _fail("LLM: no answer within max_turns ({self.max_turns})")
       } catch e {
-        # Take back this ask's turns, so the history stays one the API accepts.
+        # Take back this ask's turns, so the history stays one a provider accepts.
         self.messages = self.messages.slice(0, start)
         throw e
       }
-    }
-
-    send(on_text) {
-      let body = {model: self.model, max_tokens: self.max_tokens,
-                  messages: self.messages}
-      body.system = self.system if self.system != nil
-      body.tools = self.tools.map(|t| t.spec()) if !self.tools.empty()
-      on_text == nil ? _send(self.http, body) : _stream(self.http, body, on_text)
     }
 
     # One tool call, answered. What a tool throws goes back to the model as an
@@ -730,20 +736,21 @@ let _llm_module = fn () {
         {content: "no tool named '{call.name}'", is_error: true}
       } else {
         try {
-          {content: _content_of(chosen.f(**call.input)), is_error: false}
+          {content: _content_of(chosen.f(**call.args)), is_error: false}
         } catch e: Interrupted {
           throw e
         } catch e {
           {content: _describe(e), is_error: true}
         }
       }
-      {type: "tool_result", tool_use_id: call.id, ...answer}
+      {type: "tool_result", id: call.id, ...answer}
     }
   }
 
-  fn chat(*, model, system = nil, tools = [], max_tokens = MAX_TOKENS,
-          max_turns = MAX_TURNS, api_key = nil, base_url = nil) {
-    let model_id = _string("model", model)
+  fn chat(*, provider, model = nil, system = nil, tools = [], max_tokens = nil,
+          max_turns = MAX_TURNS) {
+    _check_provider(provider)
+    let model_id = _model_for(provider, model)
     let instructions = _optional_string("system", system)
     _type_error("tools", "Array") if type_of(tools) != "Array"
     for t in tools {
@@ -752,16 +759,13 @@ let _llm_module = fn () {
           "LLM.chat: tools takes what LLM.tool makes, got {type_of(t)}")
       }
     }
-    let http = _connect(_optional_string("api_key", api_key),
-                        _optional_string("base_url", base_url))
-    LLMChat(http, model_id, instructions, tools, _long("max_tokens", max_tokens),
-            _long("max_turns", max_turns))
+    let ceiling = max_tokens == nil ? nil : _long("max_tokens", max_tokens)
+    LLMChat(provider, model_id, instructions, tools, ceiling, _long("max_turns", max_turns))
   }
 
-  fn ask(prompt, *, model, system = nil, max_tokens = MAX_TOKENS, on_text = nil,
-         api_key = nil, base_url = nil) {
-    chat(model: model, system: system, max_tokens: max_tokens,
-         api_key: api_key, base_url: base_url).ask(prompt, on_text: on_text)
+  fn ask(prompt, *, provider, model = nil, system = nil, max_tokens = nil, on_text = nil) {
+    chat(provider: provider, model: model, system: system,
+         max_tokens: max_tokens).ask(prompt, on_text: on_text)
   }
 
   # The body as it is, the response as it is: a failure is still an LLMError.

@@ -115,8 +115,10 @@
 # back, and a Hilbert transform done on them turns a cosine into a sine).
 # 323 since test_llm_turn.cul (LLM.turn against a scripted provider: what it is
 # asked and what is refused first; split from test_llm.cul, where the same
-# assertions took twice the --jit compile).
-tests.cul 323
+# assertions took twice the --jit compile). 324 since test_llm_chat.cul (the
+# chat loop against a scripted provider: the tools it runs, what ends it and
+# what a failure leaves of the history).
+tests.cul 324
 
 # tests/isolate/*.cul — run on both engines, plus the over-cap modes.
 # 21 since test_xml_isolate.cul (an XML element keeps its methods across an

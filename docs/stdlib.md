@@ -138,7 +138,7 @@ Conventions used below:
 | Model a workflow, protocol or UI mode as states and events | [§37 `StateMachine`](#37-statemachine) — `StateMachine.parse(text)`, or a description `Object` |
 | Autocomplete / prefix lookup over a large fixed word list | [§38 FST](#38-fst) — `FST.Set.new(FST.compile_set(words))` → `.predictive_search("hel")` |
 | Spelling correction, fuzzy lookup | [§38 FST](#38-fst) — `.edit_distance_search(word, 1)` / `.suggest(word)` |
-| Ask a language model a question, or let it call your functions | [§42 LLM](#42-llm) — `LLM.ask(prompt, model:)` / `LLM.chat(model:, tools: [LLM.tool(f, "...")])` |
+| Ask a language model a question, or let it call your functions | [§42 LLM](#42-llm) — `LLM.ask(prompt, provider: LLM.anthropic(), model:)` / `LLM.chat(provider:, model:, tools: [LLM.tool(f, "...")])` |
 | Search many documents by keyword, ranked | [§39 Search](#39-search) — `Search.Index.new()` → `.add(key, text)` → `.search("quick -dog")` |
 | String / Array / Object methods | [language spec §18](language.md) |
 | Integer sequences (`range`, `iota`) | [language spec §19](language.md) |
@@ -9383,22 +9383,25 @@ playground has no ZIP support: `Dir.zip` and `Compress.zip` raise there.
 ## 42. `LLM`
 
 A client for large language models, written in Culebra over [`Http`](#15-http)
-and [`JSON`](#9-json). It speaks the Messages format (Anthropic's Claude API).
-There are three ways in: one question, a conversation that keeps its history
-and runs the tools the model asks for, and a request body sent as it is.
+and [`JSON`](#9-json). What it asks is a *provider*: `LLM.anthropic()` (the
+Messages API, Anthropic's Claude API) is the one there is so far, and a provider
+can be written in a program (see `LLM.turn`). There are four ways in: one
+question, a conversation that keeps its history and runs the tools the model
+asks for, one step with a provider (what a loop of your own is made of), and a
+request body sent as it is.
 
 ```culebra
 # doctest: skip
-IO.println(LLM.ask("Name three prime numbers.", model: "claude-haiku-5-5"))
+let claude = LLM.anthropic()
+IO.println(LLM.ask("Name three prime numbers.", provider: claude, model: "claude-haiku-5-5"))
 ```
 
-The key is read from `ANTHROPIC_API_KEY` and the server from
-`ANTHROPIC_BASE_URL` (default `https://api.anthropic.com`); `api_key:` and
-`base_url:` override them on any call. Every call names its model: model IDs
-change and differ in price, so there is no default. Like `Http`, `LLM` is
-absent from a build configured without `Http`.
+Every call names a provider, and a model unless the provider has one of its
+own: model IDs change and differ in price, so `LLM.anthropic` has no default.
+The provider holds the key, the server and the timeout (see `LLM.anthropic`).
+Like `Http`, `LLM` is absent from a build configured without `Http`.
 
-### `LLM.ask(prompt, model:, system=nil, max_tokens=16000, on_text=nil, api_key=nil, base_url=nil) -> String`
+### `LLM.ask(prompt, provider:, model=nil, system=nil, max_tokens=nil, on_text=nil) -> String`
 
 One question, one answer: the text of the reply. `system` is the system
 prompt. `on_text` streams the answer: it is called with each piece of the
@@ -9406,24 +9409,25 @@ text as it is written, and the return value is still the whole text.
 
 ```culebra
 # doctest: skip
-LLM.ask("Write a haiku about rain.", model: "claude-haiku-5-5",
+LLM.ask("Write a haiku about rain.", provider: LLM.anthropic(), model: "claude-haiku-5-5",
         on_text: |t| IO.print(t))
 ```
 
 A text answer cut off at `max_tokens` is returned as far as it got; a
-conversation's `last.stop_reason` says `"max_tokens"`. A server that answers a
-streamed request whole is read whole, and `on_text` is called once with the
-text.
+conversation's `last.stop` says `"length"`. A provider that answers a streamed
+request whole is read whole, and `on_text` is called once with the text.
 
-### `LLM.chat(model:, system=nil, tools=[], max_tokens=16000, max_turns=10, api_key=nil, base_url=nil) -> LLMChat`
+### `LLM.chat(provider:, model=nil, system=nil, tools=[], max_tokens=nil, max_turns=10) -> LLMChat`
 
 A conversation. `chat.ask(prompt, on_text=nil)` adds a turn and returns the
-text of the answer. `chat.messages` holds the history in the API's own
-`{role, content}` shapes, and `chat.last` the last response whole
-(`stop_reason`, `usage`, ...).
+text of the answer. `chat.messages` holds the history as messages (see
+[Messages](#messages)), and may be set between two asks, to trim it, say.
+`chat.last` is the last reply (see `LLM.turn`: `text`, `stop`, `usage`, ...).
 
-When the model asks for a tool, `ask` runs it, sends the result back and asks
-again, up to `max_turns` round trips; the answer is the text of the last turn.
+When the model asks for a tool, `ask` runs it, adds the result as a `tool`
+message and asks again, up to `max_turns` round trips; the answer is the text of
+the last turn. A reply that paused (`stop` is `"pause"`) is followed by another
+request.
 
 ```culebra
 # doctest: skip
@@ -9431,6 +9435,7 @@ fn weather(city: String) {
   "{city}: sunny, 18°C"
 }
 let chat = LLM.chat(
+  provider: LLM.anthropic(),
   model: "claude-haiku-5-5",
   tools: [LLM.tool(weather, "Current weather in a city", city: "a city name")],
 )
@@ -9441,12 +9446,13 @@ IO.println(chat.ask("And in Osaka?"))
 What a tool throws goes back to the model as an error result
 (`is_error: true`), so the model can correct itself or explain; a Ctrl+C
 (`Interrupted`) is not caught. A tool the model names that does not exist is
-answered the same way.
+answered the same way. A tool call cut off at `max_tokens` is an `LLMError`, and
+the tool is not run.
 
-The history only grows. An assistant turn is kept exactly as it arrived, which
-is what a thinking model needs (its thinking blocks are checked when they go
-back), and an `ask` that fails takes back what it added, so the conversation
-is still one the API accepts.
+During an `ask` the history only grows. An assistant message is kept exactly as
+the provider gave it, which is what a thinking model needs (its thinking blocks
+are checked when they go back), and an `ask` that fails takes back what it
+added, so the conversation is still one the provider accepts.
 
 ### `LLM.tool(f, description, **params) -> LLMTool`
 
@@ -9621,9 +9627,10 @@ same as without it. A `tool` message goes out as a user message of
 
 | Situation | Error |
 |---|---|
-| No key (checked before any request) | `LLMError` |
+| No key for `LLM.anthropic` (checked when it is made, before any request) | `LLMError` |
+| No `model:`, and the provider has none | `LLMError` |
 | The API answers with a status that is not 2xx | `LLMError`: `LLM: 429 rate_limit_error: ...` (the status, then the error's type and message) |
-| The model declines to answer (`stop_reason` `"refusal"`) | `LLMError` |
+| The model declines to answer (`stop` is `"refusal"`) | `LLMError` |
 | A tool call cut off at `max_tokens` (the tool is not run) | `LLMError` |
 | No answer within `max_turns` | `LLMError` |
 | A transport failure (DNS, connection refused, TLS) | `HttpError`, as from `Http` |

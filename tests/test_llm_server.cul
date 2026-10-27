@@ -154,8 +154,10 @@ let iso = Isolate.spawn(fn () {
 tx.drop()
 let BASE = "http://127.0.0.1:{rx.recv()}"
 
+let PROVIDER = LLM.anthropic(api_key: "test-key", base_url: BASE)
+
 fn opts(model) {
-  {model: model, api_key: "test-key", base_url: BASE}
+  {provider: PROVIDER, model: model}
 }
 
 # What a call raised, as "Kind: message".
@@ -191,7 +193,7 @@ assert_eq(whole, ["model nostream"])
 # Cut off at max_tokens, the text is still the answer; `last` says why.
 let long = LLM.chat(**opts("long"))
 assert_eq(long.ask("go"), "half an ans")
-assert_eq(long.last.stop_reason, "max_tokens")
+assert_eq(long.last.stop, "length")
 
 # --- tools ------------------------------------------------------------------------
 
@@ -209,10 +211,12 @@ for on_text in [nil, |t| nil] {
   let c = LLM.chat(tools: [weather_tool], **opts("tool"))
   assert_eq(c.ask("weather?", on_text: on_text), "done: Tokyo: sunny")
   assert_eq(asked, ["Tokyo"])
-  assert_eq(c.messages.map(|m| m.role), ["user", "assistant", "user", "assistant"])
-  assert_eq(c.messages[1].content[1], {type: "tool_use", id: "toolu_1", name: "weather",
-                                        input: {city: "Tokyo"}})
-  assert_eq(c.last.stop_reason, "end_turn")
+  assert_eq(c.messages.map(|m| m.role), ["user", "assistant", "tool", "assistant"])
+  assert_eq(c.messages[1].content[1], {type: "tool_call", id: "toolu_1", name: "weather",
+                                        args: {city: "Tokyo"}})
+  assert_eq(c.messages[2], {role: "tool", content: [{type: "tool_result", id: "toolu_1",
+                                                      content: "Tokyo: sunny", is_error: false}]})
+  assert_eq(c.last.stop, "end")
 }
 
 # The tools go out by name, description and schema.
@@ -235,7 +239,7 @@ assert_eq(unknown.ask("weather?"), "done: no tool named 'nope' (error)")
 asked = []
 let cut = LLM.chat(tools: [weather_tool], **opts("cut"))
 assert_eq(failure(|| cut.ask("weather?")),
-          "LLMError: LLM: a tool call was cut off at max_tokens (16000)")
+          "LLMError: LLM: a tool call was cut off at max_tokens")
 assert_eq(asked, [])
 assert_eq(cut.messages, [])
 
@@ -435,6 +439,21 @@ fn an_cases() {
   assert_eq(failure(|| LLM.anthropic(api_key: "k", timeout: "9")),
             "TypeError: type error: parameter 'timeout' expects Long")
 
+  # A chat keeps what the provider asked to have back, a quotation here, whether
+  # the answer was streamed or not.
+  for on_text in [nil, |t| nil] {
+    let quoting = LLM.chat(**opts("cited"))
+    assert_eq(quoting.ask("one", on_text: on_text), "the sky is blue")
+    quoting.model = "record"
+    let sent = JSON.parse(quoting.ask("next", on_text: on_text))
+    assert_eq(sent.messages[1].content[0], JSON.parse(AN_BODIES.citations).messages[1].content[0])
+  }
+
+  # The history is the program's to change between asks.
+  let edited = LLM.chat(**opts("record"))
+  edited.messages = [an_user("a"), an_say("b")]
+  assert_eq(JSON.parse(edited.ask("c")).messages.size(), 3)
+  assert_eq(edited.messages.size(), 4)
 }
 an_cases()
 

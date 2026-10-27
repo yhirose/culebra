@@ -135,7 +135,7 @@
 | 手順・通信手順・画面のモードを状態とイベントで表す | [§37 `StateMachine`](#37-statemachine) — `StateMachine.parse(text)`、または記述用の`Object` |
 | 変わらない大きな語彙から前方一致で補完する | [§38 FST](#38-fst) — `FST.Set.new(FST.compile_set(words))` → `.predictive_search("hel")` |
 | 綴りの直し・あいまい検索 | [§38 FST](#38-fst) — `.edit_distance_search(word, 1)`／`.suggest(word)` |
-| 言語モデルに質問する、自分の関数を呼ばせる | [§42 LLM](#42-llm) — `LLM.ask(prompt, model:)` / `LLM.chat(model:, tools: [LLM.tool(f, "...")])` |
+| 言語モデルに質問する、自分の関数を呼ばせる | [§42 LLM](#42-llm) — `LLM.ask(prompt, provider: LLM.anthropic(), model:)` / `LLM.chat(provider:, model:, tools: [LLM.tool(f, "...")])` |
 | たくさんの文書を語で検索して順位をつける | [§39 Search](#39-search) — `Search.Index.new()` → `.add(key, text)` → `.search("quick -dog")` |
 | 行列・テンソル演算（BLAS対応） | [§8 Tensor](#8-tensor) |
 | String / Array / Objectのメソッド | [言語仕様 §18](language.ja.md) |
@@ -9008,22 +9008,24 @@ Windowsでは開いているファイルを削除も置き換えもできない�
 ## 42. `LLM`
 
 大規模言語モデルのクライアントです。Culebraで書かれていて、[`Http`](#15-http)と
-[`JSON`](#9-json)の上に作られています。Messages形式（AnthropicのClaude API）を
-話します。使い方は3つあります。1回の質問、履歴を持ちモデルが求めるツールを実行する
-会話、そしてリクエスト本文をそのまま送る素通しです。
+[`JSON`](#9-json)の上に作られています。尋ねる相手は*提供元*で、今あるのは
+`LLM.anthropic()`（Messages API、AnthropicのClaude API）だけですが、提供元はプログラムの
+中で書くこともできます（`LLM.turn`を参照）。使い方は4つあります。1回の質問、履歴を持ち
+モデルが求めるツールを実行する会話、提供元への1ステップ（自前のループの部品）、
+そしてリクエスト本文をそのまま送る素通しです。
 
 ```culebra
 # doctest: skip
-IO.println(LLM.ask("Name three prime numbers.", model: "claude-haiku-5-5"))
+let claude = LLM.anthropic()
+IO.println(LLM.ask("Name three prime numbers.", provider: claude, model: "claude-haiku-5-5"))
 ```
 
-キーは`ANTHROPIC_API_KEY`から、接続先は`ANTHROPIC_BASE_URL`（既定は
-`https://api.anthropic.com`）から読みます。どの呼び出しでも`api_key:`と`base_url:`で
-上書きできます。モデルは呼び出しごとに必ず指定します。モデルIDは入れ替わり、
-価格も違うので、既定値はありません。`Http`を含めずに構成したビルドには、`Http`と
-同じく`LLM`もありません。
+どの呼び出しでも提供元を指定し、提供元が自分のモデルを持たなければモデルも指定します。
+モデルIDは入れ替わり、価格も違うので、`LLM.anthropic`に既定値はありません。キーも接続先も
+タイムアウトも提供元が持ちます（`LLM.anthropic`を参照）。`Http`を含めずに構成した
+ビルドには、`Http`と同じく`LLM`もありません。
 
-### `LLM.ask(prompt, model:, system=nil, max_tokens=16000, on_text=nil, api_key=nil, base_url=nil) -> String`
+### `LLM.ask(prompt, provider:, model=nil, system=nil, max_tokens=nil, on_text=nil) -> String`
 
 1回の質問に1回答え、その本文を返します。`system`はシステムプロンプトです。
 `on_text`を渡すと回答をストリーミングで受け取れます。本文が書かれるそばから
@@ -9031,22 +9033,24 @@ IO.println(LLM.ask("Name three prime numbers.", model: "claude-haiku-5-5"))
 
 ```culebra
 # doctest: skip
-LLM.ask("Write a haiku about rain.", model: "claude-haiku-5-5",
+LLM.ask("Write a haiku about rain.", provider: LLM.anthropic(), model: "claude-haiku-5-5",
         on_text: |t| IO.print(t))
 ```
 
 `max_tokens`で途中で切れた本文は、切れたところまでを返します。会話なら
-`last.stop_reason`が`"max_tokens"`になります。ストリーミングを求めたのにサーバが
+`last.stop`が`"length"`になります。ストリーミングを求めたのに提供元が
 まとめて返した場合はそのまま読み、`on_text`は本文全体で1回呼ばれます。
 
-### `LLM.chat(model:, system=nil, tools=[], max_tokens=16000, max_turns=10, api_key=nil, base_url=nil) -> LLMChat`
+### `LLM.chat(provider:, model=nil, system=nil, tools=[], max_tokens=nil, max_turns=10) -> LLMChat`
 
 会話です。`chat.ask(prompt, on_text=nil)`はターンを1つ足し、回答の本文を返します。
-`chat.messages`にはAPIのままの`{role, content}`の形で履歴が、`chat.last`には
-最後の応答がそのまま（`stop_reason`、`usage`など）入っています。
+`chat.messages`には履歴がメッセージの形（[Messages](#messages)を参照）で入っていて、
+二度の`ask`の間に、削るなどのために入れ替えられます。`chat.last`は最後の応答です
+（`LLM.turn`を参照。`text`、`stop`、`usage`など）。
 
-モデルがツールを求めると、`ask`はそれを実行して結果を返し、もう一度尋ねます。
-これを最大`max_turns`往復まで繰り返し、最後のターンの本文を回答として返します。
+モデルがツールを求めると、`ask`はそれを実行し、結果を`tool`メッセージとして足して、
+もう一度尋ねます。これを最大`max_turns`往復まで繰り返し、最後のターンの本文を回答として
+返します。一時停止した応答（`stop`が`"pause"`）の後には、もう一度リクエストを送ります。
 
 ```culebra
 # doctest: skip
@@ -9054,6 +9058,7 @@ fn weather(city: String) {
   "{city}: sunny, 18°C"
 }
 let chat = LLM.chat(
+  provider: LLM.anthropic(),
   model: "claude-haiku-5-5",
   tools: [LLM.tool(weather, "Current weather in a city", city: "a city name")],
 )
@@ -9063,11 +9068,12 @@ IO.println(chat.ask("And in Osaka?"))
 
 ツールが投げた例外は、エラーの結果（`is_error: true`）としてモデルに返します。
 モデルはそれを見て直したり説明したりできます。Ctrl+C（`Interrupted`）は捕まえません。
-モデルが存在しないツールを名指した場合も同じように答えます。
+モデルが存在しないツールを名指した場合も同じように答えます。ツール呼び出しが
+`max_tokens`で切れたときは`LLMError`で、ツールは実行しません。
 
-履歴は増えるだけです。アシスタントのターンは届いたとおりに残します。考えるモデル
-にはこれが必要です（思考ブロックは返すときに検査されます）。失敗した`ask`は自分が
-足したものを取り消すので、会話はAPIが受け付ける形のままです。
+`ask`の間、履歴は増えるだけです。アシスタントのメッセージは提供元が返したとおりに
+残します。考えるモデルにはこれが必要です（思考ブロックは返すときに検査されます）。
+失敗した`ask`は自分が足したものを取り消すので、会話は提供元が受け付ける形のままです。
 
 ### `LLM.tool(f, description, **params) -> LLMTool`
 
@@ -9234,9 +9240,10 @@ history.push(reply.message)
 
 | 状況 | エラー |
 |---|---|
-| キーが無い（リクエストの前に確かめる） | `LLMError` |
+| `LLM.anthropic`のキーが無い（作るときに、リクエストの前に確かめる） | `LLMError` |
+| `model:`が無く、提供元にも既定がない | `LLMError` |
 | APIが2xx以外のステータスで答えた | `LLMError`: `LLM: 429 rate_limit_error: ...`（ステータス、エラーの種類と説明） |
-| モデルが回答を断った（`stop_reason`が`"refusal"`） | `LLMError` |
+| モデルが回答を断った（`stop`が`"refusal"`） | `LLMError` |
 | ツール呼び出しが`max_tokens`で切れた（ツールは実行しない） | `LLMError` |
 | `max_turns`以内に回答が無い | `LLMError` |
 | 通信の失敗（名前解決、接続拒否、TLS） | `Http`と同じく`HttpError` |

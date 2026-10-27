@@ -1,0 +1,226 @@
+# LLM.chat and LLM.ask against a provider that is only a script: the loop that
+# runs the tools a model asks for, what ends it, and what a failure leaves of
+# the history. No network, no key; the Messages API is in test_llm_server.cul.
+
+# What a call raised, as "Kind: message".
+fn failure(thunk) {
+  try {
+    thunk()
+    "no error"
+  } catch e {
+    "{e.kind}: {e.message}"
+  }
+}
+
+fn user(t) {
+  {role: "user", content: t}
+}
+fn say(t) {
+  {role: "assistant", content: [{type: "text", text: t}]}
+}
+fn text(t) {
+  {type: "text", text: t}
+}
+fn call(id, name, args) {
+  {type: "tool_call", id: id, name: name, args: args}
+}
+
+# A reply as a provider gives it.
+fn reply(parts, stop, raw = nil) {
+  {message: {role: "assistant", content: parts},
+   text: parts.filter(|p| p.type == "text").map(|p| p.text).join(""),
+   tool_calls: parts.filter(|p| p.type == "tool_call").map(|p| {id: p.id, name: p.name, args: p.args}),
+   reasoning: "", stop: stop, usage: nil, raw: raw}
+}
+
+# A provider that answers from a list, in order, and keeps what it was asked.
+class ChatFake {
+  new(.queue, .default_model) {
+    self.name = "scripted"
+    self.capabilities = {tools: true}
+    self.seen = []
+    self.n = 0
+  }
+  turn(request, on_text) {
+    self.seen.push({...request, messages: request.messages + []})
+    on_text("piece") if on_text != nil
+    let r = self.queue[self.n]
+    self.n += 1
+    type_of(r) == "Function" ? r() : r
+  }
+}
+fn scripted(queue, default_model = "m") {
+  ChatFake(queue, default_model)
+}
+
+mut ran = []
+fn weather(city: String) {
+  ran.push(city)
+  "{city}: sunny"
+}
+fn broken(city: String) {
+  __raise("ValueError", "no data for {city}")
+}
+fn stopped(city: String) {
+  __raise("Interrupted", "stop")
+}
+fn structured(city: String) {
+  {city: city, days: [1, 2]}
+}
+let w = LLM.tool(weather, "the weather in a city")
+
+# --- one question ----------------------------------------------------------------------
+
+# The answer is the reply's text, and the history is the question and the reply.
+let p1 = scripted([reply([text("hello")], "end")])
+let c1 = LLM.chat(provider: p1)
+assert_eq(c1.ask("hi"), "hello")
+assert_eq(c1.messages, [user("hi"), say("hello")])
+assert_eq(c1.last.text, "hello")
+assert_eq(p1.seen[0].model, "m")
+assert_eq(p1.seen[0].messages, [user("hi")])
+
+# Everything the chat was made with reaches every request, and the history grows.
+let p2 = scripted([reply([text("a")], "end"), reply([text("b")], "end")])
+let c2 = LLM.chat(provider: p2, model: "big", system: "be brief", tools: [w], max_tokens: 50)
+c2.ask("one")
+c2.ask("two")
+assert_eq(p2.seen.map(|r| [r.model, r.system, r.tools.size(), r.max_tokens]),
+          [["big", "be brief", 1, 50], ["big", "be brief", 1, 50]])
+assert_eq(p2.seen[1].messages, [user("one"), say("a"), user("two")])
+let p3 = scripted([reply([text("x")], "end")])
+LLM.chat(provider: p3).ask("hi")
+assert_eq(p3.seen[0].max_tokens, nil)
+
+let heard = []
+LLM.chat(provider: scripted([reply([text("x")], "end")])).ask("hi", on_text: |t| heard.push(t))
+assert_eq(heard, ["piece"])
+
+# ask is a chat of one question.
+assert_eq(LLM.ask("hi", provider: scripted([reply([text("yo")], "end")])), "yo")
+let p5 = scripted([reply([text("a")], "end")])
+LLM.ask("hi", provider: p5, model: "big", system: "s", max_tokens: 9)
+assert_eq([p5.seen[0].model, p5.seen[0].system, p5.seen[0].max_tokens], ["big", "s", 9])
+
+# --- tools -------------------------------------------------------------------------------
+
+# The tool runs with the arguments as keywords, its result is a tool message, and
+# the answer is the last turn's text.
+ran = []
+let p6 = scripted([reply([text("checking "), call("c1", "weather", {city: "Tokyo"})], "tool_calls"),
+                   reply([text("sunny in Tokyo")], "end")])
+let c6 = LLM.chat(provider: p6, tools: [w])
+assert_eq(c6.ask("weather?"), "sunny in Tokyo")
+assert_eq(ran, ["Tokyo"])
+assert_eq(c6.messages.map(|m| m.role), ["user", "assistant", "tool", "assistant"])
+assert_eq(c6.messages[2],
+          {role: "tool", content: [{type: "tool_result", id: "c1", content: "Tokyo: sunny", is_error: false}]})
+assert_eq(p6.seen[1].messages.size(), 3)
+assert_eq(c6.last.text, "sunny in Tokyo")
+
+# Calls asked together run in order and are answered in one tool message.
+ran = []
+let p7 = scripted([reply([call("a", "weather", {city: "Tokyo"}), call("b", "weather", {city: "Osaka"})],
+                         "tool_calls"), reply([text("done")], "end")])
+let c7 = LLM.chat(provider: p7, tools: [w])
+c7.ask("two?")
+assert_eq(ran, ["Tokyo", "Osaka"])
+assert_eq(c7.messages[2].content.map(|r| r.id), ["a", "b"])
+
+# What a tool throws goes back to the model as an error it can act on.
+let p8 = scripted([reply([call("a", "broken", {city: "Tokyo"})], "tool_calls"), reply([text("ok")], "end")])
+let c8 = LLM.chat(provider: p8, tools: [LLM.tool(broken, "fails")])
+c8.ask("go")
+assert_eq(c8.messages[2].content[0],
+          {type: "tool_result", id: "a", content: "ValueError: no data for Tokyo", is_error: true})
+
+# A tool the model names that does not exist is answered the same way.
+let p9 = scripted([reply([call("a", "nope", {})], "tool_calls"), reply([text("ok")], "end")])
+let c9 = LLM.chat(provider: p9, tools: [w])
+c9.ask("go")
+assert_eq(c9.messages[2].content[0],
+          {type: "tool_result", id: "a", content: "no tool named 'nope'", is_error: true})
+
+# A value that is not a String goes back as JSON.
+let p10 = scripted([reply([call("a", "structured", {city: "Tokyo"})], "tool_calls"), reply([text("ok")], "end")])
+let c10 = LLM.chat(provider: p10, tools: [LLM.tool(structured, "s")])
+c10.ask("go")
+assert_eq(c10.messages[2].content[0].content, '{"city":"Tokyo","days":[1,2]}')
+
+# An interrupt is the user's: it is not the model's to be told of.
+let p11 = scripted([reply([call("a", "stopped", {city: "Tokyo"})], "tool_calls")])
+let c11 = LLM.chat(provider: p11, tools: [LLM.tool(stopped, "s")])
+assert_eq(failure(|| c11.ask("go")), "Interrupted: stop")
+assert_eq(c11.messages, [])
+
+# Calls are run whatever the stop reason says, unless the reply was cut off.
+ran = []
+let p12 = scripted([reply([call("a", "weather", {city: "Tokyo"})], "end"), reply([text("ok")], "end")])
+LLM.chat(provider: p12, tools: [w]).ask("go")
+assert_eq(ran, ["Tokyo"])
+
+# --- pause, refusal, cut off, too long, failing ----------------------------------------------
+
+# A reply that paused is followed by another request.
+let p13 = scripted([reply([text("part one, ")], "pause"), reply([text("part two")], "end")])
+let c13 = LLM.chat(provider: p13)
+assert_eq(c13.ask("go"), "part two")
+assert_eq(c13.messages.map(|m| m.role), ["user", "assistant", "assistant"])
+
+# A refusal says why, when the reply does, and takes the question back.
+let p14 = scripted([reply([], "refusal", {stop_details: {type: "refusal", explanation: "not this"}})])
+let c14 = LLM.chat(provider: p14)
+assert_eq(failure(|| c14.ask("go")), "LLMError: LLM: the model declined to answer: not this")
+assert_eq(c14.messages, [])
+assert_eq(failure(|| LLM.chat(provider: scripted([reply([], "refusal",
+            {stop_details: {type: "refusal", category: "cyber"}})])).ask("go")),
+          "LLMError: LLM: the model declined to answer: cyber")
+assert_eq(failure(|| LLM.chat(provider: scripted([reply([], "refusal")])).ask("go")),
+          "LLMError: LLM: the model declined to answer")
+
+# A call cut off is not run, and a text cut off is still the answer.
+ran = []
+let p17 = scripted([reply([call("a", "weather", {city: "To"})], "length")])
+let c17 = LLM.chat(provider: p17, tools: [w])
+assert_eq(failure(|| c17.ask("go")), "LLMError: LLM: a tool call was cut off at max_tokens")
+assert_eq(ran, [])
+assert_eq(c17.messages, [])
+let c18 = LLM.chat(provider: scripted([reply([text("half an ans")], "length")]))
+assert_eq(c18.ask("go"), "half an ans")
+assert_eq(c18.last.stop, "length")
+
+# A model that keeps asking is stopped, and the history is as it was.
+ran = []
+let p19 = scripted([reply([call("a", "weather", {city: "Tokyo"})], "tool_calls"),
+                    reply([call("b", "weather", {city: "Tokyo"})], "tool_calls"),
+                    reply([text("never")], "end")])
+let c19 = LLM.chat(provider: p19, tools: [w], max_turns: 2)
+assert_eq(failure(|| c19.ask("go")), "LLMError: LLM: no answer within max_turns (2)")
+assert_eq(ran, ["Tokyo", "Tokyo"])
+assert_eq(c19.messages, [])
+
+# A request that fails takes back its own turns and no earlier one.
+let p20 = scripted([reply([text("first")], "end"), fn () { __raise("HttpError", "down") }])
+let c20 = LLM.chat(provider: p20)
+c20.ask("one")
+assert_eq(failure(|| c20.ask("two")), "HttpError: down")
+assert_eq(c20.messages, [user("one"), say("first")])
+
+# --- the history is the program's ----------------------------------------------------------------
+
+let p21 = scripted([reply([text("c")], "end")])
+let c21 = LLM.chat(provider: p21)
+c21.messages = [user("a"), say("b")]
+c21.ask("c?")
+assert_eq(p21.seen[0].messages, [user("a"), say("b"), user("c?")])
+assert_eq(c21.messages.size(), 4)
+
+# --- the arguments ------------------------------------------------------------------------------------
+
+let c22 = LLM.chat(provider: scripted([reply([text("x")], "end")]))
+assert_eq(failure(|| c22.ask(3)), "TypeError: type error: parameter 'prompt' expects String")
+assert_eq(failure(|| c22.ask("hi", on_text: 3)),
+          "TypeError: type error: parameter 'on_text' expects Function | Nil")
+assert_eq(c22.messages, [])
+assert_eq(failure(|| LLM.chat(provider: scripted([]), tools: 3)),
+          "TypeError: type error: parameter 'tools' expects Array")

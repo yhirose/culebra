@@ -61,23 +61,32 @@ assert_eq(failure(|| LLM.tool(|x| x, "anonymous")),
           "ValueError: LLM.tool: the function has no name; declare it with `fn name(...)`")
 assert_eq(failure(|| LLM.tool("weather", "w")),
           "TypeError: type error: parameter 'f' expects Function")
-assert_eq(failure(|| LLM.chat()), "ArityError: missing required argument 'model'")
-assert_eq(failure(|| LLM.chat(model: "m", api_key: "k", tools: [weather])),
-          "TypeError: LLM.chat: tools takes what LLM.tool makes, got Function")
-assert_eq(failure(|| LLM.ask("hi", model: "m", api_key: "")),
+assert_eq(failure(|| LLM.chat()), "ArityError: missing required argument 'provider'")
+assert_eq(failure(|| LLM.anthropic(api_key: "")),
           "LLMError: LLM: no API key: set ANTHROPIC_API_KEY or pass api_key:")
 
 # A wrong argument is the TypeError a typed parameter raises.
 let nowhere = {api_key: "k", base_url: "http://127.0.0.1:1"}
-assert_eq(failure(|| LLM.chat(model: 3, **nowhere)),
-          "TypeError: type error: parameter 'model' expects String")
-assert_eq(failure(|| LLM.chat(model: "m", system: 3, **nowhere)),
+let nowhere_provider = LLM.anthropic(**nowhere)
+assert_eq(failure(|| LLM.chat(provider: nowhere_provider, model: "m", tools: [weather])),
+          "TypeError: LLM.chat: tools takes what LLM.tool makes, got Function")
+assert_eq(failure(|| LLM.chat(provider: 3, model: "m")),
+          "TypeError: type error: parameter 'provider' expects a provider (an object with a turn method)")
+assert_eq(failure(|| LLM.chat(provider: nowhere_provider)),
+          "LLMError: LLM: model: is required for anthropic")
+assert_eq(failure(|| LLM.ask("hi", provider: nowhere_provider)),
+          "LLMError: LLM: model: is required for anthropic")
+assert_eq(failure(|| LLM.chat(provider: nowhere_provider, model: 3)),
+          "TypeError: type error: parameter 'model' expects String | Nil")
+assert_eq(failure(|| LLM.chat(provider: nowhere_provider, model: "m", system: 3)),
           "TypeError: type error: parameter 'system' expects String | Nil")
-assert_eq(failure(|| LLM.chat(model: "m", max_turns: "9", **nowhere)),
+assert_eq(failure(|| LLM.chat(provider: nowhere_provider, model: "m", max_tokens: "9")),
+          "TypeError: type error: parameter 'max_tokens' expects Long")
+assert_eq(failure(|| LLM.chat(provider: nowhere_provider, model: "m", max_turns: "9")),
           "TypeError: type error: parameter 'max_turns' expects Long")
-assert_eq(failure(|| LLM.ask(3, model: "m", **nowhere)),
+assert_eq(failure(|| LLM.ask(3, provider: nowhere_provider, model: "m")),
           "TypeError: type error: parameter 'prompt' expects String")
-assert_eq(failure(|| LLM.ask("hi", model: "m", on_text: 3, **nowhere)),
+assert_eq(failure(|| LLM.ask("hi", provider: nowhere_provider, model: "m", on_text: 3)),
           "TypeError: type error: parameter 'on_text' expects Function | Nil")
 assert_eq(failure(|| LLM.request([], **nowhere)),
           "TypeError: type error: parameter 'body' expects Object")
@@ -97,7 +106,7 @@ fn line_of(thunk) {
     e.line
   }
 }
-let lines = [line_of(|| LLM.ask("hi", model: "m", api_key: "")), line_of(|| [][1])]
+let lines = [line_of(|| LLM.anthropic(api_key: "")), line_of(|| [][1])]
 assert_eq(lines[0], lines[1])
 
 # --- LLM.repair: a history a provider would refuse, made one it accepts --------------
@@ -203,7 +212,7 @@ assert_eq(failure(|| Isolate.spawn(|| llm_ask("hi", model: "m")).join()),
 # Nothing listens on port 1. The failure is the connection's, which also says
 # the HTTP runtime is linked into a binary that never named it.
 let refused = try {
-  LLM.ask("hi", model: "m", api_key: "k", base_url: "http://127.0.0.1:1")
+  LLM.ask("hi", provider: nowhere_provider, model: "m")
   nil
 } catch e {
   e
