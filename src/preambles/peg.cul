@@ -321,6 +321,7 @@ let _peg_module = fn () {
     }
     enable_packrat_parsing() {
       self._packrat = true
+      nil
     }
     parse(text, path = "", dt = nil) {
       return (false, nil) if self._src == nil

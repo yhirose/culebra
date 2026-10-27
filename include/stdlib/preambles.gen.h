@@ -5803,6 +5803,7 @@ let _peg_module = fn () {
     }
     enable_packrat_parsing() {
       self._packrat = true
+      nil
     }
     parse(text, path = "", dt = nil) {
       return (false, nil) if self._src == nil
@@ -6048,12 +6049,14 @@ inline constexpr const char* LOG_MODULE_SOURCE = R"=culpre=(let _log_module = fn
     let n = _levels.get(level, -1)
     __raise("ValueError", "Log.set_level: unknown level '{level}'") if n < 0
     _threshold = n
+    nil
   }
   let _set_format = fn (format) {
     if format != "text" && format != "json" {
       __raise("ValueError", "Log.set_format: unknown format '{format}'")
     }
     _format = format
+    nil
   }
   {..._methods({}), set_level: _set_level, set_format: _set_format}
 }
@@ -6989,6 +6992,7 @@ let _state_machine_module = fn () {
       let ev = {name: nil, payload: nil}
       self._exit(ROOT, ev)
       self._enter(self._boot, ev)
+      nil
     }
 
     __str__() {

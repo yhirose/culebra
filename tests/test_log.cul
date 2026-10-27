@@ -31,6 +31,9 @@ let e1 = try {
   e
 }
 assert_eq([e1.kind, e1.message], ['ValueError', "Log.set_level: unknown level 'bogus'"])
+# Both are `-> Nil`: not the threshold index or the format they stored.
+assert_eq(Log.set_level("info"), nil)
+assert_eq(Log.set_format("text"), nil)
 let e2 = try {
   Log.set_format("xml")
   "no-error"

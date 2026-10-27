@@ -95,7 +95,7 @@ let expected = [
 assert_eq(seen, [expected, expected, expected, expected])
 seen = []
 let memoized = parser_with(calc, tracing)
-memoized.enable_packrat_parsing()
+assert_eq(memoized.enable_packrat_parsing(), nil)  # `-> Nil`, not the flag it set
 assert_eq(memoized.parse("  42 ", "in.txt"), (true, 42))
 assert_eq(seen, [expected])
 

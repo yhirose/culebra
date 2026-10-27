@@ -340,6 +340,7 @@ let _state_machine_module = fn () {
       let ev = {name: nil, payload: nil}
       self._exit(ROOT, ev)
       self._enter(self._boot, ev)
+      nil
     }
 
     __str__() {

@@ -174,7 +174,7 @@ assert_eq(p.state(), "stopped")
 
 p.fire("play")
 drain(p)
-p.reset()
+assert_eq(p.reset(), nil)  # `-> Nil`: not the name of the state it entered
 assert_eq(p.state(), "stopped")
 assert_eq(drain(p), ["x_normal", "x_playing"])
 
