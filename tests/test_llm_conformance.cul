@@ -217,14 +217,16 @@ fn adapters() {
 let (tx, rx) = Channel.new(1)
 let iso = Isolate.spawn(fn () {
   let srv = Http.server()
-  for name in adapters().keys() {
-    let a = adapters()[name]
+  let scripted = cases()
+  let wires = adapters()
+  for name in wires.keys() {
+    let a = wires[name]
     srv.post(a.path, fn (req) {
       let body = JSON.parse(req.body)
       let m = body.model
       let streaming = body.get("stream", false)
-      if cases().has(m) {
-        return a.answer(cases()[m], streaming)
+      if scripted.has(m) {
+        return a.answer(scripted[m], streaming)
       }
       # `seen` answers with what the request said, as a text reply.
       let said = JSON.stringify(a.seen(body))

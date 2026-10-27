@@ -8208,10 +8208,17 @@ let _llm_module = fn () {
 
   # --- the wire -----------------------------------------------------------------
 
+  # The key and the server of a hosted service: what the call gives, else the
+  # service's variables, else its own server.
+  fn _credentials(key_var, base_var, default_base, api_key, base_url) {
+    let key = (_optional_string("api_key", api_key) ?? Sys.env(key_var)).presence()
+    _fail("LLM: no API key: set {key_var} or pass api_key:") if key == nil
+    (key, _optional_string("base_url", base_url) ?? Sys.env(base_var).presence() ?? default_base)
+  }
+
   fn _connect(api_key, base_url, timeout = nil) {
-    let key = (api_key ?? Sys.env("ANTHROPIC_API_KEY")).presence()
-    _fail("LLM: no API key: set ANTHROPIC_API_KEY or pass api_key:") if key == nil
-    let base = base_url ?? Sys.env("ANTHROPIC_BASE_URL").presence() ?? DEFAULT_BASE
+    let (key, base) = _credentials("ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", DEFAULT_BASE,
+                                   api_key, base_url)
     let headers = {"x-api-key": key, "anthropic-version": API_VERSION}
     timeout == nil ? Http.client(base, headers: headers)
                    : Http.client(base, headers: headers, timeout: timeout)
@@ -8219,22 +8226,23 @@ let _llm_module = fn () {
 
   # A failed request explains itself in its body, `{error: {type, message}}`
   # in this format; a gateway's page that is not JSON is quoted as it is.
-  fn _api_error(res) {
+  fn _api_error(res, detail_of) {
     let parsed = try {
       JSON.parse(res.body)
     } catch _e: ValueError {
       nil
     }
     let err = type_of(parsed) == "Object" ? parsed.get("error", nil) : nil
-    let detail = type_of(err) == "Object"
-      ? "{err.get('type', 'error')}: {err.get('message', '')}"
-      : res.body.truncate(500)
-    _fail("LLM: {res.status} {detail}")
+    _fail("LLM: {res.status} {detail_of(err) ?? res.body.truncate(500)}")
   }
 
-  fn _send(http, body, headers = nil, path = "/v1/messages") {
+  fn _anthropic_detail(err) {
+    type_of(err) == "Object" ? "{err.get('type', 'error')}: {err.get('message', '')}" : nil
+  }
+
+  fn _send(http, body, headers = nil, path = "/v1/messages", detail_of = _anthropic_detail) {
     let res = http.post(path, json: body, headers: headers)
-    _api_error(res) unless res.ok
+    _api_error(res, detail_of) unless res.ok
     res.json()
   }
 
@@ -8333,17 +8341,16 @@ let _llm_module = fn () {
     message.content.filter(|b| b.get("type", "") == "text").map(|b| b.text).join("")
   }
 
-  fn _stream(http, body, on_text) {
-    let assembly = LLMStream(on_text)
-    let res = http.post("/v1/messages", json: {...body, stream: true},
-                        events: |e| assembly.take(e))
-    _api_error(res) unless res.ok
+  # A streamed request: `assembly` takes the events and puts the message back
+  # together. A 2xx that did not stream is the whole answer, as a server that
+  # ignores `stream` sends it; `text_of` reads its text for `on_text`.
+  fn _stream(http, path, body, assembly, text_of, detail_of, on_text) {
+    let res = http.post(path, json: body, events: |e| assembly.take(e))
+    _api_error(res, detail_of) unless res.ok
     if assembly.events == 0 {
-      # A 2xx that did not stream is the whole answer: a server that ignores
-      # `stream` sends the message the plain request would have.
       _fail("LLM: {res.status}: the stream closed without an event") if res.body.empty()
       let message = res.json()
-      on_text(_text_of(message))
+      on_text(text_of(message))
       return message
     }
     assembly.finish()
@@ -8446,25 +8453,33 @@ let _llm_module = fn () {
     }
   }
 
-  let STOPS = {end_turn: "end", stop_sequence: "end", tool_use: "tool_calls",
-               max_tokens: "length", refusal: "refusal", pause_turn: "pause"}
-
-  # The API's answer, whole or put together from a stream, as the reply a
-  # provider gives. A stop reason it does not know is nil; `raw` has it.
-  fn _reply_of(message) {
-    let parts = message.get("content", []).map(_part_of)
-    let u = message.get("usage", nil)
+  # The reply a provider gives, whatever its format: `text`, `tool_calls` and
+  # `reasoning` are read off the parts, so they cannot disagree with `message`.
+  fn _reply_from(parts, stop, usage, raw) {
     {
       message: {role: "assistant", content: parts},
       text: parts.filter(|p| p.type == "text").map(|p| p.text).join(""),
       tool_calls: parts.filter(|p| p.type == "tool_call")
                        .map(|p| {id: p.id, name: p.name, args: p.args}),
       reasoning: parts.filter(|p| p.type == "reasoning").map(|p| p.text).join(""),
-      stop: STOPS.get(message.get("stop_reason", ""), nil),
-      usage: u == nil ? nil : {input_tokens: u.get("input_tokens", 0),
-                               output_tokens: u.get("output_tokens", 0)},
-      raw: message,
+      stop: stop,
+      usage: usage,
+      raw: raw,
     }
+  }
+
+  let STOPS = {end_turn: "end", stop_sequence: "end", tool_use: "tool_calls",
+               max_tokens: "length", refusal: "refusal", pause_turn: "pause"}
+
+  # The API's answer, whole or put together from a stream, as the reply a
+  # provider gives. A stop reason it does not know is nil; `raw` has it.
+  fn _reply_of(message) {
+    let u = message.get("usage", nil)
+    _reply_from(message.get("content", []).map(_part_of),
+                STOPS.get(message.get("stop_reason", ""), nil),
+                u == nil ? nil : {input_tokens: u.get("input_tokens", 0),
+                                  output_tokens: u.get("output_tokens", 0)},
+                message)
   }
 
   class LLMAnthropic {
@@ -8476,7 +8491,9 @@ let _llm_module = fn () {
 
     turn(req, on_text) {
       let body = _body_of(req)
-      _reply_of(on_text == nil ? _send(self.http, body) : _stream(self.http, body, on_text))
+      _reply_of(on_text == nil ? _send(self.http, body)
+        : _stream(self.http, "/v1/messages", {...body, stream: true}, LLMStream(on_text),
+                  _text_of, _anthropic_detail, on_text))
     }
 
     # The body as it is, posted to /v1/messages, and the answer as it is.
@@ -8491,8 +8508,7 @@ let _llm_module = fn () {
   }
 
   fn anthropic(*, api_key = nil, base_url = nil, timeout = 120) {
-    LLMAnthropic(_connect(_optional_string("api_key", api_key),
-                          _optional_string("base_url", base_url), _long("timeout", timeout)))
+    LLMAnthropic(_connect(api_key, base_url, _long("timeout", timeout)))
   }
 
   # --- Chat Completions as a provider ---------------------------------------------
@@ -8510,22 +8526,6 @@ let _llm_module = fn () {
     }
   }
 
-  fn _cc_error(res) {
-    let parsed = try {
-      JSON.parse(res.body)
-    } catch _e: ValueError {
-      nil
-    }
-    let detail = type_of(parsed) == "Object" ? _cc_detail(parsed.get("error", nil)) : nil
-    _fail("LLM: {res.status} {detail ?? res.body.truncate(500)}")
-  }
-
-  fn _cc_send(http, body, headers = nil) {
-    let res = http.post("/chat/completions", json: body, headers: headers)
-    _cc_error(res) unless res.ok
-    res.json()
-  }
-
   # A streamed completion, put back together into the body the plain request
   # would have answered with. A call is known by its index; its id and name
   # come with the first piece, its arguments over the rest.
@@ -8535,7 +8535,7 @@ let _llm_module = fn () {
       self.pieces = []
       self.reasoning = []
       self.calls = []
-      self.finish = nil
+      self.stopped = nil
       self.usage = nil
       self.failure = nil
     }
@@ -8556,7 +8556,7 @@ let _llm_module = fn () {
       let choices = ev.get("choices", [])
       return nil if choices.empty()
       let choice = choices[0]
-      self.finish = choice.finish_reason if choice.get("finish_reason", nil) != nil
+      self.stopped = choice.finish_reason if choice.get("finish_reason", nil) != nil
       self.grow(choice.get("delta", {}))
     }
 
@@ -8571,26 +8571,27 @@ let _llm_module = fn () {
       for c in d.get("tool_calls", []) {
         let i = c.get("index", 0)
         while self.calls.size() <= i {
-          self.calls.push({id: nil, name: "", pieces: []})
+          self.calls.push({mut id: nil, mut name: "", mut pieces: []})
         }
         let f = c.get("function", {})
-        let was = self.calls[i]
-        self.calls[i] = {id: c.get("id", nil) ?? was.id, name: f.get("name", nil) ?? was.name,
-                         pieces: [...was.pieces, f.get("arguments", nil) ?? ""]}
+        let call = self.calls[i]
+        call.id = c.get("id", nil) ?? call.id
+        call.name = f.get("name", nil) ?? call.name
+        call.pieces.push(f.get("arguments", nil) ?? "")
       }
     }
 
-    finish_body() {
+    finish() {
       if self.failure != nil {
         _fail("LLM: {_cc_detail(self.failure)}")
       }
       let calls = self.calls.map(|c|
         {id: c.id, type: "function", function: {name: c.name, arguments: c.pieces.join("")}})
       mut message = {role: "assistant", content: self.pieces.join("")}
-      message = {...message, reasoning_content: self.reasoning.join("")} if !self.reasoning.empty()
-      message = {...message, tool_calls: calls} if !calls.empty()
+      message.reasoning_content = self.reasoning.join("") if !self.reasoning.empty()
+      message.tool_calls = calls if !calls.empty()
       {choices: [{message: message,
-                  finish_reason: self.finish}],
+                  finish_reason: self.stopped}],
        usage: self.usage}
     }
   }
@@ -8601,20 +8602,10 @@ let _llm_module = fn () {
   }
 
   fn _cc_stream(http, body, on_text) {
-    let assembly = LLMChatStream(on_text)
-    let res = http.post("/chat/completions",
-                        json: {...body, stream: true, stream_options: {include_usage: true}},
-                        events: |e| assembly.take(e))
-    _cc_error(res) unless res.ok
-    if assembly.events == 0 {
-      # A 2xx that did not stream is the whole answer.
-      _fail("LLM: {res.status}: the stream closed without an event") if res.body.empty()
-      let whole = res.json()
-      let said = _cc_message(whole).get("content", nil) ?? ""
-      on_text(said) if !said.empty()
-      return whole
-    }
-    assembly.finish_body()
+    _stream(http, "/chat/completions",
+            {...body, stream: true, stream_options: {include_usage: true}},
+            LLMChatStream(on_text), |whole| _cc_message(whole).get("content", nil) ?? "",
+            _cc_detail, on_text)
   }
 
   # The tools of a request, as this format names them.
@@ -8645,14 +8636,11 @@ let _llm_module = fn () {
         }
         continue
       }
-      let text = _cc_text_of(m.content)
-      let calls = type_of(m.content) == "String" ? []
-        : m.content.filter(|p| p.type == "tool_call").map(_cc_call)
-      if calls.empty() {
-        out.push({role: m.role, content: text}) if !text.empty() || type_of(m.content) == "String"
-      } else {
-        out.push({role: m.role, content: text, tool_calls: calls})
-      }
+      let plain = type_of(m.content) == "String"
+      let msg = {role: m.role, content: _cc_text_of(m.content)}
+      let calls = plain ? [] : m.content.filter(|p| p.type == "tool_call").map(_cc_call)
+      msg.tool_calls = calls if !calls.empty()
+      out.push(msg) if plain || !msg.content.empty() || !calls.empty()
     }
     out
   }
@@ -8709,16 +8697,10 @@ let _llm_module = fn () {
     parts.push({type: "text", text: said}) if !said.empty()
     parts += calls
     let u = body.get("usage", nil)
-    {
-      message: {role: "assistant", content: parts},
-      text: said,
-      tool_calls: calls.map(|p| {id: p.id, name: p.name, args: p.args}),
-      reasoning: thought,
-      stop: CC_STOPS.get(choice.get("finish_reason", ""), nil),
-      usage: u == nil ? nil : {input_tokens: u.get("prompt_tokens", 0),
-                               output_tokens: u.get("completion_tokens", 0)},
-      raw: body,
-    }
+    _reply_from(parts, CC_STOPS.get(choice.get("finish_reason", ""), nil),
+                u == nil ? nil : {input_tokens: u.get("prompt_tokens", 0),
+                                  output_tokens: u.get("completion_tokens", 0)},
+                body)
   }
 
   class LLMChatCompletions {
@@ -8729,12 +8711,13 @@ let _llm_module = fn () {
 
     turn(req, on_text) {
       let body = _cc_body_of(req, self.max_tokens_field)
-      _cc_reply_of(on_text == nil ? _cc_send(self.http, body) : _cc_stream(self.http, body, on_text))
+      _cc_reply_of(on_text == nil ? _send(self.http, body, nil, "/chat/completions", _cc_detail)
+                                  : _cc_stream(self.http, body, on_text))
     }
 
     # The body as it is, posted to /chat/completions, and the answer as it is.
     request(body, headers) {
-      _cc_send(self.http, body, headers)
+      _send(self.http, body, headers, "/chat/completions", _cc_detail)
     }
   }
 
@@ -8753,9 +8736,7 @@ let _llm_module = fn () {
   # A hosted service on Chat Completions: the key from its variable unless one
   # is given, the server from its variable unless one is given.
   fn _hosted(who, key_var, base_var, default_base, max_tokens_field, api_key, base_url, timeout) {
-    let key = (_optional_string("api_key", api_key) ?? Sys.env(key_var)).presence()
-    _fail("LLM: no API key: set {key_var} or pass api_key:") if key == nil
-    let base = _optional_string("base_url", base_url) ?? Sys.env(base_var).presence() ?? default_base
+    let (key, base) = _credentials(key_var, base_var, default_base, api_key, base_url)
     openai_compatible(base_url: base, api_key: key, name: who,
                       max_tokens_field: max_tokens_field, timeout: timeout)
   }
