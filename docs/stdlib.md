@@ -9417,7 +9417,7 @@ A text answer cut off at `max_tokens` is returned as far as it got; a
 conversation's `last.stop` says `"length"`. A provider that answers a streamed
 request whole is read whole, and `on_text` is called once with the text.
 
-### `LLM.chat(provider:, model=nil, system=nil, tools=[], max_tokens=nil, max_turns=10) -> LLMChat`
+### `LLM.chat(provider:, model=nil, system=nil, tools=[], max_tokens=nil, max_turns=10, approve=nil) -> LLMChat`
 
 A conversation. `chat.ask(prompt, on_text=nil)` adds a turn and returns the
 text of the answer. `chat.messages` holds the history as messages (see
@@ -9447,7 +9447,8 @@ What a tool throws goes back to the model as an error result
 (`is_error: true`), so the model can correct itself or explain; a Ctrl+C
 (`Interrupted`) is not caught. A tool the model names that does not exist is
 answered the same way. A tool call cut off at `max_tokens` is an `LLMError`, and
-the tool is not run.
+the tool is not run. `approve` is asked about each call before its tool runs
+(see `LLM.run_tools`).
 
 During an `ask` the history only grows. An assistant message is kept exactly as
 the provider gave it, which is what a thinking model needs (its thinking blocks
@@ -9476,6 +9477,34 @@ called as `weather(city: "Tokyo")`. What it returns goes back to the model: a
 
 `tool.name`, `tool.description` and `tool.input_schema` can be read;
 `tool.spec()` is what goes out with a request.
+
+### `LLM.run_tools(tools, calls, approve=nil) -> Object`
+
+The `tool` message that answers `calls`, the tools a reply asked for
+(`reply.tool_calls`, each `{id:, name:, args:}`), ready to add to a history. Each
+call runs the tool of that name with the arguments as keywords, and its value is
+the result: a `String` as it is, anything else as JSON. What a tool throws is an
+error result (`is_error: true`) the model can act on, as is a tool that does not
+exist; a Ctrl+C (`Interrupted`) is not caught. It is what `LLM.chat` does, for a
+loop of your own.
+
+```culebra
+fn weather(city: String) {
+  "{city}: sunny"
+}
+let tools = [LLM.tool(weather, "the weather in a city")]
+let answer = LLM.run_tools(tools, [{id: "c1", name: "weather", args: {city: "Tokyo"}}])
+inspect(answer.content[0].content)  # => 'Tokyo: sunny'
+```
+
+`approve` is a function that is given each call, `{id:, name:, args:}`, before
+the tool of that name runs, and answers `true` to let it run. `false`, or a
+`String` that says why, does not run it; the model is told so in an error result
+(`"the call was not approved"`, or the `String`). Any other answer is a
+`TypeError`, and what `approve` throws goes up, so a loop that cannot ask (no
+terminal) stops rather than tells the model it was refused. It is not asked
+about a tool that does not exist. A call that was cut off, as `reply.stop` of
+`"length"` says, should not be run at all.
 
 ### `LLM.request(body, provider:, headers=nil) -> Object`
 

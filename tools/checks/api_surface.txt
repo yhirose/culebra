@@ -1128,8 +1128,9 @@ d.files()
 d.glob(pattern)
 d.copy_to(dest)
 LLM.ask(prompt, provider:, model=nil, system=nil, max_tokens=nil, on_text=nil) -> String
-LLM.chat(provider:, model=nil, system=nil, tools=[], max_tokens=nil, max_turns=10) -> LLMChat
+LLM.chat(provider:, model=nil, system=nil, tools=[], max_tokens=nil, max_turns=10, approve=nil) -> LLMChat
 LLM.tool(f, description, **params) -> LLMTool
+LLM.run_tools(tools, calls, approve=nil) -> Object
 LLM.request(body, provider:, headers=nil) -> Object
 LLM.repair(messages) -> Array
 LLM.turn(provider, messages:, model=nil, system=nil, tools=[], max_tokens=nil, stop=nil, temperature=nil, extra=nil, on_text=nil) -> Object

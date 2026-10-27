@@ -1,0 +1,197 @@
+# LLM.run_tools and the approve: callback: the message that answers the calls a
+# model asked for, what is asked before a tool runs, and what a chat does with
+# the answer. No network; the provider is a script.
+
+# What a call raised, as "Kind: message".
+fn failure(thunk) {
+  try {
+    thunk()
+    "no error"
+  } catch e {
+    "{e.kind}: {e.message}"
+  }
+}
+
+mut ran = []
+fn weather(city: String) {
+  ran.push("weather " + city)
+  "{city}: sunny"
+}
+fn delete(path: String) {
+  ran.push("delete " + path)
+  "deleted {path}"
+}
+fn broken(city: String) {
+  __raise("ValueError", "no data for {city}")
+}
+fn stopped(city: String) {
+  __raise("Interrupted", "stop")
+}
+fn structured(city: String) {
+  {city: city, days: [1, 2]}
+}
+fn plain() {
+  ran.push("plain")
+  "ok"
+}
+let w = LLM.tool(weather, "the weather in a city")
+let d = LLM.tool(delete, "delete a file")
+
+fn call(id, name, args) {
+  {id: id, name: name, args: args}
+}
+fn result(id, content, is_error = false) {
+  {type: "tool_result", id: id, content: content, is_error: is_error}
+}
+
+# --- the message that answers ------------------------------------------------------------
+
+# A call is run with its arguments as keywords, and answered in a tool message.
+ran = []
+assert_eq(LLM.run_tools([w], [call("a", "weather", {city: "Tokyo"})]),
+          {role: "tool", content: [result("a", "Tokyo: sunny")]})
+assert_eq(ran, ["weather Tokyo"])
+
+# Several calls are run and answered in the order they came.
+ran = []
+let both = LLM.run_tools([w, d], [call("a", "weather", {city: "Tokyo"}), call("b", "delete", {path: "x"})])
+assert_eq(both.content.map(|r| r.id), ["a", "b"])
+assert_eq(ran, ["weather Tokyo", "delete x"])
+
+# What a tool throws goes back to the model as an error it can act on.
+assert_eq(LLM.run_tools([LLM.tool(broken, "b")], [call("a", "broken", {city: "Tokyo"})]).content[0],
+          result("a", "ValueError: no data for Tokyo", true))
+# A tool the model names that does not exist is answered the same way.
+assert_eq(LLM.run_tools([w], [call("a", "nope", {})]).content[0],
+          result("a", "no tool named 'nope'", true))
+# A value that is not a String goes back as JSON.
+assert_eq(LLM.run_tools([LLM.tool(structured, "s")], [call("a", "structured", {city: "Tokyo"})]).content[0].content,
+          '{"city":"Tokyo","days":[1,2]}')
+# An interrupt is the user's.
+assert_eq(failure(|| LLM.run_tools([LLM.tool(stopped, "s")], [call("a", "stopped", {city: "Tokyo"})])),
+          "Interrupted: stop")
+# A call with no args is a call of no arguments.
+ran = []
+assert_eq(LLM.run_tools([LLM.tool(plain, "p")], [{id: "a", name: "plain"}]).content[0], result("a", "ok"))
+
+# --- approve --------------------------------------------------------------------------------
+
+fn asked_by(verdict) {
+  let asked = []
+  let message = LLM.run_tools([w, d], [call("a", "weather", {city: "Tokyo"}), call("b", "delete", {path: "x"})],
+                              approve: fn (c) {
+    asked.push(c)
+    verdict(c)
+  })
+  [asked, message]
+}
+
+# approve is asked about each call, and true lets the tool run.
+ran = []
+let yes = asked_by(|c| true)
+assert_eq(yes[0], [call("a", "weather", {city: "Tokyo"}), call("b", "delete", {path: "x"})])
+assert_eq(ran, ["weather Tokyo", "delete x"])
+assert_eq(yes[1].content, [result("a", "Tokyo: sunny"), result("b", "deleted x")])
+
+# false does not run the tool, and the model is told so.
+ran = []
+let no = asked_by(|c| c.name == "weather")
+assert_eq(ran, ["weather Tokyo"])
+assert_eq(no[1].content[1], result("b", "the call was not approved", true))
+assert_eq(no[1].content[0], result("a", "Tokyo: sunny"))
+
+# A String does not run it either, and is what the model is told.
+ran = []
+let why = asked_by(|c| "ask me first")
+assert_eq(ran, [])
+assert_eq(why[1].content.map(|r| [r.content, r.is_error]), [["ask me first", true], ["ask me first", true]])
+assert_eq(LLM.run_tools([w], [call("a", "weather", {city: "Tokyo"})],
+                        approve: |c| "not now, please".slice(0, 7)).content[0].content, "not now")
+
+# Nothing else is an answer.
+assert_eq(failure(|| asked_by(|c| nil)),
+          "TypeError: LLM: approve: must answer true, false or a String, not Nil")
+assert_eq(failure(|| asked_by(|c| 1)),
+          "TypeError: LLM: approve: must answer true, false or a String, not Long")
+
+# A tool that does not exist is not asked about, and what approve throws goes up.
+let asked_for_unknown = []
+LLM.run_tools([w], [call("a", "nope", {})], approve: fn (c) {
+  asked_for_unknown.push(c)
+  true
+})
+assert_eq(asked_for_unknown, [])
+ran = []
+assert_eq(failure(|| LLM.run_tools([w, d], [call("a", "weather", {city: "Tokyo"}), call("b", "delete", {path: "x"})],
+            approve: fn (c) { c.name == "delete" ? __raise("ValueError", "stop here") : true })),
+          "ValueError: stop here")
+assert_eq(ran, ["weather Tokyo"])
+
+# --- the arguments -------------------------------------------------------------------------------
+
+assert_eq(failure(|| LLM.run_tools(3, [call("a", "weather", {})])),
+          "TypeError: type error: parameter 'tools' expects Array")
+assert_eq(failure(|| LLM.run_tools([weather], [call("a", "weather", {})])),
+          "TypeError: LLM.run_tools: tools takes what LLM.tool makes, got Function")
+assert_eq(failure(|| LLM.run_tools([w], 3)), "TypeError: type error: parameter 'calls' expects Array")
+assert_eq(failure(|| LLM.run_tools([w], [call("a", "weather", {}), 3])),
+          "TypeError: type error: calls[1] expects Object")
+assert_eq(failure(|| LLM.run_tools([w], [{id: "a", args: {}}])),
+          "TypeError: type error: calls[0].name expects String")
+assert_eq(failure(|| LLM.run_tools([w], [{id: "a", name: "weather", args: 3}])),
+          "TypeError: type error: calls[0].args expects Object")
+assert_eq(failure(|| LLM.run_tools([w], [call("a", "weather", {})], approve: 3)),
+          "TypeError: type error: parameter 'approve' expects Function | Nil")
+assert_eq(failure(|| LLM.run_tools([w], [])), "LLMError: LLM.run_tools: no calls")
+
+# --- in a chat ---------------------------------------------------------------------------------------
+
+fn reply(parts, stop) {
+  {message: {role: "assistant", content: parts},
+   text: parts.filter(|p| p.type == "text").map(|p| p.text).join(""),
+   tool_calls: parts.filter(|p| p.type == "tool_call").map(|p| {id: p.id, name: p.name, args: p.args}),
+   reasoning: "", stop: stop, usage: nil, raw: nil}
+}
+class ToolsFake {
+  new(.queue) {
+    self.name = "scripted"
+    self.capabilities = {tools: true}
+    self.default_model = "m"
+    self.seen = []
+    self.n = 0
+  }
+  turn(request, on_text) {
+    self.seen.push({...request, messages: request.messages + []})
+    let r = self.queue[self.n]
+    self.n += 1
+    r
+  }
+}
+fn asking() {
+  ToolsFake([reply([{type: "tool_call", id: "a", name: "weather", args: {city: "Tokyo"}},
+                    {type: "tool_call", id: "b", name: "delete", args: {path: "x"}}], "tool_calls"),
+             reply([{type: "text", text: "done"}], "end")])
+}
+
+# The chat asks approve about each call, and the model is told what it did not get.
+ran = []
+let asked = []
+let provider = asking()
+let c = LLM.chat(provider: provider, tools: [w, d], approve: fn (call) {
+  asked.push(call.name)
+  call.name == "weather" ? true : "no deleting"
+})
+assert_eq(c.ask("go"), "done")
+assert_eq(asked, ["weather", "delete"])
+assert_eq(ran, ["weather Tokyo"])
+assert_eq(provider.seen[1].messages[2].content,
+          [result("a", "Tokyo: sunny"), result("b", "no deleting", true)])
+
+# What approve throws ends the ask, and the history is as it was.
+let failing = LLM.chat(provider: asking(), tools: [w, d],
+                       approve: fn (call) { __raise("ValueError", "no tty") })
+assert_eq(failure(|| failing.ask("go")), "ValueError: no tty")
+assert_eq(failing.messages, [])
+
+assert_eq(failure(|| LLM.chat(provider: asking(), approve: 3)),
+          "TypeError: type error: parameter 'approve' expects Function | Nil")

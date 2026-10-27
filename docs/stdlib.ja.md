@@ -9041,7 +9041,7 @@ LLM.ask("Write a haiku about rain.", provider: LLM.anthropic(), model: "claude-h
 `last.stop`が`"length"`になります。ストリーミングを求めたのに提供元が
 まとめて返した場合はそのまま読み、`on_text`は本文全体で1回呼ばれます。
 
-### `LLM.chat(provider:, model=nil, system=nil, tools=[], max_tokens=nil, max_turns=10) -> LLMChat`
+### `LLM.chat(provider:, model=nil, system=nil, tools=[], max_tokens=nil, max_turns=10, approve=nil) -> LLMChat`
 
 会話です。`chat.ask(prompt, on_text=nil)`はターンを1つ足し、回答の本文を返します。
 `chat.messages`には履歴がメッセージの形（[Messages](#messages)を参照）で入っていて、
@@ -9069,7 +9069,8 @@ IO.println(chat.ask("And in Osaka?"))
 ツールが投げた例外は、エラーの結果（`is_error: true`）としてモデルに返します。
 モデルはそれを見て直したり説明したりできます。Ctrl+C（`Interrupted`）は捕まえません。
 モデルが存在しないツールを名指した場合も同じように答えます。ツール呼び出しが
-`max_tokens`で切れたときは`LLMError`で、ツールは実行しません。
+`max_tokens`で切れたときは`LLMError`で、ツールは実行しません。`approve`は、各呼び出しの
+ツールを実行する前に呼ばれます（`LLM.run_tools`を参照）。
 
 `ask`の間、履歴は増えるだけです。アシスタントのメッセージは提供元が返したとおりに
 残します。考えるモデルにはこれが必要です（思考ブロックは返すときに検査されます）。
@@ -9095,6 +9096,31 @@ IO.println(chat.ask("And in Osaka?"))
 
 `tool.name`、`tool.description`、`tool.input_schema`を読めます。リクエストで
 送られるのは`tool.spec()`です。
+
+### `LLM.run_tools(tools, calls, approve=nil) -> Object`
+
+`calls`、つまり応答が求めたツール（`reply.tool_calls`、各要素は`{id:, name:, args:}`）に
+答える`tool`メッセージを、履歴にそのまま足せる形で返します。各呼び出しは、その名前のツールを
+引数をキーワードにして実行し、戻り値が結果になります（`String`はそのまま、ほかはJSON）。
+ツールが投げた例外は、モデルが対処できるエラーの結果（`is_error: true`）になります。存在しない
+ツールも同じです。Ctrl+C（`Interrupted`）は捕まえません。`LLM.chat`がしていることを、自前の
+ループのために取り出したものです。
+
+```culebra
+fn weather(city: String) {
+  "{city}: sunny"
+}
+let tools = [LLM.tool(weather, "the weather in a city")]
+let answer = LLM.run_tools(tools, [{id: "c1", name: "weather", args: {city: "Tokyo"}}])
+inspect(answer.content[0].content)  # => 'Tokyo: sunny'
+```
+
+`approve`は、その名前のツールを実行する前に、各呼び出し`{id:, name:, args:}`を渡される関数で、
+実行してよいなら`true`を返します。`false`か、理由を述べる`String`なら実行せず、モデルには
+エラーの結果（`"the call was not approved"`か、その`String`）で伝えます。それ以外を返すと
+`TypeError`です。`approve`が投げた例外はそのまま上へ出るので、尋ねられない状況（端末が無い）では、
+断られたとモデルに告げずに、ループが止まります。存在しないツールについては尋ねません。
+`reply.stop`が`"length"`で切れた呼び出しは、そもそも実行すべきではありません。
 
 ### `LLM.request(body, provider:, headers=nil) -> Object`
 

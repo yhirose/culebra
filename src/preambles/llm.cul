@@ -686,10 +686,68 @@ let _llm_module = fn () {
                           _optional_string("base_url", base_url), _long("timeout", timeout)))
   }
 
+  # --- running the tools a model asks for ---------------------------------------
+
+  # One call, answered. What a tool throws goes back to the model as an error it
+  # can correct, and an interrupt is the user's, and goes on up. `approve` is
+  # asked before a tool that exists is run: true runs it, false or a String (the
+  # reason) does not. What it throws goes up, and it is not the model's to be
+  # told of.
+  fn _answer(tools, call, approve) {
+    let chosen = tools.find(|t| t.name == call.name)
+    let answer = if chosen == nil {
+      {content: "no tool named '{call.name}'", is_error: true}
+    } else {
+      let verdict = approve == nil ? true : approve(call)
+      cond {
+        verdict == true => try {
+          {content: _content_of(chosen.f(**call.get("args", {}))), is_error: false}
+        } catch e: Interrupted {
+          throw e
+        } catch e {
+          {content: _describe(e), is_error: true}
+        },
+        verdict == false => {content: "the call was not approved", is_error: true},
+        type_of(verdict) == "String" || type_of(verdict) == "StringView" =>
+          {content: to_string(verdict), is_error: true},
+        _ => __raise("TypeError",
+               "LLM: approve: must answer true, false or a String, not {type_of(verdict)}"),
+      }
+    }
+    {type: "tool_result", id: call.id, ...answer}
+  }
+
+  # The tool message that answers calls, ready for a history.
+  fn run_tools(tools, calls, *, approve = nil) {
+    _type_error("tools", "Array") if type_of(tools) != "Array"
+    for t in tools {
+      if type_of(t) != "LLMTool" {
+        __raise("TypeError", "LLM.run_tools: tools takes what LLM.tool makes, got {type_of(t)}")
+      }
+    }
+    _type_error("calls", "Array") if type_of(calls) != "Array"
+    if approve != nil && type_of(approve) != "Function" {
+      _type_error("approve", "Function | Nil")
+    }
+    for i, c in calls.enumerate() {
+      if type_of(c) != "Object" {
+        __raise("TypeError", "type error: calls[{i}] expects Object")
+      }
+      if type_of(c.get("name", nil)) != "String" {
+        __raise("TypeError", "type error: calls[{i}].name expects String")
+      }
+      if type_of(c.get("args", {})) != "Object" {
+        __raise("TypeError", "type error: calls[{i}].args expects Object")
+      }
+    }
+    _fail("LLM.run_tools: no calls") if calls.empty()
+    {role: "tool", content: calls.map(|c| _answer(tools, c, approve))}
+  }
+
   # --- conversations ------------------------------------------------------------
 
   class LLMChat {
-    new(.provider, .model, .system, .tools, .max_tokens, .max_turns) {
+    new(.provider, .model, .system, .tools, .max_tokens, .max_turns, .approve) {
       self.messages = []
       self.last = nil
     }
@@ -720,7 +778,7 @@ let _llm_module = fn () {
             _fail("LLM: a tool call was cut off at max_tokens")
           }
           if !reply.tool_calls.empty() {
-            self.messages.push({role: "tool", content: reply.tool_calls.map(|c| self.run(c))})
+            self.messages.push(run_tools(self.tools, reply.tool_calls, approve: self.approve))
           } else if reply.stop != "pause" {
             return reply.text
           }
@@ -732,28 +790,10 @@ let _llm_module = fn () {
         throw e
       }
     }
-
-    # One tool call, answered. What a tool throws goes back to the model as an
-    # error it can correct; an interrupt is the user's, and goes on up.
-    run(call) {
-      let chosen = self.tools.find(|t| t.name == call.name)
-      let answer = if chosen == nil {
-        {content: "no tool named '{call.name}'", is_error: true}
-      } else {
-        try {
-          {content: _content_of(chosen.f(**call.args)), is_error: false}
-        } catch e: Interrupted {
-          throw e
-        } catch e {
-          {content: _describe(e), is_error: true}
-        }
-      }
-      {type: "tool_result", id: call.id, ...answer}
-    }
   }
 
   fn chat(*, provider, model = nil, system = nil, tools = [], max_tokens = nil,
-          max_turns = MAX_TURNS) {
+          max_turns = MAX_TURNS, approve = nil) {
     _check_provider(provider)
     let model_id = _model_for(provider, model)
     let instructions = _optional_string("system", system)
@@ -765,7 +805,11 @@ let _llm_module = fn () {
       }
     }
     let ceiling = max_tokens == nil ? nil : _long("max_tokens", max_tokens)
-    LLMChat(provider, model_id, instructions, tools, ceiling, _long("max_turns", max_turns))
+    if approve != nil && type_of(approve) != "Function" {
+      _type_error("approve", "Function | Nil")
+    }
+    LLMChat(provider, model_id, instructions, tools, ceiling, _long("max_turns", max_turns),
+            approve)
   }
 
   fn ask(prompt, *, provider, model = nil, system = nil, max_tokens = nil, on_text = nil) {
@@ -789,6 +833,6 @@ let _llm_module = fn () {
   }
 
   {ask: ask, chat: chat, tool: tool, request: request, repair: repair, turn: turn,
-   anthropic: anthropic}
+   anthropic: anthropic, run_tools: run_tools}
 }
 let LLM = _llm_module()
