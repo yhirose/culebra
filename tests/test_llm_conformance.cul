@@ -1,0 +1,228 @@
+# One script, every wire. Each case below says what a provider is to answer in
+# neutral terms; a stand-in per format writes it as that format's body or
+# stream, and `LLM.turn` must give back the same reply from every one of them,
+# streamed or not. A new adapter is a new entry in ADAPTERS and nothing else.
+
+# --- the script -----------------------------------------------------------------
+
+let USAGE = {input_tokens: 3, output_tokens: 5}
+
+# `parts` and `stop` are what the reply is; `error` is a failure instead.
+fn cases() {
+{
+  hello: {parts: [{type: "text", text: "hello there"}], stop: "end"},
+  tool: {parts: [{type: "text", text: "checking "},
+                 {type: "tool_call", id: "call_1", name: "weather", args: {city: "Tokyo"}}],
+         stop: "tool_calls"},
+  cut: {parts: [{type: "text", text: "half an ans"}], stop: "length"},
+  refused: {parts: [], stop: "refusal"},
+  busy: {error: {status: 529, message: "busy"}},
+  broken: {error: {status: 200, message: "broke midway"}},
+}
+}
+
+fn halves(s) {
+  let cut = s.size() / 2
+  [to_string(s.slice(0, cut)), to_string(s.slice(cut, s.size()))]
+}
+
+# --- the Messages API's stand-in --------------------------------------------------
+
+fn frame(kind, data) {
+  "event: {kind}\ndata: {JSON.stringify(data)}\n\n"
+}
+
+fn messages_block(p) {
+  if p.type == "text" {
+    return {type: "text", text: p.text}
+  }
+  {type: "tool_use", id: p.id, name: p.name, input: p.args}
+}
+
+fn messages_stop(stop) {
+  {end: "end_turn", tool_calls: "tool_use", length: "max_tokens", refusal: "refusal"}[stop]
+}
+
+fn messages_message(c) {
+  {id: "msg_1", type: "message", role: "assistant", model: "stand-in",
+   content: c.parts.map(messages_block), stop_reason: messages_stop(c.stop),
+   stop_sequence: nil, usage: {input_tokens: 3, output_tokens: 5}}
+}
+
+fn messages_error(status, message) {
+  {status: status, content_type: "application/json",
+   body: JSON.stringify({type: "error", error: {type: "overloaded_error", message: message}})}
+}
+
+fn messages_events(c) {
+  let msg = messages_message(c)
+  mut out = [frame("message_start", {type: "message_start",
+    message: {...msg, content: [], stop_reason: nil,
+              usage: {input_tokens: 3, output_tokens: 1}}})]
+  for i, b in msg.content.enumerate() {
+    let start = b.type == "text" ? {type: "text", text: ""} : {...b, input: {}}
+    out.push(frame("content_block_start",
+      {type: "content_block_start", index: i, content_block: start}))
+    let pieces = b.type == "text" ? halves(b.text) : halves(JSON.stringify(b.input))
+    for piece in pieces {
+      let d = b.type == "text" ? {type: "text_delta", text: piece}
+                               : {type: "input_json_delta", partial_json: piece}
+      out.push(frame("content_block_delta", {type: "content_block_delta", index: i, delta: d}))
+    }
+    out.push(frame("content_block_stop", {type: "content_block_stop", index: i}))
+  }
+  out.push(frame("message_delta", {type: "message_delta",
+    delta: {stop_reason: msg.stop_reason, stop_sequence: nil}, usage: {output_tokens: 5}}))
+  out.push(frame("message_stop", {type: "message_stop"}))
+  out
+}
+
+# How the stand-in answers one case, plain or as a stream.
+fn messages_answer(c, streaming) {
+  if c.has("error") {
+    if streaming && c.error.status == 200 {
+      return {content_type: "text/event-stream", stream: fn (sink) {
+        sink.write(frame("error", {type: "error",
+          error: {type: "overloaded_error", message: c.error.message}}))
+      }}
+    }
+    return messages_error(c.error.status == 200 ? 529 : c.error.status, c.error.message)
+  }
+  if streaming {
+    return {content_type: "text/event-stream", stream: fn (sink) {
+      for f in messages_events(c) {
+        sink.write(f)
+      }
+    }}
+  }
+  {content_type: "application/json", body: JSON.stringify(messages_message(c))}
+}
+
+# What the stand-in read out of a request body, in neutral terms, for the
+# models that echo it.
+fn messages_seen(body) {
+  let last = body.messages[body.messages.size() - 1]
+  let results = type_of(last.content) == "Array"
+    ? last.content.filter(|b| b.get("type", "") == "tool_result")
+    : []
+  {system: body.get("system", nil), max_tokens: body.get("max_tokens", nil),
+   stop: body.get("stop_sequences", nil), temperature: body.get("temperature", nil),
+   result: results.empty() ? nil : {id: results[0].tool_use_id, content: results[0].content},
+   tools: body.get("tools", []).map(|t| t.name)}
+}
+
+fn adapters() {
+{
+  anthropic: {path: "/v1/messages", answer: messages_answer, seen: messages_seen},
+}
+}
+
+# --- the server -----------------------------------------------------------------
+
+let (tx, rx) = Channel.new(1)
+let iso = Isolate.spawn(fn () {
+  let srv = Http.server()
+  for name in adapters().keys() {
+    let a = adapters()[name]
+    srv.post(a.path, fn (req) {
+      let body = JSON.parse(req.body)
+      let m = body.model
+      let streaming = body.get("stream", false)
+      if cases().has(m) {
+        return a.answer(cases()[m], streaming)
+      }
+      # `seen` answers with what the request said, as a text reply.
+      let said = JSON.stringify(a.seen(body))
+      a.answer({parts: [{type: "text", text: said}], stop: "end"}, streaming)
+    })
+  }
+  tx.send(srv.bind(0))
+  tx.drop()
+  srv.serve()
+})
+tx.drop()
+let BASE = "http://127.0.0.1:{rx.recv()}"
+
+let PROVIDERS = {
+  anthropic: LLM.anthropic(api_key: "test-key", base_url: BASE),
+}
+
+# --- the checks -----------------------------------------------------------------
+
+# A reply without `raw`, which is each format's own.
+fn plain(r) {
+  {text: r.text, tool_calls: r.tool_calls, stop: r.stop, usage: r.usage,
+   parts: r.message.content, role: r.message.role}
+}
+
+fn expected(c) {
+  {text: c.parts.filter(|p| p.type == "text").map(|p| p.text).join(""),
+   tool_calls: c.parts.filter(|p| p.type == "tool_call")
+                .map(|p| {id: p.id, name: p.name, args: p.args}),
+   stop: c.stop, usage: USAGE, parts: c.parts, role: "assistant"}
+}
+
+fn failure(thunk) {
+  try {
+    thunk()
+    "no error"
+  } catch e {
+    "{e.kind}: {e.message}"
+  }
+}
+
+fn ask(p, model, **more) {
+  LLM.turn(p, model: model, messages: [{role: "user", content: "hi"}], **more)
+}
+
+fn conforms(name, p) {
+  for model in cases().keys() {
+    let c = cases()[model]
+    if c.has("error") {
+      for streamed in [false, true] {
+        let got = failure(fn () {
+          streamed ? ask(p, model, on_text: |t| nil) : ask(p, model)
+        })
+        assert_true(got.starts_with("LLMError: "), "{name} {model} streamed={streamed}: {got}")
+        assert_true(got.contains(c.error.message), "{name} {model} streamed={streamed}: {got}")
+      }
+      continue
+    }
+    let want = expected(c)
+    assert_eq(plain(ask(p, model)), want, "{name} {model}")
+    let heard = []
+    assert_eq(plain(ask(p, model, on_text: |t| heard.push(t))), want, "{name} {model} streamed")
+    assert_eq(heard.join(""), want.text, "{name} {model} heard")
+  }
+}
+
+fn weather(city: String) {
+  "sunny in {city}"
+}
+
+# What the stand-in read out of the request: the system prompt, the limits, the
+# tools and a tool's result must arrive whatever the format.
+fn echoes(name, p) {
+  let tool = LLM.tool(weather, "the weather", city: "a city")
+  let said = |r| JSON.parse(r.text)
+  assert_eq(said(ask(p, "echo", system: "be brief")).system, "be brief", "{name} system")
+  let limits = said(ask(p, "echo", max_tokens: 50, stop: ["x"], temperature: 0.5))
+  assert_eq([limits.max_tokens, limits.stop, limits.temperature], [50, ["x"], 0.5],
+            "{name} limits")
+  assert_eq(said(ask(p, "echo", tools: [tool])).tools, ["weather"], "{name} tools")
+  let history = [
+    {role: "user", content: "hi"},
+    {role: "assistant", content: [{type: "tool_call", id: "call_1", name: "weather",
+                                    args: {city: "Tokyo"}}]},
+    {role: "tool", content: [{type: "tool_result", id: "call_1", content: "sunny in Tokyo"}]},
+  ]
+  let back = said(LLM.turn(p, model: "echo", messages: history, tools: [tool]))
+  assert_eq(back.result, {id: "call_1", content: "sunny in Tokyo"}, "{name} tool result")
+}
+
+for name in PROVIDERS.keys() {
+  conforms(name, PROVIDERS[name])
+  echoes(name, PROVIDERS[name])
+}
+
+iso.drop()
