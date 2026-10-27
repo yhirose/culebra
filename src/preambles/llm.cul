@@ -965,7 +965,7 @@ let _llm_module = fn () {
   }
 
   class LLMChatCompletions {
-    new(.http, .name, .max_tokens_field) {
+    new(.http, .name, .base_url, .max_tokens_field) {
       self.capabilities = {tools: true, extra: true}
       self.default_model = nil
     }
@@ -990,7 +990,32 @@ let _llm_module = fn () {
     let key = _optional_string("api_key", api_key)
     let headers = key == nil ? {} : {Authorization: "Bearer {key}"}
     LLMChatCompletions(Http.client(base, headers: headers, timeout: _long("timeout", timeout)),
-                       _string("name", name), _string("max_tokens_field", max_tokens_field))
+                       _string("name", name), base, _string("max_tokens_field", max_tokens_field))
+  }
+
+  # A hosted service on Chat Completions: the key from its variable unless one
+  # is given, the server from its variable unless one is given.
+  fn _hosted(who, key_var, base_var, default_base, max_tokens_field, api_key, base_url, timeout) {
+    let key = (_optional_string("api_key", api_key) ?? Sys.env(key_var)).presence()
+    _fail("LLM: no API key: set {key_var} or pass api_key:") if key == nil
+    let base = _optional_string("base_url", base_url) ?? Sys.env(base_var).presence() ?? default_base
+    openai_compatible(base_url: base, api_key: key, name: who,
+                      max_tokens_field: max_tokens_field, timeout: timeout)
+  }
+
+  fn openai(*, api_key = nil, base_url = nil, timeout = 120) {
+    _hosted("openai", "OPENAI_API_KEY", "OPENAI_BASE_URL", "https://api.openai.com/v1",
+            "max_completion_tokens", api_key, base_url, timeout)
+  }
+
+  fn openrouter(*, api_key = nil, base_url = nil, timeout = 120) {
+    _hosted("openrouter", "OPENROUTER_API_KEY", "OPENROUTER_BASE_URL",
+            "https://openrouter.ai/api/v1", "max_tokens", api_key, base_url, timeout)
+  }
+
+  # Ollama on this machine, which asks for no key.
+  fn ollama(*, base_url = "http://localhost:11434/v1", timeout = 120) {
+    openai_compatible(base_url: base_url, name: "ollama", timeout: timeout)
   }
 
   # --- running the tools a model asks for ---------------------------------------
@@ -1141,6 +1166,7 @@ let _llm_module = fn () {
 
   {ask: ask, chat: chat, tool: tool, request: request, repair: repair, turn: turn,
    anthropic: anthropic, run_tools: run_tools, tool_from_schema: tool_from_schema,
-   count_tokens: count_tokens, openai_compatible: openai_compatible}
+   count_tokens: count_tokens, openai_compatible: openai_compatible,
+   openai: openai, openrouter: openrouter, ollama: ollama}
 }
 let LLM = _llm_module()

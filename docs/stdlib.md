@@ -9385,7 +9385,8 @@ playground has no ZIP support: `Dir.zip` and `Compress.zip` raise there.
 A client for large language models, written in Culebra over [`Http`](#15-http)
 and [`JSON`](#9-json). What it asks is a *provider*: `LLM.anthropic()` (the
 Messages API, Anthropic's Claude API) and `LLM.openai_compatible()` (Chat
-Completions) are the ones there are so far, and a provider can be written in a
+Completions, with `LLM.openai`, `LLM.openrouter` and `LLM.ollama` set up for
+those services) are the ones there are so far, and a provider can be written in a
 program (see `LLM.turn`). There are four ways in: one
 question, a conversation that keeps its history and runs the tools the model
 asks for, one step with a provider (what a loop of your own is made of), and a
@@ -9731,11 +9732,33 @@ server sends none; `raw` is the server's answer. An error inside a 200, as a bod
 or as a stream's frame, is an `LLMError`. This format has no counter, so
 `LLM.count_tokens` is an `LLMError`.
 
+### `LLM.openai(api_key=nil, base_url=nil, timeout=120)`, `LLM.openrouter(...)`, `LLM.ollama(base_url=nil, timeout=120)`
+
+`LLM.openai_compatible` set up for a service. All three return an
+`LLMChatCompletions`, whose `name` is the service and whose `base_url` is where it
+is.
+
+| | Key | Server (unless `base_url:` says otherwise) | Ceiling sent as |
+|---|---|---|---|
+| `LLM.openai` | `OPENAI_API_KEY` | `OPENAI_BASE_URL`, else `https://api.openai.com/v1` | `max_completion_tokens` |
+| `LLM.openrouter` | `OPENROUTER_API_KEY` | `OPENROUTER_BASE_URL`, else `https://openrouter.ai/api/v1` | `max_tokens` |
+| `LLM.ollama` | none | `http://localhost:11434/v1` | `max_tokens` |
+
+`api_key:` wins over the variable. With no key, `LLM.openai` and `LLM.openrouter`
+are an `LLMError` when they are made, before any request. A call names its model,
+as the service does (`gpt-...`, `anthropic/claude-...`, `llama3.2`).
+
+```culebra
+# doctest: skip — needs a running Ollama server
+let local = LLM.ollama()
+IO.println(LLM.ask("Name three prime numbers.", provider: local, model: "llama3.2"))
+```
+
 ### Errors
 
 | Situation | Error |
 |---|---|
-| No key for `LLM.anthropic` (checked when it is made, before any request) | `LLMError` |
+| No key for `LLM.anthropic`, `LLM.openai` or `LLM.openrouter` (checked when it is made, before any request) | `LLMError` |
 | No `model:`, and the provider has none | `LLMError` |
 | `LLM.count_tokens` on a provider that cannot count | `LLMError` |
 | The API answers with a status that is not 2xx | `LLMError`: `LLM: 429 rate_limit_error: ...` (the status, then the error's type and message) |

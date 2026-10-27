@@ -9010,7 +9010,7 @@ Windowsでは開いているファイルを削除も置き換えもできない�
 大規模言語モデルのクライアントです。Culebraで書かれていて、[`Http`](#15-http)と
 [`JSON`](#9-json)の上に作られています。尋ねる相手は*提供元*で、今あるのは
 `LLM.anthropic()`（Messages API、AnthropicのClaude API）と`LLM.openai_compatible()`
-（Chat Completions）の2つで、提供元はプログラムの中で書くこともできます（`LLM.turn`を参照）。使い方は4つあります。1回の質問、履歴を持ち
+（Chat Completions。`LLM.openai`、`LLM.openrouter`、`LLM.ollama`はそのサービス向けの設定）の2つで、提供元はプログラムの中で書くこともできます（`LLM.turn`を参照）。使い方は4つあります。1回の質問、履歴を持ち
 モデルが求めるツールを実行する会話、提供元への1ステップ（自前のループの部品）、
 そしてリクエスト本文をそのまま送る素通しです。
 
@@ -9330,11 +9330,32 @@ idなしで来た呼び出しには、モデルの順に`call_1`、`call_2`、�
 `nil`です。`raw`はサーバーの応答そのものです。200の中のエラー（本文でもストリームのフレームでも）は
 `LLMError`です。この形式にはカウンターがないので、`LLM.count_tokens`は`LLMError`です。
 
+### `LLM.openai(api_key=nil, base_url=nil, timeout=120)`、`LLM.openrouter(...)`、`LLM.ollama(base_url=nil, timeout=120)`
+
+`LLM.openai_compatible`を各サービス向けに設定したものです。3つとも`LLMChatCompletions`を返し、
+`name`はサービスの名前、`base_url`は接続先です。
+
+| | キー | 接続先（`base_url:`があればそちら） | 上限の送り名 |
+|---|---|---|---|
+| `LLM.openai` | `OPENAI_API_KEY` | `OPENAI_BASE_URL`、無ければ`https://api.openai.com/v1` | `max_completion_tokens` |
+| `LLM.openrouter` | `OPENROUTER_API_KEY` | `OPENROUTER_BASE_URL`、無ければ`https://openrouter.ai/api/v1` | `max_tokens` |
+| `LLM.ollama` | なし | `http://localhost:11434/v1` | `max_tokens` |
+
+`api_key:`は環境変数より優先されます。キーが無いと、`LLM.openai`と`LLM.openrouter`は作るときに、
+リクエストの前に`LLMError`になります。モデルは、そのサービスの名前（`gpt-...`、
+`anthropic/claude-...`、`llama3.2`など）で呼び出しごとに指定します。
+
+```culebra
+# doctest: skip — 動いているOllamaサーバーが要る
+let local = LLM.ollama()
+IO.println(LLM.ask("Name three prime numbers.", provider: local, model: "llama3.2"))
+```
+
 ### エラー
 
 | 状況 | エラー |
 |---|---|
-| `LLM.anthropic`のキーが無い（作るときに、リクエストの前に確かめる） | `LLMError` |
+| `LLM.anthropic`、`LLM.openai`、`LLM.openrouter`のキーが無い（作るときに、リクエストの前に確かめる） | `LLMError` |
 | `model:`が無く、提供元にも既定がない | `LLMError` |
 | 数えられない提供元に`LLM.count_tokens` | `LLMError` |
 | APIが2xx以外のステータスで答えた | `LLMError`: `LLM: 429 rate_limit_error: ...`（ステータス、エラーの種類と説明） |

@@ -1138,3 +1138,6 @@ LLM.turn(provider, messages:, model=nil, system=nil, tools=[], max_tokens=nil, s
 LLM.count_tokens(provider, messages:, model=nil, system=nil, tools=[]) -> Long
 LLM.anthropic(api_key=nil, base_url=nil, timeout=120) -> LLMAnthropic
 LLM.openai_compatible(base_url:, api_key=nil, name="openai_compatible", max_tokens_field="max_tokens", timeout=120) -> LLMChatCompletions
+LLM.openai(api_key=nil, base_url=nil, timeout=120)
+LLM.openrouter(...)
+LLM.ollama(base_url=nil, timeout=120)

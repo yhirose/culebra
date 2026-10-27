@@ -187,6 +187,50 @@ fn setup_cases() {
 }
 setup_cases()
 
+# --- the presets ------------------------------------------------------------------------
+
+# What a preset sent: who it called itself, the key, and the ceiling's name.
+fn sent_by(p) {
+  let body = JSON.parse(LLM.turn(p, model: "record", max_tokens: 7,
+    messages: [{role: "user", content: "hi"}]).text)
+  [p.name, body.auth, body.body.get("max_completion_tokens", nil), body.body.get("max_tokens", nil)]
+}
+
+fn preset_cases() {
+  let vars = ["OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENROUTER_API_KEY", "OPENROUTER_BASE_URL"]
+  let before = vars.map(|v| Sys.env(v))
+  for v in vars {
+    Sys.set_env(v, "")
+  }
+  let no_key = |v| "LLMError: LLM: no API key: set {v} or pass api_key:"
+  assert_eq(failure(fn () { LLM.openai() }), no_key("OPENAI_API_KEY"))
+  assert_eq(failure(fn () { LLM.openrouter(api_key: "") }), no_key("OPENROUTER_API_KEY"))
+
+  # Defaults, without a request: the server each one is on.
+  assert_eq(LLM.openai(api_key: "k").base_url, "https://api.openai.com/v1")
+  assert_eq(LLM.openrouter(api_key: "k").base_url, "https://openrouter.ai/api/v1")
+  assert_eq(LLM.ollama().base_url, "http://localhost:11434/v1")
+
+  Sys.set_env("OPENAI_API_KEY", "from-env")
+  Sys.set_env("OPENAI_BASE_URL", BASE)
+  Sys.set_env("OPENROUTER_API_KEY", "or-env")
+  Sys.set_env("OPENROUTER_BASE_URL", BASE)
+  assert_eq(sent_by(LLM.openai()), ["openai", "Bearer from-env", 7, nil])
+  assert_eq(sent_by(LLM.openai(api_key: "given")), ["openai", "Bearer given", 7, nil])
+  assert_eq(sent_by(LLM.openrouter()), ["openrouter", "Bearer or-env", nil, 7])
+  assert_eq(LLM.openai().base_url, BASE)
+  assert_eq(LLM.openai(base_url: "http://x/v1").base_url, "http://x/v1")
+  assert_eq(LLM.openrouter(base_url: "http://y/v1").base_url, "http://y/v1")
+
+  # Ollama asks for no key, whatever the environment holds.
+  assert_eq(sent_by(LLM.ollama(base_url: BASE)), ["ollama", nil, nil, 7])
+
+  for i, v in vars.enumerate() {
+    Sys.set_env(v, before[i])
+  }
+}
+preset_cases()
+
 # --- what comes back ----------------------------------------------------------------
 
 # Thinking arrives as `reasoning_content` or `reasoning`; either way it is a
