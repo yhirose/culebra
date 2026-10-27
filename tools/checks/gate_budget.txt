@@ -119,7 +119,7 @@
 # chat loop against a scripted provider: the tools it runs, what ends it and
 # what a failure leaves of the history). 325 since test_llm_tools.cul
 # (LLM.run_tools and approve:, alone and in a chat).
-tests.cul 326
+tests.cul 327
 
 # tests/isolate/*.cul — run on both engines, plus the over-cap modes.
 # 21 since test_xml_isolate.cul (an XML element keeps its methods across an
@@ -245,7 +245,7 @@ ctest.entries 36
 # question, in en and ja. 1108 since §42 shows LLM.run_tools answering a call,
 # in en and ja. 1110 since §42 shows LLM.tool_from_schema, in en and ja.
 # 1112 since §42 shows LLM.count_tokens, in en and ja.
-docs.blocks 1112
+docs.blocks 1114
 
 # The samples the language front ends are run over (examples/languages/*).
 languages.samples 130

@@ -1137,3 +1137,4 @@ LLM.repair(messages) -> Array
 LLM.turn(provider, messages:, model=nil, system=nil, tools=[], max_tokens=nil, stop=nil, temperature=nil, extra=nil, on_text=nil) -> Object
 LLM.count_tokens(provider, messages:, model=nil, system=nil, tools=[]) -> Long
 LLM.anthropic(api_key=nil, base_url=nil, timeout=120) -> LLMAnthropic
+LLM.openai_compatible(base_url:, api_key=nil, name="openai_compatible", max_tokens_field="max_tokens", timeout=120) -> LLMChatCompletions

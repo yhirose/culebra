@@ -5,8 +5,9 @@
 # `LLM.turn` checks a request once and asks a provider one step; `LLM.chat` and
 # `LLM.ask` are loops over it, and `LLM.request` sends a body as it is, so a new
 # API feature does not wait for a release. `LLM.anthropic` is the Messages API
-# as a provider. The names say what is done, not who serves it, so another
-# format is another provider behind them.
+# as a provider and `LLM.openai_compatible` is Chat Completions. The names say
+# what is done, not who serves it, so another format is another provider behind
+# them.
 #
 # A history is messages of one shape whichever provider answers: parts of text,
 # tool calls, tool results and reasoning, where a part a provider must have
@@ -737,6 +738,261 @@ let _llm_module = fn () {
                           _optional_string("base_url", base_url), _long("timeout", timeout)))
   }
 
+  # --- Chat Completions as a provider ---------------------------------------------
+
+  # A failed request explains itself in `{error: {message, type, code}}`; some
+  # servers send `{error: "text"}`, and a gateway's page that is not JSON is
+  # quoted as it is.
+  fn _cc_detail(err) {
+    cond {
+      type_of(err) == "Object" =>
+        err.get("type", nil) == nil ? "{err.get('message', '')}"
+                                    : "{err.type}: {err.get('message', '')}",
+      err == nil => nil,
+      _ => to_string(err),
+    }
+  }
+
+  fn _cc_error(res) {
+    let parsed = try {
+      JSON.parse(res.body)
+    } catch _e: ValueError {
+      nil
+    }
+    let detail = type_of(parsed) == "Object" ? _cc_detail(parsed.get("error", nil)) : nil
+    _fail("LLM: {res.status} {detail ?? res.body.truncate(500)}")
+  }
+
+  fn _cc_send(http, body, headers = nil) {
+    let res = http.post("/chat/completions", json: body, headers: headers)
+    _cc_error(res) unless res.ok
+    res.json()
+  }
+
+  # A streamed completion, put back together into the body the plain request
+  # would have answered with. A call is known by its index; its id and name
+  # come with the first piece, its arguments over the rest.
+  class LLMChatStream {
+    new(.on_text) {
+      self.events = 0
+      self.pieces = []
+      self.reasoning = []
+      self.calls = []
+      self.finish = nil
+      self.usage = nil
+      self.failure = nil
+    }
+
+    take(e) {
+      self.events += 1
+      let ev = try {
+        JSON.parse(e.data)
+      } catch _e: ValueError {
+        nil
+      }
+      return nil if type_of(ev) != "Object"
+      if ev.get("error", nil) != nil {
+        self.failure = ev.error
+        return nil
+      }
+      self.usage = ev.usage if ev.get("usage", nil) != nil
+      let choices = ev.get("choices", [])
+      return nil if choices.empty()
+      let choice = choices[0]
+      self.finish = choice.finish_reason if choice.get("finish_reason", nil) != nil
+      self.grow(choice.get("delta", {}))
+    }
+
+    grow(d) {
+      let said = d.get("content", nil) ?? ""
+      if !said.empty() {
+        self.pieces.push(said)
+        self.on_text(said) if self.on_text != nil
+      }
+      let thought = d.get("reasoning_content", nil) ?? d.get("reasoning", nil) ?? ""
+      self.reasoning.push(thought) if !thought.empty()
+      for c in d.get("tool_calls", []) {
+        let i = c.get("index", 0)
+        while self.calls.size() <= i {
+          self.calls.push({id: nil, name: "", pieces: []})
+        }
+        let f = c.get("function", {})
+        let was = self.calls[i]
+        self.calls[i] = {id: c.get("id", nil) ?? was.id, name: f.get("name", nil) ?? was.name,
+                         pieces: [...was.pieces, f.get("arguments", nil) ?? ""]}
+      }
+    }
+
+    finish_body() {
+      if self.failure != nil {
+        _fail("LLM: {_cc_detail(self.failure)}")
+      }
+      let calls = self.calls.map(|c|
+        {id: c.id, type: "function", function: {name: c.name, arguments: c.pieces.join("")}})
+      mut message = {role: "assistant", content: self.pieces.join("")}
+      message = {...message, reasoning_content: self.reasoning.join("")} if !self.reasoning.empty()
+      message = {...message, tool_calls: calls} if !calls.empty()
+      {choices: [{message: message,
+                  finish_reason: self.finish}],
+       usage: self.usage}
+    }
+  }
+
+  fn _cc_message(body) {
+    let choices = body.get("choices", [])
+    choices.empty() ? {} : choices[0].get("message", {})
+  }
+
+  fn _cc_stream(http, body, on_text) {
+    let assembly = LLMChatStream(on_text)
+    let res = http.post("/chat/completions",
+                        json: {...body, stream: true, stream_options: {include_usage: true}},
+                        events: |e| assembly.take(e))
+    _cc_error(res) unless res.ok
+    if assembly.events == 0 {
+      # A 2xx that did not stream is the whole answer.
+      _fail("LLM: {res.status}: the stream closed without an event") if res.body.empty()
+      let whole = res.json()
+      let said = _cc_message(whole).get("content", nil) ?? ""
+      on_text(said) if !said.empty()
+      return whole
+    }
+    assembly.finish_body()
+  }
+
+  # The tools of a request, as this format names them.
+  fn _cc_tool(t) {
+    {type: "function", function: {name: t.name, description: t.description,
+                                  parameters: t.input_schema}}
+  }
+
+  fn _cc_text_of(content) {
+    type_of(content) == "String" ? content
+      : content.filter(|p| p.type == "text").map(|p| p.text).join("")
+  }
+
+  fn _cc_call(p) {
+    {id: p.id, type: "function",
+     function: {name: p.name, arguments: JSON.stringify(p.get("args", {}))}}
+  }
+
+  # The messages the API takes. A system prompt is the first message, each
+  # tool result is a message of its own, and what has no place here (reasoning,
+  # another format's blocks) is left out; a message left with nothing is too.
+  fn _cc_messages(system, messages) {
+    mut out = system == nil ? [] : [{role: "system", content: system}]
+    for m in messages {
+      if m.role == "tool" {
+        for r in m.content {
+          out.push({role: "tool", tool_call_id: r.id, content: r.get("content", "")})
+        }
+        continue
+      }
+      let text = _cc_text_of(m.content)
+      let calls = type_of(m.content) == "String" ? []
+        : m.content.filter(|p| p.type == "tool_call").map(_cc_call)
+      if calls.empty() {
+        out.push({role: m.role, content: text}) if !text.empty() || type_of(m.content) == "String"
+      } else {
+        out.push({role: m.role, content: text, tool_calls: calls})
+      }
+    }
+    out
+  }
+
+  # The request body; the ceiling goes by the name this server knows it by.
+  fn _cc_body_of(req, max_tokens_field) {
+    mut body = {model: req.model, messages: _cc_messages(req.system, req.messages)}
+    body[max_tokens_field] = req.max_tokens if req.max_tokens != nil
+    body.tools = req.tools.map(_cc_tool) if !req.tools.empty()
+    body.stop = req.stop if req.stop != nil
+    body.temperature = req.temperature if req.temperature != nil
+    req.extra == nil ? body : {...body, ...req.extra}
+  }
+
+  let CC_STOPS = {stop: "end", tool_calls: "tool_calls", length: "length",
+                  content_filter: "refusal"}
+
+  # A call's arguments are a JSON document in a String.
+  fn _cc_args(c) {
+    let text = c.function.get("arguments", nil) ?? ""
+    return {} if text.empty()
+    let parsed = try {
+      JSON.parse(text)
+    } catch _e: ValueError {
+      _fail("LLM: the arguments of the call to '{c.function.name}' are not JSON")
+    }
+    type_of(parsed) == "Object" ? parsed
+      : _fail("LLM: the arguments of the call to '{c.function.name}' are not an Object")
+  }
+
+  # The API's answer, whole or put together from a stream, as the reply a
+  # provider gives. A failure can arrive inside a 200. A call with no id gets
+  # one, for the result to name.
+  fn _cc_reply_of(body) {
+    if body.get("error", nil) != nil {
+      _fail("LLM: {_cc_detail(body.error)}")
+    }
+    let choices = body.get("choices", [])
+    _fail("LLM: the API answered with no choices") if choices.empty()
+    let choice = choices[0]
+    if choice.get("error", nil) != nil {
+      _fail("LLM: {_cc_detail(choice.error)}")
+    }
+    let m = choice.get("message", {})
+    let said = m.get("content", nil) ?? ""
+    let thought = m.get("reasoning_content", nil) ?? m.get("reasoning", nil) ?? ""
+    mut calls = []
+    for n, c in m.get("tool_calls", []).enumerate() {
+      calls.push({type: "tool_call", id: c.get("id", nil) ?? "call_{n + 1}",
+                  name: c.function.name, args: _cc_args(c)})
+    }
+    mut parts = []
+    parts.push({type: "reasoning", text: thought}) if !thought.empty()
+    parts.push({type: "text", text: said}) if !said.empty()
+    parts += calls
+    let u = body.get("usage", nil)
+    {
+      message: {role: "assistant", content: parts},
+      text: said,
+      tool_calls: calls.map(|p| {id: p.id, name: p.name, args: p.args}),
+      reasoning: thought,
+      stop: CC_STOPS.get(choice.get("finish_reason", ""), nil),
+      usage: u == nil ? nil : {input_tokens: u.get("prompt_tokens", 0),
+                               output_tokens: u.get("completion_tokens", 0)},
+      raw: body,
+    }
+  }
+
+  class LLMChatCompletions {
+    new(.http, .name, .max_tokens_field) {
+      self.capabilities = {tools: true, extra: true}
+      self.default_model = nil
+    }
+
+    turn(req, on_text) {
+      let body = _cc_body_of(req, self.max_tokens_field)
+      _cc_reply_of(on_text == nil ? _cc_send(self.http, body) : _cc_stream(self.http, body, on_text))
+    }
+
+    # The body as it is, posted to /chat/completions, and the answer as it is.
+    request(body, headers) {
+      _cc_send(self.http, body, headers)
+    }
+  }
+
+  # Any server that speaks Chat Completions. The key, when there is one, goes as
+  # a bearer token; `max_tokens_field` is the name this server knows the
+  # ceiling by.
+  fn openai_compatible(*, base_url, api_key = nil, name = "openai_compatible",
+                       max_tokens_field = "max_tokens", timeout = 120) {
+    let base = _string("base_url", base_url)
+    let key = _optional_string("api_key", api_key)
+    let headers = key == nil ? {} : {Authorization: "Bearer {key}"}
+    LLMChatCompletions(Http.client(base, headers: headers, timeout: _long("timeout", timeout)),
+                       _string("name", name), _string("max_tokens_field", max_tokens_field))
+  }
+
   # --- running the tools a model asks for ---------------------------------------
 
   # One call, answered. What a tool throws goes back to the model as an error it
@@ -885,6 +1141,6 @@ let _llm_module = fn () {
 
   {ask: ask, chat: chat, tool: tool, request: request, repair: repair, turn: turn,
    anthropic: anthropic, run_tools: run_tools, tool_from_schema: tool_from_schema,
-   count_tokens: count_tokens}
+   count_tokens: count_tokens, openai_compatible: openai_compatible}
 }
 let LLM = _llm_module()

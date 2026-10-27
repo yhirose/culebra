@@ -1,0 +1,255 @@
+# What is particular to the Chat Completions wire, against a stand-in server:
+# the request body as it is written, thinking under either of its two names,
+# calls with no id, arguments that are not JSON, a key or none, the ceiling's
+# name. What every format must agree on is in test_llm_conformance.cul.
+
+fn chunk(delta, finish) {
+  "data: {JSON.stringify({choices: [{index: 0, delta: delta, finish_reason: finish}]})}\n\n"
+}
+
+fn completion(message, finish) {
+  {choices: [{index: 0, message: message, finish_reason: finish}],
+   usage: {prompt_tokens: 3, completion_tokens: 5, total_tokens: 8}}
+}
+
+fn call(id, name, arguments) {
+  let c = {type: "function", function: {name: name, arguments: arguments}}
+  id == nil ? c : {...c, id: id}
+}
+
+# The message a model answers, plain, and the same as chunks for a stream.
+fn answer_of(m, req) {
+  cond {
+    m == "think_a" => {content: "ok", reasoning_content: "let me see"},
+    m == "think_b" => {content: "ok", reasoning: "let me see"},
+    m == "noid" => {content: nil, tool_calls: [call(nil, "weather", '{"city":"Tokyo"}'),
+                                              call(nil, "weather", '{"city":"Osaka"}')]},
+    m == "badargs" => {content: nil, tool_calls: [call("c1", "weather", '{oops')]},
+    m == "listargs" => {content: nil, tool_calls: [call("c1", "weather", "[1]")]},
+    m == "emptyargs" => {content: nil, tool_calls: [call("c1", "weather", "")]},
+    m == "record" => {content: JSON.stringify({body: req.body, auth: req.auth})},
+    _ => {content: "model {m}"},
+  }
+}
+
+fn chunks_of(message) {
+  mut out = [chunk({role: "assistant"}, nil)]
+  out.push(chunk({reasoning_content: message.reasoning_content}, nil)) if message.has("reasoning_content")
+  out.push(chunk({reasoning: message.reasoning}, nil)) if message.has("reasoning")
+  if message.content != nil {
+    out.push(chunk({content: message.content}, nil))
+  }
+  for i, c in message.get("tool_calls", []).enumerate() {
+    let head = {index: i, type: "function",
+                function: {name: c.function.name, arguments: ""}}
+    out.push(chunk({tool_calls: [c.has("id") ? {...head, id: c.id} : head]}, nil))
+    out.push(chunk({tool_calls: [{index: i, function: {arguments: c.function.arguments}}]}, nil))
+  }
+  out.push(chunk({}, message.has("tool_calls") ? "tool_calls" : "stop"))
+  out.push("data: [DONE]\n\n")
+  out
+}
+
+let (tx, rx) = Channel.new(1)
+let iso = Isolate.spawn(fn () {
+  let srv = Http.server()
+  srv.post("/chat/completions", fn (req) {
+    let body = JSON.parse(req.body)
+    let m = body.model
+    let message = answer_of(m, {body: body, auth: req.headers.get("Authorization", nil)})
+    if m == "busy" {
+      return {status: 529, content_type: "application/json",
+              body: '{"error":{"message":"busy","type":"server_error","code":null}}'}
+    }
+    if m == "textual" {
+      return {status: 500, content_type: "application/json", body: '{"error":"plain text"}'}
+    }
+    if m == "gateway" {
+      return {status: 502, content_type: "text/html", body: "<h1>bad gateway</h1>"}
+    }
+    if m == "choice_error" {
+      return {content_type: "application/json", body: JSON.stringify({choices: [
+        {index: 0, error: {message: "upstream died", code: 502}, finish_reason: "error"}]})}
+    }
+    if m == "nousage" {
+      return {content_type: "application/json", body: JSON.stringify({choices: [
+        {index: 0, message: {content: "x"}, finish_reason: "stop"}]})}
+    }
+    if m == "nochoices" {
+      return {content_type: "application/json", body: '{"choices":[]}'}
+    }
+    if m == "weird" {
+      return {content_type: "application/json",
+              body: JSON.stringify(completion({content: "x"}, "weird"))}
+    }
+    if body.get("stream", false) && m != "nostream" {
+      return {content_type: "text/event-stream", stream: fn (sink) {
+        for f in chunks_of(message) {
+          sink.write(f)
+        }
+      }}
+    }
+    {content_type: "application/json",
+     body: JSON.stringify(completion(message, message.has("tool_calls") ? "tool_calls" : "stop"))}
+  })
+  tx.send(srv.bind(0))
+  tx.drop()
+  srv.serve()
+})
+tx.drop()
+let BASE = "http://127.0.0.1:{rx.recv()}"
+
+let P = LLM.openai_compatible(base_url: BASE, api_key: "k")
+
+fn ask(model, **more) {
+  LLM.turn(P, model: model, messages: [{role: "user", content: "hi"}], **more)
+}
+
+fn failure(thunk) {
+  try {
+    thunk()
+    "no error"
+  } catch e {
+    "{e.kind}: {e.message}"
+  }
+}
+
+fn weather(city: String) {
+  "sunny in {city}"
+}
+
+# --- the request, as it is written ---------------------------------------------
+
+fn request_cases() {
+  let tool = LLM.tool(weather, "the weather", city: "a city")
+  let history = [
+    {role: "user", content: "hi"},
+    {role: "assistant", content: [
+      {type: "reasoning", text: "hm", format: "anthropic", opaque: {type: "thinking"}},
+      {type: "other", format: "anthropic", opaque: {type: "server_tool_use"}},
+      {type: "text", text: "two calls"},
+      {type: "tool_call", id: "a", name: "weather", args: {city: "Tokyo"}},
+      {type: "tool_call", id: "b", name: "weather", args: {city: "Osaka"}}]},
+    {role: "tool", content: [{type: "tool_result", id: "a", content: "sunny"},
+                             {type: "tool_result", id: "b", content: "rainy", is_error: true}]},
+    {role: "assistant", content: [{type: "reasoning", text: "only thought"}]},
+    {role: "user", content: [{type: "text", text: "and "}, {type: "text", text: "now?"}]},
+  ]
+  let got = JSON.parse(LLM.turn(P, model: "record", messages: history, system: "be brief",
+    tools: [tool], max_tokens: 50, stop: ["x"], temperature: 0.5,
+    extra: {top_p: 0.5}).text)
+  assert_eq(got.auth, "Bearer k")
+  assert_eq(got.body, {
+    model: "record",
+    messages: [
+      {role: "system", content: "be brief"},
+      {role: "user", content: "hi"},
+      {role: "assistant", content: "two calls", tool_calls: [
+        {id: "a", type: "function", function: {name: "weather", arguments: '{"city":"Tokyo"}'}},
+        {id: "b", type: "function", function: {name: "weather", arguments: '{"city":"Osaka"}'}}]},
+      {role: "tool", tool_call_id: "a", content: "sunny"},
+      {role: "tool", tool_call_id: "b", content: "rainy"},
+      {role: "user", content: "and now?"},
+    ],
+    max_tokens: 50,
+    tools: [{type: "function", function: {name: "weather", description: "the weather",
+      parameters: {type: "object", properties: {city: {type: "string", description: "a city"}},
+                   required: ["city"]}}}],
+    stop: ["x"], temperature: 0.5, top_p: 0.5})
+
+  # Nothing is sent that was not asked for; a stream asks for its usage.
+  let bare = JSON.parse(ask("record").text).body
+  assert_eq(bare, {model: "record", messages: [{role: "user", content: "hi"}]})
+  let streamed = JSON.parse(ask("record", on_text: |t| nil).text).body
+  assert_eq(streamed.stream, true)
+  assert_eq(streamed.stream_options, {include_usage: true})
+}
+request_cases()
+
+# --- the key and the ceiling's name -----------------------------------------------
+
+fn setup_cases() {
+  let open = LLM.openai_compatible(base_url: BASE)
+  let seen = JSON.parse(LLM.turn(open, model: "record",
+    messages: [{role: "user", content: "hi"}]).text)
+  assert_eq(seen.auth, nil)
+  let named = LLM.openai_compatible(base_url: BASE, max_tokens_field: "max_completion_tokens")
+  let body = JSON.parse(LLM.turn(named, model: "record", max_tokens: 7,
+    messages: [{role: "user", content: "hi"}]).text).body
+  assert_eq([body.get("max_completion_tokens", nil), body.get("max_tokens", nil)], [7, nil])
+  assert_eq(P.name, "openai_compatible")
+  assert_eq(LLM.openai_compatible(base_url: BASE, name: "x").name, "x")
+  assert_eq(failure(fn () { LLM.count_tokens(P, model: "m", messages: [{role: "user", content: "hi"}]) }),
+            "LLMError: LLM.count_tokens: openai_compatible does not count tokens")
+  assert_eq(failure(fn () { LLM.openai_compatible() }), "ArityError: missing required argument 'base_url'")
+  assert_eq(failure(fn () { LLM.openai_compatible(base_url: 1) }),
+            "TypeError: type error: parameter 'base_url' expects String")
+}
+setup_cases()
+
+# --- what comes back ----------------------------------------------------------------
+
+# Thinking arrives as `reasoning_content` or `reasoning`; either way it is a
+# part that is not sent back, and not heard as text.
+fn reply_cases() {
+  for model in ["think_a", "think_b"] {
+    let heard = []
+    for streamed in [false, true] {
+      let r = streamed ? ask(model, on_text: |t| heard.push(t)) : ask(model)
+      assert_eq(r.reasoning, "let me see", "{model} {streamed}")
+      assert_eq(r.text, "ok", "{model} {streamed}")
+      assert_eq(r.message.content, [{type: "reasoning", text: "let me see"},
+                                    {type: "text", text: "ok"}], "{model} {streamed}")
+    }
+    assert_eq(heard, ["ok"], model)
+  }
+
+  # A call without an id is given one, in the model's order.
+  for streamed in [false, true] {
+    let r = streamed ? ask("noid", on_text: |t| nil) : ask("noid")
+    assert_eq(r.tool_calls, [{id: "call_1", name: "weather", args: {city: "Tokyo"}},
+                             {id: "call_2", name: "weather", args: {city: "Osaka"}}],
+              "noid {streamed}")
+    assert_eq(r.stop, "tool_calls")
+  }
+
+  assert_eq(ask("emptyargs").tool_calls[0].args, {})
+  for streamed in [false, true] {
+    let bad = failure(fn () { streamed ? ask("badargs", on_text: |t| nil) : ask("badargs") })
+    assert_eq(bad, "LLMError: LLM: the arguments of the call to 'weather' are not JSON",
+              "badargs {streamed}")
+  }
+  assert_eq(failure(fn () { ask("listargs") }),
+            "LLMError: LLM: the arguments of the call to 'weather' are not an Object")
+
+  assert_eq(ask("nousage").usage, nil)
+  assert_eq(failure(fn () { ask("busy") }), "LLMError: LLM: 529 server_error: busy")
+  assert_eq(failure(fn () { ask("textual") }), "LLMError: LLM: 500 plain text")
+  assert_eq(failure(fn () { ask("gateway") }), "LLMError: LLM: 502 <h1>bad gateway</h1>")
+  assert_eq(failure(fn () { ask("choice_error") }), "LLMError: LLM: upstream died")
+
+  assert_eq(ask("weird").stop, nil)
+  assert_eq(ask("weird").raw.choices[0].finish_reason, "weird")
+  assert_eq(failure(fn () { ask("nochoices") }), "LLMError: LLM: the API answered with no choices")
+
+  # A server that answers whole when asked to stream: the whole answer, heard once.
+  let whole = []
+  assert_eq(ask("nostream", on_text: |t| whole.push(t)).text, "model nostream")
+  assert_eq(whole, ["model nostream"])
+}
+reply_cases()
+
+# --- end to end -----------------------------------------------------------------------
+
+# A chat runs a tool and sends its result back in this format's own message.
+fn chat_cases() {
+  let c = LLM.chat(provider: P, model: "noid", tools: [LLM.tool(weather, "the weather", city: "a city")],
+                   max_turns: 1)
+  assert_eq(failure(fn () { c.ask("go") }), "LLMError: LLM: no answer within max_turns (1)")
+  assert_eq(LLM.ask("hi", provider: P, model: "plain"), "model plain")
+  assert_eq(LLM.request({model: "plain", messages: [{role: "user", content: "hi"}]},
+                        provider: P).choices[0].message.content, "model plain")
+}
+chat_cases()
+
+iso.drop()

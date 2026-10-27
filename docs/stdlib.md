@@ -81,7 +81,7 @@ Conventions used below:
 39. [`Search`](#39-search) — full-text index over your own documents, ranked
 40. [`Audio`](#40-audio) — sound for any program, with or without a window: WASM-4 tones, samples, streamed music, synthesised PCM, the microphone
 41. [`Dir`](#41-dir) — a read-only set of files on disk, in memory, baked into the binary or in a ZIP archive, read one way (`Dir.disk` / `Dir.memory` / `Dir.embedded` / `Dir.zip`, and the `Dir` trait)
-42. [`LLM`](#42-llm) — a client for large language models: one step with a provider (the Messages API so far), a conversation that runs your functions as tools, or a request as it is
+42. [`LLM`](#42-llm) — a client for large language models: one step with a provider (the Messages API or Chat Completions), a conversation that runs your functions as tools, or a request as it is
 43. [Design notes](#43-design-notes)
 44. [Not included (yet)](#44-not-included-yet)
 
@@ -9384,8 +9384,9 @@ playground has no ZIP support: `Dir.zip` and `Compress.zip` raise there.
 
 A client for large language models, written in Culebra over [`Http`](#15-http)
 and [`JSON`](#9-json). What it asks is a *provider*: `LLM.anthropic()` (the
-Messages API, Anthropic's Claude API) is the one there is so far, and a provider
-can be written in a program (see `LLM.turn`). There are four ways in: one
+Messages API, Anthropic's Claude API) and `LLM.openai_compatible()` (Chat
+Completions) are the ones there are so far, and a provider can be written in a
+program (see `LLM.turn`). There are four ways in: one
 question, a conversation that keeps its history and runs the tools the model
 asks for, one step with a provider (what a loop of your own is made of), and a
 request body sent as it is.
@@ -9697,6 +9698,39 @@ same as without it. A `tool` message goes out as a user message of
 `"refusal"` and `"pause"` (`pause_turn`) for the stop reasons of those names, and
 `nil` for one it does not know; `raw` is the API's answer, where it is.
 
+### `LLM.openai_compatible(base_url:, api_key=nil, name="openai_compatible", max_tokens_field="max_tokens", timeout=120) -> LLMChatCompletions`
+
+Any server that speaks Chat Completions (`POST {base_url}/chat/completions`) as a
+provider for `LLM.turn`: OpenAI, OpenRouter, Ollama, llama-server and the like.
+`base_url` carries the version path (`https://api.openai.com/v1`). A key, when
+there is one, goes as `Authorization: Bearer ...`; with none, no header is sent.
+`name` is how the provider is called in an error. `max_tokens_field` is the name
+the server knows the output ceiling by (OpenAI's own is `max_completion_tokens`);
+`max_tokens` is sent only when the call gives one. Like `LLM.anthropic`, a call
+names its model.
+
+```culebra
+# doctest: skip
+let server = LLM.openai_compatible(base_url: "http://localhost:8080/v1")
+let reply = LLM.turn(server, model: "any", messages: [{role: "user", content: "Hi"}])
+IO.println(reply.text)
+```
+
+The system prompt goes out as the first message and each tool result as a `tool`
+message of its own (this format has no error flag, so `is_error` is not sent). A
+call's arguments go out as a JSON string and are read back from one: arguments
+that are not a JSON Object are an `LLMError`, and an empty string is `{}`. A call
+that comes with no id is given `call_1`, `call_2`, ... in the model's order.
+Thinking is read from `reasoning_content` or `reasoning`, whichever the server
+sends, into a `reasoning` part; it is not sent back and not passed to `on_text`.
+With `on_text` the request asks for the stream's usage (`stream_options`), and the
+reply is the same as without it. In the reply, `stop` is `"end"` for `stop`,
+`"tool_calls"`, `"length"` and `"refusal"` for `content_filter`, and `nil` for one
+it does not know; `usage` is `{input_tokens, output_tokens}`, or `nil` when the
+server sends none; `raw` is the server's answer. An error inside a 200, as a body
+or as a stream's frame, is an `LLMError`. This format has no counter, so
+`LLM.count_tokens` is an `LLMError`.
+
 ### Errors
 
 | Situation | Error |
@@ -9705,6 +9739,7 @@ same as without it. A `tool` message goes out as a user message of
 | No `model:`, and the provider has none | `LLMError` |
 | `LLM.count_tokens` on a provider that cannot count | `LLMError` |
 | The API answers with a status that is not 2xx | `LLMError`: `LLM: 429 rate_limit_error: ...` (the status, then the error's type and message) |
+| Chat Completions: an error inside a 200, no choices, or a call whose arguments are not a JSON Object | `LLMError` |
 | The model declines to answer (`stop` is `"refusal"`) | `LLMError` |
 | A tool call cut off at `max_tokens` (the tool is not run) | `LLMError` |
 | No answer within `max_turns` | `LLMError` |

@@ -12,7 +12,7 @@ fn cases() {
 {
   hello: {parts: [{type: "text", text: "hello there"}], stop: "end"},
   tool: {parts: [{type: "text", text: "checking "},
-                 {type: "tool_call", id: "call_1", name: "weather", args: {city: "Tokyo"}}],
+                 {type: "tool_call", id: "call_7x", name: "weather", args: {city: "Tokyo"}}],
          stop: "tool_calls"},
   cut: {parts: [{type: "text", text: "half an ans"}], stop: "length"},
   refused: {parts: [], stop: "refusal"},
@@ -111,10 +111,105 @@ fn messages_seen(body) {
    tools: body.get("tools", []).map(|t| t.name)}
 }
 
-fn adapters() {
-{
-  anthropic: {path: "/v1/messages", answer: messages_answer, seen: messages_seen},
+# --- the Chat Completions API's stand-in --------------------------------------------
+
+fn chat_frame(data) {
+  "data: {JSON.stringify(data)}\n\n"
 }
+
+let CHAT_STOPS = {end: "stop", tool_calls: "tool_calls", length: "length",
+                  refusal: "content_filter"}
+
+fn chat_calls(c) {
+  c.parts.filter(|p| p.type == "tool_call").map(|p|
+    {id: p.id, type: "function", function: {name: p.name, arguments: JSON.stringify(p.args)}})
+}
+
+fn chat_text(c) {
+  c.parts.filter(|p| p.type == "text").map(|p| p.text).join("")
+}
+
+fn chat_body(c) {
+  let calls = chat_calls(c)
+  let message = {role: "assistant", content: chat_text(c)}
+  {id: "chatcmpl-1", object: "chat.completion", model: "stand-in",
+   choices: [{index: 0, message: calls.empty() ? message : {...message, tool_calls: calls},
+              finish_reason: CHAT_STOPS[c.stop]}],
+   usage: {prompt_tokens: 3, completion_tokens: 5, total_tokens: 8}}
+}
+
+fn chat_error(status, message) {
+  {status: status, content_type: "application/json",
+   body: JSON.stringify({error: {message: message, type: "server_error", code: nil}})}
+}
+
+fn chunk(delta, finish) {
+  chat_frame({id: "chatcmpl-1", object: "chat.completion.chunk", model: "stand-in",
+              choices: [{index: 0, delta: delta, finish_reason: finish}]})
+}
+
+# The stream a Chat Completions server sends: pieces of text, a call's name and
+# then its arguments in two pieces, the finish, a frame of usage alone, [DONE].
+fn chat_chunks(c) {
+  mut out = [chunk({role: "assistant", content: ""}, nil)]
+  for piece in halves(chat_text(c)) {
+    out.push(chunk({content: piece}, nil)) if !piece.empty()
+  }
+  for i, call in chat_calls(c).enumerate() {
+    out.push(chunk({tool_calls: [{index: i, id: call.id, type: "function",
+      function: {name: call.function.name, arguments: ""}}]}, nil))
+    for piece in halves(call.function.arguments) {
+      out.push(chunk({tool_calls: [{index: i, function: {arguments: piece}}]}, nil))
+    }
+  }
+  out.push(chunk({}, CHAT_STOPS[c.stop]))
+  out.push(chat_frame({id: "chatcmpl-1", choices: [],
+    usage: {prompt_tokens: 3, completion_tokens: 5, total_tokens: 8}}))
+  out.push("data: [DONE]\n\n")
+  out
+}
+
+# An error in a 200 is a body of its own, or a frame in the stream.
+fn chat_answer(c, streaming) {
+  if c.has("error") {
+    let e = c.error
+    if e.status != 200 {
+      return chat_error(e.status, e.message)
+    }
+    let failure = {error: {message: e.message, type: "server_error", code: nil}}
+    if streaming {
+      return {content_type: "text/event-stream", stream: fn (sink) {
+        sink.write(chat_frame(failure))
+      }}
+    }
+    return {content_type: "application/json", body: JSON.stringify(failure)}
+  }
+  if streaming {
+    return {content_type: "text/event-stream", stream: fn (sink) {
+      for f in chat_chunks(c) {
+        sink.write(f)
+      }
+    }}
+  }
+  {content_type: "application/json", body: JSON.stringify(chat_body(c))}
+}
+
+fn chat_seen(body) {
+  let ms = body.messages
+  let last = ms[ms.size() - 1]
+  {system: ms[0].role == "system" ? ms[0].content : nil,
+   max_tokens: body.get("max_tokens", nil), max_completion_tokens: body.get("max_completion_tokens", nil),
+   stop: body.get("stop", nil), temperature: body.get("temperature", nil),
+   result: last.role == "tool" ? {id: last.tool_call_id, content: last.content} : nil,
+   tools: body.get("tools", []).map(|t| t.function.name),
+   roles: ms.map(|m| m.role)}
+}
+
+fn adapters() {
+  {
+    anthropic: {path: "/v1/messages", answer: messages_answer, seen: messages_seen},
+    chat: {path: "/chat/completions", answer: chat_answer, seen: chat_seen},
+  }
 }
 
 # --- the server -----------------------------------------------------------------
@@ -145,6 +240,7 @@ let BASE = "http://127.0.0.1:{rx.recv()}"
 
 let PROVIDERS = {
   anthropic: LLM.anthropic(api_key: "test-key", base_url: BASE),
+  chat: LLM.openai_compatible(base_url: BASE, api_key: "test-key"),
 }
 
 # --- the checks -----------------------------------------------------------------

@@ -79,7 +79,7 @@
 39. [`Search`](#39-search) — 自分の文書を全文検索して順位をつける
 40. [`Audio`](#40-audio) — ウィンドウの有無によらず使える音: WASM-4のtone、効果音、ストリーム再生の音楽、合成するPCM、マイク
 41. [`Dir`](#41-dir) — ディスク・メモリ・バイナリへの焼き込み・ZIPアーカイブのどこにあるファイルの集まりも、同じ読み方で（`Dir.disk` / `Dir.memory` / `Dir.embedded` / `Dir.zip`と`Dir` trait）
-42. [`LLM`](#42-llm) — 大規模言語モデルのクライアント。提供元（今はMessages API）への1ステップ、関数をツールとして使う会話、リクエストの素通し
+42. [`LLM`](#42-llm) — 大規模言語モデルのクライアント。提供元（Messages APIかChat Completions）への1ステップ、関数をツールとして使う会話、リクエストの素通し
 43. [設計上の注記](#43-設計上の注記)
 44. [未収録（将来検討）](#44-未収録将来検討)
 
@@ -9009,8 +9009,8 @@ Windowsでは開いているファイルを削除も置き換えもできない�
 
 大規模言語モデルのクライアントです。Culebraで書かれていて、[`Http`](#15-http)と
 [`JSON`](#9-json)の上に作られています。尋ねる相手は*提供元*で、今あるのは
-`LLM.anthropic()`（Messages API、AnthropicのClaude API）だけですが、提供元はプログラムの
-中で書くこともできます（`LLM.turn`を参照）。使い方は4つあります。1回の質問、履歴を持ち
+`LLM.anthropic()`（Messages API、AnthropicのClaude API）と`LLM.openai_compatible()`
+（Chat Completions）の2つで、提供元はプログラムの中で書くこともできます（`LLM.turn`を参照）。使い方は4つあります。1回の質問、履歴を持ち
 モデルが求めるツールを実行する会話、提供元への1ステップ（自前のループの部品）、
 そしてリクエスト本文をそのまま送る素通しです。
 
@@ -9303,6 +9303,33 @@ history.push(reply.message)
 `stop_sequence`が`"end"`、`tool_use`が`"tool_calls"`、`max_tokens`が`"length"`、`refusal`が
 `"refusal"`、`pause_turn`が`"pause"`で、知らない値は`nil`です。`raw`はAPIの応答そのものです。
 
+### `LLM.openai_compatible(base_url:, api_key=nil, name="openai_compatible", max_tokens_field="max_tokens", timeout=120) -> LLMChatCompletions`
+
+Chat Completions（`POST {base_url}/chat/completions`）を話すサーバーを、`LLM.turn`の提供元として使います。
+OpenAI、OpenRouter、Ollama、llama-serverなどが相手です。`base_url`にはバージョンのパスまで含めます
+（`https://api.openai.com/v1`）。キーがあれば`Authorization: Bearer ...`で送り、無ければヘッダーは送りません。
+`name`はエラーでこの提供元を呼ぶときの名前です。`max_tokens_field`は、そのサーバーが出力の上限を
+何という名前で受け取るかです（OpenAI本家は`max_completion_tokens`）。`max_tokens`は呼び出しが指定した
+ときだけ送られます。`LLM.anthropic`と同じく、モデルは呼び出しごとに指定します。
+
+```culebra
+# doctest: skip
+let server = LLM.openai_compatible(base_url: "http://localhost:8080/v1")
+let reply = LLM.turn(server, model: "any", messages: [{role: "user", content: "Hi"}])
+IO.println(reply.text)
+```
+
+システムプロンプトは先頭のメッセージとして、ツールの結果は1件ごとの`tool`メッセージとして送られます
+（この形式にはエラーのフラグがないので、`is_error`は送られません）。呼び出しの引数はJSON文字列として
+送り、JSON文字列から読み戻します。JSONのObjectでない引数は`LLMError`で、空文字列は`{}`です。
+idなしで来た呼び出しには、モデルの順に`call_1`、`call_2`、…が付きます。思考は、サーバーが送るのが
+`reasoning_content`でも`reasoning`でも、`reasoning`の部品に読みます。送り返さず、`on_text`にも渡しません。
+`on_text`を渡すと、リクエストはストリームのusageも求め（`stream_options`）、応答は渡さないときと同じです。
+応答の`stop`は、`stop`が`"end"`、`tool_calls`が`"tool_calls"`、`length`が`"length"`、`content_filter`が
+`"refusal"`で、知らない値は`nil`です。`usage`は`{input_tokens, output_tokens}`で、サーバーが送らなければ
+`nil`です。`raw`はサーバーの応答そのものです。200の中のエラー（本文でもストリームのフレームでも）は
+`LLMError`です。この形式にはカウンターがないので、`LLM.count_tokens`は`LLMError`です。
+
 ### エラー
 
 | 状況 | エラー |
@@ -9311,6 +9338,7 @@ history.push(reply.message)
 | `model:`が無く、提供元にも既定がない | `LLMError` |
 | 数えられない提供元に`LLM.count_tokens` | `LLMError` |
 | APIが2xx以外のステータスで答えた | `LLMError`: `LLM: 429 rate_limit_error: ...`（ステータス、エラーの種類と説明） |
+| Chat Completions: 200の中のエラー、choicesが空、引数がJSONのObjectでない呼び出し | `LLMError` |
 | モデルが回答を断った（`stop`が`"refusal"`） | `LLMError` |
 | ツール呼び出しが`max_tokens`で切れた（ツールは実行しない） | `LLMError` |
 | `max_turns`以内に回答が無い | `LLMError` |
