@@ -9518,6 +9518,56 @@ inspect(repaired.map(|m| m.role))  # => ['user', 'assistant', 'user']
 inspect(repaired[1].content.size())  # => 1
 ```
 
+### `LLM.turn(provider, messages:, model=nil, system=nil, tools=[], max_tokens=nil, stop=nil, temperature=nil, extra=nil, on_text=nil) -> Object`
+
+One step with a provider: the provider is asked once and the tools it calls are
+not run. `LLM.turn` checks what it is given first, so a provider only ever sees
+a request that is whole, and it answers with the provider's reply as it is.
+
+A provider is anything with a `turn(request, on_text)` method: a class, or an
+Object whose `turn` is a function. Its `name` is used in messages, its
+`capabilities` (an Object, `{tools: true, extra: true}`) says what it takes, and
+its `default_model`, if it has one, is the model when `model:` is left out. A
+provider that has none needs `model:`. `request` is `{model, system, messages,
+tools, max_tokens, stop, temperature, extra}`, and the reply is an Object:
+
+| field | meaning |
+|---|---|
+| `message` | the assistant message, `{role: "assistant", content: [...]}`, ready to add to the history |
+| `text` | what it said, as a `String` |
+| `tool_calls` | the tools it asks for, `[{id:, name:, args:}]` |
+| `reasoning` | its thinking, as a `String` |
+| `stop` | `"end"`, `"tool_calls"`, `"length"`, `"refusal"` or `"pause"`; `nil` when the provider does not say |
+| `usage` | `{input_tokens:, output_tokens:}`; `nil` when the provider does not say |
+| `raw` | the provider's own answer |
+
+```culebra
+let echo = {
+  name: "echo",
+  capabilities: {},
+  default_model: "echo-1",
+  turn: fn (request, on_text) {
+    let last = request.messages[request.messages.size() - 1].content
+    {message: {role: "assistant", content: [{type: "text", text: last}]}, text: last,
+     tool_calls: [], reasoning: "", stop: "end", usage: nil, raw: nil}
+  },
+}
+let reply = LLM.turn(echo, messages: [{role: "user", content: "hi"}])
+inspect(reply.text)  # => 'hi'
+```
+
+The system prompt is `system:`, or a first message of role `system`, but not
+both, and not a `system` message anywhere else. A request that asks for what the
+provider's `capabilities` lack (`tools` or `extra`) is refused before the
+provider is asked, and so is a history whose tool calls and results do not pair
+up (see `LLM.repair`).
+
+| Situation | Error |
+|---|---|
+| A message, a part or an argument of the wrong type | `TypeError` |
+| An unknown role or part type, or a part in a role it does not belong to (a `tool_result` in an assistant message) | `ValueError` |
+| No `model:` and the provider has none, no messages, a `system` prompt given twice or late, a call and a result that do not pair, something the provider does not take, a reply that is not an Object | `LLMError` |
+
 ### Errors
 
 | Situation | Error |

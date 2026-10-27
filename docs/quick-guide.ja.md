@@ -822,7 +822,7 @@ inspect(match 9 {
 
 **Dir** — Dir.disk(path: String | Path) -> Dir; Dir.memory(files: Object) -> Dir; Dir.embedded(name: String) -> Dir; Dir.zip(path: String | Path = nil, *, bytes: String = nil) -> Dir; d.read(path); d.list_dir(path); d.exists(path); d.is_file(path); d.is_dir(path); d.size(path); d.files(); d.glob(pattern); d.copy_to(dest)
 
-**LLM** — LLM.ask(prompt, model:, system=nil, max_tokens=16000, on_text=nil, api_key=nil, base_url=nil) -> String; LLM.chat(model:, system=nil, tools=[], max_tokens=16000, max_turns=10, api_key=nil, base_url=nil) -> LLMChat; LLM.tool(f, description, **params) -> LLMTool; LLM.request(body, headers=nil, api_key=nil, base_url=nil) -> Object; LLM.repair(messages) -> Array
+**LLM** — LLM.ask(prompt, model:, system=nil, max_tokens=16000, on_text=nil, api_key=nil, base_url=nil) -> String; LLM.chat(model:, system=nil, tools=[], max_tokens=16000, max_turns=10, api_key=nil, base_url=nil) -> LLMChat; LLM.tool(f, description, **params) -> LLMTool; LLM.request(body, headers=nil, api_key=nil, base_url=nil) -> Object; LLM.repair(messages) -> Array; LLM.turn(provider, messages:, model=nil, system=nil, tools=[], max_tokens=nil, stop=nil, temperature=nil, extra=nil, on_text=nil) -> Object
 
 ### 一覧ではなく章を読むもの
 

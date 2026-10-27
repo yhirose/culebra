@@ -7997,6 +7997,162 @@ let _llm_module = fn () {
     out
   }
 
+  # --- turn ---------------------------------------------------------------------
+
+  let ROLES = ["system", "user", "assistant", "tool"]
+
+  # The roles a part may sit in.
+  let PART_ROLES = {
+    text: ["system", "user", "assistant"],
+    tool_call: ["assistant"],
+    tool_result: ["tool"],
+    reasoning: ["assistant"],
+    other: ["assistant"],
+  }
+
+  fn _check_message(i, m) {
+    if type_of(m) != "Object" {
+      __raise("TypeError", "type error: messages[{i}] expects Object")
+    }
+    let role = m.get("role", nil)
+    if type_of(role) != "String" {
+      __raise("TypeError", "type error: messages[{i}].role expects String")
+    }
+    if !ROLES.contains(role) {
+      __raise("ValueError", "LLM.turn: messages[{i}]: unknown role '{role}'")
+    }
+    let content = m.get("content", nil)
+    if type_of(content) == "String" {
+      if role == "tool" {
+        __raise("ValueError",
+          "LLM.turn: messages[{i}]: a tool message holds tool_result parts, not a String")
+      }
+      return nil
+    }
+    if type_of(content) != "Array" {
+      __raise("TypeError", "type error: messages[{i}].content expects String | Array")
+    }
+    for j, part in content.enumerate() {
+      if type_of(part) != "Object" {
+        __raise("TypeError", "type error: messages[{i}].content[{j}] expects Object")
+      }
+      let kind = part.get("type", nil)
+      if type_of(kind) != "String" {
+        __raise("TypeError", "type error: messages[{i}].content[{j}].type expects String")
+      }
+      let roles = PART_ROLES.get(kind, nil)
+      if roles == nil {
+        __raise("ValueError",
+          "LLM.turn: messages[{i}].content[{j}]: unknown part type '{kind}'")
+      }
+      if !roles.contains(role) {
+        __raise("ValueError",
+          "LLM.turn: messages[{i}].content[{j}]: a {kind} part is not allowed in a {role} message")
+      }
+    }
+  }
+
+  fn _check_pairing(messages) {
+    let orphans = _orphans(messages)
+    if !orphans.empty() {
+      let o = orphans[0]
+      let id = o.id == nil ? "without an id" : "'{o.id}'"
+      let partner = o.kind == "tool_call"
+        ? "a tool_result just after it"
+        : "a tool_call just before it"
+      _fail("LLM.turn: messages[{o.message}]: the {o.kind} {id} is not paired with {partner} (see LLM.repair)")
+    }
+  }
+
+  fn _system_text(content) {
+    type_of(content) == "String" ? content : content.map(|p| p.text).join("")
+  }
+
+  # The system prompt, and the messages without it. It is given as system: or as
+  # the first message, once.
+  fn _lift_system(system, messages) {
+    let lead = !messages.empty() && messages[0].role == "system"
+    let rest = lead ? messages.slice(1, messages.size()) : messages
+    if rest.any(|m| m.role == "system") {
+      _fail("LLM.turn: a system message must be the first message, and only once")
+    }
+    if lead && system != nil {
+      _fail("LLM.turn: the system prompt is given twice: as system: and as a system message")
+    }
+    (system ?? (lead ? _system_text(messages[0].content) : nil), rest)
+  }
+
+  fn _is_provider(p) {
+    try {
+      type_of(p.turn) == "Function"
+    } catch _e {
+      false
+    }
+  }
+
+  # One step: what the provider is asked is checked here once, so a provider
+  # sees a request that is whole, and runs no tool. A provider is anything with a
+  # `turn(request, on_text)` method, `name`, `capabilities` and `default_model`
+  # fields.
+  fn turn(provider, *, messages, model = nil, system = nil, tools = [], max_tokens = nil,
+          stop = nil, temperature = nil, extra = nil, on_text = nil) {
+    if !_is_provider(provider) {
+      _type_error("provider", "a provider (an object with a turn method)")
+    }
+    let name = to_string(provider.name ?? "provider")
+    let caps = provider.capabilities ?? {}
+
+    let model_id = _optional_string("model", model) ?? provider.default_model
+    if model_id == nil {
+      _fail("LLM: model: is required for {name}")
+    }
+    let prompt = _optional_string("system", system)
+    _type_error("messages", "Array") if type_of(messages) != "Array"
+    _type_error("tools", "Array") if type_of(tools) != "Array"
+    for t in tools {
+      if type_of(t) != "LLMTool" {
+        __raise("TypeError", "LLM.turn: tools takes what LLM.tool makes, got {type_of(t)}")
+      }
+    }
+    if max_tokens != nil && type_of(max_tokens) != "Long" {
+      _type_error("max_tokens", "Long | Nil")
+    }
+    if stop != nil && (type_of(stop) != "Array" || stop.any(|s| type_of(s) != "String")) {
+      _type_error("stop", "Array<String> | Nil")
+    }
+    if temperature != nil && type_of(temperature) != "Long" && type_of(temperature) != "Float" {
+      _type_error("temperature", "Float | Nil")
+    }
+    if extra != nil && type_of(extra) != "Object" {
+      _type_error("extra", "Object | Nil")
+    }
+    if on_text != nil && type_of(on_text) != "Function" {
+      _type_error("on_text", "Function | Nil")
+    }
+
+    if !tools.empty() && !caps.get("tools", false) {
+      _fail("LLM.turn: {name} does not take tools")
+    }
+    if extra != nil && !caps.get("extra", false) {
+      _fail("LLM.turn: {name} does not take extra:")
+    }
+
+    for i, m in messages.enumerate() {
+      _check_message(i, m)
+    }
+    _check_pairing(messages)
+    let (lifted, rest) = _lift_system(prompt, messages)
+    _fail("LLM.turn: no messages") if rest.empty()
+
+    let reply = provider.turn({model: model_id, system: lifted, messages: rest, tools: tools,
+                               max_tokens: max_tokens, stop: stop, temperature: temperature,
+                               extra: extra}, on_text)
+    if type_of(reply) != "Object" {
+      _fail("LLM.turn: {name} answered with a {type_of(reply)}, not an Object")
+    }
+    reply
+  }
+
   # --- the wire -----------------------------------------------------------------
 
   fn _connect(api_key, base_url) {
@@ -8123,11 +8279,11 @@ let _llm_module = fn () {
   }
 
   fn _stream(http, body, on_text) {
-    let turn = LLMStream(on_text)
+    let assembly = LLMStream(on_text)
     let res = http.post("/v1/messages", json: {...body, stream: true},
-                        events: |e| turn.take(e))
+                        events: |e| assembly.take(e))
     _api_error(res) unless res.ok
-    if turn.events == 0 {
+    if assembly.events == 0 {
       # A 2xx that did not stream is the whole answer: a server that ignores
       # `stream` sends the message the plain request would have.
       _fail("LLM: {res.status}: the stream closed without an event") if res.body.empty()
@@ -8135,7 +8291,7 @@ let _llm_module = fn () {
       on_text(_text_of(message))
       return message
     }
-    turn.finish()
+    assembly.finish()
   }
 
   # --- conversations ------------------------------------------------------------
@@ -8245,7 +8401,7 @@ let _llm_module = fn () {
                    _optional_string("base_url", base_url)), body, headers)
   }
 
-  {ask: ask, chat: chat, tool: tool, request: request, repair: repair}
+  {ask: ask, chat: chat, tool: tool, request: request, repair: repair, turn: turn}
 }
 let LLM = _llm_module()
 )=culpre=";

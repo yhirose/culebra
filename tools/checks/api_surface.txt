@@ -1132,3 +1132,4 @@ LLM.chat(model:, system=nil, tools=[], max_tokens=16000, max_turns=10, api_key=n
 LLM.tool(f, description, **params) -> LLMTool
 LLM.request(body, headers=nil, api_key=nil, base_url=nil) -> Object
 LLM.repair(messages) -> Array
+LLM.turn(provider, messages:, model=nil, system=nil, tools=[], max_tokens=nil, stop=nil, temperature=nil, extra=nil, on_text=nil) -> Object

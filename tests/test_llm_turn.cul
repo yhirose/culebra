@@ -1,0 +1,190 @@
+# LLM.turn against a provider that is only a script: what the provider is asked,
+# and what is refused before it is asked. No network, no key.
+#
+# A file of its own: the same assertions cost twice as much to compile under
+# --jit inside test_llm.cul as they do here.
+
+# What a call raised, as "Kind: message".
+fn failure(thunk) {
+  try {
+    thunk()
+    "no error"
+  } catch e {
+    "{e.kind}: {e.message}"
+  }
+}
+
+fn weather(city: String) {
+  "{city}: sunny"
+}
+let w = LLM.tool(weather, "the weather in a city")
+
+# --- LLM.turn: what a provider is asked, and what is refused first ---------------------
+
+fn tn_user(t) {
+  {role: "user", content: t}
+}
+fn tn_say(t) {
+  {role: "assistant", content: [{type: "text", text: t}]}
+}
+fn tn_sys(t) {
+  {role: "system", content: t}
+}
+fn tn_call(id) {
+  {role: "assistant", content: [{type: "tool_call", id: id, name: "weather", args: {}}]}
+}
+fn tn_result(id) {
+  {role: "tool", content: [{type: "tool_result", id: id, content: "ok", is_error: false}]}
+}
+let TN_REPLY = {message: tn_say("hi"), text: "hi", tool_calls: [], reasoning: "", stop: "end",
+                usage: nil, raw: nil}
+
+# A provider is anything with a turn method: this one records what it is asked.
+class TurnFake {
+  new(.name, .capabilities, .default_model) {
+    self.seen = []
+    self.reply = TN_REPLY
+  }
+  turn(request, on_text) {
+    self.seen.push(request)
+    on_text("piece") if on_text != nil
+    self.reply
+  }
+}
+fn tn_fake(caps = {tools: true, extra: true}, default_model = nil) {
+  TurnFake("fake", caps, default_model)
+}
+fn tn_turn(provider, **args) {
+  LLM.turn(provider, model: "m", **args)
+}
+
+# The provider's reply comes back as it is, and the request is whole.
+let tn_p = tn_fake()
+assert_eq(tn_turn(tn_p, messages: [tn_user("hi")]), TN_REPLY)
+assert_eq(tn_p.seen[0], {model: "m", system: nil, messages: [tn_user("hi")], tools: [], max_tokens: nil,
+                         stop: nil, temperature: nil, extra: nil})
+let tn_all = tn_fake()
+tn_turn(tn_all, messages: [tn_user("hi")], system: "be brief", tools: [w], max_tokens: 100,
+        stop: ["x"], temperature: 0.5, extra: {a: 1})
+assert_eq(tn_all.seen[0], {model: "m", system: "be brief", messages: [tn_user("hi")], tools: [w],
+                           max_tokens: 100, stop: ["x"], temperature: 0.5, extra: {a: 1}})
+let tn_heard = []
+tn_turn(tn_fake(), messages: [tn_user("hi")], on_text: |t| tn_heard.push(t))
+assert_eq(tn_heard, ["piece"])
+let tn_given = [tn_user("hi"), tn_say("yo"), tn_user("again")]
+let tn_before = JSON.stringify(tn_given)
+tn_turn(tn_fake(), messages: tn_given)
+assert_eq(JSON.stringify(tn_given), tn_before)
+
+# A provider can be a plain Object whose turn is a function.
+let tn_plain = {name: "plain", capabilities: {}, turn: fn (request, on_text) { TN_REPLY }}
+assert_eq(tn_turn(tn_plain, messages: [tn_user("hi")]), TN_REPLY)
+
+# The model: required, unless the provider has one; one given wins.
+assert_eq(failure(|| LLM.turn(tn_fake(), messages: [tn_user("hi")])),
+          "LLMError: LLM: model: is required for fake")
+fn tn_model(provider, **opts) {
+  try {
+    LLM.turn(provider, messages: [tn_user("hi")], **opts)
+    provider.seen[provider.seen.size() - 1].model
+  } catch e {
+    "{e.kind}: {e.message}"
+  }
+}
+let tn_local = tn_fake({}, "local-model")
+assert_eq(tn_model(tn_local), "local-model")
+assert_eq(tn_model(tn_local, model: "other"), "other")
+
+# The system prompt is system:, or the first message, once.
+let tn_lead = tn_fake()
+tn_turn(tn_lead, messages: [tn_sys("be brief"), tn_user("hi")])
+assert_eq([tn_lead.seen[0].system, tn_lead.seen[0].messages], ["be brief", [tn_user("hi")]])
+let tn_parts = tn_fake()
+tn_turn(tn_parts, messages: [{role: "system", content: [{type: "text", text: "be "},
+                                                        {type: "text", text: "brief"}]},
+                             tn_user("hi")])
+assert_eq(tn_parts.seen[0].system, "be brief")
+assert_eq(failure(|| tn_turn(tn_fake(), system: "a", messages: [tn_sys("b"), tn_user("hi")])),
+  "LLMError: LLM.turn: the system prompt is given twice: as system: and as a system message")
+assert_eq(failure(|| tn_turn(tn_fake(), messages: [tn_user("hi"), tn_sys("b")])),
+  "LLMError: LLM.turn: a system message must be the first message, and only once")
+assert_eq(failure(|| tn_turn(tn_fake(), messages: [tn_sys("a"), tn_sys("b"), tn_user("hi")])),
+  "LLMError: LLM.turn: a system message must be the first message, and only once")
+assert_eq(failure(|| tn_turn(tn_fake(), messages: [tn_sys("a")])), "LLMError: LLM.turn: no messages")
+assert_eq(failure(|| tn_turn(tn_fake(), messages: [])), "LLMError: LLM.turn: no messages")
+
+# A message is {role, content}: a wrong type is a TypeError, a wrong value a ValueError.
+assert_eq(failure(|| tn_turn(tn_fake(), messages: "x")),
+          "TypeError: type error: parameter 'messages' expects Array")
+assert_eq(failure(|| tn_turn(tn_fake(), messages: [tn_user("hi"), 3])),
+          "TypeError: type error: messages[1] expects Object")
+assert_eq(failure(|| tn_turn(tn_fake(), messages: [{role: 3}])),
+          "TypeError: type error: messages[0].role expects String")
+assert_eq(failure(|| tn_turn(tn_fake(), messages: [{role: "bot", content: "x"}])),
+          "ValueError: LLM.turn: messages[0]: unknown role 'bot'")
+assert_eq(failure(|| tn_turn(tn_fake(), messages: [{role: "user", content: 3}])),
+          "TypeError: type error: messages[0].content expects String | Array")
+assert_eq(failure(|| tn_turn(tn_fake(), messages: [{role: "user", content: ["x"]}])),
+          "TypeError: type error: messages[0].content[0] expects Object")
+assert_eq(failure(|| tn_turn(tn_fake(), messages: [{role: "user", content: [{text: "x"}]}])),
+          "TypeError: type error: messages[0].content[0].type expects String")
+assert_eq(failure(|| tn_turn(tn_fake(), messages: [{role: "user", content: [{type: "image"}]}])),
+          "ValueError: LLM.turn: messages[0].content[0]: unknown part type 'image'")
+assert_eq(failure(|| tn_turn(tn_fake(),
+            messages: [tn_user("hi"), {role: "assistant", content: [{type: "tool_result", id: "a"}]}])),
+  "ValueError: LLM.turn: messages[1].content[0]: a tool_result part is not allowed in a assistant message")
+assert_eq(failure(|| tn_turn(tn_fake(), messages: [{role: "user", content: [{type: "tool_call", id: "a"}]}])),
+  "ValueError: LLM.turn: messages[0].content[0]: a tool_call part is not allowed in a user message")
+assert_eq(failure(|| tn_turn(tn_fake(),
+            messages: [tn_user("hi"), {role: "tool", content: [{type: "text", text: "x"}]}])),
+  "ValueError: LLM.turn: messages[1].content[0]: a text part is not allowed in a tool message")
+assert_eq(failure(|| tn_turn(tn_fake(), messages: [tn_user("hi"), {role: "tool", content: "x"}])),
+  "ValueError: LLM.turn: messages[1]: a tool message holds tool_result parts, not a String")
+
+# A call and its result must pair up, which LLM.repair can make so.
+assert_eq(failure(|| tn_turn(tn_fake(),
+            messages: [tn_user("hi"), tn_call("a"), tn_result("a"), tn_say("done")])), "no error")
+assert_eq(failure(|| tn_turn(tn_fake(), messages: [tn_user("hi"), tn_result("a")])),
+  "LLMError: LLM.turn: messages[1]: the tool_result 'a' is not paired with a tool_call just before it (see LLM.repair)")
+assert_eq(failure(|| tn_turn(tn_fake(), messages: [tn_user("hi"), tn_call("a"), tn_user("again")])),
+  "LLMError: LLM.turn: messages[1]: the tool_call 'a' is not paired with a tool_result just after it (see LLM.repair)")
+assert_eq(failure(|| tn_turn(tn_fake(),
+            messages: [tn_user("hi"), {role: "assistant", content: [{type: "tool_call", name: "w"}]}])),
+  "LLMError: LLM.turn: messages[1]: the tool_call without an id is not paired with a tool_result just after it (see LLM.repair)")
+
+# What the provider says it takes is checked before it is asked.
+assert_eq(failure(|| tn_turn(tn_fake({}), messages: [tn_user("hi")], tools: [w])),
+          "LLMError: LLM.turn: fake does not take tools")
+assert_eq(failure(|| tn_turn(tn_fake({tools: true}), messages: [tn_user("hi")], extra: {a: 1})),
+          "LLMError: LLM.turn: fake does not take extra:")
+assert_eq(failure(|| tn_turn(tn_plain, messages: [tn_user("hi")], tools: [w])),
+          "LLMError: LLM.turn: plain does not take tools")
+
+# The arguments.
+let tn_not_provider = "TypeError: type error: parameter 'provider' expects a provider (an object with a turn method)"
+assert_eq(failure(|| tn_turn(3, messages: [tn_user("hi")])), tn_not_provider)
+assert_eq(failure(|| tn_turn({name: "x"}, messages: [tn_user("hi")])), tn_not_provider)
+assert_eq(failure(|| LLM.turn(tn_fake(), model: 3, messages: [tn_user("hi")])),
+          "TypeError: type error: parameter 'model' expects String | Nil")
+assert_eq(failure(|| tn_turn(tn_fake(), system: 3, messages: [tn_user("hi")])),
+          "TypeError: type error: parameter 'system' expects String | Nil")
+assert_eq(failure(|| tn_turn(tn_fake(), messages: [tn_user("hi")], tools: [weather])),
+          "TypeError: LLM.turn: tools takes what LLM.tool makes, got Function")
+assert_eq(failure(|| tn_turn(tn_fake(), messages: [tn_user("hi")], max_tokens: "9")),
+          "TypeError: type error: parameter 'max_tokens' expects Long | Nil")
+assert_eq(failure(|| tn_turn(tn_fake(), messages: [tn_user("hi")], stop: "x")),
+          "TypeError: type error: parameter 'stop' expects Array<String> | Nil")
+assert_eq(failure(|| tn_turn(tn_fake(), messages: [tn_user("hi")], stop: [1])),
+          "TypeError: type error: parameter 'stop' expects Array<String> | Nil")
+assert_eq(failure(|| tn_turn(tn_fake(), messages: [tn_user("hi")], temperature: "hot")),
+          "TypeError: type error: parameter 'temperature' expects Float | Nil")
+assert_eq(failure(|| tn_turn(tn_fake(), messages: [tn_user("hi")], extra: [])),
+          "TypeError: type error: parameter 'extra' expects Object | Nil")
+assert_eq(failure(|| tn_turn(tn_fake(), messages: [tn_user("hi")], on_text: 3)),
+          "TypeError: type error: parameter 'on_text' expects Function | Nil")
+assert_eq(failure(|| tn_turn(tn_fake())), "ArityError: missing required argument 'messages'")
+let tn_bad = tn_fake()
+tn_bad.reply = "not an object"
+assert_eq(failure(|| tn_turn(tn_bad, messages: [tn_user("hi")])),
+          "LLMError: LLM.turn: fake answered with a String, not an Object")
+

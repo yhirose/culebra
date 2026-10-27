@@ -9136,6 +9136,55 @@ inspect(repaired.map(|m| m.role))  # => ['user', 'assistant', 'user']
 inspect(repaired[1].content.size())  # => 1
 ```
 
+### `LLM.turn(provider, messages:, model=nil, system=nil, tools=[], max_tokens=nil, stop=nil, temperature=nil, extra=nil, on_text=nil) -> Object`
+
+提供元に1回だけ尋ねる1ステップです。提供元が呼ぶよう求めたツールは実行しません。
+`LLM.turn`は渡されたものを先に検査するので、提供元は常に欠けのないリクエストだけを
+受け取り、返すのは提供元の応答そのままです。
+
+提供元とは、`turn(request, on_text)`メソッドを持つものなら何でも構いません。クラスでも、
+`turn`が関数であるObjectでも使えます。`name`はメッセージに使われ、`capabilities`
+（Objectで、`{tools: true, extra: true}`のように）は受け付けるものを表し、
+`default_model`があれば`model:`を省いたときのモデルになります。`default_model`の
+ない提供元には`model:`が必要です。`request`は`{model, system, messages, tools,
+max_tokens, stop, temperature, extra}`で、応答はObjectです。
+
+| フィールド | 意味 |
+|---|---|
+| `message` | アシスタントのメッセージ`{role: "assistant", content: [...]}`。そのまま履歴に足せる |
+| `text` | 話した内容（`String`） |
+| `tool_calls` | 求められたツール`[{id:, name:, args:}]` |
+| `reasoning` | 思考（`String`） |
+| `stop` | `"end"`、`"tool_calls"`、`"length"`、`"refusal"`、`"pause"`のどれか。提供元が言わないときは`nil` |
+| `usage` | `{input_tokens:, output_tokens:}`。提供元が言わないときは`nil` |
+| `raw` | 提供元自身の応答 |
+
+```culebra
+let echo = {
+  name: "echo",
+  capabilities: {},
+  default_model: "echo-1",
+  turn: fn (request, on_text) {
+    let last = request.messages[request.messages.size() - 1].content
+    {message: {role: "assistant", content: [{type: "text", text: last}]}, text: last,
+     tool_calls: [], reasoning: "", stop: "end", usage: nil, raw: nil}
+  },
+}
+let reply = LLM.turn(echo, messages: [{role: "user", content: "hi"}])
+inspect(reply.text)  # => 'hi'
+```
+
+システムプロンプトは`system:`か、役割`system`の最初のメッセージのどちらかです。両方に
+置くことも、最初以外の場所に`system`のメッセージを置くこともできません。提供元の
+`capabilities`にないもの（`tools`と`extra`）を求めるリクエストと、ツールの呼び出しと結果が
+対応しない履歴（`LLM.repair`を参照）は、提供元に尋ねる前に断られます。
+
+| 状況 | エラー |
+|---|---|
+| メッセージ、部品、引数の型が違う | `TypeError` |
+| 未知の役割や部品の種類、役割に合わない部品（アシスタントのメッセージの`tool_result`など） | `ValueError` |
+| `model:`がなく提供元にも既定がない、メッセージがない、`system`が2回指定されたか最初以外にある、呼び出しと結果が対応しない、提供元が受け付けないものを求めた、応答がObjectでない | `LLMError` |
+
 ### エラー
 
 | 状況 | エラー |

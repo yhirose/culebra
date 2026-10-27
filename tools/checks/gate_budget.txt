@@ -113,7 +113,10 @@
 # test_defer_fn.cul (`fn` in a defer body is the function it is written in).
 # 322 since test_audio_stft.cul (a sound's frames of bins give the sound
 # back, and a Hilbert transform done on them turns a cosine into a sine).
-tests.cul 322
+# 323 since test_llm_turn.cul (LLM.turn against a scripted provider: what it is
+# asked and what is refused first; split from test_llm.cul, where the same
+# assertions took twice the --jit compile).
+tests.cul 323
 
 # tests/isolate/*.cul — run on both engines, plus the over-cap modes.
 # 21 since test_xml_isolate.cul (an XML element keeps its methods across an
@@ -234,8 +237,9 @@ ctest.entries 36
 # song, a program playing it, the built-in voices, an external voice and a
 # model of a sound, each run as it is written).
 # 1102 since stdlib §42 shows LLM.repair taking out a call nothing answers, in
-# en and ja.
-docs.blocks 1102
+# en and ja. 1104 since §42 shows LLM.turn with a provider written in the
+# program, in en and ja.
+docs.blocks 1104
 
 # The samples the language front ends are run over (examples/languages/*).
 languages.samples 130
