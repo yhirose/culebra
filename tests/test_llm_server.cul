@@ -51,6 +51,9 @@ fn events_of(msg) {
       for piece in halves(b.text) {
         out.push(delta(i, {type: "text_delta", text: piece}))
       }
+      for c in b.get("citations", []) {
+        out.push(delta(i, {type: "citations_delta", citation: c}))
+      }
     } else if t == "thinking" {
       for piece in halves(b.thinking) {
         out.push(delta(i, {type: "thinking_delta", thinking: piece}))
@@ -90,6 +93,11 @@ fn reply(body, headers) {
       version: headers["anthropic-version"], beta: headers.get("anthropic-beta", nil),
       tools: body.get("tools", []).map(|t| t.name)}))], "end_turn"),
     m == "story" => message([text("once upon a time")], "end_turn"),
+    # The request body as it came, to see what was sent.
+    m == "record" => message([text(JSON.stringify(body))], "end_turn"),
+    m == "cited" => message([{type: "text", text: "the sky is blue",
+      citations: [{type: "char_location", cited_text: "sky", document_index: 0,
+                   start_char_index: 0, end_char_index: 3}]}], "end_turn"),
     (m == "tool" || m == "unknown") && !results.empty() => {
       let r = results[0]
       message([text("done: {r.content}" + (r.get("is_error", false) ? " (error)" : ""))],
@@ -275,5 +283,159 @@ let with_beta = LLM.request({model: "echo", max_tokens: 10,
                             headers: {"anthropic-beta": "some-beta-2026-01-01"},
                             api_key: "test-key", base_url: BASE)
 assert_eq(JSON.parse(with_beta.content[0].text).beta, "some-beta-2026-01-01")
+
+# --- LLM.turn with the Messages API as a provider ----------------------------------------
+
+# In a function of its own: the same lines flat took a fifth more --jit compile
+# than this file's flat ones, since a flat script is one JIT function.
+fn an_cases() {
+  let an_p = LLM.anthropic(api_key: "test-key", base_url: BASE)
+  assert_eq([an_p.name, an_p.capabilities, an_p.default_model],
+            ["anthropic", {tools: true, extra: true}, nil])
+
+  fn an_user(t) {
+    {role: "user", content: t}
+  }
+  fn an_say(t) {
+    {role: "assistant", content: [{type: "text", text: t}]}
+  }
+  fn an_call(id, args) {
+    {type: "tool_call", id: id, name: "weather", args: args}
+  }
+  fn an_result(id, content, is_error = false) {
+    {role: "tool", content: [{type: "tool_result", id: id, content: content, is_error: is_error}]}
+  }
+  fn an_kept(block, kind, text) {
+    {type: kind, text: text, format: "anthropic", opaque: block}
+  }
+
+  # The body sent for histories of every shape, as the old path recorded it (the
+  # stand-in answers "record" with the body it was sent).
+  let AN_BODIES = {
+    plain: '{"model":"record","max_tokens":16000,"messages":[{"role":"user","content":"hi"},{"role":"assistant","content":[{"type":"text","text":"hello"}]},{"role":"user","content":"next"}]}',
+    system: '{"model":"record","max_tokens":16000,"messages":[{"role":"user","content":"hi"},{"role":"assistant","content":[{"type":"text","text":"hello"}]},{"role":"user","content":"next"}],"system":"be brief"}',
+    thinking: '{"model":"record","max_tokens":16000,"messages":[{"role":"user","content":"one"},{"role":"assistant","content":[{"type":"thinking","thinking":"let me see","signature":"sig-1"},{"type":"text","text":"first"}]},{"role":"user","content":"next"}]}',
+    redacted_thinking: '{"model":"record","max_tokens":16000,"messages":[{"role":"user","content":"one"},{"role":"assistant","content":[{"type":"redacted_thinking","data":"opaque-bytes"},{"type":"text","text":"first"}]},{"role":"user","content":"next"}]}',
+    citations: '{"model":"record","max_tokens":16000,"messages":[{"role":"user","content":"one"},{"role":"assistant","content":[{"type":"text","text":"the sky is blue","citations":[{"type":"char_location","cited_text":"sky","document_index":0,"start_char_index":0,"end_char_index":3}]}]},{"role":"user","content":"next"}]}',
+    tool_use_result: '{"model":"record","max_tokens":16000,"messages":[{"role":"user","content":"weather?"},{"role":"assistant","content":[{"type":"text","text":"checking "},{"type":"tool_use","id":"toolu_1","name":"weather","input":{"city":"Tokyo"}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"Tokyo: sunny","is_error":false}]},{"role":"assistant","content":[{"type":"text","text":"sunny"}]},{"role":"user","content":"next"}],"tools":[{"name":"weather","description":"the weather in a city","input_schema":{"type":"object","properties":{"city":{"type":"string","description":"a city name"},"days":{"type":"integer"}},"required":["city"]}}]}',
+    parallel_tools: '{"model":"record","max_tokens":16000,"messages":[{"role":"user","content":"two cities?"},{"role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"weather","input":{"city":"Tokyo"}},{"type":"tool_use","id":"toolu_2","name":"weather","input":{"city":"Osaka"}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"Tokyo: sunny","is_error":false},{"type":"tool_result","tool_use_id":"toolu_2","content":"no data","is_error":true}]},{"role":"assistant","content":[{"type":"text","text":"done"}]},{"role":"user","content":"next"}],"tools":[{"name":"weather","description":"the weather in a city","input_schema":{"type":"object","properties":{"city":{"type":"string","description":"a city name"},"days":{"type":"integer"}},"required":["city"]}}]}',
+    server_tool: '{"model":"record","max_tokens":16000,"messages":[{"role":"user","content":"search"},{"role":"assistant","content":[{"type":"server_tool_use","id":"srvtoolu_1","name":"web_search","input":{"query":"culebra"}},{"type":"web_search_tool_result","tool_use_id":"srvtoolu_1","content":[{"type":"web_search_result","url":"https://example.com","title":"t","encrypted_content":"enc"}]},{"type":"text","text":"found"}]},{"role":"user","content":"next"}]}',
+  }
+  fn an_sent(history, **opts) {
+    LLM.turn(an_p, model: "record", messages: history + [an_user("next")], **opts).text
+  }
+  assert_eq(an_sent([an_user("hi"), an_say("hello")]), AN_BODIES.plain)
+  assert_eq(an_sent([an_user("hi"), an_say("hello")], system: "be brief"), AN_BODIES.system)
+  assert_eq(an_sent([an_user("one"), {role: "assistant", content: [
+    an_kept({type: "thinking", thinking: "let me see", signature: "sig-1"}, "reasoning", "let me see"),
+    {type: "text", text: "first"}]}]), AN_BODIES.thinking)
+  assert_eq(an_sent([an_user("one"), {role: "assistant", content: [
+    an_kept({type: "redacted_thinking", data: "opaque-bytes"}, "reasoning", ""),
+    {type: "text", text: "first"}]}]), AN_BODIES.redacted_thinking)
+  assert_eq(an_sent([an_user("one"), {role: "assistant", content: [
+    an_kept({type: "text", text: "the sky is blue",
+             citations: [{type: "char_location", cited_text: "sky", document_index: 0,
+                          start_char_index: 0, end_char_index: 3}]}, "text", "the sky is blue")]}]),
+    AN_BODIES.citations)
+  assert_eq(an_sent([an_user("weather?"),
+    {role: "assistant", content: [{type: "text", text: "checking "}, an_call("toolu_1", {city: "Tokyo"})]},
+    an_result("toolu_1", "Tokyo: sunny"), an_say("sunny")], tools: [weather_tool]),
+    AN_BODIES.tool_use_result)
+  # Results in a tool message each are one user message of results.
+  assert_eq(an_sent([an_user("two cities?"),
+    {role: "assistant", content: [an_call("toolu_1", {city: "Tokyo"}), an_call("toolu_2", {city: "Osaka"})]},
+    an_result("toolu_1", "Tokyo: sunny"), an_result("toolu_2", "no data", true), an_say("done")],
+    tools: [weather_tool]), AN_BODIES.parallel_tools)
+  assert_eq(an_sent([an_user("search"), {role: "assistant", content: [
+    {type: "other", format: "anthropic", opaque: {type: "server_tool_use", id: "srvtoolu_1",
+      name: "web_search", input: {query: "culebra"}}},
+    {type: "other", format: "anthropic", opaque: {type: "web_search_tool_result",
+      tool_use_id: "srvtoolu_1", content: [{type: "web_search_result", url: "https://example.com",
+      title: "t", encrypted_content: "enc"}]}},
+    {type: "text", text: "found"}]}]), AN_BODIES.server_tool)
+
+  # What the API is asked beyond the history.
+  let an_options = JSON.parse(an_sent([an_user("hi")], max_tokens: 50, stop: ["x"], temperature: 0.5,
+    extra: {thinking: {type: "enabled", budget_tokens: 1024}}))
+  assert_eq([an_options.max_tokens, an_options.stop_sequences, an_options.temperature, an_options.thinking],
+            [50, ["x"], 0.5, {type: "enabled", budget_tokens: 1024}])
+  let an_echo = JSON.parse(LLM.turn(an_p, model: "echo", messages: [an_user("hi")],
+                                    system: "be brief", tools: [weather_tool]).text)
+  assert_eq([an_echo.key, an_echo.version, an_echo.max_tokens, an_echo.system, an_echo.tools],
+            ["test-key", "2023-06-01", 16000, "be brief", ["weather"]])
+  # A leading system message is the same as system:.
+  assert_eq(JSON.parse(LLM.turn(an_p, model: "echo",
+            messages: [{role: "system", content: "be brief"}, an_user("hi")]).text).system, "be brief")
+
+  # One step: the text, why it stopped and what it cost; streamed it is the same
+  # reply, with the text in pieces on the way.
+  let an_plain = LLM.turn(an_p, model: "story", messages: [an_user("hi")])
+  assert_eq([an_plain.text, an_plain.stop, an_plain.usage, an_plain.tool_calls, an_plain.reasoning],
+            ["once upon a time", "end", {input_tokens: 3, output_tokens: 5}, [], ""])
+  assert_eq(an_plain.message, an_say("once upon a time"))
+  assert_eq(an_plain.raw.id, "msg_1")
+  let an_pieces = []
+  let an_streamed = LLM.turn(an_p, model: "story", messages: [an_user("hi")],
+                             on_text: |t| an_pieces.push(t))
+  assert_eq(an_pieces, ["once upo", "n a time"])
+  assert_eq(an_streamed, an_plain)
+  # A server that answers whole when asked to stream: the reply is the same.
+  let an_whole = []
+  let an_nostream = LLM.turn(an_p, model: "nostream", messages: [an_user("hi")],
+                             on_text: |t| an_whole.push(t))
+  assert_eq([an_nostream.text, an_whole], ["model nostream", ["model nostream"]])
+
+  # A call, its result and the answer: the loop is the program's.
+  for on_text in [nil, |t| nil] {
+    let history = [an_user("weather?")]
+    let first = LLM.turn(an_p, model: "tool", messages: history, tools: [weather_tool], on_text: on_text)
+    assert_eq([first.text, first.stop, first.tool_calls],
+              ["checking ", "tool_calls", [{id: "toolu_1", name: "weather", args: {city: "Tokyo"}}]])
+    history.push(first.message)
+    history.push(an_result("toolu_1", "Tokyo: sunny"))
+    let second = LLM.turn(an_p, model: "tool", messages: history, tools: [weather_tool], on_text: on_text)
+    assert_eq([second.text, second.stop], ["done: Tokyo: sunny", "end"])
+  }
+
+  # A call cut off at max_tokens and a refusal are replies, whose stop says so.
+  let an_cut = LLM.turn(an_p, model: "cut", messages: [an_user("hi")], tools: [weather_tool])
+  assert_eq([an_cut.stop, an_cut.tool_calls], ["length", [{id: "toolu_1", name: "weather", args: {city: "To"}}]])
+  let an_refused = LLM.turn(an_p, model: "refuse", messages: [an_user("hi")])
+  assert_eq([an_refused.stop, an_refused.text, an_refused.message.content], ["refusal", "", []])
+
+  # Thinking goes back as it came, and so does a quotation, streamed or not.
+  for on_text in [nil, |t| nil] {
+    let history = [an_user("one")]
+    let first = LLM.turn(an_p, model: "think", messages: history, on_text: on_text)
+    assert_eq([first.text, first.reasoning], ["first", "let me see"])
+    history.push(first.message)
+    history.push(an_user("two"))
+    assert_eq(LLM.turn(an_p, model: "think", messages: history, on_text: on_text).text, "kept")
+
+    let quoted = [an_user("one")]
+    let cited = LLM.turn(an_p, model: "cited", messages: quoted, on_text: on_text)
+    assert_eq(cited.text, "the sky is blue")
+    quoted.push(cited.message)
+    assert_eq(an_sent(quoted), AN_BODIES.citations)
+  }
+
+  # What the API refuses is an LLMError, and what the call lacks is refused first.
+  assert_eq(failure(|| LLM.turn(an_p, model: "busy", messages: [an_user("hi")])),
+            "LLMError: LLM: 529 overloaded_error: busy")
+  assert_eq(failure(|| LLM.turn(an_p, model: "busy", messages: [an_user("hi")], on_text: |t| nil)),
+            "LLMError: LLM: 529 overloaded_error: busy")
+  assert_eq(failure(|| LLM.turn(an_p, model: "gateway", messages: [an_user("hi")])),
+            "LLMError: LLM: 502 <h1>bad gateway</h1>")
+  assert_eq(failure(|| LLM.turn(an_p, messages: [an_user("hi")])),
+            "LLMError: LLM: model: is required for anthropic")
+  assert_eq(failure(|| LLM.anthropic(api_key: "")),
+            "LLMError: LLM: no API key: set ANTHROPIC_API_KEY or pass api_key:")
+  assert_eq(failure(|| LLM.anthropic(api_key: 3)),
+            "TypeError: type error: parameter 'api_key' expects String | Nil")
+  assert_eq(failure(|| LLM.anthropic(api_key: "k", timeout: "9")),
+            "TypeError: type error: parameter 'timeout' expects Long")
+
+}
+an_cases()
 
 iso.drop()

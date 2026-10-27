@@ -1356,7 +1356,7 @@ inline bool is_stdlib_type_name(std::string_view name) {
       "Deque",     "Dir",      "DiskDir",       "Duration",     "EmbedDir",
       "Empty",     "Eq",       "Font",          "Generator",    "Hashable",
       "IndexMap",  "Input",    "Instant",       "Iterable",     "Iterator",
-      "LLMChat",   "LLMStream", "LLMTool",
+      "LLMAnthropic", "LLMChat",   "LLMStream", "LLMTool",
       "Map",       "MemoryDir", "Message",      "Music",        "PCM",
       "PEG",       "Path",     "PriorityQueue", "Range",        "Regex",
       "Screen",    "SemanticValues", "Set",     "Song",         "Sound",

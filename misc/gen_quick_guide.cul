@@ -56,7 +56,7 @@ INDEX_ROW = re'^\d+\. \[([^\]]+)\]\([^)]+\)\s+—\s+(.+)$'
 INLINE = Set(
   'Math', 'IO', 'FS', 'File', 'Time', 'Random', 'Sys', 'JSON', 'Args', 'Proc',
   'Isolate', 'Matchers', 'Regex', 'Http', 'Encoding', 'Compress', 'Hash', 'CSV',
-  'Env', 'UUID', 'Log', 'TOML', 'Deque', 'PriorityQueue', 'Dir', 'LLM',
+  'Env', 'UUID', 'Log', 'TOML', 'Deque', 'PriorityQueue', 'Dir',
 )
 
 # What each quick guide may weigh, in bytes, as a file. A guide meant to be

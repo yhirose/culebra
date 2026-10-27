@@ -398,11 +398,13 @@ let _llm_module = fn () {
 
   # --- the wire -----------------------------------------------------------------
 
-  fn _connect(api_key, base_url) {
+  fn _connect(api_key, base_url, timeout = nil) {
     let key = (api_key ?? Sys.env("ANTHROPIC_API_KEY")).presence()
     _fail("LLM: no API key: set ANTHROPIC_API_KEY or pass api_key:") if key == nil
     let base = base_url ?? Sys.env("ANTHROPIC_BASE_URL").presence() ?? DEFAULT_BASE
-    Http.client(base, headers: {"x-api-key": key, "anthropic-version": API_VERSION})
+    let headers = {"x-api-key": key, "anthropic-version": API_VERSION}
+    timeout == nil ? Http.client(base, headers: headers)
+                   : Http.client(base, headers: headers, timeout: timeout)
   }
 
   # A failed request explains itself in its body, `{error: {type, message}}`
@@ -537,6 +539,133 @@ let _llm_module = fn () {
     assembly.finish()
   }
 
+  # --- the Messages API as a provider ---------------------------------------------
+
+  # A part kept as the block it came from, by the format that made it.
+  fn _kept(part) {
+    part.get("format", nil) == "anthropic" && part.has("opaque")
+  }
+
+  # The block for a part of an assistant or user message, or nil when this
+  # format has no place for it.
+  fn _block_of(part) {
+    if _kept(part) {
+      return part.opaque
+    }
+    let kind = part.type
+    cond {
+      kind == "text" => {type: "text", text: part.text},
+      kind == "tool_call" => {type: "tool_use", id: part.id, name: part.name,
+                              input: part.get("args", {})},
+      _ => nil,
+    }
+  }
+
+  fn _result_block(part) {
+    {type: "tool_result", tool_use_id: part.id, content: part.get("content", ""),
+     is_error: part.get("is_error", false)}
+  }
+
+  # The messages the API takes. Consecutive tool messages are one user message
+  # of tool_result blocks, and a message none of whose parts has a place here is
+  # left out.
+  fn _wire_messages(messages) {
+    mut out = []
+    mut after_tool = false
+    for m in messages {
+      if m.role == "tool" {
+        let blocks = m.content.map(_result_block)
+        if after_tool {
+          let last = out[out.size() - 1]
+          out[out.size() - 1] = {...last, content: last.content + blocks}
+        } else {
+          out.push({role: "user", content: blocks})
+        }
+        after_tool = true
+        continue
+      }
+      after_tool = false
+      if type_of(m.content) == "String" {
+        out.push({role: m.role, content: m.content})
+      } else {
+        let blocks = m.content.map(_block_of).filter(|b| b != nil)
+        out.push({role: m.role, content: blocks}) if !blocks.empty()
+      }
+    }
+    out
+  }
+
+  # The request body, in the order the API's own examples give it.
+  fn _body_of(req) {
+    mut body = {model: req.model, max_tokens: req.max_tokens ?? MAX_TOKENS,
+                messages: _wire_messages(req.messages)}
+    body.system = req.system if req.system != nil
+    body.tools = req.tools.map(|t| t.spec()) if !req.tools.empty()
+    body.stop_sequences = req.stop if req.stop != nil
+    body.temperature = req.temperature if req.temperature != nil
+    req.extra == nil ? body : {...body, ...req.extra}
+  }
+
+  # Whether a block says nothing a plain part would lose.
+  fn _plain(block, keys) {
+    block.keys().all(|k| keys.contains(k))
+  }
+
+  fn _part_of(b) {
+    let kind = b.get("type", "")
+    cond {
+      kind == "text" && _plain(b, ["type", "text"]) => {type: "text", text: b.text},
+      kind == "text" => {type: "text", text: b.get("text", ""), format: "anthropic", opaque: b},
+      kind == "tool_use" && _plain(b, ["type", "id", "name", "input"]) =>
+        {type: "tool_call", id: b.id, name: b.name, args: b.get("input", {})},
+      kind == "tool_use" => {type: "tool_call", id: b.id, name: b.name, args: b.get("input", {}),
+                             format: "anthropic", opaque: b},
+      kind == "thinking" => {type: "reasoning", text: b.get("thinking", ""),
+                             format: "anthropic", opaque: b},
+      kind == "redacted_thinking" => {type: "reasoning", text: "", format: "anthropic", opaque: b},
+      _ => {type: "other", format: "anthropic", opaque: b},
+    }
+  }
+
+  let STOPS = {end_turn: "end", stop_sequence: "end", tool_use: "tool_calls",
+               max_tokens: "length", refusal: "refusal", pause_turn: "pause"}
+
+  # The API's answer, whole or put together from a stream, as the reply a
+  # provider gives. A stop reason it does not know is nil; `raw` has it.
+  fn _reply_of(message) {
+    let parts = message.get("content", []).map(_part_of)
+    let u = message.get("usage", nil)
+    {
+      message: {role: "assistant", content: parts},
+      text: parts.filter(|p| p.type == "text").map(|p| p.text).join(""),
+      tool_calls: parts.filter(|p| p.type == "tool_call")
+                       .map(|p| {id: p.id, name: p.name, args: p.args}),
+      reasoning: parts.filter(|p| p.type == "reasoning").map(|p| p.text).join(""),
+      stop: STOPS.get(message.get("stop_reason", ""), nil),
+      usage: u == nil ? nil : {input_tokens: u.get("input_tokens", 0),
+                               output_tokens: u.get("output_tokens", 0)},
+      raw: message,
+    }
+  }
+
+  class LLMAnthropic {
+    new(.http) {
+      self.name = "anthropic"
+      self.capabilities = {tools: true, extra: true}
+      self.default_model = nil
+    }
+
+    turn(req, on_text) {
+      let body = _body_of(req)
+      _reply_of(on_text == nil ? _send(self.http, body) : _stream(self.http, body, on_text))
+    }
+  }
+
+  fn anthropic(*, api_key = nil, base_url = nil, timeout = 120) {
+    LLMAnthropic(_connect(_optional_string("api_key", api_key),
+                          _optional_string("base_url", base_url), _long("timeout", timeout)))
+  }
+
   # --- conversations ------------------------------------------------------------
 
   class LLMChat {
@@ -644,6 +773,7 @@ let _llm_module = fn () {
                    _optional_string("base_url", base_url)), body, headers)
   }
 
-  {ask: ask, chat: chat, tool: tool, request: request, repair: repair, turn: turn}
+  {ask: ask, chat: chat, tool: tool, request: request, repair: repair, turn: turn,
+   anthropic: anthropic}
 }
 let LLM = _llm_module()

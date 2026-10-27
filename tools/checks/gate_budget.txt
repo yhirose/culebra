@@ -238,8 +238,9 @@ ctest.entries 36
 # model of a sound, each run as it is written).
 # 1102 since stdlib §42 shows LLM.repair taking out a call nothing answers, in
 # en and ja. 1104 since §42 shows LLM.turn with a provider written in the
-# program, in en and ja.
-docs.blocks 1104
+# program, in en and ja. 1106 since §42 shows LLM.anthropic asking one
+# question, in en and ja.
+docs.blocks 1106
 
 # The samples the language front ends are run over (examples/languages/*).
 languages.samples 130

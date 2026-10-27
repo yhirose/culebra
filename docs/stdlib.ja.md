@@ -79,7 +79,7 @@
 39. [`Search`](#39-search) — 自分の文書を全文検索して順位をつける
 40. [`Audio`](#40-audio) — ウィンドウの有無によらず使える音: WASM-4のtone、効果音、ストリーム再生の音楽、合成するPCM、マイク
 41. [`Dir`](#41-dir) — ディスク・メモリ・バイナリへの焼き込み・ZIPアーカイブのどこにあるファイルの集まりも、同じ読み方で（`Dir.disk` / `Dir.memory` / `Dir.embedded` / `Dir.zip`と`Dir` trait）
-42. [`LLM`](#42-llm) — 大規模言語モデルのクライアント。1回の質問、関数をツールとして使う会話、リクエストの素通し（Messages形式）
+42. [`LLM`](#42-llm) — 大規模言語モデルのクライアント。提供元（今はMessages API）への1ステップ、関数をツールとして使う会話、リクエストの素通し
 43. [設計上の注記](#43-設計上の注記)
 44. [未収録（将来検討）](#44-未収録将来検討)
 
@@ -9184,6 +9184,51 @@ inspect(reply.text)  # => 'hi'
 | メッセージ、部品、引数の型が違う | `TypeError` |
 | 未知の役割や部品の種類、役割に合わない部品（アシスタントのメッセージの`tool_result`など） | `ValueError` |
 | `model:`がなく提供元にも既定がない、メッセージがない、`system`が2回指定されたか最初以外にある、呼び出しと結果が対応しない、提供元が受け付けないものを求めた、応答がObjectでない | `LLMError` |
+
+### Messages
+
+メッセージは`{role, content}`です。役割は`system`、`user`、`assistant`、`tool`のどれかです。
+内容は`String`（1つのテキスト）か、部品の`Array`で、部品は`type`を持つObjectです。
+
+| `type` | 入れられるメッセージの役割 | フィールド |
+|---|---|---|
+| `text` | `system`、`user`、`assistant` | `text` |
+| `tool_call` | `assistant` | `id`、`name`、`args` |
+| `tool_result` | `tool` | `id`、`content`、`is_error` |
+| `reasoning` | `assistant` | `text` |
+| `other` | `assistant` | 固有のものはなし |
+
+部品には`format`と`opaque`を持たせられます。`opaque`はその部品を作った提供元が書いた
+とおりの部品で、`format`はその提供元の名前です（Messages APIなら`"anthropic"`）。同じ提供元は
+`opaque`をそのまま送り返すので、署名つきの思考ブロック、引用、提供元自身が実行したツールの
+ブロックなど、提供元が返すよう求めるものが手を加えずに戻ります。そうした部品の内容を
+変えたいときは、`opaque`を外してください。その部品を作っていない提供元は、`text`の部品は
+そのテキストとして送り、`reasoning`と`other`の部品は送りません。
+
+### `LLM.anthropic(api_key=nil, base_url=nil, timeout=120) -> LLMAnthropic`
+
+`LLM.turn`の提供元としてのMessages API（AnthropicのClaude API）です。キーは
+`ANTHROPIC_API_KEY`から、接続先は`ANTHROPIC_BASE_URL`（既定は
+`https://api.anthropic.com`）から読み、`api_key:`と`base_url:`があればそちらを使います。
+`timeout`は秒です。モデルは呼び出しごとに指定します。モデルIDは入れ替わり、価格も違うので、
+既定値はありません。
+
+```culebra
+# doctest: skip
+let claude = LLM.anthropic()
+let history = [{role: "user", content: "Name three prime numbers."}]
+let reply = LLM.turn(claude, model: "claude-haiku-5-5", messages: history)
+IO.println(reply.text)
+history.push(reply.message)
+```
+
+`max_tokens`を省くと16000です。`stop`は`stop_sequences`として、`temperature`はそのまま送られ、
+`extra`は最後にリクエスト本文へ足されるので、`thinking`のように`LLM.turn`に引数のないものに
+届きます。`on_text`を渡すと回答はストリーミングで受け取られ、テキストは断片ごとに渡されます。
+応答は渡さないときと同じです。`tool`メッセージは`tool_result`ブロックを持つ1つのuser
+メッセージとして送られ、続けて並んだものは1つにまとまります。応答の`stop`は、`end_turn`と
+`stop_sequence`が`"end"`、`tool_use`が`"tool_calls"`、`max_tokens`が`"length"`、`refusal`が
+`"refusal"`、`pause_turn`が`"pause"`で、知らない値は`nil`です。`raw`はAPIの応答そのものです。
 
 ### エラー
 

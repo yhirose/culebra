@@ -81,7 +81,7 @@ Conventions used below:
 39. [`Search`](#39-search) — full-text index over your own documents, ranked
 40. [`Audio`](#40-audio) — sound for any program, with or without a window: WASM-4 tones, samples, streamed music, synthesised PCM, the microphone
 41. [`Dir`](#41-dir) — a read-only set of files on disk, in memory, baked into the binary or in a ZIP archive, read one way (`Dir.disk` / `Dir.memory` / `Dir.embedded` / `Dir.zip`, and the `Dir` trait)
-42. [`LLM`](#42-llm) — a client for large language models: one question, a conversation that runs your functions as tools, or a request as it is (the Messages format)
+42. [`LLM`](#42-llm) — a client for large language models: one step with a provider (the Messages API so far), a conversation that runs your functions as tools, or a request as it is
 43. [Design notes](#43-design-notes)
 44. [Not included (yet)](#44-not-included-yet)
 
@@ -9567,6 +9567,55 @@ up (see `LLM.repair`).
 | A message, a part or an argument of the wrong type | `TypeError` |
 | An unknown role or part type, or a part in a role it does not belong to (a `tool_result` in an assistant message) | `ValueError` |
 | No `model:` and the provider has none, no messages, a `system` prompt given twice or late, a call and a result that do not pair, something the provider does not take, a reply that is not an Object | `LLMError` |
+
+### Messages
+
+A message is `{role, content}`. The role is `system`, `user`, `assistant` or
+`tool`. The content is a `String` (one piece of text) or an `Array` of parts, and
+a part is an Object with a `type`:
+
+| `type` | in a message of role | fields |
+|---|---|---|
+| `text` | `system`, `user`, `assistant` | `text` |
+| `tool_call` | `assistant` | `id`, `name`, `args` |
+| `tool_result` | `tool` | `id`, `content`, `is_error` |
+| `reasoning` | `assistant` | `text` |
+| `other` | `assistant` | none of its own |
+
+A part can carry `format` and `opaque`: the part as the provider that made it
+wrote it, with `format` naming that provider (`"anthropic"` for the Messages
+API). The same provider sends `opaque` back as it is, so what a provider asks to
+have returned, such as a thinking block with its signature, a quotation, or the
+blocks of a tool it ran itself, goes back untouched. To change what such a part
+says, take `opaque` off. A provider that did not make a part sends a `text` part
+as its text and leaves a `reasoning` or `other` part out.
+
+### `LLM.anthropic(api_key=nil, base_url=nil, timeout=120) -> LLMAnthropic`
+
+The Messages API (Anthropic's Claude API) as a provider for `LLM.turn`. The key
+is read from `ANTHROPIC_API_KEY` and the server from `ANTHROPIC_BASE_URL`
+(default `https://api.anthropic.com`), unless `api_key:` and `base_url:` say
+otherwise. `timeout` is in seconds. A call names its model: model IDs change and
+differ in price, so there is no default.
+
+```culebra
+# doctest: skip
+let claude = LLM.anthropic()
+let history = [{role: "user", content: "Name three prime numbers."}]
+let reply = LLM.turn(claude, model: "claude-haiku-5-5", messages: history)
+IO.println(reply.text)
+history.push(reply.message)
+```
+
+`max_tokens` is 16000 when it is left out. `stop` goes out as `stop_sequences` and
+`temperature` as it is, and `extra` is added to the request body last, so it
+reaches what `LLM.turn` has no argument for, such as `thinking`. With `on_text`
+the answer is streamed and the text is passed on in pieces; the reply is the
+same as without it. A `tool` message goes out as a user message of
+`tool_result` blocks, and several in a row are one. In the reply, `stop` is
+`"end"` for `end_turn` and `stop_sequence`, `"tool_calls"`, `"length"`,
+`"refusal"` and `"pause"` (`pause_turn`) for the stop reasons of those names, and
+`nil` for one it does not know; `raw` is the API's answer, where it is.
 
 ### Errors
 
