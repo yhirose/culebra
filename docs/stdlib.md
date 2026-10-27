@@ -4315,16 +4315,16 @@ srv.listen(8080)  # blocks; Ctrl+C to stop
 
 | Method | Effect |
 | --- | --- |
-| `get/post/put/delete/patch/options(pattern, handler)` | register `handler` (a `fn(req)->response`) for that method and route `pattern`; returns the server (so calls chain) |
-| `static(mount, dir)` | serve static files at the URL prefix `mount`; `dir` is a String path (a live on-disk directory) or any `Dir` — `Dir.embedded(...)` is baked into the binary under AOT (see [Serving a Dir](#serving-a-dir)) |
+| `srv.get/post/put/delete/patch/options(pattern, handler)` | register `handler` (a `fn(req)->response`) for that method and route `pattern`; returns the server (so calls chain) |
+| `srv.static(mount, dir)` | serve static files at the URL prefix `mount`; `dir` is a String path (a live on-disk directory) or any `Dir` — `Dir.embedded(...)` is baked into the binary under AOT (see [Serving a Dir](#serving-a-dir)) |
 | `sink.write(chunk)` | (inside a `stream:` closure) push one chunk; returns `false` if the client has disconnected |
-| `bind(port, host="0.0.0.0") -> Long` | open the listening socket and return the port it got; `port=0` asks the OS for an ephemeral one; a `port` outside 0..65535 is a `ValueError` (on `listen` / `listen_async` too). Once only, and not after the server has served |
-| `serve(workers=0)` | run the accept loop on a bound socket until interrupted (blocks the calling thread). Handlers run on a worker pool, never on the accept loop, so a slow handler can't block accepting new connections — and handlers must be **Sendable**. `workers=0` (default) picks a CPU-scaled pool size; pass a positive count to fix it |
-| `serve_async(workers=0)` | same, but serve on a background pool and return immediately; stop with `stop()` |
-| `listen(port, host="0.0.0.0", workers=0)` | `bind` + `serve` in one call. Returns only once stopped |
-| `listen_async(port, host="0.0.0.0", workers=0) -> Long` | `bind` + `serve_async`; returns the bound port |
-| `stop()` | stop a background (`listen_async`) server and join its thread (can be called from another thread) |
-| `close()` | stop serving and release the server (the GC also closes one that goes out of scope) |
+| `srv.bind(port, host="0.0.0.0") -> Long` | open the listening socket and return the port it got; `port=0` asks the OS for an ephemeral one; a `port` outside 0..65535 is a `ValueError` (on `listen` / `listen_async` too). Once only, and not after the server has served |
+| `srv.serve(workers=0)` | run the accept loop on a bound socket until interrupted (blocks the calling thread). Handlers run on a worker pool, never on the accept loop, so a slow handler can't block accepting new connections — and handlers must be **Sendable**. `workers=0` (default) picks a CPU-scaled pool size; pass a positive count to fix it |
+| `srv.serve_async(workers=0)` | same, but serve on a background pool and return immediately; stop with `stop()` |
+| `srv.listen(port, host="0.0.0.0", workers=0)` | `bind` + `serve` in one call. Returns only once stopped |
+| `srv.listen_async(port, host="0.0.0.0", workers=0) -> Long` | `bind` + `serve_async`; returns the bound port |
+| `srv.stop()` | stop a background (`listen_async`) server and join its thread (can be called from another thread) |
+| `srv.close()` | stop serving and release the server (the GC also closes one that goes out of scope) |
 
 **The request `req`** is an object with `method`, `path`, and `body` (Strings), and
 `headers`, `query` (the parsed query string), and `params` (matched route path

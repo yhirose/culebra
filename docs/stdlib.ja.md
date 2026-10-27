@@ -4188,16 +4188,16 @@ srv.listen(8080)  # ブロックする。Ctrl+C で停止
 
 | メソッド | 効果 |
 | --- | --- |
-| `get/post/put/delete/patch/options(pattern, handler)` | そのメソッドとルート`pattern`に`handler`（`fn(req)->response`）を登録。サーバを返す（チェーン可） |
-| `static(mount, dir)` | URLプレフィックス`mount`で静的ファイルを配信。`dir`はStringパス（ディスク上のディレクトリをライブ配信）または任意の`Dir`。`Dir.embedded(...)`はAOTではバイナリに焼き込まれる（[Dirを配信する](#dirを配信する) 参照） |
+| `srv.get/post/put/delete/patch/options(pattern, handler)` | そのメソッドとルート`pattern`に`handler`（`fn(req)->response`）を登録。サーバを返す（チェーン可） |
+| `srv.static(mount, dir)` | URLプレフィックス`mount`で静的ファイルを配信。`dir`はStringパス（ディスク上のディレクトリをライブ配信）または任意の`Dir`。`Dir.embedded(...)`はAOTではバイナリに焼き込まれる（[Dirを配信する](#dirを配信する) 参照） |
 | `sink.write(chunk)` | （`stream:`クロージャ内）1チャンクを送出。クライアント切断時は`false`を返す |
-| `bind(port, host="0.0.0.0") -> Long` | listenソケットを開き、実際に取れたポートを返す。`port=0`はOS任せのephemeral port。0〜65535の外の`port`は`ValueError`（`listen` / `listen_async`も同じ）。1回だけ、かつ配信開始後は不可 |
-| `serve(workers=0)` | バインド済みソケットでacceptループを回す（中断まで呼び出しスレッドをブロック）。ハンドラはacceptループでなくworkerプールで動くので、遅いハンドラが新規接続の受付を止めない — ハンドラは **Sendable** 必須。`workers=0`（既定）はCPU連動のプールサイズ、正の数で固定 |
-| `serve_async(workers=0)` | 同上を背後プールで行い即return。停止は`stop()` |
-| `listen(port, host="0.0.0.0", workers=0)` | `bind` + `serve`を1回で。停止するまで返らない |
-| `listen_async(port, host="0.0.0.0", workers=0) -> Long` | `bind` + `serve_async`。バインドしたポートを返す |
-| `stop()` | 背後（`listen_async`）サーバを停止しスレッドをjoin（別スレッドからも呼べる） |
-| `close()` | 配信を停止しサーバを解放（スコープを抜けたサーバはGCも閉じる） |
+| `srv.bind(port, host="0.0.0.0") -> Long` | listenソケットを開き、実際に取れたポートを返す。`port=0`はOS任せのephemeral port。0〜65535の外の`port`は`ValueError`（`listen` / `listen_async`も同じ）。1回だけ、かつ配信開始後は不可 |
+| `srv.serve(workers=0)` | バインド済みソケットでacceptループを回す（中断まで呼び出しスレッドをブロック）。ハンドラはacceptループでなくworkerプールで動くので、遅いハンドラが新規接続の受付を止めない — ハンドラは **Sendable** 必須。`workers=0`（既定）はCPU連動のプールサイズ、正の数で固定 |
+| `srv.serve_async(workers=0)` | 同上を背後プールで行い即return。停止は`stop()` |
+| `srv.listen(port, host="0.0.0.0", workers=0)` | `bind` + `serve`を1回で。停止するまで返らない |
+| `srv.listen_async(port, host="0.0.0.0", workers=0) -> Long` | `bind` + `serve_async`。バインドしたポートを返す |
+| `srv.stop()` | 背後（`listen_async`）サーバを停止しスレッドをjoin（別スレッドからも呼べる） |
+| `srv.close()` | 配信を停止しサーバを解放（スコープを抜けたサーバはGCも閉じる） |
 
 **リクエスト`req`** は`method`・`path`・`body`（String）と、`headers`・`query`
 （解析済みクエリ文字列）・`params`（マッチしたルートのパスパラメータ。例: `:id` →
