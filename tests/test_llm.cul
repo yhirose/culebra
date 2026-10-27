@@ -100,6 +100,95 @@ fn line_of(thunk) {
 let lines = [line_of(|| LLM.ask("hi", model: "m", api_key: "")), line_of(|| [][1])]
 assert_eq(lines[0], lines[1])
 
+# --- LLM.repair: a history a provider would refuse, made one it accepts --------------
+
+fn rp_user(t) {
+  {role: "user", content: t}
+}
+fn rp_say(t) {
+  {role: "assistant", content: [{type: "text", text: t}]}
+}
+fn rp_ask(ids, t = nil) {
+  let parts = ids.map(|id| {type: "tool_call", id: id, name: "weather", args: {}})
+  {role: "assistant", content: t == nil ? parts : [{type: "text", text: t}] + parts}
+}
+fn rp_answer(ids) {
+  {role: "tool", content: ids.map(|id| {type: "tool_result", id: id, content: "ok", is_error: false})}
+}
+let rp_histories = []
+fn rp(history) {
+  rp_histories.push(history)
+  LLM.repair(history)
+}
+
+# A history whose calls and results pair up is returned as it is.
+let rp_good = [rp_user("hi"), rp_ask(["a"], "checking"), rp_answer(["a"]), rp_say("done")]
+assert_eq(rp(rp_good), rp_good)
+assert_eq(rp([]), [])
+
+# A result whose call is not there goes, and its message when nothing is left.
+assert_eq(rp([rp_user("hi"), rp_answer(["a"]), rp_say("done")]),
+          [rp_user("hi"), rp_say("done")])
+assert_eq(rp([rp_user("hi"), rp_ask(["a"]), rp_answer(["a", "b"]), rp_say("done")]),
+          [rp_user("hi"), rp_ask(["a"]), rp_answer(["a"]), rp_say("done")])
+
+# A call whose result is not there goes; what the message said stays.
+assert_eq(rp([rp_user("hi"), rp_ask(["a"], "let me"), rp_say("done")]),
+          [rp_user("hi"), rp_say("let me"), rp_say("done")])
+assert_eq(rp([rp_user("hi"), rp_ask(["a"]), rp_user("again")]),
+          [rp_user("hi"), rp_user("again")])
+assert_eq(rp([rp_user("hi"), rp_ask(["a", "b"]), rp_answer(["a"]), rp_say("done")]),
+          [rp_user("hi"), rp_ask(["a"]), rp_answer(["a"]), rp_say("done")])
+
+# The results follow the call directly, in one tool message or several.
+assert_eq(rp([rp_user("hi"), rp_ask(["a", "b"]), rp_answer(["a"]), rp_answer(["b"]), rp_say("done")]),
+          [rp_user("hi"), rp_ask(["a", "b"]), rp_answer(["a"]), rp_answer(["b"]), rp_say("done")])
+assert_eq(rp([rp_user("hi"), rp_answer(["a"]), rp_ask(["a"]), rp_say("done")]),
+          [rp_user("hi"), rp_say("done")])
+assert_eq(rp([rp_user("hi"), rp_ask(["a"], "x"), rp_user("more"), rp_answer(["a"]), rp_say("done")]),
+          [rp_user("hi"), rp_say("x"), rp_user("more"), rp_say("done")])
+assert_eq(rp([rp_user("hi"), rp_ask(["a"], "x"), {role: "system", content: "s"},
+              rp_answer(["a"]), rp_say("done")]),
+          [rp_user("hi"), rp_say("x"), {role: "system", content: "s"}, rp_say("done")])
+
+# A call is answered once, and a call id is used once.
+assert_eq(rp([rp_user("hi"), rp_ask(["a"]), rp_answer(["a"]), rp_answer(["a"]), rp_say("done")]),
+          [rp_user("hi"), rp_ask(["a"]), rp_answer(["a"]), rp_say("done")])
+assert_eq(rp([rp_user("hi"), rp_ask(["a", "a"]), rp_answer(["a"]), rp_say("done")]),
+          [rp_user("hi"), rp_ask(["a"]), rp_answer(["a"]), rp_say("done")])
+
+# A call and a result with no id are not a pair.
+assert_eq(rp([rp_user("hi"),
+              {role: "assistant", content: [{type: "text", text: "x"}, {type: "tool_call", name: "w"}]},
+              {role: "tool", content: [{type: "tool_result", content: "ok"}]},
+              rp_say("done")]),
+          [rp_user("hi"), rp_say("x"), rp_say("done")])
+
+# Nothing else is touched: other parts, String content, system, empty content.
+let rp_odd = [
+  {role: "system", content: "be brief"},
+  rp_user("hi"),
+  {role: "assistant", content: [
+    {type: "reasoning", text: "t", format: "anthropic", opaque: {signature: "sig"}},
+    {type: "other", format: "anthropic", opaque: {type: "web_search_tool_result"}},
+    {type: "text", text: "hello"}]},
+  {role: "assistant", content: "plain text"},
+  {role: "assistant", content: []},
+]
+assert_eq(rp(rp_odd), rp_odd)
+
+# The history it is given is not changed, and a repaired history needs no more repair.
+let rp_snapshot = JSON.parse(JSON.stringify(rp_histories))
+for i, history in rp_histories.enumerate() {
+  assert_eq(history, rp_snapshot[i])
+  assert_eq(LLM.repair(LLM.repair(history)), LLM.repair(history))
+}
+
+assert_eq(failure(|| LLM.repair("x")),
+          "TypeError: type error: parameter 'messages' expects Array")
+assert_eq(failure(|| LLM.repair([rp_user("hi"), 3])),
+          "TypeError: type error: messages[1] expects Object")
+
 # --- LLM is a namespace, as Time and Log are ---------------------------------------
 
 # A member it does not have is an error, not nil, and a function read off it

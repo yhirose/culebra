@@ -9487,6 +9487,37 @@ let res = LLM.request({
 IO.println(res.content[0].text)
 ```
 
+### `LLM.repair(messages) -> Array`
+
+A history with the tool calls and tool results that have no partner taken out,
+for one that was cut by trimming or summarising and that a provider would
+refuse. A message is `{role, content}`; `content` is a `String` or an `Array`
+of parts. The `tool_call` parts of an assistant message (`{type: "tool_call",
+id:, name:, args:}`) are answered by the `tool_result` parts (`{type:
+"tool_result", id:, content:, is_error:}`) of the run of `tool` messages that
+follows it directly, in one message or several.
+
+A call with no result, a result with no call, a result that does not follow its
+call directly, and a second call or result with the same id are taken out. So
+is a message that has no parts left. Nothing is added, so a history that is
+empty afterwards is still empty, and everything else (text, `system` and `user`
+messages, parts of other kinds) is returned as it is. The history it is given
+is not changed.
+
+```culebra
+let history = [
+  {role: "user", content: "weather?"},
+  {role: "assistant", content: [
+    {type: "text", text: "checking"},
+    {type: "tool_call", id: "c1", name: "weather", args: {city: "Tokyo"}},
+  ]},
+  {role: "user", content: "never mind"},
+]
+let repaired = LLM.repair(history)
+inspect(repaired.map(|m| m.role))  # => ['user', 'assistant', 'user']
+inspect(repaired[1].content.size())  # => 1
+```
+
 ### Errors
 
 | Situation | Error |

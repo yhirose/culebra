@@ -233,7 +233,9 @@ ctest.entries 36
 # 1100 since docs/guides/kauai-songs and kauai-sounds, en and ja (a first
 # song, a program playing it, the built-in voices, an external voice and a
 # model of a sound, each run as it is written).
-docs.blocks 1100
+# 1102 since stdlib §42 shows LLM.repair taking out a call nothing answers, in
+# en and ja.
+docs.blocks 1102
 
 # The samples the language front ends are run over (examples/languages/*).
 languages.samples 130

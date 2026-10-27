@@ -149,6 +149,97 @@ let _llm_module = fn () {
     type_of(e) == "Object" && e.has("kind") ? "{e.kind}: {e.message}" : "{e}"
   }
 
+  # --- histories ----------------------------------------------------------------
+
+  fn _role(m) {
+    m.get("role", "")
+  }
+
+  # The parts of a message's content that are of one kind, with where they sit.
+  fn _marks(m, kind) {
+    mut out = []
+    if type_of(m.get("content", nil)) == "Array" {
+      for p, part in m.content.enumerate() {
+        if type_of(part) == "Object" && part.get("type", "") == kind {
+          out.push({part: p, id: part.get("id", nil)})
+        }
+      }
+    }
+    out
+  }
+
+  # Every tool_call or tool_result part that has no partner. An assistant
+  # message's calls are answered by the run of `tool` messages that follows it
+  # directly: each call needs exactly one result in that run, and each result
+  # needs a call of that message. A run of `tool` messages that no assistant
+  # message heads answers nothing.
+  fn _orphans(messages) {
+    mut out = []
+    mut i = 0
+    while i < messages.size() {
+      let role = _role(messages[i])
+      if role != "assistant" && role != "tool" {
+        i += 1
+        continue
+      }
+      let calls = role == "assistant" ? _marks(messages[i], "tool_call") : []
+      let lo = role == "assistant" ? i + 1 : i
+      mut hi = lo
+      while hi < messages.size() && _role(messages[hi]) == "tool" {
+        hi += 1
+      }
+      mut results = []
+      for k in lo..hi {
+        for r in _marks(messages[k], "tool_result") {
+          results.push({message: k, part: r.part, id: r.id})
+        }
+      }
+      let asked = calls.map(|c| c.id).filter(|id| id != nil).to_set()
+      let answered = results.map(|r| r.id).filter(|id| id != nil).to_set()
+      let matched = asked.intersect(answered)
+      for n, c in calls.enumerate() {
+        let again = calls.slice(0, n).any(|e| e.id == c.id)
+        if !matched.contains(c.id) || again {
+          out.push({message: i, part: c.part, kind: "tool_call", id: c.id})
+        }
+      }
+      for n, r in results.enumerate() {
+        let again = results.slice(0, n).any(|e| e.id == r.id)
+        if !matched.contains(r.id) || again {
+          out.push({message: r.message, part: r.part, kind: "tool_result", id: r.id})
+        }
+      }
+      i = hi
+    }
+    out
+  }
+
+  # The history without the tool calls and results that have no partner, and
+  # without the messages that leaves empty. Nothing is added to it.
+  fn repair(messages) {
+    _type_error("messages", "Array") if type_of(messages) != "Array"
+    for i, m in messages.enumerate() {
+      if type_of(m) != "Object" {
+        __raise("TypeError", "type error: messages[{i}] expects Object")
+      }
+    }
+    let orphans = _orphans(messages)
+    mut out = []
+    for i, m in messages.enumerate() {
+      let gone = orphans.filter(|o| o.message == i).map(|o| o.part)
+      if gone.empty() {
+        out.push(m)
+        continue
+      }
+      mut kept = []
+      for p, part in m.content.enumerate() {
+        kept.push(part) if !gone.contains(p)
+      }
+      out.push({...m, content: kept}) if !kept.empty()
+    }
+    out
+  }
+
   # --- the wire -----------------------------------------------------------------
 
   fn _connect(api_key, base_url) {
@@ -397,6 +488,6 @@ let _llm_module = fn () {
                    _optional_string("base_url", base_url)), body, headers)
   }
 
-  {ask: ask, chat: chat, tool: tool, request: request}
+  {ask: ask, chat: chat, tool: tool, request: request, repair: repair}
 }
 let LLM = _llm_module()

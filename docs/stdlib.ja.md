@@ -9106,6 +9106,36 @@ let res = LLM.request({
 IO.println(res.content[0].text)
 ```
 
+### `LLM.repair(messages) -> Array`
+
+ツールの呼び出しと結果のうち、相手のないものを取り除いた履歴です。履歴を削ったり
+要約したりして途中で切れ、そのままでは提供元に拒否される履歴のために使います。
+メッセージは`{role, content}`で、`content`は`String`か、部品の`Array`です。
+アシスタントのメッセージの`tool_call`部品（`{type: "tool_call", id:, name:,
+args:}`）には、そのすぐ後ろに続く`tool`メッセージの並びにある`tool_result`部品
+（`{type: "tool_result", id:, content:, is_error:}`）が答えます。結果は1つの
+メッセージに入っていても、複数に分かれていても構いません。
+
+結果のない呼び出し、呼び出しのない結果、呼び出しのすぐ後ろに続いていない結果、
+同じidの2つ目の呼び出しや結果は取り除かれます。部品が残らなくなったメッセージも
+取り除かれます。何も足さないので、取り除いた結果が空になっても空のままです。それ以外
+（テキスト、`system`と`user`のメッセージ、ほかの種類の部品）はそのまま返します。
+渡した履歴は変更されません。
+
+```culebra
+let history = [
+  {role: "user", content: "weather?"},
+  {role: "assistant", content: [
+    {type: "text", text: "checking"},
+    {type: "tool_call", id: "c1", name: "weather", args: {city: "Tokyo"}},
+  ]},
+  {role: "user", content: "never mind"},
+]
+let repaired = LLM.repair(history)
+inspect(repaired.map(|m| m.role))  # => ['user', 'assistant', 'user']
+inspect(repaired[1].content.size())  # => 1
+```
+
 ### エラー
 
 | 状況 | エラー |
