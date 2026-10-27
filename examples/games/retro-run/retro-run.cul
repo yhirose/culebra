@@ -816,12 +816,22 @@ let pick_sound = fn (keys) {
 }
 
 # Esc asks before it quits, the world frozen meanwhile (the music plays on:
-# a Kauai song can stop but not pause); Esc again or N goes back. Only where
-# there is a window to close: not in the browser, nor headless.
+# a Kauai song can stop but not pause); Esc again or N goes back. Y ends the
+# run by frame() answering false, which stops Canvas.run in the browser too,
+# where Canvas.quit() has no window to close.
 mut quitting = false
+# Whether the answer was yes; N or Esc goes back.
 let answer_quit = fn (keys) {
-  Canvas.quit() if keys.contains("y")
   quitting = false if keys.contains("n") || keys.contains("escape")
+  keys.contains("y")
+}
+
+# The last frame, blanked so a page that keeps the canvas up after the run
+# shows it over. The end of the run silences the sound, in a window and in the
+# browser alike.
+let leave = fn () {
+  _Canvas.clear(Canvas.rgba(0, 0, 0))
+  false
 }
 
 # After the flag the car drives itself. It holds the nearest lane and coasts
@@ -1853,8 +1863,8 @@ let frame = fn () {
   # also pick the sound. Esc is an ordinary key, not a built-in quit.
   let keys = Canvas.key_queue()
   if quitting {
-    answer_quit(keys)
-  } else if keys.contains("escape") && Canvas.can_quit() {
+    return leave() if answer_quit(keys)
+  } else if keys.contains("escape") {
     quitting = true
   } else if picking {
     pick_sound(keys)

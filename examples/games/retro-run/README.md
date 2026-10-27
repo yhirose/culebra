@@ -27,9 +27,9 @@ non-secure and breaks WebGPU.
 Controls are arrow keys or WASD. Before each race a menu over the road picks
 the laps' lead, the saxophone or the chip (up and down to choose, Enter to
 race), and Enter on the results screen brings the menu back with the last
-pick still chosen. In a window, Esc asks before it quits (Y to quit, N or Esc
-to go back), the road frozen meanwhile; the Playground has no window to close,
-so there Esc does nothing. A bare number overrides the draw distance
+pick still chosen. Esc asks before it quits (Y to quit, N or Esc to go back),
+the road frozen meanwhile; in the Playground, Y ends the run as Stop does. A
+bare number overrides the draw distance
 (default 300, matching v4's own default; its tweak UI allows 100..500),
 `--assets <dir>` reads the art from somewhere else, and `--chiptune` starts
 the menu on the chip:
