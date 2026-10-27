@@ -349,6 +349,17 @@ What it reports today:
     skipped rather than guessed at. A guarded arm (`Circle(r) if r > 0
     => …`) does not count as covering what it names, since the guard may
     reject at runtime.
+  - **More arguments than the callee takes** — a call such as `f(1, 2, 3)`
+    where `f` takes two, or `Point(x, y, z)` for a class whose `new` takes
+    two. A function literal or a constructor drops the extra positional
+    arguments without a word, and a `fn name` declaration fails with a
+    `DispatchError`, so the count is what the message states
+    (`f takes 2 arguments, 3 given`). Only a callee the file settles is
+    checked: a `fn name`, a `class`, or a function literal bound once and
+    never written to, called by that name. A callee that declares `*rest`
+    or reads `__ARGS__` keeps the extras, and an overloaded `fn`, a
+    generic class, a name written to after its declaration and a method
+    call (`x.f(…)`, which may reach a free function) are left alone.
 
   A leading underscore (`_x`, or the bare sink `_`) marks a binding as
   intentionally unused and is never flagged. **Parameters are not

@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <format>
 #include <map>
+#include <optional>
 #include <set>
 #include <span>
 #include <string>
@@ -1593,6 +1594,132 @@ inline void analyze_module(const peg::Ast& ast, std::vector<Diagnostic>& diags) 
 
 }  // namespace idiom
 
+// A call that passes more positional arguments than the function or class it
+// names takes. What the run does with them depends on the callee: a function
+// literal or a constructor without a keyword-only part drops them without a
+// word (`Point(x, y, z)` for a two-field class, `E(1)` for a class with no
+// `new`, read as if every argument were used), a `fn name` declaration fails
+// with a DispatchError, and one that declares `*rest` or reads `__ARGS__`
+// keeps them. The message therefore states the count and not the outcome.
+// Only a callee the file settles is checked: a `fn name`, a `class`, or a
+// function literal bound once and never written to, which the call reaches by
+// that name. Everything else is left alone, since an overload, a reassigned
+// name or a method (UFCS) may take what this count says it does not.
+namespace surplus_args {
+
+// How many positional arguments a parameter list takes, or nullopt when it
+// takes any number (`*rest`).
+inline std::optional<size_t> positional_capacity(const peg::Ast& params) {
+  size_t n = 0;
+  for (const auto& p : params.nodes) {
+    auto pv = culebra::view_parameter(*p);
+    if (pv.is_args_rest) return std::nullopt;
+    if (pv.is_kw_only_sep || pv.is_kwargs_rest) break;
+    n++;
+  }
+  return n;
+}
+
+inline bool mentions_args(const peg::Ast& n) {
+  if (n.name == "IDENTIFIER" && n.token == "__ARGS__") return true;
+  return std::ranges::any_of(
+      n.nodes, [](const auto& c) { return mentions_args(*c); });
+}
+
+// The positional capacity of what `declared_at` (a name node) declares, when
+// that is a `fn name` or a class this check understands.
+inline std::optional<size_t> capacity_of(const peg::Ast& declared_at) {
+  auto parent = declared_at.parent.lock();
+  if (!parent) return std::nullopt;
+  if (parent->name == "ASSIGNMENT") {
+    auto av = culebra::view_assignment(*parent);
+    if (av.compound || av.lvalcnt != 1 ||
+        parent->nodes[av.lvaloff].get() != &declared_at)
+      return std::nullopt;
+    const peg::Ast& rhs = *av.rhs;
+    if (rhs.name != "FUNCTION" && rhs.name != "LAMBDA") return std::nullopt;
+    auto fv = rhs.name == "FUNCTION" ? culebra::view_function(rhs)
+                                     : culebra::view_lambda(rhs);
+    if (mentions_args(*fv.body)) return std::nullopt;
+    return positional_capacity(*fv.params);
+  }
+  size_t head = culebra::first_non_decorator_index(*parent);
+  if (head >= parent->nodes.size() || parent->nodes[head].get() != &declared_at)
+    return std::nullopt;
+  if (parent->name == "MULTIFN_DECL") {
+    if (head + 1 >= parent->nodes.size()) return std::nullopt;
+    if (mentions_args(*parent->nodes.back())) return std::nullopt;
+    return positional_capacity(*parent->nodes[head + 1]);
+  }
+  if (parent->name != "CLASS_DECL") return std::nullopt;
+  const peg::Ast* ctor = nullptr;
+  for (size_t i = head + 1; i < parent->nodes.size(); i++) {
+    auto mv = culebra::view_method(*parent->nodes[i]);
+    if (mv.is_static || mv.name != "new" || !mv.params) continue;
+    if (ctor) return std::nullopt;  // overloaded `new`
+    ctor = mv.params;
+    if (mv.body && mentions_args(**mv.body)) return std::nullopt;
+  }
+  if (ctor) return positional_capacity(*ctor);
+  // No `new`: a class that extends another or takes type parameters may get
+  // its constructor from elsewhere.
+  if (declared_at.token.find('<') != std::string_view::npos) return std::nullopt;
+  return size_t{0};
+}
+
+inline void analyze_module(const peg::Ast& authored,
+                           const resolve::Resolution& res,
+                           std::vector<Diagnostic>& diags) {
+  // The names something writes to after declaring them (`x = v`, `x += v`):
+  // read off every name node the walk looked up, since an occurrence whose
+  // text the parse synthesized is not kept per symbol.
+  std::set<size_t> written;
+  for (const auto& [node, use] : res.uses)
+    if (use.role == resolve::Role::Write && use.symbol != resolve::kNone)
+      written.insert(use.symbol);
+  // symbol -> capacity, or nullopt for one this check does not judge
+  std::map<size_t, std::optional<size_t>> memo;
+  auto judged = [&](size_t sym) -> const std::optional<size_t>& {
+    auto [it, fresh] = memo.try_emplace(sym);
+    if (!fresh) return it->second;
+    const auto& s = res.symbols[sym];
+    bool plain = (s.kind == resolve::SymbolKind::Function ||
+                  s.kind == resolve::SymbolKind::Class ||
+                  s.kind == resolve::SymbolKind::Variable) &&
+                 s.declarations == 1 && s.declared_at && !written.contains(sym);
+    if (plain) it->second = capacity_of(*s.declared_at);
+    return it->second;
+  };
+  auto walk = [&](auto& self, const peg::Ast& n) -> void {
+    if (n.name == "CALL" && n.nodes.size() >= 2 &&
+        n.nodes[0]->name == "IDENTIFIER" && n.nodes[1]->name == "ARG_LIST") {
+      size_t sym = res.symbol_of(*n.nodes[0]);
+      if (sym != resolve::kNone) {
+        const auto& cap = judged(sym);
+        auto args = culebra::scan_arg_list(*n.nodes[1]);
+        bool spread = std::ranges::any_of(args.positional, [](const auto* a) {
+          return a->name.find("SPREAD") != std::string::npos;
+        });
+        if (cap && !spread && args.positional.size() > *cap) {
+          const peg::Ast& extra = *args.positional[*cap];
+          auto plural = [](size_t k) { return k == 1 ? " argument" : " arguments"; };
+          diags.push_back(Diagnostic{
+              "SurplusArguments",
+              std::format("{} takes {}{}, {} given",
+                          std::string(n.nodes[0]->token), *cap, plural(*cap),
+                          args.positional.size()),
+              static_cast<long>(extra.line), static_cast<long>(extra.column),
+              Severity::Warning});
+        }
+      }
+    }
+    for (const auto& c : n.nodes) self(self, *c);
+  };
+  walk(walk, authored);
+}
+
+}  // namespace surplus_args
+
 // Non-exhaustive enum match: `match` returns `nil` on no arm matching
 // (docs/language.md), so a missing variant fails silently instead of
 // raising. Unlike Object shapes (unbounded key combinations, see
@@ -1907,6 +2034,8 @@ inline std::vector<Diagnostic> collect_module(const peg::Ast& lowered,
   _detail::toplevel::analyze_module(authored, diags);
   _detail::unreachable::analyze_module(authored, diags);
   _detail::idiom::analyze_module(authored, diags);
+  _detail::surplus_args::analyze_module(
+      authored, resolve::resolve_module(authored, {}, resolve_options()), diags);
   _detail::enum_exhaustiveness::analyze_module(authored, diags);
   std::sort(diags.begin(), diags.end(), [](const Diagnostic& a,
                                            const Diagnostic& b) {

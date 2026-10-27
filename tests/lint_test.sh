@@ -866,6 +866,83 @@ expect_lint_warns "range zero step"  'inspect(range(0, 9, step: 3).collect())' \
 expect_lint_clean "range one start"  'inspect(range(1, 5).collect())'
 expect_lint_clean "range single arg" 'inspect(range(5).collect())'
 
+# --- more positional arguments than the callee takes ----------------------
+# The run drops them (a literal, a constructor) or fails (a `fn name`), so
+# the count is the whole message. Only a callee the file settles is judged.
+expect_lint_warns "surplus: fn declaration" \
+'fn two(a, b) { a + b }
+inspect(two(1, 2, 3))' "two takes 2 arguments, 3 given"
+expect_lint_warns "surplus: function literal" \
+'let one = fn (a) { a }
+inspect(one(1, 2))' "one takes 1 argument, 2 given"
+expect_lint_warns "surplus: lambda" \
+'let id = |a| a
+inspect(id(1, 2))' "id takes 1 argument, 2 given"
+expect_lint_warns "surplus: class with no new" \
+'class E {
+  x = 1
+}
+inspect(E(1).x)' "E takes 0 arguments, 1 given"
+# A @value class is built from keywords; positional arguments are dropped and
+# the fields stay at their defaults (V(1, 2).y is 0), which is the slip this
+# warning is for.
+expect_lint_warns "surplus: @value takes keywords" \
+'@value
+class V {
+  x: Long
+  y: Long
+}
+inspect(V(1, 2).y)' "V takes 0 arguments, 2 given"
+expect_lint_clean "surplus: @value with keywords" \
+'@value
+class V {
+  x: Long
+  y: Long
+}
+inspect(V(x: 1, y: 2).y)'
+expect_lint_warns "surplus: field parameters count" \
+'class P {
+  new(.x, .y) {}
+}
+inspect(P(1, 2, 3).x)' "P takes 2 arguments, 3 given"
+expect_lint_warns "surplus: default parameters count" \
+'fn d(a, b = 2) { a + b }
+inspect(d(1, 2, 3))' "d takes 2 arguments, 3 given"
+expect_lint_warns "surplus: after a keyword-only separator" \
+'fn k(a, *, b = 1) { a + b }
+inspect(k(1, 2))' "k takes 1 argument, 2 given"
+# Sound-negatives: the exact count, a callee that keeps the extras (*rest,
+# __ARGS__), an overload, a name written to, a member, a generic class.
+expect_lint_clean "surplus: exact count" \
+'fn two(a, b) { a + b }
+inspect(two(1, 2))'
+expect_lint_clean "surplus: *rest keeps them" \
+'fn v(a, *rest) { a }
+inspect(v(1, 2, 3))'
+expect_lint_clean "surplus: __ARGS__ keeps them" \
+'let logger = fn (level) { __ARGS__.size() }
+inspect(logger(1, 2, 3))'
+expect_lint_clean "surplus: overload is not judged" \
+'fn over(a: Long) { a }
+fn over(a: String) { a }
+inspect(over(1, 2))'
+expect_lint_clean "surplus: written name is not judged" \
+'mut f = fn (a) { a }
+f = fn (a, b) { a + b }
+inspect(f(1, 2))'
+expect_lint_clean "surplus: a member is not judged" \
+'let o = {m: fn (a) { a }}
+inspect(o.m(1, 2))'
+expect_lint_clean "surplus: generic class is not judged" \
+'class Box<T> {
+  v: T
+}
+inspect(Box(1, 2))'
+expect_lint_clean "surplus: a parameter shadows the name" \
+'fn two(a, b) { a + b }
+let use = fn (two) { two(1, 2, 3) }
+inspect(use(fn (a, b, c) { a }))'
+
 # --- non-exhaustive enum match (falls through to nil, not an error) --------
 expect_lint_warns "missing nullary variant" \
 'enum Shape { Circle(Float), Rect(Float, Float), Origin }
