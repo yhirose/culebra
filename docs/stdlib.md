@@ -9477,11 +9477,14 @@ called as `weather(city: "Tokyo")`. What it returns goes back to the model: a
 `tool.name`, `tool.description` and `tool.input_schema` can be read;
 `tool.spec()` is what goes out with a request.
 
-### `LLM.request(body, headers=nil, api_key=nil, base_url=nil) -> Object`
+### `LLM.request(body, provider:, headers=nil) -> Object`
 
-The request body as it is, posted to `/v1/messages`, and the response as it is
-(the parsed JSON), for what `ask` and `chat` do not set. `headers` carries
-what a body cannot, such as `anthropic-beta` for a beta feature.
+The request body as it is, sent to the provider, and the response as it is (the
+parsed JSON), for what `ask`, `chat` and `turn` do not set. `headers` carries
+what a body cannot, such as `anthropic-beta` for a beta feature. What a body
+says is the provider's format, so it goes only as far as the provider does:
+`LLM.anthropic` posts it to `/v1/messages`, and a provider takes a request as it
+is only if it has a `request(body, headers)` method.
 
 ```culebra
 # doctest: skip
@@ -9489,7 +9492,7 @@ let res = LLM.request({
   model: "claude-haiku-5-5",
   max_tokens: 1000,
   messages: [{role: "user", content: "Hello"}],
-})
+}, provider: LLM.anthropic())
 IO.println(res.content[0].text)
 ```
 

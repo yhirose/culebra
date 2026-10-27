@@ -278,14 +278,13 @@ for on_text in [nil, |t| nil] {
 
 let raw = LLM.request({model: "story", max_tokens: 10,
                        messages: [{role: "user", content: "hi"}]},
-                      api_key: "test-key", base_url: BASE)
+                      provider: PROVIDER)
 assert_eq([raw.id, raw.content[0].text], ["msg_1", "once upon a time"])
 
 # A header a body cannot carry, such as a beta's, rides along.
 let with_beta = LLM.request({model: "echo", max_tokens: 10,
                              messages: [{role: "user", content: "hi"}]},
-                            headers: {"anthropic-beta": "some-beta-2026-01-01"},
-                            api_key: "test-key", base_url: BASE)
+                            provider: PROVIDER, headers: {"anthropic-beta": "some-beta-2026-01-01"})
 assert_eq(JSON.parse(with_beta.content[0].text).beta, "some-beta-2026-01-01")
 
 # --- LLM.turn with the Messages API as a provider ----------------------------------------

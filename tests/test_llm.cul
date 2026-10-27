@@ -88,10 +88,22 @@ assert_eq(failure(|| LLM.ask(3, provider: nowhere_provider, model: "m")),
           "TypeError: type error: parameter 'prompt' expects String")
 assert_eq(failure(|| LLM.ask("hi", provider: nowhere_provider, model: "m", on_text: 3)),
           "TypeError: type error: parameter 'on_text' expects Function | Nil")
-assert_eq(failure(|| LLM.request([], **nowhere)),
+assert_eq(failure(|| LLM.request([], provider: nowhere_provider)),
           "TypeError: type error: parameter 'body' expects Object")
-assert_eq(failure(|| LLM.request({}, headers: "x", **nowhere)),
+assert_eq(failure(|| LLM.request({}, provider: nowhere_provider, headers: "x")),
           "TypeError: type error: parameter 'headers' expects Object | Nil")
+assert_eq(failure(|| LLM.request({}, provider: 3)),
+          "TypeError: type error: parameter 'provider' expects a provider (an object with a turn method)")
+# A provider takes a request as it is only if it says how.
+assert_eq(failure(|| LLM.request({}, provider: {name: "plain", turn: fn (request, on_text) { {} }})),
+          "LLMError: LLM.request: plain does not take a request as it is")
+let rq_seen = []
+let rq_provider = {name: "own", turn: fn (request, on_text) { {} },
+                   request: fn (body, headers) { rq_seen.push([body, headers]); {ok: true} }}
+assert_eq(LLM.request({a: 1}, provider: rq_provider, headers: {"x-b": "c"}), {ok: true})
+assert_eq(rq_seen, [[{a: 1}, {"x-b": "c"}]])
+assert_eq(LLM.request({a: 2}, provider: rq_provider), {ok: true})
+assert_eq(rq_seen[1], [{a: 2}, nil])
 # A slice is taken as the String it reads as.
 assert_eq(LLM.tool(weather, "the weather in a city".slice(0, 11)).description,
           "the weather")

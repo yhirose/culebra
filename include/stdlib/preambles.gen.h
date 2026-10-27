@@ -8431,6 +8431,11 @@ let _llm_module = fn () {
       let body = _body_of(req)
       _reply_of(on_text == nil ? _send(self.http, body) : _stream(self.http, body, on_text))
     }
+
+    # The body as it is, posted to /v1/messages, and the answer as it is.
+    request(body, headers) {
+      _send(self.http, body, headers)
+    }
   }
 
   fn anthropic(*, api_key = nil, base_url = nil, timeout = 120) {
@@ -8526,12 +8531,18 @@ let _llm_module = fn () {
   }
 
   # The body as it is, the response as it is: a failure is still an LLMError.
-  # `headers` carries what a body cannot, such as a beta's `anthropic-beta`.
-  fn request(body, *, headers = nil, api_key = nil, base_url = nil) {
+  # `headers` carries what a body cannot, such as a beta's `anthropic-beta`. A
+  # provider takes this with a `request(body, headers)` method of its own; what
+  # a body says is its format's, so it is only as portable as the provider.
+  fn request(body, *, provider, headers = nil) {
+    _check_provider(provider)
     _type_error("body", "Object") if type_of(body) != "Object"
     _type_error("headers", "Object | Nil") if headers != nil && type_of(headers) != "Object"
-    _send(_connect(_optional_string("api_key", api_key),
-                   _optional_string("base_url", base_url)), body, headers)
+    let name = _provider_name(provider)
+    if type_of(provider.request) != "Function" {
+      _fail("LLM.request: {name} does not take a request as it is")
+    }
+    provider.request(body, headers)
   }
 
   {ask: ask, chat: chat, tool: tool, request: request, repair: repair, turn: turn,

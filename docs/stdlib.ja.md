@@ -9096,11 +9096,13 @@ IO.println(chat.ask("And in Osaka?"))
 `tool.name`、`tool.description`、`tool.input_schema`を読めます。リクエストで
 送られるのは`tool.spec()`です。
 
-### `LLM.request(body, headers=nil, api_key=nil, base_url=nil) -> Object`
+### `LLM.request(body, provider:, headers=nil) -> Object`
 
-リクエスト本文をそのまま`/v1/messages`へ送り、応答をそのまま（JSONを読んだ
-Objectで）返します。`ask`と`chat`が設定しないものを使うためのものです。
-`headers`には、ベータ機能の`anthropic-beta`のように本文に書けないものを渡します。
+リクエスト本文をそのまま提供元へ送り、応答をそのまま（JSONを読んだObjectで）返します。
+`ask`、`chat`、`turn`が設定しないものを使うためのものです。`headers`には、ベータ機能の
+`anthropic-beta`のように本文に書けないものを渡します。本文に書くのは提供元の形式の
+ことなので、届く範囲は提供元しだいです。`LLM.anthropic`は`/v1/messages`へ送り、提供元が
+素のリクエストを受けるのは、`request(body, headers)`メソッドを持つときだけです。
 
 ```culebra
 # doctest: skip
@@ -9108,7 +9110,7 @@ let res = LLM.request({
   model: "claude-haiku-5-5",
   max_tokens: 1000,
   messages: [{role: "user", content: "Hello"}],
-})
+}, provider: LLM.anthropic())
 IO.println(res.content[0].text)
 ```
 
