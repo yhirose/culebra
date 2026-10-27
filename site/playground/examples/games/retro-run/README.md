@@ -6,7 +6,7 @@ A culebra port of Jake Gordon's
 the AI traffic, collision, and lap timing all come from the original. What's
 different: the art (generated, not lifted — see `assets/README.md`), a
 five-scene day cycle that gives each scene a fifth of the track, a race
-around it — a three-second count-in, two laps, a results screen, where the
+around it — a choice of sound, a three-second count-in, two laps, a results screen, where the
 original runs forever — and the shape of the hot loops, rewritten for a tree-walking interpreter rather than a
 JIT'd browser (see `retro-run.cul`'s header comment for why).
 
@@ -24,11 +24,15 @@ instead of the local filesystem, everything else is identical. Open it as
 `http://localhost:...`, not `http://[::]`: the latter is treated as
 non-secure and breaks WebGPU.
 
-Controls are arrow keys or WASD, and space starts another race from the
-results screen. A bare number overrides the draw distance
+Controls are arrow keys or WASD. Before each race a menu over the road picks
+the laps' lead, the saxophone or the chip (up and down to choose, Enter to
+race), and Enter on the results screen brings the menu back with the last
+pick still chosen. In a window, Esc asks before it quits (Y to quit, N or Esc
+to go back), the road frozen meanwhile; the Playground has no window to close,
+so there Esc does nothing. A bare number overrides the draw distance
 (default 300, matching v4's own default; its tweak UI allows 100..500),
-`--assets <dir>` reads the art from somewhere else, and `--chiptune` gives the
-laps' lead back to the chip:
+`--assets <dir>` reads the art from somewhere else, and `--chiptune` starts
+the menu on the chip:
 
 ```sh
 culebra --jit examples/games/retro-run/retro-run.cul 150
@@ -72,7 +76,8 @@ own soundtrack, if you have it. It plays at `MUSIC_VOL` (0.6), under the
 engine but clearly audible; edit the constant to taste. The generated set ships
 none, so the songs are the default: a tune a lap, breezy for the first and a
 sprint for the second, a saxophone leading the chip band (a soprano, then an
-alto).
+alto) or the chip alone, as the menu picked. With either music file the menu
+does not appear, and neither does it when no lap has its saxophone phrases.
 
 Either way the flag ends it: the music fades out over a couple of seconds, a
 few more pass in silence, and a slow chiptune theme plays once over the frozen

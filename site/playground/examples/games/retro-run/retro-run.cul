@@ -3,15 +3,16 @@
 # The pseudo-3D road, the projection, the road geometry, the AI and every
 # constant come from the original; what changed is the art (generated, see
 # assets/README.md), the day cycle (five scenes over one lap), the race around
-# it (a count-in, two laps, a results screen — the original runs forever), and
-# the shape of the hot loops. The interpreter charges a C++ stack unwind for
-# `return`,
-# `break` and `continue`, so the loops that run per car or per segment carry a
-# `done` flag instead, and the drawing calls go straight to the `_Canvas.*`
-# primitives rather than through the preamble wrappers.
+# it (a choice of sound, a count-in, two laps, a results screen — the original
+# runs forever), and the shape of the hot loops. The interpreter charges a C++
+# stack unwind for `return`, `break` and `continue`, so the loops that run per
+# car or per segment carry a `done` flag instead, and the drawing calls go
+# straight to the `_Canvas.*` primitives rather than through the preamble
+# wrappers.
 #
-# Controls: arrows or WASD, space to race again from the results screen. Run
-# with --jit for the smoothest frame time.
+# Controls: arrows or WASD; up/down and Enter pick the sound before each race,
+# Enter on the results screen goes back to that pick, and Esc asks before it
+# quits. Run with --jit for the smoothest frame time.
 # An optional first argument overrides the draw distance, e.g.
 #   culebra --jit retro-run.cul 150
 # Shortening it trims the far road/background/sprites and, since v4's own AI
@@ -46,7 +47,7 @@ let ARGS_SPEC = {
       name: 'chiptune',
       type: 'Bool',
       default: false,
-      doc: "the laps' lead on the chip, not the saxophone",
+      doc: "start the menu on the chip, not the saxophone",
     },
     {
       name: 'distance',
@@ -682,18 +683,27 @@ let SONGS = ART.exists("cruise.kau") ? ART : Dir.embedded("assets")
 let ep = |pitch, params| Audio.Sound(pcm_wav(ep_samples(pitch, params.bright)))
 let kauai = |name| Audio.Kauai.load(name, dir: SONGS, voices: {ep: ep})
 
-# The laps' lead is a saxophone (sax_tunes.cul: a soprano for the first lap,
-# an alto for the second) where the songs have its phrases made; on the chip
-# where they do not, and with --chiptune.
-let lap_tune = |name| (args.chiptune ? nil : sax_tunes.load(name, SONGS, {ep: ep})) ?? kauai(name)
-let LAP_TUNES = [lap_tune("cruise.kau"), lap_tune("sprint.kau")]
+# Each lap's song twice: on the chip, and with a saxophone leading
+# (sax_tunes.cul: a soprano for the first lap, an alto for the second), nil
+# where the songs do not have its phrases made.
+let LAP_TUNES = ["cruise.kau", "sprint.kau"].map(fn (name) {
+  {chip: kauai(name), sax: sax_tunes.load(name, SONGS, {ep: ep})}
+})
 let THEME = kauai("ballad.kau")
-mut playing = LAP_TUNES[0]
+
+# The laps' lead, picked before each race (--chiptune starts on the chip); a
+# lap without a saxophone plays on the chip either way.
+mut on_chip = args.chiptune
+let lap_tune = fn (n) {
+  let tunes = LAP_TUNES[(n - 1) % LAP_TUNES.size()]
+  (on_chip ? nil : tunes.sax) ?? tunes.chip
+}
+mut playing = lap_tune(1)
 
 # The tune for lap `n`, from its first bar, once the last one has stopped.
 let start_tune = fn (n) {
   playing.stop()
-  playing = LAP_TUNES[(n - 1) % LAP_TUNES.size()]
+  playing = lap_tune(n)
   playing.volume(1.0)
 }
 
@@ -786,6 +796,34 @@ let tick_count_in = fn (dt) {
   }
 }
 
+# Before each race, over the frozen road, the player picks the laps' lead:
+# up and down to choose, Enter to race. There is nothing to pick when no lap
+# has a saxophone, or when a music.ogg / music.mp3 plays instead of the songs.
+let PICKS_SOUND = music == nil && LAP_TUNES.any(|tunes| tunes.sax != nil)
+mut picking = PICKS_SOUND
+
+# `keys` is this frame's presses, from Canvas.key_queue(): a press, unlike the
+# held buttons, is never missed between two frames.
+let pick_sound = fn (keys) {
+  let was = on_chip
+  on_chip = true if keys.contains("down") || keys.contains("s")
+  on_chip = false if keys.contains("up") || keys.contains("w")
+  Audio.tone(440, 4, vol: 15, wave: Audio.PULSE, release: 2) if on_chip != was
+  if keys.contains("enter") {
+    picking = false
+    start_tune(1)
+  }
+}
+
+# Esc asks before it quits, the world frozen meanwhile (the music plays on:
+# a Kauai song can stop but not pause); Esc again or N goes back. Only where
+# there is a window to close: not in the browser, nor headless.
+mut quitting = false
+let answer_quit = fn (keys) {
+  Canvas.quit() if keys.contains("y")
+  quitting = false if keys.contains("n") || keys.contains("escape")
+}
+
 # After the flag the car drives itself. It holds the nearest lane and coasts
 # to a stop while the race music fades, stands there through the theme's
 # opening bars, then cruises off at an easy pace, moving over for anything
@@ -865,6 +903,7 @@ let restart_race = fn () {
   wave_wait = 0
   lap_fade = 0
   start_tune(1)
+  picking = PICKS_SOUND
   music_on = false
   music_wait = MUSIC_DELAY
   music?.stop()
@@ -1668,7 +1707,23 @@ let draw_finish = fn () {
   draw_banner("FINISH", 170, 5)
   draw_banner("TOTAL {format_time(total_time)}", 228, 2)
   draw_banner("BEST {format_time(fast_lap_time)}", 252, 2)
-  draw_banner("PRESS SPACE TO RACE AGAIN", 285, 1)
+  draw_banner("PRESS ENTER TO RACE AGAIN", 285, 1)
+}
+
+# The choice of lead, the picked one between arrows.
+let draw_pick = fn () {
+  let item = |name, picked| picked ? "> {name} <" : name
+  draw_panel(160, 150, 320, 160, 12)
+  draw_banner("START", 170, 4)
+  draw_banner(item("SAXOPHONE", !on_chip), 222, 2)
+  draw_banner(item("CHIPTUNE", on_chip), 248, 2)
+  draw_banner("UP/DOWN TO CHOOSE, ENTER TO RACE", 285, 1)
+}
+
+let draw_quit = fn () {
+  draw_panel(120, 170, 400, 120, 12)
+  draw_banner("QUIT?", 190, 4)
+  draw_banner("Y TO QUIT, N TO GO BACK", 250, 2)
 }
 
 let render = fn () {
@@ -1765,8 +1820,16 @@ let render = fn () {
   }
 
   draw_hud()
-  draw_count_in() if count_in > -GO_HOLD
-  draw_finish() if finished
+  # One panel at a time: the question to quit covers whichever was up.
+  if quitting {
+    draw_quit()
+  } else if picking {
+    draw_pick()
+  } else if finished {
+    draw_finish()
+  } else if count_in > -GO_HOLD {
+    draw_count_in()
+  }
 }
 
 # --- main ------------------------------------------------------------------
@@ -1777,9 +1840,6 @@ mut last = Time.monotonic()
 mut gdt = 0.0
 
 let frame = fn () {
-  # Esc is an ordinary key, not a built-in quit -- ask for one explicitly.
-  Canvas.quit() if Canvas.key('escape')
-
   let now = Time.monotonic()
   # Bound the catch-up, not just the clock: a second of arrears is 60 physics
   # steps in one frame, which on a host that was already behind makes the next
@@ -1789,7 +1849,18 @@ let frame = fn () {
   let dt = Math.min(4.0 * STEP, now - last)
   last = now
 
-  restart_race() if finished && Canvas.key('space')
+  # One press does one thing: the Enter that starts another race does not
+  # also pick the sound. Esc is an ordinary key, not a built-in quit.
+  let keys = Canvas.key_queue()
+  if quitting {
+    answer_quit(keys)
+  } else if keys.contains("escape") && Canvas.can_quit() {
+    quitting = true
+  } else if picking {
+    pick_sound(keys)
+  } else if finished && keys.contains("enter") {
+    restart_race()
+  }
 
   let held = _Canvas.buttons()
   key_left = held & Canvas.LEFT != 0
@@ -1799,7 +1870,9 @@ let frame = fn () {
   key_faster = held & Canvas.UP != 0
   key_slower = held & Canvas.DOWN != 0
 
-  gdt += dt
+  # The world, the clock and the count-in all wait for the pick, and for the
+  # answer to quitting.
+  gdt = picking || quitting ? 0.0 : gdt + dt
   while gdt > STEP {
     gdt -= STEP
     # Exactly one of these runs, and each keeps the sound going: the world is
