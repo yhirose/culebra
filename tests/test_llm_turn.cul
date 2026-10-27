@@ -188,3 +188,59 @@ tn_bad.reply = "not an object"
 assert_eq(failure(|| tn_turn(tn_bad, messages: [tn_user("hi")])),
           "LLMError: LLM.turn: fake answered with a String, not an Object")
 
+# --- LLM.count_tokens: the same request, asked for a count ------------------------------------
+
+class CountFake {
+  new(.name, .capabilities, .answer) {
+    self.default_model = nil
+    self.seen = []
+  }
+  turn(request, on_text) {
+    TN_REPLY
+  }
+  count_tokens(request) {
+    self.seen.push(request)
+    self.answer
+  }
+}
+fn cn_fake(caps = {tools: true, count_tokens: true}, answer = 42) {
+  CountFake("fake", caps, answer)
+}
+fn cn_count(provider, **args) {
+  LLM.count_tokens(provider, model: "m", **args)
+}
+
+# The request is the one a turn would make, without what only an answer needs.
+let cn_p = cn_fake()
+assert_eq(cn_count(cn_p, messages: [tn_sys("be brief"), tn_user("hi")], tools: [w]), 42)
+assert_eq(cn_p.seen[0], {model: "m", system: "be brief", messages: [tn_user("hi")], tools: [w],
+                         max_tokens: nil, stop: nil, temperature: nil, extra: nil})
+
+# A provider that cannot count says so before anything is checked.
+assert_eq(failure(|| cn_count(cn_fake({tools: true}), messages: [tn_user("hi")])),
+          "LLMError: LLM.count_tokens: fake does not count tokens")
+assert_eq(failure(|| cn_count(tn_fake(), messages: [])),
+          "LLMError: LLM.count_tokens: fake does not count tokens")
+assert_eq(failure(|| cn_count(tn_plain, messages: [tn_user("hi")])),
+          "LLMError: LLM.count_tokens: plain does not count tokens")
+assert_eq(failure(|| cn_count({name: "x", capabilities: {count_tokens: true},
+                              turn: fn (request, on_text) { TN_REPLY }}, messages: [tn_user("hi")])),
+          "LLMError: LLM.count_tokens: x does not count tokens")
+
+# Its answer is a count.
+assert_eq(failure(|| cn_count(cn_fake({count_tokens: true}, "many"), messages: [tn_user("hi")])),
+          "LLMError: LLM.count_tokens: fake answered with a String, not a Long")
+
+# What is refused is refused as for a turn, by this name.
+assert_eq(failure(|| cn_count(cn_fake(), messages: [])), "LLMError: LLM.count_tokens: no messages")
+assert_eq(failure(|| cn_count(cn_fake(), messages: [tn_user("hi"), tn_result("a")])),
+  "LLMError: LLM.count_tokens: messages[1]: the tool_result 'a' is not paired with a tool_call just before it (see LLM.repair)")
+assert_eq(failure(|| cn_count(cn_fake({count_tokens: true}), messages: [tn_user("hi")], tools: [w])),
+          "LLMError: LLM.count_tokens: fake does not take tools")
+assert_eq(failure(|| LLM.count_tokens(cn_fake(), messages: [tn_user("hi")])),
+          "LLMError: LLM: model: is required for fake")
+assert_eq(failure(|| cn_count(3, messages: [tn_user("hi")])),
+          "TypeError: type error: parameter 'provider' expects a provider (an object with a turn method)")
+assert_eq(failure(|| cn_count(cn_fake(), messages: [{role: "bot", content: "x"}])),
+          "ValueError: LLM.count_tokens: messages[0]: unknown role 'bot'")
+

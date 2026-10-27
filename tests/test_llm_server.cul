@@ -125,6 +125,14 @@ fn reply(body, headers) {
 let (tx, rx) = Channel.new(1)
 let iso = Isolate.spawn(fn () {
   let srv = Http.server()
+  # Counts the bytes of the body it was sent, so a test knows the body exactly.
+  srv.post("/v1/messages/count_tokens", fn (req) {
+    if JSON.parse(req.body).model == "busy" {
+      return {status: 529, content_type: "application/json",
+              body: '{"type":"error","error":{"type":"overloaded_error","message":"busy"}}'}
+    }
+    {content_type: "application/json", body: JSON.stringify({input_tokens: req.body.size()})}
+  })
   srv.post("/v1/messages", fn (req) {
     let body = JSON.parse(req.body)
     let m = body.model
@@ -294,7 +302,7 @@ assert_eq(JSON.parse(with_beta.content[0].text).beta, "some-beta-2026-01-01")
 fn an_cases() {
   let an_p = LLM.anthropic(api_key: "test-key", base_url: BASE)
   assert_eq([an_p.name, an_p.capabilities, an_p.default_model],
-            ["anthropic", {tools: true, extra: true}, nil])
+            ["anthropic", {tools: true, extra: true, count_tokens: true}, nil])
 
   fn an_user(t) {
     {role: "user", content: t}
@@ -361,6 +369,22 @@ fn an_cases() {
   let an_search = LLM.tool_from_schema("search", "Search the notes", {type: "object"}, fn (**args) { "x" })
   assert_eq(JSON.parse(an_sent([an_user("q")], tools: [an_search])).tools,
             [{name: "search", description: "Search the notes", input_schema: {type: "object"}}])
+
+  # Counting the input asks the count endpoint for the model, the messages, the
+  # system prompt and the tools, and nothing else: the stand-in answers with the
+  # size of the body it was sent.
+  assert_eq(LLM.count_tokens(an_p, model: "story", messages: [an_user("hi")]),
+            '{"model":"story","messages":[{"role":"user","content":"hi"}]}'.size())
+  assert_eq(LLM.count_tokens(an_p, model: "story", messages: [{role: "system", content: "be brief"}, an_user("hi")]),
+            '{"model":"story","messages":[{"role":"user","content":"hi"}],"system":"be brief"}'.size())
+  assert_eq(LLM.count_tokens(an_p, model: "story", system: "be brief", tools: [an_search],
+                             messages: [an_user("hi"), an_say("yo"), an_user("again")]),
+            ('{"model":"story","messages":[{"role":"user","content":"hi"},{"role":"assistant",' +
+             '"content":[{"type":"text","text":"yo"}]},{"role":"user","content":"again"}],' +
+             '"system":"be brief","tools":[{"name":"search","description":"Search the notes",' +
+             '"input_schema":{"type":"object"}}]}').size())
+  assert_eq(failure(|| LLM.count_tokens(an_p, model: "busy", messages: [an_user("hi")])),
+            "LLMError: LLM: 529 overloaded_error: busy")
 
   # What the API is asked beyond the history.
   let an_options = JSON.parse(an_sent([an_user("hi")], max_tokens: 50, stop: ["x"], temperature: 0.5,

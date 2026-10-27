@@ -267,7 +267,7 @@ let _llm_module = fn () {
     other: ["assistant"],
   }
 
-  fn _check_message(i, m) {
+  fn _check_message(who, i, m) {
     if type_of(m) != "Object" {
       __raise("TypeError", "type error: messages[{i}] expects Object")
     }
@@ -276,13 +276,13 @@ let _llm_module = fn () {
       __raise("TypeError", "type error: messages[{i}].role expects String")
     }
     if !ROLES.contains(role) {
-      __raise("ValueError", "LLM.turn: messages[{i}]: unknown role '{role}'")
+      __raise("ValueError", "{who}: messages[{i}]: unknown role '{role}'")
     }
     let content = m.get("content", nil)
     if type_of(content) == "String" {
       if role == "tool" {
         __raise("ValueError",
-          "LLM.turn: messages[{i}]: a tool message holds tool_result parts, not a String")
+          "{who}: messages[{i}]: a tool message holds tool_result parts, not a String")
       }
       return nil
     }
@@ -300,16 +300,16 @@ let _llm_module = fn () {
       let roles = PART_ROLES.get(kind, nil)
       if roles == nil {
         __raise("ValueError",
-          "LLM.turn: messages[{i}].content[{j}]: unknown part type '{kind}'")
+          "{who}: messages[{i}].content[{j}]: unknown part type '{kind}'")
       }
       if !roles.contains(role) {
         __raise("ValueError",
-          "LLM.turn: messages[{i}].content[{j}]: a {kind} part is not allowed in a {role} message")
+          "{who}: messages[{i}].content[{j}]: a {kind} part is not allowed in a {role} message")
       }
     }
   }
 
-  fn _check_pairing(messages) {
+  fn _check_pairing(who, messages) {
     let orphans = _orphans(messages)
     if !orphans.empty() {
       let o = orphans[0]
@@ -317,7 +317,7 @@ let _llm_module = fn () {
       let partner = o.kind == "tool_call"
         ? "a tool_result just after it"
         : "a tool_call just before it"
-      _fail("LLM.turn: messages[{o.message}]: the {o.kind} {id} is not paired with {partner} (see LLM.repair)")
+      _fail("{who}: messages[{o.message}]: the {o.kind} {id} is not paired with {partner} (see LLM.repair)")
     }
   }
 
@@ -327,14 +327,14 @@ let _llm_module = fn () {
 
   # The system prompt, and the messages without it. It is given as system: or as
   # the first message, once.
-  fn _lift_system(system, messages) {
+  fn _lift_system(who, system, messages) {
     let lead = !messages.empty() && messages[0].role == "system"
     let rest = lead ? messages.slice(1, messages.size()) : messages
     if rest.any(|m| m.role == "system") {
-      _fail("LLM.turn: a system message must be the first message, and only once")
+      _fail("{who}: a system message must be the first message, and only once")
     }
     if lead && system != nil {
-      _fail("LLM.turn: the system prompt is given twice: as system: and as a system message")
+      _fail("{who}: the system prompt is given twice: as system: and as a system message")
     }
     (system ?? (lead ? _system_text(messages[0].content) : nil), rest)
   }
@@ -364,12 +364,10 @@ let _llm_module = fn () {
     id
   }
 
-  # One step: what the provider is asked is checked here once, so a provider
-  # sees a request that is whole, and runs no tool. A provider is anything with a
-  # `turn(request, on_text)` method, `name`, `capabilities` and `default_model`
-  # fields.
-  fn turn(provider, *, messages, model = nil, system = nil, tools = [], max_tokens = nil,
-          stop = nil, temperature = nil, extra = nil, on_text = nil) {
+  # The request a provider is asked, checked once here so that a provider sees
+  # one that is whole. `who` names the call in what is refused.
+  fn _request_for(who, provider, messages, model, system, tools, max_tokens, stop,
+                  temperature, extra) {
     _check_provider(provider)
     let name = _provider_name(provider)
     let caps = provider.capabilities ?? {}
@@ -380,7 +378,7 @@ let _llm_module = fn () {
     _type_error("tools", "Array") if type_of(tools) != "Array"
     for t in tools {
       if type_of(t) != "LLMTool" {
-        __raise("TypeError", "LLM.turn: tools takes what LLM.tool makes, got {type_of(t)}")
+        __raise("TypeError", "{who}: tools takes what LLM.tool makes, got {type_of(t)}")
       }
     }
     if max_tokens != nil && type_of(max_tokens) != "Long" {
@@ -395,31 +393,59 @@ let _llm_module = fn () {
     if extra != nil && type_of(extra) != "Object" {
       _type_error("extra", "Object | Nil")
     }
-    if on_text != nil && type_of(on_text) != "Function" {
-      _type_error("on_text", "Function | Nil")
-    }
-
     if !tools.empty() && !caps.get("tools", false) {
-      _fail("LLM.turn: {name} does not take tools")
+      _fail("{who}: {name} does not take tools")
     }
     if extra != nil && !caps.get("extra", false) {
-      _fail("LLM.turn: {name} does not take extra:")
+      _fail("{who}: {name} does not take extra:")
     }
 
     for i, m in messages.enumerate() {
-      _check_message(i, m)
+      _check_message(who, i, m)
     }
-    _check_pairing(messages)
-    let (lifted, rest) = _lift_system(prompt, messages)
-    _fail("LLM.turn: no messages") if rest.empty()
+    _check_pairing(who, messages)
+    let (lifted, rest) = _lift_system(who, prompt, messages)
+    _fail("{who}: no messages") if rest.empty()
 
-    let reply = provider.turn({model: model_id, system: lifted, messages: rest, tools: tools,
-                               max_tokens: max_tokens, stop: stop, temperature: temperature,
-                               extra: extra}, on_text)
+    {model: model_id, system: lifted, messages: rest, tools: tools, max_tokens: max_tokens,
+     stop: stop, temperature: temperature, extra: extra}
+  }
+
+  # One step: what the provider is asked is checked once, so a provider sees a
+  # request that is whole, and runs no tool. A provider is anything with a
+  # `turn(request, on_text)` method, `name`, `capabilities` and `default_model`
+  # fields.
+  fn turn(provider, *, messages, model = nil, system = nil, tools = [], max_tokens = nil,
+          stop = nil, temperature = nil, extra = nil, on_text = nil) {
+    if on_text != nil && type_of(on_text) != "Function" {
+      _type_error("on_text", "Function | Nil")
+    }
+    let req = _request_for("LLM.turn", provider, messages, model, system, tools, max_tokens,
+                           stop, temperature, extra)
+    let reply = provider.turn(req, on_text)
     if type_of(reply) != "Object" {
-      _fail("LLM.turn: {name} answered with a {type_of(reply)}, not an Object")
+      _fail("LLM.turn: {_provider_name(provider)} answered with a {type_of(reply)}, not an Object")
     }
     reply
+  }
+
+  # How many tokens the input of a turn comes to, as the provider counts them,
+  # for a provider that can: that is a request to it each time, and it is not
+  # asked to answer.
+  fn count_tokens(provider, *, messages, model = nil, system = nil, tools = []) {
+    _check_provider(provider)
+    let name = _provider_name(provider)
+    let caps = provider.capabilities ?? {}
+    if !caps.get("count_tokens", false) || type_of(provider.count_tokens) != "Function" {
+      _fail("LLM.count_tokens: {name} does not count tokens")
+    }
+    let req = _request_for("LLM.count_tokens", provider, messages, model, system, tools, nil,
+                           nil, nil, nil)
+    let count = provider.count_tokens(req)
+    if type_of(count) != "Long" {
+      _fail("LLM.count_tokens: {name} answered with a {type_of(count)}, not a Long")
+    }
+    count
   }
 
   # --- the wire -----------------------------------------------------------------
@@ -448,8 +474,8 @@ let _llm_module = fn () {
     _fail("LLM: {res.status} {detail}")
   }
 
-  fn _send(http, body, headers = nil) {
-    let res = http.post("/v1/messages", json: body, headers: headers)
+  fn _send(http, body, headers = nil, path = "/v1/messages") {
+    let res = http.post(path, json: body, headers: headers)
     _api_error(res) unless res.ok
     res.json()
   }
@@ -632,6 +658,15 @@ let _llm_module = fn () {
     req.extra == nil ? body : {...body, ...req.extra}
   }
 
+  # What counting the input asks of the API: the request without what only an
+  # answer needs.
+  fn _count_body_of(req) {
+    mut body = {model: req.model, messages: _wire_messages(req.messages)}
+    body.system = req.system if req.system != nil
+    body.tools = req.tools.map(|t| t.spec()) if !req.tools.empty()
+    body
+  }
+
   # Whether a block says nothing a plain part would lose.
   fn _plain(block, keys) {
     block.keys().all(|k| keys.contains(k))
@@ -677,7 +712,7 @@ let _llm_module = fn () {
   class LLMAnthropic {
     new(.http) {
       self.name = "anthropic"
-      self.capabilities = {tools: true, extra: true}
+      self.capabilities = {tools: true, extra: true, count_tokens: true}
       self.default_model = nil
     }
 
@@ -689,6 +724,11 @@ let _llm_module = fn () {
     # The body as it is, posted to /v1/messages, and the answer as it is.
     request(body, headers) {
       _send(self.http, body, headers)
+    }
+
+    # The input tokens of the request, as /v1/messages/count_tokens counts them.
+    count_tokens(req) {
+      _send(self.http, _count_body_of(req), nil, "/v1/messages/count_tokens").input_tokens
     }
   }
 
@@ -844,6 +884,7 @@ let _llm_module = fn () {
   }
 
   {ask: ask, chat: chat, tool: tool, request: request, repair: repair, turn: turn,
-   anthropic: anthropic, run_tools: run_tools, tool_from_schema: tool_from_schema}
+   anthropic: anthropic, run_tools: run_tools, tool_from_schema: tool_from_schema,
+   count_tokens: count_tokens}
 }
 let LLM = _llm_module()

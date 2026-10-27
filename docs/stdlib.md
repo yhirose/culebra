@@ -9587,9 +9587,11 @@ a request that is whole, and it answers with the provider's reply as it is.
 
 A provider is anything with a `turn(request, on_text)` method: a class, or an
 Object whose `turn` is a function. Its `name` is used in messages, its
-`capabilities` (an Object, `{tools: true, extra: true}`) says what it takes, and
-its `default_model`, if it has one, is the model when `model:` is left out. A
-provider that has none needs `model:`. `request` is `{model, system, messages,
+`capabilities` (an Object, `{tools: true, extra: true, count_tokens: true}`) says
+what it takes, and its `default_model`, if it has one, is the model when
+`model:` is left out. A provider that has none needs `model:`. It may also have a
+`request(body, headers)` method (see `LLM.request`) and a `count_tokens(request)`
+method (see `LLM.count_tokens`). `request` is `{model, system, messages,
 tools, max_tokens, stop, temperature, extra}`, and the reply is an Object:
 
 | field | meaning |
@@ -9628,6 +9630,23 @@ up (see `LLM.repair`).
 | A message, a part or an argument of the wrong type | `TypeError` |
 | An unknown role or part type, or a part in a role it does not belong to (a `tool_result` in an assistant message) | `ValueError` |
 | No `model:` and the provider has none, no messages, a `system` prompt given twice or late, a call and a result that do not pair, something the provider does not take, a reply that is not an Object | `LLMError` |
+
+### `LLM.count_tokens(provider, messages:, model=nil, system=nil, tools=[]) -> Long`
+
+How many tokens the input of a turn comes to, as the provider counts them: the
+messages, the system prompt and the tools. It is for deciding whether a history
+still fits before sending it, or what to cut. The request is checked as `LLM.turn`
+checks it, and a provider that cannot count (its `capabilities` lack
+`count_tokens`) is an `LLMError`, not a count of zero. Asking is a request to
+the provider each time, and its count is an estimate that can differ a little
+from what a call is billed. The `usage` of a reply is what a call did take.
+
+```culebra
+# doctest: skip
+let claude = LLM.anthropic()
+let history = [{role: "user", content: "Name three prime numbers."}]
+IO.println(LLM.count_tokens(claude, model: "claude-haiku-5-5", messages: history))
+```
 
 ### Messages
 
@@ -9668,7 +9687,7 @@ IO.println(reply.text)
 history.push(reply.message)
 ```
 
-`max_tokens` is 16000 when it is left out. `stop` goes out as `stop_sequences` and
+`LLM.count_tokens` asks `/v1/messages/count_tokens`. `max_tokens` is 16000 when it is left out. `stop` goes out as `stop_sequences` and
 `temperature` as it is, and `extra` is added to the request body last, so it
 reaches what `LLM.turn` has no argument for, such as `thinking`. With `on_text`
 the answer is streamed and the text is passed on in pieces; the reply is the
@@ -9684,6 +9703,7 @@ same as without it. A `tool` message goes out as a user message of
 |---|---|
 | No key for `LLM.anthropic` (checked when it is made, before any request) | `LLMError` |
 | No `model:`, and the provider has none | `LLMError` |
+| `LLM.count_tokens` on a provider that cannot count | `LLMError` |
 | The API answers with a status that is not 2xx | `LLMError`: `LLM: 429 rate_limit_error: ...` (the status, then the error's type and message) |
 | The model declines to answer (`stop` is `"refusal"`) | `LLMError` |
 | A tool call cut off at `max_tokens` (the tool is not run) | `LLMError` |

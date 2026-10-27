@@ -9200,9 +9200,10 @@ inspect(repaired[1].content.size())  # => 1
 
 提供元とは、`turn(request, on_text)`メソッドを持つものなら何でも構いません。クラスでも、
 `turn`が関数であるObjectでも使えます。`name`はメッセージに使われ、`capabilities`
-（Objectで、`{tools: true, extra: true}`のように）は受け付けるものを表し、
-`default_model`があれば`model:`を省いたときのモデルになります。`default_model`の
-ない提供元には`model:`が必要です。`request`は`{model, system, messages, tools,
+（Objectで、`{tools: true, extra: true, count_tokens: true}`のように）は受け付けるものを
+表し、`default_model`があれば`model:`を省いたときのモデルになります。`default_model`の
+ない提供元には`model:`が必要です。`request(body, headers)`メソッド（`LLM.request`を参照）と
+`count_tokens(request)`メソッド（`LLM.count_tokens`を参照）を持つこともできます。`request`は`{model, system, messages, tools,
 max_tokens, stop, temperature, extra}`で、応答はObjectです。
 
 | フィールド | 意味 |
@@ -9241,6 +9242,22 @@ inspect(reply.text)  # => 'hi'
 | 未知の役割や部品の種類、役割に合わない部品（アシスタントのメッセージの`tool_result`など） | `ValueError` |
 | `model:`がなく提供元にも既定がない、メッセージがない、`system`が2回指定されたか最初以外にある、呼び出しと結果が対応しない、提供元が受け付けないものを求めた、応答がObjectでない | `LLMError` |
 
+### `LLM.count_tokens(provider, messages:, model=nil, system=nil, tools=[]) -> Long`
+
+1ステップの入力が、提供元の数え方でいくつのトークンになるかを返します。対象はメッセージ、
+システムプロンプト、ツールです。履歴がまだ収まるか、どこを削るかを、送る前に決めるために
+使います。リクエストは`LLM.turn`と同じ検査を受け、数えられない提供元（`capabilities`に
+`count_tokens`がない）では、0を返さずに`LLMError`になります。数えるのは、そのたびに提供元への
+リクエストで、結果は見積もりなので、課金される値とは少しずれることがあります。呼び出しが
+実際に使った量は、応答の`usage`にあります。
+
+```culebra
+# doctest: skip
+let claude = LLM.anthropic()
+let history = [{role: "user", content: "Name three prime numbers."}]
+IO.println(LLM.count_tokens(claude, model: "claude-haiku-5-5", messages: history))
+```
+
 ### Messages
 
 メッセージは`{role, content}`です。役割は`system`、`user`、`assistant`、`tool`のどれかです。
@@ -9278,7 +9295,7 @@ IO.println(reply.text)
 history.push(reply.message)
 ```
 
-`max_tokens`を省くと16000です。`stop`は`stop_sequences`として、`temperature`はそのまま送られ、
+`LLM.count_tokens`は`/v1/messages/count_tokens`に尋ねます。`max_tokens`を省くと16000です。`stop`は`stop_sequences`として、`temperature`はそのまま送られ、
 `extra`は最後にリクエスト本文へ足されるので、`thinking`のように`LLM.turn`に引数のないものに
 届きます。`on_text`を渡すと回答はストリーミングで受け取られ、テキストは断片ごとに渡されます。
 応答は渡さないときと同じです。`tool`メッセージは`tool_result`ブロックを持つ1つのuser
@@ -9292,6 +9309,7 @@ history.push(reply.message)
 |---|---|
 | `LLM.anthropic`のキーが無い（作るときに、リクエストの前に確かめる） | `LLMError` |
 | `model:`が無く、提供元にも既定がない | `LLMError` |
+| 数えられない提供元に`LLM.count_tokens` | `LLMError` |
 | APIが2xx以外のステータスで答えた | `LLMError`: `LLM: 429 rate_limit_error: ...`（ステータス、エラーの種類と説明） |
 | モデルが回答を断った（`stop`が`"refusal"`） | `LLMError` |
 | ツール呼び出しが`max_tokens`で切れた（ツールは実行しない） | `LLMError` |
