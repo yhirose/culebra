@@ -345,6 +345,9 @@ instance that links it.
 
 ## 4. The shared front end
 
+The parser, the loader and the lowerings that come before this are
+[`frontend.md`](frontend.md); this section starts where the compiler does.
+
 `FnAnalysis` (`fn_analysis.h`) runs over each function's AST — the
 module top level included — before it is compiled, and produces a
 `FuncInfo`:

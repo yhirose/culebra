@@ -347,6 +347,9 @@ variantのコンストラクタ、束縛メソッドがそれで、
 
 ## 4. 共有フロントエンド
 
+これより前のパーサ、ローダ、loweringは[`frontend.md`](frontend.ja.md)にあります。
+この節はコンパイラが始まるところから書きます。
+
 `FnAnalysis`（`fn_analysis.h`）は各関数のAST — モジュールトップ
 レベルを含む — に対してコンパイルの前に走り、`FuncInfo`を生成する:
 

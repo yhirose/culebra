@@ -8,7 +8,7 @@ meaning what it says.
 this file says what the rules are for.
 
 The architecture these files implement is [`vm.md`](vm.md); the memory
-half is [`memory.md`](memory.md). The Japanese mirror of this file is
+half is [`memory.md`](memory.md); the front end is [`frontend.md`](frontend.md). The Japanese mirror of this file is
 [`layout.ja.md`](layout.ja.md).
 
 Contents

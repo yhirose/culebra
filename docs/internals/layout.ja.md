@@ -8,7 +8,8 @@
 何のためにあるかを書きます。
 
 これらのファイルが実装しているアーキテクチャは[`vm.md`](vm.ja.md)、
-メモリ側は[`memory.md`](memory.ja.md)です。英語版は
+メモリ側は[`memory.md`](memory.ja.md)、フロントエンドは
+[`frontend.md`](frontend.ja.md)です。英語版は
 [`layout.md`](layout.md)。
 
 目次
