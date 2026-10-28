@@ -696,14 +696,19 @@ let _llm_module = fn () {
     }
   }
 
+  # A call as `reply.tool_calls` lists it; one that could not be read says why.
+  fn _call_of(p) {
+    let call = {id: p.id, name: p.name, args: p.args}
+    p.has("error") ? {...call, error: p.error} : call
+  }
+
   # The reply a provider gives, whatever its format: `text`, `tool_calls` and
   # `reasoning` are read off the parts, so they cannot disagree with `message`.
   fn _reply_from(parts, stop, usage, raw) {
     {
       message: {role: "assistant", content: parts},
       text: parts.filter(|p| p.type == "text").map(|p| p.text).join(""),
-      tool_calls: parts.filter(|p| p.type == "tool_call")
-                       .map(|p| {id: p.id, name: p.name, args: p.args}),
+      tool_calls: parts.filter(|p| p.type == "tool_call").map(_call_of),
       reasoning: parts.filter(|p| p.type == "reasoning").map(|p| p.text).join(""),
       stop: stop,
       usage: usage,
@@ -864,7 +869,7 @@ let _llm_module = fn () {
 
   fn _cc_call(p) {
     {id: p.id, type: "function",
-     function: {name: p.name, arguments: JSON.stringify(p.get("args", {}))}}
+     function: {name: p.name, arguments: p.get("raw", nil) ?? JSON.stringify(p.get("args", {}))}}
   }
 
   # The messages the API takes. A system prompt is the first message, each
@@ -901,17 +906,25 @@ let _llm_module = fn () {
   let CC_STOPS = {stop: "end", tool_calls: "tool_calls", length: "length",
                   content_filter: "refusal"}
 
-  # A call's arguments are a JSON document in a String.
-  fn _cc_args(c) {
+  # The part for one call. Its arguments are a JSON document in a String; text
+  # that is not an Object does not fail the reply. The call keeps what the model
+  # wrote (`raw`) and why it cannot be read (`error`), and `run_tools` tells the
+  # model rather than run it.
+  fn _cc_call_part(n, c) {
     let text = c.function.get("arguments", nil) ?? ""
-    return {} if text.empty()
+    let part = {type: "tool_call", id: c.get("id", nil) ?? "call_{n + 1}", name: c.function.name}
+    return {...part, args: {}} if text.empty()
     let parsed = try {
-      JSON.parse(text)
+      {value: JSON.parse(text)}
     } catch _e: ValueError {
-      _fail("LLM: the arguments of the call to '{c.function.name}' are not JSON")
+      nil
     }
-    type_of(parsed) == "Object" ? parsed
-      : _fail("LLM: the arguments of the call to '{c.function.name}' are not an Object")
+    cond {
+      parsed == nil => {...part, args: {}, raw: text, error: "the arguments are not JSON"},
+      type_of(parsed.value) != "Object" =>
+        {...part, args: {}, raw: text, error: "the arguments are not a JSON Object"},
+      _ => {...part, args: parsed.value},
+    }
   }
 
   # The API's answer, whole or put together from a stream, as the reply a
@@ -932,8 +945,7 @@ let _llm_module = fn () {
     let thought = m.get("reasoning_content", nil) ?? m.get("reasoning", nil) ?? ""
     mut calls = []
     for n, c in m.get("tool_calls", []).enumerate() {
-      calls.push({type: "tool_call", id: c.get("id", nil) ?? "call_{n + 1}",
-                  name: c.function.name, args: _cc_args(c)})
+      calls.push(_cc_call_part(n, c))
     }
     mut parts = []
     parts.push({type: "reasoning", text: thought}) if !thought.empty()
@@ -1010,6 +1022,8 @@ let _llm_module = fn () {
     let chosen = tools.find(|t| t.name == call.name)
     let answer = if chosen == nil {
       {content: "no tool named '{call.name}'", is_error: true}
+    } else if call.get("error", nil) != nil {
+      {content: "the call was not run: {call.error}", is_error: true}
     } else {
       let verdict = approve == nil ? true : approve(call)
       cond {
@@ -1051,6 +1065,9 @@ let _llm_module = fn () {
       }
       if type_of(c.get("args", {})) != "Object" {
         __raise("TypeError", "type error: calls[{i}].args expects Object")
+      }
+      if c.get("error", nil) != nil && type_of(c.error) != "String" {
+        __raise("TypeError", "type error: calls[{i}].error expects String")
       }
     }
     _fail("LLM.run_tools: no calls") if calls.empty()

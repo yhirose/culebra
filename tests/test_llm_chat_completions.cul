@@ -25,6 +25,9 @@ fn answer_of(m, req) {
     m == "noid" => {content: nil, tool_calls: [call(nil, "weather", '{"city":"Tokyo"}'),
                                               call(nil, "weather", '{"city":"Osaka"}')]},
     m == "badargs" => {content: nil, tool_calls: [call("c1", "weather", '{oops')]},
+    m == "fixargs" => req.body.messages[req.body.messages.size() - 1].role == "tool"
+      ? {content: "got: {req.body.messages[req.body.messages.size() - 1].content}"}
+      : {content: nil, tool_calls: [call("c1", "watch", '{oops')]},
     m == "listargs" => {content: nil, tool_calls: [call("c1", "weather", "[1]")]},
     m == "emptyargs" => {content: nil, tool_calls: [call("c1", "weather", "")]},
     m == "record" => {content: JSON.stringify({body: req.body, auth: req.auth})},
@@ -157,6 +160,16 @@ fn request_cases() {
                    required: ["city"]}}}],
     stop: ["x"], temperature: 0.5, top_p: 0.5})
 
+  # A call that could not be read goes back as the model wrote it.
+  let unread = [
+    {role: "user", content: "hi"},
+    {role: "assistant", content: [{type: "tool_call", id: "c1", name: "weather", args: {},
+                                    raw: '{oops', error: "the arguments are not JSON"}]},
+    {role: "tool", content: [{type: "tool_result", id: "c1", content: "x", is_error: true}]},
+  ]
+  let echoed = JSON.parse(LLM.turn(P, model: "record", messages: unread, tools: [tool]).text)
+  assert_eq(echoed.body.messages[1].tool_calls[0].function.arguments, '{oops')
+
   # Nothing is sent that was not asked for; a stream asks for its usage.
   let bare = JSON.parse(ask("record").text).body
   assert_eq(bare, {model: "record", messages: [{role: "user", content: "hi"}]})
@@ -257,14 +270,21 @@ fn reply_cases() {
     assert_eq(r.stop, "tool_calls")
   }
 
-  assert_eq(ask("emptyargs").tool_calls[0].args, {})
+  assert_eq(ask("emptyargs").tool_calls, [{id: "c1", name: "weather", args: {}}])
+
+  # Arguments that are not a JSON Object do not fail the reply: the call keeps
+  # what the model wrote and why it cannot be read, to be told to the model.
   for streamed in [false, true] {
-    let bad = failure(fn () { streamed ? ask("badargs", on_text: |t| nil) : ask("badargs") })
-    assert_eq(bad, "LLMError: LLM: the arguments of the call to 'weather' are not JSON",
-              "badargs {streamed}")
+    let bad = streamed ? ask("badargs", on_text: |t| nil) : ask("badargs")
+    assert_eq(bad.tool_calls, [{id: "c1", name: "weather", args: {},
+                                error: "the arguments are not JSON"}], "badargs {streamed}")
+    assert_eq(bad.message.content, [{type: "tool_call", id: "c1", name: "weather", args: {},
+      raw: '{oops', error: "the arguments are not JSON"}], "badargs {streamed}")
+    assert_eq(bad.stop, "tool_calls", "badargs {streamed}")
   }
-  assert_eq(failure(fn () { ask("listargs") }),
-            "LLMError: LLM: the arguments of the call to 'weather' are not an Object")
+  let list = ask("listargs")
+  assert_eq(list.tool_calls[0].error, "the arguments are not a JSON Object")
+  assert_eq(list.message.content[0].raw, "[1]")
 
   assert_eq(ask("nousage").usage, nil)
   assert_eq(failure(fn () { ask("busy") }), "LLMError: LLM: 529 server_error: busy")
@@ -291,6 +311,23 @@ fn chat_cases() {
                    max_turns: 1)
   assert_eq(failure(fn () { c.ask("go") }), "LLMError: LLM: no answer within max_turns (1)")
   assert_eq(LLM.ask("hi", provider: P, model: "plain"), "model plain")
+
+  # A call the model wrote badly is not run or asked about; the model is told.
+  let ran = []
+  let asked = []
+  fn watch(city: String) {
+    ran.push(city)
+    "sunny"
+  }
+  let fixing = LLM.chat(provider: P, model: "fixargs", tools: [LLM.tool(watch, "watch")],
+                        approve: fn (call) {
+    asked.push(call.name)
+    true
+  })
+  assert_eq(fixing.ask("go"), "got: the call was not run: the arguments are not JSON")
+  assert_eq([ran, asked], [[], []])
+  assert_eq(fixing.messages.map(|m| m.role), ["user", "assistant", "tool", "assistant"])
+  assert_eq(fixing.messages[2].content[0].is_error, true)
   assert_eq(LLM.request({model: "plain", messages: [{role: "user", content: "hi"}]},
                         provider: P).choices[0].message.content, "model plain")
 }

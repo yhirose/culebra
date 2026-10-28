@@ -9510,7 +9510,10 @@ The `tool` message that answers `calls`, the tools a reply asked for
 call runs the tool of that name with the arguments as keywords, and its value is
 the result: a `String` as it is, anything else as JSON. What a tool throws is an
 error result (`is_error: true`) the model can act on, as is a tool that does not
-exist; a Ctrl+C (`Interrupted`) is not caught. It is what `LLM.chat` does, for a
+exist. A call that carries an `error` (a `String`: its arguments could not be
+read, see `LLM.openai_compatible`) is not run and `approve` is not asked about it;
+the model is told `the call was not run: ` and the reason, and can write it
+again. A Ctrl+C (`Interrupted`) is not caught. It is what `LLM.chat` does, for a
 loop of your own.
 
 ```culebra
@@ -9600,7 +9603,7 @@ tools, max_tokens, stop, temperature, extra}`, and the reply is an Object:
 |---|---|
 | `message` | the assistant message, `{role: "assistant", content: [...]}`, ready to add to the history |
 | `text` | what it said, as a `String` |
-| `tool_calls` | the tools it asks for, `[{id:, name:, args:}]` |
+| `tool_calls` | the tools it asks for, `[{id:, name:, args:}]`; one whose arguments could not be read also has `error:` |
 | `reasoning` | its thinking, as a `String` |
 | `stop` | `"end"`, `"tool_calls"`, `"length"`, `"refusal"` or `"pause"`; `nil` when the provider does not say |
 | `usage` | `{input_tokens:, output_tokens:}`; `nil` when the provider does not say |
@@ -9659,7 +9662,7 @@ a part is an Object with a `type`:
 | `type` | in a message of role | fields |
 |---|---|---|
 | `text` | `system`, `user`, `assistant` | `text` |
-| `tool_call` | `assistant` | `id`, `name`, `args` |
+| `tool_call` | `assistant` | `id`, `name`, `args`; and `error` and `raw` for a call whose arguments could not be read |
 | `tool_result` | `tool` | `id`, `content`, `is_error` |
 | `reasoning` | `assistant` | `text` |
 | `other` | `assistant` | none of its own |
@@ -9720,7 +9723,10 @@ IO.println(reply.text)
 The system prompt goes out as the first message and each tool result as a `tool`
 message of its own (this format has no error flag, so `is_error` is not sent). A
 call's arguments go out as a JSON string and are read back from one: arguments
-that are not a JSON Object are an `LLMError`, and an empty string is `{}`. A call
+that are not a JSON Object do not fail the reply: the call has `args: {}`, `error:`
+(`"the arguments are not JSON"` or `"the arguments are not a JSON Object"`) and
+`raw:` (what the model wrote, which goes back to the server as it is); `LLM.run_tools`
+and `LLM.chat` do not run it and tell the model. An empty string is `{}`. A call
 that comes with no id is given `call_1`, `call_2`, ... in the model's order.
 Thinking is read from `reasoning_content` or `reasoning`, whichever the server
 sends, into a `reasoning` part; it is not sent back and not passed to `on_text`.
@@ -9762,7 +9768,7 @@ IO.println(LLM.ask("Name three prime numbers.", provider: local, model: "llama3.
 | No `model:`, and the provider has none | `LLMError` |
 | `LLM.count_tokens` on a provider that cannot count | `LLMError` |
 | The API answers with a status that is not 2xx | `LLMError`: `LLM: 429 rate_limit_error: ...` (the status, then the error's type and message) |
-| Chat Completions: an error inside a 200, no choices, or a call whose arguments are not a JSON Object | `LLMError` |
+| Chat Completions: an error inside a 200, or no choices | `LLMError` |
 | The model declines to answer (`stop` is `"refusal"`) | `LLMError` |
 | A tool call cut off at `max_tokens` (the tool is not run) | `LLMError` |
 | No answer within `max_turns` | `LLMError` |

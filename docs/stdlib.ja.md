@@ -9125,7 +9125,9 @@ inspect(LLM.run_tools([search], [call]).content[0].content)  # => 'found: tea'
 答える`tool`メッセージを、履歴にそのまま足せる形で返します。各呼び出しは、その名前のツールを
 引数をキーワードにして実行し、戻り値が結果になります（`String`はそのまま、ほかはJSON）。
 ツールが投げた例外は、モデルが対処できるエラーの結果（`is_error: true`）になります。存在しない
-ツールも同じです。Ctrl+C（`Interrupted`）は捕まえません。`LLM.chat`がしていることを、自前の
+ツールも同じです。`error`（`String`。引数が読めなかった理由。`LLM.openai_compatible`を参照）を持つ
+呼び出しは実行せず、`approve`にも聞きません。モデルには`the call was not run: `と理由が返り、
+書き直せます。Ctrl+C（`Interrupted`）は捕まえません。`LLM.chat`がしていることを、自前の
 ループのために取り出したものです。
 
 ```culebra
@@ -9210,7 +9212,7 @@ max_tokens, stop, temperature, extra}`で、応答はObjectです。
 |---|---|
 | `message` | アシスタントのメッセージ`{role: "assistant", content: [...]}`。そのまま履歴に足せる |
 | `text` | 話した内容（`String`） |
-| `tool_calls` | 求められたツール`[{id:, name:, args:}]` |
+| `tool_calls` | 求められたツール`[{id:, name:, args:}]`。引数が読めなかったものは`error:`も持つ |
 | `reasoning` | 思考（`String`） |
 | `stop` | `"end"`、`"tool_calls"`、`"length"`、`"refusal"`、`"pause"`のどれか。提供元が言わないときは`nil` |
 | `usage` | `{input_tokens:, output_tokens:}`。提供元が言わないときは`nil` |
@@ -9266,7 +9268,7 @@ IO.println(LLM.count_tokens(claude, model: "claude-haiku-5-5", messages: history
 | `type` | 入れられるメッセージの役割 | フィールド |
 |---|---|---|
 | `text` | `system`、`user`、`assistant` | `text` |
-| `tool_call` | `assistant` | `id`、`name`、`args` |
+| `tool_call` | `assistant` | `id`、`name`、`args`。引数が読めなかった呼び出しは`error`と`raw`も |
 | `tool_result` | `tool` | `id`、`content`、`is_error` |
 | `reasoning` | `assistant` | `text` |
 | `other` | `assistant` | 固有のものはなし |
@@ -9321,7 +9323,10 @@ IO.println(reply.text)
 
 システムプロンプトは先頭のメッセージとして、ツールの結果は1件ごとの`tool`メッセージとして送られます
 （この形式にはエラーのフラグがないので、`is_error`は送られません）。呼び出しの引数はJSON文字列として
-送り、JSON文字列から読み戻します。JSONのObjectでない引数は`LLMError`で、空文字列は`{}`です。
+送り、JSON文字列から読み戻します。JSONのObjectでない引数は応答を失敗させず、その呼び出しは`args: {}`、`error:`
+（`"the arguments are not JSON"`か`"the arguments are not a JSON Object"`）、`raw:`（モデルが書いた
+文字列で、サーバーにはそのまま送り返されます）を持ちます。`LLM.run_tools`と`LLM.chat`は実行せず、
+モデルに伝えます。空文字列は`{}`です。
 idなしで来た呼び出しには、モデルの順に`call_1`、`call_2`、…が付きます。思考は、サーバーが送るのが
 `reasoning_content`でも`reasoning`でも、`reasoning`の部品に読みます。送り返さず、`on_text`にも渡しません。
 `on_text`を渡すと、リクエストはストリームのusageも求め（`stream_options`）、応答は渡さないときと同じです。
@@ -9359,7 +9364,7 @@ IO.println(LLM.ask("Name three prime numbers.", provider: local, model: "llama3.
 | `model:`が無く、提供元にも既定がない | `LLMError` |
 | 数えられない提供元に`LLM.count_tokens` | `LLMError` |
 | APIが2xx以外のステータスで答えた | `LLMError`: `LLM: 429 rate_limit_error: ...`（ステータス、エラーの種類と説明） |
-| Chat Completions: 200の中のエラー、choicesが空、引数がJSONのObjectでない呼び出し | `LLMError` |
+| Chat Completions: 200の中のエラー、choicesが空 | `LLMError` |
 | モデルが回答を断った（`stop`が`"refusal"`） | `LLMError` |
 | ツール呼び出しが`max_tokens`で切れた（ツールは実行しない） | `LLMError` |
 | `max_turns`以内に回答が無い | `LLMError` |

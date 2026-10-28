@@ -127,6 +127,22 @@ assert_eq(failure(|| LLM.run_tools([w, d], [call("a", "weather", {city: "Tokyo"}
           "ValueError: stop here")
 assert_eq(ran, ["weather Tokyo"])
 
+# A call whose arguments could not be read is not run, and approve is not asked
+# about it: the model is told why, and can write it again. An unknown tool is
+# still named first.
+ran = []
+let unread = []
+let broken_call = {id: "a", name: "weather", args: {}, error: "the arguments are not JSON"}
+assert_eq(LLM.run_tools([w], [broken_call], approve: fn (c) {
+  unread.push(c)
+  true
+}).content[0], result("a", "the call was not run: the arguments are not JSON", true))
+assert_eq([ran, unread], [[], []])
+assert_eq(LLM.run_tools([w], [{...broken_call, name: "nope"}]).content[0],
+          result("a", "no tool named 'nope'", true))
+assert_eq(failure(|| LLM.run_tools([w], [{...broken_call, error: 1}])),
+          "TypeError: type error: calls[0].error expects String")
+
 # --- the arguments -------------------------------------------------------------------------------
 
 assert_eq(failure(|| LLM.run_tools(3, [call("a", "weather", {})])),
