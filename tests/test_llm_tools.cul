@@ -132,7 +132,7 @@ assert_eq(ran, ["weather Tokyo"])
 # still named first.
 ran = []
 let unread = []
-let broken_call = {id: "a", name: "weather", args: {}, error: "the arguments are not JSON"}
+let broken_call = {...call("a", "weather", {}), error: "the arguments are not JSON"}
 assert_eq(LLM.run_tools([w], [broken_call], approve: fn (c) {
   unread.push(c)
   true

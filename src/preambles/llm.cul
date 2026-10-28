@@ -912,17 +912,18 @@ let _llm_module = fn () {
   # model rather than run it.
   fn _cc_call_part(n, c) {
     let text = c.function.get("arguments", nil) ?? ""
-    let part = {type: "tool_call", id: c.get("id", nil) ?? "call_{n + 1}", name: c.function.name}
-    return {...part, args: {}} if text.empty()
+    let part = {type: "tool_call", id: c.get("id", nil) ?? "call_{n + 1}", name: c.function.name,
+                args: {}}
+    return part if text.empty()
     let parsed = try {
       {value: JSON.parse(text)}
     } catch _e: ValueError {
       nil
     }
+    let unread = |why| {...part, raw: text, error: why}
     cond {
-      parsed == nil => {...part, args: {}, raw: text, error: "the arguments are not JSON"},
-      type_of(parsed.value) != "Object" =>
-        {...part, args: {}, raw: text, error: "the arguments are not a JSON Object"},
+      parsed == nil => unread("the arguments are not JSON"),
+      type_of(parsed.value) != "Object" => unread("the arguments are not a JSON Object"),
       _ => {...part, args: parsed.value},
     }
   }
