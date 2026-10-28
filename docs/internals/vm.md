@@ -603,11 +603,11 @@ of almost every scope.
 
 | family | ops | notes |
 |---|---|---|
-| values | `LoadConst` `Move` `MoveRetain` `Take` `Release` `ReleaseMany` | §5.2; `ReleaseMany` is the fused release ladder the shape pass emits (§5.2.1) |
+| values | `LoadConst` `Move` `MoveRetain` `Take` `Release` `ReleaseMany` `ValueBox` | §5.2; `ReleaseMany` is the fused release ladder the shape pass emits (§5.2.1); `ValueBox` reboxes an unboxed `@value` run (§5.3.4) |
 | arithmetic, bitwise, comparison | `Neg` `Not` `Add` … `Pow` `MatMul` `BitAnd` … `Shr` `BitNot` `Eq` … `Ge` `JumpIfSame` | each is one runtime dispatch, with the arithmetic and comparison ops deciding both-Long and both-numeric inline first (`Neg` its Long and Float arms); `d=1` on an arithmetic op marks a compound assignment's in-place Tensor step |
 | containers | `ArrayNew/Append/Push/Extend/Resize` `TupleNew/Push` `ObjectNew/NewShaped/Set/SetAny/Merge` `SlotInit` `RangeNew` `ChkLong` `ChkNum` | the container absorbs the element's `+1`; `SlotInit` is `ObjectSet` by slot index for a literal whose Shape was pre-built (§5.3.5) |
 | access | `Index` `IndexWr` `IndexCo` `IndexSet` `PropSet` `PropWr` `PropCo` `PropVal` `PropRaw` `HasProp` `UfcsTakes` `NsWrChk` `NilChk` | read / write / coalescing-write forms of subscript and property access; `PropVal` is a plain property read that may invoke a getter |
-| calls | `Call` `CallM` `CallKw` `CallRecv` `Ret` `RecEnter` `RecLeave` `ArgsRest` `KwRest` `JumpIfFilled` `ChkArg` `ChkTypeAt` `PosSnap` `BoundPos` | the JitFn ABI; `CallM` resolves a method (user or built-in) on its receiver; `RecEnter` counts the frame against the recursion limit after the parameters are bound |
+| calls | `Call` `CallM` `CallKw` `CallRecv` `Ret` `RecEnter` `RecLeave` `ArgsRest` `KwRest` `JumpIfFilled` `ChkArg` `ChkTypeAt` `PosSnap` `BoundPos` `ArgTag` | the JitFn ABI; `ArgTag` records the tag a parameter's entry check just settled (§5.4); `CallM` resolves a method (user or built-in) on its receiver; `RecEnter` counts the frame against the recursion limit after the parameters are bound |
 | built-in methods | `MethGate` `ChkParam` `BMeth` `BArity` `CbType` `ArityChk` `BareMethChk` | §5.4 |
 | closures and names | `MakeClosure` `CellNew` `CellGet` `CellSet` `CellRelease` `BindCapture` `ImmutErr` `UnboundErr` `NsGet` `LazyNsReg` `FnHandle` `ModReg` `ModGet` | §4.1, §4.2; `ModReg`/`ModGet` publish and read a module's export object |
 | functions and classes | `MultifnReg` `MfSelf` `ClsSelf` `ClassMeta` `ClassObj` `MakeInst` `FieldsInit` `FieldInit` `BindStatic` `SelfMerge` `DeriveFn` `RegPack` `EnumVariant` `TraitReg` `TraitDefault` `TraitReset` `ClsParamsChk` `ClsParamsWalk` `WkErr` | `MultifnReg` registers a body into the runtime's arity-dispatch registry; class declarations build a meta and register members |
@@ -1461,10 +1461,12 @@ The compiler throws `Unsupported` for a construct it cannot compile;
 `compile_unit` turns that into a `VmError`. Inside a function literal the
 rejection is caught by `compile_fn_chunk` and becomes a chunk whose whole
 body raises it, so the module still compiles and only a call that
-reaches the construct fails. The remaining rejections are a handful of
-structural shapes — a binding alternative inside an or-pattern, a
-`perform` in a control-flow condition — that the language rejects on
-every lane.
+reaches the construct fails. The compiler's own rejections are a handful of
+structural shapes — a frame past the slot limit, scopes nested too
+deeply, `break` or `continue` outside a loop, a forward-reference
+capture. Two more shapes never reach it: the parser rejects a binding
+alternative inside an or-pattern and the effects transform rejects a
+`perform` in a control-flow condition, so every lane rejects them alike.
 
 ### 5.7 A generator keeps its frame
 
@@ -1619,7 +1621,7 @@ walks the tables of §5.5 and either resumes at a handler or re-raises
 with the frame uncounted. The inline frames above it unwind in the same
 handler, top first (`unwind_frames`), each popped as it goes. A `defer`
 that throws while its scope unwinds replaces the exception in flight for
-for the frames below: `unwind_frames` recurses from inside its own
+the frames below: `unwind_frames` recurses from inside its own
 handler, so the replacement is what the next `run_frame` catch sees. Uncaught errors are formatted at the engine
 boundary (`run_prepared`): a user `throw` becomes the same `uncaught: …`
 line every lane prints, and a positionless `CulebraError` is backfilled
@@ -1682,8 +1684,9 @@ re-anchors.
 ### 6.3 Safepoints
 
 Loops emit `Safepoint`, which polls the process-wide wake flag (Ctrl-C
-and per-isolate cancel) and throws `Interrupted`. On wasm the same poll
-is where the collector runs (§9): a threshold trip only sets a pending
+and per-isolate cancel) and throws `Interrupted`. On wasm the collector
+runs from a separate poll in the dispatch macro, before every instruction
+(§9): a threshold trip only sets a pending
 flag, and the executor collects at the next instruction boundary, where
 every live value of every frame sits in a register window the scan can
 see — on the machine stack, or on the `VmStack` the roots hook covers.
@@ -1707,7 +1710,7 @@ hangs off, which is the iterator the program holds. The frame records
 the program, the chunk and the pc to come back to.
 
 `Exec::gen_resume` puts it back: a window on the machine stack, the
-registers and marks copied in and cleared in the frame, the close flag
+registers copied in and cleared in the frame, the marks copied in, the close flag
 written to the suspension instruction's `b` register, and dispatch
 entered at the saved pc. At a `Yield`, dispatch returns with the
 yielded value and the registers go back to the frame. Three things
@@ -1904,8 +1907,8 @@ instead (§10.2).
 The lowering's C++ holds every transient `+1` in `JIT::Owned`, a
 move-only RAII handle that must be consumed exactly once; a value read
 out of it is `Pinned` to the basic block it was consumed in; a call that
-may throw is emitted as `invoke`, spilling the live handles into a
-per-function cleanup slot for the call's duration. `memory.md` §4 is the
+may throw is emitted as `invoke`, spilling the live handles into the
+function's unwind-temp pool for the call's duration. `memory.md` §4 is the
 full account. Cleanup pads are built by `JIT::CleanupPad`, whose
 destructor emits the edge that continues the unwind, so a region cannot
 be opened without being continued; only a handler prologue opens the
@@ -1915,19 +1918,23 @@ verifies that over the emitted IR.
 ### 7.2 Unwind shape
 
 The lowering mirrors the executor's tables (§5.5) block for block: one
-cleanup step per scope, entered at the rung for the bindings alive at
-the throwing site, descending a shared chain (`fn.release.3 →
-fn.release.2 → … → fn.unwind`) so each slot's release exists once. The
-statement temporaries abandoned by a throw get one pad per distinct set,
-sharing rungs by prefix, with a single re-raise at the foot. A `try`
-scope's step classifies the exception after its releases
-(`emit_classify_tail`), the order the executor uses.
+cleanup pad per scope (`vm.scope.k`, the function frame included), each
+continuing into its enclosing scope's pad. A throw lands on the innermost
+scope's pad, which releases every slot of the scope's range in reverse
+declaration order. Slots start out nil, so releasing a binding that was
+never initialised does nothing, and the pad needs no entry per binding.
+The statement temporaries abandoned by a throw are the one place with a
+shared descent chain: one pad per distinct set, sharing rungs
+(`vm.temps.rel{N}`) by prefix, with a single re-raise at the foot
+(`vm.temps.done`) into the scope's pad. A `try` scope's pad classifies
+the exception after its releases (`emit_classify_tail`), the order the
+executor uses.
 
 A step's defer run is the one `invoke` inside a pad. Its unwind edge is a
 relay (`emit_landingpad`'s `replaces` mode) that ends the exception the
 region was carrying — opened and closed on the spot, which is what frees
 it — stores the replacement in the region's slot and rejoins the step,
-so the rest of the ladder runs with it. A `try` scope reads a phi of
+so the rest of the pad runs with it. A `try` scope reads a phi of
 which edge it arrived by, and hands a replacement its own defers threw
 on unclassified.
 
@@ -1935,8 +1942,6 @@ A value live into a landing pad must be spilled — the unwinder restores
 callee-saved registers and nothing else — so a function with many
 throwing calls pays register pressure at `-O2`: the bytecode register file
 is promoted to SSA, which is also why the lowered code runs fast on loops.
-A single pad per scope would minimize IR but produces 700-wide phis that
-take `llc` 30 s, so the lowering does not use one.
 
 ### 7.3 Generator bodies
 
@@ -2143,7 +2148,7 @@ folds the exit code in — stdout alone lets a segfault read as agreement.
 |---|---|---|
 | vm/jit symmetry | `tests/*.cul` on `--vm` and `--jit`, stdout + exit code: the op cover in `tools/checks/jit_shape_set.txt` plus the files the branch touched, or every file | `just test-dev` (the op cover), `just test` (every file) |
 | isolate suite | `tests/isolate/*.cul` on both lanes | `just test-dev`, `just test` |
-| `vm_cases` | `tools/bench/vm_cases/`: both lanes against frozen `expected/` outputs and exit codes, then again under `CULEBRA_GC_STRESS=1` | `just test` (`compare.sh`; `--freeze` re-records an intended change) |
+| `vm_cases` | `tools/bench/vm_cases/`: both lanes against frozen `expected/` outputs and exit codes, then again under `CULEBRA_GC_STRESS=1` and under `CULEBRA_GC_REFS=1 CULEBRA_GC_STRESS=1` | `just test` (`compare.sh`; `--freeze` re-records an intended change) |
 | doctest | every documentation block on both lanes | `just doctest` |
 | difftest | the generated template-combinator corpus (`tools/difftest/gen.cul`, ~21k cases), `--vm` against `--jit` byte for byte | `just test` (`tools/difftest/run.sh`) |
 | AOT | `culebra build` output == `--vm` output per test | `just test` (every tenth file), CI's aot shard (every file) |
@@ -2155,8 +2160,8 @@ check, used by the Windows CI jobs.
 ### 10.2 Checks on what the lowering emits
 
 - `culebra --jit --emit-llvm f.cul | opt -passes=verify` — the standing
-  check for lowering work; `run_program` also verifies every module it
-  builds and throws on failure.
+  check for lowering work; `run_program` also verifies every function it
+  lowers and throws on failure.
 - **IR diffing.** A refactor that must not change codegen is verified by
   `--jit -O0 --emit-llvm` over all of `tests/*.cul` before and after,
   byte-identical, stderr included.

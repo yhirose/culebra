@@ -205,7 +205,7 @@ through the ownership layer described below. A bare, hand-emitted
 retain or release call in a *new* code path is treated as a defect to
 justify in review, not a valid implementation choice;
 `tools/checks/check_rc_discipline.sh` ratchets the count of such sites in
-`jit.h` so it can only shrink.
+`jit/jit.h`, `stdlib/bindings.h` and `conc/sendable.h` so it can only shrink.
 
 ### 4.2 Ownership and rooting are different jobs
 
@@ -255,8 +255,9 @@ three operations: `borrow()` (read without consuming), `consume()`
 (hand the reference onward exactly once — into a slot, a call, or a
 return — marking the handle spent), or `drop()` (release immediately
 for a value that dies rather than being handed on). **Consuming an
-already-spent handle is a compile-time abort** — a double-free is
-turned into a build failure. If the handle is still holding a reference
+already-spent handle aborts** — an `assert`, so in builds without
+`NDEBUG`, and it fires while the lowering compiles the program, not when
+the C++ is built. A double-free becomes a failure at the faulty site. If the handle is still holding a reference
 when it goes out of scope, its destructor releases it. This handle only
 covers a *straight-line* region of code; a value that must survive a
 loop iteration, or that is consumed on one branch and released on
@@ -272,17 +273,15 @@ same mechanism covers every scope-like region uniformly — lexical
 blocks, loop bodies, `match`/`try` bodies, the `for` loop's iterable
 scope, and the function frame itself.
 
-**The function frame's unwind path is a ladder, not one pad.** The
-frame is the region every throwing call falls back to, so a single
-landing pad for it would collect one unwind edge per call and read
-every slot in the frame — which asks the compiler for a merge value
-per slot per edge, quadratic in the size of the function. Instead the
-frame's teardown is split into a rung per owned binding: a call
-unwinds to the rung for the bindings alive where it stands, and that
-rung releases its own slot before falling into the one below. A rung
-is only reachable from after its binding's initializing store, so no
-merge values are needed at all, and the release order down the ladder
-is the same reverse-declaration order the normal exit uses. The top
+**The function frame's unwind path is one pad per scope, with no entry
+per binding.** A throw lands on the pad of the innermost scope, each
+pad continues into its enclosing scope's, and the frame's pad is the
+last. A pad releases its scope's whole slot range in reverse
+declaration order, the order the normal exit uses. Slots start out nil,
+so a binding that has no value yet where the call throws releases as a
+no-op, and a call does not need an entry point chosen by which bindings
+are alive. The statement temporaries a throw abandons are the one place
+that shares a descent chain, by prefix, into the scope's pad. The top
 level is an ordinary frame here — a program's own bindings are
 released when an uncaught error leaves it, just like a function's.
 
@@ -327,8 +326,9 @@ every shape. The unwind edge is therefore structural instead of
 enumerated: every live handle registers itself with the `JIT` as it is
 created; `emit_call` turns every may-throw call into an `invoke`, and
 around it (`open_unwind_window` / `close_unwind_window`) every
-still-live, not-otherwise-covered handle is spilled into a per-function
-cleanup slot that every cleanup path releases first. A value already
+still-live, not-otherwise-covered handle is spilled into a slot of the
+function's unwind-temp pool (one slot per handle) that every cleanup
+path drains first. A value already
 covered by one of the contracts below is marked as such and skipped,
 which is what prevents the window from double-freeing it.
 
@@ -405,7 +405,7 @@ If every rule in §4.3 holds:
 
 The corollary: a codegen path that leaks or double-frees requires
 breaking one of these nine invariants, each of which is enforced by a
-C++ type or a compile-time check — not a runtime accident to be
+C++ type, an assertion or a gate check — not a runtime accident to be
 caught by testing. Remaining hand-placed retain/release calls outside
 this discipline are audited migration debt, counted and never allowed
 to grow, and fall into a small number of legitimate categories the

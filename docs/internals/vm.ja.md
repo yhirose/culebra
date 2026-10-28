@@ -596,11 +596,11 @@ testsと言語front endを合わせたコーパス全体では、4つのpassが
 
 | ファミリー | op | 備考 |
 |---|---|---|
-| 値 | `LoadConst` `Move` `MoveRetain` `Take` `Release` `ReleaseMany` | §5.2。`ReleaseMany`はshape passが発行する、融合された解放の梯子（§5.2.1） |
+| 値 | `LoadConst` `Move` `MoveRetain` `Take` `Release` `ReleaseMany` `ValueBox` | §5.2。`ReleaseMany`はshape passが発行する、融合された解放の梯子（§5.2.1）。`ValueBox`はunboxされた`@value`の連なりをrebox（§5.3.4） |
 | 算術・ビット演算・比較 | `Neg` `Not` `Add` … `Pow` `MatMul` `BitAnd` … `Shr` `BitNot` `Eq` … `Ge` `JumpIfSame` | それぞれ1回のランタイムdispatch。算術と比較のopは両Long・両数値の腕をまずinlineで決める（`Neg`はLongとFloatの腕）。算術opの`d=1`は複合代入のin-place Tensorステップを示す |
 | コンテナ | `ArrayNew/Append/Push/Extend/Resize` `TupleNew/Push` `ObjectNew/NewShaped/Set/SetAny/Merge` `SlotInit` `RangeNew` `ChkLong` `ChkNum` | コンテナは要素の`+1`を吸収する。`SlotInit`はShapeを事前構築したリテラル向けの、スロット番号による`ObjectSet`（§5.3.5） |
 | アクセス | `Index` `IndexWr` `IndexCo` `IndexSet` `PropSet` `PropWr` `PropCo` `PropVal` `PropRaw` `HasProp` `UfcsTakes` `NsWrChk` `NilChk` | 添字とプロパティアクセスの読み/書き/coalescing-write形。`PropVal`はgetterを呼ぶこともある素のプロパティ読み取り |
-| 呼び出し | `Call` `CallM` `CallKw` `CallRecv` `Ret` `RecEnter` `RecLeave` `ArgsRest` `KwRest` `JumpIfFilled` `ChkArg` `ChkTypeAt` `PosSnap` `BoundPos` | JitFn ABI。`CallM`はreceiver上のメソッド（ユーザー定義または組み込み）を解決する。`RecEnter`はパラメータが束縛された後、フレームを再帰上限に対してカウントする |
+| 呼び出し | `Call` `CallM` `CallKw` `CallRecv` `Ret` `RecEnter` `RecLeave` `ArgsRest` `KwRest` `JumpIfFilled` `ChkArg` `ChkTypeAt` `PosSnap` `BoundPos` `ArgTag` | JitFn ABI。`ArgTag`はパラメータのentry checkが確定させたtagを記録する（§5.4）。`CallM`はreceiver上のメソッド（ユーザー定義または組み込み）を解決する。`RecEnter`はパラメータが束縛された後、フレームを再帰上限に対してカウントする |
 | 組み込みメソッド | `MethGate` `ChkParam` `BMeth` `BArity` `CbType` `ArityChk` `BareMethChk` | §5.4 |
 | クロージャと名前 | `MakeClosure` `CellNew` `CellGet` `CellSet` `CellRelease` `BindCapture` `ImmutErr` `UnboundErr` `NsGet` `LazyNsReg` `FnHandle` `ModReg` `ModGet` | §4.1、§4.2。`ModReg`/`ModGet`はモジュールのexportオブジェクトを公開/読み取る |
 | 関数とクラス | `MultifnReg` `MfSelf` `ClsSelf` `ClassMeta` `ClassObj` `MakeInst` `FieldsInit` `FieldInit` `BindStatic` `SelfMerge` `DeriveFn` `RegPack` `EnumVariant` `TraitReg` `TraitDefault` `TraitReset` `ClsParamsChk` `ClsParamsWalk` `WkErr` | `MultifnReg`はランタイムのarity-dispatchレジストリに本体を登録する。クラス宣言はmetaを構築しメンバを登録する |
@@ -1426,10 +1426,12 @@ payloadの参照も終わらせ）ており、handlerが読むのはキャリア
 `compile_unit`はそれを`VmError`に変換する。関数リテラルの内側では
 拒否は`compile_fn_chunk`が捕捉し、本体全体がそれをraiseするchunkに
 なる。したがってモジュール自体はコンパイルを続け、その構文に実際に
-到達する呼び出しだけが失敗する。残る拒否は一握りの構造的な形 —
-or-patternの中のbinding alternative、制御フローの条件式の中の
-`perform`など — であり、これらはどのレーンでも言語仕様として拒否
-される。
+到達する呼び出しだけが失敗する。コンパイラ自身の拒否は一握りの構造的な形 —
+slot上限を超えるフレーム、深すぎるスコープのネスト、ループの外の
+`break`／`continue`、前方参照のキャプチャ — である。さらに2つの形は
+そこに届かない: or-patternの中のbinding alternativeはパーサが、制御
+フローの条件式の中の`perform`はeffects変換が拒否するので、どのレーンも
+同じように拒否する。
 
 ### 5.7 generatorはフレームを保持する
 
@@ -1637,7 +1639,7 @@ trampolineと組み込みメソッドの腕は呼び出しから、`Disp`・gett
 
 ループは`Safepoint`をemitする。これはプロセス全体のwakeフラグ
 （Ctrl-Cとisolateごとのcancel）をpollし、`Interrupted`をthrowする。
-wasmでは同じpollがコレクタが動く場所でもある（§9）: 閾値超過は
+wasmではコレクタは、dispatchマクロの中の別のpollで全命令の前に動く（§9）: 閾値超過は
 pending flagを立てるだけであり、executorは次の命令境界でcollectを
 行う — そこではすべてのフレームの生きた値がスキャンの見えるレジスタ
 ウィンドウの中にある（機械スタック上か、rootのフックが覆う`VmStack`
@@ -1664,7 +1666,7 @@ owned markを`JitGenFrame`（`rt/gen.inc.h`）にコピーし、ウィンドウ�
 pcを記録する。
 
 `Exec::gen_resume`がそれを戻す: 機械スタック上のウィンドウに
-レジスタとmarkをコピーして（フレーム側はクリアする）、中断命令の`b`
+レジスタをコピーして（フレーム側はクリアする）、markもコピーして、中断命令の`b`
 レジスタにcloseフラグを書き、保存したpcからdispatchに入る。`Yield`では
 dispatchがyieldされた値を持って戻り、レジスタはフレームへ帰る。
 レジスタに入っていないものが3つ、一緒に動く:
@@ -1861,7 +1863,7 @@ loweringのC++は、すべての一時的な`+1`を`JIT::Owned`に保持する�
 これは正確に1回消費されなければならないmove-onlyのRAIIハンドル
 である。そこから読み出された値は消費されたベーシックブロックに
 `Pinned`される。throwしうる呼び出しは`invoke`としてemitされ、
-呼び出しの期間だけ生きているハンドルを関数ごとのcleanup slotへ
+呼び出しの期間だけ生きているハンドルを関数のunwind-tempプールへ
 spillする。`memory.md` §4が全体像である。cleanup padは
 `JIT::CleanupPad`で構築され、そのデストラクタがunwindを継続する
 edgeをemitするので、領域は継続されずに開かれることがない。
@@ -1871,29 +1873,29 @@ handlerだけが例外を開き（`emit_handler_prologue`）、
 ### 7.2 unwindの形
 
 loweringはexecutorのテーブル（§5.5）をブロック単位で写す:
-スコープごとに1つのcleanupステップが、throwサイトで生きている
-束縛のためのrungに入り、共有チェーン（`fn.release.3 →
-fn.release.2 → … → fn.unwind`）を下る。これにより各slotの解放は
-1回だけ存在する。throwが放棄する文の一時値は、異なる集合ごとに
-1つのpadを得て、prefixによってrungを共有し、足元で1回だけ
-re-raiseする。`try`スコープのステップは、自分の解放の後に例外を
-分類する（`emit_classify_tail`）。これはexecutorが使う順序と同じ
+スコープごとに1つのcleanup pad（`vm.scope.k`。関数のフレームも含む）
+があり、それぞれが外側のスコープのpadへ続く。throwは最も内側の
+スコープのpadに着地し、そのpadがスコープのslot範囲を宣言の逆順にすべて
+解放する。slotはnilで始まるので、初期化されなかった束縛の解放は何もせず、
+束縛ごとの入口は要らない。throwが放棄する文の一時値だけが共有の下降
+チェーンを持つ: 異なる集合ごとに1つのpadを得て、prefixによってrung
+（`vm.temps.rel{N}`）を共有し、足元（`vm.temps.done`）で1回だけ
+スコープのpadへre-raiseする。`try`スコープのpadは、自分の解放の後に
+例外を分類する（`emit_classify_tail`）。これはexecutorが使う順序と同じ
 である。
 
 ステップのdefer実行は、padの中でただ1つの`invoke`である。そのunwind
 edgeはrelay（`emit_landingpad`の`replaces`モード）で、領域が運んでいた
 例外をそこで終わらせ — その場で開いて閉じる。それが例外オブジェクトを
 解放する — 置き換え後の例外を領域のslotに入れてステップに戻るので、
-ladderの残りはその例外で走る。`try`スコープはどちらのedgeから来たかを
+padの残りはその例外で走る。`try`スコープはどちらのedgeから来たかを
 phiで読み、自分のdeferが投げた置き換えは分類せずに先へ渡す。
 
 landing padに生きたまま入る値はspillされなければならない —
 unwinderはcallee-savedレジスタしか復元しないので — したがって
 throwする可能性のある呼び出しを多く持つ関数は、`-O2`でレジスタ圧を払う:
 バイトコードのレジスタファイルはSSAに昇格されており、loweringされた
-コードがループで速く走るのも同じ事実による。スコープごとに1つのpadは
-IRを最小化するが、`llc`に30秒かかる幅700のphiを生むので、loweringは
-それを使わない。
+コードがループで速く走るのも同じ事実による。
 
 ### 7.3 generatorの本体
 
@@ -2107,7 +2109,7 @@ helper-to-userのすべての呼び出しは`_jit_invoke`を通り、その
 |---|---|---|
 | vm/jit対称性 | `tests/*.cul`を`--vm`と`--jit`で、stdout + exit code。`tools/checks/jit_shape_set.txt`のop被覆とブランチが触ったファイル、または全ファイル | `just test-dev`（op被覆）、`just test`（全ファイル） |
 | isolateスイート | `tests/isolate/*.cul`を両レーンで | `just test-dev`、`just test` |
-| `vm_cases` | `tools/bench/vm_cases/`: 両レーンをfrozenな`expected/`の出力とexit codeに対して、さらに`CULEBRA_GC_STRESS=1`下でも | `just test`（`compare.sh`。`--freeze`が意図的な変更を再記録する） |
+| `vm_cases` | `tools/bench/vm_cases/`: 両レーンをfrozenな`expected/`の出力とexit codeに対して、さらに`CULEBRA_GC_STRESS=1`下と`CULEBRA_GC_REFS=1 CULEBRA_GC_STRESS=1`下でも | `just test`（`compare.sh`。`--freeze`が意図的な変更を再記録する） |
 | doctest | すべてのドキュメントブロックを両レーンで | `just doctest` |
 | difftest | 生成されたtemplate-combinatorコーパス（`tools/difftest/gen.cul`、約2万1千ケース）を`--vm`対`--jit`でバイト単位一致 | `just test`（`tools/difftest/run.sh`） |
 | AOT | `culebra build`の出力 == テストごとの`--vm`の出力 | `just test`（10ファイルごとに1つ）、CIのaotシャード（全ファイル） |
@@ -2119,8 +2121,8 @@ helper-to-userのすべての呼び出しは`_jit_invoke`を通り、その
 ### 10.2 loweringの出力へのチェック
 
 - `culebra --jit --emit-llvm f.cul | opt -passes=verify` — lowering
-  作業の常設チェック。`run_program`も自分が構築するすべての
-  モジュールを検証し失敗時にthrowする。
+  作業の常設チェック。`run_program`も自分がloweringするすべての
+  関数を検証し失敗時にthrowする。
 - **IR diffing。** codegenを変えてはいけないリファクタは、
   `tests/*.cul`全体に対する`--jit -O0 --emit-llvm`を前後で比較し、
   stderrを含めてバイト単位で一致することで検証する。

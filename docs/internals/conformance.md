@@ -102,7 +102,7 @@ carry them.
 
 Every check above costs a population times a per-item price, and the two
 lanes an engine check can run on are not close to each other in price:
-the files of `tests/` (322, recorded in `gate_budget.txt`) cost far more
+the files of `tests/` (327, recorded in `gate_budget.txt`) cost far more
 under `--jit` than under the executor, because what the JIT lane pays for
 is LLVM rather than execution (a heavy file spends seconds in the IR
 pipeline and in the backend, and milliseconds running). An axis applied to the whole corpus on that

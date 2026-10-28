@@ -28,7 +28,8 @@
 `include/`には公開ヘッダ1本と10のディレクトリがあり、ファイルがどの
 ディレクトリにあるかが、そのまま**どの層に属するか**です。includeは
 読んだとおりに書きます（`<rt/value.inc.h>`・`<stdlib/http.h>`）。
-`CMakeLists.txt`の`-I include`ひとつが全部を解決します。
+`CMakeLists.txt`の`include_directories(./include)`ひとつが全部を解決します
+（vendorのライブラリは、その横に自分のディレクトリを足します）。
 
 | ディレクトリ | 中身 | includeしてよい先 |
 |---|---|---|
@@ -84,8 +85,8 @@ dispatch、イテレータプロトコル、標準ライブラリ全体 — は�
 **両方向に**正しくなければなりません。名乗らない生成物は手編集が失われる
 ことを隠し、名乗る手書きファイルは存在しない生成元を主張します。
 `frontend/grammar_blob.gen.h`は生成物で、`stdlib/canon_sigs_table.h`は
-手で保守するファイルです。ゲートは「コミットされた全`.gen.h`に、
-それを書くレシピが存在すること」と「生成器が`include/`配下に書く全パスが
+手で保守するファイルです。ゲートは「コミットされた全`.gen.h`の名前が、
+`justfile`・`misc`・`tools`のどこかに出てくること」と「生成器が`include/`配下に書く全パスが
 `.gen.h`で終わること」を検査します。
 
 ## 4. `.inc.h`はヘッダではない
@@ -107,15 +108,22 @@ Rubyの`.inc`が、インタプリタがテキストとしてincludeするファ
 
 C++で実装された利用者向けnamespaceには、`stdlib/`にその名前を小文字に
 したヘッダが1つ対応します。`Http`は`stdlib/http.h`、`SQLite`は
-`stdlib/sqlite.h`、`PEG`は`stdlib/peg.h`です。これはツリーの中で唯一
-ドリフトしなかった命名軸で、新しいnamespaceもこれに従います。
+`stdlib/sqlite.h`、`PEG`は`stdlib/peg.h`です。新しいnamespaceもこれに
+従います。小さいもの（`Random`・`FS`・`IO`・`Sys`）はヘッダを持たず束縛層の
+中に実装され、CMakeオプションの背後にあるもの（`Scene`・`Webview`）は
+`src/runtime/culebra_rt_*.cc`にあります。
 
-同じディレクトリにありながらnamespaceそのものではないものが3種あります:
+同じディレクトリにありながらnamespaceそのものではないものが何種かあります:
 namespaceが必要とする補助ヘッダ（`Canvas`の背後の`image.h`・
-`font_ttf.h`）、その下のエンジン非依存カーネル（`kernels.h`・`math.h`）、
-そしてそれら全部を値表現に繋ぐ束縛層（`bindings.h`）です。C++でなく
-Culebraで書かれたnamespaceは`src/preambles/<name>.cul`に置かれ、
-最も小さいものは専用ヘッダを持たず束縛層の中に実装されています。
+`font_ttf.h`、`pcm_block.h`・`pixel_size.h`・`http_method.h`・
+`keynames.h`・`search_model.h`）、その下のエンジン非依存カーネル
+（`kernels.h`・`math.h`）、コンパイラのシグネチャ表（`canon_sigs.h`・
+`canon_sigs_table.h`）、preambleのローダとその生成blob（`preamble.h`・
+`preambles.gen.h`）、そしてそれら全部を値表現に繋ぐ束縛層
+（`bindings.h`）です。C++でなくCulebraで書かれたnamespaceは
+`src/preambles/<name>.cul`に置かれます。ネイティブ部分のためにすぐ隣に
+ヘッダを持つもの（`audio`・`canvas`・`fst`・`peg`・`regex`・`term`）と、
+ヘッダを持たないもの（`dir`・`llm`・`log`・`time`・`kauai`ほか）があります。
 
 ## 6. ファイルを追加するとき
 

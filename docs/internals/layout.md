@@ -28,7 +28,8 @@ Contents
 `include/` holds one public header and ten directories, and which
 directory a file is in *is* which layer it belongs to. An include is
 written the way it reads — `<rt/value.inc.h>`, `<stdlib/http.h>` — and
-the single `-I include` in `CMakeLists.txt` resolves all of them.
+the one `include_directories(./include)` in `CMakeLists.txt` resolves all of
+them (the vendored libraries add their own directories beside it).
 
 | Directory | What is in it | May include |
 |---|---|---|
@@ -87,7 +88,7 @@ hides that edits are lost, and a hand-maintained file with it claims a
 generator that does not exist. `frontend/grammar_blob.gen.h` is
 generated; `stdlib/canon_sigs_table.h` is maintained by hand. The gate
 checks that every committed
-`.gen.h` is named by a recipe that writes it, and that every path a
+`.gen.h` is named somewhere under `justfile`, `misc` or `tools`, and that every path a
 generator writes under `include/` ends in `.gen.h`.
 
 ## 4. `.inc.h` is not a header
@@ -108,17 +109,24 @@ may include one.
 
 A user-visible namespace implemented in C++ gets one header in `stdlib/`
 named after it in lowercase: `Http` is `stdlib/http.h`, `SQLite` is
-`stdlib/sqlite.h`, `PEG` is `stdlib/peg.h`. This is the one naming axis
-in the tree that never drifted, and it is the pattern a new namespace
-follows.
+`stdlib/sqlite.h`, `PEG` is `stdlib/peg.h`. That is the pattern a new
+namespace follows. The small ones (`Random`, `FS`, `IO`, `Sys`) have no
+header and are implemented inside the binding layer, and the namespaces
+behind a CMake option (`Scene`, `Webview`) live in
+`src/runtime/culebra_rt_*.cc`.
 
-Three things share the directory without being namespaces themselves:
-support headers a namespace needs (`image.h` and `font_ttf.h` behind
-`Canvas`), the engine-neutral kernels beneath them (`kernels.h`,
-`math.h`), and the binding layer that joins all of them to the value
-model (`bindings.h`). Namespaces written in Culebra rather than C++ live
-in `src/preambles/<name>.cul`, and the smallest ones have no header of
-their own at all — they are implemented inside the binding layer.
+Several kinds of file share the directory without being namespaces
+themselves: support headers a namespace needs (`image.h` and `font_ttf.h`
+behind `Canvas`, `pcm_block.h`, `pixel_size.h`, `http_method.h`,
+`keynames.h`, `search_model.h`), the engine-neutral kernels beneath them
+(`kernels.h`, `math.h`), the compiler's signature tables (`canon_sigs.h`,
+`canon_sigs_table.h`), the preamble loader and its generated blob
+(`preamble.h`, `preambles.gen.h`), and the binding layer that joins all of
+them to the value model (`bindings.h`). Namespaces written in Culebra
+rather than C++ live in `src/preambles/<name>.cul`. Some have a header
+beside them (`audio`, `canvas`, `fst`, `peg`, `regex`, `term`) for their
+native part, and the rest (`dir`, `llm`, `log`, `time`, `kauai` and others)
+have none.
 
 ## 6. Adding a file
 
