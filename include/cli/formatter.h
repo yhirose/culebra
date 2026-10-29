@@ -1522,6 +1522,18 @@ class Printer {
                        doc_text(" " + std::string(node.nodes[1]->token) + " " + text)});
   }
 
+  // Whether `n`, printed bare, puts a `|` or an `is` on the ladder parameter
+  // defaults parse on (the one that copies the levels below `??` and lacks
+  // both): at its top, or as an operand of a level that has no brackets of its
+  // own. A bare `a && (x is T)` loses the inner parentheses, so the whole
+  // default takes them.
+  static bool needs_full_ladder(const peg::Ast& n) {
+    if (n.name == "BIT_OR" || n.name == "IS_TEST") return true;
+    if (!is_bare_chain(n.name)) return false;
+    return std::any_of(n.nodes.begin(), n.nodes.end(),
+                       [](const auto& c) { return needs_full_ladder(*c); });
+  }
+
   DocP print_param(const peg::Ast& p) {
     auto v = view_parameter(p);
     if (v.is_kw_only_sep) return doc_text("*");
@@ -1539,7 +1551,7 @@ class Printer {
       // grammar ladder, so this is the one operator precedence can't recover).
       // The same ladder has no `is`, so a type test there keeps its parens too.
       DocP dv = print(*v.default_value);
-      if (v.default_value->name == "BIT_OR" || v.default_value->name == "IS_TEST")
+      if (needs_full_ladder(*v.default_value))
         dv = doc_concat({doc_text("("), dv, doc_text(")")});
       d = doc_concat({d, doc_text(" = "), dv});
     }

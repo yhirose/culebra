@@ -76,6 +76,12 @@ expect_syntax_message "class body"          'class C { 1 }' \
 # The field parameter's old spelling gets the new one named.
 expect_syntax_reject "old field parameter" \
   " A field parameter is written \`@x\`, not \`.x\`." 'class C { new(.x) { } }'
+# `f(x:)` names a variable, so an undefined one is the NameError `f(x: x)` is.
+printf 'fn f(nope = 0) { nope }\nf(nope:)\n' > "$TMP/t.cul"
+out=$("$CULEBRA" --vm "$TMP/t.cul" 2>&1)
+if [[ "$out" != *NameError*nope* ]]; then
+  echo "FAIL f(nope:) is not a NameError: $out"; fail=1
+fi
 # ...and only there: a `.` where an expression is due is not a field parameter.
 printf 'xs = [.5]\n' > "$TMP/t.cul"
 out=$("$CULEBRA" --vm "$TMP/t.cul" 2>&1)

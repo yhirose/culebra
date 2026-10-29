@@ -36,6 +36,9 @@ enum Shape {
 }
 assert_eq(Dog() is Dog, true)
 assert_eq(Dog() is String, false)
+# a name no type carries matches nothing, as in a `match` arm
+assert_eq(1 is Nope, false)
+assert_eq(1 !is Nope, true)
 # what an annotation asks: an instance is an Object, though type_of names Dog
 assert_eq(Dog() is Object, true)
 assert_eq({k: 1} is Object, true)

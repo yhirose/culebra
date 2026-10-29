@@ -2779,6 +2779,21 @@ inline std::shared_ptr<peg::Ast> desugar_postfix_modifiers(
   return node;
 }
 
+// `f(x:)` is `f(x: x)`: the value is a read of the variable named for the
+// keyword, built from the name's own token so it is a view of the source like
+// any other identifier the parser produced.
+inline std::shared_ptr<peg::Ast> desugar_kwarg_shorthand(
+    std::shared_ptr<peg::Ast> node) {
+  using namespace peg::udl;
+  for (auto& child : node->nodes) child = desugar_kwarg_shorthand(child);
+  if (node->tag != "KWARG_SHORT"_) return node;
+  const auto& name = node->nodes[0];
+  SynthNode at{node->path.c_str(), node->line, node->column};
+  auto value = at.tok("IDENTIFIER", "EXPRESSION", name->token, name->line,
+                      name->column, name->position, name->length);
+  return at.grp("KWARG", "KWARG", {name, value}, node->position, node->length);
+}
+
 // `x is P` / `x !is P` is the `match` it abbreviates:
 // `match x { P => true, _ => false }` (the arms swapped for `!is`). Reading it
 // as a `match` gives every later stage the type test it already has, and a
@@ -2820,7 +2835,7 @@ inline const std::vector<std::string>& ast_optimizer_keep_rules() {
       "THROW", "YIELD", "YIELD_FROM", "TRY", "DEFER", "FOR",
       "LEXICAL_SCOPE", "TYPE_ANNOTATION", "RETURN_TYPE",
       "DEFAULT_VALUE",
-      "ARG_LIST", "KWARG", "KWARG_SPLAT",
+      "ARG_LIST", "KWARG", "KWARG_SHORT", "KWARG_SPLAT",
       "CLASS_DECL", "METHOD", "DECORATOR",
       "TRAIT_DECL", "TRAIT_METHOD", "TRAIT_BODY",
       "ENUM_DECL", "VARIANT",
@@ -2985,8 +3000,11 @@ inline std::shared_ptr<peg::Ast> parse(const std::string& path,
                                        std::string& expr,
                                        std::vector<ParseFailure>& failures) {
   auto ast = parse_undesugared(path, expr, failures);
-  return ast ? desugar_is_test(desugar_postfix_modifiers(
-                   desugar_regex_literals(desugar_self_sigil(ast))))
+  // The postfix modifier goes last: it re-parents a statement already read as
+  // the form it will run as.
+  return ast ? desugar_postfix_modifiers(desugar_is_test(
+                   desugar_kwarg_shorthand(
+                       desugar_regex_literals(desugar_self_sigil(ast)))))
              : nullptr;
 }
 
@@ -3000,9 +3018,10 @@ inline std::shared_ptr<peg::Ast> parse(const std::string& path,
 }
 
 // Like parse(), but keeps REGEX_LIT, postfix-modifier (`stmt if cond` /
-// `stmt unless cond`), `@name` and `x is T` nodes intact — no desugaring to a
-// `Regex.compile(...)` call, a plain IF, `self.name` or a `match` — so the
-// source formatter can re-emit all four forms verbatim. Used only by `culebra fmt`; never feed this AST to a backend,
+// `stmt unless cond`), `@name`, `x is T` and `f(x:)` nodes intact — no
+// desugaring to a `Regex.compile(...)` call, a plain IF, `self.name`, a
+// `match` or `f(x: x)` — so the source formatter can re-emit all five forms
+// verbatim. Used only by `culebra fmt`; never feed this AST to a backend,
 // which expects the desugared form.
 inline std::shared_ptr<peg::Ast> parse_for_format(
     const std::string& path, std::string& expr,

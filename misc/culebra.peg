@@ -269,9 +269,14 @@
   AT_MEMBER                <-  IDENTIFIER  { ast_name: DOT }
   ARGUMENTS                <-  '(' _ ARG_LIST _ ')'
   ARG_LIST                 <-  (ARG_ITEM (_ ',' _ ARG_ITEM)* _ ','?)?
-  ARG_ITEM                 <-  KWARG_SPLAT / KWARG / EXPRESSION
+  ARG_ITEM                 <-  KWARG_SPLAT / KWARG / KWARG_SHORT / EXPRESSION
   KWARG_SPLAT              <-  '**' _ EXPRESSION
   KWARG                    <-  IDENTIFIER _ ':' _ EXPRESSION
+  # `f(x:)` is `f(x: x)`: a keyword argument named for the variable that holds
+  # its value, the way the object `{x}` is `{x: x}`. Only a `:` that closes the
+  # argument (`,` or `)` next) is the shorthand. desugar_kwarg_shorthand
+  # (parser.h) gives it the value `x`; parse_for_format keeps it as written.
+  KWARG_SHORT              <-  IDENTIFIER _ ':' &(_ (',' / ')'))
   INDEX                    <-  '[' _ EXPRESSION _ ']'
   SAFE_INDEX               <-  '?[' _ EXPRESSION _ ']'
   DOT                      <-  '.' _ IDENTIFIER

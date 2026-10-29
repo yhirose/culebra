@@ -2486,6 +2486,19 @@ name. It must be the last parameter.
     route('/users', method: 'GET')             # opts = {method: 'GET'}
     route('/users', method: 'POST', body: '…') # opts = {method, body}
 
+A keyword whose value is the variable of the same name may drop the
+value: `f(x:)` is `f(x: x)`, the way the object `{x}` is `{x: x}`. It
+mixes with the long form, and only a `:` that closes the argument (a `,` or
+`)` follows) is the shorthand.
+
+```culebra
+let f = fn (x, y = 10, z = 100) { x + y + z }
+let x = 1
+let z = 5
+inspect(f(x:, z:))      # => 16
+inspect(f(x:, z: 7))    # => 18
+```
+
 Keyword-only parameters: a bare `*` in the parameter list marks the
 boundary; parameters after it can only be passed by name.
 
@@ -3510,16 +3523,16 @@ opposite. `T` is one type name, several joined by `|`, each optionally
 followed by `?`, or an enum variant `Enum.Variant`:
 
 ```culebra
-inspect(1 is Long)              # true
-inspect('a' is Long | Float)    # false
-inspect(nil is Long?)           # true
-inspect('a' !is Long)           # true
+inspect(1 is Long)              # => true
+inspect('a' is Long | Float)    # => false
+inspect(nil is Long?)           # => true
+inspect('a' !is Long)           # => true
 ```
 
 * It reads as `match x { T => true, _ => false }` (the arms swapped for
   `!is`), so `x` is evaluated once and `T` is resolved the way a type
-  pattern is: a class or enum by its name, and the same error for an
-  undefined name.
+  pattern is: a class or enum by its name, and a name no type carries
+  matches nothing (`1 is Nope` is `false`).
 * It sits at the comparison level (§3) and does not chain: `a + b is Long`
   is `(a + b) is Long`, and `a is Long && b is String` combines two
   tests. `(a is Long) == true` needs its parentheses. A unary prefix binds

@@ -1,0 +1,80 @@
+# `f(x:)` is `f(x: x)`: a keyword argument named for the variable that holds
+# its value. The parser reads the shorthand as the long form, so every shape
+# below has to answer as its `x: x` spelling does, on every engine.
+#
+# Run: ./build/culebra tests/test_kwarg_shorthand.cul
+#      ./build/culebra --jit tests/test_kwarg_shorthand.cul
+
+fn area(w, h = 1, *, scale = 1) {
+  w * h * scale
+}
+
+let w = 3
+let h = 4
+let scale = 10
+assert_eq(area(w, h:), 12)
+assert_eq(area(w, scale:), 30)
+assert_eq(area(w, h:, scale:), 120)
+# mixed with a long form, in any order the keywords were already allowed
+assert_eq(area(w, scale: 2, h:), 24)
+assert_eq(area(w, h:, scale: 2), 24)
+# the value is read where the call is: a trailing comma, a nested call
+assert_eq(area(w, h:,), 12)
+assert_eq(area(area(w, h:), h:), 48)
+
+# a constructor and a method call take it the same way
+class Box {
+  new(@w, @h = 1) {}
+  grown(by = 1) {
+    Box(w: @w + by, h: @h)
+  }
+  size(factor = 1) {
+    @w * @h * factor
+  }
+}
+assert_eq(Box(w:, h:).size(), 12)
+let factor = 5
+assert_eq(Box(w:, h:).size(factor:), 60)
+let by = 2
+assert_eq(Box(w:, h:).grown(by:).w, 5)
+
+# a closure's captured variable, and a lambda's own parameter
+let make = |k| area(w, scale: k)
+assert_eq(make(7), 21)
+let apply = |h| area(w, h:)
+assert_eq(apply(2), 6)
+
+# the ternary's `:` is not the shorthand
+let flag = true
+assert_eq(area(w, h: flag ? 2 : 3), 6)
+
+# inside an effect body, which lowers to source text: a local held across a
+# `perform` is moved onto the lowered state, and the shorthand keeps its key
+# (the lowering reads the value from the label's own token)
+effect fn tick()
+fn pick(count = 0, *, label = 'none') {
+  [count, label]
+}
+fn tally() {
+  mut out = []
+  handle {
+    let count = 6
+    let label = 'h'
+    perform tick()
+    out.push(pick(count:, label:))
+    perform tick()
+    out.push(pick(count:))
+  } with tick(resume) {
+    resume(nil)
+  }
+  out
+}
+assert_eq(tally(), [[6, 'h'], [6, 'none']])
+
+# a generator keeps its own frame, so the shorthand needs nothing of it
+fn runs(count) {
+  for i in 0..2 {
+    yield pick(count:, label: 'g')
+  }
+}
+assert_eq(runs(4).collect(), [[4, 'g'], [4, 'g']])

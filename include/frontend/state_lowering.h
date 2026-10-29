@@ -1188,6 +1188,16 @@ inline void collect_promoted_edits(const peg::Ast& n, const std::string& src,
                    MappedSource::standing_for(": " + promoted.reference(key),
                                               src, at(key))});
     return;
+  } else if (n.tag == "KWARG"_ && is_promoted(*n.nodes[1]) &&
+             n.nodes[0]->token.data() == n.nodes[1]->token.data()) {
+    // `f(x:)` (desugar_kwarg_shorthand): the value is the label's own token,
+    // so like `{x}` it keeps its key and gains the value, after the `:` the
+    // node's span ends on.
+    const auto& key = *n.nodes[1];
+    out.push_back({n.position + n.length, 0,
+                   MappedSource::standing_for(" " + promoted.reference(key), src,
+                                              at(key))});
+    return;
   } else if (auto pv = view_postfix_if(n);
              pv && pv->stmt->tag == "DESTRUCTURE_ASSIGN"_) {
     // `<destructure> if c`, whose source still reads that way: the copies

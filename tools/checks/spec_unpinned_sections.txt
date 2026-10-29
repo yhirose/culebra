@@ -32,7 +32,6 @@
 10. Objects > `class` sugar
 11. Functions and closures > Closures
 11. Functions and closures > Function literals
-11. Functions and closures > Keyword arguments and `**` splat
 11. Functions and closures > Lambda sugar `|x| ...`
 11. Functions and closures > Methods: `self`
 11. Functions and closures > Parameters

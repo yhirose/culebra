@@ -2381,6 +2381,18 @@ kwargsをObjectとして受け取ります。パラメータリストの末尾�
     route('/users', method: 'GET')             # opts = {method: 'GET'}
     route('/users', method: 'POST', body: '…') # opts = {method, body}
 
+キーワードの値が同名の変数なら、値を省略できます。`f(x:)`は`f(x: x)`
+で、オブジェクトの`{x}`が`{x: x}`であるのと同じです。長い形と混ぜられ、
+省略形になるのは、引数を閉じる`:`（直後が`,`か`)`）だけです。
+
+```culebra
+let f = fn (x, y = 10, z = 100) { x + y + z }
+let x = 1
+let z = 5
+inspect(f(x:, z:))      # => 16
+inspect(f(x:, z: 7))    # => 18
+```
+
 キーワード専用パラメータでは、パラメータリスト中の単独の`*`以降の
 パラメータは名前付きでのみ渡せます。
 
@@ -3370,15 +3382,16 @@ inspect(kind('s'))         # => 'something else: s'
 enumのvariant`Enum.Variant`です:
 
 ```culebra
-inspect(1 is Long)              # true
-inspect('a' is Long | Float)    # false
-inspect(nil is Long?)           # true
-inspect('a' !is Long)           # true
+inspect(1 is Long)              # => true
+inspect('a' is Long | Float)    # => false
+inspect(nil is Long?)           # => true
+inspect('a' !is Long)           # => true
 ```
 
 * `match x { T => true, _ => false }`（`!is`ではアームが逆）として読まれる
   ので、`x`は1回だけ評価され、`T`は型パターンと同じに解決されます。
-  クラスやenumは名前で判定し、未定義の名前は同じエラーになります。
+  クラスやenumは名前で判定し、どの型も持たない名前には何も一致しません
+  （`1 is Nope`は`false`）。
 * 比較と同じ階層（§3）にあり、連鎖しません。`a + b is Long`は
   `(a + b) is Long`、`a is Long && b is String`は2つの判定を組み合わせます。
   `(a is Long) == true`は括弧が要ります。単項の前置は`is`より強く結びつくので、

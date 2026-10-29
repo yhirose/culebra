@@ -413,6 +413,9 @@ let r3 = (a == b) is Bool
 let r4 = (a is Long) == true
 let r5 = 1+2 is Long && b is String
 let r6 = !(a is Long)
+fn d1(ok = a && (x is Long)) { ok }
+fn d2(ok = (x is Long)) { ok }
+fn d3(v = a && (b | c)) { v }
 EOF
 cat > "$TMP/is_want.cul" <<'EOF'
 let r1 = a is Long | Float
@@ -421,12 +424,41 @@ let r3 = (a == b) is Bool
 let r4 = (a is Long) == true
 let r5 = 1 + 2 is Long && b is String
 let r6 = !(a is Long)
+fn d1(ok = (a && x is Long)) {
+  ok
+}
+fn d2(ok = (x is Long)) {
+  ok
+}
+fn d3(v = (a && b | c)) {
+  v
+}
 EOF
 "$CULEBRA" fmt "$TMP/is_in.cul" > "$TMP/is_got.cul" 2>"$TMP/is_err"
 if ! diff -u "$TMP/is_want.cul" "$TMP/is_got.cul" > "$TMP/is_diff" 2>&1; then
   echo "FAIL golden (is): formatted output differs from expected"
   cat "$TMP/is_diff"
   cat "$TMP/is_err"
+  fail=1
+fi
+
+# --- 1f1c. Golden fixture: `f(x:)` ------------------------------------------
+# parse_for_format keeps KWARG_SHORT, so the shorthand comes back as written
+# (not `x: x`), beside long keywords and a splat. A keyword argument prints as
+# its source, so only the separators between arguments are normalized.
+cat > "$TMP/kw_in.cul" <<'EOF'
+f(a,x:,y: 2,z:,**rest)
+g(h:)
+EOF
+cat > "$TMP/kw_want.cul" <<'EOF'
+f(a, x:, y: 2, z:, **rest)
+g(h:)
+EOF
+"$CULEBRA" fmt "$TMP/kw_in.cul" > "$TMP/kw_got.cul" 2>"$TMP/kw_err"
+if ! diff -u "$TMP/kw_want.cul" "$TMP/kw_got.cul" > "$TMP/kw_diff" 2>&1; then
+  echo "FAIL golden (f(x:)): formatted output differs from expected"
+  cat "$TMP/kw_diff"
+  cat "$TMP/kw_err"
   fail=1
 fi
 
