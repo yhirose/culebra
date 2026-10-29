@@ -39,9 +39,9 @@ class Src {
 inspect(Src.new().iter().collect())
 class Cur {
   i: Long
-  new() { self.i = 0 }
-  has_next() { self.i < 2 }
-  next() { self.i = self.i + 1; self.i }
+  new() { @i = 0 }
+  has_next() { @i < 2 }
+  next() { @i = @i + 1; @i }
 }
 # No `iter` of its own: the dict builtin answers, walking (key, value) pairs.
 inspect(Cur.new().iter().collect())

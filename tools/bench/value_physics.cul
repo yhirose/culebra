@@ -42,16 +42,16 @@ class V2 {
   y: Float
 
   new(x: Float, y: Float) {
-    self.x = x
-    self.y = y
+    @x = x
+    @y = y
   }
 
   __add__(o) {
-    V2.new(self.x + o.x, self.y + o.y)
+    V2.new(@x + o.x, @y + o.y)
   }
 
   __mul__(s) {
-    V2.new(self.x * s, self.y * s)
+    V2.new(@x * s, @y * s)
   }
 }
 

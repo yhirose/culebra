@@ -6,8 +6,8 @@ fn trace(n) {
 }
 class Point {
   x = trace(1)
-  new(a) { self.tag = 'one' }
-  new(a, b) { self.tag = 'two' }
+  new(a) { @tag = 'one' }
+  new(a, b) { @tag = 'two' }
 }
 println('before')
 println(Point(1, 2, 3).tag)

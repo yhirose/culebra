@@ -37,15 +37,15 @@ for x in [] {
 # The tail runs after the iterator closed and the iteration's bindings died.
 class Res {
   id: String
-  new(id) { self.id = id }
-  drop() { inspect('drop ' + self.id) }
+  new(id) { @id = id }
+  drop() { inspect('drop ' + @id) }
 }
 class Src {
   n: Long
-  new() { self.n = 0 }
+  new() { @n = 0 }
   iter() { self }
-  has_next() { self.n < 2 }
-  next() { let v = self.n; self.n = v + 1; v }
+  has_next() { @n < 2 }
+  next() { let v = @n; @n = v + 1; v }
   dispose() { inspect('dispose') }
 }
 for v in Src.new() {

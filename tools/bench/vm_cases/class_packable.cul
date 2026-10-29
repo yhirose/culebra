@@ -28,7 +28,7 @@ class P {
   a: Long = 7
   b: Bool = true
   m() {
-    self.a * 2
+    @a * 2
   }
   static mk() {
     P.new()

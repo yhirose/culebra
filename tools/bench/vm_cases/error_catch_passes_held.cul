@@ -4,7 +4,7 @@
 class Held {
   new(@name) {}
   drop() {
-    println("dropped {self.name}")
+    println("dropped {@name}")
   }
 }
 fn hang(e) {

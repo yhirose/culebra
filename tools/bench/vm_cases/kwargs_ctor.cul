@@ -6,7 +6,7 @@
 class C {
   s = 0
   new(a, b = 12) {
-    self.s = a + b
+    @s = a + b
   }
 }
 println(C.new(1).s)
@@ -41,7 +41,7 @@ println(try {
 class K {
   s = ''
   new(a, *, flag = false, **rest) {
-    self.s = to_string(a) + to_string(flag) + to_string(rest.keys())
+    @s = to_string(a) + to_string(flag) + to_string(rest.keys())
   }
 }
 println(K.new(1).s)
@@ -57,10 +57,10 @@ println(try {
 class O {
   s = 0
   new(a) {
-    self.s = 1
+    @s = 1
   }
   new(a, b) {
-    self.s = 2
+    @s = 2
   }
 }
 println(O.new(1).s)

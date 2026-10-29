@@ -5,19 +5,19 @@
 # matter, and not an error at the point the closure is built.
 
 class A {
-    new(v) { self.n = v }
+    new(v) { @n = v }
     m() {
-        let f = fn () { self.n }
+        let f = fn () { @n }
         return f()
     }
     deep() {
         let g = fn () {
-            let h = fn () { self.n }
+            let h = fn () { @n }
             return h()
         }
         return g()
     }
-    mk() { fn () { self.n } }
+    mk() { fn () { @n } }
 }
 let say = fn (v) { println('  = ' + to_string(v)) }
 
@@ -35,7 +35,7 @@ say(try { {'f': A.new(5).mk()}.f() } catch e { e.kind + '|' + e.message })
 let built = fn () { self }
 println('built')
 say(try { built() } catch e { e.kind + '|' + e.message })
-let member = fn () { self.n }
+let member = fn () { @n }
 say(try { member() } catch e { e.kind + '|' + e.message })
 let nested = fn () {
     let inner = fn () { self }

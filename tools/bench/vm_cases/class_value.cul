@@ -9,12 +9,12 @@ class Vec2 {
   y: Float
 
   new(x: Long | Float, y: Long | Float) {
-    self.x = to_float(x)
-    self.y = to_float(y)
+    @x = to_float(x)
+    @y = to_float(y)
   }
 
   __add__(o) {
-    Vec2.new(self.x + o.x, self.y + o.y)
+    Vec2.new(@x + o.x, @y + o.y)
   }
 }
 
@@ -70,8 +70,8 @@ class Seg {
   b: Vec2
 
   new(a, b) {
-    self.a = a
-    self.b = b
+    @a = a
+    @b = b
   }
 }
 let s = Seg.new(Vec2.new(0, 0), Vec2.new(3, 4))
@@ -85,7 +85,7 @@ println(try {
 # An ordinary class still promotes its fields to mutable.
 class Plain {
   new(x) {
-    self.x = x
+    @x = x
   }
 }
 let p = Plain.new(1)

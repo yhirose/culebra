@@ -30,7 +30,7 @@ println(any)
 
 class P {
   new(v) {
-    self.v = v
+    @v = v
   }
 }
 let inst: P = P.new(3)

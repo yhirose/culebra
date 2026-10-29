@@ -5,9 +5,9 @@
 
 class Shape {
   static UNIT = 1
-  new() { self.kind = 'unknown' }
+  new() { @kind = 'unknown' }
   area() { 0 }
-  get named() { 'shape:' + self.kind }
+  get named() { 'shape:' + @kind }
   static circle(r) {
     let s = Shape.new()
     s.kind = 'circle'
@@ -36,7 +36,7 @@ println(try { Shape.UNIT = 8 } catch e { e.kind })
 # `self` inside a static body is the class object, and stays bound when the
 # static is taken as a value.
 class S {
-  new() { self.x = 1 }
+  new() { @x = 1 }
   static kind_of_self() { type_of(self) }
 }
 println(S.kind_of_self())
@@ -45,7 +45,7 @@ println(detached())
 
 # Statics and instance methods do not leak into each other's namespace.
 class Split {
-  new() { self.x = 1 }
+  new() { @x = 1 }
   static st() { 'static' }
   inst() { 'instance' }
 }
@@ -66,7 +66,7 @@ println('--- decl')
 class K {
   static A = trace('static-A', 1)
   static FROM_OUTER = outer + 2
-  new() { self.x = 1 }
+  new() { @x = 1 }
   static B = trace('static-B', 2)
   static SIZED: Long = 8
 }
@@ -78,12 +78,12 @@ inspect(K.keys())
 
 # --- Getters --------------------------------------------------------------
 class C {
-  new(v) { self.v = v }
-  get doubled() { self.v * 2 }
-  get label() { "v={self.v}" }
-  get boxed() { fn () { self.v } }
+  new(v) { @v = v }
+  get doubled() { @v * 2 }
+  get label() { "v={@v}" }
+  get boxed() { fn () { @v } }
   get size() { 99 }
-  plain() { self.v }
+  plain() { @v }
 }
 let c = C.new(21)
 println(c.doubled)
@@ -102,22 +102,22 @@ inspect(c)
 
 # A getter that throws, and one whose body captures `self` into a closure.
 class G {
-  new() { self.n = 1 }
+  new() { @n = 1 }
   get boom() { throw 'getter' }
-  get held() { fn () { self.n + 1 } }
+  get held() { fn () { @n + 1 } }
 }
 println(try { G.new().boom } catch e { e })
 println(G.new().held()())
 
 # Getters through higher-order code, and nested instances.
 class H {
-  new(v) { self.v = v }
-  get doubled() { self.v * 2 }
+  new(v) { @v = v }
+  get doubled() { @v * 2 }
 }
 inspect([H.new(1), H.new(2)].map(fn (h) { h.doubled }))
 class W {
-  new(inner) { self.inner = inner }
-  get deep() { self.inner.doubled }
+  new(inner) { @inner = inner }
+  get deep() { @inner.doubled }
 }
 println(W.new(H.new(4)).deep)
 
@@ -125,8 +125,8 @@ println(W.new(H.new(4)).deep)
 # wins, the getter stays unreachable.
 class A {
   v = 1
-  new() { self.set_by_ctor = 5 }
-  get v2() { self.v }
+  new() { @set_by_ctor = 5 }
+  get v2() { @v }
   get set_by_ctor() { 'getter' }
 }
 let a = A.new()
@@ -138,7 +138,7 @@ inspect(a.keys())
 # `.name` / `.params` / `.return_type` belong to a Function receiver; every
 # other receiver resolves an ordinary property of that name, getters included.
 class N {
-  new(a) { self.a = a }
+  new(a) { @a = a }
   get name() { 'g' }
   params() { ['p'] }
 }

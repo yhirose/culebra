@@ -6,11 +6,11 @@
 class R {
   n = 0
   new(k) {
-    self.n = k
+    @n = k
   }
   down(k) {
     if k == 0 {
-      self.n
+      @n
     } else {
       fn(k - 1)
     }
@@ -18,7 +18,7 @@ class R {
   via_value(k) {
     let g = fn
     if k == 0 {
-      self.n
+      @n
     } else {
       g(k - 1)
     }
@@ -56,11 +56,11 @@ println(p(2))
 class C {
   n = 0
   new(k) {
-    self.n = k
+    @n = k
   }
   walk(k) {
     if k == 0 {
-      self.n
+      @n
     } else {
       fn(k - 1)
     }

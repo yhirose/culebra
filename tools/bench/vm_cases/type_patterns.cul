@@ -4,8 +4,8 @@
 
 class Point {
   new(x, y) {
-    self.x = x
-    self.y = y
+    @x = x
+    @y = y
   }
 }
 class Other {

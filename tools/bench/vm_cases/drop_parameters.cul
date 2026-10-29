@@ -5,20 +5,20 @@
 # still claim the receivers that resolve nothing.
 
 class R {
-    new(v) { self.n = v }
-    drop() { println('  drop ' + to_string(self.n)) }
+    new(v) { @n = v }
+    drop() { println('  drop ' + to_string(@n)) }
 }
 class Plain {
-    new(v) { self.n = v }
+    new(v) { @n = v }
 }
 class Owns {
-    new(v) { self.n = v }
+    new(v) { @n = v }
     parameters() { 'own parameters' }
 }
 class Nested {
     new() {
-        self.a = Plain.new(1)
-        self.b = 3
+        @a = Plain.new(1)
+        @b = 3
     }
 }
 let say = fn (v) { println('  = ' + to_string(v)) }

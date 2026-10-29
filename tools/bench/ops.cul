@@ -65,7 +65,7 @@ let lit = {f: fn (a) {
 
 class Inst {
   new() {
-    self.v = 1.0
+    @v = 1.0
   }
   nullary() {
     1.0
@@ -88,28 +88,28 @@ class Stat {
 
 class Ctor {
   new(a, b) {
-    self.x = a
-    self.y = b
+    @x = a
+    @y = b
   }
 }
 class CtorTyped {
   new(a: Float, b: Float) {
-    self.x = a
-    self.y = b
+    @x = a
+    @y = b
   }
 }
 class CtorUnion {
   new(a: Long | Float, b: Long | Float) {
-    self.x = a
-    self.y = b
+    @x = a
+    @y = b
   }
 }
 class CtorFields {
   x: Float
   y: Float
   new(a, b) {
-    self.x = a
-    self.y = b
+    @x = a
+    @y = b
   }
 }
 

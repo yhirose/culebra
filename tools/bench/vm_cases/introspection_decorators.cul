@@ -65,10 +65,10 @@ let mark = fn (cls) {
 @mark
 class Point {
   new(x) {
-    self.x = x
+    @x = x
   }
   get doubled() {
-    self.x * 2
+    @x * 2
   }
 }
 println(to_string(Point.marked))

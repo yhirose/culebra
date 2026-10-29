@@ -32,20 +32,20 @@ for x in 5..0 by -2 { inspect(x) }
 # A user iterator: `iter()` hands back self, `has_next()`/`next()` walk.
 class Countdown {
   n: Long
-  new(n) { self.n = n }
+  new(n) { @n = n }
   iter() { self }
-  has_next() { self.n > 0 }
-  next() { let v = self.n; self.n = v - 1; v }
+  has_next() { @n > 0 }
+  next() { let v = @n; @n = v - 1; v }
 }
 for x in Countdown.new(3) { inspect(x) }
 
 # has_next() is read for truthiness, not for a Bool tag (docs §18.5).
 class NumericGate {
   n: Long
-  new() { self.n = 0 }
+  new() { @n = 0 }
   iter() { self }
-  has_next() { if self.n < 3 { 1 } else { 0 } }
-  next() { let v = self.n; self.n = v + 1; v }
+  has_next() { if @n < 3 { 1 } else { 0 } }
+  next() { let v = @n; @n = v + 1; v }
 }
 for x in NumericGate.new() { inspect(x) }
 

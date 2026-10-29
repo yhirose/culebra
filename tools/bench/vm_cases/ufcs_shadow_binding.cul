@@ -7,7 +7,7 @@
 # The shadowing bindings make `to_string` itself unusable here, so the
 # printing goes through interpolation.
 class Sc {
-  new() { self.f = 1 }
+  new() { @f = 1 }
 }
 
 let to_string = 5

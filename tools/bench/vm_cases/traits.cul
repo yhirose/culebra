@@ -6,7 +6,7 @@
 trait Counter {
   current() -> Long
   bump() -> Long {
-    self.current() + 1
+    @current() + 1
   }
 }
 
@@ -43,31 +43,31 @@ println(NoCurrent.new().bump)  # not conforming: no default in sight
 trait Chain {
   base() -> Long
   once() -> Long {
-    self.base() + 1
+    @base() + 1
   }
   twice() -> Long {
-    self.once() * 10
+    @once() * 10
   }
   countdown(n) -> Long {
     if n <= 0 {
-      self.base()
+      @base()
     } else {
-      self.countdown(n - 1)
+      @countdown(n - 1)
     }
   }
   boxed() -> Function {
     fn () {
-      self.base() * 3
+      @base() * 3
     }
   }
 }
 
 class Two {
   new(v) {
-    self.v = v
+    @v = v
   }
   base() {
-    self.v
+    @v
   }
 }
 
@@ -84,14 +84,14 @@ println(detached())
 trait Base {
   a() -> Long
   da() -> Long {
-    self.a() * 10
+    @a() * 10
   }
 }
 
 trait Sub: Base {
   b() -> Long
   db() -> Long {
-    self.a() + self.b()
+    @a() + @b()
   }
 }
 
@@ -127,7 +127,7 @@ trait Named {
 
 class Tagged {
   new() {
-    self.f = 1
+    @f = 1
   }
   tag() {
     0
@@ -188,13 +188,13 @@ println(Swappy.new().zz)
 # `neq`, `cmp` alone earns the four comparisons.
 class Money {
   new(cents) {
-    self.cents = cents
+    @cents = cents
   }
   eq(other) {
-    self.cents == other.cents
+    @cents == other.cents
   }
   cmp(other) {
-    self.cents - other.cents
+    @cents - other.cents
   }
 }
 
@@ -214,7 +214,7 @@ println(two.gt(one))
 trait Applicable {
   base() -> Long
   __call__(a) -> Long {
-    self.base() + a
+    @base() + a
   }
 }
 
@@ -222,10 +222,10 @@ println(Two.new(10)(5))
 
 class Adder {
   new(n) {
-    self.n = n
+    @n = n
   }
   __call__(a) {
-    self.n + a
+    @n + a
   }
 }
 
@@ -239,7 +239,7 @@ fn declare(v) {
   trait Local {
     base() -> Long
     plus() -> Long {
-      self.base() + v
+      @base() + v
     }
   }
   Two.new(1).plus()
@@ -253,7 +253,7 @@ println(Two.new(1).plus())
 trait Strict {
   base() -> Long
   as_str() -> String {
-    self.base()
+    @base()
   }
 }
 

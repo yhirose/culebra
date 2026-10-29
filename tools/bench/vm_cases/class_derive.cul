@@ -6,8 +6,8 @@
 @derive(Eq, Hash, Show, Comparable)
 class Point {
   new(x, y) {
-    self.x = x
-    self.y = y
+    @x = x
+    @y = y
   }
 }
 let a = Point.new(1, 2)
@@ -46,8 +46,8 @@ println(g())
 @derive(Eq, Hash, Show, Comparable)
 class Other {
   new(x, y) {
-    self.x = x
-    self.y = y
+    @x = x
+    @y = y
   }
 }
 let o = Other.new(1, 2)
@@ -65,10 +65,10 @@ println(a.cmp(5))
 @derive(Eq, Hash, Show, Comparable)
 class Custom {
   new(v) {
-    self.v = v
+    @v = v
   }
   to_s() {
-    'custom-' + to_string(self.v)
+    'custom-' + to_string(@v)
   }
   eq(o) {
     true
@@ -86,7 +86,7 @@ println(cu.cmp(Custom.new(9)))
 @derive(Eq, Show)
 class Over {
   new(v) {
-    self.v = v
+    @v = v
   }
   m() {
     'm0'
@@ -105,7 +105,7 @@ println(ov.eq(Over.new(1)))
 @derive(Eq, Show)
 class OverEq {
   new(v) {
-    self.v = v
+    @v = v
   }
   eq() {
     'eq0'
@@ -126,7 +126,7 @@ class Fielded {
   a: Long = 1
   b = 'z'
   new() {
-    self.c = 3.5
+    @c = 3.5
   }
   m() {
     9
@@ -143,7 +143,7 @@ println(fi.cmp(Fielded.new()))
 @derive(Eq, Hash)
 class Key {
   new(x) {
-    self.x = x
+    @x = x
   }
 }
 let s = Set(Key.new(1), Key.new(2), Key.new(1))
@@ -166,7 +166,7 @@ println(a.to_s(1))
 @derive(Comparable)
 class Holder {
   new(v) {
-    self.v = v
+    @v = v
   }
 }
 println(Holder.new(1).cmp(Holder.new(2)))
@@ -183,7 +183,7 @@ for i in 0..3 {
   @derive(Eq, Show)
   class Loop {
     new(x) {
-      self.x = x
+      @x = x
     }
   }
   let p = Loop.new(i)

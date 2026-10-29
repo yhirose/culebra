@@ -4,10 +4,10 @@
 
 class Countdown {
   n: Long
-  new(n) { self.n = n }
+  new(n) { @n = n }
   iter() { self }
-  has_next() { self.n > 0 }
-  next() { let v = self.n; self.n = v - 1; v }
+  has_next() { @n > 0 }
+  next() { let v = @n; @n = v - 1; v }
 }
 
 fn gen() {

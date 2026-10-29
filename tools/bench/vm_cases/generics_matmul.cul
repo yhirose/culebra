@@ -68,10 +68,10 @@ println(needs(Two.new()))
 # form, and no in-place variant, so `@=` steps through the same operator.
 class M {
   new(v) {
-    self.v = v
+    @v = v
   }
   __matmul__(other) {
-    M.new(self.v + other.v)
+    M.new(@v + other.v)
   }
 }
 println((M.new(1) @ M.new(2)).v)

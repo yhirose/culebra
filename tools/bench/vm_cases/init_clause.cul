@@ -90,8 +90,8 @@ while mut e = 0; e < 5 {
 # The bindings die at the construct's exit, before the next statement — and
 # on every exit path (`break`, `return`, a throw from the init list itself).
 class R {
-  new(id) { self.id = id }
-  drop() { println(['drop', self.id]) }
+  new(id) { @id = id }
+  drop() { println(['drop', @id]) }
 }
 if let res = R.new('if'); true {
   println('in then')

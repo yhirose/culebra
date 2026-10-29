@@ -5,6 +5,6 @@ class P {
     println('field-init')
     1
   })()
-  new(a, b) { self.n = a + b }
+  new(a, b) { @n = a + b }
 }
 P.new(1)

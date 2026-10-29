@@ -49,8 +49,8 @@ inspect(full(1, **{'z': 50, 'bonus': 8, 'extra': 'x'}))
 class C {
   a: Long
   b: String
-  new(a, b = 'x') { self.a = a; self.b = b }
-  m(p, q = 0, **kw) { [self.a, p, q, kw] }
+  new(a, b = 'x') { @a = a; @b = b }
+  m(p, q = 0, **kw) { [@a, p, q, kw] }
   static s(p = 1, **kw) { [p, kw] }
 }
 inspect(C.new(a: 1, b: 'y').b)
@@ -97,8 +97,8 @@ inspect(carry([1, 2], b: (3, 4), extra: ['x']))
 inspect(carry(**{'a': [5], 'b': {'m': 6}}, extra: (7, 8)))
 class Box {
   v: Array
-  new(v = []) { self.v = v }
-  keep(p, **kw) { [self.v, p, kw] }
+  new(v = []) { @v = v }
+  keep(p, **kw) { [@v, p, kw] }
 }
 inspect(Box.new(v: [9, 10]).keep(p: ['q'], extra: {'r': 11}))
 

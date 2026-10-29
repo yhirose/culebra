@@ -1,7 +1,7 @@
 # A getter takes no parameters — reported by the static pass, so it fires
 # before anything runs on every backend.
 class E {
-  new() { self.x = 1 }
+  new() { @x = 1 }
   get bad(a) { a }
 }
 println('unreached')

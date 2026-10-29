@@ -5,8 +5,8 @@
 
 class R {
   n = 0
-  new(k) { self.n = k }
-  drop() { println('drop ' + to_string(self.n)) }
+  new(k) { @n = k }
+  drop() { println('drop ' + to_string(@n)) }
 }
 
 let top = R.new(1)  # never dropped: a top-level binding

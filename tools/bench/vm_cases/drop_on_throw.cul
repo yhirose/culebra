@@ -5,8 +5,8 @@
 
 class R {
   n = 0
-  new(k) { self.n = k }
-  drop() { println('drop ' + to_string(self.n)) }
+  new(k) { @n = k }
+  drop() { println('drop ' + to_string(@n)) }
 }
 
 # --- Plain locals, innermost frame first ---------------------------------
@@ -47,7 +47,7 @@ println('--- cascade')
 class Holder {
   a = nil
   b = nil
-  new(x, y) { self.a = x ; self.b = y }
+  new(x, y) { @a = x ; @b = y }
   drop() { println('drop holder') }
 }
 fn cascade() {
@@ -97,7 +97,7 @@ println(try { rethrow() } catch e { 'caught outside' })
 println('--- receiver')
 class M {
   r = nil
-  new() { self.r = R.new(40) }
+  new() { @r = R.new(40) }
   boom() {
     let local = R.new(41)
     throw 'x'
@@ -113,7 +113,7 @@ println(try { usemethod() } catch e { 'caught' })
 println('--- ctor')
 class D {
   x = 1
-  new(a: Long) { self.x = a }
+  new(a: Long) { @x = a }
   drop() { println('drop D') }
 }
 println(try { D.new() } catch e { e.kind })
@@ -219,10 +219,10 @@ println(try { nsk() ; 0 } catch e { 'caught' })
 println('--- set members')
 class H {
   n = 0
-  new(k) { self.n = k }
-  drop() { println('drop ' + to_string(self.n)) }
-  hash() { self.n }
-  eq(other) { self.n == other.n }
+  new(k) { @n = k }
+  drop() { println('drop ' + to_string(@n)) }
+  hash() { @n }
+  eq(other) { @n == other.n }
 }
 fn setdrop() {
   let s = Set(H.new(85), H.new(86), H.new(87))
@@ -236,7 +236,7 @@ println(try { setdrop() ; 0 } catch e { 'caught' })
 mut dropped = 0
 class Q {
   n = 0
-  new(k) { self.n = k }
+  new(k) { @n = k }
   drop() { dropped = dropped + 1 }
 }
 fn churn() {

@@ -4,9 +4,9 @@
 
 class Src {
   n: Long
-  new() { self.n = 0 }
-  has_next() { self.n < 5 }
-  next() { let v = self.n; self.n = v + 1; v }
+  new() { @n = 0 }
+  has_next() { @n < 5 }
+  next() { let v = @n; @n = v + 1; v }
   dispose() { inspect('dispose') }
 }
 

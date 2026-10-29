@@ -55,7 +55,7 @@ fn g(x: Long) { 'outer g' }
 if true {
   fn g(x: String) { 'arm g' }
   println(g('s'))
-  class K { new(n) { self.n = n } }
+  class K { new(n) { @n = n } }
   println(to_string(K.new(3).n))
   enum E { A, B }
   println(to_string(E.A == E.A))
@@ -106,8 +106,8 @@ run_defer(false)
 # --- Resources: an arm's value drops when the arm ends ---------------------
 println('--- drop')
 class R {
-  new(n) { self.n = n }
-  drop() { println("drop {self.n}") }
+  new(n) { @n = n }
+  drop() { println("drop {@n}") }
 }
 let run = fn () {
   let first = R.new(1)

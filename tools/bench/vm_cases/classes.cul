@@ -6,11 +6,11 @@
 
 class Car {
   new(mpr) {
-    self.miles = 0
-    self.mpr = mpr
+    @miles = 0
+    @mpr = mpr
   }
-  run(n) { self.miles = self.miles + self.mpr * n }
-  total() { self.miles }
+  run(n) { @miles = @miles + @mpr * n }
+  total() { @miles }
 }
 let c = Car.new(5)
 c.run(3)
@@ -37,7 +37,7 @@ class NoCtor {
   a = 1
   b: Long = 2
   c: String
-  sum() { self.a + self.b }
+  sum() { @a + @b }
 }
 println(NoCtor.new().sum())
 inspect(NoCtor.new())
@@ -49,10 +49,10 @@ class Box {
   items = []
   bare: Long
   new(extra) {
-    println("ctor sees n={self.n}")
-    self.extra = extra
+    println("ctor sees n={@n}")
+    @extra = extra
   }
-  show() { "{self.n}/{self.tag}/{self.items}/{self.extra}/{self.bare}" }
+  show() { "{@n}/{@tag}/{@items}/{@extra}/{@bare}" }
 }
 let b1 = Box.new(7)
 println(b1.show())
@@ -68,15 +68,15 @@ inspect(b1.keys())
 class Chain {
   a = 1
   b = 2
-  new() { self.c = self.a + self.b }
-  sum() { self.a + self.b + self.c }
+  new() { @c = @a + @b }
+  sum() { @a + @b + @c }
 }
 println(Chain.new().sum())
 
 # --- `self`: immutable, and the ctor always returns its instance ---------
 class R {
   new() {
-    self.x = 1
+    @x = 1
     return 42
   }
   bad() { self = 5 }
@@ -86,9 +86,9 @@ println(try { R.new().bad() } catch e { e.kind })
 
 # Fields reached through `self` are mutable, from inside and out.
 class M {
-  new() { self.a = 1 }
+  new() { @a = 1 }
   bump() {
-    self.a = self.a + 1
+    @a = @a + 1
     self
   }
 }
@@ -99,15 +99,15 @@ println(m.a)
 
 # --- Captured `self` ------------------------------------------------------
 class Basket {
-  new(s) { self.scale = s }
-  scaled(xs) { xs.map(fn (x) { self.scale * x }) }
-  scaled_lambda(xs) { xs.map(|x| self.scale * x) }
+  new(s) { @scale = s }
+  scaled(xs) { xs.map(fn (x) { @scale * x }) }
+  scaled_lambda(xs) { xs.map(|x| @scale * x) }
   total(xs) {
     mut sum = 0
-    xs.for_each(fn (x) { sum = sum + x * self.scale })
+    xs.for_each(fn (x) { sum = sum + x * @scale })
     sum
   }
-  detached() { fn () { self.scale } }
+  detached() { fn () { @scale } }
 }
 let bk = Basket.new(3)
 inspect(bk.scaled([1, 2]))
@@ -121,10 +121,10 @@ println(host.f())
 
 # --- Methods, values, and the class object -------------------------------
 class T {
-  new(v) { self.v = v }
-  m() { self.v }
-  twin() { T.new(self.v) }
-  down(n) { if n <= 0 { 0 } else { 1 + self.down(n - 1) } }
+  new(v) { @v = v }
+  m() { @v }
+  twin() { T.new(@v) }
+  down(n) { if n <= 0 { 0 } else { 1 + @down(n - 1) } }
 }
 let t = T.new(3)
 println(t.m())
@@ -142,8 +142,8 @@ println(type_of(t.m))
 # A class declared inside a function, and the class captured by its methods.
 fn make(v) {
   class Local {
-    new(x) { self.x = x }
-    doubled() { self.x * 2 }
+    new(x) { @x = x }
+    doubled() { @x * 2 }
   }
   Local.new(v)
 }
@@ -152,7 +152,7 @@ println(make(21).doubled())
 # --- Errors, defer, and unwinding ----------------------------------------
 class E {
   new(x) {
-    self.a = x
+    @a = x
     throw 'ctor'
   }
 }
@@ -167,14 +167,14 @@ class Fi {
 println(try { Fi.new() } catch e { e })
 
 class D {
-  new() { self.log = [] }
+  new() { @log = [] }
   work() {
-    defer { self.log.push('defer') }
-    self.log.push('body')
+    defer { @log.push('defer') }
+    @log.push('body')
     'ok'
   }
   thrower() {
-    defer { self.log.push('unwound') }
+    defer { @log.push('unwound') }
     throw 'x'
   }
 }
@@ -185,16 +185,16 @@ inspect(d.log)
 
 # Instances in containers, and one instance holding another.
 class P {
-  new(x) { self.x = x }
-  get_() { self.x }
+  new(x) { @x = x }
+  get_() { @x }
 }
 let p = P.new(1)
 inspect([p, P.new(2)])
 let dict = {'k': p}
 println(dict['k'].get_())
 class Wrap {
-  new(inner) { self.inner = inner }
-  deep() { self.inner.get_() }
+  new(inner) { @inner = inner }
+  deep() { @inner.get_() }
 }
 println(Wrap.new(p).deep())
 inspect(Wrap.new(p))

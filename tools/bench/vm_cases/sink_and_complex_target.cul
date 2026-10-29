@@ -5,8 +5,8 @@
 # write with or without it.
 
 class R {
-  new(id) { self.id = id }
-  drop() { println(['drop', self.id]) }
+  new(id) { @id = id }
+  drop() { println(['drop', @id]) }
 }
 fn f() {
   println('ran')
@@ -44,7 +44,7 @@ mut obj.p = 1
 obj.p = 2
 println(obj)
 class B {
-  new(v) { mut self.v = v }
+  new(v) { mut @v = v }
 }
 println(B.new(5).v)
 

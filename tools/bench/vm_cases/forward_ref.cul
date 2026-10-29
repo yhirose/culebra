@@ -43,8 +43,8 @@ println('--- class')
 let make = fn () { Later.new(3) }
 class Later {
   n: Long = 0
-  new(v) { self.n = v }
-  get_n() { self.n }
+  new(v) { @n = v }
+  get_n() { @n }
 }
 println(to_string(make().get_n()))
 

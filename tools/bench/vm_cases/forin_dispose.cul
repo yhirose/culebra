@@ -5,15 +5,15 @@
 # The iteration's bindings die before the iterator does, on every exit.
 class Res {
   id: String
-  new(id) { self.id = id }
-  drop() { inspect('drop ' + self.id) }
+  new(id) { @id = id }
+  drop() { inspect('drop ' + @id) }
 }
 class Source {
   n: Long
-  new() { self.n = 0 }
+  new() { @n = 0 }
   iter() { self }
-  has_next() { self.n < 2 }
-  next() { let v = self.n; self.n = v + 1; Res.new('e' + to_string(v)) }
+  has_next() { @n < 2 }
+  next() { let v = @n; @n = v + 1; Res.new('e' + to_string(v)) }
   dispose() { inspect('dispose') }
 }
 fn source() { Source.new() }
@@ -29,10 +29,10 @@ inspect(leave_res())
 # releases on the way out, so the iterable's drop fires.
 class Sour {
   n: Long
-  new() { self.n = 0 }
+  new() { @n = 0 }
   iter() { self }
-  has_next() { self.n < 2 }
-  next() { let v = self.n; self.n = v + 1; v }
+  has_next() { @n < 2 }
+  next() { let v = @n; @n = v + 1; v }
   dispose() { throw 'from dispose' }
   drop() { inspect('drop sour') }
 }

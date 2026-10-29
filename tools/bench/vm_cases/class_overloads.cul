@@ -5,11 +5,11 @@
 
 class Calc {
   base = 10
-  plus(a) { self.base + a }
-  plus(a, b) { self.base + a + b }
-  plus(a, b, cc) { self.base + a + b + cc }
+  plus(a) { @base + a }
+  plus(a, b) { @base + a + b }
+  plus(a, b, cc) { @base + a + b + cc }
   once() { 'no dispatcher' }
-  both() { "{self.plus(1)}/{self.plus(1, 2)}" }
+  both() { "{@plus(1)}/{@plus(1, 2)}" }
 }
 let c = Calc.new()
 println(c.plus(1))
@@ -46,7 +46,7 @@ println(Vec.new().make)
 # A static body is still a receiver frame — `self` is the class object.
 class Ref {
   static tell(a) { type_of(self) }
-  static tell(a, b) { self.helper(a) }
+  static tell(a, b) { @helper(a) }
   static helper(a) { "helper:{a}" }
 }
 println(Ref.tell(1))
@@ -58,9 +58,9 @@ println(Ref.tell(1, 2))
 class Point {
   tag = 'unset'
   seen = 0
-  new() { self.tag = 'empty' }
-  new(a) { self.tag = "one:{a}" }
-  new(a, b) { self.tag = "two:{a},{b}" }
+  new() { @tag = 'empty' }
+  new(a) { @tag = "one:{a}" }
+  new(a, b) { @tag = "two:{a},{b}" }
 }
 println(Point().tag)
 println(Point(1).tag)
@@ -72,8 +72,8 @@ inspect(Point.keys())
 # Constructor overloads with no declared fields, reached through a detached
 # `C.new` value as well as `C(args)`.
 class Pair {
-  new(a) { self.v = "one:{a}" }
-  new(a, b) { self.v = "two" }
+  new(a) { @v = "one:{a}" }
+  new(a, b) { @v = "two" }
 }
 let ctor = Pair.new
 println(ctor(1).v)
@@ -86,9 +86,9 @@ println(Pair(3).v)
 # read stops auto-invoking and yields the dispatcher itself.
 class Mixed {
   x = 4
-  get v() { "getter:{self.x}" }
+  get v() { "getter:{@x}" }
   v(a) { "method:{a}" }
-  get plainv() { "plain:{self.x}" }
+  get plainv() { "plain:{@x}" }
 }
 println(type_of(Mixed.new().v))
 println(Mixed.new().v(1))
@@ -103,8 +103,8 @@ fn spawn(tag) {
     m(a, b) { "{tag}-two" }
     static s(a) { "{tag}-s1" }
     static s(a, b) { "{tag}-s2" }
-    new(a) { self.v = "{tag}-c1" }
-    new(a, b) { self.v = "{tag}-c2" }
+    new(a) { @v = "{tag}-c1" }
+    new(a, b) { @v = "{tag}-c2" }
   }
   Tagged
 }
@@ -153,10 +153,10 @@ try {
 # Overloaded construction and dispatch in a hot loop: nothing accumulates.
 class Box {
   items = []
-  new(a) { self.items = [a] }
-  new(a, b) { self.items = [a, b] }
-  total(x) { self.items.size() + x }
-  total(x, y) { self.items.size() + x + y }
+  new(a) { @items = [a] }
+  new(a, b) { @items = [a, b] }
+  total(x) { @items.size() + x }
+  total(x, y) { @items.size() + x + y }
 }
 mut acc = 0
 mut i = 0

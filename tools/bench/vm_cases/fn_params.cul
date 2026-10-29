@@ -107,10 +107,10 @@ println(spread(1, 2, 3))
 # --- Class members -------------------------------------------------------
 class C {
   n: Long = 4
-  new(v: Long = 7) { self.n = v }
-  plus(k: Long = 1) { self.n + k }
+  new(v: Long = 7) { @n = v }
+  plus(k: Long = 1) { @n + k }
   # A default reads the receiver, and the recursion handle is the frame's.
-  same(k = self.n) { k }
+  same(k = @n) { k }
   kind(h = fn) { type_of(h) }
   static make(v: Long = 2) { v * 10 }
   # Overloads separated by type, not just arity.
@@ -132,7 +132,7 @@ println(c.tag('s'))
 # A Generic class's parameter is documentation: it lowers to Any.
 class Box<T> {
   v = nil
-  new(x: T) { self.v = x }
+  new(x: T) { @v = x }
   put(x: T, k: Long = 1) { [x, k] }
 }
 println(Box.new('anything').v)
