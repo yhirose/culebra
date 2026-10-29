@@ -2,7 +2,7 @@ Generator
 Generator {}
 Generator {}
 []
-0
+type error: expected Function, got Nil ('size' is not a method of Generator)
 true
 false
 nil
