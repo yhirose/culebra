@@ -31,7 +31,7 @@
   `AttributeError: namespace 'IO' has no member 'read_all'`を送出します。
   これにより、タイプミスや廃止APIの使用が、後続の呼び出しでの分かりにくい
   失敗ではなく、即座に捕捉可能なエラーになります。（プレーンなdictは寛容な
-  ルールのまま — 未定義キーは`nil`。）dictの組み込みメソッド
+  ルールのままで、未定義キーは`nil`です。）dictの組み込みメソッド
   `keys`/`values`/`has`/`get`/`size`は名前空間でも従来通り使えます。唯一の
   例外は`Path`で、これは名前空間ではなくクラスなので、未定義プロパティは
   他のクラスと同様に`nil`を返します。
@@ -152,11 +152,11 @@
 `Long` / `Float`のいずれかを受け取ります。`Long`と`Float`の相互作用は
 言語仕様 §4 / §7を参照。
 
-このセクションのサブグループ: **定数**（`Math.pi`、`Math.e`、
-`Math.inf`、`Math.nan`） — **スカラー演算**（`abs`、`min`、`max`、
+このセクションのサブグループは、**定数**（`Math.pi`、`Math.e`、
+`Math.inf`、`Math.nan`）、**スカラー演算**（`abs`、`min`、`max`、
 `log`、`exp`、`sqrt`、`floor`、`ceil`、`round`、`pow`、`sign`、
-`clamp`、`wrap`） — **三角関数**（`sin`、`cos`、`tan`、`asin`、`acos`、
-`atan`、`atan2`、ラジアン）。整数列ファクトリ`range` / `iota`は
+`clamp`、`wrap`）、**三角関数**（`sin`、`cos`、`tan`、`asin`、`acos`、
+`atan`、`atan2`、ラジアン）です。整数列ファクトリ`range` / `iota`は
 言語コアグローバルで、[言語仕様 §19](language.ja.md#19-コア組み込み関数) を参照。
 
 ### 定数
@@ -202,8 +202,8 @@ inspect(Math.abs(-7.5))  # => 7.5
 ### `Math.min(a, b, ...) -> Long|Float`、`Math.max(a, b, ...) -> Long|Float`
 
 2つ以上の数値引数から最小 / 最大を取ります。全て`Long`なら`Long`、
-1つでも`Float`が含まれれば結果は`Float`。引数1個以下、または
-数値以外が混じれば`type error`。
+1つでも`Float`が含まれれば結果は`Float`です。引数が1個以下の場合、または
+数値以外が混じる場合は`type error`になります。
 
 ```culebra
 inspect(Math.min(3, 1, 4, 1, 5))  # => 1
@@ -327,8 +327,8 @@ inspect(Math.wrap(320, 320))  # => 0
 ```
 
 `x`が非負の範囲では両者は一致するので、`Math.wrap`が効くのは`x`が
-負になりうるとき — スクロール量、折り返すタイル座標、逆向きに進めた
-角度 — だけです。
+負になりうるとき（スクロール量、折り返すタイル座標、逆向きに進めた
+角度など）だけです。
 
 ```culebra
 let frames = ['a', 'b', 'c']
@@ -375,7 +375,7 @@ IO.println('')  # → Hello, world!
 ### `IO.println(x: Any = '') -> Nil`
 
 `x`を改行付きで標準出力に書き出します。書式は`to_string`と同じで、
-文字列は**引用符なし**で出力されます — `inspect`の生表示版であり、
+文字列は**引用符なし**で出力されます。`inspect`の生表示版であり、
 `print`の改行付き版です。`x`は`''`がデフォルトなので、`println()`単体は
 空行だけを出力します。
 
@@ -400,7 +400,7 @@ println("Hello, {name}")
 ### `IO.stdin() -> reader`
 
 標準入力に対する読み取り専用ハンドルを返します。`File`ハンドルと同じreader
-インターフェース（だからソース非依存のコードが両方で動く）:
+インターフェースなので、入力元を問わないコードがどちらでも動きます。
 
 | メソッド | 結果 |
 | --- | --- |
@@ -408,8 +408,8 @@ println("Hello, {name}")
 | `.read(n: Long)` | 最大`n`バイト（EOF時のみ少なく返る） |
 | `.lines()` | 入力行の遅延iterator。末尾改行を除去し、EOFで停止 |
 
-`.lines()`は定数メモリでストリーミングする = 巨大・無限入力（`tail -f \| script`）に対する
-Unixフィルタのイディオム。読み取りはブロッキングかつ割り込み可能（Ctrl+C 1回で待機解除）。
+`.lines()`は定数メモリでストリーミングするので、巨大な入力や無限の入力（`tail -f \| script`）を
+扱うUnixフィルタのイディオムになります。読み取りはブロッキングですが割り込み可能で、Ctrl+Cを1回押すと待機が解除されます。
 標準入力は単一消費者で、各メソッドは内部バッファを共有するので`.read(n)`の後の`.lines()`
 はバイト読みの続きから続行します。
 
@@ -449,9 +449,9 @@ IO.eprintln("done")
 ### `IO.stdin_is_terminal() -> Bool` / `IO.stdout_is_terminal() -> Bool` / `IO.stderr_is_terminal() -> Bool`
 
 指定した標準ストリームが端末に接続されているか（POSIX `isatty`）を返し
-ます。対話性に応じた分岐に使えます。stdinならプロンプト表示かパイプ
-読み取りか、stdout / stderrなら色付けかプレーン出力か。スト
-リームがファイルやパイプにリダイレクトされている場合は`false`を返し
+ます。対話性に応じた分岐に使えます。たとえばstdinならプロンプトを出すかパイプ
+から読むか、stdout / stderrなら色を付けるかプレーンに出すかを切り替えます。
+ストリームがファイルやパイプにリダイレクトされている場合は`false`を返し
 ます。
 
 ```culebra
@@ -503,8 +503,8 @@ assert_eq(out, "hello\n")
 
 #### `FS.join(parts...: String) -> String`
 
-プラットフォームの区切り文字（POSIXでは`/`、Windowsでは`\` — 下の
-`FS.sep()`参照）でパス要素を結合します。引数0個は`""`を返します。
+プラットフォームの区切り文字（POSIXでは`/`、Windowsでは`\`。下の
+`FS.sep()`を参照）でパス要素を結合します。引数0個は`""`を返します。
 `std::filesystem::path::operator/=`と同じく、途中要素の末尾区切り文字は
 尊重されます。
 
@@ -514,14 +514,14 @@ inspect(FS.join('/usr', 'local', 'bin'))  # => '/usr/local/bin'
 inspect(FS.join())                        # => ''
 ```
 
-上の例はPOSIXの区切り文字での表示。結合したパスをリテラルと比較する
+上の例はPOSIXの区切り文字での表示です。結合したパスをリテラルと比較する
 プログラムは、`/`を決め打ちせず`FS.sep()`で組み立てるか、パスの
-構成要素同士を比較すること。
+構成要素同士を比較してください。
 
 #### `FS.sep() -> String`
 
-プラットフォームのパス区切り文字 — `FS.join`と`Path`の`/`が要素間に
-挿むもの。POSIXでは`/`、Windowsでは`\`。
+プラットフォームのパス区切り文字です。`FS.join`と`Path`の`/`が要素間に
+挿みます。POSIXでは`/`、Windowsでは`\`です。
 
 ```culebra
 inspect(FS.join('a', 'b') == "a{FS.sep()}b")  # => true
@@ -543,8 +543,8 @@ inspect(FS.basename('/'))          # => ''
 #### `FS.extension(path: String) -> String`
 
 拡張子（先頭ドット込み）。無ければ`""`。ドットファイル
-（`.hidden`）は拡張子なしとして扱います — `std::filesystem`仕様
-通り。
+（`.hidden`）は拡張子なしとして扱います（`std::filesystem`の仕様
+どおり）。
 
 ```culebra
 inspect(FS.extension('a/b/c.txt'))  # => '.txt'
@@ -564,9 +564,9 @@ inspect(FS.stem('a/b/c.txt'))  # => 'c'
 #### `FS.read(path: String) -> String`
 
 `path`のファイル全体を`String`として読み込みます（open + read +
-closeを1呼び出しで）。常にバイナリ: 戻り値は任意の内容を往復できる
-byte string。逐次／ストリーミング読みは`File`ハンドルを使います。
-ファイルが存在しない・読込不可・ディレクトリの場合`IOError`をthrow。
+closeを1呼び出しで）。常にバイナリで、戻り値は任意の内容を往復できる
+byte stringです。逐次／ストリーミング読みは`File`ハンドルを使います。
+ファイルが存在しない・読込不可・ディレクトリの場合は`IOError`をthrowします。
 
 ```culebra
 # doctest: skip
@@ -576,7 +576,7 @@ contents = FS.read('data.txt')
 #### `FS.write(path: String, content: String) -> Nil`
 
 `content`を`path`に書き込みます（作成または上書き）。バイナリ、
-改行変換なし。親ディレクトリが無い・書込不可の場合`IOError`をthrow。
+改行変換はありません。親ディレクトリが無い・書込不可の場合は`IOError`をthrowします。
 
 ```culebra
 # doctest: skip — 隣にファイルを書く
@@ -588,20 +588,20 @@ FS.write('out.txt', 'hello\n')
 #### `FS.exists(path: String) -> Bool`
 
 `path`に何かが存在するか。ファイル／ディレクトリ／シンボリック
-リンクの区別なし。空文字列や不正なパスは`false`。
+リンクの区別はありません。空文字列や不正なパスは`false`です。
 
 #### `FS.is_file(path: String) -> Bool`
 
-`path`が通常ファイルならtrue。シンボリックリンクはfollow。
+`path`が通常ファイルならtrueです。シンボリックリンクは辿ります。
 
 #### `FS.is_dir(path: String) -> Bool`
 
-`path`がディレクトリならtrue。シンボリックリンクはfollow。
+`path`がディレクトリならtrueです。シンボリックリンクは辿ります。
 
 #### `FS.size(path: String) -> Long`
 
-ファイルサイズ（バイト）。`path`が存在しない／通常ファイルで
-ない場合は`IOError`をthrow。
+ファイルサイズ（バイト）です。`path`が存在しない／通常ファイルで
+ない場合は`IOError`をthrowします。
 
 ### ディレクトリ変更系
 
@@ -610,7 +610,7 @@ FS.write('out.txt', 'hello\n')
 `path`の直下エントリをファイル名（プレフィックスなし、`.` /
 `..`除く）の配列で返します。順序はファイルシステム任せなので
 必要なら明示的にソートしてください。`path`がディレクトリでなけ
-れば`IOError`をthrow。
+れば`IOError`をthrowします。
 
 ```culebra
 # doctest: skip
@@ -620,16 +620,16 @@ assert_true(names.contains('out.o'))
 
 #### `FS.mkdir(path: String) -> Nil`
 
-ディレクトリを作成。途中の親ディレクトリも含めて作成
-（`mkdir -p`セマンティクス）。既存ならno-op。パスがファイル
-として存在する／作成に失敗した場合は`IOError`をthrow。
+ディレクトリを作成します。途中の親ディレクトリもまとめて作成します
+（`mkdir -p`セマンティクス）。既存ならno-opです。パスがファイル
+として存在する場合や作成に失敗した場合は`IOError`をthrowします。
 
 #### `FS.temp_dir() -> String`
 
-このマシンが一時ファイルを置くディレクトリ。POSIXでは`$TMPDIR`と
-そのフォールバック、Windowsでは`GetTempPath`。末尾に区切り文字を
-付けないので`FS.join`で二重にならない。プラットフォームが返した
-パスがディレクトリでない場合は`IOError`をthrow。
+このマシンが一時ファイルを置くディレクトリです。POSIXでは`$TMPDIR`と
+そのフォールバック、Windowsでは`GetTempPath`を使います。末尾に区切り文字を
+付けないので、`FS.join`で区切りが二重になりません。プラットフォームが返した
+パスがディレクトリでない場合は`IOError`をthrowします。
 
 ```culebra
 assert_true(FS.is_dir(FS.temp_dir()))
@@ -638,13 +638,13 @@ assert_true(FS.is_dir(FS.temp_dir()))
 #### `FS.mkdtemp(prefix: String) -> String`
 
 `FS.temp_dir()`の下に`prefix`で始まる名前の新しいディレクトリを
-作成し、そのパスを返す。名前を決めるだけでなく実際に**作成**するので、
-同時に走る2つのプログラムが同じディレクトリを受け取ることはない
+作成し、そのパスを返します。名前を決めるだけでなく実際に**作成**するので、
+同時に走る2つのプログラムが同じディレクトリを受け取ることはありません
 （サフィックスは共有エンジンではなくOSから引くので、`Random.seed`で
-同じ種を与えた2つの実行でも一致しない）。削除は呼び出し側の責任。
+同じ種を与えた2つの実行でも一致しません）。削除は呼び出し側の責任です。
 
-`prefix`はパスではなく名前。存在しない親ディレクトリを含む場合は
-暗黙の`mkdir -p`ではなく`IOError`。
+`prefix`はパスではなく名前です。存在しない親ディレクトリを含む場合は、
+暗黙の`mkdir -p`は行わず`IOError`になります。
 
 ```culebra
 let dir = FS.mkdtemp('build-')
@@ -655,9 +655,9 @@ FS.remove(dir, recursive: true)
 
 #### `FS.remove(path: String, recursive: Bool = false) -> Nil`
 
-ファイルまたは空ディレクトリを削除（既定）。非空ディレクトリは
-`IOError`。`recursive: true`でディレクトリツリーを削除（`rm -rf`）。
-対象が存在しない／削除できない場合は`IOError`。
+既定ではファイルまたは空ディレクトリを削除します。非空ディレクトリは
+`IOError`になります。`recursive: true`ならディレクトリツリーを削除します（`rm -rf`）。
+対象が存在しない場合や削除できない場合も`IOError`です。
 
 ```culebra
 # doctest: skip
@@ -667,21 +667,21 @@ FS.remove('/tmp/build', recursive: true)
 
 #### `FS.rename(src: String, dst: String) -> Nil`
 
-`src`を`dst`にリネーム／移動（同一ファイルシステム内はatomic）。
-失敗時`IOError`。
+`src`を`dst`にリネーム／移動します（同一ファイルシステム内ではatomic）。
+失敗時は`IOError`をthrowします。
 
 #### `FS.copy(src: String, dst: String, recursive: Bool = false) -> Nil`
 
-ファイルをコピー（`dst`既存なら上書き）。`recursive: true`で
-ディレクトリツリーをコピー。失敗時`IOError`。
+ファイルをコピーします（`dst`が既存なら上書き）。`recursive: true`なら
+ディレクトリツリーをコピーします。失敗時は`IOError`をthrowします。
 
 #### `FS.chmod(path: String, mode: Long) -> Nil`
 
 `path`の権限ビットを`mode`（整数、通常は8進リテラル`0o755`/`0o644`）に
-設定する。`mode`は下位12ビット（所有者/グループ/その他の`rwx` +
-setuid/setgid/sticky）にマスクされ、既存ビットを置き換える。現在のビットは
-`FS.stat(path).mode`で読める。存在しない、または権限変更に失敗すると
-`IOError`。
+設定します。`mode`は下位12ビット（所有者/グループ/その他の`rwx` +
+setuid/setgid/sticky）にマスクされ、既存ビットを置き換えます。現在のビットは
+`FS.stat(path).mode`で読めます。存在しない場合や権限変更に失敗した場合は
+`IOError`です。
 
 プラットフォームをまたいで通用するのは所有者のwriteビットだけです。Windows
 は権限ビットではなく読み取り専用属性を1つ持つので、どのファイルも`0o666`か
@@ -697,11 +697,11 @@ inspect(FS.stat('deploy.sh').mode)  # 493  (0o755)
 
 #### `FS.chown(path: String, owner = nil, group = nil) -> Nil`
 
-`path`の所有者・グループを変更する。`owner`/`group`はそれぞれ名前（`String`）・
-数値id（`Long`）・`nil`（その項目は変更しない）を受ける。現在のidは
-`FS.stat(path).uid` / `.gid`で読める。所有者の変更は通常rootが必要、グループは
-所属グループへなら一般ユーザでも可。存在しないパス・不明な名前・権限失敗で
-`IOError`、String/Long/Nil以外の引数は`TypeError`。
+`path`の所有者・グループを変更します。`owner`/`group`はそれぞれ名前（`String`）・
+数値id（`Long`）・`nil`（その項目は変更しない）を受け取ります。現在のidは
+`FS.stat(path).uid` / `.gid`で読めます。所有者の変更には通常rootが必要で、グループは
+所属グループへなら一般ユーザでも変更できます。存在しないパス・不明な名前・権限失敗は
+`IOError`、String/Long/Nil以外の引数は`TypeError`です。
 
 ```culebra
 # doctest: skip
@@ -713,12 +713,11 @@ FS.chown('data', 'deploy', 'deploy')  # 両方を名前で（root）
 
 #### `FS.stat(path: String) -> Object`
 
-`{size, is_dir, is_file, is_symlink, mtime, mode, uid, gid}`を返す。`size`は
+`{size, is_dir, is_file, is_symlink, mtime, mode, uid, gid}`を返します。`size`は
 バイト（非通常ファイルは0）、`mtime`はUnix epoch秒、`mode`は権限ビットの整数
-（8進と比較: `st.mode == 0o644`）、`uid`/`gid`は所有者・グループid、
-`is_symlink`は
-リンク自体を、他フィールドはリンク先を見ます。存在しなければ
-`IOError`。
+（8進と比較します: `st.mode == 0o644`）、`uid`/`gid`は所有者・グループidです。
+`is_symlink`はリンク自体を、他フィールドはリンク先を見ます。存在しなければ
+`IOError`です。
 
 WindowsにはPOSIXの所有者モデルが無いので、`uid`と`gid`は代替値を持つのでは
 なく**フィールドごと存在しません**。`st.uid`は`nil`になり、そのプラット
@@ -736,10 +735,10 @@ inspect(st.size)
 
 #### `FS.walk(path: String) -> Array<String>`
 
-`path`配下の全パスを再帰・深さ優先で。各要素はフルパス。
-読む権限の無いディレクトリは要素には入るが、その中へは降りない。
+`path`配下の全パスを、再帰的に深さ優先で返します。各要素はフルパスです。
+読む権限の無いディレクトリは要素には入りますが、その中へは降りません。
 `path`がディレクトリでないとき、`path`自体が読めないとき、配下の読み込みが
-それ以外の理由で失敗したときは`IOError`。
+それ以外の理由で失敗したときは`IOError`です。
 
 #### `FS.glob(pattern: String) -> Array<String>`
 
@@ -762,16 +761,16 @@ let sources = FS.glob('src/**/*.cul')
 リンク解決済みなので、macOSでは`/tmp`配下が`/private/tmp`配下として
 報告される）、`kind`は`'created'` / `'modified'` / `'deleted'`。
 `match`は指定拡張子で終わるパスだけを通します（先頭ドットは有無どちら
-でも可 — `'cul'`と`'.cul'`は同じフィルタ）。判定はイベントをキューに積む
+でも可。`'cul'`と`'.cul'`は同じフィルタです）。判定はイベントをキューに積む
 前に行うので、弾かれた変更はキューに入りません。
 ディレクトリでなければ`IOError`、`match`が文字列配列でなければ
 `TypeError`。
 
 `recursive: false`は監視をそのディレクトリ直下の項目に絞ります。サブ
 ディレクトリの*下*で起きた変更は報告されませんが、サブディレクトリ項目
-そのものの変更は報告されることがあります — 中のファイルが書かれたとき
-にタイムスタンプが動いたことをWindowsは報告し、inotifyとFSEventsは報告
-しません。
+そのものの変更は報告されることがあります。中のファイルが書かれたときに
+タイムスタンプが動いたことを、Windowsは報告しますが、inotifyとFSEventsは
+報告しません。
 
 バックエンドはmacOSがFSEvents、Linuxがinotify、Windowsが
 `ReadDirectoryChangesW`。
@@ -802,7 +801,7 @@ w.close()
 意図的に約束していないことが3点あります。**kindはOSの粒度でのbest
 effort**です。FSEventsは短い窓の中で同一パスへの複数の変更を1イベント
 に畳み、inotifyは個別に報告するため、同じ編集が片方では1イベント、もう
-片方では2イベントになりえます。**renameはペアになりません** — 旧パスの
+片方では2イベントになりえます。**renameはペアになりません**。旧パスの
 `deleted`と新パスの`created`として別々に届きます。**重複排除も
 debounceもせず**、キューは無制限です。木の変化より遅い消費者はイベント
 を落とすのではなくメモリを消費します。
@@ -839,8 +838,8 @@ debounceもせず**、キューは無制限です。木の変化より遅い消�
 
 #### `FS.readlink(path: String) -> String`
 
-シンボリックリンクの参照先を読む。`path`がリンクでなければ
-`IOError`。
+シンボリックリンクの参照先を読みます。`path`がリンクでなければ
+`IOError`です。
 
 #### `FS.is_symlink(path: String) -> Bool`
 
@@ -850,11 +849,11 @@ debounceもせず**、キューは無制限です。木の変化より遅い消�
 
 `Path`は`FS.*`ヘルパの上の薄い**不変**ラッパです。`FS`が原始層
 （生の`String`パスを受け、`String`／値を返す）で、`Path`はパスを持ち
-回る糖衣層 — パス文字列を手で引き回さずに済みます。各操作は新しい
+回る糖衣層で、パス文字列を手で引き回さずに済みます。各操作は新しい
 `Path`（成分は`String`）を返し、`Path`は決して破壊的に変更されません。
 
 短いスクリプトでは`FS.*`を、パスを段階的に組み立てたり複数の操作へ
-渡したりする所では`Path`を。`/`演算子とプロパティ連鎖の方が読みやすく
+渡したりする所では`Path`を使います。`/`演算子とプロパティ連鎖の方が読みやすく
 なります:
 
 ```culebra
@@ -891,7 +890,7 @@ for src in root.glob("*/content.src.js") {
 | `p.str()` | `String`（エスケープハッチ） | — |
 
 `name` / `stem` / `suffix` / `parent`は **getter**（純粋な文字列導出）で、
-括弧なしで読みます — `p.parent().name()`ではなく`p.parent.name`（括弧付き
+括弧なしで読みます。`p.parent().name()`ではなく`p.parent.name`と書きます（括弧付き
 の呼び出しも動きます）。下段のファイルシステム操作はI/Oを行いthrowし
 うるためメソッドのままです。
 
@@ -913,8 +912,8 @@ for line in File.open(cfg).lines() {
 ```
 
 こうしてopt-inするのは*パスを取る*標準ライブラリ関数だけです。それ
-以外では`Path`と`String`は**別の型**のまま — ふつうの`fn(x: String)`
-は`Path`を受け付けないので型境界は意味を保ちます。`String`専用APIに
+以外では`Path`と`String`は**別の型**のままです。ふつうの`fn(x: String)`
+は`Path`を受け付けないので、型境界は意味を保ちます。`String`専用APIに
 生文字列を渡すには`p.str()`（または`"{p}"`）を使ってください。
 
 ---
@@ -936,8 +935,8 @@ for line in File.open(cfg).lines() {
 
 #### `File.open(path: String, mode: String = "r") -> File`
 
-`path`を開く。`mode`は`"r"`（読み）/ `"w"`（切り詰め+書き）/
-`"a"`（追記）。それ以外は`ValueError`、開けなければ`IOError`。
+`path`を開きます。`mode`は`"r"`（読み）/ `"w"`（切り詰め+書き）/
+`"a"`（追記）です。それ以外は`ValueError`、開けなければ`IOError`です。
 
 #### `File.with(path: String, mode: String = "r", fn: Function) -> Any`
 
@@ -968,14 +967,14 @@ let head = File.with('big.log', 'r', fn (f) {
 
 #### `f.read() -> String` / `f.read(n: Long) -> String`
 
-現在位置からのストリーミング読み: `read()`は残り全部、`read(n)`
-は最大`n`バイト（EOFでは少なくなる）。ハンドル不要の一発全読みは
+現在位置からストリーミングで読みます。`read()`は残り全部、`read(n)`
+は最大`n`バイトを返します（EOFでは少なくなります）。ハンドル不要の一発全読みは
 `FS.read(path)`を使います。
 
 #### `f.lines() -> Iterator<String>`
 
-行を反復、各行は末尾改行を剥がします（`\n` / `\r\n` / `\r`全対応）。
-iteratorがハンドルを所有し、ループ終了・breakで閉じます。
+行を順に返し、各行から末尾改行を取り除きます（`\n` / `\r\n` / `\r`の
+すべてに対応）。iteratorがハンドルを所有し、ループ終了やbreakで閉じます。
 
 ```culebra
 # doctest: skip
@@ -988,26 +987,26 @@ for line in File.open('access.log').lines() {
 
 #### `f.chunks(n: Long) -> Iterator<String>`
 
-最大`n`バイトの固定長チャンクを反復（最後は短いことあり）。
+最大`n`バイトの固定長チャンクを順に返します（最後は短いことがあります）。
 `lines()`と同じclose-on-exit契約。
 
 ### Writer メソッド
 
 #### `f.write(data: String) -> Nil`
 
-現在位置に`data`を書き込み（生バイト、改行変換なし）。読み取り
-専用ハンドルでは`IOError`。
+現在位置に`data`を書き込みます（生バイト、改行変換なし）。読み取り
+専用ハンドルでは`IOError`です。
 
 #### `f.flush() -> Nil`
 
-バッファした書き込みをOSにフラッシュ。
+バッファした書き込みをOSにフラッシュします。
 
 ### Seekable メソッド
 
 #### `f.seek(offset: Long, whence: String = "set") -> Nil`
 
-カーソル移動。`whence`は`"set"`（先頭から）/ `"cur"`（相対）/
-`"end"`（末尾から；負の`offset`を使う）。
+カーソルを移動します。`whence`は`"set"`（先頭から）/ `"cur"`（相対）/
+`"end"`（末尾から。負の`offset`を使います）です。
 
 #### `f.tell() -> Long`
 
@@ -1017,36 +1016,36 @@ for line in File.open('access.log').lines() {
 
 #### `f.close() -> Nil`
 
-ハンドルを閉じ、書き込みをフラッシュ。冪等 — 二重closeはno-op。
-閉じたハンドルへの操作は`IOError`。
+ハンドルを閉じ、書き込みをフラッシュします。冪等で、二重closeはno-opです。
+閉じたハンドルへの操作は`IOError`です。
 
 ---
 
 ## 5. `Time`
 
-Wall-clock + monotonic時刻、ISO 8601入出力、カレンダー算術。
-モジュールが提供する2つのクラス — `Instant`（時点）と
-`Duration`（時間幅）— 内部表現はUnix epoch起点の`i64`
-ナノ秒（範囲 ±292年、完全ナノ秒精度）。この範囲を超える結果は
-桁あふれせず`ValueError`になる。
+Wall-clock時刻とmonotonic時刻、ISO 8601の入出力、カレンダー算術を扱います。
+モジュールが提供するクラスは`Instant`（時点）と
+`Duration`（時間幅）の2つで、内部表現はUnix epoch起点の`i64`
+ナノ秒です（範囲 ±292年、完全ナノ秒精度）。この範囲を超える結果は
+桁あふれせず`ValueError`になります。
 
-タイムゾーンは **UTC + localのみ**（`Asia/Tokyo`等の名前付き
-ゾーンは将来対応）。各methodはkw-only `utc:`フラグを取り、
-`iso`は`utc: true`がデフォルト（Z付きISO 8601がinteropの
-wire formのため）、それ以外は`utc: false`（local）デフォルト。
+タイムゾーンは**UTCとlocalのみ**です（`Asia/Tokyo`等の名前付き
+ゾーンは将来対応）。各methodはkw-only `utc:`フラグを取ります。
+`iso`は`utc: true`がデフォルトで（Z付きISO 8601がinteropの
+wire formのため）、それ以外は`utc: false`（local）がデフォルトです。
 
 ### 取得
 
 #### `Time.now() -> Instant`
 
 現在のwall-clock時刻。NTPや手動時計調整の影響を受けるので、
-経過計測には`Time.monotonic`を使うこと。
+経過計測には`Time.monotonic`を使ってください。
 
 #### `Time.monotonic() -> Float`
 
-最初の呼出（プロセス起動）からの経過秒数（sub-秒精度）。厳密に
-非減少、壁時計変更の影響を受けない。ベンチやtimeoutの基本ツー
-ル。
+最初の呼出（プロセス起動）からの経過秒数です（sub-秒精度）。厳密に
+非減少で、壁時計の変更の影響を受けません。ベンチやtimeoutの基本ツー
+ルです。
 
 ```culebra
 # doctest: skip
@@ -1057,47 +1056,47 @@ inspect("elapsed: {Time.monotonic() - t0} s")
 
 #### `Time.sleep(secs: Float) -> Nil`
 
-現在スレッドを`secs`秒以上ブロック。負値や0はno-op。
+現在のスレッドを`secs`秒以上ブロックします。負値や0はno-opです。
 
 ### `Instant` コンストラクタ
 
 #### `Time.from_iso(s: String) -> Instant`
 
-ISO 8601タイムスタンプをparse。受け付けるvariant:
+ISO 8601タイムスタンプをparseします。受け付けるvariantは次のとおりです:
 
 - `2026-05-20T15:30:00Z`
 - `2026-05-20T15:30:00.123Z`
 - `2026-05-20T15:30:00.000123456Z`（ns精度の入力）
 - `2026-05-20T15:30:00+09:00`
 - `2026-05-20T15:30:00-0900`
-- `2026-05-20`（日付のみ — UTC 0:00として扱う）
+- `2026-05-20`（日付のみ。UTC 0:00として扱います）
 - `2026-05-20T15:30`（秒省略）
 
-不正な入力は`ValueError`をthrow。暦の範囲外の値（`2026-13-01`、
-`2025-02-29`、`T25:00`）も不正な入力で、翌月や翌日へ繰り上げはしない。
+不正な入力は`ValueError`をthrowします。暦の範囲外の値（`2026-13-01`、
+`2025-02-29`、`T25:00`）も不正な入力で、翌月や翌日への繰り上げは行いません。
 
 #### `Time.from_unix(secs: Long|Float) -> Instant`
 
-Unix epoch秒から構築。Longなら正確に、Floatならsub-秒精度で、
-最も近いナノ秒に丸める。
+Unix epoch秒から構築します。Longなら正確に、Floatならsub-秒精度で、
+最も近いナノ秒に丸めます。
 
 #### `Time.from_parts(p: Object, utc: Bool = false) -> Instant`
 
-parts dictからtimestampを組み立て — `Instant.parts`の逆操作。
-認識キー: `year`、`month`、`day`、`hour`、`minute`、`second`、
-`nanosecond`（デフォルト: `year=1970`、`month=1`、`day=1`、その他0）。それ
-以外のキーは無視。認識キーの値はLongでなければ`TypeError`、暦の範囲
+parts dictからtimestampを組み立てます（`Instant.parts`の逆操作）。
+認識するキーは`year`、`month`、`day`、`hour`、`minute`、`second`、
+`nanosecond`で、デフォルトは`year=1970`、`month=1`、`day=1`、その他0です。それ
+以外のキーは無視されます。認識するキーの値がLongでなければ`TypeError`、暦の範囲
 （`month`は1〜12、`day`はその月の日数まで、`hour`は0〜23、`minute`と
-`second`は0〜59、`nanosecond`は10⁹未満）を外れると`ValueError`。
+`second`は0〜59、`nanosecond`は10⁹未満）を外れると`ValueError`です。
 
 #### `Time.parse(s: String, fmt: String) -> Instant`
 
-非ISO入力向けの厳格strftime parse。formatはPOSIX `strptime`
-準拠。`s`が`fmt`に一致しないとき、`fmt`を読み終えても文字が
+非ISO入力向けの厳格なstrftime parseです。formatはPOSIX `strptime`
+に準拠します。`s`が`fmt`に一致しないとき、`fmt`を読み終えても文字が
 残るとき、項目が暦の範囲（`Time.from_parts`と同じ）を外れるときは
-`ValueError`をthrow（`2026-02-30`は3月に繰り上げずに拒否）。`fmt`に
+`ValueError`をthrowします（`2026-02-30`は3月に繰り上げずに拒否します）。`fmt`に
 ない項目は`Time.from_parts`と同じ既定値（`year=1970`、`month=1`、
-`day=1`、その他0）。結果はlocal timeとして解釈。
+`day=1`、その他0）になります。結果はlocal timeとして解釈されます。
 
 ```culebra
 Time.parse("2026/05/20 15:30:00", "%Y/%m/%d %H:%M:%S")
@@ -1107,12 +1106,12 @@ Time.parse("2026/05/20 15:30:00", "%Y/%m/%d %H:%M:%S")
 
 #### `t.iso(utc: true) -> String`
 
-ISO 8601形式、完全ナノ秒精度（小数部が0の場合は省略）。デフォ
-ルトUTC（`...Z`）、`utc: false`でlocal time + `±HH:MM` offset。
+ISO 8601形式で、完全ナノ秒精度です（小数部が0の場合は省略）。デフォ
+ルトはUTC（`...Z`）で、`utc: false`ならlocal time + `±HH:MM` offsetになります。
 
 #### `t.format(fmt: String, utc: false) -> String`
 
-strftime formatで整形。デフォルトはlocal time。
+strftime formatで整形します。デフォルトはlocal timeです。
 
 ```culebra
 # doctest: skip
@@ -1123,8 +1122,8 @@ t.format("%Y%m%d", utc: true)  # 20260520
 #### `t.parts(utc: false) -> Object`
 
 `{year, month, day, hour, minute, second, nanosecond, weekday,
-dayofyear}`に分解。`weekday`はISO 8601起点（`0=Mon`、`6=Sun`）、
-`dayofyear`は1-based（`1..366`）。
+dayofyear}`に分解します。`weekday`はISO 8601起点（`0=Mon`、`6=Sun`）、
+`dayofyear`は1-based（`1..366`）です。
 
 ```culebra
 let p = Time.now().parts()
@@ -1135,15 +1134,15 @@ if p.hour >= 9 && p.hour < 17 {
 
 #### `t.weekday(utc: false) -> Long`
 
-weekday単体（0=Mon..6=Sun）。`parts()`のObject allocationを
-避けたい場合用。
+weekday単体（0=Mon..6=Sun）を返します。`parts()`のObject allocationを
+避けたい場合に使います。
 
 #### `t.add(years=0, months=0, days=0, hours=0, minutes=0, seconds=0, utc: false) -> Instant`
 
-カレンダー算術。`years` / `months`は **月末clamp** セマンティ
-クス: `2026-01-31 + 1ヶ月 → 2026-02-28`、
-`2024-01-31 + 1ヶ月 → 2024-02-29`（うるう年）。日以下の場は単純
-加算。
+カレンダー算術です。`years` / `months`は**月末clamp**セマンティ
+クスです: `2026-01-31 + 1ヶ月 → 2026-02-28`、
+`2024-01-31 + 1ヶ月 → 2024-02-29`（うるう年）。日以下の単位は単純
+加算です。
 
 ```culebra
 let next_month = Time.now().add(months: 1)
@@ -1153,8 +1152,8 @@ let next_year = Time.now().add(years: 1)
 
 #### `t.start_of(unit: String, utc: false) -> Instant`
 
-カレンダー単位の先頭に丸める。`unit` ∈ `"year"` / `"month"` /
-`"day"` / `"hour"` / `"minute"`。それ以外は`ValueError`。
+カレンダー単位の先頭に丸めます。`unit`は`"year"` / `"month"` /
+`"day"` / `"hour"` / `"minute"`のいずれかで、それ以外は`ValueError`です。
 
 ```culebra
 # doctest: skip
@@ -1164,8 +1163,8 @@ let hour_bucket = t.start_of("hour")
 
 #### `t.unix() -> Float`、`t.unix_nanos() -> Long`
 
-Unix epochをFloat秒（現在時点で ~400ns精度）またはLong ns
-（loss-less）で取得。
+Unix epochをFloat秒（現在時点で約400ns精度）またはLong ns
+（loss-less）で取得します。
 
 ### `Duration` コンストラクタ
 
@@ -1178,8 +1177,8 @@ Time.hours(n)
 Time.days(n)
 ```
 
-`n`はLongでもFloatでも可 — Longは正確に換算し、小数単位は最も近い
-ナノ秒に丸める。
+`n`はLongでもFloatでも構いません。Longは正確に換算し、小数単位は最も近い
+ナノ秒に丸めます。
 
 ### `Duration` method
 
@@ -1227,7 +1226,7 @@ a < b, a <= b, a == b                 # 両クラスで自然な順序
 
 ### `Random.seed(n: Long) -> Nil`
 
-PRNGを再シード。同じ`n` → 同じ系列。
+PRNGを再シードします。同じ`n`なら同じ系列になります。
 
 ```culebra
 Random.seed(42)
@@ -1235,8 +1234,8 @@ Random.seed(42)
 
 ### `Random.int(lo: Long, hi: Long) -> Long`
 
-半開区間`[lo, hi)`からの一様整数。`hi > lo`必須、
-違反すると`type error`。
+半開区間`[lo, hi)`からの一様整数です。`hi > lo`が必須で、
+違反すると`type error`になります。
 
 ```culebra
 Random.seed(0)
@@ -1250,7 +1249,7 @@ inspect(Random.int(0, 10))  # 0..9
 
 ### `Random.gauss(mu: Float, sigma: Float) -> Float`
 
-平均`mu`、標準偏差`sigma`のガウス分布から1サンプル。
+平均`mu`、標準偏差`sigma`のガウス分布から1サンプルを取ります。
 `Long`引数は`Float`に昇格します。
 
 ```culebra
@@ -1266,7 +1265,7 @@ Fisher–Yatesによるインプレース置換。`nil`を返し、引数は破�
 
 対応する`weights`に比例する確率で`pop`から1要素を取り出します。
 `weights`はすべて数値かつ`pop`と同じ長さである必要があります。
-空または長さ不一致は`type error`。重み`0`は選ばれません。負または
+空の場合や長さが一致しない場合は`type error`です。重み`0`は選ばれません。負または
 有限でない重み、およびすべてが`0`の重みは`ValueError`です。
 
 ```culebra
@@ -1309,7 +1308,7 @@ inspect(Sys.argv)  # ['hello', 'world']
 
 `culebra build`で作ったバイナリも同じ形で（プログラム名を同様に除いて）
 実行時の引数を返します。値はプロセス全体で共有されるので、
-[isolate](#12-isolate) やworkerスレッド上のHTTPハンドラでも
+[isolate](#12-isolate)やworkerスレッド上のHTTPハンドラでも
 メインスレッドと同じ配列が読めます。
 
 ### `Sys.exit(code: Long) -> Nil`
@@ -1387,7 +1386,7 @@ inspect(Sys.getcwd())  # '/tmp'（または解決後のパス）
 | Windows | `%APPDATA%\<app>`（未設定なら`%USERPROFILE%\AppData\Roaming\<app>`） |
 | その他 | `$XDG_DATA_HOME/<app>`、未設定なら`~/.local/share/<app>` |
 
-ディレクトリは**作成しません** — 最初に書き込むときに`FS.mkdir`が親ごと作ります。
+ディレクトリは**作成しません**。最初に書き込むときに`FS.mkdir`が親ごと作ります。
 `app`は単一のパスセグメントでなければならず、空文字列・`/`や`\`や`:`を含む
 名前・`.`・`..`はいずれも`ValueError`になります。したがって戻り値がベース
 ディレクトリの外を指すことはありません（Windowsのドライブレターは、付け足す
@@ -1405,10 +1404,10 @@ inspect(dir)  # '/Users/alice/Library/Application Support/samegame'
 
 ### `Sys.executable -> String`
 
-実行中のculebraバイナリの絶対パス。`culebra`が`PATH`にあることに頼らず、
-culebraのワーカーコピーを起動するのに使う — 例
+実行中のculebraバイナリの絶対パスです。`culebra`が`PATH`にあることに頼らず、
+culebraのworkerコピーを起動するのに使います。例:
 `Proc.run([Sys.executable, "worker.cul"], ...)`。（AOTビルドされたプログラムでは
-その単体バイナリ自身のパスになる。）
+その単体バイナリ自身のパスになります。）
 
 ```culebra
 # doctest: skip — マシン固有の値を印字する
@@ -1417,11 +1416,11 @@ inspect(Sys.executable)  # '/usr/local/bin/culebra'
 
 ### `Sys.script -> String?`
 
-実行中スクリプトの絶対パス（`__file__`相当）。カレントディレクトリに頼らず、
-スクリプトの隣にあるファイルを解決するのに使う：
+実行中スクリプトの絶対パス（`__file__`相当）です。カレントディレクトリに頼らず、
+スクリプトの隣にあるファイルを解決するのに使います:
 `FS.join(FS.dirname(Sys.script), "data.txt")`。実行時にソースファイルが存在しない
-場合 — REPL・パイプした`stdin`・AOTビルドされたバイナリ（`.cul`を持たない。その
-場合は`Sys.executable`を使う）— では`nil`。
+場合（REPL、パイプした`stdin`、`.cul`を持たないAOTビルドされたバイナリ。AOTの
+場合は`Sys.executable`を使います）は`nil`です。
 
 ```culebra
 # doctest: skip — マシン固有の値を印字する
@@ -1445,7 +1444,7 @@ inspect(Sys.time() - t0 >= 0.0)  # => true
 ### `GC` — ヒープ情報の取得
 
 `GC.stat()`はフルコレクションを実行し、その直後の生きたヒープを表す
-`Object`を返す:
+`Object`を返します:
 
 | キー | 型 | 意味 |
 |---|---|---|
@@ -1454,18 +1453,18 @@ inspect(Sys.time() - t0 >= 0.0)  # => true
 | `heap_bytes` | `Long` | それらが占めるバイト数 |
 
 先にコレクションを走らせるので、数値はsweep待ちの循環残渣ではなく
-*到達可能な* 状態を表す。呼び出し自体が結果`Object`を確保するため、
-連続して読むと小さな定数分だけ差が出る — 絶対値ではなく対象コード前後の
-差分（delta）を測ること。
+*到達可能な* 状態を表します。呼び出し自体が結果`Object`を確保するため、
+連続して読むと小さな定数分だけ差が出ます。絶対値ではなく対象コード前後の
+差分（delta）を測ってください。
 
 このコレクションは根をスタック走査ではなく参照カウント（CPythonの
 `gc_refs`）から決めるので、プログラムのどのオブジェクトが生き残るか、
 つまりどの孤児の`drop`が発火するかは参照カウントだけで決まり、どの
-backendでも毎回同じになる。したがって`rc_objects`は同じプログラムなら
-決定的な値で、executorと`--jit`は同じ値を返す。
+backendでも毎回同じになります。したがって`rc_objects`は同じプログラムなら
+決定的な値で、executorと`--jit`は同じ値を返します。
 `live_objects`は保守的なスタック走査でトレースされるStringも数えるので
-数個ぶれることがある。2回の呼び出しの間に走るバックグラウンドの
-コレクションも保守的で、より安価である。
+数個ぶれることがあります。2回の呼び出しの間に走るバックグラウンドの
+コレクションも保守的で、より安価です。
 
 ```culebra
 # doctest: skip
@@ -1474,16 +1473,16 @@ build_some_structure()
 inspect(GC.stat().live_objects - base)  # 構造が保持しているオブジェクト数
 ```
 
-これはリーク回帰テストの土台になる: 多数の反復をまたいでdeltaが有界に
-留まることをassertする。メモリはそれ以外は自動管理 — メモリモデルと
-確定的`drop`は言語仕様を参照。
+これはリーク回帰テストの土台になります。多数の反復をまたいでdeltaが有界に
+留まることをassertします。メモリはそれ以外は自動管理です。メモリモデルと
+確定的`drop`は言語仕様を参照してください。
 
-`GC.refcount(value)`はヒープ値が開いている参照の数を返す。参照カウントを
-持たない値では`nil` — `Long`・`Float`・`Bool`・`nil`は即値で、`String`は
-カウントでなくトレースで管理される。これは`GC.stat()`では答えられない
-問いに答える: 決して回収されない値 — 例えばnamespaceから到達可能なもの — は、
+`GC.refcount(value)`はヒープ値が開いている参照の数を返します。参照カウントを
+持たない値では`nil`です。`Long`・`Float`・`Bool`・`nil`は即値で、`String`は
+カウントでなくトレースで管理されます。これは`GC.stat()`では答えられない
+問いに答えます。決して回収されない値（例えばnamespaceから到達可能なもの）は、
 参照がいくら積み上がってもオブジェクト数を1つも増やさないので、そうした値に
-対して漏れた参照はオブジェクト数の計測には写らない。
+対して漏れた参照はオブジェクト数の計測には写りません。
 
 ```culebra
 let obj = {a: 1}
@@ -1494,9 +1493,9 @@ for _ in range(100) {
 inspect(GC.refcount(obj) - base)  # => 0
 ```
 
-絶対値ではなく必ずdeltaとして読むこと: 答えを返している間その呼び出し自身が
-参照を1つ持っているし、ランタイムがrootとして保持している値は、プログラムから
-見える数よりはるかに大きな値を返す。
+絶対値ではなく必ずdeltaとして読んでください。答えを返している間その呼び出し自身が
+参照を1つ持っていますし、ランタイムがrootとして保持している値は、プログラムから
+見える数よりはるかに大きな値を返します。
 
 ---
 
@@ -1505,7 +1504,7 @@ inspect(GC.refcount(obj) - base)  # => 0
 N次元数値テンソル。lazy計算グラフを構築し、`Tensor.eval(...)`で
 BLAS / vDSP経由のカーネルを起動して値を確定します。dtypeは
 `Float32`のみ、形状はvariadicか`[m, n]`
-配列で指定。`transpose` / `slice` / `reshape`はzero-copy view。
+配列で指定します。`transpose` / `slice` / `reshape`はzero-copy viewです。
 
 ```culebra
 let A = Tensor.from([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])    # [2, 3]
@@ -1522,7 +1521,7 @@ inspect(C.to_array())                                      # => [[5.0, 6.0], [11
 
 形状をvariadic（`Tensor.zeros(3, 4)`）またはArray
 （`Tensor.zeros([3, 4])`）で受け取ります。dtypeは文字列タグを
-**第一引数**に置くJulia流。dtypeは`"f32"`のみです（float64は
+**第一引数**に置くJulia流です。dtypeは`"f32"`のみです（float64は
 GPUバックエンドに高速パスがないため）：
 
 ```culebra
@@ -1536,7 +1535,7 @@ let r = Tensor.randn(2, 3)  # 標準正規
 #### `Tensor.from(arr: Array) -> Tensor`
 
 ネストされたCulebra配列をTensorに変換します。1D（`[1.0, 2.0]`）
-または2D（`[[1.0, 2.0], [3.0, 4.0]]`）を受け、F32で格納：
+または2D（`[[1.0, 2.0], [3.0, 4.0]]`）を受け、F32で格納します:
 
 ```culebra
 let v = Tensor.from([1.0, 2.0, 3.0, 4.0])      # [4]
@@ -1548,7 +1547,7 @@ let m = Tensor.from([[1.0, 2.0], [3.0, 4.0]])  # [2, 2]
 Tensorを`axis`方向（既定は軸0＝行）に積み重ね、1つのTensorに
 します。すべてのpartはdtype・rank、`axis`以外の次元が一致して
 いる必要があります。結果の`axis`方向の長さは各partの合計です。
-微分可能 — 勾配は各partに対応する`axis`方向のwindowに切り分けて
+微分可能で、勾配は各partに対応する`axis`方向のwindowに切り分けて
 戻されます。
 
 ```culebra
@@ -1566,8 +1565,8 @@ let kv = Tensor.concat([k1, k2], 1)  # [2, 5, 8] — KVキャッシュへの追�
 要素ごとの選択で、3つのオペランド全てを（他のbinopと同じ規則で）
 broadcastします: `cond != 0 ? a : b`。`a`/`b`はスカラーでもよく、
 `cond`のdtypeに合わせてliftされます。masking（attention mask、
-padding mask）の基礎部品です。微分可能 — `da = g*cond`、
-`db = g*(1-cond)`。`cond`自体には勾配が流れません
+padding mask）の基礎部品です。微分可能で、`da = g*cond`、
+`db = g*(1-cond)`です。`cond`自体には勾配が流れません
 （numpy/PyTorch自身の`where()`と同じ規約）。
 
 ```culebra
@@ -1601,10 +1600,10 @@ for i in range(params.size()) {
 
 #### `Tensor.index_add(indices: Tensor, values: Tensor, target_shape: Array) -> Tensor`
 
-`.index_select()`の正確な双対: `t.index_select(indices)`のような形の
+`.index_select()`の正確な双対です。`t.index_select(indices)`のような形の
 `values`を、`target_shape`の新規ゼロバッファへscatter-addします。
-同じインデックスが重複すれば累積されます——embeddingテーブルの勾配は
-これです。`values`について微分可能（入ってきた勾配に対する
+同じインデックスが重複すれば累積され、embeddingテーブルの勾配はこれに
+あたります。`values`について微分可能です（入ってきた勾配に対する
 `.index_select(indices)`）。`indices`には勾配が流れません。
 
 ```culebra
@@ -1615,12 +1614,12 @@ let grad = Tensor.index_add(idx, values, [4, 2])  # [[1,2],[40,60],[0,0],[0,0]]
 
 #### `Tensor.scatter_to_axis(indices: Tensor, values: Tensor, size: Long) -> Tensor`
 
-新規の末尾軸（長さ`size`）へのone-hot scatter: `indices[...] == k`のとき
-`out[..., k] = values[...]`、それ以外は0。`indices`/`values`は同じ形状
+新規の末尾軸（長さ`size`）へのone-hot scatterです。`indices[...] == k`のとき
+`out[..., k] = values[...]`、それ以外は0になります。`indices`/`values`は同じ形状
 である必要があります。poolingレイヤー自身の手書きbackwardが`.fold()`と
-組み合わせてpadded input勾配を再構築するネイティブプリミティブです
-——`.max(axis)`/`.argmax(axis)`がwindowから1要素選ぶのに対し、これは
-勾配を同じwindow形状へscatterして戻します。`values`について微分可能:
+組み合わせてpadded input勾配を再構築するネイティブプリミティブです。
+`.max(axis)`/`.argmax(axis)`がwindowから1要素選ぶのに対し、これは
+勾配を同じwindow形状へscatterして戻します。`values`について微分可能です。
 各値はちょうど1つのスロットに入るので、勾配はそのスロットから取り出す
 だけです。`indices`には勾配が付きません。
 
@@ -1634,9 +1633,9 @@ let out = Tensor.scatter_to_axis(idx, values, 4)
 #### `Tensor.from_csv(path: String) -> Tensor`
 
 CSVファイルを直接contiguousなTensorに読み込みます。常に
-**rank-2** を返す — 単列CSVは`[N, 1]`（biasベクトル形式）。
+**rank-2**を返し、単列CSVは`[N, 1]`（biasベクトル形式）になります。
 nested Arrayを経由しないので、`Tensor.from(load_2d(path))`
-パターンより3-5x速い（MNIST規模で実測）：
+パターンより3-5x速くなります（MNIST規模で実測）:
 
 ```culebra
 # doctest: skip
@@ -1649,7 +1648,7 @@ let X = Tensor.from_csv("X.csv")    # [N, 784]
 
 可変長のTensorを受け、依存グラフをtopological順に評価します。
 共有部分式は一度だけ計算されます。学習ループのmini-batch境界で
-**必ず一度呼ぶ**（呼ばないとグラフが累積してメモリが膨張）。
+**必ず一度呼んでください**（呼ばないとグラフが累積してメモリが膨張します）。
 
 ```culebra
 # doctest: skip
@@ -1693,8 +1692,8 @@ let m = z.clamp(-1.0, 1.0)  # elementwise clip、[lo, hi]に収める
 | `.tanh() / .sin() / .cos() -> Tensor` | lazy | elementwiseな三角関数・双曲線正接 |
 | `.clamp(lo, hi) -> Tensor` | lazy | `[lo, hi]`へのelementwise clip |
 | `.rope(pos: Long, base) -> Tensor` | lazy | 回転位置埋め込み（half-split方式）、最後の軸に適用。selfは`[H, D]`または`[H, T, D]`、行rの位置は`pos + (r % T)` |
-| `.causal_attention(k, v) -> Tensor` | lazy | 因果的なself-attention: `softmax(self·kᵀ / sqrt(D))·v`、行`t`は行`0..t`だけを見る。`self`・`k`・`v`は同じ形で`[H, T, D]`または`[T, D]` — 下記参照 |
-| `.layer_norm(gamma, beta) -> Tensor` | lazy | 最後の軸についてのlayer normalization: 行ごとに`(self - mean) / sqrt(var + 1e-5) · gamma + beta`。`gamma`・`beta`は`[D]`または`[1, D]` — 下記参照 |
+| `.causal_attention(k, v) -> Tensor` | lazy | 因果的なself-attention: `softmax(self·kᵀ / sqrt(D))·v`、行`t`は行`0..t`だけを見る。`self`・`k`・`v`は同じ形で`[H, T, D]`または`[T, D]`（下記参照） |
+| `.layer_norm(gamma, beta) -> Tensor` | lazy | 最後の軸についてのlayer normalization: 行ごとに`(self - mean) / sqrt(var + 1e-5) · gamma + beta`。`gamma`・`beta`は`[D]`または`[1, D]`（下記参照） |
 | `.transpose() -> Tensor` | view | 全軸逆順（rank-2で行列転置） |
 | `.permute(axes: Array) -> Tensor` | view | 任意軸並べ替え。`axes[i]`が結果の軸`i`に対応する自分自身の軸を指定 |
 | `.slice(start, end) -> Tensor` | view | 軸0を`[start, end)`で切り出し |
@@ -1702,20 +1701,20 @@ let m = z.clamp(-1.0, 1.0)  # elementwise clip、[lo, hi]に収める
 | `.reshape(dims: Array) -> Tensor` | view / new buffer | 新形状。連続入力ならview、そうでなければ連続なコピー |
 | `.unfold(params: Array) -> Tensor` | view | `[axis, win, step]`。`axis`沿いのスライディングウィンドウ、末尾に長さ`win`の軸を追加 |
 | `.pad(params: Array) -> Tensor` | new buffer | `[axis, before, after]`。`axis`沿いにゼロパディング |
-| `.fold(params: Array) -> Tensor` | new buffer | `[axis, orig_size, step]`。`.unfold()`の逆——重なる窓をscatter-addで`axis`へ戻す |
+| `.fold(params: Array) -> Tensor` | new buffer | `[axis, orig_size, step]`。`.unfold()`の逆。重なる窓をscatter-addで`axis`へ戻す |
 | `.sum() -> Float` | scalar | 全要素和（暗黙eval） |
 | `.sum(axis: Long?, keepdims: Bool = false) -> Tensor` | lazy | 軸を1つ畳む。axisがnilなら軸指定なし＝スカラー形と同じ。`keepdims: true`なら畳んだ軸を長さ1で残すので、結果はそのまま入力にブロードキャストできる: `x - x.mean(1, keepdims: true)` |
 | `.mean() / .mean(axis, keepdims:)` | Float / Tensor | 同様 |
 | `.max() / .max(axis, keepdims:)` | Float / Tensor | 同様 |
 | `.argmax(axis: Long, keepdims: Bool = false) -> Tensor` | lazy | 軸を畳んでインデックスをFloatで格納 |
-| `.index_select(indices: Tensor) -> Tensor` | lazy | 軸0方向の行gather: `out[i] = self[indices[i]]`——embeddingテーブルのlookup |
+| `.index_select(indices: Tensor) -> Tensor` | lazy | 軸0方向の行gather: `out[i] = self[indices[i]]`（embeddingテーブルのlookup） |
 | `.softmax_cross_entropy(targets: Tensor) -> Tensor` | lazy | `[N, C]`のlogitsの行ごとにsoftmax + cross-entropyを融合。行あたり1つのloss（`[N]`） |
 | `.to_array() -> Array` | eager | Culebra Arrayへ変換（暗黙eval） |
 | `.item() -> Float` | eager | 唯一の要素をFloatとして取り出す。要素数が1でない（任意rank）場合は例外 |
 
-`.item()`はスカラーの取り出し口で、`.to_array()`（形状を持つデータ用）と対をなす。
-lossなど単一要素の結果をreshapeせず読むのに使う。`loss.item()`は
-`to_float(loss.to_array()[0])`の置き換え。
+`.item()`はスカラーの取り出し口で、`.to_array()`（形状を持つデータ用）と対をなします。
+lossなど単一要素の結果をreshapeせず読むのに使います。`loss.item()`は
+`to_float(loss.to_array()[0])`の置き換えです。
 
 #### `.softmax_cross_entropy(targets: Tensor) -> Tensor`
 
@@ -1748,7 +1747,7 @@ RTX 3090の`[512, 1000]`で、forwardが91 µsに対し47 µs、backwardが
 #### `.causal_attention(k, v) -> Tensor`
 
 因果的なself-attentionを1つのopで計算します。各headの各行`t`について
-`softmax(self[t]·k[0..t]ᵀ / sqrt(D))·v[0..t]` — 行は自分と自分より前の
+`softmax(self[t]·k[0..t]ᵀ / sqrt(D))·v[0..t]`を求めます。行は自分と自分より前の
 行だけを見て、後ろの行は見ません。`self`・`k`・`v`は同じ形で、
 `[H, T, D]`（head数、行数、headの幅）か、1 headなら`[T, D]`です。係数は
 `1/sqrt(D)`に固定です。別の係数にしたいときは`self`を先にスケールして
@@ -1797,9 +1796,9 @@ CPUでは行ごとに1回なめるだけ、GPUでは1つのカーネルで済み
 
 Tensorプリミティブはネイティブなreverse-mode自動微分エンジンを
 持ちます。forwardグラフがそのままtapeを兼ね、`.backward()`が
-C++ 側でそれを辿ります。スクリプト側のラッパは不要 — 値を計算する
+C++側でそれを辿ります。スクリプト側のラッパは不要です。値を計算する
 op自身がvector-Jacobian productを知っています。tapeが記録される
-のは`requires_grad`な葉に繋がるopのみ。forward-onlyな処理
+のは`requires_grad`な葉に繋がるopだけです。forward-onlyな処理
 （推論、あるいはbackwardを自前で書く学習ループ）はtapeを一切
 記録しないので、下層のテンソルライブラリと同等のコストで済みます。
 
@@ -1813,7 +1812,7 @@ op自身がvector-Jacobian productを知っています。tapeが記録される
 | `.clone() -> Tensor` | Tensor | ディープコピー。materialized、グラフも勾配追跡も持たない |
 | `Tensor.no_grad(fn) -> Any` | Any | 勾配追跡を抑制して`fn`を実行し、`fn`の戻り値を返す（下記） |
 
-`requires_grad`はforwardに伝播します — 勾配追跡する入力を持つop
+`requires_grad`はforwardに伝播します。勾配追跡する入力を持つop
 の出力も勾配を追跡します。微分可能なopは`+ - * /`、`.pow()`（底に
 ついて）、`.dot()`、軸`.sum()` / `.mean()`、`.relu()`、`.sigmoid()`、
 `.softmax()`、`.log()`、`.tanh()`、`.sin()`、`.cos()`、`.clamp()`、
@@ -1825,28 +1824,28 @@ op自身がvector-Jacobian productを知っています。tapeが記録される
 `Tensor.index_add()`（互いが相手のVJP）。勾配は自動でun-broadcastされる
 ので、バッチ越しに加えたbiasは元の形状に和を取って戻ります。
 `.permute()`のVJPは逆置換です。これによりattentionのhead分割
-（`[B, C, H, D]`から`[B, H, C, D]`）が学習できます——`.transpose()`は
+（`[B, C, H, D]`から`[B, H, C, D]`）が学習できます。`.transpose()`は
 *全*軸を反転するので、rank 3以上では別の操作であって、これの短縮形では
 ありません。置換はノード自身のスカラースロットに1軸4ビットで収めるため、
 rank 16以上の`.permute()`を通した`.backward()`は、切り詰めた置換を
 保存するのではなく例外を投げます。`.rope()`も何も保存しません。
 回転行列の逆は自身の転置であり、head次元の後ろ半分の符号を反転して
 から回して戻せばその転置になるので、backwardは順方向をもう一度
-走らせるだけで済みます——使ったcos/sinの表を持ち回る必要がありません。
+走らせるだけで済みます。使ったcos/sinの表を持ち回る必要がありません。
 im2colの3つは2組の双対として微分されます: `.pad()`のVJPは`.narrow()`が
-行うcropで、`.narrow()`のVJPがそのpad。`.unfold()`のVJPは`.fold()`で、
+行うcropで、`.narrow()`のVJPがそのpadです。`.unfold()`のVJPは`.fold()`で、
 `.fold()`のVJPは`.unfold()`です。各ノードが持つのは軸とstepだけで、
 windowサイズと復元する長さは前後の形状から取れます。つまりpad -> unfold
 -> reshape -> `.dot()`と書いた畳み込みは、backwardを一行も書かずに
-`.backward()`で学習できます——`examples/tensor/mnist_conv.cul`を参照。
+`.backward()`で学習できます。`examples/tensor/mnist_conv.cul`を参照してください。
 windowが重なる位置では`.fold()`がコピーを足し合わせるので、これは逆関数
 ではなく転置です。
 `.gt()` / `.lt()` / `.ge()` / `.le()` / `.eq()` / `.ne()`（および`.max()` /
-`.argmax()`）は恒久的に微分不可能です——比較を通した`.backward()`は常に
+`.argmax()`）は恒久的に微分不可能です。比較を通した`.backward()`は常に
 例外を投げます（PyTorch/numpyと同じ）。0/1マスクは`*`で合成してください
 （ReLU系のbackward gateが具体例）。Tanh/Sin/Cos/Clipのbackwardを
 これらのopから自前で組み立てるやり方も、ネイティブVJPと共存する
-選択の一つとして今も有効です——どちらの経路でも動きます。
+選択の一つとして今も有効です。どちらの経路でも動きます。
 
 ```culebra
 let w = Tensor.from([[2.0, 0.0], [0.0, 3.0]]).requires_grad()
@@ -1888,8 +1887,8 @@ let logits = Tensor.no_grad(fn () {
 
 ### 演算子オーバーロード
 
-`+ - * /`はブロードキャストelementwise（numpy / silarray規則）。
-スカラーとの混在も自動：
+`+ - * /`はブロードキャストelementwise（numpy / silarray規則）で、
+スカラーとの混在も自動です:
 
 ```culebra
 let M = Tensor.ones(3, 4)
@@ -1898,13 +1897,13 @@ let r = Tensor.ones(3, 1)  # → [3, 4] にブロードキャスト
 Tensor.eval(M + v, M + r, M + 1.0, M * 2.0)
 ```
 
-`@`演算子は未実装（`.dot()`を使う）。
+`@`演算子は未実装です（`.dot()`を使ってください）。
 
 ### 複合代入 (`+=` `-=` `*=` `/=` `**=`) と in-place 書き込み
 
 複合代入は左辺のTensorバッファに直接書き戻します（新規Tensorを
 確保しない）。条件は「LHSが自前バッファを所有していて、形が右辺の
-broadcast結果と一致する」こと — view・未評価グラフノード・形状不一致
+broadcast結果と一致する」ことで、view・未評価グラフノード・形状不一致
 の場合は通常経路（新規Tensor）に自動でフォールバックします。
 
 ```culebra
@@ -1920,18 +1919,18 @@ SGD形式の重み更新で`W = W - grad * lr`と書くと毎ステップWサイ
 回るほど差が広がります（実測で5000ステップ・1024×256 f32のloopで
 plain `=` 5.5s → `-=` 3.6s）。
 
-サポートop: `+= -= *= /= **=`（`%=`と`@=`は対象外 — `%`は
-Tensorで意味づけしておらず、`@`は出力形状が変わるためin-place不可）。
+サポートするopは`+= -= *= /= **=`です（`%=`と`@=`は対象外です。`%`は
+Tensorで意味づけしておらず、`@`は出力形状が変わるためin-place不可です）。
 
 ### dtype / 形状の制約
 
 - dtypeはF32のみ（float64はGPUバックエンドに高速パスがない。
   `.item()` / `.to_array()`などスカラー出口は`Float`を返す）
-- `.dot()`はbatched matmul対応（rank 3以上）——両オペランドの先頭
+- `.dot()`はbatched matmul対応（rank 3以上）。両オペランドの先頭
   次元が一致していれば、それぞれの末尾2軸同士でmatmulが走る
   （GPU上でもbatchのsliceごとにdispatchされる）
 - `.reshape()`・`.softmax()`とも非連続入力（`.transpose()`や
-  `.permute()`の結果など）をそのまま受け付ける——明示的な
+  `.permute()`の結果など）をそのまま受け付ける。明示的な
   materialize手順は不要。`.reshape()`は元が非連続なら内部で
   連続バッファへclone、`.softmax()`はstrided入力を直接読む
 
@@ -1970,7 +1969,7 @@ inspect(Tensor.device())                  # => 'auto'
 `auto`での最初の評価のときにそのマシン上で測って決めます（正方行列の
 積を数個、両デバイスで計時します。一度きりで数ミリ秒）。別のマシンで
 測った表ではなく、実際に載っているCPUとGPUの力関係で分かれます。
-`use_cpu()` / `use_gpu()`を呼べば — 最初のテンソルを作る前でも —
+`use_cpu()` / `use_gpu()`を呼べば、最初のテンソルを作る前でも
 以降の演算はそのデバイスに固定されます。
 
 GPUが無いビルドで`use_gpu()`を呼んでもthrowせずCPU経路に
@@ -2054,14 +2053,14 @@ Culebraの値とJSONテキストの相互変換。両バックエンドで同じ
   コンパクト出力。結果が確保できないほど大きくなる`indent`は
   `ValueError`（`JSON.stringify() result is too large`）。
 * `sort_keys=true`で`Object`のキーを挿入順ではなく辞書順で
-  出力します。diff / ハッシュ向けの決定論的出力に有用。
-* `lines=true`で **JSON Lines** を出力します。`Array` / `Tuple` /
+  出力します。diff / ハッシュ向けの決定論的出力に役立ちます。
+* `lines=true`で**JSON Lines**を出力します。`Array` / `Tuple` /
   `Set`の各要素をそれぞれ独立した行としてcompact形式で出力し、
-  末尾`\n`付き。空コレクションは空文字列を返します。`indent > 0`
-  との併用や、Array/Tuple/Set以外への指定はどちらも`TypeError`。
+  末尾に`\n`が付きます。空コレクションは空文字列を返します。`indent > 0`
+  との併用や、Array/Tuple/Set以外への指定はどちらも`TypeError`です。
 
-旧APIとの互換: 位置引数2番目を`indent`として受けます。
-`JSON.stringify(v, 2)`は`JSON.stringify(v, indent: 2)`と等価。
+旧APIとの互換のため、位置引数の2番目を`indent`として受けます。
+`JSON.stringify(v, 2)`は`JSON.stringify(v, indent: 2)`と等価です。
 
 サポート対象:
 
@@ -2084,13 +2083,13 @@ Culebraの値とJSONテキストの相互変換。両バックエンドで同じ
 JSON文字列をCulebraの値に変換します。
 
 * `number_mode='auto'`（既定）: 小数点や指数を含まない数値は`Long`、
-  それ以外は`Float`。`Long`に収まらない整数も`Float`として読む（JSON は
-  数の大きさを制限しない）。`Float`にも収まらなければ`ValueError`。
-* `number_mode='float'`: すべての数値を`Float`に。生産者側が
-  数値型を統一している場合のround-trip安全性向上に。
+  それ以外は`Float`。`Long`に収まらない整数も`Float`として読みます（JSONは
+  数の大きさを制限しません）。`Float`にも収まらなければ`ValueError`です。
+* `number_mode='float'`: すべての数値を`Float`にします。生産者側が
+  数値型を統一している場合に、round-trip安全性を高められます。
 * `lines=true`: 入力を`\n`で分割し、空でない各行を独立したJSON
   値として解析、`Array`を返します。
-* `jsonc=true`: **JSONC** として解析します。`//`行コメント・`/* */`
+* `jsonc=true`: **JSONC**として解析します。`//`行コメント・`/* */`
   ブロックコメント・オブジェクト/配列の末尾カンマを許容するため、
   既存の設定ファイル（`tsconfig.json`、VSCodeの`settings.json`等）を
   事前に除去せず読めます。既定は厳格なJSONで、コメントや末尾カンマは
@@ -2114,10 +2113,10 @@ inspect(r.message)           # => 'JSON.parse: expected value'
 inspect("{r.line}:{r.col}")  # => '1:7'
 ```
 
-`\uXXXX`エスケープはUTF-8に復号される。BMP外の文字はJSONの規定どおり
-UTF-16のサロゲートペアで書かれ、2つで1文字に合成される。片方だけでは
-どの文字も指さないので`ValueError`。`stringify`は制御バイトを`\u00xx`で
-出すので、自身の出力は常に読み戻せる。
+`\uXXXX`エスケープはUTF-8に復号されます。BMP外の文字はJSONの規定どおり
+UTF-16のサロゲートペアで書かれ、2つで1文字に合成されます。片方だけでは
+どの文字も指さないので`ValueError`です。`stringify`は制御バイトを`\u00xx`で
+出すので、自身の出力は常に読み戻せます。
 
 ```culebra
 # Goのencoding/jsonは`<`・`>`・`&`をこの形でエスケープするため、Go製
@@ -2126,9 +2125,9 @@ inspect(JSON.parse('"\u003cb\u003e"'))        # => '<b>'
 inspect(JSON.parse('"\uD83D\uDE00"'))         # => '😀'
 ```
 
-ネストの深さには上限がある: コンテナのネストが1000段を超えると、Cスタックを
-使い果たす代わりに`ValueError`（`nesting too deep (limit 1000)`）を投げる。
-`stringify`も走査する値の木に同じ上限を適用する。
+ネストの深さには上限があります。コンテナのネストが1000段を超えると、Cスタックを
+使い果たす代わりに`ValueError`（`nesting too deep (limit 1000)`）を投げます。
+`stringify`も走査する値の木に同じ上限を適用します。
 
 例:
 
@@ -2175,10 +2174,10 @@ inspect(JSON.stringify([1, 2, 3], lines: true))
 
 JITメモ: ビルトインの`JSON.{stringify, parse}`は他の名前空間
 メソッドと同じ正準呼び出しリゾルバを経由するため、すべての呼び出し
-形がVMと同一に振る舞います。位置引数の束縛
+形がVMと同一に振る舞います。具体的には、位置引数の束縛
 （`JSON.stringify(v, 2)`は`indent`、`JSON.parse(s, true)`は
 `lines`）、キーワード引数、リテラル`**{...}`と動的`**variable`
-splatの両方。第一級の値として使った場合も束縛は同じです
+splatの両方です。第一級の値として使った場合も束縛は同じです
 （`let f = JSON.stringify; f(v, indent: 2)`）。
 
 ---
@@ -2186,25 +2185,25 @@ splatの両方。第一級の値として使った場合も束縛は同じです
 ## 10. `Args`
 
 宣言的なCLI引数パーサ。specはculebra `Object`でpositional / option /
-subcommandを列挙し、`Args.parse`はparse結果を`Object`で返す。
-`--help`指定でhelpをstdoutに出して`Sys.exit(0)`、パースエラー時は
-stderrにerror表示 + `Sys.exit(2)`。プログラム制御したい場合は
-`Args.try_parse`を使うと`ArgParseError`が発生し、`--help`では
-`{kind: "ArgParseHelp", help}`がthrowされる。
+subcommandを列挙し、`Args.parse`はparse結果を`Object`で返します。
+`--help`が指定されるとhelpをstdoutに出して`Sys.exit(0)`し、パースエラー時は
+stderrにerrorを表示して`Sys.exit(2)`します。プログラムで制御したい場合は
+`Args.try_parse`を使います。`ArgParseError`が発生し、`--help`では
+`{kind: "ArgParseHelp", help}`がthrowされます。
 
 ### `Args.parse(argv: Array<String>, spec: Object) -> Object`
 
-`argv` (通常`Sys.argv`) を`spec`に従ってparse。`--help` / `-h`でhelp
-をstdout出力 + `Sys.exit(0)`、パースエラーでstderr出力 + `Sys.exit(2)`。
+`argv`（通常`Sys.argv`）を`spec`に従ってparseします。`--help` / `-h`でhelp
+をstdoutに出力して`Sys.exit(0)`し、パースエラーではstderrに出力して`Sys.exit(2)`します。
 
 ### `Args.try_parse(argv, spec) -> Object`
 
-同じエンジンだがexitせず例外をthrow。テストや独自UX構築用。
+同じエンジンですが、exitせず例外をthrowします。テストや独自UXの構築に使います。
 
 ### `Args.help(spec: Object) -> String`
 
-parse / exitせずにhelp文字列だけ取得。広めのメッセージに埋め込みたい
-時など。
+parse / exitせずにhelp文字列だけを取得します。別のメッセージに埋め込みたい
+時などに使います。
 
 ### Spec 形式
 
@@ -2220,14 +2219,14 @@ parse / exitせずにhelp文字列だけ取得。広めのメッセージに埋�
 | `repeated` | `Bool` | `false` | 複数指定可、`Array`で集約 |
 | `positional` | `Bool` | (推論) | `true`でpositional、`false`でoptionに固定 |
 
-`type: "Bool"`の場合は値を取らない **flag** (`--verbose` / `-v`)。それ以外
-の型は次のトークンを値として消費する (`--count 5` / `--count=5`)。
+`type: "Bool"`の場合は値を取らない**flag**（`--verbose` / `-v`）です。それ以外
+の型は次のトークンを値として消費します（`--count 5` / `--count=5`）。
 
-`short`も`default`も無い引数は **positional** 扱い。また`default`を持つか
-`repeated`か`Bool` flagのいずれかであれば **省略可能**、そうでなければ必須。
-`positional`はこの2つの規則が食い違う場合にどちらかを明示する — 省略可能な
-positionalは「省略時の値」を言うために`default`が要るが、それだけだと
-optionと見なされてしまうため。
+`short`も`default`も無い引数は**positional**扱いです。また`default`を持つか
+`repeated`か`Bool` flagのいずれかであれば**省略可能**、そうでなければ必須です。
+`positional`はこの2つの規則が食い違う場合にどちらかを明示します。省略可能な
+positionalは「省略時の値」を言うために`default`が要りますが、それだけだと
+optionと見なされてしまうためです。
 
 ```culebra
 {name: "file", positional: true, default: "-"}   # cat [<file>]
@@ -2235,10 +2234,10 @@ optionと見なされてしまうため。
 {name: "out", positional: false}                 # 必須の--out
 ```
 
-positionalはspec順にマッチするが、省略可能なものは「後続の必須positionalが
-必要とする数」より多くトークンが残っている時だけ受け取る。つまり
+positionalはspec順にマッチしますが、省略可能なものは「後続の必須positionalが
+必要とする数」より多くトークンが残っている時だけ受け取ります。つまり
 `[{name: "files", repeated: true}, {name: "dest"}]`は`a b d`を
-`files == ["a", "b"]` / `dest == "d"`とparseする。
+`files == ["a", "b"]` / `dest == "d"`とparseします。
 
 ### 例
 
@@ -2301,9 +2300,9 @@ Options:
 ### サブコマンド
 
 `spec.subcommands`は`Array<Object>`で各要素がsub-spec (top-levelと
-同形)。指定すると最初のpositionalトークンがsubcommand名として扱われ、
+同形）です。指定すると最初のpositionalトークンがsubcommand名として扱われ、
 parse結果の`subcommand`フィールドに名前が入り、残りの引数はselected
-subcommandのspecに従ってparseされる:
+subcommandのspecに従ってparseされます:
 
 ```culebra
 # doctest: skip
@@ -2323,7 +2322,7 @@ match Args.parse(Sys.argv, spec).subcommand {
 
 ### エラーハンドリング
 
-`Args.parse`はエラー時にexitする。`Args.try_parse`はthrow:
+`Args.parse`はエラー時にexitします。`Args.try_parse`はthrowします:
 
 ```culebra
 let r = try {
@@ -2334,7 +2333,7 @@ let r = try {
 # r.kind == "ArgParseError", r.message == "unknown option '--bogus'"
 ```
 
-発生するものの`kind`は次のいずれか:
+発生しうる`kind`は次のとおりです:
 
 | `kind` | 意味 | 付随フィールド |
 |---|---|---|
@@ -2374,10 +2373,10 @@ let r = try {
 
 キーワード引数:
 
-- `cwd: String` — 子プロセスの作業ディレクトリ（既定: 親を継承）。
-- `env: Object` — 子プロセスに設定する環境変数（既定: 継承する分以外は無し）。
+- `cwd: String`: 子プロセスの作業ディレクトリ（既定: 親を継承）。
+- `env: Object`: 子プロセスに設定する環境変数（既定: 継承する分以外は無し）。
   値は`String`であること。
-- `inherit_env: Bool` — `env`が乗る土台が親自身の環境かどうか（既定: `true`
+- `inherit_env: Bool`: `env`が乗る土台が親自身の環境かどうか（既定: `true`
   なので`PATH`等は維持されます）。`false`にすると子は何も無い状態から始まり、
   `env`が与えたものだけを持ちます。親の環境にある秘密を、それを読む理由の無い
   子プロセスから遠ざける手段です:
@@ -2388,21 +2387,21 @@ let r = try {
            env: {PATH: Sys.env("PATH"), HOME: "/tmp"})
   ```
 
-  2つは独立しています — `env`だけなら追加、`inherit_env: false`だけなら空、
+  2つは独立しています。`env`だけなら追加、`inherit_env: false`だけなら空、
   両方でちょうど1つの環境を組み立てます。`share`で渡したバッファはそれ自身が
   環境変数として運ばれるので、どちらの場合も子に届きます。
-- `stdin: String` — 子プロセスの標準入力に書き込むバイト列。書き込み後にクローズ
+- `stdin: String`: 子プロセスの標準入力に書き込むバイト列。書き込み後にクローズ
   されます（既定: 空）。
-- `check: Bool` — `true`のとき、非0終了・シグナル死・timeoutで`{ok: false}`を
+- `check: Bool`: `true`のとき、非0終了・シグナル死・timeoutで`{ok: false}`を
   返す代わりに`ProcessError`をthrowします（既定: `false`）。
-- `timeout: Long` — ミリ秒。これを超えて走るとコマンドはkillされ（`SIGTERM` →
+- `timeout: Long`: ミリ秒。これを超えて走るとコマンドはkillされ（`SIGTERM` →
   短い猶予の後`SIGKILL`）、結果は`ok: false` / `timed_out: true`になります
-  （既定: `0` = 無制限）。**プロセスツリー全体**がkillされます — コマンドは
+  （既定: `0` = 無制限）。**プロセスツリー全体**がkillされます。コマンドは
   自分専用のプロセスグループ（POSIX）／ジョブオブジェクト（Windows）の中で
   走るので、そこから抜けていない子孫も道連れになります。stdout/stderrを
   早期に閉じて走り続けるプロセスにはtimeoutが届かないことがあります。
 
-**非0終了**や**シグナル死**はエラーではなく通常の結果です — `ok` / `code` /
+**非0終了**や**シグナル死**はエラーではなく通常の結果です。`ok` / `code` /
 `signal`で分岐してください。**起動失敗**（実行ファイルが存在しない等）や
 `check: true`での失敗のみが`ProcessError`をthrowします。非Array・非String
 要素・空コマンドは`TypeError` / `ValueError`をthrowします。
@@ -2433,35 +2432,35 @@ Proc.run(
 stderrは並行して読み出すので、両方を埋めるコマンドでもデッドロックしません。
 
 `share: {名前: buf}`は1つ以上の`SharedBuffer.shared(...)` bufferを子プロセス
-へ渡す（子は`SharedBuffer.receive(name, Class)`で再アタッチする）。子はculebra
-プロセスである必要があり、通常は`[Sys.executable, "worker.cul"]`。詳細は
+へ渡します（子は`SharedBuffer.receive(name, Class)`で再アタッチします）。子はculebra
+プロセスである必要があり、通常は`[Sys.executable, "worker.cul"]`です。詳細は
 [SharedBuffer › プロセス間での共有](#プロセス間での共有zero-copy)。
 
 ### `Proc.all(commands: Array<Array<String>>, limit: Long = <CPU数>, timeout: Long = 0, fail_fast: Bool = false, retries: Long = 0, share: Object? = nil, inherit_env: Bool = true) -> Array<Object>`
 
 複数コマンドを並列実行し、結果Objectを入力順で返します。各コマンドは
-`Array<String>`（`Proc.run`の第1引数と同形）。同時実行数は最大`limit`（既定 =
-オンラインCPU数。絞るには小さい値、広げるには大きい値を渡す）。`timeout`（ms、
+`Array<String>`（`Proc.run`の第1引数と同形）。同時実行数は最大`limit`です（既定は
+オンラインCPU数。絞るには小さい値、広げるには大きい値を渡します）。`timeout`（ms、
 `0` = 無し）は各コマンドにその起動時刻から適用され、発火時は結果に
 `timed_out: true`を立てます。
 
-既定は **allSettled** です。1個の失敗が他を巻き込みません。走って非0終了した
+既定は**allSettled**です。1個の失敗が他を巻き込みません。走って非0終了した
 コマンドは`{ok: false, code: N, error: nil}`、そもそも起動できなかった（実行
 ファイルが無い等）コマンドは`{ok: false, error: "<メッセージ>"}`で、どちらも
 throwしません。空リストは`[]`を返します。
 
-**`fail_fast: true`** の場合は最初の失敗（非0終了・シグナル・timeout・起動失敗）
+**`fail_fast: true`**の場合は最初の失敗（非0終了・シグナル・timeout・起動失敗）
 で残りの実行中コマンドを`SIGKILL`し、該当コマンドを示す`ProcessError`をthrow
 します（既定の`Promise.allSettled`に対する`Promise.all`形）。全コマンド成功時は
 通常どおり結果配列を返します。
 
-**`retries`** は失敗したコマンドをその回数だけ再実行し、最終試行の結果を採用します。
+**`retries`**は失敗したコマンドをその回数だけ再実行し、最終試行の結果を採用します。
 再実行は空きが出た`limit`プールに割り込みます。`fail_fast`と併用した場合、コマンドが
 失敗とみなされるのはretriesを使い切った後だけです。
 
-**`share: {name: buf}`** は`SharedBuffer.shared(...)`バッファを**全**子に渡す
-（各子が`SharedBuffer.receive`で再アタッチ）。`Proc.run`の`share:`と同じで、
-ワーカープールが共有結果バッファに書ける（競合するセルは`buf.with_lock`）。
+**`share: {name: buf}`**は`SharedBuffer.shared(...)`バッファを**全**子に渡します
+（各子が`SharedBuffer.receive`で再アタッチします）。`Proc.run`の`share:`と同じで、
+ワーカープールが共有結果バッファに書けます（競合するセルは`buf.with_lock`）。
 `inherit_env: false`は`Proc.run`と同様に、各子へ独自の環境を与えます。
 
 ```culebra
@@ -2480,7 +2479,7 @@ for r in results {
 ### `Proc.race(commands: Array<Array<String>>, share: Object? = nil, inherit_env: Bool = true) -> Object`
 
 全コマンドを起動し、**最初に完了した1個**の結果Objectを返し、残りに`SIGKILL`
-を送ってreapします。冗長なプロバイダの競争や「最速のミラーが勝ち」に有用。空
+を送ってreapします。冗長なプロバイダの競争や「最速のミラーが勝ち」に使えます。空
 リストは`ValueError`をthrowします。`share: {name: buf}`が共有バッファを子に渡し、
 `inherit_env: false`が親の環境を子から遠ざけるのは`Proc.run`/`Proc.all`と同様です。
 
@@ -2508,9 +2507,9 @@ IO.print(fastest.stdout)
 Object（通常の`{code, stdout, stderr, ok, signal, error, timed_out}`）を返します。
 起動失敗は`Proc.run`と同様`ProcessError`をthrowし、`cwd` / `env` / `stdin` /
 `share` / `inherit_env`の意味も`Proc.run`と同じです。一度もwaitされずに
-捨てられたハンドルはGCがreapし（子を`SIGKILL`）、ゾンビとして残りません — ただし
+捨てられたハンドルはGCがreapし（子を`SIGKILL`）、ゾンビとして残りません。ただし
 明示的に`wait()` / `kill()`する方が明快です。`Proc.run`の`timeout:`と同様、
-`kill()`（およびGC自身の`SIGKILL`）はプロセスツリー全体に届きます — 詳細は
+`kill()`（およびGC自身の`SIGKILL`）はプロセスツリー全体に届きます。詳細は
 本節冒頭を参照。
 
 ```culebra
@@ -2541,8 +2540,8 @@ CPU並列を得ます。isolate間で可変メモリは共有されません。�
 ありません。[§11 `Proc`](#11-proc)（プロセス並列）のスレッド版に当たります。
 
 > `Isolate.spawn`・`Channel`・`Parallel`はいずれもVMと`--jit`の
-> 両方で動作します（クロージャは共有コード参照 — VMはバイトコード、JITは
-> コンパイル済み`fn_ptr` — とコピーした捕獲で越境し、子の自前ヒープで実行）。
+> 両方で動作します（クロージャは共有コード参照（VMはバイトコード、JITは
+> コンパイル済み`fn_ptr`）とコピーした捕獲で越境し、子の自前ヒープで実行されます）。
 
 ### `Isolate.spawn(fn, *args) -> handle`
 
@@ -2575,7 +2574,7 @@ isolateをキャンセルしてjoinするため、スレッドが取り残され
 
 ### Sendable: 境界を越えられる値
 
-クロージャ・その引数と、クロージャが返す値・投げる値は **Sendable** でなければなりません。
+クロージャ・その引数と、クロージャが返す値・投げる値は**Sendable**でなければなりません。
 違反は`SendError`を投げます（黙ってコピーはしません）。クロージャと引数なら`spawn`の時点で、
 返す値・投げる値なら`join()`で投げます:
 
@@ -2610,7 +2609,7 @@ h.join()  # => 4   (isolate 側のコピー)
 xs        # => [1, 2, 3]   (親は不変)
 ```
 
-`mut`の捕獲は黙ってスナップショットを取らず拒否します — 値は引数として
+`mut`の捕獲は黙ってスナップショットを取らず拒否します。値は引数として
 渡してください:
 
 ```culebra
@@ -2634,15 +2633,15 @@ Isolate.spawn(|t| t, total)  # ok — 値渡し
 インスタンスを作るメソッド（`update() { Player(self.x + 1) }`）が向こう側でも
 動き、`class_of`はそのコピーを答えます。それ以外のインスタンスはクラスを
 置いて行くので、届いたものの`class_of`は`nil`です。`class_of(self)`を通して
-しかクラスを読まないメソッドは、名指しに数えません。クラスのメンバー（`new`、
+しかクラスを読まないメソッドは、クラスを名指ししたことにはなりません。クラスのメンバー（`new`、
 staticメソッド、static）が送れないときは`SendError`になり、`クラス名.メンバー名`の
 形でそのメンバーを示します。
 `@packable`のクラスは、バイト配置が宣言したisolateに残るのでSendableでは
 ありません。そのインスタンスは、メソッドがクラスを名指さない限り渡せます。
 
 enumもクラスと同じように渡せます。クロージャが名指したもの、引数で渡したもの、
-取り出したコンストラクタ（`let circle = Shape.Circle`、enumに結び付いている）と
-一緒に行くもの、いずれも届くのはコピーで、そのenumが宣言したvariantはコピーを
+取り出したコンストラクタ（`let circle = Shape.Circle`、enumに結び付いている）を
+通して渡したもの、いずれも届くのはコピーで、そのenumが宣言したvariantはコピーを
 指します。向こう側でコピーから作ったvariantにも、同じメッセージで届いたvariantにも、
 `class_of`はそのコピーを答えます。enumと一緒に届かなかったvariantの`class_of`は`nil`です。
 
@@ -2691,9 +2690,9 @@ GCが回収する）とisolateに停止が伝わり、次の文境界またはch
 ### Channel — `Channel.new(cap = 1) -> (tx, rx)`
 
 channelはisolate間で値を渡す有界・ブロッキングのキューです。**(tx, rx)** の組を
-返します。`tx.send(v)`で投入、`rx`で取り出し。channelの
-endpointはSendable規則の唯一の例外で、（参照で）共有されます — クロージャが
-`tx`/`rx`を捕獲してspawnしたisolateに持ち込めます。値そのものはコピーで渡り、
+返します。`tx.send(v)`で投入し、`rx`で取り出します。channelの
+endpointはSendable規則の唯一の例外で、（参照で）共有されます。クロージャが
+`tx`/`rx`を捕獲して、spawnしたisolateに持ち込めます。値そのものはコピーで渡り、
 共有されるのはchannelだけです。
 
 ```culebra
@@ -2726,7 +2725,7 @@ prod.join()
 がdropされた**時（producer isolateが正常／例外終了）にchannelがcloseし、
 `for v in rx`が終了します。producerがクラッシュしてもconsumerはハングせず、
 原因はproducerを`join()`してsurfaceします。multi-producerの罠に注意:
-channelが閉じるには全ての`tx`（親の元のtx含む）がdropされる必要があります —
+channelが閉じるには全ての`tx`（親の元のtx含む）がdropされる必要があります。
 保持しないtxはdropしてください。
 
 **cloneしたendpointは競合し、複製はしません。** 各値はちょうど1つのendpoint
@@ -2746,17 +2745,17 @@ Objectのままです。dropしたendpointは、
 cloneがchannelを開いたままにしていても閉じたものとして振る舞います
 （`send`は`ChannelError`、`recv`は`nil`、表示は`[dropped Channel tx]`）。
 
-**`Channel.new(0)`はrendezvous channel**（容量0）: `send`は受信者が値を
-受け取るまで返りません — バッファ無しの同期ハンドオフ。backpressure
-（producerがconsumerを追い越せない）に有用。単一isolate内ではdeadlock
-（渡す相手がいない）のでisolate間で使います。容量は`0以上`。
+**`Channel.new(0)`はrendezvous channel**（容量0）です。`send`は受信者が値を
+受け取るまで返りません。バッファ無しの同期ハンドオフです。backpressure
+（producerがconsumerを追い越せない）に使えます。単一isolate内ではdeadlock
+（渡す相手がいない）するのでisolate間で使います。容量は`0以上`です。
 
 #### ブロックしない受信 — `rx.try_recv`と`rx.drain`
 
 `recv()`と`for v in rx`はブロックします。channelだけが仕事のconsumerには
-それが正解ですが、自分のスケジュールで進み続けなければならない呼び出し側 —
-`Canvas.run`のフレームコールバック、TUIのキーループ、その他あらゆる時間駆動の
-ループ — はそこで止まれません。ブロックしたフレームは落ちたフレームです。
+それが正解ですが、自分のスケジュールで進み続けなければならない呼び出し側
+（`Canvas.run`のフレームコールバック、TUIのキーループ、その他あらゆる時間駆動の
+ループ）はそこで止まれません。ブロックしたフレームは落ちたフレームです。
 `try_recv()`は常に即座に返ります。
 
 戻り値は`enum`の形をした3つのvariantのいずれかです:
@@ -2825,11 +2824,11 @@ for ev in rx.drain(16) { world.apply(ev) }   # このフレームは最大16件
 #### `Channel.fan_in(items: [rx]) -> rx`
 
 複数のreceiverを1つに束ねます。返る`rx`は、readyなsourceから順に値を
-返し（全sourceを同時に待つ — Goの`select` / core.asyncの`merge`と同じ
-イベント駆動、pollではない）、**全** sourceがcloseしたら終了します。これに
+返し（全sourceを同時に待ちます。Goの`select` / core.asyncの`merge`と同じ
+イベント駆動で、pollではありません）、**全**sourceがcloseしたら終了します。これに
 より各producerが`tx.clone()`で1本を共有する代わりに**自分専用のchannel**を
 持てるので、multi-producerの罠（clone-drop忘れでconsumerがhang）を回避でき
-ます — 各channelの`tx`は1個だけ、1:1でdrop。
+ます。各channelの`tx`は1個だけで、1:1でdropします。
 
 ```culebra
 # doctest: skip
@@ -2853,14 +2852,14 @@ for h in handles {
 
 mergeは渡したreceiverを**引き取り**ます — 元のrxを直接読まず、束ねた`rx`
 経由でのみ読んでください（元を読むとmergeと競合）。source間の順序は保たれ
-ません（mergeゆえ）。空リストは即closedな`rx`、source 1個はパススルー。
+ません（mergeの性質上）。空リストは即closedな`rx`になり、source 1個はパススルーです。
 
 #### `Channel.fan_in(items, fn) -> rx`
 
-オールインワン形：各itemにproducer isolateを起動し`fn(item, tx)`を実行、
+オールインワン形です。各itemにproducer isolateを起動して`fn(item, tx)`を実行し、
 出力をmergeします。`fn`は自分の`tx`にsendし、fan_inがchannel作成・親
-txのdrop・producer handleの所有をすべて引き受けるので、consumerは **txも
-dropもhandleも一切書きません**。`fn`と各itemはSendable必須。
+txのdrop・producer handleの所有をすべて引き受けるので、consumerは**txも
+dropもhandleも一切書きません**。`fn`と各itemはSendableである必要があります。
 
 ```culebra
 # doctest: skip
@@ -2875,9 +2874,9 @@ for v in merged {
 merged.join()  # producer を join、最初のエラーを再送出
 ```
 
-`merged.join()`（stream終了後）はproducerをjoinし最初のエラーを再送出。
-呼ばなければproducerのエラーは握り潰し（`Isolate.spawn` handleをjoinしない
-のと同じ）。producerは専用スレッドで実行されます。
+`merged.join()`（stream終了後）はproducerをjoinして最初のエラーを再送出します。
+呼ばなければproducerのエラーは握り潰されます（`Isolate.spawn` handleをjoinしない
+のと同じです）。producerは専用スレッドで実行されます。
 
 どちらの形でも、束ねた`rx`はendpointがchannelへのハンドルであるのと同じく、
 mergeへのハンドルです。表示は`[merged Channel rx]`で、フィールドを持たず、
@@ -2921,10 +2920,10 @@ failed: ...`）。`failed:`の後ろはエラーのmessageです。投げられ�
 失敗で他の成果を失いません（`r.ok ? r.value : r.error`）。
 
 **`race`は最初の成功**を返し、残りの要素をキャンセルします。*全要素*が例外を
-投げたら`ParallelError`、空配列でも`ParallelError`（返す結果が無いため）。
+投げたら`ParallelError`になります。空配列でも`ParallelError`です（返す結果が無いため）。
 
 **`on_progress:`で進捗報告。** どのメソッドも`on_progress: |done, total|`
-callbackを受け取れます。`fn`と違い **Sendableではありません** — 呼び出し
+callbackを受け取れます。`fn`と違い**Sendableではありません**。呼び出し
 スレッド上で実行されるので、捕獲した状態（カウンタや進捗バー等）を自由に読み
 書きできます。要素が完了するたびに「完了数・総数」で呼ばれ、callbackが例外を
 投げると実行はキャンセルされます。
@@ -2938,14 +2937,14 @@ Parallel.map(
 )
 ```
 
-(`map_reduce`は予定。)
+（`map_reduce`は予定しています。）
 
 ### Signal — `Signal.notify` / `Signal.reset`
 
 既定ではCtrl+Cは協調的な`Interrupted`をthrowします（言語ガイドの
-*割り込み* 節を参照）。長時間動くサービスでは逆に、シグナルを一箇所で受けて
+*割り込み*節を参照）。長時間動くサービスでは逆に、シグナルを一箇所で受けて
 自分の都合でshutdownしたいことが多いです。`Signal.notify(tx)`はCtrl+Cを
-*throw* から *配信* に切り替えます — 各押下が実行中コードを中断する代わりに
+*throw*から*配信*に切り替えます。各押下が実行中コードを中断する代わりに
 チャネルの`tx`に`"SIGINT"`を送るので、プログラムは`rx.recv()`（または
 `for sig in rx`）でブロックして自前のgraceful shutdownを駆動できます。Goの
 `signal.Notify`モデルです。
@@ -2962,24 +2961,24 @@ drain_and_close()
 
 | 呼び出し | 備考 |
 |---|---|
-| `Signal.notify(tx)` | Ctrl+Cをこのチャネルの`tx`へ流す（非ブロッキング送信 — バッファ満杯なら超過分はドロップ、Goと同じ）。有効中はthrowを抑制。バッファ付き（`Channel.new(1)`）を使う。 |
+| `Signal.notify(tx)` | Ctrl+Cをこのチャネルの`tx`へ流す（非ブロッキング送信。バッファ満杯なら超過分はドロップされ、Goと同じ）。有効中はthrowを抑制します。バッファ付き（`Channel.new(1)`）を使ってください。 |
 | `Signal.reset()` | 既定の`Interrupted` throw動作に戻し、`notify`が保持していたチャネルを解放。 |
 
 `notify`は自分用の送信端をチャネルに保持するので、こちらの`tx.drop()`後も
 開いたままになります（`reset()`で解放）。notify有効中は強制終了へのエスカ
 レーションはありません（自分でシグナルを扱うと宣言したため。後続のCtrl+Cで
-中断させたいなら`reset()`を呼ぶ）。配信はバックグラウンドのポーラ経由なので、
+中断させたいなら`reset()`を呼んでください）。配信はバックグラウンドのポーラ経由なので、
 押下は数十ミリ秒以内に観測されます。
 
 ### SharedBuffer — zero-copy で共有する固定レイアウトデータ
 
 `SharedBuffer`は固定レイアウトのレコード列を保持し、複数のisolateが
-**コピーせず**読み書きできる。isolateモデルで唯一mutableメモリを共
+**コピーせず**読み書きできます。isolateモデルで唯一mutableメモリを共
 有する場所であり、レコードを固定スカラフィールド（参照やポインタを含
-まない）に限定することで安全性を保つ。
+まない）に限定することで安全性を保ちます。
 
 レコード型は`@packable`を付けた通常のクラスで、各フィールドは型注釈
-と任意のデフォルトを持つ:
+と任意のデフォルトを持ちます:
 
 ```culebra
 @packable
@@ -2989,30 +2988,30 @@ class FloatPair {
 }
 ```
 
-`@packable`はバイトレイアウト（C ABI自然アライメント）を確定する。
-各フィールドは固定スカラ — `Float32`, `Float64`/`Float`, `Int8`,
-`Int16`, `Int32`, `Int64`/`Long`, `Byte`, `UInt16`, `UInt32`, `Bool` — でなければならず、
-非スカラフィールドはロード時に`SyntaxError`。デフォルト省略時は型の
-ゼロ値（`0` / `0.0` / `false`）。
+`@packable`はバイトレイアウト（C ABI自然アライメント）を確定します。
+各フィールドは固定スカラ（`Float32`, `Float64`/`Float`, `Int8`,
+`Int16`, `Int32`, `Int64`/`Long`, `Byte`, `UInt16`, `UInt32`, `Bool`）でなければならず、
+非スカラフィールドはロード時に`SyntaxError`になります。デフォルトを省略すると型の
+ゼロ値（`0` / `0.0` / `false`）になります。
 
 #### `SharedBuffer.new(count, type: Class) -> buffer`
 
-`Class`のレイアウトで`count`個のゼロ初期化レコードを確保する。
-`buffer.size`（`.count` / `.len`も同じ）が要素数を返す。バイトはこのプロセス
-のヒープに置かれる — isolate（スレッド）間では共有できるが、プロセス間では
-共有できない。レコード全体がアドレスできない、または確保できないほど大きい
+`Class`のレイアウトで`count`個のゼロ初期化レコードを確保します。
+`buffer.size`（`.count` / `.len`も同じ）が要素数を返します。バイトはこのプロセス
+のヒープに置かれ、isolate（スレッド）間では共有できますが、プロセス間では
+共有できません。レコード全体がアドレスできない、または確保できないほど大きい
 `count`は`ValueError`（`count is too large`）で、`SharedBuffer.file`と
-`.shared`も同じ。
+`.shared`も同じです。
 
 #### `SharedBuffer.file(path, count, type: Class) -> buffer`
 
 同じbufferを、メモリマップしたファイル（POSIX `mmap(MAP_SHARED)`、Windows
-`CreateFileMapping`）で裏打ちする。書き込み
-はファイルのページに届く — **永続**（ファイルはプロセスより長生き）で、同じ
-`path`をマップした別プロセスからも見える。ハンドルに`flush()`（dirtyページを
-ディスクへ）が付く。ファイルは普通のファイルなので`FS.remove(path)`
-で削除する。`path`をRAM上の場所（Linuxなら`/dev/shm/...`など）に向ければ、
-ディスク永続なしの共有メモリになる。
+`CreateFileMapping`）で裏打ちします。書き込み
+はファイルのページに届きます。**永続**（ファイルはプロセスより長生き）で、同じ
+`path`をマップした別プロセスからも見えます。ハンドルに`flush()`（dirtyページを
+ディスクへ）が付きます。ファイルは普通のファイルなので`FS.remove(path)`
+で削除します。`path`をRAM上の場所（Linuxなら`/dev/shm/...`など）に向ければ、
+ディスク永続なしの共有メモリになります。
 
 ```culebra
 # doctest: skip — 大きなバッファを worker pool で回す
@@ -3027,18 +3026,18 @@ buf.flush()  # ディスクへ永続化
 
 #### `SharedBuffer.shared(count, type: Class) -> buffer`
 
-同じbufferを、**匿名の**共有メモリ（名前のないfd — Linuxは`memfd`、macOSは
+同じbufferを、**匿名の**共有メモリ（名前のないfd。Linuxは`memfd`、macOSは
 即unlinkしたPOSIX shmオブジェクト、Windowsはpagefile-backedの
-`CreateFileMapping`）で裏打ちする。ディスクにも
-触れない。全ハンドルがdropされるとカーネルが解放する。用途は、`Proc.run` /
-`Proc.spawn`の`share:`で**子プロセス**へ渡すこと（下記
+`CreateFileMapping`）で裏打ちします。ディスクにも
+触れません。全ハンドルがdropされるとカーネルが解放します。用途は、`Proc.run` /
+`Proc.spawn`の`share:`で**子プロセス**へ渡すことです（下記
 [プロセス間での共有](#プロセス間での共有zero-copy)）。
 
 #### `buffer[i] -> view`
 
-添字アクセスは要素`i`の **view** を返す（負の添字は末尾から数える）。
-`view.field`の読み書きはbacking bytesに直接届く — レコードごとのオブ
-ジェクトは生成されない:
+添字アクセスは要素`i`の**view**を返します（負の添字は末尾から数えます）。
+`view.field`の読み書きはbacking bytesに直接届き、レコードごとのオブ
+ジェクトは生成されません:
 
 ```culebra
 @packable
@@ -3054,28 +3053,28 @@ v.y = 2.5
 inspect([buf[0].x, buf[0].y])  # => [1.5, 2.5]
 ```
 
-要素まるごとの代入（`buf[i] = ...`）は`TypeError` — レコードは単独の値
-形を持たないので、フィールドを個別に設定する。未知のフィールドは
-`AttributeError`、範囲外の添字は`IndexError`。
+要素まるごとの代入（`buf[i] = ...`）は`TypeError`です。レコードは単独の値
+形を持たないので、フィールドを個別に設定してください。未知のフィールドは
+`AttributeError`、範囲外の添字は`IndexError`です。
 
-buffer自体はバイト列へのハンドルである。表示は`[SharedBuffer of 3]`で、
-自分のフィールドを持たない（`keys()`は`[]`、代入は`TypeError`）。2つの
-ハンドルは同じバイト列を指していれば`==`。viewは読み出し元のbufferを保持し、
+buffer自体はバイト列へのハンドルです。表示は`[SharedBuffer of 3]`で、
+自分のフィールドを持ちません（`keys()`は`[]`、代入は`TypeError`）。2つの
+ハンドルは同じバイト列を指していれば`==`です。viewは読み出し元のbufferを保持し、
 それを通して読むので、`buf.drop()`の後は`buf`のviewはすべて`ValueError`
-（`SharedBuffer has been dropped`）になる。他のisolateが持つハンドルは、
-そのisolateのためにバイト列を保つ。別のisolateに送ったviewは、ハンドルを
-一緒に持っていく。
+（`SharedBuffer has been dropped`）になります。他のisolateが持つハンドルは、
+そのisolateのためにバイト列を保ちます。別のisolateに送ったviewは、ハンドルを
+一緒に持っていきます。
 
 viewもハンドルで、表示・展開（`{...v}`、`[...v]`）・`JSON.stringify` /
-`TOML.stringify`では、その時点のバイト列を読み解いた値として読まれる。
-レコードはフィールドのObject（表示ではclass名が前に付く）、`FixedArray`と
+`TOML.stringify`では、その時点のバイト列を読み解いた値として読まれます。
+レコードはフィールドのObject（表示ではclass名が前に付きます）、`FixedArray`と
 `BoundedArray`のフィールドはArray、`BoundedSet`はSet、`BoundedMap`はキーを
-キーにしたObjectになる（そのため`BoundedMap`を持つレコードは、String以外の
-キーを持つObjectと同じく`JSON.stringify`できない）。viewは自分のフィールドを
-持たない。レコードの名前はそのフィールドで（`v["x"]`は`v.x`を読み書きする）、
-それ以外のviewに名前を代入すると`TypeError`。2つのviewは、同じバイト列を
-同じものとして読んでいれば`==`。dropしたbufferのviewは
-`[dropped SharedBuffer view]`と表示される。
+キーにしたObjectになります（そのため`BoundedMap`を持つレコードは、String以外の
+キーを持つObjectと同じく`JSON.stringify`できません）。viewは自分のフィールドを
+持ちません。レコードの名前はそのフィールドで（`v["x"]`は`v.x`を読み書きします）、
+それ以外のviewに名前を代入すると`TypeError`です。2つのviewは、同じバイト列を
+同じものとして読んでいれば`==`です。dropしたbufferのviewは
+`[dropped SharedBuffer view]`と表示されます。
 
 ```culebra
 @packable
@@ -3093,10 +3092,10 @@ inspect([cells[0] == cells[0], cells[0] == cells[1]])  # => [true, false]
 
 #### isolate 間での共有（zero copy）
 
-bufferはisolate境界を **参照で**越える — 子は同じバイトを読み書きす
-る。他のすべての値（境界でコピーされる）と異なり、SharedBufferは共有
-される（channelと同じ例外）。これにより、ワーカーがdisjointな要素を
-更新する典型的なデータ並列パターンがアロケーションなしで書ける:
+bufferはisolate境界を**参照で**越えます。子は同じバイトを読み書きしま
+す。他のすべての値（境界でコピーされる）と異なり、SharedBufferは共有
+されます（channelと同じ例外）。これにより、ワーカーがdisjointな要素を
+更新する典型的なデータ並列パターンがアロケーションなしで書けます:
 
 ```culebra
 # doctest: skip — 大きなバッファを worker pool で回す
@@ -3113,18 +3112,18 @@ Parallel.each([0, 1, 2, 3, 4, 5, 6, 7], fn (i) {
 # cells は 0, 1, 4, 9, 16, 25, 36, 49 を保持
 ```
 
-**disjointな**要素を書くワーカーは同期不要。同じ要素を複数のisolate
+**disjointな**要素を書くワーカーは同期不要です。同じ要素を複数のisolate
 が同時に書くのはデータ競合であり、作業を分割して（上記のように）各要素
-のwriterを1つにするか、共有更新を [`with_lock`](#bufferwith_lockfn-で同期する)
-で守るのは呼び出し側の責任。
+のwriterを1つにするか、共有更新を[`with_lock`](#bufferwith_lockfn-で同期する)
+で守るのは呼び出し側の責任です。
 
 #### プロセス間での共有（zero copy）
 
 `SharedBuffer.shared(...)`のbufferは、別のisolateだけでなく**子プロセス**へ
-も渡せる。親は`Proc.run`（または`Proc.spawn`）の`share:`キーワード（`名前 ->
+も渡せます。親は`Proc.run`（または`Proc.spawn`）の`share:`キーワード（`名前 ->
 buffer`のObject）で渡し、子はその名前で`SharedBuffer.receive(name, Class)`に
-よって再アタッチする。両プロセスが同じ物理ページをマップする — コピーや
-シリアライズなしで書き込みが見える。
+よって再アタッチします。両プロセスが同じ物理ページをマップするので、コピーや
+シリアライズなしで書き込みが見えます。
 
 ```culebra
 # doctest: skip — この checkout に無いプログラムを起こす
@@ -3154,26 +3153,26 @@ for i in 0..grid.count {
 grid.drop()
 ```
 
-`receive`は名前と`@packable`型だけを取る — 要素数は親由来（なので
-`grid.count`が一致する）。子は同じ`@packable`クラスを宣言し、`receive`は
-レコードサイズの一致を確認して、レイアウト不一致・未知の名前のときは
-`ValueError`を投げる。ヒープbufferやファイルbufferを`share:`に渡すと、子を
-起動する前に`Proc.run`自身が`ValueError`で拒否する（この方法で渡せるのは
-`SharedBuffer.shared(...)`のbufferだけ。ファイルbufferは`path`を開き直して
-共有する）。`Sys.executable`は実行中のculebraバイナリのパスで、culebraの
-ワーカーコピーを起動するのに使う。
+`receive`が取るのは名前と`@packable`型だけで、要素数は親から決まります（その
+ため`grid.count`が一致します）。子は同じ`@packable`クラスを宣言します。
+`receive`はレコードサイズの一致を確認し、レイアウトが合わない場合と未知の
+名前の場合は`ValueError`を投げます。ヒープbufferやファイルbufferを`share:`に
+渡すと、子を起動する前に`Proc.run`自身が`ValueError`で拒否します（この方法で
+渡せるのは`SharedBuffer.shared(...)`のbufferだけです。ファイルbufferは
+`path`を開き直して共有します）。`Sys.executable`は実行中のculebraバイナリの
+パスで、culebraのワーカーコピーを起動するのに使います。
 
 `Proc.run`は子の終了までブロックするので、戻った時点で子の書き込みは完了して
-いる。並行な子は`Proc.spawn`してそれぞれ`wait()`する。isolateと同様、各子が
-**disjointな**要素を持つようにして書き込みが競合しないようにする。
+います。並行な子は`Proc.spawn`してそれぞれ`wait()`します。isolateと同様、各子が
+**disjointな**要素を持つようにして、書き込みが競合しないようにします。
 
 #### `buffer.with_lock(fn)` で同期する
 
-disjointな書き込みは同期不要。2つの書き手が本当に**同じ**データに触れざるを
-得ないとき — カウンタや、一貫性を保ちたい複数フィールドの更新など — に
-`with_lock`がescape hatchになる。callbackをbufferのロックを保持したまま
-実行し、callbackの戻り値を返す。ロックは例外送出を含むあらゆる脱出経路で
-解放される。
+disjointな書き込みに同期は要りません。2つの書き手が本当に**同じ**データに
+触れざるを得ないとき（カウンタや、一貫性を保ちたい複数フィールドの更新など）
+には、`with_lock`がescape hatchになります。callbackをbufferのロックを保持した
+まま実行し、callbackの戻り値を返します。ロックは例外送出を含むあらゆる脱出
+経路で解放されます。
 
 ```culebra
 # doctest: skip — 大きなバッファを worker pool で回す
@@ -3193,23 +3192,23 @@ Parallel.each(iota(0, 8), fn (w) {
 inspect(tally[0].n)  # ちょうど 8000 — lost update なし
 ```
 
-同じ呼び出しが**プロセス間**でも効く。`.shared` / `.file`のbufferは
+同じ呼び出しが**プロセス間**でも効きます。`.shared` / `.file`のbufferは
 プロセス共有ロックを持つので、`share:`で渡された子（あるいは同じファイル
-`path`を再オープンした別プロセス）どうしが排他される。callbackは短く保つ
-こと — すべてのholderを直列化する。ロックは**再入不可**で、callbackの中から
-同じbufferの`with_lock`を再度呼ぶとデッドロックする。引数が関数でなければ
-`TypeError`、drop済みのbufferは`ValueError`。
+`path`を再オープンした別プロセス）どうしが排他されます。callbackは短く保って
+ください。すべてのholderを直列化するためです。ロックは**再入不可**で、
+callbackの中から同じbufferの`with_lock`を再度呼ぶとデッドロックします。引数が
+関数でなければ`TypeError`、drop済みのbufferは`ValueError`です。
 
 `.file`のbufferはこのロック用に先頭へ小さな固定ヘッダを確保するので、その
-バイト列は素のレコード配列ではなくculebraのコンテナ形式になる — 外部ツールが
-ファイルを直接読む場合は注意。
+バイト列は素のレコード配列ではなくculebraのコンテナ形式になります。外部ツールが
+ファイルを直接読む場合は注意してください。
 
 #### 固定個数フィールド: `FixedArray<T, N>`
 
-`@packable`フィールドには`FixedArray<T, N>`を使える。スカラ`T`をちょうど
-`N`個持つ配列で、前に何も置かずに`[T × N]`としてインラインに並ぶ（Cの
-`T[N]`）。個数は変わらないので`push`は無く、各要素は書くまで0。レコードの
-形式で長さが決まっている配列に使う（形の3つの次元、色の3チャンネル、
+`@packable`フィールドには`FixedArray<T, N>`を使えます。スカラ`T`をちょうど
+`N`個持つ配列で、前に何も置かずに`[T × N]`としてインラインに並びます（Cの
+`T[N]`）。個数は変わらないので`push`は無く、各要素は書くまで0です。レコードの
+形式で長さが決まっている配列に使います（形の3つの次元、色の3チャンネル、
 予約領域など）。
 
 ```culebra
@@ -3226,16 +3225,16 @@ inspect([v.pos.size(), v.pos[0], v.rgb[2], v.rgb[0]])  # => [3, -4, 255, 0]
 ```
 
 viewは`.size()` / `.capacity()`（どちらも`N`）/ `.get(i)` / `.set(i, v)` /
-`arr[i]`（読み書き）/ `for x in arr`をサポート。`0...N`の外の添字（負の数は
-末尾から数える）は`IndexError`。`BoundedArray`と同じく、フィールドまるごとの
-代入は`TypeError`で、要素に書く。
+`arr[i]`（読み書き）/ `for x in arr`をサポートします。`0...N`の外の添字（負の
+数は末尾から数えます）は`IndexError`です。`BoundedArray`と同じく、フィールド
+まるごとの代入は`TypeError`なので、要素に書きます。
 
 #### 可変個数フィールド: `BoundedArray<T, N>`
 
-`@packable`フィールドには`BoundedArray<T, N>`を使える — スカラ`T`を
-**容量** `N`個まで保持する固定容量のインラインコレクションで、**個数**は
-実行時に可変。完全インライン展開（`[len][T × N]`、ポインタなし）なので、
-可変個数のデータも共有レコードに載る（VARCHAR(N)の手法）。
+`@packable`フィールドには`BoundedArray<T, N>`を使えます。スカラ`T`を
+**容量**`N`個まで保持する固定容量のインラインコレクションで、**個数**は
+実行時に変わります。完全インライン展開（`[len][T × N]`、ポインタなし）なので、
+可変個数のデータも共有レコードに載ります（VARCHAR(N)の手法）。
 
 ```culebra
 # doctest: skip
@@ -3255,17 +3254,18 @@ for p in b.trail { ... }
 ```
 
 viewは`.size()` / `.capacity()` / `.push(v)` / `.get(i)` / `.set(i, v)` /
-`arr[i]`（読み書き）/ `for x in arr`をサポート。容量超過の`push`と範囲外
-の添字は`IndexError`。要素型は固定スカラに限る。フィールドまるごとの代入
-（`record.field = ...`）は`TypeError` — view経由で変更する。viewはレコード
-のバイトをその場で読み書きするので、bufferとともにisolate間で共有される。
+`arr[i]`（読み書き）/ `for x in arr`をサポートします。容量を超える`push`と
+範囲外の添字は`IndexError`です。要素型は固定スカラに限ります。フィールド
+まるごとの代入（`record.field = ...`）は`TypeError`なので、view経由で変更
+します。viewはレコードのバイトをその場で読み書きするので、bufferとともに
+isolate間で共有されます。
 
 #### テキストフィールド: `BoundedString<N>`
 
-`@packable`フィールドには`BoundedString<N>`を使える — 最大`N`バイトの
-UTF-8文字列を保持する固定容量インライン文字列（`[len][byte × N]`、ポインタ
-なし）。`BoundedArray`と違い、**まるごと`String`値として**読み書きする
-（VARCHAR(N) の手法）:
+`@packable`フィールドには`BoundedString<N>`を使えます。最大`N`バイトの
+UTF-8文字列を保持する固定容量のインライン文字列です（`[len][byte × N]`、
+ポインタなし）。`BoundedArray`と違い、**まるごと`String`値として**読み書き
+します（VARCHAR(N)の手法）:
 
 ```culebra
 # doctest: skip
@@ -3282,17 +3282,17 @@ rows[0].name.upper()    # => "ALICE"   （String の全メソッドが効く）
 rows[1].name            # => ""        （ゼロ値は空文字列）
 ```
 
-`N`は**バイト**容量。`N`バイトを超える文字列は`CapacityError`、String以外
-の代入は`TypeError`。読み出しは格納バイトの新しい`String`コピーを返すので、
-bufferとともにisolate間で共有される（子isolateの書き込みが親の読み出しに
-見える）。
+`N`は**バイト**容量です。`N`バイトを超える文字列は`CapacityError`、String
+以外の代入は`TypeError`です。読み出しは格納バイトの新しい`String`コピーを
+返します。バイトはbufferとともにisolate間で共有されるので、子isolateの書き込みが
+親の読み出しに見えます。
 
 #### ハッシュコレクション: `BoundedSet<T, N>` / `BoundedMap<K, V, N>`
 
 `@packable`フィールドには`BoundedSet<T, N>`（最大`N`個のスカラ値）や
-`BoundedMap<K, V, N>`（最大`N`組のスカラkey→value）も使える。どちらも完全
+`BoundedMap<K, V, N>`（最大`N`組のスカラkey→value）も使えます。どちらも完全
 インライン展開（`[count][states][entries]`、ポインタなし）のopen-addressing
-ハッシュテーブルで、view経由でその場変更する:
+ハッシュテーブルで、view経由でその場で変更します:
 
 ```culebra
 # doctest: skip
@@ -3319,18 +3319,18 @@ m.keys()                       # => [Int32, ...]
 for k, v in m { ... }          # (key, value) タプルを yield
 ```
 
-容量超過の`add` / `set`は`CapacityError`。キー/値型は固定スカラに限り、等価は
-スカラのバイト比較（`BoundedSet<Float32>`は`0.0`と`-0.0`を別物とみなす）。
-フィールドまるごとの代入は`TypeError` — viewのメソッド経由で変更する。view自体は
-バイトへの道筋しか持たないので、viewへの書き込み（`m.note = 1`、`m[42] = 1`）は
-`TypeError`。バイトはレコード内にあるので、bufferとともにisolate間で共有
-される。
+容量を超える`add` / `set`は`CapacityError`です。キー/値型は固定スカラに限り、
+等価はスカラのバイト比較です（`BoundedSet<Float32>`は`0.0`と`-0.0`を別物と
+みなします）。フィールドまるごとの代入は`TypeError`なので、viewのメソッド経由で
+変更します。view自体はバイトへの道筋しか持たないので、viewへの書き込み
+（`m.note = 1`、`m[42] = 1`）は`TypeError`です。バイトはレコード内にあるので、
+bufferとともにisolate間で共有されます。
 
 #### Optional フィールド: `T?`
 
-`@packable`フィールドにはoptionalスカラ`T?`も使える — 値または`nil`を持つ
-スロットで、`[present:byte][T]`のレイアウト。まるごと値として読み書きし、present
-バイトが0なら`nil`、そうでなければスカラ:
+`@packable`フィールドにはoptionalスカラ`T?`も使えます。値または`nil`を持つ
+スロットで、レイアウトは`[present:byte][T]`です。まるごと値として読み書きし、
+presentバイトが0なら`nil`、そうでなければスカラです:
 
 ```culebra
 # doctest: skip
@@ -3348,16 +3348,16 @@ n[0].parent = nil  # クリア
 n[0].parent ?? -1  # => -1
 ```
 
-`0`は実値で`nil`とは別。packableなのはスカラoptionalのみ（`T`は固定スカラ）。
-疎構造（id→optionalスロットの配列）が主用途で、tagged payloadはpackable enumと
-組み合わせる。
+`0`は実値で`nil`とは別です。packableなのはスカラoptionalのみです（`T`は固定
+スカラ）。主な用途は疎構造（id→optionalスロットの配列）で、tagged payloadは
+packable enumと組み合わせます。
 
 #### タグ付き共用体: `@packable enum`
 
-`@packable` enumは固定のタグ付き共用体`[tag:i32][payload]`: 各variantのスカラ
-payloadが最大variantに合わせた1領域を共有し、tagがどのvariantがliveかを選ぶ。
-`@packable`クラスのフィールドにそのenum型を使える。component種別・メッセージ型など、
-共有レコード内の判別付きpayloadに使う:
+`@packable` enumは固定のタグ付き共用体`[tag:i32][payload]`です。各variantの
+スカラpayloadが最大のvariantに合わせた1つの領域を共有し、tagがどのvariantが
+liveかを選びます。`@packable`クラスのフィールドにそのenum型を使えます。
+component種別・メッセージ型など、共有レコード内の判別付きpayloadに使います:
 
 ```culebra
 # doctest: skip — 大きなバッファを worker pool で回す
@@ -3384,16 +3384,16 @@ match objs[0].shape {
 }
 ```
 
-variant payloadは全て固定スカラに限る（非スカラpayloadはvariant位置で
-`SyntaxError`）。そのenumのインスタンスでない値の書き込みは`TypeError`。読み出しは
+variant payloadは全て固定スカラに限ります（非スカラpayloadはvariant位置で
+`SyntaxError`）。そのenumのインスタンスでない値を書くと`TypeError`です。読み出しは
 バイトからvariantインスタンスを再構築する（enum namespace不要）ので、あるisolateが
-書いた値を別のisolateが共有buffer越しに読める。
+書いた値を別のisolateが共有buffer越しに読めます。
 
 #### 生バイト: `Bytes<N>`
 
-`@packable`フィールドには`Bytes<N>`も使える — 長さprefixなしの**ちょうど** `N`
-バイトをインライン保持し、まるごとbyte `String`として読み書きする。ハッシュ・UUID・
-固定長のバイト列用:
+`@packable`フィールドには`Bytes<N>`も使えます。長さprefixなしで**ちょうど**`N`
+バイトをインライン保持し、まるごとbyte `String`として読み書きします。ハッシュ・
+UUID・固定長のバイト列用です:
 
 ```culebra
 # doctest: skip
@@ -3408,15 +3408,16 @@ e[0].digest = some_32_byte_string
 e[0].digest  # => 32 バイト（バイナリ安全）
 ```
 
-書き込む`String`は**ちょうど** `N`バイトでなければならない（違えば`ValueError`）。
-String以外は`TypeError`。バイトはバイナリ安全（埋め込みNULも保持）。`BoundedString<N>`
-（長さprefix付きの可変長テキスト）と違い、`Bytes<N>`は固定長のバイト列。
+書き込む`String`は**ちょうど**`N`バイトでなければなりません（違えば`ValueError`）。
+String以外は`TypeError`です。バイトはバイナリ安全で、埋め込みNULも保持します。
+`BoundedString<N>`（長さprefix付きの可変長テキスト）と違い、`Bytes<N>`は固定長の
+バイト列です。
 
 #### ネストレコード: `@packable` クラスのフィールド
 
-`@packable`クラスのフィールドに別の`@packable`クラスを使える — そのレコードが
-インラインで格納され、`outer.inner`がそのバイトへのviewを返すので、ネストフィールド
-への代入はその場に書き込まれる:
+`@packable`クラスのフィールドに別の`@packable`クラスを使えます。そのレコードが
+インラインで格納され、`outer.inner`がそのバイトへのviewを返すので、ネストした
+フィールドへの代入はその場に書き込まれます:
 
 ```culebra
 # doctest: skip
@@ -3439,9 +3440,9 @@ lines[0].start.x               # => 1.0
 lines[0].end = lines[0].start  # サブレコードまるごとコピー（memcpy）
 ```
 
-ネストするクラスは、それを含むクラスより前に（`@packable`で）宣言する必要がある。
-サブレコードまるごとの代入は**同じ**クラスの別レコードのバイトをコピーする（違えば
-`TypeError`）。個別フィールドの設定はview経由（`outer.inner.field = v`）。
+ネストするクラスは、それを含むクラスより前に（`@packable`で）宣言する必要があります。
+サブレコードまるごとの代入は**同じ**クラスの別レコードのバイトをコピーします（違えば
+`TypeError`）。個別フィールドの設定はview経由（`outer.inner.field = v`）で行います。
 
 #### バイト列としてのレコード: `String.pack`
 
@@ -3449,7 +3450,7 @@ lines[0].end = lines[0].start  # サブレコードまるごとコピー（memcp
 表すのにも使える。[`String.pack` / `String.unpack`](language.ja.md#バイナリデータ-stringpack--stringunpack)
 の`type`に渡すと、要素1つがレコード1件になる。フィールドは宣言した順に、
 **詰め物を入れずに**並び、各スカラーは呼び出しの`endian:`の順序で書かれる
-（指定しなければlittle）。これは上のSharedBufferの置き方とは別のものである。
+（指定しなければlittle）。これは上のSharedBufferの置き方とは別のものです。
 SharedBufferはフィールドをCと同じ規則で整列させ、機械のバイト順のまま
 置く（isolateの間で共有するメモリのため）。こちらはファイルに載る
 バイト列のためのもので、ファイル形式で半端な位置にあるフィールドも、
@@ -3465,18 +3466,18 @@ SharedBufferはフィールドをCと同じ規則で整列させ、機械のバ�
 | `FixedArray<T, N>` | `T`の幅 × `N` | 要素がちょうど`N`個の`Array`。各要素は上の`T`の規則で書く | `N`個の`Array` |
 
 値を入れていない（`nil`の）`Bytes<N>`・`BoundedString<N>`・`FixedArray<T, N>`
-フィールドは0のバイトとして書く。それ以外の種類（`BoundedArray`、`BoundedSet`、
-`BoundedMap`（個数が変わるものは固定長のレコードに収まらない）、optional、
+フィールドは0のバイトとして書きます。それ以外の種類（`BoundedArray`、`BoundedSet`、
+`BoundedMap`（個数が変わるものは固定長のレコードに収まりません）、optional、
 enum、入れ子のレコード）にはバイト列の形がなく、そういうフィールドを持つ
-クラスを渡すと`TypeError`になる。その部分はスカラーの
-`String.unpack`で読むか、別のレコードに分ける。`pack`にはそのクラスの
-インスタンスを渡す（ほかの値は`TypeError`）。エラーのメッセージには
-レコードの番号とフィールド名が入る。`unpack`はレコードを**`new`を呼ばずに**
-作る。`@packable`のレコードの状態は宣言したフィールドがすべてで、
-そのどれもがバイト列から埋まるからである。返るのはそのクラスの普通の
+クラスを渡すと`TypeError`になります。その部分はスカラーの
+`String.unpack`で読むか、別のレコードに分けてください。`pack`にはそのクラスの
+インスタンスを渡します（ほかの値は`TypeError`）。エラーのメッセージには
+レコードの番号とフィールド名が入ります。`unpack`はレコードを**`new`を呼ばずに**
+作ります。`@packable`のレコードの状態は宣言したフィールドがすべてで、
+そのどれもがバイト列から埋まるからです。返るのはそのクラスの普通の
 インスタンスで、メソッドも使え、後でフィールドに書くときの型の検査も
-効く。`String.pack_size(Class)`はレコード1件のバイト数で、ちょうど1件分
-だけ読むときに使う:
+効きます。`String.pack_size(Class)`はレコード1件のバイト数で、ちょうど1件分
+だけ読むときに使います:
 
 ```culebra
 @packable
@@ -3500,10 +3501,10 @@ inspect([back.offset, back.size, back.name])  # => [12, 4096, 'E1M1']
 
 `Shared.new(value)`は普通の値（オブジェクト・配列・タプル・セット・スカラの
 任意のネスト）を**凍結**し、すべてのisolateがコピーなしで使える
-**読み取り専用view** を返す。可変長の読み取り専用データ
-（トークナイザ辞書、パース済み設定、検索インデックス）のためのレーン:
+**読み取り専用view**を返します。可変長の読み取り専用データ
+（トークナイザ辞書、パース済み設定、検索インデックス）のためのレーンです。
 channelレーンはタスクごとにコピーし、`SharedBuffer`は固定レイアウトを
-要求する。凍結ツリーは1つ、読み手は何個でも:
+要求します。凍結ツリーは1つで、読み手は何個でも持てます:
 
 ```culebra
 # doctest: skip
@@ -3514,50 +3515,50 @@ let workers = [0, 1, 2, 3].map(|i| Isolate.spawn(fn () {
 }))
 ```
 
-読みは普通のコレクションアクセスと同じ — `view.field`・`view[key]`・
+読みは普通のコレクションアクセスと同じです。`view.field`・`view[key]`・
 `view[i]`・`view.size()`・`view.has(k)`・`view.keys()` / `view.values()`・
-`for ... in view`（Object viewは`(key, value)`ペア、Array/Tuple/Set
-viewは要素を返す）。スカラフィールドは読み手のheapに材料化され、
-コンテナフィールドは別の共有viewとして返る（コピーなし）。ローカルの
-作業コピーが要る時は`view.copy()`で普通の可変値へ深い材料化をする。
+`for ... in view`が使えます（Object viewは`(key, value)`ペア、Array/Tuple/Set
+viewは要素を返します）。スカラフィールドは読み手のheapに材料化され、
+コンテナフィールドは別の共有viewとして返ります（コピーなし）。ローカルの
+作業コピーが要る時は、`view.copy()`で普通の可変値へ深く材料化します。
 `view[key]`と`view.has(key)`は、凍結したObjectと同じやり方でキーを
-見つける。そのObjectが持っていたキーならTupleも`nil`も引け、型をまたいで
-一致することはない。
+見つけます。そのObjectが持っていたキーならTupleも`nil`も引け、型をまたいで
+一致することはありません。
 
-viewは、凍結したコレクションと同じ答え方をする問い合わせを3つ持つ。
+viewは、凍結したコレクションと同じ答え方をする問い合わせを3つ持ちます。
 Objectの`view.get(key, fallback)`とArrayの`view.get(i, fallback)`、Set
 （要素をキーと同じやり方で探す）とArray・Tuple（要素を`==`で探す）の
-`view.contains(x)`、Arrayの`view.index_of(x)`。Arrayのviewは、Arrayの
-`view.map(f)`と`view.filter(f)`も持つ。どちらも普通のArrayを返し、
-コンテナの要素はviewとして`f`に渡り、`filter`が残した要素もviewのままになる。
-列が答えるそれ以外の操作には、viewのイテレータを使う。
+`view.contains(x)`、Arrayの`view.index_of(x)`です。Arrayのviewは、Arrayの
+`view.map(f)`と`view.filter(f)`も持ちます。どちらも普通のArrayを返し、
+コンテナの要素はviewとして`f`に渡り、`filter`が残した要素もviewのままになります。
+これら以外の列の操作には、viewのイテレータを使います。
 `view.iter()`は全体をコピーせずに要素を1つずつ返すので、
 `view.iter().map(f)`、`.sum()`などのイテレータのメソッドが、凍結した木を
-直接読む。
+直接読みます。
 
-viewの`for`とviewのイテレータは、凍結した木を自分で保持する。途中でviewを
-dropしても走査は終わらない。
+viewの`for`とviewのイテレータは、凍結した木を自分で保持します。途中でviewを
+dropしても走査は終わりません。
 
 view自身のメソッド名（`size`、`has`、`get`、`contains`、`index_of`、
 `keys`、`values`、`copy`、`iter`、`map`、`filter`、`drop`）は、`view.name`でもパターンでも
-そのメソッドとして読まれる。凍結したObjectが同じ名前のキーを持っていても、
-そのキーは`view['name']`で読める。
+そのメソッドとして読まれます。凍結したObjectが同じ名前のキーを持っていても、
+そのキーは`view['name']`で読めます。
 
 viewの表示、`JSON.stringify(view)`、`TOML.stringify(view)`、展開
 （`{...view}`と`[...view]`）は、凍結した値そのもの（`view.copy()`が返す
-もの）を読む。したがって展開の結果は奥まで普通の値になる。キーワードの
-splatにはその展開を渡す（`f(**{...view})`）。`**view`そのものは
-`TypeError`。パターンはviewのキーを`view.name`と同じように読む
+もの）を読みます。したがって展開の結果は奥まで普通の値になります。キーワードの
+splatにはその展開を渡します（`f(**{...view})`）。`**view`そのものは
+`TypeError`です。パターンはviewのキーを`view.name`と同じように読みます
 （`let {port} = view`）。`==`はviewの中身を見ないので、`view.copy()`を
-比べる。dropしたviewは`[dropped Shared value]`と表示される。
+比べてください。dropしたviewは`[dropped Shared value]`と表示されます。
 
-凍結できるのはisolateへ送れる値と同じで、Sendableなものは凍結
-できる。追加の拒否が2つ: **関数**（`Shared`の値はデータのみ）と
-**nativeハンドル**（channel・buffer・別の`Shared` view）は`SendError`。
-すべての書き込みは`ImmutableError`。更新は構造上copy-on-write
-（新しい値を作って再度`Shared.new`し、新viewを配る）。`view.drop()`
-は参照を解放（冪等）。ツリー本体はどこかの最後のviewがdropした時に
-解放され、以降の読みは`ClosedError`。
+凍結できるのはisolateへ送れる値と同じで、Sendableなものは凍結できます。
+これに加えて、次の2つは拒否されます。**関数**（`Shared`の値はデータのみ）と
+**nativeハンドル**（channel・buffer・別の`Shared` view）は`SendError`です。
+すべての書き込みは`ImmutableError`です。更新は構造上copy-on-writeで、
+新しい値を作って再度`Shared.new`し、新しいviewを配ります。`view.drop()`
+は参照を解放します（冪等）。ツリー本体はどこかの最後のviewがdropした時に
+解放され、以降の読みは`ClosedError`です。
 
 | | レーン | 共有 | 読み手ごとのコピー |
 |---|---|---|---|
@@ -3572,7 +3573,7 @@ splatにはその展開を渡す（`f(**{...view})`）。`**view`そのものは
 テスト用 / 実行時不変条件チェック用のアサーションmatcher。全10
 個のmatcherが`import`不要のグローバル名としてすべての環境に
 bindされています。失敗時は`{kind: "AssertionError", message: ...}`
-形のculebra Objectをthrow — `try/catch`で捕捉可能。
+形のculebra Objectをthrowするので、`try/catch`で捕捉できます。
 
 捕捉されなかった失敗は`assert_*`呼び出しの位置を報告します:
 
@@ -3583,8 +3584,8 @@ AssertionError at 12:1: assert_eq failed:
 ```
 
 `assert_throws`以外のmatcherは末尾に省略可能な`label`を取り、失敗
-メッセージがそれを繰り返します。効いてくるのは位置では2つの失敗を
-区別できない場面 — 呼び出し元に代わってassertするヘルパーは、どの
+メッセージがそれを繰り返します。ラベルが役に立つのは、位置では2つの失敗を
+区別できない場面です。呼び出し元に代わってassertするヘルパーは、どの
 失敗も自分自身の同じ1行として報告するからです:
 
 ```culebra
@@ -3595,7 +3596,7 @@ check(1, 1, "first")   # pass
 # ここで失敗すれば: assert_eq failed: second
 ```
 
-`assert`キーワード / builtinは存在しません — 用途ごとに専用matcher
+`assert`キーワード / builtinは存在しません。用途ごとに専用matcher
 を使います。productionの不変条件には`if`/`throw`を直接書きます:
 
 ```culebra
@@ -3609,16 +3610,16 @@ if !cond {
 
 * **`assert_true(x: Bool, label: String? = nil) -> Nil`** — `x`がtruthyならpass。失敗
   時は`assert_true failed:\n  value: {x}`。`x`は`Bool` / `Long` /
-  `Float`のみ — それ以外は`TypeError`。暗黙のtruthinessは無く、
+  `Float`のみで、それ以外は`TypeError`です。暗黙のtruthinessは無く、
   空文字列・空配列はfalsyではありません。
 * **`assert_false(x: Bool, label: String? = nil) -> Nil`** — `assert_true`の逆。
 
 ### 比較 matcher
 
-各比較matcherは **同名の演算子と同じdispatch** を行います —
+各比較matcherは**同名の演算子と同じdispatch**を行います。
 `assert_eq(a, b)`は`a == b`と等価で、クラスインスタンスの
 `__eq__` / `__lt__` / `__le__`が尊重されます。失敗messageは
-`to_string`で両辺を表示 (ユーザ`__str__`を尊重)。
+`to_string`で両辺を表示します（ユーザ定義の`__str__`も尊重されます）。
 
 * **`assert_eq(a, b, label: String? = nil) -> Nil`** — `a == b`。
 * **`assert_ne(a, b, label: String? = nil) -> Nil`** — `a != b`。
@@ -3647,9 +3648,9 @@ inspect(r.message)
 ### `assert_throws(kind: String, f: Function) -> Nil`
 
 0引数`f()`を呼び、`kind`に一致する`kind`を持つエラーがthrow
-されることを表明。組み込みエラー (`ZeroDivisionError`, `TypeError`
-等) は`e.kind`を持ち、ユーザ`throw {kind: "X", ...}`も同じく
-照合。`f`の引数数が0以外なら`ArityError`。
+されることを表明します。組み込みエラー（`ZeroDivisionError`, `TypeError`
+等）は`e.kind`を持ち、ユーザの`throw {kind: "X", ...}`も同じように
+照合します。`f`の引数数が0以外なら`ArityError`です。
 
 ```culebra
 assert_throws("ZeroDivisionError", fn () {
@@ -3662,9 +3663,9 @@ assert_throws("MyError", fn () {
 
 ### `assert_close(a: Float, b: Float, tol: Float, label: String? = nil) -> Nil`
 
-`|a - b| <= tol`ならpass。`a` / `b` / `tol`のいずれかがNaNなら
-**故意に失敗** (素朴な`diff > tol`だとNaNがsilently passする
-ため)。浮動小数比較は`assert_eq`ではなくこちらを使う。
+`|a - b| <= tol`ならpassします。`a` / `b` / `tol`のいずれかがNaNなら
+**故意に失敗**します（素朴な`diff > tol`だとNaNがsilentlyにpassして
+しまうため）。浮動小数の比較には`assert_eq`ではなくこちらを使ってください。
 
 ```culebra
 assert_close(3.14, 3.1415, 0.01)
@@ -3718,10 +3719,10 @@ Unicodeの **extended grapheme cluster** 単位でマッチし、コードポイ
 | `Regex.escape(s)` | `String` — メタ文字を全てバックスラッシュエスケープし`s`をリテラル一致に |
 | `Regex.interp(x)` | `String` — `re"...${x}..."`用の合成ヘルパ: `Regex` → `(?:src)`、それ以外 → エスケープしてリテラル一致 |
 
-その場限りの利用には、下のnamespaceメソッドがパターンを直接受け取り`compile`を隠します
-。1つのパターンを多数の入力に再利用するなら
-`Regex.compile(pattern)`を使いますが、エンジンがパターンでキャッシュするのでone-shot形に再コンパイルの
-コストはありません。フラグはインライン（`(?i)` / `(?m)` / `(?s)`）で。
+その場限りの利用には、下のnamespaceメソッドがパターンを直接受け取るので、
+`compile`を書かずに済みます。エンジンがパターンをキャッシュするため、one-shot形でも
+再コンパイルのコストはかかりません。1つのパターンを多数の入力に再利用するなら
+`Regex.compile(pattern)`を使います。フラグはインライン（`(?i)` / `(?m)` / `(?s)`）で指定します。
 
 | one-shot | 等価 |
 | --- | --- |
@@ -3756,12 +3757,12 @@ inspect(Regex.find('x', "y")?.value ?? "none")  # => 'none'
 | `re.split(s)` | `[String]` — マッチで`s`を分割 |
 
 **bulk APIの選び方。** `find_all`はマッチごとに完全な`Match`
-オブジェクト（テキスト・span・`groups`・`named`）を構築する。match-dense
+オブジェクト（テキスト・span・`groups`・`named`）を構築します。match-dense
 な入力では、マッチングそのものより**このオブジェクト構築が支配的**になり、
-エンジンの生スキャンの数十倍のコストになる。マッチごとのcaptureが不要なら
-leanな変種を使う: 個数だけなら`count`、byte spanなら`find_all_index`、
-マッチ文字列なら`find_all_str`、途中で止めるなら`find_iter`。
-`groups`/`named`をマッチごとに実際に使うときだけ`find_all`を使う。
+エンジンの生スキャンの数十倍のコストになります。マッチごとのcaptureが不要なら
+leanな変種を使ってください。個数だけなら`count`、byte spanなら`find_all_index`、
+マッチ文字列なら`find_all_str`、途中で止めるなら`find_iter`です。
+`groups`/`named`をマッチごとに実際に使うときだけ`find_all`を使います。
 
 `Match`はデータオブジェクト（`nil`はマッチなし）:
 
@@ -3776,7 +3777,7 @@ leanな変種を使う: 個数だけなら`count`、byte spanなら`find_all_ind
 マッチ全体、負数は配列同様にラップ）、`m["name"]`は名前付きグループの文字列を返します。
 ミス（範囲外・未マッチの省略可能グループ・無い名前）はすべて`nil`なので`?? ""`と
 合成できます。添字はキャプチャだけに届きレコードのフィールドには届かないため、マッチ全体は
-`m.value`か`m[0]`（`m["value"]`ではない）。spanが要る時はdotフィールド
+`m.value`か`m[0]`で読みます（`m["value"]`ではありません）。spanが要る時はdotフィールド
 （`m.groups[i].start`）を使います。
 
 `Group`は`.value` / `.start` / `.end`を持ちます。不正なパターンは`RegexError`を送出。
@@ -4292,11 +4293,11 @@ WebSocket接続はその寿命の間workerを占有するので、`workers: N`�
 - `workers: N` — N固定のプール。リクエストは**真の並列**で処理されます:
   あいだにグローバルなインタプリタロックは挟まりません。
 
-各workerは専用ランタイムを持つため、ハンドラは **Sendable** 必須（可変変数や非Sendable
-値をキャプチャ不可）。巨大なread-onlyデータは [`Shared.new`](#12-isolate) で共有（全
-workerで1コピー）、workerごとの資源（DB接続）はハンドラ内で開く。非Sendableなハンドラ
-は`listen`時に`SendError`（該当ルートを明示）。可変状態を持ちたいなら`Shared`/channel/
-hubに寄せる（`Isolate`と同じ規則）。
+各workerは専用ランタイムを持つため、ハンドラは**Sendable**でなければなりません（可変変数や
+非Sendableな値はキャプチャできません）。巨大なread-onlyデータは [`Shared.new`](#12-isolate) で
+共有し（全workerで1コピー）、workerごとの資源（DB接続）はハンドラ内で開きます。非Sendableな
+ハンドラは`listen`時に`SendError`になり、該当ルートが示されます。可変状態を持ちたいなら
+`Shared`/channel/hubに寄せます（`Isolate`と同じ規則）。
 
 ```culebra
 # doctest: skip
@@ -4309,10 +4310,10 @@ srv.listen(8080, workers: 8)  # 8 ハンドラが並列実行
 ```
 
 **バックグラウンドサーバ — `listen_async` + `stop`。** メインスレッドが別作業を
-する間（GUIの背後など）配信するには`listen_async`を使います。背後スレッドで配信し
-即return、`stop()`で停止（別スレッドからも呼べる）。サーバはハンドルを保持している
+する間（GUIの背後など）配信するには`listen_async`を使います。背後スレッドで配信して
+すぐに戻り、`stop()`で停止します（別スレッドからも呼べます）。サーバはハンドルを保持している
 間だけ動くので、配信し続けたい間は`srv`を参照し続けてください。ハンドラは呼び出し
-スレッド外で動くため **Sendable** 必須（`workers > 1`と同じ）。bind失敗は同期的に
+スレッド外で動くため、**Sendable**でなければなりません（`workers > 1`と同じです）。bind失敗は同期的に
 `HttpError`で報告されます。サーバはsingle-useで、一度配信したら再起動は`HttpError`
 です — もう一度配信するには新しい`Http.server()`を作ってください。
 
@@ -4649,7 +4650,7 @@ FS.write("site.zip", Compress.zip(Dir.disk("public")))
 
 ## 18. `Hash`
 
-メッセージダイジェストとHMAC。自前実装（OpenSSL非依存）で全バックエンド一致。
+メッセージダイジェストとHMAC。自前実装（OpenSSL非依存）で、全バックエンドで一致します。
 各関数は**小文字hex** のダイジェストを返します。入力はバイナリセーフ（埋め込み
 NULも終端でなくメッセージの一部）。
 
@@ -4681,22 +4682,22 @@ inspect(Hash.hmac_sha256("Jefe", "what do ya want for nothing?"))
 
 ## 19. `CSV`
 
-カンマ区切り値（RFC 4180流）のparse / 生成。全backendでbyte一致。
+カンマ区切り値（RFC 4180流）のparse / 生成を行います。全backendでbyte一致します。
 フィールドはカンマ、レコードは改行で区切られ、カンマ・ダブルクォート・改行を
-含むフィールドはダブルクォートで囲み、内部のクォートは`""`に二重化する。
+含むフィールドはダブルクォートで囲み、内部のクォートは`""`に二重化します。
 
 | 関数 | 結果 |
 | --- | --- |
 | `CSV.parse(text, delimiter=",", header=false, types=nil) -> Array` | Stringフィールドの行、または（`header`指定で）ObjectのArray |
 | `CSV.stringify(rows: Array, delimiter: String = ",") -> String` | CSVテキスト。各行はArray、各フィールドは`to_string`同様にレンダリング |
 
-`delimiter:`オプション（1バイト。先頭バイトを使用）でフィールド区切りを選べる
-— TSVなら`"\t"`。位置引数でもキーワードでも渡せる。
+`delimiter:`オプション（1バイト。先頭バイトを使用）でフィールド区切りを選べます
+（TSVなら`"\t"`）。位置引数でもキーワードでも渡せます。
 
-既定では`parse`は寛容（エラーなし）: 全フィールドは`String`で返り（数値推論は
-しない）、空入力は0行、末尾改行は空行を足さない。LFとCRLFの両方がレコード区切り。
+既定では`parse`は寛容で、エラーにしません。全フィールドは`String`で返り（数値推論は
+しません）、空入力は0行、末尾改行は空行を足しません。LFとCRLFの両方がレコード区切りです。
 `stringify`は各フィールドを`to_string`と同じ変換でレンダリングするので数値や
-`Bool`も自然に出力され、`stringify(parse(text))`は整形式入力をround-tripする。
+`Bool`も自然に出力され、`stringify(parse(text))`は整形式の入力をround-tripします。
 
 ```culebra
 let rows = CSV.parse("name,age\nalice,30\nbob,25")
@@ -4706,20 +4707,20 @@ inspect(CSV.parse("a\tb", delimiter: "\t")[0])                      # => ['a', '
 ```
 
 **ヘッダモード — `header: true`.** 1行目を列名とし、以降の各行を（位置Arrayでなく）
-その名前をキーにした`Object`にする：
+その名前をキーにした`Object`にします：
 
 ```culebra
 let rows = CSV.parse("name,age\nalice,30\nbob,25", header: true)
 inspect(rows[0]["name"])  # => 'alice'
 ```
 
-データ行が無いヘッダ（や空入力）は`[]`。ヘッダ名の重複や、ヘッダとフィールド数が
-食い違うデータ行は`ValueError`。
+データ行が無いヘッダ（や空入力）は`[]`になります。ヘッダ名の重複や、ヘッダとフィールド数が
+食い違うデータ行は`ValueError`です。
 
 **型付き列 — `types:`.** `types:`（ヘッダ名 → `"String"` / `"Long"` / `"Float"` /
-`"Bool"`の`Object`）を渡すとその列を変換する。未指定の列は`String`のまま。変換は
-**明示・推論しない** — 郵便番号やIDを`String`と宣言すれば元のテキストが正確に保たれる
-（先頭ゼロや精度の喪失なし）。`types:`は`header: true`を要する。
+`"Bool"`の`Object`）を渡すとその列を変換します。未指定の列は`String`のままです。変換は
+明示的に指定したときだけ行い、推論はしません。郵便番号やIDを`String`と宣言すれば元のテキストが
+正確に保たれます（先頭ゼロや精度が失われません）。`types:`には`header: true`が必要です。
 
 ```culebra
 let rows = CSV.parse(
@@ -4735,17 +4736,17 @@ inspect(z[0]["zip"])  # => '01234'
 ```
 
 未知の型名・どの列も指さない`types`キー・変換不能なセル（`Long`への`"hello"`、
-空セル等）は、レコード番号と列名付きの`ValueError`。Boolは厳密に`"true"` /
-`"false"`のみ。変換は前後の空白をトリムしない。
+空セル等）は、レコード番号と列名付きの`ValueError`になります。Boolは厳密に`"true"` /
+`"false"`のみです。変換は前後の空白をトリムしません。
 
-制約検証（範囲・正規表現・許可集合・一意性）は**あえて組み込まない** — それは別の
-汎用的な関心事。`types:`を使わない場合は`to_long` / `to_float`で都度変換する。
+制約検証（範囲・正規表現・許可集合・一意性）は**あえて組み込みません**。それは別の
+汎用的な関心事だからです。`types:`を使わない場合は`to_long` / `to_float`で都度変換してください。
 
 ---
 
 ## 20. `Env`
 
-dotenv形式の`.env`設定をparse / loadする。3 backendでバイト一致。
+dotenv形式の`.env`設定をparse / loadします。3 backendでバイト一致します。
 
 | 関数 | 結果 |
 | --- | --- |
@@ -4762,10 +4763,10 @@ dotenv形式の`.env`設定をparse / loadする。3 backendでバイト一致�
   ` # コメント`（空白に続く`#`）は除去（空白を伴わない`#`はリテラル）;
 - 重複キーは最初の位置を保ち、最後の値が勝つ。
 
-parseは寛容（不正な行はskip）。複数行の値は非対応。`Env.load`はファイルを開けない
-場合`IOError`を送出。デフォルトでは既に環境にある変数を上書きしない（実環境が優先）。
-`override: true`で既存値を置き換える。読み込んだ変数は`Sys.env`から見え、以降に
-起動する子プロセス（例: `Proc.run`）に継承される。
+parseは寛容で、不正な行はskipします。複数行の値は非対応です。`Env.load`はファイルを開けない
+場合`IOError`を送出します。デフォルトでは既に環境にある変数を上書きしません（実環境が優先）。
+`override: true`で既存値を置き換えます。読み込んだ変数は`Sys.env`から見え、以降に
+起動する子プロセス（例: `Proc.run`）に継承されます。
 
 ```culebra
 let cfg = Env.parse("# app config\nPORT=8080\nNAME=\"my app\"\nDEBUG=true")
@@ -4780,24 +4781,24 @@ Env.load(".env")  # ./.env があれば変数を設定
 inspect(Sys.env("PORT"))
 ```
 
-値を数値や真偽値として使うには、利用箇所で`to_long` / `to_float`で変換する
-（全ての値は`String`）。
+値を数値や真偽値として使うには、利用箇所で`to_long` / `to_float`で変換してください
+（全ての値は`String`です）。
 
 ---
 
 ## 21. `UUID`
 
-正準の小文字UUID（`8-4-4-4-12`ハイフン形式）を生成。2種類:
+正準の小文字UUID（`8-4-4-4-12`ハイフン形式）を生成します。2種類あります:
 
 | 関数 | 結果 |
 | --- | --- |
 | `UUID.v4() -> String` | ランダムUUID（122ランダムビット） |
 | `UUID.v7() -> String` | 時刻順UUID — 48-bit Unix-ミリ秒プレフィックス + ランダム。作成時刻でソートできる（DBキー向き） |
 
-エントロピーは`Random.*`が使う共有PRNG由来なので`Random.seed`で再現可能、
-かつ**暗号学的に安全ではない**（識別子向けで、トークンや秘密には不可）。v7は
-ミリ秒単位の順序で、同一ミリ秒内に生成された2値は相互に順序づけられない
-（monotonic counterは持たない）。
+エントロピーは`Random.*`が使う共有PRNG由来なので、`Random.seed`で再現できます。
+一方で**暗号学的に安全ではない**ため、識別子向けで、トークンや秘密には使えません。
+v7の順序はミリ秒単位で、同一ミリ秒内に生成された2値の間に順序はありません
+（monotonic counterは持ちません）。
 
 ```culebra
 inspect(UUID.v4().size())        # => 36
@@ -4829,9 +4830,9 @@ inspect(UUID.v4() != UUID.v4())  # => true
 
 色は端末の**ケイパビリティレベル**（`0`なし / `1` 16 / `2` 256 / `3`
 トゥルーカラー）に適応します。レベルは`isatty`・`NO_COLOR`（あれば無効）・
-`FORCE_COLOR`・`COLORTERM`・`TERM`から検出。レベルを超える色は
+`FORCE_COLOR`・`COLORTERM`・`TERM`から検出します。レベルを超える色は
 ダウンサンプル（トゥルーカラー → 最近傍256 → 最近傍16）され、レベル0では
-何も出さない（パイプ / `NO_COLOR`時はプレーン）。`Term.level()`で取得、
+何も出しません（パイプ / `NO_COLOR`時はプレーン）。`Term.level()`で取得、
 `Term.set_level(n)`で上書きできます。`fg`/`bg`/`rgb`/`bold`/… は直接表示用に
 文字列を包み、`Term.style(...)`は色付きセル用に`screen.set` / `screen.put`
 へ渡すスタイルを返します。
@@ -4855,13 +4856,13 @@ let st = Term.style(fg: (255, 128, 0), bold: true)  # Screen セル用
 
 ### パイプ入力
 
-`Term.attach_tty() -> Bool`はstdinを制御端末へ再接続する（現在のstdinが
-パイプでもリダイレクトされたファイルでも上書きする）。raw modeとキー読み取り
+`Term.attach_tty() -> Bool`はstdinを制御端末へ再接続します（現在のstdinが
+パイプでもリダイレクトされたファイルでも上書きします）。raw modeとキー読み取り
 （`Term.app`・`Term.poll`）は本物のttyでしか機能しないため、
-stdinに内容を流し込まれたスクリプト（`some-command | script.cul`）は先に
-そのパイプを読み切ってから`Term.attach_tty()`を呼んで対話的なキー入力へ
-切り替えられる —— `less`と同じパターン。制御端末が一切無い場合（完全に
-非対話・CI下など）は`false`を返し、stdinはそのまま変更されない。
+stdinに内容を流し込まれたスクリプト（`some-command | script.cul`）は、先に
+そのパイプを読み切ってから`Term.attach_tty()`を呼ぶと、対話的なキー入力へ
+切り替えられます。`less`と同じパターンです。制御端末が一切無い場合（完全に
+非対話・CI下など）は`false`を返し、stdinはそのまま変更されません。
 
 ```culebra
 # doctest: skip
@@ -4875,9 +4876,9 @@ Term.app(fn (screen) { ... })
 
 ### 入力イベント
 
-入力は単一のイベントモデル: `Term.poll(timeout)` —— `Term.app`の
-コールバック内では`screen.poll(timeout)`としても届きます —— が1つの
-イベント **Object** を返し、`timeout`秒の間に何も来なければ`nil`を
+入力は単一のイベントモデルです。`Term.poll(timeout)`（`Term.app`の
+コールバック内では`screen.poll(timeout)`としても使えます）が1つの
+イベント**Object**を返し、`timeout`秒の間に何も来なければ`nil`を
 返します。既に読み込んだエスケープ列を同じ形に変換するのが
 `Term.parse(raw)`です。`kind`で種別を判別し、修飾子はboolです。
 
@@ -4964,10 +4965,10 @@ Term.app(fn (s) {
 | `Log.set_level(level: String) -> Nil` | しきい値を設定（`"debug" < "info" < "warn" < "error"`） |
 | `Log.set_format(format: String) -> Nil` | `"text"`（既定）または`"json"` |
 
-各呼び出しはメッセージと省略可能な構造化フィールド`Object`を取る。しきい値以上の
-レコードだけが出力される（既定`info`なので`debug`は落ちる）。しきい値とフォーマットは
-`LOG_LEVEL` / `LOG_FORMAT`環境変数を既定値とし、`set_level` / `set_format`で上書き可能
-（不明なレベル・フォーマットは`ValueError`）。タイムスタンプ（ISO 8601 UTC、ナノ秒まで）は常に付与。
+各呼び出しはメッセージと省略可能な構造化フィールド`Object`を取ります。しきい値以上の
+レコードだけが出力されます（既定は`info`なので`debug`は出力されません）。しきい値とフォーマットは
+`LOG_LEVEL` / `LOG_FORMAT`環境変数を既定値とし、`set_level` / `set_format`で上書きできます
+（不明なレベル・フォーマットは`ValueError`）。タイムスタンプ（ISO 8601 UTC、ナノ秒まで）は常に付与されます。
 
 `text`は人間可読（stderrが端末ならlevelに色が付く）:
 
@@ -4981,10 +4982,10 @@ Term.app(fn (s) {
 {"method":"GET","status":200,"ms":12.4,"time":"2026-06-24T21:30:01.123456789Z","level":"info","msg":"request done"}
 ```
 
-`Log.with(fields)`は **child logger** を返し、`fields`を全行に乗せる
-（リクエスト/ジョブ単位の文脈を毎回でなく一度だけ束縛）。childは親のレベル/フォーマットを
-共有し、ネスト可能。`json`では予約キー`time`・`level`・`msg`が同名フィールドより優先される。
-`text`では同名のフィールドも普通の`key=value`として出力される。
+`Log.with(fields)`は**child logger**を返し、`fields`を全行に乗せます
+（リクエスト/ジョブ単位の文脈を毎回でなく一度だけ束縛します）。childは親のレベル/フォーマットを
+共有し、ネストできます。`json`では予約キー`time`・`level`・`msg`が同名フィールドより優先されます。
+`text`では同名のフィールドも普通の`key=value`として出力されます。
 
 ```culebra
 # doctest: skip
@@ -4997,22 +4998,22 @@ log.info("received")                  # ...以後の全行に付与
 log.error("upstream failed", {status: 502})
 ```
 
-値はtextでは`to_string`、jsonではJSON namespaceで直列化される。致命的状況は
-`error`でログして`Sys.exit(1)`する（専用の`fatal`レベルは無い）。
+値はtextでは`to_string`、jsonではJSON namespaceで直列化されます。致命的な状況は
+`error`でログして`Sys.exit(1)`してください（専用の`fatal`レベルは無いためです）。
 
 ---
 
 ## 24. `TOML`
 
-[TOML](https://toml.io) 設定のparse / 生成。文法と直列化は値中立コアに置かれ、
-VM・JIT・AOTがバイト単位で一致する。
+[TOML](https://toml.io) 設定のparse / 生成を行います。文法と直列化は値中立コアに置かれ、
+VM・JIT・AOTでバイト単位に一致します。
 
 | 関数 | 結果 |
 | --- | --- |
 | `TOML.parse(text: String) -> Object` | 文書を入れ子`Object`として返す |
 | `TOML.stringify(v: Object, sort_keys: Bool = false) -> String` | TOMLテキスト。サブテーブルは`[section]`見出しに展開 |
 
-`parse`はTOML v1.0の範囲を受け付ける: bare / quoted / dottedキー、
+`parse`はTOML v1.0の範囲を受け付けます: bare / quoted / dottedキー、
 `[table]` / `[[array.of.tables]]`見出し、4種の文字列形式（basic・literalと
 それぞれの複数行`"""` / `'''`）、整数（10進 / `0x` / `0o` / `0b`、`_`区切り可）、
 浮動小数（`inf` / `nan`を含む）、真偽値、配列、インラインテーブル。値の対応:
@@ -5029,11 +5030,11 @@ VM・JIT・AOTがバイト単位で一致する。
 | 日時 / 日付 / 時刻 | `String`（生のまま保持 — 専用の日時型は無い） |
 
 日時は専用型ではなく生テキストとして返るため、往復すると通常の文字列として
-再クォートされる。`\uXXXX` / `\UXXXXXXXX`エスケープはUnicodeスカラ値を
+再クォートされます。`\uXXXX` / `\UXXXXXXXX`エスケープはUnicodeスカラ値を
 指さねばならず、サロゲート（`U+D800`〜`U+DFFF`）や`U+10FFFF`超のコードポイントは
-parseエラーになる — culebra自身の文字列エスケープと同じ境界である。
+parseエラーになります。これはculebra自身の文字列エスケープと同じ境界です。
 不正な入力は`ValueError`を投げ、`e.line` / `e.col`
-（いずれも1始まり）が問題の文字を指す:
+（いずれも1始まり）が問題の文字を指します:
 
 ```culebra
 let r = try {
@@ -5046,17 +5047,17 @@ inspect(r.message)           # => 'TOML.parse: expected value'
 inspect("{r.line}:{r.col}")  # => '1:5'
 ```
 
-ネストの深さには上限がある: 木が1000段を超える文書 — ネストした配列 /
-インラインテーブルでも、dottedキーでも — は、Cスタックを使い果たす代わりに
-`ValueError`（`nesting too deep (limit 1000)`）を投げる。`stringify`も
-走査する値の木に同じ上限を適用する。
+ネストの深さには上限があります。木が1000段を超える文書（ネストした配列 /
+インラインテーブルでも、dottedキーでも）は、Cスタックを使い果たす代わりに
+`ValueError`（`nesting too deep (limit 1000)`）を投げます。`stringify`も
+走査する値の木に同じ上限を適用します。
 
 `stringify`は`Object`（TOML文書は常にテーブル）を取り、まずスカラ / 配列 /
 インライン値を出力し、続いてサブテーブルを`[section]`見出しへ、テーブル配列を
-`[[…]]`ブロックへ展開する。これによりbareキーが必ず該当見出しより前に来る。
-浮動小数は常に小数点を持つのでfloatとして読み戻せる。`sort_keys: true`は
-キーをアルファベット順に走査し決定的出力にする。関数・テンソル・非Stringキーを
-持つObjectは直列化できず、`stringify`は`TypeError`を投げる。
+`[[…]]`ブロックへ展開します。これによりbareキーが必ず該当見出しより前に来ます。
+浮動小数は常に小数点を持つのでfloatとして読み戻せます。`sort_keys: true`は
+キーをアルファベット順に走査して、出力を決定的にします。関数・テンソル・非Stringキーを
+持つObjectは直列化できず、`stringify`は`TypeError`を投げます。
 
 ```culebra
 let cfg = TOML.parse("""
@@ -5086,10 +5087,10 @@ inspect(TOML.stringify({a: 1, b: {c: 2}}))
 
 ## 25. `XML`
 
-XMLを普通の値として読み込み、小さなパス言語で検索し、書き戻す。専用の要素型は
-無い。要素は4つのフィールドを持つ`Object`である。`parse`が返す要素と、そこから
-見つかる要素はメソッドも持つ。`el.find(path)`は`XML.find(el, path)`と同じで、
-ほかも同様。
+XMLを普通の値として読み込み、小さなパス言語で検索し、書き戻します。専用の要素型は
+ありません。要素は4つのフィールドを持つ`Object`です。`parse`が返す要素と、そこから
+見つかる要素はメソッドも持ちます。`el.find(path)`は`XML.find(el, path)`と同じで、
+ほかも同様です。
 
 | 呼び出し | 結果 |
 | --- | --- |
@@ -5101,7 +5102,7 @@ XMLを普通の値として読み込み、小さなパス言語で検索し、�
 | `el.text(path=".", namespaces={}) -> String \| Nil` | 最初の一致のテキスト、無ければ`nil` |
 | `el.stringify(indent=0, declaration=false) -> String` | XMLテキスト |
 
-要素は次の4つのフィールドをこの順で持つ:
+要素は次の4つのフィールドをこの順で持ちます:
 
 * `tag`: 書かれたとおりの名前。接頭辞も含む（`'item'`、`'m:image'`）。
 * `ns`: 名前が解決された名前空間URI。名前空間が無ければ`nil`。
@@ -5110,14 +5111,14 @@ XMLを普通の値として読み込み、小さなパス言語で検索し、�
 * `children`: 要素と`String`（テキスト）の`Array`。文書中の順。
 
 メソッドはフィールドではなく、parseされたすべての要素が共有するプロトタイプに
-ある。そのため`inspect`、`==`、`keys()`、`for`、`JSON.stringify`には4つの
-フィールドしか見えず、`type_of`は`'Object'`を返す。`el.has('find')`はクラス
-インスタンスのメソッドと同じく`true`を返すが、`el.get('find', d)`と`el['find']`
-からはフィールドとして見えない。手で組み立てた要素や、spreadで作ったコピー
-（`{...el}`）はメソッドを持たない普通の`Object`である。`XML`の関数は
-この形の`Object`なら何でも受け取るので、そうした要素には関数を使う。parseされた
-要素は、別の`Isolate`に送っても`Channel`を通してもメソッドを保つ。`Shared.new`は
-これを受け付けない。メソッドは関数で、`Shared`の値はデータだけだからである。
+あります。そのため`inspect`、`==`、`keys()`、`for`、`JSON.stringify`には4つの
+フィールドしか見えず、`type_of`は`'Object'`を返します。`el.has('find')`はクラス
+インスタンスのメソッドと同じく`true`を返しますが、`el.get('find', d)`と`el['find']`
+からはフィールドとして見えません。手で組み立てた要素や、spreadで作ったコピー
+（`{...el}`）はメソッドを持たない普通の`Object`です。`XML`の関数は
+この形の`Object`なら何でも受け取るので、そうした要素には関数を使ってください。parseされた
+要素は、別の`Isolate`に送っても`Channel`を通してもメソッドを保ちます。`Shared.new`は
+これを受け付けません。メソッドは関数で、`Shared`の値はデータだけだからです。
 
 ```culebra
 let doc = XML.parse('<order id="17"><item sku="a1">Tea</item><item sku="b2">Mug &amp; saucer</item></order>')
@@ -5131,44 +5132,44 @@ inspect({...doc}.find)             # => nil
 
 ### `XML.parse(text, keep_space=false) -> Object`
 
-文書全体をparseし、ルート要素を返す。
+文書全体をparseし、ルート要素を返します。
 
 * **テキスト。** 隣り合うテキスト・CDATAセクション・参照は1つの`String`に
-  まとまる。コメントと処理命令は捨てられるので、その両側のテキストもまとまる。
+  まとまります。コメントと処理命令は捨てられるので、その両側のテキストもまとまります。
   空白（スペース・タブ・改行・復帰）だけのテキストは`keep_space: true`でない限り
-  捨てられる。それ以外のテキストは書かれたとおりに残り、前後の空白も削られない。
-* **改行。** `\r\n`と単独の`\r`は、テキストでもCDATAでも`\n`として読む
+  捨てられます。それ以外のテキストは書かれたとおりに残り、前後の空白も削られません。
+* **改行。** `\r\n`と単独の`\r`は、テキストでもCDATAでも`\n`として読みます
   （XML 1.0の2.11節）。
-* **属性値。** 値の中に直接書かれたタブ・改行・復帰はスペースとして読む
+* **属性値。** 値の中に直接書かれたタブ・改行・復帰はスペースとして読みます
   （XML 1.0の3.3.3節）。文字参照（`&#10;`）で書かれたものは残り、`stringify`も
-  この形で書く。
-* **実体。** 定義済みの5つ（`&lt;` `&gt;` `&amp;` `&quot;` `&apos;`）と文字参照
-  （`&#10;`、`&#x1F600;`）だけ。それ以外の`&name;`はその名前を示すエラーになる。
-* **プロローグ。** XML宣言とDOCTYPE（内部サブセットを含む）は読み飛ばし、残さない。
-  DOCTYPEが宣言したものは何も使わない。実体は展開せず、外部のものも取得しない。
+  この形で書きます。
+* **実体。** 使えるのは定義済みの5つ（`&lt;` `&gt;` `&amp;` `&quot;` `&apos;`）と文字参照
+  （`&#10;`、`&#x1F600;`）だけです。それ以外の`&name;`はその名前を示すエラーになります。
+* **プロローグ。** XML宣言とDOCTYPE（内部サブセットを含む）は読み飛ばし、残しません。
+  DOCTYPEが宣言したものは何も使いません。実体は展開せず、外部のものも取得しません。
   宣言には`version`（`1.`と数字）、続いて省略可能な`encoding`、さらに省略可能な
-  `standalone`（`yes`か`no`）を、この順に、それぞれ1回だけ、空白の後に書く。
+  `standalone`（`yes`か`no`）を、この順に、それぞれ1回だけ、空白の後に書きます。
 * **名前。** 要素名・属性名・実体名と処理命令のターゲットは、XML 1.0の名前文字
-  （大半の文字体系の文字と数字、`_`、`-`、`.`、`:`）で書き、1文字ずつ検査する。
-  処理命令のターゲットは`:`を含まない。
-* **文字コード。** UTF-8のみ。宣言が別の文字コードを名乗ればエラー（名前の比較は
-  大文字小文字を区別しない）。UTF-8でないバイト列や、XMLが許さない文字（大半の
-  制御文字）もエラー。先頭のバイトオーダーマークは読み飛ばす。
-* **名前空間。** 各要素の`ns`は、その位置で有効な`xmlns` / `xmlns:p`宣言から決まる。
+  （大半の文字体系の文字と数字、`_`、`-`、`.`、`:`）で書き、1文字ずつ検査します。
+  処理命令のターゲットは`:`を含められません。
+* **文字コード。** UTF-8のみです。宣言が別の文字コードを名乗ればエラーになります（名前の比較は
+  大文字小文字を区別しません）。UTF-8でないバイト列や、XMLが許さない文字（大半の
+  制御文字）もエラーです。先頭のバイトオーダーマークは読み飛ばします。
+* **名前空間。** 各要素の`ns`は、その位置で有効な`xmlns` / `xmlns:p`宣言から決まります。
   `xmlns=""`は既定の名前空間を外し、接頭辞`xml`は常に
-  `http://www.w3.org/XML/1998/namespace`に束縛される。どの宣言も束縛していない
-  要素や属性の接頭辞はエラー。ほかの接頭辞も既定の名前空間もこの名前空間には
-  束縛できず、`http://www.w3.org/2000/xmlns/`には何も束縛できない。1つの要素の
+  `http://www.w3.org/XML/1998/namespace`に束縛されます。どの宣言も束縛していない
+  要素や属性の接頭辞はエラーです。ほかの接頭辞も既定の名前空間もこの名前空間には
+  束縛できず、`http://www.w3.org/2000/xmlns/`には何も束縛できません。1つの要素の
   2つの属性が同じ名前空間と局所名を持つこと（`p`と`q`が同じURIに束縛されたときの
-  `p:a`と`q:a`など）もできない。
-* **整形式。** ルート要素は1つ。終了タグは対応する開始タグと一致する。属性名は要素内で
-  重複せず、値は引用符で囲まれ、`<`を含まない。ルートの外には空白・コメント・処理命令
-  しか置けない。
+  `p:a`と`q:a`など）もできません。
+* **整形式。** ルート要素は1つです。終了タグは対応する開始タグと一致します。属性名は要素内で
+  重複せず、値は引用符で囲まれ、`<`を含みません。ルートの外には空白・コメント・処理命令
+  しか置けません。
 * **深さ。** 1000段を超えて入れ子になった要素は`JSON`と同じく`ValueError`
-  （`nesting too deep (limit 1000)`）になる。
+  （`nesting too deep (limit 1000)`）になります。
 
 不正な文書は`XML.parse:`で始まるメッセージの`ValueError`を投げ、`e.line` /
-`e.col`（いずれも1始まり、バイト単位）が文書中の問題箇所を指す:
+`e.col`（いずれも1始まり、バイト単位）が文書中の問題箇所を指します:
 
 ```culebra
 let r = try {
@@ -5183,8 +5184,8 @@ inspect("{r.line}:{r.col}")  # => '2:6'
 
 ### `XML.events(text, keep_space=false) -> Iterator`
 
-`parse`と同じパーサを1イベントずつ使う。木として持つには大きすぎる文書や、
-一部だけが必要な場合に向く。各イベントは`Object`:
+`parse`と同じパーサを1イベントずつ使います。木として持つには大きすぎる文書や、
+一部だけが必要な場合に向いています。各イベントは`Object`です:
 
 | `kind` | ほかのフィールド |
 | --- | --- |
@@ -5192,13 +5193,13 @@ inspect("{r.line}:{r.col}")  # => '2:6'
 | `'end'` | `tag`、`ns` |
 | `'text'` | `text` |
 
-`<a/>`は`start`と`end`を1つずつ生む。テキストのまとめ方と空白の扱いは`parse`と
-まったく同じで、コメントと処理命令は何も生まない。
+`<a/>`は`start`と`end`を1つずつ生みます。テキストのまとめ方と空白の扱いは`parse`と
+まったく同じで、コメントと処理命令は何も生みません。
 
-呼び出した時点では何も読まない。各ステップは次のイベントまでしかparseしないので、
+呼び出した時点では何も読みません。各ステップは次のイベントまでしかparseしないので、
 不正な文書は反復が問題箇所に達したときに、それより前のイベントをすべて返した後で
-`XML.events:`で始まるメッセージの例外を投げる。`for`ループを`break`で途中で抜けると
-イテレータが閉じてパーサが解放され、残りのテキストは読まれない。
+`XML.events:`で始まるメッセージの例外を投げます。`for`ループを`break`で途中で抜けると
+イテレータが閉じてパーサが解放され、残りのテキストは読まれません。
 
 ```culebra
 let texts = XML.events('<log><e>boot</e> <e>ready</e></log>')
@@ -5219,13 +5220,13 @@ for ev in XML.events('<log><e>boot</e><<<') {
 
 ### `el.find_iter(path, namespaces={}) -> Iterator`, `XML.find_iter(el, path, namespaces={}) -> Iterator`
 
-`el`以下の木を`path`で検索する。`find_all`はすべての一致を文書順に重複なく返し、
-`find`はその最初（無ければ`nil`）、`find_iter`は`find_all`と同じ一致を`Iterator`で
-返す。返るのは要素そのもので、コピーではない。
+`el`以下の木を`path`で検索します。`find_all`はすべての一致を文書順に重複なく返し、
+`find`はその最初（無ければ`nil`）を返し、`find_iter`は`find_all`と同じ一致を`Iterator`で
+返します。返るのは要素そのもので、コピーではありません。
 
 パス言語はXPathの部分集合で、XPath 1.0の省略形のロケーションパスに、後の版の名前の
-形式を2つ加えたもの（XPath 2.0の`*:tag`とXPath 3.0の`Q{uri}tag`）。各形式の意味は
-XPathでの意味と同じ。パスは`el`からの相対で、ステップは`/`で区切る。
+形式を2つ加えたものです（XPath 2.0の`*:tag`とXPath 3.0の`Q{uri}tag`）。各形式の意味は
+XPathでの意味と同じです。パスは`el`からの相対で、ステップは`/`で区切ります。
 
 | ステップ | 選ぶもの |
 | --- | --- |
@@ -5249,27 +5250,27 @@ XPathでの意味と同じ。パスは`el`からの相対で、ステップは`/
 | `[last()]`、`[last()-n]` | 最後の候補、またはその`n`個前 |
 
 述語は連ねられ（`book[@lang='en'][2]`）、それぞれが前の述語の残したものをさらに
-絞る。XPathと同じく位置は1つの親の子の中で数える。`book[1]`は`book`を持つ各親の
-最初の`book`で、`.//book[1]`は`el`自身と、その下の各要素の最初の`book`子要素。
-述語中の属性名は文書に書かれたとおりの名前で照合する（`[@xlink:href]`）。
+絞ります。XPathと同じく位置は1つの親の子の中で数えます。`book[1]`は`book`を持つ各親の
+最初の`book`で、`.//book[1]`は`el`自身と、その下の各要素の最初の`book`子要素です。
+述語中の属性名は文書に書かれたとおりの名前で照合します（`[@xlink:href]`）。
 
 述語中のパスは候補の要素から始まり、外側のパスと同じステップを`.`と`..`も含めて使え、
-自身の述語も持てる（`note[pitch[step='C']]`）。その`..`は`el`まで上がり、それより上へは
-行かない。名前は外側のパスと同じく解決する。XPathと同じく、`[p='v']`は`p`が選ぶ要素の
-どれか1つのテキストが`v`なら成り立つ。述語の入れ子は1000段まで。
+自身の述語も持てます（`note[pitch[step='C']]`）。その`..`は`el`まで上がり、それより上へは
+行きません。名前は外側のパスと同じく解決します。XPathと同じく、`[p='v']`は`p`が選ぶ要素の
+どれか1つのテキストが`v`なら成り立ちます。述語の入れ子は1000段までです。
 
 **名前と名前空間。** パス中の接頭辞はまず`namespaces:`で引き、無ければ`el`自身の
-`xmlns:p`宣言で引く（祖先の宣言は見ない。要素は祖先を記録していない）。どちらにも
-無い接頭辞は`ValueError`。接頭辞の無い名前は、既定の`xmlns=`の下にあっても名前空間の
-無い要素にしか一致しない。そうした要素に一致させるには`namespaces:`で`""`をそのURIに
-対応させる（XPath 2.0の既定要素名前空間）か、`Q{uri}tag`か`*:tag`と書く。
+`xmlns:p`宣言で引きます（祖先の宣言は見ません。要素は祖先を記録していないためです）。どちらにも
+無い接頭辞は`ValueError`です。接頭辞の無い名前は、既定の`xmlns=`の下にあっても名前空間の
+無い要素にしか一致しません。そうした要素に一致させるには、`namespaces:`で`""`をそのURIに
+対応させる（XPath 2.0の既定要素名前空間）か、`Q{uri}tag`か`*:tag`と書きます。
 
-それ以外はすべて、その構文と桁を示す`ValueError`で拒否する: 軸（`following-sibling::`）、
+それ以外はすべて、その構文と桁を示す`ValueError`で拒否します: 軸（`following-sibling::`）、
 `last()`以外の関数、`and`、`or`、`=`以外の比較とリテラル以外との比較、和集合（`|`）、
 述語中のパスの末尾以外にある属性ステップ（`a/@href`）、絶対パス（`/a`、`//a`。述語中でも
 同じ: "a path is relative to the element"）。
 `Q`の無い波括弧の名前（`{uri}tag`、`{*}tag`）もXPathではなく、そのエラーはXPathでの
-書き方（`Q{uri}tag`、`*:tag`）を示す。
+書き方（`Q{uri}tag`、`*:tag`）を示します。
 
 ```culebra
 let lib = XML.parse('<lib><shelf><book lang="en"><title>A</title></book><book lang="fr"><title>B</title></book></shelf><shelf><book lang="en"><title>C</title></book></shelf></lib>')
@@ -5287,7 +5288,7 @@ inspect(titles(lib.find_all(".//book[../book/title='B']")))        # => ['A', 'B
 inspect(lib.find_all("shelf[book[title='C']/@lang='en']").size())  # => 1
 ```
 
-名前空間を使う場合:
+名前空間を使う場合は次のようにします:
 
 ```culebra
 let feed = XML.parse('<feed xmlns="urn:ex:feed" xmlns:m="urn:ex:media"><entry><title>First</title><m:image href="a.png"/></entry></feed>')
@@ -5304,9 +5305,9 @@ inspect(feed.find_all('*:entry').size())                                 # => 1
 
 ### `el.text(path=".", namespaces={}) -> String | Nil`, `XML.text(el, path=".", namespaces={}) -> String | Nil`
 
-`path`に最初に一致した要素のテキスト。XPathのstring-value、つまりその下のすべての
-テキストを文書順につないだもの。一致が無ければ`nil`、テキストの無い要素なら`''`。
-`parse`が要素の間で捨てた空白は含まない。残すには`keep_space: true`で読む。
+`path`に最初に一致した要素のテキストを返します。XPathのstring-value、つまりその下のすべての
+テキストを文書順につないだものです。一致が無ければ`nil`、テキストの無い要素なら`''`です。
+`parse`が要素の間で捨てた空白は含みません。残すには`keep_space: true`で読んでください。
 
 ```culebra
 inspect(XML.parse('<p>a <b>bold</b> word</p>').text())  # => 'a bold word'
@@ -5316,29 +5317,29 @@ inspect(XML.parse('<p/>').text('q'))                   # => nil
 
 ### `el.stringify(indent=0, declaration=false) -> String`, `XML.stringify(el, indent=0, declaration=false) -> String`
 
-要素をXMLテキストとして書く。`tag`、順序どおりの`attrs`、`children`の順に出力する。
-`ns`は読まない。名前空間宣言は`attrs`から出る。
+要素をXMLテキストとして書きます。`tag`、順序どおりの`attrs`、`children`の順に出力します。
+`ns`は読みません。名前空間宣言は`attrs`から出力されます。
 
-* `tag`は`String`でなければならない。`attrs`と`children`は省略（または`nil`）できる。
+* `tag`は`String`でなければなりません。`attrs`と`children`は省略（または`nil`）できます。
   ある場合、`attrs`は値が`String`・`Long`・`Float`・`Bool`の`Object`、`children`は
-  要素と`String`の`Array`。それ以外は`TypeError`。
+  要素と`String`の`Array`でなければならず、それ以外は`TypeError`です。
 * タグと`attrs`の各キーは`parse`が受け付ける名前（修飾名: 名前文字で書き、`:`は
-  1つまでで両端には置かない）でなければならず、そうでなければ`TypeError`。
+  1つまでで両端には置かない）でなければならず、そうでなければ`TypeError`です。
   テキストと属性値にUTF-8でないバイト列や、XML文書に含められない文字（大半の
-  制御文字）があれば`ValueError`。
-* 子の無い要素は`<tag/>`と書く。
-* テキストは`&`、`<`、`>`と復帰（`&#13;`）をエスケープする。属性値は`"`で囲み、
+  制御文字）があれば`ValueError`です。
+* 子の無い要素は`<tag/>`と書きます。
+* テキストは`&`、`<`、`>`と復帰（`&#13;`）をエスケープします。属性値は`"`で囲み、
   `&`、`<`、`"`をエスケープし、タブ・改行・復帰を文字参照で書くので、どれも読み戻すと
-  元のままになる。
-* `indent > 0`は子要素を1つずつインデントした行に置くが、子がすべて要素である要素に
-  限る。テキストを1つでも持つ要素は中身全体を1行に保つので、インデントがテキストを
-  変えることはない。
+  元のままになります。
+* `indent > 0`は子要素を1つずつインデントした行に置きますが、対象は子がすべて要素である要素に
+  限ります。テキストを1つでも持つ要素は中身全体を1行に保つので、インデントがテキストを
+  変えることはありません。
 * `declaration: true`は出力の先頭に`<?xml version="1.0" encoding="UTF-8"?>`と改行を
-  置く。
-* 1000段を超えて入れ子になった要素は`parse`と同じく`ValueError`になる。
+  置きます。
+* 1000段を超えて入れ子になった要素は`parse`と同じく`ValueError`になります。
 
 `parse`が返した任意の`e`について、2回のparseが同じ`keep_space`を使えば、`indent`の
-有無にかかわらず`XML.parse(XML.stringify(e))`は`e`に等しい。
+有無にかかわらず`XML.parse(XML.stringify(e))`は`e`に等しくなります。
 
 ```culebra
 inspect(XML.stringify({tag: 'point', attrs: {x: 1, y: 2.5, note: 'a "b"'}}))  # => '<point x="1" y="2.5" note="a &quot;b&quot;"/>'
@@ -5360,10 +5361,10 @@ println(page.stringify(indent: 2, declaration: true))
 
 [SQLite](https://sqlite.org) による組み込みSQLデータベース（amalgamationを
 vendor同梱・コンパイル済みで、システムライブラリ不要）。`SQLite.open`は
-ステートフルな **Database** ハンドルを返す。高レベルの`execute` / `query` /
-`transaction`が日常的なCRUDを、`prepare`が返す再利用可能な **Statement**
-ハンドルがホットループを担う。どちらのハンドルもスコープを抜けると確定的に
-クローズされるので、明示的な`close` / `finalize`は任意。
+ステートフルな**Database**ハンドルを返します。高レベルの`execute` / `query` /
+`transaction`が日常的なCRUDを、`prepare`が返す再利用可能な**Statement**
+ハンドルがホットループを担います。どちらのハンドルもスコープを抜けると確定的に
+クローズされるので、明示的な`close` / `finalize`は任意です。
 
 | 関数 | 結果 |
 | --- | --- |
@@ -5390,9 +5391,9 @@ vendor同梱・コンパイル済みで、システムライブラリ不要）�
 
 ### パラメータ
 
-`params`はSQLのプレースホルダを束縛する。**Array** は位置プレースホルダ
-`?`を左から順に、**Object** は名前付きプレースホルダ`:name`（`@name` /
-`$name`も可）をキーで束縛する：
+`params`はSQLのプレースホルダを束縛します。**Array**は位置プレースホルダ
+`?`を左から順に、**Object**は名前付きプレースホルダ`:name`（`@name` /
+`$name`も可）をキーで束縛します：
 
 ```culebra
 # doctest: skip
@@ -5402,7 +5403,7 @@ db.query("SELECT * FROM users WHERE id = :id", {id: 1})
 
 ### 型マッピング
 
-値は読み出し時は列の実行時型で、書き込み時はculebra値の型で対応づけられる：
+値は、読み出し時は列の実行時型で、書き込み時はculebra値の型で対応づけられます：
 
 | SQLite | Culebra |
 | --- | --- |
@@ -5412,9 +5413,9 @@ db.query("SELECT * FROM users WHERE id = :id", {id: 1})
 | BLOB | `String`（生バイト列） |
 | NULL | `nil` |
 
-書き込み側では`Bool`は`0` / `1`として束縛される。それ以外の型（`Array`・
-`Object`・関数など）の束縛は`TypeError`。SQLエラーや制約違反はSQLite自身の
-メッセージを載せた`SQLiteError`を送出する：
+書き込み側では`Bool`は`0` / `1`として束縛されます。それ以外の型（`Array`・
+`Object`・関数など）の束縛は`TypeError`です。SQLエラーや制約違反はSQLite自身の
+メッセージを載せた`SQLiteError`を送出します：
 
 ```culebra
 let db = SQLite.open(":memory:")
@@ -5447,66 +5448,66 @@ inspect(r.kind)  # => 'SQLiteError'
 db.close()
 ```
 
-Database / Statementハンドルは生成したスレッド（isolate）に紐づく。`Sendable`
-ではなく、`Isolate` / `Channel`境界を越えて渡せない。トランザクションはネスト
-できない（必要なら`SAVEPOINT`を直接使う）。
+Database / Statementハンドルは生成したスレッド（isolate）に紐づきます。`Sendable`
+ではなく、`Isolate` / `Channel`境界を越えて渡せません。トランザクションはネスト
+できません（必要なら`SAVEPOINT`を直接使ってください）。
 
 ---
 
 ## 27. `Canvas`
 
 小さなゲームやピクセルグラフィックス向けのイミディエイトモード2Dフレーム
-バッファ。フレームを描き、`present`で提示し、入力をポーリングして繰り返す。
-色はpacked RGBA `Long`、バッファは任意サイズ（WASM-4流の160×160が典型）。
-WASM PlaygroundではCanvasプログラムは **Canvasタブ**で動く — フレームは
+バッファです。フレームを描き、`present`で提示し、入力をポーリングして繰り返します。
+色はpacked RGBA `Long`、バッファは任意サイズです（WASM-4流の160×160が典型）。
+WASM PlaygroundではCanvasプログラムは**Canvasタブ**で動きます。フレームは
 `<canvas>`に表示され、キーボード / ポインタが入力になり、音（[`Audio`](#40-audio)）は
-WebAudioで鳴る。ネイティブではmacOS・Linux・Windowsで（`Scene`と同じvendored静的
-raylib + SDL3を使い）**実際のデスクトップウィンドウを開く**。Linuxでの
-ビルドにはSDL3が挙げるビルド依存が必要で、探索するX11 / 音声のヘッダが
+WebAudioで鳴ります。ネイティブではmacOS・Linux・Windowsで（`Scene`と同じvendored静的
+raylib + SDL3を使い）**実際のデスクトップウィンドウを開きます**。Linuxでの
+ビルドにはSDL3が挙げるビルド依存が必要です。configureが探すX11 / 音声のヘッダが
 無いとSDL3のconfigureが失敗するので、入っていないマシンでは
-`-DCULEBRA_ENABLE_CANVAS_WINDOW=OFF`でconfigureする。Windowsでは追加の
-パッケージは不要 — SDL3のWin32バックエンドが要るヘッダはmingw-w64の
-ツールチェーンに揃っている。できたバイナリはどこでも
-動く: SDL3はX11/GL/音声（Windowsなら`opengl32.dll`など）を初回使用時に
-読み込むので、ウィンドウビルドでもロード時のライブラリ依存は増えず、
-ディスプレイの無いサーバでも問題なく起動する。
+`-DCULEBRA_ENABLE_CANVAS_WINDOW=OFF`でconfigureします。Windowsでは追加の
+パッケージは不要で、SDL3のWin32バックエンドが要るヘッダはmingw-w64の
+ツールチェーンに揃っています。できたバイナリはどこでも動きます。SDL3は
+X11/GL/音声（Windowsなら`opengl32.dll`など）を初回使用時に読み込むので、
+ウィンドウビルドでもロード時のライブラリ依存は増えず、
+ディスプレイの無いサーバでも問題なく起動します。
 各`present`はフレームをアップロードし、最近傍で見やすい
-サイズに整数倍拡大し、60fpsでvsyncまでブロックする。キーボードとマウスが
-`Canvas.buttons` / `Canvas.mouse`になり、ウィンドウを閉じる（クローズボタン、
-またはスクリプト自身の`Canvas.quit()`）と`run`ループが終わる — Escはここでは
-ただのキー（`Canvas.key`参照）であり、組み込みの終了操作ではない。
-**ヘッドレスは宣言するもので、推測されるものではない**:
+サイズに整数倍拡大し、60fpsでvsyncまでブロックします。キーボードとマウスが
+`Canvas.buttons` / `Canvas.mouse`になり、ウィンドウを閉じると（クローズボタン、
+またはスクリプト自身の`Canvas.quit()`）`run`ループが終わります。Escはここでは
+ただのキー（`Canvas.key`参照）であり、組み込みの終了操作ではありません。
+**ヘッドレスは宣言するもので、推測されるものではありません**。
 ウィンドウバックエンド無しのビルド、および`CULEBRA_CANVAS_HEADLESS`が
-空・`0`・`off`以外に設定された実行では**ヘッドレス**: ピクセル / スプライト操作は同一に
-動く（振る舞いはVM / JIT / AOTで一致し`Canvas.get_pixel`で検証可能）が、
-何も表示されず、入力は「ボタンなし」を返す。この環境変数が、
+空・`0`・`off`以外に設定された実行は**ヘッドレス**になります。ピクセル / スプライト操作は同一に
+動きますが（振る舞いはVM / JIT / AOTで一致し、`Canvas.get_pixel`で検証できます）、
+何も表示されず、入力は「ボタンなし」を返します。この環境変数は、
 ディスプレイの無いサーバや（`just`の全レシピがexportするので）テストスイートが
-ウィンドウ対応バイナリを走らせる方法。`-DCULEBRA_ENABLE_CANVAS_WINDOW=OFF`は
-さらに踏み込んでraylib自体をビルドから外す。どちらも宣言していないウィンドウ
+ウィンドウ対応バイナリを走らせる方法です。`-DCULEBRA_ENABLE_CANVAS_WINDOW=OFF`は
+さらに踏み込んでraylib自体をビルドから外します。どちらも宣言していないウィンドウ
 ビルドがウィンドウを開けない場合（ディスプレイ無し・使えるGL無し）は、黙って
 ヘッドレスのふりをするのではなく、最初の`present`でこの環境変数を案内する
-`RuntimeError`を送出する。
+`RuntimeError`を送出します。
 
 ### 色
 
 `Canvas.rgba(r, g, b, a = 255) -> Long`は0–255の4チャンネルを1つの`Long`
-に詰める（バイト順`[r, g, b, a]`）。すべての描画呼び出しがこの色を取り、
-**アルファは合成される**: 255は不透明に描き、0は何も描かず、その間は図形が
-既存の内容の上にブレンドされる（整数source-over — 色チャンネルごとに
-`(src*a + dst*(255-a) + 127) / 255`。3 backendで丸めが一致し、不透明な
-バッファは不透明のまま）。`rgba(0, 0, 0, 128)`は半暗のオーバーレイで、
-2回描けば2回暗くなる。例外は2つ: `clear`は全ピクセルを与えた値で
-**置き換える**（フレームのリセットであって薄塗りではない）。`set_pixel`は
-値をそのまま格納し`get_pixel`と対になる（透過を書き込むのはこの2つの
-役目）。
+に詰めます（バイト順`[r, g, b, a]`）。すべての描画呼び出しがこの色を取り、
+**アルファは合成されます**。255は不透明に描き、0は何も描かず、その間は図形が
+既存の内容の上にブレンドされます（整数source-over。色チャンネルごとに
+`(src*a + dst*(255-a) + 127) / 255`で、3 backendで丸めが一致し、不透明な
+バッファは不透明のままです）。`rgba(0, 0, 0, 128)`は半暗のオーバーレイで、
+2回描けば2回暗くなります。例外は2つあります。`clear`は全ピクセルを与えた値で
+**置き換え**ます（フレームのリセットであって薄塗りではありません）。`set_pixel`は
+値をそのまま格納し、`get_pixel`と対になります（透過を書き込むのはこの2つの
+役目です）。
 
 `Canvas.rgb_to_hsv(r, g, b) -> Tuple`と`Canvas.hsv_to_rgb(h, s, v) -> Tuple`
-は2つの色モデルを変換する — RGB側は`rgba`と同じ0–255チャンネル、HSV
-側は色相/彩度/明度それぞれ`0.0..1.0`。パレットを**派生させる**場面は
+は2つの色モデルを変換します。RGB側は`rgba`と同じ0–255チャンネル、HSV
+側は色相/彩度/明度それぞれ`0.0..1.0`です。パレットを**派生させる**場面は
 HSVの出番で、彩度を上げる・明暗ペアを近づける・色相をずらす、といった操作
-はどれもHSVでは1行の式になるが、RGBにはそれに相当する単純な式がない。
-`Canvas.hsv(h, s, v, a = 255) -> Long`は結果をそのまま詰める — `rgba`と
-対になる形。
+はどれもHSVでは1行の式になりますが、RGBにはそれに相当する単純な式がありません。
+`Canvas.hsv(h, s, v, a = 255) -> Long`は結果をそのまま詰めます。`rgba`と
+対になる形です。
 
 ```culebra
 inspect(Canvas.rgb_to_hsv(255, 0, 0))                         # => (0.0, 1.0, 1.0)
@@ -5518,9 +5519,9 @@ let (h, s, v) = Canvas.rgb_to_hsv(180, 140, 200)
 inspect(Canvas.hsv(h, Math.min(1.0, s * 1.4), v))  # => 4291327148
 ```
 
-2つは0–255のグリッド上で厳密に往復する — `hsv_to_rgb`は各チャンネルを
+2つは0–255のグリッド上で厳密に往復します。`hsv_to_rgb`は各チャンネルを
 丸めるので、`rgb_to_hsv`の結果をそのまま`hsv_to_rgb`に戻すとどの入力
-でも元の`r, g, b`に一致する。見た目が近いだけの近似ではない。
+でも元の`r, g, b`に一致します。見た目が近いだけの近似ではありません。
 
 ### 描画
 
@@ -5541,44 +5542,44 @@ inspect(Canvas.hsv(h, Math.min(1.0, s * 1.4), v))  # => 4291327148
 | `Canvas.present()` | フレームを提示（下記ループ参照） |
 
 フレームバッファとスプライトレジストリは1つのisolateのもので、最初に触れた
-isolate（描画でも`width`/`get_pixel`のような読み取りでも）が持ち主になる。
+isolate（描画でも`width`/`get_pixel`のような読み取りでも）が持ち主になります。
 2つ目のisolateは競合させる代わりに拒否され、空のキャンバス（ピクセルも
-スプライトハンドルも無い）を見る。報告できる呼び出しは理由を返す — `init`と
-`draw_to`/`to_png`は`RuntimeError`。他のisolateが一度も触れていなければ、
-持ち主がworkerでも構わない。
+スプライトハンドルも無い）を見ます。エラーを報告できる呼び出しは理由を返します。`init`と
+`draw_to`/`to_png`は`RuntimeError`です。他のisolateが一度も触れていなければ、
+持ち主がworkerでも構いません。
 
-すべての図形は`fill: false`で塗りの代わりに1ピクセル幅の輪郭を描く:
+すべての図形は`fill: false`で、塗りの代わりに1ピクセル幅の輪郭を描きます。
 `rect`は同じ塗りの最外周リング、`circle` / `ellipse`はつながった縁、
-`triangle` / `polygon`は`line`で描いた辺の閉じた連鎖（半開区間の塗りと
-違い頂点を含む）。`line`は長軸を1ピクセルずつ歩き短軸座標を最近傍に
-丸める。先に端点をソートするので`line(a, b)`と`line(b, a)`は同一の
-ピクセルを描く。半径`r`の円は中心行で`2r + 1`ピクセルにわたり —
-`(cx ± r, cy)`が円周上に乗る — 半径0は1ピクセル。負の半径は何も
-描かない。
+`triangle` / `polygon`は`line`で描いた辺の閉じた連鎖です（半開区間の塗りと
+違い頂点を含みます）。`line`は長軸を1ピクセルずつ歩き、短軸座標を最近傍に
+丸めます。先に端点をソートするので、`line(a, b)`と`line(b, a)`は同一の
+ピクセルを描きます。半径`r`の円は中心行で`2r + 1`ピクセルにわたり
+（`(cx ± r, cy)`が円周上に乗ります）、半径0は1ピクセルです。負の半径は何も
+描きません。
 
-位置とサイズの引数はすべて`Long|Float`。`Float`は −∞ 方向に丸める（ピクセル
+位置とサイズの引数はすべて`Long|Float`です。`Float`は −∞ 方向に丸める（ピクセル
 *n* が`[n, n+1)`を覆う）ので、隣接するスパンは隙間なく敷き詰まり、負の座標は
-0列目に吸着せず範囲外のままになる。非有限値と範囲外の値は例外を投げず飽和し、
-`Math.nan`は0になる。これにより、位置を浮動小数で計算するプログラム（投影、
-スクロールオフセット）は1つずつ丸めずそのまま渡せる。色 / blitフラグ /
+0列目に吸着せず範囲外のままになります。非有限値と範囲外の値は例外を投げず飽和し、
+`Math.nan`は0になります。これにより、位置を浮動小数で計算するプログラム（投影、
+スクロールオフセット）は1つずつ丸めずそのまま渡せます。色 / blitフラグ /
 アルファ / スプライトハンドル、フレームバッファとスプライトの寸法
 （`Canvas.init`、`Canvas.run`、`Sprite.new` / `blank`）、`Canvas.text`の
-`scale`は`Long`のまま。
+`scale`は`Long`のままです。
 
 `Canvas.polygon`の`points`は平坦な`[x0, y0, x1, y1, …]`の頂点列（3頂点
-以上、他の座標と同じくLongかFloat）で、輪郭は自動で閉じる。末尾の半端な1個
-は無視される。塗りはeven-odd規則なので、凹んだ輪郭は見たとおりに凹む。
+以上、他の座標と同じくLongかFloat）で、輪郭は自動で閉じます。末尾の半端な1個
+は無視されます。塗りはeven-odd規則なので、凹んだ輪郭は見たとおりに凹みます。
 `Canvas.triangle`は同じ塗りを3頂点で直接書く形で、慣習的な形状呼び出し
-（raylib / SDL / GPUラスタライザはいずれも3頂点を取る）に合わせるとともに、
-ホットパスで呼び出しごとに`Array`を作らずに済む。`Canvas.circle`は半径を
-1つにした`ellipse`。どちらも各行の半幅を正確な整数平方根で求めるので、
-どのbackendでも同一の曲線になる。
+（raylib / SDL / GPUラスタライザはいずれも3頂点を取ります）に合わせるとともに、
+ホットパスで呼び出しごとに`Array`を作らずに済みます。`Canvas.circle`は半径を
+1つにした`ellipse`です。どちらも各行の半幅を正確な整数平方根で求めるので、
+どのbackendでも同一の曲線になります。
 
-行とスパンは`rect`と同じ半開区間 — 行は「その行を縦スパンに含む辺」に属し、
-塗るスパンは`[xl, xr)`。したがって辺を共有する図形は継ぎ目なく、二重描画もなく
-敷き詰まる（矩形を対角線で2つの三角形に切ると、ラスタライズ結果は元の矩形に
-正確に戻る）。補間は全て整数なので、どのbackendでも同一の形になる。座標は
-±2³⁰ のガードバンドに飽和するので、どんな入力でも桁あふれしない。
+行とスパンは`rect`と同じ半開区間で、行は「その行を縦スパンに含む辺」に属し、
+塗るスパンは`[xl, xr)`です。したがって辺を共有する図形は継ぎ目なく、二重描画もなく
+敷き詰まります（矩形を対角線で2つの三角形に切ると、ラスタライズ結果は元の矩形に
+正確に戻ります）。補間は全て整数なので、どのbackendでも同一の形になります。座標は
+±2³⁰ のガードバンドに飽和するので、どんな入力でも桁あふれしません。
 
 ### ウィンドウ
 
@@ -5601,8 +5602,8 @@ isolate（描画でも`width`/`get_pixel`のような読み取りでも）が持
 | `Canvas.can_quit() -> Bool` | 閉じられる実ウィンドウがあるか |
 
 ブラウザで何もしないのは未実装ではなく方針です。タブのタイトルはキャンバスを
-載せているページのものであって、その上で動くプログラムのものではありません
-— 上の他の項目もすべて同じ理由でブラウザとヘッドレスではno-opです。そこには
+載せているページのものであって、その上で動くプログラムのものではありません。
+上の他の項目もすべて同じ理由でブラウザとヘッドレスではno-opです。そこには
 影響を与えるべきOSウィンドウがそもそも無いからです。
 
 `Canvas`のウィンドウは通常固定サイズです。`resizable`はOSウィンドウ自体を
@@ -5617,19 +5618,19 @@ isolate（描画でも`width`/`get_pixel`のような読み取りでも）が持
 ### スプライト
 
 `Canvas.Sprite.new(pixels, w, h, palette = nil)`はスプライトを一度アップロード
-し、毎フレーム安価にblitできるハンドルを返す。`pixels`は行優先の平坦配列:
+し、毎フレーム安価にblitできるハンドルを返します。`pixels`は行優先の平坦配列で、
 packed RGBA `Long`、または`palette`を与えたときはそのパレットへのインデックス
-（コンパクトなインデックスカラー画像）。完全透過のソースピクセルはスキップされ
-（形マスク）、部分透過のピクセル — PNGのアンチエイリアス縁 — は既存の内容に
-ブレンドされるので、スプライトは合成される。スプライトのピクセルは最後の参照が
-消えたときに解放される。
+（コンパクトなインデックスカラー画像）です。完全透過のソースピクセルはスキップされ
+（形マスク）、部分透過のピクセル（PNGのアンチエイリアス縁）は既存の内容に
+ブレンドされるので、スプライトは合成されます。スプライトのピクセルは最後の参照が
+消えたときに解放されます。
 
-`Canvas.Sprite.new(png: String)`は代わりにPNGのバイト列をデコードする。`String`
-はバイト列なので、例えば画像ファイルの`FS.read`をそのまま渡せる。サイズは画像から
-得るのでデータ以外に渡すものは無い。`Canvas.Sprite.from_png(data)`は呼び出し側で意図が読める名前を付けた同じ
-もの。グレースケール / パレット（`tRNS`込み）/ トゥルーカラー / 16bit/chのいずれも
-フレームバッファと同じpacked RGBAになる。デコードできない入力は
-`ValueError: not a valid PNG image`。
+`Canvas.Sprite.new(png: String)`は代わりにPNGのバイト列をデコードします。`String`
+はバイト列なので、例えば画像ファイルの`FS.read`をそのまま渡せます。サイズは画像から
+得るので、データ以外に渡すものはありません。`Canvas.Sprite.from_png(data)`は、
+呼び出し側で意図が読める名前を付けた同じものです。グレースケール / パレット（`tRNS`込み）/
+トゥルーカラー / 16bit/chのいずれもフレームバッファと同じpacked RGBAになります。
+デコードできない入力は`ValueError: not a valid PNG image`です。
 
 | メソッド | 効果 |
 | --- | --- |
@@ -5640,16 +5641,16 @@ packed RGBA `Long`、または`palette`を与えたときはそのパレット�
 | `sprite.to_png() -> String` | スプライトのピクセルをPNGバイト列で返す（`from_png`の逆） |
 | `sprite.width()` / `sprite.height()` | スプライト寸法 |
 
-拡縮blitのサンプリングは最近傍なので、ドット絵を拡大しても輪郭は鮮明なまま。
-`smooth`は縮小時にソースをボックス平均する（どちらの軸も縮小しないときは無視）。
-拡縮版に`transpose`は無い。`alpha`（0–255）はblit全体をスケールする: 各
+拡縮blitのサンプリングは最近傍なので、ドット絵を拡大しても輪郭は鮮明なままです。
+`smooth`は縮小時にソースをボックス平均します（どちらの軸も縮小しないときは無視）。
+拡縮版に`transpose`はありません。`alpha`（0–255）はblit全体をスケールします。各
 ピクセルは自身のソースアルファ × `alpha`で合成されるので、不透明なスプライトの
 `alpha: 128`は半分ブレンド、その中の半透明の縁ピクセルは4分の1でブレンド
-される。完全透過のソースピクセルは直接サンプルされてもボックス平均されても
-スキップされ、寄与しない。転送先・転送元の矩形の辺が非正なら何も描かない。
+されます。完全透過のソースピクセルは直接サンプルされてもボックス平均されても
+スキップされ、寄与しません。転送先・転送元の矩形の辺が非正なら何も描きません。
 
-スプライトとフレームバッファの負の辺は0として扱う。画像に収まらない大きさ
-（`w * h * 4`バイトが2 GiB以上）は`ValueError`
+スプライトとフレームバッファの負の辺は0として扱います。画像に収まらない大きさ
+（`w * h * 4`バイトが2 GiB以上）は`ValueError`です
 （`Canvas.Sprite: 24000x24000 is too large`。`Canvas.init` / `Canvas.run`では
 `Canvas.init: …`）。
 
@@ -5657,11 +5658,11 @@ packed RGBA `Long`、または`palette`を与えたときはそのパレット�
 
 `Canvas.Sprite.blank(w, h, color = 0)`は空のスプライトを作り、
 `Canvas.draw_to(sprite, fn () { ... })`はクロージャの間だけすべての描画
-呼び出しをそこへ向ける — `clear`、図形、`text`、他スプライトの`draw`、
+呼び出しをそこへ向けます。`clear`、図形、`text`、他スプライトの`draw`、
 さらに`Canvas.width()` / `height()`と`get_pixel`も描画先に従うので、
-中央寄せのコードはオフスクリーンでもそのまま動く。`present()`は常に
-フレームバッファを表示する。前の描画先はどの脱出経路でも（throwでも）
-復元され、`draw_to`は呼び出しスタックのようにネストする。
+中央寄せのコードはオフスクリーンでもそのまま動きます。`present()`は常に
+フレームバッファを表示します。前の描画先はどの脱出経路でも（throwでも）
+復元され、`draw_to`は呼び出しスタックのようにネストします。
 
 ```culebra
 # doctest: skip
@@ -5679,11 +5680,11 @@ Canvas.run(320, 240, fn () {
 })
 ```
 
-スプライトを自分自身に描くこと（blitが自分の書き込みを読んでしまう）は
-`ValueError`になる。いま描画先になっているスプライトの解放も拒否されるが、
+スプライトを自分自身に描くこと（blitが自分の書き込みを読んでしまいます）は
+`ValueError`になります。いま描画先になっているスプライトの解放も拒否されますが、
 `drop`のエラーは投げられずログに出るので、プログラムには標準エラーへの
-`drop: cannot free the sprite currently drawn to`が見え、呼び出しは`nil`を返す。
-どちらも他のCanvasエラーと同じくbackend対称。
+`drop: cannot free the sprite currently drawn to`が見え、呼び出しは`nil`を返します。
+どちらも他のCanvasエラーと同じくbackend対称です。
 
 ### 画像の保存
 
@@ -5707,7 +5708,7 @@ FS.write("tile.png", tile.to_png())
 ```
 
 出力は8bit truecolor + アルファ、`IDAT`は1個で、各行はスコアが最小に
-なるフィルタで符号化されます — 平坦でディザのかかったピクセルアートなら
+なるフィルタで符号化されます。平坦でディザのかかったピクセルアートなら
 専用エンコーダに近いところまで縮みます。ピクセルが1つもない画像
 （`Canvas.init(0, 0)`）と、解放済みのスプライトハンドルはどちらも
 `ValueError`です。
@@ -5716,22 +5717,23 @@ FS.write("tile.png", tile.to_png())
 
 `Canvas.text(s, x, y, color, scale = 1)`は内蔵8×8ビットマップフォント
 （WASM-4ランタイムのフォント、印字可能ASCII 32–126の大文字・小文字を収録、
-範囲外の文字はスキップ）で`s`を描く。フォントの各ピクセルは`scale`×`scale`
-のブロックになり、送りも1文字`8 * scale` pxで追随する — `scale: 2`が
-タイトル画面サイズ。非正のscaleは何も描かない。
-`Canvas.text_width(s, scale = 1) -> Long`はピクセル幅を返す（中央寄せ /
+範囲外の文字はスキップ）で`s`を描きます。フォントの各ピクセルは`scale`×`scale`
+のブロックになり、送りも1文字`8 * scale` pxで追随します。`scale: 2`が
+タイトル画面サイズです。非正のscaleは何も描きません。
+`Canvas.text_width(s, scale = 1) -> Long`はピクセル幅を返します（中央寄せ /
 右寄せ用）。
 
 ### TTFフォント
 
-`Canvas.Font(data)`はTTF/OTFのバイト列をパースし — フォントファイルの`FS.read`や、
-`Dir.embedded(...).read(...)`でAOTバイナリへ焼き込める（`Sprite.from_png`のアセットと
-同じ要領） — ハンドルを返す。`Sprite`と違い`Font`はサイズを固定しない — サイズは
-描画のたびに引数で渡すので、1つの`Font`がプログラム内で使う全サイズを兼ねる。
-ラスタライズ済みグリフは内部で(font, codepoint, size)ごとにキャッシュされる。
+`Canvas.Font(data)`はTTF/OTFのバイト列をパースしてハンドルを返します。
+`data`にはフォントファイルの`FS.read`や、AOTバイナリへ焼き込める
+`Dir.embedded(...).read(...)`が使えます（`Sprite.from_png`のアセットと
+同じ要領です）。`Sprite`と違い`Font`はサイズを固定しません。サイズは
+描画のたびに引数で渡すので、1つの`Font`がプログラム内で使う全サイズを兼ねます。
+ラスタライズ済みグリフは内部で(font, codepoint, size)ごとにキャッシュされます。
 stb_truetypeがパースできないものは`ValueError: not a valid TTF/OTF font`を送出
-する。**信頼できるソースのフォントのみ読み込むこと** — 大半のTTF/OTFパーサ同様、
-stb_truetypeは壊れたファイル内部のオフセットを範囲チェックしない。
+します。**信頼できるソースのフォントのみ読み込んでください。**大半のTTF/OTFパーサ同様、
+stb_truetypeは壊れたファイル内部のオフセットを範囲チェックしません。
 
 | メソッド | 効果 |
 | --- | --- |
@@ -5741,16 +5743,15 @@ stb_truetypeは壊れたファイル内部のオフセットを範囲チェッ�
 | `font.ascent(size) -> Long` | `size`でのベースラインからの上端ピクセル数 |
 | `font.advance(codepoint, size) -> Long` | `size`での1コードポイント分の送り幅 |
 
-`draw`は`s`中の全Unicodeスカラー値を歩く(内蔵ビットマップフォントの`text`はASCII
-限定の`.bytes()`ベースだが、こちらはフルUnicode)。各グリフはアンチエイリアス付き
-で描かれ — 他の描画呼び出しと同じアルファブレンドを通るので、部分的にしか覆われて
-いないピクセルは完全なon/offでなく`color`へ向かってブレンドする。フォントに無い
-コードポイントはスキップされずフォント自身の`.notdef`グリフへフォールバックする。
-kerningはない: 送り幅は各グリフ自身の幅の和。
-hintingもない — これは欠落でなく意図的な選択で、hintingを入れるとグリフ形状が
-hintingエンジン自体の丸め処理に依存してしまい、`Canvas.Font`はnative・ブラウザ・
-headlessの全backendで同じ結果を目指す他の全Canvas primitiveと同じ立場を取って
-いる。
+`draw`は`s`中の全Unicodeスカラー値を歩きます(内蔵ビットマップフォントの`text`はASCII
+限定の`.bytes()`ベースですが、こちらはフルUnicodeです)。各グリフはアンチエイリアス付き
+で描かれ、他の描画呼び出しと同じアルファブレンドを通るので、部分的にしか覆われて
+いないピクセルは完全なon/offでなく`color`へ向かってブレンドされます。フォントに無い
+コードポイントはスキップされず、フォント自身の`.notdef`グリフへフォールバックします。
+kerningはありません。送り幅は各グリフ自身の幅の和です。
+hintingもありません。これは欠落でなく意図的な選択です。hintingを入れるとグリフ形状が
+hintingエンジン自体の丸め処理に依存してしまうため、`Canvas.Font`はnative・ブラウザ・
+headlessの全backendで同じ結果を目指す、他の全Canvas primitiveと同じ立場を取っています。
 
 ```culebra
 # doctest: skip
@@ -5764,35 +5765,35 @@ Canvas.run(320, 240, fn () {
 
 #### ディスプレイ解像度でのテキスト描画
 
-フレームはフレームバッファをnearest-neighborで拡大して表示される。スプライトや
-ビットマップフォントにはこれが正しいが、グリフのアンチエイリアスされた縁は
-ブロック状に拡大されてしまう。**`font.draw_screen`**は`draw`と同じ引数を同じ
-座標系で取り、描かれる位置も`draw`と同じだが、フレームが実際に表示されるサイズで
-ラスタライズし、フレームの中でなく上に合成する — ウィンドウサイズやPlaygroundの
-ペイン幅がいくつでもシャープなまま。呼び出しは名前を変えるだけで切り替わり、
-`text_width`・`ascent`・`advance`はどちらにも同じように使える。
+フレームはフレームバッファをnearest-neighborで拡大して表示されます。スプライトや
+ビットマップフォントにはこれが正しいのですが、グリフのアンチエイリアスされた縁は
+ブロック状に拡大されてしまいます。**`font.draw_screen`**は`draw`と同じ引数を同じ
+座標系で取り、描かれる位置も`draw`と同じですが、フレームが実際に表示されるサイズで
+ラスタライズし、フレームの中でなく上に合成します。そのため、ウィンドウサイズやPlaygroundの
+ペイン幅がいくつでもシャープなままです。呼び出しは名前を変えるだけで切り替わり、
+`text_width`・`ascent`・`advance`はどちらにも同じように使えます。
 
-画面レイヤーがフレームバッファと別であることから、2点が導かれる:
+画面レイヤーがフレームバッファと別であることから、次の2点が導かれます:
 
 - **毎フレームクリアされる。** フレームバッファは`present()`をまたいで残るので
-  描画を積み重ねられるが、画面テキストは毎フレーム描き直す必要がある(`Canvas.run`
-  のtickなら元々そうしている)。これは必然で、グリフはアンチエイリアス付きなので
-  フレームごとに自分自身の上へ合成し続けると縁がどんどん濃くなってしまう。
+  描画を積み重ねられますが、画面テキストは毎フレーム描き直す必要があります(`Canvas.run`
+  のtickなら元々そうしています)。これは必然で、グリフはアンチエイリアス付きなので
+  フレームごとに自分自身の上へ合成し続けると縁がどんどん濃くなってしまいます。
 - **`Canvas.to_png()`には写らない。** `to_png`は描画ターゲットを読むもので、画面
-  レイヤーはターゲットではない。フレームバッファへの描画をスプライトへ振り替える
-  `Canvas.draw_to`の影響も受けない。保存する画像に入れたいテキストには`draw`を
-  使うこと。
+  レイヤーはターゲットではありません。フレームバッファへの描画をスプライトへ振り替える
+  `Canvas.draw_to`の影響も受けません。保存する画像に入れたいテキストには`draw`を
+  使ってください。
 
-ネイティブウィンドウではウィンドウの公称サイズでなくディスプレイの実ピクセル密度で
-ラスタライズする: 2x(Retina/HiDPI)の画面では640x380のウィンドウは実際には1280x760
-ピクセルで、テキストはそのサイズで描かれる。Playgroundも同じで、ペインが表示されて
-いる幅にブラウザのデバイスピクセル比を掛けたサイズで描く。拡大先の
+ネイティブウィンドウでは、ウィンドウの公称サイズでなくディスプレイの実ピクセル密度で
+ラスタライズします。2x(Retina/HiDPI)の画面では640x380のウィンドウは実際には1280x760
+ピクセルで、テキストはそのサイズで描かれます。Playgroundも同じで、ペインが表示されて
+いる幅にブラウザのデバイスピクセル比を掛けたサイズで描きます。拡大先の
 ディスプレイが無い場合(headless、あるいはウィンドウを開けなかった場合)はスケールが
-1になり、`draw_screen`は`draw`とまったく同じ位置に描く。
+1になり、`draw_screen`は`draw`とまったく同じ位置に描きます。
 
 ### 入力
 
-入力は毎フレームのポーリング（イベントキューでなく現在の状態を反映する）。
+入力は毎フレームのポーリングです（イベントキューでなく現在の状態を反映します）。
 
 | 関数 | 結果 |
 | --- | --- |
@@ -5805,8 +5806,8 @@ Canvas.run(320, 240, fn () {
 
 ボタンビットは定数`Canvas.LEFT` / `RIGHT` / `UP` / `DOWN`（矢印キー、および
 第2のセットとしてWASD）と
-`Canvas.A` / `B`（アクションキー — `A`はSpace/Z、`B`はX）。エッジ検出には
-`Canvas.Input.new()`が前フレームを覚える:
+`Canvas.A` / `B`（アクションキー。`A`はSpace/Z、`B`はX）です。エッジ検出には
+`Canvas.Input.new()`が前フレームを覚えます:
 
 | メソッド | 結果 |
 | --- | --- |
@@ -5814,25 +5815,25 @@ Canvas.run(320, 240, fn () {
 | `input.down(btn) -> Bool` | 今押されている |
 | `input.pressed(btn) -> Bool` | **このフレーム**に押された（フラップのトリガ） |
 
-6ボタンの外側は`Canvas.key`が任意のキーを名前で報告する — **`Term.poll`
-と同じ語彙**なので、キー処理コードは2つのnamespace間をそのまま移動できる:
+6ボタンの外側では、`Canvas.key`が任意のキーを名前で報告します。**`Term.poll`
+と同じ語彙**なので、キー処理コードは2つのnamespace間をそのまま移動できます:
 印字可能文字（`"a"`、`" "`、`"-"`）か特殊キー名（`"up"` / `"down"` / `"left"` /
 `"right"`、`"enter"`、`"escape"`、`"tab"`、`"backspace"`、`"insert"`、
 `"delete"`、`"home"`、`"end"`、`"pageup"`、`"pagedown"`、`"f1"`…`"f12"`）。
-`" "`の読みやすい別名として`"space"`も受け付ける。未知の名前は単に
-押されていない扱い。英字はShiftに関係なく物理キーを指す（`"a"`が両方の
-ケースを覆う）。
+`" "`の読みやすい別名として`"space"`も受け付けます。未知の名前は単に
+押されていない扱いです。英字はShiftに関係なく物理キーを指します（`"a"`が両方の
+ケースを覆います）。
 
-`Canvas.key_queue()`は前回呼び出し以降に押されたキーを返し（エッジイベント —
-押しっぱなしでリピートさせないバインディング用）、`Canvas.typed()`は打たれた
-文字（Shift / 配列 / IME適用済み）を返す — 名前入力画面が読むのはこちら。
-どちらも破壊的に引き取り、上限256件（古い方から溢れる）なので、フレームごとに
-1箇所で呼んで結果を配ること。ネイティブでは最初の`typed()`呼び出しが
-プラットフォームのテキスト入力を有効化する — キーだけをポーリングする
-プログラムがIMEポップアップを見ることはない。ヘッドレスでは何も押されず
-キューは空。
+`Canvas.key_queue()`は前回呼び出し以降に押されたキーを返し（エッジイベントで、
+押しっぱなしでリピートさせないバインディング用です）、`Canvas.typed()`は打たれた
+文字（Shift / 配列 / IME適用済み）を返します。名前入力画面が読むのはこちらです。
+どちらも破壊的に引き取り、上限は256件（古い方から溢れます）なので、フレームごとに
+1箇所で呼んで結果を配ってください。ネイティブでは最初の`typed()`呼び出しが
+プラットフォームのテキスト入力を有効化するので、キーだけをポーリングする
+プログラムがIMEポップアップを見ることはありません。ヘッドレスでは何も押されず
+キューは空です。
 
-`wheel()`が正の値はユーザーから遠ざかる向き（上スクロール / ズームイン）
+`wheel()`の正の値はユーザーから遠ざかる向き（上スクロール / ズームイン）
 で、ブラウザの`-deltaY`の符号規則に合わせています。
 
 ### ゲームパッド
@@ -5847,12 +5848,12 @@ Canvas.run(320, 240, fn () {
 | `Canvas.pad_rumble(left, right, sec, index = 0)` | 両モーターを強さ0–1で`sec`秒振動させる |
 | `Canvas.pad_mappings(db) -> Bool` | バンドル済みDBに無いパッド用の`SDL_GameControllerDB`追加行を読み込む |
 
-`index`（0–3）はどのパッドかを選ぶ — 単一コントローラの一般的なケースなら0、
-ローカルマルチプレイならそれ以外を使う。`pad_pressed`は`buttons()`に対する
-`input.pressed`と同じ「このフレームだけのエッジ」だが、raylibがネイティブに
-追跡しているため`update()`や前フレーム状態の管理は不要。ボタン・軸の番号は
+`index`（0–3）はどのパッドかを選びます。単一コントローラの一般的なケースなら0、
+ローカルマルチプレイならそれ以外を使います。`pad_pressed`は`buttons()`に対する
+`input.pressed`と同じ「このフレームだけのエッジ」ですが、raylibがネイティブに
+追跡しているため`update()`や前フレーム状態の管理は不要です。ボタン・軸の番号は
 raylib自身の`GamepadButton` / `GamepadAxis`の値で、スクリプトがその番号を
-知らずに済むよう名前が付けられている:
+知らずに済むよう名前が付けられています:
 
 | ボタン | 軸 |
 | --- | --- |
@@ -5863,8 +5864,8 @@ raylib自身の`GamepadButton` / `GamepadAxis`の値で、スクリプトがそ�
 | `Canvas.PAD_L3` / `R3`（スティック押し込み） | |
 
 `pad_rumble`は触覚フィードバックの無いbackend/パッド（macOSのXboxパッドは
-それを駆動するAPIが無い）では黙って何もしない。ゲームパッドの状態は
-ブラウザとヘッドレスでは利用できず、`pad_available`は常に`false`。
+それを駆動するAPIが無い）では黙って何もしません。ゲームパッドの状態は
+ブラウザとヘッドレスでは利用できず、`pad_available`は常に`false`です。
 
 ### 衝突判定
 
@@ -5883,22 +5884,22 @@ raylib自身の`GamepadButton` / `GamepadAxis`の値で、スクリプトがそ�
 
 ### 音声
 
-Canvasは音声を持たない。音は名前空間[`Audio`](#40-audio)で、Canvasのプログラムも
-ほかのプログラムと同じようにそれを使う。
+Canvasは音声を持ちません。音は名前空間[`Audio`](#40-audio)で、Canvasのプログラムも
+ほかのプログラムと同じようにそれを使います。
 
 ### ゲームループ
 
 `Canvas.run(w, h, tick, frames = 600)`は`w`×`h`のフレームバッファを用意し、
-`tick()`を毎フレーム呼んで各回のあとにpresentする。`tick`が`false`を返すと
-停止（例: プレイヤーが終了）。対話的なPlaygroundビルドでは`present()`が
-ブラウザの次のアニメーションフレームを待つので、ループは自らペーシングし協調的に
-譲る。それ以外の場合は`frames`後に停止するので、誰も終われない実行が無限に回り
-続けることはない。無制限に回り続けるには両方の条件が要る: フレームが実際に画面へ
+`tick()`を毎フレーム呼んで各回のあとにpresentします。`tick`が`false`を返すと
+停止します（例: プレイヤーが終了）。対話的なPlaygroundビルドでは`present()`が
+ブラウザの次のアニメーションフレームを待つので、ループは自らペーシングし、協調的に
+譲ります。それ以外の場合は`frames`後に停止するので、誰も終われない実行が無限に回り
+続けることはありません。無制限に回り続けるには両方の条件が要ります。フレームが実際に画面へ
 届いていること（ウィンドウバックエンド無しのビルド、`CULEBRA_CANVAS_HEADLESS`、
-ディスプレイの無いマシンはいずれも該当しない）と、実行が対話的であること（パイプ
-されたネイティブ実行と非JSPIブラウザは該当しない）。端末からのヘッドレス実行は
-後者しか満たさない — 何も表示せず、入力も受けず、閉じるボタンも無い — ので、他の
-自動実行と同じように上限が掛かる。
+ディスプレイの無いマシンはいずれも該当しません）と、実行が対話的であること（パイプ
+されたネイティブ実行と非JSPIブラウザは該当しません）です。端末からのヘッドレス実行は
+後者しか満たさず（何も表示せず、入力も受けず、閉じるボタンも無い）、他の
+自動実行と同じように上限が掛かります。
 
 ```culebra
 # doctest: skip — ウィンドウを開く
@@ -5933,41 +5934,41 @@ Canvas.run(160, 160, fn () {
 
 ## 28. `Scene`
 
-手続きジオメトリから組み立てる3D用のretained-modeレンダラ。ノードの
-シーングラフ — プリミティブ（box / sphere / cylinder / plane）と手組みメッシュ
-— を並べ、マテリアルとトランスフォームを与え、カメラを置いて描画する。
+手続きジオメトリから組み立てる3D用のretained-modeレンダラです。ノードの
+シーングラフ（プリミティブ（box / sphere / cylinder / plane）と手組みメッシュ）
+を並べ、マテリアルとトランスフォームを与え、カメラを置いて描画します。
 ライティングは物理ベース（metallic / roughnessマテリアル、2カスケード影付き
 の指向性sun、sky / fog、SSAA・アンビエントオクルージョン・bloom・被写界深度の
-post stack）なので、出力はフラットシェーディングのプリミティブ以上になる。
+post stack）なので、出力はフラットシェーディングのプリミティブ以上になります。
 
-`Scene`は **ゲームエンジンではない**。物理・当たり判定なし、モデルのimportなし
+`Scene`は**ゲームエンジンではありません**。物理・当たり判定なし、モデルのimportなし
 （ジオメトリは手続き生成か頂点単位の組み立て。テクスチャはプロセス内で描くか
-PNGのバイト列から読む）、スケルタルアニメーションなし。狙いは*組み立てる*
-3D — 可視化、手続き的シーン、チェイスカメラ付きの車両 / フライトデモ — であって、
-アセット駆動のゲームではない。サーキットのメッシュ、チェイスカメラ、
-ゲームパッド操作といったレーシングデモの形が、設計の基準になっている。
+PNGのバイト列から読みます）、スケルタルアニメーションなしです。狙いは*組み立てる*
+3D（可視化、手続き的シーン、チェイスカメラ付きの車両 / フライトデモ）であって、
+アセット駆動のゲームではありません。サーキットのメッシュ、チェイスカメラ、
+ゲームパッド操作といったレーシングデモの形が、設計の基準になっています。
 
-`Scene`は`Canvas`のウィンドウバックエンドを持つビルドには必ず入る — macOS・
-Linux・Windowsの既定で、リリースバイナリもこれを持つ — vendoredな静的SDL3 +
-raylibを`Canvas`と共用し、`-DCULEBRA_ENABLE_SCENE=OFF`で外せる。`culebra build`
-した`Scene`プログラムはraylibとSDL3を静的リンクし、macOS arm64で約5.1 MBになる
+`Scene`は`Canvas`のウィンドウバックエンドを持つビルドには必ず入ります（macOS・
+Linux・Windowsの既定で、リリースバイナリもこれを持ちます）。vendoredな静的SDL3 +
+raylibを`Canvas`と共用し、`-DCULEBRA_ENABLE_SCENE=OFF`で外せます。`culebra build`
+した`Scene`プログラムはraylibとSDL3を静的リンクし、macOS arm64で約5.1 MBになります
 （`print`だけなら約0.4 MB）。フレームを
 実際に描いて確認しているのはLinux（毎pushのCIがXvfb下で`tests/scene_api_test.sh`
-を回し、全メソッドを両エンジンで呼ぶ）とmacOS（手動）で、Windowsビルドは
-リンクまでは通るがまだウィンドウを開いたことがない。`View`にヘッドレスモードは
-無いので、`Canvas`と違い`Scene`プログラムはヘッドレスでもPlaygroundでも動かない。
-ウィンドウ無しで動くのはCPU側の画像ベイカー`Scene.Image`だけ。
+を回し、全メソッドを両エンジンで呼びます）とmacOS（手動）で、Windowsビルドは
+リンクまでは通りますが、まだウィンドウを開いたことがありません。`View`にヘッドレスモードは
+無いので、`Canvas`と違い`Scene`プログラムはヘッドレスでもPlaygroundでも動きません。
+ウィンドウ無しで動くのはCPU側の画像ベイカー`Scene.Image`だけです。
 
 ### View とフレームループ
 
-`Scene.View.new(w, h, title)`はウィンドウを開く。開けない場合
-（使えるディスプレイ / GLが無い）は`RuntimeError`を送出する — `Canvas`と
-違いfallbackすべきヘッドレスモードは無い（`View`の観測可能な動作はすべて
-GPUを必要とするため）。位置とサイズは`Float`
+`Scene.View.new(w, h, title)`はウィンドウを開きます。開けない場合
+（使えるディスプレイ / GLが無い）は`RuntimeError`を送出します。`Canvas`と
+違い、fallbackすべきヘッドレスモードはありません（`View`の観測可能な動作はすべて
+GPUを必要とするためです）。位置とサイズは`Float`
 （ワールド単位）、色は`0–255`の3または4チャンネル整数で、範囲外の
-チャンネルは端に丸められる。1フレームは、
+チャンネルは端に丸められます。1フレームは、
 2Dオーバーレイ付きの3Dパス（`render_3d()` → オーバーレイ描画 → `present()`）
-か、純2D（`begin_2d()` → 描画 → `present()`）のいずれか。
+か、純2D（`begin_2d()` → 描画 → `present()`）のいずれかです。
 
 | メソッド | 効果 |
 | --- | --- |
@@ -5990,16 +5991,16 @@ GPUを必要とするため）。位置とサイズは`Float`
 | `view.supersample(n)` | ウィンドウの`n`倍で描いて縮小する（1–4。既定の2がアンチエイリアス） |
 | `view.clip_planes(near, far)` | 3Dパスのクリップ面（メートル。既定2と8000。コックピットカメラは`near`を手前に） |
 
-3Dのターゲットはウィンドウに追従する: リサイズやフルスクリーン切替が認識された
+3Dのターゲットはウィンドウに追従します。リサイズやフルスクリーン切替が認識された
 （その直後の`present()`）後のフレームは、古い解像度を引き伸ばすのでなく新しい
-解像度で描かれる。
+解像度で描かれます。
 
 ### シーングラフ
 
-`view.add_node()`は空ノードを追加。`add_*`ヘルパーはジオメトリを追加して新しい
-ノードを返す。ノードは入れ子（`node.add_node()`、`node.add_box()` …）にでき、
-トランスフォーム系メソッドはfluentなので、部分木を1式で組める。永続的な
-ジオメトリは一度組んで、毎フレーム動かす。
+`view.add_node()`は空ノードを追加します。`add_*`ヘルパーはジオメトリを追加して新しい
+ノードを返します。ノードは入れ子（`node.add_node()`、`node.add_box()` …）にでき、
+トランスフォーム系メソッドはfluentなので、部分木を1式で組めます。永続的な
+ジオメトリは一度組んで、毎フレーム動かします。
 
 | メソッド | 効果 |
 | --- | --- |
@@ -6027,19 +6028,19 @@ GPUを必要とするため）。位置とサイズは`Float`
 | `view.remove(node)` / `view.find(name) -> Node` / `view.has(name) -> Bool` | 同じことをシーン全体（ルート含む）に |
 | `view.culling(on)` | 境界球が画面外のノードを飛ばす（既定on。絵は決して変わらない） |
 
-カスタムメッシュは頂点と三角形から組み、最後に確定する: `m.vertex(x, y, z, nx,
+カスタムメッシュは頂点と三角形から組み、最後に確定します: `m.vertex(x, y, z, nx,
 ny, nz)`（または`vertex_uv(…, u, v)`）が頂点、`m.tri(a, b, c)`が頂点インデックス
-での三角形、`m.build()`がアップロード。（raylibは16bitインデックスバッファ
-なので1メッシュは65535頂点が上限。超過は`build()`が拒否する。）テクスチャ座標の
-`(0, 0)`は2Dと同じく画像の左上。プリミティブは画像を正立で見せ、その上辺は`+y`側
-（planeでは`-z`側、`+z`のカメラから見て奥の辺）に来る。アップロード済み
+での三角形、`m.build()`がアップロードです。（raylibは16bitインデックスバッファ
+なので1メッシュは65535頂点が上限で、超過は`build()`が拒否します。）テクスチャ座標の
+`(0, 0)`は2Dと同じく画像の左上です。プリミティブは画像を正立で見せ、その上辺は`+y`側
+（planeでは`-z`側、`+z`のカメラから見て奥の辺）に来ます。アップロード済み
 メッシュはアップロードしたviewのもので、`view.drop()`後も残したnodeは変換としては
-使えるが、後続のviewでは何も描かない。`build()`はアップロード先のviewが開いて
-いることを要求するので、viewが無ければ拒否し、頂点は後のviewのために残る。
+使えますが、後続のviewでは何も描きません。`build()`はアップロード先のviewが開いて
+いることを要求するので、viewが無ければ拒否し、頂点は後のviewのために残ります。
 
 ### マテリアル・ライティング・テクスチャ
 
-マテリアルはviewが作るハンドルで、fluentなsetterで設定するので1式で書ける:
+マテリアルはviewが作るハンドルで、fluentなsetterで設定するので1式で書けます:
 
 | メソッド | 結果 |
 | --- | --- |
@@ -6067,20 +6068,20 @@ let glass = view.add_material().rgb(200, 220, 255).opacity(90).depth_write(false
 let shadow = view.add_material().rgb(0, 0, 0).opacity(110).unlit().depth_write(false).casts_shadow(false)
 ```
 
-面は、不透明度（node × material）が255未満か、blendが`"over"`以外なら透過面。
-litパスは不透明な面を手前から奥へ先に描き、次に透過面を奥から手前へ描く。
+面は、不透明度（node × material）が255未満か、blendが`"over"`以外なら透過面です。
+litパスは不透明な面を手前から奥へ先に描き、次に透過面を奥から手前へ描きます。
 `node.order()`はその両方より優先されるので、何より上に載る板（リアビューミラーの
-枠と像、そのLED帯）は大きなorderを持てば距離に関わらず最後に描かれる。透過面は
+枠と像、そのLED帯）は大きなorderを持てば距離に関わらず最後に描かれます。透過面は
 色だけを混ぜ、フレームの深度は不透明パスが書いたまま残すので、アンビエント
-オクルージョンと被写界深度はガラスを透かして背後の実体を見る — ブロブシャドウや
-ウィンドスクリーンが望む読み方そのもの。透過面は影を落とさないが、cutoutは形が
-実体なので落とす。
+オクルージョンと被写界深度はガラスを透かして背後の実体を見ます。これはブロブシャドウや
+ウィンドスクリーンが望む読み方そのものです。透過面は影を落としませんが、cutoutは形が
+実体なので落とします。
 
 ### ポストプロセス
 
-`render_3d()`はフレームをpostパスに通す: 被写界深度、アンビエントオクルージョン、
-bloom、トーンマップ、彩度、そして求めればvignetteとカラーグレーディング。それぞれに
-つまみがあり、既定値はシェーダを調整したときの見た目そのもの。`0`でそのパスはoff。
+`render_3d()`はフレームをpostパスに通します。パスは被写界深度、アンビエントオクルージョン、
+bloom、トーンマップ、彩度、そして求めればvignetteとカラーグレーディングです。それぞれに
+つまみがあり、既定値はシェーダを調整したときの見た目そのものです。`0`でそのパスはoffになります。
 
 | メソッド | 効果 |
 | --- | --- |
@@ -6094,22 +6095,22 @@ bloom、トーンマップ、彩度、そして求めればvignetteとカラー�
 | `view.lut(tex, amount = 1.0)` | 3D LUTでカラーグレーディング。`amount`で混ぜ、`nil`でoff |
 
 LUTは`n`個のスライス（各`n`×`n`）を横に並べたストリップを持つ`Texture`で、`n`は
-テクスチャの高さ（4096×64のストリップなら64スライス）: 青がスライスを選び、赤が
-横に、緑が縦に走る。`Scene.Image`で組み、ミップマップとリピートをoffにして
-アップロードする（`view.texture(img, false, false)`）。パスはセルをセルとして
-サンプルする。恒等LUT — 各セルが自分自身の色 — はフレームを変えず、グレーディング
-されたものはカラーツールが書き出すものそのまま。
+テクスチャの高さです（4096×64のストリップなら64スライス）。青がスライスを選び、赤が
+横に、緑が縦に走ります。`Scene.Image`で組み、ミップマップとリピートをoffにして
+アップロードします（`view.texture(img, false, false)`）。パスはセルをセルとして
+サンプルします。恒等LUT（各セルが自分自身の色）はフレームを変えず、グレーディング
+されたLUTはカラーツールが書き出すものそのままです。
 
 ### 第2カメラ
 
 `view.render_to(tex, px,py,pz, tx,ty,tz, ux,uy,uz, fov)`は別のカメラからシーンを
-`render_target`テクスチャに描く — `render_3d()`と同じlitパスで、post stackは無し。
+`render_target`テクスチャに描きます。`render_3d()`と同じlitパスで、post stackはありません。
 リアビューミラーは、そのターゲットを貼った板に`uv(-1.0, 1.0, 1.0, 0.0)`で像を
-左右反転したもの。毎フレーム`render_3d()`の前に呼ぶ: テクスチャをサンプルする板は
-`render_3d()`の中で描かれるので、後に呼べば前のフレームの像が出る。影は直前の
-`render_3d()`がメインカメラに合わせて張ったものをそのまま使う — 同じ道を振り返る
-ミラーなら共有できる — ので、最初のフレームのミラーには影が無い。render targetは
-canvasと同じく、メッシュ上でも`sprite`でも`uv()`越しでも正しい向きになる。
+左右反転したものです。毎フレーム`render_3d()`の前に呼んでください。テクスチャをサンプルする板は
+`render_3d()`の中で描かれるので、後に呼ぶと前のフレームの像が出ます。影は直前の
+`render_3d()`がメインカメラに合わせて張ったものをそのまま使います（同じ道を振り返る
+ミラーなら共有できます）。そのため最初のフレームのミラーには影がありません。render targetは
+canvasと同じく、メッシュ上でも`sprite`でも`uv()`越しでも正しい向きになります。
 
 ```culebra
 # doctest: skip
@@ -6124,9 +6125,9 @@ while !view.closing() {
 }
 ```
 
-テクスチャもハンドル。2つのハンドル型が契約そのもの: マテリアルの位置に
+テクスチャもハンドルです。2つのハンドル型が契約そのものです。マテリアルの位置に
 テクスチャ（やその逆）を渡せば呼び出し時点で`TypeError`、drop済みのハンドルは
-`ClosedError`になる。
+`ClosedError`になります。
 
 | メソッド | 結果 |
 | --- | --- |
@@ -6140,28 +6141,28 @@ while !view.closing() {
 | `tex.filter(name) -> Texture` | サンプリング: `"point"`（ピクセルアート、LUTのセルそのまま）、`"bilinear"`、`"trilinear"` |
 | `tex.wrap(name) -> Texture` | 端の外側: `"repeat"`、`"clamp"`、`"mirror"` |
 
-`checker`・`grain`・`canvas`・`render_target`に渡す大きさも、下の画像の規則に従う。
-負の辺と、`w * h * 4`バイトが2 GiB以上になる大きさは`ValueError`。
+`checker`・`grain`・`canvas`・`render_target`に渡す大きさも、下の画像の規則に従います。
+負の辺と、`w * h * 4`バイトが2 GiB以上になる大きさは`ValueError`です。
 
 canvasはGPUでテクスチャを描く方法（`canvas()`と`canvas_end()`の間の
-`rect` / `text` …）で、レーシングデモがリバリーや看板を塗るやり方。同時に1枚だけ:
-閉じる前の2枚目の`canvas()`は`RuntimeError`、開いたままフレームを開くと先に
-閉じられる。テクスチャはUVの向きに関わらずメッシュ上で正しい向きになる。
-テクスチャやマテリアルは作ったviewより長生きしてよいが、その後のviewでは
-不活性なハンドルになる: 白としてサンプルされ、nodeのメッシュが何も描かないのと
-同じ扱い。
+`rect` / `text` …）で、レーシングデモがリバリーや看板を塗るやり方です。同時に使えるのは1枚だけです。
+閉じる前の2枚目の`canvas()`は`RuntimeError`になり、開いたままフレームを開くと先に
+閉じられます。テクスチャはUVの向きに関わらずメッシュ上で正しい向きになります。
+テクスチャやマテリアルは作ったviewより長生きしてよいのですが、その後のviewでは
+不活性なハンドルになります。白としてサンプルされ、nodeのメッシュが何も描かないのと
+同じ扱いです。
 
 ### 画像
 
-`Scene.Image`はCPU上の画像 — シーンを飾る手続きテクスチャ（リバリー、路面の粒、
-ランプの光、カラーグレーディングのLUT）のベイカーであり、PNGのピクセルの入り口。
-ウィンドウを必要としない: `View`が1つも無い段階で画像を組み、ピクセル単位で
-読み戻し、書き出せる。`Scene`のうちディスプレイ無しでテストが回る唯一の部分で
-ある理由がこれ。常にRGBA、座標はピクセル、色はそれぞれ自分のalpha（既定255）を持つ。
+`Scene.Image`はCPU上の画像です。シーンを飾る手続きテクスチャ（リバリー、路面の粒、
+ランプの光、カラーグレーディングのLUT）のベイカーであり、PNGのピクセルの入り口です。
+ウィンドウを必要としません。`View`が1つも無い段階で画像を組み、ピクセル単位で
+読み戻し、書き出せます。`Scene`のうちディスプレイ無しでテストが回る唯一の部分で
+ある理由がこれです。常にRGBAで、座標はピクセル、色はそれぞれ自分のalpha（既定255）を持ちます。
 `Scene.Image.new(w, h)`と`img.resize(w, h)`は、負の辺と、画像に収まらない大きさ
-（`w * h * 4`バイトが2 GiB以上）を`ValueError`にする
+（`w * h * 4`バイトが2 GiB以上）を`ValueError`にします
 （`Scene.Image.new: 24000x24000 is too large`）。回転後の画像がこの大きさを超える
-`img.rotate(degrees)`と、`size`で描いた文字列がこの大きさを超える`img.text`も`ValueError`。
+`img.rotate(degrees)`と、`size`で描いた文字列がこの大きさを超える`img.text`も`ValueError`です。
 
 | メソッド | 結果 |
 | --- | --- |
@@ -6195,8 +6196,8 @@ let asphalt = Scene.Image.new(256, 256).fill(60, 60, 64).noise(3, 4.0, 90).cellu
 let road = view.add_material().texture(view.texture(asphalt)).pbr(0.0, 0.9)
 ```
 
-`img.get`は厳密 — CPUラスタはどのプラットフォームでも同じバイト列 — なので、
-描画フレームはゆるく比較するしかないところを、テストはピクセルを断言できる。
+`img.get`は厳密で、CPUラスタはどのプラットフォームでも同じバイト列になります。
+描画フレームはゆるく比較するしかないところを、テストはピクセルを断言できます。
 
 ライティングはview上で設定する:
 
@@ -6211,9 +6212,9 @@ let road = view.add_material().texture(view.texture(asphalt)).pbr(0.0, 0.9)
 
 ### 2D オーバーレイ
 
-`render_3d()`（または`begin_2d()`）の後、これらが上に描かれる（HUD用）。開いた
-`canvas()`の中にも描け、それがテクスチャを描く方法。座標はウィンドウ座標、
-角度は度、すべての呼び出しは共有の`alpha()`を使う。
+`render_3d()`（または`begin_2d()`）の後、これらが上に描かれます（HUD用）。開いた
+`canvas()`の中にも描け、それがテクスチャを描く方法です。座標はウィンドウ座標、
+角度は度で、すべての呼び出しは共有の`alpha()`を使います。
 
 | メソッド | 効果 |
 | --- | --- |
@@ -6233,46 +6234,46 @@ let road = view.add_material().texture(view.texture(asphalt)).pbr(0.0, 0.9)
 | `view.sprite_rec(tex, sx, sy, sw, sh, x, y, w, h, rot = 0.0, ox = 0.0, oy = 0.0)` | テクスチャの部分矩形（アトラス） |
 | `view.clip(x, y, w, h)` / `view.clip_end()` | 間の描画を矩形にクリップ |
 
-パスはスカラpushで組む — `view.path_begin()`、頂点ごとに`view.path_to(x, y)`、
-`view.path_close()`で始点に戻る — そして`view.path_fill(r, g, b)`（始点からの
+パスはスカラpushで組みます。`view.path_begin()`で始め、頂点ごとに`view.path_to(x, y)`を呼び、
+`view.path_close()`で始点に戻ります。そのうえで`view.path_fill(r, g, b)`（始点からの
 ファン。凸形状向け）、`view.path_strip(r, g, b)`（左右ペアのリボン。ミニマップの
 コース）、`view.path_stroke(thick, r, g, b)`（輪郭）、`view.path_spline(thick, r,
-g, b)`（4点以上を通るCatmull-Rom曲線）のいずれかで描く。点は次の`path_begin()`
-まで残るので、塗ってから輪郭を引ける。
+g, b)`（4点以上を通るCatmull-Rom曲線）のいずれかで描きます。点は次の`path_begin()`
+まで残るので、塗ってから輪郭を引けます。
 
 ### フォント
 
 `view.font(path, size, chars = "") -> Font`はTTF/OTFを1つのピクセルサイズで
-グリフアトラスに焼く。`view.font_bytes(data, size, chars = "") -> Font`は
-ファイルのバイト列から同じことをする — `Dir.embedded`の資産に使え、One Binaryの
-ゲームがフォントを自分の中に持てる。`chars`は含めるグリフ（`""`は印字可能
-ASCII）: 数字と数語のHUDはそれだけ列挙して小さなアトラスを得、日本語を使うなら
-使う文字を列挙する。読めないフォントは`RuntimeError`で、組み込みフォントへ
-黙って落ちて計測がずれることはない。アトラスは、各グリフを`size`四方と数えて
-8192ピクセル四方に収まらなければならない。超える場合（印字可能ASCIIなら約750、
+グリフアトラスに焼きます。`view.font_bytes(data, size, chars = "") -> Font`は
+ファイルのバイト列から同じことをします。`Dir.embedded`の資産に使えるので、One Binaryの
+ゲームがフォントを自分の中に持てます。`chars`は含めるグリフです（`""`は印字可能
+ASCII）。数字と数語のHUDはそれだけ列挙して小さなアトラスを得て、日本語を使うなら
+使う文字を列挙します。読めないフォントは`RuntimeError`で、組み込みフォントへ
+黙って落ちて計測がずれることはありません。アトラスは、各グリフを`size`四方と数えて
+8192ピクセル四方に収まらなければなりません。超える場合（印字可能ASCIIなら約750、
 2000文字なら約160が目安）は、グリフを焼く前に`ValueError`
-（`view.font: 2000 glyphs at size 300 is too large`）になる。文字を減らすか、
-大きさを下げる。`font.size() -> Float`と
-`font.glyphs() -> Long`で作った内容を読み戻せる。テクスチャと同じく、フォントは
-作ったviewのもの。
+（`view.font: 2000 glyphs at size 300 is too large`）になります。文字を減らすか、
+大きさを下げてください。`font.size() -> Float`と
+`font.glyphs() -> Long`で作った内容を読み戻せます。テクスチャと同じく、フォントは
+作ったviewのものです。
 
 ### 入力
 
-入力は毎フレームviewからポーリングする。キーは名前で指す — **`Canvas.key`と
-`Term.poll`と同じ語彙**: 印字可能な1文字（`"a"`、`" "`、`"-"`）か特殊キー名
+入力は毎フレームviewからポーリングします。キーは名前で指します。**`Canvas.key`と
+`Term.poll`と同じ語彙**で、印字可能な1文字（`"a"`、`" "`、`"-"`）か特殊キー名
 （`"up"` / `"down"` / `"left"` / `"right"`、`"enter"`、`"escape"`、`"tab"`、
 `"backspace"`、`"insert"`、`"delete"`、`"home"`、`"end"`、`"pageup"`、
 `"pagedown"`、`"f1"`…`"f12"`。`"space"`は`" "`の読みやすい別名）。未知の名前は
-押されることのないキーになる。Escはここでは普通のキーで、ウィンドウを閉じる
-手段ではない: ループは閉じるボタンか`view.quit()`で終わる。
+押されることのないキーになります。Escはここでは普通のキーで、ウィンドウを閉じる
+手段ではありません。ループは閉じるボタンか`view.quit()`で終わります。
 
-ゲームパッドのボタンと軸も名前で指す。SDLのマッピングDBがどのパッドも
+ゲームパッドのボタンと軸も名前で指します。SDLのマッピングDBがどのパッドも
 正規化するレイアウトに従い、フェイスボタンは`"a"` `"b"` `"x"` `"y"`
 （Xboxの文字 — PlayStationパッドでは`"a"`が×）、十字キーは`"up"` `"down"`
 `"left"` `"right"`、ショルダーは`"lb"` `"rb"`、トリガーは`"lt"` `"rt"`、
-`"select"` `"guide"` `"start"`、スティック押し込みは`"l3"` `"r3"`。軸は`"lx"`
-`"ly"` `"rx"` `"ry"` `"lt"` `"rt"`。`index`でパッド（0–3）を選び、既定は最初の1台。
-マウスはウィンドウ座標で報告し、ボタンは`"left"`・`"right"`・`"middle"`。
+`"select"` `"guide"` `"start"`、スティック押し込みは`"l3"` `"r3"`です。軸は`"lx"`
+`"ly"` `"rx"` `"ry"` `"lt"` `"rt"`です。`index`でパッド（0–3）を選び、既定は最初の1台です。
+マウスはウィンドウ座標で報告し、ボタンは`"left"`・`"right"`・`"middle"`です。
 
 | メソッド | 結果 |
 | --- | --- |
@@ -6290,8 +6291,8 @@ ASCII）: 数字と数語のHUDはそれだけ列挙して小さなアトラス�
 
 ### 音声
 
-Sceneは音声を持たない。音は名前空間[`Audio`](#40-audio)で、Sceneのプログラムも
-ほかのプログラムと同じようにそれを使う。
+Sceneは音声を持ちません。音は名前空間[`Audio`](#40-audio)で、Sceneのプログラムも
+ほかのプログラムと同じようにそれを使います。
 
 ### 最小のシーン
 
@@ -6323,27 +6324,27 @@ view.drop()
 
 ## 29. `Net`
 
-生のTCP / UDPソケットと名前解決 — [§15 Http](#15-http) の下位レイヤ。
-ブロッキング + ソケット単位のタイムアウトで、`Http`と同じ「asyncではなく
-スレッド」モデル。メインスレッドを止めたくないサーバは
-[`Isolate`](#12-isolate) の中で動かす。
+生のTCP / UDPソケットと名前解決を扱います。[§15 Http](#15-http) の下位レイヤです。
+ブロッキングで、タイムアウトはソケットごとに設定します。`Http`と同じく
+asyncではなくスレッドのモデルです。メインスレッドを止めたくないサーバは
+[`Isolate`](#12-isolate) の中で動かします。
 
 転送の失敗（接続拒否・名前解決失敗・切断・タイムアウト）は`NetError`を
-送出する。メッセージはOSの文言をそのまま使うが、タイムアウトだけは常に
-`timed out`。ブロック中の`read` / `accept` / `recv_from`は割り込み可能で、
-Ctrl+C一回で`Interrupted`になる（ハングしない）。
+送出します。メッセージにはOSの文言をそのまま使いますが、タイムアウトだけは
+常に`timed out`です。ブロック中の`read` / `accept` / `recv_from`は割り込み可能で、
+Ctrl+Cを一回押せば`Interrupted`になります（ハングしません）。
 
 ポートを受け取る入口（`connect` / `listen` / `udp` / `send_to`）はすべて
-0〜65535だけを受け付ける。範囲外のポートはソケットを開く前に`ValueError`
-（`Net.listen: port must be between 0 and 65535, got 70000`）になる。
+0〜65535だけを受け付けます。範囲外のポートを渡すと、ソケットを開く前に`ValueError`
+（`Net.listen: port must be between 0 and 65535, got 70000`）になります。
 
-ソケットハンドルは **Sendableではない** — ソケットはそれを開いたスレッドに
-属する。別スレッドで待ち受けるなら、そのアイソレートの中で開くこと。
+ソケットハンドルは **Sendableではありません**。ソケットはそれを開いたスレッドに
+属します。別スレッドで待ち受けるなら、そのアイソレートの中で開いてください。
 
 ### `Net.connect(host: String, port: Long, timeout: Long = 0) -> Socket`
 
-`host:port`へ接続する。`timeout`はミリ秒（`0` = 無制限）で、接続の待ち時間を
-制限し、そのままこのソケットの読み書きタイムアウトになる。
+`host:port`へ接続します。`timeout`はミリ秒（`0` = 無制限）で、接続の待ち時間を
+制限し、そのままこのソケットの読み書きタイムアウトにもなります。
 
 ```culebra
 # doctest: skip — ネットワークに出る
@@ -6354,8 +6355,8 @@ inspect(s.read())   # サーバが閉じるまで読む
 s.close()
 ```
 
-**`Socket`ハンドル** — [§4 File](#4-file) と同じreader/writerの形なので、
-読むだけのコードは両方で動く:
+**`Socket`ハンドル** は [§4 File](#4-file) と同じreader/writerの形なので、
+読むだけのコードは両方で動きます。
 
 | メソッド | 効果 |
 | --- | --- |
@@ -6370,14 +6371,15 @@ s.close()
 | `set_nodelay(on = true)` | Nagleアルゴリズムを無効化（小さい書き込みを即送信） |
 | `is_open()` / `close()` | 生存確認 / クローズ（冪等。スコープを抜けたハンドルはGCも閉じる） |
 
-行の終端は`\n`のみで、末尾の`\r`は除去される — CRLFプロトコルがそのまま
-読める。（ファイルの`f.lines()`は単独の`\r`でも区切るが、ソケットでは不可能: CRLFが
-2つのパケットに分かれて届いたときにブロックしうる1バイト先読みが必要になる。）
+行の終端は`\n`のみで、末尾の`\r`は除去されます。このためCRLFプロトコルが
+そのまま読めます。（ファイルの`f.lines()`は単独の`\r`でも区切りますが、ソケットでは
+できません。CRLFが2つのパケットに分かれて届いたときにブロックしうる1バイト先読みが
+必要になるためです。）
 
 ### `Net.listen(port: Long, host: String = "0.0.0.0", backlog: Long = 0) -> Listener`
 
-bindしてlistenする。`port: 0`はOSに空きポートを選ばせ、`listener.port`で
-読み戻せる — テストで固定ポートの衝突を避ける確実な方法。
+bindしてlistenします。`port: 0`を渡すとOSが空きポートを選び、`listener.port`で
+読み戻せます。テストで固定ポートの衝突を避ける確実な方法です。
 
 ```culebra
 # doctest: skip — ポートを listen して割り込みまで待つ
@@ -6400,12 +6402,12 @@ for conn in server {
 | `is_open()` / `close()` | `Socket`と同じ |
 
 `accept`と`for conn in listener`は逐次処理で、ハンドリングもacceptした
-スレッドで走る — 遅い接続が次の接続をブロックする。
+スレッドで走ります。このため遅い接続が次の接続をブロックします。
 
 ### `listener.serve(handler, workers = 0)` — 並行版
 
-`serve`はacceptを続けながら、ハンドラをワーカースレッドのプールで実行する。
-遅い接続がacceptループを止めることはない:
+`serve`はacceptを続けながら、ハンドラをワーカースレッドのプールで実行します。
+遅い接続がacceptループを止めることはありません。
 
 ```culebra
 # doctest: skip — ポートを listen して割り込みまで待つ
@@ -6417,28 +6419,28 @@ server.serve(fn (conn) {
 }, workers: 8)  # Ctrl+C までブロック
 ```
 
-- `workers: 0`（既定）はCPU数に応じたプール（最小4、最大8）。正の数を渡せば
-  固定できる。各ワーカーが自分のランタイムを持つのでグローバルロックはなく、
-  **真に並列**に処理される。
+- `workers: 0`（既定）はCPU数に応じたプール（最小4、最大8）になります。正の数を
+  渡せば固定できます。各ワーカーが自分のランタイムを持つのでグローバルロックはなく、
+  **真に並列**に処理されます。
 - 各ワーカーがハンドラを自分のヒープに再構築するため、ハンドラは **Sendable**
-  でなければならない（可変変数や非Sendableな値をキャプチャできない）。非
-  Sendableなハンドラは最初の接続時ではなく`serve`自身が`SendError`を送出
-  する。読み取り専用データの共有は [`Shared.new`](#12-isolate)、接続ごとの
-  リソースはハンドラの中で開く。
-- ハンドラがreturnすると接続は閉じられる。ハンドラが送出した場合は **その
-  接続だけ** が閉じられ、ワーカーもサーバも動き続ける（`Http.server`と違い、
-  `500`に変換できるレスポンスが存在しないため）。
-- `serve`はブロックする。Ctrl+C（またはこれを動かしているアイソレートのdrop）
+  でなければなりません（可変変数や非Sendableな値をキャプチャできません）。非
+  Sendableなハンドラを渡すと、最初の接続時ではなく`serve`自身が`SendError`を
+  送出します。読み取り専用データの共有には [`Shared.new`](#12-isolate) を使い、
+  接続ごとのリソースはハンドラの中で開いてください。
+- ハンドラがreturnすると接続は閉じられます。ハンドラが送出した場合は **その
+  接続だけ** が閉じられ、ワーカーもサーバも動き続けます（`Http.server`と違い、
+  `500`に変換できるレスポンスが存在しないためです）。
+- `serve`はブロックします。Ctrl+C（またはこれを動かしているアイソレートのdrop）
   でacceptループが止まり、実行中のハンドラを待ってから`Interrupted`を送出
-  する。メインスレッドで別の作業を続けたいなら
-  [`Isolate`](#12-isolate) の中で動かす。
+  します。メインスレッドで別の作業を続けたいなら
+  [`Isolate`](#12-isolate) の中で動かしてください。
 
-HTTPを話すなら [`Http.server`](#httpserver---object) を使う — 同じワーカー
-モデルの上に、ルーティング・静的ファイル・ストリーミング・WebSocketを備える。
+HTTPを話すなら [`Http.server`](#httpserver---object) を使ってください。同じワーカー
+モデルの上に、ルーティング・静的ファイル・ストリーミング・WebSocketを備えています。
 
 ### `Net.udp(port: Long = 0, host: String = "0.0.0.0") -> UdpSocket`
 
-`host:port`にbindしたデータグラムソケットを開く（`port: 0` = エフェメラル）。
+`host:port`にbindしたデータグラムソケットを開きます（`port: 0` = エフェメラル）。
 
 ```culebra
 # doctest: skip
@@ -6456,13 +6458,13 @@ sock.send_to("ack", msg.host, msg.port)
 | `set_broadcast(on = true)` | ブロードキャストアドレスへの送信を許可 |
 | `set_timeout(ms)` / `is_open()` / `close()` | `Socket`と同じ |
 
-UDPにはEOFも接続もない。空のデータグラムはデータであり、相手がいなくなっても
-エラーではなく単に無音になる。
+UDPにはEOFも接続もありません。空のデータグラムもデータであり、相手がいなくなっても
+エラーにはならず、単に何も届かなくなります。
 
 ### `Net.resolve(host: String) -> Array<String>`
 
-`host`が解決する数値アドレスを、リゾルバの順序で重複を除いて返す。数値
-アドレスはそれ自身に解決する。解決できない名前は`NetError`。
+`host`が解決する数値アドレスを、リゾルバの順序で重複を除いて返します。数値
+アドレスはそれ自身に解決されます。解決できない名前は`NetError`になります。
 
 ```culebra
 # doctest: skip
@@ -6483,8 +6485,8 @@ Web技術で書くデスクトップGUI: ローカルHTTPサーバがUIを配信
 なります。`Webview`はOS自身のエンジン（macOSはWKWebView、Linuxは
 WebKitGTK、WindowsはWebView2）をラップするので、ブラウザは同梱しません。
 どちらの名前空間もデフォルトビルドに含まれます（`-DCULEBRA_ENABLE_WEBVIEW=OFF`
-で無効化。エンジンのヘッダが無ければ自動で無効化 — LinuxならGTK4 /
-WebKitGTKのdevパッケージ、Windowsなら`WebView2.h`）。
+で無効化。エンジンのヘッダが無ければ自動で無効化されます。必要なのは、LinuxならGTK4 /
+WebKitGTKのdevパッケージ、Windowsなら`WebView2.h`です）。
 `culebra build`は実際に参照しているプログラムに対してのみ
 WebViewフレームワークをリンクします。
 
@@ -6525,7 +6527,7 @@ WebViewフレームワークをリンクします。
 
 要するに、`Desktop`が全体を統括し、`Webview.Window`はそれが操作する
 ネイティブウィンドウであり、`window`はそのウィンドウがたまたま表示している
-ページの内側にある、ごく普通のブラウザのグローバルオブジェクトです —
+ページの内側にある、ごく普通のブラウザのグローバルオブジェクトです。
 culebraはそれを生成も所有もせず、その上にある2つの決められた名前の
 プロパティを読み書きするだけです。
 
@@ -6587,16 +6589,16 @@ w.run()
 **ウィンドウが見えるようになるタイミング。** macOSでは、ページが最初のフレームを
 画面に出すまでウィンドウを透明にしてあります。空の白い矩形が一瞬見えてから中身が
 出るのではなく、最初から中身が見えます。フレームを報告しないページ（JavaScript
-無効、完了しないナビゲーション）は1.5秒後に空のまま表示します — 見えないままより
+無効、完了しないナビゲーション）は1.5秒後に空のまま表示します。見えないままより
 はましだからです。WindowsとLinuxは`set_size`の時点でウィンドウを表示するので、
 空のフレームは依然として一瞬見えます。
 
 ### ページの`window`オブジェクト
 
-ネイティブウィンドウとそれが表示するページは、ページ自身の`window`
-— culebraが定義・所有するものではなく、ただの標準JSグローバルオブジェクト
-— 上にある、名前が決められた2つのプロパティを介して「閉じてよいか」を
-やり取りします。ページ側で何かをimportする必要はなく、culebraはページが
+ネイティブウィンドウとそれが表示するページは、「閉じてよいか」をやり取りします。
+そのときに使うのは、ページ自身の`window`の上にある、名前が決められた
+2つのプロパティです。`window`はculebraが定義・所有するものではなく、
+ただの標準JSグローバルオブジェクトです。ページ側で何かをimportする必要はなく、culebraはページが
 そこに置いたものを読んで呼び出すだけです。
 
 フレーム自身の閉じるボタンを押しても、ウィンドウはそのままでは閉じません。
@@ -6604,7 +6606,7 @@ w.run()
 1. 閉じる前に、ネイティブ側はページが`window.__culebra_before_close__`を
    定義しているか確認します。
 2. 定義されていれば、そのフック単独が閉じるかどうか・いつ閉じるかを
-   判断します（confirmダイアログや未保存チェックなど） — 準備ができたら
+   判断します（confirmダイアログや未保存チェックなど）。準備ができたら
    `window.__culebra_close__()`を呼びます。これはページ内のquitボタンから
    直接呼んでもよい関数で、`Desktop.run`を使っているかどうかを問いません。
 3. `__culebra_before_close__`を定義していないページは、これまで通り即座に
@@ -6624,18 +6626,17 @@ window.__culebra_before_close__ = () => {
 
 ## 31. `Vector2`
 
-グラフィックス/ゲームコード向けの最小限の2D floatベクトル——言語組み込み
-ではなく普通のculebraクラスです。要素は
-常に`Float`: `new`は`Long | Float`を受けてcoerceするので`Vector2.new(1,
-0)`は動きますが、`.x` / `.y`が`Long`になることはありません。
+グラフィックス/ゲームコード向けの最小限の2D floatベクトルです。言語組み込み
+ではなく普通のculebraクラスです。要素は常に`Float`です。`new`は
+`Long | Float`を受け取って変換するので`Vector2.new(1, 0)`は動きますが、
+`.x` / `.y`が`Long`になることはありません。
 
-`Vector2`は「Point」の代わりも兼ねます——位置と方向を型で区別しない
+`Vector2`は「Point」の代わりも兼ねます。位置と方向を型で区別しない
 設計で、これはCGAL / nalgebraの厳密な分離よりもUnity / Godot /
-three.jsの流儀に合わせたもので、標準ライブラリ全体の「必要最小限の
-型数で済ませる」という方針とも一致します。`SharedBuffer`の固定レイア
-ウトレコード(§12)に使う`@packable class`パターンとは別物——あちらは
-演算を持たない生バイトレイアウト記述子で、`Vector2`は汎用の数学型
-です。
+three.jsの流儀に合わせたものです。標準ライブラリ全体の「必要最小限の
+型数で済ませる」という方針とも一致します。`SharedBuffer`の固定レイアウト
+レコード(§12)に使う`@packable class`パターンとは別物です。あちらは
+演算を持たない生バイトレイアウト記述子で、`Vector2`は汎用の数学型です。
 
 ```culebra
 let a = Vector2.new(3, 4)
@@ -6660,14 +6661,14 @@ inspect(a + Vector2.new(1, 1))  # => (4.0, 5.0)
 | `"{a}"` / `to_string(a)` | `String` — `"(x, y)"` |
 
 `cross()`は(`Vector2`・`Vector3`(§32)いずれにも)意図的に持たせて
-いません: 2Dの外積はスカラー(perp dot)、3Dの外積はベクトルを返す
+いません。2Dの外積はスカラー(perp dot)、3Dの外積はベクトルを返す
 非対称な演算で、このリポジトリのどのexampleでも必要とされなかった
 ためです。
 
 ## 32. `Vector3`
 
-`Vector2`(§31)の3D版——同じ設計(Float固定、独立したPoint型を
-作らない、nominalな`==`)、同じメンバー構成で、`x` / `y` / `z`
+`Vector2`(§31)の3D版です。設計(Float固定、独立したPoint型を
+作らない、nominalな`==`)もメンバー構成も同じで、`x` / `y` / `z`
 フィールドと`Vector3.new(x, y, z)`を持ちます。
 
 ```culebra
@@ -6693,16 +6694,16 @@ inspect(a + Vector3.new(1, 1, 1))  # => (2.0, 3.0, 4.0)
 
 ## 33. `Deque`
 
-両端キュー——言語組み込みではなく普通のculebraクラスです。
+両端キューです。言語組み込みではなく普通のculebraクラスです。
 成長するリングバッファ(配列 +
 先頭インデックス + 要素数)で実装しているため、どちらの端での
 `push`/`pop`も償却O(1)です。`Array`(言語仕様§18)は末尾でしか
 伸縮しません(`push`/`pop`)。`Array`でFIFOキューを組もうとすると
 `remove_at(0)`が必要になり、残り全要素をシフトするのでdequeue
-1回がO(n)になります。前方が関わる場面——FIFOキュー(`push_back` +
-`pop_front`)、スライディングウィンドウ、「どちら側か」を明示した
-いスタック(`push_back` + `pop_back`、`Array.push`/`pop`と対応)
-——では`Deque`を使ってください。
+1回がO(n)になります。先頭側を操作する場面では`Deque`を使ってください。
+たとえばFIFOキュー(`push_back` + `pop_front`)、スライディングウィンドウ、
+「どちら側か」を明示したいスタック(`push_back` + `pop_back`、
+`Array.push`/`pop`と対応)です。
 
 ```culebra
 let q = Deque.new()
@@ -6730,13 +6731,13 @@ inspect(q.size())       # => 1
 | `"{d}"` / `to_string(d)` | `String` |
 
 `Array.pop()`と同様、`pop_front`/`pop_back`/`peek_front`/
-`peek_back`は空の`Deque`に対して例外を投げず`nil`を返します——
-`Array.pop()`が既に受け入れているのと同じ曖昧さです(pushした
+`peek_back`は空の`Deque`に対して例外を投げず`nil`を返します。
+これは`Array.pop()`が既に受け入れているのと同じ曖昧さです(pushした
 `nil`と空であることは戻り値だけからは区別できません)。
 
 ## 34. `PriorityQueue`
 
-`Array`上の二分ヒープ——言語組み込みではなく普通のculebraクラスです。
+`Array`上の二分ヒープです。言語組み込みではなく普通のculebraクラスです。
 `push`/`pop`はO(log n)で、
 素朴な代替（`Array`をソート済みに保つ、あるいはpopのたびに最小値を
 線形探索する）は1回あたりO(n log n)またはO(n)になります。
@@ -6774,11 +6775,11 @@ inspect(jobs.pop())  # => (1, 'ping')
 
 ## 35. `PEG`
 
-パーサジェネレータ。**PEG**（parsing expression grammar）を書いて、それでパースする。
+パーサジェネレータです。**PEG**（parsing expression grammar）で文法を書き、その文法でパースします。
 エンジンは同梱の[cpp-peglib](https://github.com/yhirose/cpp-peglib)で、culebra自身の
-フロントエンドが載っているものと同じ。`peglint`が受理する文法はここでも同じ振る舞いをする。
-APIもcpp-peglibのものである。`PEG.parser`はその`peg::parser`で、メソッドも既定も
-コールバックも同じ（[違う点](#cpp-peglibと違う点)は章の最後にまとめてある）。
+フロントエンドが使っているものと同じです。`peglint`が受理する文法は、ここでも同じように動きます。
+APIもcpp-peglibのものです。`PEG.parser`はその`peg::parser`にあたり、メソッドも既定値も
+コールバックも同じです（[違う点](#cpp-peglibと違う点)は章の最後にまとめてあります）。
 
 ```culebra
 let calc = `
@@ -6796,15 +6797,15 @@ inspect(ast.name)             # => 'Additive'
 inspect(parser.parse("1 +"))  # => (false, nil)
 ```
 
-**文法はバッククォートのraw string（`` `...` ``）で書く。** エスケープ処理も
-`{...}`補間も行わないので、`\t`・`[0-9]{2}`・`'`がそのまま文法に届く。シングル
-クォートのraw stringでも書けるが、PEGは`'literal'`という引用で埋まるので通常は
-バッククォートのほうが収まりがよい。
+**文法はバッククォートのraw string（`` `...` ``）で書きます。** エスケープ処理も
+`{...}`補間も行わないので、`\t`・`[0-9]{2}`・`'`がそのまま文法に届きます。シングル
+クォートのraw stringでも書けますが、PEGは`'literal'`という引用を多用するので、通常は
+バッククォートのほうが書きやすくなります。
 
 ### 文法の記法
 
-記法の全体は[cpp-peglib側](https://github.com/yhirose/cpp-peglib#syntax)にある。
-よく使うのは次の部分:
+記法の全体は[cpp-peglib側](https://github.com/yhirose/cpp-peglib#syntax)にあります。
+よく使うのは次の部分です。
 
 | 形 | 意味 |
 | --- | --- |
@@ -6821,8 +6822,8 @@ inspect(parser.parse("1 +"))  # => (false, nil)
 | `{ no_ast_opt }` | 子が1つでもこの規則のノードを残す |
 | `{ ast_name: Tag }` | 規則名の代わりに`Tag`としてノードを出す |
 
-PEGは構成上曖昧にならない。`/`は順序付きなので最初にマッチした選択肢が勝ち、解決すべき
-曖昧性が生じない。裏を返せば順序が意味を持つ — `'a' / 'ab'`は`ab`にマッチしない。
+PEGは構成上、曖昧になりません。`/`は順序付きなので最初にマッチした選択肢が勝ち、解決すべき
+曖昧性が生じないからです。裏を返せば順序が意味を持ち、`'a' / 'ab'`は`ab`にマッチしません。
 
 ### パーサオブジェクト
 
@@ -6855,8 +6856,8 @@ PEGは構成上曖昧にならない。`/`は順序付きなので最初にマ�
 | `PEG.find_all(node, name)` | `[Node]` — 名前が`name`のノード全部 |
 | `PEG.ast_to_s(node)` | `String` — インデント付きのダンプ。`peglint --ast`と同じ形 |
 
-`parse`は`(ok, val)`を返す。cpp-peglibの`bool parse(s, val)`のout引数を、戻り値を1つ
-増やして返したものである。`val`が何になるかは、パーサに何を頼んだかで決まる:
+`parse`は`(ok, val)`を返します。cpp-peglibの`bool parse(s, val)`のout引数を、戻り値を1つ
+増やして返すようにしたものです。`val`が何になるかは、パーサに何を設定したかで決まります。
 
 | パーサの状態 | `val` |
 | --- | --- |
@@ -6864,7 +6865,7 @@ PEGは構成上曖昧にならない。`/`は順序付きなので最初にマ�
 | `enable_ast()`を呼んであり、actionは無い | 木 |
 | どちらでもない | `nil` |
 
-同じ手順を両方で書くとこうなる:
+同じ手順を両方で書くと次のようになります。
 
 | culebra | cpp-peglib |
 | --- | --- |
@@ -6881,19 +6882,19 @@ PEGは構成上曖昧にならない。`/`は順序付きなので最初にマ�
 | `nil`を代入する | 空の関数を代入する |
 | `PEG.ast_to_s(ast)` | `peg::ast_to_s(ast)` |
 
-文法に対して設定したものは、その文法と一緒に消える。`load_grammar`はパーサを新しい文法で
+文法に対して設定したものは、その文法と一緒に消えます。`load_grammar`はパーサを新しい文法で
 最初からやり直すので、コールバックも`enable_ast()`も`enable_packrat_parsing()`も無くなり、
-残るのはロガーだけである。文法を持たないパーサで呼んだ2つの`enable_`メソッドは何もしない。
+残るのはロガーだけです。文法を持たないパーサで呼んだ2つの`enable_`メソッドは何もしません。
 
-ロードした文法はスレッドごとに保持されるので、同じ文法の2つ目のパーサは検索1回で済む。
-パーサがisolate境界を越えるときは文法テキストが渡って向こう側でロードし直される。
-共有されるものは何もない。規則に代入したコールバックは他のクロージャと同じ規則で
-越えるので、`mut`束縛を捕まえたコールバックを持つパーサは越えられない（`SendError`）。
+ロードした文法はスレッドごとに保持されるので、同じ文法の2つ目のパーサは検索1回で済みます。
+パーサがisolate境界を越えるときは、文法テキストが渡され、向こう側でロードし直されます。
+共有されるものは何もありません。規則に代入したコールバックは他のクロージャと同じ規則で
+越えるので、`mut`束縛を捕まえたコールバックを持つパーサは越えられません（`SendError`）。
 
 ### 木
 
-`enable_ast()`を呼んだ後のパースは木を返す。ノードはただの`Object`なので、専用APIなしで
-`match`が分解できる:
+`enable_ast()`を呼んだ後のパースは木を返します。ノードはただの`Object`なので、専用APIなしで
+`match`で分解できます。
 
 ```culebra
 let calc = `
@@ -6928,8 +6929,8 @@ inspect(eval(ast))  # => 9
 | `is_token` | `< ... >`のトークン境界から来たノードかどうか |
 | `choice` | 順序付き選択のどの選択肢がマッチしたか（0始まり） |
 
-`parent`リンクは持たせていない。ただのObjectの木に親ポインタを張ると参照サイクルになる。
-下向きに辿り、必要なものは引数で持ち回る。
+`parent`リンクは持たせていません。ただのObjectの木に親ポインタを張ると参照サイクルになるからです。
+下向きに辿り、必要なものは引数で持ち回ってください。
 
 ```culebra
 let g = `
@@ -6952,8 +6953,8 @@ inspect(PEG.ast_to_s(doc))
 
 #### 木の最適化
 
-`enable_ast()`が作る木には、マッチした規則すべてのノードがある。`optimize_ast`は子が
-ちょうど1つのノードをその子で置き換えるので、木が文法の内部事情ではなく構造を運ぶようになる:
+`enable_ast()`が作る木には、マッチした規則すべてのノードがあります。`optimize_ast`は子が
+ちょうど1つのノードをその子で置き換えるので、木は文法の内部事情ではなく、構造を表すようになります。
 
 ```culebra
 let g = `
@@ -6973,20 +6974,20 @@ inspect(PEG.walk(parser.parse("1")[1]).map(|n| n.name).collect())
 # => ['Inner']
 ```
 
-`enable_ast(true)`は`optimize_ast`が作るのと同じ木を、消えるノードをプログラムに渡さずに
-作る。大きな入力ではこちらを使う。畳まない木は数倍の大きさになり、畳んだ木なら収まる入力でも
-[木の深さの上限](#エラーと境界)を超える深さになる。
+`enable_ast(true)`は、`optimize_ast`が作るのと同じ木を、消えるノードをプログラムに渡さずに
+作ります。大きな入力ではこちらを使ってください。畳まない木は数倍の大きさになり、畳んだ木なら収まる入力でも
+[木の深さの上限](#エラーと境界)を超える深さになります。
 
 文法側では、`{ no_ast_opt }`でその規則のノードを残し、`{ ast_name: Tag }`で改名して2つの
-生成規則を1つのタグに合流させる。`optimize_ast`と`enable_ast`の2番目の引数`opt_mode`を
-`false`にすると選び方が逆になり、`no_ast_opt`の規則のノードだけが消える。
+生成規則を1つのタグにまとめます。`optimize_ast`と`enable_ast`の2番目の引数`opt_mode`を
+`false`にすると選び方が逆になり、`no_ast_opt`の規則のノードだけが消えます。
 
 ### packratパース
 
-メモ化は、cpp-peglibと同じく`enable_packrat_parsing()`を呼ぶまで無効である。PEGは
+メモ化は、cpp-peglibと同じく`enable_packrat_parsing()`を呼ぶまで無効です。PEGは
 後戻りするので、接頭辞を共有する選択肢（`A <- B '+' A / B`という、最初に書く文法がたいてい
-持つ形）は同じ接頭辞を選択肢の数だけパースし、メモ化なしでは指数時間になる。上の電卓文法での
-実測では、10段のネストがメモ化ありで0.04ms、なしで2.0s。
+持つ形）は同じ接頭辞を選択肢の数だけパースし、メモ化なしでは指数時間になります。上の電卓文法での
+実測では、10段のネストがメモ化ありで0.04ms、なしで2.0sでした。
 
 ```culebra
 let parser = PEG.parser(`
@@ -6999,15 +7000,15 @@ parser.enable_packrat_parsing()
 inspect(parser.parse("((((((((((((((((1))))))))))))))))"))  # => (true, nil)
 ```
 
-代償は入力長×規則数に比例するテーブル（入力1バイトあたり概ね1KB）で、頼んだときだけ
-有効になるのはそのためである。接頭辞を共有しない書き方をした文法（左因子化済み、あるいは
-素朴な文法が再帰するところを`*`/`+`で書いたもの）には要らない。コールバックが走る回数も
-変わる。以前試した位置でもう一度試される規則は、コールバックを走らせ直さずに以前の結果を使う。
+代償は入力長×規則数に比例するテーブル（入力1バイトあたり概ね1KB）です。呼んだときだけ
+有効になるのはそのためです。接頭辞を共有しない書き方をした文法（左因子化済み、あるいは
+素朴な文法が再帰するところを`*`/`+`で書いたもの）には要りません。コールバックが走る回数も
+変わります。以前試した位置でもう一度試される規則は、コールバックを走らせ直さずに以前の結果を使います。
 
 ### エラーと境界
 
-文法や入力が誤っていても、エラーは送出されない。`load_grammar`と`parse`が`false`を返し、
-理由はロガーにエラー1件ごとに伝わる:
+文法や入力が誤っていても、エラーは送出されません。`load_grammar`と`parse`が`false`を返し、
+理由はエラー1件ごとにロガーへ伝わります。
 
 ```culebra
 let parser = PEG.parser()
@@ -7024,17 +7025,17 @@ inspect(errors)
 # => ['1:1: syntax error, unexpected 'x', expecting <N>.']
 ```
 
-位置は文法の中、または入力の中のものである。引数が4つのロガーには、エラーが属する規則の
-名前も渡る（あるとき）。ロガーが無ければ、失敗が伝えるのは`false`だけ。`set_logger(nil)`で
-外せる。ロードできた文法にも警告が付くことがあり（どこからも参照されない規則）、それも
-ロガーに伝わる。
+位置は文法の中、または入力の中のものです。引数が4つのロガーには、エラーが属する規則の
+名前も渡されます（あるとき）。ロガーが無ければ、失敗は`false`でしか分かりません。`set_logger(nil)`で
+外せます。ロードできた文法にも警告が付くことがあり（どこからも参照されない規則）、それも
+ロガーに伝わります。
 
 `PEG.parser(grammar)`は、cpp-peglibのコンストラクタと同じく、ロガーを設定できるより前に
-文法をロードする。文法がロードできなかった理由を知るには、文法なしでパーサを作り、ロガーを
-設定してから`load_grammar`を呼ぶ。
+文法をロードします。文法がロードできなかった理由を知るには、文法なしでパーサを作り、ロガーを
+設定してから`load_grammar`を呼んでください。
 
-ロガーには対象名は渡らない。`path`はコールバックに渡るもので、メッセージに入れたい
-プログラムは自分で入れる:
+ロガーには対象名は渡されません。`path`はコールバックに渡るもので、メッセージに入れたい
+場合はプログラム側で入れます。
 
 ```culebra
 let parser = PEG.parser(`N <- < [0-9]+ >`)
@@ -7044,28 +7045,28 @@ parser.parse("x", path)
 # => input.txt:1:1: syntax error, unexpected 'x', expecting <N>.
 ```
 
-送出されるもの: 文法に無い規則へのコールバックの代入（`PEGError`）と、`Function`でない
-規則メンバ（`TypeError`）（どちらも`parse`で）。型の違う引数（`TypeError`）。木の深さの
+送出されるのは次のものです。文法に無い規則へのコールバックの代入（`PEGError`）と、`Function`でない
+規則メンバ（`TypeError`）（どちらも`parse`で送出）。型の違う引数（`TypeError`）。木の深さの
 上限を超えた木（`ValueError`）。コールバックが投げたもの。
 
-敵対的な入力を致命的な失敗にしないため、境界が2つある:
+敵対的な入力が致命的な失敗にならないよう、境界が2つあります。
 
-* **規則の入れ子** — 規則の一致が4000段を超えて入れ子になるパース、または4000段を超える
-  木を作るパースは`nesting too deep (limit 4000)`で失敗する。他と同じ失敗したパースで、
-  ロガーに伝わる。そうしないと機械生成のネストがパーサ内部でCスタックを溢れさせる。
-  culebraが自分の文法にかけているのと同じ限界値の同じ上限。
-* **木の深さ** — それより浅くても1000段を超える木は`ValueError`
-  （`nesting too deep (limit 1000)`）。
+* **規則の入れ子**: 規則の一致が4000段を超えて入れ子になるパース、または4000段を超える
+  木を作るパースは`nesting too deep (limit 4000)`で失敗します。これは他の失敗したパースと同じ
+  扱いで、ロガーに伝わります。この上限がないと、機械生成のネストがパーサ内部でCスタックを溢れさせます。
+  culebraが自分の文法にかけているのと同じ上限です。
+* **木の深さ**: それより浅くても1000段を超える木は`ValueError`
+  （`nesting too deep (limit 1000)`）になります。
   `JSON`や`TOML`が自分の木に適用しているのと同じ
-  [値ネストの上限](language.ja.md#値ネストの上限)。
+  [値ネストの上限](language.ja.md#値ネストの上限)です。
 
 ### セマンティックアクション
 
-actionは規則に代入する`Function`である。どれかの規則にactionがあると、パースは木を
-作らずに対象を直接解釈する。各actionはその規則自身の還元結果である`SemanticValues`を
-受け取り、親に渡す値を返す。cpp-peglibの
+actionは規則に代入する`Function`です。どれかの規則にactionがあると、パースは木を
+作らずに対象を直接解釈します。各actionはその規則自身の還元結果である`SemanticValues`を
+受け取り、親に渡す値を返します。cpp-peglibの
 [semantic action](https://github.com/yhirose/cpp-peglib#semantic-actions)
-（`parser["Rule"] = [](const SemanticValues &vs) { ... }`）と同じ形:
+（`parser["Rule"] = [](const SemanticValues &vs) { ... }`）と同じ形です。
 
 ```culebra
 let parser = PEG.parser(`
@@ -7082,10 +7083,10 @@ inspect(parser.parse("1 + 2 * 3"))  # => (true, 7)
 inspect(parser.parse("1 +"))        # => (false, nil)
 ```
 
-引数が2つのactionには`dt`も渡る。そのパースの呼び出しに渡した
-[ユーザーデータ](#ユーザーデータ)である。
+引数が2つのactionには`dt`も渡されます。そのパースの呼び出しに渡した
+[ユーザーデータ](#ユーザーデータ)です。
 
-`vs`の読み方はcpp-peglibの`SemanticValues`と同じ:
+`vs`の読み方はcpp-peglibの`SemanticValues`と同じです。
 
 | メンバ | 結果 |
 | --- | --- |
@@ -7102,9 +7103,9 @@ inspect(parser.parse("1 +"))        # => (false, nil)
 | `vs.choice()` / `vs.choice_count()` | 順序付き選択のどの選択肢がマッチしたか（0始まり）と、選択肢の数 |
 | `vs.path` | 対象名（`parse`の`path`） |
 
-規則のトークンは、その規則自身の`< ... >`である。トークン規則を参照するだけの規則は
-トークンを持たないので、`token()`はマッチ全体になり、パーサが後ろで読み飛ばした空白が付く。
-参照を`< ... >`で包めば、その規則自身のトークンになる:
+規則のトークンは、その規則自身の`< ... >`です。トークン規則を参照するだけの規則は
+トークンを持たないので、`token()`はマッチ全体になり、パーサが後ろで読み飛ばした空白が付きます。
+参照を`< ... >`で包めば、その規則自身のトークンになります。
 
 ```culebra
 let parser = PEG.parser(`
@@ -7120,18 +7121,18 @@ parser["Pair"] = |vs| vs.transform()
 inspect(parser.parse("ab cd "))  # => (true, ['ab ', 'cd'])
 ```
 
-actionの無い規則にはcpp-peglib自身の既定が適用される: 最初の子の値、
-子を持たない規則なら`nil`（actionの無いleafトークン規則は値そのものを持たない。
-cpp-peglibと同じで、テキストが要るleafには自分でactionを書く）。
-規則が返せるのはスカラーだけではない。actionの戻り値はただのculebra値なので、
-1つの文法で評価器・整形器・独自の木構造のいずれも、各actionが何を返すか次第で駆動できる。
+actionの無い規則には、cpp-peglib自身の既定が適用されます。最初の子の値になり、
+子を持たない規則なら`nil`になります（actionの無いleafトークン規則は値そのものを持ちません。
+cpp-peglibと同じで、テキストが要るleafには自分でactionを書きます）。
+規則が返せるのはスカラーだけではありません。actionの戻り値はただのculebra値なので、
+1つの文法から、評価器・整形器・独自の木構造のいずれも、各actionが何を返すか次第で作れます。
 
-actionは文法ではなくパーサオブジェクトに属する。同じ文法の別のパーサはactionを持たない。
-`nil`を代入するとactionが外れる。どれかの規則にactionがあれば、`enable_ast()`を呼んだか
-どうかに関わらずパースは還元を行う。
+actionは文法ではなくパーサオブジェクトに属します。同じ文法の別のパーサはactionを持ちません。
+`nil`を代入するとactionが外れます。どれかの規則にactionがあれば、`enable_ast()`を呼んだか
+どうかに関わらずパースは還元を行います。
 
-文法に無い規則へのactionは、`parse`を呼んだときに検出される。typoが黙って無視される
-ことはない:
+文法に無い規則へのactionは、`parse`を呼んだときに検出されます。typoが黙って無視される
+ことはありません。
 
 ```culebra
 let parser = PEG.parser(`N <- < [0-9]+ >`)
@@ -7144,12 +7145,12 @@ inspect(try {
 ```
 
 actionが投げたものは何であれ（culebraの`throw`、`vs`の誤用による`TypeError`など）
-そのまま伝播する。action専用のcatchで回避する必要はない。
+そのまま伝播します。action専用のcatchで回避する必要はありません。
 
 ### ユーザーデータ
 
-`dt`はcpp-peglibのユーザーデータである。`parse`の呼び出し1回に渡した値が、そのパースが
-走らせるすべてのコールバックに渡る。位置はcpp-peglibと同じ:
+`dt`はcpp-peglibのユーザーデータです。`parse`の呼び出し1回に渡した値が、そのパースが
+走らせるすべてのコールバックに渡されます。引数の位置はcpp-peglibと同じです。
 
 | コールバック | 呼ばれ方 |
 | --- | --- |
@@ -7158,7 +7159,7 @@ actionが投げたものは何であれ（culebraの`throw`、`vs`の誤用に�
 | `enter` | `f(c, s, n)`または`f(c, s, n, dt)` |
 | `leave` | `f(c, s, n, matchlen, value)`または`f(c, s, n, matchlen, value, dt)` |
 
-コールバックは読む引数だけを書けばよく、書いた数だけの引数で呼ばれる。
+コールバックは読む引数だけを書けばよく、書いた数だけの引数で呼ばれます。
 
 ```culebra
 let p = PEG.parser(`
@@ -7178,20 +7179,20 @@ inspect(p.parse("40", dt: second))    # => (true, 40)
 inspect([first.count, second.count])  # => [3, 1]
 ```
 
-コールバックが`dt`に置いたものは、パース1回のものである。クロージャが捕まえたものは
-パーサオブジェクトのもので、次のパースにも残り、コールバックが同じパーサで始めたパースとも
-共有される。
+コールバックが`dt`に置いたものは、そのパース1回のものです。クロージャが捕まえたものは
+パーサオブジェクトのものなので、次のパースにも残り、コールバックが同じパーサで始めたパースとも
+共有されます。
 
-`dt`は値そのもので、cpp-peglibのような呼び出し側の変数への参照ではない。コールバックは
-渡されたObjectやArrayの中身を書き換えられるが、別の値に置き換えることはできない。上の例が
-数をObjectに入れて渡しているのはそのためである。`dt`なしで呼んだパースでは`nil`が渡る。
+`dt`は値そのもので、cpp-peglibのような呼び出し側の変数への参照ではありません。コールバックは
+渡されたObjectやArrayの中身を書き換えられますが、別の値に置き換えることはできません。上の例が
+数をObjectに入れて渡しているのはそのためです。`dt`なしで呼んだパースでは`nil`が渡されます。
 
 ### 述語（predicate）
 
-述語は規則がマッチしたときに走り、そのマッチを認めるかを決める。`false`を返すと規則は
-そこで失敗し、パーサはマッチしなかった規則と同じように次の選択肢へ進む。文法の記法では
-書けない判断を、文法に取らせる手段である。ここではCの「`T * x;`は`T`が型の名前のときだけ
-ポインタの宣言」という規則を扱う:
+述語は規則がマッチしたときに走り、そのマッチを認めるかどうかを決めます。`false`を返すと規則は
+そこで失敗し、パーサはマッチしなかった規則と同じように次の選択肢へ進みます。文法の記法では
+書けない判断を、文法に取り込むための手段です。次の例ではCの「`T * x;`は`T`が型の名前のときだけ
+ポインタの宣言」という規則を扱います。
 
 ```culebra
 let p = PEG.parser(`
@@ -7218,10 +7219,10 @@ inspect(unit.nodes.map(|stmt| stmt.nodes[0].name))
 # => ['Typedef', 'Decl', 'ExprStmt']
 ```
 
-型の名前は`dt`に置いているので、どの対象も型の名前が1つも無い状態から始まる。
+型の名前は`dt`に置いているので、どの対象も型の名前が1つも無い状態から始まります。
 
-cpp-peglibの述語は`bool`を返し、out引数を2つ（`msg`と`predicate_data`）持つ。ここでは
-それらも一緒に返す:
+cpp-peglibの述語は`bool`を返し、out引数を2つ（`msg`と`predicate_data`）持ちます。ここでは
+それらも一緒に返します。
 
 | 述語の戻り値 | 意味 |
 | --- | --- |
@@ -7229,8 +7230,8 @@ cpp-peglibの述語は`bool`を返し、out引数を2つ（`msg`と`predicate_da
 | `(ok, msg)` | 同じ。パースが結局ここで失敗に終わったとき、`msg`がそのエラーになる |
 | `(ok, msg, predicate_data)` | 同じ。規則のactionが`predicate_data`を第3引数で受け取る |
 
-これ以外は`TypeError`。メッセージは、パーサが次に試した選択肢から報告するはずだった構文
-エラーに代わるもので、規則の開始位置で報告される:
+これ以外は`TypeError`です。`msg`は、パーサが次に試した選択肢から報告するはずだった構文
+エラーの代わりになり、規則の開始位置で報告されます。
 
 ```culebra
 let p = PEG.parser(`
@@ -7249,13 +7250,13 @@ inspect(p.parse("200"))  # => (false, nil)
 inspect(errors)          # => [[1, 1, 'number out of range', 'NUMBER']]
 ```
 
-木を作るパースでは、述語の`vs`は規則のテキストとトークンを持つが値は持たない
-（`vs.size()`は`0`）。そこでの値は構築中の木だからである。
+木を作るパースでは、述語の`vs`は規則のテキストとトークンを持ちますが、値は持ちません
+（`vs.size()`は`0`）。そこでの値は構築中の木だからです。
 
 ### `enter`と`leave`
 
 `enter`はパーサが規則に取りかかるときに、`leave`はマッチしたかどうかに関わらず規則を
-終えるときに走る:
+終えるときに走ります。
 
 | コールバック | 引数 |
 | --- | --- |
@@ -7289,53 +7290,53 @@ inspect(p.parse('{ a { b { c } } d }'))  # => (true, nil)
 inspect(deepest)                         # => 3
 ```
 
-`leave`の`value`は値そのもので、cpp-peglibのような値への参照ではない。ハンドラが規則の値を
-別の値に差し替えることはできない。
+`leave`の`value`は値そのもので、cpp-peglibのような値への参照ではありません。ハンドラが規則の値を
+別の値に差し替えることはできません。
 
-パーサが後で捨てる試行の中でコールバックが走るかどうか、何回走るかは決まっていない
-（[cpp-peglib](https://github.com/yhirose/cpp-peglib#semantic-actions)と同じ）。次の1バイトで
-始まり得ない選択肢は規則に入らずに飛ばされるし、packratパースは同じ位置での規則の以前の
-結果を使い回して規則を試し直さない。だからコールバックのすることは、繰り返されても
-飛ばされても困らないようにしておく（上のように`enter`でしたことを`leave`で戻す）か、
-`parse`が返す値から状態を組み立てる。コールバックが投げたものがパーサを抜けるとき、途中の
-規則の`leave`ハンドラは走らない。
+パーサが後で捨てる試行の中でコールバックが走るかどうか、何回走るかは決まっていません
+（[cpp-peglib](https://github.com/yhirose/cpp-peglib#semantic-actions)と同じです）。次の1バイトで
+始まり得ない選択肢は規則に入らずに飛ばされますし、packratパースは同じ位置での規則の以前の
+結果を使い回して、規則を試し直しません。したがって、コールバックの処理は、繰り返されても
+飛ばされても困らないようにしておくか（上のように`enter`でしたことを`leave`で戻す）、
+`parse`が返す値から状態を組み立ててください。コールバックが投げたものがパーサを抜けるとき、途中の
+規則の`leave`ハンドラは走りません。
 
 ### cpp-peglibと違う点
 
-C++のシグネチャをそのまま持ち込めないもの:
+C++のシグネチャをそのまま持ち込めないものは次のとおりです。
 
-* out引数は戻り値を1つ増やして返す。`parse`は`(ok, val)`を、述語は`ok`・`(ok, msg)`・
-  `(ok, msg, predicate_data)`のいずれかを返す。
-* `dt`と`leave`の`value`は参照ではなく値である。ObjectやArrayの中身は書き換えられるが、
-  値そのものは差し替えられない。
-* `token_to_number()`と`transform()`は型を取らない。`Long`か`Float`かはトークンの
-  テキストが決め、値はactionが返したものがそのまま入る。
+* out引数は戻り値を1つ増やして返します。`parse`は`(ok, val)`を、述語は`ok`・`(ok, msg)`・
+  `(ok, msg, predicate_data)`のいずれかを返します。
+* `dt`と`leave`の`value`は参照ではなく値です。ObjectやArrayの中身は書き換えられますが、
+  値そのものは差し替えられません。
+* `token_to_number()`と`transform()`は型を取りません。`Long`か`Float`かはトークンの
+  テキストが決め、値はactionが返したものがそのまま入ります。
 
-狭いもの:
+機能が狭くなっているものは次のとおりです。
 
-* 木のノードは[上](#木)のフィールドを持つただの`Object`である。`parent`・`tag`・
-  `original_name`・`original_choice`・`choice_count`・`path`は無い。
-* 木を作るパースでは、述語の`vs`は値を持たず、`leave`の`value`は`nil`である。
-* どれかの規則にactionがあるとパースは還元を行い、`enable_ast()`は効かない。
-* `enable_ast`は3番目の引数（規則のリスト）を取らない。
+* 木のノードは[上](#木)のフィールドを持つただの`Object`です。`parent`・`tag`・
+  `original_name`・`original_choice`・`choice_count`・`path`はありません。
+* 木を作るパースでは、述語の`vs`は値を持たず、`leave`の`value`は`nil`です。
+* どれかの規則にactionがあるとパースは還元を行い、`enable_ast()`は効きません。
+* `enable_ast`は3番目の引数（規則のリスト）を取りません。
 * ユーザー定義の規則、文法のシリアライズ、`set_error_reporter`、`enable_trace`、
-  `disable_eoi_check`、`enable_left_recursion`は無い。左再帰は有効である。
+  `disable_eoi_check`、`enable_left_recursion`はありません。左再帰は有効です。
 
-厳しいもの:
+厳しくなっているものは次のとおりです。
 
-* 規則の入れ子は、どのパースでも4000段が上限である。`set_max_depth`は無い。
-* 文法に無い規則へのコールバックの代入は、`parse`で`PEGError`になる。
+* 規則の入れ子は、どのパースでも4000段が上限です。`set_max_depth`はありません。
+* 文法に無い規則へのコールバックの代入は、`parse`で`PEGError`になります。
 
-入力の構文エラーの文面は、culebra自身の診断と同じ形でここで組み立てている。文法のエラーの
-文面はcpp-peglibのものである。
+入力の構文エラーの文面は、culebra自身の診断と同じ形でここで組み立てています。文法のエラーの
+文面はcpp-peglibのものです。
 
 ## 36. `CodeGen`
 
-閉じた中間表現(IR)と、それを実行するレジスタ方式のbytecodeコンパイラ・実行器 ——
-[cpp-vmlib](https://github.com/yhirose/cpp-vmlib)。`PEG`がcpp-peglibを取り込むのと
-同じ形でvendorしている。`PEG`が構文木を返すのに対して、`CodeGen`はその構文木で
-何をするかを置く場所を提供する: `parser.parse`が返した木を`match`で辿りながら、
-小さな言語のIRを手で組み立てて実行する。
+閉じた中間表現(IR)と、それを実行するレジスタ方式のbytecodeコンパイラ・実行器です。
+[cpp-vmlib](https://github.com/yhirose/cpp-vmlib)を、`PEG`がcpp-peglibを取り込むのと
+同じ形でvendorしています。`PEG`が構文木を返すのに対して、`CodeGen`はその構文木を
+使って何をするかを書く場所を提供します。`parser.parse`が返した木を`match`で辿りながら、
+小さな言語のIRを手で組み立てて実行します。
 
 ```culebra
 let m = CodeGen.Module.new()
@@ -7358,7 +7359,7 @@ m.run()  # => 42
 ### IRノードはオブジェクトでなく`Long`
 
 `Module`のbuilderメソッドはどれも、モジュール自身のノード表に対する素の`Long`
-(index)を返す ——handleではない。小さな式木を組み立てて、その数値を繋いでいく:
+(index)を返します。handleではありません。小さな式木を組み立てるには、その数値を繋いでいきます。
 
 ```culebra
 let m = CodeGen.Module.new()
@@ -7367,7 +7368,7 @@ let b = m.literal(v: 4, line: 1, col: 1)
 let sum = m.binary(op: 'add', lhs: a, rhs: b, line: 1, col: 1)  # sumはLong
 ```
 
-`Block`の文並び・`Call`の引数・`Object`のキーと値は、**ノードidの配列**で渡す:
+`Block`の文並び・`Call`の引数・`Object`のキーと値は、**ノードidの配列**で渡します。
 
 ```culebra
 let m = CodeGen.Module.new()
@@ -7379,15 +7380,15 @@ let body = m.block(stmts: [m.intrinsic(name: 'print', args: args, line: 1, col: 
 ```
 
 `list_new()`と`list_push(list, value)`は同じものを1要素ずつ組み立てる形で、
-配列を取るメソッドはそのlist idも受ける。ただしこちらは古い形だ。要素ごとに
-1呼び出し掛かるうえ、配列をそのまま渡せる今は必要がない。
+配列を取るメソッドはそのlist idも受け付けます。ただしこちらは古い形です。要素ごとに
+1回の呼び出しが必要で、配列をそのまま渡せる今は必要がありません。
 
 ### 位置は`line:`/`col:`でなく`at:`
 
-builderの呼び出しはどれも、そのノードがどこから来たかを記録する。`line`と
-`column`を持つObjectなら何でも`at:`に渡せる —— `parser.parse`のノードでも、
-フロントエンドが自分で作ったコードのために用意したものでもよい。2つの数値を
-自分で取り出す必要はない:
+builderの呼び出しはどれも、そのノードがどこから来たかを記録します。`line`と
+`column`を持つObjectなら何でも`at:`に渡せます。`parser.parse`のノードでも、
+フロントエンドが自分で作ったコードのために用意したものでも構いません。2つの数値を
+自分で取り出す必要はありません。
 
 ```culebra
 let m = CodeGen.Module.new()
@@ -7397,8 +7398,8 @@ let sum = m.binary(op: 'add', lhs: m.literal(v: 40, at: node),
 inspect([m.node_line(sum), m.node_col(sum)])  # => [7, 3]
 ```
 
-`at`は`line`/`col`より前、「そのノードが何であるか」を言う引数の直後にある。
-だからノードを手に持っているフロントエンドは位置引数で書ける:
+`at`は`line`/`col`より前、「そのノードが何であるか」を表す引数の直後にあります。
+そのため、ノードを手に持っているフロントエンドは位置引数で書けます。
 
 ```culebra
 let m = CodeGen.Module.new()
@@ -7408,13 +7409,13 @@ let sum = m.binary('add', a, m.literal(2, node), node)
 inspect(m.node_col(sum))  # => 3
 ```
 
-`line:`/`col:`も従来どおり使えて、両方渡した場合は`at`が勝つ。**`at`を
-勧める。** フロントエンドはbuilderを呼ぶほぼ全箇所でノードを手に持っており、
-2つの数値は行ごとの雑音になる。速いのも`at`のほうだ。境界を渡る引数が2個から
-1個になり、フィールドの読み出しが向こう側で済む。
+`line:`/`col:`も従来どおり使えます。両方渡した場合は`at`が優先されます。**`at`を
+勧めます。** フロントエンドはbuilderを呼ぶほぼ全箇所でノードを手に持っており、
+2つの数値は行ごとの雑音になります。速いのも`at`のほうです。境界を渡る引数が2個から
+1個になり、フィールドの読み出しが向こう側で済みます。
 
-3つとも省略できる。何も渡さずに作ったノードは1:1になる。ソース行が生んだ
-わけではないコードにフロントエンドが欲しいのはこれだ。
+3つとも省略できます。何も渡さずに作ったノードは1:1になります。ソース行から
+生まれたわけではないコードに、フロントエンドが付けたい位置はこれです。
 
 ### プログラムを組み立てる
 
@@ -7469,23 +7470,23 @@ inspect(m.node_col(sum))  # => 3
 | `m.dump_ir()` | 木の可読なダンプ(デバッグ用) |
 | `m.dump_bc()` | コンパイル済みbytecodeの可読なダンプ(デバッグ用) |
 
-executorはdrop契約も履行する: `"\x01drop"`キーにクロージャを持つオブジェクトは、refcountが0になった瞬間・解放の前に、そのオブジェクト自身を引数としてクロージャが呼ばれる。throwするデストラクタはstderrに報告して飲み込む。デストラクタが引数をどこかへ保存したら復活扱いで解放はスキップされる。
+executorはdrop契約も履行します。`"\x01drop"`キーにクロージャを持つオブジェクトは、refcountが0になった瞬間・解放の前に、そのオブジェクト自身を引数としてクロージャが呼ばれます。throwするデストラクタはstderrに報告して飲み込みます。デストラクタが引数をどこかへ保存したら復活扱いで解放はスキップされます。
 
 `kind:`は`'local'`(その関数自身のスロット)、`'cell'`(同じくその関数自身の
 スロットだが、この関数が行う呼び出しがcaptureできるようbox化したもの)、
-`'capture'`(外側から借りたスロット)のいずれか。変数参照は実行時の名前解決
-ではない —— 後述の「変数はcaptureであり静的リンクではない」を参照。
+`'capture'`(外側から借りたスロット)のいずれかです。変数参照は実行時の名前解決
+ではありません。後述の「変数はcaptureであり静的リンクではない」を参照してください。
 
 ステージング用listやcapture mapは、`block()`/`intrinsic()`/`call()`に渡した
-瞬間に消費されて消える。渡した後に同じidを使い回すのは未定義。
+瞬間に消費されて消えます。渡した後に同じidを使い回した場合の動作は未定義です。
 
 ### IRを読み返す
 
-上のbuilderにはそれぞれ対応する読み出しがある: スクリプト自身の定数畳み込みや、
+上のbuilderにはそれぞれ対応する読み出しがあります。スクリプト自身の定数畳み込みや、
 `dump_ir()`の文字列マッチではなくノードの形を検査するテストが、Compilerや
-Dumperと同じ経路で木を辿れる。不正なnode/func/cmap id、あるいはtagやliteralの
-種類を取り違えた読み出しは`IrError`を送出する —— `verify()`自身が報告するのと
-同じ失敗の種類だ。
+Dumperと同じ経路で木を辿れます。不正なnode/func/cmap id、あるいはtagやliteralの
+種類を取り違えた読み出しは`IrError`を送出します。これは`verify()`自身が報告するのと
+同じ失敗の種類です。
 
 | 呼び出し | 読むもの |
 | --- | --- |
@@ -7534,15 +7535,15 @@ Dumperと同じ経路で木を辿れる。不正なnode/func/cmap id、あるい
 | `m.capture_index(cmap:, index:)` | その要素のスロットindex |
 
 `node_op`/`var_kind`/`capture_kind`/`const_kind`が返す文字列は、上のbuilderが
-`op:`/`kind:`/`name:`として受け取るのと同じもの —— これらで読み戻した値は、
-そのまま別のbuilder呼び出しに渡せる。
+`op:`/`kind:`/`name:`として受け取るのと同じものです。これらで読み戻した値は、
+そのまま別のbuilder呼び出しに渡せます。
 
 ### 1度コンパイルして何度も走らせる
 
-`m.compile()`は`m.run()`が行うことのうち実行そのものを除く全て —— `m`を
-verifyし、`CodeGen.Program`を返す。だから同じコンパイル済みプログラムを
-2度以上走らせたり、runの合間にheapを覗いたりできる —— どちらも`m.run()`
-だけでは不可能だった。
+`m.compile()`は、`m.run()`が行うことのうち実行そのものを除く全てを行い、`m`を
+verifyして`CodeGen.Program`を返します。これにより、同じコンパイル済みプログラムを
+2度以上走らせたり、runの合間にheapを覗いたりできます。どちらも`m.run()`
+だけでは不可能でした。
 
 | 呼び出し | すること |
 | --- | --- |
@@ -7572,45 +7573,45 @@ inspect(rt.live_objects())  # => 0
 ```
 
 **別の**コンパイル済みプログラムのオブジェクトをまだ保持している`Runtime`
-では走らせられない: `Program`のクロージャは自分自身のchunk表を指すindexを
-持つので、別プログラムのchunk表を読むと読み違える。`rt.collect()`(または
-単に新しい`Runtime`を使うこと)で道が空く。
+では走らせられません。`Program`のクロージャは自分自身のchunk表を指すindexを
+持つので、別プログラムのchunk表を読むと読み違えるためです。`rt.collect()`(または
+単に新しい`Runtime`を使うこと)で走らせられるようになります。
 
 `entry_frame_drops`はコンパイル済み`Program`のプロパティであって`run()`の
-引数ではない: `compile()`より前に`m.set_entry_frame_drops(on:)`を呼んで
-決める —— `m.run()`の挙動を決めているのと同じフラグだ。
+引数ではありません。`compile()`より前に`m.set_entry_frame_drops(on:)`を呼んで
+決めます。これは`m.run()`の挙動を決めているのと同じフラグです。
 
 ### 変数はcaptureであり静的リンクではない
 
 変数参照は、実行中の関数自身のフレームのスロット(`kind: 'local'`)か、外側の
-フレームから借りたスロット(`kind: 'capture'`)のどちらかを指す。教科書的な
-静的スコープVMにある「レベル」という概念は無い: 静的リンクは変数を宣言した
-フレームがまだスタック上に生きていることを前提にするが、これはクロージャで
-破綻する。だからcapture転送という形にしておけば、クロージャが後から来ても
-`var_ref`の意味を変えずに済む。
+フレームから借りたスロット(`kind: 'capture'`)のどちらかを指します。教科書的な
+静的スコープVMにある「レベル」という概念はありません。静的リンクは、変数を宣言した
+フレームがまだスタック上に生きていることを前提にしますが、これはクロージャで
+破綻します。capture転送という形にしておけば、クロージャが後から来ても
+`var_ref`の意味を変えずに済みます。
 
 呼び出しごとの転送表は**呼び出し側**が持つものであって、呼ばれる関数側では
-ない。自己再帰するプロシージャは、自己再帰の呼び出しでは自分のcaptureを
-そのまま転送し、それを最初に呼ぶ側は自分のcellを転送する —— 同じ呼び出し先に
+ありません。自己再帰するプロシージャは、自己再帰の呼び出しでは自分のcaptureを
+そのまま転送し、それを最初に呼ぶ側は自分のcellを転送します。同じ呼び出し先に
 対して2種類の転送表があるのは、自己再帰の呼び出しが要求するものを関数単位の
-表では表現できないからだ(この点の詳しい説明はcpp-vmlibのREADMEを参照)。
+表では表現できないからです(この点の詳しい説明はcpp-vmlibのREADMEを参照)。
 
-素の`'local'`はこの形で転送できない: それを持つフレームと運命を共にして
-消えるが、組み立てている呼び出しはそのフレームより長生きするかもしれない
-からだ。呼び出しがcaptureするlocalは、まず`'cell'`に昇格させる必要がある
-——フレームとそれを捕まえたすべての呼び出しが共有するbox化スロットだ——
-`capture_map_push`がそれを名指す前に。`verify()`は`kind: 'local'`の
-capture map要素を、後で解放済みメモリを読みに行かせる代わりに拒否する。
-どのスロットを昇格させるかは手で解析するものではなく`CodeGen.Resolver`
-(後述)の仕事だ。昇格したスロットの読み書きはcapture地点だけでなく全て
-`kind: 'cell'`に切り替わる。
+素の`'local'`はこの形で転送できません。それを持つフレームと運命を共にして
+消えますが、組み立てている呼び出しはそのフレームより長生きするかもしれない
+からです。呼び出しがcaptureするlocalは、`capture_map_push`がそれを名指す前に、
+まず`'cell'`に昇格させる必要があります。cellは、フレームとそれを捕まえた
+すべての呼び出しが共有するbox化スロットです。`verify()`は`kind: 'local'`の
+capture map要素を、後で解放済みメモリを読みに行かせる代わりに拒否します。
+どのスロットを昇格させるかは手で解析するものではなく、`CodeGen.Resolver`
+(後述)の仕事です。昇格したスロットの読み書きは、capture地点だけでなく全て
+`kind: 'cell'`に切り替わります。
 
 ### closure変換: `CodeGen.Resolver`
 
-どのスロットをcellに昇格させるか、どの関数が何をcaptureするか——この解析は
-どの言語でも同じ形になる。`CodeGen.Resolver`がそれを引き受ける。変数は
-(関数, スロット)の組ではなく1つのidで、`declare`がそれを配り、その言語が
-記録したい残りはフロントエンドが横に持つ。読みは`use`で記録する。
+どのスロットをcellに昇格させるか、どの関数が何をcaptureするか。この解析は
+どの言語でも同じ形になるので、`CodeGen.Resolver`が引き受けます。変数は
+(関数, スロット)の組ではなく1つのidで、`declare`がそれを配ります。その言語が
+記録したい残りの情報は、フロントエンドが別に持ちます。読みは`use`で記録します。
 
 ```culebra
 let rs = CodeGen.Resolver.new()
@@ -7624,15 +7625,15 @@ rs.use(x, inner)                # innerがmainの持つ変数を読む
 inspect(rs.num_captures(outer))  # => 1
 ```
 
-最後の行が要点だ。`outer`は`x`を一度も名指さない。それでも1になるのは、
+最後の行が要点です。`outer`は`x`を一度も名指しません。それでも1になるのは、
 closureのcapture mapがそれを組むフレームで書かれ、2段下のフレームは自分の
-持たないcellを名指せないからだ。だから`use`は、読み手と持ち主の間にある
-すべての関数に、その読みを記録する。ここを手で間違えると、実行時に別の変数を
-読むプログラムができあがる。
+持たないcellを名指せないからです。そのため`use`は、読み手と持ち主の間にある
+すべての関数に、その読みを記録します。ここを手で間違えると、実行時に別の変数を
+読むプログラムができあがります。
 
-読みを入れ終えたら`number_captures()`が各関数のcaptureの番号と各持ち主の
+読みを入れ終えたら、`number_captures()`が各関数のcaptureの番号と各持ち主の
 cellの番号を割り当て、`access_kind`/`access_index`が`var_ref`に渡す引数を
-答える。
+答えます。
 
 ```culebra
 let rs = CodeGen.Resolver.new()
@@ -7652,15 +7653,15 @@ inspect(rs.access_kind(outer, x))  # => 'capture'
 inspect(rs.num_cells(main))        # => 1
 ```
 
-個数は`add_func`へ、名前は`set_capture_name`へ渡す形にしてあり、ここで
-モジュールに書き込みはしない。関数の本体は、そこで読むcaptureの番号が
-決まるまで組めない。つまり番号付けは、それが説明する当の関数より先に
-来るしかない。
+個数は`add_func`へ、名前は`set_capture_name`へ渡す形にしてあり、Resolverは
+モジュールに書き込みをしません。関数の本体は、そこで読むcaptureの番号が
+決まるまで組めません。つまり番号付けは、それが説明する当の関数より先に
+行うしかありません。
 
 `capture_map(m, builder, target)`は、`builder`のフレームで組む`target`の
-closureの転送表を書く。closureがcaptureするものを供給できないフレームを
-渡された場合、空の表を書く代わりに拒否する——closureはその関数が書かれた
-フレームで組むか、そのフレームに先にcaptureを記録すること。
+closureの転送表を書きます。closureがcaptureするものを供給できないフレームを
+渡された場合は、空の表を書く代わりに拒否します。closureはその関数が書かれた
+フレームで組むか、そのフレームに先にcaptureを記録してください。
 
 | 呼び出し | 答えるもの |
 | --- | --- |
@@ -7688,29 +7689,29 @@ closureの転送表を書く。closureがcaptureするものを供給できな�
 | `rs.rollback(mark:)` | それ以降に増えた関数・変数・自由変数の項を戻す |
 | `rs.reset_fn(fn:, parent:)` | 残した関数を1つ、最初からやり直す |
 
-見つからなかった検索は`nil`ではなく`-1`を答える。ここのidはすべて非負の
-添字だからだ。
+見つからなかった検索は`nil`ではなく`-1`を答えます。ここのidはすべて非負の
+添字だからです。
 
 #### preludeを1度だけ束縛する
 
 ランタイムの一部を自分の言語で書くフロントエンドは、それを1度束縛してから、
-プログラムを次々とその上でコンパイルする。preludeの後に`mark()`を取り、各
-プログラムの前に`rollback(mark)`すると、直前のプログラムが増やしたもの
-——関数・変数・それらを名指す自由変数の項——が戻り、preludeがcaptureした分は
-残る。`reset_fn`はエントリ関数用だ。rollbackはこれを残すが、次のプログラムが
-どのみち作り直す。
+プログラムを次々とその上でコンパイルします。preludeの後に`mark()`を取り、各
+プログラムの前に`rollback(mark)`すると、直前のプログラムが増やした関数・変数と、
+それらを名指す自由変数の項が戻り、preludeがcaptureした分は残ります。
+`reset_fn`はエントリ関数用です。rollbackはこれを残しますが、次のプログラムが
+どのみち作り直します。
 
 #### 1回歩くだけでは足りないとき
 
-`use`は1回の走査で自由変数の集合を閉じる。関数値が式から生まれる言語では
-これが正しい——closureはその関数が書かれた場所で組まれるので、伝播は入れ子を
-たどる。関数が**静的な実体**で、参照するたびにそのclosureを組み直す言語
-(PL/0のprocedure、多重定義の族になりうる巻き上げられた`fn`)では義務が違う。
-参照する側すべてが、参照される側のcaptureを運ばなければならず、再帰がある
-ので走査ではなく不動点になる。
+`use`は1回の走査で自由変数の集合を閉じます。関数値が式から生まれる言語では
+これで正しく動きます。closureはその関数が書かれた場所で組まれるので、伝播は入れ子を
+たどるだけだからです。関数が**静的な実体**で、参照するたびにそのclosureを組み直す言語
+(PL/0のprocedure、多重定義の族になりうる巻き上げられた`fn`)では事情が違います。
+参照する側すべてが、参照される側のcaptureを運ばなければならず、再帰があるので
+走査ではなく不動点の計算になります。
 
-その立場のフロントエンドは、呼び出しの辺を申告して閉包を頼む。読みを入れ
-終えてから`number_captures`の前だ:
+その立場のフロントエンドは、呼び出しの辺を申告して閉包を頼みます。読みを入れ
+終えてから`number_captures`の前に行います。
 
 ```culebra
 # doctest: skip
@@ -7718,20 +7719,20 @@ rs.note_call(caller, callee)   # 束縛中、参照するたびに
 rs.close_over_calls()          # そのあと、number_capturesの前に
 ```
 
-`use`がやるのでなく頼む形にしてあり、違いはそこに尽きる。`use`が既にやる
-伝播は代金が要らない。closureはそれが書かれた場所で組まれるので、入れ子を
-たどるだけで済むからだ。呼び出しの辺で持ち上げるほうは、参照側と持ち主の間の
-フレーム全部に使いもしないcaptureを抱えさせ、そして肝心なのはこちらだが、
-**closureを間違ったフレームで組む降ろし方まで動かしてしまう**。辺を申告しない
-フロントエンドはその代金を1つも払わない。
+`use`が自動で行うのではなく、頼まれたときだけ行う形にしてあり、違いはそこに尽きます。`use`が既に行う
+伝播には代金が要りません。closureはそれが書かれた場所で組まれるので、入れ子を
+たどるだけで済むからです。呼び出しの辺で持ち上げるほうは、参照側と持ち主の間の
+フレーム全部に使いもしないcaptureを抱えさせます。さらに肝心なのは、
+**closureを間違ったフレームで組む降ろし方まで動かしてしまう**ことです。辺を申告しない
+フロントエンドは、その代金を1つも払いません。
 
 ### エラー・割り込み・再帰
 
-0除算・未初期化の読み・型違いのオペランド・暴走する再帰 —— 実行時の失敗は
-まず**組み立てたプログラムの内側で**捕捉できる: それを`body`に含む
+0除算・未初期化の読み・型違いのオペランド・暴走する再帰といった実行時の失敗は、
+まず**組み立てたプログラムの内側で**捕捉できます。それを`body`に含む
 `make_try`領域は、`{message, line, col}`のオブジェクトを受け取って`handler`で
-再開する。どの`make_try`にも保護されない失敗(と`verify()`の構造エラー全て)
-だけがculebra側へ届き、`kind: 'IrError'`の`CulebraError`として送出される:
+再開します。どの`make_try`にも保護されない失敗(と`verify()`の構造エラー全て)
+だけがculebra側へ届き、`kind: 'IrError'`の`CulebraError`として送出されます。
 
 ```culebra
 let m = CodeGen.Module.new()  # funcsが1つも無い -- verify()が検知する
@@ -7743,31 +7744,30 @@ inspect(try {
 ```
 
 `CodeGen`で組み立てたプログラムは、他の実行中のculebraコードと同じように
-割り込み可能(Ctrl+C、isolate自身のcancel)であり、暴走する再帰呼び出しは
-プロセス自身のスタックを溢れさせるのではなく`IrError`(`"recursion limit
-exceeded"`)を送出する。
+割り込み可能(Ctrl+C、isolate自身のcancel)です。暴走する再帰呼び出しは
+プロセス自身のスタックを溢れさせるのではなく、`IrError`(`"recursion limit
+exceeded"`)を送出します。
 
 ### 対象範囲
 
 値は`nil`・真偽値・整数・浮動小数点・文字列・配列・オブジェクト・クロージャ・
-generatorの活性化(`set_generator`を参照)。変数のcaptureはフロントエンドがIRを
-組み立てる時点で一度だけ解決され、実行時には解決されない。`make_closure`で
+generatorの活性化(`set_generator`を参照)です。変数のcaptureはフロントエンドがIRを
+組み立てる時点で一度だけ解決され、実行時には解決されません。`make_closure`で
 組み立てたクロージャは第一級値で、変数に保持でき、`call_value`の引数として
-渡せ、関数の結果として返せる。`CodeGen.Module`・`CodeGen.Program`・
-`CodeGen.Runtime`のいずれもisolateの境界を越えられない
-(`Isolate.spawn`/`Parallel.map`のworkerはそれぞれ自分自身のModuleを組み立てる)。
+渡せ、関数の結果として返せます。`CodeGen.Module`・`CodeGen.Program`・
+`CodeGen.Runtime`のいずれもisolateの境界を越えられません
+(`Isolate.spawn`/`Parallel.map`のworkerはそれぞれ自分自身のModuleを組み立てます)。
 
 ## 37. `StateMachine`
 
-入れ子にできる状態機械。言語の組み込みではなく、素のculebraクラス。
-状態は入れ子にでき、いま居る状態が
-受け取らなかったイベントは親へ渡され、入れ子の外へ出る遷移はその親の
-`exit`を通って出ていく。
+入れ子にできる状態機械です。言語の組み込みではなく、素のculebraクラスです。
+いま居る状態が受け取らなかったイベントは親へ渡されます。入れ子の外へ出る遷移は、
+その親の`exit`を通って出ていきます。
 
-作り方は2通りあるが、出来上がる機械は同じもの。`StateMachine.new`には
-記述用の`Object`を渡すので、guardやactionはその場に普通の関数として書ける。
+作り方は2通りありますが、出来上がる機械は同じです。`StateMachine.new`には
+記述用の`Object`を渡すので、guardやactionはその場に普通の関数として書けます。
 `StateMachine.parse`には下記のテキストを渡し、guardとactionは`guards:` /
-`actions:`の表から名前で引く——§35のsemantic actionsと同じ「名前→関数」の表。
+`actions:`の表から名前で引きます。これは§35のsemantic actionsと同じ「名前→関数」の表です。
 
 ```culebra
 let vending = `
@@ -7799,16 +7799,16 @@ inspect(m.state())      # => 'idle'
 inspect(m.context.log)  # => ['only 60', 'dispensed']
 ```
 
-機械のテキストは**そのまま文字列**（バッククォートか単一引用符）で書く。
-`"..."`だと波括弧が変数の埋め込みとして読まれてしまう。
+機械のテキストは**そのまま文字列**（バッククォートか単一引用符）で書きます。
+`"..."`だと波括弧が変数の埋め込みとして読まれてしまいます。
 
 ### テキストの書き方
 
 本文の1行は`event ['[' guard ']'] [':' action] ['->' target]`、状態の見出しは
-`name [initial] [entry: action] [exit: action]`。本文側に予約語は無い——
+`name [initial] [entry: action] [exit: action]`です。本文側に予約語はありません。
 `entry`・`exit`・`initial`が意味を持つのは見出しの位置だけなので、`entry`という
-名前のイベントも書ける。`#`から行末までは注記。改行は普通の空白なので、
-`a { x -> b }`と1行に詰めても同じ機械になる。
+名前のイベントも書けます。`#`から行末まではコメントです。改行は普通の空白なので、
+`a { x -> b }`と1行に詰めても同じ機械になります。
 
 | 書き方 | 意味 |
 | --- | --- |
@@ -7823,16 +7823,16 @@ inspect(m.context.log)  # => ['only 60', 'dispensed']
 | `e[!g] -> s` | 通らなかったときだけ |
 
 状態名は1つの機械の中で重複しないので、`-> normal`のように経路を書かずに
-名指しできる。同じイベントの行が複数あるときは書いた順に試し、guardが最初に
-通った1本を採る。どれも通らなければ、そのイベントは親へ渡って探索が続く。
+名指しできます。同じイベントの行が複数あるときは書いた順に試し、guardが最初に
+通った1本を採ります。どれも通らなければ、そのイベントは親へ渡って探索が続きます。
 
 ### 入れ子
 
-遷移が出入りするのは**その遷移の範囲**より内側の状態だけ。範囲とは、遷移を
-書いた状態と行き先の両方について、自分自身を含めない祖先のうち最も深いもの。
-だから入れ子の中での兄弟どうしの移動では親は出入りせず、外へ出る移動では親の
-`exit`が走る。入れ子の状態へ入るときは`initial`をたどって葉まで降り、途中の
-`entry`を順に呼ぶ。
+遷移で出入りするのは、**その遷移の範囲**より内側の状態だけです。範囲とは、遷移を
+書いた状態と行き先の両方について、自分自身を含めない祖先のうち最も深いものです。
+そのため、入れ子の中での兄弟どうしの移動では親は出入りせず、外へ出る移動では親の
+`exit`が走ります。入れ子の状態へ入るときは`initial`をたどって葉まで降り、途中の
+`entry`を順に呼びます。
 
 ```culebra
 let player = StateMachine.parse(`
@@ -7860,11 +7860,11 @@ inspect((player.state(), player.context.log))  # => ('stopped', ['start', 'stop'
 
 ### 記述用の`Object`
 
-同じ機械を`Object`で書くと、状態名→`{initial, entry, exit, on, states}`。
+同じ機械を`Object`で書くと、状態名から`{initial, entry, exit, on, states}`への対応になります。
 `on`はイベント名から1件または`Array`への対応で、各件は
-`{guard, negate, action, target}`。どのキーも省略できる。ここでのguardと
-actionは関数そのものを書くのが普通だが、`String`を書けばテキスト版と同じく
-`guards:` / `actions:`から引かれる。
+`{guard, negate, action, target}`です。どのキーも省略できます。ここでのguardと
+actionは関数そのものを書くのが普通ですが、`String`を書けばテキスト版と同じく
+`guards:` / `actions:`から引かれます。
 
 ```culebra
 let bump = fn (ctx, ev) { ctx.n += 1 }
@@ -7891,25 +7891,25 @@ inspect((m.state(), m.context.n))  # => ('off', 1)
 | `m.reset()` | `Nil` — いまの状態から出て、初期状態に入り直す。contextは呼び手のものなので触らない |
 | `"{m}"` / `to_string(m)` | `String` — `"StateMachine(Name, state=s)"` |
 
-guardとactionは`fn (ctx, ev)`。`ctx`は渡した`context:`、`ev`は
-`{name, payload}`という`Object`——後から項目が増えても、既にある関数が
-受け取れなくなることはない。機械が初期状態に入る2つの場面——組み立てた
-直後と`reset()`——にはきっかけとなるイベントが無いので、そこで走る`entry`
-は`ev.name`が`nil`になる。状態名・guard名・action名は機械を組み立てる
-時点で全て解決するので、綴り違いはそこで`StateMachineError`になる（その
-イベントが実際に来るまで黙っている、ということがない）。初期状態が無い機械、
-初期状態を持たない入れ子、初期状態が2つある兄弟も同じ時点で弾かれる。
+guardとactionは`fn (ctx, ev)`の形です。`ctx`は渡した`context:`、`ev`は
+`{name, payload}`という`Object`です。後から項目が増えても、既にある関数が
+受け取れなくなることはありません。機械が初期状態に入る2つの場面(組み立てた
+直後と`reset()`)にはきっかけとなるイベントが無いので、そこで走る`entry`
+では`ev.name`が`nil`になります。状態名・guard名・action名は機械を組み立てる
+時点で全て解決されるので、綴り違いはそこで`StateMachineError`になります（その
+イベントが実際に来るまで黙っている、ということはありません）。初期状態が無い機械、
+初期状態を持たない入れ子、初期状態が2つある兄弟も、同じ時点で弾かれます。
 
-扱わないもの: 並行領域と履歴状態（SCXMLの`<parallel>`と`<history>`）。
-機械が同時に居る葉の状態は常に1つ。
+扱わないものは、並行領域と履歴状態（SCXMLの`<parallel>`と`<history>`）です。
+機械が同時に居る葉の状態は常に1つです。
 
 ## 38. `FST`
 
-**書き換えない辞書を圧縮して持つ**ための名前空間。鍵の集合、または鍵から値への対応を、一度だけ小さなバイト列に組み上げ、あとは引くだけにする（エンジンは同梱の[cpp-fstlib](https://github.com/yhirose/cpp-fstlib)。有限状態トランスデューサ）。鍵どうしで前も後ろも共有するので大きな語彙がよく縮み、しかも展開せずそのまま引ける。引き換えに、組み上げたあとは足すことも消すこともできない。
+**書き換えない辞書を圧縮して持つ**ための名前空間です。鍵の集合、または鍵から値への対応を、一度だけ小さなバイト列に組み上げ、あとは引くだけにします（エンジンは同梱の[cpp-fstlib](https://github.com/yhirose/cpp-fstlib)で、有限状態トランスデューサです）。鍵どうしで前も後ろも共有するので大きな語彙がよく縮み、しかも展開せずそのまま引けます。引き換えに、組み上げたあとは足すことも消すこともできません。
 
-鍵が多く、かつ「あるかどうか」以上のことを訊きたいときに向く。入力補完（`predictive_search`）、最長一致での切り出し（`longest_common_prefix_search`）、綴りの直し（`edit_distance_search`、`suggest`）。実行中に中身が変わる集合の在不在を見るだけなら、言語側の`Set`や`Object`のほうがよい。
+鍵が多く、かつ「あるかどうか」以上のことを知りたいときに向いています。たとえば入力補完（`predictive_search`）、最長一致での切り出し（`longest_common_prefix_search`）、綴りの直し（`edit_distance_search`、`suggest`）です。実行中に中身が変わる集合の在不在を見るだけなら、言語側の`Set`や`Object`のほうが適しています。
 
-組み上げと問い合わせが別の手順なのは、この構造が「一度組んで何度も引く」ためのものだから。多くの場合、引くのは別の実行、別のプロセスになる。
+組み上げと問い合わせが別の手順なのは、この構造が「一度組んで何度も引く」ためのものだからです。多くの場合、引くのは別の実行、別のプロセスになります。
 
 ```culebra
 let words = ["hello", "hell", "help", "world"]
@@ -7919,7 +7919,7 @@ inspect(dict.contains("hell"))         # => true
 inspect(dict.predictive_search("hel"))  # => ['hell', 'hello', 'help']
 ```
 
-バイト列は普通の`String`で（`Compress`の出力と同じくバイト列をそのまま持てる）、専用のファイル API は要らない。長さとチェックサムを自分で持っているので、途中で切れたり壊れたりしたファイルは読まれる前に開く時点で弾かれる（v0.7.0 より前に書き出したバイト列はどちらも持たないので同じく弾かれる。元の語彙から`FST.compile_*`で作り直すこと）。
+バイト列は普通の`String`で（`Compress`の出力と同じくバイト列をそのまま持てます）、専用のファイルAPIは要りません。長さとチェックサムを自分で持っているので、途中で切れたり壊れたりしたファイルは、読まれる前に開く時点で弾かれます（v0.7.0より前に書き出したバイト列はどちらも持たないので、同じく弾かれます。元の語彙から`FST.compile_*`で作り直してください）。
 
 ```culebra
 # doctest: skip
@@ -7929,7 +7929,7 @@ let dict = FST.Set.new(FS.read("words.fst"))
 
 ### 組み上げる
 
-どれもバイト列を`String`で返す。`sorted: true`は「渡す鍵はもう並べ替えてある」という申告で、内部の並べ替えを省く。大きな整列済みの一覧では速くなる。申告が嘘だった場合は`FSTError`になる。
+どれもバイト列を`String`で返します。`sorted: true`は「渡す鍵はもう並べ替えてある」という申告で、内部の並べ替えを省きます。大きな整列済みの一覧では速くなります。申告が事実と違う場合は`FSTError`になります。
 
 | 組み上げ | 結果 |
 | --- | --- |
@@ -7938,9 +7938,9 @@ let dict = FST.Set.new(FS.read("words.fst"))
 | `FST.compile_index_map(entries: Object, sorted: Bool = false)` | `{鍵: Long}` → `FST.IndexMap`で開く |
 | `FST.compile_auto_index(keys: [String], sorted: Bool = false)` | 鍵だけ。値は並べ替えた順の位置 → `FST.IndexMap`で開く |
 
-`compile_index_map`の値は`0..4294967295`の整数。外れた値はその場で`ValueError`になる。空の鍵、重なった鍵、`sorted: true`の申告に反する並びは、何番目かを添えて`FSTError`になる。
+`compile_index_map`の値は`0..4294967295`の整数です。範囲外の値はその場で`ValueError`になります。空の鍵、重なった鍵、`sorted: true`の申告に反する並びは、何番目かを添えて`FSTError`になります。
 
-`compile_auto_index`は語彙に番号を振る小さな形。各鍵の値は「鍵を並べ替えたときの0始まりの位置」なので、別に配列を持たなくても辞書自身が番号表になる。
+`compile_auto_index`は語彙に番号を振る小さな形です。各鍵の値は「鍵を並べ替えたときの0始まりの位置」なので、別に配列を持たなくても辞書自身が番号表になります。
 
 ```culebra
 let ranked = FST.IndexMap.new(FST.compile_auto_index(["cherry", "apple", "fig"]))
@@ -7951,7 +7951,7 @@ inspect(ranked.get("fig"))     # => 2
 
 ### 引く
 
-組み上げ方に応じて3つのクラスがある。どれもバイト列を受け取り、壊れていれば`FSTError`にする。**3種のうち別の種類として組まれたバイト列も弾く**ので、`Set`のバイト列を`Map`として開いてしまい、意味のない答えが返る、ということは起きない。
+組み上げ方に応じて3つのクラスがあります。どれもバイト列を受け取り、壊れていれば`FSTError`になります。**3種のうち別の種類として組まれたバイト列も弾く**ので、`Set`のバイト列を`Map`として開いてしまい、意味のない答えが返る、ということは起きません。
 
 | 開き方 | 結果 |
 | --- | --- |
@@ -7959,7 +7959,7 @@ inspect(ranked.get("fig"))     # => 2
 | `FST.Map.new(bytes)` | `Map` — 鍵ごとに`String`を持つ |
 | `FST.IndexMap.new(bytes)` | `IndexMap` — 鍵ごとに`Long`を持つ |
 
-メソッドの顔ぶれは3つで共通で、違うのは結果が値を連れてくるかどうかだけ。`Set`は鍵と長さだけを返し、`Map`／`IndexMap`はそれぞれに`value`が付く。
+メソッドは3つのクラスで共通で、違うのは結果に値が付くかどうかだけです。`Set`は鍵と長さだけを返し、`Map`／`IndexMap`はそれぞれに`value`が付きます。
 
 | メソッド | `Set` | `Map`／`IndexMap` |
 | --- | --- | --- |
@@ -7971,9 +7971,9 @@ inspect(ranked.get("fig"))     # => 2
 | `edit_distance_search(word, max_edits, insert_cost = 1, delete_cost = 1, replace_cost = 1)` | `[String]` | `[{key, value}]` |
 | `suggest(word)` | `[{ratio, key}]` | `[{ratio, key, value}]` |
 
-長さは`Regex`の位置と同じく**バイト**単位。見つからなければ`nil`（`get`、`longest_common_prefix_search`）か空の配列なので、`??`や`?.`とそのままつながる。
+長さは`Regex`の位置と同じく**バイト**単位です。見つからなければ`nil`（`get`、`longest_common_prefix_search`）か空の配列になるので、`??`や`?.`とそのままつながります。
 
-`common_prefix_search`は「与えた文字列の先頭部分になっている鍵」をたどる。文章を辞書で切り出すときの「ここで何に一致するか」という問いがこれ。`predictive_search`は逆に「与えた文字列で始まる鍵」をたどる。こちらが入力補完の問い。
+`common_prefix_search`は「与えた文字列の先頭部分になっている鍵」をたどります。文章を辞書で切り出すときの「ここで何に一致するか」という問いに使います。`predictive_search`は逆に「与えた文字列で始まる鍵」をたどります。こちらは入力補完の問いに使います。
 
 ```culebra
 let d = FST.Set.new(FST.compile_set(["hell", "hello", "help", "world"]))
@@ -7983,7 +7983,7 @@ inspect(d.longest_common_prefix_search("zebra"))     # => nil
 inspect(d.predictive_search("hel"))  # => ['hell', 'hello', 'help']
 ```
 
-`Map`は同じ形の答えに、しまってある値を添えて返す。
+`Map`は同じ形の答えに、格納してある値を添えて返します。
 
 ```culebra
 let m = FST.Map.new(FST.compile_map({hello: "こんにちは", world: "世界"}))
@@ -7995,7 +7995,7 @@ inspect(m.longest_common_prefix_search("worldly"))  # => {length: 5, value: '世
 
 ### あいまいに引く
 
-`edit_distance_search`は`max_edits`の範囲で届く鍵をすべて返す。3つの代価は直し方ごとの重みで、名前は**探す語の側から**付いている。`delete`は鍵にあって探す語に無いバイトを落とすこと、`insert`は探す語にあって鍵に無いバイトを足すこと、`replace`は1バイトを別のバイトに変えること。代価を上げると、その直し方で届く鍵が同じ予算から外れる。
+`edit_distance_search`は、`max_edits`の範囲で届く鍵をすべて返します。3つの代価は直し方ごとの重みで、名前は**探す語の側から**見て付いています。`delete`は鍵にあって探す語に無いバイトを落とすこと、`insert`は探す語にあって鍵に無いバイトを足すこと、`replace`は1バイトを別のバイトに変えることです。代価を上げると、その直し方で届く鍵は、同じ予算では届かなくなります。
 
 ```culebra
 let d = FST.Set.new(FST.compile_set(["hell", "hello", "help"]))
@@ -8006,25 +8006,25 @@ inspect(d.edit_distance_search("helo", 1, 1, 2))  # => ['hell', 'help']
 inspect(d.edit_distance_search("helo", 1, 1, 1, 2))  # => ['hello']
 ```
 
-`suggest`は綴りを直すときの形。近さの順に並べて返すので、呼ぶ側は距離をあらかじめ決めずに上位いくつかを取れる。`ratio`はエンジンが出す`0..1`の近さ。
+`suggest`は綴りを直すときに使います。近さの順に並べて返すので、呼ぶ側は距離をあらかじめ決めずに上位いくつかを取れます。`ratio`はエンジンが出す`0..1`の近さです。
 
 ```culebra
 let d = FST.Set.new(FST.compile_set(["their", "there", "third", "tier"]))
 inspect(d.suggest("thier")[0].key)  # => 'their'
 ```
 
-鍵は**バイト列として**比べる。大文字小文字も Unicode の正規化形も区別するし、編集距離が数えるのは文字ではなくバイトなので、複数バイトの文字を1文字書き換えると2つ以上の直しとして数えられる。そこが問題になる場面では、組み上げる前と引く前に`.lower()`や NFC への正規化をかけておく。
+鍵は**バイト列として**比べます。大文字小文字もUnicodeの正規化形も区別しますし、編集距離が数えるのは文字ではなくバイトなので、複数バイトの文字を1文字書き換えると2つ以上の直しとして数えられます。これが問題になる場面では、組み上げる前と引く前に`.lower()`やNFCへの正規化をかけておいてください。
 
 ## 39. `Search`
 
 自分で決めた鍵のもとに文書を登録しておき、問い合わせ言語で検索して、順位のついた
-結果を受け取る**全文検索**（エンジンは同梱の
-[cpp-searchlib](https://github.com/yhirose/cpp-searchlib)。転置索引とBM25の
-順位付け）。ここに出しているのはエンジンができることのごく一部で、今後増える。
+結果を受け取る**全文検索**です（エンジンは同梱の
+[cpp-searchlib](https://github.com/yhirose/cpp-searchlib)で、転置索引とBM25の
+順位付けを使います）。ここに出しているのはエンジンができることのごく一部で、今後増える予定です。
 
-部分一致の走査では足りないとき——文書が多い、複数の語を組み合わせて絞りたい、
-結果に順位が要る——に使う。1つの文字列から1つのパターンを探すなら`Regex`、
-変わらない語彙への前方一致なら`FST`のほうが向いている。
+部分一致の走査では足りないとき、たとえば文書が多い、複数の語を組み合わせて絞りたい、
+結果に順位が要る、といった場合に使います。1つの文字列から1つのパターンを探すなら`Regex`、
+変わらない語彙への前方一致なら`FST`のほうが向いています。
 
 ```culebra
 let idx = Search.Index.new()
@@ -8037,13 +8037,13 @@ for hit in idx.search("quick -dog") {
 ```
 
 索引は文書をメモリに持つ生きたハンドルで、ファイルと同じくスコープを抜けるときに
-閉じられる。`close()`で明示的に閉じてもよい。
+閉じられます。`close()`で明示的に閉じることもできます。
 
 ### 鍵は呼び出す側のもの
 
-`add`には文書を呼ぶための鍵を渡し、`search`はその鍵をそのまま返す。鍵は
-`String`で、`Long`は文字列化せずに拒否する——出てくる鍵が入れた鍵と同じもので
-あるようにするため。すでにある鍵で`add`すると、その文書を置き換える。
+`add`には文書を識別するための鍵を渡し、`search`はその鍵をそのまま返します。鍵は
+`String`で、`Long`は文字列化せずに拒否します。出てくる鍵が入れた鍵と同じもので
+あるようにするためです。すでにある鍵で`add`すると、その文書を置き換えます。
 
 ```culebra
 let idx = Search.Index.new()
@@ -8053,8 +8053,8 @@ inspect(idx.search("first"))      # => []
 inspect(idx.search("second").size())  # => 1
 ```
 
-`remove(key)`は文書を消す。知らない鍵なら何もしない。削除は論理削除で、領域は
-索引を作り直すまで戻らない。
+`remove(key)`は文書を消します。知らない鍵なら何もしません。削除は論理削除で、領域は
+索引を作り直すまで戻りません。
 
 ### 問い合わせ言語
 
@@ -8070,24 +8070,24 @@ inspect(idx.search("second").size())  # => 1
 | `apple~2` | あいまい一致。2編集までの語 |
 | `( ... )` | まとめる |
 
-`NOT`には肯定の語が1つ以上要る。索引は全文書を列挙できないため。壊れた問い合わせは
-何にも一致しないのではなく`SearchError`になる。
+`NOT`には肯定の語が1つ以上必要です。索引は全文書を列挙できないためです。壊れた問い合わせは
+何にも一致しないのではなく、`SearchError`になります。
 
-文書も問い合わせも同じ規則で語に切る。Unicodeの語境界
+文書も問い合わせも同じ規則で語に切ります。Unicodeの語境界
 （[UAX #29](https://unicode.org/reports/tr29/)）で区切り、文字か数字を含む区間だけを
-語として小文字に揃える。したがって`version 2.0`は`version`と`2.0`、`don't`や
+語として小文字に揃えます。したがって`version 2.0`は`version`と`2.0`、`don't`や
 `1,234.56`はそれぞれ1語で、語のあいだの空白と句読点は語にならず、大文字と小文字は
-区別されない。空白で語を分ける文字体系は語ごとに切れる。分けない文字体系（漢字・
-ひらがな・タイ文字など）は1文字ずつになり、カタカナの連なりだけは1語になる。これは
-UAX #29自身が辞書に委ねると定めている箇所で、辞書なしの土台にあたる。`東京タワー`は
+区別されません。空白で語を分ける文字体系は語ごとに切れます。分けない文字体系（漢字・
+ひらがな・タイ文字など）は1文字ずつになり、カタカナの連なりだけは1語になります。これは
+UAX #29自身が辞書に委ねると定めている箇所で、辞書なしの土台にあたります。`東京タワー`は
 `東` `京` `タワー`として索引に入り、`東京`の問い合わせは`東`+`京`の句になるので
-見つかる。`東京`を1語にするのは辞書に基づく splitter（下）の仕事。
+見つかります。`東京`を1語にするのは、辞書に基づくsplitter（下）の仕事です。
 
 ### 解析器
 
-索引には、文章を語に切る手順を自分で持たせられる。`add`のときと`search`のときで
-同じものが走る。索引を作ったときと違う切り方で問い合わせると何も見つからないため、
-2つを別々に設定することはできない。
+索引には、文章を語に切る手順を自分で持たせられます。`add`のときと`search`のときで
+同じものが走ります。索引を作ったときと違う切り方で問い合わせると何も見つからないため、
+2つを別々に設定することはできません。
 
 ```culebra
 let stop_words = fn (t) {
@@ -8106,43 +8106,43 @@ inspect(idx.search("the"))           # => []
 | `normalizer` | `fn (term: String) -> String` | 語ごとに、filtersより先に走る。省くと組み込みの小文字化 |
 | `filters` | `fn (term: String) -> String \| Nil`のArray | normalizerのあとに順に適用する。置き換えた語を返すか、`nil`を返して捨てる |
 
-出す語は、範囲が指すバイト列と一致していなくてよい。形態素解析器が原形を索引に入れ
-つつ、ハイライトは書かれたとおりの文字列に当たる、という形にできるのはこのため。
-範囲の開始位置は戻ってはならない。同じバイトから始まる2つの語は、1つの語位置に重ねた
-候補になる——複合語とその構成語を並べて出せば、どちらで検索しても文書が見つかり、句検索
-もどちらを通っても続く——。どの候補でヒットしても、ハイライトの範囲はその位置に最初に
-出した語のもの。あとから始まる語は、範囲が重なっていても次の位置になる。問い合わせ側も
-同じsplitterが走るので、こう割れた語は各位置に候補を持つ句として検索される。
+出す語は、範囲が指すバイト列と一致していなくても構いません。形態素解析器が原形を索引に入れ
+つつ、ハイライトは書かれたとおりの文字列に当てる、という形にできるのはこのためです。
+範囲の開始位置は戻ってはいけません。同じバイトから始まる2つの語は、1つの語位置に重ねた
+候補になります。複合語とその構成語を並べて出せば、どちらで検索しても文書が見つかり、句検索
+もどちらを通っても続きます。どの候補でヒットしても、ハイライトの範囲はその位置に最初に
+出した語のものになります。あとから始まる語は、範囲が重なっていても次の位置になります。問い合わせ側も
+同じsplitterが走るので、こう割れた語は各位置に候補を持つ句として検索されます。
 
-1つの語を複数に増やす filter は書けない。複数の出力は「どれか」を意味するので
-問い合わせ側の仕事であり、語を**並び**に割るのは splitter の仕事だから。
+1つの語を複数に増やすfilterは書けません。複数の出力は「どれか」を意味するので
+問い合わせ側の仕事であり、語を**並び**に割るのはsplitterの仕事だからです。
 
-**これらは語ごとに呼ばれる。** Culebraで書いた`normalizer`は全文書の全語に対して
-走る。既定がネイティブなのはそのため。`splitter`は1文書につき1回、問い合わせの
-1語につき1回。手軽な経路であって速い経路ではない——千語の文書は千回プログラムへ
-戻ってくる。
+**これらは語ごとに呼ばれます。** Culebraで書いた`normalizer`は全文書の全語に対して
+走ります。既定がネイティブなのはそのためです。`splitter`は1文書につき1回、問い合わせの
+1語につき1回呼ばれます。手軽な経路であって速い経路ではありません。千語の文書では、
+千回プログラムへ戻ってきます。
 
-これらの関数が上げたものは、上げられたままの形で`add`や`search`から出てくる。エラーは
-そのkindのまま、`throw`した値はその値のままプログラムの`catch`に届く。
+これらの関数が投げたものは、投げられたままの形で`add`や`search`から出てきます。エラーは
+そのkindのまま、`throw`した値はその値のままプログラムの`catch`に届きます。
 
-C++で書いたsplitterはネイティブに走る。`ISplitter`を継承して`wrap<T>`で宣言した
-クラスのハンドルは、そのまま`splitter`に渡せる。契約とハンドルの寿命は
-[Searchにsplitterを挿す](deployment.ja.md#searchにsplitterを挿す)にある。
+C++で書いたsplitterはネイティブに走ります。`ISplitter`を継承して`wrap<T>`で宣言した
+クラスのハンドルは、そのまま`splitter`に渡せます。契約とハンドルの寿命は
+[Searchにsplitterを挿す](deployment.ja.md#searchにsplitterを挿す)にあります。
 
-`Search.Index.load(path, analyzer)`も解析器を取る。渡すのは索引を作ったものと同じ形の
-解析器でなければならない。splitterが索引に入る語を決めるので、違う切り方をした問い合わせは
-何も見つけられない。ファイルはその形を記録していて、`load`は食い違いを断る
+`Search.Index.load(path, analyzer)`も解析器を取ります。渡すのは索引を作ったものと同じ形の
+解析器でなければなりません。splitterが索引に入る語を決めるので、違う切り方をした問い合わせは
+何も見つけられないからです。ファイルはその形を記録していて、`load`は食い違いを断ります
 （[保存と読み込み](#保存と読み込み)を参照）。
 
 ### 日本語: モデルによる分かち書き
 
-組み込みの切り方では漢字とひらがなは1文字ずつになる（上）。`Search.segmenter(model)`は
-分かち書きのモデル（エンジンは cpp-searchlib に同梱の
+組み込みの切り方では漢字とひらがなは1文字ずつになります（上）。`Search.segmenter(model)`は
+分かち書きのモデル（エンジンはcpp-searchlibに同梱の
 [cpp-segmentlib](https://github.com/yhirose/cpp-segmentlib)）を読み込み、日本語の
-文字が続く区間を語に切り、それ以外は組み込みの規則に任せる splitter を返す。
+文字が続く区間を語に切り、それ以外は組み込みの規則に任せるsplitterを返します。
 `iPhone 15を買った`は`iphone` `15` `を` `買っ` `た`、`東京タワー`は`東京` `タワー`として
-索引に入る。解析器の`splitter`に渡して使う。ネイティブに走るので、文書ごとに
-プログラムへ戻ることはない。
+索引に入ります。解析器の`splitter`に渡して使います。ネイティブに走るので、文書ごとに
+プログラムへ戻ることはありません。
 
 ```culebra
 # doctest: skip
@@ -8153,41 +8153,41 @@ inspect(idx.search("東京タワー").size())  # => 1
 inspect(idx.search("京"))                # => []   東京 が1語になった
 ```
 
-`model`は下の表にある名前か、cpp-segmentlibが読める形式のモデルファイルのパス。
-読み込めないファイルは`SearchError`になる。segmenterは索引と同じくハンドルで、
-スコープを抜けるか`close()`で解放する。索引は作られるときにsplitterを写し取るので、
-あとでハンドルを閉じても索引には影響せず、そのハンドルで新しい索引を作れなくなるだけ。
-モデルは上に書いた意味で解析器の一部——両側で同じものを使い、変えたら索引を作り直す。
+`model`は下の表にある名前か、cpp-segmentlibが読める形式のモデルファイルのパスです。
+読み込めないファイルは`SearchError`になります。segmenterは索引と同じくハンドルで、
+スコープを抜けるか`close()`で解放します。索引は作られるときにsplitterを写し取るので、
+あとでハンドルを閉じても索引には影響せず、そのハンドルで新しい索引を作れなくなるだけです。
+モデルは上に書いた意味で解析器の一部です。登録と検索の両側で同じものを使い、変えたら索引を作り直します。
 
 | 名前 | モデル | 大きさ | ライセンス |
 |---|---|---|---|
 | `ja-ud-gsd` | cpp-segmentlibの参照モデルv0.3.0。UD Japanese-GSDで訓練 | 2.1 MB | CC BY-SA 4.0 |
 
-名前は`Sys.data_dir("culebra")/models`に置かれた写しに解決される。初回はculebraが
-端末で確認してから取得する。stdinかstderrが端末でないプログラム——スクリプト、CI、
-パイプ——には聞かず、URLと写しを置くべきパスと、取得を避ける2つの方法（自分でその
-パスに置く、パスを渡す）を添えた`SearchError`になる。ダウンロードはこのリリースに
-固定されたダイジェストと照合してから書き、モデルのNOTICEを隣に置く。`CULEBRA_OFFLINE`が
-`0`以外に設定されていれば何も取得しない。`Http`を名指さないAOTバイナリも取得できないが、
-キャッシュは共有なので、同じマシンで`culebra`を一度走らせれば両方がそれを使う。
+名前は`Sys.data_dir("culebra")/models`に置かれた写しに解決されます。初回はculebraが
+端末で確認してから取得します。stdinかstderrが端末でないプログラム（スクリプト、CI、
+パイプ）には確認せず、URLと写しを置くべきパスと、取得を避ける2つの方法（自分でその
+パスに置く、パスを渡す）を添えた`SearchError`になります。ダウンロードはこのリリースに
+固定されたダイジェストと照合してから書き、モデルのNOTICEを隣に置きます。`CULEBRA_OFFLINE`が
+`0`以外に設定されていれば何も取得しません。`Http`を名指さないAOTバイナリも取得できませんが、
+キャッシュは共有なので、同じマシンで`culebra`を一度走らせれば両方がそれを使います。
 
 写しのファイル名にはバージョンが入る（`ja-ud-gsd-v0.3.0.mod`）ので、上流がモデルを
-更新しても、索引を作ったときのモデルが差し替わることはない。語の境界が変われば索引は
-作り直しで、いつ変えるかを決めるのはネットワークではなくculebraのリリースである。
+更新しても、索引を作ったときのモデルが差し替わることはありません。語の境界が変われば索引は
+作り直しになりますが、いつ変えるかを決めるのはネットワークではなくculebraのリリースです。
 
 ### 言語は索引のもの
 
-索引がどのモデルを使うか（使わないか）は解析器の設定で、つまり索引のもの。すべての
-文書とすべてのクエリが同じものを通る。文書ごとの言語指定も、テキストからの推測もない。
-クエリは数文字で文書は1ページなので、それぞれから推測すると両側で食い違う。`東京都庁`は
-仮名に囲まれた文書の中では`東京` `都庁`に切れるが、クエリとして単独では推測の手がかりに
-なる仮名がなく丸ごと1語のまま、何にも一致しない。文字体系の混在は言語ではなく文字体系で
-扱う。モデルが日本語の文字が続く区間を引き受け、残りは組み込みの規則が切る——両側とも
-同じように。別々のモデルが要る複数の言語のコーパスは、複数の索引にする。
+索引がどのモデルを使うか（使わないか）は解析器の設定で、つまり索引のものです。すべての
+文書とすべてのクエリが同じものを通ります。文書ごとの言語指定も、テキストからの推測もありません。
+クエリは数文字で文書は1ページなので、それぞれから推測すると両側で食い違うからです。`東京都庁`は
+仮名に囲まれた文書の中では`東京` `都庁`に切れますが、クエリとして単独では推測の手がかりに
+なる仮名がなく、丸ごと1語のままで何にも一致しません。文字体系の混在は、言語ではなく文字体系で
+扱います。モデルが日本語の文字が続く区間を引き受け、残りは組み込みの規則が切ります。これは両側とも
+同じです。別々のモデルが必要な複数の言語のコーパスは、複数の索引にしてください。
 
 ### 検索結果
 
-`search(query, limit = 10)`はObjectのArrayを、スコアの高い順に返す。
+`search(query, limit = 10)`はObjectのArrayを、スコアの高い順に返します。
 
 | 欄 | |
 |---|---|
@@ -8195,7 +8195,7 @@ inspect(idx.search("京"))                # => []   東京 が1語になった
 | `score` | BM25の関連度。1回の結果の中では比べられるが、別の検索とは比べられない |
 | `ranges` | 一致した語の位置。登録した文字列へのバイト単位の`{position, length}` |
 
-`ranges`は該当箇所を目立たせるためのもの。
+`ranges`は該当箇所を目立たせるためのものです。
 
 ```culebra
 let text = "A quick brown dog outpaces a lazy fox."
@@ -8213,14 +8213,14 @@ idx.save("notes.idx")
 let reopened = Search.Index.load("notes.idx")
 ```
 
-保存されるのは索引であって文書そのものではない。`search`が返すのは変わらず鍵と
-バイト位置なので、それを解決するための元の文字列は呼び出す側が持っておく。ファイル
-形式はculebra自身のもの（中にエンジンの形式を包んでいる）。版数を持っているので、
-別の版を書くculebraが作った索引は、誤読せずにそうと報告される。索引は文書そのものを
-持たないので、その場合は元の文書から作り直す。
+保存されるのは索引であって文書そのものではありません。`search`が返すのは変わらず鍵と
+バイト位置なので、それを解決するための元の文字列は呼び出す側が持っておいてください。ファイル
+形式はculebra自身のもの（中にエンジンの形式を包んでいます）です。版数を持っているので、
+別の版を書くculebraが作った索引は、誤読されずに、そのとおり報告されます。索引は文書そのものを
+持たないので、その場合は元の文書から作り直します。
 
-ファイルは、それを作った解析器がどういう形だったかを記録している。`load`は形の違う
-解析器を断る:
+ファイルは、それを作った解析器がどういう形だったかを記録しています。`load`は形の違う
+解析器を断ります。
 
 ```culebra
 # doctest: skip
@@ -8231,38 +8231,38 @@ idx.save("notes.idx")
 Search.Index.load("notes.idx")  # !! SearchError: 別の解析器で作られている
 ```
 
-記録される形は粗い。ファイルが正直に書けるのはそこまでだからで、内訳は、どの種類の
-splitterが語を切ったか（組み込みの規則か、モデルか——ファイル名と大きさで名指す——、
+記録される形は粗いものです。ファイルが正直に書けるのはそこまでだからです。内訳は、どの種類の
+splitterが語を切ったか（組み込みの規則か、モデルか(ファイル名と大きさで名指します)、
 wrapしたC++のクラスか、culebraのclosureか）、normalizerが組み込みのままか、filterが
-何本走ったか。culebraの関数には処理をまたいで残る同一性がないので、closureはどれも
-同じに見える。停止語の一覧を同じ長さの別のものに差し替えた場合は捕まらない。捕まるのは
-名前のある食い違い——モデルで作った索引をモデルなしで開いた、filterが1本消えている——で、
-この種の間違いはたいていその形をしている。
+何本走ったかです。culebraの関数には処理をまたいで残る同一性がないので、closureはどれも
+同じに見えます。停止語の一覧を同じ長さの別のものに差し替えた場合は捕まりません。捕まるのは
+名前のある食い違い、たとえばモデルで作った索引をモデルなしで開いた、filterが1本消えている、
+といったもので、この種の間違いはたいていその形をしています。
 
 ファイルには書いたときの形式が記録されていて、`load`は形式の違うファイルを誤読せず
-`SearchError`で弾く。v0.7.0より前に保存した索引は、`Search.Index.new`で作り直す必要がある。
+`SearchError`で弾きます。v0.7.0より前に保存した索引は、`Search.Index.new`で作り直す必要があります。
 
-ファイルはElias-Fanoで圧縮された転置リストとして書かれる。`load`はそれを`new`が
-作るのと同じ形に展開し直すので、開いた索引は全速で引けるうえ、そのまま文書を足せる。
-`readonly: true`は展開を省き、圧縮された構造のまま引く。
+ファイルはElias-Fanoで圧縮された転置リストとして書かれます。`load`はそれを`new`が
+作るのと同じ形に展開し直すので、開いた索引は全速で引け、そのまま文書を足せます。
+`readonly: true`は展開を省き、圧縮された構造のまま引きます。
 
 ```culebra
 # doctest: skip
 let idx = Search.Index.load("notes.idx", readonly: true)
 ```
 
-こうして開いた索引は、開くのが桁違いに速く、メモリも大幅に少ない。かわりに`add`・
-`remove`・`save`は`SearchError`になり、検索は遅くなる。とくに句が遅い。311,030文書
-（KJVを10部、索引は36 MB）での実測、5回の最良値:
+こうして開いた索引は、開くのが桁違いに速く、メモリも大幅に少なくて済みます。かわりに`add`・
+`remove`・`save`は`SearchError`になり、検索は遅くなります。とくに句が遅くなります。311,030文書
+（KJVを10部、索引は36 MB）での実測で、5回の最良値は次のとおりです。
 
 | | `load` | メモリ | 頻出語1語 | 2語 | 句 |
 |---|---|---|---|---|---|
 | 既定 | 1,592 ms | 376 MB | 35 µs | 23 µs | 205 µs |
 | `readonly: true` | 83 ms | 102 MB | 122 µs | 83 µs | 1,346 µs |
 
-一度作って短命なプロセスから何度も引く索引に向く。呼ばれるたびにファイルを開くCLIなら
-1.6秒ではなく83ミリ秒で済む。逆に、長く生きるプロセスが同じ索引を何度も引く場合や、
-文書を足し続ける場合は既定のほうがよい。
+一度作って、短命なプロセスから何度も引く索引に向いています。呼ばれるたびにファイルを開くCLIなら
+1.6秒ではなく83ミリ秒で済みます。逆に、長く生きるプロセスが同じ索引を何度も引く場合や、
+文書を足し続ける場合は、既定のほうが適しています。
 
 ### 一覧
 
@@ -8278,55 +8278,55 @@ let idx = Search.Index.load("notes.idx", readonly: true)
 | `Search.segmenter(model: String) -> Segmenter` | `analyzer.splitter`に渡す、モデルによる日本語のsplitter。`model`は目録の名前かファイルのパス |
 | `seg.close() -> Nil` | 解放する。それで作った索引はそのまま使える |
 
-索引は`Sendable`ではない。結果が索引を参照しているので、作ったスレッドから出せない。
-isolateごとに別の索引を持たせる。
+索引は`Sendable`ではありません。結果が索引を参照しているので、作ったスレッドから出せません。
+isolateごとに別の索引を持たせてください。
 
 ## 40. `Audio`
 
-どのプログラムでも使える音: WASM-4流のtone、ワンショットのサンプル、ストリーム
-再生の音楽、スクリプトが合成するPCMとそれを組み立てるネイティブの部品、部品をつないで鳴らしながら計算するグラフ、マイク、Kauaiで書いた曲。`Audio`は音声デバイスを単独で持ち、
+どのプログラムでも使える音を扱います。WASM-4流のtone、ワンショットのサンプル、ストリーム
+再生の音楽、スクリプトが合成するPCMとそれを組み立てるネイティブの部品、部品をつないで鳴らしながら計算するグラフ、マイク、Kauaiで書いた曲です。`Audio`は音声デバイスを単独で持ち、
 ウィンドウを必要としないので、`Canvas`で描くプログラムでも、`Scene`で描く
-プログラムでも、何も描かないプログラムでも同じように動く。デバイスは初回使用時に
-開き、何も鳴らさないプログラムはデバイスを開かない。
+プログラムでも、何も描かないプログラムでも同じように動きます。デバイスは初回使用時に
+開き、何も鳴らさないプログラムはデバイスを開きません。
 
-デバイスが無いことはエラーではない。デバイスの無いマシン（サーバ、CI）や、
-`CULEBRA_AUDIO`を`off`か`0`にした実行（`just`の全レシピがそう設定する）では、
-`Audio.available()`は`false`で、何も鳴らないが、どの呼び出しもこの節のとおりに
-答える: ハンドルは作られ、操作は何もせず、`playing()`は`false`、`PCM`は
-渡されたものを数える。デバイスを求めた最初の呼び出しが、無いことを警告として
-1度だけ表示する。
+デバイスが無いことはエラーではありません。デバイスの無いマシン（サーバ、CI）や、
+`CULEBRA_AUDIO`を`off`か`0`にした実行（`just`の全レシピがそう設定します）では、
+`Audio.available()`は`false`になり、何も鳴りませんが、どの呼び出しもこの節のとおりに
+答えます。ハンドルは作られ、操作は何もせず、`playing()`は`false`、`PCM`は
+渡されたものを数えます。デバイスを求めた最初の呼び出しが、デバイスが無いことを警告として
+1度だけ表示します。
 
 | 関数 | 効果 |
 | --- | --- |
 | `Audio.available() -> Bool` | 音声デバイスが開いているか（まだ誰も開いていなければ開く） |
 
-音量は`0.0..1.0`で、`1.0`が元の音量。pitchは再生速度で`1.0`が元のまま。panは
-`-1.0`（左）から`0.0`を経て`1.0`（右）。WASM-4の単位を保つのは下の`tone`だけ。
+音量は`0.0..1.0`で、`1.0`が元の音量です。pitchは再生速度で、`1.0`が元のままです。panは
+`-1.0`（左）から`0.0`を経て`1.0`（右）です。WASM-4の単位を保つのは下の`tone`だけです。
 
 ### tone
 
 `Audio.tone(freq, dur, vol = 100, wave = 0, end_freq = nil, attack = 0,
 decay = 0, release = 0, peak = nil, duty = 2)`はWASM-4流の小さなAPUで音を
-鳴らす。単位はWASM-4自身のものなので、WASM-4のプログラムの呼び出しは
-そのまま使える。最も簡単な形`Audio.tone(freq, dur)`は`freq` Hzの`dur`ティック
-（1ティックは1/60秒）の音。オプション引数でエンベロープ全体を扱える: 音程は
+鳴らします。単位はWASM-4自身のものなので、WASM-4のプログラムの呼び出しは
+そのまま使えます。最も簡単な形`Audio.tone(freq, dur)`は、`freq` Hzの音を`dur`ティック
+（1ティックは1/60秒）鳴らします。オプション引数でエンベロープ全体を扱えます。音程は
 `freq → end_freq`にスライドし、ADSRエンベロープ（`attack`/`decay`/`release`は
 ティック数、`dur`はサステイン長）が音量を0 → `peak` → サステインの`vol`
-（どちらも`0..100`）→ 0と整形する。`wave`はチャンネルを選ぶ — `Audio.PULSE` /
+（どちらも`0..100`）→ 0と整形します。`wave`はチャンネルを選びます。選択肢は`Audio.PULSE` /
 `PULSE2`（`duty`サイクル付き: `Audio.DUTY_EIGHTH` / `DUTY_QUARTER` /
 `DUTY_HALF` / `DUTY_THREE_QUARTER`）、`Audio.TRIANGLE`、`Audio.NOISE`、
-またはculebra拡張の`Audio.SAWTOOTH`。各チャンネルはモノフォニック（新しい音が
-前の音を止める）。合成波形は生で、4チャンネルが同時に鳴りうるので、`tone`は
-`0..100`をフルスケールよりかなり低くミックスする。
+またはculebra拡張の`Audio.SAWTOOTH`です。各チャンネルはモノフォニック（新しい音が
+前の音を止める）です。合成波形は加工されていない生の波形で、4チャンネルが同時に鳴りうるので、`tone`は
+`0..100`をフルスケールよりかなり低くミックスします。
 
-ブラウザでは`tone`はWebAudioで鳴る（チャンネルごとのオシレータ、pulseのduty
+ブラウザでは`tone`はWebAudioで鳴ります（チャンネルごとのオシレータ、pulseのduty
 サイクル用`PeriodicWave`、フィルタ済みノイズバッファ）。ネイティブでは
-オーディオスレッドで鳴らす小さなソフトウェアシンセ（帯域制限していない素朴な
-オシレータ、noiseはフィルタ済みPRNG）。どちらの実装でもノートはデバイスが
-埋めていたバッファの境界ではなくオーディオストリーム自身のサンプルクロック上に
-置かれるので、デバイスが選んだバッファ長によらずシーケンサの音符間隔は保たれる。
-2つは**似た音になるよう調整した別実装**であってサンプル単位で同一ではない —
-ピクセル操作と違い`tone`はbackend間でビット完全一致である必要はない。
+オーディオスレッドで鳴らす小さなソフトウェアシンセです（帯域制限していない素朴な
+オシレータで、noiseはフィルタ済みPRNG）。どちらの実装でもノートは、デバイスが
+埋めていたバッファの境界ではなく、オーディオストリーム自身のサンプルクロック上に
+置かれるので、デバイスが選んだバッファ長によらずシーケンサの音符間隔は保たれます。
+2つは**似た音になるよう調整した別実装**であって、サンプル単位では同一ではありません。
+ピクセル操作と違い、`tone`はbackend間でビット完全一致である必要はありません。
 
 ```culebra
 Audio.tone(440, 8)
@@ -8337,11 +8337,11 @@ Audio.tone(700, 0, 10, Audio.PULSE, 870, 10, 5, 3, 20, Audio.DUTY_QUARTER)
 
 `Audio.Sound.new(data)`はワンショットのサンプルをバイト列（WAV / MP3 /
 Ogg Vorbisの`String`。`FS.read`や`Dir`から、あるいはプログラムが組み立てた
-もの）からデコードし、呼び出しごとに再生する。`tone`の合成に対する録音サンプル
-側の対応物。`Audio.Sound.new(samples, rate = 44100)`は、代わりにプログラムが
-計算したサンプルから作る。サンプルは-1.0から1.0の数の配列で、モノラル、1秒に
-`rate`個。WAVファイルと同じく16ビットで持つ（-1.0..1.0を超えるサンプルはその端に
-とどめ、NaNは無音）。
+もの）からデコードし、呼び出しごとに再生します。`tone`の合成に対する、録音サンプル
+側の対応物です。`Audio.Sound.new(samples, rate = 44100)`は、代わりにプログラムが
+計算したサンプルから作ります。サンプルは-1.0から1.0の数の配列で、モノラル、1秒に
+`rate`個です。WAVファイルと同じく16ビットで持ちます（-1.0..1.0を超えるサンプルはその端に
+とどめ、NaNは無音になります）。
 
 | メソッド | 効果 |
 | --- | --- |
@@ -8352,13 +8352,13 @@ Ogg Vorbisの`String`。`FS.read`や`Dir`から、あるいはプログラムが
 | `sound.data() -> String` | 作った元のバイト列。渡されたWAV・MP3・Oggそのもの、サンプルから作ったものはその16ビットWAV。`Audio.Sound.new(s.data())`で同じ音がもう1つ作れ、`FS.write("note.wav", s.data())`でプログラムが作った音を保存できる |
 
 各`Sound`は1ボイスで、デコード済みサンプルは最後の参照とともに解放され、
-そのとき音も止まる: 鳴らしたい間はハンドルを持ち続ける。3形式のどれでもない
-バイト列はどのbackendでも`ValueError: not a valid WAV, MP3 or Ogg audio stream`を
-投げる。検査を通ったのにデコードできないストリームは無音のまま。数でない
-サンプルを含む配列は`TypeError`、1以上2^31未満でない`rate`は`ValueError`。
+そのとき音も止まります。鳴らしたい間はハンドルを持ち続けてください。3形式のどれでもない
+バイト列は、どのbackendでも`ValueError: not a valid WAV, MP3 or Ogg audio stream`を
+投げます。検査を通ったのにデコードできないストリームは無音のままです。数でない
+サンプルを含む配列は`TypeError`、1以上2^31未満でない`rate`は`ValueError`になります。
 ブラウザではバイト列のデコードをWebAudioが裏で行うので、`Sound`を作った直後の
-`play()`はデコードが終わった時点で、わずかに遅れて鳴り始める。ネイティブでは
-`Sound`を作った時点でデコードが済んでいる。
+`play()`は、デコードが終わった時点で、わずかに遅れて鳴り始めます。ネイティブでは
+`Sound`を作った時点でデコードが済んでいます。
 
 ```culebra
 let WAV = Encoding.hex.decode("524946462800000057415645666d7420100000000100010040" +
@@ -8375,9 +8375,9 @@ beep.play()
 ### Music
 
 `Audio.Music.new(data, loop = true)`はMP3 / Ogg Vorbisのファイルをバイト列から
-ストリーム再生する。複数を同時に鳴らせ（ループの上に短いジングルなど）、
+ストリーム再生します。複数を同時に鳴らせます（ループの上に短いジングルなど）。
 runtimeが専用のスレッドから供給し続けるので、長引いたフレームの間も、
-ロード画面の間も、フレームループの無いプログラムでも音楽は止まらない。
+ロード画面の間も、フレームループの無いプログラムでも音楽は止まりません。
 
 | メソッド | 効果 |
 | --- | --- |
@@ -8388,11 +8388,11 @@ runtimeが専用のスレッドから供給し続けるので、長引いたフ�
 | `music.playing() -> Bool` | いま鳴っているか |
 | `music.volume(v)` / `music.pitch(p)` / `music.pan(p)` | 上記の単位 |
 
-`Sound`と同じく、`Music`も最後の参照が消えると止まる。MP3でもOggでもない
-バイト列はどのbackendでも`ValueError: not a valid MP3 or Ogg audio stream`を
-投げ、この検査を通ったのにデコードに失敗したストリームは無音のまま。ブラウザでは
+`Sound`と同じく、`Music`も最後の参照が消えると止まります。MP3でもOggでもない
+バイト列は、どのbackendでも`ValueError: not a valid MP3 or Ogg audio stream`を
+投げ、この検査を通ったのにデコードに失敗したストリームは無音のままです。ブラウザでは
 ファイルのデコードはWebAudioが行い、Ogg対応はブラウザ依存（Safariは歴史的に
-MP3のみ）である点に注意。ネイティブは両フォーマットとも常に再生できる。
+MP3のみ）である点に注意してください。ネイティブは両フォーマットとも常に再生できます。
 
 ```culebra
 # doctest: skip
@@ -8404,14 +8404,14 @@ bgm.play()
 ### PCM
 
 `tone`・`Sound`・`Music`はどれも、音符・サンプル・ファイルとしてすでに形のある
-音を鳴らす。`Audio.PCM`は4つ目の種類で、PCM（パルス符号変調）— 波の高さを1秒に
-`rate`回測って並べた数の列としての音 — をスクリプトがブロック単位で自分で作って
-鳴らす。エミュレータのAPUのミキサ、元のサンプルレートから変換したチップチューン
-など、プログラム自身が組み立てる信号に使う。
-`Audio.PCM.new(rate, channels, buffer)`は`rate` Hz、1または2チャンネル、
-`buffer`フレームずつ供給するストリームを開く（1024が目安、約512未満は非対応）。
+音を鳴らします。`Audio.PCM`は4つ目の種類で、PCM（パルス符号変調。波の高さを1秒に
+`rate`回測って並べた数の列としての音）を、スクリプトがブロック単位で自分で作って
+鳴らします。エミュレータのAPUのミキサ、元のサンプルレートから変換したチップチューン
+など、プログラム自身が組み立てる信号に使います。
+`Audio.PCM.new(rate, channels, buffer)`は、`rate` Hz、1または2チャンネルで、
+`buffer`フレームずつ供給するストリームを開きます（1024が目安、約512未満は非対応）。
 2^31 − 1を超える`rate`・`buffer`と、確保できないほど大きい`buffer`は`ValueError`
-（`Audio.PCM: buffer is too large`）。
+（`Audio.PCM: buffer is too large`）になります。
 
 | メソッド | 効果 |
 | --- | --- |
@@ -8443,17 +8443,17 @@ Canvas.run(160, 160, fn () {
 ```
 
 60fpsでは、44.1kHzのストリームは描画1フレームあたり735フレーム分のサンプルを
-必要とする。サンプルごとに呼ぶのでなく、ブロック全体をまとめて作って渡すことが、
-スクリプトの1フレームの予算に収めるための要点になる。`PCM`はブラウザでは
-鳴らず、音声デバイスの無いマシンと同じように答える。
+必要とします。サンプルごとに呼ぶのでなく、ブロック全体をまとめて作って渡すことが、
+スクリプトの1フレームの予算に収めるための要点になります。`PCM`はブラウザでは
+鳴らず、音声デバイスの無いマシンと同じように答えます。
 
 ### 音を組み立てる部品
 
 自分で音を作るプログラム（`Audio.Kauai`の楽器や、`PCM`のブロックを埋める
-ループ）は、音を1サンプルずつ計算し、そのループに時間のほとんどを使う。ここに
-挙げる関数は、そうした音を組み立てる部品である。どれもサンプル（1秒に`rate`個
-並んだ数）の配列全体をネイティブで処理し、`Float`の配列を返す。返した配列は
-`Audio.Sound.new(samples, rate)`で鳴らせる。
+ループ）は、音を1サンプルずつ計算し、そのループに時間のほとんどを使います。ここに
+挙げる関数は、そうした音を組み立てる部品です。どれもサンプル（1秒に`rate`個
+並んだ数）の配列全体をネイティブで処理し、`Float`の配列を返します。返した配列は
+`Audio.Sound.new(samples, rate)`で鳴らせます。
 
 | 関数 | 効果 |
 | --- | --- |
@@ -8465,29 +8465,29 @@ Canvas.run(160, 160, fn () {
 | `Audio.mix(parts: Array, rate = 44100) -> Array` | `parts`を足し合わせる。それぞれはサンプルの配列か`{samples, at, gain}`で、`at`秒から（省略すると`0`）、`gain`倍（`1`）で足す。答えは、一番遅く終わるものの終わりまで |
 
 3つの数を持つオブジェクトでないモードや、`Long`でも`Float`でもないサンプルは
-`TypeError`。0より大きく`rate`の半分より小さくない`freq`、0より大きくない
-`width`、0より大きくない`rate`は`ValueError`。共鳴は打たれた後も鳴り続けるので、
-最後のサンプルの先まで消えていく音を聞くには、`samples`の終わりに無音を足す。
+`TypeError`になります。`freq`が0より大きく`rate`の半分より小さい範囲にない場合、
+`width`が0以下の場合、`rate`が0以下の場合は`ValueError`になります。共鳴は打たれた後も鳴り続けるので、
+最後のサンプルの先まで消えていく音を聞くには、`samples`の終わりに無音を足してください。
 
 `pluck`の時刻は最も近いサンプルに置かれ、ちょうど中間なら`Math.round`と同じく偶数の
-サンプルになる。そのため、自分でサンプルを数えるスクリプトとも一致する。終わりを越える
-ストロークは、終わりで切られる。数を持つオブジェクトでないチューニングやストロークは
-`TypeError`。チューニングが無い、チューニングの順が逆、`at`や`seconds`が0未満、
-0より大きく`rate`の半分より小さくない`freq`、0より大きくない`ring`は`ValueError`。
+サンプルになります。そのため、自分でサンプルを数えるスクリプトとも一致します。終わりを越える
+ストロークは、終わりで切られます。数を持つオブジェクトでないチューニングやストロークは
+`TypeError`です。チューニングが無い、チューニングの順が逆、`at`や`seconds`が0未満、
+`freq`が0より大きく`rate`の半分より小さい範囲にない、`ring`が0以下、のいずれも`ValueError`です。
 
 `partials`は、それぞれの制御を点から次の点へ直線で動かし、最初の点より前は最初の値、最後の点より後は
-最後の値を保つ。同じ時刻の2点は段差になる。そのため楽器は、制御をサンプルごとでなく、1ミリ秒ほどの間隔と、
-制御が折れる角と、跳ぶところの前後で計算すればよい。`(at, value)`の数の列でないエンベロープ、`(at, amps)`の列で
-ないspectrum、オブジェクトでない`noise`は`TypeError`。次はどれも`ValueError`になる。freqやspectrumが無い。
-freqが0より大きくない。時刻が0未満か、順が逆。雑音の`low`と`high`が、0より大きく、この順に並び、`rate`の
-半分より小さい、になっていない。seedが0以上2^31未満の整数でない。
+最後の値を保ちます。同じ時刻の2点は段差になります。そのため楽器は、制御をサンプルごとでなく、1ミリ秒ほどの間隔と、
+制御が折れる角と、跳ぶところの前後で計算すれば足ります。`(at, value)`の数の列でないエンベロープ、`(at, amps)`の列で
+ないspectrum、オブジェクトでない`noise`は`TypeError`になります。次はどれも`ValueError`になります。freqやspectrumが無い。
+freqが0以下。時刻が0未満か、順が逆。雑音の`low`と`high`が、0より大きく、この順に並び、`rate`の
+半分より小さい、という条件を満たさない。seedが0以上2^31未満の整数でない。
 
-`filter`と`envelope`も、エンベロープを`partials`と同じく点から次の点への直線で読む。減衰のような曲線は、
-点を細かく並べて表す（耳には10ミリ秒ごとで十分）。次はどれも`ValueError`になる。`kind`が3つのどれでもない。
-cutoffが0より大きく`rate`の半分より小さい、になっていない。`q`が0より大きくない。cutoffが無い。時刻が0未満か、
-順が逆。数（cutoffの場合）でも`(at, value)`の列でもないcutoffやgainは`TypeError`。`mix`の時刻は`pluck`と
-同じく最も近いサンプルに置かれる。サンプルの配列でも`samples`を持つオブジェクトでもない要素は`TypeError`、
-0未満の`at`は`ValueError`。
+`filter`と`envelope`も、エンベロープを`partials`と同じく点から次の点への直線で読みます。減衰のような曲線は、
+点を細かく並べて表します（耳には10ミリ秒ごとで十分です）。次はどれも`ValueError`になります。`kind`が3つのどれでもない。
+cutoffが0より大きく`rate`の半分より小さい、という条件を満たさない。`q`が0以下。cutoffが無い。時刻が0未満か、
+順が逆。数（cutoffの場合）でも`(at, value)`の列でもないcutoffやgainは`TypeError`になります。`mix`の時刻は`pluck`と
+同じく最も近いサンプルに置かれます。サンプルの配列でも`samples`を持つオブジェクトでもない要素は`TypeError`、
+0未満の`at`は`ValueError`になります。
 
 ```culebra
 let impulse = [1.0, ...repeat(44099, 0.0)]
@@ -8526,8 +8526,8 @@ println(both.size())                                                     # => 48
 
 ### 音を測る
 
-ここに挙げる関数は、音を作るのではなく調べる。録音のサンプル、そこに含まれる
-周波数、音の高さと倍音、別の速さで取り直したサンプル、音の大きさを返す。
+ここに挙げる関数は、音を作るのではなく調べます。録音のサンプル、そこに含まれる
+周波数、音の高さと倍音、別の速さで取り直したサンプル、音の大きさを返します。
 
 | 関数 | 答え |
 | --- | --- |
@@ -8541,12 +8541,12 @@ println(both.size())                                                     # => 48
 | `Audio.loudness(samples: Array, rate = 44100) -> Float?` | `samples`の最も大きいところの音量（LUFS）。K特性を掛けた400ミリ秒のうち最も大きいもの（ITU-R BS.1770のmomentary loudness）で、Kauaiが楽器の音量をそろえるのと同じ物差し。無音なら`nil` |
 | `Audio.integrated_loudness(samples: Array, rate = 44100) -> Float?` | `samples`全体の音量（LUFS）。K特性を掛けた400ミリ秒の区間を100ミリ秒ずつずらして取り、-70 LUFSに満たない区間と、残りの平均より10 LU以上小さい区間を除いて、残りの平均を取る（ITU-R BS.1770のintegrated loudness、EBU R128の番組の音量と同じ）。曲の一部の静かな端や途切れは数に入らない。400ミリ秒より短い音は1つの区間として測る。無音なら`nil` |
 
-録音でないバイト列、2から2^24までの2のべき乗でない`size`、1より小さい`hop`、
-1以上2^31未満でない速さ、20 Hz未満か`high`以上の`low`、速さの半分以上の`high`、
-`f0`の中の`nil`でも20 Hz以上で速さの半分未満でもない高さ、1から2^16まででない`count`、
-`istft`に渡した区間で値が`size / 2 + 1`個でないもの、`re`と`im`で区間の数が違うときは`ValueError`。
-`f0`に数と`nil`以外が入っていれば`TypeError`、数の配列でない区間も`TypeError`。ブラウザでは`decode`は`ValueError`に
-なる（ページは音を鳴らすためにしか復号しない）。残りはネイティブと同じく動く。
+次の場合は`ValueError`になります。録音でないバイト列。2から2^24までの2のべき乗でない`size`。1より小さい`hop`。
+1以上2^31未満でない速さ。20 Hz未満か`high`以上の`low`。速さの半分以上の`high`。
+`f0`の中の、`nil`でも20 Hz以上で速さの半分未満でもない高さ。1から2^16まででない`count`。
+`istft`に渡した区間で、値が`size / 2 + 1`個でないもの。`re`と`im`で区間の数が違うとき。
+`f0`に数と`nil`以外が入っていれば`TypeError`、数の配列でない区間も`TypeError`です。ブラウザでは`decode`は`ValueError`に
+なります（ページは音を鳴らすためにしか復号しないためです）。残りはネイティブと同じく動きます。
 
 ```culebra
 # A second of A at 48000, as a recording would hand it over.
@@ -8586,16 +8586,16 @@ println(Math.round(Audio.integrated_loudness(both)))                     # => -1
 
 ### グラフ
 
-上の関数は、鳴らす前に音を全部計算する。`Audio.Graph`は部品をつないでおき、
-鳴っている間にruntimeが音声スレッドでブロックごとに計算する。そのため、音は
+上の関数は、鳴らす前に音を全部計算します。`Audio.Graph`は部品をつないでおき、
+鳴っている間にruntimeが音声スレッドでブロックごとに計算します。そのため、音は
 どれだけ長くてもすぐに鳴り始め、鳴っている間に値を変えると、デバイスのバッファ
-の分だけ遅れて聞こえる。部品は上の関数と同じもので、サンプルまで同じ音になる。
-`render(seconds)`は`play()`が鳴らす音を返す。
+の分だけ遅れて聞こえます。部品は上の関数と同じもので、サンプルまで同じ音になります。
+`render(seconds)`は`play()`が鳴らす音を返します。
 
-グラフの下のメソッドは、それぞれ部品を1つ足し、それを`AudioGraphPart`として返す。
-部品は、渡された部品を足し合わせたものを受け取る。グラフが鳴らす部品は
-`output(part)`で決める。グラフは、グラフ自身とその部品・値への最後の参照が
-なくなったときに止まり、解放される。
+グラフの下のメソッドは、それぞれ部品を1つ足し、それを`AudioGraphPart`として返します。
+部品は、渡された部品を足し合わせたものを受け取ります。グラフが鳴らす部品は
+`output(part)`で決めます。グラフは、グラフ自身とその部品・値への最後の参照が
+なくなったときに止まり、解放されます。
 
 | 関数・メソッド | 効果 |
 | --- | --- |
@@ -8613,35 +8613,35 @@ println(Math.round(Audio.integrated_loudness(both)))                     # => -1
 | `g.stop()` | 止める |
 | `g.now() -> Float` | 今行った変更が、グラフの時計のどこに入るか。鳴っていなければ`0.0` |
 
-部品の中で動くものは値と呼び、波の`freq`、フィルタの`cutoff`、gainの`gain`、
-弦の`freq`と`ring`が、それぞれ部品のフィールドになっている。値は最初の変更まで
-部品を作ったときの値のままで、変更はグラフの時計（始まりからの秒）の上に予約する。
+部品の中で動かせるものを値と呼びます。波の`freq`、フィルタの`cutoff`、gainの`gain`、
+弦の`freq`と`ring`が、それぞれ部品のフィールドになっています。値は最初の変更まで
+部品を作ったときの値のままで、変更はグラフの時計（始まりからの秒）の上に予約します。
 
 | メソッド | 効果 |
 | --- | --- |
 | `value.set(at, v)` | `at`から値を`v`にする |
 | `value.ramp(at, v)` | 1つ前の変更（無ければ始まり）から直線で動かし、`at`で`v`にする |
 
-どちらも値を返すので、変更はつなげて書ける。予約する順番は自由で、それぞれの
-時刻に効く。グラフは予約をすべて覚えていて、`render`するときも鳴らすときも
-始まりから計算する。鳴っている間の予約は鳴っているグラフにも届き、過ぎた時刻の
-予約はすぐに効く。鳴っているグラフのつなぎ方は`play()`の時点のままで、鳴っている
+どちらも値を返すので、変更はつなげて書けます。予約する順番は自由で、それぞれの
+時刻に効きます。グラフは予約をすべて覚えていて、`render`するときも鳴らすときも
+始まりから計算します。鳴っている間の予約は鳴っているグラフにも届き、過ぎた時刻の
+予約はすぐに効きます。鳴っているグラフのつなぎ方は`play()`の時点のままで、鳴っている
 間に足した部品や`output`の変更は、その部品の値の予約も含めて、次の`play()`から
-聞こえる。予約は、その時刻と同じかそれより後の最初のサンプルから効く。
-`Audio.filter`や`Audio.envelope`のエンベロープの点と同じ扱いである。`Audio.pluck`は
+聞こえます。予約は、その時刻と同じかそれより後の最初のサンプルから効きます。
+これは`Audio.filter`や`Audio.envelope`のエンベロープの点と同じ扱いです。`Audio.pluck`は
 チューニングを最も近いサンプルに置くので、2つのサンプルの間の時刻で調律を変えた
-弦は、グラフでは1サンプル遅れて変わることがある。Web Audioの`setValueAtTime`と
+弦は、グラフでは1サンプル遅れて変わることがあります。Web Audioの`setValueAtTime`と
 `linearRampToValueAtTime`にあたるので、曲の音符は`Audio.Kauai`がしているように
-前もって予約できる。
+前もって予約できます。
 
-次はどれも`ValueError`になる。名前の挙がっていない種類。別のグラフの部品。
+次はどれも`ValueError`になります。名前の挙がっていない種類。別のグラフの部品。
 範囲外の値（波のfreqが0未満か`rate`の半分以上、cutoffが0以下か`rate`の半分以上、
 gainが有限の数でない、弦のfreqが20 Hz未満か`rate`の半分以上、ringが0以下）。
 0未満の時刻。0以下の`q`。`Audio.resonate`が受け付けないモード。グラフの部品で
-ない入力と、3つの数を持つオブジェクトでないモードは`TypeError`。グラフは`rate`が44100のときだけ鳴らせ、
-同時に鳴らせるのは64個まで（超えると`ValueError`）。デバイスが無いときは何も
-鳴らず、`now()`は`play()`からの時間を返す。ブラウザではグラフは`render`できるが、
-まだ鳴らせない。
+ない入力と、3つの数を持つオブジェクトでないモードは`TypeError`です。グラフは`rate`が44100のときだけ鳴らせ、
+同時に鳴らせるのは64個まで（超えると`ValueError`）です。デバイスが無いときは何も
+鳴らず、`now()`は`play()`からの時間を返します。ブラウザではグラフは`render`できますが、
+まだ鳴らせません。
 
 ```culebra
 # A saw through a low-pass that closes over its first 0.3 s, faded in and out.
@@ -8665,19 +8665,19 @@ println(iota(22050).all(|i| Math.abs(sound[i] - faded[i]) < 1e-9))  # => true
 
 ### Capture
 
-`Audio.Capture`はマイクで、`PCM`の鏡になる。ランタイムが直近1秒分を保持する
-リングに録音し、スクリプトがブロック単位で取り出す。出力デバイスもウィンドウも
-必要としない。`Audio.Capture.new(rate = 44100, channels = 1)`は既定の入力を
-`rate` Hz、1または2チャンネルで開く（`rate`は要求で、プラットフォームが
-リサンプルして満たす）。どちらも`PCM`と同じに扱い、1未満の`rate`は1、2^31 − 1を
-超える`rate`は`ValueError`（`Audio.Capture: rate is too large`）。作った直後は停止していて、
-`start()`から録音が始まる。スクリプトが間に合わず読まなかったフレームは、
-新しい側から捨てられる。
+`Audio.Capture`はマイクで、`PCM`と対になる入力側です。ランタイムが直近1秒分を保持する
+リングに録音し、スクリプトがブロック単位で取り出します。出力デバイスもウィンドウも
+必要としません。`Audio.Capture.new(rate = 44100, channels = 1)`は既定の入力を
+`rate` Hz、1または2チャンネルで開きます（`rate`は要求で、プラットフォームが
+リサンプルして満たします）。`rate`と`channels`の扱いは`PCM`と同じで、1未満の`rate`は1になり、2^31 − 1を
+超える`rate`は`ValueError`（`Audio.Capture: rate is too large`）になります。作った直後は停止していて、
+`start()`から録音が始まります。スクリプトが間に合わず読まなかったフレームは、
+新しい側から捨てられます。
 
 マイクの無いマシンや、プログラムに使わせないマシン（macOSとWindowsでは
-OSがユーザーに許可を求める）もある。どちらもエラーではない: `ready()`は`false`で、
-何も届かず、最初の試行が警告を1度だけ表示する。`CULEBRA_AUDIO`を`off`か`0`にした
-実行と、まだキャプチャを持たないブラウザでも同じ。
+OSがユーザーに許可を求めます）もあります。どちらもエラーではありません。`ready()`は`false`で、
+何も届かず、最初の試行が警告を1度だけ表示します。`CULEBRA_AUDIO`を`off`か`0`にした
+実行と、まだキャプチャを持たないブラウザでも同じです。
 
 | 関数 / メソッド | 効果 |
 | --- | --- |
@@ -8705,13 +8705,13 @@ loop {
 
 > **Status: Draft.** リリースまでに、言語とAPIが変わることがある。
 
-`Audio.Kauai`は、Kauaiで書いた曲を演奏する。Kauaiはバンドの演奏をそのまま
+`Audio.Kauai`は、Kauaiで書いた曲を演奏します。Kauaiはバンドの演奏をそのまま
 書き表すための言語で、コードとメロディに加えて、バンドがそれにどう伴奏を
-付けるかをgrooveとして書く（[Kauai言語仕様](kauai/language.ja.md)）。曲は
-まず全体を読み込んで検査し、それからruntimeに渡す。runtimeは、音声ストリーム
+付けるかをgrooveとして書きます（[Kauai言語仕様](kauai/language.ja.md)）。曲は
+まず全体を読み込んで検査し、それからruntimeに渡します。runtimeは、音声ストリーム
 自身のクロックに合わせて各音を`tone`のチャンネルで鳴らし、外部の楽器の音は、
-プログラムが用意した音声をサンプルとしてそこに重ねる。
-コマンドラインからは`culebra play song.kau`で曲のファイルを再生できる
+プログラムが用意した音声をサンプルとして重ねます。
+コマンドラインからは`culebra play song.kau`で曲のファイルを再生できます
 ([ツール §9](tooling.ja.md#9-曲の再生-culebra-play))。
 
 | 関数 | 動作 |
@@ -8719,11 +8719,11 @@ loop {
 | `Audio.Kauai.new(text: String, voices = nil, drums = nil)` | 文字列から曲を作る。ほかのファイルは取り込めない |
 | `Audio.Kauai.load(path: String, voices = nil, drums = nil, dir = nil)` | 曲のファイルと、そこから`use`しているファイルを読み込む。読み込み元はディスクか、`dir`（任意の`Dir`、または`exists(name)`と`read(name)`を持つオブジェクト） |
 
-曲に誤りがあると`KauaiError`になり、メッセージにはファイル名と行番号が付く。
+曲に誤りがあると`KauaiError`になり、メッセージにはファイル名と行番号が付きます。
 曲のオブジェクトには`play()`、`stop()`、`volume(v)`、`playing()`、
 `reached(mark)`、`prepare()`、`length()`、`about()`、`events()`があり、音声デバイスで
-実際に鳴っているかどうかに関係なく、自分で経過時間を管理する。詳しくは仕様の
-[10章](kauai/language.ja.md#10-culebra-から再生する)を参照。
+実際に鳴っているかどうかに関係なく、自分で経過時間を管理します。詳しくは仕様の
+[10章](kauai/language.ja.md#10-culebra-から再生する)を参照してください。
 
 ```culebra
 let song = Audio.Kauai.new(`
@@ -8907,12 +8907,12 @@ srv.listen(8080)
 
 `Dir.embedded(name)`は**バックエンドごとに**（コード変更なしで）解決されます:
 
-- **ソース実行**（VM / JIT）: `name`のディスク上ディレクトリをライブに
-  読む（`Dir.embedded`を呼んだファイルからの相対で解決。エントリスクリプトでも、
-  それがimportするモジュールでも、`import`がパスを解決するのと同じ）。ファイルを
-  編集して実行し直せば即反映＝開発ループ。
+- **ソース実行**（VM / JIT）: `name`のディスク上のディレクトリをその都度
+  読みます（`Dir.embedded`を呼んだファイルからの相対パスで解決します。エントリスクリプトでも、
+  それがimportするモジュールでも、`import`がパスを解決するのと同じです）。ファイルを
+  編集して実行し直せばすぐ反映されるので、開発ループが回ります。
 - **`culebra build`**（AOT）: ビルド時にディレクトリを走査してバイト列をバイナリ
-  に焼き込み、外部ファイル無しで読む。焼き込んだ内容はビルドが表示する
+  に焼き込み、外部ファイル無しで読みます。焼き込んだ内容はビルドが表示します
   （`embedded N file(s) (… bytes) from '…'`）。
 
 ```culebra
@@ -8923,7 +8923,7 @@ let music = art.exists("music.ogg") ? Audio.Music.new(art.read("music.ogg")) : n
 music?.play()
 ```
 
-同じ`Dir`でディレクトリ全体をHTTP配信できる:
+同じ`Dir`でディレクトリ全体をHTTP配信できます。
 
 ```culebra
 # doctest: skip — ポートを listen して割り込みまで待つ
@@ -8935,20 +8935,20 @@ srv.get("/api/ping", fn (req) {
 srv.listen(8080)
 ```
 
-モジュールも同じやり方で自分の隣のファイルを読める。どのプログラムがimportしても、
-そのプログラムがどこにあっても変わらない。フォルダにまとめた楽器なら、演奏する
+モジュールも同じやり方で、自分の隣のファイルを読めます。どのプログラムがimportしても、
+そのプログラムがどこにあっても変わりません。フォルダにまとめた楽器なら、演奏する
 データの隣にある`main.cul`が`Dir.embedded("data")`を読み、それを使うプログラムを
-ビルドすればそのフォルダも焼き込まれる。
+ビルドすれば、そのフォルダも焼き込まれます。
 
-`name`はAOTビルドが探して焼き込めるよう**文字列リテラル**であること（計算した
-名前はソース実行では動くが焼き込まれない）。`srv.static`での配信のされ方は
-[前述](#dirを配信する)のとおり。`Dir.embedded`は`Http`非依存＝アセットを読む
-だけのプログラムにサーバは要らない。
+`name`は、AOTビルドが探して焼き込めるよう**文字列リテラル**にしてください（計算した
+名前はソース実行では動きますが、焼き込まれません）。`srv.static`での配信のされ方は
+[前述](#dirを配信する)のとおりです。`Dir.embedded`自体は`Http`に依存しないので、
+アセットを読むだけのプログラムにサーバは要りません。
 
-`culebra build`は焼き込むアセットをculebraのヘッダに対してコンパイルするため、
-ソースチェックアウトが必要。既定はそのバイナリをビルドしたときのパスで、
-`$CULEBRA_HOME`があればそちらが優先される。どちらも無ければバイナリを作らず
-エラーで停止する。
+`culebra build`は、焼き込むアセットをculebraのヘッダに対してコンパイルするため、
+ソースチェックアウトが必要です。既定ではそのバイナリをビルドしたときのパスを使い、
+`$CULEBRA_HOME`があればそちらが優先されます。どちらも無ければ、バイナリを作らず
+エラーで停止します。
 
 ### ZIPアーカイブ
 
@@ -9010,7 +9010,7 @@ Windowsでは開いているファイルを削除も置き換えもできない�
 大規模言語モデルのクライアントです。Culebraで書かれていて、[`Http`](#15-http)と
 [`JSON`](#9-json)の上に作られています。尋ねる相手は*提供元*で、今あるのは
 `LLM.anthropic()`（Messages API、AnthropicのClaude API）と`LLM.openai_compatible()`
-（Chat Completions。`LLM.openai`、`LLM.openrouter`、`LLM.ollama`はそのサービス向けの設定）の2つで、提供元はプログラムの中で書くこともできます（`LLM.turn`を参照）。使い方は4つあります。1回の質問、履歴を持ち
+（Chat Completions。`LLM.openai`、`LLM.openrouter`、`LLM.ollama`はそのサービス向けの設定）の2つです。提供元はプログラムの中で書くこともできます（`LLM.turn`を参照）。使い方は4つあります。1回の質問、履歴を持ち
 モデルが求めるツールを実行する会話、提供元への1ステップ（自前のループの部品）、
 そしてリクエスト本文をそのまま送る素通しです。
 
@@ -9295,13 +9295,13 @@ IO.println(reply.text)
 history.push(reply.message)
 ```
 
-`LLM.count_tokens`は`/v1/messages/count_tokens`に尋ねます。`max_tokens`を省くと16000です。`stop`は`stop_sequences`として、`temperature`はそのまま送られ、
-`extra`は最後にリクエスト本文へ足されるので、`thinking`のように`LLM.turn`に引数のないものに
-届きます。`on_text`を渡すと回答はストリーミングで受け取られ、テキストは断片ごとに渡されます。
+`LLM.count_tokens`は`/v1/messages/count_tokens`に尋ねます。`max_tokens`を省くと16000です。`stop`は`stop_sequences`として、`temperature`はそのまま送られます。
+`extra`は最後にリクエスト本文へ足されるので、`thinking`のように`LLM.turn`に引数のないものも
+届けられます。`on_text`を渡すと回答はストリーミングで受け取られ、テキストは断片ごとに渡されます。
 応答は渡さないときと同じです。`tool`メッセージは`tool_result`ブロックを持つ1つのuser
 メッセージとして送られ、続けて並んだものは1つにまとまります。応答の`stop`は、`end_turn`と
 `stop_sequence`が`"end"`、`tool_use`が`"tool_calls"`、`max_tokens`が`"length"`、`refusal`が
-`"refusal"`、`pause_turn`が`"pause"`で、知らない値は`nil`です。`raw`はAPIの応答そのものです。
+`"refusal"`、`pause_turn`が`"pause"`になり、知らない値は`nil`です。`raw`はAPIの応答そのものです。
 
 ### `LLM.openai_compatible(base_url:, api_key=nil, name="openai_compatible", max_tokens_field="max_tokens", timeout=120) -> LLMChatCompletions`
 
