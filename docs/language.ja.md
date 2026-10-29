@@ -1221,6 +1221,15 @@ fallbackを返し、`p['m']`は`KeyError`を投げます。メソッド名への
     obj.keys()           # 挿入順（interleave）のキー配列
     obj.remove(key)      # `key`の項目を削除（任意のハッシュ可能キー）。なければno-op
 
+`size()`、`empty()`、`presence()`はコンテナのためのものです。イテレータ（generatorと
+`range(n)`を含む）とRangeもObjectですが、プロパティは要素ではなくプロトコルのスロット
+なので、この3つの名前はそれらに対してメソッドの欠落になります
+（`TypeError: ... 'size' is not a method of Object`）。`it.count()`は列をたどって消費し、
+`it.collect().size()`は要素を残します。ここでの「イテレータ」はプロトコル自身の形、
+つまり関数である自前または継承の`next`（§18.5）なので、`next()`メソッドを持つクラスも
+そうです。そのクラスが自前の`size`を定義していれば、それが答えます。自由関数の`size(o)`は、
+UFCSでこれらの受け手に対して答えます。
+
 `mut`指定なしで既存プロパティに代入すると
 `immutable property 'key' at L:C`になります。実行時に`obj.key = v`
 （や`obj[k] = v`・`get_or_put`・`to_object`・`group_by`）で作ったプロパティは
@@ -5792,7 +5801,7 @@ inspect(nums().filter(|x| x % 2 == 0).map(|x| x * 10).collect())  # => [20, 40]
 | `it.find(p)` | Any \| `nil` | 最初に`p(x)`が真の`x`、無ければ`nil` |
 | `it.any(p)` | `Bool` | 一つでも`p(x)`が真なら`true` |
 | `it.all(p)` | `Bool` | すべて`p(x)`が真なら`true`（空は`true`） |
-| `it.count()` | `Long` | 要素数 |
+| `it.count()` | `Long` | 要素数（イテレータに`size()`はない。§10を参照） |
 | `it.first()` | Any \| `nil` | 先頭要素、空なら`nil`。1個しか引かない |
 | `it.last()` | Any \| `nil` | 末尾要素、空なら`nil` |
 | `it.nth(n)` | Any \| `nil` | 0起点で`n`番目の要素、無ければ`nil`。`n + 1`個しか引かない。負の`n`は`ValueError` |

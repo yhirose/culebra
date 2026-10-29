@@ -669,6 +669,7 @@ produces something else, in Culebra.
 | `if [] { }`, `if '' { }` | `TypeError`. Only `Bool`, `Long` and `Float` are testable |
 | `0 == false` | `false` — there is no cross-type coercion |
 | `.length` / `.count` | `.size()`. A missing property is `nil`, so `.length` reads as `nil` instead of raising |
+| `it.size()` / `it.empty()` on an iterator or a Range | `TypeError`: a lazy sequence has no length until it is walked. `it.count()` walks and consumes it; `it.collect().size()` keeps the elements |
 | `.append(x)` | `.push(x)` |
 | `xs.sort(\|a, b\| ...)` — a comparator | `xs.sorted_by(key)` takes a *key*, not a comparator; `reverse: true` descends. A Tuple key orders by several things: `xs.sorted_by(\|x\| (x.a, x.b))`. There is no `<=>` |
 | `xs.take(n)` / `xs[:n]` | `xs.slice(0, n)`. `take` is an Iterator method — `xs.iter().take(n).collect()` |

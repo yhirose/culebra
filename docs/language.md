@@ -1289,6 +1289,16 @@ the fallback and `p['m']` raises `KeyError`. Assigning to a method name
     obj.keys()           # Array of keys in insertion order (interleaved)
     obj.remove(key)      # remove the entry for `key` (any hashable key); no-op if absent
 
+`size()`, `empty()` and `presence()` are for containers. An iterator (a
+generator and `range(n)` included) and a Range are Objects too, but their
+properties are protocol slots, not elements, so these three names are a method
+miss on them (`TypeError: ... 'size' is not a method of Object`); `it.count()`
+walks and consumes the sequence, `it.collect().size()` keeps the elements.
+"Iterator" here is the protocol's own shape, an own or inherited `next` that is
+a function (§18.5), so a class with a `next()` method is one as well unless it
+defines its own `size`; a free function `size(o)` answers for these receivers
+through UFCS.
+
 Assigning to an *existing* property that was declared without `mut`
 raises `immutable property 'key' at L:C`. A property created at
 runtime by `obj.key = v` (or `obj[k] = v`, `get_or_put`, `to_object`,
@@ -6041,7 +6051,7 @@ inspect(nums().filter(|x| x % 2 == 0).map(|x| x * 10).collect())  # => [20, 40]
 | `it.find(p)` | Any \| `nil` | first `x` where `p(x)` is truthy, else `nil` |
 | `it.any(p)` | `Bool` | `true` if any `p(x)` is truthy |
 | `it.all(p)` | `Bool` | `true` if every `p(x)` is truthy (empty → `true`) |
-| `it.count()` | `Long` | number of elements consumed |
+| `it.count()` | `Long` | number of elements consumed (an iterator has no `size()`; see §10) |
 | `it.first()` | Any \| `nil` | first element, else `nil`; pulls only one |
 | `it.last()` | Any \| `nil` | last element, else `nil` |
 | `it.nth(n)` | Any \| `nil` | element at 0-based `n`, else `nil`; pulls only `n + 1`. Negative `n` raises `ValueError` |

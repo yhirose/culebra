@@ -660,6 +660,7 @@ inspect(show('hi'))  # => 'hi'
 | `if [] { }` / `if '' { }` | `TypeError`。判定できるのは`Bool` / `Long` / `Float`のみ |
 | `0 == false` | `false` — 型をまたぐ暗黙変換は無い |
 | `.length` / `.count` | `.size()`。存在しないプロパティは`nil`なので`.length`はraiseせず`nil`になる |
+| イテレータやRangeへの`it.size()`／`it.empty()` | `TypeError`。遅延評価の列は、たどるまで長さを持たない。`it.count()`はたどって数える（消費する）。`it.collect().size()`は要素を残す |
 | `.append(x)` | `.push(x)` |
 | `xs.sort(\|a, b\| ...)` — 比較関数を渡す | `xs.sorted_by(key)`が取るのは比較関数ではなく**キー関数**。降順は`reverse: true`。Tupleのキーなら複数の項目で並ぶ: `xs.sorted_by(\|x\| (x.a, x.b))`。`<=>`は無い |
 | `xs.take(n)` / `xs[:n]` | `xs.slice(0, n)`。`take`はIteratorのメソッド — `xs.iter().take(n).collect()` |
