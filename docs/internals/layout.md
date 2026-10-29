@@ -44,7 +44,7 @@ them (the vendored libraries add their own directories beside it).
 | `aot/` | what `culebra build` needs past the lowering | `base`, `rt`, `frontend` |
 | `cli/` | the subcommands: test, fmt, lint, docs, init, repl, dap, lsp, toolchain, embed-flags | everything |
 
-The stack is the point, and the gate holds it. Three inversions exist and
+The stack is the point, and a check holds it. Three inversions exist and
 are recorded with their counts, so each can only shrink:
 
 - **`rt` → `frontend` (2)**: `rt.h` includes the parser for one call to
@@ -59,8 +59,8 @@ are recorded with their counts, so each can only shrink:
   module.
 
 This is what the directories buy: "which layer is this file in" is
-answered by the path, so the gate can hold it, and a new inversion is an
-`#include` the gate rejects rather than one that compiles and passes every
+answered by the path, so a check can hold it, and a new inversion is an
+`#include` the check rejects rather than one that compiles and passes every
 test.
 
 ## 2. `jit` means LLVM
@@ -74,7 +74,7 @@ what lets the WASM playground exist at all.
 
 One header outside `jit/` names `llvm::`: `stdlib/bindings.h`, in the one
 member described above. It is a wart rather than a design — the rest of
-that header is engine-neutral — and the gate holds an explicit list of
+that header is engine-neutral — and a check holds an explicit list of
 the files allowed to name LLVM, which may shrink and never grow. Growing
 it means some new part of the tree stopped building without LLVM, which
 is worth deciding on purpose.
@@ -86,8 +86,8 @@ the edit at the next `just gen-*`. The suffix marks which files those
 are, and it has to be true in both directions: a generated file without it
 hides that edits are lost, and a hand-maintained file with it claims a
 generator that does not exist. `frontend/grammar_blob.gen.h` is
-generated; `stdlib/canon_sigs_table.h` is maintained by hand. The gate
-checks that every committed
+generated; `stdlib/canon_sigs_table.h` is maintained by hand. A check
+verifies that every committed
 `.gen.h` is named somewhere under `justfile`, `misc` or `tools`, and that every path a
 generator writes under `include/` ends in `.gen.h`.
 
@@ -102,7 +102,7 @@ fixed order that does not survive reordering.
 
 `.inc.h` puts that constraint in the name, where a comment at the top of
 rt.h would be met only by a reader already there — the job Ruby's `.inc` does for the files its interpreter textually
-includes — and the gate enforces the half that matters: only `rt/rt.h`
+includes — and a check enforces the half that matters: only `rt/rt.h`
 may include one.
 
 ## 5. One file per standard-library namespace

@@ -5477,7 +5477,7 @@ receiver is never mutated.
 | `s.sentences() -> Iterator<StringView>`         | Lazy walk yielding **UAX #29 sentence boundary** segments — one sentence per step, trailing whitespace stays attached to the sentence before it. |
 | `s.bytes() -> Iterator<Long>`                   | Lazy walk yielding the receiver's **raw UTF-8 bytes** as `Long` (`0`–`255`), one byte per step — no decoding, unlike `code_points`. For when the encoding itself is wanted (hashing, tokenizer vocabularies, wire formats). |
 | `String.from_code_point(cp: Long) -> String`    | The inverse of `code_points()`: one Unicode scalar value in, a one-character `String` out. Raises `ValueError` for `cp` above `U+10FFFF` or in the surrogate range `U+D800`–`U+DFFF` — the same boundary the `\u`/`\U` literal escapes (§2, Literals) reject at parse time. |
-| `String.from_code_points(cps: Array) -> String` | The plural inverse of `code_points()`: an `Array` of Unicode scalar values in, a `String` out. Each element passes through the same gate as `from_code_point`, so `String.from_code_points([cp]) == String.from_code_point(cp)`; a non-`Long` element is a `TypeError`, an out-of-range one a `ValueError`. |
+| `String.from_code_points(cps: Array) -> String` | The plural inverse of `code_points()`: an `Array` of Unicode scalar values in, a `String` out. Each element passes through the same check as `from_code_point`, so `String.from_code_points([cp]) == String.from_code_point(cp)`; a non-`Long` element is a `TypeError`, an out-of-range one a `ValueError`. |
 | `String.from_bytes(bytes: Array) -> String`     | The inverse of `bytes()`: an `Array` of raw byte values (`0`–`255`) in, a `String` out. **No UTF-8 validation**, and no error on malformed input: culebra `String`s tolerate invalid UTF-8 (same as `iter()`), so `String.from_bytes(s.bytes().collect()) == s` holds for every `String`, including ones with invalid sequences. A non-`Long` element is a `TypeError`, an out-of-range one (outside `0`–`255`) a `ValueError`. |
 | `String.pack(type: String \| Class, values: Array, endian: String = "little") -> String` | Each element of `values` as one fixed-width scalar of `type` — or one record of a `@packable` class — laid end to end: the bytes a binary file or protocol stores. See [Binary data](#binary-data-stringpack--stringunpack) below. |
 | `String.unpack(type: String \| Class, data: StringLike, at: Long = 0, count: Long? = nil, into: Array? = nil, endian: String = "little") -> Array` | The inverse of `pack`: elements of `type` read from byte `at` of `data` — `count` of them, as many as `into` holds, or else every remaining byte. |
@@ -5860,7 +5860,7 @@ inspect(prices.iter().map(|(k, v)| (v, k)).to_object())
 
 `for x in expr { ... }` (§12) requires `expr` to participate in the
 iterator protocol. The protocol uses three **well-known method names**
-on `Object` (and its subtype `Array`), with a `has_next` gate in front
+on `Object` (and its subtype `Array`), with a `has_next` check in front
 of each `next`:
 
 | Method | Shape | Called on | Returns |
@@ -5871,7 +5871,7 @@ of each `next`:
 
 A built-in iterator called past its end yields `nil` rather than
 raising, the same as a drained generator. Since `nil` is also a
-perfectly good element, gate on `has_next()` to tell the two apart.
+perfectly good element, check `has_next()` to tell the two apart.
 
 **Contract, enforced at property assignment**: binding `iter`,
 `has_next` or `next` to a function that takes arguments raises
@@ -7335,7 +7335,7 @@ return values, same side-effect ordering, same error `kind` / `message`
 / location. Internal representation is free to differ as long as the
 externally observable behavior matches; any deviation in observable
 behavior is a bug. A released binary is the independent second
-implementation the gates compare against.
+implementation the checks compare against.
 
 ### Identical observable behavior
 

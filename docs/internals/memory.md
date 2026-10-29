@@ -89,7 +89,7 @@ per-chunk unwind tables (the scopes' slot ranges and the in-flight
 temporaries at each pc) under the *borrow operand contract* — an
 operator or helper borrows its operands, so a throw leaves every
 register frame-owned and the tables are the single releaser.
-[`vm.md`](vm.md) §5.2 and §5.5 describe the format; the gates in §5 of
+[`vm.md`](vm.md) §5.2 and §5.5 describe the format; the checks in §5 of
 this document verify the placement on both lanes.
 
 **The LLVM lowering's own codegen.** Lowering one bytecode instruction
@@ -405,7 +405,7 @@ If every rule in §4.3 holds:
 
 The corollary: a codegen path that leaks or double-frees requires
 breaking one of these nine invariants, each of which is enforced by a
-C++ type, an assertion or a gate check — not a runtime accident to be
+C++ type, an assertion or an automated check — not a runtime accident to be
 caught by testing. Remaining hand-placed retain/release calls outside
 this discipline are audited migration debt, counted and never allowed
 to grow, and fall into a small number of legitimate categories the
@@ -428,7 +428,7 @@ where one arm consumes a value and a different arm releases it.
   to this discipline is internal by construction and must never
   alter observable behavior, error messages, or the order in which
   checks run, relative to the executor and the released binary the
-  gates diff against.
+  checks diff against.
 - **Dispatch is resolved at runtime.** Method and operator targets are
   not known statically, so ownership contracts are enforced at the
   call boundary dynamically, not by the static type of a callee.
@@ -449,7 +449,7 @@ A reference-counting placement bug that goes undetected has a
 specific, unhelpful failure signature: the tracing backstop (§6)
 quietly reclaims the leaked object at its next collection, and
 nothing ever surfaces the mistake. The detectors below exist so that a
-placement bug fails a gate instead of shipping as elevated memory use.
+placement bug fails a check instead of shipping as elevated memory use.
 
 ### 5.1 A reference-accounting classifier
 
@@ -508,7 +508,7 @@ a` and its spellings, mutually recursive `fn` declarations) — permanent
 by definition, since a cycle leaks with the cycle collector off. A new
 entry is classified before it is filed by cutting one edge of the
 program: a cycle's growth falls to zero, a leaked retain's does not.
-This gate discards cases whose warm-up throws, which is why §5.2 exists
+This check discards cases whose warm-up throws, which is why §5.2 exists
 beside it.
 
 ### 5.4 The other lanes
@@ -756,8 +756,8 @@ registers for the whole call use `_jit_invoke_rooted` and stay
 collectable — which is what keeps a `Canvas.run` game loop collecting
 every tick. The marking is fail-safe by construction: an unaudited new
 call path only defers collection until the next eligible poll; memory
-grows, nothing is freed wrongly. Explicit collects (`GC.stat`) gate the
-same way. On native builds the whole protocol folds away.
+grows, nothing is freed wrongly. Explicit collects (`GC.stat`) run only under the
+same conditions. On native builds the whole protocol folds away.
 
 ### 6.6 Safety devices
 
@@ -777,7 +777,7 @@ same way. On native builds the whole protocol folds away.
   only — the count the leak fuzzer watches) and `heap_bytes` for
   diagnostic use; `CULEBRA_GC_BIRTH_SITE=1` records an allocation
   backtrace per object for the leak audit's report.
-- The leak-regression gates of §5 form the memory acceptance gate.
+- The leak-regression checks of §5 form the memory acceptance check.
 
 The collector's own C++ implementation follows the same discipline it
 enforces on generated code: its teardown is an ordinary struct

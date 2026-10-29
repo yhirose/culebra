@@ -1946,7 +1946,7 @@ carries its expected output.
 `culebra lint` reports what static analysis can see without running the
 program: errors that would abort a run anyway, plus advisory warnings
 (unused variable / import / unreachable code). It exits 0 clean, 1 for
-warnings, 2 for errors, so CI can gate on it.
+warnings, 2 for errors, so CI can fail on it.
 
 ```bash
 culebra lint .          # recurse over every .cul below the current dir
@@ -1960,7 +1960,7 @@ applied.
 
 ```bash
 culebra fmt -i .        # format the project in place
-culebra fmt --check .   # exit 1 if anything is unformatted (CI gate)
+culebra fmt --check .   # exit 1 if anything is unformatted (CI check)
 ```
 
 In an editor, `culebra lsp` shows the lint diagnostics as you type and

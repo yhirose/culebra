@@ -127,7 +127,7 @@ includes them in a fixed order and nothing else includes them at all.
    tells the compiler to leave the prologue out (`BakedLane::traits`);
    the two have to move together, since emitting the call without dropping
    the source would register twice.
-   The executor keeps compiling the spliced source, so the symmetry gate
+   The executor keeps compiling the spliced source, so the symmetry check
    compares the baked code against it on every run;
    `CULEBRA_PREAMBLE_SOURCE=1` makes the lowering lanes splice again — the
    traits included, which is what `check_baked_preamble.sh` reads the
@@ -170,8 +170,8 @@ Engine selection is explicit inside the repository: every `just` recipe
 and CI workflow sets `CULEBRA_REQUIRE_EXPLICIT_ENGINE=1`, under which a
 launch that picks the default engine aborts (`require_explicit_engine`
 in `main.cc`). A test lane is thereby forced to name what it measures,
-so a change of default cannot silently move a gate onto a different
-engine. The only intentional exception is the release-diff gate (§10.3),
+so a change of default cannot silently move a check onto a different
+engine. The only intentional exception is the release-diff check (§10.3),
 whose subject *is* the default.
 
 ## 3. The runtime layer
@@ -645,7 +645,7 @@ one: a re-declaration writes the folded reads back into the cell reads
 they stood for (`const_sites_by_cell`). Only the code is static:
 the closure still rides the register, because its captures are the
 caller's. Both consumers then skip the same three things — the
-`TAG_FUNC` gate with its two cold probes, the parameter-meta lookup
+`TAG_FUNC` check with its two cold probes, the parameter-meta lookup
 behind `check_pos_count_cls` (the cap is the callee chunk's and the
 positional count is the site's, so the answer is a compile-time one),
 and the `fn_ptr` indirection. The executor enters `run_frame` on the
@@ -924,10 +924,10 @@ Value:
   and every consumer of it compiles boxed.
 
 A class's own name inside its methods (`FuncInfo::own_name`, read off the
-receiver rather than a captured cell) is gated off only for an actual
+receiver rather than a captured cell) is turned off only for an actual
 decorator, whose binding is that decorator's return value, possibly not
 the class at all. A compile-time marker (`@value` / `@packable` /
-`@derive`, which the compiler reads itself) does not gate it. That is
+`@derive`, which the compiler reads itself) does not turn it off. That is
 what lets the same-class tail recursion §5.3.1 documents (`V2.__add__`
 returning `V2.new(...)`) inline.
 
@@ -1257,7 +1257,7 @@ The value-type methods (`'ab'.upper()`, `xs.map(f)`, `it.count()`, …)
 are driven by one table, `bmeth_specs()`: one `BMethSpec` row per
 `(name, argc)` with a receiver tag mask, per-argument declared types,
 the optional trailing parameter's default, an optional keyword-only
-parameter, and an id. The compiler reads the receiver gate and the
+parameter, and an id. The compiler reads the receiver check and the
 parameter checks out of the row (`MethGate` → `ChkParam` → `BMeth`), and
 the executor and the lowering switch on the id. Which receiver resolves
 a name at which arity decides between an `ArityError` and a method miss,
@@ -1370,7 +1370,7 @@ the two cannot disagree.
 The same shape, one step earlier. A parameter's annotation is checked on
 entry (`docs/language.md` §14) and the check then threw its answer away,
 so the body went on asking. `Op::ArgTag` keeps it: the emitter places it
-past the check *and* past the `JumpIfTag` gate that skips a check the tag
+past the check *and* past the `JumpIfTag` branch that skips a check the tag
 already satisfies, so both routes reach it, and the lowering stores the
 tag back as a constant with the payload untouched. The executor reads
 tags off values and has nothing to do — its arm is the assert that the
@@ -2056,7 +2056,7 @@ the next one. A file may `import`: its module list runs as one session
 unit, and `Session::run_modules` asks for the stdlib delta itself when
 the list does not already carry a spliced preamble.
 
-The gate runs every `tests/*.cul` through the runner, asserting the exit
+The check runs every `tests/*.cul` through the runner, asserting the exit
 code and the file count — these files register no `test(...)`, so
 `passed` says nothing about coverage. It is the only lane that exercises
 session scoping over the suite; the symmetry sweep runs the same files as
@@ -2147,7 +2147,7 @@ folds the exit code in — stdout alone lets a segfault read as agreement.
 
 ### 10.1 Symmetry between the lanes
 
-| gate | what it compares | where |
+| check | what it compares | where |
 |---|---|---|
 | vm/jit symmetry | `tests/*.cul` on `--vm` and `--jit`, stdout + exit code: the op cover in `tools/checks/jit_shape_set.txt` plus the files the branch touched, or every file | `just test-dev` (the op cover), `just test` (every file) |
 | isolate suite | `tests/isolate/*.cul` on both lanes | `just test-dev`, `just test` |
@@ -2202,7 +2202,7 @@ baseline binary and under this build and reports every case whose
 behaviour changed; both sides run on their default engine, with no flag.
 Every difference must be named as a glob over the case label in
 `tools/difftest/release_diff_allow.txt` — an unlisted change fails the
-gate, a listed pattern matching nothing is reported so the file can
+check, a listed pattern matching nothing is reported so the file can
 shrink once the release that needed it ships — which makes that file the
 draft of the release notes. A baseline that predates a syntax the corpus
 now uses is handled per case (`::: unsupported`), and the comparator has
@@ -2218,11 +2218,11 @@ the `culebra_runtime_*` helpers, the `JIT` emitters — are reached *only*
 by the generated corpus and by no hand-written test.
 `tools/coverage/corpus_only_coverage.txt` is that set as a ratchet: a
 new corpus-only function fails the report, and the file is empty. A
-35-minute instrumented run, outside the per-PR gates.
+35-minute instrumented run, outside the per-PR checks.
 
 ### 10.5 Memory
 
-The leak gates (leak-fuzz, leak-abort, the rc-leak battery, GC stress,
+The leak checks (leak-fuzz, leak-abort, the rc-leak battery, GC stress,
 the assert lane) are described with the collector in `memory.md` §5–6.
 
 ### 10.6 Name resolution against resolve.h
@@ -2325,7 +2325,7 @@ row in `just test` runs them under `CULEBRA_GC_STRESS`,
   frame layout the analysis already computes and onto SSA values in the
   lowering; the interpreter loop dispatches fewer times per expression.
 - **RC explicit in the stream.** One emitter, two consumers: the leak
-  gates verify the compiler's placement once, and the executor and the
+  checks verify the compiler's placement once, and the executor and the
   lowering inherit it. The alternative — each consumer deciding its own
   retains — is two placements to keep in agreement.
 - **Positions and debug tables ride the bytecode.** A side table per

@@ -93,7 +93,7 @@ caller anywhere fails the check unless it is filed in
 the file only shrinks. The surface file is deliberately not the index in
 `docs/quick-guide.md`: that one lists only the namespaces the context pack
 carries inline, so reading the population from it would have dropped half
-of this gate's names the moment a namespace moved to being named there.
+of this check's names the moment a namespace moved to being named there.
 
 Both run as part of `check-generated`, so `just test-dev` and CI both
 carry them.
@@ -113,7 +113,7 @@ The justfile's `gate_rows` is the single declaration of that placement:
 one row per phase, saying what it needs (the checkout, the binary, a build
 tree), which local tiers run it, which CI shard runs it, and what it
 measured. Every lane — `just check`, `just test-dev`, `just test`, and each
-CI shard — is a filter over that table, so a phase reaches the gates by
+CI shard — is a filter over that table, so a phase reaches the checks by
 declaring itself rather than by being pasted into each of them, and
 `gate_table_selftest` refuses a phase that names no shard, a build-tree
 phase riding a binary-only shard, and a lane that selects nothing.
@@ -125,7 +125,7 @@ phase riding a binary-only shard, and a lane that selects nothing.
 | `just test` | may this be pushed | every axis over every corpus, AOT included |
 | CI | both operating systems, and what a laptop cannot see | the full sweeps, the refcount and leak lanes, the platform and window builds |
 
-What the landing gate holds is decided by where breaks have actually got
+What the landing check holds is decided by where breaks have actually got
 through rather than by what is cheapest to run: the CLI `ctest` entries
 (two escapes, `jit_error_pos_test` and `search_model_test`) and the
 `-O0` / faststart codegen axis (three bugs invisible at the default `-O2`)
@@ -135,14 +135,14 @@ corpus — runs once, in `just test` and in CI.
 
 ### The JIT lane's subset
 
-`tools/checks/jit_shape_set.txt` is what the landing gate's `--jit` leg
+`tools/checks/jit_shape_set.txt` is what the landing check's `--jit` leg
 sweeps: the smallest set of test files that still lowers every bytecode op
 the executor implements, seeded with the files
 `tools/checks/codegen_sensitive.txt` names, plus whatever test files the
 branch touches. It is 31 files covering 152 of the 155 ops; the three it cannot reach
 are filed in the set with the reason, and that list may only shrink.
 `tools/checks/check_jit_shape_set.sh` recomputes the coverage from the
-compiled bytecode on every run of the gate, so a new op fails the gate
+compiled bytecode on every run of the check, so a new op fails the check
 until a test reaches it.
 
 What the cover does not hold is op *combinations* — an unwind edge inside
@@ -157,16 +157,16 @@ full sweep therefore runs on x86-64 Linux only, and a break that needs
 both the arm64 backend and a file outside the cover is seen when
 `just test` is run on a Mac, not on a push.
 
-### The gate's own cost
+### The cost of the checks
 
 `tools/checks/gate_budget.txt` records each swept population — the corpus,
 the isolate files, the generator probes, the `vm_cases`, the ctest
 entries, the doc blocks, the language samples — and `check-gate-budget` holds them exactly. Growth is
-normal and is made here, in the commit that grows it, so that a gate that
+normal and is made here, in the commit that grows it, so that a check that
 has become slow shows where its time went. Seconds are
 deliberately not the ratchet — the same lane varies by 1.5–2× on a loaded
 machine — so the table's per-phase costs are reported against the measured
-budget at the end of a lane and gate nothing.
+budget at the end of a lane and fail nothing.
 
 A lane compiles a file once. The phases that put the corpus through
 `--jit` again under a collector setting — gc-stress's two legs, the three
@@ -184,7 +184,7 @@ module and the backend ([vm.md](vm.md) §7), a rebuild that changes
 neither finds it, and what it skips is the backend — 53% of the corpus's
 compile, the IR pipeline being run every time to arrive at the key.
 `CULEBRA_GATE_JIT_CACHE` names another directory, or `off` for one that
-lasts the run; a directory the gate cannot write is said in one line and
+lasts the run; a directory the check cannot write is said in one line and
 passed over the same way. Two things follow from keeping it. The
 per-file compile budget of the vm/jit sweep reads a full compile only
 the first time a module is seen. And an object outlives the run that
@@ -201,7 +201,7 @@ form that stops working stays documented. A skip is justified one of two
 ways: the block cannot run at
 all, or it says why it must not run here (`# doctest: skip — opens a
 window`). `check_doctest_skips.sh` runs the skips that give no reason on the
-executor, and a block that runs cleanly fails the gate — un-skip it, or give
+executor, and a block that runs cleanly fails the check — un-skip it, or give
 it the reason a reader wants anyway. Blocks that need a window, a server, a watcher, stdin, the network, an
 external program or this machine's own paths carry a reason; an
 illustration that simply runs has no skip.

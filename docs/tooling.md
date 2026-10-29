@@ -296,7 +296,7 @@ that doesn't run under `culebra test`; and an AOT doctest lane beside
 ## 2. Linting (`culebra lint`)
 
 `culebra lint [paths...]` reports static problems **without running** the
-program, and exits non-zero so CI can gate on it (0 = clean, 1 = warnings
+program, and exits non-zero so CI can fail on it (0 = clean, 1 = warnings
 only, 2 = errors). It reuses the same load-stage static analysis every
 backend already runs — so the errors it reports are exactly the ones that
 would abort a run — and adds advisory warnings on top.
@@ -311,7 +311,7 @@ culebra lint .          # recurse into every .cul under the current directory,
 ```
 
 Paths holding no `.cul` file exit 2 rather than reporting a clean run, so a
-mistyped directory can't pass the gate.
+mistyped directory can't pass the check.
 
 A file named `test_*.cul` — the same convention `culebra test` discovers by
 — is linted as that runner would run it, so `test` and `parametrize` count
@@ -426,20 +426,20 @@ exceed the line width. It is opinionated and zero-config (no style flags).
 culebra fmt app.cul          # write the formatted source to stdout
 culebra fmt -i app.cul       # rewrite the file in place
 culebra fmt -i .             # format every .cul under the current directory
-culebra fmt --check app.cul  # exit 1 if it isn't already formatted (CI gate)
+culebra fmt --check app.cul  # exit 1 if it isn't already formatted (CI check)
 culebra fmt -l src/*.cul     # list the files that would change
 cat app.cul | culebra fmt -  # stdin -> stdout (editor format-on-save)
 ```
 
 A directory argument is scanned recursively for `.cul` files, so
 `culebra fmt -i .` formats a whole project and `culebra fmt --check .`
-gates it in CI. Paths holding no `.cul` file are an error (exit 2), so a
+checks it in CI. Paths holding no `.cul` file are an error (exit 2), so a
 mistyped path fails loudly instead of silently formatting nothing.
 
 The output modes compose: `culebra fmt -i -l .` rewrites the files that
 need it *and* prints their names (like `gofmt -l -w`), and `-i --check`
 does the same silently. With `-l` or `--check`, the exit code is 1 whenever some
-file's formatting differed — so it still gates CI after a rewrite. The
+file's formatting differed — so it still fails CI after a rewrite. The
 formatted source goes to stdout only when no other output mode was asked
 for.
 

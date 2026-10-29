@@ -117,7 +117,7 @@ anyone having to say in advance what the right answer was. That is how the
 UFCS ordering bug above was found, and dozens like it. After the change,
 both consumers are handed bytecode by the same compiler — so a bug in that
 compiler produces the same wrong answer on both lanes, and the differential
-gate stays green while the language quietly changes.
+check stays green while the language quietly changes.
 
 ## What replaces an oracle
 
@@ -140,7 +140,7 @@ culebra has no ecosystem to run, but it does have its own releases.
 
 So the interpreter's role was handed to the previous release's binary. It is
 already built, already frozen, and downloadable for three platforms. The
-release gate runs the same generated corpus — about 17,000 programs — under
+release check runs the same generated corpus — about 17,000 programs — under
 the baseline binary and under the current tree, with both sides on their
 default engine and no flags, and every behavioral difference has to be named
 by a pattern in an allowlist file. An unnamed change fails the build. In
@@ -152,7 +152,7 @@ Seen that way, deleting the interpreter did not destroy the oracle so much
 as seal it. v0.3.1 is the last release that carries both engines. For the
 subset of the language frozen into that binary, an independently written
 second implementation goes on answering, permanently, through the
-release-to-release gate.
+release-to-release check.
 
 The durable answer is still the first kind, and that is where the effort
 went afterwards: `docs/language.md` is now the normative reference, with a
@@ -173,7 +173,7 @@ engine turns out to be an audit of the engines you already have, and it is a
 better audit than reading the code, because it asks a question the code has
 to answer.
 
-**Check that your gates are looking at what you think.** Partway through,
+**Check that your checks are looking at what you think.** Partway through,
 the symmetry sweep that compared the engines was found to be comparing
 standard output and throwing the VM lanes' exit status away. An uncaught
 exception and a segmentation fault both leave standard output empty, which
@@ -189,8 +189,8 @@ charge. Then it became the front end of the JIT, and the AST code generator
 was deleted — `jit.h` went from 16,446 lines to 5,271. Then it became the
 default engine, and that release sat in the world for a while. Only then was
 the interpreter removed. The switch to default was, satisfyingly, verified
-for free: because the release-diff gate runs both sides on "no flag, default
-engine," flipping the default turned that gate into a tree-walker-versus-VM
+for free: because the release-diff check runs both sides on "no flag, default
+engine," flipping the default turned that check into a tree-walker-versus-VM
 comparison without a line of it being edited. Across 17,262 generated
 programs, every difference it reported was a standard-library addition made
 since the previous release, and nothing else moved.
@@ -254,7 +254,7 @@ spike that proposed replacing it. Hot loops run 2–4.5× faster than they did.
 About 24,000 lines went away; the runtime archive that ahead-of-time
 compilation links against halved, from 20.2 MB to 10.3 MB, and its defined
 symbols dropped from 6,433 to 1,472. A build without LLVM has a real engine
-again, which is what the browser Playground is. And the release-diff gate
+again, which is what the browser Playground is. And the release-diff check
 landed the deletion with an empty allowlist: the whole removal, with not one
 observable difference to explain.
 
