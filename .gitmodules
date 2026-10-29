@@ -38,3 +38,6 @@
 [submodule "vendor/cpp-zipper"]
 	path = vendor/cpp-zipper
 	url = https://github.com/yhirose/cpp-zipper
+[submodule "vendor/cpp-llamalib"]
+	path = vendor/cpp-llamalib
+	url = https://github.com/yhirose/cpp-llamalib
