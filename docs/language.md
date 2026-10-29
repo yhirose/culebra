@@ -3529,6 +3529,9 @@ inspect('a' !is Long)           # true
   the same line; anywhere else it is an ordinary name.
 * The right side is a type pattern and nothing else. To test a value or a
   shape, use `match`.
+* It asks what an annotation asks, which is not always what `type_of`
+  names: an instance of a class is `is Object`, while its `type_of` is the
+  class's name.
 * A parameter default is parsed without `is`, so a default that tests a
   type takes parentheses: `fn f(ok = (x is Long))`.
 
@@ -6358,7 +6361,8 @@ class's own name (an enum variant answers with the variant's). A class
 object itself is a `'Class'`. So the set is open, and `type_of(v) == 'T'`
 answers the same question `v: T` asks of a parameter, except that an
 annotation also accepts a subtype (`Object` accepts any instance) where
-this names the exact one.
+this names the exact one. `v is T` (§13) asks the annotation's question
+directly.
 
 ```culebra
 inspect(type_of(42))      # => 'Long'

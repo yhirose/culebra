@@ -36,6 +36,9 @@ enum Shape {
 }
 assert_eq(Dog() is Dog, true)
 assert_eq(Dog() is String, false)
+# what an annotation asks: an instance is an Object, though type_of names Dog
+assert_eq(Dog() is Object, true)
+assert_eq({k: 1} is Object, true)
 assert_eq(Shape.Circle is Shape.Circle, true)
 assert_eq(Shape.Square is Shape.Circle, false)
 assert_eq(Shape.Square !is Shape.Circle, true)
