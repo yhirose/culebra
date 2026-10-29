@@ -170,7 +170,7 @@ MSYS2ツールチェーンを必要とします。[`CONTRIBUTING.md`](../CONTRIB
 
 2つめはTensorのelementwiseカーネルで、これがこの軸に乗る理由は
 バックエンドのchokeではカバーできない。`culebra::tensor_eval_node`が
-ゲートするのはBLASとMetalだが、cpp-tensorlibの`map_binary`実体化は
+切り替えるのはBLASとMetalだが、cpp-tensorlibの`map_binary`実体化は
 純粋なC++なので外部依存では締め出せない。しかも汎用の算術ヘルパは
 どちらかの被演算子が`Tensor`でありうる限りそこへ到達する — つまり
 算術を含む全バイナリが該当する。そこで`culebra::tensor_binop`と
@@ -185,7 +185,7 @@ MSYS2ツールチェーンを必要とします。[`CONTRIBUTING.md`](../CONTRIB
 バイナリにそこを呼ぶ経路は無い——渡せる`Tensor`値が存在しない。だが
 リンカはそこを問わない。`-framework Metal`がリンク行に載るのはAST
 スキャンが`Tensor`を報告したときだけで、参照を置いているのはその
-スキャンではない——loweringはメソッド"名"`clone`・`backward`・`detach`を
+スキャンではない——LLVM変換（lowering）はメソッド"名"`clone`・`backward`・`detach`を
 これらのruntime helperへ対応付けるので、自分で定義したクラスに同名の
 メソッドがあるだけでそこにTensorの腕が生成され、そのプログラムの
 `culebra build`がmacOSで`_MTLCreateSystemDefaultDevice`未定義で落ちて

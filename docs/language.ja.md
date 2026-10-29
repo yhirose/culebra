@@ -2,7 +2,7 @@
 
 本書はCulebraプログラミング言語の構文と実行時セマンティクスを
 定義する規範的ドキュメントです。2つのエンジン — バイトコードVMの
-executorとそのLLVM lowering（`--jit`とAOT）— は本書の記述どおりに
+executorとそのLLVMへの変換（lowering、`--jit`とAOT）— は本書の記述どおりに
 実装することを要求され、エンジン間または本書との差異はバグです。
 
 実例つき入門は [`handbook.ja.md`](handbook.ja.md)、標準ライブラリの
@@ -1801,7 +1801,7 @@ variable 'self'`になります。送出されるのは本体に入った時点�
   `obj.name`と`obj.name()`の両表記はVM・JIT・AOTで同一に発火します。
 * 両エンジンともクラス宣言をコンパイルします。
   インスタンス生成は軽いランタイム呼出: `new`自体は通常のJIT
-  closureで、capturesにメソッドclosure群とユーザの`new`本体
+  closureで、capturesにメソッドclosureとユーザの`new`本体
   closureを持ち、ランタイムヘルパーが新オブジェクトに結び付けます。
 * `drop`等のwell-knownメソッドも通常のメソッドと同じ形で書けます
   （§17）。JITではメソッドはクラス共有メタオブジェクト経由のプロト
@@ -2014,7 +2014,7 @@ LHSが対応する特殊メソッドを持つ`Object`である必要がありま
 
 すべてのclassインスタンスは、引数なしの`parameters()`メソッドを
 自動的に得ます。これは自身のフィールドから到達可能なすべてのclass
-インスタンス値をフラットな`Array`として返します。ウォーカーは
+インスタンス値をフラットな`Array`として返します。走査は
 `Array`の要素と、classインスタンスではない通常の`Object`の値を
 再帰的に降下し、出会ったclassインスタンスはleafとして収集して
 それ以上は降下しません。スキップされるもの: 名前が`_`で始まる
@@ -2035,7 +2035,7 @@ LHSが対応する特殊メソッドを持つ`Object`である必要がありま
     let model = GPT.new()
     model.parameters().size()    # 40 — すべてのValueがleafとして収集
 
-classインスタンスはleaf扱いで、ウォーカーはそこで停止し、内部の
+classインスタンスはleaf扱いで、走査はそこで停止し、内部の
 フィールドへは降下しません。列挙にとって透過的にしたい中間グルーピン
 グには通常のObject dict (classインスタンスではないもの) を使い、実際にパラメータ
 として扱いたい葉だけをclassインスタンスにする、というのが基本パター
@@ -2043,7 +2043,7 @@ classインスタンスはleaf扱いで、ウォーカーはそこで停止し�
 
 ユーザー定義の`parameters`メソッド (同名のプロパティ) があれば、
 それが合成版より優先されます — フィールドwalkが意図する列挙と
-異なる場合に有用です。両エンジンは同じウォーカーで合成しており、
+異なる場合に有用です。両エンジンは同じ走査で合成しており、
 出力順序も一致します。
 
 ---
@@ -4488,7 +4488,7 @@ unionとしての順位で、`Object`より下です。
 | `ArityError` | 必須引数の欠如 — 関数やclass constructorへのpositional不足；**組み込み**・名前空間関数が受け取れる数を超えたpositional。**ユーザ定義**関数への余分なpositionalはエラーではなく`__ARGS__`（§19）に溢れる。class constructorは`new`の無いclassも含めて無視する | はい |
 | `DispatchError` | 多重ディスパッチ（§20）でマッチなし、またはspecificity同点 | はい |
 | `AssertionError` | matcherの失敗 (`assert_true` / `assert_eq`等) もしくはユーザ`throw {kind: "AssertionError", ...}`。比較系matcherは両辺をmessageに含めます | はい |
-| `SyntaxError` | AST loweringで検出される構造エラー：`**rest`が末尾でない、`*`区切りの重複、デフォルト値後に非デフォルト、`let`付きcompound、ループ外の`break` / `continue`等。該当functionの宣言評価時に発火 | はい |
+| `SyntaxError` | ASTの書き換えで検出される構造エラー：`**rest`が末尾でない、`*`区切りの重複、デフォルト値後に非デフォルト、`let`付きcompound、ループ外の`break` / `continue`等。該当functionの宣言評価時に発火 | はい |
 | `ShadowError` | §6のシャドウ解析でキャプチャ済み外側名と衝突する束縛を検出。ユーザの`try`が走る前に発火 | **いいえ**（eval前のanalyzer） |
 | `IOError` | `FS` / `File`等stdlibファイル操作の失敗（パス不在・権限・クローズ済みハンドル）；`Tensor.from_csv`失敗 | はい |
 | `ImportError` | `import`の循環（AがBをimportし、BがAをimport）。プログラムのロード中に位置なしで報告されるので、どの`try`も観測できない（§24） | **いいえ**（ロード時） |
@@ -5237,7 +5237,7 @@ matcher一族`assert_true` / `assert_eq`等）は
 | `s.sentences() -> Iterator<StringView>`         | **UAX #29の文境界**でセグメントに分けて1つずつyield。1ステップが1文になり、末尾の空白は直前の文にそのままくっつく |
 | `s.bytes() -> Iterator<Long>`                   | レシーバの**生UTF-8バイト**を`Long`（`0`–`255`）として1バイトずつyield — `code_points`と違いデコードしない。エンコーディングそのものが欲しい場面向け（ハッシュ計算、tokenizerの語彙、ワイヤーフォーマット等） |
 | `String.from_code_point(cp: Long) -> String`    | `code_points()`の逆演算: Unicodeスカラー値1つを受け取り1文字の`String`を返す。`cp`が`U+10FFFF`超過またはサロゲート範囲`U+D800`–`U+DFFF`の場合`ValueError`（`\u`/`\U`リテラルエスケープ（§2、リテラル）がパース時に拒否するのと同じ境界） |
-| `String.from_code_points(cps: Array) -> String` | `code_points()`の複数形の逆演算: Unicodeスカラー値の`Array`を受け取り`String`を返す。各要素は`from_code_point`と同じゲートを通るので`String.from_code_points([cp]) == String.from_code_point(cp)`。要素が`Long`でなければ`TypeError`、範囲外なら`ValueError` |
+| `String.from_code_points(cps: Array) -> String` | `code_points()`の複数形の逆演算: Unicodeスカラー値の`Array`を受け取り`String`を返す。各要素は`from_code_point`と同じ検査を通るので`String.from_code_points([cp]) == String.from_code_point(cp)`。要素が`Long`でなければ`TypeError`、範囲外なら`ValueError` |
 | `String.from_bytes(bytes: Array) -> String`     | `bytes()`の逆演算: 生バイト値（`0`–`255`）の`Array`を受け取り`String`を返す。**UTF-8の検証は行わず**、不正入力でも例外を投げない: culebraの`String`は不正なUTF-8を許容する（`iter()`と同様）ため、不正なバイト列を含むあらゆる`String`について`String.from_bytes(s.bytes().collect()) == s`が成立する。要素が`Long`でなければ`TypeError`、範囲外（`0`–`255`の外）なら`ValueError` |
 | `String.pack(type: String \| Class, values: Array, endian: String = "little") -> String` | `values`の各要素を`type`の固定幅の値1つ（`@packable`クラスならレコード1件）として、順に並べたバイト列。二進のファイル形式や通信で使うバイト列を作る。下の[バイナリデータ](#バイナリデータ-stringpack--stringunpack)を参照 |
 | `String.unpack(type: String \| Class, data: StringLike, at: Long = 0, count: Long? = nil, into: Array? = nil, endian: String = "little") -> Array` | `pack`の逆演算: `data`のバイト位置`at`から`type`の要素を読む。読む個数は`count`、`into`の要素数、どちらも無ければ残りのバイト全部 |
@@ -5614,7 +5614,7 @@ inspect(prices.iter().map(|(k, v)| (v, k)).to_object())
 `for x in expr { ... }`（§12）は`expr`がイテレータプロトコルに
 参加していることを要求します。プロトコルは`Object`（サブ型の
 `Array`含む）上の3つの **well-knownメソッド名**を使います —
-各`next`の手前に`has_next`のゲートを置く形です:
+各`next`の手前に`has_next`の確認を置く形です:
 
 | メソッド | 形状 | 呼び出される型 | 戻り値 |
 |---|---|---|---|
@@ -5624,7 +5624,7 @@ inspect(prices.iter().map(|(k, v)| (v, k)).to_object())
 
 組み込みイテレータを終端より先で呼ぶと、例外ではなく`nil`が返ります
 （汲み尽くしたgeneratorと同じ）。`nil`自体も要素になりうるので、
-両者を区別したいときは`has_next()`でゲートしてください。
+両者を区別したいときは`has_next()`で確認してください。
 
 **契約（プロパティ代入時に検査）**: `iter` / `has_next` / `next`を
 引数を取るFunctionに束縛すると、代入時点で
@@ -7037,12 +7037,12 @@ AOTバンドリングとtree-shaking解析が成り立つ前提になります�
 
 ## 25. 付録: VM ↔ JIT の差分
 
-本書が規範的です。VMのexecutorとLLVM loweringは同じコンパイラが
+本書が規範的です。VMのexecutorとLLVM変換は同じコンパイラが
 生成した同じバイトコードを消費し、すべてのプログラムについて
 **観測可能な挙動が一致する**ことを要求されます — 戻り値・副作用順・
 エラー`kind` / `message` / 位置情報すべて同じ。内部表現は外部観測動作が
 一致する限り自由に異なって良く、観測動作のずれはバグとして扱います。
-リリース済みバイナリが、ゲートの比較対象となる独立した第二実装です。
+リリース済みバイナリが、検査の比較対象となる独立した第二実装です。
 
 ### 観測可能な挙動が一致する点
 

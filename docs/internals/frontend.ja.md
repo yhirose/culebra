@@ -2,7 +2,7 @@
 =====================================================
 
 `.cul`ファイルが`vm::Compiler`に届くまでに起きること。文法、パーサ、
-構文エラーのメッセージ、モジュールローダ、AST→ASTのlowering、そして
+構文エラーのメッセージ、モジュールローダ、AST→ASTの書き換え（lowering）、そして
 後段のすべてが読む名前解決を扱います。バイトコードとそれを消費する
 3つのレーンは[`vm.md`](vm.ja.md)、`include/frontend/`のディレクトリ規則は
 [`layout.md`](layout.ja.md)です。英語版は[`frontend.md`](frontend.md)。
@@ -11,11 +11,11 @@
 ----
 
 1. [フロントエンドの位置](#1-フロントエンドの位置)
-2. [文法とそのスナップショット](#2-文法とそのスナップショット)
+2. [文法と保存データ](#2-文法と保存データ)
 3. [パース](#3-パース)
 4. [構文エラー](#4-構文エラー)
 5. [モジュールのロード](#5-モジュールのロード)
-6. [コンパイラの前に走るlowering](#6-コンパイラの前に走るlowering)
+6. [コンパイラの前に走る書き換え](#6-コンパイラの前に走る書き換え)
 7. [名前とスコープ](#7-名前とスコープ)
 8. [同じフロントエンド上のlintとfmt](#8-同じフロントエンド上のlintとfmt)
 9. [文法を変えるとき](#9-文法を変えるとき)
@@ -58,9 +58,9 @@ vm::Compiler                        include/vm/vm.h
 | `parser.h` | パーサ、ASTの上の`view_*`アクセサ、パースの入口、脱糖、いくつかの構造的な拒否 |
 | `syntax_error.h` | peglibのエラーレポートをメッセージにする（§4） |
 | `module_loader.h`、`embed_paths.h` | プログラムをモジュールの列としてロードする（§5） |
-| `effects_transform.h`、`state_lowering.h`、`fragments.h`、`generator_rules.h` | コンパイラの前に走るlowering（§6） |
+| `effects_transform.h`、`state_lowering.h`、`fragments.h`、`generator_rules.h` | コンパイラの前に走る書き換え（§6） |
 | `resolve.h`、`scope_check.h`、`fn_analysis.h` | 名前、スコープ、キャプチャ（§7） |
-| `lint.h` | 静的検査。`resolve.h`とloweringを共有する（§8） |
+| `lint.h` | 静的検査。`resolve.h`と書き換えを共有する（§8） |
 
 誰が何をincludeするか: コンパイラ（`vm/vm.h`）は`module_loader.h`、
 `fn_analysis.h`、`scope_check.h`を通してフロントエンドに届きます。フォーマッタ、
@@ -69,7 +69,7 @@ vm::Compiler                        include/vm/vm.h
 
 ---
 
-## 2. 文法とそのスナップショット
+## 2. 文法と保存データ
 
 `grammar_def.h`は`const auto grammar_ = R"(...)"`が1つあるだけです。ツリーの
 中で構文を定義するのはここだけです。エディタ用の文法（`misc/culebra.peg`と、
@@ -78,7 +78,7 @@ vim・VS Code・ZedのファイルおよびPlaygroundのキーワードブロッ
 
 cpp-peglibで文法を読むには文法テキストのメタパースが要り、ソースはそれを
 約10msとしています。数ミリ秒で終わるプログラムが毎回それを払うべきではないので、
-ビルドはスナップショットを持ちます:
+ビルドは文法の保存データ（blob）を持ちます:
 
 - `tools/gen_grammar_blob.cc`が`grammar_`を素の`peg::parser`に読み込み、
   `serialize_grammar()`して`grammar_blob.gen.h`を書きます。中身はバイト配列、
@@ -86,14 +86,14 @@ cpp-peglibで文法を読むには文法テキストのメタパースが要り�
   `just gen-blob`が実行し、`just check-blob`は`--check`付きで実行します
   （メモリ上で再生成してバイト単位で比べます）。
 - `grammar_blob_key()`は、`grammar_`、区切りのバイト、`CPPPEGLIB_VERSION`に
-  対するFNV-1aハッシュです。blob自身のmagicはpeglibのバージョンが変わっても
+  対するFNV-1aハッシュです。保存データ自身の先頭の識別子（magic）はpeglibのバージョンが変わっても
   変わらないので、レイアウトの変化に気づくのはこの鍵です。
 - `get_parser()`（`thread_local`な`peg::parser`）は、`GRAMMAR_BLOB_HASH`が
-  鍵と等しければblobを読み、そうでなければ`load_grammar(grammar_)`に
+  鍵と等しければ保存データを読み、そうでなければ`load_grammar(grammar_)`に
   フォールバックします。それも失敗すると`std::logic_error("invalid peg grammar")`
   をthrowします。
 
-**古いblobは正しく動き、遅いだけです。** フォールバックがそれを隠すので、
+**古い保存データは正しく動き、遅いだけです。** フォールバックがそれを隠すので、
 パーサのテストは緑のままです。それを見つけられるのは`just check-blob`だけで、
 そのため`check-generated`に含まれ、CIにも独立したステップとして入っています。
 
@@ -104,15 +104,15 @@ cpp-peglibで文法を読むには文法テキストのメタパースが要り�
 `get_parser()`はパーサをスレッドごとに1回設定します:
 
 - `enable_ast(true, true, ast_optimizer_keep_rules())`。optimizerは子が1つの
-  ノードをその子に畳みますが、keepリストのルールは畳みません。ウォーカーが名前で
+  ノードをその子に畳みますが、keepリストのルールは畳みません。ASTを読むコードが名前で
   探すためにノードのまま残すべき新しいルールは、`ast_optimizer_keep_rules()`に
   足す必要があります。`FOR_BINDING`は意図的にkeepしていません。
-- `enable_packrat_parsing()`。blobはpackratフラグを持っていて、この呼び出しは
+- `enable_packrat_parsing()`。保存データはpackratフラグを持っていて、この呼び出しは
   それをリセットせずに再適用します。
 - `set_max_depth(kCulebraParseDepthLimit)`、4000。単位はルールのマッチ回数で、
   括弧1段あたり約6です。テストコーパスで最も深いファイルは101に届き、ネイティブ
   スタックが尽きるには約120,000が要ります。peglibは返すASTも同じ深さに
-  抑えるので、下流の再帰ウォーカーすべてがこれで守られます。深さの失敗は
+  抑えるので、下流で木をたどるコードすべてがこれで守られます。深さの失敗は
   `reword_parse_depth_error`が言い換えます。
 - `INTERPOLATED_STRING`、`TRIPLE_STRING`、`INTERP_EXPR`の`leave`フック。
   文字列がどこで開いたかを記録し、閉じていない文字列に
@@ -138,13 +138,13 @@ cpp-peglibで文法を読むには文法テキストのメタパースが要り�
 
 ### `view_*`アクセサ
 
-ASTの形についての知識は、ウォーカーの外に置かれています。`parser.h`には
+ASTの形についての知識は、ASTを読むコードの外に置かれています。`parser.h`には
 22個の`view_*(const peg::Ast&)`関数（`view_assignment`、`view_for`、`view_if`、
 `view_match`、`view_function`、`view_lambda`など）があり、それぞれが子を名前で
-持つ小さな構造体を返します。`for`の部品が要るウォーカーは`view_for`を通して読み、
-子の位置が動く文法変更は、全ウォーカーでなくviewを更新します。
+持つ小さな構造体を返します。`for`の部品が要るコードは`view_for`を通して読み、
+子の位置が動く文法変更は、それを読むコードすべてでなくviewを更新します。
 
-ウォーカーは、もうインタプリタとJITではありません。`vm::Compiler`、`resolve.h`、
+ASTを読むコードは、もうインタプリタとJITではありません。`vm::Compiler`、`resolve.h`、
 `lint.h`、`fn_analysis.h`、`state_lowering.h`、`effects_transform.h`、
 `generator_rules.h`、フォーマッタ、型推論器です。ノードを足したり形を変えたりする
 文法の編集は、これらをそれぞれ読み直すまで終わりません（§9）。
@@ -171,9 +171,9 @@ fn f(a b) { }     ->  unexpected 'b', expecting ':', '=', ',' or ')'.
 - リテラルは引用し（`','`）、ルールは名前で呼びます（`<IDENTIFIER>`）。リテラルが
   先で、ルールが後。それぞれレポートが与えた順です。
 - **silent**な項目（空白、コメントの開始）は落とします。
-- 2つの**群**は、並べずに名前で呼びます。任意の式の後に来うる項目は`an operator`、
-  式の先頭に来うる項目は`an expression`になります。群が名前で呼ばれるのは、
-  そのメンバーの**半数を厳密に超える**数がレポートに含まれているときだけです。
+- 2つの**ひとまとまりの項目**は、並べずに名前で呼びます。任意の式の後に来うる項目は`an operator`、
+  式の先頭に来うる項目は`an expression`になります。名前で呼ばれるのは、
+  そのまとまりの項目の**半数を厳密に超える**数がレポートに含まれているときだけです。
   それ以下なら1つずつ並べます。パラメータの後には、演算子が来うるわけでもないのに
   `:`や`=`が来うるからです。名づけ方はrustcに倣っています。
 - 文法自身が付けたメッセージ（独自メッセージや上限）は、そのまま返します。
@@ -192,13 +192,13 @@ fn f(a b) { }     ->  unexpected 'b', expecting ':', '=', ',' or ')'.
 各プローブは入力の終端と、`\x01`バイトの手前の両方で走らせ、2つの失敗を
 合併します。集合が空になるとジェネレータはエラーで終了し、silentな項目は
 残り2つから取り除かれます。集合は文法から出てくるので、文法の編集は、
-スナップショットを更新するのと同じ`just gen-blob`で再生成されます。
+保存データを更新するのと同じ`just gen-blob`で再生成されます。
 
 **既知の限界。** 項目はテキストだけで識別されるので、演算子と同じ綴りの閉じ記号
 （ラムダのパラメータを閉じる`|`、`a ? b : c`の`:`）は、演算子に名前を付ける
 ときはいつも`an operator`に畳まれます。
 
-標準ライブラリの`PEG.parse`は群を渡さないので、利用者の文法に対するメッセージは
+標準ライブラリの`PEG.parse`はこのまとまりの定義を渡さないので、利用者の文法に対するメッセージは
 すべてをエスケープして並べます。
 
 ---
@@ -245,11 +245,11 @@ JITとAOTのレーンは、ビルド時にパースしてコンパイルしたpr
 
 ---
 
-## 6. コンパイラの前に走るlowering
+## 6. コンパイラの前に走る書き換え
 
 2つの機能は、書かれたままではコンパイルされません。プレーンなCulebraのソースに
 書き換えられ、もう一度パースされ、他のコードと同じようにコンパイルされます。
-だからどのレーンもloweringされたプログラムを走らせ、それらのための特別な
+だからどのレーンも書き換えられたプログラムを走らせ、それらのための特別な
 サポートを持ちません。
 
 `apply_transforms`は、書かれたままパースされたモジュールに、この順で走ります:
@@ -258,7 +258,7 @@ JITとAOTのレーンは、ビルド時にパースしてコンパイルしたpr
    `defer`はスコープを出るときに走り、generatorがそこでcloseされるときも含むので
    中断できない、と説明する。`try`と`catch`の本体はyieldしてよい。handleと
    effectの本体は次の段に任せる。
-2. `transform_effects_in`: effectsのlowering（下記）。
+2. `transform_effects_in`: effectsの書き換え（下記）。
 3. `reject_orphan_yield`: 関数やメソッドの本体の外（トップレベル、`|...|`ラムダ、
    `new`、`drop`）の`yield`を拒否する。
 4. `reject_sized_spread_mix`、`reject_brace_set`、`reject_or_pattern_binding`、
@@ -270,9 +270,9 @@ JITとAOTのレーンは、ビルド時にパースしてコンパイルしたpr
 `can_be_generator`と`fn_body_has_yield`はコンパイラと共有されていて、チャンクが
 generatorだとコンパイラが決めるのはこれによります。
 
-### effectsのlowering
+### effectsの書き換え
 
-`effect fn`、`perform`、`handle ... with`は`EffectsLowerer`がloweringします。本体を
+`effect fn`、`perform`、`handle ... with`は`EffectsLowerer`が書き換えます。本体を
 持つ`effect fn`は、computationオブジェクトを返す普通の関数になります。これは、
 `_step(rv)`が次の中断まで走るクラスで、状態番号で分岐します。シグネチャだけの
 `effect fn`は、throwするスタブになります。`handle`は、computation、操作名、
@@ -291,8 +291,9 @@ generatorだとコンパイラが決めるのはこれによります。
   いるので、どの名前がローカルかの判断は`resolve.h`のものです。束縛が走る前に
   promoteされたローカルを読むことは、コンパイラの`__bound`／`__unbound`
   intrinsicが守ります。
-- **fragment ledger**（`fragments.h`）。loweringが合成するソースの断片はすべて、
-  パースの前に`parse_registered_source`で登録されるので、loweringされたコードの
+- **fragment ledger**（`fragments.h`。書き換えで作ったソースの断片と、その元の
+  行の対応表）。書き換えが合成するソースの断片はすべて、パースの前に
+  `parse_registered_source`で登録されるので、書き換えられたコードの
   エラーを、利用者が書いた行で報告できます。ledgerがバッファを持ち、合成された
   テキストはアンカー（`/*@culebra:`）を運びます。`SourceResolver`は、それを
   中間のバッファをたどって利用者のファイルの1バイトまで戻ります。コピーされた
@@ -303,7 +304,7 @@ generatorだとコンパイラが決めるのはこれによります。
   mutexで守られています。エディタやlintの実行は、`parse_with_transforms`の
   `FragmentLedger&`オーバーロードで、スレッドローカルなledgerを選びます。
 
-loweringは、表現できないもの（短絡演算のオペランドの下、メソッドチェーンの後ろ、
+書き換えは、表現できないもの（短絡演算のオペランドの下、メソッドチェーンの後ろ、
 ループ条件の中の`perform`、制御フローに入れ子になった`defer`、`resume`
 パラメータのないhandlerの節など）に`SyntaxError`を、自分が合成したソースが
 パースできなかったときに`InternalError`を投げます。lintは
@@ -360,7 +361,7 @@ resolve_body(body, params, Options)     one function body (the effects lowering)
   読まれた名前は、読み手から宣言した関数までの全関数の自由変数になります。
   コンパイラはこれで、どのローカルが捕捉されてセルを要するかを知ります。ウォークは、
   解決器が知る理由のない事実をまだいくつか記録しています: `self`、フィールド初期化子
-  のスロット、`fn`、lowering済みフレームのマークです。
+  のスロット、`fn`、書き換え済みフレームのマークです。
 - **`lint.h`**（§8）。
 - **言語サーバ、型推論器、エディタのアウトライン**（`resolve::outline`）。
 - **`scope_check.h`**（下記）。
@@ -388,12 +389,12 @@ resolve_body(body, params, Options)     one function body (the effects lowering)
 
 ## 8. 同じフロントエンド上のlintとfmt
 
-**lintは名前について何も決めません。** 解決を読みます。検査は2つの群に分かれます:
+**lintは名前について何も決めません。** 解決を読みます。検査は2つに分かれます:
 
 - *書かれたままの*ASTに対して、`scope_diagnostics`を通して: 予約されたデコレータと
   宣言、不変性（`LetRule`）、未定義の読み取り、シャドーイング。
-- *lowering後の*ASTに対して、`RuleWalker`と、未使用名、トップレベルの文、イディオム、
-  到達不能コードを見る独立した構文ウォーカー群。
+- *書き換え後の*ASTに対して、`RuleWalker`と、未使用名、トップレベルの文、イディオム、
+  到達不能コードを見る独立した構文を見るコード。
 
 scope検査のうちシャドーイングと予約された束縛の2つは、`FnAnalysis`から
 `check_resolution`を通して、コンパイルのたびにも走るので、REPLを含むどのレーンも
@@ -412,11 +413,11 @@ scope検査のうちシャドーイングと予約された束縛の2つは、`F
 ## 9. 文法を変えるとき
 
 1. `include/frontend/grammar_def.h`を編集する。
-2. ウォーカーが名前で探すノードを足すなら、`parser.h`の
+2. ASTを読むコードが名前で探すノードを足すなら、`parser.h`の
    `ast_optimizer_keep_rules()`にルールを足す。ノードの形を変えるなら、`view_*`
    アクセサを更新または追加する。
-3. 変更について、§3のウォーカーをそれぞれ読む。アクセサは形の変更を1か所にしますが、
-   ノードが何を意味するかを知っているのはウォーカーだけです。
+3. 変更について、§3のASTを読むコードをそれぞれ読む。アクセサは形の変更を1か所にしますが、
+   ノードが何を意味するかを知っているのはそれを読むコードだけです。
 4. `just sync-grammar`が、`misc/culebra.peg`とエディタ文法・Playgroundの
    キーワードブロックを再生成し、`misc/keyword-map.txt`が対応づけていない
    キーワードを警告する。
@@ -427,7 +428,7 @@ scope検査のうちシャドーイングと予約された束縛の2つは、`F
    走らせる。反復中は`just phase <語>`で一部だけ走らせられる。
 7. エラーメッセージが変わったなら、凍結した`vm_cases`の出力の再凍結と、release-diff
    の許可リストへの1行が要る（vm.md §10）。
-8. effectやgeneratorのloweringを変えたなら、
+8. effectやgeneratorの書き換えを変えたなら、
    `python3 tools/checks/lowering_diff.py ./build-dev/culebra`を走らせる。
 
 `peglint`を走らせるレシピもCIのステップもありません。
@@ -445,13 +446,13 @@ scope検査のうちシャドーイングと予約された束縛の2つは、`F
 - **エラーメッセージは、パーサライブラリでなくここで作る。** peglibが最も遠い位置で
   失敗したもの全部の和集合を報告するようになったとき、`x = [1, 2`は空白から始まる
   38項目のリストになり、どのテストもそれに気づきませんでした。決定は、ライブラリの
-  構造化レポートを残し、文言を`syntax_error.h`に書くことで、群は文法から導出するので
+  構造化レポートを残し、文言を`syntax_error.h`に書くことで、このまとまりは文法から導出するので
   古くなりません。
-- **loweringはもう1本の木でなく、ソースを作る。** effectsのloweringはプレーンな
-  Culebraのソースに書き換えてもう一度パースするので、どのレーンもlowering済みの
+- **書き換えはもう1本の木でなく、ソースを作る。** effectsはプレーンな
+  Culebraのソースに書き換えてもう一度パースするので、どのレーンも書き換え済みの
   プログラムを走らせ、effects専用に実装するものを持ちません（`effects_transform.h`
   の冒頭がそう述べています）。その代価が§6の来歴の仕組み、つまりledgerとアンカーで、
   再パースしたテキストを利用者が書いた行に結びつけ直す必要があります。
-- **文法のスナップショットは、テストに見えない最適化である。** 古いblobは遅い経路に
+- **文法の保存データは、テストに見えない最適化である。** 古い保存データは遅い経路に
   フォールバックして正しいままです。だからパーサのテストに頼らず、専用の検査を
   持ちます。

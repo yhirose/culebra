@@ -22,7 +22,7 @@ smokeを1度に回します。AOT差分のみなら`just test aot`。下表
 | `tests/test_defer.cul` | §15 (`defer`、scope-guardパターン) |
 | `tests/test_forward_ref.cul` | §6 (スコープ)、§11 (closure)、§20 |
 | `tests/test_iter.cul` | §12 (`for ... in`)、§18 (iterator protocol、Stringメソッド)、§19 (`range`、`iota`) |
-| `tests/test_iter_combinators.cul` | §18 (lazy combinator群、無限ソースのlaziness) |
+| `tests/test_iter_combinators.cul` | §18 (lazy combinator各種、無限ソースのlaziness) |
 | `tests/test_iter_combinators_group.cul` | §18 (`min_by`/`max_by`、`to_set`/`to_object`/`group_by`/`partition`) |
 | `tests/test_iter_combinators_stream.cul` | §18 (`unzip`/`flatten`/`scan`/`distinct`/`tap`/`step_by`/`chunk_by`、無限ソースのlaziness) |
 | `tests/test_iter_terminal.cul` | §18 (terminal iteratorメソッド、§18.5 protocol contract) |
@@ -112,7 +112,7 @@ justfileの`gate_rows`がその配置の単一の宣言になっている。1フ
 tierが走らせるか、どの CIシャードが走らせるか、実測コストを書く。
 `just check`・`just test-dev`・`just test`・各 CIシャードはすべてこの表
 へのフィルタなので、新しいフェーズは各所に貼り付けられるのではなく
-自分で宣言することでゲートに入る。`gate_table_selftest`が、シャードを
+自分で宣言することで検査に入る。`gate_table_selftest`が、シャードを
 1つも名乗らないフェーズ、バイナリだけのシャードに乗ったビルドツリー
 依存フェーズ、そして何も選ばないレーンを拒否する。
 
@@ -123,7 +123,7 @@ tierが走らせるか、どの CIシャードが走らせるか、実測コス�
 | `just test` | これを pushしてよいか | 全コーパス×全軸、AOT含む |
 | CI | 両 OSと、ラップトップから見えないもの | 全掃き、refcount/leakレーン、プラットフォーム・ウィンドウビルド |
 
-着地ゲートが何を持つかは「安いから」ではなく「実際にすり抜けた場所」で
+着地前の検査が何を持つかは「安いから」ではなく「実際にすり抜けた場所」で
 決めてある。CIの`ctest`エントリ(escape 2件: `jit_error_pos_test`と
 `search_model_test`)と`-O0`/faststartの codegen軸(既定の`-O2`では見え
 なかったバグ3件)は中に入れ、コーパスを GC設定や refcount設定で二度
@@ -132,15 +132,15 @@ CIで一度だけ走らせる。
 
 ### JITレーンの部分集合
 
-`tools/checks/jit_shape_set.txt`が着地ゲートの`--jit`脚が掃く対象で、
+`tools/checks/jit_shape_set.txt`が着地前の検査の`--jit`脚が掃く対象で、
 executorが実装する全 bytecode opを JITが降ろすことを保つ最小のテスト
 ファイル集合である。`tools/checks/codegen_sensitive.txt`が名指しする
 ファイルを必須の種にし、ブランチが触ったテストファイルを足す。31
 ファイルで155 opのうち152を覆う。届かない
 3つは理由付きでこの集合の中に記載してあり、その一覧は減る方向にしか
-動かせない。`tools/checks/check_jit_shape_set.sh`がゲートを回すたびに
+動かせない。`tools/checks/check_jit_shape_set.sh`が検査を回すたびに
 コンパイル済み bytecodeから被覆を再計算するので、新しい opは誰かが
-テストで届かせるまでゲートを落とす。
+テストで届かせるまで検査を失敗させる。
 
 この cover が持っていないのは opの**組み合わせ**——ループの中の
 クロージャの中の unwindエッジ——である。それは codegenの種が手で運び、
@@ -153,13 +153,13 @@ x86-64の Linuxだけで、arm64のバックエンドと cover外のファイル
 揃って初めて出る不具合は、pushではなく Macで`just test`を回したときに
 見つかる。
 
-### ゲート自身のコスト
+### 検査自身のコスト
 
 `tools/checks/gate_budget.txt`が掃く母集団——コーパス、isolateファイル、
 generatorのプローブ、`vm_cases`、ctestエントリ、docブロック、
 言語サンプル——を記録し、
 `check-gate-budget`がその数を厳密に保つ。増えるのは普通のことで、
-増やすコミットの中でここを更新するので、遅くなったゲートは時間の
+増やすコミットの中でここを更新するので、遅くなった検査は時間の
 行き先を示す。秒数をratchetにしないのは意図的
 で、同じレーンが負荷のかかったマシンでは1.5〜2倍ぶれる。表のフェーズ別
 コストはレーン終了時に実測と並べて表示するだけで、何も落とさない。
@@ -180,7 +180,7 @@ CPUの87%はこのコンパイルだった。vm/jitの全掃きと gc-stressが�
 変えない再ビルドはそれを見つける。飛ぶのはバックエンドで、コーパスの
 コンパイルの53%にあたる。IRパイプラインはキーを得るために毎回走る。
 `CULEBRA_GATE_JIT_CACHE`で別のディレクトリを指定でき、`off`ならその実行
-だけのディレクトリになる。ゲートが書き込めないディレクトリは1行で
+だけのディレクトリになる。検査が書き込めないディレクトリは1行で
 知らせたうえで、同じくその実行だけのものに切り替える。残すことから2つの
 ことが決まる。vm/jit掃きのファイル別コンパイル予算がコンパイル全体を
 測るのは、そのモジュールを初めて見たときだけになる。そして objectは
@@ -196,7 +196,7 @@ CPUの87%はこのコンパイルだった。vm/jitの全掃きと gc-stressが�
 書かれた形が動かなくなっても文書には残り続ける。skipの正当化は2通りだけである: そのブロックがそもそも走れないか、
 なぜここで走らせないかを書いてあるか（`# doctest: skip — ウィンドウを開く`）。
 `check_doctest_skips.sh`が理由のないskipを executor で走らせ、きれいに走った
-ブロックはゲートを落とす——skipを外すか、読者が知りたい理由を書く。
+ブロックは検査を失敗させる——skipを外すか、読者が知りたい理由を書く。
 ウィンドウ・サーバ・監視・stdin・ネットワーク・外部プログラム・マシン固有の
 パスが要るブロックは理由を持ち、単に走る例示にskipは付かない。
 

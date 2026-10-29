@@ -4,7 +4,7 @@
 この文書はculebraの実行エンジンがどう作られているかを説明する。仕様書
 ではない — 観測可能な言語契約は[`language.md`](../language.ja.md)が
 規範であり、両者が食い違う場合は`language.ja.md`が勝つ。ランタイムの
-メモリ管理側 — 参照カウント、LLVM loweringの所有権規律、tracing
+メモリ管理側 — 参照カウント、LLVM IRへの変換（lowering）の所有権規律、tracing
 backstop — は別の文書[`memory.md`](memory.ja.md)にある。以下の各ファイルが
 どの層に属し、その名前が何を意味してよいかは[`layout.md`](layout.ja.md)に
 ある。
@@ -20,7 +20,7 @@ backstop — は別の文書[`memory.md`](memory.ja.md)にある。以下の各�
 4. [共有フロントエンド](#4-共有フロントエンド)
 5. [バイトコード](#5-バイトコード)
 6. [executor](#6-executor)
-7. [LLVM lowering](#7-llvm-lowering)
+7. [LLVM変換（lowering）](#7-llvm変換lowering)
 8. [セッションとホスト](#8-セッションとホスト)
 9. [ビルド構成](#9-ビルド構成)
 10. [検証](#10-検証)
@@ -33,7 +33,7 @@ backstop — は別の文書[`memory.md`](memory.ja.md)にある。以下の各�
 フロントエンドは1つ、消費者は2つ。パーサがASTを作り、バイトコード
 コンパイラがそれをレジスタベースでslot解決済みのバイトコードに変える。
 そして同じバイトコードを、インタプリタループ（*executor*、既定
-エンジン）とLLVM lowering（`--jit`、および事前ビルドバイナリ用の
+エンジン）とLLVM変換（`--jit`、および事前ビルドバイナリ用の
 `culebra build`）のどちらかが消費する。
 
 ```text
@@ -56,7 +56,7 @@ backstop — は別の文書[`memory.md`](memory.ja.md)にある。以下の各�
 両方の消費者は1つのランタイム層（`rt.h`）の上で動く: 値表現、演算子・
 コンテナ・dispatch・標準ライブラリを実装する`extern "C"`ヘルパー、
 スラブアロケータ、コレクタ。executorはそれらのヘルパーを直接呼び、
-loweringはそれらへの呼び出しを生成する。2つのレーンが同じヘルパーの
+LLVM変換はそれらへの呼び出しを生成する。2つのレーンが同じヘルパーの
 上で同じ命令列を実行するので、このプロジェクトの中心的な要件 —
 振る舞い・エラーのkind/文面/位置・チェックの*順序*がすべてのレーンで
 一致すること — は手作業で保つ規律ではなく、パイプラインの構造的な
@@ -69,7 +69,7 @@ loweringはそれらへの呼び出しを生成する。2つのレーンが同�
 | ランタイム値表現とヘルパー | `rt.h`とそれがincludeする`rt_*.inc.h`断片 | LLVM非依存。stdlib全体がこの上に載る（`stdlib/bindings.h`） |
 | フロントエンド解析 | `fn_analysis.h` | `FuncInfo` / `FnAnalysis`。両消費者が共有 |
 | バイトコード形式・コンパイラ・executor | `vm.h` | `Op`、`Chunk`、`VmProgram`、`vm::Compiler`、`vm::Exec` |
-| LLVM lowering、`--jit`、AOT | `jit/lowering.h` | LLVMを必要とする唯一のVMヘッダ |
+| LLVM変換、`--jit`、AOT | `jit/lowering.h` | LLVMを必要とする唯一のVMヘッダ |
 | LLVM codegenコンテキスト | `jit.h` | `struct JIT`: emitter群、所有権ハンドル、ORC/`exec`、object cache |
 | セッション（REPL、`culebra test`、embedding） | `vm/session.h`、`cli/repl.h`、`cli/test_engine.h`、`vm/embed.h` | プログラムより長生きするトップレベル束縛 |
 | デバッガ | `cli/debug_engine.h`、`vm/debug.h`、`cli/dap.h` | 6問のエンジンインターフェースの上のDAPプロトコル |
@@ -107,19 +107,19 @@ includeし、他のどこからもincludeしない。
    付け加える（`stdlib/preamble.h`、ソースは`stdlib/preambles.gen.h`）。
    したがってstdlib名はコンパイル時に、コンパイラがその名前を見た
    時点で解決される。
-   2つのloweringレーンは、このバイナリが**bake**したモジュールを
+   LLVM変換の2つのレーンは、このバイナリが**bake**したモジュールを
    preambleから再び取り出す（`resolve_baked_preamble`）: ビルドが
    各stdlibモジュールを独立したネイティブオブジェクトにコンパイル
    してあり（`culebra_preamble_cc`、モジュールごとに1つの
    `culebra_preamble_<Name>`エントリ、driverと`libculebra_rt.a`が
-   持ち運ぶ）、loweringされたプログラムは各エントリの呼び出しで
+   持ち運ぶ）、変換されたプログラムは各エントリの呼び出しで
    始まる — 差し込まれたソースが行うのと同じ`_lazy_ns_register`を
    実行する — ので、モジュールあたり約2万行のIRを抱え込まずに済む。
    組み込みtrait（`Stringer`、`Eq`、`Comparable`、…）も`__Traits`と
    いう名前で同じようにbakeされるが、エントリ一覧への入り方が違う。
    どのプログラムも名指しせずに登録するものなので、そもそもspliceの
-   対象ではなく、コンパイルするレーンは自前のprologueとしてはlowering
-   しない。5つのデフォルト本体（`Eq.neq`と`Comparable.lt/le/gt/ge`）が
+   対象ではなく、コンパイルするレーンは自前のprologueとしてはLLVM IRに
+   変換しない。5つのデフォルト本体（`Eq.neq`と`Comparable.lt/le/gt/ge`）が
    小さなプログラムのIRの大半を占めることになり、プログラム自身の
    コードからはどれも到達しないからである。
    `with_baked_traits`がこのエントリをstdlibのエントリ
@@ -127,8 +127,8 @@ includeし、他のどこからもincludeしない。
    （`BakedLane::traits`）。呼び出しを出しつつソースも残すと二重に
    登録してしまうので、この2つは必ず一緒に動かす。
    executorは差し込まれたソースをコンパイルし続けるので、対称性
-   ゲートは毎回bakeされたコードをそれと比較する。
-   `CULEBRA_PREAMBLE_SOURCE=1`でloweringレーンも再びソースを
+   検査は毎回bakeされたコードをそれと比較する。
+   `CULEBRA_PREAMBLE_SOURCE=1`でLLVM変換のレーンも再びソースを
    差し込む。traitも同様で、`check_baked_preamble.sh`はこの
    切り替えが生きていることをそこで読み取る。
    この差し替えのあとにも1つだけ、コンパイル時の情報が要る。bakeされた
@@ -149,7 +149,7 @@ includeし、他のどこからもincludeしない。
    プログラムをコンパイルして`vm::Lowering`に渡す。
 
 `--vm-dump`は実行せずバイトコードを表示し（`vm::dump(prog)`）、
-`--jit --emit-llvm`はloweringされたIRを表示する。どちらも2つの
+`--jit --emit-llvm`は変換されたIRを表示する。どちらも2つの
 レーンが食い違ったときに最初に手を伸ばすツールである。
 
 他のエントリポイントは、この4ステップの薄いバリエーションである:
@@ -157,11 +157,11 @@ includeし、他のどこからもincludeしない。
 | エントリ | コンパイルに使う | 実行先 | 備考 |
 |---|---|---|---|
 | `culebra prog.cul` | `compile_modules` | executor | 既定 |
-| `culebra --jit prog.cul` | `compile_modules` | lowering (ORC) | `--jit-faststart`、`-O<n>`、`--emit-llvm` |
-| `culebra build prog.cul` | `compile_modules` | lowering (オブジェクトファイル) | `libculebra_rt.a`とリンク |
+| `culebra --jit prog.cul` | `compile_modules` | LLVM変換 (ORC) | `--jit-faststart`、`-O<n>`、`--emit-llvm` |
+| `culebra build prog.cul` | `compile_modules` | LLVM変換 (オブジェクトファイル) | `libculebra_rt.a`とリンク |
 | REPL（ファイルなしの`culebra`） | 入力ごとに`compile_repl_line` | executor | セッションcell、§8.1 |
 | `culebra test` | ファイルごとに`compile_session_modules` | executor | §8.2 |
-| `culebra test --doc` | ブロックごとに`compile_modules` | executorまたはlowering | ブロックごとに新しい`Runtime` |
+| `culebra test --doc` | ブロックごとに`compile_modules` | executorまたはLLVM変換 | ブロックごとに新しい`Runtime` |
 | `culebra dap` | `Debug::Step`付き`compile_modules` | executor | §8.3 |
 | `vm::Embed`（C++ホスト） | `compile_session_modules` | executor | §8.4 |
 | Playground (wasm) | `compile_modules` | executor | §9 |
@@ -170,9 +170,9 @@ includeし、他のどこからもincludeしない。
 CIワークフローは`CULEBRA_REQUIRE_EXPLICIT_ENGINE=1`を設定しており、
 この下では既定エンジンを選ぶ起動はabortする（`main.cc`の
 `require_explicit_engine`）。これによりテストレーンは自分が何を
-測っているかを名指しせざるを得ず、既定の変更が黙ってゲートを別
+測っているかを名指しせざるを得ず、既定の変更が黙って検査を別
 エンジンに動かすことができなくなる。唯一の意図的な例外は
-release-diffゲート（§10.3）で、そこでは既定そのものが対象である。
+release-diffの検査（§10.3）で、そこでは既定そのものが対象である。
 
 ## 3. ランタイム層
 
@@ -189,7 +189,7 @@ release-diffゲート（§10.3）で、そこでは既定そのものが対象�
 
 値は16バイト: `JitValue { int64_t tag; int64_t data; }`。tagが
 `int8`でなく`int64`なのはABI上の理由からである: `{i8, i64}`の戻り値
-はCコンパイラとLLVMで異なる形に強制変換されるため、loweringが生成
+はCコンパイラとLLVMで異なる形に強制変換されるため、LLVM変換が生成
 する呼び出しはヘルパーのCシグネチャと厳密に一致していなければ
 ならない。
 
@@ -212,7 +212,7 @@ VMが必要とするヒープオブジェクトはランタイムの既存のも
   参照とREPLセッション束縛の表現でもある（§4.2、§8.1）。
 - `JitClosure` — `fn_ptr` + `JitCell*`のcapture配列 + arity。
   executorが構築するクロージャは`fn_ptr`にVM trampolineを持ち、
-  自分のchunkをパラメータのメタデータ経由で名指す（§6.1）。loweringが
+  自分のchunkをパラメータのメタデータ経由で名指す（§6.1）。LLVM変換が
   構築するクロージャはそこにネイティブ関数を持つ。どちらも同じ*JitFn ABI*
   で呼ばれる: `void (JitValue* ret, JitClosure*, int8_t self_tag,
   int64_t self_data, int64_t n_args, JitValue* args)`。
@@ -347,7 +347,7 @@ variantのコンストラクタ、束縛メソッドがそれで、
 
 ## 4. 共有フロントエンド
 
-これより前のパーサ、ローダ、loweringは[`frontend.md`](frontend.ja.md)にあります。
+これより前のパーサ、ローダ、書き換えは[`frontend.md`](frontend.ja.md)にあります。
 この節はコンパイラが始まるところから書きます。
 
 `FnAnalysis`（`fn_analysis.h`）は各関数のAST — モジュールトップ
@@ -402,7 +402,7 @@ mutabilityビットでモデル化する:
   この呼び出しの事実である: コンパイラは各宣言の`mut`をその隣のslotに
   記録し（`Binding::mut_slot`）、bareな書き込みはそれを参照する。この
   bindingがcellになるのはクロージャがその名前をcaptureするときだけで、
-  それ以外は同じセンチネルを保持する素のslotになる。loweringはheapからの
+  それ以外は同じセンチネルを保持する素のslotになる。LLVM変換はheapからの
   loadでなく値そのものを見るので、そのタグは他のローカルと同じように
   畳まれる。
 - 宣言はborrowされたcaptureを通して書き込むことは決してない:
@@ -630,17 +630,17 @@ captureはこれを引き継ぐ。borrowするcellはその束縛が所有する
 （`Known::constant`）。そうした名前をcell越しに読む — captureされた
 `DT = 0.016` — と、読みはその定数そのものになり、`CellGet`があった場所に
 `LoadConst`が置かれる: どちらのエンジンもcellを辿らず、タグがコードの中に
-あるので、loweringのSCCPが下流の算術・比較のdispatchを畳める。plainな
-slotにはこの事実は要らない — loweringはそこに何が格納されたかを既に見て
+あるので、LLVM変換のSCCPが下流の算術・比較のdispatchを畳める。plainな
+slotにはこの事実は要らない — LLVM変換はそこに何が格納されたかを既に見て
 いる。取り消しも同じ1つである: 再宣言は、畳まれた読みをそれが代わりを
 務めていたcellの読みへ書き戻す（`const_sites_by_cell`）。
 静的なのはコードだけである: closure自体は
 レジスタに乗ったままで、そのcaptureは呼び手のものだからだ。両consumer
-は同じ3つを飛ばす — 2つのcold probeを伴う`TAG_FUNC`ゲート、
+は同じ3つを飛ばす — 2つのcold probeを伴う`TAG_FUNC`の確認、
 `check_pos_count_cls`の背後にあるパラメータmetaの引き当て（上限は
 呼び先chunkのもの、位置引数の個数はサイトのものなので、答えは
 コンパイル時に出る）、そして`fn_ptr`の間接である。executorは名指し
-されたchunkで`run_frame`に入り、loweringはそのchunkの関数への直接
+されたchunkで`run_frame`に入り、LLVM変換はそのchunkの関数への直接
 callを出す。
 
 この形に実行時のフォールバックは無い: サイトは渡された値を検査しない。
@@ -652,7 +652,7 @@ releaseビルドは何も払わない。
 `Chunk::Reach`は解決済みサイトが3つの形のどれかを名指しする。3つはフラグ
 ではなく択一である: `Direct`が今述べた形、`Mono`と`Guarded`が以下の2つ。
 それぞれが実行時に問う質問は高々1つなので、executorはそれを1箇所で問い
-（`resolved_entry`、`Call`と`CallM`が共有する）、loweringは質問を持つ形に
+（`resolved_entry`、`Call`と`CallM`が共有する）、LLVM変換は質問を持つ形に
 共通のダイヤモンドを1つ出す。
 
 **`fn name`の場合。** `fn name`が束縛するのはclosureではなくdispatcher
@@ -690,7 +690,7 @@ chunkではなくdispatcherにするし、コンパイル時マーカー以外�
 いれば、同じ名前が別のクラスに解決されうる。そうしたサイトは`Reach::Guarded`
 になる — chunkは保ったまま、入る前に「この呼び先は本当にそのchunkのclosureか」
 を問う。executorは`call_target_holds`（上のassertが使う述語そのもの）で問い、
-loweringはclosureの`fn_ptr`をターゲットが名指しする関数と比較する。外れれば
+LLVM変換はclosureの`fn_ptr`をターゲットが名指しする関数と比較する。外れれば
 元々取っていた動的な腕へ落ちる。宣言スコープ由来やcapture由来のクラス名は
 ガード無しの答えのままである。
 
@@ -1234,8 +1234,8 @@ pinしないとtrial-deletionが「metaの参照数はインスタンスから�
 テーブル`bmeth_specs()`で駆動される: `(name, argc)`ごとに1行の
 `BMethSpec`が、receiverのタグマスク、引数ごとの宣言型、末尾の
 オプション引数のデフォルト、任意のkeyword-onlyパラメータ、idを
-持つ。コンパイラはこの行からreceiverゲートとパラメータチェックを
-読み取り（`MethGate` → `ChkParam` → `BMeth`）、executorとlowering
+持つ。コンパイラはこの行からreceiverの確認とパラメータチェックを
+読み取り（`MethGate` → `ChkParam` → `BMeth`）、executorとLLVM変換
 はidでswitchする。どのreceiverがどのarityでその名前を解決するかが
 `ArityError`とメソッドmissのどちらになるかを決めるので、**specの
 receiverマスクはその名前・arityを解決するreceiverの集合と厳密に
@@ -1253,7 +1253,7 @@ namespace closureのadapterが届いたであろうhelperへ1つのdispatch
 位置が渡る。行が持つのは名前とidだけである: arityとパラメータの宣言型は
 `canon_sigs_table.h`から読み、型付きパラメータは引数リスト全体が走った後に
 その引数の位置で`ChkTypeAt`で検査する — closure trampolineと同じ順で
-ある。loweringはFloat系（`sqrt`、`sin`、`exp`、…、`abs`、`atan2`）を
+ある。LLVM変換はFloat系（`sqrt`、`sin`、`exp`、…、`abs`、`atan2`）を
 数値タグの検査の背後にinlineする — LLVM intrinsicがあればそれを使い、
 これはhelperが呼ぶlibmの当の呼び出しに落ちる — ので、タグが既知なら
 呼び出しは1命令に畳まれる。`min`、`max`、`clamp`、`f32`にも腕がある
@@ -1279,7 +1279,7 @@ namespace closureのadapterが届いたであろうhelperへ1つのdispatch
 `self.n += 1`の読みである`Op::PropWr`は、同じ答えを`d`で、DOTの位置を
 持つconstの番号と並べて運ぶ（`Chunk::PropWrOperand`）。
 
-loweringがそれで何をするかが要点である。読みはslotのペイロードを
+LLVM変換がそれで何をするかが要点である。読みはslotのペイロードを
 **定数**のtagとともに作るので、tag付きの値が負っていたものが全て
 emit時に畳まれる: 読みが行うはずだったretain、statement末尾のrelease、
 そして消費側のtag検査。`acc += p.x`はdouble phi上の`fadd`になる。
@@ -1340,8 +1340,8 @@ trait、`Range`や`Generator`のようにネイティブに作られるオブジ
 同じ形の1段手前。パラメータの注釈は入口で検査される（`docs/language.md`
 §14）が、検査はその答えを捨てていたので、本体は問い続けていた。
 `Op::ArgTag`がそれを保つ: emitterはこれを検査の後、かつ「tagが既に
-合っていれば検査を飛ばす」`JumpIfTag`のゲートの合流点より後に置くので、
-どちらの経路もここに到達する。loweringはtagを定数として書き戻し、
+合っていれば検査を飛ばす」`JumpIfTag`の分岐の合流点より後に置くので、
+どちらの経路もここに到達する。LLVM変換はtagを定数として書き戻し、
 ペイロードには触れない。実行器は値からtagを読むので何もすることがなく、
 その腕は配置が正しいことのassertである（`just test-assert`がスイープ全体を
 これに対して回す）。
@@ -1359,7 +1359,7 @@ tagを名指さない）。`mut`パラメータも除外する（再代入は再
 対照を自分で持つので、何も測っていない状態では通らない。
 
 限界: **連鎖が畳まれるのは頭のtagが分かっているときだけ**。`trim`は既に結果を
-`make_string`で作っているので、組み込みメソッドの戻りtagはloweringの側に、
+`make_string`で作っているので、組み込みメソッドの戻りtagはLLVM変換の側に、
 `CanonSig`が言えるより正確に既にある。頭が不明だと最初の呼び出しがmiss腕を
 持ち、その結果はphiになる。定数と非定数のphiは定数ではない。だから
 `CanonSig::return_type`を埋めても畳み込みは広がらず、攻められるのは頭だけである。
@@ -1551,10 +1551,10 @@ executorのクロージャは本物の`JitClosure`であり、`fn_ptr`は
 共有するので、どのchunkを解釈するかを言うのはクロージャの`meta`である。
 キーワード解決器が読むパラメータのメタデータは`VmChunkRef`の先頭
 メンバで、その後ろに`VmFnDesc`（`{program, chunk}`）がある。ネイティブ
-コードはVM関数をloweringされた関数と全く同じ方法で呼ぶ。クロージャを
+コードはVM関数を変換済みの関数と全く同じ方法で呼ぶ。クロージャを
 部品から組み直す側（isolateの受け取り側、遅延名前空間のレジストリ）は
 もともと`fn_ptr`・フラグ・`meta`を写していて、それで全部である。
-captureは本体自身のものだけで、loweringされたクロージャと同じ配列に
+captureは本体自身のものだけで、変換済みのクロージャと同じ配列に
 なる。
 
 そのクロージャが何であるかを知るのに、フックも第二の入口も要らない。
@@ -1617,14 +1617,14 @@ interruptが（または値のthrowが）どうなるかの注記をハンドラ
 ライブラリの中で起きたエラーは、ユーザーがそのライブラリを呼んだ位置を
 報告する。コンパイラはライブラリのソース（`<stdlib>`のpreamble、
 `<builtin>`のtrait、`culebra test`の`<test>`のambient）から取る位置すべての
-行に`kLibraryLineBit`を立てるので、印は既存の経路を変更なしで運ばれる: chunkの位置、loweringの定数、
+行に`kLibraryLineBit`を立てるので、印は既存の経路を変更なしで運ばれる: chunkの位置、LLVM変換の定数、
 公開される呼び出し位置、引数位置、carrier。ライブラリの関数はprologueで
 自分を呼んだ位置を控え（`PosSnap`で`Cleanup::site_slot`へ）、フレームの
 段でその位置を`culebra_runtime_reanchor`に渡す: 印の付いた位置のまま
 フレームを抜けるエラーは、控えた位置がユーザーのものなら、その位置の
 同じエラーに置き換わる（throwする`defer`が置き換えるのと同じ）。控えた
 位置に印があれば、その位置が属するライブラリのフレームに任せる。executorの
-`unwind`とloweringのframe padは同じ段で同じヘルパーを呼び、ヘルパーは
+`unwind`とLLVM変換のframe padは同じ段で同じヘルパーを呼び、ヘルパーは
 carrierしか読まないので、JITのpadにC++の再検査は要らない。フォーマッタまで
 印が残った位置（上にユーザーのフレームが無いthrow）は、位置なしで表示する。
 
@@ -1695,18 +1695,18 @@ generatorが共有する1つのmeta（`_jit_gen_meta`）上のnativeで、それ
 1つ先読みする。`--jit`でもビルドしたバイナリでも同じもので、違うのは
 フレームのresumeの仕方だけである（§7.3）。
 
-## 7. LLVM lowering
+## 7. LLVM変換（lowering）
 
-`vm::Lowering`（`jit/lowering.h`）は`VmProgram`をchunkごとにlowering
-する: 各chunkはJitFn ABIを持つ1つのLLVM関数になり、各レジスタは
+`vm::Lowering`（`jit/lowering.h`）は`VmProgram`をchunkごとにLLVM IRへ
+変換する: 各chunkはJitFn ABIを持つ1つのLLVM関数になり、各レジスタは
 mem2regがSSAに昇格させるエントリブロックの`alloca`になり、各`Insn`
 はいくつかのIR命令かランタイムへの呼び出しになる。executorがヘルパー
-を呼ぶところで、loweringは`struct JIT`上の対応するemitter
+を呼ぶところで、LLVM変換は`struct JIT`上の対応するemitter
 （`emit_arith_step`、`emit_comparison_i1`、`value_to_bool`、
 プロパティのインラインキャッシュ）を呼ぶ — したがってある構文の
 dispatchは1回定義され2回消費される。
 
-loweringを共有する2つのエントリポイントがある: `run_program`は
+LLVM変換を共有する2つのエントリポイントがある: `run_program`は
 モジュールを構築し最適化し（`JIT::optimize_module`、既定の`-O2`
 パイプライン）、`JIT::exec`経由でORCに渡す — isolate-joinと
 teardown-collectのガード、捕捉されなかったエラーの変換はここに
@@ -1717,11 +1717,11 @@ teardown-collectのガード、捕捉されなかったエラーの変換はこ�
 `JIT::run_modules`、`JIT::build_object` — はこれらの上で定義
 されている。
 
-loweringされたプログラムに対してホスト側に登録されるものは何も
+変換されたプログラムに対してホスト側に登録されるものは何も
 ない: キーワード呼び出しが解決の根拠にするパラメータメタデータは
 モジュールのグローバルとしてemitされ（`param_meta_global`、それを
 必要とする最初の`MakeClosure`サイトで — `CreateGlobalString`は
-挿入ブロックを必要とするため）、これが同じloweringをオブジェクト
+挿入ブロックを必要とするため）、これが同じLLVM変換をオブジェクト
 ファイルに対しても有効にしている。
 
 `--jit-faststart`はIRパイプラインを飛ばしバックエンドの高速パス
@@ -1735,13 +1735,13 @@ loweringされたプログラムに対してホスト側に登録されるもの
 | ソースキー（`jit_module_name`） | プログラムのソースとオプション、このバイナリのパス・サイズ・時刻 | IRパイプラインとバックエンド | それを書いたバイナリ |
 | objectキー（`object_key_for`） | 最適化後のモジュールのテキストと`backend_identity`: バイナリが持つLLVM、ホストCPU、`kBackendKnobs`の設定 | バックエンド | このモジュールをこのバックエンドに渡すすべてのビルド |
 
-`run_program`はloweringの後でソースキーで尋ね
+`run_program`はLLVM変換の後でソースキーで尋ね
 （`JIT::cached_object`）、ヒットすれば保存されたobjectをリンクして
 モジュールは読まずに捨てる。ミスならパイプラインを走らせ、object
 キーでもう一度尋ねる（`JIT::keyed_object`）。このときobjectキーを
 ソースキーの下に記録し、モジュールをその名前にする — バックエンドが
 走ることになった場合にcompile layerがobjectを保存する名前である。
-lowering・ランタイム・パイプラインへの変更はobjectキーに入れる必要が
+LLVM変換・ランタイム・パイプラインへの変更はobjectキーに入れる必要が
 ない: それが変えたものはモジュールのテキストに現れる。テキストに
 現れないのはバックエンド自身なので、その素性は明示してある — LLVMは
 CMakeがリンクしたライブラリの印（`CULEBRA_LLVM_BUILD_ID`。パッケージの
@@ -1754,11 +1754,11 @@ startの実行と同じであることを、2つのバイナリにまたがっ�
 そしてfaststartもcacheも、coldな`--jit`の
 起動が安い理由ではない: プログラムが名前で呼ぶstdlibモジュールも、
 どのプログラムも登録する組み込みtraitも、そもそもモジュールの中に
-無い（§2、焼き込みpreamble）ので、loweringされるのはユーザーの
+無い（§2、焼き込みpreamble）ので、変換されるのはユーザーの
 コードである。距離のほとんどはこれで稼いでいる — `let x = 1`が
-loweringするIRは既定の`-O2`で21行である（`--jit --emit-llvm`）。
+変換されるIRは既定の`-O2`で21行である（`--jit --emit-llvm`）。
 `Lowering::build_preamble_object`
-は同じloweringをモジュールごとのエントリ名で走らせたもので、ビルド時
+は同じLLVM変換をモジュールごとのエントリ名で走らせたもので、ビルド時
 に`culebra_preamble_cc`が実行する。`lower_program`は`__culebra_main`を
 プログラムが名前で呼ぶ焼き込みエントリそれぞれへの呼び出しで開き、
 シンボルはレーンのリンクが供給する — JITはドライバの表から定義し
@@ -1784,7 +1784,7 @@ cacheのヒットは`cached`と報告される — ソースキーが答えた�
 2命令少なく、モジュールは5%小さい）にすると同じファイルのcoalescerが
 1.2sから9.2sになる。範囲テストはそのために残している。
 
-このパイプラインのうち1つのパスはlowering自身のものである。
+このパイプラインのうち1つのパスはLLVM変換自身のものである。
 4つのrefcountヘルパーはそれぞれガードで始まる — 値の2つは
 `_is_refcounted_value_tag`とnullペイロードに対して、cellの2つは
 nullのcellに対して。したがってそれを満たす定数で到達する呼び出しは
@@ -1860,9 +1860,9 @@ passをtarget initの2経路の両方で切る。x86は元から走らせてい�
 `tools/checks/check_early_ifcvt.sh`がJITの出したobjectを読み戻して
 確かめる（§10.2）。
 
-### 7.1 loweringの中の所有権
+### 7.1 LLVM変換の中の所有権
 
-loweringのC++は、すべての一時的な`+1`を`JIT::Owned`に保持する。
+LLVM変換のC++は、すべての一時的な`+1`を`JIT::Owned`に保持する。
 これは正確に1回消費されなければならないmove-onlyのRAIIハンドル
 である。そこから読み出された値は消費されたベーシックブロックに
 `Pinned`される。throwしうる呼び出しは`invoke`としてemitされ、
@@ -1875,7 +1875,7 @@ handlerだけが例外を開き（`emit_handler_prologue`）、
 
 ### 7.2 unwindの形
 
-loweringはexecutorのテーブル（§5.5）をブロック単位で写す:
+LLVM変換はexecutorのテーブル（§5.5）をブロック単位で写す:
 スコープごとに1つのcleanup pad（`vm.scope.k`。関数のフレームも含む）
 があり、それぞれが外側のスコープのpadへ続く。throwは最も内側の
 スコープのpadに着地し、そのpadがスコープのslot範囲を宣言の逆順にすべて
@@ -1897,7 +1897,7 @@ phiで読み、自分のdeferが投げた置き換えは分類せずに先へ渡
 landing padに生きたまま入る値はspillされなければならない —
 unwinderはcallee-savedレジスタしか復元しないので — したがって
 throwする可能性のある呼び出しを多く持つ関数は、`-O2`でレジスタ圧を払う:
-バイトコードのレジスタファイルはSSAに昇格されており、loweringされた
+バイトコードのレジスタファイルはSSAに昇格されており、変換された
 コードがループで速く走るのも同じ事実による。
 
 ### 7.3 generatorの本体
@@ -1922,7 +1922,7 @@ generatorのchunk（§5.7）は2つのLLVM関数になる。`__vm_fn_N`は
 - `for-in`カーソルのnativeな6フィールドは、entryブロックのallocaでは
   なくフレームのscratchワードに置く
 
-loweringがレジスタの外に持つその他のもの — 引数のslab、unwind用の
+LLVM変換がレジスタの外に持つその他のもの — 引数のslab、unwind用の
 一時値プール、例外slot — は1命令の中で完結するので`alloca`のままで
 ある。cleanup padは変わらない: closeはそこに届かず（§5.7）、本体からの
 throwはどの関数とも同じようにpadを使う。chunkのstack mapはprivateな
@@ -1938,7 +1938,7 @@ dispatchを持ち続ける: 300回のyieldの間に3000万回のFloat演算を�
 
 executorは、プログラムのトップレベルの束縛がそれを作ったプログラム
 より長生きしなければならない場面、あるいはすべての本体をコンパイル
-することがレイテンシしか買わない場面のエンジンである。lowering
+することがレイテンシしか買わない場面のエンジンである。LLVM変換
 レーンにはREPLもデバッガもユニットテストホストもない。
 
 ### 8.1 セッション
@@ -2010,7 +2010,7 @@ throwを説明する。そして`VmTestHost`（`cli/test_engine.h`）は自分�
 として走り、リストにpreambleがsplice済みでなければ
 `Session::run_modules`が自分でstdlibデルタを要求する。
 
-ゲートは`tests/*.cul`の全部をランナーに通し、終了コードとファイル数の
+この検査は`tests/*.cul`の全部をランナーに通し、終了コードとファイル数の
 両方を検査する — これらのファイルは`test(...)`を登録しないので、
 `passed`はカバレッジについて何も言わない。スイープ全体でセッションの
 スコープ規則を通す唯一のレーンである。対称性スイープは同じファイルを
@@ -2074,7 +2074,7 @@ evaluate、set_variable。`VmDebugEngine`は`Debug::Step`でコンパイル
 
 AOTランタイムアーカイブ（`libculebra_rt*.a`、`src/runtime/`）は
 ドライバと同じヘッダを、ビルドされたプログラムがリンクするライブラリ
-にコンパイルする。loweringが名指す`culebra_runtime_*`シンボル集合
+にコンパイルする。LLVM変換が名指す`culebra_runtime_*`シンボル集合
 は両方に存在しなければならない（`tools/checks/check_jit_host_symbols.sh`、
 `tools/checks/check_rt_archive_tls.sh`）。さらに、base archiveが
 解決するものはそれをリンクするプログラムが供給できるものでなければ
@@ -2108,7 +2108,7 @@ helper-to-userのすべての呼び出しは`_jit_invoke`を通り、その
 
 ### 10.1 レーン間の対称性
 
-| ゲート | 何を比較するか | どこで |
+| 検査 | 何を比較するか | どこで |
 |---|---|---|
 | vm/jit対称性 | `tests/*.cul`を`--vm`と`--jit`で、stdout + exit code。`tools/checks/jit_shape_set.txt`のop被覆とブランチが触ったファイル、または全ファイル | `just test-dev`（op被覆）、`just test`（全ファイル） |
 | isolateスイート | `tests/isolate/*.cul`を両レーンで | `just test-dev`、`just test` |
@@ -2121,10 +2121,10 @@ helper-to-userのすべての呼び出しは`_jit_invoke`を通り、その
 `misc/run_all_backends.sh`は対称性チェックの単一スクリプト版で
 あり、Windows CIジョブが使う。
 
-### 10.2 loweringの出力へのチェック
+### 10.2 LLVM変換の出力へのチェック
 
-- `culebra --jit --emit-llvm f.cul | opt -passes=verify` — lowering
-  作業の常設チェック。`run_program`も自分がloweringするすべての
+- `culebra --jit --emit-llvm f.cul | opt -passes=verify` — LLVM変換
+  作業の常設チェック。`run_program`も自分が変換するすべての
   関数を検証し失敗時にthrowする。
 - **IR diffing。** codegenを変えてはいけないリファクタは、
   `tests/*.cul`全体に対する`--jit -O0 --emit-llvm`を前後で比較し、
@@ -2164,7 +2164,7 @@ helper-to-userのすべての呼び出しは`_jit_invoke`を通り、その
 変わったすべてのケースを報告する。両側とも既定エンジンで、フラグ
 なしで実行される。すべての差分は`tools/difftest/release_diff_allow.txt`
 にケースラベルに対するglobとして名指しされなければならない —
-一覧にない変更はゲートを失敗させ、何にもマッチしない一覧された
+一覧にない変更は検査を失敗させ、何にもマッチしない一覧された
 パターンはファイルを縮められるよう報告される — これによりこの
 ファイルはリリースノートの下書きになる。コーパスが今使っている構文
 より前のbaselineはケースごとに処理される（`::: unsupported`）。
@@ -2180,11 +2180,11 @@ comparator自身のセルフテスト（`release_diff_selftest.sh`）があり�
 テストが1つも到達しない関数を測定する。`tools/coverage/corpus_only_coverage.txt`
 がその集合をratchetとして保持する: 新しいcorpus-only関数は報告を
 失敗させ、このファイルは空である。35分かかる計装ビルドでの計測で
-あり、PRごとのゲートの外にある。
+あり、PRごとの検査の外にある。
 
 ### 10.5 メモリ
 
-リークゲート（leak-fuzz、leak-abort、rc-leakバッテリー、GC stress、
+リーク検査（leak-fuzz、leak-abort、rc-leakバッテリー、GC stress、
 assertレーン）はコレクタと一緒に`memory.md` §5〜6で説明されている。
 
 ### 10.6 名前解決をresolve.hと突き合わせる
@@ -2276,11 +2276,11 @@ yieldする`tests/*.cul`のファイルは他と同じコーパスで、上の�
 ## 11. 設計判断
 
 - **スタックベースでなくレジスタベース。** レジスタは解析が既に
-  計算しているフレームレイアウトと、loweringのSSA値に直接対応
+  計算しているフレームレイアウトと、LLVM変換のSSA値に直接対応
   する。インタプリタループは式あたりのdispatch回数が減る。
 - **RCは命令列の中で明示的。** 1つのemitter、2つの消費者:
-  リークゲートはコンパイラの配置を1回だけ検証し、executorと
-  loweringはそれを継承する。代替案 — 各消費者が自分でretainを
+  リーク検査はコンパイラの配置を1回だけ検証し、executorと
+  LLVM変換はそれを継承する。代替案 — 各消費者が自分でretainを
   決める — は一致させておくべき配置が2つになってしまう。
 - **位置とデバッグテーブルがバイトコードに乗る。** chunkごとの
   サイドテーブルが、エラー位置とデバッガをすべてのemitterが手で
@@ -2291,7 +2291,7 @@ yieldする`tests/*.cul`のファイルは他と同じコーパスで、上の�
 - **effectsはAST→AST変換で、generatorはフレームを保持する。**
   `effects_transform.h`は`effect fn` / `perform` / `handle`を`__Eff`
   ランタイム上の普通のソースに書き換える。制御フローをflat-dispatchの
-  CPS状態機械を通じてloweringし、中断で割られるスコープの変数をstate
+  CPS状態機械を通じて書き換え、中断で割られるスコープの変数をstate
   instance上に持つ。コンパイラは状態クラスに印（`@__lowered_storage`）を
   付け、変換用の組み込み（`__lowered_frame`、`__bound`、`__unbound`）を
   コンパイルし、ランタイムはメソッドdispatchでその印を読む。どちらも
@@ -2300,7 +2300,7 @@ yieldする`tests/*.cul`のファイルは他と同じコーパスで、上の�
   複数回resumeできるが、そのようなフレームはそれに応えられないので、
   effectは変換のままである。
 - **組み込みメソッドはデータである。** `(name, argc)`ごとの
-  テーブル行が、拒否の判断、executor、loweringを1つの定義の上に
+  テーブル行が、拒否の判断、executor、LLVM変換を1つの定義の上に
   保つ（§5.4）。
 - **呼び先を名指ししても買えるのはdispatchであって本体ではない。**
   呼び出しを1つのchunkに解決すると（§5.3）、単相呼び出しは`--jit`で
@@ -2326,4 +2326,4 @@ yieldする`tests/*.cul`のファイルは他と同じコーパスで、上の�
   SpiderMonkey。ランタイム値表現は`memory.md` §3〜4に記載されて
   おり、その設計の系譜は`memory.md` §7にある。
 
-受け入れられている既知のコスト: loweringレーンにはREPLもデバッガもない。
+受け入れられている既知のコスト: LLVM変換のレーンにはREPLもデバッガもない。

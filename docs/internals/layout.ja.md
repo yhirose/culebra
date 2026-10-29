@@ -41,11 +41,11 @@
 | `interop/` | C++のクラスとインスタンスを言語に束縛する | `base`・`rt` |
 | `stdlib/` | namespaceごとのヘッダ、その下のカーネル、値表現に繋ぐ束縛層 | 下位すべて |
 | `vm/` | バイトコード、コンパイラ、executor、セッション、埋め込みAPI | `base`・`frontend`・`rt`・`conc`・`stdlib` |
-| `jit/` | LLVM loweringとcodegenコンテキスト | `cli`以外すべて |
-| `aot/` | `culebra build`がloweringの先で必要とするもの | `base`・`rt`・`frontend` |
+| `jit/` | LLVM IRへの変換（lowering）とcodegenコンテキスト | `cli`以外すべて |
+| `aot/` | `culebra build`がLLVM変換の先で必要とするもの | `base`・`rt`・`frontend` |
 | `cli/` | サブコマンド: test・fmt・lint・docs・init・repl・dap・lsp・toolchain・embed-flags | すべて |
 
-積み重なりこそが要点で、それをゲートが保持します。逆流は3本あり、
+積み重なりこそが要点で、それを検査が保持します。逆流は3本あり、
 それぞれ本数を記録してあるので、減ることしかできません:
 
 - **`rt` → `frontend`（2）**: `rt.h`がパーサをincludeしているのは
@@ -60,8 +60,8 @@
   宣言します。
 
 これがディレクトリが与えるものです。「このファイルはどの層か」はパスが
-答えるので、ゲートがそれを保持でき、新しい逆流は、コンパイルも通り全テストも
-通る`#include`としてではなく、ゲートが拒否する`#include`として現れます。
+答えるので、検査がそれを保持でき、新しい逆流は、コンパイルも通り全テストも
+通る`#include`としてではなく、検査が拒否する`#include`として現れます。
 
 ## 2. `jit`はLLVMを意味する
 
@@ -74,7 +74,7 @@ dispatch、イテレータプロトコル、標準ライブラリ全体 — は�
 
 `jit/`の外で`llvm::`を名指すヘッダが1本あります。上で触れた
 `stdlib/bindings.h`の1メンバです。これは設計ではなく瑕疵で、このヘッダの
-残りはエンジン非依存です。ゲートはLLVMを名指してよいファイルの明示リストを
+残りはエンジン非依存です。検査はLLVMを名指してよいファイルの明示リストを
 保持し、リストは縮小のみ許され増えません。増えるということは、ツリーの
 どこかがLLVM無しでビルドできなくなったということで、それは意識して
 下すべき判断です。
@@ -86,7 +86,7 @@ dispatch、イテレータプロトコル、標準ライブラリ全体 — は�
 **両方向に**正しくなければなりません。名乗らない生成物は手編集が失われる
 ことを隠し、名乗る手書きファイルは存在しない生成元を主張します。
 `frontend/grammar_blob.gen.h`は生成物で、`stdlib/canon_sigs_table.h`は
-手で保守するファイルです。ゲートは「コミットされた全`.gen.h`の名前が、
+手で保守するファイルです。検査は「コミットされた全`.gen.h`の名前が、
 `justfile`・`misc`・`tools`のどこかに出てくること」と「生成器が`include/`配下に書く全パスが
 `.gen.h`で終わること」を検査します。
 
@@ -102,7 +102,7 @@ dispatch、イテレータプロトコル、標準ライブラリ全体 — は�
 `.inc.h`はこの制約を名前に載せます。`rt.h`冒頭のコメントでは、既にそこに
 たどり着いた人しか読めません —
 Rubyの`.inc`が、インタプリタがテキストとしてincludeするファイルに対して
-果たしているのと同じ役割です。ゲートは肝心な半分を強制します:
+果たしているのと同じ役割です。検査は肝心な半分を強制します:
 `rt/rt.h`以外はこれをincludeできません。
 
 ## 5. 標準ライブラリのnamespaceは1ファイル
@@ -119,7 +119,7 @@ namespaceが必要とする補助ヘッダ（`Canvas`の背後の`image.h`・
 `font_ttf.h`、`pcm_block.h`・`pixel_size.h`・`http_method.h`・
 `keynames.h`・`search_model.h`）、その下のエンジン非依存カーネル
 （`kernels.h`・`math.h`）、コンパイラのシグネチャ表（`canon_sigs.h`・
-`canon_sigs_table.h`）、preambleのローダとその生成blob（`preamble.h`・
+`canon_sigs_table.h`）、preambleのローダとその生成された保存データ（`preamble.h`・
 `preambles.gen.h`）、そしてそれら全部を値表現に繋ぐ束縛層
 （`bindings.h`）です。C++でなくCulebraで書かれたnamespaceは
 `src/preambles/<name>.cul`に置かれます。ネイティブ部分のためにすぐ隣に
@@ -133,7 +133,7 @@ namespaceが必要とする補助ヘッダ（`Canvas`の背後の`image.h`・
 - **ランタイムの断片**: それは`rt/rt.h`のものなので`rt/<what>.inc.h`と
   し、`rt.h`の順序付きブロックに加えます。自前のincludeが要るなら、
   それは断片ではなくヘッダです。素の`.h`にしてください。
-- **LLVM loweringだけが使うもの**: `jit/`に置きます。他所に置いてそこで
+- **LLVM変換だけが使うもの**: `jit/`に置きます。他所に置いてそこで
   LLVMに手を伸ばすのは、細部ではなく判断です。
 - **生成物**: それを所有する層の下に`<name>.gen.h`として置き、書く
   レシピをjustfileに、古くなったら落ちる`check-`レシピも用意します。

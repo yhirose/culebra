@@ -3393,7 +3393,7 @@ variant payloadは全て固定スカラに限る（非スカラpayloadはvariant
 
 `@packable`フィールドには`Bytes<N>`も使える — 長さprefixなしの**ちょうど** `N`
 バイトをインライン保持し、まるごとbyte `String`として読み書きする。ハッシュ・UUID・
-固定バイナリblob用:
+固定長のバイト列用:
 
 ```culebra
 # doctest: skip
@@ -3410,7 +3410,7 @@ e[0].digest  # => 32 バイト（バイナリ安全）
 
 書き込む`String`は**ちょうど** `N`バイトでなければならない（違えば`ValueError`）。
 String以外は`TypeError`。バイトはバイナリ安全（埋め込みNULも保持）。`BoundedString<N>`
-（長さprefix付きの可変長テキスト）と違い、`Bytes<N>`は固定長blob。
+（長さprefix付きの可変長テキスト）と違い、`Bytes<N>`は固定長のバイト列。
 
 #### ネストレコード: `@packable` クラスのフィールド
 
@@ -4600,7 +4600,7 @@ FS.write("out.gz", Compress.gzip(text))
 `deflate`が`gzip`と違うのはラッパーだけです — ファイル名/mtimeヘッダも
 CRC-32トレーラも無く、2 byteのヘッダとAdler-32チェックサムだけ。これは
 PNGの`IDAT`チャンクが持つ形式そのもので、gzipの封筒が何の得にもならない
-場面（メモリ上のblob、別のコンテナに埋め込む値）で選ぶとよい小さい方です。
+場面（メモリ上のバイト列、別のコンテナに埋め込む値）で選ぶとよい小さい方です。
 
 ```culebra
 let text = "the quick brown fox the quick brown fox the quick brown fox"

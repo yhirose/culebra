@@ -1913,7 +1913,7 @@ culebra test --filter "Array/push"  # 名前で絞って実行
 `culebra lint`は、プログラムを実行せずに静的解析で分かることを報告します。
 実行すればどのみち中断されるエラーに加えて、助言的な警告（未使用の変数・
 import、到達不能コード）も出します。終了コードはcleanが0、警告のみが1、
-エラーが2なのでCIのゲートに使えます。
+エラーが2なのでCIの検査に使えます。
 
 ```bash
 culebra lint .          # カレントディレクトリ配下の .cul を再帰的に
@@ -1926,7 +1926,7 @@ culebra lint --fix .    # 加えて未使用 import 行を削除する
 
 ```bash
 culebra fmt -i .        # プロジェクトをその場で整形
-culebra fmt --check .   # 未整形があれば exit 1（CI ゲート）
+culebra fmt --check .   # 未整形があれば exit 1（CIの検査）
 ```
 
 エディタでは`culebra lsp`が、入力中にlintの診断を表示し、求めに応じて整形します。
