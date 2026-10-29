@@ -3424,6 +3424,13 @@ struct JIT {
                          llvm::PointerType::get(ctx_, 0)),
                      {objPtr}, "has.iter");
   }
+  // i1: an iterator or a Range (culebra_runtime_is_sequence_object, fixed.inc.h).
+  llvm::Value* emit_is_sequence_object(llvm::Value* objPtr) {
+    return emit_call(module_->getOrInsertFunction(
+                         rt::is_sequence_object, builder_.getInt1Ty(),
+                         llvm::PointerType::get(ctx_, 0)),
+                     {objPtr}, "seq.object");
+  }
 
   // The property arm's test in both UFCS gates: an Object receiver takes it
   // when it resolves `method` itself — own slot, class meta, or a trait

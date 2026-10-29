@@ -321,3 +321,11 @@ ufcsshadownest|map|*|Shared.new({a: 1})
 m|[1, 2, 3]|to_set|
 typos|*to_set()
 disp-str|(1, 2)
+
+# `size()`, `empty()` and `presence()` no longer resolve on an iterator or a
+# Range: they counted the receiver's properties, which for a sequence are its
+# protocol slots (3 for any iterator, 4 for a Range), not a length. A free
+# function of that name now answers by UFCS where the built-in used to
+# answer 3, and a non-function binding of that name is a method miss.
+ufcsshadow|size|*|[1, 2].iter()
+ufcsshadownest|size|*|[1, 2].iter()

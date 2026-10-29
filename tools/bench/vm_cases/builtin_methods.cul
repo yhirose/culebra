@@ -10,7 +10,11 @@ println(Set(1, 2, 3).size())
 println('abc'.size())
 println('café'.size())
 println('abc'.view().size())
-println(range(0, 3).size())
+println(try {
+  range(3).size()
+} catch e {
+  e.message
+})
 println(Math.size() > 0)
 
 println([].empty())

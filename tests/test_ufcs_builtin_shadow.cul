@@ -70,6 +70,11 @@ assert_eq([1, 2].size(), 2)
 assert_eq("ab".size(), 2)
 assert_eq({a: 1}.size(), 1)
 
+# An iterator and a Range are not sized (the built-in lacks the name on them),
+# so the user's `size` is what answers.
+assert_eq(range(3).size(), "ufcs size")
+assert_eq((0..3).size(), "ufcs size")
+
 # UFCS still fires for a receiver that resolves nothing (non-builtin name).
 fn tripled(x) {
   x * 3

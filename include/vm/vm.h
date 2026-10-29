@@ -335,7 +335,9 @@ enum class Op : uint8_t {
                // of its own? The UFCS gate (interp's receiver_has_property /
                // the JIT's method-or-UFCS branch). `d` carries the static half
                // — the tags whose own built-in table binds the name, plus
-               // kHasPropIterBit for an iterator-protocol name — and the Object
+               // kHasPropIterBit for an iterator-protocol name, or
+               // kHasPropPlainObjBit in place of the Object tag bit for a name
+               // a sequence lacks (`size`) — and the Object
                // arm is probed here: an own/proto slot, a conforming
                // instance's trait default, or a closed namespace (which
                // answers every name itself). Nothrow.
@@ -1075,15 +1077,27 @@ struct BMethSpec {
   // Whether a Range passes the iterator-shape gate too: `contains` on a range
   // is interval membership, answered without walking a sequence.
   bool range_recv = false;
+  // The inverse of obj_iter_shaped: an Object resolves the name only if it is
+  // NOT a sequence (an iterator or a Range). `size`/`empty`/`presence` measure
+  // an Object by its property count, which for a sequence is its protocol
+  // slots, not its length — so the name is a method miss there, and the UFCS
+  // arm (a user's own `size`) is free to answer instead.
+  bool obj_plain_only = false;
 };
 
 inline std::span<const BMethSpec> bmeth_specs() {
   using enum BMeth;
   using enum BParam;
   static constexpr BMethSpec kSpecs[] = {
-      {"size", 0, Size, kRecvSized, 0, nullptr, {}, {}},
-      {"empty", 0, Empty, kRecvSized, 0, nullptr, {}, {}},
-      {"presence", 0, Presence, kRecvSized, 0, nullptr, {}, {}},
+      {"size", 0, Size, kRecvSized, 0, nullptr, {}, {}, {},
+       /*subsumes_global=*/false, /*obj_iter_shaped=*/false, /*kw=*/nullptr,
+       /*callback_param=*/-1, /*range_recv=*/false, /*obj_plain_only=*/true},
+      {"empty", 0, Empty, kRecvSized, 0, nullptr, {}, {}, {},
+       /*subsumes_global=*/false, /*obj_iter_shaped=*/false, /*kw=*/nullptr,
+       /*callback_param=*/-1, /*range_recv=*/false, /*obj_plain_only=*/true},
+      {"presence", 0, Presence, kRecvSized, 0, nullptr, {}, {}, {},
+       /*subsumes_global=*/false, /*obj_iter_shaped=*/false, /*kw=*/nullptr,
+       /*callback_param=*/-1, /*range_recv=*/false, /*obj_plain_only=*/true},
       {"upper", 0, Upper, kRecvStrLike, 0, nullptr, {}, {}},
       {"lower", 0, Lower, kRecvStrLike, 0, nullptr, {}, {}},
       {"capitalize", 0, Capitalize, kRecvStrLike, 0, nullptr, {}, {}},
@@ -1483,6 +1497,17 @@ inline std::string nsfn_name(int32_t id) {
 // the same operand to say the name is an iterator-protocol one, which an
 // iterator-shaped Object resolves as well.
 inline constexpr int32_t kHasPropIterBit = 1 << 16;
+// The inverse: the name is one an Object resolves only when it is NOT a
+// sequence (BMethSpec::obj_plain_only), so the Object tag bit stays clear and
+// this one stands in for it, tested at run time.
+inline constexpr int32_t kHasPropPlainObjBit = 1 << 17;
+
+// Whether the built-in rows for `name` resolve it on plain Objects only.
+inline bool bmeth_name_plain_only(std::string_view name) {
+  for (const auto& s : bmeth_specs())
+    if (s.name == name && s.obj_plain_only) return true;
+  return false;
+}
 
 inline const BMethSpec* bmeth_lookup(std::string_view name, size_t argc) {
   for (const auto& s : bmeth_specs())
@@ -1523,8 +1548,13 @@ inline bool has_prop_apply(int32_t tags, const JitValue& recv,
   // An iterator-shaped Object resolves the whole lazy method set through
   // eval_property's duck-typed fallback; `next` is what shapes it — a
   // concrete slot, like interp's is_iterator_shaped reads.
-  return (tags & kHasPropIterBit) != 0 &&
-         culebra_runtime_is_iterator_shaped(obj);
+  if ((tags & kHasPropIterBit) != 0 &&
+      culebra_runtime_is_iterator_shaped(obj))
+    return true;
+  // A name only a non-sequence Object resolves (`size`): the Object tag bit
+  // was left clear for it, so this is where a plain dict answers.
+  return (tags & kHasPropPlainObjBit) != 0 &&
+         !culebra_runtime_is_sequence_object(obj);
 }
 
 // The name a parameter's declared type carries into the error message.
@@ -12877,15 +12907,22 @@ class Compiler {
   // The static half of the UFCS gate, baked into the HasProp operand: the
   // tags whose own built-in table binds this name, plus a bit saying the name
   // is an iterator-protocol one (which an iterator-shaped Object resolves as
-  // well). Read from the very tables interp's receiver_has_property
+  // well), or one a sequence lacks (kHasPropPlainObjBit). Read from the very
+  // tables interp's receiver_has_property
   // consults, so the lanes cannot disagree about which receiver owns a name.
   static int32_t has_prop_gate_operand(std::string_view name) {
     int32_t m = 0;
     for (auto& [t, tbl] : builtin_value_tables())
       if (tbl->count(name)) m |= bmeth_tag_bit(t);
     if (fn_introspection_name(name)) m |= bmeth_tag_bit(TAG_FUNC);
-    // A dict builtin resolves on every Object, whatever its shape.
-    if (dict_builtin_table()->count(name)) m |= bmeth_tag_bit(TAG_OBJECT);
+    // A dict builtin resolves on every Object, whatever its shape — except the
+    // sized names, which a sequence does not take (obj_plain_only).
+    if (dict_builtin_table()->count(name)) {
+      if (bmeth_name_plain_only(name))
+        m |= kHasPropPlainObjBit;
+      else
+        m |= bmeth_tag_bit(TAG_OBJECT);
+    }
     if (culebra::canon_iterator_sigs().count(name)) m |= kHasPropIterBit;
     return m;
   }
@@ -17195,11 +17232,15 @@ struct Exec {
           bool ok = bmeth_receiver_ok(gate.recv, static_cast<int8_t>(recv.tag));
           // An iterator-protocol name resolves on an Object only when the
           // object carries the protocol; a plain dict merely lacks it.
-          if (ok && gate.obj_iter_shaped && recv.tag == TAG_OBJECT)
-            ok = culebra_runtime_is_iterator_shaped(
-                     reinterpret_cast<JitObject*>(recv.data)) ||
-                 (gate.range_recv &&
-                  culebra_runtime_is_range(TAG_OBJECT, recv.data));
+          if (ok && recv.tag == TAG_OBJECT) {
+            auto* obj = reinterpret_cast<JitObject*>(recv.data);
+            if (gate.obj_iter_shaped)
+              ok = gate.range_recv ? culebra_runtime_is_sequence_object(obj)
+                                   : culebra_runtime_is_iterator_shaped(obj);
+            // The inverse: a sequence (iterator or Range) lacks the name.
+            else if (gate.obj_plain_only)
+              ok = !culebra_runtime_is_sequence_object(obj);
+          }
           if (!ok) {
             if (bmeth_scalar_tag(static_cast<int8_t>(recv.tag)))
               bmeth_scalar_receiver_error(static_cast<int8_t>(recv.tag), line,

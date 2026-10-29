@@ -2330,6 +2330,15 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int8_t culebra_runtime_is_range(
   return _jit_is_range_shaped(reinterpret_cast<JitObject*>(data)) ? 1 : 0;
 }
 
+// An Object that is a sequence rather than a container: an iterator or a
+// Range. Its properties are protocol slots, so `size`/`empty`/`presence`,
+// which count properties, do not resolve on it (BMethSpec::obj_plain_only).
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_is_sequence_object(
+    JitObject* obj) {
+  return culebra_runtime_is_iterator_shaped(obj) ||
+         _jit_is_range_shaped(obj);
+}
+
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_object_size(
     JitObject* obj) {
   if (_jit_meta_opaque(obj)) return 0;

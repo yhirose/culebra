@@ -1750,10 +1750,13 @@ struct Lowering {
                          contBB);
           b.SetInsertPoint(objBB);
           llvm::Value* objHit = j.emit_receiver_resolves_method(recv, key);
+          auto* objPtr = b.CreateIntToPtr(j.extract_data(recv), ptrTy);
           if (in.d & kHasPropIterBit)
-            objHit = b.CreateOr(
-                objHit, j.emit_is_iterator_shaped(b.CreateIntToPtr(
-                            j.extract_data(recv), ptrTy)));
+            objHit = b.CreateOr(objHit, j.emit_is_iterator_shaped(objPtr));
+          // A name only a non-sequence Object resolves (`size`).
+          if (in.d & kHasPropPlainObjBit)
+            objHit =
+                b.CreateOr(objHit, b.CreateNot(j.emit_is_sequence_object(objPtr)));
           auto objEnd = b.GetInsertBlock();
           b.CreateBr(contBB);
           b.SetInsertPoint(contBB);
@@ -1901,7 +1904,8 @@ struct Lowering {
             // An iterator-protocol name resolves on an Object only when the
             // object carries the protocol; a plain dict merely lacks it.
             llvm::BasicBlock* shapeBB = okBB;
-            if (gate.obj_iter_shaped && bmeth_receiver_ok(mask, TAG_OBJECT))
+            if ((gate.obj_iter_shaped || gate.obj_plain_only) &&
+                bmeth_receiver_ok(mask, TAG_OBJECT))
               shapeBB = BasicBlock::Create(j.ctx_, "vbm.itershape", fn);
             auto sw = b.CreateSwitch(tag, badBB, std::popcount(mask));
             for (int8_t t = 0; t < 16; ++t)
@@ -1909,11 +1913,15 @@ struct Lowering {
                 sw->addCase(b.getInt8(t), t == TAG_OBJECT ? shapeBB : okBB);
             if (shapeBB != okBB) {
               b.SetInsertPoint(shapeBB);
-              llvm::Value* shaped = j.emit_is_iterator_shaped(
-                  b.CreateIntToPtr(j.extract_data(recv), ptrTy));
-              if (gate.range_recv)
-                shaped = b.CreateOr(shaped, j.emit_is_range(recv));
-              b.CreateCondBr(shaped, okBB, badBB);
+              auto* objPtr = b.CreateIntToPtr(j.extract_data(recv), ptrTy);
+              if (gate.obj_plain_only)
+                // The inverse: a sequence (iterator or Range) lacks the name.
+                b.CreateCondBr(j.emit_is_sequence_object(objPtr), badBB, okBB);
+              else
+                b.CreateCondBr(gate.range_recv
+                                   ? j.emit_is_sequence_object(objPtr)
+                                   : j.emit_is_iterator_shaped(objPtr),
+                               okBB, badBB);
             }
             // A scalar receiver fails here and now; anything else only lacks
             // the method, which BMeth reports once the arguments have run.

@@ -4,7 +4,6 @@
 2
 2
 25
-3
 nil
 AB
 true
@@ -14,6 +13,7 @@ free size 5
 free size nil
 free size true
 free size 1.5
+free size {iter: [function], has_next: [function], next: [function]}
 free push
 free push
 free upper

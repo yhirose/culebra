@@ -28,17 +28,16 @@ assert_eq(drained.empty(), true)
 // not restated here. What it does not cover is the receivers that answer
 // nothing at all, which is the rejection block below.
 
-// Anything Object-shaped rides the Object arm and reports its property
-// count — a class instance, and an iterator (which is an Object of three
-// closures, so `range(5).size()` is 3 for every range, not 5).
+// A class instance rides the Object arm and reports its property count. (An
+// iterator and a Range are Objects too, but they are not sized: see below.)
 class Box {
   new() {
     self.x = 1
   }
 }
 assert_eq(Box.new().size(), 1)  // just `x`: the class name is not a field
-assert_eq(range(5).size(), 3)
-assert_eq([1, 2, 3, 4].iter().size(), 3)
+// A `next` that is not a function is data, not the iterator protocol.
+assert_eq({value: 1, next: {value: 2}}.size(), 2)
 
 // --- every other receiver is rejected, identically on both backends -----
 // A scalar has no member table at all, so it raises the shared
@@ -79,5 +78,64 @@ fn sized_miss(type) {
 }
 rejects(|x| x, "TypeError", sized_miss('Function'))
 rejects(Tensor.zeros([2]), "TypeError", sized_miss('Tensor'))
+
+// --- a sequence is not a container --------------------------------------
+// An iterator and a Range are Objects, but their properties are protocol
+// slots (`iter`, `has_next`, `next`; a Range's `start`, `end`, ...). Counting
+// them answered 3 or 4 whatever the length, and `empty()` was always false.
+// They lack the three names as they lack any other method.
+fn two() {
+  yield 1
+  yield 2
+}
+class Counter {
+  new() {}
+  iter() {
+    self
+  }
+  has_next() {
+    false
+  }
+  next() {
+    nil
+  }
+}
+// Only `next`, no `has_next`: the protocol's shape is a function-valued `next`.
+class Lexer {
+  new() {}
+  next() {
+    1
+  }
+}
+let half_open = 0..5
+let closed = 0..=5
+let by_hand = {iter: || 1, has_next: || false, next: || 1}
+rejects(range(5), "TypeError", sized_miss('Object'))
+rejects([1, 2, 3, 4].iter(), "TypeError", sized_miss('Object'))
+rejects(range(5).map(|x| x * 2), "TypeError", sized_miss('Object'))
+rejects(two(), "TypeError", sized_miss('Generator'))
+rejects(Counter(), "TypeError", sized_miss('Counter'))
+rejects(Lexer(), "TypeError", sized_miss('Lexer'))
+rejects(by_hand, "TypeError", sized_miss('Object'))
+rejects(half_open, "TypeError", sized_miss('Range'))
+rejects(closed, "TypeError", sized_miss('Range'))
+
+// The length of a sequence is a walk away: `count()` consumes it,
+// `collect().size()` keeps the elements.
+assert_eq(range(5).count(), 5)
+assert_eq(range(5).collect().size(), 5)
+assert_eq(two().collect().empty(), false)
+
+// An own `size` still answers first, whatever the shape.
+class Sized {
+  new() {}
+  next() {
+    nil
+  }
+  size() {
+    42
+  }
+}
+assert_eq(Sized().size(), 42)
 
 IO.inspect("test_sized_types OK")
