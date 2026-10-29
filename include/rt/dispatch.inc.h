@@ -324,8 +324,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_derived_cmp(
 
 // The native bodies of the derived-method closures (they borrow `self` and
 // their argument, see _jit_native_entry).
-// `eq(other)` / `cmp(other)` declare a required parameter on the interp side
-// (a native FunctionValue with one param), so calling either with no argument
+// `eq(other)` / `cmp(other)` declare a required parameter
+// (a native function with one param), so calling either with no argument
 // is the ordinary missing-required ArityError — raised before the body, as any
 // binder would. Shared by the two 1-parameter thunks below; `hash()` / `to_s()`
 // take none and so have nothing to check.
@@ -559,7 +559,7 @@ inline bool (*_jit_ns_kwarg_hook)(
 // kwarg-capable method is created with JIT_VARIADIC_ARITY, which would
 // otherwise accept any callback arity. The hook writes the method's
 // callback bounds (cb_max < 0 = variadic) derived from the SAME canonical
-// params the interp's check_callback_arity reads, and returns true; it
+// params the callback arity check reads, and returns true; it
 // returns false for non-ns closures so the regular path runs.
 inline bool (*_jit_ns_callback_arity_hook)(
     JitClosure* cls, int64_t* cb_min, int64_t* cb_max) = nullptr;
@@ -1102,7 +1102,7 @@ inline JitClosure* _jit_multifn_new_dispatcher(std::string_view name,
 
 // Forward-declared above for the trait-conformance walk: a dispatcher's own
 // arity is just one overload's, so report the widest overload's positional
-// count (mirrors the interp multimethod_for_each_overload walk).
+// count.
 inline size_t _jit_dispatcher_max_arity(JitClosure* cls) {
   size_t arity = cls ? cls->arity : 0;
   if (const auto* rec = _jit_dispatcher_record(cls))

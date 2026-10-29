@@ -135,7 +135,7 @@ inline bool is_builtin_var(const std::string& name) {
 
 // The three function-introspection properties (`g.name` / `g.params` /
 // `g.return_type`) — the only names a Function receiver owns
-// (interp's receiver_has_property Function arm). Their property reads
+// (the Function arm of the UFCS gate). Their property reads
 // return a +1-owned view (the JIT's emit_property_get fn_mode retains).
 inline bool fn_introspection_name(std::string_view name) {
   return name == "name" || name == "params" || name == "return_type";

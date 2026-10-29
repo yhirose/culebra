@@ -23,10 +23,9 @@
 //
 // A partially-built container (or a finished root value that a later
 // trailing-input check rejects) must be released if parsing throws.
-// Backends over value types (interp ObjectValue/ArrayValue/Value) get this
-// from C++ stack unwinding, so their *_abandon / abandon_value are no-ops;
-// backends over raw refcounted heap objects (JIT JitObject*/JitArray*/
-// JitValue) release the +1 there.
+// A backend over value types would get this from C++ stack unwinding, so its
+// *_abandon / abandon_value would be no-ops; backends over raw refcounted
+// heap objects (JIT JitObject*/JitArray*/JitValue) release the +1 there.
 //
 // Reader requirements (see _JsonValueReader / _JitJsonReader):
 //   using Value;

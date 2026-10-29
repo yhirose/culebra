@@ -28,7 +28,7 @@ namespace culebra {
 enum class CanonDefault : int8_t { None, Nil, Bool, Long, Float, Str };
 
 // One declared parameter. Field names/types intentionally match the uses the
-// JIT binder grew against the interp's FunctionValue::Parameter (`.name`,
+// JIT binder grew against the old binder's Parameter (`.name`,
 // `.has_default`, `.kw_only`, `.type` as string_views), so the resolver and
 // trampoline read it unchanged.
 struct CanonParam {

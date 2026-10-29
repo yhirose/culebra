@@ -65,7 +65,7 @@ const auto grammar_ = R"(
 
   # Class / trait / fn head with optional Generic type parameters:
   # `Box`, `Box<T>`, `Pair<K, V>`, `sort<T: Comparable>`. Captured into
-  # a single token; eval_class_decl / eval_trait_decl / multifn_decl
+  # a single token; the compiler and the static passes
   # peel off the outer name via parse_generic_head, then split args
   # into per-param `name: bound` pairs via parse_type_param. A bound
   # may be composite (`T: Hashable + Stringer`, all-of). Unbounded

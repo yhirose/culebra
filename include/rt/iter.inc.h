@@ -599,7 +599,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_iter_for_each(
   // Callback checks straddle the drive on purpose: the TYPE precheck mirrors
   // the interp's bind-time typed-param error (before the wrapper body — no
   // dispose), while JitHofCallback's ARITY check mirrors the in-body
-  // check_callback_arity (dispose runs, via the drive's dtor).
+  // callback arity check (dispose runs, via the drive's dtor).
   _culebra_callback_type_precheck(ft, fd, "f");
   JitIterDrive drive{it, id};
   JitHofCallback fn(ft, fd, 1, "for_each", "f", line, col);

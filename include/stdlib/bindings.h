@@ -193,8 +193,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_write_file(
   ofs.write(sv.data(), static_cast<std::streamsize>(sv.size()));
 }
 
-// The Math bodies below delegate to the kernels in stdlib_math.h — the
-// same ones the interp's make_math_namespace calls — so the semantic
+// The Math bodies below delegate to the kernels in stdlib/math.h — the
+// same ones every backend uses — so the semantic
 // decisions (Long/Float promotion, exact Long comparison, edge-case
 // errors) exist once across backends. These shims only translate the JIT
 // value representation to and from culebra::math::Num.
@@ -463,7 +463,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_fs_join(
   std::filesystem::path out;
   for (int64_t i = 0; i < n; ++i) {
     // PathLike per component: String as-is, Path via __str__ (symmetric with
-    // the interp `_fspath` and the adapter `take_path`).
+    // the adapter `take_path`).
     if (args[i].tag == TAG_STRING) {
       out /= reinterpret_cast<const char*>(args[i].data);
     } else if (args[i].tag == TAG_STRINGVIEW ||
@@ -1858,8 +1858,7 @@ class _JitKwargResolver {
 
   // Resolve a `share` Object (name -> SharedBuffer handle) into CULEBRA_SHARE_*
   // env entries (appended to `env_out`) plus the fds the child inherits
-  // (appended to `fds_out`). Mirrors the interp proc_parse_launch share branch.
-  // Returns true if `share` was present.
+  // (appended to `fds_out`). Returns true if `share` was present.
   bool take_share(std::vector<std::pair<std::string, std::string>>& env_out,
                   std::vector<int>& fds_out) {
     // `share` is an optional Object (nil = absent, like interp's nil default);
@@ -2432,7 +2431,7 @@ inline JitValue _http_run_client(int64_t id, culebra::http::HttpRequest& req,
 }
 
 // Parse the `files` slab value into req.multipart for a multipart/form-data
-// upload. Mirrors interp http_setup_multipart: each Object entry is a part whose
+// upload. Each Object entry is a part whose
 // value is a String (text field), an Object ({content|path|stream, filename?,
 // content_type?}), or an Array of those (repeated parts under one name). A
 // path/stream part is streamed chunked so a big file or slow output never has to
@@ -2561,7 +2560,7 @@ inline void _http_setup_multipart(JitValue filesv,
 // Configure the request body from the `body` slab value: TAG_STRING → whole;
 // TAG_FUNC → producer (called per chunk, returns next chunk String or nil),
 // streamed chunked. `json` → application/json; `form` → urlencoded; `files` →
-// multipart/form-data. Else → TypeError. Mirrors interp http_setup_body.
+// multipart/form-data. Else → TypeError.
 inline void _http_setup_body(JitValue bodyv, JitValue jsonv, JitValue formv,
                              JitValue filesv, JitValue ct,
                              culebra::http::HttpRequest& req, JitHttpSink& st,
@@ -4093,8 +4092,8 @@ inline const char* take_str(JitValue v) {
 }
 // PathLike coercion for a path-typed adapter argument: a String/StringView
 // passes through, a `Path` object collapses to its inner string via __str__
-// (culebra_runtime_value_to_display honors it). The JIT twin of the interp
-// `_fspath`; byte-identical "expected String|Path" wording keeps FS.read(42)
+// (culebra_runtime_value_to_display honors it). The
+// "expected String|Path" wording matches the executor, which keeps FS.read(42)
 // symmetric across backends. Returns a stable C string (heap-interned for the
 // Path case).
 inline const char* take_path(JitValue v) {
@@ -6266,8 +6265,7 @@ inline JitValue _ns_gc_stat(JitValue*, int64_t) {
   // Refcounted-only live count (Strings/StringViews excluded). The RC-leak
   // fuzzer measures this so benign traced-only churn under CULEBRA_GC_NEVER
   // (collector off) doesn't read as growth. Under normal GC it equals a
-  // subset of live_objects; the interp exposes the same field (== its
-  // live_objects, all heap objects are shared_ptr-managed) for symmetry.
+  // subset of live_objects.
   culebra_runtime_object_set(obj, "rc_objects", /*mut=*/false, TAG_LONG,
                              rc_live, 0, 0);
   culebra_runtime_object_set(obj, "heap_bytes", /*mut=*/false, TAG_LONG,
@@ -6615,15 +6613,14 @@ inline JitValue _ns_http_sse(JitValue* a, int64_t n) {
 }
 
 // --- Http.client persistent-client handle (JIT) ---
-// Mirrors interp make_http_client_handle: methods take a base-url-relative path
+// Methods take a base-url-relative path
 // (no per-request timeout/follow), reuse the client's connection, and layer its
 // default headers under each request.
 inline int64_t _jit_http_client_id(JitValue self) {
   return _jit_handle_long(reinterpret_cast<JitObject*>(self.data), "_id");
 }
 
-// Parse an Object-of-String slab value (headers/params) into `out`, matching
-// interp http_parse_headers/params messages.
+// Parse an Object-of-String slab value (headers/params) into `out`.
 inline void _jit_http_client_strobj(JitValue v, culebra::http::HeaderList& out,
                                     const char* ctx, const char* container,
                                     const char* valueword) {
@@ -6829,7 +6826,7 @@ inline JitValue _ns_http_client(JitValue* a, int64_t n) {
 }
 
 // --- Http.server handle (JIT) ---
-// Mirrors interp make_http_server_handle. v0 single-threaded: handlers run on
+// v0 single-threaded: handlers run on
 // the listen thread (where this runtime lives), so the trampoline calls the
 // handler closure directly via _culebra_invoke1. The handle owns a +1 on the
 // route handler closure for the server's lifetime (released when the server is
@@ -6944,10 +6941,9 @@ inline void _jit_http_apply_response(JitValue ret,
       "Http.server: handler must return a String, an Object, or nil", 0, 0);
 }
 
-// sink.write(chunk) for a streaming response — mirrors interp
-// make_http_sink_handle's write. Returns Bool (false if the client has gone
-// away or the sink has been invalidated). A `String` param rejects a StringView
-// slice on every path, matching the interp/File handle-method convention.
+// sink.write(chunk) for a streaming response. Returns Bool (false if the client
+// has gone away or the sink has been invalidated). A `String` param rejects a
+// StringView slice on every path, matching the File handle-method convention.
 inline void _jit_http_sink_write(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                                 int64_t n, JitValue* args) {
   JitValue self{self_tag, self_data};
@@ -6960,7 +6956,7 @@ inline void _jit_http_sink_write(JitValue* __ret, JitClosure*, int8_t self_tag, 
   bool ok = culebra::http::http_sink_write(sid, sv.data(), sv.size());
   { *__ret = {TAG_BOOL, ok ? 1 : 0}; return; }
 }
-// Build the `sink` handle (mirrors interp make_http_sink_handle): a thin
+// Build the `sink` handle: a thin
 // non-sendable object over a sink id with a `write` method.
 inline JitObject* _jit_make_http_sink_handle(int64_t sink_id) {
   auto* h = culebra_runtime_object_new();
@@ -6972,7 +6968,7 @@ inline JitObject* _jit_make_http_sink_handle(int64_t sink_id) {
   return h;
 }
 
-// Mirror interp http_try_stream_response: if `ret` is an Object carrying a
+// If `ret` is an Object carrying a
 // `stream` Function, wire a chunked response (same status/content_type/headers
 // fields, same order, same TypeError messages as _jit_http_apply_response) and
 // return true; the caller then skips _jit_http_apply_response. body + stream is
@@ -7027,7 +7023,7 @@ inline bool _jit_http_try_stream_response(JitValue ret,
 }
 
 // --- WebSocket handle (server-side connection or Http.ws client) ----------
-// Mirrors interp make_http_ws_handle: send/receive/close/is_open + `iter` for
+// send/receive/close/is_open + `iter` for
 // for-in, and (client only) drop to free the owned connection.
 
 // Block for the next message, waiting again through a read timeout: both

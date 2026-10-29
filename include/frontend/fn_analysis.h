@@ -795,7 +795,7 @@ struct FnAnalysis {
     if (node.tag == "TRY"_) {
       info.has_eh = true;
       // TRY = [body, CATCH_CLAUSE+]. The body and each clause's block are
-      // their own scopes (interp's tryEnv / catchEnv each run_deferred at
+      // their own scopes (each runs its defers at
       // exit): absorb their defers so they fire when the block closes, not
       // at function exit. The counter snapshot sees defers the body's nested
       // scopes absorbed (the return value deliberately does not).

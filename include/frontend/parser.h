@@ -271,9 +271,8 @@ struct InterpPiece {
 //   FORMAT_SPEC <- (SPEC_ARG / SPEC_TEXT)*
 // Layout: [EXPRESSION, (FORMAT_SPEC)?]; FORMAT_SPEC's children are SPEC_TEXT
 // (a literal chunk, in `token`) and SPEC_ARG (whose lone child is the
-// EXPRESSION spliced in). Both evaluators (interp append_interp_expr, JIT
-// emit_interp_fragment) read the layout through this view; `constant_spec`
-// keeps a field-free spec on their fixed-spec path.
+// EXPRESSION spliced in). vm::Compiler reads the layout through this view;
+// `constant_spec` keeps a field-free spec on its fixed-spec path.
 struct InterpExprView {
   const peg::Ast* value;         // the expression being formatted
   const peg::Ast* spec;          // FORMAT_SPEC node, or null when there is none
@@ -662,9 +661,8 @@ inline ForView view_for(const peg::Ast& a) {
 // the step expression as its lone child and is excluded from the end-bound
 // slot. Returns the endpoint/step AST nodes (null when absent) without
 // compiling them, so callers control evaluation order. Single source for the
-// RANGE layout shared by the interpreter (eval_range), the JIT
-// (compile_range, compile_for's counted fast path), and the bytecode-VM
-// spike.
+// RANGE layout shared by vm::Compiler's range expressions, counted `for`
+// loops and range patterns.
 struct RangeLayout {
   const peg::Ast* start;  // null if open-started
   const peg::Ast* end;    // null if open-ended
@@ -994,7 +992,7 @@ inline VariantView view_variant(const peg::Ast& v) {
 }
 
 // Stable storage for synthetic positional payload field names
-// (`_0`, `_1`, ...) so a FunctionValue::Parameter's string_view name
+// (`_0`, `_1`, ...) so a parameter's string_view name
 // and the instance field key outlive the call. Capped well above any
 // realistic variant arity.
 inline constexpr size_t kMaxPositionalFields = 64;
@@ -1141,9 +1139,8 @@ inline void reject_brace_set(const peg::Ast& ast) {
 // Returns the requested trait identifiers when the decorator is a bare
 // `derive(...)` call, or an empty vector otherwise (a regular decorator
 // the caller applies as a function). The eval/compile side validates the
-// names against the supported set. Used by both interp (`eval_class_decl`)
-// and JIT (`compile_class_decl`) so the directive is recognized
-// identically.
+// names against the supported set. Used by vm::Compiler and the lint pass
+// so the directive is recognized identically.
 inline std::vector<std::string_view> view_derive(const peg::Ast& decorator) {
   std::vector<std::string_view> traits;
   if (decorator.nodes.empty()) return traits;
@@ -1745,8 +1742,8 @@ struct ArgListError {
 
 // Scan a call's ARG_LIST (children are KWARG / KWARG_SPLAT / a positional
 // expression). positional-after-keyword (SyntaxError) takes priority over a
-// duplicate keyword (TypeError), matching the interpreter's split_call_args
-// (which throws the former during its linear scan and only then checks dups).
+// duplicate keyword (TypeError): the former is found during the linear scan,
+// duplicates are checked after it.
 inline std::optional<ArgListError> check_arg_list(const peg::Ast& args_ast) {
   using namespace peg::udl;
   bool saw_named = false;
@@ -1975,7 +1972,7 @@ inline std::string_view destructure_param_name(size_t i) {
 }
 
 // Positional arity of a trait method's parameter list. `has_param` reports
-// what the interp's FunctionValue::params would hold — everything but the
+// the declared parameters — everything but the
 // `*` separator — which is what the well-known contract check reads.
 inline size_t trait_method_arity(const peg::Ast& params,
                                  bool* has_param = nullptr) {
@@ -2058,8 +2055,8 @@ inline ParamNameLoc extract_param_name_loc(const peg::Ast& p) {
 
 // Returns the index of the first kw-only parameter (the cap on
 // allowed positional arguments), or nullopt if there is no `*`
-// separator. Templated so it works for both FunctionValue::Parameter
-// (interp) and JIT-local ParamInfo, which share a `kw_only` field.
+// separator. Templated so it works for both the canonical-signature Parameter
+// and JIT-local ParamInfo, which share a `kw_only` field.
 template <class P>
 inline std::optional<size_t> first_kw_only_index(
     const std::vector<P>& params) {
@@ -2134,7 +2131,7 @@ inline bool builtin_method_accepts_keyword(const Ps& params,
 // positional params (cb_max < 0 means a `*args` catch-all removed the upper
 // bound) can stand in for a higher-order callback invoked with exactly
 // `expected` positional args. The single source of truth both backends
-// consult (interp's `check_callback_arity`, the JIT's
+// consult (the executor and the JIT's
 // `_culebra_expect_callback`) so they accept and reject the same callbacks.
 //
 // A variadic callback absorbs any surplus, so it only needs its required

@@ -865,8 +865,8 @@ inline bool _jit_try_object_index(JitObject* obj, int8_t key_tag,
                                   int64_t key_data, int8_t* out_tag,
                                   int64_t* out_data, int64_t line,
                                   int64_t col) {
-  // Subscript overloading is a class-instance feature (matches interp's
-  // class_tag gate); a plain dict never routes to __index__.
+  // Subscript overloading is a class-instance feature; a plain dict never
+  // routes to __index__.
   if (!obj->proto()) return false;
   culebra_runtime_set_op_pos(line, col);
   auto r = _try_special_binop(TAG_OBJECT, reinterpret_cast<int64_t>(obj),
@@ -878,8 +878,7 @@ inline bool _jit_try_object_index(JitObject* obj, int8_t key_tag,
 }
 
 // A capture-group slot (`{value,start,end}` object, or nil when the group
-// did not participate) -> its value string (+1 owned), or nil. Mirrors the
-// interp match_capture's group_value lambda.
+// did not participate) -> its value string (+1 owned), or nil.
 inline JitValue _jit_match_group_value(JitValue g) {
   if (g.tag != TAG_OBJECT) return JitValue{TAG_NIL, 0};
   auto* go = reinterpret_cast<JitObject*>(g.data);
@@ -892,7 +891,7 @@ inline JitValue _jit_match_group_value(JitValue g) {
 
 // `m[key]` on a Regex match: Long -> positional group (negative wraps like an
 // array), String/StringView -> named group. Any miss is nil. Returns a +1
-// owned value. The interp twin is Interpreter::match_capture.
+// owned value.
 inline JitValue _jit_match_index(JitObject* m, int8_t key_tag,
                                  int64_t key_data) {
   if (key_tag == TAG_LONG) {
@@ -1655,7 +1654,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_object_has(JitObject* obj
 // property of its own? Own slots and the class meta answer for themselves;
 // past those, a conforming instance also owns every trait default of that
 // name, which is what keeps a same-named free function from hijacking the
-// call (interp asks this in receiver_has_property). Gated on `proto` — a
+// call (the UFCS gate asks this). Gated on `proto` — a
 // plain dict is not a class instance and inherits nothing — so a dict's
 // lookup costs one extra null test.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool
@@ -1697,7 +1696,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_check_namespace_write(
 // the class meta (proto), and inherited trait defaults — the same
 // resolution order as culebra_runtime_object_get_ic. Gated on
 // `proto != null` so a plain dict that merely holds a "__call__" key
-// stays non-callable, matching the interp class_tag gate and the
+// stays non-callable, matching the
 // __index__ design. Returns Nil for any non-instance / missing method,
 // so the caller raises "type error: expected Function".
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_class_call_method(
@@ -1785,7 +1784,7 @@ culebra_runtime_method_not_callable(int64_t line, int64_t col,
 // `match v { x: ClassName => ... }` predicate. Returns true when `obj` was
 // built by a class of that name — read from its meta, so an object cannot
 // answer to a name by carrying one. Mirrors `culebra::class_tag()` + name
-// comparison in the interp's `type_matches`.
+// comparison in `culebra_runtime_type_matches`.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_object_class_matches(
     JitObject* obj, const char* expected) {
   const char* cls = _jit_meta_class_name(obj);
@@ -1919,8 +1918,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_run_field_init(
   _culebra_value_release_impl(r.tag, r.data);
 }
 
-// Class-sugar constructor body. Mirrors the tree interpreter's
-// `eval_class_decl` constructor path:
+// Class-sugar constructor body:
 //   1. Allocate a fresh instance (refcount=1, caller-owned).
 //   2. Wire the instance's `proto` at the shared class meta object, which is
 //      where its class name lives;

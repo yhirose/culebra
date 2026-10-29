@@ -1161,7 +1161,7 @@ static_assert(sizeof(JitClosure) <= 48 && !std::is_polymorphic_v<JitClosure>);
 //
 // GETTER — a class getter (`get x() { … }`). A bare property read (`obj.x`,
 // no call parens) resolving to one invokes it 0-arg instead of yielding a
-// bound method. The interp's FunctionValue::is_getter.
+// bound method.
 //
 // NATIVE — a C++-bodied closure. Not Sendable unless PORTABLE: its captures
 // may hold raw same-heap pointers (the iterator wrappers cache upstream

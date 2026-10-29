@@ -332,8 +332,7 @@ enum class Op : uint8_t {
                // bare-method reject: CallM passes the receiver as `self`
                // itself, compile_method_call's property tail.
   HasProp,     // regs[a] = Bool: does regs[b] resolve consts[c] as a property
-               // of its own? The UFCS gate (interp's receiver_has_property /
-               // the JIT's method-or-UFCS branch). `d` carries the static half
+               // of its own? The UFCS gate. `d` carries the static half
                // — the tags whose own built-in table binds the name, plus
                // kHasPropIterBit for an iterator-protocol name, or
                // kHasPropPlainObjBit in place of the Object tag bit for a name
@@ -1489,9 +1488,9 @@ inline std::string nsfn_name(int32_t id) {
   return "?";
 }
 
-// The static half of the UFCS gate (interp's receiver_has_property): the
+// The static half of the UFCS gate: the
 // tags whose own built-in table binds this name. Read from the very tables
-// the interpreter consults, so the lanes cannot disagree about which
+// method calls bind from (bmeth_specs), so the lanes cannot disagree about which
 // receiver owns a name. The Object arm is a
 // runtime probe and lives in the op itself; `kHasPropIterBit` rides along in
 // the same operand to say the name is an iterator-protocol one, which an
@@ -1528,8 +1527,8 @@ inline bool bmeth_receiver_ok(BRecvMask recv, int8_t tag) {
   return tag >= 0 && tag < 16 && (recv & bmeth_tag_bit(tag)) != 0;
 }
 
-// The UFCS gate's answer, executor-side (interp's receiver_has_property). `tags` is the operand the compiler baked
-// from the very tables those two read — the static half. The Object arm is a
+// The UFCS gate's answer, executor-side. `tags` is the operand the compiler baked from
+// the static half's tables. The Object arm is a
 // runtime probe, since own/proto membership needs the pointer.
 inline bool has_prop_apply(int32_t tags, const JitValue& recv,
                            const char* key) {
@@ -2822,8 +2821,7 @@ struct Chunk {
   bool self_raw = false;
   // A getter body (`get x() { … }`): a bare `obj.x` read invokes a closure
   // over this chunk rather than yielding a bound method. Read at MakeClosure
-  // by both lanes (chunk_closure_flags) — the interp's
-  // FunctionValue::is_getter, carried where it belongs.
+  // by both lanes (chunk_closure_flags).
   bool is_getter = false;
   // Method-name tables for ClassMeta, indexed by its `d` operand. Stable
   // storage: the executor hands build_class_meta an array of these c_str()s.
@@ -9537,8 +9535,8 @@ class Compiler {
       fc.compile_body_into(body, rv);
     }
     fc.emit_return_type_check(rv);
-    // Frame defers run before the frame scope's releases (interp's
-    // run_deferred(callEnv) order); `return` emits its own copy.
+    // Frame defers run before the frame scope's releases;
+    // `return` emits its own copy.
     if (fc.frame_defer_mark_ >= 0)
       fc.emit(Op::DeferRunTo, fc.frame_defer_mark_);
     fc.pop_scope();
@@ -12908,8 +12906,8 @@ class Compiler {
   // tags whose own built-in table binds this name, plus a bit saying the name
   // is an iterator-protocol one (which an iterator-shaped Object resolves as
   // well), or one a sequence lacks (kHasPropPlainObjBit). Read from the very
-  // tables interp's receiver_has_property
-  // consults, so the lanes cannot disagree about which receiver owns a name.
+  // tables method calls bind from
+  // (bmeth_specs), so the lanes cannot disagree about which receiver owns a name.
   static int32_t has_prop_gate_operand(std::string_view name) {
     int32_t m = 0;
     for (auto& [t, tbl] : builtin_value_tables())
@@ -13977,9 +13975,9 @@ class Compiler {
     // The body inline (compile_block_into minus its own DeferScope): the
     // catching part of the body's scope must END before its fall-through
     // defer run, because a defer throwing at the try body's NORMAL exit
-    // escapes this catch (interp runs run_deferred(tryEnv) outside its
+    // escapes this catch (the try's own defers run outside its
     // try/catch pair), while one throwing at a NESTED scope's exit — still
-    // inside the region — is caught here, exactly as the interp's nesting has
+    // inside the region — is caught here, as the source nesting has
     // it. The tail keeps a cleanup entry of its own so the body's bindings
     // still release as that escaping throw passes them.
     pending_scope_mark_ = rmark;

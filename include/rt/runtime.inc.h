@@ -1476,15 +1476,14 @@ inline bool _jit_conforms_to_trait(int8_t tag, int64_t data,
 inline bool _culebra_type_matches_single(int8_t tag, int64_t data,
                                           std::string_view expected) {
   if (expected == "Any") return true;
-  // Function type `fn(...) -> R`: structural callable match, mirroring
-  // interp's type_matches. Params/return are documentation in the MVP, so
+  // Function type `fn(...) -> R`: structural callable match.
+  // Params/return are documentation in the MVP, so
   // a closure (TAG_FUNC) or a class instance with an own/proto `__call__`
   // satisfies it. Checked before the `?` sugar so `fn(A) -> B?` (optional
   // return) isn't misread as an optional function.
   if (culebra::is_fn_type(expected))
     return tag == TAG_FUNC || _culebra_call_operator(tag, data);
   // Composite bound (`A + B`) — all-of: conform to every part.
-  // Mirrors interp's type_matches.
   if (culebra::has_toplevel_plus(expected)) {
     for (auto part : culebra::split_intersection_types(expected)) {
       if (!_culebra_type_matches_single(tag, data, part)) return false;
@@ -1492,14 +1491,14 @@ inline bool _culebra_type_matches_single(int8_t tag, int64_t data,
     return true;
   }
   // `T?` Optional sugar = `T | Nil`: trailing `?` accepts Nil, else
-  // checks the base. Mirrors interp's type_matches.
+  // checks the base.
   if (!expected.empty() && expected.back() == '?') {
     if (tag == TAG_NIL) return true;
     return _culebra_type_matches_single(tag, data,
                                         expected.substr(0, expected.size() - 1));
   }
   // Generic outer-match: `Array<Long>` checks `Array` only. Element
-  // type is documentation in the MVP (matches interp's type_matches).
+  // type is documentation in the MVP.
   if (expected.find('<') != std::string_view::npos) {
     expected = culebra::parse_generic_head(expected).outer;
   }

@@ -905,7 +905,7 @@ CULEBRA_RT_HTTP_LINKAGE void http_client_close(int64_t id) {
 //
 // The inverse of the client: httplib::Server accepts connections and, for each
 // matched route, calls back into a culebra handler closure. Invoking the
-// closure is backend-specific (interp call_closure / JIT _culebra_invoke1), so
+// closure is backend-specific (JIT _culebra_invoke1), so
 // this core stays value-neutral — the backend hands us a RouteHandler that
 // reads the neutral ServerRequest and fills the ServerResponse. Handlers always
 // run on a CulebraWorkerPool (one culebra runtime per worker thread; a
