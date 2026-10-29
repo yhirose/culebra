@@ -24,44 +24,44 @@ let CANCELLED = 'Cancelled by the user. Consider another approach.'
 
 class Agent {
   new(config) {
-    self.name = config.name
-    self.instructions = config.instructions
-    self.model = config.model
+    @name = config.name
+    @instructions = config.instructions
+    @model = config.model
     # An Object of tools becomes a list: the model calls them by name, not by
     # the key they were filed under.
-    self.tools = config.tools.values().collect()
-    self.max_steps = config.max_steps ?? 10
-    self.verbose = config.verbose ?? false
-    self.stream = config.stream ?? false
-    self.approval_func = config.approval_func ?? approval.request_approval
+    @tools = config.tools.values().collect()
+    @max_steps = config.max_steps ?? 10
+    @verbose = config.verbose ?? false
+    @stream = config.stream ?? false
+    @approval_func = config.approval_func ?? approval.request_approval
   }
 
   generate(user_prompt) {
-    mut messages = [msg.system(self.instructions), msg.user(user_prompt)]
+    mut messages = [msg.system(@instructions), msg.user(user_prompt)]
     mut step = 0
     mut final_text = ''
     mut tool_call_count = 0
 
-    while step < self.max_steps {
+    while step < @max_steps {
       step += 1
-      if self.verbose {
-        println("\n=== step {step}/{self.max_steps} ===")
+      if @verbose {
+        println("\n=== step {step}/{@max_steps} ===")
       }
 
-      messages = self.manage_context(messages)
-      let response = self.ask(messages)
+      messages = @manage_context(messages)
+      let response = @ask(messages)
 
       let said = response.text ?? ''
       if !said.empty() {
         final_text = said
         # A streamed answer reached the screen as it was written, so all that
         # is left of the printing is the newline `println` would have added.
-        if self.stream {
+        if @stream {
           println('')
         } else {
           println(said)
         }
-      } else if self.verbose && !(response.reasoning ?? '').empty() {
+      } else if @verbose && !(response.reasoning ?? '').empty() {
         # Not upstream's. A model that thinks before it answers can spend a
         # whole turn on it, and a step that prints nothing at all reads as a
         # hang rather than as a turn that produced no answer.
@@ -81,13 +81,13 @@ class Agent {
 
       messages.push(msg.assistant(said, calls, blocks))
       for call in calls {
-        if self.run_call(call, messages) {
+        if @run_call(call, messages) {
           tool_call_count += 1
         }
       }
     }
 
-    if step >= self.max_steps {
+    if step >= @max_steps {
       println('warning: reached the maximum number of steps')
     }
     if tool_call_count == 0 && step == 1 {
@@ -101,42 +101,42 @@ class Agent {
   # printed once above. Either way the reply is the same shape, which is what
   # lets the rest of the loop not care which it was.
   ask(messages) {
-    if !self.stream {
-      return lm.generate_text(self.model, messages, self.tools)
+    if !@stream {
+      return lm.generate_text(@model, messages, @tools)
     }
-    lm.stream_text(self.model, messages, self.tools, |piece| IO.print(piece))
+    lm.stream_text(@model, messages, @tools, |piece| IO.print(piece))
   }
 
   # One call: its result is appended to `messages`, and the answer says whether
   # the tool ran.
   run_call(call, messages) {
-    let tool = self.tools.find(|t| t.name == call.name)
+    let tool = @tools.find(|t| t.name == call.name)
     if tool == nil {
       # Not upstream's. The step is over before the `[tool]` line below, so
       # without one of its own a verbose run says nothing at all about a turn
       # that did nothing.
-      if self.verbose {
+      if @verbose {
         println("[tool] {call.name}: no such tool")
       }
-      messages.push(self.result(call, "error: tool {call.name} not found"))
+      messages.push(@result(call, "error: tool {call.name} not found"))
       return false
     }
 
-    if self.verbose {
+    if @verbose {
       println("[tool] {call.name}({JSON.stringify(call.args ?? {})})")
     }
 
     if (tool.needs_approval ?? false) &&
-       !self.approval_func(call.name, call.args) {
-      messages.push(self.result(call, CANCELLED))
+       !@approval_func(call.name, call.args) {
+      messages.push(@result(call, CANCELLED))
       return false
     }
 
     let out = execute_tool(tool, call.args ?? {})
-    if self.verbose {
+    if @verbose {
       println("[result] {clip(out)}")
     }
-    messages.push(self.result(call, out))
+    messages.push(@result(call, out))
     true
   }
 

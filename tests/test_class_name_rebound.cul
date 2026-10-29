@@ -22,7 +22,7 @@ fn cnr_kind(f) {
 #        reads the new value. A plain class and a flat `@value` one agree.
 fn cnr_plain_then_let() {
   class CnrPlain {
-    new(.x, .y) {}
+    new(@x, @y) {}
   }
   let make = || CnrPlain.new(1.0, 2.0).x
   let before = make()
@@ -34,7 +34,7 @@ assert_eq(cnr_plain_then_let(), [1.0, 'other'])
 fn cnr_flat_then_let() {
   @value
   class CnrFlat {
-    new(.x: Float, .y: Float) {}
+    new(@x: Float, @y: Float) {}
   }
   let make = || CnrFlat.new(1.0, 2.0).x
   let before = make()
@@ -47,7 +47,7 @@ assert_eq(cnr_flat_then_let(), [1.0, 'other'])
 #        on any function
 fn cnr_plain_then_fn() {
   class CnrCalled {
-    new(.x, .y) {}
+    new(@x, @y) {}
   }
   let make = || CnrCalled.new(1.0, 2.0).x
   let before = make()
@@ -61,7 +61,7 @@ assert_eq(cnr_plain_then_fn(), [1.0, 'TypeError'])
 fn cnr_flat_then_fn() {
   @value
   class CnrFlatCalled {
-    new(.x: Float, .y: Float) {}
+    new(@x: Float, @y: Float) {}
   }
   let make = || CnrFlatCalled.new(1.0, 2.0).x
   let before = make()
@@ -81,7 +81,7 @@ fn cnr_fn_then_flat() {
   let called = CnrEarly(1, 2)
   @value
   class CnrEarly {
-    new(.x: Float, .y: Float) {}
+    new(@x: Float, @y: Float) {}
     static early = cnr_kind(|| CnrEarly.new(1.0, 2.0).x)
   }
   [called, CnrEarly.early, CnrEarly.new(1.0, 2.0).x]
@@ -92,7 +92,7 @@ assert_eq(cnr_fn_then_flat(), ['the function', 'TypeError', 1.0])
 fn cnr_static_then_let() {
   @value
   class CnrKept {
-    new(.x: Float, .y: Float) {}
+    new(@x: Float, @y: Float) {}
     static make = || CnrKept.new(1.0, 2.0).x
   }
   let make = CnrKept.make

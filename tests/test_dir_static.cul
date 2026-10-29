@@ -128,7 +128,7 @@ assert_eq(
 # routes, and each reads its copy through its methods; a throw from them
 # answers 500, as a handler's does.
 class Greetings {
-  new(.prefix) {}
+  new(@prefix) {}
   read(path) {
     throw {kind: 'ValueError', message: 'broken'} if path == 'broken.txt'
     "{self.prefix} {path}"
@@ -166,7 +166,7 @@ serving(Greetings('hello'), fn (base) {
 
 # What crosses to the workers has to be Sendable, as a handler does.
 class Holding {
-  new(.d) {}
+  new(@d) {}
   read(path) {
     self.d.read(path)
   }
@@ -194,7 +194,7 @@ unsendable.close()
 
 # An object that is no Dir is refused when it is handed over.
 class NotADir {
-  new(.name) {}
+  new(@name) {}
 }
 assert_eq(
   caught(|| Http.server().static("/", NotADir('x'))),

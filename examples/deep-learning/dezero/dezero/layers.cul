@@ -29,32 +29,32 @@ class Linear {
   nobias = false
 
   new(out_size, nobias = false, in_size = nil) {
-    self.out_size = out_size
-    self.nobias = nobias
-    self.b = nobias ? nil : dz.Parameter(Tensor.zeros(1, out_size))
+    @out_size = out_size
+    @nobias = nobias
+    @b = nobias ? nil : dz.Parameter(Tensor.zeros(1, out_size))
     if in_size != nil {
-      self.init_w(in_size)
+      @init_w(in_size)
     }
   }
 
   init_w(in_size) {
     scale = Math.sqrt(1.0 / to_float(in_size))
-    self.w = dz.Parameter(Tensor.randn(in_size, self.out_size) * scale)
+    @w = dz.Parameter(Tensor.randn(in_size, @out_size) * scale)
   }
 
   forward(x) {
-    if self.w == nil {
-      self.init_w(dz.as_variable(x).shape[1])
+    if @w == nil {
+      @init_w(dz.as_variable(x).shape[1])
     }
-    F.linear(x, self.w, self.b)
+    F.linear(x, @w, @b)
   }
 
   __call__(x) {
-    self.forward(x)
+    @forward(x)
   }
 
   params() {
-    self.b == nil ? [self.w] : [self.w, self.b]
+    @b == nil ? [@w] : [@w, @b]
   }
 }
 
@@ -64,27 +64,27 @@ class RNN {
   h = nil
 
   new(hidden_size, in_size = nil) {
-    self.x2h = Linear(hidden_size, false, in_size)
-    self.h2h = Linear(hidden_size, true, hidden_size)
+    @x2h = Linear(hidden_size, false, in_size)
+    @h2h = Linear(hidden_size, true, hidden_size)
   }
 
   reset_state() {
-    self.h = nil
+    @h = nil
   }
 
   forward(x) {
-    pre = self.h == nil ? self.x2h(x) : self.x2h(x) + self.h2h(self.h)
+    pre = @h == nil ? @x2h(x) : @x2h(x) + @h2h(@h)
     h_new = F.tanh(pre)
-    self.h = h_new
+    @h = h_new
     h_new
   }
 
   __call__(x) {
-    self.forward(x)
+    @forward(x)
   }
 
   params() {
-    self.x2h.params() + self.h2h.params()
+    @x2h.params() + @h2h.params()
   }
 }
 
@@ -95,58 +95,58 @@ class LSTM {
   c = nil
 
   new(hidden_size, in_size = nil) {
-    self.x2f = Linear(hidden_size, false, in_size)
-    self.x2i = Linear(hidden_size, false, in_size)
-    self.x2o = Linear(hidden_size, false, in_size)
-    self.x2u = Linear(hidden_size, false, in_size)
-    self.h2f = Linear(hidden_size, true, hidden_size)
-    self.h2i = Linear(hidden_size, true, hidden_size)
-    self.h2o = Linear(hidden_size, true, hidden_size)
-    self.h2u = Linear(hidden_size, true, hidden_size)
+    @x2f = Linear(hidden_size, false, in_size)
+    @x2i = Linear(hidden_size, false, in_size)
+    @x2o = Linear(hidden_size, false, in_size)
+    @x2u = Linear(hidden_size, false, in_size)
+    @h2f = Linear(hidden_size, true, hidden_size)
+    @h2i = Linear(hidden_size, true, hidden_size)
+    @h2o = Linear(hidden_size, true, hidden_size)
+    @h2u = Linear(hidden_size, true, hidden_size)
   }
 
   reset_state() {
-    self.h = nil
-    self.c = nil
+    @h = nil
+    @c = nil
   }
 
   forward(x) {
-    (f, i, o, u) = if self.h == nil {
+    (f, i, o, u) = if @h == nil {
       (
-        F.sigmoid(self.x2f(x)),
-        F.sigmoid(self.x2i(x)),
-        F.sigmoid(self.x2o(x)),
-        F.tanh(self.x2u(x)),
+        F.sigmoid(@x2f(x)),
+        F.sigmoid(@x2i(x)),
+        F.sigmoid(@x2o(x)),
+        F.tanh(@x2u(x)),
       )
     } else {
       (
-        F.sigmoid(self.x2f(x) + self.h2f(self.h)),
-        F.sigmoid(self.x2i(x) + self.h2i(self.h)),
-        F.sigmoid(self.x2o(x) + self.h2o(self.h)),
-        F.tanh(self.x2u(x) + self.h2u(self.h)),
+        F.sigmoid(@x2f(x) + @h2f(@h)),
+        F.sigmoid(@x2i(x) + @h2i(@h)),
+        F.sigmoid(@x2o(x) + @h2o(@h)),
+        F.tanh(@x2u(x) + @h2u(@h)),
       )
     }
 
-    c_new = self.c == nil ? i * u : f * self.c + i * u
+    c_new = @c == nil ? i * u : f * @c + i * u
     h_new = o * F.tanh(c_new)
-    self.h = h_new
-    self.c = c_new
+    @h = h_new
+    @c = c_new
     h_new
   }
 
   __call__(x) {
-    self.forward(x)
+    @forward(x)
   }
 
   params() {
-    self.x2f.params() +
-      self.x2i.params() +
-      self.x2o.params() +
-      self.x2u.params() +
-      self.h2f.params() +
-      self.h2i.params() +
-      self.h2o.params() +
-      self.h2u.params()
+    @x2f.params() +
+      @x2i.params() +
+      @x2o.params() +
+      @x2u.params() +
+      @h2f.params() +
+      @h2i.params() +
+      @h2o.params() +
+      @h2u.params()
   }
 }
 
@@ -154,19 +154,19 @@ class LSTM {
 
 class EmbedID {
   new(in_size, out_size) {
-    self.w = dz.Parameter(Tensor.randn(in_size, out_size))
+    @w = dz.Parameter(Tensor.randn(in_size, out_size))
   }
 
   forward(idx) {
-    F.embed_id(idx, self.w)
+    F.embed_id(idx, @w)
   }
 
   __call__(idx) {
-    self.forward(idx)
+    @forward(idx)
   }
 
   params() {
-    [self.w]
+    [@w]
   }
 }
 
@@ -185,16 +185,16 @@ class BatchNorm {
   eps = 2.0e-5
 
   init_params(d) {
-    self.gamma = dz.Parameter(Tensor.ones(1, d))
-    self.beta = dz.Parameter(Tensor.zeros(1, d))
-    self.avg_mean = dz.Variable(Tensor.zeros(1, d))
-    self.avg_var = dz.Variable(Tensor.ones(1, d))
+    @gamma = dz.Parameter(Tensor.ones(1, d))
+    @beta = dz.Parameter(Tensor.zeros(1, d))
+    @avg_mean = dz.Variable(Tensor.zeros(1, d))
+    @avg_var = dz.Variable(Tensor.ones(1, d))
   }
 
   forward(x) {
     v = dz.as_variable(x)
-    if self.gamma == nil {
-      self.init_params(v.shape[1])
+    if @gamma == nil {
+      @init_params(v.shape[1])
     }
 
     (mean, var) = if dz.is_training() {
@@ -212,27 +212,27 @@ class BatchNorm {
       # Variable/autograd involved. Evaluating right after reshape, before
       # folding it into the running average, sidesteps it.
       Tensor.eval(batch_mean.data, batch_var.data)
-      self.avg_mean.data = self.avg_mean.data * self.decay +
-        batch_mean.data * (1.0 - self.decay)
-      self.avg_var.data = self.avg_var.data * self.decay +
-        batch_var.data * (1.0 - self.decay)
-      Tensor.eval(self.avg_mean.data, self.avg_var.data)
+      @avg_mean.data = @avg_mean.data * @decay +
+        batch_mean.data * (1.0 - @decay)
+      @avg_var.data = @avg_var.data * @decay +
+        batch_var.data * (1.0 - @decay)
+      Tensor.eval(@avg_mean.data, @avg_var.data)
       (batch_mean, batch_var)
     } else {
-      (self.avg_mean, self.avg_var)
+      (@avg_mean, @avg_var)
     }
 
-    std = dz.pow_(var + self.eps, 0.5)
+    std = dz.pow_(var + @eps, 0.5)
     xhat = (v - mean) / std
-    self.gamma * xhat + self.beta
+    @gamma * xhat + @beta
   }
 
   __call__(x) {
-    self.forward(x)
+    @forward(x)
   }
 
   params() {
-    self.gamma == nil ? [] : [self.gamma, self.beta]
+    @gamma == nil ? [] : [@gamma, @beta]
   }
 }
 
@@ -253,16 +253,16 @@ class LayerNorm {
   eps = 2.0e-5
 
   init_params(d) {
-    self.gamma = dz.Parameter(Tensor.ones(1, d))
-    self.beta = dz.Parameter(Tensor.zeros(1, d))
+    @gamma = dz.Parameter(Tensor.ones(1, d))
+    @beta = dz.Parameter(Tensor.zeros(1, d))
   }
 
   forward(x) {
     v = dz.as_variable(x)
     last = v.ndim - 1
     d = v.shape[last]
-    if self.gamma == nil {
-      self.init_params(d)
+    if @gamma == nil {
+      @init_params(d)
     }
 
     n = to_float(d)
@@ -272,17 +272,17 @@ class LayerNorm {
     var = dz.reshape((centered * centered).sum(last) * (1.0 / n), kd)
     # See BatchNorm.forward for why this Tensor.eval is load-bearing.
     Tensor.eval(mean.data, var.data)
-    std = dz.pow_(var + self.eps, 0.5)
+    std = dz.pow_(var + @eps, 0.5)
     xhat = centered / std
-    self.gamma * xhat + self.beta
+    @gamma * xhat + @beta
   }
 
   __call__(x) {
-    self.forward(x)
+    @forward(x)
   }
 
   params() {
-    self.gamma == nil ? [] : [self.gamma, self.beta]
+    @gamma == nil ? [] : [@gamma, @beta]
   }
 }
 
@@ -306,78 +306,78 @@ fn causal_mask(t) {
 }
 
 class MultiHeadAttention {
-  new(n_embd, .n_head, .rope_base = 10000.0) {
-    self.head_dim = n_embd / n_head
-    self.scale = 1.0 / Math.sqrt(to_float(self.head_dim))
-    self.wq = Linear(n_embd, true, n_embd)
-    self.wk = Linear(n_embd, true, n_embd)
-    self.wv = Linear(n_embd, true, n_embd)
-    self.wo = Linear(n_embd, true, n_embd)
+  new(n_embd, @n_head, @rope_base = 10000.0) {
+    @head_dim = n_embd / n_head
+    @scale = 1.0 / Math.sqrt(to_float(@head_dim))
+    @wq = Linear(n_embd, true, n_embd)
+    @wk = Linear(n_embd, true, n_embd)
+    @wv = Linear(n_embd, true, n_embd)
+    @wo = Linear(n_embd, true, n_embd)
   }
 
   forward(x) {
     v = dz.as_variable(x)
     t = v.shape[0]
-    q = self.wq(v)
-    k = self.wk(v)
-    val = self.wv(v)
+    q = @wq(v)
+    k = @wk(v)
+    val = @wv(v)
     mask = causal_mask(t)
 
     mut head_outs = []
-    for h in 0..self.n_head {
-      hs = h * self.head_dim
-      he = hs + self.head_dim
-      q_h = F.rope(dz.narrow(q, 1, hs, he), 0, self.rope_base)
-      k_h = F.rope(dz.narrow(k, 1, hs, he), 0, self.rope_base)
+    for h in 0..@n_head {
+      hs = h * @head_dim
+      he = hs + @head_dim
+      q_h = F.rope(dz.narrow(q, 1, hs, he), 0, @rope_base)
+      k_h = F.rope(dz.narrow(k, 1, hs, he), 0, @rope_base)
       v_h = dz.narrow(val, 1, hs, he)
 
-      scores = dz.matmul(q_h, dz.transpose(k_h)) * self.scale  # [T, T]
+      scores = dz.matmul(q_h, dz.transpose(k_h)) * @scale  # [T, T]
       weights = F.softmax(dz.where_(mask, scores, -1.0e9), 1)
       head_outs.push(dz.matmul(weights, v_h))  # [T, head_dim]
     }
 
     mut x_attn = head_outs[0]
-    for i in 1..self.n_head {
+    for i in 1..@n_head {
       x_attn = dz.concat2(x_attn, head_outs[i], 1)
     }
-    self.wo(x_attn)
+    @wo(x_attn)
   }
 
   __call__(x) {
-    self.forward(x)
+    @forward(x)
   }
 
   params() {
-    self.wq.params() + self.wk.params() + self.wv.params() + self.wo.params()
+    @wq.params() + @wk.params() + @wv.params() + @wo.params()
   }
 }
 
 class GPTBlock {
   new(n_embd, n_head, mlp_ratio = 4, rope_base = 10000.0) {
-    self.ln1 = LayerNorm()
-    self.attn = MultiHeadAttention(n_embd, n_head, rope_base)
-    self.ln2 = LayerNorm()
-    self.fc1 = Linear(mlp_ratio * n_embd)
-    self.fc2 = Linear(n_embd)
+    @ln1 = LayerNorm()
+    @attn = MultiHeadAttention(n_embd, n_head, rope_base)
+    @ln2 = LayerNorm()
+    @fc1 = Linear(mlp_ratio * n_embd)
+    @fc2 = Linear(n_embd)
   }
 
   forward(x) {
     v = dz.as_variable(x)
-    x1 = v + self.attn(self.ln1(v))
-    h = F.gelu(self.fc1(self.ln2(x1)))
-    x1 + self.fc2(h)
+    x1 = v + @attn(@ln1(v))
+    h = F.gelu(@fc1(@ln2(x1)))
+    x1 + @fc2(h)
   }
 
   __call__(x) {
-    self.forward(x)
+    @forward(x)
   }
 
   params() {
-    self.ln1.params() +
-      self.attn.params() +
-      self.ln2.params() +
-      self.fc1.params() +
-      self.fc2.params()
+    @ln1.params() +
+      @attn.params() +
+      @ln2.params() +
+      @fc1.params() +
+      @fc2.params()
   }
 
   cleargrads() {

@@ -2,7 +2,7 @@
 # what a guard hung on its Object is dropped where the error leaves — before
 # the report, as it is for a thrown value.
 class Held {
-  new(.name) {}
+  new(@name) {}
   drop() {
     println("dropped {self.name}")
   }

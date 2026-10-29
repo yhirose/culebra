@@ -19,7 +19,7 @@ trait Shape {
 }
 
 class Sq {
-  new(.name, .side) {}
+  new(@name, @side) {}
   area() {
     self.side * self.side
   }
@@ -42,7 +42,7 @@ assert_eq(here, ['a: 9', true, true, false, true])
 assert_eq(Isolate.spawn(probe, Sq('a', 3), Sq('b', 2)).join(), here)
 assert_eq(Isolate.spawn(fn () {
   class Tri {
-    new(.name, .w, .h) {}
+    new(@name, @w, @h) {}
     area() {
       self.w * self.h / 2
     }
@@ -69,7 +69,7 @@ let iso = Isolate.spawn(fn () {
   let srv = Http.server()
   srv.get('/shape/:n', fn (req) {
     class Sq {
-      new(.name, .side) {}
+      new(@name, @side) {}
       area() {
         self.side * self.side
       }
@@ -100,7 +100,7 @@ let niso = Isolate.spawn(fn () {
   ntx.drop()
   l.serve(fn (conn) {
     class Sq {
-      new(.name, .side) {}
+      new(@name, @side) {}
       area() {
         self.side * self.side
       }
@@ -229,7 +229,7 @@ trait Tagged {
   }
 }
 class Tg {
-  new(.x) {}
+  new(@x) {}
   raw() {
     self.x
   }

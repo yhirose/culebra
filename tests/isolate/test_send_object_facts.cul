@@ -19,7 +19,7 @@ fn caught(thunk) {
 # --- a drop that already ran does not run again on the other side ------------
 let (dd_tx, dd_rx) = Channel.new(16)
 class DdRes {
-  new(.name) {}
+  new(@name) {}
   drop() {
     dd_tx.send(self.name)
   }
@@ -41,7 +41,7 @@ assert_eq(od_rx.drain(), ["dropped"])
 # --- a received instance keeps its fields' declared types --------------------
 class TyP {
   x: Long
-  new(.x) {}
+  new(@x) {}
 }
 let local_write = caught(fn () {
   let p = TyP(1)
@@ -68,7 +68,7 @@ assert_eq(
 # --- a Shared copy of a typed instance keeps its types -----------------------
 class ShP {
   x: Long
-  new(.x) {}
+  new(@x) {}
 }
 let sh = Shared.new([ShP(1)])
 let sh_copy = sh.copy()

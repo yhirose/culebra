@@ -17,31 +17,31 @@ import msg from './core/message.cul'
 # callback the way `Http` does, and answers with the empty body a streamed 2xx
 # leaves. A failure is not an event stream, so its body is kept.
 class StreamStub {
-  new(.events) {
-    self.status = 200
-    self.body = ''
-    self.sent = []
+  new(@events) {
+    @status = 200
+    @body = ''
+    @sent = []
   }
 
   failing(status, body) {
-    self.status = status
-    self.events = []
-    self.body = body
+    @status = status
+    @events = []
+    @body = body
     self
   }
 
   post(path, json, events = nil) {
-    self.sent.push({path: path, body: json})
-    for e in self.events {
+    @sent.push({path: path, body: json})
+    for e in @events {
       events(e)
     }
-    let body = self.body
-    {ok: self.status >= 200 && self.status < 300, status: self.status,
+    let body = @body
+    {ok: @status >= 200 && @status < 300, status: @status,
      body: body, json: fn () { JSON.parse(body) }}
   }
 
   last_body() {
-    self.sent[self.sent.size() - 1].body
+    @sent[@sent.size() - 1].body
   }
 }
 
@@ -389,22 +389,22 @@ fn the_other_format_asks_for_usage_along_with_the_stream() {
 
 # A model that answers from a list either way: whole, or a piece at a time.
 class BothWaysModel {
-  new(.replies) {
-    self.asked = 0
+  new(@replies) {
+    @asked = 0
   }
 
   reply() {
-    let i = self.asked
-    self.asked += 1
-    i < self.replies.size() ? self.replies[i] : {text: 'nothing more to do.'}
+    let i = @asked
+    @asked += 1
+    i < @replies.size() ? @replies[i] : {text: 'nothing more to do.'}
   }
 
   do_generate(_params) {
-    self.reply()
+    @reply()
   }
 
   do_stream(_params, on_text) {
-    let reply = self.reply()
+    let reply = @reply()
     let text = reply.text ?? ''
     # Said the way a stream says it: in pieces that fall wherever they fall,
     # and that add up to exactly the answer.
@@ -420,11 +420,11 @@ class BothWaysModel {
 # A model that cannot stream. Upstream's SDKs have the same distinction.
 class WholeOnlyModel {
   new() {
-    self.asked = 0
+    @asked = 0
   }
 
   do_generate(_params) {
-    self.asked += 1
+    @asked += 1
     {text: 'done'}
   }
 }

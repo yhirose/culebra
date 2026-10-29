@@ -16,21 +16,21 @@ import err from './core/errors.cul'
 
 # A model that answers from a list, and remembers what it was asked.
 class ScriptedModel {
-  new(.replies) {
-    self.seen = []
+  new(@replies) {
+    @seen = []
   }
 
   do_generate(params) {
     # The agent keeps pushing onto the array it passed, so what is recorded
     # has to be a copy — otherwise every entry here would be the same live
     # history, read after the run rather than during it.
-    self.seen.push(params.messages.slice(0, params.messages.size()))
-    let i = self.seen.size() - 1
-    i < self.replies.size() ? self.replies[i] : {text: 'nothing more to do.'}
+    @seen.push(params.messages.slice(0, params.messages.size()))
+    let i = @seen.size() - 1
+    i < @replies.size() ? @replies[i] : {text: 'nothing more to do.'}
   }
 
   last_messages() {
-    self.seen[self.seen.size() - 1]
+    @seen[@seen.size() - 1]
   }
 }
 

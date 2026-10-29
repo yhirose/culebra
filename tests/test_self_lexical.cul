@@ -185,7 +185,7 @@ assert_eq(rm(1), 5)
 // The handle and a direct `fn(...)` see the receiver the call delivered:
 // also in a method a closure takes `self` from, and in that closure.
 class RCap {
-  new(.v) {}
+  new(@v) {}
   recurse(k) {
     let g = || self.v
     if k == 0 { return g() }

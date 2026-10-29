@@ -26,7 +26,7 @@ fn rsr_churn() {
 mut rsr_keep = []
 mut rsr_drops = 0
 class RsrZero {
-  new(.n) {
+  new(@n) {
     self.payload = [n, n + 1]
     self.name = "zero-{n}"
   }
@@ -74,7 +74,7 @@ assert_eq(rsr_drops, 3)
 mut rsr_kept_cycle = []
 mut rsr_cycle_drops = 0
 class RsrCycle {
-  new(.n) {
+  new(@n) {
     self.me = nil
     self.payload = [n, n * 2]
     self.name = "cycle-{n}"
@@ -108,7 +108,7 @@ rsr_kept_cycle = []
 mut rsr_kids = []
 mut rsr_names = []
 class RsrParts {
-  new(.n) {
+  new(@n) {
     self.me = nil
     self.name = "parts-{n}-{n * 7}"
     self.kid = {tag: "kid-{n}", of: [n]}
@@ -137,7 +137,7 @@ assert_eq(GC.refcount(rsr_kids[0]) - GC.refcount(rsr_one[0]), 0)
 # other is swept by that same collection.
 mut rsr_mixed = []
 class RsrMixed {
-  new(.keep) {
+  new(@keep) {
     self.me = nil
   }
   drop() {
@@ -203,7 +203,7 @@ assert_eq(rsr_log, ['cap-a', 'a'])
 # alone too; the next one finds both unreachable and takes them together.
 mut rsr_boxed_drops = 0
 class RsrBoxed {
-  new(.n) {
+  new(@n) {
     self.me = nil
   }
   drop() {
@@ -229,7 +229,7 @@ assert_eq(rsr_boxed_drops, 20)
 # next collection runs that body, what it holds is still whole.
 mut rsr_seen = []
 class RsrHeld {
-  new(.n) {
+  new(@n) {
     self.me = nil
     self.payload = [n, n + 1]
   }

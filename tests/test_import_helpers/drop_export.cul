@@ -3,7 +3,7 @@
 // drop bodies (the entry's own top-level bindings get the same treatment);
 // running them there took the process down at exit.
 class Kept {
-  new(.n) {}
+  new(@n) {}
   drop() {
     nil
   }

@@ -145,7 +145,7 @@ assert_eq(shared_refusal(fn () { [SharedOpt.Has] }), refused_fn)
 @value
 class SharedValue {
   x: Long
-  new(.x) {}
+  new(@x) {}
 }
 assert_eq(shared_refusal(fn () { SharedValue(1) }), refused_fn)
 # A class is no data either, with its `new` or without it.

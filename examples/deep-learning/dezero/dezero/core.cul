@@ -98,48 +98,48 @@ class Variable {
   generation = 0
 
   new(data, name = nil) {
-    self.data = data
-    self.name = name
+    @data = data
+    @name = name
   }
 
   get shape() {
-    self.data.shape()
+    @data.shape()
   }
 
   get ndim() {
-    self.shape.size()
+    @shape.size()
   }
 
   get size() {
-    self.shape.product()
+    @shape.product()
   }
 
   __str__() {
-    if self.data == nil {
+    if @data == nil {
       "variable(None)"
     } else {
-      "variable({self.data.to_array()})"
+      "variable({@data.to_array()})"
     }
   }
 
   set_creator(f) {
-    self.creator = f
-    self.generation = f.generation + 1
+    @creator = f
+    @generation = f.generation + 1
   }
 
   unchain() {
-    self.creator = nil
+    @creator = nil
   }
 
   cleargrad() {
-    self.grad = nil
+    @grad = nil
   }
 
   # Reverse-mode sweep in generation order, so a diamond in the graph is
   # never processed before every path into it has contributed its share.
   backward(retain_grad = false, create_graph = false) {
-    if self.grad == nil {
-      self.grad = Variable(Tensor.ones(self.shape))
+    if @grad == nil {
+      @grad = Variable(Tensor.ones(@shape))
     }
 
     backward_epoch += 1
@@ -153,7 +153,7 @@ class Variable {
         funcs.sort_by(|n| n.generation)
       }
     }
-    add_func(self.creator) if self.creator != nil
+    add_func(@creator) if @creator != nil
 
     while !funcs.empty() {
       f = funcs.pop()
@@ -197,8 +197,8 @@ class Variable {
   }
 
   unchain_backward() {
-    if self.creator != nil {
-      mut funcs = [self.creator]
+    if @creator != nil {
+      mut funcs = [@creator]
       while !funcs.empty() {
         f = funcs.pop()
         for x in f.inputs {
@@ -328,15 +328,15 @@ class SumTo {
   output = nil
   seen = -1
 
-  new(.shape) {}
+  new(@shape) {}
 
   forward(x) {
-    self.x_shape = x.shape()
-    raw_sum_to(x, self.shape)
+    @x_shape = x.shape()
+    raw_sum_to(x, @shape)
   }
 
   backward(gy) {
-    broadcast_to(gy, self.x_shape)
+    broadcast_to(gy, @x_shape)
   }
 }
 
@@ -354,15 +354,15 @@ class BroadcastTo {
   output = nil
   seen = -1
 
-  new(.shape) {}
+  new(@shape) {}
 
   forward(x) {
-    self.x_shape = x.shape()
-    raw_broadcast_to(x, self.shape)
+    @x_shape = x.shape()
+    raw_broadcast_to(x, @shape)
   }
 
   backward(gy) {
-    sum_to(gy, self.x_shape)
+    sum_to(gy, @x_shape)
   }
 }
 
@@ -380,17 +380,17 @@ class Sum {
   output = nil
   seen = -1
 
-  new(.axis = nil, .keepdims = false) {}
+  new(@axis = nil, @keepdims = false) {}
 
   forward(x) {
-    self.x_shape = x.shape()
-    mut y = if self.axis == nil {
+    @x_shape = x.shape()
+    mut y = if @axis == nil {
       Tensor.from([x.sum()])
     } else {
-      x.sum(self.axis)
+      x.sum(@axis)
     }
-    if self.keepdims && self.axis != nil {
-      y = y.reshape(insert_axis(self.x_shape, self.axis))
+    if @keepdims && @axis != nil {
+      y = y.reshape(insert_axis(@x_shape, @axis))
     }
     y
   }
@@ -400,12 +400,12 @@ class Sum {
     # there); reinsert it as a size-1 dim so broadcast_to can align the
     # remaining axes against x_shape instead of the numpy trailing-axis
     # broadcast rule picking the wrong one.
-    gy_r = if self.axis == nil || self.keepdims {
+    gy_r = if @axis == nil || @keepdims {
       gy
     } else {
-      reshape(gy, insert_axis(self.x_shape, self.axis))
+      reshape(gy, insert_axis(@x_shape, @axis))
     }
-    broadcast_to(gy_r, self.x_shape)
+    broadcast_to(gy_r, @x_shape)
   }
 }
 
@@ -422,16 +422,16 @@ class Add {
   seen = -1
 
   forward(x0, x1) {
-    self.x0_shape = x0.shape()
-    self.x1_shape = x1.shape()
+    @x0_shape = x0.shape()
+    @x1_shape = x1.shape()
     x0 + x1
   }
 
   backward(gy) {
-    if self.x0_shape == self.x1_shape {
+    if @x0_shape == @x1_shape {
       (gy, gy)
     } else {
-      (sum_to(gy, self.x0_shape), sum_to(gy, self.x1_shape))
+      (sum_to(gy, @x0_shape), sum_to(gy, @x1_shape))
     }
   }
 }
@@ -451,7 +451,7 @@ class Mul {
   }
 
   backward(gy) {
-    (x0, x1) = (self.inputs[0], self.inputs[1])
+    (x0, x1) = (@inputs[0], @inputs[1])
     gx0 = gy * x1
     gx1 = gy * x0
     if x0.shape == x1.shape {
@@ -496,18 +496,18 @@ class Sub {
   seen = -1
 
   forward(x0, x1) {
-    self.x0_shape = x0.shape()
-    self.x1_shape = x1.shape()
+    @x0_shape = x0.shape()
+    @x1_shape = x1.shape()
     x0 - x1
   }
 
   backward(gy) {
     gx0 = gy
     gx1 = neg(gy)
-    if self.x0_shape == self.x1_shape {
+    if @x0_shape == @x1_shape {
       (gx0, gx1)
     } else {
-      (sum_to(gx0, self.x0_shape), sum_to(gx1, self.x1_shape))
+      (sum_to(gx0, @x0_shape), sum_to(gx1, @x1_shape))
     }
   }
 }
@@ -527,7 +527,7 @@ class Div {
   }
 
   backward(gy) {
-    (x0, x1) = (self.inputs[0], self.inputs[1])
+    (x0, x1) = (@inputs[0], @inputs[1])
     gx0 = gy / x1
     gx1 = gy * raw_neg(x0 / (x1 * x1))
     if x0.shape == x1.shape {
@@ -548,15 +548,15 @@ class Pow {
   output = nil
   seen = -1
 
-  new(.c) {}
+  new(@c) {}
 
   forward(x) {
-    x.pow(self.c)
+    x.pow(@c)
   }
 
   backward(gy) {
-    x = self.inputs[0]
-    c = self.c
+    x = @inputs[0]
+    c = @c
     mul(mul(c, pow_(x, c - 1)), gy)
   }
 }
@@ -573,15 +573,15 @@ class Reshape {
   output = nil
   seen = -1
 
-  new(.shape) {}
+  new(@shape) {}
 
   forward(x) {
-    self.x_shape = x.shape()
-    x.reshape(self.shape)
+    @x_shape = x.shape()
+    x.reshape(@shape)
   }
 
   backward(gy) {
-    reshape(gy, self.x_shape)
+    reshape(gy, @x_shape)
   }
 }
 
@@ -616,14 +616,14 @@ class Transpose {
   output = nil
   seen = -1
 
-  new(.axes = nil) {}
+  new(@axes = nil) {}
 
   forward(x) {
-    raw_transpose(x, self.axes)
+    raw_transpose(x, @axes)
   }
 
   backward(gy) {
-    transpose(gy, self.axes == nil ? nil : invert_permutation(self.axes))
+    transpose(gy, @axes == nil ? nil : invert_permutation(@axes))
   }
 }
 
@@ -658,7 +658,7 @@ class MatMul {
   }
 
   backward(gy) {
-    (x, w) = (self.inputs[0], self.inputs[1])
+    (x, w) = (@inputs[0], @inputs[1])
     (matmul(gy, swap_last_two_axes(w)), matmul(swap_last_two_axes(x), gy))
   }
 }
@@ -695,16 +695,16 @@ class Max {
   output = nil
   seen = -1
 
-  new(.axis = nil, .keepdims = false) {}
+  new(@axis = nil, @keepdims = false) {}
 
   forward(x) {
-    self.x_shape = x.shape()
-    y = if self.axis == nil {
+    @x_shape = x.shape()
+    y = if @axis == nil {
       Tensor.from([x.max()])
     } else {
-      x.max(self.axis)
+      x.max(@axis)
     }
-    self.y_data = y
+    @y_data = y
     y
   }
 
@@ -723,18 +723,18 @@ class Min {
   output = nil
   seen = -1
 
-  new(.axis = nil, .keepdims = false) {}
+  new(@axis = nil, @keepdims = false) {}
 
   # Tensor has `.max()` but no `.min()`.
   forward(x) {
-    self.x_shape = x.shape()
+    @x_shape = x.shape()
     neg_x = x * -1.0
-    y = if self.axis == nil {
+    y = if @axis == nil {
       Tensor.from([neg_x.max()]) * -1.0
     } else {
-      neg_x.max(self.axis) * -1.0
+      neg_x.max(@axis) * -1.0
     }
-    self.y_data = y
+    @y_data = y
     y
   }
 
@@ -762,16 +762,16 @@ class Narrow {
   output = nil
   seen = -1
 
-  new(.axis, .start, .end) {}
+  new(@axis, @start, @end) {}
 
   forward(x) {
-    self.x_len = x.shape()[self.axis]
-    x.narrow([self.axis, self.start, self.end])
+    @x_len = x.shape()[@axis]
+    x.narrow([@axis, @start, @end])
   }
 
   backward(gy) {
-    after = self.x_len - self.end
-    as_variable(gy.data.pad([self.axis, self.start, after]))
+    after = @x_len - @end
+    as_variable(gy.data.pad([@axis, @start, after]))
   }
 }
 
@@ -792,21 +792,21 @@ class Concat {
   output = nil
   seen = -1
 
-  new(.axis) {}
+  new(@axis) {}
 
   forward(a, b) {
-    self.a_len = a.shape()[self.axis]
-    self.b_len = b.shape()[self.axis]
-    Tensor.concat([a, b], self.axis)
+    @a_len = a.shape()[@axis]
+    @b_len = b.shape()[@axis]
+    Tensor.concat([a, b], @axis)
   }
 
   backward(gy) {
-    axis = self.axis
-    ga = as_variable(gy.data.narrow([axis, 0, self.a_len]))
+    axis = @axis
+    ga = as_variable(gy.data.narrow([axis, 0, @a_len]))
     gb = as_variable(gy.data.narrow([
       axis,
-      self.a_len,
-      self.a_len + self.b_len,
+      @a_len,
+      @a_len + @b_len,
     ]))
     (ga, gb)
   }
@@ -828,15 +828,15 @@ class Where {
   output = nil
   seen = -1
 
-  new(.cond) {}
+  new(@cond) {}
 
   forward(a, b) {
-    Tensor.where(self.cond, a, b)
+    Tensor.where(@cond, a, b)
   }
 
   backward(gy) {
-    da = gy * as_variable(self.cond)
-    db = gy * as_variable(Tensor.ones(self.cond.shape()) - self.cond)
+    da = gy * as_variable(@cond)
+    db = gy * as_variable(Tensor.ones(@cond.shape()) - @cond)
     (da, db)
   }
 }

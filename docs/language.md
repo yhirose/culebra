@@ -1607,6 +1607,14 @@ receiver nor an enclosing `self` exists does the read raise
 name does, and at the point of the read rather than on entry to the
 body.
 
+Inside a class or object-literal method, `@name` is `self.name`: the
+spelling is only a shorthand, and parses to the same tree. It heads a read,
+a write (`@n += 1`, `@items[i] = x`, `(@a, @b) = (@b, @a)`) or a call
+(`@size()`), and it resolves `self` as above. The `@` touches the name: a
+bare `@` is not `self`, and `@ name` is not `@name`. Binary `@` (matrix
+product, `@=`) and a decorator `@deco` before a declaration keep their
+meaning, and `@` at the start of a line never continues the line before.
+
 Reading a function-valued property *as a value* (`let m = o.f`, no
 call parens) returns a **bound method**: a fresh wrapper that carries
 `o` as its `self`. The binding is permanent — attaching the wrapper to
@@ -1762,7 +1770,7 @@ Semantics:
     visible inside initializers (initializers close over the class's
     defining scope, not over the constructor call); pass ctor args to
     fields explicitly with `self.x = a` in the body, or with a field
-    parameter (`new(.x)`, below).
+    parameter (`new(@x)`, below).
   - **Each initializer is a scope of its own**: what one declares
     (`area = (let side = 3) * side`) ends with it, and the next
     field's initializer does not see it.
@@ -1797,7 +1805,7 @@ Semantics:
   ```culebra
   class Car {
     speed: Float
-    new(.speed) {}
+    new(@speed) {}
   }
   class Garage {
     car: Car
@@ -1823,10 +1831,10 @@ Semantics:
   typed fields (`x = 7` in either is a SyntaxError). A `@packable` field
   of any other type than a scalar is its byte layout's: its packed view
   checks a write to it, and an ordinary instance's write is not checked.
-* `new(.x)` declares a **field parameter**: a `new` parameter `x` that
+* `new(@x)` declares a **field parameter**: a `new` parameter `x` that
   also stores its argument into the field `x`, so the body carries no
-  assignment for it. `.x: T` and `.x = v` give it a type and a default
-  the way any parameter takes them; `.x?` makes it optional and takes
+  assignment for it. `@x: T` and `@x = v` give it a type and a default
+  the way any parameter takes them; `@x?` makes it optional and takes
   both from the field's declaration instead:
 
       class Cartridge {
@@ -1835,7 +1843,7 @@ Semantics:
         chr_ram = self.chr_rom.empty() ? repeat(8192, 0) : []
         mapper_id = 0
         has_battery = false
-        new(.prg_rom, .chr_rom, *, .mapper_id?, .has_battery?) {}
+        new(@prg_rom, @chr_rom, *, @mapper_id?, @has_battery?) {}
       }
       let c = Cartridge([0x4E, 0x45, 0x53], [], mapper_id: 4)
       inspect(c.mapper_id)       # 4
@@ -1846,30 +1854,30 @@ Semantics:
     reported as `x` in arity and type errors, readable as `x` in later
     defaults and in the body. Positional and keyword passing, `*`, and
     the ordering rule (a required parameter cannot follow an optional
-    one) apply unchanged; `.x?` counts as optional.
+    one) apply unchanged; `@x?` counts as optional.
   - The argument is stored at the field's own place in the declaration
     order, after the arguments bound and before the `new` body, so an
     initializer declared *below* the field reads what the argument
     stored (`chr_ram` above) and one declared *above* it reads `nil`,
     as ever. The store is the checked write every other store is: a
     declared type refuses a value it does not admit.
-  - `.x?` left out by the caller takes the declaration's own value, the
+  - `@x?` left out by the caller takes the declaration's own value, the
     initializer or the type's zero value, and the parameter `x` reads as
     that value in the body. Passing `nil` is passing a value, not leaving it
     out.
   - Naming a declared field: the declaration must carry no initializer
-    unless the parameter is `.x?` (the parameter would otherwise always
+    unless the parameter is `@x?` (the parameter would otherwise always
     supply the value); a type on the parameter must repeat the
-    declaration's; `.x?` takes neither a type nor a default of its own.
-  - Naming no declared field: `.x` and `.x: T` **declare** it, in the
+    declaration's; `@x?` takes neither a type nor a default of its own.
+  - Naming no declared field: `@x` and `@x: T` **declare** it, in the
     class's field list at the first `new`'s place (every overload's such
     fields go there, in the order the overloads name them), with the type
     given (an untyped one starts as `nil`, has no zero value and is
     unchecked). Several `new` overloads may declare the same field so,
-    spelling its type identically (an untyped `.x` included), and the
+    spelling its type identically (an untyped `@x` included), and the
     name is held to the same uniqueness rule as a body declaration. A
     `@value` or `@packable` class holds such a field to its field rules
-    (a type is required). `.x?` has no declaration to default from there
+    (a type is required). `@x?` has no declaration to default from there
     and is a SyntaxError.
   - Only a `new` parameter list accepts the form; anywhere else it is a
     SyntaxError.
@@ -2717,7 +2725,7 @@ the object it is called on as `self`.
 
 ```culebra
 class Bag {
-  new(.items) {}
+  new(@items) {}
   iter() {
     for x in self.items {
       yield x
@@ -3412,7 +3420,7 @@ inspect(kind('a'))   # => 'other'
 
 ```culebra
 class Dog {
-  new(.name) {}
+  new(@name) {}
 }
 kind = fn (v) {
   match v {
@@ -4441,7 +4449,7 @@ Semantics:
 
 ```culebra
 class ApiError {
-  new(.status) {}
+  new(@status) {}
 }
 fetch = fn (status) {
   try {
@@ -7084,6 +7092,12 @@ between two operands and never crosses a newline. So
 `}\n@deco fn ...` is unambiguously two statements (a decorator on a
 fresh declaration), not a matmul continuation of the preceding
 expression.
+
+The field shorthand `@name` (`self.name`) adds no third case. It is
+an operand, so it starts an expression or a statement, and a binary
+operator never continues from a line break. After an operand on the
+same line, `a @b` and `a @ b` are both matmul: `@name` is read as a
+field only where an operand is due.
 
 ---
 

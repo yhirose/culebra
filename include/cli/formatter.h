@@ -1251,14 +1251,28 @@ class Printer {
     return print(arg);
   }
 
+  // `@name` reaches the printer as the IDENTIFIER `@` followed by the DOT
+  // `name` (the form `self.name` has); the pair prints as one atom and the
+  // chain's other segments start after it. 1 when `head` is anything else.
+  static size_t at_self_width(const peg::Ast& head) {
+    return head.is_token && head.token == "@" ? 2 : 1;
+  }
+
+  static DocP print_at_self(const peg::Ast& member) {
+    return doc_text("@" + std::string(member.token));
+  }
+
   DocP print_call(const peg::Ast& node) {
     // The receiver must keep parens when it binds looser than a postfix op, so
     // `(-3).double()` / `(a + b).x` don't collapse to `-3.double()` (which
     // parses as `-(3.double())`) or `a + b.x`. A parenthesised chain is a
     // nested CALL, and `(n?[0])[5]` stops the nil collapse where `n?[0][5]`
     // doesn't, so that one keeps them too.
-    DocP receiver = print_operand(*node.nodes[0], /*parent_prec=*/prec("CALL"),
-                                  /*assoc_safe=*/true, /*parent_name=*/"CALL");
+    const size_t first = at_self_width(*node.nodes[0]);
+    DocP receiver = first == 2
+                        ? print_at_self(*node.nodes[1])
+                        : print_operand(*node.nodes[0], /*parent_prec=*/prec("CALL"),
+                                        /*assoc_safe=*/true, /*parent_name=*/"CALL");
     auto is_dot = [](const peg::Ast& s) {
       return s.original_name == "DOT" || s.original_name == "SAFE_DOT";
     };
@@ -1267,12 +1281,12 @@ class Printer {
     // that permits a preceding newline), keeping each call on its own line
     // instead of wrapping one call's arguments mid-chain.
     int calls = 0;
-    for (size_t i = 1; i + 1 < node.nodes.size(); i++)
+    for (size_t i = first; i + 1 < node.nodes.size(); i++)
       if (is_dot(*node.nodes[i]) && node.nodes[i + 1]->original_name == "ARGUMENTS")
         calls++;
 
     std::vector<DocP> segs{receiver};
-    for (size_t i = 1; i < node.nodes.size(); i++)
+    for (size_t i = first; i < node.nodes.size(); i++)
       segs.push_back(print_postfix(*node.nodes[i]));
 
     // A chain carrying a block argument has nothing worth wrapping either: the
@@ -1282,9 +1296,9 @@ class Printer {
       return doc_concat(std::move(segs));
 
     std::vector<DocP> cont;
-    for (size_t i = 1; i < node.nodes.size(); i++) {
+    for (size_t i = first; i < node.nodes.size(); i++) {
       if (is_dot(*node.nodes[i])) cont.push_back(doc_softline());  // break before `.`
-      cont.push_back(std::move(segs[i]));
+      cont.push_back(std::move(segs[i - first + 1]));
     }
     return doc_group(doc_concat({receiver, doc_indent(kIndent, doc_concat(std::move(cont)))}));
   }
@@ -1293,8 +1307,10 @@ class Printer {
   // target followed by its postfix segments. Shared by ASSIGNMENT and
   // PLACE_ASSIGN, whose targets have exactly this shape.
   DocP print_lvalue_chain(const peg::Ast& node, size_t off, int cnt) {
-    std::vector<DocP> parts{print(*node.nodes[off])};
-    for (int k = 1; k < cnt; k++)
+    const int first = static_cast<int>(at_self_width(*node.nodes[off]));
+    std::vector<DocP> parts{first == 2 ? print_at_self(*node.nodes[off + 1])
+                                       : print(*node.nodes[off])};
+    for (int k = first; k < cnt; k++)
       parts.push_back(print_postfix(*node.nodes[off + k]));
     return doc_concat(std::move(parts));
   }
@@ -1496,7 +1512,7 @@ class Printer {
     if (v.is_kwargs_rest) return doc_text("**" + std::string(v.name));
     if (v.pattern) return print_pattern(*v.pattern);
     DocP d = v.is_field
-                 ? doc_text("." + std::string(v.name) + (v.is_optional ? "?" : ""))
+                 ? doc_text("@" + std::string(v.name) + (v.is_optional ? "?" : ""))
                  : doc_text((v.is_mut ? "mut " : "") + std::string(v.name));
     if (!v.type_annotation.empty())
       d = doc_concat({d, doc_text(": " + std::string(v.type_annotation))});

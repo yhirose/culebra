@@ -3,11 +3,11 @@ fn show(label, f) {
 }
 class Point {
   new(x, y) {
-    self.x = x
-    self.y = y
+    @x = x
+    @y = y
   }
-  norm2() { self.x * self.x + self.y * self.y }
-  scaled(k) { Point(self.x * k, self.y * k) }
+  norm2() { @x * @x + @y * @y }
+  scaled(k) { Point(@x * k, @y * k) }
 }
 let p = Point(3, 4)
 show('field', fn () { p.x })
@@ -20,8 +20,8 @@ show('field-set', fn () { mut q = Point(1, 2)
                           q.x })
 show('eq-default', fn () { Point(1, 2) == Point(1, 2) })
 class WithEq {
-  new(v) { self.v = v }
-  __eq__(o) { self.v == o.v }
+  new(v) { @v = v }
+  __eq__(o) { @v == o.v }
 }
 show('eq-dunder', fn () { WithEq(5) == WithEq(5) })
 class WithStr {
@@ -30,10 +30,10 @@ class WithStr {
 }
 show('str-dunder', fn () { "{WithStr()}" })
 class Counter {
-  new() { self.n = 0 }
+  new() { @n = 0 }
   bump() {
-    self.n += 1
-    self.n
+    @n += 1
+    @n
   }
 }
 show('mut-field', fn () { let c = Counter()
@@ -42,11 +42,11 @@ show('mut-field', fn () { let c = Counter()
 show('missing-method', fn () { p.zzz() })
 trait Shape {
   area() -> Long
-  describe() { "shape with area {self.area()}" }
+  describe() { "shape with area {@area()}" }
 }
 class Sq {
-  new(s) { self.s = s }
-  area() { self.s * self.s }
+  new(s) { @s = s }
+  area() { @s * @s }
 }
 show('trait-default', fn () { Sq.new(3).describe() })
 fn takes_shape(x: Shape) { x.area() }

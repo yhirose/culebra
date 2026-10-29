@@ -264,7 +264,7 @@ gen|effect fn a(); fn gg() { effect fn f()*
 gen|fn gg() { try { yield 1; to_long("x"); yield 2 } catch e*
 gen|mut log = []; fn gg() { defer { log.push("outer") }; try {*
 gen|class C { new() { self.v = 5 } vals()*
-gen|class B { new(.xs) {} iter()*
+gen|class B { new(@xs) {} iter()*
 gen|let g = fn (n) { yield n; yield n * 2 }*
 gen|let o = {t: 7, g: fn () { yield self.t }}*
 gen|class S { static of(n)*

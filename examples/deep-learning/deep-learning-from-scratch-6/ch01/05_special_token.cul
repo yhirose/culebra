@@ -71,21 +71,21 @@ for rule in merge_rules {
 # (105, 115) -> 256 / (256, 32) -> 257 / (105, 110) -> 258
 
 class BPETokenizer {
-  new(.merge_rules, .end_token = END_TOKEN) {
-    self.end_token_id = 256 + merge_rules.size()
+  new(@merge_rules, @end_token = END_TOKEN) {
+    @end_token_id = 256 + merge_rules.size()
 
     mut id_to_bytes = range(256).map(|b| [b]).collect()
     for rule in merge_rules {
       id_to_bytes.push(id_to_bytes[rule[0]] + id_to_bytes[rule[1]])
     }
     id_to_bytes.push(end_token.bytes().collect())
-    self.id_to_bytes = id_to_bytes
-    self.vocab_size = id_to_bytes.size()
+    @id_to_bytes = id_to_bytes
+    @vocab_size = id_to_bytes.size()
   }
 
   encode_text(text) {
     mut ids = text.bytes().collect()
-    for rule in self.merge_rules {
+    for rule in @merge_rules {
       ids = merge(ids, pack(rule[0], rule[1]), rule[2])
     }
     ids
@@ -94,15 +94,15 @@ class BPETokenizer {
   # Splitting drops the separator, so put its id back between the parts.
   encode(input_text) {
     mut all_ids = []
-    for i, text in input_text.split(self.end_token).enumerate() {
-      all_ids.push(self.end_token_id) if i > 0
-      all_ids.extend(self.encode_text(text))
+    for i, text in input_text.split(@end_token).enumerate() {
+      all_ids.push(@end_token_id) if i > 0
+      all_ids.extend(@encode_text(text))
     }
     all_ids
   }
 
   decode(ids) {
-    String.from_bytes(ids.flat_map(|id| self.id_to_bytes[id]))
+    String.from_bytes(ids.flat_map(|id| @id_to_bytes[id]))
   }
 }
 

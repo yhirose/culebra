@@ -41,7 +41,7 @@ let TN_REPLY = {message: tn_say("hi"), text: "hi", tool_calls: [], reasoning: ""
 
 # A provider is anything with a turn method: this one records what it is asked.
 class TurnFake {
-  new(.name, .capabilities, .default_model) {
+  new(@name, @capabilities, @default_model) {
     self.seen = []
     self.reply = TN_REPLY
   }
@@ -191,7 +191,7 @@ assert_eq(failure(|| tn_turn(tn_bad, messages: [tn_user("hi")])),
 # --- LLM.count_tokens: the same request, asked for a count ------------------------------------
 
 class CountFake {
-  new(.name, .capabilities, .answer) {
+  new(@name, @capabilities, @answer) {
     self.default_model = nil
     self.seen = []
   }

@@ -141,17 +141,17 @@ class Im2col {
   output = nil
   seen = -1
 
-  new(.kernel_size, .stride = 1, .pad = 0) {}
+  new(@kernel_size, @stride = 1, @pad = 0) {}
 
   forward(x) {
     s = x.shape()
     (n, c, h, w) = (s[0], s[1], s[2], s[3])
-    (kh, kw) = pair(self.kernel_size)
-    (sh, sw) = pair(self.stride)
-    (ph, pw) = pair(self.pad)
+    (kh, kw) = pair(@kernel_size)
+    (sh, sw) = pair(@stride)
+    (ph, pw) = pair(@pad)
     oh = get_conv_outsize(h, kh, sh, ph)
     ow = get_conv_outsize(w, kw, sw, pw)
-    self.x_shape = s
+    @x_shape = s
 
     windows = x
       .permute([0, 2, 3, 1])
@@ -163,7 +163,7 @@ class Im2col {
   }
 
   backward(gy) {
-    col2im(gy, self.x_shape, self.kernel_size, self.stride, self.pad)
+    col2im(gy, @x_shape, @kernel_size, @stride, @pad)
   }
 }
 
@@ -177,7 +177,7 @@ class Col2im {
   output = nil
   seen = -1
 
-  new(.input_shape, .kernel_size, .stride = 1, .pad = 0) {}
+  new(@input_shape, @kernel_size, @stride = 1, @pad = 0) {}
 
   forward(x) {
     (
@@ -186,14 +186,14 @@ class Col2im {
       h,
       w,
     ) = (
-      self.input_shape[0],
-      self.input_shape[1],
-      self.input_shape[2],
-      self.input_shape[3],
+      @input_shape[0],
+      @input_shape[1],
+      @input_shape[2],
+      @input_shape[3],
     )
-    (kh, kw) = pair(self.kernel_size)
-    (sh, sw) = pair(self.stride)
-    (ph, pw) = pair(self.pad)
+    (kh, kw) = pair(@kernel_size)
+    (sh, sw) = pair(@stride)
+    (ph, pw) = pair(@pad)
     oh = get_conv_outsize(h, kh, sh, ph)
     ow = get_conv_outsize(w, kw, sw, pw)
     hp = h + 2 * ph
@@ -209,7 +209,7 @@ class Col2im {
   }
 
   backward(gy) {
-    im2col(gy, self.kernel_size, self.stride, self.pad)
+    im2col(gy, @kernel_size, @stride, @pad)
   }
 }
 
@@ -286,20 +286,20 @@ class WeightAsMatrix {
   output = nil
   seen = -1
 
-  new(.out_c, .in_c, .kh, .kw) {}
+  new(@out_c, @in_c, @kh, @kw) {}
 
   forward(w) {
-    k = self.in_c * self.kh * self.kw
-    mat = tensor_to_nested(w.reshape([self.out_c, k]))
-    tensor_from_nested(arr_transpose2d(mat, self.out_c, k), [k, self.out_c])
+    k = @in_c * @kh * @kw
+    mat = tensor_to_nested(w.reshape([@out_c, k]))
+    tensor_from_nested(arr_transpose2d(mat, @out_c, k), [k, @out_c])
   }
 
   backward(gy) {
-    k = self.in_c * self.kh * self.kw
+    k = @in_c * @kh * @kw
     mat = tensor_to_nested(gy.data)
     dz.as_variable(tensor_from_nested(
-      arr_transpose2d(mat, k, self.out_c),
-      [self.out_c, self.in_c, self.kh, self.kw],
+      arr_transpose2d(mat, k, @out_c),
+      [@out_c, @in_c, @kh, @kw],
     ))
   }
 }
@@ -380,25 +380,25 @@ class Pooling {
   output = nil
   seen = -1
 
-  new(.kernel_size, .stride = 1, .pad = 0) {}
+  new(@kernel_size, @stride = 1, @pad = 0) {}
 
   forward(x) {
     s = x.shape()
     (n, c, h, w) = (s[0], s[1], s[2], s[3])
-    (kh, kw) = pair(self.kernel_size)
-    (sh, sw) = pair(self.stride)
-    (ph, pw) = pair(self.pad)
+    (kh, kw) = pair(@kernel_size)
+    (sh, sw) = pair(@stride)
+    (ph, pw) = pair(@pad)
     oh = get_conv_outsize(h, kh, sh, ph)
     ow = get_conv_outsize(w, kw, sw, pw)
-    self.x_shape = s
-    self.kh = kh
-    self.kw = kw
-    self.sh = sh
-    self.sw = sw
-    self.ph = ph
-    self.pw = pw
-    self.oh = oh
-    self.ow = ow
+    @x_shape = s
+    @kh = kh
+    @kw = kw
+    @sh = sh
+    @sw = sw
+    @ph = ph
+    @pw = pw
+    @oh = oh
+    @ow = ow
 
     flat = x
       .pad([2, ph, ph])
@@ -407,7 +407,7 @@ class Pooling {
       .unfold([3, kw, sw])
       .clone()
       .reshape([n, c, oh, ow, kh * kw])
-    self.argmax = flat.argmax(4)
+    @argmax = flat.argmax(4)
     flat.max(4)
   }
 
@@ -423,14 +423,14 @@ class Pooling {
       c,
       h,
       w,
-    ) = (self.x_shape[0], self.x_shape[1], self.x_shape[2], self.x_shape[3])
+    ) = (@x_shape[0], @x_shape[1], @x_shape[2], @x_shape[3])
     dz.as_variable(Tensor
-      .scatter_to_axis(self.argmax, gy.data, self.kh * self.kw)
-      .reshape([n, c, self.oh, self.ow, self.kh, self.kw])
-      .fold([3, w + 2 * self.pw, self.sw])
-      .fold([2, h + 2 * self.ph, self.sh])
-      .narrow([2, self.ph, self.ph + h])
-      .narrow([3, self.pw, self.pw + w]))
+      .scatter_to_axis(@argmax, gy.data, @kh * @kw)
+      .reshape([n, c, @oh, @ow, @kh, @kw])
+      .fold([3, w + 2 * @pw, @sw])
+      .fold([2, h + 2 * @ph, @sh])
+      .narrow([2, @ph, @ph + h])
+      .narrow([3, @pw, @pw + w]))
   }
 }
 
@@ -444,25 +444,25 @@ class AveragePooling {
   output = nil
   seen = -1
 
-  new(.kernel_size, .stride = 1, .pad = 0) {}
+  new(@kernel_size, @stride = 1, @pad = 0) {}
 
   forward(x) {
     s = x.shape()
     (n, c, h, w) = (s[0], s[1], s[2], s[3])
-    (kh, kw) = pair(self.kernel_size)
-    (sh, sw) = pair(self.stride)
-    (ph, pw) = pair(self.pad)
+    (kh, kw) = pair(@kernel_size)
+    (sh, sw) = pair(@stride)
+    (ph, pw) = pair(@pad)
     oh = get_conv_outsize(h, kh, sh, ph)
     ow = get_conv_outsize(w, kw, sw, pw)
-    self.x_shape = s
-    self.kh = kh
-    self.kw = kw
-    self.sh = sh
-    self.sw = sw
-    self.ph = ph
-    self.pw = pw
-    self.oh = oh
-    self.ow = ow
+    @x_shape = s
+    @kh = kh
+    @kw = kw
+    @sh = sh
+    @sw = sw
+    @ph = ph
+    @pw = pw
+    @oh = oh
+    @ow = ow
 
     x
       .pad([2, ph, ph])
@@ -481,17 +481,17 @@ class AveragePooling {
       c,
       h,
       w,
-    ) = (self.x_shape[0], self.x_shape[1], self.x_shape[2], self.x_shape[3])
-    cnt = to_float(self.kh * self.kw)
-    mut padded = zeros_nested([n, c, h + 2 * self.ph, w + 2 * self.pw])
+    ) = (@x_shape[0], @x_shape[1], @x_shape[2], @x_shape[3])
+    cnt = to_float(@kh * @kw)
+    mut padded = zeros_nested([n, c, h + 2 * @ph, w + 2 * @pw])
     for ni in range(n) {
       for ci in range(c) {
-        for ohi in range(self.oh) {
-          for owi in range(self.ow) {
+        for ohi in range(@oh) {
+          for owi in range(@ow) {
             g = gy_arr[ni][ci][ohi][owi] / cnt
-            for khi in range(self.kh) {
-              for kwi in range(self.kw) {
-                padded[ni][ci][ohi * self.sh + khi][owi * self.sw + kwi] += g
+            for khi in range(@kh) {
+              for kwi in range(@kw) {
+                padded[ni][ci][ohi * @sh + khi][owi * @sw + kwi] += g
               }
             }
           }
@@ -499,7 +499,7 @@ class AveragePooling {
       }
     }
     dz.as_variable(tensor_from_nested(
-      strip_padding(padded, n, c, h, w, self.ph, self.pw),
+      strip_padding(padded, n, c, h, w, @ph, @pw),
       [n, c, h, w],
     ))
   }

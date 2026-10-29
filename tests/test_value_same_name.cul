@@ -7,7 +7,7 @@ import vsn_dep from './test_import_helpers/value_same_name_dep.cul'
 
 @value
 class VsnPoint {
-  new(.x: Float) {}
+  new(@x: Float) {}
   __add__(o) {
     VsnPoint.new(self.x + o.x)
   }
@@ -16,7 +16,7 @@ class VsnPoint {
 fn vsn_local_point() {
   @value
   class VsnPoint {
-    new(.x: Float, .y: Float) {}
+    new(@x: Float, @y: Float) {}
   }
   VsnPoint.new(7.0, 8.0).y
 }
@@ -66,7 +66,7 @@ assert_eq([vsn_local_typed(), vsn_outer_typed()], [7, 1.5])
 fn vsn_own_vector() {
   @value
   class Vector2 {
-    new(.x: Float, .y: Float) {}
+    new(@x: Float, @y: Float) {}
     length() {
       99.0
     }

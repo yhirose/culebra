@@ -226,7 +226,7 @@ assert_eq(ias_fn_in_cond(1), ["one", "DispatchError"])
 fn ias_arm_class(a) {
   if a {
     class IasBox {
-      new(.v) {}
+      new(@v) {}
     }
     enum IasTone { Low, High }
     [IasBox.new(3).v, IasTone.High == IasTone.High]

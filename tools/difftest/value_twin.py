@@ -72,9 +72,9 @@ OPERATORS = {
     "neg": "__neg__() { P.new(-self.x, -self.y) }",
 }
 CTORS = [
-    "  new(.x: Float, .y: Float) {}",
+    "  new(@x: Float, @y: Float) {}",
     "  x: Float\n  y: Float\n  new(x: Float, y: Float) {\n    self.x = x\n    self.y = y\n  }",
-    "  new(.x: Float, .y: Float) {\n    self.x += 1.0\n    self.y *= 2.0\n  }",
+    "  new(@x: Float, @y: Float) {\n    self.x += 1.0\n    self.y *= 2.0\n  }",
 ]
 
 

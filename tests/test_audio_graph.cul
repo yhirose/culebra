@@ -182,7 +182,7 @@ assert_eq(kept.freq.set(0.1, 500.0).ramp(0.2, 700.0), kept.freq)
 
 // A program's own class Graph is its own; the audio graph is AudioGraph.
 class Graph {
-  new(.nodes) {}
+  new(@nodes) {}
 }
 assert_eq(
   (type_of(Graph([1, 2])), type_of(Audio.Graph.new())),

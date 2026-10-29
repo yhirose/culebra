@@ -21,7 +21,7 @@ enum SharedCard {
   Joker,
 }
 class SharedPoint {
-  new(.x) {}
+  new(@x) {}
 }
 let cards = [SharedCard.Card(1), SharedCard.Card(2), SharedPoint(1), SharedPoint(2)]
 let card_view = Shared.new(cards)

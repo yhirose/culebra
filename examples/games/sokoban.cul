@@ -478,43 +478,43 @@ class Game {
   target: Tuple?
 
   new(level) {
-    self.load(level)
+    @load(level)
   }
 
   # `#` wall, `.` goal, `$` crate, `@` player, `*` crate on a goal, `+` player
   # on a goal. Rows need not be padded to the same length.
   load(n) {
     return if n < 0 || n >= LEVELS.size()
-    self.level = n
+    @level = n
     let rows = LEVELS[n].board.lines()
-    self.h = rows.size()
-    self.w = rows.max_by(|r| r.size()).size()
-    self.ox = (BOARD_W - self.w * TILE) / 2
-    self.oy = (BOARD_H - self.h * TILE) / 2
-    self.tiles = iota(self.h).map(|_| repeat(self.w, Tile.Floor))
-    self.goals = [].to_set()
-    self.crates = [].to_set()
+    @h = rows.size()
+    @w = rows.max_by(|r| r.size()).size()
+    @ox = (BOARD_W - @w * TILE) / 2
+    @oy = (BOARD_H - @h * TILE) / 2
+    @tiles = iota(@h).map(|_| repeat(@w, Tile.Floor))
+    @goals = [].to_set()
+    @crates = [].to_set()
     for y, row in rows.enumerate() {
       for x, ch in row.iter().enumerate() {
-        self.tiles[y][x] = Tile.Wall if ch == '#'
-        self.goals.add((x, y)) if ch == '.' || ch == '*' || ch == '+'
-        self.crates.add((x, y)) if ch == '$' || ch == '*'
-        self.place(x, y) if ch == '@' || ch == '+'
+        @tiles[y][x] = Tile.Wall if ch == '#'
+        @goals.add((x, y)) if ch == '.' || ch == '*' || ch == '+'
+        @crates.add((x, y)) if ch == '$' || ch == '*'
+        @place(x, y) if ch == '@' || ch == '+'
       }
     }
-    self.seal()
-    self.history = []
-    self.at = 0
-    self.moves = 0
-    self.pushes = 0
-    self.cursor = 0
-    self.hold_frames = 0
-    self.target = nil
+    @seal()
+    @history = []
+    @at = 0
+    @moves = 0
+    @pushes = 0
+    @cursor = 0
+    @hold_frames = 0
+    @target = nil
   }
 
   place(x, y) {
-    self.x = x
-    self.y = y
+    @x = x
+    @y = y
   }
 
   # Every floor square the border can reach lies beyond the outer wall, so the
@@ -522,18 +522,18 @@ class Game {
   # one connected run along them.
   seal() {
     mut stack = []
-    for x in 0..self.w {
+    for x in 0..@w {
       stack.push((x, 0))
-      stack.push((x, self.h - 1))
+      stack.push((x, @h - 1))
     }
-    for y in 0..self.h {
+    for y in 0..@h {
       stack.push((0, y))
-      stack.push((self.w - 1, y))
+      stack.push((@w - 1, y))
     }
     while !stack.empty() {
       let (x, y) = stack.pop()
-      continue if !self.inside(x, y) || self.tiles[y][x] != Tile.Floor
-      self.tiles[y][x] = Tile.Outside
+      continue if !@inside(x, y) || @tiles[y][x] != Tile.Floor
+      @tiles[y][x] = Tile.Outside
       stack.push((x - 1, y))
       stack.push((x + 1, y))
       stack.push((x, y - 1))
@@ -542,21 +542,21 @@ class Game {
   }
 
   inside(x, y) {
-    x >= 0 && x < self.w && y >= 0 && y < self.h
+    x >= 0 && x < @w && y >= 0 && y < @h
   }
 
   free(x, y) {
-    self.inside(x, y) &&
-      self.tiles[y][x] == Tile.Floor &&
-      !self.crates.contains((x, y))
+    @inside(x, y) &&
+      @tiles[y][x] == Tile.Floor &&
+      !@crates.contains((x, y))
   }
 
   get saved() {
-    self.crates.intersect(self.goals).size()
+    @crates.intersect(@goals).size()
   }
 
   get solved() {
-    self.crates.superset(self.goals)
+    @crates.superset(@goals)
   }
 
   unpack(step) {
@@ -569,58 +569,58 @@ class Game {
   # Walk one square, or push the crate standing there when the square behind it
   # is free. Reports whether anything moved; a click-walk stops when it did not.
   walk(dx, dy) {
-    let (nx, ny) = (self.x + dx, self.y + dy)
-    let pushing = self.crates.contains((nx, ny))
+    let (nx, ny) = (@x + dx, @y + dy)
+    let pushing = @crates.contains((nx, ny))
     if pushing {
-      return false if !self.free(nx + dx, ny + dy)
-      self.crates.remove((nx, ny))
-      self.crates.add((nx + dx, ny + dy))
+      return false if !@free(nx + dx, ny + dy)
+      @crates.remove((nx, ny))
+      @crates.add((nx + dx, ny + dy))
     } else {
-      return false if !self.free(nx, ny)
+      return false if !@free(nx, ny)
     }
-    self.place(nx, ny)
-    self.history = self.history.slice(0, self.at)
-    self.history.push(pushing ? Step.Push(dx, dy) : Step.Walk(dx, dy))
-    self.at += 1
-    self.moves += 1
-    self.total += 1
-    self.pushes += 1 if pushing
+    @place(nx, ny)
+    @history = @history.slice(0, @at)
+    @history.push(pushing ? Step.Push(dx, dy) : Step.Walk(dx, dy))
+    @at += 1
+    @moves += 1
+    @total += 1
+    @pushes += 1 if pushing
     true
   }
 
   undo() {
-    return if self.at == 0
-    self.at -= 1
-    self.replay(-1)
+    return if @at == 0
+    @at -= 1
+    @replay(-1)
   }
 
   redo() {
-    return if self.at >= self.history.size()
-    self.replay(1)
-    self.at += 1
+    return if @at >= @history.size()
+    @replay(1)
+    @at += 1
   }
 
   # Undo and redo are this one step at opposite signs. Adding the crate back
   # after the player has landed is what lets both share it: the crate always
   # ends one square further along than wherever the player stopped.
   replay(sign) {
-    let (dx, dy, pushing) = self.unpack(self.history[self.at])
-    self.crates.remove((self.x + dx, self.y + dy)) if pushing
-    self.place(self.x + sign * dx, self.y + sign * dy)
+    let (dx, dy, pushing) = @unpack(@history[@at])
+    @crates.remove((@x + dx, @y + dy)) if pushing
+    @place(@x + sign * dx, @y + sign * dy)
     if pushing {
-      self.crates.add((self.x + dx, self.y + dy))
-      self.pushes += sign
+      @crates.add((@x + dx, @y + dy))
+      @pushes += sign
     }
-    self.moves += sign
+    @moves += sign
   }
 
   stop() {
-    self.quit = true
+    @quit = true
   }
 
   ask_level() {
-    self.mode = Mode.AskLevel
-    self.entry = ''
+    @mode = Mode.AskLevel
+    @entry = ''
   }
 
   # The prompt the original opens for `l`: digits accumulate, enter commits, and
@@ -628,14 +628,14 @@ class Game {
   type_level(key) {
     match key {
       'enter' => {
-        self.load(to_long(self.entry) - 1) unless self.entry.empty()
-        self.mode = Mode.Play
+        @load(to_long(@entry) - 1) unless @entry.empty()
+        @mode = Mode.Play
       },
-      'backspace' if !self.entry.empty() => {
-        self.entry = self.entry.slice(0, self.entry.size() - 1).to_string()
+      'backspace' if !@entry.empty() => {
+        @entry = @entry.slice(0, @entry.size() - 1).to_string()
       },
-      k if k.is_digit() && self.entry.size() < 2 => {
-        self.entry += k
+      k if k.is_digit() && @entry.size() < 2 => {
+        @entry += k
       },
       _ => nil,
     }
@@ -644,19 +644,19 @@ class Game {
   # Seed7's playLevel body, minus the loop that waited for a key. The panel
   # buttons route through here too.
   on_key(key) {
-    return self.type_level(key) if self.mode == Mode.AskLevel
+    return @type_level(key) if @mode == Mode.AskLevel
     match key {
-      'up' => self.walk(0, -1),
-      'down' => self.walk(0, 1),
-      'left' => self.walk(-1, 0),
-      'right' => self.walk(1, 0),
-      'u' => self.undo(),
-      'r' => self.redo(),
-      'p' => self.load(self.level - 1),
-      'n' => self.load(self.level + 1),
-      's' => self.load(self.level),
-      'l' => self.ask_level(),
-      'q' => self.stop(),
+      'up' => @walk(0, -1),
+      'down' => @walk(0, 1),
+      'left' => @walk(-1, 0),
+      'right' => @walk(1, 0),
+      'u' => @undo(),
+      'r' => @redo(),
+      'p' => @load(@level - 1),
+      'n' => @load(@level + 1),
+      's' => @load(@level),
+      'l' => @ask_level(),
+      'q' => @stop(),
       _ => nil,
     }
   }
@@ -664,13 +664,13 @@ class Game {
   on_mouse() {
     let m = Canvas.mouse()
     let down = m.buttons & 1 != 0
-    let pressed = down && !self.was_down
-    self.was_down = down
+    let pressed = down && !@was_down
+    @was_down = down
     return if !pressed
 
     for i, b in BUTTONS.enumerate() {
       let (bx, by, bw, bh) = button_rect(i)
-      return self.on_key(b.key) if Canvas.point_in_rect(
+      return @on_key(b.key) if Canvas.point_in_rect(
         m.x,
         m.y,
         bx,
@@ -679,8 +679,8 @@ class Game {
         bh,
       )
     }
-    if Canvas.point_in_rect(m.x, m.y, self.ox, self.oy, self.w * TILE, self.h * TILE) {
-      self.target = ((m.x - self.ox) / TILE, (m.y - self.oy) / TILE)
+    if Canvas.point_in_rect(m.x, m.y, @ox, @oy, @w * TILE, @h * TILE) {
+      @target = ((m.x - @ox) / TILE, (m.y - @oy) / TILE)
     }
   }
 
@@ -688,90 +688,90 @@ class Game {
   # player arrives or a wall stops it. Seed7 runs the same walk inside a
   # `repeat` with a 100 ms wait between steps; here a frame is that wait.
   follow_click() {
-    return if self.target == nil
-    let (tx, ty) = self.target
-    let (dx, dy) = (tx - self.x, ty - self.y)
+    return if @target == nil
+    let (tx, ty) = @target
+    let (dx, dy) = (tx - @x, ty - @y)
     if dx == 0 && dy == 0 {
-      self.target = nil
+      @target = nil
       return
     }
     let moved = Math.abs(dx) > Math.abs(dy)
-      ? self.walk(Math.sign(dx), 0)
-      : self.walk(0, Math.sign(dy))
-    self.target = nil unless moved
+      ? @walk(Math.sign(dx), 0)
+      : @walk(0, Math.sign(dy))
+    @target = nil unless moved
   }
 
   # No terminal (a piped run, CI) means nobody is going to press a key, so the
   # recorded solutions play themselves and the run ends after the last level.
   # `cleared` is the check that they really are solutions.
   play_demo() {
-    let script = LEVELS[self.level].demo
-    if self.cursor >= script.size() {
-      self.hold_frames += 1
-      return if self.hold_frames < 20
-      self.cleared += 1 if self.solved
-      return self.stop() if self.level + 1 >= LEVELS.size()
-      return self.load(self.level + 1)
+    let script = LEVELS[@level].demo
+    if @cursor >= script.size() {
+      @hold_frames += 1
+      return if @hold_frames < 20
+      @cleared += 1 if @solved
+      return @stop() if @level + 1 >= LEVELS.size()
+      return @load(@level + 1)
     }
-    return if self.frame % 3 != 0
-    let (dx, dy) = STEPS[script.slice(self.cursor, self.cursor + 1)]
-    self.cursor += 1
-    self.walk(dx, dy)
+    return if @frame % 3 != 0
+    let (dx, dy) = STEPS[script.slice(@cursor, @cursor + 1)]
+    @cursor += 1
+    @walk(dx, dy)
   }
 
   tick() {
-    self.frame += 1
-    if self.interactive {
+    @frame += 1
+    if @interactive {
       for key in Canvas.key_queue() {
-        self.on_key(key)
+        @on_key(key)
       }
-      if self.mode == Mode.Play {
-        self.on_mouse()
-        self.follow_click()
+      if @mode == Mode.Play {
+        @on_mouse()
+        @follow_click()
       }
     } else {
-      self.play_demo()
+      @play_demo()
     }
-    self.draw()
-    !self.quit
+    @draw()
+    !@quit
   }
 
   draw() {
     Canvas.clear(BG)
-    for (x, y) in grid(0..self.w, 0..self.h) {
-      let (px, py) = (self.ox + x * TILE, self.oy + y * TILE)
-      match self.tiles[y][x] {
+    for (x, y) in grid(0..@w, 0..@h) {
+      let (px, py) = (@ox + x * TILE, @oy + y * TILE)
+      match @tiles[y][x] {
         t: Wall => blit(WALL_TILE, px, py),
-        t: Floor => self.draw_square(x, y, px, py),
+        t: Floor => @draw_square(x, y, px, py),
         t: Outside => nil,
       }
     }
-    self.draw_panel()
-    self.draw_banner()
+    @draw_panel()
+    @draw_banner()
   }
 
   draw_square(x, y, px, py) {
-    let on_goal = self.goals.contains((x, y))
+    let on_goal = @goals.contains((x, y))
     blit(FLOOR_TILE, px, py)
     blit(GOAL_TILE, px, py) if on_goal
     let crate = on_goal ? DONE_TILE : CRATE_TILE
-    blit(crate, px, py) if self.crates.contains((x, y))
-    blit(PLAYER_TILE, px, py) if x == self.x && y == self.y
+    blit(crate, px, py) if @crates.contains((x, y))
+    blit(PLAYER_TILE, px, py) if x == @x && y == @y
   }
 
   draw_panel() {
     Canvas.text('SOKOBAN', PANEL_X, 12, TEXT, FONT + 1)
     let stats = [
-      "Level    {self.level + 1} / {LEVELS.size()}",
-      "Crates   {self.saved} / {self.goals.size()}",
-      "Moves    {self.moves}",
-      "Pushes   {self.pushes}",
+      "Level    {@level + 1} / {LEVELS.size()}",
+      "Crates   {@saved} / {@goals.size()}",
+      "Moves    {@moves}",
+      "Pushes   {@pushes}",
     ]
     for i, line in stats.enumerate() {
       Canvas.text(line, PANEL_X, 52 + i * LINE, TEXT, FONT)
     }
     Canvas.text(
-      "Microban #{LEVELS[self.level].origin}",
+      "Microban #{LEVELS[@level].origin}",
       PANEL_X,
       140,
       DIM,
@@ -794,8 +794,8 @@ class Game {
 
   draw_banner() {
     let text = cond {
-      self.mode == Mode.AskLevel => "level 1-{LEVELS.size()}: {self.entry}_",
-      self.solved => "solved in {self.moves} moves",
+      @mode == Mode.AskLevel => "level 1-{LEVELS.size()}: {@entry}_",
+      @solved => "solved in {@moves} moves",
       _ => '',
     }
     return if text.empty()

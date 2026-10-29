@@ -148,7 +148,7 @@ class CapturesInInitializer {
 }
 
 class CapturesWithFieldParam {
-  new(.cfg) {
+  new(@cfg) {
     self.blocks = range(cfg.n).map(|_| self.cfg.k).collect()
   }
 }

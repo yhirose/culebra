@@ -41,8 +41,8 @@ class RMSNorm {
     # Sized here rather than on the first forward, so a checkpoint taken
     # before training has it (the same reason `L.LayerNorm.init_params` is
     # called eagerly in `codebot/model.cul`).
-    self.gamma = dz.Parameter(Tensor.ones(1, d))
-    self.eps = 1.0e-5
+    @gamma = dz.Parameter(Tensor.ones(1, d))
+    @eps = 1.0e-5
   }
 
   __call__(x) {
@@ -54,11 +54,11 @@ class RMSNorm {
     # See `L.BatchNorm.forward` for why forcing a reshaped tensor once
     # before folding it into more arithmetic is load-bearing.
     Tensor.eval(ms.data)
-    self.gamma * (v / dz.pow_(ms + self.eps, 0.5))
+    @gamma * (v / dz.pow_(ms + @eps, 0.5))
   }
 
   params() {
-    [self.gamma]
+    [@gamma]
   }
 }
 
@@ -72,8 +72,8 @@ class RMSNorm {
 # head axis, but that permutation would have to be applied to every Q and K
 # and undone afterwards, which is more work than the rotation itself.
 class RoPE {
-  new(.head_dim, .base = 10000.0) {
-    self.cache = {}
+  new(@head_dim, @base = 10000.0) {
+    @cache = {}
   }
 
   # cos/sin for `c` consecutive positions starting at `pos`, shaped
@@ -84,11 +84,11 @@ class RoPE {
   # a single table.
   table(c, pos) {
     let key = "{c}@{pos}"
-    if !self.cache.has(key) {
-      let d = self.head_dim
+    if !@cache.has(key) {
+      let d = @head_dim
       let half = d / 2
       let freqs = range(half)
-        .map(|p| self.base ** (-2.0 * to_float(p) / to_float(d)))
+        .map(|p| @base ** (-2.0 * to_float(p) / to_float(d)))
         .collect()
       mut cos_rows = []
       mut sin_rows = []
@@ -97,20 +97,20 @@ class RoPE {
         cos_rows.push(freqs.map(|f| Math.cos(angle * f)))
         sin_rows.push(freqs.map(|f| Math.sin(angle * f)))
       }
-      self.cache[key] = {
+      @cache[key] = {
         cos: Tensor.from(cos_rows).reshape([1, c, half, 1]),
         sin: Tensor.from(sin_rows).reshape([1, c, half, 1]),
       }
     }
-    self.cache[key]
+    @cache[key]
   }
 
   # `x` is `[n, c, head_dim]`. Viewing it as `[n, c, head_dim/2, 2]` puts
   # each interleaved pair on the last axis, where the rotation is two
   # elementwise lines.
   __call__(x, c, pos) {
-    let t = self.table(c, pos)
-    let d = self.head_dim
+    let t = @table(c, pos)
+    let d = @head_dim
     let z = dz.reshape(x, [x.shape[0], c, d / 2, 2])
     let a = dz.narrow(z, 3, 0, 1)
     let b = dz.narrow(z, 3, 1, 2)
@@ -124,37 +124,37 @@ class RoPE {
 }
 
 class MultiHeadAttention {
-  new(embed_dim, .n_head, .dropout_rate, .rope) {
-    self.head_dim = embed_dim / n_head
-    self.scale = 1.0 / Math.sqrt(to_float(self.head_dim))
-    self.w_q = L.Linear(embed_dim, false, embed_dim)
-    self.w_k = L.Linear(embed_dim, false, embed_dim)
-    self.w_v = L.Linear(embed_dim, false, embed_dim)
-    self.w_o = L.Linear(embed_dim, false, embed_dim)
+  new(embed_dim, @n_head, @dropout_rate, @rope) {
+    @head_dim = embed_dim / n_head
+    @scale = 1.0 / Math.sqrt(to_float(@head_dim))
+    @w_q = L.Linear(embed_dim, false, embed_dim)
+    @w_k = L.Linear(embed_dim, false, embed_dim)
+    @w_v = L.Linear(embed_dim, false, embed_dim)
+    @w_o = L.Linear(embed_dim, false, embed_dim)
   }
 
   # `past` is nil or `{k, v}` holding `[b*h, t_past, d]` from earlier
   # positions. Returns `{out, k, v}`; the caller decides whether to keep
   # the keys and values.
   attend(x, b, c, pos, past) {
-    let h = self.n_head
-    let d = self.head_dim
+    let h = @n_head
+    let d = @head_dim
     # (B*C, H*D) -> (B, C, H, D) -> (B, H, C, D) -> (B*H, C, D)
     let heads = |p| dz.reshape(
       dz.transpose(dz.reshape(p, [b, c, h, d]), [0, 2, 1, 3]),
       [b * h, c, d],
     )
-    let q = self.rope(heads(self.w_q(x)), c, pos)
-    let k_new = self.rope(heads(self.w_k(x)), c, pos)
-    let v_new = heads(self.w_v(x))
+    let q = @rope(heads(@w_q(x)), c, pos)
+    let k_new = @rope(heads(@w_k(x)), c, pos)
+    let v_new = heads(@w_v(x))
     let k = past == nil ? k_new : dz.concat2(past.k, k_new, 1)
     let v = past == nil ? v_new : dz.concat2(past.v, v_new, 1)
     let t = k.shape[1]
 
-    let scores = dz.mul(dz.matmul(q, dz.transpose(k, [0, 2, 1])), self.scale)
+    let scores = dz.mul(dz.matmul(q, dz.transpose(k, [0, 2, 1])), @scale)
     let weights = F.dropout(
       F.softmax(dz.add(scores, causal_bias(c, t)), 2),
-      self.dropout_rate,
+      @dropout_rate,
     )
     let hidden = dz.matmul(weights, v)
 
@@ -162,23 +162,23 @@ class MultiHeadAttention {
       dz.transpose(dz.reshape(hidden, [b, h, c, d]), [0, 2, 1, 3]),
       [b * c, h * d],
     )
-    {out: F.dropout(self.w_o(merged), self.dropout_rate), k: k, v: v}
+    {out: F.dropout(@w_o(merged), @dropout_rate), k: k, v: v}
   }
 
   __call__(x, b, c, pos = 0) {
-    self.attend(x, b, c, pos, nil).out
+    @attend(x, b, c, pos, nil).out
   }
 
   named_params(prefix) {
     [
-      {name: "{prefix}wq.w", param: self.w_q.w},
-      {name: "{prefix}wq.b", param: self.w_q.b},
-      {name: "{prefix}wk.w", param: self.w_k.w},
-      {name: "{prefix}wk.b", param: self.w_k.b},
-      {name: "{prefix}wv.w", param: self.w_v.w},
-      {name: "{prefix}wv.b", param: self.w_v.b},
-      {name: "{prefix}wo.w", param: self.w_o.w},
-      {name: "{prefix}wo.b", param: self.w_o.b},
+      {name: "{prefix}wq.w", param: @w_q.w},
+      {name: "{prefix}wq.b", param: @w_q.b},
+      {name: "{prefix}wk.w", param: @w_k.w},
+      {name: "{prefix}wk.b", param: @w_k.b},
+      {name: "{prefix}wv.w", param: @w_v.w},
+      {name: "{prefix}wv.b", param: @w_v.b},
+      {name: "{prefix}wo.w", param: @w_o.w},
+      {name: "{prefix}wo.b", param: @w_o.b},
     ]
   }
 }
@@ -194,42 +194,42 @@ fn swiglu_hidden(ff_dim) {
 }
 
 class FFN {
-  new(embed_dim, ff_dim, .dropout_rate) {
+  new(embed_dim, ff_dim, @dropout_rate) {
     let hidden = swiglu_hidden(ff_dim)
-    self.w1 = L.Linear(hidden, false, embed_dim)
-    self.w3 = L.Linear(hidden, false, embed_dim)
-    self.w2 = L.Linear(embed_dim, false, hidden)
+    @w1 = L.Linear(hidden, false, embed_dim)
+    @w3 = L.Linear(hidden, false, embed_dim)
+    @w2 = L.Linear(embed_dim, false, hidden)
   }
 
   __call__(x) {
-    let gate = self.w1(x)
+    let gate = @w1(x)
     let silu = dz.mul(gate, F.sigmoid(gate))
-    F.dropout(self.w2(dz.mul(silu, self.w3(x))), self.dropout_rate)
+    F.dropout(@w2(dz.mul(silu, @w3(x))), @dropout_rate)
   }
 
   named_params(prefix) {
     [
-      {name: "{prefix}w1.w", param: self.w1.w},
-      {name: "{prefix}w1.b", param: self.w1.b},
-      {name: "{prefix}w3.w", param: self.w3.w},
-      {name: "{prefix}w3.b", param: self.w3.b},
-      {name: "{prefix}w2.w", param: self.w2.w},
-      {name: "{prefix}w2.b", param: self.w2.b},
+      {name: "{prefix}w1.w", param: @w1.w},
+      {name: "{prefix}w1.b", param: @w1.b},
+      {name: "{prefix}w3.w", param: @w3.w},
+      {name: "{prefix}w3.b", param: @w3.b},
+      {name: "{prefix}w2.w", param: @w2.w},
+      {name: "{prefix}w2.b", param: @w2.b},
     ]
   }
 }
 
 class Block {
   new(embed_dim, n_head, ff_dim, dropout_rate, rope) {
-    self.norm1 = RMSNorm(embed_dim)
-    self.attn = MultiHeadAttention(embed_dim, n_head, dropout_rate, rope)
-    self.norm2 = RMSNorm(embed_dim)
-    self.ffn = FFN(embed_dim, ff_dim, dropout_rate)
+    @norm1 = RMSNorm(embed_dim)
+    @attn = MultiHeadAttention(embed_dim, n_head, dropout_rate, rope)
+    @norm2 = RMSNorm(embed_dim)
+    @ffn = FFN(embed_dim, ff_dim, dropout_rate)
   }
 
   __call__(x, b, c, pos = 0) {
-    let h = dz.add(x, self.attn(self.norm1(x), b, c, pos))
-    dz.add(h, self.ffn(self.norm2(h)))
+    let h = dz.add(x, @attn(@norm1(x), b, c, pos))
+    dz.add(h, @ffn(@norm2(h)))
   }
 
   # The cached counterpart: same arithmetic, but the attention reads the
@@ -237,53 +237,53 @@ class Block {
   # back the extended pair.
   forward_cached(x, c, cache, layer) {
     let past = cache.past(layer, c)
-    let a = self.attn.attend(self.norm1(x), 1, c, cache.pos, past)
+    let a = @attn.attend(@norm1(x), 1, c, cache.pos, past)
     cache.put(layer, a.k, a.v)
     let h = dz.add(x, a.out)
-    dz.add(h, self.ffn(self.norm2(h)))
+    dz.add(h, @ffn(@norm2(h)))
   }
 
   named_params(prefix) {
-    [{name: "{prefix}norm1.gamma", param: self.norm1.gamma}] +
-      self.attn.named_params("{prefix}attn.") +
-      [{name: "{prefix}norm2.gamma", param: self.norm2.gamma}] +
-      self.ffn.named_params("{prefix}ffn.")
+    [{name: "{prefix}norm1.gamma", param: @norm1.gamma}] +
+      @attn.named_params("{prefix}attn.") +
+      [{name: "{prefix}norm2.gamma", param: @norm2.gamma}] +
+      @ffn.named_params("{prefix}ffn.")
   }
 }
 
 class GPT {
-  new(.cfg) {
+  new(@cfg) {
     # `L.EmbedID` initialises at unit variance -- unlike `L.Linear`, it has
     # no 1/sqrt(fan_in). The unembedding is this table read the other way,
     # so that variance is the logit variance: at the book's width the
     # softmax starts saturated and the loss sits on the 1e-15 clamp for the
     # first dozens of steps. GPT-2's 0.02 is what puts step 1 on ln(V).
-    self.embed = L.EmbedID(cfg.vocab_size, cfg.embed_dim)
-    self.embed.w.data = self.embed.w.data * INIT_STD
+    @embed = L.EmbedID(cfg.vocab_size, cfg.embed_dim)
+    @embed.w.data = @embed.w.data * INIT_STD
     # One table shared by every layer: the rotation depends on the position
     # and the head width, not on which block is asking.
-    self.rope = RoPE(cfg.embed_dim / cfg.n_head)
-    self.blocks = range(cfg.n_layer)
+    @rope = RoPE(cfg.embed_dim / cfg.n_head)
+    @blocks = range(cfg.n_layer)
       .map(|_| Block(
         cfg.embed_dim,
         cfg.n_head,
         cfg.ff_dim,
         cfg.dropout,
-        self.rope,
+        @rope,
       ))
       .collect()
-    self.norm = RMSNorm(cfg.embed_dim)
+    @norm = RMSNorm(cfg.embed_dim)
   }
 
   # `ids` is a flat Array of `b * c` token ids, row-major. `pos` is the
   # absolute position of each row's first token -- 0 while training, the
   # start of the window while generating. Returns logits `[b * c, vocab]`.
   __call__(ids, b, c, pos = 0) {
-    mut x = F.dropout(self.embed(ids), self.cfg.dropout)
-    for block in self.blocks {
+    mut x = F.dropout(@embed(ids), @cfg.dropout)
+    for block in @blocks {
       x = block(x, b, c, pos)
     }
-    self.unembed(x)
+    @unembed(x)
   }
 
   # One batch row, continuing whatever `cache` already holds. `ids` are the
@@ -294,11 +294,11 @@ class GPT {
     # `F.dropout` for the same reason the uncached forward has it: decoding
     # runs in test mode where it is the identity, and leaving it out would
     # make the two paths differ the moment someone forgets `test_mode`.
-    mut x = F.dropout(self.embed(ids), self.cfg.dropout)
-    for i, block in self.blocks.enumerate() {
+    mut x = F.dropout(@embed(ids), @cfg.dropout)
+    for i, block in @blocks.enumerate() {
       x = block.forward_cached(x, c, cache, i)
     }
-    let logits = self.unembed(x)
+    let logits = @unembed(x)
     cache.advance(c)
     logits
   }
@@ -306,26 +306,26 @@ class GPT {
   # Weight tying: the unembedding is the token embedding read the other
   # way, so it is not a parameter of its own.
   unembed(x) {
-    dz.matmul(self.norm(x), dz.transpose(self.embed.w, [1, 0]))
+    dz.matmul(@norm(x), dz.transpose(@embed.w, [1, 0]))
   }
 
   # The primary definition. `embed.w` appears exactly once even though the
   # forward pass uses it twice.
   named_params() {
-    mut out = [{name: 'embed.w', param: self.embed.w}]
-    for i, block in self.blocks.enumerate() {
+    mut out = [{name: 'embed.w', param: @embed.w}]
+    for i, block in @blocks.enumerate() {
       out += block.named_params("blocks.{i}.")
     }
-    out.push({name: 'norm.gamma', param: self.norm.gamma})
+    out.push({name: 'norm.gamma', param: @norm.gamma})
     out
   }
 
   params() {
-    self.named_params().map(|e| e.param)
+    @named_params().map(|e| e.param)
   }
 
   cleargrads() {
-    for p in self.params() {
+    for p in @params() {
       p.cleargrad()
     }
   }

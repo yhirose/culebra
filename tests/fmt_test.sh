@@ -364,6 +364,43 @@ if ! diff -u "$TMP/mod_want.cul" "$TMP/mod_got.cul" > "$TMP/mod_diff" 2>&1; then
   fail=1
 fi
 
+# --- 1f1. Golden fixture: `@name` ------------------------------------------
+# `@name` parses to the nodes `self.name` has, with the head's token `@`;
+# parse_for_format keeps it, and the printer has to write the sigil back
+# rather than `@.name`. The head is a read, a write target, a PLACE and the
+# start of a chain that wraps at its dots after the `@name` atom.
+cat > "$TMP/at_in.cul" <<'EOF'
+class A {
+  f() {
+    @n   +=   1
+    @items[0]=@a+1
+    (@x,@y)=(@y,@x)
+    @measurements_of_things.map(|measurement| measurement * @scale_factor_value).filter(|measurement| measurement > @threshold_value).sum()
+    "{@a} and {@items.size()}"
+  }
+}
+EOF
+cat > "$TMP/at_want.cul" <<'EOF'
+class A {
+  f() {
+    @n += 1
+    @items[0] = @a + 1
+    (@x, @y) = (@y, @x)
+    @measurements_of_things
+      .map(|measurement| measurement * @scale_factor_value)
+      .filter(|measurement| measurement > @threshold_value)
+      .sum()
+    "{@a} and {@items.size()}"
+  }
+}
+EOF
+"$CULEBRA" fmt "$TMP/at_in.cul" > "$TMP/at_got.cul" 2>"$TMP/at_err"
+if ! diff -u "$TMP/at_want.cul" "$TMP/at_got.cul" > "$TMP/at_diff" 2>&1; then
+  echo "FAIL golden (@name): formatted output differs from expected"
+  cat "$TMP/at_diff"
+  fail=1
+fi
+
 # --- 1f2. Golden fixture: range and negative literal patterns --------------
 # A range pattern prints like a range expression, with no spaces around the
 # operator; `5..` keeps its space before `=>` (`5..=>` would read as `..=`).

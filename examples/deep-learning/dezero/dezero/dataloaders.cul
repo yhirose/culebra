@@ -19,33 +19,33 @@ fn gather_rows(t, indices) {
 }
 
 class DataLoader {
-  new(.dataset, .batch_size, .shuffle = true) {
-    self.n = dataset.size()
-    self.max_iter = (self.n + batch_size - 1) / batch_size
-    self.reset()
+  new(@dataset, @batch_size, @shuffle = true) {
+    @n = dataset.size()
+    @max_iter = (@n + batch_size - 1) / batch_size
+    @reset()
   }
 
   reset() {
-    self.iteration = 0
-    self.index_order = if self.shuffle {
-      order = range(self.n).collect()
+    @iteration = 0
+    @index_order = if @shuffle {
+      order = range(@n).collect()
       Random.shuffle(order)
       order
     } else {
-      range(self.n).collect()
+      range(@n).collect()
     }
   }
 
   next_batch() {
-    if self.iteration >= self.max_iter {
+    if @iteration >= @max_iter {
       nil
     } else {
-      start = self.iteration * self.batch_size
-      end = Math.min(start + self.batch_size, self.n)
-      picked = self.index_order.slice(start, end)
-      self.iteration += 1
-      x = gather_rows(self.dataset.x, picked)
-      t = picked.map(|i| self.dataset.y[i])
+      start = @iteration * @batch_size
+      end = Math.min(start + @batch_size, @n)
+      picked = @index_order.slice(start, end)
+      @iteration += 1
+      x = gather_rows(@dataset.x, picked)
+      t = picked.map(|i| @dataset.y[i])
       {x: x, t: t}
     }
   }
@@ -56,26 +56,26 @@ class DataLoader {
 # minibatch layout, so consecutive `next_batch()` calls continue each
 # chunk's own sequence rather than reshuffling.
 class SeqDataLoader {
-  new(.dataset, .batch_size) {
-    self.n = dataset.size()
-    self.jump = self.n / batch_size
-    self.starts = range(batch_size).map(|i| i * self.jump).collect()
-    self.max_iter = self.jump
-    self.iteration = 0
+  new(@dataset, @batch_size) {
+    @n = dataset.size()
+    @jump = @n / batch_size
+    @starts = range(batch_size).map(|i| i * @jump).collect()
+    @max_iter = @jump
+    @iteration = 0
   }
 
   reset() {
-    self.iteration = 0
+    @iteration = 0
   }
 
   next_batch() {
-    if self.iteration >= self.max_iter {
+    if @iteration >= @max_iter {
       nil
     } else {
-      picked = self.starts.map(|s| (s + self.iteration) % self.n)
-      self.iteration += 1
-      x = gather_rows(self.dataset.x, picked)
-      t = gather_rows(self.dataset.y, picked)
+      picked = @starts.map(|s| (s + @iteration) % @n)
+      @iteration += 1
+      x = gather_rows(@dataset.x, picked)
+      t = gather_rows(@dataset.y, picked)
       {x: x, t: t}
     }
   }

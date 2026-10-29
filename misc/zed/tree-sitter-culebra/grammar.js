@@ -85,7 +85,10 @@ module.exports = grammar({
     storage: ($) => choice("let", "mut", "static", "get"),
     boolean: ($) => choice("true", "false"),
     nil: ($) => "nil",
-    self: ($) => choice("self", "__ARGS__"),
+    // `@name` is `self.name`; a token has no lookahead, so the whole `@name`
+    // is the self token.
+    self: ($) =>
+      choice("self", "__ARGS__", token(seq("@", /[A-Za-z_][A-Za-z0-9_]*/))),
 
     // --- numbers ---
     number: ($) =>

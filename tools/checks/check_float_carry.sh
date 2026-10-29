@@ -133,7 +133,7 @@ CUL
 cat > "$TMP/static_fn.cul" <<'CUL'
 @value
 class Step {
-  new(.x: Float, .y: Float) {}
+  new(@x: Float, @y: Float) {}
   __add__(o) {
     Step.new(self.x + o.x, self.y + o.y)
   }

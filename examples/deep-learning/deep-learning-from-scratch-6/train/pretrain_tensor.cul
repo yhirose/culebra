@@ -71,7 +71,7 @@ class Param {
 
   new(t) {
     Tensor.eval(t)
-    self.data = t.detach().requires_grad()
+    @data = t.detach().requires_grad()
   }
 }
 
@@ -104,12 +104,12 @@ fn causal_bias(c) {
 class Linear {
   new(in_size, out_size) {
     let scale = Math.sqrt(1.0 / to_float(in_size))
-    self.w = Param(Tensor.randn(in_size, out_size) * scale)
-    self.b = Param(Tensor.zeros(1, out_size))
+    @w = Param(Tensor.randn(in_size, out_size) * scale)
+    @b = Param(Tensor.zeros(1, out_size))
   }
 
   __call__(x) {
-    x.dot(self.w.data) + self.b.data
+    x.dot(@w.data) + @b.data
   }
 }
 
@@ -117,9 +117,9 @@ class Linear {
 # eps inside the square root, gamma/beta as `[1, D]` row vectors.
 class LayerNorm {
   new(d) {
-    self.eps = 2.0e-5
-    self.gamma = Param(Tensor.ones(1, d))
-    self.beta = Param(Tensor.zeros(1, d))
+    @eps = 2.0e-5
+    @gamma = Param(Tensor.ones(1, d))
+    @beta = Param(Tensor.zeros(1, d))
   }
 
   __call__(x, rows, d) {
@@ -127,7 +127,7 @@ class LayerNorm {
     let mean = (x.sum(1) * (1.0 / n)).reshape([rows, 1])
     let centered = x - mean
     let var = ((centered * centered).sum(1) * (1.0 / n)).reshape([rows, 1])
-    self.gamma.data * (centered / (var + self.eps).pow(0.5)) + self.beta.data
+    @gamma.data * (centered / (var + @eps).pow(0.5)) + @beta.data
   }
 }
 
@@ -135,19 +135,19 @@ class MultiHeadAttention {
   bias = nil
   bias_c = 0
 
-  new(embed_dim, .n_head, .dropout_rate) {
-    self.head_dim = embed_dim / n_head
-    self.scale = 1.0 / Math.sqrt(to_float(self.head_dim))
-    self.w_q = Linear(embed_dim, embed_dim)
-    self.w_k = Linear(embed_dim, embed_dim)
-    self.w_v = Linear(embed_dim, embed_dim)
-    self.w_o = Linear(embed_dim, embed_dim)
+  new(embed_dim, @n_head, @dropout_rate) {
+    @head_dim = embed_dim / n_head
+    @scale = 1.0 / Math.sqrt(to_float(@head_dim))
+    @w_q = Linear(embed_dim, embed_dim)
+    @w_k = Linear(embed_dim, embed_dim)
+    @w_v = Linear(embed_dim, embed_dim)
+    @w_o = Linear(embed_dim, embed_dim)
   }
 
   # One head's slice of a (B*C, H*D) projection, as (B, C, D). The column
   # narrow is a view; the reshape is what materializes it.
   head_view(t, hi, b, c) {
-    let d = self.head_dim
+    let d = @head_dim
     t.narrow([1, hi * d, (hi + 1) * d]).reshape([b, c, d])
   }
 
@@ -156,91 +156,91 @@ class MultiHeadAttention {
   # that matter are swapped with `.permute()`, whose VJP is the inverse
   # permutation.
   head_view_t(t, hi, b, c) {
-    self.head_view(t, hi, b, c).permute([0, 2, 1])
+    @head_view(t, hi, b, c).permute([0, 2, 1])
   }
 
   causal(c) {
-    if self.bias == nil || self.bias_c != c {
-      self.bias = causal_bias(c)
-      self.bias_c = c
+    if @bias == nil || @bias_c != c {
+      @bias = causal_bias(c)
+      @bias_c = c
     }
-    self.bias
+    @bias
   }
 
   __call__(x, b, c) {
-    let d = self.head_dim
-    let q = self.w_q(x)
-    let k = self.w_k(x)
-    let v = self.w_v(x)
+    let d = @head_dim
+    let q = @w_q(x)
+    let k = @w_k(x)
+    let v = @w_v(x)
 
     # Per head, batched over B: [B, C, D] @ [B, D, C] -> [B, C, C].
     mut heads = []
-    for hi in 0..self.n_head {
-      let qh = self.head_view(q, hi, b, c)
-      let kh = self.head_view_t(k, hi, b, c)
-      let scores = qh.dot(kh) * self.scale
+    for hi in 0..@n_head {
+      let qh = @head_view(q, hi, b, c)
+      let kh = @head_view_t(k, hi, b, c)
+      let scores = qh.dot(kh) * @scale
       let weights = dropout(
-        (scores + self.causal(c)).softmax(),
+        (scores + @causal(c)).softmax(),
         [b, c, c],
-        self.dropout_rate,
+        @dropout_rate,
       )
-      heads.push(weights.dot(self.head_view(v, hi, b, c)).reshape([b * c, d]))
+      heads.push(weights.dot(@head_view(v, hi, b, c)).reshape([b * c, d]))
     }
 
     dropout(
-      self.w_o(Tensor.concat(heads, 1)),
-      [b * c, self.n_head * d],
-      self.dropout_rate,
+      @w_o(Tensor.concat(heads, 1)),
+      [b * c, @n_head * d],
+      @dropout_rate,
     )
   }
 }
 
 class FFN {
-  new(.embed_dim, ff_dim, .dropout_rate) {
-    self.fc1 = Linear(embed_dim, ff_dim)
-    self.fc2 = Linear(ff_dim, embed_dim)
+  new(@embed_dim, ff_dim, @dropout_rate) {
+    @fc1 = Linear(embed_dim, ff_dim)
+    @fc2 = Linear(ff_dim, embed_dim)
   }
 
   # GELU as dezero has it: the sigmoid approximation x * sigmoid(1.702x).
   __call__(x, rows) {
-    let h = self.fc1(x)
+    let h = @fc1(x)
     let a = h * (h * 1.702).sigmoid()
-    dropout(self.fc2(a), [rows, self.embed_dim], self.dropout_rate)
+    dropout(@fc2(a), [rows, @embed_dim], @dropout_rate)
   }
 }
 
 class Block {
-  new(.embed_dim, n_head, ff_dim, dropout_rate) {
-    self.norm1 = LayerNorm(embed_dim)
-    self.attn = MultiHeadAttention(embed_dim, n_head, dropout_rate)
-    self.norm2 = LayerNorm(embed_dim)
-    self.ffn = FFN(embed_dim, ff_dim, dropout_rate)
+  new(@embed_dim, n_head, ff_dim, dropout_rate) {
+    @norm1 = LayerNorm(embed_dim)
+    @attn = MultiHeadAttention(embed_dim, n_head, dropout_rate)
+    @norm2 = LayerNorm(embed_dim)
+    @ffn = FFN(embed_dim, ff_dim, dropout_rate)
   }
 
   __call__(x, b, c) {
     let rows = b * c
-    let h = x + self.attn(self.norm1(x, rows, self.embed_dim), b, c)
-    h + self.ffn(self.norm2(h, rows, self.embed_dim), rows)
+    let h = x + @attn(@norm1(x, rows, @embed_dim), b, c)
+    h + @ffn(@norm2(h, rows, @embed_dim), rows)
   }
 
   named_params(prefix) {
     [
-      {name: "{prefix}norm1.gamma", param: self.norm1.gamma},
-      {name: "{prefix}norm1.beta", param: self.norm1.beta},
-      {name: "{prefix}attn.wq.w", param: self.attn.w_q.w},
-      {name: "{prefix}attn.wq.b", param: self.attn.w_q.b},
-      {name: "{prefix}attn.wk.w", param: self.attn.w_k.w},
-      {name: "{prefix}attn.wk.b", param: self.attn.w_k.b},
-      {name: "{prefix}attn.wv.w", param: self.attn.w_v.w},
-      {name: "{prefix}attn.wv.b", param: self.attn.w_v.b},
-      {name: "{prefix}attn.wo.w", param: self.attn.w_o.w},
-      {name: "{prefix}attn.wo.b", param: self.attn.w_o.b},
-      {name: "{prefix}norm2.gamma", param: self.norm2.gamma},
-      {name: "{prefix}norm2.beta", param: self.norm2.beta},
-      {name: "{prefix}ffn.fc1.w", param: self.ffn.fc1.w},
-      {name: "{prefix}ffn.fc1.b", param: self.ffn.fc1.b},
-      {name: "{prefix}ffn.fc2.w", param: self.ffn.fc2.w},
-      {name: "{prefix}ffn.fc2.b", param: self.ffn.fc2.b},
+      {name: "{prefix}norm1.gamma", param: @norm1.gamma},
+      {name: "{prefix}norm1.beta", param: @norm1.beta},
+      {name: "{prefix}attn.wq.w", param: @attn.w_q.w},
+      {name: "{prefix}attn.wq.b", param: @attn.w_q.b},
+      {name: "{prefix}attn.wk.w", param: @attn.w_k.w},
+      {name: "{prefix}attn.wk.b", param: @attn.w_k.b},
+      {name: "{prefix}attn.wv.w", param: @attn.w_v.w},
+      {name: "{prefix}attn.wv.b", param: @attn.w_v.b},
+      {name: "{prefix}attn.wo.w", param: @attn.w_o.w},
+      {name: "{prefix}attn.wo.b", param: @attn.w_o.b},
+      {name: "{prefix}norm2.gamma", param: @norm2.gamma},
+      {name: "{prefix}norm2.beta", param: @norm2.beta},
+      {name: "{prefix}ffn.fc1.w", param: @ffn.fc1.w},
+      {name: "{prefix}ffn.fc1.b", param: @ffn.fc1.b},
+      {name: "{prefix}ffn.fc2.w", param: @ffn.fc2.w},
+      {name: "{prefix}ffn.fc2.b", param: @ffn.fc2.b},
     ]
   }
 }
@@ -249,52 +249,52 @@ class Block {
 # -- layer count, widths, causal multi-head attention, pre-norm blocks, a
 # tied unembedding -- so `common/checkpoint.cul` moves weights either way.
 class GPT {
-  new(.cfg) {
+  new(@cfg) {
     # The same 0.02 codebot/model.cul uses, and for the same reason: the
     # unembedding is this table transposed, so its scale is the logit scale.
-    self.embed = Param(Tensor.randn(cfg.vocab_size, cfg.embed_dim) * 0.02)
-    self.pos_embed = Param(Tensor.randn(cfg.context_len, cfg.embed_dim) * 0.02)
-    self.blocks = range(cfg.n_layer)
+    @embed = Param(Tensor.randn(cfg.vocab_size, cfg.embed_dim) * 0.02)
+    @pos_embed = Param(Tensor.randn(cfg.context_len, cfg.embed_dim) * 0.02)
+    @blocks = range(cfg.n_layer)
       .map(|_| Block(cfg.embed_dim, cfg.n_head, cfg.ff_dim, cfg.dropout))
       .collect()
-    self.norm = LayerNorm(cfg.embed_dim)
+    @norm = LayerNorm(cfg.embed_dim)
   }
 
   # `ids` is a flat Array of `b * c` token ids, row-major. Returns logits
   # shaped [b * c, vocab_size].
   __call__(ids, b, c) {
-    let e = self.cfg.embed_dim
+    let e = @cfg.embed_dim
     let rows = b * c
     let positions = range(b).flat_map(|_| range(c).collect()).collect()
     mut x = dropout(
-      self.embed.data.index_select(Tensor.from(ids)) +
-        self.pos_embed.data.index_select(Tensor.from(positions)),
+      @embed.data.index_select(Tensor.from(ids)) +
+        @pos_embed.data.index_select(Tensor.from(positions)),
       [rows, e],
-      self.cfg.dropout,
+      @cfg.dropout,
     )
-    for block in self.blocks {
+    for block in @blocks {
       x = block(x, b, c)
     }
     # Weight tying: the unembedding is the token embedding read the other
     # way. The gradient of both uses lands on the same leaf.
-    self.norm(x, rows, e).dot(self.embed.data.transpose())
+    @norm(x, rows, e).dot(@embed.data.transpose())
   }
 
   named_params() {
     mut out = [
-      {name: 'embed.w', param: self.embed},
-      {name: 'pos_embed.w', param: self.pos_embed},
+      {name: 'embed.w', param: @embed},
+      {name: 'pos_embed.w', param: @pos_embed},
     ]
-    for i, block in self.blocks.enumerate() {
+    for i, block in @blocks.enumerate() {
       out += block.named_params("blocks.{i}.")
     }
-    out.push({name: 'norm.gamma', param: self.norm.gamma})
-    out.push({name: 'norm.beta', param: self.norm.beta})
+    out.push({name: 'norm.gamma', param: @norm.gamma})
+    out.push({name: 'norm.beta', param: @norm.beta})
     out
   }
 
   params() {
-    self.named_params().map(|e| e.param)
+    @named_params().map(|e| e.param)
   }
 
   # `common/checkpoint.cul` writes a plain Tensor into `param.data`, which
@@ -302,7 +302,7 @@ class GPT {
   # rather than inline there because what makes a leaf is the model's own
   # business (dezero's parameters need nothing).
   mark_leaves() {
-    for p in self.params() {
+    for p in @params() {
       p.data = p.data.detach().requires_grad()
     }
   }
@@ -323,31 +323,31 @@ fn cross_entropy(logits, targets) {
 class Adam {
   t = 0
 
-  new(.alpha = 0.001, .beta1 = 0.9, .beta2 = 0.999, .eps = 1.0e-8) {}
+  new(@alpha = 0.001, @beta1 = 0.9, @beta2 = 0.999, @eps = 1.0e-8) {}
 
   setup(target) {
-    self.target = target
+    @target = target
     self
   }
 
   get lr() {
-    let fix1 = 1.0 - self.beta1 ** to_float(self.t)
-    let fix2 = 1.0 - self.beta2 ** to_float(self.t)
-    self.alpha * Math.sqrt(fix2) / fix1
+    let fix1 = 1.0 - @beta1 ** to_float(@t)
+    let fix2 = 1.0 - @beta2 ** to_float(@t)
+    @alpha * Math.sqrt(fix2) / fix1
   }
 
   update() {
-    self.t += 1
-    let lr = self.lr
-    for p in self.target.params() {
+    @t += 1
+    let lr = @lr
+    for p in @target.params() {
       let g = p.data.grad()
       if p.m == nil {
         p.m = Tensor.zeros(p.data.shape())
         p.v = Tensor.zeros(p.data.shape())
       }
-      p.m = (p.m + (g - p.m) * (1.0 - self.beta1)).detach()
-      p.v = (p.v + (g * g - p.v) * (1.0 - self.beta2)).detach()
-      let step = lr * p.m / (p.v.pow(0.5) + self.eps)
+      p.m = (p.m + (g - p.m) * (1.0 - @beta1)).detach()
+      p.v = (p.v + (g * g - p.v) * (1.0 - @beta2)).detach()
+      let step = lr * p.m / (p.v.pow(0.5) + @eps)
       p.data = (p.data - step).detach().requires_grad()
     }
   }

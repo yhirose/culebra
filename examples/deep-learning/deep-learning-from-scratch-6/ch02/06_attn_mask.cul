@@ -27,22 +27,22 @@ fn causal_bias(c) {
 }
 
 class Attention {
-  new(.embed_dim, .key_dim) {
-    self.scale = 1.0 / Math.sqrt(to_float(key_dim))
-    self.w_q = L.Linear(key_dim, false, embed_dim)
-    self.w_k = L.Linear(key_dim, false, embed_dim)
-    self.w_v = L.Linear(embed_dim, false, embed_dim)
+  new(@embed_dim, @key_dim) {
+    @scale = 1.0 / Math.sqrt(to_float(key_dim))
+    @w_q = L.Linear(key_dim, false, embed_dim)
+    @w_k = L.Linear(key_dim, false, embed_dim)
+    @w_v = L.Linear(embed_dim, false, embed_dim)
   }
 
   __call__(x, b, c) {
-    let d = self.key_dim
-    let e = self.embed_dim
-    let q = dz.reshape(self.w_q(x), [b, c, d])
-    let k = dz.reshape(self.w_k(x), [b, c, d])
-    let v = dz.reshape(self.w_v(x), [b, c, e])
+    let d = @key_dim
+    let e = @embed_dim
+    let q = dz.reshape(@w_q(x), [b, c, d])
+    let k = dz.reshape(@w_k(x), [b, c, d])
+    let v = dz.reshape(@w_v(x), [b, c, e])
 
     # (B, C, D) x (B, D, C) -> (B, C, C): every query against every key.
-    let scores = dz.mul(dz.matmul(q, dz.transpose(k, [0, 2, 1])), self.scale)
+    let scores = dz.mul(dz.matmul(q, dz.transpose(k, [0, 2, 1])), @scale)
     let weights = F.softmax(dz.add(scores, causal_bias(c)), 2)
     dz.matmul(weights, v)  # (B, C, E)
   }

@@ -14,17 +14,17 @@ class Conv2d {
   b = nil
 
   new(
-    .out_channels,
-    .kernel_size,
-    .stride = 1,
-    .pad = 0,
+    @out_channels,
+    @kernel_size,
+    @stride = 1,
+    @pad = 0,
     nobias = false,
-    .in_channels = nil,
+    @in_channels = nil,
   ) {
     if in_channels != nil {
-      self.init_w(in_channels)
+      @init_w(in_channels)
     }
-    self.b = if nobias {
+    @b = if nobias {
       nil
     } else {
       dz.Parameter(Tensor.zeros(out_channels))
@@ -32,23 +32,23 @@ class Conv2d {
   }
 
   init_w(in_channels) {
-    (kh, kw) = conv.pair(self.kernel_size)
+    (kh, kw) = conv.pair(@kernel_size)
     scale = Math.sqrt(1.0 / to_float(in_channels * kh * kw))
-    self.w = dz.Parameter(Tensor.randn(self.out_channels, in_channels, kh, kw) * scale)
+    @w = dz.Parameter(Tensor.randn(@out_channels, in_channels, kh, kw) * scale)
   }
 
   __call__(x) {
-    if self.w == nil {
-      self.init_w(dz.as_variable(x).shape[1])
+    if @w == nil {
+      @init_w(dz.as_variable(x).shape[1])
     }
-    conv.conv2d(x, self.w, self.b, self.stride, self.pad)
+    conv.conv2d(x, @w, @b, @stride, @pad)
   }
 
   params() {
-    if self.b == nil {
-      [self.w]
+    if @b == nil {
+      [@w]
     } else {
-      [self.w, self.b]
+      [@w, @b]
     }
   }
 }
@@ -58,17 +58,17 @@ class Deconv2d {
   b = nil
 
   new(
-    .out_channels,
-    .kernel_size,
-    .stride = 1,
-    .pad = 0,
+    @out_channels,
+    @kernel_size,
+    @stride = 1,
+    @pad = 0,
     nobias = false,
-    .in_channels = nil,
+    @in_channels = nil,
   ) {
     if in_channels != nil {
-      self.init_w(in_channels)
+      @init_w(in_channels)
     }
-    self.b = if nobias {
+    @b = if nobias {
       nil
     } else {
       dz.Parameter(Tensor.zeros(out_channels))
@@ -76,23 +76,23 @@ class Deconv2d {
   }
 
   init_w(in_channels) {
-    (kh, kw) = conv.pair(self.kernel_size)
+    (kh, kw) = conv.pair(@kernel_size)
     scale = Math.sqrt(1.0 / to_float(in_channels * kh * kw))
-    self.w = dz.Parameter(Tensor.randn(in_channels, self.out_channels, kh, kw) * scale)
+    @w = dz.Parameter(Tensor.randn(in_channels, @out_channels, kh, kw) * scale)
   }
 
   __call__(x) {
-    if self.w == nil {
-      self.init_w(dz.as_variable(x).shape[1])
+    if @w == nil {
+      @init_w(dz.as_variable(x).shape[1])
     }
-    conv.deconv2d(x, self.w, self.b, self.stride, self.pad)
+    conv.deconv2d(x, @w, @b, @stride, @pad)
   }
 
   params() {
-    if self.b == nil {
-      [self.w]
+    if @b == nil {
+      [@w]
     } else {
-      [self.w, self.b]
+      [@w, @b]
     }
   }
 }

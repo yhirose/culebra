@@ -101,12 +101,12 @@ let _llm_module = fn () {
   }
 
   class LLMTool {
-    new(.name, .description, .input_schema, .f) {}
+    new(@name, @description, @input_schema, @f) {}
 
     # What the request names: everything but the function itself.
     spec() {
-      {name: self.name, description: self.description,
-       input_schema: self.input_schema}
+      {name: @name, description: @description,
+       input_schema: @input_schema}
     }
   }
 
@@ -493,16 +493,16 @@ let _llm_module = fn () {
   # request would have answered with, so one reader serves both. Pieces are
   # collected and joined once, not appended to a growing String.
   class LLMStream {
-    new(.on_text) {
-      self.events = 0
-      self.message = nil
-      self.blocks = []
-      self.pieces = []
-      self.failure = nil
+    new(@on_text) {
+      @events = 0
+      @message = nil
+      @blocks = []
+      @pieces = []
+      @failure = nil
     }
 
     take(e) {
-      self.events += 1
+      @events += 1
       let ev = try {
         JSON.parse(e.data)
       } catch _e: ValueError {
@@ -511,42 +511,42 @@ let _llm_module = fn () {
       return nil if type_of(ev) != "Object"
       let kind = ev.get("type", "")
       if kind == "message_start" {
-        self.message = ev.message
+        @message = ev.message
       } else if kind == "content_block_start" {
-        while self.blocks.size() <= ev.index {
-          self.blocks.push(nil)
-          self.pieces.push([])
+        while @blocks.size() <= ev.index {
+          @blocks.push(nil)
+          @pieces.push([])
         }
-        self.blocks[ev.index] = ev.content_block
+        @blocks[ev.index] = ev.content_block
       } else if kind == "content_block_delta" {
-        self.grow(ev.index, ev.delta)
+        @grow(ev.index, ev.delta)
       } else if kind == "content_block_stop" {
-        self.close(ev.index)
+        @close(ev.index)
       } else if kind == "message_delta" {
         # A parsed Object's fields are fixed, so each change is a new Object.
-        self.message = {...self.message,
+        @message = {...@message,
           stop_reason: ev.delta.get("stop_reason", nil),
           stop_sequence: ev.delta.get("stop_sequence", nil),
-          usage: {...self.message.get("usage", {}), ...ev.get("usage", {})}}
+          usage: {...@message.get("usage", {}), ...ev.get("usage", {})}}
       } else if kind == "error" {
-        self.failure = ev.get("error", {})
+        @failure = ev.get("error", {})
       }
     }
 
     grow(i, d) {
       let kind = d.get("type", "")
       if kind == "text_delta" {
-        self.pieces[i].push(d.text)
-        self.on_text(d.text) if self.on_text != nil
+        @pieces[i].push(d.text)
+        @on_text(d.text) if @on_text != nil
       } else if kind == "thinking_delta" {
-        self.pieces[i].push(d.thinking)
+        @pieces[i].push(d.thinking)
       } else if kind == "input_json_delta" {
-        self.pieces[i].push(d.partial_json)
+        @pieces[i].push(d.partial_json)
       } else if kind == "signature_delta" {
-        self.blocks[i] = {...self.blocks[i], signature: d.signature}
+        @blocks[i] = {...@blocks[i], signature: d.signature}
       } else if kind == "citations_delta" {
-        let b = self.blocks[i]
-        self.blocks[i] = {...b, citations: [...b.get("citations", []), d.citation]}
+        let b = @blocks[i]
+        @blocks[i] = {...b, citations: [...b.get("citations", []), d.citation]}
       }
     }
 
@@ -554,29 +554,29 @@ let _llm_module = fn () {
     # are one JSON document written a few characters at a time; one cut off
     # mid-document stays empty, and the stop reason says why.
     close(i) {
-      let b = self.blocks[i]
-      let joined = self.pieces[i].join("")
+      let b = @blocks[i]
+      let joined = @pieces[i].join("")
       let kind = b.get("type", "")
       if kind == "text" {
-        self.blocks[i] = {...b, text: joined}
+        @blocks[i] = {...b, text: joined}
       } else if kind == "thinking" {
-        self.blocks[i] = {...b, thinking: joined}
+        @blocks[i] = {...b, thinking: joined}
       } else if b.has("input") && !joined.empty() {
         let input = try {
           JSON.parse(joined)
         } catch _e: ValueError {
           {}
         }
-        self.blocks[i] = {...b, input: input}
+        @blocks[i] = {...b, input: input}
       }
     }
 
     finish() {
-      if self.failure != nil {
-        _fail("LLM: {self.failure.get('type', 'error')}: {self.failure.get('message', '')}")
+      if @failure != nil {
+        _fail("LLM: {@failure.get('type', 'error')}: {@failure.get('message', '')}")
       }
-      _fail("LLM: the stream ended before the message began") if self.message == nil
-      {...self.message, content: self.blocks}
+      _fail("LLM: the stream ended before the message began") if @message == nil
+      {...@message, content: @blocks}
     }
   }
 
@@ -726,27 +726,27 @@ let _llm_module = fn () {
   }
 
   class LLMAnthropic {
-    new(.http) {
-      self.name = "anthropic"
-      self.capabilities = {tools: true, extra: true, count_tokens: true}
-      self.default_model = nil
+    new(@http) {
+      @name = "anthropic"
+      @capabilities = {tools: true, extra: true, count_tokens: true}
+      @default_model = nil
     }
 
     turn(req, on_text) {
       let body = _body_of(req)
-      _reply_of(on_text == nil ? _send(self.http, body)
-        : _stream(self.http, "/v1/messages", {...body, stream: true}, LLMStream(on_text),
+      _reply_of(on_text == nil ? _send(@http, body)
+        : _stream(@http, "/v1/messages", {...body, stream: true}, LLMStream(on_text),
                   _text_of, _anthropic_detail, on_text))
     }
 
     # The body as it is, posted to /v1/messages, and the answer as it is.
     request(body, headers) {
-      _send(self.http, body, headers)
+      _send(@http, body, headers)
     }
 
     # The input tokens of the request, as /v1/messages/count_tokens counts them.
     count_tokens(req) {
-      _send(self.http, _count_body_of(req), nil, "/v1/messages/count_tokens").input_tokens
+      _send(@http, _count_body_of(req), nil, "/v1/messages/count_tokens").input_tokens
     }
   }
 
@@ -773,18 +773,18 @@ let _llm_module = fn () {
   # would have answered with. A call is known by its index; its id and name
   # come with the first piece, its arguments over the rest.
   class LLMChatStream {
-    new(.on_text) {
-      self.events = 0
-      self.pieces = []
-      self.reasoning = []
-      self.calls = []
-      self.stopped = nil
-      self.usage = nil
-      self.failure = nil
+    new(@on_text) {
+      @events = 0
+      @pieces = []
+      @reasoning = []
+      @calls = []
+      @stopped = nil
+      @usage = nil
+      @failure = nil
     }
 
     take(e) {
-      self.events += 1
+      @events += 1
       let ev = try {
         JSON.parse(e.data)
       } catch _e: ValueError {
@@ -792,32 +792,32 @@ let _llm_module = fn () {
       }
       return nil if type_of(ev) != "Object"
       if ev.get("error", nil) != nil {
-        self.failure = ev.error
+        @failure = ev.error
         return nil
       }
-      self.usage = ev.usage if ev.get("usage", nil) != nil
+      @usage = ev.usage if ev.get("usage", nil) != nil
       let choices = ev.get("choices", [])
       return nil if choices.empty()
       let choice = choices[0]
-      self.stopped = choice.finish_reason if choice.get("finish_reason", nil) != nil
-      self.grow(choice.get("delta", {}))
+      @stopped = choice.finish_reason if choice.get("finish_reason", nil) != nil
+      @grow(choice.get("delta", {}))
     }
 
     grow(d) {
       let said = d.get("content", nil) ?? ""
       if !said.empty() {
-        self.pieces.push(said)
-        self.on_text(said) if self.on_text != nil
+        @pieces.push(said)
+        @on_text(said) if @on_text != nil
       }
       let thought = d.get("reasoning_content", nil) ?? d.get("reasoning", nil) ?? ""
-      self.reasoning.push(thought) if !thought.empty()
+      @reasoning.push(thought) if !thought.empty()
       for c in d.get("tool_calls", []) {
         let i = c.get("index", 0)
-        while self.calls.size() <= i {
-          self.calls.push({mut id: nil, mut name: "", mut pieces: []})
+        while @calls.size() <= i {
+          @calls.push({mut id: nil, mut name: "", mut pieces: []})
         }
         let f = c.get("function", {})
-        let call = self.calls[i]
+        let call = @calls[i]
         call.id = c.get("id", nil) ?? call.id
         call.name = f.get("name", nil) ?? call.name
         call.pieces.push(f.get("arguments", nil) ?? "")
@@ -825,17 +825,17 @@ let _llm_module = fn () {
     }
 
     finish() {
-      if self.failure != nil {
-        _fail("LLM: {_cc_detail(self.failure)}")
+      if @failure != nil {
+        _fail("LLM: {_cc_detail(@failure)}")
       }
-      let calls = self.calls.map(|c|
+      let calls = @calls.map(|c|
         {id: c.id, type: "function", function: {name: c.name, arguments: c.pieces.join("")}})
-      mut message = {role: "assistant", content: self.pieces.join("")}
-      message.reasoning_content = self.reasoning.join("") if !self.reasoning.empty()
+      mut message = {role: "assistant", content: @pieces.join("")}
+      message.reasoning_content = @reasoning.join("") if !@reasoning.empty()
       message.tool_calls = calls if !calls.empty()
       {choices: [{message: message,
-                  finish_reason: self.stopped}],
-       usage: self.usage}
+                  finish_reason: @stopped}],
+       usage: @usage}
     }
   }
 
@@ -947,20 +947,20 @@ let _llm_module = fn () {
   }
 
   class LLMChatCompletions {
-    new(.http, .name, .base_url, .max_tokens_field) {
-      self.capabilities = {tools: true, extra: true}
-      self.default_model = nil
+    new(@http, @name, @base_url, @max_tokens_field) {
+      @capabilities = {tools: true, extra: true}
+      @default_model = nil
     }
 
     turn(req, on_text) {
-      let body = _cc_body_of(req, self.max_tokens_field)
-      _cc_reply_of(on_text == nil ? _send(self.http, body, nil, "/chat/completions", _cc_detail)
-                                  : _cc_stream(self.http, body, on_text))
+      let body = _cc_body_of(req, @max_tokens_field)
+      _cc_reply_of(on_text == nil ? _send(@http, body, nil, "/chat/completions", _cc_detail)
+                                  : _cc_stream(@http, body, on_text))
     }
 
     # The body as it is, posted to /chat/completions, and the answer as it is.
     request(body, headers) {
-      _send(self.http, body, headers, "/chat/completions", _cc_detail)
+      _send(@http, body, headers, "/chat/completions", _cc_detail)
     }
   }
 
@@ -1060,23 +1060,23 @@ let _llm_module = fn () {
   # --- conversations ------------------------------------------------------------
 
   class LLMChat {
-    new(.provider, .model, .system, .tools, .max_tokens, .max_turns, .approve) {
-      self.messages = []
-      self.last = nil
+    new(@provider, @model, @system, @tools, @max_tokens, @max_turns, @approve) {
+      @messages = []
+      @last = nil
     }
 
     # The answer's text. The tools the model asks for run on the way there, up
     # to `max_turns` round trips; `last` holds the final reply whole.
     ask(prompt, on_text = nil) {
       let content = _string("prompt", prompt)
-      let start = self.messages.size()
+      let start = @messages.size()
       try {
-        self.messages.push({role: "user", content: content})
-        for _step in 0..self.max_turns {
-          let reply = turn(self.provider, model: self.model, messages: self.messages,
-                           system: self.system, tools: self.tools,
-                           max_tokens: self.max_tokens, on_text: on_text)
-          self.last = reply
+        @messages.push({role: "user", content: content})
+        for _step in 0..@max_turns {
+          let reply = turn(@provider, model: @model, messages: @messages,
+                           system: @system, tools: @tools,
+                           max_tokens: @max_tokens, on_text: on_text)
+          @last = reply
           if reply.stop == "refusal" {
             # The Messages API says why in stop_details.
             let raw = reply.raw
@@ -1086,20 +1086,20 @@ let _llm_module = fn () {
               : nil
             _fail("LLM: the model declined to answer" + (why == nil ? "" : ": {why}"))
           }
-          self.messages.push(reply.message)
+          @messages.push(reply.message)
           if reply.stop == "length" && !reply.tool_calls.empty() {
             _fail("LLM: a tool call was cut off at max_tokens")
           }
           if !reply.tool_calls.empty() {
-            self.messages.push(run_tools(self.tools, reply.tool_calls, approve: self.approve))
+            @messages.push(run_tools(@tools, reply.tool_calls, approve: @approve))
           } else if reply.stop != "pause" {
             return reply.text
           }
         }
-        _fail("LLM: no answer within max_turns ({self.max_turns})")
+        _fail("LLM: no answer within max_turns ({@max_turns})")
       } catch e {
         # Take back this ask's turns, so the history stays one a provider accepts.
-        self.messages = self.messages.slice(0, start)
+        @messages = @messages.slice(0, start)
         throw e
       }
     }

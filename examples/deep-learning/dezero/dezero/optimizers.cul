@@ -45,7 +45,7 @@ class SGD {
   target = nil
   hooks = []
 
-  new(.lr = 0.01) {}
+  new(@lr = 0.01) {}
 
   setup(target) {
     optimizer_setup(self, target)
@@ -60,7 +60,7 @@ class SGD {
   }
 
   update_one(p) {
-    p.data = p.data - self.lr * p.grad.data
+    p.data = p.data - @lr * p.grad.data
   }
 }
 
@@ -68,7 +68,7 @@ class MomentumSGD {
   target = nil
   hooks = []
 
-  new(.lr = 0.01, .momentum = 0.9) {}
+  new(@lr = 0.01, @momentum = 0.9) {}
 
   setup(target) {
     optimizer_setup(self, target)
@@ -84,7 +84,7 @@ class MomentumSGD {
 
   update_one(p) {
     p.velocity = Tensor.zeros(p.data.shape()) if p.velocity == nil
-    p.velocity = p.velocity * self.momentum - self.lr * p.grad.data
+    p.velocity = p.velocity * @momentum - @lr * p.grad.data
     p.data = p.data + p.velocity
   }
 }
@@ -93,7 +93,7 @@ class AdaGrad {
   target = nil
   hooks = []
 
-  new(.lr = 0.001, .eps = 1.0e-8) {}
+  new(@lr = 0.001, @eps = 1.0e-8) {}
 
   setup(target) {
     optimizer_setup(self, target)
@@ -111,7 +111,7 @@ class AdaGrad {
     g = p.grad.data
     p.h = Tensor.zeros(p.data.shape()) if p.h == nil
     p.h = p.h + g * g
-    p.data = p.data - self.lr * g / (p.h.pow(0.5) + self.eps)
+    p.data = p.data - @lr * g / (p.h.pow(0.5) + @eps)
   }
 }
 
@@ -119,7 +119,7 @@ class AdaDelta {
   target = nil
   hooks = []
 
-  new(.rho = 0.95, .eps = 1.0e-6) {}
+  new(@rho = 0.95, @eps = 1.0e-6) {}
 
   setup(target) {
     optimizer_setup(self, target)
@@ -139,9 +139,9 @@ class AdaDelta {
       p.msg = Tensor.zeros(p.data.shape())
       p.msdx = Tensor.zeros(p.data.shape())
     }
-    p.msg = p.msg * self.rho + g * g * (1.0 - self.rho)
-    dx = (p.msdx + self.eps).pow(0.5) / (p.msg + self.eps).pow(0.5) * g
-    p.msdx = p.msdx * self.rho + dx * dx * (1.0 - self.rho)
+    p.msg = p.msg * @rho + g * g * (1.0 - @rho)
+    dx = (p.msdx + @eps).pow(0.5) / (p.msg + @eps).pow(0.5) * g
+    p.msdx = p.msdx * @rho + dx * dx * (1.0 - @rho)
     p.data = p.data - dx
   }
 }
@@ -150,8 +150,8 @@ class Adam {
   target = nil
   hooks = []
 
-  new(.alpha = 0.001, .beta1 = 0.9, .beta2 = 0.999, .eps = 1.0e-8) {
-    self.t = 0
+  new(@alpha = 0.001, @beta1 = 0.9, @beta2 = 0.999, @eps = 1.0e-8) {
+    @t = 0
   }
 
   setup(target) {
@@ -163,14 +163,14 @@ class Adam {
   }
 
   update() {
-    self.t += 1
+    @t += 1
     optimizer_update(self)
   }
 
   get lr() {
-    fix1 = 1.0 - self.beta1 ** to_float(self.t)
-    fix2 = 1.0 - self.beta2 ** to_float(self.t)
-    self.alpha * Math.sqrt(fix2) / fix1
+    fix1 = 1.0 - @beta1 ** to_float(@t)
+    fix2 = 1.0 - @beta2 ** to_float(@t)
+    @alpha * Math.sqrt(fix2) / fix1
   }
 
   update_one(p) {
@@ -179,26 +179,26 @@ class Adam {
       p.m = Tensor.zeros(p.data.shape())
       p.v = Tensor.zeros(p.data.shape())
     }
-    p.m = p.m + (g - p.m) * (1.0 - self.beta1)
-    p.v = p.v + (g * g - p.v) * (1.0 - self.beta2)
-    p.data = p.data - self.lr * p.m / (p.v.pow(0.5) + self.eps)
+    p.m = p.m + (g - p.m) * (1.0 - @beta1)
+    p.v = p.v + (g * g - p.v) * (1.0 - @beta2)
+    p.data = p.data - @lr * p.m / (p.v.pow(0.5) + @eps)
   }
 }
 
 # --- update hooks --------------------------------------------------------
 
 class WeightDecay {
-  new(.rate) {}
+  new(@rate) {}
 
   __call__(params) {
     for p in params {
-      p.grad.data = p.grad.data + self.rate * p.data
+      p.grad.data = p.grad.data + @rate * p.data
     }
   }
 }
 
 class ClipGrad {
-  new(.max_norm) {}
+  new(@max_norm) {}
 
   __call__(params) {
     mut total_norm = 0.0
@@ -207,7 +207,7 @@ class ClipGrad {
       total_norm += (g * g).sum()
     }
     total_norm = Math.sqrt(total_norm)
-    rate = self.max_norm / (total_norm + 1.0e-6)
+    rate = @max_norm / (total_norm + 1.0e-6)
     if rate < 1.0 {
       for p in params {
         p.grad.data = p.grad.data * rate
@@ -223,7 +223,7 @@ class FreezeParam {
     # method) — Culebra has no runtime trait-membership test to branch on
     # here, so this just tries `.params()` and falls back to treating the
     # item as a param itself.
-    self.freeze_params = layers_or_params.flat_map(|item| try {
+    @freeze_params = layers_or_params.flat_map(|item| try {
       item.params()
     } catch _ {
       [item]
@@ -231,7 +231,7 @@ class FreezeParam {
   }
 
   __call__(params) {
-    for p in self.freeze_params {
+    for p in @freeze_params {
       p.grad = nil
     }
   }

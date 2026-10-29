@@ -71,7 +71,7 @@ assert_eq(
   'TypeError: type error: Compress.zip expects Object|Dir, got Array',
 )
 class NotADir {
-  new(.x) {}
+  new(@x) {}
 }
 assert_eq(
   caught(|| Compress.zip(NotADir(1))),

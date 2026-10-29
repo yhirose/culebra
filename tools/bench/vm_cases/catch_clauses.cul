@@ -2,7 +2,7 @@
 # clauses: the first that accepts the thrown value runs, and a value none
 # accepts leaves the try as it was raised.
 class Timeout {
-  new(.after) {}
+  new(@after) {}
 }
 enum Failure {
   NotFound(String),

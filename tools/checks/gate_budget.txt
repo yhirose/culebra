@@ -118,8 +118,10 @@
 # assertions took twice the --jit compile). 324 since test_llm_chat.cul (the
 # chat loop against a scripted provider: the tools it runs, what ends it and
 # what a failure leaves of the history). 325 since test_llm_tools.cul
-# (LLM.run_tools and approve:, alone and in a chat).
-tests.cul 327
+# (LLM.run_tools and approve:, alone and in a chat). 328 since
+# test_at_self_field.cul (`@name` is `self.name`: every shape of it, on every
+# engine, and the `@` that is not a field read).
+tests.cul 328
 
 # tests/isolate/*.cul — run on both engines, plus the over-cap modes.
 # 21 since test_xml_isolate.cul (an XML element keeps its methods across an
@@ -244,8 +246,9 @@ ctest.entries 36
 # program, in en and ja. 1106 since §42 shows LLM.anthropic asking one
 # question, in en and ja. 1108 since §42 shows LLM.run_tools answering a call,
 # in en and ja. 1110 since §42 shows LLM.tool_from_schema, in en and ja.
-# 1112 since §42 shows LLM.count_tokens, in en and ja.
-docs.blocks 1116
+# 1112 since §42 shows LLM.count_tokens, in en and ja. 1118 since 2.9 of the
+# quick guide shows `@name` in a method, in en and ja.
+docs.blocks 1118
 
 # The samples the language front ends are run over (examples/languages/*).
 languages.samples 130

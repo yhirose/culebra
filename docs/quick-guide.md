@@ -407,7 +407,7 @@ takes only what it matches, and a value no clause takes keeps propagating.
 
 ```culebra
 class Timeout {
-  new(.after) {}
+  new(@after) {}
 }
 wait = fn (v) {
   try {
@@ -482,7 +482,7 @@ reference to an instance goes away.
 ```culebra
 class Car {
   wheels = 4  # declared field with a default
-  new(.mpr, .wheels?) {  # field parameters: stored into self.mpr / self.wheels
+  new(@mpr, @wheels?) {  # field parameters: stored into self.mpr / self.wheels
     self.miles = 0
   }
   drop() {}  # cleanup resources when the last reference goes away
@@ -505,9 +505,28 @@ inspect(c.wheels)  # => 4
 inspect(type_of(c))  # => 'Car'
 ```
 
-A `new` parameter written `.x` also stores into the field `x`
-(declaring it if the body does not); `.x?` is optional and takes the
+A `new` parameter written `@x` also stores into the field `x`
+(declaring it if the body does not); `@x?` is optional and takes the
 declaration's default, so `Car(5, wheels: 3)` overrides the 4.
+
+Inside a method, `@name` is `self.name`, in a read, a write or a call
+(`@miles += @mpr * n`, `@items.push(x)`). The `@` touches the name, and
+a bare `@` is not `self`. Outside a method it raises the `NameError` that
+`self` does. `a @ b` (matrix product) and `@deco` before a declaration
+keep their meaning.
+
+```culebra
+class Tally {
+  new() {
+    @n = 0
+  }
+  add(k) {
+    @n += k
+    self
+  }
+}
+inspect(Tally().add(2).add(3).n)  # => 5
+```
 
 Operators map to dunder methods (`__add__`, `__eq__`, `__lt__`,
 `__index__`, `__setindex__`, `__call__`, ...). Reverse-side methods
@@ -724,7 +743,8 @@ single most common transfer mistake.
 | `if c { a } else { b }` as a value | `c ? a : b` |
 | `if` / `else if` chain yielding a value | one value against constants: `match`; unrelated conditions: `cond` |
 | `ClassName.new(...)` | `ClassName(...)` — a `class`-defined type is callable and desugars to its constructor |
-| `new(x, y) { self.x = x; self.y = y }` | `new(.x, .y) {}` — a field parameter stores into its field |
+| `new(x, y) { self.x = x; self.y = y }` | `new(@x, @y) {}` — a field parameter stores into its field |
+| `self.count += 1`, `self.items.push(v)` in a method body | `@count += 1`, `@items.push(v)` — `@name` is `self.name`; passing the object itself stays `self` (`f(self)`), and `@name` outside a method is a `NameError` |
 | `"a" + x + "b"` (splicing literal text around a value) | `"a{x}b"` |
 | `i = i + 1` | `i += 1` |
 | `x.size() == 0` / `> 0` | `x.empty()` / `!x.empty()` |

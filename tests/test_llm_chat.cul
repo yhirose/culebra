@@ -35,7 +35,7 @@ fn reply(parts, stop, raw = nil) {
 
 # A provider that answers from a list, in order, and keeps what it was asked.
 class ChatFake {
-  new(.queue, .default_model) {
+  new(@queue, @default_model) {
     self.name = "scripted"
     self.capabilities = {tools: true}
     self.seen = []

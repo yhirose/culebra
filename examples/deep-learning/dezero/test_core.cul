@@ -135,7 +135,7 @@ class ExpOp {
   }
 
   backward(gy) {
-    dz.mul(gy, self.output)
+    dz.mul(gy, @output)
   }
 }
 

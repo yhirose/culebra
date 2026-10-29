@@ -178,7 +178,7 @@ fn reply(parts, stop) {
    reasoning: "", stop: stop, usage: nil, raw: nil}
 }
 class ToolsFake {
-  new(.queue) {
+  new(@queue) {
     self.name = "scripted"
     self.capabilities = {tools: true}
     self.default_model = "m"

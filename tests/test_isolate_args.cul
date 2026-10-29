@@ -7,7 +7,7 @@
 # at every allocation, is where this file fails when the rule is broken.
 
 class Box {
-  new(.label, .items) {}
+  new(@label, @items) {}
 }
 
 let show = |x| "{x.label}:{x.items}"
@@ -88,7 +88,7 @@ assert_eq(sender3.join(), 'done')
 let (tx4, rx4) = Channel.new(4)
 class Typed {
   n: Long
-  new(.n) {}
+  new(@n) {}
   drop() {
     tx4.send(self.keys())
   }

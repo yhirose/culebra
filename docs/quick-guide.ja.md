@@ -402,7 +402,7 @@ inspect(try {
 
 ```culebra
 class Timeout {
-  new(.after) {}
+  new(@after) {}
 }
 wait = fn (v) {
   try {
@@ -477,7 +477,7 @@ inspect('after')
 ```culebra
 class Car {
   wheels = 4  # デフォルト付きの宣言フィールド
-  new(.mpr, .wheels?) {  # field parameter: self.mpr / self.wheelsにも格納
+  new(@mpr, @wheels?) {  # field parameter: self.mpr / self.wheelsにも格納
     self.miles = 0
   }
   drop() {}  # 最後の参照が消えた時点でリソースを後始末
@@ -500,9 +500,28 @@ inspect(c.wheels)  # => 4
 inspect(type_of(c))  # => 'Car'
 ```
 
-`new`のパラメータを`.x`と書くとフィールド`x`にも格納します（本体に
-宣言がなければそのフィールドを宣言します）。`.x?`は省略可能で宣言の
+`new`のパラメータを`@x`と書くとフィールド`x`にも格納します（本体に
+宣言がなければそのフィールドを宣言します）。`@x?`は省略可能で宣言の
 デフォルトを取るので、`Car(5, wheels: 3)`は4を上書きします。
+
+メソッドの中では`@name`が`self.name`です。読み取り・書き込み・呼び出しの
+どれにも使えます（`@miles += @mpr * n`、`@items.push(x)`）。`@`は名前に
+隣接させ、`@`だけでは`self`になりません。メソッドの外では`self`と同じ
+`NameError`になります。`a @ b`（行列積）と宣言の前の`@deco`は従来どおりの
+意味です。
+
+```culebra
+class Tally {
+  new() {
+    @n = 0
+  }
+  add(k) {
+    @n += k
+    self
+  }
+}
+inspect(Tally().add(2).add(3).n)  # => 5
+```
 
 演算子はdunderメソッド (`__add__`、`__eq__`、`__lt__`、`__index__`、
 `__setindex__`、`__call__`等) に対応します。逆側メソッド
@@ -713,7 +732,8 @@ inspect(match 9 {
 | 値としての`if c { a } else { b }` | `c ? a : b` |
 | 値を返す`if` / `else if`の連鎖 | 1つの値を定数群と比較するなら`match`、互いに無関係な条件なら`cond` |
 | `ClassName.new(...)` | `ClassName(...)` — `class`定義型は呼び出し可能で、コンストラクタ呼び出しの糖衣になる |
-| `new(x, y) { self.x = x; self.y = y }` | `new(.x, .y) {}` — field parameterはフィールドにも格納する |
+| `new(x, y) { self.x = x; self.y = y }` | `new(@x, @y) {}` — field parameterはフィールドにも格納する |
+| メソッド本体の`self.count += 1`、`self.items.push(v)` | `@count += 1`、`@items.push(v)` — `@name`は`self.name`。オブジェクト自身を渡すときは`self`のまま（`f(self)`）。メソッドの外の`@name`は`NameError` |
 | `"a" + x + "b"`（値の前後にリテラル文字列を継ぎ足す） | `"a{x}b"` |
 | `i = i + 1` | `i += 1` |
 | `x.size() == 0` / `> 0` | `x.empty()` / `!x.empty()` |

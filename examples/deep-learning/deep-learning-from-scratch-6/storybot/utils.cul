@@ -49,29 +49,29 @@ fn last_row(logits) {
 # more keys than that, which is exactly the window `generate` recomputes.
 class KVCache {
   new(n_layer, limit) {
-    self.k = repeat(n_layer, nil)
-    self.v = repeat(n_layer, nil)
-    self.limit = limit
-    self.pos = 0
+    @k = repeat(n_layer, nil)
+    @v = repeat(n_layer, nil)
+    @limit = limit
+    @pos = 0
   }
 
   # `c` new positions are about to be appended, so hand back at most
   # `limit - c` old ones.
   past(layer, c) {
-    return nil if self.k[layer] == nil
-    let keep = self.limit > c ? self.limit - c : 0
+    return nil if @k[layer] == nil
+    let keep = @limit > c ? @limit - c : 0
     return nil if keep == 0
-    {k: newest(self.k[layer], keep), v: newest(self.v[layer], keep)}
+    {k: newest(@k[layer], keep), v: newest(@v[layer], keep)}
   }
 
   put(layer, k, v) {
-    self.k[layer] = newest(k, self.limit)
-    self.v[layer] = newest(v, self.limit)
-    Tensor.eval(self.k[layer].data, self.v[layer].data)
+    @k[layer] = newest(k, @limit)
+    @v[layer] = newest(v, @limit)
+    Tensor.eval(@k[layer].data, @v[layer].data)
   }
 
   advance(c) {
-    self.pos += c
+    @pos += c
   }
 }
 

@@ -144,7 +144,7 @@ const auto grammar_ = R"(
   # pattern and take a block statement on the next line for its body.
   CATCH_CLAUSE             <-  catch _ (&'{' ARM_PATTERN (_ GUARD)? _h_ BLOCK / !'{' ARM_PATTERN (_ GUARD)? _ BLOCK)
 
-  ASSIGNMENT               <-  LET _ MUTABLE _ PRIMARY (_h_ (ARGUMENTS / INDEX) / _ DOT)* (_ TYPE_ANNOTATION)? _ ASSIGN_OP _ EXPRESSION
+  ASSIGNMENT               <-  LET _ MUTABLE _ (AT_SELF AT_MEMBER / PRIMARY) (_h_ (ARGUMENTS / INDEX) / _ DOT)* (_ TYPE_ANNOTATION)? _ ASSIGN_OP _ EXPRESSION
   # `let` is optional: `let (a, b) = …` declares; bare `(a, b) = (b, a)`
   # (parallel / swap assignment) reassigns existing variables.
   DESTRUCTURE_ASSIGN       <-  LET _ MUTABLE _ (OBJECT_PATTERN / ARRAY_PATTERN / TUPLE_PATTERN) _ '=' _ EXPRESSION
@@ -162,7 +162,7 @@ const auto grammar_ = R"(
   # pattern-position identifier speculatively try WHILE / IF / MATCH / … first.
   # With no postfix the node collapses to its lone IDENTIFIER child, which is
   # how both backends tell a plain name from a chain.
-  PLACE                    <-  IDENTIFIER (_h_ (ARGUMENTS / INDEX) / _ DOT)*
+  PLACE                    <-  (AT_SELF AT_MEMBER / IDENTIFIER) (_h_ (ARGUMENTS / INDEX) / _ DOT)*
   # ASSIGN_OP captures the literal so eval_assignment can dispatch on
   # `=` (plain) vs the compound forms. `**=` precedes `*=` so the
   # alternation chooses the longer match. `??=` is the nil-coalescing
@@ -254,7 +254,14 @@ const auto grammar_ = R"(
   # (throws NilError on nil, else passes the value through). `?.` / `?[`
   # are matched before plain DOT / INDEX; none collide with `??` (that
   # needs `?` then `?`) or `!=` (that needs `!` then `=`).
-  CALL                     <-  PRIMARY (_h_ (ARGUMENTS / INDEX) / _ SAFE_DOT / _ SAFE_INDEX / _ DOT / NONNULL)*
+  CALL                     <-  (AT_SELF AT_MEMBER / PRIMARY) (_h_ (ARGUMENTS / INDEX) / _ SAFE_DOT / _ SAFE_INDEX / _ DOT / NONNULL)*
+  # `@name` is `self.name`: the head of a chain, a target, or a PLACE. It
+  # builds the nodes `self.name` builds (an IDENTIFIER, then a DOT) with the
+  # head's token `@`; desugar_self_sigil (parser.h) reads it as `self`, and
+  # `culebra fmt` prints the sigil back. No whitespace is allowed between the
+  # `@` and the name, and `@` alone is not `self`.
+  AT_SELF                  <-  < '@' > &IdentInitChar  { ast_name: IDENTIFIER }
+  AT_MEMBER                <-  IDENTIFIER  { ast_name: DOT }
   ARGUMENTS                <-  '(' _ ARG_LIST _ ')'
   ARG_LIST                 <-  (ARG_ITEM (_ ',' _ ARG_ITEM)* _ ','?)?
   ARG_ITEM                 <-  KWARG_SPLAT / KWARG / EXPRESSION
@@ -440,13 +447,13 @@ const auto grammar_ = R"(
   # `fn ([x, y])`, `|(k, v)| …` — which binds the pattern's names from
   # the matching argument (desugared to a synthetic param + a destructure
   # at the function body's entry).
-  # A field parameter (`new(.x, .y: T = v, .z?)`) is a `new` parameter that
+  # A field parameter (`new(@x, @y: T = v, @z?)`) is a `new` parameter that
   # also stores into the field of its name. It keeps the ordinary layout
   # — the mark at [0] where MUTABLE sits, the name at [1] — so every
   # reader of a parameter's name finds it in the same place; FIELD_OPTIONAL
   # at [2] carries the `?` (or nothing) and shifts the annotation to [3].
   PARAMETER                <-  KWARGS_REST / ARGS_REST / KW_ONLY_SEP / OBJECT_PATTERN / ARRAY_PATTERN / TUPLE_PATTERN / FIELD_MARK IDENTIFIER FIELD_OPTIONAL (_ TYPE_ANNOTATION)? (_ '=' _ DEFAULT_VALUE)? / MUTABLE _ IDENTIFIER (_ TYPE_ANNOTATION)? (_ '=' _ DEFAULT_VALUE)?
-  FIELD_MARK               <-  < '.' >
+  FIELD_MARK               <-  < '@' >
   FIELD_OPTIONAL           <-  < '?'? >
   KW_ONLY_SEP              <-  '*' !'*'
   ARGS_REST                <-  '*' _ < IdentInitChar IdentChar* >

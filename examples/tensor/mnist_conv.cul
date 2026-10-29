@@ -110,7 +110,7 @@ println("loaded train={n_train} test={yt.size()} in {Sys.time() - load_t0}s")
 
 class Param {
   new(t) {
-    self.t = t
+    @t = t
   }
 }
 

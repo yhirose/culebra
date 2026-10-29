@@ -88,31 +88,31 @@ fn array_allclose(a, b, rtol = 1.0e-4, atol = 1.0e-5) {
 
 class DotBuilder {
   new() {
-    self.var_ids = []
-    self.var_objs = []
-    self.fn_ids = []
-    self.fn_objs = []
+    @var_ids = []
+    @var_objs = []
+    @fn_ids = []
+    @fn_objs = []
   }
 
   var_id(v) {
     mut found = nil
-    for i in range(self.var_objs.size()) {
-      found = self.var_ids[i] if self.var_objs[i] == v
+    for i in range(@var_objs.size()) {
+      found = @var_ids[i] if @var_objs[i] == v
     }
     if found != nil {
       found
     } else {
-      idx = self.var_objs.size()
-      self.var_objs.push(v)
-      self.var_ids.push("v{idx}")
+      idx = @var_objs.size()
+      @var_objs.push(v)
+      @var_ids.push("v{idx}")
       "v{idx}"
     }
   }
 
   fn_id(f) {
-    idx = self.fn_objs.size()
-    self.fn_objs.push(f)
-    self.fn_ids.push("f{idx}")
+    idx = @fn_objs.size()
+    @fn_objs.push(f)
+    @fn_ids.push("f{idx}")
     "f{idx}"
   }
 }

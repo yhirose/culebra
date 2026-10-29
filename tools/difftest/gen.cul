@@ -572,7 +572,7 @@ let gens = ['fn gg() { yield 1; yield 2; yield 3 }; gg().collect()',
             'mut log = []; fn gg() { defer { log.push("outer") }; try { defer { log.push("try") }; yield 1; yield 2 } catch e { log.push("handler") } }; for v in gg() { break }; to_string(log)',
             'class C { new() { self.v = 5 } vals() { yield self.v; self.v = 6; yield self.v } }; to_string(C.new().vals().collect())',
             # a generator that is a method, a fn expression, an object's function
-            'class B { new(.xs) {} iter() { for x in self.xs { yield x } } }; mut s = 0; for x in B.new([1, 2, 3]) { s = s + x }; s',
+            'class B { new(@xs) {} iter() { for x in self.xs { yield x } } }; mut s = 0; for x in B.new([1, 2, 3]) { s = s + x }; s',
             'let g = fn (n) { yield n; yield n * 2 }; to_string(g(4).collect())',
             'let o = {t: 7, g: fn () { yield self.t }}; to_string(o.g().collect())',
             'class S { static of(n) { for i in 0..n { yield i } } }; to_string(S.of(3).collect())',
@@ -781,7 +781,7 @@ for p in range_patterns {
 # A bare type name in an arm tests and binds nothing, and a name no type
 # carries matches nothing. (That a pattern which declares still binds every
 # name is held by `match|` and `assign|` cases, which no allow entry covers.)
-let tp_pre = 'class Dog { new(.n) {} }; ' + me_pre
+let tp_pre = 'class Dog { new(@n) {} }; ' + me_pre
 let type_patterns = [
   tp_pre + 'match Dog(1) { Dog => "dog", _ => "other" }',
   tp_pre + 'match 1 { Dog => "dog", _ => "other" }',
@@ -861,7 +861,7 @@ let kind_types = [
   'fn k(e: IndexError) { "index" }; fn k(e: Object) { "object" }; [k(try { [1][5] } catch e { e }), k(try { 1 / 0 } catch e { e }), k({kind: "IndexError"})]',
   'try { throw {kind: "ZeroDivisionError"} } catch ZeroDivisionError { "by name" } catch {kind: "ZeroDivisionError"} { "by shape" }',
   'try { throw {kind: "NoSuchKindError"} } catch NoSuchKindError { "by name" } catch {kind: "NoSuchKindError"} { "by shape" }',
-  'class Tagged { new(.kind) {} }; try { throw Tagged("TypeError") } catch TypeError { "by name" } catch Tagged { "an instance" }',
+  'class Tagged { new(@kind) {} }; try { throw Tagged("TypeError") } catch TypeError { "by name" } catch Tagged { "an instance" }',
   'try { StateMachine.new([]) } catch TypeError { "from the library" }',
   'fn s(x: Object) { "object" }; fn s(x: Function) { "function" }; fn w(x: Object) { "object" }; fn w(x: Iterable) { "iterable" }; let d = {kind: "ValueError", n: 1}; [s(d), w(d)]',
   'fn u(e: IndexError | Nil) { "union" }; fn u(e: Object) { "object" }; [u(try { [1][5] } catch e { e }), u(nil)]',

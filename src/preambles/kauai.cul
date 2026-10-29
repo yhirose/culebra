@@ -2529,29 +2529,29 @@ let _kauai_module = fn () {
   # A song, read and checked, ready to play.
   class Song {
     new(x, voices, drums) {
-      self._events = render(x)
+      @_events = render(x)
       let time = clock(x)
-      self._length = time(x.steps)
-      self._loop_at = x.song.loop ? time(x.loop_at) : -1.0
-      self._room = x.song.get("room", 0.0)
-      self._marks = x.marks.keys().map(|k| (k, time(x.marks[k]))).to_object()
-      self._about = x.about
-      let external = external_sounds(x, self._events, voices, drums)
-      self._build = external.build
-      self._plays = external.plays
-      self._weighed = external.weighed
-      self._weights = nil
-      self._todo = self._build.keys()
-      self._sounds = {}
-      self._score = nil
-      self._started = nil
-      self._volume = 1.0
+      @_length = time(x.steps)
+      @_loop_at = x.song.loop ? time(x.loop_at) : -1.0
+      @_room = x.song.get("room", 0.0)
+      @_marks = x.marks.keys().map(|k| (k, time(x.marks[k]))).to_object()
+      @_about = x.about
+      let external = external_sounds(x, @_events, voices, drums)
+      @_build = external.build
+      @_plays = external.plays
+      @_weighed = external.weighed
+      @_weights = nil
+      @_todo = @_build.keys()
+      @_sounds = {}
+      @_score = nil
+      @_started = nil
+      @_volume = 1.0
     }
 
     # External sound `key`, built the first time it is asked for.
     _sound(key) {
-      self._sounds.get_or_put(key, fn () {
-        let s = self._build[key]()
+      @_sounds.get_or_put(key, fn () {
+        let s = @_build[key]()
         if type_of(s) != "Sound" {
           __raise(
             "TypeError",
@@ -2564,8 +2564,8 @@ let _kauai_module = fn () {
 
     # Build one external sound the song still needs; answers how many remain.
     prepare() {
-      self._sound(self._todo.pop()) if !self._todo.empty()
-      self._todo.size()
+      @_sound(@_todo.pop()) if !@_todo.empty()
+      @_todo.size()
     }
 
     # The song as the mixer takes it, with `plays` of its external sounds and
@@ -2581,44 +2581,44 @@ let _kauai_module = fn () {
       for p in plays {
         needed.add(p.sound)
       }
-      for w in self._weighed.values() {
+      for w in @_weighed.values() {
         needed.add(w.sound)
       }
       # Built in the order prepare() takes them, which an instrument may hear.
-      for i in 0..self._todo.size() {
-        let key = self._todo[-1 - i]
-        self._sound(key) if needed.contains(key)
+      for i in 0..@_todo.size() {
+        let key = @_todo[-1 - i]
+        @_sound(key) if needed.contains(key)
       }
       # And one whose building prepare() took, and that threw.
       for key in needed {
-        self._sound(key)
+        @_sound(key)
       }
-      if self._weights == nil {
-        self._weights = self._weighed.keys().map(fn (by) {
-          let w = self._weighed[by]
-          let l = _Audio.sound_loudness(self._sounds[w.sound]._id)
+      if @_weights == nil {
+        @_weights = @_weighed.keys().map(fn (by) {
+          let w = @_weighed[by]
+          let l = _Audio.sound_loudness(@_sounds[w.sound]._id)
           (by, l == nil ? 1.0 : 10.0 ** ((tone_loudness(w.pitch) - l) / 20.0))
         }).to_object()
       }
       # What prepare() has left is what is still not built.
-      self._todo = self._todo.filter(|k| !self._sounds.has(k))
-      let tones = self._events.filter(|e| e.has("tone") && (to == nil || e.at < to)).map(|e| [e.at, ...e.tone])
-      let sounds = plays.map(|p| [p.at, -1, self._sounds[p.sound]._id, p.vol / 100.0 * self._weights[p.by], 0, 0, 0, 0, 0, 0, 0])
+      @_todo = @_todo.filter(|k| !@_sounds.has(k))
+      let tones = @_events.filter(|e| e.has("tone") && (to == nil || e.at < to)).map(|e| [e.at, ...e.tone])
+      let sounds = plays.map(|p| [p.at, -1, @_sounds[p.sound]._id, p.vol / 100.0 * @_weights[p.by], 0, 0, 0, 0, 0, 0, 0])
       # In time order: the mixers read it from the head.
       [...tones, ...sounds].sorted_by(|e| e[0]).flat_map(|e| e)
     }
 
     # Seconds into the song at mark `name`.
     _mark(name) {
-      let has = self._marks.empty() ? "none" : self._marks.keys().join(", ")
-      self._marks.get(name, nil) ?? __raise("ValueError", "Audio.Kauai: the song has no mark {name} (it has {has})")
+      let has = @_marks.empty() ? "none" : @_marks.keys().join(", ")
+      @_marks.get(name, nil) ?? __raise("ValueError", "Audio.Kauai: the song has no mark {name} (it has {has})")
     }
 
     # Seconds into the song at `p`: seconds, or a String of a mark's name, of
     # seconds (83.5), or of minutes and seconds (1:23.5).
     _point(p) {
       return p * 1.0 if type_of(p) != "String"
-      return self._mark(p) if !p.empty() && !"0123456789".contains(p.slice(0, 1).to_string())
+      return @_mark(p) if !p.empty() && !"0123456789".contains(p.slice(0, 1).to_string())
       let (m, s) = halves(p, ":") ?? (nil, p)
       let secs = seconds_of(s)
       let whole = (halves(s, ".") ?? (s, ""))[0]
@@ -2630,13 +2630,13 @@ let _kauai_module = fn () {
 
     # Play from the top (again, if it is playing), after building what is left.
     play() {
-      if self._score == nil {
-        self._score = _Audio.score_new(self._list(self._plays, nil), self._length, self._loop_at)
-        _Audio.score_volume(self._score, self._volume)
-        _Audio.score_room(self._score, self._room)
+      if @_score == nil {
+        @_score = _Audio.score_new(@_list(@_plays, nil), @_length, @_loop_at)
+        _Audio.score_volume(@_score, @_volume)
+        _Audio.score_room(@_score, @_room)
       }
-      _Audio.score_play(self._score)
-      self._started = _Time.monotonic()
+      _Audio.score_play(@_score)
+      @_started = _Time.monotonic()
     }
 
     # The song once through as play() sounds it, until its last sound and its
@@ -2648,21 +2648,21 @@ let _kauai_module = fn () {
     # only those that start before `to` and play notes LEAD seconds before
     # `from` or later are built.
     render(from: String | Long | Float | Nil = nil, to: String | Long | Float | Nil = nil) {
-      let part = self._part("render", from, to)
+      let part = @_part("render", from, to)
       let (first, last, start, plays) = (part.first, part.last, part.start, part.plays)
-      let list = self._list(plays, last)
+      let list = @_list(plays, last)
       let used = Set()
       for p in plays {
         used.add(p.sound)
       }
       let sounds = []
       for key in used {
-        let s = self._sounds[key]
+        let s = @_sounds[key]
         sounds.push(s._id)
         sounds.push(s.data())
       }
-      let length = last == nil ? self._length : Math.min(last, self._length)
-      let out = _Audio.score_render(list, sounds, length, self._room, self._volume, start)
+      let length = last == nil ? @_length : Math.min(last, @_length)
+      let out = _Audio.score_render(list, sounds, length, @_room, @_volume, start)
       # The lead rises as half a cosine, to the level `from` is heard at.
       let rise = Math.round((first - start) * RATE)
       for i in 0..Math.min(rise, out.size()) {
@@ -2672,35 +2672,35 @@ let _kauai_module = fn () {
     }
 
     stop() {
-      _Audio.score_stop(self._score) if self._score != nil
-      self._started = nil
+      _Audio.score_stop(@_score) if @_score != nil
+      @_started = nil
     }
 
     # The level the whole song plays at, 0.0..1.0, from its next note on.
     volume(v: Long | Float) {
-      self._volume = v * 1.0
-      _Audio.score_volume(self._score, v) if self._score != nil
+      @_volume = v * 1.0
+      _Audio.score_volume(@_score, v) if @_score != nil
     }
 
     # Whether it is playing: from play() until stop(), or its end.
     playing() {
-      self._started != nil && (self._loop_at >= 0 || _Time.monotonic() - self._started < self._length)
+      @_started != nil && (@_loop_at >= 0 || _Time.monotonic() - @_started < @_length)
     }
 
     # Whether it has played as far as `mark NAME`.
     reached(name: String) {
-      let t = self._mark(name)
-      self._started != nil && _Time.monotonic() - self._started >= t
+      let t = @_mark(name)
+      @_started != nil && _Time.monotonic() - @_started >= t
     }
 
     # Where each `mark NAME` is: {NAME: seconds into the song}, in its order.
     marks() {
-      {...self._marks}
+      {...@_marks}
     }
 
     # Seconds into the song at `at`, a point as render() takes one.
     seconds(at: String | Long | Float) {
-      self._point(at)
+      @_point(at)
     }
 
     # The part from point `from` until `to` (nil for the top or the end) as
@@ -2708,10 +2708,10 @@ let _kauai_module = fn () {
     # before `first` (or the top), and `plays`, the external sounds that
     # start before `last` and play notes from `start` on.
     _part(what, from, to) {
-      let first = from == nil ? 0.0 : self._point(from)
-      let last = to == nil ? nil : self._point(to)
-      if first < 0 || first >= self._length {
-        __raise("ValueError", "Audio.Kauai: {what}(from:) is at {first} seconds, outside the song's 0 to {self._length}")
+      let first = from == nil ? 0.0 : @_point(from)
+      let last = to == nil ? nil : @_point(to)
+      if first < 0 || first >= @_length {
+        __raise("ValueError", "Audio.Kauai: {what}(from:) is at {first} seconds, outside the song's 0 to {@_length}")
       }
       if last != nil && last <= first {
         __raise("ValueError", "Audio.Kauai: {what}(to:) is at {last} seconds, not after from: at {first}")
@@ -2721,7 +2721,7 @@ let _kauai_module = fn () {
         first: first,
         last: last,
         start: start,
-        plays: self._plays.filter(|p| (last == nil || p.at < last) && p.until >= start),
+        plays: @_plays.filter(|p| (last == nil || p.at < last) && p.until >= start),
       }
     }
 
@@ -2730,7 +2730,7 @@ let _kauai_module = fn () {
     # its instrument's key in `voices:` or `drums:`, and what the instrument
     # is handed for it.
     external_sounds(from: String | Long | Float | Nil = nil, to: String | Long | Float | Nil = nil) {
-      self._part("external_sounds", from, to).plays.sorted_by(|p| p.at).map(|p| {
+      @_part("external_sounds", from, to).plays.sorted_by(|p| p.at).map(|p| {
         at: p.at,
         until: p.until,
         by: p.by,
@@ -2741,22 +2741,22 @@ let _kauai_module = fn () {
 
     # Seconds once through.
     length() {
-      self._length
+      @_length
     }
 
     # What its `about` says: {title, composer, ...}, the items it writes.
     about() {
-      {...self._about}
+      {...@_about}
     }
 
     # What it plays, in order: {at, len, by, pitch, vol}, in seconds from its
     # start; `by` names the voice or the drum, and a drum's pitch is nil.
     events() {
-      self._events.map(|e| ({at: e.at, len: e.len, by: e.by, pitch: e.pitch, vol: e.vol}))
+      @_events.map(|e| ({at: e.at, len: e.len, by: e.by, pitch: e.pitch, vol: e.vol}))
     }
 
     drop() {
-      _Audio.score_free(self._score) if self._score != nil
+      _Audio.score_free(@_score) if @_score != nil
     }
   }
 

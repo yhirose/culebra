@@ -39,10 +39,10 @@ fn create_anthropic(config = {}) {
 }
 
 class AnthropicModel {
-  new(.http, .model_id) {}
+  new(@http, @model_id) {}
 
   do_generate(params) {
-    let res = self.http.post('/messages', json: self.body_for(params, false))
+    let res = @http.post('/messages', json: @body_for(params, false))
     if !res.ok {
       throw err.llm_api_error(res.status, PROVIDER,
                               api_error.explain(PROVIDER, res))
@@ -57,7 +57,7 @@ class AnthropicModel {
   # is what reads it either way.
   do_stream(params, on_text) {
     let turn = AnthropicStream(on_text)
-    let res = self.http.post('/messages', json: self.body_for(params, true),
+    let res = @http.post('/messages', json: @body_for(params, true),
                              events: |e| turn.take(e))
     # A refusal is not an event stream, so its body is still in `res.body`.
     if !res.ok {
@@ -82,7 +82,7 @@ class AnthropicModel {
     let history = clean.clean_messages(params.messages)
 
     mut body = {
-      model: self.model_id,
+      model: @model_id,
       system: system_blocks(params.messages),
       # This format requires a ceiling, so upstream supplies one when the
       # caller does not. The other format does not require it, and upstream
@@ -223,17 +223,17 @@ fn call_of(b) {
 # format's blocks at the end, so that what `finish` answers is exactly a
 # non-streaming body.
 class AnthropicStream {
-  new(.on_text) {
-    self.events = 0
-    self.blocks = []
-    self.stop_reason = nil
-    self.sent = 0
-    self.received = 0
-    self.failure = nil
+  new(@on_text) {
+    @events = 0
+    @blocks = []
+    @stop_reason = nil
+    @sent = 0
+    @received = 0
+    @failure = nil
   }
 
   take(event) {
-    self.events += 1
+    @events += 1
     # A frame that will not parse is not worth ending the turn over: the next
     # one usually carries the same content, and the stream says when it broke.
     let payload = try {
@@ -245,30 +245,30 @@ class AnthropicStream {
 
     let kind = payload.type
     if kind == 'message_start' {
-      self.open(payload)
+      @open(payload)
     } else if kind == 'content_block_start' {
-      self.open_block(payload)
+      @open_block(payload)
     } else if kind == 'content_block_delta' {
-      self.grow_block(payload)
+      @grow_block(payload)
     } else if kind == 'message_delta' {
-      self.close(payload)
+      @close(payload)
     } else if kind == 'error' {
       # Kept rather than raised here: `read_reply` already knows what to do
       # with a body that is an error in place of a turn.
-      self.failure = payload
+      @failure = payload
     }
     nil
   }
 
   open(payload) {
     let usage = (payload.message ?? {}).usage ?? {}
-    self.sent = usage.input_tokens ?? 0
-    self.received = usage.output_tokens ?? 0
+    @sent = usage.input_tokens ?? 0
+    @received = usage.output_tokens ?? 0
   }
 
   open_block(payload) {
     let block = payload.content_block ?? {}
-    self.put(payload.index ?? 0, {
+    @put(payload.index ?? 0, {
       kind: block.type ?? 'text',
       id: block.id,
       name: block.name,
@@ -282,7 +282,7 @@ class AnthropicStream {
   }
 
   grow_block(payload) {
-    let block = self.at(payload.index ?? 0)
+    let block = @at(payload.index ?? 0)
     return nil if block == nil
 
     let delta = payload.delta ?? {}
@@ -292,8 +292,8 @@ class AnthropicStream {
       block.text = block.text + said
       # The one place a piece leaves this class as it arrives, rather than at
       # the end: what the model is saying, to whoever is watching it be said.
-      if self.on_text != nil && !said.empty() {
-        self.on_text(said)
+      if @on_text != nil && !said.empty() {
+        @on_text(said)
       }
     } else if kind == 'thinking_delta' {
       block.text = block.text + (delta.thinking ?? '')
@@ -306,30 +306,30 @@ class AnthropicStream {
   }
 
   close(payload) {
-    self.stop_reason = (payload.delta ?? {}).stop_reason ?? self.stop_reason
+    @stop_reason = (payload.delta ?? {}).stop_reason ?? @stop_reason
     # The final count. What `message_start` carried was the count so far.
-    self.received = (payload.usage ?? {}).output_tokens ?? self.received
+    @received = (payload.usage ?? {}).output_tokens ?? @received
   }
 
   # Blocks are numbered, and nothing says they arrive in order.
   put(index, block) {
-    while self.blocks.size() <= index {
-      self.blocks.push(nil)
+    while @blocks.size() <= index {
+      @blocks.push(nil)
     }
-    self.blocks[index] = block
+    @blocks[index] = block
   }
 
   at(index) {
-    index >= 0 && index < self.blocks.size() ? self.blocks[index] : nil
+    index >= 0 && index < @blocks.size() ? @blocks[index] : nil
   }
 
   # The body the non-streaming endpoint would have sent.
   finish() {
-    return self.failure if self.failure != nil
+    return @failure if @failure != nil
     {
-      content: self.blocks.filter(|b| b != nil).map(|b| block_of(b)),
-      stop_reason: self.stop_reason,
-      usage: {input_tokens: self.sent, output_tokens: self.received},
+      content: @blocks.filter(|b| b != nil).map(|b| block_of(b)),
+      stop_reason: @stop_reason,
+      usage: {input_tokens: @sent, output_tokens: @received},
     }
   }
 }

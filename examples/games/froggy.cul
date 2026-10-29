@@ -95,19 +95,19 @@ class Frog {
   energy = -1
 
   draw(s, off) {
-    if self.energy > 0 {
-      output(s, off, self.y, self.x, "😱")
-      self.energy -= 1
-    } else if self.bonus > 0 {
-      output(s, off, self.y, self.x, "👀")
-      self.bonus -= 1
+    if @energy > 0 {
+      output(s, off, @y, @x, "😱")
+      @energy -= 1
+    } else if @bonus > 0 {
+      output(s, off, @y, @x, "👀")
+      @bonus -= 1
     } else {
-      output(s, off, self.y, self.x, "🐸")
+      output(s, off, @y, @x, "🐸")
     }
   }
   move(dx, dy) {
-    self.x = Math.clamp(self.x + dx, 0, COLS - 1)
-    self.y = Math.clamp(self.y + dy, 0, ROWS - 1)
+    @x = Math.clamp(@x + dx, 0, COLS - 1)
+    @y = Math.clamp(@y + dy, 0, ROWS - 1)
   }
   move_by_key(key) {
     let (dx, dy) = match key {
@@ -117,30 +117,30 @@ class Frog {
       "down"  | "j" => (0, 1),
       _ => (0, 0),
     }
-    self.move(dx, dy)
+    @move(dx, dy)
   }
   eat() {
-    if self.energy == -1 {
-      if self.bonus == 0 {
-        self.bonus = 50
+    if @energy == -1 {
+      if @bonus == 0 {
+        @bonus = 50
       }
     } else {
-      self.bonus = 0
-      self.energy = -1
+      @bonus = 0
+      @energy = -1
     }
   }
   eaten() {
-    self.energy = 50 if self.energy == -1
+    @energy = 50 if @energy == -1
   }
   alive() {
-    self.energy != 0
+    @energy != 0
   }
 }
 
 class Food {
   food_index = 0
 
-  new(.foods, .speed, .score) {
+  new(@foods, @speed, @score) {
     # `self` is immutable inside a constructor, so settle away from the board
     # centre first and assign each field once.
     let (
@@ -148,55 +148,55 @@ class Food {
       x,
       y,
     ) = settle(to_float(to_long(Time.now().unix()) % 1000 * 10000), speed, 4.0)
-    self.base = base
-    self.x = x
-    self.y = y
+    @base = base
+    @x = x
+    @y = y
   }
   draw(s, off) {
-    output(s, off, self.y, self.x, self.foods[self.food_index])
+    output(s, off, @y, @x, @foods[@food_index])
   }
   move(s) {
-    let (x, y) = self.next_pos()
-    self.x = x
-    self.y = y
-    self.base += 1.0
+    let (x, y) = @next_pos()
+    @x = x
+    @y = y
+    @base += 1.0
   }
   eaten() {
-    if self.food_index < self.foods.size() {
-      self.food_index += 1
-      self.base += 100000.0
+    if @food_index < @foods.size() {
+      @food_index += 1
+      @base += 100000.0
     }
   }
   remaining() {
-    self.foods.size() - self.food_index
+    @foods.size() - @food_index
   }
   next_pos() {
-    noise_pos(self.base, self.speed)
+    noise_pos(@base, @speed)
   }
 }
 
 class Enemy {
-  new(.emoji, .speed) {
+  new(@emoji, @speed) {
     let (
       base,
       x,
       y,
     ) = settle(to_float(to_long(Time.now().unix()) % 1000), speed, 6.0)
-    self.base = base
-    self.x = x
-    self.y = y
+    @base = base
+    @x = x
+    @y = y
   }
   draw(s, off) {
-    output(s, off, self.y, self.x, self.emoji)
+    output(s, off, @y, @x, @emoji)
   }
   move(s) {
-    let (x, y) = self.next_pos()
-    self.x = x
-    self.y = y
-    self.base += 1.0
+    let (x, y) = @next_pos()
+    @x = x
+    @y = y
+    @base += 1.0
   }
   next_pos() {
-    noise_pos(self.base, self.speed)
+    noise_pos(@base, @speed)
   }
 }
 

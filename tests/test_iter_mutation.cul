@@ -68,7 +68,7 @@ assert_eq(dst.b, 2)
 # 7. A removed key is skipped on a class instance too, where the class has a
 #    method of the key's name.
 class Named {
-  new(.x) {}
+  new(@x) {}
   label() {
     'method'
   }

@@ -9,41 +9,41 @@
 let _priority_queue_module = fn () {
   class PriorityQueue {
     new(*, key: Function | Nil = nil, reverse: Bool = false) {
-      self._heap = []
-      self._key = key
-      self._reverse = reverse
+      @_heap = []
+      @_key = key
+      @_reverse = reverse
     }
 
     size() {
-      self._heap.size()
+      @_heap.size()
     }
     empty() {
-      self._heap.empty()
+      @_heap.empty()
     }
 
     # Heap-array order is not priority order, so echoing `_heap` here
     # (the default formatter's fallback) would mislead more than help.
     __str__() {
-      "PriorityQueue(size={self.size()})"
+      "PriorityQueue(size={@size()})"
     }
 
     _less(a, b) {
-      let ka = self._key == nil ? a : self._key(a)
-      let kb = self._key == nil ? b : self._key(b)
-      self._reverse ? kb < ka : ka < kb
+      let ka = @_key == nil ? a : @_key(a)
+      let kb = @_key == nil ? b : @_key(b)
+      @_reverse ? kb < ka : ka < kb
     }
 
     _swap(i, j) {
-      (self._heap[i], self._heap[j]) = (self._heap[j], self._heap[i])
+      (@_heap[i], @_heap[j]) = (@_heap[j], @_heap[i])
     }
 
     push(x) {
-      self._heap.push(x)
-      let mut i = self._heap.size() - 1
+      @_heap.push(x)
+      let mut i = @_heap.size() - 1
       while i > 0 {
         let parent = (i - 1) / 2
-        if self._less(self._heap[i], self._heap[parent]) {
-          self._swap(i, parent)
+        if @_less(@_heap[i], @_heap[parent]) {
+          @_swap(i, parent)
           i = parent
         } else {
           break
@@ -52,38 +52,38 @@ let _priority_queue_module = fn () {
     }
 
     peek() {
-      return nil if self.empty()
-      self._heap[0]
+      return nil if @empty()
+      @_heap[0]
     }
 
     pop() {
-      return nil if self.empty()
-      let top = self._heap[0]
-      let last = self._heap.pop()
-      if !self._heap.empty() {
-        self._heap[0] = last
-        self._sift_down(0)
+      return nil if @empty()
+      let top = @_heap[0]
+      let last = @_heap.pop()
+      if !@_heap.empty() {
+        @_heap[0] = last
+        @_sift_down(0)
       }
       top
     }
 
     _sift_down(start) {
       let mut i = start
-      let n = self._heap.size()
+      let n = @_heap.size()
       while true {
         let l = i * 2 + 1
         let r = i * 2 + 2
         let mut smallest = i
-        if l < n && self._less(self._heap[l], self._heap[smallest]) {
+        if l < n && @_less(@_heap[l], @_heap[smallest]) {
           smallest = l
         }
-        if r < n && self._less(self._heap[r], self._heap[smallest]) {
+        if r < n && @_less(@_heap[r], @_heap[smallest]) {
           smallest = r
         }
         if smallest == i {
           break
         }
-        self._swap(i, smallest)
+        @_swap(i, smallest)
         i = smallest
       }
     }

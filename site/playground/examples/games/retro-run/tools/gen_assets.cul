@@ -373,9 +373,9 @@ let MARK = Canvas.rgba(255, 255, 255)
 # pixels at the end — that is where the pixel-art grid comes from. A wrapping
 # grid folds x modulo its width, so a scrolling layer's shapes meet themselves.
 class Cells {
-  new(.w, .h, .wrap = false) {
-    self.k = repeat(w * h, 0)
-    self.scratch = nil
+  new(@w, @h, @wrap = false) {
+    @k = repeat(w * h, 0)
+    @scratch = nil
   }
 
   id(key) {
@@ -385,18 +385,18 @@ class Cells {
   get(x, y) {
     mut xi = x.to_long()
     let yi = y.to_long()
-    xi = Math.wrap(xi, self.w) if self.wrap
-    xi >= 0 && xi < self.w && yi >= 0 && yi < self.h
-      ? self.k[yi * self.w + xi]
+    xi = Math.wrap(xi, @w) if @wrap
+    xi >= 0 && xi < @w && yi >= 0 && yi < @h
+      ? @k[yi * @w + xi]
       : 0
   }
 
   set(x, y, key) {
     mut xi = x.to_long()
     let yi = y.to_long()
-    xi = Math.wrap(xi, self.w) if self.wrap
-    if xi >= 0 && xi < self.w && yi >= 0 && yi < self.h {
-      self.k[yi * self.w + xi] = self.id(key)
+    xi = Math.wrap(xi, @w) if @wrap
+    if xi >= 0 && xi < @w && yi >= 0 && yi < @h {
+      @k[yi * @w + xi] = @id(key)
     }
   }
 
@@ -405,14 +405,14 @@ class Cells {
     let xi = x.to_long()
     let yi = y.to_long()
     let th = (BAYER[Math.wrap(yi, 4) * 4 + Math.wrap(xi, 4)] + 0.5) / 16.0
-    self.set(xi, yi, t > th ? key_b : key_a)
+    @set(xi, yi, t > th ? key_b : key_a)
   }
 
   rect(x, y, w, h, key) {
     let xs = x.to_long()..(x + w).to_long()
     let ys = y.to_long()..(y + h).to_long()
     for (xx, yy) in grid(xs, ys) {
-      self.set(xx, yy, key)
+      @set(xx, yy, key)
     }
   }
 
@@ -421,7 +421,7 @@ class Cells {
     let xs = x.to_long()..(x + w).to_long()
     let ys = y.to_long()..(y + h).to_long()
     for (xx, yy) in grid(xs, ys) {
-      self.set(xx, yy, (xx / size + yy / size) % 2 == 0 ? key_a : key_b)
+      @set(xx, yy, (xx / size + yy / size) % 2 == 0 ? key_a : key_b)
     }
   }
 
@@ -438,7 +438,7 @@ class Cells {
       let [p1, b] = stops[i + 1]
       let f = Math.clamp((t - p0) / Math.max(0.0001, p1 - p0), 0.0, 1.0)
       for xx in x.to_long()..(x + w).to_long() {
-        self.mix(xx, yy, a, b, f)
+        @mix(xx, yy, a, b, f)
       }
     }
   }
@@ -452,27 +452,27 @@ class Cells {
       continue if Math.abs(dy) > 1
       let half = rx * Math.sqrt(1 - dy * dy)
       for xx in (cx - half).to_long()..=(cx + half).to_long() {
-        self.set(xx, yy, key)
+        @set(xx, yy, key)
       }
     }
   }
 
   circle(cx, cy, r, key) {
-    self.ellipse(cx, cy, r, r, key)
+    @ellipse(cx, cy, r, r, key)
   }
 
   # Shapes the Canvas rasterises for us — polygons, lines, text — are drawn
   # into a scratch sprite and copied back as keys. `draw` runs with the
   # scratch as the draw target; (x0, y0)-(x1, y1) bounds what it touched.
   raster(x0, y0, x1, y1, key, draw) {
-    self.scratch ??= Canvas.Sprite.blank(self.w, self.h)
-    let xs = Math.max(0, x0.to_long())..Math.min(self.w, x1.to_long() + 1)
-    let ys = Math.max(0, y0.to_long())..Math.min(self.h, y1.to_long() + 1)
-    Canvas.draw_to(self.scratch, fn () {
+    @scratch ??= Canvas.Sprite.blank(@w, @h)
+    let xs = Math.max(0, x0.to_long())..Math.min(@w, x1.to_long() + 1)
+    let ys = Math.max(0, y0.to_long())..Math.min(@h, y1.to_long() + 1)
+    Canvas.draw_to(@scratch, fn () {
       Canvas.clear(0)
       draw()
       for (x, y) in grid(xs, ys) {
-        self.set(x, y, key) if Canvas.get_pixel(x, y) != 0
+        @set(x, y, key) if Canvas.get_pixel(x, y) != 0
       }
     })
   }
@@ -490,16 +490,16 @@ class Cells {
       .filter(|(i, _)| i % 2 == 1)
       .map(|(_, v)| v)
       .collect()
-    let shifts = self.wrap ? [0, -self.w, self.w] : [0]
+    let shifts = @wrap ? [0, -@w, @w] : [0]
     for dx in shifts {
       let x0 = xs.min() + dx
       let x1 = xs.max() + dx
-      continue if x1 < 0 || x0 >= self.w
+      continue if x1 < 0 || x0 >= @w
       let pts = points
         .enumerate()
         .map(|(i, v)| i % 2 == 0 ? v + dx : v)
         .collect()
-      self.raster(x0, ys.min(), x1, ys.max(), key, || Canvas.polygon(pts, MARK))
+      @raster(x0, ys.min(), x1, ys.max(), key, || Canvas.polygon(pts, MARK))
     }
   }
 
@@ -507,12 +507,12 @@ class Cells {
   # straight to the Canvas).
   line(x1, y1, x2, y2, key, thick = 1) {
     if thick <= 1 {
-      let shifts = self.wrap ? [0, -self.w, self.w] : [0]
+      let shifts = @wrap ? [0, -@w, @w] : [0]
       for dx in shifts {
         let lo = Math.min(x1, x2) + dx
         let hi = Math.max(x1, x2) + dx
-        continue if hi < 0 || lo >= self.w
-        self.raster(
+        continue if hi < 0 || lo >= @w
+        @raster(
           lo,
           Math.min(y1, y2),
           hi,
@@ -528,7 +528,7 @@ class Cells {
     let len = Math.max(0.001, Math.sqrt(dx * dx + dy * dy))
     let px = -dy / len * thick / 2.0
     let py = dx / len * thick / 2.0
-    self.poly(
+    @poly(
       [x1 + px, y1 + py, x2 + px, y2 + py, x2 - px, y2 - py, x1 - px, y1 - py],
       key,
     )
@@ -537,7 +537,7 @@ class Cells {
   # The built-in 8x8 font, one cell per font pixel (times `scale`).
   text(s, x, y, key, scale = 1) {
     let w = Canvas.text_width(s, scale)
-    self.raster(
+    @raster(
       x,
       y,
       x + w,
@@ -550,54 +550,54 @@ class Cells {
   # One-cell border around everything drawn so far. Runs on a copy so the
   # border doesn't grow into itself.
   outline(key = "INK") {
-    let src = self.k.slice(0, self.k.size())
+    let src = @k.slice(0, @k.size())
     let kid = KEY_ID[key]
-    for (x, y) in grid(0..self.w, 0..self.h) {
-      continue if src[y * self.w + x] != 0
+    for (x, y) in grid(0..@w, 0..@h) {
+      continue if src[y * @w + x] != 0
       mut touching = false
       for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
         let nx = x + dx
         let ny = y + dy
-        if nx >= 0 && nx < self.w && ny >= 0 && ny < self.h {
-          let v = src[ny * self.w + nx]
+        if nx >= 0 && nx < @w && ny >= 0 && ny < @h {
+          let v = src[ny * @w + nx]
           if v != 0 && v != kid {
             touching = true
             break
           }
         }
       }
-      self.k[y * self.w + x] = kid if touching
+      @k[y * @w + x] = kid if touching
     }
   }
 
   # Shift every row above `pivot` sideways by `k` cells per row of height —
   # a car leaning into a turn.
   shear(pivot, k) {
-    let src = self.k.slice(0, self.k.size())
-    for (x, y) in grid(0..self.w, 0..self.h) {
+    let src = @k.slice(0, @k.size())
+    for (x, y) in grid(0..@w, 0..@h) {
       let d = y < pivot ? Math.round((pivot - y) * k) : 0
       let sx = x - d
-      self.k[y * self.w + x] = sx >= 0 && sx < self.w ? src[y * self.w + sx] : 0
+      @k[y * @w + x] = sx >= 0 && sx < @w ? src[y * @w + sx] : 0
     }
   }
 
   # Replace every cell holding `from` (or in `froms`) that the predicate
   # accepts — the way facets and textures get their tone after the fact.
   recolor(froms, f) {
-    let ids = froms.map(|k| self.id(k)).to_set()
-    for (x, y) in grid(0..self.w, 0..self.h) {
-      let v = self.k[y * self.w + x]
+    let ids = froms.map(|k| @id(k)).to_set()
+    for (x, y) in grid(0..@w, 0..@h) {
+      let v = @k[y * @w + x]
       continue if !ids.contains(v)
       let nk = f(x, y, v)
-      self.k[y * self.w + x] = self.id(nk) if nk != nil
+      @k[y * @w + x] = @id(nk) if nk != nil
     }
   }
 }
 
 # A full-resolution buffer of palette keys — the atlas under construction.
 class KeyImage {
-  new(.w, .h) {
-    self.k = repeat(w * h, 0)
+  new(@w, @h) {
+    @k = repeat(w * h, 0)
   }
 
   # Expand `cells` by `scale` and drop it at (x, y), cropped to w x h.
@@ -606,12 +606,12 @@ class KeyImage {
       let cy = py / scale
       break if cy >= cells.h
       let row = cy * cells.w
-      let base = (y + py) * self.w + x
+      let base = (y + py) * @w + x
       for px in 0..w {
         let cx = px / scale
         break if cx >= cells.w
         let v = cells.k[row + cx]
-        self.k[base + px] = v if v != 0
+        @k[base + px] = v if v != 0
       }
     }
   }

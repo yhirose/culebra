@@ -354,6 +354,22 @@
         {
           "type": "STRING",
           "value": "__ARGS__"
+        },
+        {
+          "type": "TOKEN",
+          "content": {
+            "type": "SEQ",
+            "members": [
+              {
+                "type": "STRING",
+                "value": "@"
+              },
+              {
+                "type": "PATTERN",
+                "value": "[A-Za-z_][A-Za-z0-9_]*"
+              }
+            ]
+          }
         }
       ]
     },

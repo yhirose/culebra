@@ -15,7 +15,7 @@ class SceLive {
 }
 # No `drop`, so a scope's exit leaves the cycle to the collector.
 class SceNode {
-  new(.held) {
+  new(@held) {
     self.me = nil
   }
 }

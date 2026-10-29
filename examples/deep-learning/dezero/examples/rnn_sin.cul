@@ -25,16 +25,16 @@ loader = DL.SeqDataLoader(train_set, BATCH_SIZE)
 
 class LSTMRegressor {
   new(hidden_size) {
-    self.rnn = L.LSTM(hidden_size)
-    self.fc = L.Linear(1)
+    @rnn = L.LSTM(hidden_size)
+    @fc = L.Linear(1)
   }
 
   __call__(x) {
-    self.fc(self.rnn(x))
+    @fc(@rnn(x))
   }
 
   reset_state() {
-    self.rnn.reset_state()
+    @rnn.reset_state()
   }
 
   cleargrads() {
@@ -42,7 +42,7 @@ class LSTMRegressor {
   }
 
   params() {
-    self.rnn.params() + self.fc.params()
+    @rnn.params() + @fc.params()
   }
 }
 

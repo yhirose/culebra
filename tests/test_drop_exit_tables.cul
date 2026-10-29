@@ -14,7 +14,7 @@
 
 mut dxt_drops = 0
 class DxtGuard {
-  new(.n) {}
+  new(@n) {}
   label() {
     "guard {self.n}"
   }
@@ -24,7 +24,7 @@ class DxtGuard {
   }
 }
 class DxtSquare {
-  new(.side) {}
+  new(@side) {}
   dxt_area() {
     self.side * self.side
   }
@@ -69,7 +69,7 @@ let dxt_worker = Isolate.spawn(fn () {
     }
   }
   class DxtThing {
-    new(.id) {}
+    new(@id) {}
     dxt_id() {
       self.id
     }

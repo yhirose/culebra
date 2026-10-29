@@ -84,8 +84,8 @@ show('named kwrest', || named_kw(1, k: 2))
 show('named splat', || named_kw(**{a: 3, k: 4}))
 class K {
   new(a, **opts) {
-    self.a = a
-    self.o = opts
+    @a = a
+    @o = opts
   }
   m(*, q = 1) { q }
 }
@@ -104,10 +104,10 @@ show('thunk needs arg', || {a: 1}.get_or_put('z', |k| k))
 # --- generics are documentation ---
 class Cell<T> {
   new(v: T) {
-    self.v = v
+    @v = v
   }
   new(a: T, b: T) {
-    self.v = a + b
+    @v = a + b
   }
 }
 show('generic one', || Cell(7).v)
@@ -131,8 +131,8 @@ show('fmt bool', || "{true:>6}|")
 @derive(Eq, Hash, Comparable)
 class Point {
   new(x, y) {
-    self.x = x
-    self.y = y
+    @x = x
+    @y = y
   }
 }
 let pa = Point.new(1, 2)
@@ -144,28 +144,28 @@ show('derive hash set', || {pa, pb, pc}.size())
 show('derive key', fn () { mut bag = {}; mut bag[pa] = 'hit'; bag[pb] })
 show('derive cmp other', || pa < 5)
 class Mod3 {
-  new(n) { self.n = n }
-  eq(other) { self.n % 3 == other.n % 3 }
+  new(n) { @n = n }
+  eq(other) { @n % 3 == other.n % 3 }
 }
 show('eq method', || [Mod3(1) == Mod3(4), Mod3(1) == Mod3(2), Mod3(1) != Mod3(2)])
 class Rev {
-  new(n) { self.n = n }
-  cmp(other) { other.n - self.n }
+  new(n) { @n = n }
+  cmp(other) { other.n - @n }
 }
 show('cmp method', || [Rev(1) < Rev(2), Rev(2) < Rev(1), Rev(1) >= Rev(2)])
 class Plain {
-  new(n) { self.n = n }
+  new(n) { @n = n }
 }
 show_at('plain lt', || Plain(1) < Plain(2))
 @derive(Hash)
 class OnlyHash {
-  new(x) { self.x = x }
+  new(x) { @x = x }
 }
 show('only hash set', || Set(OnlyHash(1), OnlyHash(1)).size())
 class WithHash {
-  new(x) { self.x = x }
-  hash() { self.x }
-  eq(o) { self.x == o.x }
+  new(x) { @x = x }
+  hash() { @x }
+  eq(o) { @x == o.x }
 }
 show('hash+eq methods set', || Set(WithHash(1), WithHash(1)).size())
 show('fresh bound wrapper', fn () { let obj = {m: fn () { self }}; obj.m == obj.m })

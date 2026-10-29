@@ -68,6 +68,8 @@ syn keyword culBuiltin     PEG FST Search Range Set LLM
 
 " Conventional identifiers that aren't grammar keywords.
 syn keyword culSelf         self __ARGS__
+" `@name` is `self.name`: the `@` reads as `self`.
+syn match   culSelf         /@\ze[A-Za-z_]/
 
 " Capitalized identifiers the culBuiltin list did not claim: names declared in
 " the program itself (classes, traits, enums and their variants). Coloured as

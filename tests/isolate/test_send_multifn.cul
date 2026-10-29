@@ -17,7 +17,7 @@ assert_eq(rt_back(1), "long")
 assert_eq(rt_kind("s"), "str")
 
 class RtP {
-  new(.v) {}
+  new(@v) {}
   f(x: Long) {
     "long"
   }
@@ -82,7 +82,7 @@ assert_eq(same_kind("s"), "str")
 
 # --- Parallel: the function and every item into one worker -------------------
 class PlP {
-  new(.v) {}
+  new(@v) {}
   f(x: Long) {
     "long"
   }

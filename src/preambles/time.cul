@@ -39,28 +39,28 @@ let _time_module = fn () {
   }
   class Duration {
     new(nanos) {
-      self._nanos = nanos
+      @_nanos = nanos
     }
     seconds() {
-      to_float(self._nanos) / 1000000000.0
+      to_float(@_nanos) / 1000000000.0
     }
     milliseconds() {
-      to_float(self._nanos) / 1000000.0
+      to_float(@_nanos) / 1000000.0
     }
     minutes() {
-      self.seconds() / 60.0
+      @seconds() / 60.0
     }
     hours() {
-      self.seconds() / 3600.0
+      @seconds() / 3600.0
     }
     days() {
-      self.seconds() / 86400.0
+      @seconds() / 86400.0
     }
     abs() {
-      if self._nanos < 0 {
+      if @_nanos < 0 {
         -self
       } else {
-        Duration.new(self._nanos)
+        Duration.new(@_nanos)
       }
     }
     __add__(o) {
@@ -68,67 +68,67 @@ let _time_module = fn () {
         d: Duration => d._nanos,
       }
       _type_error("Duration", o) if n == nil
-      Duration.new(_add_ns(self._nanos, n))
+      Duration.new(_add_ns(@_nanos, n))
     }
     __sub__(o) {
       let n = match o {
         d: Duration => d._nanos,
       }
       _type_error("Duration", o) if n == nil
-      Duration.new(_sub_ns(self._nanos, n))
+      Duration.new(_sub_ns(@_nanos, n))
     }
     __mul__(n) {
-      Duration.new(_scale_ns(n, self._nanos))
+      Duration.new(_scale_ns(n, @_nanos))
     }
     __div__(n) {
       Duration.new(match n {
         i: Long => {
-          _out_of_range() if i == -1 && self._nanos == _long_min
-          self._nanos / i
+          _out_of_range() if i == -1 && @_nanos == _long_min
+          @_nanos / i
         },
-        f: Float => _float_ns(to_float(self._nanos) / f),
+        f: Float => _float_ns(to_float(@_nanos) / f),
         _ => _type_error("Long or Float", n),
       })
     }
     __neg__() {
-      Duration.new(_sub_ns(0, self._nanos))
+      Duration.new(_sub_ns(0, @_nanos))
     }
     __lt__(o) {
       let n = match o {
         d: Duration => d._nanos,
       }
       _type_error("Duration", o) if n == nil
-      self._nanos < n
+      @_nanos < n
     }
     __le__(o) {
       let n = match o {
         d: Duration => d._nanos,
       }
       _type_error("Duration", o) if n == nil
-      self._nanos <= n
+      @_nanos <= n
     }
     __eq__(o) {
       let n = match o {
         d: Duration => d._nanos,
       }
-      n != nil && self._nanos == n
+      n != nil && @_nanos == n
     }
   }
   class Instant {
     new(nanos) {
-      self._nanos = nanos
+      @_nanos = nanos
     }
     iso(utc = true) {
-      _Time.iso_nanos(self._nanos, utc)
+      _Time.iso_nanos(@_nanos, utc)
     }
     format(fmt, utc = false) {
-      _Time.format_nanos(self._nanos, fmt, utc)
+      _Time.format_nanos(@_nanos, fmt, utc)
     }
     parts(utc = false) {
-      _Time.parts_nanos(self._nanos, utc)
+      _Time.parts_nanos(@_nanos, utc)
     }
     weekday(utc = false) {
-      _Time.weekday_nanos(self._nanos, utc)
+      _Time.weekday_nanos(@_nanos, utc)
     }
     add(
       years = 0,
@@ -140,7 +140,7 @@ let _time_module = fn () {
       utc = false,
     ) {
       Instant.new(_Time.add_nanos(
-        self._nanos,
+        @_nanos,
         years,
         months,
         days,
@@ -151,25 +151,25 @@ let _time_module = fn () {
       ))
     }
     start_of(unit, utc = false) {
-      Instant.new(_Time.start_of_nanos(self._nanos, unit, utc))
+      Instant.new(_Time.start_of_nanos(@_nanos, unit, utc))
     }
     unix() {
-      to_float(self._nanos) / 1000000000.0
+      to_float(@_nanos) / 1000000000.0
     }
     unix_nanos() {
-      self._nanos
+      @_nanos
     }
     __add__(o) {
       let n = match o {
         d: Duration => d._nanos,
       }
       _type_error("Duration", o) if n == nil
-      Instant.new(_add_ns(self._nanos, n))
+      Instant.new(_add_ns(@_nanos, n))
     }
     __sub__(o) {
       let r = match o {
-        d: Duration => Instant.new(_sub_ns(self._nanos, d._nanos)),
-        i: Instant => Duration.new(_sub_ns(self._nanos, i._nanos)),
+        d: Duration => Instant.new(_sub_ns(@_nanos, d._nanos)),
+        i: Instant => Duration.new(_sub_ns(@_nanos, i._nanos)),
       }
       _type_error("Duration or Instant", o) if r == nil
       r
@@ -179,20 +179,20 @@ let _time_module = fn () {
         i: Instant => i._nanos,
       }
       _type_error("Instant", o) if n == nil
-      self._nanos < n
+      @_nanos < n
     }
     __le__(o) {
       let n = match o {
         i: Instant => i._nanos,
       }
       _type_error("Instant", o) if n == nil
-      self._nanos <= n
+      @_nanos <= n
     }
     __eq__(o) {
       let n = match o {
         i: Instant => i._nanos,
       }
-      n != nil && self._nanos == n
+      n != nil && @_nanos == n
     }
   }
   {

@@ -673,7 +673,7 @@ class PromotedLocals {
     for (size_t sym : order_)
       if (!slots_[sym].box.empty())
         return std::format(
-            "  @__lowered_storage\n  class {} {{\n    new(.v) {{}}\n  }}\n",
+            "  @__lowered_storage\n  class {} {{\n    new(@v) {{}}\n  }}\n",
             box_class_);
     return {};
   }

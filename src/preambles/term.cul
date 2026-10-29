@@ -336,13 +336,13 @@ let _term_module = fn () {
   # stays alloc-free (see clear()).
   class Screen {
     new() {
-      self._w = 0
-      self._h = 0
-      self._fw = 0
-      self._back = []
-      self._front = []
-      self._bstyle = []
-      self._fstyle = []
+      @_w = 0
+      @_h = 0
+      @_fw = 0
+      @_back = []
+      @_front = []
+      @_bstyle = []
+      @_fstyle = []
     }
     cols() {
       _Term.cols()
@@ -357,41 +357,41 @@ let _term_module = fn () {
       let w = _Term.cols()
       let h = _Term.rows()
       let n = w * h
-      self._w = w
-      self._h = h
+      @_w = w
+      @_h = h
       # Reuse the buffers on the common path (size unchanged); only reallocate
       # when the terminal was resized.
-      if self._back.size() == n {
+      if @_back.size() == n {
         for i in 0..n {
-          self._back[i] = " "
-          self._bstyle[i] = ""
+          @_back[i] = " "
+          @_bstyle[i] = ""
         }
       } else {
-        self._back = []
-        self._bstyle = []
+        @_back = []
+        @_bstyle = []
         for _ in 0..n {
-          self._back.push(" ")
-          self._bstyle.push("")
+          @_back.push(" ")
+          @_bstyle.push("")
         }
       }
       self
     }
     set(x, y, glyph, style = "") {
       let gs = to_string(glyph)  # graphemes()/slices yield StringView
-      if x >= 0 && x < self._w && y >= 0 && y < self._h {
-        let idx = y * self._w + x
-        self._back[idx] = gs
-        self._bstyle[idx] = style
-        if x + 1 < self._w {
+      if x >= 0 && x < @_w && y >= 0 && y < @_h {
+        let idx = y * @_w + x
+        @_back[idx] = gs
+        @_bstyle[idx] = style
+        if x + 1 < @_w {
           # "" marks the right half of a wide glyph, so it must be written and
           # taken back with its owner: a narrow glyph landing here frees the
           # cell the previous wide one held.
           if _Term.width(gs) == 2 {
-            self._back[idx + 1] = ""
-            self._bstyle[idx + 1] = style
-          } else if self._back[idx + 1] == "" {
-            self._back[idx + 1] = " "
-            self._bstyle[idx + 1] = style
+            @_back[idx + 1] = ""
+            @_bstyle[idx + 1] = style
+          } else if @_back[idx + 1] == "" {
+            @_back[idx + 1] = " "
+            @_bstyle[idx + 1] = style
           }
         }
       }
@@ -401,7 +401,7 @@ let _term_module = fn () {
       mut cx = x
       for g in s.graphemes() {
         let gs = to_string(g)
-        self.set(cx, y, gs, style)
+        @set(cx, y, gs, style)
         # Advance by the glyph's own display width, the same measure set() uses
         # to blank the continuation cell. Reading that cell back instead misses
         # the row offset and breaks whenever the draw was clipped.
@@ -417,39 +417,39 @@ let _term_module = fn () {
     # updates the front buffer. Empty when nothing changed. Returned (not
     # printed) so it is testable; flush() prints it.
     render() {
-      let n = self._w * self._h
+      let n = @_w * @_h
       mut out = ""
       # A reshape that keeps the cell count (80x24 -> 48x40) moves every cell to
       # a new column, so the width has to invalidate the front buffer too.
-      if self._front.size() != n || self._fw != self._w {
-        self._front = []
-        self._fstyle = []
+      if @_front.size() != n || @_fw != @_w {
+        @_front = []
+        @_fstyle = []
         for _ in 0..n {
-          self._front.push("\x00")
-          self._fstyle.push("")
+          @_front.push("\x00")
+          @_fstyle.push("")
         }  # force a full repaint
-        self._fw = self._w
+        @_fw = @_w
         out = "\x1b[2J"  # wipe stale content
       }
       mut cy = -1
       mut cx = -1
       mut pen = ""  # SGR currently applied at the terminal ("" = default)
-      for y in 0..self._h {
-        for x in 0..self._w {
-          let idx = y * self._w + x
-          let back = self._back[idx]
+      for y in 0..@_h {
+        for x in 0..@_w {
+          let idx = y * @_w + x
+          let back = @_back[idx]
           if back == "" {
-            self._front[idx] = ""
-            self._fstyle[idx] = self._bstyle[idx]
+            @_front[idx] = ""
+            @_fstyle[idx] = @_bstyle[idx]
           } else {
-            let st = self._bstyle[idx]
+            let st = @_bstyle[idx]
             # A wide glyph owns the cell to its right, so it is stale when that
             # cell shows anything but a continuation — an overlapping draw wrote
             # there last frame and only the owner can paint over it.
-            let half_lost = x + 1 < self._w &&
-              self._back[idx + 1] == "" &&
-              self._front[idx + 1] != ""
-            if back != self._front[idx] || st != self._fstyle[idx] || half_lost {
+            let half_lost = x + 1 < @_w &&
+              @_back[idx + 1] == "" &&
+              @_front[idx + 1] != ""
+            if back != @_front[idx] || st != @_fstyle[idx] || half_lost {
               if cy != y || cx != x {
                 out = out +
                   "\x1b[" +
@@ -464,18 +464,18 @@ let _term_module = fn () {
                 pen = st
               }
               out = out + back
-              self._front[idx] = back
-              self._fstyle[idx] = st
+              @_front[idx] = back
+              @_fstyle[idx] = st
               # Advance the tracked cursor by the glyph's real display width, the
               # same measure set() uses to blank the continuation cell. Keying off
               # the neighbour cell instead under-counts when overlapping draws have
               # since filled it, drifting cx and stranding a later cell's erase.
-              let wide = x + 1 < self._w && _Term.width(back) == 2
+              let wide = x + 1 < @_w && _Term.width(back) == 2
               cy = y
               if wide {
                 cx = x + 2
-                self._front[idx + 1] = ""
-                self._fstyle[idx + 1] = st
+                @_front[idx + 1] = ""
+                @_fstyle[idx + 1] = st
               } else {
                 cx = x + 1
               }
@@ -489,7 +489,7 @@ let _term_module = fn () {
       out
     }
     flush() {
-      IO.print(self.render())
+      IO.print(@render())
       _Term.flush()
       self
     }

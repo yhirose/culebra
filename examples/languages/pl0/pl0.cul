@@ -91,53 +91,53 @@ let grammar = `
 # is the whole of PL/0's scoping.
 
 class Scope {
-  new(.outer) {
-    self.consts = {}
-    self.vars = {}
-    self.procs = {}
+  new(@outer) {
+    @consts = {}
+    @vars = {}
+    @procs = {}
   }
 
   has(name) {
     cond {
-      self.consts.has(name) || self.vars.has(name) => true,
-      self.procs.has(name) => true,
-      self.outer != nil => self.outer.has(name),
+      @consts.has(name) || @vars.has(name) => true,
+      @procs.has(name) => true,
+      @outer != nil => @outer.has(name),
       _ => false,
     }
   }
 
   declare(kind, name, value, at) {
-    if self.has(name) {
+    if @has(name) {
       fail(at, "'{name}' is already defined")
     }
     match kind {
-      'const' => self.consts[name] = value,
-      'var' => self.vars[name] = nil,
-      'proc' => self.procs[name] = value,
+      'const' => @consts[name] = value,
+      'var' => @vars[name] = nil,
+      'proc' => @procs[name] = value,
     }
   }
 
   read(name, at) {
     cond {
-      self.consts.has(name) => self.consts[name],
-      self.vars.has(name) => self.read_var(name, at),
-      self.outer != nil => self.outer.read(name, at),
+      @consts.has(name) => @consts[name],
+      @vars.has(name) => @read_var(name, at),
+      @outer != nil => @outer.read(name, at),
       _ => fail(at, "undefined variable '{name}'"),
     }
   }
 
   # A variable declared but never assigned is an error, not a silent zero.
   read_var(name, at) {
-    self.vars[name] ?? fail(at, "uninitialized variable '{name}'")
+    @vars[name] ?? fail(at, "uninitialized variable '{name}'")
   }
 
   # Assignment finds the nearest scope that declares the name. Assigning to a
   # constant is an error in PL/0, not a rebinding.
   write(name, value, at) {
     cond {
-      self.consts.has(name) => fail(at, "cannot assign to constant '{name}'"),
-      self.vars.has(name) => self.vars[name] = value,
-      self.outer != nil => self.outer.write(name, value, at),
+      @consts.has(name) => fail(at, "cannot assign to constant '{name}'"),
+      @vars.has(name) => @vars[name] = value,
+      @outer != nil => @outer.write(name, value, at),
       _ => fail(at, "undefined variable '{name}'"),
     }
   }
@@ -146,8 +146,8 @@ class Scope {
   # has to enter through.
   procedure(name, at) {
     cond {
-      self.procs.has(name) => (self, self.procs[name]),
-      self.outer != nil => self.outer.procedure(name, at),
+      @procs.has(name) => (self, @procs[name]),
+      @outer != nil => @outer.procedure(name, at),
       _ => fail(at, "undefined procedure '{name}'"),
     }
   }

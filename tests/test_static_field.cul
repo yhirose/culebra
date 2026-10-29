@@ -199,7 +199,7 @@ test_static_field_own_class = fn () {
   let flat = said(fn () {
     @value
     class SfOwnFlat {
-      new(.x: Float, .y: Float) {}
+      new(@x: Float, @y: Float) {}
       static early = SfOwnFlat.new(note(1.0), note(2.0)).x
     }
   })
@@ -207,7 +207,7 @@ test_static_field_own_class = fn () {
   let flat_called = said(fn () {
     @value
     class SfOwnFlatCalled {
-      new(.x: Float, .y: Float) {}
+      new(@x: Float, @y: Float) {}
       static early = (|| SfOwnFlatCalled.new(1.0, 2.0).x)()
     }
   })
@@ -215,7 +215,7 @@ test_static_field_own_class = fn () {
 
   @value
   class SfOwnFlatLater {
-    new(.x: Float, .y: Float) {}
+    new(@x: Float, @y: Float) {}
     __add__(o) {
       SfOwnFlatLater.new(self.x + o.x, self.y + o.y)
     }

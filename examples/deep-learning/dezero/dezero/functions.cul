@@ -29,7 +29,7 @@ class Sin {
   }
 
   backward(gy) {
-    gy * cos(self.inputs[0])
+    gy * cos(@inputs[0])
   }
 }
 
@@ -48,7 +48,7 @@ class Cos {
   }
 
   backward(gy) {
-    gy * -sin(self.inputs[0])
+    gy * -sin(@inputs[0])
   }
 }
 
@@ -67,7 +67,7 @@ class Tanh {
   }
 
   backward(gy) {
-    y = self.output
+    y = @output
     gy * dz.sub(1.0, y * y)
   }
 }
@@ -87,7 +87,7 @@ class Exp {
   }
 
   backward(gy) {
-    gy * self.output
+    gy * @output
   }
 }
 
@@ -106,7 +106,7 @@ class Log {
   }
 
   backward(gy) {
-    gy / self.inputs[0]
+    gy / @inputs[0]
   }
 }
 
@@ -164,7 +164,7 @@ class Sigmoid {
   }
 
   backward(gy) {
-    y = self.output
+    y = @output
     gy * y * dz.sub(1.0, y)
   }
 }
@@ -205,7 +205,7 @@ class ReLU {
   }
 
   backward(gy) {
-    masked_gate(gy, self.inputs[0].data.gt(0.0))
+    masked_gate(gy, @inputs[0].data.gt(0.0))
   }
 }
 
@@ -219,20 +219,20 @@ class LeakyReLU {
   output = nil
   seen = -1
 
-  new(.slope = 0.2) {}
+  new(@slope = 0.2) {}
 
   forward(x) {
     dz.raw_elementwise(x, |v| if v > 0.0 {
       v
     } else {
-      v * self.slope
+      v * @slope
     })
   }
 
   backward(gy) {
     masked_gate(
       gy,
-      Tensor.where(self.inputs[0].data.gt(0.0), 1.0, self.slope),
+      Tensor.where(@inputs[0].data.gt(0.0), 1.0, @slope),
     )
   }
 }
@@ -247,7 +247,7 @@ class Softmax {
   output = nil
   seen = -1
 
-  new(.axis = 1) {}
+  new(@axis = 1) {}
 
   forward(x) {
     # `Tensor.softmax()` always normalizes over the last axis, and the
@@ -256,19 +256,19 @@ class Softmax {
     # normalized somewhere else with a matching-looking backward, so reject
     # it rather than return a silently wrong answer.
     last = x.shape().size() - 1
-    if self.axis != last {
+    if @axis != last {
       throw {
         kind: "ValueError",
-        message: "dezero: softmax(axis={self.axis}) on a rank-{last + 1} input -- Tensor.softmax normalizes the last axis only, so axis must be {last}",
+        message: "dezero: softmax(axis={@axis}) on a rank-{last + 1} input -- Tensor.softmax normalizes the last axis only, so axis must be {last}",
       }
     }
     x.softmax()
   }
 
   backward(gy) {
-    y = self.output
+    y = @output
     gx = y * gy
-    s = dz.sum(gx, self.axis, true)
+    s = dz.sum(gx, @axis, true)
     gx - y * s
   }
 }
@@ -295,15 +295,15 @@ class Clip {
   output = nil
   seen = -1
 
-  new(.x_min, .x_max) {}
+  new(@x_min, @x_max) {}
 
   forward(x) {
-    x.clamp(self.x_min, self.x_max)
+    x.clamp(@x_min, @x_max)
   }
 
   backward(gy) {
-    x_data = self.inputs[0].data
-    masked_gate(gy, x_data.ge(self.x_min) * x_data.le(self.x_max))
+    x_data = @inputs[0].data
+    masked_gate(gy, x_data.ge(@x_min) * x_data.le(@x_max))
   }
 }
 
@@ -322,7 +322,7 @@ class MeanSquaredError {
   }
 
   backward(gy) {
-    (x0, x1) = (self.inputs[0], self.inputs[1])
+    (x0, x1) = (@inputs[0], @inputs[1])
     diff = x0 - x1
     n = to_float(x0.shape[0])
     gy_bc = dz.broadcast_to(gy, diff.shape)
@@ -349,16 +349,16 @@ class SoftmaxCrossEntropy {
   output = nil
   seen = -1
 
-  new(.t) {}
+  new(@t) {}
 
   forward(x) {
     probs = x.softmax()
-    self.probs = probs
+    @probs = probs
     n = x.shape()[0]
     c = x.shape()[1]
-    self.n = n
-    onehot = Tensor.scatter_to_axis(Tensor.from(self.t), Tensor.ones(n), c)
-    self.onehot = onehot
+    @n = n
+    onehot = Tensor.scatter_to_axis(Tensor.from(@t), Tensor.ones(n), c)
+    @onehot = onehot
     # Clamping the whole row (not just the selected class) matters here:
     # unlike the old per-selected-element clamp, every class's log feeds the
     # masked sum below, so an unclamped near-zero probability elsewhere in
@@ -368,7 +368,7 @@ class SoftmaxCrossEntropy {
   }
 
   backward(gy) {
-    diff = (self.probs - self.onehot) * (1.0 / to_float(self.n))
+    diff = (@probs - @onehot) * (1.0 / to_float(@n))
     dz.as_variable(diff) * gy
   }
 }
@@ -387,26 +387,26 @@ class SigmoidCrossEntropy {
   output = nil
   seen = -1
 
-  new(.t) {}
+  new(@t) {}
 
   forward(x) {
     p = x.sigmoid()
-    self.p = p
-    n = self.t.size()
+    @p = p
+    n = @t.size()
     rows = p.to_array()  # forces eval, so no separate Tensor.eval needed
     mut total = 0.0
     for i in range(n) {
       pi = Math.clamp(rows[i][0], 1.0e-7, 1.0 - 1.0e-7)
-      ti = self.t[i]
+      ti = @t[i]
       total -= ti * Math.log(pi) + (1.0 - ti) * Math.log(1.0 - pi)
     }
     Tensor.from([total / to_float(n)])
   }
 
   backward(gy) {
-    n = self.t.size()
-    tcol = Tensor.from(self.t.map(|v| [v]))
-    diff = (self.p - tcol) * (1.0 / to_float(n))
+    n = @t.size()
+    tcol = Tensor.from(@t.map(|v| [v]))
+    diff = (@p - tcol) * (1.0 / to_float(n))
     dz.as_variable(diff) * gy
   }
 }
@@ -450,23 +450,23 @@ class Dropout {
   output = nil
   seen = -1
 
-  new(.dropout_ratio = 0.5) {}
+  new(@dropout_ratio = 0.5) {}
 
   forward(x) {
-    if dz.is_training() && self.dropout_ratio > 0.0 {
-      self.mask = bernoulli_keep_mask(x.shape(), self.dropout_ratio)
-      x * self.mask
+    if dz.is_training() && @dropout_ratio > 0.0 {
+      @mask = bernoulli_keep_mask(x.shape(), @dropout_ratio)
+      x * @mask
     } else {
-      self.mask = nil
+      @mask = nil
       x
     }
   }
 
   backward(gy) {
-    if self.mask == nil {
+    if @mask == nil {
       gy
     } else {
-      gy * dz.as_variable(self.mask)
+      gy * dz.as_variable(@mask)
     }
   }
 }
@@ -487,17 +487,17 @@ class EmbedID {
   output = nil
   seen = -1
 
-  new(.idx) {
-    self.idx_tensor = Tensor.from(idx.map(to_float))
+  new(@idx) {
+    @idx_tensor = Tensor.from(idx.map(to_float))
   }
 
   forward(w) {
-    w.index_select(self.idx_tensor)
+    w.index_select(@idx_tensor)
   }
 
   backward(gy) {
-    w = self.inputs[0]
-    dz.as_variable(Tensor.index_add(self.idx_tensor, gy.data, w.shape))
+    w = @inputs[0]
+    dz.as_variable(Tensor.index_add(@idx_tensor, gy.data, w.shape))
   }
 }
 

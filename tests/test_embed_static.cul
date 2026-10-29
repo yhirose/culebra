@@ -34,7 +34,7 @@ srv.stop()
 # srv.static knows a Dir.embedded by its class, not by its shape or its name:
 # a class of the program's own called EmbedDir, with the same field, is not one.
 class EmbedDir {
-  new(.name) {}
+  new(@name) {}
 }
 let other = Http.server()
 let static_err = try {

@@ -32,11 +32,11 @@ fn create_openai(config = {}) {
 }
 
 class OpenAIModel {
-  new(.http, .model_id) {}
+  new(@http, @model_id) {}
 
   do_generate(params) {
-    let res = self.http.post('/chat/completions',
-                             json: self.body_for(params, false))
+    let res = @http.post('/chat/completions',
+                             json: @body_for(params, false))
     if !res.ok {
       throw err.llm_api_error(res.status, PROVIDER,
                               api_error.explain(PROVIDER, res))
@@ -49,8 +49,8 @@ class OpenAIModel {
   # is what interprets it either way.
   do_stream(params, on_text) {
     let turn = OpenAIStream(on_text)
-    let res = self.http.post('/chat/completions',
-                             json: self.body_for(params, true),
+    let res = @http.post('/chat/completions',
+                             json: @body_for(params, true),
                              events: |e| turn.take(e))
     if !res.ok {
       throw err.llm_api_error(res.status, PROVIDER,
@@ -66,7 +66,7 @@ class OpenAIModel {
   body_for(params, streaming) {
     let history = clean.clean_messages(params.messages)
 
-    mut body = {model: self.model_id, messages: turns_of(history)}
+    mut body = {model: @model_id, messages: turns_of(history)}
     # This format does not require a ceiling, so upstream sends one only when
     # asked to. The other format requires one and defaults it.
     if params.max_tokens != nil {
@@ -199,18 +199,18 @@ fn args_of(f) {
 let DONE = '[DONE]'
 
 class OpenAIStream {
-  new(.on_text) {
-    self.events = 0
-    self.content = ''
-    self.reasoning = ''
-    self.calls = []
-    self.finish_reason = nil
-    self.usage = nil
-    self.failure = nil
+  new(@on_text) {
+    @events = 0
+    @content = ''
+    @reasoning = ''
+    @calls = []
+    @finish_reason = nil
+    @usage = nil
+    @failure = nil
   }
 
   take(event) {
-    self.events += 1
+    @events += 1
     return nil if event.data == DONE
     let payload = try {
       JSON.parse(event.data)
@@ -223,41 +223,41 @@ class OpenAIStream {
     # not produce. Kept rather than raised: `read_reply` already knows what a
     # choice carrying an error means.
     if payload.error != nil {
-      self.failure = payload.error
+      @failure = payload.error
       return nil
     }
     if payload.usage != nil {
-      self.usage = payload.usage
+      @usage = payload.usage
     }
 
     let choices = payload.choices ?? []
     return nil if choices.empty()
     let choice = choices[0]
     if choice.error != nil {
-      self.failure = choice.error
+      @failure = choice.error
       return nil
     }
     if choice.finish_reason != nil {
-      self.finish_reason = choice.finish_reason
+      @finish_reason = choice.finish_reason
     }
-    self.grow(choice.delta ?? {})
+    @grow(choice.delta ?? {})
     nil
   }
 
   grow(delta) {
     let said = delta.content ?? ''
     if !said.empty() {
-      self.content = self.content + said
-      if self.on_text != nil {
-        self.on_text(said)
+      @content = @content + said
+      if @on_text != nil {
+        @on_text(said)
       }
     }
     # Thinking, where this format puts it: a field beside the answer rather
     # than a block of its own. It is not what the model said, so it is not
     # what a watcher hears.
-    self.reasoning = self.reasoning + (delta.reasoning ?? '')
+    @reasoning = @reasoning + (delta.reasoning ?? '')
     for call in (delta.tool_calls ?? []) {
-      self.grow_call(call)
+      @grow_call(call)
     }
   }
 
@@ -265,13 +265,13 @@ class OpenAIStream {
   # accumulate across the pieces that follow.
   grow_call(delta) {
     let index = delta.index ?? 0
-    while self.calls.size() <= index {
-      self.calls.push(nil)
+    while @calls.size() <= index {
+      @calls.push(nil)
     }
-    if self.calls[index] == nil {
-      self.calls[index] = {mut id: '', mut name: '', mut arguments: ''}
+    if @calls[index] == nil {
+      @calls[index] = {mut id: '', mut name: '', mut arguments: ''}
     }
-    let call = self.calls[index]
+    let call = @calls[index]
     if delta.id != nil {
       call.id = delta.id
     }
@@ -286,19 +286,19 @@ class OpenAIStream {
   # JSON string, as they are on that wire — `read_reply` is what parses them,
   # and what forgives a document the model left unfinished.
   finish() {
-    if self.failure != nil {
-      return {choices: [{error: self.failure}]}
+    if @failure != nil {
+      return {choices: [{error: @failure}]}
     }
     {
       choices: [{
         message: {
-          content: self.content,
-          reasoning: self.reasoning,
-          tool_calls: self.calls.filter(|c| c != nil).map(|c| call_frame_of(c)),
+          content: @content,
+          reasoning: @reasoning,
+          tool_calls: @calls.filter(|c| c != nil).map(|c| call_frame_of(c)),
         },
-        finish_reason: self.finish_reason,
+        finish_reason: @finish_reason,
       }],
-      usage: self.usage,
+      usage: @usage,
     }
   }
 }

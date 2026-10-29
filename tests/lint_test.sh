@@ -73,6 +73,15 @@ expect_syntax_message "parameter list"      'fn f(a b) { }' \
   ", unexpected 'b', expecting ':', '=', ',' or ')'."
 expect_syntax_message "class body"          'class C { 1 }' \
   ", unexpected '1', expecting 'static', 'get', '}' or <IDENTIFIER>."
+# The field parameter's old spelling gets the new one named.
+expect_syntax_reject "old field parameter" \
+  " A field parameter is written \`@x\`, not \`.x\`." 'class C { new(.x) { } }'
+# ...and only there: a `.` where an expression is due is not a field parameter.
+printf 'xs = [.5]\n' > "$TMP/t.cul"
+out=$("$CULEBRA" --vm "$TMP/t.cul" 2>&1)
+if [[ "$out" != *SyntaxError* || "$out" == *"field parameter"* ]]; then
+  echo "FAIL syntax-reject [dot in an expression]: $out"; fail=1
+fi
 # Ahead of a byte, where peglib lists a skipped alternative by its first
 # literal: the newline that may precede the block is still not what was
 # missing.
@@ -372,41 +381,41 @@ expect_param_reject "dangling separator" "named arguments must follow '*' separa
 expect_param_reject "lambda non-default" "non-default parameter 'b' follows a default parameter" 'let g = |a = 1, b| a'
 expect_param_reject "method kwargs not last" "'**' catch-all must be the last parameter" 'class C { m(**kw, b) { } }'
 expect_param_reject "trait sig dangling sep" "named arguments must follow '*' separator" 'trait T { sig(a, *) }'
-# A field parameter (`new(.x)`) belongs to a class's `new` alone, `.x?` takes
+# A field parameter (`new(@x)`) belongs to a class's `new` alone, `@x?` takes
 # its type and default from the field's declaration, and it counts as an
 # optional parameter for the ordering rule.
-expect_param_reject "field param in fn"      "field parameter '.x' is only allowed in a class's \`new\`" 'fn f(.x) { x }'
-expect_param_reject "field param in lambda"  "field parameter '.x' is only allowed in a class's \`new\`" 'let g = |.x| x'
-expect_param_reject "field param in method"  "field parameter '.x' is only allowed in a class's \`new\`" 'class C { m(.x) { x } }'
-expect_param_reject "field param in static"  "field parameter '.x' is only allowed in a class's \`new\`" 'class C { static m(.x) { x } }'
-expect_param_reject "field param shadows a method" "duplicate member 'x'" 'class C { new(.x) { }
+expect_param_reject "field param in fn"      "field parameter '@x' is only allowed in a class's \`new\`" 'fn f(@x) { x }'
+expect_param_reject "field param in lambda"  "field parameter '@x' is only allowed in a class's \`new\`" 'let g = |@x| x'
+expect_param_reject "field param in method"  "field parameter '@x' is only allowed in a class's \`new\`" 'class C { m(@x) { x } }'
+expect_param_reject "field param in static"  "field parameter '@x' is only allowed in a class's \`new\`" 'class C { static m(@x) { x } }'
+expect_param_reject "field param shadows a method" "duplicate member 'x'" 'class C { new(@x) { }
 x() { 1 } }'
-expect_param_reject "optional field typed"   "field parameter '.x?' takes its type and default from the field's declaration" 'class C { x = 1
-new(.x?: Long) { } }'
-expect_param_reject "optional field default" "field parameter '.x?' takes its type and default from the field's declaration" 'class C { x = 1
-new(.x? = 2) { } }'
+expect_param_reject "optional field typed"   "field parameter '@x?' takes its type and default from the field's declaration" 'class C { x = 1
+new(@x?: Long) { } }'
+expect_param_reject "optional field default" "field parameter '@x?' takes its type and default from the field's declaration" 'class C { x = 1
+new(@x? = 2) { } }'
 expect_param_reject "required field after optional" "non-default parameter 'y' follows a default parameter" 'class C { x = 1
-new(.x?, .y) { } }'
-# Against the class's declared fields: `.x` never lets an initializer run, a
-# type must repeat the declaration's, `.x?` needs a declaration to default
+new(@x?, @y) { } }'
+# Against the class's declared fields: `@x` never lets an initializer run, a
+# type must repeat the declaration's, `@x?` needs a declaration to default
 # from, and a parameter that declares the field falls under the @value /
 # @packable field rules like a body declaration.
 expect_param_reject "field param over initializer" "cannot have an initializer" 'class C { x = 1
-new(.x) { } }'
+new(@x) { } }'
 expect_param_reject "field param type disagrees" "disagrees with the declaration \`x: Long\`" 'class C { x: Long
-new(.x: Float) { } }'
+new(@x: Float) { } }'
 expect_param_reject "optional field undeclared" "declares no field \`y\`" 'class C { x = 1
-new(.y?) { } }'
-expect_param_reject "overloads disagree on a declared field" "disagrees with the declaration \`k: Long\`" 'class C { new(.k: Long) { }
-new(.k: Float, s) { } }'
-expect_param_reject "untyped overload of a typed declaration" "field parameter '.k' (untyped) disagrees with the declaration \`k: Long\`" 'class C { new(.k: Long) { }
-new(.k, s) { } }'
-expect_param_reject "typed overload of an untyped declaration" "disagrees with the untyped declaration of \`k\`" 'class C { new(.k) { }
-new(.k: Long, s) { } }'
+new(@y?) { } }'
+expect_param_reject "overloads disagree on a declared field" "disagrees with the declaration \`k: Long\`" 'class C { new(@k: Long) { }
+new(@k: Float, s) { } }'
+expect_param_reject "untyped overload of a typed declaration" "field parameter '@k' (untyped) disagrees with the declaration \`k: Long\`" 'class C { new(@k: Long) { }
+new(@k, s) { } }'
+expect_param_reject "typed overload of an untyped declaration" "disagrees with the untyped declaration of \`k\`" 'class C { new(@k) { }
+new(@k: Long, s) { } }'
 expect_param_reject "value field param untyped" "needs a type annotation" '@value
-class C { new(.k) { } }'
+class C { new(@k) { } }'
 expect_param_reject "packable field param untyped" "needs a type annotation" '@packable
-class C { new(.k) { } }'
+class C { new(@k) { } }'
 # The retired Fixed* names of the bounded collections say what they are now.
 expect_param_reject "retired FixedString" "which is now spelled \`BoundedString<8>\`" '@packable
 class C { s: FixedString<8> }'
@@ -902,7 +911,7 @@ class V {
 inspect(V(x: 1, y: 2).y)'
 expect_lint_warns "surplus: field parameters count" \
 'class P {
-  new(.x, .y) {}
+  new(@x, @y) {}
 }
 inspect(P(1, 2, 3).x)' "P takes 2 arguments, 3 given"
 expect_lint_warns "surplus: default parameters count" \

@@ -11,10 +11,10 @@ fn show(label, f) {
 }
 class R {
   new(id) {
-    self.id = id
+    @id = id
   }
   drop() {
-    println("drop {self.id}")
+    println("drop {@id}")
   }
 }
 
@@ -130,10 +130,10 @@ show('dispose while unwinding', fn () {
 let log = []
 class C {
   new(lg) {
-    self.log = lg
+    @log = lg
   }
   drop() {
-    self.log.push(1)
+    @log.push(1)
   }
 }
 fn cyclic() {
@@ -192,8 +192,8 @@ show('scan 1-param', || [1, 2].iter().scan(0, |a| a).collect())
 show('reduce rest', || [1, 2, 3].reduce(0, fn (*xs) { xs[0] + xs[1] }))
 show('map bound method', fn () {
   class G {
-    new(p) { self.p = p }
-    g(x) { "{self.p} {x}" }
+    new(p) { @p = p }
+    g(x) { "{@p} {x}" }
   }
   [1, 2].map(G.new('hi').g)
 })

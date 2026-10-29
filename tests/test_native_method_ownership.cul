@@ -4,7 +4,7 @@
 # before the next line. They used to stay held until the collector ran.
 mut dropped = []
 class Held {
-  new(.name) {
+  new(@name) {
   }
   drop() {
     dropped.push(self.name)

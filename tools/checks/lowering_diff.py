@@ -369,11 +369,11 @@ VALUES = ['true', 'false', 'nil', '1', '"s"']
 
 # What a `for` walks, and what it refuses.
 ITER_PRELUDE = """class Counted {
-  new(.n) {}
+  new(@n) {}
   iter() { Walk(0, self.n) }
 }
 class Walk {
-  new(.i, .n) {}
+  new(@i, @n) {}
   has_next() { self.i < self.n }
   next() { self.i = self.i + 1; self.i }
 }

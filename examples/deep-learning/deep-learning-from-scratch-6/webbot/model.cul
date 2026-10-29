@@ -18,117 +18,117 @@ import L from '../../dezero/dezero/layers.cul'
 import S from '../storybot/model.cul'
 
 class GroupedQueryAttention {
-  new(embed_dim, .n_head, .n_kv_head, .dropout_rate, .rope) {
+  new(embed_dim, @n_head, @n_kv_head, @dropout_rate, @rope) {
     throw {
       kind: "ValueError",
       message: "n_head {n_head} is not a multiple of n_kv_head {n_kv_head}",
     } if n_head % n_kv_head != 0
 
-    self.group = n_head / n_kv_head
-    self.head_dim = embed_dim / n_head
-    self.scale = 1.0 / Math.sqrt(to_float(self.head_dim))
-    let kv_dim = n_kv_head * self.head_dim
-    self.w_q = L.Linear(embed_dim, false, embed_dim)
-    self.w_k = L.Linear(kv_dim, false, embed_dim)
-    self.w_v = L.Linear(kv_dim, false, embed_dim)
-    self.w_o = L.Linear(embed_dim, false, embed_dim)
+    @group = n_head / n_kv_head
+    @head_dim = embed_dim / n_head
+    @scale = 1.0 / Math.sqrt(to_float(@head_dim))
+    let kv_dim = n_kv_head * @head_dim
+    @w_q = L.Linear(embed_dim, false, embed_dim)
+    @w_k = L.Linear(kv_dim, false, embed_dim)
+    @w_v = L.Linear(kv_dim, false, embed_dim)
+    @w_o = L.Linear(embed_dim, false, embed_dim)
   }
 
   # `[B*C, N*D]` -> `[B*N, C, D]` for any head count N.
   fold(p, b, c, n) {
     dz.reshape(
-      dz.transpose(dz.reshape(p, [b, c, n, self.head_dim]), [0, 2, 1, 3]),
-      [b * n, c, self.head_dim],
+      dz.transpose(dz.reshape(p, [b, c, n, @head_dim]), [0, 2, 1, 3]),
+      [b * n, c, @head_dim],
     )
   }
 
   # One KV head serves `group` consecutive query heads, so each is repeated
   # in place: [kv0, kv0, kv1, kv1, ...] for group 2.
   expand(t, b, c) {
-    let kv = self.n_kv_head
-    let d = self.head_dim
+    let kv = @n_kv_head
+    let d = @head_dim
     let grouped = dz.reshape(t, [b, kv, c, d])
     mut out = nil
     for j in 0..kv {
       let one = dz.narrow(grouped, 1, j, j + 1)
-      for _ in 0..self.group {
+      for _ in 0..@group {
         out = out == nil ? one : dz.concat2(out, one, 1)
       }
     }
-    dz.reshape(out, [b * self.n_head, c, d])
+    dz.reshape(out, [b * @n_head, c, d])
   }
 
   # `past` is nil or `{k, v}` holding the *unexpanded* `[b*kv, t, d]` from
   # earlier positions. Keeping the cache narrow is the whole point of GQA,
   # so the expansion happens after the concatenation, never before it.
   attend(x, b, c, pos, past) {
-    let q = self.rope(self.fold(self.w_q(x), b, c, self.n_head), c, pos)
-    let k_new = self.rope(self.fold(self.w_k(x), b, c, self.n_kv_head), c, pos)
-    let v_new = self.fold(self.w_v(x), b, c, self.n_kv_head)
+    let q = @rope(@fold(@w_q(x), b, c, @n_head), c, pos)
+    let k_new = @rope(@fold(@w_k(x), b, c, @n_kv_head), c, pos)
+    let v_new = @fold(@w_v(x), b, c, @n_kv_head)
     let k = past == nil ? k_new : dz.concat2(past.k, k_new, 1)
     let v = past == nil ? v_new : dz.concat2(past.v, v_new, 1)
     let t = k.shape[1]
 
     let scores = dz.mul(
-      dz.matmul(q, dz.transpose(self.expand(k, b, t), [0, 2, 1])),
-      self.scale,
+      dz.matmul(q, dz.transpose(@expand(k, b, t), [0, 2, 1])),
+      @scale,
     )
     let weights = F.dropout(
       F.softmax(dz.add(scores, S.causal_bias(c, t)), 2),
-      self.dropout_rate,
+      @dropout_rate,
     )
-    let hidden = dz.matmul(weights, self.expand(v, b, t))
+    let hidden = dz.matmul(weights, @expand(v, b, t))
 
     let merged = dz.reshape(
       dz.transpose(
-        dz.reshape(hidden, [b, self.n_head, c, self.head_dim]),
+        dz.reshape(hidden, [b, @n_head, c, @head_dim]),
         [0, 2, 1, 3],
       ),
-      [b * c, self.n_head * self.head_dim],
+      [b * c, @n_head * @head_dim],
     )
-    {out: F.dropout(self.w_o(merged), self.dropout_rate), k: k, v: v}
+    {out: F.dropout(@w_o(merged), @dropout_rate), k: k, v: v}
   }
 
   __call__(x, b, c, pos = 0) {
-    self.attend(x, b, c, pos, nil).out
+    @attend(x, b, c, pos, nil).out
   }
 
   named_params(prefix) {
     [
-      {name: "{prefix}wq.w", param: self.w_q.w},
-      {name: "{prefix}wq.b", param: self.w_q.b},
-      {name: "{prefix}wk.w", param: self.w_k.w},
-      {name: "{prefix}wk.b", param: self.w_k.b},
-      {name: "{prefix}wv.w", param: self.w_v.w},
-      {name: "{prefix}wv.b", param: self.w_v.b},
-      {name: "{prefix}wo.w", param: self.w_o.w},
-      {name: "{prefix}wo.b", param: self.w_o.b},
+      {name: "{prefix}wq.w", param: @w_q.w},
+      {name: "{prefix}wq.b", param: @w_q.b},
+      {name: "{prefix}wk.w", param: @w_k.w},
+      {name: "{prefix}wk.b", param: @w_k.b},
+      {name: "{prefix}wv.w", param: @w_v.w},
+      {name: "{prefix}wv.b", param: @w_v.b},
+      {name: "{prefix}wo.w", param: @w_o.w},
+      {name: "{prefix}wo.b", param: @w_o.b},
     ]
   }
 }
 
 class Block {
   new(embed_dim, n_head, n_kv_head, ff_dim, dropout_rate, rope) {
-    self.norm1 = S.RMSNorm(embed_dim)
-    self.attn = GroupedQueryAttention(
+    @norm1 = S.RMSNorm(embed_dim)
+    @attn = GroupedQueryAttention(
       embed_dim,
       n_head,
       n_kv_head,
       dropout_rate,
       rope,
     )
-    self.norm2 = S.RMSNorm(embed_dim)
-    self.ffn = S.FFN(embed_dim, ff_dim, dropout_rate)
+    @norm2 = S.RMSNorm(embed_dim)
+    @ffn = S.FFN(embed_dim, ff_dim, dropout_rate)
   }
 
   __call__(x, b, c, pos = 0) {
-    let h = dz.add(x, self.attn(self.norm1(x), b, c, pos))
-    dz.add(h, self.ffn(self.norm2(h)))
+    let h = dz.add(x, @attn(@norm1(x), b, c, pos))
+    dz.add(h, @ffn(@norm2(h)))
   }
 
   forward_cached(x, c, cache, layer) {
-    let a = self.attn.attend(
-      self.norm1(x),
+    let a = @attn.attend(
+      @norm1(x),
       1,
       c,
       cache.pos,
@@ -136,74 +136,74 @@ class Block {
     )
     cache.put(layer, a.k, a.v)
     let h = dz.add(x, a.out)
-    dz.add(h, self.ffn(self.norm2(h)))
+    dz.add(h, @ffn(@norm2(h)))
   }
 
   named_params(prefix) {
-    [{name: "{prefix}norm1.gamma", param: self.norm1.gamma}] +
-      self.attn.named_params("{prefix}attn.") +
-      [{name: "{prefix}norm2.gamma", param: self.norm2.gamma}] +
-      self.ffn.named_params("{prefix}ffn.")
+    [{name: "{prefix}norm1.gamma", param: @norm1.gamma}] +
+      @attn.named_params("{prefix}attn.") +
+      [{name: "{prefix}norm2.gamma", param: @norm2.gamma}] +
+      @ffn.named_params("{prefix}ffn.")
   }
 }
 
 class GPT {
-  new(.cfg) {
+  new(@cfg) {
     # Same reason as storybot: the unembedding is this table transposed.
-    self.embed = L.EmbedID(cfg.vocab_size, cfg.embed_dim)
-    self.embed.w.data = self.embed.w.data * 0.02
-    self.rope = S.RoPE(cfg.embed_dim / cfg.n_head)
-    self.blocks = range(cfg.n_layer)
+    @embed = L.EmbedID(cfg.vocab_size, cfg.embed_dim)
+    @embed.w.data = @embed.w.data * 0.02
+    @rope = S.RoPE(cfg.embed_dim / cfg.n_head)
+    @blocks = range(cfg.n_layer)
       .map(|_| Block(
         cfg.embed_dim,
         cfg.n_head,
         cfg.n_kv_head,
         cfg.ff_dim,
         cfg.dropout,
-        self.rope,
+        @rope,
       ))
       .collect()
-    self.norm = S.RMSNorm(cfg.embed_dim)
+    @norm = S.RMSNorm(cfg.embed_dim)
   }
 
   unembed(x) {
-    dz.matmul(self.norm(x), dz.transpose(self.embed.w, [1, 0]))
+    dz.matmul(@norm(x), dz.transpose(@embed.w, [1, 0]))
   }
 
   __call__(ids, b, c, pos = 0) {
-    mut x = F.dropout(self.embed(ids), self.cfg.dropout)
-    for block in self.blocks {
+    mut x = F.dropout(@embed(ids), @cfg.dropout)
+    for block in @blocks {
       x = block(x, b, c, pos)
     }
-    self.unembed(x)
+    @unembed(x)
   }
 
   forward_cached(ids, cache) {
     let c = ids.size()
-    mut x = F.dropout(self.embed(ids), self.cfg.dropout)
-    for i, block in self.blocks.enumerate() {
+    mut x = F.dropout(@embed(ids), @cfg.dropout)
+    for i, block in @blocks.enumerate() {
       x = block.forward_cached(x, c, cache, i)
     }
-    let logits = self.unembed(x)
+    let logits = @unembed(x)
     cache.advance(c)
     logits
   }
 
   named_params() {
-    mut out = [{name: 'embed.w', param: self.embed.w}]
-    for i, block in self.blocks.enumerate() {
+    mut out = [{name: 'embed.w', param: @embed.w}]
+    for i, block in @blocks.enumerate() {
       out += block.named_params("blocks.{i}.")
     }
-    out.push({name: 'norm.gamma', param: self.norm.gamma})
+    out.push({name: 'norm.gamma', param: @norm.gamma})
     out
   }
 
   params() {
-    self.named_params().map(|e| e.param)
+    @named_params().map(|e| e.param)
   }
 
   cleargrads() {
-    for p in self.params() {
+    for p in @params() {
       p.cleargrad()
     }
   }

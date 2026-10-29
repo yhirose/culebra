@@ -340,7 +340,7 @@ trait Measured {
   get(k, fallback) { "trait get {k}" }
 }
 class Ruler {
-  new(.n) {}
+  new(@n) {}
   len() { self.n }
 }
 let ruler = Ruler(3)
@@ -349,7 +349,7 @@ assert_eq(ruler.keys(), ['trait', 'keys'])
 assert_eq(ruler.get('a', 0), 'trait get a')
 # A receiver that conforms to nothing still owes the built-in's diagnostic.
 class Plain {
-  new(.n) {}
+  new(@n) {}
 }
 assert_eq(try { Plain(1).size(10) } catch e { e.kind }, 'ArityError')
 assert_eq(try { {a: 1}.size(10) } catch e { e.kind }, 'ArityError')

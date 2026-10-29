@@ -493,7 +493,7 @@ assert_eq(gk_self.it.next(), 2)
 class GkP {
   x: Float
   y: Float
-  new(.x, .y) {}
+  new(@x, @y) {}
   coords() {
     yield self.x
     yield self.y

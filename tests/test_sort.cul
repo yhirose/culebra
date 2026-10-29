@@ -267,7 +267,7 @@ assert_eq([9223372036854775807, 9223372036854775806].sorted(),
 // freed slot.
 mut ks = []
 class K {
-  new(.n) {}
+  new(@n) {}
   __lt__(o) {
     if ks.size() > 3 {
       ks.pop()

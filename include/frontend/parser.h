@@ -882,7 +882,7 @@ struct MethodView {
   }
 };
 
-// `new(.x)`: a field parameter, [FIELD_MARK, IDENTIFIER, FIELD_OPTIONAL,
+// `new(@x)`: a field parameter, [FIELD_MARK, IDENTIFIER, FIELD_OPTIONAL,
 // (TYPE_ANNOTATION)?, (DEFAULT_VALUE)?].
 inline bool is_field_param(const peg::Ast& node) {
   using namespace peg::udl;
@@ -2181,8 +2181,8 @@ struct ParameterView {
   std::string_view type_annotation;   // normal form, "" when absent
   const peg::Ast* default_value;      // normal form, nullptr when absent
   const peg::Ast* pattern;            // destructuring param node, else nullptr
-  bool is_field = false;              // `.name`: stores into the field too
-  bool is_optional = false;           // `.name?`: the declaration's default
+  bool is_field = false;              // `@name`: stores into the field too
+  bool is_optional = false;           // `@name?`: the declaration's default
 };
 
 inline ParameterView view_parameter(const peg::Ast& p) {
@@ -2224,12 +2224,12 @@ inline ParameterView view_parameter(const peg::Ast& p) {
   };
 }
 
-// --- Field parameters (`new(.x, .y: T = v, .z?)`, docs/language.md §10) ---
+// --- Field parameters (`new(@x, @y: T = v, @z?)`, docs/language.md §10) ---
 //
 // A field parameter is an ordinary parameter that also stores into the
 // field of its name, at that field's place in the declaration order. What
 // a class body declares about the field decides what the parameter may
-// say: a declaration with an initializer is only reached through `.x?`
+// say: a declaration with an initializer is only reached through `@x?`
 // (the parameter would otherwise always supply the value), and a type on
 // the parameter must repeat the declaration's. The same check runs in lint
 // (pre-eval, every diagnostic) and in the compiler (the first, thrown), so
@@ -2243,7 +2243,7 @@ using DeclaredFields = std::map<std::string, DeclaredField, std::less<>>;
 
 // A class's instance fields in declaration order, each a node view_method
 // reads: the body's own, and the fields the `new` overloads' field
-// parameters declare — a `.x` naming no body field, spliced in at the first
+// parameters declare — a `@x` naming no body field, spliced in at the first
 // `new`'s place, the first spelling of each name winning (check_field_params
 // holds the others to it). Lint, the compiler and the baked-stdlib scan all
 // lay fields out from this one list.
@@ -2336,8 +2336,8 @@ inline ClassFields declared_class_fields(
 inline std::string field_param_initializer_message(std::string_view name,
                                                    std::string_view class_name) {
   return std::format(
-      "field parameter '.{}' always supplies the value, so field `{}` of "
-      "class `{}` cannot have an initializer (use '.{}?' to take the "
+      "field parameter '@{}' always supplies the value, so field `{}` of "
+      "class `{}` cannot have an initializer (use '@{}?' to take the "
       "declaration's default)",
       name, name, class_name, name);
 }
@@ -2346,8 +2346,8 @@ inline std::string field_param_type_message(std::string_view name,
                                             std::string_view class_name,
                                             std::string_view field_type) {
   auto param = param_type.empty()
-                   ? std::format("'.{}' (untyped)", name)
-                   : std::format("'.{}: {}'", name, param_type);
+                   ? std::format("'@{}' (untyped)", name)
+                   : std::format("'@{}: {}'", name, param_type);
   if (field_type.empty())
     return std::format("field parameter {} disagrees with the untyped "
                        "declaration of `{}` in class `{}`",
@@ -2360,10 +2360,10 @@ inline std::string field_param_undeclared_message(std::string_view name,
                                                   bool optional,
                                                   std::string_view class_name) {
   if (optional)
-    return std::format("field parameter '.{}?' takes its default from a "
+    return std::format("field parameter '@{}?' takes its default from a "
                        "declaration, but class `{}` declares no field `{}`",
                        name, class_name, name);
-  return std::format("field parameter '.{}' names no declared field of "
+  return std::format("field parameter '@{}' names no declared field of "
                      "class `{}`",
                      name, class_name);
 }
@@ -2386,8 +2386,8 @@ inline void check_field_params(const peg::Ast& params,
     if (!pv.is_optional && it->second.has_initializer)
       report(field_param_initializer_message(pv.name, class_name),
              pv.name_line, pv.name_col);
-    // (`.x?` carries no type of its own: the parameter check refuses one.)
-    // Against a body declaration an untyped `.x` takes the declared type;
+    // (`@x?` carries no type of its own: the parameter check refuses one.)
+    // Against a body declaration an untyped `@x` takes the declared type;
     // a field the parameters declare has no one place to take it from, so
     // every overload spells it the same way, untyped included.
     bool mismatch = pv.type_annotation != it->second.type &&
@@ -2494,8 +2494,11 @@ struct SynthNode {
   size_t ln, col;
 
   std::shared_ptr<peg::Ast> tok(const char* name, const char* orig,
-                                std::string_view t, size_t l, size_t c) const {
-    return std::make_shared<peg::Ast>(peg::Ast(path, l, c, name, t), orig);
+                                std::string_view t, size_t l, size_t c,
+                                size_t position = 0, size_t length = 0) const {
+    return std::make_shared<peg::Ast>(
+        peg::Ast(path, l, c, name, t, position, length), orig, position,
+        length);
   }
   // `position`/`length` default to 0 (cpp-peglib's own default) for callers
   // that never need a source-text slice of the synthesized node. Passing the
@@ -2632,6 +2635,24 @@ inline std::shared_ptr<peg::Ast> desugar_regex_literals(
   // to EXPRESSION while `tag` stays REGEX_LIT.
   if (node->tag == "REGEX_LIT"_) return make_regex_compile_call(*node);
   for (auto& child : node->nodes) child = desugar_regex_literals(child);
+  return node;
+}
+
+// `@name` is `self.name`. The grammar builds the nodes `self.name` builds, but
+// the head's token is `@` (AT_SELF); read it as `self` so every later stage
+// sees the form it already handles. The node keeps the one byte it was
+// written as and says so in its original_name (`AT_SELF`), for a stage that
+// edits the source text: its token is no longer a view of that text. Run
+// before the other desugarings so it reaches inside a `${expr}` of a regex
+// literal too.
+inline std::shared_ptr<peg::Ast> desugar_self_sigil(
+    std::shared_ptr<peg::Ast> node) {
+  using namespace peg::udl;
+  if (node->tag == "IDENTIFIER"_ && node->token == "@")
+    return SynthNode{node->path.c_str(), node->line, node->column}.tok(
+        "IDENTIFIER", "AT_SELF", "self", node->line, node->column,
+        node->position, node->length);
+  for (auto& child : node->nodes) child = desugar_self_sigil(child);
   return node;
 }
 
@@ -2935,7 +2956,9 @@ inline std::shared_ptr<peg::Ast> parse(const std::string& path,
                                        std::string& expr,
                                        std::vector<ParseFailure>& failures) {
   auto ast = parse_undesugared(path, expr, failures);
-  return ast ? desugar_postfix_modifiers(desugar_regex_literals(ast)) : nullptr;
+  return ast ? desugar_postfix_modifiers(
+                    desugar_regex_literals(desugar_self_sigil(ast)))
+              : nullptr;
 }
 
 inline std::shared_ptr<peg::Ast> parse(const std::string& path,
@@ -2947,10 +2970,10 @@ inline std::shared_ptr<peg::Ast> parse(const std::string& path,
   return ast;
 }
 
-// Like parse(), but keeps REGEX_LIT and postfix-modifier (`stmt if cond` /
-// `stmt unless cond`) nodes intact — no desugaring to a `Regex.compile(...)`
-// call or a plain IF — so the source formatter can re-emit both forms
-// verbatim. Used only by `culebra fmt`; never feed this AST to a backend,
+// Like parse(), but keeps REGEX_LIT, postfix-modifier (`stmt if cond` /
+// `stmt unless cond`) and `@name` nodes intact — no desugaring to a
+// `Regex.compile(...)` call, a plain IF or `self.name` — so the source
+// formatter can re-emit all three forms verbatim. Used only by `culebra fmt`; never feed this AST to a backend,
 // which expects the desugared form.
 inline std::shared_ptr<peg::Ast> parse_for_format(
     const std::string& path, std::string& expr,

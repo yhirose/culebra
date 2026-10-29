@@ -3594,7 +3594,7 @@ inline bool pos_index_agrees(const VmProgram& p) {
 struct MemberOpts {
   bool receiver = false;
   // This chunk is a class's `new` body: the one parameter list a field
-  // parameter (`.x`) may appear in.
+  // parameter (`@x`) may appear in.
   bool ctor = false;
   // This chunk IS the synthetic field-init thunk: its body is the declared
   // field stores rather than the AST's.
@@ -6317,9 +6317,9 @@ class Compiler {
   // typed one takes a one-field Op::FieldsInit of its own just before that
   // store, which is how its declared type reaches the slot.
   //
-  // `provided` names the fields a field parameter (`new(.x)`) supplies: the
+  // `provided` names the fields a field parameter (`new(@x)`) supplies: the
   // slot (or cell) holding the argument, and whether it may be unfilled
-  // (`.x?`, or a thunk shared by several `new` overloads). A supplied value
+  // (`@x?`, or a thunk shared by several `new` overloads). A supplied value
   // is stored at the field's own place in the order, after the same typed
   // layout the zero would have taken, so the slot carries its declared type
   // and the store is checked against it like every other write; an
@@ -6381,7 +6381,7 @@ class Compiler {
         emit_declared_field_store(*f, mv);
         continue;
       }
-      // An initializer field is only ever supplied through `.x?` (or a
+      // An initializer field is only ever supplied through `@x?` (or a
       // thunk parameter): left out, the initializer runs as declared.
       int32_t v = emit_provided_read(*f, pf->second);
       size_t filled = 0, done = 0;
@@ -8929,8 +8929,8 @@ class Compiler {
       int32_t abi_index;
       bool is_mut;
       bool sink;
-      bool optional;          // has a default, or is a `.x?` field param
-      bool is_field;          // `.x`: also stored into the field
+      bool optional;          // has a default, or is a `@x?` field param
+      bool is_field;          // `@x`: also stored into the field
       int32_t pos_slot = -1;  // PosSnap's eager snapshot, -1 = cold path
     };
     std::vector<ParamPlan> plans;
@@ -9001,7 +9001,7 @@ class Compiler {
         fc.chunk_.param_names.push_back(name);
         fc.chunk_.param_types.push_back(type);
         fc.chunk_.param_declared_types.emplace_back(pv.type_annotation);
-        // `.x?` is optional without a default expression of its own: the
+        // `@x?` is optional without a default expression of its own: the
         // slot stays unfilled and the field's declaration supplies the value.
         bool optional = pv.default_value || pv.is_optional;
         fc.chunk_.param_has_default.push_back(optional ? 1 : 0);
@@ -9504,7 +9504,7 @@ class Compiler {
       // wants (docs/language.md §21).
       fc.emit_declared_field_stores(*mo.prologue_fields, provided);
     }
-    // `.x?` left out by the caller: the parameter reads as the field the
+    // `@x?` left out by the caller: the parameter reads as the field the
     // declaration just initialized, so the body never sees the sentinel.
     for (const ParamPlan* pl : optional_fields) {
       const Binding* b = fc.lookup_name(pl->name);
@@ -10690,8 +10690,8 @@ class Compiler {
   // destructuring pattern, `*args`, `**rest`, or a keyword-only run. Each is
   // refused rather than handled because each is machinery whose whole point
   // is the call boundary being removed here.
-  // A required field parameter (`new(.x)`) is a plain parameter plus a
-  // store into the run, so it splices; `.x?` is an optional one, refused
+  // A required field parameter (`new(@x)`) is a plain parameter plus a
+  // store into the run, so it splices; `@x?` is an optional one, refused
   // with the defaults.
   // `type` is lowered as the boxed frame's prologue lowers it.
   struct InlineParam {
@@ -12104,7 +12104,7 @@ class Compiler {
         StampGuard pos(*this, *ps[i].at);
         // An annotated parameter was just checked against the same scalar
         // type (check_field_params holds the two identical), so only an
-        // unannotated `.x` on a typed field has the field's check to make.
+        // unannotated `@x` on a typed field has the field's check to make.
         if (ps[i].type.empty()) emit_inline_field_check(cls_ast, ix, b->slot);
         store_into(self_base + static_cast<int32_t>(ix),
                    ExprResult{b->slot, /*owned=*/false});

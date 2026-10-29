@@ -14,25 +14,25 @@ import F from './functions.cul'
 import L from './layers.cul'
 
 class MLP {
-  new(fc_output_sizes, .activation = F.sigmoid) {
-    self.layers = fc_output_sizes.map(|size| L.Linear(size))
+  new(fc_output_sizes, @activation = F.sigmoid) {
+    @layers = fc_output_sizes.map(|size| L.Linear(size))
   }
 
   forward(x) {
-    n = self.layers.size()
+    n = @layers.size()
     mut v = x
     for i in range(n - 1) {
-      v = self.activation(self.layers[i](v))
+      v = @activation(@layers[i](v))
     }
-    self.layers[n - 1](v)
+    @layers[n - 1](v)
   }
 
   __call__(x) {
-    self.forward(x)
+    @forward(x)
   }
 
   params() {
-    self.layers.flat_map(|layer| layer.params())
+    @layers.flat_map(|layer| layer.params())
   }
 
   cleargrads() {
@@ -45,22 +45,22 @@ class MLP {
 # rather than relying on a variadic `new`, which core.cul/functions.cul
 # never needed to exercise) — call it as `Sequential([a, b, c])`.
 class Sequential {
-  new(.layers) {}
+  new(@layers) {}
 
   forward(x) {
     mut v = x
-    for layer in self.layers {
+    for layer in @layers {
       v = layer(v)
     }
     v
   }
 
   __call__(x) {
-    self.forward(x)
+    @forward(x)
   }
 
   params() {
-    self.layers.flat_map(|layer| layer.params())
+    @layers.flat_map(|layer| layer.params())
   }
 
   cleargrads() {

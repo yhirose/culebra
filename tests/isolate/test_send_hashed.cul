@@ -8,7 +8,7 @@
 # alike: none runs on the receiving side, and lookups there find each one.
 let (pc_tx, pc_rx) = Channel.new(64)
 class PCount {
-  new(.x) {}
+  new(@x) {}
   hash() {
     pc_tx.send('hash')
     0
@@ -32,7 +32,7 @@ assert_eq(Isolate.spawn(|| [pc_bag.contains(PCount(2)), pc_keyed[PCount(5)]])
 # arrives with.
 let hs_reg = []
 class HSet {
-  new(.x) {}
+  new(@x) {}
   all() {
     hs_reg[0]
   }
@@ -51,7 +51,7 @@ assert_eq(Isolate.spawn(|| [hs.all().size(), hs.all().contains(HSet(2))])
 # ... and an Object keyed by one, whose keys keep the order they were in.
 let hk_reg = []
 class HKey {
-  new(.x) {}
+  new(@x) {}
   all() {
     hk_reg[0]
   }
@@ -75,7 +75,7 @@ assert_eq(Isolate.spawn(|| [hk.all()[HKey(1)], hk.all().keys().size(),
 # ... and a hash() reading a static the class stores after the Set it hashes
 # into.
 class HSalt {
-  new(.x) {}
+  new(@x) {}
   hash() {
     HSalt.salt + self.x
   }
@@ -100,7 +100,7 @@ let hd_register = fn (c) {
 }
 @hd_register
 class HDeco {
-  new(.x) {}
+  new(@x) {}
   again() {
     HDeco(self.x + 1)
   }
@@ -124,7 +124,7 @@ let hc_register = fn (c) {
 }
 @hc_register
 class HCapt {
-  new(.x) {}
+  new(@x) {}
   all() {
     HCapt.bag
   }

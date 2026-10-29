@@ -29,7 +29,7 @@ fn caught(thunk) {
 
 # A Dir of the program's own: the five, nothing else.
 class Wrapped {
-  new(.inner) {}
+  new(@inner) {}
   read(path) {
     self.inner.read(path)
   }

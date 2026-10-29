@@ -106,6 +106,16 @@ inline std::string format_syntax_error(const peg::ErrorReport& r,
     msg += parts[i];
   }
   msg += '.';
+  // A parameter list offers `@` and `mut` but no expression: a `.` there is
+  // the old `new(.x)`. (Where an expression is due, `@` and `mut` are offered
+  // as well, so `[.5]` must not get the hint.)
+  auto expects = [&](std::string_view lit) {
+    return std::ranges::any_of(r.expected_literals,
+                               [&](const std::string& l) { return l == lit; });
+  };
+  if (cls && !expression && r.unexpected_token == "." && expects("@") &&
+      expects("mut"))
+    msg += " A field parameter is written `@x`, not `.x`.";
   return msg;
 }
 

@@ -156,7 +156,7 @@ fn count_pretokens_parallel(
 
 # One unique pre-token: its current ids and how often the corpus has it.
 class Entry {
-  new(.ids, .count) {}
+  new(@ids, @count) {}
 }
 
 fn add_pair_counts(ids, weight, counts) {
@@ -296,37 +296,37 @@ fn encode_chunk(chunk, rule_of, end_token, end_token_id) {
 }
 
 class BPETokenizer {
-  new(.merge_rules, .end_token = END_TOKEN) {
-    self.end_token_id = 256 + merge_rules.size()
+  new(@merge_rules, @end_token = END_TOKEN) {
+    @end_token_id = 256 + merge_rules.size()
 
     mut id_to_bytes = range(256).map(|b| [b]).collect()
     for rule in merge_rules {
       id_to_bytes.push(id_to_bytes[rule[0]] + id_to_bytes[rule[1]])
     }
     id_to_bytes.push(end_token.bytes().collect())
-    self.id_to_bytes = id_to_bytes
-    self.vocab_size = id_to_bytes.size()
+    @id_to_bytes = id_to_bytes
+    @vocab_size = id_to_bytes.size()
 
-    self.rule_of = build_rule_index(merge_rules)
+    @rule_of = build_rule_index(merge_rules)
   }
 
   encode_pretoken(pretoken) {
-    encode_pretoken_with(pretoken, self.rule_of)
+    encode_pretoken_with(pretoken, @rule_of)
   }
 
   encode(input_text) {
     mut all_ids = []
-    for i, part in input_text.split(self.end_token).enumerate() {
-      all_ids.push(self.end_token_id) if i > 0
+    for i, part in input_text.split(@end_token).enumerate() {
+      all_ids.push(@end_token_id) if i > 0
       for pretoken in pretokenize(part) {
-        all_ids.extend(self.encode_pretoken(pretoken))
+        all_ids.extend(@encode_pretoken(pretoken))
       }
     }
     all_ids
   }
 
   decode(ids) {
-    String.from_bytes(ids.flat_map(|id| self.id_to_bytes[id]))
+    String.from_bytes(ids.flat_map(|id| @id_to_bytes[id]))
   }
 }
 

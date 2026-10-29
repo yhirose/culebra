@@ -13,11 +13,11 @@ fn show_at(label, f) {
 
 class Config {
   new(host, port = 80) {
-    self.host = host
-    self.port = port
+    @host = host
+    @port = port
   }
   describe(prefix, sep = ':') {
-    "{prefix}{sep}{self.host}{sep}{self.port}"
+    "{prefix}{sep}{@host}{sep}{@port}"
   }
   typed(s: String) {
     s
@@ -49,13 +49,13 @@ show('bound method default', fn () {
 
 class Over {
   new() {
-    self.tag = 'zero'
+    @tag = 'zero'
   }
   new(v: Long) {
-    self.tag = "long {v}"
+    @tag = "long {v}"
   }
   new(s: String, n) {
-    self.tag = "str {s} {n}"
+    @tag = "str {s} {n}"
   }
   m(a) {
     1
@@ -83,38 +83,38 @@ show('overload family unknown kw', || Over().m(1, zz: 2))
 
 class Vec {
   new(x: Long, y: Long) {
-    self.x = x
-    self.y = y
+    @x = x
+    @y = y
   }
   __add__(o: Vec) {
-    Vec(self.x + o.x, self.y + o.y)
+    Vec(@x + o.x, @y + o.y)
   }
   __add__(n: Long) {
-    Vec(self.x + n, self.y + n)
+    Vec(@x + n, @y + n)
   }
   __mul__(n: Long) {
-    Vec(self.x * n, self.y * n)
+    Vec(@x * n, @y * n)
   }
   __mul__(o: Vec) {
-    self.x * o.x + self.y * o.y
+    @x * o.x + @y * o.y
   }
   __eq__(o: Vec) {
-    self.x == o.x && self.y == o.y
+    @x == o.x && @y == o.y
   }
   __eq__(n: Long) {
-    self.x == n
+    @x == n
   }
   __index__(i: Long) {
-    [self.x, self.y][i]
+    [@x, @y][i]
   }
   __index__(s: String) {
     "k:{s}"
   }
   __setindex__(i: Long, v: Long) {
-    if i == 0 { self.x = v } else { self.y = v }
+    if i == 0 { @x = v } else { @y = v }
   }
   show() {
-    "({self.x},{self.y})"
+    "({@x},{@y})"
   }
 }
 show('dunder vec+vec', || (Vec(1, 2) + Vec(10, 20)).show())
@@ -139,11 +139,11 @@ class Pt {
   x: Float
   y: Float
   new(x, y) {
-    self.x = to_float(x)
-    self.y = to_float(y)
+    @x = to_float(x)
+    @y = to_float(y)
   }
   __add__(o) {
-    Pt(self.x + o.x, self.y + o.y)
+    Pt(@x + o.x, @y + o.y)
   }
 }
 show('value fields', || Pt(1, 2).keys())
@@ -178,7 +178,7 @@ show('value ctor add', fn () {
   class Bad {
     x: Long
     new(k) {
-      self.x = 1
+      @x = 1
       self[k] = 2
     }
   }
@@ -189,8 +189,8 @@ show('value add op', || (Pt(1, 2) + Pt(3, 4)).x)
 @derive(Eq, Show)
 class D {
   new(a, s) {
-    self.a = a
-    self.s = s
+    @a = a
+    @s = s
   }
 }
 show('derive to_s', || D(2, 'x').to_s())
@@ -198,22 +198,22 @@ show('derive eq', || D(2, 'x') == D(2, 'x'))
 
 class Leaf {
   new(d) {
-    self.data = d
+    @data = d
   }
 }
 class Model {
   new() {
-    self.a = Leaf(1)
-    self.scalar = 42
-    self._cache = Leaf(99)
-    self.rows = [[Leaf(2), Leaf(3)], {k: Leaf(4)}]
+    @a = Leaf(1)
+    @scalar = 42
+    @_cache = Leaf(99)
+    @rows = [[Leaf(2), Leaf(3)], {k: Leaf(4)}]
   }
 }
 show('parameters', || Model().parameters().map(|p| p.data))
 show('parameters extra arg ignored', || Model().parameters(1, 2).size())
 class Own {
   new() {
-    self.a = Leaf(1)
+    @a = Leaf(1)
   }
   parameters() {
     ['own']
@@ -260,19 +260,19 @@ show('static field immutable', fn () {
 
 class Layer {
   new(w) {
-    self.w = w
+    @w = w
   }
   __call__(x) {
-    x * self.w
+    x * @w
   }
 }
 class Net {
   new() {
-    self.l1 = Layer(2)
-    self.l2 = Layer(3)
+    @l1 = Layer(2)
+    @l2 = Layer(3)
   }
   __call__(x) {
-    self.l2(self.l1(x))
+    @l2(@l1(x))
   }
 }
 fn apply2(cb: Function, v) {

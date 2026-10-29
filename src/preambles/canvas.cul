@@ -112,24 +112,24 @@ let _canvas_module = fn () {
       } else {
         pixels.map(|i| palette[i])
       }
-      self._id = _Canvas.sprite_load(rgba_px, w, h)
-      self._w = _Canvas.sprite_width(self._id)
-      self._h = _Canvas.sprite_height(self._id)
+      @_id = _Canvas.sprite_load(rgba_px, w, h)
+      @_w = _Canvas.sprite_width(@_id)
+      @_h = _Canvas.sprite_height(@_id)
     }
     # Decode a PNG image (its bytes as a String, e.g. from `FS.read`) and
     # upload it. The size comes from the image, so there is nothing to pass.
     # Raises ValueError on anything that isn't a decodable PNG.
     new(png: String) {
-      self._id = _Canvas.sprite_from_png(png)
-      self._w = _Canvas.sprite_width(self._id)
-      self._h = _Canvas.sprite_height(self._id)
+      @_id = _Canvas.sprite_from_png(png)
+      @_w = _Canvas.sprite_width(@_id)
+      @_h = _Canvas.sprite_height(@_id)
     }
     # A blank w×h sprite in one colour — the raw material of an offscreen
     # draw target (see Canvas.draw_to).
     new(w: Long, h: Long, color = 0) {
-      self._id = _Canvas.sprite_blank(w, h, color)
-      self._w = _Canvas.sprite_width(self._id)
-      self._h = _Canvas.sprite_height(self._id)
+      @_id = _Canvas.sprite_blank(w, h, color)
+      @_w = _Canvas.sprite_width(@_id)
+      @_h = _Canvas.sprite_height(@_id)
     }
     # Named form of the String constructor, for call sites where `Sprite(data)`
     # would not read as "this is a PNG".
@@ -144,25 +144,25 @@ let _canvas_module = fn () {
     # program that creates them per frame doesn't grow the registry. A
     # constructor that threw (bad PNG bytes) drops before _id was ever set.
     drop() {
-      _Canvas.sprite_free(self._id) if self._id != nil
+      _Canvas.sprite_free(@_id) if @_id != nil
     }
     width() {
-      self._w
+      @_w
     }
     height() {
-      self._h
+      @_h
     }
     # Blit the whole sprite to (x, y). flip_x/flip_y mirror; transpose swaps
     # X/Y. Transparent (alpha 0) pixels are skipped.
     draw(x, y, flip_x = false, flip_y = false, transpose = false) {
       _Canvas.blit(
-        self._id,
+        @_id,
         x,
         y,
         0,
         0,
-        self._w,
-        self._h,
+        @_w,
+        @_h,
         _blit_flags(flip_x, flip_y, transpose),
       )
     }
@@ -179,7 +179,7 @@ let _canvas_module = fn () {
       transpose = false,
     ) {
       _Canvas.blit(
-        self._id,
+        @_id,
         x,
         y,
         sx,
@@ -204,15 +204,15 @@ let _canvas_module = fn () {
       alpha = 255,
     ) {
       _Canvas.blit_scaled(
-        self._id,
+        @_id,
         x,
         y,
         w,
         h,
         0,
         0,
-        self._w,
-        self._h,
+        @_w,
+        @_h,
         _scale_flags(flip_x, flip_y, smooth),
         alpha,
       )
@@ -233,7 +233,7 @@ let _canvas_module = fn () {
       alpha = 255,
     ) {
       _Canvas.blit_scaled(
-        self._id,
+        @_id,
         x,
         y,
         w,
@@ -250,7 +250,7 @@ let _canvas_module = fn () {
     # `FS.write(path, sprite.to_png())` saves what `Sprite.from_png(FS.read(
     # path))` loads back.
     to_png() {
-      _Canvas.sprite_to_png(self._id)
+      _Canvas.sprite_to_png(@_id)
     }
   }
 
@@ -264,23 +264,23 @@ let _canvas_module = fn () {
   # -- only load fonts from trusted sources.
   class Font {
     new(data: String) {
-      self._id = _Canvas.ttf_load(data)
+      @_id = _Canvas.ttf_load(data)
     }
     # A font's native memory frees when the last reference drops, mirroring
     # Sprite. A constructor that threw (bad font bytes) drops before _id was
     # ever set.
     drop() {
-      _Canvas.ttf_free(self._id) if self._id != nil
+      _Canvas.ttf_free(@_id) if @_id != nil
     }
     # Pixel ascent at `size`: how far the tallest glyph reaches above the
     # baseline. draw()/text_width() use this so (x, y) reads as visual
     # top-left, matching Canvas.text's convention even though the native
     # primitive places glyphs by baseline.
     ascent(size) {
-      _Canvas.ttf_ascent(self._id, size)
+      _Canvas.ttf_ascent(@_id, size)
     }
     advance(codepoint, size) {
-      _Canvas.ttf_advance(self._id, codepoint, size)
+      _Canvas.ttf_advance(@_id, codepoint, size)
     }
     # Draw `s` at (x, y) -- visual top-left -- in `color` at `size` px. Every
     # Unicode scalar value in `s` is drawn (full Unicode, unlike the built-in
@@ -288,10 +288,10 @@ let _canvas_module = fn () {
     # .notdef glyph rather than being skipped. No kerning (v1): advance is
     # the sum of each glyph's own width.
     draw(s, x, y, color, size) {
-      let baseline = y + self.ascent(size)
+      let baseline = y + @ascent(size)
       mut cx = x
       for cp in s.code_points() {
-        cx += _Canvas.ttf_glyph(self._id, cp, cx, baseline, color, size)
+        cx += _Canvas.ttf_glyph(@_id, cp, cx, baseline, color, size)
       }
     }
     # draw(), but rasterized at the size the frame is actually presented at
@@ -307,17 +307,17 @@ let _canvas_module = fn () {
     # and Canvas.to_png() does not capture it (to_png reads the draw target;
     # use draw() for text that has to appear in a saved image).
     draw_screen(s, x, y, color, size) {
-      let baseline = y + self.ascent(size)
+      let baseline = y + @ascent(size)
       mut cx = x
       for cp in s.code_points() {
-        cx += _Canvas.ttf_glyph_screen(self._id, cp, cx, baseline, color, size)
+        cx += _Canvas.ttf_glyph_screen(@_id, cp, cx, baseline, color, size)
       }
     }
     # Pixel width `s` will occupy at `size` -- for right-aligning / centring.
     text_width(s, size) {
       mut w = 0
       for cp in s.code_points() {
-        w += self.advance(cp, size)
+        w += @advance(cp, size)
       }
       w
     }
@@ -426,19 +426,19 @@ let _canvas_module = fn () {
   # once per frame, after reading input.
   class Input {
     new() {
-      self._prev = 0
-      self._cur = 0
+      @_prev = 0
+      @_cur = 0
     }
     update() {
-      self._prev = self._cur
-      self._cur = _Canvas.buttons()
+      @_prev = @_cur
+      @_cur = _Canvas.buttons()
       self
     }
     down(btn) {
-      self._cur & btn != 0
+      @_cur & btn != 0
     }  # held now
     pressed(btn) {
-      self._cur & btn != 0 && self._prev & btn == 0
+      @_cur & btn != 0 && @_prev & btn == 0
     }  # just went down
   }
 

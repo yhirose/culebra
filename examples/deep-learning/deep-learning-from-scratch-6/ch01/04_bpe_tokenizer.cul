@@ -28,7 +28,7 @@ fn merge(ids, pair, new_id) {
 }
 
 class BPETokenizer {
-  new(.merge_rules) {
+  new(@merge_rules) {
     # id -> the bytes it stands for. Ids 0-255 are the byte values; each
     # merged id is its two halves concatenated, and both are already in the
     # table because ids are assigned in training order.
@@ -36,20 +36,20 @@ class BPETokenizer {
     for rule in merge_rules {
       id_to_bytes.push(id_to_bytes[rule[0]] + id_to_bytes[rule[1]])
     }
-    self.id_to_bytes = id_to_bytes
-    self.vocab_size = id_to_bytes.size()
+    @id_to_bytes = id_to_bytes
+    @vocab_size = id_to_bytes.size()
   }
 
   encode(text) {
     mut ids = text.bytes().collect()
-    for rule in self.merge_rules {
+    for rule in @merge_rules {
       ids = merge(ids, pack(rule[0], rule[1]), rule[2])
     }
     ids
   }
 
   decode(ids) {
-    String.from_bytes(ids.flat_map(|id| self.id_to_bytes[id]))
+    String.from_bytes(ids.flat_map(|id| @id_to_bytes[id]))
   }
 }
 

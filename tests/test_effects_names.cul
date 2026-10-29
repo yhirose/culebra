@@ -183,7 +183,7 @@ assert_eq(
 // in it that refuses raises as it would in a plain fn
 let pd_drops = []
 class PdRes {
-  new(.id) {}
+  new(@id) {}
   drop() {
     pd_drops.push("drop {self.id}")
   }
@@ -252,14 +252,14 @@ effect fn sf_nested() {
   perform sf_ask()
   handle {
     class SfBox {
-      new(.m) {}
+      new(@m) {}
       get() { self.m }
     }
     let a = perform sf_ask()
     "{n}:{SfBox(10).get()}:{a}"
   } with sf_ask(resume) {
     class SfTag {
-      new(.m) {}
+      new(@m) {}
       get() { self.m }
     }
     resume(SfTag(20).get())
@@ -335,7 +335,7 @@ let sc_getv = fn () { self.v }
 fn sc_run() {
   handle {
     class _EffBody_inner {
-      new(.v) {
+      new(@v) {
       }
     }
     perform sc_ask()

@@ -186,21 +186,21 @@ let _audio_module = fn () {
   # the change before. Each answers the value, so changes chain.
   class AudioGraphValue {
     new(graph, part: Long, index: Long) {
-      self._graph = graph
-      self._part = part
-      self._index = index
+      @_graph = graph
+      @_part = part
+      @_index = index
     }
     set(at: Long | Float, value: Long | Float) {
       _Audio.graph_schedule(
-        self._graph._id,
-        [self._part, self._index, 0, at, value],
+        @_graph._id,
+        [@_part, @_index, 0, at, value],
       )
       self
     }
     ramp(at: Long | Float, value: Long | Float) {
       _Audio.graph_schedule(
-        self._graph._id,
-        [self._part, self._index, 1, at, value],
+        @_graph._id,
+        [@_part, @_index, 1, at, value],
       )
       self
     }
@@ -215,8 +215,8 @@ let _audio_module = fn () {
     gain = nil
     ring = nil
     new(graph, index: Long) {
-      self._graph = graph
-      self._index = index
+      @_graph = graph
+      @_index = index
     }
   }
 
@@ -225,7 +225,7 @@ let _audio_module = fn () {
   # with the last reference to it or to any of its parts and values.
   class AudioGraph {
     new(rate: Long | Float = 44100) {
-      self._id = _Audio.graph_new(rate)
+      @_id = _Audio.graph_new(rate)
     }
     _part(family: String, kind: String, inputs: Array, options: Array) {
       for p in inputs {
@@ -235,7 +235,7 @@ let _audio_module = fn () {
             "type error: parameter 'inputs' expects an Array of AudioGraphPart",
           )
         }
-        if p._graph._id != self._id {
+        if p._graph._id != @_id {
           __raise(
             "ValueError",
             "Audio.Graph: a part takes in parts of its own graph",
@@ -243,7 +243,7 @@ let _audio_module = fn () {
         }
       }
       let n = _Audio.graph_part(
-        self._id,
+        @_id,
         family,
         kind,
         inputs.map(|p| p._index),
@@ -255,12 +255,12 @@ let _audio_module = fn () {
       AudioGraphValue.new(self, part._index, index)
     }
     wave(kind: String = "sine", freq: Long | Float = 440.0) {
-      let p = self._part("wave", kind, [], [freq])
-      p.freq = self._value(p, 0)
+      let p = @_part("wave", kind, [], [freq])
+      p.freq = @_value(p, 0)
       p
     }
     noise(seed: Long = 1) {
-      self._part("noise", "", [], [seed])
+      @_part("noise", "", [], [seed])
     }
     filter(
       kind: String,
@@ -268,22 +268,22 @@ let _audio_module = fn () {
       cutoff: Long | Float = 1000.0,
       q: Long | Float = 0.707,
     ) {
-      let p = self._part("filter", kind, [input], [cutoff, q])
-      p.cutoff = self._value(p, 0)
+      let p = @_part("filter", kind, [input], [cutoff, q])
+      p.cutoff = @_value(p, 0)
       p
     }
     gain(input: AudioGraphPart, gain: Long | Float = 1.0) {
-      let p = self._part("gain", "", [input], [gain])
-      p.gain = self._value(p, 0)
+      let p = @_part("gain", "", [input], [gain])
+      p.gain = @_value(p, 0)
       p
     }
     mix(inputs: Array, gain: Long | Float = 1.0) {
-      let p = self._part("gain", "", inputs, [gain])
-      p.gain = self._value(p, 0)
+      let p = @_part("gain", "", inputs, [gain])
+      p.gain = @_value(p, 0)
       p
     }
     resonate(input: AudioGraphPart, modes: Array, dry: Long | Float = 0.0) {
-      self._part(
+      @_part(
         "resonate",
         "",
         [input],
@@ -295,34 +295,34 @@ let _audio_module = fn () {
       freq: Long | Float = 220.0,
       ring: Long | Float = 2.0,
     ) {
-      let p = self._part("pluck", "", [input], [freq, ring])
-      p.freq = self._value(p, 0)
-      p.ring = self._value(p, 1)
+      let p = @_part("pluck", "", [input], [freq, ring])
+      p.freq = @_value(p, 0)
+      p.ring = @_value(p, 1)
       p
     }
     output(part: AudioGraphPart) {
-      if part._graph._id != self._id {
+      if part._graph._id != @_id {
         __raise(
           "ValueError",
           "Audio.Graph: the output is a part of its own graph",
         )
       }
-      _Audio.graph_output(self._id, part._index)
+      _Audio.graph_output(@_id, part._index)
     }
     render(seconds: Long | Float) {
-      _Audio.graph_render(self._id, seconds)
+      _Audio.graph_render(@_id, seconds)
     }
     play() {
-      _Audio.graph_play(self._id)
+      _Audio.graph_play(@_id)
     }
     stop() {
-      _Audio.graph_stop(self._id)
+      _Audio.graph_stop(@_id)
     }
     now() {
-      _Audio.graph_now(self._id)
+      _Audio.graph_now(@_id)
     }
     drop() {
-      _Audio.graph_free(self._id) if self._id != nil
+      _Audio.graph_free(@_id) if @_id != nil
     }
   }
 
@@ -331,43 +331,43 @@ let _audio_module = fn () {
   # it. Raises ValueError when the bytes are none of the three formats.
   class Sound {
     new(data: String) {
-      self._id = _Audio.sound_load(data)
-      self._data = data
+      @_id = _Audio.sound_load(data)
+      @_data = data
     }
     # One from samples the program made: -1.0..1.0, mono, `rate` a second,
     # kept as 16 bits as a WAV file keeps them.
     new(samples: Array, rate: Long = 44100) {
       let made = _Audio.sound_samples(samples, rate)
-      self._id = made[0]
-      self._data = made[1]
+      @_id = made[0]
+      @_data = made[1]
     }
     # The bytes it was made from: the WAV, MP3 or Ogg it was given, or the
     # 16-bit WAV of the samples. Audio.Sound.new(s.data()) is the same sound.
     data() {
-      self._data
+      @_data
     }
     play() {
-      _Audio.sound_play(self._id)
+      _Audio.sound_play(@_id)
     }
     stop() {
-      _Audio.sound_stop(self._id)
+      _Audio.sound_stop(@_id)
     }
     playing() {
-      _Audio.sound_playing(self._id)
+      _Audio.sound_playing(@_id)
     }
     volume(v: Long | Float) {
-      _Audio.sound_volume(self._id, v)
+      _Audio.sound_volume(@_id, v)
     }
     pitch(p: Long | Float) {
-      _Audio.sound_pitch(self._id, p)
+      _Audio.sound_pitch(@_id, p)
     }
     pan(p: Long | Float) {
-      _Audio.sound_pan(self._id, p)
+      _Audio.sound_pan(@_id, p)
     }
     # Free the decoded sample with the last reference (a constructor that
     # threw drops before _id was ever set).
     drop() {
-      _Audio.sound_free(self._id) if self._id != nil
+      _Audio.sound_free(@_id) if @_id != nil
     }
   }
 
@@ -376,37 +376,37 @@ let _audio_module = fn () {
   # the position. Raises ValueError when the bytes are neither format.
   class Music {
     new(data: String, loop: Bool = true) {
-      self._id = _Audio.music_load(data, loop)
+      @_id = _Audio.music_load(data, loop)
     }
     play() {
-      _Audio.music_play(self._id)
+      _Audio.music_play(@_id)
     }
     stop() {
-      _Audio.music_stop(self._id)
+      _Audio.music_stop(@_id)
     }
     pause() {
-      _Audio.music_pause(self._id)
+      _Audio.music_pause(@_id)
     }
     resume() {
-      _Audio.music_resume(self._id)
+      _Audio.music_resume(@_id)
     }
     playing() {
-      _Audio.music_playing(self._id)
+      _Audio.music_playing(@_id)
     }
     seek(seconds: Long | Float) {
-      _Audio.music_seek(self._id, seconds)
+      _Audio.music_seek(@_id, seconds)
     }
     volume(v: Long | Float) {
-      _Audio.music_volume(self._id, v)
+      _Audio.music_volume(@_id, v)
     }
     pitch(p: Long | Float) {
-      _Audio.music_pitch(self._id, p)
+      _Audio.music_pitch(@_id, p)
     }
     pan(p: Long | Float) {
-      _Audio.music_pan(self._id, p)
+      _Audio.music_pan(@_id, p)
     }
     drop() {
-      _Audio.music_free(self._id) if self._id != nil
+      _Audio.music_free(@_id) if @_id != nil
     }
   }
 
@@ -415,49 +415,49 @@ let _audio_module = fn () {
   # no audio device nothing plays, and the block still counts.
   class PCM {
     new(rate: Long, channels: Long, buffer: Long) {
-      self._id = _Audio.pcm_new(rate, channels, buffer)
+      @_id = _Audio.pcm_new(rate, channels, buffer)
     }
     ready() {
-      _Audio.pcm_ready(self._id)
+      _Audio.pcm_ready(@_id)
     }
     needed() {
-      _Audio.pcm_needed(self._id)
+      _Audio.pcm_needed(@_id)
     }
     push(samples: Array) {
-      _Audio.pcm_push(self._id, samples)
+      _Audio.pcm_push(@_id, samples)
     }
     submit() {
-      _Audio.pcm_submit(self._id)
+      _Audio.pcm_submit(@_id)
     }
     latency() {
-      _Audio.pcm_latency(self._id)
+      _Audio.pcm_latency(@_id)
     }
     play() {
-      _Audio.pcm_play(self._id)
+      _Audio.pcm_play(@_id)
     }
     stop() {
-      _Audio.pcm_stop(self._id)
+      _Audio.pcm_stop(@_id)
     }
     pause() {
-      _Audio.pcm_pause(self._id)
+      _Audio.pcm_pause(@_id)
     }
     resume() {
-      _Audio.pcm_resume(self._id)
+      _Audio.pcm_resume(@_id)
     }
     playing() {
-      _Audio.pcm_playing(self._id)
+      _Audio.pcm_playing(@_id)
     }
     volume(v: Long | Float) {
-      _Audio.pcm_volume(self._id, v)
+      _Audio.pcm_volume(@_id, v)
     }
     pitch(p: Long | Float) {
-      _Audio.pcm_pitch(self._id, p)
+      _Audio.pcm_pitch(@_id, p)
     }
     pan(p: Long | Float) {
-      _Audio.pcm_pan(self._id, p)
+      _Audio.pcm_pan(@_id, p)
     }
     drop() {
-      _Audio.pcm_free(self._id) if self._id != nil
+      _Audio.pcm_free(@_id) if @_id != nil
     }
   }
 
@@ -469,28 +469,28 @@ let _audio_module = fn () {
   # arrives: ready() says which, and Audio.capture_available() says before.
   class Capture {
     new(rate: Long = 44100, channels: Long = 1) {
-      self._id = _Audio.capture_new(rate, channels)
+      @_id = _Audio.capture_new(rate, channels)
     }
     ready() {
-      _Audio.capture_ready(self._id)
+      _Audio.capture_ready(@_id)
     }
     start() {
-      _Audio.capture_start(self._id)
+      _Audio.capture_start(@_id)
     }
     stop() {
-      _Audio.capture_stop(self._id)
+      _Audio.capture_stop(@_id)
     }
     running() {
-      _Audio.capture_running(self._id)
+      _Audio.capture_running(@_id)
     }
     waiting() {
-      _Audio.capture_waiting(self._id)
+      _Audio.capture_waiting(@_id)
     }
     read(frames = nil) {
-      _Audio.capture_read(self._id, frames == nil ? -1 : frames)
+      _Audio.capture_read(@_id, frames == nil ? -1 : frames)
     }
     drop() {
-      _Audio.capture_free(self._id) if self._id != nil
+      _Audio.capture_free(@_id) if @_id != nil
     }
   }
 

@@ -29,40 +29,40 @@ fn _regex_interp(x) {
 let _regex_module = fn () {
   class Regex {
     new(pattern) {
-      self._pat = pattern
+      @_pat = pattern
       _Regex.check(pattern)
     }
     test(s) {
-      _Regex.test(self._pat, s)
+      _Regex.test(@_pat, s)
     }
     find(s) {
-      _Regex.find(self._pat, s)
+      _Regex.find(@_pat, s)
     }
     match(s) {
-      _Regex.match(self._pat, s)
+      _Regex.match(@_pat, s)
     }
     find_all(s) {
-      _Regex.find_all(self._pat, s)
+      _Regex.find_all(@_pat, s)
     }
     find_all_str(s) {
-      _Regex.find_all_str(self._pat, s)
+      _Regex.find_all_str(@_pat, s)
     }
     find_all_index(s) {
-      _Regex.find_all_index(self._pat, s)
+      _Regex.find_all_index(@_pat, s)
     }
     count(s) {
-      _Regex.count(self._pat, s)
+      _Regex.count(@_pat, s)
     }
     find_iter(s) {
-      _regex_find_iter(self._pat, s)
+      _regex_find_iter(@_pat, s)
     }
     replace_all(s, repl) {
       if type_of(repl) != "Function" {
-        return _Regex.replace_all(self._pat, s, repl)
+        return _Regex.replace_all(@_pat, s, repl)
       }
       let mut out = ""
       let mut last = 0
-      for m in _Regex.find_all(self._pat, s) {
+      for m in _Regex.find_all(@_pat, s) {
         out = out + s.slice(last, m.start) + repl(m)
         last = m.end
       }
@@ -70,14 +70,14 @@ let _regex_module = fn () {
     }
     replace_first(s, repl) {
       if type_of(repl) != "Function" {
-        return _Regex.replace_first(self._pat, s, repl)
+        return _Regex.replace_first(@_pat, s, repl)
       }
-      let m = _Regex.find(self._pat, s)
+      let m = _Regex.find(@_pat, s)
       return s if m == nil
       s.slice(0, m.start) + repl(m) + s.slice(m.end, s.size())
     }
     split(s) {
-      _Regex.split(self._pat, s)
+      _Regex.split(@_pat, s)
     }
   }
   {

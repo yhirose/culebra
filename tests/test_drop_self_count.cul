@@ -21,7 +21,7 @@ fn dsc_left(f) {
 # function that made it.
 mut dsc_keep = []
 class DscKeeper {
-  new(.id) {}
+  new(@id) {}
   drop() {
     dsc_keep.push(self)
   }
@@ -42,7 +42,7 @@ dsc_keep = []
 # object the body stored is a live one, its own edge still in place.
 mut dsc_keep2 = []
 class DscKeptCycle {
-  new(.id) {
+  new(@id) {
     self.me = nil
   }
   drop() {

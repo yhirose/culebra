@@ -129,7 +129,7 @@ assert_eq(try {
 # An instance of a class is what its class says, whatever it keeps in a field
 # named `kind`.
 class Tagged {
-  new(.kind) {}
+  new(@kind) {}
 }
 assert_eq(try {
   throw Tagged('TypeError')
@@ -185,7 +185,7 @@ let typed_same_name = fn () {
   class ValueError {
     code: Long
     ratio: Float
-    new(.code, .ratio) {}
+    new(@code, @ratio) {}
   }
   let code_of = fn (e: ValueError) {
     e.code
@@ -213,7 +213,7 @@ assert_eq(typed_same_name(), [7, 3.0, nil, 'TypeError'])
 # to the name, and each is still what it is.
 let same_name = fn () {
   class IOError {
-    new(.path) {}
+    new(@path) {}
   }
   let what = fn (thrower) {
     try {

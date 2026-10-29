@@ -545,7 +545,7 @@ test_declaration_reads_another_binding()
 # ---- member it calls is spliced onto it like a step of any other chain.
 @value
 class SelfCalls {
-  new(.x: Float, .y: Float) {}
+  new(@x: Float, @y: Float) {}
   sq() {
     self.x * self.x + self.y * self.y
   }
@@ -596,7 +596,7 @@ test_member_calls_member_through_self()
 # ---- no `@value`) is the reference for every answer.
 @value
 class Ends {
-  new(.x: Float, .y: Float) {}
+  new(@x: Float, @y: Float) {}
   len() {
     Math.sqrt(self.x * self.x + self.y * self.y)
   }
@@ -623,7 +623,7 @@ class Ends {
 }
 
 class BoxedEnds {
-  new(.x: Float, .y: Float) {}
+  new(@x: Float, @y: Float) {}
   len() {
     Math.sqrt(self.x * self.x + self.y * self.y)
   }
@@ -758,7 +758,7 @@ test_spliced_step_after_a_spliced_argument()
 # ---- there takes keeps the binding boxed.
 @value
 class Writes {
-  new(.x: Float, .y: Float) {}
+  new(@x: Float, @y: Float) {}
   scale(k) {
     Writes.new(self.x * k, self.y * k)
   }
@@ -832,7 +832,7 @@ test_name_inside_another_writes_head()
 # ---- runs in a function of its own: an uncaptured binding stays unboxed.
 @value
 class Stepped {
-  new(.x: Float, .y: Float) {
+  new(@x: Float, @y: Float) {
     self.x += 1.0
     self.y ??= 9.0
   }
@@ -840,14 +840,14 @@ class Stepped {
 
 @value
 class LongStepped {
-  new(.n: Long) {
+  new(@n: Long) {
     self.n += 0.5
   }
 }
 
 @value
 class Checked {
-  new(.x: Float, .y: Float) {}
+  new(@x: Float, @y: Float) {}
   as_long() -> Long {
     self.x
   }
@@ -890,7 +890,7 @@ fn checked_let_own() {
 
 @value
 class LongScaled {
-  new(.x: Float, .y: Float) {}
+  new(@x: Float, @y: Float) {}
   __mul__(k: Long) {
     LongScaled.new(self.x * k, self.y * k)
   }

@@ -43,28 +43,28 @@ inline constexpr const char* TIME_MODULE_SOURCE = R"=culpre=(let _time_module = 
   }
   class Duration {
     new(nanos) {
-      self._nanos = nanos
+      @_nanos = nanos
     }
     seconds() {
-      to_float(self._nanos) / 1000000000.0
+      to_float(@_nanos) / 1000000000.0
     }
     milliseconds() {
-      to_float(self._nanos) / 1000000.0
+      to_float(@_nanos) / 1000000.0
     }
     minutes() {
-      self.seconds() / 60.0
+      @seconds() / 60.0
     }
     hours() {
-      self.seconds() / 3600.0
+      @seconds() / 3600.0
     }
     days() {
-      self.seconds() / 86400.0
+      @seconds() / 86400.0
     }
     abs() {
-      if self._nanos < 0 {
+      if @_nanos < 0 {
         -self
       } else {
-        Duration.new(self._nanos)
+        Duration.new(@_nanos)
       }
     }
     __add__(o) {
@@ -72,67 +72,67 @@ inline constexpr const char* TIME_MODULE_SOURCE = R"=culpre=(let _time_module = 
         d: Duration => d._nanos,
       }
       _type_error("Duration", o) if n == nil
-      Duration.new(_add_ns(self._nanos, n))
+      Duration.new(_add_ns(@_nanos, n))
     }
     __sub__(o) {
       let n = match o {
         d: Duration => d._nanos,
       }
       _type_error("Duration", o) if n == nil
-      Duration.new(_sub_ns(self._nanos, n))
+      Duration.new(_sub_ns(@_nanos, n))
     }
     __mul__(n) {
-      Duration.new(_scale_ns(n, self._nanos))
+      Duration.new(_scale_ns(n, @_nanos))
     }
     __div__(n) {
       Duration.new(match n {
         i: Long => {
-          _out_of_range() if i == -1 && self._nanos == _long_min
-          self._nanos / i
+          _out_of_range() if i == -1 && @_nanos == _long_min
+          @_nanos / i
         },
-        f: Float => _float_ns(to_float(self._nanos) / f),
+        f: Float => _float_ns(to_float(@_nanos) / f),
         _ => _type_error("Long or Float", n),
       })
     }
     __neg__() {
-      Duration.new(_sub_ns(0, self._nanos))
+      Duration.new(_sub_ns(0, @_nanos))
     }
     __lt__(o) {
       let n = match o {
         d: Duration => d._nanos,
       }
       _type_error("Duration", o) if n == nil
-      self._nanos < n
+      @_nanos < n
     }
     __le__(o) {
       let n = match o {
         d: Duration => d._nanos,
       }
       _type_error("Duration", o) if n == nil
-      self._nanos <= n
+      @_nanos <= n
     }
     __eq__(o) {
       let n = match o {
         d: Duration => d._nanos,
       }
-      n != nil && self._nanos == n
+      n != nil && @_nanos == n
     }
   }
   class Instant {
     new(nanos) {
-      self._nanos = nanos
+      @_nanos = nanos
     }
     iso(utc = true) {
-      _Time.iso_nanos(self._nanos, utc)
+      _Time.iso_nanos(@_nanos, utc)
     }
     format(fmt, utc = false) {
-      _Time.format_nanos(self._nanos, fmt, utc)
+      _Time.format_nanos(@_nanos, fmt, utc)
     }
     parts(utc = false) {
-      _Time.parts_nanos(self._nanos, utc)
+      _Time.parts_nanos(@_nanos, utc)
     }
     weekday(utc = false) {
-      _Time.weekday_nanos(self._nanos, utc)
+      _Time.weekday_nanos(@_nanos, utc)
     }
     add(
       years = 0,
@@ -144,7 +144,7 @@ inline constexpr const char* TIME_MODULE_SOURCE = R"=culpre=(let _time_module = 
       utc = false,
     ) {
       Instant.new(_Time.add_nanos(
-        self._nanos,
+        @_nanos,
         years,
         months,
         days,
@@ -155,25 +155,25 @@ inline constexpr const char* TIME_MODULE_SOURCE = R"=culpre=(let _time_module = 
       ))
     }
     start_of(unit, utc = false) {
-      Instant.new(_Time.start_of_nanos(self._nanos, unit, utc))
+      Instant.new(_Time.start_of_nanos(@_nanos, unit, utc))
     }
     unix() {
-      to_float(self._nanos) / 1000000000.0
+      to_float(@_nanos) / 1000000000.0
     }
     unix_nanos() {
-      self._nanos
+      @_nanos
     }
     __add__(o) {
       let n = match o {
         d: Duration => d._nanos,
       }
       _type_error("Duration", o) if n == nil
-      Instant.new(_add_ns(self._nanos, n))
+      Instant.new(_add_ns(@_nanos, n))
     }
     __sub__(o) {
       let r = match o {
-        d: Duration => Instant.new(_sub_ns(self._nanos, d._nanos)),
-        i: Instant => Duration.new(_sub_ns(self._nanos, i._nanos)),
+        d: Duration => Instant.new(_sub_ns(@_nanos, d._nanos)),
+        i: Instant => Duration.new(_sub_ns(@_nanos, i._nanos)),
       }
       _type_error("Duration or Instant", o) if r == nil
       r
@@ -183,20 +183,20 @@ inline constexpr const char* TIME_MODULE_SOURCE = R"=culpre=(let _time_module = 
         i: Instant => i._nanos,
       }
       _type_error("Instant", o) if n == nil
-      self._nanos < n
+      @_nanos < n
     }
     __le__(o) {
       let n = match o {
         i: Instant => i._nanos,
       }
       _type_error("Instant", o) if n == nil
-      self._nanos <= n
+      @_nanos <= n
     }
     __eq__(o) {
       let n = match o {
         i: Instant => i._nanos,
       }
-      n != nil && self._nanos == n
+      n != nil && @_nanos == n
     }
   }
   {
@@ -581,13 +581,13 @@ inline constexpr const char* TERM_MODULE_SOURCE = R"=culpre=(let _term_module = 
   # stays alloc-free (see clear()).
   class Screen {
     new() {
-      self._w = 0
-      self._h = 0
-      self._fw = 0
-      self._back = []
-      self._front = []
-      self._bstyle = []
-      self._fstyle = []
+      @_w = 0
+      @_h = 0
+      @_fw = 0
+      @_back = []
+      @_front = []
+      @_bstyle = []
+      @_fstyle = []
     }
     cols() {
       _Term.cols()
@@ -602,41 +602,41 @@ inline constexpr const char* TERM_MODULE_SOURCE = R"=culpre=(let _term_module = 
       let w = _Term.cols()
       let h = _Term.rows()
       let n = w * h
-      self._w = w
-      self._h = h
+      @_w = w
+      @_h = h
       # Reuse the buffers on the common path (size unchanged); only reallocate
       # when the terminal was resized.
-      if self._back.size() == n {
+      if @_back.size() == n {
         for i in 0..n {
-          self._back[i] = " "
-          self._bstyle[i] = ""
+          @_back[i] = " "
+          @_bstyle[i] = ""
         }
       } else {
-        self._back = []
-        self._bstyle = []
+        @_back = []
+        @_bstyle = []
         for _ in 0..n {
-          self._back.push(" ")
-          self._bstyle.push("")
+          @_back.push(" ")
+          @_bstyle.push("")
         }
       }
       self
     }
     set(x, y, glyph, style = "") {
       let gs = to_string(glyph)  # graphemes()/slices yield StringView
-      if x >= 0 && x < self._w && y >= 0 && y < self._h {
-        let idx = y * self._w + x
-        self._back[idx] = gs
-        self._bstyle[idx] = style
-        if x + 1 < self._w {
+      if x >= 0 && x < @_w && y >= 0 && y < @_h {
+        let idx = y * @_w + x
+        @_back[idx] = gs
+        @_bstyle[idx] = style
+        if x + 1 < @_w {
           # "" marks the right half of a wide glyph, so it must be written and
           # taken back with its owner: a narrow glyph landing here frees the
           # cell the previous wide one held.
           if _Term.width(gs) == 2 {
-            self._back[idx + 1] = ""
-            self._bstyle[idx + 1] = style
-          } else if self._back[idx + 1] == "" {
-            self._back[idx + 1] = " "
-            self._bstyle[idx + 1] = style
+            @_back[idx + 1] = ""
+            @_bstyle[idx + 1] = style
+          } else if @_back[idx + 1] == "" {
+            @_back[idx + 1] = " "
+            @_bstyle[idx + 1] = style
           }
         }
       }
@@ -646,7 +646,7 @@ inline constexpr const char* TERM_MODULE_SOURCE = R"=culpre=(let _term_module = 
       mut cx = x
       for g in s.graphemes() {
         let gs = to_string(g)
-        self.set(cx, y, gs, style)
+        @set(cx, y, gs, style)
         # Advance by the glyph's own display width, the same measure set() uses
         # to blank the continuation cell. Reading that cell back instead misses
         # the row offset and breaks whenever the draw was clipped.
@@ -662,39 +662,39 @@ inline constexpr const char* TERM_MODULE_SOURCE = R"=culpre=(let _term_module = 
     # updates the front buffer. Empty when nothing changed. Returned (not
     # printed) so it is testable; flush() prints it.
     render() {
-      let n = self._w * self._h
+      let n = @_w * @_h
       mut out = ""
       # A reshape that keeps the cell count (80x24 -> 48x40) moves every cell to
       # a new column, so the width has to invalidate the front buffer too.
-      if self._front.size() != n || self._fw != self._w {
-        self._front = []
-        self._fstyle = []
+      if @_front.size() != n || @_fw != @_w {
+        @_front = []
+        @_fstyle = []
         for _ in 0..n {
-          self._front.push("\x00")
-          self._fstyle.push("")
+          @_front.push("\x00")
+          @_fstyle.push("")
         }  # force a full repaint
-        self._fw = self._w
+        @_fw = @_w
         out = "\x1b[2J"  # wipe stale content
       }
       mut cy = -1
       mut cx = -1
       mut pen = ""  # SGR currently applied at the terminal ("" = default)
-      for y in 0..self._h {
-        for x in 0..self._w {
-          let idx = y * self._w + x
-          let back = self._back[idx]
+      for y in 0..@_h {
+        for x in 0..@_w {
+          let idx = y * @_w + x
+          let back = @_back[idx]
           if back == "" {
-            self._front[idx] = ""
-            self._fstyle[idx] = self._bstyle[idx]
+            @_front[idx] = ""
+            @_fstyle[idx] = @_bstyle[idx]
           } else {
-            let st = self._bstyle[idx]
+            let st = @_bstyle[idx]
             # A wide glyph owns the cell to its right, so it is stale when that
             # cell shows anything but a continuation — an overlapping draw wrote
             # there last frame and only the owner can paint over it.
-            let half_lost = x + 1 < self._w &&
-              self._back[idx + 1] == "" &&
-              self._front[idx + 1] != ""
-            if back != self._front[idx] || st != self._fstyle[idx] || half_lost {
+            let half_lost = x + 1 < @_w &&
+              @_back[idx + 1] == "" &&
+              @_front[idx + 1] != ""
+            if back != @_front[idx] || st != @_fstyle[idx] || half_lost {
               if cy != y || cx != x {
                 out = out +
                   "\x1b[" +
@@ -709,18 +709,18 @@ inline constexpr const char* TERM_MODULE_SOURCE = R"=culpre=(let _term_module = 
                 pen = st
               }
               out = out + back
-              self._front[idx] = back
-              self._fstyle[idx] = st
+              @_front[idx] = back
+              @_fstyle[idx] = st
               # Advance the tracked cursor by the glyph's real display width, the
               # same measure set() uses to blank the continuation cell. Keying off
               # the neighbour cell instead under-counts when overlapping draws have
               # since filled it, drifting cx and stranding a later cell's erase.
-              let wide = x + 1 < self._w && _Term.width(back) == 2
+              let wide = x + 1 < @_w && _Term.width(back) == 2
               cy = y
               if wide {
                 cx = x + 2
-                self._front[idx + 1] = ""
-                self._fstyle[idx + 1] = st
+                @_front[idx + 1] = ""
+                @_fstyle[idx + 1] = st
               } else {
                 cx = x + 1
               }
@@ -734,7 +734,7 @@ inline constexpr const char* TERM_MODULE_SOURCE = R"=culpre=(let _term_module = 
       out
     }
     flush() {
-      IO.print(self.render())
+      IO.print(@render())
       _Term.flush()
       self
     }
@@ -979,24 +979,24 @@ inline constexpr const char* CANVAS_MODULE_SOURCE = R"=culpre=(let _canvas_modul
       } else {
         pixels.map(|i| palette[i])
       }
-      self._id = _Canvas.sprite_load(rgba_px, w, h)
-      self._w = _Canvas.sprite_width(self._id)
-      self._h = _Canvas.sprite_height(self._id)
+      @_id = _Canvas.sprite_load(rgba_px, w, h)
+      @_w = _Canvas.sprite_width(@_id)
+      @_h = _Canvas.sprite_height(@_id)
     }
     # Decode a PNG image (its bytes as a String, e.g. from `FS.read`) and
     # upload it. The size comes from the image, so there is nothing to pass.
     # Raises ValueError on anything that isn't a decodable PNG.
     new(png: String) {
-      self._id = _Canvas.sprite_from_png(png)
-      self._w = _Canvas.sprite_width(self._id)
-      self._h = _Canvas.sprite_height(self._id)
+      @_id = _Canvas.sprite_from_png(png)
+      @_w = _Canvas.sprite_width(@_id)
+      @_h = _Canvas.sprite_height(@_id)
     }
     # A blank w×h sprite in one colour — the raw material of an offscreen
     # draw target (see Canvas.draw_to).
     new(w: Long, h: Long, color = 0) {
-      self._id = _Canvas.sprite_blank(w, h, color)
-      self._w = _Canvas.sprite_width(self._id)
-      self._h = _Canvas.sprite_height(self._id)
+      @_id = _Canvas.sprite_blank(w, h, color)
+      @_w = _Canvas.sprite_width(@_id)
+      @_h = _Canvas.sprite_height(@_id)
     }
     # Named form of the String constructor, for call sites where `Sprite(data)`
     # would not read as "this is a PNG".
@@ -1011,25 +1011,25 @@ inline constexpr const char* CANVAS_MODULE_SOURCE = R"=culpre=(let _canvas_modul
     # program that creates them per frame doesn't grow the registry. A
     # constructor that threw (bad PNG bytes) drops before _id was ever set.
     drop() {
-      _Canvas.sprite_free(self._id) if self._id != nil
+      _Canvas.sprite_free(@_id) if @_id != nil
     }
     width() {
-      self._w
+      @_w
     }
     height() {
-      self._h
+      @_h
     }
     # Blit the whole sprite to (x, y). flip_x/flip_y mirror; transpose swaps
     # X/Y. Transparent (alpha 0) pixels are skipped.
     draw(x, y, flip_x = false, flip_y = false, transpose = false) {
       _Canvas.blit(
-        self._id,
+        @_id,
         x,
         y,
         0,
         0,
-        self._w,
-        self._h,
+        @_w,
+        @_h,
         _blit_flags(flip_x, flip_y, transpose),
       )
     }
@@ -1046,7 +1046,7 @@ inline constexpr const char* CANVAS_MODULE_SOURCE = R"=culpre=(let _canvas_modul
       transpose = false,
     ) {
       _Canvas.blit(
-        self._id,
+        @_id,
         x,
         y,
         sx,
@@ -1071,15 +1071,15 @@ inline constexpr const char* CANVAS_MODULE_SOURCE = R"=culpre=(let _canvas_modul
       alpha = 255,
     ) {
       _Canvas.blit_scaled(
-        self._id,
+        @_id,
         x,
         y,
         w,
         h,
         0,
         0,
-        self._w,
-        self._h,
+        @_w,
+        @_h,
         _scale_flags(flip_x, flip_y, smooth),
         alpha,
       )
@@ -1100,7 +1100,7 @@ inline constexpr const char* CANVAS_MODULE_SOURCE = R"=culpre=(let _canvas_modul
       alpha = 255,
     ) {
       _Canvas.blit_scaled(
-        self._id,
+        @_id,
         x,
         y,
         w,
@@ -1117,7 +1117,7 @@ inline constexpr const char* CANVAS_MODULE_SOURCE = R"=culpre=(let _canvas_modul
     # `FS.write(path, sprite.to_png())` saves what `Sprite.from_png(FS.read(
     # path))` loads back.
     to_png() {
-      _Canvas.sprite_to_png(self._id)
+      _Canvas.sprite_to_png(@_id)
     }
   }
 
@@ -1131,23 +1131,23 @@ inline constexpr const char* CANVAS_MODULE_SOURCE = R"=culpre=(let _canvas_modul
   # -- only load fonts from trusted sources.
   class Font {
     new(data: String) {
-      self._id = _Canvas.ttf_load(data)
+      @_id = _Canvas.ttf_load(data)
     }
     # A font's native memory frees when the last reference drops, mirroring
     # Sprite. A constructor that threw (bad font bytes) drops before _id was
     # ever set.
     drop() {
-      _Canvas.ttf_free(self._id) if self._id != nil
+      _Canvas.ttf_free(@_id) if @_id != nil
     }
     # Pixel ascent at `size`: how far the tallest glyph reaches above the
     # baseline. draw()/text_width() use this so (x, y) reads as visual
     # top-left, matching Canvas.text's convention even though the native
     # primitive places glyphs by baseline.
     ascent(size) {
-      _Canvas.ttf_ascent(self._id, size)
+      _Canvas.ttf_ascent(@_id, size)
     }
     advance(codepoint, size) {
-      _Canvas.ttf_advance(self._id, codepoint, size)
+      _Canvas.ttf_advance(@_id, codepoint, size)
     }
     # Draw `s` at (x, y) -- visual top-left -- in `color` at `size` px. Every
     # Unicode scalar value in `s` is drawn (full Unicode, unlike the built-in
@@ -1155,10 +1155,10 @@ inline constexpr const char* CANVAS_MODULE_SOURCE = R"=culpre=(let _canvas_modul
     # .notdef glyph rather than being skipped. No kerning (v1): advance is
     # the sum of each glyph's own width.
     draw(s, x, y, color, size) {
-      let baseline = y + self.ascent(size)
+      let baseline = y + @ascent(size)
       mut cx = x
       for cp in s.code_points() {
-        cx += _Canvas.ttf_glyph(self._id, cp, cx, baseline, color, size)
+        cx += _Canvas.ttf_glyph(@_id, cp, cx, baseline, color, size)
       }
     }
     # draw(), but rasterized at the size the frame is actually presented at
@@ -1174,17 +1174,17 @@ inline constexpr const char* CANVAS_MODULE_SOURCE = R"=culpre=(let _canvas_modul
     # and Canvas.to_png() does not capture it (to_png reads the draw target;
     # use draw() for text that has to appear in a saved image).
     draw_screen(s, x, y, color, size) {
-      let baseline = y + self.ascent(size)
+      let baseline = y + @ascent(size)
       mut cx = x
       for cp in s.code_points() {
-        cx += _Canvas.ttf_glyph_screen(self._id, cp, cx, baseline, color, size)
+        cx += _Canvas.ttf_glyph_screen(@_id, cp, cx, baseline, color, size)
       }
     }
     # Pixel width `s` will occupy at `size` -- for right-aligning / centring.
     text_width(s, size) {
       mut w = 0
       for cp in s.code_points() {
-        w += self.advance(cp, size)
+        w += @advance(cp, size)
       }
       w
     }
@@ -1293,19 +1293,19 @@ inline constexpr const char* CANVAS_MODULE_SOURCE = R"=culpre=(let _canvas_modul
   # once per frame, after reading input.
   class Input {
     new() {
-      self._prev = 0
-      self._cur = 0
+      @_prev = 0
+      @_cur = 0
     }
     update() {
-      self._prev = self._cur
-      self._cur = _Canvas.buttons()
+      @_prev = @_cur
+      @_cur = _Canvas.buttons()
       self
     }
     down(btn) {
-      self._cur & btn != 0
+      @_cur & btn != 0
     }  # held now
     pressed(btn) {
-      self._cur & btn != 0 && self._prev & btn == 0
+      @_cur & btn != 0 && @_prev & btn == 0
     }  # just went down
   }
 
@@ -4179,29 +4179,29 @@ let _kauai_module = fn () {
   # A song, read and checked, ready to play.
   class Song {
     new(x, voices, drums) {
-      self._events = render(x)
+      @_events = render(x)
       let time = clock(x)
-      self._length = time(x.steps)
-      self._loop_at = x.song.loop ? time(x.loop_at) : -1.0
-      self._room = x.song.get("room", 0.0)
-      self._marks = x.marks.keys().map(|k| (k, time(x.marks[k]))).to_object()
-      self._about = x.about
-      let external = external_sounds(x, self._events, voices, drums)
-      self._build = external.build
-      self._plays = external.plays
-      self._weighed = external.weighed
-      self._weights = nil
-      self._todo = self._build.keys()
-      self._sounds = {}
-      self._score = nil
-      self._started = nil
-      self._volume = 1.0
+      @_length = time(x.steps)
+      @_loop_at = x.song.loop ? time(x.loop_at) : -1.0
+      @_room = x.song.get("room", 0.0)
+      @_marks = x.marks.keys().map(|k| (k, time(x.marks[k]))).to_object()
+      @_about = x.about
+      let external = external_sounds(x, @_events, voices, drums)
+      @_build = external.build
+      @_plays = external.plays
+      @_weighed = external.weighed
+      @_weights = nil
+      @_todo = @_build.keys()
+      @_sounds = {}
+      @_score = nil
+      @_started = nil
+      @_volume = 1.0
     }
 
     # External sound `key`, built the first time it is asked for.
     _sound(key) {
-      self._sounds.get_or_put(key, fn () {
-        let s = self._build[key]()
+      @_sounds.get_or_put(key, fn () {
+        let s = @_build[key]()
         if type_of(s) != "Sound" {
           __raise(
             "TypeError",
@@ -4214,8 +4214,8 @@ let _kauai_module = fn () {
 
     # Build one external sound the song still needs; answers how many remain.
     prepare() {
-      self._sound(self._todo.pop()) if !self._todo.empty()
-      self._todo.size()
+      @_sound(@_todo.pop()) if !@_todo.empty()
+      @_todo.size()
     }
 
     # The song as the mixer takes it, with `plays` of its external sounds and
@@ -4231,44 +4231,44 @@ let _kauai_module = fn () {
       for p in plays {
         needed.add(p.sound)
       }
-      for w in self._weighed.values() {
+      for w in @_weighed.values() {
         needed.add(w.sound)
       }
       # Built in the order prepare() takes them, which an instrument may hear.
-      for i in 0..self._todo.size() {
-        let key = self._todo[-1 - i]
-        self._sound(key) if needed.contains(key)
+      for i in 0..@_todo.size() {
+        let key = @_todo[-1 - i]
+        @_sound(key) if needed.contains(key)
       }
       # And one whose building prepare() took, and that threw.
       for key in needed {
-        self._sound(key)
+        @_sound(key)
       }
-      if self._weights == nil {
-        self._weights = self._weighed.keys().map(fn (by) {
-          let w = self._weighed[by]
-          let l = _Audio.sound_loudness(self._sounds[w.sound]._id)
+      if @_weights == nil {
+        @_weights = @_weighed.keys().map(fn (by) {
+          let w = @_weighed[by]
+          let l = _Audio.sound_loudness(@_sounds[w.sound]._id)
           (by, l == nil ? 1.0 : 10.0 ** ((tone_loudness(w.pitch) - l) / 20.0))
         }).to_object()
       }
       # What prepare() has left is what is still not built.
-      self._todo = self._todo.filter(|k| !self._sounds.has(k))
-      let tones = self._events.filter(|e| e.has("tone") && (to == nil || e.at < to)).map(|e| [e.at, ...e.tone])
-      let sounds = plays.map(|p| [p.at, -1, self._sounds[p.sound]._id, p.vol / 100.0 * self._weights[p.by], 0, 0, 0, 0, 0, 0, 0])
+      @_todo = @_todo.filter(|k| !@_sounds.has(k))
+      let tones = @_events.filter(|e| e.has("tone") && (to == nil || e.at < to)).map(|e| [e.at, ...e.tone])
+      let sounds = plays.map(|p| [p.at, -1, @_sounds[p.sound]._id, p.vol / 100.0 * @_weights[p.by], 0, 0, 0, 0, 0, 0, 0])
       # In time order: the mixers read it from the head.
       [...tones, ...sounds].sorted_by(|e| e[0]).flat_map(|e| e)
     }
 
     # Seconds into the song at mark `name`.
     _mark(name) {
-      let has = self._marks.empty() ? "none" : self._marks.keys().join(", ")
-      self._marks.get(name, nil) ?? __raise("ValueError", "Audio.Kauai: the song has no mark {name} (it has {has})")
+      let has = @_marks.empty() ? "none" : @_marks.keys().join(", ")
+      @_marks.get(name, nil) ?? __raise("ValueError", "Audio.Kauai: the song has no mark {name} (it has {has})")
     }
 
     # Seconds into the song at `p`: seconds, or a String of a mark's name, of
     # seconds (83.5), or of minutes and seconds (1:23.5).
     _point(p) {
       return p * 1.0 if type_of(p) != "String"
-      return self._mark(p) if !p.empty() && !"0123456789".contains(p.slice(0, 1).to_string())
+      return @_mark(p) if !p.empty() && !"0123456789".contains(p.slice(0, 1).to_string())
       let (m, s) = halves(p, ":") ?? (nil, p)
       let secs = seconds_of(s)
       let whole = (halves(s, ".") ?? (s, ""))[0]
@@ -4280,13 +4280,13 @@ let _kauai_module = fn () {
 
     # Play from the top (again, if it is playing), after building what is left.
     play() {
-      if self._score == nil {
-        self._score = _Audio.score_new(self._list(self._plays, nil), self._length, self._loop_at)
-        _Audio.score_volume(self._score, self._volume)
-        _Audio.score_room(self._score, self._room)
+      if @_score == nil {
+        @_score = _Audio.score_new(@_list(@_plays, nil), @_length, @_loop_at)
+        _Audio.score_volume(@_score, @_volume)
+        _Audio.score_room(@_score, @_room)
       }
-      _Audio.score_play(self._score)
-      self._started = _Time.monotonic()
+      _Audio.score_play(@_score)
+      @_started = _Time.monotonic()
     }
 
     # The song once through as play() sounds it, until its last sound and its
@@ -4298,21 +4298,21 @@ let _kauai_module = fn () {
     # only those that start before `to` and play notes LEAD seconds before
     # `from` or later are built.
     render(from: String | Long | Float | Nil = nil, to: String | Long | Float | Nil = nil) {
-      let part = self._part("render", from, to)
+      let part = @_part("render", from, to)
       let (first, last, start, plays) = (part.first, part.last, part.start, part.plays)
-      let list = self._list(plays, last)
+      let list = @_list(plays, last)
       let used = Set()
       for p in plays {
         used.add(p.sound)
       }
       let sounds = []
       for key in used {
-        let s = self._sounds[key]
+        let s = @_sounds[key]
         sounds.push(s._id)
         sounds.push(s.data())
       }
-      let length = last == nil ? self._length : Math.min(last, self._length)
-      let out = _Audio.score_render(list, sounds, length, self._room, self._volume, start)
+      let length = last == nil ? @_length : Math.min(last, @_length)
+      let out = _Audio.score_render(list, sounds, length, @_room, @_volume, start)
       # The lead rises as half a cosine, to the level `from` is heard at.
       let rise = Math.round((first - start) * RATE)
       for i in 0..Math.min(rise, out.size()) {
@@ -4322,35 +4322,35 @@ let _kauai_module = fn () {
     }
 
     stop() {
-      _Audio.score_stop(self._score) if self._score != nil
-      self._started = nil
+      _Audio.score_stop(@_score) if @_score != nil
+      @_started = nil
     }
 
     # The level the whole song plays at, 0.0..1.0, from its next note on.
     volume(v: Long | Float) {
-      self._volume = v * 1.0
-      _Audio.score_volume(self._score, v) if self._score != nil
+      @_volume = v * 1.0
+      _Audio.score_volume(@_score, v) if @_score != nil
     }
 
     # Whether it is playing: from play() until stop(), or its end.
     playing() {
-      self._started != nil && (self._loop_at >= 0 || _Time.monotonic() - self._started < self._length)
+      @_started != nil && (@_loop_at >= 0 || _Time.monotonic() - @_started < @_length)
     }
 
     # Whether it has played as far as `mark NAME`.
     reached(name: String) {
-      let t = self._mark(name)
-      self._started != nil && _Time.monotonic() - self._started >= t
+      let t = @_mark(name)
+      @_started != nil && _Time.monotonic() - @_started >= t
     }
 
     # Where each `mark NAME` is: {NAME: seconds into the song}, in its order.
     marks() {
-      {...self._marks}
+      {...@_marks}
     }
 
     # Seconds into the song at `at`, a point as render() takes one.
     seconds(at: String | Long | Float) {
-      self._point(at)
+      @_point(at)
     }
 
     # The part from point `from` until `to` (nil for the top or the end) as
@@ -4358,10 +4358,10 @@ let _kauai_module = fn () {
     # before `first` (or the top), and `plays`, the external sounds that
     # start before `last` and play notes from `start` on.
     _part(what, from, to) {
-      let first = from == nil ? 0.0 : self._point(from)
-      let last = to == nil ? nil : self._point(to)
-      if first < 0 || first >= self._length {
-        __raise("ValueError", "Audio.Kauai: {what}(from:) is at {first} seconds, outside the song's 0 to {self._length}")
+      let first = from == nil ? 0.0 : @_point(from)
+      let last = to == nil ? nil : @_point(to)
+      if first < 0 || first >= @_length {
+        __raise("ValueError", "Audio.Kauai: {what}(from:) is at {first} seconds, outside the song's 0 to {@_length}")
       }
       if last != nil && last <= first {
         __raise("ValueError", "Audio.Kauai: {what}(to:) is at {last} seconds, not after from: at {first}")
@@ -4371,7 +4371,7 @@ let _kauai_module = fn () {
         first: first,
         last: last,
         start: start,
-        plays: self._plays.filter(|p| (last == nil || p.at < last) && p.until >= start),
+        plays: @_plays.filter(|p| (last == nil || p.at < last) && p.until >= start),
       }
     }
 
@@ -4380,7 +4380,7 @@ let _kauai_module = fn () {
     # its instrument's key in `voices:` or `drums:`, and what the instrument
     # is handed for it.
     external_sounds(from: String | Long | Float | Nil = nil, to: String | Long | Float | Nil = nil) {
-      self._part("external_sounds", from, to).plays.sorted_by(|p| p.at).map(|p| {
+      @_part("external_sounds", from, to).plays.sorted_by(|p| p.at).map(|p| {
         at: p.at,
         until: p.until,
         by: p.by,
@@ -4391,22 +4391,22 @@ let _kauai_module = fn () {
 
     # Seconds once through.
     length() {
-      self._length
+      @_length
     }
 
     # What its `about` says: {title, composer, ...}, the items it writes.
     about() {
-      {...self._about}
+      {...@_about}
     }
 
     # What it plays, in order: {at, len, by, pitch, vol}, in seconds from its
     # start; `by` names the voice or the drum, and a drum's pitch is nil.
     events() {
-      self._events.map(|e| ({at: e.at, len: e.len, by: e.by, pitch: e.pitch, vol: e.vol}))
+      @_events.map(|e| ({at: e.at, len: e.len, by: e.by, pitch: e.pitch, vol: e.vol}))
     }
 
     drop() {
-      _Audio.score_free(self._score) if self._score != nil
+      _Audio.score_free(@_score) if @_score != nil
     }
   }
 
@@ -4631,21 +4631,21 @@ let _audio_module = fn () {
   # the change before. Each answers the value, so changes chain.
   class AudioGraphValue {
     new(graph, part: Long, index: Long) {
-      self._graph = graph
-      self._part = part
-      self._index = index
+      @_graph = graph
+      @_part = part
+      @_index = index
     }
     set(at: Long | Float, value: Long | Float) {
       _Audio.graph_schedule(
-        self._graph._id,
-        [self._part, self._index, 0, at, value],
+        @_graph._id,
+        [@_part, @_index, 0, at, value],
       )
       self
     }
     ramp(at: Long | Float, value: Long | Float) {
       _Audio.graph_schedule(
-        self._graph._id,
-        [self._part, self._index, 1, at, value],
+        @_graph._id,
+        [@_part, @_index, 1, at, value],
       )
       self
     }
@@ -4660,8 +4660,8 @@ let _audio_module = fn () {
     gain = nil
     ring = nil
     new(graph, index: Long) {
-      self._graph = graph
-      self._index = index
+      @_graph = graph
+      @_index = index
     }
   }
 
@@ -4670,7 +4670,7 @@ let _audio_module = fn () {
   # with the last reference to it or to any of its parts and values.
   class AudioGraph {
     new(rate: Long | Float = 44100) {
-      self._id = _Audio.graph_new(rate)
+      @_id = _Audio.graph_new(rate)
     }
     _part(family: String, kind: String, inputs: Array, options: Array) {
       for p in inputs {
@@ -4680,7 +4680,7 @@ let _audio_module = fn () {
             "type error: parameter 'inputs' expects an Array of AudioGraphPart",
           )
         }
-        if p._graph._id != self._id {
+        if p._graph._id != @_id {
           __raise(
             "ValueError",
             "Audio.Graph: a part takes in parts of its own graph",
@@ -4688,7 +4688,7 @@ let _audio_module = fn () {
         }
       }
       let n = _Audio.graph_part(
-        self._id,
+        @_id,
         family,
         kind,
         inputs.map(|p| p._index),
@@ -4700,12 +4700,12 @@ let _audio_module = fn () {
       AudioGraphValue.new(self, part._index, index)
     }
     wave(kind: String = "sine", freq: Long | Float = 440.0) {
-      let p = self._part("wave", kind, [], [freq])
-      p.freq = self._value(p, 0)
+      let p = @_part("wave", kind, [], [freq])
+      p.freq = @_value(p, 0)
       p
     }
     noise(seed: Long = 1) {
-      self._part("noise", "", [], [seed])
+      @_part("noise", "", [], [seed])
     }
     filter(
       kind: String,
@@ -4713,22 +4713,22 @@ let _audio_module = fn () {
       cutoff: Long | Float = 1000.0,
       q: Long | Float = 0.707,
     ) {
-      let p = self._part("filter", kind, [input], [cutoff, q])
-      p.cutoff = self._value(p, 0)
+      let p = @_part("filter", kind, [input], [cutoff, q])
+      p.cutoff = @_value(p, 0)
       p
     }
     gain(input: AudioGraphPart, gain: Long | Float = 1.0) {
-      let p = self._part("gain", "", [input], [gain])
-      p.gain = self._value(p, 0)
+      let p = @_part("gain", "", [input], [gain])
+      p.gain = @_value(p, 0)
       p
     }
     mix(inputs: Array, gain: Long | Float = 1.0) {
-      let p = self._part("gain", "", inputs, [gain])
-      p.gain = self._value(p, 0)
+      let p = @_part("gain", "", inputs, [gain])
+      p.gain = @_value(p, 0)
       p
     }
     resonate(input: AudioGraphPart, modes: Array, dry: Long | Float = 0.0) {
-      self._part(
+      @_part(
         "resonate",
         "",
         [input],
@@ -4740,34 +4740,34 @@ let _audio_module = fn () {
       freq: Long | Float = 220.0,
       ring: Long | Float = 2.0,
     ) {
-      let p = self._part("pluck", "", [input], [freq, ring])
-      p.freq = self._value(p, 0)
-      p.ring = self._value(p, 1)
+      let p = @_part("pluck", "", [input], [freq, ring])
+      p.freq = @_value(p, 0)
+      p.ring = @_value(p, 1)
       p
     }
     output(part: AudioGraphPart) {
-      if part._graph._id != self._id {
+      if part._graph._id != @_id {
         __raise(
           "ValueError",
           "Audio.Graph: the output is a part of its own graph",
         )
       }
-      _Audio.graph_output(self._id, part._index)
+      _Audio.graph_output(@_id, part._index)
     }
     render(seconds: Long | Float) {
-      _Audio.graph_render(self._id, seconds)
+      _Audio.graph_render(@_id, seconds)
     }
     play() {
-      _Audio.graph_play(self._id)
+      _Audio.graph_play(@_id)
     }
     stop() {
-      _Audio.graph_stop(self._id)
+      _Audio.graph_stop(@_id)
     }
     now() {
-      _Audio.graph_now(self._id)
+      _Audio.graph_now(@_id)
     }
     drop() {
-      _Audio.graph_free(self._id) if self._id != nil
+      _Audio.graph_free(@_id) if @_id != nil
     }
   }
 
@@ -4776,43 +4776,43 @@ let _audio_module = fn () {
   # it. Raises ValueError when the bytes are none of the three formats.
   class Sound {
     new(data: String) {
-      self._id = _Audio.sound_load(data)
-      self._data = data
+      @_id = _Audio.sound_load(data)
+      @_data = data
     }
     # One from samples the program made: -1.0..1.0, mono, `rate` a second,
     # kept as 16 bits as a WAV file keeps them.
     new(samples: Array, rate: Long = 44100) {
       let made = _Audio.sound_samples(samples, rate)
-      self._id = made[0]
-      self._data = made[1]
+      @_id = made[0]
+      @_data = made[1]
     }
     # The bytes it was made from: the WAV, MP3 or Ogg it was given, or the
     # 16-bit WAV of the samples. Audio.Sound.new(s.data()) is the same sound.
     data() {
-      self._data
+      @_data
     }
     play() {
-      _Audio.sound_play(self._id)
+      _Audio.sound_play(@_id)
     }
     stop() {
-      _Audio.sound_stop(self._id)
+      _Audio.sound_stop(@_id)
     }
     playing() {
-      _Audio.sound_playing(self._id)
+      _Audio.sound_playing(@_id)
     }
     volume(v: Long | Float) {
-      _Audio.sound_volume(self._id, v)
+      _Audio.sound_volume(@_id, v)
     }
     pitch(p: Long | Float) {
-      _Audio.sound_pitch(self._id, p)
+      _Audio.sound_pitch(@_id, p)
     }
     pan(p: Long | Float) {
-      _Audio.sound_pan(self._id, p)
+      _Audio.sound_pan(@_id, p)
     }
     # Free the decoded sample with the last reference (a constructor that
     # threw drops before _id was ever set).
     drop() {
-      _Audio.sound_free(self._id) if self._id != nil
+      _Audio.sound_free(@_id) if @_id != nil
     }
   }
 
@@ -4821,37 +4821,37 @@ let _audio_module = fn () {
   # the position. Raises ValueError when the bytes are neither format.
   class Music {
     new(data: String, loop: Bool = true) {
-      self._id = _Audio.music_load(data, loop)
+      @_id = _Audio.music_load(data, loop)
     }
     play() {
-      _Audio.music_play(self._id)
+      _Audio.music_play(@_id)
     }
     stop() {
-      _Audio.music_stop(self._id)
+      _Audio.music_stop(@_id)
     }
     pause() {
-      _Audio.music_pause(self._id)
+      _Audio.music_pause(@_id)
     }
     resume() {
-      _Audio.music_resume(self._id)
+      _Audio.music_resume(@_id)
     }
     playing() {
-      _Audio.music_playing(self._id)
+      _Audio.music_playing(@_id)
     }
     seek(seconds: Long | Float) {
-      _Audio.music_seek(self._id, seconds)
+      _Audio.music_seek(@_id, seconds)
     }
     volume(v: Long | Float) {
-      _Audio.music_volume(self._id, v)
+      _Audio.music_volume(@_id, v)
     }
     pitch(p: Long | Float) {
-      _Audio.music_pitch(self._id, p)
+      _Audio.music_pitch(@_id, p)
     }
     pan(p: Long | Float) {
-      _Audio.music_pan(self._id, p)
+      _Audio.music_pan(@_id, p)
     }
     drop() {
-      _Audio.music_free(self._id) if self._id != nil
+      _Audio.music_free(@_id) if @_id != nil
     }
   }
 
@@ -4860,49 +4860,49 @@ let _audio_module = fn () {
   # no audio device nothing plays, and the block still counts.
   class PCM {
     new(rate: Long, channels: Long, buffer: Long) {
-      self._id = _Audio.pcm_new(rate, channels, buffer)
+      @_id = _Audio.pcm_new(rate, channels, buffer)
     }
     ready() {
-      _Audio.pcm_ready(self._id)
+      _Audio.pcm_ready(@_id)
     }
     needed() {
-      _Audio.pcm_needed(self._id)
+      _Audio.pcm_needed(@_id)
     }
     push(samples: Array) {
-      _Audio.pcm_push(self._id, samples)
+      _Audio.pcm_push(@_id, samples)
     }
     submit() {
-      _Audio.pcm_submit(self._id)
+      _Audio.pcm_submit(@_id)
     }
     latency() {
-      _Audio.pcm_latency(self._id)
+      _Audio.pcm_latency(@_id)
     }
     play() {
-      _Audio.pcm_play(self._id)
+      _Audio.pcm_play(@_id)
     }
     stop() {
-      _Audio.pcm_stop(self._id)
+      _Audio.pcm_stop(@_id)
     }
     pause() {
-      _Audio.pcm_pause(self._id)
+      _Audio.pcm_pause(@_id)
     }
     resume() {
-      _Audio.pcm_resume(self._id)
+      _Audio.pcm_resume(@_id)
     }
     playing() {
-      _Audio.pcm_playing(self._id)
+      _Audio.pcm_playing(@_id)
     }
     volume(v: Long | Float) {
-      _Audio.pcm_volume(self._id, v)
+      _Audio.pcm_volume(@_id, v)
     }
     pitch(p: Long | Float) {
-      _Audio.pcm_pitch(self._id, p)
+      _Audio.pcm_pitch(@_id, p)
     }
     pan(p: Long | Float) {
-      _Audio.pcm_pan(self._id, p)
+      _Audio.pcm_pan(@_id, p)
     }
     drop() {
-      _Audio.pcm_free(self._id) if self._id != nil
+      _Audio.pcm_free(@_id) if @_id != nil
     }
   }
 
@@ -4914,28 +4914,28 @@ let _audio_module = fn () {
   # arrives: ready() says which, and Audio.capture_available() says before.
   class Capture {
     new(rate: Long = 44100, channels: Long = 1) {
-      self._id = _Audio.capture_new(rate, channels)
+      @_id = _Audio.capture_new(rate, channels)
     }
     ready() {
-      _Audio.capture_ready(self._id)
+      _Audio.capture_ready(@_id)
     }
     start() {
-      _Audio.capture_start(self._id)
+      _Audio.capture_start(@_id)
     }
     stop() {
-      _Audio.capture_stop(self._id)
+      _Audio.capture_stop(@_id)
     }
     running() {
-      _Audio.capture_running(self._id)
+      _Audio.capture_running(@_id)
     }
     waiting() {
-      _Audio.capture_waiting(self._id)
+      _Audio.capture_waiting(@_id)
     }
     read(frames = nil) {
-      _Audio.capture_read(self._id, frames == nil ? -1 : frames)
+      _Audio.capture_read(@_id, frames == nil ? -1 : frames)
     }
     drop() {
-      _Audio.capture_free(self._id) if self._id != nil
+      _Audio.capture_free(@_id) if @_id != nil
     }
   }
 
@@ -5392,40 +5392,40 @@ fn _regex_interp(x) {
 let _regex_module = fn () {
   class Regex {
     new(pattern) {
-      self._pat = pattern
+      @_pat = pattern
       _Regex.check(pattern)
     }
     test(s) {
-      _Regex.test(self._pat, s)
+      _Regex.test(@_pat, s)
     }
     find(s) {
-      _Regex.find(self._pat, s)
+      _Regex.find(@_pat, s)
     }
     match(s) {
-      _Regex.match(self._pat, s)
+      _Regex.match(@_pat, s)
     }
     find_all(s) {
-      _Regex.find_all(self._pat, s)
+      _Regex.find_all(@_pat, s)
     }
     find_all_str(s) {
-      _Regex.find_all_str(self._pat, s)
+      _Regex.find_all_str(@_pat, s)
     }
     find_all_index(s) {
-      _Regex.find_all_index(self._pat, s)
+      _Regex.find_all_index(@_pat, s)
     }
     count(s) {
-      _Regex.count(self._pat, s)
+      _Regex.count(@_pat, s)
     }
     find_iter(s) {
-      _regex_find_iter(self._pat, s)
+      _regex_find_iter(@_pat, s)
     }
     replace_all(s, repl) {
       if type_of(repl) != "Function" {
-        return _Regex.replace_all(self._pat, s, repl)
+        return _Regex.replace_all(@_pat, s, repl)
       }
       let mut out = ""
       let mut last = 0
-      for m in _Regex.find_all(self._pat, s) {
+      for m in _Regex.find_all(@_pat, s) {
         out = out + s.slice(last, m.start) + repl(m)
         last = m.end
       }
@@ -5433,14 +5433,14 @@ let _regex_module = fn () {
     }
     replace_first(s, repl) {
       if type_of(repl) != "Function" {
-        return _Regex.replace_first(self._pat, s, repl)
+        return _Regex.replace_first(@_pat, s, repl)
       }
-      let m = _Regex.find(self._pat, s)
+      let m = _Regex.find(@_pat, s)
       return s if m == nil
       s.slice(0, m.start) + repl(m) + s.slice(m.end, s.size())
     }
     split(s) {
-      _Regex.split(self._pat, s)
+      _Regex.split(@_pat, s)
     }
   }
   {
@@ -5695,48 +5695,48 @@ let _peg_module = fn () {
   # `raw` is the Object the native side builds for the match (bindings.h).
   class SemanticValues {
     new(raw, path) {
-      self._raw = raw
-      self.tokens = raw.tokens
-      self.path = path
+      @_raw = raw
+      @tokens = raw.tokens
+      @path = path
     }
     sv() {
-      self._raw.sv
+      @_raw.sv
     }
     name() {
-      self._raw.name
+      @_raw.name
     }
     line_info() {
-      (self._raw.line, self._raw.column)
+      (@_raw.line, @_raw.column)
     }
     choice() {
-      self._raw.choice
+      @_raw.choice
     }
     choice_count() {
-      self._raw.choice_count
+      @_raw.choice_count
     }
     token(id = 0) {
-      self.tokens.empty() ? self._raw.sv : self.tokens[id]
+      @tokens.empty() ? @_raw.sv : @tokens[id]
     }
     token_to_string(id = 0) {
-      self.token(id)
+      @token(id)
     }
     token_to_number() {
-      _peg_number(self.token())
+      _peg_number(@token())
     }
     transform(beg = 0, end = -1) {
-      self._raw.values.slice(beg, end < 0 ? self._raw.values.size() : end)
+      @_raw.values.slice(beg, end < 0 ? @_raw.values.size() : end)
     }
     size() {
-      self._raw.values.size()
+      @_raw.values.size()
     }
     empty() {
-      self._raw.values.empty()
+      @_raw.values.empty()
     }
     __index__(i) {
-      self._raw.values[i]
+      @_raw.values[i]
     }
     iter() {
-      for v in self._raw.values {
+      for v in @_raw.values {
         yield v
       }
     }
@@ -5744,27 +5744,27 @@ let _peg_module = fn () {
 
   class PEG {
     new(grammar = nil, start = "") {
-      self._log = nil
-      self._reset(nil, "", [])
-      self.load_grammar(grammar, start) if grammar != nil
+      @_log = nil
+      @_reset(nil, "", [])
+      @load_grammar(grammar, start) if grammar != nil
     }
     # What is set on a grammar's rules goes with the grammar, as in
     # cpp-peglib: the callbacks, enable_ast() and enable_packrat_parsing().
     _reset(src, start, no_ast_opt) {
-      self._src = src
-      self._start = start
-      self._no_ast_opt = no_ast_opt
-      self._ast = 0
-      self._packrat = false
-      self._rules = {}
+      @_src = src
+      @_start = start
+      @_no_ast_opt = no_ast_opt
+      @_ast = 0
+      @_packrat = false
+      @_rules = {}
     }
     # The logger is the parser's, and is told what peglib says of a grammar:
     # why it did not load, or what it warns of in one that did.
     load_grammar(grammar, start = "") {
       let (ok, diags, no_ast_opt) = _PEG.load(grammar, start)
-      self._reset(ok ? grammar : nil, start, no_ast_opt)
-      if self._log != nil {
-        let log = _peg_wrap_log(self._log)
+      @_reset(ok ? grammar : nil, start, no_ast_opt)
+      if @_log != nil {
+        let log = _peg_wrap_log(@_log)
         for (line, col, msg, rule) in diags {
           log(line, col, msg, rule)
         }
@@ -5774,24 +5774,24 @@ let _peg_module = fn () {
     # A rule of the grammar: cpp-peglib's Definition, down to the four
     # members a program assigns.
     __index__(rule) {
-      self._rules[rule] ??= {
+      @_rules[rule] ??= {
         mut action: nil,
         mut predicate: nil,
         mut enter: nil,
         mut leave: nil,
       }
-      self._rules[rule]
+      @_rules[rule]
     }
     __setindex__(rule, action) {
       self[rule].action = action
     }
     set_logger(log) {
-      self._log = log
+      @_log = log
     }
     # `_ast` is what `_PEG.run` reads: 1 the tree as it is built, 2 and 3
     # that tree through optimize_ast() with `opt_mode` true and false.
     enable_ast(collapse_mode = false, opt_mode = true) {
-      self._ast = cond {
+      @_ast = cond {
         !collapse_mode => 1,
         opt_mode => 2,
         _ => 3,
@@ -5799,21 +5799,21 @@ let _peg_module = fn () {
       self
     }
     optimize_ast(ast, opt_mode = true) {
-      _peg_optimize(ast, self._no_ast_opt, opt_mode)
+      _peg_optimize(ast, @_no_ast_opt, opt_mode)
     }
     enable_packrat_parsing() {
-      self._packrat = true
+      @_packrat = true
       nil
     }
     parse(text, path = "", dt = nil) {
-      return (false, nil) if self._src == nil
+      return (false, nil) if @_src == nil
       _PEG.run(
-        self._src,
+        @_src,
         text,
-        self._start,
-        self._ast,
-        self._packrat,
-        _peg_hooks(self._rules, self._log, text, path, dt),
+        @_start,
+        @_ast,
+        @_packrat,
+        _peg_hooks(@_rules, @_log, text, path, dt),
       )
     }
   }
@@ -5835,20 +5835,20 @@ let PEG = _peg_module()
 inline constexpr const char* FST_MODULE_SOURCE = R"=culpre=(let _fst_module = fn () {
   class Set {
     new(bytecode) {
-      self._bc = bytecode
+      @_bc = bytecode
       _FST.set_check(bytecode)
     }
     contains(key) {
-      _FST.set_contains(self._bc, key)
+      _FST.set_contains(@_bc, key)
     }
     common_prefix_search(text) {
-      _FST.set_common_prefix_search(self._bc, text)
+      _FST.set_common_prefix_search(@_bc, text)
     }
     longest_common_prefix_search(text) {
-      _FST.set_longest_common_prefix_search(self._bc, text)
+      _FST.set_longest_common_prefix_search(@_bc, text)
     }
     predictive_search(prefix) {
-      _FST.set_predictive_search(self._bc, prefix)
+      _FST.set_predictive_search(@_bc, prefix)
     }
     edit_distance_search(
       word,
@@ -5858,7 +5858,7 @@ inline constexpr const char* FST_MODULE_SOURCE = R"=culpre=(let _fst_module = fn
       replace_cost = 1,
     ) {
       _FST.set_edit_distance_search(
-        self._bc,
+        @_bc,
         word,
         max_edits,
         insert_cost,
@@ -5867,25 +5867,25 @@ inline constexpr const char* FST_MODULE_SOURCE = R"=culpre=(let _fst_module = fn
       )
     }
     suggest(word) {
-      _FST.set_suggest(self._bc, word)
+      _FST.set_suggest(@_bc, word)
     }
   }
   class Map {
     new(bytecode) {
-      self._bc = bytecode
+      @_bc = bytecode
       _FST.map_check(bytecode)
     }
     get(key) {
-      _FST.map_get(self._bc, key)
+      _FST.map_get(@_bc, key)
     }
     common_prefix_search(text) {
-      _FST.map_common_prefix_search(self._bc, text)
+      _FST.map_common_prefix_search(@_bc, text)
     }
     longest_common_prefix_search(text) {
-      _FST.map_longest_common_prefix_search(self._bc, text)
+      _FST.map_longest_common_prefix_search(@_bc, text)
     }
     predictive_search(prefix) {
-      _FST.map_predictive_search(self._bc, prefix)
+      _FST.map_predictive_search(@_bc, prefix)
     }
     edit_distance_search(
       word,
@@ -5895,7 +5895,7 @@ inline constexpr const char* FST_MODULE_SOURCE = R"=culpre=(let _fst_module = fn
       replace_cost = 1,
     ) {
       _FST.map_edit_distance_search(
-        self._bc,
+        @_bc,
         word,
         max_edits,
         insert_cost,
@@ -5904,25 +5904,25 @@ inline constexpr const char* FST_MODULE_SOURCE = R"=culpre=(let _fst_module = fn
       )
     }
     suggest(word) {
-      _FST.map_suggest(self._bc, word)
+      _FST.map_suggest(@_bc, word)
     }
   }
   class IndexMap {
     new(bytecode) {
-      self._bc = bytecode
+      @_bc = bytecode
       _FST.index_check(bytecode)
     }
     get(key) {
-      _FST.index_get(self._bc, key)
+      _FST.index_get(@_bc, key)
     }
     common_prefix_search(text) {
-      _FST.index_common_prefix_search(self._bc, text)
+      _FST.index_common_prefix_search(@_bc, text)
     }
     longest_common_prefix_search(text) {
-      _FST.index_longest_common_prefix_search(self._bc, text)
+      _FST.index_longest_common_prefix_search(@_bc, text)
     }
     predictive_search(prefix) {
-      _FST.index_predictive_search(self._bc, prefix)
+      _FST.index_predictive_search(@_bc, prefix)
     }
     edit_distance_search(
       word,
@@ -5932,7 +5932,7 @@ inline constexpr const char* FST_MODULE_SOURCE = R"=culpre=(let _fst_module = fn
       replace_cost = 1,
     ) {
       _FST.index_edit_distance_search(
-        self._bc,
+        @_bc,
         word,
         max_edits,
         insert_cost,
@@ -5941,7 +5941,7 @@ inline constexpr const char* FST_MODULE_SOURCE = R"=culpre=(let _fst_module = fn
       )
     }
     suggest(word) {
-      _FST.index_suggest(self._bc, word)
+      _FST.index_suggest(@_bc, word)
     }
   }
   {
@@ -6154,23 +6154,23 @@ let _path_module = fn () {
   }
   class Path {
     new(p) {
-      self._path = _s(p)
+      @_path = _s(p)
     }
 
     # --- display / conversion ---
     __str__() {
-      self._path
+      @_path
     }  # "{p}" and to_string(p) yield the raw path
     str() {
-      self._path
+      @_path
     }  # explicit String escape hatch
     # equal only to a String/StringView or another Path with the same path;
     # any other type is simply not-equal (never a TypeError).
     __eq__(o) {
       if type_of(o) == "String" || type_of(o) == "StringView" {
-        self._path == o
+        @_path == o
       } else if _is_path(o) {
-        self._path == to_string(o)
+        @_path == to_string(o)
       } else {
         false
       }
@@ -6182,15 +6182,15 @@ let _path_module = fn () {
     # there. `<=`/`>`/`>=` fall out of `__lt__` + `__eq__` via the backends'
     # comparison derivation. Raw (not resolved) to stay consistent with __eq__.
     __lt__(o) {
-      self._path < _s(o)
+      @_path < _s(o)
     }
 
     # --- joining: `base / "sub" / "leaf"` ---
     join(other) {
-      Path.new(FS.join(self._path, _s(other)))
+      Path.new(FS.join(@_path, _s(other)))
     }
     __div__(o) {
-      self.join(o)
+      @join(o)
     }
 
     # --- path components (String, mirroring FS.*) ---
@@ -6198,65 +6198,65 @@ let _path_module = fn () {
     # (`p.name`, `p.parent`) — no parens. `p.name()` still works too. The
     # filesystem ops below stay methods: they do I/O and can throw.
     get name() {
-      FS.basename(self._path)
+      FS.basename(@_path)
     }  # final component, e.g. "content.js"
     get stem() {
-      FS.stem(self._path)
+      FS.stem(@_path)
     }  # final component without suffix
     get suffix() {
-      FS.extension(self._path)
+      FS.extension(@_path)
     }  # extension incl. dot, e.g. ".js"
     get parent() {
-      Path.new(FS.dirname(self._path))
+      Path.new(FS.dirname(@_path))
     }
 
     # --- queries ---
     exists() {
-      FS.exists(self._path)
+      FS.exists(@_path)
     }
     is_file() {
-      FS.is_file(self._path)
+      FS.is_file(@_path)
     }
     is_dir() {
-      FS.is_dir(self._path)
+      FS.is_dir(@_path)
     }
 
     # --- filesystem ops (delegate to FS) ---
     read() {
-      FS.read(self._path)
+      FS.read(@_path)
     }
     write(content) {
-      FS.write(self._path, content)
+      FS.write(@_path, content)
     }
     mkdir() {
-      FS.mkdir(self._path)
+      FS.mkdir(@_path)
     }  # creates parents (FS.mkdir does)
     remove(recursive = false) {
-      FS.remove(self._path, recursive: recursive)
+      FS.remove(@_path, recursive: recursive)
     }
     rename(dst) {
-      FS.rename(self._path, _s(dst))
+      FS.rename(@_path, _s(dst))
       Path.new(_s(dst))
     }
 
     # --- normalization ---
     resolve() {
-      Path.new(FS.abspath(self._path))
+      Path.new(FS.abspath(@_path))
     }
 
     # --- directory listing / globbing (return Path, so chains stay Path) ---
     list() {
-      FS.list_dir(self._path).map(fn (e) {
-        Path.new(FS.join(self._path, e))
+      FS.list_dir(@_path).map(fn (e) {
+        Path.new(FS.join(@_path, e))
       })
     }
     glob(pattern) {
-      FS.glob(FS.join(self._path, pattern)).map(fn (p) {
+      FS.glob(FS.join(@_path, pattern)).map(fn (p) {
         Path.new(p)
       })
     }
     walk() {
-      FS.walk(self._path).map(fn (p) {
+      FS.walk(@_path).map(fn (p) {
         Path.new(p)
       })
     }
@@ -6299,48 +6299,48 @@ let _vector2_module = fn () {
     y: Float
 
     new(x: Long | Float, y: Long | Float) {
-      self.x = to_float(x)
-      self.y = to_float(y)
+      @x = to_float(x)
+      @y = to_float(y)
     }
 
     __str__() {
-      "({self.x}, {self.y})"
+      "({@x}, {@y})"
     }
 
     __add__(o) {
-      Vector2.new(self.x + o.x, self.y + o.y)
+      Vector2.new(@x + o.x, @y + o.y)
     }
     __sub__(o) {
-      Vector2.new(self.x - o.x, self.y - o.y)
+      Vector2.new(@x - o.x, @y - o.y)
     }
     __mul__(k: Long | Float) {
-      Vector2.new(self.x * k, self.y * k)
+      Vector2.new(@x * k, @y * k)
     }
     __neg__() {
-      Vector2.new(-self.x, -self.y)
+      Vector2.new(-@x, -@y)
     }
 
     # Each of these spells its arithmetic out rather than delegating
     # (length -> length_squared -> dot): a dynamic call costs more than the
     # two products it would wrap, and these are what a per-frame loop calls.
     dot(other) {
-      self.x * other.x + self.y * other.y
+      @x * other.x + @y * other.y
     }
     length_squared() {
-      let x = self.x
-      let y = self.y
+      let x = @x
+      let y = @y
       x * x + y * y
     }
     length() {
-      let x = self.x
-      let y = self.y
+      let x = @x
+      let y = @y
       Math.sqrt(x * x + y * y)
     }
     # A zero vector's normalized() divides by 0.0 like any other Float
     # division in culebra — raises ZeroDivisionError. No silent fallback.
     normalized() {
-      let x = self.x
-      let y = self.y
+      let x = @x
+      let y = @y
       let len = Math.sqrt(x * x + y * y)
       Vector2.new(x / len, y / len)
     }
@@ -6349,13 +6349,13 @@ let _vector2_module = fn () {
     # never needs the square root, so distance_squared_to is the form a hot
     # path wants.
     distance_to(other) {
-      let dx = self.x - other.x
-      let dy = self.y - other.y
+      let dx = @x - other.x
+      let dy = @y - other.y
       Math.sqrt(dx * dx + dy * dy)
     }
     distance_squared_to(other) {
-      let dx = self.x - other.x
-      let dy = self.y - other.y
+      let dx = @x - other.x
+      let dy = @y - other.y
       dx * dx + dy * dy
     }
   }
@@ -6378,50 +6378,50 @@ let _vector3_module = fn () {
     z: Float
 
     new(x: Long | Float, y: Long | Float, z: Long | Float) {
-      self.x = to_float(x)
-      self.y = to_float(y)
-      self.z = to_float(z)
+      @x = to_float(x)
+      @y = to_float(y)
+      @z = to_float(z)
     }
 
     __str__() {
-      "({self.x}, {self.y}, {self.z})"
+      "({@x}, {@y}, {@z})"
     }
 
     __add__(o) {
-      Vector3.new(self.x + o.x, self.y + o.y, self.z + o.z)
+      Vector3.new(@x + o.x, @y + o.y, @z + o.z)
     }
     __sub__(o) {
-      Vector3.new(self.x - o.x, self.y - o.y, self.z - o.z)
+      Vector3.new(@x - o.x, @y - o.y, @z - o.z)
     }
     __mul__(k: Long | Float) {
-      Vector3.new(self.x * k, self.y * k, self.z * k)
+      Vector3.new(@x * k, @y * k, @z * k)
     }
     __neg__() {
-      Vector3.new(-self.x, -self.y, -self.z)
+      Vector3.new(-@x, -@y, -@z)
     }
 
     # Each of these spells its arithmetic out rather than delegating
     # (length -> length_squared -> dot): a dynamic call costs more than the
     # three products it would wrap, and these are what a per-frame loop calls.
     dot(other) {
-      self.x * other.x + self.y * other.y + self.z * other.z
+      @x * other.x + @y * other.y + @z * other.z
     }
     length_squared() {
-      let x = self.x
-      let y = self.y
-      let z = self.z
+      let x = @x
+      let y = @y
+      let z = @z
       x * x + y * y + z * z
     }
     length() {
-      let x = self.x
-      let y = self.y
-      let z = self.z
+      let x = @x
+      let y = @y
+      let z = @z
       Math.sqrt(x * x + y * y + z * z)
     }
     normalized() {
-      let x = self.x
-      let y = self.y
-      let z = self.z
+      let x = @x
+      let y = @y
+      let z = @z
       let len = Math.sqrt(x * x + y * y + z * z)
       Vector3.new(x / len, y / len, z / len)
     }
@@ -6430,15 +6430,15 @@ let _vector3_module = fn () {
     # never needs the square root, so distance_squared_to is the form a hot
     # path wants.
     distance_to(other) {
-      let dx = self.x - other.x
-      let dy = self.y - other.y
-      let dz = self.z - other.z
+      let dx = @x - other.x
+      let dy = @y - other.y
+      let dz = @z - other.z
       Math.sqrt(dx * dx + dy * dy + dz * dz)
     }
     distance_squared_to(other) {
-      let dx = self.x - other.x
-      let dy = self.y - other.y
-      let dz = self.z - other.z
+      let dx = @x - other.x
+      let dy = @y - other.y
+      let dz = @z - other.z
       dx * dx + dy * dy + dz * dz
     }
   }
@@ -6470,84 +6470,84 @@ let _deque_module = fn () {
 
   class Deque {
     new() {
-      self._buf = []
-      self._head = 0
-      self._count = 0
+      @_buf = []
+      @_head = 0
+      @_count = 0
     }
 
     size() {
-      self._count
+      @_count
     }
     empty() {
-      self._count == 0
+      @_count == 0
     }
 
     _grow() {
-      let old_cap = self._buf.size()
+      let old_cap = @_buf.size()
       let new_cap = old_cap == 0 ? 8 : old_cap * 2
-      let mut new_buf = range(self._count)
-        .map(|i| self._buf[(self._head + i) % old_cap])
+      let mut new_buf = range(@_count)
+        .map(|i| @_buf[(@_head + i) % old_cap])
         .collect()
-      new_buf.extend(repeat(new_cap - self._count, nil))
-      self._buf = new_buf
-      self._head = 0
+      new_buf.extend(repeat(new_cap - @_count, nil))
+      @_buf = new_buf
+      @_head = 0
     }
 
     push_back(x) {
-      if self._count == self._buf.size() {
-        self._grow()
+      if @_count == @_buf.size() {
+        @_grow()
       }
-      self._buf[(self._head + self._count) % self._buf.size()] = x
-      self._count += 1
+      @_buf[(@_head + @_count) % @_buf.size()] = x
+      @_count += 1
     }
 
     push_front(x) {
-      if self._count == self._buf.size() {
-        self._grow()
+      if @_count == @_buf.size() {
+        @_grow()
       }
-      self._head = (self._head - 1 + self._buf.size()) % self._buf.size()
-      self._buf[self._head] = x
-      self._count += 1
+      @_head = (@_head - 1 + @_buf.size()) % @_buf.size()
+      @_buf[@_head] = x
+      @_count += 1
     }
 
     pop_front() {
-      return nil if self.empty()
-      let x = self._buf[self._head]
-      self._buf[self._head] = nil
-      self._head = (self._head + 1) % self._buf.size()
-      self._count -= 1
+      return nil if @empty()
+      let x = @_buf[@_head]
+      @_buf[@_head] = nil
+      @_head = (@_head + 1) % @_buf.size()
+      @_count -= 1
       x
     }
 
     pop_back() {
-      return nil if self.empty()
-      let i = (self._head + self._count - 1) % self._buf.size()
-      let x = self._buf[i]
-      self._buf[i] = nil
-      self._count -= 1
+      return nil if @empty()
+      let i = (@_head + @_count - 1) % @_buf.size()
+      let x = @_buf[i]
+      @_buf[i] = nil
+      @_count -= 1
       x
     }
 
     peek_front() {
-      return nil if self.empty()
-      self._buf[self._head]
+      return nil if @empty()
+      @_buf[@_head]
     }
 
     peek_back() {
-      return nil if self.empty()
-      self._buf[(self._head + self._count - 1) % self._buf.size()]
+      return nil if @empty()
+      @_buf[(@_head + @_count - 1) % @_buf.size()]
     }
 
     to_array() {
-      _deque_iter(self._buf, self._head, self._count).collect()
+      _deque_iter(@_buf, @_head, @_count).collect()
     }
 
     iter() {
-      _deque_iter(self._buf, self._head, self._count)
+      _deque_iter(@_buf, @_head, @_count)
     }
 
     __str__() {
-      "Deque({self.to_array()})"
+      "Deque({@to_array()})"
     }
   }
   Deque
@@ -6566,41 +6566,41 @@ inline constexpr const char* PRIORITY_QUEUE_MODULE_SOURCE = R"=culpre=(# Priorit
 let _priority_queue_module = fn () {
   class PriorityQueue {
     new(*, key: Function | Nil = nil, reverse: Bool = false) {
-      self._heap = []
-      self._key = key
-      self._reverse = reverse
+      @_heap = []
+      @_key = key
+      @_reverse = reverse
     }
 
     size() {
-      self._heap.size()
+      @_heap.size()
     }
     empty() {
-      self._heap.empty()
+      @_heap.empty()
     }
 
     # Heap-array order is not priority order, so echoing `_heap` here
     # (the default formatter's fallback) would mislead more than help.
     __str__() {
-      "PriorityQueue(size={self.size()})"
+      "PriorityQueue(size={@size()})"
     }
 
     _less(a, b) {
-      let ka = self._key == nil ? a : self._key(a)
-      let kb = self._key == nil ? b : self._key(b)
-      self._reverse ? kb < ka : ka < kb
+      let ka = @_key == nil ? a : @_key(a)
+      let kb = @_key == nil ? b : @_key(b)
+      @_reverse ? kb < ka : ka < kb
     }
 
     _swap(i, j) {
-      (self._heap[i], self._heap[j]) = (self._heap[j], self._heap[i])
+      (@_heap[i], @_heap[j]) = (@_heap[j], @_heap[i])
     }
 
     push(x) {
-      self._heap.push(x)
-      let mut i = self._heap.size() - 1
+      @_heap.push(x)
+      let mut i = @_heap.size() - 1
       while i > 0 {
         let parent = (i - 1) / 2
-        if self._less(self._heap[i], self._heap[parent]) {
-          self._swap(i, parent)
+        if @_less(@_heap[i], @_heap[parent]) {
+          @_swap(i, parent)
           i = parent
         } else {
           break
@@ -6609,38 +6609,38 @@ let _priority_queue_module = fn () {
     }
 
     peek() {
-      return nil if self.empty()
-      self._heap[0]
+      return nil if @empty()
+      @_heap[0]
     }
 
     pop() {
-      return nil if self.empty()
-      let top = self._heap[0]
-      let last = self._heap.pop()
-      if !self._heap.empty() {
-        self._heap[0] = last
-        self._sift_down(0)
+      return nil if @empty()
+      let top = @_heap[0]
+      let last = @_heap.pop()
+      if !@_heap.empty() {
+        @_heap[0] = last
+        @_sift_down(0)
       }
       top
     }
 
     _sift_down(start) {
       let mut i = start
-      let n = self._heap.size()
+      let n = @_heap.size()
       while true {
         let l = i * 2 + 1
         let r = i * 2 + 2
         let mut smallest = i
-        if l < n && self._less(self._heap[l], self._heap[smallest]) {
+        if l < n && @_less(@_heap[l], @_heap[smallest]) {
           smallest = l
         }
-        if r < n && self._less(self._heap[r], self._heap[smallest]) {
+        if r < n && @_less(@_heap[r], @_heap[smallest]) {
           smallest = r
         }
         if smallest == i {
           break
         }
-        self._swap(i, smallest)
+        @_swap(i, smallest)
         i = smallest
       }
     }
@@ -6919,7 +6919,7 @@ let _state_machine_module = fn () {
   }
 
   class StateMachine {
-    new(desc, *, .name = "", guards = {}, actions = {}, .context = nil) {
+    new(desc, *, @name = "", guards = {}, actions = {}, @context = nil) {
       let mut states = {}
       states[ROOT] = {
         parent: nil,
@@ -6930,11 +6930,11 @@ let _state_machine_module = fn () {
       }
       _walk(desc, ROOT, states, guards, actions)
       _link(states)
-      self._states = states
-      self._boot = _path(states, ROOT, _leaf(states, ROOT))
+      @_states = states
+      @_boot = _path(states, ROOT, _leaf(states, ROOT))
       # Standing at the root, `reset` is exactly "enter the initial one".
-      self._current = ROOT
-      self.reset()
+      @_current = ROOT
+      @reset()
     }
 
     # Build from the text DSL. A malformed machine raises `PEGError`, whose
@@ -6952,85 +6952,85 @@ let _state_machine_module = fn () {
     }
 
     state() {
-      self._current
+      @_current
     }
 
     # True for the active leaf and for every composite state containing it.
     in_state(name) {
-      let mut s = self._current
+      let mut s = @_current
       while s != ROOT {
         return true if s == name
-        s = self._states[s].parent
+        s = @_states[s].parent
       }
       false
     }
 
     fire(event, payload = nil) {
       let ev = {name: event, payload: payload}
-      let t = self._select(event, ev)
+      let t = @_select(event, ev)
       return false if t == nil
       if t.enter == nil {
         # An internal transition: the action runs, the configuration stands.
-        t.action(self.context, ev) if t.action != nil
+        t.action(@context, ev) if t.action != nil
         return true
       }
-      self._exit(t.domain, ev)
-      t.action(self.context, ev) if t.action != nil
-      self._enter(t.enter, ev)
+      @_exit(t.domain, ev)
+      t.action(@context, ev) if t.action != nil
+      @_enter(t.enter, ev)
       true
     }
 
     # Whether `fire` would take a transition. Guards see the same event, so
     # they must be free of side effects for this to mean anything.
     can_fire(event, payload = nil) {
-      self._select(event, {name: event, payload: payload}) != nil
+      @_select(event, {name: event, payload: payload}) != nil
     }
 
     # Leave the active configuration and enter the initial one again. The
     # context is the caller's data and is left alone.
     reset() {
       let ev = {name: nil, payload: nil}
-      self._exit(ROOT, ev)
-      self._enter(self._boot, ev)
+      @_exit(ROOT, ev)
+      @_enter(@_boot, ev)
       nil
     }
 
     __str__() {
-      self.name == ""
-        ? "StateMachine(state={self._current})"
-        : "StateMachine({self.name}, state={self._current})"
+      @name == ""
+        ? "StateMachine(state={@_current})"
+        : "StateMachine({@name}, state={@_current})"
     }
 
     _exit(domain, ev) {
-      let mut s = self._current
+      let mut s = @_current
       while s != domain {
-        let ex = self._states[s].exit
-        ex(self.context, ev) if ex != nil
-        s = self._states[s].parent
+        let ex = @_states[s].exit
+        ex(@context, ev) if ex != nil
+        s = @_states[s].parent
       }
     }
 
     _enter(path, ev) {
       for n in path {
-        let en = self._states[n].entry
-        en(self.context, ev) if en != nil
+        let en = @_states[n].entry
+        en(@context, ev) if en != nil
       }
-      self._current = path[-1]
+      @_current = path[-1]
     }
 
     # Walk out from the active leaf; the innermost state that both names the
     # event and passes its guard wins. A state that names it but whose guards
     # all fail has not handled it, so the search carries on to the parent.
     _select(name, ev) {
-      let mut s = self._current
+      let mut s = @_current
       while s != nil {
-        let list = self._states[s].on.get(name, nil)
+        let list = @_states[s].on.get(name, nil)
         if list != nil {
           for t in list {
-            return t if t.guard == nil || t.guard(self.context, ev)
+            return t if t.guard == nil || t.guard(@context, ev)
           }
         }
-        s = self._states[s].parent
+        s = @_states[s].parent
       }
       nil
     }
@@ -7099,35 +7099,35 @@ let _dir_module = fn () {
     new(path) {
       _Dir.mark(self, 'disk')
       let p = _disk_path('Dir.disk', path)
-      self.root = FS.abspath(p)
-      if !FS.is_dir(self.root) {
+      @root = FS.abspath(p)
+      if !FS.is_dir(@root) {
         __raise('IOError', "Dir.disk: no such directory '{p}'")
       }
-      self._real = FS.realpath(self.root)
+      @_real = FS.realpath(@root)
     }
     read(path) {
       _need_file(self, 'read', path)
-      _Dir.disk_read(self._real, path)
+      _Dir.disk_read(@_real, path)
     }
     list_dir(path) {
       _need_dir(self, 'list_dir', path)
-      _Dir.disk_list_dir(self._real, path)
+      _Dir.disk_list_dir(@_real, path)
     }
     exists(path) {
-      self.is_file(path) || self.is_dir(path)
+      @is_file(path) || @is_dir(path)
     }
     is_file(path) {
-      _Dir.disk_is_file(self._real, path)
+      _Dir.disk_is_file(@_real, path)
     }
     is_dir(path) {
-      _Dir.disk_is_dir(self._real, path)
+      _Dir.disk_is_dir(@_real, path)
     }
     size(path) {
       _need_file(self, 'size', path)
-      _Dir.disk_size(self._real, path)
+      _Dir.disk_size(@_real, path)
     }
     files() {
-      _Dir.disk_files(self._real)
+      _Dir.disk_files(@_real)
     }
   }
 
@@ -7189,13 +7189,13 @@ let _dir_module = fn () {
           dirs.add(parent)
         }
       }
-      self.contents = contents
-      self._paths = paths
-      self._dirs = dirs
+      @contents = contents
+      @_paths = paths
+      @_dirs = dirs
     }
     read(path) {
       _need_file(self, 'read', path)
-      self.contents[_Dir.normalize(path)]
+      @contents[_Dir.normalize(path)]
     }
     list_dir(path) {
       _need_dir(self, 'list_dir', path)
@@ -7212,18 +7212,18 @@ let _dir_module = fn () {
     }
     exists(path) {
       let rel = _Dir.normalize(path)
-      rel != nil && (self._paths.contains(rel) || self._dirs.contains(rel))
+      rel != nil && (@_paths.contains(rel) || @_dirs.contains(rel))
     }
     is_file(path) {
       let rel = _Dir.normalize(path)
-      rel != nil && self._paths.contains(rel)
+      rel != nil && @_paths.contains(rel)
     }
     is_dir(path) {
       let rel = _Dir.normalize(path)
-      rel != nil && self._dirs.contains(rel)
+      rel != nil && @_dirs.contains(rel)
     }
     files() {
-      self._paths.to_array().sorted()
+      @_paths.to_array().sorted()
     }
   }
 
@@ -7235,28 +7235,28 @@ let _dir_module = fn () {
   class EmbedDir {
     new(name) {
       _Dir.mark(self, 'embedded')
-      self.name = _string_arg('Dir.embedded', name)
+      @name = _string_arg('Dir.embedded', name)
     }
     read(path) {
       _need_file(self, 'read', path)
-      _Dir.embedded_read(self.name, path)
+      _Dir.embedded_read(@name, path)
     }
     list_dir(path) {
       _need_dir(self, 'list_dir', path)
-      _Dir.embedded_list_dir(self.name, path)
+      _Dir.embedded_list_dir(@name, path)
     }
     exists(path) {
-      self.is_file(path) || self.is_dir(path)
+      @is_file(path) || @is_dir(path)
     }
     is_file(path) {
-      _Dir.embedded_is_file(self.name, path)
+      _Dir.embedded_is_file(@name, path)
     }
     is_dir(path) {
-      _Dir.embedded_is_dir(self.name, path)
+      _Dir.embedded_is_dir(@name, path)
     }
     size(path) {
       _need_file(self, 'size', path)
-      _Dir.embedded_size(self.name, path)
+      _Dir.embedded_size(@name, path)
     }
   }
 
@@ -7278,11 +7278,11 @@ let _dir_module = fn () {
           "type error: Dir.zip takes a path or bytes:, one of the two",
         )
       }
-      self.path = nil
-      self.bytes = nil
+      @path = nil
+      @bytes = nil
       if path != nil {
-        self.path = FS.abspath(_disk_path('Dir.zip', path))
-        self._id = _Dir.zip_open(self.path)
+        @path = FS.abspath(_disk_path('Dir.zip', path))
+        @_id = _Dir.zip_open(@path)
       } else {
         let t = type_of(bytes)
         if t != 'String' && t != 'StringView' {
@@ -7291,8 +7291,8 @@ let _dir_module = fn () {
             "type error: Dir.zip bytes: expects String, got {t}",
           )
         }
-        self.bytes = bytes
-        self._id = _Dir.zip_open_bytes(bytes)
+        @bytes = bytes
+        @_id = _Dir.zip_open_bytes(bytes)
       }
     }
     read(path) {
@@ -7304,7 +7304,7 @@ let _dir_module = fn () {
       _Dir.zip_list_dir(self, path)
     }
     exists(path) {
-      self.is_file(path) || self.is_dir(path)
+      @is_file(path) || @is_dir(path)
     }
     is_file(path) {
       _Dir.zip_is_file(self, path)
@@ -7320,12 +7320,12 @@ let _dir_module = fn () {
       _Dir.zip_files(self)
     }
     close() {
-      _Dir.zip_close(self._id)
-      self._id = nil
-      self.bytes = nil
+      _Dir.zip_close(@_id)
+      @_id = nil
+      @bytes = nil
     }
     drop() {
-      _Dir.zip_close(self._id) if self._id != nil
+      _Dir.zip_close(@_id) if @_id != nil
     }
   }
 
@@ -7858,12 +7858,12 @@ let _llm_module = fn () {
   }
 
   class LLMTool {
-    new(.name, .description, .input_schema, .f) {}
+    new(@name, @description, @input_schema, @f) {}
 
     # What the request names: everything but the function itself.
     spec() {
-      {name: self.name, description: self.description,
-       input_schema: self.input_schema}
+      {name: @name, description: @description,
+       input_schema: @input_schema}
     }
   }
 
@@ -8250,16 +8250,16 @@ let _llm_module = fn () {
   # request would have answered with, so one reader serves both. Pieces are
   # collected and joined once, not appended to a growing String.
   class LLMStream {
-    new(.on_text) {
-      self.events = 0
-      self.message = nil
-      self.blocks = []
-      self.pieces = []
-      self.failure = nil
+    new(@on_text) {
+      @events = 0
+      @message = nil
+      @blocks = []
+      @pieces = []
+      @failure = nil
     }
 
     take(e) {
-      self.events += 1
+      @events += 1
       let ev = try {
         JSON.parse(e.data)
       } catch _e: ValueError {
@@ -8268,42 +8268,42 @@ let _llm_module = fn () {
       return nil if type_of(ev) != "Object"
       let kind = ev.get("type", "")
       if kind == "message_start" {
-        self.message = ev.message
+        @message = ev.message
       } else if kind == "content_block_start" {
-        while self.blocks.size() <= ev.index {
-          self.blocks.push(nil)
-          self.pieces.push([])
+        while @blocks.size() <= ev.index {
+          @blocks.push(nil)
+          @pieces.push([])
         }
-        self.blocks[ev.index] = ev.content_block
+        @blocks[ev.index] = ev.content_block
       } else if kind == "content_block_delta" {
-        self.grow(ev.index, ev.delta)
+        @grow(ev.index, ev.delta)
       } else if kind == "content_block_stop" {
-        self.close(ev.index)
+        @close(ev.index)
       } else if kind == "message_delta" {
         # A parsed Object's fields are fixed, so each change is a new Object.
-        self.message = {...self.message,
+        @message = {...@message,
           stop_reason: ev.delta.get("stop_reason", nil),
           stop_sequence: ev.delta.get("stop_sequence", nil),
-          usage: {...self.message.get("usage", {}), ...ev.get("usage", {})}}
+          usage: {...@message.get("usage", {}), ...ev.get("usage", {})}}
       } else if kind == "error" {
-        self.failure = ev.get("error", {})
+        @failure = ev.get("error", {})
       }
     }
 
     grow(i, d) {
       let kind = d.get("type", "")
       if kind == "text_delta" {
-        self.pieces[i].push(d.text)
-        self.on_text(d.text) if self.on_text != nil
+        @pieces[i].push(d.text)
+        @on_text(d.text) if @on_text != nil
       } else if kind == "thinking_delta" {
-        self.pieces[i].push(d.thinking)
+        @pieces[i].push(d.thinking)
       } else if kind == "input_json_delta" {
-        self.pieces[i].push(d.partial_json)
+        @pieces[i].push(d.partial_json)
       } else if kind == "signature_delta" {
-        self.blocks[i] = {...self.blocks[i], signature: d.signature}
+        @blocks[i] = {...@blocks[i], signature: d.signature}
       } else if kind == "citations_delta" {
-        let b = self.blocks[i]
-        self.blocks[i] = {...b, citations: [...b.get("citations", []), d.citation]}
+        let b = @blocks[i]
+        @blocks[i] = {...b, citations: [...b.get("citations", []), d.citation]}
       }
     }
 
@@ -8311,29 +8311,29 @@ let _llm_module = fn () {
     # are one JSON document written a few characters at a time; one cut off
     # mid-document stays empty, and the stop reason says why.
     close(i) {
-      let b = self.blocks[i]
-      let joined = self.pieces[i].join("")
+      let b = @blocks[i]
+      let joined = @pieces[i].join("")
       let kind = b.get("type", "")
       if kind == "text" {
-        self.blocks[i] = {...b, text: joined}
+        @blocks[i] = {...b, text: joined}
       } else if kind == "thinking" {
-        self.blocks[i] = {...b, thinking: joined}
+        @blocks[i] = {...b, thinking: joined}
       } else if b.has("input") && !joined.empty() {
         let input = try {
           JSON.parse(joined)
         } catch _e: ValueError {
           {}
         }
-        self.blocks[i] = {...b, input: input}
+        @blocks[i] = {...b, input: input}
       }
     }
 
     finish() {
-      if self.failure != nil {
-        _fail("LLM: {self.failure.get('type', 'error')}: {self.failure.get('message', '')}")
+      if @failure != nil {
+        _fail("LLM: {@failure.get('type', 'error')}: {@failure.get('message', '')}")
       }
-      _fail("LLM: the stream ended before the message began") if self.message == nil
-      {...self.message, content: self.blocks}
+      _fail("LLM: the stream ended before the message began") if @message == nil
+      {...@message, content: @blocks}
     }
   }
 
@@ -8483,27 +8483,27 @@ let _llm_module = fn () {
   }
 
   class LLMAnthropic {
-    new(.http) {
-      self.name = "anthropic"
-      self.capabilities = {tools: true, extra: true, count_tokens: true}
-      self.default_model = nil
+    new(@http) {
+      @name = "anthropic"
+      @capabilities = {tools: true, extra: true, count_tokens: true}
+      @default_model = nil
     }
 
     turn(req, on_text) {
       let body = _body_of(req)
-      _reply_of(on_text == nil ? _send(self.http, body)
-        : _stream(self.http, "/v1/messages", {...body, stream: true}, LLMStream(on_text),
+      _reply_of(on_text == nil ? _send(@http, body)
+        : _stream(@http, "/v1/messages", {...body, stream: true}, LLMStream(on_text),
                   _text_of, _anthropic_detail, on_text))
     }
 
     # The body as it is, posted to /v1/messages, and the answer as it is.
     request(body, headers) {
-      _send(self.http, body, headers)
+      _send(@http, body, headers)
     }
 
     # The input tokens of the request, as /v1/messages/count_tokens counts them.
     count_tokens(req) {
-      _send(self.http, _count_body_of(req), nil, "/v1/messages/count_tokens").input_tokens
+      _send(@http, _count_body_of(req), nil, "/v1/messages/count_tokens").input_tokens
     }
   }
 
@@ -8530,18 +8530,18 @@ let _llm_module = fn () {
   # would have answered with. A call is known by its index; its id and name
   # come with the first piece, its arguments over the rest.
   class LLMChatStream {
-    new(.on_text) {
-      self.events = 0
-      self.pieces = []
-      self.reasoning = []
-      self.calls = []
-      self.stopped = nil
-      self.usage = nil
-      self.failure = nil
+    new(@on_text) {
+      @events = 0
+      @pieces = []
+      @reasoning = []
+      @calls = []
+      @stopped = nil
+      @usage = nil
+      @failure = nil
     }
 
     take(e) {
-      self.events += 1
+      @events += 1
       let ev = try {
         JSON.parse(e.data)
       } catch _e: ValueError {
@@ -8549,32 +8549,32 @@ let _llm_module = fn () {
       }
       return nil if type_of(ev) != "Object"
       if ev.get("error", nil) != nil {
-        self.failure = ev.error
+        @failure = ev.error
         return nil
       }
-      self.usage = ev.usage if ev.get("usage", nil) != nil
+      @usage = ev.usage if ev.get("usage", nil) != nil
       let choices = ev.get("choices", [])
       return nil if choices.empty()
       let choice = choices[0]
-      self.stopped = choice.finish_reason if choice.get("finish_reason", nil) != nil
-      self.grow(choice.get("delta", {}))
+      @stopped = choice.finish_reason if choice.get("finish_reason", nil) != nil
+      @grow(choice.get("delta", {}))
     }
 
     grow(d) {
       let said = d.get("content", nil) ?? ""
       if !said.empty() {
-        self.pieces.push(said)
-        self.on_text(said) if self.on_text != nil
+        @pieces.push(said)
+        @on_text(said) if @on_text != nil
       }
       let thought = d.get("reasoning_content", nil) ?? d.get("reasoning", nil) ?? ""
-      self.reasoning.push(thought) if !thought.empty()
+      @reasoning.push(thought) if !thought.empty()
       for c in d.get("tool_calls", []) {
         let i = c.get("index", 0)
-        while self.calls.size() <= i {
-          self.calls.push({mut id: nil, mut name: "", mut pieces: []})
+        while @calls.size() <= i {
+          @calls.push({mut id: nil, mut name: "", mut pieces: []})
         }
         let f = c.get("function", {})
-        let call = self.calls[i]
+        let call = @calls[i]
         call.id = c.get("id", nil) ?? call.id
         call.name = f.get("name", nil) ?? call.name
         call.pieces.push(f.get("arguments", nil) ?? "")
@@ -8582,17 +8582,17 @@ let _llm_module = fn () {
     }
 
     finish() {
-      if self.failure != nil {
-        _fail("LLM: {_cc_detail(self.failure)}")
+      if @failure != nil {
+        _fail("LLM: {_cc_detail(@failure)}")
       }
-      let calls = self.calls.map(|c|
+      let calls = @calls.map(|c|
         {id: c.id, type: "function", function: {name: c.name, arguments: c.pieces.join("")}})
-      mut message = {role: "assistant", content: self.pieces.join("")}
-      message.reasoning_content = self.reasoning.join("") if !self.reasoning.empty()
+      mut message = {role: "assistant", content: @pieces.join("")}
+      message.reasoning_content = @reasoning.join("") if !@reasoning.empty()
       message.tool_calls = calls if !calls.empty()
       {choices: [{message: message,
-                  finish_reason: self.stopped}],
-       usage: self.usage}
+                  finish_reason: @stopped}],
+       usage: @usage}
     }
   }
 
@@ -8704,20 +8704,20 @@ let _llm_module = fn () {
   }
 
   class LLMChatCompletions {
-    new(.http, .name, .base_url, .max_tokens_field) {
-      self.capabilities = {tools: true, extra: true}
-      self.default_model = nil
+    new(@http, @name, @base_url, @max_tokens_field) {
+      @capabilities = {tools: true, extra: true}
+      @default_model = nil
     }
 
     turn(req, on_text) {
-      let body = _cc_body_of(req, self.max_tokens_field)
-      _cc_reply_of(on_text == nil ? _send(self.http, body, nil, "/chat/completions", _cc_detail)
-                                  : _cc_stream(self.http, body, on_text))
+      let body = _cc_body_of(req, @max_tokens_field)
+      _cc_reply_of(on_text == nil ? _send(@http, body, nil, "/chat/completions", _cc_detail)
+                                  : _cc_stream(@http, body, on_text))
     }
 
     # The body as it is, posted to /chat/completions, and the answer as it is.
     request(body, headers) {
-      _send(self.http, body, headers, "/chat/completions", _cc_detail)
+      _send(@http, body, headers, "/chat/completions", _cc_detail)
     }
   }
 
@@ -8817,23 +8817,23 @@ let _llm_module = fn () {
   # --- conversations ------------------------------------------------------------
 
   class LLMChat {
-    new(.provider, .model, .system, .tools, .max_tokens, .max_turns, .approve) {
-      self.messages = []
-      self.last = nil
+    new(@provider, @model, @system, @tools, @max_tokens, @max_turns, @approve) {
+      @messages = []
+      @last = nil
     }
 
     # The answer's text. The tools the model asks for run on the way there, up
     # to `max_turns` round trips; `last` holds the final reply whole.
     ask(prompt, on_text = nil) {
       let content = _string("prompt", prompt)
-      let start = self.messages.size()
+      let start = @messages.size()
       try {
-        self.messages.push({role: "user", content: content})
-        for _step in 0..self.max_turns {
-          let reply = turn(self.provider, model: self.model, messages: self.messages,
-                           system: self.system, tools: self.tools,
-                           max_tokens: self.max_tokens, on_text: on_text)
-          self.last = reply
+        @messages.push({role: "user", content: content})
+        for _step in 0..@max_turns {
+          let reply = turn(@provider, model: @model, messages: @messages,
+                           system: @system, tools: @tools,
+                           max_tokens: @max_tokens, on_text: on_text)
+          @last = reply
           if reply.stop == "refusal" {
             # The Messages API says why in stop_details.
             let raw = reply.raw
@@ -8843,20 +8843,20 @@ let _llm_module = fn () {
               : nil
             _fail("LLM: the model declined to answer" + (why == nil ? "" : ": {why}"))
           }
-          self.messages.push(reply.message)
+          @messages.push(reply.message)
           if reply.stop == "length" && !reply.tool_calls.empty() {
             _fail("LLM: a tool call was cut off at max_tokens")
           }
           if !reply.tool_calls.empty() {
-            self.messages.push(run_tools(self.tools, reply.tool_calls, approve: self.approve))
+            @messages.push(run_tools(@tools, reply.tool_calls, approve: @approve))
           } else if reply.stop != "pause" {
             return reply.text
           }
         }
-        _fail("LLM: no answer within max_turns ({self.max_turns})")
+        _fail("LLM: no answer within max_turns ({@max_turns})")
       } catch e {
         # Take back this ask's turns, so the history stays one a provider accepts.
-        self.messages = self.messages.slice(0, start)
+        @messages = @messages.slice(0, start)
         throw e
       }
     }

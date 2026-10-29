@@ -1,20 +1,20 @@
 class Vec2 {
-  new(.x, .y) {}  # field parameters: each argument is stored into self.x / self.y
+  new(@x, @y) {}  # field parameters: each argument is stored into self.x / self.y
 
   __add__(o) {
-    Vec2(self.x + o.x, self.y + o.y)
+    Vec2(@x + o.x, @y + o.y)
   }
 
   __mul__(k) {
-    Vec2(self.x * k, self.y * k)
+    Vec2(@x * k, @y * k)
   }
 
   __str__() {
-    "({self.x}, {self.y})"
+    "({@x}, {@y})"
   }  # how the value prints
 
   get len() {
-    Math.sqrt(to_float(self.x * self.x + self.y * self.y))
+    Math.sqrt(to_float(@x * @x + @y * @y))
   }
 }
 
@@ -41,10 +41,10 @@ trait Greeter {
 class Robot {
   kind = 'robot'  # a declared field with a default
 
-  new(.id, .kind?) {}  # `.kind?` is optional: left out, the default stays
+  new(@id, @kind?) {}  # `.kind?` is optional: left out, the default stays
 
   hello() {
-    "beep {self.id} ({self.kind})"
+    "beep {@id} ({@kind})"
   }
 }
 

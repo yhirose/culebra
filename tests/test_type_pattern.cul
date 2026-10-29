@@ -4,10 +4,10 @@
 # `Dog => ...` reads as `d: Dog => ...` without the `d`.
 
 class Dog {
-  new(.name) {}
+  new(@name) {}
 }
 class Cat {
-  new(.name) {}
+  new(@name) {}
 }
 enum Shape {
   Circle(Float),
@@ -21,7 +21,7 @@ trait Named {
   label() -> String
 }
 class Tag {
-  new(.text) {}
+  new(@text) {}
   label() {
     self.text
   }

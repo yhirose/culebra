@@ -2,7 +2,7 @@
 # (tests/test_value_same_name.cul).
 @value
 class Vector2 {
-  new(.x: Float, .y: Float) {}
+  new(@x: Float, @y: Float) {}
   length() {
     99.0
   }

@@ -57,35 +57,35 @@ let _dir_module = fn () {
     new(path) {
       _Dir.mark(self, 'disk')
       let p = _disk_path('Dir.disk', path)
-      self.root = FS.abspath(p)
-      if !FS.is_dir(self.root) {
+      @root = FS.abspath(p)
+      if !FS.is_dir(@root) {
         __raise('IOError', "Dir.disk: no such directory '{p}'")
       }
-      self._real = FS.realpath(self.root)
+      @_real = FS.realpath(@root)
     }
     read(path) {
       _need_file(self, 'read', path)
-      _Dir.disk_read(self._real, path)
+      _Dir.disk_read(@_real, path)
     }
     list_dir(path) {
       _need_dir(self, 'list_dir', path)
-      _Dir.disk_list_dir(self._real, path)
+      _Dir.disk_list_dir(@_real, path)
     }
     exists(path) {
-      self.is_file(path) || self.is_dir(path)
+      @is_file(path) || @is_dir(path)
     }
     is_file(path) {
-      _Dir.disk_is_file(self._real, path)
+      _Dir.disk_is_file(@_real, path)
     }
     is_dir(path) {
-      _Dir.disk_is_dir(self._real, path)
+      _Dir.disk_is_dir(@_real, path)
     }
     size(path) {
       _need_file(self, 'size', path)
-      _Dir.disk_size(self._real, path)
+      _Dir.disk_size(@_real, path)
     }
     files() {
-      _Dir.disk_files(self._real)
+      _Dir.disk_files(@_real)
     }
   }
 
@@ -147,13 +147,13 @@ let _dir_module = fn () {
           dirs.add(parent)
         }
       }
-      self.contents = contents
-      self._paths = paths
-      self._dirs = dirs
+      @contents = contents
+      @_paths = paths
+      @_dirs = dirs
     }
     read(path) {
       _need_file(self, 'read', path)
-      self.contents[_Dir.normalize(path)]
+      @contents[_Dir.normalize(path)]
     }
     list_dir(path) {
       _need_dir(self, 'list_dir', path)
@@ -170,18 +170,18 @@ let _dir_module = fn () {
     }
     exists(path) {
       let rel = _Dir.normalize(path)
-      rel != nil && (self._paths.contains(rel) || self._dirs.contains(rel))
+      rel != nil && (@_paths.contains(rel) || @_dirs.contains(rel))
     }
     is_file(path) {
       let rel = _Dir.normalize(path)
-      rel != nil && self._paths.contains(rel)
+      rel != nil && @_paths.contains(rel)
     }
     is_dir(path) {
       let rel = _Dir.normalize(path)
-      rel != nil && self._dirs.contains(rel)
+      rel != nil && @_dirs.contains(rel)
     }
     files() {
-      self._paths.to_array().sorted()
+      @_paths.to_array().sorted()
     }
   }
 
@@ -193,28 +193,28 @@ let _dir_module = fn () {
   class EmbedDir {
     new(name) {
       _Dir.mark(self, 'embedded')
-      self.name = _string_arg('Dir.embedded', name)
+      @name = _string_arg('Dir.embedded', name)
     }
     read(path) {
       _need_file(self, 'read', path)
-      _Dir.embedded_read(self.name, path)
+      _Dir.embedded_read(@name, path)
     }
     list_dir(path) {
       _need_dir(self, 'list_dir', path)
-      _Dir.embedded_list_dir(self.name, path)
+      _Dir.embedded_list_dir(@name, path)
     }
     exists(path) {
-      self.is_file(path) || self.is_dir(path)
+      @is_file(path) || @is_dir(path)
     }
     is_file(path) {
-      _Dir.embedded_is_file(self.name, path)
+      _Dir.embedded_is_file(@name, path)
     }
     is_dir(path) {
-      _Dir.embedded_is_dir(self.name, path)
+      _Dir.embedded_is_dir(@name, path)
     }
     size(path) {
       _need_file(self, 'size', path)
-      _Dir.embedded_size(self.name, path)
+      _Dir.embedded_size(@name, path)
     }
   }
 
@@ -236,11 +236,11 @@ let _dir_module = fn () {
           "type error: Dir.zip takes a path or bytes:, one of the two",
         )
       }
-      self.path = nil
-      self.bytes = nil
+      @path = nil
+      @bytes = nil
       if path != nil {
-        self.path = FS.abspath(_disk_path('Dir.zip', path))
-        self._id = _Dir.zip_open(self.path)
+        @path = FS.abspath(_disk_path('Dir.zip', path))
+        @_id = _Dir.zip_open(@path)
       } else {
         let t = type_of(bytes)
         if t != 'String' && t != 'StringView' {
@@ -249,8 +249,8 @@ let _dir_module = fn () {
             "type error: Dir.zip bytes: expects String, got {t}",
           )
         }
-        self.bytes = bytes
-        self._id = _Dir.zip_open_bytes(bytes)
+        @bytes = bytes
+        @_id = _Dir.zip_open_bytes(bytes)
       }
     }
     read(path) {
@@ -262,7 +262,7 @@ let _dir_module = fn () {
       _Dir.zip_list_dir(self, path)
     }
     exists(path) {
-      self.is_file(path) || self.is_dir(path)
+      @is_file(path) || @is_dir(path)
     }
     is_file(path) {
       _Dir.zip_is_file(self, path)
@@ -278,12 +278,12 @@ let _dir_module = fn () {
       _Dir.zip_files(self)
     }
     close() {
-      _Dir.zip_close(self._id)
-      self._id = nil
-      self.bytes = nil
+      _Dir.zip_close(@_id)
+      @_id = nil
+      @bytes = nil
     }
     drop() {
-      _Dir.zip_close(self._id) if self._id != nil
+      _Dir.zip_close(@_id) if @_id != nil
     }
   }
 

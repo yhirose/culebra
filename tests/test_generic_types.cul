@@ -163,16 +163,16 @@ assert_eq(Holder.new().unwrap(3), 8)
 // shadows it.
 class Elem {
   x: Float
-  new(.x) {}
+  new(@x) {}
 }
 class Plain {
-  new(.x) {}
+  new(@x) {}
 }
 trait Labeled {
   label() -> String
 }
 class Badge {
-  new(.x) {}
+  new(@x) {}
   label() {
     'badge'
   }
@@ -200,7 +200,7 @@ assert_eq([maybe(Plain('m')).x, maybe(nil)], ['m', nil])
 fn wrapped<Elem>(v) {
   class Wrap {
     item: Elem
-    new(.item) {}
+    new(@item) {}
   }
   fn read(w: Wrap) {
     let item = w.item
@@ -226,7 +226,7 @@ assert_eq(refused, ["type error: parameter 'p' expects Labeled", 217])
 
 class Shelf<Elem: Labeled> {
   item: Elem
-  new(.item) {}
+  new(@item) {}
 }
 fn shelf_x(s: Shelf) {
   let item = s.item
@@ -319,7 +319,7 @@ assert_eq(String.unpack(Packed, String.pack(Packed, [packed]))[0].x, 7)
 @value
 class Meter<Elem: Float> {
   x: Elem
-  new(.x) {}
+  new(@x) {}
   doubled() {
     Meter(self.x * 2.0)
   }
@@ -334,7 +334,7 @@ fn wrapped_in<Meter>(v) {
   @value
   class Wrapped {
     m: Meter
-    new(.m) {}
+    new(@m) {}
   }
   Wrapped(v)
 }

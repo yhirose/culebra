@@ -179,12 +179,12 @@ assert_eq(opt.n, nil)
 
 class Car {
   speed: Float
-  new(.speed) {}
+  new(@speed) {}
 }
 
 class Bike {
   speed: Long
-  new(.speed) {}
+  new(@speed) {}
 }
 
 class Garage {
@@ -247,7 +247,7 @@ class PPoint {
 
 class Fake {
   x: Long
-  new(.x) {}
+  new(@x) {}
 }
 
 @packable
@@ -272,12 +272,12 @@ assert_eq([pline.via_local(), pline.via_chain()], [3, 3])
 # instance, and a reader follows it to the class
 class Interval {
   lo: Float
-  new(.lo) {}
+  new(@lo) {}
 }
 
 class UIntPair {
   a: Long
-  new(.a) {}
+  new(@a) {}
 }
 
 class Span {
@@ -936,7 +936,7 @@ fn primitive_thrown(f) {
 
 fn primitive_long() {
   class Long {
-    new(.v) {}
+    new(@v) {}
   }
   fn add_one(x: Long) {
     x + 1
@@ -950,7 +950,7 @@ fn primitive_long() {
 
 fn primitive_set() {
   class Set {
-    new(.n) {}
+    new(@n) {}
   }
   fn first(s: Set) {
     s.n
@@ -961,7 +961,7 @@ fn primitive_set() {
 # `Function` takes a callable instance, and still no class of the name
 fn primitive_function() {
   class Function {
-    new(.v) {}
+    new(@v) {}
   }
   class Doubler {
     __call__(x) {
@@ -983,7 +983,7 @@ assert_eq(primitive_function(), [42, "type error: parameter 'f' expects Function
 # a library function's typed parameter is read the same way
 fn primitive_array() {
   class Array {
-    new(.n) {}
+    new(@n) {}
   }
   primitive_thrown(|| Random.shuffle(Array(1)))
 }

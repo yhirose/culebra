@@ -105,6 +105,9 @@ function tokenBase(stream, state) {
     return "variableName";
   }
 
+  // `@name` is `self.name`: the `@` reads as `self`.
+  if (stream.match(/^@(?=[A-Za-z_])/)) return "specialVar";
+
   // Multi-char operators before single-char ones so prefixes don't shadow them.
   if (stream.match(/^(&&|\|\||\?\?|\*\*|=>|->|\.\.\.|\.\.=?)/)) return "operator";
   if (stream.match(/^[-+*/%@!=<>^|&]=?/)) return "operator";

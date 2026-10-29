@@ -1,4 +1,4 @@
-# Constructor field parameters: `new(.x)` is a parameter `x` that also
+# Constructor field parameters: `new(@x)` is a parameter `x` that also
 # stores into the field `x`, at that field's place in the declaration order;
 # `.x?` is optional and takes the declaration's own default when omitted
 # (docs/language.md §10).
@@ -11,7 +11,7 @@ class Color {
   b: Long
   a: Long
 
-  new(.r, .g, .b, .a?) {
+  new(@r, @g, @b, @a?) {
     self.seen = (r, g, b, a)  # the body reads every one as a parameter
   }
 }
@@ -45,7 +45,7 @@ class Cartridge {
   mirroring = 'horizontal'
   has_battery = false
 
-  new(.prg_rom, .chr_rom, *, .mapper_id?, .mirroring?, .has_battery?) {
+  new(@prg_rom, @chr_rom, *, @mapper_id?, @mirroring?, @has_battery?) {
     self.seen = (mapper_id, mirroring, has_battery)
   }
 }
@@ -88,7 +88,7 @@ class Point {
   y = 20
   tag = 'none'
 
-  new(.x?, .y?) {}
+  new(@x?, @y?) {}
 
   new(s: String) {
     self.tag = s
@@ -108,7 +108,7 @@ class Q {
   a: Long
   b: Long
 
-  new(.a, .b = a * 2) {
+  new(@a, @b = a * 2) {
     # a default reads the earlier parameter
     self.f = fn () {
       # a captured one lives in a cell; the store reads it
@@ -128,7 +128,7 @@ test_default_and_capture()
 class F {
   x: Float
 
-  new(.x) {}
+  new(@x) {}
 }
 
 test_store_type_check = fn () {
@@ -150,7 +150,7 @@ class V {
   x: Float
   y: Float = 0.5
 
-  new(.x, .y?) {}
+  new(@x, @y?) {}
 }
 
 test_value_class = fn () {
@@ -170,7 +170,7 @@ class Flat {
   x: Long
   y: Long
 
-  new(.x, .y) {}
+  new(@x, @y) {}
 }
 
 test_flat_value_class = fn () {
@@ -189,7 +189,7 @@ test_flat_value_class()
 class Rect {
   above = 'a'
 
-  new(.w: Long, .h: Long, .name) {
+  new(@w: Long, @h: Long, @name) {
     self.after = 1
   }
 
@@ -212,7 +212,7 @@ test_parameter_declares_the_field = fn () {
 test_parameter_declares_the_field()
 
 class Twice {
-  new(.n: Long) {}
+  new(@n: Long) {}
 
   double() {
     self.n * 2  # a typed read of the field the parameter declared
@@ -220,16 +220,16 @@ class Twice {
 }
 
 class Agree {
-  new(.k: Long) {}
+  new(@k: Long) {}
 
-  new(.k: Long, s: String) {
+  new(@k: Long, s: String) {
     self.s = s
   }
 }
 
 # A defaulted parameter declares its field too.
 class Dflt {
-  new(.n = 7, .t: Long = 3) {}
+  new(@n = 7, @t: Long = 3) {}
 }
 
 test_declared_by_parameter_reads = fn () {
@@ -247,7 +247,7 @@ test_declared_by_parameter_reads()
 # type check the boxed form makes.
 @value
 class Vec2 {
-  new(.x: Float, .y: Float) {}
+  new(@x: Float, @y: Float) {}
 }
 
 fn len2(v: Vec2) {

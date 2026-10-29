@@ -76,7 +76,7 @@ test_statement_form = fn () {
 # runs on fallthrough and on `return`, as for a `fn`.
 class Acc {
   x: Long
-  new(.x) {}
+  new(@x) {}
   add(n: Long) -> Long { self.x + n }
   wrong() -> String { self.x }
   early(n) -> Long {

@@ -110,8 +110,8 @@ fn train_bpe(input_text, vocab_size, end_token = END_TOKEN) {
 }
 
 class BPETokenizer {
-  new(.merge_rules, .end_token = END_TOKEN) {
-    self.end_token_id = 256 + merge_rules.size()
+  new(@merge_rules, @end_token = END_TOKEN) {
+    @end_token_id = 256 + merge_rules.size()
 
     # id -> the bytes it stands for. An Array indexed by id rather than a
     # map: ids are dense and assigned in order, so the merged entry's two
@@ -121,14 +121,14 @@ class BPETokenizer {
       id_to_bytes.push(id_to_bytes[rule[0]] + id_to_bytes[rule[1]])
     }
     id_to_bytes.push(end_token.bytes().collect())
-    self.id_to_bytes = id_to_bytes
-    self.vocab_size = id_to_bytes.size()
+    @id_to_bytes = id_to_bytes
+    @vocab_size = id_to_bytes.size()
   }
 
   # The merge rules replayed in training order over one pre-token.
   encode_pretoken(pretoken) {
     mut ids = pretoken.bytes().collect()
-    for rule in self.merge_rules {
+    for rule in @merge_rules {
       ids = merge(ids, pack_pair(rule[0], rule[1]), rule[2])
     }
     ids
@@ -138,10 +138,10 @@ class BPETokenizer {
   # parts -- upstream keeps it with a capturing `re.split` instead.
   encode(input_text) {
     mut all_ids = []
-    for i, part in input_text.split(self.end_token).enumerate() {
-      all_ids.push(self.end_token_id) if i > 0
+    for i, part in input_text.split(@end_token).enumerate() {
+      all_ids.push(@end_token_id) if i > 0
       for pretoken in pretokenize(part) {
-        all_ids.extend(self.encode_pretoken(pretoken))
+        all_ids.extend(@encode_pretoken(pretoken))
       }
     }
     all_ids
@@ -151,7 +151,7 @@ class BPETokenizer {
   # UTF-8 (a token cut mid-character) comes back as those raw bytes rather
   # than U+FFFD -- culebra Strings carry arbitrary bytes.
   decode(ids) {
-    String.from_bytes(ids.flat_map(|id| self.id_to_bytes[id]))
+    String.from_bytes(ids.flat_map(|id| @id_to_bytes[id]))
   }
 }
 

@@ -21,84 +21,84 @@ let _deque_module = fn () {
 
   class Deque {
     new() {
-      self._buf = []
-      self._head = 0
-      self._count = 0
+      @_buf = []
+      @_head = 0
+      @_count = 0
     }
 
     size() {
-      self._count
+      @_count
     }
     empty() {
-      self._count == 0
+      @_count == 0
     }
 
     _grow() {
-      let old_cap = self._buf.size()
+      let old_cap = @_buf.size()
       let new_cap = old_cap == 0 ? 8 : old_cap * 2
-      let mut new_buf = range(self._count)
-        .map(|i| self._buf[(self._head + i) % old_cap])
+      let mut new_buf = range(@_count)
+        .map(|i| @_buf[(@_head + i) % old_cap])
         .collect()
-      new_buf.extend(repeat(new_cap - self._count, nil))
-      self._buf = new_buf
-      self._head = 0
+      new_buf.extend(repeat(new_cap - @_count, nil))
+      @_buf = new_buf
+      @_head = 0
     }
 
     push_back(x) {
-      if self._count == self._buf.size() {
-        self._grow()
+      if @_count == @_buf.size() {
+        @_grow()
       }
-      self._buf[(self._head + self._count) % self._buf.size()] = x
-      self._count += 1
+      @_buf[(@_head + @_count) % @_buf.size()] = x
+      @_count += 1
     }
 
     push_front(x) {
-      if self._count == self._buf.size() {
-        self._grow()
+      if @_count == @_buf.size() {
+        @_grow()
       }
-      self._head = (self._head - 1 + self._buf.size()) % self._buf.size()
-      self._buf[self._head] = x
-      self._count += 1
+      @_head = (@_head - 1 + @_buf.size()) % @_buf.size()
+      @_buf[@_head] = x
+      @_count += 1
     }
 
     pop_front() {
-      return nil if self.empty()
-      let x = self._buf[self._head]
-      self._buf[self._head] = nil
-      self._head = (self._head + 1) % self._buf.size()
-      self._count -= 1
+      return nil if @empty()
+      let x = @_buf[@_head]
+      @_buf[@_head] = nil
+      @_head = (@_head + 1) % @_buf.size()
+      @_count -= 1
       x
     }
 
     pop_back() {
-      return nil if self.empty()
-      let i = (self._head + self._count - 1) % self._buf.size()
-      let x = self._buf[i]
-      self._buf[i] = nil
-      self._count -= 1
+      return nil if @empty()
+      let i = (@_head + @_count - 1) % @_buf.size()
+      let x = @_buf[i]
+      @_buf[i] = nil
+      @_count -= 1
       x
     }
 
     peek_front() {
-      return nil if self.empty()
-      self._buf[self._head]
+      return nil if @empty()
+      @_buf[@_head]
     }
 
     peek_back() {
-      return nil if self.empty()
-      self._buf[(self._head + self._count - 1) % self._buf.size()]
+      return nil if @empty()
+      @_buf[(@_head + @_count - 1) % @_buf.size()]
     }
 
     to_array() {
-      _deque_iter(self._buf, self._head, self._count).collect()
+      _deque_iter(@_buf, @_head, @_count).collect()
     }
 
     iter() {
-      _deque_iter(self._buf, self._head, self._count)
+      _deque_iter(@_buf, @_head, @_count)
     }
 
     __str__() {
-      "Deque({self.to_array()})"
+      "Deque({@to_array()})"
     }
   }
   Deque

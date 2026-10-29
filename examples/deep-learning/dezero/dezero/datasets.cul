@@ -39,12 +39,12 @@ class Spiral {
     }
     order = range(rows.size()).collect()
     Random.shuffle(order)
-    self.x = Tensor.from(order.map(|i| rows[i]))
-    self.y = order.map(|i| labels[i])
+    @x = Tensor.from(order.map(|i| rows[i]))
+    @y = order.map(|i| labels[i])
   }
 
   size() {
-    self.y.size()
+    @y.size()
   }
 }
 
@@ -67,12 +67,12 @@ class SinCurve {
       xs.map(Math.cos)
     }
     n = ys.size() - 1
-    self.x = Tensor.from(ys.slice(0, n).map(|v| [v]))
-    self.y = Tensor.from(ys.slice(1, ys.size()).map(|v| [v]))
+    @x = Tensor.from(ys.slice(0, n).map(|v| [v]))
+    @y = Tensor.from(ys.slice(1, ys.size()).map(|v| [v]))
   }
 
   size() {
-    self.x.shape()[0]
+    @x.shape()[0]
   }
 }
 
@@ -84,9 +84,9 @@ class SinCurve {
 # any `x`/`y` pair (e.g. `load_mnist_arrays`'s fields) in this instead.
 
 class ArrayDataset {
-  new(.x, .y) {}
+  new(@x, @y) {}
   size() {
-    self.y.size()
+    @y.size()
   }
 }
 

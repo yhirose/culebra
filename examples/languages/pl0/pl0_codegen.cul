@@ -119,7 +119,7 @@ class Binder {
   declared_anywhere(block, name) {
     mut b = block
     while b != nil {
-      let bi = self.blocks[b]
+      let bi = @blocks[b]
       if bi.consts.has(name) || bi.var_slot.has(name) || bi.procs.has(name) {
         return true
       }
@@ -129,14 +129,14 @@ class Binder {
   }
 
   check_fresh(block, name, at) {
-    if self.declared_anywhere(block, name) {
+    if @declared_anywhere(block, name) {
       fail(at, "'{name}' is already defined")
     }
   }
 
   collect(node, parent, name) {
-    let index = self.blocks.size()
-    self.blocks.push({
+    let index = @blocks.size()
+    @blocks.push({
       parent: parent,
       name: name,
       consts: {},
@@ -148,30 +148,30 @@ class Binder {
     })
     # no parent: a PL/0 closure exists only at its call site, so the call
     # edges alone say what a procedure has to capture (Phase 2)
-    self.rs.new_fn(-1)
-    self.rs.set_func_index(index, index)
+    @rs.new_fn(-1)
+    @rs.set_func_index(index, index)
 
     let [cst, vr, prc, _] = node.nodes
     for [cname, cvalue] in cst.nodes.iter().chunks(2) {
-      self.check_fresh(index, cname.token, cname)
-      self.blocks[index].consts[cname.token] = to_long(cvalue.token)
+      @check_fresh(index, cname.token, cname)
+      @blocks[index].consts[cname.token] = to_long(cvalue.token)
     }
     for vname in vr.nodes {
-      self.check_fresh(index, vname.token, vname)
-      let slot = self.blocks[index].var_names.size()
-      let v = self.rs.declare_var(vname.token, index)
-      self.rs.set_var_slot(v, slot)
-      self.blocks[index].var_slot[vname.token] = v
-      self.blocks[index].var_names.push(vname.token)
+      @check_fresh(index, vname.token, vname)
+      let slot = @blocks[index].var_names.size()
+      let v = @rs.declare_var(vname.token, index)
+      @rs.set_var_slot(v, slot)
+      @blocks[index].var_slot[vname.token] = v
+      @blocks[index].var_names.push(vname.token)
     }
     for [pname, _] in prc.nodes.iter().chunks(2) {
-      self.check_fresh(index, pname.token, pname)
-      self.blocks[index].procs[pname.token] = -1  # reserved; filled in below
+      @check_fresh(index, pname.token, pname)
+      @blocks[index].procs[pname.token] = -1  # reserved; filled in below
     }
     for [pname, sub] in prc.nodes.iter().chunks(2) {
-      let child = self.collect(sub, index, pname.token)
-      self.blocks[index].procs[pname.token] = child
-      self.blocks[index].children.push(child)
+      let child = @collect(sub, index, pname.token)
+      @blocks[index].procs[pname.token] = child
+      @blocks[index].children.push(child)
     }
     index
   }
@@ -186,7 +186,7 @@ class Binder {
   lookup_value(block, name) {
     mut b = block
     while b != nil {
-      let bi = self.blocks[b]
+      let bi = @blocks[b]
       if bi.consts.has(name) {
         return {found: true, is_const: true, cval: bi.consts[name]}
       }
@@ -201,7 +201,7 @@ class Binder {
   lookup_assign(block, name, at) {
     mut b = block
     while b != nil {
-      let bi = self.blocks[b]
+      let bi = @blocks[b]
       if bi.consts.has(name) {
         fail(at, "cannot assign to constant '{name}'")
       }
@@ -216,7 +216,7 @@ class Binder {
   lookup_proc(block, name) {
     mut b = block
     while b != nil {
-      let bi = self.blocks[b]
+      let bi = @blocks[b]
       if bi.procs.has(name) {
         return bi.procs[name]
       }
@@ -238,18 +238,18 @@ class Binder {
   # library exposes the free sets instead of closing them itself.
 
   note_ref(block, v) {
-    self.rs.use(v, block)
+    @rs.use(v, block)
   }
 
   solve_captures() {
-    self.rs.close_over_calls()
-    self.rs.number_captures()
+    @rs.close_over_calls()
+    @rs.number_captures()
   }
 
   scan_chain(nodes, block) {
     for n in nodes {
       if n.name != 'sign' && n.name != 'term_op' && n.name != 'factor_op' {
-        self.scan_expr(n, block)
+        @scan_expr(n, block)
       }
     }
   }
@@ -258,26 +258,26 @@ class Binder {
     match node {
       {name: 'number'} => to_long(node.token),  # range-checked now, at bind time
       {name: 'ident', token} => {
-        let r = self.lookup_value(block, token)
+        let r = @lookup_value(block, token)
         if !r.found {
           fail(node, "undefined variable '{token}'")
         }
         if !r.is_const {
-          self.note_ref(block, r.var)
+          @note_ref(block, r.var)
         }
       },
-      {name: 'expression', nodes} => self.scan_chain(nodes, block),
-      {name: 'term', nodes} => self.scan_chain(nodes, block),
+      {name: 'expression', nodes} => @scan_chain(nodes, block),
+      {name: 'term', nodes} => @scan_chain(nodes, block),
       _ => fail(node, "cannot evaluate {node.name}"),
     }
   }
 
   scan_cond(node, block) {
     match node {
-      {name: 'odd', nodes: [value]} => self.scan_expr(value, block),
+      {name: 'odd', nodes: [value]} => @scan_expr(value, block),
       {name: 'compare', nodes: [l, _op, r]} => {
-        self.scan_expr(l, block)
-        self.scan_expr(r, block)
+        @scan_expr(l, block)
+        @scan_expr(r, block)
       },
       _ => fail(node, "cannot evaluate {node.name} as a condition"),
     }
@@ -288,31 +288,31 @@ class Binder {
       {
         name: 'statements',
         nodes,
-      } => nodes.for_each(|s| self.scan_stmt(s, block)),
+      } => nodes.for_each(|s| @scan_stmt(s, block)),
       {name: 'assignment', nodes: [name, value]} => {
-        self.note_ref(block, self.lookup_assign(block, name.token, name))
-        self.scan_expr(value, block)
+        @note_ref(block, @lookup_assign(block, name.token, name))
+        @scan_expr(value, block)
       },
       {name: 'call', nodes: [name]} => {
-        let g = self.lookup_proc(block, name.token)
+        let g = @lookup_proc(block, name.token)
         if g < 0 {
           fail(name, "undefined procedure '{name.token}'")
         }
-        self.rs.note_call(block, g)
+        @rs.note_call(block, g)
       },
       {name: 'if', nodes: [cond, body]} => {
-        self.scan_cond(cond, block)
-        self.scan_stmt(body, block)
+        @scan_cond(cond, block)
+        @scan_stmt(body, block)
       },
       {name: 'while', nodes: [cond, body]} => {
-        self.scan_cond(cond, block)
-        self.scan_stmt(body, block)
+        @scan_cond(cond, block)
+        @scan_stmt(body, block)
       },
-      {name: 'out', nodes: [value]} => self.scan_expr(value, block),
+      {name: 'out', nodes: [value]} => @scan_expr(value, block),
       {
         name: 'in',
         nodes: [name],
-      } => self.note_ref(block, self.lookup_assign(block, name.token, name)),
+      } => @note_ref(block, @lookup_assign(block, name.token, name)),
       {name: 'statement'} => nil,  # the empty statement a trailing `;` leaves
       _ => fail(node, "cannot execute {node.name}"),
     }
@@ -322,10 +322,10 @@ class Binder {
   # out in source order (PL/0 writes PROCEDURE declarations ahead of the
   # statement they precede).
   scan_block(block) {
-    for child in self.blocks[block].children {
-      self.scan_block(child)
+    for child in @blocks[block].children {
+      @scan_block(child)
     }
-    self.scan_stmt(self.blocks[block].body, block)
+    @scan_stmt(@blocks[block].body, block)
   }
 
   # --- Phase 3: emit -----------------------------------------------------------
@@ -339,38 +339,38 @@ class Binder {
     let [head, ...rest] = nodes
     if head.name == 'sign' {
       let [first, ...pairs] = rest
-      mut acc = self.emit_expr(first, f)
+      mut acc = @emit_expr(first, f)
       if head.token == '-' {
-        acc = self.m.unary('neg', acc, head)
+        acc = @m.unary('neg', acc, head)
       }
-      self.emit_fold(pairs, acc, f)
+      @emit_fold(pairs, acc, f)
     } else {
-      self.emit_fold(rest, self.emit_expr(head, f), f)
+      @emit_fold(rest, @emit_expr(head, f), f)
     }
   }
 
   emit_fold(pairs, acc, f) {
     mut value = acc
     for [op, operand] in pairs.iter().chunks(2) {
-      let rhs = self.emit_expr(operand, f)
-      value = self.m.binary(binop_name(op.token), value, rhs, op)
+      let rhs = @emit_expr(operand, f)
+      value = @m.binary(binop_name(op.token), value, rhs, op)
     }
     value
   }
 
   emit_expr(node, f) {
     match node {
-      {name: 'number'} => self.m.literal(to_long(node.token), node),
+      {name: 'number'} => @m.literal(to_long(node.token), node),
       {name: 'ident', token} => {
-        let r = self.lookup_value(f, token)
+        let r = @lookup_value(f, token)
         if r.is_const {
-          self.m.literal(r.cval, node)
+          @m.literal(r.cval, node)
         } else {
-          self.rs.read(self.m, f, r.var, node)
+          @rs.read(@m, f, r.var, node)
         }
       },
-      {name: 'expression', nodes} => self.emit_chain(nodes, f),
-      {name: 'term', nodes} => self.emit_chain(nodes, f),
+      {name: 'expression', nodes} => @emit_chain(nodes, f),
+      {name: 'term', nodes} => @emit_chain(nodes, f),
       _ => fail(node, "cannot evaluate {node.name}"),
     }
   }
@@ -381,14 +381,14 @@ class Binder {
   emit_cond(node, f) {
     match node {
       {name: 'odd', nodes: [value]} => {
-        let e = self.emit_expr(value, f)
-        let rem = self.m.binary('mod', e, self.m.literal(2, node), node)
-        self.m.binary('ne', rem, self.m.literal(0, node), node)
+        let e = @emit_expr(value, f)
+        let rem = @m.binary('mod', e, @m.literal(2, node), node)
+        @m.binary('ne', rem, @m.literal(0, node), node)
       },
       {name: 'compare', nodes: [l, op, r]} => {
-        let lhs = self.emit_expr(l, f)
-        let rhs = self.emit_expr(r, f)
-        self.m.binary(cmp_name(op.token), lhs, rhs, op)
+        let lhs = @emit_expr(l, f)
+        let rhs = @emit_expr(r, f)
+        @m.binary(cmp_name(op.token), lhs, rhs, op)
       },
       _ => fail(node, "cannot evaluate {node.name} as a condition"),
     }
@@ -399,39 +399,39 @@ class Binder {
       {
         name: 'statements',
         nodes,
-      } => self.m.block(nodes.map(|n| self.emit_stmt(n, f)), node),
+      } => @m.block(nodes.map(|n| @emit_stmt(n, f)), node),
       {name: 'assignment', nodes: [name, value]} => {
-        let target = self.lookup_assign(f, name.token, name)
-        let v = self.emit_expr(value, f)
-        self.rs.write(self.m, f, target, v, node)
+        let target = @lookup_assign(f, name.token, name)
+        let v = @emit_expr(value, f)
+        @rs.write(@m, f, target, v, node)
       },
       # The closure is built here, per call site, because a self-recursive
       # call (g == f) forwards `f`'s own captures straight through -- see
       # cpp-vmlib's README for fib.pas's version of that table.
       {name: 'call', nodes: [name]} => {
-        let g = self.lookup_proc(f, name.token)
-        self.rs.call(self.m, f, g, [], node)
+        let g = @lookup_proc(f, name.token)
+        @rs.call(@m, f, g, [], node)
       },
       {name: 'if', nodes: [cond, body]} => {
-        let c = self.emit_cond(cond, f)
-        let t = self.emit_stmt(body, f)
-        self.m.make_if(c, t, node)
+        let c = @emit_cond(cond, f)
+        let t = @emit_stmt(body, f)
+        @m.make_if(c, t, node)
       },
       {name: 'while', nodes: [cond, body]} => {
-        let c = self.emit_cond(cond, f)
-        let b = self.emit_stmt(body, f)
-        self.m.make_while(c, b, node)
+        let c = @emit_cond(cond, f)
+        let b = @emit_stmt(body, f)
+        @m.make_while(c, b, node)
       },
       {name: 'out', nodes: [value]} => {
-        let v = self.emit_expr(value, f)
-        self.m.intrinsic('print', [v], node)
+        let v = @emit_expr(value, f)
+        @m.intrinsic('print', [v], node)
       },
       {name: 'in', nodes: [name]} => {
-        let target = self.lookup_assign(f, name.token, name)
-        let got = self.m.intrinsic('readint', [], node)
-        self.rs.write(self.m, f, target, got, node)
+        let target = @lookup_assign(f, name.token, name)
+        let got = @m.intrinsic('readint', [], node)
+        @rs.write(@m, f, target, got, node)
       },
-      {name: 'statement'} => self.m.block([], node),
+      {name: 'statement'} => @m.block([], node),
       _ => fail(node, "cannot execute {node.name}"),
     }
   }
@@ -439,28 +439,28 @@ class Binder {
   # --- Driver ------------------------------------------------------------------
 
   build(m, root) {
-    self.m = m
-    self.collect(root, nil, 'main')
-    self.scan_block(0)
-    self.solve_captures()
+    @m = m
+    @collect(root, nil, 'main')
+    @scan_block(0)
+    @solve_captures()
 
     # Blocks and funcs share indices by construction: block 0 (the program's
     # own outermost scope) is emitted first, so it becomes func #0, the entry
     # point CodeGen requires.
-    for f in range(self.blocks.size()) {
-      let body = self.emit_stmt(self.blocks[f].body, f)
+    for f in range(@blocks.size()) {
+      let body = @emit_stmt(@blocks[f].body, f)
       let func = m.add_func(
-        name: self.blocks[f].name,
-        num_locals: self.blocks[f].var_names.size(),
-        num_captures: self.rs.num_captures(f),
-        num_cells: self.rs.num_cells(f),
+        name: @blocks[f].name,
+        num_locals: @blocks[f].var_names.size(),
+        num_captures: @rs.num_captures(f),
+        num_cells: @rs.num_cells(f),
         num_params: 0,
         body: body,
       )
-      for i, name in self.blocks[f].var_names.enumerate() {
+      for i, name in @blocks[f].var_names.enumerate() {
         m.set_local_name(func: func, index: i, name: name)
       }
-      self.rs.name_captures(m, func, f)
+      @rs.name_captures(m, func, f)
     }
     m
   }

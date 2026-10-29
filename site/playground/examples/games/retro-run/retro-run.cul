@@ -101,9 +101,9 @@ let SW_K = ROAD_WIDTH * W2  # projected road half-width per unit scale
 let SPRITE_SCALE = 0.3 / 80.0  # 0.3 / PLAYER_STRAIGHT.w
 
 class Art {
-  new(.x, .y, .w, .h) {
-    self.sw = w * SPRITE_SCALE  # world width, pre-scaled
-    self.sh = h * SPRITE_SCALE
+  new(@x, @y, @w, @h) {
+    @sw = w * SPRITE_SCALE  # world width, pre-scaled
+    @sh = h * SPRITE_SCALE
   }
 }
 
@@ -315,31 +315,31 @@ let overlap = fn (x1, w1, x2, w2, percent) {
 # p1/p2 are flat fields rather than nested objects: the projection loop writes
 # ten of them per segment per frame.
 class Segment {
-  new(.index, y1, y2, curve) {
-    self.p1_wy = y1
-    self.p1_wz = index * SEGMENT_LENGTH * 1.0
-    self.p2_wy = y2
-    self.p2_wz = (index + 1) * SEGMENT_LENGTH * 1.0
-    self.curve = curve
-    self.p1_sx = 0.0
-    self.p1_sy = 0.0
-    self.p1_sw = 0.0
-    self.p1_scale = 0.0
-    self.p2_sx = 0.0
-    self.p2_sy = 0.0
-    self.p2_sw = 0.0
-    self.p2_scale = 0.0
-    self.clip = 0.0
-    self.vis = false  # projected this frame (i.e. in front of us)
-    self.kind = (index / RUMBLE_LENGTH) % 2 == 0 ? KIND_LIGHT : KIND_DARK
-    self.mark = MARK_NONE
-    self.sprites = []
-    self.cars = []
+  new(@index, y1, y2, curve) {
+    @p1_wy = y1
+    @p1_wz = index * SEGMENT_LENGTH * 1.0
+    @p2_wy = y2
+    @p2_wz = (index + 1) * SEGMENT_LENGTH * 1.0
+    @curve = curve
+    @p1_sx = 0.0
+    @p1_sy = 0.0
+    @p1_sw = 0.0
+    @p1_scale = 0.0
+    @p2_sx = 0.0
+    @p2_sy = 0.0
+    @p2_sw = 0.0
+    @p2_scale = 0.0
+    @clip = 0.0
+    @vis = false  # projected this frame (i.e. in front of us)
+    @kind = (index / RUMBLE_LENGTH) % 2 == 0 ? KIND_LIGHT : KIND_DARK
+    @mark = MARK_NONE
+    @sprites = []
+    @cars = []
   }
 }
 
 class Prop {
-  new(.art, .offset) {}
+  new(@art, @offset) {}
 }
 
 # A car's position is (segment index, distance into that segment) rather than a
@@ -347,10 +347,10 @@ class Prop {
 # add and a carry, and the two find_segment calls the original does per car per
 # frame disappear.
 class Car {
-  new(.art, .offset, .seg, .zin, .speed) {
-    self.percent = 0.0
-    self.w = art.sw  # the AI compares widths every lookahead step
-    self.z = seg * SEGMENT_LENGTH * 1.0 + zin
+  new(@art, @offset, @seg, @zin, @speed) {
+    @percent = 0.0
+    @w = art.sw  # the AI compares widths every lookahead step
+    @z = seg * SEGMENT_LENGTH * 1.0 + zin
   }
 }
 

@@ -24,30 +24,30 @@ fn causal_bias(c) {
 }
 
 class MultiHeadAttention {
-  new(embed_dim, .n_head, .head_dim) {
-    self.scale = 1.0 / Math.sqrt(to_float(head_dim))
+  new(embed_dim, @n_head, @head_dim) {
+    @scale = 1.0 / Math.sqrt(to_float(head_dim))
     let inner = n_head * head_dim
-    self.w_q = L.Linear(inner, false, embed_dim)
-    self.w_k = L.Linear(inner, false, embed_dim)
-    self.w_v = L.Linear(inner, false, embed_dim)
-    self.w_o = L.Linear(embed_dim, false, inner)
+    @w_q = L.Linear(inner, false, embed_dim)
+    @w_k = L.Linear(inner, false, embed_dim)
+    @w_v = L.Linear(inner, false, embed_dim)
+    @w_o = L.Linear(embed_dim, false, inner)
   }
 
   # x is the flattened (B*C, E); b and c say how to fold it back.
   __call__(x, b, c) {
-    let h = self.n_head
-    let d = self.head_dim
+    let h = @n_head
+    let d = @head_dim
 
     # (B*C, H*D) -> (B, C, H, D) -> (B, H, C, D) -> (B*H, C, D)
     let heads = |p| dz.reshape(
       dz.transpose(dz.reshape(p, [b, c, h, d]), [0, 2, 1, 3]),
       [b * h, c, d],
     )
-    let q = heads(self.w_q(x))
-    let k = heads(self.w_k(x))
-    let v = heads(self.w_v(x))
+    let q = heads(@w_q(x))
+    let k = heads(@w_k(x))
+    let v = heads(@w_v(x))
 
-    let scores = dz.mul(dz.matmul(q, dz.transpose(k, [0, 2, 1])), self.scale)
+    let scores = dz.mul(dz.matmul(q, dz.transpose(k, [0, 2, 1])), @scale)
     let weights = F.softmax(dz.add(scores, causal_bias(c)), 2)
     let hidden = dz.matmul(weights, v)  # (B*H, C, D)
 
@@ -56,14 +56,14 @@ class MultiHeadAttention {
       dz.transpose(dz.reshape(hidden, [b, h, c, d]), [0, 2, 1, 3]),
       [b * c, h * d],
     )
-    self.w_o(merged)
+    @w_o(merged)
   }
 
   params() {
-    self.w_q.params() +
-      self.w_k.params() +
-      self.w_v.params() +
-      self.w_o.params()
+    @w_q.params() +
+      @w_k.params() +
+      @w_v.params() +
+      @w_o.params()
   }
 }
 

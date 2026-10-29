@@ -267,7 +267,7 @@ let _state_machine_module = fn () {
   }
 
   class StateMachine {
-    new(desc, *, .name = "", guards = {}, actions = {}, .context = nil) {
+    new(desc, *, @name = "", guards = {}, actions = {}, @context = nil) {
       let mut states = {}
       states[ROOT] = {
         parent: nil,
@@ -278,11 +278,11 @@ let _state_machine_module = fn () {
       }
       _walk(desc, ROOT, states, guards, actions)
       _link(states)
-      self._states = states
-      self._boot = _path(states, ROOT, _leaf(states, ROOT))
+      @_states = states
+      @_boot = _path(states, ROOT, _leaf(states, ROOT))
       # Standing at the root, `reset` is exactly "enter the initial one".
-      self._current = ROOT
-      self.reset()
+      @_current = ROOT
+      @reset()
     }
 
     # Build from the text DSL. A malformed machine raises `PEGError`, whose
@@ -300,85 +300,85 @@ let _state_machine_module = fn () {
     }
 
     state() {
-      self._current
+      @_current
     }
 
     # True for the active leaf and for every composite state containing it.
     in_state(name) {
-      let mut s = self._current
+      let mut s = @_current
       while s != ROOT {
         return true if s == name
-        s = self._states[s].parent
+        s = @_states[s].parent
       }
       false
     }
 
     fire(event, payload = nil) {
       let ev = {name: event, payload: payload}
-      let t = self._select(event, ev)
+      let t = @_select(event, ev)
       return false if t == nil
       if t.enter == nil {
         # An internal transition: the action runs, the configuration stands.
-        t.action(self.context, ev) if t.action != nil
+        t.action(@context, ev) if t.action != nil
         return true
       }
-      self._exit(t.domain, ev)
-      t.action(self.context, ev) if t.action != nil
-      self._enter(t.enter, ev)
+      @_exit(t.domain, ev)
+      t.action(@context, ev) if t.action != nil
+      @_enter(t.enter, ev)
       true
     }
 
     # Whether `fire` would take a transition. Guards see the same event, so
     # they must be free of side effects for this to mean anything.
     can_fire(event, payload = nil) {
-      self._select(event, {name: event, payload: payload}) != nil
+      @_select(event, {name: event, payload: payload}) != nil
     }
 
     # Leave the active configuration and enter the initial one again. The
     # context is the caller's data and is left alone.
     reset() {
       let ev = {name: nil, payload: nil}
-      self._exit(ROOT, ev)
-      self._enter(self._boot, ev)
+      @_exit(ROOT, ev)
+      @_enter(@_boot, ev)
       nil
     }
 
     __str__() {
-      self.name == ""
-        ? "StateMachine(state={self._current})"
-        : "StateMachine({self.name}, state={self._current})"
+      @name == ""
+        ? "StateMachine(state={@_current})"
+        : "StateMachine({@name}, state={@_current})"
     }
 
     _exit(domain, ev) {
-      let mut s = self._current
+      let mut s = @_current
       while s != domain {
-        let ex = self._states[s].exit
-        ex(self.context, ev) if ex != nil
-        s = self._states[s].parent
+        let ex = @_states[s].exit
+        ex(@context, ev) if ex != nil
+        s = @_states[s].parent
       }
     }
 
     _enter(path, ev) {
       for n in path {
-        let en = self._states[n].entry
-        en(self.context, ev) if en != nil
+        let en = @_states[n].entry
+        en(@context, ev) if en != nil
       }
-      self._current = path[-1]
+      @_current = path[-1]
     }
 
     # Walk out from the active leaf; the innermost state that both names the
     # event and passes its guard wins. A state that names it but whose guards
     # all fail has not handled it, so the search carries on to the parent.
     _select(name, ev) {
-      let mut s = self._current
+      let mut s = @_current
       while s != nil {
-        let list = self._states[s].on.get(name, nil)
+        let list = @_states[s].on.get(name, nil)
         if list != nil {
           for t in list {
-            return t if t.guard == nil || t.guard(self.context, ev)
+            return t if t.guard == nil || t.guard(@context, ev)
           }
         }
-        s = self._states[s].parent
+        s = @_states[s].parent
       }
       nil
     }

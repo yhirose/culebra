@@ -51,7 +51,7 @@ assert_eq(least.n, 1)
 mut grow = false
 mut seen = Set(0)
 class H {
-  new(.n) {}
+  new(@n) {}
   hash() {
     self.n
   }

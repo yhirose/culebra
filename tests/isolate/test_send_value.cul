@@ -16,7 +16,7 @@ fn caught(thunk) {
 class V {
   x: Long
   y: Float
-  new(.x, .y) {}
+  new(@x, @y) {}
   sum() {
     to_float(self.x) + self.y
   }
@@ -26,7 +26,7 @@ class V {
 class Pair {
   a: V
   b: V
-  new(.a, .b) {}
+  new(@a, @b) {}
 }
 
 # --- methods, == and hash work in the worker, without naming the class ------
@@ -93,7 +93,7 @@ assert_eq(
 # --- a @derive class crosses with its derived methods -----------------------
 @derive(Eq, Hash, Show)
 class D {
-  new(.x) {}
+  new(@x) {}
 }
 let d = D(7)
 let d2 = D(7)
@@ -107,7 +107,7 @@ let (etx, erx) = Channel.new(1)
 @value
 class Early {
   x: Long
-  new(.x) {
+  new(@x) {
     etx.send(self)
   }
 }
@@ -120,7 +120,7 @@ mut leaked = nil
 @value
 class Thrown {
   x: Long
-  new(.x) {
+  new(@x) {
     leaked = self
     throw {kind: 'ValueError', message: 'refused'}
   }

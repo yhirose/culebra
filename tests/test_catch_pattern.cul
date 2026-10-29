@@ -4,10 +4,10 @@
 # order; an exception none of them accepts keeps propagating as it was.
 
 class ApiError {
-  new(.status) {}
+  new(@status) {}
 }
 class Timeout {
-  new(.after) {}
+  new(@after) {}
 }
 enum Failure {
   NotFound(String),
@@ -447,7 +447,7 @@ assert_eq(try {
 # hung on it is dropped then, once.
 mut dropped = []
 class Held {
-  new(.name) {}
+  new(@name) {}
   drop() {
     dropped.push(self.name)
   }

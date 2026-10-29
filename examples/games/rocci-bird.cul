@@ -127,39 +127,39 @@ enum AnimState {
 }
 
 class Anim {
-  new(.sheet, .sw, .cells, fc, .index, .state) {
+  new(@sheet, @sw, @cells, fc, @index, @state) {
     # state: an AnimState
-    self.last_updated = fc
+    @last_updated = fc
   }
   reset(fc, index, state) {
-    self.index = index
-    self.state = state
-    self.last_updated = fc
+    @index = index
+    @state = state
+    @last_updated = fc
   }
   update(fc) {
-    let fpu = self.cells[self.index][0]
-    return if fc - self.last_updated < fpu
-    let ni = (self.index + 1) % self.cells.size()
-    match self.state {
+    let fpu = @cells[@index][0]
+    return if fc - @last_updated < fpu
+    let ni = (@index + 1) % @cells.size()
+    match @state {
       s: Completed => {
-        self.last_updated = fc
+        @last_updated = fc
       },
       s: Loop => {
-        self.index = ni
-        self.last_updated = fc
+        @index = ni
+        @last_updated = fc
       },
       s: RunOnce => {
         if ni == 0 {
-          self.state = AnimState.Completed
+          @state = AnimState.Completed
         } else {
-          self.index = ni
+          @index = ni
         }
-        self.last_updated = fc
+        @last_updated = fc
       },
     }
   }
   draw(x, y) {
-    self.sheet.draw_sub(x, y, self.cells[self.index][1], 0, self.sw, 16)
+    @sheet.draw_sub(x, y, @cells[@index][1], 0, @sw, 16)
   }
 }
 
@@ -305,8 +305,8 @@ class App {
   ground_x = 0
 
   new() {
-    Random.seed(self.fc)
-    self.enter_title()
+    Random.seed(@fc)
+    @enter_title()
   }
 
   starting_plants() {
@@ -314,61 +314,61 @@ class App {
   }
 
   enter_title() {
-    self.mode = Mode.Title
-    self.plants = self.starting_plants()
-    self.rocci = idle_anim(self.fc)
+    @mode = Mode.Title
+    @plants = @starting_plants()
+    @rocci = idle_anim(@fc)
   }
 
   enter_game() {
-    self.mode = Mode.Game
+    @mode = Mode.Game
     # The original reseeds from the frame count at the moment play begins, so
     # the run feels randomly seeded (players rarely start on the same frame).
-    Random.seed(self.fc)
-    self.score = 0
-    self.max_score = 0
-    self.player_y = to_float(PLAYER_START_Y)
-    self.player_vel = JUMP
-    self.pipes = []
-    self.last_pipe = self.fc
-    self.last_plant = Math.max(self.fc - 4, 0)
-    self.last_flap = true
-    self.rocci = flap_anim(self.fc)
-    self.ground_x = 0
+    Random.seed(@fc)
+    @score = 0
+    @max_score = 0
+    @player_y = to_float(PLAYER_START_Y)
+    @player_vel = JUMP
+    @pipes = []
+    @last_pipe = @fc
+    @last_plant = Math.max(@fc - 4, 0)
+    @last_flap = true
+    @rocci = flap_anim(@fc)
+    @ground_x = 0
     flap_tone()
   }
 
   enter_over() {
-    self.mode = Mode.Over
-    self.new_high = self.max_score > self.high_score
-    self.high_score = self.max_score if self.new_high
-    save_high_score(self.high_score) if self.new_high
-    self.rocci = fall_anim(self.fc)
-    self.hiscore = hiscore_anim(self.fc)
+    @mode = Mode.Over
+    @new_high = @max_score > @high_score
+    @high_score = @max_score if @new_high
+    save_high_score(@high_score) if @new_high
+    @rocci = fall_anim(@fc)
+    @hiscore = hiscore_anim(@fc)
     death_tone()
   }
 
   # The "flap / start" action: A, up, or left-click held this frame.
   action_held() {
     let m = Canvas.mouse()
-    self.input.down(Canvas.A) ||
-      self.input.down(Canvas.UP) ||
+    @input.down(Canvas.A) ||
+      @input.down(Canvas.UP) ||
       m.buttons & 1 != 0
   }
   # In-game flap and title start read the action, with a simple autopilot when
   # input is not interactive so a CI / headless run still plays the game.
   flap_input() {
-    self.interactive
-      ? self.action_held()
-      : self.player_vel > 0.0 && self.player_y > 70.0
+    @interactive
+      ? @action_held()
+      : @player_vel > 0.0 && @player_y > 70.0
   }
   start_input() {
-    self.interactive ? self.action_held() : true
+    @interactive ? @action_held() : true
   }
   restart_input() {
-    return true if !self.interactive
+    return true if !@interactive
     let m = Canvas.mouse()
-    self.input.down(Canvas.B) ||
-      self.input.down(Canvas.RIGHT) ||
+    @input.down(Canvas.B) ||
+      @input.down(Canvas.RIGHT) ||
       m.buttons & 2 != 0
   }
 
@@ -377,113 +377,113 @@ class App {
     Canvas.quit() if Canvas.key('escape')
 
     Canvas.clear(C1)
-    self.input.update()
-    self.fc += 1
-    match self.mode {
-      m: Title => self.tick_title(),
-      m: Game => self.tick_game(),
-      m: Over => self.tick_over(),
+    @input.update()
+    @fc += 1
+    match @mode {
+      m: Title => @tick_title(),
+      m: Game => @tick_game(),
+      m: Over => @tick_over(),
     }
     true
   }
 
   idle_shift() {
-    let a = self.rocci
+    let a = @rocci
     cond {
       a.index == 2 => 0,
-      a.index == 1 && self.fc - a.last_updated > 3 => 0,
+      a.index == 1 && @fc - a.last_updated > 3 => 0,
       _ => 1,
     }
   }
 
   flap_allowed() {
-    let a = self.rocci
+    let a = @rocci
     cond {
       a.index == 2 => true,
-      a.index == 1 => self.fc - a.last_updated > 6,
+      a.index == 1 => @fc - a.last_updated > 6,
       _ => false,
     }
   }
 
   tick_title() {
-    self.rocci.update(self.fc)
+    @rocci.update(@fc)
     Canvas.text("Rocci Bird!!!", 32, 12, C4)
     Canvas.text("Click to start!", 24, 72, C4)
     draw_ground(0)
-    draw_plants(self.plants)
-    self.rocci.draw(PLAYER_X, PLAYER_START_Y + self.idle_shift())
-    self.enter_game() if self.start_input()
+    draw_plants(@plants)
+    @rocci.draw(PLAYER_X, PLAYER_START_Y + @idle_shift())
+    @enter_game() if @start_input()
   }
 
   tick_game() {
-    let flap = self.flap_input()
-    if !self.last_flap && flap && self.flap_allowed() {
+    let flap = @flap_input()
+    if !@last_flap && flap && @flap_allowed() {
       flap_tone()
-      self.player_vel = JUMP
-      self.rocci.reset(self.fc, 0, AnimState.RunOnce)
+      @player_vel = JUMP
+      @rocci.reset(@fc, 0, AnimState.RunOnce)
     } else {
-      self.player_vel += GRAVITY
-      self.rocci.update(self.fc)
+      @player_vel += GRAVITY
+      @rocci.update(@fc)
     }
-    self.last_flap = flap
+    @last_flap = flap
 
     # pipes: spawn, move (scoring when a pipe crosses PLAYER_X - 2), cull
-    if self.fc - self.last_pipe > 90 {
-      self.pipes.push({x: W, gap_start: Random.int(0, 16) * 5 + 10})
-      self.last_pipe = self.fc
+    if @fc - @last_pipe > 90 {
+      @pipes.push({x: W, gap_start: Random.int(0, 16) * 5 + 10})
+      @last_pipe = @fc
     }
-    let moved_pipes = self.pipes.map(shift_left)
+    let moved_pipes = @pipes.map(shift_left)
     let gained = moved_pipes.filter(|p| p.x == PLAYER_X - 2).size()
-    self.pipes = moved_pipes.filter(|p| p.x >= -20)
+    @pipes = moved_pipes.filter(|p| p.x >= -20)
 
     # plants: spawn, move, cull
-    if self.fc - self.last_plant > 12 {
-      self.plants.push({x: W, type: Random.int(0, PLANT_TYPES)})
-      self.last_plant = self.fc
+    if @fc - @last_plant > 12 {
+      @plants.push({x: W, type: Random.int(0, PLANT_TYPES)})
+      @last_plant = @fc
     }
-    self.plants = self.plants.map(shift_left).filter(|p| p.x >= -12)
+    @plants = @plants.map(shift_left).filter(|p| p.x >= -12)
 
-    self.player_y += self.player_vel
-    self.score = Math.min(self.score + gained, 255)
-    self.max_score = Math.max(self.score, self.max_score)
-    self.ground_x = (self.ground_x - 1) % W
+    @player_y += @player_vel
+    @score = Math.min(@score + gained, 255)
+    @max_score = Math.max(@score, @max_score)
+    @ground_x = (@ground_x - 1) % W
     point_tone() if gained > 0
 
-    draw_pipes(self.pipes)
-    draw_ground(self.ground_x)
-    draw_plants(self.plants)
+    draw_pipes(@pipes)
+    draw_ground(@ground_x)
+    draw_plants(@plants)
 
-    let y_pixel = Math.min(self.player_y.to_long(), 134)
-    let hit = collided(y_pixel, self.rocci.index)
-    self.rocci.draw(PLAYER_X, y_pixel)
-    draw_score(self.score, 68, 4)
+    let y_pixel = Math.min(@player_y.to_long(), 134)
+    let hit = collided(y_pixel, @rocci.index)
+    @rocci.draw(PLAYER_X, y_pixel)
+    draw_score(@score, 68, 4)
 
-    self.enter_over() if hit || self.player_y >= 134.0
+    @enter_over() if hit || @player_y >= 134.0
   }
 
   tick_over() {
-    self.player_vel += GRAVITY
-    self.rocci.update(self.fc)
-    self.hiscore.update(self.fc)
-    self.player_y = Math.min(self.player_y + self.player_vel, 134.0)
+    @player_vel += GRAVITY
+    @rocci.update(@fc)
+    @hiscore.update(@fc)
+    @player_y = Math.min(@player_y + @player_vel, 134.0)
 
-    draw_pipes(self.pipes)
-    draw_ground(self.ground_x)
-    draw_plants(self.plants)
-    self.rocci.draw(PLAYER_X, self.player_y.to_long())
+    draw_pipes(@pipes)
+    draw_ground(@ground_x)
+    draw_plants(@plants)
+    @rocci.draw(PLAYER_X, @player_y.to_long())
 
     Canvas.rect(16, 52, 136, 32, C1)
     Canvas.text("Game Over!", 44, 56, C4)
     Canvas.text("Right to restart", 20, 72, C4)
     Canvas.text("Art by Luke DeVault", 4, 151, C4)
     Canvas.rect(66, 2, 28, 12, C1)
-    draw_score(self.score, 68, 4)
-    self.hiscore.draw(64, 0) if self.new_high
+    draw_score(@score, 68, 4)
+    @hiscore.draw(64, 0) if @new_high
     Canvas.rect(54, 18, 52, 12, C1)
     Canvas.text("HS:", 57, 20, C4)
-    draw_score(self.high_score, 80, 20)
+    draw_score(@high_score, 80, 20)
 
-    self.enter_title() if self.restart_input()
+    @enter_title() if @restart_input()
   }
 }
 

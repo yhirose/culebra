@@ -56,7 +56,7 @@ assert_eq(fh_nested(0), 'fh_nested')
 
 // In a method, `fn` is the bound method: recursing through it keeps `self`.
 class FhCounter {
-  new(.base) {
+  new(@base) {
   }
   down(k) {
     if k == 0 {
@@ -235,7 +235,7 @@ assert_eq(handle { fh_rest(2, 5) } with fh_ask(resume) { resume(nil) }, [1, 9])
 // A method's `fn` is one bound method in its body, its clauses and itself;
 // a closure's that captured `self` and was called plainly is the closure.
 class FhBound {
-  new(.v) {
+  new(@v) {
   }
   same() {
     let a = handle {

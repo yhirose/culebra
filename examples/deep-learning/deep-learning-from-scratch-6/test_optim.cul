@@ -7,11 +7,11 @@ import Optim from './train/optim.cul'
 # An optimizer's target only has to answer `params()`.
 class Target {
   new(params) {
-    self.list = params
+    @list = params
   }
 
   params() {
-    self.list
+    @list
   }
 }
 

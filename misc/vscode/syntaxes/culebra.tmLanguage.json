@@ -200,7 +200,7 @@
       ]
     },
     "language-constants": {
-      "match": "\\b(self|__ARGS__)\\b",
+      "match": "\\b(self|__ARGS__)\\b|@(?=[A-Za-z_])",
       "name": "variable.language.culebra"
     },
     "function-call": {

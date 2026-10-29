@@ -25,56 +25,56 @@ fn causal_bias(c) {
 }
 
 class MultiHeadAttention {
-  new(embed_dim, .n_head) {
-    self.head_dim = embed_dim / n_head
-    self.scale = 1.0 / Math.sqrt(to_float(self.head_dim))
+  new(embed_dim, @n_head) {
+    @head_dim = embed_dim / n_head
+    @scale = 1.0 / Math.sqrt(to_float(@head_dim))
     # `L.Linear(out, nobias, in)`: the middle argument turns bias *off*.
     # GPT-2 biases every linear, so it stays false throughout this file.
-    self.w_q = L.Linear(embed_dim, false, embed_dim)
-    self.w_k = L.Linear(embed_dim, false, embed_dim)
-    self.w_v = L.Linear(embed_dim, false, embed_dim)
-    self.w_o = L.Linear(embed_dim, false, embed_dim)
+    @w_q = L.Linear(embed_dim, false, embed_dim)
+    @w_k = L.Linear(embed_dim, false, embed_dim)
+    @w_v = L.Linear(embed_dim, false, embed_dim)
+    @w_o = L.Linear(embed_dim, false, embed_dim)
   }
 
   __call__(x, b, c) {
-    let h = self.n_head
-    let d = self.head_dim
+    let h = @n_head
+    let d = @head_dim
     let heads = |p| dz.reshape(
       dz.transpose(dz.reshape(p, [b, c, h, d]), [0, 2, 1, 3]),
       [b * h, c, d],
     )
-    let q = heads(self.w_q(x))
-    let k = heads(self.w_k(x))
-    let v = heads(self.w_v(x))
+    let q = heads(@w_q(x))
+    let k = heads(@w_k(x))
+    let v = heads(@w_v(x))
 
-    let scores = dz.mul(dz.matmul(q, dz.transpose(k, [0, 2, 1])), self.scale)
+    let scores = dz.mul(dz.matmul(q, dz.transpose(k, [0, 2, 1])), @scale)
     let hidden = dz.matmul(F.softmax(dz.add(scores, causal_bias(c)), 2), v)
-    self.w_o(dz.reshape(
+    @w_o(dz.reshape(
       dz.transpose(dz.reshape(hidden, [b, h, c, d]), [0, 2, 1, 3]),
       [b * c, h * d],
     ))
   }
 
   params() {
-    self.w_q.params() +
-      self.w_k.params() +
-      self.w_v.params() +
-      self.w_o.params()
+    @w_q.params() +
+      @w_k.params() +
+      @w_v.params() +
+      @w_o.params()
   }
 }
 
 class FFN {
   new(embed_dim, ff_dim) {
-    self.fc1 = L.Linear(ff_dim, false, embed_dim)
-    self.fc2 = L.Linear(embed_dim, false, ff_dim)
+    @fc1 = L.Linear(ff_dim, false, embed_dim)
+    @fc2 = L.Linear(embed_dim, false, ff_dim)
   }
 
   __call__(x) {
-    self.fc2(F.gelu(self.fc1(x)))
+    @fc2(F.gelu(@fc1(x)))
   }
 
   params() {
-    self.fc1.params() + self.fc2.params()
+    @fc1.params() + @fc2.params()
   }
 }
 
@@ -82,54 +82,54 @@ class Block {
   new(embed_dim, n_head, ff_dim) {
     # `L.LayerNorm` sizes gamma and beta on its first forward, so a model
     # counted before any forward would report them as absent.
-    self.norm1 = L.LayerNorm()
-    self.norm1.init_params(embed_dim)
-    self.attn = MultiHeadAttention(embed_dim, n_head)
-    self.norm2 = L.LayerNorm()
-    self.norm2.init_params(embed_dim)
-    self.ffn = FFN(embed_dim, ff_dim)
+    @norm1 = L.LayerNorm()
+    @norm1.init_params(embed_dim)
+    @attn = MultiHeadAttention(embed_dim, n_head)
+    @norm2 = L.LayerNorm()
+    @norm2.init_params(embed_dim)
+    @ffn = FFN(embed_dim, ff_dim)
   }
 
   __call__(x, b, c) {
-    let h = dz.add(x, self.attn(self.norm1(x), b, c))
-    dz.add(h, self.ffn(self.norm2(h)))
+    let h = dz.add(x, @attn(@norm1(x), b, c))
+    dz.add(h, @ffn(@norm2(h)))
   }
 
   params() {
-    self.norm1.params() +
-      self.attn.params() +
-      self.norm2.params() +
-      self.ffn.params()
+    @norm1.params() +
+      @attn.params() +
+      @norm2.params() +
+      @ffn.params()
   }
 }
 
 class GPT {
-  new(.cfg) {
-    self.embed = L.EmbedID(cfg.vocab_size, cfg.embed_dim)
-    self.pos_embed = L.EmbedID(cfg.context_len, cfg.embed_dim)
-    self.blocks = range(cfg.n_layer)
+  new(@cfg) {
+    @embed = L.EmbedID(cfg.vocab_size, cfg.embed_dim)
+    @pos_embed = L.EmbedID(cfg.context_len, cfg.embed_dim)
+    @blocks = range(cfg.n_layer)
       .map(|_| Block(cfg.embed_dim, cfg.n_head, cfg.ff_dim))
       .collect()
-    self.norm = L.LayerNorm()
-    self.norm.init_params(cfg.embed_dim)
+    @norm = L.LayerNorm()
+    @norm.init_params(cfg.embed_dim)
     # Weight tying: the unembedding *is* the embedding, read the other way.
-    self.unembed_w = self.embed.w
+    @unembed_w = @embed.w
   }
 
   # `ids` is a flat Array of b * c token ids, row-major.
   __call__(ids, b, c) {
     let positions = range(b).flat_map(|_| range(c).collect()).collect()
-    mut x = dz.add(self.embed(ids), self.pos_embed(positions))
-    for block in self.blocks {
+    mut x = dz.add(@embed(ids), @pos_embed(positions))
+    for block in @blocks {
       x = block(x, b, c)
     }
-    dz.matmul(self.norm(x), dz.transpose(self.unembed_w, [1, 0]))
+    dz.matmul(@norm(x), dz.transpose(@unembed_w, [1, 0]))
   }
 
   params() {
-    [self.embed.w, self.pos_embed.w] +
-      self.norm.params() +
-      self.blocks.iter().flat_map(|b| b.params()).collect()
+    [@embed.w, @pos_embed.w] +
+      @norm.params() +
+      @blocks.iter().flat_map(|b| b.params()).collect()
   }
 }
 

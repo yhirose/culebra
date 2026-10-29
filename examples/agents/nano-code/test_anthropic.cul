@@ -8,17 +8,17 @@ import msg from './core/message.cul'
 
 # A client that answers with a canned payload and remembers what it was sent.
 class AnthropicStub {
-  new(.response) {
-    self.sent = []
+  new(@response) {
+    @sent = []
   }
 
   post(path, json) {
-    self.sent.push({path: path, body: json})
-    self.response
+    @sent.push({path: path, body: json})
+    @response
   }
 
   last_body() {
-    self.sent[self.sent.size() - 1].body
+    @sent[@sent.size() - 1].body
   }
 }
 

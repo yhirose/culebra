@@ -16,7 +16,7 @@ fn mm_miss(name, type) {
 }
 
 class MmPoint {
-  new(.x) {}
+  new(@x) {}
   area() { self.x * 2 }
   twice() { self.areaa() }
 }

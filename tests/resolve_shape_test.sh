@@ -100,7 +100,7 @@ Out.new(In.new(1), 2).k' \
 check "an unread arm's write is not reboxed" \
 '@value
 class V2 {
-  new(.x: Float, .y: Float) {}
+  new(@x: Float, @y: Float) {}
   __add__(o) { V2.new(self.x + o.x, self.y + o.y) }
 }
 fn f(n) {
@@ -122,7 +122,7 @@ println(f(3))' \
 check "a body's last write is reboxed" \
 '@value
 class V2 {
-  new(.x: Float, .y: Float) {}
+  new(@x: Float, @y: Float) {}
   __add__(o) { V2.new(self.x + o.x, self.y + o.y) }
 }
 fn f(k) {

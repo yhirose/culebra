@@ -171,7 +171,7 @@ for i in 0..1000 {
 }
 mut term_dropped = []
 class TermHeld {
-  new(.name) {
+  new(@name) {
     self.payload = too_deep
   }
   eq(o) {

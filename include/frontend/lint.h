@@ -237,7 +237,7 @@ class RuleWalker {
   // closes those interp/JIT divergences. Stops at the first violation, as the
   // interp's throwing builder does.
   // `ctor`: this is a class's `new`, the one list a field parameter
-  // (`.x`, docs/language.md §10) may appear in.
+  // (`@x`, docs/language.md §10) may appear in.
   void check_param_wellformed(const peg::Ast& params, bool ctor = false) {
     bool seen_default = false, kw_only = false, seen_sep = false;
     bool seen_kwargs_rest = false, seen_args_rest = false;
@@ -281,19 +281,19 @@ class RuleWalker {
         continue;
       }
       if (pv.is_field && !ctor) {
-        return err(std::format("field parameter '.{}' is only allowed in a "
+        return err(std::format("field parameter '@{}' is only allowed in a "
                                "class's `new`", pv.name),
                    pv.name_line, pv.name_col);
       }
       if (pv.is_optional && (pv.default_value || !pv.type_annotation.empty())) {
-        return err(std::format("field parameter '.{}?' takes its type and "
+        return err(std::format("field parameter '@{}?' takes its type and "
                                "default from the field's declaration", pv.name),
                    pv.name_line, pv.name_col);
       }
       // A destructuring parameter cannot carry a default, so it is a
       // required one and falls under the same ordering rule — the binders
       // count required slots by position, and a required slot after a
-      // defaulted one has no arity that can fill it. `.x?` is optional the
+      // defaulted one has no arity that can fill it. `@x?` is optional the
       // same way a defaulted one is.
       if (pv.default_value || pv.is_optional) {
         seen_default = true;

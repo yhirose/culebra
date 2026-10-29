@@ -2,7 +2,7 @@
 # report names the `throw`, not the `catch` that let it by, and the defers of
 # the scopes it left have run.
 class Timeout {
-  new(.after) {}
+  new(@after) {}
 }
 fn work() {
   defer { println('work defer') }

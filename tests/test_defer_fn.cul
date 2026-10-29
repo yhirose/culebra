@@ -26,7 +26,7 @@ let fd_order = []
 fd_recurse(2, fd_order)
 assert_eq(fd_order, [2, 1, 0])
 class FdBox {
-  new(.v) {
+  new(@v) {
   }
   m() {
     mut out = nil

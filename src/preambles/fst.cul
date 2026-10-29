@@ -1,20 +1,20 @@
 let _fst_module = fn () {
   class Set {
     new(bytecode) {
-      self._bc = bytecode
+      @_bc = bytecode
       _FST.set_check(bytecode)
     }
     contains(key) {
-      _FST.set_contains(self._bc, key)
+      _FST.set_contains(@_bc, key)
     }
     common_prefix_search(text) {
-      _FST.set_common_prefix_search(self._bc, text)
+      _FST.set_common_prefix_search(@_bc, text)
     }
     longest_common_prefix_search(text) {
-      _FST.set_longest_common_prefix_search(self._bc, text)
+      _FST.set_longest_common_prefix_search(@_bc, text)
     }
     predictive_search(prefix) {
-      _FST.set_predictive_search(self._bc, prefix)
+      _FST.set_predictive_search(@_bc, prefix)
     }
     edit_distance_search(
       word,
@@ -24,7 +24,7 @@ let _fst_module = fn () {
       replace_cost = 1,
     ) {
       _FST.set_edit_distance_search(
-        self._bc,
+        @_bc,
         word,
         max_edits,
         insert_cost,
@@ -33,25 +33,25 @@ let _fst_module = fn () {
       )
     }
     suggest(word) {
-      _FST.set_suggest(self._bc, word)
+      _FST.set_suggest(@_bc, word)
     }
   }
   class Map {
     new(bytecode) {
-      self._bc = bytecode
+      @_bc = bytecode
       _FST.map_check(bytecode)
     }
     get(key) {
-      _FST.map_get(self._bc, key)
+      _FST.map_get(@_bc, key)
     }
     common_prefix_search(text) {
-      _FST.map_common_prefix_search(self._bc, text)
+      _FST.map_common_prefix_search(@_bc, text)
     }
     longest_common_prefix_search(text) {
-      _FST.map_longest_common_prefix_search(self._bc, text)
+      _FST.map_longest_common_prefix_search(@_bc, text)
     }
     predictive_search(prefix) {
-      _FST.map_predictive_search(self._bc, prefix)
+      _FST.map_predictive_search(@_bc, prefix)
     }
     edit_distance_search(
       word,
@@ -61,7 +61,7 @@ let _fst_module = fn () {
       replace_cost = 1,
     ) {
       _FST.map_edit_distance_search(
-        self._bc,
+        @_bc,
         word,
         max_edits,
         insert_cost,
@@ -70,25 +70,25 @@ let _fst_module = fn () {
       )
     }
     suggest(word) {
-      _FST.map_suggest(self._bc, word)
+      _FST.map_suggest(@_bc, word)
     }
   }
   class IndexMap {
     new(bytecode) {
-      self._bc = bytecode
+      @_bc = bytecode
       _FST.index_check(bytecode)
     }
     get(key) {
-      _FST.index_get(self._bc, key)
+      _FST.index_get(@_bc, key)
     }
     common_prefix_search(text) {
-      _FST.index_common_prefix_search(self._bc, text)
+      _FST.index_common_prefix_search(@_bc, text)
     }
     longest_common_prefix_search(text) {
-      _FST.index_longest_common_prefix_search(self._bc, text)
+      _FST.index_longest_common_prefix_search(@_bc, text)
     }
     predictive_search(prefix) {
-      _FST.index_predictive_search(self._bc, prefix)
+      _FST.index_predictive_search(@_bc, prefix)
     }
     edit_distance_search(
       word,
@@ -98,7 +98,7 @@ let _fst_module = fn () {
       replace_cost = 1,
     ) {
       _FST.index_edit_distance_search(
-        self._bc,
+        @_bc,
         word,
         max_edits,
         insert_cost,
@@ -107,7 +107,7 @@ let _fst_module = fn () {
       )
     }
     suggest(word) {
-      _FST.index_suggest(self._bc, word)
+      _FST.index_suggest(@_bc, word)
     }
   }
   {

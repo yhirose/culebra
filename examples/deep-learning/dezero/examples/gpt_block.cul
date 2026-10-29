@@ -30,23 +30,23 @@ let targets = seq.slice(1, block_size + 1)
 
 class TinyGPT {
   new(vocab_size, n_embd, n_head) {
-    self.embed = L.EmbedID(vocab_size, n_embd)
-    self.block = L.GPTBlock(n_embd, n_head)
-    self.head = L.Linear(vocab_size)
+    @embed = L.EmbedID(vocab_size, n_embd)
+    @block = L.GPTBlock(n_embd, n_head)
+    @head = L.Linear(vocab_size)
   }
 
   forward(ids) {
-    mut x = self.embed(ids)  # [T, n_embd]
-    x = self.block(x)        # [T, n_embd]
-    self.head(x)             # [T, vocab_size]
+    mut x = @embed(ids)  # [T, n_embd]
+    x = @block(x)        # [T, n_embd]
+    @head(x)             # [T, vocab_size]
   }
 
   __call__(ids) {
-    self.forward(ids)
+    @forward(ids)
   }
 
   params() {
-    self.embed.params() + self.block.params() + self.head.params()
+    @embed.params() + @block.params() + @head.params()
   }
 
   cleargrads() {

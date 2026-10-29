@@ -28,16 +28,16 @@ n_train = !Sys.argv.empty() ? to_long(Sys.argv[0]) : 1000
 
 class SmallCNN {
   new() {
-    self.conv1 = LC.Conv2d(8, 3, 1, 1)
-    self.fc = L.Linear(10)
+    @conv1 = LC.Conv2d(8, 3, 1, 1)
+    @fc = L.Linear(10)
   }
 
   __call__(x) {
     images = dz.reshape(x, [x.shape[0], 1, 28, 28])
-    h = conv.pooling(F.relu(self.conv1(images)), 2, 2, 0)
+    h = conv.pooling(F.relu(@conv1(images)), 2, 2, 0)
     s = h.shape
     flat = dz.reshape(h, [s[0], s[1] * s[2] * s[3]])
-    self.fc(flat)
+    @fc(flat)
   }
 
   cleargrads() {
@@ -45,7 +45,7 @@ class SmallCNN {
   }
 
   params() {
-    self.conv1.params() + self.fc.params()
+    @conv1.params() + @fc.params()
   }
 }
 

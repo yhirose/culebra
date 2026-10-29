@@ -44,7 +44,7 @@ assert_eq(vmn_stdlib_own_class_narrower(), [2.0, 4.0])
 fn vmn_program_own_class() {
   @value
   class VmnPair {
-    new(.x: Float, .y: Float) {}
+    new(@x: Float, @y: Float) {}
     __mul__(k) {
       VmnPair.new(self.x * k, self.y * k)
     }
@@ -94,7 +94,7 @@ fn vmn_namespace_at_class() {
   let Math = {sqrt: |x| 99.0}
   @value
   class VmnLen {
-    new(.x: Float, .y: Float) {}
+    new(@x: Float, @y: Float) {}
     len() {
       Math.sqrt(self.x * self.x + self.y * self.y)
     }
@@ -115,7 +115,7 @@ fn vmn_ufcs() {
   }
   @value
   class VmnOne {
-    new(.x: Float) {}
+    new(@x: Float) {}
     doubled() {
       let a = self.x
       a.vmn_twice()
@@ -139,7 +139,7 @@ assert_eq(vmn_ufcs(), [6.0, 106.0])
 fn vmn_own_handle() {
   @value
   class VmnDown {
-    new(.x: Float) {}
+    new(@x: Float) {}
     down(n) {
       n < 1.0 ? self.x : fn(n - 1.0) + 1.0
     }

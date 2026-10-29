@@ -407,7 +407,7 @@ effect fn td_ask()
 
 effect fn td_comp() {
   class TdCounter {
-    new(.n) {}
+    new(@n) {}
     next() {
       TdCounter(self.n + 1)
     }
@@ -426,7 +426,7 @@ assert_eq(
   }
   @derive(Eq)
   class TdPt {
-    new(.x) {}
+    new(@x) {}
   }
   let a = perform td_ask()
   [TdLight.Green == TdLight.Green, TdPt(a) == TdPt(a), TdPt(a).x]
@@ -490,7 +490,7 @@ effect fn td_member_fn() {
   let base = 100
   if true {
     class TdCalc {
-      new(.n) {}
+      new(@n) {}
       calc() {
         fn helper(x) {
           TdCalc(x + base).n
@@ -511,7 +511,7 @@ assert_eq(
   handle {
   let a = perform td_ask()
   class TdLate {
-    new(.v) {}
+    new(@v) {}
   }
 } with td_ask(resume) { resume(1) },
   nil,

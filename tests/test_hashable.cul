@@ -139,7 +139,7 @@ assert_eq([nan].contains(nan), false)
 // key, while `==` compares the fields by `==`.
 @derive(Eq, Hash)
 class Reading {
-  new(.value) {}
+  new(@value) {}
 }
 mut readings = {}
 readings[Reading(nan)] = 1
@@ -158,7 +158,7 @@ assert_eq(zeros.size(), 1)
 // which the AOT lane does not run.
 let sent_reg = []
 class Sent {
-  new(.x) {}
+  new(@x) {}
   all() {
     sent_reg[0]
   }

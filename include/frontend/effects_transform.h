@@ -1727,6 +1727,12 @@ class EffectsLowerer {
                                                const std::string& to) {
     std::vector<SourceEdit> out;
     for_each_self_ref(node, [&](const peg::Ast& s, bool shorthand) {
+      // `@name` is the byte `@` and the DOT that follows, so `to` takes its
+      // place with the `.` it lacks; its token is not a view of `src`.
+      if (s.original_name == "AT_SELF") {
+        out.push_back({written_at(s, src), 1, to + "."});
+        return false;
+      }
       auto at = static_cast<size_t>(s.token.data() - src.data());
       out.push_back({at, 4, shorthand ? "self: " + to : to});
       return false;
