@@ -32,7 +32,7 @@ class LeakVoxel {
 # A class whose `eq` throws, for the terminals that compare.
 class EqThrows {
   new(n) {
-    self.n = n
+    @n = n
   }
   eq(o) {
     throw 'no eq'
@@ -42,27 +42,27 @@ class EqThrows {
 # A small class exercising constructors, defaults, operators, and methods.
 class V {
   new(data, children = [], grads = []) {
-    self.data = data
-    self.children = children
-    self.grads = grads
+    @data = data
+    @children = children
+    @grads = grads
   }
   __add__(o) {
-    V.new(self.data + o.data, [self, o], [1.0, 1.0])
+    V.new(@data + o.data, [self, o], [1.0, 1.0])
   }
   __mul__(o) {
-    V.new(self.data * o.data, [self, o], [o.data, self.data])
+    V.new(@data * o.data, [self, o], [o.data, @data])
   }
   __lt__(o) {
-    self.data < o.data
+    @data < o.data
   }
   __eq__(o) {
-    self.data == o.data
+    @data == o.data
   }
   __neg__() {
-    V.new(-self.data, [self], [-1.0])
+    V.new(-@data, [self], [-1.0])
   }
   twice() {
-    V.new(self.data * 2, [self], [2.0])
+    V.new(@data * 2, [self], [2.0])
   }
 }
 
@@ -626,11 +626,11 @@ fn mk_proto(v) {
     {
       mut i: 0,
       has_next: fn () {
-        self.i < 2
+        @i < 2
       },
       next: fn () {
-        self.i = self.i + 1
-        self.i
+        @i = @i + 1
+        @i
       },
       dispose: fn () {
         0
@@ -666,11 +666,11 @@ fn mk_proto_throwing(v) {
     {
       mut i: 0,
       has_next: fn () {
-        self.i < 2
+        @i < 2
       },
       next: fn () {
-        self.i = self.i + 1
-        self.i
+        @i = @i + 1
+        @i
       },
       dispose: fn () {
         throw "boom"
@@ -694,16 +694,16 @@ fn forin_ret(n) {
 fn mk_local(x) {
   class Local {
     new(v) {
-      self.v = v
+      @v = v
     }
     a() {
-      self.v
+      @v
     }
     b() {
-      self.v + 1
+      @v + 1
     }
     c() {
-      self.v + 2
+      @v + 2
     }
   }
   Local.new(x)

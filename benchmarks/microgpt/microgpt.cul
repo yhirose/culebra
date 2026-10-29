@@ -36,30 +36,30 @@ inspect("vocab size: {vocab_size}")
 # Let there be Autograd to recursively apply the chain rule through a computation graph
 class Value {
   new(data, children = [], local_grads = []) {
-    self.data = data                 # scalar value of this node calculated during forward pass
-    self.grad = 0.0                  # derivative of the loss w.r.t. this node, calculated in backward pass
-    self._children = children        # children of this node in the computation graph
-    self._local_grads = local_grads  # local derivative of this node w.r.t. its children
-    self._visited = false
+    @data = data                 # scalar value of this node calculated during forward pass
+    @grad = 0.0                  # derivative of the loss w.r.t. this node, calculated in backward pass
+    @_children = children        # children of this node in the computation graph
+    @_local_grads = local_grads  # local derivative of this node w.r.t. its children
+    @_visited = false
   }
   __add__(other) {
     match other {
-      o: Object => Value.new(self.data + o.data, [self, o], [1.0, 1.0]),
-      _ => Value.new(self.data + other, [self], [1.0]),
+      o: Object => Value.new(@data + o.data, [self, o], [1.0, 1.0]),
+      _ => Value.new(@data + other, [self], [1.0]),
     }
   }
   __mul__(other) {
     match other {
       o: Object => Value.new(
-        self.data * o.data,
+        @data * o.data,
         [self, o],
-        [o.data, self.data],
+        [o.data, @data],
       ),
-      _ => Value.new(self.data * other, [self], [other]),
+      _ => Value.new(@data * other, [self], [other]),
     }
   }
   __pow__(n) {
-    Value.new(self.data ** n, [self], [n * self.data ** (n - 1)])
+    Value.new(@data ** n, [self], [n * @data ** (n - 1)])
   }
   __neg__() {
     self * -1.0
@@ -74,19 +74,19 @@ class Value {
     }
   }
   log() {
-    Value.new(Math.log(self.data), [self], [1.0 / self.data])
+    Value.new(Math.log(@data), [self], [1.0 / @data])
   }
   exp() {
-    d = Math.exp(self.data)
+    d = Math.exp(@data)
     Value.new(d, [self], [d])
   }
   relu() {
-    d = if self.data > 0.0 {
-      self.data
+    d = if @data > 0.0 {
+      @data
     } else {
       0.0
     }
-    g = if self.data > 0.0 {
+    g = if @data > 0.0 {
       1.0
     } else {
       0.0
@@ -103,7 +103,7 @@ class Value {
       topo.push(node)
     }
     build_topo(self)
-    self.grad = 1.0
+    @grad = 1.0
     topo.reverse()
     # Python's `for child, local_grad in zip(...)`: a counted loop, not
     # `range(n).for_each(fn ...)` -- that spelling built a range, an iterator
@@ -153,9 +153,9 @@ matrix = |nout, nin, std = 0.08| range(nout)
 # overall convergence behavior matches.
 class GPT {
   new() {
-    self.wte = matrix(vocab_size, n_embd)
-    self.wpe = matrix(block_size, n_embd)
-    self.lm_head = matrix(vocab_size, n_embd)
+    @wte = matrix(vocab_size, n_embd)
+    @wpe = matrix(block_size, n_embd)
+    @lm_head = matrix(vocab_size, n_embd)
     mut layers = []
     for _ in 0..n_layer {
       layers.push({
@@ -167,7 +167,7 @@ class GPT {
         mlp_fc2: matrix(n_embd, 4 * n_embd),
       })
     }
-    self.layers = layers
+    @layers = layers
   }
 }
 

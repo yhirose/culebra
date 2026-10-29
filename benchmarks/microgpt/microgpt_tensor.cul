@@ -118,7 +118,7 @@ let ce_loss = fn (logits, target, n) {
 
 class Param {
   new(t) {
-    self.t = t
+    @t = t
   }
 }
 

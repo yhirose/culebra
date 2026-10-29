@@ -68,7 +68,7 @@ let positions = id_tensor(1, 0, T)
 
 class Param {
   new(t) {
-    self.t = t
+    @t = t
   }
 }
 
