@@ -4364,11 +4364,6 @@ tag), so they stay correct as fields change. Details:
   and then a stated `eq` (*Trait-method fallback*). Comparable's
   default `lt` / `le` — and a class's own override of them — fire only
   when called as `x.lt(y)`.
-* **Same-name defaults across traits are non-deterministic**: if
-  two registered traits both provide a `to_s` default and an
-  instance conforms to both, the dispatch picks the one the
-  internal hash map iterates first. Avoid declaring same-named
-  defaults across overlapping traits.
 * **Self-recursive trait defaults are user responsibility**:
   `trait X { foo() { self.foo() } }` will stack-overflow if a
   conforming class doesn't override `foo`. No depth guard is

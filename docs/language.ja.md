@@ -4166,10 +4166,6 @@ fieldの変更に追従します。詳細:
   `eq`を使います（*traitメソッドへのフォールバック*）。Comparableの
   default `lt` / `le`は、classが自分で上書きしたものも含めて、
   `x.lt(y)`の形で呼んだときだけ動きます。
-* **複数traitの同名defaultの選択は非決定です**: 2つのtraitが
-  同名default (`to_s`等) を持ちinstanceが両方にconformするとき、
-  dispatchは内部hash mapのiteration順で勝者を決めます。同名default
-  を持つtraitの併用は避けてください。
 * **自己再帰するtrait defaultはuserの責任です**: `trait X { foo() {
   self.foo() } }`でconform classが`foo`をoverrideしないと
   stack overflowになります。depth guardは未実装です。
