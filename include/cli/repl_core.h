@@ -3,8 +3,7 @@
 // The engine-neutral REPL core: the input-completeness check, the history
 // path, and repl_loop — linenoise, multi-line accumulation, Ctrl+C, and the
 // per-line ReplEval seam an engine plugs its evaluator into (the VM's is
-// vm_repl.h; split out of the interp REPL in Phase 4 B7-b, which retired
-// with the tree-walker in B7-f).
+// VmRepl in repl.h).
 
 #include <cstdlib>
 #include <deque>
@@ -98,27 +97,25 @@ inline std::string repl_history_path() {
 }
 
 // One accepted input, handed to whichever engine the session runs on. The
-// engine prints its own echo — the two hold a result differently, an interp
-// `Value` against the VM's tagged pair — and returns false when it put a
-// report in `msgs` for the loop to print.
+// engine prints its own echo and returns false when it put a report in `msgs`
+// for the loop to print.
 using ReplEval = std::function<bool(const std::shared_ptr<peg::Ast>&,
                                     std::vector<std::string>& msgs)>;
 
-// The REPL always runs on a tier-0 engine: the interpreter, or the bytecode
-// VM's executor under `--vm` (see vm_repl.h). A REPL line is never a hot loop,
-// so compiling each input only adds latency for no gain — the same reason V8 /
-// the JVM / LuaJIT start interpreted and only JIT hot code. The compiled lane
-// (`--jit`) is for scripts; combined with the REPL it is a no-op the CLI notes
-// and ignores (see main.cc).
+// The REPL always runs on a tier-0 engine: the bytecode VM's executor (see
+// repl.h). A REPL line is never a hot loop, so compiling each input only adds
+// latency for no gain — the same reason V8 / the JVM / LuaJIT start
+// interpreted and only JIT hot code. The compiled lane (`--jit`) is for
+// scripts; combined with the REPL it is a no-op the CLI notes and ignores
+// (see main.cc).
 //
-// This is the line editor and session bookkeeping both engines share; `eval`
-// is the engine.
+// This is the line editor and session bookkeeping; `eval` is the engine.
 inline int repl_loop(bool print_ast, const ReplEval& eval) {
   using namespace std;
 
   // Ctrl+C interrupts the running eval and returns to the prompt (rather than
-  // killing the REPL): the handler sets the global SIGINT flag, the interp /
-  // JIT safepoints throw a catchable Interrupted, and the per-input try/catch
+  // killing the REPL): the handler sets the global SIGINT flag, the
+  // executor's safepoints throw a catchable Interrupted, and the per-input try/catch
   // below prints it and loops. During line editing linenoise holds the
   // terminal in raw mode with ISIG disabled, so Ctrl+C there is the literal
   // 0x03 it handles itself (cancel the line) — no signal — and only an
@@ -132,7 +129,7 @@ inline int repl_loop(bool print_ast, const ReplEval& eval) {
   // ScriptTeardownGuard (script_teardown.h) is function-scoped here instead of
   // per-input: an Isolate.spawn'd background task (or a watch bound to a
   // variable) is expected to keep running across multiple REPL lines, so
-  // reaping after every `interpret()` call below would cancel legitimate
+  // reaping after every `eval()` call below would cancel legitimate
   // in-flight work instead of just clearing stragglers at session exit.
   ScriptTeardownGuard script_teardown_guard;
 
@@ -168,9 +165,10 @@ inline int repl_loop(bool print_ast, const ReplEval& eval) {
   std::string accum;
 
   // Per-session retention of every accepted input's source buffer.
-  // AST token `string_view`s point into this buffer, and the
-  // FunctionValues created during eval need those tokens (parameter
-  // names, return types) to outlive the input that produced them.
+  // AST token `string_view`s point into this buffer, and the session keeps
+  // every line's AST and program for its whole lifetime (vm::Session::run_unit
+  // is handed no source of its own for a REPL line), so the tokens must
+  // outlive the input that produced them.
   //
   // Must be a `std::deque`, not a `std::vector`: a vector's `push_back`
   // can reallocate and relocate every existing element, and a small
@@ -181,11 +179,9 @@ inline int repl_loop(bool print_ast, const ReplEval& eval) {
   // every retained source — and the SSO bytes inside it — keeps a
   // stable address for the whole session.
   //
-  // The AST nodes themselves do NOT need a separate retention list:
-  // `FunctionValue`'s `eval` lambda captures the body subtree's
-  // `shared_ptr<peg::Ast>` by value, which keeps the body and all
-  // its descendants alive even after the input's root AST is
-  // destroyed. Only the source-buffer string needs explicit retention.
+  // The AST nodes themselves need no retention list here: the session holds
+  // the `shared_ptr<peg::Ast>` it was given. Only the source-buffer string
+  // needs explicit retention.
   //
   // Memory is O(session length). Typical interactive sessions
   // (hundreds of inputs) sit in the tens-of-KB range, which we
@@ -228,14 +224,10 @@ inline int repl_loop(bool print_ast, const ReplEval& eval) {
     accum.clear();
     {
       vector<string> msgs;
-      // Retain the source buffer + parsed AST for the whole session.
-      // `peg::Ast` nodes hold `string_view` tokens into the source
-      // buffer, and FunctionValues capture body-subtree shared_ptr's
-      // whose lifetimes alone don't keep the source alive. Without
-      // retention, every REPL-defined function dangles its parameter
-      // names + body tokens as soon as the next input drops the
-      // previous line. Bounded by session length (one entry per
-      // accepted input).
+      // Retain the source buffer for the whole session. `peg::Ast` nodes
+      // hold `string_view` tokens into it, and the AST the session keeps
+      // does not own it. Bounded by session length (one entry per accepted
+      // input).
       retained_sources_.push_back(full_line);
       auto& src = retained_sources_.back();  // parse normalizes it in place
       auto ast = parse_with_transforms("(repl)", src, msgs);

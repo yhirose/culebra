@@ -9,10 +9,9 @@
 
 namespace culebra {
 
-// The REPL on the bytecode VM's executor (`culebra --vm` with no script) —
-// the tier-0 story repl.h tells about the interpreter, told about the engine
-// that is going to replace it. What a session is, and why a line's program
-// has to outlive it, is vm_session.h; this is the prompt on top of one.
+// The REPL on the bytecode VM's executor (`culebra` with no script). What a
+// session is, and why a line's program has to outlive it, is session.h; this
+// is the prompt on top of one.
 class VmRepl {
  public:
   explicit VmRepl(bool dump) : dump_(dump) {}
@@ -41,8 +40,8 @@ class VmRepl {
 
   // What the prompt shows: the value of the line's last statement, which the
   // program left in the session's result cell. Released right after, because
-  // that is where the interp's own `val` dies — a resource echoed and bound
-  // to nothing drops before the next prompt, not one line later (probed).
+  // that is where a line's value dies — a resource echoed and bound to
+  // nothing drops before the next prompt, not one line later (probed).
   bool echo_result(std::vector<std::string>& msgs) {
     JitOwnedVal v(session_.take_result());
     const JitValue r = v.borrow();
