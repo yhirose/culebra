@@ -1,10 +1,9 @@
 # デプロイ: バイナリ・埋め込み・ラッピング
 
-素の`culebra`実行以外でCulebraコードを動かす3つの方法: standalone
-AOTバイナリ（`culebra build`）、C++ ホスト内へのVM/JIT埋め込み、自分の
-C++ クラスをビルトインとして公開する拡張`culebra`バイナリ
-（`culebra wrap`）。3つは1つのruntime archiveレイアウトを共有し、
-[§4](#4-共有-runtime-archive-レイアウト) にまとめて記述し各章から参照する。
+素の`culebra`実行以外でCulebraコードを動かす方法は3つあります。standalone AOTバイナリ（`culebra build`）、
+C++ ホスト内へのVM/JITの埋め込み、自分のC++ クラスをビルトインとして公開する拡張`culebra`バイナリ
+（`culebra wrap`）です。3つは1つのruntime archiveレイアウトを共有します。そのレイアウトは
+[§4](#4-共有-runtime-archive-レイアウト)にまとめて記述し、各章から参照します。
 
 目次
 ----
@@ -14,15 +13,14 @@ C++ クラスをビルトインとして公開する拡張`culebra`バイナリ
 3. [C++ ライブラリのラッピング（`culebra wrap`）](#3-c-ライブラリのラッピングculebra-wrap)
 4. [共有 runtime archive レイアウト](#4-共有-runtime-archive-レイアウト)
 
-開発用サブコマンド — `test`・`lint`・`fmt`・`dap` — は
-[`tooling.ja.md`](tooling.ja.md) が扱います。
+開発用サブコマンドの`test`・`lint`・`fmt`・`dap`は[`tooling.ja.md`](tooling.ja.md)が扱います。
 
 ## 1. Standalone バイナリビルド（`culebra build`）
 
 `culebra build`は`.cul`ソースを **LLVM AOT codegen + システム
 `cc`** によって単体実行ファイルにコンパイルします。生成バイナリに
 LLVMランタイムは含まれず、依存表面は`libc++` / `libSystem`
-(macOS) または`libstdc++` / `libc` (Linux)、それと`Tensor`を
+（macOS）または`libstdc++` / `libc`（Linux）、それと`Tensor`を
 参照するときに限り`Accelerate` / BLASが加わるだけです。
 
 ```sh
@@ -30,29 +28,27 @@ culebra build path/to/program.cul -o ./program
 ./program [args...]
 ```
 
-デフォルトはホストプラットフォーム向け。
+デフォルトはホストプラットフォーム向けです。
 
 ### ホスト側に必要なもの
 
-スクリプトの実行に`culebra`バイナリ以外は要りません。`--jit`も同じで、
-コンパイルに使うLLVMはバイナリの中にあります。外へ出るのは
-`culebra build`だけです — codegenはプロセス内で完結しますが、
-リンクにはプラットフォーム側のオブジェクトファイル周りが要り、
-一度も何もビルドしたことのないマシンにはそれがありません。`build`は
-コンパイルを始める前にこれを確認し、端末上ならば足りないものを
-「名前を挙げるだけ」でなくインストールするか尋ねます。
+スクリプトの実行に`culebra`バイナリ以外は要りません。`--jit`も同じで、コンパイルに使うLLVMはバイナリの中にあります。
+外部のものが要るのは`culebra build`だけです。codegenはプロセス内で完結しますが、リンクにはプラットフォーム側の
+オブジェクトファイル周りが要り、一度も何もビルドしたことのないマシンにはそれがありません。`build`は
+コンパイルを始める前にこれを確認し、端末上ならば、足りないものの名前を挙げるだけでなく、
+インストールするか尋ねます。
 
 | ホスト | リンク段が必要とするもの | 入手方法 |
 |---|---|---|
 | macOS | Xcode Command Line Tools（`/usr/bin`の`cc`はその実体ではなくシムで、Mach-Oが`libSystem`をリンクする先のSDKスタブもこれが持ち込む） | `culebra toolchain install`（Appleのインストーラを起動）または`xcode-select --install` |
 | Linux | `cc`・libstdc++・Cランタイムのスタートアップファイル | `sudo apt install g++`（Debian / Ubuntu）、`sudo dnf install gcc-c++`（Fedora） |
-| Windows | mingwのCRTオブジェクトと静的ライブラリ — **コンパイラもリンカも不要** | `culebra toolchain install`（約8MB） |
+| Windows | mingwのCRTオブジェクトと静的ライブラリ（**コンパイラもリンカも不要**） | `culebra toolchain install`（約8MB） |
 
 他には何も要りません。AOTのリンクが必要とするアーカイブは、
 サードパーティの静的ライブラリも含めて`culebra`バイナリ自身から
 出てきます（[§4](#4-共有-runtime-archive-レイアウト)）。
 システムからリンクされるライブラリとして残るのはzlibだけで、
-`Http`・`Compress`・`to_png`を使うプログラムが`-lz`で引きます —
+`Http`・`Compress`・`to_png`を使うプログラムが`-lz`で引きます。
 macOSとWindowsのkitには既にありますが、Linuxではリンカが見る
 `libz.so`のシンボリックリンクがdevパッケージ側にあります
 （`sudo apt install zlib1g-dev`、`sudo dnf install zlib-devel`）。
@@ -84,7 +80,7 @@ Windowsでは`install`が、このバイナリが名乗るバージョンのリ�
 `uninstall`はこのディレクトリの削除で、手で消しても同じことです。
 kitがバージョンごとに分かれているのは、kitのlibstdc++がこのバイナリに
 埋め込まれたランタイムアーカイブをコンパイルしたものと同一でなければ
-ならないからです — `install`はマニフェストが別バージョンを名乗るkitを
+ならないからです。`install`はマニフェストが別バージョンを名乗るkitを
 拒否しますし、culebraを上げたら付属のkitを入れ直すことになります。
 
 他のプラットフォームでの`install`は薄いものです。macOSではAppleの
@@ -96,10 +92,10 @@ Command Line Toolsインストーラを起動し（このプロセスが待て�
 ### Windowsにコンパイラが要らない理由
 
 Windowsはツールチェーンを一切同梱していませんが、そこでAOTのリンクに
-足りないのはリンカであってコンパイラではありません — `culebra build`は
-オブジェクトをプロセス内で自分で吐きます。そこでリンカをバイナリの中に
+足りないのはリンカであってコンパイラではありません。`culebra build`は
+オブジェクトをプロセス内で自分で吐くからです。そこでリンカをバイナリの中に
 置きました。JITのために既に載せているLLVMの上に、culebraがlldを
-リンクしています。kitが供給するのはリンクのmingw側の半分だけ —
+リンクしています。kitが供給するのはリンクのmingw側の半分だけで、
 CRTオブジェクト、libstdc++ / libgcc、そしてWin32のインポートライブラリです。
 
 そのLLVMを共有できることが安く済む理由で、代替案は推測でなく実測して
@@ -117,7 +113,7 @@ kitはリリース時に、バイナリの中のランタイムアーカイブ�
 両者のlibstdc++が一致することが、誰かが正しく突き合わせた結果ではなく
 構成上の帰結になるのはこのためです。kitはそのツールチェーンのC++ドライバが
 組み立てるリンカコマンドライン（`link-recipe.txt`）を記録しており、
-culebraは自分のオブジェクトとfeature側のライブラリをその中間に差し込みます —
+culebraは自分のオブジェクトとfeature側のライブラリをその中間に差し込みます。
 つまりculebraが行うリンクは、ドライバ抜きで、ドライバが行ったはずの
 リンクそのものです。
 
@@ -153,65 +149,46 @@ MSYS2ツールチェーンを必要とします。[`CONTRIBUTING.md`](../CONTRIB
 
 ### Tensor-free / Http-free バイナリ
 
-各機能軸は独立にforce-loadされる（仕組みは
-[§4](#4-共有-runtime-archive-レイアウト) 参照）ので、`Tensor`も
-`Http`も使わないプログラムはbaseのみをlinkする。OpenSSLを
-落とすだけで約4.7 MB効く（非Httpバイナリ ~0.3 MBに対しHttp版は
-~5.1 MB、OpenSSLは静的リンクのため）。同じゲーティングは、外部
-ライブラリを引かないが自前のコードを抱える2つのサブシステムにも
-効く。1つめは正規表現エンジン（`Regex`、`re'...'`リテラルを含む）。
-この軸のコストは約0.9 MBで、cpp-regexlibとこのnamespace自身のgroupの
-合計。実測の内訳はコード約0.55 MBとテーブル約0.24 MB。
-外部依存が無くても弱/強分岐が要るのは、
-エンジン内部の`__builtin_cpu_supports`によるランタイム分岐チェックが
-コンパイラに、それをコンパイルする翻訳単位ごとの起動時CPUID
-コンストラクタを生成させるためで、これを無条件にすると自前のコード
-以外にもこのコンストラクタが全バイナリに入ってしまう。
+各機能軸は独立にforce-loadされます（仕組みは[§4](#4-共有-runtime-archive-レイアウト)を参照）。そのため、
+`Tensor`も`Http`も使わないプログラムはbaseのarchiveだけをリンクします。OpenSSLを落とすだけで約4.7 MB減ります
+（OpenSSLは静的リンクなので、非Httpバイナリが約0.3 MBなのに対し、Http版は約5.1 MBです）。同じ仕組みは、
+外部ライブラリを引かないが自前のコードを抱える2つのサブシステムにも使われています。
 
-2つめはTensorのelementwiseカーネルで、これがこの軸に乗る理由は
-バックエンドのchokeではカバーできない。`culebra::tensor_eval_node`が
-切り替えるのはBLASとMetalだが、cpp-tensorlibの`map_binary`実体化は
-純粋なC++なので外部依存では締め出せない。しかも汎用の算術ヘルパは
-どちらかの被演算子が`Tensor`でありうる限りそこへ到達する — つまり
-算術を含む全バイナリが該当する。そこで`culebra::tensor_binop`と
-`culebra::tensor_inplace_binop`（遅延の`+`とin-placeの`+=`の経路）に
-同じ弱/強分岐を掛けている。効果は約115 KBで、helloの4分の1に当たる。
+1つめは正規表現エンジン（`Regex`、`re'...'`リテラルを含む）です。この軸のコストは約0.9 MBで、
+cpp-regexlibとこのnamespace自身のgroupの合計です。実測の内訳はコード約0.55 MBとテーブル約0.24 MBです。
+外部依存が無くても弱/強の切り分けが要るのは、エンジン内部の`__builtin_cpu_supports`によるランタイム分岐チェックのせいで、
+コンパイラがそのエンジンをコンパイルする翻訳単位ごとに、起動時のCPUIDコンストラクタを生成するからです。
+これを無条件にすると、自前のコード以外にもこのコンストラクタが全バイナリに入ってしまいます。
 
-3つめは`culebra::tensor_backward`で、その理由はサイズでは
-ない。cpp-tensorlibは確保とグラフ評価をtensor archiveが仕込むhook経由に
-しているので、グラフを組むだけの翻訳単位はバックエンドを名指ししない。
-しかしeagerに走るカーネルは直接デバイスを掴みにいき、VJPの1つがそれを
-呼ぶ（`array::xent_bwd`、融合損失のpullback）。Tensor不使用の
-バイナリにそこを呼ぶ経路は無い——渡せる`Tensor`値が存在しない。だが
-リンカはそこを問わない。`-framework Metal`がリンク行に載るのはAST
-スキャンが`Tensor`を報告したときだけで、参照を置いているのはその
-スキャンではない——LLVM変換（lowering）はメソッド"名"`clone`・`backward`・`detach`を
-これらのruntime helperへ対応付けるので、自分で定義したクラスに同名の
-メソッドがあるだけでそこにTensorの腕が生成され、そのプログラムの
-`culebra build`がmacOSで`_MTLCreateSystemDefaultDevice`未定義で落ちて
-いた。（`array::clone()`のデバイスコピーは1つ下の層の同じ穴で、choke
-ではなくruntime hookにした。tlは`reshape`や`logsumexp`の内部から
-`clone`を呼ぶので、culebra側の境界では塞ぎようがない。）
-`tools/checks/check_rt_archive_backend_free.sh`がこの線を守る——base
-archive単体のdead-stripリンクで全runtime helperを強制的に生かし、
-未定義のまま残るものを読む。
+2つめはTensorのelementwiseカーネルです。これがこの軸に乗るのは、バックエンドのchokeではカバーできない理由があるからです。
+`culebra::tensor_eval_node`が切り替えるのはBLASとMetalですが、cpp-tensorlibの`map_binary`実体化は純粋なC++なので、
+外部依存では締め出せません。しかも汎用の算術ヘルパは、どちらかの被演算子が`Tensor`でありうる限りそこへ到達します。
+つまり、算術を含む全バイナリが該当します。そこで`culebra::tensor_binop`と`culebra::tensor_inplace_binop`
+（遅延の`+`とin-placeの`+=`の経路）に、同じ弱/強の切り分けを掛けています。効果は約115 KBで、helloの4分の1に当たります。
 
-`Proc`のfork/exec層、`Canvas.Sprite.from_png` / `Canvas.Font`の背後の
-PNG/TTFデコーダ、そして`PEG`（cpp-peglib）も外部ライブラリを引かない
-が、それぞれ専用のchokeは不要——自身のnamespaceのdispatch tableを
-通じてのみ到達するプレーンなコードとしてコンパイルされるので、
-名指ししないプログラムはリンクされない（仕組みは
-[§4](#4-共有-runtime-archive-レイアウト) 参照）。ただし`PEG`は
-このdead-strippingが全バイトには届かない唯一のnamespaceで、`culebra::
-pegparser::load()`自体はPEGを名指ししないバイナリから消えている
-ことを`--keep-symbols`ビルドの`nm -C --defined-only`で確認済みだが、
-peglibの`Ope`クラス階層はvtableとtypeinfoを残し、それを
-`--gc-sections`が使用の有無に関わらず保持する。加えて、`std::function`
-に包んだローカルラムダのcomdatテンプレート実体化が、それを呼ぶはずの
-関数が消えたあとも孤立して生き残る（リンカの既知の制限で、到達可能な
-呼び出し経路ではない）。どちらも不活性で、PEG未使用バイナリで実行され
-ることは無く、実測で固定約53 KB——2本目のarchiveをforce-loadして
-避けるのではなく、これは受け入れる。
+3つめは`culebra::tensor_backward`で、その理由はサイズではありません。cpp-tensorlibは確保とグラフ評価を
+tensor archiveが仕込むhook経由にしているので、グラフを組むだけの翻訳単位はバックエンドを名指ししません。
+しかしeagerに走るカーネルは直接デバイスを掴みにいき、VJPの1つがそれを呼びます（`array::xent_bwd`、融合損失のpullback）。
+Tensorを使わないバイナリにそこを呼ぶ経路はありません。渡せる`Tensor`値が存在しないからです。ところがリンカはそれを問いません。
+`-framework Metal`がリンク行に載るのはASTスキャンが`Tensor`を報告したときだけですが、参照を置いているのはそのスキャンではありません。
+LLVM変換（lowering）がメソッド"名"`clone`・`backward`・`detach`をこれらのruntime helperへ対応付けるので、
+自分で定義したクラスに同名のメソッドがあるだけで、そこにTensorの腕が生成されます。実際、そのようなプログラムの
+`culebra build`がmacOSで`_MTLCreateSystemDefaultDevice`未定義で落ちていました。
+（`array::clone()`のデバイスコピーは1つ下の層の同じ穴で、chokeではなくruntime hookにしました。
+tlは`reshape`や`logsumexp`の内部から`clone`を呼ぶので、culebra側の境界では塞ぎようがないからです。）
+`tools/checks/check_rt_archive_backend_free.sh`がこの線を守ります。base archive単体のdead-stripリンクで
+全runtime helperを強制的に生かし、未定義のまま残るものを読みます。
+
+`Proc`のfork/exec層、`Canvas.Sprite.from_png` / `Canvas.Font`の背後のPNG/TTFデコーダ、そして`PEG`（cpp-peglib）も
+外部ライブラリを引きませんが、それぞれ専用のchokeは要りません。自身のnamespaceのdispatch tableを通じてのみ到達する
+プレーンなコードとしてコンパイルされるので、名指ししないプログラムにはリンクされません
+（仕組みは[§4](#4-共有-runtime-archive-レイアウト)を参照）。ただし`PEG`は、このdead-strippingが全バイトには届かない
+唯一のnamespaceです。`culebra::pegparser::load()`自体は、PEGを名指ししないバイナリから消えていることを
+`--keep-symbols`ビルドの`nm -C --defined-only`で確認済みです。しかしpeglibの`Ope`クラス階層はvtableとtypeinfoを残し、
+それを`--gc-sections`が使用の有無に関わらず保持します。加えて、`std::function`に包んだローカルラムダのcomdatテンプレート実体化が、
+それを呼ぶはずの関数が消えたあとも孤立して生き残ります（リンカの既知の制限で、到達可能な呼び出し経路ではありません）。
+どちらも不活性で、PEG未使用バイナリで実行されることは無く、実測で固定約53 KBです。
+2本目のarchiveをforce-loadして避けることはせず、これは受け入れます。
 
 `otool -L`（macOS）や`ldd`（Linux）で確認できます:
 
@@ -276,23 +253,18 @@ VMと`--jit`は常にTLSを持ちます（どちらもOpenSSLを積んだ`culebr
 
 ### シンボルの除去
 
-出力バイナリは自分のシンボルテーブルを読まない（ランタイムは
-名前でシンボルを解決しない）ので、ビルドは2段階でこれを取り除く。
-まずリンクがローカルシンボルを破棄し（`-Wl,-x` — ld64・GNU ld・
-lldのいずれも解釈する。埋め込みランタイムアーカイブには
-`GCC_except_table*`、テンプレートや文字列の実体化が数千個ある）、
-次にプラットフォームの`strip`ツールがリンカの残したグローバル
-シンボルテーブルを除去する（リリースパッケージが`culebra`本体に
-掛けているのと同じ処理）。この2つで`print("hello")`のバイナリは
-0.52 MB → 0.42 MBになる。ローダが必要とする動的シンボルは
-どちらの段階でも残る。デバッグ用に両方を飛ばすには`--keep-symbols`
-を渡す。クロスコンパイル（`--target`）の出力はリンク段階で止まる
-（ホストの`strip`は他形式のオブジェクトを読めない）。`PATH`に
-`strip`が無い場合も同様にエラーにはならない。
+出力バイナリは自分のシンボルテーブルを読まない（ランタイムは名前でシンボルを解決しない）ので、
+ビルドは2段階でこれを取り除きます。まずリンクがローカルシンボルを破棄します（`-Wl,-x`。ld64・GNU ld・lldのいずれも
+解釈します。埋め込みランタイムアーカイブには`GCC_except_table*`、テンプレートや文字列の実体化が数千個あります）。
+次にプラットフォームの`strip`ツールが、リンカの残したグローバルシンボルテーブルを除去します
+（リリースパッケージが`culebra`本体に掛けているのと同じ処理）。この2つで`print("hello")`のバイナリは
+0.52 MBから0.42 MBになります。ローダが必要とする動的シンボルは、どちらの段階でも残ります。
+デバッグ用に両方を飛ばすには`--keep-symbols`を渡します。クロスコンパイル（`--target`）の出力はリンク段階で止まります
+（ホストの`strip`は他形式のオブジェクトを読めないため）。`PATH`に`strip`が無い場合も同様で、エラーにはなりません。
 
 ### クロスコンパイル
 
-`--target=<triple>`でLLVMターゲットを指定。よく使うtriple:
+`--target=<triple>`でLLVMターゲットを指定します。よく使うtriple:
 
 - `x86_64-unknown-linux-gnu`
 - `aarch64-unknown-linux-gnu`
@@ -301,20 +273,18 @@ lldのいずれも解釈する。埋め込みランタイムアーカイブに�
 クロスコンパイルにはユーザ側で以下を用意する必要があります:
 
 1. **ターゲット用sysroot**（ターゲットのC++ ヘッダ、`libc`、
-   CRTファイルを含むディレクトリ）。`--sysroot=<path>`で渡す。
+   CRTファイルを含むディレクトリ）。`--sysroot=<path>`で渡します。
 2. **ターゲット向けにビルドしたランタイムアーカイブ**。
-   `--rt-lib=<path>`で渡す。ホスト用`libculebra_rt.a`は
+   `--rt-lib=<path>`で渡します。ホスト用`libculebra_rt.a`は
    ホストtriple向けにビルドされているので使えません。
 
 ターゲット向けランタイムをビルドするには、CMakeにターゲット
 ツールチェーン（同じソースツリーを、ターゲットsysrootと`cc`
 で設定）を向けてください。
 
-現状の制約: 各ターゲット向けランタイムは同梱されず、ユーザが自前
-CMake / ツールチェーンで生成する必要がある（下の例を参照）。また
-`--target=<triple>`と`Tensor`の併用はrejectされる — ホストの
-BLASリンクフラグはターゲットでは正しくないため。`Tensor`参照を
-外すか、将来のフェーズを待つこと。
+現状の制約は2つあります。1つは、各ターゲット向けランタイムが同梱されないことです。ユーザが自前のCMake / ツールチェーンで
+生成する必要があります（下の例を参照）。もう1つは、`--target=<triple>`と`Tensor`の併用が拒否されることです。
+ホストのBLASリンクフラグはターゲットでは正しくないためです。`Tensor`参照を外すか、将来のフェーズを待ってください。
 
 #### 例: macOS ホストから Linux x86_64 向け
 
@@ -373,9 +343,9 @@ module loader・`CULEBRA_VERSION`・下のセッション、そして
 `Embed`の前の2行は省けます。書かなければ、エンジンを最初に使った
 時点で**スレッドローカルの既定Runtime**が作られ、以下はそのまま動きます
 （READMEの例が3行短いのはこのためです）。書くのは、既定では足りない
-ものが要るときです — 1つのスレッドに独立したエンジンを複数持つ
-（[後述](#同一スレッドで複数スクリプトを動かす)）か、このエンジンにだけ
-絞った標準ライブラリを渡す（[後述](#runtime-ごとの拡張フック)）。
+ものが要るときです。具体的には、1つのスレッドに独立したエンジンを複数持つ場合
+（[後述](#同一スレッドで複数スクリプトを動かす)）や、このエンジンにだけ
+絞った標準ライブラリを渡す場合（[後述](#runtime-ごとの拡張フック)）です。
 どちらも要らないホストは、2本目のスレッドを立てるまで`Runtime`の存在を
 忘れていて構いません（[スレッディング](#スレッディング)）。
 
@@ -391,7 +361,7 @@ auto n = embed.eval("1 + 2").as<int64_t>();   // 3
 位置はそのまま残ります。parse失敗の種別は`SyntaxError`、実行中
 の失敗はその種別です。捕まらなかったスクリプトの`throw`だけは
 種別`RuntimeError`になり、どのレーンも表示する`uncaught: ...`の
-行を持ちます — 投げられたオブジェクトはエンジンの境界で1行の
+行を持ちます。これは、投げられたオブジェクトがエンジンの境界で1行の
 テキストに畳まれるためです。
 
 `vm::Embed`はセッションです。各実行はそれまでの実行が
@@ -455,10 +425,10 @@ SQLiteのamalgamationはCで、C++コンパイラは最初に現れる`new`と�
 OpenSSLとLLVMはホスト側のものです。prefixはculebraが決める話ではないので、
 `--tls`と`--jit`はculebra側だけを設定し、あちらの指定は
 `pkg-config` / `llvm-config`に任せます。JITなら`--cflags`の横に
-`-I "$(llvm-config --includedir)"`です。`--cxxflags`は使いません——
-それ自身の`-std=c++17 -fno-exceptions`がculebra側の指定の上に乗ります。
+`-I "$(llvm-config --includedir)"`です。`--cxxflags`は使いません。
+使うと、それ自身の`-std=c++17 -fno-exceptions`がculebra側の指定の上に乗ってしまうからです。
 
-フラグが指すのはチェックアウト——そのバイナリのビルド元か`$CULEBRA_HOME`——
+フラグが指すのはチェックアウト（そのバイナリのビルド元か`$CULEBRA_HOME`）
 です。ダウンロードしたバイナリはその版のソースをcloneするまでどちらも
 持たないので、ビルドされたマシンのパスを出す代わりにその旨を伝えます。
 
@@ -485,8 +455,8 @@ c++ -std=c++23 \
 `vendor/cpp-regexlib`が無いと`regex.h`で、`vendor/cpp-fstlib`が無いと
 `fst.h`で、`vendor/cpp-searchlib/include`が無いと`search.h`で、
 `vendor/cpp-searchlib/third_party`が無いと`searchlib_segment.h`
-（`Search.segmenter`の日本語分かち書き）でビルドが止まります —
-stdlibがどれも無条件に参照するためです。`-lz`はAOTのリンクが
+（`Search.segmenter`の日本語分かち書き）でビルドが止まります。
+これは、stdlibがどれも無条件に参照するためです。`-lz`はAOTのリンクが
 必要とするzlibと同じもので（[§1](#ホスト側に必要なもの)）、
 `Compress`とPNGライタが参照するため、スクリプトが使うかどうかに
 関わらずホスト側でリンクします。
@@ -664,7 +634,7 @@ culebra::Runtime trusted, sandbox;
 
 `RuntimeScope`がアクティブで無い状態で`install_jit_stdlib()`を
 呼ぶと、プロセス共通のデフォルトに書き込まれ、overrideを設定していない
-すべてのRuntimeがそこにフォールバックします — これが従来の
+すべてのRuntimeがそこにフォールバックします。これが従来の
 単一VMとマルチスレッドembeddingのパスです。
 
 ### スクリプトの値を読む・書く
@@ -715,7 +685,7 @@ cfg["hosts"].set(int64_t{0}, "a2.example");
 値の引数は`Value`のコンストラクタが受ける型すべて（に加えて
 `std::vector`・`std::map<std::string, T>`・`std::optional`）から
 変換されるので、数値や文字列をそのまま書けます。逆に、数値や
-文字列そのものは値です — Objectから読んだ`Long`はコピーなので、
+文字列そのものは値です。Objectから読んだ`Long`はコピーなので、
 それに書いても何も変わりません。上のように、それを持っている
 Object側に書いてください。
 
@@ -733,8 +703,8 @@ auto opts = Value::object({{"port", 8080},
 embed.call("connect", opts);
 ```
 
-ビルダが作るエントリは`mut`付き（`{mut k: v}`であって`{k: v}`
-ではない）です。ホストが組んだものはホスト自身のデータなので。
+ビルダが作るエントリは`mut`付き（`{k: v}`ではなく`{mut k: v}`）
+です。ホストが組んだものはホスト自身のデータだからです。
 
 `Value`は、ホストが持っている間、中身を生かし続けます。置き場所は
 問いません（ローカル変数、ホスト自身のオブジェクトのメンバ、
@@ -783,8 +753,8 @@ public:
 ```
 
 `Embed::call` / `culebra::JIT::run`などユーザコードを駆動する
-経路をくるむ形でcatchします（`Embed::run*`は例外でなく`msgs`で
-報告します — CLIが印字するのと同じテキストです）:
+経路の呼び出しを囲んでcatchします（`Embed::run*`は例外でなく`msgs`で
+報告します。内容はCLIが印字するのと同じテキストです）:
 
 ```cpp
 try {
@@ -801,22 +771,17 @@ try {
 }
 ```
 
-スクリプト側ではこれと同じ値が`catch e { ... }`の`e`として
-バインドされ、`e.kind` / `e.message` / `e.line` / `e.col`プロ
-パティでアクセスできます — ユーザ側仕様と標準kind一覧
-（`TypeError`, `ArityError`, `IOError`, `ValueError`, `NameError`,
+スクリプト側ではこれと同じ値が`catch e { ... }`の`e`としてバインドされ、
+`e.kind` / `e.message` / `e.line` / `e.col`プロパティでアクセスできます。
+ユーザ側仕様と標準kind一覧（`TypeError`, `ArityError`, `IOError`, `ValueError`, `NameError`,
 `IndexError`, `KeyError`, `AssertionError`, `InternalError`）は
-[言語仕様 §15](language.ja.md) を参照。
+[言語仕様 §15](language.ja.md)を参照してください。
 
-`Embed::call`に届いたスクリプト側`throw expr`はホスト向けに
-変換されます: 投げられたオブジェクトの`kind`/`message`がそのまま
-`CulebraError`のフィールドになる（それ以外は未catchの`throw`が表示する
-のと同じ形で届く）ので、「catch CulebraError」の契約はuser throwにも
-通用します。classの`__index__`や`__setindex__`を走らせる`Value`の
-読み書きでも同じです。`items()`と`display()`はスクリプトのコードを
-走らせません。
-（`Embed::run*`は例外でなく`msgs`で報告します — CLIが印字する
-のと同じテキストです。）
+`Embed::call`に届いたスクリプト側`throw expr`はホスト向けに変換されます。投げられたオブジェクトの`kind`/`message`が
+そのまま`CulebraError`のフィールドになり、それ以外は未catchの`throw`が表示するのと同じ形で届きます。
+そのため「catch CulebraError」の契約はuser throwにも通用します。classの`__index__`や`__setindex__`を走らせる
+`Value`の読み書きでも同じです。`items()`と`display()`はスクリプトのコードを走らせません。
+（`Embed::run*`は例外でなく`msgs`で報告します。内容はCLIが印字するのと同じテキストです。）
 
 ### interruptはエラーではない
 
@@ -830,11 +795,9 @@ public:
 };
 ```
 
-上のどちらのハンドラもこれを捕まえません。意図的です — スクリプト
-エラーを報告するために書かれたハンドラがこれを捕まえると、押された
-Ctrl+Cが診断メッセージになって実行が続いてしまい、フラグはone-shot
-なので何も止まらなくなります。interruptに答えるのはループをhostする
-コンポーネントだけで、その表明が型を名指すことです:
+上のどちらのハンドラもこれを捕まえません。意図的です。スクリプトエラーを報告するために書かれたハンドラがこれを捕まえると、
+押されたCtrl+Cが診断メッセージになって実行が続いてしまい、フラグはone-shotなので何も止まらなくなります。
+interruptに答えてよいのは、ループをhostするコンポーネントだけです。そのコンポーネントは、この型を名指しでcatchすることで答えます:
 
 ```cpp
 try {
@@ -847,12 +810,10 @@ try {
 }
 ```
 
-Ctrl+Cで何も止めたくない埋め込み側は、単にハンドラを設置しなければ
-よい（`culebra::install_sigint_handler()`はopt-inでCLI専用）。
-スクリプト側の見え方は変わりません: `catch e`は今までどおり
-`e.kind == "Interrupted"`のエラーオブジェクトをバインドして再開でき、
-押下はそのthrow時に消費されるので、catchしたinterruptが二度発火する
-ことはありません。
+Ctrl+Cで何も止めたくない埋め込み側は、単にハンドラを設置しなければよいです
+（`culebra::install_sigint_handler()`はopt-inでCLI専用です）。スクリプト側の見え方は変わりません。
+`catch e`は今までどおり`e.kind == "Interrupted"`のエラーオブジェクトをバインドして再開でき、
+押下はそのthrow時に消費されるので、catchしたinterruptが二度発火することはありません。
 
 プロセスのロケールもホストのものです。スクリプトが扱うパスはUTF-8ですが、
 WindowsのCランタイムはロケールがUTF-8でない限りパスをANSIコードページで
@@ -878,7 +839,7 @@ embed.define("host_add",
 
 **引数名は省略できます。効くのはエラーに出る名前だけ**で、束縛は
 どちらでも位置です。C++23からはラムダが引数を何と名付けたかを見る手段が
-ありません — `std::source_location`にも`__PRETTY_FUNCTION__`にも名前は
+ありません。`std::source_location`にも`__PRETTY_FUNCTION__`にも名前は
 乗りません（引数名は関数の型の一部ではないからです）。つまりホストが
 書かなかった名前はどこからも復元できず、メッセージは位置に落ちます:
 
@@ -887,9 +848,9 @@ host_add() argument 'a': expected a Long     // {"a", "b"} 付きで定義
 host_add() argument '_arg0': expected a Long // 名前なしで定義
 ```
 
-呼ぶ側が見て分かる名前だけ渡し、位置で自明なもの（`host_neg(x)`）は
-省く、で構いません。一部だけ名付けることもできます — `{"", "b"}`なら
-2番目だけです。（名前が**省略できない**のは`culebra wrap`（§3）の
+呼ぶ側が見て分かる名前だけを渡し、位置で自明なもの（`host_neg(x)`）は
+省いて構いません。一部だけ名付けることもでき、`{"", "b"}`なら
+2番目だけに付きます。（名前が**省略できない**のは`culebra wrap`（§3）の
 ほうです。ラップしたメソッドはキーワード引数をこの名前で束縛するので、
 あちらの名前は診断ではなく意味を持ちます。）
 
@@ -915,38 +876,27 @@ callableをプロセスが終わるまで保持するので、キャプチャが
 （値でキャプチャするか、それだけの期間ホストが所有するものを参照で
 キャプチャしてください）。
 
-容器の引数は要素ごとに変換されるので、要素が1つでも合わなければ
-その要素単体で出るはずの`TypeError`になります。同じ変換は`Value`
-からの読み出し（`v.as<std::vector<std::string>>()`）にも効きます。
-誤った型の引数はcallableに入る前に
-呼び出し側でcatch可能な`TypeError`として弾かれ、引数の個数違いは
-`ArityError`になります。バインドは位置引数のみ（ホスト関数は
-キーワード引数を取りません）。メソッド・ハンドル・キーワード束縛
-などのより豊かな表面が要る場合は`culebra wrap`（§3）でクラスを
-宣言してください — AOT含む全レーンに効きます。
+容器の引数は要素ごとに変換されるので、要素が1つでも合わなければその要素単体で出るはずの`TypeError`になります。
+同じ変換は`Value`からの読み出し（`v.as<std::vector<std::string>>()`）にも効きます。誤った型の引数は
+callableに入る前に呼び出し側でcatch可能な`TypeError`として弾かれ、引数の個数違いは`ArityError`になります。
+バインドは位置引数のみです（ホスト関数はキーワード引数を取りません）。メソッド・ハンドル・キーワード束縛などの
+より豊かな表面が要る場合は、`culebra wrap`（§3）でクラスを宣言してください。宣言したクラスはAOTを含む全レーンに効きます。
 
 ### 自分の embedder から AOT 経路を組み込む
 
-通常のembedderに`libculebra_rt.a`は無関係 — ヘッダオンリー
-includeがサポート経路で、スクリプトをin-processで走らせるだけなら
-archiveは要らない。必要になるのは1ケースだけ: `culebra build`と
-同じく`culebra::JIT::build_object`を駆動して **standaloneバイナリを
-出力したい**とき（[§1](#1-standalone-バイナリビルドculebra-build)）。
-archiveは`culebra_aot_bootstrap`と、生成オブジェクトが呼ぶ
-ランタイムヘルパを供給する。レイアウトは
-[§4](#4-共有-runtime-archive-レイアウト)。
+通常のembedderに`libculebra_rt.a`は関係ありません。サポートされる経路はヘッダオンリーのincludeで、
+スクリプトをin-processで走らせるだけならarchiveは要りません。archiveが必要になるのは1つの場合だけで、
+`culebra build`と同じく`culebra::JIT::build_object`を駆動して**standaloneバイナリを出力したい**ときです
+（[§1](#1-standalone-バイナリビルドculebra-build)）。archiveは`culebra_aot_bootstrap`と、
+生成オブジェクトが呼ぶランタイムヘルパを供給します。レイアウトは[§4](#4-共有-runtime-archive-レイアウト)にあります。
 
-**入手先。** `-DCULEBRA_ENABLE_JIT=ON`でconfigureしたCMakeビルド
-は`libculebra_rt.a`（と機能別archive）をビルドディレクトリに出力する。
-配布される`culebra`ドライバは同じarchiveを埋め込んで持っていて、
-最初の`culebra build`で`$HOME/.cache/culebra/<fingerprint>/`に
-materializeする — 自前のlink手順からそのパスを指してもよい。
+**入手先。** `-DCULEBRA_ENABLE_JIT=ON`でconfigureしたCMakeビルドは、`libculebra_rt.a`（と機能別archive）を
+ビルドディレクトリに出力します。配布される`culebra`ドライバは同じarchiveを埋め込んで持っていて、
+最初の`culebra build`で`$HOME/.cache/culebra/<fingerprint>/`に展開します。自前のlink手順からそのパスを指してもかまいません。
 
-**オブジェクトの生成。** プログラムは`ModuleLoader`経由で読み込み、
-`build_object`に渡す**前に** stdlib preambleをspliceする。この
-preambleが`println` / `inspect`を定義している。（`Stringer` / `Eq` /
-`Comparable`の宣言はこれには含まれない — `build_object`が`JIT::run`と
-同じく自前でprependする。）
+**オブジェクトの生成。** プログラムは`ModuleLoader`経由で読み込み、`build_object`に渡す**前に**stdlib preambleを
+spliceします。このpreambleが`println` / `inspect`を定義しています。（`Stringer` / `Eq` /
+`Comparable`の宣言はこれに含まれません。`build_object`が`JIT::run`と同じく自前でprependします。）
 
 ```cpp
 #include <culebra.h>
@@ -966,13 +916,11 @@ int main() {
 }
 ```
 
-> **`splice_stdlib_preamble`を飛ばすと黙って失敗する。** オブジェクト
-> の生成もlinkも通り、バイナリはexit 0で終わる — ただし何も出力
-> しない。`println`が何にも解決されなかったため。診断は一切出ない
-> ので、AOTバイナリが静かに何もしないならこれを疑う。
+> **`splice_stdlib_preamble`を飛ばすと黙って失敗します。** オブジェクトの生成もlinkも通り、バイナリはexit 0で終わりますが、
+> 何も出力しません。`println`が何にも解決されなかったためです。診断は一切出ないので、
+> AOTバイナリが静かに何もしないならこれを疑ってください。
 
-**リンク。** 生成オブジェクトに必要なのはarchiveとdead-stripと
-C++ ランタイムだけ（重い機能を使わないプログラムの場合）:
+**リンク。** 生成オブジェクトに必要なのは、archiveとdead-stripとC++ ランタイムだけです（重い機能を使わないプログラムの場合）:
 
 ```bash
 # macOS
@@ -985,49 +933,40 @@ cc prog.o libculebra_rt.a -Wl,--gc-sections -Wl,-x -no-pie -lstdc++ -lm -o prog
 strip prog
 ```
 
-機能のnamespace（`Tensor` / `Http` / `Compress` / `SQLite` / `Regex` /
-`Canvas` / …、[§4](#4-共有-runtime-archive-レイアウト) の表）を
-参照するプログラムは、その機能のarchiveを **force-load** する必要がある — Mach-Oなら
-`-Wl,-force_load,<archive>`、ELFなら`-Wl,--whole-archive <archive>
--Wl,--no-whole-archive` — さらにその機能の外部ライブラリも要る。
-単にappendしても効かない: base archiveの弱シンボルスタブが既に
-シンボルを満たしてしまい、メンバがloadされない
-（gatingは [§4](#4-共有-runtime-archive-レイアウト)）。
+機能のnamespace（`Tensor` / `Http` / `Compress` / `SQLite` / `Regex` / `Canvas` / …、
+[§4](#4-共有-runtime-archive-レイアウト)の表）を参照するプログラムは、その機能のarchiveを**force-load**する必要があります。
+Mach-Oなら`-Wl,-force_load,<archive>`、ELFなら`-Wl,--whole-archive <archive>
+-Wl,--no-whole-archive`を使い、さらにその機能の外部ライブラリも要ります。
+単にappendしても効きません。base archiveの弱シンボルスタブが既にシンボルを満たしてしまい、
+メンバがloadされないためです（この条件は[§4](#4-共有-runtime-archive-レイアウト)にあります）。
 
-これらの規則を書き写すより、ドライバを一度
-`CULEBRA_VERBOSE=1 culebra build prog.cul -o prog`で走らせるのが早い。
-実際に使った`link:`コマンドラインが機能archive込みでそのまま
-表示され、embedderに必要なのも同じ形。 (`--rt-lib=<path>`はCLI側
-の上書き用オプションで、crossビルドしたarchiveなどを指すのに使う。)
+これらの規則を書き写すより、ドライバを一度`CULEBRA_VERBOSE=1 culebra build prog.cul -o prog`で走らせるほうが早いです。
+実際に使った`link:`コマンドラインが機能archive込みでそのまま表示され、embedderに必要なのも同じ形です。
+（`--rt-lib=<path>`はCLI側の上書き用オプションで、crossビルドしたarchiveなどを指すのに使います。）
 
-`CULEBRA_RT_DEFINE_RUNTIME`マクロは、`CULEBRA_RT_INLINE`タグ付き
-ヘルパを`inline`から`extern "C"`に切り替えてarchive側TUが唯一
-のownerになるようにする。ヘッダオンリーembedderは **絶対に
-defineしてはいけない**。AOT archiveの生成元TU
-(`src/runtime/culebra_rt.cc`) のみでdefineされるべき。
+`CULEBRA_RT_DEFINE_RUNTIME`マクロは、`CULEBRA_RT_INLINE`タグ付きヘルパを`inline`から`extern "C"`に切り替えて、
+archive側のTUがそれらのシンボルを唯一定義する場所になるようにします。ヘッダオンリーembedderは**絶対に定義してはいけません**。
+このマクロを定義してよいのは、AOT archiveの生成元TU（`src/runtime/culebra_rt.cc`）だけです。
 
 ### スモークテスト
 
 リポジトリには契約を検証する小さなサンプルが含まれます:
 
-* [`tests/embedding/mt_smoke.cc`](../tests/embedding/mt_smoke.cc) —
-  4つのホストスレッドがそれぞれtry/catch付きスクリプトをparse +
-  Embedセッションを実行、加えてJITパスでも4スレッド。合計240並行実行。
-* [`tests/embedding/mi_smoke.cc`](../tests/embedding/mi_smoke.cc) —
-  1スレッド内で2つのRuntime（それぞれ自分のEmbedを持つ）を
-  交互に切替え、独立したPRNG状態
-  と独立したJITフックセットを検証。
-* [`tests/embedding/define_smoke.cc`](../tests/embedding/define_smoke.cc)
-  — `Embed::define`を経由してスクリプトと`Embed::call`両方から
-  C++ 関数を呼び、推論型による誤引数の拒否も確認。
+* [`tests/embedding/mt_smoke.cc`](../tests/embedding/mt_smoke.cc)は、
+  4つのホストスレッドがそれぞれtry/catch付きスクリプトをparseし、Embedセッションを実行します。
+  JITパスでもさらに4スレッドが走ります。合計240並行実行です。
+* [`tests/embedding/mi_smoke.cc`](../tests/embedding/mi_smoke.cc)は、
+  1スレッド内で2つのRuntime（それぞれ自分のEmbedを持つ）を交互に切り替え、
+  独立したPRNG状態と独立したJITフックセットを検証します。
+* [`tests/embedding/define_smoke.cc`](../tests/embedding/define_smoke.cc)は、
+  `Embed::define`を経由してスクリプトと`Embed::call`の両方からC++ 関数を呼び、
+  推論型による誤引数の拒否も確認します。
 
 ## 3. C++ ライブラリのラッピング（`culebra wrap`）
 
-`culebra wrap`は、あなたのC++ クラスをビルトインとして組み込んだ
-**拡張culebraバイナリ**を作ります — ランタイムのforkもplugin
-ABIも不要です。短い宣言TUを書くとC++ コンパイラがglueを実体化し
-（pybind11流）、`--vm`・`--jit`・拡張バイナリの`culebra build`
-が作るAOTバイナリのすべてで同一に動きます。
+`culebra wrap`は、あなたのC++ クラスをビルトインとして組み込んだ**拡張culebraバイナリ**を作ります。
+ランタイムのforkもplugin ABIも不要です。短い宣言TUを書くとC++ コンパイラがglueを実体化し（pybind11流）、
+結果は`--vm`・`--jit`・拡張バイナリの`culebra build`が作るAOTバイナリのすべてで同一に動きます。
 
 ### 宣言する
 
@@ -1073,9 +1012,8 @@ const bool registered = [] {
 専用のthunkがコンパイルされます。引数名は省略可能で、エラーメッセージと
 実行時のキーワード束縛に使われます。
 
-宣言するのは構築（`ctor`）だけで、破棄は宣言しません — `.dtor`ビルダーは
-ありません。ラップした型の`~T()`は、ハンドルが継承する確定drop機構
-（下記参照）が自動的に呼び出すので、書くのはC++ のデストラクタだけです。
+宣言するのは構築（`ctor`）だけで、破棄は宣言しません（`.dtor`ビルダーはありません）。ラップした型の`~T()`は、
+ハンドルが継承する確定drop機構（下記参照）が自動的に呼び出すので、書くのはC++ のデストラクタだけです。
 
 ### ビルドする
 
@@ -1088,7 +1026,7 @@ culebra wrap mylib_binding.cpp --link "-L/opt/mylib/lib -lmylib" -o ext-culebra
 `culebra wrap`はculebraのソースツリー（このバイナリのビルド元、または
 `$CULEBRA_HOME`）にあなたのTUを加えて再ビルドし、`~/.cache/culebra-wrap/`
 にキャッシュします。ccacheがあれば実質「宣言のコンパイル + relink」で
-済みます。`--lto`で最適化バイナリ（ビルドは遅くなります）。
+済みます。`--lto`を付けると最適化されたバイナリになります（ビルドは遅くなります）。
 `--build-dir <dir>`を渡すと`<dir>`でビルドします。ccacheは
 `CCACHE_BASEDIR`からの相対パスでキャッシュを引くので、同じチェックアウトの
 既存ビルドと同じ深さのディレクトリを選び、`--lto`の有無も揃えれば、
@@ -1108,7 +1046,7 @@ v.len()           # !! ClosedError
 
 `ctor`を宣言すると束縛された名前が呼び出し可能になるので、`class`と
 同じ書き方で構築でき、`type_of(Geo.Vec2)`は`'Class'`を返します。
-`ctor`を宣言せずにbindした型 — ファクトリ経由でしか得られないハンドル —
+`ctor`を宣言せずにbindした型（ファクトリ経由でしか得られないハンドル）
 は呼び出し不可で、通常の`Object`のままです。
 
 ラップされたインスタンスは完全なlifetimeモデルを持つリソースです:
@@ -1138,8 +1076,8 @@ scope終端の確定drop（循環込み）、冪等な明示`drop()`、use-after
 ラップクラスを一切使わないプログラムは、ラップ対象ライブラリを一切リンクせず、
 素の`culebra build`と同じサイズになります。判定は保守的な識別子マッチ
 （`Geo`等）なので、過剰リンクはあっても不足リンクはありません。これは
-[§4](#4-共有-runtime-archive-レイアウト) で説明する`Tensor` / `Http`と
-同じusage-gatingを`libculebra_rt_wrap.a`に適用したものです。
+[§4](#4-共有-runtime-archive-レイアウト)で説明する`Tensor` / `Http`と
+同様に、使われたときだけリンクする仕組みを`libculebra_rt_wrap.a`に適用したものです。
 
 ### マーシャリング
 
@@ -1151,21 +1089,18 @@ scope終端の確定drop（循環込み）、冪等な明示`drop()`、use-after
 | `std::string` / `std::string_view` / `const char*` | `String` |
 | 値返しの`T`・`std::unique_ptr<T>` | ラップ済み`T`の所有インスタンス |
 | `std::shared_ptr<T>` | shareを1つ保持するインスタンス |
-| `U&` / `const U&` / `U*` / `const U*`（ラップ済み`U`、methodの引数のみ） | `U`のハンドル — 後述 |
+| `U&` / `const U&` / `U*` / `const U*`（ラップ済み`U`、methodの引数のみ） | `U`のハンドル（後述） |
 
-ラップ済みクラスの`T&` / `const T&`返しは`.method`では**コンパイル
-エラー**です — 参照は所有形状ではありません。`.borrowed_method`で
-宣言してください:
+ラップ済みクラスの`T&` / `const T&`返しは、`.method`では**コンパイルエラー**です。参照は所有の形ではないためです。
+`.borrowed_method`で宣言してください:
 
 ```cpp
 .borrowed_method<&Box::inner>("inner")     // Counter& inner()
 ```
 
-結果は**借用ハンドル**です: 所有しない（dropはno-op）、存在する間は
-親を生かし、アクセスごとに検証されます — 親が明示dropされた、または
-借用取得後に非constメソッドで変更された（各インスタンスはgeneration
-カウンタを持ち、非const dispatchが自動でbump）場合、解放/再配置済み
-メモリに触れる代わりに`ClosedError`になります:
+結果は**借用ハンドル**です。所有せず（dropはno-op）、存在する間は親を生かし、アクセスごとに検証されます。
+親が明示dropされた場合と、借用を取得したあとに非constメソッドで変更された場合は、解放または再配置済みのメモリに
+触れる代わりに`ClosedError`になります（各インスタンスはgenerationカウンタを持ち、非const dispatchが自動でbumpします）:
 
 ```culebra
 let b = __Foreign.Box.new(3)
@@ -1174,20 +1109,17 @@ b.reset(9)  # 非 const -> generation bump
 c.value()   # !! ClosedError
 ```
 
-借用を無効化しないことが確実な非constメソッドはopt-outできます:
+借用を無効化しないことが確実な非constメソッドは、bumpの対象から外せます:
 `.method<&T::touch>("touch", {}, culebra::wrap_policy::preserves_borrows)`。
-const性やこのフラグの誤宣言は著者の契約違反（sol2/pybind11と同じ
-建付け）ですが、その場合も「staleエラーの過剰/欠落」であってculebra
-側のメモリ非安全には絶対になりません。
+const性やこのフラグの誤宣言は著者の契約違反（sol2/pybind11と同じ建付け）ですが、起きるのは
+「staleエラーの過剰または欠落」であり、culebra側のメモリ安全性が損なわれることは決してありません。
 
-methodの引数はラップ済みクラスを直接名指せます。**引数はその呼び出しの
-間だけ呼び出し元のハンドルを借用する — 所有権を移すのは戻り値だけ**
-です（上の値返し/`unique_ptr`/`shared_ptr`の行の鏡像）。`U&`/`const U&`は
-`U`の生きたハンドルを要求し、`U*`/`const U*`はそれに加えて`nil`も
-受け付けます。非constの`U&`/`U*`は非constのreceiverが自分自身をbumpする
-のとまったく同じ形で、その引数自身のgenerationをbumpします。ラップ済み
-クラスの値渡し・`U&&`・スマートポインタ引数には委譲すべき所有権が無いので
-サポート対象外です（`.method`宣言はコンパイルエラーになります）:
+methodの引数はラップ済みクラスを直接名指せます。**引数はその呼び出しの間だけ呼び出し元のハンドルを借用し、
+所有権を移すのは戻り値だけ**です（上の値返し/`unique_ptr`/`shared_ptr`の行の鏡像）。`U&`/`const U&`は
+`U`の生きたハンドルを要求し、`U*`/`const U*`はそれに加えて`nil`も受け付けます。非constの`U&`/`U*`は、
+非constのreceiverが自分自身のgenerationを進めるのとまったく同じ形で、その引数自身のgenerationを進めます。
+ラップ済みクラスの値渡し・`U&&`・スマートポインタ引数には委譲すべき所有権が無いのでサポート対象外です
+（`.method`宣言はコンパイルエラーになります）:
 
 ```cpp
 void merge(const Counter& o) { value_ += o.value_; }  // 借用のみ、bumpしない
@@ -1201,10 +1133,9 @@ c.merge(o)      # oは変化しない
 c.add_maybe(nil)
 ```
 
-末尾の引数はデフォルト値を持て、呼び出し側は省略できます。宣言する
-エントリは素の名前でなく`{"name", value}`にします（bool・整数・
-float/double・文字列、`U*`/`const U*`引数なら`nullptr`のいずれか —
-ここには式評価器が無いので、デフォルト値は常にC++側のリテラルです）:
+末尾の引数にはデフォルト値を持たせることができ、呼び出し側は省略できます。宣言するエントリは素の名前でなく
+`{"name", value}`にします。valueにできるのはbool・整数・float/double・文字列と、`U*`/`const U*`引数の`nullptr`です
+（ここには式評価器が無いので、デフォルト値は常にC++側のリテラルです）:
 
 ```cpp
 .method<&Counter::bump_by>("bump_by", {{"n", 1L}})
@@ -1218,15 +1149,17 @@ c.scale(2)           # offは既定で0
 c.scale(2, off: 1)
 ```
 
-optional引数は末尾に連続していなければならず、この2つの拡張はどちらも
-`.method`/`.borrowed_method`限定です — `.ctor`/`.static_method`の引数は
-常に必須で、まだラップ済みクラスを名指せません。
+optional引数は末尾に連続していなければならず、この2つの拡張はどちらも`.method`/`.borrowed_method`限定です。
+`.ctor`/`.static_method`の引数は常に必須で、ラップ済みクラスをまだ名指せません。
 
-コンテナ（`std::vector`/`std::map`）とコールバックは自動ではマーシャルされません。それらが要るメソッド —— 呼び返す`Function`や、読み取る任意の`Object`を取るもの —— は`.raw_method<&thunk>(name, params)`で宣言し、thunkを手で書きます。宣言的な部分はそのまま効くので、パラメータ名・キーワード引数・既定値は変わりません。引き換えにthunkが自分で行うのは、deducedな側がただで得ている次のことです:
+コンテナ（`std::vector`/`std::map`）とコールバックは自動ではマーシャルされません。それらが要るメソッド
+（呼び返す`Function`や、読み取る任意の`Object`を取るもの）は、`.raw_method<&thunk>(name, params)`で宣言し、
+thunkを手で書きます。宣言的な部分はそのまま効くので、パラメータ名・キーワード引数・既定値は変わりません。
+引き換えに、deducedな側がただで得ている次のことを、thunkが自分で行います:
 
-- selfと引数は借りるだけにする。メソッドはselfと引数を持つ入口の後ろで動き、thunkが戻るか投げたときに入口が解放するので、thunkは解放しません。呼び出しの後も持ち続ける値はretainします。
-- 引数を使う前に型検査する。`jit_check_args`はdeducedな経路にしかなく、`jit_handle_self`は渡されたものをそのまま解釈するので、ハンドルのスロットに未検査のスカラーが入ると`TypeError`ではなく野良ポインタになります。
-- レシーバを`wrap_detail::jit_handle_self<T>`で解決し、引数を読み（`TAG_UNFILLED`のスロットは呼び出し側が省略したもの）、結果は`surface_native_error_at_call_site`を通して`__ret`へ書く。こうすると本体からのC++例外がプロセスを抜けず、呼び出し位置で捕まえられるエラーになります。
+- selfと引数は借りるだけにします。メソッドはselfと引数を持つ入口の後ろで動き、thunkが戻るか投げたときに入口が解放するので、thunkは解放しません。呼び出しの後も持ち続ける値には、retainを呼びます。
+- 引数を使う前に型検査します。`jit_check_args`はdeducedな経路にしかなく、`jit_handle_self`は渡されたものをそのまま解釈するので、ハンドルのスロットに未検査のスカラーが入ると`TypeError`ではなく野良ポインタになります。
+- レシーバを`wrap_detail::jit_handle_self<T>`で解決し、引数を読み（`TAG_UNFILLED`のスロットは呼び出し側が省略したもの）、結果は`surface_native_error_at_call_site`を通して`__ret`へ書きます。こうすると本体からのC++例外がプロセスを抜けず、呼び出し位置で捕まえられるエラーになります。
 
 `CodeGen.Program.run`の`natives:`表がこのリポジトリ内の実例です。
 
@@ -1235,11 +1168,10 @@ optional引数は末尾に連続していなければならず、この2つの�
 ### Searchにsplitterを挿す
 
 `Search`は解析器からsplitterを受け取りますが（[stdlib.ja.md §39](stdlib.ja.md#39-search)）、
-そのsplitterは自分のクラスでもかまいません。`culebra::search::ISplitter`——
-`<interop/search_splitter.h>`、culebraの他のヘッダを何もincludeしないヘッダ——を継承し、
-上と同じように`wrap<T>`で宣言します。それ以外に宣言するものはありません。契約を
-継承していることが、そのハンドルを解析器の`splitter`に渡せるものにし、索引は`split`を
-ネイティブに呼びます。文書ごとにプログラムへ戻ることはありません。
+そのsplitterは自分のクラスでもかまいません。`<interop/search_splitter.h>`（culebraの他のヘッダを何もincludeしないヘッダ）の
+`culebra::search::ISplitter`を継承し、上と同じように`wrap<T>`で宣言します。それ以外に宣言するものはありません。
+契約を継承していることで、そのハンドルは解析器の`splitter`に渡せるようになり、索引は`split`をネイティブに呼びます。
+文書ごとにプログラムへ戻ることはありません。
 
 ```cpp
 // stemmer_binding.cpp
@@ -1270,27 +1202,25 @@ const bool registered = [] {
 let idx = Search.Index.new(analyzer: { splitter: Text.Stemmer.new() })
 ```
 
-契約はヘッダのコメントにあります。同じsplitterが文書を足すときと問い合わせを解析する
-ときの両方で走るので、決定的で、複数スレッドから呼べる必要があります。範囲は`text`への
-UTF-8バイトオフセットで、UTF-16で話す解析器は出口で変換します。語は範囲が指すバイト列と
-同じでなくてかまいません——形態素解析器は原形を索引に入れ、範囲は表層のままにするので、
-原形で検索すると書かれたとおりの文字列がハイライトされます——が、範囲の開始位置は戻らない
-こと。直前の語と同じバイトから始まる語は同じ語位置の候補になり（複合語とその構成語。
-Luceneの`positionIncrement == 0`）、あとから始まる語は範囲が重なっていても次の位置に
-なります。それ以外をエンジンは信用しません。開始位置が戻る・書記素クラスタの境界で
-切れていない語は索引に入れず捨て、両側で同じように扱います。実体はあなたのものです。
-ハンドルをdropすると、それで作った索引の次の`add`か`search`は`ClosedError`になります。
+契約はヘッダのコメントにあります。同じsplitterが、文書を足すときと問い合わせを解析するときの両方で走るので、
+決定的で、複数スレッドから呼べる必要があります。範囲は`text`へのUTF-8バイトオフセットで、UTF-16で話す解析器は
+出口で変換します。語は、範囲が指すバイト列と同じでなくてもかまいません。形態素解析器は原形を索引に入れ、
+範囲は表層のままにするので、原形で検索すると書かれたとおりの文字列がハイライトされます。ただし、範囲の開始位置は
+戻ってはいけません。直前の語と同じバイトから始まる語は同じ語位置の候補になり（複合語とその構成語。
+Luceneの`positionIncrement == 0`）、あとから始まる語は範囲が重なっていても次の位置になります。
+それ以外をエンジンは信用しません。開始位置が戻る語や、書記素クラスタの境界で切れていない語は索引に入れず捨て、
+追加する側と問い合わせる側で同じように扱います。実体はあなたのものです。ハンドルをdropすると、
+それで作った索引の次の`add`か`search`は`ClosedError`になります。
 
 ## 4. 共有 runtime archive レイアウト
 
-上記3つのワークフローはすべて、生成バイナリや埋め込みバイナリが
-LLVM依存を持たずに済むようstatic **runtime archive** を出荷します。
-CMakeは`-DCULEBRA_ENABLE_JIT=ON`で、base archive＋ 重い機能ごとに
-1つ（2^Nの組合せでなくN+1）を出力します:
+上記3つのワークフローはすべて、生成バイナリや埋め込みバイナリがLLVM依存を持たずに済むよう、
+static **runtime archive**を出荷します。CMakeは`-DCULEBRA_ENABLE_JIT=ON`で、base archive 1つと、
+重い機能ごとに1つ（2^Nの組合せでなくN+1）を出力します:
 
 | Archive | 内容 |
 |---|---|
-| `libculebra_rt.a` | base — 全部入りだが各機能のchokeは**弱シンボルのスタブ**（ここから呼べるコードはBLAS・OpenSSL・zlib・sqlite3・正規表現エンジンに到達しない）。サブプロセス層、画像デコーダ（stb_image / stb_truetype）、cpp-peglibパーサジェネレータ（`PEG`）は外部ライブラリを引かないのでこのarchiveに直接コンパイルされ、chokeでなく下のnamespace-group単位のdead-strippingに委ねる——3つのうち`PEG`だけは未使用でも固定約53 KBのpeglib RTTI/vtableメタデータを残す（§1参照） |
+| `libculebra_rt.a` | base。全部入りだが、各機能のchokeは**弱シンボルのスタブ**（ここから呼べるコードはBLAS・OpenSSL・zlib・sqlite3・正規表現エンジンに到達しない）。サブプロセス層、画像デコーダ（stb_image / stb_truetype）、cpp-peglibパーサジェネレータ（`PEG`）は外部ライブラリを引かないのでこのarchiveに直接コンパイルされ、chokeではなく下のnamespace-group単位のdead-strippingに委ねられる。3つのうち`PEG`だけは、未使用でも固定約53 KBのpeglib RTTI/vtableメタデータを残す（§1参照） |
 | `libculebra_rt_tensor.a` | 強いtensor choke 3種: バックエンド側（BLAS / Accelerateを引く）、汎用の算術経路が到達してしまうelementwiseカーネル、そしてVJPがtlのeagerなデバイスカーネルを呼ぶ`backward`（[§1](#tensor-free--http-free-バイナリ)参照） |
 | `libculebra_rt_http.a` | 強いhttp choke（OpenSSL + zlibを引く） |
 | `libculebra_rt_http_notls.a` | 同じchokeをcpp-httplibのTLS無しでビルドしたもの。`--no-tls`のときこちらが代わりにforce-loadされる（[§1](#tls抜きでhttpをビルドする)参照）。アーカイブが2本ある唯一の軸で、1回のリンクは必ず片方だけを取り、baseはどちらも持たない |
@@ -1306,13 +1236,11 @@ CMakeは`-DCULEBRA_ENABLE_JIT=ON`で、base archive＋ 重い機能ごとに
 | `libculebra_rt_webview.a` | Webviewのwrap registrar（OSのWebViewフレームワーク。baseには一切入っていない） |
 | `libculebra_rt_wrap.a` | `culebra wrap`のバインディング |
 
-`culebra build`（および拡張された`ext-culebra build`バイナリ）は
-常にbaseをlinkし、ソースASTがそのnamespace（`Tensor` / `Http` /
-`Compress` / `SQLite` / `Regex` / `Canvas` / `Audio` / `Scene` /
-`Webview`、あるいはラップされたnamespace）を参照する時だけ機能
-archiveを **force-load** し、同じ条件でその外部ライブラリ（BLAS /
-OpenSSL / zlib / …）を付けます。強いchokeがbaseの弱スタブを上書きする
-ので、これらの機能をどれも使わないプログラムはどれもlinkしません。
+`culebra build`（および拡張された`ext-culebra build`バイナリ）は常にbaseをlinkします。機能archiveを**force-load**するのは、
+ソースASTがそのnamespace（`Tensor` / `Http` / `Compress` / `SQLite` / `Regex` / `Canvas` / `Audio` / `Scene` /
+`Webview`、あるいはラップされたnamespace）を参照するときだけで、同じ条件でその外部ライブラリ（BLAS /
+OpenSSL / zlib / …）も付けます。強いchokeがbaseの弱スタブを上書きするので、これらの機能をどれも使わないプログラムは、
+どのarchiveもlinkしません。
 
 標準ライブラリ自身のdispatch表も、namespace単位で同じようにlinkされ
 ます。各namespaceの行（`Math.abs`や`Isolate.spawn`が実行時に解決する
@@ -1333,13 +1261,13 @@ namespace分。ソースが名指ししないものはnullエントリ）を運�
 1つの引数visitorが整数・浮動小数・文字列のformatterをまとめて名指しするので
 リンク単位が1ブロックになり、到達する呼び出しが1つあるだけでhelloが15%
 太るためです。補間の書式指定（`"{x:.2f}"`）を書いたプログラムは今も
-`std::format`をリンクします — その書式こそ`std::format`のミニ言語だからです。
+`std::format`をリンクします。その書式こそ`std::format`のミニ言語だからです。
 機能軸と合わせて、これが`print("hello")`のバイナリを0.4 MB前後
 に保っています。走査が見落としたnamespaceは黙って`nil`に読めたりはせず、
 到達した時点でそのnamespace名を含む`InternalError`になります。
 
 これらのアーカイブはcpp-embedlibによって **`culebra`ドライバに
-直接埋め込まれています** — ドライバは単体で完結する1バイナリで、
+直接埋め込まれています**。ドライバは単体で完結する1バイナリで、
 サイドカーの`.a`ファイルを別途インストールする必要はありません。
 deflate圧縮して格納しており、ドライバ内で37.4 MBのところ11.9 MB
 です。`culebra build`の初回呼び出し時に必要なアーカイブを
@@ -1352,22 +1280,20 @@ deflate圧縮して格納しており、ドライバ内で37.4 MBのところ11.
 同じ置き場に自分の名前で同居します: `Http`のOpenSSL（`libssl.a` /
 `libcrypto.a`）、`Canvas`のウィンドウバックエンドと`Scene`が使う
 vendored SDL3 / raylib（`libSDL3.a` / `libraylib.a`）。これらは
-ランタイムアーカイブの一部ではありません — `-l`で渡すと参照された
-分しか引かれず、それでは目的を果たさないからです。かといってパスで
+ランタイムアーカイブの一部ではありません（`-l`で渡すと参照された
+分しか引かれず、それでは目的を果たさないため）。かといってパスで
 名指すこともできません: それぞれが置かれていたディレクトリは
 ドライバをビルドしたマシンのもの（ディストリのディレクトリ、
 Homebrewのprefix、MSYS2のツリー、CIランナーの依存キャッシュ）で、
 リンクが走るのはユーザーのマシンだからです。そこで各機能軸のリンク
 断片はこれらを名前で書き（`@libssl.a@`）、`culebra build`が`cc`へ
 コマンドを渡す前に同じキャッシュへ解決します。素の`-l`のまま残すのは
-どのマシンにもあるもの — `-lz`・`-lstdc++`・`-lpthread`・OSの
-フレームワーク — だけです。断片にパスを焼き込むことはCMakeがconfigure
+どのマシンにもあるもの（`-lz`・`-lstdc++`・`-lpthread`・OSの
+フレームワーク）だけです。断片にパスを焼き込むことはCMakeがconfigure
 時に拒否し、`tools/checks/check_aot_link_portability.sh`が実際のリンク行を
 読み返して1本も無いことを証明します。他のAOTテストはすべてビルド
 ツリーの中で走るので、焼き込まれたパスがたまたま存在してしまうためです。
 
-`culebra build --target=<triple>`は現状ホストアーカイブのみです —
-埋め込み/キャッシュされたアーカイブはホスト向けにビルドされています。
-クロスターゲットには`--rt-lib=<path>`で対応するarchiveを指定して
-ください（ターゲットごとのauto-buildはroadmap。手動クロスビルドの
-手順は [§1](#1-standalone-バイナリビルドculebra-build) 参照）。
+`culebra build --target=<triple>`は現状ホストアーカイブのみです。埋め込み/キャッシュされたアーカイブはホスト向けに
+ビルドされているためです。クロスターゲットには`--rt-lib=<path>`で対応するarchiveを指定してください
+（ターゲットごとのauto-buildはroadmap。手動クロスビルドの手順は[§1](#1-standalone-バイナリビルドculebra-build)を参照）。
