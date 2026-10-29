@@ -183,6 +183,7 @@ means something only in `(x,)`, where it makes a one-element tuple.
 ### Operators and punctuation
 
     ==  !=  <=  <  >=  >        # comparison
+    is  !is                     # type test (`x is Long | Float`, §13)
     +  -  *  /  %  **           # arithmetic (`**` exponentiation); `+` also concatenates strings and Arrays
     @                           # matmul (user-defined via `__matmul__`)
     |  &  ^  <<  >>  ~          # bitwise or / and / xor / shifts / complement (Long only)
@@ -257,7 +258,8 @@ and `x = c ? a : b` is `x = (c ? a : b)`.
 
 1. `||`
 2. `&&`
-3. `==`, `!=`, `<`, `<=`, `>`, `>=`
+3. `==`, `!=`, `<`, `<=`, `>`, `>=`, and the type test `is` / `!is` (§13;
+   it does not chain with the comparisons)
 4. Binary `+`, `-`
 5. Binary `*`, `/`, `%`, `@` (matmul)
 6. Unary `+`, `-`, `!`, `~` (right-associative)
@@ -3499,6 +3501,36 @@ may be named `break`, that arm raises `NameError` — write the bare
 No static exhaustiveness check is performed. If no arm matches, the
 `match` yields `nil`. Add `_ => nil` or a typed fallback explicitly
 if that bothers you.
+
+### Type test: `is`
+
+`x is T` is `true` when `x` matches the type pattern `T` and `false`
+otherwise, the way a `match` arm `T =>` would; `x !is T` is the
+opposite. `T` is one type name, several joined by `|`, each optionally
+followed by `?`, or an enum variant `Enum.Variant`:
+
+```culebra
+inspect(1 is Long)              # true
+inspect('a' is Long | Float)    # false
+inspect(nil is Long?)           # true
+inspect('a' !is Long)           # true
+```
+
+* It reads as `match x { T => true, _ => false }` (the arms swapped for
+  `!is`), so `x` is evaluated once and `T` is resolved the way a type
+  pattern is: a class or enum by its name, and the same error for an
+  undefined name.
+* It sits at the comparison level (§3) and does not chain: `a + b is Long`
+  is `(a + b) is Long`, and `a is Long && b is String` combines two
+  tests. `(a is Long) == true` needs its parentheses. A unary prefix binds
+  tighter than `is`, so `!x is T` is `(!x) is T`: write `x !is T` or
+  `!(x is T)`.
+* `is` is not a reserved word. It is the operator only after an operand on
+  the same line; anywhere else it is an ordinary name.
+* The right side is a type pattern and nothing else. To test a value or a
+  shape, use `match`.
+* A parameter default is parsed without `is`, so a default that tests a
+  type takes parentheses: `fn f(ok = (x is Long))`.
 
 ---
 

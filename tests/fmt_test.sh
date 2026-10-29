@@ -401,6 +401,35 @@ if ! diff -u "$TMP/at_want.cul" "$TMP/at_got.cul" > "$TMP/at_diff" 2>&1; then
   fail=1
 fi
 
+# --- 1f1b. Golden fixture: `x is T` -----------------------------------------
+# parse_for_format keeps IS_TEST, so the printer writes it back: the operator
+# and the types normalized, the subject parenthesized only where a lower level
+# needs it, and the test itself parenthesized as an operand of a comparison
+# (it does not chain: `(a is T) == b`).
+cat > "$TMP/is_in.cul" <<'EOF'
+let r1 = a   is   Long|Float
+let r2 = a!is Nil
+let r3 = (a == b) is Bool
+let r4 = (a is Long) == true
+let r5 = 1+2 is Long && b is String
+let r6 = !(a is Long)
+EOF
+cat > "$TMP/is_want.cul" <<'EOF'
+let r1 = a is Long | Float
+let r2 = a !is Nil
+let r3 = (a == b) is Bool
+let r4 = (a is Long) == true
+let r5 = 1 + 2 is Long && b is String
+let r6 = !(a is Long)
+EOF
+"$CULEBRA" fmt "$TMP/is_in.cul" > "$TMP/is_got.cul" 2>"$TMP/is_err"
+if ! diff -u "$TMP/is_want.cul" "$TMP/is_got.cul" > "$TMP/is_diff" 2>&1; then
+  echo "FAIL golden (is): formatted output differs from expected"
+  cat "$TMP/is_diff"
+  cat "$TMP/is_err"
+  fail=1
+fi
+
 # --- 1f2. Golden fixture: range and negative literal patterns --------------
 # A range pattern prints like a range expression, with no spaces around the
 # operator; `5..` keeps its space before `=>` (`5..=>` would read as `..=`).

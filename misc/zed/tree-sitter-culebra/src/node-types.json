@@ -551,6 +551,10 @@
     "named": false
   },
   {
+    "type": "is",
+    "named": false
+  },
+  {
     "type": "kw_debugger",
     "named": true
   },

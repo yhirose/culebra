@@ -15,7 +15,7 @@ import { StreamLanguage, HighlightStyle, tags as t } from "./vendor/codemirror.j
 const KEYWORDS = new Set([
   "fn",
   "class", "trait", "enum",
-  "if", "unless", "else", "match", "cond",
+  "if", "unless", "else", "match", "cond", "is",
   "while", "for", "in", "by",
   "return", "break", "continue", "nobreak", "throw", "try", "catch", "defer", "yield",
   "effect", "perform", "handle", "with",

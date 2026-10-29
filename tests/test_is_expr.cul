@@ -1,0 +1,123 @@
+# `x is T` / `x !is T`: whether a value matches the type patterns a `match` arm
+# takes, as a Bool. The parser reads it as the `match` it abbreviates, so every
+# shape below has to answer as that `match` does, on every engine.
+#
+# Run: ./build/culebra tests/test_is_expr.cul
+#      ./build/culebra --jit tests/test_is_expr.cul
+
+# one type, a union, and the nil-allowing `?`
+assert_eq(1 is Long, true)
+assert_eq(1 is Float, false)
+assert_eq(1.5 is Float, true)
+assert_eq('a' is String, true)
+assert_eq([1] is Array, true)
+assert_eq(true is Bool, true)
+assert_eq(1 is Long | Float, true)
+assert_eq(1.5 is Long | Float, true)
+assert_eq('a' is Long | Float, false)
+assert_eq(nil is Long?, true)
+assert_eq(3 is Long?, true)
+assert_eq('a' is Long?, false)
+
+# the negated form is the exact opposite
+assert_eq(1 !is Long, false)
+assert_eq('a' !is Long, true)
+assert_eq('a' !is Long | Float, true)
+assert_eq(2.5 !is Long | Float, false)
+assert_eq(nil !is Long?, false)
+
+# a user class and an enum variant
+class Dog {
+  new() {}
+}
+enum Shape {
+  Circle,
+  Square
+}
+assert_eq(Dog() is Dog, true)
+assert_eq(Dog() is String, false)
+assert_eq(Shape.Circle is Shape.Circle, true)
+assert_eq(Shape.Square is Shape.Circle, false)
+assert_eq(Shape.Square !is Shape.Circle, true)
+
+# it sits at the comparison level: arithmetic on the left binds first, `&&` and
+# `||` combine it, and `!( )` negates it
+assert_eq(1 + 2 is Long, true)
+assert_eq(1 + 2.5 is Long, false)
+let a = 1
+let b = 'x'
+assert_eq(a is Long && b is String, true)
+assert_eq(a is String || b is String, true)
+assert_eq(a is String || b is Long, false)
+assert_eq(!(a is Long), false)
+assert_eq((a is Long) == true, true)
+
+# the subject is evaluated once
+mut calls = 0
+let probe = || { calls += 1; 7 }
+assert_eq(probe() is Long | Float, true)
+assert_eq(calls, 1)
+assert_eq(probe() !is Long, false)
+assert_eq(calls, 2)
+
+# in the places a condition goes
+assert_eq(if a is Long { 'long' } else { 'other' }, 'long')
+assert_eq(a is Long ? 1 : 2, 1)
+assert_eq([1, 'a', 2.5, 3].filter(|v| v is Long).size(), 2)
+assert_eq([1, 'a', 2.5, 3].map(|v| v is String), [false, true, false, false])
+fn describe(v) {
+  return 'num' if v is Long | Float
+  'other'
+}
+assert_eq(describe(1), 'num')
+assert_eq(describe('a'), 'other')
+assert_eq(match 1 { n if n is Long => 'guarded', _ => 'no' }, 'guarded')
+
+# a parameter default is parsed without `is`: the test takes parentheses
+fn flag(ok = (a is Long)) {
+  ok
+}
+assert_eq(flag(), true)
+
+# `is` stays an ordinary name where no operand precedes it on the line
+let is = 3
+assert_eq(is + 1, 4)
+let is_ok = 5
+assert_eq(is_ok, 5)
+
+# a field read as the subject
+class Box {
+  new(@v) {}
+  numeric() {
+    @v is Long | Float
+  }
+  text() {
+    @v !is Long | Float
+  }
+}
+assert_eq(Box(1).numeric(), true)
+assert_eq(Box('a').numeric(), false)
+assert_eq(Box('a').text(), true)
+
+# inside an effect handler and a generator, which lower to source text
+effect fn tick()
+fn kinds() {
+  mut seen = []
+  handle {
+    perform tick()
+    perform tick()
+  } with tick(resume) {
+    seen.push(resume is Function)
+    resume(nil)
+  }
+  seen
+}
+assert_eq(kinds(), [true, true])
+fn evens(xs) {
+  for x in xs {
+    if x is Long && x % 2 == 0 {
+      yield x
+    }
+  }
+}
+assert_eq(evens([1, 2, 'a', 4, 5.0]).collect(), [2, 4])

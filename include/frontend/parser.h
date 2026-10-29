@@ -2779,6 +2779,35 @@ inline std::shared_ptr<peg::Ast> desugar_postfix_modifiers(
   return node;
 }
 
+// `x is P` / `x !is P` is the `match` it abbreviates:
+// `match x { P => true, _ => false }` (the arms swapped for `!is`). Reading it
+// as a `match` gives every later stage the type test it already has, and a
+// subject that is evaluated once. The node spans the source it was written as,
+// like make_postfix_if's, for a stage that slices source text by position.
+inline std::shared_ptr<peg::Ast> desugar_is_test(
+    std::shared_ptr<peg::Ast> node) {
+  using namespace peg::udl;
+  for (auto& child : node->nodes) child = desugar_is_test(child);
+  if (node->tag != "IS_TEST"_) return node;
+  const bool negated = node->nodes[1]->token == "!is";
+  SynthNode at{node->path.c_str(), node->line, node->column};
+  auto result = [&](bool value) {
+    return at.tok("BOOLEAN", "EXPRESSION",
+                  std::string_view(value ? "true" : "false"), node->line,
+                  node->column);
+  };
+  auto arm = [&](std::shared_ptr<peg::Ast> pattern, bool value) {
+    return at.grp("MATCH_ARM", "MATCH_ARM",
+                  {std::move(pattern), result(value)});
+  };
+  auto wildcard = at.tok("WILDCARD", "PATTERN", std::string_view("_"),
+                         node->line, node->column);
+  auto arms = at.grp("MATCH_ARMS", "MATCH_ARMS",
+                     {arm(node->nodes[2], !negated), arm(wildcard, negated)});
+  return at.grp("MATCH", "EXPRESSION", {node->nodes[0], arms}, node->position,
+                node->length);
+}
+
 // Rules never collapsed onto a single child when get_parser's enable_ast
 // builds the optimized AST (AstOptimizer's keep-list) — the single source of
 // truth for every consumer of that AST (interp / JIT / lint / fmt). Adding a
@@ -2956,9 +2985,9 @@ inline std::shared_ptr<peg::Ast> parse(const std::string& path,
                                        std::string& expr,
                                        std::vector<ParseFailure>& failures) {
   auto ast = parse_undesugared(path, expr, failures);
-  return ast ? desugar_postfix_modifiers(
-                    desugar_regex_literals(desugar_self_sigil(ast)))
-              : nullptr;
+  return ast ? desugar_is_test(desugar_postfix_modifiers(
+                   desugar_regex_literals(desugar_self_sigil(ast))))
+             : nullptr;
 }
 
 inline std::shared_ptr<peg::Ast> parse(const std::string& path,
@@ -2971,9 +3000,9 @@ inline std::shared_ptr<peg::Ast> parse(const std::string& path,
 }
 
 // Like parse(), but keeps REGEX_LIT, postfix-modifier (`stmt if cond` /
-// `stmt unless cond`) and `@name` nodes intact — no desugaring to a
-// `Regex.compile(...)` call, a plain IF or `self.name` — so the source
-// formatter can re-emit all three forms verbatim. Used only by `culebra fmt`; never feed this AST to a backend,
+// `stmt unless cond`), `@name` and `x is T` nodes intact — no desugaring to a
+// `Regex.compile(...)` call, a plain IF, `self.name` or a `match` — so the
+// source formatter can re-emit all four forms verbatim. Used only by `culebra fmt`; never feed this AST to a backend,
 // which expects the desugared form.
 inline std::shared_ptr<peg::Ast> parse_for_format(
     const std::string& path, std::string& expr,

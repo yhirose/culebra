@@ -173,7 +173,19 @@
   NIL_COALESCE             <-  LOGICAL_OR (_ '??' _ LOGICAL_OR)*
   LOGICAL_OR               <-  LOGICAL_AND (_ '||' _ LOGICAL_AND)*
   LOGICAL_AND              <-  CONDITION (_ '&&' _  CONDITION)*
-  CONDITION                <-  BIT_OR (_ CONDITION_OPERATOR _ BIT_OR)*
+  CONDITION                <-  IS_TEST / BIT_OR (_ CONDITION_OPERATOR _ BIT_OR)*
+  # `x is Long | Float` / `x !is Nil`: whether a value matches one of the type
+  # patterns a `match` arm takes, as a Bool. It sits at the comparison level and
+  # does not chain; parse_for_format keeps it for the formatter and
+  # desugar_is_test (parser.h) reads it as the `match` it abbreviates. `is` is
+  # contextual like `by`: after an operand on the same line, never a reserved
+  # name. The `|`-free ladder below (parameter defaults) has no `is`; a default
+  # that tests a type takes parentheses. IS_TYPES / IS_TYPE mirror ARM_PATTERN /
+  # ARM_PRIMARY_PATTERN so the arm built from them is the shape a `match` has.
+  IS_TEST                  <-  BIT_OR _h_ IS_OP _h_ IS_TYPES
+  IS_OP                    <-  < '!is' / 'is' > !IdentChar
+  IS_TYPES                 <-  IS_TYPE (_ '|' _ IS_TYPE)*  { ast_name: PATTERN }
+  IS_TYPE                  <-  TYPE_PATTERN  { ast_name: PRIMARY_PATTERN }
   # Bitwise / shift levels (precedence: comparison < | < ^ < & < shift
   # < additive). A single bit-OR `|` infix collides with the `|...|`
   # lambda delimiter under a stateless PEG, so parameter defaults parse

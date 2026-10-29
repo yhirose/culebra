@@ -207,6 +207,10 @@
         {
           "type": "STRING",
           "value": "cond"
+        },
+        {
+          "type": "STRING",
+          "value": "is"
         }
       ]
     },

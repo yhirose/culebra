@@ -7,7 +7,7 @@
 
 culFunction:    fn
 culClass:       class trait enum
-culConditional: if unless else match cond
+culConditional: if unless else match cond is
 culRepeat:      while for in by
 culStatement:   return break continue nobreak throw try catch defer yield
 culEffect:      effect perform handle with

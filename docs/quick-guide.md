@@ -745,6 +745,7 @@ single most common transfer mistake.
 | `ClassName.new(...)` | `ClassName(...)` — a `class`-defined type is callable and desugars to its constructor |
 | `new(x, y) { self.x = x; self.y = y }` | `new(@x, @y) {}` — a field parameter stores into its field |
 | `self.count += 1`, `self.items.push(v)` in a method body | `@count += 1`, `@items.push(v)` — `@name` is `self.name`; passing the object itself stays `self` (`f(self)`), and `@name` outside a method is a `NameError` |
+| `type_of(x) == "Long"`, `type_of(x) == "String" \|\| type_of(x) == "StringView"` | `x is Long`, `x is String \| StringView` — `x !is T` for the opposite; a type pattern, so `Long?` allows nil |
 | `"a" + x + "b"` (splicing literal text around a value) | `"a{x}b"` |
 | `i = i + 1` | `i += 1` |
 | `x.size() == 0` / `> 0` | `x.empty()` / `!x.empty()` |

@@ -49,7 +49,7 @@ syn region  culComment      start="/\*" end="\*/" contains=culCommentTodo,@Spell
 " === BEGIN AUTO-KEYWORDS (from misc/keyword-map.txt via `just sync-grammar`) ===
 syn keyword culFunction    fn
 syn keyword culClass       class trait enum
-syn keyword culConditional if unless else match cond
+syn keyword culConditional if unless else match cond is
 syn keyword culRepeat      while for in by
 syn keyword culStatement   return break continue nobreak throw try catch defer yield
 syn keyword culEffect      effect perform handle with

@@ -734,6 +734,7 @@ inspect(match 9 {
 | `ClassName.new(...)` | `ClassName(...)` — `class`定義型は呼び出し可能で、コンストラクタ呼び出しの糖衣になる |
 | `new(x, y) { self.x = x; self.y = y }` | `new(@x, @y) {}` — field parameterはフィールドにも格納する |
 | メソッド本体の`self.count += 1`、`self.items.push(v)` | `@count += 1`、`@items.push(v)` — `@name`は`self.name`。オブジェクト自身を渡すときは`self`のまま（`f(self)`）。メソッドの外の`@name`は`NameError` |
+| `type_of(x) == "Long"`、`type_of(x) == "String" \|\| type_of(x) == "StringView"` | `x is Long`、`x is String \| StringView` — 逆は`x !is T`。型パターンなので、`Long?`はnilも通す |
 | `"a" + x + "b"`（値の前後にリテラル文字列を継ぎ足す） | `"a{x}b"` |
 | `i = i + 1` | `i += 1` |
 | `x.size() == 0` / `> 0` | `x.empty()` / `!x.empty()` |

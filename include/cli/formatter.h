@@ -608,7 +608,7 @@ class Printer {
     if (name == "NIL_COALESCE") return 2;
     if (name == "LOGICAL_OR") return 3;
     if (name == "LOGICAL_AND") return 4;
-    if (name == "CONDITION") return 5;
+    if (name == "CONDITION" || name == "IS_TEST") return 5;
     if (name == "BIT_OR") return 6;
     if (name == "BIT_XOR") return 7;
     if (name == "BIT_AND") return 8;
@@ -994,7 +994,10 @@ class Printer {
                      std::string_view parent_name = {},
                      bool flat_when_bare = false) {
     int cp = prec(node.name);
-    bool paren = cp < parent_prec || (cp == parent_prec && !assoc_safe);
+    // `is` does not chain with the comparisons it shares a level with, so it
+    // keeps its parentheses as an operand of one: `(a is T) == b`.
+    bool paren = cp < parent_prec ||
+                 (cp == parent_prec && (!assoc_safe || node.name == "IS_TEST"));
     // Parentheses around an operand of the SAME rule stay even when
     // associativity makes them redundant: the grammar folds a run of
     // same-precedence operators into one flat node, so `(a * b) / c` and
@@ -1505,6 +1508,20 @@ class Printer {
     return verbatim(n);
   }
 
+  // [subject, IS_OP, PATTERN]: `x is Long | Float`. The types are a lone leaf
+  // or a PATTERN of leaves, one per alternative.
+  DocP print_is_test(const peg::Ast& node) {
+    const peg::Ast& types = *node.nodes[2];
+    std::string text;
+    if (types.nodes.empty()) text = std::string(tight_span(types));
+    else
+      for (auto& t : types.nodes)
+        text += (text.empty() ? "" : " | ") + std::string(tight_span(*t));
+    return doc_concat({print_operand(*node.nodes[0], prec("BIT_OR"),
+                                     /*assoc_safe=*/true),
+                       doc_text(" " + std::string(node.nodes[1]->token) + " " + text)});
+  }
+
   DocP print_param(const peg::Ast& p) {
     auto v = view_parameter(p);
     if (v.is_kw_only_sep) return doc_text("*");
@@ -1520,8 +1537,9 @@ class Printer {
       // A top-level bit-or in a default must keep its parens — a bare `|` would
       // close the `|...|` lambda (and param defaults parse on the no-bit-or
       // grammar ladder, so this is the one operator precedence can't recover).
+      // The same ladder has no `is`, so a type test there keeps its parens too.
       DocP dv = print(*v.default_value);
-      if (v.default_value->name == "BIT_OR")
+      if (v.default_value->name == "BIT_OR" || v.default_value->name == "IS_TEST")
         dv = doc_concat({doc_text("("), dv, doc_text(")")});
       d = doc_concat({d, doc_text(" = "), dv});
     }
@@ -1969,6 +1987,7 @@ class Printer {
     // Expressions
     if (n == "CALL") return print_call(node);
     if (n == "CONDITIONAL") return print_ternary(node);
+    if (n == "IS_TEST") return print_is_test(node);
     if (n == "RANGE") return print_range(node);
     if (is_unary(n)) return print_unary(node);
     if (is_binary_explicit(n) || is_binary_implicit(n)) return print_binary(node);
