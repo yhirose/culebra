@@ -709,6 +709,22 @@ function(_culebra_dep_rev out dir)
   set(${out} "${rev}" PARENT_SCOPE)
 endfunction()
 
+# Where the vendored third-party statics (SDL3, raylib, llama.cpp) are built and
+# shared from, one directory per platform and source revision under it. The root
+# is a cache entry seeded from $CULEBRA_DEPS_CACHE, so it stays put for a build
+# dir once configured (CI, or a sandbox that can't write $HOME, sets the
+# variable; -DCULEBRA_DEPS_CACHE= moves an existing one).
+function(_culebra_deps_cache_root out)
+  if(DEFINED ENV{CULEBRA_DEPS_CACHE})
+    set(_default "$ENV{CULEBRA_DEPS_CACHE}")
+  else()
+    set(_default "$ENV{HOME}/.cache/culebra/deps")
+  endif()
+  set(CULEBRA_DEPS_CACHE "${_default}" CACHE PATH
+    "Where the vendored SDL3, raylib and llama.cpp statics are built and shared from")
+  set(${out} "${CULEBRA_DEPS_CACHE}" PARENT_SCOPE)
+endfunction()
+
 # Publish, in `tgt`'s dynamic symbol table, the names ORC JIT resolves out of the
 # host process at codegen time. Every executable that hosts the in-process JIT
 # needs this and needs it the same way, so both call here rather than each
@@ -837,22 +853,12 @@ if(CULEBRA_ENABLE_SCENE OR CULEBRA_ENABLE_CANVAS_WINDOW)
   # instead: a vendor bump lands under a new key, so a stale artifact can never
   # be picked up, and the build below skips ExternalProject entirely on a hit.
   # ~10 MB per key; old keys are inert (delete with `rm -rf ~/.cache/culebra/deps`).
-  # The root is a cache entry seeded from $CULEBRA_DEPS_CACHE, so it stays put for
-  # a build dir once configured (CI, or a sandbox that can't write $HOME, sets the
-  # variable; -DCULEBRA_DEPS_CACHE= moves an existing one).
   # Without git (a source tarball) there is no key, so we keep the old per-build
   # dir location rather than risk sharing across unknown sources.
   _culebra_dep_rev(_sdl_rev "${CMAKE_CURRENT_SOURCE_DIR}/vendor/SDL")
   _culebra_dep_rev(_raylib_rev "${CMAKE_CURRENT_SOURCE_DIR}/vendor/raylib")
   if(_sdl_rev AND _raylib_rev)
-    if(DEFINED ENV{CULEBRA_DEPS_CACHE})
-      set(_deps_root_default "$ENV{CULEBRA_DEPS_CACHE}")
-    else()
-      set(_deps_root_default "$ENV{HOME}/.cache/culebra/deps")
-    endif()
-    set(CULEBRA_DEPS_CACHE "${_deps_root_default}" CACHE PATH
-      "Where the vendored SDL3 + raylib statics are built and shared from")
-    set(_deps_root "${CULEBRA_DEPS_CACHE}")
+    _culebra_deps_cache_root(_deps_root)
     set(_deps_key "${CMAKE_SYSTEM_NAME}" "${CMAKE_SYSTEM_PROCESSOR}")
     if(CMAKE_OSX_ARCHITECTURES)
       list(APPEND _deps_key "${CMAKE_OSX_ARCHITECTURES}")
@@ -942,6 +948,13 @@ if(CULEBRA_ENABLE_CANVAS_WINDOW)
   set(_canvas_link "${_raylib_aot_link}")
   message(STATUS "Canvas window: enabled (vendored static SDL3 + raylib)")
 endif()
+
+# --- Llama (a language model run in this process): config ------------------
+# OFF by default: it builds llama.cpp from its release archive (cmake/llama.cmake),
+# which is minutes of compile and a download, for a namespace most programs never
+# touch. Nothing in the driver uses it yet; with the option on, the build adds the
+# llama.cpp statics to the shared deps cache and a llama_smoke test that links them.
+option(CULEBRA_ENABLE_LLAMA "Build llama.cpp for the Llama namespace (downloads the release archive)" OFF)
 
 # --- Builtin Webview namespace (native WebView desktop): config ------------
 # ON by default: unlike Scene there is no static library to build — webview
@@ -2120,6 +2133,10 @@ if(CULEBRA_ENABLE_SQLITE)
     target_link_libraries(sqlite_test Threads::Threads ${CMAKE_DL_LIBS})
   endif()
   add_test(NAME sqlite_test COMMAND sqlite_test)
+endif()
+
+if(CULEBRA_ENABLE_LLAMA)
+  include(cmake/llama.cmake)
 endif()
 
 # net.h core test: loopback TCP/UDP on ephemeral ports drives the value-neutral

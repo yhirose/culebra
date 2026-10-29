@@ -360,6 +360,48 @@ jobs:
       - name: Report ccache stats
         run: ccache -s
 
+  # Llama (a language model run in this process, cmake/llama.cmake) is off by
+  # default, so no other lane builds it. This one builds llama.cpp from the
+  # pinned release archive and runs llama_smoke, which links the statics and
+  # loads no model; without a lane the option would rot unseen. The statics go
+  # through the deps cache, so only a version bump pays the compile.
+  linux-llama:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      CULEBRA_CANVAS_WINDOW_DEFAULT: OFF
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CMAKE_C_COMPILER_LAUNCHER: ccache
+      CMAKE_CXX_COMPILER_LAUNCHER: ccache
+      CULEBRA_DEPS_CACHE: ${{ github.workspace }}/.deps-cache
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+
+      - name: Install dependencies
+        uses: ./.github/actions/setup-linux-toolchain
+
+      - name: Restore the llama.cpp statics
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.deps-cache
+          key: linux-llama-deps-${{ hashFiles('cmake/llama_cpp.cmake', 'cmake/llama.cmake') }}
+
+      - name: Build llama_smoke (Llama ON)
+        run: |
+          cmake -S . -B build-llama -DCMAKE_BUILD_TYPE=Release \
+            -DCULEBRA_ENABLE_LLAMA=ON -DCULEBRA_ENABLE_JIT=OFF
+          cmake --build build-llama --target llama_smoke -j"$(nproc)"
+
+      # --no-tests=error: a configure that quietly left the option off finds
+      # no test, which would otherwise be a pass.
+      - name: Run llama_smoke
+        run: ctest --test-dir build-llama -R llama_smoke --no-tests=error --output-on-failure
+
+      - name: Report ccache stats
+        run: ccache -s
+
   # Release-to-release differential (tools/difftest/release_diff.sh): the
   # generated corpus under the latest published binary and under this commit,
   # each on its own default engine, with every behavioural change named in
