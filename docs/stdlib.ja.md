@@ -9011,7 +9011,9 @@ Windowsでは開いているファイルを削除も置き換えもできない�
 大規模言語モデルのクライアントです。Culebraで書かれていて、[`Http`](#15-http)と
 [`JSON`](#9-json)の上に作られています。尋ねる相手は*提供元*で、今あるのは
 `LLM.anthropic()`（Messages API、AnthropicのClaude API）と`LLM.openai_compatible()`
-（Chat Completions。`LLM.openai`、`LLM.openrouter`、`LLM.ollama`はそのサービス向けの設定）の2つです。提供元はプログラムの中で書くこともできます（`LLM.turn`を参照）。使い方は4つあります。1回の質問、履歴を持ち
+（Chat Completions。`LLM.openai`、`LLM.openrouter`、`LLM.ollama`はそのサービス向けの設定）、
+そして`LLM.local()`（このプロセスの中で動かすモデル。[`Llama`](#43-llama)を参照）です。
+提供元はプログラムの中で書くこともできます（`LLM.turn`を参照）。使い方は4つあります。1回の質問、履歴を持ち
 モデルが求めるツールを実行する会話、提供元への1ステップ（自前のループの部品）、
 そしてリクエスト本文をそのまま送る素通しです。
 
@@ -9357,6 +9359,32 @@ let local = LLM.ollama()
 IO.println(LLM.ask("Name three prime numbers.", provider: local, model: "llama3.2"))
 ```
 
+### `LLM.local(engine) -> LLMLocal`
+
+このプロセスの中で動かすモデルの提供元です。`engine`は読み込んだモデル、つまり
+[`Llama.load`](#43-llama)が返すものか、モデルと同じ動きをする`chat`、`format_chat`、
+`count_tokens`のメソッドを持つ何かです。それ以外は`TypeError`になります。提供元は
+エンジンを閉じません。エンジンは作ったisolateのものなので、提供元も使うisolateの中で作ってください。
+
+```culebra
+# doctest: skip — GGUFのモデルファイルとLlama入りのビルドが要る
+let model = Llama.load("gemma-3-4b-it-Q4_K_M.gguf")
+let provider = LLM.local(model)
+IO.println(LLM.ask("Translate into Japanese: Good morning.", provider: provider))
+```
+
+提供元は自分のモデル（読み込んだもの）を持つので、`model:`は省けます。渡しても読みません。
+ツール、`extra:`、`LLM.request`は受け付けず、どれもモデルに尋ねる前に`LLMError`になります。
+履歴にツール呼び出しや結果があるときも`LLMError`です。モデルに届くのはメッセージの
+テキストだけで、reasoningのpartや別の提供元の形式のブロックは、チャットテンプレートに
+置き場が無いので除かれます。モデル自身のチャットテンプレートが使われるので（`model.chat`を
+参照）、テンプレートの無いモデルは`LlamaError`です。
+
+`stop`は、モデルが終えたか`stop`の文字列が現れたとき`"end"`、`max_tokens`かコンテキストが
+尽きたとき`"length"`です。`usage`はプロンプトと生成のトークン数です。キャッシュはターンを
+またいで残るので、履歴が伸びていく会話では新しい分だけがデコードされます。
+`LLM.count_tokens`は、システムプロンプトを含めてチャットテンプレートが作るプロンプトで数えた正確な値です。
+
 ### エラー
 
 | 状況 | エラー |
@@ -9364,6 +9392,8 @@ IO.println(LLM.ask("Name three prime numbers.", provider: local, model: "llama3.
 | `LLM.anthropic`、`LLM.openai`、`LLM.openrouter`のキーが無い（作るときに、リクエストの前に確かめる） | `LLMError` |
 | `model:`が無く、提供元にも既定がない | `LLMError` |
 | 数えられない提供元に`LLM.count_tokens` | `LLMError` |
+| エンジンでないものを`LLM.local`に渡した | `TypeError` |
+| `LLM.local`にツール、`extra:`、`LLM.request`。履歴にツール呼び出しや結果 | `LLMError` |
 | APIが2xx以外のステータスで答えた | `LLMError`: `LLM: 429 rate_limit_error: ...`（ステータス、エラーの種類と説明） |
 | Chat Completions: 200の中のエラー、choicesが空 | `LLMError` |
 | モデルが回答を断った（`stop`が`"refusal"`） | `LLMError` |

@@ -129,7 +129,7 @@
 # 332 since test_object_rest.cul (`{a, ...rest}` in let, match, for, parameters
 # and assignment, on plain, non-String-keyed and large objects, and an
 # instance that must not match).
-tests.cul 332
+tests.cul 333
 
 # tests/isolate/*.cul — run on both engines, plus the over-cap modes.
 # 21 since test_xml_isolate.cul (an XML element keeps its methods across an
@@ -258,7 +258,7 @@ ctest.entries 36
 # quick guide shows `@name` in a method, in en and ja. 1120 since 13 shows
 # the `is` type test, in en and ja. 1122 since the keyword-arguments section
 # shows `f(x:)`, in en and ja.
-docs.blocks 1130
+docs.blocks 1128
 
 # The samples the language front ends are run over (examples/languages/*).
 languages.samples 130

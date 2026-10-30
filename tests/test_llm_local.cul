@@ -1,0 +1,186 @@
+# LLM.local: a model run in this process, as a provider. The engine here is a
+# script (anything with chat, format_chat and count_tokens is one), so the file
+# needs no model and runs in every build. Against a real model it is
+# tests/llama/test_llama.cul.
+
+
+fn lc_failure(thunk) {
+  try {
+    thunk()
+    "no error"
+  } catch e {
+    "{e.kind}: {e.message}"
+  }
+}
+
+# An engine is anything with chat, format_chat and count_tokens: this one
+# records what it is asked and answers with a result it was given.
+class LcEngine {
+  new(@result) {
+    self.chats = []
+    self.formats = []
+    self.counted = []
+  }
+  chat(messages, max_tokens = nil, stop = nil, temperature = nil, cache = false, on_text = nil) {
+    self.chats.push({messages: messages, max_tokens: max_tokens, stop: stop,
+                     temperature: temperature, cache: cache})
+    if on_text != nil {
+      on_text("he")
+      on_text("llo")
+    }
+    @result
+  }
+  format_chat(messages) {
+    self.formats.push(messages)
+    "PROMPT"
+  }
+  count_tokens(text) {
+    self.counted.push(text)
+    text.size()
+  }
+}
+
+fn lc_result(finish = "end", text = "hello") {
+  {text: text, finish: finish, prompt_tokens: 7, completion_tokens: 2}
+}
+
+fn lc_user(t) {
+  {role: "user", content: t}
+}
+
+fn lc_req(messages, system = nil, max_tokens = nil, stop = nil, temperature = nil) {
+  {model: "local", system: system, messages: messages, tools: [], max_tokens: max_tokens,
+   stop: stop, temperature: temperature, extra: nil}
+}
+
+# What is taken for an engine: all three methods, so each one missing is refused.
+class LcNoCount {
+  chat(messages) { nil }
+  format_chat(messages) { "" }
+}
+class LcNoFormat {
+  chat(messages) { nil }
+  count_tokens(text) { 0 }
+}
+class LcNoChat {
+  format_chat(messages) { "" }
+  count_tokens(text) { 0 }
+}
+# (up to the parenthesis: the rest names the namespace some builds do not carry)
+fn lc_refused(thunk) {
+  lc_failure(thunk).starts_with("TypeError: type error: parameter 'engine' expects an engine")
+}
+assert_eq(lc_refused(|| LLM.local(1)), true)
+assert_eq(lc_refused(|| LLM.local({chat: 1})), true)
+assert_eq(lc_refused(|| LLM.local(LcNoCount())), true)
+assert_eq(lc_refused(|| LLM.local(LcNoFormat())), true)
+assert_eq(lc_refused(|| LLM.local(LcNoChat())), true)
+
+# What the provider says about itself.
+let lc_eng = LcEngine(lc_result())
+let lc = LLM.local(lc_eng)
+assert_eq(lc.name, "local")
+assert_eq(lc.capabilities, {tools: false, extra: false, count_tokens: true})
+assert_eq(lc.default_model, "local")
+
+# What the engine is asked: the system prompt first, the text of each message
+# (reasoning and another format's blocks left out), the settings as they are,
+# and the cache kept for the next turn of the conversation.
+let history = [
+  lc_user("hi"),
+  {role: "assistant", content: [{type: "text", text: "a"},
+                                {type: "reasoning", text: "thought", format: "anthropic"},
+                                {type: "other", format: "anthropic", opaque: {}},
+                                {type: "text", text: "b"}]},
+  {role: "user", content: [{type: "text", text: "x"}]},
+  {role: "assistant", content: "plain"},
+]
+lc.turn(lc_req(history, system: "be brief", max_tokens: 5, stop: ["."], temperature: 0.5), nil)
+assert_eq(lc_eng.chats[0], {
+  messages: [{role: "system", content: "be brief"}, {role: "user", content: "hi"},
+             {role: "assistant", content: "ab"}, {role: "user", content: "x"},
+             {role: "assistant", content: "plain"}],
+  max_tokens: 5, stop: ["."], temperature: 0.5, cache: true,
+})
+
+# Without a system prompt there is no system message; unset settings stay unset.
+lc.turn(lc_req([lc_user("hi")]), nil)
+assert_eq(lc_eng.chats[1], {messages: [{role: "user", content: "hi"}], max_tokens: nil,
+                            stop: nil, temperature: nil, cache: true})
+
+# A local model takes no tools: a call or a result in the history is refused.
+let call = {role: "assistant", content: [{type: "tool_call", id: "1", name: "f", args: {}}]}
+let result = {role: "tool", content: [{type: "tool_result", id: "1", content: "ok", is_error: false}]}
+let no_tools = "LLMError: LLM: local does not take tool calls or results"
+assert_eq(lc_failure(|| lc.turn(lc_req([lc_user("hi"), call]), nil)), no_tools)
+assert_eq(lc_failure(|| lc.turn(lc_req([lc_user("hi"), result]), nil)), no_tools)
+assert_eq(lc_eng.chats.size(), 2)
+
+# The reply: the text as one part, why it ended, what it cost, the result as it was.
+let reply = lc.turn(lc_req([lc_user("hi")]), nil)
+assert_eq(reply.text, "hello")
+assert_eq(reply.message, {role: "assistant", content: [{type: "text", text: "hello"}]})
+assert_eq(reply.stop, "end")
+assert_eq(reply.usage, {input_tokens: 7, output_tokens: 2})
+assert_eq(reply.tool_calls, [])
+assert_eq(reply.reasoning, "")
+assert_eq(reply.raw, lc_result())
+
+# Why it ended: a stop string is an ordinary end, a full context is a length, and
+# an aborted generation has no reason.
+fn lc_stop(finish) {
+  LLM.local(LcEngine(lc_result(finish))).turn(lc_req([lc_user("hi")]), nil).stop
+}
+assert_eq(lc_stop("stop"), "end")
+assert_eq(lc_stop("length"), "length")
+assert_eq(lc_stop("aborted"), nil)
+
+# Nothing generated is no part at all.
+let empty = LLM.local(LcEngine(lc_result("end", ""))).turn(lc_req([lc_user("hi")]), nil)
+assert_eq(empty.message, {role: "assistant", content: []})
+assert_eq(empty.text, "")
+
+# Text is handed over as it is generated.
+let pieces = []
+lc.turn(lc_req([lc_user("hi")]), |t| pieces.push(t))
+assert_eq(pieces, ["he", "llo"])
+
+# Tokens are counted on the prompt the engine's chat template makes, system
+# prompt included.
+assert_eq(lc.count_tokens(lc_req([lc_user("hi")], system: "be brief")), 6)
+assert_eq(lc_eng.formats[0], [{role: "system", content: "be brief"}, {role: "user", content: "hi"}])
+assert_eq(lc_eng.counted, ["PROMPT"])
+
+# --- through the calls that take a provider -------------------------------------
+
+# The model is the engine's own: `model:` can be left out, and the system prompt
+# is lifted out of the messages.
+let e2 = LcEngine(lc_result())
+let p2 = LLM.local(e2)
+let turned = LLM.turn(p2, messages: [{role: "system", content: "be brief"}, lc_user("hi")])
+assert_eq(turned.text, "hello")
+assert_eq(e2.chats[0].messages, [{role: "system", content: "be brief"}, lc_user("hi")])
+
+# A conversation: the second ask carries the first answer, and the cache is kept.
+let talk = LLM.chat(provider: p2)
+assert_eq(talk.ask("one"), "hello")
+assert_eq(talk.ask("two"), "hello")
+assert_eq(e2.chats[2].messages, [lc_user("one"), {role: "assistant", content: "hello"}, lc_user("two")])
+assert_eq(e2.chats[2].cache, true)
+
+# What a local model cannot do is refused before it is asked.
+let quiet = LcEngine(lc_result())
+let p3 = LLM.local(quiet)
+fn lc_weather(city: String) {
+  "{city}: sunny"
+}
+assert_eq(lc_failure(|| LLM.chat(provider: p3, tools: [LLM.tool(lc_weather, "the weather")]).ask("hi")),
+          "LLMError: LLM.turn: local does not take tools")
+assert_eq(lc_failure(|| LLM.turn(p3, messages: [lc_user("hi")], extra: {a: 1})),
+          "LLMError: LLM.turn: local does not take extra:")
+assert_eq(lc_failure(|| LLM.request({a: 1}, provider: p3)),
+          "LLMError: LLM.request: local does not take a request as it is")
+assert_eq(quiet.chats.size(), 0)
+
+# Tokens, counted by the engine on the prompt it would be given.
+assert_eq(LLM.count_tokens(p3, messages: [lc_user("hi")], system: "be brief"), 6)

@@ -1012,6 +1012,75 @@ let _llm_module = fn () {
     openai_compatible(base_url:, name: "ollama", timeout:)
   }
 
+  # --- a model run in this process ----------------------------------------------
+
+  # What the model sees of a message: its text. Reasoning, and blocks that belong
+  # to another format, are left out (a chat template has no place for them); a
+  # tool call or result is refused, since a local model takes no tools.
+  fn _local_text(m) {
+    return m.content if m.content is String
+    mut out = []
+    for p in m.content {
+      if p.type == "text" {
+        out.push(p.text)
+      } else if p.type == "tool_call" || p.type == "tool_result" {
+        _fail("LLM: local does not take tool calls or results")
+      }
+    }
+    out.join("")
+  }
+
+  fn _local_messages(req) {
+    let msgs = req.messages.map(fn (m) { {role: m.role, content: _local_text(m)} })
+    req.system == nil ? msgs : [{role: "system", content: req.system}, ...msgs]
+  }
+
+  let LOCAL_STOPS = {"end": "end", "stop": "end", "length": "length"}
+
+  # The engine's result as the reply a provider gives. A generation that was
+  # aborted has no stop reason.
+  fn _local_reply(r) {
+    _reply_from(r.text.empty() ? [] : [{type: "text", text: r.text}],
+                LOCAL_STOPS.get(r.finish, nil),
+                {input_tokens: r.prompt_tokens, output_tokens: r.completion_tokens}, r)
+  }
+
+  class LLMLocal {
+    new(@engine) {
+      self.name = "local"
+      self.capabilities = {tools: false, extra: false, count_tokens: true}
+      self.default_model = "local"
+    }
+
+    turn(req, on_text) {
+      _local_reply(@engine.chat(_local_messages(req), max_tokens: req.max_tokens,
+                                    stop: req.stop, temperature: req.temperature,
+                                    cache: true, on_text:))
+    }
+
+    count_tokens(req) {
+      @engine.count_tokens(@engine.format_chat(_local_messages(req)))
+    }
+  }
+
+  # An engine is a loaded model: `Llama.load` makes one, and so can anything with
+  # the same three methods.
+  fn _is_engine(e) {
+    try {
+      e.chat is Function && e.format_chat is Function && e.count_tokens is Function
+    } catch _e {
+      false
+    }
+  }
+
+  fn local(engine) {
+    if !_is_engine(engine) {
+      __raise("TypeError",
+        "type error: parameter 'engine' expects an engine (what Llama.load returns)")
+    }
+    LLMLocal(engine)
+  }
+
   # --- running the tools a model asks for ---------------------------------------
 
   # One call, answered. What a tool throws goes back to the model as an error it
@@ -1165,6 +1234,6 @@ let _llm_module = fn () {
   {ask: ask, chat: chat, tool: tool, request: request, repair: repair, turn: turn,
    anthropic: anthropic, run_tools: run_tools, tool_from_schema: tool_from_schema,
    count_tokens: count_tokens, openai_compatible: openai_compatible,
-   openai: openai, openrouter: openrouter, ollama: ollama}
+   openai: openai, openrouter: openrouter, ollama: ollama, local: local}
 }
 let LLM = _llm_module()

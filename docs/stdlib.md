@@ -9388,8 +9388,9 @@ A client for large language models, written in Culebra over [`Http`](#15-http)
 and [`JSON`](#9-json). What it asks is a *provider*: `LLM.anthropic()` (the
 Messages API, Anthropic's Claude API) and `LLM.openai_compatible()` (Chat
 Completions, with `LLM.openai`, `LLM.openrouter` and `LLM.ollama` set up for
-those services) are the ones there are so far, and a provider can be written in a
-program (see `LLM.turn`). There are four ways in: one
+those services) and `LLM.local()` (a model run in this process, see
+[`Llama`](#43-llama)) are the ones there are so far, and a provider can be written
+in a program (see `LLM.turn`). There are four ways in: one
 question, a conversation that keeps its history and runs the tools the model
 asks for, one step with a provider (what a loop of your own is made of), and a
 request body sent as it is.
@@ -9762,6 +9763,35 @@ let local = LLM.ollama()
 IO.println(LLM.ask("Name three prime numbers.", provider: local, model: "llama3.2"))
 ```
 
+### `LLM.local(engine) -> LLMLocal`
+
+A provider over a model run in this process. `engine` is a loaded model, which is
+what [`Llama.load`](#43-llama) returns, or anything with `chat`, `format_chat` and
+`count_tokens` methods that behave as the model's do; anything else is a
+`TypeError`. The provider does not close the engine, and the engine belongs to
+the isolate that made it, so make the provider in the isolate that uses it.
+
+```culebra
+# doctest: skip — needs a GGUF model file and a build with Llama
+let model = Llama.load("gemma-3-4b-it-Q4_K_M.gguf")
+let provider = LLM.local(model)
+IO.println(LLM.ask("Translate into Japanese: Good morning.", provider: provider))
+```
+
+The provider has a model of its own, the one loaded, so `model:` can be left out
+and is not read. It takes no tools, no `extra:` and no `LLM.request`, each an
+`LLMError` before the model is asked, and a history that holds a tool call or a
+result is an `LLMError` too. Only the text of a message reaches the model: a
+reasoning part, or a block that belongs to another provider's format, is left out,
+because a chat template has no place for it. The model's own chat template is
+applied (see `model.chat`), so a model without one is a `LlamaError`.
+
+`stop` is `"end"` when the model finished or a `stop` string appeared, and
+`"length"` when `max_tokens` or the context ran out; `usage` is the prompt and
+completion tokens. The cache is kept from one turn to the next, so a conversation
+whose history grows decodes only what is new. `LLM.count_tokens` is exact, on the
+prompt the chat template makes of the request, system prompt included.
+
 ### Errors
 
 | Situation | Error |
@@ -9769,6 +9799,8 @@ IO.println(LLM.ask("Name three prime numbers.", provider: local, model: "llama3.
 | No key for `LLM.anthropic`, `LLM.openai` or `LLM.openrouter` (checked when it is made, before any request) | `LLMError` |
 | No `model:`, and the provider has none | `LLMError` |
 | `LLM.count_tokens` on a provider that cannot count | `LLMError` |
+| `LLM.local` given something that is not an engine | `TypeError` |
+| A tool, `extra:` or `LLM.request` on `LLM.local`; a tool call or result in its history | `LLMError` |
 | The API answers with a status that is not 2xx | `LLMError`: `LLM: 429 rate_limit_error: ...` (the status, then the error's type and message) |
 | Chat Completions: an error inside a 200, or no choices | `LLMError` |
 | The model declines to answer (`stop` is `"refusal"`) | `LLMError` |

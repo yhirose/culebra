@@ -120,6 +120,21 @@ fn with_a_model(path) {
     assert_eq(failure(|| m.chat(messages)), formatted)
   }
 
+  # As a provider (LLM.local): the model's errors reach the caller as they are, and
+  # its tokens are what LLM.count_tokens counts. tests/test_llm_local.cul has the
+  # rest, against an engine that is a script.
+  let provider = LLM.local(m)
+  if formatted == "no error" {
+    let reply = LLM.turn(provider, messages: messages, max_tokens: 8)
+    assert_eq(reply.text.empty(), false)
+    assert_eq(reply.usage.input_tokens, m.count_tokens(m.format_chat(messages)))
+    assert_eq(LLM.count_tokens(provider, messages: [messages[1]], system: "Answer in one word."),
+              reply.usage.input_tokens)
+  } else {
+    assert_eq(failure(|| LLM.turn(provider, messages: messages)), formatted)
+    assert_eq(failure(|| LLM.count_tokens(provider, messages: messages)), formatted)
+  }
+
   # What it is given is checked before anything runs.
   assert_eq(failure(|| m.generate(1)), "TypeError: type error: parameter 'prompt' expects String")
   assert_eq(failure(|| m.generate()), "ArityError: missing required argument 'prompt'")
