@@ -246,6 +246,31 @@ $ otool -L /tmp/microgpt_tensor
         /usr/lib/libSystem.B.dylib
 ```
 
+### Binaries that run a model
+
+`Llama` (a language model run in the process, see
+[`Llama`](stdlib.md#43-llama)) is one more axis, and the only one that exists
+only in a build configured with `-DCULEBRA_ENABLE_LLAMA=ON`: the driver then
+carries the four llama.cpp static libraries, and a program that names `Llama`
+links them. A program that does not name it carries none of it, and
+`ldd` shows the same libraries as for a `print("hello")` binary
+(libc, libm, libgcc_s and libstdc++; llama.cpp is built without OpenMP, so
+there is no libgomp). Measured on Linux x86-64, CPU only, for a program that
+calls `Llama.load`:
+
+| Program | Size |
+|---|---|
+| `print("hello")` | 0.85 MB |
+| names `Llama` | 6.92 MB (+6.07 MB) |
+| names `LLM` | 7.25 MB (+6.40 MB) |
+| names `Llama` and calls `LLM.local` | 13.16 MB |
+| the same with `--no-tls` | 9.20 MB |
+
+`LLM` is written over `Http`, so naming it pulls OpenSSL in as well; that is
+what `--no-tls` takes out (see below), and a program that only runs a local
+model may use it. The model file is not part of the binary: the program is
+given its path. The GPU backends are not built in this configuration.
+
 ### Building Http without TLS
 
 OpenSSL is 82% of what `Http` adds to a binary, and a program that only

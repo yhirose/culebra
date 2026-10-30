@@ -213,6 +213,27 @@ $ otool -L /tmp/microgpt_tensor
         /usr/lib/libSystem.B.dylib
 ```
 
+### モデルを動かすバイナリ
+
+`Llama`（プロセスの中で言語モデルを動かす名前空間。[`Llama`](stdlib.ja.md#43-llama)を参照）は
+もう1つの軸で、`-DCULEBRA_ENABLE_LLAMA=ON`で構成したビルドにだけ存在する唯一の軸です。
+そのドライバはllama.cppの静的ライブラリ4つを抱え、`Llama`を名指しするプログラムがそれをリンクします。
+名指ししないプログラムには何も入らず、`ldd`は`print("hello")`のバイナリと同じライブラリ
+（libc、libm、libgcc_s、libstdc++）を示します。llama.cppはOpenMPなしでビルドしているので、libgompは要りません。
+Linux x86-64のCPUのみで、`Llama.load`を呼ぶプログラムについて測りました。
+
+| プログラム | サイズ |
+|---|---|
+| `print("hello")` | 0.85 MB |
+| `Llama`を名指し | 6.92 MB（+6.07 MB） |
+| `LLM`を名指し | 7.25 MB（+6.40 MB） |
+| `Llama`を名指しして`LLM.local`を呼ぶ | 13.16 MB |
+| 同じものを`--no-tls`で | 9.20 MB |
+
+`LLM`は`Http`の上に書かれているので、名指しするとOpenSSLも入ります。`--no-tls`が外すのはそれで
+（後述）、ローカルのモデルだけを動かすプログラムなら使えます。モデルのファイルはバイナリに入りません。
+プログラムにはそのパスを渡します。この構成にGPUバックエンドは含まれません。
+
 ### TLS抜きでHttpをビルドする
 
 `Http`がバイナリに足すもののうち82%はOpenSSLで、`http://`しか喋らない
