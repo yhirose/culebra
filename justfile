@@ -446,6 +446,18 @@ build-scene *extra:
     cd build-scene && cmake -DCMAKE_BUILD_TYPE=Release -DCULEBRA_ENABLE_JIT=ON -DCULEBRA_LTO=OFF -DCULEBRA_ENABLE_SCENE=ON {{extra}} .. > /dev/null
     cd build-scene && {{lock_cmd}} {{nice_cmd}} make -j{{build_jobs}} culebra
 
+# The dev build with the Llama namespace: llama.cpp is built (once, into the
+# deps cache) and linked in. Its own dir for build-scene's reason: the option is
+# a target-wide define, so every TU's command line differs from `just dev`'s.
+# The `culebra` target alone. The first run downloads the llama.cpp release
+# archive and compiles it, a few minutes; later runs find it in the cache.
+[doc("Dev build with the Llama namespace on (downloads and builds llama.cpp once)")]
+[group("build")]
+dev-llama *extra:
+    mkdir -p build-dev-llama
+    cd build-dev-llama && cmake -DCMAKE_BUILD_TYPE=Release -DCULEBRA_ENABLE_JIT=ON -DCULEBRA_LTO=OFF -DCULEBRA_DEV_NO_RT=ON -DCULEBRA_DEV_O1=ON -DCULEBRA_ENABLE_LLAMA=ON {{extra}} .. > /dev/null
+    cd build-dev-llama && {{nice_cmd}} make -j{{build_jobs}} culebra
+
 # Install the Release binary (`just build`) into PREFIX/bin, with sudo only when
 # that directory isn't already writable. PREFIX defaults to /usr/local: on macOS
 # /usr/bin is read-only even for root (SIP), so a system-wide install goes here.

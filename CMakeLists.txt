@@ -954,9 +954,13 @@ endif()
 # --- Llama (a language model run in this process): config ------------------
 # OFF by default: it builds llama.cpp from its release archive (cmake/llama.cmake),
 # which is minutes of compile and a download, for a namespace most programs never
-# touch. Nothing in the driver uses it yet; with the option on, the build adds the
-# llama.cpp statics to the shared deps cache and a llama_smoke test that links them.
+# touch. With the option on, the build adds the llama.cpp statics to the shared
+# deps cache, links them into the driver, and the Llama namespace exists (a build
+# without it has no Llama, the way one without Webview has no Webview).
 option(CULEBRA_ENABLE_LLAMA "Build llama.cpp for the Llama namespace (downloads the release archive)" OFF)
+if(CULEBRA_ENABLE_LLAMA)
+  include(cmake/llama.cmake)
+endif()
 
 # --- Builtin Webview namespace (native WebView desktop): config ------------
 # ON by default: unlike Scene there is no static library to build — webview
@@ -1250,6 +1254,7 @@ inline const auto FS = ::cpp_embedlib::EmbeddedFS{_entries};
     CULEBRA_RT_HTTP_REQUEST_WEAK=1
     CULEBRA_RT_COMPRESS_WEAK=1
     CULEBRA_RT_SQLITE_WEAK=1
+    CULEBRA_RT_LLAMA_WEAK=1
     CULEBRA_RT_REGEX_WEAK=1
     CULEBRA_RT_SEARCH_WEAK=1)
   # In a window build the Canvas backend is the raylib one: the base archive
@@ -2138,7 +2143,7 @@ if(CULEBRA_ENABLE_SQLITE)
 endif()
 
 if(CULEBRA_ENABLE_LLAMA)
-  include(cmake/llama.cmake)
+  include(cmake/llama_build.cmake)
 endif()
 
 # net.h core test: loopback TCP/UDP on ephemeral ports drives the value-neutral

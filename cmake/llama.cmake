@@ -1,7 +1,8 @@
-# llama.cpp (ggml + llama, static), built once into the shared deps cache, and
-# the Llama smoke test that proves the build links. Included from
-# CMakeLists.txt when CULEBRA_ENABLE_LLAMA is ON; nothing here touches the
-# `culebra` driver yet, so a build with the option on behaves as one with it off.
+# llama.cpp (ggml + llama, static) for the Llama namespace: where it is built
+# and what a translation unit needs to see it. Included from CMakeLists.txt, at
+# the option, before any target exists, when CULEBRA_ENABLE_LLAMA is ON. The
+# build itself (ExternalProject) and the targets that link it are in
+# cmake/llama_build.cmake, included once those targets are there.
 #
 # Like SDL3 and raylib, the statics depend only on their sources, their
 # configuration and the target platform, never on culebra's build type, LTO or
@@ -12,7 +13,6 @@
 # would pay for. The release archive (~38 MB, one download shared through the
 # cache) is fetched against a pinned SHA-256 instead; cmake/llama_cpp.cmake holds
 # the version and the hash.
-include(ExternalProject)
 include(${CMAKE_CURRENT_LIST_DIR}/llama_cpp.cmake)
 _culebra_require_submodules(cpp-llamalib)
 
@@ -27,7 +27,8 @@ set(_llama_cmake_args
   -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_SERVER=OFF -DLLAMA_BUILD_APP=OFF
   # ggml's own thread pool, so the binary does not need libgomp.so at start.
   -DGGML_OPENMP=OFF
-  # Portable code: not tuned to the machine that builds it.
+  # Portable code: not tuned to the machine that builds it. (On x86 that still
+  # means AVX2; stdlib/llama.h checks the CPU for it before loading a model.)
   -DGGML_NATIVE=OFF
   -DGGML_CUDA=OFF -DGGML_METAL=OFF -DGGML_VULKAN=OFF -DGGML_BLAS=OFF)
 string(MD5 _llama_args_hash "${_llama_cmake_args}")
@@ -63,40 +64,8 @@ elseif(APPLE)
   list(APPEND _llama_system_libs "-framework Accelerate" "-framework Foundation")
 endif()
 
-if(NOT EXISTS "${_llama_install}/lib/libllama.a")
-  set(_llama_stage "${CMAKE_CURRENT_BINARY_DIR}/llama_stage")
-  ExternalProject_Add(llama_ext
-    URL "https://github.com/ggml-org/llama.cpp/archive/refs/tags/${CULEBRA_LLAMA_CPP_VERSION}.tar.gz"
-    URL_HASH "SHA256=${CULEBRA_LLAMA_CPP_SHA256}"
-    DOWNLOAD_DIR "${_llama_root}/downloads"
-    DOWNLOAD_NAME "llama.cpp-${CULEBRA_LLAMA_CPP_VERSION}.tar.gz"
-    PREFIX "${CMAKE_CURRENT_BINARY_DIR}/llama_ext_build"
-    CMAKE_ARGS
-      ${_llama_cmake_args}
-      -DCMAKE_C_COMPILER=${CMAKE_C_COMPILER}
-      -DCMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER}
-      -DCMAKE_INSTALL_PREFIX=${_llama_stage}
-      -DCMAKE_OSX_ARCHITECTURES=${CMAKE_OSX_ARCHITECTURES}
-      -DCMAKE_OSX_DEPLOYMENT_TARGET=${CMAKE_OSX_DEPLOYMENT_TARGET}
-      -DCMAKE_C_COMPILER_LAUNCHER=${CMAKE_C_COMPILER_LAUNCHER}
-      -DCMAKE_CXX_COMPILER_LAUNCHER=${CMAKE_CXX_COMPILER_LAUNCHER}
-    BUILD_BYPRODUCTS ${_llama_a})
-  ExternalProject_Add_Step(llama_ext publish
-    COMMAND ${CMAKE_COMMAND} -DSTAGE=${_llama_stage} -DDEST=${_llama_install}
-            -DPROBE=${_llama_install}/lib/libllama.a
-            -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/publish_dep.cmake"
-    COMMENT "Publishing llama.cpp to ${_llama_install}"
-    DEPENDEES install)
-endif()
-
-# No model: the static llama.cpp links, its backends come up, and a model that
-# cannot be loaded is the wrapper's ModelLoadError.
-add_executable(llama_smoke test/llama_smoke.cc)
-target_compile_features(llama_smoke PRIVATE cxx_std_23)
-target_include_directories(llama_smoke SYSTEM PRIVATE
-  "${CMAKE_CURRENT_SOURCE_DIR}/vendor/cpp-llamalib" "${_llama_install}/include")
-target_link_libraries(llama_smoke ${_llama_a} ${_llama_system_libs})
-if(TARGET llama_ext)
-  add_dependencies(llama_smoke llama_ext)
-endif()
-add_test(NAME llama_smoke COMMAND llama_smoke)
+# Every translation unit that reaches stdlib/bindings.h compiles the Llama rows
+# (stdlib/llama.h), so every one of them sees the headers.
+add_compile_definitions(CULEBRA_LLAMA_ENABLED)
+include_directories(SYSTEM "${_llama_install}/include"
+                           "${CMAKE_CURRENT_SOURCE_DIR}/vendor/cpp-llamalib")
