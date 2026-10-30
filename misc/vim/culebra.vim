@@ -6,9 +6,9 @@ if exists("b:current_syntax")
 endif
 
 " Numbers — float patterns first so the integer rule does not steal them.
-syn match   culFloat        "\<\d\+\.\d\+\%([eE][-+]\?\d\+\)\?\>"
-syn match   culFloat        "\<\d\+[eE][-+]\?\d\+\>"
-syn match   culDecNumber    "\<\d\+\>"
+syn match   culFloat        "\<\d\+\%(_\d\+\)*\.\d\+\%(_\d\+\)*\%([eE][-+]\?\d\+\%(_\d\+\)*\)\?\>"
+syn match   culFloat        "\<\d\+\%(_\d\+\)*[eE][-+]\?\d\+\%(_\d\+\)*\>"
+syn match   culDecNumber    "\<\d\+\%(_\d\+\)*\>"
 
 " Strings
 syn region  culStringS      start=+'+ skip=+\\\\\|\\'+ end=+'\|$+

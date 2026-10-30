@@ -5723,7 +5723,8 @@ class Compiler {
         return JitValue{TAG_LONG, culebra::parse_integer_literal(e.token)};
       case "FLOAT"_:
         return JitValue{TAG_FLOAT,
-                        _culebra_double_to_bits(e.token_to_number<double>())};
+                        _culebra_double_to_bits(
+                            culebra::parse_float_literal(e.token))};
       case "BOOLEAN"_:
         return JitValue{TAG_BOOL, e.token == "true"};
       case "UNARY_MINUS"_: {

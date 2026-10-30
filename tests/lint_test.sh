@@ -73,6 +73,11 @@ expect_syntax_message "parameter list"      'fn f(a b) { }' \
   ", unexpected 'b', expecting ':', '=', ',' or ')'."
 expect_syntax_message "class body"          'class C { 1 }' \
   ", unexpected '1', expecting 'static', 'get', '}' or <IDENTIFIER>."
+# A digit separator sits between digits: not doubled, trailing, or after a
+# radix prefix.
+expect_syntax_reject "doubled digit separator"   "syntax error" 'x = 1__0'
+expect_syntax_reject "trailing digit separator"  "syntax error" 'x = 1_'
+expect_syntax_reject "separator after a prefix"  "syntax error" 'x = 0x_ff'
 # The field parameter's old spelling gets the new one named.
 expect_syntax_reject "old field parameter" \
   " A field parameter is written \`@x\`, not \`.x\`." 'class C { new(.x) { } }'

@@ -1,0 +1,31 @@
+# A `_` between digits is a separator: the token keeps it, the value ignores it.
+
+assert_eq(1_000_000, 1000000)
+assert_eq(1_0, 10)
+assert_eq(0xFF_FF, 0xFFFF)
+assert_eq(0b1010_0101, 165)
+assert_eq(0o7_7, 63)
+assert_eq(9_223_372_036_854_775_807, 9223372036854775807)
+
+assert_eq(3.141_592, 3.141592)
+assert_eq(1_000.5, 1000.5)
+assert_eq(1_0.0_5, 10.05)
+assert_eq(1e1_0, 1e10)
+assert_eq(2.5e-1_0, 2.5e-10)
+assert_eq(type_of(1_000), "Long")
+assert_eq(type_of(1_0.5), "Float")
+
+# Negation, arithmetic, ranges and pattern literals take them too.
+assert_eq(-1_000 + 1_000, 0)
+mut seen = []
+for i in 1_0..1_3 {
+  seen.push(i)
+}
+assert_eq(seen, [10, 11, 12])
+assert_eq(match 1_000 { 1_000 => "k", _ => "other" }, "k")
+assert_eq(match 2_5.5 { 25.5 => "f", _ => "other" }, "f")
+assert_eq(match 5 { 1_0..2_0 => "teen", _ => "other" }, "other")
+
+# An object key is the number it spells.
+let o = {1_000: "a"}
+assert_eq(o[1000], "a")

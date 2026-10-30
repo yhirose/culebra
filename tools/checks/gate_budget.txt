@@ -124,8 +124,9 @@
 # (`x is T` / `x !is T`: types, unions, `?`, precedence, one evaluation, and
 # the shapes that lower to source text). 330 since test_kwarg_shorthand.cul
 # (`f(x:)` is `f(x: x)`: calls, constructors, closures, and a local an effect
-# body holds across a `perform`).
-tests.cul 330
+# body holds across a `perform`). 331 since test_digit_separators.cul (`1_000`
+# in every base, in floats and exponents, in patterns, ranges and object keys).
+tests.cul 331
 
 # tests/isolate/*.cul — run on both engines, plus the over-cap modes.
 # 21 since test_xml_isolate.cul (an XML element keeps its methods across an

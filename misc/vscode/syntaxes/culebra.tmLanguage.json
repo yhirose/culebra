@@ -162,15 +162,15 @@
       "patterns": [
         {
           "comment": "Float patterns first so the integer rule does not steal them.",
-          "match": "\\b\\d+\\.\\d+([eE][-+]?\\d+)?\\b",
+          "match": "\\b\\d+(_\\d+)*\\.\\d+(_\\d+)*([eE][-+]?\\d+(_\\d+)*)?\\b",
           "name": "constant.numeric.float.culebra"
         },
         {
-          "match": "\\b\\d+[eE][-+]?\\d+\\b",
+          "match": "\\b\\d+(_\\d+)*[eE][-+]?\\d+(_\\d+)*\\b",
           "name": "constant.numeric.float.culebra"
         },
         {
-          "match": "\\b\\d+\\b",
+          "match": "\\b\\d+(_\\d+)*\\b",
           "name": "constant.numeric.integer.culebra"
         }
       ]

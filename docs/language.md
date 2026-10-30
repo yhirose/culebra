@@ -150,7 +150,14 @@ The parser also recognizes `let` as an optional prefix in assignments.
 * Integer: a `NUMBER` is a 64-bit signed integer (`Long`), written in
   decimal or with a radix prefix — hex `0xFF`, octal `0o755`, binary
   `0b1010` (prefix letter is case-insensitive; digits match the base).
-* Float: `FLOAT <- [0-9]+ '.' [0-9]+ ([eE] [-+]? [0-9]+)? / [0-9]+ [eE] [-+]? [0-9]+`.
+* Digit separators: a single `_` between two digits is ignored, in every
+  base and in a float's integer, fraction and exponent digits
+  (`1_000_000`, `0xFF_FF`, `0b1010_0101`, `3.141_592`, `1e1_0`). A `_` that
+  is doubled, trailing, or right after a radix prefix (`1__0`, `1_`,
+  `0x_ff`) is a `SyntaxError`. Only literals read them: `to_long('1_000')`
+  does not.
+* Float: `FLOAT <- [0-9]+ '.' [0-9]+ ([eE] [-+]? [0-9]+)? / [0-9]+ [eE] [-+]? [0-9]+`
+  (each digit run may hold separators).
   A literal with either a decimal point (followed by digits, not a
   bare trailing dot) or an `e`/`E` exponent is a `Float` (IEEE 754
   binary64). Examples: `1.0`, `0.5`, `-2.5` (unary minus applied to

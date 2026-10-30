@@ -23,6 +23,7 @@
 #include <shared_mutex>
 #include <span>
 #include <stdexcept>
+#include <sstream>
 #include <string>
 #include <string_view>
 #include <type_traits>
@@ -2313,6 +2314,7 @@ inline int64_t parse_long_strict(std::string_view s, int64_t line, int64_t col,
 // backends decode literals identically.
 inline int64_t parse_integer_literal(std::string_view tok) {
   std::string owned(tok);
+  std::erase(owned, '_');  // digit separators (`1_000`) carry no value
   int base = 10;
   size_t off = 0;
   if (tok.size() > 2 && tok[0] == '0') {
@@ -2333,6 +2335,18 @@ inline int64_t parse_integer_literal(std::string_view tok) {
     throw CulebraError("ValueError",
                        culebra::format("integer literal out of range: {}", tok));
   }
+  return v;
+}
+
+// A FLOAT token's value, read the way cpp-peglib's token_to_number<double>
+// reads one (an istringstream) once the digit separators (`3.141_592`) are
+// out of it.
+inline double parse_float_literal(std::string_view tok) {
+  std::string owned(tok);
+  std::erase(owned, '_');
+  std::istringstream in(owned);
+  double v = 0;
+  in >> v;
   return v;
 }
 

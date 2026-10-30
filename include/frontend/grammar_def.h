@@ -543,13 +543,20 @@ const auto grammar_ = R"(
   # fractional digits, with an optional exponent, or (b) integer part
   # followed directly by an exponent. A trailing-dot form (e.g. `1.`)
   # is intentionally *not* accepted so that `1.foo` stays unambiguous.
-  FLOAT                    <-  < [0-9]+ '.' [0-9]+ ([eE] [-+]? [0-9]+)?
-                              / [0-9]+ [eE] [-+]? [0-9]+ >
+  FLOAT                    <-  < DecDigits '.' DecDigits ([eE] [-+]? DecDigits)?
+                              / DecDigits [eE] [-+]? DecDigits >
   # Integer literal: hex `0x` / octal `0o` / binary `0b` radix prefixes,
   # or plain decimal. Radix forms precede the decimal alt so `0x1f`
   # isn't split into `0` + `x1f`. FLOAT is tried before NUMBER, so a
   # leading-`0` decimal that is really a float (`0.5`) still wins.
-  NUMBER                   <-  < '0' [xX] [0-9a-fA-F]+ / '0' [oO] [0-7]+ / '0' [bB] [01]+ / [0-9]+ >
+  NUMBER                   <-  < '0' [xX] HexDigits / '0' [oO] OctDigits / '0' [bB] BinDigits / DecDigits >
+  # A run of digits may hold single `_` separators between digits
+  # (`1_000_000`, `0xFF_FF`, `3.141_592`); the token keeps them and the
+  # literal's value ignores them (shared.h parse_integer_literal / parse_float_literal).
+  DecDigits                <-  [0-9]+ ('_' [0-9]+)*
+  HexDigits                <-  [0-9a-fA-F]+ ('_' [0-9a-fA-F]+)*
+  OctDigits                <-  [0-7]+ ('_' [0-7]+)*
+  BinDigits                <-  [01]+ ('_' [01]+)*
   STRING                   <-  ['] < (!['] .)* > [']
   # Backtick raw string (Go-style): every byte verbatim between backticks
   # — no escapes, no interpolation, multi-line. Unlike `'...'` it may hold

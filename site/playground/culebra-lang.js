@@ -84,9 +84,9 @@ function tokenBase(stream, state) {
   }
 
   // Numbers: float patterns first so the integer rule doesn't steal them.
-  if (stream.match(/^\d+\.\d+([eE][-+]?\d+)?\b/)) return "number";
-  if (stream.match(/^\d+[eE][-+]?\d+\b/)) return "number";
-  if (stream.match(/^\d+\b/)) return "number";
+  if (stream.match(/^\d+(_\d+)*\.\d+(_\d+)*([eE][-+]?\d+(_\d+)*)?\b/)) return "number";
+  if (stream.match(/^\d+(_\d+)*[eE][-+]?\d+(_\d+)*\b/)) return "number";
+  if (stream.match(/^\d+(_\d+)*\b/)) return "number";
 
   const id = stream.match(/^[A-Za-z_]\w*/);
   if (id) {

@@ -92,7 +92,7 @@ module.exports = grammar({
 
     // --- numbers ---
     number: ($) =>
-      token(choice(/\d+\.\d+([eE][-+]?\d+)?/, /\d+[eE][-+]?\d+/, /\d+/)),
+      token(choice(/\d+(_\d+)*\.\d+(_\d+)*([eE][-+]?\d+(_\d+)*)?/, /\d+(_\d+)*[eE][-+]?\d+(_\d+)*/, /\d+(_\d+)*/)),
 
     // --- strings ---
     // Double-quoted strings interpolate `{expr}`; single-quoted are raw; triple
