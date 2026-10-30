@@ -1245,11 +1245,15 @@ class Printer {
     return verbatim(seg);
   }
 
+  // The optimizer folds ARG_ITEM onto the node it wraps, so an argument is
+  // told by its own `name`, not by the rule it came from.
   DocP print_arg(const peg::Ast& arg) {
-    if (arg.original_name == "KWARG")
+    if (arg.name == "KWARG")
       return doc_concat({doc_text(std::string(arg.nodes[0]->token)), doc_text(": "),
                          print(*arg.nodes[1])});
-    if (arg.original_name == "KWARG_SPLAT")
+    if (arg.name == "KWARG_SHORT")
+      return doc_text(std::string(arg.nodes[0]->token) + ":");
+    if (arg.name == "KWARG_SPLAT")
       return doc_concat({doc_text("**"), print(*arg.nodes[0])});
     return print(arg);
   }

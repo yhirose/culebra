@@ -444,14 +444,16 @@ fi
 
 # --- 1f1c. Golden fixture: `f(x:)` ------------------------------------------
 # parse_for_format keeps KWARG_SHORT, so the shorthand comes back as written
-# (not `x: x`), beside long keywords and a splat. A keyword argument prints as
-# its source, so only the separators between arguments are normalized.
+# (not `x: x`), beside long keywords and a splat. The space after a keyword's
+# `:` is normalized, and so is the one before it and the splat's.
 cat > "$TMP/kw_in.cul" <<'EOF'
 f(a,x:,y: 2,z:,**rest)
-g(h:)
+f(a,y:2,w :   3,**  rest)
+g(h :)
 EOF
 cat > "$TMP/kw_want.cul" <<'EOF'
 f(a, x:, y: 2, z:, **rest)
+f(a, y: 2, w: 3, **rest)
 g(h:)
 EOF
 "$CULEBRA" fmt "$TMP/kw_in.cul" > "$TMP/kw_got.cul" 2>"$TMP/kw_err"
