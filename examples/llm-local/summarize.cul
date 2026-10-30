@@ -1,0 +1,33 @@
+# Summarize a text file, after checking that it fits in the model's context.
+# `LLM.count_tokens` counts with the model's own tokenizer, so the answer is
+# exact, not an estimate from the length of the text.
+#
+#   culebra summarize.cul model.gguf notes.txt
+
+if Sys.argv.size() < 2 {
+  IO.eprintln("usage: culebra summarize.cul MODEL.gguf FILE")
+  Sys.exit(2)
+}
+
+let model = Llama.load(Sys.argv[0], n_ctx: 8192)
+let provider = LLM.local(model)
+let messages = [{
+  role: "user",
+  content: "Summarize this in three bullet points:\n\n" + FS.read(Sys.argv[1]),
+}]
+
+let room = 400  # tokens kept free for the summary
+let tokens = LLM.count_tokens(provider, messages: messages)
+if tokens + room > model.n_ctx() {
+  IO.eprintln("{Sys.argv[1]} is {tokens} tokens; the model's context is {model.n_ctx()}")
+  Sys.exit(1)
+}
+
+let reply = LLM.turn(
+  provider,
+  messages: messages,
+  max_tokens: room,
+  temperature: 0.2,
+)
+IO.println(reply.text.trim())
+IO.eprintln("({reply.usage.input_tokens} tokens read, {reply.usage.output_tokens} written)")

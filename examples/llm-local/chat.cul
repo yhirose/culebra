@@ -1,0 +1,30 @@
+# A conversation in the terminal. The history is kept between lines, and the
+# model's answer is printed as it is generated. An empty line ends it.
+#
+#   culebra chat.cul model.gguf
+
+if Sys.argv.empty() {
+  IO.eprintln("usage: culebra chat.cul MODEL.gguf")
+  Sys.exit(2)
+}
+
+let model = Llama.load(Sys.argv[0], n_ctx: 4096)
+let chat = LLM.chat(
+  provider: LLM.local(model),
+  system: "You are a helpful assistant. Keep your answers short.",
+)
+
+while true {
+  IO.print("> ")
+  let line = IO.input()
+  break if line.empty()
+  try {
+    chat.ask(line, on_text: |piece| IO.print(piece))
+    IO.println("")
+  } catch e: LlamaError {
+    # The history no longer fits the context. `chat.messages` can be assigned,
+    # so a longer program would drop the oldest turns here instead of stopping.
+    IO.eprintln("\n{e.message}")
+    break
+  }
+}

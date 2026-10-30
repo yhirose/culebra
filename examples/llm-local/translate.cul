@@ -1,0 +1,36 @@
+# Translate text with a model run in this process: no server, no key, no network.
+#
+#   culebra translate.cul model.gguf Japanese "Good morning"
+#   echo "Good morning" | culebra translate.cul model.gguf Japanese
+#
+# Needs a build with Llama (-DCULEBRA_ENABLE_LLAMA=ON) and a GGUF chat model.
+
+if Sys.argv.size() < 2 {
+  IO.eprintln("usage: culebra translate.cul MODEL.gguf LANGUAGE [TEXT]")
+  Sys.exit(2)
+}
+
+fn read_stdin() {
+  mut lines = []
+  while true {
+    let line = IO.input()
+    break if line.empty()
+    lines.push(line)
+  }
+  lines.join("\n")
+}
+
+let model = Llama.load(Sys.argv[0])
+let provider = LLM.local(model)
+let text = Sys.argv.size() > 2 ? Sys.argv[2] : read_stdin()
+
+# temperature 0 takes the likeliest token each time, so the same text gives the
+# same translation.
+let reply = LLM.turn(
+  provider,
+  system: "Translate the user's message into {Sys.argv[1]}. Reply with the translation only.",
+  messages: [{role: "user", content: text}],
+  temperature: 0,
+  max_tokens: 512,
+)
+IO.println(reply.text.trim())

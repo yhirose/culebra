@@ -1,0 +1,22 @@
+# The same question to a model on this machine or to a hosted one. Only the
+# provider differs: everything after it is the same code.
+#
+#   culebra ask.cul "Name three prime numbers." model.gguf     # local
+#   culebra ask.cul "Name three prime numbers."                # Anthropic (ANTHROPIC_API_KEY)
+
+if Sys.argv.empty() {
+  IO.eprintln("usage: culebra ask.cul QUESTION [MODEL.gguf]")
+  Sys.exit(2)
+}
+
+let local = Sys.argv.size() > 1
+let provider = local ? LLM.local(Llama.load(Sys.argv[1])) : LLM.anthropic()
+# A local provider has the model it loaded; a hosted one is told which.
+let model = local ? nil : "claude-haiku-5-5"
+
+IO.println(LLM.ask(
+  Sys.argv[0],
+  provider: provider,
+  model: model,
+  max_tokens: 300,
+))

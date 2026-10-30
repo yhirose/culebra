@@ -1,0 +1,27 @@
+# Hold a small model to an answer from a fixed list. `LLM.local` does not pass a
+# grammar, so this one talks to the model directly: a GBNF grammar makes the
+# output one of the labels, whatever the model would have said.
+#
+#   culebra classify.cul model.gguf "The battery died after two days."
+
+if Sys.argv.size() < 2 {
+  IO.eprintln("usage: culebra classify.cul MODEL.gguf TEXT")
+  Sys.exit(2)
+}
+
+let model = Llama.load(Sys.argv[0])
+let labels = ["positive", "negative", "neutral"]
+let grammar = "root ::= " + labels.map(|l| "\"{l}\"").join(" | ")
+
+let answer = model.chat(
+  [
+    {
+      role: "system",
+      content: "Classify the sentiment of the user's text as one word.",
+    },
+    {role: "user", content: Sys.argv[1]},
+  ],
+  grammar: grammar,
+  temperature: 0,
+)
+IO.println(answer.text)
