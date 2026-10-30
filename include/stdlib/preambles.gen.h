@@ -6089,16 +6089,16 @@ inline constexpr const char* DESKTOP_MODULE_SOURCE = R"=culpre=(let _desktop_mod
     }
     let port = if config.has("port") {
       # An explicit port is a contract: if it's taken, fail loudly.
-      srv.listen_async(config["port"], LOOPBACK, workers: workers)
+      srv.listen_async(config["port"], LOOPBACK, workers:)
     } else {
       try {
-        srv.listen_async(8731, LOOPBACK, workers: workers)
+        srv.listen_async(8731, LOOPBACK, workers:)
       } catch _ {
         # Default port taken (most likely another culebra desktop app): retry
         # once on an OS-assigned free port — a failed bind leaves the handle
         # unbound and its routes recorded, so the same server serves the retry.
         # A non-bind startup error reproduces identically here and propagates.
-        srv.listen_async(0, LOOPBACK, workers: workers)
+        srv.listen_async(0, LOOPBACK, workers:)
       }
     }
     let base = "http://" + LOOPBACK + ":" + port.to_string()
@@ -6232,7 +6232,7 @@ let _path_module = fn () {
       FS.mkdir(@_path)
     }  # creates parents (FS.mkdir does)
     remove(recursive = false) {
-      FS.remove(@_path, recursive: recursive)
+      FS.remove(@_path, recursive:)
     }
     rename(dst) {
       FS.rename(@_path, _s(dst))
@@ -6942,13 +6942,7 @@ let _state_machine_module = fn () {
     static parse(text, *, guards = {}, actions = {}, context = nil, path = "") {
       # _PEG.parse(grammar, text, start, optimize, packrat, path, hooks)
       let m = _PEG.parse(GRAMMAR, text, "", true, true, path, {actions: ACTIONS})
-      StateMachine.new(
-        m.states,
-        name: m.name,
-        guards: guards,
-        actions: actions,
-        context: context,
-      )
+      StateMachine.new(m.states, name: m.name, guards:, actions:, context:)
     }
 
     state() {
@@ -8220,8 +8214,8 @@ let _llm_module = fn () {
     let (key, base) = _credentials("ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", DEFAULT_BASE,
                                    api_key, base_url)
     let headers = {"x-api-key": key, "anthropic-version": API_VERSION}
-    timeout == nil ? Http.client(base, headers: headers)
-                   : Http.client(base, headers: headers, timeout: timeout)
+    timeout == nil ? Http.client(base, headers:)
+                   : Http.client(base, headers:, timeout:)
   }
 
   # A failed request explains itself in its body, `{error: {type, message}}`
@@ -8241,7 +8235,7 @@ let _llm_module = fn () {
   }
 
   fn _send(http, body, headers = nil, path = "/v1/messages", detail_of = _anthropic_detail) {
-    let res = http.post(path, json: body, headers: headers)
+    let res = http.post(path, json: body, headers:)
     _api_error(res, detail_of) unless res.ok
     res.json()
   }
@@ -8729,7 +8723,7 @@ let _llm_module = fn () {
     let base = _string("base_url", base_url)
     let key = _optional_string("api_key", api_key)
     let headers = key == nil ? {} : {Authorization: "Bearer {key}"}
-    LLMChatCompletions(Http.client(base, headers: headers, timeout: _long("timeout", timeout)),
+    LLMChatCompletions(Http.client(base, headers:, timeout: _long("timeout", timeout)),
                        _string("name", name), base, _string("max_tokens_field", max_tokens_field))
   }
 
@@ -8738,7 +8732,7 @@ let _llm_module = fn () {
   fn _hosted(who, key_var, base_var, default_base, max_tokens_field, api_key, base_url, timeout) {
     let (key, base) = _credentials(key_var, base_var, default_base, api_key, base_url)
     openai_compatible(base_url: base, api_key: key, name: who,
-                      max_tokens_field: max_tokens_field, timeout: timeout)
+                      max_tokens_field:, timeout:)
   }
 
   fn openai(*, api_key = nil, base_url = nil, timeout = 120) {
@@ -8753,7 +8747,7 @@ let _llm_module = fn () {
 
   # Ollama on this machine, which asks for no key.
   fn ollama(*, base_url = "http://localhost:11434/v1", timeout = 120) {
-    openai_compatible(base_url: base_url, name: "ollama", timeout: timeout)
+    openai_compatible(base_url:, name: "ollama", timeout:)
   }
 
   # --- running the tools a model asks for ---------------------------------------
@@ -8832,7 +8826,7 @@ let _llm_module = fn () {
         for _step in 0..@max_turns {
           let reply = turn(@provider, model: @model, messages: @messages,
                            system: @system, tools: @tools,
-                           max_tokens: @max_tokens, on_text: on_text)
+                           max_tokens: @max_tokens, on_text:)
           @last = reply
           if reply.stop == "refusal" {
             # The Messages API says why in stop_details.
@@ -8883,8 +8877,7 @@ let _llm_module = fn () {
   }
 
   fn ask(prompt, *, provider, model = nil, system = nil, max_tokens = nil, on_text = nil) {
-    chat(provider: provider, model: model, system: system,
-         max_tokens: max_tokens).ask(prompt, on_text: on_text)
+    chat(provider:, model:, system:, max_tokens:).ask(prompt, on_text:)
   }
 
   # The body as it is, the response as it is: a failure is still an LLMError.

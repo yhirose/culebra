@@ -5384,7 +5384,7 @@ fn emit_stmt(m, node, f) {
       node.nodes.size() == 0 => ir.make_break(node),
       _ => {
         let depth = find_label_depth(f, node.nodes[0].token, false, node)
-        ir.make_break(node, depth: depth)
+        ir.make_break(node, depth:)
       },
     },
     {name: 'continue_s'} => {
@@ -5405,7 +5405,7 @@ fn emit_stmt(m, node, f) {
             target.step != nil => target.step(m),
             _ => [],
           }
-          ids.push(ir.make_continue(node, depth: depth))
+          ids.push(ir.make_continue(node, depth:))
           ir.block(ids, node)
         },
         _ => {
@@ -5878,12 +5878,12 @@ fn emit_funcs(m) {
       num_captures: rs.num_captures(f),
       num_cells: rs.num_cells(f),
       num_params: fi.params.size(),
-      body: body,
+      body:,
     )
     rs.name_captures(m, func, f)
-    m.set_lenient_arity(func: func)
+    m.set_lenient_arity(func:)
     if fi.is_gen == true {
-      m.set_generator(func: func)
+      m.set_generator(func:)
     }
   }
   in_prelude = false

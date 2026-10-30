@@ -45,7 +45,7 @@ fn performance(cents = 0.0) {
     (2.48, 1.0),
     (2.5, 0.0),
   ]
-  let tone = Audio.partials(3.2, freq, [(0.0, REED)], gain: gain)
+  let tone = Audio.partials(3.2, freq, [(0.0, REED)], gain:)
   iota(tone.size()).map(|i| 0.25 * tone[i] + Random.uniform(-0.002, 0.002))
 }
 

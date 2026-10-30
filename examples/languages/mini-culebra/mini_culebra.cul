@@ -11301,16 +11301,16 @@ fn emit_funcs(m) {
       num_captures: rs.num_captures(f),
       num_cells: rs.num_cells(f),
       num_params: fi.params.size(),
-      body: body,
+      body:,
     )
     if fi.is_gen == true {
-      m.set_generator(func: func)
+      m.set_generator(func:)
     }
-    m.set_lenient_arity(func: func)
+    m.set_lenient_arity(func:)
     # a prelude helper's closure has no identity the program can see, so
     # every call site shares one instead of building its own
     if fi.is_prelude && rs.num_captures(f) == 0 {
-      m.set_singleton(func: func)
+      m.set_singleton(func:)
     }
     rs.name_captures(m, func, f)
   }

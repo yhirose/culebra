@@ -180,7 +180,7 @@ let adam = fn (step) {
       beta1: 0.9,
       beta2: 0.999,
       eps: 1.0e-8,
-      step: step,
+      step:,
     )
   }
 }

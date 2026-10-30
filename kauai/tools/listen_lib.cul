@@ -24,7 +24,7 @@ let RATE = 44100
 fn passage(sounds, w, from, to) {
   let made = instrument.told(sounds, w.set)
   let song = Audio.Kauai.load(w.song, voices: made.voices, drums: made.drums)
-  let samples = song.render(from: from, to: to)
+  let samples = song.render(from:, to:)
   {
     samples: samples,
     lead: from == nil

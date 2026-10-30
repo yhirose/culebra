@@ -186,7 +186,7 @@ fn the_breath_is_what_is_left_without_the_harmonics_against_them() {
   let reed = [(0.0, REED.map(|a| a * 0.25))]
   let tone = Audio.partials(1.2, [(0.0, 440.0)], reed)
   let noise = {low: 4000, high: 8000, steady: [(0.0, 0.1)]}
-  let hiss = Audio.partials(1.2, [(0.0, 440.0)], [(0.0, [0.0])], noise: noise)
+  let hiss = Audio.partials(1.2, [(0.0, 440.0)], [(0.0, [0.0])], noise:)
   let m = lib.measure(Audio.mix([tone, hiss]), RATE, 200, 1400)
   # Each band's breath is the noise's power there against the tone's, through
   # the same window, up to 1.5 dB under it: the noise within each of the 40

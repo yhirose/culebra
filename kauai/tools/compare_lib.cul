@@ -95,7 +95,7 @@ fn band_map(size, rate) {
 fn features(samples, rate, low, high) {
   let size = 2048
   let hop = Math.round(rate * STEP)
-  let spec = Audio.spectrum(samples, size: size, hop: hop)
+  let spec = Audio.spectrum(samples, size:, hop:)
   let map = band_map(size, rate)
   let width = rate / to_float(size)
   let n = spec.size()
@@ -298,7 +298,7 @@ fn degraded(samples, rate, kind) {
     return samples.map(|v| v * 10.0 ** (-1.0 / 20.0))
   }
   if kind == "lowpass" {
-    return Audio.filter(samples, "low", 6000.0, rate: rate)
+    return Audio.filter(samples, "low", 6000.0, rate:)
   }
   if kind == "noise" {
     let peak = samples.map(|v| Math.abs(v)).max()

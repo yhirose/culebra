@@ -82,7 +82,7 @@ fn two_ends() {
 @test
 fn a_slur_borrows_no_recording_that_dips_where_it_joins() {
   let inst = two_ends()
-  let at = |s, e, from, to| {...note(s, e, 72, from: from, to: to), level: -20.0, level_end: -20.0}
+  let at = |s, e, from, to| {...note(s, e, 72, from:, to:), level: -20.0, level_end: -20.0}
   # Slurred into: the second, whose start is at its level.
   let into = [at(0, 40, "tongue", "legato"), at(40, 80, "legato", "rest")]
   assert_eq(choose.borrow_for(inst, into, 1, nil), 1)

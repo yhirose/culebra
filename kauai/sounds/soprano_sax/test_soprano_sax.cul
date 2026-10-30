@@ -73,7 +73,7 @@ section Verse {
   }, hears: sax.voices.sopranosax.hears}}
   let song = Audio.Kauai.load(
     "tune.kau",
-    voices: voices,
+    voices:,
     dir: Dir.memory({"tune.kau": song_text}),
   )
   mut left = song.prepare()

@@ -20,7 +20,7 @@ fn vibrato_tones(cents, vib) {
     (1.55, 0.4),
     (1.6, 0.0),
   ]
-  Audio.partials(1.6, freq, [(0.0, REED)], gain: gain)
+  Audio.partials(1.6, freq, [(0.0, REED)], gain:)
 }
 
 # A and C a minor third up in turn, slurred: the notes changing at `ats`
@@ -35,7 +35,7 @@ fn tones_changing_at(ats) {
   }
   freq.push((1.6, now))
   let gain = [(0.0, 0.0), (0.05, 0.4), (1.55, 0.4), (1.6, 0.0)]
-  Audio.partials(1.6, freq, [(0.0, REED)], gain: gain)
+  Audio.partials(1.6, freq, [(0.0, REED)], gain:)
 }
 
 # A, then C a minor third up, 0.8 s each, `cents` sharp.
@@ -55,7 +55,7 @@ fn tones(cents) {
     (1.55, 0.4),
     (1.6, 0.0),
   ]
-  Audio.partials(1.6, freq, [(0.0, REED)], gain: gain)
+  Audio.partials(1.6, freq, [(0.0, REED)], gain:)
 }
 
 let ref_samples = tones(0.0)

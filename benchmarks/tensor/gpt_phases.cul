@@ -154,7 +154,7 @@ let adam = fn (step) {
   for i in range(params.size()) {
     let p = params[i]
     Tensor.adam_step(p.t, m[i], v[i], p.t.grad(), lr: LR, beta1: BETA1,
-                     beta2: BETA2, eps: EPS, step: step)
+                     beta2: BETA2, eps: EPS, step:)
   }
 }
 

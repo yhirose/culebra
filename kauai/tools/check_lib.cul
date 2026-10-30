@@ -443,13 +443,13 @@ fn findings(sounds, w, from, to, limits = {}) {
     voices: played.voices,
     drums: played.drums,
   )
-  let mix = song.render(from: from, to: to)
+  let mix = song.render(from:, to:)
   let first = from == nil ? 0.0 : song.seconds(from)
   let start = Math.max(0.0, first - 1.0)
   let lead = Math.round((first - start) * RATE)
-  let listed = song.external_sounds(from: from, to: to)
+  let listed = song.external_sounds(from:, to:)
   let until = to == nil ? nil : song.seconds(to)
-  mut found = mix_findings(song, mix, start, lead, lim, until: until)
+  mut found = mix_findings(song, mix, start, lead, lim, until:)
   mut seconds = 0.0
   # Which sound each is, numbered as they first play, and what is in it.
   let ids = {}

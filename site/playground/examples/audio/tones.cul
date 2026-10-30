@@ -28,7 +28,7 @@ let WAVES = [
 for (name, wave) in WAVES {
   println("C major on {name}")
   for freq in C_MAJOR {
-    Audio.tone(freq, 8, vol: 60, wave: wave)
+    Audio.tone(freq, 8, vol: 60, wave:)
     wait(10)
   }
   wait(20)
@@ -37,7 +37,7 @@ for (name, wave) in WAVES {
 # A pulse wave's duty cycle is its shape: thin (1/8) is nasal, half is hollow.
 println("one note, four duty cycles")
 for duty in [Audio.DUTY_EIGHTH, Audio.DUTY_QUARTER, Audio.DUTY_HALF, Audio.DUTY_THREE_QUARTER] {
-  Audio.tone(330, 16, vol: 60, duty: duty)
+  Audio.tone(330, 16, vol: 60, duty:)
   wait(20)
 }
 wait(20)

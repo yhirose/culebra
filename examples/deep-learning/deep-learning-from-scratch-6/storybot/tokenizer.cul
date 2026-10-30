@@ -140,7 +140,7 @@ fn count_pretokens_parallel(
   let per_chunk = Parallel.map(
     chunks(text, num_chunks, end_token),
     |chunk| count_pretokens(chunk, {}, end_token),
-    limit: limit,
+    limit:,
   )
 
   mut total = {}
@@ -342,7 +342,7 @@ fn encode_file(tokenizer, in_path, out_path, num_chunks = 64, limit = 8) {
   let per_chunk = Parallel.map(
     parts,
     |chunk| encode_chunk(chunk, rule_of, end_token, end_id),
-    limit: limit,
+    limit:,
   )
 
   let ids = per_chunk.flat_map(|c| c)

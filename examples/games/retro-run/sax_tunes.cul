@@ -40,7 +40,7 @@ fn load(name, songs, voices) {
   }
   let led = {...voices}
   led[lead.voice] = sax
-  let tune = Audio.Kauai.load(name, dir: dir, voices: led)
+  let tune = Audio.Kauai.load(name, dir:, voices: led)
   while tune.prepare() > 0 {
   }
   if !missing.empty() {

@@ -84,7 +84,7 @@ fn rendered(inst, name, path, seconds, dir = nil, seen = {}) {
     }
     Audio.Sound(inst.phrase_samples(notes, params), rate: RATE)
   }, hears: ["len", "level", "marks", "next", "params"]}
-  Audio.Kauai.load(path, voices: voices, dir: dir).render(to: seconds)
+  Audio.Kauai.load(path, voices:, dir:).render(to: seconds)
 }
 
 # `style` with the number at `path` (names, from the style down) set to `v`.

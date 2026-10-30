@@ -354,21 +354,17 @@ fn breath(xs, rest, f0, rate) {
   # What is left and the harmonics, each half a window late, so that the
   # window about frame t is the `size` samples from its middle on.
   let lead = size / 2 / to_float(rate)
-  let left = Audio.mix([{samples: rest, at: lead}], rate: rate)
+  let left = Audio.mix([{samples: rest, at: lead}], rate:)
   let tone = Audio.mix(
     [{samples: xs, at: lead}, {samples: rest, at: lead, gain: -1.0}],
-    rate: rate,
+    rate:,
   )
   # Each band's bins, those whose frequency (k * rate / size) is in it.
   let bins = S.breath_bands.map(|b| (
     Math.ceil(b[0] * size / to_float(rate)),
     Math.ceil(b[1] * size / to_float(rate)),
   ))
-  let at = |ys, c| Audio.spectrum(
-    ys.slice(c, c + size),
-    size: size,
-    hop: size,
-  )[0]
+  let at = |ys, c| Audio.spectrum(ys.slice(c, c + size), size:, hop: size)[0]
   iota(f0.size()).map(fn (t) {
     return nil if f0[t] == nil
     let c = centre(t, rate)

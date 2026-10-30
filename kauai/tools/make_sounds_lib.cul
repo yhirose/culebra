@@ -160,12 +160,7 @@ fn make(songs, sounds, out, opts = {}) {
     let file = |n| use.get(n, n)
     let dir = {exists: |n| disk.exists(file(n)), read: |n| disk.read(file(n))}
     asked = {}
-    let song = Audio.Kauai.load(
-      FS.basename(path),
-      voices: voices,
-      drums: drums,
-      dir: dir,
-    )
+    let song = Audio.Kauai.load(FS.basename(path), voices:, drums:, dir:)
     while song.prepare() > 0 {
     }
     # Each instrument the song asked: the sound Kauai weighs it by.

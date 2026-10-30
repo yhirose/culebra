@@ -62,7 +62,7 @@ fn electric_piano(pitch, bright) {
     seconds,
     [(0.0, freq)],
     spectrum(bright),
-    gain: gain,
+    gain:,
     rate: RATE,
   )
   Audio.mix([pair(f), pair(f * 1.0025)], rate: RATE)

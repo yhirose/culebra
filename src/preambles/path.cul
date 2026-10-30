@@ -108,7 +108,7 @@ let _path_module = fn () {
       FS.mkdir(@_path)
     }  # creates parents (FS.mkdir does)
     remove(recursive = false) {
-      FS.remove(@_path, recursive: recursive)
+      FS.remove(@_path, recursive:)
     }
     rename(dst) {
       FS.rename(@_path, _s(dst))

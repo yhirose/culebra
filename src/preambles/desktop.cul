@@ -24,16 +24,16 @@ let _desktop_module = fn () {
     }
     let port = if config.has("port") {
       # An explicit port is a contract: if it's taken, fail loudly.
-      srv.listen_async(config["port"], LOOPBACK, workers: workers)
+      srv.listen_async(config["port"], LOOPBACK, workers:)
     } else {
       try {
-        srv.listen_async(8731, LOOPBACK, workers: workers)
+        srv.listen_async(8731, LOOPBACK, workers:)
       } catch _ {
         # Default port taken (most likely another culebra desktop app): retry
         # once on an OS-assigned free port — a failed bind leaves the handle
         # unbound and its routes recorded, so the same server serves the retry.
         # A non-bind startup error reproduces identically here and propagates.
-        srv.listen_async(0, LOOPBACK, workers: workers)
+        srv.listen_async(0, LOOPBACK, workers:)
       }
     }
     let base = "http://" + LOOPBACK + ":" + port.to_string()

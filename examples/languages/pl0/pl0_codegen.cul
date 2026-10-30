@@ -455,10 +455,10 @@ class Binder {
         num_captures: @rs.num_captures(f),
         num_cells: @rs.num_cells(f),
         num_params: 0,
-        body: body,
+        body:,
       )
       for i, name in @blocks[f].var_names.enumerate() {
-        m.set_local_name(func: func, index: i, name: name)
+        m.set_local_name(func:, index: i, name:)
       }
       @rs.name_captures(m, func, f)
     }

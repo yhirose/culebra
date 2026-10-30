@@ -71,12 +71,7 @@ let desc = {
 fn fresh() {
   {mut balance: 0, mut log: []}
 }
-let from_text = StateMachine.parse(
-  text,
-  guards: guards,
-  actions: actions,
-  context: fresh(),
-)
+let from_text = StateMachine.parse(text, guards:, actions:, context: fresh())
 let from_desc = StateMachine(desc, name: "Vending", context: fresh())
 
 # --- run the same events through both ------------------------------------

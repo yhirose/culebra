@@ -1601,7 +1601,7 @@ class Instrument {
       # up to what their powers add to: worked out every 2 ms (never turned
       # down, at most doubled) and moved smoothly from one to the next.
       let step = Math.round(0.002 * RATE)
-      let starts = range(c0, c1, step: step).collect()
+      let starts = range(c0, c1, step:).collect()
       let lifts = starts.map(fn (q0) {
         let q1 = Math.min(c1, q0 + step)
         let wq = 0.5 *
