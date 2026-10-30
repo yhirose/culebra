@@ -2,7 +2,7 @@
 fn show(label, f) {
   try { println("{label}: {f()}") } catch e { println("{label}: !{e.kind}: {e.message}") }
 }
-let o = {name: 'o', g: fn (x) { "{@name}:{x}" }, f: fn () { @name }}
+let o = {name: 'o', g: fn (x) { "{self.name}:{x}" }, f: fn () { self.name }}
 show('method_self', || o.f())
 show('method_self_arg', || o.g(1))
 fn extracted() {
@@ -16,30 +16,30 @@ fn rebind() {
   o3.g(1)
 }
 show('rebind', rebind)
-let f0 = fn () { @name }
+let f0 = fn () { self.name }
 let o4 = {name: 'o4', f: f0}
 let o5 = {name: 'o5', f: f0}
 show('same_closure_two_objs', || "{o4.f()} {o5.f()}")
 show('direct_unbound', || f0())
 show('cb_unbound', || [1].map(fn (x) { self }))
 fn inner_direct() {
-  let o6 = {v: 1, outer: fn () { let inner6 = fn () { @v }; inner6() }}
+  let o6 = {v: 1, outer: fn () { let inner6 = fn () { self.v }; inner6() }}
   o6.outer()
 }
 show('inner_called_direct_in_method', inner_direct)
 fn callback_in_method() {
-  let o7 = {v: 7, m: fn () { [1].map(fn (x) { @v + x }) }}
+  let o7 = {v: 7, m: fn () { [1].map(fn (x) { self.v + x }) }}
   o7.m()
 }
 show('callback_inside_method', callback_in_method)
 fn escaped() {
-  let o8 = {v: 8, m: fn () { let gg = fn () { @v }; gg }}
+  let o8 = {v: 8, m: fn () { let gg = fn () { self.v }; gg }}
   let g8 = o8.m()
   g8()
 }
 show('escaped_inner', escaped)
 fn literal_in_fn() {
-  let mk = fn () { {v: 9, m: fn () { @v }} }
+  let mk = fn () { {v: 9, m: fn () { self.v }} }
   mk().m()
 }
 show('literal_in_fn', literal_in_fn)
@@ -49,20 +49,20 @@ fn identity() {
 }
 show('self_identity', identity)
 fn inner_rebound() {
-  let o10 = {v: 11, m: fn () { fn () { @v } }}
+  let o10 = {v: 11, m: fn () { fn () { self.v } }}
   let h10 = o10.m()
   let o11 = {v: 12, h: h10}
   o11.h()
 }
 show('inner_rebound', inner_rebound)
 fn lambda_self() {
-  let p = {v: 5, get: || @v}
+  let p = {v: 5, get: || self.v}
   p.get()
 }
 show('lambda_self', lambda_self)
 fn mut_via_self() {
-  let it = {mut i: 3, iter: fn () { self }, has_next: fn () { @i > 0 },
-            next: fn () { @i = @i - 1; @i }}
+  let it = {mut i: 3, iter: fn () { self }, has_next: fn () { self.i > 0 },
+            next: fn () { self.i = self.i - 1; self.i }}
   it.collect()
 }
 show('mut_via_self', mut_via_self)
@@ -78,22 +78,22 @@ fn user_iter_for() {
 }
 show('user_iter_for', user_iter_for)
 class Ctr {
-  new(n) { @n = n }
-  has_next() { @n > 0 }
+  new(n) { self.n = n }
+  has_next() { self.n > 0 }
   next() {
-    let v = @n
-    @n = @n - 1
+    let v = self.n
+    self.n = self.n - 1
     v
   }
 }
 show('class_iter_map', || Ctr.new(3).map(|x| x * 2).collect())
 class It2 {
-  new() { @i = 0 }
+  new() { self.i = 0 }
   iter() { self }
-  has_next() { @i < 2 }
+  has_next() { self.i < 2 }
   next() {
-    @i = @i + 1
-    @i
+    self.i = self.i + 1
+    self.i
   }
 }
 show('class_iter', || It2.new().collect())
@@ -104,8 +104,8 @@ fn class_for() {
 }
 show('class_iter_for', class_for)
 class Greeter {
-  new(who) { @who = who }
-  hi(x) { "{@who} hi {x}" }
+  new(who) { self.who = who }
+  hi(x) { "{self.who} hi {x}" }
 }
 show('bound_class_method', || [1, 2].map(Greeter.new('g').hi))
 show('self_missing_arg', || o.g())

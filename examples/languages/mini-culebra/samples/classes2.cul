@@ -3,15 +3,15 @@ fn show(label, f) {
 }
 @derive(Eq)
 class DE {
-  new(v) { @v = v }
+  new(v) { self.v = v }
 }
 show('derive-eq', fn () { DE.new(1) == DE.new(1) })
 class Ops {
-  new(v) { @v = v }
-  __add__(o) { Ops.new(@v + o.v) }
-  __neg__() { Ops.new(0 - @v) }
-  __lt__(o) { @v < o.v }
-  __index__(k) { @v * k }
+  new(v) { self.v = v }
+  __add__(o) { Ops.new(self.v + o.v) }
+  __neg__() { Ops.new(0 - self.v) }
+  __lt__(o) { self.v < o.v }
+  __index__(k) { self.v * k }
 }
 show('dunder-add', fn () { (Ops.new(2) + Ops.new(3)).v })
 show('dunder-neg', fn () { let x = Ops.new(4)
@@ -20,7 +20,7 @@ show('dunder-neg', fn () { let x = Ops.new(4)
 show('dunder-lt', fn () { Ops.new(1) < Ops.new(2) })
 show('dunder-idx', fn () { Ops.new(5)[3] })
 class NoEq {
-  new(v) { @v = v }
+  new(v) { self.v = v }
 }
 show('cross-class-eq', fn () { DE.new(1) == NoEq.new(1) })
 show('inst-truthy', fn () { NoEq.new(1) && 1 })
