@@ -311,7 +311,7 @@ let _term_module = fn () {
     parts.push("4") if underline
     parts.push("7") if reverse
     if fg != nil {
-      let p = if type_of(fg) == "Tuple" || type_of(fg) == "Array" {
+      let p = if fg is Tuple || fg is Array {
         _rgbfg_params(fg[0], fg[1], fg[2])
       } else {
         _fg_params(fg)
@@ -319,7 +319,7 @@ let _term_module = fn () {
       parts.push(p) if p != ""
     }
     if bg != nil {
-      let p = if type_of(bg) == "Tuple" || type_of(bg) == "Array" {
+      let p = if bg is Tuple || bg is Array {
         _rgbbg_params(bg[0], bg[1], bg[2])
       } else {
         _bg_params(bg)

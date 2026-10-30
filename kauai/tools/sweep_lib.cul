@@ -19,7 +19,7 @@ let NEXTS = [nil, 1]
 # A sound as {samples, rate}: what an instrument answered, `Audio.Sound` or an
 # Array of samples at `rate`.
 fn samples_of(sound, rate) {
-  if type_of(sound) == "Array" {
+  if sound is Array {
     return {samples: sound, rate: rate}
   }
   let d = Audio.decode(sound.data())
@@ -63,7 +63,7 @@ fn broken(m, limits) {
 # pitch, len, level, next}]}, by kind (KINDS' order), the worst of each first.
 fn sweep(sounds, name, low, high, step = 3, limits = LIMITS, rate = 44100) {
   let f = sounds.voices[name]
-  let phrase = type_of(f) == "Function" ? nil : f.phrase
+  let phrase = f is Function ? nil : f.phrase
   mut count = 0
   let findings = []
   for pitch in range(low, high + 1, step:) {

@@ -27,10 +27,10 @@ let __test_has_cases = fn (fname) {
 # own name and hands it back, so `@test` leaves the binding alone.
 let test = fn (*args) {
   if args.size() == 2 {
-    if type_of(args[0]) != "String" {
+    if args[0] !is String {
       __raise("TypeError", "test(name, fn): name must be a String")
     }
-    if type_of(args[1]) != "Function" {
+    if args[1] !is Function {
       __raise("TypeError", "test(name, fn): fn must be a Function")
     }
     __test_add(args[0], args[1], nil)
@@ -38,7 +38,7 @@ let test = fn (*args) {
   }
   if args.size() == 1 {
     let f = args[0]
-    if type_of(f) != "Function" {
+    if f !is Function {
       __raise("TypeError", "test(fn): argument must be a Function")
     }
     if f.name == "" {
@@ -57,11 +57,11 @@ let test = fn (*args) {
 # a Tuple or an Array spreads across the parameters; anything else is a single
 # argument.
 let parametrize = fn (cases) {
-  if type_of(cases) != "Array" {
+  if cases !is Array {
     __raise("TypeError", "parametrize(cases): cases must be an Array")
   }
   fn (f) {
-    if type_of(f) != "Function" {
+    if f !is Function {
       __raise(
         "TypeError",
         "parametrize(cases): the decorated value must be a Function",

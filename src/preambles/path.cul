@@ -43,7 +43,7 @@ let _path_module = fn () {
     # equal only to a String/StringView or another Path with the same path;
     # any other type is simply not-equal (never a TypeError).
     __eq__(o) {
-      if type_of(o) == "String" || type_of(o) == "StringView" {
+      if o is String || o is StringView {
         @_path == o
       } else if _is_path(o) {
         @_path == to_string(o)

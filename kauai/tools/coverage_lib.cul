@@ -107,8 +107,8 @@ fn asked_of(song, only = nil) {
     .flat_map(fn (s) {
       let first = s.args[0]
       cond {
-        type_of(first) == "Long" => [{semi: first, frames: Math.round((s.until - s.at) * 100.0)}],
-        type_of(first) == "Array" => first.map(fn (n) {
+        first is Long => [{semi: first, frames: Math.round((s.until - s.at) * 100.0)}],
+        first is Array => first.map(fn (n) {
           let later = first.filter(|m| m.at > n.at).map(|m| m.at)
           let ends = later.empty() ? s.until - s.at : later.min()
           {

@@ -52,8 +52,8 @@ let _state_machine_module = fn () {
   # `guards:` / `actions:` table answers; the DSL only ever emits names.
   fn _resolve(v, table, kind, where) {
     return nil if v == nil
-    return v if type_of(v) == "Function"
-    _want("Function|String", v, "{kind} at {where}") if type_of(v) != "String"
+    return v if v is Function
+    _want("Function|String", v, "{kind} at {where}") if v !is String
     let f = table.get(v, nil)
     _fail("{where}: no {kind} named '{v}'") if f == nil
     f
@@ -61,7 +61,7 @@ let _state_machine_module = fn () {
 
   fn _candidates(spec, guards, actions, where) {
     let mut out = []
-    for c in type_of(spec) == "Array" ? spec : [spec] {
+    for c in spec is Array ? spec : [spec] {
       _reject_unknown(c, CAND_KEYS, where)
       let g = _resolve(c.get("guard", nil), guards, "guard", where)
       out.push({

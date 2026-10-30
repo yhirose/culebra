@@ -104,7 +104,7 @@ let _dir_module = fn () {
       mut contents = {}
       mut paths = [].to_set()
       for key, value in files {
-        if type_of(key) != 'String' {
+        if key !is String {
           __raise(
             'TypeError',
             "Dir.memory: a path is a String, got {type_of(key)}",

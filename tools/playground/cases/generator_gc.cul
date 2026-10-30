@@ -19,7 +19,7 @@ mut sizes = 0
 mut last = ''
 for v in labels(10000) {
   let churn = iota(8).map(|k| "churn {k}")
-  if type_of(v) == 'String' {
+  if v is String {
     last = v
   } else {
     sizes += v + churn.size()

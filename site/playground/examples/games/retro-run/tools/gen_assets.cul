@@ -379,7 +379,7 @@ class Cells {
   }
 
   id(key) {
-    type_of(key) == "String" ? KEY_ID[key] : key
+    key is String ? KEY_ID[key] : key
   }
 
   get(x, y) {

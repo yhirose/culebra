@@ -556,7 +556,7 @@ inline constexpr const char* TERM_MODULE_SOURCE = R"=culpre=(let _term_module = 
     parts.push("4") if underline
     parts.push("7") if reverse
     if fg != nil {
-      let p = if type_of(fg) == "Tuple" || type_of(fg) == "Array" {
+      let p = if fg is Tuple || fg is Array {
         _rgbfg_params(fg[0], fg[1], fg[2])
       } else {
         _fg_params(fg)
@@ -564,7 +564,7 @@ inline constexpr const char* TERM_MODULE_SOURCE = R"=culpre=(let _term_module = 
       parts.push(p) if p != ""
     }
     if bg != nil {
-      let p = if type_of(bg) == "Tuple" || type_of(bg) == "Array" {
+      let p = if bg is Tuple || bg is Array {
         _rgbbg_params(bg[0], bg[1], bg[2])
       } else {
         _bg_params(bg)
@@ -2229,7 +2229,7 @@ let _kauai_module = fn () {
   # `v` with each Array and Object in it made anew, an Object's entries read
   # and written by subscript (a parameter may be named `keys`).
   fn copied(v) {
-    return v.map(copied) if type_of(v) == "Array"
+    return v.map(copied) if v is Array
     return v if type_of(v) != "Object"
     let out = {}
     for k, x in v {
@@ -3994,12 +3994,12 @@ let _kauai_module = fn () {
     let key = name.lower()
     let f = (kind.table ?? {}).get(key, nil)
     __raise("ValueError", "Audio.Kauai: {what} plays `external {name}`, and {kind.kwarg}: has no `{key}`") if f == nil
-    return {make: f, hears: nil, key: key} if type_of(f) == "Function"
-    if type_of(f) != "Object" || type_of(f.get(kind.call, nil)) != "Function" {
+    return {make: f, hears: nil, key: key} if f is Function
+    if type_of(f) != "Object" || f.get(kind.call, nil) !is Function {
       __raise("ValueError", "Audio.Kauai: {kind.kwarg}: `{key}` is a function or an object whose `{kind.call}` is one")
     }
     let hears = f.get("hears", [])
-    __raise("ValueError", "Audio.Kauai: {kind.kwarg}: `{key}` hears an Array of names") if type_of(hears) != "Array"
+    __raise("ValueError", "Audio.Kauai: {kind.kwarg}: `{key}` hears an Array of names") if hears !is Array
     let heard = hears.filter(|h| !kind.may.contains(h))
     if !heard.empty() {
       __raise("ValueError", "Audio.Kauai: {kind.kwarg}: `{key}` hears {heard[0]}; it can hear {kind.may.join(", ")}")
@@ -4267,7 +4267,7 @@ let _kauai_module = fn () {
     # Seconds into the song at `p`: seconds, or a String of a mark's name, of
     # seconds (83.5), or of minutes and seconds (1:23.5).
     _point(p) {
-      return p * 1.0 if type_of(p) != "String"
+      return p * 1.0 if p !is String
       return @_mark(p) if !p.empty() && !"0123456789".contains(p.slice(0, 1).to_string())
       let (m, s) = halves(p, ":") ?? (nil, p)
       let secs = seconds_of(s)
@@ -4535,7 +4535,7 @@ let _audio_module = fn () {
       [t.at, t.freq, t.ring]
     })
     for s in strikes {
-      if type_of(s) != "Object" || type_of(s.samples) != "Array" {
+      if type_of(s) != "Object" || s.samples !is Array {
         __raise(
           "TypeError",
           "Audio.pluck: a strike is \{at, samples}, its samples numbers",
@@ -4566,7 +4566,7 @@ let _audio_module = fn () {
     rate: Long | Float = 44100,
   ) {
     for p in spectrum {
-      if type_of(p) != "Tuple" || p.size() != 2 || type_of(p[1]) != "Array" {
+      if p !is Tuple || p.size() != 2 || p[1] !is Array {
         __raise(
           "TypeError",
           "Audio.partials: a spectrum is a list of (at, amps), amps a list of numbers",
@@ -4603,7 +4603,7 @@ let _audio_module = fn () {
     q: Long | Float = 0.707,
     rate: Long | Float = 44100,
   ) {
-    let at = type_of(cutoff) == "Array" ? cutoff : [(0.0, cutoff)]
+    let at = cutoff is Array ? cutoff : [(0.0, cutoff)]
     _Audio.filter(samples, kind, at, q, rate)
   }
 
@@ -5420,7 +5420,7 @@ let _regex_module = fn () {
       _regex_find_iter(@_pat, s)
     }
     replace_all(s, repl) {
-      if type_of(repl) != "Function" {
+      if repl !is Function {
         return _Regex.replace_all(@_pat, s, repl)
       }
       let mut out = ""
@@ -5432,7 +5432,7 @@ let _regex_module = fn () {
       out + s.slice(last, s.size())
     }
     replace_first(s, repl) {
-      if type_of(repl) != "Function" {
+      if repl !is Function {
         return _Regex.replace_first(@_pat, s, repl)
       }
       let m = _Regex.find(@_pat, s)
@@ -5612,7 +5612,7 @@ fn _peg_wrap_predicate(f, path, dt) {
       _ => (r, "", nil),
     }
     let said = type_of(msg)
-    if type_of(ok) != "Bool" || said != "String" && said != "StringView" {
+    if ok !is Bool || said != "String" && said != "StringView" {
       __raise(
         "TypeError",
         "PEG: a predicate answers Bool, (Bool, String) or (Bool, String, Any), got {r}",
@@ -5656,7 +5656,7 @@ fn _peg_hooks(rules, log, text, path, dt) {
   let leaves = {}
   for name, d in rules {
     for member, f in d {
-      if f != nil && type_of(f) != "Function" {
+      if f != nil && f !is Function {
         __raise("TypeError", "PEG: rule '{name}': {member} is {type_of(f)}, not a Function")
       }
     }
@@ -5966,7 +5966,7 @@ let FST = _fst_module()
 )=culpre=";
 
 inline constexpr const char* STRING_FNS_MODULE_SOURCE = R"=culpre=(let replace = fn (s, pat, repl) {
-  if type_of(pat) == "String" || type_of(pat) == "StringView" {
+  if pat is String || pat is StringView {
     s.split(pat).join(repl)
   } else {
     pat.replace_all(s, repl)
@@ -5974,7 +5974,7 @@ inline constexpr const char* STRING_FNS_MODULE_SOURCE = R"=culpre=(let replace =
 }
 
 let replace_first = fn (s, pat, repl) {
-  if type_of(pat) == "String" || type_of(pat) == "StringView" {
+  if pat is String || pat is StringView {
     s.split(pat, 2).join(repl)
   } else {
     pat.replace_first(s, repl)
@@ -6167,7 +6167,7 @@ let _path_module = fn () {
     # equal only to a String/StringView or another Path with the same path;
     # any other type is simply not-equal (never a TypeError).
     __eq__(o) {
-      if type_of(o) == "String" || type_of(o) == "StringView" {
+      if o is String || o is StringView {
         @_path == o
       } else if _is_path(o) {
         @_path == to_string(o)
@@ -6704,8 +6704,8 @@ let _state_machine_module = fn () {
   # `guards:` / `actions:` table answers; the DSL only ever emits names.
   fn _resolve(v, table, kind, where) {
     return nil if v == nil
-    return v if type_of(v) == "Function"
-    _want("Function|String", v, "{kind} at {where}") if type_of(v) != "String"
+    return v if v is Function
+    _want("Function|String", v, "{kind} at {where}") if v !is String
     let f = table.get(v, nil)
     _fail("{where}: no {kind} named '{v}'") if f == nil
     f
@@ -6713,7 +6713,7 @@ let _state_machine_module = fn () {
 
   fn _candidates(spec, guards, actions, where) {
     let mut out = []
-    for c in type_of(spec) == "Array" ? spec : [spec] {
+    for c in spec is Array ? spec : [spec] {
       _reject_unknown(c, CAND_KEYS, where)
       let g = _resolve(c.get("guard", nil), guards, "guard", where)
       out.push({
@@ -7140,7 +7140,7 @@ let _dir_module = fn () {
       mut contents = {}
       mut paths = [].to_set()
       for key, value in files {
-        if type_of(key) != 'String' {
+        if key !is String {
           __raise(
             'TypeError',
             "Dir.memory: a path is a String, got {type_of(key)}",
@@ -7695,10 +7695,10 @@ let __test_has_cases = fn (fname) {
 # own name and hands it back, so `@test` leaves the binding alone.
 let test = fn (*args) {
   if args.size() == 2 {
-    if type_of(args[0]) != "String" {
+    if args[0] !is String {
       __raise("TypeError", "test(name, fn): name must be a String")
     }
-    if type_of(args[1]) != "Function" {
+    if args[1] !is Function {
       __raise("TypeError", "test(name, fn): fn must be a Function")
     }
     __test_add(args[0], args[1], nil)
@@ -7706,7 +7706,7 @@ let test = fn (*args) {
   }
   if args.size() == 1 {
     let f = args[0]
-    if type_of(f) != "Function" {
+    if f !is Function {
       __raise("TypeError", "test(fn): argument must be a Function")
     }
     if f.name == "" {
@@ -7725,11 +7725,11 @@ let test = fn (*args) {
 # a Tuple or an Array spreads across the parameters; anything else is a single
 # argument.
 let parametrize = fn (cases) {
-  if type_of(cases) != "Array" {
+  if cases !is Array {
     __raise("TypeError", "parametrize(cases): cases must be an Array")
   }
   fn (f) {
-    if type_of(f) != "Function" {
+    if f !is Function {
       __raise(
         "TypeError",
         "parametrize(cases): the decorated value must be a Function",
@@ -7799,13 +7799,13 @@ let _llm_module = fn () {
   fn _optional_string(name, v) {
     cond {
       v == nil => nil,
-      type_of(v) == "String" || type_of(v) == "StringView" => _string(name, v),
+      v is String || v is StringView => _string(name, v),
       _ => _type_error(name, "String | Nil"),
     }
   }
 
   fn _long(name, v) {
-    type_of(v) == "Long" ? v : _type_error(name, "Long")
+    v is Long ? v : _type_error(name, "Long")
   }
 
   # --- tools ------------------------------------------------------------------
@@ -7862,7 +7862,7 @@ let _llm_module = fn () {
   }
 
   fn tool(f, description, **params) {
-    _type_error("f", "Function") if type_of(f) != "Function"
+    _type_error("f", "Function") if f !is Function
     let summary = _string("description", description)
     let name = f.name
     if name.empty() {
@@ -7897,7 +7897,7 @@ let _llm_module = fn () {
     __raise("ValueError", "LLM.tool_from_schema: the name is empty") if id.empty()
     let summary = _string("description", description)
     _type_error("schema", "Object") if type_of(schema) != "Object"
-    _type_error("f", "Function") if type_of(f) != "Function"
+    _type_error("f", "Function") if f !is Function
     LLMTool(id, summary, schema, f)
   }
 
@@ -7905,8 +7905,8 @@ let _llm_module = fn () {
   # else as JSON.
   fn _content_of(v) {
     cond {
-      type_of(v) == "String" => v,
-      type_of(v) == "StringView" => to_string(v),
+      v is String => v,
+      v is StringView => to_string(v),
       _ => JSON.stringify(v),
     }
   }
@@ -7924,7 +7924,7 @@ let _llm_module = fn () {
   # The parts of a message's content that are of one kind, with where they sit.
   fn _marks(m, kind) {
     mut out = []
-    if type_of(m.get("content", nil)) == "Array" {
+    if m.get("content", nil) is Array {
       for p, part in m.content.enumerate() {
         if type_of(part) == "Object" && part.get("type", "") == kind {
           out.push({part: p, id: part.get("id", nil)})
@@ -7983,7 +7983,7 @@ let _llm_module = fn () {
   # The history without the tool calls and results that have no partner, and
   # without the messages that leaves empty. Nothing is added to it.
   fn repair(messages) {
-    _type_error("messages", "Array") if type_of(messages) != "Array"
+    _type_error("messages", "Array") if messages !is Array
     for i, m in messages.enumerate() {
       if type_of(m) != "Object" {
         __raise("TypeError", "type error: messages[{i}] expects Object")
@@ -8024,21 +8024,21 @@ let _llm_module = fn () {
       __raise("TypeError", "type error: messages[{i}] expects Object")
     }
     let role = m.get("role", nil)
-    if type_of(role) != "String" {
+    if role !is String {
       __raise("TypeError", "type error: messages[{i}].role expects String")
     }
     if !ROLES.contains(role) {
       __raise("ValueError", "{who}: messages[{i}]: unknown role '{role}'")
     }
     let content = m.get("content", nil)
-    if type_of(content) == "String" {
+    if content is String {
       if role == "tool" {
         __raise("ValueError",
           "{who}: messages[{i}]: a tool message holds tool_result parts, not a String")
       }
       return nil
     }
-    if type_of(content) != "Array" {
+    if content !is Array {
       __raise("TypeError", "type error: messages[{i}].content expects String | Array")
     }
     for j, part in content.enumerate() {
@@ -8046,7 +8046,7 @@ let _llm_module = fn () {
         __raise("TypeError", "type error: messages[{i}].content[{j}] expects Object")
       }
       let kind = part.get("type", nil)
-      if type_of(kind) != "String" {
+      if kind !is String {
         __raise("TypeError", "type error: messages[{i}].content[{j}].type expects String")
       }
       let roles = PART_ROLES.get(kind, nil)
@@ -8074,7 +8074,7 @@ let _llm_module = fn () {
   }
 
   fn _system_text(content) {
-    type_of(content) == "String" ? content : content.map(|p| p.text).join("")
+    content is String ? content : content.map(|p| p.text).join("")
   }
 
   # The system prompt, and the messages without it. It is given as system: or as
@@ -8093,7 +8093,7 @@ let _llm_module = fn () {
 
   fn _is_provider(p) {
     try {
-      type_of(p.turn) == "Function"
+      p.turn is Function
     } catch _e {
       false
     }
@@ -8126,20 +8126,20 @@ let _llm_module = fn () {
 
     let model_id = _model_for(provider, model)
     let prompt = _optional_string("system", system)
-    _type_error("messages", "Array") if type_of(messages) != "Array"
-    _type_error("tools", "Array") if type_of(tools) != "Array"
+    _type_error("messages", "Array") if messages !is Array
+    _type_error("tools", "Array") if tools !is Array
     for t in tools {
       if type_of(t) != "LLMTool" {
         __raise("TypeError", "{who}: tools takes what LLM.tool makes, got {type_of(t)}")
       }
     }
-    if max_tokens != nil && type_of(max_tokens) != "Long" {
+    if max_tokens != nil && max_tokens !is Long {
       _type_error("max_tokens", "Long | Nil")
     }
-    if stop != nil && (type_of(stop) != "Array" || stop.any(|s| type_of(s) != "String")) {
+    if stop != nil && (stop !is Array || stop.any(|s| s !is String)) {
       _type_error("stop", "Array<String> | Nil")
     }
-    if temperature != nil && type_of(temperature) != "Long" && type_of(temperature) != "Float" {
+    if temperature != nil && temperature !is Long && temperature !is Float {
       _type_error("temperature", "Float | Nil")
     }
     if extra != nil && type_of(extra) != "Object" {
@@ -8169,7 +8169,7 @@ let _llm_module = fn () {
   # fields.
   fn turn(provider, *, messages, model = nil, system = nil, tools = [], max_tokens = nil,
           stop = nil, temperature = nil, extra = nil, on_text = nil) {
-    if on_text != nil && type_of(on_text) != "Function" {
+    if on_text != nil && on_text !is Function {
       _type_error("on_text", "Function | Nil")
     }
     let req = _request_for("LLM.turn", provider, messages, model, system, tools, max_tokens,
@@ -8188,13 +8188,13 @@ let _llm_module = fn () {
     _check_provider(provider)
     let name = _provider_name(provider)
     let caps = provider.capabilities ?? {}
-    if !caps.get("count_tokens", false) || type_of(provider.count_tokens) != "Function" {
+    if !caps.get("count_tokens", false) || provider.count_tokens !is Function {
       _fail("LLM.count_tokens: {name} does not count tokens")
     }
     let req = _request_for("LLM.count_tokens", provider, messages, model, system, tools, nil,
                            nil, nil, nil)
     let count = provider.count_tokens(req)
-    if type_of(count) != "Long" {
+    if count !is Long {
       _fail("LLM.count_tokens: {name} answered with a {type_of(count)}, not a Long")
     }
     count
@@ -8396,7 +8396,7 @@ let _llm_module = fn () {
         continue
       }
       after_tool = false
-      if type_of(m.content) == "String" {
+      if m.content is String {
         out.push({role: m.role, content: m.content})
       } else {
         let blocks = m.content.map(_block_of).filter(|b| b != nil)
@@ -8609,7 +8609,7 @@ let _llm_module = fn () {
   }
 
   fn _cc_text_of(content) {
-    type_of(content) == "String" ? content
+    content is String ? content
       : content.filter(|p| p.type == "text").map(|p| p.text).join("")
   }
 
@@ -8630,7 +8630,7 @@ let _llm_module = fn () {
         }
         continue
       }
-      let plain = type_of(m.content) == "String"
+      let plain = m.content is String
       let msg = {role: m.role, content: _cc_text_of(m.content)}
       let calls = plain ? [] : m.content.filter(|p| p.type == "tool_call").map(_cc_call)
       msg.tool_calls = calls if !calls.empty()
@@ -8772,7 +8772,7 @@ let _llm_module = fn () {
           {content: _describe(e), is_error: true}
         },
         verdict == false => {content: "the call was not approved", is_error: true},
-        type_of(verdict) == "String" || type_of(verdict) == "StringView" =>
+        verdict is String || verdict is StringView =>
           {content: to_string(verdict), is_error: true},
         _ => __raise("TypeError",
                "LLM: approve: must answer true, false or a String, not {type_of(verdict)}"),
@@ -8783,21 +8783,21 @@ let _llm_module = fn () {
 
   # The tool message that answers calls, ready for a history.
   fn run_tools(tools, calls, *, approve = nil) {
-    _type_error("tools", "Array") if type_of(tools) != "Array"
+    _type_error("tools", "Array") if tools !is Array
     for t in tools {
       if type_of(t) != "LLMTool" {
         __raise("TypeError", "LLM.run_tools: tools takes what LLM.tool makes, got {type_of(t)}")
       }
     }
-    _type_error("calls", "Array") if type_of(calls) != "Array"
-    if approve != nil && type_of(approve) != "Function" {
+    _type_error("calls", "Array") if calls !is Array
+    if approve != nil && approve !is Function {
       _type_error("approve", "Function | Nil")
     }
     for i, c in calls.enumerate() {
       if type_of(c) != "Object" {
         __raise("TypeError", "type error: calls[{i}] expects Object")
       }
-      if type_of(c.get("name", nil)) != "String" {
+      if c.get("name", nil) !is String {
         __raise("TypeError", "type error: calls[{i}].name expects String")
       }
       if type_of(c.get("args", {})) != "Object" {
@@ -8861,7 +8861,7 @@ let _llm_module = fn () {
     _check_provider(provider)
     let model_id = _model_for(provider, model)
     let instructions = _optional_string("system", system)
-    _type_error("tools", "Array") if type_of(tools) != "Array"
+    _type_error("tools", "Array") if tools !is Array
     for t in tools {
       if type_of(t) != "LLMTool" {
         __raise("TypeError",
@@ -8869,7 +8869,7 @@ let _llm_module = fn () {
       }
     }
     let ceiling = max_tokens == nil ? nil : _long("max_tokens", max_tokens)
-    if approve != nil && type_of(approve) != "Function" {
+    if approve != nil && approve !is Function {
       _type_error("approve", "Function | Nil")
     }
     LLMChat(provider, model_id, instructions, tools, ceiling, _long("max_turns", max_turns),
@@ -8889,7 +8889,7 @@ let _llm_module = fn () {
     _type_error("body", "Object") if type_of(body) != "Object"
     _type_error("headers", "Object | Nil") if headers != nil && type_of(headers) != "Object"
     let name = _provider_name(provider)
-    if type_of(provider.request) != "Function" {
+    if provider.request !is Function {
       _fail("LLM.request: {name} does not take a request as it is")
     }
     provider.request(body, headers)

@@ -138,7 +138,7 @@ fn make(songs, sounds, out, opts = {}) {
   let wrap = fn (kind, ins, f) {
     let id = "{kind}:{ins}"
     let drum = kind == "drums"
-    let call = type_of(f) == "Function" ? nil : drum ? "hit" : "phrase"
+    let call = f is Function ? nil : drum ? "hit" : "phrase"
     made[id] = {
       kind: kind,
       ins: ins,

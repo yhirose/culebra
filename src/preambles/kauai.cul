@@ -579,7 +579,7 @@ let _kauai_module = fn () {
   # `v` with each Array and Object in it made anew, an Object's entries read
   # and written by subscript (a parameter may be named `keys`).
   fn copied(v) {
-    return v.map(copied) if type_of(v) == "Array"
+    return v.map(copied) if v is Array
     return v if type_of(v) != "Object"
     let out = {}
     for k, x in v {
@@ -2344,12 +2344,12 @@ let _kauai_module = fn () {
     let key = name.lower()
     let f = (kind.table ?? {}).get(key, nil)
     __raise("ValueError", "Audio.Kauai: {what} plays `external {name}`, and {kind.kwarg}: has no `{key}`") if f == nil
-    return {make: f, hears: nil, key: key} if type_of(f) == "Function"
-    if type_of(f) != "Object" || type_of(f.get(kind.call, nil)) != "Function" {
+    return {make: f, hears: nil, key: key} if f is Function
+    if type_of(f) != "Object" || f.get(kind.call, nil) !is Function {
       __raise("ValueError", "Audio.Kauai: {kind.kwarg}: `{key}` is a function or an object whose `{kind.call}` is one")
     }
     let hears = f.get("hears", [])
-    __raise("ValueError", "Audio.Kauai: {kind.kwarg}: `{key}` hears an Array of names") if type_of(hears) != "Array"
+    __raise("ValueError", "Audio.Kauai: {kind.kwarg}: `{key}` hears an Array of names") if hears !is Array
     let heard = hears.filter(|h| !kind.may.contains(h))
     if !heard.empty() {
       __raise("ValueError", "Audio.Kauai: {kind.kwarg}: `{key}` hears {heard[0]}; it can hear {kind.may.join(", ")}")
@@ -2617,7 +2617,7 @@ let _kauai_module = fn () {
     # Seconds into the song at `p`: seconds, or a String of a mark's name, of
     # seconds (83.5), or of minutes and seconds (1:23.5).
     _point(p) {
-      return p * 1.0 if type_of(p) != "String"
+      return p * 1.0 if p !is String
       return @_mark(p) if !p.empty() && !"0123456789".contains(p.slice(0, 1).to_string())
       let (m, s) = halves(p, ":") ?? (nil, p)
       let secs = seconds_of(s)

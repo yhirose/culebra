@@ -97,7 +97,7 @@ fn mono(data) {
 # slur's join, which is no attack and no release). A drum plays none.
 fn notes_of(s) {
   let first = s.args[0]
-  if type_of(first) == "Long" {
+  if first is Long {
     return [{
       pitch: first,
       at: 0.0,
@@ -108,7 +108,7 @@ fn notes_of(s) {
       joined_out: false,
     }]
   }
-  return [] if type_of(first) != "Array"
+  return [] if first !is Array
   let ends = s.until - s.at
   let moving = ["scoop", "plop", "doit", "fall"]
   let notes = iota(first.size()).map(fn (i) {

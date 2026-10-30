@@ -130,7 +130,7 @@ fn _peg_wrap_predicate(f, path, dt) {
       _ => (r, "", nil),
     }
     let said = type_of(msg)
-    if type_of(ok) != "Bool" || said != "String" && said != "StringView" {
+    if ok !is Bool || said != "String" && said != "StringView" {
       __raise(
         "TypeError",
         "PEG: a predicate answers Bool, (Bool, String) or (Bool, String, Any), got {r}",
@@ -174,7 +174,7 @@ fn _peg_hooks(rules, log, text, path, dt) {
   let leaves = {}
   for name, d in rules {
     for member, f in d {
-      if f != nil && type_of(f) != "Function" {
+      if f != nil && f !is Function {
         __raise("TypeError", "PEG: rule '{name}': {member} is {type_of(f)}, not a Function")
       }
     }

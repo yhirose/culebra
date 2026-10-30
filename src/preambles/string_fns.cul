@@ -1,5 +1,5 @@
 let replace = fn (s, pat, repl) {
-  if type_of(pat) == "String" || type_of(pat) == "StringView" {
+  if pat is String || pat is StringView {
     s.split(pat).join(repl)
   } else {
     pat.replace_all(s, repl)
@@ -7,7 +7,7 @@ let replace = fn (s, pat, repl) {
 }
 
 let replace_first = fn (s, pat, repl) {
-  if type_of(pat) == "String" || type_of(pat) == "StringView" {
+  if pat is String || pat is StringView {
     s.split(pat, 2).join(repl)
   } else {
     pat.replace_first(s, repl)

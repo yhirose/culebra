@@ -39,7 +39,7 @@ fn program(module, lib, name, arg) {
 # given (a function, or an object with `hit` or `phrase`), and `make(args)`
 # the instrument's sound for those.
 fn calls_through(f, drum, through) {
-  let function = type_of(f) == "Function"
+  let function = f is Function
   cond {
     function && drum => |params| through([params], |a| f(a[0])),
     function => |pitch, params| through([pitch, params], |a| f(a[0], a[1])),
@@ -94,7 +94,7 @@ fn with_set(args, set) {
   let own = |n| n.has("params") ? {...n, params: {...n.params, ...set}} : n
   iota(args.size()).map(|i| cond {
     i == last => {...args[i], ...set},
-    type_of(args[i]) == "Array" => args[i].map(own),
+    args[i] is Array => args[i].map(own),
     _ => args[i],
   })
 }

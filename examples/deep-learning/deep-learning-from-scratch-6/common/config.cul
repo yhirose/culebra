@@ -51,7 +51,7 @@ fn demo() {
 # The setting's current value says what type the override must parse to,
 # so `lr=1e-3` stays a Float and `n_layer=4` a Long.
 fn parse_value(reference, text) {
-  type_of(reference) == 'Float' ? to_float(text) : to_long(text)
+  reference is Float ? to_float(text) : to_long(text)
 }
 
 # `args` is Sys.argv without the program name.

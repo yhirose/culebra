@@ -57,7 +57,7 @@ let _regex_module = fn () {
       _regex_find_iter(@_pat, s)
     }
     replace_all(s, repl) {
-      if type_of(repl) != "Function" {
+      if repl !is Function {
         return _Regex.replace_all(@_pat, s, repl)
       }
       let mut out = ""
@@ -69,7 +69,7 @@ let _regex_module = fn () {
       out + s.slice(last, s.size())
     }
     replace_first(s, repl) {
-      if type_of(repl) != "Function" {
+      if repl !is Function {
         return _Regex.replace_first(@_pat, s, repl)
       }
       let m = _Regex.find(@_pat, s)

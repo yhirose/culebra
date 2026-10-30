@@ -24,7 +24,7 @@ fn fake_api() {
 
     # A history carrying a tool result is the second turn; answer it in words
     # so the loop ends. Here a result arrives as a user turn of blocks.
-    if body.messages.any(|m| type_of(m.content) == 'Array') {
+    if body.messages.any(|m| m.content is Array) {
       return JSON.stringify({
         content: [{type: 'text', text: seen}],
         stop_reason: 'end_turn',

@@ -90,7 +90,7 @@ let _audio_module = fn () {
       [t.at, t.freq, t.ring]
     })
     for s in strikes {
-      if type_of(s) != "Object" || type_of(s.samples) != "Array" {
+      if type_of(s) != "Object" || s.samples !is Array {
         __raise(
           "TypeError",
           "Audio.pluck: a strike is \{at, samples}, its samples numbers",
@@ -121,7 +121,7 @@ let _audio_module = fn () {
     rate: Long | Float = 44100,
   ) {
     for p in spectrum {
-      if type_of(p) != "Tuple" || p.size() != 2 || type_of(p[1]) != "Array" {
+      if p !is Tuple || p.size() != 2 || p[1] !is Array {
         __raise(
           "TypeError",
           "Audio.partials: a spectrum is a list of (at, amps), amps a list of numbers",
@@ -158,7 +158,7 @@ let _audio_module = fn () {
     q: Long | Float = 0.707,
     rate: Long | Float = 44100,
   ) {
-    let at = type_of(cutoff) == "Array" ? cutoff : [(0.0, cutoff)]
+    let at = cutoff is Array ? cutoff : [(0.0, cutoff)]
     _Audio.filter(samples, kind, at, q, rate)
   }
 

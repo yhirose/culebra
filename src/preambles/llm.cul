@@ -48,13 +48,13 @@ let _llm_module = fn () {
   fn _optional_string(name, v) {
     cond {
       v == nil => nil,
-      type_of(v) == "String" || type_of(v) == "StringView" => _string(name, v),
+      v is String || v is StringView => _string(name, v),
       _ => _type_error(name, "String | Nil"),
     }
   }
 
   fn _long(name, v) {
-    type_of(v) == "Long" ? v : _type_error(name, "Long")
+    v is Long ? v : _type_error(name, "Long")
   }
 
   # --- tools ------------------------------------------------------------------
@@ -111,7 +111,7 @@ let _llm_module = fn () {
   }
 
   fn tool(f, description, **params) {
-    _type_error("f", "Function") if type_of(f) != "Function"
+    _type_error("f", "Function") if f !is Function
     let summary = _string("description", description)
     let name = f.name
     if name.empty() {
@@ -146,7 +146,7 @@ let _llm_module = fn () {
     __raise("ValueError", "LLM.tool_from_schema: the name is empty") if id.empty()
     let summary = _string("description", description)
     _type_error("schema", "Object") if type_of(schema) != "Object"
-    _type_error("f", "Function") if type_of(f) != "Function"
+    _type_error("f", "Function") if f !is Function
     LLMTool(id, summary, schema, f)
   }
 
@@ -154,8 +154,8 @@ let _llm_module = fn () {
   # else as JSON.
   fn _content_of(v) {
     cond {
-      type_of(v) == "String" => v,
-      type_of(v) == "StringView" => to_string(v),
+      v is String => v,
+      v is StringView => to_string(v),
       _ => JSON.stringify(v),
     }
   }
@@ -173,7 +173,7 @@ let _llm_module = fn () {
   # The parts of a message's content that are of one kind, with where they sit.
   fn _marks(m, kind) {
     mut out = []
-    if type_of(m.get("content", nil)) == "Array" {
+    if m.get("content", nil) is Array {
       for p, part in m.content.enumerate() {
         if type_of(part) == "Object" && part.get("type", "") == kind {
           out.push({part: p, id: part.get("id", nil)})
@@ -232,7 +232,7 @@ let _llm_module = fn () {
   # The history without the tool calls and results that have no partner, and
   # without the messages that leaves empty. Nothing is added to it.
   fn repair(messages) {
-    _type_error("messages", "Array") if type_of(messages) != "Array"
+    _type_error("messages", "Array") if messages !is Array
     for i, m in messages.enumerate() {
       if type_of(m) != "Object" {
         __raise("TypeError", "type error: messages[{i}] expects Object")
@@ -273,21 +273,21 @@ let _llm_module = fn () {
       __raise("TypeError", "type error: messages[{i}] expects Object")
     }
     let role = m.get("role", nil)
-    if type_of(role) != "String" {
+    if role !is String {
       __raise("TypeError", "type error: messages[{i}].role expects String")
     }
     if !ROLES.contains(role) {
       __raise("ValueError", "{who}: messages[{i}]: unknown role '{role}'")
     }
     let content = m.get("content", nil)
-    if type_of(content) == "String" {
+    if content is String {
       if role == "tool" {
         __raise("ValueError",
           "{who}: messages[{i}]: a tool message holds tool_result parts, not a String")
       }
       return nil
     }
-    if type_of(content) != "Array" {
+    if content !is Array {
       __raise("TypeError", "type error: messages[{i}].content expects String | Array")
     }
     for j, part in content.enumerate() {
@@ -295,7 +295,7 @@ let _llm_module = fn () {
         __raise("TypeError", "type error: messages[{i}].content[{j}] expects Object")
       }
       let kind = part.get("type", nil)
-      if type_of(kind) != "String" {
+      if kind !is String {
         __raise("TypeError", "type error: messages[{i}].content[{j}].type expects String")
       }
       let roles = PART_ROLES.get(kind, nil)
@@ -323,7 +323,7 @@ let _llm_module = fn () {
   }
 
   fn _system_text(content) {
-    type_of(content) == "String" ? content : content.map(|p| p.text).join("")
+    content is String ? content : content.map(|p| p.text).join("")
   }
 
   # The system prompt, and the messages without it. It is given as system: or as
@@ -342,7 +342,7 @@ let _llm_module = fn () {
 
   fn _is_provider(p) {
     try {
-      type_of(p.turn) == "Function"
+      p.turn is Function
     } catch _e {
       false
     }
@@ -375,20 +375,20 @@ let _llm_module = fn () {
 
     let model_id = _model_for(provider, model)
     let prompt = _optional_string("system", system)
-    _type_error("messages", "Array") if type_of(messages) != "Array"
-    _type_error("tools", "Array") if type_of(tools) != "Array"
+    _type_error("messages", "Array") if messages !is Array
+    _type_error("tools", "Array") if tools !is Array
     for t in tools {
       if type_of(t) != "LLMTool" {
         __raise("TypeError", "{who}: tools takes what LLM.tool makes, got {type_of(t)}")
       }
     }
-    if max_tokens != nil && type_of(max_tokens) != "Long" {
+    if max_tokens != nil && max_tokens !is Long {
       _type_error("max_tokens", "Long | Nil")
     }
-    if stop != nil && (type_of(stop) != "Array" || stop.any(|s| type_of(s) != "String")) {
+    if stop != nil && (stop !is Array || stop.any(|s| s !is String)) {
       _type_error("stop", "Array<String> | Nil")
     }
-    if temperature != nil && type_of(temperature) != "Long" && type_of(temperature) != "Float" {
+    if temperature != nil && temperature !is Long && temperature !is Float {
       _type_error("temperature", "Float | Nil")
     }
     if extra != nil && type_of(extra) != "Object" {
@@ -418,7 +418,7 @@ let _llm_module = fn () {
   # fields.
   fn turn(provider, *, messages, model = nil, system = nil, tools = [], max_tokens = nil,
           stop = nil, temperature = nil, extra = nil, on_text = nil) {
-    if on_text != nil && type_of(on_text) != "Function" {
+    if on_text != nil && on_text !is Function {
       _type_error("on_text", "Function | Nil")
     }
     let req = _request_for("LLM.turn", provider, messages, model, system, tools, max_tokens,
@@ -437,13 +437,13 @@ let _llm_module = fn () {
     _check_provider(provider)
     let name = _provider_name(provider)
     let caps = provider.capabilities ?? {}
-    if !caps.get("count_tokens", false) || type_of(provider.count_tokens) != "Function" {
+    if !caps.get("count_tokens", false) || provider.count_tokens !is Function {
       _fail("LLM.count_tokens: {name} does not count tokens")
     }
     let req = _request_for("LLM.count_tokens", provider, messages, model, system, tools, nil,
                            nil, nil, nil)
     let count = provider.count_tokens(req)
-    if type_of(count) != "Long" {
+    if count !is Long {
       _fail("LLM.count_tokens: {name} answered with a {type_of(count)}, not a Long")
     }
     count
@@ -645,7 +645,7 @@ let _llm_module = fn () {
         continue
       }
       after_tool = false
-      if type_of(m.content) == "String" {
+      if m.content is String {
         out.push({role: m.role, content: m.content})
       } else {
         let blocks = m.content.map(_block_of).filter(|b| b != nil)
@@ -858,7 +858,7 @@ let _llm_module = fn () {
   }
 
   fn _cc_text_of(content) {
-    type_of(content) == "String" ? content
+    content is String ? content
       : content.filter(|p| p.type == "text").map(|p| p.text).join("")
   }
 
@@ -879,7 +879,7 @@ let _llm_module = fn () {
         }
         continue
       }
-      let plain = type_of(m.content) == "String"
+      let plain = m.content is String
       let msg = {role: m.role, content: _cc_text_of(m.content)}
       let calls = plain ? [] : m.content.filter(|p| p.type == "tool_call").map(_cc_call)
       msg.tool_calls = calls if !calls.empty()
@@ -1021,7 +1021,7 @@ let _llm_module = fn () {
           {content: _describe(e), is_error: true}
         },
         verdict == false => {content: "the call was not approved", is_error: true},
-        type_of(verdict) == "String" || type_of(verdict) == "StringView" =>
+        verdict is String || verdict is StringView =>
           {content: to_string(verdict), is_error: true},
         _ => __raise("TypeError",
                "LLM: approve: must answer true, false or a String, not {type_of(verdict)}"),
@@ -1032,21 +1032,21 @@ let _llm_module = fn () {
 
   # The tool message that answers calls, ready for a history.
   fn run_tools(tools, calls, *, approve = nil) {
-    _type_error("tools", "Array") if type_of(tools) != "Array"
+    _type_error("tools", "Array") if tools !is Array
     for t in tools {
       if type_of(t) != "LLMTool" {
         __raise("TypeError", "LLM.run_tools: tools takes what LLM.tool makes, got {type_of(t)}")
       }
     }
-    _type_error("calls", "Array") if type_of(calls) != "Array"
-    if approve != nil && type_of(approve) != "Function" {
+    _type_error("calls", "Array") if calls !is Array
+    if approve != nil && approve !is Function {
       _type_error("approve", "Function | Nil")
     }
     for i, c in calls.enumerate() {
       if type_of(c) != "Object" {
         __raise("TypeError", "type error: calls[{i}] expects Object")
       }
-      if type_of(c.get("name", nil)) != "String" {
+      if c.get("name", nil) !is String {
         __raise("TypeError", "type error: calls[{i}].name expects String")
       }
       if type_of(c.get("args", {})) != "Object" {
@@ -1110,7 +1110,7 @@ let _llm_module = fn () {
     _check_provider(provider)
     let model_id = _model_for(provider, model)
     let instructions = _optional_string("system", system)
-    _type_error("tools", "Array") if type_of(tools) != "Array"
+    _type_error("tools", "Array") if tools !is Array
     for t in tools {
       if type_of(t) != "LLMTool" {
         __raise("TypeError",
@@ -1118,7 +1118,7 @@ let _llm_module = fn () {
       }
     }
     let ceiling = max_tokens == nil ? nil : _long("max_tokens", max_tokens)
-    if approve != nil && type_of(approve) != "Function" {
+    if approve != nil && approve !is Function {
       _type_error("approve", "Function | Nil")
     }
     LLMChat(provider, model_id, instructions, tools, ceiling, _long("max_turns", max_turns),
@@ -1138,7 +1138,7 @@ let _llm_module = fn () {
     _type_error("body", "Object") if type_of(body) != "Object"
     _type_error("headers", "Object | Nil") if headers != nil && type_of(headers) != "Object"
     let name = _provider_name(provider)
-    if type_of(provider.request) != "Function" {
+    if provider.request !is Function {
       _fail("LLM.request: {name} does not take a request as it is")
     }
     provider.request(body, headers)
