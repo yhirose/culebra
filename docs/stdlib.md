@@ -81,8 +81,8 @@ Conventions used below:
 39. [`Search`](#39-search) — full-text index over your own documents, ranked
 40. [`Audio`](#40-audio) — sound for any program, with or without a window: WASM-4 tones, samples, streamed music, synthesised PCM, the microphone
 41. [`Dir`](#41-dir) — a read-only set of files on disk, in memory, baked into the binary or in a ZIP archive, read one way (`Dir.disk` / `Dir.memory` / `Dir.embedded` / `Dir.zip`, and the `Dir` trait)
-42. [`LLM`](#42-llm) — a client for large language models: one step with a provider (the Messages API or Chat Completions), a conversation that runs your functions as tools, or a request as it is
-43. [`Llama`](#43-llama) — a language model run in this process: load a GGUF file, then `generate` or `chat` (a build option)
+42. [`LLM`](#42-llm) — a client for LLMs: one step with a provider (the Messages API or Chat Completions), a conversation that runs your functions as tools, or a request as it is
+43. [`Llama`](#43-llama) — a model run in this process: load a GGUF file, then `generate` or `chat` (a build option)
 44. [Design notes](#44-design-notes)
 45. [Not included (yet)](#45-not-included-yet)
 

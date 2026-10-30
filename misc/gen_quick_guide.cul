@@ -62,7 +62,7 @@ INLINE = Set(
 # What each quick guide may weigh, in bytes, as a file. A guide meant to be
 # read whole by a model is paid for on every prompt it is in, so growth has to
 # be a decision: raise the number here in the commit that needs the room.
-BUDGET = {'docs/quick-guide.md': 43700, 'docs/quick-guide.ja.md': 47500}
+BUDGET = {'docs/quick-guide.md': 43800, 'docs/quick-guide.ja.md': 47700}
 
 # The six built-in-type groups live in language.md; every other group is one
 # stdlib.md namespace. Only the Set anchor differs between en and ja — the

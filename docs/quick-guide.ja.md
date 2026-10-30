@@ -867,8 +867,8 @@ inspect(match 9 {
 | `FST` | 14 | 書き換えない辞書を圧縮して持つ。前方一致・補完・あいまい検索 |
 | `Search` | 9 | 自分の文書を全文検索して順位をつける |
 | `Audio` | 68 | ウィンドウの有無によらず使える音: WASM-4のtone、効果音、ストリーム再生の音楽、合成するPCM、マイク |
-| `LLM` | 14 | 大規模言語モデルのクライアント。提供元（Messages APIかChat Completions）への1ステップ、関数をツールとして使う会話、リクエストの素通し |
-| `Llama` | 7 | このプロセスの中で動く言語モデル。GGUFを読み込んで`generate`か`chat`（ビルドオプション） |
+| `LLM` | 15 | LLMのクライアント。提供元（Messages APIかChat Completions）への1ステップ、関数をツールとして使う会話、素通しのリクエスト |
+| `Llama` | 7 | このプロセス内で動くモデル。GGUFを読んで`generate`か`chat`（ビルドオプション） |
 
 <!-- END GENERATED -->
 

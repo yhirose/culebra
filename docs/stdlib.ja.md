@@ -79,8 +79,8 @@
 39. [`Search`](#39-search) — 自分の文書を全文検索して順位をつける
 40. [`Audio`](#40-audio) — ウィンドウの有無によらず使える音: WASM-4のtone、効果音、ストリーム再生の音楽、合成するPCM、マイク
 41. [`Dir`](#41-dir) — ディスク・メモリ・バイナリへの焼き込み・ZIPアーカイブのどこにあるファイルの集まりも、同じ読み方で（`Dir.disk` / `Dir.memory` / `Dir.embedded` / `Dir.zip`と`Dir` trait）
-42. [`LLM`](#42-llm) — 大規模言語モデルのクライアント。提供元（Messages APIかChat Completions）への1ステップ、関数をツールとして使う会話、リクエストの素通し
-43. [`Llama`](#43-llama) — このプロセスの中で動く言語モデル。GGUFを読み込んで`generate`か`chat`（ビルドオプション）
+42. [`LLM`](#42-llm) — LLMのクライアント。提供元（Messages APIかChat Completions）への1ステップ、関数をツールとして使う会話、素通しのリクエスト
+43. [`Llama`](#43-llama) — このプロセス内で動くモデル。GGUFを読んで`generate`か`chat`（ビルドオプション）
 44. [設計上の注記](#44-設計上の注記)
 45. [未収録（将来検討）](#45-未収録将来検討)
 

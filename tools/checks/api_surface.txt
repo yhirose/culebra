@@ -1141,6 +1141,7 @@ LLM.openai_compatible(base_url:, api_key=nil, name="openai_compatible", max_toke
 LLM.openai(api_key=nil, base_url=nil, timeout=120)
 LLM.openrouter(...)
 LLM.ollama(base_url=nil, timeout=120)
+LLM.local(engine) -> LLMLocal
 Llama.load(path, n_ctx=2048, gpu=true, n_batch=0, n_slots=1) -> LlamaModel
 model.generate(prompt, max_tokens=nil, stop=nil, temperature=nil, seed=nil, grammar=nil, cache=false, on_text=nil) -> Object
 model.chat(messages, max_tokens=nil, stop=nil, temperature=nil, seed=nil, grammar=nil, cache=false, on_text=nil) -> Object
