@@ -2251,6 +2251,13 @@ patterns also work in `match` arms and nest naturally:
       (a, b) => 'other',
     }
 
+An object pattern takes a `...rest` that binds the entries it did not name, as
+a new `Object` (the pattern table has the rules):
+
+    let {name, ...others} = {name: 'Rex', age: 3, kind: 'dog'}
+    # name == 'Rex', others == {age: 3, kind: 'dog'}
+    let {password, ...safe} = user       # `user` without `password`
+
 **Parallel / swap assignment.** Dropping `let` reassigns *existing*
 variables instead of declaring new ones — the RHS is fully evaluated
 before any binding, so swaps and rotates need no temporary:
@@ -3392,6 +3399,7 @@ fall-through, or an exception).
 | `[a, ...m, z]`    | Rest can be in the middle; pre/post positions match fixed elements |
 | `{k1, k2}`        | `Object` containing at least those keys; binds each `ki` to `obj.ki` (shorthand) |
 | `{k1: p1, k2: p2}` | `Object` whose `k1` matches `p1` and `k2` matches `p2`. Nests freely (`{user: {name}}`). Mixes with shorthand. |
+| `{k1, ...rest}`   | `Object` containing `k1`; `rest` is a new `Object` of the other entries, in order. `...rest` comes last, and `{...rest}` alone copies every entry |
 | `{}`              | Any `Object` (keys ignored)              |
 | `(p1, p2, ...)`   | `Tuple` of exactly the same arity; element-wise sub-patterns |
 | `Ok(p1, ...)`     | Enum constructor: matches the variant `Ok` and destructures its positional payload against the sub-patterns. The qualified form `Result.Ok(p)` also requires the value's enum to be `Result` — how two enums that each declare an `Ok` are told apart. See "Sum types". |
@@ -3467,6 +3475,13 @@ inspect(kind('s'))         # => 'something else: s'
 * `Array` patterns require an exact length unless a `...rest` element
   is present; objects do not require exact key sets — extra keys are
   ignored.
+* An object pattern's `...rest` is a newly-allocated `Object` of the entries
+  whose key no entry of the pattern names, in their order. Its keys are
+  immutable, as an object literal's are, and its values are shared with the
+  subject. It matches a plain `Object` only: a class instance or a handle (a
+  view, a `SharedBuffer`, a channel end) does not match a pattern with a
+  `...rest` (a `match` arm falls through, a destructuring raises
+  `ValueError`).
 * The rest array is a newly-allocated `Array` with elements from the
   subject shallow-copied; mutating it does not affect the subject,
   but mutating a reference-typed element mutates the shared object.

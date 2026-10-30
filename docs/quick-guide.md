@@ -119,7 +119,8 @@ inspect(type_of(0..3))                 # => 'Range'
 ```
 
 `Tensor` is the thirteenth (section 4). `Object` is the substrate for
-classes, modules and errors.
+classes, modules and errors. A number literal may hold `_` between
+digits: `1_000_000`, `0xFF_FF`, `3.141_592`.
 
 ### 2.3 Control flow
 
@@ -763,6 +764,7 @@ single most common transfer mistake.
 | `mut i = start; while i < end { …; i += 1 }` | `for i in start..end { … }` |
 | `match n { k if k < 10 => … }` / `x >= lo && x < hi` | `match n { ..10 => … }` — a range pattern; `(lo..hi).contains(x)` for the test alone |
 | `{k1: v1, k2: obj.k2, k3: obj.k3}` (copy every field to change one) | `{...obj, k1: v1}` |
+| `mut o = {}` + copying every key but one | `let {password, ...safe} = user` — an object pattern's `...rest` binds the entries it did not name |
 | `if cond { stmt }` — single statement, no `else` | `stmt if cond` (`stmt unless cond` for the negation) |
 | `if x == nil { x = v }` / `if !d.has(k) { d[k] = v }` | `x ??= v` / `d[k] ??= v` — also targets `obj.key` |
 | `"{a.b(c).d ?? e}"` — a long/nested expression inline | `let x = a.b(c).d ?? e`, then `"{x}"` |

@@ -380,6 +380,13 @@ enum class Op : uint8_t {
   ObjGet,      // unless regs[c] is an Object holding key consts[d], pc = b;
                // otherwise regs[a] = that property (+1). One op for an object
                // pattern entry's presence test and its read.
+  ObjPlain,    // unless regs[c] is a plain Object (not a class instance or a
+               // handle), pc = b: an object pattern with a `...rest` tests
+               // this, and builds nothing.
+  ObjRest,     // regs[a] = a fresh Object (+1) of the plain Object regs[c]'s
+               // entries whose key is not one of the names in consts[d]
+               // (`;` separated) — an object pattern's `...rest`, after the
+               // ObjPlain test.
   DestrErr,    // throw the destructure mismatch ValueError at this
                // instruction's position — stamped at the DESTRUCTURE_ASSIGN
                // node, where the other backends anchor it. Never falls
@@ -3772,6 +3779,7 @@ inline Succ rc_successors(const Insn& in) {
     case Op::JumpIfFilled:
     case Op::SeqChk:
     case Op::ObjGet:
+    case Op::ObjPlain:
     case Op::TypeMatch:
     case Op::ForNext:
     case Op::ForLoop: return {in.b, true};
@@ -14204,12 +14212,21 @@ class Compiler {
       }
       case "OBJECT_PATTERN"_: {
         for (const auto& entry : pat.nodes) {
+          if (entry->tag == "REST_PATTERN"_) {
+            if (!culebra::find_pattern_binding(*entry)) continue;
+            int32_t t = alloc_temp(*entry);
+            emit(Op::ObjRest, t, 0, subj,
+                 kconst_str(object_pattern_keys(pat)));
+            bind_pattern_name(*entry, *entry->nodes[0], t, /*src_owned=*/true,
+                              is_mut, declares);
+            continue;
+          }
           bool full = entry->tag == "OBJECT_PAT_ENTRY"_;
           const peg::Ast* sub = full ? entry->nodes[1].get() : nullptr;
           if (sub ? !culebra::find_pattern_binding(*sub)
                   : culebra::is_sink_name(entry->token))
             continue;
-          auto key = full ? entry->nodes[0]->token : entry->token;
+          auto key = object_entry_key(*entry);
           int32_t t = alloc_temp(*entry);
           fail.push_back(emit(Op::ObjGet, t, 0, subj, kconst_str(key)));
           if (sub)
@@ -14509,14 +14526,40 @@ class Compiler {
     }
   }
 
+  // The key an object pattern entry names: `key: pattern` or the bare `key`.
+  static std::string_view object_entry_key(const peg::Ast& entry) {
+    using namespace peg::udl;
+    return entry.tag == "OBJECT_PAT_ENTRY"_ ? entry.nodes[0]->token
+                                            : entry.token;
+  }
+
+  // The keys an object pattern names, `;` separated: what its `...rest` leaves
+  // out. A key is an identifier, so no key holds the separator.
+  static std::string object_pattern_keys(const peg::Ast& pat) {
+    using namespace peg::udl;
+    std::string keys;
+    for (const auto& entry : pat.nodes) {
+      if (entry->tag == "REST_PATTERN"_) continue;
+      if (!keys.empty()) keys += ';';
+      keys += object_entry_key(*entry);
+    }
+    return keys;
+  }
+
   void compile_obj_pattern_test(const peg::Ast& pat, int32_t subj,
                                 std::vector<size_t>& fail) {
     using namespace peg::udl;
     emit_tag_gate(subj, {TAG_OBJECT}, fail);
     for (const auto& entry : pat.nodes) {
+      if (entry->tag == "REST_PATTERN"_) {
+        // Only a plain Object has entries to hand over. The rest itself is
+        // built once, by the bind walk.
+        fail.push_back(emit(Op::ObjPlain, 0, 0, subj));
+        continue;
+      }
       bool full = entry->tag == "OBJECT_PAT_ENTRY"_;
       const peg::Ast* sub = full ? entry->nodes[1].get() : nullptr;
-      auto key = full ? entry->nodes[0]->token : entry->token;
+      auto key = object_entry_key(*entry);
       int32_t t = alloc_temp(*entry);
       fail.push_back(emit(Op::ObjGet, t, 0, subj, kconst_str(key)));
       if (sub && pattern_has_test(*sub)) compile_pattern_test(*sub, t, fail);
@@ -15184,7 +15227,7 @@ inline std::string dump(const Chunk& c) {
       "ArityChk",  "BMeth",
       "PropRaw",
       "HasProp",   "UfcsTakes", "Drop",      "DropChk",    "ClsParamsChk", "ClsParamsWalk",
-      "SeqChk",    "SeqGet",    "SeqRest",    "ObjGet",       "DestrErr",
+      "SeqChk",    "SeqGet",    "SeqRest",    "ObjGet",       "ObjPlain",    "ObjRest",     "DestrErr",
       "Jump",      "JumpIfFalse", "JumpIfTrue", "JumpIfNotNil", "JumpIfNil",
       "JumpIfTag",
       "MakeClosure", "Call",    "CallM",      "CallKw",  "RaiseErr", "Ret",
@@ -16332,7 +16375,7 @@ struct Exec {
         &&L_CallRecv, &&L_CbType, &&L_ArityChk, &&L_BMeth, &&L_PropRaw,
         &&L_HasProp, &&L_UfcsTakes, &&L_Drop, &&L_DropChk, &&L_ClsParamsChk,
         &&L_ClsParamsWalk,
-        &&L_SeqChk, &&L_SeqGet, &&L_SeqRest, &&L_ObjGet, &&L_DestrErr,
+        &&L_SeqChk, &&L_SeqGet, &&L_SeqRest, &&L_ObjGet, &&L_ObjPlain, &&L_ObjRest, &&L_DestrErr,
         &&L_Jump, &&L_JumpIfFalse, &&L_JumpIfTrue, &&L_JumpIfNotNil,
         &&L_JumpIfNil, &&L_JumpIfTag, &&L_MakeClosure, &&L_Call, &&L_CallM,
         &&L_CallKw, &&L_RaiseErr, &&L_Ret, &&L_CellNew, &&L_CellGet,
@@ -17670,6 +17713,31 @@ struct Exec {
                                      key, &t, &d);
           _culebra_value_retain_impl(t, d);  // object_get borrows the slot
           regs[in.a] = JitValue{t, d};
+          ++ip;
+          break;
+        } while (0);
+        VM_NEXT();
+      L_ObjPlain:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
+          const JitValue& recv = regs[in.c];
+          if (recv.tag != TAG_OBJECT ||
+              !culebra_runtime_object_is_plain(
+                  reinterpret_cast<JitObject*>(recv.data))) {
+            ip = code + static_cast<size_t>(in.b);
+            break;
+          }
+          ++ip;
+          break;
+        } while (0);
+        VM_NEXT();
+      L_ObjRest:
+        do {
+          [[maybe_unused]] const Insn& in = *ip;
+          auto* rest = culebra_runtime_object_rest(
+              reinterpret_cast<JitObject*>(regs[in.c].data),
+              reinterpret_cast<const char*>(c.consts[in.d].data));
+          regs[in.a] = JitValue{TAG_OBJECT, reinterpret_cast<int64_t>(rest)};
           ++ip;
           break;
         } while (0);

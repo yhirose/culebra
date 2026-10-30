@@ -126,7 +126,10 @@
 # (`f(x:)` is `f(x: x)`: calls, constructors, closures, and a local an effect
 # body holds across a `perform`). 331 since test_digit_separators.cul (`1_000`
 # in every base, in floats and exponents, in patterns, ranges and object keys).
-tests.cul 331
+# 332 since test_object_rest.cul (`{a, ...rest}` in let, match, for, parameters
+# and assignment, on plain, non-String-keyed and large objects, and an
+# instance that must not match).
+tests.cul 332
 
 # tests/isolate/*.cul — run on both engines, plus the over-cap modes.
 # 21 since test_xml_isolate.cul (an XML element keeps its methods across an

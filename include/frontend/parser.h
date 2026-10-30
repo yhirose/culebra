@@ -3093,6 +3093,8 @@ inline void for_each_pattern_leaf(const peg::Ast& pattern, F&& f) {
         // — bind the key as the slot name.
         if (entry->tag == "OBJECT_PAT_ENTRY"_) {
           for_each_pattern_leaf(*entry->nodes[1], f);
+        } else if (entry->tag == "REST_PATTERN"_) {
+          for_each_pattern_leaf(*entry, f);
         } else {
           emit(*entry, true);
         }

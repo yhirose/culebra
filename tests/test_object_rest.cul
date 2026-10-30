@@ -1,0 +1,134 @@
+# `{a, ...rest}`: an object pattern's `...rest` is a new Object of the entries
+# no entry named, in their order, with immutable keys.
+
+# let
+let {name, ...others} = {name: "Rex", age: 3, kind: "dog"}
+assert_eq(name, "Rex")
+assert_eq(others, {age: 3, kind: "dog"})
+assert_eq(others.keys(), ["age", "kind"])
+
+# Only the named keys leave; a `key: pattern` entry names its key too.
+let {a: {b}, ...tail} = {a: {b: 1}, c: 2, d: 3}
+assert_eq(b, 1)
+assert_eq(tail, {c: 2, d: 3})
+
+# Nothing left is an empty Object; `{...all}` is a copy of every entry.
+let {x, ...none} = {x: 1}
+assert_eq(none, {})
+let {...all} = {p: 1, q: 2}
+assert_eq(all, {p: 1, q: 2})
+
+# A trailing comma is fine, and the rest sits inside nested patterns.
+let {u, ...v,} = {u: 1, w: 2}
+assert_eq(v, {w: 2})
+let {outer: {i, ...j}} = {outer: {i: 1, k: 2, m: 3}}
+assert_eq(j, {k: 2, m: 3})
+
+# The source is untouched, and the rest is not a window onto it.
+let src = {mut n: 0, label: "s"}
+let {label, ...r} = src
+src.n += 1
+assert_eq(r.n, 0)
+assert_eq(src.n, 1)
+
+# Its keys are immutable, as an object literal's are.
+assert_throws("ImmutableError", fn () {
+  let {label, ...ro} = {mut n: 0, label: "s"}
+  ro.n += 1
+})
+
+# Non-String keys travel with it.
+let {tag, ...keyed} = {tag: "t", 1: "one", (2, 3): "pair"}
+assert_eq(keyed[1], "one")
+assert_eq(keyed[(2, 3)], "pair")
+
+# A big object (past the shape's inline size) rests the same way.
+let big = {first: 0, ...iota(1, 40).map(|i| ("k{i}", i)).to_object()}
+let {first, ...most} = big
+assert_eq(most.size(), 39)
+assert_eq(most["k39"], 39)
+assert_eq(most.has("first"), false)
+
+# match: a rest arm binds like any other, and an instance never matches it.
+class Dog {
+  new(@name, @age) {}
+}
+let kind = fn (v) {
+  match v {
+    {name, ...extra} => "obj {name} {extra.keys()}",
+    _ => "other",
+  }
+}
+assert_eq(kind({name: "Rex", age: 3}), "obj Rex ['age']")
+assert_eq(kind(Dog("Rex", 3)), "other")
+assert_eq(kind(5), "other")
+assert_eq(kind({age: 3}), "other")  # `name` is absent
+
+# A pattern builds its rest once, after it matched: an arm that does not match
+# (or binds nothing) makes no copy, so no copy's `drop` runs.
+mut drops = 0
+fn probe() {
+  let src = [{a: 1, drop: fn () { drops += 1 }}, 3]
+  let first = match src {
+    [{a, ...rest}, 2] => "first",
+    _ => "other",
+  }
+  assert_eq(first, "other")
+  assert_eq(drops, 0)
+  let sink = match src[0] {
+    {..._} => "sink",
+  }
+  assert_eq(sink, "sink")
+  assert_eq(drops, 0)
+}
+probe()
+assert_eq(drops, 1)  # the source's own `drop`, when `probe` returns
+
+# A regex match is a plain Object of fields, as `{...m}` reads it.
+let found = Regex.compile('(?<x>a)b').find("zab")
+let {start, ...others_of_match} = found
+assert_eq(start, 1)
+assert_eq(others_of_match.has("value"), true)
+assert_eq(others_of_match.has("start"), false)
+
+# Destructuring an instance is the mismatch a missing key is.
+assert_throws("ValueError", fn () { let {name, ...r} = Dog("Rex", 3) })
+
+# for, parameters and lambdas
+mut seen = []
+for {id, ...fields} in [{id: 1, v: "a"}, {id: 2, v: "b", w: "c"}] {
+  seen.push((id, fields))
+}
+assert_eq(seen, [(1, {v: "a"}), (2, {v: "b", w: "c"})])
+
+fn show({id, ...fields}) {
+  (id, fields)
+}
+assert_eq(show({id: 7, x: 1}), (7, {x: 1}))
+let f = |{head, ...rest}| rest
+assert_eq(f({head: 1, k: 2}), {k: 2})
+
+# inside a handle body, which lowers to source text: both bindings are held
+# across a `perform`
+effect fn tick()
+fn held() {
+  mut out = []
+  handle {
+    let {a, ...rest} = {a: 1, b: 2, c: 3}
+    perform tick()
+    out.push((a, rest))
+    perform tick()
+    out.push(rest.size())
+  } with tick(resume) {
+    resume(nil)
+  }
+  out
+}
+assert_eq(held(), [(1, {b: 2, c: 3}), 2])
+
+# assignment, with `let` dropped
+mut m = 0
+mut left = nil
+{m, ...left} = {m: 5, z: 6}
+assert_eq(m, 5)
+assert_eq(left, {z: 6})

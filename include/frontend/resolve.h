@@ -781,6 +781,8 @@ class Resolver {
         for (const auto& e : pat.nodes) {
           if (e->tag == "OBJECT_PAT_ENTRY"_ && e->nodes.size() >= 2)
             bind_pattern(*e->nodes[1], form);
+          else if (e->tag == "REST_PATTERN"_)
+            bind_pattern(*e, form);
           else if (e->tag == "IDENTIFIER"_)
             bind(*e, e->token, form, Spelling::PatternShorthand);
         }

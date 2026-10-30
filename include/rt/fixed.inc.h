@@ -813,6 +813,40 @@ inline bool culebra_runtime_object_sets_named(JitObject* obj,
   return !_jit_is_handle(obj) && !_jit_setindex_first(obj, name);
 }
 
+// Copies `src`'s own entries into `dst` in insertion order, but for the String
+// keys named in `skip` (`;` separated). Each insert takes its own +1 to the
+// value, and to a non-String key; a non-String key moves with the hash it is
+// stored under. One into the sidecar can run a key's `eq`, which may change
+// `src`: the walk allows for that, and the caller holds `src` itself.
+inline void _jit_copy_own_entries(JitObject* dst, JitObject* src, bool mut,
+                                  int64_t line, int64_t col,
+                                  std::string_view skip) {
+  auto skipped = [&](std::string_view name) {
+    for (size_t at = 0; at < skip.size();) {
+      size_t end = skip.find(';', at);
+      if (end == std::string_view::npos) end = skip.size();
+      if (skip.substr(at, end - at) == name) return true;
+      at = end + 1;
+    }
+    return false;
+  };
+  _jit_each_own_entry(
+      src,
+      [&](std::string_view name, const JitObjectEntry& entry) {
+        if (skipped(name)) return;
+        JitValue v = entry.value;
+        culebra_runtime_value_retain(v.tag, v.data);
+        culebra_runtime_object_set(dst, std::string(name).c_str(), mut, v.tag,
+                                   v.data, line, col, /*is_init=*/true);
+      },
+      [&](const JitHashedKey& k, const JitObjectEntry& entry) {
+        JitValue v = entry.value;
+        culebra_runtime_value_retain(k.value().tag, k.value().data);
+        culebra_runtime_value_retain(v.tag, v.data);
+        _jit_object_set_hashed(dst, k, mut, v, line, col, /*is_init=*/true);
+      });
+}
+
 // `{...x}` object spread: merge another Object's own entries into `dst`, in
 // its insertion order (later keys win). Merged keys are made mutable so
 // explicit properties after the spread can override them. A non-String key
@@ -836,24 +870,28 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_merge(
     return;
   }
   _jit_require_own_entries(src, line, col);
-  // Each insert takes its own +1 to the value, and to a non-String key. One
-  // into the sidecar can run a key's `eq`, which may change `src`: the walk
-  // allows for that, and the caller holds `src` itself.
-  _jit_each_own_entry(
-      src,
-      [&](std::string_view name, const JitObjectEntry& entry) {
-        JitValue v = entry.value;
-        culebra_runtime_value_retain(v.tag, v.data);
-        culebra_runtime_object_set(dst, std::string(name).c_str(), /*mut=*/true,
-                                   v.tag, v.data, line, col, /*is_init=*/true);
-      },
-      [&](const JitHashedKey& k, const JitObjectEntry& entry) {
-        JitValue v = entry.value;
-        culebra_runtime_value_retain(k.value().tag, k.value().data);
-        culebra_runtime_value_retain(v.tag, v.data);
-        _jit_object_set_hashed(dst, k, /*mut=*/true, v, line, col,
-                               /*is_init=*/true);
-      });
+  _jit_copy_own_entries(dst, src, /*mut=*/true, line, col, {});
+}
+
+// Whether `{a, ...rest}` can match `src`: a plain Object, not a class instance
+// or a handle (a view, a SharedBuffer, a channel end) — the objects whose own
+// entries `{...src}` copies.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_object_is_plain(
+    JitObject* src) {
+  return !src->proto() && !_jit_is_handle(src);
+}
+
+// `{a, ...rest}`: a new Object (+1) holding the entries of the plain Object
+// `src` (culebra_runtime_object_is_plain) whose String key is not one of the
+// pattern's names (`drop`, `;` separated). Its keys are immutable, as an
+// object literal's are.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_object_rest(
+    JitObject* src, const char* drop) {
+  auto* out = culebra_runtime_object_new();
+  JitOwnedVal guard(JitValue{TAG_OBJECT, reinterpret_cast<int64_t>(out)});
+  _jit_copy_own_entries(out, src, /*mut=*/false, 0, 0, drop);
+  guard.consume();
+  return out;
 }
 
 // Consumes the caller's +1 to the key on the refcounted (sidecar)

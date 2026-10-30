@@ -389,7 +389,9 @@ const auto grammar_ = R"(
 
   # OBJECT_PAT_ENTRY: either `key: PATTERN` (value match / nested) or
   # a bare identifier (shorthand for `name: name`).
-  OBJECT_PATTERN           <-  '{' _ (OBJECT_PAT_ENTRY (_ ',' _ OBJECT_PAT_ENTRY)* _ ','?)? _ '}'
+  # `...rest` (the REST_PATTERN an array pattern has) comes last and binds the
+  # keys no entry named, as a new Object.
+  OBJECT_PATTERN           <-  '{' _ (((OBJECT_PAT_ENTRY _ ',' _)* REST_PATTERN / OBJECT_PAT_ENTRY (_ ',' _ OBJECT_PAT_ENTRY)*) _ ','?)? _ '}'
   OBJECT_PAT_ENTRY         <-  IDENTIFIER _ ':' _ PATTERN
                             /  IDENTIFIER
 
@@ -417,7 +419,7 @@ const auto grammar_ = R"(
   ARM_CTOR_PATTERN         <-  CTOR_PATH _ '(' _ (ARM_PATTERN (_ ',' _ ARM_PATTERN)*)? _ ')'  { ast_name: CTOR_PATTERN }
   ARM_ARRAY_PATTERN        <-  '[' _ (ARM_ARRAY_PAT_ELEM (_ ',' _ ARM_ARRAY_PAT_ELEM)* _ ','?)? _ ']'  { ast_name: ARRAY_PATTERN }
   ARM_ARRAY_PAT_ELEM       <-  REST_PATTERN / ARM_PATTERN  { ast_name: ARRAY_PAT_ELEM }
-  ARM_OBJECT_PATTERN       <-  '{' _ (ARM_OBJECT_PAT_ENTRY (_ ',' _ ARM_OBJECT_PAT_ENTRY)* _ ','?)? _ '}'  { ast_name: OBJECT_PATTERN }
+  ARM_OBJECT_PATTERN       <-  '{' _ (((ARM_OBJECT_PAT_ENTRY _ ',' _)* REST_PATTERN / ARM_OBJECT_PAT_ENTRY (_ ',' _ ARM_OBJECT_PAT_ENTRY)*) _ ','?)? _ '}'  { ast_name: OBJECT_PATTERN }
   ARM_OBJECT_PAT_ENTRY     <-  IDENTIFIER _ ':' _ ARM_PATTERN
                             /  IDENTIFIER  { ast_name: OBJECT_PAT_ENTRY }
   ARM_TUPLE_PATTERN        <-  '(' _ ARM_PATTERN _ ',' _ ARM_PATTERN (_ ',' _ ARM_PATTERN)* _ ','? _ ')'

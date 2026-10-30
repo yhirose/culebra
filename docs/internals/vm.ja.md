@@ -588,7 +588,7 @@ testsと言語front endを合わせたコーパス全体では、4つのpassが
 | 組み込みメソッド | `MethGate` `ChkParam` `BMeth` `BArity` `CbType` `ArityChk` `BareMethChk` | §5.4 |
 | クロージャと名前 | `MakeClosure` `CellNew` `CellGet` `CellSet` `CellRelease` `BindCapture` `ImmutErr` `UnboundErr` `NsGet` `LazyNsReg` `FnHandle` `ModReg` `ModGet` | §4.1、§4.2。`ModReg`/`ModGet`はモジュールのexportオブジェクトを公開/読み取る |
 | 関数とクラス | `MultifnReg` `MfSelf` `ClsSelf` `ClassMeta` `ClassObj` `MakeInst` `FieldsInit` `FieldInit` `BindStatic` `SelfMerge` `DeriveFn` `RegPack` `EnumVariant` `TraitReg` `TraitDefault` `TraitReset` `ClsParamsChk` `ClsParamsWalk` `WkErr` | `MultifnReg`はランタイムのarity-dispatchレジストリに本体を登録する。クラス宣言はmetaを構築しメンバを登録する |
-| パターン | `TypeMatch` `SeqChk` `SeqGet` `SeqRest` `ObjGet` `DestrErr` `JumpIfTag` | `match`の腕とdestructuring。テストが失敗すると次の腕へジャンプし、その時点で何も生きていない |
+| パターン | `TypeMatch` `SeqChk` `SeqGet` `SeqRest` `ObjGet` `ObjPlain` `ObjRest` `DestrErr` `JumpIfTag` | `match`の腕とdestructuring。テストが失敗すると次の腕へジャンプし、その時点で何も生きていない |
 | 制御フロー | `Jump` `JumpIfFalse` `JumpIfTrue` `JumpIfNil` `JumpIfNotNil` `Halt` | `JumpIfFalse`は共有のtruthiness変換を運ぶ（非Bool条件はTypeError） |
 | ループ | `ForPrep` `ForLoop` `ForOpen` `ForNext` `ForDispose` `Safepoint` | Long範囲の数え上げ`for`は融合されたペア（sinkの`for _ in 0..n`も含む）。それ以外は12個のslotからなるカーソル（`ForSlot`）でプロトコルを歩く |
 | 例外とdefer | `Throw` `Rethrow` `CaughtPos` `RaiseErr` `DeferMark` `DeferPush` `DeferRunTo` `OwnedMark` `OwnedExit` `DropSuppress` `Drop` `DropChk` | §5.5。`OwnedMark`/`OwnedExit`は決定的`drop`のためowned-resourceスタック上でスコープを括る |

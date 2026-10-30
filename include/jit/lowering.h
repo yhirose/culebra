@@ -733,6 +733,7 @@ struct Lowering {
         case Op::JumpIfFilled:
         case Op::SeqChk:   // pattern mismatch edges, same encoding
         case Op::ObjGet:
+        case Op::ObjPlain:
         case Op::TypeMatch:
           mark(in.b);
           mark(static_cast<int32_t>(i) + 1);
@@ -1633,6 +1634,31 @@ struct Lowering {
           j.emit_value_retain(got);  // object_get borrows the slot
           b.CreateStore(got, slots[in.a]);
           b.CreateBr(blocks.at(static_cast<int32_t>(i) + 1));
+          break;
+        }
+        case Op::ObjPlain: {
+          auto v = load_slot(in.c);
+          auto isObj = b.CreateICmpEQ(j.extract_tag(v),
+                                      b.getInt8(TAG_OBJECT), "vplain.is_obj");
+          auto callBB = BasicBlock::Create(j.ctx_, "vplain.call", fn);
+          b.CreateCondBr(isObj, callBB, blocks.at(in.b));
+          b.SetInsertPoint(callBB);
+          auto obj = b.CreateIntToPtr(j.extract_data(v), ptrTy);
+          auto plain = j.emit_call(
+              j.module_->getOrInsertFunction(rt::object_is_plain,
+                                             b.getInt1Ty(), ptrTy),
+              {obj}, "vplain.hit");
+          b.CreateCondBr(plain, blocks.at(static_cast<int32_t>(i) + 1),
+                         blocks.at(in.b));
+          break;
+        }
+        case Op::ObjRest: {
+          auto obj = b.CreateIntToPtr(j.extract_data(load_slot(in.c)), ptrTy);
+          auto rest = j.emit_call(
+              j.module_->getOrInsertFunction(rt::object_rest, ptrTy, ptrTy,
+                                             ptrTy),
+              {obj, vm_str_const(in.d, ".vm.objrest.keys")}, "vrest.obj");
+          b.CreateStore(j.make_object(rest), slots[in.a]);
           break;
         }
         case Op::DestrErr: {

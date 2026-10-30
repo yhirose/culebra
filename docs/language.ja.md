@@ -2156,6 +2156,13 @@ inspect(notes.min_by(|n| (n.bar, n.beat)).beat)    # => 1.0
       (a, b) => 'other',
     }
 
+オブジェクトパターンは`...rest`を取れ、名指ししなかったエントリを新しい`Object`として
+束縛します（規則はパターン表）。
+
+    let {name, ...others} = {name: 'Rex', age: 3, kind: 'dog'}
+    # name == 'Rex'、others == {age: 3, kind: 'dog'}
+    let {password, ...safe} = user       # `password`を除いた`user`
+
 **並列代入 / swap。** `let`を外すと、新規宣言ではなく**既存変数**へ
 再代入します。RHSは束縛前に全評価されるので、swapやrotateに一時変数
 は要りません:
@@ -3255,6 +3262,7 @@ let width = "v" + match n {
 | `[a, ...m, z]`   | 中間位置のrestも可                       |
 | `{k1, k2}`       | 指定キーを持つ`Object`。各`ki`に`obj.ki`を束縛（省略形） |
 | `{k1: p1, k2: p2}` | `k1`が`p1`に、`k2`が`p2`に一致する`Object`。入れ子可（`{user: {name}}`）。省略形と混在可 |
+| `{k1, ...rest}`  | `k1`を持つ`Object`。`rest`は残りのエントリを順に並べた新しい`Object`。`...rest`は最後に置く。`{...rest}`だけなら全エントリのコピー |
 | `{}`             | 任意の`Object`（キー無視）                  |
 | `(p1, p2, ...)`  | 同じ要素数の`Tuple`。要素ごとに部分パターン |
 | `Ok(p1, ...)`    | enum constructor: variant `Ok`にマッチしpositional payloadを部分パターンに分解。修飾形`Result.Ok(p)`は親enumが`Result`であることも要求するので、同名variantを持つ2つのenumはこれで区別できる。「Sum type」参照 |
@@ -3325,6 +3333,12 @@ inspect(kind('s'))         # => 'something else: s'
   置き、束縛の形ごとにアーム（もしくはパターン）を分けます。
 * `Array`パターンは`...rest`がなければ長さの厳密一致を要求します。
   `Object`パターンはキーの網羅性を要求しません（余分なキーは無視）。
+* オブジェクトパターンの`...rest`は、パターンのどのエントリも名指ししていない
+  キーのエントリを順に並べた、新しく確保された`Object`です。キーは
+  オブジェクトリテラルと同じく不変で、値は元のオブジェクトと共有されます。
+  マッチするのはプレーンな`Object`だけです。クラスのインスタンスやハンドル
+  （view、`SharedBuffer`、チャネルの端）は`...rest`を持つパターンにマッチしません
+  （`match`の腕は次へ進み、destructuringは`ValueError`を投げます）。
 * rest配列は新しく確保された`Array`で、要素は浅くコピーされます。
   rest自体の変更は元の配列に影響しませんが、要素が参照型ならその
   先の可変オブジェクトは共有されたままです。

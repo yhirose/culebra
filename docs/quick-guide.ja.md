@@ -117,7 +117,8 @@ inspect(type_of(0..3))                 # => 'Range'
 ```
 
 13番目が`Tensor`です (§4)。クラス・モジュール・エラーはいずれも
-`Object`の上に構築されています。
+`Object`の上に構築されています。数値リテラルは数字の間に`_`を
+入れられます（`1_000_000`、`0xFF_FF`、`3.141_592`）。
 
 ### 2.3 制御フロー
 
@@ -752,6 +753,7 @@ inspect(match 9 {
 | `mut i = start; while i < end { …; i += 1 }` | `for i in start..end { … }` |
 | `match n { k if k < 10 => … }` / `x >= lo && x < hi` | `match n { ..10 => … }`（範囲パターン）。判定だけなら`(lo..hi).contains(x)` |
 | `{k1: v1, k2: obj.k2, k3: obj.k3}`（1つ変えるために全フィールドを手コピー） | `{...obj, k1: v1}` |
+| `mut o = {}`から、1つを除く全キーをコピー | `let {password, ...safe} = user`。オブジェクトパターンの`...rest`が、名指ししなかったエントリを束縛する |
 | `if cond { stmt }` — `else`なしの単文 | `stmt if cond`（否定は`stmt unless cond`） |
 | `if x == nil { x = v }` / `if !d.has(k) { d[k] = v }` | `x ??= v` / `d[k] ??= v`（`obj.key`にも使える） |
 | `"{a.b(c).d ?? e}"`（長く入れ子になった式をそのまま埋め込む） | `let x = a.b(c).d ?? e`としてから`"{x}"` |

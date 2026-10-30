@@ -851,6 +851,12 @@ first_name = fn (people) {
 }
 inspect(first_name([{name: 'x'}, {name: 'y'}]))  # => 'x'
 inspect(first_name([]))                          # => 'none'
+
+without_secret = fn (user) {
+  let {password, ...safe} = user
+  safe
+}
+inspect(without_secret({name: 'x', password: 'p', age: 3}))  # => {name: 'x', age: 3}
 ```
 
 ### 6.4 Recursion

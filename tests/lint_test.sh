@@ -78,6 +78,10 @@ expect_syntax_message "class body"          'class C { 1 }' \
 expect_syntax_reject "doubled digit separator"   "syntax error" 'x = 1__0'
 expect_syntax_reject "trailing digit separator"  "syntax error" 'x = 1_'
 expect_syntax_reject "separator after a prefix"  "syntax error" 'x = 0x_ff'
+# An object pattern's `...rest` comes last and there is one.
+expect_syntax_reject "object rest not last" "invalid variable name" 'let {...r, a} = {}'
+expect_syntax_reject "two object rests"     "invalid variable name" 'let {...r, ...s} = {}'
+expect_syntax_reject "lone comma pattern"   "unexpected ','" 'let {,} = {}'
 # The field parameter's old spelling gets the new one named.
 expect_syntax_reject "old field parameter" \
   " A field parameter is written \`@x\`, not \`.x\`." 'class C { new(.x) { } }'
