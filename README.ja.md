@@ -3,7 +3,7 @@ Culebraプログラミング言語
 
 [![CI](https://github.com/yhirose/culebra/actions/workflows/ci.yml/badge.svg)](https://github.com/yhirose/culebra/actions/workflows/ci.yml)
 
-> **ステータス:** 1.0前・活発に開発中 — APIと構文は変わることがあります。
+> **ステータス:** 1.0前・活発に開発中。APIと構文は変わることがあります。
 
 動的型付けのクロスプラットフォームなスクリプト言語です。バックエンドは
 3つあります。バイトコードVM、LLVM JIT、そして単体バイナリを生成する
@@ -124,8 +124,8 @@ WindowsとLinux向けのパッケージはまだ無いので、上のダウン�
 マネージャもロックファイルもありません:
 
 - **データ。** JSON（JSONCのコメントと末尾カンマも任意で受け付けます）、
-  CSV、TOML、XML、`.env`、UUID、そしてSQLite — amalgamationを同梱して
-  コンパイルしているので、システムライブラリの導入は不要です。
+  CSV、TOML、XML、`.env`、UUID、そしてSQLite（amalgamationを同梱して
+  コンパイルしているので、システムライブラリの導入は不要です）。
 - **テキスト。** 書記素単位の正規表現、エンコーディング（base64 / hex /
   url / HTMLエンティティ）、SHA / MD5ダイジェストとHMAC、gzip / deflate。
 - **システム。** パス操作とファイル一括入出力、ストリーミング用の
@@ -136,10 +136,10 @@ WindowsとLinux向けのパッケージはまだ無いので、上のダウン�
   TCP / UDPソケットと名前解決も入っています。
 - **並行処理。** アイソレート、チャネル、`Parallel`、共有バッファ、そして
   チャネルのメッセージとして届くCtrl+C。
-- **端末。** `Term` — 色、カーソル制御、代替画面、TUI向けのキー・マウス
-  入力。端末が対応している範囲まで自動で落とします（`NO_COLOR`が
+- **端末。** `Term`（色、カーソル制御、代替画面、TUI向けのキー・マウス
+  入力）。端末が対応している範囲まで自動で落とします（`NO_COLOR`が
   設定されていれば何も出しません）。
-- **3D。** `Scene` — 手続き的に構築したジオメトリを物理ベースライティングで
+- **3D。** `Scene`は、手続き的に構築したジオメトリを物理ベースライティングで
   描く保持モードの3Dレンダラ。experimentalです。リリースバイナリには
   3 OSとも入っていて、ウィンドウまで確認しているのはmacOSとLinuxです。
 
@@ -361,12 +361,12 @@ c++ $(culebra embed-flags --cflags) host.cpp $(culebra embed-flags --libs) -o ho
 - **予測可能なスレッド並行処理。** `async`/`await`はありません。スタック
   トレースは読めるままで、デバッガはすべてのフレームを見られ、ライブラリ
   作者が関数ごとに色分けされた版を書かずに済みます。狙いは数千接続あたりを
-  上限とするサービス — SQLiteやRedis、そして多くの業務バックエンドが
+  上限とするサービスです。SQLiteやRedis、そして多くの業務バックエンドが
   すでに採っている形です。理由は
   [`docs/essays/concurrency.ja.md`](docs/essays/concurrency.ja.md)に
   書き下しています。
 - **決定的な破棄、`weak`なし。** `drop`プロパティを持つオブジェクトは、
-  最後の参照が消えた時点でそれが呼ばれます — スコープが残した循環参照も
+  最後の参照が消えた時点でそれが呼ばれます。スコープが残した循環参照も
   含むので、親への逆参照にweak注釈は要りません。タイミングを駆動するのは
   参照カウントで、循環はトレーシングコレクタが引き取ります。理由は
   [`docs/essays/memory.ja.md`](docs/essays/memory.ja.md)に書き下しています。
@@ -387,9 +387,12 @@ c++ $(culebra embed-flags --cflags) host.cpp $(culebra embed-flags --libs) -o ho
   落とすときに、これが必要になります。
 - **電池つき。** 日常のスクリプティングに要るものはサードパーティ
   パッケージではなくバイナリに入っています。
+- **パッケージレジストリは作りません。** サードパーティのコードを導入時に
+  取り込む仕組みは攻撃面が広がり続けているため、culebraにはレジストリも
+  マニフェストもロックファイルもなく、今後も足しません。日常の需要は
+  標準ライブラリが満たします。
 - **1.0前。** リリースはsemverの0.x解釈に従うので、マイナーの更新で壊れる
-  ことがあります。パッケージレジストリはまだなく、バイナリを落とすか自分で
-  ビルドします。
+  ことがあります。バイナリを落とすか自分でビルドします。
 
 性能
 ----
@@ -412,31 +415,31 @@ BLAS級の数値計算です。
   / [English](docs/language.md)
 * 標準ライブラリリファレンス: [`docs/stdlib.ja.md`](docs/stdlib.ja.md)
   / [English](docs/stdlib.md)
-* ツール — テストランナー、リンタ、フォーマッタ、デバッグアダプタ、言語サーバ、
+* ツール：テストランナー、リンタ、フォーマッタ、デバッグアダプタ、言語サーバ、
   埋め込みドキュメント（`culebra test` / `lint` / `fmt` / `dap` / `lsp` / `docs`）:
   [`docs/tooling.ja.md`](docs/tooling.ja.md)
   / [English](docs/tooling.md)
-* デプロイ — 単体バイナリのビルド、C++からの埋め込み、C++ライブラリの
+* デプロイ：単体バイナリのビルド、C++からの埋め込み、C++ライブラリの
   ラップ（`culebra build` / `culebra wrap`）:
   [`docs/deployment.ja.md`](docs/deployment.ja.md)
   / [English](docs/deployment.md)
-* ガイド — culebraで特定のものを作るための、目的別の手引き:
-  [`docs/guides/`](docs/guides/) — 現在は
+* ガイド：culebraで特定のものを作るための、目的別の手引き:
+  [`docs/guides/`](docs/guides/)、現在は
   [PEGで解析する](docs/guides/parsing-with-peg.ja.md)、
   [デスクトップアプリを作る](docs/guides/desktop-app.ja.md)、
   [Kauaiで曲を書く](docs/guides/kauai-songs.ja.md)、
   [Kauaiで音を作る](docs/guides/kauai-sounds.ja.md)
-* クイックガイド — 構文、間違えやすい点、言われなくても手が伸びる範囲の
+* クイックガイド：構文、間違えやすい点、言われなくても手が伸びる範囲の
   標準ライブラリのシグネチャを1ファイルに凝縮したもの。LLMのプロンプト用に
   書いていますが、人が最初から最後まで読み切れる分量でもあります:
   [`docs/quick-guide.ja.md`](docs/quick-guide.ja.md)
   / [English](docs/quick-guide.md)
-* エージェント規約 — 同じ出発点をコーディングエージェントが読む形にした
+* エージェント規約：同じ出発点をコーディングエージェントが読む形にした
   もの。`CLAUDE.md`・`.github/copilot-instructions.md`・`AGENTS.md`に
   追記して使います（`culebra docs agent`）:
   [`docs/agent.ja.md`](docs/agent.ja.md)
   / [English](docs/agent.md)
-* エッセイ — 設計判断に至った経緯を、仕様書には収まらない長さで:
+* エッセイ：設計判断に至った経緯を、仕様書には収まらない長さで:
   [`docs/essays/`](docs/essays/)
 
 ソースからのビルドとテストの実行は[`CONTRIBUTING.md`](CONTRIBUTING.md)へ。

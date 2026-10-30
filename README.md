@@ -3,7 +3,7 @@ Culebra Programming Language
 
 [![CI](https://github.com/yhirose/culebra/actions/workflows/ci.yml/badge.svg)](https://github.com/yhirose/culebra/actions/workflows/ci.yml)
 
-> **Status:** pre-1.0 and under active development — APIs and syntax may change.
+> **Status:** pre-1.0 and under active development. APIs and syntax may change.
 
 A dynamically-typed cross-platform scripting language with three
 backends: a bytecode VM, an LLVM JIT, and an ahead-of-time build that
@@ -18,7 +18,7 @@ Or try it in the browser first on the
 Quickstart
 ----------
 
-Paste this into a terminal — it downloads culebra, writes an example to `hello.cul`, and runs that same source
+Paste this into a terminal. It downloads culebra, writes an example to `hello.cul`, and runs that same source
 file three ways: as a script, JIT-compiled, and built into a standalone binary.
 
 ```bash
@@ -43,7 +43,7 @@ culebra build hello.cul -o hello && ./hello  # AOT: compile once, ship the binar
 cat hello.cul | culebra -                    # stdin (curl ... | culebra - also works)
 ```
 
-Optional — this one also touches your editor's config
+Optional: this one also touches your editor's config
 (VSCode/Vim/Neovim/Zed) and writes `AGENTS.md`/`CLAUDE.md` into the
 current directory, so it isn't bundled into the block above:
 
@@ -54,8 +54,8 @@ culebra init
 `culebra init` installs syntax highlighting and the debug adapter for
 whichever of VSCode, Vim, Neovim, or Zed it finds on this machine, and adds
 coding-agent instructions to `AGENTS.md` (or
-`CLAUDE.md`/`.github/copilot-instructions.md` if one already exists) —
-reopen `hello.cul` afterward and the highlighting is already on, and
+`CLAUDE.md`/`.github/copilot-instructions.md` if one already exists).
+Reopen `hello.cul` afterward and the highlighting is already on, and
 Claude Code or another agent reading `AGENTS.md` already knows the
 conventions.
 
@@ -73,7 +73,7 @@ install by hand, download the archive for your platform:
 
 These always point at the newest release; `culebra --version` reports
 which one you have. Extracting from the command line also avoids the
-quarantine flag macOS puts on anything unpacked through Finder — the
+quarantine flag macOS puts on anything unpacked through Finder. The
 binaries are unsigned. To put `culebra` on `PATH` permanently instead
 of just for this shell:
 
@@ -87,7 +87,7 @@ macOS also installs through a package manager:
 brew install yhirose/culebra/culebra
 ```
 
-Windows and Linux have no package manager entry yet — use the download
+Windows and Linux have no package manager entry yet. Use the download
 above.
 
 Checksums and every release's notes are on the
@@ -99,7 +99,7 @@ Highlights
 ### Cold start, single binary, cross-platform
 
 - **CLI script.** Cold start in tens of milliseconds.
-- **Standalone binary.** `culebra build` emits a single executable —
+- **Standalone binary.** `culebra build` emits a single executable:
   nothing to install alongside it, no runtime dependencies.
 - **Embedded library.** Embeds the bytecode VM into a C++ host.
 - **Cross-platform.** macOS / Linux / Windows; cross-compile to any
@@ -119,18 +119,18 @@ every turn.
 
 ### Immutable by default, mutability opt-in
 
-A bare `x = 1` is an immutable binding — reassigning it is an error;
+A bare `x = 1` is an immutable binding, and reassigning it is an error;
 write `mut x = 1` for one you intend to change. No declaration keyword
 for the common case.
 
 ### Batteries included, in one binary
 
-The whole standard library is bound before the program runs — no
-package manager, no lockfile:
+The whole standard library is bound before the program runs, with no
+package manager and no lockfile:
 
 - **Data.** JSON (with optional JSONC comments and trailing commas),
-  CSV, TOML, XML, `.env`, UUID, and SQLite — the amalgamation is compiled
-  in, so there is no system library to install.
+  CSV, TOML, XML, `.env`, UUID, and SQLite (the amalgamation is compiled
+  in, so there is no system library to install).
 - **Text.** Grapheme-aware regex, encodings (base64 / hex / url / HTML
   entities), SHA / MD5 digests and HMAC, gzip / deflate.
 - **System.** Paths and whole-file I/O, streaming file handles,
@@ -141,10 +141,10 @@ package manager, no lockfile:
   resolution underneath.
 - **Concurrency.** Isolates, channels, `Parallel`, shared buffers, and
   Ctrl+C delivered as a channel message.
-- **Terminal.** `Term` — color, cursor control, the alternate screen,
+- **Terminal.** `Term`: color, cursor control, the alternate screen,
   and key/mouse input for TUIs, downsampled to whatever the terminal
   supports (and silent under `NO_COLOR`).
-- **3D.** `Scene` — a retained-mode 3D renderer for procedural geometry
+- **3D.** `Scene`: a retained-mode 3D renderer for procedural geometry
   with physically based lighting. Experimental. It is in the released
   binaries on all three platforms; the window is exercised on macOS and
   Linux.
@@ -167,7 +167,7 @@ Tensor.eval(y)  # [[5.0, 11.0], [11.0, 25.0]]
 
 `Dir.embedded(name)` hands a directory of files to your program with no
 code change across backends: the VM and JIT read it live
-from disk — edit a file, rerun — and `culebra build` bakes every byte
+from disk (edit a file, rerun), and `culebra build` bakes every byte
 into the executable, so the shipped binary needs nothing alongside it.
 It is one kind of `Dir`, read the same way as a directory on disk
 (`Dir.disk`) or files held in memory (`Dir.memory`).
@@ -182,7 +182,7 @@ println(assets.exists("favicon.ico"))  # => true
 
 A desktop GUI in web tech: a local HTTP server supplies the UI, the
 OS's own WebView engine displays it, and `culebra build` ships the
-whole thing — server, routes, and embedded assets — as one binary.
+whole thing (server, routes, and embedded assets) as one binary.
 
 ```culebra
 Desktop.run({
@@ -198,8 +198,8 @@ Desktop.run({
 
 ### 2D Canvas
 
-An immediate-mode 2D framebuffer — draw, `present`, poll input,
-repeat — with sprites and text; sound is the `Audio` namespace (tones,
+An immediate-mode 2D framebuffer: draw, `present`, poll input,
+repeat, with sprites and text; sound is the `Audio` namespace (tones,
 samples, music, synthesised PCM), which needs no window. It opens a real window on
 macOS, Linux and Windows; a run that declares itself headless does the
 same pixel work and displays nothing, which is how the tests and a
@@ -237,7 +237,7 @@ Language features
 - **Generators.** A `fn` whose body contains `yield` returns an
   Iterator; `yield from` delegates to any iterable.
 - **Algebraic effects.** `effect fn` / `perform` / `handle … with`, with
-  multi-shot `resume` — one mechanism covering generators, exceptions,
+  multi-shot `resume`, one mechanism covering generators, exceptions,
   dependency injection, and backtracking search.
 - **Decorators.** `@expr` before a `fn` or `class` wraps the declared
   value before it is bound.
@@ -247,7 +247,7 @@ Language features
 - **Defer / RAII.** Scope-bound cleanup.
 - **Threaded concurrency.** No `async`/`await`. `Isolate.spawn` runs a
   closure on its own thread with its own heap, values cross by copy,
-  and `Channel` carries them — so two isolates cannot race on one
+  and `Channel` carries them, so two isolates cannot race on one
   object. `SharedBuffer` (fixed-layout, zero-copy) and `Shared`
   (immutable, by reference) opt out of the copy where it matters.
 
@@ -299,7 +299,7 @@ Embedding in a C++ host
 
 The bytecode VM embeds into a C++23 host: header-only, no LLVM, no
 culebra library to build or install. C++ and the script call each other,
-so a script can be what the host is configured — or extended — with.
+so a script can be what the host is configured (or extended) with.
 
 ```cpp
 #include <culebra.h>
@@ -324,7 +324,7 @@ int main() {
   )");
 
   // The session outlives the run, so the host reads what the script left,
-  // calls back into it, and writes into its values — an Object is a
+  // calls back into it, and writes into its values. An Object is a
   // reference, not a copy.
   auto config = embed.global("config");
   auto limit = config["limit"].as<double>();        // 40.0
@@ -362,12 +362,12 @@ Design choices
 - **Predictable threaded concurrency.** No `async`/`await`. Stack
   traces stay readable, the debugger sees every frame, and library
   authors don't write a colored version of every function. Targeted
-  at services up to a few-thousand-connection ceiling — the shape
+  at services up to a few-thousand-connection ceiling, the shape
   SQLite, Redis, and most line-of-business backends already use. The
   reasoning is written out in
   [`docs/essays/concurrency.md`](docs/essays/concurrency.md).
 - **Deterministic destruction, and no `weak`.** An object with a
-  `drop` property has it called when the last reference goes away —
+  `drop` property has it called when the last reference goes away,
   including for a reference cycle a scope leaves behind, so a
   back-reference to a parent needs no weak annotation. Reference
   counting drives the timing; a tracing collector backs it up for
@@ -377,7 +377,7 @@ Design choices
   runtime-checked at boundaries; startup stays instant. Union,
   Optional, Tuple, Trait and Generic annotations are all in.
 - **Immutable by default, no declaration keyword.** A bare `x = 1`
-  creates an *immutable* binding — reassigning it is an error. Use `mut`
+  creates an *immutable* binding, and reassigning it is an error. Use `mut`
   for a variable you intend to change (`mut x = 1; x = 2`), so `mut`
   marks exactly what changes; `let` is an optional, explicit marker for
   the immutable form. The default binding is both safe and ceremony-free,
@@ -387,12 +387,16 @@ Design choices
 - **The stdlib needs no `import`.** Namespaces are bound before the
   program runs, so a one-file script has no import block. Splitting
   across files uses top-level `import` / `export`, which keeps the
-  dependency graph known at parse time — what AOT bundling and
+  dependency graph known at parse time, which is what AOT bundling and
   tree-shaking need.
 - **Batteries included.** Everyday scripting needs ship in the binary,
   not as third-party packages.
+- **No package registry, by design.** Pulling third-party code in at
+  install time is an attack surface that keeps growing, so culebra has
+  no registry, manifest, or lockfile, and will not add one. The
+  standard library covers everyday needs.
 - **Pre-1.0.** Releases follow semver's 0.x reading: a minor bump may
-  break things. No package registry yet — download a binary or build it.
+  break things. Download a binary or build it.
 
 Performance
 -----------
@@ -416,34 +420,34 @@ Documentation
   / [日本語](docs/language.ja.md)
 * Standard library reference: [`docs/stdlib.md`](docs/stdlib.md)
   / [日本語](docs/stdlib.ja.md)
-* Tooling — the test runner, linter, formatter, debug adapter, language
+* Tooling: the test runner, linter, formatter, debug adapter, language
   server and embedded docs (`culebra test` / `lint` / `fmt` / `dap` /
   `lsp` / `docs`):
   [`docs/tooling.md`](docs/tooling.md)
   / [日本語](docs/tooling.ja.md)
-* Deployment — standalone binary build, embedding from C++, wrapping
+* Deployment: standalone binary build, embedding from C++, wrapping
   C++ libraries (`culebra build` / `culebra wrap`):
   [`docs/deployment.md`](docs/deployment.md)
   / [日本語](docs/deployment.ja.md)
-* Guides — task-oriented how-tos for building specific things with
+* Guides: task-oriented how-tos for building specific things with
   culebra:
-  [`docs/guides/`](docs/guides/) — currently
+  [`docs/guides/`](docs/guides/), currently
   [parsing with PEG](docs/guides/parsing-with-peg.md),
   [building a desktop app](docs/guides/desktop-app.md),
   [writing a song in Kauai](docs/guides/kauai-songs.md) and
   [writing a sound in Kauai](docs/guides/kauai-sounds.md)
-* Quick guide — the syntax, the carried-over mistakes and the stdlib
+* Quick guide: the syntax, the carried-over mistakes and the stdlib
   signatures a program reaches for unprompted, condensed into one file;
   written for an LLM prompt, and short enough for a human to read start
   to finish:
   [`docs/quick-guide.md`](docs/quick-guide.md)
   / [日本語](docs/quick-guide.ja.md)
-* Agent rules — the same starting point in the form a coding agent
+* Agent rules: the same starting point in the form a coding agent
   reads, to append to `CLAUDE.md`, `.github/copilot-instructions.md` or
   `AGENTS.md` (`culebra docs agent`):
   [`docs/agent.md`](docs/agent.md)
   / [日本語](docs/agent.ja.md)
-* Essays — how a design decision was reached, at the length the
+* Essays: how a design decision was reached, at the length the
   specification has no room for:
   [`docs/essays/`](docs/essays/)
 
