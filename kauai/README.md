@@ -55,12 +55,32 @@ result by ear. Start with the route:
 - [`tools/README.md`](tools/README.md): each measuring, checking, comparing and
   listening tool, with its options.
 
+## I want a command line that needs no Culebra
+
+`just kauai-build` compiles [`cli/main.cul`](cli/main.cul) into one binary,
+`build/kauai`, and `just kauai-install [PREFIX]` puts it in `PREFIX/bin`.
+Running it needs nothing else: it reads no module at run time.
+
+```bash
+kauai song.kau                      # play it
+kauai song.kau --check              # read and check it, play nothing
+kauai song.kau --wav out.wav        # write it to a WAV file, no device needed
+kauai song.kau --wav out.wav --from Chorus --to 1:30
+```
+
+It takes the options `culebra play` takes, except `--sounds` and `--watch`.
+The instruments in `sounds/` (`SopranoSax`, `AltoSax`) are compiled in, and
+a song names them as `external SopranoSax`. An instrument of your own is added
+to `cli/main.cul` and the binary built again, because a compiled program loads
+no module of its own at run time.
+
 ## Folders
 
 | Folder | What it holds |
 |---|---|
 | `engine/` | the playing code instruments from recordings share |
 | `tools/` | the tools for measuring, checking and comparing |
+| `cli/` | the command line `just kauai-build` compiles |
 | `sounds/` | the finished external instruments, one folder each |
 | `skills/make-instrument/` | the skill for making an instrument with Claude |
 | `harness/` | the agents' roles and the `main.cul` template, for building with one job to an agent |

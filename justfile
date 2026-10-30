@@ -468,7 +468,25 @@ dev-llama *extra:
 # (include/base/source_dir.h) — so keep this tree, or point CULEBRA_HOME at one.
 [doc("Install the Release binary into PREFIX/bin (default /usr/local, sudo only if needed).")]
 [group("build")]
-install PREFIX='/usr/local': build
+install PREFIX='/usr/local': build (install-bin 'build/culebra' 'culebra' PREFIX)
+
+# The Kauai command line (kauai/cli/main.cul), compiled ahead of time into one
+# binary. The sound packages are compiled in and it reads no module at run time,
+# so what it makes needs no culebra. Only this build reads the source checkout
+# (`Dir.embedded` bakes the packages' data in).
+[doc("Build the Kauai command line into build/kauai (one binary; running it needs no culebra).")]
+[group("build")]
+kauai-build: build
+    build/culebra build kauai/cli/main.cul -o build/kauai
+
+[doc("Install the Kauai command line into PREFIX/bin (default /usr/local, sudo only if needed).")]
+[group("build")]
+kauai-install PREFIX='/usr/local': kauai-build (install-bin 'build/kauai' 'kauai' PREFIX)
+
+# Copy the built binary SRC to PREFIX/bin/NAME, with sudo only when that
+# directory isn't already writable.
+[private]
+install-bin SRC NAME PREFIX:
     #!/usr/bin/env bash
     set -euo pipefail
     dest="{{PREFIX}}/bin"
@@ -481,8 +499,8 @@ install PREFIX='/usr/local': build
     $sudo mkdir -p "$dest"
     # -s: the same ~9 MB of global symbols the release archive drops
     # (misc/package_release.sh), for the same reason.
-    $sudo install -m 755 -s build/culebra "$dest/culebra"
-    echo "installed -> $dest/culebra"
+    $sudo install -m 755 -s {{SRC}} "$dest/{{NAME}}"
+    echo "installed -> $dest/{{NAME}}"
     case ":${PATH}:" in *":$dest:"*) ;;
       *) echo "note: $dest is not on your PATH" >&2 ;;
     esac
@@ -1091,6 +1109,9 @@ _run-tests BACKEND:
         # The sweep above runs every binary with no arguments, so this is the
         # one place an AOT build is asked what it does with some.
         {{nice_cmd}} bash tests/sys_argv_test.sh "$BIN" --aot || exit 1
+        # The Kauai command line as an AOT binary (about a minute to build: the
+        # instruments' recordings are embedded), against `culebra play`.
+        {{nice_cmd}} bash tests/kauai_cli_test.sh "$BIN" --aot || exit 1
         # The self-contained axes are silent when lost (no link error, no
         # ldd); tools/checks/check_aot_feature_axes.sh reads the linked outputs.
         {{nice_cmd}} bash tools/checks/check_aot_feature_axes.sh "$(dirname "$BIN")" || exit 1

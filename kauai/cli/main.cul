@@ -1,0 +1,123 @@
+# The Kauai command line: `kauai song.kau` plays a song, and `--check`, `--wav`,
+# `--from` and `--to` do what they do under `culebra play`. `just kauai-build`
+# compiles it into one binary. The sound packages it knows are compiled in, so
+# the binary reads no module at run time and needs no culebra.
+import soprano from '../sounds/soprano_sax/main.cul'
+import alto from '../sounds/alto_sax/main.cul'
+
+# Every bundled instrument, by the name a song gives it (`external SopranoSax`).
+let voices = [soprano, alto].flat_map(|p| p.voices.keys().map(|k| (k, p.voices[k]))).to_object()
+
+let usage = "Usage: kauai <song.kau> [options]
+  --check              read and check the song, and play nothing
+  --wav <file.wav>     write the song once through to a WAV file, as it
+                       would sound, and play nothing; no device needed
+  --from <at>          with --wav, write the part from <at> on, heard
+                       from a second before it: seconds (83.5),
+                       minutes and seconds (1:23.5) or a mark's name
+  --to <at>            with --wav, write the part until <at>, and what
+                       starts before it ringing on"
+
+let args = Sys.argv
+
+if args.contains("-h") || args.contains("--help") {
+  println(usage)
+  Sys.exit(0)
+}
+if args.empty() || args[0].starts_with("-") {
+  IO.eprintln(usage)
+  Sys.exit(2)
+}
+
+let path = args[0]
+let check = args.contains("--check")
+let wav = args.contains("--wav") ? args[args.index_of("--wav") + 1] : nil
+let from_at = args.contains("--from") ? args[args.index_of("--from") + 1] : nil
+let to_at = args.contains("--to") ? args[args.index_of("--to") + 1] : nil
+
+if wav != nil && check {
+  IO.eprintln("kauai: --wav writes the song and plays nothing, so not with --check")
+  Sys.exit(2)
+}
+if (from_at != nil || to_at != nil) && wav == nil {
+  IO.eprintln("kauai: --from and --to choose the part --wav writes, so they need --wav")
+  Sys.exit(2)
+}
+
+fn clock(secs) {
+  let s = Math.round(secs)
+  "{s / 60}:{s % 60 < 10 ? "0" : ""}{s % 60}"
+}
+
+fn refuse(e) {
+  IO.eprintln("{e.kind}: {e.message}")
+  Sys.exit(1)
+}
+
+let song = try {
+  Audio.Kauai.load(path, voices: voices)
+} catch e: KauaiError {
+  refuse(e)
+} catch e: IOError {
+  refuse(e)
+}
+
+if check {
+  println("{path}: {clock(song.length())} once through")
+  Sys.exit(0)
+}
+if wav == nil && !Audio.available() {
+  IO.eprintln("{path}: no audio device, so nothing plays")
+  Sys.exit(1)
+}
+
+# A point in the song, in seconds, from a number of seconds, minutes and
+# seconds, or a mark's name. A mistake ends the program.
+let marks = song.marks()
+fn point(name, s) {
+  return nil if s == nil
+  if !"0123456789".contains(s.slice(0, 1).to_string()) && !marks.has(s) {
+    let has = marks.empty() ? "none" : marks.keys().join(", ")
+    IO.eprintln("kauai: {path} has no mark {s} (it has {has})")
+    Sys.exit(1)
+  }
+  song.seconds(s)
+}
+let from = point("--from", from_at)
+let to = point("--to", to_at)
+if from != nil && from >= song.length() {
+  IO.eprintln("kauai: --from {from_at} is past the song's end ({clock(song.length())})")
+  Sys.exit(1)
+}
+if to != nil && to <= (from ?? 0.0) {
+  let after = from == nil ? "the song's start" : "--from {from_at}"
+  IO.eprintln("kauai: --to {to_at} is not after {after}")
+  Sys.exit(1)
+}
+
+# The external sounds are built first, and a terminal shows how far along
+# that is. A part builds only its own, as it renders.
+let watched = IO.stdout_is_terminal()
+mut left = from == nil && to == nil ? song.prepare() : 0
+while left > 0 {
+  print("\rpreparing sounds: {left} left ") if watched
+  left = song.prepare()
+}
+print("\r") if watched
+
+if wav != nil {
+  let samples = song.render(from: from, to: to)
+  try {
+    FS.write(wav, Audio.Sound(samples).data())
+  } catch e: IOError {
+    refuse(e)
+  }
+  println("{path}: {clock(samples.size() / 44100.0)} written to {wav}")
+  Sys.exit(0)
+}
+
+println("playing {path} ({clock(song.length())} once through)")
+song.play()
+while song.playing() {
+  Time.sleep(0.1)
+}

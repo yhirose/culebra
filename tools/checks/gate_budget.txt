@@ -174,7 +174,9 @@ vm_cases 191
 # phase (tools/checks/ctest_shell_driven.py names them).
 # 35 since jit_cache_test (a JIT cache hit is the run a cold start gives).
 # 36 since play_test (`culebra play`'s streams and statuses, on each engine).
-ctest.entries 36
+# 37 since kauai_cli_test (the Kauai command line gives `culebra play`'s
+# streams, statuses and WAV bytes; its AOT build runs in the aot lane).
+ctest.entries 37
 
 # ```culebra blocks under docs/ — `just doctest` runs the runnable ones on both
 # engines, and the JIT lane costs one LLVM module per block.

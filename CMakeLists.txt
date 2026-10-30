@@ -2431,6 +2431,13 @@ add_test(NAME play_test
          COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/play_test.sh
                  $<TARGET_FILE:culebra>)
 
+# The Kauai command line (kauai/cli/main.cul) against `culebra play`: the same
+# streams, statuses and WAV bytes, run as a script and, where this build can
+# make one, as the binary `culebra build` makes of it.
+add_test(NAME kauai_cli_test
+         COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/kauai_cli_test.sh
+                 $<TARGET_FILE:culebra>)
+
 # --- Baked stdlib preamble -----------------------------------------------------
 # The stdlib modules written in Culebra (src/preambles/*.cul) are compiled to
 # native objects at build time and carried by the driver (for `--jit`) and by
