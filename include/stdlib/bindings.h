@@ -6239,34 +6239,34 @@ inline JitValue _ns_audio_graph_now(JitValue* a, int64_t) {
   if (std::isnan(t)) t = std::chrono::duration<double>(std::chrono::steady_clock::now() - it->second).count();
   return _ns_adapt::v_float(t);
 }
-// Audio.Kauai's song as both mixers take it (kScoreStride, stdlib/audio.h),
+// Audio.Kauai's song as both mixers take it (kScheduleStride, stdlib/audio.h),
 // refused out of time order.
-inline void _ns_audio_score_events(JitValue v, std::vector<double>& out) {
+inline void _ns_audio_schedule_events(JitValue v, std::vector<double>& out) {
   namespace ad = culebra::_audio_detail;
-  _ns_audio_numbers(v, out, ad::kScoreEventsError);
-  constexpr size_t stride = ad::kScoreStride;
+  _ns_audio_numbers(v, out, ad::kScheduleEventsError);
+  constexpr size_t stride = ad::kScheduleStride;
   for (size_t i = stride; i < out.size(); i += stride)
     if (out[i] < out[i - stride]) _ns_audio_fail("Audio.Kauai: a song's events are out of time order");
 }
 
 // Audio.Kauai's timed notes.
-inline JitValue _ns_audio_score_new(JitValue* a, int64_t) {
+inline JitValue _ns_audio_schedule_new(JitValue* a, int64_t) {
   namespace ad = culebra::_audio_detail;
   std::vector<double> events;
-  _ns_audio_score_events(a[0], events);
+  _ns_audio_schedule_events(a[0], events);
   int64_t id = ad::alloc_id();
-  ad::score_new(id, events.data(), static_cast<int64_t>(events.size()),
+  ad::schedule_new(id, events.data(), static_cast<int64_t>(events.size()),
                 _ns_adapt::take_double(a[1]), _ns_adapt::take_double(a[2]));
   return _ns_adapt::v_long(id);
 }
 
-// A score rendered to samples as it would play (score_render): Audio.Kauai's
+// A schedule rendered to samples as it would play (schedule_render): Audio.Kauai's
 // list, the bytes of each Sound it plays as [handle, data, handle, data, ...],
 // its length, its room's wet, its volume, and the second the samples start at.
-inline JitValue _ns_audio_score_render(JitValue* a, int64_t) {
+inline JitValue _ns_audio_schedule_render(JitValue* a, int64_t) {
   namespace ad = culebra::_audio_detail;
   std::vector<double> events;
-  _ns_audio_score_events(a[0], events);
+  _ns_audio_schedule_events(a[0], events);
   ::JitArray* list = _ns_adapt::take_array(a[1]);
   std::vector<ad::SoundBytes> sounds;
   for (size_t i = 0; i + 1 < list->size; i += 2) {
@@ -6276,7 +6276,7 @@ inline JitValue _ns_audio_score_render(JitValue* a, int64_t) {
       sounds.push_back({_ns_adapt::take_long(list->items[i]), p, static_cast<int64_t>(sv.size()), fmt});
   }
   std::vector<float> out;
-  if (!ad::score_render(events.data(), static_cast<int64_t>(events.size()),
+  if (!ad::schedule_render(events.data(), static_cast<int64_t>(events.size()),
                         _ns_adapt::take_double(a[2]), _ns_adapt::take_double(a[3]),
                         _ns_adapt::take_double(a[4]), _ns_adapt::take_double(a[5]), sounds,
                         out))
@@ -11541,13 +11541,13 @@ inline const NsMethod kNsRows_Audio_native[] = {
   {"_Audio", "capture_running", 1, &_ns_audio_ask<culebra::_audio_detail::capture_running>},
   {"_Audio", "capture_waiting", 1, &_ns_audio_count<culebra::_audio_detail::capture_waiting>},
   {"_Audio", "capture_read",   2, &_ns_audio_capture_read},
-  {"_Audio", "score_new",      3, &_ns_audio_score_new},
-  {"_Audio", "score_free",     1, &_ns_audio_on<culebra::_audio_detail::score_free>},
-  {"_Audio", "score_play",     1, &_ns_audio_on<culebra::_audio_detail::score_play>},
-  {"_Audio", "score_stop",     1, &_ns_audio_on<culebra::_audio_detail::score_stop>},
-  {"_Audio", "score_volume",   2, &_ns_audio_set<culebra::_audio_detail::score_volume>},
-  {"_Audio", "score_room",     2, &_ns_audio_set<culebra::_audio_detail::score_room>},
-  {"_Audio", "score_render",   6, &_ns_audio_score_render},
+  {"_Audio", "schedule_new",      3, &_ns_audio_schedule_new},
+  {"_Audio", "schedule_free",     1, &_ns_audio_on<culebra::_audio_detail::schedule_free>},
+  {"_Audio", "schedule_play",     1, &_ns_audio_on<culebra::_audio_detail::schedule_play>},
+  {"_Audio", "schedule_stop",     1, &_ns_audio_on<culebra::_audio_detail::schedule_stop>},
+  {"_Audio", "schedule_volume",   2, &_ns_audio_set<culebra::_audio_detail::schedule_volume>},
+  {"_Audio", "schedule_room",     2, &_ns_audio_set<culebra::_audio_detail::schedule_room>},
+  {"_Audio", "schedule_render",   6, &_ns_audio_schedule_render},
   {"_Audio", "resonate",       4, &_ns_audio_resonate},
   {"_Audio", "pluck",          5, &_ns_audio_pluck},
   {"_Audio", "partials",       9, &_ns_audio_partials},

@@ -124,8 +124,8 @@ struct Note {
   int64_t elapsed = 0;        // samples into the note; audio thread owns this
   double phase = 0;           // 0..1, oscillator channels
   double lp_state = 0;        // noise channel's one-pole lowpass
-  int64_t owner = 0;          // the score that started it; 0 for tone()
-  Room* room = nullptr;       // the room its score plays in
+  int64_t owner = 0;          // the schedule that started it; 0 for tone()
+  Room* room = nullptr;       // the room its schedule plays in
 };
 
 // A note carries where it starts, on the stream's own sample clock. tone()
@@ -160,18 +160,18 @@ Queued g_pending[kQueueCap];
 int g_pending_count = 0;
 int64_t g_pos = 0;           // samples rendered so far
 
-// --- Score: a song's notes, on the stream's own clock ---------------------
+// --- Schedule: a song's notes, on the stream's own clock ---------------------
 //
 // Audio.Kauai hands a whole song over at once, every note already timed, and
 // the mixer below starts each one on its sample: the music keeps time however
 // long a frame runs, and plays in a program with no frame loop. A note is a
 // tone on one of the channels, or a sample (an Audio.Sound's decoded PCM)
 // mixed in alongside them, as many at once as the song asks for.
-// The room a score plays in (Freeverb: eight damped combs in parallel, then
+// The room a schedule plays in (Freeverb: eight damped combs in parallel, then
 // four allpasses in series, at Jezar's delays and gain), heard `wet` strong
-// alongside the score's own sound. The score's tones and samples add into
+// alongside the schedule's own sound. The schedule's tones and samples add into
 // `send` as they render, and step() runs the room one sample on. It is a
-// score's own, so a song's echoes are its own, and ring on after its last
+// schedule's own, so a song's echoes are its own, and ring on after its last
 // sound. Audio thread only, but for `wet`.
 struct Room {
   static constexpr int kCombs[8] = {1116, 1188, 1277, 1356, 1422, 1491, 1557, 1617};
@@ -193,7 +193,7 @@ struct Room {
     for (int k = 0; k < 8; k++) combs[k].assign(kCombs[k], 0.0f);
     for (int k = 0; k < 4; k++) passes[k].assign(kPasses[k], 0.0f);
   }
-  // Silent again, for a score played from the top.
+  // Silent again, for a schedule played from the top.
   void reset() {
     for (int k = 0; k < 8; k++) {
       std::ranges::fill(combs[k], 0.0f);
@@ -236,16 +236,16 @@ struct Room {
   }
 };
 
-struct ScoreEvent {
-  int64_t at = 0;    // samples from the score's start
+struct ScheduleEvent {
+  int64_t at = 0;    // samples from the schedule's start
   int channel = -1;  // a tone channel, or -1 for a sample
   Note note;         // a tone
   std::shared_ptr<const std::vector<float>> pcm;  // a sample, mono at kSampleRate
   double gain = 0;   // a sample's
 };
 
-struct Score {
-  std::vector<ScoreEvent> events;  // ordered by `at`
+struct Schedule {
+  std::vector<ScheduleEvent> events;  // ordered by `at`
   int64_t length = 0;              // samples in one time through
   int64_t loop_at = -1;            // where a loop goes back to; -1 plays once
   std::atomic<double> volume{1.0};
@@ -253,19 +253,19 @@ struct Score {
 };
 
 // Asked for on the main thread, carried out at the next buffer.
-struct ScoreCommand {
+struct ScheduleCommand {
   int64_t id = 0;
-  std::shared_ptr<Score> score;  // play; null stops
-  int64_t start = 0;             // play: the stream sample the score starts on
+  std::shared_ptr<Schedule> schedule;  // play; null stops
+  int64_t start = 0;             // play: the stream sample the schedule starts on
 };
 
-// A score being played, and a sample sounding. Audio thread only. The audio
-// thread never drops a score's last reference (see g_retired), so it frees
-// nothing: a sample plays its score's PCM, and the score plays on until its
+// A schedule being played, and a sample sounding. Audio thread only. The audio
+// thread never drops a schedule's last reference (see g_retired), so it frees
+// nothing: a sample plays its schedule's PCM, and the schedule plays on until its
 // samples end.
-struct PlayingScore {
+struct PlayingSchedule {
   int64_t id = 0;
-  std::shared_ptr<Score> score;
+  std::shared_ptr<Schedule> schedule;
   int64_t origin = 0;  // the stream sample this time through starts on
   size_t next = 0;     // the next event to start
 };
@@ -278,39 +278,39 @@ struct Sampler {
 };
 constexpr size_t kMaxSamplers = 64;  // the oldest goes, as a channel's note would
 
-// The mixing: the voice sounding on each channel, the scores playing and the
+// The mixing: the voice sounding on each channel, the schedules playing and the
 // samples they started, and the noise channel's generator. The stream has
-// one, g_mix, which the audio thread alone touches; a score rendered to
-// samples (score_render) gets one of its own, so it renders as it plays, and
+// one, g_mix, which the audio thread alone touches; a schedule rendered to
+// samples (schedule_render) gets one of its own, so it renders as it plays, and
 // the same every time.
 struct Mixer {
   Note voice[5];
-  std::vector<PlayingScore> playing;
+  std::vector<PlayingSchedule> playing;
   std::vector<Sampler> samplers;
   uint32_t rng = 0x9e3779b9u;
 
-  // Start what score `ps` has due at sample `p`, and go round again at its
+  // Start what schedule `ps` has due at sample `p`, and go round again at its
   // end if it loops; false once it has played through and its sounds ended.
-  bool advance(PlayingScore& ps, int64_t p);
-  // Silence what score `id` started: its tones on their channels, its samples.
+  bool advance(PlayingSchedule& ps, int64_t p);
+  // Silence what schedule `id` started: its tones on their channels, its samples.
   void cut(int64_t id);
-  // Sample `p`: the scores' notes due then started, the samples and the
+  // Sample `p`: the schedules' notes due then started, the samples and the
   // channels sounding, `extra`, and the rooms' echoes. Not yet clamped.
   double sample(int64_t p, double extra);
   // The noise channel's next sample, from the mixer's own generator.
   double noise(Note& n, double cutoff);
 };
 
-std::vector<ScoreCommand> g_score_inbox;  // guarded by g_tone_mutex
+std::vector<ScheduleCommand> g_schedule_inbox;  // guarded by g_tone_mutex
 Mixer g_mix;                              // audio thread
 
-// The scores and the samples they can play, by handle. Main thread only; a
-// score holds its samples' PCM itself, so a Sound freed while a song plays
+// The schedules and the samples they can play, by handle. Main thread only; a
+// schedule holds its samples' PCM itself, so a Sound freed while a song plays
 // keeps sounding in it.
-std::unordered_map<int64_t, std::shared_ptr<Score>> g_scores;
-// Freed scores the mixer may still hold, kept until this thread holds the last
+std::unordered_map<int64_t, std::shared_ptr<Schedule>> g_schedules;
+// Freed schedules the mixer may still hold, kept until this thread holds the last
 // reference, so that the free happens here.
-std::vector<std::shared_ptr<Score>> g_retired;
+std::vector<std::shared_ptr<Schedule>> g_retired;
 
 // --- Graph: parts the mixer works out as they play -------------------------
 //
@@ -318,7 +318,7 @@ std::vector<std::shared_ptr<Score>> g_retired;
 // then works out; changes scheduled after that to the values of the parts
 // it was played with reach the copy through g_graph_posts. Parts added, and
 // a new output, wait for the next play(). The main thread keeps a reference to each copy (in
-// g_live_graphs, then g_retired_graphs) so that, as with scores, the free
+// g_live_graphs, then g_retired_graphs) so that, as with schedules, the free
 // happens here. Nothing on the audio thread allocates or frees: its list is
 // reserved for kGraphsPlaying, a copy's values have room for the changes
 // made while it plays (graph_post sends a longer list before they could run
@@ -372,11 +372,11 @@ void release_retired() {
 }
 std::unordered_map<int64_t, std::shared_ptr<const std::vector<float>>> g_sound_pcm;
 
-bool Mixer::advance(PlayingScore& ps, int64_t p) {
-  const Score& s = *ps.score;
+bool Mixer::advance(PlayingSchedule& ps, int64_t p) {
+  const Schedule& s = *ps.schedule;
   for (;;) {
     while (ps.next < s.events.size() && ps.origin + s.events[ps.next].at <= p) {
-      const ScoreEvent& e = s.events[ps.next++];
+      const ScheduleEvent& e = s.events[ps.next++];
       double v = s.volume.load(std::memory_order_relaxed);
       if (e.channel >= 0) {
         Note n = e.note;
@@ -399,7 +399,7 @@ bool Mixer::advance(PlayingScore& ps, int64_t p) {
     }
     ps.origin += s.length - s.loop_at;
     ps.next = std::lower_bound(s.events.begin(), s.events.end(), s.loop_at,
-                               [](const ScoreEvent& e, int64_t at) { return e.at < at; }) -
+                               [](const ScheduleEvent& e, int64_t at) { return e.at < at; }) -
               s.events.begin();
   }
 }
@@ -468,7 +468,7 @@ double oscillate(Note& n, int channel, double freq) {
 // Noise: a cheap xorshift PRNG through a one-pole lowpass that sweeps
 // start->end (times 8, matching the browser's filter sweep), so it reads as a
 // pitched hiss rather than flat static. The generator is the mixer's, so a
-// rendered score's noise is the same every time.
+// rendered schedule's noise is the same every time.
 double Mixer::noise(Note& n, double cutoff) {
   rng ^= rng << 13;
   rng ^= rng >> 17;
@@ -481,7 +481,7 @@ double Mixer::noise(Note& n, double cutoff) {
 }
 
 double Mixer::sample(int64_t p, double extra) {
-  std::erase_if(playing, [&](PlayingScore& ps) { return !advance(ps, p); });
+  std::erase_if(playing, [&](PlayingSchedule& ps) { return !advance(ps, p); });
   double mixed = 0.0;
   for (auto& s : samplers) {
     if (s.pos >= s.pcm.size()) continue;
@@ -506,7 +506,7 @@ double Mixer::sample(int64_t p, double extra) {
     n.elapsed++;
   }
   mixed += extra;
-  for (auto& ps : playing) mixed += ps.score->room->step();
+  for (auto& ps : playing) mixed += ps.schedule->room->step();
   return mixed;
 }
 
@@ -535,16 +535,16 @@ void tone_callback(void* buffer_data, unsigned int frames) {
       g_pending[g_pending_count++] = g_inbox[i];
     }
     g_inbox_count = 0;
-    // A score played again starts over; one stopped goes silent at once.
-    for (auto& cmd : g_score_inbox) {
-      std::erase_if(g_mix.playing, [&](const PlayingScore& ps) { return ps.id == cmd.id; });
+    // A schedule played again starts over; one stopped goes silent at once.
+    for (auto& cmd : g_schedule_inbox) {
+      std::erase_if(g_mix.playing, [&](const PlayingSchedule& ps) { return ps.id == cmd.id; });
       g_mix.cut(cmd.id);
-      if (cmd.score) {
-        cmd.score->room->reset();
-        g_mix.playing.push_back(PlayingScore{cmd.id, std::move(cmd.score), cmd.start, 0});
+      if (cmd.schedule) {
+        cmd.schedule->room->reset();
+        g_mix.playing.push_back(PlayingSchedule{cmd.id, std::move(cmd.schedule), cmd.start, 0});
       }
     }
-    g_score_inbox.clear();
+    g_schedule_inbox.clear();
     // A graph played again starts over; one stopped goes silent at once.
     for (auto& cmd : g_graph_inbox) {
       std::erase_if(g_playing_graphs, [&](const PlayingGraph& pg) { return pg.id == cmd.id; });
@@ -845,14 +845,14 @@ void exit_teardown() {
   }
   g_mix.playing.clear();
   g_mix.samplers.clear();
-  g_score_inbox.clear();
+  g_schedule_inbox.clear();
   g_playing_graphs.clear();
   g_graph_inbox.clear();
   g_graph_posts.clear();
   g_graph_posts_taken = 0;
   g_live_graphs.clear();
   g_retired_graphs.clear();
-  g_scores.clear();
+  g_schedules.clear();
   g_retired.clear();
   g_sound_pcm.clear();
   if (g_ready) {
@@ -904,9 +904,9 @@ void tone(int64_t start_freq, int64_t end_freq, int64_t attack, int64_t decay,
   g_inbox[g_inbox_count++] = Queued{start, static_cast<int>(channel), n};
 }
 
-// A decoded sample as a score mixes it, mono floats at the mixer's rate
+// A decoded sample as a schedule mixes it, mono floats at the mixer's rate
 // (converting `w` so); nullptr when it has none. Playing a Sound and
-// rendering a score both decode through it.
+// rendering a schedule both decode through it.
 std::shared_ptr<const std::vector<float>> mixer_samples(Wave& w) {
   WaveFormat(&w, kSampleRate, 32, 1);
   float* f = LoadWaveSamples(w);
@@ -916,19 +916,19 @@ std::shared_ptr<const std::vector<float>> mixer_samples(Wave& w) {
   return pcm;
 }
 
-// A score from Audio.Kauai's list (kScoreStride), a Sound's samples found by
+// A schedule from Audio.Kauai's list (kScheduleStride), a Sound's samples found by
 // its handle in `pcm` (one it does not hold, which the device could not
 // decode, is left out).
 using PcmByHandle = std::unordered_map<int64_t, std::shared_ptr<const std::vector<float>>>;
-std::shared_ptr<Score> build_score(const double* events, int64_t count, double length,
+std::shared_ptr<Schedule> build_schedule(const double* events, int64_t count, double length,
                                    double loop_at, const PcmByHandle& pcm) {
   auto samples = [](double seconds) {
     return static_cast<int64_t>(std::max(0.0, seconds) * kSampleRate);
   };
-  auto s = std::make_shared<Score>();
-  for (int64_t i = 0; i + kScoreStride <= count; i += kScoreStride) {
+  auto s = std::make_shared<Schedule>();
+  for (int64_t i = 0; i + kScheduleStride <= count; i += kScheduleStride) {
     const double* e = events + i;
-    ScoreEvent ev;
+    ScheduleEvent ev;
     ev.at = samples(e[0]);
     ev.channel = static_cast<int>(e[1]);
     if (ev.channel < 0) {
@@ -948,19 +948,19 @@ std::shared_ptr<Score> build_score(const double* events, int64_t count, double l
   return s;
 }
 
-void score_new(int64_t id, const double* events, int64_t count, double length,
+void schedule_new(int64_t id, const double* events, int64_t count, double length,
                double loop_at) {
   ensure_tone_stream();
   if (!g_tone_ready) return;
   release_retired();
-  g_scores[id] = build_score(events, count, length, loop_at, g_sound_pcm);
+  g_schedules[id] = build_schedule(events, count, length, loop_at, g_sound_pcm);
 }
 
-// A mixer of its own plays the score once through, from sample 0 until it
+// A mixer of its own plays the schedule once through, from sample 0 until it
 // lets go of it (its last sound and its room's echoes over), as the stream
 // would, and keeps the samples from `from` seconds on; its Sounds decoded here
 // as sound_load decodes them, so no device is needed.
-bool score_render(const double* events, int64_t count, double length, double wet,
+bool schedule_render(const double* events, int64_t count, double length, double wet,
                   double volume, double from, const std::vector<SoundBytes>& sounds,
                   std::vector<float>& out) {
   PcmByHandle pcm;
@@ -970,11 +970,11 @@ bool score_render(const double* events, int64_t count, double length, double wet
     if (auto p = mixer_samples(w)) pcm[b.handle] = std::move(p);
     UnloadWave(w);
   }
-  auto score = build_score(events, count, length, -1, pcm);
-  score->volume.store(std::max(0.0, volume));
-  score->room->wet.store(std::max(0.0, wet));
+  auto schedule = build_schedule(events, count, length, -1, pcm);
+  schedule->volume.store(std::max(0.0, volume));
+  schedule->room->wet.store(std::max(0.0, wet));
   Mixer m;
-  m.playing.push_back(PlayingScore{1, std::move(score), 0, 0});
+  m.playing.push_back(PlayingSchedule{1, std::move(schedule), 0, 0});
   const int64_t first = std::llround(std::max(0.0, from) * kSampleRate);
   for (int64_t p = 0; !m.playing.empty(); p++) {
     double v = m.sample(p, 0.0);
@@ -993,33 +993,33 @@ DecodeResult decode(const uint8_t* data, int64_t len, const char* fmt, Recording
   return culebra_decode(fmt, data, static_cast<size_t>(len), sink, &out) ? DecodeResult::Decoded
                                                                           : DecodeResult::Undecodable;
 }
-void score_free(int64_t id) {
-  auto it = g_scores.find(id);
-  if (it == g_scores.end()) return;
-  score_stop(id);
+void schedule_free(int64_t id) {
+  auto it = g_schedules.find(id);
+  if (it == g_schedules.end()) return;
+  schedule_stop(id);
   g_retired.push_back(std::move(it->second));
-  g_scores.erase(it);
+  g_schedules.erase(it);
   release_retired();
 }
-void score_play(int64_t id) {
+void schedule_play(int64_t id) {
   release_retired();
-  auto it = g_scores.find(id);
-  if (it == g_scores.end()) return;
+  auto it = g_schedules.find(id);
+  if (it == g_schedules.end()) return;
   std::lock_guard<std::mutex> lock(g_tone_mutex);
-  g_score_inbox.push_back(ScoreCommand{id, it->second, stream_now()});
+  g_schedule_inbox.push_back(ScheduleCommand{id, it->second, stream_now()});
 }
-void score_stop(int64_t id) {
-  if (!g_scores.contains(id)) return;
+void schedule_stop(int64_t id) {
+  if (!g_schedules.contains(id)) return;
   std::lock_guard<std::mutex> lock(g_tone_mutex);
-  g_score_inbox.push_back(ScoreCommand{id, nullptr, 0});
+  g_schedule_inbox.push_back(ScheduleCommand{id, nullptr, 0});
 }
-void score_volume(int64_t id, double v) {
-  auto it = g_scores.find(id);
-  if (it != g_scores.end()) it->second->volume.store(std::max(0.0, v));
+void schedule_volume(int64_t id, double v) {
+  auto it = g_schedules.find(id);
+  if (it != g_schedules.end()) it->second->volume.store(std::max(0.0, v));
 }
-void score_room(int64_t id, double wet) {
-  auto it = g_scores.find(id);
-  if (it != g_scores.end()) it->second->room->wet.store(std::max(0.0, wet));
+void schedule_room(int64_t id, double wet) {
+  auto it = g_schedules.find(id);
+  if (it != g_schedules.end()) it->second->room->wet.store(std::max(0.0, wet));
 }
 
 // The copy plays from the next sample the stream can start it on.
@@ -1080,7 +1080,7 @@ void sound_load(int64_t id, const uint8_t* data, int64_t len, const char* fmt) {
   if (w.data == nullptr) return;
   Sound s = LoadSoundFromWave(w);
   g_sounds[id] = s;
-  // A score mixes the sample itself, so it keeps it as the mixer's samples.
+  // A schedule mixes the sample itself, so it keeps it as the mixer's samples.
   if (auto pcm = mixer_samples(w)) g_sound_pcm[id] = std::move(pcm);
   UnloadWave(w);
 }

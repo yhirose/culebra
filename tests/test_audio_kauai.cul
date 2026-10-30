@@ -367,8 +367,8 @@ let refused = fn (f) {
   }
 }
 let out_of_order = "Audio.Kauai: a song's events are out of time order"
-assert_eq(refused(fn () { _Audio.score_new(backwards, 2.0, -1.0) }), out_of_order)
-assert_eq(refused(fn () { _Audio.score_render(backwards, [], 2.0, 0.0, 1.0, 0.0) }), out_of_order)
+assert_eq(refused(fn () { _Audio.schedule_new(backwards, 2.0, -1.0) }), out_of_order)
+assert_eq(refused(fn () { _Audio.schedule_render(backwards, [], 2.0, 0.0, 1.0, 0.0) }), out_of_order)
 let not_a_sound = Audio.Kauai.new(EXTERNAL, voices: {ep: |pitch, params| 1}, drums: {ride: |params| 1})
 assert_throws("TypeError", fn () {
   not_a_sound.prepare()

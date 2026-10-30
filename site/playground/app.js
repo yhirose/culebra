@@ -441,8 +441,8 @@ function spawnWorker() {
       handleSound(msg);
       return;
     }
-    if (msg.type === "score") {
-      handleScore(msg);
+    if (msg.type === "schedule") {
+      handleSchedule(msg);
       return;
     }
     if (msg.type === "done") {
@@ -451,7 +451,7 @@ function spawnWorker() {
       stopRafPump();
       resetMusic();   // the native analogue: process exit silences every track
       resetSounds();
-      resetScores();
+      resetSchedules();
       stopBtn.disabled = true;
       runBtn.disabled = false;
       ranOnce = true;
@@ -486,7 +486,7 @@ function run({ holdFirstFrame = false } = {}) {
   ensureAudio();    // this click is a user gesture — unlock audio for any tones
   resetMusic();     // a fresh run must not inherit the previous run's BGM
   resetSounds();
-  resetScores();
+  resetSchedules();
   running = true;
   runBtn.disabled = true;
   stopBtn.disabled = false;
@@ -529,7 +529,7 @@ function stop() {
   stopRafPump();
   resetMusic();     // terminating the worker must also silence a looping BGM
   resetSounds();
-  resetScores();
+  resetSchedules();
   stopBtn.disabled = true;
   runBtn.disabled = true; // until the fresh worker reports ready
   updatePlayOverlay();
@@ -960,8 +960,8 @@ function playTone(m) {
 
 // A tone from `now` on the context's clock, its phases in seconds; answers
 // the source node (null when audio is unavailable). `scale` multiplies the
-// levels after they are clamped, as a score's volume does natively, and `out`
-// is where it sounds (a score's own bus).
+// levels after they are clamped, as a schedule's volume does natively, and `out`
+// is where it sounds (a schedule's own bus).
 function toneAt(now, ch, startFreq, endFreq, attackT, decayT, sustainT, releaseT,
                 vol, peak, duty, scale = 1, out = audioCtx.destination) {
   try {
@@ -975,7 +975,7 @@ function toneAt(now, ch, startFreq, endFreq, attackT, decayT, sustainT, releaseT
 
     // Monophony by time, as the native mixer has it: a channel belongs to the
     // note that started last. This one cuts what is sounding at `now`, and is
-    // cut in turn by a note a score has already put later on.
+    // cut in turn by a note a schedule has already put later on.
     let end = now + total;
     for (const v of activeVoices[channel]) {
       if (v.start <= now) {
@@ -1104,7 +1104,7 @@ function handleSound(m) {
         if (!ensureAudio()) return;
         // The decode is asynchronous, and a script plays a sample it has just
         // made: a play asked for before it lands is honoured when it does,
-        // as a track's is, and a score waits for `ready`.
+        // as a track's is, and a schedule waits for `ready`.
         entry.ready = audioCtx.decodeAudioData(m.buf.buffer)
           .then((buf) => {
             if (sounds.get(m.id) !== entry) return;  // freed while decoding
@@ -1173,18 +1173,18 @@ function startTrack(id, t, offset) {
 }
 
 // --- Audio.Kauai: a song's notes, each started on the context's own clock ---
-// A score arrives whole, in time order (stdlib/audio.h's kScoreStride says
+// A schedule arrives whole, in time order (stdlib/audio.h's kScheduleStride says
 // what an event holds), and a timer puts each note on the context's clock a
 // little ahead of when it sounds, the usual WebAudio lookahead: the notes
 // keep time however the page's own timers jitter.
-const SCORE_STRIDE = 11;
-const SCORE_AHEAD = 0.2;  // seconds of notes scheduled ahead of the clock
-const scores = new Map();  // id -> { events, length, loopAt, volume, room, run }
+const SCHEDULE_STRIDE = 11;
+const SCHEDULE_AHEAD = 0.2;  // seconds of notes scheduled ahead of the clock
+const schedules = new Map();  // id -> { events, length, loopAt, volume, room, run }
 
-// The room a score plays in, as the native mixer has it (Freeverb: eight
+// The room a schedule plays in, as the native mixer has it (Freeverb: eight
 // damped combs in parallel, then four allpasses in series, at Jezar's delays
 // and gain, scaled to the context's rate): its echoes of a single click,
-// 2.3 seconds of them, which a convolver plays against the score's sound.
+// 2.3 seconds of them, which a convolver plays against the schedule's sound.
 const roomEchoes = new Map();  // sample rate -> AudioBuffer
 function roomEcho(rate) {
   if (roomEchoes.has(rate)) return roomEchoes.get(rate);
@@ -1217,9 +1217,9 @@ function roomEcho(rate) {
   return buf;
 }
 
-// Where a score's notes sound: straight out, and through its room when it
+// Where a schedule's notes sound: straight out, and through its room when it
 // plays in one.
-function scoreBus(e) {
+function scheduleBus(e) {
   const dry = audioCtx.createGain();
   dry.connect(audioCtx.destination);
   const nodes = [dry];
@@ -1235,7 +1235,7 @@ function scoreBus(e) {
   return { out: dry, nodes };
 }
 
-function stopScore(e) {
+function stopSchedule(e) {
   const run = e.run;
   e.run = null;
   if (!run) return;
@@ -1249,22 +1249,22 @@ function stopScore(e) {
   }
 }
 
-function resetScores() {
-  for (const e of scores.values()) stopScore(e);
-  scores.clear();
+function resetSchedules() {
+  for (const e of schedules.values()) stopSchedule(e);
+  schedules.clear();
 }
 
-// Put every note due before the clock is SCORE_AHEAD further on in place,
+// Put every note due before the clock is SCHEDULE_AHEAD further on in place,
 // going round again at the end of a song that loops.
-function pumpScore(e) {
+function pumpSchedule(e) {
   const run = e.run;
   if (!run) return;
   const ev = e.events;
-  const n = ev.length / SCORE_STRIDE;
-  const until = audioCtx.currentTime + SCORE_AHEAD;
+  const n = ev.length / SCHEDULE_STRIDE;
+  const until = audioCtx.currentTime + SCHEDULE_AHEAD;
   for (;;) {
-    while (run.next < n && run.origin + ev[run.next * SCORE_STRIDE] < until) {
-      const i = run.next++ * SCORE_STRIDE;
+    while (run.next < n && run.origin + ev[run.next * SCHEDULE_STRIDE] < until) {
+      const i = run.next++ * SCHEDULE_STRIDE;
       const when = Math.max(audioCtx.currentTime, run.origin + ev[i]);
       let node = null;
       if (ev[i + 1] < 0) {
@@ -1295,39 +1295,39 @@ function pumpScore(e) {
     }
     run.origin += e.length - e.loopAt;
     run.next = 0;
-    while (run.next < n && ev[run.next * SCORE_STRIDE] < e.loopAt) run.next++;
+    while (run.next < n && ev[run.next * SCHEDULE_STRIDE] < e.loopAt) run.next++;
   }
 }
 
-function handleScore(m) {
+function handleSchedule(m) {
   try {
-    const e = scores.get(m.id);
+    const e = schedules.get(m.id);
     switch (m.cmd) {
       case "new":
-        scores.set(m.id, { events: m.events, length: m.length, loopAt: m.loopAt,
+        schedules.set(m.id, { events: m.events, length: m.length, loopAt: m.loopAt,
                            volume: 1, room: 0, run: null });
         break;
       case "play": {
         if (!e || !ensureAudio()) return;
-        stopScore(e);
+        stopSchedule(e);
         // The samples the song plays have just been made, and decode on their
         // own time: the song starts once they have.
         const decoding = [];
-        for (let i = 0; i < e.events.length; i += SCORE_STRIDE) {
+        for (let i = 0; i < e.events.length; i += SCHEDULE_STRIDE) {
           if (e.events[i + 1] < 0) decoding.push(sounds.get(e.events[i + 2])?.ready);
         }
-        const run = { origin: 0, next: 0, nodes: new Set(), timer: 0, bus: scoreBus(e) };
+        const run = { origin: 0, next: 0, nodes: new Set(), timer: 0, bus: scheduleBus(e) };
         e.run = run;
         Promise.all(decoding).then(() => {
           if (e.run !== run) return;  // stopped or played again meanwhile
           run.origin = audioCtx.currentTime + 0.05;
-          run.timer = setInterval(() => pumpScore(e), 25);
-          pumpScore(e);
+          run.timer = setInterval(() => pumpSchedule(e), 25);
+          pumpSchedule(e);
         });
         break;
       }
       case "stop":
-        if (e) stopScore(e);
+        if (e) stopSchedule(e);
         break;
       case "volume":
         if (e) e.volume = Math.max(0, m.value);
@@ -1336,8 +1336,8 @@ function handleScore(m) {
         if (e) e.room = Math.max(0, m.value);
         break;
       case "free":
-        if (e) stopScore(e);
-        scores.delete(m.id);
+        if (e) stopSchedule(e);
+        schedules.delete(m.id);
         break;
     }
   } catch {

@@ -1503,20 +1503,20 @@ inline constexpr CanonParam kCanonParams_Audio_native[] = {
   // 66: _Audio.capture_read
   {"id", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
   {"frames", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
-  // 68: _Audio.score_new
+  // 68: _Audio.schedule_new
   {"events", false, false, false, false, false, "Array", CanonDefault::None, 0, {}},
   {"length", false, false, false, false, false, "Long|Float", CanonDefault::None, 0, {}},
   {"loop_at", false, false, false, false, false, "Long|Float", CanonDefault::None, 0, {}},
-  // 71: _Audio.score_free
+  // 71: _Audio.schedule_free
   {"id", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
-  // 72: _Audio.score_play
+  // 72: _Audio.schedule_play
   {"id", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
-  // 73: _Audio.score_stop
+  // 73: _Audio.schedule_stop
   {"id", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
-  // 74: _Audio.score_volume
+  // 74: _Audio.schedule_volume
   {"id", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
   {"v", false, false, false, false, false, "Long|Float", CanonDefault::None, 0, {}},
-  // 76: _Audio.score_room
+  // 76: _Audio.schedule_room
   {"id", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
   {"wet", false, false, false, false, false, "Long|Float", CanonDefault::None, 0, {}},
   // 78: _Audio.resonate
@@ -1581,7 +1581,7 @@ inline constexpr CanonParam kCanonParams_Audio_native[] = {
   {"rate", false, false, false, false, false, "Long|Float", CanonDefault::None, 0, {}},
   // 124: _Audio.tone_loudness
   {"freq", false, false, false, false, false, "Long|Float", CanonDefault::None, 0, {}},
-  // 125: _Audio.score_render
+  // 125: _Audio.schedule_render
   {"events", false, false, false, false, false, "Array", CanonDefault::None, 0, {}},
   {"sounds", false, false, false, false, false, "Array", CanonDefault::None, 0, {}},
   {"length", false, false, false, false, false, "Long|Float", CanonDefault::None, 0, {}},
@@ -1665,12 +1665,12 @@ inline constexpr CanonSig kCanonSigs_Audio_native[] = {
   {"_Audio", "", "capture_running", kCanonParams_Audio_native + 64, 1, "Bool", 1, 1, false, -1, -1, -1},
   {"_Audio", "", "capture_waiting", kCanonParams_Audio_native + 65, 1, "Long", 1, 1, false, -1, -1, -1},
   {"_Audio", "", "capture_read", kCanonParams_Audio_native + 66, 2, "Array", 2, 2, false, -1, -1, -1},
-  {"_Audio", "", "score_new", kCanonParams_Audio_native + 68, 3, "Long", 3, 3, false, -1, -1, -1},
-  {"_Audio", "", "score_free", kCanonParams_Audio_native + 71, 1, "", 1, 1, false, -1, -1, -1},
-  {"_Audio", "", "score_play", kCanonParams_Audio_native + 72, 1, "", 1, 1, false, -1, -1, -1},
-  {"_Audio", "", "score_stop", kCanonParams_Audio_native + 73, 1, "", 1, 1, false, -1, -1, -1},
-  {"_Audio", "", "score_volume", kCanonParams_Audio_native + 74, 2, "", 2, 2, false, -1, -1, -1},
-  {"_Audio", "", "score_room", kCanonParams_Audio_native + 76, 2, "", 2, 2, false, -1, -1, -1},
+  {"_Audio", "", "schedule_new", kCanonParams_Audio_native + 68, 3, "Long", 3, 3, false, -1, -1, -1},
+  {"_Audio", "", "schedule_free", kCanonParams_Audio_native + 71, 1, "", 1, 1, false, -1, -1, -1},
+  {"_Audio", "", "schedule_play", kCanonParams_Audio_native + 72, 1, "", 1, 1, false, -1, -1, -1},
+  {"_Audio", "", "schedule_stop", kCanonParams_Audio_native + 73, 1, "", 1, 1, false, -1, -1, -1},
+  {"_Audio", "", "schedule_volume", kCanonParams_Audio_native + 74, 2, "", 2, 2, false, -1, -1, -1},
+  {"_Audio", "", "schedule_room", kCanonParams_Audio_native + 76, 2, "", 2, 2, false, -1, -1, -1},
   {"_Audio", "", "resonate", kCanonParams_Audio_native + 78, 4, "Array", 4, 4, false, -1, -1, -1},
   {"_Audio", "", "pluck", kCanonParams_Audio_native + 82, 5, "Array", 5, 5, false, -1, -1, -1},
   {"_Audio", "", "partials", kCanonParams_Audio_native + 87, 9, "Array", 9, 9, false, -1, -1, -1},
@@ -1691,7 +1691,7 @@ inline constexpr CanonSig kCanonSigs_Audio_native[] = {
   {"_Audio", "", "loudness", kCanonParams_Audio_native + 122, 2, "Float?", 2, 2, false, -1, -1, -1},
   {"_Audio", "", "integrated_loudness", kCanonParams_Audio_native + 122, 2, "Float?", 2, 2, false, -1, -1, -1},
   {"_Audio", "", "tone_loudness", kCanonParams_Audio_native + 124, 1, "Float?", 1, 1, false, -1, -1, -1},
-  {"_Audio", "", "score_render", kCanonParams_Audio_native + 125, 6, "Array", 6, 6, false, -1, -1, -1},
+  {"_Audio", "", "schedule_render", kCanonParams_Audio_native + 125, 6, "Array", 6, 6, false, -1, -1, -1},
   {"_Audio", "", "decode", kCanonParams_Audio_native + 131, 1, "Array", 1, 1, false, -1, -1, -1},
   {"_Audio", "", "spectrum", kCanonParams_Audio_native + 132, 3, "Array", 3, 3, false, -1, -1, -1},
   {"_Audio", "", "resample", kCanonParams_Audio_native + 135, 3, "Array", 3, 3, false, -1, -1, -1},

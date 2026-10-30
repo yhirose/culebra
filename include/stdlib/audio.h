@@ -2,7 +2,7 @@
 
 // The Audio namespace's backend choke: the one owner of the sound device and
 // of everything that plays through it (tone, Sound, Music, PCM, and the
-// scores Audio.Kauai plays) or listens on the microphone (Capture). The
+// schedules Audio.Kauai plays) or listens on the microphone (Capture). The
 // script-facing surface is src/preambles/audio.cul and the natives are in
 // stdlib/bindings.h; this header picks the backend.
 //
@@ -17,7 +17,7 @@
 //
 // Silent means what a native build answers on a machine with no audio device:
 // nothing plays, a PCM's block counts pushes all the same, and a Capture
-// hears nothing. What needs raudio's code but no device (score_render,
+// hears nothing. What needs raudio's code but no device (schedule_render,
 // decode) answers there, and in the browser, that it is not available.
 
 #include <stdlib/pcm_block.h>
@@ -282,7 +282,7 @@ inline constexpr auto kSamplesError =
     "type error: parameter 'samples' expects an Array of Long|Float";
 inline constexpr auto kF0Error =
     "type error: parameter 'f0' expects an Array of Long|Float|Nil";
-inline constexpr auto kScoreEventsError =
+inline constexpr auto kScheduleEventsError =
     "type error: parameter 'events' expects an Array of Long|Float";
 
 // Sound, Music and PCM handles: one counter for every backend, so a
@@ -314,16 +314,16 @@ inline double tone_loudness(double freq) {
   return loudness(x.data(), n, kMixerRate);
 }
 
-// Numbers an event takes in a score's flat list, Audio.Kauai's song as both
+// Numbers an event takes in a schedule's flat list, Audio.Kauai's song as both
 // mixers take it: its time in seconds, then a tone's channel, start and end
 // frequency, attack, decay, sustain and release in seconds, vol, peak and
 // duty; or -1 and a Sound's handle and gain. The events come in time order,
 // since the mixers read them from the head (the binding refuses a list out
 // of it).
-inline constexpr int64_t kScoreStride = 11;
+inline constexpr int64_t kScheduleStride = 11;
 
-// A Sound a score plays, by the bytes it was made from, for score_render: the
-// handle the score's list names it by, and its format (sound_format's).
+// A Sound a schedule plays, by the bytes it was made from, for schedule_render: the
+// handle the schedule's list names it by, and its format (sound_format's).
 struct SoundBytes {
   int64_t handle = 0;
   const uint8_t* data = nullptr;
@@ -1538,16 +1538,16 @@ EM_JS(void, _wasm_audio_music_load,
 EM_JS(int, _wasm_audio_music_playing, (int id), {
   return self.__musicPlaying[id] ? 1 : 0;
 });
-// A score's events go to the page whole; it schedules them on its own clock.
-EM_JS(void, _wasm_audio_score_new,
+// A schedule's events go to the page whole; it schedules them on its own clock.
+EM_JS(void, _wasm_audio_schedule_new,
       (int id, const double* events, int count, double length, double loop_at), {
-  postMessage({ type: "score", cmd: "new", id: id,
+  postMessage({ type: "schedule", cmd: "new", id: id,
                 events: HEAPF64.slice(events >> 3, (events >> 3) + count),
                 length: length, loopAt: loop_at });
 });
-EM_JS(void, _wasm_audio_score, (int cmd, int id, double value), {
+EM_JS(void, _wasm_audio_schedule, (int cmd, int id, double value), {
   const names = ["play", "stop", "free", "volume", "room"];
-  postMessage({ type: "score", cmd: names[cmd], id: id, value: value });
+  postMessage({ type: "schedule", cmd: names[cmd], id: id, value: value });
 });
 
 inline bool available() { return true; }
@@ -1595,18 +1595,18 @@ inline void music_volume(int64_t id, double x) { _wasm_audio_music(6, static_cas
 inline void music_pitch(int64_t id, double x) { _wasm_audio_music(7, static_cast<int>(id), x); }
 inline void music_pan(int64_t id, double x) { _wasm_audio_music(8, static_cast<int>(id), x); }
 
-inline void score_new(int64_t id, const double* events, int64_t count,
+inline void schedule_new(int64_t id, const double* events, int64_t count,
                       double length, double loop_at) {
-  _wasm_audio_score_new(static_cast<int>(id), events, static_cast<int>(count),
+  _wasm_audio_schedule_new(static_cast<int>(id), events, static_cast<int>(count),
                         length, loop_at);
 }
-inline void score_play(int64_t id) { _wasm_audio_score(0, static_cast<int>(id), 0); }
-inline void score_stop(int64_t id) { _wasm_audio_score(1, static_cast<int>(id), 0); }
-inline void score_free(int64_t id) { _wasm_audio_score(2, static_cast<int>(id), 0); }
-inline void score_volume(int64_t id, double x) { _wasm_audio_score(3, static_cast<int>(id), x); }
-inline void score_room(int64_t id, double x) { _wasm_audio_score(4, static_cast<int>(id), x); }
-// The page mixes a score in WebAudio, which renders nothing back to the program.
-inline bool score_render(const double*, int64_t, double, double, double, double,
+inline void schedule_play(int64_t id) { _wasm_audio_schedule(0, static_cast<int>(id), 0); }
+inline void schedule_stop(int64_t id) { _wasm_audio_schedule(1, static_cast<int>(id), 0); }
+inline void schedule_free(int64_t id) { _wasm_audio_schedule(2, static_cast<int>(id), 0); }
+inline void schedule_volume(int64_t id, double x) { _wasm_audio_schedule(3, static_cast<int>(id), x); }
+inline void schedule_room(int64_t id, double x) { _wasm_audio_schedule(4, static_cast<int>(id), x); }
+// The page mixes a schedule in WebAudio, which renders nothing back to the program.
+inline bool schedule_render(const double*, int64_t, double, double, double, double,
                          const std::vector<SoundBytes>&, std::vector<float>&) {
   return false;
 }
@@ -1669,22 +1669,22 @@ int64_t capture_waiting(int64_t id);
 // Up to `frames` waiting frames (all of them when negative), interleaved into
 // `out`, which arrives empty.
 void capture_read(int64_t id, int64_t frames, std::vector<float>& out);
-void score_new(int64_t id, const double* events, int64_t count, double length,
+void schedule_new(int64_t id, const double* events, int64_t count, double length,
                double loop_at);
-void score_free(int64_t id);
-void score_play(int64_t id);
-void score_stop(int64_t id);
-void score_volume(int64_t id, double v);
-// How much of the room the score plays in is heard with it, 0 for none.
-void score_room(int64_t id, double wet);
-// A score (score_new's list and length) rendered into `out`, which arrives
+void schedule_free(int64_t id);
+void schedule_play(int64_t id);
+void schedule_stop(int64_t id);
+void schedule_volume(int64_t id, double v);
+// How much of the room the schedule plays in is heard with it, 0 for none.
+void schedule_room(int64_t id, double wet);
+// A schedule (schedule_new's list and length) rendered into `out`, which arrives
 // empty, as the stream would play it once through at `volume` in a room heard
 // `wet` strong: mono at kMixerRate, from `from` seconds on until its last
 // sound and its room's echoes end. It is mixed from the top all the same, so
-// what sounds from `from` on is what the whole score sounds there. Its Sounds
+// what sounds from `from` on is what the whole schedule sounds there. Its Sounds
 // are decoded from `sounds` as sound_load decodes them, so it needs no
 // device. False where there is no mixer to render with.
-bool score_render(const double* events, int64_t count, double length, double wet,
+bool schedule_render(const double* events, int64_t count, double length, double wet,
                   double volume, double from, const std::vector<SoundBytes>& sounds,
                   std::vector<float>& out);
 // A recording's bytes (`fmt` sound_format's) read with the decoders a Sound
@@ -1734,14 +1734,14 @@ CULEBRA_RT_AUDIO_LINKAGE void music_seek(int64_t, double) {}
 CULEBRA_RT_AUDIO_LINKAGE void music_volume(int64_t, double) {}
 CULEBRA_RT_AUDIO_LINKAGE void music_pitch(int64_t, double) {}
 CULEBRA_RT_AUDIO_LINKAGE void music_pan(int64_t, double) {}
-CULEBRA_RT_AUDIO_LINKAGE void score_new(int64_t, const double*, int64_t, double,
+CULEBRA_RT_AUDIO_LINKAGE void schedule_new(int64_t, const double*, int64_t, double,
                                         double) {}
-CULEBRA_RT_AUDIO_LINKAGE void score_free(int64_t) {}
-CULEBRA_RT_AUDIO_LINKAGE void score_play(int64_t) {}
-CULEBRA_RT_AUDIO_LINKAGE void score_stop(int64_t) {}
-CULEBRA_RT_AUDIO_LINKAGE void score_volume(int64_t, double) {}
-CULEBRA_RT_AUDIO_LINKAGE void score_room(int64_t, double) {}
-CULEBRA_RT_AUDIO_LINKAGE bool score_render(const double*, int64_t, double, double,
+CULEBRA_RT_AUDIO_LINKAGE void schedule_free(int64_t) {}
+CULEBRA_RT_AUDIO_LINKAGE void schedule_play(int64_t) {}
+CULEBRA_RT_AUDIO_LINKAGE void schedule_stop(int64_t) {}
+CULEBRA_RT_AUDIO_LINKAGE void schedule_volume(int64_t, double) {}
+CULEBRA_RT_AUDIO_LINKAGE void schedule_room(int64_t, double) {}
+CULEBRA_RT_AUDIO_LINKAGE bool schedule_render(const double*, int64_t, double, double,
                                            double, double, const std::vector<SoundBytes>&,
                                            std::vector<float>&) {
   return false;

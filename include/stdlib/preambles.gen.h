@@ -1650,7 +1650,7 @@ let Canvas = _canvas_module()
 
 inline constexpr const char* AUDIO_MODULE_SOURCE = R"=culpre=(# Audio.Kauai: the Kauai language (docs/kauai/language.md), read, checked and
 # played. A song is expanded to its notes, each timed in seconds, and handed to
-# the runtime whole as a score (_Audio.score_*), which starts every note on
+# the runtime whole as a schedule (_Audio.schedule_*), which starts every note on
 # the audio stream's own clock. Spliced in front of audio.cul, whose module
 # builds it (misc/gen_preambles.sh).
 let _kauai_module = fn () {
@@ -4193,7 +4193,7 @@ let _kauai_module = fn () {
       @_weights = nil
       @_todo = @_build.keys()
       @_sounds = {}
-      @_score = nil
+      @_schedule = nil
       @_started = nil
       @_volume = 1.0
     }
@@ -4280,12 +4280,12 @@ let _kauai_module = fn () {
 
     # Play from the top (again, if it is playing), after building what is left.
     play() {
-      if @_score == nil {
-        @_score = _Audio.score_new(@_list(@_plays, nil), @_length, @_loop_at)
-        _Audio.score_volume(@_score, @_volume)
-        _Audio.score_room(@_score, @_room)
+      if @_schedule == nil {
+        @_schedule = _Audio.schedule_new(@_list(@_plays, nil), @_length, @_loop_at)
+        _Audio.schedule_volume(@_schedule, @_volume)
+        _Audio.schedule_room(@_schedule, @_room)
       }
-      _Audio.score_play(@_score)
+      _Audio.schedule_play(@_schedule)
       @_started = _Time.monotonic()
     }
 
@@ -4312,7 +4312,7 @@ let _kauai_module = fn () {
         sounds.push(s.data())
       }
       let length = last == nil ? @_length : Math.min(last, @_length)
-      let out = _Audio.score_render(list, sounds, length, @_room, @_volume, start)
+      let out = _Audio.schedule_render(list, sounds, length, @_room, @_volume, start)
       # The lead rises as half a cosine, to the level `from` is heard at.
       let rise = Math.round((first - start) * RATE)
       for i in 0..Math.min(rise, out.size()) {
@@ -4322,14 +4322,14 @@ let _kauai_module = fn () {
     }
 
     stop() {
-      _Audio.score_stop(@_score) if @_score != nil
+      _Audio.schedule_stop(@_schedule) if @_schedule != nil
       @_started = nil
     }
 
     # The level the whole song plays at, 0.0..1.0, from its next note on.
     volume(v: Long | Float) {
       @_volume = v * 1.0
-      _Audio.score_volume(@_score, v) if @_score != nil
+      _Audio.schedule_volume(@_schedule, v) if @_schedule != nil
     }
 
     # Whether it is playing: from play() until stop(), or its end.
@@ -4406,7 +4406,7 @@ let _kauai_module = fn () {
     }
 
     drop() {
-      _Audio.score_free(@_score) if @_score != nil
+      _Audio.schedule_free(@_schedule) if @_schedule != nil
     }
   }
 
