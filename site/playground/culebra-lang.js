@@ -28,7 +28,7 @@ const BUILTINS = new Set([
   "Nil", "Bool", "Long", "Float", "String", "Array", "Object", "Function", "Any",
   "Math", "IO", "FS", "File", "Time", "Random", "Sys", "Tensor", "JSON", "Args", "Proc", "Path", "Dir",
   "Isolate", "Channel", "Parallel", "Signal", "SharedBuffer", "Shared", "GC", "Regex", "Http",
-  "Encoding", "Compress", "Hash", "CSV", "Env", "UUID", "Term", "Log", "TOML", "XML", "SQLite",
+  "Encoding", "Compress", "Hash", "CSV", "Env", "UUID", "Term", "Log", "TOML", "XML", "SQLite", "Llama",
   "Canvas", "Audio", "Scene", "Net", "Desktop", "Webview", "Vector2", "Vector3", "Deque", "PriorityQueue", "StateMachine",
   "PEG", "FST", "Search", "Range", "Set", "LLM",
 ]);

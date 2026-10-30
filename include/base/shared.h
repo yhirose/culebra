@@ -3719,7 +3719,7 @@ inline bool is_error_kind_name(std::string_view name) {
       "DispatchError", "DropContractError", "EffectError", "ExitError",
       "FSTError", "HttpError", "IOError", "ImmutableError",
       "ImportError", "IndexError", "InternalError", "Interrupted", "IrError",
-      "KauaiError", "KeyError", "LLMError", "NameError", "NetError",
+      "KauaiError", "KeyError", "LLMError", "LlamaError", "NameError", "NetError",
       "NilError",
       "PEGError", "ParallelError", "ProcessError", "RecursionError",
       "RegexError", "RuntimeError", "SQLiteError", "SearchError", "SendError",

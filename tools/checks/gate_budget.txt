@@ -258,7 +258,7 @@ ctest.entries 36
 # quick guide shows `@name` in a method, in en and ja. 1120 since 13 shows
 # the `is` type test, in en and ja. 1122 since the keyword-arguments section
 # shows `f(x:)`, in en and ja.
-docs.blocks 1122
+docs.blocks 1130
 
 # The samples the language front ends are run over (examples/languages/*).
 languages.samples 130

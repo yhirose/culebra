@@ -1,0 +1,172 @@
+# Llama: a model run in this process. Not under tests/*.cul: a build without
+# CULEBRA_ENABLE_LLAMA has no Llama (tools/checks/check_tests_optional_ns.sh).
+# What needs no model always runs; the rest runs when CULEBRA_TEST_MODEL names a
+# GGUF file (the 1.2 MB stories260K.gguf is enough: a grammar fixes what the
+# model writes, so no check depends on what a model happens to say).
+
+# What a call raised, as "Kind: message".
+fn failure(thunk) {
+  try {
+    thunk()
+    "no error"
+  } catch e {
+    "{e.kind}: {e.message}"
+  }
+}
+
+# A grammar that allows exactly `text`.
+fn only(text) {
+  'root ::= "' + text + '"'
+}
+
+# --- what needs no model -------------------------------------------------------
+
+# The reason comes from llama.cpp's own log, not just that it failed.
+let refused = failure(|| Llama.load("/nonexistent/model.gguf"))
+let because = "LlamaError: Llama: Failed to load model: "
+assert_eq(refused.starts_with(because), true)
+assert_eq(refused.size() > because.size() + 10, true)
+
+assert_eq(failure(|| Llama.load(1)), "TypeError: type error: parameter 'path' expects String")
+assert_eq(failure(|| Llama.load("m.gguf", n_ctx: "big")),
+          "TypeError: type error: parameter 'n_ctx' expects Long")
+assert_eq(failure(|| Llama.load("m.gguf", gpu: 1)),
+          "TypeError: type error: parameter 'gpu' expects Bool")
+assert_eq(failure(|| Llama.load("m.gguf", n_ctx: 0)),
+          "ValueError: Llama: n_ctx must be between 1 and 16777216")
+assert_eq(failure(|| Llama.load("m.gguf", n_batch: -1)),
+          "ValueError: Llama: n_batch must be between 0 and 1048576")
+assert_eq(failure(|| Llama.load("m.gguf", n_slots: 0)),
+          "ValueError: Llama: n_slots must be between 1 and 64")
+assert_eq(failure(|| Llama.load()), "ArityError: expected 1 positional argument, got 0")
+
+# --- a model -------------------------------------------------------------------
+
+fn with_a_model(path) {
+  let m = Llama.load(path, n_ctx: 512, gpu: false)
+  assert_eq(m.n_ctx(), 512)
+
+  # A result says what was written, why it ended, and how many tokens it cost.
+  let r = m.generate("Say ok", grammar: only("ok"), max_tokens: 64)
+  assert_eq(r.text, "ok")
+  assert_eq(r.finish, "end")
+  assert_eq(r.prompt_tokens > 0, true)
+  assert_eq(r.completion_tokens >= 1, true)
+  assert_eq(r.keys().sorted(), ["completion_tokens", "finish", "prompt_tokens", "text"])
+
+  # A stream and the result agree.
+  let pieces = []
+  let streamed = m.generate("Count", grammar: only("one two three"),
+                            on_text: |t| pieces.push(t))
+  assert_eq(streamed.text, "one two three")
+  assert_eq(pieces.join(""), streamed.text)
+  assert_eq(pieces.size() > 1, true)
+
+  # A stop sequence ends it, and is not in the text.
+  let stopped = m.generate("Count", grammar: only("one two three"), stop: ["two"])
+  assert_eq(stopped.finish, "stop")
+  assert_eq(stopped.text, "one ")
+
+  # max_tokens ran out.
+  let cut = m.generate("Tell me a story", max_tokens: 3)
+  assert_eq(cut.finish, "length")
+  assert_eq(cut.completion_tokens, 3)
+
+  # What a callback throws ends the generation and goes up as it is.
+  let calls = []
+  assert_eq(failure(|| m.generate("Count", grammar: only("one two three four"),
+                                  on_text: fn (t) {
+                                    calls.push(t)
+                                    __raise("ValueError", "enough")
+                                  })),
+            "ValueError: enough")
+  assert_eq(calls.size(), 1)
+
+  # The same call gives the same text: the cache is not reused unless asked.
+  let first = m.generate("Tell me a story", max_tokens: 16, temperature: 0)
+  let second = m.generate("Tell me a story", max_tokens: 16, temperature: 0)
+  assert_eq(second.text, first.text)
+
+  # A seed makes a warm sample repeat.
+  let draw = |seed| m.generate("Tell me a story", max_tokens: 24, temperature: 2, seed: seed).text
+  assert_eq(draw(1), draw(1))
+  assert_eq(draw(1) != draw(2), true)
+
+  # Tokens are counted as the model counts them.
+  assert_eq(m.count_tokens("Hello there") > 0, true)
+  assert_eq(m.count_tokens("Hello there, how are you today?") > m.count_tokens("Hello"), true)
+
+  # Chat goes through the model's own template. A model without one is refused
+  # with that said; one with a template is checked on what it makes.
+  let messages = [{role: "system", content: "Answer in one word."}, {role: "user", content: "Hello"}]
+  let formatted = failure(|| m.format_chat(messages))
+  if formatted == "no error" {
+    # The template's own markup, not the contents joined: that is what a model
+    # without a template would silently get if this did not refuse it.
+    let prompt = m.format_chat(messages)
+    assert_eq(prompt.contains("Hello"), true)
+    assert_eq(prompt != "Answer in one word.Hello", true)
+    assert_eq(m.chat(messages, grammar: only("ok")).text, "ok")
+
+    # The same chat gives the same text without the cache. Re-decoding a prompt
+    # the cache holds, from its last token alone, can change even a greedy
+    # answer ("Hello", then "Greetings." for this very chat on Gemma 3), so this
+    # is where a call that reused the cache by mistake shows.
+    let a = m.chat(messages, max_tokens: 24, temperature: 0).text
+    let b = m.chat(messages, max_tokens: 24, temperature: 0).text
+    assert_eq(b, a)
+  } else {
+    assert_eq(formatted, "LlamaError: Llama: The model has no chat template")
+    assert_eq(failure(|| m.chat(messages)), formatted)
+  }
+
+  # What it is given is checked before anything runs.
+  assert_eq(failure(|| m.generate(1)), "TypeError: type error: parameter 'prompt' expects String")
+  assert_eq(failure(|| m.generate()), "ArityError: missing required argument 'prompt'")
+  assert_eq(failure(|| m.generate("x", max_tokens: "a")),
+            "TypeError: type error: parameter 'max_tokens' expects Long")
+  assert_eq(failure(|| m.generate("x", max_tokens: 0)),
+            "ValueError: Llama: max_tokens must be at least 1")
+  assert_eq(failure(|| m.generate("x", stop: "a")),
+            "TypeError: type error: parameter 'stop' expects Array")
+  assert_eq(failure(|| m.generate("x", stop: [1])),
+            "TypeError: type error: parameter 'stop' expects Array<String>")
+  assert_eq(failure(|| m.generate("x", temperature: "hot")),
+            "TypeError: type error: parameter 'temperature' expects Float")
+  assert_eq(failure(|| m.generate("x", temperature: -1)),
+            "ValueError: Llama: temperature must not be negative")
+  assert_eq(failure(|| m.generate("x", seed: "a")),
+            "TypeError: type error: parameter 'seed' expects Long")
+  assert_eq(failure(|| m.generate("x", seed: -1)),
+            "ValueError: Llama: seed must fit in 32 bits")
+  assert_eq(failure(|| m.generate("x", grammar: 1)),
+            "TypeError: type error: parameter 'grammar' expects String")
+  assert_eq(failure(|| m.generate("x", cache: 1)),
+            "TypeError: type error: parameter 'cache' expects Bool")
+  assert_eq(failure(|| m.generate("x", on_text: 1)),
+            "TypeError: type error: parameter 'on_text' expects Function")
+  assert_eq(failure(|| m.chat("hi")), "TypeError: type error: parameter 'messages' expects Array")
+  assert_eq(failure(|| m.chat([1])), "TypeError: type error: messages[0] expects Object")
+  assert_eq(failure(|| m.chat([{role: "user"}])),
+            "TypeError: type error: messages[0].content expects String")
+  assert_eq(failure(|| m.chat([{role: "wizard", content: "hi"}])),
+            "ValueError: Llama: messages[0].role must be system, user or assistant")
+  assert_eq(failure(|| m.count_tokens(1)), "TypeError: type error: parameter 'text' expects String")
+
+  # A prompt that does not fit says so.
+  let long = "word ".repeat(m.n_ctx() + 100)
+  assert_eq(failure(|| m.generate(long)).starts_with("LlamaError: Llama: Prompt too long"), true)
+
+  # Closed, it refuses, and closing again is fine.
+  m.close()
+  assert_eq(failure(|| m.generate("x")), "LlamaError: Llama: the model is closed")
+  assert_eq(m.n_ctx(), 0)
+  m.close()
+}
+
+let model = Sys.env("CULEBRA_TEST_MODEL")
+if model.empty() {
+  println("test_llama: CULEBRA_TEST_MODEL is not set, the model part is skipped")
+} else {
+  with_a_model(model)
+}

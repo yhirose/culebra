@@ -80,8 +80,9 @@
 40. [`Audio`](#40-audio) — ウィンドウの有無によらず使える音: WASM-4のtone、効果音、ストリーム再生の音楽、合成するPCM、マイク
 41. [`Dir`](#41-dir) — ディスク・メモリ・バイナリへの焼き込み・ZIPアーカイブのどこにあるファイルの集まりも、同じ読み方で（`Dir.disk` / `Dir.memory` / `Dir.embedded` / `Dir.zip`と`Dir` trait）
 42. [`LLM`](#42-llm) — 大規模言語モデルのクライアント。提供元（Messages APIかChat Completions）への1ステップ、関数をツールとして使う会話、リクエストの素通し
-43. [設計上の注記](#43-設計上の注記)
-44. [未収録（将来検討）](#44-未収録将来検討)
+43. [`Llama`](#43-llama) — このプロセスの中で動く言語モデル。GGUFを読み込んで`generate`か`chat`（ビルドオプション）
+44. [設計上の注記](#44-設計上の注記)
+45. [未収録（将来検討）](#45-未収録将来検討)
 
 **目的別索引**
 
@@ -9371,7 +9372,105 @@ IO.println(LLM.ask("Name three prime numbers.", provider: local, model: "llama3.
 | 通信の失敗（名前解決、接続拒否、TLS） | `Http`と同じく`HttpError` |
 | 引数の型の誤り | `TypeError` |
 
-## 43. 設計上の注記
+## 43. `Llama`
+
+このプロセスの中で動く言語モデルです。GGUFファイルを読み込んで、問い合わせます。中身はllama.cppで、
+サーバーも、キーも、ネットワークも要りません。この名前空間があるのは、`-DCULEBRA_ENABLE_LLAMA=ON`で
+configureしたビルドだけです（既定はOFF。最初のビルドで、llama.cppのリリースをダウンロードしてコンパイルします）。
+それ以外のビルドでは、`Llama`は未定義の名前です。モデルは、読み込んだisolateに属するハンドルで、別の
+isolateには送れません。
+
+```culebra
+# doctest: skip — GGUFのモデルファイルと、Llama入りのビルドが要る
+let m = Llama.load("gemma-3-4b-it-Q4_K_M.gguf")
+let r = m.chat([{role: "user", content: "Translate into Japanese: Good morning."}])
+IO.println(r.text)
+```
+
+動く環境は、AVX2、BMI2、FMA、F16Cを持つx86-64のCPU（2013年ごろ以降のもの）か、Apple Siliconです。
+それ以外のCPUでは、`Llama.load`が足りないものを挙げた`LlamaError`で答えます。このビルドのllama.cppは
+CPUで計算します。`gpu:`は受け付けますが、効くのはGPUのバックエンドを持つビルドだけです。
+
+### `Llama.load(path, n_ctx=2048, gpu=true, n_batch=0, n_slots=1) -> LlamaModel`
+
+`path`のGGUFモデルを読み込みます。`n_ctx`はコンテキストのトークン数です（llama.cppが切り上げることが
+あります。`n_ctx()`を参照）。`gpu: false`はモデルをCPUに留めます。`n_batch`は一度にデコードするトークン数で
+（0はllama.cppの既定。これより長いプロンプトは、この大きさに分けてデコードされます）、`n_slots`はモデルが
+同時に走らせられる呼び出しの数です。
+
+### `model.generate(prompt, max_tokens=nil, stop=nil, temperature=nil, seed=nil, grammar=nil, cache=false, on_text=nil) -> Object`
+
+`prompt`を、チャットテンプレートを通さずに、そのまま続けます。結果は`Object`です。
+
+| フィールド | |
+|---|---|
+| `text` | 生成されたテキスト（`String`） |
+| `finish` | 終わった理由。`"end"`（モデルが終えた）、`"length"`（`max_tokens`かコンテキストが尽きた）、`"stop"`（`stop`の文字列が現れた。`text`には入らない） |
+| `prompt_tokens` | プロンプトのトークン数 |
+| `completion_tokens` | 生成したトークン数（生成の終端は数えない） |
+
+`max_tokens`の既定は、コンテキストに余裕がある分です。`stop`は`String`の`Array`です。`temperature`と
+`seed`はその呼び出しだけに効きます。どちらかがあると、その呼び出しは自前のサンプラー（温度をかけて、
+`seed`で種を決めた抽選）で選びます。`temperature: 0`は、常に最も確からしいトークンを取ります。`grammar`は
+出力が従うべきGBNF文法で、小さなモデルでも、結果を形（リストからの選択、JSONなど）に収めるために使います。
+
+`on_text`は、テキストが生成されるたびに、その断片を渡されて呼ばれます。これが投げたものは、生成を止めて、
+そのまま上に伝わります。Ctrl+Cも生成を止め、`Interrupted`になります。
+
+```culebra
+# doctest: skip — GGUFのモデルファイルと、Llama入りのビルドが要る
+let m = Llama.load("model.gguf")
+let pieces = []
+let r = m.generate("The capital of France is", max_tokens: 8, on_text: |t| pieces.push(t))
+IO.println(r.text == pieces.join(""))  # => true
+let verdict = m.generate("Is the sky blue? ", grammar: 'root ::= "yes" | "no"').text
+```
+
+`cache`の既定はfalseで、呼び出しごとに空のキャッシュから始めます。同じプロンプトと設定なら、それまでに何回
+呼んでいても同じテキストになります（同じ機械の、同じバックエンドで）。キャッシュがすでに持っているプロンプトは、
+最後の1トークンだけを再デコードするため、全体を一度にデコードした場合と末尾の桁で違い、プロンプトによっては
+貪欲な答えまで変わります。`cache: true`は前の呼び出しのキャッシュを使い、履歴が伸びていく会話では速くなります。
+
+### `model.chat(messages, max_tokens=nil, stop=nil, temperature=nil, seed=nil, grammar=nil, cache=false, on_text=nil) -> Object`
+
+`generate`と同じで、`messages`（`{role:, content:}`の`Array`。`role`は`"system"`、`"user"`、`"assistant"`）を、
+先にモデル自身のチャットテンプレートに通します。llama.cppが適用できるテンプレートは約50種の固定の
+一覧だけで、テンプレートを持たないモデルや、一覧にないテンプレートのモデルは、その旨の`LlamaError`になります
+（メッセージを連結してそのまま送ることはしません）。そのようなモデルでは、プロンプトを自分で組み立てて
+`generate`を呼んでください。
+
+### `model.format_chat(messages) -> String`
+
+チャットテンプレートが`messages`から作るプロンプトです。`generate`や`count_tokens`に渡せます。
+
+### `model.count_tokens(text) -> Long`
+
+`text`が、このモデルの数え方で何トークンかを返します。
+
+### `model.n_ctx() -> Long`
+
+モデルが得たコンテキストの大きさです。頼んだ`n_ctx`より大きいことがあります。閉じたモデルでは0です。
+
+### `model.close()`
+
+モデルを解放します。ハンドルがスコープを抜けたときも解放されます。2回閉じても構いません。閉じたモデルへの
+呼び出しは`LlamaError`です。
+
+### エラー
+
+| 状況 | エラー |
+|---|---|
+| モデルを読み込めない（ファイルがない、GGUFでない、メモリ不足）、CPUにAVX2がない | `LlamaError`（理由つき） |
+| モデルが閉じている | `LlamaError` |
+| プロンプトと`max_tokens`がコンテキストに収まらない | `LlamaError` |
+| 使えるチャットテンプレートがない | `LlamaError` |
+| 型の違う引数 | `TypeError` |
+| 範囲外の値（`n_ctx`、`max_tokens`、`temperature`、`seed`、role） | `ValueError` |
+| 生成中のCtrl+C | `Interrupted` |
+
+含まないもの: ツール呼び出し（形の決まった結果には`grammar:`を使います）、画像と音声、埋め込み。
+
+## 44. 設計上の注記
 
 ### 名前空間ファースト、グローバルは出力の3つだけ
 
@@ -9428,7 +9527,7 @@ run_with(IO, "via parameter")
 
 ---
 
-## 44. 未収録（将来検討）
+## 45. 未収録（将来検討）
 
 ### 重量級データ構造
 

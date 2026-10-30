@@ -361,19 +361,21 @@ jobs:
         run: ccache -s
 
   # Llama (a language model run in this process, cmake/llama.cmake) is off by
-  # default, so no other lane builds it. This one builds llama.cpp from the
-  # pinned release archive and runs llama_smoke, which links the statics and
-  # loads no model; without a lane the option would rot unseen. The statics go
-  # through the deps cache, so only a version bump pays the compile.
+  # default, so no other lane builds it. This one builds the driver with it on
+  # and runs tests/llama on both engines against a 1.2 MB model, the one
+  # llama.cpp's own CI uses: it writes nothing sensible, and does not need to,
+  # since a grammar fixes what each test expects. The llama.cpp statics go
+  # through the deps cache, so only a version bump pays their compile.
   linux-llama:
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 60
     env:
       CULEBRA_CANVAS_WINDOW_DEFAULT: OFF
       CCACHE_DIR: ${{ github.workspace }}/.ccache
       CMAKE_C_COMPILER_LAUNCHER: ccache
       CMAKE_CXX_COMPILER_LAUNCHER: ccache
       CULEBRA_DEPS_CACHE: ${{ github.workspace }}/.deps-cache
+      CULEBRA_TEST_MODEL: ${{ github.workspace }}/stories260K.gguf
     steps:
       - uses: actions/checkout@v5
         with:
@@ -388,19 +390,41 @@ jobs:
           path: ${{ github.workspace }}/.deps-cache
           key: linux-llama-deps-${{ hashFiles('cmake/llama_cpp.cmake', 'cmake/llama.cmake') }}
 
-      - name: Build llama_smoke (Llama ON)
-        run: |
-          cmake -S . -B build-llama -DCMAKE_BUILD_TYPE=Release \
-            -DCULEBRA_ENABLE_LLAMA=ON -DCULEBRA_ENABLE_JIT=OFF
-          cmake --build build-llama --target llama_smoke -j"$(nproc)"
+      # Its own ccache, outside the shared prefix: CULEBRA_ENABLE_LLAMA is a
+      # target-wide define, so no other job's objects would hit.
+      - name: Restore ccache
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.ccache
+          key: linux-llama-ccache-${{ github.sha }}
+          restore-keys: |
+            linux-llama-ccache-
 
-      # --no-tests=error: a configure that quietly left the option off finds
-      # no test, which would otherwise be a pass.
-      - name: Run llama_smoke
-        run: ctest --test-dir build-llama -R llama_smoke --no-tests=error --output-on-failure
+      # Pinned by hash: a model file is code that is run on this machine.
+      - name: Fetch the test model
+        run: |
+          curl -fsSL --retry 5 --retry-delay 5 -o "$CULEBRA_TEST_MODEL" \
+            https://huggingface.co/ggml-org/models/resolve/main/tinyllamas/stories260K.gguf
+          echo "270cba1bd5109f42d03350f60406024560464db173c0e387d91f0426d3bd256d  $CULEBRA_TEST_MODEL" | sha256sum -c -
+
+      - name: Build (Llama ON)
+        run: |
+          just dev-llama
+          cmake --build build-dev-llama --target llama_smoke llama_test -j"$(nproc)"
 
       - name: Report ccache stats
         run: ccache -s
+
+      # --no-tests=error: a configure that quietly left the option off finds
+      # no test, which would otherwise be a pass.
+      - name: ctest (llama_smoke, llama_test)
+        run: ctest --test-dir build-dev-llama -R 'llama_' --no-tests=error --output-on-failure
+
+      # The same file on the bytecode VM and on the LLVM lowering: same results.
+      - name: tests/llama on both engines
+        run: |
+          ./build-dev-llama/culebra tests/llama/test_llama.cul
+          ./build-dev-llama/culebra --jit tests/llama/test_llama.cul
 
   # Release-to-release differential (tools/difftest/release_diff.sh): the
   # generated corpus under the latest published binary and under this commit,

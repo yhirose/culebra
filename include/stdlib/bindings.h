@@ -35,6 +35,9 @@
 #if defined(CULEBRA_SQLITE_ENABLED)
 #include <stdlib/sqlite.h>
 #endif
+#if defined(CULEBRA_LLAMA_ENABLED)
+#include <stdlib/llama.h>
+#endif
 #include <stdlib/canon_sigs.h>  // the canonical native/built-in signature tables
 #include <stdlib/fswatcher.h>   // FS.watch core (fswatch::)
 #include <interop/wrap_registry.h>  // the wrap.h compiled-lane rows
@@ -4746,6 +4749,298 @@ inline JitValue _ns_sqlite_version(JitValue*, int64_t) {
                           std::string(culebra::sqlite::libversion())))};
 }
 #endif  // CULEBRA_SQLITE_ENABLED
+
+#if defined(CULEBRA_LLAMA_ENABLED)
+// ===========================================================================
+// Llama — a language model run in this process: the model handle over the
+// value-neutral core (llama.h). This layer marshals values and nothing else;
+// every refusal the core makes comes back as a LlamaError, and a Ctrl+C is the
+// interrupt, never an error of this namespace.
+// ===========================================================================
+
+[[noreturn]] inline void _jit_llama_throw(const std::string& msg, int64_t line,
+                                          int64_t col) {
+  throw culebra::CulebraError("LlamaError", culebra::format("Llama: {}", msg),
+                              line, col);
+}
+
+[[noreturn]] inline void _jit_llama_bad_value(const std::string& msg, int64_t line,
+                                              int64_t col) {
+  throw culebra::CulebraError("ValueError", culebra::format("Llama: {}", msg),
+                              line, col);
+}
+
+inline int64_t _jit_llama_model_id(JitValue self) {
+  return _jit_handle_long(reinterpret_cast<JitObject*>(self.data), "_id");
+}
+
+// The options of one generate/chat call and the state of its stream. A throw
+// from the callback is kept in `eptr` and stops the generation; it is thrown
+// again as it is once the call has returned (the way Http's sinks do).
+struct JitLlamaCall {
+  culebra::llama::GenerateOptions opts;
+  JitClosure* on_text = nullptr;
+  std::exception_ptr eptr;
+};
+
+// The seven optional arguments that follow the prompt or the messages, from
+// slot `first`: max_tokens, stop, temperature, seed, grammar, cache, on_text.
+// nil, or left out, is the default.
+inline void _jit_llama_options(int64_t n, JitValue* args, size_t first,
+                               JitLlamaCall& c) {
+  auto present = [&](size_t k) {
+    return _jit_file_arg_present(n, args, first + k) &&
+           args[first + k].tag != TAG_NIL;
+  };
+  if (present(0)) {
+    if (args[first].tag != TAG_LONG) _jit_file_param_type_error("max_tokens", "Long", first);
+    if (args[first].data < 1)
+      _jit_llama_bad_value("max_tokens must be at least 1", _jit_thread.call_line,
+                           _jit_thread.call_col);
+    c.opts.max_tokens = static_cast<int>(args[first].data);
+  }
+  if (present(1)) {
+    if (args[first + 1].tag != TAG_ARRAY)
+      _jit_file_param_type_error("stop", "Array", first + 1);
+    auto* arr = reinterpret_cast<JitArray*>(args[first + 1].data);
+    for (size_t i = 0; i < arr->size; i++) {
+      JitValue v = arr->items[i];
+      if (v.tag != TAG_STRING && v.tag != TAG_STRINGVIEW)
+        _jit_file_param_type_error("stop", "Array<String>", first + 1);
+      c.opts.stop.emplace_back(_culebra_str_view(v.tag, v.data));
+    }
+  }
+  if (present(2)) {
+    JitValue v = args[first + 2];
+    if (v.tag != TAG_LONG && v.tag != TAG_FLOAT)
+      _jit_file_param_type_error("temperature", "Float", first + 2);
+    double t = _ns_adapt::take_double(v);
+    if (t < 0)
+      _jit_llama_bad_value("temperature must not be negative", _jit_thread.call_line,
+                           _jit_thread.call_col);
+    c.opts.temperature = static_cast<float>(t);
+  }
+  if (present(3)) {
+    if (args[first + 3].tag != TAG_LONG) _jit_file_param_type_error("seed", "Long", first + 3);
+    if (args[first + 3].data < 0 || args[first + 3].data > 0xFFFFFFFFLL)
+      _jit_llama_bad_value("seed must fit in 32 bits", _jit_thread.call_line,
+                           _jit_thread.call_col);
+    c.opts.seed = static_cast<uint32_t>(args[first + 3].data);
+  }
+  if (present(4)) {
+    if (args[first + 4].tag != TAG_STRING && args[first + 4].tag != TAG_STRINGVIEW)
+      _jit_file_param_type_error("grammar", "String", first + 4);
+    c.opts.grammar = std::string(_culebra_str_view(args[first + 4].tag, args[first + 4].data));
+  }
+  if (present(5)) {
+    if (args[first + 5].tag != TAG_BOOL) _jit_file_param_type_error("cache", "Bool", first + 5);
+    c.opts.cache = args[first + 5].data != 0;
+  }
+  if (present(6)) {
+    if (args[first + 6].tag != TAG_FUNC)
+      _jit_file_param_type_error("on_text", "Function", first + 6);
+    c.on_text = reinterpret_cast<JitClosure*>(args[first + 6].data);
+  }
+}
+
+inline const char* _jit_llama_finish_name(culebra::llama::Finish f) {
+  switch (f) {
+    case culebra::llama::Finish::End: return "end";
+    case culebra::llama::Finish::Length: return "length";
+    case culebra::llama::Finish::Stop: return "stop";
+    case culebra::llama::Finish::Aborted: return "aborted";
+  }
+  return "end";
+}
+
+inline JitValue _jit_llama_result_value(const culebra::llama::Result& r) {
+  auto* o = culebra_runtime_object_new();
+  _ns_adapt::set_field(o, "text", _ns_adapt::str(r.text));
+  _ns_adapt::set_field(o, "finish", _ns_adapt::str(_jit_llama_finish_name(r.finish)));
+  _ns_adapt::set_field(o, "prompt_tokens", _ns_adapt::v_long(r.prompt_tokens));
+  _ns_adapt::set_field(o, "completion_tokens", _ns_adapt::v_long(r.completion_tokens));
+  return _ns_adapt::v_object(o);
+}
+
+// messages: [{role: "user", content: "..."}, ...]
+inline std::vector<culebra::llama::Message> _jit_llama_messages(JitValue v,
+                                                                size_t slot) {
+  if (v.tag != TAG_ARRAY) _jit_file_param_type_error("messages", "Array", slot);
+  auto* arr = reinterpret_cast<JitArray*>(v.data);
+  std::vector<culebra::llama::Message> out;
+  out.reserve(arr->size);
+  auto field = [&](JitObject* o, const char* key, size_t i) -> std::string {
+    size_t k = o->find_slot(key);
+    JitValue f = k == static_cast<size_t>(-1) ? JitValue{TAG_NIL, 0} : o->slots[k].value;
+    if (f.tag != TAG_STRING && f.tag != TAG_STRINGVIEW) {
+      throw culebra::CulebraError(
+          "TypeError",
+          culebra::format("type error: messages[{}].{} expects String", i, key),
+          _jit_arg_pos(static_cast<int>(slot)).line, _jit_arg_pos(static_cast<int>(slot)).col);
+    }
+    return std::string(_culebra_str_view(f.tag, f.data));
+  };
+  for (size_t i = 0; i < arr->size; i++) {
+    JitValue m = arr->items[i];
+    if (m.tag != TAG_OBJECT) {
+      throw culebra::CulebraError(
+          "TypeError", culebra::format("type error: messages[{}] expects Object", i),
+          _jit_arg_pos(static_cast<int>(slot)).line, _jit_arg_pos(static_cast<int>(slot)).col);
+    }
+    auto* o = reinterpret_cast<JitObject*>(m.data);
+    culebra::llama::Message msg{field(o, "role", i), field(o, "content", i)};
+    if (msg.role != "system" && msg.role != "user" && msg.role != "assistant") {
+      _jit_llama_bad_value(
+          culebra::format("messages[{}].role must be system, user or assistant", i),
+          _jit_arg_pos(static_cast<int>(slot)).line, _jit_arg_pos(static_cast<int>(slot)).col);
+    }
+    out.push_back(std::move(msg));
+  }
+  return out;
+}
+
+// What a call to the core does once its options are read: stream into the
+// callback, stop on Ctrl+C, then raise whatever ended it, in that order: a
+// callback's own throw, the interrupt, the core's refusal.
+template <class Run>
+inline JitValue _jit_llama_run(JitLlamaCall& c, Run run) {
+  culebra::llama::Result result;
+  std::string err;
+  auto on_piece = [&c](std::string_view piece) -> bool {
+    if (culebra::interrupt_pending()) return false;
+    if (!c.on_text) return true;
+    try {
+      JitOwnedVal result(_culebra_invoke1(c.on_text, _ns_adapt::str(piece)));
+      return true;
+    } catch (...) {
+      // thrown value: kept, and thrown again as it is once the call returns.
+      c.eptr = std::current_exception();
+      return false;
+    }
+  };
+  bool ok = run(on_piece, &result, &err);
+  if (c.eptr) std::rethrow_exception(c.eptr);
+  culebra::throw_if_interrupted();
+  if (!ok) _jit_llama_throw(err, _jit_thread.call_line, _jit_thread.call_col);
+  return _jit_llama_result_value(result);
+}
+
+inline void _jit_llama_model_generate(JitValue* __ret, JitClosure*, int8_t self_tag,
+                                      int64_t self_data, int64_t n, JitValue* args) {
+  JitValue self{self_tag, self_data};
+  std::string prompt(_jit_handle_req_string(n, args, 0, "prompt"));
+  JitLlamaCall c;
+  _jit_llama_options(n, args, 1, c);
+  int64_t id = _jit_llama_model_id(self);
+  *__ret = _jit_llama_run(c, [&](const culebra::llama::OnPiece& on_piece,
+                                 culebra::llama::Result* r, std::string* err) {
+    return culebra::llama::generate(id, prompt, c.opts, on_piece, r, err);
+  });
+}
+
+inline void _jit_llama_model_chat(JitValue* __ret, JitClosure*, int8_t self_tag,
+                                  int64_t self_data, int64_t n, JitValue* args) {
+  JitValue self{self_tag, self_data};
+  if (!_jit_file_arg_present(n, args, 0)) _jit_file_missing_arg("messages");
+  auto messages = _jit_llama_messages(args[0], 0);
+  JitLlamaCall c;
+  _jit_llama_options(n, args, 1, c);
+  int64_t id = _jit_llama_model_id(self);
+  *__ret = _jit_llama_run(c, [&](const culebra::llama::OnPiece& on_piece,
+                                 culebra::llama::Result* r, std::string* err) {
+    return culebra::llama::chat(id, messages, c.opts, on_piece, r, err);
+  });
+}
+
+inline void _jit_llama_model_format_chat(JitValue* __ret, JitClosure*, int8_t self_tag,
+                                         int64_t self_data, int64_t n, JitValue* args) {
+  JitValue self{self_tag, self_data};
+  if (!_jit_file_arg_present(n, args, 0)) _jit_file_missing_arg("messages");
+  auto messages = _jit_llama_messages(args[0], 0);
+  std::string out, err;
+  if (!culebra::llama::format_chat(_jit_llama_model_id(self), messages, &out, &err))
+    _jit_llama_throw(err, _jit_thread.call_line, _jit_thread.call_col);
+  *__ret = _ns_adapt::str(out);
+}
+
+inline void _jit_llama_model_count_tokens(JitValue* __ret, JitClosure*, int8_t self_tag,
+                                          int64_t self_data, int64_t n, JitValue* args) {
+  JitValue self{self_tag, self_data};
+  std::string text(_jit_handle_req_string(n, args, 0, "text"));
+  int64_t count = 0;
+  std::string err;
+  if (!culebra::llama::count_tokens(_jit_llama_model_id(self), text, &count, &err))
+    _jit_llama_throw(err, _jit_thread.call_line, _jit_thread.call_col);
+  *__ret = _ns_adapt::v_long(count);
+}
+
+inline void _jit_llama_model_n_ctx(JitValue* __ret, JitClosure*, int8_t self_tag,
+                                   int64_t self_data, int64_t, JitValue*) {
+  JitValue self{self_tag, self_data};
+  *__ret = _ns_adapt::v_long(culebra::llama::n_ctx(_jit_llama_model_id(self)));
+}
+
+inline void _jit_llama_model_close(JitValue* __ret, JitClosure*, int8_t self_tag,
+                                   int64_t self_data, int64_t, JitValue*) {
+  JitValue self{self_tag, self_data};
+  culebra::llama::close(_jit_llama_model_id(self));
+  *__ret = {TAG_NIL, 0};
+}
+
+inline JitValue _culebra_llama_build_model_handle(int64_t id) {
+  auto* h = culebra_runtime_object_new();
+  h->set_or_append("_id", JitValue{TAG_LONG, id}, false);
+  h->set_or_append("__nonsendable__", JitValue{TAG_BOOL, 1}, false);
+  static const JitParamMeta* generate_meta = _jit_make_handle_meta(
+      {"prompt", "max_tokens", "stop", "temperature", "seed", "grammar", "cache",
+       "on_text"},
+      {false, true, true, true, true, true, true, true});
+  static const JitParamMeta* chat_meta = _jit_make_handle_meta(
+      {"messages", "max_tokens", "stop", "temperature", "seed", "grammar", "cache",
+       "on_text"},
+      {false, true, true, true, true, true, true, true});
+  static const JitParamMeta* messages_meta = _jit_make_handle_meta({"messages"}, {false});
+  static const JitParamMeta* text_meta = _jit_make_handle_meta({"text"}, {false});
+  _jit_handle_bind_method(h, "generate", _jit_native<_jit_llama_model_generate>, 1,
+                          generate_meta);
+  _jit_handle_bind_method(h, "chat", _jit_native<_jit_llama_model_chat>, 1, chat_meta);
+  _jit_handle_bind_method(h, "format_chat", _jit_native<_jit_llama_model_format_chat>, 1,
+                          messages_meta);
+  _jit_handle_bind_method(h, "count_tokens", _jit_native<_jit_llama_model_count_tokens>, 1,
+                          text_meta);
+  _jit_handle_bind_method(h, "n_ctx", _jit_native<_jit_llama_model_n_ctx>, 0);
+  _jit_handle_bind_method(h, "close", _jit_native<_jit_llama_model_close>, 0);
+  _jit_handle_bind_method(h, "drop", _jit_native<_jit_llama_model_close>, 0);
+  _jit_owned_bind_drop(h);
+  return {TAG_OBJECT, reinterpret_cast<int64_t>(h)};
+}
+
+// Llama.load(path, n_ctx=2048, gpu=true, n_batch=0, n_slots=1) -> model handle.
+// A slot left out, or nil, is the default.
+inline JitValue _ns_llama_load(JitValue* a, int64_t n) {
+  std::string path(_ns_adapt::require_sv(a[0], "path"));
+  auto slot = [&](int64_t i) { return i < n ? a[i] : JitValue{TAG_NIL, 0}; };
+  auto bounded = [&](int64_t i, const char* name, int64_t dflt, int64_t lo, int64_t hi) {
+    JitValue v = slot(i);
+    int64_t x = v.tag == TAG_NIL ? dflt : _ns_adapt::require_long(v, name);
+    if (x < lo || x > hi) {
+      _jit_llama_bad_value(culebra::format("{} must be between {} and {}", name, lo, hi),
+                           0, 0);
+    }
+    return static_cast<int>(x);
+  };
+  culebra::llama::LoadOptions o;
+  o.n_ctx = bounded(1, "n_ctx", 2048, 1, 1 << 24);
+  JitValue gpu = slot(2);
+  o.gpu = gpu.tag == TAG_NIL ? true : _ns_adapt::require_bool(gpu, "gpu");
+  o.n_batch = bounded(3, "n_batch", 0, 0, 1 << 20);
+  o.n_slots = bounded(4, "n_slots", 1, 1, 64);
+  std::string err;
+  int64_t id = culebra::llama::load(path, o, &err);
+  if (id < 0) _jit_llama_throw(err, 0, 0);
+  return _culebra_llama_build_model_handle(id);
+}
+#endif  // CULEBRA_LLAMA_ENABLED
 
 // Math: each closure adapter is the direct-call dispatch (Op::NsCall's
 // culebra_runtime_ns_call) without a position of its own.
@@ -10768,6 +11063,7 @@ inline bool _ns_method_uses_kwarg_slab(const NsMethod* m) {
   if (ns == "Http")     return true;  // all Http methods take kwargs
   if (ns == "Net")      return true;  // host/timeout/backlog all bind by name
   if (ns == "Search")   return true;  // `analyzer` binds by name on both
+  if (ns == "Llama")    return true;  // n_ctx/gpu/n_batch/n_slots bind by name
   if (ns == "JSON")     return nm == "stringify" || nm == "parse";
   if (ns == "CSV")      return nm == "parse" || nm == "stringify";
   if (ns == "TOML")     return nm == "stringify";  // sort_keys default
@@ -11089,6 +11385,11 @@ inline const NsMethod kNsRows_CSV[] = {
 inline const NsMethod kNsRows_SQLite[] = {
   {"SQLite", "open",    1, &_ns_sqlite_open,    nullptr, "String", "path"},
   {"SQLite", "version", 0, &_ns_sqlite_version},
+};
+#endif
+#if defined(CULEBRA_LLAMA_ENABLED)
+inline const NsMethod kNsRows_Llama[] = {
+  {"Llama", "load", 1, &_ns_llama_load, nullptr, "String", "path"},
 };
 #endif
 inline const NsMethod kNsRows_TOML[] = {
@@ -11426,6 +11727,10 @@ CULEBRA_NS_GROUP_LINKAGE const NsGroup culebra_ns_group_CSV{
 CULEBRA_NS_GROUP_LINKAGE const NsGroup culebra_ns_group_SQLite{
     kNsRows_SQLite, kCanonSigs_SQLite};
 #endif
+#if defined(CULEBRA_LLAMA_ENABLED)
+CULEBRA_NS_GROUP_LINKAGE const NsGroup culebra_ns_group_Llama{
+    kNsRows_Llama, kCanonSigs_Llama};
+#endif
 CULEBRA_NS_GROUP_LINKAGE const NsGroup culebra_ns_group_TOML{
     kNsRows_TOML, kCanonSigs_TOML};
 CULEBRA_NS_GROUP_LINKAGE const NsGroup culebra_ns_group_XML{
@@ -11487,6 +11792,9 @@ inline const NsGroupRef kNsGroups[] = {
   {"CSV", &culebra_ns_group_CSV},
 #if defined(CULEBRA_SQLITE_ENABLED)
   {"SQLite", &culebra_ns_group_SQLite},
+#endif
+#if defined(CULEBRA_LLAMA_ENABLED)
+  {"Llama", &culebra_ns_group_Llama},
 #endif
   {"TOML", &culebra_ns_group_TOML},
   {"XML", &culebra_ns_group_XML},
@@ -13069,6 +13377,9 @@ inline const std::unordered_set<std::string_view>& builtin_var_names() {
       "_Term",   "_Canvas",   "_Audio",    "_Dir",
 #if defined(CULEBRA_SQLITE_ENABLED)
       "SQLite",
+#endif
+#if defined(CULEBRA_LLAMA_ENABLED)
+      "Llama",
 #endif
       // Lazy source modules (preamble builders, resolved via namespace_get +
       // the lazy-ns builder registry). Listed here so closures capture-skip

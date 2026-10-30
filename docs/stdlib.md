@@ -82,8 +82,9 @@ Conventions used below:
 40. [`Audio`](#40-audio) — sound for any program, with or without a window: WASM-4 tones, samples, streamed music, synthesised PCM, the microphone
 41. [`Dir`](#41-dir) — a read-only set of files on disk, in memory, baked into the binary or in a ZIP archive, read one way (`Dir.disk` / `Dir.memory` / `Dir.embedded` / `Dir.zip`, and the `Dir` trait)
 42. [`LLM`](#42-llm) — a client for large language models: one step with a provider (the Messages API or Chat Completions), a conversation that runs your functions as tools, or a request as it is
-43. [Design notes](#43-design-notes)
-44. [Not included (yet)](#44-not-included-yet)
+43. [`Llama`](#43-llama) — a language model run in this process: load a GGUF file, then `generate` or `chat` (a build option)
+44. [Design notes](#44-design-notes)
+45. [Not included (yet)](#45-not-included-yet)
 
 **Where to find what**
 
@@ -120,6 +121,7 @@ Conventions used below:
 | Parse / write CSV | [§19 CSV](#19-csv) — `CSV.parse(text)` / `CSV.stringify(rows)` |
 | Parse / write TOML | [§24 TOML](#24-toml) — `TOML.parse(text)` / `TOML.stringify(obj)` |
 | Parse / search / write XML | [§25 XML](#25-xml): `XML.parse(text)` / `root.find_all(".//item")` / `el.stringify()` |
+| Run a language model in this process, no server (a build with Llama) | [§43 Llama](#43-llama) — `Llama.load(path)` → `m.chat(messages)` / `m.generate(prompt)` |
 | Query an embedded SQL database | [§26 SQLite](#26-sqlite) — `SQLite.open(path)` → `db.query(sql, params)` / `db.execute(...)` |
 | Load a `.env` config file | [§20 Env](#20-env) — `Env.load(".env")` / `Env.parse(text)` |
 | Generate a UUID | [§21 UUID](#21-uuid) — `UUID.v4()` / `UUID.v7()` |
@@ -9775,7 +9777,115 @@ IO.println(LLM.ask("Name three prime numbers.", provider: local, model: "llama3.
 | A transport failure (DNS, connection refused, TLS) | `HttpError`, as from `Http` |
 | An argument of the wrong type | `TypeError` |
 
-## 43. Design notes
+## 43. `Llama`
+
+A language model run in this process: load a GGUF file, then ask it. It is
+llama.cpp underneath, and it needs no server, no key and no network. The
+namespace exists only in a build configured with `-DCULEBRA_ENABLE_LLAMA=ON`
+(off by default: the first such build downloads the llama.cpp release and
+compiles it); in any other build `Llama` is an undefined name. A model is a
+handle that belongs to the isolate that loaded it and cannot be sent to another.
+
+```culebra
+# doctest: skip — needs a GGUF model file and a build with Llama
+let m = Llama.load("gemma-3-4b-it-Q4_K_M.gguf")
+let r = m.chat([{role: "user", content: "Translate into Japanese: Good morning."}])
+IO.println(r.text)
+```
+
+What it runs on: an x86-64 CPU with AVX2, BMI2, FMA and F16C (anything since
+about 2013), or Apple Silicon; on another CPU `Llama.load` answers with a
+`LlamaError` that names what is missing. This build of llama.cpp computes on the
+CPU; `gpu:` is accepted and takes effect in builds that carry a GPU backend.
+
+### `Llama.load(path, n_ctx=2048, gpu=true, n_batch=0, n_slots=1) -> LlamaModel`
+
+Loads the GGUF model at `path`. `n_ctx` is the context size in tokens (llama.cpp
+may round it up, see `n_ctx()`); `gpu: false` keeps the model on the CPU;
+`n_batch` is how many tokens are decoded at a time (0 = llama.cpp's default; a
+longer prompt is decoded in pieces of this size); `n_slots` is how many calls the
+model can run at once.
+
+### `model.generate(prompt, max_tokens=nil, stop=nil, temperature=nil, seed=nil, grammar=nil, cache=false, on_text=nil) -> Object`
+
+Continues `prompt` as it is, with no chat template. The result is an `Object`:
+
+| Field | |
+|---|---|
+| `text` | what was generated, as a `String` |
+| `finish` | why it ended: `"end"` (the model finished), `"length"` (`max_tokens`, or the context, ran out), `"stop"` (a `stop` string appeared; it is not in `text`) |
+| `prompt_tokens` | the prompt's tokens |
+| `completion_tokens` | tokens generated, not counting the end of generation |
+
+`max_tokens` defaults to what the context has room for. `stop` is an `Array` of
+`String`s. `temperature` and `seed` apply to this call: with either, the call
+samples with a chain of its own (the temperature, then a draw seeded by `seed`);
+`temperature: 0` always takes the likeliest token. `grammar` is a GBNF grammar
+that the output has to follow, which is how a result is held to a shape (a
+choice from a list, JSON) even from a small model.
+
+`on_text` is called with each piece of text as it is generated. What it throws
+ends the generation and goes up as it is. A Ctrl+C ends it too, as `Interrupted`.
+
+```culebra
+# doctest: skip — needs a GGUF model file and a build with Llama
+let m = Llama.load("model.gguf")
+let pieces = []
+let r = m.generate("The capital of France is", max_tokens: 8, on_text: |t| pieces.push(t))
+IO.println(r.text == pieces.join(""))  # => true
+let verdict = m.generate("Is the sky blue? ", grammar: 'root ::= "yes" | "no"').text
+```
+
+`cache` is false by default: each call starts from an empty cache, so the same
+prompt and settings give the same text however many calls came before (on the
+same machine and the same backend). A prompt the cache already holds is decoded
+again from its last token alone, which can differ from decoding it whole in the
+last digits and, on some prompts, in a greedy answer. `cache: true` keeps the
+previous call's cache, which is faster for a conversation whose history grows.
+
+### `model.chat(messages, max_tokens=nil, stop=nil, temperature=nil, seed=nil, grammar=nil, cache=false, on_text=nil) -> Object`
+
+Like `generate`, for `messages`, an `Array` of `{role:, content:}` with `role` one
+of `"system"`, `"user"` and `"assistant"`, put through the model's own chat
+template first. llama.cpp can apply a fixed list of about fifty templates; a model
+with none, or with one outside that list, is a `LlamaError` that says so (the
+messages are never joined and sent as they are). To use such a model, build the
+prompt yourself and call `generate`.
+
+### `model.format_chat(messages) -> String`
+
+The prompt the chat template makes of `messages`, for `generate` or `count_tokens`.
+
+### `model.count_tokens(text) -> Long`
+
+How many tokens `text` is, as this model counts them.
+
+### `model.n_ctx() -> Long`
+
+The context size the model got, which may be larger than the `n_ctx` asked for.
+0 once the model is closed.
+
+### `model.close()`
+
+Frees the model. The model is also freed when its handle goes out of scope.
+Closing twice is fine; a call on a closed model is a `LlamaError`.
+
+### Errors
+
+| Situation | Error |
+|---|---|
+| The model cannot be loaded (no such file, not a GGUF, out of memory), the CPU lacks AVX2 | `LlamaError`, with the reason |
+| The model is closed | `LlamaError` |
+| The prompt, with `max_tokens`, does not fit the context | `LlamaError` |
+| The model has no usable chat template | `LlamaError` |
+| An argument of the wrong type | `TypeError` |
+| A value out of range (`n_ctx`, `max_tokens`, `temperature`, `seed`, a role) | `ValueError` |
+| Ctrl+C during a generation | `Interrupted` |
+
+Not included: tool calls (use `grammar:` for a result with a fixed shape),
+images and audio, embeddings.
+
+## 44. Design notes
 
 ### Namespace-first, with three global shortcuts
 
@@ -9831,7 +9941,7 @@ sentinel values for "found or not" predicates (`IO.input()` returns
 
 ---
 
-## 44. Not included (yet)
+## 45. Not included (yet)
 
 ### Heavier data structures
 

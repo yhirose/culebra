@@ -898,6 +898,21 @@ inline constexpr CanonSig kCanonSigs_SQLite[] = {
   {"SQLite", "", "version", nullptr, 0, "String", 0, 0, false, -1, -1, -1},
 };
 
+#if defined(CULEBRA_LLAMA_ENABLED)
+inline constexpr CanonParam kCanonParams_Llama[] = {
+  // 0: Llama.load
+  {"path", false, false, false, false, false, "String", CanonDefault::None, 0, {}},
+  {"n_ctx", true, false, false, false, false, "", CanonDefault::Long, 2048, {}},
+  {"gpu", true, false, false, false, false, "", CanonDefault::Bool, 1, {}},
+  {"n_batch", true, false, false, false, false, "", CanonDefault::Long, 0, {}},
+  {"n_slots", true, false, false, false, false, "", CanonDefault::Long, 1, {}},
+};
+
+inline constexpr CanonSig kCanonSigs_Llama[] = {
+  {"Llama", "", "load", kCanonParams_Llama + 0, 5, "Object", 1, 5, false, -1, -1, -1},
+};
+#endif
+
 inline constexpr CanonParam kCanonParams_TOML[] = {
   // 0: TOML.parse
   {"text", false, false, false, false, false, "String", CanonDefault::None, 0, {}},

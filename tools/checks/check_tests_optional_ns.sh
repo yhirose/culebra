@@ -16,7 +16,8 @@ shopt -s nullglob
 # tree — so the option is what this checks before trusting the row.
 OPTIONAL='Scene:CULEBRA_ENABLE_SCENE
 Webview:CULEBRA_ENABLE_WEBVIEW
-Desktop:CULEBRA_ENABLE_WEBVIEW'
+Desktop:CULEBRA_ENABLE_WEBVIEW
+Llama:CULEBRA_ENABLE_LLAMA'
 
 alt=''
 while IFS=: read -r ns opt; do
