@@ -64,6 +64,16 @@ elseif(APPLE)
   list(APPEND _llama_system_libs "-framework Accelerate" "-framework Foundation")
 endif()
 
+# What `culebra build` appends to the link of a program that names Llama: the
+# four statics by embedded name (@libllama.a@, see _rt_embed_extern in
+# CMakeLists.txt) and the system libraries, never a path of this machine.
+set(_llama_link "@libllama.a@ @libggml.a@ @libggml-cpu.a@ @libggml-base.a@")
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  string(APPEND _llama_link " -lpthread -ldl -lm")
+elseif(APPLE)
+  string(APPEND _llama_link " -framework Accelerate -framework Foundation")
+endif()
+
 # Every translation unit that reaches stdlib/bindings.h compiles the Llama rows
 # (stdlib/llama.h), so every one of them sees the headers.
 add_compile_definitions(CULEBRA_LLAMA_ENABLED)

@@ -9798,6 +9798,10 @@ about 2013), or Apple Silicon; on another CPU `Llama.load` answers with a
 `LlamaError` that names what is missing. This build of llama.cpp computes on the
 CPU; `gpu:` is accepted and takes effect in builds that carry a GPU backend.
 
+`culebra build` works with it. A program that names `Llama` links llama.cpp
+statically into the binary, which adds a few megabytes; a program that does not
+carries none of it. The model file stays outside the binary.
+
 ### `Llama.load(path, n_ctx=2048, gpu=true, n_batch=0, n_slots=1) -> LlamaModel`
 
 Loads the GGUF model at `path`. `n_ctx` is the context size in tokens (llama.cpp

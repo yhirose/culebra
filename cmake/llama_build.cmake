@@ -58,3 +58,11 @@ foreach(_t llama_smoke llama_test)
     add_dependencies(${_t} llama_ext)
   endif()
 endforeach()
+
+# The AOT half: the strong archive compiles against llama.cpp's headers, and the
+# statics are packed into the driver (_rt_embed_extern) once they are published.
+foreach(_t culebra_rt_llama culebra_rt_packed)
+  if(TARGET ${_t} AND TARGET llama_ext)
+    add_dependencies(${_t} llama_ext)
+  endif()
+endforeach()

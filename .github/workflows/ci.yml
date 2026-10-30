@@ -423,8 +423,20 @@ jobs:
       # The same file on the bytecode VM and on the LLVM lowering: same results.
       - name: tests/llama on both engines
         run: |
-          ./build-dev-llama/culebra tests/llama/test_llama.cul
+          ./build-dev-llama/culebra --vm tests/llama/test_llama.cul
           ./build-dev-llama/culebra --jit tests/llama/test_llama.cul
+
+      # `culebra build` on a program that names Llama: the strong archive and the
+      # four embedded statics are linked, a program that does not name it carries
+      # none of them, and the binary generates with the test model. Needs the
+      # AOT runtime archives, which the dev build above leaves out.
+      - name: Build the AOT runtime (Llama ON)
+        run: just build-gate -DCULEBRA_ENABLE_LLAMA=ON
+
+      - name: AOT axis and link gates
+        run: |
+          bash tools/checks/check_aot_feature_axes.sh build-gate
+          bash tools/checks/check_aot_link_portability.sh build-gate
 
   # Release-to-release differential (tools/difftest/release_diff.sh): the
   # generated corpus under the latest published binary and under this commit,

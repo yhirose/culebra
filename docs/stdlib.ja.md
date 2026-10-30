@@ -9391,6 +9391,10 @@ IO.println(r.text)
 それ以外のCPUでは、`Llama.load`が足りないものを挙げた`LlamaError`で答えます。このビルドのllama.cppは
 CPUで計算します。`gpu:`は受け付けますが、効くのはGPUのバックエンドを持つビルドだけです。
 
+`culebra build`でも使えます。`Llama`を名指しするプログラムにはllama.cppが静的にリンクされ、
+バイナリは数MB大きくなります。名指ししないプログラムには何も入りません。モデルのファイルは
+バイナリの外に置きます。
+
 ### `Llama.load(path, n_ctx=2048, gpu=true, n_batch=0, n_slots=1) -> LlamaModel`
 
 `path`のGGUFモデルを読み込みます。`n_ctx`はコンテキストのトークン数です（llama.cppが切り上げることが

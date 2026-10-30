@@ -480,6 +480,38 @@ expect_output shared "21"
 # (shared.h's format_value_as vformats it), so this one program is expected to
 # carry the formatter. Without it, the seven checks above could pass because
 # the probe stopped working rather than because the boundary holds.
+# Llama: an axis only a build with CULEBRA_ENABLE_LLAMA=ON carries; the driver
+# of any other build has no Llama to probe. Naming it force-loads the strong
+# bodies and links the four embedded llama.cpp statics; the weak stubs in the
+# core archive must be what a program that never names it gets. With
+# CULEBRA_TEST_MODEL set the probe also generates (a grammar makes the text
+# exact), which proves the binary runs the engine and not just links it.
+llama_choke='^culebra::llama::load[(]'
+# (captured, then matched: under pipefail a `| grep -q` that exits on its first
+# hit fails the pipeline with SIGPIPE, which reads as "has Llama")
+llama_probe=$(printf 'IO.print(Llama)\n' | "$bin" --vm - 2>&1 || true)
+if [[ "$llama_probe" == *"undefined variable 'Llama'"* ]]; then
+  echo "check_aot_feature_axes: this driver has no Llama; the Llama axis is not probed"
+else
+  expect_class none "$llama_choke" "W?" "expected 'W' or absent" "no Llama use"
+  expect_absent none ' _?llama_model_load_from_file$| _?ggml_backend_load_all$' "llama.cpp"
+  build llama 'try {
+  Llama.load("/nonexistent/model.gguf")
+} catch e {
+  IO.print(e.kind)
+}'
+  expect_class llama "$llama_choke" "T" "expected 'T'" "Llama named"
+  expect_present llama ' _?llama_model_load_from_file$' "Llama named, llama.cpp must be linked"
+  expect_class llama "$regex_choke" "W?" "expected 'W' or absent" "Llama only"
+  expect_absent llama "$fmt_machinery" "libstdc++'s formatter, Llama"
+  expect_output llama "LlamaError"
+  if [[ -n "${CULEBRA_TEST_MODEL:-}" ]]; then
+    build llama_run "let m = Llama.load(\"$CULEBRA_TEST_MODEL\", n_ctx: 256)
+IO.print(m.generate(\"x\", max_tokens: 4, grammar: 'root ::= \"ok\"').text)"
+    expect_output llama_run "ok"
+  fi
+fi
+
 build spec 'let x = 1.5
 IO.print("{x:.2f}")'
 expect_present spec "$fmt_machinery" "an interpolation spec asks for std::format"

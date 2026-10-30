@@ -1341,6 +1341,17 @@ inline const auto FS = ::cpp_embedlib::EmbeddedFS{_entries};
     -ffunction-sections -fdata-sections)
   endif()
 
+  # Llama feature object: the strong culebra::llama::* bodies (the lone
+  # llama.cpp anchor). Force-loaded only when the AST scan reports Llama use;
+  # the statics it needs ride _rt_embed_extern and CULEBRA_LLAMA_LINK.
+  if(CULEBRA_ENABLE_LLAMA)
+    add_library(culebra_rt_llama STATIC ./src/runtime/culebra_rt_llama.cc)
+    target_compile_features(culebra_rt_llama PRIVATE cxx_std_23)
+    target_compile_definitions(culebra_rt_llama PRIVATE CULEBRA_RT_LLAMA_STRONG=1)
+    target_compile_options(culebra_rt_llama PRIVATE
+      -ffunction-sections -fdata-sections)
+  endif()
+
   # Embed the runtime archives into the `culebra` driver via
   # cpp-embedlib. `culebra build` materializes the core archive (+ the
   # tensor / http feature objects when needed) to
@@ -1439,6 +1450,11 @@ inline const auto FS = ::cpp_embedlib::EmbeddedFS{_entries};
     list(APPEND _rt_embed_files
       "${CMAKE_CURRENT_BINARY_DIR}/${CMAKE_STATIC_LIBRARY_PREFIX}culebra_rt_sqlite${CMAKE_STATIC_LIBRARY_SUFFIX}")
     list(APPEND _rt_embed_deps culebra_rt_sqlite)
+  endif()
+  if(CULEBRA_ENABLE_LLAMA)
+    list(APPEND _rt_embed_files
+      "${CMAKE_CURRENT_BINARY_DIR}/${CMAKE_STATIC_LIBRARY_PREFIX}culebra_rt_llama${CMAKE_STATIC_LIBRARY_SUFFIX}")
+    list(APPEND _rt_embed_deps culebra_rt_llama)
   endif()
   if(CULEBRA_WRAP_SOURCES)
     # Wrap declarations for AOT outputs. The TUs hold static registrars
@@ -1541,6 +1557,9 @@ inline const auto FS = ::cpp_embedlib::EmbeddedFS{_entries};
   if(CULEBRA_ENABLE_SCENE OR CULEBRA_ENABLE_CANVAS_WINDOW)
     list(APPEND _rt_embed_extern "${_raylib_a}" "${_sdl_a}")
   endif()
+  if(CULEBRA_ENABLE_LLAMA)
+    list(APPEND _rt_embed_extern ${_llama_a})
+  endif()
   # Every feature archive is force-loaded next to the core archive, so the two
   # must not both define the same symbol: mingw's ld rejects the duplicate and
   # the Windows AOT link fails. CULEBRA_RT_FEATURE_ARCHIVE stops the runtime
@@ -1556,7 +1575,7 @@ inline const auto FS = ::cpp_embedlib::EmbeddedFS{_entries};
                       culebra_rt_regex culebra_rt_search
                       culebra_rt_search_segmenter culebra_rt_foreign
                       culebra_rt_codegen
-                      culebra_rt_sqlite culebra_rt_scene culebra_rt_canvas
+                      culebra_rt_sqlite culebra_rt_llama culebra_rt_scene culebra_rt_canvas
                       culebra_rt_audio culebra_rt_webview culebra_rt_wrap)
     if(TARGET ${_rt_feature})
       target_compile_definitions(${_rt_feature} PRIVATE
@@ -1820,6 +1839,16 @@ if(CULEBRA_ENABLE_JIT)
   target_compile_definitions(culebra PRIVATE CULEBRA_SQLITE_LINK="${_sqlite_link}")
 endif()
 
+# `culebra build` appends the llama.cpp statics only when the program references
+# Llama. "" when the option is off.
+if(CULEBRA_ENABLE_JIT)
+  if(CULEBRA_ENABLE_LLAMA)
+    target_compile_definitions(culebra PRIVATE CULEBRA_LLAMA_LINK="${_llama_link}")
+  else()
+    target_compile_definitions(culebra PRIVATE CULEBRA_LLAMA_LINK="")
+  endif()
+endif()
+
 # `culebra build` appends the raylib + SDL3 statics + frameworks only when the
 # program references Scene (see aot_scan). Defined unconditionally (gated on
 # JIT) like the peer link fragments above so the fast inner-loop build
@@ -1882,7 +1911,7 @@ endif()
 # the one running the build.
 foreach(_frag _blas_link _ssl_link _zlib_link _sqlite_link _scene_link
               _canvas_link _webview_link _foreign_link _codegen_link
-              _audio_link)
+              _audio_link _llama_link)
   string(REPLACE " " ";" _frag_tokens "${${_frag}}")
   foreach(_tok IN LISTS _frag_tokens)
     if(_tok MATCHES "^[/\\]" OR _tok MATCHES "^[A-Za-z]:[/\\]")

@@ -6,7 +6,7 @@
 # driver, so every file the link needs has to come out of the binary itself
 # (materialize_archive) rather than off a path baked in at build time. The
 # third-party statics an axis links whole — OpenSSL for Http, SDL3 + raylib for
-# Canvas/Scene — used to be spliced in as absolute paths: a distro directory, a
+# Canvas/Scene, llama.cpp for Llama — used to be spliced in as absolute paths: a distro directory, a
 # Homebrew prefix, the release runner's deps cache. Those exist nowhere but the
 # build machine, so a downloaded binary could not AOT an Http or Canvas program
 # at all, and no test saw it because every AOT test runs inside a build tree
@@ -49,8 +49,12 @@ Canvas.init(8, 8)
 print("canvas {Canvas.width()}")
 CUL
 
+cat > "$work/llama.cul" <<'CUL'
+print("llama {Llama.load}")
+CUL
+
 checked=0
-for name in http canvas; do
+for name in http canvas llama; do
   # --vm, not a bare run: every `just` recipe exports
   # CULEBRA_REQUIRE_EXPLICIT_ENGINE=1, under which an unnamed engine aborts by
   # design (src/main.cc). A bare probe therefore reads every axis as absent.

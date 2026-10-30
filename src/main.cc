@@ -500,6 +500,12 @@ static constexpr bool kEmbedsSqlite =
 #else
     false;
 #endif
+static constexpr bool kEmbedsLlama =
+#if defined(CULEBRA_LLAMA_ENABLED)
+    true;
+#else
+    false;
+#endif
 static constexpr bool kEmbedsScene =
 #if defined(CULEBRA_ENABLE_SCENE)
     true;
@@ -566,6 +572,9 @@ static constexpr FeatureAxis kFeatureAxes[] = {
     // The archive bundles the amalgamation object too, so a force-loaded
     // culebra_rt_sqlite is self-contained; the flags are its platform deps.
     {{"SQLite"}, "libculebra_rt_sqlite.a", CULEBRA_SQLITE_LINK, kEmbedsSqlite},
+    // llama.h: weak stubs in the core archive, the strong bodies here; the
+    // flags name the four llama.cpp statics the driver embeds.
+    {{"Llama"}, "libculebra_rt_llama.a", CULEBRA_LLAMA_LINK, kEmbedsLlama},
     // Scene and Webview have no weak choke — they simply aren't in the core
     // archive, so a program that names neither references no raylib/WebKit
     // symbol. What gets force-loaded is the wrap registrar nothing calls by name.
