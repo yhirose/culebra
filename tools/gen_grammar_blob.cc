@@ -121,7 +121,8 @@ void append_keys(std::string& text, const char* name, const Keys& keys) {
   for (const auto& k : keys) {
     text += "    \"";
     for (unsigned char ch : k) {
-      if (ch == '"' || ch == '\\') appendf(text, "\\%c", ch);
+      // `?` is escaped so "??=" / "??'" never form a trigraph (-Wtrigraphs).
+      if (ch == '"' || ch == '\\' || ch == '?') appendf(text, "\\%c", ch);
       else if (ch >= 0x20 && ch < 0x7f) text += static_cast<char>(ch);
       else appendf(text, "\\%03o", ch);
     }

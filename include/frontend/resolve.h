@@ -409,7 +409,7 @@ void walk_declaring_sites(const peg::Ast& node, bool conditional, Visitor& v) {
       const auto* target = av.compound ? nullptr : assign_name_target(node, av);
       for (const auto& c : node.nodes)
         if (c.get() != target)
-          walk(*c, conditional || (av.op_token == "??=" && c.get() == av.rhs));
+          walk(*c, conditional || (av.op_token == "?\?=" && c.get() == av.rhs));
       return;
     }
     default:

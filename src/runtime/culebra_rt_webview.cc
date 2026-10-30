@@ -23,7 +23,11 @@
 #include <string>
 #include <unordered_map>
 
+// vendor/webview/webview.h uses std::aligned_storage (deprecated in C++23).
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
 #include "webview.h"
+#pragma GCC diagnostic pop
 
 #if defined(__APPLE__)
 #include <dispatch/dispatch.h>

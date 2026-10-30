@@ -28,11 +28,13 @@ endif()
 #   vla-cxx-extension  vm.h sizes the register window from the chunk on
 #       purpose (see run_frame); kMaxSlots bounds it.
 include(CheckCXXCompilerFlag)
-foreach(_w -Wno-return-type-c-linkage -Wno-vla-cxx-extension)
-  string(MAKE_C_IDENTIFIER "HAS${_w}" _have)
-  check_cxx_compiler_flag("${_w}" ${_have})
+# Probe the positive spelling: GCC accepts any unknown -Wno-* silently, so
+# probing the -Wno- form passes there and later prints "unrecognized option".
+foreach(_w return-type-c-linkage vla-cxx-extension)
+  string(MAKE_C_IDENTIFIER "HAS_W${_w}" _have)
+  check_cxx_compiler_flag("-W${_w}" ${_have})
   if(${_have})
-    add_compile_options("$<$<COMPILE_LANGUAGE:CXX>:${_w}>")
+    add_compile_options("$<$<COMPILE_LANGUAGE:CXX>:-Wno-${_w}>")
   endif()
 endforeach()
 
