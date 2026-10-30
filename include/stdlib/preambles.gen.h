@@ -4173,6 +4173,13 @@ let _kauai_module = fn () {
 
   # Samples a second, as the mixer renders a song.
   let RATE = 44100
+  # The numbers in a row of the schedule, which the engine defines, and a row
+  # held to that width: a row of any other is read from the wrong place.
+  let STRIDE = _Audio.schedule_stride()
+  fn schedule_row(fields) {
+    __raise("RuntimeError", "Audio.Kauai: a schedule row is {fields.size()} numbers, the engine reads {STRIDE}") if fields.size() != STRIDE
+    fields
+  }
   # Seconds a part of a song is heard from before it starts.
   let LEAD = 1.0
 
@@ -4252,8 +4259,8 @@ let _kauai_module = fn () {
       }
       # What prepare() has left is what is still not built.
       @_todo = @_todo.filter(|k| !@_sounds.has(k))
-      let tones = @_events.filter(|e| e.has("tone") && (to == nil || e.at < to)).map(|e| [e.at, ...e.tone])
-      let sounds = plays.map(|p| [p.at, -1, @_sounds[p.sound]._id, p.vol / 100.0 * @_weights[p.by], 0, 0, 0, 0, 0, 0, 0])
+      let tones = @_events.filter(|e| e.has("tone") && (to == nil || e.at < to)).map(|e| schedule_row([e.at, ...e.tone]))
+      let sounds = plays.map(|p| schedule_row([p.at, -1, @_sounds[p.sound]._id, p.vol / 100.0 * @_weights[p.by], 0, 0, 0, 0, 0, 0, 0]))
       # In time order: the mixers read it from the head.
       [...tones, ...sounds].sorted_by(|e| e[0]).flat_map(|e| e)
     }

@@ -6240,13 +6240,20 @@ inline JitValue _ns_audio_graph_now(JitValue* a, int64_t) {
   return _ns_adapt::v_float(t);
 }
 // Audio.Kauai's song as both mixers take it (kScheduleStride, stdlib/audio.h),
-// refused out of time order.
+// refused out of time order, or when it is not a whole number of rows.
 inline void _ns_audio_schedule_events(JitValue v, std::vector<double>& out) {
   namespace ad = culebra::_audio_detail;
   _ns_audio_numbers(v, out, ad::kScheduleEventsError);
   constexpr size_t stride = ad::kScheduleStride;
+  if (out.size() % stride != 0)
+    _ns_audio_fail(("Audio.Kauai: a song's events are rows of " + std::to_string(stride) + " numbers").c_str());
   for (size_t i = stride; i < out.size(); i += stride)
     if (out[i] < out[i - stride]) _ns_audio_fail("Audio.Kauai: a song's events are out of time order");
+}
+
+// How many numbers a row of a schedule takes (kScheduleStride, stdlib/audio.h).
+inline JitValue _ns_audio_schedule_stride(JitValue*, int64_t) {
+  return _ns_adapt::v_long(culebra::_audio_detail::kScheduleStride);
 }
 
 // Audio.Kauai's timed notes.
@@ -11541,6 +11548,7 @@ inline const NsMethod kNsRows_Audio_native[] = {
   {"_Audio", "capture_running", 1, &_ns_audio_ask<culebra::_audio_detail::capture_running>},
   {"_Audio", "capture_waiting", 1, &_ns_audio_count<culebra::_audio_detail::capture_waiting>},
   {"_Audio", "capture_read",   2, &_ns_audio_capture_read},
+  {"_Audio", "schedule_stride",   0, &_ns_audio_schedule_stride},
   {"_Audio", "schedule_new",      3, &_ns_audio_schedule_new},
   {"_Audio", "schedule_free",     1, &_ns_audio_on<culebra::_audio_detail::schedule_free>},
   {"_Audio", "schedule_play",     1, &_ns_audio_on<culebra::_audio_detail::schedule_play>},

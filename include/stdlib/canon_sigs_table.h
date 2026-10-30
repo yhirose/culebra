@@ -1665,6 +1665,7 @@ inline constexpr CanonSig kCanonSigs_Audio_native[] = {
   {"_Audio", "", "capture_running", kCanonParams_Audio_native + 64, 1, "Bool", 1, 1, false, -1, -1, -1},
   {"_Audio", "", "capture_waiting", kCanonParams_Audio_native + 65, 1, "Long", 1, 1, false, -1, -1, -1},
   {"_Audio", "", "capture_read", kCanonParams_Audio_native + 66, 2, "Array", 2, 2, false, -1, -1, -1},
+  {"_Audio", "", "schedule_stride", nullptr, 0, "Long", 0, 0, false, -1, -1, -1},
   {"_Audio", "", "schedule_new", kCanonParams_Audio_native + 68, 3, "Long", 3, 3, false, -1, -1, -1},
   {"_Audio", "", "schedule_free", kCanonParams_Audio_native + 71, 1, "", 1, 1, false, -1, -1, -1},
   {"_Audio", "", "schedule_play", kCanonParams_Audio_native + 72, 1, "", 1, 1, false, -1, -1, -1},

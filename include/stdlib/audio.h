@@ -314,12 +314,19 @@ inline double tone_loudness(double freq) {
   return loudness(x.data(), n, kMixerRate);
 }
 
-// Numbers an event takes in a schedule's flat list, Audio.Kauai's song as both
-// mixers take it: its time in seconds, then a tone's channel, start and end
+// The schedule: all the engine knows of a song Audio.Kauai plays, as a flat
+// list of numbers in rows of kScheduleStride, one row for each sound that
+// starts. A row is its time in seconds, then a tone's channel, start and end
 // frequency, attack, decay, sustain and release in seconds, vol, peak and
-// duty; or -1 and a Sound's handle and gain. The events come in time order,
-// since the mixers read them from the head (the binding refuses a list out
-// of it).
+// duty; or -1, a Sound's handle and gain, and zeros to fill the row. The rows
+// come in time order, since the mixers read them from the head; the binding
+// refuses a list out of it or not a whole number of rows.
+//
+// The width is defined here alone. Audio.Kauai asks the binding for it
+// (_Audio.schedule_stride) and checks each row it builds against it, and the
+// page is sent it with the list. The entry points, all on _Audio:
+// schedule_new(list, length, loop_at) -> id, schedule_play/stop/free(id),
+// schedule_volume/room(id, x), schedule_render(...) -> samples, schedule_stride().
 inline constexpr int64_t kScheduleStride = 11;
 
 // A Sound a schedule plays, by the bytes it was made from, for schedule_render: the
@@ -1538,12 +1545,13 @@ EM_JS(void, _wasm_audio_music_load,
 EM_JS(int, _wasm_audio_music_playing, (int id), {
   return self.__musicPlaying[id] ? 1 : 0;
 });
-// A schedule's events go to the page whole; it schedules them on its own clock.
+// A schedule's events go to the page whole, with the width of a row; it
+// schedules them on its own clock.
 EM_JS(void, _wasm_audio_schedule_new,
-      (int id, const double* events, int count, double length, double loop_at), {
+      (int id, const double* events, int count, int stride, double length, double loop_at), {
   postMessage({ type: "schedule", cmd: "new", id: id,
                 events: HEAPF64.slice(events >> 3, (events >> 3) + count),
-                length: length, loopAt: loop_at });
+                stride: stride, length: length, loopAt: loop_at });
 });
 EM_JS(void, _wasm_audio_schedule, (int cmd, int id, double value), {
   const names = ["play", "stop", "free", "volume", "room"];
@@ -1598,7 +1606,7 @@ inline void music_pan(int64_t id, double x) { _wasm_audio_music(8, static_cast<i
 inline void schedule_new(int64_t id, const double* events, int64_t count,
                       double length, double loop_at) {
   _wasm_audio_schedule_new(static_cast<int>(id), events, static_cast<int>(count),
-                        length, loop_at);
+                           static_cast<int>(kScheduleStride), length, loop_at);
 }
 inline void schedule_play(int64_t id) { _wasm_audio_schedule(0, static_cast<int>(id), 0); }
 inline void schedule_stop(int64_t id) { _wasm_audio_schedule(1, static_cast<int>(id), 0); }

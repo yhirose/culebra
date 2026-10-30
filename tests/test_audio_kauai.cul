@@ -353,10 +353,13 @@ let mixed = Audio.Kauai.new(lines([
   'song Mixed {', '  tempo 60', '  band Mixed', '  groove Time', '  melody in C4..B4', '  Solo', '}',
   'section Solo {', '  C  c4 d e f', '}',
 ]), drums: {ride: |params| tick})
-let events = mixed._list(mixed._plays, nil).iter().chunks(11).collect()
+let stride = _Audio.schedule_stride()
+let events = mixed._list(mixed._plays, nil).iter().chunks(stride).collect()
 let times = events.map(|e| e[0])
 assert_eq(events.map(|e| e[1] < 0 ? "sound" : "tone").sorted(), ["sound", "sound", "tone", "tone", "tone", "tone"])
 assert_eq(times, times.sorted())
+# Every row, of a tone and of a sound, is as wide as the engine reads.
+assert_eq(events.map(|e| e.size()).to_set(), Set(stride))
 let backwards = [...events[-1], ...events[0]]
 let refused = fn (f) {
   try {
@@ -369,6 +372,10 @@ let refused = fn (f) {
 let out_of_order = "Audio.Kauai: a song's events are out of time order"
 assert_eq(refused(fn () { _Audio.schedule_new(backwards, 2.0, -1.0) }), out_of_order)
 assert_eq(refused(fn () { _Audio.schedule_render(backwards, [], 2.0, 0.0, 1.0, 0.0) }), out_of_order)
+# A list that is not a whole number of rows is refused as well.
+let not_rows = "Audio.Kauai: a song's events are rows of {stride} numbers"
+assert_eq(refused(fn () { _Audio.schedule_new([...events[0], 0.0], 2.0, -1.0) }), not_rows)
+assert_eq(refused(fn () { _Audio.schedule_render(events[0].slice(0, stride - 1), [], 2.0, 0.0, 1.0, 0.0) }), not_rows)
 let not_a_sound = Audio.Kauai.new(EXTERNAL, voices: {ep: |pitch, params| 1}, drums: {ride: |params| 1})
 assert_throws("TypeError", fn () {
   not_a_sound.prepare()

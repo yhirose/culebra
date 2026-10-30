@@ -1173,13 +1173,13 @@ function startTrack(id, t, offset) {
 }
 
 // --- Audio.Kauai: a song's notes, each started on the context's own clock ---
-// A schedule arrives whole, in time order (stdlib/audio.h's kScheduleStride says
-// what an event holds), and a timer puts each note on the context's clock a
-// little ahead of when it sounds, the usual WebAudio lookahead: the notes
-// keep time however the page's own timers jitter.
-const SCHEDULE_STRIDE = 11;
+// A schedule arrives whole, in time order, with the width of an event
+// (stdlib/audio.h's kScheduleStride, which says what one holds), and a timer
+// puts each note on the context's clock a little ahead of when it sounds, the
+// usual WebAudio lookahead: the notes keep time however the page's own timers
+// jitter.
 const SCHEDULE_AHEAD = 0.2;  // seconds of notes scheduled ahead of the clock
-const schedules = new Map();  // id -> { events, length, loopAt, volume, room, run }
+const schedules = new Map();  // id -> { events, stride, length, loopAt, volume, room, run }
 
 // The room a schedule plays in, as the native mixer has it (Freeverb: eight
 // damped combs in parallel, then four allpasses in series, at Jezar's delays
@@ -1260,11 +1260,12 @@ function pumpSchedule(e) {
   const run = e.run;
   if (!run) return;
   const ev = e.events;
-  const n = ev.length / SCHEDULE_STRIDE;
+  const stride = e.stride;
+  const n = ev.length / stride;
   const until = audioCtx.currentTime + SCHEDULE_AHEAD;
   for (;;) {
-    while (run.next < n && run.origin + ev[run.next * SCHEDULE_STRIDE] < until) {
-      const i = run.next++ * SCHEDULE_STRIDE;
+    while (run.next < n && run.origin + ev[run.next * stride] < until) {
+      const i = run.next++ * stride;
       const when = Math.max(audioCtx.currentTime, run.origin + ev[i]);
       let node = null;
       if (ev[i + 1] < 0) {
@@ -1295,7 +1296,7 @@ function pumpSchedule(e) {
     }
     run.origin += e.length - e.loopAt;
     run.next = 0;
-    while (run.next < n && ev[run.next * SCHEDULE_STRIDE] < e.loopAt) run.next++;
+    while (run.next < n && ev[run.next * stride] < e.loopAt) run.next++;
   }
 }
 
@@ -1304,8 +1305,8 @@ function handleSchedule(m) {
     const e = schedules.get(m.id);
     switch (m.cmd) {
       case "new":
-        schedules.set(m.id, { events: m.events, length: m.length, loopAt: m.loopAt,
-                           volume: 1, room: 0, run: null });
+        schedules.set(m.id, { events: m.events, stride: m.stride, length: m.length,
+                           loopAt: m.loopAt, volume: 1, room: 0, run: null });
         break;
       case "play": {
         if (!e || !ensureAudio()) return;
@@ -1313,7 +1314,7 @@ function handleSchedule(m) {
         // The samples the song plays have just been made, and decode on their
         // own time: the song starts once they have.
         const decoding = [];
-        for (let i = 0; i < e.events.length; i += SCHEDULE_STRIDE) {
+        for (let i = 0; i < e.events.length; i += e.stride) {
           if (e.events[i + 1] < 0) decoding.push(sounds.get(e.events[i + 2])?.ready);
         }
         const run = { origin: 0, next: 0, nodes: new Set(), timer: 0, bus: scheduleBus(e) };
