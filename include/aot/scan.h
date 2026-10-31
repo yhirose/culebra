@@ -6,6 +6,7 @@
 //     in src/main.cc for the axes themselves)
 //   * which directories it bakes in via `Dir.embedded("...")`
 
+#include <base/shared.h>  // builtin_trait_units
 #include <frontend/embed_paths.h>
 #include <frontend/module_loader.h>  // LoadedModule, is_library_path
 #include <frontend/parser.h>
@@ -68,12 +69,15 @@ inline bool aot_named(const AotNames& names, std::string_view name) {
 
 // The traits the library declares — the core built-in ones, which run in
 // every program but are no module the loader returns, and the units the
-// stdlib splice declares (Dir) — reach a namespace only through a default
-// body (`Dir.copy_to`'s `FS`). A default runs only when something calls it
-// by name, so its body counts as named exactly when its method's name is;
-// run to a fixpoint, since a default the program calls may call another.
-// The declarations' own names never count (the trait `Dir` is not a use of
-// the namespace `_Dir`).
+// stdlib splice declares (shared.h builtin_trait_units) — reach a namespace
+// or a builtin only through a default body (`Dir.copy_to`'s `FS`). A default
+// the program alone calls runs only when the program calls it by name, so
+// its body counts as named exactly when its method's name is; run to a
+// fixpoint, since a default the program calls may call another. A unit
+// whose defaults the library calls by name itself (Dir's `files` and `size`,
+// from Compress.zip and server.static) counts every body. The declarations'
+// own names never count (the trait `Dir` is not a use of the namespace
+// `_Dir`).
 inline void _aot_collect_trait_methods(const peg::Ast& node,
                                        std::vector<const peg::Ast*>& out) {
   using namespace peg::udl;
@@ -88,12 +92,22 @@ inline void _aot_collect_library_names(const peg::Ast& node, AotNames& out,
                                        std::vector<const peg::Ast*>& held) {
   using namespace peg::udl;
   if (node.tag == "TRAIT_DECL"_) {
-    _aot_collect_trait_methods(node, held);
+    held.push_back(&node);
     return;
   }
   if (node.tag == "IDENTIFIER"_) out.insert(_aot_name_key(node.token));
   for (const auto& child : node.nodes)
     _aot_collect_library_names(*child, out, held);
+}
+// Does the library call this trait's defaults by name (a unit that lists no
+// `called` defaults)?
+inline bool _aot_library_calls_defaults(const peg::Ast& decl) {
+  using namespace peg::udl;
+  for (const auto& part : decl.nodes)
+    if (part->tag == "TRAIT_HEAD"_)
+      for (const auto& u : builtin_trait_units())
+        if (part->token == u.trait) return u.called.empty();
+  return false;
 }
 
 // Every name a program's module list reaches, the spliced preamble included.
@@ -101,13 +115,25 @@ inline AotNames aot_collect_program_names(
     const std::vector<LoadedModule>& modules) {
   using namespace peg::udl;
   AotNames out;
-  std::vector<const peg::Ast*> methods;
+  std::vector<const peg::Ast*> decls;
   for (const auto& m : modules) {
     if (!m.ast) continue;
     if (is_library_path(m.abs_path.string()))
-      _aot_collect_library_names(*m.ast, out, methods);
+      _aot_collect_library_names(*m.ast, out, decls);
     else
       aot_collect_names(*m.ast, out);
+  }
+  std::vector<const peg::Ast*> methods;
+  for (const auto* d : decls) {
+    if (_aot_library_calls_defaults(*d)) {
+      std::vector<const peg::Ast*> all;
+      _aot_collect_trait_methods(*d, all);
+      for (const auto* m : all)
+        for (const auto& part : m->nodes)
+          if (part->tag == "TRAIT_BODY"_) aot_collect_names(*part, out);
+    } else {
+      _aot_collect_trait_methods(*d, methods);
+    }
   }
   if (auto ast = parse_builtin_traits_preamble())
     _aot_collect_trait_methods(*ast, methods);

@@ -266,6 +266,24 @@ struct Lowering {
                          ConstantInt::get(i64, refs.size()),
                          "culebra_aot_ns_group_count");
     }
+    // culebra_aot_builtin_fns[] / _count: the bare builtins the program
+    // names, each an external reference to its row (builtin_fn_symbol), the
+    // one thing that keeps that row and its adapter through the link.
+    {
+      auto i64 = builder.getInt64Ty();
+      std::vector<Constant*> rows;
+      for (const auto* m : kBuiltinFns)
+        if (aot_named(names, m->name))
+          rows.push_back(mod->getOrInsertGlobal(builtin_fn_symbol(m->name),
+                                                builder.getInt8Ty()));
+      auto arrTy = ArrayType::get(ptrTy, rows.size());
+      new GlobalVariable(*mod, arrTy, true, GlobalValue::ExternalLinkage,
+                         ConstantArray::get(arrTy, rows),
+                         "culebra_aot_builtin_fns");
+      new GlobalVariable(*mod, i64, true, GlobalValue::ExternalLinkage,
+                         ConstantInt::get(i64, rows.size()),
+                         "culebra_aot_builtin_fn_count");
+    }
 
     if (opt_level > 0) JIT::optimize_module(*mod, opt_level);
     if (emit_llvm) mod->print(outs(), nullptr);

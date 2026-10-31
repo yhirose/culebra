@@ -304,6 +304,15 @@ expect_present none ' _?culebra_ns_group_IO$' "IO named, its group must be linke
 expect_absent none ' _?culebra_ns_group_Math$' "the Math group"
 expect_absent none ' [A-Za-z] culebra::_ns_isolate_spawn[(]' "the Isolate adapter"
 expect_absent none ' [A-Za-z] culebra::_ns_http_[a-z_]*[(]' "the Http adapters"
+# The bare builtins link the same way, each its own row (builtin_fn_symbol)
+# that only the program object's culebra_aot_builtin_fns[] refers to. (The
+# scan reads `IO.print`'s member name as a name, so print's row is here.)
+expect_absent none ' _?culebra_builtin_fn_(grid|range|assert_eq|eff_recapture_internal|for_iter_internal)$' "bare builtins it never names"
+build builtins 'print(type_of(1))'
+expect_present builtins ' _?culebra_builtin_fn_print$' "print named, its row must be linked"
+expect_present builtins ' _?culebra_builtin_fn_type_of$' "type_of named, its row must be linked"
+expect_absent builtins ' _?culebra_builtin_fn_(grid|eff_recapture_internal)$' "builtins it never names"
+expect_output builtins "Long"
 
 # 2. Each on its own: the engine is what runs, and no other feature's code
 #    came along with it.
@@ -530,6 +539,21 @@ IO.print(m.generate(\"x\", max_tokens: 4, grammar: 'root ::= \"ok\"').text)"
     expect_output llama_run "ok"
   fi
 fi
+
+# A Dir default the library calls by name (Compress.zip asks for files(),
+# server.static for size()) runs though the program never names it, so the
+# builtins its body reaches link anyway: `size` raises through __raise, which
+# neither this program nor (with no `Dir` named) the Dir module names.
+build dirzip 'class Own {
+  read(p) { "x" }
+  list_dir(p) { p == "" ? ["a"] : [] }
+  exists(p) { true }
+  is_file(p) { p == "a" }
+  is_dir(p) { p == "" }
+}
+IO.print(Compress.zip(Own()) != "")'
+expect_present dirzip ' _?culebra_builtin_fn_raise_internal$' "a library-called Dir default's builtin"
+expect_output dirzip "true"
 
 build spec 'let x = 1.5
 IO.print("{x:.2f}")'

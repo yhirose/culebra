@@ -12466,46 +12466,145 @@ struct _JitNamespaceTable {
 };
 
 // Bare builtin function globals, exposed as first-class values by reusing
-// the ns-method closure machinery (shared trampoline + arity check). Direct
-// calls keep their fast paths (compile_global / try_compile_core_global);
-// only value / higher-order uses (`map(type_of)`, `let f = inspect`) reach the
-// closure built here. `ns` is empty — these are not namespaced; the trampoline
-// uses it only for arity-error text, which `_ns_adapt::arity_error` renders
-// name-only when blank.
-inline const NsMethod kBuiltinFns[] = {
-  {"", "inspect",   1, &_ns_io_inspect},
-  {"", "print",     1, &_ns_io_print},
-  {"", "println",   1, &_ns_io_println},
-  {"", "type_of",   1, &_ns_global_type_of},
-  {"", "class_of",  1, &_ns_global_class_of},
-  {"", "to_long",   2, &_ns_global_to_long},
-  {"", "to_float",  1, &_ns_global_to_float},
-  {"", "to_string", 1, &_ns_global_to_string},
-  {"", "hash",      1, &_ns_global_hash},
-  {"", "__eff_copy", 1, &_ns_global_eff_copy},
-  {"", "__eff_recapture", 3, &_ns_global_eff_recapture},
-  {"", "__eff_abort", 1, &_ns_global_eff_abort},
-  {"", "__eff_catch_abort", 1, &_ns_global_eff_catch_abort},
-  {"", "__for_iter", 1, &_ns_global_for_iter},
-  {"", "__raise",    2, &_ns_global_raise},
-  {"", "__raise_at", 3, &_ns_global_raise_at},
-  {"", "range",    -1, &_ns_global_range},
-  {"", "iota",     -1, &_ns_global_iota},
-  {"", "repeat",    2, &_ns_global_repeat},
-  {"", "grid",     -1, &_ns_global_grid},
-  {"", "Range",    -1, &_ns_global_range_ctor},
-  // Matchers, native so a failure carries the call site's position.
-  // `assert_throws` is not here — it stays in the __Matchers preamble.
-  {"", "assert_true",  2, &_ns_assert_true},
-  {"", "assert_false", 2, &_ns_assert_false},
-  {"", "assert_eq",    3, &_ns_assert_eq},
-  {"", "assert_ne",    3, &_ns_assert_ne},
-  {"", "assert_lt",    3, &_ns_assert_lt},
-  {"", "assert_le",    3, &_ns_assert_le},
-  {"", "assert_gt",    3, &_ns_assert_gt},
-  {"", "assert_ge",    3, &_ns_assert_ge},
-  {"", "assert_close", 4, &_ns_assert_close},
+// the ns-method closure machinery (shared trampoline + arity check). A
+// compiled program reaches every one of them by name, through
+// culebra_runtime_namespace_get, whether it calls it or passes it around.
+// `ns` is empty — these are not namespaced; the trampoline uses it only for
+// arity-error text, which `_ns_adapt::arity_error` renders name-only when
+// blank.
+//
+// Each is a symbol of its own, the unit of AOT linkage that a namespace's
+// group is (ns_group_symbol): `culebra build` emits a reference to each one
+// the program names, so a binary carries those adapters and not the rest
+// (`__eff_recapture`'s effects machinery, `grid`, the matchers...). The rule:
+// `culebra_builtin_fn_<name>`, an internal `__x` spelled `x_internal`; the
+// definitions follow it by hand, and one that doesn't is an undefined symbol
+// at the AOT link.
+inline std::string builtin_fn_symbol(std::string_view name) {
+  std::string s = "culebra_builtin_fn_";
+  if (name.starts_with("__")) {
+    s += name.substr(2);
+    s += "_internal";
+  } else {
+    s += name;
+  }
+  return s;
+}
+CULEBRA_NS_GROUP_LINKAGE const NsMethod culebra_builtin_fn_inspect{
+    "", "inspect", 1, &_ns_io_inspect};
+CULEBRA_NS_GROUP_LINKAGE const NsMethod culebra_builtin_fn_print{
+    "", "print", 1, &_ns_io_print};
+CULEBRA_NS_GROUP_LINKAGE const NsMethod culebra_builtin_fn_println{
+    "", "println", 1, &_ns_io_println};
+CULEBRA_NS_GROUP_LINKAGE const NsMethod culebra_builtin_fn_type_of{
+    "", "type_of", 1, &_ns_global_type_of};
+CULEBRA_NS_GROUP_LINKAGE const NsMethod culebra_builtin_fn_class_of{
+    "", "class_of", 1, &_ns_global_class_of};
+CULEBRA_NS_GROUP_LINKAGE const NsMethod culebra_builtin_fn_to_long{
+    "", "to_long", 2, &_ns_global_to_long};
+CULEBRA_NS_GROUP_LINKAGE const NsMethod culebra_builtin_fn_to_float{
+    "", "to_float", 1, &_ns_global_to_float};
+CULEBRA_NS_GROUP_LINKAGE const NsMethod culebra_builtin_fn_to_string{
+    "", "to_string", 1, &_ns_global_to_string};
+CULEBRA_NS_GROUP_LINKAGE const NsMethod culebra_builtin_fn_hash{
+    "", "hash", 1, &_ns_global_hash};
+CULEBRA_NS_GROUP_LINKAGE const NsMethod culebra_builtin_fn_eff_copy_internal{
+    "", "__eff_copy", 1, &_ns_global_eff_copy};
+CULEBRA_NS_GROUP_LINKAGE const NsMethod
+    culebra_builtin_fn_eff_recapture_internal{
+        "", "__eff_recapture", 3, &_ns_global_eff_recapture};
+CULEBRA_NS_GROUP_LINKAGE const NsMethod culebra_builtin_fn_eff_abort_internal{
+    "", "__eff_abort", 1, &_ns_global_eff_abort};
+CULEBRA_NS_GROUP_LINKAGE const NsMethod
+    culebra_builtin_fn_eff_catch_abort_internal{
+        "", "__eff_catch_abort", 1, &_ns_global_eff_catch_abort};
+CULEBRA_NS_GROUP_LINKAGE const NsMethod culebra_builtin_fn_for_iter_internal{
+    "", "__for_iter", 1, &_ns_global_for_iter};
+CULEBRA_NS_GROUP_LINKAGE const NsMethod culebra_builtin_fn_raise_internal{
+    "", "__raise", 2, &_ns_global_raise};
+CULEBRA_NS_GROUP_LINKAGE const NsMethod culebra_builtin_fn_raise_at_internal{
+    "", "__raise_at", 3, &_ns_global_raise_at};
+CULEBRA_NS_GROUP_LINKAGE const NsMethod culebra_builtin_fn_range{
+    "", "range", -1, &_ns_global_range};
+CULEBRA_NS_GROUP_LINKAGE const NsMethod culebra_builtin_fn_iota{
+    "", "iota", -1, &_ns_global_iota};
+CULEBRA_NS_GROUP_LINKAGE const NsMethod culebra_builtin_fn_repeat{
+    "", "repeat", 2, &_ns_global_repeat};
+CULEBRA_NS_GROUP_LINKAGE const NsMethod culebra_builtin_fn_grid{
+    "", "grid", -1, &_ns_global_grid};
+CULEBRA_NS_GROUP_LINKAGE const NsMethod culebra_builtin_fn_Range{
+    "", "Range", -1, &_ns_global_range_ctor};
+// Matchers, native so a failure carries the call site's position.
+// `assert_throws` is not here — it stays in the __Matchers preamble.
+CULEBRA_NS_GROUP_LINKAGE const NsMethod culebra_builtin_fn_assert_true{
+    "", "assert_true", 2, &_ns_assert_true};
+CULEBRA_NS_GROUP_LINKAGE const NsMethod culebra_builtin_fn_assert_false{
+    "", "assert_false", 2, &_ns_assert_false};
+CULEBRA_NS_GROUP_LINKAGE const NsMethod culebra_builtin_fn_assert_eq{
+    "", "assert_eq", 3, &_ns_assert_eq};
+CULEBRA_NS_GROUP_LINKAGE const NsMethod culebra_builtin_fn_assert_ne{
+    "", "assert_ne", 3, &_ns_assert_ne};
+CULEBRA_NS_GROUP_LINKAGE const NsMethod culebra_builtin_fn_assert_lt{
+    "", "assert_lt", 3, &_ns_assert_lt};
+CULEBRA_NS_GROUP_LINKAGE const NsMethod culebra_builtin_fn_assert_le{
+    "", "assert_le", 3, &_ns_assert_le};
+CULEBRA_NS_GROUP_LINKAGE const NsMethod culebra_builtin_fn_assert_gt{
+    "", "assert_gt", 3, &_ns_assert_gt};
+CULEBRA_NS_GROUP_LINKAGE const NsMethod culebra_builtin_fn_assert_ge{
+    "", "assert_ge", 3, &_ns_assert_ge};
+CULEBRA_NS_GROUP_LINKAGE const NsMethod culebra_builtin_fn_assert_close{
+    "", "assert_close", 4, &_ns_assert_close};
+
+// Every one, for the lanes that run in this process and for the compilers'
+// name sets (is_stdlib_global, the lint); an AOT binary resolves through the
+// list its program object emitted instead (builtin_fns()), and nothing the
+// archive emits may read this one, or every row would link
+// (check_aot_feature_axes.sh keeps that so).
+inline const NsMethod* const kBuiltinFns[] = {
+    &culebra_builtin_fn_inspect,
+    &culebra_builtin_fn_print,
+    &culebra_builtin_fn_println,
+    &culebra_builtin_fn_type_of,
+    &culebra_builtin_fn_class_of,
+    &culebra_builtin_fn_to_long,
+    &culebra_builtin_fn_to_float,
+    &culebra_builtin_fn_to_string,
+    &culebra_builtin_fn_hash,
+    &culebra_builtin_fn_eff_copy_internal,
+    &culebra_builtin_fn_eff_recapture_internal,
+    &culebra_builtin_fn_eff_abort_internal,
+    &culebra_builtin_fn_eff_catch_abort_internal,
+    &culebra_builtin_fn_for_iter_internal,
+    &culebra_builtin_fn_raise_internal,
+    &culebra_builtin_fn_raise_at_internal,
+    &culebra_builtin_fn_range,
+    &culebra_builtin_fn_iota,
+    &culebra_builtin_fn_repeat,
+    &culebra_builtin_fn_grid,
+    &culebra_builtin_fn_Range,
+    &culebra_builtin_fn_assert_true,
+    &culebra_builtin_fn_assert_false,
+    &culebra_builtin_fn_assert_eq,
+    &culebra_builtin_fn_assert_ne,
+    &culebra_builtin_fn_assert_lt,
+    &culebra_builtin_fn_assert_le,
+    &culebra_builtin_fn_assert_gt,
+    &culebra_builtin_fn_assert_ge,
+    &culebra_builtin_fn_assert_close,
 };
+
+#if defined(CULEBRA_RT_DEFINE_RUNTIME) || defined(CULEBRA_RT_FEATURE_ARCHIVE)
+// The AOT binary's list, emitted into the program object by `culebra build`
+// (Lowering::build_object): the builtins the program names, nothing else.
+extern "C" const NsMethod* const culebra_aot_builtin_fns[];
+extern "C" const int64_t culebra_aot_builtin_fn_count;
+inline std::span<const NsMethod* const> builtin_fns() {
+  return {culebra_aot_builtin_fns,
+          static_cast<size_t>(culebra_aot_builtin_fn_count)};
+}
+#else
+inline std::span<const NsMethod* const> builtin_fns() { return kBuiltinFns; }
+#endif
 
 namespace _ns_spec_detail {
 // The NsMethod* → canonical-sig table for the rows `pred` admits (null pred
@@ -12521,7 +12620,7 @@ inline std::unordered_map<const NsMethod*, const NsParamMeta*> sig_table(
     // else: canonical lookup failed — skip, callers fall back
   };
   _each_linked_ns_row(add);
-  for (const auto& nm : kBuiltinFns) add(nm);
+  for (const auto* nm : builtin_fns()) add(*nm);
   for (const auto& nm : _wrapped_ns_methods()) add(nm);
   return t;
 }
@@ -12638,7 +12737,7 @@ inline const JitParamMeta* _jit_ns_introspect_meta(JitClosure* cls) {
           storage.push_back(std::move(built));
         };
         _each_linked_ns_row(add);
-        for (const auto& nm : kBuiltinFns) add(nm);
+        for (const auto* nm : builtin_fns()) add(*nm);
         for (const auto& nm : _wrapped_ns_methods()) add(nm);
         return t;
       }();
@@ -12656,9 +12755,9 @@ inline JitClosure* _jit_builtin_fn_closure(_JitNamespaceTable& t,
   auto& cache = t.builtin_fns;
   auto it = cache.find(name);
   if (it != cache.end()) return it->second;
-  for (const auto& m : kBuiltinFns) {
-    if (name != m.name) continue;
-    auto* cls = _jit_make_ns_method_closure(&m);
+  for (const auto* m : builtin_fns()) {
+    if (name != m->name) continue;
+    auto* cls = _jit_make_ns_method_closure(m);
     _gc_heap().pin(cls);
     cache.emplace(name, cls);
     return cls;
@@ -12749,8 +12848,8 @@ inline _LazyNsBuilder _lazy_ns_builder(std::string_view name) {
 // below relies on — culebra_runtime_namespace_get consults that memo first, so
 // a name in both sets would silently change which one a bare read resolves to.
 inline bool _is_bare_stdlib_fn(std::string_view name) {
-  for (const auto& m : kBuiltinFns)
-    if (name == m.name) return true;
+  for (const auto* m : kBuiltinFns)
+    if (name == m->name) return true;
   return !culebra::lazy_fn_group_of(name).empty();
 }
 
@@ -13430,7 +13529,7 @@ inline const std::set<std::string, std::less<>>& builtin_global_names() {
   static const std::set<std::string, std::less<>> names = [] {
     std::set<std::string, std::less<>> s;
     for (auto n : builtin_var_names()) s.emplace(n);
-    for (const auto& m : kBuiltinFns) s.emplace(m.name);
+    for (const auto* m : kBuiltinFns) s.emplace(m->name);
     for (const auto& g : lazy_fn_groups())
       for (auto m : g.members) s.emplace(m);
     // wrapped_class_names, not _wrapped_ns_methods: a rowless wrapped class

@@ -308,7 +308,9 @@ lookup per frame instead of four.
 that the runtime resolves by name — grouped per namespace so an AOT
 binary links only the namespaces its source names (`ns_groups()`,
 `deployment.md` §4) — the built-in globals (`to_string`, `type_of`,
-`range`, …) as `kBuiltinFns`, and the value-type methods. A program
+`range`, …) as `kBuiltinFns`, one symbol per row so that a binary links
+the ones its source names in the same way (`builtin_fns()`), and the
+value-type methods. A program
 installs it once with `install_jit_stdlib()`, which fills the
 `ExtensionHooks` that `install_extension` (`rt.h`) registers — the same
 seam an embedder uses to add its own namespaces (`deployment.md` §2).

@@ -299,7 +299,7 @@ executorとランタイム自身からユーザーコードへの呼び戻しは
 
 ### 3.3 標準ライブラリ
 
-`stdlib/bindings.h`が標準ライブラリを束縛する。ネイティブ名前空間（`Math`、`IO`、`Random`、`FS`、`Net`、`Canvas`、…）は、実行時が名前で解決する名前空間ごとの`kNsRows_*`テーブルとして束縛する。名前空間単位にまとめてあるのは、AOTバイナリがソースの名指しした名前空間だけをlinkするためである（`ns_groups()`、`deployment.md` §4）。組み込みグローバル（`to_string`、`type_of`、`range`、…）は`kBuiltinFns`として、値型のメソッドはメソッドとして束縛する。プログラムは`install_jit_stdlib()`を1回呼んでこれを
+`stdlib/bindings.h`が標準ライブラリを束縛する。ネイティブ名前空間（`Math`、`IO`、`Random`、`FS`、`Net`、`Canvas`、…）は、実行時が名前で解決する名前空間ごとの`kNsRows_*`テーブルとして束縛する。名前空間単位にまとめてあるのは、AOTバイナリがソースの名指しした名前空間だけをlinkするためである（`ns_groups()`、`deployment.md` §4）。組み込みグローバル（`to_string`、`type_of`、`range`、…）は`kBuiltinFns`として束縛し、行ごとに別のシンボルにして、AOTバイナリが同じくソースの名指したものだけをlinkするようにしてある（`builtin_fns()`）。値型のメソッドはメソッドとして束縛する。プログラムは`install_jit_stdlib()`を1回呼んでこれを
 インストールし、これが`install_extension`（`rt.h`）が登録する
 `ExtensionHooks`を埋める — 同じ差し込み口をembedderが自分の名前空間
 を追加するのにも使う（`deployment.md` §2）。フックはASTを一切運ば
