@@ -1278,6 +1278,16 @@ inline const auto FS = ::cpp_embedlib::EmbeddedFS{_entries};
   # .data section and the linker can't drop them.
   target_compile_options(culebra_rt PRIVATE
     -ffunction-sections -fdata-sections)
+  # ...which GCC's SLP vectorizer undoes: it stores a pair of function pointers
+  # (a std::function's manager and invoker, a hook table's two entries) from a
+  # 16-byte constant, and puts every such constant in one .data.rel.ro.local
+  # pool per translation unit, which -fdata-sections does not split. One
+  # reachable store then kept the whole pool and every function it names —
+  # peglib's actions, Http's and Search's handlers — 70 KB of a hello. Without
+  # SLP the pool is gone; the AOT benchmarks measured no difference.
+  if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    target_compile_options(culebra_rt PRIVATE -fno-tree-slp-vectorize)
+  endif()
 
   # Tensor feature object: the strong real tensor_eval_node (the lone
   # cblas anchor). Force-loaded into the AOT binary only when the AST

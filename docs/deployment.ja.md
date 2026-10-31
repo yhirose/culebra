@@ -182,13 +182,12 @@ tlは`reshape`や`logsumexp`の内部から`clone`を呼ぶので、culebra側�
 `Proc`のfork/exec層、`Canvas.Sprite.from_png` / `Canvas.Font`の背後のPNG/TTFデコーダ、そして`PEG`（cpp-peglib）も
 外部ライブラリを引きませんが、それぞれ専用のchokeは要りません。自身のnamespaceのdispatch tableを通じてのみ到達する
 プレーンなコードとしてコンパイルされるので、名指ししないプログラムにはリンクされません
-（仕組みは[§4](#4-共有-runtime-archive-レイアウト)を参照）。ただし`PEG`は、このdead-strippingが全バイトには届かない
-唯一のnamespaceです。`culebra::pegparser::load()`自体は、PEGを名指ししないバイナリから消えていることを
-`--keep-symbols`ビルドの`nm -C --defined-only`で確認済みです。しかしpeglibの`Ope`クラス階層はvtableとtypeinfoを残し、
-それを`--gc-sections`が使用の有無に関わらず保持します。加えて、`std::function`に包んだローカルラムダのcomdatテンプレート実体化が、
-それを呼ぶはずの関数が消えたあとも孤立して生き残ります（リンカの既知の制限で、到達可能な呼び出し経路ではありません）。
-どちらも不活性で、PEG未使用バイナリで実行されることは無く、実測で固定約53 KBです。
-2本目のarchiveをforce-loadして避けることはせず、これは受け入れます。
+（仕組みは[§4](#4-共有-runtime-archive-レイアウト)を参照）。`PEG`ではもう1つ手当てが要ります。GCCのSLPベクトル化は
+2つの関数ポインタを16バイトの定数からまとめて書き込み、翻訳単位のそうした定数をすべて1つのプールに置きます。
+このプールは`-fdata-sections`でも分割されないので、到達する書き込みが1つあるだけで、peglibのvtableやactionが
+すべてのバイナリに残ってしまいます。base archiveはSLPベクトル化なしでコンパイルしており（AOTのベンチマークで
+速度の差は測れませんでした）、`PEG`を名指ししないバイナリにはpeglibのシンボルが1つも残りません
+（`--keep-symbols`ビルドの`nm -C --defined-only`で確認できます）。
 
 `otool -L`（macOS）や`ldd`（Linux）で確認できます:
 
@@ -1238,7 +1237,7 @@ static **runtime archive**を出荷します。CMakeは`-DCULEBRA_ENABLE_JIT=ON`
 
 | Archive | 内容 |
 |---|---|
-| `libculebra_rt.a` | base。全部入りだが、各機能のchokeは**弱シンボルのスタブ**（ここから呼べるコードはBLAS・OpenSSL・zlib・sqlite3・正規表現エンジンに到達しない）。サブプロセス層、画像デコーダ（stb_image / stb_truetype）、cpp-peglibパーサジェネレータ（`PEG`）は外部ライブラリを引かないのでこのarchiveに直接コンパイルされ、chokeではなく下のnamespace-group単位のdead-strippingに委ねられる。3つのうち`PEG`だけは、未使用でも固定約53 KBのpeglib RTTI/vtableメタデータを残す（§1参照） |
+| `libculebra_rt.a` | base。全部入りだが、各機能のchokeは**弱シンボルのスタブ**（ここから呼べるコードはBLAS・OpenSSL・zlib・sqlite3・正規表現エンジンに到達しない）。サブプロセス層、画像デコーダ（stb_image / stb_truetype）、cpp-peglibパーサジェネレータ（`PEG`）は外部ライブラリを引かないのでこのarchiveに直接コンパイルされ、chokeではなく下のnamespace-group単位のdead-strippingに委ねられる |
 | `libculebra_rt_tensor.a` | 強いtensor choke 3種: バックエンド側（BLAS / Accelerateを引く）、汎用の算術経路が到達してしまうelementwiseカーネル、そしてVJPがtlのeagerなデバイスカーネルを呼ぶ`backward`（[§1](#tensor-free--http-free-バイナリ)参照） |
 | `libculebra_rt_http.a` | 強いhttp choke（OpenSSL + zlibを引く） |
 | `libculebra_rt_http_notls.a` | 同じchokeをcpp-httplibのTLS無しでビルドしたもの。`--no-tls`のときこちらが代わりにforce-loadされる（[§1](#tls抜きでhttpをビルドする)参照）。アーカイブが2本ある唯一の軸で、1回のリンクは必ず片方だけを取り、baseはどちらも持たない |

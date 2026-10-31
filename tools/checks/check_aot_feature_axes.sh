@@ -36,17 +36,12 @@
 #     reached — the same mechanism §4 of docs/deployment.md describes for
 #     Math/IO. This script checks that these choke functions are present when
 #     the namespace is used and gone (not merely stubbed) when it is not.
-#     PEG is the one exception `--gc-sections` only partly reaches: peglib's
-#     Ope class hierarchy leaves typeinfo/vtables behind (see peg.h), and a
-#     couple of `std::function`-wrapped local lambdas leave an inert
-#     `_Function_handler<...>::_M_manager` comdat behind even after their only
-#     caller is pruned (a linker limitation, not a reachable call path). Both
-#     are accepted rather than chased with a second archive: they're fixed at
-#     a measured ~53 KB total and never executed in a binary that never names
-#     PEG (see peg.h). What this script's `none` probe checks instead is the
-#     thing that DOES matter -- that `culebra::pegparser::load` itself
-#     (the actual entry point, not a nested lambda's enclosing-scope name) is
-#     gone, not merely stubbed, when the program never names PEG.
+#     For PEG that holds for every peglib symbol, which only GCC's SLP
+#     constant pool used to keep (one .data.rel.ro.local pool per
+#     translation unit, unsplit by -fdata-sections, kept whole by any one
+#     reachable reference): the core archive compiles without SLP
+#     (CMakeLists.txt), and `none` carrying no `peg::` symbol is what keeps
+#     it so.
 #
 # The choke names below are this script's own copy of what the source
 # actually reaches; renaming one means updating it.
@@ -257,10 +252,7 @@ expect_absent none "$codegen_choke" "no CodeGen use"
 expect_absent none ' reg::' "regexlib"
 expect_absent none 'searchlib::InMemoryInvertedIndexBase' "cpp-searchlib"
 expect_absent none 'segmentlib::' "cpp-segmentlib"
-# peglib's typeinfo/vtables, and a couple of unreachable std::function comdat
-# thunks, survive here by design (see the PEG note above) -- culebra's own
-# front-end parser (parser.h) already needs a working peg::parser regardless
-# of this program, so raw `peg::` symbols are not checked for absence here.
+expect_absent none 'peg::' "peglib (see the PEG note above)"
 expect_absent none 'culebra::proc::_detail::' "the fork/exec layer"
 expect_absent none 'culebra::_canvas_detail::ttf_rasterize' "stb_truetype"
 expect_absent none 'culebra::foreign_fixture::' "the fixture's own C++ class"
@@ -588,4 +580,4 @@ if (( fail )); then
 EOF
   exit 1
 fi
-echo "aot-feature-axes OK (Regex / Search / Tensor / Http+TLS / Audio / __Foreign / CodeGen by axis; Proc/Canvas/PEG/Shared by namespace group; PEG's fixed RTTI residue accepted; groups linked only when named; no libstdc++ formatter)"
+echo "aot-feature-axes OK (Regex / Search / Tensor / Http+TLS / Audio / __Foreign / CodeGen by axis; Proc/Canvas/PEG/Shared by namespace group, no peglib in none; groups linked only when named; no libstdc++ formatter)"

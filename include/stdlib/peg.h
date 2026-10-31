@@ -19,17 +19,11 @@
 // rows) does dead-strip the actual parsing entry points --
 // culebra::pegparser::load() itself is absent from a binary that never
 // names PEG, verified with `nm -C --defined-only` on a `--keep-symbols` build
-// (plain `nm` on a stripped binary proves nothing either way). What survives
-// regardless is inert, not reachable code: peglib's own `Ope` class hierarchy
-// leaves vtables and typeinfo behind that `--gc-sections` keeps no matter
-// what (shared with culebra's own front end, parser.h, which needs a working
-// peg::parser regardless of this header), plus a handful of
-// `std::function`-wrapped local lambdas in this file and stdlib_rt.h (the
-// grammar's error logger, the JIT's hook builder) whose
-// `_Function_handler<...>::_M_manager` template instantiation outlives its
-// only caller -- a known comdat/--gc-sections gap where a template
-// instantiation can survive after everything that would have called it is
-// pruned.
+// (plain `nm` on a stripped binary proves nothing either way), and so is every
+// peglib symbol with it (check_aot_feature_axes.sh). What used to survive —
+// peglib's vtables and the std::function managers of this file's lambdas —
+// was held by GCC's SLP constant pool, which the core archive compiles
+// without (CMakeLists.txt).
 //
 // The namespace is `pegparser`, not `peg`: a `culebra::peg` would shadow
 // peglib's own `peg::` at every `peg::Ast` spelled inside namespace culebra
