@@ -207,10 +207,11 @@ let _audio_module = fn () {
   }
 
   # A part of a graph, which keeps its graph as an AudioGraphValue does.
-  # What moves in it is an AudioGraphValue: a wave's freq, a filter's
-  # cutoff, a gain's gain, a string's freq and ring.
+  # What moves in it is an AudioGraphValue: a wave's freq and feedback, a
+  # filter's cutoff, a gain's gain, a string's freq and ring.
   class AudioGraphPart {
     freq = nil
+    feedback = nil
     cutoff = nil
     gain = nil
     ring = nil
@@ -254,9 +255,15 @@ let _audio_module = fn () {
     _value(part: AudioGraphPart, index: Long) {
       AudioGraphValue.new(self, part._index, index)
     }
-    wave(kind: String = "sine", freq: Long | Float = 440.0) {
-      let p = @_part("wave", kind, [], [freq])
+    wave(
+      kind: String = "sine",
+      freq: Long | Float = 440.0,
+      modulators: Array = [],
+      feedback: Long | Float = 0.0,
+    ) {
+      let p = @_part("wave", kind, modulators, [freq, feedback])
       p.freq = @_value(p, 0)
+      p.feedback = @_value(p, 1)
       p
     }
     noise(seed: Long = 1) {

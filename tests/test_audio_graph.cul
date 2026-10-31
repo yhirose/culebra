@@ -170,6 +170,65 @@ many.for_each(|g| g.stop())
 one_more.play()
 one_more.stop()
 
+// A wave's phase moves by the sum of the parts that modulate it, in radians:
+// two sines, the second's phase moved by the first's output times an index,
+// are the sines the formula says. The modulator has the carrier's freq and a
+// feedback of its own, as a DX7 operator has: its phase also moves by
+// `feedback` times the mean of its last two outputs.
+fn fm_reference(n, rate, f_mod, f_car, feedback, index) {
+  mut ph_mod = 0.0
+  mut ph_car = 0.0
+  mut y1 = 0.0
+  mut y2 = 0.0
+  iota(n).map(fn (_) {
+    let m = Math.sin(2.0 * Math.pi * ph_mod + feedback * 0.5 * (y1 + y2))
+    y2 = y1
+    y1 = m
+    let c = Math.sin(2.0 * Math.pi * ph_car + index * m)
+    ph_mod += f_mod / rate
+    ph_mod -= Math.floor(ph_mod)
+    ph_car += f_car / rate
+    ph_car -= Math.floor(ph_car)
+    c
+  })
+}
+let fm = Audio.Graph.new(rate: 8000)
+let modulator = fm.wave("sine", freq: 300.0, feedback: 1.5)
+let carrier = fm.wave("sine", freq: 700.0, modulators: [fm.gain(modulator, 2.0)])
+fm.output(carrier)
+assert_samples(
+  fm.render(0.05),
+  fm_reference(400, 8000.0, 300.0, 700.0, 1.5, 2.0),
+)
+// Without a modulator or feedback a wave is as it was: the carrier alone.
+let plain = Audio.Graph.new(rate: 8000)
+plain.output(plain.wave("sine", freq: 700.0))
+assert_samples(
+  plain.render(0.05),
+  fm_reference(400, 8000.0, 300.0, 700.0, 0.0, 0.0),
+)
+// Feedback is a value, moved on the graph's clock like the others: 0 until
+// sample 200 (0.025 s), then 1.5.
+fn fed_sine(n, rate, freq, from, feedback) {
+  mut ph = 0.0
+  mut y1 = 0.0
+  mut y2 = 0.0
+  iota(n).map(fn (i) {
+    let fb = i >= from ? feedback : 0.0
+    let y = Math.sin(2.0 * Math.pi * ph + fb * 0.5 * (y1 + y2))
+    y2 = y1
+    y1 = y
+    ph += freq / rate
+    ph -= Math.floor(ph)
+    y
+  })
+}
+let late_fb = Audio.Graph.new(rate: 8000)
+let fed = late_fb.wave("sine", freq: 300.0)
+fed.feedback.set(0.025, 1.5)
+late_fb.output(fed)
+assert_samples(late_fb.render(0.05), fed_sine(400, 8000.0, 300.0, 200, 1.5))
+
 // A part keeps its graph: the graph lives on after the variable that held it.
 fn lone_wave() {
   let g = Audio.Graph.new()
@@ -197,7 +256,7 @@ for (
   call,
   kind,
   message,
-) in [(|| Audio.Graph.new(rate: 0), "ValueError", "the rate is above 0"), (|| g.wave("zigzag"), "ValueError", "a wave is \"sine\", \"saw\", \"square\" or \"triangle\", not zigzag"), (|| g.wave(freq: 30000.0), "ValueError", "a wave's freq is 0 or more and below half the rate"), (|| g.noise(seed: -1), "ValueError", "a noise's seed is a whole number from 0 below 2^31"), (|| g.filter("notch", w), "ValueError", "a filter is \"low\", \"high\" or \"band\", not notch"), (|| g.filter("low", w, cutoff: 0.0), "ValueError", "a cutoff is above 0 and below half the rate"), (|| g.filter("low", w, q: 0.0), "ValueError", "the q is above 0"), (|| g.gain(w, Math.nan), "ValueError", "a gain is a finite number"), (|| g.pluck(w, freq: 10.0), "ValueError", "a string's freq is 20 or more and below half the rate"), (|| g.pluck(w, ring: 0.0), "ValueError", "a string's ring is above 0"), (|| g.resonate(w, [{freq: 0.0, width: 10.0, gain: 1.0}]), "ValueError", "a mode's freq is above 0 and below half the rate"), (|| g.resonate(w, [{freq: 300.0, width: 0.0, gain: 1.0}]), "ValueError", "a mode's width is above 0"), (|| g.filter("low", elsewhere), "ValueError", "a part takes in parts of its own graph"), (|| g.mix([w, elsewhere]), "ValueError", "a part takes in parts of its own graph"), (|| g.output(elsewhere), "ValueError", "the output is a part of its own graph"), (|| w.freq.set(-0.5, 220.0), "ValueError", "a change's time is 0 or more"), (|| w.freq.ramp(0.5, -220.0), "ValueError", "a wave's freq is 0 or more and below half the rate"), (|| Audio.Graph.new(rate: 22050).play(), "ValueError", "a graph plays at a rate of 44100"), (|| g.render(-1.0), "ValueError", "the seconds are 0 or more")] {
+) in [(|| Audio.Graph.new(rate: 0), "ValueError", "the rate is above 0"), (|| g.wave("zigzag"), "ValueError", "a wave is \"sine\", \"saw\", \"square\" or \"triangle\", not zigzag"), (|| g.wave(freq: 30000.0), "ValueError", "a wave's freq is 0 or more and below half the rate"), (|| g.wave(feedback: -1.0), "ValueError", "a wave's feedback is 0 or more"), (|| w.feedback.ramp(0.5, Math.nan), "ValueError", "a wave's feedback is 0 or more"), (|| g.wave(modulators: [elsewhere]), "ValueError", "a part takes in parts of its own graph"),(|| g.noise(seed: -1), "ValueError", "a noise's seed is a whole number from 0 below 2^31"), (|| g.filter("notch", w), "ValueError", "a filter is \"low\", \"high\" or \"band\", not notch"), (|| g.filter("low", w, cutoff: 0.0), "ValueError", "a cutoff is above 0 and below half the rate"), (|| g.filter("low", w, q: 0.0), "ValueError", "the q is above 0"), (|| g.gain(w, Math.nan), "ValueError", "a gain is a finite number"), (|| g.pluck(w, freq: 10.0), "ValueError", "a string's freq is 20 or more and below half the rate"), (|| g.pluck(w, ring: 0.0), "ValueError", "a string's ring is above 0"), (|| g.resonate(w, [{freq: 0.0, width: 10.0, gain: 1.0}]), "ValueError", "a mode's freq is above 0 and below half the rate"), (|| g.resonate(w, [{freq: 300.0, width: 0.0, gain: 1.0}]), "ValueError", "a mode's width is above 0"), (|| g.filter("low", elsewhere), "ValueError", "a part takes in parts of its own graph"), (|| g.mix([w, elsewhere]), "ValueError", "a part takes in parts of its own graph"), (|| g.output(elsewhere), "ValueError", "the output is a part of its own graph"), (|| w.freq.set(-0.5, 220.0), "ValueError", "a change's time is 0 or more"), (|| w.freq.ramp(0.5, -220.0), "ValueError", "a wave's freq is 0 or more and below half the rate"), (|| Audio.Graph.new(rate: 22050).play(), "ValueError", "a graph plays at a rate of 44100"), (|| g.render(-1.0), "ValueError", "the seconds are 0 or more")] {
   assert_eq(caught(call), (kind, "Audio.Graph: " + message))
 }
 assert_eq(caught(|| g.resonate(w, [1.0]))[0], "TypeError")

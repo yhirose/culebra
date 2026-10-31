@@ -8968,7 +8968,7 @@ it or to any of its parts and values.
 | Function / method | Effect |
 | --- | --- |
 | `Audio.Graph.new(rate = 44100)` | an empty graph |
-| `g.wave(kind = "sine", freq = 440.0)` | a wave from -1 to 1 at `freq` Hz: `"sine"`, `"saw"` or `"square"` (their jumps smoothed, so little folds back from above half the rate), or `"triangle"` |
+| `g.wave(kind = "sine", freq = 440.0, modulators = [], feedback = 0.0)` | a wave from -1 to 1 at `freq` Hz: `"sine"`, `"saw"` or `"square"` (their jumps smoothed, so little folds back from above half the rate), or `"triangle"`. The sum of the `modulators` (parts made before it) moves its phase, in radians, and so does `feedback` times the mean of its own last two samples: with sines, FM as a DX7 makes it. An index is a `gain` between a modulator and the wave it moves |
 | `g.noise(seed = 1)` | white noise from -1 to 1, the same from the same `seed` |
 | `g.filter(kind, input, cutoff = 1000.0, q = 0.707)` | `input` through `Audio.filter`'s filter |
 | `g.gain(input, gain = 1.0)` | `input` times `gain` |
@@ -8981,8 +8981,9 @@ it or to any of its parts and values.
 | `g.stop()` | silence it |
 | `g.now() -> Float` | where on the graph's clock a change made now lands; `0.0` when it is not playing |
 
-What moves in a part is a value: a wave's `freq`, a filter's `cutoff`, a
-gain's `gain`, and a string's `freq` and `ring`, each a field of the part. A
+What moves in a part is a value: a wave's `freq` and `feedback`, a filter's
+`cutoff`, a gain's `gain`, and a string's `freq` and `ring`, each a field of
+the part. A
 value is what the part was made with until its first change, and changes are
 scheduled on the graph's clock, in seconds from its start:
 
@@ -9005,8 +9006,8 @@ are Web Audio's `setValueAtTime` and `linearRampToValueAtTime`, so a song's
 notes can be scheduled ahead, as `Audio.Kauai` schedules its own.
 
 A kind other than those named, a part from another graph, a value out of
-range (a wave's freq below 0 or not below half the rate, a cutoff not above
-0 and below half the rate, a gain that is not a finite number, a string's
+range (a wave's freq below 0 or not below half the rate, a feedback below 0
+or not a finite number, a cutoff not above 0 and below half the rate, a gain that is not a finite number, a string's
 freq below 20 Hz or not below half the rate, a ring not above 0), a time
 below 0, or a `q` not above 0 raises `ValueError`, and so does a mode as
 `Audio.resonate` refuses one; an input that is not a part of a graph, or a
@@ -9033,6 +9034,14 @@ saw.output(saw.wave("saw", freq: 110.0))
 let swept = Audio.filter(saw.render(0.5), "low", [(0.0, 3000.0), (0.3, 500.0)], q: 2.0)
 let faded = Audio.envelope(swept, [(0.0, 0.0), (0.01, 0.5), (0.4, 0.4), (0.5, 0.0)])
 println(iota(22050).all(|i| Math.abs(sound[i] - faded[i]) < 1e-9))  # => true
+
+# Two sines, the first moving the second's phase: FM. The gain between them
+# is the index, in radians, and the first one feeds itself a little.
+let fm = Audio.Graph.new()
+let op1 = fm.wave("sine", freq: 220.0, feedback: 0.5)
+let op2 = fm.wave("sine", freq: 220.0, modulators: [fm.gain(op1, 2.0)])
+fm.output(fm.gain(op2, 0.5))
+println(fm.render(0.1).size())  # => 4410
 ```
 
 ### Capture

@@ -1322,12 +1322,18 @@ inline double poly_blep(double t, double dt) {
 
 // A wave from -1 to 1: a sine, a saw or a square whose jumps are smoothed so
 // little of it folds back from above half the rate (polyBLEP), or a triangle.
+// `mod` radians move its phase for a sample (the parts that modulate it), and
+// so do `feedback` times the mean of its last two outputs (as the DX7's
+// operator feeds itself); the phase it keeps runs on at `freq` regardless.
 struct Oscillator {
   WaveKind kind;
   double phase = 0;
+  double last[2] = {0, 0};
 
-  double step(double freq, double rate) {
-    double t = phase, dt = freq / rate, y;
+  double step(double freq, double rate, double mod = 0, double feedback = 0) {
+    double dt = freq / rate, y;
+    double t = phase + (mod + feedback * 0.5 * (last[0] + last[1])) / (2.0 * std::numbers::pi);
+    t -= std::floor(t);
     switch (kind) {
       case WaveKind::Sine: y = std::sin(2.0 * std::numbers::pi * t); break;
       case WaveKind::Saw: y = 2.0 * t - 1.0 - poly_blep(t, dt); break;
@@ -1338,19 +1344,22 @@ struct Oscillator {
       }
       default: y = 4.0 * std::abs(t - std::floor(t + 0.5)) - 1.0; break;
     }
-    phase = t + dt - std::floor(t + dt);
+    phase = phase + dt - std::floor(phase + dt);
+    last[1] = last[0];
+    last[0] = y;
     return y;
   }
 };
 
 enum class PartKind { Wave, Noise, Filter, Gain, Resonate, Pluck };
 
-// How many values a part of `kind` reads: a wave's freq, a filter's cutoff,
-// a gain's gain, a string's freq and ring.
+// How many values a part of `kind` reads: a wave's freq and feedback, a
+// filter's cutoff, a gain's gain, a string's freq and ring.
 inline int value_count(PartKind kind) {
   switch (kind) {
     case PartKind::Noise:
     case PartKind::Resonate: return 0;
+    case PartKind::Wave:
     case PartKind::Pluck: return 2;
     default: return 1;
   }
@@ -1368,7 +1377,7 @@ inline constexpr size_t kGraphLiveRoom = 256;
 struct GraphPart {
   PartKind kind;
   std::vector<int> inputs;  // parts made before it, added together
-  Param values[2];          // a wave's freq, a filter's cutoff, a gain's gain, a string's freq and ring
+  Param values[2];          // a wave's freq and feedback, a filter's cutoff, a gain's gain, a string's freq and ring
   std::variant<std::monostate, Oscillator, Noise, Svf, Resonance, PluckString> processor;
   double out[kGraphBlock] = {};
 };
@@ -1432,10 +1441,12 @@ class Graph {
         for (int i = 0; i < n; i++) in[i] += parts_[static_cast<size_t>(k)].out[i];
       if (value_count(p.kind) > 0)
         for (int i = 0; i < n; i++) v0[i] = p.values[0].at(static_cast<double>(pos_ + i) / rate_);
+      if (value_count(p.kind) > 1)
+        for (int i = 0; i < n; i++) v1[i] = p.values[1].at(static_cast<double>(pos_ + i) / rate_);
       switch (p.kind) {
         case PartKind::Wave: {
           auto& w = std::get<Oscillator>(p.processor);
-          for (int i = 0; i < n; i++) p.out[i] = w.step(v0[i], rate_);
+          for (int i = 0; i < n; i++) p.out[i] = w.step(v0[i], rate_, in[i], v1[i]);
           break;
         }
         case PartKind::Noise: {
@@ -1461,7 +1472,6 @@ class Graph {
         }
         case PartKind::Pluck: {
           auto& s = std::get<PluckString>(p.processor);
-          for (int i = 0; i < n; i++) v1[i] = p.values[1].at(static_cast<double>(pos_ + i) / rate_);
           for (int i = 0; i < n; i++) {
             s.tune(v0[i], v1[i]);
             p.out[i] = s.step(in[i]);

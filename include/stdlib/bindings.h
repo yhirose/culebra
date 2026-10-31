@@ -6093,8 +6093,9 @@ inline const char* _ns_audio_graph_bad_value(culebra::_audio_detail::PartKind ki
   double half = rate / 2;
   switch (kind) {
     case ad::PartKind::Wave:
-      return value == 0 && v >= 0 && v < half ? nullptr
-                                              : "Audio.Graph: a wave's freq is 0 or more and below half the rate";
+      if (value == 0)
+        return v >= 0 && v < half ? nullptr : "Audio.Graph: a wave's freq is 0 or more and below half the rate";
+      return value == 1 && v >= 0 && std::isfinite(v) ? nullptr : "Audio.Graph: a wave's feedback is 0 or more";
     case ad::PartKind::Filter:
       return value == 0 && v > 0 && v < half ? nullptr
                                              : "Audio.Graph: a cutoff is above 0 and below half the rate";
@@ -6126,9 +6127,9 @@ inline JitValue _ns_audio_graph_new(JitValue* a, int64_t) {
 }
 // A part of `family` ("wave", "noise", "filter", "gain", "resonate" or
 // "pluck"), `kind` naming the wave or the filter, taking in `inputs` (parts
-// made before it), set up by the numbers `options`: a wave's freq, a noise's
-// seed, a filter's cutoff and q, a gain's gain, a resonance's dry and modes,
-// a string's freq and ring.
+// made before it; a wave's move its phase), set up by the numbers `options`:
+// a wave's freq and feedback, a noise's seed, a filter's cutoff and q, a
+// gain's gain, a resonance's dry and modes, a string's freq and ring.
 inline JitValue _ns_audio_graph_part(JitValue* a, int64_t) {
   namespace ad = culebra::_audio_detail;
   auto& g = _ns_audio_graph(a[0]);
@@ -6143,7 +6144,7 @@ inline JitValue _ns_audio_graph_part(JitValue* a, int64_t) {
   // Each family and the options it takes, in number; a resonance takes its
   // dry and then three a mode (-1 here).
   static constexpr std::pair<std::string_view, int> kFamilies[] = {
-      {"wave", 1}, {"noise", 1}, {"filter", 2}, {"gain", 1}, {"resonate", -1}, {"pluck", 2}};
+      {"wave", 2}, {"noise", 1}, {"filter", 2}, {"gain", 1}, {"resonate", -1}, {"pluck", 2}};
   auto fam = std::ranges::find(kFamilies, family, &std::pair<std::string_view, int>::first);
   if (fam == std::end(kFamilies)) {
     auto message = culebra::format("Audio.Graph: no part {}", family);
@@ -6163,7 +6164,7 @@ inline JitValue _ns_audio_graph_part(JitValue* a, int64_t) {
         {"sine", ad::WaveKind::Sine}, {"saw", ad::WaveKind::Saw},
         {"square", ad::WaveKind::Square}, {"triangle", ad::WaveKind::Triangle}};
     for (auto [name, w] : kWaves)
-      if (kind == name) return made(ad::PartKind::Wave, ad::Oscillator{w}, opt[0]);
+      if (kind == name) return made(ad::PartKind::Wave, ad::Oscillator{w}, opt[0], opt[1]);
     auto message = culebra::format("Audio.Graph: a wave is \"sine\", \"saw\", \"square\" or \"triangle\", not {}", kind);
     _ns_audio_fail(message.c_str());
   }
