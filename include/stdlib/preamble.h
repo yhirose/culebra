@@ -15,6 +15,7 @@
 #include <interop/wrap_registry.h>  // wrapped_class_names
 
 #include <algorithm>
+#include <cctype>
 #include <memory>
 #include <span>
 #include <string>
@@ -198,13 +199,41 @@ inline std::string _wrap_lazy_fn_group(const LazyFnGroup& g) {
          std::string(src) + "; {" + members + "} });";
 }
 
-// Every token the parsed program carries. Comments and whitespace are gone
-// by this point, and a token is a whole lexeme — which is what makes the
-// module selection below name-exact instead of substring-based.
+// A type, or a declaration head with its generic bounds and supertraits, is
+// captured as one token (`String | Dir`, `same<T: Eq>`, `Ord: Eq`); the
+// names inside it are names the program uses as much as a bare one is.
+inline bool _token_holds_type_names(const peg::Ast& ast) {
+  using namespace peg::udl;
+  switch (ast.tag) {
+    case "TYPE_ANNOTATION"_: case "RETURN_TYPE"_: case "TYPE_PATTERN"_:
+    case "VARIANT_FIELD"_: case "CLASS_HEAD"_: case "TRAIT_HEAD"_:
+      return true;
+    default:
+      return false;
+  }
+}
+
+// Every token the parsed program carries, and each name inside a captured
+// type. Comments and whitespace are gone by this point, and a token is a
+// whole lexeme — which is what makes the module selection below name-exact
+// instead of substring-based. A string literal stays whole: a word in one
+// names nothing.
 inline void collect_ast_tokens(const peg::Ast& ast,
                                std::unordered_set<std::string_view>& out) {
   if (ast.is_token) {
-    if (!ast.token.empty()) out.insert(ast.token);
+    if (ast.token.empty()) return;
+    out.insert(ast.token);
+    if (!_token_holds_type_names(ast)) return;
+    auto is_ident = [](char c) {
+      return std::isalnum(static_cast<unsigned char>(c)) || c == '_';
+    };
+    std::string_view t = ast.token;
+    for (size_t i = 0; i < t.size();) {
+      size_t j = i;
+      while (j < t.size() && is_ident(t[j])) j++;
+      if (j > i) out.insert(t.substr(i, j - i));
+      i = j + 1;
+    }
     return;
   }
   for (const auto& n : ast.nodes) collect_ast_tokens(*n, out);
@@ -231,21 +260,23 @@ inline void collect_ast_tokens(const peg::Ast& ast,
 // (one `assert_*` brings the family, as on the interp side, where
 // initialize_lazy_group binds all ten at once).
 //
-// A built-in trait unit (shared.h) comes in where a value of the program can
-// conform to its trait: the program names the trait, or names every method
+// A built-in trait unit (shared.h) comes in where the program can reach one
+// of its defaults. Naming the trait always counts. A default only a program
+// calls (`called`) is reached by a call of its name, so naming one counts.
+// One the library calls by name itself (Dir's `files`) is reached by any
+// value that conforms, so then the program counts when it names every method
 // the trait requires — a class of its own that defines them — or a wrapped
 // class has them all. That last is read off the registry, not the text: a
 // wrapped method can return a handle of a class whose namespace the program
-// never names. A value that gets the methods under computed names alone
-// (`obj['re' + 'ad'] = ...`) is the one this does not see.
+// never names. A name computed at run time (`obj['n' + 'eq']`) is the one
+// thing neither rule sees.
 inline bool builtin_trait_unit_selected(
     const BuiltinTraitUnit& u,
     const std::unordered_set<std::string_view>& names) {
+  auto named = [&](std::string_view m) { return names.contains(m); };
   if (names.contains(u.trait)) return true;
-  if (std::ranges::all_of(u.required, [&](std::string_view m) {
-        return names.contains(m);
-      }))
-    return true;
+  if (!u.called.empty()) return std::ranges::any_of(u.called, named);
+  if (std::ranges::all_of(u.required, named)) return true;
   return std::ranges::any_of(wrapped_class_names(), [&](const auto& wc) {
     return std::ranges::all_of(u.required, [&](std::string_view m) {
       return std::ranges::find(wc.methods, m) != wc.methods.end();
@@ -273,14 +304,16 @@ inline StdlibSelection select_stdlib_modules(
 }
 
 // The table's own spelling of `token` when a rule above reads it — a module's
-// name, a group's member, a trait unit's trait or required method — and empty
-// otherwise. What a session keeps of its inputs' tokens: a unit can be named
-// across inputs (a method per line), and an embedding that runs input after
-// input must not grow with every literal it ever saw.
+// name, a group's member, a trait unit's trait, required method or called
+// default — and empty otherwise. What a session keeps of its inputs' tokens:
+// a unit can be named across inputs (a method per line), and an embedding
+// that runs input after input must not grow with every literal it ever saw.
 inline std::string_view stdlib_selection_key(std::string_view token) {
   for (const auto& u : builtin_trait_units()) {
     if (token == u.trait) return u.trait;
     for (auto m : u.required)
+      if (token == m) return m;
+    for (auto m : u.called)
       if (token == m) return m;
   }
   for (const auto& m : lazy_ns_modules())
@@ -372,10 +405,8 @@ inline const BakedPreamble* baked_preamble(std::string_view name) {
 // entry. They are not part of the splice — every program registers them,
 // whatever it names — so they never reach `baked` through
 // resolve_baked_preamble (a trait unit, which the splice selects, does), and
-// a compiled lane ran them as a prologue it lowered itself. That prologue is
-// the largest thing in a trivial program's IR: the five default bodies
-// (`Eq.neq`, `Comparable.lt/le/gt/ge`) are ~4.8k of the ~6.2k lines `let x =
-// 1` lowered, none of them reachable from the program's own code.
+// a compiled lane would otherwise lower them as a prologue of its own in
+// every program, reachable or not.
 inline constexpr const char* kBuiltinTraitsBakedName = "__Traits";
 
 // What a lane that calls baked entries runs first: the traits entry when

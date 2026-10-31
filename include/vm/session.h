@@ -33,7 +33,7 @@ namespace culebra::vm {
 
 class Session {
  public:
-  // The built-in traits (Eq's `neq`, Comparable's four comparisons, ...) are a
+  // The core built-in traits (Iterator's `dispose`, ...) are a
   // session-wide registration, not a per-input one: run them once, where the
   // script lane runs them once as chunk 0's prologue.
   bool run_builtin_traits(std::vector<std::string>& msgs) {

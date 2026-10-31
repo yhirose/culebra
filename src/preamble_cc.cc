@@ -56,9 +56,10 @@ std::string source_for(std::string_view name) {
 }
 
 // A trait unit's declaration, held to its row in builtin_trait_units: the
-// one trait it declares, and `required` as exactly its methods without a
-// default — the selection reads the row, so a method added to the trait and
-// not to the row would let a class conform where the trait is never declared.
+// one trait it declares, `required` as exactly its methods without a
+// default, and `called` as exactly its defaults when it lists any. The
+// selection reads the row, so a method the trait gains and the row lacks
+// would leave a default unreachable where the trait is never declared.
 bool unit_matches_declaration(const culebra::BuiltinTraitUnit& u,
                               const peg::Ast& ast) {
   using namespace peg::udl;
@@ -66,8 +67,8 @@ bool unit_matches_declaration(const culebra::BuiltinTraitUnit& u,
   for (const auto& n : ast.nodes)
     if (n->tag == "TRAIT_DECL"_) decls.push_back(n.get());
   if (ast.tag == "TRAIT_DECL"_) decls.push_back(&ast);
-  std::set<std::string_view> declared, listed(u.required.begin(),
-                                               u.required.end());
+  using Names = std::set<std::string_view>;
+  Names required, defaults;
   std::string_view head;
   for (const auto* d : decls)
     for (const auto& part : d->nodes) {
@@ -75,13 +76,18 @@ bool unit_matches_declaration(const culebra::BuiltinTraitUnit& u,
       if (part->tag != "TRAIT_METHOD"_) continue;
       bool has_default = std::ranges::any_of(
           part->nodes, [](const auto& p) { return p->tag == "TRAIT_BODY"_; });
-      if (!has_default) declared.insert(part->nodes[0]->token);
+      (has_default ? defaults : required).insert(part->nodes[0]->token);
     }
-  if (decls.size() == 1 && head == u.trait && declared == listed) return true;
+  if (decls.size() == 1 && head == u.trait &&
+      required == Names(u.required.begin(), u.required.end()) &&
+      (u.called.empty() ||
+       defaults == Names(u.called.begin(), u.called.end())))
+    return true;
   std::fprintf(stderr,
                "culebra_preamble_cc: trait unit '%.*s' must declare the one "
-               "trait `%.*s` whose methods without a default are its "
-               "`required` row (shared.h builtin_trait_units)\n",
+               "trait `%.*s`, its methods without a default as `required` "
+               "and, if it lists `called`, its defaults as `called` "
+               "(shared.h builtin_trait_units)\n",
                static_cast<int>(u.name.size()), u.name.data(),
                static_cast<int>(u.trait.size()), u.trait.data());
   return false;

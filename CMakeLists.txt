@@ -2479,11 +2479,11 @@ if(CULEBRA_ENABLE_JIT)
     add_dependencies(culebra_preamble_cc ${_v})
   endif()
 
-  # __Traits is the built-in trait prologue (Stringer / Eq / Comparable / …),
-  # which every program registers rather than naming — so unlike the rest it
-  # is linked into every built binary, not only the ones that use it.
-  # __DirTrait is a built-in trait the splice selects like a module.
-  set(_baked_names __Traits __DirTrait
+  # __Traits is the built-in trait prologue (Stringer / Iterator / …), which
+  # every program registers rather than naming — so unlike the rest it is
+  # linked into every built binary, not only the ones that use it. The
+  # __*Trait ones are built-in traits the splice selects like a module.
+  set(_baked_names __Traits __EqTrait __ComparableTrait __DirTrait
                    Time Term Canvas Audio Args Regex PEG FST Log Path Vector2
                    Vector3
                    Deque PriorityQueue StateMachine Dir __Eff __Matchers

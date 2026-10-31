@@ -3541,26 +3541,15 @@ inline bool class_conforms_to_trait(
 }
 
 // Built-in trait declarations evaluated at the top of every program
-// (interp + JIT). Provides the standard `Stringer`, `Eq`, and
-// `Comparable` abstractions — small enough to inline as a const
-// string, structurally usable by any class that ships the right
-// methods. A built-in trait too large for every program is a unit instead
-// (builtin_trait_units below).
+// (interp + JIT): the ones with no default worth leaving out — `Stringer`,
+// `StringLike`, `Hashable`, `Iterator`, `Iterable` — small enough to inline
+// as a const string, structurally usable by any class that ships the right
+// methods. A built-in trait whose defaults no program should carry unless it
+// can use them is a unit instead (builtin_trait_units below).
 inline std::string_view builtin_traits_preamble() {
   static constexpr std::string_view src = R"culebra(
 trait Stringer {
   to_s() -> String
-}
-trait Eq {
-  eq(other) -> Bool
-  neq(other) -> Bool { !self.eq(other) }
-}
-trait Comparable {
-  cmp(other) -> Long
-  lt(other) -> Bool { self.cmp(other) < 0 }
-  le(other) -> Bool { self.cmp(other) <= 0 }
-  gt(other) -> Bool { self.cmp(other) > 0 }
-  ge(other) -> Bool { self.cmp(other) >= 0 }
 }
 trait StringLike {
   to_string_view() -> StringView
@@ -3580,19 +3569,38 @@ trait Iterable {
   return src;
 }
 
-// A built-in trait whose defaults are too large to register in every program
-// (Dir's are a third of a built hello). The stdlib splice declares it ahead
-// of its modules, in every lane, only where a value of the program can
-// conform to it (stdlib/preamble.h, builtin_trait_unit_selected); a program
-// still reaches it the way it reaches the traits above, with no import.
-// `required` is the trait's methods without a default, which
-// culebra_preamble_cc holds to the declaration.
+// A built-in trait whose defaults a program should carry only if it can use
+// them (Dir's alone are a third of a built hello). The stdlib splice
+// declares it ahead of its modules, in every lane, where the program can
+// reach a default (stdlib/preamble.h, builtin_trait_unit_selected); a
+// program still reaches it the way it reaches the traits above, with no
+// import. `required` is the trait's methods without a default and `called`
+// its defaults, or empty when the library itself calls a default by name;
+// culebra_preamble_cc holds both to the declaration.
 struct BuiltinTraitUnit {
   std::string_view name;  // the splice entry, baked as culebra_preamble_<name>
   std::string_view trait;
   std::span<const std::string_view> required;
+  std::span<const std::string_view> called;
   std::string_view source;
 };
+
+inline constexpr std::string_view kEqTraitSource = R"culebra(
+trait Eq {
+  eq(other) -> Bool
+  neq(other) -> Bool { !self.eq(other) }
+}
+)culebra";
+
+inline constexpr std::string_view kComparableTraitSource = R"culebra(
+trait Comparable {
+  cmp(other) -> Long
+  lt(other) -> Bool { self.cmp(other) < 0 }
+  le(other) -> Bool { self.cmp(other) <= 0 }
+  gt(other) -> Bool { self.cmp(other) > 0 }
+  ge(other) -> Bool { self.cmp(other) >= 0 }
+}
+)culebra";
 
 inline constexpr std::string_view kDirTraitSource = R"culebra(
 trait Dir {
@@ -3717,10 +3725,21 @@ trait Dir {
 )culebra";
 
 inline std::span<const BuiltinTraitUnit> builtin_trait_units() {
+  // The operators read `eq` and `cmp` (the class's own, JitSpecialTable), so
+  // a default of these two is reached by a call of its name alone.
+  static constexpr std::string_view kEqRequired[] = {"eq"};
+  static constexpr std::string_view kEqCalled[] = {"neq"};
+  static constexpr std::string_view kComparableRequired[] = {"cmp"};
+  static constexpr std::string_view kComparableCalled[] = {"lt", "le", "gt",
+                                                          "ge"};
+  // Compress.zip and server.static call `files` and `size` on a Dir.
   static constexpr std::string_view kDirRequired[] = {
       "read", "list_dir", "exists", "is_file", "is_dir"};
   static constexpr BuiltinTraitUnit kUnits[] = {
-      {"__DirTrait", "Dir", kDirRequired, kDirTraitSource}};
+      {"__EqTrait", "Eq", kEqRequired, kEqCalled, kEqTraitSource},
+      {"__ComparableTrait", "Comparable", kComparableRequired,
+       kComparableCalled, kComparableTraitSource},
+      {"__DirTrait", "Dir", kDirRequired, {}, kDirTraitSource}};
   return kUnits;
 }
 

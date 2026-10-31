@@ -1,0 +1,32 @@
+# A built-in trait named only inside a type is named all the same: in a
+# generic bound, a union annotation, an optional return type and a
+# supertrait list, it is declared, so each of them holds.
+
+fn bigger<T: Comparable>(a: T, b: T) {
+  a > b ? a : b
+}
+assert_eq(bigger(3, 5), 5)
+
+fn label(x: Long | Eq) {
+  'checked'
+}
+assert_eq(label('a'), 'checked')
+
+fn first_of(xs) -> Comparable? {
+  xs.empty() ? nil : xs[0]
+}
+assert_eq(first_of([7]), 7)
+
+class N {
+  new(@v) {}
+  cmp(o) {
+    self.v - o.v
+  }
+}
+class Plain {}
+trait Ranked: Comparable {}
+fn rank(x: Ranked) {
+  'ranked'
+}
+assert_eq(rank(N(1)), 'ranked')
+assert_eq(try { rank(Plain()) } catch e { e.kind }, 'DispatchError')

@@ -116,26 +116,27 @@ includes them in a fixed order and nothing else includes them at all.
    program opens with a call to each entry — which performs the same
    `_lazy_ns_register` the spliced source would — instead of carrying
    ~20k lines of IR per module.
-   The built-in traits (`Stringer`, `Eq`, `Comparable`, …) are baked the
+   The core built-in traits (`Stringer`, `Iterator`, …) are baked the
    same way, under the name `__Traits`, but they reach the entry list by a
    different route: every program registers them whatever it names, so they
    are never part of the splice, and a compiled lane does not lower them as a
-   prologue of its own: the five default bodies (`Eq.neq`,
-   `Comparable.lt/le/gt/ge`) would be most of a small program's IR, and
-   none of them is reachable from the program's own code.
+   prologue of its own in every program.
    `with_baked_traits` puts the entry ahead of the stdlib ones and
    tells the compiler to leave the prologue out (`BakedLane::traits`);
    the two have to move together, since emitting the call without dropping
    the source would register twice.
-   A built-in trait too large for every program is a **trait unit**
-   instead (`builtin_trait_units`, `base/shared.h`): `Dir`, whose
-   defaults would be a third of a built `print("hello")`. The splice
-   selects it as it selects a module, where a value of the program can
-   conform to it — the program names the trait, or every method the trait
-   requires, or a wrapped class has them all — puts its declaration ahead
-   of the modules, and bakes it as `__DirTrait`. The AOT scan reads its
-   default bodies as it reads the core traits': one counts once the
-   program names its method.
+   A built-in trait whose defaults a program should carry only if it can
+   use them is a **trait unit** instead (`builtin_trait_units`,
+   `base/shared.h`): `Eq`, `Comparable` and `Dir`, whose defaults would
+   otherwise be most of a built `print("hello")`. The splice selects a unit
+   as it selects a module, where the program can reach a default: it names
+   the trait, or calls a default only a program calls (`neq`; `lt` and the
+   rest), or — for `Dir`, whose defaults the library calls by name on any
+   conforming value — names every method the trait requires, or a wrapped
+   class has them all. It puts the declaration ahead of the modules and
+   bakes it as `__<Trait>Trait`. The AOT scan reads a unit's default bodies
+   as it reads the core traits': one counts once the program names its
+   method.
    The executor keeps compiling the spliced source, so the symmetry check
    compares the baked code against it on every run;
    `CULEBRA_PREAMBLE_SOURCE=1` makes the lowering lanes splice again — the

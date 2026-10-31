@@ -4838,7 +4838,7 @@ class Compiler {
     const peg::Ast* stdlib = opts.stdlib;
     VmProgram prog;
     FnAnalysis analysis(&is_builtin_var);
-    // The built-in traits (Eq's `neq`, Comparable's four comparisons, ...)
+    // The core built-in traits (Stringer, Iterator's `dispose`, ...)
     // reach interp and JIT as a synthetic module `with_builtin_traits`
     // prepends; this lane compiles a single module, so the very same
     // declarations run as a prologue instead. A trait declaration binds no

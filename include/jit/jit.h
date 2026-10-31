@@ -2949,12 +2949,12 @@ struct JIT {
                                  builder_.getVoidTy(), builder_.getInt64Ty(),
                                  builder_.getInt64Ty());
     // Core, not Tensor-specific, despite the name: the built-in `Eq` trait's
-    // `neq` default (shared.h's builtin_traits_preamble, compiled for every
-    // program) reads `!self.eq(other)`, and the front end resolves a call
-    // named `eq` to whichever BMethSpec is registered under that name --
-    // which is Tensor's, the only one there is. So every program's compiled
-    // code contains this call, gated at runtime by the receiver's tag,
-    // whether or not that program ever mentions Tensor. Declaring it only
+    // `neq` default (shared.h's builtin_trait_units) reads
+    // `!self.eq(other)`, and the front end resolves a call named `eq` to
+    // whichever BMethSpec is registered under that name -- which is
+    // Tensor's, the only one there is. So a program that carries the trait
+    // contains this call, gated at runtime by the receiver's tag, whether or
+    // not that program ever mentions Tensor. Declaring it only
     // from Tensor's own declare_runtime (stdlib_rt.h) left a host that
     // skips install_jit_stdlib() with an undeclared function and a crash in
     // JIT::emit_call, not a script-level error -- getFunction() found

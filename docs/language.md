@@ -4237,14 +4237,21 @@ are visible without `import`:
 An Object literal has no class and conforms to none of these,
 whatever members it carries.
 
-`Dir` is declared only in a program that can make a value of it, which
-keeps its defaults out of every other program: one that names `Dir`, or
-names all five of its required methods (as a class that defines them
-does, in any module the program imports; the REPL counts every line so
-far), or runs where a wrapped C++ class has all five. A value that gets
-the five only under computed names (`obj['re' + 'ad'] = ...`), in a
-program that names neither the trait nor them, gets none of the
-defaults: `obj.files()` raises the `TypeError` any missing method does.
+Three of them are declared only in a program that can use their
+defaults, which keeps the defaults out of every other program. `Eq` and
+`Comparable` come in when the program names the trait or calls one of
+its defaults (`neq`; `lt`, `le`, `gt`, `ge`): the operators use a class's
+own `eq` and `cmp`, so nothing else reaches a default. `Dir` comes in
+where a value of it can exist, since the library calls its defaults on
+one (`Compress.zip` asks for `files()`): in a program that names `Dir`,
+or names all five of its required methods (as a class that defines them
+does, in any module the program imports), or runs where a wrapped C++
+class has all five. The REPL counts every line entered so far. A name
+that exists only at run time is what these rules do not see: a default
+called under a computed name (`obj['n' + 'eq'](x)`), or a Dir value that
+gets the five only under computed names (`obj['re' + 'ad'] = ...`), in a
+program that names none of them, finds no default, and the call raises
+the `TypeError` any missing method does.
 
 A class with only `cmp` automatically gets the six-way comparison
 suite; a class with `eq` gets `neq`; a class with `to_s` is

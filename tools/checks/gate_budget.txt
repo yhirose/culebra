@@ -131,7 +131,10 @@
 # instance that must not match).
 # 334 since test_dir_trait_select.cul (the Dir trait comes in for a class an
 # imported module defines with its five methods, the entry naming none).
-tests.cul 334
+# 336 since test_trait_default_call.cul (Eq's and Comparable's defaults come
+# in for a call of their name) and test_trait_named_in_type.cul (a trait
+# named only inside a bound, a union, a return type or a supertrait list).
+tests.cul 336
 
 # tests/isolate/*.cul — run on both engines, plus the over-cap modes.
 # 21 since test_xml_isolate.cul (an XML element keeps its methods across an

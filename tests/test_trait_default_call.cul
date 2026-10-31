@@ -1,0 +1,30 @@
+# A built-in trait default that only a program's own call can reach comes in
+# when the program calls it by name, though the program never names the
+# trait: Comparable's lt/le/gt/ge over a class's `cmp`, and Eq's `neq` over
+# the `eq` a @value class derives without the source writing it.
+
+class Pri {
+  new(v) {
+    self.v = v
+  }
+  cmp(other) {
+    self.v - other.v
+  }
+}
+
+@value
+class P {
+  x: Long
+  new(x: Long) {
+    self.x = x
+  }
+}
+
+let lo = Pri.new(1)
+let hi = Pri.new(5)
+assert_true(lo.lt(hi))
+assert_true(lo.le(lo))
+assert_true(hi.gt(lo))
+assert_true(hi.ge(hi))
+assert_true(P.new(1).neq(P.new(2)))
+assert_false(P.new(3).neq(P.new(3)))
