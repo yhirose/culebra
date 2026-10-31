@@ -264,8 +264,9 @@ ctest.entries 37
 # 1112 since §42 shows LLM.count_tokens, in en and ja. 1118 since 2.9 of the
 # quick guide shows `@name` in a method, in en and ja. 1120 since 13 shows
 # the `is` type test, in en and ja. 1122 since the keyword-arguments section
-# shows `f(x:)`, in en and ja.
-docs.blocks 1128
+# shows `f(x:)`, in en and ja. 1130 since §43 shows model.device() saying why
+# a model is not on a GPU, in en and ja (skipped: needs a model).
+docs.blocks 1130
 
 # The samples the language front ends are run over (examples/languages/*).
 languages.samples 130

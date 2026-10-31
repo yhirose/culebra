@@ -34,6 +34,9 @@
 
 #if !defined(CULEBRA_RT_LLAMA_WEAK)
 #include <base/id_registry.h>  // IdRegistry<T> (slot+generation handle table)
+#include <stdlib/llama_gpu.h>
+
+#include <memory>
 
 #include "cpp-llamalib.h"
 #endif
@@ -70,6 +73,13 @@ struct Result {
   int completion_tokens = 0;
 };
 
+// Where a model runs, decided when it is loaded.
+struct Device {
+  std::string backend;  // "vulkan" or "cpu"
+  std::string name;     // the GPU's own description, or "CPU"
+  std::string reason;   // empty when a GPU is used; otherwise why not
+};
+
 // Called with each piece of text as it is generated; false stops the generation.
 using OnPiece = std::function<bool(std::string_view)>;
 
@@ -81,10 +91,15 @@ using OnPiece = std::function<bool(std::string_view)>;
 #if !defined(CULEBRA_RT_LLAMA_WEAK)
 
 namespace detail {
-inline thread_local IdRegistry<llamalib::Llama> g_models;
+struct Model {
+  std::unique_ptr<llamalib::Llama> lib;
+  Device device;
+};
 
-inline int64_t model_intern(llamalib::Llama* m) { return g_models.add(m); }
-inline llamalib::Llama* model_get(int64_t id) { return g_models.get(id); }
+inline thread_local IdRegistry<Model> g_models;
+
+inline int64_t model_intern(Model* m) { return g_models.add(m); }
+inline Model* model_get(int64_t id) { return g_models.get(id); }
 }  // namespace detail
 
 #endif  // !CULEBRA_RT_LLAMA_WEAK
@@ -101,6 +116,8 @@ CULEBRA_RT_LLAMA_LINKAGE void close(int64_t id);
 // The context size the model got, which llama.cpp may round up from n_ctx.
 // 0 for a closed handle.
 CULEBRA_RT_LLAMA_LINKAGE int64_t n_ctx(int64_t id);
+
+CULEBRA_RT_LLAMA_LINKAGE bool device(int64_t id, Device* out, std::string* err);
 
 CULEBRA_RT_LLAMA_LINKAGE bool generate(int64_t id, const std::string& prompt,
                                        const GenerateOptions& opts,
@@ -138,6 +155,10 @@ CULEBRA_RT_LLAMA_LINKAGE int64_t load(const std::string&, const LoadOptions&,
 }
 CULEBRA_RT_LLAMA_LINKAGE void close(int64_t) {}
 CULEBRA_RT_LLAMA_LINKAGE int64_t n_ctx(int64_t) { return 0; }
+CULEBRA_RT_LLAMA_LINKAGE bool device(int64_t, Device*, std::string* err) {
+  if (err) *err = CULEBRA_LLAMA_STUB;
+  return false;
+}
 CULEBRA_RT_LLAMA_LINKAGE bool generate(int64_t, const std::string&,
                                        const GenerateOptions&, const OnPiece&,
                                        Result*, std::string* err) {
@@ -242,8 +263,19 @@ inline Result from_lib(llamalib::Result&& r) {
   return out;
 }
 
+// The device llama.cpp put the model on. With no device list, its loader offloads
+// to every discrete GPU, or to the integrated ones when there is none
+// (llama_model_load_from_file_impl); the first of those is the one reported.
+inline Device chosen_device(bool gpu) {
+  if (!gpu) return {"cpu", "CPU", "gpu: false"};
+  ggml_backend_dev_t dev = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_GPU);
+  if (!dev) dev = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_IGPU);
+  if (!dev) return {"cpu", "CPU", gpu_unavailable_reason()};
+  return {gpu_backend(), ggml_backend_dev_description(dev), ""};
+}
+
 // A handle that is not open: the one message for every method that needs a model.
-inline llamalib::Llama* open_model(int64_t id, std::string* err) {
+inline Model* open_model(int64_t id, std::string* err) {
   auto* m = model_get(id);
   if (!m && err) *err = "the model is closed";
   return m;
@@ -274,7 +306,7 @@ CULEBRA_RT_LLAMA_LINKAGE int64_t load(const std::string& path,
   }
   detail::silence_llama_log();
   detail::g_load_error.clear();
-  llamalib::Llama* model = nullptr;
+  std::unique_ptr<llamalib::Llama> model;
   bool ok = detail::guarded(err, [&] {
     llamalib::Options o;
     o.n_ctx = opts.n_ctx;
@@ -284,7 +316,7 @@ CULEBRA_RT_LLAMA_LINKAGE int64_t load(const std::string& path,
     // A model without a template this library can apply is an error when it is
     // asked to chat, not a silent join of the messages.
     o.strict_chat_template = true;
-    model = new llamalib::Llama(path, o);
+    model = std::make_unique<llamalib::Llama>(path, o);
   });
   if (!ok) {
     if (err && !detail::g_load_error.empty()) {
@@ -294,7 +326,8 @@ CULEBRA_RT_LLAMA_LINKAGE int64_t load(const std::string& path,
     }
     return -1;
   }
-  return detail::model_intern(model);
+  return detail::model_intern(
+      new detail::Model{std::move(model), detail::chosen_device(opts.gpu)});
 }
 
 CULEBRA_RT_LLAMA_LINKAGE void close(int64_t id) {
@@ -306,7 +339,14 @@ CULEBRA_RT_LLAMA_LINKAGE void close(int64_t id) {
 
 CULEBRA_RT_LLAMA_LINKAGE int64_t n_ctx(int64_t id) {
   auto* m = detail::model_get(id);
-  return m ? m->n_ctx() : 0;
+  return m ? m->lib->n_ctx() : 0;
+}
+
+CULEBRA_RT_LLAMA_LINKAGE bool device(int64_t id, Device* out, std::string* err) {
+  auto* m = detail::open_model(id, err);
+  if (!m) return false;
+  *out = m->device;
+  return true;
 }
 
 CULEBRA_RT_LLAMA_LINKAGE bool generate(int64_t id, const std::string& prompt,
@@ -316,7 +356,7 @@ CULEBRA_RT_LLAMA_LINKAGE bool generate(int64_t id, const std::string& prompt,
   auto* m = detail::open_model(id, err);
   if (!m) return false;
   return detail::guarded(err, [&] {
-    *out = detail::from_lib(m->complete(prompt, detail::to_lib(opts), on_piece));
+    *out = detail::from_lib(m->lib->complete(prompt, detail::to_lib(opts), on_piece));
   });
 }
 
@@ -328,7 +368,7 @@ CULEBRA_RT_LLAMA_LINKAGE bool chat(int64_t id, const std::vector<Message>& messa
   if (!m) return false;
   return detail::guarded(err, [&] {
     *out = detail::from_lib(
-        m->chat_complete(detail::to_lib(messages), detail::to_lib(opts), on_piece));
+        m->lib->chat_complete(detail::to_lib(messages), detail::to_lib(opts), on_piece));
   });
 }
 
@@ -337,14 +377,14 @@ CULEBRA_RT_LLAMA_LINKAGE bool format_chat(int64_t id,
                                           std::string* out, std::string* err) {
   auto* m = detail::open_model(id, err);
   if (!m) return false;
-  return detail::guarded(err, [&] { *out = m->format_chat(detail::to_lib(messages)); });
+  return detail::guarded(err, [&] { *out = m->lib->format_chat(detail::to_lib(messages)); });
 }
 
 CULEBRA_RT_LLAMA_LINKAGE bool count_tokens(int64_t id, const std::string& text,
                                            int64_t* out, std::string* err) {
   auto* m = detail::open_model(id, err);
   if (!m) return false;
-  return detail::guarded(err, [&] { *out = static_cast<int64_t>(m->token_count(text)); });
+  return detail::guarded(err, [&] { *out = static_cast<int64_t>(m->lib->token_count(text)); });
 }
 
 #endif  // CULEBRA_RT_LLAMA_WEAK

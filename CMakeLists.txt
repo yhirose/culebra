@@ -1355,7 +1355,9 @@ inline const auto FS = ::cpp_embedlib::EmbeddedFS{_entries};
   # llama.cpp anchor). Force-loaded only when the AST scan reports Llama use;
   # the statics it needs ride _rt_embed_extern and CULEBRA_LLAMA_LINK.
   if(CULEBRA_ENABLE_LLAMA)
-    add_library(culebra_rt_llama STATIC ./src/runtime/culebra_rt_llama.cc)
+    # A program built by `culebra build` runs Llama on the CPU (llama_gpu_none.cc).
+    add_library(culebra_rt_llama STATIC ./src/runtime/culebra_rt_llama.cc
+                                        ./src/runtime/llama_gpu_none.cc)
     target_compile_features(culebra_rt_llama PRIVATE cxx_std_23)
     target_compile_definitions(culebra_rt_llama PRIVATE CULEBRA_RT_LLAMA_STRONG=1)
     target_compile_options(culebra_rt_llama PRIVATE
@@ -1568,7 +1570,7 @@ inline const auto FS = ::cpp_embedlib::EmbeddedFS{_entries};
     list(APPEND _rt_embed_extern "${_raylib_a}" "${_sdl_a}")
   endif()
   if(CULEBRA_ENABLE_LLAMA)
-    list(APPEND _rt_embed_extern ${_llama_a})
+    list(APPEND _rt_embed_extern ${_llama_aot_a})
   endif()
   # Every feature archive is force-loaded next to the core archive, so the two
   # must not both define the same symbol: mingw's ld rejects the duplicate and

@@ -868,7 +868,7 @@ inspect(match 9 {
 | `Search` | 9 | 自分の文書を全文検索して順位をつける |
 | `Audio` | 68 | ウィンドウの有無によらず使える音: WASM-4のtone、効果音、ストリーム再生の音楽、合成するPCM、マイク |
 | `LLM` | 15 | LLMのクライアント。提供元（Messages APIかChat Completions）への1ステップ、関数をツールとして使う会話、素通しのリクエスト |
-| `Llama` | 7 | このプロセス内で動くモデル。GGUFを読んで`generate`か`chat`（ビルドオプション） |
+| `Llama` | 8 | このプロセス内で動くモデル。GGUFを読んで`generate`か`chat`（ビルドオプション） |
 
 <!-- END GENERATED -->
 

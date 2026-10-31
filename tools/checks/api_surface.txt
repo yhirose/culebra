@@ -1148,4 +1148,5 @@ model.chat(messages, max_tokens=nil, stop=nil, temperature=nil, seed=nil, gramma
 model.format_chat(messages) -> String
 model.count_tokens(text) -> Long
 model.n_ctx() -> Long
+model.device() -> Object
 model.close()
