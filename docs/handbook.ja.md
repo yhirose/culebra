@@ -1839,7 +1839,7 @@ tensorエンジンが必要とするAccelerate / Metalフレームワークへ�
 
 ```bash
 ./build/culebra build my-program.cul -o ./out
-./out                                     # standalone、~0.4 MB on macOS
+./out                                     # standalone、~0.3 MB on macOS
 otool -L ./out                            # Accelerate も Metal も LLVM も無し
 ```
 
@@ -1865,7 +1865,7 @@ macOSはXcode Command Line Tools、Linuxは`cc`です。`build`は開始前に�
 
 `inspect`だけを使う "hello world" はtensorもHTTPランタイムも要りません。エントリファイルからcall graphを辿ることで、
 参照されていないランタイムヘルパ(~530個)を落とせます。`Tensor`への参照がなければtensorなしのarchiveに差し替わるので、
-全featureのarchiveを抱えると ~11.6 MBのところが~0.4 MBに収まります。
+全featureのarchiveを抱えると ~11.6 MBのところが~0.3 MBに収まります。
 
 ## 17. 埋め込み概観
 

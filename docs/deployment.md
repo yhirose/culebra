@@ -316,7 +316,7 @@ lld alike: the embedded runtime archive carries thousands of
 platform's `strip` tool removes the global symbol table the linker
 leaves behind, the same step the release packaging applies to
 `culebra` itself. Together they take a `print("hello")` binary from
-0.52 MB to 0.42 MB; the dynamic symbols the loader needs survive
+0.41 MB to 0.34 MB on Linux x86-64; the dynamic symbols the loader needs survive
 both. Pass `--keep-symbols` to skip both for debugging. Cross-compiled
 outputs (`--target`) stop after the link step, since the host's
 `strip` does not read a foreign object format; a `strip` missing from
