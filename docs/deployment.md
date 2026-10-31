@@ -250,16 +250,16 @@ carries the four llama.cpp static libraries, and a program that names `Llama`
 links them. A program that does not name it carries none of it, and
 `ldd` shows the same libraries as for a `print("hello")` binary
 (libc, libm, libgcc_s and libstdc++; llama.cpp is built without OpenMP, so
-there is no libgomp). Measured on Linux x86-64, CPU only, for a program that
-calls `Llama.load`:
+there is no libgomp). Measured on Linux x86-64 as CI builds it, CPU only, for
+a program that calls `Llama.load`:
 
 | Program | Size |
 |---|---|
-| `print("hello")` | 0.62 MB |
-| names `Llama` | 6.68 MB (+6.06 MB) |
-| names `LLM` | 7.06 MB (+6.44 MB) |
-| names `Llama` and calls `LLM.local` | 12.99 MB |
-| the same with `--no-tls` | 9.03 MB |
+| `print("hello")` | 0.34 MB |
+| names `Llama` | 6.47 MB (+6.13 MB) |
+| names `LLM` | 7.72 MB (+7.38 MB) |
+| names `Llama` and calls `LLM.local` | 13.62 MB |
+| the same with `--no-tls` | 8.89 MB |
 
 `LLM` is written over `Http`, so naming it pulls OpenSSL in as well; that is
 what `--no-tls` takes out (see below), and a program that only runs a local
@@ -1388,7 +1388,7 @@ together, so one reachable call would add 15% to a hello. A program
 that writes an interpolation format spec (`"{x:.2f}"`) still links it,
 because that spec *is* `std::format`'s mini-language. Together with the
 feature axes this is what keeps a `print("hello")` binary near
-0.6 MB on Linux x86-64. A namespace the scan missed does not silently read as `nil`:
+0.34 MB on Linux x86-64. A namespace the scan missed does not silently read as `nil`:
 reaching it raises an `InternalError` naming the namespace.
 
 These archives are **embedded directly into the `culebra` driver**

@@ -219,15 +219,15 @@ $ otool -L /tmp/microgpt_tensor
 そのドライバはllama.cppの静的ライブラリ4つを抱え、`Llama`を名指しするプログラムがそれをリンクします。
 名指ししないプログラムには何も入らず、`ldd`は`print("hello")`のバイナリと同じライブラリ
 （libc、libm、libgcc_s、libstdc++）を示します。llama.cppはOpenMPなしでビルドしているので、libgompは要りません。
-Linux x86-64のCPUのみで、`Llama.load`を呼ぶプログラムについて測りました。
+CIがビルドしたLinux x86-64のCPUのみで、`Llama.load`を呼ぶプログラムについて測りました。
 
 | プログラム | サイズ |
 |---|---|
-| `print("hello")` | 0.62 MB |
-| `Llama`を名指し | 6.68 MB（+6.06 MB） |
-| `LLM`を名指し | 7.06 MB（+6.44 MB） |
-| `Llama`を名指しして`LLM.local`を呼ぶ | 12.99 MB |
-| 同じものを`--no-tls`で | 9.03 MB |
+| `print("hello")` | 0.34 MB |
+| `Llama`を名指し | 6.47 MB（+6.13 MB） |
+| `LLM`を名指し | 7.72 MB（+7.38 MB） |
+| `Llama`を名指しして`LLM.local`を呼ぶ | 13.62 MB |
+| 同じものを`--no-tls`で | 8.89 MB |
 
 `LLM`は`Http`の上に書かれているので、名指しするとOpenSSLも入ります。`--no-tls`が外すのはそれで
 （後述）、ローカルのモデルだけを動かすプログラムなら使えます。モデルのファイルはバイナリに入りません。
@@ -1279,7 +1279,7 @@ namespace分。ソースが名指ししないものはnullエントリ）を運�
 リンク単位が1ブロックになり、到達する呼び出しが1つあるだけでhelloが15%
 太るためです。補間の書式指定（`"{x:.2f}"`）を書いたプログラムは今も
 `std::format`をリンクします。その書式こそ`std::format`のミニ言語だからです。
-機能軸と合わせて、これが`print("hello")`のバイナリをLinux x86-64で0.6 MB前後
+機能軸と合わせて、これが`print("hello")`のバイナリをLinux x86-64で0.34 MB前後
 に保っています。走査が見落としたnamespaceは黙って`nil`に読めたりはせず、
 到達した時点でそのnamespace名を含む`InternalError`になります。
 

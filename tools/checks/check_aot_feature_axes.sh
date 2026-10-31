@@ -273,7 +273,7 @@ expect_output none "none"
 # carries: growth past the ceiling is a decision made here, not drift. Linux
 # x86-64 only, the CI lane the ceiling was measured on.
 if [[ "$(uname -s)" == Linux && "$(uname -m)" == x86_64 ]]; then
-  none_ceiling=654992
+  none_ceiling=474440
   none_size=$("$bin" build "$work/none.cul" -o "$work/none-stripped" > /dev/null 2>&1 &&
               wc -c < "$work/none-stripped" | tr -d ' ') || none_size=""
   if [[ -z "$none_size" ]]; then
