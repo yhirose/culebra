@@ -21,6 +21,7 @@
 #include "tensor_device_smoke.cc"
 #include "utf8_invalid_smoke.cc"
 #include "value_api_smoke.cc"
+#include "wrap_dir_smoke.cc"
 
 #include <cstdio>
 #include <cstring>
@@ -45,10 +46,12 @@ int main(int argc, char** argv) {
       return utf8_invalid_smoke_ns::run();
     if (std::strcmp(argv[1], "value_api") == 0)
       return value_api_smoke_ns::run();
+    if (std::strcmp(argv[1], "wrap_dir") == 0)
+      return wrap_dir_smoke_ns::run();
   }
   std::fprintf(stderr,
                "usage: smoke_suite <define|mi|module_scope|mt|signal|"
                "single_ast|tensor_device|tensor_device_pin|utf8_invalid|"
-               "value_api>\n");
+               "value_api|wrap_dir>\n");
   return 2;
 }

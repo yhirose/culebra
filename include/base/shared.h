@@ -3544,7 +3544,8 @@ inline bool class_conforms_to_trait(
 // (interp + JIT). Provides the standard `Stringer`, `Eq`, and
 // `Comparable` abstractions — small enough to inline as a const
 // string, structurally usable by any class that ships the right
-// methods.
+// methods. A built-in trait too large for every program is a unit instead
+// (builtin_trait_units below).
 inline std::string_view builtin_traits_preamble() {
   static constexpr std::string_view src = R"culebra(
 trait Stringer {
@@ -3575,6 +3576,25 @@ trait Iterator {
 trait Iterable {
   iter() -> Iterator
 }
+)culebra";
+  return src;
+}
+
+// A built-in trait whose defaults are too large to register in every program
+// (Dir's are a third of a built hello). The stdlib splice declares it ahead
+// of its modules, in every lane, only where a value of the program can
+// conform to it (stdlib/preamble.h, builtin_trait_unit_selected); a program
+// still reaches it the way it reaches the traits above, with no import.
+// `required` is the trait's methods without a default, which
+// culebra_preamble_cc holds to the declaration.
+struct BuiltinTraitUnit {
+  std::string_view name;  // the splice entry, baked as culebra_preamble_<name>
+  std::string_view trait;
+  std::span<const std::string_view> required;
+  std::string_view source;
+};
+
+inline constexpr std::string_view kDirTraitSource = R"culebra(
 trait Dir {
   read(path) -> String
   list_dir(path) -> Array
@@ -3695,7 +3715,13 @@ trait Dir {
   }
 }
 )culebra";
-  return src;
+
+inline std::span<const BuiltinTraitUnit> builtin_trait_units() {
+  static constexpr std::string_view kDirRequired[] = {
+      "read", "list_dir", "exists", "is_file", "is_dir"};
+  static constexpr BuiltinTraitUnit kUnits[] = {
+      {"__DirTrait", "Dir", kDirRequired, kDirTraitSource}};
+  return kUnits;
 }
 
 

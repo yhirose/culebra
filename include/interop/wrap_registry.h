@@ -49,10 +49,13 @@ inline std::vector<WrappedNsRow>& wrapped_ns_rows() {
 // Every wrapped class's (ns, name), whether or not it declared any
 // ctor/static rows: the engines bind an (empty) class sub-object for a
 // rowless class too. Pushed by ~ClassBinder (wrap.h); the AOT gate reads
-// the ns column to decide whether a program links the wrapped library.
+// the ns column to decide whether a program links the wrapped library, and
+// the stdlib splice the methods, to know which built-in traits a handle can
+// conform to (builtin_trait_unit_selected).
 struct WrappedClassName {
   std::string ns;
   std::string name;
+  std::vector<std::string> methods;
 };
 inline std::vector<WrappedClassName>& wrapped_class_names() {
   static std::vector<WrappedClassName> v;

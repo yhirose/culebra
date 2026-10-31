@@ -275,6 +275,7 @@ expect_absent none "$tensor_kernels" "cpp-tensorlib's elementwise kernels"
 expect_absent none "$tensor_device_clone" "clone()'s device arm"
 expect_absent none "$openssl_syms" "OpenSSL"
 expect_absent none "$audio_syms" "raylib's audio module"
+expect_absent none ' _?culebra_preamble___DirTrait$' "the Dir trait's defaults, which no value of it can reach"
 expect_output none "none"
 # The namespace groups (stdlib_rt.h ns_groups()): a namespace's dispatch rows
 # and adapters link only when the program names it. No axis, no choke — the

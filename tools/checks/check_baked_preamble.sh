@@ -13,6 +13,9 @@
 #      out of libculebra_rt.a, and only that module's;
 #   3. both lanes agree with the executor, which always compiles the source.
 #
+# A built-in trait unit (__DirTrait) is held to the same three, with a class
+# that defines Dir's five methods as the program that selects it.
+#
 # The `_?` in the nm patterns is Mach-O's leading underscore: without it all
 # three symbol assertions matched nothing on macOS and the gate was inert
 # there, which is where a link that drops a baked entry shows up first.
@@ -35,6 +38,18 @@ IO.print(Time.seconds(90) == Time.minutes(1) + Time.seconds(30))
 EOF
 cat > "$work/plain.cul" <<'EOF'
 IO.print("plain")
+EOF
+# The built-in trait unit __DirTrait, selected by a class that defines the
+# five methods Dir requires in a program that never names the trait.
+cat > "$work/own.cul" <<'EOF'
+class Own {
+  read(p) { 'x' }
+  list_dir(p) { p == '' ? ['a', 'b'] : [] }
+  exists(p) { true }
+  is_file(p) { p != '' }
+  is_dir(p) { p == '' }
+}
+IO.print(Own().files())
 EOF
 
 # 1. The JIT lane: baked -> a call to the entry, no registration lowered;
@@ -71,11 +86,38 @@ if ! grep -q 'culebra_runtime_register_trait_default' "$work/source.ll"; then
   fail=1
 fi
 
-# 3. Executor / JIT / JIT-from-source agree.
-vm=$("$bin" --vm "$work/t.cul"); jit=$("$bin" --jit "$work/t.cul")
-src=$(CULEBRA_PREAMBLE_SOURCE=1 "$bin" --jit "$work/t.cul")
-if [[ "$vm" != "$jit" || "$vm" != "$src" ]]; then
-  echo "check_baked_preamble FAIL: lanes disagree: vm=[$vm] jit=[$jit] jit-source=[$src]" >&2
+# 1c. A trait unit is an entry the splice selects: called where a class can
+#     conform to the trait, lowered nowhere, and absent where none can.
+"$bin" --jit --emit-llvm "$work/own.cul" > "$work/own.ll" 2> "$work/own.err" || {
+  echo "check_baked_preamble FAIL: --jit --emit-llvm failed:" >&2; cat "$work/own.err" >&2; exit 1; }
+if ! grep -q 'call void @culebra_preamble___DirTrait()' "$work/own.ll"; then
+  echo "check_baked_preamble FAIL: --jit does not call culebra_preamble___DirTrait for a class with Dir's five methods" >&2
+  fail=1
+fi
+if grep -q 'culebra_runtime_register_trait_default' "$work/own.ll"; then
+  echo "check_baked_preamble FAIL: --jit lowers the Dir defaults (is __DirTrait in _baked_names?)" >&2
+  fail=1
+fi
+if grep -q '@culebra_preamble___DirTrait()' "$work/baked.ll"; then
+  echo "check_baked_preamble FAIL: --jit calls culebra_preamble___DirTrait for a program no Dir can reach" >&2
+  fail=1
+fi
+
+# 3. Executor / JIT / JIT-from-source agree (prints the executor's output).
+lanes() {
+  local vm jit src
+  vm=$("$bin" --vm "$work/$1.cul"); jit=$("$bin" --jit "$work/$1.cul")
+  src=$(CULEBRA_PREAMBLE_SOURCE=1 "$bin" --jit "$work/$1.cul")
+  if [[ "$vm" != "$jit" || "$vm" != "$src" ]]; then
+    echo "check_baked_preamble FAIL: $1: lanes disagree: vm=[$vm] jit=[$jit] jit-source=[$src]" >&2
+    return 1
+  fi
+  printf '%s' "$vm"
+}
+vm=$(lanes t) || fail=1
+own_vm=$(lanes own) || fail=1
+if [[ "$own_vm" != "['a', 'b']" ]]; then
+  echo "check_baked_preamble FAIL: own: the executor printed [$own_vm], expected the Dir default's ['a', 'b']" >&2
   fail=1
 fi
 
@@ -99,6 +141,13 @@ if ! grep -qE ' T _?culebra_preamble___Traits$' "$work/plain.nm"; then
   echo "check_baked_preamble FAIL: the built binary lacks culebra_preamble___Traits" >&2; fail=1; fi
 if grep -E ' T _?culebra_preamble_' "$work/plain.nm" | grep -v '___Traits$' >/dev/null; then
   echo "check_baked_preamble FAIL: a program naming no stdlib module links a baked preamble" >&2; fail=1; fi
+"$bin" build --keep-symbols "$work/own.cul" -o "$work/own" > /dev/null 2>&1
+nm "$work/own" > "$work/own.nm"
+if ! grep -qE ' T _?culebra_preamble___DirTrait$' "$work/own.nm"; then
+  echo "check_baked_preamble FAIL: the built binary of a class with Dir's five methods lacks culebra_preamble___DirTrait" >&2; fail=1; fi
+own_aot=$("$work/own")
+if [[ "$own_aot" != "$own_vm" ]]; then
+  echo "check_baked_preamble FAIL: own: AOT printed [$own_aot], executor [$own_vm]" >&2; fail=1; fi
 
 if (( fail )); then
   cat >&2 <<'EOF'

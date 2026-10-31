@@ -153,5 +153,13 @@ out=$(session "for fn in [1] { 1 }" "1 + 1")
 out=$(session "let t = Tensor.from([[1.0]])" "1 + 1")
 [[ "$out" == *$'\n'"2" ]] || { echo "FAIL slice recovery: $out"; fail=1; }
 
+# The built-in trait behind `files()` comes in once the session has named the
+# five methods it requires, over all its lines rather than on any one.
+out=$(session "class Bare {}" "let b = Bare()" "b.read = |p| 'x'" \
+              "b.list_dir = |p| p == '' ? ['a'] : []" "b.exists = |p| true" \
+              "b.is_file = |p| p == 'a'" "b.is_dir = |p| p == ''" "b.files()")
+[[ "$out" == *$'\n'"['a']" ]] ||
+  { echo "FAIL trait methods across lines: $out"; fail=1; }
+
 if [[ $fail -eq 0 ]]; then echo "repl_test OK"; exit 0; fi
 echo "repl_test FAILED"; exit 1

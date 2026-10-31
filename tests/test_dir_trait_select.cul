@@ -1,0 +1,18 @@
+# The built-in trait behind `files`, `glob`, `size` and `copy_to` comes into a
+# program where one of its values can conform to it: here a class an imported
+# module defines with the five methods the trait requires, while this module
+# names neither the trait nor any of the five. Its defaults answer in every
+# lane, and so does the library's own call of one (Compress.zip asks the
+# value for its files()).
+
+import store from './test_dir_trait_select_helpers/store.cul'
+
+let FILES = {'a.txt': 'alpha', 'img/x.png': 'xy', 'img/sub/y.png': 'y'}
+let s = store.Store(FILES)
+
+assert_eq(s.files(), ['a.txt', 'img/sub/y.png', 'img/x.png'])
+assert_eq(s.glob('img/*.png'), ['img/x.png'])
+assert_eq(s.glob('**/*.png'), ['img/sub/y.png', 'img/x.png'])
+assert_eq(s.size('img/x.png'), 2)
+assert_eq(try { s.size('img') } catch e { e.kind }, 'IOError')
+assert_eq(Compress.zip(s), Compress.zip(FILES))

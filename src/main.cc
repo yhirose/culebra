@@ -1008,9 +1008,7 @@ int run_build(const BuildOptions& opts) {
   scratch.add(obj);
 
   // Every name the program reaches, walked once; each axis is a lookup.
-  culebra::AotNames names;
-  for (const auto& m : modules) culebra::aot_collect_names(*m.ast, names);
-  culebra::aot_collect_builtin_trait_names(names);
+  auto names = culebra::aot_collect_program_names(modules);
   bool used[std::size(kFeatureAxes)] = {};
   for (size_t i = 0; i < std::size(kFeatureAxes); i++) {
     for (const char* n : kFeatureAxes[i].names)

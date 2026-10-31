@@ -129,7 +129,9 @@
 # 332 since test_object_rest.cul (`{a, ...rest}` in let, match, for, parameters
 # and assignment, on plain, non-String-keyed and large objects, and an
 # instance that must not match).
-tests.cul 333
+# 334 since test_dir_trait_select.cul (the Dir trait comes in for a class an
+# imported module defines with its five methods, the entry naming none).
+tests.cul 334
 
 # tests/isolate/*.cul — run on both engines, plus the over-cap modes.
 # 21 since test_xml_isolate.cul (an XML element keeps its methods across an

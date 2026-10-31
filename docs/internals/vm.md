@@ -127,6 +127,15 @@ includes them in a fixed order and nothing else includes them at all.
    tells the compiler to leave the prologue out (`BakedLane::traits`);
    the two have to move together, since emitting the call without dropping
    the source would register twice.
+   A built-in trait too large for every program is a **trait unit**
+   instead (`builtin_trait_units`, `base/shared.h`): `Dir`, whose
+   defaults would be a third of a built `print("hello")`. The splice
+   selects it as it selects a module, where a value of the program can
+   conform to it — the program names the trait, or every method the trait
+   requires, or a wrapped class has them all — puts its declaration ahead
+   of the modules, and bakes it as `__DirTrait`. The AOT scan reads its
+   default bodies as it reads the core traits': one counts once the
+   program names its method.
    The executor keeps compiling the spliced source, so the symmetry check
    compares the baked code against it on every run;
    `CULEBRA_PREAMBLE_SOURCE=1` makes the lowering lanes splice again — the
@@ -2008,8 +2017,10 @@ the retained programs (a closure reaches its bytecode through a
 descriptor pointing into its program, so a program a session ran must
 stay alive), the one-time built-in-traits prologue, and the **stdlib
 delta** — a session sees one input at a time, so each input registers
-only the lazy modules no earlier input named; registering a builder
-twice would mint a second instance of a namespace.
+only what no earlier input registered; registering a builder twice would
+mint a second instance of a namespace. The selection runs over every
+name the session's inputs have named so far, not over the input alone,
+since a trait unit (§2) can be named a method per line.
 
 A function literal in a session unit **captures the cell** for every name
 it does not bind, rather than leaving the body to load it by name. A body

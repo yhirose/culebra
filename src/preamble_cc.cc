@@ -13,6 +13,7 @@
 #include <stdlib/preamble.h>
 #include <jit/lowering.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <set>
 #include <string>
@@ -21,27 +22,69 @@
 
 namespace {
 
-// Every name a compiled lane can call an entry for: the built-in traits,
-// which every program registers, plus the splice's namespace modules and
-// bare-function groups. What CMake bakes must be exactly this list.
+// Every name a compiled lane can call an entry for: the core built-in traits,
+// which every program registers, plus the splice's trait units, namespace
+// modules and bare-function groups. What CMake bakes must be exactly this
+// list.
 std::vector<std::string> bakeable_names() {
   std::vector<std::string> out{culebra::kBuiltinTraitsBakedName};
+  for (const auto& u : culebra::builtin_trait_units()) out.emplace_back(u.name);
   for (const auto& m : culebra::lazy_ns_modules()) out.emplace_back(m.name);
   for (const auto& g : culebra::lazy_fn_groups()) out.emplace_back(g.name);
   return out;
 }
 
+const culebra::BuiltinTraitUnit* trait_unit(std::string_view name) {
+  for (const auto& u : culebra::builtin_trait_units())
+    if (name == u.name) return &u;
+  return nullptr;
+}
+
 // The registration source for `name` alone — the same string the lane would
 // otherwise have lowered itself: the splice's contribution for a stdlib
-// module (stdlib_module_source), the traits prologue for the traits.
+// module or trait unit (stdlib_module_source), the traits prologue for the
+// core traits.
 std::string source_for(std::string_view name) {
   if (name == culebra::kBuiltinTraitsBakedName)
     return std::string(culebra::builtin_traits_preamble());
+  if (const auto* u = trait_unit(name)) return culebra::stdlib_module_source(*u);
   for (const auto& m : culebra::lazy_ns_modules())
     if (name == m.name) return culebra::stdlib_module_source(m);
   for (const auto& g : culebra::lazy_fn_groups())
     if (name == g.name) return culebra::stdlib_module_source(g);
   return {};
+}
+
+// A trait unit's declaration, held to its row in builtin_trait_units: the
+// one trait it declares, and `required` as exactly its methods without a
+// default — the selection reads the row, so a method added to the trait and
+// not to the row would let a class conform where the trait is never declared.
+bool unit_matches_declaration(const culebra::BuiltinTraitUnit& u,
+                              const peg::Ast& ast) {
+  using namespace peg::udl;
+  std::vector<const peg::Ast*> decls;
+  for (const auto& n : ast.nodes)
+    if (n->tag == "TRAIT_DECL"_) decls.push_back(n.get());
+  if (ast.tag == "TRAIT_DECL"_) decls.push_back(&ast);
+  std::set<std::string_view> declared, listed(u.required.begin(),
+                                               u.required.end());
+  std::string_view head;
+  for (const auto* d : decls)
+    for (const auto& part : d->nodes) {
+      if (part->tag == "TRAIT_HEAD"_) head = part->token;
+      if (part->tag != "TRAIT_METHOD"_) continue;
+      bool has_default = std::ranges::any_of(
+          part->nodes, [](const auto& p) { return p->tag == "TRAIT_BODY"_; });
+      if (!has_default) declared.insert(part->nodes[0]->token);
+    }
+  if (decls.size() == 1 && head == u.trait && declared == listed) return true;
+  std::fprintf(stderr,
+               "culebra_preamble_cc: trait unit '%.*s' must declare the one "
+               "trait `%.*s` whose methods without a default are its "
+               "`required` row (shared.h builtin_trait_units)\n",
+               static_cast<int>(u.name.size()), u.name.data(),
+               static_cast<int>(u.trait.size()), u.trait.data());
+  return false;
 }
 
 // The tokens of what a default runs: its body and its parameters' default
@@ -92,21 +135,25 @@ int main(int argc, char** argv) {
     for (const auto& s : msgs) std::fprintf(stderr, "%s\n", s.c_str());
     return 1;
   }
-  // The built-in traits run in every program, but a stdlib module is only
-  // there when the program itself names it: a default that names one (a
-  // `replace`, a `Regex.`) works only when the program names it too, and is
-  // a NameError otherwise (as on a Windows-only branch).
-  if (name == culebra::kBuiltinTraitsBakedName) {
+  // A built-in trait runs where the program never named a stdlib module: a
+  // default that names one (a `replace`, a `Regex.`) works only when the
+  // program names it too, and is a NameError otherwise (as on a Windows-only
+  // branch).
+  const auto* unit = trait_unit(name);
+  if (unit && !unit_matches_declaration(*unit, *ast)) return 1;
+  if (unit || name == culebra::kBuiltinTraitsBakedName) {
     std::unordered_set<std::string_view> names;
     default_body_tokens(*ast, names);
-    if (auto pulled = culebra::stdlib_preamble_triggers(names);
-        !pulled.empty()) {
+    auto sel = culebra::select_stdlib_modules(names);
+    if (!sel.modules.empty() || !sel.groups.empty()) {
       std::fprintf(stderr,
                    "culebra_preamble_cc: the built-in traits name stdlib "
                    "modules or functions a program may not have:");
-      for (auto n : pulled)
-        if (names.contains(n))
-          std::fprintf(stderr, " %.*s", static_cast<int>(n.size()), n.data());
+      for (const auto* m : sel.modules) std::fprintf(stderr, " %s", m->name);
+      for (const auto* g : sel.groups)
+        for (auto n : g->members)
+          if (names.contains(n))
+            std::fprintf(stderr, " %.*s", static_cast<int>(n.size()), n.data());
       std::fprintf(stderr, "\n");
       return 1;
     }

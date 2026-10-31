@@ -16,15 +16,15 @@
 // registering a builder twice would mint a second instance of the namespace,
 // and values an earlier input built would stop matching it.
 
-#include <stdlib/preamble.h>  // stdlib_preamble_for / stdlib_preamble_triggers
+#include <stdlib/preamble.h>  // select_stdlib_modules / for_each_stdlib_entry
 #include <vm/vm.h>
 
 #include <functional>
 #include <map>
 #include <memory>
 #include <optional>
-#include <set>
 #include <string>
+#include <string_view>
 #include <unordered_set>
 #include <utility>
 #include <vector>
@@ -49,21 +49,36 @@ class Session {
   }
 
  private:
+  // What the session has selected so far: the selection over every token its
+  // inputs named (a trait unit can be named across inputs, a method per
+  // line), less the entries already registered.
   bool run_stdlib_delta(const std::unordered_set<std::string_view>& tokens,
                         std::vector<std::string>& msgs) {
-    std::unordered_set<std::string_view> fresh;
-    for (auto t : tokens)
-      if (!registered_.contains(t)) fresh.insert(t);
-    auto triggers = stdlib_preamble_triggers(fresh);
-    if (triggers.empty()) return true;
-    for (auto t : triggers) registered_.emplace(t);
+    std::string text;
+    for_each_new_stdlib_entry(tokens, [&](auto&& source) {
+      text.append(source());
+    });
+    if (text.empty()) return true;
     std::vector<std::string> parse_msgs;
-    auto pre = parse_preamble(stdlib_preamble_for(fresh), parse_msgs);
+    auto pre = parse_preamble(std::move(text), parse_msgs);
     if (!pre.ast) {  // the stdlib is trusted; a parse failure is a build bug
       msgs.insert(msgs.end(), parse_msgs.begin(), parse_msgs.end());
       return false;
     }
     return run_unit(pre.ast, pre.source, /*session=*/false, msgs);
+  }
+
+  // Note `tokens` as seen, and hand `f` each entry the selection now takes
+  // that no earlier input registered, marking it registered.
+  template <class F>
+  void for_each_new_stdlib_entry(
+      const std::unordered_set<std::string_view>& tokens, F&& f) {
+    for (auto t : tokens)
+      if (auto key = stdlib_selection_key(t); !key.empty()) seen_.insert(key);
+    for_each_stdlib_entry(select_stdlib_modules(seen_),
+                          [&](std::string_view name, auto&& source) {
+                            if (registered_.insert(name).second) f(source);
+                          });
   }
 
  public:
@@ -104,20 +119,16 @@ class Session {
     // tokens, which is the one preamble the splice would have produced.
     bool spliced = !modules.empty() &&
                    modules.front().abs_path == kStdlibPreamblePath;
-    if (!spliced) {
-      std::unordered_set<std::string_view> tokens;
-      for (const auto& m : modules)
-        if (m.ast) collect_ast_tokens(*m.ast, tokens);
-      if (!run_stdlib_delta(tokens, msgs)) return false;
-    }
+    // The splice's own scan: every module but the one it made.
+    std::unordered_set<std::string_view> tokens;
+    for (const auto& m : modules)
+      if (m.ast && m.abs_path != kStdlibPreamblePath)
+        collect_ast_tokens(*m.ast, tokens);
+    if (!spliced && !run_stdlib_delta(tokens, msgs)) return false;
     return run_reported(msgs, [&] {
       auto prog =
           std::make_unique<VmProgram>(Compiler::compile_session_modules(modules));
-      for (const auto& m : modules) {
-        std::unordered_set<std::string_view> tokens;
-        if (m.ast) collect_ast_tokens(*m.ast, tokens);
-        for (auto t : stdlib_preamble_triggers(tokens)) registered_.emplace(t);
-      }
+      if (spliced) for_each_new_stdlib_entry(tokens, [](auto&&) {});
       retained_modules_.push_back(modules);  // shared_ptrs: sources + ASTs
       auto& kept = retained_.keep(nullptr, modules.back().ast, std::move(prog));
       Exec::run(*kept.prog);
@@ -206,7 +217,10 @@ class Session {
   // Module lists run_modules kept alive (shared_ptr'd sources + ASTs): a
   // retained program's chunks hold string_views into them.
   std::vector<std::vector<LoadedModule>> retained_modules_;
-  std::set<std::string, std::less<>> registered_;
+  // Both hold the stdlib tables' own spellings (stdlib_selection_key and the
+  // entry names), which live as long as the process.
+  std::unordered_set<std::string_view> seen_;
+  std::unordered_set<std::string_view> registered_;
 };
 
 }  // namespace culebra::vm

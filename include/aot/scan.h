@@ -7,6 +7,7 @@
 //   * which directories it bakes in via `Dir.embedded("...")`
 
 #include <frontend/embed_paths.h>
+#include <frontend/module_loader.h>  // LoadedModule, is_library_path
 #include <frontend/parser.h>
 
 #include <algorithm>
@@ -65,12 +66,12 @@ inline bool aot_named(const AotNames& names, std::string_view name) {
   return names.contains(_aot_name_key(name));
 }
 
-// The built-in traits (shared.h) run in every program but are no module the
-// loader returns, so the scan above never reads them — and a default body
-// that reaches a namespace (`Dir.copy_to`'s `FS`) would find it unlinked in
-// a binary whose program calls it. A default runs only when something calls
-// it by name, so its body counts as named exactly when its method's name
-// is; run to a fixpoint, since a default the program calls may call another.
+// The traits the library declares — the core built-in ones, which run in
+// every program but are no module the loader returns, and the units the
+// stdlib splice declares (Dir) — reach a namespace only through a default
+// body (`Dir.copy_to`'s `FS`). A default runs only when something calls it
+// by name, so its body counts as named exactly when its method's name is;
+// run to a fixpoint, since a default the program calls may call another.
 // The declarations' own names never count (the trait `Dir` is not a use of
 // the namespace `_Dir`).
 inline void _aot_collect_trait_methods(const peg::Ast& node,
@@ -82,12 +83,34 @@ inline void _aot_collect_trait_methods(const peg::Ast& node,
   }
   for (const auto& child : node.nodes) _aot_collect_trait_methods(*child, out);
 }
-inline void aot_collect_builtin_trait_names(AotNames& out) {
+// aot_collect_names over a library module, its trait declarations held back.
+inline void _aot_collect_library_names(const peg::Ast& node, AotNames& out,
+                                       std::vector<const peg::Ast*>& held) {
   using namespace peg::udl;
-  auto ast = parse_builtin_traits_preamble();
-  if (!ast) return;
+  if (node.tag == "TRAIT_DECL"_) {
+    _aot_collect_trait_methods(node, held);
+    return;
+  }
+  if (node.tag == "IDENTIFIER"_) out.insert(_aot_name_key(node.token));
+  for (const auto& child : node.nodes)
+    _aot_collect_library_names(*child, out, held);
+}
+
+// Every name a program's module list reaches, the spliced preamble included.
+inline AotNames aot_collect_program_names(
+    const std::vector<LoadedModule>& modules) {
+  using namespace peg::udl;
+  AotNames out;
   std::vector<const peg::Ast*> methods;
-  _aot_collect_trait_methods(*ast, methods);
+  for (const auto& m : modules) {
+    if (!m.ast) continue;
+    if (is_library_path(m.abs_path.string()))
+      _aot_collect_library_names(*m.ast, out, methods);
+    else
+      aot_collect_names(*m.ast, out);
+  }
+  if (auto ast = parse_builtin_traits_preamble())
+    _aot_collect_trait_methods(*ast, methods);
   std::vector<bool> taken(methods.size(), false);
   for (bool grew = true; grew;) {
     grew = false;
@@ -100,6 +123,7 @@ inline void aot_collect_builtin_trait_names(AotNames& out) {
         if (part->tag == "TRAIT_BODY"_) aot_collect_names(*part, out);
     }
   }
+  return out;
 }
 
 }  // namespace culebra

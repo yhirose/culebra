@@ -8865,6 +8865,10 @@ inspect(count(Greetings()))      # => 2
 inspect(Greetings().glob('b*'))  # => ['b.txt']
 ```
 
+このtraitは、その値を作りうるプログラムでだけ宣言されます。`Dir`を
+名指すか、上のクラスのように5つのメソッドをすべて名指せば足ります（規則の
+全体はlanguage.ja.mdの組み込みtraitにあります）。
+
 trait注釈が受け付けるのはクラスのインスタンスで、Objectリテラルは含みません。
 とはいえライブラリの多くは`Dir`ほどを求めません。名前でファイルを引くだけの
 読み手（`Audio.Kauai.load(dir:)`）は、`exists(path)`と`read(path)`を持つもの

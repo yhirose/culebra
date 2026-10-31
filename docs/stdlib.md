@@ -9240,6 +9240,10 @@ inspect(count(Greetings()))      # => 2
 inspect(Greetings().glob('b*'))  # => ['b.txt']
 ```
 
+The trait is declared only in a program that can make a value of it: naming
+`Dir`, or all five methods as the class above does, is enough (language.md,
+Built-in traits, has the whole rule).
+
 A trait annotation accepts a class instance, and an Object literal is not one.
 Much of the library asks for less than a Dir anyway: a reader that only looks
 files up by name (`Audio.Kauai.load(dir:)`) takes anything with

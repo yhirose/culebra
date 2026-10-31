@@ -1,0 +1,30 @@
+# An in-memory file set with the five methods the built-in trait requires and
+# nothing else, for test_dir_trait_select.cul: the module that names them is
+# not the one that calls the defaults.
+
+class Store {
+  new(@entries) {}
+  read(path) {
+    self.entries[path]
+  }
+  list_dir(path) {
+    let depth = path == '' ? 0 : path.split('/').size()
+    let prefix = path == '' ? '' : "{path}/"
+    mut names = {}
+    for f in self.entries.keys() {
+      names[f.split('/')[depth]] = true if f.starts_with(prefix)
+    }
+    names.keys().sorted()
+  }
+  exists(path) {
+    self.is_file(path) || self.is_dir(path)
+  }
+  is_file(path) {
+    self.entries.has(path)
+  }
+  is_dir(path) {
+    path == '' || self.entries.keys().any(|f| f.starts_with("{path}/"))
+  }
+}
+
+export {Store}

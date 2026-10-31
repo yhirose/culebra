@@ -875,7 +875,12 @@ class ClassBinder {
     return *this;
   }
 
-  ~ClassBinder() { wrapped_class_names().push_back({ns_, name_}); }
+  ~ClassBinder() {
+    std::vector<std::string> methods;
+    for (const auto& m : wrap_detail::jit_class_info<T>::methods)
+      methods.push_back(m.name);
+    wrapped_class_names().push_back({ns_, name_, std::move(methods)});
+  }
 
   ClassBinder(const ClassBinder&) = delete;
   ClassBinder& operator=(const ClassBinder&) = delete;

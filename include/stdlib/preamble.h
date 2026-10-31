@@ -11,8 +11,10 @@
 
 #include <frontend/module_loader.h>  // LoadedModule, kStdlibPreamblePath
 #include <frontend/parser.h>         // parse_with_transforms, peg::Ast
-#include <base/shared.h>         // LazyFnGroup, lazy_fn_groups, trim_ascii
+#include <base/shared.h>  // LazyFnGroup, BuiltinTraitUnit, trim_ascii
+#include <interop/wrap_registry.h>  // wrapped_class_names
 
+#include <algorithm>
 #include <memory>
 #include <span>
 #include <string>
@@ -216,7 +218,7 @@ inline void collect_ast_tokens(const peg::Ast& ast,
 // Runtime. That is what makes the JIT match the interp, which binds each
 // stdlib module once in the global environment every module can see.
 // Which stdlib modules a token set names. The one place that rule lives:
-// the preamble source, the trigger set the REPL remembers, and the baked/
+// the preamble source, what a session has registered, and the baked/
 // unbaked split all read it, so they cannot disagree about what a program
 // pulled in. Matching the parsed token set rather than the raw source keeps
 // a mention in a comment — or a longer identifier that merely contains the
@@ -228,13 +230,39 @@ inline void collect_ast_tokens(const peg::Ast& ast,
 // whole: naming any one member pulls in its group, since they share a source
 // (one `assert_*` brings the family, as on the interp side, where
 // initialize_lazy_group binds all ten at once).
+//
+// A built-in trait unit (shared.h) comes in where a value of the program can
+// conform to its trait: the program names the trait, or names every method
+// the trait requires — a class of its own that defines them — or a wrapped
+// class has them all. That last is read off the registry, not the text: a
+// wrapped method can return a handle of a class whose namespace the program
+// never names. A value that gets the methods under computed names alone
+// (`obj['re' + 'ad'] = ...`) is the one this does not see.
+inline bool builtin_trait_unit_selected(
+    const BuiltinTraitUnit& u,
+    const std::unordered_set<std::string_view>& names) {
+  if (names.contains(u.trait)) return true;
+  if (std::ranges::all_of(u.required, [&](std::string_view m) {
+        return names.contains(m);
+      }))
+    return true;
+  return std::ranges::any_of(wrapped_class_names(), [&](const auto& wc) {
+    return std::ranges::all_of(u.required, [&](std::string_view m) {
+      return std::ranges::find(wc.methods, m) != wc.methods.end();
+    });
+  });
+}
+
 struct StdlibSelection {
+  std::vector<const BuiltinTraitUnit*> traits;
   std::vector<const LazyNsModule*> modules;
   std::vector<const LazyFnGroup*> groups;
 };
 inline StdlibSelection select_stdlib_modules(
     const std::unordered_set<std::string_view>& names) {
   StdlibSelection sel;
+  for (const auto& u : builtin_trait_units())
+    if (builtin_trait_unit_selected(u, names)) sel.traits.push_back(&u);
   for (const auto& m : lazy_ns_modules())
     if (names.contains(m.name)) sel.modules.push_back(&m);
   for (const auto& g : lazy_fn_groups())
@@ -242,6 +270,25 @@ inline StdlibSelection select_stdlib_modules(
                     [&](std::string_view n) { return names.contains(n); }))
       sel.groups.push_back(&g);
   return sel;
+}
+
+// The table's own spelling of `token` when a rule above reads it — a module's
+// name, a group's member, a trait unit's trait or required method — and empty
+// otherwise. What a session keeps of its inputs' tokens: a unit can be named
+// across inputs (a method per line), and an embedding that runs input after
+// input must not grow with every literal it ever saw.
+inline std::string_view stdlib_selection_key(std::string_view token) {
+  for (const auto& u : builtin_trait_units()) {
+    if (token == u.trait) return u.trait;
+    for (auto m : u.required)
+      if (token == m) return m;
+  }
+  for (const auto& m : lazy_ns_modules())
+    if (token == m.name) return m.name;
+  for (const auto& g : lazy_fn_groups())
+    for (auto m : g.members)
+      if (token == m) return m;
+  return {};
 }
 
 // The registration source for one selected module — what the preamble is
@@ -252,30 +299,33 @@ inline std::string stdlib_module_source(const LazyNsModule& m) {
 inline std::string stdlib_module_source(const LazyFnGroup& g) {
   return _wrap_lazy_fn_group(g);
 }
+inline std::string stdlib_module_source(const BuiltinTraitUnit& u) {
+  return std::string(u.source);
+}
+
+// Every entry of a selection, in the order they register: the trait units
+// first, as the core traits run ahead of the splice, then the namespace
+// modules, then the bare-function groups. `f(name, source)` per entry, where
+// `name` is the entry's (and its baked object's) and `source()` builds the
+// registration text — on demand, so a baked entry's is never built.
+template <class F>
+inline void for_each_stdlib_entry(const StdlibSelection& sel, F&& f) {
+  for (const auto* u : sel.traits)
+    f(u->name, [u] { return stdlib_module_source(*u); });
+  for (const auto* m : sel.modules)
+    f(std::string_view(m->name), [m] { return stdlib_module_source(*m); });
+  for (const auto* g : sel.groups)
+    f(g->name, [g] { return stdlib_module_source(*g); });
+}
 
 inline std::string stdlib_preamble_for(
     const std::unordered_set<std::string_view>& names) {
-  auto sel = select_stdlib_modules(names);
   std::string preamble;
-  for (const auto* m : sel.modules) preamble.append(stdlib_module_source(*m));
-  for (const auto* g : sel.groups) preamble.append(stdlib_module_source(*g));
+  for_each_stdlib_entry(select_stdlib_modules(names),
+                        [&](std::string_view, auto&& source) {
+                          preamble.append(source());
+                        });
   return preamble;
-}
-
-// Which names in `names` made stdlib_preamble_for emit something — module
-// names, and every member of a bare-function group one of whose members was
-// named (naming any one pulls in the whole group). The REPL splices one line
-// at a time and has to remember what it has already registered: a builder
-// registered twice would mint a second instance of the namespace, and values
-// an earlier line built would stop matching it.
-inline std::unordered_set<std::string_view> stdlib_preamble_triggers(
-    const std::unordered_set<std::string_view>& names) {
-  auto sel = select_stdlib_modules(names);
-  std::unordered_set<std::string_view> out;
-  for (const auto* m : sel.modules) out.insert(m->name);
-  for (const auto* g : sel.groups)
-    out.insert(g->members.begin(), g->members.end());
-  return out;
 }
 
 // --- Baked preamble (the JIT/AOT lanes) -------------------------------------
@@ -318,9 +368,10 @@ inline const BakedPreamble* baked_preamble(std::string_view name) {
   return nullptr;
 }
 
-// The built-in traits (shared.h's builtin_traits_preamble) as a baked entry.
-// They are not part of the splice — every program registers them, whatever
-// it names — so they never reach `baked` through resolve_baked_preamble, and
+// The core built-in traits (shared.h's builtin_traits_preamble) as a baked
+// entry. They are not part of the splice — every program registers them,
+// whatever it names — so they never reach `baked` through
+// resolve_baked_preamble (a trait unit, which the splice selects, does), and
 // a compiled lane ran them as a prologue it lowered itself. That prologue is
 // the largest thing in a trivial program's IR: the five default bodies
 // (`Eq.neq`, `Comparable.lt/le/gt/ge`) are ~4.8k of the ~6.2k lines `let x =
@@ -372,17 +423,13 @@ inline StdlibPlan plan_stdlib_preamble(
     p.rest = stdlib_preamble_for(names);
     return p;
   }
-  auto sel = select_stdlib_modules(names);
-  auto take = [&](std::string_view name, auto&& src) {
-    if (auto* b = baked_preamble(name))
-      p.baked.push_back(b);
-    else
-      p.rest.append(src());
-  };
-  for (const auto* m : sel.modules)
-    take(m->name, [&] { return stdlib_module_source(*m); });
-  for (const auto* g : sel.groups)
-    take(g->name, [&] { return stdlib_module_source(*g); });
+  for_each_stdlib_entry(select_stdlib_modules(names),
+                        [&](std::string_view name, auto&& source) {
+                          if (auto* b = baked_preamble(name))
+                            p.baked.push_back(b);
+                          else
+                            p.rest.append(source());
+                        });
   return p;
 }
 

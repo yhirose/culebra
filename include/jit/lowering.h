@@ -5461,12 +5461,10 @@ inline int build_object_from_modules(
   // resolver just took that source out of the list. Scanning the resolved
   // list would link no group for them and the baked code would raise
   // "namespace is not linked" at its first use.
-  AotNames names;
-  for (const auto& m : modules)
-    if (m.ast) aot_collect_names(*m.ast, names);
-  aot_collect_builtin_trait_names(names);
   return Lowering::build_object(prog, out_path, opt_level, emit_llvm,
-                                target_triple, names, entries.all);
+                                target_triple,
+                                aot_collect_program_names(modules),
+                                entries.all);
 }
 
 }  // namespace culebra::vm

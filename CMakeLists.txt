@@ -2127,7 +2127,7 @@ endif()
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   target_link_libraries(smoke_suite Threads::Threads ${CMAKE_DL_LIBS})
 endif()
-foreach(smoke mt mi module_scope define closure_flags signal single_ast utf8_invalid value_api)
+foreach(smoke mt mi module_scope define closure_flags signal single_ast utf8_invalid value_api wrap_dir)
   add_test(NAME ${smoke}_smoke COMMAND smoke_suite ${smoke})
 endforeach()
 # Two entries, not one: the device default installs from a function-local
@@ -2482,7 +2482,8 @@ if(CULEBRA_ENABLE_JIT)
   # __Traits is the built-in trait prologue (Stringer / Eq / Comparable / …),
   # which every program registers rather than naming — so unlike the rest it
   # is linked into every built binary, not only the ones that use it.
-  set(_baked_names __Traits
+  # __DirTrait is a built-in trait the splice selects like a module.
+  set(_baked_names __Traits __DirTrait
                    Time Term Canvas Audio Args Regex PEG FST Log Path Vector2
                    Vector3
                    Deque PriorityQueue StateMachine Dir __Eff __Matchers

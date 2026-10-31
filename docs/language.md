@@ -4237,6 +4237,15 @@ are visible without `import`:
 An Object literal has no class and conforms to none of these,
 whatever members it carries.
 
+`Dir` is declared only in a program that can make a value of it, which
+keeps its defaults out of every other program: one that names `Dir`, or
+names all five of its required methods (as a class that defines them
+does, in any module the program imports; the REPL counts every line so
+far), or runs where a wrapped C++ class has all five. A value that gets
+the five only under computed names (`obj['re' + 'ad'] = ...`), in a
+program that names neither the trait nor them, gets none of the
+defaults: `obj.files()` raises the `TypeError` any missing method does.
+
 A class with only `cmp` automatically gets the six-way comparison
 suite; a class with `eq` gets `neq`; a class with `to_s` is
 displayable wherever a `Stringer` is expected. `StringLike` accepts
