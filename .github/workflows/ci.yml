@@ -455,6 +455,120 @@ jobs:
           bash tools/checks/check_aot_feature_axes.sh build-gate
           bash tools/checks/check_aot_link_portability.sh build-gate
 
+  # linux-llama's in-process half on Windows: the driver with Llama and the
+  # Vulkan backend, built under UCRT64 like every Windows job (MSYS2 packages
+  # the Vulkan headers, glslc and the SPIR-V headers). The runner has no GPU, so
+  # models run on the CPU; the built driver is uploaded so it can be run on a
+  # machine that has one. `culebra build` with Llama on Windows is not covered
+  # yet.
+  windows-llama:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    env:
+      CULEBRA_CANVAS_WINDOW_DEFAULT: OFF
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CULEBRA_DEPS_CACHE: ${{ github.workspace }}/.deps-cache
+      CULEBRA_TEST_MODEL: ${{ github.workspace }}/stories260K.gguf
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-ninja
+            mingw-w64-ucrt-x86_64-zlib
+            mingw-w64-ucrt-x86_64-llvm
+            mingw-w64-ucrt-x86_64-ccache
+            mingw-w64-ucrt-x86_64-openssl
+            mingw-w64-ucrt-x86_64-vulkan-devel
+            mingw-w64-ucrt-x86_64-shaderc
+            mingw-w64-ucrt-x86_64-spirv-headers
+
+      - name: Restore the llama.cpp statics
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.deps-cache
+          key: windows-llama-deps-${{ hashFiles('cmake/llama_cpp.cmake', 'cmake/llama.cmake') }}
+
+      - name: Restore ccache
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.ccache
+          key: windows-llama-ccache-${{ github.sha }}
+          restore-keys: |
+            windows-llama-ccache-
+
+      # Pinned by hash: a model file is code that is run on this machine.
+      - name: Fetch the test model
+        run: |
+          curl -fsSL --retry 5 --retry-delay 5 -o "$CULEBRA_TEST_MODEL" \
+            https://huggingface.co/ggml-org/models/resolve/main/tinyllamas/stories260K.gguf
+          echo "270cba1bd5109f42d03350f60406024560464db173c0e387d91f0426d3bd256d  $CULEBRA_TEST_MODEL" | sha256sum -c -
+
+      # ON, not AUTO, for the reason linux-llama gives.
+      - name: Configure (Llama ON, Vulkan ON)
+        run: |
+          cmake -S . -B build-win-llama -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_COMPILER=g++ \
+            -DCMAKE_C_COMPILER=gcc \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_EXE_LINKER_FLAGS="-static -static-libgcc -static-libstdc++" \
+            -DCULEBRA_ENABLE_JIT=ON \
+            -DCULEBRA_ENABLE_WEBVIEW=OFF \
+            -DCULEBRA_DEV_NO_RT=ON \
+            -DCULEBRA_LTO=OFF \
+            -DCULEBRA_ENABLE_LLAMA=ON \
+            -DCULEBRA_LLAMA_VULKAN=ON
+
+      - name: Build
+        run: cmake --build build-win-llama --target culebra llama_smoke llama_test -j
+
+      - name: Report ccache stats
+        run: ccache -s || true
+
+      - name: The Vulkan loader is opened, not linked
+        run: bash tools/checks/check_llama_vulkan_dynload.sh build-win-llama
+
+      - name: ctest (llama_smoke, llama_test)
+        run: ctest --test-dir build-win-llama -R 'llama_' --no-tests=error --output-on-failure
+
+      # MSYS2's vulkan-1.dll is on PATH and no driver is listed, so a model
+      # asked for a GPU says exactly why it got none.
+      - name: tests/llama on both engines
+        env:
+          VK_DRIVER_FILES: C:\nonexistent.json
+          VK_ICD_FILENAMES: C:\nonexistent.json
+          CULEBRA_TEST_GPU_REASON: no Vulkan device
+        run: |
+          ./build-win-llama/culebra.exe --vm tests/llama/test_llama.cul
+          ./build-win-llama/culebra.exe --jit tests/llama/test_llama.cul
+
+      # The driver and the DLLs it needs from UCRT64 (none of them Vulkan's),
+      # to be run where there is a GPU.
+      - name: Collect the driver
+        run: |
+          mkdir -p dist
+          cp build-win-llama/culebra.exe dist/
+          ldd dist/culebra.exe | awk '$3 ~ /ucrt64/ {print $3}' | xargs -r -I{} cp {} dist/
+          ls -l dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: culebra-windows-llama-vulkan
+          path: dist/
+          retention-days: 7
+
   # Release-to-release differential (tools/difftest/release_diff.sh): the
   # generated corpus under the latest published binary and under this commit,
   # each on its own default engine, with every behavioural change named in
