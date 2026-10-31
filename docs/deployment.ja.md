@@ -411,7 +411,9 @@ embed.run(modules, val, msgs);
 LLVMレーンを使う場合は、起動時に`culebra::install_jit_stdlib()`を1回
 呼んで`culebra::JIT::run(ast)`を使います。どちらも`<culebra.h>`が宣言し、
 `CULEBRA_JIT_ENABLED`のもとにあるのは`JIT::run`だけです（`Embed`は
-JITの有無に関わらず自分でstdlibをinstallします）。
+JITの有無に関わらず自分でstdlibをinstallします）。どちらも、stdlib preambleを
+持たない入力には自分でspliceするので、ASTを1つ渡しただけでも、それが名指す
+stdlibモジュールと組み込みtraitに届きます。
 
 ### ホストプログラムのビルド
 
@@ -915,14 +917,13 @@ callableに入る前に呼び出し側でcatch可能な`TypeError`として弾�
 ビルドディレクトリに出力します。配布される`culebra`ドライバは同じarchiveを埋め込んで持っていて、
 最初の`culebra build`で`$HOME/.cache/culebra/<fingerprint>/`に展開します。自前のlink手順からそのパスを指してもかまいません。
 
-**オブジェクトの生成。** プログラムは`ModuleLoader`経由で読み込み、`build_object`に渡す**前に**stdlib preambleを
-spliceします。このpreambleが`println` / `inspect`を定義しています。（`Stringer` / `Eq` /
-`Comparable`の宣言はこれに含まれません。`build_object`が`JIT::run`と同じく自前でprependします。）
+**オブジェクトの生成。** プログラムは`ModuleLoader`経由で読み込み、モジュールを`build_object`に渡します。
+一覧がstdlib preambleを持っていなければ、`build_object`が`JIT::run`と同じく自分でspliceするので、
+プログラムが名指すstdlibモジュールと組み込みtraitはそれと一緒に入ります。
 
 ```cpp
 #include <culebra.h>
 #include <frontend/module_loader.h>
-#include <stdlib/preamble.h>
 #include <stdlib/bindings.h>
 
 int main() {
@@ -930,16 +931,12 @@ int main() {
   std::vector<std::string> msgs;
   culebra::ModuleLoader loader;
   auto modules = loader.load_program("prog.cul", src, msgs);
-  culebra::splice_stdlib_preamble(modules);   // 必須 — 下記参照
 
   culebra::install_jit_stdlib();
   return culebra::JIT::build_object(modules, "prog.o", /*opt_level=*/2);
 }
 ```
 
-> **`splice_stdlib_preamble`を飛ばすと黙って失敗します。** オブジェクトの生成もlinkも通り、バイナリはexit 0で終わりますが、
-> 何も出力しません。`println`が何にも解決されなかったためです。診断は一切出ないので、
-> AOTバイナリが静かに何もしないならこれを疑ってください。
 
 **リンク。** 生成オブジェクトに必要なのは、archiveとdead-stripとC++ ランタイムだけです（重い機能を使わないプログラムの場合）:
 

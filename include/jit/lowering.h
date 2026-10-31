@@ -5414,15 +5414,17 @@ inline void run_modules_via_llvm(const std::vector<LoadedModule>& modules,
 }
 
 // For a caller that spliced the whole preamble — the doctest runner, whose
-// one module list feeds both lanes, and an embedder — the same run with the
-// baked modules taken back out here (stdlib_preamble.h). The CLI's --jit
-// path passes them in instead, having never parsed their source.
+// one module list feeds both lanes — or an embedder, whose list is spliced
+// here: the same run with the baked modules taken back out
+// (stdlib_preamble.h). The CLI's --jit path passes them in instead, having
+// never parsed their source.
 inline void run_modules_via_llvm(const std::vector<LoadedModule>& modules,
                                  bool emit_llvm = false, bool debug = false,
                                  int opt_level = 2,
                                  bool fast_codegen = false) {
   if (modules.empty()) return;
-  auto res = resolve_baked_preamble(modules, /*force_source=*/false);
+  auto res = resolve_baked_preamble(with_stdlib_preamble(modules),
+                                    /*force_source=*/false);
   run_modules_via_llvm(res.modules, res.baked, emit_llvm, debug, opt_level,
                        fast_codegen);
 }
@@ -5443,10 +5445,12 @@ inline int build_object_from_modules(
     std::fprintf(stderr, "culebra build: empty module list\n");
     return 1;
   }
+  // An embedder's unspliced list gets the splice the CLI's already carries.
   // Baked stdlib modules become references into the archive rather than
   // code in this object (stdlib_preamble.h); a cross build keeps the
   // source, since its archive is the user's.
-  auto res = resolve_baked_preamble(modules, preamble_from_source);
+  const auto spliced = with_stdlib_preamble(modules);
+  auto res = resolve_baked_preamble(spliced, preamble_from_source);
   // As the run lane above: the baked modules' `@value` declarations still
   // reach the compiler, so both lanes emit the same spliced bytecode, and
   // the built-in traits are an entry ahead of them. A cross build keeps the
@@ -5456,14 +5460,14 @@ inline int build_object_from_modules(
   auto entries = with_baked_traits(res.baked, preamble_from_source);
   auto prog = Compiler::compile_modules(res.modules, Debug::Off,
                                         {&value_decls, entries.traits});
-  // Over `modules`, NOT `res.modules`: a baked module's source is what names
+  // Over `spliced`, NOT `res.modules`: a baked module's source is what names
   // the namespaces it needs (the Canvas preamble's `_Canvas`, ...), and the
   // resolver just took that source out of the list. Scanning the resolved
   // list would link no group for them and the baked code would raise
   // "namespace is not linked" at its first use.
   return Lowering::build_object(prog, out_path, opt_level, emit_llvm,
                                 target_triple,
-                                aot_collect_program_names(modules),
+                                aot_collect_program_names(spliced),
                                 entries.all);
 }
 

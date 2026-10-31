@@ -455,7 +455,9 @@ embed.run(modules, val, msgs);
 For the LLVM lane, call `culebra::install_jit_stdlib()` once at startup
 and use `culebra::JIT::run(ast)`. `<culebra.h>` declares both; `JIT::run`
 is the one behind `CULEBRA_JIT_ENABLED` (an `Embed` installs the stdlib
-itself, with or without the JIT).
+itself, with or without the JIT). Both splice the stdlib preamble for an
+input that does not carry one, so a single AST reaches the stdlib modules
+and built-in traits it names.
 
 ### Building your host program
 
@@ -974,15 +976,13 @@ carries the same archives embedded, and materializes them on the first
 can point your own link step at.
 
 **Emitting the object.** Load the program through `ModuleLoader` and
-splice the stdlib preamble *before* handing the modules to
-`build_object` — the preamble is what defines `println` / `inspect`.
-(The `Stringer` / `Eq` / `Comparable` declarations are not part of it:
-`build_object` prepends those itself, as `JIT::run` does.)
+hand the modules to `build_object`. It splices the stdlib preamble itself
+when the list does not carry one, as `JIT::run` does, so the stdlib
+modules and built-in traits the program names come with it.
 
 ```cpp
 #include <culebra.h>
 #include <frontend/module_loader.h>
-#include <stdlib/preamble.h>
 #include <stdlib/bindings.h>
 
 int main() {
@@ -990,17 +990,12 @@ int main() {
   std::vector<std::string> msgs;
   culebra::ModuleLoader loader;
   auto modules = loader.load_program("prog.cul", src, msgs);
-  culebra::splice_stdlib_preamble(modules);   // required — see below
 
   culebra::install_jit_stdlib();
   return culebra::JIT::build_object(modules, "prog.o", /*opt_level=*/2);
 }
 ```
 
-> **Skipping `splice_stdlib_preamble` fails silently.** The object still
-> emits and links, and the binary still exits 0 — it just produces no
-> output, because `println` resolved to nothing. There is no diagnostic;
-> if your AOT binary runs quietly and does nothing, this is why.
 
 **Linking it.** The emitted object needs the archive, dead-stripping,
 and the C++ runtime — nothing else for a program that uses no heavy

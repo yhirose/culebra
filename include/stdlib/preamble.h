@@ -482,6 +482,19 @@ inline void splice_stdlib_preamble(
   modules.insert(modules.begin(), std::move(pre));
 }
 
+// A module list as the lanes run it, the `<stdlib>` module in front when the
+// program names any of it. A list that already carries it (the CLI's, the
+// doctest runner's) passes through; an embedder's — a bare loader result, a
+// single AST — is spliced here, as vm::Session::run_modules splices one for
+// the executor, so the JIT entries see the same stdlib and built-in trait
+// units the CLI does.
+inline std::vector<LoadedModule> with_stdlib_preamble(
+    std::vector<LoadedModule> modules) {
+  if (!modules.empty() && modules.front().abs_path != kStdlibPreamblePath)
+    splice_stdlib_preamble(modules);
+  return modules;
+}
+
 // The lowering's view of a spliced module list: the `<stdlib>` module is
 // replaced by one registering only the modules this binary has not baked
 // (and dropped when that is none), and `baked` lists the entries the

@@ -1,9 +1,11 @@
 // Single-input embedder entries must behave like the module path.
 // `vm::Embed::run_source` and `culebra::JIT::run(ast)` bypass the loader,
-// and both have to see the built-in trait preamble — otherwise `Comparable`
-// is an undefined name and its default methods (lt/le/gt/ge, Eq's neq) are
-// missing on the embedder API only. (The interp-era `culebra::interpret`
-// lane this exercised retired with the tree-walker — Phase 4 B7-d.)
+// and both have to see the built-in traits — otherwise `Comparable` is an
+// undefined name and its default methods (lt/le/gt/ge, Eq's neq, Dir's files)
+// are missing on the embedder API only. The ones the stdlib splice selects
+// (Dir) reach a bare AST only because each entry splices for itself.
+// (The interp-era `culebra::interpret` lane this exercised retired with the
+// tree-walker — Phase 4 B7-d.)
 
 #include <deque>
 #include <iostream>
@@ -20,9 +22,10 @@ namespace single_ast_smoke_ns {
 namespace {
 
 // Exercises only preamble-provided machinery: the six Comparable defaults on
-// top of a hand-written `cmp`, Eq's default `neq`, and `Comparable` as a
-// parameter type. Every check throws on failure, so both lanes report the
-// same way — Embed via `msgs`, JIT via std::runtime_error.
+// top of a hand-written `cmp`, Eq's default `neq`, `Comparable` as a
+// parameter type, and Dir's `files` over a class of the five methods it
+// requires. Every check throws on failure, so both lanes report the same
+// way — Embed via `msgs`, JIT via std::runtime_error.
 constexpr const char* kScript = R"(
 class Pri {
   new(v) {
@@ -46,6 +49,14 @@ fn only_comparable(x: Comparable) -> Long {
   x.cmp(x)
 }
 if only_comparable(lo) != 0 { throw 'trait param' }
+class Shelf {
+  read(p) { 'x' }
+  list_dir(p) { p == '' ? ['a'] : [] }
+  exists(p) { true }
+  is_file(p) { p == 'a' }
+  is_dir(p) { p == '' }
+}
+if Shelf().files() != ['a'] { throw 'files' }
 )";
 
 // parse()'s AST holds string_view tokens into its source buffer, and the AST
