@@ -27,9 +27,9 @@ run() {
 }
 # cli <args...>: the program, as the lane under test runs it.
 cli() {
-  if [[ $lane == aot ]]; then "$TMP/kauai" "$@"; else "$CULEBRA" "$CLI" "$@"; fi
+  if [[ $lane == aot ]]; then "$TMP/kauai" "$@"; else "$CULEBRA" --vm "$CLI" "$@"; fi
 }
-play() { "$CULEBRA" play "$@"; }
+play() { "$CULEBRA" play --vm "$@"; }
 same_wav() {  # same_wav <label> <wav> <wav>
   cmp -s "$2" "$3" || { echo "FAIL $1: $2 and $3 differ"; fail=1; }
 }
