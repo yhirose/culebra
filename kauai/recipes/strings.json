@@ -1,0 +1,29 @@
+{
+  "recipe": 1,
+  "knobs": {"bright": {"default": 0.5, "min": 0, "max": 1}},
+  "parts": {
+    "m1": {"part": "wave", "freq": "f * (1 - 0.003)", "feedback": 1.1},
+    "i1": {"part": "gain", "input": "m1", "gain": {
+      "on": [[0, 0], [0.5, "mix(0.5, 0.8, bright)"]], "off": [[0.7, 0.2]]}},
+    "c1": {"part": "wave", "freq": "f * (1 - 0.003)", "modulators": ["i1"]},
+
+    "m2": {"part": "wave", "feedback": 1.1},
+    "i2": {"part": "gain", "input": "m2", "gain": {
+      "on": [[0, 0], [0.5, "mix(0.5, 0.8, bright)"]], "off": [[0.7, 0.2]]}},
+    "c2": {"part": "wave", "modulators": ["i2"]},
+
+    "m3": {"part": "wave", "freq": "f * (1 + 0.0035)", "feedback": 1.1},
+    "i3": {"part": "gain", "input": "m3", "gain": {
+      "on": [[0, 0], [0.5, "mix(0.5, 0.8, bright)"]], "off": [[0.7, 0.2]]}},
+    "c3": {"part": "wave", "freq": "f * (1 + 0.0035)", "modulators": ["i3"]},
+
+    "octave": {"part": "wave", "freq": "2.002 * f"},
+    "over": {"part": "gain", "input": "octave", "gain": "0.35 * bright"},
+
+    "voices": {"part": "mix", "inputs": ["c1", "c2", "c3", "over"], "gain": 0.3},
+    "amp": {"part": "gain", "input": "voices", "gain": {
+      "on": [[0, 0], [0.35, 1]],
+      "off": [[0.7, 0]]}}
+  },
+  "out": "amp"
+}

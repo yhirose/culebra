@@ -4,9 +4,10 @@
 # the binary reads no module at run time and needs no culebra.
 import soprano from '../sounds/soprano_sax/main.cul'
 import alto from '../sounds/alto_sax/main.cul'
+import recipes from '../recipes/main.cul'
 
 # Every bundled instrument, by the name a song gives it (`external SopranoSax`).
-let voices = [soprano, alto].flat_map(|p| p.voices.keys().map(|k| (k, p.voices[k]))).to_object()
+let voices = [soprano, alto, recipes].flat_map(|p| p.voices.keys().map(|k| (k, p.voices[k]))).to_object()
 
 let usage = "Usage: kauai <song.kau> [options]
   --check              read and check the song, and play nothing

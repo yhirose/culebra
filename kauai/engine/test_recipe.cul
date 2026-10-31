@@ -1,0 +1,251 @@
+import r from './recipe.cul'
+
+let RATE = 8000
+
+let made = |doc| r.Recipe.new(doc, name: "t", rate: RATE)
+
+# A recipe of one sine through a gain, the gain's value `gain`.
+let sine = |gain| made({
+  recipe: 1,
+  knobs: {bright: {"default": 0.5, min: 0, max: 1}},
+  parts: {w: {part: "wave"}, g: {part: "gain", input: "w", gain: gain}},
+  out: "g",
+})
+
+# What `f` throws, nil for nothing.
+fn thrown(f) {
+  try {
+    f()
+    nil
+  } catch e {
+    e
+  }
+}
+
+fn says(doc, text) {
+  let e = thrown(|| made(doc))
+  assert_true(e is String && e.contains(text), e)
+}
+
+# A sine's sample `i` at `pitch` as a recipe's output is heard: 2 pi f t,
+# through the high-pass at 20 Hz that every recipe's output passes.
+let raw_sine = |pitch, i| Math.sin(2.0 *
+  Math.pi *
+  440.0 *
+  2.0 ** ((pitch - 69) / 12.0) *
+  i /
+  RATE)
+let sine_at = |pitch, i| Audio.filter(
+  iota(i + 1).map(|j| raw_sine(pitch, j)),
+  "high",
+  20.0,
+  rate: RATE,
+)[i]
+
+@test
+fn an_offset_is_cut_from_what_a_recipe_plays() {
+  # A square at 0 Hz is a steady 1: an offset alone, gone within 0.2 s.
+  let steady = made({
+    recipe: 1,
+    parts: {w: {part: "wave", kind: "square", freq: 0}},
+    out: "w",
+  })
+  let s = steady.note(69, 0.5)
+  assert_true(s[0] > 0.9, s[0])
+  assert_true(iota(1600, 4000).all(|i| Math.abs(s[i]) < 0.01), s[1600])
+}
+
+@test
+fn a_note_is_its_graph_rendered_for_its_length_at_its_level() {
+  let s = sine(0.5).note(69, 0.1, level: 0.8)
+  assert_eq(s.size(), 800)
+  for i in [1, 17, 401, 799] {
+    assert_true(Math.abs(s[i] - 0.4 * sine_at(69, i)) < 1e-9, i)
+  }
+}
+
+@test
+fn an_expression_reads_the_note_and_the_knobs() {
+  let s = sine("bright * (pitch - 60) / 18").note(
+    66,
+    0.05,
+    params: {bright: 0.6},
+  )
+  assert_true(Math.abs(s[123] - 0.2 * sine_at(66, 123)) < 1e-9, s[123])
+}
+
+@test
+fn an_envelope_is_held_while_the_note_is_and_released_from_where_it_was_cut() {
+  let v = sine({on: [[0, 0], [0.5, 1]], off: [[0.25, 0]]})
+  # Cut half way up, at 0.5; off falls from there to nothing in 0.25 s.
+  let s = v.note(69, 0.25)
+  assert_eq(s.size(), 4000)
+  let peak = |lo, hi| iota(lo, hi).map(|i| Math.abs(s[i])).max()
+  assert_true(Math.abs(peak(1980, 2020) - 0.5) < 0.01, peak(1980, 2020))
+  assert_true(Math.abs(peak(2980, 3020) - 0.25) < 0.01, peak(2980, 3020))
+  assert_true(peak(3960, 4000) < 0.01, peak(3960, 4000))
+}
+
+@test
+fn a_curve_below_zero_falls_as_an_exponential() {
+  # From 1 to e^-3 over a second with a curve of -3 is e^(-3t) itself.
+  let c = r.course(
+    r.value({on: [[0, 1], [1, "exp(-3)", -3]]}, ["dur"], "v"),
+    {},
+    1.0,
+    "v",
+  )
+  for (t, v) in c {
+    assert_true(Math.abs(v - Math.exp(-3.0 * t)) < 1e-12, (t, v))
+  }
+  # Drawn in straight pieces 10 ms long.
+  assert_eq(c.size(), 101)
+}
+
+@test
+fn a_knob_left_out_is_its_default_and_one_out_of_range_is_refused() {
+  let s = sine("bright").note(69, 0.05)
+  assert_true(Math.abs(s[123] - 0.5 * sine_at(69, 123)) < 1e-9, s[123])
+  let e = thrown(|| sine("bright").note(69, 0.05, params: {bright: 1.5}))
+  assert_true(e.contains("bright is from 0.0 to 1.0, not 1.5"), e)
+  let e2 = thrown(|| sine("bright").note(69, 0.05, params: {brigt: 0.5}))
+  assert_true(e2.contains("no knob `brigt`"), e2)
+}
+
+@test
+fn a_phrase_is_its_notes_mixed_at_their_times() {
+  let s = sine(0.5).phrase(
+    [{pitch: 69, at: 0.0, len: 0.1}, {pitch: 72, at: 0.2, len: 0.1}],
+    {},
+  )
+  let xs = Audio.decode(s.data()).channels[0]
+  assert_eq(xs.size(), 2400)
+}
+
+@test
+fn a_recipe_is_checked_whole_before_it_plays() {
+  let wave = {part: "wave"}
+  let doc = |parts, out| {recipe: 1, parts: parts, out: out}
+  says({recipe: 2, parts: {w: wave}, out: "w"}, "recipe t: `recipe` is 1")
+  says({...doc({w: wave}, "w"), sound: 1}, "not `sound`")
+  says(doc({w: {part: "wav"}}, "w"), "recipe t.parts.w.part: no part `wav`")
+  says(
+    doc({w: {part: "wave", frq: 3}}, "w"),
+    "recipe t.parts.w: a wave has kind, part, modulators, freq, feedback, phase, not `frq`",
+  )
+  says(doc({w: wave}, "v"), "recipe t.parts: out: no part `v`")
+  says(
+    doc({w: wave, g: {part: "gain", input: "x"}}, "g"),
+    "recipe t.parts.g: no part `x`",
+  )
+  says(doc({w: wave, v: wave}, "w"), "recipe t.parts: `v` does not reach out")
+  says(
+    doc(
+      {
+        a: {part: "wave", modulators: ["b"]},
+        b: {part: "wave", modulators: ["a"]},
+      },
+      "a",
+    ),
+    "recipe t.parts: `a` takes itself in",
+  )
+  says(
+    doc({w: {part: "wave", freq: "f * 2 +"}}, "w"),
+    "recipe t.parts.w.freq: cannot read `f * 2 +`: column",
+  )
+  says(
+    doc({w: {part: "wave", freq: "g * 2"}}, "w"),
+    "recipe t.parts.w.freq: `g * 2`: no name `g`; it may name pitch, f, dur, level",
+  )
+  says(doc({w: {part: "wave", freq: "cube(f)"}}, "w"), "no function `cube`")
+  says(doc({w: {part: "wave", freq: "min(f)"}}, "w"), "`min` takes 2, given 1")
+  says(
+    doc({w: {part: "wave", freq: {on: [[0, 1]], of: []}}}, "w"),
+    "an envelope has `on` and `off`, not `of`",
+  )
+  says(
+    doc({w: {part: "wave", freq: {on: [[0]]}}}, "w"),
+    "recipe t.parts.w.freq.on[0]: a point is",
+  )
+  says(
+    {
+      recipe: 1,
+      knobs: {Bright: {"default": 0, min: 0, max: 1}},
+      parts: {w: wave},
+      out: "w",
+    },
+    "a word in lower case",
+  )
+  says(
+    {
+      recipe: 1,
+      knobs: {f: {"default": 0, min: 0, max: 1}},
+      parts: {w: wave},
+      out: "w",
+    },
+    "`f` names the note",
+  )
+}
+
+@test
+fn a_patch_goes_over_its_target_as_json_merge_patch_says() {
+  # RFC 7386's own examples (its appendix A), a few of them.
+  let m = |a, b| r.merged(JSON.parse(a), JSON.parse(b))
+  assert_eq(m(`{"a":"b"}`, `{"a":"c"}`), {a: "c"})
+  assert_eq(m(`{"a":"b"}`, `{"a":null}`), {})
+  assert_eq(m(`{"a":"b","b":"c"}`, `{"a":null}`), {b: "c"})
+  assert_eq(m(`{"a":["b"]}`, `{"a":"c"}`), {a: "c"})
+  assert_eq(m(`{"a":{"b":"c"}}`, `{"a":{"b":"d","c":null}}`), {a: {b: "d"}})
+  assert_eq(m(`{"a":[{"b":"c"}]}`, `{"a":[1]}`), {a: [1]})
+  assert_eq(m(`{"e":null}`, `{"a":1}`), {e: nil, a: 1})
+  assert_eq(m(`[1,2]`, `{"a":"b","c":null}`), {a: "b"})
+}
+
+@test
+fn a_recipe_with_a_base_is_its_base_with_the_rest_over_it() {
+  let book = {
+    tone: {
+      recipe: 1,
+      knobs: {bright: {"default": 0.5, min: 0, max: 1}},
+      parts: {w: {part: "wave"}, g: {part: "gain", input: "w", gain: "bright"}},
+      out: "g",
+    },
+    dark: {base: "tone", knobs: {bright: {"default": 0.1}}},
+    darker: {base: "dark", parts: {g: {gain: "bright / 2"}}},
+    loop: {base: "round"},
+    round: {base: "loop"},
+  }
+  let find = |name| book.get(name, nil)
+  let darker = r.resolved("darker", find)
+  assert_eq(darker.knobs.bright, {"default": 0.1, min: 0, max: 1})
+  assert_eq(darker.parts.g, {part: "gain", input: "w", gain: "bright / 2"})
+  assert_false(darker.has("base"))
+  let s = r.Recipe.new(darker, name: "darker", rate: RATE).note(69, 0.05)
+  assert_true(Math.abs(s[123] - 0.05 * sine_at(69, 123)) < 1e-9, s[123])
+  let e = thrown(|| r.resolved("loop", find))
+  assert_true(
+    e.contains("recipe loop: its base is itself, through loop, round"),
+    e,
+  )
+  let e2 = thrown(|| r.resolved("dim", find))
+  assert_true(e2.contains("recipe dim: no recipe of that name"), e2)
+}
+
+@test
+fn what_only_the_note_can_say_is_refused_when_it_plays() {
+  # Times that go back, read for this note.
+  let back = sine({on: [[0, 0], ["dur", 1], [0.05, 0.5]]})
+  let e = thrown(|| back.note(69, 0.1))
+  assert_true(e.contains("recipe t.parts.g.gain.on[2]: its time is before"), e)
+  # A value the graph refuses, with where it is in the recipe.
+  let high = made({
+    recipe: 1,
+    parts: {w: {part: "wave", freq: "f * 8"}},
+    out: "w",
+  })
+  let e2 = thrown(|| high.note(81, 0.1))
+  assert_true(
+    e2 is String && e2.starts_with("recipe t.parts.w: Audio.Graph:"),
+    e2,
+  )
+}

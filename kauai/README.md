@@ -31,6 +31,10 @@ it to a WAV file with `culebra play --wav out.wav song.kau`.
   | [`sounds/alto_sax`](sounds/alto_sax) | `Alto` | an alto saxophone, from a jazz player's improvisations (CC0 and CC BY) |
 
   Play a song with one: `culebra play --sounds kauai/sounds/soprano_sax song.kau`.
+- **Recipes**: synthesized instruments written as data, a synth brass, a synth
+  string section and an electric piano, with a `bright` knob. Play a song with
+  them: `culebra play --sounds kauai/recipes song.kau`.
+  [`recipe.md`](recipe.md) lists them and says how to write one.
 - [`docs/guides/kauai-sounds.md`](../docs/guides/kauai-sounds.md): the sounds a
   song plays, shaping them, supplying an `external` instrument, a model, and a
   recorded instrument made with the harness.
@@ -69,8 +73,9 @@ kauai song.kau --wav out.wav --from Chorus --to 1:30
 ```
 
 It takes the options `culebra play` takes, except `--sounds` and `--watch`.
-The instruments in `sounds/` (`SopranoSax`, `AltoSax`) are compiled in, and
-a song names them as `external SopranoSax`. An instrument of your own is added
+The instruments in `sounds/` (`SopranoSax`, `AltoSax`) and the recipes in
+`recipes/` (`Brass`, `Strings` and the rest) are compiled in, and a song names
+them as `external SopranoSax`. An instrument of your own is added
 to `cli/main.cul` and the binary built again, because a compiled program loads
 no module of its own at run time.
 
@@ -78,7 +83,8 @@ no module of its own at run time.
 
 | Folder | What it holds |
 |---|---|
-| `engine/` | the playing code instruments from recordings share |
+| `engine/` | the playing code instruments from recordings share, and the interpreter of recipes |
+| `recipes/` | the instruments written as recipes, one JSON file each |
 | `tools/` | the tools for measuring, checking and comparing |
 | `cli/` | the command line `just kauai-build` compiles |
 | `sounds/` | the finished external instruments, one folder each |

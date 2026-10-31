@@ -1,0 +1,24 @@
+{
+  "recipe": 1,
+  "knobs": {"bright": {"default": 1, "min": 0, "max": 2}},
+  "parts": {
+    "m1": {"part": "wave"},
+    "i1": {"part": "gain", "input": "m1",
+           "gain": {"on": [[0, "bright * 1.65"], [3, "bright * (1.4 * exp(-18) + 0.25)", -18]]}},
+    "c1": {"part": "wave", "modulators": ["i1"]},
+    "a1": {"part": "gain", "input": "c1",
+           "gain": {"on": [[0, 0], [0.0018, "0.25 * exp(-1.1 * sqrt(f / 261.63) * 0.0018)"],
+                           [3, "0.25 * exp(-1.1 * sqrt(f / 261.63) * 3)", "-1.1 * sqrt(f / 261.63) * (3 - 0.0018)"]],
+                    "off": [[0.036, 0]]}},
+    "m2": {"part": "wave", "freq": "f * 1.0025"},
+    "i2": {"part": "gain", "input": "m2",
+           "gain": {"on": [[0, "bright * 1.65"], [3, "bright * (1.4 * exp(-18) + 0.25)", -18]]}},
+    "c2": {"part": "wave", "freq": "f * 1.0025", "modulators": ["i2"]},
+    "a2": {"part": "gain", "input": "c2",
+           "gain": {"on": [[0, 0], [0.0018, "0.25 * exp(-1.1 * sqrt(f / 261.63) * 0.0018)"],
+                           [3, "0.25 * exp(-1.1 * sqrt(f / 261.63) * 3)", "-1.1 * sqrt(f / 261.63) * (3 - 0.0018)"]],
+                    "off": [[0.036, 0]]}},
+    "both": {"part": "mix", "inputs": ["a1", "a2"]}
+  },
+  "out": "both"
+}

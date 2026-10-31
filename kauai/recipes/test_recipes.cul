@@ -1,0 +1,60 @@
+import recipes from './main.cul'
+
+let peak = |xs| xs.map(|v| Math.abs(v)).max()
+
+# Every recipe here is whole and checked (main.cul made each one already),
+# and plays a note, at its knobs' defaults and at each knob's ends, that is
+# heard and does not clip.
+@test
+fn each_recipe_plays_a_note_at_each_end_of_its_knobs() {
+  assert_true(recipes.names.contains("brass"))
+  for name in recipes.names {
+    let r = recipes.recipe(name)
+    let ends = |k| [
+      r.knobs[k].min,
+      r.knobs[k].max,
+    ].map(|v| [(k, v)].to_object())
+    let settings = [{}, ...r.knobs.keys().flat_map(ends)]
+    for params in settings {
+      let s = r.note(60, 0.3, params: params)
+      let p = peak(s)
+      assert_true(p > 0.01 && p < 1.0, (name, params, p))
+    }
+  }
+}
+
+@test
+fn a_preset_is_its_recipe_with_its_knob_set() {
+  let mellow = recipes.recipe("brass_mellow").note(60, 0.3)
+  let brass = recipes.recipe("brass").note(60, 0.3, params: {bright: 0.0})
+  assert_eq(mellow, brass)
+}
+
+@test
+fn kauai_plays_a_song_with_them() {
+  let song_text = 'band Pads {
+  voice Lead  external BrassMellow  plays melody  vol 60  bright=0.2
+  voice Pad   external Strings      plays chords from C3  vol 40
+}
+song Tune {
+  tempo 120
+  band Pads
+  melody in C4..B4
+  Verse
+}
+section Verse {
+  C     c4 e g e
+}
+'
+
+  let song = Audio.Kauai.load(
+    "tune.kau",
+    voices: recipes.voices,
+    dir: Dir.memory({"tune.kau": song_text}),
+  )
+  mut left = song.prepare()
+  while left > 0 {
+    left = song.prepare()
+  }
+  assert_true(song.length() > 1.5)
+}

@@ -1,0 +1,35 @@
+# The instruments Kauai comes with that are recipes: each .json file here
+# is one, played by the engine's interpreter (kauai/engine/recipe.cul). A
+# file's name is the instrument's, without its underscores: brass_mellow.json
+# is `external BrassMellow`.
+#
+#   band Pads {
+#     voice Lead  external Brass  plays melody  bright=0.3
+#   }
+
+import engine from '../engine/recipe.cul'
+
+let DIR = Dir.embedded('.')
+
+# The recipes' names: their files' names without `.json`.
+let names = DIR
+  .files()
+  .filter(|p| p.ends_with(".json"))
+  .map(|p| to_string(p.slice(0, p.size() - 5)))
+  .sorted()
+
+# The recipe `name` as JSON reads it, nil for none.
+fn find(name) {
+  let file = "{name}.json"
+  DIR.is_file(file) ? JSON.parse(DIR.read(file)) : nil
+}
+
+# The recipe `name` whole (its base under it) and checked.
+fn recipe(name) {
+  engine.Recipe.new(engine.resolved(name, find), name: name)
+}
+
+# The instruments, as Audio.Kauai.load's `voices:` takes them.
+let voices = names.map(|n| (n.replace("_", ""), recipe(n).voice())).to_object()
+
+export {voices, names, recipe, find}

@@ -303,4 +303,7 @@ languages.samples 130
 # synthesized alto and its test were removed.
 # 47 since kauai/engine/test_join.cul (where a join's step is read, past a
 # recorded onset or release at it).
-examples.suites 47
+# 49 since kauai/engine/test_recipe.cul (the interpreter of recipes: their
+# checks, envelopes and bases, 0.2 s) and kauai/recipes/test_recipes.cul
+# (each bundled recipe plays, and Kauai plays a song with them, 0.5 s).
+examples.suites 49

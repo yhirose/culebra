@@ -80,6 +80,8 @@ section Theme {
   C  c4 e g c
 }
 EOF
+# The same notes on a bundled recipe.
+sed -e 's/external AltoSax/external BrassMellow/' "$TMP/alto.kau" > "$TMP/brass.kau"
 
 for lane in "${lanes[@]}"; do
   # What the two print and leave for a song that reads, one that is not
@@ -122,6 +124,10 @@ for lane in "${lanes[@]}"; do
   run cli "$TMP/alto.kau" --wav "$TMP/cli.wav"
   check "$lane bundled instrument: status" 0 "$rc"
   same_wav "$lane bundled instrument" "$TMP/play.wav" "$TMP/cli.wav"
+  run play --sounds "$HERE/../kauai/recipes" --wav "$TMP/play.wav" "$TMP/brass.kau"
+  run cli "$TMP/brass.kau" --wav "$TMP/cli.wav"
+  check "$lane bundled recipe: status" 0 "$rc"
+  same_wav "$lane bundled recipe" "$TMP/play.wav" "$TMP/cli.wav"
 done
 
 exit $fail
