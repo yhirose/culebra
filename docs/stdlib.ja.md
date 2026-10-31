@@ -9422,12 +9422,17 @@ IO.println(r.text)
 ```
 
 動く環境は、AVX2、BMI2、FMA、F16Cを持つx86-64のCPU（2013年ごろ以降のもの）か、Apple Siliconです。
-それ以外のCPUでは、`Llama.load`が足りないものを挙げた`LlamaError`で答えます。このビルドのllama.cppは
-CPUで計算します。`gpu:`は受け付けますが、効くのはGPUのバックエンドを持つビルドだけです。
+それ以外のCPUでは、`Llama.load`が足りないものを挙げた`LlamaError`で答えます。
+
+Linuxでは、ビルドがVulkanのバックエンドを持ち（`-DCULEBRA_LLAMA_VULKAN`。Vulkanのヘッダーと`glslc`が
+見つかれば既定で入ります）、機械にVulkanのドライバとGPUがあれば、モデルはVulkanを通してGPUで動きます。
+NVIDIA、AMD、IntelのどのGPUでも同じです。ドライバは最初のモデルを読み込むときに探すので、バックエンドを
+持つバイナリも、ドライバのない機械で起動して、モデルをCPUで動かします。どちらで動いているか、GPUでない
+ならなぜかは、`model.device()`でわかります。
 
 `culebra build`でも使えます。`Llama`を名指しするプログラムにはllama.cppが静的にリンクされ、
-バイナリは数MB大きくなります。名指ししないプログラムには何も入りません。モデルのファイルは
-バイナリの外に置きます。
+バイナリは数MB大きくなります。名指ししないプログラムには何も入りません。このバイナリはモデルをCPUで
+動かします。モデルのファイルはバイナリの外に置きます。
 
 ### `Llama.load(path, n_ctx=2048, gpu=true, n_batch=0, n_slots=1) -> LlamaModel`
 
@@ -9488,6 +9493,25 @@ let verdict = m.generate("Is the sky blue? ", grammar: 'root ::= "yes" | "no"').
 ### `model.n_ctx() -> Long`
 
 モデルが得たコンテキストの大きさです。頼んだ`n_ctx`より大きいことがあります。閉じたモデルでは0です。
+
+### `model.device() -> Object`
+
+モデルがどこで動いているかです。読み込んだときに決まります。
+
+| フィールド | |
+|---|---|
+| `backend` | `"vulkan"`か`"cpu"` |
+| `name` | GPUの名前（`"NVIDIA GeForce RTX 3090"`）か`"CPU"` |
+| `reason` | モデルがGPUにあれば`nil`。そうでなければ理由で、`"gpu: false"`、`"built without GPU support"`、`"no Vulkan driver"`（この機械にVulkanのローダーがない）、`"no Vulkan device"`（ローダーはあるが、使えるGPUがない）のどれか |
+
+```culebra
+# doctest: skip — GGUFのモデルファイルと、Llama入りのビルドが要る
+let m = Llama.load("model.gguf")
+let d = m.device()
+if d.reason != nil {
+  IO.println("running on the CPU: {d.reason}")
+}
+```
 
 ### `model.close()`
 

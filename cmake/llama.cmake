@@ -16,6 +16,37 @@
 include(${CMAKE_CURRENT_LIST_DIR}/llama_cpp.cmake)
 _culebra_require_submodules(cpp-llamalib)
 
+# GPU backend off macOS (macOS gets Metal, U5). ggml-vulkan needs the Vulkan
+# headers and glslc to build; at run time the loader is opened, not linked
+# (src/runtime/llama_vulkan_dynload.cc), so the binary still starts, and runs
+# Llama on the CPU, where no Vulkan driver exists. Like CULEBRA_TENSOR_CUDA,
+# AUTO turns it on where the tools are found; ON fails the configure without them.
+set(CULEBRA_LLAMA_VULKAN AUTO CACHE STRING
+    "Vulkan GPU backend for Llama off macOS: ON, OFF, or AUTO (Vulkan headers and glslc found)")
+set_property(CACHE CULEBRA_LLAMA_VULKAN PROPERTY STRINGS AUTO ON OFF)
+
+set(_llama_vulkan OFF)
+# Tool locations go to llama.cpp's configure but not into the cache key below,
+# which must not depend on where this machine keeps them.
+set(_llama_tool_args "")
+if(NOT APPLE AND NOT CULEBRA_LLAMA_VULKAN STREQUAL "OFF")
+  # glslc by its path variable: the component form needs CMake 3.24.
+  find_package(Vulkan)
+  if(Vulkan_FOUND AND Vulkan_GLSLC_EXECUTABLE)
+    set(_llama_vulkan ON)
+    list(APPEND _llama_tool_args
+      -DVulkan_INCLUDE_DIR=${Vulkan_INCLUDE_DIR}
+      -DVulkan_LIBRARY=${Vulkan_LIBRARY}
+      -DVulkan_GLSLC_EXECUTABLE=${Vulkan_GLSLC_EXECUTABLE})
+  elseif(CULEBRA_LLAMA_VULKAN STREQUAL "ON")
+    message(FATAL_ERROR
+      "CULEBRA_LLAMA_VULKAN=ON but the Vulkan headers or glslc were not found. "
+      "Install them (Ubuntu: libvulkan-dev glslc) or set VULKAN_SDK.")
+  else()
+    message(STATUS "Llama: Vulkan backend off (no Vulkan headers or glslc)")
+  endif()
+endif()
+
 # The configuration is part of the key: a flag change builds into a new
 # directory instead of being served stale bytes.
 set(_llama_cmake_args
@@ -30,7 +61,7 @@ set(_llama_cmake_args
   # Portable code: not tuned to the machine that builds it. (On x86 that still
   # means AVX2; stdlib/llama.h checks the CPU for it before loading a model.)
   -DGGML_NATIVE=OFF
-  -DGGML_CUDA=OFF -DGGML_METAL=OFF -DGGML_VULKAN=OFF -DGGML_BLAS=OFF)
+  -DGGML_CUDA=OFF -DGGML_METAL=OFF -DGGML_VULKAN=${_llama_vulkan} -DGGML_BLAS=OFF)
 string(MD5 _llama_args_hash "${_llama_cmake_args}")
 string(SUBSTRING "${_llama_args_hash}" 0 8 _llama_args_hash)
 string(SUBSTRING "${CULEBRA_LLAMA_CPP_SHA256}" 0 12 _llama_src_hash)
@@ -49,13 +80,28 @@ string(REPLACE ";" "-" _llama_key "${_llama_key}")
 set(_llama_install "${_llama_root}/${_llama_key}/llama")
 message(STATUS "llama.cpp ${CULEBRA_LLAMA_CPP_VERSION} deps cache: ${_llama_root}/${_llama_key}")
 
-# Link order matters for static archives: llama needs ggml, which needs the CPU
-# backend and the base, which the backend needs in turn.
-set(_llama_a
+# Link order matters for static archives: llama needs ggml, which needs the
+# backends and the base, which the backends need in turn. _llama_aot_a is what
+# `culebra build` links (and the driver embeds): the CPU backend only, whose one
+# reference into the Vulkan backend src/runtime/llama_gpu_none.cc answers.
+set(_llama_aot_a
   "${_llama_install}/lib/libllama.a"
   "${_llama_install}/lib/libggml.a"
   "${_llama_install}/lib/libggml-cpu.a"
   "${_llama_install}/lib/libggml-base.a")
+set(_llama_vulkan_a "")
+if(_llama_vulkan)
+  set(_llama_vulkan_a "${_llama_install}/lib/libggml-vulkan.a")
+endif()
+set(_llama_a
+  "${_llama_install}/lib/libllama.a"
+  "${_llama_install}/lib/libggml.a"
+  ${_llama_vulkan_a}
+  "${_llama_install}/lib/libggml-cpu.a"
+  "${_llama_install}/lib/libggml-base.a")
+# For tools/checks/check_llama_vulkan_dynload.sh, which compares the forwarders
+# with what the archive names ("" without the backend).
+set(CULEBRA_LLAMA_VULKAN_ARCHIVE "${_llama_vulkan_a}" CACHE INTERNAL "")
 set(_llama_system_libs "")
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   list(APPEND _llama_system_libs Threads::Threads ${CMAKE_DL_LIBS})

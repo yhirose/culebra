@@ -384,6 +384,12 @@ jobs:
       - name: Install dependencies
         uses: ./.github/actions/setup-linux-toolchain
 
+      # The Vulkan backend's build tools. The runner has no GPU and no Vulkan
+      # driver, so every model here runs on the CPU, which is what the
+      # dynamic-load gate and the pinned device() answer below rely on.
+      - name: Install the Vulkan headers and glslc
+        run: sudo apt-get install -y --no-install-recommends libvulkan-dev glslc
+
       - name: Restore the llama.cpp statics
         uses: actions/cache@v4
         with:
@@ -407,10 +413,15 @@ jobs:
             https://huggingface.co/ggml-org/models/resolve/main/tinyllamas/stories260K.gguf
           echo "270cba1bd5109f42d03350f60406024560464db173c0e387d91f0426d3bd256d  $CULEBRA_TEST_MODEL" | sha256sum -c -
 
-      - name: Build (Llama ON)
+      # ON, not AUTO: a runner that lost the tools fails here instead of
+      # building, and passing, without the backend.
+      - name: Build (Llama ON, Vulkan ON)
         run: |
-          just dev-llama
+          just dev-llama -DCULEBRA_LLAMA_VULKAN=ON
           cmake --build build-dev-llama --target llama_smoke llama_test -j"$(nproc)"
+
+      - name: The Vulkan loader is opened, not linked
+        run: bash tools/checks/check_llama_vulkan_dynload.sh build-dev-llama
 
       - name: Report ccache stats
         run: ccache -s
@@ -421,7 +432,13 @@ jobs:
         run: ctest --test-dir build-dev-llama -R 'llama_' --no-tests=error --output-on-failure
 
       # The same file on the bytecode VM and on the LLVM lowering: same results.
+      # No Vulkan driver is listed, so a model asked for a GPU says exactly why
+      # it got none.
       - name: tests/llama on both engines
+        env:
+          VK_DRIVER_FILES: /nonexistent.json
+          VK_ICD_FILENAMES: /nonexistent.json
+          CULEBRA_TEST_GPU_REASON: no Vulkan device
         run: |
           ./build-dev-llama/culebra --vm tests/llama/test_llama.cul
           ./build-dev-llama/culebra --jit tests/llama/test_llama.cul
@@ -431,7 +448,7 @@ jobs:
       # none of them, and the binary generates with the test model. Needs the
       # AOT runtime archives, which the dev build above leaves out.
       - name: Build the AOT runtime (Llama ON)
-        run: just build-gate -DCULEBRA_ENABLE_LLAMA=ON
+        run: just build-gate -DCULEBRA_ENABLE_LLAMA=ON -DCULEBRA_LLAMA_VULKAN=ON
 
       - name: AOT axis and link gates
         run: |

@@ -50,6 +50,10 @@ static void without_a_model() {
     err.clear();
     CHECK(!L::count_tokens(id, "hi", &n, &err));
     CHECK(err == "the model is closed");
+    L::Device d;
+    err.clear();
+    CHECK(!L::device(id, &d, &err));
+    CHECK(err == "the model is closed");
     CHECK(L::n_ctx(id) == 0);
     L::close(id);  // ignored
   }
@@ -67,6 +71,11 @@ static void with_a_model(const char* path) {
     return;
   }
   CHECK(L::n_ctx(id) == 512);
+
+  // gpu: false is its own answer, whatever the machine has.
+  L::Device d;
+  CHECK(L::device(id, &d, &err));
+  CHECK(d.backend == "cpu" && d.name == "CPU" && d.reason == "gpu: false");
 
   L::Result r;
   CHECK(L::generate(id, "Say ok", fixed("ok"), nullptr, &r, &err));

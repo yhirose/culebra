@@ -46,6 +46,30 @@ fn with_a_model(path) {
   let m = Llama.load(path, n_ctx: 512, gpu: false)
   assert_eq(m.n_ctx(), 512)
 
+  # Where it runs, and why not on a GPU.
+  let d = m.device()
+  assert_eq(d.keys().sorted(), ["backend", "name", "reason"])
+  assert_eq([d.backend, d.name, d.reason], ["cpu", "CPU", "gpu: false"])
+
+  # Asked for a GPU, it is on one (reason nil) or says why not, in one of the
+  # fixed answers. CULEBRA_TEST_GPU_REASON pins which one this machine gives.
+  # Closed at once: on a machine with a GPU it holds the device and its memory.
+  let gm = Llama.load(path, n_ctx: 512)
+  let g = gm.device()
+  gm.close()
+  if g.reason == nil {
+    assert_eq(g.backend, "vulkan")
+    assert_eq(g.name.empty(), false)
+  } else {
+    assert_eq([g.backend, g.name], ["cpu", "CPU"])
+    assert_eq(["no Vulkan driver", "no Vulkan device", "built without GPU support"]
+                .contains(g.reason), true)
+  }
+  let pinned = Sys.env("CULEBRA_TEST_GPU_REASON")
+  if !pinned.empty() {
+    assert_eq(g.reason, pinned)
+  }
+
   # A result says what was written, why it ended, and how many tokens it cost.
   let r = m.generate("Say ok", grammar: only("ok"), max_tokens: 64)
   assert_eq(r.text, "ok")
@@ -175,6 +199,7 @@ fn with_a_model(path) {
   # Closed, it refuses, and closing again is fine.
   m.close()
   assert_eq(failure(|| m.generate("x")), "LlamaError: Llama: the model is closed")
+  assert_eq(failure(|| m.device()), "LlamaError: Llama: the model is closed")
   assert_eq(m.n_ctx(), 0)
   m.close()
 }

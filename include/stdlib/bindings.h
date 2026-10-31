@@ -4980,6 +4980,22 @@ inline void _jit_llama_model_n_ctx(JitValue* __ret, JitClosure*, int8_t self_tag
   *__ret = _ns_adapt::v_long(culebra::llama::n_ctx(_jit_llama_model_id(self)));
 }
 
+// {backend, name, reason}: reason is nil exactly when the model is on a GPU.
+inline void _jit_llama_model_device(JitValue* __ret, JitClosure*, int8_t self_tag,
+                                    int64_t self_data, int64_t, JitValue*) {
+  JitValue self{self_tag, self_data};
+  culebra::llama::Device d;
+  std::string err;
+  if (!culebra::llama::device(_jit_llama_model_id(self), &d, &err))
+    _jit_llama_throw(err, _jit_thread.call_line, _jit_thread.call_col);
+  auto* o = culebra_runtime_object_new();
+  _ns_adapt::set_field(o, "backend", _ns_adapt::str(d.backend));
+  _ns_adapt::set_field(o, "name", _ns_adapt::str(d.name));
+  _ns_adapt::set_field(o, "reason",
+                       d.reason.empty() ? _ns_adapt::v_nil() : _ns_adapt::str(d.reason));
+  *__ret = _ns_adapt::v_object(o);
+}
+
 inline void _jit_llama_model_close(JitValue* __ret, JitClosure*, int8_t self_tag,
                                    int64_t self_data, int64_t, JitValue*) {
   JitValue self{self_tag, self_data};
@@ -5009,6 +5025,7 @@ inline JitValue _culebra_llama_build_model_handle(int64_t id) {
   _jit_handle_bind_method(h, "count_tokens", _jit_native<_jit_llama_model_count_tokens>, 1,
                           text_meta);
   _jit_handle_bind_method(h, "n_ctx", _jit_native<_jit_llama_model_n_ctx>, 0);
+  _jit_handle_bind_method(h, "device", _jit_native<_jit_llama_model_device>, 0);
   _jit_handle_bind_method(h, "close", _jit_native<_jit_llama_model_close>, 0);
   _jit_handle_bind_method(h, "drop", _jit_native<_jit_llama_model_close>, 0);
   _jit_owned_bind_drop(h);

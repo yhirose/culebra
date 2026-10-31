@@ -9831,12 +9831,19 @@ IO.println(r.text)
 
 What it runs on: an x86-64 CPU with AVX2, BMI2, FMA and F16C (anything since
 about 2013), or Apple Silicon; on another CPU `Llama.load` answers with a
-`LlamaError` that names what is missing. This build of llama.cpp computes on the
-CPU; `gpu:` is accepted and takes effect in builds that carry a GPU backend.
+`LlamaError` that names what is missing.
+
+On Linux a model goes to the GPU through Vulkan, when the build has
+the Vulkan backend (`-DCULEBRA_LLAMA_VULKAN`, on by default where the Vulkan
+headers and `glslc` are found) and the machine has a Vulkan driver and a GPU:
+NVIDIA, AMD and Intel GPUs alike. The driver is looked for when the first model
+is loaded, so a binary with the backend starts on a machine without one and runs
+the model on the CPU. `model.device()` says which it is, and why not a GPU.
 
 `culebra build` works with it. A program that names `Llama` links llama.cpp
 statically into the binary, which adds a few megabytes; a program that does not
-carries none of it. The model file stays outside the binary.
+carries none of it. The binary runs the model on the CPU. The model file stays
+outside the binary.
 
 ### `Llama.load(path, n_ctx=2048, gpu=true, n_batch=0, n_slots=1) -> LlamaModel`
 
@@ -9904,6 +9911,25 @@ How many tokens `text` is, as this model counts them.
 
 The context size the model got, which may be larger than the `n_ctx` asked for.
 0 once the model is closed.
+
+### `model.device() -> Object`
+
+Where the model runs, decided when it was loaded:
+
+| Field | |
+|---|---|
+| `backend` | `"vulkan"` or `"cpu"` |
+| `name` | the GPU's name (`"NVIDIA GeForce RTX 3090"`), or `"CPU"` |
+| `reason` | `nil` when the model is on a GPU; otherwise why not: `"gpu: false"`, `"built without GPU support"`, `"no Vulkan driver"` (no Vulkan loader on this machine) or `"no Vulkan device"` (a loader, but no GPU it can use) |
+
+```culebra
+# doctest: skip — needs a GGUF model file and a build with Llama
+let m = Llama.load("model.gguf")
+let d = m.device()
+if d.reason != nil {
+  IO.println("running on the CPU: {d.reason}")
+}
+```
 
 ### `model.close()`
 

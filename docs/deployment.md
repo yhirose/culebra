@@ -264,7 +264,14 @@ a program that calls `Llama.load`:
 `LLM` is written over `Http`, so naming it pulls OpenSSL in as well; that is
 what `--no-tls` takes out (see below), and a program that only runs a local
 model may use it. The model file is not part of the binary: the program is
-given its path. The GPU backends are not built in this configuration.
+given its path. These binaries run the model on the CPU.
+
+The driver itself can run a model on a GPU through Vulkan
+(`-DCULEBRA_LLAMA_VULKAN`, on where the Vulkan headers and `glslc` are found).
+That backend adds about 42 MB to the driver (measured on a stripped static test
+program over the same llama.cpp release). The Vulkan loader is opened when the
+first model is loaded rather than linked, so `ldd` does not list it and the
+driver starts, and runs models on the CPU, on a machine without a GPU driver.
 
 ### Building Http without TLS
 
