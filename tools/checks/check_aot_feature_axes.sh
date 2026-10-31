@@ -277,6 +277,24 @@ expect_absent none "$openssl_syms" "OpenSSL"
 expect_absent none "$audio_syms" "raylib's audio module"
 expect_absent none ' _?culebra_preamble___DirTrait$' "the Dir trait's defaults, which no value of it can reach"
 expect_output none "none"
+# ...and its size as `culebra build` ships it (stripped), which every binary
+# carries: growth past the ceiling is a decision made here, not drift. Linux
+# x86-64 only, the CI lane the ceiling was measured on.
+if [[ "$(uname -s)" == Linux && "$(uname -m)" == x86_64 ]]; then
+  none_ceiling=654992
+  none_size=$("$bin" build "$work/none.cul" -o "$work/none-stripped" > /dev/null 2>&1 &&
+              wc -c < "$work/none-stripped" | tr -d ' ') || none_size=""
+  if [[ -z "$none_size" ]]; then
+    echo "check_aot_feature_axes FAIL: could not build and measure the stripped none" >&2
+    fail=1
+  else
+    echo "aot-feature-axes: none is $none_size bytes stripped (ceiling $none_ceiling)"
+    if (( none_size > none_ceiling )); then
+      echo "check_aot_feature_axes FAIL: none is $none_size bytes stripped, over the ceiling $none_ceiling" >&2
+      fail=1
+    fi
+  fi
+fi
 # The namespace groups (stdlib_rt.h ns_groups()): a namespace's dispatch rows
 # and adapters link only when the program names it. No axis, no choke — the
 # program object's culebra_aot_ns_groups[] is the one reference that keeps a
