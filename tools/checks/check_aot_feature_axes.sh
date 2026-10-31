@@ -58,12 +58,14 @@ work=$(mktemp -d "${TMPDIR:-/tmp}/culebra-axes.XXXXXX")
 trap 'rm -rf "$work"' EXIT
 
 fail=0
+checks=0  # counted by every expect_*, and reported on the closing line
 build() {  # build <name> <source> [extra build flags...]: binary + nm listing
   # (--keep-symbols: the default post-link strip would leave nm nothing to
   # read; which bodies got linked is the question here, not the symbol table)
   printf '%s\n' "$2" > "$work/$1.cul"
+  # `+`: bash 3.2 (macOS /bin/bash) calls an empty array unbound under set -u
   local extra=("${@:3}")
-  if ! "$bin" build --keep-symbols "${extra[@]}" "$work/$1.cul" -o "$work/$1" > "$work/$1.err" 2>&1; then
+  if ! "$bin" build --keep-symbols ${extra[@]+"${extra[@]}"} "$work/$1.cul" -o "$work/$1" > "$work/$1.err" 2>&1; then
     echo "check_aot_feature_axes FAIL: $1 did not build:" >&2
     cat "$work/$1.err" >&2
     exit 1
@@ -110,6 +112,7 @@ sym_class() {
 # patterns, or "no symbol anywhere under this namespace prefix" rather than
 # one exact function) -- anchoring those would narrow what they catch.
 expect_class() {  # expect_class <binary> <symbol-start ERE> <allowed-class ERE> <expected-desc> <why>
+  checks=$((checks + 1))
   local got
   got=$(sym_class "$1" "$2")
   if ! [[ "$got" =~ ^($3)$ ]]; then
@@ -123,6 +126,7 @@ expect_class() {  # expect_class <binary> <symbol-start ERE> <allowed-class ERE>
 # broad checks below (fmt_machinery's alternation, a bare namespace prefix
 # like ' reg::'), wrong for "does this one function exist" (use expect_class).
 expect_absent() {  # expect_absent <binary> <ERE> <why>
+  checks=$((checks + 1))
   local hits
   hits=$(grep -m 3 -E "$2" "$work/$1.nm" || true)
   if [[ -n "$hits" ]]; then
@@ -132,12 +136,14 @@ expect_absent() {  # expect_absent <binary> <ERE> <why>
   fi
 }
 expect_present() {  # expect_present <binary> <ERE> <why>
+  checks=$((checks + 1))
   if ! grep -qE "$2" "$work/$1.nm"; then
     echo "check_aot_feature_axes FAIL: $1 lacks $2 ($3)" >&2
     fail=1
   fi
 }
 expect_output() {  # expect_output <binary> <expected stdout>
+  checks=$((checks + 1))
   local got
   got=$("$work/$1")
   if [[ "$got" != "$2" ]]; then
@@ -580,4 +586,4 @@ if (( fail )); then
 EOF
   exit 1
 fi
-echo "aot-feature-axes OK (Regex / Search / Tensor / Http+TLS / Audio / __Foreign / CodeGen by axis; Proc/Canvas/PEG/Shared by namespace group, no peglib in none; groups linked only when named; no libstdc++ formatter)"
+echo "aot-feature-axes OK ($checks checks: Regex / Search / Tensor / Http+TLS / Audio / __Foreign / CodeGen by axis; Proc/Canvas/PEG/Shared by namespace group, no peglib in none; groups linked only when named; no libstdc++ formatter)"

@@ -1106,23 +1106,35 @@ _run-tests BACKEND:
     # place an AOT binary is handed arguments. Cheap, and none of them is
     # implied by the sweep, so every tier that can link runs them.
     run_aot_axes() {
+        # A check that dies on a shell error can still exit 0: macOS's bash 3.2
+        # did, and the feature axes ran nothing there for two months. So each
+        # must also print its closing OK line.
+        closes_ok() {  # closes_ok <OK line prefix> <command...>
+            local out
+            out=$("${@:2}") || exit 1
+            printf '%s\n' "$out"
+            grep -q "^$1 OK" <<< "$out" || {
+                echo "$1 ended without its OK line: it stopped partway" >&2
+                exit 1
+            }
+        }
         # The sweep above runs every binary with no arguments, so this is the
         # one place an AOT build is asked what it does with some.
-        {{nice_cmd}} bash tests/sys_argv_test.sh "$BIN" --aot || exit 1
+        closes_ok sys_argv_test {{nice_cmd}} bash tests/sys_argv_test.sh "$BIN" --aot
         # The Kauai command line as an AOT binary (about a minute to build: the
         # instruments' recordings are embedded), against `culebra play`.
         {{nice_cmd}} bash tests/kauai_cli_test.sh "$BIN" --aot || exit 1
         # The self-contained axes are silent when lost (no link error, no
         # ldd); tools/checks/check_aot_feature_axes.sh reads the linked outputs.
-        {{nice_cmd}} bash tools/checks/check_aot_feature_axes.sh "$(dirname "$BIN")" || exit 1
+        closes_ok aot-feature-axes {{nice_cmd}} bash tools/checks/check_aot_feature_axes.sh "$(dirname "$BIN")"
         # Every AOT test above links inside a build tree, where the paths a
         # fragment could bake in happen to exist. This one asserts none is
         # there to begin with — the failure only a downloaded binary sees.
-        {{nice_cmd}} bash tools/checks/check_aot_link_portability.sh "$(dirname "$BIN")" || exit 1
+        closes_ok aot-link-portability {{nice_cmd}} bash tools/checks/check_aot_link_portability.sh "$(dirname "$BIN")"
         # Losing the baked stdlib preamble is silent too (the lanes splice
         # the source again, two seconds slower per module); read it off the
         # emitted IR and the linked outputs.
-        {{nice_cmd}} bash tools/checks/check_baked_preamble.sh "$(dirname "$BIN")" || exit 1
+        closes_ok baked-preamble {{nice_cmd}} bash tools/checks/check_baked_preamble.sh "$(dirname "$BIN")"
         echo "aot axes OK (arguments, feature axes, link portability, baked preamble)"
     }
 
