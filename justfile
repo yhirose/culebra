@@ -1313,22 +1313,31 @@ _run-tests BACKEND:
     # outside its twenty; the whole sweep, in the landing gate and above,
     # still does.
     run_unit_runner_sweep() {
-        local mode="${1:-whole}" d="$job_dir/unit-${1:-whole}" want got=0 per f n
-        want=$(ls tests/*.cul | wc -l | tr -d ' ')
-        per=$want
-        [[ "$mode" == sliced ]] && per=20
+        local -a files=(tests/*.cul)
+        local per=${#files[@]}
+        [[ "${1:-whole}" == sliced ]] && per=20
+        sweep_units "tests/*.cul" "$job_dir/unit-${1:-whole}" "$per" "${files[@]}"
+    }
+
+    # `culebra test --vm` over <file...>, <per> to a process and the processes
+    # side by side. The files ran are counted too, since a runner that quietly
+    # ran nothing would exit 0 all the same.
+    sweep_units() {  # sweep_units <what> <out dir> <per> <file...>
+        local what="$1" d="$2" per="$3" want got=0 f n
+        shift 3
+        want=$#
         mkdir -p "$d"
         # stdin from /dev/null, as the xargs phases get it: test_io_streams
         # reads a non-terminal stdin to EOF, and a pipe nobody closes (an
         # editor's or agent's shell) held the sweep until its timeout.
-        printf '%s\n' tests/*.cul | xargs -n "$per" -P "$JOBS" bash -c '
+        printf '%s\n' "$@" | xargs -n "$per" -P "$JOBS" bash -c '
             d="$1"; shift
-            out="$d/$(basename "$1" .cul)"
+            out="$d/$(printf "%s" "${1%.cul}" | tr / _)"
             cul test --vm --reporter json "$@" > "$out.out" 2>&1 < /dev/null \
                 || echo "$?" > "$out.fail"
         ' _ "$d"
         for f in "$d"/*.fail; do
-            echo "culebra test: the tests/*.cul sweep failed (rc $(cat "$f"))" >&2
+            echo "culebra test: the $what sweep failed (rc $(cat "$f"))" >&2
             grep -E '"event":"(file_error|test_fail)"' "${f%.fail}.out" | tail -20 >&2 || true
             tail -3 "${f%.fail}.out" >&2
             exit 1
@@ -1338,7 +1347,7 @@ _run-tests BACKEND:
             got=$(( got + ${n:-0} ))
         done
         [[ "$got" == "$want" ]] || {
-            echo "culebra test: sweep ran the wrong file count (want $want, ran $got)" >&2
+            echo "culebra test: the $what sweep ran the wrong file count (want $want, ran $got)" >&2
             exit 1
         }
     }
@@ -1348,25 +1357,17 @@ _run-tests BACKEND:
     # The vm2gol-v2 suite had not run since the unit runner moved to the VM —
     # `culebra test` was rejecting every file with an `import` — and nothing
     # said so, because examples/ was wired into no gate at all (996a1957).
-    # Three seconds in one process, so there is no reason for that to be true.
     # These files are held to the optional-namespace rule as well
     # (check_tests_optional_ns.sh), since they run on every lane.
+    # One file to a process: kauai/'s tools and instruments made the suites
+    # 50 seconds end to end, and side by side they take as long as the
+    # slowest one (kauai/engine/test_engine.cul, 7 seconds).
     run_examples_sweep() {
-        local out rc=0 want
-        want=$(find examples kauai -name 'test_*.cul' | wc -l | tr -d ' ')
-        out=$(cul test --vm --reporter json examples kauai 2>&1 < /dev/null) || rc=$?
-        if [[ "$rc" != 0 ]]; then
-            echo "culebra test: the examples/ and kauai/ sweep failed (rc $rc)" >&2
-            printf '%s\n' "$out" | grep -E '"event":"(file_error|test_fail)"' | tail -20 >&2 || true
-            printf '%s\n' "$out" | tail -3 >&2
-            exit 1
-        fi
-        case "${out##*$'\n'}" in
-            *'"files":'"$want"',"errored_files":0'*) ;;
-            *) echo "culebra test: the examples/ and kauai/ sweep ran the wrong file count (want $want)" >&2
-               printf '%s\n' "$out" | tail -1 >&2; exit 1 ;;
-        esac
-        echo "examples sweep OK ($want suites)"
+        local -a files=()
+        local f
+        while IFS= read -r f; do files+=("$f"); done < <(find examples kauai -name 'test_*.cul' | sort)
+        sweep_units "examples/ and kauai/" "$job_dir/examples" 1 "${files[@]}"
+        echo "examples sweep OK (${#files[@]} suites)"
     }
 
     # Isolate tests live in a subdir kept out of the `tests/*.cul` vm-vs-JIT
@@ -1815,7 +1816,7 @@ _run-tests BACKEND:
       "run_culebra_test_self|culebra-test self|binary|check,dev,test|light|-|0"
       "run_unit_runner_sweep sliced|culebra-test sweep (tests/*.cul as session units, twenty to a process)|binary|check|-|-|8"
       "run_unit_runner_sweep|culebra-test sweep (tests/*.cul as session units)|binary|dev,test|light|-|11"
-      "run_examples_sweep|examples sweep (the suites under examples/ and kauai/)|binary|check,dev,test|light|-|3"
+      "run_examples_sweep|examples sweep (the suites under examples/ and kauai/)|binary|check,dev,test|light|-|8"
       "run_isolate|isolate (jit + VM)|binary|dev,test|light|-|5"
       "run_aot_hygiene|AOT hygiene (CULEBRA_HOME, cache prune, TMPDIR, webview link)|binary|test|aot|-|6"
       "run_aot_sweep sample|AOT (== vm, every tenth file)|binary|test|-|local|25"
