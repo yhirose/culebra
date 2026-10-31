@@ -4838,12 +4838,10 @@ class Compiler {
     const peg::Ast* stdlib = opts.stdlib;
     VmProgram prog;
     FnAnalysis analysis(&is_builtin_var);
-    // The core built-in traits (Stringer, Iterator's `dispose`, ...)
-    // reach interp and JIT as a synthetic module `with_builtin_traits`
-    // prepends; this lane compiles a single module, so the very same
-    // declarations run as a prologue instead. A trait declaration binds no
-    // name, so nothing of it lands in the user's scope — only in the
-    // registry a property read consults.
+    // The core built-in traits (Stringer, Iterator's `dispose`, ...) run as
+    // a prologue of the one program this lane compiles, ahead of the stdlib
+    // splice. A trait declaration binds no name, so nothing of it lands in
+    // the user's scope — only in the registry a property read consults.
     const auto* preamble = opts.builtin_traits
                                ? culebra::parse_builtin_traits_preamble().get()
                                : nullptr;

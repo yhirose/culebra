@@ -3569,19 +3569,22 @@ trait Iterable {
   return src;
 }
 
-// A built-in trait whose defaults a program should carry only if it can use
-// them (Dir's alone are a third of a built hello). The stdlib splice
-// declares it ahead of its modules, in every lane, where the program can
-// reach a default (stdlib/preamble.h, builtin_trait_unit_selected); a
-// program still reaches it the way it reaches the traits above, with no
-// import. `required` is the trait's methods without a default and `called`
-// its defaults, or empty when the library itself calls a default by name;
-// culebra_preamble_cc holds both to the declaration.
+// A built-in trait whose defaults a program should carry only if it can reach
+// one (Dir's alone are a third of a built hello). The stdlib splice declares
+// it ahead of its modules, in every lane, where the program can
+// (stdlib/preamble.h, builtin_trait_unit_selected); a program still reaches
+// it the way it reaches the traits above, with no import. A default runs
+// when something calls it by name: the program, through one of `called`, or
+// the library itself, through one of `library_calls` on a value that
+// conforms — and then wherever such a value can exist, which is where the
+// program names every method `required` lists (those without a default).
+// culebra_preamble_cc holds the lists to the declaration.
 struct BuiltinTraitUnit {
   std::string_view name;  // the splice entry, baked as culebra_preamble_<name>
   std::string_view trait;
   std::span<const std::string_view> required;
   std::span<const std::string_view> called;
+  std::span<const std::string_view> library_calls;
   std::string_view source;
 };
 
@@ -3725,22 +3728,31 @@ trait Dir {
 )culebra";
 
 inline std::span<const BuiltinTraitUnit> builtin_trait_units() {
-  // The operators read `eq` and `cmp` (the class's own, JitSpecialTable), so
-  // a default of these two is reached by a call of its name alone.
+  // The operators read a class's own `eq` and `cmp` (JitSpecialTable), so
+  // nothing but the program calls these two traits' defaults.
   static constexpr std::string_view kEqRequired[] = {"eq"};
   static constexpr std::string_view kEqCalled[] = {"neq"};
   static constexpr std::string_view kComparableRequired[] = {"cmp"};
   static constexpr std::string_view kComparableCalled[] = {"lt", "le", "gt",
                                                           "ge"};
-  // Compress.zip and server.static call `files` and `size` on a Dir.
   static constexpr std::string_view kDirRequired[] = {
       "read", "list_dir", "exists", "is_file", "is_dir"};
+  // Compress.zip asks a Dir for its files(), server.static for a size().
+  static constexpr std::string_view kDirLibraryCalls[] = {"files", "size"};
   static constexpr BuiltinTraitUnit kUnits[] = {
-      {"__EqTrait", "Eq", kEqRequired, kEqCalled, kEqTraitSource},
+      {"__EqTrait", "Eq", kEqRequired, kEqCalled, {}, kEqTraitSource},
       {"__ComparableTrait", "Comparable", kComparableRequired,
-       kComparableCalled, kComparableTraitSource},
-      {"__DirTrait", "Dir", kDirRequired, {}, kDirTraitSource}};
+       kComparableCalled, {}, kComparableTraitSource},
+      {"__DirTrait", "Dir", kDirRequired, {}, kDirLibraryCalls,
+       kDirTraitSource}};
   return kUnits;
+}
+
+// The unit that declares `trait`, or null.
+inline const BuiltinTraitUnit* builtin_trait_unit_for(std::string_view trait) {
+  for (const auto& u : builtin_trait_units())
+    if (u.trait == trait) return &u;
+  return nullptr;
 }
 
 

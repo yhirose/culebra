@@ -122,9 +122,13 @@ if [[ "$own_vm" != "['a', 'b']" ]]; then
 fi
 
 # 2. The AOT lane: the named module's entry is linked, an unnamed one is not.
-if ! "$bin" build --keep-symbols "$work/t.cul" -o "$work/t" > "$work/t.buildlog" 2>&1; then
-  echo "check_baked_preamble FAIL: culebra build failed:" >&2; cat "$work/t.buildlog" >&2; exit 1; fi
-nm "$work/t" > "$work/t.nm"
+# `culebra build --keep-symbols` of $work/<name>.cul, and its symbol listing.
+aot() {
+  if ! "$bin" build --keep-symbols "$work/$1.cul" -o "$work/$1" > "$work/$1.buildlog" 2>&1; then
+    echo "check_baked_preamble FAIL: culebra build of $1 failed:" >&2; cat "$work/$1.buildlog" >&2; exit 1; fi
+  nm "$work/$1" > "$work/$1.nm"
+}
+aot t
 if ! grep -qE ' T _?culebra_preamble_Time$' "$work/t.nm"; then
   echo "check_baked_preamble FAIL: the built binary lacks culebra_preamble_Time" >&2; fail=1; fi
 if grep -qE ' T _?culebra_preamble_Args$' "$work/t.nm"; then
@@ -132,8 +136,7 @@ if grep -qE ' T _?culebra_preamble_Args$' "$work/t.nm"; then
 aot=$("$work/t")
 if [[ "$aot" != "$vm" ]]; then
   echo "check_baked_preamble FAIL: AOT printed [$aot], executor [$vm]" >&2; fail=1; fi
-"$bin" build --keep-symbols "$work/plain.cul" -o "$work/plain" > /dev/null 2>&1
-nm "$work/plain" > "$work/plain.nm"
+aot plain
 # __Traits is the exception the grep has to make: every program registers the
 # built-in traits, so its entry is linked even here. That it IS linked is the
 # assertion — a miss means the traits went back to being lowered per program.
@@ -141,8 +144,7 @@ if ! grep -qE ' T _?culebra_preamble___Traits$' "$work/plain.nm"; then
   echo "check_baked_preamble FAIL: the built binary lacks culebra_preamble___Traits" >&2; fail=1; fi
 if grep -E ' T _?culebra_preamble_' "$work/plain.nm" | grep -v '___Traits$' >/dev/null; then
   echo "check_baked_preamble FAIL: a program naming no stdlib module links a baked preamble" >&2; fail=1; fi
-"$bin" build --keep-symbols "$work/own.cul" -o "$work/own" > /dev/null 2>&1
-nm "$work/own" > "$work/own.nm"
+aot own
 if ! grep -qE ' T _?culebra_preamble___DirTrait$' "$work/own.nm"; then
   echo "check_baked_preamble FAIL: the built binary of a class with Dir's five methods lacks culebra_preamble___DirTrait" >&2; fail=1; fi
 own_aot=$("$work/own")

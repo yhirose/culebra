@@ -2,8 +2,9 @@
 // `vm::Embed::run_source` and `culebra::JIT::run(ast)` bypass the loader,
 // and both have to see the built-in traits — otherwise `Comparable` is an
 // undefined name and its default methods (lt/le/gt/ge, Eq's neq, Dir's files)
-// are missing on the embedder API only. The ones the stdlib splice selects
-// (Dir) reach a bare AST only because each entry splices for itself.
+// are missing on the embedder API only. Eq, Comparable and Dir come with the
+// stdlib splice, so they reach a bare AST because each entry splices for
+// itself.
 // (The interp-era `culebra::interpret` lane this exercised retired with the
 // tree-walker — Phase 4 B7-d.)
 

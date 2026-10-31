@@ -991,7 +991,6 @@ int main() {
 }
 ```
 
-
 **Linking it.** The emitted object needs the archive, dead-stripping,
 and the C++ runtime — nothing else for a program that uses no heavy
 feature:

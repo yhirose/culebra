@@ -73,8 +73,9 @@ class Session {
   template <class F>
   void for_each_new_stdlib_entry(
       const std::unordered_set<std::string_view>& tokens, F&& f) {
-    for (auto t : tokens)
-      if (auto key = stdlib_selection_key(t); !key.empty()) seen_.insert(key);
+    for_each_stdlib_selection_name([&](std::string_view n) {
+      if (tokens.contains(n)) seen_.insert(n);
+    });
     for_each_stdlib_entry(select_stdlib_modules(seen_),
                           [&](std::string_view name, auto&& source) {
                             if (registered_.insert(name).second) f(source);
@@ -117,13 +118,8 @@ class Session {
     // bare loader result — the embedding lane, and `culebra test` on a file
     // that imports — gets the delta here, over the union of every module's
     // tokens, which is the one preamble the splice would have produced.
-    bool spliced = !modules.empty() &&
-                   modules.front().abs_path == kStdlibPreamblePath;
-    // The splice's own scan: every module but the one it made.
-    std::unordered_set<std::string_view> tokens;
-    for (const auto& m : modules)
-      if (m.ast && m.abs_path != kStdlibPreamblePath)
-        collect_ast_tokens(*m.ast, tokens);
+    bool spliced = stdlib_spliced(modules);
+    auto tokens = program_tokens(modules);
     if (!spliced && !run_stdlib_delta(tokens, msgs)) return false;
     return run_reported(msgs, [&] {
       auto prog =
@@ -217,7 +213,7 @@ class Session {
   // Module lists run_modules kept alive (shared_ptr'd sources + ASTs): a
   // retained program's chunks hold string_views into them.
   std::vector<std::vector<LoadedModule>> retained_modules_;
-  // Both hold the stdlib tables' own spellings (stdlib_selection_key and the
+  // Both hold the stdlib tables' own spellings (the selection names and the
   // entry names), which live as long as the process.
   std::unordered_set<std::string_view> seen_;
   std::unordered_set<std::string_view> registered_;

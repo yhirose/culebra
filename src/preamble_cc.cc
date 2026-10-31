@@ -23,15 +23,29 @@
 namespace {
 
 // Every name a compiled lane can call an entry for: the core built-in traits,
-// which every program registers, plus the splice's trait units, namespace
-// modules and bare-function groups. What CMake bakes must be exactly this
-// list.
+// which every program registers, plus every entry the splice can select (its
+// trait units, namespace modules and bare-function groups). What CMake bakes
+// must be exactly this list.
 std::vector<std::string> bakeable_names() {
   std::vector<std::string> out{culebra::kBuiltinTraitsBakedName};
-  for (const auto& u : culebra::builtin_trait_units()) out.emplace_back(u.name);
-  for (const auto& m : culebra::lazy_ns_modules()) out.emplace_back(m.name);
-  for (const auto& g : culebra::lazy_fn_groups()) out.emplace_back(g.name);
+  culebra::for_each_stdlib_entry(
+      culebra::all_stdlib_entries(),
+      [&](std::string_view name, auto&&) { out.emplace_back(name); });
   return out;
+}
+
+// The registration source for `name` alone — the same string the lane would
+// otherwise have lowered itself: the splice's contribution for one of its
+// entries, the traits prologue for the core traits.
+std::string source_for(std::string_view name) {
+  if (name == culebra::kBuiltinTraitsBakedName)
+    return std::string(culebra::builtin_traits_preamble());
+  std::string src;
+  culebra::for_each_stdlib_entry(
+      culebra::all_stdlib_entries(), [&](std::string_view n, auto&& source) {
+        if (n == name) src = source();
+      });
+  return src;
 }
 
 const culebra::BuiltinTraitUnit* trait_unit(std::string_view name) {
@@ -40,54 +54,40 @@ const culebra::BuiltinTraitUnit* trait_unit(std::string_view name) {
   return nullptr;
 }
 
-// The registration source for `name` alone — the same string the lane would
-// otherwise have lowered itself: the splice's contribution for a stdlib
-// module or trait unit (stdlib_module_source), the traits prologue for the
-// core traits.
-std::string source_for(std::string_view name) {
-  if (name == culebra::kBuiltinTraitsBakedName)
-    return std::string(culebra::builtin_traits_preamble());
-  if (const auto* u = trait_unit(name)) return culebra::stdlib_module_source(*u);
-  for (const auto& m : culebra::lazy_ns_modules())
-    if (name == m.name) return culebra::stdlib_module_source(m);
-  for (const auto& g : culebra::lazy_fn_groups())
-    if (name == g.name) return culebra::stdlib_module_source(g);
-  return {};
-}
-
-// A trait unit's declaration, held to its row in builtin_trait_units: the
-// one trait it declares, `required` as exactly its methods without a
-// default, and `called` as exactly its defaults when it lists any. The
-// selection reads the row, so a method the trait gains and the row lacks
-// would leave a default unreachable where the trait is never declared.
+// A trait unit's declaration, held to its row in builtin_trait_units: the one
+// trait it declares, `required` as exactly its methods without a default,
+// and the defaults it lists as defaults it has — all of them in `called` for
+// a unit the program alone reaches, since the selection reads the row and a
+// default missing from it could be called where the trait is never declared.
 bool unit_matches_declaration(const culebra::BuiltinTraitUnit& u,
                               const peg::Ast& ast) {
   using namespace peg::udl;
-  std::vector<const peg::Ast*> decls;
-  for (const auto& n : ast.nodes)
-    if (n->tag == "TRAIT_DECL"_) decls.push_back(n.get());
-  if (ast.tag == "TRAIT_DECL"_) decls.push_back(&ast);
   using Names = std::set<std::string_view>;
+  std::vector<const peg::Ast*> decls;
+  culebra::for_each_toplevel_statement(ast, [&](const peg::Ast& n) {
+    if (n.tag == "TRAIT_DECL"_) decls.push_back(&n);
+  });
   Names required, defaults;
-  std::string_view head;
-  for (const auto* d : decls)
-    for (const auto& part : d->nodes) {
-      if (part->tag == "TRAIT_HEAD"_) head = part->token;
-      if (part->tag != "TRAIT_METHOD"_) continue;
-      bool has_default = std::ranges::any_of(
-          part->nodes, [](const auto& p) { return p->tag == "TRAIT_BODY"_; });
-      (has_default ? defaults : required).insert(part->nodes[0]->token);
-    }
-  if (decls.size() == 1 && head == u.trait &&
+  if (decls.size() == 1)
+    culebra::for_each_trait_method(*decls[0], [&](const auto& tv) {
+      (tv.body ? defaults : required).insert(tv.name);
+    });
+  auto has_all = [&](auto list) {
+    return std::ranges::all_of(
+        list, [&](std::string_view m) { return defaults.contains(m); });
+  };
+  if (decls.size() == 1 && culebra::trait_decl_name(*decls[0]) == u.trait &&
       required == Names(u.required.begin(), u.required.end()) &&
-      (u.called.empty() ||
-       defaults == Names(u.called.begin(), u.called.end())))
+      (u.library_calls.empty()
+           ? defaults == Names(u.called.begin(), u.called.end())
+           : has_all(u.called) && has_all(u.library_calls)))
     return true;
   std::fprintf(stderr,
                "culebra_preamble_cc: trait unit '%.*s' must declare the one "
-               "trait `%.*s`, its methods without a default as `required` "
-               "and, if it lists `called`, its defaults as `called` "
-               "(shared.h builtin_trait_units)\n",
+               "trait `%.*s`, its methods without a default as `required`, "
+               "and defaults it has as `called` / `library_calls` (all of "
+               "them in `called` when `library_calls` is empty; shared.h "
+               "builtin_trait_units)\n",
                static_cast<int>(u.name.size()), u.name.data(),
                static_cast<int>(u.trait.size()), u.trait.data());
   return false;
@@ -114,7 +114,7 @@ int main(int argc, char** argv) {
     if (want == got) return 0;
     std::fprintf(stderr,
                  "culebra_preamble_cc: the baked-module list in CMakeLists.txt "
-                 "does not match lazy_ns_modules() + lazy_fn_groups():\n");
+                 "does not match the core traits + all_stdlib_entries():\n");
     for (const auto& n : want)
       if (!got.count(n)) std::fprintf(stderr, "  missing from CMake: %s\n", n.c_str());
     for (const auto& n : got)

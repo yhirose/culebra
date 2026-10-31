@@ -135,8 +135,9 @@ includes them in a fixed order and nothing else includes them at all.
    conforming value — names every method the trait requires, or a wrapped
    class has them all. It puts the declaration ahead of the modules and
    bakes it as `__<Trait>Trait`. The AOT scan reads a unit's default bodies
-   as it reads the core traits': one counts once the program names its
-   method.
+   as it reads the core traits': one counts once its method is named, by
+   the program or, for the defaults a unit lists as `library_calls`, by the
+   library.
    The executor keeps compiling the spliced source, so the symmetry check
    compares the baked code against it on every run;
    `CULEBRA_PREAMBLE_SOURCE=1` makes the lowering lanes splice again — the

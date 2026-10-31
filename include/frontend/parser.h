@@ -1996,22 +1996,33 @@ struct TraitDeclSpec {
   std::string supers;
 };
 
+// A TRAIT_DECL's head and its methods, in declaration order.
+inline TraitHead trait_decl_head(const peg::Ast& ast) {
+  return parse_trait_head(ast.nodes[first_non_decorator_index(ast)]->token);
+}
+// The declared trait's name, generics dropped (`Cmp<T>: Eq` -> `Cmp`).
+inline std::string_view trait_decl_name(const peg::Ast& ast) {
+  return parse_generic_head(trait_decl_head(ast).name).outer;
+}
+template <class F>
+inline void for_each_trait_method(const peg::Ast& ast, F&& f) {
+  for (size_t i = first_non_decorator_index(ast) + 1; i < ast.nodes.size(); i++)
+    f(view_trait_method(*ast.nodes[i]));
+}
+
 inline TraitDeclSpec trait_decl_spec(const peg::Ast& ast) {
   TraitDeclSpec spec;
-  size_t k = first_non_decorator_index(ast);
-  auto th = parse_trait_head(ast.nodes[k]->token);
-  spec.name = std::string(parse_generic_head(th.name).outer);
-  for (auto super : th.supertraits) {
+  spec.name = std::string(trait_decl_name(ast));
+  for (auto super : trait_decl_head(ast).supertraits) {
     spec.supers += std::string(super);
     spec.supers += ';';
   }
-  for (size_t i = k + 1; i < ast.nodes.size(); i++) {
-    auto tv = view_trait_method(*ast.nodes[i]);
+  for_each_trait_method(ast, [&](const TraitMethodView& tv) {
     spec.methods += std::string(tv.name);
     spec.methods += ':';
     spec.methods += std::to_string(trait_method_arity(*tv.params));
     spec.methods += tv.body ? ":1;" : ":0;";
-  }
+  });
   return spec;
 }
 

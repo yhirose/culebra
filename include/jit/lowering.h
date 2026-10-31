@@ -239,14 +239,24 @@ struct Lowering {
         builder.CreateCall(bootstrapFn, {argcArg, argvArg, mainFn}));
     verifyFunction(*cMain);
 
-    // culebra_aot_ns_groups[] / _count: one NsGroupRef {ns, group} per stdlib
-    // namespace. A named namespace's group is an external reference — the one
-    // thing that keeps its rows, signatures and adapters through the link's
-    // dead-stripping — and an unnamed one's is null, which the archive reports
-    // as a scan miss if the program reaches it anyway.
+    // An index the archive reads back: `name[]` holding `elems` and
+    // `name_count` (it declares both, bindings.h).
+    auto emit_index = [&](const char* name, const char* count, Type* elemTy,
+                          const std::vector<Constant*>& elems) {
+      auto arrTy = ArrayType::get(elemTy, elems.size());
+      new GlobalVariable(*mod, arrTy, true, GlobalValue::ExternalLinkage,
+                         ConstantArray::get(arrTy, elems), name);
+      auto i64 = builder.getInt64Ty();
+      new GlobalVariable(*mod, i64, true, GlobalValue::ExternalLinkage,
+                         ConstantInt::get(i64, elems.size()), count);
+    };
+    // culebra_aot_ns_groups: one NsGroupRef {ns, group} per stdlib namespace.
+    // A named namespace's group is an external reference — the one thing that
+    // keeps its rows, signatures and adapters through the link's
+    // dead-stripping — and an unnamed one's is null, which the archive
+    // reports as a scan miss if the program reaches it anyway.
     {
       static_assert(sizeof(NsGroupRef) == 2 * sizeof(void*));
-      auto i64 = builder.getInt64Ty();
       auto refTy = StructType::get(*ctx, {ptrTy, ptrTy});
       std::vector<Constant*> refs;
       for (const auto& g : kNsGroups) {
@@ -258,31 +268,20 @@ struct Lowering {
         refs.push_back(ConstantStruct::get(
             refTy, {builder.CreateGlobalString(g.ns, ".ns"), group}));
       }
-      auto arrTy = ArrayType::get(refTy, refs.size());
-      new GlobalVariable(*mod, arrTy, true, GlobalValue::ExternalLinkage,
-                         ConstantArray::get(arrTy, refs),
-                         "culebra_aot_ns_groups");
-      new GlobalVariable(*mod, i64, true, GlobalValue::ExternalLinkage,
-                         ConstantInt::get(i64, refs.size()),
-                         "culebra_aot_ns_group_count");
+      emit_index("culebra_aot_ns_groups", "culebra_aot_ns_group_count", refTy,
+                 refs);
     }
-    // culebra_aot_builtin_fns[] / _count: the bare builtins the program
-    // names, each an external reference to its row (builtin_fn_symbol), the
-    // one thing that keeps that row and its adapter through the link.
+    // culebra_aot_builtin_fns: the bare builtins the program names, each an
+    // external reference to its row (builtin_fn_symbol), the one thing that
+    // keeps that row and its adapter through the link.
     {
-      auto i64 = builder.getInt64Ty();
       std::vector<Constant*> rows;
       for (const auto* m : kBuiltinFns)
         if (aot_named(names, m->name))
           rows.push_back(mod->getOrInsertGlobal(builtin_fn_symbol(m->name),
                                                 builder.getInt8Ty()));
-      auto arrTy = ArrayType::get(ptrTy, rows.size());
-      new GlobalVariable(*mod, arrTy, true, GlobalValue::ExternalLinkage,
-                         ConstantArray::get(arrTy, rows),
-                         "culebra_aot_builtin_fns");
-      new GlobalVariable(*mod, i64, true, GlobalValue::ExternalLinkage,
-                         ConstantInt::get(i64, rows.size()),
-                         "culebra_aot_builtin_fn_count");
+      emit_index("culebra_aot_builtin_fns", "culebra_aot_builtin_fn_count",
+                 ptrTy, rows);
     }
 
     if (opt_level > 0) JIT::optimize_module(*mod, opt_level);

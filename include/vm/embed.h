@@ -671,8 +671,10 @@ inline Value Value::object(
 
 // ---------------------------------------------------------------------------
 // Embed — one engine session for a host. Construction installs the compiled
-// stdlib and runs the built-in traits (so `Comparable` defaults etc. resolve
-// even for a bare AST, the single_ast_smoke contract); destruction joins any
+// stdlib and runs the core built-in traits; each run then registers the stdlib
+// modules and trait units it names (Session's stdlib delta), so `Comparable`'s
+// defaults resolve even for a bare AST (the single_ast_smoke contract);
+// destruction joins any
 // isolates the session's programs left running and releases the session's
 // cells.
 // ---------------------------------------------------------------------------

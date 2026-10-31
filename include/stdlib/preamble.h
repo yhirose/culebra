@@ -199,44 +199,63 @@ inline std::string _wrap_lazy_fn_group(const LazyFnGroup& g) {
          std::string(src) + "; {" + members + "} });";
 }
 
-// A type, or a declaration head with its generic bounds and supertraits, is
-// captured as one token (`String | Dir`, `same<T: Eq>`, `Ord: Eq`); the
-// names inside it are names the program uses as much as a bare one is.
-inline bool _token_holds_type_names(const peg::Ast& ast) {
+// A token whose text is a literal's (a string, a format spec, a regex body)
+// rather than the program's own names.
+inline bool _token_is_literal_text(const peg::Ast& ast) {
   using namespace peg::udl;
   switch (ast.tag) {
-    case "TYPE_ANNOTATION"_: case "RETURN_TYPE"_: case "TYPE_PATTERN"_:
-    case "VARIANT_FIELD"_: case "CLASS_HEAD"_: case "TRAIT_HEAD"_:
+    case "STRING"_: case "INTERPOLATED_CONTENT"_: case "TRIPLE_CONTENT"_:
+    case "SPEC_TEXT"_: case "REGEX_CONTENT_SQ"_: case "REGEX_CONTENT_DQ"_:
+    case "REGEX_CONTENT_BT"_: case "REGEX_FLAGS"_:
       return true;
     default:
       return false;
   }
 }
 
-// Every token the parsed program carries, and each name inside a captured
-// type. Comments and whitespace are gone by this point, and a token is a
-// whole lexeme — which is what makes the module selection below name-exact
-// instead of substring-based. A string literal stays whole: a word in one
-// names nothing.
+// Every token the parsed program carries, and each name inside one that
+// holds several: a type or a declaration head with its bounds and
+// supertraits is captured whole (`String | Dir`, `same<T: Eq>`, `Ord: Eq`),
+// and a name in it is as much the program's as a bare one. Comments and
+// whitespace are gone by this point, and a token is a whole lexeme — which
+// is what makes the module selection below name-exact instead of
+// substring-based. A literal's text stays whole: a word in a string names
+// nothing.
 inline void collect_ast_tokens(const peg::Ast& ast,
                                std::unordered_set<std::string_view>& out) {
-  if (ast.is_token) {
-    if (ast.token.empty()) return;
-    out.insert(ast.token);
-    if (!_token_holds_type_names(ast)) return;
-    auto is_ident = [](char c) {
-      return std::isalnum(static_cast<unsigned char>(c)) || c == '_';
-    };
-    std::string_view t = ast.token;
-    for (size_t i = 0; i < t.size();) {
-      size_t j = i;
-      while (j < t.size() && is_ident(t[j])) j++;
-      if (j > i) out.insert(t.substr(i, j - i));
-      i = j + 1;
-    }
+  if (!ast.is_token) {
+    for (const auto& n : ast.nodes) collect_ast_tokens(*n, out);
     return;
   }
-  for (const auto& n : ast.nodes) collect_ast_tokens(*n, out);
+  std::string_view t = ast.token;
+  if (t.empty()) return;
+  out.insert(t);
+  if (_token_is_literal_text(ast)) return;
+  auto is_ident = [](char c) {
+    return std::isalnum(static_cast<unsigned char>(c)) || c == '_';
+  };
+  if (std::ranges::all_of(t, is_ident)) return;
+  for (size_t i = 0; i < t.size();) {
+    size_t j = i;
+    while (j < t.size() && is_ident(t[j])) j++;
+    if (j > i) out.insert(t.substr(i, j - i));
+    i = j + 1;
+  }
+}
+
+// Does the list already carry the `<stdlib>` module the splice puts in front?
+inline bool stdlib_spliced(const std::vector<LoadedModule>& modules) {
+  return !modules.empty() && modules.front().abs_path == kStdlibPreamblePath;
+}
+
+// The tokens of the program's own modules — every one but a spliced
+// `<stdlib>` — which is what the stdlib selection reads.
+inline std::unordered_set<std::string_view> program_tokens(
+    const std::vector<LoadedModule>& modules) {
+  std::unordered_set<std::string_view> names;
+  for (size_t i = stdlib_spliced(modules) ? 1 : 0; i < modules.size(); ++i)
+    if (modules[i].ast) collect_ast_tokens(*modules[i].ast, names);
+  return names;
 }
 
 // The JIT/AOT stdlib preamble: `_lazy_ns_register("Ns", fn(){...})`
@@ -260,22 +279,21 @@ inline void collect_ast_tokens(const peg::Ast& ast,
 // (one `assert_*` brings the family, as on the interp side, where
 // initialize_lazy_group binds all ten at once).
 //
-// A built-in trait unit (shared.h) comes in where the program can reach one
-// of its defaults. Naming the trait always counts. A default only a program
-// calls (`called`) is reached by a call of its name, so naming one counts.
-// One the library calls by name itself (Dir's `files`) is reached by any
-// value that conforms, so then the program counts when it names every method
-// the trait requires — a class of its own that defines them — or a wrapped
-// class has them all. That last is read off the registry, not the text: a
-// wrapped method can return a handle of a class whose namespace the program
-// never names. A name computed at run time (`obj['n' + 'eq']`) is the one
-// thing neither rule sees.
+// A built-in trait unit (shared.h) comes in where a default of it can run.
+// Naming the trait always counts, and so does naming a default the program
+// calls (`called`). A default the library calls (`library_calls`, Dir's
+// `files`) runs on any value that conforms, so for such a unit it counts
+// where one can exist: the program names every method the trait requires —
+// a class of its own that defines them — or a wrapped class has them all.
+// That last is read off the registry, not the text: a wrapped method can
+// return a handle of a class whose namespace the program never names. A name
+// computed at run time (`obj['n' + 'eq']`) is the one thing no rule sees.
 inline bool builtin_trait_unit_selected(
     const BuiltinTraitUnit& u,
     const std::unordered_set<std::string_view>& names) {
   auto named = [&](std::string_view m) { return names.contains(m); };
-  if (names.contains(u.trait)) return true;
-  if (!u.called.empty()) return std::ranges::any_of(u.called, named);
+  if (named(u.trait) || std::ranges::any_of(u.called, named)) return true;
+  if (u.library_calls.empty()) return false;
   if (std::ranges::all_of(u.required, named)) return true;
   return std::ranges::any_of(wrapped_class_names(), [&](const auto& wc) {
     return std::ranges::all_of(u.required, [&](std::string_view m) {
@@ -303,25 +321,31 @@ inline StdlibSelection select_stdlib_modules(
   return sel;
 }
 
-// The table's own spelling of `token` when a rule above reads it — a module's
-// name, a group's member, a trait unit's trait, required method or called
-// default — and empty otherwise. What a session keeps of its inputs' tokens:
-// a unit can be named across inputs (a method per line), and an embedding
-// that runs input after input must not grow with every literal it ever saw.
-inline std::string_view stdlib_selection_key(std::string_view token) {
+// Every name the two rules above read, in the tables' own (process-lifetime)
+// spelling. What a session keeps of its inputs' tokens: a unit can be named
+// across inputs (a method per line), and an embedding that runs input after
+// input must not grow with every literal it ever saw. A rule that reads a
+// new field reads it here too.
+template <class F>
+inline void for_each_stdlib_selection_name(F&& f) {
   for (const auto& u : builtin_trait_units()) {
-    if (token == u.trait) return u.trait;
-    for (auto m : u.required)
-      if (token == m) return m;
-    for (auto m : u.called)
-      if (token == m) return m;
+    f(u.trait);
+    for (auto m : u.called) f(m);
+    if (!u.library_calls.empty())
+      for (auto m : u.required) f(m);
   }
-  for (const auto& m : lazy_ns_modules())
-    if (token == m.name) return m.name;
+  for (const auto& m : lazy_ns_modules()) f(std::string_view(m.name));
   for (const auto& g : lazy_fn_groups())
-    for (auto m : g.members)
-      if (token == m) return m;
-  return {};
+    for (auto m : g.members) f(m);
+}
+
+// Every entry there is, for culebra_preamble_cc, which bakes each one.
+inline StdlibSelection all_stdlib_entries() {
+  StdlibSelection sel;
+  for (const auto& u : builtin_trait_units()) sel.traits.push_back(&u);
+  for (const auto& m : lazy_ns_modules()) sel.modules.push_back(&m);
+  for (const auto& g : lazy_fn_groups()) sel.groups.push_back(&g);
+  return sel;
 }
 
 // The registration source for one selected module — what the preamble is
@@ -488,10 +512,7 @@ inline void splice_stdlib_preamble(
   // Scan every module, not just the entry: an imported module's `Canvas`
   // (or `Time`, ...) must pull that namespace's preamble in too, even when
   // the entry module never names it.
-  std::unordered_set<std::string_view> names;
-  for (const auto& m : modules) {
-    if (m.ast) collect_ast_tokens(*m.ast, names);
-  }
+  auto names = program_tokens(modules);
   std::string preamble;
   if (baked) {
     auto plan = plan_stdlib_preamble(names);
@@ -521,8 +542,7 @@ inline void splice_stdlib_preamble(
 // units the CLI does.
 inline std::vector<LoadedModule> with_stdlib_preamble(
     std::vector<LoadedModule> modules) {
-  if (!modules.empty() && modules.front().abs_path != kStdlibPreamblePath)
-    splice_stdlib_preamble(modules);
+  if (!stdlib_spliced(modules)) splice_stdlib_preamble(modules);
   return modules;
 }
 
@@ -544,15 +564,11 @@ inline BakedResolution resolve_baked_preamble(
   // only skips the scan below in the cases plan_stdlib_preamble would answer
   // "nothing baked" for anyway, so the two cannot disagree.
   if (force_source || baked_preambles().empty() ||
-      std::getenv("CULEBRA_PREAMBLE_SOURCE") || modules.empty() ||
-      modules.front().abs_path != kStdlibPreamblePath)
+      std::getenv("CULEBRA_PREAMBLE_SOURCE") || !stdlib_spliced(modules))
     return r;
   // The same scan the splice made, over the same (user) modules: what the
   // program names decides what it registers, baked or not.
-  std::unordered_set<std::string_view> names;
-  for (size_t i = 1; i < modules.size(); ++i)
-    if (modules[i].ast) collect_ast_tokens(*modules[i].ast, names);
-  auto plan = plan_stdlib_preamble(names);
+  auto plan = plan_stdlib_preamble(program_tokens(modules));
   if (plan.baked.empty()) return r;
   r.baked = std::move(plan.baked);
   std::string rest = std::move(plan.rest);
