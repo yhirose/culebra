@@ -8968,13 +8968,14 @@ it or to any of its parts and values.
 | Function / method | Effect |
 | --- | --- |
 | `Audio.Graph.new(rate = 44100)` | an empty graph |
-| `g.wave(kind = "sine", freq = 440.0, modulators = [], feedback = 0.0)` | a wave from -1 to 1 at `freq` Hz: `"sine"`, `"saw"` or `"square"` (their jumps smoothed, so little folds back from above half the rate), or `"triangle"`. The sum of the `modulators` (parts made before it) moves its phase, in radians, and so does `feedback` times the mean of its own last two samples: with sines, FM as a DX7 makes it. An index is a `gain` between a modulator and the wave it moves |
+| `g.wave(kind = "sine", freq = 440.0, modulators = [], feedback = 0.0, phase = 0.0)` | a wave from -1 to 1 at `freq` Hz, starting `phase` radians on: `"sine"`, `"saw"` or `"square"` (their jumps smoothed, so little folds back from above half the rate), or `"triangle"`. The sum of the `modulators` (parts made before it) moves its phase, in radians, and so does `feedback` times the mean of its own last two samples: with sines, FM as a DX7 makes it. An index is a `gain` between a modulator and the wave it moves |
 | `g.noise(seed = 1)` | white noise from -1 to 1, the same from the same `seed` |
 | `g.filter(kind, input, cutoff = 1000.0, q = 0.707)` | `input` through `Audio.filter`'s filter |
 | `g.gain(input, gain = 1.0)` | `input` times `gain` |
 | `g.mix(inputs: Array, gain = 1.0)` | the `inputs` added together, times `gain` |
 | `g.resonate(input, modes: Array, dry = 0.0)` | `input` through `Audio.resonate`'s bank of resonances |
 | `g.pluck(input, freq = 220.0, ring = 2.0)` | `Audio.pluck`'s string, `input` added into it as a strike is |
+| `g.delay(input, time = 0.0, modulators = [])` | `input` as it was `time` seconds before, read between two samples in a straight line (silence before the start). The sum of the `modulators` (parts made before it) adds to the time, in seconds; the time they move it to is held from 0 to 1. A slow wave as a modulator makes a chorus, as Web Audio wires an oscillator to a `DelayNode`'s `delayTime` |
 | `g.output(part)` | the part the graph plays (silence until there is one) |
 | `g.render(seconds) -> Array` | the graph's first `seconds`, worked out now from its start |
 | `g.play()` | play the graph from its start (again, if it is playing) |
@@ -8982,8 +8983,8 @@ it or to any of its parts and values.
 | `g.now() -> Float` | where on the graph's clock a change made now lands; `0.0` when it is not playing |
 
 What moves in a part is a value: a wave's `freq` and `feedback`, a filter's
-`cutoff`, a gain's `gain`, and a string's `freq` and `ring`, each a field of
-the part. A
+`cutoff`, a gain's `gain`, a string's `freq` and `ring`, and a delay's `time`,
+each a field of the part. A
 value is what the part was made with until its first change, and changes are
 scheduled on the graph's clock, in seconds from its start:
 
@@ -9008,7 +9009,8 @@ notes can be scheduled ahead, as `Audio.Kauai` schedules its own.
 A kind other than those named, a part from another graph, a value out of
 range (a wave's freq below 0 or not below half the rate, a feedback below 0
 or not a finite number, a cutoff not above 0 and below half the rate, a gain that is not a finite number, a string's
-freq below 20 Hz or not below half the rate, a ring not above 0), a time
+freq below 20 Hz or not below half the rate, a ring not above 0, a delay's
+time below 0 or above 1), a wave's phase that is not a finite number, a time
 below 0, or a `q` not above 0 raises `ValueError`, and so does a mode as
 `Audio.resonate` refuses one; an input that is not a part of a graph, or a
 mode that is not an object of three numbers, raises `TypeError`. A graph
@@ -9042,6 +9044,17 @@ let op1 = fm.wave("sine", freq: 220.0, feedback: 0.5)
 let op2 = fm.wave("sine", freq: 220.0, modulators: [fm.gain(op1, 2.0)])
 fm.output(fm.gain(op2, 0.5))
 println(fm.render(0.1).size())  # => 4410
+
+# A chorus: three copies of a saw, each delayed 15 ms give or take 3 ms by a
+# slow sine of its own, the three sines a third of a turn apart.
+let ch = Audio.Graph.new()
+let saw2 = ch.wave("saw", freq: 220.0)
+let copies = iota(3).map(fn (k) {
+  let lfo = ch.wave("sine", freq: 0.6, phase: 2.0 * Math.pi * k / 3.0)
+  ch.delay(saw2, 0.015, modulators: [ch.gain(lfo, 0.003)])
+})
+ch.output(ch.mix([saw2, ...copies], gain: 0.25))
+println(ch.render(0.1).size())  # => 4410
 ```
 
 ### Capture

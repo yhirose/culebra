@@ -877,7 +877,7 @@ from a signature produces code that lints and does not run.
 | `StateMachine` | 8 | hierarchical state machine, with a text DSL |
 | `FST` | 14 | compiled read-only dictionary: prefix, predictive and fuzzy search |
 | `Search` | 9 | full-text index over your own documents, ranked |
-| `Audio` | 68 | sound for any program, with or without a window: WASM-4 tones, samples, streamed music, synthesised PCM, the microphone |
+| `Audio` | 69 | sound for any program, with or without a window: WASM-4 tones, samples, streamed music, synthesised PCM, the microphone |
 | `LLM` | 15 | a client for LLMs: one step with a provider (the Messages API or Chat Completions), a conversation that runs your functions as tools, or a request as it is |
 | `Llama` | 8 | a model run in this process: load a GGUF file, then `generate` or `chat` (a build option) |
 

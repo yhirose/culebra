@@ -6107,6 +6107,9 @@ inline const char* _ns_audio_graph_bad_value(culebra::_audio_detail::PartKind ki
                    ? nullptr
                    : "Audio.Graph: a string's freq is 20 or more and below half the rate";
       return value == 1 && v > 0 && std::isfinite(v) ? nullptr : "Audio.Graph: a string's ring is above 0";
+    case ad::PartKind::Delay:
+      return value == 0 && v >= 0 && v <= ad::kGraphDelayLongest ? nullptr
+                                                                 : "Audio.Graph: a delay's time is from 0 to 1";
     default:
       return "Audio.Graph: that part has no value to change";
   }
@@ -6125,26 +6128,33 @@ inline JitValue _ns_audio_graph_new(JitValue* a, int64_t) {
   ad::graph_defs().try_emplace(id, rate);
   return _ns_adapt::v_long(id);
 }
-// A part of `family` ("wave", "noise", "filter", "gain", "resonate" or
-// "pluck"), `kind` naming the wave or the filter, taking in `inputs` (parts
-// made before it; a wave's move its phase), set up by the numbers `options`:
-// a wave's freq and feedback, a noise's seed, a filter's cutoff and q, a
-// gain's gain, a resonance's dry and modes, a string's freq and ring.
+// A part of `family` ("wave", "noise", "filter", "gain", "resonate", "pluck"
+// or "delay"), `kind` naming the wave or the filter, wired by `wires`, two
+// lists of parts made before it: those it takes in and those that move it (a
+// wave's phase, a delay's time). It is set up by the numbers `options`: a
+// wave's freq, feedback and phase, a noise's seed, a filter's cutoff and q, a
+// gain's gain, a resonance's dry and modes, a string's freq and ring, a
+// delay's time.
 inline JitValue _ns_audio_graph_part(JitValue* a, int64_t) {
   namespace ad = culebra::_audio_detail;
   auto& g = _ns_audio_graph(a[0]);
   auto family = _ns_adapt::take_sv(a[1]);
   auto kind = _ns_adapt::take_sv(a[2]);
+  constexpr const char* kWiresError = "type error: an Audio.Graph part takes in parts of its graph";
+  auto* wires = _ns_adapt::take_array(a[3]);
+  if (!wires || wires->size != 2) culebra::throw_runtime_error_at("TypeError", kWiresError, 0, 0);
   std::vector<double> ins, opt;
-  _ns_audio_numbers(a[3], ins, "type error: an Audio.Graph part takes in parts of its graph");
+  std::vector<int> inputs, modulators;
+  for (auto [k, into] : {std::pair{size_t{0}, &inputs}, std::pair{size_t{1}, &modulators}}) {
+    _ns_audio_numbers(wires->items[k], ins, kWiresError);
+    for (double p : ins) into->push_back(_ns_audio_graph_index(g, p));
+  }
   _ns_audio_numbers(a[4], opt, "type error: an Audio.Graph part is set up by numbers");
-  std::vector<int> inputs;
-  for (double k : ins) inputs.push_back(_ns_audio_graph_index(g, k));
   double rate = g.rate();
   // Each family and the options it takes, in number; a resonance takes its
   // dry and then three a mode (-1 here).
   static constexpr std::pair<std::string_view, int> kFamilies[] = {
-      {"wave", 2}, {"noise", 1}, {"filter", 2}, {"gain", 1}, {"resonate", -1}, {"pluck", 2}};
+      {"wave", 3}, {"noise", 1}, {"filter", 2}, {"gain", 1}, {"resonate", -1}, {"pluck", 2}, {"delay", 1}};
   auto fam = std::ranges::find(kFamilies, family, &std::pair<std::string_view, int>::first);
   if (fam == std::end(kFamilies)) {
     auto message = culebra::format("Audio.Graph: no part {}", family);
@@ -6157,14 +6167,17 @@ inline JitValue _ns_audio_graph_part(JitValue* a, int64_t) {
   auto made = [&](ad::PartKind k, decltype(ad::GraphPart::processor) proc, double v0 = 0, double v1 = 0) {
     for (int value = 0; value < ad::value_count(k); value++)
       if (auto* bad = _ns_audio_graph_bad_value(k, rate, value, value == 0 ? v0 : v1)) _ns_audio_fail(bad);
-    return _ns_adapt::v_long(g.add(k, std::move(inputs), std::move(proc), v0, v1));
+    return _ns_adapt::v_long(g.add(k, std::move(inputs), std::move(modulators), std::move(proc), v0, v1));
   };
   if (family == "wave") {
     static constexpr std::pair<std::string_view, ad::WaveKind> kWaves[] = {
         {"sine", ad::WaveKind::Sine}, {"saw", ad::WaveKind::Saw},
         {"square", ad::WaveKind::Square}, {"triangle", ad::WaveKind::Triangle}};
+    if (!std::isfinite(opt[2])) _ns_audio_fail("Audio.Graph: a wave's phase is a finite number");
+    double turns = opt[2] / (2.0 * std::numbers::pi);
     for (auto [name, w] : kWaves)
-      if (kind == name) return made(ad::PartKind::Wave, ad::Oscillator{w}, opt[0], opt[1]);
+      if (kind == name)
+        return made(ad::PartKind::Wave, ad::Oscillator{w, turns - std::floor(turns)}, opt[0], opt[1]);
     auto message = culebra::format("Audio.Graph: a wave is \"sine\", \"saw\", \"square\" or \"triangle\", not {}", kind);
     _ns_audio_fail(message.c_str());
   }
@@ -6181,6 +6194,10 @@ inline JitValue _ns_audio_graph_part(JitValue* a, int64_t) {
     _ns_audio_check_modes(opt.data() + 1, (opt.size() - 1) / 3, rate, "Audio.Graph");
     return made(ad::PartKind::Resonate,
                 ad::Resonance(opt.data() + 1, static_cast<int64_t>((opt.size() - 1) / 3), opt[0], rate));
+  }
+  if (family == "delay") {
+    auto longest = static_cast<size_t>(std::ceil(ad::kGraphDelayLongest * rate));
+    return made(ad::PartKind::Delay, ad::DelayLine(longest), opt[0]);
   }
   // pluck
   int64_t size = ad::PluckString::loop_length(ad::kGraphPluckLowest, rate) + 1;

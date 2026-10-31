@@ -1563,7 +1563,7 @@ inline constexpr CanonParam kCanonParams_Audio_native[] = {
   {"id", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
   {"family", false, false, false, false, false, "String", CanonDefault::None, 0, {}},
   {"kind", false, false, false, false, false, "String", CanonDefault::None, 0, {}},
-  {"inputs", false, false, false, false, false, "Array", CanonDefault::None, 0, {}},
+  {"wires", false, false, false, false, false, "Array", CanonDefault::None, 0, {}},
   {"options", false, false, false, false, false, "Array", CanonDefault::None, 0, {}},
   // 115: _Audio.graph_output
   {"id", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},

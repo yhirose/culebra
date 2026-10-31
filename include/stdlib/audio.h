@@ -1324,7 +1324,8 @@ inline double poly_blep(double t, double dt) {
 // little of it folds back from above half the rate (polyBLEP), or a triangle.
 // `mod` radians move its phase for a sample (the parts that modulate it), and
 // so do `feedback` times the mean of its last two outputs (as the DX7's
-// operator feeds itself); the phase it keeps runs on at `freq` regardless.
+// operator feeds itself); the phase it keeps runs on at `freq` regardless,
+// from `phase` (in turns) at the start.
 struct Oscillator {
   WaveKind kind;
   double phase = 0;
@@ -1351,10 +1352,34 @@ struct Oscillator {
   }
 };
 
-enum class PartKind { Wave, Noise, Filter, Gain, Resonate, Pluck };
+// What went in `samples` samples ago, read between two samples in a straight
+// line so the time may move smoothly; held from 0 to the longest the line
+// keeps.
+class DelayLine {
+ public:
+  explicit DelayLine(size_t longest) : buf_(longest + 2, 0.0) {}
+  double step(double x, double samples) {
+    const size_t size = buf_.size();
+    buf_[w_] = x;
+    samples = std::clamp(samples, 0.0, static_cast<double>(size - 2));
+    double r = static_cast<double>(w_) - samples;
+    if (r < 0) r += static_cast<double>(size);
+    const auto i = static_cast<size_t>(r);
+    const double frac = r - static_cast<double>(i);
+    const double y = buf_[i] + (buf_[(i + 1) % size] - buf_[i]) * frac;
+    w_ = (w_ + 1) % size;
+    return y;
+  }
+
+ private:
+  std::vector<double> buf_;
+  size_t w_ = 0;
+};
+
+enum class PartKind { Wave, Noise, Filter, Gain, Resonate, Pluck, Delay };
 
 // How many values a part of `kind` reads: a wave's freq and feedback, a
-// filter's cutoff, a gain's gain, a string's freq and ring.
+// filter's cutoff, a gain's gain, a string's freq and ring, a delay's time.
 inline int value_count(PartKind kind) {
   switch (kind) {
     case PartKind::Noise:
@@ -1368,6 +1393,9 @@ inline int value_count(PartKind kind) {
 inline constexpr int kGraphBlock = 128;
 // The lowest a graph's string is tuned, which sizes its loop.
 inline constexpr double kGraphPluckLowest = 20.0;
+// The longest a graph's delay holds what went in, in seconds (Web Audio's
+// DelayNode's default).
+inline constexpr double kGraphDelayLongest = 1.0;
 // How many graphs play at once: the mixer's list of them never grows.
 inline constexpr size_t kGraphsPlaying = 64;
 // Room for changes a copy being played makes in each value at the start, on
@@ -1376,14 +1404,16 @@ inline constexpr size_t kGraphLiveRoom = 256;
 
 struct GraphPart {
   PartKind kind;
-  std::vector<int> inputs;  // parts made before it, added together
-  Param values[2];          // a wave's freq and feedback, a filter's cutoff, a gain's gain, a string's freq and ring
-  std::variant<std::monostate, Oscillator, Noise, Svf, Resonance, PluckString> processor;
+  std::vector<int> inputs;       // parts made before it, added together
+  std::vector<int> modulators;   // parts made before it that move it: a wave's phase, a delay's time
+  Param values[2];               // a wave's freq and feedback, a filter's cutoff, a gain's gain, a string's freq and ring, a delay's time
+  std::variant<std::monostate, Oscillator, Noise, Svf, Resonance, PluckString, DelayLine> processor;
   double out[kGraphBlock] = {};
 };
 
-// Parts wired together, each reading the sum of the parts it takes in (made
-// before it); what the graph answers is one part's. Every part and value is
+// Parts wired together, each reading the sum of the parts it takes in, and
+// the sum of those that move it (all made before it); what the graph answers
+// is one part's. Every part and value is
 // worked out a sample at a time, in blocks that fall at the same samples
 // however the samples are asked for, so a graph played and a graph rendered
 // answer the same. The graph a program builds is never worked out itself:
@@ -1395,9 +1425,10 @@ class Graph {
   size_t size() const { return parts_.size(); }
   PartKind kind(int part) const { return parts_[static_cast<size_t>(part)].kind; }
 
-  int add(PartKind kind, std::vector<int> inputs, decltype(GraphPart::processor) processor,
-          double rest0 = 0, double rest1 = 0) {
-    parts_.push_back(GraphPart{kind, std::move(inputs), {Param(rest0), Param(rest1)}, std::move(processor)});
+  int add(PartKind kind, std::vector<int> inputs, std::vector<int> modulators,
+          decltype(GraphPart::processor) processor, double rest0 = 0, double rest1 = 0) {
+    parts_.push_back(GraphPart{kind, std::move(inputs), std::move(modulators), {Param(rest0), Param(rest1)},
+                               std::move(processor)});
     return static_cast<int>(parts_.size()) - 1;
   }
   void output(int part) { out_ = part; }
@@ -1434,11 +1465,15 @@ class Graph {
 
  private:
   void block(int n) {
-    double in[kGraphBlock], v0[kGraphBlock], v1[kGraphBlock];
+    double in[kGraphBlock], mod[kGraphBlock], v0[kGraphBlock], v1[kGraphBlock];
+    auto sum = [&](const std::vector<int>& from, double* into) {
+      std::fill(into, into + n, 0.0);
+      for (int k : from)
+        for (int i = 0; i < n; i++) into[i] += parts_[static_cast<size_t>(k)].out[i];
+    };
     for (auto& p : parts_) {
-      std::fill(in, in + n, 0.0);
-      for (int k : p.inputs)
-        for (int i = 0; i < n; i++) in[i] += parts_[static_cast<size_t>(k)].out[i];
+      sum(p.inputs, in);
+      sum(p.modulators, mod);
       if (value_count(p.kind) > 0)
         for (int i = 0; i < n; i++) v0[i] = p.values[0].at(static_cast<double>(pos_ + i) / rate_);
       if (value_count(p.kind) > 1)
@@ -1446,7 +1481,7 @@ class Graph {
       switch (p.kind) {
         case PartKind::Wave: {
           auto& w = std::get<Oscillator>(p.processor);
-          for (int i = 0; i < n; i++) p.out[i] = w.step(v0[i], rate_, in[i], v1[i]);
+          for (int i = 0; i < n; i++) p.out[i] = w.step(v0[i], rate_, mod[i], v1[i]);
           break;
         }
         case PartKind::Noise: {
@@ -1476,6 +1511,11 @@ class Graph {
             s.tune(v0[i], v1[i]);
             p.out[i] = s.step(in[i]);
           }
+          break;
+        }
+        case PartKind::Delay: {
+          auto& d = std::get<DelayLine>(p.processor);
+          for (int i = 0; i < n; i++) p.out[i] = d.step(in[i], (v0[i] + mod[i]) * rate_);
           break;
         }
       }

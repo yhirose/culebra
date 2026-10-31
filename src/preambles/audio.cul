@@ -208,13 +208,14 @@ let _audio_module = fn () {
 
   # A part of a graph, which keeps its graph as an AudioGraphValue does.
   # What moves in it is an AudioGraphValue: a wave's freq and feedback, a
-  # filter's cutoff, a gain's gain, a string's freq and ring.
+  # filter's cutoff, a gain's gain, a string's freq and ring, a delay's time.
   class AudioGraphPart {
     freq = nil
     feedback = nil
     cutoff = nil
     gain = nil
     ring = nil
+    time = nil
     new(graph, index: Long) {
       @_graph = graph
       @_index = index
@@ -228,26 +229,30 @@ let _audio_module = fn () {
     new(rate: Long | Float = 44100) {
       @_id = _Audio.graph_new(rate)
     }
-    _part(family: String, kind: String, inputs: Array, options: Array) {
-      for p in inputs {
-        if class_of(p) != AudioGraphPart {
-          __raise(
-            "TypeError",
-            "type error: parameter 'inputs' expects an Array of AudioGraphPart",
-          )
-        }
-        if p._graph._id != @_id {
-          __raise(
-            "ValueError",
-            "Audio.Graph: a part takes in parts of its own graph",
-          )
+    # `wires`: [parameter name, parts] for the parts the part takes in and
+    # for those that move it.
+    _part(family: String, kind: String, wires: Array, options: Array) {
+      for (name, parts) in wires {
+        for p in parts {
+          if class_of(p) != AudioGraphPart {
+            __raise(
+              "TypeError",
+              "type error: parameter '{name}' expects an Array of AudioGraphPart",
+            )
+          }
+          if p._graph._id != @_id {
+            __raise(
+              "ValueError",
+              "Audio.Graph: a part takes in parts of its own graph",
+            )
+          }
         }
       }
       let n = _Audio.graph_part(
         @_id,
         family,
         kind,
-        inputs.map(|p| p._index),
+        wires.map(|w| w[1].map(|p| p._index)),
         options,
       )
       AudioGraphPart.new(self, n)
@@ -260,14 +265,15 @@ let _audio_module = fn () {
       freq: Long | Float = 440.0,
       modulators: Array = [],
       feedback: Long | Float = 0.0,
+      phase: Long | Float = 0.0,
     ) {
-      let p = @_part("wave", kind, modulators, [freq, feedback])
+      let p = @_part("wave", kind, [("inputs", []), ("modulators", modulators)], [freq, feedback, phase])
       p.freq = @_value(p, 0)
       p.feedback = @_value(p, 1)
       p
     }
     noise(seed: Long = 1) {
-      @_part("noise", "", [], [seed])
+      @_part("noise", "", [("inputs", []), ("modulators", [])], [seed])
     }
     filter(
       kind: String,
@@ -275,17 +281,17 @@ let _audio_module = fn () {
       cutoff: Long | Float = 1000.0,
       q: Long | Float = 0.707,
     ) {
-      let p = @_part("filter", kind, [input], [cutoff, q])
+      let p = @_part("filter", kind, [("input", [input]), ("modulators", [])], [cutoff, q])
       p.cutoff = @_value(p, 0)
       p
     }
     gain(input: AudioGraphPart, gain: Long | Float = 1.0) {
-      let p = @_part("gain", "", [input], [gain])
+      let p = @_part("gain", "", [("input", [input]), ("modulators", [])], [gain])
       p.gain = @_value(p, 0)
       p
     }
     mix(inputs: Array, gain: Long | Float = 1.0) {
-      let p = @_part("gain", "", inputs, [gain])
+      let p = @_part("gain", "", [("inputs", inputs), ("modulators", [])], [gain])
       p.gain = @_value(p, 0)
       p
     }
@@ -293,7 +299,7 @@ let _audio_module = fn () {
       @_part(
         "resonate",
         "",
-        [input],
+        [("input", [input]), ("modulators", [])],
         [dry, ...flat_modes(modes, "Audio.Graph.resonate")],
       )
     }
@@ -302,9 +308,23 @@ let _audio_module = fn () {
       freq: Long | Float = 220.0,
       ring: Long | Float = 2.0,
     ) {
-      let p = @_part("pluck", "", [input], [freq, ring])
+      let p = @_part("pluck", "", [("input", [input]), ("modulators", [])], [freq, ring])
       p.freq = @_value(p, 0)
       p.ring = @_value(p, 1)
+      p
+    }
+    delay(
+      input: AudioGraphPart,
+      time: Long | Float = 0.0,
+      modulators: Array = [],
+    ) {
+      let p = @_part(
+        "delay",
+        "",
+        [("input", [input]), ("modulators", modulators)],
+        [time],
+      )
+      p.time = @_value(p, 0)
       p
     }
     output(part: AudioGraphPart) {
