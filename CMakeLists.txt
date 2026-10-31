@@ -1712,6 +1712,9 @@ if(_tensor_cuda)
     COMMAND ${CULEBRA_NVCC} ${_nvcc_args}
             ${_tl_dir}/kernels/tensorlib_cuda.cu -o ${_tl_ptx}
     DEPENDS ${_tl_dir}/kernels/tensorlib_cuda.cu
+            ${_tl_dir}/kernels/cuda_core.cuh
+            ${_tl_dir}/kernels/cuda_nn.cuh
+            ${_tl_dir}/kernels/cuda_llm.cuh
     COMMENT "nvcc: tensorlib_cuda.cu -> PTX (${CULEBRA_TENSOR_CUDA_PTX_ARCH})"
     VERBATIM)
   add_custom_command(OUTPUT ${_tl_ptx_inc}
