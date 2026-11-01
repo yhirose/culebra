@@ -43,6 +43,11 @@ REFS="${REFS:-}"
 tag="${STRESS:+ (GC_STRESS)}${REFS:+ (GC_REFS)}"
 cd "$(dirname "$0")"
 
+# A Windows binary ends its lines with CRLF; the frozen outputs have LF.
+nocr() {
+  if [ "${OS:-}" = Windows_NT ]; then printf '%s' "${1//$'\r'/}"; else printf '%s' "$1"; fi
+}
+
 if [ "$FREEZE" = 1 ]; then
   # Re-freeze the named cases (default: all) from a --vm run, then assert
   # --jit reproduces every frozen file — the two consumers must agree on the
@@ -54,12 +59,14 @@ if [ "$FREEZE" = 1 ]; then
     f=$(basename "$f")
     n="${f%.cul}"
     out="$("$BIN" --vm "$f" 2>&1)"; rc=$?
+    out=$(nocr "$out")
     printf '%s' "$out" > "expected/$n.out"
     grep -v "^$n	" expected/rc.tsv 2>/dev/null > expected/rc.tsv.new || true
     printf '%s\t%s\n' "$n" "$rc" >> expected/rc.tsv.new
     LC_ALL=C sort expected/rc.tsv.new > expected/rc.tsv
     rm -f expected/rc.tsv.new
     out="$("$BIN" --jit "$f" 2>&1)"; rc_j=$?
+    out=$(nocr "$out")
     if [ "$rc_j" != "$rc" ] || ! printf '%s' "$out" | cmp -s - "expected/$n.out"; then
       echo "FREEZE-FAIL $f: --jit disagrees with the fresh --vm expectation" >&2
       exit 1
@@ -97,6 +104,7 @@ check_one() {
   else
     b="$(env ${gc_env[@]+"${gc_env[@]}"} "$BIN" "$lane" "$n.cul" 2>&1)"; b_rc=$?
   fi
+  b=$(nocr "$b")
   if [ "$b_rc" = "$want_rc" ] && printf '%s' "$b" | cmp -s - "expected/$n.out"; then
     echo "OK   $n.cul $lane$tag" > "$log"
   else
@@ -107,7 +115,7 @@ check_one() {
     : > "$work/$n.${lane#--}.fail"
   fi
 }
-export -f check_one
+export -f check_one nocr
 export work BIN STRESS REFS tag
 
 # What the sweep cannot answer per lane: a case with no frozen expectation, and
