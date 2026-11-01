@@ -136,7 +136,7 @@ MSYS2ツールチェーンを必要とします。[`CONTRIBUTING.md`](../CONTRIB
 | `--emit-llvm` | プログラムのLLVM IRも書き出す（デバッグ用） |
 | `--keep-symbols` | デバッグ用にシンボルテーブルを出力に残す（詳細は後述の[シンボルの除去](#シンボルの除去)を参照） |
 | `--no-tls` | `Http`をOpenSSL抜きでリンクする。約3.9 MB小さくなるが、`https://`と`wss://`は`HttpError`になる（後述の[TLS抜きでHttpをビルドする](#tls抜きでhttpをビルドする)を参照） |
-| `--llama-gpu` | `Llama`をVulkanのバックエンドつきでリンクし、GPUがある機械ではモデルをGPUで動かす。約42MB大きくなる。`Llama`を使わないプログラムには使えない |
+| `--llama-cpu` | `Llama`をGPUのバックエンドなしでリンクする。約42MB小さくなるが、モデルはCPUだけで動く（後述の[モデルを動かすバイナリ](#モデルを動かすバイナリ)を参照） |
 | `--target=<triple>` | 指定LLVM triple向けにクロスコンパイル |
 | `--sysroot=<path>` | `cc`の`--sysroot=`にそのまま渡す |
 | `--rt-lib=<path>` | ランタイムアーカイブのパスを上書き（cross-compileでは必須） |
@@ -232,15 +232,24 @@ CIがビルドしたLinux x86-64のCPUのみで、`Llama.load`を呼ぶプログ
 
 `LLM`は`Http`の上に書かれているので、名指しするとOpenSSLも入ります。`--no-tls`が外すのはそれで
 （後述）、ローカルのモデルだけを動かすプログラムなら使えます。モデルのファイルはバイナリに入りません。
-プログラムにはそのパスを渡します。これらのバイナリはモデルをCPUで動かします。`--llama-gpu`を付けると
-Vulkanのバックエンドもリンクされ（約42MB増えます）、バイナリは、下のドライバと同じく、Vulkanのドライバが
-ある機械ではGPUを使います。
+プログラムにはそのパスを渡します。
 
-ドライバ自身は、Vulkanを通してモデルをGPUで動かせます（`-DCULEBRA_LLAMA_VULKAN`。Vulkanのヘッダー、
-`glslc`、SPIR-Vのヘッダーが見つかれば入ります）。このバックエンドでドライバは約42MB大きくなります（同じllama.cppのリリースで
-作った、stripした静的なテストプログラムで測った値）。Vulkanのローダーはリンクせず、最初のモデルを読み込む
-ときに開くので、`ldd`には現れません。GPUのドライバがない機械でもドライバは起動し、モデルをCPUで動かします。
-GPUを使うために機械に要るものは[`model.device()`](stdlib.ja.md#modeldevice---object)にあります。
+ドライバは、Vulkanを通してモデルをGPUで動かすこともできます（`-DCULEBRA_LLAMA_VULKAN`。Vulkanのヘッダー、
+`glslc`、SPIR-Vのヘッダーが見つかれば入ります）。Vulkanのローダーはリンクせず、最初のモデルを読み込む
+ときに開くので、`ldd`には現れません。バックエンドを持つバイナリも、GPUのドライバがない機械で起動し、
+モデルをCPUで動かします。GPUを使うために機械に要るものは[`model.device()`](stdlib.ja.md#modeldevice---object)にあります。
+
+モデルはGPUがないと遅いので、このドライバがビルドするプログラムにもバックエンドが入ります。上の`Llama`を
+名指しするプログラムは、6.5MBではなく48.9MBになります。CPUだけのものは`--llama-cpu`で作れます。
+Linuxのリリース構成（`-O3`、LTO）で測った値です。
+
+| ドライバ | サイズ | 起動時間（`print("hello")`） |
+|---|---|---|
+| Llamaなし | 111.9 MB | 5.6 ms |
+| Llama入り（CPU） | 122.0 MB | 5.9 ms |
+| LlamaとVulkanのバックエンド入り | 177.9 MB | 6.2 ms |
+
+`Llama`を名指ししないプログラムの大きさは、3つとも同じです。
 
 ### TLS抜きでHttpをビルドする
 

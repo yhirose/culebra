@@ -1374,7 +1374,7 @@ inline const auto FS = ::cpp_embedlib::EmbeddedFS{_entries};
   # llama.cpp anchor). Force-loaded only when the AST scan reports Llama use;
   # the statics it needs, and the GPU half its bodies call by name, ride
   # _rt_embed_extern / _rt_embed_files and CULEBRA_LLAMA_LINK (or, for
-  # --llama-gpu, CULEBRA_LLAMA_GPU_LINK).
+  # --llama-cpu, CULEBRA_LLAMA_CPU_LINK).
   if(CULEBRA_ENABLE_LLAMA)
     add_library(culebra_rt_llama STATIC ./src/runtime/culebra_rt_llama.cc)
     target_compile_features(culebra_rt_llama PRIVATE cxx_std_23)
@@ -1595,7 +1595,7 @@ inline const auto FS = ::cpp_embedlib::EmbeddedFS{_entries};
     list(APPEND _rt_embed_extern "${_raylib_a}" "${_sdl_a}")
   endif()
   if(CULEBRA_ENABLE_LLAMA)
-    # The Vulkan backend too, for `--llama-gpu` ("" without it).
+    # The Vulkan backend too, which the default link names ("" without it).
     list(APPEND _rt_embed_extern ${_llama_aot_a} ${_llama_vulkan_a})
   endif()
   # Every feature archive is force-loaded next to the core archive, so the two
@@ -1885,14 +1885,10 @@ endif()
 if(CULEBRA_ENABLE_JIT)
   if(CULEBRA_ENABLE_LLAMA)
     target_compile_definitions(culebra PRIVATE CULEBRA_LLAMA_LINK="${_llama_link}"
-                                               CULEBRA_LLAMA_GPU_LINK="${_llama_gpu_link}")
-    # `--llama-gpu` has something to link (the driver embeds the backend).
-    if(_llama_vulkan)
-      target_compile_definitions(culebra PRIVATE CULEBRA_LLAMA_GPU_ENABLED)
-    endif()
+                                               CULEBRA_LLAMA_CPU_LINK="${_llama_cpu_link}")
   else()
     target_compile_definitions(culebra PRIVATE CULEBRA_LLAMA_LINK=""
-                                               CULEBRA_LLAMA_GPU_LINK="")
+                                               CULEBRA_LLAMA_CPU_LINK="")
   endif()
 endif()
 
@@ -1958,7 +1954,7 @@ endif()
 # the one running the build.
 foreach(_frag _blas_link _ssl_link _zlib_link _sqlite_link _scene_link
               _canvas_link _webview_link _foreign_link _codegen_link
-              _audio_link _llama_link _llama_gpu_link)
+              _audio_link _llama_link _llama_cpu_link)
   string(REPLACE " " ";" _frag_tokens "${${_frag}}")
   foreach(_tok IN LISTS _frag_tokens)
     if(_tok MATCHES "^[/\\]" OR _tok MATCHES "^[A-Za-z]:[/\\]")

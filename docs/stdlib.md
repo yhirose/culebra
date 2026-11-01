@@ -9978,10 +9978,10 @@ GPU driver compiles the backend's shaders; the driver keeps them, so later runs
 do not.
 
 `culebra build` works with it. A program that names `Llama` links llama.cpp
-statically into the binary, which adds a few megabytes; a program that does not
-carries none of it. The binary runs the model on the CPU, unless it was built
-with `culebra build --llama-gpu`, which links the Vulkan backend too (about
-42 MB). The model file stays outside the binary.
+statically into the binary, with the Vulkan backend when the culebra building it
+has one (about 49 MB in all; `culebra build --llama-cpu` leaves the backend out,
+about 6.5 MB, and the binary runs models on the CPU only). A program that does
+not name `Llama` carries none of it. The model file stays outside the binary.
 
 ### `Llama.load(path, n_ctx=2048, gpu=true, n_batch=0, n_slots=1) -> LlamaModel`
 

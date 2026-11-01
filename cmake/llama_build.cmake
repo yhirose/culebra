@@ -35,7 +35,7 @@ endif()
 # Vulkan loader forwarders. Two small archives rather than code in the Llama
 # bodies, because the bodies call the half by name: the driver links the one it
 # carries, and `culebra build` names one in its link fragment (_llama_link,
-# _llama_gpu_link), so --llama-gpu changes the link and nothing else. Both are
+# _llama_cpu_link), so --llama-cpu changes the link and nothing else. Both are
 # embedded for that (CMakeLists, _rt_embed_files).
 add_library(culebra_llama_gpu_none STATIC ./src/runtime/llama_gpu_none.cc)
 set(_llama_gpu_targets culebra_llama_gpu_none)

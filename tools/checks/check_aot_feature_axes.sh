@@ -552,9 +552,15 @@ else
   expect_class llama "$regex_choke" "W?" "expected 'W' or absent" "Llama only"
   expect_absent llama "$fmt_machinery" "libstdc++'s formatter, Llama"
   expect_output llama "LlamaError"
-  # The default link carries no GPU code at all, whether or not this driver has
-  # the Vulkan backend (--llama-gpu's link is probe_llama_aot.sh's).
-  expect_absent llama ' _?vk[A-Z][A-Za-z0-9]*$' "Vulkan, default Llama link"
+  # --llama-cpu carries no GPU code at all, whether or not this driver has the
+  # Vulkan backend (what the default link runs on is probe_llama_aot.sh's).
+  build llama_cpu 'try {
+  Llama.load("/nonexistent/model.gguf")
+} catch e {
+  IO.print(e.kind)
+}' --llama-cpu
+  expect_absent llama_cpu ' _?vk[A-Z][A-Za-z0-9]*$' "Vulkan, --llama-cpu"
+  expect_output llama_cpu "LlamaError"
 fi
 
 # A Dir default the library calls by name (Compress.zip asks for files(),

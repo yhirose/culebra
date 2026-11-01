@@ -81,9 +81,9 @@ set(_llama_install "${_llama_root}/${_llama_key}/llama")
 message(STATUS "llama.cpp ${CULEBRA_LLAMA_CPP_VERSION} deps cache: ${_llama_root}/${_llama_key}")
 
 # Link order matters for static archives: llama needs ggml, which needs the
-# backends and the base, which the backends need in turn. _llama_aot_a is what
-# `culebra build` links (and the driver embeds): the CPU backend only, whose one
-# reference into the Vulkan backend src/runtime/llama_gpu_none.cc answers.
+# backends and the base, which the backends need in turn. _llama_aot_a is the
+# CPU backend only, whose one reference into the Vulkan backend
+# src/runtime/llama_gpu_none.cc answers (`culebra build --llama-cpu`).
 #
 # ggml drops the lib prefix from its archives on every WIN32 build (its own
 # CMakeLists: "remove the lib prefix on win32 mingw"); llama keeps it. The
@@ -122,10 +122,10 @@ endif()
 # What `culebra build` appends to the link of a program that names Llama: the
 # statics by embedded name (@libllama.a@, see _rt_embed_extern in
 # CMakeLists.txt) and the system libraries, never a path of this machine.
-# _llama_link is the default (CPU) link; _llama_gpu_link, for `--llama-gpu`,
-# is the driver's own set, the Vulkan backend included ("" without it). Each
-# ends with the GPU half the Llama bodies call by name (cmake/llama_build.cmake
-# builds these archives; the driver embeds them).
+# _llama_link is the default: the driver's own set, so a program gets the GPU
+# where the driver has the Vulkan backend. _llama_cpu_link, for `--llama-cpu`,
+# leaves the backend out. Each ends with the GPU half the Llama bodies call by
+# name (cmake/llama_build.cmake builds these archives; the driver embeds them).
 set(_llama_gpu_archives culebra_llama_gpu_none)
 if(_llama_vulkan)
   list(APPEND _llama_gpu_archives culebra_llama_gpu_vulkan)
@@ -144,10 +144,10 @@ function(_llama_fragment out archives gpu_half)
   endif()
   set(${out} "${_f}" PARENT_SCOPE)
 endfunction()
-_llama_fragment(_llama_link "${_llama_aot_a}" culebra_llama_gpu_none)
-set(_llama_gpu_link "")
+_llama_fragment(_llama_cpu_link "${_llama_aot_a}" culebra_llama_gpu_none)
+set(_llama_link "${_llama_cpu_link}")
 if(_llama_vulkan)
-  _llama_fragment(_llama_gpu_link "${_llama_a}" culebra_llama_gpu_vulkan)
+  _llama_fragment(_llama_link "${_llama_a}" culebra_llama_gpu_vulkan)
 endif()
 
 # Every translation unit that reaches stdlib/bindings.h compiles the Llama rows
