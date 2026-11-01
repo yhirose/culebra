@@ -3,7 +3,8 @@
 #
 # Usage: misc/package_release.sh <binary> <tag> <os> <arch> [flavor]
 #   <binary>  path to the built culebra (or culebra.exe)
-#   <tag>     the release tag, e.g. v0.1.0
+#   <tag>     the release tag, e.g. v0.1.0; `-` for a dry run of this checkout
+#             (its version, and CULEBRA_PACKAGE_UNTAGGED)
 #   <os>      macos | linux | windows
 #   <arch>    arm64 | x64
 #   [flavor]  slim for the slim driver (CULEBRA_SLIM); none for the full one
@@ -33,6 +34,12 @@ if [ $# -ne 4 ] && [ $# -ne 5 ]; then
 fi
 
 binary=$1 tag=$2 os=$3 arch=$4 flavor=${5:-}
+if [ "$tag" = - ]; then
+  v=$(sed -n 's/^#define CULEBRA_VERSION "\([^"]*\)"/\1/p' include/culebra.h)
+  [ -n "$v" ] || { echo "package_release: no CULEBRA_VERSION in include/culebra.h" >&2; exit 1; }
+  tag=v$v
+  export CULEBRA_PACKAGE_UNTAGGED=1
+fi
 case "$flavor" in
   "" | slim) ;;
   *) echo "package_release: unknown flavor '$flavor'" >&2; exit 2 ;;

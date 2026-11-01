@@ -367,39 +367,9 @@ check-docs-cpp:
 [private]
 check-generated: check-grammar-sync check-preambles check-blob check-site-version check-site-playground-sync check-difftest-coverage check-gate-budget check-release-coverage check-spec-examples check-api-coverage check-canon-return-types check-registrar-rooted check-pe-exports-gen check-interrupt-discipline check-thrown-value-discipline check-docs-cpp-includes check-header-naming check-pipefail-readers check-error-kinds check-search-splitter check-layering check-codegen-enums check-vm-dispatch-table check-protocol-member-door check-value-equal-door check-value-order-door check-source-anchor-door check-object-facts check-portable-closure-door check-native-entry-door check-runner-pins check-llama-versions
 
-# Such a build still runs programs — everything below the LLVM lowering
-# (rt.h, vm.h) is LLVM-free, so the bytecode VM's executor is intact; what it
-# cannot do is `--jit` or `culebra build`. Builds just the
-# `culebra` driver, the only TU with CULEBRA_JIT_ENABLED #ifdef gating, so this
-# is the compile gate for that configuration. Its own build-no-jit/ dir keeps
-# it off the JIT `build/`'s cmake cache (the JIT define flips every ccache key
-# anyway). `just test-no-jit` runs what it built.
-[doc("Compile the driver without LLVM (CULEBRA_ENABLE_JIT=OFF)")]
-[group("build")]
-build-no-jit:
-    mkdir -p build-no-jit
-    # LTO off: this lane proves the no-LLVM build compiles and links, and
-    # a whole-driver relink proves nothing more than the link it already does.
-    cd build-no-jit && cmake -DCMAKE_BUILD_TYPE=Release -DCULEBRA_ENABLE_JIT=OFF -DCULEBRA_LTO=OFF .. > /dev/null
-    cd build-no-jit && {{lock_cmd}} {{nice_cmd}} make -j{{build_jobs}} culebra
-
-# A link is not the gate here: the point of keeping the VM out of the LLVM
-# guard is that a no-LLVM binary HAS a working engine, and a binary whose one
-# engine is broken can still compile and link perfectly. Only running a
-# program says so. The corpus is the one
-# `just test`'s vm_cases phase uses, for the same two reasons: it is
-# contractually inside the VM slice (so a mismatch is a mismatch, not a
-# rejected construct), and compare.sh folds each lane's EXIT CODE into the
-# comparison — reading only stdout let a SEGV pass as "equal" once already
-# (see run_diff_vm_jit below).
-[doc("Run the no-LLVM build over the VM corpus and compare with the gate's goldens")]
-[group("test")]
-test-no-jit: build-no-jit
-    @just _test-vm-only ./build-no-jit/culebra
-
-# The slim download (CULEBRA_SLIM: the VM alone, no window, 3D, audio, Webview
-# or Llama), built as a release is (-O3, LTO). Its own build-slim/ dir, for the
-# reason build-no-jit has one.
+# The slim download (CULEBRA_SLIM: the VM alone, no LLVM, window, 3D, audio,
+# Webview or Llama), built as a release is (-O3, LTO). Its own dir: the JIT
+# define flips every ccache key, so it shares nothing with `build/`.
 [doc("Build the slim driver as released (CULEBRA_SLIM=ON)")]
 [group("build")]
 build-slim:
@@ -407,36 +377,24 @@ build-slim:
     cd build-slim && cmake -DCMAKE_BUILD_TYPE=Release -DCULEBRA_SLIM=ON .. > /dev/null
     cd build-slim && {{lock_cmd}} {{nice_cmd}} make -j{{build_jobs}} culebra
 
-# What test-no-jit proves, for the binary that ships: the VM corpus and the REPL.
 [doc("Run the slim driver over the VM corpus and the REPL")]
 [group("test")]
 test-slim: build-slim
-    @just _test-vm-only ./build-slim/culebra
+    {{nice_cmd}} misc/test_vm_only.sh ./build-slim/culebra
 
-# A driver whose one engine is the VM: it says so, runs the VM corpus against
-# the frozen expected outputs, and its REPL runs.
-_test-vm-only bin:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    bin={{bin}}
-    case "$("$bin" --version)" in
-        *"(vm)"*) ;;
-        *) echo "check failed: --version does not name the VM"; exit 1 ;;
-    esac
-    TIMEOUT_BIN=""
-    if command -v timeout >/dev/null 2>&1; then TIMEOUT_BIN=timeout
-    elif command -v gtimeout >/dev/null 2>&1; then TIMEOUT_BIN=gtimeout; fi
-    out="$({{nice_cmd}} ${TIMEOUT_BIN:+$TIMEOUT_BIN 300} tools/bench/vm_cases/compare.sh "$bin" --vm 2>&1)" \
-        || { printf '%s\n' "$out"; exit 1; }
-    # The REPL is a separate entry point with its own engine pick, and no
-    # corpus reaches it. No `| grep`: grep -q exits on the first match and
-    # pipefail would read the producer's SIGPIPE as the failure.
-    repl="$(printf 'let x = 6 * 7\nx\n' | {{nice_cmd}} ${TIMEOUT_BIN:+$TIMEOUT_BIN 60} "$bin" --vm --shell)"
-    case "$repl" in
-        *42*) ;;
-        *) echo "check failed: the no-LLVM REPL does not run on --vm"; exit 1 ;;
-    esac
-    echo "$bin: --vm runs the VM corpus against the frozen expected outputs"
+# The same configuration without LTO: the fast compile gate for the driver's
+# CULEBRA_JIT_ENABLED #ifdefs (main.cc is the one TU that has them).
+[doc("Compile the slim driver without LTO (the no-LLVM compile gate)")]
+[group("build")]
+build-no-jit:
+    mkdir -p build-no-jit
+    cd build-no-jit && cmake -DCMAKE_BUILD_TYPE=Release -DCULEBRA_SLIM=ON -DCULEBRA_LTO=OFF .. > /dev/null
+    cd build-no-jit && {{lock_cmd}} {{nice_cmd}} make -j{{build_jobs}} culebra
+
+[doc("Run the no-LTO slim driver over the VM corpus and the REPL")]
+[group("test")]
+test-no-jit: build-no-jit
+    {{nice_cmd}} misc/test_vm_only.sh ./build-no-jit/culebra
 
 # Same Release + JIT shape as `just dev`, minus -DNDEBUG, so the tree's asserts
 # actually execute. Every other lane is Release, so without this one NO build

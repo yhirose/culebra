@@ -4,11 +4,9 @@ project(culebra)
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-# The slim download, for running scripts (a coding agent's runtime): the VM
-# alone, so no LLVM (`--jit`, `culebra build`), and no window, 3D, audio,
-# Webview, local LLM or Tensor CUDA. Http, SQLite and the rest of the library
-# stay. It forces those options off whatever else the configure line says, so
-# any release configuration becomes the slim one by adding -DCULEBRA_SLIM=ON.
+# The slim download, for running scripts (a coding agent's runtime). It forces
+# these off whatever else the configure line says, so any release configuration
+# becomes the slim one by adding -DCULEBRA_SLIM=ON.
 option(CULEBRA_SLIM "Build the slim driver (the VM only; no window, 3D, audio, Webview or Llama)" OFF)
 if(CULEBRA_SLIM)
   foreach(_slim_off CULEBRA_ENABLE_JIT CULEBRA_ENABLE_WEBVIEW CULEBRA_ENABLE_CANVAS_WINDOW
