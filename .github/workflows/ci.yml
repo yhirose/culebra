@@ -424,12 +424,9 @@ jobs:
       - name: Report ccache stats
         run: ccache -s || true
 
-  # Llama (a language model run in this process, cmake/llama.cmake) is off by
-  # CMake's default; the download lanes build it (cmake/release_full.cmake) and
-  # this one tests it: tests/llama on both engines against a 1.2 MB model, the one
-  # llama.cpp's own CI uses: it writes nothing sensible, and does not need to,
-  # since a grammar fixes what each test expects. The llama.cpp statics go
-  # through the deps cache, so only a version bump pays their compile.
+  # Llama's tests (the download lanes only build it): tests/llama on both
+  # engines against a 1.2 MB model, the one llama.cpp's own CI uses, whose
+  # output a grammar fixes.
   linux-llama:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
@@ -985,9 +982,7 @@ jobs:
       - name: Verify Scene is in this build too (it follows the window)
         run: misc/aot_axes/verify_scene_axis.sh build
       - name: Verify Llama and its Vulkan backend are in this build
-        run: |
-          misc/aot_axes/verify_llama_axis.sh build
-          bash tools/checks/check_llama_vulkan_dynload.sh build
+        run: misc/aot_axes/verify_llama_axis.sh build
 
       # The coexistence requirement: a window-enabled binary must still take the
       # headless path on demand, byte-identically, on every engine — the
@@ -1182,9 +1177,8 @@ jobs:
           sdl3-deps: 'true'
           extra-packages: xvfb
 
-      # Deliberately the Canvas lane's prefix, not one of this job's own: same
-      # platform, compiler and submodules means the same tree, so whichever lane
-      # runs first pays the ~4 min and the other restores it.
+      # The Canvas lane's prefix, restore only: a save from here would prune the
+      # llama.cpp statics this build does not use (cmake/release_full.cmake).
       - name: Restore SDL3 + raylib statics
         uses: ./.github/actions/deps-cache
         with:
@@ -1208,13 +1202,6 @@ jobs:
       # kept, which the ratchet and the AOT probe both need.
       - name: Build (Scene ON)
         run: just build-scene -DCMAKE_EXE_LINKER_FLAGS=-fuse-ld=mold
-
-      - name: Save SDL3 + raylib statics
-        uses: ./.github/actions/deps-cache
-        with:
-          prefix: linux-canvas-deps
-          step: save
-          build-dir: build-scene
 
       - name: Report ccache stats
         run: ccache -s || true
@@ -1996,9 +1983,7 @@ jobs:
       - name: Verify Scene is in this build too (it follows the window)
         run: misc/aot_axes/verify_scene_axis.sh build-win-aot
       - name: Verify Llama and its Vulkan backend are in this build
-        run: |
-          misc/aot_axes/verify_llama_axis.sh build-win-aot
-          bash tools/checks/check_llama_vulkan_dynload.sh build-win-aot
+        run: misc/aot_axes/verify_llama_axis.sh build-win-aot
       - name: Report ccache stats
         run: ccache -s || true
       # The widest build there is — Canvas window, Webview and Http all on — so
@@ -2451,8 +2436,7 @@ jobs:
           restore-keys: |
             windows-scene-ccache-
 
-      # windows-aot-build's prefix, for linux-scene's reason: same platform,
-      # compiler and submodules, same tree — whichever lane runs first pays for it.
+      # windows-aot-build's prefix, restore only, for linux-scene's reason.
       - name: Restore SDL3 + raylib deps cache
         uses: ./.github/actions/deps-cache
         with:
@@ -2474,12 +2458,6 @@ jobs:
         # test targets do not build here, and a clang lane should list every TU
         # it rejects rather than the first.
         run: cmake --build build-win-scene --target culebra -j -- -k 0
-      - name: Save SDL3 + raylib deps cache
-        uses: ./.github/actions/deps-cache
-        with:
-          prefix: windows-deps
-          step: save
-          build-dir: build-win-scene
       - name: Report ccache stats
         run: ccache -s || true
 

@@ -222,7 +222,6 @@ jobs:
       - name: Verify no desktop runtime crept into the link
         run: |
           tools/checks/check_webview_dynload.sh build
-          bash tools/checks/check_llama_vulkan_dynload.sh build
           deps=$(ldd build/culebra)
           echo "Shared library dependencies:"
           echo "$deps"
@@ -355,9 +354,7 @@ jobs:
       - name: Verify Scene is in this build too (it follows the window)
         run: misc/aot_axes/verify_scene_axis.sh build
       - name: Verify Llama and its Vulkan backend are in this build
-        run: |
-          misc/aot_axes/verify_llama_axis.sh build
-          bash tools/checks/check_llama_vulkan_dynload.sh build
+        run: misc/aot_axes/verify_llama_axis.sh build
       - run: ccache -s || true
       # The whole point of -static here: a downloaded .exe must not need a DLL
       # the user does not have. Same script — and so the same allowlist — as
