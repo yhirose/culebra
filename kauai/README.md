@@ -27,8 +27,8 @@ it to a WAV file with `culebra play --wav out.wav song.kau`.
 
   | Instrument | `external` | What it is |
   |---|---|---|
-  | [`sounds/soprano_sax`](sounds/soprano_sax) | `Sax` | a soprano saxophone, from royalty-free recordings |
-  | [`sounds/alto_sax`](sounds/alto_sax) | `Alto` | an alto saxophone, from a jazz player's improvisations (CC0 and CC BY) |
+  | [`sounds/soprano_sax`](sounds/soprano_sax) | `SopranoSax` | a soprano saxophone, from royalty-free recordings |
+  | [`sounds/alto_sax`](sounds/alto_sax) | `AltoSax` | an alto saxophone, from a jazz player's improvisations (CC0 and CC BY) |
 
   Play a song with one: `culebra play --sounds kauai/sounds/soprano_sax song.kau`.
 - **Recipes**: synthesized instruments written as data, a synth brass, a synth

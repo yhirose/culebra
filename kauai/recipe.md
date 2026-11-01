@@ -10,13 +10,18 @@ The recipes Kauai comes with are in [`recipes/`](recipes). A file's name is the
 instrument's, without its underscores: `brass_mellow.json` is
 `external BrassMellow`.
 
-| Recipe | What it is |
-|---|---|
-| `brass` | a synth brass, two FM pairs a hair apart and a third with its modulator an octave up |
-| `strings` | a synth string section, three FM voices a hair apart and an octave over them |
-| `electric_piano` | the electric piano of the Kauai examples, as two FM pairs |
-| `brass_mellow`, `brass_brilliant` | `brass` with `bright` at 0 and at 1 |
-| `strings_mellow`, `strings_brilliant` | `strings` with `bright` at 0 and at 1 |
+| Recipe | A song names it | What it is | Knobs: default (range) |
+|---|---|---|---|
+| `brass` | `external Brass` | a synth brass, two FM pairs a hair apart and a third with its modulator an octave up | `bright` 0.5 (0 to 1): deeper modulation and more feedback, at the same loudness |
+| `brass_mellow` | `external BrassMellow` | `brass`, mellow | `bright` 0 (0 to 1) |
+| `brass_brilliant` | `external BrassBrilliant` | `brass`, brilliant | `bright` 1 (0 to 1) |
+| `strings` | `external Strings` | a synth string section, three FM voices a hair apart and an octave over them | `bright` 0.5 (0 to 1): deeper modulation and the octave louder, at about the same loudness |
+| `strings_mellow` | `external StringsMellow` | `strings`, mellow | `bright` 0 (0 to 1) |
+| `strings_brilliant` | `external StringsBrilliant` | `strings`, brilliant | `bright` 1 (0 to 1) |
+| `electric_piano` | `external ElectricPiano` | the electric piano of the Kauai examples, as two FM pairs, its tone decaying faster the higher the note | `bright` 1 (0 to 2): the depth of its FM, most at the attack and settling as the note goes on |
+
+A preset is its recipe with the knob's default set, so its knob still turns:
+`external BrassMellow bright=0.2` is `brass` at 0.2.
 
 ```
 band Pads {
