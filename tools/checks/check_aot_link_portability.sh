@@ -17,11 +17,22 @@
 # on it is under $CULEBRA_CACHE (or is the scratch object), and everything else
 # is a `-l` the host toolchain resolves.
 #
-# Usage: tools/checks/check_aot_link_portability.sh <build dir>
+# Usage: tools/checks/check_aot_link_portability.sh <build dir> [axis...]
+# The axes default to all three (http canvas llama); a job that adds one axis
+# to a configuration another job already checks names just that one.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 
 BUILD_DIR="${1:-build}"
+shift || true
+axes=("$@")
+[[ ${#axes[@]} -gt 0 ]] || axes=(http canvas llama)
+for a in "${axes[@]}"; do
+  case $a in
+    http | canvas | llama) ;;
+    *) echo "check_aot_link_portability: unknown axis '$a'" >&2; exit 2 ;;
+  esac
+done
 bin="$BUILD_DIR/culebra"
 [[ -x "$bin" ]] || bin="$bin.exe"
 [[ -x "$bin" ]] || { echo "check_aot_link_portability: no $BUILD_DIR/culebra" >&2; exit 1; }
@@ -54,7 +65,7 @@ print("llama {Llama.load}")
 CUL
 
 checked=0
-for name in http canvas llama; do
+for name in "${axes[@]}"; do
   # --vm, not a bare run: every `just` recipe exports
   # CULEBRA_REQUIRE_EXPLICIT_ENGINE=1, under which an unnamed engine aborts by
   # design (src/main.cc). A bare probe therefore reads every axis as absent.

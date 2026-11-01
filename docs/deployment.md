@@ -273,6 +273,8 @@ That backend adds about 42 MB to the driver (measured on a stripped static test
 program over the same llama.cpp release). The Vulkan loader is opened when the
 first model is loaded rather than linked, so `ldd` does not list it and the
 driver starts, and runs models on the CPU, on a machine without a GPU driver.
+What a machine needs for the GPU is in
+[`model.device()`](stdlib.md#modeldevice---object).
 
 ### Building Http without TLS
 

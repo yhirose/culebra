@@ -531,9 +531,8 @@ expect_output shared "21"
 # Llama: an axis only a build with CULEBRA_ENABLE_LLAMA=ON carries; the driver
 # of any other build has no Llama to probe. Naming it force-loads the strong
 # bodies and links the four embedded llama.cpp statics; the weak stubs in the
-# core archive must be what a program that never names it gets. With
-# CULEBRA_TEST_MODEL set the probe also generates (a grammar makes the text
-# exact), which proves the binary runs the engine and not just links it.
+# core archive must be what a program that never names it gets. That the
+# binary runs the engine, on every OS, is misc/aot_axes/probe_llama_aot.sh's.
 llama_choke='^culebra::llama::load[(]'
 # (captured, then matched: under pipefail a `| grep -q` that exits on its first
 # hit fails the pipeline with SIGPIPE, which reads as "has Llama")
@@ -553,11 +552,6 @@ else
   expect_class llama "$regex_choke" "W?" "expected 'W' or absent" "Llama only"
   expect_absent llama "$fmt_machinery" "libstdc++'s formatter, Llama"
   expect_output llama "LlamaError"
-  if [[ -n "${CULEBRA_TEST_MODEL:-}" ]]; then
-    build llama_run "let m = Llama.load(\"$CULEBRA_TEST_MODEL\", n_ctx: 256)
-IO.print(m.generate(\"x\", max_tokens: 4, grammar: 'root ::= \"ok\"').text)"
-    expect_output llama_run "ok"
-  fi
 fi
 
 # A Dir default the library calls by name (Compress.zip asks for files(),

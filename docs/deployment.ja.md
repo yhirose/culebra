@@ -237,6 +237,7 @@ CIがビルドしたLinux x86-64のCPUのみで、`Llama.load`を呼ぶプログ
 `glslc`、SPIR-Vのヘッダーが見つかれば入ります）。このバックエンドでドライバは約42MB大きくなります（同じllama.cppのリリースで
 作った、stripした静的なテストプログラムで測った値）。Vulkanのローダーはリンクせず、最初のモデルを読み込む
 ときに開くので、`ldd`には現れません。GPUのドライバがない機械でもドライバは起動し、モデルをCPUで動かします。
+GPUを使うために機械に要るものは[`model.device()`](stdlib.ja.md#modeldevice---object)にあります。
 
 ### TLS抜きでHttpをビルドする
 

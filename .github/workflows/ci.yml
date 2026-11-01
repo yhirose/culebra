@@ -454,6 +454,7 @@ jobs:
         run: |
           bash tools/checks/check_aot_feature_axes.sh build-gate
           bash tools/checks/check_aot_link_portability.sh build-gate
+          misc/aot_axes/probe_llama_aot.sh build-gate/culebra
 
   # linux-llama on Windows: the driver with Llama and the Vulkan backend, and
   # `culebra build` of a program that names Llama, in the Windows download's
@@ -549,30 +550,15 @@ jobs:
           ./build-win-llama/culebra.exe --vm tests/llama/test_llama.cul
           ./build-win-llama/culebra.exe --jit tests/llama/test_llama.cul
 
-      # `culebra build` on a program that names Llama: the strong archive and
-      # the embedded llama.cpp statics link through the lld inside culebra.exe,
-      # and the link names no path of this machine.
+      # `culebra build` of a program that names Llama: the link, through the
+      # lld inside culebra.exe, names no path of this machine (the llama axis
+      # only: windows-aot-build checks the others in this configuration), and
+      # the binary generates with the engine, on the CPU.
       - name: AOT link carries no build-machine path
-        run: tools/checks/check_aot_link_portability.sh build-win-llama
+        run: tools/checks/check_aot_link_portability.sh build-win-llama llama
 
-      # The same text on the VM, the JIT and the AOT binary. A grammar fixes
-      # what the model writes.
-      - name: Llama on the VM, the JIT and AOT
-        run: |
-          cat > llama_lanes.cul <<'CUL'
-          let m = Llama.load(Sys.env("CULEBRA_TEST_MODEL"), n_ctx: 256)
-          print(m.generate("Say ok", grammar: 'root ::= "ok"').text)
-          CUL
-          misc/run_all_backends.sh ./build-win-llama/culebra.exe llama_lanes.cul ok LLAMA_LANES
-
-      # A `culebra build` output carries no GPU code, and says so.
-      - name: AOT output runs on the CPU
-        run: |
-          printf 'print(Llama.load(Sys.env("CULEBRA_TEST_MODEL"), n_ctx: 256).device().reason)\n' > llama_device.cul
-          ./build-win-llama/culebra.exe build llama_device.cul -o llama_device.exe
-          out=$(./llama_device.exe)
-          echo "out=[$out]"
-          [ "$out" = "built without GPU support" ]
+      - name: AOT Llama program runs the engine
+        run: misc/aot_axes/probe_llama_aot.sh build-win-llama/culebra.exe
 
       # The release's gate: only system DLLs, so the uploaded .exe runs alone
       # (vulkan-1.dll is not on its list either).
