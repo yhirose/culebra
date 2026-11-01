@@ -9638,6 +9638,19 @@ if d.reason != nil {
 }
 ```
 
+VulkanはGPUのドライバに含まれているので、GPUメーカーのドライバが入っている機械では、別に入れるものはありません。
+WindowsではNVIDIA、AMD、Intelのどのドライバも、Vulkanを一緒に入れます。Linuxでは2つの部品が要ります。
+Vulkanのローダー（DebianとUbuntuでは`libvulkan1`。たいていのデスクトップには入っています）と、GPUごとの
+Vulkanのドライバです。後者は、NVIDIAでは公式のドライバに含まれ、AMDとIntelのGPUではMesa
+（`mesa-vulkan-drivers`）に含まれます。サーバーやコンテナには、どちらも入っていないことがよくあります。
+`reason`ごとに入れるものは次のとおりです。
+
+| `reason` | 入れるもの |
+|---|---|
+| `"no Vulkan driver"` | Windows：GPUメーカーのドライバ。Linux：Vulkanのローダー（`sudo apt install libvulkan1`） |
+| `"no Vulkan device"` | GPUメーカーのドライバ。LinuxのAMDかIntelのGPUなら`sudo apt install mesa-vulkan-drivers` |
+| `"built without GPU support"` | 機械に入れるものはありません。このculebraがVulkanのバックエンドなしでビルドされています |
+
 ### `model.close()`
 
 モデルを解放します。ハンドルがスコープを抜けたときも解放されます。2回閉じても構いません。閉じたモデルへの

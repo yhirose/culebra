@@ -10068,6 +10068,20 @@ if d.reason != nil {
 }
 ```
 
+Vulkan comes with the GPU driver; there is nothing separate to install where a
+GPU vendor's driver is. On Windows, NVIDIA's, AMD's and Intel's drivers all
+install it. On Linux it is two parts: the Vulkan loader (`libvulkan1` on
+Debian and Ubuntu, present on most desktops) and the GPU's own Vulkan driver,
+which is in NVIDIA's proprietary driver and, for AMD and Intel GPUs, in Mesa
+(`mesa-vulkan-drivers`). Servers and containers often have neither. What a
+`reason` asks for:
+
+| `reason` | What to install |
+|---|---|
+| `"no Vulkan driver"` | Windows: the GPU vendor's driver. Linux: the Vulkan loader (`sudo apt install libvulkan1`) |
+| `"no Vulkan device"` | The GPU vendor's driver. Linux with an AMD or Intel GPU: `sudo apt install mesa-vulkan-drivers` |
+| `"built without GPU support"` | Nothing on the machine: this culebra was built without the Vulkan backend |
+
 ### `model.close()`
 
 Frees the model. The model is also freed when its handle goes out of scope.
