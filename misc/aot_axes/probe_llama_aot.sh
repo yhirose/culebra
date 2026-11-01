@@ -49,8 +49,11 @@ println(m.generate("x", max_tokens: 4, grammar: 'root ::= "ok"').text)
 println(m.device().reason)
 EOF
 
+# Windows binaries end lines with CRLF.
+run() { "$@" | tr -d '\r'; }
+
 "$exe" build llama_aot.cul -o llama_aot
-out=$(./llama_aot)
+out=$(run ./llama_aot)
 want=$(printf 'ok\nbuilt without GPU support')
 [ "$out" = "$want" ] || fail "AOT Llama run printed [$out], expected [$want]"
 echo "OK: the AOT binary generated with the engine, on the CPU"
@@ -76,7 +79,7 @@ if grep -qi vulkan <<<"$libs"; then
   fail "the --llama-gpu binary links the Vulkan loader: [$libs]"
 fi
 # A relative name the loader cannot find: no driver, on every OS.
-out=$(VK_DRIVER_FILES=nonexistent.json VK_ICD_FILENAMES=nonexistent.json "./$bin")
+out=$(VK_DRIVER_FILES=nonexistent.json VK_ICD_FILENAMES=nonexistent.json run "./$bin")
 want=$(printf 'ok\nno Vulkan device')
 [ "$out" = "$want" ] || fail "AOT --llama-gpu run printed [$out], expected [$want]"
 echo "OK: the --llama-gpu binary carries the backend, opens the loader at run time"
