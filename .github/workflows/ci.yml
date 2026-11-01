@@ -455,16 +455,16 @@ jobs:
           bash tools/checks/check_aot_feature_axes.sh build-gate
           bash tools/checks/check_aot_link_portability.sh build-gate
 
-  # linux-llama's in-process half on Windows: the driver with Llama and the
-  # Vulkan backend, in the Windows download's configuration (clang + lld, like
-  # windows-scene) so the llama.cpp statics are built and linked by the
-  # toolchain a release would use. MSYS2 packages the Vulkan headers, glslc and
-  # the SPIR-V headers. The runner has no GPU, so models run on the CPU; the
-  # driver is uploaded so it can be run on a machine that has one. `culebra
-  # build` with Llama on Windows is not covered yet.
+  # linux-llama on Windows: the driver with Llama and the Vulkan backend, and
+  # `culebra build` of a program that names Llama, in the Windows download's
+  # configuration (clang + lld, like windows-scene) so the llama.cpp statics are
+  # built and linked by the toolchain a release would use. MSYS2 packages the
+  # Vulkan headers, glslc and the SPIR-V headers. The runner has no GPU, so
+  # models run on the CPU; the driver is uploaded so it can be run on a machine
+  # that has one.
   windows-llama:
     runs-on: windows-latest
-    timeout-minutes: 60
+    timeout-minutes: 75
     env:
       CULEBRA_CANVAS_WINDOW_DEFAULT: OFF
       CCACHE_DIR: ${{ github.workspace }}/.ccache
@@ -517,13 +517,13 @@ jobs:
             https://huggingface.co/ggml-org/models/resolve/main/tinyllamas/stories260K.gguf
           echo "270cba1bd5109f42d03350f60406024560464db173c0e387d91f0426d3bd256d  $CULEBRA_TEST_MODEL" | sha256sum -c -
 
-      # The download's own configure script plus this job's subject, with the
-      # AOT runtime archives and Webview left out (not what is tested here).
-      # Vulkan ON, not AUTO, for the reason linux-llama gives.
+      # The download's own configure script plus this job's subject, with
+      # Webview left out (not what is tested here). Vulkan ON, not AUTO, for
+      # the reason linux-llama gives.
       - name: Configure (the Windows download's configuration, Llama and Vulkan ON)
         run: |
           misc/windows_toolchain/configure_windows_release.sh build-win-llama \
-            -DCULEBRA_ENABLE_WEBVIEW=OFF -DCULEBRA_DEV_NO_RT=ON \
+            -DCULEBRA_ENABLE_WEBVIEW=OFF \
             -DCULEBRA_ENABLE_LLAMA=ON -DCULEBRA_LLAMA_VULKAN=ON
 
       - name: Build
@@ -548,6 +548,31 @@ jobs:
         run: |
           ./build-win-llama/culebra.exe --vm tests/llama/test_llama.cul
           ./build-win-llama/culebra.exe --jit tests/llama/test_llama.cul
+
+      # `culebra build` on a program that names Llama: the strong archive and
+      # the embedded llama.cpp statics link through the lld inside culebra.exe,
+      # and the link names no path of this machine.
+      - name: AOT link carries no build-machine path
+        run: tools/checks/check_aot_link_portability.sh build-win-llama
+
+      # The same text on the VM, the JIT and the AOT binary. A grammar fixes
+      # what the model writes.
+      - name: Llama on the VM, the JIT and AOT
+        run: |
+          cat > llama_lanes.cul <<'CUL'
+          let m = Llama.load(Sys.env("CULEBRA_TEST_MODEL"), n_ctx: 256)
+          print(m.generate("Say ok", grammar: 'root ::= "ok"').text)
+          CUL
+          misc/run_all_backends.sh ./build-win-llama/culebra.exe llama_lanes.cul ok LLAMA_LANES
+
+      # A `culebra build` output carries no GPU code, and says so.
+      - name: AOT output runs on the CPU
+        run: |
+          printf 'print(Llama.load(Sys.env("CULEBRA_TEST_MODEL"), n_ctx: 256).device().reason)\n' > llama_device.cul
+          ./build-win-llama/culebra.exe build llama_device.cul -o llama_device.exe
+          out=$(./llama_device.exe)
+          echo "out=[$out]"
+          [ "$out" = "built without GPU support" ]
 
       # The release's gate: only system DLLs, so the uploaded .exe runs alone
       # (vulkan-1.dll is not on its list either).
