@@ -161,7 +161,7 @@ fn a_recipe_is_checked_whole_before_it_plays() {
   says(doc({w: {part: "wave", freq: "min(f)"}}, "w"), "`min` takes 2, given 1")
   says(
     doc({w: {part: "wave", freq: {on: [[0, 1]], of: []}}}, "w"),
-    "an envelope has `on` and `off`, not `of`",
+    "an envelope has on, off, not `of`",
   )
   says(
     doc({w: {part: "wave", freq: {on: [[0]]}}}, "w"),

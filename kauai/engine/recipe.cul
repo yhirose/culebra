@@ -9,6 +9,9 @@ let RATE = 44100
 # How long a straight piece of a curved stretch of an envelope is (s).
 let STEP = 0.01
 
+# Whether a curve this near 0 is a straight line.
+let straight = |curve| Math.abs(curve) < 0.001
+
 # Where every recipe's output is cut below (Hz), as a synthesizer's output
 # stage cuts its offset: a sine moved by one of its own freq (1:1 FM) has one.
 let DC_CUT = 20.0
@@ -47,14 +50,14 @@ let GRAMMAR = `
   %whitespace <- [ \t]*
 `
 
-# The parts a recipe may use: the fields that name other parts (one, or a
-# list), the values that may move (with their defaults), the numbers the
-# part is made with once, its kind's default (nil for a part without
-# kinds) and how the graph makes it.
+# The parts a recipe may use, each with what it has of: its kind's default
+# (`kind`, for a part with kinds), the field that names one other part
+# (`one`), the fields that name a list of them (`many`), the values that may
+# move and the numbers it is made with once (with their defaults), and how
+# the graph makes it. part() reads what an entry leaves out as none.
 let PARTS = {
   wave: {
     kind: "sine",
-    one: [],
     many: ["modulators"],
     values: {freq: "f", feedback: 0.0},
     fixed: {phase: 0.0},
@@ -67,51 +70,35 @@ let PARTS = {
     ),
   },
   noise: {
-    kind: nil,
-    one: [],
-    many: [],
-    values: {},
     fixed: {seed: 1.0},
     make: |g, x| g.noise(seed: to_long(Math.round(x.seed))),
   },
   filter: {
     kind: "low",
     one: ["input"],
-    many: [],
     values: {cutoff: 1000.0},
     fixed: {q: 0.707},
     make: |g, x| g.filter(x.kind, x.input, cutoff: x.cutoff, q: x.q),
   },
   gain: {
-    kind: nil,
     one: ["input"],
-    many: [],
     values: {gain: 1.0},
-    fixed: {},
     make: |g, x| g.gain(x.input, gain: x.gain),
   },
   mix: {
-    kind: nil,
-    one: [],
     many: ["inputs"],
     values: {gain: 1.0},
-    fixed: {},
     make: |g, x| g.mix(x.inputs, gain: x.gain),
   },
   pluck: {
-    kind: nil,
     one: ["input"],
-    many: [],
     values: {freq: "f", ring: 2.0},
-    fixed: {},
     make: |g, x| g.pluck(x.input, freq: x.freq, ring: x.ring),
   },
   delay: {
-    kind: nil,
     one: ["input"],
     many: ["modulators"],
     values: {time: 0.0},
-    fixed: {},
     make: |g, x| g.delay(x.input, time: x.time, modulators: x.modulators),
   },
 }
@@ -217,8 +204,7 @@ fn value(x, names, where) {
     let t = term(x, names, where)
     return {on: [[|env| 0.0, t]], off: nil}
   }
-  let stray = x.keys().filter(|k| k != "on" && k != "off")
-  throw "{where}: an envelope has `on` and `off`, not `{stray[0]}`" if !stray.empty()
+  only(x, ["on", "off"], where, "an envelope")
   throw "{where}: an envelope has `on`" if !x.has("on")
   {
     on: points(x.on, names, "{where}.on"),
@@ -246,7 +232,7 @@ fn knots(ps, env, from, where) {
 fn on_curve(ta, va, tb, vb, curve, t) {
   return vb if tb <= ta
   let u = Math.clamp((t - ta) / (tb - ta), 0.0, 1.0)
-  return va + (vb - va) * u if Math.abs(curve) < 0.001
+  return va + (vb - va) * u if straight(curve)
   va + (vb - va) * (1.0 - Math.exp(curve * u)) / (1.0 - Math.exp(curve))
 }
 
@@ -259,7 +245,7 @@ fn drawn(ks, until) {
     let (tb, vb, c) = ks[k]
     break if ta >= until
     let end = Math.min(tb, until)
-    if Math.abs(c) >= 0.001 {
+    if !straight(c) {
       mut t = ta + STEP
       while t < end {
         out.push((t, on_curve(ta, va, tb, vb, c, t)))
@@ -287,12 +273,13 @@ fn course(v, env, dur, where) {
   [...held, ...released.slice(1, released.size())]
 }
 
-# How long after the note ends a value's `off` lasts.
-fn tail(v, env) {
-  v.off == nil ? 0.0 : v.off[v.off.size() - 1][0](env)
-}
-
 # --- recipes ----------------------------------------------------------------
+
+# Nothing in Object `x` but the fields `known`: `what`, at `where`, has them.
+fn only(x, known, where, what) {
+  let stray = x.keys().filter(|k| !known.contains(k))
+  throw "{where}: {what} has {known.join(", ")}, not `{stray[0]}`" if !stray.empty()
+}
 
 # A knob a recipe declares: {default, min, max}.
 fn knob(name, x, where) {
@@ -303,8 +290,7 @@ fn knob(name, x, where) {
   throw "{where}: `{name}` names the note; a knob needs another name" if NOTE_NAMES.contains(name)
   throw "{where}: a knob is an Object of default, min and max" if type_of(x) !=
     "Object"
-  let stray = x.keys().filter(|k| !["default", "min", "max"].contains(k))
-  throw "{where}: a knob has default, min and max, not `{stray[0]}`" if !stray.empty()
+  only(x, ["default", "min", "max"], where, "a knob")
   let number = fn (field) {
     let v = x.get(field, nil)
     throw "{where}.{field}: a number" if v !is Long && v !is Float
@@ -321,55 +307,49 @@ fn knob(name, x, where) {
 }
 
 # A part of a recipe, its fields checked and its values made terms.
-fn part(name, x, names, where) {
+fn part(x, names, where) {
   throw "{where}: a part is an Object with a `part`" if type_of(x) !=
     "Object" ||
     !x.has("part")
   let spec = PARTS.get(x.part, nil)
   throw "{where}.part: no part `{x.part}`; there are {PARTS.keys().join(", ")}" if spec ==
     nil
-  let fields = [
-    "part",
-    ...spec.one,
-    ...spec.many,
-    ...spec.values.keys(),
-    ...spec.fixed.keys(),
-  ]
-  let known = spec.kind == nil ? fields : ["kind", ...fields]
-  let stray = x.keys().filter(|k| !known.contains(k))
-  throw "{where}: a {x.part} has {known.join(", ")}, not `{stray[0]}`" if !stray.empty()
-  for k in spec.one {
+  let base = spec.get("kind", nil)
+  let one = spec.get("one", [])
+  let many = spec.get("many", [])
+  let values = spec.get("values", {})
+  let fixed = spec.get("fixed", {})
+  let fields = ["part", ...one, ...many, ...values.keys(), ...fixed.keys()]
+  only(x, base == nil ? fields : ["kind", ...fields], where, "a {x.part}")
+  for k in one {
     throw "{where}.{k}: the name of a part" if x.get(k, nil) !is String
   }
-  for k in spec.many {
+  for k in many {
     let xs = x.get(k, [])
     throw "{where}.{k}: a list of names of parts" if xs !is Array ||
       !xs.all(|n| n is String)
   }
-  let kind = spec.kind == nil ? nil : x.get("kind", spec.kind)
-  throw "{where}.kind: a word" if spec.kind != nil && kind !is String
+  let kind = base == nil ? nil : x.get("kind", base)
+  throw "{where}.kind: a word" if base != nil && kind !is String
   {
-    name: name,
-    part: x.part,
     kind: kind,
-    inputs: [
-      ...spec.one.map(|k| x[k]),
-      ...spec.many.flat_map(|k| x.get(k, [])),
-    ],
-    one: spec.one.map(|k| (k, x[k])).to_object(),
-    many: spec.many.map(|k| (k, x.get(k, []))).to_object(),
-    values: spec
-      .values
+    one: one.map(|k| (k, x[k])).to_object(),
+    many: many.map(|k| (k, x.get(k, []))).to_object(),
+    values: values
       .keys()
-      .map(|k| (k, value(x.get(k, spec.values[k]), names, "{where}.{k}")))
+      .map(|k| (k, value(x.get(k, values[k]), names, "{where}.{k}")))
       .to_object(),
-    fixed: spec
-      .fixed
+    fixed: fixed
       .keys()
-      .map(|k| (k, term(x.get(k, spec.fixed[k]), names, "{where}.{k}")))
+      .map(|k| (k, term(x.get(k, fixed[k]), names, "{where}.{k}")))
       .to_object(),
     make: spec.make,
   }
+}
+
+# The names of the parts part `p` takes in, or that move it.
+fn wired(p) {
+  [...p.one.keys().map(|k| p.one[k]), ...p.many.keys().flat_map(|k| p.many[k])]
 }
 
 # The parts in an order each comes after those it takes in, from `out`
@@ -390,7 +370,7 @@ fn visit(parts, name, from, where, walk) {
   throw "{where}: `{name}` takes itself in, through the parts it takes in" if s ==
     "open"
   walk.state[name] = "open"
-  for n in parts[name].inputs {
+  for n in wired(parts[name]) {
     visit(parts, n, "{where}.{name}", where, walk)
   }
   walk.state[name] = "done"
@@ -438,10 +418,7 @@ class Recipe {
     @rate = rate
     let where = "recipe {name}"
     throw "{where}: a recipe is an Object" if type_of(doc) != "Object"
-    let stray = doc
-      .keys()
-      .filter(|k| !["recipe", "knobs", "parts", "out"].contains(k))
-    throw "{where}: a recipe has recipe, knobs, parts and out, not `{stray[0]}`" if !stray.empty()
+    only(doc, ["recipe", "knobs", "parts", "out"], where, "a recipe")
     throw "{where}: `recipe` is {FORMAT}, the format it is written in" if doc.get(
       "recipe",
       nil,
@@ -459,7 +436,7 @@ class Recipe {
       ps.keys().empty()
     @parts = ps
       .keys()
-      .map(|k| (k, part(k, ps[k], names, "{where}.parts.{k}")))
+      .map(|k| (k, part(ps[k], names, "{where}.parts.{k}")))
       .to_object()
     throw "{where}.out: the name of a part" if doc.get("out", nil) !is String
     @out = doc.out
@@ -486,7 +463,7 @@ class Recipe {
   # The samples of one note, `rate` a second: `pitch` held `dur` seconds,
   # at `level` (1 for mf), with the knobs at `params` (their defaults for
   # those it leaves out), and then for as long as its longest `off`. What
-  # `out` plays passes a high-pass at DC_CUT.
+  # `out` plays, times `level`, passes a high-pass at DC_CUT.
   note(
     pitch: Long | Float,
     dur: Long | Float,
@@ -509,11 +486,12 @@ class Recipe {
       let courses = p
         .values
         .keys()
-        .map(|k| (k, course(p.values[k], env, dur, "{where}.{k}")))
+        .map(|k| (k, course(p.values[k], env, env.dur, "{where}.{k}")))
         .to_object()
+      # A course ends where its `off` does, or where the note does.
       longest = [
         longest,
-        ...p.values.keys().map(|k| tail(p.values[k], env)),
+        ...courses.keys().map(|k| courses[k][courses[k].size() - 1][0] - env.dur),
       ].max()
       let x = {
         kind: p.kind,
@@ -541,9 +519,8 @@ class Recipe {
         throw "{where}: {message}"
       }
     }
-    g.output(g.filter("high", made[@out], cutoff: DC_CUT))
-    let lv = to_float(level)
-    g.render(to_float(dur) + longest).map(|s| s * lv)
+    g.output(g.filter("high", g.gain(made[@out], env.level), cutoff: DC_CUT))
+    g.render(env.dur + longest)
   }
 
   # A phrase as Kauai hands it to an instrument that hears len, level and
@@ -576,4 +553,4 @@ class Recipe {
   }
 }
 
-export {Recipe, RATE, FORMAT, resolved, merged, value, course}
+export {Recipe, RATE, resolved, merged, value, course}

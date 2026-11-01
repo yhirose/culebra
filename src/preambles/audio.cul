@@ -229,33 +229,40 @@ let _audio_module = fn () {
     new(rate: Long | Float = 44100) {
       @_id = _Audio.graph_new(rate)
     }
-    # `wires`: [parameter name, parts] for the parts the part takes in and
-    # for those that move it.
-    _part(family: String, kind: String, wires: Array, options: Array) {
-      for (name, parts) in wires {
-        for p in parts {
-          if class_of(p) != AudioGraphPart {
-            __raise(
-              "TypeError",
-              "type error: parameter '{name}' expects an Array of AudioGraphPart",
-            )
-          }
-          if p._graph._id != @_id {
-            __raise(
-              "ValueError",
-              "Audio.Graph: a part takes in parts of its own graph",
-            )
-          }
+    # `inputs`, the parts the part takes in, and `modulators`, those that
+    # move it, as their indexes in the graph.
+    _part(
+      family: String,
+      kind: String,
+      inputs: Array,
+      options: Array,
+      modulators: Array = [],
+    ) {
+      let wires = [
+        @_indexes("inputs", inputs),
+        @_indexes("modulators", modulators),
+      ]
+      AudioGraphPart.new(
+        self,
+        _Audio.graph_part(@_id, family, kind, wires, options),
+      )
+    }
+    _indexes(name: String, parts: Array) {
+      for p in parts {
+        if class_of(p) != AudioGraphPart {
+          __raise(
+            "TypeError",
+            "type error: parameter '{name}' expects an Array of AudioGraphPart",
+          )
+        }
+        if p._graph._id != @_id {
+          __raise(
+            "ValueError",
+            "Audio.Graph: a part takes in parts of its own graph",
+          )
         }
       }
-      let n = _Audio.graph_part(
-        @_id,
-        family,
-        kind,
-        wires.map(|w| w[1].map(|p| p._index)),
-        options,
-      )
-      AudioGraphPart.new(self, n)
+      parts.map(|p| p._index)
     }
     _value(part: AudioGraphPart, index: Long) {
       AudioGraphValue.new(self, part._index, index)
@@ -267,13 +274,13 @@ let _audio_module = fn () {
       feedback: Long | Float = 0.0,
       phase: Long | Float = 0.0,
     ) {
-      let p = @_part("wave", kind, [("inputs", []), ("modulators", modulators)], [freq, feedback, phase])
+      let p = @_part("wave", kind, [], [freq, feedback, phase], modulators)
       p.freq = @_value(p, 0)
       p.feedback = @_value(p, 1)
       p
     }
     noise(seed: Long = 1) {
-      @_part("noise", "", [("inputs", []), ("modulators", [])], [seed])
+      @_part("noise", "", [], [seed])
     }
     filter(
       kind: String,
@@ -281,17 +288,17 @@ let _audio_module = fn () {
       cutoff: Long | Float = 1000.0,
       q: Long | Float = 0.707,
     ) {
-      let p = @_part("filter", kind, [("input", [input]), ("modulators", [])], [cutoff, q])
+      let p = @_part("filter", kind, [input], [cutoff, q])
       p.cutoff = @_value(p, 0)
       p
     }
     gain(input: AudioGraphPart, gain: Long | Float = 1.0) {
-      let p = @_part("gain", "", [("input", [input]), ("modulators", [])], [gain])
+      let p = @_part("gain", "", [input], [gain])
       p.gain = @_value(p, 0)
       p
     }
     mix(inputs: Array, gain: Long | Float = 1.0) {
-      let p = @_part("gain", "", [("inputs", inputs), ("modulators", [])], [gain])
+      let p = @_part("gain", "", inputs, [gain])
       p.gain = @_value(p, 0)
       p
     }
@@ -299,7 +306,7 @@ let _audio_module = fn () {
       @_part(
         "resonate",
         "",
-        [("input", [input]), ("modulators", [])],
+        [input],
         [dry, ...flat_modes(modes, "Audio.Graph.resonate")],
       )
     }
@@ -308,7 +315,7 @@ let _audio_module = fn () {
       freq: Long | Float = 220.0,
       ring: Long | Float = 2.0,
     ) {
-      let p = @_part("pluck", "", [("input", [input]), ("modulators", [])], [freq, ring])
+      let p = @_part("pluck", "", [input], [freq, ring])
       p.freq = @_value(p, 0)
       p.ring = @_value(p, 1)
       p
@@ -321,8 +328,9 @@ let _audio_module = fn () {
       let p = @_part(
         "delay",
         "",
-        [("input", [input]), ("modulators", modulators)],
+        [input],
         [time],
+        modulators,
       )
       p.time = @_value(p, 0)
       p
