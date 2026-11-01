@@ -9855,13 +9855,15 @@ What it runs on: an x86-64 CPU with AVX2, BMI2, FMA and F16C (anything since
 about 2013), or Apple Silicon; on another CPU `Llama.load` answers with a
 `LlamaError` that names what is missing.
 
-On Linux a model goes to the GPU through Vulkan, when the build has
+On Linux and Windows a model goes to the GPU through Vulkan, when the build has
 the Vulkan backend (`-DCULEBRA_LLAMA_VULKAN`, on by default where the Vulkan
 headers, `glslc` and the SPIR-V headers are found) and the machine has a Vulkan
-driver and a GPU:
-NVIDIA, AMD and Intel GPUs alike. The driver is looked for when the first model
-is loaded, so a binary with the backend starts on a machine without one and runs
-the model on the CPU. `model.device()` says which it is, and why not a GPU.
+driver and a GPU: NVIDIA, AMD and Intel GPUs alike. The driver is looked for
+when the first model is loaded, so a binary with the backend starts on a machine
+without one and runs the model on the CPU. `model.device()` says which it is,
+and why not a GPU. The first run on a machine spends a few seconds while the
+GPU driver compiles the backend's shaders; the driver keeps them, so later runs
+do not.
 
 `culebra build` works with it. A program that names `Llama` links llama.cpp
 statically into the binary, which adds a few megabytes; a program that does not

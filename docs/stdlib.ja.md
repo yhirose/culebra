@@ -9445,11 +9445,12 @@ IO.println(r.text)
 動く環境は、AVX2、BMI2、FMA、F16Cを持つx86-64のCPU（2013年ごろ以降のもの）か、Apple Siliconです。
 それ以外のCPUでは、`Llama.load`が足りないものを挙げた`LlamaError`で答えます。
 
-Linuxでは、ビルドがVulkanのバックエンドを持ち（`-DCULEBRA_LLAMA_VULKAN`。Vulkanのヘッダー、`glslc`、
+LinuxとWindowsでは、ビルドがVulkanのバックエンドを持ち（`-DCULEBRA_LLAMA_VULKAN`。Vulkanのヘッダー、`glslc`、
 SPIR-Vのヘッダーが見つかれば既定で入ります）、機械にVulkanのドライバとGPUがあれば、モデルはVulkanを通してGPUで動きます。
 NVIDIA、AMD、IntelのどのGPUでも同じです。ドライバは最初のモデルを読み込むときに探すので、バックエンドを
 持つバイナリも、ドライバのない機械で起動して、モデルをCPUで動かします。どちらで動いているか、GPUでない
-ならなぜかは、`model.device()`でわかります。
+ならなぜかは、`model.device()`でわかります。その機械で最初に動かすときは、GPUのドライバがバックエンドの
+シェーダーをコンパイルするので数秒かかります。ドライバはそれを保存するので、2回目からはかかりません。
 
 `culebra build`でも使えます。`Llama`を名指しするプログラムにはllama.cppが静的にリンクされ、
 バイナリは数MB大きくなります。名指ししないプログラムには何も入りません。このバイナリはモデルをCPUで
