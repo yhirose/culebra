@@ -89,21 +89,28 @@ message(STATUS "llama.cpp ${CULEBRA_LLAMA_CPP_VERSION} deps cache: ${_llama_root
 # backends and the base, which the backends need in turn. _llama_aot_a is what
 # `culebra build` links (and the driver embeds): the CPU backend only, whose one
 # reference into the Vulkan backend src/runtime/llama_gpu_none.cc answers.
+#
+# ggml drops the lib prefix from its archives on every WIN32 build (its own
+# CMakeLists: "remove the lib prefix on win32 mingw"); llama keeps it.
+set(_ggml "${_llama_install}/lib/lib")
+if(WIN32)
+  set(_ggml "${_llama_install}/lib/")
+endif()
 set(_llama_aot_a
   "${_llama_install}/lib/libllama.a"
-  "${_llama_install}/lib/libggml.a"
-  "${_llama_install}/lib/libggml-cpu.a"
-  "${_llama_install}/lib/libggml-base.a")
+  "${_ggml}ggml.a"
+  "${_ggml}ggml-cpu.a"
+  "${_ggml}ggml-base.a")
 set(_llama_vulkan_a "")
 if(_llama_vulkan)
-  set(_llama_vulkan_a "${_llama_install}/lib/libggml-vulkan.a")
+  set(_llama_vulkan_a "${_ggml}ggml-vulkan.a")
 endif()
 set(_llama_a
   "${_llama_install}/lib/libllama.a"
-  "${_llama_install}/lib/libggml.a"
+  "${_ggml}ggml.a"
   ${_llama_vulkan_a}
-  "${_llama_install}/lib/libggml-cpu.a"
-  "${_llama_install}/lib/libggml-base.a")
+  "${_ggml}ggml-cpu.a"
+  "${_ggml}ggml-base.a")
 # For tools/checks/check_llama_vulkan_dynload.sh, which compares the forwarders
 # with what the archive names ("" without the backend).
 set(CULEBRA_LLAMA_VULKAN_ARCHIVE "${_llama_vulkan_a}" CACHE INTERNAL "")
@@ -118,7 +125,12 @@ endif()
 # What `culebra build` appends to the link of a program that names Llama: the
 # four statics by embedded name (@libllama.a@, see _rt_embed_extern in
 # CMakeLists.txt) and the system libraries, never a path of this machine.
-set(_llama_link "@libllama.a@ @libggml.a@ @libggml-cpu.a@ @libggml-base.a@")
+set(_llama_link "")
+foreach(_a IN LISTS _llama_aot_a)
+  cmake_path(GET _a FILENAME _a_name)
+  string(APPEND _llama_link "@${_a_name}@ ")
+endforeach()
+string(STRIP "${_llama_link}" _llama_link)
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   string(APPEND _llama_link " -lpthread -ldl -lm")
 elseif(APPLE)
