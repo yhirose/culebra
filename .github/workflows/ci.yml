@@ -394,7 +394,6 @@ jobs:
         uses: ./.github/actions/deps-cache
         with:
           prefix: linux-llama-deps
-          path: ${{ github.workspace }}/.deps-cache
           step: restore
 
       # Its own ccache, outside the shared prefix: CULEBRA_ENABLE_LLAMA is a
@@ -425,7 +424,6 @@ jobs:
         uses: ./.github/actions/deps-cache
         with:
           prefix: linux-llama-deps
-          path: ${{ github.workspace }}/.deps-cache
           step: save
           build-dir: build-dev-llama
 
@@ -510,7 +508,6 @@ jobs:
         uses: ./.github/actions/deps-cache
         with:
           prefix: windows-llama-deps
-          path: ${{ github.workspace }}/.deps-cache
           step: restore
 
       - name: Restore ccache
@@ -544,7 +541,6 @@ jobs:
         uses: ./.github/actions/deps-cache
         with:
           prefix: windows-llama-deps
-          path: ${{ github.workspace }}/.deps-cache
           step: save
           build-dir: build-win-llama
 
@@ -888,7 +884,6 @@ jobs:
         uses: ./.github/actions/deps-cache
         with:
           prefix: linux-canvas-deps
-          path: ${{ github.workspace }}/.deps-cache
           step: restore
 
       # No cross-job fallback key, for linux-assert's reason: the window knob is
@@ -916,9 +911,7 @@ jobs:
         uses: ./.github/actions/deps-cache
         with:
           prefix: linux-canvas-deps
-          path: ${{ github.workspace }}/.deps-cache
           step: save
-          build-dir: build
 
       - name: Report ccache stats
         run: ccache -s || true
@@ -1031,7 +1024,6 @@ jobs:
         uses: ./.github/actions/deps-cache
         with:
           prefix: macos-canvas-deps
-          path: ${{ github.workspace }}/.deps-cache
           step: restore
 
       # No cross-job fallback key, for linux-assert's reason: the window knob is
@@ -1053,9 +1045,7 @@ jobs:
         uses: ./.github/actions/deps-cache
         with:
           prefix: macos-canvas-deps
-          path: ${{ github.workspace }}/.deps-cache
           step: save
-          build-dir: build
 
       - name: Report ccache stats
         run: ccache -s || true
@@ -1142,7 +1132,6 @@ jobs:
         uses: ./.github/actions/deps-cache
         with:
           prefix: linux-canvas-deps
-          path: ${{ github.workspace }}/.deps-cache
           step: restore
 
       # No cross-job fallback key: CULEBRA_ENABLE_SCENE is a target-wide define,
@@ -1167,7 +1156,6 @@ jobs:
         uses: ./.github/actions/deps-cache
         with:
           prefix: linux-canvas-deps
-          path: ${{ github.workspace }}/.deps-cache
           step: save
           build-dir: build-scene
 
@@ -1855,6 +1843,8 @@ jobs:
   # actually appears — the same limit the macOS and Linux jobs have.
   windows-aot-build:
     runs-on: windows-latest
+    env:
+      CULEBRA_DEPS_CACHE: ${{ github.workspace }}/.deps
     # 60 for the build, plus the kit pack and round trip that used to be a
     # second 30-minute job. Still well under the two budgets it replaces.
     timeout-minutes: 75
@@ -1911,7 +1901,6 @@ jobs:
         uses: ./.github/actions/deps-cache
         with:
           prefix: windows-deps
-          path: ${{ github.workspace }}/.deps
           step: restore
       # The widest Windows configuration, and the only job that builds Http
       # (static OpenSSL) and Webview (WebView2) on Windows — which is to say it
@@ -1922,7 +1911,6 @@ jobs:
       - name: Configure (the Windows download's configuration)
         env:
           CCACHE_DIR: ${{ github.workspace }}/.ccache
-          CULEBRA_DEPS_CACHE: ${{ github.workspace }}/.deps
         run: misc/windows_toolchain/configure_windows_release.sh build-win-aot
 
       - name: Verify the Canvas window backend is in this build
@@ -1940,7 +1928,6 @@ jobs:
         uses: ./.github/actions/deps-cache
         with:
           prefix: windows-deps
-          path: ${{ github.workspace }}/.deps
           step: save
           build-dir: build-win-aot
       # After the build, not before it: the check looks for the Scene runtime
@@ -2364,6 +2351,8 @@ jobs:
   # archive, which is the axis under test.
   windows-scene:
     runs-on: windows-latest
+    env:
+      CULEBRA_DEPS_CACHE: ${{ github.workspace }}/.deps
     timeout-minutes: 75
     defaults:
       run:
@@ -2404,7 +2393,6 @@ jobs:
         uses: ./.github/actions/deps-cache
         with:
           prefix: windows-deps
-          path: ${{ github.workspace }}/.deps
           step: restore
 
       # The download's own configure script plus the one option that is this
@@ -2413,7 +2401,6 @@ jobs:
       - name: Configure (the Windows download's configuration, Scene ON)
         env:
           CCACHE_DIR: ${{ github.workspace }}/.ccache
-          CULEBRA_DEPS_CACHE: ${{ github.workspace }}/.deps
         run: misc/windows_toolchain/configure_windows_release.sh build-win-scene -DCULEBRA_ENABLE_SCENE=ON
 
       - name: Build (culebra driver + runtime archives)
@@ -2427,7 +2414,6 @@ jobs:
         uses: ./.github/actions/deps-cache
         with:
           prefix: windows-deps
-          path: ${{ github.workspace }}/.deps
           step: save
           build-dir: build-win-scene
       - name: Report ccache stats

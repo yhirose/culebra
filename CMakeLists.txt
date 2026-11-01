@@ -744,17 +744,11 @@ function(_culebra_deps_platform_key out)
   set(${out} "${_k}" PARENT_SCOPE)
 endfunction()
 
-# The deps-cache directories this configure uses, one name per line in
-# deps-cache-dirs.txt: the CI cache keys on exactly this
-# (.github/actions/deps-cache), so CMake is the only place a key is spelled.
+# The deps-cache directories this configure uses, one per line: the CI cache
+# keys on exactly this list (.github/actions/deps-cache).
 file(WRITE "${CMAKE_BINARY_DIR}/deps-cache-dirs.txt" "")
 function(_culebra_deps_cache_use dir)
-  set_property(GLOBAL APPEND PROPERTY CULEBRA_DEPS_CACHE_DIRS "${dir}")
-  get_property(_dirs GLOBAL PROPERTY CULEBRA_DEPS_CACHE_DIRS)
-  list(REMOVE_DUPLICATES _dirs)
-  list(SORT _dirs)
-  list(JOIN _dirs "\n" _text)
-  file(WRITE "${CMAKE_BINARY_DIR}/deps-cache-dirs.txt" "${_text}\n")
+  file(APPEND "${CMAKE_BINARY_DIR}/deps-cache-dirs.txt" "${dir}\n")
 endfunction()
 
 # Publish, in `tgt`'s dynamic symbol table, the names ORC JIT resolves out of the

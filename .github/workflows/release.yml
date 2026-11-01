@@ -219,6 +219,8 @@ jobs:
   windows-x64:
     needs: prepare
     runs-on: windows-latest
+    env:
+      CULEBRA_DEPS_CACHE: ${{ github.workspace }}/.deps
     # The LTO link alone runs ~40 min here; the vendored SDL3 + raylib build
     # adds a few more on a cold deps cache.
     timeout-minutes: 75
@@ -284,7 +286,6 @@ jobs:
         uses: ./.github/actions/deps-cache
         with:
           prefix: windows-deps
-          path: ${{ github.workspace }}/.deps
           step: restore
       # The feature set of ci.yml's windows-aot-build (the widest Windows
       # configuration that CI proves), LTO included — off, the way every
@@ -309,7 +310,6 @@ jobs:
       - name: Configure
         env:
           CCACHE_DIR: ${{ github.workspace }}/.ccache
-          CULEBRA_DEPS_CACHE: ${{ github.workspace }}/.deps
         run: misc/windows_toolchain/configure_windows_release.sh build
       # Before the build, not after: unlike the macOS and Linux jobs (whose
       # `just build` is one step) this one can catch a lost window backend
