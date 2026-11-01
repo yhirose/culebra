@@ -76,7 +76,7 @@ struct Result {
 // Where a model runs, decided when it is loaded.
 struct Device {
   std::string backend;  // "vulkan" or "cpu"
-  std::string name;     // the GPU's own description, or "CPU"
+  std::string name;     // the GPUs' descriptions, ", "-separated, or "CPU"
   std::string reason;   // empty when a GPU is used; otherwise why not
 };
 
@@ -263,15 +263,17 @@ inline Result from_lib(llamalib::Result&& r) {
   return out;
 }
 
-// The device llama.cpp put the model on. With no device list, its loader offloads
-// to every discrete GPU, or to the integrated ones when there is none
-// (llama_model_load_from_file_impl); the first of those is the one reported.
-inline Device chosen_device(bool gpu) {
+// The GPUs cpp-llamalib loaded the model with, named in order.
+inline Device loaded_device(const llamalib::Llama& lib, bool gpu) {
   if (!gpu) return {"cpu", "CPU", "gpu: false"};
-  ggml_backend_dev_t dev = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_GPU);
-  if (!dev) dev = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_IGPU);
-  if (!dev) return {"cpu", "CPU", gpu_unavailable_reason()};
-  return {gpu_backend(), ggml_backend_dev_description(dev), ""};
+  const auto& devs = lib.devices();
+  if (devs.empty()) return {"cpu", "CPU", gpu_unavailable_reason()};
+  std::string names;
+  for (auto dev : devs) {
+    if (!names.empty()) names += ", ";
+    names += ggml_backend_dev_description(dev);
+  }
+  return {gpu_backend(), names, ""};
 }
 
 // A handle that is not open: the one message for every method that needs a model.
@@ -326,8 +328,8 @@ CULEBRA_RT_LLAMA_LINKAGE int64_t load(const std::string& path,
     }
     return -1;
   }
-  return detail::model_intern(
-      new detail::Model{std::move(model), detail::chosen_device(opts.gpu)});
+  Device device = detail::loaded_device(*model, opts.gpu);
+  return detail::model_intern(new detail::Model{std::move(model), std::move(device)});
 }
 
 CULEBRA_RT_LLAMA_LINKAGE void close(int64_t id) {

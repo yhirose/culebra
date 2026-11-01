@@ -9629,7 +9629,7 @@ let verdict = m.generate("Is the sky blue? ", grammar: 'root ::= "yes" | "no"').
 | フィールド | |
 |---|---|
 | `backend` | `"vulkan"`か`"cpu"` |
-| `name` | GPUの名前（`"NVIDIA GeForce RTX 3090"`）か`"CPU"` |
+| `name` | GPUの名前（`"NVIDIA GeForce RTX 3090"`）。モデルを複数のGPUに分けて載せたときは、名前を`", "`でつないだもの。CPUなら`"CPU"` |
 | `reason` | モデルがGPUにあれば`nil`。そうでなければ理由で、`"gpu: false"`、`"built without GPU support"`、`"no Vulkan driver"`（この機械にVulkanのローダーがない）、`"no Vulkan device"`（ローダーはあるが、使えるGPUがない）のどれか |
 
 ```culebra

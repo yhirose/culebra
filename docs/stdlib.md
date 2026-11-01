@@ -10059,7 +10059,7 @@ Where the model runs, decided when it was loaded:
 | Field | |
 |---|---|
 | `backend` | `"vulkan"` or `"cpu"` |
-| `name` | the GPU's name (`"NVIDIA GeForce RTX 3090"`), or `"CPU"` |
+| `name` | the GPU's name (`"NVIDIA GeForce RTX 3090"`), the names joined with `", "` when the model is spread over several, or `"CPU"` |
 | `reason` | `nil` when the model is on a GPU; otherwise why not: `"gpu: false"`, `"built without GPU support"`, `"no Vulkan driver"` (no Vulkan loader on this machine) or `"no Vulkan device"` (a loader, but no GPU it can use) |
 
 ```culebra

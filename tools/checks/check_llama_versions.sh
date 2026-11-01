@@ -35,10 +35,13 @@ tag=$(git -C "$lib" describe --tags --exact-match 2>/dev/null || true)
 if [[ -z "$tag" ]]; then
   at=$(git -C "$lib" describe --tags --always 2>/dev/null || echo unknown)
   echo "llama-versions FAIL: $lib is at $at, not at a release tag" >&2
-  echo "  It is pinned to the tag named for the llama.cpp release: $version." >&2
+  echo "  It is pinned to the tag named for the llama.cpp release: $version" >&2
+  echo "  (or $version.N for a revision of the wrapper alone)." >&2
   exit 1
 fi
-if [[ "$tag" != "$version" ]]; then
+# The wrapper's tag is the release it was tested against, with a fourth number
+# for a revision of the wrapper alone (v0.8.0.1 is still built on v0.8.0).
+if [[ "$tag" != "$version"* || ! ${tag#"$version"} =~ ^(\.[0-9]+)?$ ]]; then
   echo "llama-versions FAIL: $lib is at $tag, but $cfg builds llama.cpp $version" >&2
   exit 1
 fi
