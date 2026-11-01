@@ -1356,28 +1356,15 @@ inline const auto FS = ::cpp_embedlib::EmbeddedFS{_entries};
 
   # Llama feature object: the strong culebra::llama::* bodies (the lone
   # llama.cpp anchor). Force-loaded only when the AST scan reports Llama use;
-  # the statics it needs ride _rt_embed_extern and CULEBRA_LLAMA_LINK.
+  # the statics it needs, and the GPU half its bodies call by name, ride
+  # _rt_embed_extern / _rt_embed_files and CULEBRA_LLAMA_LINK (or, for
+  # --llama-gpu, CULEBRA_LLAMA_GPU_LINK).
   if(CULEBRA_ENABLE_LLAMA)
-    # A program built by `culebra build` runs Llama on the CPU (llama_gpu_none.cc).
-    add_library(culebra_rt_llama STATIC ./src/runtime/culebra_rt_llama.cc
-                                        ./src/runtime/llama_gpu_none.cc)
+    add_library(culebra_rt_llama STATIC ./src/runtime/culebra_rt_llama.cc)
     target_compile_features(culebra_rt_llama PRIVATE cxx_std_23)
     target_compile_definitions(culebra_rt_llama PRIVATE CULEBRA_RT_LLAMA_STRONG=1)
     target_compile_options(culebra_rt_llama PRIVATE
       -ffunction-sections -fdata-sections)
-    # The same bodies with the Vulkan backend's loader forwarders in place of
-    # the CPU answer, for `culebra build --llama-gpu`. The Llama axis is the
-    # second with two archives (Http's --no-tls is the first): both are
-    # embedded, exactly one is force-loaded.
-    if(_llama_vulkan)
-      add_library(culebra_rt_llama_gpu STATIC ./src/runtime/culebra_rt_llama.cc
-                                              ./src/runtime/llama_vulkan_dynload.cc)
-      target_compile_features(culebra_rt_llama_gpu PRIVATE cxx_std_23)
-      target_compile_definitions(culebra_rt_llama_gpu PRIVATE CULEBRA_RT_LLAMA_STRONG=1)
-      target_include_directories(culebra_rt_llama_gpu SYSTEM PRIVATE ${Vulkan_INCLUDE_DIR})
-      target_compile_options(culebra_rt_llama_gpu PRIVATE
-        -ffunction-sections -fdata-sections)
-    endif()
   endif()
 
   # Embed the runtime archives into the `culebra` driver via
@@ -1483,11 +1470,12 @@ inline const auto FS = ::cpp_embedlib::EmbeddedFS{_entries};
     list(APPEND _rt_embed_files
       "${CMAKE_CURRENT_BINARY_DIR}/${CMAKE_STATIC_LIBRARY_PREFIX}culebra_rt_llama${CMAKE_STATIC_LIBRARY_SUFFIX}")
     list(APPEND _rt_embed_deps culebra_rt_llama)
-    if(_llama_vulkan)
+    # The GPU half the link fragments name (cmake/llama_build.cmake).
+    foreach(_g IN LISTS _llama_gpu_archives)
       list(APPEND _rt_embed_files
-        "${CMAKE_CURRENT_BINARY_DIR}/${CMAKE_STATIC_LIBRARY_PREFIX}culebra_rt_llama_gpu${CMAKE_STATIC_LIBRARY_SUFFIX}")
-      list(APPEND _rt_embed_deps culebra_rt_llama_gpu)
-    endif()
+        "${CMAKE_CURRENT_BINARY_DIR}/${CMAKE_STATIC_LIBRARY_PREFIX}${_g}${CMAKE_STATIC_LIBRARY_SUFFIX}")
+      list(APPEND _rt_embed_deps ${_g})
+    endforeach()
   endif()
   if(CULEBRA_WRAP_SOURCES)
     # Wrap declarations for AOT outputs. The TUs hold static registrars
@@ -1609,7 +1597,7 @@ inline const auto FS = ::cpp_embedlib::EmbeddedFS{_entries};
                       culebra_rt_regex culebra_rt_search
                       culebra_rt_search_segmenter culebra_rt_foreign
                       culebra_rt_codegen
-                      culebra_rt_sqlite culebra_rt_llama culebra_rt_llama_gpu culebra_rt_scene culebra_rt_canvas
+                      culebra_rt_sqlite culebra_rt_llama culebra_rt_scene culebra_rt_canvas
                       culebra_rt_audio culebra_rt_webview culebra_rt_wrap)
     if(TARGET ${_rt_feature})
       target_compile_definitions(${_rt_feature} PRIVATE
@@ -1882,6 +1870,10 @@ if(CULEBRA_ENABLE_JIT)
   if(CULEBRA_ENABLE_LLAMA)
     target_compile_definitions(culebra PRIVATE CULEBRA_LLAMA_LINK="${_llama_link}"
                                                CULEBRA_LLAMA_GPU_LINK="${_llama_gpu_link}")
+    # `--llama-gpu` has something to link (the driver embeds the backend).
+    if(_llama_vulkan)
+      target_compile_definitions(culebra PRIVATE CULEBRA_LLAMA_GPU_ENABLED)
+    endif()
   else()
     target_compile_definitions(culebra PRIVATE CULEBRA_LLAMA_LINK=""
                                                CULEBRA_LLAMA_GPU_LINK="")

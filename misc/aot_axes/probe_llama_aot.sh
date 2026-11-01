@@ -22,6 +22,7 @@ set -eu
 
 exe=${1:?usage: probe_llama_aot.sh <culebra binary> [work dir]}
 [ "${exe#/}" = "$exe" ] && exe="$PWD/$exe"
+needed_libs="$(cd "$(dirname "$0")/../.." && pwd)/tools/checks/needed_libs.sh"
 if [ -z "${CULEBRA_TEST_MODEL:-}" ]; then
   echo "probe_llama_aot: SKIP (CULEBRA_TEST_MODEL is not set)"
   exit 0
@@ -71,10 +72,7 @@ esac
 "$exe" build --llama-gpu llama_aot.cul -o llama_aot_gpu
 bin=llama_aot_gpu
 [ -f "$bin.exe" ] && bin="$bin.exe"
-case "$(uname -s)" in
-  Linux) libs=$(readelf -d "$bin" 2>/dev/null | grep NEEDED || true) ;;
-  *) libs=$(objdump -p "$bin" | grep 'DLL Name' || true) ;;
-esac
+libs=$("$needed_libs" "$bin")
 if grep -qi vulkan <<<"$libs"; then
   fail "the --llama-gpu binary links the Vulkan loader: [$libs]"
 fi

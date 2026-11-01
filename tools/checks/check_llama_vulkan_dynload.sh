@@ -27,13 +27,10 @@ src=src/runtime/llama_vulkan_dynload.cc
 case "$(uname -s)" in
   Linux)
     bin="$BUILD_DIR/culebra"
-    # stderr: an older readelf warns about DWARF forms it predates; -d reads none.
-    needed() { readelf -d "$1" 2>/dev/null | grep NEEDED || true; }
     exported() { nm -D --defined-only "$1" | awk '{print $3}'; }
     ;;
   MINGW* | MSYS* | CYGWIN*)
     bin="$BUILD_DIR/culebra.exe"
-    needed() { objdump -p "$1" | grep 'DLL Name' || true; }
     # The export table's name column; empty when the image exports nothing.
     exported() { objdump -p "$1" | sed -n '/\[Ordinal\/Name Pointer\] Table/,/^$/p' | awk '{print $NF}'; }
     ;;
@@ -53,7 +50,7 @@ fi
 
 fail=0
 
-libs=$(needed "$bin")
+libs=$(tools/checks/needed_libs.sh "$bin")
 if grep -qi vulkan <<<"$libs"; then
   echo "ERROR: the driver links the Vulkan loader; it will not start without it" >&2
   echo "  (the loader belongs behind dlopen/LoadLibrary: $src)" >&2

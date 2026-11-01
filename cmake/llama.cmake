@@ -131,14 +131,20 @@ endif()
 # statics by embedded name (@libllama.a@, see _rt_embed_extern in
 # CMakeLists.txt) and the system libraries, never a path of this machine.
 # _llama_link is the default (CPU) link; _llama_gpu_link, for `--llama-gpu`,
-# is the driver's own set, the Vulkan backend included ("" without it).
-function(_llama_fragment out archives)
+# is the driver's own set, the Vulkan backend included ("" without it). Each
+# ends with the GPU half the Llama bodies call by name (cmake/llama_build.cmake
+# builds these archives; the driver embeds them).
+set(_llama_gpu_archives culebra_llama_gpu_none)
+if(_llama_vulkan)
+  list(APPEND _llama_gpu_archives culebra_llama_gpu_vulkan)
+endif()
+function(_llama_fragment out archives gpu_half)
   set(_f "")
   foreach(_a IN LISTS archives)
     cmake_path(GET _a FILENAME _a_name)
     string(APPEND _f "@${_a_name}@ ")
   endforeach()
-  string(STRIP "${_f}" _f)
+  string(APPEND _f "@${CMAKE_STATIC_LIBRARY_PREFIX}${gpu_half}${CMAKE_STATIC_LIBRARY_SUFFIX}@")
   if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     string(APPEND _f " -lpthread -ldl -lm")
   elseif(APPLE)
@@ -146,10 +152,10 @@ function(_llama_fragment out archives)
   endif()
   set(${out} "${_f}" PARENT_SCOPE)
 endfunction()
-_llama_fragment(_llama_link "${_llama_aot_a}")
+_llama_fragment(_llama_link "${_llama_aot_a}" culebra_llama_gpu_none)
 set(_llama_gpu_link "")
 if(_llama_vulkan)
-  _llama_fragment(_llama_gpu_link "${_llama_a}")
+  _llama_fragment(_llama_gpu_link "${_llama_a}" culebra_llama_gpu_vulkan)
 endif()
 
 # Every translation unit that reaches stdlib/bindings.h compiles the Llama rows

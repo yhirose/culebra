@@ -506,6 +506,12 @@ static constexpr bool kEmbedsLlama =
 #else
     false;
 #endif
+static constexpr bool kEmbedsLlamaGpu =
+#if defined(CULEBRA_LLAMA_GPU_ENABLED)
+    true;
+#else
+    false;
+#endif
 static constexpr bool kEmbedsScene =
 #if defined(CULEBRA_ENABLE_SCENE)
     true;
@@ -544,11 +550,29 @@ static constexpr bool kEmbedsWebview =
 //
 // Adding an axis is one row here plus its CMake link fragment — the scan, the
 // force-load and the link append all read this table.
+//
+// An axis may have one variant: a `culebra build` flag that links it another
+// way (--no-tls, --llama-gpu). The flag is parsed, checked and applied from
+// here, so a variant is data, not a special case in run_build.
+struct AxisVariant {
+  const char* flag = nullptr;     // e.g. "--no-tls"; null = the axis has none
+  const char* archive = nullptr;  // force-loaded instead; null = the axis's own
+  const char* link_flags = "";    // appended instead of the axis's
+  bool embedded = false;          // this driver can link the variant
+  // A variant that adds code promises the binary something, so it is refused
+  // when it cannot keep that promise (the axis unused, or this driver built
+  // without it). One that removes code (--no-tls) has nothing to promise and is
+  // simply moot for a program that does not use the axis.
+  bool adds = false;
+  const char* missing = "";       // what a driver without it lacks
+};
+
 struct FeatureAxis {
   const char* names[4];    // namespaces that trigger it (trailing may be null)
   const char* archive;     // force-loaded on a hit
   const char* link_flags;  // appended on a hit ("" when built out)
   bool embedded;           // this driver carries `archive`
+  AxisVariant variant = {};
 };
 
 static constexpr FeatureAxis kFeatureAxes[] = {
@@ -556,8 +580,12 @@ static constexpr FeatureAxis kFeatureAxes[] = {
     // program references no cblas symbol and drops the link entirely.
     {{"Tensor"}, "libculebra_rt_tensor.a", CULEBRA_BLAS_LINK, true},
     // CULEBRA_SSL_LINK carries OpenSSL *and* zlib; a non-Http binary is ~4 MB
-    // lighter for skipping it.
-    {{"Http"}, "libculebra_rt_http.a", CULEBRA_SSL_LINK, true},
+    // lighter for skipping it. --no-tls swaps in the httplib built without
+    // OpenSSL, which is the whole point of the flag (OpenSSL is 82% of what
+    // Http adds).
+    {{"Http"}, "libculebra_rt_http.a", CULEBRA_SSL_LINK, true,
+     {.flag = "--no-tls", .archive = "libculebra_rt_http_notls.a",
+      .link_flags = CULEBRA_SSL_LINK_NOTLS, .embedded = true}},
     // A duplicate -lz when Http is also used is harmless (the linker dedupes).
     // `to_png` rides this axis: the PNG encoder deflates through the same zlib
     // choke (see image.h), so a program that encodes an image needs the archive
@@ -573,8 +601,12 @@ static constexpr FeatureAxis kFeatureAxes[] = {
     // culebra_rt_sqlite is self-contained; the flags are its platform deps.
     {{"SQLite"}, "libculebra_rt_sqlite.a", CULEBRA_SQLITE_LINK, kEmbedsSqlite},
     // llama.h: weak stubs in the core archive, the strong bodies here; the
-    // flags name the four llama.cpp statics the driver embeds.
-    {{"Llama"}, "libculebra_rt_llama.a", CULEBRA_LLAMA_LINK, kEmbedsLlama},
+    // flags name the llama.cpp statics the driver embeds and the GPU half the
+    // bodies call by name. --llama-gpu links the Vulkan backend's statics and
+    // forwarders instead of the CPU half; the bodies are the same.
+    {{"Llama"}, "libculebra_rt_llama.a", CULEBRA_LLAMA_LINK, kEmbedsLlama,
+     {.flag = "--llama-gpu", .link_flags = CULEBRA_LLAMA_GPU_LINK,
+      .embedded = kEmbedsLlamaGpu, .adds = true, .missing = "the Vulkan backend"}},
     // Scene and Webview have no weak choke — they simply aren't in the core
     // archive, so a program that names neither references no raylib/WebKit
     // symbol. What gets force-loaded is the wrap registrar nothing calls by name.
@@ -617,18 +649,7 @@ static constexpr FeatureAxis kFeatureAxes[] = {
 // Cross-compiling with Tensor would need a target-specific BLAS link, which we
 // don't bundle — run_build rejects that pair up front by this row.
 static constexpr size_t kTensorAxis = 0;
-// The one axis with two archives rather than one: --no-tls swaps in the
-// httplib built without OpenSSL, which is the whole point of the flag (OpenSSL
-// is 82% of what Http adds). Both are embedded, exactly one is force-loaded.
-static constexpr size_t kHttpAxis = 1;
-// The second axis with two archives: --llama-gpu swaps in the same bodies with
-// the Vulkan backend's loader forwarders, and links the backend itself. Both
-// are embedded when this driver carries the backend.
-static constexpr size_t kLlamaAxis = 4;
-static constexpr bool kEmbedsLlamaGpu = std::string_view(CULEBRA_LLAMA_GPU_LINK).size() > 0;
 static_assert(std::string_view(kFeatureAxes[kTensorAxis].names[0]) == "Tensor");
-static_assert(std::string_view(kFeatureAxes[kHttpAxis].names[0]) == "Http");
-static_assert(std::string_view(kFeatureAxes[kLlamaAxis].names[0]) == "Llama");
 
 // An axis whose link needs a whole third-party static (OpenSSL for Http, SDL3 +
 // raylib for Scene/Canvas) names it `@libssl.a@` rather than by the path it sat
@@ -695,8 +716,8 @@ struct BuildOptions {
   string rt_lib;     // override runtime archive path (for cross-compile)
   bool emit_llvm = false;
   bool keep_symbols = false;  // skip the symbol strip (for debugging)
-  bool no_tls = false;        // link the Http axis without OpenSSL
-  bool llama_gpu = false;     // link the Llama axis with the Vulkan backend
+  // Per kFeatureAxes row: its variant's flag was given (--no-tls, --llama-gpu).
+  bool variant[std::size(kFeatureAxes)] = {};
   int opt_level = 2;
 };
 #endif  // CULEBRA_JIT_ENABLED — end of build/wrap-only helpers
@@ -894,10 +915,12 @@ bool parse_build_command_line(int argc, const char** argv, BuildOptions& opts,
       opts.emit_llvm = true;
     } else if (arg == "--keep-symbols") {
       opts.keep_symbols = true;
-    } else if (arg == "--no-tls") {
-      opts.no_tls = true;
-    } else if (arg == "--llama-gpu") {
-      opts.llama_gpu = true;
+    } else if (auto v = std::find_if(std::begin(kFeatureAxes), std::end(kFeatureAxes),
+                                     [&](const FeatureAxis& ax) {
+                                       return ax.variant.flag && arg == ax.variant.flag;
+                                     });
+               v != std::end(kFeatureAxes)) {
+      opts.variant[v - std::begin(kFeatureAxes)] = true;
     } else if (arg.starts_with("--target=")) {
       opts.target = arg.substr(9);
     } else if (arg.starts_with("--sysroot=")) {
@@ -1034,16 +1057,17 @@ int run_build(const BuildOptions& opts) {
         "supported. Drop Tensor references for now.");
     return 1;
   }
-  // Unlike --no-tls, which a program without Http just ignores, --llama-gpu
-  // promises the binary ~42 MB of GPU code; when it cannot keep that promise
-  // it says so instead of building something else.
-  if (opts.llama_gpu) {
-    const char* why = !kEmbedsLlamaGpu   ? "this culebra was built without the Vulkan backend"
-                      : cross            ? "not supported with --target=<triple>"
-                      : !used[kLlamaAxis] ? "the program does not use Llama"
-                                         : nullptr;
-    if (why) {
-      std::println(stderr, "culebra build: --llama-gpu: {}", why);
+  // A variant that adds code is refused when it cannot add it (AxisVariant).
+  for (size_t i = 0; i < std::size(kFeatureAxes); i++) {
+    const auto& v = kFeatureAxes[i].variant;
+    if (!opts.variant[i] || !v.adds) continue;
+    std::string why = !v.embedded ? std::format("this culebra was built without {}", v.missing)
+                      : cross     ? std::string("not supported with --target=<triple>")
+                      : !used[i]  ? std::format("the program does not use {}",
+                                                kFeatureAxes[i].names[0])
+                                  : std::string();
+    if (!why.empty()) {
+      std::println(stderr, "culebra build: {}: {}", v.flag, why);
       return 1;
     }
   }
@@ -1302,19 +1326,11 @@ int run_build(const BuildOptions& opts) {
   for (size_t i = 0; i < std::size(kFeatureAxes); i++) {
     if (!used[i]) continue;
     const auto& ax = kFeatureAxes[i];
-    // The Http axis is the one with two archives: --no-tls picks the httplib
-    // built without OpenSSL, and the link that goes with it keeps only what
-    // httplib itself needs (zlib, threads, sockets).
-    bool notls = (i == kHttpAxis && opts.no_tls);
-    bool llama_gpu = (i == kLlamaAxis && opts.llama_gpu);
-    const char* archive = notls       ? "libculebra_rt_http_notls.a"
-                          : llama_gpu ? "libculebra_rt_llama_gpu.a"
-                                      : ax.archive;
-    const char* link = notls       ? CULEBRA_SSL_LINK_NOTLS
-                       : llama_gpu ? CULEBRA_LLAMA_GPU_LINK
-                                   : ax.link_flags;
+    // The axis's variant, when its flag was given, links it the other way.
+    bool alt = opts.variant[i];
+    const char* archive = alt && ax.variant.archive ? ax.variant.archive : ax.archive;
     if (host_build && ax.embedded) force_load_feature(feature_objs, archive);
-    expand_archive_names(feature_links, link);
+    expand_archive_names(feature_links, alt ? ax.variant.link_flags : ax.link_flags);
   }
   // The wrap archive holds static registrars nothing references by name, so it
   // needs the same force-load for the binding to register at all; its flags are

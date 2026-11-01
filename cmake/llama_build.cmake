@@ -30,29 +30,39 @@ if(NOT EXISTS "${_llama_install}/lib/libllama.a")
     DEPENDEES install)
 endif()
 
-# The GPU half every in-process binary links after the statics: the Vulkan
-# loader forwarders, or the answer that there is no GPU backend
-# (stdlib/llama_gpu.h). Placed after ggml's archives so it resolves their
-# references to it.
+# The GPU half (stdlib/llama_gpu.h), linked after the statics so it resolves
+# their references to it: the answer that there is no GPU backend, or the
+# Vulkan loader forwarders. Two small archives rather than code in the Llama
+# bodies, because the bodies call the half by name: the driver links the one it
+# carries, and `culebra build` names one in its link fragment (_llama_link,
+# _llama_gpu_link), so --llama-gpu changes the link and nothing else. Both are
+# embedded for that (CMakeLists, _rt_embed_files).
+add_library(culebra_llama_gpu_none STATIC ./src/runtime/llama_gpu_none.cc)
+set(_llama_gpu_targets culebra_llama_gpu_none)
 if(_llama_vulkan)
-  add_library(culebra_llama_gpu STATIC ./src/runtime/llama_vulkan_dynload.cc)
-  target_include_directories(culebra_llama_gpu SYSTEM PRIVATE ${Vulkan_INCLUDE_DIR})
+  add_library(culebra_llama_gpu_vulkan STATIC ./src/runtime/llama_vulkan_dynload.cc)
+  target_include_directories(culebra_llama_gpu_vulkan SYSTEM PRIVATE ${Vulkan_INCLUDE_DIR})
   # The forwarders must not reach the dynamic symbol table (see the TU).
-  target_compile_options(culebra_llama_gpu PRIVATE -fvisibility=hidden)
-  target_link_libraries(culebra_llama_gpu ${CMAKE_DL_LIBS})
+  target_compile_options(culebra_llama_gpu_vulkan PRIVATE -fvisibility=hidden)
+  target_link_libraries(culebra_llama_gpu_vulkan ${CMAKE_DL_LIBS})
+  list(APPEND _llama_gpu_targets culebra_llama_gpu_vulkan)
+  set(_llama_gpu_lib culebra_llama_gpu_vulkan)
 else()
-  add_library(culebra_llama_gpu STATIC ./src/runtime/llama_gpu_none.cc)
+  set(_llama_gpu_lib culebra_llama_gpu_none)
 endif()
-target_compile_features(culebra_llama_gpu PRIVATE cxx_std_23)
-if(TARGET llama_ext)
-  add_dependencies(culebra_llama_gpu llama_ext)
-endif()
+foreach(_t IN LISTS _llama_gpu_targets)
+  target_compile_features(${_t} PRIVATE cxx_std_23)
+  target_compile_options(${_t} PRIVATE -ffunction-sections -fdata-sections)
+  if(TARGET llama_ext)
+    add_dependencies(${_t} llama_ext)
+  endif()
+endforeach()
 
 # The in-process lanes run Llama straight from the driver. The embedding tests
 # reach the same rows through bindings.h, so they link the statics as well.
 # Everything that compiles those rows waits for the headers llama.cpp installs.
 foreach(_t culebra smoke_suite)
-  target_link_libraries(${_t} ${_llama_a} culebra_llama_gpu ${_llama_system_libs})
+  target_link_libraries(${_t} ${_llama_a} ${_llama_gpu_lib} ${_llama_system_libs})
   if(TARGET llama_ext)
     add_dependencies(${_t} llama_ext)
   endif()
@@ -62,14 +72,14 @@ endforeach()
 # cannot be loaded is the wrapper's ModelLoadError.
 add_executable(llama_smoke test/llama_smoke.cc)
 target_compile_features(llama_smoke PRIVATE cxx_std_23)
-target_link_libraries(llama_smoke ${_llama_a} culebra_llama_gpu ${_llama_system_libs})
+target_link_libraries(llama_smoke ${_llama_a} ${_llama_gpu_lib} ${_llama_system_libs})
 add_test(NAME llama_smoke COMMAND llama_smoke)
 
 # The model handle of stdlib/llama.h. The part that needs a model runs when
 # CULEBRA_TEST_MODEL names a GGUF file.
 add_executable(llama_test test/llama_test.cc)
 target_compile_features(llama_test PRIVATE cxx_std_23)
-target_link_libraries(llama_test ${_llama_a} culebra_llama_gpu ${_llama_system_libs})
+target_link_libraries(llama_test ${_llama_a} ${_llama_gpu_lib} ${_llama_system_libs})
 add_test(NAME llama_test COMMAND llama_test)
 
 foreach(_t llama_smoke llama_test)
@@ -80,7 +90,7 @@ endforeach()
 
 # The AOT half: the strong archive compiles against llama.cpp's headers, and the
 # statics are packed into the driver (_rt_embed_extern) once they are published.
-foreach(_t culebra_rt_llama culebra_rt_llama_gpu culebra_rt_packed)
+foreach(_t culebra_rt_llama culebra_rt_packed)
   if(TARGET ${_t} AND TARGET llama_ext)
     add_dependencies(${_t} llama_ext)
   endif()
