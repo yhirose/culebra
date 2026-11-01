@@ -79,7 +79,10 @@ endif()
 if(CMAKE_OSX_DEPLOYMENT_TARGET)
   list(APPEND _llama_key "macos${CMAKE_OSX_DEPLOYMENT_TARGET}")
 endif()
-list(APPEND _llama_key "llama${CULEBRA_LLAMA_CPP_VERSION}" "${_llama_src_hash}"
+# The compiler too: gcc- and clang-built statics (the Windows CI lanes use
+# both) must not be served for each other from one cache.
+list(APPEND _llama_key "${CMAKE_CXX_COMPILER_ID}${CMAKE_CXX_COMPILER_VERSION}"
+                       "llama${CULEBRA_LLAMA_CPP_VERSION}" "${_llama_src_hash}"
                        "cfg${_llama_args_hash}")
 string(REPLACE ";" "-" _llama_key "${_llama_key}")
 set(_llama_install "${_llama_root}/${_llama_key}/llama")
@@ -91,7 +94,9 @@ message(STATUS "llama.cpp ${CULEBRA_LLAMA_CPP_VERSION} deps cache: ${_llama_root
 # reference into the Vulkan backend src/runtime/llama_gpu_none.cc answers.
 #
 # ggml drops the lib prefix from its archives on every WIN32 build (its own
-# CMakeLists: "remove the lib prefix on win32 mingw"); llama keeps it.
+# CMakeLists: "remove the lib prefix on win32 mingw"); llama keeps it. The
+# names cannot come from ggml's installed package config: the paths are needed
+# here, at configure time, before the ExternalProject has built anything.
 set(_ggml "${_llama_install}/lib/lib")
 if(WIN32)
   set(_ggml "${_llama_install}/lib/")

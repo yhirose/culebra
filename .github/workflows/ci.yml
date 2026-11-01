@@ -456,11 +456,12 @@ jobs:
           bash tools/checks/check_aot_link_portability.sh build-gate
 
   # linux-llama's in-process half on Windows: the driver with Llama and the
-  # Vulkan backend, built under UCRT64 like every Windows job (MSYS2 packages
-  # the Vulkan headers, glslc and the SPIR-V headers). The runner has no GPU, so
-  # models run on the CPU; the built driver is uploaded so it can be run on a
-  # machine that has one. `culebra build` with Llama on Windows is not covered
-  # yet.
+  # Vulkan backend, in the Windows download's configuration (clang + lld, like
+  # windows-scene) so the llama.cpp statics are built and linked by the
+  # toolchain a release would use. MSYS2 packages the Vulkan headers, glslc and
+  # the SPIR-V headers. The runner has no GPU, so models run on the CPU; the
+  # driver is uploaded so it can be run on a machine that has one. `culebra
+  # build` with Llama on Windows is not covered yet.
   windows-llama:
     runs-on: windows-latest
     timeout-minutes: 60
@@ -489,6 +490,8 @@ jobs:
             mingw-w64-ucrt-x86_64-llvm
             mingw-w64-ucrt-x86_64-ccache
             mingw-w64-ucrt-x86_64-openssl
+            mingw-w64-ucrt-x86_64-clang
+            mingw-w64-ucrt-x86_64-lld
             mingw-w64-ucrt-x86_64-vulkan-devel
             mingw-w64-ucrt-x86_64-shaderc
             mingw-w64-ucrt-x86_64-spirv-headers
@@ -514,22 +517,14 @@ jobs:
             https://huggingface.co/ggml-org/models/resolve/main/tinyllamas/stories260K.gguf
           echo "270cba1bd5109f42d03350f60406024560464db173c0e387d91f0426d3bd256d  $CULEBRA_TEST_MODEL" | sha256sum -c -
 
-      # ON, not AUTO, for the reason linux-llama gives.
-      - name: Configure (Llama ON, Vulkan ON)
+      # The download's own configure script plus this job's subject, with the
+      # AOT runtime archives and Webview left out (not what is tested here).
+      # Vulkan ON, not AUTO, for the reason linux-llama gives.
+      - name: Configure (the Windows download's configuration, Llama and Vulkan ON)
         run: |
-          cmake -S . -B build-win-llama -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_CXX_COMPILER=g++ \
-            -DCMAKE_C_COMPILER=gcc \
-            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
-            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
-            -DCMAKE_EXE_LINKER_FLAGS="-static -static-libgcc -static-libstdc++" \
-            -DCULEBRA_ENABLE_JIT=ON \
-            -DCULEBRA_ENABLE_WEBVIEW=OFF \
-            -DCULEBRA_DEV_NO_RT=ON \
-            -DCULEBRA_LTO=OFF \
-            -DCULEBRA_ENABLE_LLAMA=ON \
-            -DCULEBRA_LLAMA_VULKAN=ON
+          misc/windows_toolchain/configure_windows_release.sh build-win-llama \
+            -DCULEBRA_ENABLE_WEBVIEW=OFF -DCULEBRA_DEV_NO_RT=ON \
+            -DCULEBRA_ENABLE_LLAMA=ON -DCULEBRA_LLAMA_VULKAN=ON
 
       - name: Build
         run: cmake --build build-win-llama --target culebra llama_smoke llama_test -j
@@ -554,20 +549,17 @@ jobs:
           ./build-win-llama/culebra.exe --vm tests/llama/test_llama.cul
           ./build-win-llama/culebra.exe --jit tests/llama/test_llama.cul
 
-      # The driver and the DLLs it needs from UCRT64 (none of them Vulkan's),
-      # to be run where there is a GPU.
-      - name: Collect the driver
-        run: |
-          mkdir -p dist
-          cp build-win-llama/culebra.exe dist/
-          ldd dist/culebra.exe | awk '$3 ~ /ucrt64/ {print $3}' | xargs -r -I{} cp {} dist/
-          ls -l dist
+      # The release's gate: only system DLLs, so the uploaded .exe runs alone
+      # (vulkan-1.dll is not on its list either).
+      - name: Verify standalone binary (only system DLLs)
+        run: misc/windows_toolchain/verify_standalone_exe.sh build-win-llama/culebra.exe
 
+      # To be run where there is a GPU.
       - uses: actions/upload-artifact@v4
         with:
           name: culebra-windows-llama-vulkan
-          path: dist/
-          retention-days: 7
+          path: build-win-llama/culebra.exe
+          retention-days: 1
 
   # Release-to-release differential (tools/difftest/release_diff.sh): the
   # generated corpus under the latest published binary and under this commit,
