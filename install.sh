@@ -1,6 +1,7 @@
 #!/bin/sh
 # Installs culebra from the latest GitHub release (or CULEBRA_VERSION, e.g.
-# "v0.4.0") into /usr/local/bin (or CULEBRA_INSTALL_DIR).
+# "v0.4.0") into /usr/local/bin (or CULEBRA_INSTALL_DIR). CULEBRA_FLAVOR=slim
+# installs the slim download (the VM alone) instead of the full one.
 #
 #   curl -fsSL https://raw.githubusercontent.com/yhirose/culebra/master/install.sh | sh
 #
@@ -25,6 +26,15 @@ case "$os-$arch" in
     echo "  Windows: winget install yhirose.culebra" >&2
     echo "  Otherwise, download a binary from:" >&2
     echo "    https://github.com/$repo/releases/latest" >&2
+    exit 1
+    ;;
+esac
+
+case "${CULEBRA_FLAVOR:-full}" in
+  full) suffix= ;;
+  slim) suffix=-slim ;;
+  *)
+    echo "install.sh: CULEBRA_FLAVOR is full or slim, not '$CULEBRA_FLAVOR'" >&2
     exit 1
     ;;
 esac
@@ -55,7 +65,7 @@ else
   exit 1
 fi
 
-archive="culebra-$target.tar.gz"
+archive="culebra-$target$suffix.tar.gz"
 workdir=$(mktemp -d "${TMPDIR:-/tmp}/culebra-install.XXXXXX")
 trap 'rm -rf "$workdir"' EXIT
 

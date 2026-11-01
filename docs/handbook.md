@@ -98,11 +98,20 @@ nothing else to put on the machine. One subcommand is the exception:
 that has never built anything does not have
 ([`deployment.md` §1](deployment.md#host-requirements)).
 
-| Platform | Download |
-|---|---|
-| macOS (Apple Silicon) | [culebra-macos-arm64.tar.gz](https://github.com/yhirose/culebra/releases/latest/download/culebra-macos-arm64.tar.gz) |
-| Linux (x86-64) | [culebra-linux-x64.tar.gz](https://github.com/yhirose/culebra/releases/latest/download/culebra-linux-x64.tar.gz) |
-| Windows (x86-64) | [culebra-windows-x64.zip](https://github.com/yhirose/culebra/releases/latest/download/culebra-windows-x64.zip) |
+| Platform | Full | Slim |
+|---|---|---|
+| macOS (Apple Silicon) | [culebra-macos-arm64.tar.gz](https://github.com/yhirose/culebra/releases/latest/download/culebra-macos-arm64.tar.gz) | [culebra-macos-arm64-slim.tar.gz](https://github.com/yhirose/culebra/releases/latest/download/culebra-macos-arm64-slim.tar.gz) |
+| Linux (x86-64) | [culebra-linux-x64.tar.gz](https://github.com/yhirose/culebra/releases/latest/download/culebra-linux-x64.tar.gz) | [culebra-linux-x64-slim.tar.gz](https://github.com/yhirose/culebra/releases/latest/download/culebra-linux-x64-slim.tar.gz) |
+| Windows (x86-64) | [culebra-windows-x64.zip](https://github.com/yhirose/culebra/releases/latest/download/culebra-windows-x64.zip) | [culebra-windows-x64-slim.zip](https://github.com/yhirose/culebra/releases/latest/download/culebra-windows-x64-slim.zip) |
+
+The full download is everything the documentation describes: both engines,
+`culebra build`, the Canvas window, `Scene`, `Audio`, `Webview`, and `Llama`
+(a language model run in the process, on the GPU through Vulkan on Linux and
+Windows). The slim download is the bytecode VM alone, with the rest of the
+standard library (`Http`, `SQLite`, `FS` and so on): a small file that starts
+fast, for running scripts, a coding agent's included. Without LLVM it has no
+`--jit` and no `culebra build`. `install.sh` installs the slim one when
+`CULEBRA_FLAVOR=slim` is set.
 
 Unpacking from the command line also avoids the quarantine flag macOS
 puts on anything extracted through Finder — the binaries are unsigned:

@@ -79,11 +79,18 @@ APIリファレンスは[`stdlib.ja.md`](stdlib.ja.md)を参照してくださ�
 `culebra build`はホストのC++コンパイラでリンクするので、
 一度も何もビルドしたことのないマシンにはそれがありません（[`deployment.ja.md` §1](deployment.ja.md#ホスト側に必要なもの)）。
 
-| プラットフォーム | ダウンロード |
-|---|---|
-| macOS (Apple Silicon) | [culebra-macos-arm64.tar.gz](https://github.com/yhirose/culebra/releases/latest/download/culebra-macos-arm64.tar.gz) |
-| Linux (x86-64) | [culebra-linux-x64.tar.gz](https://github.com/yhirose/culebra/releases/latest/download/culebra-linux-x64.tar.gz) |
-| Windows (x86-64) | [culebra-windows-x64.zip](https://github.com/yhirose/culebra/releases/latest/download/culebra-windows-x64.zip) |
+| プラットフォーム | 全部入り | スリム |
+|---|---|---|
+| macOS (Apple Silicon) | [culebra-macos-arm64.tar.gz](https://github.com/yhirose/culebra/releases/latest/download/culebra-macos-arm64.tar.gz) | [culebra-macos-arm64-slim.tar.gz](https://github.com/yhirose/culebra/releases/latest/download/culebra-macos-arm64-slim.tar.gz) |
+| Linux (x86-64) | [culebra-linux-x64.tar.gz](https://github.com/yhirose/culebra/releases/latest/download/culebra-linux-x64.tar.gz) | [culebra-linux-x64-slim.tar.gz](https://github.com/yhirose/culebra/releases/latest/download/culebra-linux-x64-slim.tar.gz) |
+| Windows (x86-64) | [culebra-windows-x64.zip](https://github.com/yhirose/culebra/releases/latest/download/culebra-windows-x64.zip) | [culebra-windows-x64-slim.zip](https://github.com/yhirose/culebra/releases/latest/download/culebra-windows-x64-slim.zip) |
+
+全部入り版は、ドキュメントが説明するものをすべて含みます。2つのエンジン、`culebra build`、Canvasの窓、
+`Scene`、`Audio`、`Webview`、`Llama`（プロセスの中で動く言語モデル。LinuxとWindowsではVulkanでGPUを使います）です。
+スリム版は、バイトコードVMと、それ以外の標準ライブラリ（`Http`、`SQLite`、`FS`など）だけです。
+ファイルが小さく起動が速いので、スクリプトの実行（コーディングエージェントからの実行も含む）に向きます。
+LLVMを含まないので、`--jit`と`culebra build`はありません。`install.sh`は、`CULEBRA_FLAVOR=slim`を
+設定するとスリム版を入れます。
 
 コマンドラインで展開すると、macOSがFinder経由の展開物に付ける隔離フラグも避けられます(バイナリは未署名):
 
