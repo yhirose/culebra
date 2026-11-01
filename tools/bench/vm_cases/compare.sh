@@ -45,7 +45,9 @@ cd "$(dirname "$0")"
 
 # A Windows binary ends its lines with CRLF; the frozen outputs have LF.
 nocr() {
-  if [ "${OS:-}" = Windows_NT ]; then printf '%s' "${1//$'\r'/}"; else printf '%s' "$1"; fi
+  # tr, not ${1//$'\r'/}: check_one reaches this through export -f, and MSYS
+  # bash drops the literal CR when it re-reads an exported function.
+  if [ "${OS:-}" = Windows_NT ]; then printf '%s' "$1" | tr -d '\r'; else printf '%s' "$1"; fi
 }
 
 if [ "$FREEZE" = 1 ]; then
