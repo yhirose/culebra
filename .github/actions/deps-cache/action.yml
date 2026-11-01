@@ -1,0 +1,74 @@
+# The deps cache (CULEBRA_DEPS_CACHE: the vendored SDL3, raylib and llama.cpp
+# statics), restored before configure and saved after the build.
+#
+# CMake names each statics directory by everything that decides its bytes
+# (platform, compiler, sources, configuration) and writes the names a configure
+# uses to <build dir>/deps-cache-dirs.txt. The cache key is made from that file,
+# so CMake is the only place a key is spelled: a vendor bump or a compiler
+# update changes the names, the key follows, and nothing here can be coarser
+# than CMake (an exact hit on a tree CMake then ignores skips the save, and
+# every later run would rebuild cold).
+#
+# Restore comes before configure, which decides whether the statics need
+# building, so it takes the newest save under the prefix; a directory it holds
+# that CMake no longer names is inert. The save prunes those, and is skipped
+# when the key is the one restored.
+#
+#   - uses: ./.github/actions/deps-cache          # before configure
+#     with: {prefix: linux-canvas-deps, path: ..., step: restore}
+#   - uses: ./.github/actions/deps-cache          # after the build
+#     with: {prefix: linux-canvas-deps, path: ..., step: save, build-dir: build}
+name: deps cache
+description: Restore or save the vendored statics, keyed on what CMake names
+inputs:
+  prefix:
+    description: Cache key prefix; jobs that build the same statics share one
+    required: true
+  path:
+    description: The CULEBRA_DEPS_CACHE directory
+    required: true
+  step:
+    description: restore (before configure) or save (after the build)
+    required: true
+  build-dir:
+    description: The build directory holding deps-cache-dirs.txt (save only)
+    required: false
+    default: build
+runs:
+  using: composite
+  steps:
+    - if: inputs.step == 'restore'
+      id: restore
+      uses: actions/cache/restore@v4
+      with:
+        path: ${{ inputs.path }}
+        key: ${{ inputs.prefix }}-
+        restore-keys: ${{ inputs.prefix }}-
+
+    - if: inputs.step == 'restore'
+      shell: bash
+      run: echo "${{ steps.restore.outputs.cache-matched-key }}" > "$RUNNER_TEMP/deps-cache-${{ inputs.prefix }}.key"
+
+    - if: inputs.step == 'save'
+      id: key
+      shell: bash
+      run: |
+        list="${{ inputs.build-dir }}/deps-cache-dirs.txt"
+        [ -s "$list" ] || { echo "deps cache: no $list, nothing to save"; echo "skip=1" >> "$GITHUB_OUTPUT"; exit 0; }
+        dirs=$(tr -d '\r' < "$list" | sort -u)
+        key="${{ inputs.prefix }}-$(printf '%s\n' "$dirs" | cksum | cut -d' ' -f1)"
+        restored=$(cat "$RUNNER_TEMP/deps-cache-${{ inputs.prefix }}.key" 2>/dev/null || true)
+        root="${{ inputs.path }}"
+        command -v cygpath > /dev/null && root=$(cygpath -u "$root")  # Windows: a D:\ path
+        for d in "$root"/*; do
+          [ -e "$d" ] || continue
+          grep -qxF "$(basename "$d")" <<<"$dirs" || { echo "deps cache: pruning $(basename "$d")"; rm -rf "$d"; }
+        done
+        echo "key=$key" >> "$GITHUB_OUTPUT"
+        if [ "$key" = "$restored" ]; then echo "skip=1" >> "$GITHUB_OUTPUT"; else echo "skip=0" >> "$GITHUB_OUTPUT"; fi
+
+    - if: inputs.step == 'save' && steps.key.outputs.skip == '0'
+      uses: actions/cache/save@v4
+      with:
+        path: ${{ inputs.path }}
+        key: ${{ steps.key.outputs.key }}

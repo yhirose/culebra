@@ -730,6 +730,33 @@ function(_culebra_deps_cache_root out)
   set(${out} "${CULEBRA_DEPS_CACHE}" PARENT_SCOPE)
 endfunction()
 
+# The part of a deps-cache key every vendored static shares: what the bytes
+# were built for and by (gcc- and clang-built statics must not share a cache).
+function(_culebra_deps_platform_key out)
+  set(_k "${CMAKE_SYSTEM_NAME}" "${CMAKE_SYSTEM_PROCESSOR}")
+  if(CMAKE_OSX_ARCHITECTURES)
+    list(APPEND _k "${CMAKE_OSX_ARCHITECTURES}")
+  endif()
+  if(CMAKE_OSX_DEPLOYMENT_TARGET)
+    list(APPEND _k "macos${CMAKE_OSX_DEPLOYMENT_TARGET}")
+  endif()
+  list(APPEND _k "${CMAKE_CXX_COMPILER_ID}${CMAKE_CXX_COMPILER_VERSION}")
+  set(${out} "${_k}" PARENT_SCOPE)
+endfunction()
+
+# The deps-cache directories this configure uses, one name per line in
+# deps-cache-dirs.txt: the CI cache keys on exactly this
+# (.github/actions/deps-cache), so CMake is the only place a key is spelled.
+file(WRITE "${CMAKE_BINARY_DIR}/deps-cache-dirs.txt" "")
+function(_culebra_deps_cache_use dir)
+  set_property(GLOBAL APPEND PROPERTY CULEBRA_DEPS_CACHE_DIRS "${dir}")
+  get_property(_dirs GLOBAL PROPERTY CULEBRA_DEPS_CACHE_DIRS)
+  list(REMOVE_DUPLICATES _dirs)
+  list(SORT _dirs)
+  list(JOIN _dirs "\n" _text)
+  file(WRITE "${CMAKE_BINARY_DIR}/deps-cache-dirs.txt" "${_text}\n")
+endfunction()
+
 # Publish, in `tgt`'s dynamic symbol table, the names ORC JIT resolves out of the
 # host process at codegen time. Every executable that hosts the in-process JIT
 # needs this and needs it the same way, so both call here rather than each
@@ -864,15 +891,10 @@ if(CULEBRA_ENABLE_SCENE OR CULEBRA_ENABLE_CANVAS_WINDOW)
   _culebra_dep_rev(_raylib_rev "${CMAKE_CURRENT_SOURCE_DIR}/vendor/raylib")
   if(_sdl_rev AND _raylib_rev)
     _culebra_deps_cache_root(_deps_root)
-    set(_deps_key "${CMAKE_SYSTEM_NAME}" "${CMAKE_SYSTEM_PROCESSOR}")
-    if(CMAKE_OSX_ARCHITECTURES)
-      list(APPEND _deps_key "${CMAKE_OSX_ARCHITECTURES}")
-    endif()
-    if(CMAKE_OSX_DEPLOYMENT_TARGET)
-      list(APPEND _deps_key "macos${CMAKE_OSX_DEPLOYMENT_TARGET}")
-    endif()
+    _culebra_deps_platform_key(_deps_key)
     list(APPEND _deps_key "sdl${_sdl_rev}" "raylib${_raylib_rev}" "noaudio")
     string(REPLACE ";" "-" _deps_key "${_deps_key}")
+    _culebra_deps_cache_use("${_deps_key}")
     set(_sdl_install "${_deps_root}/${_deps_key}/sdl")
     set(_raylib_install "${_deps_root}/${_deps_key}/raylib")
     message(STATUS "SDL3 + raylib deps cache: ${_deps_root}/${_deps_key}")

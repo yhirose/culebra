@@ -277,16 +277,15 @@ jobs:
           restore-keys: |
             release-windows-ucrt-ccache-
             windows-aot-ucrt-ccache-
-      # SDL3 + raylib, on the same key ci.yml's windows-aot-build publishes
-      # under — a warm cache skips their ~4 min ExternalProject build.
-      - name: Resolve deps cache key
-        id: deps
-        run: echo "key=$(misc/deps_cache_key.sh windows-deps)" >> "$GITHUB_OUTPUT"
+      # SDL3 + raylib, under the prefix ci.yml's windows-aot-build publishes
+      # with — a warm cache skips their ~4 min ExternalProject build. Restore
+      # only: the CI job is what keeps it current.
       - name: Restore SDL3 + raylib deps cache
-        uses: actions/cache@v4
+        uses: ./.github/actions/deps-cache
         with:
+          prefix: windows-deps
           path: ${{ github.workspace }}/.deps
-          key: ${{ steps.deps.outputs.key }}
+          step: restore
       # The feature set of ci.yml's windows-aot-build (the widest Windows
       # configuration that CI proves), LTO included — off, the way every
       # Windows job in ci.yml has it. UCRT64's gcc 16 cannot LTO-link against

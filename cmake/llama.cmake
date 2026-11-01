@@ -72,19 +72,11 @@ string(SUBSTRING "${_llama_args_hash}" 0 8 _llama_args_hash)
 string(SUBSTRING "${CULEBRA_LLAMA_CPP_SHA256}" 0 12 _llama_src_hash)
 
 _culebra_deps_cache_root(_llama_root)
-set(_llama_key "${CMAKE_SYSTEM_NAME}" "${CMAKE_SYSTEM_PROCESSOR}")
-if(CMAKE_OSX_ARCHITECTURES)
-  list(APPEND _llama_key "${CMAKE_OSX_ARCHITECTURES}")
-endif()
-if(CMAKE_OSX_DEPLOYMENT_TARGET)
-  list(APPEND _llama_key "macos${CMAKE_OSX_DEPLOYMENT_TARGET}")
-endif()
-# The compiler too: gcc- and clang-built statics (the Windows CI lanes use
-# both) must not be served for each other from one cache.
-list(APPEND _llama_key "${CMAKE_CXX_COMPILER_ID}${CMAKE_CXX_COMPILER_VERSION}"
-                       "llama${CULEBRA_LLAMA_CPP_VERSION}" "${_llama_src_hash}"
+_culebra_deps_platform_key(_llama_key)
+list(APPEND _llama_key "llama${CULEBRA_LLAMA_CPP_VERSION}" "${_llama_src_hash}"
                        "cfg${_llama_args_hash}")
 string(REPLACE ";" "-" _llama_key "${_llama_key}")
+_culebra_deps_cache_use("${_llama_key}")
 set(_llama_install "${_llama_root}/${_llama_key}/llama")
 message(STATUS "llama.cpp ${CULEBRA_LLAMA_CPP_VERSION} deps cache: ${_llama_root}/${_llama_key}")
 

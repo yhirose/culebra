@@ -391,10 +391,11 @@ jobs:
         run: sudo apt-get install -y --no-install-recommends libvulkan-dev glslc spirv-headers
 
       - name: Restore the llama.cpp statics
-        uses: actions/cache@v4
+        uses: ./.github/actions/deps-cache
         with:
+          prefix: linux-llama-deps
           path: ${{ github.workspace }}/.deps-cache
-          key: linux-llama-deps-${{ hashFiles('cmake/llama_cpp.cmake', 'cmake/llama.cmake') }}
+          step: restore
 
       # Its own ccache, outside the shared prefix: CULEBRA_ENABLE_LLAMA is a
       # target-wide define, so no other job's objects would hit.
@@ -419,6 +420,14 @@ jobs:
         run: |
           just dev-llama -DCULEBRA_LLAMA_VULKAN=ON
           cmake --build build-dev-llama --target llama_smoke llama_test -j"$(nproc)"
+
+      - name: Save the llama.cpp statics
+        uses: ./.github/actions/deps-cache
+        with:
+          prefix: linux-llama-deps
+          path: ${{ github.workspace }}/.deps-cache
+          step: save
+          build-dir: build-dev-llama
 
       - name: The Vulkan loader is opened, not linked
         run: bash tools/checks/check_llama_vulkan_dynload.sh build-dev-llama
@@ -498,10 +507,11 @@ jobs:
             mingw-w64-ucrt-x86_64-spirv-headers
 
       - name: Restore the llama.cpp statics
-        uses: actions/cache@v4
+        uses: ./.github/actions/deps-cache
         with:
+          prefix: windows-llama-deps
           path: ${{ github.workspace }}/.deps-cache
-          key: windows-llama-deps-${{ hashFiles('cmake/llama_cpp.cmake', 'cmake/llama.cmake') }}
+          step: restore
 
       - name: Restore ccache
         uses: actions/cache@v4
@@ -529,6 +539,14 @@ jobs:
 
       - name: Build
         run: cmake --build build-win-llama --target culebra llama_smoke llama_test -j
+
+      - name: Save the llama.cpp statics
+        uses: ./.github/actions/deps-cache
+        with:
+          prefix: windows-llama-deps
+          path: ${{ github.workspace }}/.deps-cache
+          step: save
+          build-dir: build-win-llama
 
       - name: Report ccache stats
         run: ccache -s || true
@@ -864,19 +882,14 @@ jobs:
           sdl3-deps: 'true'
           extra-packages: xvfb
 
-      # The SDL3 + raylib statics are ~4 min of build that depends only on the
-      # two submodule revisions. misc/deps_cache_key.sh is the one spelling of
-      # that key — the release job restores what a CI job saved, and a drift
-      # between them fails as an eternally cold build rather than as a red job.
-      - name: Vendored SDL3 + raylib revisions
-        id: vendor
-        run: echo "key=$(misc/deps_cache_key.sh linux-canvas-deps)" >> "$GITHUB_OUTPUT"
-
+      # The SDL3 + raylib statics are ~4 min of build; the key is what CMake
+      # names them by (.github/actions/deps-cache).
       - name: Restore SDL3 + raylib statics
-        uses: actions/cache@v4
+        uses: ./.github/actions/deps-cache
         with:
+          prefix: linux-canvas-deps
           path: ${{ github.workspace }}/.deps-cache
-          key: ${{ steps.vendor.outputs.key }}
+          step: restore
 
       # No cross-job fallback key, for linux-assert's reason: the window knob is
       # a target-wide define, so this lane's compile commands differ from the
@@ -898,6 +911,14 @@ jobs:
       # off, so each half was covered and their product — what ships — was not.
       - name: Build (window backend ON, LTO on — the Linux download's config)
         run: just build -DCMAKE_EXE_LINKER_FLAGS=-fuse-ld=mold
+
+      - name: Save SDL3 + raylib statics
+        uses: ./.github/actions/deps-cache
+        with:
+          prefix: linux-canvas-deps
+          path: ${{ github.workspace }}/.deps-cache
+          step: save
+          build-dir: build
 
       - name: Report ccache stats
         run: ccache -s || true
@@ -1006,15 +1027,12 @@ jobs:
           submodules: recursive
       - run: brew install llvm just ccache
 
-      - name: Vendored SDL3 + raylib revisions
-        id: vendor
-        run: echo "key=$(misc/deps_cache_key.sh macos-canvas-deps)" >> "$GITHUB_OUTPUT"
-
       - name: Restore SDL3 + raylib statics
-        uses: actions/cache@v4
+        uses: ./.github/actions/deps-cache
         with:
+          prefix: macos-canvas-deps
           path: ${{ github.workspace }}/.deps-cache
-          key: ${{ steps.vendor.outputs.key }}
+          step: restore
 
       # No cross-job fallback key, for linux-assert's reason: the window knob is
       # a target-wide define, so this lane shares no compile command with
@@ -1030,6 +1048,14 @@ jobs:
 
       - name: Build (window backend ON, LTO on — the macOS download's config)
         run: just build
+
+      - name: Save SDL3 + raylib statics
+        uses: ./.github/actions/deps-cache
+        with:
+          prefix: macos-canvas-deps
+          path: ${{ github.workspace }}/.deps-cache
+          step: save
+          build-dir: build
 
       - name: Report ccache stats
         run: ccache -s || true
@@ -1109,18 +1135,15 @@ jobs:
           sdl3-deps: 'true'
           extra-packages: xvfb
 
-      # Deliberately the Canvas lane's key, not one of this job's own: same
-      # platform and same two submodules means the same tree, so whichever lane
+      # Deliberately the Canvas lane's prefix, not one of this job's own: same
+      # platform, compiler and submodules means the same tree, so whichever lane
       # runs first pays the ~4 min and the other restores it.
-      - name: Vendored SDL3 + raylib revisions
-        id: vendor
-        run: echo "key=$(misc/deps_cache_key.sh linux-canvas-deps)" >> "$GITHUB_OUTPUT"
-
       - name: Restore SDL3 + raylib statics
-        uses: actions/cache@v4
+        uses: ./.github/actions/deps-cache
         with:
+          prefix: linux-canvas-deps
           path: ${{ github.workspace }}/.deps-cache
-          key: ${{ steps.vendor.outputs.key }}
+          step: restore
 
       # No cross-job fallback key: CULEBRA_ENABLE_SCENE is a target-wide define,
       # so every culebra TU's command line differs from the Scene-OFF jobs' and
@@ -1139,6 +1162,14 @@ jobs:
       # kept, which the ratchet and the AOT probe both need.
       - name: Build (Scene ON)
         run: just build-scene -DCMAKE_EXE_LINKER_FLAGS=-fuse-ld=mold
+
+      - name: Save SDL3 + raylib statics
+        uses: ./.github/actions/deps-cache
+        with:
+          prefix: linux-canvas-deps
+          path: ${{ github.workspace }}/.deps-cache
+          step: save
+          build-dir: build-scene
 
       - name: Report ccache stats
         run: ccache -s || true
@@ -1874,17 +1905,14 @@ jobs:
             windows-aot-ucrt-ccache-
       # ccache does not cover the ExternalProject build of SDL3 + raylib end to
       # end (its install and publish steps are not compiles), so cache the
-      # published tree. No restore-keys: a partial hit is a tree CMake ignores.
-      - name: Resolve deps cache key
-        id: deps
-        run: echo "key=$(misc/deps_cache_key.sh windows-deps)" >> "$GITHUB_OUTPUT"
-      # CULEBRA_DEPS_CACHE also keeps the tree off $HOME, which under MSYS2 is
-      # an msys path the native toolchain reads as C:\home\...
+      # published tree. CULEBRA_DEPS_CACHE also keeps the tree off $HOME, which
+      # under MSYS2 is an msys path the native toolchain reads as C:\home\...
       - name: Restore SDL3 + raylib deps cache
-        uses: actions/cache@v4
+        uses: ./.github/actions/deps-cache
         with:
+          prefix: windows-deps
           path: ${{ github.workspace }}/.deps
-          key: ${{ steps.deps.outputs.key }}
+          step: restore
       # The widest Windows configuration, and the only job that builds Http
       # (static OpenSSL) and Webview (WebView2) on Windows — which is to say it
       # is the Windows download's, so it runs the same script release.yml does.
@@ -1908,6 +1936,13 @@ jobs:
         # `-k 0` as in the `windows` job: this is the one clang lane, so a run
         # should list every TU it rejects, not the first.
         run: cmake --build build-win-aot --target culebra -j -- -k 0
+      - name: Save SDL3 + raylib deps cache
+        uses: ./.github/actions/deps-cache
+        with:
+          prefix: windows-deps
+          path: ${{ github.workspace }}/.deps
+          step: save
+          build-dir: build-win-aot
       # After the build, not before it: the check looks for the Scene runtime
       # archive, which is a build product. Ahead of the build it fails on every
       # run that has Scene on — it only passed while Windows had it off.
@@ -2363,17 +2398,14 @@ jobs:
           restore-keys: |
             windows-scene-ccache-
 
-      # windows-aot-build's key, for linux-scene's reason: same platform, same
-      # submodules, same tree — whichever lane runs first pays for it.
-      - name: Resolve deps cache key
-        id: deps
-        run: echo "key=$(misc/deps_cache_key.sh windows-deps)" >> "$GITHUB_OUTPUT"
-
+      # windows-aot-build's prefix, for linux-scene's reason: same platform,
+      # compiler and submodules, same tree — whichever lane runs first pays for it.
       - name: Restore SDL3 + raylib deps cache
-        uses: actions/cache@v4
+        uses: ./.github/actions/deps-cache
         with:
+          prefix: windows-deps
           path: ${{ github.workspace }}/.deps
-          key: ${{ steps.deps.outputs.key }}
+          step: restore
 
       # The download's own configure script plus the one option that is this
       # job's subject, so the toolchain and link flags cannot drift from the
@@ -2391,6 +2423,13 @@ jobs:
         # test targets do not build here, and a clang lane should list every TU
         # it rejects rather than the first.
         run: cmake --build build-win-scene --target culebra -j -- -k 0
+      - name: Save SDL3 + raylib deps cache
+        uses: ./.github/actions/deps-cache
+        with:
+          prefix: windows-deps
+          path: ${{ github.workspace }}/.deps
+          step: save
+          build-dir: build-win-scene
       - name: Report ccache stats
         run: ccache -s || true
 
