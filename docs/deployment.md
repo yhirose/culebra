@@ -245,9 +245,9 @@ $ otool -L /tmp/microgpt_tensor
 ### Binaries that run a model
 
 `Llama` (a language model run in the process, see
-[`Llama`](stdlib.md#44-llama)) is one more axis, and the only one that exists
-only in a build configured with `-DCULEBRA_ENABLE_LLAMA=ON`: the driver then
-carries the four llama.cpp static libraries, and a program that names `Llama`
+[`Llama`](stdlib.md#44-llama)) is one more axis. The full downloads have it;
+a source build has it only when configured with `-DCULEBRA_ENABLE_LLAMA=ON`.
+Such a driver carries the four llama.cpp static libraries, and a program that names `Llama`
 links them. A program that does not name it carries none of it, and
 `ldd` shows the same libraries as for a `print("hello")` binary
 (libc, libm, libgcc_s and libstdc++; llama.cpp is built without OpenMP, so

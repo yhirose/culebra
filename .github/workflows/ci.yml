@@ -425,8 +425,8 @@ jobs:
         run: ccache -s || true
 
   # Llama (a language model run in this process, cmake/llama.cmake) is off by
-  # default, so no other lane builds it. This one builds the driver with it on
-  # and runs tests/llama on both engines against a 1.2 MB model, the one
+  # CMake's default; the download lanes build it (cmake/release_full.cmake) and
+  # this one tests it: tests/llama on both engines against a 1.2 MB model, the one
   # llama.cpp's own CI uses: it writes nothing sensible, and does not need to,
   # since a grammar fixes what each test expects. The llama.cpp statics go
   # through the deps cache, so only a version bump pays their compile.
@@ -589,14 +589,10 @@ jobs:
             https://huggingface.co/ggml-org/models/resolve/main/tinyllamas/stories260K.gguf
           echo "270cba1bd5109f42d03350f60406024560464db173c0e387d91f0426d3bd256d  $CULEBRA_TEST_MODEL" | sha256sum -c -
 
-      # The download's own configure script plus this job's subject, with
-      # Webview left out (not what is tested here). Vulkan ON, not AUTO, for
-      # the reason linux-llama gives.
-      - name: Configure (the Windows download's configuration, Llama and Vulkan ON)
-        run: |
-          misc/windows_toolchain/configure_windows_release.sh build-win-llama \
-            -DCULEBRA_ENABLE_WEBVIEW=OFF \
-            -DCULEBRA_ENABLE_LLAMA=ON -DCULEBRA_LLAMA_VULKAN=ON
+      # The download's own configure script (Llama and Vulkan ON come from
+      # cmake/release_full.cmake), with Webview left out (not tested here).
+      - name: Configure (the Windows download's configuration)
+        run: misc/windows_toolchain/configure_windows_release.sh build-win-llama -DCULEBRA_ENABLE_WEBVIEW=OFF
 
       - name: Build
         run: cmake --build build-win-llama --target culebra llama_smoke llama_test -j
@@ -935,12 +931,13 @@ jobs:
           submodules: recursive
 
       # xvfb is for the window smoke below; the SDL3 deps are what leave the
-      # Canvas window at CMake's Linux default, which is this job's subject.
+      # Canvas window at CMake's Linux default, which is this job's subject. The
+      # Vulkan tools are Llama's GPU backend (cmake/release_full.cmake).
       - name: Install toolchain
         uses: ./.github/actions/setup-linux-toolchain
         with:
           sdl3-deps: 'true'
-          extra-packages: xvfb
+          extra-packages: xvfb libvulkan-dev glslc spirv-headers
 
       # The SDL3 + raylib statics are ~4 min of build; the key is what CMake
       # names them by (.github/actions/deps-cache).
@@ -969,7 +966,7 @@ jobs:
       # download's configuration. build-ubuntu links with LTO and the window
       # off, so each half was covered and their product — what ships — was not.
       - name: Build (window backend ON, LTO on — the Linux download's config)
-        run: just build -DCMAKE_EXE_LINKER_FLAGS=-fuse-ld=mold
+        run: just build -C "$PWD/cmake/release_full.cmake" -DCMAKE_EXE_LINKER_FLAGS=-fuse-ld=mold
 
       - name: Save SDL3 + raylib statics
         uses: ./.github/actions/deps-cache
@@ -987,6 +984,10 @@ jobs:
         run: misc/aot_axes/verify_canvas_window.sh build
       - name: Verify Scene is in this build too (it follows the window)
         run: misc/aot_axes/verify_scene_axis.sh build
+      - name: Verify Llama and its Vulkan backend are in this build
+        run: |
+          misc/aot_axes/verify_llama_axis.sh build
+          bash tools/checks/check_llama_vulkan_dynload.sh build
 
       # The coexistence requirement: a window-enabled binary must still take the
       # headless path on demand, byte-identically, on every engine — the
@@ -1098,7 +1099,7 @@ jobs:
             macos-canvas-ccache-
 
       - name: Build (window backend ON, LTO on — the macOS download's config)
-        run: just build
+        run: just build -C "$PWD/cmake/release_full.cmake"
 
       - name: Save SDL3 + raylib statics
         uses: ./.github/actions/deps-cache
@@ -1113,6 +1114,8 @@ jobs:
         run: misc/aot_axes/verify_canvas_window.sh build
       - name: Verify Scene is in this build too (it follows the window)
         run: misc/aot_axes/verify_scene_axis.sh build
+      - name: Verify Llama is in this build
+        run: misc/aot_axes/verify_llama_axis.sh build
 
       # The download's load-time contract, on the configuration that links the
       # most (the window's frameworks, Webview): nothing outside macOS itself.
@@ -1929,6 +1932,9 @@ jobs:
             mingw-w64-ucrt-x86_64-webview2-loader
             mingw-w64-ucrt-x86_64-clang
             mingw-w64-ucrt-x86_64-lld
+            mingw-w64-ucrt-x86_64-vulkan-devel
+            mingw-w64-ucrt-x86_64-shaderc
+            mingw-w64-ucrt-x86_64-spirv-headers
             git
             zip
       # clang++ and lld are what misc/windows_toolchain/configure_windows_release.sh and the AOT
@@ -1989,6 +1995,10 @@ jobs:
       # run that has Scene on — it only passed while Windows had it off.
       - name: Verify Scene is in this build too (it follows the window)
         run: misc/aot_axes/verify_scene_axis.sh build-win-aot
+      - name: Verify Llama and its Vulkan backend are in this build
+        run: |
+          misc/aot_axes/verify_llama_axis.sh build-win-aot
+          bash tools/checks/check_llama_vulkan_dynload.sh build-win-aot
       - name: Report ccache stats
         run: ccache -s || true
       # The widest build there is — Canvas window, Webview and Http all on — so
@@ -2455,7 +2465,7 @@ jobs:
       - name: Configure (the Windows download's configuration, Scene ON)
         env:
           CCACHE_DIR: ${{ github.workspace }}/.ccache
-        run: misc/windows_toolchain/configure_windows_release.sh build-win-scene -DCULEBRA_ENABLE_SCENE=ON
+        run: misc/windows_toolchain/configure_windows_release.sh build-win-scene -DCULEBRA_ENABLE_SCENE=ON -DCULEBRA_ENABLE_LLAMA=OFF
 
       - name: Build (culebra driver + runtime archives)
         env:

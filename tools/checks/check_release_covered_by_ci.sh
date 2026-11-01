@@ -11,7 +11,8 @@
 # execution.
 #
 # This is the ratchet for that shape, in the only form that is decidable: the
-# set of `misc/*.sh` invocations in release.yml must be a subset of ci.yml's.
+# set of `misc/*.sh` invocations in release.yml must be a subset of ci.yml's,
+# and so must the set of `cmake/release_*.cmake` initial caches it loads.
 # It says nothing about which branches of those scripts run — only that a push
 # runs them at all, which is exactly what was missing both times.
 #
@@ -26,8 +27,11 @@ cd "$(dirname "$0")/../.."
 ci=.github/workflows/ci.yml
 rel=.github/workflows/release.yml
 
-scripts_in() {  # every misc/<name>.sh or misc/<dir>/<name>.sh named anywhere in the file
-  grep -oE 'misc/([A-Za-z0-9_]+/)?[A-Za-z0-9_]+\.sh' "$1" | sort -u
+# Every misc/[<dir>/]<name>.sh and cmake/release_<name>.cmake the file names
+# outside a comment line: a comment that mentions one runs nothing.
+scripts_in() {
+  grep -v '^[[:space:]]*#' "$1" \
+    | grep -oE 'misc/([A-Za-z0-9_]+/)?[A-Za-z0-9_]+\.sh|cmake/release_[A-Za-z0-9_]+\.cmake' | sort -u
 }
 
 missing=$(comm -23 <(scripts_in "$rel") <(scripts_in "$ci"))

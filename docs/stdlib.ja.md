@@ -9533,9 +9533,11 @@ IO.println(LLM.ask("Translate into Japanese: Good morning.", provider: provider)
 ## 44. `Llama`
 
 このプロセスの中で動く言語モデルです。GGUFファイルを読み込んで、問い合わせます。中身はllama.cppで、
-サーバーも、キーも、ネットワークも要りません。この名前空間があるのは、`-DCULEBRA_ENABLE_LLAMA=ON`で
-configureしたビルドだけです（既定はOFF。最初のビルドで、llama.cppのリリースをダウンロードしてコンパイルします）。
-それ以外のビルドでは、`Llama`は未定義の名前です。モデルは、読み込んだisolateに属するハンドルで、別の
+サーバーも、キーも、ネットワークも要りません。全部入り版のダウンロードには入っています（LinuxとWindowsは
+VulkanのGPUバックエンドつき、macOSはCPUで動きます）。スリム版には入っていません。ソースからのビルドでは、
+`-DCULEBRA_ENABLE_LLAMA=ON`でconfigureしたときだけ入ります（既定はOFF。最初のビルドで、llama.cppの
+リリースをダウンロードしてコンパイルします）。入っていないビルドでは、`Llama`は未定義の名前です。
+モデルは、読み込んだisolateに属するハンドルで、別の
 isolateには送れません。
 
 ```culebra

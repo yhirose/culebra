@@ -15,6 +15,10 @@
 # both callers assert that with misc/aot_axes/verify_canvas_window.sh — passing the
 # option would make that assertion unfalsifiable.
 #
+# What the full download adds to CMake's defaults (Llama with its Vulkan
+# backend) comes from cmake/release_full.cmake, which the Linux and macOS
+# downloads load too. A caller that wants a narrower build overrides it with -D.
+#
 # mingw-w64/UCRT64, not MSVC: the Value type is used through std::vector<Value>
 # while incomplete, which libstdc++ accepts and the MSVC STL rejects. Static
 # libgcc/libstdc++ so the download needs no runtime DLLs beside it.
@@ -39,6 +43,7 @@ build=${1:?usage: configure_windows_release.sh <build dir> [extra cmake args…]
 shift
 
 cmake -S . -B "$build" -G Ninja \
+  -C cmake/release_full.cmake \
   -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_CXX_COMPILER=clang++ \
   -DCMAKE_C_COMPILER=clang \

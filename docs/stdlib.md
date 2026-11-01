@@ -9950,10 +9950,12 @@ prompt the chat template makes of the request, system prompt included.
 ## 44. `Llama`
 
 A language model run in this process: load a GGUF file, then ask it. It is
-llama.cpp underneath, and it needs no server, no key and no network. The
-namespace exists only in a build configured with `-DCULEBRA_ENABLE_LLAMA=ON`
-(off by default: the first such build downloads the llama.cpp release and
-compiles it); in any other build `Llama` is an undefined name. A model is a
+llama.cpp underneath, and it needs no server, no key and no network. The full
+downloads carry it (with the Vulkan GPU backend on Linux and Windows, on the
+CPU on macOS); the slim downloads do not. A source build has it when
+configured with `-DCULEBRA_ENABLE_LLAMA=ON` (off by default: the first such
+build downloads the llama.cpp release and compiles it). Where it is absent,
+`Llama` is an undefined name. A model is a
 handle that belongs to the isolate that loaded it and cannot be sent to another.
 
 ```culebra

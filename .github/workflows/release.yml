@@ -88,6 +88,7 @@ jobs:
       CCACHE_DIR: ${{ github.workspace }}/.ccache
       CMAKE_C_COMPILER_LAUNCHER: ccache
       CMAKE_CXX_COMPILER_LAUNCHER: ccache
+      CULEBRA_DEPS_CACHE: ${{ github.workspace }}/.deps-cache
     steps:
       # Pinned explicitly: a workflow_dispatch re-run (see TAG above) otherwise
       # checks out whatever ref it was dispatched on, which is what runs this
@@ -112,16 +113,25 @@ jobs:
           restore-keys: |
             release-macos-ccache-
             ${{ runner.os }}-ccache-
+      # The vendored statics (SDL3, raylib, llama.cpp) as ci.yml's
+      # macos-canvas-window publishes them. Restore only: that job keeps it current.
+      - name: Restore the vendored statics
+        uses: ./.github/actions/deps-cache
+        with:
+          prefix: macos-canvas-deps
+          step: restore
       # `just build` is the -O3 + LTO configuration, unlike the no-LTO gate
       # build: a downloaded binary should be the fast one. It also builds the
       # vendored raylib + SDL3 statics here, which is why this job takes a few
       # minutes longer than ci.yml's.
-      - run: just build
+      - run: just build -C "$PWD/cmake/release_full.cmake"
       - run: ccache -s || true
       - name: Verify the Canvas window backend is in this build
         run: misc/aot_axes/verify_canvas_window.sh build
       - name: Verify Scene is in this build too (it follows the window)
         run: misc/aot_axes/verify_scene_axis.sh build
+      - name: Verify Llama is in this build
+        run: misc/aot_axes/verify_llama_axis.sh build
       # The asset's load-time contract, read off the artifact: with a load
       # command naming anything outside macOS itself, it starts only on a Mac
       # that has this runner's Homebrew (v0.7.0 shipped needing its libz3 and
@@ -146,6 +156,7 @@ jobs:
       CCACHE_DIR: ${{ github.workspace }}/.ccache
       CMAKE_C_COMPILER_LAUNCHER: ccache
       CMAKE_CXX_COMPILER_LAUNCHER: ccache
+      CULEBRA_DEPS_CACHE: ${{ github.workspace }}/.deps-cache
     steps:
       - uses: actions/checkout@v5
         with:
@@ -165,6 +176,9 @@ jobs:
         with:
           sdl3-deps: 'true'
           webview-deps: 'true'
+          # Llama's Vulkan backend (cmake/release_full.cmake): headers, glslc,
+          # the SPIR-V headers. The loader is opened at run time, not linked.
+          extra-packages: libvulkan-dev glslc spirv-headers
       - name: Restore ccache
         uses: actions/cache@v4
         with:
@@ -173,7 +187,13 @@ jobs:
           restore-keys: |
             release-linux-ccache-
             ${{ runner.os }}-ccache-
-      - run: just build -DCMAKE_EXE_LINKER_FLAGS=-fuse-ld=mold
+      # The vendored statics as ci.yml's linux-canvas-window publishes them.
+      - name: Restore the vendored statics
+        uses: ./.github/actions/deps-cache
+        with:
+          prefix: linux-canvas-deps
+          step: restore
+      - run: just build -C "$PWD/cmake/release_full.cmake" -DCMAKE_EXE_LINKER_FLAGS=-fuse-ld=mold
       - run: ccache -s || true
       - name: Verify the Canvas window backend is in this build
         run: misc/aot_axes/verify_canvas_window.sh build
@@ -184,6 +204,8 @@ jobs:
       # off and the build succeeds anyway.
       - name: Verify the Webview axis is in this build
         run: misc/aot_axes/verify_webview_axis.sh build
+      - name: Verify Llama and its Vulkan backend are in this build
+        run: misc/aot_axes/verify_llama_axis.sh build
 
       # The asset's load-time contract, checked on the artifact itself: nothing
       # a desktop provides may appear in DT_NEEDED, or this download needs a
@@ -200,6 +222,7 @@ jobs:
       - name: Verify no desktop runtime crept into the link
         run: |
           tools/checks/check_webview_dynload.sh build
+          bash tools/checks/check_llama_vulkan_dynload.sh build
           deps=$(ldd build/culebra)
           echo "Shared library dependencies:"
           echo "$deps"
@@ -266,6 +289,9 @@ jobs:
             mingw-w64-ucrt-x86_64-webview2-loader
             mingw-w64-ucrt-x86_64-clang
             mingw-w64-ucrt-x86_64-lld
+            mingw-w64-ucrt-x86_64-vulkan-devel
+            mingw-w64-ucrt-x86_64-shaderc
+            mingw-w64-ucrt-x86_64-spirv-headers
             zip
             git
       - name: Restore ccache
@@ -328,6 +354,10 @@ jobs:
       # ci.yml's windows-aot-build, which gets this order right).
       - name: Verify Scene is in this build too (it follows the window)
         run: misc/aot_axes/verify_scene_axis.sh build
+      - name: Verify Llama and its Vulkan backend are in this build
+        run: |
+          misc/aot_axes/verify_llama_axis.sh build
+          bash tools/checks/check_llama_vulkan_dynload.sh build
       - run: ccache -s || true
       # The whole point of -static here: a downloaded .exe must not need a DLL
       # the user does not have. Same script — and so the same allowlist — as
