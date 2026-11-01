@@ -9979,8 +9979,9 @@ do not.
 
 `culebra build` works with it. A program that names `Llama` links llama.cpp
 statically into the binary, which adds a few megabytes; a program that does not
-carries none of it. The binary runs the model on the CPU. The model file stays
-outside the binary.
+carries none of it. The binary runs the model on the CPU, unless it was built
+with `culebra build --llama-gpu`, which links the Vulkan backend too (about
+42 MB). The model file stays outside the binary.
 
 ### `Llama.load(path, n_ctx=2048, gpu=true, n_batch=0, n_slots=1) -> LlamaModel`
 

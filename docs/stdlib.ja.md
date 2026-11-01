@@ -9557,7 +9557,8 @@ NVIDIA、AMD、IntelのどのGPUでも同じです。ドライバは最初のモ
 
 `culebra build`でも使えます。`Llama`を名指しするプログラムにはllama.cppが静的にリンクされ、
 バイナリは数MB大きくなります。名指ししないプログラムには何も入りません。このバイナリはモデルをCPUで
-動かします。モデルのファイルはバイナリの外に置きます。
+動かします。ただし`culebra build --llama-gpu`でビルドすると、Vulkanのバックエンドもリンクされます（約42MB）。
+モデルのファイルはバイナリの外に置きます。
 
 ### `Llama.load(path, n_ctx=2048, gpu=true, n_batch=0, n_slots=1) -> LlamaModel`
 

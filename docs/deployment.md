@@ -145,6 +145,7 @@ covers that.
 | `--emit-llvm` | Also write the program's LLVM IR (for debugging). |
 | `--keep-symbols` | Keep the symbol table in the output, for debugging (see [Symbol stripping](#symbol-stripping) below). |
 | `--no-tls` | Link `Http` without OpenSSL. ~3.9 MB smaller; `https://` and `wss://` then raise `HttpError` (see [Building Http without TLS](#building-http-without-tls) below). |
+| `--llama-gpu` | Link `Llama` with its Vulkan backend, so the binary runs models on the GPU where there is one. About 42 MB larger. Refused when the program does not use `Llama` (see [Binaries that run a model](#binaries-that-run-a-model) below). |
 | `--target=<triple>` | Cross-compile for the given LLVM triple. |
 | `--sysroot=<path>` | Forwarded to `cc` as `--sysroot=`. |
 | `--rt-lib=<path>` | Override the runtime archive path (required for cross-compile). |
@@ -264,7 +265,9 @@ a program that calls `Llama.load`:
 `LLM` is written over `Http`, so naming it pulls OpenSSL in as well; that is
 what `--no-tls` takes out (see below), and a program that only runs a local
 model may use it. The model file is not part of the binary: the program is
-given its path. These binaries run the model on the CPU.
+given its path. These binaries run the model on the CPU; `--llama-gpu` links the
+Vulkan backend as well, about 42 MB more, and the binary then uses a GPU where
+the machine has a Vulkan driver, as the driver below does.
 
 The driver itself can run a model on a GPU through Vulkan
 (`-DCULEBRA_LLAMA_VULKAN`, on where the Vulkan headers, `glslc` and the SPIR-V

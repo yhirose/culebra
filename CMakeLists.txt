@@ -1365,6 +1365,19 @@ inline const auto FS = ::cpp_embedlib::EmbeddedFS{_entries};
     target_compile_definitions(culebra_rt_llama PRIVATE CULEBRA_RT_LLAMA_STRONG=1)
     target_compile_options(culebra_rt_llama PRIVATE
       -ffunction-sections -fdata-sections)
+    # The same bodies with the Vulkan backend's loader forwarders in place of
+    # the CPU answer, for `culebra build --llama-gpu`. The Llama axis is the
+    # second with two archives (Http's --no-tls is the first): both are
+    # embedded, exactly one is force-loaded.
+    if(_llama_vulkan)
+      add_library(culebra_rt_llama_gpu STATIC ./src/runtime/culebra_rt_llama.cc
+                                              ./src/runtime/llama_vulkan_dynload.cc)
+      target_compile_features(culebra_rt_llama_gpu PRIVATE cxx_std_23)
+      target_compile_definitions(culebra_rt_llama_gpu PRIVATE CULEBRA_RT_LLAMA_STRONG=1)
+      target_include_directories(culebra_rt_llama_gpu SYSTEM PRIVATE ${Vulkan_INCLUDE_DIR})
+      target_compile_options(culebra_rt_llama_gpu PRIVATE
+        -ffunction-sections -fdata-sections)
+    endif()
   endif()
 
   # Embed the runtime archives into the `culebra` driver via
@@ -1470,6 +1483,11 @@ inline const auto FS = ::cpp_embedlib::EmbeddedFS{_entries};
     list(APPEND _rt_embed_files
       "${CMAKE_CURRENT_BINARY_DIR}/${CMAKE_STATIC_LIBRARY_PREFIX}culebra_rt_llama${CMAKE_STATIC_LIBRARY_SUFFIX}")
     list(APPEND _rt_embed_deps culebra_rt_llama)
+    if(_llama_vulkan)
+      list(APPEND _rt_embed_files
+        "${CMAKE_CURRENT_BINARY_DIR}/${CMAKE_STATIC_LIBRARY_PREFIX}culebra_rt_llama_gpu${CMAKE_STATIC_LIBRARY_SUFFIX}")
+      list(APPEND _rt_embed_deps culebra_rt_llama_gpu)
+    endif()
   endif()
   if(CULEBRA_WRAP_SOURCES)
     # Wrap declarations for AOT outputs. The TUs hold static registrars
@@ -1573,7 +1591,8 @@ inline const auto FS = ::cpp_embedlib::EmbeddedFS{_entries};
     list(APPEND _rt_embed_extern "${_raylib_a}" "${_sdl_a}")
   endif()
   if(CULEBRA_ENABLE_LLAMA)
-    list(APPEND _rt_embed_extern ${_llama_aot_a})
+    # The Vulkan backend too, for `--llama-gpu` ("" without it).
+    list(APPEND _rt_embed_extern ${_llama_aot_a} ${_llama_vulkan_a})
   endif()
   # Every feature archive is force-loaded next to the core archive, so the two
   # must not both define the same symbol: mingw's ld rejects the duplicate and
@@ -1590,7 +1609,7 @@ inline const auto FS = ::cpp_embedlib::EmbeddedFS{_entries};
                       culebra_rt_regex culebra_rt_search
                       culebra_rt_search_segmenter culebra_rt_foreign
                       culebra_rt_codegen
-                      culebra_rt_sqlite culebra_rt_llama culebra_rt_scene culebra_rt_canvas
+                      culebra_rt_sqlite culebra_rt_llama culebra_rt_llama_gpu culebra_rt_scene culebra_rt_canvas
                       culebra_rt_audio culebra_rt_webview culebra_rt_wrap)
     if(TARGET ${_rt_feature})
       target_compile_definitions(${_rt_feature} PRIVATE
@@ -1861,9 +1880,11 @@ endif()
 # Llama. "" when the option is off.
 if(CULEBRA_ENABLE_JIT)
   if(CULEBRA_ENABLE_LLAMA)
-    target_compile_definitions(culebra PRIVATE CULEBRA_LLAMA_LINK="${_llama_link}")
+    target_compile_definitions(culebra PRIVATE CULEBRA_LLAMA_LINK="${_llama_link}"
+                                               CULEBRA_LLAMA_GPU_LINK="${_llama_gpu_link}")
   else()
-    target_compile_definitions(culebra PRIVATE CULEBRA_LLAMA_LINK="")
+    target_compile_definitions(culebra PRIVATE CULEBRA_LLAMA_LINK=""
+                                               CULEBRA_LLAMA_GPU_LINK="")
   endif()
 endif()
 
@@ -1929,7 +1950,7 @@ endif()
 # the one running the build.
 foreach(_frag _blas_link _ssl_link _zlib_link _sqlite_link _scene_link
               _canvas_link _webview_link _foreign_link _codegen_link
-              _audio_link _llama_link)
+              _audio_link _llama_link _llama_gpu_link)
   string(REPLACE " " ";" _frag_tokens "${${_frag}}")
   foreach(_tok IN LISTS _frag_tokens)
     if(_tok MATCHES "^[/\\]" OR _tok MATCHES "^[A-Za-z]:[/\\]")

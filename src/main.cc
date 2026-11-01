@@ -621,8 +621,14 @@ static constexpr size_t kTensorAxis = 0;
 // httplib built without OpenSSL, which is the whole point of the flag (OpenSSL
 // is 82% of what Http adds). Both are embedded, exactly one is force-loaded.
 static constexpr size_t kHttpAxis = 1;
+// The second axis with two archives: --llama-gpu swaps in the same bodies with
+// the Vulkan backend's loader forwarders, and links the backend itself. Both
+// are embedded when this driver carries the backend.
+static constexpr size_t kLlamaAxis = 4;
+static constexpr bool kEmbedsLlamaGpu = std::string_view(CULEBRA_LLAMA_GPU_LINK).size() > 0;
 static_assert(std::string_view(kFeatureAxes[kTensorAxis].names[0]) == "Tensor");
 static_assert(std::string_view(kFeatureAxes[kHttpAxis].names[0]) == "Http");
+static_assert(std::string_view(kFeatureAxes[kLlamaAxis].names[0]) == "Llama");
 
 // An axis whose link needs a whole third-party static (OpenSSL for Http, SDL3 +
 // raylib for Scene/Canvas) names it `@libssl.a@` rather than by the path it sat
@@ -690,6 +696,7 @@ struct BuildOptions {
   bool emit_llvm = false;
   bool keep_symbols = false;  // skip the symbol strip (for debugging)
   bool no_tls = false;        // link the Http axis without OpenSSL
+  bool llama_gpu = false;     // link the Llama axis with the Vulkan backend
   int opt_level = 2;
 };
 #endif  // CULEBRA_JIT_ENABLED — end of build/wrap-only helpers
@@ -794,6 +801,9 @@ void print_build_usage(ostream& os) {
         "  --no-tls           Build Http without TLS: no OpenSSL, so the\n"
         "                     binary is ~3.9 MB smaller but `https://` and\n"
         "                     `wss://` raise HttpError at run time.\n"
+        "  --llama-gpu        Link Llama with its Vulkan backend, so the\n"
+        "                     binary runs models on the GPU where there is\n"
+        "                     one (~42 MB larger). Default: CPU only.\n"
         "  --target=<triple>  Cross-compile for the given LLVM target\n"
         "                     triple (e.g. x86_64-unknown-linux-gnu).\n"
         "                     Default: host triple.\n"
@@ -886,6 +896,8 @@ bool parse_build_command_line(int argc, const char** argv, BuildOptions& opts,
       opts.keep_symbols = true;
     } else if (arg == "--no-tls") {
       opts.no_tls = true;
+    } else if (arg == "--llama-gpu") {
+      opts.llama_gpu = true;
     } else if (arg.starts_with("--target=")) {
       opts.target = arg.substr(9);
     } else if (arg.starts_with("--sysroot=")) {
@@ -1021,6 +1033,19 @@ int run_build(const BuildOptions& opts) {
         "culebra build: --target=<triple> with Tensor not yet "
         "supported. Drop Tensor references for now.");
     return 1;
+  }
+  // Unlike --no-tls, which a program without Http just ignores, --llama-gpu
+  // promises the binary ~42 MB of GPU code; when it cannot keep that promise
+  // it says so instead of building something else.
+  if (opts.llama_gpu) {
+    const char* why = !kEmbedsLlamaGpu   ? "this culebra was built without the Vulkan backend"
+                      : cross            ? "not supported with --target=<triple>"
+                      : !used[kLlamaAxis] ? "the program does not use Llama"
+                                         : nullptr;
+    if (why) {
+      std::println(stderr, "culebra build: --llama-gpu: {}", why);
+      return 1;
+    }
   }
   // A cross build carries its feature support in --rt-lib, so none of the
   // embedded feature objects is force-loaded and no host link flag is appended.
@@ -1281,11 +1306,15 @@ int run_build(const BuildOptions& opts) {
     // built without OpenSSL, and the link that goes with it keeps only what
     // httplib itself needs (zlib, threads, sockets).
     bool notls = (i == kHttpAxis && opts.no_tls);
-    if (host_build && ax.embedded)
-      force_load_feature(feature_objs,
-                         notls ? "libculebra_rt_http_notls.a" : ax.archive);
-    expand_archive_names(feature_links,
-                         notls ? CULEBRA_SSL_LINK_NOTLS : ax.link_flags);
+    bool llama_gpu = (i == kLlamaAxis && opts.llama_gpu);
+    const char* archive = notls       ? "libculebra_rt_http_notls.a"
+                          : llama_gpu ? "libculebra_rt_llama_gpu.a"
+                                      : ax.archive;
+    const char* link = notls       ? CULEBRA_SSL_LINK_NOTLS
+                       : llama_gpu ? CULEBRA_LLAMA_GPU_LINK
+                                   : ax.link_flags;
+    if (host_build && ax.embedded) force_load_feature(feature_objs, archive);
+    expand_archive_names(feature_links, link);
   }
   // The wrap archive holds static registrars nothing references by name, so it
   // needs the same force-load for the binding to register at all; its flags are

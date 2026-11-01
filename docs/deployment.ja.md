@@ -136,6 +136,7 @@ MSYS2ツールチェーンを必要とします。[`CONTRIBUTING.md`](../CONTRIB
 | `--emit-llvm` | プログラムのLLVM IRも書き出す（デバッグ用） |
 | `--keep-symbols` | デバッグ用にシンボルテーブルを出力に残す（詳細は後述の[シンボルの除去](#シンボルの除去)を参照） |
 | `--no-tls` | `Http`をOpenSSL抜きでリンクする。約3.9 MB小さくなるが、`https://`と`wss://`は`HttpError`になる（後述の[TLS抜きでHttpをビルドする](#tls抜きでhttpをビルドする)を参照） |
+| `--llama-gpu` | `Llama`をVulkanのバックエンドつきでリンクし、GPUがある機械ではモデルをGPUで動かす。約42MB大きくなる。`Llama`を使わないプログラムには使えない |
 | `--target=<triple>` | 指定LLVM triple向けにクロスコンパイル |
 | `--sysroot=<path>` | `cc`の`--sysroot=`にそのまま渡す |
 | `--rt-lib=<path>` | ランタイムアーカイブのパスを上書き（cross-compileでは必須） |
@@ -231,7 +232,9 @@ CIがビルドしたLinux x86-64のCPUのみで、`Llama.load`を呼ぶプログ
 
 `LLM`は`Http`の上に書かれているので、名指しするとOpenSSLも入ります。`--no-tls`が外すのはそれで
 （後述）、ローカルのモデルだけを動かすプログラムなら使えます。モデルのファイルはバイナリに入りません。
-プログラムにはそのパスを渡します。これらのバイナリはモデルをCPUで動かします。
+プログラムにはそのパスを渡します。これらのバイナリはモデルをCPUで動かします。`--llama-gpu`を付けると
+Vulkanのバックエンドもリンクされ（約42MB増えます）、バイナリは、下のドライバと同じく、Vulkanのドライバが
+ある機械ではGPUを使います。
 
 ドライバ自身は、Vulkanを通してモデルをGPUで動かせます（`-DCULEBRA_LLAMA_VULKAN`。Vulkanのヘッダー、
 `glslc`、SPIR-Vのヘッダーが見つかれば入ります）。このバックエンドでドライバは約42MB大きくなります（同じllama.cppのリリースで

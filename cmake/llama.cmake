@@ -128,18 +128,28 @@ elseif(APPLE)
 endif()
 
 # What `culebra build` appends to the link of a program that names Llama: the
-# four statics by embedded name (@libllama.a@, see _rt_embed_extern in
+# statics by embedded name (@libllama.a@, see _rt_embed_extern in
 # CMakeLists.txt) and the system libraries, never a path of this machine.
-set(_llama_link "")
-foreach(_a IN LISTS _llama_aot_a)
-  cmake_path(GET _a FILENAME _a_name)
-  string(APPEND _llama_link "@${_a_name}@ ")
-endforeach()
-string(STRIP "${_llama_link}" _llama_link)
-if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-  string(APPEND _llama_link " -lpthread -ldl -lm")
-elseif(APPLE)
-  string(APPEND _llama_link " -framework Accelerate -framework Foundation")
+# _llama_link is the default (CPU) link; _llama_gpu_link, for `--llama-gpu`,
+# is the driver's own set, the Vulkan backend included ("" without it).
+function(_llama_fragment out archives)
+  set(_f "")
+  foreach(_a IN LISTS archives)
+    cmake_path(GET _a FILENAME _a_name)
+    string(APPEND _f "@${_a_name}@ ")
+  endforeach()
+  string(STRIP "${_f}" _f)
+  if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    string(APPEND _f " -lpthread -ldl -lm")
+  elseif(APPLE)
+    string(APPEND _f " -framework Accelerate -framework Foundation")
+  endif()
+  set(${out} "${_f}" PARENT_SCOPE)
+endfunction()
+_llama_fragment(_llama_link "${_llama_aot_a}")
+set(_llama_gpu_link "")
+if(_llama_vulkan)
+  _llama_fragment(_llama_gpu_link "${_llama_a}")
 endif()
 
 # Every translation unit that reaches stdlib/bindings.h compiles the Llama rows
