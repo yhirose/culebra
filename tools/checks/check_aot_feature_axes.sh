@@ -542,11 +542,12 @@ if [[ "$llama_probe" == *"undefined variable 'Llama'"* ]]; then
 else
   expect_class none "$llama_choke" "W?" "expected 'W' or absent" "no Llama use"
   expect_absent none ' _?llama_model_load_from_file$| _?ggml_backend_load_all$' "llama.cpp"
-  build llama 'try {
+  llama_prog='try {
   Llama.load("/nonexistent/model.gguf")
 } catch e {
   IO.print(e.kind)
 }'
+  build llama "$llama_prog"
   expect_class llama "$llama_choke" "T" "expected 'T'" "Llama named"
   expect_present llama ' _?llama_model_load_from_file$' "Llama named, llama.cpp must be linked"
   expect_class llama "$regex_choke" "W?" "expected 'W' or absent" "Llama only"
@@ -554,11 +555,7 @@ else
   expect_output llama "LlamaError"
   # --llama-cpu carries no GPU code at all, whether or not this driver has the
   # Vulkan backend (what the default link runs on is probe_llama_aot.sh's).
-  build llama_cpu 'try {
-  Llama.load("/nonexistent/model.gguf")
-} catch e {
-  IO.print(e.kind)
-}' --llama-cpu
+  build llama_cpu "$llama_prog" --llama-cpu
   expect_absent llama_cpu ' _?vk[A-Z][A-Za-z0-9]*$' "Vulkan, --llama-cpu"
   expect_output llama_cpu "LlamaError"
 fi

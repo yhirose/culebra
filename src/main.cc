@@ -592,7 +592,7 @@ static constexpr FeatureAxis kFeatureAxes[] = {
     // flags name the llama.cpp statics the driver embeds and the GPU half the
     // bodies call by name: the Vulkan backend where this driver has it, since a
     // program that runs a model is slow without a GPU. --llama-cpu links the
-    // CPU half alone (about 42 MB smaller); the bodies are the same.
+    // CPU half alone; the bodies are the same.
     {{"Llama"}, "libculebra_rt_llama.a", CULEBRA_LLAMA_LINK, kEmbedsLlama,
      {.flag = "--llama-cpu", .link_flags = CULEBRA_LLAMA_CPU_LINK}},
     // Scene and Webview have no weak choke — they simply aren't in the core
