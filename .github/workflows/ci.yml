@@ -318,20 +318,18 @@ jobs:
       - name: Check the generated signature index (docs/quick-guide.md)
         run: BIN=./build/culebra just _check-quick-guide
 
-  # No-LLVM gate (CULEBRA_ENABLE_JIT=OFF). The `culebra` driver is the one TU
-  # with #ifdef CULEBRA_JIT_ENABLED gating, so a mismatched guard there breaks
-  # this build while the default JIT build stays green. It runs as well as
-  # builds: only executing a program on the bytecode VM's executor proves the
-  # VM stayed out of the LLVM guard. Ubuntu-only — the breakage is
-  # compiler/define driven, not platform-specific. Its own job with its own
-  # ccache key: the JIT define flips every ccache key, so this build shares
-  # nothing with build-ubuntu's cache and would only churn it from inside
-  # that job.
-  build-no-jit:
+  # The slim download (CULEBRA_SLIM: the VM alone, no LLVM, window, 3D,
+  # audio, Webview or Llama), built as a release builds it. It is also the
+  # no-LLVM gate: the `culebra` driver is the one TU with #ifdef
+  # CULEBRA_JIT_ENABLED gating, so a mismatched guard there breaks this build
+  # while the default JIT build stays green, and only running the VM corpus
+  # proves the VM stayed out of the LLVM guard. Its own ccache key: the JIT
+  # define flips every ccache key, so this build shares nothing with
+  # build-ubuntu's cache.
+  linux-slim:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
-      CULEBRA_CANVAS_WINDOW_DEFAULT: OFF
       CCACHE_DIR: ${{ github.workspace }}/.ccache
       CMAKE_C_COMPILER_LAUNCHER: ccache
       CMAKE_CXX_COMPILER_LAUNCHER: ccache
@@ -350,15 +348,124 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ github.workspace }}/.ccache
-          key: linux-nojit-ccache-${{ github.sha }}
+          key: linux-slim-ccache-${{ github.sha }}
           restore-keys: |
-            linux-nojit-ccache-
+            linux-slim-ccache-
 
-      - name: Build and run (no LLVM)
-        run: just test-no-jit
+      - name: Build and run (the slim driver)
+        run: just test-slim
 
       - name: Report ccache stats
         run: ccache -s
+
+      - name: Dry-run the slim release packaging
+        env:
+          CULEBRA_PACKAGE_UNTAGGED: 1  # a push reaches no tag; its build says so
+        run: |
+          v=$(sed -n 's/^#define CULEBRA_VERSION "\([^"]*\)"/\1/p' include/culebra.h)
+          [ -n "$v" ] || { echo "no CULEBRA_VERSION in include/culebra.h" >&2; exit 1; }
+          misc/package_release.sh ./build-slim/culebra "v$v" linux x64 slim
+
+  # linux-slim on macOS: the macOS slim download, as released.
+  macos-slim:
+    runs-on: macos-latest
+    timeout-minutes: 45
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CMAKE_C_COMPILER_LAUNCHER: ccache
+      CMAKE_CXX_COMPILER_LAUNCHER: ccache
+      CULEBRA_BUILD_JOBS: "2"  # the runner swaps above 2; see test-macos
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+      - run: brew install just ccache
+
+      - name: Restore ccache
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.ccache
+          key: macos-slim-ccache-${{ github.sha }}
+          restore-keys: |
+            macos-slim-ccache-
+
+      - name: Build and run (the slim driver)
+        run: just test-slim
+
+      - name: Verify the binary loads only system libraries
+        run: misc/verify_standalone_macho.sh build-slim/culebra
+
+      - name: Dry-run the slim release packaging
+        env:
+          CULEBRA_PACKAGE_UNTAGGED: 1
+        run: |
+          v=$(sed -n 's/^#define CULEBRA_VERSION "\([^"]*\)"/\1/p' include/culebra.h)
+          [ -n "$v" ] || { echo "no CULEBRA_VERSION in include/culebra.h" >&2; exit 1; }
+          misc/package_release.sh ./build-slim/culebra "v$v" macos arm64 slim
+
+  # linux-slim on Windows: the Windows download's configure script with
+  # CULEBRA_SLIM, as release.yml builds the slim one. No LLVM is needed.
+  windows-slim:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-ninja
+            mingw-w64-ucrt-x86_64-zlib
+            mingw-w64-ucrt-x86_64-ccache
+            mingw-w64-ucrt-x86_64-openssl
+            mingw-w64-ucrt-x86_64-clang
+            mingw-w64-ucrt-x86_64-lld
+            diffutils
+            zip
+
+      - name: Restore ccache
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.ccache
+          key: windows-slim-ccache-${{ github.sha }}
+          restore-keys: |
+            windows-slim-ccache-
+
+      - name: Configure (the Windows download's configuration, slim)
+        run: misc/windows_toolchain/configure_windows_release.sh build-slim -DCULEBRA_SLIM=ON
+
+      - name: Build
+        run: cmake --build build-slim --target culebra -j
+
+      - name: Report ccache stats
+        run: ccache -s || true
+
+      - name: Verify standalone binary (only system DLLs)
+        run: misc/windows_toolchain/verify_standalone_exe.sh build-slim/culebra.exe
+
+      # The VM corpus, as just test-slim runs it elsewhere (just is not set
+      # up on this runner).
+      - name: Run the VM corpus
+        run: tools/bench/vm_cases/compare.sh ./build-slim/culebra.exe --vm
+
+      - name: Dry-run the slim release packaging
+        env:
+          CULEBRA_PACKAGE_UNTAGGED: 1
+        run: |
+          v=$(sed -n 's/^#define CULEBRA_VERSION "\([^"]*\)"/\1/p' include/culebra.h)
+          [ -n "$v" ] || { echo "no CULEBRA_VERSION in include/culebra.h" >&2; exit 1; }
+          misc/package_release.sh ./build-slim/culebra.exe "v$v" windows x64 slim
 
   # Llama (a language model run in this process, cmake/llama.cmake) is off by
   # default, so no other lane builds it. This one builds the driver with it on

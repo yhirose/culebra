@@ -37,7 +37,7 @@ culebra は個人の趣味プロジェクト（プログラミング言語処理
 - ゲートの JIT はコンパイル結果を `~/.cache/culebra/gate-jit`（macOS は `~/Library/Caches/culebra/gate-jit`）に残し、全 worktree で共有する。鍵は最適化後の IR とバックエンドなので、ビルドし直しても IR が同じファイルはコード生成を飛ばす（コーパスで JIT の CPU 882s → 413s）。`CULEBRA_GATE_JIT_CACHE=<絶対パス>` で場所を変え、`off` で実行ごとのディレクトリに戻す。書き込めない場合（sandbox）は `jit cache: cannot write …` と 1 行出して実行ごとに落ちる。**やり直しても説明のつかない JIT の失敗は、まず `CULEBRA_GATE_JIT_CACHE=off` で回し直す**（オブジェクトが作った実行より長く残るため）。
 - **`just build`** は性能計測とリリースバイナリが要るときだけ。**性能計測は必ず `just build`（`-O3` + LTO）で**。`build-dev/` は `-O1` なので数字が出ない。コミット前の確認や AOT runtime archive の確認は CI に任せる（下記「どこまで回すか」）。
 - このマシンは 20 スレッド / 15.9 GB。ビルドの並列数は既定で物理メモリ 2 GB あたり 1 本（`misc/jobs_within.sh`、ここでは 8）で、`CULEBRA_BUILD_JOBS` で上書きできる。所要時間は直列の鎖（preamble ツール → 焼き込み → runtime archive → driver → リンク）で決まり、一からのリリースビルドは 8 本でも 20 本でも約 400s。メモリを食うのはテストではなくビルド: 1 本 4〜7 GB の翻訳単位（`main.cc`、`preamble_cc.cc`、`culebra_rt.cc`、`smoke_suite.cc`）があり、全ツリーのビルドは約 11 GB、`just dev` は 6.9 GB（`main.cc`）、`just test-dev` のテスト部分は 1.3 GB。全ツリーのビルドは `misc/one_at_a_time.sh` のロックで直列化済み（下記「並走時のマシン占有」）。
-- `build`/`dev`/`build-gate`/`build-no-jit` の make、および `_run-tests`（`test`/`test-dev` 共通）の culebra 実行・ctest はデフォルトで `nice -n 10` 経由。複数 worktree セッション並走時の CPU 専有で通常の Mac 操作が詰まる問題への対処（単独実行時は速度低下なし、競合時のみ譲る）。`CULEBRA_NICE=0` で無効化可。
+- `build`/`dev`/`build-gate`/`build-no-jit`/`build-slim` の make、および `_run-tests`（`test`/`test-dev` 共通）の culebra 実行・ctest はデフォルトで `nice -n 10` 経由。複数 worktree セッション並走時の CPU 専有で通常の Mac 操作が詰まる問題への対処（単独実行時は速度低下なし、競合時のみ譲る）。`CULEBRA_NICE=0` で無効化可。
 
 ## テスト（速い順に段階的に）
 
@@ -98,7 +98,7 @@ assert が本当に compile-in されたかを binary 内の assert 文字列 gr
 
 ### 並走時のマシン占有
 
-`dev` 以外のビルド（`build`／`build-gate`／`build-assert`／`build-scene`／`build-no-jit`／
+`dev` 以外のビルド（`build`／`build-gate`／`build-assert`／`build-scene`／`build-no-jit`／`build-slim`／
 `coverage-build`／`asan`）、C++ 埋め込み例のコンパイル（`check-docs-cpp`）、`just test` は
 **machine-wide ロックで直列化**される（`misc/one_at_a_time.sh`）。2 本目は "waiting: another culebra
 build/gate holds this machine…" と出して待つ。重いレーンの並走は実測 2.4〜2.8 倍遅くなるので、待つほうが

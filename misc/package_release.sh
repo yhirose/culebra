@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # Package one release build into the archive GitHub Releases serves.
 #
-# Usage: misc/package_release.sh <binary> <tag> <os> <arch>
+# Usage: misc/package_release.sh <binary> <tag> <os> <arch> [flavor]
 #   <binary>  path to the built culebra (or culebra.exe)
 #   <tag>     the release tag, e.g. v0.1.0
 #   <os>      macos | linux | windows
 #   <arch>    arm64 | x64
+#   [flavor]  slim for the slim driver (CULEBRA_SLIM); none for the full one
 #
 # CULEBRA_PACKAGE_UNTAGGED=1 says this build reaches no tag, which is what
 # ci.yml's dry-run sets (see the check it opts out of, below).
@@ -26,17 +27,22 @@
 # itself answers definitively with `culebra --version`.
 set -euo pipefail
 
-if [ $# -ne 4 ]; then
-  echo "usage: package_release.sh <binary> <tag> <os> <arch>" >&2
+if [ $# -ne 4 ] && [ $# -ne 5 ]; then
+  echo "usage: package_release.sh <binary> <tag> <os> <arch> [flavor]" >&2
   exit 2
 fi
 
-binary=$1 tag=$2 os=$3 arch=$4
+binary=$1 tag=$2 os=$3 arch=$4 flavor=${5:-}
+case "$flavor" in
+  "" | slim) ;;
+  *) echo "package_release: unknown flavor '$flavor'" >&2; exit 2 ;;
+esac
+suffix=${flavor:+-$flavor}
 
 [ -x "$binary" ] || { echo "package_release: not executable: $binary" >&2; exit 1; }
 
-dir="culebra-$tag-$os-$arch"   # inside the archive: says which release
-stem="culebra-$os-$arch"       # the archive itself: stable across releases
+dir="culebra-$tag-$os-$arch$suffix"   # inside the archive: says which release
+stem="culebra-$os-$arch$suffix"       # the archive itself: stable across releases
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT  # the staged copy is ~100 MB; don't leak it locally
 staging="$tmp/$dir"

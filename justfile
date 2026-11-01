@@ -395,9 +395,30 @@ build-no-jit:
 [doc("Run the no-LLVM build over the VM corpus and compare with the gate's goldens")]
 [group("test")]
 test-no-jit: build-no-jit
+    @just _test-vm-only ./build-no-jit/culebra
+
+# The slim download (CULEBRA_SLIM: the VM alone, no window, 3D, audio, Webview
+# or Llama), built as a release is (-O3, LTO). Its own build-slim/ dir, for the
+# reason build-no-jit has one.
+[doc("Build the slim driver as released (CULEBRA_SLIM=ON)")]
+[group("build")]
+build-slim:
+    mkdir -p build-slim
+    cd build-slim && cmake -DCMAKE_BUILD_TYPE=Release -DCULEBRA_SLIM=ON .. > /dev/null
+    cd build-slim && {{lock_cmd}} {{nice_cmd}} make -j{{build_jobs}} culebra
+
+# What test-no-jit proves, for the binary that ships: the VM corpus and the REPL.
+[doc("Run the slim driver over the VM corpus and the REPL")]
+[group("test")]
+test-slim: build-slim
+    @just _test-vm-only ./build-slim/culebra
+
+# A driver whose one engine is the VM: it says so, runs the VM corpus against
+# the frozen expected outputs, and its REPL runs.
+_test-vm-only bin:
     #!/usr/bin/env bash
     set -euo pipefail
-    bin=./build-no-jit/culebra
+    bin={{bin}}
     case "$("$bin" --version)" in
         *"(vm)"*) ;;
         *) echo "check failed: --version does not name the VM"; exit 1 ;;
@@ -415,7 +436,7 @@ test-no-jit: build-no-jit
         *42*) ;;
         *) echo "check failed: the no-LLVM REPL does not run on --vm"; exit 1 ;;
     esac
-    echo "no-LLVM build: --vm runs the VM corpus against the frozen expected outputs"
+    echo "$bin: --vm runs the VM corpus against the frozen expected outputs"
 
 # Same Release + JIT shape as `just dev`, minus -DNDEBUG, so the tree's asserts
 # actually execute. Every other lane is Release, so without this one NO build

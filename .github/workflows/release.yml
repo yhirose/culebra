@@ -394,8 +394,137 @@ jobs:
   # One file the user can `sha256sum -c` against every asset at once. Reads the
   # per-asset digests back off the release rather than passing artifacts around,
   # which also proves each upload actually landed.
+  # The slim downloads (CULEBRA_SLIM: the VM alone, for running scripts), one per
+  # platform, built and checked as ci.yml's linux-slim, macos-slim and
+  # windows-slim build them. No LLVM, so no deps cache and a short build.
+  linux-x64-slim:
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CMAKE_C_COMPILER_LAUNCHER: ccache
+      CMAKE_CXX_COMPILER_LAUNCHER: ccache
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+          ref: ${{ env.TAG }}
+      - name: Install toolchain
+        uses: ./.github/actions/setup-linux-toolchain
+      - name: Restore ccache
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.ccache
+          key: release-linux-slim-ccache-${{ github.sha }}
+          restore-keys: |
+            release-linux-slim-ccache-
+            linux-slim-ccache-
+      - name: Build and run (the slim driver)
+        run: just test-slim
+      - name: Package and upload
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          assets=$(misc/package_release.sh ./build-slim/culebra "$TAG" linux x64 slim)
+          gh release upload "$TAG" --clobber $assets
+
+  macos-arm64-slim:
+    needs: prepare
+    runs-on: macos-latest
+    timeout-minutes: 45
+    env:
+      CULEBRA_BUILD_JOBS: "2"
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CMAKE_C_COMPILER_LAUNCHER: ccache
+      CMAKE_CXX_COMPILER_LAUNCHER: ccache
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+          ref: ${{ env.TAG }}
+      - run: brew install just ccache
+      - name: Restore ccache
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.ccache
+          key: release-macos-slim-ccache-${{ github.sha }}
+          restore-keys: |
+            release-macos-slim-ccache-
+            macos-slim-ccache-
+      - name: Build and run (the slim driver)
+        run: just test-slim
+      - name: Verify the binary loads only system libraries
+        run: misc/verify_standalone_macho.sh build-slim/culebra
+      - name: Package and upload
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          assets=$(misc/package_release.sh ./build-slim/culebra "$TAG" macos arm64 slim)
+          gh release upload "$TAG" --clobber $assets
+
+  windows-x64-slim:
+    needs: prepare
+    runs-on: windows-latest
+    timeout-minutes: 45
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      # windows-x64's reason: checkout must not rewrite line endings.
+      - name: Disable autocrlf so checkout doesn't rewrite line endings
+        shell: pwsh
+        run: git config --global core.autocrlf false
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+          ref: ${{ env.TAG }}
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-ninja
+            mingw-w64-ucrt-x86_64-zlib
+            mingw-w64-ucrt-x86_64-ccache
+            mingw-w64-ucrt-x86_64-openssl
+            mingw-w64-ucrt-x86_64-clang
+            mingw-w64-ucrt-x86_64-lld
+            diffutils
+            zip
+            git
+      - name: Restore ccache
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.ccache
+          key: release-windows-slim-ccache-${{ github.sha }}
+          restore-keys: |
+            release-windows-slim-ccache-
+            windows-slim-ccache-
+      - name: Configure (the Windows download's configuration, slim)
+        run: misc/windows_toolchain/configure_windows_release.sh build-slim -DCULEBRA_SLIM=ON
+      - name: Build
+        run: cmake --build build-slim --target culebra -j
+      - name: Verify standalone binary (only system DLLs)
+        run: misc/windows_toolchain/verify_standalone_exe.sh build-slim/culebra.exe
+      - name: Run the VM corpus
+        run: tools/bench/vm_cases/compare.sh ./build-slim/culebra.exe --vm
+      - name: Package and upload
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          assets=$(misc/package_release.sh ./build-slim/culebra.exe "$TAG" windows x64 slim)
+          gh release upload "$TAG" --clobber $assets
+
   finalize:
-    needs: [macos-arm64, linux-x64, windows-x64]
+    needs: [macos-arm64, linux-x64, windows-x64, linux-x64-slim, macos-arm64-slim, windows-x64-slim]
     runs-on: ubuntu-24.04
     steps:
       - name: Aggregate SHA256SUMS

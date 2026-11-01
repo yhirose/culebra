@@ -155,8 +155,9 @@ draft が 2 つできる（v0.1.0 で実際に発生し、片方を消したら�
     gh run list --workflow=release.yml --limit 1 --json databaseId,url
     gh run watch <databaseId> --exit-status
 
-macOS / Linux x64 / Windows x64 の 3 本を並列でビルドし、それぞれ
-`culebra-<os>-<arch>.{tar.gz,zip}` + `.sha256` を添付する。Windows job はさらに AOT の
+macOS / Linux x64 / Windows x64 の全部入り 3 本とスリム版 3 本を並列でビルドし、それぞれ
+`culebra-<os>-<arch>.{tar.gz,zip}`（スリム版は `culebra-<os>-<arch>-slim.{tar.gz,zip}`）+
+`.sha256` を添付する。Windows job はさらに AOT の
 リンク kit `culebra-toolchain-windows-x64.zip` + `.sha256` を添付し（`culebra toolchain install`
 がこの名前で取りに来る）、最後に `finalize` が `SHA256SUMS` を添付する
 （アーカイブ名に版数は入らない — README の `releases/latest/download/...` を固定リンクに
@@ -167,7 +168,8 @@ macOS / Linux x64 / Windows x64 の 3 本を並列でビルドし、それぞれ
     gh release edit vX.Y.Z --notes-file <file>
 
 念のため `gh release view vX.Y.Z --json tagName,assets` で、タグ名が `vX.Y.Z` のままで
-アセットが 9 個（3 アーカイブ + toolchain kit + 各 `.sha256` 4 個 + `SHA256SUMS`）あることを
+アセットが 15 個（全部入り 3 + スリム版 3 + toolchain kit の 7 アーカイブ + 各 `.sha256` 7 個 +
+`SHA256SUMS`）あることを
 確認する。数が合わないときは、まず前回リリースのアセット構成
 （`gh release view <prev-tag> --json assets`）と比べる — `release.yml` に添付物が増減した
 だけならこの行の方が古い。
