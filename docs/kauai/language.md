@@ -1055,7 +1055,8 @@ An external drum is built once: the function given for its sound under
 `voices:` and `drums:` are the names after `external`, in lower case:
 `external Ep` is `ep:`, `external HiHat` is `hihat:`; a song whose external
 sound has no function is a
-`ValueError` when it is read. `prepare()` builds one sound and answers how
+`ValueError` when it is read, which names the line of the voice or drum and
+the keys there are. `prepare()` builds one sound and answers how
 many remain, so a game can spread the work over frames; `play()` builds
 whatever is left first.
 

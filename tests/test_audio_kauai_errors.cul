@@ -206,6 +206,21 @@ for opt in ["env 1 2 3", "gap 2", "duty 1/4"] {
     "line 4: an external voice plays its sound through: no env, gap or duty",
   )
 }
+# An external sound the program does not supply is the program's ValueError,
+# on the line of the voice or drum that plays it, with the names it does.
+let unsupplied = |what| "ValueError: Audio.Kauai: " + what
+assert_eq(
+  error_of(play("  T", "C c1").replace("external Ep", "external Organ")),
+  unsupplied("line 4: voice Ch plays `external Organ`, and voices: has no `organ` (it has ep)"),
+)
+assert_eq(
+  error_of(with_hits("C c1\n  hits: x1").replace("external Kick", "external Snare")),
+  unsupplied("line 5: drum Kick plays `external Snare`, and drums: has no `snare` (it has kick)"),
+)
+assert_eq(
+  try { Audio.Kauai.new(play("  T", "C c1")); nil } catch e { "{e.kind}: {e.message}" },
+  unsupplied("line 4: voice Ch plays `external Ep`, and voices: has no `ep` (it has none)"),
+)
 # A vol is the tones' 0 to 100, an external voice's and drum's too: a
 # percentage is none.
 fails(play("  T", "C c1").replace("poly  vol 40", "poly  vol 40%"), "line 4: a voice's vol is 0 to 100, as Audio.tone's: vol 20")

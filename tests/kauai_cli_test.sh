@@ -82,6 +82,8 @@ section Theme {
 EOF
 # The same notes on a bundled recipe.
 sed -e 's/external AltoSax/external MellowFmBrass/' "$TMP/alto.kau" > "$TMP/brass.kau"
+# An instrument the program does not have.
+sed -e 's/external AltoSax/external Organ/' "$TMP/alto.kau" > "$TMP/organ.kau"
 
 for lane in "${lanes[@]}"; do
   # What the two print and leave for a song that reads, one that is not
@@ -108,6 +110,11 @@ for lane in "${lanes[@]}"; do
   run cli "$TMP/marked.kau" --wav "$TMP/x.wav" --from Nope
   check "$lane part, no mark: status" 1 "$rc"
   check "$lane part, no mark: stderr" "kauai: $TMP/marked.kau has no mark Nope (it has Again)" "$err"
+  # An instrument it does not have: the song's line and the ones it has.
+  run cli "$TMP/organ.kau" --check
+  check "$lane no instrument: status" 1 "$rc"
+  [[ "$err" == "ValueError: Audio.Kauai: $TMP/organ.kau:2: voice Lead plays \`external Organ\`, and voices: has no \`organ\` (it has "*"altosax, "*"mellowfmbrass"*")" ]] || {
+    echo "FAIL $lane no instrument: stderr [$err]"; fail=1; }
 
   # The WAV, whole and in part, is the one `culebra play` writes.
   run play --wav "$TMP/play.wav" "$TMP/duo.kau"

@@ -61,6 +61,9 @@ let song = try {
   refuse(e)
 } catch e: IOError {
   refuse(e)
+} catch e: ValueError {
+  # An external instrument the program does not have.
+  refuse(e)
 }
 
 if check {

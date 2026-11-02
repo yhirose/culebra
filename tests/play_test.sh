@@ -182,7 +182,7 @@ check "$ENGINE external, a folder: stderr" "" "$err"
 run --check --sounds "$TMP/voices_only.cul" "$TMP/external.kau"
 check "$ENGINE external, voices only: status" 1 "$rc"
 check "$ENGINE external, voices only: stderr" \
-  'ValueError: Audio.Kauai: drum Kick plays `external Kick`, and drums: has no `kick`' "$err"
+  "ValueError: Audio.Kauai: $TMP/external.kau:4: drum Kick plays \`external Kick\`, and drums: has no \`kick\` (it has none)" "$err"
 
 # --watch reads the song again whenever a file in its folder changes, says
 # which, and watches on through a mistake until Ctrl+C.

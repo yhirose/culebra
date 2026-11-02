@@ -985,6 +985,7 @@ let _kauai_module = fn () {
       gap: option_number(o, "gap", line, 0),
       params: params,
       parts: parts,
+      line: line,
       mut role: nil,
     }
     # A voice with no `plays` plays only what it echoes or harmonizes.
@@ -1058,6 +1059,7 @@ let _kauai_module = fn () {
             on_hits: at_hits != nil,
             external: sound,
             params: external_params(w, item.line),
+            line: item.line,
             vol: vol_of(vol[0], item.line, "a drum"),
             choke: choke == nil ? dn : choke[0],
           }
@@ -2339,11 +2341,16 @@ let _kauai_module = fn () {
   # How external sound `name` is made, from `kind.table` (the `voices:` or
   # `drums:` given): a function, or an instrument `{phrase: ..., hears: [...]}`
   # (`hit:` for a drum), under `key` in the table. `hears` is nil for a
-  # function.
-  fn instrument(kind, name, what) {
+  # function. `player` is the voice or drum, with the line it is defined on.
+  fn instrument(kind, player, what) {
+    let name = player.external
     let key = name.lower()
-    let f = (kind.table ?? {}).get(key, nil)
-    __raise("ValueError", "Audio.Kauai: {what} plays `external {name}`, and {kind.kwarg}: has no `{key}`") if f == nil
+    let table = kind.table ?? {}
+    let f = table.get(key, nil)
+    if f == nil {
+      let has = table.empty() ? "none" : table.keys().join(", ")
+      __raise("ValueError", "Audio.Kauai: {player.line}: {what} plays `external {name}`, and {kind.kwarg}: has no `{key}` (it has {has})")
+    }
     return {make: f, hears: nil, key: key} if f is Function
     if type_of(f) != "Object" || f.get(kind.call, nil) !is Function {
       __raise("ValueError", "Audio.Kauai: {kind.kwarg}: `{key}` is a function or an object whose `{kind.call}` is one")
@@ -2399,7 +2406,7 @@ let _kauai_module = fn () {
       let player = drum ? x.drums[e.by] : x.voices[e.by]
       let ins = kinds.get_or_put(
         e.by,
-        || instrument(drum ? DRUM : VOICE, player.external, "{drum ? "drum" : "voice"} {e.by}"),
+        || instrument(drum ? DRUM : VOICE, player, "{drum ? "drum" : "voice"} {e.by}"),
       )
       let params = player.params
       cond {
