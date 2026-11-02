@@ -370,18 +370,20 @@ inline double settled(double x) { return std::abs(x) < 1e-30 ? 0.0 : x; }
 // `value`, or (`ramp`) it arrives there in a straight line from the change
 // before. Web Audio's setValueAtTime and linearRampToValueAtTime. A change
 // takes effect at the first sample whose time, its index over the rate, is
-// `at` or later.
+// `at` or later. One that `cancel`s first drops the changes after `at` still
+// to come (Param::held makes it).
 struct ParamEvent {
   double at = 0;
   bool ramp = false;
   double value = 0;
+  bool cancel = false;
 };
 
 // A value a part reads, `rest` until its first change and then moved by its
 // changes; asked for at times that only go forward.
 class Param {
  public:
-  explicit Param(double rest = 0) : value_(rest), from_value_(rest) {}
+  explicit Param(double rest = 0) : rest_(rest), value_(rest), from_value_(rest) {}
   // A value through `n` numbers of (at, value) pairs, `at` in seconds: it
   // holds its first value before them and its last after, moving in straight
   // lines between; two at the same time are a step. `rest` when there are none.
@@ -391,11 +393,32 @@ class Param {
     return p;
   }
 
-  // After the changes already scheduled for the same time.
+  // After the changes already scheduled for the same time; one that cancels
+  // takes the place of those after it still to come.
   void schedule(ParamEvent e) {
     auto it = std::upper_bound(events_.begin() + static_cast<std::ptrdiff_t>(next_), events_.end(),
                                e.at, [](double at, const ParamEvent& x) { return at < x.at; });
+    if (e.cancel) {
+      it = events_.erase(it, events_.end());
+      e.cancel = false;
+    }
     events_.insert(it, e);
+  }
+  // The change that cancels those after `at`, holding the value there: a
+  // ramp to it when one was under way at `at`, as Web Audio's
+  // cancelAndHoldAtTime keeps the line, and a set otherwise. Read on a value
+  // that has every change it was given, a graph's definition.
+  ParamEvent held(double at) const {
+    auto next = std::upper_bound(events_.begin(), events_.end(), at,
+                                 [](double t, const ParamEvent& x) { return t < x.at; });
+    double from_at = 0, from = rest_;
+    if (next != events_.begin()) {
+      from_at = std::prev(next)->at;
+      from = std::prev(next)->value;
+    }
+    if (next != events_.end() && next->ramp)
+      return {at, true, from + (next->value - from) * (at - from_at) / (next->at - from_at), true};
+    return {at, false, from, true};
   }
   size_t size() const { return events_.size(); }
   // Room for `extra` changes more without allocating; answers how many it
@@ -415,7 +438,8 @@ class Param {
   }
   // schedule() that never allocates: false when there is no room for it.
   bool schedule_in_place(ParamEvent e) {
-    if (events_.size() == events_.capacity()) return false;
+    bool frees = e.cancel && next_ < events_.size() && events_.back().at > e.at;
+    if (events_.size() == events_.capacity() && !frees) return false;
     schedule(e);
     return true;
   }
@@ -436,7 +460,7 @@ class Param {
  private:
   std::vector<ParamEvent> events_;
   size_t next_ = 0;
-  double value_, from_value_;
+  double rest_, value_, from_value_;
   double from_at_ = 0;
 };
 
@@ -1434,6 +1458,9 @@ class Graph {
   void output(int part) { out_ = part; }
   void schedule(int part, int value, ParamEvent e) {
     parts_[static_cast<size_t>(part)].values[value].schedule(e);
+  }
+  ParamEvent held(int part, int value, double at) const {
+    return parts_[static_cast<size_t>(part)].values[value].held(at);
   }
   // How many changes value `value` of `part` has been given.
   size_t changes(int part, int value) const { return parts_[static_cast<size_t>(part)].values[value].size(); }

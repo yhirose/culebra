@@ -8992,9 +8992,14 @@ scheduled on the graph's clock, in seconds from its start:
 | --- | --- |
 | `value.set(at, v)` | from `at` on, the value is `v` |
 | `value.ramp(at, v)` | the value arrives at `v` at `at`, in a straight line from the change before (or from the start) |
+| `value.cancel(at)` | the changes after `at` are dropped, and the value holds what it has at `at`: a ramp under way keeps its line up to `at` |
 
-Both answer the value, so changes chain, and they may be made in any order:
-each is heard at its time. A graph keeps every change made to it and works
+Each answers the value, so changes chain, and they may be made in any order:
+each is heard at its time. `cancel` is for what is not known ahead, as when
+a key is let go: the changes scheduled for while it was held give way to
+those made from then on, which start from the value held. On a graph that
+is playing, a cancel for a time already past is made at the graph's clock:
+what has been heard stays. A graph keeps every change made to it and works
 them out from its start whenever it renders or plays; a change made while it
 plays reaches the playing graph too, and one for a time already past takes
 effect at once. What a graph plays is wired as it was at `play()`: a part
@@ -9003,7 +9008,8 @@ and so are changes to such a part's values. A change takes effect at the first s
 time, as a point of `Audio.filter`'s or `Audio.envelope`'s envelope does;
 `Audio.pluck` puts a tuning on the nearest sample instead, so a string
 re-tuned between two samples can change one sample later in a graph. These
-are Web Audio's `setValueAtTime` and `linearRampToValueAtTime`, so a song's
+are Web Audio's `setValueAtTime`, `linearRampToValueAtTime` and
+`cancelAndHoldAtTime`, so a song's
 notes can be scheduled ahead, as `Audio.Kauai` schedules its own.
 
 A kind other than those named, a part from another graph, a value out of

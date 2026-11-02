@@ -6208,8 +6208,21 @@ inline JitValue _ns_audio_graph_output(JitValue* a, int64_t) {
   g.output(_ns_audio_graph_index(g, static_cast<double>(_ns_adapt::take_long(a[1]))));
   return _ns_adapt::v_nil();
 }
-// The changes come as [part, value, ramp, at, to] end to end, all checked
-// before any is made; a graph playing hears them too.
+// Where a playing graph's clock is (the device's, or without one the time
+// since play()); NaN when it is not playing.
+inline double _ns_audio_graph_clock(int64_t id) {
+  namespace ad = culebra::_audio_detail;
+  auto it = ad::graphs_playing().find(id);
+  if (it == ad::graphs_playing().end()) return std::nan("");
+  double t = ad::graph_now(id);
+  return std::isnan(t) ? std::chrono::duration<double>(std::chrono::steady_clock::now() - it->second).count() : t;
+}
+// The changes come as [part, value, how, at, to] end to end, `how` 0 for a
+// set, 1 for a ramp and 2 for a cancel (whose `to` is unread), all checked
+// before any is made; a graph playing hears them too. A cancel holds the
+// value the definition has at `at`, so the copy playing holds the same; on a
+// playing graph it is at the clock at the earliest, as Web Audio's is, for
+// the copy has played what came before and keeps it.
 inline JitValue _ns_audio_graph_schedule(JitValue* a, int64_t) {
   namespace ad = culebra::_audio_detail;
   int64_t id = _ns_adapt::take_long(a[0]);
@@ -6221,12 +6234,16 @@ inline JitValue _ns_audio_graph_schedule(JitValue* a, int64_t) {
       _ns_audio_fail("Audio.Graph: a change's time is 0 or more");
     int part = _ns_audio_graph_index(g, xs[k]);
     if (!(xs[k + 1] == 0 || xs[k + 1] == 1)) _ns_audio_fail("Audio.Graph: a part's value is one of its own");
+    if (xs[k + 2] == 2) continue;
     if (auto* bad = _ns_audio_graph_bad_value(g.kind(part), g.rate(), static_cast<int>(xs[k + 1]), xs[k + 4]))
       _ns_audio_fail(bad);
   }
   for (size_t k = 0; k + 4 < xs.size(); k += 5) {
     int part = static_cast<int>(xs[k]), value = static_cast<int>(xs[k + 1]);
-    ad::ParamEvent e{xs[k + 3], xs[k + 2] != 0, xs[k + 4]};
+    bool cancel = xs[k + 2] == 2;
+    double now = cancel ? _ns_audio_graph_clock(id) : std::nan("");
+    ad::ParamEvent e = cancel ? g.held(part, value, std::isnan(now) ? xs[k + 3] : std::max(xs[k + 3], now))
+                              : ad::ParamEvent{xs[k + 3], xs[k + 2] != 0, xs[k + 4]};
     g.schedule(part, value, e);
     ad::graph_post(id, part, value, e);
   }
@@ -6266,13 +6283,8 @@ inline void _ns_audio_graph_free(int64_t id) {
 // The device's clock while it plays the graph; the monotonic clock since
 // play() when nothing does.
 inline JitValue _ns_audio_graph_now(JitValue* a, int64_t) {
-  namespace ad = culebra::_audio_detail;
-  int64_t id = _ns_adapt::take_long(a[0]);
-  auto it = ad::graphs_playing().find(id);
-  if (it == ad::graphs_playing().end()) return _ns_adapt::v_float(0.0);
-  double t = ad::graph_now(id);
-  if (std::isnan(t)) t = std::chrono::duration<double>(std::chrono::steady_clock::now() - it->second).count();
-  return _ns_adapt::v_float(t);
+  double t = _ns_audio_graph_clock(_ns_adapt::take_long(a[0]));
+  return _ns_adapt::v_float(std::isnan(t) ? 0.0 : t);
 }
 // Audio.Kauai's song as both mixers take it (kScheduleStride, stdlib/audio.h),
 // refused out of time order, or when it is not a whole number of rows.

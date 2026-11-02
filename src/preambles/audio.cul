@@ -183,7 +183,8 @@ let _audio_module = fn () {
   # One value a part of a graph reads, moved by changes scheduled on the
   # graph's clock, in seconds from its start: set(at, value) jumps to
   # `value` at `at`; ramp(at, value) arrives there in a straight line from
-  # the change before. Each answers the value, so changes chain.
+  # the change before; cancel(at) drops the changes after `at` and holds the
+  # value it has there. Each answers the value, so changes chain.
   class AudioGraphValue {
     new(graph, part: Long, index: Long) {
       @_graph = graph
@@ -191,17 +192,18 @@ let _audio_module = fn () {
       @_index = index
     }
     set(at: Long | Float, value: Long | Float) {
-      _Audio.graph_schedule(
-        @_graph._id,
-        [@_part, @_index, 0, at, value],
-      )
-      self
+      self._change(0, at, value)
     }
     ramp(at: Long | Float, value: Long | Float) {
-      _Audio.graph_schedule(
-        @_graph._id,
-        [@_part, @_index, 1, at, value],
-      )
+      self._change(1, at, value)
+    }
+    cancel(at: Long | Float) {
+      self._change(2, at, 0)
+    }
+    # A change as _Audio.graph_schedule takes it: `how` 0 sets, 1 ramps and
+    # 2 cancels.
+    _change(how, at, to) {
+      _Audio.graph_schedule(@_graph._id, [@_part, @_index, how, at, to])
       self
     }
   }
