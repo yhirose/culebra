@@ -1,10 +1,11 @@
 # `kauai live`: a recipe played from a MIDI controller, one note at a time,
-# as a wind controller plays: a note played while another is held moves it
-# to the new pitch (legato); the breath is the volume, straight in dB from
-# BREATH_DB down at no breath to full at `full`, turns the `bright` knob
-# from its least to its most, and is the attack (the recipe's output gain
-# starts where its `on` ends). Each note is made ahead, so a note played only
-# begins it.
+# as a wind controller plays. The breath is the volume, straight in dB from
+# BREATH_DB down at no breath to full at `full`. When the recipe's output
+# gain has an attack, the breath is that attack instead (the gain starts
+# where its `on` ends) and turns the `bright` knob from its least to its
+# most, and a note played while another is held moves it to the new pitch
+# (legato). A recipe whose sound fades by itself, as a piano's, strikes
+# every note anew. Each note is made ahead, so a note played only begins it.
 
 # How far below full no breath is (dB).
 let BREATH_DB = 40.0
@@ -33,9 +34,11 @@ fn play(recipe, input, breath, full) {
   silence.play()
   silence.stop()
 
-  # The output's gain, when it has one, is the recipe's attack: the breath's.
-  let steady = recipe.parts[recipe.out].values.has("gain") ? [recipe.out] : []
-  let bright = recipe.knobs.get("bright", nil)
+  # The output's gain, when its `on` moves (an attack), is the breath's.
+  let out_gain = recipe.parts[recipe.out].values.get("gain", nil)
+  let blown_in = out_gain != nil && out_gain.on.size() > 1
+  let steady = blown_in ? [recipe.out] : []
+  let bright = blown_in ? recipe.knobs.get("bright", nil) : nil
   let cc = breath == "pressure" ? nil : to_long(breath.slice(2, breath.size()))
   mut pressure = 0.0
   # The breath now on channel `on`, 0.0 to 1.0 of full.
@@ -62,11 +65,15 @@ fn play(recipe, input, breath, full) {
     }
     for m in input.read() {
       cond {
-        m.kind == "note_on" && held != nil => {
+        m.kind == "note_on" && held != nil && blown_in => {
           held.retune(m.note)
           held_pitch = m.note
         },
         m.kind == "note_on" => {
+          if held != nil {
+            held.release()
+            fading.push(held)
+          }
           channel = m.channel
           let level = Math.clamp(2.0 * m.velocity, 0.05, 2.0)
           held = ready.begin(m.note, level, loudness(blown(channel)))
