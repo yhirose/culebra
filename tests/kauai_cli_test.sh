@@ -126,6 +126,16 @@ for lane in "${lanes[@]}"; do
   run cli live fmbrass --midi EWI
   check "$lane live, no input: status" 1 "$rc"
   check "$lane live, no input: stderr" "kauai: live needs one MIDI input named like EWI; there are none" "$err"
+  # An option needs its value, and --breath-full a number.
+  run cli live FmBrass --breath-full
+  check "$lane option, no value: status" 2 "$rc"
+  check "$lane option, no value: stderr" "kauai: --breath-full needs a value" "$err"
+  run cli live FmBrass --breath-full much
+  check "$lane breath-full, not a number: status" 2 "$rc"
+  check "$lane breath-full, not a number: stderr" "kauai: --breath-full is a number above 0 and at most 1, not much" "$err"
+  run cli "$TMP/duo.kau" --wav
+  check "$lane wav, no value: status" 2 "$rc"
+  check "$lane wav, no value: stderr" "kauai: --wav needs a value" "$err"
   # An instrument it does not have: the song's line and the ones it has.
   run cli "$TMP/organ.kau" --check
   check "$lane no instrument: status" 1 "$rc"

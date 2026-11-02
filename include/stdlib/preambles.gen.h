@@ -5167,8 +5167,10 @@ let _midi_module = fn () {
     dropped() {
       _Audio.midi_dropped(@_id)
     }
+    # Closes it; a wait or a read after it is a TypeError.
     drop() {
       _Audio.midi_free(@_id) if @_id != nil
+      @_id = nil
     }
   }
 

@@ -289,9 +289,10 @@ fn held_course(v, env, where) {
   drawn(ks, ks[-1][0])
 }
 
-# Where a value's `on` ends, which a held note's value stays at.
-fn on_end(v, env, where) {
-  on_knots(v, env, where)[-1][1]
+# Where a value's `on` ends, which a held note's value stays at: its last
+# point's value, the one number a held note reads of it.
+fn on_end(v, env) {
+  v.on[-1][1](env)
 }
 
 # A held note's course for a value of part `name`: held_course, or, for a
@@ -653,7 +654,7 @@ class Held {
     let up = {...env, pitch: env.pitch + 12.0, f: env.f * 2.0}
     @_pitched = values.map(fn (x) {
       let end = x.course[-1][1]
-      end != 0.0 && Math.abs(on_end(x.def, up, x.where) / end - 2.0) < 1e-9
+      end != 0.0 && Math.abs(on_end(x.def, up) / end - 2.0) < 1e-9
     })
     # For each knob turned, the values that read it (found when it is first).
     @_reads = {}
@@ -711,11 +712,16 @@ class Held {
     let turned = {...@_params}
     turned[name] = v
     let env = {...@_env, ...@_recipe.knob_values(turned)}
+    # A value reads the knob if it ends elsewhere at the knob's least and
+    # most, at the note as it is when the knob is first turned: one whose
+    # end is the same at both (`abs(bright - 0.5)`, or one clamped at this
+    # pitch) is left alone. The recipes Kauai has read `bright` through
+    # mix() and products only.
     let reads = @_reads.get_or_put(name, fn () {
       let (lo, hi) = ({...env}, {...env})
       lo[name] = @_recipe.knobs[name].min
       hi[name] = @_recipe.knobs[name].max
-      iota(@_values.size()).filter(|i| on_end(@_values[i].def, lo, "") != on_end(@_values[i].def, hi, ""))
+      iota(@_values.size()).filter(|i| on_end(@_values[i].def, lo) != on_end(@_values[i].def, hi))
     })
     self._follow(env, reads)
     @_params = turned
@@ -727,7 +733,7 @@ class Held {
     let t = self._at()
     for i in which {
       let x = @_values[i]
-      let end = on_end(x.def, env, x.where)
+      let end = on_end(x.def, env)
       if end != @_ends[i] {
         @_ends[i] = end
         self._move(i, @_pitched[i] ? end * @_bend : end, t)

@@ -48,10 +48,16 @@ if args.empty() || args[0].starts_with("-") {
   Sys.exit(2)
 }
 
-# The word after option `name`, or `fallback` without it.
+# The word after option `name`, or `fallback` without the option; the option
+# with no word after it ends the program.
 fn option(name, fallback) {
   let at = args.index_of(name)
-  at < 0 || at + 1 >= args.size() ? fallback : args[at + 1]
+  return fallback if at < 0
+  if at + 1 >= args.size() {
+    IO.eprintln("kauai: {name} needs a value")
+    Sys.exit(2)
+  }
+  args[at + 1]
 }
 
 if args[0] == "instruments" {
@@ -78,9 +84,10 @@ if args[0] == "live" {
     IO.eprintln("kauai: --breath is cc2, cc7, cc11 or pressure, not {breath}")
     Sys.exit(2)
   }
-  let full = to_float(option("--breath-full", "0.9"))
+  let given = option("--breath-full", "0.9")
+  let full = try { to_float(given) } catch e { -1.0 }
   if !(full > 0.0 && full <= 1.0) {
-    IO.eprintln("kauai: --breath-full is above 0 and at most 1")
+    IO.eprintln("kauai: --breath-full is a number above 0 and at most 1, not {given}")
     Sys.exit(2)
   }
   let wanted = option("--midi", nil)
@@ -98,9 +105,9 @@ if args[0] == "live" {
 
 let path = args[0]
 let check = args.contains("--check")
-let wav = args.contains("--wav") ? args[args.index_of("--wav") + 1] : nil
-let from_at = args.contains("--from") ? args[args.index_of("--from") + 1] : nil
-let to_at = args.contains("--to") ? args[args.index_of("--to") + 1] : nil
+let wav = option("--wav", nil)
+let from_at = option("--from", nil)
+let to_at = option("--to", nil)
 
 if wav != nil && check {
   IO.eprintln("kauai: --wav writes the song and plays nothing, so not with --check")

@@ -33,7 +33,7 @@ let input = MIDI.Input.new(port.id)
 FS.write(fifo, "ready\n")
 let r3 = |x| Math.round(x * 1000) / 1000.0
 mut seen = 0
-while seen < 9 && input.wait(5.0) {
+while seen < 10 && input.wait(5.0) {
   for m in input.read() {
     seen += 1
     cond {
@@ -49,6 +49,9 @@ while seen < 9 && input.wait(5.0) {
 }
 println("breath {r3(input.control(2))}, dropped {input.dropped()}")
 input.drop()
+# Closed, it neither waits nor reads.
+let after = try { input.wait(0.1); "waited" } catch e { e.kind }
+println("after drop: {after}")
 EOF
 
 want='cc 2 0.504
@@ -61,7 +64,8 @@ bend 1.0
 pressure 0.504
 program 5
 note_off 62 0.0 [144, 62, 0]
-breath 0.501, dropped 0'
+breath 0.501, dropped 0
+after drop: TypeError'
 
 for engine in --vm --jit; do
   mkfifo "$TMP/ready"
