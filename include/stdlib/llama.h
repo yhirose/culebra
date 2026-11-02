@@ -314,7 +314,8 @@ CULEBRA_RT_LLAMA_LINKAGE int64_t load(const std::string& path,
     o.n_ctx = opts.n_ctx;
     o.n_batch = opts.n_batch;
     o.n_slots = opts.n_slots;
-    o.cpu_only = !opts.gpu;
+    // gpu: false is an empty device list; left unset, llama.cpp's own pick.
+    if (!opts.gpu) { o.devices.emplace(); }
     // A model without a template this library can apply is an error when it is
     // asked to chat, not a silent join of the messages.
     o.strict_chat_template = true;
