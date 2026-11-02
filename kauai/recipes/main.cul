@@ -33,15 +33,14 @@ fn recipe(name) {
 let voices = names.map(|n| (n.replace("_", ""), recipe(n).voice())).to_object()
 
 # Each recipe as `kauai instruments` lists it: the name a song writes
-# (mellow_fm_brass is MellowFmBrass), its file's, and its knobs. A recipe is
-# played as it is made, so it can be played live.
+# (mellow_fm_brass is MellowFmBrass), its knobs, and its player for
+# `kauai live`.
 let instruments = names.map(fn (n) {
   let knobs = recipe(n).knobs
   let about = knobs.keys().map(|k| "{k} {knobs[k].fallback} ({knobs[k].min} to {knobs[k].max})")
   {
     name: n.split("_").map(|w| w.capitalize()).join(""),
-    recipe: n,
-    live: true,
+    live: || engine.LivePlayer(recipe(n)),
     about: about.empty() ? "a recipe" : "a recipe; {about.join(", ")}",
   }
 })

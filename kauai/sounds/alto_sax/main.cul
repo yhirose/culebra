@@ -19,6 +19,7 @@
 # whose `make` is what kauai/tools/make_data.cul makes them with.
 
 import engine from '../../engine/borrow.cul'
+import live from '../../engine/borrow_live.cul'
 
 let RATE = engine.RATE
 
@@ -26,7 +27,12 @@ let DATA = Dir.embedded('data')
 
 let CONFIG = JSON.parse(DATA.read('instrument.json'))
 
-let ALTO = engine.Instrument.new(DATA, CONFIG.play)
+# The instrument, made anew: for a worker (an isolate) that plays it too.
+fn instrument() {
+  engine.Instrument.new(Dir.embedded('data'), CONFIG.play)
+}
+
+let ALTO = instrument()
 
 # A phrase's samples, mono, RATE a second: the phrase as Kauai hands it to
 # an instrument (each note's `pitch` and `at`, and what `hears` asks for),
@@ -42,8 +48,7 @@ let voices = {altosax: {
   hears: ["len", "level", "marks", "next", "params"],
 }}
 
-# As `kauai instruments` lists it. Its phrases are made from recordings
-# before they play, so it cannot be played live.
-let instruments = [{name: "AltoSax", live: false, about: "an alto saxophone, from recordings"}]
+# As `kauai instruments` lists it, and its player for `kauai live`.
+let instruments = [{name: "AltoSax", live: || live.LivePlayer(ALTO, instrument), about: "an alto saxophone, from recordings"}]
 
-export {voices, phrase_samples, RATE, instruments}
+export {voices, phrase_samples, RATE, instruments, instrument}

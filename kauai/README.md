@@ -84,17 +84,25 @@ because a compiled program loads no module of its own at run time.
 ```bash
 kauai live FmBrass                  # from the one MIDI input there is
 kauai live FmBrass --midi EWI       # from the input whose name has EWI
-kauai live FmBrass --breath pressure --breath-full 0.8
+kauai live FmBrass --breath pressure  # the breath from the channel's pressure
 ```
 
-[`cli/live.cul`](cli/live.cul) plays a recipe as a wind controller plays it,
-one note at a time: a note played while another is held moves to the new
-pitch without starting over, and the breath (CC 2 unless `--breath` says
-CC 7, CC 11 or the channel's pressure) is the volume and turns the recipe's
-`bright` knob, so a note blown harder is louder and brighter. The breath that
-plays at full is `--breath-full` (0.9). Only a recipe plays live: a recorded
-instrument makes its phrases before they play. Through a laptop's built-in
-speakers a note sounds more than 10 ms later than through a headphone jack.
+[`cli/live.cul`](cli/live.cul) plays an instrument as a wind controller plays
+it, one note at a time. The breath (CC 2 unless `--breath` says CC 7, CC 11
+or the channel's pressure) is the volume, as General MIDI turns a volume
+into a gain (40 log10 of it); how hard to blow for full is the controller's
+own breath gain. A note played while another is held moves to the new
+pitch without starting over, and a note blown harder is brighter: a
+recipe's breath turns its `bright` knob. A saxophone plays each note as a
+song's phrase would, slurred from the note before
+([`engine/borrow_live.cul`](engine/borrow_live.cul)): the breath a note
+starts with is the loudness of the recording it borrows, and from then on
+dims or brightens it. Its first 0.4 s are worked out as the note is played
+(about 6 ms), the rest by a worker thread. Live, a saxophone has no vibrato,
+scoop or recorded attack of its own, only the player's. A recipe whose
+sound fades by itself, as `FmElectricPiano`, strikes every note anew.
+Through a laptop's built-in speakers a note sounds more than 10 ms later
+than through a headphone jack.
 
 ## Folders
 

@@ -110,29 +110,25 @@ for lane in "${lanes[@]}"; do
   run cli "$TMP/marked.kau" --wav "$TMP/x.wav" --from Nope
   check "$lane part, no mark: status" 1 "$rc"
   check "$lane part, no mark: stderr" "kauai: $TMP/marked.kau has no mark Nope (it has Again)" "$err"
-  # The instruments it has, which ones play live, and `live` refusing what
-  # it cannot play (the device is closed, so there is no MIDI input either).
+  # The instruments it has, and `live` refusing what it cannot play (the
+  # device is closed, so there is no MIDI input).
   run cli instruments
   check "$lane instruments: status" 0 "$rc"
-  [[ "$out" == *$'\n''FmBrass          live  a recipe; bright 0.5 (0.0 to 1.0)'$'\n'* &&
-     "$out" == 'AltoSax                an alto saxophone, from recordings'* ]] || {
+  [[ "$out" == *$'\n''FmBrass          a recipe; bright 0.5 (0.0 to 1.0)'$'\n'* &&
+     "$out" == 'AltoSax          an alto saxophone, from recordings'* ]] || {
     echo "FAIL $lane instruments: stdout [$out]"; fail=1; }
-  run cli live AltoSax
-  check "$lane live, recorded: status" 1 "$rc"
-  check "$lane live, recorded: stderr" "kauai: AltoSax is made from recordings before it plays, so it cannot be played live" "$err"
+  run cli live AltoSax --midi EWI
+  check "$lane live, from recordings: stderr" "kauai: live needs one MIDI input named like EWI; there are none" "$err"
   run cli live Nope
   check "$lane live, no such: status" 2 "$rc"
   check "$lane live, no such: stderr" 'kauai: no instrument `Nope`; `kauai instruments` lists them' "$err"
   run cli live fmbrass --midi EWI
   check "$lane live, no input: status" 1 "$rc"
   check "$lane live, no input: stderr" "kauai: live needs one MIDI input named like EWI; there are none" "$err"
-  # An option needs its value, and --breath-full a number.
-  run cli live FmBrass --breath-full
+  # An option needs its value.
+  run cli live FmBrass --breath
   check "$lane option, no value: status" 2 "$rc"
-  check "$lane option, no value: stderr" "kauai: --breath-full needs a value" "$err"
-  run cli live FmBrass --breath-full much
-  check "$lane breath-full, not a number: status" 2 "$rc"
-  check "$lane breath-full, not a number: stderr" "kauai: --breath-full is a number above 0 and at most 1, not much" "$err"
+  check "$lane option, no value: stderr" "kauai: --breath needs a value" "$err"
   run cli "$TMP/duo.kau" --wav
   check "$lane wav, no value: status" 2 "$rc"
   check "$lane wav, no value: stderr" "kauai: --wav needs a value" "$err"

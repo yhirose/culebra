@@ -26,7 +26,7 @@ let usage = "Usage: kauai <song.kau> [options]
                        starts before it ringing on
 
        kauai instruments
-  the instruments a song names after `external`, and which play live
+  the instruments a song names after `external`, which live plays too
 
        kauai live <instrument> [options]
   play an instrument from a MIDI controller, as a wind controller plays it:
@@ -34,8 +34,7 @@ let usage = "Usage: kauai <song.kau> [options]
   --midi <name>        the MIDI input whose name has <name> (the one
                        there is, when there is one)
   --breath <from>      where the breath comes from: cc2 (breath, the
-                       default), cc7, cc11 or pressure
-  --breath-full <x>    the breath, 0 to 1, that plays at full (0.9)"
+                       default), cc7, cc11 or pressure"
 
 let args = Sys.argv
 
@@ -63,7 +62,7 @@ fn option(name, fallback) {
 if args[0] == "instruments" {
   let width = instruments.map(|i| i.name.size()).max()
   for i in instruments {
-    println("{i.name}{" ".repeat(width - i.name.size() + 2)}{i.live ? "live  " : "      "}{i.about}")
+    println("{i.name}{" ".repeat(width - i.name.size() + 2)}{i.about}")
   }
   Sys.exit(0)
 }
@@ -75,19 +74,9 @@ if args[0] == "live" {
     IO.eprintln("kauai: no instrument `{name}`; `kauai instruments` lists them")
     Sys.exit(2)
   }
-  if !found.live {
-    IO.eprintln("kauai: {found.name} is made from recordings before it plays, so it cannot be played live")
-    Sys.exit(1)
-  }
   let breath = option("--breath", "cc2")
   if !["cc2", "cc7", "cc11", "pressure"].contains(breath) {
     IO.eprintln("kauai: --breath is cc2, cc7, cc11 or pressure, not {breath}")
-    Sys.exit(2)
-  }
-  let given = option("--breath-full", "0.9")
-  let full = try { to_float(given) } catch e { -1.0 }
-  if !(full > 0.0 && full <= 1.0) {
-    IO.eprintln("kauai: --breath-full is a number above 0 and at most 1, not {given}")
     Sys.exit(2)
   }
   let wanted = option("--midi", nil)
@@ -99,8 +88,9 @@ if args[0] == "live" {
     IO.eprintln("kauai: live needs {which}; there are {there}")
     Sys.exit(1)
   }
+  let player = found.live()
   println("playing {found.name} from {named[0].name} (Ctrl+C stops)")
-  live.play(recipes.recipe(found.recipe), MIDI.Input.new(named[0].id), breath, full)
+  live.play(player, MIDI.Input.new(named[0].id), breath)
 }
 
 let path = args[0]

@@ -1,31 +1,37 @@
-# `kauai live`: a recipe played from a MIDI controller, one note at a time,
-# as a wind controller plays. The breath is the volume, straight in dB from
-# BREATH_DB down at no breath to full at `full`. When the recipe's output
-# gain has an attack, the breath is that attack instead (the gain starts
-# where its `on` ends) and turns the `bright` knob from its least to its
-# most, and a note played while another is held moves it to the new pitch
-# (legato). A recipe whose sound fades by itself, as a piano's, strikes
-# every note anew. Each note is made ahead, so a note played only begins it.
-
-# How far below full no breath is (dB).
-let BREATH_DB = 40.0
+# `kauai live`: an instrument played from a MIDI controller, one note at a
+# time, as a wind controller plays. The breath is the volume, as General MIDI
+# turns a volume (CC 7) into a gain (40 log10 of it), and what else it does is
+# the instrument's. How hard to blow for full is the controller's own breath
+# gain. Each note is made ahead, so a note played only begins it.
+#
+# An instrument is played through a player, which has
+#
+#   legato        whether a note played while another is held moves that
+#                 one to the new pitch, rather than striking a new note
+#   prepare()     the next note, made ahead and silent
+#   breath(n, x)  note n played with the breath at x, 0.0 to 1.0
+#   every         nil, or how often (s) a sounding note needs feed(n)
+#   feed(n)       note n kept sounding, as `every` asks
+#
+# and a note has begin(pitch, level, volume), retune(pitch), bend(semitones),
+# volume(v), release() and done(), as the recipes' Held has them.
 
 # The device's period asked for: a note starts this much after it is played,
 # besides the device's own delay.
 let PERIOD = 0.003
 
-# The fewest seconds between two turns of a knob by the breath.
-let KNOB_EVERY = 0.01
+# The fewest seconds between two changes of a note by the breath.
+let BREATH_EVERY = 0.01
 
-# The breath, 0.0 to 1.0 of `full`, as the output's level.
+# The breath, 0.0 to 1.0, as the output's level.
 fn loudness(x) {
-  x <= 0.0 ? 0.0 : 10.0 ** ((Math.min(x, 1.0) - 1.0) * BREATH_DB / 20.0)
+  Math.clamp(x, 0.0, 1.0) ** 2
 }
 
-# Plays `recipe` from `input` until the input is closed or the program is
-# stopped. `breath` is where the breath comes from: "cc2", "cc7", "cc11" or
+# Plays `player`'s instrument from `input` until the program is stopped.
+# `breath` is where the breath comes from: "cc2", "cc7", "cc11" or
 # "pressure".
-fn play(recipe, input, breath, full) {
+fn play(player, input, breath) {
   Audio.latency(PERIOD)
   # The device opens on the first play(), which takes a while: open it now,
   # with a silent graph, rather than on the first note.
@@ -34,38 +40,32 @@ fn play(recipe, input, breath, full) {
   silence.play()
   silence.stop()
 
-  # The output's gain, when its `on` moves (an attack), is the breath's.
-  let out_gain = recipe.parts[recipe.out].values.get("gain", nil)
-  let blown_in = out_gain != nil && out_gain.on.size() > 1
-  let steady = blown_in ? [recipe.out] : []
-  let bright = blown_in ? recipe.knobs.get("bright", nil) : nil
   let cc = breath == "pressure" ? nil : to_long(breath.slice(2, breath.size()))
   mut pressure = 0.0
-  # The breath now on channel `on`, 0.0 to 1.0 of full.
-  let blown = |on| Math.min((cc == nil ? pressure : input.control(cc, on)) / full, 1.0)
+  # The breath now on channel `on`, 0.0 to 1.0.
+  let blown = |on| cc == nil ? pressure : input.control(cc, on)
 
-  mut ready = recipe.prepare({}, steady)
+  mut ready = player.prepare()
   mut held = nil
   mut held_pitch = nil
   mut channel = 0  # the one the notes come on, whose breath is read
   mut fading = []
   mut range = 2.0  # the bend's, in semitones, until the controller says (RPN 0)
   mut rpn = (127, 127)
-  # When the knob was last turned, and for what breath; a change of breath
-  # held back by KNOB_EVERY waits that long for the next message at most.
+  # When the note was last changed by the breath, and for what breath (nil:
+  # not yet); a change held back by BREATH_EVERY waits that long for the
+  # next message at most.
   mut turned = 0.0
   mut turned_for = nil
   mut behind = false
 
   while true {
-    if behind {
-      input.wait(KNOB_EVERY)
-    } else {
-      input.wait()
-    }
+    let fed = player.every != nil && (held != nil || !fading.empty())
+    let waits = [behind ? BREATH_EVERY : nil, fed ? player.every : nil].filter(|w| w != nil)
+    input.wait(waits.empty() ? nil : waits.min())
     for m in input.read() {
       cond {
-        m.kind == "note_on" && held != nil && blown_in => {
+        m.kind == "note_on" && held != nil && player.legato => {
           held.retune(m.note)
           held_pitch = m.note
         },
@@ -79,7 +79,7 @@ fn play(recipe, input, breath, full) {
           held = ready.begin(m.note, level, loudness(blown(channel)))
           held_pitch = m.note
           turned_for = nil
-          ready = recipe.prepare({}, steady)
+          ready = player.prepare()
         },
         m.kind == "note_off" && held != nil && m.note == held_pitch => {
           held.release()
@@ -109,9 +109,9 @@ fn play(recipe, input, breath, full) {
     if held != nil {
       let x = blown(channel)
       held.volume(loudness(x))
-      if bright != nil && x != turned_for {
-        if Time.monotonic() - turned >= KNOB_EVERY {
-          held.knob("bright", bright.min + x * (bright.max - bright.min))
+      if x != turned_for {
+        if turned_for == nil || Time.monotonic() - turned >= BREATH_EVERY {
+          player.breath(held, x)
           turned = Time.monotonic()
           turned_for = x
         } else {
@@ -120,6 +120,11 @@ fn play(recipe, input, breath, full) {
       }
     }
     fading = fading.filter(|h| !h.done())
+    if player.every != nil {
+      for n in [held, ...fading].filter(|n| n != nil) {
+        player.feed(n)
+      }
+    }
   }
 }
 

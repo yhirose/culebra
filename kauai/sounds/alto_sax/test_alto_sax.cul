@@ -1,5 +1,6 @@
 import alto from './main.cul'
 import engine from '../../engine/borrow.cul'
+import live from '../../engine/borrow_live.cul'
 
 # A phrase as Kauai hands it to the instrument: two notes slurred, then one
 # held.
@@ -157,4 +158,63 @@ fn slurred_held_notes_meet_with_no_step() {
     let b = c.notes[1].s
     assert_true(Math.abs(c.db[b] - c.db[b - 1]) < 0.5, [from, to, c.db[b] - c.db[b - 1]])
   }
+}
+
+# A live note begun at breath `x`, then blown at `then`, 0.2 s to 0.45 s
+# into it: not played, its frames scheduled by hand (as feed() does to the
+# graph's clock) and rendered.
+fn live_note(player, pitch, x, then) {
+  let n = player.prepare()
+  n.retune(pitch)
+  n.breath(x)
+  n.breath(then)
+  n.volume(1.0)
+  n._feed_until(0.45)
+  n.graph.render(0.45).slice(8820, 19845)
+}
+
+# A note blown harder as it sounds is brighter, softer darker (the engine's
+# `dimmed`); begun at full breath, it is about as loud as the strings.
+@test
+fn live_a_harder_breath_is_a_brighter_tone_and_full_is_as_loud_as_the_strings() {
+  let player = alto.instruments[0].live()
+  let centroid = fn (s) {
+    let spec = Audio.spectrum(s, 4096, 4096)
+    let p = iota(spec[0].size()).map(|k| spec.map(|fr| fr[k] * fr[k]).sum())
+    iota(p.size()).map(|k| k * p[k]).sum() / p.sum()
+  }
+  let db = |s| 10.0 * Math.log(s.map(|v| v * v).sum() / s.size()) / Math.log(10.0)
+  for p in [55, 65, 75] {
+    let (soft, hard) = (live_note(player, p, 0.5, 0.0), live_note(player, p, 0.5, 1.0))
+    assert_true(centroid(hard) > centroid(soft), p)
+    let full = live_note(player, p, 1.0, 1.0)
+    assert_close(db(full), 20.0 * Math.log(0.25) / Math.log(10.0), 3.0, p)
+  }
+}
+
+# A note keeps only its newest request to the worker wanted, and none once
+# it is done, so answers nobody will take are not kept.
+@test
+fn live_a_note_wants_only_its_newest_course() {
+  let player = alto.instruments[0].live()
+  let n = player.prepare().begin(60)
+  n.breath(0.5)
+  n.retune(62)
+  n.retune(64)
+  assert_eq(player._waiting.size(), 1)
+  Time.sleep(n.release() - n.graph.now() + 0.01)
+  assert_true(n.done())
+  assert_eq(player._waiting.size(), 0)
+}
+
+# Slurred into from a recorded note, a live note borrows the note its
+# recording played next, as a phrase does: how it will be left is not known
+# yet, so that costs nothing (asked as a note before a rest, the recording's
+# slur on was costed as a tongue would be, and the take was passed over).
+@test
+fn live_a_slur_borrows_the_note_the_recording_played_next() {
+  let inst = alto.instrument()
+  let prev = {pitch: 63, level: 0.74, borrow: 1}
+  let course = live.course_of(inst, {pitch: 60, level: 0.86, len: 0.4, borrow: nil, prev})
+  assert_eq(course.borrow, 2)
 }

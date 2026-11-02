@@ -313,3 +313,33 @@ fn a_held_note_begins_once() {
   held.graph.stop()
   assert_eq(e, "a held note begins once; prepare() another")
 }
+
+@test
+fn live_the_breath_is_the_attack_and_the_brightness_of_a_recipe_with_one() {
+  # A 1 kHz sine through a gain of the knob, out through a gain with an
+  # attack: legato, and the breath turns the knob.
+  let doc = |out_gain| {
+    recipe: 1,
+    knobs: {bright: {"default": 0.5, min: 0, max: 1}},
+    parts: {
+      w: {part: "wave", freq: 1000},
+      g: {part: "gain", input: "w", gain: "bright"},
+      h: {part: "gain", input: "g", gain: out_gain},
+    },
+    out: "h",
+  }
+  let peak = |xs| xs.map(|v| Math.abs(v)).max()
+  let blown = r.LivePlayer(r.Recipe.new(doc({on: [[0, 0], [0.02, 0.8]]}), name: "t"))
+  assert_true(blown.legato)
+  let held = blown.prepare().begin(60)
+  blown.breath(held, 1.0)
+  assert_close(peak(held.graph.render(0.5)[-441..]), 0.8, 0.002)
+  held.graph.stop()
+  # Without one, it strikes every note and the breath leaves the knob.
+  let struck = r.LivePlayer(r.Recipe.new(doc(0.8), name: "t"))
+  assert_false(struck.legato)
+  let other = struck.prepare().begin(60)
+  struck.breath(other, 1.0)
+  assert_close(peak(other.graph.render(0.5)[-441..]), 0.5 * 0.8, 0.002)
+  other.graph.stop()
+}

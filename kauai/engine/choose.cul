@@ -12,8 +12,9 @@
 # `inst.vibrato_wanted(v)` the vibrato (cents peak to peak) a note asks of
 # the note it borrows (or nil), `inst.slur_kind(semitones)` a slur's kind.
 # `notes` are the phrase's notes ({s, e (frames), semi, from, to ("rest",
-# "tongue" or "legato"), level, soft, ...}), `k` the one asked for, `before`
-# the recorded note index borrowed for the note before it (or nil).
+# "tongue", "legato" or "open": not decided), level, soft, ...}), `k` the
+# one asked for, `before` the recorded note index borrowed for the note
+# before it (or nil).
 #
 # Answers the index of the recorded note note `k` borrows, or nil where there
 # is none to borrow. The note keeps that recording's own moves of pitch and
@@ -102,9 +103,10 @@ fn follows(inst, b, i) {
 let is_slur = |kind| kind != "rest" && kind != "tongue"
 
 # What a recorded way in or out (`got`) costs for one asked (`want`: "rest",
-# "tongue", a slur's kind, or nil for a rest or a tongue alike), by weights
-# `w`.
+# "tongue", a slur's kind, nil for a rest or a tongue alike, or "open" for
+# any), by weights `w`.
 fn way_cost(w, got, want) {
+  return 0.0 if want == "open"
   if want != nil && is_slur(want) {
     return got == want ? 0.0 : is_slur(got) ? w.slur_other : w.slur_none
   }

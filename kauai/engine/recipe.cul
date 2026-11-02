@@ -778,4 +778,31 @@ class Held {
   }
 }
 
-export {Recipe, Held, RATE, resolved, merged, value, course, live_course}
+# A recipe as `kauai live` plays it (kauai/cli/live.cul says how a player is
+# used). When the recipe's output gain has an attack, the breath is that
+# attack instead (the gain starts where its `on` ends) and turns the
+# `bright` knob from its least to its most, and a note played while another
+# is held moves it to the new pitch (legato). A recipe whose sound fades by
+# itself, as a piano's, strikes every note anew.
+class LivePlayer {
+  new(@recipe) {
+    let out_gain = @recipe.parts[@recipe.out].values.get("gain", nil)
+    @legato = out_gain != nil && out_gain.on.size() > 1
+    @every = nil  # a held note's course is scheduled whole
+    @_steady = @legato ? [@recipe.out] : []
+    @_bright = @legato ? @recipe.knobs.get("bright", nil) : nil
+  }
+
+  # The next note, made ahead.
+  prepare() {
+    @recipe.prepare({}, @_steady)
+  }
+
+  # Held note `held` played with the breath at `x`, 0 to 1.
+  breath(held, x) {
+    return if @_bright == nil
+    held.knob("bright", @_bright.min + x * (@_bright.max - @_bright.min))
+  }
+}
+
+export {Recipe, Held, LivePlayer, RATE, resolved, merged, value, course, live_course}

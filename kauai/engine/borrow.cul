@@ -296,16 +296,19 @@ let DRIFT_KEPT = 0.15
 # pitch.
 let SLOW_KEPT = {db: 1.0, timbre: 1.0}
 
+# The raised cosine slow_course weighs by.
+let SLOW_WEIGHTS = iota(-30, 31).map(|d| 0.5 * (1.0 + Math.cos(Math.pi * d / 31.0)))
+
 # The slow course of xs: its mean about each frame, weighed by a raised cosine
 # 61 frames wide, within frames a until b and carried flat beyond them.
 fn slow_course(xs, a, b) {
-  iota(xs.size()).map(fn (j) {
-    let jj = Math.clamp(j, a, b - 1)
+  let within = iota(a, b).map(fn (jj) {
     let lo = Math.max(a, jj - 30)
     let hi = Math.min(b, jj + 31)
-    let ws = iota(lo, hi).map(|w| 0.5 * (1.0 + Math.cos(Math.pi * (w - jj) / 31.0)))
+    let ws = SLOW_WEIGHTS[lo - jj + 30..hi - jj + 30]
     iota(lo, hi).map(|w| xs[w] * ws[w - lo]).sum() / ws.sum()
   })
+  iota(xs.size()).map(|j| within[Math.clamp(j, a, b - 1) - a])
 }
 
 # xs with the part of its slow course (within frames a until b) that is not
@@ -315,6 +318,15 @@ fn slow_eased(xs, a, b, kept) {
   let mean = xs[a..b].sum() / (b - a)
   iota(xs.size()).map(|j| xs[j] - (1.0 - kept) * (slow[j] - mean))
 }
+
+# The breath heard with the tone, in amplitude against the recordings' (the
+# voice's `breath`).
+let BREATH = 0.25
+
+# Each harmonic's breath is a unit noise through two two-pole bands on it, of
+# a q of its number times this: 3 dB down half a spacing away, so the bands
+# fill the gaps between the harmonics evenly.
+let NARROW = 0.6436
 
 # The fine gain is kept within these between a note's first 40 ms and its
 # last 60 ms: its quick flutter stays, a gap in the note it came from does
@@ -393,6 +405,7 @@ class Instrument {
     @lh = @lib.harmonics
 
     @nb = @breath_info.bands.size()
+    @breath_mids = @breath_info.bands.map(|bd| Math.log(Math.sqrt(bd[0] * bd[1])) / Math.log(2.0))
 
     @note_db_cache = @lib.notes.map(|_| nil)
 
@@ -671,6 +684,8 @@ class Instrument {
       let next_at = x.get("next", nil)
       let to = if k < last {
         frames[k + 1][0] - end <= 1 ? "legato" : "tongue"
+      } else if x.get("open", false) {
+        "open"
       } else {
         next_at == nil || next_at * 100.0 - end > 6.0 ? "rest" : "tongue"
       }
@@ -685,6 +700,7 @@ class Instrument {
         marks: x.get("marks", []),
         vibrato: @vibrato_style(x.get("params", nil) ?? {}),
         soft: (x.get("params", nil) ?? {}).get("soft", 0.0),
+        borrow: x.get("borrow", nil),
       }
     })
   }
@@ -946,7 +962,10 @@ class Instrument {
   # side, eased in over up to 140 ms, so every move the borrowed notes make is
   # kept and only a slow slope is added (as joins of recorded speech are
   # smoothed). The pitch's own moves are eased only within a note: at a slur
-  # both sides are let down to nothing.
+  # both sides are let down to nothing. A note of the phrase with `borrow`
+  # (a recorded note's index) borrows that one rather than choosing, and its
+  # last with `open: true` is left in any way (its `to` is "open": the player
+  # has not decided).
   borrowed_curves(phrase, vibcap, overtone, overtone_db) {
     let notes = @notes_of(phrase)
     # A note at `overtone` or above (0: none) is played as a saxophonist plays
@@ -965,7 +984,7 @@ class Instrument {
     mut last = nil
     for k in 0..notes.size() {
       let before = k > 0 && notes[k].from == "legato" ? last : nil
-      let i = @borrow_for(sources, k, before)
+      let i = notes[k].borrow ?? @borrow_for(sources, k, before)
       chosen.push(i)
       last = i
     }
@@ -1306,12 +1325,61 @@ class Instrument {
     }
   }
 
+  # The breath band (breath.json's) that `f` Hz is in, the nearest end's
+  # outside them.
+  breath_band(f) {
+    let bands = @breath_info.bands
+    iota(@nb).find(|q| f >= bands[q][0] && f < bands[q][1]) ??
+      (f < bands[0][0] ? 0 : @nb - 1)
+  }
+
+  # How loud a unit noise goes into each harmonic's two NARROW bands for a
+  # frame of harmonics `amps` at `f0` Hz whose breath was `breath_db` a band
+  # against the harmonics in it, heard at `breath` (BREATH's scale): as loud
+  # against its harmonic as the band's breath against the band's harmonics,
+  # read between the bands' middles on a log scale. 0 above 0.45 of the rate.
+  breath_levels(amps, f0, breath_db, breath) {
+    let mids = @breath_mids
+    let all = amps.map(|z| z * z / 2.0).sum()
+    mut in_band = repeat(@nb, 0.0)
+    for h in 0..@lh {
+      let q = @breath_band((h + 1) * f0)
+      in_band[q] += amps[h] * amps[h] / 2.0
+    }
+    let share = iota(@nb).map(|q| in_band[q] > 0.0
+      ? breath * breath * 10.0 ** (breath_db[q] / 10.0) * all / in_band[q]
+      : 0.0)
+    let share_at = fn (f) {
+      let lf = Math.log(f) / Math.log(2.0)
+      let q = iota(@nb).find(|i| mids[i] > lf) ?? @nb
+      let at_q = |i| share[Math.clamp(i, 0, @nb - 1)]
+      if q == 0 || q == @nb {
+        return at_q(q == 0 ? 0 : @nb - 1)
+      }
+      let (d0, d1) = (at_q(q - 1), at_q(q))
+      if d0 <= 0.0 || d1 <= 0.0 {
+        return Math.max(d0, d1)
+      }
+      let x = (lf - mids[q - 1]) / (mids[q] - mids[q - 1])
+      Math.exp(Math.log(d0) * (1.0 - x) + Math.log(d1) * x)
+    }
+    # A unit noise's power a hertz (uniform, -1 to 1: a variance of 1/3), and
+    # the two bands' width for noise (pi / 4 the width of each: the spacing
+    # over NARROW).
+    let width = 2.0 / 3.0 / RATE * Math.pi / 4.0 * f0 / NARROW
+    iota(@lh).map(fn (h) {
+      let k = h + 1
+      return 0.0 if k * f0 >= 0.45 * RATE
+      Math.sqrt(amps[h] * amps[h] / 2.0 * share_at(k * f0) / width)
+    })
+  }
+
   # A phrase's samples, mono, RATE a second: the phrase as Kauai hands it to
   # an instrument (each note's `pitch` and `at`, and what `hears` asks for),
   # with the voice's parameters as they stand at its first note.
   phrase_samples(phrase, params) {
     let asked = params ?? {}
-    let breath = asked.get("breath", 0.25)
+    let breath = asked.get("breath", BREATH)
     let wander = asked.get("wander", 0.0)
     let c = @borrowed_curves(
       phrase,
@@ -1383,7 +1451,7 @@ class Instrument {
     )
     # The breath: noise about each harmonic, a band as wide as the spacing
     # (Audio.filter "band" twice, on the harmonic's freq, each a q of its
-    # number times 0.6436 so the two are 3 dB down half a spacing away; their
+    # number times NARROW so the two are 3 dB down half a spacing away; their
     # skirts 12 dB an octave, so a harmonic's noise stays near it), so the
     # bands fill the gaps between the harmonics evenly, as the recordings'
     # does, and take the harmonics' own colour (the bore's resonances shape
@@ -1396,41 +1464,9 @@ class Instrument {
     # frame, through the fine gain.
     mut air = repeat(out.size(), 0.0)
     if breath > 0.0 {
-      let mids = @breath_info.bands.map(|bd| Math.log(Math.sqrt(bd[0] *
-        bd[1])) /
-        Math.log(2.0))
-      let band_of = |f| iota(@nb).find(|q| f >=
-        @breath_info.bands[q][0] &&
-        f < @breath_info.bands[q][1]) ??
-        (f < @breath_info.bands[0][0] ? 0 : @nb - 1)
-      # Each frame's noise against the harmonics in each band (power).
-      let share = iota(total).map(fn (u) {
-        if f0[u] == nil {
-          return repeat(@nb, 0.0)
-        }
-        let all = amps[u].map(|z| z * z / 2.0).sum()
-        let in_band = iota(@nb).map(|q| iota(@lh)
-          .filter(|h| band_of((h + 1) * f0[u]) == q)
-          .map(|h| amps[u][h] * amps[u][h] / 2.0)
-          .sum())
-        iota(@nb).map(|q| in_band[q] > 0.0
-          ? breath * breath * 10.0 ** (c.breath[u][q] / 10.0) * all / in_band[q]
-          : 0.0)
-      })
-      let share_at = fn (u, f) {
-        let lf = Math.log(f) / Math.log(2.0)
-        let q = iota(@nb).find(|i| mids[i] > lf) ?? @nb
-        let at_q = |i| share[u][Math.clamp(i, 0, @nb - 1)]
-        if q == 0 || q == @nb {
-          return at_q(q == 0 ? 0 : @nb - 1)
-        }
-        let (d0, d1) = (at_q(q - 1), at_q(q))
-        if d0 <= 0.0 || d1 <= 0.0 {
-          return Math.max(d0, d1)
-        }
-        let x = (lf - mids[q - 1]) / (mids[q] - mids[q - 1])
-        Math.exp(Math.log(d0) * (1.0 - x) + Math.log(d1) * x)
-      }
+      let levels = iota(total).map(|u| f0[u] == nil
+        ? nil
+        : @breath_levels(amps[u], f0[u], c.breath[u], breath))
       let mid_f0 = f0
         .filter(|f| f != nil)
         .sorted()[f0.filter(|f| f != nil).size() / 2]
@@ -1447,36 +1483,25 @@ class Instrument {
           rate: RATE,
         )
       })
-      # A unit noise's power a hertz (uniform, -1 to 1: a variance of 1/3),
-      # and two two-pole bands' width for noise (pi / 4 the width of each:
-      # the spacing over 0.6436).
-      let density = 2.0 / 3.0 / RATE
-      let narrow = 0.6436
       for h in 0..@lh {
         let k = h + 1
         continue if k * mid_f0 >= @breath_info.bands[@nb - 1][1]
-        let q = band_of(k * mid_f0)
+        let q = @breath_band(k * mid_f0)
         let level = [
           (0.0, 0.0),
           (rise_at, 0.0),
-          ...iota(total).map(fn (u) {
-          if f0[u] == nil || k * f0[u] >= 0.45 * RATE {
-            return (at_frames[u], 0.0)
-          }
-          let want = amps[u][h] * amps[u][h] / 2.0 * share_at(u, k * f0[u])
-          (at_frames[u], Math.sqrt(want / (density * Math.pi / 4.0 * f0[u] / narrow)))
-        }),
+          ...iota(total).map(|u| (at_frames[u], levels[u] == nil ? 0.0 : levels[u][h])),
         ]
         let centre = points.map(|pt| (pt[0], Math.min(0.45 * RATE, k * pt[1])))
         let one = Audio.filter(
           sources[q],
           "band",
           centre,
-          q: k * narrow,
+          q: k * NARROW,
           rate: RATE,
         )
         let band = Audio.envelope(
-          Audio.filter(one, "band", centre, q: k * narrow, rate: RATE),
+          Audio.filter(one, "band", centre, q: k * NARROW, rate: RATE),
           level,
           rate: RATE,
         )
@@ -1633,4 +1658,4 @@ class Instrument {
   }
 }
 
-export {Instrument, RATE, DEFAULTS, reshaped, dimmed, bend_shake, join_reads, eased}
+export {Instrument, RATE, DEFAULTS, reshaped, dimmed, bend_shake, join_reads, eased, BREATH, NARROW, BEND}
