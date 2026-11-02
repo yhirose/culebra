@@ -259,18 +259,66 @@ fn drawn(ks, until) {
   out
 }
 
+# A value's `on` as knots from 0.
+fn on_knots(v, env, where) {
+  let on = knots(v.on, env, 0.0, "{where}.on")
+  on[0][0] > 0.0 ? [(0.0, on[0][1], 0.0), ...on] : on
+}
+
+# A value's `off` from `at`, where `on` was cut at `cut`: [(time, value)]
+# from `at`.
+fn released(v, env, at, cut, where) {
+  let off = knots(v.off, env, at, "{where}.off")
+  drawn([(at, cut, 0.0), ...off], off[-1][0])
+}
+
 # A value's course for a note `dur` long: [(time, value)] from 0. `on` is
 # held while the note is held and cut where it ends; `off` starts there
 # from the value it was cut at.
 fn course(v, env, dur, where) {
-  let on = knots(v.on, env, 0.0, "{where}.on")
-  let first = on[0][0] > 0.0 ? [(0.0, on[0][1], 0.0), ...on] : on
-  let held = drawn(first, dur)
+  let held = drawn(on_knots(v, env, where), dur)
   return held if v.off == nil
-  let cut = held[held.size() - 1][1]
-  let off = knots(v.off, env, dur, "{where}.off")
-  let released = drawn([(dur, cut, 0.0), ...off], off[off.size() - 1][0])
-  [...held, ...released.slice(1, released.size())]
+  let rest = released(v, env, dur, held[-1][1], where)
+  [...held, ...rest.slice(1, rest.size())]
+}
+
+# A value's `on` for a note held until it is let go: [(time, value)] from 0
+# to its last knot, where it stays.
+fn held_course(v, env, where) {
+  let ks = on_knots(v, env, where)
+  drawn(ks, ks[-1][0])
+}
+
+# A held note's course for a value of part `name`: held_course, or, for a
+# part in `steady`, where it ends from the start.
+fn live_course(v, env, steady, name, where) {
+  let c = held_course(v, env, where)
+  steady.contains(name) ? [(0.0, c[-1][1])] : c
+}
+
+# A course's value at `t`: straight between its points, held past them.
+fn course_at(c, t) {
+  mut k = 1
+  while k < c.size() && c[k][0] < t {
+    k += 1
+  }
+  return c[-1][1] if k == c.size()
+  let (ta, va) = c[k - 1]
+  let (tb, vb) = c[k]
+  on_curve(ta, va, tb, vb, 0.0, t)
+}
+
+# A course's changes after its first point, scheduled on graph value `v`:
+# a point at the time of the one before is a step, any other a ramp.
+fn scheduled(v, c) {
+  for j in 1..c.size() {
+    let (t, y) = c[j]
+    if t <= c[j - 1][0] {
+      v.set(t, y)
+    } else {
+      v.ramp(t, y)
+    }
+  }
 }
 
 # --- recipes ----------------------------------------------------------------
@@ -477,22 +525,53 @@ class Recipe {
       level: to_float(level),
       ...self.knob_values(params),
     }
+    let w = self._wire(env, |v, _, where| course(v, env, env.dur, where))
+    # A course ends where its `off` does, or where the note does.
+    let longest = [0.0, ...w.values.map(|x| x.course[-1][0] - env.dur)].max()
+    let g = w.graph
+    g.output(g.filter("high", g.gain(w.out, env.level), cutoff: DC_CUT))
+    g.render(env.dur + longest)
+  }
+
+  # A note held until it is let go, playing on the device from now:
+  # `pitch` at `level` (1 for mf), with the knobs at `params`, its `on`
+  # scheduled from the start and its output at `volume`. The parts named in
+  # `steady` start where their `on` ends, as when the player's breath is
+  # the attack. A note held has no `dur`; an expression that names it
+  # reads 0.
+  start(
+    pitch: Long | Float,
+    level: Long | Float = 1.0,
+    params = {},
+    volume: Long | Float = 1.0,
+    steady: Array = [],
+  ) {
+    self.prepare(params, steady).begin(pitch, level, volume)
+  }
+
+  # start()'s note made ahead, silent and not playing, so that begin()
+  # only has to move what depends on the pitch and the level.
+  prepare(params = {}, steady: Array = []) {
+    let env = {pitch: 60.0, f: hz(60), dur: 0.0, level: 1.0, ...self.knob_values(params)}
+    let w = self._wire(env, |v, name, where| live_course(v, env, steady, name, where))
+    let g = w.graph
+    let gain = g.gain(w.out, 0.0)
+    g.output(g.filter("high", gain, cutoff: DC_CUT))
+    Held(g, w.values, gain.gain, env, steady)
+  }
+
+  # A note's graph: each part made in order, with its values where their
+  # courses start and the rest of each course scheduled, a course being
+  # `plan(value, part's name, where)`. Answers {graph, out, values},
+  # `values` each {value, def, part, course, where} for a value of a part.
+  _wire(env, plan) {
     let g = Audio.Graph.new(rate: @rate)
     mut made = {}
-    mut longest = 0.0
+    mut values = []
     for name in @order {
       let p = @parts[name]
       let where = "recipe {@name}.parts.{name}"
-      let courses = p
-        .values
-        .keys()
-        .map(|k| (k, course(p.values[k], env, env.dur, "{where}.{k}")))
-        .to_object()
-      # A course ends where its `off` does, or where the note does.
-      longest = [
-        longest,
-        ...courses.keys().map(|k| courses[k][courses[k].size() - 1][0] - env.dur),
-      ].max()
+      let courses = p.values.keys().map(|k| (k, plan(p.values[k], name, "{where}.{k}"))).to_object()
       let x = {
         kind: p.kind,
         ...p.one.keys().map(|k| (k, made[p.one[k]])).to_object(),
@@ -503,24 +582,15 @@ class Recipe {
       try {
         let built = p.make(g, x)
         for k in courses.keys() {
-          let c = courses[k]
-          let v = built[k]
-          for j in 1..c.size() {
-            let (t, y) = c[j]
-            if t <= c[j - 1][0] {
-              v.set(t, y)
-            } else {
-              v.ramp(t, y)
-            }
-          }
+          scheduled(built[k], courses[k])
+          values.push({value: built[k], def: p.values[k], part: name, course: courses[k], where: "{where}.{k}"})
         }
         made[name] = built
       } catch {kind: "ValueError", message} {
         throw "{where}: {message}"
       }
     }
-    g.output(g.filter("high", g.gain(made[@out], env.level), cutoff: DC_CUT))
-    g.render(env.dur + longest)
+    {graph: g, out: made[@out], values: values}
   }
 
   # A phrase as Kauai hands it to an instrument that hears len, level and
@@ -553,4 +623,122 @@ class Recipe {
   }
 }
 
-export {Recipe, RATE, resolved, merged, value, course}
+# How far ahead of a playing graph's clock a change made now is put, so the
+# audio thread has not passed it yet (s).
+let LEAD = 0.003
+
+# How long a new pitch, a bend or a volume takes to arrive (s).
+let GLIDE = 0.005
+
+# A note Recipe.prepare() made, played from begin() and held until
+# release(): its values can follow a new pitch (legato), a bend and a volume
+# while it sounds.
+class Held {
+  new(graph, values, volume, env, steady) {
+    @graph = graph
+    @_values = values
+    @_volume = volume
+    @_env = env
+    @_steady = steady
+    @_bend = 1.0
+    @_ends = values.map(|x| x.course[-1][1])
+    # The values that follow the note's freq: an octave up, twice as high.
+    let up = {...env, pitch: env.pitch + 12.0, f: env.f * 2.0}
+    @_pitched = values.map(fn (x) {
+      let end = x.course[-1][1]
+      end != 0.0 && Math.abs(held_course(x.def, up, x.where)[-1][1] / end - 2.0) < 1e-9
+    })
+    @_begun = false
+    @_until = nil
+  }
+
+  # Play from now, once: `pitch` at `level`, its output at `volume`. Only the
+  # values whose course the pitch or the level changes are scheduled again.
+  begin(pitch: Long | Float, level: Long | Float = 1.0, volume: Long | Float = 1.0) {
+    throw "a held note begins once; prepare() another" if @_begun
+    @_begun = true
+    let env = {...@_env, pitch: to_float(pitch), f: hz(pitch), level: to_float(level)}
+    for i, x in @_values.enumerate() {
+      let c = live_course(x.def, env, @_steady, x.part, x.where)
+      if c != x.course {
+        x.value.cancel(0.0).set(0.0, c[0][1])
+        scheduled(x.value, c)
+        @_values[i] = {...x, course: c}
+        @_ends[i] = c[-1][1]
+      }
+    }
+    @_volume.cancel(0.0).set(0.0, to_float(volume))
+    @_env = env
+    @graph.play()
+    self
+  }
+
+  _at() {
+    @graph.now() + LEAD
+  }
+
+  # Graph value `value` moved to `to` from `t`, over GLIDE.
+  _glide(value, to, t) {
+    value.cancel(t).ramp(t + GLIDE, to)
+  }
+
+  # The value at `i` moved to `to`, which its course then holds, so that
+  # release() starts its `off` from there.
+  _move(i, to, t) {
+    let x = @_values[i]
+    self._glide(x.value, to, t)
+    @_values[i] = {...x, course: [(0.0, to)]}
+  }
+
+  # Play `pitch` from now without starting over: each value that depends on
+  # the pitch moves to where the new pitch holds it.
+  retune(pitch: Long | Float) {
+    let env = {...@_env, pitch: to_float(pitch), f: hz(pitch)}
+    let t = self._at()
+    for i, x in @_values.enumerate() {
+      let end = held_course(x.def, env, x.where)[-1][1]
+      if end != @_ends[i] {
+        @_ends[i] = end
+        self._move(i, @_pitched[i] ? end * @_bend : end, t)
+      }
+    }
+    @_env = env
+  }
+
+  # Bend the pitch `semitones` from the note's own.
+  bend(semitones: Long | Float) {
+    @_bend = 2.0 ** (to_float(semitones) / 12.0)
+    let t = self._at()
+    for i in 0..@_values.size() {
+      self._move(i, @_ends[i] * @_bend, t) if @_pitched[i]
+    }
+  }
+
+  # The output's level from now.
+  volume(v: Long | Float) {
+    self._glide(@_volume, to_float(v), self._at())
+  }
+
+  # Let the note go: each value with an `off` runs it from where it is now.
+  # Answers when, on the graph's clock, the last of them ends.
+  release() {
+    let t = self._at()
+    mut until = t
+    for x in @_values {
+      continue if x.def.off == nil
+      let rest = released(x.def, @_env, t, course_at(x.course, t), x.where)
+      x.value.cancel(t)
+      scheduled(x.value, rest)
+      until = Math.max(until, rest[-1][0])
+    }
+    @_until = until
+    until
+  }
+
+  # Whether it was let go and its `off` has ended.
+  done() {
+    @_until != nil && @graph.now() > @_until
+  }
+}
+
+export {Recipe, Held, RATE, resolved, merged, value, course, live_course}

@@ -249,3 +249,36 @@ fn what_only_the_note_can_say_is_refused_when_it_plays() {
     e2,
   )
 }
+
+# A recipe at the device's rate, which a held note plays at.
+let live = r.Recipe.new({
+  recipe: 1,
+  parts: {
+    w: {part: "wave", freq: {on: [[0, "f * 0.98"], [0.05, "f", -3]]}},
+    g: {part: "gain", input: "w", gain: {on: [[0, 0], [0.02, "level"]], off: [[0.05, 0]]}},
+  },
+  out: "g",
+}, name: "t")
+
+@test
+fn a_note_made_ahead_and_begun_sounds_as_the_same_note_written() {
+  # Begun at a pitch and a level, at a volume of that level, it is the note
+  # of that pitch and level for as long as it is held.
+  for (pitch, level) in [(48, 0.5), (72, 1.5)] {
+    let held = live.prepare().begin(pitch, level, level)
+    let heard = held.graph.render(0.1)
+    held.graph.stop()
+    # The note written goes on into its `off`.
+    let written = live.note(pitch, 0.1, level)
+    assert_eq(heard.size(), 4410)
+    assert_true(iota(heard.size()).all(|i| Math.abs(heard[i] - written[i]) < 1e-12))
+  }
+}
+
+@test
+fn a_held_note_begins_once() {
+  let held = live.prepare().begin(60)
+  let e = thrown(|| held.begin(62))
+  held.graph.stop()
+  assert_eq(e, "a held note begins once; prepare() another")
+}
