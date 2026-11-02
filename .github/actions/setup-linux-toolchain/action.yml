@@ -42,8 +42,10 @@ runs:
       run: |
         # gcc-14: Ubuntu 24.04 ships gcc-13 by default, which lacks C++23
         # <print>. lsb-release/software-properties-common/gnupg are what
-        # apt.llvm.org's installer needs below.
-        pkgs=(ccache cmake g++-14 libblas-dev mold wget
+        # apt.llvm.org's installer needs below. libasound2-dev is ALSA's
+        # headers alone: MIDI input loads libasound at run time, so the
+        # binary still names no audio library.
+        pkgs=(ccache cmake g++-14 libblas-dev mold wget libasound2-dev
               lsb-release software-properties-common gnupg)
         if [ "$SDL3_DEPS" = true ]; then
           pkgs+=(libasound2-dev libpulse-dev libaudio-dev libfribidi-dev

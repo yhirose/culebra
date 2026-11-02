@@ -584,7 +584,8 @@ static constexpr FeatureAxis kFeatureAxes[] = {
     {{"Canvas"}, "libculebra_rt_canvas.a", CULEBRA_CANVAS_LINK, kEmbedsCanvas},
     // Audio has the same weak choke: silent bodies in the core archive,
     // overridden by the raudio-backed ones here.
-    {{"Audio"}, "libculebra_rt_audio.a", CULEBRA_AUDIO_LINK, kEmbedsAudio},
+    // MIDI input rides on the same archive and link (vendor/cpp-midilib).
+    {{"Audio", "MIDI"}, "libculebra_rt_audio.a", CULEBRA_AUDIO_LINK, kEmbedsAudio},
     // `Desktop` is the facade that drives Webview, so naming it has to trigger
     // the axis even when the program never says `Webview`.
     {{"Webview", "Desktop"}, "libculebra_rt_webview.a", CULEBRA_WEBVIEW_LINK,

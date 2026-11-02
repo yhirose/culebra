@@ -1047,6 +1047,8 @@ idx.close() -> Nil
 Search.segmenter(model: String) -> Segmenter
 seg.close() -> Nil
 Audio.available() -> Bool
+Audio.latency(seconds)
+Audio.latency() -> Float?
 sound.play()
 sound.stop()
 sound.playing() -> Bool
@@ -1107,6 +1109,7 @@ g.stop()
 g.now() -> Float
 value.set(at, v)
 value.ramp(at, v)
+value.cancel(at)
 Audio.capture_available() -> Bool
 mic.ready() -> Bool
 mic.start()
@@ -1115,6 +1118,13 @@ mic.waiting() -> Long
 mic.read(frames = nil) -> Array
 Audio.Kauai.new(text: String, voices = nil, drums = nil)
 Audio.Kauai.load(path: String, voices = nil, drums = nil, dir = nil)
+MIDI.inputs() -> Array
+MIDI.Input.new(id)
+input.read() -> Array
+input.wait(seconds = nil) -> Bool
+input.messages()
+input.control(cc, channel = 0) -> Float
+input.dropped() -> Long
 Dir.disk(path: String | Path) -> Dir
 Dir.memory(files: Object) -> Dir
 Dir.embedded(name: String) -> Dir

@@ -78,11 +78,12 @@
 38. [`FST`](#38-fst) — 書き換えない辞書を圧縮して持つ。前方一致・補完・あいまい検索
 39. [`Search`](#39-search) — 自分の文書を全文検索して順位をつける
 40. [`Audio`](#40-audio) — ウィンドウの有無によらず使える音: WASM-4のtone、効果音、ストリーム再生の音楽、合成するPCM、マイク
-41. [`Dir`](#41-dir) — ディスク・メモリ・バイナリへの焼き込み・ZIPアーカイブのどこにあるファイルの集まりも、同じ読み方で（`Dir.disk` / `Dir.memory` / `Dir.embedded` / `Dir.zip`と`Dir` trait）
-42. [`LLM`](#42-llm) — LLMのクライアント。提供元（Messages APIかChat Completions）への1ステップ、関数をツールとして使う会話、素通しのリクエスト
-43. [`Llama`](#43-llama) — このプロセス内で動くモデル。GGUFを読んで`generate`か`chat`（ビルドオプション）
-44. [設計上の注記](#44-設計上の注記)
-45. [未収録（将来検討）](#45-未収録将来検討)
+41. [`MIDI`](#41-midi) — MIDIの鍵盤やウインドコントローラからの入力
+42. [`Dir`](#42-dir) — ディスク・メモリ・バイナリへの焼き込み・ZIPアーカイブのどこにあるファイルの集まりも、同じ読み方で（`Dir.disk` / `Dir.memory` / `Dir.embedded` / `Dir.zip`と`Dir` trait）
+43. [`LLM`](#43-llm) — LLMのクライアント。提供元（Messages APIかChat Completions）への1ステップ、関数をツールとして使う会話、素通しのリクエスト
+44. [`Llama`](#44-llama) — このプロセス内で動くモデル。GGUFを読んで`generate`か`chat`（ビルドオプション）
+45. [設計上の注記](#45-設計上の注記)
+46. [未収録（将来検討）](#46-未収録将来検討)
 
 **目的別索引**
 
@@ -99,7 +100,7 @@
 | stat / walk / glob / copy / rename / symlink / chmod / chown | [§3 FS](#3-fs) |
 | ディレクトリの変更監視 | [§3 FS](#3-fs) — `FS.watch` |
 | ディレクトリ列挙・作成・削除 | `FS.list_dir`、`FS.mkdir`、`FS.remove` |
-| ZIPアーカイブ、バイナリに焼き込んだアセット、メモリ上のファイルを同じやり方で読む | [§41 Dir](#41-dir) — `Dir.zip(path)` / `Dir.embedded("assets")` / `Dir.memory({...})` |
+| ZIPアーカイブ、バイナリに焼き込んだアセット、メモリ上のファイルを同じやり方で読む | [§42 Dir](#42-dir) — `Dir.zip(path)` / `Dir.embedded("assets")` / `Dir.memory({...})` |
 | `Instant` / `Duration`クラス、ISO 8601、カレンダー算術 | [§5 Time](#5-time) |
 | 負になりうるインデックスを`0..n`に巻き戻す | [§1 Math](#1-math) — `Math.wrap(i, n)`（`%`は切り捨てなので負のまま） |
 | 乱数 | `Random.int`、`.uniform`、`.gauss`、`.shuffle`、`.choice`、`.weighted_choice` |
@@ -127,6 +128,7 @@
 | 可変長のread-onlyデータをスレッド間で共有（コピーなし） | [§12 Shared](#shared--参照共有する-immutable-値) — `Shared.new(value)` |
 | Ctrl+C / SIGINTを綺麗に扱う | [§12 Signal](#signal--signalnotify--signalreset) — `Signal.notify(tx)` / `Signal.reset()` |
 | デスクトップGUI（ネイティブWebView + ローカルサーバ） | [§30 Desktop](#30-desktop--webview) — `Desktop.run({title, assets, routes})` |
+| MIDIの鍵盤やウインドコントローラで演奏する | [§41 MIDI](#41-midi) — `MIDI.inputs()` / `MIDI.Input.new(id).messages()` / `input.control(2)` |
 | 音を鳴らす（tone・効果音・音楽）、音を合成する | [§40 Audio](#40-audio) — `Audio.tone(440, 10)` / `Audio.Sound.new(bytes).play()` / `Audio.Music.new(bytes)` / `Audio.PCM.new(44100, 1, 1024)` / `Audio.Capture.new(44100)` |
 | ヒープ情報・リークチェック | [§7 GC](#gc--ヒープ情報の取得) — `GC.stat()` → `{live_objects, rc_objects, heap_bytes}` |
 | 2D/3Dベクトル演算（dot、length、normalize、distance） | [§31 `Vector2`](#31-vector2) / [§32 `Vector3`](#32-vector3) |
@@ -136,7 +138,7 @@
 | 手順・通信手順・画面のモードを状態とイベントで表す | [§37 `StateMachine`](#37-statemachine) — `StateMachine.parse(text)`、または記述用の`Object` |
 | 変わらない大きな語彙から前方一致で補完する | [§38 FST](#38-fst) — `FST.Set.new(FST.compile_set(words))` → `.predictive_search("hel")` |
 | 綴りの直し・あいまい検索 | [§38 FST](#38-fst) — `.edit_distance_search(word, 1)`／`.suggest(word)` |
-| 言語モデルに質問する、自分の関数を呼ばせる | [§42 LLM](#42-llm) — `LLM.ask(prompt, provider: LLM.anthropic(), model:)` / `LLM.chat(provider:, model:, tools: [LLM.tool(f, "...")])` |
+| 言語モデルに質問する、自分の関数を呼ばせる | [§43 LLM](#43-llm) — `LLM.ask(prompt, provider: LLM.anthropic(), model:)` / `LLM.chat(provider:, model:, tools: [LLM.tool(f, "...")])` |
 | たくさんの文書を語で検索して順位をつける | [§39 Search](#39-search) — `Search.Index.new()` → `.add(key, text)` → `.search("quick -dog")` |
 | 行列・テンソル演算（BLAS対応） | [§8 Tensor](#8-tensor) |
 | String / Array / Objectのメソッド | [言語仕様 §18](language.ja.md) |
@@ -4628,8 +4630,8 @@ HTTPレスポンスは`Http`クライアントが透過的に展開します（`
 データやファイル向けで、`Http`のボディには不要です。
 
 `zip`はファイルの集まりをアーカイブに詰めます。渡すのは、1ファイルにつき1つの
-キー（`"sub/name.txt"`から中身へ、[`Dir.memory`](#41-dir)が受け取る形）を持つ
-Objectか、任意の[`Dir`](#41-dir)です。`\`を含むパスとドライブ（`C:`）で始まるパスは
+キー（`"sub/name.txt"`から中身へ、[`Dir.memory`](#42-dir)が受け取る形）を持つ
+Objectか、任意の[`Dir`](#42-dir)です。`\`を含むパスとドライブ（`C:`）で始まるパスは
 `ValueError`です。アーカイブを読む側はそれぞれを区切りと根と受け取るからです。
 エントリはパスの順に、同じ固定の時刻で
 入るので、同じファイルからはいつも同じバイト列ができます。アーカイブを書くのは
@@ -8778,7 +8780,59 @@ println(song.length())  # => 2.0
 song.play()
 ```
 
-## 41. `Dir`
+## 41. `MIDI`
+
+MIDIコントローラ（鍵盤、ウインドコントローラ、パッドなど）からの入力です。演奏に合わせて
+音を鳴らすプログラムのためのものです。入力を開くと、届いたメッセージは読まれるまで、届いた
+順に、届いた時刻とともに待ちます。`MIDI`は`Audio`のネイティブのバックエンドの上で動きます。
+macOSはCoreMIDI、WindowsはWinMM、LinuxはALSAのシーケンサで、LinuxではALSAを最初に
+必要になったときに読み込みます。デバイスが無いとき、ブラウザ、`CULEBRA_AUDIO`が`off`の
+ときは、`MIDI.inputs()`は`[]`です。
+
+| 関数・メソッド | 効果 |
+| --- | --- |
+| `MIDI.inputs() -> Array` | ある入力の一覧。それぞれ`{id, name}`。`id`はデバイスがつながっている間は変わらない |
+| `MIDI.Input.new(id)` | 入力`id`を開く。そのidの入力が無ければ、ある入力の名前を挙げて`ValueError` |
+| `input.read() -> Array` | 前に読んでから届いたメッセージを、届いた順にすべて。無ければ`[]` |
+| `input.wait(seconds = nil) -> Bool` | メッセージが届くまで、最長`seconds`秒（省くといつまでも）待つ。届いたかどうか |
+| `input.messages()` | 届いたメッセージを1つずつ、次が届くのを待ちながら返す。`for`で回すと演奏になる |
+| `input.control(cc, channel = 0) -> Float` | それまでに読んだメッセージが決めた、コントローラ`cc`の値。`0.0`〜`1.0`。コントローラが14ビットで送れば14ビット（0〜31番と32〜63番の組。ウインドコントローラの息など）、そうでなければ7ビット |
+| `input.dropped() -> Long` | 読むより速く届いたために捨てたメッセージの数（待てるのは最大4096個） |
+
+メッセージは、`kind`、`channel`（0〜15）、`at`（届いた時刻。`Time.monotonic()`と同じ時計）、
+届いたままの`bytes`を持つオブジェクトです。種類ごとに次のフィールドも持ちます。
+
+| `kind` | フィールド |
+| --- | --- |
+| `"note_on"` | `note`（0〜127。60が真ん中のド）、`velocity`（`0.0`〜`1.0`。High Resolution Velocity Prefix（CC88）があれば14ビット） |
+| `"note_off"` | `note`、`velocity`。ベロシティ0のノートオンは、MIDI 1.0の決まりどおりノートオフ |
+| `"cc"` | `cc`、`value`（`0.0`〜`1.0`） |
+| `"bend"` | `bend`。`-1.0`〜`1.0`で、何もしていないとき`0.0` |
+| `"pressure"` | `value`。チャンネルのプレッシャー（アフタータッチ） |
+| `"poly_pressure"` | `note`、`value` |
+| `"program"` | `program`。0〜127 |
+
+システムメッセージとSysExは渡しません。一緒に届いたメッセージは、その順番のままです。
+ウインドコントローラでレガートに吹くと、新しい音のノートオン、古い音のノートオフの順に届きます。
+
+```culebra
+println(MIDI.inputs() is Array)  # => true
+```
+
+```culebra
+# doctest: skip — MIDIデバイスが必要
+let port = MIDI.inputs().find(|p| p.name.contains("EWI"))
+let ewi = MIDI.Input.new(port.id)
+for m in ewi.messages() {
+  cond {
+    m.kind == "note_on" => println("on {m.note} at {m.velocity}, breath {ewi.control(2)}"),
+    m.kind == "note_off" => println("off {m.note}"),
+    _ => {},
+  }
+}
+```
+
+## 42. `Dir`
 
 **読み出し専用のファイルの集まり**を、どこにあっても同じ読み方で扱います。
 ディスク上のディレクトリでも、メモリ上のファイルでも、実行ファイルに焼き込んだ
@@ -9043,13 +9097,13 @@ Windowsでは開いているファイルを削除も置き換えもできない�
 
 ---
 
-## 42. `LLM`
+## 43. `LLM`
 
 大規模言語モデルのクライアントです。Culebraで書かれていて、[`Http`](#15-http)と
 [`JSON`](#9-json)の上に作られています。尋ねる相手は*提供元*で、今あるのは
 `LLM.anthropic()`（Messages API、AnthropicのClaude API）と`LLM.openai_compatible()`
 （Chat Completions。`LLM.openai`、`LLM.openrouter`、`LLM.ollama`はそのサービス向けの設定）、
-そして`LLM.local()`（このプロセスの中で動かすモデル。[`Llama`](#43-llama)を参照）です。
+そして`LLM.local()`（このプロセスの中で動かすモデル。[`Llama`](#44-llama)を参照）です。
 提供元はプログラムの中で書くこともできます（`LLM.turn`を参照）。使い方は4つあります。1回の質問、履歴を持ち
 モデルが求めるツールを実行する会話、提供元への1ステップ（自前のループの部品）、
 そしてリクエスト本文をそのまま送る素通しです。
@@ -9399,7 +9453,7 @@ IO.println(LLM.ask("Name three prime numbers.", provider: local, model: "llama3.
 ### `LLM.local(engine) -> LLMLocal`
 
 このプロセスの中で動かすモデルの提供元です。`engine`は読み込んだモデル、つまり
-[`Llama.load`](#43-llama)が返すものか、モデルと同じ動きをする`chat`、`format_chat`、
+[`Llama.load`](#44-llama)が返すものか、モデルと同じ動きをする`chat`、`format_chat`、
 `count_tokens`のメソッドを持つ何かです。それ以外は`TypeError`になります。提供元は
 エンジンを閉じません。エンジンは作ったisolateのものなので、提供元も使うisolateの中で作ってください。
 
@@ -9439,7 +9493,7 @@ IO.println(LLM.ask("Translate into Japanese: Good morning.", provider: provider)
 | 通信の失敗（名前解決、接続拒否、TLS） | `Http`と同じく`HttpError` |
 | 引数の型の誤り | `TypeError` |
 
-## 43. `Llama`
+## 44. `Llama`
 
 このプロセスの中で動く言語モデルです。GGUFファイルを読み込んで、問い合わせます。中身はllama.cppで、
 サーバーも、キーも、ネットワークも要りません。この名前空間があるのは、`-DCULEBRA_ENABLE_LLAMA=ON`で
@@ -9566,7 +9620,7 @@ if d.reason != nil {
 
 含まないもの: ツール呼び出し（形の決まった結果には`grammar:`を使います）、画像と音声、埋め込み。
 
-## 44. 設計上の注記
+## 45. 設計上の注記
 
 ### 名前空間ファースト、グローバルは出力の3つだけ
 
@@ -9623,7 +9677,7 @@ run_with(IO, "via parameter")
 
 ---
 
-## 45. 未収録（将来検討）
+## 46. 未収録（将来検討）
 
 ### 重量級データ構造
 

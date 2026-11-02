@@ -5088,6 +5088,100 @@ let _audio_module = fn () {
 let Audio = _audio_module()
 )=culpre=";
 
+inline constexpr const char* MIDI_MODULE_SOURCE = R"=culpre=(# MIDI: input from a MIDI controller (docs/stdlib.md), through _Audio's
+# midi_* natives (vendor/cpp-midilib on the audio device's backend).
+let _midi_module = fn () {
+  # A channel message's kind, by the top half of its status byte (8 to 14).
+  let KINDS = ["note_off", "note_on", "poly_pressure", "cc", "program", "pressure", "bend"]
+
+  # The inputs there are, each {id, name}.
+  fn inputs() {
+    let xs = _Audio.midi_inputs()
+    iota(xs.size() / 2).map(|i| {id: xs[i * 2], name: xs[i * 2 + 1]})
+  }
+
+  # One message from the six numbers _Audio.midi_read gives each (seconds
+  # ago, status, two data bytes, size, a note on's 14-bit velocity), `now`
+  # the clock when they were read.
+  fn message(xs, k, now) {
+    let status = to_long(xs[k + 1])
+    let (d1, d2) = (to_long(xs[k + 2]), to_long(xs[k + 3]))
+    let channel = status & 15
+    let at = now - xs[k]
+    let bytes = to_long(xs[k + 4]) == 2 ? [status, d1] : [status, d1, d2]
+    # A note on at velocity 0 is a note off, as MIDI 1.0 says.
+    let kind = status >> 4 == 9 && d2 == 0 ? "note_off" : KINDS[(status >> 4) - 8]
+    match kind {
+      "note_on" => {kind: kind, channel: channel, at: at, bytes: bytes, note: d1, velocity: xs[k + 5] / 16383.0},
+      "note_off" => {kind: kind, channel: channel, at: at, bytes: bytes, note: d1, velocity: d2 / 127.0},
+      "poly_pressure" => {kind: kind, channel: channel, at: at, bytes: bytes, note: d1, value: d2 / 127.0},
+      "cc" => {kind: kind, channel: channel, at: at, bytes: bytes, cc: d1, value: d2 / 127.0},
+      "program" => {kind: kind, channel: channel, at: at, bytes: bytes, program: d1},
+      "pressure" => {kind: kind, channel: channel, at: at, bytes: bytes, value: d1 / 127.0},
+      _ => {kind: kind, channel: channel, at: at, bytes: bytes, bend: (d2 * 128 + d1 - 8192) / 8192.0},
+    }
+  }
+
+  # An input, open: its messages wait from when it opens until they are
+  # read, in the order they came. The controls (control()) are as the
+  # messages read so far have set them.
+  class Input {
+    new(id: String) {
+      @id = id
+      @_id = _Audio.midi_open(id)
+      if @_id < 0 {
+        @_id = nil
+        let names = inputs().map(|p| "{p.id} ({p.name})")
+        let has = names.empty() ? "none" : names.join(", ")
+        __raise("ValueError", "MIDI.Input: no input {id}; there are {has}")
+      }
+    }
+    # What came since the last read, all of it; [] when nothing has.
+    read() {
+      let xs = _Audio.midi_read(@_id)
+      let now = _Time.monotonic()
+      iota(xs.size() / 6).map(|i| message(xs, i * 6, now))
+    }
+    # Waits until a message has come, for `seconds` at most (for ever
+    # without); whether one has.
+    wait(seconds: Long | Float | Nil = nil) {
+      return _Audio.midi_wait(@_id, seconds) if seconds != nil
+      while !_Audio.midi_wait(@_id, 3600.0) {}
+      true
+    }
+    # Each message as it comes, waiting for the next: a loop over it plays.
+    messages() {
+      while true {
+        self.wait()
+        for m in self.read() {
+          yield m
+        }
+      }
+    }
+    # Controller `cc` on `channel` (0 to 15), 0.0 to 1.0: at 14 bits where
+    # the controller sends them so (0 to 31 with 32 to 63), at 7 otherwise.
+    control(cc: Long, channel: Long = 0) {
+      _Audio.midi_control(@_id, channel, cc) / 16383.0
+    }
+    # Messages dropped because they came faster than they were read.
+    dropped() {
+      _Audio.midi_dropped(@_id)
+    }
+    drop() {
+      _Audio.midi_free(@_id) if @_id != nil
+    }
+  }
+
+  {
+    # The inputs there are, each {id, name}: an id to open, which stays the
+    # same while the device is plugged in.
+    inputs: inputs,
+    Input: Input,
+  }
+}
+let MIDI = _midi_module()
+)=culpre=";
+
 inline constexpr const char* ARGS_MODULE_SOURCE = R"=culpre=(let _args_module = fn () {
   # A spec that only routes to `subcommands` has no `args` of its own.
   let _args_of = fn (spec) {

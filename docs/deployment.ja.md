@@ -214,7 +214,7 @@ $ otool -L /tmp/microgpt_tensor
 
 ### モデルを動かすバイナリ
 
-`Llama`（プロセスの中で言語モデルを動かす名前空間。[`Llama`](stdlib.ja.md#43-llama)を参照）は
+`Llama`（プロセスの中で言語モデルを動かす名前空間。[`Llama`](stdlib.ja.md#44-llama)を参照）は
 もう1つの軸で、`-DCULEBRA_ENABLE_LLAMA=ON`で構成したビルドにだけ存在する唯一の軸です。
 そのドライバはllama.cppの静的ライブラリ4つを抱え、`Llama`を名指しするプログラムがそれをリンクします。
 名指ししないプログラムには何も入らず、`ldd`は`print("hello")`のバイナリと同じライブラリ

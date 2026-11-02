@@ -16,10 +16,11 @@ set -eu
 echo "==> Installing base packages"
 # gcc-14: Ubuntu 24.04 ships gcc-13 by default, which lacks C++23 <print>.
 # lsb-release/software-properties-common/gnupg are what apt.llvm.org's
-# installer needs below.
+# installer needs below. libasound2-dev is ALSA's headers alone: MIDI input
+# loads libasound at run time.
 sudo apt-get update
 sudo apt-get install -y \
-  ccache cmake g++-14 libblas-dev mold wget \
+  ccache cmake g++-14 libblas-dev libasound2-dev mold wget \
   lsb-release software-properties-common gnupg
 
 echo "==> Installing just"

@@ -131,7 +131,7 @@ inline bool is_object_builtin_method_name(std::string_view name) {
 // Returns the module's static name, which the tagging sites keep as
 // ObjectValue::ns_name / JitObject::ns_name for the error message.
 inline const char* lazy_namespace_static_name(std::string_view name) {
-  static constexpr const char* kNames[] = {"Time",  "Term", "Canvas",  "Audio",
+  static constexpr const char* kNames[] = {"Time",  "Term", "Canvas",  "Audio", "MIDI",
                                            "Args",  "Regex", "PEG",    "FST",
                                            "Log",   "LLM",   "Desktop", "Dir",
                                            "__Eff"};

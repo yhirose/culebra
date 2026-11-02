@@ -80,11 +80,12 @@ Conventions used below:
 38. [`FST`](#38-fst) — compiled read-only dictionary: prefix, predictive and fuzzy search
 39. [`Search`](#39-search) — full-text index over your own documents, ranked
 40. [`Audio`](#40-audio) — sound for any program, with or without a window: WASM-4 tones, samples, streamed music, synthesised PCM, the microphone
-41. [`Dir`](#41-dir) — a read-only set of files on disk, in memory, baked into the binary or in a ZIP archive, read one way (`Dir.disk` / `Dir.memory` / `Dir.embedded` / `Dir.zip`, and the `Dir` trait)
-42. [`LLM`](#42-llm) — a client for LLMs: one step with a provider (the Messages API or Chat Completions), a conversation that runs your functions as tools, or a request as it is
-43. [`Llama`](#43-llama) — a model run in this process: load a GGUF file, then `generate` or `chat` (a build option)
-44. [Design notes](#44-design-notes)
-45. [Not included (yet)](#45-not-included-yet)
+41. [`MIDI`](#41-midi) — input from a MIDI keyboard or wind controller
+42. [`Dir`](#42-dir) — a read-only set of files on disk, in memory, baked into the binary or in a ZIP archive, read one way (`Dir.disk` / `Dir.memory` / `Dir.embedded` / `Dir.zip`, and the `Dir` trait)
+43. [`LLM`](#43-llm) — a client for LLMs: one step with a provider (the Messages API or Chat Completions), a conversation that runs your functions as tools, or a request as it is
+44. [`Llama`](#44-llama) — a model run in this process: load a GGUF file, then `generate` or `chat` (a build option)
+45. [Design notes](#45-design-notes)
+46. [Not included (yet)](#46-not-included-yet)
 
 **Where to find what**
 
@@ -101,7 +102,7 @@ Conventions used below:
 | Stat / walk / glob / copy / rename / symlink / chmod / chown | [§3 FS](#3-fs) |
 | Watch a directory for changes | [§3 FS](#3-fs) — `FS.watch` |
 | Directory listing / create / remove | `FS.list_dir`, `FS.mkdir`, `FS.remove` |
-| Read a ZIP archive, the assets baked into the binary, or files held in memory, one way | [§41 Dir](#41-dir) — `Dir.zip(path)` / `Dir.embedded("assets")` / `Dir.memory({...})` |
+| Read a ZIP archive, the assets baked into the binary, or files held in memory, one way | [§42 Dir](#42-dir) — `Dir.zip(path)` / `Dir.embedded("assets")` / `Dir.memory({...})` |
 | `Instant` / `Duration`, ISO 8601, calendar arithmetic | [§5 Time](#5-time) |
 | Wrap an index that can go negative into `0..n` | [§1 Math](#1-math) — `Math.wrap(i, n)` (`%` truncates, so it stays negative) |
 | Random numbers | `Random.int`, `.uniform`, `.gauss`, `.shuffle`, `.choice`, `.weighted_choice` |
@@ -121,7 +122,7 @@ Conventions used below:
 | Parse / write CSV | [§19 CSV](#19-csv) — `CSV.parse(text)` / `CSV.stringify(rows)` |
 | Parse / write TOML | [§24 TOML](#24-toml) — `TOML.parse(text)` / `TOML.stringify(obj)` |
 | Parse / search / write XML | [§25 XML](#25-xml): `XML.parse(text)` / `root.find_all(".//item")` / `el.stringify()` |
-| Run a language model in this process, no server (a build with Llama) | [§43 Llama](#43-llama) — `Llama.load(path)` → `m.chat(messages)` / `m.generate(prompt)` |
+| Run a language model in this process, no server (a build with Llama) | [§44 Llama](#44-llama) — `Llama.load(path)` → `m.chat(messages)` / `m.generate(prompt)` |
 | Query an embedded SQL database | [§26 SQLite](#26-sqlite) — `SQLite.open(path)` → `db.query(sql, params)` / `db.execute(...)` |
 | Load a `.env` config file | [§20 Env](#20-env) — `Env.load(".env")` / `Env.parse(text)` |
 | Generate a UUID | [§21 UUID](#21-uuid) — `UUID.v4()` / `UUID.v7()` |
@@ -131,6 +132,7 @@ Conventions used below:
 | Share variable-length read-only data across threads (no copy) | [§12 Shared](#shared--immutable-values-shared-by-reference) — `Shared.new(value)` |
 | Handle Ctrl+C / SIGINT gracefully | [§12 Signal](#signal--signalnotify--signalreset) — `Signal.notify(tx)` / `Signal.reset()` |
 | Desktop GUI (native WebView + local server) | [§30 Desktop](#30-desktop--webview) — `Desktop.run({title, assets, routes})` |
+| Play from a MIDI keyboard or wind controller | [§41 MIDI](#41-midi) — `MIDI.inputs()` / `MIDI.Input.new(id).messages()` / `input.control(2)` |
 | Play a tone, a sound effect or music; synthesise audio | [§40 Audio](#40-audio) — `Audio.tone(440, 10)` / `Audio.Sound.new(bytes).play()` / `Audio.Music.new(bytes)` / `Audio.PCM.new(44100, 1, 1024)` / `Audio.Capture.new(44100)` |
 | Heap introspection / leak checks | [§7 GC](#gc--heap-introspection) — `GC.stat()` → `{live_objects, rc_objects, heap_bytes}` |
 | 2D/3D vector math (dot, length, normalize, distance) | [§31 `Vector2`](#31-vector2) / [§32 `Vector3`](#32-vector3) |
@@ -140,7 +142,7 @@ Conventions used below:
 | Model a workflow, protocol or UI mode as states and events | [§37 `StateMachine`](#37-statemachine) — `StateMachine.parse(text)`, or a description `Object` |
 | Autocomplete / prefix lookup over a large fixed word list | [§38 FST](#38-fst) — `FST.Set.new(FST.compile_set(words))` → `.predictive_search("hel")` |
 | Spelling correction, fuzzy lookup | [§38 FST](#38-fst) — `.edit_distance_search(word, 1)` / `.suggest(word)` |
-| Ask a language model a question, or let it call your functions | [§42 LLM](#42-llm) — `LLM.ask(prompt, provider: LLM.anthropic(), model:)` / `LLM.chat(provider:, model:, tools: [LLM.tool(f, "...")])` |
+| Ask a language model a question, or let it call your functions | [§43 LLM](#43-llm) — `LLM.ask(prompt, provider: LLM.anthropic(), model:)` / `LLM.chat(provider:, model:, tools: [LLM.tool(f, "...")])` |
 | Search many documents by keyword, ranked | [§39 Search](#39-search) — `Search.Index.new()` → `.add(key, text)` → `.search("quick -dog")` |
 | String / Array / Object methods | [language spec §18](language.md) |
 | Integer sequences (`range`, `iota`) | [language spec §19](language.md) |
@@ -4771,8 +4773,8 @@ HTTP responses are decompressed transparently by the `Http` client (it sends
 `Compress` is for data and files you handle yourself, not for `Http` bodies.
 
 `zip` packs a set of files into an archive: an Object of one key per file
-(`"sub/name.txt"` to its contents, as [`Dir.memory`](#41-dir) takes it) or any
-[`Dir`](#41-dir). A path holding `\` or starting with a drive (`C:`) raises
+(`"sub/name.txt"` to its contents, as [`Dir.memory`](#42-dir) takes it) or any
+[`Dir`](#42-dir). A path holding `\` or starting with a drive (`C:`) raises
 `ValueError`, since an archive reader takes either for a separator or a root.
 The entries go in sorted by path, with one fixed timestamp,
 so the same files always make the same bytes. Writing the archive is
@@ -9156,7 +9158,62 @@ println(song.length())  # => 2.0
 song.play()
 ```
 
-## 41. `Dir`
+## 41. `MIDI`
+
+Input from a MIDI controller (a keyboard, a wind controller, a pad), for a
+program that plays sound as it is played. An input's messages wait from
+when it opens until they are read, in the order they came, each with the
+time it came. `MIDI` rides on `Audio`'s native backend: CoreMIDI on macOS,
+WinMM on Windows, and on Linux the ALSA sequencer, loaded when it is first
+asked for. With no device, in the browser, or with `CULEBRA_AUDIO` set to
+`off`, `MIDI.inputs()` is `[]`.
+
+| Function / method | Effect |
+| --- | --- |
+| `MIDI.inputs() -> Array` | the inputs there are, each `{id, name}`; an `id` stays the same while the device is plugged in |
+| `MIDI.Input.new(id)` | input `id`, open; `ValueError`, naming the inputs there are, when there is none of that id |
+| `input.read() -> Array` | the messages that came since the last read, in order; `[]` when none has |
+| `input.wait(seconds = nil) -> Bool` | waits until a message has come, for `seconds` at most (for ever without); whether one has |
+| `input.messages()` | each message as it comes, waiting for the next: a `for` over it plays |
+| `input.control(cc, channel = 0) -> Float` | controller `cc`'s value as the messages read so far set it, `0.0` to `1.0`: at 14 bits where the controller sends them so (controllers 0 to 31 with 32 to 63, as a wind controller's breath may), at 7 otherwise |
+| `input.dropped() -> Long` | the messages dropped because they came faster than they were read (4096 wait at most) |
+
+A message is an object with its `kind`, its `channel` (0 to 15), `at` (when
+it came, on `Time.monotonic()`'s clock) and its `bytes` as they came, and
+by its kind:
+
+| `kind` | Fields |
+| --- | --- |
+| `"note_on"` | `note` (0 to 127; 60 is middle C), `velocity` (`0.0` to `1.0`, at 14 bits with the High Resolution Velocity Prefix, CC 88) |
+| `"note_off"` | `note`, `velocity`; a note on at velocity 0 is a note off, as MIDI 1.0 says |
+| `"cc"` | `cc`, `value` (`0.0` to `1.0`) |
+| `"bend"` | `bend`, `-1.0` to `1.0`, `0.0` at rest |
+| `"pressure"` | `value`, the channel's pressure (aftertouch) |
+| `"poly_pressure"` | `note`, `value` |
+| `"program"` | `program`, 0 to 127 |
+
+System messages and sysex are left out. Messages that came together keep
+their order: a wind controller playing legato sends the new note's note on,
+then the old note's note off.
+
+```culebra
+println(MIDI.inputs() is Array)  # => true
+```
+
+```culebra
+# doctest: skip — needs a MIDI device
+let port = MIDI.inputs().find(|p| p.name.contains("EWI"))
+let ewi = MIDI.Input.new(port.id)
+for m in ewi.messages() {
+  cond {
+    m.kind == "note_on" => println("on {m.note} at {m.velocity}, breath {ewi.control(2)}"),
+    m.kind == "note_off" => println("off {m.note}"),
+    _ => {},
+  }
+}
+```
+
+## 42. `Dir`
 
 A **read-only set of files**, wherever it lives — a directory on disk, files
 held in memory, assets baked into the executable, or the entries of a ZIP
@@ -9424,14 +9481,14 @@ playground has no ZIP support: `Dir.zip` and `Compress.zip` raise there.
 
 ---
 
-## 42. `LLM`
+## 43. `LLM`
 
 A client for large language models, written in Culebra over [`Http`](#15-http)
 and [`JSON`](#9-json). What it asks is a *provider*: `LLM.anthropic()` (the
 Messages API, Anthropic's Claude API) and `LLM.openai_compatible()` (Chat
 Completions, with `LLM.openai`, `LLM.openrouter` and `LLM.ollama` set up for
 those services) and `LLM.local()` (a model run in this process, see
-[`Llama`](#43-llama)) are the ones there are so far, and a provider can be written
+[`Llama`](#44-llama)) are the ones there are so far, and a provider can be written
 in a program (see `LLM.turn`). There are four ways in: one
 question, a conversation that keeps its history and runs the tools the model
 asks for, one step with a provider (what a loop of your own is made of), and a
@@ -9808,7 +9865,7 @@ IO.println(LLM.ask("Name three prime numbers.", provider: local, model: "llama3.
 ### `LLM.local(engine) -> LLMLocal`
 
 A provider over a model run in this process. `engine` is a loaded model, which is
-what [`Llama.load`](#43-llama) returns, or anything with `chat`, `format_chat` and
+what [`Llama.load`](#44-llama) returns, or anything with `chat`, `format_chat` and
 `count_tokens` methods that behave as the model's do; anything else is a
 `TypeError`. The provider does not close the engine, and the engine belongs to
 the isolate that made it, so make the provider in the isolate that uses it.
@@ -9851,7 +9908,7 @@ prompt the chat template makes of the request, system prompt included.
 | A transport failure (DNS, connection refused, TLS) | `HttpError`, as from `Http` |
 | An argument of the wrong type | `TypeError` |
 
-## 43. `Llama`
+## 44. `Llama`
 
 A language model run in this process: load a GGUF file, then ask it. It is
 llama.cpp underneath, and it needs no server, no key and no network. The
@@ -9992,7 +10049,7 @@ Closing twice is fine; a call on a closed model is a `LlamaError`.
 Not included: tool calls (use `grammar:` for a result with a fixed shape),
 images and audio, embeddings.
 
-## 44. Design notes
+## 45. Design notes
 
 ### Namespace-first, with three global shortcuts
 
@@ -10048,7 +10105,7 @@ sentinel values for "found or not" predicates (`IO.input()` returns
 
 ---
 
-## 45. Not included (yet)
+## 46. Not included (yet)
 
 ### Heavier data structures
 

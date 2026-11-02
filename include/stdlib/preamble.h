@@ -140,6 +140,7 @@ inline std::span<const LazyNsModule> lazy_ns_modules() {
       {"Term", TERM_MODULE_SOURCE, "_term_module"},
       {"Canvas", CANVAS_MODULE_SOURCE, "_canvas_module"},
       {"Audio", AUDIO_MODULE_SOURCE, "_audio_module"},
+      {"MIDI", MIDI_MODULE_SOURCE, "_midi_module"},
       {"Args", ARGS_MODULE_SOURCE, "_args_module"},
       {"Regex", REGEX_MODULE_SOURCE, "_regex_module"},
       {"PEG", PEG_MODULE_SOURCE, "_peg_module"},

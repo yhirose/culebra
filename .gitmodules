@@ -41,3 +41,6 @@
 [submodule "vendor/cpp-llamalib"]
 	path = vendor/cpp-llamalib
 	url = https://github.com/yhirose/cpp-llamalib
+[submodule "vendor/cpp-midilib"]
+	path = vendor/cpp-midilib
+	url = https://github.com/yhirose/cpp-midilib

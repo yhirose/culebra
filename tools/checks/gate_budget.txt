@@ -134,7 +134,9 @@
 # 336 since test_trait_default_call.cul (Eq's and Comparable's defaults come
 # in for a call of their name) and test_trait_named_in_type.cul (a trait
 # named only inside a bound, a union, a return type or a supertrait list).
-tests.cul 336
+# 337 since test_midi.cul (MIDI with the device closed: no inputs, and an
+# input not there refused, naming those there are).
+tests.cul 337
 
 # tests/isolate/*.cul — run on both engines, plus the over-cap modes.
 # 21 since test_xml_isolate.cul (an XML element keeps its methods across an
@@ -181,7 +183,8 @@ vm_cases 191
 # 36 since play_test (`culebra play`'s streams and statuses, on each engine).
 # 37 since kauai_cli_test (the Kauai command line gives `culebra play`'s
 # streams, statuses and WAV bytes; its AOT build runs in the aot lane).
-ctest.entries 37
+# 38 since midi_test (MIDI input end to end through a virtual source, macOS).
+ctest.entries 38
 
 # ```culebra blocks under docs/ — `just doctest` runs the runnable ones on both
 # engines, and the JIT lane costs one LLVM module per block.
@@ -266,7 +269,9 @@ ctest.entries 37
 # the `is` type test, in en and ja. 1122 since the keyword-arguments section
 # shows `f(x:)`, in en and ja. 1130 since §43 shows model.device() saying why
 # a model is not on a GPU, in en and ja (skipped: needs a model).
-docs.blocks 1130
+# 1134 since §41 MIDI shows the inputs and a wind controller played (skipped:
+# needs a device), in en and ja.
+docs.blocks 1134
 
 # The samples the language front ends are run over (examples/languages/*).
 languages.samples 130

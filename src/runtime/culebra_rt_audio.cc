@@ -31,6 +31,7 @@
 
 #include "culebra_capture.h"
 #include "culebra_period.h"
+#include "midilib.h"
 #include "culebra_decode.h"
 #include "raudio.h"
 
@@ -55,6 +56,14 @@ bool audio_off() {
 
 bool g_ready = false;
 bool g_failed = false;  // latch: don't retry InitAudioDevice every call
+
+// The MIDI inputs open, by handle (see midi_open below).
+struct MidiIn {
+  explicit MidiIn(const std::string& port) : input(port) {}
+  midilib::Input input;
+  midilib::Controls controls;
+};
+std::unordered_map<int64_t, std::unique_ptr<MidiIn>> g_midi;  // main thread
 
 void arm_exit_teardown();
 
@@ -836,6 +845,7 @@ void exit_teardown() {
   g_sounds.clear();
   g_streams.clear();
   g_captures.clear();
+  g_midi.clear();
   if (g_capture_ready) {
     culebra_capture_shutdown();
     g_capture_ready = false;
@@ -889,6 +899,66 @@ bool latency_ask(double seconds) {
   return true;
 }
 double latency() { return g_ready ? culebra_period() : std::nan(""); }
+
+// --- MIDI input -------------------------------------------------------------
+//
+// cpp-midilib takes each input's messages on the system's MIDI thread into a
+// queue of its own; the script reads them here, on its thread, which keeps
+// the controls they set. CULEBRA_AUDIO=off closes MIDI too: no inputs.
+
+std::vector<std::string> midi_inputs() {
+  std::vector<std::string> out;
+  if (audio_off()) return out;
+  for (auto& p : midilib::input_ports()) {
+    out.push_back(p.id);
+    out.push_back(p.name);
+  }
+  return out;
+}
+
+bool midi_open(int64_t id, const std::string& port) {
+  if (audio_off()) return false;
+  try {
+    g_midi[id] = std::make_unique<MidiIn>(port);
+    return true;
+  } catch (const midilib::Error&) {
+    return false;
+  }
+}
+
+void midi_free(int64_t id) { g_midi.erase(id); }
+
+void midi_read(int64_t id, std::vector<double>& out) {
+  auto it = g_midi.find(id);
+  if (it == g_midi.end()) return;
+  auto& in = *it->second;
+  auto now = midilib::now_ns();
+  midilib::Message m;
+  while (in.input.poll(m)) {
+    in.controls.apply(m);
+    bool on = m.kind() == midilib::Kind::note_on;
+    out.insert(out.end(), {static_cast<double>(now - m.time_ns) / 1e9, static_cast<double>(m.bytes[0]),
+                           static_cast<double>(m.bytes[1]), static_cast<double>(m.bytes[2]),
+                           static_cast<double>(m.size),
+                           on ? static_cast<double>(in.controls.velocity14(m.channel())) : 0.0});
+  }
+}
+
+bool midi_wait(int64_t id, double seconds) {
+  auto it = g_midi.find(id);
+  return it != g_midi.end() &&
+         it->second->input.wait(std::chrono::nanoseconds(static_cast<int64_t>(seconds * 1e9)));
+}
+
+int64_t midi_control(int64_t id, int64_t channel, int64_t cc) {
+  auto it = g_midi.find(id);
+  return it == g_midi.end() ? 0 : it->second->controls.value14(static_cast<int>(channel), static_cast<int>(cc));
+}
+
+int64_t midi_dropped(int64_t id) {
+  auto it = g_midi.find(id);
+  return it == g_midi.end() ? 0 : static_cast<int64_t>(it->second->input.dropped());
+}
 
 void tone(int64_t start_freq, int64_t end_freq, int64_t attack, int64_t decay,
           int64_t sustain, int64_t release, int64_t vol, int64_t peak,

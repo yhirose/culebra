@@ -5698,6 +5698,30 @@ inline JitArray* _ns_audio_floats(const T* p, size_t n, const char* what, size_t
     culebra_runtime_array_push(r, TAG_FLOAT, _culebra_double_to_bits(static_cast<double>(p[i * stride])));
   return r;
 }
+// MIDI input: the inputs as [id, name, id, name, ...]; an input opened under
+// a handle of its own, -1 when there is no such port; and what came since
+// the last read, six numbers a message (culebra::_audio_detail::midi_read).
+inline JitValue _ns_audio_midi_inputs(JitValue*, int64_t) {
+  return _ns_adapt::string_array(culebra::_audio_detail::midi_inputs());
+}
+inline JitValue _ns_audio_midi_open(JitValue* a, int64_t) {
+  namespace ad = culebra::_audio_detail;
+  int64_t id = ad::alloc_id();
+  return _ns_adapt::v_long(ad::midi_open(id, _ns_adapt::take_str(a[0])) ? id : -1);
+}
+inline JitValue _ns_audio_midi_read(JitValue* a, int64_t) {
+  thread_local std::vector<double> scratch;
+  scratch.clear();
+  culebra::_audio_detail::midi_read(_ns_adapt::take_long(a[0]), scratch);
+  return _ns_adapt::v_array(_ns_audio_floats(scratch.data(), scratch.size(), "MIDI.Input.read() result"));
+}
+inline JitValue _ns_audio_midi_wait(JitValue* a, int64_t) {
+  return _ns_adapt::v_bool(culebra::_audio_detail::midi_wait(_ns_adapt::take_long(a[0]), _ns_adapt::take_double(a[1])));
+}
+inline JitValue _ns_audio_midi_control(JitValue* a, int64_t) {
+  return _ns_adapt::v_long(culebra::_audio_detail::midi_control(
+      _ns_adapt::take_long(a[0]), _ns_adapt::take_long(a[1]), _ns_adapt::take_long(a[2])));
+}
 inline JitValue _ns_audio_capture_read(JitValue* a, int64_t) {
   thread_local std::vector<float> scratch;  // a block a frame: no allocation
   scratch.clear();
@@ -11605,6 +11629,13 @@ inline const NsMethod kNsRows_Audio_native[] = {
   {"_Audio", "capture_stop",   1, &_ns_audio_on<culebra::_audio_detail::capture_stop>},
   {"_Audio", "capture_running", 1, &_ns_audio_ask<culebra::_audio_detail::capture_running>},
   {"_Audio", "capture_waiting", 1, &_ns_audio_count<culebra::_audio_detail::capture_waiting>},
+  {"_Audio", "midi_inputs",    0, &_ns_audio_midi_inputs},
+  {"_Audio", "midi_open",      1, &_ns_audio_midi_open},
+  {"_Audio", "midi_free",      1, &_ns_audio_on<culebra::_audio_detail::midi_free>},
+  {"_Audio", "midi_read",      1, &_ns_audio_midi_read},
+  {"_Audio", "midi_wait",      2, &_ns_audio_midi_wait},
+  {"_Audio", "midi_control",   3, &_ns_audio_midi_control},
+  {"_Audio", "midi_dropped",   1, &_ns_audio_count<culebra::_audio_detail::midi_dropped>},
   {"_Audio", "capture_read",   2, &_ns_audio_capture_read},
   {"_Audio", "schedule_stride",   0, &_ns_audio_schedule_stride},
   {"_Audio", "schedule_new",      3, &_ns_audio_schedule_new},
@@ -13552,7 +13583,7 @@ inline const std::unordered_set<std::string_view>& builtin_var_names() {
       // interp's builtin_names skip. See _jit_namespace_get_or_build.
       "Time",    "Args",      "Regex",     "PEG",       "FST",      "Term",
       "Log",
-      "Path",    "Canvas",    "Audio",     "__Eff",     "Vector2",   "Vector3",
+      "Path",    "Canvas",    "Audio",     "MIDI",      "__Eff",     "Vector2",   "Vector3",
       "Deque",
       "PriorityQueue", "StateMachine", "Dir",
       // The bare function globals from those same source modules (assert_*,

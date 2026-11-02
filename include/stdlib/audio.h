@@ -33,6 +33,7 @@
 #include <cstdint>
 #include <cstring>
 #include <numbers>
+#include <string>
 #include <string_view>
 #include <unordered_map>
 #include <variant>
@@ -1761,6 +1762,20 @@ int64_t capture_waiting(int64_t id);
 // Up to `frames` waiting frames (all of them when negative), interleaved into
 // `out`, which arrives empty.
 void capture_read(int64_t id, int64_t frames, std::vector<float>& out);
+// MIDI input (vendor/cpp-midilib), on the device's backend: the inputs there
+// are, each its id and then its name; an input opened under handle `id`
+// (false when there is no `port`); what came since the last read, six
+// numbers a message (seconds ago, the status and two data bytes, the size,
+// and a note on's 14-bit velocity, 0 for the rest); a wait for one; a
+// controller's 14-bit value as the messages read have set it; and how many
+// were dropped.
+std::vector<std::string> midi_inputs();
+bool midi_open(int64_t id, const std::string& port);
+void midi_free(int64_t id);
+void midi_read(int64_t id, std::vector<double>& out);
+bool midi_wait(int64_t id, double seconds);
+int64_t midi_control(int64_t id, int64_t channel, int64_t cc);
+int64_t midi_dropped(int64_t id);
 void schedule_new(int64_t id, const double* events, int64_t count, double length,
                double loop_at);
 void schedule_free(int64_t id);
@@ -1902,6 +1917,17 @@ CULEBRA_RT_AUDIO_LINKAGE bool capture_running(int64_t) { return false; }
 CULEBRA_RT_AUDIO_LINKAGE int64_t capture_waiting(int64_t) { return 0; }
 CULEBRA_RT_AUDIO_LINKAGE void capture_read(int64_t, int64_t,
                                            std::vector<float>&) {}
+#endif
+
+// MIDI input, the same: no inputs, and none opens.
+#if !defined(CULEBRA_AUDIO_DEVICE)
+CULEBRA_RT_AUDIO_LINKAGE std::vector<std::string> midi_inputs() { return {}; }
+CULEBRA_RT_AUDIO_LINKAGE bool midi_open(int64_t, const std::string&) { return false; }
+CULEBRA_RT_AUDIO_LINKAGE void midi_free(int64_t) {}
+CULEBRA_RT_AUDIO_LINKAGE void midi_read(int64_t, std::vector<double>&) {}
+CULEBRA_RT_AUDIO_LINKAGE bool midi_wait(int64_t, double) { return false; }
+CULEBRA_RT_AUDIO_LINKAGE int64_t midi_control(int64_t, int64_t, int64_t) { return 0; }
+CULEBRA_RT_AUDIO_LINKAGE int64_t midi_dropped(int64_t) { return 0; }
 #endif
 
 // A graph renders everywhere, and plays on a device alone: the browser has no

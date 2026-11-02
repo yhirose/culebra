@@ -1,0 +1,25 @@
+// The MIDI namespace. The test harness keeps the device closed
+// (CULEBRA_AUDIO=off), which closes MIDI too: no inputs. A direct run lists
+// whatever inputs the machine has. tests/midi_test.sh reads a virtual source
+// end to end on macOS.
+let closed = Sys.env("CULEBRA_AUDIO") == "off"
+
+let inputs = MIDI.inputs()
+if closed {
+  assert_eq(inputs, [])
+}
+for p in inputs {
+  assert_true(p.id is String && p.name is String)
+}
+
+// An input that is not there is refused, naming those that are.
+let refused = try {
+  MIDI.Input.new("no such input")
+  nil
+} catch e {
+  "{e.kind}: {e.message}"
+}
+assert_true(refused.starts_with("ValueError: MIDI.Input: no input no such input; there are "), refused)
+if closed {
+  assert_eq(refused, "ValueError: MIDI.Input: no input no such input; there are none")
+}

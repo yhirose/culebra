@@ -205,14 +205,17 @@ option(CULEBRA_ENABLE_AUDIO
   "Enable the Audio namespace's native backend (raylib's raudio, standalone)" ON)
 set(_audio_link "")
 if(CULEBRA_ENABLE_AUDIO)
-  _culebra_require_submodules(raylib)
+  _culebra_require_submodules(raylib cpp-midilib)
   add_library(culebra_raudio OBJECT ./src/runtime/culebra_raudio.c)
   target_include_directories(culebra_raudio PRIVATE ./src/runtime)
   target_compile_options(culebra_raudio PRIVATE -w -ffunction-sections -fdata-sections)
   # One list for the driver's link and the AOT fragment, so they can't drift.
+  # MIDI input (vendor/cpp-midilib) rides on the same backend: CoreMIDI on
+  # macOS, WinMM on Windows, and on Linux the ALSA sequencer, which it loads
+  # at run time (dl) as miniaudio loads ALSA's PCM.
   if(APPLE)
     set(_audio_libs "-framework CoreAudio" "-framework AudioToolbox"
-                    "-framework CoreFoundation")
+                    "-framework CoreFoundation" "-framework CoreMIDI")
   elseif(WIN32)
     set(_audio_libs -lwinmm -lole32)
   else()
@@ -1527,7 +1530,7 @@ inline const auto FS = ::cpp_embedlib::EmbeddedFS{_entries};
     add_library(culebra_rt_audio STATIC ./src/runtime/culebra_rt_audio.cc
       $<TARGET_OBJECTS:culebra_raudio>)
     target_compile_features(culebra_rt_audio PRIVATE cxx_std_23)
-    target_include_directories(culebra_rt_audio PRIVATE ./src/runtime)
+    target_include_directories(culebra_rt_audio PRIVATE ./src/runtime ./vendor/cpp-midilib)
     target_compile_definitions(culebra_rt_audio PRIVATE CULEBRA_AUDIO_NATIVE=1)
     target_compile_options(culebra_rt_audio PRIVATE -ffunction-sections -fdata-sections)
     list(APPEND _rt_embed_files
@@ -1885,7 +1888,7 @@ endif()
 # when the program references Audio (see aot_scan). "" when Audio is off.
 if(CULEBRA_ENABLE_AUDIO)
   target_sources(culebra PRIVATE ./src/runtime/culebra_rt_audio.cc)
-  target_include_directories(culebra PRIVATE ./src/runtime)
+  target_include_directories(culebra PRIVATE ./src/runtime ./vendor/cpp-midilib)
   target_compile_definitions(culebra PRIVATE CULEBRA_AUDIO_NATIVE=1)
   target_link_libraries(culebra culebra_raudio ${_audio_libs})
 endif()
@@ -2450,6 +2453,13 @@ add_test(NAME kauai_cli_test
          COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/kauai_cli_test.sh
                  $<TARGET_FILE:culebra>)
 
+# MIDI input end to end on each engine: a virtual CoreMIDI source sends a
+# fixed run and a script reads it through MIDI.Input. macOS only (it skips
+# elsewhere); tests/test_midi.cul covers the closed device everywhere.
+add_test(NAME midi_test
+         COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/midi_test.sh
+                 $<TARGET_FILE:culebra>)
+
 # --- Baked stdlib preamble -----------------------------------------------------
 # The stdlib modules written in Culebra (src/preambles/*.cul) are compiled to
 # native objects at build time and carried by the driver (for `--jit`) and by
@@ -2496,7 +2506,7 @@ if(CULEBRA_ENABLE_JIT)
   # linked into every built binary, not only the ones that use it. The
   # __*Trait ones are built-in traits the splice selects like a module.
   set(_baked_names __Traits __EqTrait __ComparableTrait __DirTrait
-                   Time Term Canvas Audio Args Regex PEG FST Log Path Vector2
+                   Time Term Canvas Audio MIDI Args Regex PEG FST Log Path Vector2
                    Vector3
                    Deque PriorityQueue StateMachine Dir __Eff __Matchers
                    __StringFns)
