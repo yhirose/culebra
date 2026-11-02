@@ -276,6 +276,37 @@ fn a_note_made_ahead_and_begun_sounds_as_the_same_note_written() {
 }
 
 @test
+fn a_knob_turned_while_a_note_is_held_moves_what_reads_it() {
+  # A 1 kHz sine through a gain of the knob, and a second gain that does not
+  # read it: the sine's peak arrives at the knob's new value.
+  let knobbed = r.Recipe.new({
+    recipe: 1,
+    knobs: {bright: {"default": 0.5, min: 0, max: 1}},
+    parts: {
+      w: {part: "wave", freq: 1000},
+      g: {part: "gain", input: "w", gain: "bright"},
+      h: {part: "gain", input: "g", gain: 0.8},
+    },
+    out: "h",
+  }, name: "t")
+  let peak = |xs| xs.map(|v| Math.abs(v)).max()
+  let end = fn (turn) {
+    let held = knobbed.prepare({bright: 0.25}).begin(60)
+    held.knob("bright", 0.75) if turn
+    let heard = held.graph.render(0.5)
+    held.graph.stop()
+    peak(heard[-441..])
+  }
+  assert_close(end(false), 0.25 * 0.8, 0.002)
+  assert_close(end(true), 0.75 * 0.8, 0.002)
+  # A knob the recipe has not, or out of its range, is refused as anywhere.
+  let other = knobbed.prepare().begin(60)
+  assert_eq(thrown(|| other.knob("dark", 0.5)), "recipe t: no knob `dark`; it has bright")
+  assert_eq(thrown(|| other.knob("bright", 2)), "recipe t: bright is from 0.0 to 1.0, not 2")
+  other.graph.stop()
+}
+
+@test
 fn a_held_note_begins_once() {
   let held = live.prepare().begin(60)
   let e = thrown(|| held.begin(62))

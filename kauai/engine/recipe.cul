@@ -289,6 +289,11 @@ fn held_course(v, env, where) {
   drawn(ks, ks[-1][0])
 }
 
+# Where a value's `on` ends, which a held note's value stays at.
+fn on_end(v, env, where) {
+  on_knots(v, env, where)[-1][1]
+}
+
 # A held note's course for a value of part `name`: held_course, or, for a
 # part in `steady`, where it ends from the start.
 fn live_course(v, env, steady, name, where) {
@@ -557,7 +562,7 @@ class Recipe {
     let g = w.graph
     let gain = g.gain(w.out, 0.0)
     g.output(g.filter("high", gain, cutoff: DC_CUT))
-    Held(g, w.values, gain.gain, env, steady)
+    Held(self, params, g, w.values, gain.gain, env, steady)
   }
 
   # A note's graph: each part made in order, with its values where their
@@ -631,10 +636,12 @@ let LEAD = 0.003
 let GLIDE = 0.005
 
 # A note Recipe.prepare() made, played from begin() and held until
-# release(): its values can follow a new pitch (legato), a bend and a volume
-# while it sounds.
+# release(): its values can follow a new pitch (legato), a bend, a knob
+# turned and a volume while it sounds.
 class Held {
-  new(graph, values, volume, env, steady) {
+  new(recipe, params, graph, values, volume, env, steady) {
+    @_recipe = recipe
+    @_params = params
     @graph = graph
     @_values = values
     @_volume = volume
@@ -646,8 +653,10 @@ class Held {
     let up = {...env, pitch: env.pitch + 12.0, f: env.f * 2.0}
     @_pitched = values.map(fn (x) {
       let end = x.course[-1][1]
-      end != 0.0 && Math.abs(held_course(x.def, up, x.where)[-1][1] / end - 2.0) < 1e-9
+      end != 0.0 && Math.abs(on_end(x.def, up, x.where) / end - 2.0) < 1e-9
     })
+    # For each knob turned, the values that read it (found when it is first).
+    @_reads = {}
     @_begun = false
     @_until = nil
   }
@@ -693,10 +702,32 @@ class Held {
   # Play `pitch` from now without starting over: each value that depends on
   # the pitch moves to where the new pitch holds it.
   retune(pitch: Long | Float) {
-    let env = {...@_env, pitch: to_float(pitch), f: hz(pitch)}
+    self._follow({...@_env, pitch: to_float(pitch), f: hz(pitch)}, iota(@_values.size()))
+  }
+
+  # Turn knob `name` to `v` while the note sounds, as a player's breath
+  # turns a brightness: each value that reads it moves to where it holds it.
+  knob(name: String, v: Long | Float) {
+    let turned = {...@_params}
+    turned[name] = v
+    let env = {...@_env, ...@_recipe.knob_values(turned)}
+    let reads = @_reads.get_or_put(name, fn () {
+      let (lo, hi) = ({...env}, {...env})
+      lo[name] = @_recipe.knobs[name].min
+      hi[name] = @_recipe.knobs[name].max
+      iota(@_values.size()).filter(|i| on_end(@_values[i].def, lo, "") != on_end(@_values[i].def, hi, ""))
+    })
+    self._follow(env, reads)
+    @_params = turned
+  }
+
+  # The values at `which` moved to where `env` holds them at the end of
+  # their `on`.
+  _follow(env, which) {
     let t = self._at()
-    for i, x in @_values.enumerate() {
-      let end = held_course(x.def, env, x.where)[-1][1]
+    for i in which {
+      let x = @_values[i]
+      let end = on_end(x.def, env, x.where)
       if end != @_ends[i] {
         @_ends[i] = end
         self._move(i, @_pitched[i] ? end * @_bend : end, t)
