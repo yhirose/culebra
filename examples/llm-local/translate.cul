@@ -3,7 +3,7 @@
 #   culebra translate.cul model.gguf Japanese "Good morning"
 #   echo "Good morning" | culebra translate.cul model.gguf Japanese
 #
-# Needs a build with Llama (-DCULEBRA_ENABLE_LLAMA=ON) and a GGUF chat model.
+# Needs a culebra with Llama (the full download) and a GGUF chat model.
 
 if Sys.argv.size() < 2 {
   IO.eprintln("usage: culebra translate.cul MODEL.gguf LANGUAGE [TEXT]")

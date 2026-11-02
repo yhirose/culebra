@@ -442,6 +442,7 @@ Documentation
   [`docs/guides/`](docs/guides/), currently
   [parsing with PEG](docs/guides/parsing-with-peg.md),
   [building a desktop app](docs/guides/desktop-app.md),
+  [working with language models](docs/guides/llm.md),
   [writing a song in Kauai](docs/guides/kauai-songs.md) and
   [writing a sound in Kauai](docs/guides/kauai-sounds.md)
 * Quick guide: the syntax, the carried-over mistakes and the stdlib

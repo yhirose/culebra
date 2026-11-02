@@ -433,6 +433,7 @@ BLAS級の数値計算です。
   [`docs/guides/`](docs/guides/)、現在は
   [PEGで解析する](docs/guides/parsing-with-peg.ja.md)、
   [デスクトップアプリを作る](docs/guides/desktop-app.ja.md)、
+  [言語モデルを使う](docs/guides/llm.ja.md)、
   [Kauaiで曲を書く](docs/guides/kauai-songs.ja.md)、
   [Kauaiで音を作る](docs/guides/kauai-sounds.ja.md)
 * クイックガイド：構文、間違えやすい点、言われなくても手が伸びる範囲の

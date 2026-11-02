@@ -1,9 +1,12 @@
 # LLM.local examples
 
 Programs that use a language model run in this process (`Llama` and
-`LLM.local`): no server, no API key, no network. They need a build configured
-with `-DCULEBRA_ENABLE_LLAMA=ON` and a GGUF chat model. Each takes the model's
-path as its first argument.
+`LLM.local`): no server, no API key, no network. They need a culebra that has
+`Llama` (the full download, or a source build configured with
+`-DCULEBRA_ENABLE_LLAMA=ON`) and a GGUF chat model. Each takes the model's path
+as its first argument. The guide
+[Working with language models](../../docs/guides/llm.md) builds them up one
+piece at a time.
 
 | Program | What it does |
 |---|---|
