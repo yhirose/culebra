@@ -280,8 +280,10 @@ ctest.entries 39
 # read with a sysex and changed (skipped: needs a device), in en and ja.
 # 1138 since the Kauai spec's §10 reads a song's score as data, in en and ja.
 # 1136 since tooling's §9, `culebra play`, went with the subcommand (its
-# sounds module, in en and ja).
-docs.blocks 1136
+# sounds module, in en and ja). 1162 since the guide to language models
+# (docs/guides/llm*.md), 13 blocks in en and ja, of which only the
+# scripted-provider test runs (the rest need a model or a key).
+docs.blocks 1162
 
 # The samples the language front ends are run over (examples/languages/*).
 languages.samples 130
