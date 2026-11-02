@@ -5494,6 +5494,15 @@ template <bool (*F)()>
 inline JitValue _ns_audio_query(JitValue*, int64_t) {
   return _ns_adapt::v_bool(F());
 }
+// The output's period: asked for before the device opens (false once it
+// has), and the one it runs at in seconds, nil when it is not open.
+inline JitValue _ns_audio_latency_ask(JitValue* a, int64_t) {
+  return _ns_adapt::v_bool(culebra::_audio_detail::latency_ask(_ns_adapt::take_double(a[0])));
+}
+inline JitValue _ns_audio_latency(JitValue*, int64_t) {
+  double s = culebra::_audio_detail::latency();
+  return std::isnan(s) ? _ns_adapt::v_nil() : _ns_adapt::v_float(s);
+}
 inline JitValue _ns_audio_tone(JitValue* a, int64_t) {
   culebra::_audio_detail::tone(
       _ns_adapt::take_long(a[0]), _ns_adapt::take_long(a[1]),
@@ -11551,6 +11560,8 @@ inline const NsMethod kNsRows_Dir_native[] = {
 };
 inline const NsMethod kNsRows_Audio_native[] = {
   {"_Audio", "available",      0, &_ns_audio_query<culebra::_audio_detail::available>},
+  {"_Audio", "latency_ask",    1, &_ns_audio_latency_ask},
+  {"_Audio", "latency",        0, &_ns_audio_latency},
   {"_Audio", "tone",          10, &_ns_audio_tone},
   {"_Audio", "sound_load",     1, &_ns_audio_sound_load},
   {"_Audio", "sound_free",     1, &_ns_audio_sound_free},

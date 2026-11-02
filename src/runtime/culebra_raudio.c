@@ -17,6 +17,13 @@
 #include <stdarg.h>
 #include <stdio.h>
 
+#include "culebra_period.h"
+
+// The period raudio asks for when it opens the device: Audio.latency's, in
+// frames at the device's own rate (below).
+static unsigned culebra_period_frames(void);
+#define AUDIO_DEVICE_PERIOD_SIZE_IN_FRAMES culebra_period_frames()
+
 // Standalone raudio logs through printf, onto the program's stdout. Only
 // warnings and worse are worth a line, and they go to stderr, spelled the
 // way raylib's own logger spells them (4 is raudio's LOG_WARNING).
@@ -32,6 +39,32 @@ static void culebra_raudio_trace(int level, const char* fmt, ...) {
 #define TRACELOG(level, ...) culebra_raudio_trace(level, __VA_ARGS__)
 
 #include "../../vendor/raylib/src/raudio.c"
+
+// --- the output's period (culebra_period.h) ---------------------------------
+
+static double culebra_period_asked = 0;
+
+void culebra_period_ask(double seconds) { culebra_period_asked = seconds; }
+
+// Read while InitAudioDevice builds its config, its context already open:
+// the frames of the period asked for at the default output's own rate (the
+// rate raudio opens it at), 0 for miniaudio's own.
+static unsigned culebra_period_frames(void) {
+  if (culebra_period_asked <= 0) return 0;
+  ma_uint32 rate = 48000;
+  ma_device_info info;
+  if (ma_context_get_device_info(&AUDIO.System.context, ma_device_type_playback, NULL, &info) == MA_SUCCESS &&
+      info.nativeDataFormatCount > 0 && info.nativeDataFormats[0].sampleRate > 0)
+    rate = info.nativeDataFormats[0].sampleRate;
+  unsigned frames = (unsigned)(culebra_period_asked * rate + 0.5);
+  return frames > 0 ? frames : 1;
+}
+
+double culebra_period(void) {
+  if (!IsAudioDeviceReady() || AUDIO.System.device.playback.internalSampleRate == 0) return 0;
+  return (double)AUDIO.System.device.playback.internalPeriodSizeInFrames /
+         AUDIO.System.device.playback.internalSampleRate;
+}
 
 // --- microphone capture (culebra_capture.h) ---------------------------------
 //

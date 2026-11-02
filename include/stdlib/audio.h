@@ -1636,6 +1636,9 @@ EM_JS(void, _wasm_audio_schedule, (int cmd, int id, double value), {
 });
 
 inline bool available() { return true; }
+// The page's AudioContext chooses its own latency.
+inline bool latency_ask(double) { return true; }
+inline double latency() { return std::nan(""); }
 inline void tone(int64_t start_freq, int64_t end_freq, int64_t attack,
                  int64_t decay, int64_t sustain, int64_t release, int64_t vol,
                  int64_t peak, int64_t channel, int64_t duty) {
@@ -1704,6 +1707,10 @@ inline DecodeResult decode(const uint8_t*, int64_t, const char*, Recording&) {
 
 // Strong bodies in src/runtime/culebra_rt_audio.cc.
 bool available();
+// The output's period: asked for before the device opens (false once it has),
+// and the one it runs at in seconds, NaN when it is not open.
+bool latency_ask(double seconds);
+double latency();
 void tone(int64_t start_freq, int64_t end_freq, int64_t attack, int64_t decay,
           int64_t sustain, int64_t release, int64_t vol, int64_t peak,
           int64_t channel, int64_t duty);
@@ -1796,6 +1803,8 @@ double graph_now(int64_t id);
 
 #if defined(CULEBRA_AUDIO_SILENT)
 CULEBRA_RT_AUDIO_LINKAGE bool available() { return false; }
+CULEBRA_RT_AUDIO_LINKAGE bool latency_ask(double) { return true; }
+CULEBRA_RT_AUDIO_LINKAGE double latency() { return std::nan(""); }
 CULEBRA_RT_AUDIO_LINKAGE void tone(int64_t, int64_t, int64_t, int64_t, int64_t,
                                    int64_t, int64_t, int64_t, int64_t, int64_t) {}
 CULEBRA_RT_AUDIO_LINKAGE void sound_load(int64_t, const uint8_t*, int64_t,

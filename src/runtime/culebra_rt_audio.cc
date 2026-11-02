@@ -30,6 +30,7 @@
 #include <vector>
 
 #include "culebra_capture.h"
+#include "culebra_period.h"
 #include "culebra_decode.h"
 #include "raudio.h"
 
@@ -879,6 +880,15 @@ bool available() {
   ensure_device();
   return g_ready;
 }
+
+// Asked for once the device is open, a period cannot be had without opening
+// it again, which every sound playing would not survive.
+bool latency_ask(double seconds) {
+  if (g_ready) return false;
+  culebra_period_ask(seconds);
+  return true;
+}
+double latency() { return g_ready ? culebra_period() : std::nan(""); }
 
 void tone(int64_t start_freq, int64_t end_freq, int64_t attack, int64_t decay,
           int64_t sustain, int64_t release, int64_t vol, int64_t peak,

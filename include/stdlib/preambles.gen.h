@@ -4994,6 +4994,18 @@ let _audio_module = fn () {
     available: fn () {
       _Audio.available()
     },
+    # latency(seconds) asks for the device's period before it opens;
+    # latency() answers the one it runs at, nil when it is not open.
+    latency: fn (seconds: Long | Float | Nil = nil) {
+      return _Audio.latency() if seconds == nil
+      if !(seconds > 0 && seconds <= 0.5) {
+        __raise("ValueError", "Audio.latency: a period is above 0 and at most 0.5 seconds, not {seconds}")
+      }
+      if !_Audio.latency_ask(seconds) {
+        __raise("ValueError", "Audio.latency: the device is open already; ask before the first sound")
+      }
+      nil
+    },
     capture_available: fn () {
       _Audio.capture_present()
     },

@@ -8643,6 +8643,16 @@ missing device prints one warning.
 | Function | Effect |
 | --- | --- |
 | `Audio.available() -> Bool` | whether an audio device is open (opening it if nothing has yet) |
+| `Audio.latency(seconds)` | asks for the device's period, the length of the buffer it fills at a time, before the device opens: a sound starts that much sooner, and the mixer has that much less time to fill each buffer. The device rounds it to one it can run at. Above `0` and at most `0.5`; once the device is open, `ValueError` |
+| `Audio.latency() -> Float?` | the period the open device runs at, in seconds (about `0.01` unless one was asked for); `nil` when it is not open |
+
+A period of a few milliseconds is for a sound that must follow a player at
+once, as an instrument played from a MIDI controller does: through an
+output with no processing of its own (a headphone jack, not a laptop's
+built-in speakers, which add more than 10 ms here), it starts a note within
+a few milliseconds more than the period. A period that short leaves the
+mixer little room: many graphs at once may not be worked out in time, and
+then the sound breaks up.
 
 Volumes are `0.0..1.0`, `1.0` being the source's own level; pitch is a
 playback rate, `1.0` unchanged; pan runs from `-1.0` (left) through `0.0` to
