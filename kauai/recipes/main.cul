@@ -1,10 +1,10 @@
 # The instruments Kauai comes with that are recipes: each .json file here
 # is one, played by the engine's interpreter (kauai/engine/recipe.cul). A
-# file's name is the instrument's, without its underscores: brass_mellow.json
-# is `external BrassMellow`.
+# file's name is the instrument's, without its underscores: mellow_fm_brass.json
+# is `external MellowFmBrass`.
 #
 #   band Pads {
-#     voice Lead  external Brass  plays melody  bright=0.3
+#     voice Lead  external FmBrass  plays melody  bright=0.3
 #   }
 
 import engine from '../engine/recipe.cul'

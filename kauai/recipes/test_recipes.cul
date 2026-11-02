@@ -7,7 +7,7 @@ let peak = |xs| xs.map(|v| Math.abs(v)).max()
 # heard and does not clip.
 @test
 fn each_recipe_plays_a_note_at_each_end_of_its_knobs() {
-  assert_true(recipes.names.contains("brass"))
+  assert_true(recipes.names.contains("fm_brass"))
   for name in recipes.names {
     let r = recipes.recipe(name)
     let ends = |k| [
@@ -25,16 +25,16 @@ fn each_recipe_plays_a_note_at_each_end_of_its_knobs() {
 
 @test
 fn a_preset_is_its_recipe_with_its_knob_set() {
-  let mellow = recipes.recipe("brass_mellow").note(60, 0.3)
-  let brass = recipes.recipe("brass").note(60, 0.3, params: {bright: 0.0})
+  let mellow = recipes.recipe("mellow_fm_brass").note(60, 0.3)
+  let brass = recipes.recipe("fm_brass").note(60, 0.3, params: {bright: 0.0})
   assert_eq(mellow, brass)
 }
 
 @test
 fn kauai_plays_a_song_with_them() {
   let song_text = 'band Pads {
-  voice Lead  external BrassMellow  plays melody  vol 60  bright=0.2
-  voice Pad   external Strings      plays chords from C3  vol 40
+  voice Lead  external MellowFmBrass  plays melody  vol 60  bright=0.2
+  voice Pad   external FmStrings      plays chords from C3  vol 40
 }
 song Tune {
   tempo 120

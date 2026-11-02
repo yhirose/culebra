@@ -7,26 +7,39 @@ then builds the graph for each note and renders it. No code is loaded, so a
 recipe plays the same under `culebra play` and in the `kauai` binary.
 
 The recipes Kauai comes with are in [`recipes/`](recipes). A file's name is the
-instrument's, without its underscores: `brass_mellow.json` is
-`external BrassMellow`.
+instrument's, without its underscores: `mellow_fm_brass.json` is
+`external MellowFmBrass`.
+
+An instrument's name is plain English in its usual order: how it sounds, how
+it is made, then what it is.
+
+- What it is: a common instrument's name, as General MIDI's programs name
+  them (`ElectricPiano`, `Strings`, `Brass`, `Lead`, `Bass`, `Guitar`).
+- How it is made: `Fm` for frequency modulation, `Analog` for oscillators
+  through a filter. An instrument made from recordings has none: it is the
+  instrument itself (`SopranoSax`, `AltoSax`).
+- How it sounds, for a preset: `Mellow` or `Bright`, the ends of its `bright`
+  knob.
+
+No name holds a product's, a maker's, a player's or a song's name.
 
 | Recipe | A song names it | What it is | Knobs: default (range) |
 |---|---|---|---|
-| `brass` | `external Brass` | a synth brass, two FM pairs a hair apart and a third with its modulator an octave up | `bright` 0.5 (0 to 1): deeper modulation and more feedback, at the same loudness |
-| `brass_mellow` | `external BrassMellow` | `brass`, mellow | `bright` 0 (0 to 1) |
-| `brass_brilliant` | `external BrassBrilliant` | `brass`, brilliant | `bright` 1 (0 to 1) |
-| `strings` | `external Strings` | a synth string section, three FM voices a hair apart and an octave over them | `bright` 0.5 (0 to 1): deeper modulation and the octave louder, at about the same loudness |
-| `strings_mellow` | `external StringsMellow` | `strings`, mellow | `bright` 0 (0 to 1) |
-| `strings_brilliant` | `external StringsBrilliant` | `strings`, brilliant | `bright` 1 (0 to 1) |
-| `electric_piano` | `external ElectricPiano` | the electric piano of the Kauai examples, as two FM pairs, its tone decaying faster the higher the note | `bright` 1 (0 to 2): the depth of its FM, most at the attack and settling as the note goes on |
+| `fm_brass` | `external FmBrass` | a synth brass, two FM pairs a hair apart and a third with its modulator an octave up | `bright` 0.5 (0 to 1): deeper modulation and more feedback, at the same loudness |
+| `mellow_fm_brass` | `external MellowFmBrass` | `fm_brass`, mellow | `bright` 0 (0 to 1) |
+| `bright_fm_brass` | `external BrightFmBrass` | `fm_brass`, bright | `bright` 1 (0 to 1) |
+| `fm_strings` | `external FmStrings` | a synth string section, three FM voices a hair apart and an octave over them | `bright` 0.5 (0 to 1): deeper modulation and the octave louder, at about the same loudness |
+| `mellow_fm_strings` | `external MellowFmStrings` | `fm_strings`, mellow | `bright` 0 (0 to 1) |
+| `bright_fm_strings` | `external BrightFmStrings` | `fm_strings`, bright | `bright` 1 (0 to 1) |
+| `fm_electric_piano` | `external FmElectricPiano` | the electric piano of the Kauai examples, as two FM pairs, its tone decaying faster the higher the note | `bright` 1 (0 to 2): the depth of its FM, most at the attack and settling as the note goes on |
 
 A preset is its recipe with the knob's default set, so its knob still turns:
-`external BrassMellow bright=0.2` is `brass` at 0.2.
+`external MellowFmBrass bright=0.2` is `fm_brass` at 0.2.
 
 ```
 band Pads {
-  voice Lead  external Brass    plays melody          vol 60  bright=0.3
-  voice Pad   external Strings  plays chords from C3  vol 40
+  voice Lead  external FmBrass    plays melody          vol 60  bright=0.3
+  voice Pad   external FmStrings  plays chords from C3  vol 40
 }
 ```
 
@@ -125,11 +138,11 @@ Merge Patch (RFC 7386) puts it: an object goes over an object field by field,
 there.
 
 ```json
-{"base": "brass", "knobs": {"bright": {"default": 0}}}
+{"base": "fm_brass", "knobs": {"bright": {"default": 0}}}
 ```
 
 ```json
-{"base": "brass", "parts": {"m1": {"feedback": 1.0}, "m2": {"feedback": 1.0}, "l3": {"gain": 0}}}
+{"base": "fm_brass", "parts": {"m1": {"feedback": 1.0}, "m2": {"feedback": 1.0}, "l3": {"gain": 0}}}
 ```
 
 A base may have a base of its own. What the recipe and its bases make is
@@ -140,7 +153,7 @@ checked whole, as any recipe is.
 A recipe is checked when it is loaded, and an error says where in it:
 
 ```
-recipe brass.parts.i1.gain.on[2][1]: `3 + brigt`: no name `brigt`; it may name pitch, f, dur, level, bright
+recipe fm_brass.parts.i1.gain.on[2][1]: `3 + brigt`: no name `brigt`; it may name pitch, f, dur, level, bright
 ```
 
 What depends on the note is checked when the note plays: times that go back

@@ -81,7 +81,7 @@ section Theme {
 }
 EOF
 # The same notes on a bundled recipe.
-sed -e 's/external AltoSax/external BrassMellow/' "$TMP/alto.kau" > "$TMP/brass.kau"
+sed -e 's/external AltoSax/external MellowFmBrass/' "$TMP/alto.kau" > "$TMP/brass.kau"
 
 for lane in "${lanes[@]}"; do
   # What the two print and leave for a song that reads, one that is not
