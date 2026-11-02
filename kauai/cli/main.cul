@@ -5,9 +5,15 @@
 import soprano from '../sounds/soprano_sax/main.cul'
 import alto from '../sounds/alto_sax/main.cul'
 import recipes from '../recipes/main.cul'
+import live from './live.cul'
+
+let packages = [soprano, alto, recipes]
 
 # Every bundled instrument, by the name a song gives it (`external SopranoSax`).
-let voices = [soprano, alto, recipes].flat_map(|p| p.voices.keys().map(|k| (k, p.voices[k]))).to_object()
+let voices = packages.flat_map(|p| p.voices.keys().map(|k| (k, p.voices[k]))).to_object()
+
+# The same, as `kauai instruments` lists them.
+let instruments = packages.flat_map(|p| p.instruments).sorted_by(|i| i.name)
 
 let usage = "Usage: kauai <song.kau> [options]
   --check              read and check the song, and play nothing
@@ -17,7 +23,19 @@ let usage = "Usage: kauai <song.kau> [options]
                        from a second before it: seconds (83.5),
                        minutes and seconds (1:23.5) or a mark's name
   --to <at>            with --wav, write the part until <at>, and what
-                       starts before it ringing on"
+                       starts before it ringing on
+
+       kauai instruments
+  the instruments a song names after `external`, and which play live
+
+       kauai live <instrument> [options]
+  play an instrument from a MIDI controller, as a wind controller plays it:
+  its breath is the volume and the brightness, until Ctrl+C
+  --midi <name>        the MIDI input whose name has <name> (the one
+                       there is, when there is one)
+  --breath <from>      where the breath comes from: cc2 (breath, the
+                       default), cc7, cc11 or pressure
+  --breath-full <x>    the breath, 0 to 1, that plays at full (0.9)"
 
 let args = Sys.argv
 
@@ -28,6 +46,54 @@ if args.contains("-h") || args.contains("--help") {
 if args.empty() || args[0].starts_with("-") {
   IO.eprintln(usage)
   Sys.exit(2)
+}
+
+# The word after option `name`, or `fallback` without it.
+fn option(name, fallback) {
+  let at = args.index_of(name)
+  at < 0 || at + 1 >= args.size() ? fallback : args[at + 1]
+}
+
+if args[0] == "instruments" {
+  let width = instruments.map(|i| i.name.size()).max()
+  for i in instruments {
+    println("{i.name}{" ".repeat(width - i.name.size() + 2)}{i.live ? "live  " : "      "}{i.about}")
+  }
+  Sys.exit(0)
+}
+
+if args[0] == "live" {
+  let name = args.size() > 1 ? args[1] : ""
+  let found = instruments.find(|i| i.name.lower() == name.lower())
+  if found == nil {
+    IO.eprintln("kauai: no instrument `{name}`; `kauai instruments` lists them")
+    Sys.exit(2)
+  }
+  if !found.live {
+    IO.eprintln("kauai: {found.name} is made from recordings before it plays, so it cannot be played live")
+    Sys.exit(1)
+  }
+  let breath = option("--breath", "cc2")
+  if !["cc2", "cc7", "cc11", "pressure"].contains(breath) {
+    IO.eprintln("kauai: --breath is cc2, cc7, cc11 or pressure, not {breath}")
+    Sys.exit(2)
+  }
+  let full = to_float(option("--breath-full", "0.9"))
+  if !(full > 0.0 && full <= 1.0) {
+    IO.eprintln("kauai: --breath-full is above 0 and at most 1")
+    Sys.exit(2)
+  }
+  let wanted = option("--midi", nil)
+  let inputs = MIDI.inputs()
+  let named = wanted == nil ? inputs : inputs.filter(|p| p.name.lower().contains(wanted.lower()))
+  if named.size() != 1 {
+    let there = inputs.empty() ? "none" : inputs.map(|p| p.name).join(", ")
+    let which = wanted == nil ? "one MIDI input to play from" : "one MIDI input named like {wanted}"
+    IO.eprintln("kauai: live needs {which}; there are {there}")
+    Sys.exit(1)
+  }
+  println("playing {found.name} from {named[0].name} (Ctrl+C stops)")
+  live.play(recipes.recipe(found.recipe), MIDI.Input.new(named[0].id), breath, full)
 }
 
 let path = args[0]

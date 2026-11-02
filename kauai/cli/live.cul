@@ -1,0 +1,102 @@
+# `kauai live`: a recipe played from a MIDI controller, one note at a time,
+# as a wind controller plays: a note played while another is held moves it
+# to the new pitch (legato); the breath is the volume, straight in dB from
+# BREATH_DB down at no breath to full at `full`, turns the `bright` knob
+# from its least to its most, and is the attack (the recipe's output gain
+# starts where its `on` ends). Each note is made ahead, so a note played only
+# begins it.
+
+# How far below full no breath is (dB).
+let BREATH_DB = 40.0
+
+# The device's period asked for: a note starts this much after it is played,
+# besides the device's own delay.
+let PERIOD = 0.003
+
+# The fewest seconds between two turns of a knob by the breath.
+let KNOB_EVERY = 0.01
+
+# The breath, 0.0 to 1.0 of `full`, as the output's level.
+fn loudness(x) {
+  x <= 0.0 ? 0.0 : 10.0 ** ((Math.min(x, 1.0) - 1.0) * BREATH_DB / 20.0)
+}
+
+# Plays `recipe` from `input` until the input is closed or the program is
+# stopped. `breath` is where the breath comes from: "cc2", "cc7", "cc11" or
+# "pressure".
+fn play(recipe, input, breath, full) {
+  Audio.latency(PERIOD)
+  # The device opens on the first play(), which takes a while: open it now,
+  # with a silent graph, rather than on the first note.
+  let silence = Audio.Graph.new()
+  silence.output(silence.gain(silence.wave(), 0.0))
+  silence.play()
+  silence.stop()
+
+  # The output's gain, when it has one, is the recipe's attack: the breath's.
+  let steady = recipe.parts[recipe.out].values.has("gain") ? [recipe.out] : []
+  let bright = recipe.knobs.get("bright", nil)
+  let cc = breath == "pressure" ? nil : to_long(breath.slice(2, breath.size()))
+  mut pressure = 0.0
+  # The breath now, 0.0 to 1.0 of full.
+  let blown = || Math.min((cc == nil ? pressure : input.control(cc)) / full, 1.0)
+
+  mut ready = recipe.prepare({}, steady)
+  mut held = nil
+  mut held_pitch = nil
+  mut fading = []
+  mut range = 2.0  # the bend's, in semitones, until the controller says (RPN 0)
+  mut rpn = (127, 127)
+  mut turned = 0.0
+
+  while true {
+    input.wait()
+    for m in input.read() {
+      cond {
+        m.kind == "note_on" && held != nil => {
+          held.retune(m.note)
+          held_pitch = m.note
+        },
+        m.kind == "note_on" => {
+          let level = Math.clamp(2.0 * m.velocity, 0.05, 2.0)
+          held = ready.begin(m.note, level, loudness(blown()))
+          held_pitch = m.note
+          ready = recipe.prepare({}, steady)
+        },
+        m.kind == "note_off" && held != nil && m.note == held_pitch => {
+          held.release()
+          fading.push(held)
+          held = nil
+          held_pitch = nil
+        },
+        m.kind == "bend" => {
+          held?.bend(m.bend * range)
+        },
+        m.kind == "pressure" => {
+          pressure = m.value
+        },
+        m.kind == "cc" && m.cc == 101 => {
+          rpn = (m.bytes[2], rpn[1])
+        },
+        m.kind == "cc" && m.cc == 100 => {
+          rpn = (rpn[0], m.bytes[2])
+        },
+        m.kind == "cc" && m.cc == 6 && rpn == (0, 0) => {
+          range = to_float(m.bytes[2])
+        },
+        _ => {},
+      }
+    }
+    if held != nil {
+      let x = blown()
+      held.volume(loudness(x))
+      if bright != nil && Time.monotonic() - turned >= KNOB_EVERY {
+        held.knob("bright", bright.min + x * (bright.max - bright.min))
+        turned = Time.monotonic()
+      }
+    }
+    fading = fading.filter(|h| !h.done())
+  }
+}
+
+export {play}

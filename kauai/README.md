@@ -74,10 +74,27 @@ kauai song.kau --wav out.wav --from Chorus --to 1:30
 
 It takes the options `culebra play` takes, except `--sounds` and `--watch`.
 The instruments in `sounds/` (`SopranoSax`, `AltoSax`) and the recipes in
-`recipes/` (`Brass`, `Strings` and the rest) are compiled in, and a song names
-them as `external SopranoSax`. An instrument of your own is added
-to `cli/main.cul` and the binary built again, because a compiled program loads
-no module of its own at run time.
+`recipes/` (`FmBrass`, `FmStrings` and the rest) are compiled in, and a song
+names them as `external SopranoSax`; `kauai instruments` lists them. An
+instrument of your own is added to `cli/main.cul` and the binary built again,
+because a compiled program loads no module of its own at run time.
+
+## I want to play an instrument from a MIDI controller
+
+```bash
+kauai live FmBrass                  # from the one MIDI input there is
+kauai live FmBrass --midi EWI       # from the input whose name has EWI
+kauai live FmBrass --breath pressure --breath-full 0.8
+```
+
+[`cli/live.cul`](cli/live.cul) plays a recipe as a wind controller plays it,
+one note at a time: a note played while another is held moves to the new
+pitch without starting over, and the breath (CC 2 unless `--breath` says
+CC 7, CC 11 or the channel's pressure) is the volume and turns the recipe's
+`bright` knob, so a note blown harder is louder and brighter. The breath that
+plays at full is `--breath-full` (0.9). Only a recipe plays live: a recorded
+instrument makes its phrases before they play. Through a laptop's built-in
+speakers a note sounds more than 10 ms later than through a headphone jack.
 
 ## Folders
 

@@ -42,4 +42,8 @@ let voices = {altosax: {
   hears: ["len", "level", "marks", "next", "params"],
 }}
 
-export {voices, phrase_samples, RATE}
+# As `kauai instruments` lists it. Its phrases are made from recordings
+# before they play, so it cannot be played live.
+let instruments = [{name: "AltoSax", live: false, about: "an alto saxophone, from recordings"}]
+
+export {voices, phrase_samples, RATE, instruments}

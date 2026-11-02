@@ -110,6 +110,22 @@ for lane in "${lanes[@]}"; do
   run cli "$TMP/marked.kau" --wav "$TMP/x.wav" --from Nope
   check "$lane part, no mark: status" 1 "$rc"
   check "$lane part, no mark: stderr" "kauai: $TMP/marked.kau has no mark Nope (it has Again)" "$err"
+  # The instruments it has, which ones play live, and `live` refusing what
+  # it cannot play (the device is closed, so there is no MIDI input either).
+  run cli instruments
+  check "$lane instruments: status" 0 "$rc"
+  [[ "$out" == *$'\n''FmBrass          live  a recipe; bright 0.5 (0.0 to 1.0)'$'\n'* &&
+     "$out" == 'AltoSax                an alto saxophone, from recordings'* ]] || {
+    echo "FAIL $lane instruments: stdout [$out]"; fail=1; }
+  run cli live AltoSax
+  check "$lane live, recorded: status" 1 "$rc"
+  check "$lane live, recorded: stderr" "kauai: AltoSax is made from recordings before it plays, so it cannot be played live" "$err"
+  run cli live Nope
+  check "$lane live, no such: status" 2 "$rc"
+  check "$lane live, no such: stderr" 'kauai: no instrument `Nope`; `kauai instruments` lists them' "$err"
+  run cli live fmbrass --midi EWI
+  check "$lane live, no input: status" 1 "$rc"
+  check "$lane live, no input: stderr" "kauai: live needs one MIDI input named like EWI; there are none" "$err"
   # An instrument it does not have: the song's line and the ones it has.
   run cli "$TMP/organ.kau" --check
   check "$lane no instrument: status" 1 "$rc"
