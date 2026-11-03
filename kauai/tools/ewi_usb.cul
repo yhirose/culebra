@@ -1,0 +1,106 @@
+# An Akai EWI USB's settings: shows them, and changes those named. README.md
+# says more, and ewi_usb_lib.cul what each setting is.
+#
+#   culebra kauai/tools/ewi_usb.cul show
+#   culebra kauai/tools/ewi_usb.cul set key-delay=4 fingering=sax
+#   culebra kauai/tools/ewi_usb.cul help
+#
+# `set` changes the EWI plugged in as soon as it runs. Whether a change
+# outlives unplugging the EWI is not known.
+
+import lib from './ewi_usb_lib.cul'
+
+let SPEC = {
+  name: 'ewi_usb.cul',
+  doc: "an Akai EWI USB's settings",
+  subcommands: [
+    {name: 'show', doc: 'shows them', args: []},
+    {
+      name: 'set',
+      doc: 'changes those named, then shows them',
+      args: [{
+        name: 'changes',
+        type: 'String',
+        repeated: true,
+        doc: 'NAME=VALUE',
+      }],
+    },
+    {
+      name: 'help',
+      doc: 'this, and the settings with the values each takes',
+      args: [],
+    },
+  ],
+}
+
+# Args.help names no subcommands, so this lists them.
+fn help() {
+  println("{SPEC.name} - {SPEC.doc}")
+  println("")
+  for c in SPEC.subcommands {
+    let usage = [c.name, ...c.args.map(|a| "{a.doc}...")].join(" ")
+    println("  {usage:<22}{c.doc}")
+  }
+  println("")
+  println("The settings, and the values each takes:")
+  for line in lib.described() {
+    println(line)
+  }
+}
+
+# Sends `changes` to the EWI plugged in, then shows its settings.
+fn run(changes) {
+  let is_ewi = |p| p.name.contains("EWI-USB") || p.name.contains("EWI USB")
+  let input_port = MIDI.inputs().find(is_ewi)
+  let output_port = MIDI.outputs().find(is_ewi)
+  if input_port == nil || output_port == nil {
+    IO.eprintln("ewi_usb: no EWI USB is plugged in")
+    Sys.exit(1)
+  }
+  let input = MIDI.Input(input_port.id, sysex: true)
+  let out = MIDI.Output(output_port.id)
+
+  for c in changes {
+    out.send(lib.nrpn(c.setting.bank, c.setting.at, c.value))
+  }
+  Time.sleep(0.1) if !changes.empty()
+
+  let banks = {}
+  for b in lib.BANKS {
+    input.read()  # what came before the asking
+    out.send(lib.asking(b))
+    mut got = nil
+    let until = Time.monotonic() + 2.0
+    while got == nil &&
+        Time.monotonic() < until &&
+        input.wait(until - Time.monotonic()) {
+      got = input.read().map(|m| lib.bank_of(m, b)).find(|x| x != nil)
+    }
+    out.send(lib.ASKED)
+    if got == nil {
+      IO.eprintln("ewi_usb: the EWI did not send bank {b} of its settings")
+      Sys.exit(1)
+    }
+    banks[b] = got
+  }
+  println("{input_port.name}{changes.empty() ? "" : ", after the changes"}:")
+  for line in lib.shown_lines(banks) {
+    println(line)
+  }
+}
+
+let asks_help = Sys.argv.empty() || ["-h", "--help"].contains(Sys.argv[0])
+let args = Args.parse(asks_help ? ["help"] : Sys.argv, SPEC)
+match args.subcommand {
+  "show" => run([]),
+  "set" => {
+    let changes = try {
+      lib.changes(args.changes)
+    } catch e: String {
+      IO.eprintln("ewi_usb: {e}")
+      Sys.exit(2)
+    }
+    run(changes)
+  },
+  "help" => help(),
+}

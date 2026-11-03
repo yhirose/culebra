@@ -1,0 +1,233 @@
+# An Akai EWI USB's settings: what each is, the words for its values, and
+# the MIDI that reads and changes them. ewi_usb.cul talks to the EWI; this
+# file has no device, and throws a String for a mistake in what it was asked.
+#
+# The EWI is asked for its two banks of settings with a sysex each, as
+# Akai's own editor asks (ewi-usb-config-cli and ewiusb.com describe it);
+# a setting is changed with an NRPN on channel 1.
+
+# A setting's values: a number from `low` to `high`, shown and given as
+# itself (`plus` added when stored), or one of `names`, each a stored value,
+# and a number from `low` to `high` only where they are given.
+fn number(low, high, plus = 0) {
+  {low, high, plus, names: {}}
+}
+fn named(names, low = 1, high = 0) {
+  {low, high, plus: 0, names}
+}
+
+let CC_OR_AFTERTOUCH = named({off: 0, aftertouch: 127}, 1, 126)
+let CC_OR_BEND = named({off: 0, bend: 127}, 1, 126)
+# Each setting: its byte `at` in bank `bank`, which is also its NRPN.
+let SETTINGS = [
+  {
+    name: "breath-gain",
+    bank: 0,
+    at: 0,
+    about: "how much the breath sends",
+    values: number(0, 127),
+  },
+  {
+    name: "bite-gain",
+    bank: 0,
+    at: 1,
+    about: "how much biting sends",
+    values: number(0, 127),
+  },
+  {
+    name: "bite-ac-gain",
+    bank: 0,
+    at: 2,
+    about: "how much a bite's wobble sends",
+    values: number(0, 127),
+  },
+  {
+    name: "bend-gain",
+    bank: 0,
+    at: 3,
+    about: "how much the bend plates send",
+    values: number(0, 127),
+  },
+  {
+    name: "key-delay",
+    bank: 0,
+    at: 4,
+    about: "how long a fingering settles before it sounds",
+    values: number(0, 15),
+  },
+  {
+    name: "channel",
+    bank: 2,
+    at: 0,
+    about: "the MIDI channel it sends on",
+    values: number(1, 16, -1),
+  },
+  {
+    name: "fingering",
+    bank: 2,
+    at: 1,
+    about: "the fingering it reads",
+    values: named({ewi: 0, sax: 1, flute: 2, oboe: 3, evi: 4, evi2: 5}),
+  },
+  {
+    name: "transpose",
+    bank: 2,
+    at: 2,
+    about: "semitones added to each note",
+    values: number(-12, 12, 64),
+  },
+  {
+    name: "velocity",
+    bank: 2,
+    at: 3,
+    about: "a note's velocity: from the breath's attack, or fixed",
+    values: named({dynamic: 0}, 1, 127),
+  },
+  {
+    name: "breath-cc",
+    bank: 2,
+    at: 4,
+    about: "where the breath goes: a CC",
+    values: CC_OR_AFTERTOUCH,
+  },
+  {
+    name: "breath-cc2",
+    bank: 2,
+    at: 5,
+    about: "a second place the breath goes",
+    values: CC_OR_AFTERTOUCH,
+  },
+  {
+    name: "bite-cc",
+    bank: 2,
+    at: 7,
+    about: "where biting goes: a CC, or the pitch bend",
+    values: named(
+      {
+        off: 0,
+        "bend-up": 124,
+        "bend-down": 125,
+        "bend-up-down": 126,
+        "bend-down-up": 127,
+      },
+      1,
+      123,
+    ),
+  },
+  {
+    name: "bite-cc2",
+    bank: 2,
+    at: 8,
+    about: "a second place biting goes",
+    values: CC_OR_AFTERTOUCH,
+  },
+  {
+    name: "bend-up-cc",
+    bank: 2,
+    at: 9,
+    about: "where the upper bend plate goes",
+    values: CC_OR_BEND,
+  },
+  {
+    name: "bend-down-cc",
+    bank: 2,
+    at: 10,
+    about: "where the lower bend plate goes",
+    values: CC_OR_BEND,
+  },
+]
+let BANKS = [0, 2]
+let WIDTH = SETTINGS.map(|s| s.name.size()).max() + 2
+
+# `name` padded to the widest setting's name.
+fn padded(name) {
+  "{name:<{WIDTH}}"
+}
+
+# The words setting `s` takes.
+fn takes(s) {
+  let vs = s.values
+  [
+    ...vs.names.keys(),
+    ...(vs.low <= vs.high ? ["{vs.low} to {vs.high}"] : []),
+  ].join(", ")
+}
+
+# The settings, each with what it is and the words it takes, as help lists
+# them.
+fn described() {
+  SETTINGS.flat_map(|s| [
+    "  {padded(s.name)}{s.about}",
+    "  {padded("")}{takes(s)}",
+  ])
+}
+
+# What a stored value reads as, or nil when it is none of the setting's.
+fn shown(s, v) {
+  let vs = s.values
+  let name = vs.names.keys().find(|k| vs.names[k] == v)
+  return name if name != nil
+  let n = v - vs.plus
+  (vs.low..=vs.high).contains(n) ? to_string(n) : nil
+}
+
+# The stored value `word` gives setting `s`.
+fn stored(s, word) {
+  let vs = s.values
+  return vs.names[word] if vs.names.has(word)
+  let n = try {
+    to_long(word)
+  } catch _ {
+    nil
+  }
+  return n + vs.plus if n != nil && (vs.low..=vs.high).contains(n)
+  throw "{s.name} takes {takes(s)}, not {word}"
+}
+
+# The changes `args` ask for, each "NAME=VALUE", as {setting, value}: all
+# checked before any is sent.
+fn changes(args) {
+  throw "set needs NAME=VALUE" if args.empty()
+  args.map(fn (arg) {
+    let parts = arg.split("=")
+    let s = SETTINGS.find(|x| x.name == parts[0])
+    if parts.size() != 2 || s == nil {
+      throw "{arg} is not NAME=VALUE with a NAME from help"
+    }
+    {setting: s, value: stored(s, parts[1])}
+  })
+}
+
+# The bytes that set NRPN `msb`/`lsb` to `value` on channel 1.
+fn nrpn(msb, lsb, value) {
+  [0xB0, 0x63, msb, 0xB0, 0x62, lsb, 0xB0, 0x06, value]
+}
+
+# The bytes that ask for bank `b`: the EWI is put in its sysex mode (NRPN
+# 1/4 at 0x20) for the asking, and ASKED puts it back once it has answered.
+fn asking(b) {
+  [...nrpn(1, 4, 0x20), 0xF0, 0x47, 0x7F, 0x6D, 0x40 + b, 0x00, 0x00, 0xF7]
+}
+let ASKED = nrpn(1, 4, 0x10)
+
+# Bank `b`'s settings, if `m` is the EWI sending them: F0 47 <device> 6D
+# <bank> 00 <count>, that many bytes, then F7. nil when it is not (a
+# channel message is too short to be).
+fn bank_of(m, b) {
+  let x = m.bytes
+  return nil if x.size() < 8 || x[1] != 0x47 || x[3] != 0x6D || x[4] != b
+  x.slice(7, Math.min(7 + x[6], x.size() - 1))
+}
+
+# A line for each setting, its value read from `banks` (bank number to its
+# bytes).
+fn shown_lines(banks) {
+  SETTINGS.map(fn (s) {
+    let data = banks[s.bank]
+    let v = s.at < data.size() ? data[s.at] : nil
+    let text = v == nil ? "(not sent)" : shown(s, v) ?? "{v} (unknown)"
+    "  {padded(s.name)}{text}"
+  })
+}
+
+export {SETTINGS, BANKS, ASKED, described, shown, stored, changes, nrpn, asking, bank_of, shown_lines}

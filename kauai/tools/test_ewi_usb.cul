@@ -1,0 +1,125 @@
+import lib from './ewi_usb_lib.cul'
+
+let setting = |name| lib.SETTINGS.find(|s| s.name == name)
+let refusal = |f| try {
+  f()
+  nil
+} catch e: String {
+  e
+}
+
+@test
+fn a_value_is_stored_and_shown_as_its_word() {
+  let fingering = setting("fingering")
+  assert_eq(lib.stored(fingering, "sax"), 1)
+  assert_eq(lib.shown(fingering, 1), "sax")
+  let bite = setting("bite-cc")
+  assert_eq(lib.stored(bite, "bend-down-up"), 127)
+  assert_eq(lib.stored(bite, "1"), 1)
+  assert_eq(lib.shown(bite, 1), "1")
+}
+
+@test
+fn a_number_is_stored_with_what_its_setting_adds() {
+  let transpose = setting("transpose")
+  assert_eq(lib.stored(transpose, "-2"), 62)
+  assert_eq(lib.shown(transpose, 62), "-2")
+  assert_eq(lib.stored(setting("channel"), "1"), 0)
+  assert_eq(lib.shown(setting("channel"), 0), "1")
+}
+
+@test
+fn a_value_a_setting_does_not_take_is_refused_naming_those_it_does() {
+  assert_eq(
+    refusal(|| lib.stored(setting("fingering"), "bassoon")),
+    "fingering takes ewi, sax, flute, oboe, evi, evi2, not bassoon",
+  )
+  assert_eq(
+    refusal(|| lib.stored(setting("key-delay"), "16")),
+    "key-delay takes 0 to 15, not 16",
+  )
+  assert_eq(
+    refusal(|| lib.stored(setting("transpose"), "-13")),
+    "transpose takes -12 to 12, not -13",
+  )
+  assert_eq(lib.shown(setting("key-delay"), 16), nil)
+}
+
+@test
+fn every_change_is_checked_before_any_is_sent() {
+  let cs = lib.changes(["key-delay=4", "fingering=ewi"])
+  assert_eq(
+    cs.map(|c| [c.setting.name, c.value]),
+    [["key-delay", 4], ["fingering", 0]],
+  )
+  assert_eq(
+    refusal(|| lib.changes(["key-delay=4", "loudness=3"])),
+    "loudness=3 is not NAME=VALUE with a NAME from help",
+  )
+  assert_eq(
+    refusal(|| lib.changes(["key-delay"])),
+    "key-delay is not NAME=VALUE with a NAME from help",
+  )
+  assert_eq(refusal(|| lib.changes([])), "set needs NAME=VALUE")
+}
+
+@test
+fn a_change_is_an_nrpn_and_a_bank_is_asked_for_with_a_sysex() {
+  let c = lib.changes(["transpose=3"])[0]
+  assert_eq(
+    lib.nrpn(c.setting.bank, c.setting.at, c.value),
+    [0xB0, 0x63, 2, 0xB0, 0x62, 2, 0xB0, 0x06, 67],
+  )
+  assert_eq(
+    lib.asking(2),
+    [
+      0xB0, 0x63,    1, 0xB0, 0x62,    4, 0xB0, 0x06,
+      0x20, 0xF0, 0x47, 0x7F, 0x6D, 0x42, 0x00, 0x00,
+      0xF7,
+    ],
+  )
+  assert_eq(lib.ASKED, [0xB0, 0x63, 1, 0xB0, 0x62, 4, 0xB0, 0x06, 0x10])
+}
+
+@test
+fn a_bank_is_read_from_the_ewis_answer_and_shown() {
+  let answer = |b, data| {
+    kind: "sysex",
+    bytes: [0xF0, 0x47, 0x00, 0x6D, b, 0x00, data.size(), ...data, 0xF7],
+  }
+  assert_eq(
+    lib.bank_of(answer(0, [20, 127, 64, 64, 8]), 0),
+    [20, 127, 64, 64, 8],
+  )
+  assert_eq(lib.bank_of(answer(0, [20]), 2), nil)
+  assert_eq(lib.bank_of({kind: "cc", bytes: [0xB0, 1, 2]}, 0), nil)
+  assert_eq(
+    lib.bank_of({kind: "sysex", bytes: [0xF0, 0x47, 0x00, 0x6D, 0, 0xF7]}, 0),
+    nil,
+  )
+  assert_eq(
+    lib.bank_of(
+      {kind: "sysex", bytes: [0xF0, 0x41, 0x00, 0x6D, 0, 0x00, 1, 5, 0xF7]},
+      0,
+    ),
+    nil,
+  )
+
+  let banks = {0: [20, 127, 64, 64, 8], 2: [0, 0, 64, 0, 2, 0, 0, 127, 0, 127]}
+  let lines = lib.shown_lines(banks)
+  assert_eq(lines.size(), lib.SETTINGS.size())
+  assert_eq(
+    lines.find(|l| l.contains("bite-cc ")),
+    "  bite-cc       bend-down-up",
+  )
+  assert_eq(lines.find(|l| l.contains("transpose")), "  transpose     0")
+  assert_eq(
+    lines.find(|l| l.contains("bend-down-cc")),
+    "  bend-down-cc  (not sent)",
+  )
+  let unknown = {0: [20, 127, 64, 64, 99], 2: banks[2]}
+  assert_eq(
+    lib.shown_lines(unknown).find(|l| l.contains("key-delay")),
+    "  key-delay     99 (unknown)",
+  )
+}

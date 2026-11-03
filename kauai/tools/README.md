@@ -518,3 +518,28 @@ length and level shows only where a song happens to go. The alto's borrowed
 attack began before its sound did for seven such combinations (up to 66% of
 the peak), and a song reached one of them.
 
+## ewi_usb.cul: an Akai EWI USB's settings
+
+`ewi_usb.cul` shows the settings of the EWI USB plugged in, and changes
+those named. Akai's own editor does not install on current macOS, and the
+settings decide what `kauai live` hears: how much the breath sends, and
+whether biting bends the pitch (a vibrato) or sends a controller.
+
+```sh
+culebra kauai/tools/ewi_usb.cul show
+culebra kauai/tools/ewi_usb.cul set bite-cc=bend-down-up breath-gain=40
+culebra kauai/tools/ewi_usb.cul help
+```
+
+| Command | What it does |
+|---|---|
+| `show` | asks the EWI for its settings and prints them, each as a word or a number |
+| `set NAME=VALUE ...` | changes those named, then shows them all; every one is checked before any is sent |
+| `help` (or none) | how it is used, and each setting with the values it takes |
+
+`set` changes the EWI as soon as it runs. Whether a change outlives
+unplugging it is not known. The EWI is asked for its two banks of settings
+with a sysex each, and a setting is changed with an NRPN on channel 1, as
+[ewi-usb-config-cli](https://github.com/SpotlightKid/ewi-usb-config-cli)
+describes; `ewi_usb_lib.cul` has the table of settings. The EWI 5000's
+settings are not published, so it is not covered.

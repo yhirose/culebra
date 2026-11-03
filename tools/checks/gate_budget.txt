@@ -312,4 +312,6 @@ languages.samples 130
 # 49 since kauai/engine/test_recipe.cul (the interpreter of recipes: their
 # checks, envelopes and bases, 0.2 s) and kauai/recipes/test_recipes.cul
 # (each bundled recipe plays, and Kauai plays a song with them, 0.5 s).
-examples.suites 49
+# 50 since kauai/tools/test_ewi_usb.cul (an EWI USB's settings read and
+# written as words, and the MIDI that asks for and changes them, 0.05 s).
+examples.suites 50
