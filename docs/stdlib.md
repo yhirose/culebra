@@ -2258,7 +2258,9 @@ and exits with status 2 on parse errors. For programmatic control,
 
 Parse `argv` (typically `Sys.argv`) against `spec`. On `--help` or
 `-h`, prints help to stdout and `Sys.exit(0)`. On any parse error,
-prints `error: <message>` to stderr and `Sys.exit(2)`.
+prints `error: <message>` to stderr and `Sys.exit(2)`. A spec with
+`subcommands` given no arguments at all prints its help, which lists
+them, to stderr and `Sys.exit(2)`.
 
 ### `Args.try_parse(argv, spec) -> Object`
 
@@ -2354,13 +2356,13 @@ wc-lite - count lines and words
 Usage: wc-lite [options] <input>
 
 Arguments:
-  input    input file
+  input  input file
 
 Options:
-  -l, --lines    count lines
-  -w, --words    count words
+  -l, --lines     count lines
+  -w, --words     count words
       --encoding
-  -h, --help    show this help and exit
+  -h, --help      show this help and exit
 ```
 
 ### Subcommands
@@ -2368,9 +2370,13 @@ Options:
 `spec.subcommands` is an `Array<Object>` where each element is a
 sub-spec (same shape as the top-level spec, minus its own
 `subcommands` typically). When present, the first positional token
-selects a subcommand; the parsed result has a `subcommand` field
-naming the selected command, and the rest of the spec's args are
-parsed as that subcommand's:
+selects a subcommand. Options before it are the spec's own `args`, as
+git takes `git --no-pager log`, and the tokens after it are the
+subcommand's. The parsed result has both, each left out at its default,
+and a `subcommand` field naming the selected command. A name both
+declare, an argument named `subcommand`, and a positional of the spec's
+own (its first positional token is the subcommand) are each an
+`ArgParseError`:
 
 ```culebra
 # doctest: skip
@@ -2397,9 +2403,11 @@ $ ./git-lite --help
 Usage: git-lite <command>
 
 Commands:
-  add    stage files
-  commit    record the staged files
-  -h, --help    show this help and exit
+  add     stage files
+  commit  record the staged files
+
+Options:
+  -h, --help  show this help and exit
 
 $ ./git-lite add --help
 git-lite add - stage files
@@ -2407,8 +2415,10 @@ git-lite add - stage files
 Usage: git-lite add [<files>...]
 
 Arguments:
-  files    the files to stage
-  -h, --help    show this help and exit
+  files  the files to stage
+
+Options:
+  -h, --help  show this help and exit
 ```
 
 ### Error handling

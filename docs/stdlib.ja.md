@@ -2198,6 +2198,8 @@ stderrにerrorを表示して`Sys.exit(2)`します。プログラムで制御�
 
 `argv`（通常`Sys.argv`）を`spec`に従ってparseします。`--help` / `-h`でhelp
 をstdoutに出力して`Sys.exit(0)`し、パースエラーではstderrに出力して`Sys.exit(2)`します。
+`subcommands`を持つspecに引数が1つも無いときは、subcommandを並べたhelpを
+stderrに出力して`Sys.exit(2)`します。
 
 ### `Args.try_parse(argv, spec) -> Object`
 
@@ -2291,21 +2293,25 @@ wc-lite - count lines and words
 Usage: wc-lite [options] <input>
 
 Arguments:
-  input    input file
+  input  input file
 
 Options:
-  -l, --lines    count lines
-  -w, --words    count words
+  -l, --lines     count lines
+  -w, --words     count words
       --encoding
-  -h, --help    show this help and exit
+  -h, --help      show this help and exit
 ```
 
 ### サブコマンド
 
 `spec.subcommands`は`Array<Object>`で各要素がsub-spec (top-levelと
-同形）です。指定すると最初のpositionalトークンがsubcommand名として扱われ、
-parse結果の`subcommand`フィールドに名前が入り、残りの引数はselected
-subcommandのspecに従ってparseされます:
+同形）です。指定すると最初のpositionalトークンがsubcommand名として扱われます。
+それより前のoptionはspec自身の`args`として（gitが`git --no-pager log`を
+受け取るように）、後ろのトークンはselected subcommandのspecに従ってparse
+されます。parse結果には両方の値（指定が無いものは既定値）と、名前の入った
+`subcommand`フィールドが入ります。両方が同じ名前を宣言しているとき、
+`subcommand`という名前の引数があるとき、spec自身がpositionalを持つとき
+（最初のpositionalトークンはsubcommand名なので）は`ArgParseError`です:
 
 ```culebra
 # doctest: skip
@@ -2332,9 +2338,11 @@ $ ./git-lite --help
 Usage: git-lite <command>
 
 Commands:
-  add    stage files
-  commit    record the staged files
-  -h, --help    show this help and exit
+  add     stage files
+  commit  record the staged files
+
+Options:
+  -h, --help  show this help and exit
 
 $ ./git-lite add --help
 git-lite add - stage files
@@ -2342,8 +2350,10 @@ git-lite add - stage files
 Usage: git-lite add [<files>...]
 
 Arguments:
-  files    the files to stage
-  -h, --help    show this help and exit
+  files  the files to stage
+
+Options:
+  -h, --help  show this help and exit
 ```
 
 ### エラーハンドリング

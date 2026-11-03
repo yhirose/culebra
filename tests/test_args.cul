@@ -211,7 +211,7 @@ assert_eq(g3.message, "unknown subcommand 'push'")
 # Help lists the subcommands, and a subcommand's help is named as it is run.
 let git_help = Args.help(git)
 assert_true(git_help.contains("Usage: git-lite <command>\n"), git_help)
-assert_true(git_help.contains("\nCommands:\n  add    stages files\n  commit    \n"), git_help)
+assert_true(git_help.contains("\nCommands:\n  add     stages files\n  commit\n"), git_help)
 let add_help = try {
   Args.try_parse(["add", "--help"], git)
 } catch e {
@@ -226,6 +226,77 @@ assert_true(help.contains("Usage: demo"))
 assert_true(help.contains("--verbose"))
 assert_true(help.contains("--help"))
 assert_false(help.contains("Commands:") || help.contains("<command>"), help)
+
+# Each section's names are padded to its longest, and -h/--help is an option.
+assert_true(help.contains("\nOptions:\n  -v, --verbose\n  -n, --count\n  -h, --help     show this help and exit\n"), help)
+let documented = {
+  name: "ls",
+  args: [{name: "dir", doc: "where"}, {name: "long", short: "l", type: "Bool", doc: "one per line"}],
+}
+let ls_help = Args.help(documented)
+assert_true(ls_help.contains("\nArguments:\n  dir  where\n"), ls_help)
+assert_true(ls_help.contains("\nOptions:\n  -l, --long  one per line\n  -h, --help  show this help and exit\n"), ls_help)
+
+# The program's options come before the subcommand, as git's do: the result has
+# them, at their defaults when left out, beside the subcommand's.
+let tool = {
+  name: "tool",
+  args: [
+    {name: "out", short: "o", default: "x"},
+    {name: "dry", type: "Bool", default: false},
+  ],
+  subcommands: [
+    {name: "show", args: []},
+    {name: "set", args: [{name: "changes", repeated: true}]},
+  ],
+}
+let t1 = Args.try_parse(["--out", "y", "--dry", "set", "a=1", "b=2"], tool)
+assert_eq([t1.subcommand, t1.out, t1.dry, t1.changes], ["set", "y", true, ["a=1", "b=2"]])
+let t2 = Args.try_parse(["-o=z", "show"], tool)
+assert_eq([t2.subcommand, t2.out, t2.dry], ["show", "z", false])
+assert_eq(Args.try_parse(["show"], tool).out, "x")
+let refused = fn (argv, s) {
+  try {
+    Args.try_parse(argv, s)
+    nil
+  } catch e {
+    e.message
+  }
+}
+assert_eq(refused(["show", "--out", "y"], tool), "unknown option '--out'")
+assert_eq(refused(["--out"], tool), "option '--out' expects a value")
+assert_eq(refused(["--out", "y"], tool), "expected subcommand")
+let required = {name: "r", args: [{name: "key", positional: false}], subcommands: [{name: "go", args: []}]}
+assert_eq(refused(["go"], required), "missing required argument 'key'")
+let clash = {
+  name: "c",
+  args: [{name: "out", default: "x"}],
+  subcommands: [{name: "go", args: [{name: "out", default: "y"}]}],
+}
+assert_eq(refused(["go"], clash), "argument 'out' is both the program's and go's")
+let named_subcommand = {
+  name: "n",
+  args: [{name: "subcommand", default: "z"}],
+  subcommands: [{name: "go", args: []}],
+}
+assert_eq(refused(["go"], named_subcommand), "argument 'subcommand' is the name the result gives the subcommand")
+let sub_named_subcommand = {
+  name: "n",
+  subcommands: [{name: "go", args: [{name: "subcommand", default: "z"}]}],
+}
+assert_eq(refused(["go"], sub_named_subcommand), "argument 'subcommand' is the name the result gives the subcommand")
+let own_positional = {name: "p", args: [{name: "input"}], subcommands: [{name: "go", args: []}]}
+assert_eq(
+  refused(["in.txt", "go"], own_positional),
+  "argument 'input' is positional, and a spec with subcommands takes options only",
+)
+
+# A name's width is the columns it takes, as the padding counts them.
+let wide = {name: "w", args: [
+  {name: "ñame", short: "a", type: "Bool", doc: "a"},
+  {name: "日本", short: "b", type: "Bool", doc: "b"},
+]}
+assert_true(Args.help(wide).contains("  -a, --ñame  a\n  -b, --日本  b\n"), Args.help(wide))
 
 # Usage brackets what may be left out.
 assert_true(Args.help(spec_opt).contains("Usage: cat [options] [<file>]"))

@@ -65,6 +65,12 @@ let _args_module = fn () {
   let _name_of = fn (spec) {
     spec.get("name", "program")
   }
+  # A help section: each row's name padded to the longest, then its doc.
+  let _section = fn (title, rows) {
+    let w = rows.map(|r| _Term.width(r[0])).max()
+    let lines = rows.map(|r| "  {r[0]:<{w}}  {r[1]}".trim_end())
+    "\n{title}:\n{lines.join("\n")}\n"
+  }
   let _format_help = fn (spec) {
     let name = _name_of(spec)
     let doc = spec.get("doc", "")
@@ -77,9 +83,7 @@ let _args_module = fn () {
     let subs = spec.get("subcommands", [])
     parts.push("Usage: {name}")
     parts.push(" [options]") if !opt_args.empty()
-    let mut j = 0
-    while j < pos_args.size() {
-      let a = pos_args[j]
+    for a in pos_args {
       if _is_repeated(a) {
         parts.push(" [<{a.name}>...]")
       } else if _is_optional(a) {
@@ -87,79 +91,37 @@ let _args_module = fn () {
       } else {
         parts.push(" <{a.name}>")
       }
-      j += 1
     }
     parts.push(" <command>") if !subs.empty()
     parts.push("\n")
     if !subs.empty() {
-      parts.push("\nCommands:\n")
-      for sub in subs {
-        let d = sub.get("doc", "")
-        parts.push("  {sub.name}    {d}\n")
-      }
+      parts.push(_section("Commands", subs.map(|c| [c.name, c.get("doc", "")])))
     }
     if !pos_args.empty() {
-      parts.push("\nArguments:\n")
-      let mut k = 0
-      while k < pos_args.size() {
-        let a = pos_args[k]
-        let d = a.get("doc", "")
-        parts.push("  {a.name}    {d}\n")
-        k += 1
-      }
+      parts.push(_section(
+        "Arguments",
+        pos_args.map(|a| [a.name, a.get("doc", "")]),
+      ))
     }
-    if !opt_args.empty() {
-      parts.push("\nOptions:\n")
-      let mut m = 0
-      while m < opt_args.size() {
-        let a = opt_args[m]
-        let short = if a.has("short") {
-          "-{a.short}, "
-        } else {
-          "    "
-        }
-        let d = a.get("doc", "")
-        parts.push("  {short}--{a.name}    {d}\n")
-        m += 1
-      }
-    }
-    parts.push("  -h, --help    show this help and exit\n")
+    let opts = opt_args.map(fn (a) {
+      let short = a.has("short") ? "-{a.short}, " : "    "
+      ["{short}--{a.name}", a.get("doc", "")]
+    })
+    parts.push(_section(
+      "Options",
+      [...opts, ["-h, --help", "show this help and exit"]],
+    ))
     parts.join("")
   }
-  let _route_subcommand = fn (argv, spec) {
-    return nil if !spec.has("subcommands")
-    let mut i = 0
-    while i < argv.size() {
-      let tok = argv[i]
-      if tok == "-h" || tok == "--help" {
-        throw {kind: "ArgParseHelp", help: _format_help(spec)}
-      }
-      if tok.starts_with("-") {
-        i += 1
-        continue
-      }
-      let mut j = 0
-      while j < spec.subcommands.size() {
-        let sub = spec.subcommands[j]
-        if sub.name == tok {
-          let mut rest = []
-          let mut k = 0
-          while k < argv.size() {
-            rest.push(argv[k]) if k != i
-            k += 1
-          }
-          return {sub: sub, argv: rest}
-        }
-        j += 1
-      }
-      __raise("ArgParseError", "unknown subcommand '{tok}'")
+  # `--name[=v]` and `-n[=v]` differ only in how many dashes they carry, and
+  # `-h`/`--help` throws the help. Puts what it read into `result`, and answers
+  # the index of the last token it took — one past `i` when the value was the
+  # next token rather than after the `=`.
+  let _take_option = fn (result, argv, i, spec) {
+    if argv[i] == "-h" || argv[i] == "--help" {
+      throw {kind: "ArgParseHelp", help: _format_help(spec)}
     }
-    __raise("ArgParseError", "expected subcommand")
-  }
-  # `--name[=v]` and `-n[=v]` differ only in how many dashes they carry. Puts
-  # what it read into `result`, and answers the index of the last token it took
-  # — one past `i` when the value was the next token rather than after the `=`.
-  let _take_option = fn (result, argv, i, spec, dash) {
+    let dash = argv[i].starts_with("--") ? "--" : "-"
     let parts = argv[i].slice(dash.size(), argv[i].size()).split("=")
     let name = parts[0]
     let has_value = parts.size() > 1
@@ -190,31 +152,9 @@ let _args_module = fn () {
     }
     last
   }
-  let _parse_impl_flat = fn (argv, spec) {
-    let mut result = {}
-    let mut positionals = []
-    let mut i = 0
-    let n = argv.size()
-    while i < n {
-      let tok = argv[i]
-      if tok == "--" {
-        let mut j = i + 1
-        while j < n {
-          positionals.push(argv[j])
-          j += 1
-        }
-        i = n
-      } else if tok == "-h" || tok == "--help" {
-        throw {kind: "ArgParseHelp", help: _format_help(spec)}
-      } else if tok.starts_with("--") {
-        i = _take_option(result, argv, i, spec, "--")
-      } else if tok.starts_with("-") && tok.size() > 1 {
-        i = _take_option(result, argv, i, spec, "-")
-      } else {
-        positionals.push(tok)
-      }
-      i += 1
-    }
+  # The positionals, then what was left out: fills `result` from them as
+  # `spec` says.
+  let _fill = fn (result, positionals, spec) {
     # Positionals are filled in spec order, but one that may be omitted only
     # takes a token when more are left than the required ones after it still
     # need. That is what makes `<files>... <dest>` hand `dest` the last token
@@ -241,35 +181,97 @@ let _args_module = fn () {
         "unexpected positional argument '{positionals[taken]}'",
       )
     }
-    let mut k = 0
-    while k < _args_of(spec).size() {
-      let a = _args_of(spec)[k]
+    for a in _args_of(spec) {
       if !result.has(a.name) {
         if !_is_optional(a) {
           __raise("ArgParseError", "missing required argument '{a.name}'")
         }
         result[a.name] = _missing_value(a)
       }
-      k += 1
     }
     result
   }
-  let _parse_impl = fn (argv, spec) {
-    let routed = _route_subcommand(argv, spec)
-    if routed != nil {
-      # Its help is named as it is run, the program's name and then its own.
-      let named = {...routed.sub, name: "{_name_of(spec)} {routed.sub.name}"}
-      let mut result = _parse_impl_flat(routed.argv, named)
-      result.subcommand = routed.sub.name
-      return result
+  let _parse_impl_flat = fn (argv, spec) {
+    let mut result = {}
+    let mut positionals = []
+    let mut i = 0
+    let n = argv.size()
+    while i < n {
+      let tok = argv[i]
+      if tok == "--" {
+        let mut j = i + 1
+        while j < n {
+          positionals.push(argv[j])
+          j += 1
+        }
+        i = n
+      } else if tok.starts_with("-") && tok.size() > 1 {
+        i = _take_option(result, argv, i, spec)
+      } else {
+        positionals.push(tok)
+      }
+      i += 1
     }
-    _parse_impl_flat(argv, spec)
+    _fill(result, positionals, spec)
+  }
+  # The program's options come before the subcommand, as git's do, and the
+  # subcommand's after it; the result has both, and `subcommand`.
+  let _parse_routed = fn (argv, spec) {
+    # Its first positional token is the subcommand, so it has none of its own.
+    let own_positional = _args_of(spec).find(_is_positional)
+    if own_positional != nil {
+      __raise(
+        "ArgParseError",
+        "argument '{own_positional.name}' is positional, and a spec with subcommands takes options only",
+      )
+    }
+    let mut result = {}
+    let mut i = 0
+    while i < argv.size() {
+      let tok = argv[i]
+      if tok.starts_with("-") && tok.size() > 1 {
+        i = _take_option(result, argv, i, spec)
+      } else {
+        let sub = spec.subcommands.find(|c| c.name == tok)
+        __raise("ArgParseError", "unknown subcommand '{tok}'") if sub == nil
+        _fill(result, [], spec)
+        # Its help is named as it is run, the program's name and then its own.
+        let named = {...sub, name: "{_name_of(spec)} {sub.name}"}
+        let own = _parse_impl_flat(argv.slice(i + 1, argv.size()), named)
+        let both = own.keys().find(|k| result.has(k))
+        if both != nil {
+          __raise(
+            "ArgParseError",
+            "argument '{both}' is both the program's and {sub.name}'s",
+          )
+        }
+        if result.has("subcommand") || own.has("subcommand") {
+          __raise(
+            "ArgParseError",
+            "argument 'subcommand' is the name the result gives the subcommand",
+          )
+        }
+        return {...result, ...own, subcommand: sub.name}
+      }
+      i += 1
+    }
+    __raise("ArgParseError", "expected subcommand")
+  }
+  let _parse_impl = fn (argv, spec) {
+    spec.has("subcommands")
+      ? _parse_routed(argv, spec)
+      : _parse_impl_flat(argv, spec)
   }
   {
     try_parse: fn (argv, spec) {
       _parse_impl(argv, spec)
     },
     parse: fn (argv, spec) {
+      # Nothing to run: what there is to run, as git and clap show it.
+      if argv.empty() && spec.has("subcommands") {
+        IO.eprint(_format_help(spec))
+        Sys.exit(2)
+      }
       try {
         _parse_impl(argv, spec)
       } catch e {

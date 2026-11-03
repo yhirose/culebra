@@ -45,5 +45,24 @@ out=$("$CULEBRA" --vm "$TMP/greet.cul" world -l 2>&1); rc=$?
 [[ $rc -eq 0 && "$out" == "who=world loud=true" ]] || {
   echo "FAIL parse: rc=$rc out=$out"; fail=1; }
 
+# A program with subcommands run with nothing: its help, which names them, on
+# stderr, and exit 2, as an error is; with a subcommand, it runs.
+cat > "$TMP/tool.cul" <<'EOF'
+let spec = {
+  name: "tool",
+  subcommands: [{name: "show", doc: "shows them", args: []}],
+}
+let a = Args.parse(Sys.argv, spec)
+IO.println("ran {a.subcommand}")
+EOF
+out=$("$CULEBRA" --vm "$TMP/tool.cul" 2>"$TMP/err"); rc=$?
+err=$(cat "$TMP/err")
+[[ $rc -eq 2 ]] || { echo "FAIL no command: expected exit 2, got $rc"; fail=1; }
+[[ -z "$out" ]] || { echo "FAIL no command: wrote to stdout: $out"; fail=1; }
+[[ "$err" == "Usage: tool <command>"*"Commands:"*"show  shows them"* ]] || {
+  echo "FAIL no command: unexpected stderr: $err"; fail=1; }
+out=$("$CULEBRA" --vm "$TMP/tool.cul" show 2>&1); rc=$?
+[[ $rc -eq 0 && "$out" == "ran show" ]] || { echo "FAIL command: rc=$rc out=$out"; fail=1; }
+
 if [[ $fail -eq 0 ]]; then echo "args_cli_test OK"; exit 0; fi
 echo "args_cli_test FAILED"; exit 1
