@@ -45,7 +45,7 @@ fi
 
 # The tag claims the llama.cpp release it was tested against; its own build
 # file is where it fetches that release from.
-fetched=$(sed -n '0,/GIT_TAG/{s/^[[:space:]]*GIT_TAG[[:space:]]\{1,\}\([^[:space:]]*\).*/\1/p}' "$lib/CMakeLists.txt")
+fetched=$(awk '$1 == "GIT_TAG" { print $2; exit }' "$lib/CMakeLists.txt")
 if [[ "$fetched" != "$version" ]]; then
   echo "llama-versions FAIL: $lib/CMakeLists.txt fetches llama.cpp ${fetched:-nothing}, not $version" >&2
   exit 1
