@@ -2312,15 +2312,38 @@ subcommandのspecに従ってparseされます:
 let spec = {
   name: "git-lite",
   subcommands: [
-    {name: "add", args: [{name: "files", type: "String", repeated: true}]},
-    {name: "commit", args: [{name: "message", short: "m", type: "String"}]},
+    {name: "add", doc: "stage files", args: [{name: "files", type: "String", repeated: true, doc: "the files to stage"}]},
+    {name: "commit", doc: "record the staged files", args: [{name: "message", short: "m", type: "String"}]},
   ],
 }
 
-match Args.parse(Sys.argv, spec).subcommand {
+let args = Args.parse(Sys.argv, spec)
+match args.subcommand {
   "add" => stage_files(args.files),
   "commit" => commit_with_message(args.message),
 }
+```
+
+ヘルプはsubcommandをそれぞれの`doc`とともに並べ、subcommandのヘルプ
+（`git-lite add --help`）は実行するときの名前で表示されます:
+
+```
+$ ./git-lite --help
+Usage: git-lite <command>
+
+Commands:
+  add    stage files
+  commit    record the staged files
+  -h, --help    show this help and exit
+
+$ ./git-lite add --help
+git-lite add - stage files
+
+Usage: git-lite add [<files>...]
+
+Arguments:
+  files    the files to stage
+  -h, --help    show this help and exit
 ```
 
 ### エラーハンドリング

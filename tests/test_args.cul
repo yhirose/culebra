@@ -187,7 +187,7 @@ assert_eq(e_badbool.kind, "ArgParseError")
 let git = {
   name: "git-lite",
   subcommands: [
-    {name: "add", args: [{name: "files", type: "String", repeated: true}]},
+    {name: "add", doc: "stages files", args: [{name: "files", type: "String", repeated: true}]},
     {name: "commit", args: [{name: "message", short: "m", type: "String"}]},
   ],
 }
@@ -208,11 +208,24 @@ let g3 = try {
 assert_eq(g3.kind, "ArgParseError")
 assert_eq(g3.message, "unknown subcommand 'push'")
 
+# Help lists the subcommands, and a subcommand's help is named as it is run.
+let git_help = Args.help(git)
+assert_true(git_help.contains("Usage: git-lite <command>\n"), git_help)
+assert_true(git_help.contains("\nCommands:\n  add    stages files\n  commit    \n"), git_help)
+let add_help = try {
+  Args.try_parse(["add", "--help"], git)
+} catch e {
+  e.help
+}
+assert_true(add_help.starts_with("git-lite add - stages files\n"), add_help)
+assert_true(add_help.contains("Usage: git-lite add [<files>...]\n"), add_help)
+
 # --- Help text generation ---
 let help = Args.help(spec)
 assert_true(help.contains("Usage: demo"))
 assert_true(help.contains("--verbose"))
 assert_true(help.contains("--help"))
+assert_false(help.contains("Commands:") || help.contains("<command>"), help)
 
 # Usage brackets what may be left out.
 assert_true(Args.help(spec_opt).contains("Usage: cat [options] [<file>]"))

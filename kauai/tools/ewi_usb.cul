@@ -17,7 +17,7 @@ let SPEC = {
     {name: 'show', doc: 'shows them', args: []},
     {
       name: 'set',
-      doc: 'changes those named, then shows them',
+      doc: 'changes those named, as NAME=VALUE, then shows them',
       args: [{
         name: 'changes',
         type: 'String',
@@ -33,15 +33,8 @@ let SPEC = {
   ],
 }
 
-# Args.help names no subcommands, so this lists them.
 fn help() {
-  println("{SPEC.name} - {SPEC.doc}")
-  println("")
-  for c in SPEC.subcommands {
-    let usage = [c.name, ...c.args.map(|a| "{a.doc}...")].join(" ")
-    println("  {usage:<22}{c.doc}")
-  }
-  println("")
+  println(Args.help(SPEC))
   println("The settings, and the values each takes:")
   for line in lib.described() {
     println(line)

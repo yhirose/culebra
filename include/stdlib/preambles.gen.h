@@ -5242,7 +5242,7 @@ let MIDI = _midi_module()
 inline constexpr const char* ARGS_MODULE_SOURCE = R"=culpre=(let _args_module = fn () {
   # A spec that only routes to `subcommands` has no `args` of its own.
   let _args_of = fn (spec) {
-    spec.has("args") ? spec.args : []
+    spec.get("args", [])
   }
   let _number = fn (convert, raw, type, name) {
     try {
@@ -5303,23 +5303,19 @@ inline constexpr const char* ARGS_MODULE_SOURCE = R"=culpre=(let _args_module = 
     return [] if _is_repeated(a)
     false
   }
+  let _name_of = fn (spec) {
+    spec.get("name", "program")
+  }
   let _format_help = fn (spec) {
-    let name = if spec.has("name") {
-      spec.name
-    } else {
-      "program"
-    }
-    let doc = if spec.has("doc") {
-      spec.doc
-    } else {
-      ""
-    }
+    let name = _name_of(spec)
+    let doc = spec.get("doc", "")
     let mut parts = []
     if doc != "" {
       parts.push("{name} - {doc}\n\n")
     }
     let pos_args = _args_of(spec).filter(_is_positional)
     let opt_args = _args_of(spec).filter(_is_option)
+    let subs = spec.get("subcommands", [])
     parts.push("Usage: {name}")
     parts.push(" [options]") if !opt_args.empty()
     let mut j = 0
@@ -5334,17 +5330,21 @@ inline constexpr const char* ARGS_MODULE_SOURCE = R"=culpre=(let _args_module = 
       }
       j += 1
     }
+    parts.push(" <command>") if !subs.empty()
     parts.push("\n")
+    if !subs.empty() {
+      parts.push("\nCommands:\n")
+      for sub in subs {
+        let d = sub.get("doc", "")
+        parts.push("  {sub.name}    {d}\n")
+      }
+    }
     if !pos_args.empty() {
       parts.push("\nArguments:\n")
       let mut k = 0
       while k < pos_args.size() {
         let a = pos_args[k]
-        let d = if a.has("doc") {
-          a.doc
-        } else {
-          ""
-        }
+        let d = a.get("doc", "")
         parts.push("  {a.name}    {d}\n")
         k += 1
       }
@@ -5359,11 +5359,7 @@ inline constexpr const char* ARGS_MODULE_SOURCE = R"=culpre=(let _args_module = 
         } else {
           "    "
         }
-        let d = if a.has("doc") {
-          a.doc
-        } else {
-          ""
-        }
+        let d = a.get("doc", "")
         parts.push("  {short}--{a.name}    {d}\n")
         m += 1
       }
@@ -5502,7 +5498,9 @@ inline constexpr const char* ARGS_MODULE_SOURCE = R"=culpre=(let _args_module = 
   let _parse_impl = fn (argv, spec) {
     let routed = _route_subcommand(argv, spec)
     if routed != nil {
-      let mut result = _parse_impl_flat(routed.argv, routed.sub)
+      # Its help is named as it is run, the program's name and then its own.
+      let named = {...routed.sub, name: "{_name_of(spec)} {routed.sub.name}"}
+      let mut result = _parse_impl_flat(routed.argv, named)
       result.subcommand = routed.sub.name
       return result
     }
@@ -5520,11 +5518,7 @@ inline constexpr const char* ARGS_MODULE_SOURCE = R"=culpre=(let _args_module = 
           IO.print(e.help)
           Sys.exit(0)
         }
-        let msg = if e.has("message") {
-          e.message
-        } else {
-          to_string(e)
-        }
+        let msg = e.get("message", to_string(e))
         IO.eprintln("error: {msg}")
         Sys.exit(2)
       }
