@@ -62,7 +62,7 @@ syn keyword culBuiltin     Nil Bool Long Float String Array Object Function Any
 syn keyword culBuiltin     Math IO FS File Time Random Sys Tensor JSON Args Proc Path Dir
 syn keyword culBuiltin     Isolate Channel Parallel Signal SharedBuffer Shared GC Regex Http
 syn keyword culBuiltin     Encoding Compress Hash CSV Env UUID Term Log TOML XML SQLite Llama
-syn keyword culBuiltin     Canvas Audio Scene Net Desktop Webview Vector2 Vector3 Deque PriorityQueue StateMachine
+syn keyword culBuiltin     Canvas Audio MIDI Scene Net Desktop Webview Vector2 Vector3 Deque PriorityQueue StateMachine
 syn keyword culBuiltin     PEG FST Search Range Set LLM
 " === END AUTO-KEYWORDS ===
 
