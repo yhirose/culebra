@@ -18,13 +18,17 @@ it is made, then what it is.
 - How it is made: `Fm` for frequency modulation, `Analog` for oscillators
   through a filter. An instrument made from recordings has none: it is the
   instrument itself (`SopranoSax`, `AltoSax`).
-- How it sounds, for a preset: `Mellow` or `Bright`, the ends of its `bright`
-  knob.
+- How it sounds: for a preset, `Mellow` or `Bright`, the ends of its
+  `bright` knob; for a recipe of its own that is another tone of an
+  instrument Kauai has, a word for how it differs, `Clear` for a clean, light
+  one (`ClearAnalogLead` beside `AnalogLead`).
 
 No name holds a product's, a maker's, a player's or a song's name.
 
 | Recipe | A song names it | What it is | Knobs: default (range) |
 |---|---|---|---|
+| `analog_lead` | `external AnalogLead` | an analog lead, two saws a hair apart and a square an octave under them through a low-pass that opens at the attack and follows the note | `bright` 0.5 (0 to 1): the low-pass opened wider, at about the same loudness |
+| `clear_analog_lead` | `external ClearAnalogLead` | a lighter, clearer lead, two saws a hair apart over a triangle, with a sine an octave up for its shine, through a low-pass that opens at the attack and follows the note | `bright` 1 (0 to 1): the low-pass opened wider and more of the octave |
 | `fm_brass` | `external FmBrass` | a synth brass, two FM pairs a hair apart and a third with its modulator an octave up | `bright` 0.5 (0 to 1): deeper modulation and more feedback, at the same loudness |
 | `mellow_fm_brass` | `external MellowFmBrass` | `fm_brass`, mellow | `bright` 0 (0 to 1) |
 | `bright_fm_brass` | `external BrightFmBrass` | `fm_brass`, bright | `bright` 1 (0 to 1) |

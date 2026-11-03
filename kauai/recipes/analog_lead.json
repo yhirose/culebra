@@ -1,0 +1,20 @@
+{
+  "recipe": 1,
+  "knobs": {"bright": {"default": 0.5, "min": 0, "max": 1}},
+  "parts": {
+    "saw1": {"part": "wave", "kind": "saw", "freq": "f * 0.997"},
+    "saw2": {"part": "wave", "kind": "saw", "freq": "f * 1.003"},
+    "sub": {"part": "wave", "kind": "square", "freq": "f / 2"},
+    "subl": {"part": "gain", "input": "sub", "gain": 0.3},
+    "osc": {"part": "mix", "inputs": ["saw1", "saw2", "subl"], "gain": 0.22},
+    "vcf": {"part": "filter", "kind": "low", "q": 1.4, "input": "osc", "cutoff": {
+      "on": [[0, "min(f * mix(1, 2, bright), 16000)"],
+             [0.04, "min(f * mix(3, 18, bright), 16000)", -3],
+             [0.25, "min(f * mix(2, 12, bright), 16000)", -2]],
+      "off": [[0.15, "f", -3]]}},
+    "amp": {"part": "gain", "input": "vcf", "gain": {
+      "on": [[0, 0], [0.015, 1]],
+      "off": [[0.15, 0, -4]]}}
+  },
+  "out": "amp"
+}
