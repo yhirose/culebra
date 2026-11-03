@@ -1,13 +1,27 @@
-# MIDI: input from a MIDI controller (docs/stdlib.md), through _Audio's
-# midi_* natives (vendor/cpp-midilib on the audio device's backend).
+# MIDI: input from a MIDI controller and output to one (docs/stdlib.md),
+# through _Audio's midi_* natives (vendor/cpp-midilib on the audio device's
+# backend).
 let _midi_module = fn () {
   # A channel message's kind, by the top half of its status byte (8 to 14).
   let KINDS = ["note_off", "note_on", "poly_pressure", "cc", "program", "pressure", "bend"]
 
-  # The inputs there are, each {id, name}.
-  fn inputs() {
-    let xs = _Audio.midi_inputs()
+  # The inputs (or, `output`, the outputs) there are, each {id, name}.
+  fn ports(output) {
+    let xs = _Audio.midi_ports(output)
     iota(xs.size() / 2).map(|i| {id: xs[i * 2], name: xs[i * 2 + 1]})
+  }
+  fn inputs() {
+    ports(false)
+  }
+  fn outputs() {
+    ports(true)
+  }
+
+  # "there are a, b" for the ports in `ps`, or "there are none".
+  fn there_are(ps) {
+    let names = ps.map(|p| "{p.id} ({p.name})")
+    let has = names.empty() ? "none" : names.join(", ")
+    "there are {has}"
   }
 
   # One message from the six numbers _Audio.midi_read gives each (seconds
@@ -34,23 +48,36 @@ let _midi_module = fn () {
 
   # An input, open: its messages wait from when it opens until they are
   # read, in the order they came. The controls (control()) are as the
-  # messages read so far have set them.
+  # messages read so far have set them. With `sysex`, a sysex comes too,
+  # whole, as a message of its own.
   class Input {
-    new(id: String) {
+    new(id: String, sysex: Bool = false) {
       @id = id
-      @_id = _Audio.midi_open(id)
+      @_id = _Audio.midi_open(id, sysex)
       if @_id < 0 {
         @_id = nil
-        let names = inputs().map(|p| "{p.id} ({p.name})")
-        let has = names.empty() ? "none" : names.join(", ")
-        __raise("ValueError", "MIDI.Input: no input {id}; there are {has}")
+        __raise("ValueError", "MIDI.Input: no input {id}; {there_are(inputs())}")
       }
     }
-    # What came since the last read, all of it; [] when nothing has.
+    # What came since the last read, all of it; [] when nothing has. A sysex
+    # (status 240) has its size where a message's data bytes are, then its
+    # bytes.
     read() {
       let xs = _Audio.midi_read(@_id)
       let now = _Time.monotonic()
-      iota(xs.size() / 6).map(|i| message(xs, i * 6, now))
+      mut out = []
+      mut k = 0
+      while k < xs.size() {
+        if xs[k + 1] == 240.0 {
+          let n = to_long(xs[k + 2])
+          out.push({kind: "sysex", at: now - xs[k], bytes: xs.slice(k + 6, k + 6 + n).map(|b| to_long(b))})
+          k += 6 + n
+        } else {
+          out.push(message(xs, k, now))
+          k += 6
+        }
+      }
+      out
     }
     # Waits until a message has come, for `seconds` at most (for ever
     # without); whether one has.
@@ -84,11 +111,39 @@ let _midi_module = fn () {
     }
   }
 
+  # An output, open: send() sends it whole messages.
+  class Output {
+    new(id: String) {
+      @id = id
+      @_id = _Audio.midi_out_open(id)
+      if @_id < 0 {
+        @_id = nil
+        __raise("ValueError", "MIDI.Output: no output {id}; {there_are(outputs())}")
+      }
+    }
+    # Sends `bytes` (Longs, 0 to 255): channel messages and sysexes, whole,
+    # one after another, with no running status. Anything else is a
+    # ValueError, and none of it is sent.
+    send(bytes: Array) {
+      let wrong = _Audio.midi_send(@_id, bytes)
+      __raise("ValueError", "MIDI.Output.send: {wrong}") if !wrong.empty()
+    }
+    # Closes it; a send after it is a TypeError.
+    drop() {
+      _Audio.midi_free(@_id) if @_id != nil
+      @_id = nil
+    }
+  }
+
   {
     # The inputs there are, each {id, name}: an id to open, which stays the
     # same while the device is plugged in.
     inputs: inputs,
+    # The outputs there are, the same way (a device's output has an id of
+    # its own).
+    outputs: outputs,
     Input: Input,
+    Output: Output,
   }
 }
 let MIDI = _midi_module()

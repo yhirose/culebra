@@ -1119,12 +1119,15 @@ mic.read(frames = nil) -> Array
 Audio.Kauai.new(text: String, voices = nil, drums = nil)
 Audio.Kauai.load(path: String, voices = nil, drums = nil, dir = nil)
 MIDI.inputs() -> Array
-MIDI.Input.new(id)
+MIDI.Input.new(id, sysex: false)
 input.read() -> Array
 input.wait(seconds = nil) -> Bool
 input.messages()
 input.control(cc, channel = 0) -> Float
 input.dropped() -> Long
+MIDI.outputs() -> Array
+MIDI.Output.new(id)
+out.send(bytes: Array)
 Dir.disk(path: String | Path) -> Dir
 Dir.memory(files: Object) -> Dir
 Dir.embedded(name: String) -> Dir

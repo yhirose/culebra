@@ -78,7 +78,7 @@
 38. [`FST`](#38-fst) — 書き換えない辞書を圧縮して持つ。前方一致・補完・あいまい検索
 39. [`Search`](#39-search) — 自分の文書を全文検索して順位をつける
 40. [`Audio`](#40-audio) — ウィンドウの有無によらず使える音: WASM-4のtone、効果音、ストリーム再生の音楽、合成するPCM、マイク
-41. [`MIDI`](#41-midi) — MIDIの鍵盤やウインドコントローラからの入力
+41. [`MIDI`](#41-midi) — MIDIの鍵盤やウインドコントローラからの入力と、それへの出力
 42. [`Dir`](#42-dir) — ディスク・メモリ・バイナリへの焼き込み・ZIPアーカイブのどこにあるファイルの集まりも、同じ読み方で（`Dir.disk` / `Dir.memory` / `Dir.embedded` / `Dir.zip`と`Dir` trait）
 43. [`LLM`](#43-llm) — LLMのクライアント。提供元（Messages APIかChat Completions）への1ステップ、関数をツールとして使う会話、素通しのリクエスト
 44. [`Llama`](#44-llama) — このプロセス内で動くモデル。GGUFを読んで`generate`か`chat`（ビルドオプション）
@@ -8782,22 +8782,25 @@ song.play()
 
 ## 41. `MIDI`
 
-MIDIコントローラ（鍵盤、ウインドコントローラ、パッドなど）からの入力です。演奏に合わせて
-音を鳴らすプログラムのためのものです。入力を開くと、届いたメッセージは読まれるまで、届いた
-順に、届いた時刻とともに待ちます。`MIDI`は`Audio`のネイティブのバックエンドの上で動きます。
-macOSはCoreMIDI、WindowsはWinMM、LinuxはALSAのシーケンサで、LinuxではALSAを最初に
-必要になったときに読み込みます。デバイスが無いとき、ブラウザ、`CULEBRA_AUDIO`が`off`の
-ときは、`MIDI.inputs()`は`[]`です。
+MIDIコントローラ（鍵盤、ウインドコントローラ、パッドなど）からの入力と、それへの出力です。
+入力は演奏に合わせて音を鳴らすプログラムのため、出力はデバイスの設定を変えるときなどのための
+ものです。入力を開くと、届いたメッセージは読まれるまで、届いた順に、届いた時刻とともに待ちます。
+`MIDI`は`Audio`のネイティブのバックエンドの上で動きます。macOSはCoreMIDI、WindowsはWinMM、
+LinuxはALSAのシーケンサで、LinuxではALSAを最初に必要になったときに読み込みます。デバイスが
+無いとき、ブラウザ、`CULEBRA_AUDIO`が`off`のときは、`MIDI.inputs()`も`MIDI.outputs()`も`[]`です。
 
 | 関数・メソッド | 効果 |
 | --- | --- |
 | `MIDI.inputs() -> Array` | ある入力の一覧。それぞれ`{id, name}`。`id`はデバイスがつながっている間は変わらない |
-| `MIDI.Input.new(id)` | 入力`id`を開く。そのidの入力が無ければ、ある入力の名前を挙げて`ValueError` |
+| `MIDI.Input.new(id, sysex: false)` | 入力`id`を開く。そのidの入力が無ければ、ある入力の名前を挙げて`ValueError`。`sysex: true`ならSysExも1つのメッセージとして届く |
 | `input.read() -> Array` | 前に読んでから届いたメッセージを、届いた順にすべて。無ければ`[]` |
 | `input.wait(seconds = nil) -> Bool` | メッセージが届くまで、最長`seconds`秒（省くといつまでも）待つ。届いたかどうか |
 | `input.messages()` | 届いたメッセージを1つずつ、次が届くのを待ちながら返す。`for`で回すと演奏になる |
 | `input.control(cc, channel = 0) -> Float` | それまでに読んだメッセージが決めた、コントローラ`cc`の値。`0.0`〜`1.0`。コントローラが14ビットで送れば14ビット（0〜31番と32〜63番の組。ウインドコントローラの息など）、そうでなければ7ビット |
-| `input.dropped() -> Long` | 読むより速く届いたために捨てたメッセージの数（待てるのは最大4096個） |
+| `input.dropped() -> Long` | 読むより速く届いたために捨てたメッセージの数（待てるのは最大4096個）と、途中で切れたSysExや64KiBより長いSysExの数 |
+| `MIDI.outputs() -> Array` | ある出力の一覧。それぞれ`{id, name}`。デバイスの出力には、入力とは別の`id`がある |
+| `MIDI.Output.new(id)` | 出力`id`を開く。そのidの出力が無ければ、ある出力の名前を挙げて`ValueError` |
+| `out.send(bytes: Array)` | `bytes`（0〜255の`Long`）を送る。チャンネルメッセージとSysExを、それぞれ欠けずに続けて並べたもの（ランニングステータスは使わない）。バイトでない要素があれば`TypeError`。それ以外の並びは、どこがおかしいかを挙げて`ValueError`で、そのときは何も送らない |
 
 メッセージは、`kind`、`channel`（0〜15）、`at`（届いた時刻。`Time.monotonic()`と同じ時計）、
 届いたままの`bytes`を持つオブジェクトです。種類ごとに次のフィールドも持ちます。
@@ -8811,9 +8814,12 @@ macOSはCoreMIDI、WindowsはWinMM、LinuxはALSAのシーケンサで、Linux�
 | `"pressure"` | `value`。チャンネルのプレッシャー（アフタータッチ） |
 | `"poly_pressure"` | `note`、`value` |
 | `"program"` | `program`。0〜127 |
+| `"sysex"` | （`sysex: true`で開いた入力だけ）`bytes`。240（F0）から247（F7）までのSysEx全体。`channel`は無い |
 
-システムメッセージとSysExは渡しません。一緒に届いたメッセージは、その順番のままです。
-ウインドコントローラでレガートに吹くと、新しい音のノートオン、古い音のノートオフの順に届きます。
+システムメッセージは渡しません。SysExも、入力が頼んだときだけ渡します。一緒に届いたメッセージは、
+その順番のままです。ウインドコントローラでレガートに吹くと、新しい音のノートオン、古い音の
+ノートオフの順に届きます。SysExは、いくつに分かれて届いても1つにまとめて渡し、時刻は最初の
+断片が届いた時刻です。
 
 ```culebra
 println(MIDI.inputs() is Array)  # => true
@@ -8830,6 +8836,23 @@ for m in ewi.messages() {
     _ => {},
   }
 }
+```
+
+デバイスの設定を、それを頼むSysExで読み（ここではAkai EWI USBの設定の最初のまとまり）、
+チャンネルメッセージで変える例です。
+
+```culebra
+# doctest: skip — MIDIデバイスが必要
+let named = |ps| ps.find(|p| p.name.contains("EWI"))
+let ewi = MIDI.Input.new(named(MIDI.inputs()).id, sysex: true)
+let out = MIDI.Output.new(named(MIDI.outputs()).id)
+out.send([0xF0, 0x47, 0x7F, 0x6D, 0x40, 0x00, 0x00, 0xF7])
+while ewi.wait(1.0) {
+  for m in ewi.read() {
+    println(m.bytes) if m.kind == "sysex"
+  }
+}
+out.send([0xB0, 0x63, 0x02, 0xB0, 0x62, 0x01, 0xB0, 0x06, 0x01])  # NRPN 2/1 = 1
 ```
 
 ## 42. `Dir`

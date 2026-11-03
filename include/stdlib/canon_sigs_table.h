@@ -1617,7 +1617,7 @@ inline constexpr CanonParam kCanonParams_Audio_native[] = {
   {"im", false, false, false, false, false, "Array", CanonDefault::None, 0, {}},
   {"size", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
   {"hop", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
-  // 153: _Audio.midi_open
+  // 153: _Audio.midi_out_open
   {"port", false, false, false, false, false, "String", CanonDefault::None, 0, {}},
   // 154: _Audio.midi_free / midi_read / midi_dropped
   {"input", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
@@ -1628,6 +1628,14 @@ inline constexpr CanonParam kCanonParams_Audio_native[] = {
   {"input", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
   {"channel", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
   {"cc", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
+  // 160: _Audio.midi_open
+  {"port", false, false, false, false, false, "String", CanonDefault::None, 0, {}},
+  {"sysex", false, false, false, false, false, "Bool", CanonDefault::None, 0, {}},
+  // 162: _Audio.midi_ports
+  {"output", false, false, false, false, false, "Bool", CanonDefault::None, 0, {}},
+  // 163: _Audio.midi_send
+  {"output", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
+  {"bytes", false, false, false, false, false, "Array", CanonDefault::None, 0, {}},
 };
 
 inline constexpr CanonSig kCanonSigs_Audio_native[] = {
@@ -1678,8 +1686,10 @@ inline constexpr CanonSig kCanonSigs_Audio_native[] = {
   {"_Audio", "", "capture_running", kCanonParams_Audio_native + 64, 1, "Bool", 1, 1, false, -1, -1, -1},
   {"_Audio", "", "capture_waiting", kCanonParams_Audio_native + 65, 1, "Long", 1, 1, false, -1, -1, -1},
   {"_Audio", "", "capture_read", kCanonParams_Audio_native + 66, 2, "Array", 2, 2, false, -1, -1, -1},
-  {"_Audio", "", "midi_inputs", nullptr, 0, "Array", 0, 0, false, -1, -1, -1},
-  {"_Audio", "", "midi_open", kCanonParams_Audio_native + 153, 1, "Long", 1, 1, false, -1, -1, -1},
+  {"_Audio", "", "midi_ports", kCanonParams_Audio_native + 162, 1, "Array", 1, 1, false, -1, -1, -1},
+  {"_Audio", "", "midi_open", kCanonParams_Audio_native + 160, 2, "Long", 2, 2, false, -1, -1, -1},
+  {"_Audio", "", "midi_out_open", kCanonParams_Audio_native + 153, 1, "Long", 1, 1, false, -1, -1, -1},
+  {"_Audio", "", "midi_send", kCanonParams_Audio_native + 163, 2, "String", 2, 2, false, -1, -1, -1},
   {"_Audio", "", "midi_free", kCanonParams_Audio_native + 154, 1, "", 1, 1, false, -1, -1, -1},
   {"_Audio", "", "midi_read", kCanonParams_Audio_native + 154, 1, "Array", 1, 1, false, -1, -1, -1},
   {"_Audio", "", "midi_wait", kCanonParams_Audio_native + 155, 2, "Bool", 2, 2, false, -1, -1, -1},

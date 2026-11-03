@@ -2453,9 +2453,11 @@ add_test(NAME kauai_cli_test
          COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/kauai_cli_test.sh
                  $<TARGET_FILE:culebra>)
 
-# MIDI input end to end on each engine: a virtual CoreMIDI source sends a
-# fixed run and a script reads it through MIDI.Input. macOS only (it skips
-# elsewhere); tests/test_midi.cul covers the closed device everywhere.
+# MIDI end to end on each engine: a virtual CoreMIDI source sends a fixed
+# run that a script reads through MIDI.Input, the script sends to a virtual
+# destination through MIDI.Output, and one Ctrl+C stops a script waiting for
+# a message. macOS only (it skips elsewhere); tests/test_midi.cul covers the
+# closed device everywhere.
 add_test(NAME midi_test
          COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/midi_test.sh
                  $<TARGET_FILE:culebra>)

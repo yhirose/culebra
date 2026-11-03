@@ -80,7 +80,7 @@ Conventions used below:
 38. [`FST`](#38-fst) — compiled read-only dictionary: prefix, predictive and fuzzy search
 39. [`Search`](#39-search) — full-text index over your own documents, ranked
 40. [`Audio`](#40-audio) — sound for any program, with or without a window: WASM-4 tones, samples, streamed music, synthesised PCM, the microphone
-41. [`MIDI`](#41-midi) — input from a MIDI keyboard or wind controller
+41. [`MIDI`](#41-midi) — input from a MIDI keyboard or wind controller, and output to one
 42. [`Dir`](#42-dir) — a read-only set of files on disk, in memory, baked into the binary or in a ZIP archive, read one way (`Dir.disk` / `Dir.memory` / `Dir.embedded` / `Dir.zip`, and the `Dir` trait)
 43. [`LLM`](#43-llm) — a client for LLMs: one step with a provider (the Messages API or Chat Completions), a conversation that runs your functions as tools, or a request as it is
 44. [`Llama`](#44-llama) — a model run in this process: load a GGUF file, then `generate` or `chat` (a build option)
@@ -9161,22 +9161,26 @@ song.play()
 ## 41. `MIDI`
 
 Input from a MIDI controller (a keyboard, a wind controller, a pad), for a
-program that plays sound as it is played. An input's messages wait from
-when it opens until they are read, in the order they came, each with the
-time it came. `MIDI` rides on `Audio`'s native backend: CoreMIDI on macOS,
-WinMM on Windows, and on Linux the ALSA sequencer, loaded when it is first
-asked for. With no device, in the browser, or with `CULEBRA_AUDIO` set to
-`off`, `MIDI.inputs()` is `[]`.
+program that plays sound as it is played, and output to one, as to change
+a device's settings. An input's messages wait from when it opens until
+they are read, in the order they came, each with the time it came. `MIDI`
+rides on `Audio`'s native backend: CoreMIDI on macOS, WinMM on Windows, and
+on Linux the ALSA sequencer, loaded when it is first asked for. With no
+device, in the browser, or with `CULEBRA_AUDIO` set to `off`,
+`MIDI.inputs()` and `MIDI.outputs()` are `[]`.
 
 | Function / method | Effect |
 | --- | --- |
 | `MIDI.inputs() -> Array` | the inputs there are, each `{id, name}`; an `id` stays the same while the device is plugged in |
-| `MIDI.Input.new(id)` | input `id`, open; `ValueError`, naming the inputs there are, when there is none of that id |
+| `MIDI.Input.new(id, sysex: false)` | input `id`, open; `ValueError`, naming the inputs there are, when there is none of that id. With `sysex: true` a sysex comes too, as a message of its own |
 | `input.read() -> Array` | the messages that came since the last read, in order; `[]` when none has |
 | `input.wait(seconds = nil) -> Bool` | waits until a message has come, for `seconds` at most (for ever without); whether one has |
 | `input.messages()` | each message as it comes, waiting for the next: a `for` over it plays |
 | `input.control(cc, channel = 0) -> Float` | controller `cc`'s value as the messages read so far set it, `0.0` to `1.0`: at 14 bits where the controller sends them so (controllers 0 to 31 with 32 to 63, as a wind controller's breath may), at 7 otherwise |
-| `input.dropped() -> Long` | the messages dropped because they came faster than they were read (4096 wait at most) |
+| `input.dropped() -> Long` | the messages dropped because they came faster than they were read (4096 wait at most), and the sysexes cut short or longer than 64 KiB |
+| `MIDI.outputs() -> Array` | the outputs there are, each `{id, name}`; a device's output has an `id` of its own, not its input's |
+| `MIDI.Output.new(id)` | output `id`, open; `ValueError`, naming the outputs there are, when there is none of that id |
+| `out.send(bytes: Array)` | sends `bytes` (Longs, 0 to 255): channel messages and sysexes, whole, one after another, with no running status. `TypeError` for an element that is not a byte; `ValueError` for bytes that are anything else, naming where, and then none of them is sent |
 
 A message is an object with its `kind`, its `channel` (0 to 15), `at` (when
 it came, on `Time.monotonic()`'s clock) and its `bytes` as they came, and
@@ -9191,10 +9195,13 @@ by its kind:
 | `"pressure"` | `value`, the channel's pressure (aftertouch) |
 | `"poly_pressure"` | `note`, `value` |
 | `"program"` | `program`, 0 to 127 |
+| `"sysex"` | (an input opened with `sysex: true`) `bytes`, the whole sysex from 240 (F0) to 247 (F7); no `channel` |
 
-System messages and sysex are left out. Messages that came together keep
-their order: a wind controller playing legato sends the new note's note on,
-then the old note's note off.
+System messages are left out, and so are sysexes unless the input asks for
+them. Messages that came together keep their order: a wind controller
+playing legato sends the new note's note on, then the old note's note off.
+A sysex comes whole, however many pieces it came in, with the time its
+first piece came.
 
 ```culebra
 println(MIDI.inputs() is Array)  # => true
@@ -9211,6 +9218,23 @@ for m in ewi.messages() {
     _ => {},
   }
 }
+```
+
+A device's settings, read with a sysex that asks for them (here an Akai EWI
+USB's first bank of settings) and changed with a channel message:
+
+```culebra
+# doctest: skip — needs a MIDI device
+let named = |ps| ps.find(|p| p.name.contains("EWI"))
+let ewi = MIDI.Input.new(named(MIDI.inputs()).id, sysex: true)
+let out = MIDI.Output.new(named(MIDI.outputs()).id)
+out.send([0xF0, 0x47, 0x7F, 0x6D, 0x40, 0x00, 0x00, 0xF7])
+while ewi.wait(1.0) {
+  for m in ewi.read() {
+    println(m.bytes) if m.kind == "sysex"
+  }
+}
+out.send([0xB0, 0x63, 0x02, 0xB0, 0x62, 0x01, 0xB0, 0x06, 0x01])  # NRPN 2/1 = 1
 ```
 
 ## 42. `Dir`

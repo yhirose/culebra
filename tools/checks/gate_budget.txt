@@ -270,8 +270,9 @@ ctest.entries 38
 # shows `f(x:)`, in en and ja. 1130 since §43 shows model.device() saying why
 # a model is not on a GPU, in en and ja (skipped: needs a model).
 # 1134 since §41 MIDI shows the inputs and a wind controller played (skipped:
-# needs a device), in en and ja.
-docs.blocks 1134
+# needs a device), in en and ja. 1136 since §41 shows a device's settings
+# read with a sysex and changed (skipped: needs a device), in en and ja.
+docs.blocks 1136
 
 # The samples the language front ends are run over (examples/languages/*).
 languages.samples 130

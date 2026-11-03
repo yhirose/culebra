@@ -3,6 +3,7 @@
 // whatever inputs the machine has. tests/midi_test.sh reads a virtual source
 // end to end on macOS.
 let closed = Sys.env("CULEBRA_AUDIO") == "off"
+let refusal = |f| try { f(); nil } catch e { "{e.kind}: {e.message}" }
 
 let inputs = MIDI.inputs()
 if closed {
@@ -13,13 +14,24 @@ for p in inputs {
 }
 
 // An input that is not there is refused, naming those that are.
-let refused = try {
-  MIDI.Input.new("no such input")
-  nil
-} catch e {
-  "{e.kind}: {e.message}"
-}
+let refused = refusal(|| MIDI.Input.new("no such input"))
 assert_true(refused.starts_with("ValueError: MIDI.Input: no input no such input; there are "), refused)
 if closed {
   assert_eq(refused, "ValueError: MIDI.Input: no input no such input; there are none")
 }
+
+// The outputs the same way, and an input asked for sysexes is refused the
+// same way.
+let outputs = MIDI.outputs()
+if closed {
+  assert_eq(outputs, [])
+}
+for p in outputs {
+  assert_true(p.id is String && p.name is String)
+}
+let no_output = refusal(|| MIDI.Output.new("no such output"))
+assert_true(no_output.starts_with("ValueError: MIDI.Output: no output no such output; there are "), no_output)
+if closed {
+  assert_eq(no_output, "ValueError: MIDI.Output: no output no such output; there are none")
+}
+assert_eq(refusal(|| MIDI.Input.new("no such input", sysex: true)), refused)

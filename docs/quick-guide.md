@@ -878,7 +878,7 @@ from a signature produces code that lints and does not run.
 | `FST` | 14 | compiled read-only dictionary: prefix, predictive and fuzzy search |
 | `Search` | 9 | full-text index over your own documents, ranked |
 | `Audio` | 72 | sound for any program, with or without a window: WASM-4 tones, samples, streamed music, synthesised PCM, the microphone |
-| `MIDI` | 7 | input from a MIDI keyboard or wind controller |
+| `MIDI` | 10 | input from a MIDI keyboard or wind controller, and output to one |
 | `LLM` | 15 | a client for LLMs: one step with a provider (the Messages API or Chat Completions), a conversation that runs your functions as tools, or a request as it is |
 | `Llama` | 8 | a model run in this process: load a GGUF file, then `generate` or `chat` (a build option) |
 

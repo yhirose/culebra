@@ -5698,16 +5698,34 @@ inline JitArray* _ns_audio_floats(const T* p, size_t n, const char* what, size_t
     culebra_runtime_array_push(r, TAG_FLOAT, _culebra_double_to_bits(static_cast<double>(p[i * stride])));
   return r;
 }
-// MIDI input: the inputs as [id, name, id, name, ...]; an input opened under
-// a handle of its own, -1 when there is no such port; and what came since
-// the last read, six numbers a message (culebra::_audio_detail::midi_read).
-inline JitValue _ns_audio_midi_inputs(JitValue*, int64_t) {
-  return _ns_adapt::string_array(culebra::_audio_detail::midi_inputs());
+// MIDI: the inputs (or outputs) as [id, name, id, name, ...]; an input or
+// an output opened under a handle of its own, -1 when there is no such port;
+// what came since the last read (culebra::_audio_detail::midi_read); and
+// bytes sent, answering what is wrong with them ("" when they were sent).
+inline JitValue _ns_audio_midi_ports(JitValue* a, int64_t) {
+  return _ns_adapt::string_array(culebra::_audio_detail::midi_ports(_ns_adapt::take_bool(a[0])));
 }
 inline JitValue _ns_audio_midi_open(JitValue* a, int64_t) {
   namespace ad = culebra::_audio_detail;
   int64_t id = ad::alloc_id();
-  return _ns_adapt::v_long(ad::midi_open(id, _ns_adapt::take_str(a[0])) ? id : -1);
+  return _ns_adapt::v_long(ad::midi_open(id, _ns_adapt::take_str(a[0]), _ns_adapt::take_bool(a[1])) ? id : -1);
+}
+inline JitValue _ns_audio_midi_out_open(JitValue* a, int64_t) {
+  namespace ad = culebra::_audio_detail;
+  int64_t id = ad::alloc_id();
+  return _ns_adapt::v_long(ad::midi_out_open(id, _ns_adapt::take_str(a[0])) ? id : -1);
+}
+inline JitValue _ns_audio_midi_send(JitValue* a, int64_t) {
+  auto* given = _ns_adapt::take_array(a[1]);
+  std::vector<uint8_t> bytes;
+  if (given) bytes.reserve(given->size);
+  for (size_t i = 0; given && i < given->size; i++) {
+    const auto& e = given->items[i];
+    if (e.tag != TAG_LONG || e.data < 0 || e.data > 255)
+      culebra::throw_runtime_error_at("TypeError", "MIDI.Output.send: bytes are Longs from 0 to 255", 0, 0);
+    bytes.push_back(static_cast<uint8_t>(e.data));
+  }
+  return _ns_adapt::str(culebra::_audio_detail::midi_send(_ns_adapt::take_long(a[0]), bytes));
 }
 inline JitValue _ns_audio_midi_read(JitValue* a, int64_t) {
   thread_local std::vector<double> scratch;
@@ -11630,8 +11648,10 @@ inline const NsMethod kNsRows_Audio_native[] = {
   {"_Audio", "capture_running", 1, &_ns_audio_ask<culebra::_audio_detail::capture_running>},
   {"_Audio", "capture_waiting", 1, &_ns_audio_count<culebra::_audio_detail::capture_waiting>},
   {"_Audio", "capture_read",   2, &_ns_audio_capture_read},
-  {"_Audio", "midi_inputs",    0, &_ns_audio_midi_inputs},
-  {"_Audio", "midi_open",      1, &_ns_audio_midi_open},
+  {"_Audio", "midi_ports",     1, &_ns_audio_midi_ports},
+  {"_Audio", "midi_open",      2, &_ns_audio_midi_open},
+  {"_Audio", "midi_out_open",  1, &_ns_audio_midi_out_open},
+  {"_Audio", "midi_send",      2, &_ns_audio_midi_send},
   {"_Audio", "midi_free",      1, &_ns_audio_on<culebra::_audio_detail::midi_free>},
   {"_Audio", "midi_read",      1, &_ns_audio_midi_read},
   {"_Audio", "midi_wait",      2, &_ns_audio_midi_wait},
