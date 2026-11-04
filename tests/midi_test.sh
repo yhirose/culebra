@@ -101,8 +101,9 @@ for engine in --vm --jit; do
   "$TMP/sender" "$TMP/ready" > "$TMP/sent" &
   sender=$!
   got=$(CULEBRA_AUDIO=on "$CULEBRA" "$engine" "$TMP/read.cul" "$TMP/ready" 2>&1)
-  # The sender ends within 3 s of the reader saying it is ready; a reader
-  # that failed before that leaves it waiting on the FIFO.
+  # The sender ends when the reader's last message comes; a reader that
+  # failed leaves it waiting, on the FIFO or for that message, and it is
+  # stopped here.
   for _ in $(seq 40); do kill -0 $sender 2>/dev/null || break; sleep 0.1; done
   kill $sender 2>/dev/null
   wait $sender 2>/dev/null

@@ -5,7 +5,8 @@
 // and the old note off in one packet), a bend, a channel pressure, a program,
 // a sysex in two packets, a note on at velocity 0. Then it prints, as hex
 // bytes on one line, what the destination is sent until a note on of note 0
-// comes (or 3 s pass).
+// comes (or 60 s pass: midi_test.sh stops it sooner when the reader fails,
+// and a reader slowed by a loaded machine still finds the destination).
 #include <CoreMIDI/CoreMIDI.h>
 
 #include <chrono>
@@ -81,7 +82,7 @@ int main(int argc, char **argv) {
   send({ump(0xE0, 0x7F, 0x7F), ump(0xD0, 64), ump(0xC0, 5)});
   send({0x3016477Fu, 0x6D420000u});  // F0 47 7F 6D 42 00 00 ...
   send({0x30320007u, 0x00000000u, ump(0x90, 62, 0)});  // ... 00 07 F7
-  for (int i = 0; i < 300; i++) {
+  for (int i = 0; i < 6000; i++) {
     {
       std::lock_guard<std::mutex> lock(mutex);
       if (ended) { break; }
