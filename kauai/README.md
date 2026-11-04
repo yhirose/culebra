@@ -32,8 +32,9 @@ it to a WAV file with `culebra play --wav out.wav song.kau`.
 
   Play a song with one: `culebra play --sounds kauai/sounds/soprano_sax song.kau`.
 - **Recipes**: synthesized instruments written as data, a synth brass, a synth
-  string section and an electric piano, with a `bright` knob. Play a song with
-  them: `culebra play --sounds kauai/recipes song.kau`.
+  string section and an electric piano, with a `bright` knob, and a drum kit
+  (`Kick`, `Snare`, `CrossStick`, three hi-hats, two cymbals, toms). Play a
+  song with them: `culebra play --sounds kauai/recipes song.kau`.
   [`recipe.md`](recipe.md) lists them and says how to write one.
 - [`docs/guides/kauai-sounds.md`](../docs/guides/kauai-sounds.md): the sounds a
   song plays, shaping them, supplying an `external` instrument, a model, and a
@@ -73,9 +74,11 @@ kauai song.kau --wav out.wav --from Chorus --to 1:30
 ```
 
 It takes the options `culebra play` takes, except `--sounds` and `--watch`.
-The instruments in `sounds/` (`SopranoSax`, `AltoSax`) and the recipes in
-`recipes/` (`FmBrass`, `FmStrings` and the rest) are compiled in, and a song
-names them as `external SopranoSax`; `kauai instruments` lists them. An
+The instruments in `sounds/` (`SopranoSax`, `AltoSax`), the recipes in
+`recipes/` (`FmBrass`, `FmStrings` and the rest) and the drums in
+`recipes/drums/` (`Kick`, `Snare` and the rest) are compiled in, and a song
+names them as `external SopranoSax` or `drum Kick external Kick`;
+`kauai instruments` lists them. An
 instrument of your own is added to `cli/main.cul` and the binary built again,
 because a compiled program loads no module of its own at run time.
 
@@ -112,7 +115,7 @@ than through a headphone jack.
 | Folder | What it holds |
 |---|---|
 | `engine/` | the playing code instruments from recordings share, and the interpreter of recipes |
-| `recipes/` | the instruments written as recipes, one JSON file each |
+| `recipes/` | the instruments written as recipes, one JSON file each, and the drums in `recipes/drums/` |
 | `tools/` | the tools for measuring, checking and comparing |
 | `cli/` | the command line `just kauai-build` compiles |
 | `sounds/` | the finished external instruments, one folder each |

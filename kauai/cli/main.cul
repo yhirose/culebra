@@ -9,8 +9,10 @@ import live from './live.cul'
 
 let packages = [soprano, alto, recipes]
 
-# Every bundled instrument, by the name a song gives it (`external SopranoSax`).
+# Every bundled instrument, by the name a song gives it (`external SopranoSax`),
+# and the drums, which only the recipes have (`external Kick`).
 let voices = packages.flat_map(|p| p.voices.keys().map(|k| (k, p.voices[k]))).to_object()
+let drums = recipes.drums
 
 # The same, as `kauai instruments` lists them.
 let instruments = packages.flat_map(|p| p.instruments).sorted_by(|i| i.name)
@@ -26,7 +28,8 @@ let usage = "Usage: kauai <song.kau> [options]
                        starts before it ringing on
 
        kauai instruments
-  the instruments a song names after `external`, which live plays too
+  the instruments and drums a song names after `external`; live plays
+  the instruments
 
        kauai live <instrument> [options]
   play an instrument from a MIDI controller, as a wind controller plays it:
@@ -75,6 +78,10 @@ if args[0] == "live" {
   let found = instruments.find(|i| i.name.lower() == name.lower())
   if found == nil {
     IO.eprintln("kauai: no instrument `{name}`; `kauai instruments` lists them")
+    Sys.exit(2)
+  }
+  if found.live == nil {
+    IO.eprintln("kauai: `{found.name}` is a drum, which live does not play")
     Sys.exit(2)
   }
   let breath = option("--breath", "cc2")
@@ -128,7 +135,7 @@ fn refuse(e) {
 }
 
 let song = try {
-  Audio.Kauai.load(path, voices: voices)
+  Audio.Kauai.load(path, voices:, drums:)
 } catch e: KauaiError {
   refuse(e)
 } catch e: IOError {

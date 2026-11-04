@@ -524,19 +524,29 @@ class Recipe {
     level: Long | Float = 1.0,
     params = {},
   ) {
-    let env = {
-      pitch: to_float(pitch),
-      f: hz(pitch),
-      dur: to_float(dur),
-      level: to_float(level),
-      ...self.knob_values(params),
-    }
+    let env = self._env(pitch, dur, level, params)
     let w = self._wire(env, |v, _, where| course(v, env, env.dur, where))
     # A course ends where its `off` does, or where the note does.
     let longest = [0.0, ...w.values.map(|x| x.course[-1][0] - env.dur)].max()
     let g = w.graph
     g.output(g.filter("high", g.gain(w.out, env.level), cutoff: DC_CUT))
     g.render(env.dur + longest)
+  }
+
+  # The samples of one hit, as a drum is struck: the recipe at `level`
+  # with the knobs at `params`, held for as long as the `on` of its values
+  # lasts, or for `next` seconds if that is sooner (the drum, or its choke
+  # group, struck again: an open hi-hat closed), and then for as long as
+  # its longest `off`. A drum is struck at middle C; one that is tuned has
+  # a knob for it.
+  hit(level: Long | Float = 1.0, next = nil, params = {}) {
+    let env = self._env(60, 0.0, level, params)
+    let ends = @order.flat_map(fn (name) {
+      let vs = @parts[name].values
+      vs.keys().map(|k| on_knots(vs[k], env, "recipe {@name}.parts.{name}.{k}")[-1][0])
+    })
+    let lasts = [0.0, ...ends].max()
+    self.note(60, next == nil ? lasts : Math.min(next, lasts), level, params)
   }
 
   # A note held until it is let go, playing on the device from now:
@@ -559,12 +569,24 @@ class Recipe {
   # only has to move what depends on the pitch and the level. A volume
   # above 1 is held under full scale by a limit.
   prepare(params = {}, steady: Array = []) {
-    let env = {pitch: 60.0, f: hz(60), dur: 0.0, level: 1.0, ...self.knob_values(params)}
+    let env = self._env(60, 0.0, 1.0, params)
     let w = self._wire(env, |v, name, where| live_course(v, env, steady, name, where))
     let g = w.graph
     let gain = g.gain(w.out, 0.0)
     g.output(g.limit(g.filter("high", gain, cutoff: DC_CUT)))
     Held(self, params, g, w.values, gain.gain, env, steady)
+  }
+
+  # What a note's expressions may name: its pitch, f, dur and level, and
+  # the knobs at `params` (their defaults for those it leaves out).
+  _env(pitch, dur, level, params) {
+    {
+      pitch: to_float(pitch),
+      f: hz(pitch),
+      dur: to_float(dur),
+      level: to_float(level),
+      ...self.knob_values(params),
+    }
   }
 
   # A note's graph: each part made in order, with its values where their
@@ -626,6 +648,16 @@ class Recipe {
     {
       phrase: |notes, params| recipe.phrase(notes, params),
       hears: ["len", "level", "params"],
+    }
+  }
+
+  # The instrument as a drum, as Audio.Kauai.load's `drums:` takes it: each
+  # hit is hit()'s, its `next` the deadline Kauai gives.
+  drum() {
+    let recipe = self
+    {
+      hit: |n, params| Audio.Sound(recipe.hit(n.level, n.next, params), rate: recipe.rate),
+      hears: ["level", "next"],
     }
   }
 }

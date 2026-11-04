@@ -122,6 +122,35 @@ fn a_phrase_is_its_notes_mixed_at_their_times() {
   assert_eq(xs.size(), 2400)
 }
 
+# A drum whose values' `on` last 0.02 s (the freq), 0.08 s (a gain) and
+# 0.05 s (the gain it plays, then its `off` of 0.1 s).
+let struck = made({
+  recipe: 1,
+  knobs: {tune: {"default": 500, min: 100, max: 1000}},
+  parts: {
+    w: {part: "wave", freq: {on: [[0, "tune"], [0.02, "tune / 2"]]}},
+    swell: {part: "gain", input: "w", gain: {on: [[0, 0.5], [0.08, 1]]}},
+    g: {part: "gain", input: "swell", gain: {on: [[0, 0], [0.01, 1], [0.05, 0.5]], off: [[0.1, 0]]}},
+  },
+  out: "g",
+})
+
+@test
+fn a_hit_is_held_while_its_on_lasts_or_until_the_next_if_sooner() {
+  # Held for the longest `on` of all its values, struck at middle C.
+  assert_eq(struck.hit(0.8), struck.note(60, 0.08, 0.8))
+  # Cut where the next hit comes, when that is sooner.
+  assert_eq(struck.hit(0.8, 0.03), struck.note(60, 0.03, 0.8))
+  assert_eq(struck.hit(0.8, 0.2), struck.note(60, 0.08, 0.8))
+  # Its knobs at the params given.
+  assert_eq(struck.hit(params: {tune: 300}), struck.note(60, 0.08, 1.0, {tune: 300}))
+  # As Kauai takes a drum: a Sound of the hit, hearing its level and the
+  # next hit (0.03 s, then the `off`'s 0.1 s).
+  let d = struck.drum()
+  assert_eq(d.hears, ["level", "next"])
+  assert_eq(Audio.decode(d.hit({level: 0.8, next: 0.03}, {}).data()).channels[0].size(), 1040)
+}
+
 @test
 fn a_recipe_is_checked_whole_before_it_plays() {
   let wave = {part: "wave"}

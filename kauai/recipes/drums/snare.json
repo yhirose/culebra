@@ -1,0 +1,25 @@
+{
+  "recipe": 1,
+  "parts": {
+    "head1": {"part": "wave", "freq": {
+      "on": [[0, 245]],
+      "off": [[0.03, 192, -3]]}},
+    "head1a": {"part": "gain", "input": "head1", "gain": {
+      "on": [[0, 0], [0.001, 0.6]],
+      "off": [[0.14, 0, -6]]}},
+    "head2": {"part": "wave", "freq": {
+      "on": [[0, 345]],
+      "off": [[0.03, 305, -3]]}},
+    "head2a": {"part": "gain", "input": "head2", "gain": {
+      "on": [[0, 0], [0.001, 0.3]],
+      "off": [[0.08, 0, -6]]}},
+    "wires": {"part": "noise", "seed": 4},
+    "wiresb": {"part": "filter", "kind": "band", "q": 0.6, "input": "wires", "cutoff": "mix(3000, 6000, clamp(level, 0, 1.5) / 1.5)"},
+    "wiresh": {"part": "filter", "kind": "high", "q": 0.7, "input": "wiresb", "cutoff": 1200},
+    "wiresa": {"part": "gain", "input": "wiresh", "gain": {
+      "on": [[0, 0], [0.001, 0.9]],
+      "off": [[0.025, 0.55, -2], [0.24, 0, -5]]}},
+    "all": {"part": "mix", "inputs": ["head1a", "head2a", "wiresa"], "gain": 0.38}
+  },
+  "out": "all"
+}

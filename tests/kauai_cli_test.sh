@@ -80,8 +80,32 @@ section Theme {
   C  c4 e g c
 }
 EOF
-# The same notes on a bundled recipe.
-sed -e 's/external AltoSax/external MellowFmBrass/' "$TMP/alto.kau" > "$TMP/brass.kau"
+# The same notes on a bundled recipe, with the bundled drums under them: an
+# open hi-hat in the first bar that the hat closes in the second.
+cat > "$TMP/kit.kau" <<'EOF'
+band Kit {
+  voice Lead    external MellowFmBrass  plays melody  vol 40
+  drum Kick     external Kick     vol 30
+  drum Hat      external Hat      vol 10  choke Hats
+  drum OpenHat  external OpenHat  vol 10  choke Hats
+}
+groove Beat {
+  Kick     x . . . x . . .
+  Hat      x . x . x . . .
+  OpenHat  . . . . . . x .
+}
+song Tune {
+  tempo 120
+  band Kit
+  groove Beat
+  melody in C4..B4
+  Theme
+}
+section Theme {
+  C  c4 e g c
+  G  d4 g b g
+}
+EOF
 # An instrument the program does not have.
 sed -e 's/external AltoSax/external Organ/' "$TMP/alto.kau" > "$TMP/organ.kau"
 
@@ -116,8 +140,12 @@ for lane in "${lanes[@]}"; do
   check "$lane instruments: status" 0 "$rc"
   # (the names padded to the longest one's width, whatever it is now)
   [[ "$out" == *$'\n''FmBrass   '*' a recipe; bright 0.5 (0.0 to 1.0)'$'\n'* &&
+     "$out" == *$'\n''Kick   '*' a drum'$'\n'* &&
      "$out" == 'AltoSax   '*' an alto saxophone, from recordings'* ]] || {
     echo "FAIL $lane instruments: stdout [$out]"; fail=1; }
+  run cli live Kick
+  check "$lane live, a drum: status" 2 "$rc"
+  check "$lane live, a drum: stderr" 'kauai: `Kick` is a drum, which live does not play' "$err"
   run cli live AltoSax --midi EWI
   check "$lane live, from recordings: stderr" "kauai: live needs one MIDI input named like EWI; there are none" "$err"
   run cli live Nope
@@ -157,10 +185,10 @@ for lane in "${lanes[@]}"; do
   run cli "$TMP/alto.kau" --wav "$TMP/cli.wav"
   check "$lane bundled instrument: status" 0 "$rc"
   same_wav "$lane bundled instrument" "$TMP/play.wav" "$TMP/cli.wav"
-  run play --sounds "$HERE/../kauai/recipes" --wav "$TMP/play.wav" "$TMP/brass.kau"
-  run cli "$TMP/brass.kau" --wav "$TMP/cli.wav"
-  check "$lane bundled recipe: status" 0 "$rc"
-  same_wav "$lane bundled recipe" "$TMP/play.wav" "$TMP/cli.wav"
+  run play --sounds "$HERE/../kauai/recipes" --wav "$TMP/play.wav" "$TMP/kit.kau"
+  run cli "$TMP/kit.kau" --wav "$TMP/cli.wav"
+  check "$lane bundled recipe and drums: status" 0 "$rc"
+  same_wav "$lane bundled recipe and drums" "$TMP/play.wav" "$TMP/cli.wav"
 done
 
 exit $fail

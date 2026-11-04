@@ -1,48 +1,59 @@
 # The instruments Kauai comes with that are recipes: each .json file here
-# is one, played by the engine's interpreter (kauai/engine/recipe.cul). A
-# file's name is the instrument's, without its underscores: mellow_fm_brass.json
-# is `external MellowFmBrass`.
+# is one, played by the engine's interpreter (kauai/engine/recipe.cul), and
+# each in drums/ is a drum. A file's name is the instrument's, without its
+# underscores: mellow_fm_brass.json is `external MellowFmBrass`, and
+# drums/open_hat.json is `external OpenHat`.
 #
 #   band Pads {
 #     voice Lead  external FmBrass  plays melody  bright=0.3
+#     drum Kick   external Kick     vol 30
 #   }
 
 import engine from '../engine/recipe.cul'
 
 let DIR = Dir.embedded('.')
 
-# The recipes' names: their files' names without `.json`.
-let names = DIR
-  .files()
-  .filter(|p| p.ends_with(".json"))
-  .map(|p| to_string(p.slice(0, p.size() - 5)))
-  .sorted()
-
-# The recipe `name` as JSON reads it, nil for none.
-fn find(name) {
-  let file = "{name}.json"
-  DIR.is_file(file) ? JSON.parse(DIR.read(file)) : nil
-}
-
-# The recipe `name` whole (its base under it) and checked.
-fn recipe(name) {
-  engine.Recipe.new(engine.resolved(name, find), name: name)
-}
-
-# The instruments, as Audio.Kauai.load's `voices:` takes them.
-let voices = names.map(|n| (n.replace("_", ""), recipe(n).voice())).to_object()
-
-# Each recipe as `kauai instruments` lists it: the name a song writes
-# (mellow_fm_brass is MellowFmBrass), its knobs, and its player for
-# `kauai live`.
-let instruments = names.map(fn (n) {
-  let knobs = recipe(n).knobs
-  let about = knobs.keys().map(|k| "{k} {knobs[k].fallback} ({knobs[k].min} to {knobs[k].max})")
+# The recipes in `folder` ("" for this one, "drums/" for the drums):
+# {names, find, recipe}, `names` their files' names without `.json`,
+# `find(name)` one as JSON reads it (nil for none), and `recipe(name)` one
+# whole (its base, from the same folder, under it) and checked.
+fn shelf(folder) {
+  let path = |name| "{folder}{name}.json"
+  let find = |name| DIR.is_file(path(name)) ? JSON.parse(DIR.read(path(name))) : nil
   {
-    name: n.split("_").map(|w| w.capitalize()).join(""),
-    live: || engine.LivePlayer(recipe(n)),
-    about: about.empty() ? "a recipe" : "a recipe; {about.join(", ")}",
+    names: DIR.glob(path("*")).map(|p| FS.stem(p)),
+    find,
+    recipe: |name| engine.Recipe.new(engine.resolved(name, find), name:),
   }
-})
+}
 
-export {voices, names, recipe, find, instruments}
+# The voices' names, the one `name` as JSON reads it, and whole.
+let {names, find, recipe} = shelf("")
+
+# The drums' names, and the one `name` whole.
+let {names: drum_names, recipe: drum} = shelf("drums/")
+
+# A name as a song gives it after `external`, and as Audio.Kauai.load's
+# keys are: mellow_fm_brass is MellowFmBrass, and mellowfmbrass.
+let title = |name| name.split("_").map(|w| w.capitalize()).join("")
+let key = |name| name.replace("_", "")
+
+# The instruments, as Audio.Kauai.load's `voices:` and `drums:` take them.
+let voices = names.map(|n| (key(n), recipe(n).voice())).to_object()
+let drums = drum_names.map(|n| (key(n), drum(n).drum())).to_object()
+
+# What `kauai instruments` says of recipe `r`: `what` it is, and its knobs.
+fn about(what, r) {
+  let knobs = r.knobs.keys().map(|k| "{k} {r.knobs[k].fallback} ({r.knobs[k].min} to {r.knobs[k].max})")
+  knobs.empty() ? what : "{what}; {knobs.join(", ")}"
+}
+
+# Each recipe as `kauai instruments` lists it: the name a song writes, what
+# it is and its knobs, and its player for `kauai live` (nil for a drum,
+# which live does not play).
+let instruments = [
+  ...names.map(|n| {name: title(n), live: || engine.LivePlayer(recipe(n)), about: about("a recipe", recipe(n))}),
+  ...drum_names.map(|n| {name: title(n), live: nil, about: about("a drum", drum(n))}),
+]
+
+export {voices, drums, names, drum_names, recipe, drum, find, instruments}

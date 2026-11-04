@@ -6,7 +6,8 @@ A recipe is an instrument written as data: a JSON file that wires
 then builds the graph for each note and renders it. No code is loaded, so a
 recipe plays the same under `culebra play` and in the `kauai` binary.
 
-The recipes Kauai comes with are in [`recipes/`](recipes). A file's name is the
+The recipes Kauai comes with are in [`recipes/`](recipes), and its drums in
+[`recipes/drums/`](recipes/drums) ([Drums](#drums)). A file's name is the
 instrument's, without its underscores: `mellow_fm_brass.json` is
 `external MellowFmBrass`.
 
@@ -49,8 +50,49 @@ band Pads {
 }
 ```
 
-`culebra play --sounds kauai/recipes song.kau` plays a song with them, and the
-`kauai` binary has them built in.
+`culebra play --sounds kauai/recipes song.kau` plays a song with them and the
+drums, and the `kauai` binary has them built in.
+
+## Drums
+
+A drum is a recipe in `recipes/drums/`, named as the others are, and a song
+gives it as a drum: `drums/open_hat.json` is `drum OpenHat external OpenHat`.
+A drum's name is the drum itself, as a drummer calls it: General MIDI's
+Bass Drum is `Kick`, its Side Stick `CrossStick`.
+
+| Recipe | A song names it | What it is | Knobs: default (range) |
+|---|---|---|---|
+| `kick` | `external Kick` | a bass drum: a sine falling from 150 Hz to 47 Hz, and the beater's thump, brighter the harder it is struck | |
+| `snare` | `external Snare` | two modes of the head falling in pitch, and the wires' noise, brighter the harder it is struck | |
+| `cross_stick` | `external CrossStick` | the stick laid on the head and struck on the rim: a wooden knock and a click | |
+| `hat` | `external Hat` | a closed hi-hat: six square waves at unrelated pitches for the metal, and noise, high and short | |
+| `pedal_hat` | `external PedalHat` | the hi-hat closed by its pedal: shorter and lower than `hat` | |
+| `open_hat` | `external OpenHat` | an open hi-hat, ringing until it is closed | |
+| `ride` | `external Ride` | a ride cymbal: the metal's wash, its ping and the stick | |
+| `crash` | `external Crash` | a crash cymbal, darkening as it fades over 2.6 s | |
+| `tom` | `external Tom` | a tom: the head falling to its pitch, a second mode over it, and the stick | `tune` 147 (60 to 400): the head's pitch, in Hz |
+| `high_tom`, `mid_tom`, `low_tom` | `external HighTom`, `MidTom`, `LowTom` | `tom` tuned high, in the middle (as `Tom`) and low | `tune` 196, 147 and 98 |
+
+A drum is struck at middle C (`f` is 261.63 Hz); one that is tuned has a
+knob for it, as the toms' `tune`. A hit holds the recipe for as long as the
+`on` of its values lasts, the longest of them, and then plays their `off`:
+the `on` is what the stick or the pedal does, the `off` what rings after
+it. The hit is cut short where the drum, or a drum of its `choke` group, is
+struck next, so an open hi-hat, whose `on` is its ring, is closed by the
+pedal:
+
+```
+band Kit {
+  drum Hat       external Hat       vol 10  choke Hats
+  drum PedalHat  external PedalHat  vol 8   choke Hats
+  drum OpenHat   external OpenHat   vol 10  choke Hats
+  drum Ride      external Ride      vol 9
+}
+```
+
+Each drum stays under full scale at the loudest a song strikes it (an
+accented `ff`). How loud it is against the band is its `vol`: Kauai weighs
+each drum by one hit, as it does an instrument by one note.
 
 ## A recipe
 
