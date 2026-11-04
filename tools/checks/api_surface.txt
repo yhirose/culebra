@@ -1102,6 +1102,7 @@ g.mix(inputs: Array, gain = 1.0)
 g.resonate(input, modes: Array, dry = 0.0)
 g.pluck(input, freq = 220.0, ring = 2.0)
 g.delay(input, time = 0.0, modulators = [])
+g.limit(input, ceiling = 0.9, release = 0.2)
 g.output(part)
 g.render(seconds) -> Array
 g.play()

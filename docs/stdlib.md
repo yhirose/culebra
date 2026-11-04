@@ -9021,6 +9021,7 @@ it or to any of its parts and values.
 | `g.resonate(input, modes: Array, dry = 0.0)` | `input` through `Audio.resonate`'s bank of resonances |
 | `g.pluck(input, freq = 220.0, ring = 2.0)` | `Audio.pluck`'s string, `input` added into it as a strike is |
 | `g.delay(input, time = 0.0, modulators = [])` | `input` as it was `time` seconds before, read between two samples in a straight line (silence before the start). The sum of the `modulators` (parts made before it) adds to the time, in seconds; the time they move it to is held from 0 to 1. A slow wave as a modulator makes a chorus, as Web Audio wires an oscillator to a `DelayNode`'s `delayTime` |
+| `g.limit(input, ceiling = 0.9, release = 0.2)` | `input` kept at or under `ceiling`, as an output stage keeps a sound from clipping: its gain drops at the sample that would go over, by as much as it takes, and comes back to 1 exponentially, with 1/e of the way left after each `release` seconds. It does not look ahead, so it adds no delay |
 | `g.output(part)` | the part the graph plays (silence until there is one) |
 | `g.render(seconds) -> Array` | the graph's first `seconds`, worked out now from its start |
 | `g.play()` | play the graph from its start (again, if it is playing) |

@@ -8652,6 +8652,7 @@ println(Math.round(Audio.integrated_loudness(both)))                     # => -1
 | `g.resonate(input, modes: Array, dry = 0.0)` | `input`を`Audio.resonate`と同じ共鳴の集まりに通す |
 | `g.pluck(input, freq = 220.0, ring = 2.0)` | `Audio.pluck`と同じ弦。`input`をストロークと同じように弦に足し込む |
 | `g.delay(input, time = 0.0, modulators = [])` | `time`秒前の`input`。2つのサンプルの間は直線で読む（始まりより前は無音）。`modulators`（この部品より前に作った部品）の出力の和を秒として遅れに足し、動いた遅れは0から1の間に収める。遅い波をつなぐとコーラスになる。Web Audioで`DelayNode`の`delayTime`に発振器をつなぐのと同じ |
+| `g.limit(input, ceiling = 0.9, release = 0.2)` | `ceiling`以下に収めた`input`。出力段が音の割れを防ぐのと同じで、超えそうなサンプルでその分だけ音量を下げ、`release`秒で1までの残りが1/eになる速さで指数的に1へ戻す。先読みしないので遅れは足さない |
 | `g.output(part)` | グラフが鳴らす部品（決めるまでは無音） |
 | `g.render(seconds) -> Array` | グラフの最初の`seconds`秒を、始まりから今計算する |
 | `g.play()` | グラフを始まりから鳴らす（鳴っていれば始まりからやり直す） |

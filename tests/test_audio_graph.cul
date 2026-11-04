@@ -313,6 +313,40 @@ let push = held.gain(held.wave("sine", freq: 0.0, phase: Math.pi / 2.0), -0.5)
 held.output(held.delay(held.wave("sine", freq: 700.0), 0.001, modulators: [push]))
 assert_samples(held.render(0.01), iota(80).map(tone))
 
+// A limit keeps what comes in at or under its ceiling without delaying it:
+// the gain drops at the sample that would go over, by as much as it takes,
+// and comes back to 1 with 1/e of the way left after each `release`
+// seconds. A sine at 2 that falls to 0.3 at 0.01 s, sample by sample
+// against that.
+fn limited(xs, ceiling, release, rate) {
+  let back = 1.0 - Math.exp(-1.0 / (release * rate))
+  mut gain = 1.0
+  mut out = []
+  for x in xs {
+    gain += (1.0 - gain) * back
+    if Math.abs(x) * gain > ceiling {
+      gain = ceiling / Math.abs(x)
+      out.push(x < 0 ? -ceiling : ceiling)
+    } else {
+      out.push(x * gain)
+    }
+  }
+  out
+}
+fn loud(limit) {
+  let lg = Audio.Graph.new(rate: 8000)
+  let level = lg.gain(lg.wave("sine", freq: 300.0), 2.0)
+  level.gain.set(0.01, 0.3)
+  lg.output(limit == nil ? level : lg.limit(level, limit[0], limit[1]))
+  lg.render(0.05)
+}
+let unlimited = loud(nil)
+let kept_under = loud((0.9, 0.005))
+assert_samples(kept_under, limited(unlimited, 0.9, 0.005, 8000.0))
+assert_true(kept_under.all(|x| Math.abs(x) <= 0.9))
+// What stays under the ceiling passes as it is.
+assert_samples(loud((2.5, 0.005)), unlimited)
+
 // A part keeps its graph: the graph lives on after the variable that held it.
 fn lone_wave() {
   let g = Audio.Graph.new()
@@ -340,7 +374,7 @@ for (
   call,
   kind,
   message,
-) in [(|| Audio.Graph.new(rate: 0), "ValueError", "the rate is above 0"), (|| g.wave("zigzag"), "ValueError", "a wave is \"sine\", \"saw\", \"square\" or \"triangle\", not zigzag"), (|| g.wave(freq: 30000.0), "ValueError", "a wave's freq is 0 or more and below half the rate"), (|| g.wave(feedback: -1.0), "ValueError", "a wave's feedback is 0 or more"), (|| w.feedback.ramp(0.5, Math.nan), "ValueError", "a wave's feedback is 0 or more"), (|| g.wave(modulators: [elsewhere]), "ValueError", "a part takes in parts of its own graph"), (|| g.wave(phase: Math.inf), "ValueError", "a wave's phase is a finite number"), (|| g.delay(w, 1.5), "ValueError", "a delay's time is from 0 to 1"), (|| g.delay(w).time.ramp(0.5, -0.1), "ValueError", "a delay's time is from 0 to 1"), (|| g.delay(w, modulators: [elsewhere]), "ValueError", "a part takes in parts of its own graph"), (|| g.noise(seed: -1), "ValueError", "a noise's seed is a whole number from 0 below 2^31"), (|| g.filter("notch", w), "ValueError", "a filter is \"low\", \"high\" or \"band\", not notch"), (|| g.filter("low", w, cutoff: 0.0), "ValueError", "a cutoff is above 0 and below half the rate"), (|| g.filter("low", w, q: 0.0), "ValueError", "the q is above 0"), (|| g.gain(w, Math.nan), "ValueError", "a gain is a finite number"), (|| g.pluck(w, freq: 10.0), "ValueError", "a string's freq is 20 or more and below half the rate"), (|| g.pluck(w, ring: 0.0), "ValueError", "a string's ring is above 0"), (|| g.resonate(w, [{freq: 0.0, width: 10.0, gain: 1.0}]), "ValueError", "a mode's freq is above 0 and below half the rate"), (|| g.resonate(w, [{freq: 300.0, width: 0.0, gain: 1.0}]), "ValueError", "a mode's width is above 0"), (|| g.filter("low", elsewhere), "ValueError", "a part takes in parts of its own graph"), (|| g.mix([w, elsewhere]), "ValueError", "a part takes in parts of its own graph"), (|| g.output(elsewhere), "ValueError", "the output is a part of its own graph"), (|| w.freq.set(-0.5, 220.0), "ValueError", "a change's time is 0 or more"), (|| w.freq.cancel(-0.5), "ValueError", "a change's time is 0 or more"), (|| w.freq.ramp(0.5, -220.0), "ValueError", "a wave's freq is 0 or more and below half the rate"), (|| Audio.Graph.new(rate: 22050).play(), "ValueError", "a graph plays at a rate of 44100"), (|| g.render(-1.0), "ValueError", "the seconds are 0 or more")] {
+) in [(|| Audio.Graph.new(rate: 0), "ValueError", "the rate is above 0"), (|| g.wave("zigzag"), "ValueError", "a wave is \"sine\", \"saw\", \"square\" or \"triangle\", not zigzag"), (|| g.wave(freq: 30000.0), "ValueError", "a wave's freq is 0 or more and below half the rate"), (|| g.wave(feedback: -1.0), "ValueError", "a wave's feedback is 0 or more"), (|| w.feedback.ramp(0.5, Math.nan), "ValueError", "a wave's feedback is 0 or more"), (|| g.wave(modulators: [elsewhere]), "ValueError", "a part takes in parts of its own graph"), (|| g.wave(phase: Math.inf), "ValueError", "a wave's phase is a finite number"), (|| g.delay(w, 1.5), "ValueError", "a delay's time is from 0 to 1"), (|| g.delay(w).time.ramp(0.5, -0.1), "ValueError", "a delay's time is from 0 to 1"), (|| g.delay(w, modulators: [elsewhere]), "ValueError", "a part takes in parts of its own graph"), (|| g.limit(w, 0.0), "ValueError", "a limit's ceiling is above 0"), (|| g.limit(w, release: Math.inf), "ValueError", "a limit's release is above 0"), (|| g.noise(seed: -1), "ValueError", "a noise's seed is a whole number from 0 below 2^31"), (|| g.filter("notch", w), "ValueError", "a filter is \"low\", \"high\" or \"band\", not notch"), (|| g.filter("low", w, cutoff: 0.0), "ValueError", "a cutoff is above 0 and below half the rate"), (|| g.filter("low", w, q: 0.0), "ValueError", "the q is above 0"), (|| g.gain(w, Math.nan), "ValueError", "a gain is a finite number"), (|| g.pluck(w, freq: 10.0), "ValueError", "a string's freq is 20 or more and below half the rate"), (|| g.pluck(w, ring: 0.0), "ValueError", "a string's ring is above 0"), (|| g.resonate(w, [{freq: 0.0, width: 10.0, gain: 1.0}]), "ValueError", "a mode's freq is above 0 and below half the rate"), (|| g.resonate(w, [{freq: 300.0, width: 0.0, gain: 1.0}]), "ValueError", "a mode's width is above 0"), (|| g.filter("low", elsewhere), "ValueError", "a part takes in parts of its own graph"), (|| g.mix([w, elsewhere]), "ValueError", "a part takes in parts of its own graph"), (|| g.output(elsewhere), "ValueError", "the output is a part of its own graph"), (|| w.freq.set(-0.5, 220.0), "ValueError", "a change's time is 0 or more"), (|| w.freq.cancel(-0.5), "ValueError", "a change's time is 0 or more"), (|| w.freq.ramp(0.5, -220.0), "ValueError", "a wave's freq is 0 or more and below half the rate"), (|| Audio.Graph.new(rate: 22050).play(), "ValueError", "a graph plays at a rate of 44100"), (|| g.render(-1.0), "ValueError", "the seconds are 0 or more")] {
   assert_eq(caught(call), (kind, "Audio.Graph: " + message))
 }
 assert_eq(caught(|| g.resonate(w, [1.0]))[0], "TypeError")

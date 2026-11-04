@@ -6179,13 +6179,13 @@ inline JitValue _ns_audio_graph_new(JitValue* a, int64_t) {
   ad::graph_defs().try_emplace(id, rate);
   return _ns_adapt::v_long(id);
 }
-// A part of `family` ("wave", "noise", "filter", "gain", "resonate", "pluck"
-// or "delay"), `kind` naming the wave or the filter, wired by `wires`, two
-// lists of parts made before it: those it takes in and those that move it (a
-// wave's phase, a delay's time). It is set up by the numbers `options`: a
+// A part of `family` ("wave", "noise", "filter", "gain", "resonate", "pluck",
+// "delay" or "limit"), `kind` naming the wave or the filter, wired by `wires`,
+// two lists of parts made before it: those it takes in and those that move it
+// (a wave's phase, a delay's time). It is set up by the numbers `options`: a
 // wave's freq, feedback and phase, a noise's seed, a filter's cutoff and q, a
 // gain's gain, a resonance's dry and modes, a string's freq and ring, a
-// delay's time.
+// delay's time, a limit's ceiling and release.
 inline JitValue _ns_audio_graph_part(JitValue* a, int64_t) {
   namespace ad = culebra::_audio_detail;
   auto& g = _ns_audio_graph(a[0]);
@@ -6205,7 +6205,8 @@ inline JitValue _ns_audio_graph_part(JitValue* a, int64_t) {
   // Each family and the options it takes, in number; a resonance takes its
   // dry and then three a mode (-1 here).
   static constexpr std::pair<std::string_view, int> kFamilies[] = {
-      {"wave", 3}, {"noise", 1}, {"filter", 2}, {"gain", 1}, {"resonate", -1}, {"pluck", 2}, {"delay", 1}};
+      {"wave", 3}, {"noise", 1}, {"filter", 2}, {"gain", 1}, {"resonate", -1}, {"pluck", 2}, {"delay", 1},
+      {"limit", 2}};
   auto fam = std::ranges::find(kFamilies, family, &std::pair<std::string_view, int>::first);
   if (fam == std::end(kFamilies)) {
     auto message = culebra::format("Audio.Graph: no part {}", family);
@@ -6249,6 +6250,11 @@ inline JitValue _ns_audio_graph_part(JitValue* a, int64_t) {
   if (family == "delay") {
     auto longest = static_cast<size_t>(std::ceil(ad::kGraphDelayLongest * rate));
     return made(ad::PartKind::Delay, ad::DelayLine(longest), opt[0]);
+  }
+  if (family == "limit") {
+    if (!(opt[0] > 0 && std::isfinite(opt[0]))) _ns_audio_fail("Audio.Graph: a limit's ceiling is above 0");
+    if (!(opt[1] > 0 && std::isfinite(opt[1]))) _ns_audio_fail("Audio.Graph: a limit's release is above 0");
+    return made(ad::PartKind::Limit, ad::Limiter(opt[0], opt[1], rate));
   }
   // pluck
   int64_t size = ad::PluckString::loop_length(ad::kGraphPluckLowest, rate) + 1;

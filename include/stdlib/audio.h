@@ -1401,14 +1401,37 @@ class DelayLine {
   size_t w_ = 0;
 };
 
-enum class PartKind { Wave, Noise, Filter, Gain, Resonate, Pluck, Delay };
+// What comes in kept at or under `ceiling`, without delaying it: the gain
+// drops at the sample that would go over, by as much as it takes, and
+// returns to 1 exponentially, with 1/e of the way left after each `release`
+// seconds.
+class Limiter {
+ public:
+  Limiter(double ceiling, double release, double rate)
+      : ceiling_(ceiling), back_(1.0 - std::exp(-1.0 / (release * rate))) {}
+  double step(double x) {
+    gain_ += (1.0 - gain_) * back_;
+    const double a = std::abs(x);
+    if (a * gain_ <= ceiling_) return x * gain_;
+    gain_ = ceiling_ / a;
+    return std::copysign(ceiling_, x);  // not x * gain_, which can round past it
+  }
+
+ private:
+  double ceiling_;
+  double back_;
+  double gain_ = 1.0;
+};
+
+enum class PartKind { Wave, Noise, Filter, Gain, Resonate, Pluck, Delay, Limit };
 
 // How many values a part of `kind` reads: a wave's freq and feedback, a
 // filter's cutoff, a gain's gain, a string's freq and ring, a delay's time.
 inline int value_count(PartKind kind) {
   switch (kind) {
     case PartKind::Noise:
-    case PartKind::Resonate: return 0;
+    case PartKind::Resonate:
+    case PartKind::Limit: return 0;
     case PartKind::Wave:
     case PartKind::Pluck: return 2;
     default: return 1;
@@ -1432,7 +1455,7 @@ struct GraphPart {
   std::vector<int> inputs;       // parts made before it, added together
   std::vector<int> modulators;   // parts made before it that move it: a wave's phase, a delay's time
   Param values[2];               // a wave's freq and feedback, a filter's cutoff, a gain's gain, a string's freq and ring, a delay's time
-  std::variant<std::monostate, Oscillator, Noise, Svf, Resonance, PluckString, DelayLine> processor;
+  std::variant<std::monostate, Oscillator, Noise, Svf, Resonance, PluckString, DelayLine, Limiter> processor;
   double out[kGraphBlock] = {};
 };
 
@@ -1544,6 +1567,11 @@ class Graph {
         case PartKind::Delay: {
           auto& d = std::get<DelayLine>(p.processor);
           for (int i = 0; i < n; i++) p.out[i] = d.step(in[i], (v0[i] + mod[i]) * rate_);
+          break;
+        }
+        case PartKind::Limit: {
+          auto& l = std::get<Limiter>(p.processor);
+          for (int i = 0; i < n; i++) p.out[i] = l.step(in[i]);
           break;
         }
       }

@@ -337,6 +337,13 @@ let _audio_module = fn () {
       p.time = @_value(p, 0)
       p
     }
+    limit(
+      input: AudioGraphPart,
+      ceiling: Long | Float = 0.9,
+      release: Long | Float = 0.2,
+    ) {
+      @_part("limit", "", [input], [ceiling, release])
+    }
     output(part: AudioGraphPart) {
       if part._graph._id != @_id {
         __raise(
