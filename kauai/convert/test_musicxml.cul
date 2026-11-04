@@ -5,15 +5,21 @@ let STEP = {C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11}
 let SCHEMA = "kauai/convert/musicxml-4.0"
 let WRITTEN = {}
 
-# Song `path`'s score and its MusicXML, made once for the tests that read
-# every song.
+# Song `path`'s score, its MusicXML and that read back, made once for the
+# tests that read every song.
 fn written(path) {
   WRITTEN[path] ??= fn () {
     let score = Audio.Kauai.parse_file(path)
-    {score, text: mx.write(score)}
+    let text = mx.write(score)
+    {score, text, doc: XML.parse(text)}
   }()
   WRITTEN[path]
 }
+
+# The names of a score's parts, in order.
+let part_names = |doc| doc
+  .find_all("part-list/score-part")
+  .map(|p| p.text("part-name"))
 
 # --- playing a score -------------------------------------------------------------
 
@@ -56,22 +62,26 @@ fn unfolded(measures) {
   out
 }
 
-# The pitches a part strikes, as [onset in divisions, MIDI pitch]: its
-# grace notes a sixty-fourth (30) apart before their note, as Kauai plays
-# them.
-fn struck(part) {
+# Note `n`'s MIDI pitch, nil for a rest.
+fn midi_of(n) {
+  let p = n.find("pitch")
+  return nil if p == nil
+  12 * (to_long(p.text("octave")) + 1) +
+    STEP[p.text("step")] +
+    to_long(p.text("alter") ?? "0")
+}
+
+# What a part strikes, as [onset in divisions, what `sound_of` hears in the
+# note (nil for none), its MIDI pitch unless said]: its grace notes a
+# sixty-fourth (30) apart before their note, as Kauai plays them.
+fn struck(part, sound_of = midi_of) {
   let out = []
   mut graces = []
   mut t = 0
   mut at = 0
   for m in unfolded(part.find_all("measure")) {
     for n in m.find_all("note") {
-      let p = n.find("pitch")
-      let pitch = p == nil
-        ? nil
-        : 12 * (to_long(p.text("octave")) + 1) +
-          STEP[p.text("step")] +
-          to_long(p.text("alter") ?? "0")
+      let pitch = sound_of(n)
       if n.find("grace") != nil {
         graces = [...graces, pitch]
         continue
@@ -91,15 +101,19 @@ fn struck(part) {
   out
 }
 
-# The voices of a band that play only lines a score writes, each with the
-# names of its lines: `Melody` for the melody, else its parts.
-fn line_voices(arrangement) {
+# The parts of a band's voices in a score, each with the parts it plays
+# on: `Melody` for the melody, the song's parts it plays, and its own last,
+# after every part the song writes, for the grooves, echoes and harmonies
+# it plays (`played`). A part is its index among the score's.
+fn voice_parts(arrangement, played, names) {
+  let band_at = names.size() -
+    played.voices.size() -
+    (played.drums.empty() ? 0 : 1)
   arrangement.lines().map(|l| l
     .split_whitespace()
     .map(|w| w.to_string())).filter(|w| w.size() > 1 &&
-    w[0] == "voice").flat_map(fn (w) {
+    w[0] == "voice").map(fn (w) {
     let plays = iota(w.size() - 1).filter(|i| w[i] == "plays").map(|i| w[i + 1])
-    return [] if plays.empty() || plays.any(|p| p != "melody" && p != "part")
     let from = w.index_of("part")
     let parts = from < 0
       ? []
@@ -109,29 +123,33 @@ fn line_voices(arrangement) {
         .take_while(|x| x.slice(0, 1).to_string() !=
           x.slice(0, 1).to_string().lower())
         .collect()
-    [{
+    let own = played.voices.index_of(w[1])
+    {
       voice: w[1],
-      lines: [...(plays.contains("melody") ? ["Melody"] : []), ...parts],
-    }]
+      parts: [
+        ...(plays.contains("melody") ? [0] : []),
+        ...parts.map(|p| names.slice(0, band_at).index_of(p)).filter(|i| i >= 0),
+        ...(own < 0 ? [] : [band_at + own]),
+      ],
+    }
   })
 }
 
 # Every song's score plays the notes the song does, in the same order: each
-# voice that plays only the melody or parts strikes the pitches the score's
-# lines do, with its repeats and endings taken. (Kauai's times are seconds,
-# with swing and articulations in them, so the order is what is compared.)
+# voice strikes the pitches the parts it plays on do, and each drum is hit
+# where the drum part hits it, with the repeats and endings taken. (Kauai's
+# times are seconds, with swing and articulations in them, so the order is
+# what is compared.)
 @test
 fn every_score_plays_the_notes_of_its_song() {
   for path in corpus.SONGS {
-    let (score, doc) = (written(path).score, XML.parse(written(path).text))
-    let names = doc
-      .find_all("part-list/score-part")
-      .map(|p| p.text("part-name"))
+    let (score, doc) = (written(path).score, written(path).doc)
+    let names = part_names(doc)
     let parts = doc.find_all("part")
     let events = corpus.events_of(path, score.arrangement)
-    let voices = line_voices(score.arrangement)
+    let voices = voice_parts(score.arrangement, score.played, names)
     assert_true(
-      voices.any(|v| v.lines.contains("Melody")),
+      voices.any(|v| v.parts.contains(0)),
       "{path} has a melody voice",
     )
     for v in voices {
@@ -140,19 +158,64 @@ fn every_score_plays_the_notes_of_its_song() {
         .sorted_by(|e| (e.at, e.pitch))
         .map(|e| e.pitch)
       let written = v
-        .lines
-        .flat_map(|n| struck(parts[names.index_of(n)]))
+        .parts
+        .flat_map(|i| struck(parts[i]))
         .sorted_by(|x| (x[0], x[1]))
         .map(|x| x[1])
-      assert_eq(written, played, "{path}: {v.voice} plays {v.lines}")
+      assert_eq(
+        written,
+        played,
+        "{path}: {v.voice} plays {v.parts.map(|i| names[i])}",
+      )
     }
+    continue if score.played.drums.empty()
+    let named = doc
+      .find_all("part-list/score-part")[-1]
+      .find_all("score-instrument")
+      .map(|s| (s.attrs.id, s.text("instrument-name")))
+      .to_object()
+    let heard = events
+      .filter(|e| score.played.drums.contains(e.by))
+      .sorted_by(|e| (e.at, e.by))
+      .map(|e| e.by)
+    let drum = |n| n.find("rest") != nil
+      ? nil
+      : named[n.find("instrument").attrs.id]
+    let drummed = struck(parts[-1], drum)
+      .sorted_by(|x| (x[0], x[1]))
+      .map(|x| x[1])
+    assert_eq(drummed, heard, "{path}: the drums")
   }
 }
 
-# Every score is MusicXML 4.0 as its schema defines it, checked with xmllint
-# where there is one.
+# Every measure of every score lasts as long as its time signature says,
+# but the pickup a song opens with; and every score is MusicXML 4.0 as its
+# schema defines it, checked with xmllint where there is one.
 @test
 fn every_score_is_valid_musicxml_4() {
+  for path in corpus.SONGS {
+    for part in written(path).doc.find_all("part") {
+      mut meter = [4, 4]
+      for m in part.find_all("measure") {
+        let time = m.find("attributes/time")
+        meter = [
+          to_long(time.text("beats")),
+          to_long(time.text("beat-type")),
+        ] if time != nil
+        continue if m.attrs.get("implicit", nil) == "yes"
+        let filled = m
+          .find_all("note")
+          .filter(|n| n.find("chord") == nil && n.find("grace") == nil)
+          .map(|n| to_long(n.text("duration")))
+          .sum()
+        assert_eq(
+          filled,
+          meter[0] * 1920 / meter[1],
+          "{path}: {part.attrs.id} measure {m.attrs.number}",
+        )
+      }
+    }
+  }
   let found = try {
     Proc.run(["xmllint", "--version"]).ok
   } catch _ {
@@ -190,10 +253,10 @@ let BAND = 'band B {
 
 '
 
-# Song text (its song and sections, after a band of one voice) as the
-# score's document.
-fn scored(text) {
-  XML.parse(mx.write(Audio.Kauai.parse(BAND + text)))
+# Song text (its song and sections, after `band`, by default one voice) as
+# the score's document.
+fn scored(text, band = BAND) {
+  XML.parse(mx.write(Audio.Kauai.parse(band + text)))
 }
 
 let notes = |m| m.find_all("note")
@@ -584,4 +647,370 @@ section A {
     doc.text("identification/miscellaneous/miscellaneous-field[@name='year']"),
     "1902",
   )
+}
+
+# --- the band ----------------------------------------------------------------------
+
+let COMBO = 'band Combo {
+  voice Lead  pulse        plays melody                vol 20
+  voice Echo  pulse2                                   vol 9
+  voice Bass  triangle     plays roots in E2..D#3      vol 18
+  voice Keys  external Ep  plays chords from C4  poly  vol 7
+  Echo echoes Lead  late 1/8  level 70%
+  drum Kick     noise 120   len 1  vol 20  env 0 3 2
+  drum Hat      noise 3000  len 1  vol 5   env 0 0 1
+  drum Cowbell  noise 2000  len 1  vol 5   env 0 0 1  plays hits
+}
+
+'
+
+let combo = |text| scored(text, COMBO)
+
+# The measures of the part named `name`.
+fn part_measures(doc, name) {
+  doc.find_all("part")[part_names(doc).index_of(name)].find_all("measure")
+}
+
+let SIGNS = {"1": "#", "-1": "b"}
+
+# Note `n` as its pitch ("F#4") or "r", a "~" after a tie's start.
+fn pitch_text(n) {
+  return "r" if n.find("rest") != nil
+  let sign = SIGNS.get(n.text("pitch/alter") ?? "0", "")
+  let tie = n.find("tie[@type='start']") == nil ? "" : "~"
+  "{n.text("pitch/step")}{sign}{n.text("pitch/octave")}{tie}"
+}
+
+# A measure's notes as [pitch or "r", type].
+let heard = |m| notes(m).map(|n| [pitch_text(n), n.text("type")])
+
+@test
+fn the_band_plays_on_staves_of_its_own() {
+  let doc = combo('song Band {
+  tempo 120
+  band Combo
+  groove Pocket
+  melody in C4..B4
+
+  A
+  A with echo
+}
+
+groove Pocket {
+  Bass  1 1 - 1  . . 1 -  8 - - -  > - - - | 1 - - -  - - - - | - - - -  . . . .
+  Keys  x x x  x x x  x x x  x x x | . . . . | x - - -
+}
+
+section A {
+  C7   d4 e f# g
+  E    a1
+  Ab   r1
+}
+')
+  assert_eq(
+    part_names(doc),
+    ["Melody", "Echo", "Bass", "Keys"],
+    "a voice's staff where it plays, and no drums where none is hit",
+  )
+  let clef = |name| part_measures(doc, name)[0].text("attributes/clef/sign")
+  assert_eq(["Echo", "Bass", "Keys"].map(clef), ["G", "F", "G"])
+  let bass = part_measures(doc, "Bass")
+  assert_eq(
+    heard(bass[0]),
+    [
+      ["C3", "16th"],
+      ["C3", "eighth"],
+      ["C3", "16th"],
+      ["r", "eighth"],
+      ["C3", "eighth"],
+      ["C4", "quarter"],
+      ["D#2", "quarter"],
+    ],
+    "an eighth a 16th into the beat, and an approach spelled the way it goes, D sharp up to E",
+  )
+  assert_eq(heard(bass[1]), [["E2~", "whole"]], "a note held over the bar line")
+  assert_eq(heard(bass[2]), [["E2", "half"], ["r", "half"]])
+  let keys = part_measures(doc, "Keys")
+  assert_eq(notes(keys[0]).size(), 48)
+  assert_eq(
+    heard(keys[0]).slice(0, 4),
+    [["C4", "eighth"], ["E4", "eighth"], ["G4", "eighth"], ["Bb4", "eighth"]],
+  )
+  assert_eq(
+    heard(keys[2]),
+    [["Ab4", "whole"], ["C5", "whole"], ["Eb5", "whole"], ["Ab5", "whole"]],
+    "a chord's tones spelled from its root, A flat where the key would have G sharp",
+  )
+  assert_true(
+    notes(keys[0]).all(|n| n.text("time-modification/actual-notes") == "3" &&
+      n.text("time-modification/normal-notes") == "2"),
+    "twelve steps in a bar are triplets",
+  )
+  assert_eq(keys[0].find_all("note/notations/tuplet[@type='start']").size(), 4)
+  assert_true(keys[1].find("note/rest[@measure='yes']") != nil)
+  let echo = part_measures(doc, "Echo")
+  assert_eq(
+    echo.size(),
+    6,
+    "the passes differ in the echo, so both are written",
+  )
+  assert_true(echo[0].find("note/rest[@measure='yes']") != nil)
+  assert_eq(
+    heard(echo[3]).map(|n| n[0]),
+    ["r", "D4~", "D4", "E4~", "E4", "F#4~", "F#4", "G4~"],
+    "an eighth late, cut where each beat starts",
+  )
+  assert_eq(heard(echo[4])[0], ["G4", "eighth"])
+}
+
+@test
+fn the_band_is_spelled_by_its_key_and_chords_and_counted_in_beats() {
+  let spelled = combo('song Spell {
+  tempo 120
+  key D
+  band Combo
+  groove Walk
+  melody in C4..B4
+
+  A
+}
+
+groove Walk {
+  Bass  1 - - -  - - < -
+  Keys  . . . x
+}
+
+section A {
+  C / / Ab  d1
+  F         d1
+  Bb/Ab     d1
+}
+')
+  assert_eq(
+    heard(part_measures(spelled, "Keys")[0]),
+    [
+      ["r", "half"],
+      ["r", "quarter"],
+      ["Ab4", "quarter"],
+      ["C5", "quarter"],
+      ["Eb5", "quarter"],
+      ["Ab5", "quarter"],
+    ],
+    "spelled from the chord of its beat",
+  )
+  let bass = part_measures(spelled, "Bass")
+  assert_eq(
+    heard(bass[0]),
+    [["C3", "half"], ["F#2", "quarter"]],
+    "the key's F sharp, though it goes down to F",
+  )
+  assert_eq(
+    heard(bass[2]),
+    [["Ab2", "half"], ["Ab2", "quarter"]],
+    "a chord's bass as the chord writes it, A flat where the key would have G sharp",
+  )
+  let echoes = combo('song Echoes {
+  tempo 120
+  key A
+  band Combo
+  melody in C4..B4
+
+  A with echo
+  B with echo
+}
+
+section A {
+  A   d#4 a c# e
+}
+
+section B key C {
+  C   g#4 c e g
+}
+')
+  let echo = part_measures(echoes, "Echo")
+  assert_eq(
+    heard(echo[0]).map(|n| n[0]),
+    ["r", "D#4~", "D#4", "A4~", "A4", "C#4~", "C#4", "E4~"],
+    "D sharp nearer A major than E flat",
+  )
+  assert_eq(
+    heard(echo[1]).map(|n| n[0]),
+    ["E4", "G#4~", "G#4", "C4~", "C4", "E4~", "E4", "G4"],
+    "G sharp before A flat, as near C major; nothing tied past the end",
+  )
+  let lilt = combo('song Lilt {
+  tempo 120
+  meter 6/8
+  band Combo
+  groove Lilt
+  melody in C4..B4
+
+  A
+}
+
+groove Lilt {
+  Bass  . . 1 - . .
+}
+
+section A {
+  C   c2.
+}
+')
+  assert_eq(
+    heard(part_measures(lilt, "Bass")[0]),
+    [["r", "quarter"], ["C3~", "eighth"], ["C3", "eighth"], ["r", "quarter"]],
+    "6/8 counted in dotted quarters",
+  )
+}
+
+@test
+fn the_drums_play_on_a_drum_set() {
+  let doc = combo('song Beat {
+  tempo 120
+  band Combo
+  groove Beat
+  melody in C4..B4
+
+  A
+}
+
+groove Beat {
+  Kick     x... .... x... ....
+  Hat      ..x. ..x. .... ....
+  Cowbell  .... .... .... x...
+  Bass     - - - -  - - - -
+}
+
+section A {
+  C   c1
+  C   c1
+    hits:  x4. !x8~ x2
+  C   c1
+}
+')
+  let part = doc.find_all("part-list/score-part")[-1]
+  assert_eq(part.text("part-name"), "Drums")
+  assert_eq(
+    part
+      .find_all("score-instrument")
+      .map(|s| [s.attrs.id, s.text("instrument-name")]),
+    [["P4-I1", "Kick"], ["P4-I2", "Hat"], ["P4-I3", "Cowbell"]],
+  )
+  assert_eq(
+    part
+      .find_all("midi-instrument")
+      .map(|s| [s.attrs.id, s.text("midi-unpitched")]),
+    [["P4-I1", "37"], ["P4-I2", "43"]],
+    "General MIDI's keys, none for a drum the kit does not name",
+  )
+  let ms = part_measures(doc, "Drums")
+  let drummed = |m| notes(m).map(|n| [
+    n.find("rest") != nil
+      ? "r"
+      : "{n.text("unpitched/display-step")}{n.text("unpitched/display-octave")}",
+    n.text("notehead"),
+    n.text("type"),
+    n.find("instrument")?.attrs?.id,
+  ])
+  assert_eq(ms[0].text("attributes/clef/sign"), "percussion")
+  assert_eq(
+    drummed(ms[0]),
+    [
+      ["F4", nil, "eighth", "P4-I1"],
+      ["G5", "x", "eighth", "P4-I2"],
+      ["r", nil, "eighth", nil],
+      ["G5", "x", "eighth", "P4-I2"],
+      ["F4", nil, "quarter", "P4-I1"],
+      ["D5", nil, "quarter", "P4-I3"],
+    ],
+    "a hit lasts until the next one or the beat",
+  )
+  assert_eq(
+    drummed(ms[1]),
+    [
+      ["D5", nil, "quarter", "P4-I3"],
+      ["r", nil, "eighth", nil],
+      ["D5", nil, "eighth", "P4-I3"],
+      ["r", nil, "half", nil],
+    ],
+    "the drum that plays the hits, alone",
+  )
+  let accented = |m| notes(m).map(|n| n.find("notations/articulations/accent") !=
+    nil)
+  assert_eq(accented(ms[1]), [false, false, true, false])
+  let bass = part_measures(doc, "Bass")
+  assert_eq(
+    heard(bass[1]),
+    [["C3", "quarter"], ["C3~", "eighth"], ["C3~", "half"]],
+    "the bass plays the hits too, the last held on by the groove's next bar",
+  )
+  assert_eq(
+    accented(bass[1]),
+    [false, true, false],
+    "an accent on a note's first value",
+  )
+  assert_eq(heard(bass[2]), [["C3", "whole"]])
+  assert_eq(accented(bass[2]), [false], "and not where a tie holds it on")
+}
+
+@test
+fn a_band_folds_and_repeats_a_bar_where_it_plays_the_same() {
+  let doc = combo('song Form {
+  tempo 120
+  band Combo
+  groove One
+  melody in C4..B4
+
+  A x2
+  B
+}
+
+groove One {
+  Bass  1 . . .  . . 1 -
+}
+
+groove Two {
+  Bass  1 - - -  - - - - | 5 - - -  - - - -
+}
+
+section A {
+  C   c1
+}
+
+section B {
+  groove Two
+  F   f1
+  %
+}
+')
+  assert_eq(
+    part_names(doc),
+    ["Melody", "Bass"],
+    "a staff for a voice that plays",
+  )
+  let (
+    melody,
+    bass,
+  ) = (part_measures(doc, "Melody"), part_measures(doc, "Bass"))
+  assert_eq(melody.size(), 3, "A's two times are one in repeat signs")
+  assert_eq(
+    heard(bass[0]),
+    [
+      ["C3", "eighth"],
+      ["r", "eighth"],
+      ["r", "quarter"],
+      ["r", "quarter"],
+      ["C3", "quarter"],
+    ],
+    "a rest starts where its own value falls, no half on the second beat",
+  )
+  assert_true(bass[0].find("barline/repeat[@direction='forward']") != nil)
+  assert_true(bass[0].find("barline/repeat[@direction='backward']") != nil)
+  assert_eq(melody[2].text("attributes/measure-style/measure-repeat"), "1")
+  assert_eq(
+    bass[2].find("attributes/measure-style"),
+    nil,
+    "the bass plays the groove's next bar",
+  )
+  assert_eq(heard(bass[2]), [["C3", "whole"]])
 }

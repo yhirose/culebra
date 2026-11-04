@@ -1177,6 +1177,7 @@ println(score.sections[0].bars[1].melody[0].tuplet)  # => {actual: 2, normal: 3}
 | `song` | `name`; `tempo`, `{value, dots, per}`: `per` beats a minute of a `value` with `dots` (`tempo 96` a quarter's); `meter` `{beats, value}` (4/4 when the song writes none); `key` (`'C'` when it writes none); `swing` `{unit, first, second}` or `nil`; `band`; `groove`; `loop`; `room`; and `plays`, its lines that play, each `{section, times, ending, with, key}` (`ending` as written, `'2'`; `key` the one `in` plays it in) or `{mark}` |
 | `sections` | the sections the song plays, in the file's order, each `{name, key, pickup, bars, endings}`: `key` `nil` when the section writes none, `pickup` `{melody}` or `nil`, `endings` the ones it plays, each `{number, as_written, bars}`, `number` as written (`'2'`) |
 | `arrangement` | the `band`, `groove` and `voicings` blocks as text, as they were read (comments left out), the ones from the files the song uses with them |
+| `played` | what the band plays, bar by bar: `voices`, the names of the voices that play its grooves, echoes and harmonies, and `drums`, of the drums it hits, each in the band's order; and `bars`, every bar the song plays in the order it plays them (a pickup it starts with first), each `{len, voices, drums}` |
 
 A bar:
 
@@ -1205,6 +1206,14 @@ A bar's notes, a part's and a pickup's are its items, in order:
 
 The pitches are as written: neither a play's `in` nor a voice's `octave down`
 moves them. A section or an ending the song does not play is left out.
+
+A bar of `played` is the band as it plays, so its pitches are the ones heard:
+
+| Key | What it holds |
+|---|---|
+| `len` | the bar's length in units, a whole note 1920 |
+| `voices` | `{name, notes}` for each of `played.voices`, each note `{at, len, pitches, marks}`: `at` units from the bar's start, `len` how long it sounds (on into the bars after, for a note held over a bar line), `pitches` MIDI numbers, and `marks` those its hits give it |
+| `drums` | the hits, each `{name, at, marks}`, in order |
 
 ## Appendix A: Chord qualities
 

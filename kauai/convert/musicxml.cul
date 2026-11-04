@@ -1,6 +1,8 @@
 # A Kauai song's score, as Audio.Kauai.parse gives it, as a MusicXML 4.0
-# partwise score. The melody is the first part and each part the song writes
-# out another; the chords are <harmony> over the melody. The song is written
+# partwise score. The melody is the first part, each part the song writes
+# out another, then each voice of the band's that plays its grooves, echoes
+# and harmonies, and a drum set for its drums; the chords are <harmony> over
+# the melody. The song is written
 # in the order it plays, a section each time the song plays it, folded into
 # repeat signs and endings where every time through is the same.
 
@@ -54,6 +56,8 @@ fn type_name(value) {
 let natural = |step, octave| 12 * (octave + 1) + PC[step]
 let sounding = |p| natural(p.step, p.octave) + p.alter
 let floor_div = |a, b| (a - Math.wrap(a, b)) / b
+# The semitones from `b` to `a` the nearer way, -6 to 5.
+let semis_from = |a, b| Math.wrap(a - b + 6, 12) - 6
 
 # A key or a chord root ("Eb", "F#m", "Bb") as its letter, its alteration
 # and whether it is minor.
@@ -234,7 +238,6 @@ fn degrees_of(intervals) {
 # it or take from it: the kind that needs the fewest, the first of those.
 let kind_of = remembered(fn (intervals) {
   let tones = degrees_of(intervals)
-  let alter = |a, b| Math.wrap(a - b + 6, 12) - 6
   KINDS.map(fn (k) {
     let used = []
     let edits = []
@@ -245,14 +248,14 @@ let kind_of = remembered(fn (intervals) {
         edits.push({value: t[0], alter: 0, type: "subtract"})
       } else {
         used.push(at)
-        let by = alter(tones[at][1], t[1])
+        let by = semis_from(tones[at][1], t[1])
         edits.push({value: t[0], alter: by, type: "alter"}) if by != 0
       }
     }
     for i in iota(tones.size()).filter(|i| !used.contains(i)) {
       edits.push({
         value: tones[i][0],
-        alter: alter(tones[i][1], dominant(tones[i][0])),
+        alter: semis_from(tones[i][1], dominant(tones[i][0])),
         type: "add",
       })
     }
@@ -408,7 +411,7 @@ fn put_events(items, st, ratio, depth) {
         notes[0].starts.push(bracket)
         notes[-1].stops.push(bracket)
       },
-      it.has("pitches") || it.has("rest") => {
+      it.has("pitches") || it.has("rest") || it.has("drums") => {
         let len = units(it) * ratio.normal / ratio.actual
         st.out.push(note_event(st.at, len, it, ratio))
         st.at += len
@@ -427,26 +430,49 @@ fn events_of(items) {
 
 let length_of = |events| events.filter(|e| e.has("len")).map(|e| e.len).sum()
 
-# Rests from `from` to `to` units into a bar, each as long as fits and
-# starting on a multiple of its length.
-fn rests_between(from, to) {
+# The note values a span is written in, longest first: each plain, and
+# dotted down to the sixty-fourth.
+let VALUES = [
+  1, 2, 4, 8, 16, 32, 64, 128,
+].flat_map(|v| v == 128
+  ? [{value: v, dots: 0}]
+  : [{value: v, dots: 1}, {value: v, dots: 0}])
+
+# Each value with its length and where a note of it may start: on a
+# multiple of half its length (the eighth of 16th, eighth, 16th), a dotted
+# one on a multiple of its dot's.
+let SIZED = VALUES.map(|v| {
+  v,
+  len: units(v),
+  grid: Math.max(WHOLE / 128, v.dots == 0 ? units(v) / 2 : units(v) / 3),
+})
+
+let rest_item = |v| {rest: true, ...v, marks: []}
+
+# The values that fill `from` to `to` units, each the longest that fits and
+# starts where it may: a rest, which is plain, on a multiple of its length.
+fn values_between(from, to, rest) {
   let out = []
   mut at = from
   while at < to {
-    let v = [
-      1, 2, 4, 8, 16, 32, 64, 128,
-    ].find(|n| WHOLE / n <= to - at && at % (WHOLE / n) == 0)
-    throw "kauai convert: a rest of {to - at} units at {at} is not a note value" if v ==
+    let fit = SIZED.find(|s| s.len <= to - at &&
+      (rest ? s.v.dots == 0 && at % s.len == 0 : at % s.grid == 0))
+    throw "kauai convert: {to - at} units at {at} are not a note value" if fit ==
       nil
-    out.push(note_event(
-      at,
-      WHOLE / v,
-      {rest: true, value: v, dots: 0, marks: []},
-      PLAIN,
-    ))
-    at += WHOLE / v
+    out.push(fit.v)
+    at += fit.len
   }
   out
+}
+
+# Rests from `from` to `to` units into a bar.
+fn rests_between(from, to) {
+  mut at = from
+  values_between(from, to, true).map(fn (v) {
+    let e = note_event(at, units(v), rest_item(v), PLAIN)
+    at += units(v)
+    e
+  })
 }
 
 # Line `events` of a measure `len` long with pickup `notes` in place of the
@@ -602,6 +628,298 @@ fn tempos_at(measures) {
   out
 }
 
+# --- the band ------------------------------------------------------------------
+
+# Where a drum set's drums stand on a percussion staff, their noteheads and
+# their General MIDI keys, by the names Kauai's songs give them.
+let KIT = {
+  Kick: {step: "F", octave: 4, head: "normal", key: 36},
+  Floor: {step: "A", octave: 4, head: "normal", key: 43},
+  Snare: {step: "C", octave: 5, head: "normal", key: 38},
+  Rim: {step: "C", octave: 5, head: "x", key: 37},
+  Tom: {step: "E", octave: 5, head: "normal", key: 48},
+  Ride: {step: "F", octave: 5, head: "x", key: 51},
+  Hat: {step: "G", octave: 5, head: "x", key: 42},
+  Open: {step: "G", octave: 5, head: "circle-x", key: 46},
+  OpenHat: {step: "G", octave: 5, head: "circle-x", key: 46},
+  Pedal: {step: "D", octave: 4, head: "x", key: 44},
+  Crash: {step: "A", octave: 5, head: "x", key: 49},
+}
+# The places left for drums the kit does not name, in turn.
+let SPARE = [
+  {step: "D", octave: 5},
+  {step: "B", octave: 4},
+  {step: "G", octave: 4},
+  {step: "E", octave: 4},
+  {step: "B", octave: 5},
+  {step: "C", octave: 6},
+]
+
+# The band's drums as a drum set, each {name, id, step, octave, head, key}:
+# `id` its instrument's in part `part`, and `key` nil for a drum the kit
+# does not name, which takes the next place left.
+fn kit_of(drums, part) {
+  mut spare = 0
+  iota(drums.size()).map(fn (k) {
+    let name = drums[k]
+    let id = "{part}-I{k + 1}"
+    if KIT.has(name) {
+      return {name, id, ...KIT[name]}
+    }
+    let place = SPARE[spare % SPARE.size()]
+    let head = ["normal", "triangle", "diamond"][spare / SPARE.size() % 3]
+    spare += 1
+    {name, id, ...place, head, key: nil}
+  })
+}
+
+fn gcd(a, b) {
+  b == 0 ? a : gcd(b, a % b)
+}
+
+# The beat a measure in `meter` is counted in: a dotted one in 3/8, 6/8,
+# 9/8 and 12/8, else the meter's own.
+let beat_of = |meter| meter.value >= 8 && meter.beats % 3 == 0
+  ? 3 * WHOLE / meter.value
+  : WHOLE / meter.value
+
+# MIDI pitch `p` spelled ({step, alter, octave}): as the tone of chord `c` it
+# is (the chord's bass, else its degree over the root); else as key `key`'s
+# letter; else, going a semitone `toward` the next note (1 up, -1 down, 0
+# neither), sharp up and flat down, as an approach is; else as the letter
+# nearest the key along the line of fifths, a sharp before a flat.
+fn pitch_of(p, c, key, toward) {
+  let pc = Math.wrap(p, 12)
+  let pc_of = fn (name) {
+    let n = spelled(name)
+    Math.wrap(PC[n.step] + n.alter, 12)
+  }
+  let tone = fn () {
+    return nil if c == nil
+    return spelled(c.bass).step if c.bass != nil && pc_of(c.bass) == pc
+    let root = spelled(c.root)
+    let up = Math.wrap(pc - pc_of(c.root), 12)
+    let degree = up == 0
+      ? [1, 0]
+      : degrees_of(c.intervals).find(|x| x[1] % 12 == up)
+    degree == nil
+      ? nil
+      : LETTERS[Math.wrap(LETTERS.index_of(root.step) + degree[0] - 1, 7)]
+  }
+  let alter_of = |s| semis_from(pc, PC[s])
+  let by_key = fn () {
+    let near = LETTERS.filter(|s| Math.abs(alter_of(s)) <= 1)
+    let alters = key_alters(key)
+    let center = fifths_of(key) + 2
+    near.find(|s| alter_of(s) == alters[s]) ??
+      near.find(|s| toward != 0 && alter_of(s) == toward) ??
+      near.min_by(|s| 2 * Math.abs(FIFTHS[s] + 7 * alter_of(s) - center) +
+        (alter_of(s) > 0 ? 0 : 1))
+  }
+  let step = tone() ?? by_key()
+  let alter = alter_of(step)
+  {step, alter, octave: floor_div(p - alter - PC[step], 12) - 1}
+}
+
+# A measure's line of spans, each {from, to, sound, marks, tie} in units from
+# its start (`tie` whether the last goes on into the next measure), as items
+# that `item(sound, value, tie, marks)` makes, rests between them. A span is
+# cut where a beat starts unless it starts on one, and a beat whose notes are
+# not on a 128th's grid is a tuplet: its n cells written as m of a plain
+# value, the most that fit in n.
+fn notated(spans, meter, len, item) {
+  return [] if spans.empty()
+  let gap = |from, to| {from, to, sound: nil, marks: [], tie: false}
+  let all = []
+  mut at = 0
+  for s in spans {
+    all.push(gap(at, s.from)) if s.from > at
+    all.push(s)
+    at = s.to
+  }
+  all.push(gap(at, len)) if at < len
+  let beat = beat_of(meter)
+  let beats = iota((len + beat - 1) /
+    beat).map(|k| (k * beat, Math.min(k * beat + beat, len)))
+  let edges = all.map(|s| s.from)
+  let tuplets = beats.map(fn (b) {
+    let inside = edges.filter(|p| p > b[0] && p < b[1]).map(|p| p - b[0])
+    return nil if inside.all(|p| p % (WHOLE / 128) == 0)
+    let span = b[1] - b[0]
+    let n = span / inside.reduce(span, gcd)
+    let written = SIZED
+      .filter(|s| s.v.dots == 0 && span % s.len == 0 && span / s.len <= n)
+      .map(|s| s.len)
+      .min()
+    let d = gcd(n, span / written)
+    {actual: n / d, normal: span / written / d, cell: span / n, written}
+  })
+  # The pieces in order, each a value of a span, in the tuplet of beat `beat`
+  # or none.
+  let pieces = []
+  for s in all {
+    mut p = s.from
+    while p < s.to {
+      let bi = p / beat
+      let t = tuplets[bi]
+      let (b0, b1) = beats[bi]
+      let end = if t != nil {
+        Math.min(s.to, b1)
+      } else {
+        let next = iota(bi + 1, beats.size()).find(|j| tuplets[j] != nil)
+        let stop = next == nil ? len : beats[next][0]
+        Math.min(s.to, p == b0 ? stop : b1, stop)
+      }
+      # Units as the tuplet writes them, from its beat's start.
+      let as_written = |q| t == nil ? q : (q - b0) / t.cell * t.written
+      let vs = values_between(as_written(p), as_written(end), s.sound == nil)
+      for k, v in vs.enumerate() {
+        let last = end == s.to && k == vs.size() - 1
+        pieces.push({
+          beat: t == nil ? nil : bi,
+          item: s.sound == nil
+            ? rest_item(v)
+            : item(
+              s.sound,
+              v,
+              !last || s.tie,
+              p == s.from && k == 0 ? s.marks : [],
+            ),
+        })
+      }
+      p = end
+    }
+  }
+  let out = []
+  for k, piece in pieces.enumerate() {
+    if piece.beat == nil {
+      out.push(piece.item)
+    } else if k > 0 && pieces[k - 1].beat == piece.beat {
+      out[-1].items.push(piece.item)
+    } else {
+      let t = tuplets[piece.beat]
+      out.push({
+        tuplet: {actual: t.actual, normal: t.normal},
+        items: [piece.item],
+      })
+    }
+  }
+  out
+}
+
+let pitched = |sound, v, tie, marks| {
+  pitches: sound.map(|p| {...p, tie}),
+  ...v,
+  marks,
+  graces: [],
+  arpeggio: false,
+}
+let unpitched = |sound, v, tie, marks| {drums: sound, ...v, marks}
+
+# The chord measure `m` plays `at` units in, nil for none.
+fn chord_in(m, at) {
+  return nil if m.bar == nil
+  let chords = m.bar.chords
+  chords[Math.min(at / (WHOLE / m.meter.value), chords.size() - 1)]
+}
+
+# The band's lines along the measures, which are the bars it plays in order:
+# each voice's, then its drums' on a drum set `kit` when it has any; each
+# line its items in every measure. A voice is one line, so a note lasts until
+# the next one starts; a drum's hit until the next hit or beat.
+fn band_lines(played, measures, kit) {
+  let bars = played.bars
+  if bars.map(|b| b.len) != measures.map(|m| m.len) {
+    throw "kauai convert: the band plays other bars than the score's"
+  }
+  let starts = []
+  mut end = 0
+  for m in measures {
+    starts.push(end)
+    end += m.len
+  }
+  let voice_line = fn (v) {
+    let notes = iota(bars.size()).flat_map(|k| bars[k].voices[v].notes.map(|n| {
+      ...n,
+      at: starts[k] + n.at,
+      m: measures[k],
+      offset: n.at,
+    }))
+    let sounds = iota(notes.size()).map(fn (i) {
+      let n = notes[i]
+      let next = notes.get(i + 1, nil)
+      let step = next != nil &&
+        n.pitches.size() == 1 &&
+        next.pitches.size() == 1
+        ? next.pitches[0] - n.pitches[0]
+        : 0
+      let toward = Math.abs(step) == 1 ? step : 0
+      {
+        at: n.at,
+        to: Math.min(n.at + n.len, next?.at ?? end),
+        marks: n.marks,
+        sound: n
+          .pitches
+          .sorted()
+          .map(|p| pitch_of(p, chord_in(n.m, n.offset), n.m.key, toward)),
+      }
+    }).filter(|s| s.to > s.at)
+    # The first sound that does not end before the measure.
+    mut past = 0
+    iota(measures.size()).map(fn (k) {
+      let (from, to) = (starts[k], starts[k] + measures[k].len)
+      while past < sounds.size() && sounds[past].to <= from {
+        past += 1
+      }
+      let spans = []
+      mut j = past
+      while j < sounds.size() && sounds[j].at < to {
+        let s = sounds[j]
+        spans.push({
+          from: Math.max(s.at, from) - from,
+          to: Math.min(s.to, to) - from,
+          sound: s.sound,
+          marks: s.at >= from ? s.marks : [],
+          tie: s.to > to,
+        })
+        j += 1
+      }
+      notated(spans, measures[k].meter, measures[k].len, pitched)
+    })
+  }
+  let drum_line = fn () {
+    let placed = kit.map(|d| (d.name, d)).to_object()
+    iota(measures.size()).map(fn (k) {
+      let m = measures[k]
+      let beat = beat_of(m.meter)
+      let onsets = []
+      for h in bars[k].drums {
+        if onsets.empty() || onsets[-1].at != h.at {
+          onsets.push({at: h.at, sound: [], marks: []})
+        }
+        onsets[-1].sound.push(placed[h.name])
+        onsets[-1].marks.extend(h.marks.filter(|mk| !onsets[-1].marks.contains(mk)))
+      }
+      let spans = iota(onsets.size()).map(fn (q) {
+        let o = onsets[q]
+        let next = onsets.get(q + 1, nil)?.at ?? m.len
+        {
+          from: o.at,
+          to: Math.min(next, (o.at / beat + 1) * beat, m.len),
+          sound: o.sound,
+          marks: o.marks,
+          tie: false,
+        }
+      })
+      notated(spans, m.meter, m.len, unpitched)
+    })
+  }
+  [
+    ...iota(played.voices.size()).map(voice_line),
+    ...(kit.empty() ? [] : [drum_line()]),
+  ]
+}
+
 # --- notes ---------------------------------------------------------------------
 
 let pitch_el = |p| node(
@@ -676,8 +994,8 @@ fn mark_els(marks) {
   ]
 }
 
-# Note or rest event `e` as <note>s: its grace notes, then a <note> for each
-# of its pitches, the second and later a <chord/>.
+# Note, rest or drum event `e` as <note>s: its grace notes, then a <note>
+# for each of its pitches or drums, the second and later a <chord/>.
 fn note_els(e, acc) {
   let it = e.item
   if it.has("rest") {
@@ -693,6 +1011,29 @@ fn note_els(e, acc) {
         ...notations([...tuplet_els(e), ...mark_els(it.marks)]),
       ],
     )]
+  }
+  if it.has("drums") {
+    return iota(it.drums.size()).map(fn (k) {
+      let d = it.drums[k]
+      node(
+        "note",
+        [
+          ...(k > 0 ? [node("chord", [])] : []),
+          node(
+            "unpitched",
+            [leaf("display-step", d.step), leaf("display-octave", d.octave)],
+          ),
+          leaf("duration", e.len),
+          node("instrument", [], {id: d.id}),
+          leaf("voice", 1),
+          leaf("type", type_name(it.value)),
+          ...dot_els(it),
+          ...time_els(e),
+          ...(d.head == "normal" ? [] : [leaf("notehead", d.head)]),
+          ...notations(k > 0 ? [] : [...tuplet_els(e), ...mark_els(it.marks)]),
+        ],
+      )
+    })
   }
   let one = it.graces.size() == 1
   let graces = it.graces.map(|g| node(
@@ -871,10 +1212,12 @@ fn content_of(measures, mi, line, passes, song) {
   out
 }
 
-# How many bars the `%` sign over measure `mi` repeats, 0 for none: a `%`
-# is drawn when each bar of its sign plays as the bar it repeats, so not when
-# a pickup has gone into one or a later time changes one.
-fn repeats(measures, mi) {
+# How many bars the `%` sign over line `line` of measure `mi` repeats, 0 for
+# none: a `%` is drawn when each bar of its sign plays as the bar it
+# repeats, so not when a pickup has gone into one or a later time changes
+# one; and on a line of the band's (from `band_from` on) when the band plays
+# it as it played there too.
+fn repeats(measures, mi, line, band_from) {
   let r = measures[mi].bar?.repeat
   return 0 if r == nil
   let first = mi - r.index
@@ -890,7 +1233,8 @@ fn repeats(measures, mi) {
       copy.pass == source.pass &&
       !copy.merged &&
       !source.merged &&
-      same(copy.bar, source.bar)
+      same(copy.bar, source.bar) &&
+      (line < band_from || copy.lines[line] == source.lines[line])
   })
   drawn ? r.bars : 0
 }
@@ -1043,12 +1387,13 @@ fn clef_el(measures, line) {
   )
 }
 
-# The `%` signs along the score: for each measure, where one starts or stops.
-fn repeat_signs(order, rendered) {
+# The `%` signs along line `line`: for each measure, where one starts or
+# stops.
+fn repeat_signs(order, rendered, line) {
   let out = []
   mut on = 0
   for o in order {
-    let r = rendered[o.mi].repeats
+    let r = rendered[o.mi].repeats[line]
     let stop = on > 0 && r != on
       ? [node("measure-repeat", [], {type: "stop"})]
       : []
@@ -1083,13 +1428,30 @@ fn about_els(about, song) {
   ]
 }
 
-# The song `score` (Audio.Kauai.parse's) as MusicXML text.
+# The song `score` (Audio.Kauai.parse's) as MusicXML text: a part for the
+# melody, each part the song writes out, each voice of the band's that plays
+# its grooves, echoes and harmonies, and its drums.
 fn write(score) {
   let song = score.song
+  let band = score.played
   let names = part_names(score)
   let passes = passes_of(score)
   let measures = measures_of(passes, names)
-  let lines = iota(names.size() + 1)
+  let band_from = names.size() + 1
+  let staves = [
+    "Melody",
+    ...names,
+    ...band.voices,
+    ...(band.drums.empty() ? [] : ["Drums"]),
+  ]
+  let drum_line = band.drums.empty() ? -1 : staves.size() - 1
+  let kit = kit_of(band.drums, "P{drum_line + 1}")
+  for items in band_lines(band, measures, kit) {
+    for k, m in measures.enumerate() {
+      m.lines.push(events_of(items[k]))
+    }
+  }
+  let lines = iota(staves.size())
   for line in lines {
     join_line(measures, line)
   }
@@ -1099,13 +1461,15 @@ fn write(score) {
       key: m.key,
       meter: m.meter,
       swing: m.swing,
-      repeats: repeats(measures, mi),
+      repeats: lines.map(|line| repeats(measures, mi, line, band_from)),
       lines: lines.map(|line| content_of(measures, mi, line, passes, song)),
     }
   })
   let order = layout(passes, measures, rendered, tempos_at(measures))
-  let signs = repeat_signs(order, rendered)
-  let clefs = lines.map(|line| clef_el(measures, line))
+  let signs = lines.map(|line| repeat_signs(order, rendered, line))
+  let clefs = lines.map(|line| line == drum_line
+    ? node("clef", [leaf("sign", "percussion")])
+    : clef_el(measures, line))
   let first_number = measures[0].at < 0 ? 0 : 1
 
   let measure_el = fn (n, line) {
@@ -1119,7 +1483,7 @@ fn write(score) {
       ...(restate(|s| s.key) ? [key_el(m.key)] : []),
       ...(restate(|s| s.meter) ? [time_el(m.meter)] : []),
       ...(first ? [clefs[line]] : []),
-      ...signs[n],
+      ...signs[line][n],
     ]
     let heads = line > 0
       ? []
@@ -1169,11 +1533,24 @@ fn write(score) {
     )
   }
 
+  # The drums' instruments, and the General MIDI keys of those the kit names
+  # (MusicXML counts the keys from 1).
+  let instruments = [
+    ...kit.map(|d| node("score-instrument", [leaf("instrument-name", d.name)], {id: d.id})),
+    ...kit.filter(|d| d.key != nil).map(|d| node(
+      "midi-instrument",
+      [leaf("midi-channel", 10), leaf("midi-unpitched", d.key + 1)],
+      {id: d.id},
+    )),
+  ]
   let part_list = node(
     "part-list",
     lines.map(|line| node(
       "score-part",
-      [leaf("part-name", line == 0 ? "Melody" : names[line - 1])],
+      [
+        leaf("part-name", staves[line]),
+        ...(line == drum_line ? instruments : []),
+      ],
       {id: "P{line + 1}"},
     )),
   )

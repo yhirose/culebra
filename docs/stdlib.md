@@ -9166,7 +9166,7 @@ program supplies for `external` instruments as samples mixed alongside them.
 | --- | --- |
 | `Audio.Kauai.new(text: String, voices = nil, drums = nil)` | a song from its text, which uses no other files |
 | `Audio.Kauai.load(path: String, voices = nil, drums = nil, dir = nil)` | a song file and the files it `use`s, from the disk or from `dir` (any `Dir`, or any object with `exists(name)` and `read(name)`) |
-| `Audio.Kauai.parse(text: String)` | a song's score as written, as plain data, read and checked as `new` reads it, with no sound built ([the score as data](kauai/language.md#the-score-as-data)) |
+| `Audio.Kauai.parse(text: String)` | a song's score as written, and what its band plays bar by bar, as plain data, read and checked as `new` reads it, with no sound built ([the score as data](kauai/language.md#the-score-as-data)) |
 | `Audio.Kauai.parse_file(path: String, dir = nil)` | the same, of a song file and the files it `use`s, read as `load` reads them |
 
 A song's mistake raises `KauaiError`, its message naming the file and the

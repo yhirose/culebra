@@ -1169,6 +1169,7 @@ println(score.sections[0].bars[1].melody[0].tuplet)  # => {actual: 2, normal: 3}
 | `song` | `name`。`tempo`は`{value, dots, per}`で、`dots`の付いた`value`の音符が1分に`per`拍（`tempo 96`は4分音符）。`meter`は`{beats, value}`（書いていなければ4/4）。`key`（書いていなければ`'C'`）。`swing`は`{unit, first, second}`か`nil`。`band`、`groove`、`loop`、`room`。`plays`は演奏する行で、それぞれ`{section, times, ending, with, key}`（`ending`は書いたとおりの`'2'`、`key`は`in`で弾く調）か`{mark}` |
 | `sections` | 曲が演奏するセクションをファイルの順に。それぞれ`{name, key, pickup, bars, endings}`で、`key`はセクションが書いていなければ`nil`、`pickup`は`{melody}`か`nil`、`endings`は演奏するendingで、それぞれ`{number, as_written, bars}`。`number`は書いたとおり（`'2'`） |
 | `arrangement` | `band`、`groove`、`voicings`のブロックを、読んだとおりの文字列で（コメントは除く）。曲が使うファイルにあるものも含む |
+| `played` | バンドが弾く音を小節ごとに。`voices`はgroove、echo、harmonyを弾く楽器の名前、`drums`は叩くドラムの名前で、どちらもバンドに書いた順。`bars`は曲が弾く小節を弾く順に（曲頭の弱起が最初）並べたもので、それぞれ`{len, voices, drums}` |
 
 小節:
 
@@ -1197,6 +1198,14 @@ println(score.sections[0].bars[1].melody[0].tuplet)  # => {actual: 2, normal: 3}
 
 音高は書いたとおりで、演奏の行の`in`も、楽器の`octave down`も動かしません。曲が
 演奏しないセクションとendingは含みません。
+
+`played`の小節はバンドが弾くとおりなので、音高は聞こえる音です。
+
+| キー | 中身 |
+|---|---|
+| `len` | 小節の長さ。全音符を1920とする単位 |
+| `voices` | `played.voices`の楽器ごとに`{name, notes}`。音符はそれぞれ`{at, len, pitches, marks}`で、`at`は小節の頭からの単位、`len`は鳴る長さ（小節線をまたいで伸ばす音は後の小節まで）、`pitches`はMIDIの音高、`marks`はキメが付けたもの |
+| `drums` | ドラムの打点を順に。それぞれ`{name, at, marks}` |
 
 ## 付録 A: コードの種類
 

@@ -3806,6 +3806,8 @@ let _kauai_module = fn () {
       # its last bar.
       opening: lead_in ? bars[0].len : 0,
       steps: steps,
+      # Every bar the song plays, in order, from unit `at` for `len` units.
+      bars: bars.map(|b| ({at: b.at, len: b.len})),
       melody: {voice: melody_v, notes: voice_state.notes},
       parts: part_states.keys().map(|pname| (pname, {
         notes: part_states[pname].notes,
@@ -3905,9 +3907,9 @@ let _kauai_module = fn () {
 
   # The song parse() read, as a score: its sections and endings the song
   # plays, each bar's chords (one a beat), melody, parts and hits, its notes
-  # spelled; the song's line and its plays; and its band, grooves and voicings
-  # as written.
-  fn score_of(s) {
+  # spelled; the song's line and its plays; its band, grooves and voicings as
+  # written; and what the band plays, `played`.
+  fn score_of(s, played) {
     let sg = s.songs[0]
     let meter_of = |m| ({beats: m.beats, value: WHOLE / m.beat})
     let low_of = |r| r.low ?? sg.low
@@ -4020,6 +4022,7 @@ let _kauai_module = fn () {
       },
       sections: sections,
       arrangement: s.arrangement.map(|b| block_lines(b, "").join("\n")).join("\n\n"),
+      played: played,
     }
   }
 
@@ -4681,11 +4684,52 @@ let _kauai_module = fn () {
     fail(line, "a song given as text uses no files: use '{name}'")
   }
 
+  # What the band plays as expand() `x` gives it, bar by bar in the order the
+  # song plays: the voices that play its grooves, echoes and harmonies, and its
+  # drums, each in the band's order and named where it plays at all; and for
+  # each bar its length, each of those voices' notes and the drums' hits, from
+  # the bar's start in units. A note can last into the bars after it.
+  fn played_of(x) {
+    let notes = {}
+    for row in x.rows {
+      continue if row.voice.name == nil || row.notes.empty()
+      notes.get_or_put(row.voice.name, || []).extend(row.notes)
+    }
+    let voices = x.voices.keys().filter(|vn| notes.has(vn))
+    let drums = x.drums.keys().filter(|dn| x.hits.any(|h| h.name == dn))
+    # The `at`s in bar order: each bar takes the ones before its end.
+    let by_bar = fn (sorted, keep) {
+      mut k = 0
+      x.bars.map(fn (b) {
+        let from = k
+        while k < sorted.size() && sorted[k].at < b.at + b.len {
+          k += 1
+        }
+        sorted.slice(from, k).map(|it| keep(it, it.at - b.at))
+      })
+    }
+    let voice_bars = voices.map(|vn| by_bar(notes[vn].sorted_by(|n| n.at), |n, at| ({
+      at: at,
+      len: n.len,
+      pitches: [...n.pitches],
+      marks: [...n.get("marks", [])],
+    })))
+    let hit_bars = by_bar(x.hits.sorted_by(|h| h.at), |h, at| ({name: h.name, at: at, marks: [...h.marks]}))
+    {
+      voices: voices,
+      drums: drums,
+      bars: iota(x.bars.size()).map(|i| ({
+        len: x.bars[i].len,
+        voices: iota(voices.size()).map(|v| ({name: voices[v], notes: voice_bars[v][i]})),
+        drums: hit_bars[i],
+      })),
+    }
+  }
+
   # The song's score, checked as a song that plays is.
   fn score(src, file, load) {
     let s = parse(src, file, load)
-    expand(s, file)
-    score_of(s)
+    score_of(s, played_of(expand(s, file)))
   }
   {
     load: fn (path: String, voices = nil, drums = nil, dir = nil) {

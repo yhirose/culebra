@@ -109,6 +109,58 @@ assert_eq(coda.melody[4], {direction: "tempo", tempo: {value: 4, dots: 1, per: 5
 let chord = coda.parts[0].notes[0]
 assert_eq(chord.pitches, [note("F", 0, 4, false), note("A", 0, 4, false), note("C", 0, 5, false)])
 
+# What the band plays, bar by bar in the order the song plays them: nothing
+# under the pickup that starts it; the bass's groove, under the 2nd time's
+# chord too; the hits, a tie holding one on; and six steps in 9/8 in G. The
+# Keys voice plays only its part, which the score writes.
+let played = score.played
+assert_eq([played.voices, played.drums], [["Bass"], []])
+assert_eq(played.bars.map(|b| b.len), [240, 1440, 1440, 1440, 1440, 1440, 1440, 1440, 1440, 2160])
+let bass = |i| played.bars[i].voices
+let low = |at, len, pitch, marks| ({at: at, len: len, pitches: [pitch], marks: marks})
+let plays = |notes| [{name: "Bass", notes: notes}]
+assert_eq(bass(0), plays([]))
+assert_eq(bass(1), plays([low(0, 720, 41, []), low(720, 720, 41, [])]))
+assert_eq(bass(3), plays([low(0, 720, 48, ["accent"])]))
+assert_eq(bass(5), plays([low(0, 720, 46, []), low(720, 720, 46, [])]))
+assert_eq(bass(9), plays([low(0, 1080, 43, []), low(1080, 1080, 43, [])]))
+assert_true(played.bars.all(|b| b.drums.empty()))
+
+# A voice that plays roots and echoes the melody too plays both, in time; a
+# looping song's last note echoes into its first bar.
+let round = Audio.Kauai.parse(`
+band Pair {
+  voice Tune  pulse   plays melody            vol 20
+  voice Low   pulse2  plays roots in E2..D#3  vol 9
+  Low echoes Tune  late 1/8  level 70%
+}
+
+song Round {
+  tempo 120
+  band Pair
+  groove G
+  melody in C4..B4
+  loop
+
+  A with echo
+}
+
+groove G {
+  Low  . . . .  1 - - -
+}
+
+section A {
+  C  c2 d4 e8 f
+}
+`)
+assert_eq(round.played.bars[0].voices, [{name: "Low", notes: [
+  low(0, 240, 65, []),
+  low(240, 960, 60, []),
+  low(960, 960, 48, []),
+  low(1200, 480, 62, []),
+  low(1680, 240, 64, []),
+]}])
+
 # Plain data, as JSON.parse gives: its fields are not written to.
 assert_eq(JSON.parse(JSON.stringify(score)), score)
 assert_throws("ImmutableError", fn () {
