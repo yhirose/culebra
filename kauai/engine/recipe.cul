@@ -16,6 +16,11 @@ let straight = |curve| Math.abs(curve) < 0.001
 # stage cuts its offset: a sine moved by one of its own freq (1:1 FM) has one.
 let DC_CUT = 20.0
 
+# How far down a phrase's notes are mixed (12 dB), room for a chord of
+# several at ff under the full scale a Sound keeps: Kauai weighs an
+# instrument by one of its phrases, so its loudness in a song does not change.
+let HEADROOM = 0.25
+
 # The format a recipe's `recipe` names.
 let FORMAT = 1
 
@@ -623,7 +628,7 @@ class Recipe {
   }
 
   # A phrase as Kauai hands it to an instrument that hears len, level and
-  # params, as one Sound.
+  # params, as one Sound, its notes mixed HEADROOM down.
   phrase(notes, params) {
     Audio.Sound(
       Audio.mix(
@@ -635,6 +640,7 @@ class Recipe {
             n.get("params", params),
           ),
           at: n.at,
+          gain: HEADROOM,
         }),
         rate: @rate,
       ),
@@ -838,4 +844,4 @@ class LivePlayer {
   }
 }
 
-export {Recipe, Held, LivePlayer, RATE, resolved, merged, value, course, live_course}
+export {Recipe, Held, LivePlayer, RATE, HEADROOM, resolved, merged, value, course, live_course}

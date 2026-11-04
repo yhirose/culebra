@@ -122,6 +122,20 @@ fn a_phrase_is_its_notes_mixed_at_their_times() {
   assert_eq(xs.size(), 2400)
 }
 
+@test
+fn a_chord_is_its_notes_mixed_headroom_down_under_full_scale() {
+  # Three sines at 1.2, together up to 3.6.
+  let notes = [69, 73, 76].map(|p| {pitch: p, at: 0.0, len: 0.1, level: 1.2})
+  let v = sine(1.0)
+  let xs = Audio.decode(v.phrase(notes, {}).data()).channels[0]
+  let each = notes.map(|n| v.note(n.pitch, n.len, n.level))
+  let want = iota(xs.size()).map(|i| r.HEADROOM * each.map(|s| s[i]).sum())
+  # As close as the 16 bits a Sound keeps, and with room under full scale,
+  # where a clipped sample would sit.
+  assert_true(iota(xs.size()).all(|i| Math.abs(xs[i] - want[i]) < 1e-4))
+  assert_true(xs.all(|x| Math.abs(x) < 0.95))
+}
+
 # A drum whose values' `on` last 0.02 s (the freq), 0.08 s (a gain) and
 # 0.05 s (the gain it plays, then its `off` of 0.1 s).
 let struck = made({

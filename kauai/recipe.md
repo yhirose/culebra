@@ -176,7 +176,10 @@ A note's level is in its samples already: the engine multiplies what `out`
 plays by `level`. What `out` plays also passes a high-pass at 20 Hz, as a
 synthesizer's output stage does, so a recipe holds no offset: a sine moved by
 a wave of its own freq has one. A recipe may also use `level` for its tone, a brass brighter
-when it is played louder.
+when it is played louder. The notes a song hands together, a chord among
+them, are mixed 12 dB down, so that several at `ff` stay under full scale;
+Kauai weighs an instrument by one of its phrases, so this does not change
+how loud it plays in a song.
 
 ## Recipes over recipes
 
