@@ -474,6 +474,118 @@ section C {
 }
 
 @test
+fn endings_start_where_the_times_start_to_differ() {
+  let doc = scored('song S {
+  tempo 120
+  band B
+  melody in C4..B4
+
+  A x2
+  B ending 1
+  B ending 2
+  C x2
+  D ending 1
+  D ending 2
+  E x3
+}
+
+section A {
+  C    c1
+  C    d1
+  C    e1
+  C    f1
+    2nd: g1
+}
+
+section B {
+  F    f1
+  F    g1
+    2nd: a1
+  ending 1 {
+    G  g1
+  }
+  ending 2 {
+    C  c1
+  }
+}
+
+section C {
+  C    c1
+  C    d1
+    2nd: f1
+  C    e1
+  C    g1
+}
+
+section D {
+  ending 1 {
+    C  c1
+  }
+  ending 2 {
+    F  f1
+  }
+}
+
+section E {
+  C    c1
+  C    d1
+    3rd: e1
+}
+')
+  let ms = doc.find_all("part/measure")
+  let marks = |m| m
+    .find_all("barline/*")
+    .filter(|e| e.tag == "repeat" || e.tag == "ending")
+    .map(|e| "{e.tag} {e.attrs.get("direction", nil) ?? e.attrs.type}")
+  assert_eq(
+    ms.slice(0, 5).map(marks),
+    [
+      ["repeat forward"],
+      [],
+      [],
+      ["ending start", "ending stop", "repeat backward"],
+      ["ending start", "ending discontinue"],
+    ],
+    "A's last bar differs the second time, so it is in endings",
+  )
+  assert_eq(
+    ms.slice(0, 5).map(|m| m.find("harmony") != nil),
+    [true, false, false, true, true],
+    "an ending names its chord where it starts",
+  )
+  assert_eq(
+    ms.slice(5, 10).map(marks),
+    [
+      ["repeat forward"],
+      ["ending start"],
+      ["ending stop", "repeat backward"],
+      ["ending start"],
+      ["ending discontinue"],
+    ],
+    "B's endings start a bar before the section's own, where the times differ",
+  )
+  assert_true(ms[6].find("harmony") != nil)
+  assert_eq(
+    ms.slice(10, 20).flat_map(marks),
+    [],
+    "C differs in its second bar, more than half of it, and D has no body: both written out",
+  )
+  let ending = |m| m.find("barline[@location='left']/ending")?.attrs?.number
+  assert_eq(
+    ms
+      .slice(20, ms.size())
+      .map(|m| [ending(m), m.find("barline/repeat")?.attrs]),
+    [
+      [nil, {direction: "forward"}],
+      ["1, 2", {direction: "backward", times: "3"}],
+      ["3", nil],
+    ],
+    "E's first two times end the same, its third differently",
+  )
+  assert_eq(ms.size(), 23)
+}
+
+@test
 fn a_pickup_opens_the_song_or_goes_into_the_bar_before_it() {
   let doc = scored('song S {
   tempo 120

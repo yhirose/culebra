@@ -1162,12 +1162,13 @@ fn direction_els(e, song) {
 # --- measures ------------------------------------------------------------------
 
 # The chords measure `mi` shows, at the beats they start on: where they
-# change, and every one at the start of a pass or an ending.
-fn harmonies(measures, mi, passes) {
+# change, and every one at the start of a pass or an ending (the section's
+# own, or one the score draws, `opens`).
+fn harmonies(measures, mi, passes, opens) {
   let m = measures[mi]
   return [] if m.bar == nil
   let chords = m.bar.chords
-  let starts = m.at == 0 || m.at == passes[m.pass].body
+  let starts = opens || m.at == 0 || m.at == passes[m.pass].body
   let before = starts ? nil : measures[mi - 1].bar.chords[-1]
   iota(chords.size())
     .filter(|k| k == 0 && starts ||
@@ -1177,10 +1178,10 @@ fn harmonies(measures, mi, passes) {
 
 # What line `line` holds in measure `mi`: on the melody the section's name
 # where a pass starts and the chords, then the notes and directions.
-fn content_of(measures, mi, line, passes, song) {
+fn content_of(measures, mi, line, passes, song, opens = false) {
   let m = measures[mi]
   let events = m.lines[line] ?? []
-  let chords = line == 0 ? harmonies(measures, mi, passes) : []
+  let chords = line == 0 ? harmonies(measures, mi, passes, opens) : []
   let acc = {key: key_alters(m.key), shown: {}}
   let out = []
   if line == 0 && m.at == 0 {
@@ -1241,43 +1242,44 @@ fn repeats(measures, mi, line, band_from) {
 
 # --- the form ------------------------------------------------------------------
 
-# How passes `i` to `j` of the same section fold: nil when they do not, or
-# the passes each ending is written for ([] when every pass is the same and a
-# repeat sign is enough). They fold when they start at the same tempo, their
-# bodies are the same, and the endings that differ are the passes' last.
+# How passes `i` to `j` of the same section fold, each pass its measures in
+# `spans`: nil when they do not, or {cut, groups}. The first `cut` bars,
+# which every pass plays the same, are in repeat signs, and the rest are
+# endings, written for the passes in each of `groups` ([] when every pass is
+# the same and a repeat sign is enough). The endings start where the passes
+# start to differ, at the latest where the section's own do, and at most
+# half of the section's body goes into them. They fold when they start at
+# the same tempo, and the endings that differ are the passes' last.
 fn fold_of(passes, spans, rendered, tempos, i, j) {
   let ps = iota(i, j + 1)
-  return nil if !ps.all(|q| passes[q].section == passes[i].section)
-  let same = |xs, ys| xs.map(|mi| rendered[mi]) == ys.map(|mi| rendered[mi])
-  let body = |q| spans[q].body
-  let tail = |q| spans[q].tail
-  return nil if body(i).empty()
-  return nil if !ps.all(|q| same(body(q), body(i)) &&
-    tempos[body(q)[0]] == tempos[body(i)[0]])
-  return [] if ps.all(|q| same(tail(q), tail(i)))
+  # Whether every pass gives what `f` asks of it as pass `i` does.
+  let agree = |f| ps.all(|q| f(q) == f(i))
+  return nil if !agree(|q| passes[q].section)
+  let body = passes[i].body
+  let cut = range(body).take_while(|k| agree(|q| rendered[spans[q][k]])).count()
+  return nil if body == 0 || 2 * cut < body || !agree(|q| tempos[spans[q][0]])
+  let tail = |q| spans[q][cut..].map(|mi| rendered[mi])
+  return {cut, groups: []} if cut == body && agree(tail)
   let groups = []
   for q in ps {
-    if !groups.empty() && same(tail(q), tail(groups[-1][0])) {
-      groups[-1].push(q - i + 1)
+    if !groups.empty() && tail(q) == tail(groups[-1][0]) {
+      groups[-1].push(q)
     } else {
-      groups.push([q - i + 1])
+      groups.push([q])
     }
   }
   return nil if groups[-1].size() != 1 || ps.any(|q| tail(q).empty())
-  groups
+  {cut, groups}
 }
 
 # The measures as the score writes them, in order: each with the barlines
 # around it, and the measures the music comes into it from (-1 at the start),
 # which say what the measure has to restate.
 fn layout(passes, measures, rendered, tempos) {
-  # Each pass's measures, and those of its body and of its ending.
-  let spans = iota(passes.size()).map(fn (q) {
-    let all = iota(measures.size()).filter(|mi| measures[mi].pass == q &&
-      measures[mi].at >= 0)
-    let (body, tail) = all.partition(|mi| measures[mi].at < passes[q].body)
-    {all, body, tail}
-  })
+  # Each pass's measures.
+  let spans = iota(passes.size()).map(|q| iota(measures.size())
+    .filter(|mi| measures[mi].pass == q)
+    .filter(|mi| measures[mi].at >= 0))
   let out = []
   mut prev = -1
   let put = fn (mi, enter) {
@@ -1300,21 +1302,22 @@ fn layout(passes, measures, rendered, tempos) {
     let last = iota(i + 1, passes.size())
       .filter(|j| fold_of(passes, spans, rendered, tempos, i, j) != nil)
       .reduce(i, Math.max)
-    let groups = last == i
+    let fold = last == i
       ? nil
       : fold_of(passes, spans, rendered, tempos, i, last)
     let k = last - i + 1
-    if groups == nil {
-      for mi in spans[i].all {
+    if fold == nil {
+      for mi in spans[i] {
         put(mi, [prev])
       }
-      out[-1].style = "light-light" if !spans[i].all.empty()
+      out[-1].style = "light-light" if !spans[i].empty()
     } else {
       # The body in repeat signs (the whole pass when every time is the
       # same), which the music comes back into from where each time but the
       # last ends; then each ending, written for the times it plays.
-      let body = groups.empty() ? spans[i].all : spans[i].body
-      let tail = |g| spans[i + g[0] - 1].tail
+      let groups = fold.groups
+      let body = groups.empty() ? spans[i] : spans[i][..fold.cut]
+      let tail = |g| spans[g[0]][fold.cut..]
       let ends = groups.empty()
         ? [body[-1]]
         : groups.slice(0, groups.size() - 1).map(|g| tail(g)[-1])
@@ -1327,7 +1330,7 @@ fn layout(passes, measures, rendered, tempos) {
       let body_end = body[-1]
       for n, g in groups.enumerate() {
         let t = tail(g)
-        let number = g.map(|q| "{q}").join(", ")
+        let number = g.map(|q| "{q - i + 1}").join(", ")
         let start = put(t[0], [body_end])
         start.ending = number
         for mi in t.slice(1, t.size()) {
@@ -1466,6 +1469,10 @@ fn write(score) {
     }
   })
   let order = layout(passes, measures, rendered, tempos_at(measures))
+  # An ending names its chords where it starts, which only the layout knows.
+  for o in order.filter(|o| o.ending != nil) {
+    rendered[o.mi].lines[0] = content_of(measures, o.mi, 0, passes, song, true)
+  }
   let signs = lines.map(|line| repeat_signs(order, rendered, line))
   let clefs = lines.map(|line| line == drum_line
     ? node("clef", [leaf("sign", "percussion")])

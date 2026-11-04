@@ -102,22 +102,24 @@ harmonies, with the notes it plays, spelled from the chord they are in (else
 from the key), and a drum set staff for the drums it hits. A note is cut
 where each beat starts unless it starts on one, and a beat whose notes are
 off a 128th's grid is a tuplet. The drums Kauai's songs name (Kick, Snare,
-Rim, Hat, Open or OpenHat, Pedal, Ride, Crash, Tom, Floor) stand where drum set
-notation puts them, with their General MIDI sounds; any other drum takes a
-free line or space.
+Rim, Hat, Open or OpenHat, Pedal, Ride, Crash, Tom, Floor) stand where drum
+set notation puts them, with their General MIDI sounds; any other drum takes
+a free line or space.
 
 The score is the song in the order it plays: each time it plays a section,
 named by a rehearsal mark, with `in` spelled in the new key. Times through a
 section that are all the same, band and all, are written once in repeat
-signs, and times that differ only in their ending have first and second
-endings; any other time is written out. A pickup that starts the song is a
-short first bar, and a later one goes into the rests at the end of the bar
-before it.
+signs. Times that differ only toward their end have first and second endings
+from the bar where they start to differ (or from the section's own endings,
+where those come first), as long as at least half of the section's body
+stays in the repeat signs; any other time is written out. A pickup that
+starts the song is a short first bar, and a later one goes into the rests at
+the end of the bar before it.
 
-Not written yet: the band's dynamics (the melody's staff has them), a
-line's parameters (`\bright=`), and the song's own lines (`mark`, `with`,
-`loop`, `room`); `\rit N` and `\accel N` are a rit. or accel. without the
-tempo they reach. Writing a compressed `.mxl` and reading MusicXML back are to come.
+Not written yet: the band's dynamics (the melody's staff has them), a line's
+parameters (`\bright=`), and the song's own lines (`mark`, `with`, `loop`,
+`room`); `\rit N` and `\accel N` are a rit. or accel. without the tempo they
+reach. Writing a compressed `.mxl` and reading MusicXML back are to come.
 [`convert/musicxml-4.0/`](convert/musicxml-4.0/) holds the schema the tests
 check every score against.
 
