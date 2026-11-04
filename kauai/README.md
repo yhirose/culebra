@@ -116,10 +116,18 @@ stays in the repeat signs; any other time is written out. A pickup that
 starts the song is a short first bar, and a later one goes into the rests at
 the end of the bar before it.
 
-Not written yet: the band's dynamics (the melody's staff has them), a line's
-parameters (`\bright=`), and the song's own lines (`mark`, `with`, `loop`,
-`room`). A `\rit N` or `\accel N` is a rit. or accel., the tempo it reaches
-kept where Kauai reads it back. Writing a compressed `.mxl` is to come.
+The band's staves have the dynamics and hairpins of the bar lines, which the
+whole band plays at, each drawn where it falls and placed before the first
+note it reaches. A section played `with echo` or `with harmony` says so in
+small italics where it starts, and a song that loops says `loop` after its
+last note. A `\rit N` or `\accel N` is a rit. or accel., the tempo it
+reaches kept where Kauai reads it back.
+
+What a score has no place for (the band, its grooves and voicings, a line's
+parameters such as `\bright=`, the hits, the sections and the order the song
+plays them in, `mark` and `room`) goes with it as the song's Kauai text, in a
+`<miscellaneous-field>` named `kauai-song`, which MuseScore keeps when it
+saves the score again. Writing a compressed `.mxl` is to come.
 [`convert/musicxml-4.0/`](convert/musicxml-4.0/) holds the schema the tests
 check every score against.
 

@@ -4,9 +4,12 @@
 # and harmonies, and a drum set for its drums; the chords are <harmony> over
 # the melody. The song is written
 # in the order it plays, a section each time the song plays it, folded into
-# repeat signs and endings where every time through is the same.
+# repeat signs and endings where every time through is the same. The song's
+# Kauai text goes with it, for what a score does not hold (its band, its
+# sections and the order it plays them in).
 
 import music from './music.cul'
+import kau from './kau.cul'
 
 let WHOLE = music.WHOLE
 let PC = music.PC
@@ -20,6 +23,8 @@ let FIFTHS = {F: -1, C: 0, G: 1, D: 2, A: 3, E: 4, B: 5}
 # A dynamic's level as <sound dynamics> gives it, a percent of forte.
 let LEVELS = {pp: 40, p: 55, mp: 70, mf: 85, f: 100, ff: 115}
 let WEDGES = {cresc: "crescendo", dim: "diminuendo"}
+# A dynamic, a hairpin, or the `\!` that ends one.
+let dynamic = |d| LEVELS.has(d) || WEDGES.has(d) || d == "!"
 let TEMPOS = ["tempo", "rit", "accel"]
 let PLAIN = {actual: 1, normal: 1}  # the time a note not in a tuplet plays in
 let UNMOVED = {semis: 0, steps: 0}  # the interval a section played as written moves by
@@ -310,7 +315,7 @@ fn played_bar(b, time, iv, key) {
 
 # Each time the song plays a section, in order: the section's name, its bars
 # as they play that time (its ending's after its body's), how many of them
-# are its body's, and its pickup.
+# are its body's, its pickup, and the derived part it plays `with`.
 fn passes_of(score) {
   let song = score.song
   let sections = score.sections.map(|s| (s.name, s)).to_object()
@@ -336,6 +341,7 @@ fn passes_of(score) {
         bars: [...sec.bars.map(|b| played_bar(b, time, iv, key)), ...closing],
         body: sec.bars.size(),
         pickup: sec.pickup == nil ? nil : moved_items(sec.pickup.melody, iv),
+        with: p.with,
       }
     })
   })
@@ -364,10 +370,11 @@ fn note_event(at, len, item, ratio) {
   {at, len, item, ratio, starts: [], stops: [], mut tied_from: [], slurs: []}
 }
 
-# A direction, a parameter or a slur's end, and the hairpin or dashes it
-# ends.
-fn mark_event(at, mark) {
-  {at, mark, closes: []}
+# A direction, a parameter or a slur's end, the hairpin or dashes it ends,
+# and how far from where it stands it is drawn (a band's dynamic, which stands
+# before the note it reaches).
+fn mark_event(at, mark, offset = 0) {
+  {at, mark, closes: [], offset}
 }
 
 fn put_events(items, st, ratio, depth) {
@@ -558,7 +565,7 @@ fn join_line(measures, line) {
         },
         e.has("mark") && e.mark.has("direction") => {
           let d = e.mark.direction
-          if LEVELS.has(d) || WEDGES.has(d) || d == "!" {
+          if dynamic(d) {
             e.closes.push("wedge") if wedge
             wedge = WEDGES.has(d)
           }
@@ -793,6 +800,27 @@ let pitched = |sound, v, tie, marks| {
   arpeggio: false,
 }
 let unpitched = |sound, v, tie, marks| {drums: sound, ...v, marks}
+
+# A band line's `events` in a measure with the dynamics and hairpins of the
+# measure's `melody` events, which a bar line writes for the whole band: each
+# before the first note it reaches, the first to start at or after it, and
+# drawn at its own time.
+fn with_dynamics(events, melody) {
+  let said = melody.filter(|e| dynamic(e.mark?.direction))
+  let out = []
+  mut k = 0
+  for e in events {
+    while k < said.size() && said[k].at <= e.at {
+      out.push(mark_event(said[k].at, said[k].mark, said[k].at - e.at))
+      k += 1
+    }
+    out.push(e)
+  }
+  # Those left stand at the end: after the last note, or before the
+  # measure's rest an empty line gets.
+  let end = length_of(events)
+  [...out, ...said[k..].map(|d| mark_event(d.at, d.mark, d.at - end))]
+}
 
 # The chord measure `m` plays `at` units in, nil for none.
 fn chord_in(m, at) {
@@ -1053,16 +1081,24 @@ fn note_els(e, acc) {
 
 # --- directions ----------------------------------------------------------------
 
-fn direction(types, placement, sound = nil) {
+# A <direction>, drawn `offset` units from where it stands.
+fn direction(types, placement, sound = nil, offset = 0) {
   node(
     "direction",
     [
       ...types.map(|t| node("direction-type", [t])),
+      ...(offset == 0 ? [] : [leaf("offset", offset)]),
       ...(sound == nil ? [] : [sound]),
     ],
     {placement},
   )
 }
+
+# A word of Kauai's own (`with echo`, `loop`) in small italics.
+let remark_el = |text| direction(
+  [node("words", [text], {"font-size": "9", "font-style": "italic"})],
+  "above",
+)
 
 let quarters = |t| t.per * units(t) / (WHOLE / 4)
 let tempo_sound = |t| node("sound", [], {tempo: number_text(quarters(t))})
@@ -1110,6 +1146,7 @@ fn direction_els(e, song) {
   let closes = e.closes.map(|c| direction(
     [node(c, [], {type: "stop"})],
     "below",
+    offset: e.offset,
   ))
   let d = e.mark.direction
   let says = match d {
@@ -1141,11 +1178,13 @@ fn direction_els(e, song) {
     _ if WEDGES.has(d) => [direction(
       [node("wedge", [], {type: WEDGES[d]})],
       "below",
+      offset: e.offset,
     )],
     _ if LEVELS.has(d) => [direction(
       [node("dynamics", [node(d, [])])],
       "below",
       node("sound", [], {dynamics: LEVELS[d]}),
+      offset: e.offset,
     )],
     _ => [],
   }
@@ -1170,7 +1209,8 @@ fn harmonies(measures, mi, passes, opens) {
 }
 
 # What line `line` holds in measure `mi`: on the melody the section's name
-# where a pass starts and the chords, then the notes and directions.
+# where a pass starts (and the derived part it plays with) and the chords,
+# then the notes and directions.
 fn content_of(measures, mi, line, passes, song, opens = false) {
   let m = measures[mi]
   let events = m.lines[line] ?? []
@@ -1178,7 +1218,9 @@ fn content_of(measures, mi, line, passes, song, opens = false) {
   let acc = {key: key_alters(m.key), shown: {}}
   let out = []
   if line == 0 && m.at == 0 {
-    out.push(direction([leaf("rehearsal", passes[m.pass].section)], "above"))
+    let pass = passes[m.pass]
+    out.push(direction([leaf("rehearsal", pass.section)], "above"))
+    out.push(remark_el("with {pass.with}")) if pass.with != nil
   }
   mut h = 0
   for e in events {
@@ -1402,17 +1444,19 @@ fn repeat_signs(order, rendered, line) {
   out
 }
 
-# The song's about, and the parts its band plays (`band`, their ids), which a
-# reader leaves out as Kauai's own.
-fn about_els(about, song, band) {
+# The song's about, the parts its band plays (`band`, their ids), which a
+# reader leaves out as Kauai's own, and the song as Kauai text (a field, as
+# MuseScore keeps a score's fields when it saves it again).
+fn about_els(score, band) {
+  let {about, song} = score
   let creators = ["composer", "lyricist", "arranger"]
     .filter(|k| about[k] != nil)
     .map(|k| node("creator", ["{about[k]}"], {type: k}))
+  let field = |name, text| node("miscellaneous-field", ["{text}"], {name})
   let fields = [
-    ...["year", "note"]
-      .filter(|k| about[k] != nil)
-      .map(|k| node("miscellaneous-field", ["{about[k]}"], {name: k})),
-    ...(band.empty() ? [] : [node("miscellaneous-field", [band.join(" ")], {name: "kauai-band"})]),
+    ...["year", "note"].filter(|k| about[k] != nil).map(|k| field(k, about[k])),
+    ...(band.empty() ? [] : [field("kauai-band", band.join(" "))]),
+    field("kauai-song", kau.write(score)),
   ]
   [
     node("work", [leaf("work-title", about.title ?? song.name)]),
@@ -1423,7 +1467,7 @@ fn about_els(about, song, band) {
         ...(about.license == nil ? [] : [leaf("rights", about.license)]),
         node("encoding", [leaf("software", "Kauai")]),
         ...(about.source == nil ? [] : [leaf("source", about.source)]),
-        ...(fields.empty() ? [] : [node("miscellaneous", fields)]),
+        node("miscellaneous", fields),
       ],
     ),
   ]
@@ -1450,7 +1494,7 @@ fn write(score) {
   let kit = kit_of(band.drums, part_id(drum_line))
   for items in band_lines(band, measures, kit) {
     for k, m in measures.enumerate() {
-      m.lines.push(events_of(items[k]))
+      m.lines.push(with_dynamics(events_of(items[k]), m.lines[0]))
     }
   }
   let lines = iota(staves.size())
@@ -1533,6 +1577,7 @@ fn write(score) {
         ...(attrs.empty() ? [] : [node("attributes", attrs)]),
         ...heads,
         ...rendered[o.mi].lines[line],
+        ...(last && line == 0 && song.loop ? [remark_el("loop")] : []),
         ...right,
       ],
       number,
@@ -1568,7 +1613,7 @@ fn write(score) {
   let doc = node(
     "score-partwise",
     [
-      ...about_els(score.about, song, iota(band_from, staves.size()).map(part_id)),
+      ...about_els(score, iota(band_from, staves.size()).map(part_id)),
       part_list,
       ...parts,
     ],

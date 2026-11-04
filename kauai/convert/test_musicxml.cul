@@ -1,4 +1,5 @@
 import mx from './musicxml.cul'
+import kau from './kau.cul'
 import corpus from './corpus.cul'
 
 let STEP = {C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11}
@@ -860,6 +861,125 @@ section A {
     "an eighth late, cut where each beat starts",
   )
   assert_eq(heard(echo[4])[0], ["G4", "eighth"])
+}
+
+let DYN = 'band Dyn {
+  voice Lead  pulse     plays melody            vol 20
+  voice Alto  pulse2    plays part Fill         vol 9
+  voice Bass  triangle  plays roots in E2..D#3  vol 18
+  voice Echo  saw                               vol 8
+  Echo echoes Lead  late 1/8  level 70%
+  drum Kick   noise 120  len 1  vol 20  env 0 3 2
+}
+
+'
+
+let LOUD = 'song Loud {
+  tempo 120
+  band Dyn
+  groove Pocket
+  melody in C4..B4
+  loop
+
+  A
+  A with echo
+}
+
+groove Pocket {
+  Bass  1 - - -  - - - -  1 - - -  - - - -
+  Kick  x... x... x... x...
+}
+
+section A {
+  C    \p c4 \cresc d4 e2
+  F    \f f4 g \dim a b \!
+  C    \dim c4 \mp d e2
+    Fill: \pp c4 d e f
+}
+'
+
+# A measure's notes and the dynamics and hairpins between them, in order,
+# each with how far from where it stands it is drawn.
+let said = |m| m.children.filter(|c| c.tag == "note" ||
+  c.find("direction-type/dynamics") != nil ||
+  c.find("direction-type/wedge") != nil).map(fn (c) {
+  return "note" if c.tag == "note"
+  let t = c.find("direction-type").children[0]
+  let offset = c.text("offset")
+  (t.tag == "dynamics" ? t.children[0].tag : t.attrs.type) +
+    (offset == nil ? "" : "@{offset}")
+})
+
+@test
+fn the_band_plays_the_bar_lines_dynamics() {
+  let doc = scored(LOUD, DYN)
+  let bars = |name| part_measures(doc, name).slice(0, 3).map(said)
+  assert_eq(
+    bars("Bass"),
+    [
+      ["p", "note", "crescendo@-480", "note"],
+      ["stop", "f", "note", "diminuendo", "note", "stop"],
+      ["diminuendo", "note", "stop@-480", "mp@-480", "note"],
+    ],
+    "each before the first note it reaches, drawn back to where it is; the last after the notes",
+  )
+  assert_eq(
+    bars("Drums"),
+    [
+      ["p", "note", "crescendo", "note", "note", "note"],
+      ["stop", "f", "note", "note", "diminuendo", "note", "note", "stop"],
+      ["diminuendo", "note", "stop", "mp", "note", "note", "note"],
+    ],
+  )
+  assert_eq(
+    bars("Echo")[0],
+    ["p", "crescendo@480", "note"],
+    "before a measure's rest, drawn on to where they are",
+  )
+  assert_eq(
+    bars("Fill")[2],
+    ["pp", "note", "note", "note", "note"],
+    "a part's staff has its own dynamics, not the bar line's",
+  )
+}
+
+@test
+fn with_and_loop_are_said_in_small_words() {
+  let doc = scored(LOUD, DYN)
+  let words = |m| m
+    .find_all("direction/direction-type/words")
+    .map(|w| [w.text(), w.attrs])
+  let small = {"font-size": "9", "font-style": "italic"}
+  let melody = part_measures(doc, "Melody")
+  assert_eq(
+    melody.map(words),
+    [[], [], [], [["with echo", small]], [], [["loop", small]]],
+  )
+  let last = melody[-1].children
+  assert_eq(
+    [last[-3].tag, last[-2].text("direction-type/words"), last[-1].tag],
+    ["note", "loop", "barline"],
+    "the song starts again after its last note",
+  )
+  assert_true(
+    part_names(doc)[1..].all(|name| part_measures(
+      doc,
+      name,
+    ).all(|m| words(m).empty())),
+    "only the melody's staff says them",
+  )
+}
+
+@test
+fn every_score_holds_its_song_as_kauai_text() {
+  for path in corpus.SONGS {
+    let w = written(path)
+    assert_eq(
+      w.doc.text("identification/miscellaneous/miscellaneous-field[@name='kauai-song']"),
+      kau.write(w.score),
+      path,
+    )
+  }
 }
 
 @test
