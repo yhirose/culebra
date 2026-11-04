@@ -14,7 +14,8 @@
 #
 # A band that plays `external` instruments names sounds that sounds.cul
 # supplies; jukebox.cul plays the same songs from a window, and
-# xml2kau.cul makes a song from a MusicXML score.
+# `kauai convert score.musicxml song.kau` (kauai/README.md) makes a song
+# from a MusicXML score.
 
 import sounds from './sounds.cul'
 

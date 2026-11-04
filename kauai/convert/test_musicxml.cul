@@ -109,26 +109,13 @@ fn voice_parts(arrangement, played, names) {
   let band_at = names.size() -
     played.voices.size() -
     (played.drums.empty() ? 0 : 1)
-  arrangement.lines().map(|l| l
-    .split_whitespace()
-    .map(|w| w.to_string())).filter(|w| w.size() > 1 &&
-    w[0] == "voice").map(fn (w) {
-    let plays = iota(w.size() - 1).filter(|i| w[i] == "plays").map(|i| w[i + 1])
-    let from = w.index_of("part")
-    let parts = from < 0
-      ? []
-      : w
-        .slice(from + 1, w.size())
-        .iter()
-        .take_while(|x| x.slice(0, 1).to_string() !=
-          x.slice(0, 1).to_string().lower())
-        .collect()
-    let own = played.voices.index_of(w[1])
+  corpus.band_voices(arrangement).map(fn (v) {
+    let own = played.voices.index_of(v.voice)
     {
-      voice: w[1],
+      voice: v.voice,
       parts: [
-        ...(plays.contains("melody") ? [0] : []),
-        ...parts.map(|p| names.slice(0, band_at).index_of(p)).filter(|i| i >= 0),
+        ...(v.plays.contains("melody") ? [0] : []),
+        ...v.parts.map(|p| names.slice(0, band_at).index_of(p)).filter(|i| i >= 0),
         ...(own < 0 ? [] : [band_at + own]),
       ],
     }

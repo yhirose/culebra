@@ -182,6 +182,13 @@ for lane in "${lanes[@]}"; do
   check "$lane convert, a song that does not read: status" 1 "$rc"
   [[ "$err" == "KauaiError: "* ]] || { echo "FAIL $lane convert, a song that does not read: stderr [$err]"; fail=1; }
 
+  # The score as a song again, which reads.
+  run cli convert "$TMP/$lane.musicxml" "$TMP/$lane.kau"
+  check "$lane convert back: status" 0 "$rc"
+  check "$lane convert back: stdout" "$TMP/$lane.musicxml: written to $TMP/$lane.kau" "$out"
+  run cli "$TMP/$lane.kau" --check
+  check "$lane convert back: the song reads" 0 "$rc"
+
   # The WAV, whole and in part, is the one `culebra play` writes.
   run play --wav "$TMP/play.wav" "$TMP/duo.kau"
   run cli "$TMP/duo.kau" --wav "$TMP/cli.wav"

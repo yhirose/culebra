@@ -1,0 +1,67 @@
+# What the converters share: Kauai's time units, note letters and values,
+# pitches and articulations, and how Kauai writes a number and a tempo.
+
+let WHOLE = 1920         # Kauai's units in a whole note
+let QUARTER = WHOLE / 4  # a quarter's units, which are MusicXML's divisions
+let PC = {C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11}
+# Kauai's articulations as MusicXML's <articulations> names them.
+let ARTICULATIONS = {
+  staccato: "staccato",
+  accent: "accent",
+  tenuto: "tenuto",
+  marcato: "strong-accent",
+  scoop: "scoop",
+  plop: "plop",
+  doit: "doit",
+  fall: "falloff",
+}
+
+# Value `v` ({value, dots}) in units.
+let units = |v| WHOLE / v.value * 2 - WHOLE / v.value / (1 << v.dots)
+
+# Pitch `p` ({step, alter, octave}) as a MIDI number.
+let sounding = |p| 12 * (p.octave + 1) + PC[p.step] + p.alter
+
+# An alteration as a note name writes it: a `#` or a `b` for each semitone.
+let accidental = |alter| alter > 0 ? "#".repeat(alter) : "b".repeat(-alter)
+
+let number_text = |x| x == Math.floor(x) ? "{to_long(x)}" : "{x}"
+
+fn gcd(a, b) {
+  b == 0 ? a : gcd(b, a % b)
+}
+
+# `f` of one argument, answering from what it answered before for an
+# argument written the same: a song names a few keys and chords many times.
+# The answers are shared, so they are only read.
+fn remembered(f) {
+  let answers = {}
+  fn (x) {
+    let k = "{x}"
+    answers[k] ??= f(x)
+    answers[k]
+  }
+}
+
+# Tempo `t` ({value, dots, per}) as Kauai writes it: `96` for a quarter's,
+# else `4.=60`.
+fn tempo_text(t) {
+  t.value == 4 && t.dots == 0
+    ? number_text(t.per)
+    : "{t.value}" + ".".repeat(t.dots) + "={number_text(t.per)}"
+}
+
+# A tempo as `tempo_text` writes it, back as {value, dots, per}.
+fn tempo_of(text) {
+  let halves = text.split("=")
+  return {value: 4, dots: 0, per: to_float(text)} if halves.size() == 1
+  let head = halves[0].to_string()
+  let dots = head.count(".")
+  {
+    value: to_long(head.slice(0, head.size() - dots).to_string()),
+    dots,
+    per: to_float(halves[1].to_string()),
+  }
+}
+
+export {WHOLE, QUARTER, PC, ARTICULATIONS, units, sounding, accidental, number_text, gcd, remembered, tempo_text, tempo_of}

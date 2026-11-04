@@ -321,4 +321,7 @@ languages.samples 130
 # back from its score reads to the same score and plays the same, 1.2 s).
 # 52 since kauai/convert/test_musicxml.cul (every song's MusicXML score plays
 # its notes and is valid MusicXML 4.0, and what a score writes, 1.2 s).
-examples.suites 52
+# 53 since kauai/convert/test_musicxml_read.cul (every song read back from its
+# score plays its lines, Je te veux plays its score, the test suite's scores
+# read, and jumps, 2.2 s).
+examples.suites 53

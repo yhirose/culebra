@@ -1,0 +1,427 @@
+import mx from './musicxml.cul'
+import reader from './musicxml_read.cul'
+import kau from './kau.cul'
+import corpus from './corpus.cul'
+
+let SCORES = "kauai/convert/scores"
+let silent = {ep: |pitch, params| nil}
+let READ_BACK = {}
+
+# A score's MusicXML text read as a Kauai song: its text and what it leaves
+# out.
+fn song_of(text) {
+  let r = reader.read(text)
+  {text: kau.write(r.score), dropped: r.dropped, score: r.score}
+}
+
+# Song `path`'s score and that written as a MusicXML score and read back,
+# made once for the tests that read songs back.
+fn read_back(path) {
+  READ_BACK[path] ??= fn () {
+    let score = Audio.Kauai.parse_file(path)
+    {score, back: song_of(mx.write(score))}
+  }()
+  READ_BACK[path]
+}
+
+# The notes voices `by` play, as (pitch, start, length) in milliseconds, in
+# order.
+let notes_of = |events, by| events
+  .filter(|e| by.contains(e.by))
+  .map(|e| (e.pitch, Math.round(e.at * 1000), Math.round(e.len * 1000)))
+  .sorted_by(|n| (n[1], n[0]))
+
+# The voices of a band that play only the melody and parts, each with the
+# lines it plays: `Melody`, else its parts.
+fn line_voices(arrangement) {
+  corpus
+    .band_voices(arrangement)
+    .filter(|v| !v.plays.empty() &&
+      v.plays.all(|p| p == "melody" || p == "part"))
+    .map(|v| {
+      voice: v.voice,
+      lines: [...(v.plays.contains("melody") ? ["Melody"] : []), ...v.parts],
+    })
+}
+
+# Every song in the repository, written as a MusicXML score and read back,
+# plays its melody and its parts as the song does, and leaves out the band's
+# staves: the song's band plays the lines the score writes, each a voice of
+# the line's name.
+@test
+fn every_song_read_back_from_its_score_plays_its_lines() {
+  for path in corpus.SONGS {
+    let (score, back) = (read_back(path).score, read_back(path).back)
+    let heard = Audio.Kauai.new(back.text, voices: silent).events()
+    let played = corpus.events_of(path, score.arrangement)
+    for v in line_voices(score.arrangement) {
+      assert_eq(
+        notes_of(heard, v.lines),
+        notes_of(played, [v.voice]),
+        "{path}: {v.voice} plays {v.lines}",
+      )
+    }
+    let parts = back
+      .score
+      .sections
+      .flat_map(|s| s.bars)
+      .flat_map(|b| b.parts)
+      .map(|p| p.name)
+      .iter()
+      .distinct()
+      .collect()
+    assert_true(
+      parts.all(|p| score.played.voices.all(|v| v != p)),
+      "{path}: no band staff read as a part: {parts}",
+    )
+  }
+}
+
+# A song read from a score reads back from its own score as the same text.
+@test
+fn a_song_read_from_a_score_is_its_own_scores_song() {
+  for path in ["kauai/convert/notations.kau", "examples/games/retro-run/assets/cruise.kau", "examples/kauai/songs/sax.kau"] {
+    let once = read_back(path).back.text
+    assert_eq(song_of(mx.write(Audio.Kauai.parse(once))).text, once, path)
+  }
+}
+
+# The OpenScore Je te veux plays its voice as tests/kauai/jetveux.expect,
+# written from the score alone, has it: its repeats, its three endings and
+# its two verses' endings taken. At one tempo, the times are sixty-fourths.
+@test
+fn je_te_veux_plays_its_score() {
+  let song = song_of(reader.score_text(FS.read("{SCORES}/jetveux.mxl")))
+  let steady = Regex.replace_all(
+    "\\\\(tempo|rit|accel)( [0-9.=]+)?",
+    song.text,
+    "",
+  )
+  let per_second = song.score.song.tempo.per / 60.0 * 16
+  let at_64 = |seconds| Math.round(seconds * per_second)
+  let played = Audio
+    .Kauai
+    .new(steady, voices: silent)
+    .events()
+    .filter(|e| e.by == "Melody")
+    .map(|e| (e.pitch, at_64(e.at), at_64(e.len)))
+  let expect = JSON
+    .parse(FS.read("tests/kauai/jetveux.expect"))
+    .notes
+    .map(|n| (
+      to_long(n[0]),
+      Math.round(to_float(n[1]) * 16),
+      Math.round(to_float(n[2]) * 16),
+    ))
+  assert_eq(played, expect)
+  assert_true(
+    song.dropped.any(|d| d.starts_with("lyrics: ")),
+    "the lyrics are said to be left out",
+  )
+}
+
+# The test suite's scores read as songs, but those Kauai does not play: each
+# with what it is said to leave out, or the error.
+@test
+fn the_test_suites_scores_read_as_songs() {
+  let refused = {
+    "02a-Rests-Durations.xml": "a 64th",
+    "03a-Rhythm-Durations.xml": "a long",
+    "23a-Tuplets.xml": "a tuplet too fine for Kauai (7:3",
+    "23d-Tuplets-Nested.xml": "a tuplet too fine for Kauai (9:4",
+  }
+  let says = {
+    "61a-Lyrics.xml": "lyrics",
+    "71a-Chordnames.xml": "a chord symbol Kauai spells another way",
+    "21f-Chord-ElementInBetween.xml": "a segno or a coda sign",
+  }
+  for path in FS.glob("{SCORES}/kainhofer/*.xml").sorted() {
+    let name = FS.basename(path)
+    let outcome = try {
+      let song = song_of(FS.read(path))
+      Audio.Kauai.new(song.text, voices: silent)
+      song.dropped
+    } catch e: String {
+      e
+    }
+    if refused.has(name) {
+      assert_true(
+        outcome is String && outcome.contains(refused[name]),
+        "{name}: {outcome}",
+      )
+    } else {
+      assert_true(!(outcome is String), "{name}: {outcome}")
+      assert_true(
+        outcome.any(|d| d.starts_with(says[name])),
+        "{name}: {outcome}",
+      ) if says.has(name)
+    }
+  }
+}
+
+# A whole note of each `pitches` in a measure, the measure's other elements
+# after the note: a score as MusicXML.
+fn whole_notes(measures) {
+  partwise(measures.map(|m| ("", note(m[0], "whole", 4) + m[1])))
+}
+
+# A score of one part, its measures each (attributes, what it holds), in
+# 4/4 with a division to a quarter.
+fn partwise(measures) {
+  score_of([("Voice", measures)])
+}
+
+# A score of `parts`, each (its name, its measures as `partwise` takes them).
+fn score_of(parts) {
+  let list = parts.enumerate().map(fn ((i, p)) {
+    "<score-part id=\"P{i + 1}\"><part-name>{p[0]}</part-name></score-part>"
+  }).join("")
+  let body = parts.enumerate().map(fn ((i, p)) {
+    let measures = p[1].enumerate().map(fn ((k, m)) {
+      let head = k == 0
+        ? "<attributes><divisions>1</divisions><time><beats>4</beats><beat-type>4</beat-type></time></attributes>"
+        : ""
+      "<measure number=\"{k + 1}\"{m[0]}>{head}{m[1]}</measure>"
+    }).join("")
+    "<part id=\"P{i + 1}\">{measures}</part>"
+  }).join("")
+  "<?xml version=\"1.0\"?><score-partwise version=\"4.0\"><part-list>{list}</part-list>{body}</score-partwise>"
+}
+
+# A note of pitch `step` in octave 4, as long as `type` and `duration` say,
+# with `more` inside it.
+let note = |step, type, duration, more = ""| "<note><pitch><step>{step}</step><octave>4</octave></pitch><duration>{duration}</duration><voice>1</voice><type>{type}</type>{more}</note>"
+
+let barline = |where, what| "<barline location=\"{where}\">{what}</barline>"
+
+# What the melody plays, as (pitch, start in quarters at 120 a minute).
+let heard = |text| Audio
+  .Kauai
+  .new(song_of(text).text, voices: silent)
+  .events()
+  .filter(|e| e.by == "Melody")
+  .map(|e| (e.pitch, e.at * 2))
+
+# A first measure the score marks implicit is a pickup, and one it does not
+# is a whole bar, its notes at its start; notes in a tuplet the score draws
+# no bracket for are its tuplet still; a slur from a grace note starts on
+# the note it leads to; and a second group of endings right after a first
+# plays its endings on the times they say.
+@test
+fn pickups_tuplets_grace_slurs_and_endings_read() {
+  let short = |attrs| partwise([
+    (attrs, note("C", "quarter", 1)),
+    ("", note("D", "whole", 4)),
+  ])
+  assert_eq(heard(short(" implicit=\"yes\"")), [(60, 0.0), (62, 1.0)])
+  assert_eq(heard(short("")), [(60, 0.0), (62, 4.0)])
+  let triplet = note(
+    "C",
+    "eighth",
+    1,
+    "<time-modification><actual-notes>3</actual-notes><normal-notes>2</normal-notes></time-modification>",
+  )
+  # Three divisions to a quarter, a triplet eighth's one.
+  let bar = song_of(partwise([(
+    "",
+    "<attributes><divisions>3</divisions></attributes>" +
+      triplet +
+      triplet +
+      triplet +
+      note("D", "half", 6) +
+      note("E", "quarter", 3),
+  )])).score.sections[0].bars[0]
+  assert_eq(bar.melody[0].tuplet, {actual: 3, normal: 2})
+  let grace = "<note><grace/><pitch><step>B</step><octave>3</octave></pitch><voice>1</voice><type>eighth</type><notations><slur type=\"start\"/></notations></note>"
+  let slurred = song_of(partwise([(
+    "",
+    grace +
+      note("C", "half", 2) +
+      note("D", "half", 2, "<notations><slur type=\"stop\"/></notations>"),
+  )])).score
+  assert_eq(
+    slurred.sections[0].bars[0].melody.map(|it| it.has("slur")
+      ? it.slur
+      : it.pitches[0].step),
+    ["start", "C", "D", "stop"],
+  )
+  let groups = partwise([
+    (
+      "",
+      barline("left", "<repeat direction=\"forward\"/>") +
+        note("C", "whole", 4),
+    ),
+    (
+      "",
+      barline("left", "<ending number=\"1\" type=\"start\"/>") +
+        note("D", "whole", 4) +
+        barline("right", "<ending number=\"1\" type=\"stop\"/>"),
+    ),
+    (
+      "",
+      barline("left", "<ending number=\"2\" type=\"start\"/>") +
+        note("E", "whole", 4) +
+        barline("right", "<ending number=\"2\" type=\"discontinue\"/>"),
+    ),
+    (
+      "",
+      barline("left", "<ending number=\"1\" type=\"start\"/>") +
+        note("F", "whole", 4) +
+        barline(
+          "right",
+          "<ending number=\"1\" type=\"stop\"/><repeat direction=\"backward\"/>",
+        ),
+    ),
+    (
+      "",
+      barline("left", "<ending number=\"2\" type=\"start\"/>") +
+        note("G", "whole", 4) +
+        barline("right", "<ending number=\"2\" type=\"discontinue\"/>"),
+    ),
+  ])
+  assert_eq(heard(groups).map(|n| n[0]), [60, 62, 65, 60, 64, 67])
+}
+
+# A slur from a repeat's body that the first ending closes keeps its start
+# when the second ending only rests, or leaves the slur's voice out of its
+# last measure or only rests there: that ending ends the slur after its
+# rest, or on the voice's last note it writes. When an ending leaves the
+# voice out altogether, the body ends the slur before every ending, and
+# every note is kept.
+@test
+fn a_slur_an_ending_closes_keeps_its_start() {
+  let slur = |type| "<notations><slur type=\"{type}\"/></notations>"
+  let rest = "<note><rest/><duration>4</duration><voice>1</voice><type>whole</type></note>"
+  let repeat = barline("left", "<repeat direction=\"forward\"/>")
+  let first = barline("left", "<ending number=\"1\" type=\"start\"/>")
+  let back = barline(
+    "right",
+    "<ending number=\"1\" type=\"stop\"/><repeat direction=\"backward\"/>",
+  )
+  let second = barline("left", "<ending number=\"2\" type=\"start\"/>")
+  let done = barline("right", "<ending number=\"2\" type=\"discontinue\"/>")
+  let ending_rests = partwise([
+    ("", repeat + note("C", "whole", 4, slur("start"))),
+    ("", first + note("D", "whole", 4, slur("stop")) + back),
+    ("", second + rest + done),
+  ])
+  assert_eq(heard(ending_rests), [(60, 0.0), (62, 4.0), (60, 8.0)])
+  # A whole note or rest in a second voice of the measure.
+  let in_lower = |el| "<backup><duration>4</duration></backup>" +
+    el.replace("<voice>1</voice>", "<voice>2</voice>")
+  let lower = |step, more = ""| in_lower(note(step, "whole", 4, more))
+  let voice_left_out = partwise([
+    ("", repeat + note("C", "whole", 4) + lower("E", slur("start"))),
+    ("", first + note("D", "whole", 4) + lower("F", slur("stop")) + back),
+    ("", second + note("G", "whole", 4) + lower("A")),
+    ("", note("B", "whole", 4) + done),
+  ])
+  assert_eq(heard(voice_left_out).map(|n| n[0]), [60, 62, 60, 67, 71])
+  # What the second voice plays.
+  let lower_heard = |text| notes_of(
+    Audio.Kauai.new(song_of(text).text, voices: silent).events(),
+    ["Voice2"],
+  ).map(|n| n[0])
+  let voice_rests = partwise([
+    ("", repeat + note("C", "whole", 4) + lower("E", slur("start"))),
+    ("", first + note("D", "whole", 4) + lower("F", slur("stop")) + back),
+    ("", second + note("G", "whole", 4) + lower("A")),
+    ("", note("B", "whole", 4) + in_lower(rest) + done),
+  ])
+  assert_eq(lower_heard(voice_rests), [64, 65, 64, 69])
+  let no_ending_has_it = partwise([
+    ("", repeat + note("C", "whole", 4) + lower("E", slur("start"))),
+    ("", first + note("D", "whole", 4) + back),
+    ("", second + note("G", "whole", 4) + done),
+  ])
+  assert_eq(lower_heard(no_ending_has_it), [64, 64])
+  let second_has_not = partwise([
+    ("", repeat + note("C", "whole", 4) + lower("E", slur("start"))),
+    ("", first + note("D", "whole", 4) + lower("F", slur("stop")) + back),
+    ("", second + note("G", "whole", 4) + done),
+  ])
+  assert_eq(lower_heard(second_has_not), [64, 65, 64])
+}
+
+let sound = |attrs| "<direction><direction-type><words>x</words></direction-type><sound {attrs}/></direction>"
+
+# D.S. goes back to the segno, and after it To Coda goes to the coda; D.C.
+# goes back to the start, and after it Fine ends the song.
+@test
+fn jumps_go_where_the_score_says() {
+  let melody = |text| heard(text).map(|n| n[0])
+  let al_coda = whole_notes([
+    ("C", ""),
+    ("D", sound("segno=\"s\"")),
+    ("E", sound("tocoda=\"c\"")),
+    ("F", sound("dalsegno=\"s\"")),
+    ("G", sound("coda=\"c\"")),
+  ])
+  assert_eq(melody(al_coda), [60, 62, 64, 65, 62, 64, 67])
+  let al_fine = whole_notes([
+    ("C", ""),
+    ("D", sound("fine=\"yes\"")),
+    ("E", sound("dacapo=\"yes\"")),
+  ])
+  assert_eq(melody(al_fine), [60, 62, 64, 60, 62])
+}
+
+# A chord symbol as the score writes it (its kind's text), else as its kind
+# and degrees spell it; an sf an accent on the note after it; and a hairpin
+# a dynamic ends with nothing more.
+@test
+fn chords_and_dynamics_read_as_kauai_writes_them() {
+  let direction = |what| "<direction><direction-type>{what}</direction-type></direction>"
+  let measure = [
+    "<harmony><root><root-step>C</root-step></root><kind text=\"-7\">minor-seventh</kind></harmony>",
+    direction("<wedge type=\"crescendo\"/>"),
+    note("C", "half", 2),
+    direction("<wedge type=\"stop\"/>"),
+    direction("<dynamics><f/></dynamics>"),
+    "<harmony><root><root-step>G</root-step></root><kind>dominant</kind><degree><degree-value>9</degree-value><degree-alter>-1</degree-alter><degree-type>add</degree-type></degree></harmony>",
+    direction("<dynamics><sf/></dynamics>"),
+    note("D", "half", 2),
+  ].join("")
+  let bar = reader.read(partwise([("", measure)])).score.sections[0].bars[0]
+  assert_eq(bar.chords.map(|c| c.symbol), ["C-7", "C-7", "G7(b9)", "G7(b9)"])
+  assert_eq(
+    bar.melody.map(|it| it.has("direction") ? it.direction : it.marks),
+    ["cresc", [], "f", ["accent"]],
+  )
+}
+
+# A song read from a score gets a band: its single-note lines on the chip
+# channels pulse, pulse2 and saw while they last, the lowest single line
+# under the melody on the triangle, and the lines with chords and the rest
+# on the external piano.
+@test
+fn the_band_plays_single_lines_on_chips_and_the_rest_on_the_piano() {
+  let whole = |step| [("", note(step, "whole", 4))]
+  let chord = [(
+    "",
+    note("C", "whole", 4) +
+      note("E", "whole", 4, "<chord/>") +
+      note("G", "whole", 4, "<chord/>"),
+  )]
+  let arrangement = song_of(score_of([
+    ("Voice", whole("G")),
+    ("Keys", chord),
+    ("Alto", whole("F")),
+    ("Tenor", whole("D")),
+    ("Bass", whole("C")),
+    ("Horn", whole("E")),
+  ])).score.arrangement
+  assert_eq(
+    arrangement.split("\n").map(|l| l.to_string()),
+    [
+      "band Score \{",
+      "  voice Melody  pulse  plays melody  vol 20  gap 1",
+      "  voice Keys  external Ep  plays part Keys  poly  vol 38",
+      "  voice Alto  pulse2  plays part Alto  vol 14  gap 1",
+      "  voice Tenor  saw  plays part Tenor  vol 14  gap 1",
+      "  voice Bass  triangle  plays part Bass  vol 14  gap 1",
+      "  voice Horn  external Ep  plays part Horn  poly  vol 38",
+      "}",
+    ],
+  )
+}

@@ -3,8 +3,12 @@
 # chosen to need the fewest octave marks, a bar names its chords where they
 # change, and parts are written under their bars.
 
-let WHOLE = 1920  # Kauai's units in a whole note
-let PC = {C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11}
+import music from './music.cul'
+
+let WHOLE = music.WHOLE
+let PC = music.PC
+let units = music.units
+let tempo_text = music.tempo_text
 let SHARPS = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
 let TOUCHES = {staccato: ".", accent: "!", tenuto: "-", marcato: "^", fermata: "@"}
 let BENDS = ["scoop", "plop", "doit", "fall"]
@@ -49,7 +53,6 @@ fn pitches_in(items) {
   })
 }
 
-let units = |v| WHOLE / v.value * 2 - WHOLE / v.value / (1 << v.dots)
 let value_text = |v| "{v.value}" + ".".repeat(v.dots)
 
 # How long `items` are as written, a tuplet as long as it sounds.
@@ -71,14 +74,6 @@ fn fitted(u) {
     target /= 2
   }
   target
-}
-
-fn number_text(x) {
-  x == Math.floor(x) ? "{to_long(x)}" : "{x}"
-}
-
-fn tempo_text(t) {
-  t.value == 4 && t.dots == 0 ? number_text(t.per) : "{value_text(t)}={number_text(t.per)}"
 }
 
 # A note's token in range `low`, its value `shown` (or none, to keep the one

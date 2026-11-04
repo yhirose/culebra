@@ -44,4 +44,27 @@ fn events_of(path, arrangement) {
   Audio.Kauai.load(path, voices: sounds.voices, drums: sounds.drums).events()
 }
 
-export {SONGS, silent, events_of}
+# The voices of a band, each {voice, plays (the word after each `plays`),
+# parts (the parts it names after `part`)}.
+fn band_voices(arrangement) {
+  arrangement.lines().map(|l| l
+    .split_whitespace()
+    .map(|w| w.to_string())).filter(|w| w.size() > 1 &&
+    w[0] == "voice").map(fn (w) {
+    let from = w.index_of("part")
+    {
+      voice: w[1],
+      plays: iota(w.size() - 1).filter(|i| w[i] == "plays").map(|i| w[i + 1]),
+      parts: from < 0
+        ? []
+        : w
+          .slice(from + 1, w.size())
+          .iter()
+          .take_while(|x| x.slice(0, 1).to_string() !=
+            x.slice(0, 1).to_string().lower())
+          .collect(),
+    }
+  })
+}
+
+export {SONGS, silent, events_of, band_voices}

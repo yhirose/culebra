@@ -1,0 +1,1270 @@
+# A MusicXML score as a Kauai song's score, the data Audio.Kauai.parse
+# gives (kauai/convert/kau.cul writes it as Kauai text). Each voice of each
+# part is a line: the first part's first voice is the melody, every other
+# line a part of the song. The parts a score marks as a Kauai band's own
+# (kauai/convert/musicxml.cul writes the mark) are left out, as what the
+# band plays. Rehearsal marks, repeat signs, key changes, segnos and codas
+# make the sections, and D.S., D.C., To Coda and Fine the order the song
+# plays them in; the song is given a band that plays its lines.
+#
+# What a score holds that Kauai does not play is an error; what Kauai leaves
+# out or changes a little (lyrics, words, a chord symbol it spells another
+# way, a slur cut where a section ends) is said in `dropped`.
+
+import music from './music.cul'
+
+let WHOLE = music.WHOLE
+let QUARTER = music.QUARTER
+let units = music.units
+let TYPES = {whole: 1, half: 2, quarter: 4, eighth: 8, "16th": 16, "32nd": 32}
+let LEVELS = {
+  ppp: "pp",
+  pp: "pp",
+  p: "p",
+  mp: "mp",
+  mf: "mf",
+  f: "f",
+  ff: "ff",
+  fff: "ff",
+}
+# Dynamics that accent one note.
+let SFORZANDI = ["sf", "sfz", "sffz", "fz", "rf", "rfz"]
+# MusicXML's articulations as Kauai names them.
+let ARTICULATIONS = music
+  .ARTICULATIONS
+  .keys()
+  .map(|k| (music.ARTICULATIONS[k], k))
+  .to_object()
+# Notations that change how a note sounds, which Kauai does not play.
+let UNPLAYED = ["ornaments", "glissando", "slide", "tremolo"]
+# <harmony>'s kinds, as Kauai spells them.
+let KINDS = {
+  major: "",
+  minor: "m",
+  augmented: "aug",
+  diminished: "dim",
+  dominant: "7",
+  "major-seventh": "maj7",
+  "minor-seventh": "m7",
+  "diminished-seventh": "dim7",
+  "augmented-seventh": "7#5",
+  "half-diminished": "m7b5",
+  "major-minor": "mmaj7",
+  "major-sixth": "6",
+  "minor-sixth": "m6",
+  "dominant-ninth": "9",
+  "major-ninth": "maj9",
+  "minor-ninth": "m9",
+  "dominant-11th": "9(11)",
+  "minor-11th": "m11",
+  "dominant-13th": "13",
+  "major-13th": "maj9(13)",
+  "minor-13th": "m11(13)",
+  "suspended-second": "sus2",
+  "suspended-fourth": "sus4",
+}
+let MAJOR = [
+  "Cb",
+  "Gb",
+  "Db",
+  "Ab",
+  "Eb",
+  "Bb",
+  "F",
+  "C",
+  "G",
+  "D",
+  "A",
+  "E",
+  "B",
+  "F#",
+  "C#",
+]
+let MINOR = [
+  "Ab",
+  "Eb",
+  "Bb",
+  "F",
+  "C",
+  "G",
+  "D",
+  "A",
+  "E",
+  "B",
+  "F#",
+  "C#",
+  "G#",
+  "D#",
+  "A#",
+]
+# Words for a rit. or an accel.
+let TEMPO_CHANGES = ["rit.", "rit", "ritard.", "rall.", "accel."]
+let CAPITALS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+let ALNUM = CAPITALS + CAPITALS.lower() + "0123456789"
+
+# --- the file ------------------------------------------------------------------
+
+# Text a score may be saved in UTF-16 (after its byte order mark), as UTF-8.
+fn as_utf8(data) {
+  let head = data.slice(0, 2).bytes().collect()
+  return data if head != [0xfe, 0xff] && head != [0xff, 0xfe]
+  Encoding.utf16.decode(data).replace('encoding="UTF-16"', 'encoding="UTF-8"')
+}
+
+# A score file's bytes as its MusicXML: the file's own, or the score an .mxl
+# archive's container names.
+fn score_text(data) {
+  return as_utf8(data) if !data.starts_with("PK")
+  let zip = Dir.zip(bytes: data)
+  let root = zip.is_file("META-INF/container.xml")
+    ? XML
+      .parse(as_utf8(zip.read("META-INF/container.xml")))
+      .find(".//*:rootfile")
+    : nil
+  let name = root?.attrs?.get("full-path", nil) ??
+    zip
+      .files()
+      .find(|k| !k.starts_with("META-INF") &&
+        (k.ends_with(".xml") || k.ends_with(".musicxml")))
+  throw "kauai convert: the archive holds no score" if name == nil
+  as_utf8(zip.read(name))
+}
+
+# --- small things ----------------------------------------------------------------
+
+let elements = |el| el.find_all("*")
+let text_at = |el, path| el.text(path)?.trim()
+let number_at = |el, path| to_long(text_at(el, path) ?? "0")
+# The text of the score's <miscellaneous-field> named `name`.
+let field = |doc, name| doc
+  .find("identification/miscellaneous/miscellaneous-field[@name='{name}']")
+  ?.text()
+
+# A name Kauai reads as one: capitalized words run together, their letters
+# without accents; `fallback` when no letter starts it.
+fn name_of(text, fallback) {
+  let words = text
+    .normalize("NFD")
+    .split_whitespace()
+    .map(|w| w
+      .iter()
+      .map(|ch| ch.to_string())
+      .filter(|ch| ALNUM.contains(ch))
+      .collect()
+      .join(""))
+    .filter(|w| !w.empty())
+  let joined = words
+    .map(|w| w.slice(0, 1).upper() + w.slice(1, w.size()))
+    .join("")
+  joined.empty() || !CAPITALS.contains(joined.slice(0, 1)) ? fallback : joined
+}
+
+# A key from <key>: its fifths and mode, as Kauai names it.
+fn key_name(k) {
+  let fifths = Math.max(-7, Math.min(7, number_at(k, "fifths")))
+  text_at(k, "mode") == "minor" ? MINOR[fifths + 7] + "m" : MAJOR[fifths + 7]
+}
+
+# The rests that fill `len` units from `at`, each the longest plain value
+# that fits and starts on a multiple of its length.
+fn rests_for(at, len) {
+  let out = []
+  mut p = at
+  while p < at + len {
+    let v = [
+      1, 2, 4, 8, 16, 32,
+    ].find(|n| WHOLE / n <= at + len - p && p % (WHOLE / n) == 0)
+    throw "kauai convert: {at + len - p} units of rest at {p} are not a note value Kauai writes" if v ==
+      nil
+    out.push({rest: true, value: v, dots: 0, marks: []})
+    p += WHOLE / v
+  }
+  out
+}
+
+# --- chords --------------------------------------------------------------------
+
+# A <root> or a <bass> (`tag`) as a note name: "Bb".
+fn note_name(el, tag) {
+  let a = Math.round(to_float(text_at(el, "{tag}-alter") ?? "0"))
+  text_at(el, "{tag}-step") + music.accidental(a)
+}
+
+let CHORD_SONG = 'band B {
+  voice V  pulse  plays melody  vol 9
+}
+
+song S {
+  tempo 120
+  band B
+  melody in C4..B4
+
+  A
+}
+
+section A {
+  C'
+
+# Whether Kauai reads `quality` after a root as a chord symbol.
+let reads_as_chord = music.remembered(fn (quality) {
+  try {
+    Audio.Kauai.parse(CHORD_SONG + quality + "  c1\n}\n")
+    true
+  } catch _ {
+    false
+  }
+})
+
+# <harmony> `h` as a chord's symbol (nil for N.C.), and what of it Kauai
+# spells another way, if anything.
+fn chord_of(h) {
+  let kind = h.find("kind")
+  let k = kind == nil ? "major" : kind.text().trim()
+  return (nil, nil) if k == "none" || h.find("root") == nil
+  let root = note_name(h.find("root"), "root")
+  let bass = h.find("bass") == nil
+    ? ""
+    : "/" + note_name(h.find("bass"), "bass")
+  let written = kind?.attrs?.get("text", nil)
+  if written != nil && reads_as_chord(written) {
+    return ({symbol: root + written + bass}, nil)
+  }
+  let base = KINDS.get(k, nil)
+  let tensions = h.find_all("degree").filter(|d| text_at(d, "degree-type") !=
+    "subtract").map(fn (d) {
+    let a = to_long(text_at(d, "degree-alter") ?? "0")
+    (a > 0 ? "#" : a < 0 ? "b" : "") + text_at(d, "degree-value")
+  })
+  let quality = (base ?? "") +
+    (tensions.empty() ? "" : "(" + tensions.join(",") + ")")
+  if base != nil &&
+      reads_as_chord(quality) &&
+      h.find("degree[degree-type='subtract']") == nil {
+    return (
+      {symbol: root + quality + bass},
+      written == nil || written == quality ? nil : written,
+    )
+  }
+  ({symbol: root + (base ?? "") + bass}, written ?? k)
+}
+
+# Every measure's chords, one a beat, from every part's chord symbols; a
+# measure without one keeps the chord before it.
+fn chords_of(ms, parts, report) {
+  mut sounding = nil
+  iota(ms.size()).map(fn (mi) {
+    let m = ms[mi]
+    let beat = 4 * m.res / m.meter.value
+    let named = parts.flat_map(|p| p.measures[mi].harmonies).sorted_by(|h| h.at)
+    iota(m.meter.beats).map(fn (k) {
+      for h in named.filter(|h| (k * beat..(k + 1) * beat).contains(h.at)) {
+        report(
+          "a chord symbol off its beat, moved to the beat",
+          "measure {m.number}",
+        ) if h.at != k * beat
+        let (c, spelled) = chord_of(h.harmony)
+        report(
+          "a chord symbol Kauai spells another way ({spelled})",
+          "measure {m.number}",
+        ) if spelled != nil
+        sounding = c
+      }
+      sounding
+    })
+  })
+}
+
+# --- a part's measures -----------------------------------------------------------
+
+# What <sound> `s` says of the form onto `bar`: a segno or a coda the
+# measure is (by its name), or a jump it ends with (D.S. to a segno, D.C., to
+# a coda, or Fine).
+fn jumps(s, bar) {
+  return nil if s == nil
+  bar.segno = s.attrs.get("segno", bar.segno)
+  bar.coda = s.attrs.get("coda", bar.coda)
+  bar.dalsegno = s.attrs.get("dalsegno", bar.dalsegno)
+  bar.tocoda = s.attrs.get("tocoda", bar.tocoda)
+  bar.dacapo = bar.dacapo || s.attrs.get("dacapo", "no") == "yes"
+  bar.fine = bar.fine || s.attrs.has("fine")
+}
+
+# A part's measures, each {number, implicit, meter, key, len, content, voices
+# (each voice's notes and rests in order, a voice by its <voice>),
+# directions, harmonies, rehearsal, swing, forward, backward, ending (the
+# numbers of the ending it starts), ending_ends, key_change, segno, coda,
+# dalsegno, tocoda, dacapo, fine, res}: times from the measure's start in
+# ticks, `res` of them to a quarter, which every duration the part writes is
+# a whole number of (a tuplet's notes need not be a whole number of Kauai's
+# units).
+fn read_measures(part, report) {
+  let res = part
+    .find_all("measure/attributes/divisions")
+    .map(|d| to_long(d.text().trim()))
+    .reduce(QUARTER, |a, b| a / music.gcd(a, b) * b)
+  mut divisions = 1
+  mut meter = {beats: 4, value: 4}
+  mut key = nil
+  let out = []
+  for m in part.find_all("measure") {
+    mut at = 0
+    mut end = 0
+    let voices = {}
+    let order = []
+    mut previous = nil
+    let graces = {}
+    let grace_slurs = {}
+    let bar = {
+      number: m.attrs.get("number", "?"),
+      implicit: m.attrs.get("implicit", "no") == "yes",
+      directions: [],
+      harmonies: [],
+      mut rehearsal: nil,
+      mut swing: nil,
+      mut forward: false,
+      mut backward: nil,
+      mut ending: nil,
+      mut ending_ends: false,
+      mut key_change: nil,
+      mut segno: nil,
+      mut coda: nil,
+      mut dalsegno: nil,
+      mut tocoda: nil,
+      mut dacapo: false,
+      mut fine: false,
+    }
+    let where = "measure {bar.number}"
+    let ticks = |el| number_at(el, "duration") * res / divisions
+    # An offset may be a fraction of a division, to place a sign a little.
+    let offset_of = |el| el.find("offset") == nil
+      ? 0
+      : Math.round(to_float(text_at(el, "offset")) * res / divisions)
+    for c in elements(m) {
+      match c.tag {
+        "attributes" => {
+          divisions = to_long(text_at(c, "divisions") ?? "{divisions}")
+          if c.find("time") != nil {
+            meter = {
+              beats: number_at(c, "time/beats"),
+              value: number_at(c, "time/beat-type"),
+            }
+          }
+          if c.find("key") != nil {
+            let named = key_name(c.find("key"))
+            bar.key_change = named if named != key
+            key = named
+          }
+        },
+        "harmony" => bar.harmonies.push({at: at + offset_of(c), harmony: c}),
+        "direction" => {
+          let t = at + offset_of(c)
+          let staff = text_at(c, "staff") ?? "1"
+          jumps(c.find("sound"), bar)
+          for dt in c.find_all("direction-type") {
+            for d in elements(dt) {
+              bar.directions.push({at: t, staff, el: d, sound: c.find("sound")})
+            }
+          }
+          let sw = c.find("sound/swing")
+          if sw != nil {
+            bar.swing = sw.find("straight") != nil
+              ? "straight"
+              : {
+                unit: TYPES.get(text_at(sw, "swing-type") ?? "eighth", 8),
+                first: number_at(sw, "first"),
+                second: number_at(sw, "second"),
+              }
+          }
+        },
+        "backup" => at -= ticks(c),
+        "forward" => {
+          at += ticks(c)
+          end = Math.max(end, at)
+        },
+        "barline" => {
+          bar.forward = true if c.find("repeat[@direction='forward']") != nil
+          let back = c.find("repeat[@direction='backward']")
+          bar.backward = to_long(back.attrs.get("times", "2")) if back != nil
+          let e = c.find("ending")
+          if e != nil {
+            if e.attrs.get("type", "") == "start" {
+              bar.ending = e
+                .attrs
+                .get("number", "1")
+                .split(",")
+                .map(|x| x.trim().to_string())
+                .filter(|x| !x.empty())
+            } else {
+              bar.ending_ends = true
+            }
+          }
+          report(
+            "a segno or a coda sign",
+            where,
+          ) if c.find("segno") != nil || c.find("coda") != nil
+          jumps(c.find("sound"), bar)
+        },
+        "sound" => jumps(c, bar),
+        "note" => {
+          let voice = text_at(c, "voice") ?? "1"
+          continue if c.find("cue") != nil
+          let pitch = c.find("pitch")
+          throw "kauai convert: {where}: an unpitched note (a drum) is not read; a drum part goes in a Kauai band" if c.find("unpitched") !=
+            nil
+          let p = pitch == nil
+            ? nil
+            : {
+              step: text_at(pitch, "step"),
+              alter: Math.round(to_float(text_at(pitch, "alter") ?? "0")),
+              octave: number_at(pitch, "octave"),
+              tie: c.find("tie[@type='start']") != nil,
+            }
+          let slurs = |type| c
+            .find_all("notations/slur")
+            .filter(|s| s.attrs.get("type", "") == type)
+            .size()
+          if c.find("grace") != nil {
+            graces[voice] = [
+              ...graces.get(voice, []),
+              {step: p.step, alter: p.alter, octave: p.octave},
+            ] if p != nil
+            # A slur from a grace note starts with the note it leads to.
+            grace_slurs[voice] = grace_slurs.get(voice, 0) + slurs("start")
+            continue
+          }
+          for kind in UNPLAYED {
+            throw "kauai convert: {where}: Kauai does not play a note's {kind}" if c.find("notations/{kind}") !=
+              nil
+          }
+          report("lyrics", where) if c.find("lyric") != nil
+          if c.find("chord") != nil && previous != nil {
+            previous.pitches.push(p) if p != nil
+            continue
+          }
+          let len = ticks(c)
+          let tm = c.find("time-modification")
+          let tuplet_el = |type| c
+            .find_all("notations/tuplet")
+            .filter(|t| t.attrs.get("type", "") == type)
+          let ev = {
+            at,
+            len,
+            rest: p == nil,
+            # A rest the length of the measure, which may say no value.
+            whole: c.find("rest[@measure='yes']") != nil ||
+              p == nil && c.find("type") == nil,
+            pitches: p == nil ? [] : [p],
+            type: text_at(c, "type"),
+            dots: c.find_all("dot").size(),
+            ratio: tm == nil
+              ? {actual: 1, normal: 1}
+              : {
+                actual: number_at(tm, "actual-notes"),
+                normal: number_at(tm, "normal-notes"),
+              },
+            starts: tuplet_el("start").map(|t| {
+              actual: t.find("tuplet-actual/tuplet-number") == nil
+                ? nil
+                : number_at(t, "tuplet-actual/tuplet-number"),
+              normal: t.find("tuplet-normal/tuplet-number") == nil
+                ? nil
+                : number_at(t, "tuplet-normal/tuplet-number"),
+            }),
+            stops: tuplet_el("stop").size(),
+            marks: [
+              ...c.find_all("notations/articulations/*").map(|a| ARTICULATIONS.get(a.tag, nil)).filter(|x| x != nil),
+              ...(c.find("notations/fermata") == nil ? [] : ["fermata"]),
+            ],
+            slur_starts: slurs("start") + grace_slurs.get(voice, 0),
+            slur_stops: slurs("stop"),
+            arpeggio: c.find("notations/arpeggiate") != nil,
+            graces: p == nil ? [] : graces.get(voice, []),
+            staff: text_at(c, "staff") ?? "1",
+          }
+          graces[voice] = []
+          grace_slurs[voice] = 0
+          if !voices.has(voice) {
+            voices[voice] = []
+            order.push(voice)
+          }
+          voices[voice].push(ev)
+          previous = ev
+          at += len
+          end = Math.max(end, at)
+        },
+        _ => nil,
+      }
+    }
+    let r = bar.directions.find(|d| d.el.tag == "rehearsal")
+    bar.rehearsal = r?.el?.text()?.trim()
+    out.push({
+      ...bar,
+      meter,
+      key,
+      len: meter.beats * 4 * res / meter.value,
+      content: end,
+      voices: order.map(|v| {voice: v, events: voices[v]}),
+      res,
+    })
+  }
+  out
+}
+
+# --- a line's items --------------------------------------------------------------
+
+# Direction `d` ({at, el, sound}) as the items it writes, through `report`
+# for what it leaves out.
+fn direction_items(d, where, report) {
+  let el = d.el
+  let carried = d.sound?.find("play/other-play[@type='kauai']")?.text()?.trim()
+  match el.tag {
+    "dynamics" => elements(el).flat_map(fn (x) {
+      return [{direction: LEVELS[x.tag], tempo: nil}] if LEVELS.has(x.tag)
+      return [{accent: true}] if SFORZANDI.contains(x.tag)
+      throw "kauai convert: {where}: the dynamic {x.tag} is not one Kauai plays"
+    }),
+    "wedge" => match el.attrs.get("type", "") {
+      "crescendo" => [{direction: "cresc", tempo: nil}],
+      "diminuendo" => [{direction: "dim", tempo: nil}],
+      "stop" => [{direction: "!", tempo: nil}],
+      _ => [],
+    },
+    "metronome" => {
+      let unit = TYPES.get(text_at(el, "beat-unit") ?? "", nil)
+      let per = try {
+        to_float(text_at(el, "per-minute"))
+      } catch _ {
+        nil
+      }
+      if unit == nil || per == nil {
+        # A mark Kauai does not write plays at its <sound>'s tempo, if any.
+        let tempo = d.sound?.attrs?.get("tempo", nil)
+        report(
+          "a metronome mark that says no tempo Kauai writes",
+          where,
+        ) if tempo == nil
+        return tempo == nil
+          ? []
+          : [{direction: "tempo", tempo: music.tempo_of(tempo)}]
+      }
+      [{
+        direction: "tempo",
+        tempo: {value: unit, dots: el.find_all("beat-unit-dot").size(), per},
+      }]
+    },
+    "words" => {
+      let w = el.text().trim().lower()
+      cond {
+        w.starts_with("swing") || w == "straight" => [],
+        w == "a tempo" => [{direction: "tempo", tempo: nil}],
+        TEMPO_CHANGES.contains(w) && carried != nil => {
+          let said = carried.split_whitespace().map(|s| s.to_string())
+          [{direction: said[0], tempo: music.tempo_of(said[1])}]
+        },
+        TEMPO_CHANGES.contains(w) => {
+          report("a rit. or accel. that says no tempo it reaches", where)
+          []
+        },
+        _ => {
+          report("words", where)
+          []
+        },
+      }
+    },
+    "rehearsal" | "dashes" => [],
+    "segno" | "coda" => {
+      report("a segno or a coda sign", where)
+      []
+    },
+    "octave-shift" => throw "kauai convert: {where}: an octave shift (8va) is not read yet",
+    _ => {
+      report(el.tag, where)
+      []
+    },
+  }
+}
+
+# A ratio {actual, normal} in lowest terms.
+fn reduced(actual, normal) {
+  let d = music.gcd(actual, normal)
+  {actual: actual / d, normal: normal / d}
+}
+
+# A line's notes and rests in a measure `len` ticks long (`events`, in
+# order; `res` ticks to a quarter) as Kauai items, its directions (`marks`,
+# {at, items}) before the note at or after them, and rests where it plays
+# nothing. `state` ({depth, wedge}) carries the line's slurs and hairpins
+# from measure to measure: how many slurs it is in, and whether a hairpin is
+# going.
+fn items_of(events, len, res, marks, state, where, report) {
+  # Ticks as Kauai's units, which a rest has to be a whole number of.
+  let in_units = fn (ticks) {
+    throw "kauai convert: {where}: a rest Kauai does not write" if ticks *
+      QUARTER %
+      res !=
+      0
+    ticks * QUARTER / res
+  }
+  # Each level of tuplets: the ratio its notes play in (`ratio`, all the
+  # levels' together), its own (`tuplet`), and whether the score gave it no
+  # bracket.
+  let stack = [{
+    ratio: {actual: 1, normal: 1},
+    items: [],
+    tuplet: nil,
+    implicit: false,
+  }]
+  let top = || stack[-1]
+  let put = |it| top().items.push(it)
+  let close = fn () {
+    let level = stack.pop()
+    put({tuplet: level.tuplet, items: level.items})
+  }
+  let open = fn (ratio, tuplet, implicit) {
+    stack.push({ratio, items: [], tuplet, implicit})
+  }
+  let close_implicit = fn () {
+    while stack.size() > 1 && top().implicit {
+      close()
+    }
+  }
+  mut accent = false
+  mut t = 0
+  mut k = 0
+  let marks_until = fn (at) {
+    while k < marks.size() && marks[k].at <= at {
+      for it in marks[k].items {
+        cond {
+          it.has("accent") => accent = true,
+          it.direction == "!" => {
+            put(it) if state.wedge
+            state.wedge = false
+          },
+          _ => {
+            state.wedge = it.direction == "cresc" ||
+              it.direction == "dim" ||
+              state.wedge && !LEVELS.values().contains(it.direction)
+            put(it)
+          },
+        }
+      }
+      k += 1
+    }
+  }
+  let rests_to = fn (to) {
+    throw "kauai convert: {where}: a gap inside a tuplet" if to > t &&
+      stack.size() > 1
+    rests_for(in_units(t), in_units(to - t)).for_each(put)
+    t = Math.max(t, to)
+  }
+  for e in events {
+    throw "kauai convert: {where}: notes in one voice overlap" if e.at < t
+    if e.at > t {
+      close_implicit()
+      rests_to(e.at)
+    }
+    marks_until(e.at)
+    if e.whole {
+      rests_to(e.at + e.len)
+      continue
+    }
+    let value = TYPES.get(e.type ?? "", nil)
+    throw "kauai convert: {where}: a {e.type ?? "note with no type"} (Kauai writes whole notes to 32nds)" if value ==
+      nil
+    let v = {value, dots: e.dots}
+    # The ratio the note plays in, from its value and its length: its
+    # tuplets' together.
+    let ratio = reduced(units(v) * res, e.len * QUARTER)
+    # The tuplets it starts, each the ratio its bracket says or what is left
+    # of the note's own; one the score gives no bracket for where the ratio
+    # changes.
+    for s in e.starts {
+      let r = top().ratio
+      let own = s.actual != nil && s.normal != nil
+        ? reduced(s.actual, s.normal)
+        : reduced(ratio.actual * r.normal, ratio.normal * r.actual)
+      open(reduced(r.actual * own.actual, r.normal * own.normal), own, false)
+    }
+    if top().ratio != ratio {
+      close_implicit()
+      let r = top().ratio
+      open(
+        ratio,
+        reduced(ratio.actual * r.normal, ratio.normal * r.actual),
+        true,
+      )
+    }
+    throw "kauai convert: {where}: a tuplet too fine for Kauai ({ratio.actual}:{ratio.normal} of a {e.type})" if units(v) *
+      ratio.normal %
+      ratio.actual !=
+      0
+    let marks_here = [
+      ...e.marks,
+      ...(accent && !e.rest && !e.marks.contains("accent") ? ["accent"] : []),
+    ]
+    accent = false if !e.rest
+    for _ in 0..e.slur_starts {
+      if state.depth == 0 {
+        put({slur: "start"})
+      } else {
+        report("a slur inside a slur", where)
+      }
+      state.depth += 1
+    }
+    put(e.rest
+      ? {rest: true, ...v, marks: e.marks}
+      : {
+        pitches: e.pitches,
+        ...v,
+        marks: marks_here,
+        graces: e.graces,
+        arpeggio: e.arpeggio,
+      })
+    for _ in 0..e.slur_stops {
+      continue if state.depth == 0
+      state.depth -= 1
+      put({slur: "stop"}) if state.depth == 0
+    }
+    for _ in 0..e.stops {
+      close_implicit()
+      close() if stack.size() > 1
+    }
+    t = e.at + e.len
+  }
+  while stack.size() > 1 {
+    close()
+  }
+  marks_until(len)
+  rests_to(len) if t < len && !stack[0].items.empty()
+  stack[0].items
+}
+
+# --- the form --------------------------------------------------------------------
+
+# The measures from `start` as blocks the song plays: each {from, body (the
+# measures of its body), endings ([{numbers, measures}]), times}. A block
+# ends where a rehearsal mark, a forward repeat, a key change, a segno or a
+# coda starts another, after a backward repeat or a jump, and after its last
+# ending.
+fn blocks_of(ms, start) {
+  let out = []
+  mut i = start
+  let opens = |m| m.rehearsal != nil ||
+    m.forward ||
+    m.key_change != nil ||
+    m.segno != nil ||
+    m.coda != nil
+  let jumps_from = |m| m.dalsegno != nil ||
+    m.tocoda != nil ||
+    m.dacapo ||
+    m.fine
+  while i < ms.size() {
+    mut j = i
+    mut times = 1
+    while j < ms.size() && ms[j].ending == nil && (j == i || !opens(ms[j])) {
+      let m = ms[j]
+      j += 1
+      times = m.backward ?? 1
+      break if m.backward != nil || jumps_from(m)
+    }
+    let body = iota(i, j)
+    let endings = []
+    if times == 1 && (body.empty() || !jumps_from(ms[j - 1])) {
+      while j < ms.size() && ms[j].ending != nil {
+        # An ending that says no number is the next one; one whose number
+        # this group has had starts the next group.
+        let numbers = ms[j].ending.empty()
+          ? ["{endings.size() + 1}"]
+          : ms[j].ending
+        break if endings.any(|had| had.numbers.any(|n| numbers.contains(n)))
+        mut e = j
+        while e + 1 < ms.size() &&
+            !ms[e].ending_ends &&
+            ms[e].backward == nil &&
+            ms[e + 1].ending == nil &&
+            !opens(ms[e + 1]) {
+          e += 1
+        }
+        endings.push({numbers, measures: iota(j, e + 1)})
+        j = e + 1
+      }
+    }
+    out.push({from: i, body, endings, times})
+    i = j
+  }
+  out
+}
+
+# The song's plays, the blocks in the order the music goes through them:
+# a block's repeats (but once through after a jump), each time to it the
+# ending of that time, and the jumps, each taken once (to the coda and
+# Fine only after a D.S. or D.C.).
+fn plays_of(ms, blocks, names, alike) {
+  let plays = []
+  let play = fn (section, times, ending) {
+    let last = plays.get(-1, nil)
+    if last != nil && last.section == section && last.ending == ending {
+      plays[plays.size() - 1] = {...last, times: last.times + times}
+    } else {
+      plays.push({section, times, ending, with: nil, key: nil})
+    }
+  }
+  # The first block whose first measure `found` picks.
+  let target = |found| iota(blocks.size()).find(|k| found(ms[blocks[k].from]))
+  let arrivals = blocks.map(|_| 0)
+  let taken_jumps = []
+  mut jumped = false
+  mut bi = 0
+  mut steps = 0
+  while bi != nil && bi < blocks.size() {
+    steps += 1
+    throw "kauai convert: the score's repeats and jumps go round without end" if steps >
+      10000
+    let b = blocks[bi]
+    arrivals[bi] += 1
+    mut last = nil
+    if b.endings.empty() {
+      play(names[bi], jumped ? 1 : b.times, nil)
+      last = b.body[-1]
+    } else {
+      let n = arrivals[bi]
+      let e = b.endings.find(|x| x.numbers.contains("{n}"))
+      if e == nil && b.body.empty() {
+        # A group of endings with none for this time is passed over.
+        bi += 1
+        continue
+      }
+      let ending = e ?? b.endings[-1]
+      play(names[bi], 1, alike[bi] ? nil : ending.numbers[0])
+      last = ending.measures[-1]
+      if ms[last].backward != nil && !jumped {
+        # Back to where the repeat starts, while an ending there is for a
+        # later time.
+        let from = iota(bi + 1)
+          .filter(|k| ms[blocks[k].from].forward)
+          .reduce(0, Math.max)
+        let times = iota(from, bi + 1)
+          .flat_map(|k| blocks[k].endings)
+          .flat_map(|x| x.numbers)
+          .map(|k| to_long(k))
+          .reduce(0, Math.max)
+        if n < times {
+          bi = from
+          continue
+        }
+      } else if e != nil && ms[last].backward == nil {
+        # An ending that does not repeat goes on to a later group of endings
+        # that has one for this time, before the next repeat starts.
+        let ahead = iota(bi + 1, blocks.size())
+          .iter()
+          .take_while(|k| !ms[blocks[k].from].forward)
+          .find(|k| blocks[k].body.empty() &&
+            blocks[k].endings.any(|x| x.numbers.contains("{n}")))
+        if ahead != nil {
+          bi = ahead
+          continue
+        }
+      }
+    }
+    let m = ms[last]
+    break if jumped && m.fine
+    if jumped && m.tocoda != nil {
+      bi = target(|x| x.coda == m.tocoda) ?? target(|x| x.coda != nil)
+    } else if (m.dalsegno != nil || m.dacapo) && !taken_jumps.contains(last) {
+      taken_jumps.push(last)
+      jumped = true
+      bi = m.dacapo
+        ? 0
+        : target(|x| x.segno == m.dalsegno) ?? target(|x| x.segno != nil)
+    } else {
+      bi += 1
+    }
+  }
+  plays
+}
+
+# --- the song --------------------------------------------------------------------
+
+let one_line = |s| s.split_whitespace().join(" ")
+
+# Voice `v`'s notes and rests in each of `measures`.
+fn events_in(measures, v) {
+  measures.map(|m| m.voices.find(|x| x.voice == v)?.events ?? [])
+}
+
+fn about_of(doc) {
+  let creator = |type| doc
+    .find("identification/creator[@type='{type}']")
+    ?.text()
+  let said = {
+    title: text_at(doc, "work/work-title") ?? text_at(doc, "movement-title"),
+    composer: creator("composer"),
+    lyricist: creator("lyricist") ?? creator("poet"),
+    arranger: creator("arranger"),
+    year: field(doc, "year"),
+    source: text_at(doc, "identification/source"),
+    license: text_at(doc, "identification/rights"),
+    note: field(doc, "note"),
+  }
+  said
+    .keys()
+    .map(|k| (
+      k,
+      said[k] == nil || one_line(said[k]).empty() ? nil : one_line(said[k]),
+    ))
+    .to_object()
+}
+
+# The band that plays `lines`: single notes on the chip channels while they
+# last, the lowest line on the triangle; chords and the rest on the external
+# piano.
+fn band_of(lines) {
+  let lowest = lines.map(|l| l
+    .events
+    .flat_map(|es| es)
+    .flat_map(|e| e.pitches)
+    .map(music.sounding)
+    .reduce(127, Math.min))
+  let poly = lines.map(|l| l
+    .events
+    .flat_map(|es| es)
+    .any(|e| e.pitches.size() > 1))
+  let singles = iota(lines.size()).filter(|li| !poly[li])
+  let chips = {}
+  let lows = singles.filter(|li| li > 0).sorted_by(|li| lowest[li])
+  chips[lows[0]] = "triangle" if !lows.empty()
+  mut free = ["pulse", "pulse2", "saw"]
+  for li in singles {
+    continue if chips.has(li) || free.empty()
+    chips[li] = free[0]
+    free = free.slice(1, free.size())
+  }
+  let voice_line = fn (li) {
+    let l = lines[li]
+    let plays_what = li == 0 ? "plays melody" : "plays part {l.name}"
+    let source = chips.get(li, nil)
+    source == nil
+      ? "  voice {l.name}  external Ep  {plays_what}  poly  vol 38"
+      : "  voice {l.name}  {source}  {plays_what}  vol {li == 0 ? 20 : 14}  gap 1"
+  }
+  ["band Score \{", ...iota(lines.size()).map(voice_line), "}"].join("\n")
+}
+
+# The score MusicXML `text` holds, as {score, dropped}: the song's score, as
+# Audio.Kauai.parse gives one, and what Kauai leaves out of it or changes a
+# little, each said once with the measures it is in.
+fn read(text) {
+  let doc = XML.parse(text)
+  throw "kauai convert: only a partwise score (<score-partwise>) is read, not <{doc.tag}>" if doc.tag !=
+    "score-partwise"
+  let left_out = {}
+  let order = []
+  let report = fn (what, where) {
+    if !left_out.has(what) {
+      left_out[what] = []
+      order.push(what)
+    }
+    left_out[what].push(where)
+  }
+  let band_parts = (field(doc, "kauai-band") ?? "")
+    .split_whitespace()
+    .map(|s| s.to_string())
+  let names = doc
+    .find_all("part-list/score-part")
+    .map(|p| (p.attrs.id, text_at(p, "part-name") ?? p.attrs.id))
+    .to_object()
+  let parts = doc
+    .find_all("part")
+    .filter(|p| !band_parts.contains(p.attrs.id))
+    .map(|p| {
+      name: names.get(p.attrs.id, "Part"),
+      measures: read_measures(p, report),
+    })
+  throw "kauai convert: the score has no parts" if parts.empty()
+  let ms = parts[0].measures
+  throw "kauai convert: the score has no measures" if ms.empty()
+  for p in parts {
+    throw "kauai convert: part {p.name} has {p.measures.size()} measures, the first part {ms.size()}" if p.measures.size() !=
+      ms.size()
+  }
+
+  # The lines: each part's voices that play, in the order they start.
+  let lines = []
+  for pi, p in parts.enumerate() {
+    let voices = []
+    for m in p.measures {
+      for v in m.voices {
+        voices.push(v.voice) if !voices.contains(v.voice) &&
+          v.events.any(|e| !e.rest)
+      }
+    }
+    for vi, v in voices.enumerate() {
+      let base = pi == 0 && vi == 0
+        ? "Melody"
+        : name_of(p.name, "Part") + (vi == 0 ? "" : "{vi + 1}")
+      mut name = base
+      mut n = 2
+      while lines.any(|l| l.name == name) {
+        name = "{base}{n}"
+        n += 1
+      }
+      lines.push({part: pi, voice: v, name, events: events_in(p.measures, v)})
+    }
+  }
+  # A score that only rests still has a melody: its first voice's rests.
+  if lines.empty() || lines[0].part != 0 {
+    let v = ms.flat_map(|m| m.voices).get(0, nil)?.voice ?? "1"
+    lines.insert(
+      0,
+      {part: 0, voice: v, name: "Melody", events: events_in(ms, v)},
+    )
+  }
+  # Directions go to the first line of their part whose first note is on
+  # their staff, else to the part's first line.
+  let first_staff = lines.map(|l| l
+    .events
+    .flat_map(|es| es)
+    .find(|e| !e.rest)
+    ?.staff)
+  let staff_line = fn (pi, staff) {
+    let of_part = iota(lines.size()).filter(|li| lines[li].part == pi)
+    of_part.find(|li| first_staff[li] == staff) ?? of_part.get(0, nil)
+  }
+
+  # The song's tempo: a metronome mark or a tempo at its very start.
+  let opening = ms[0].directions.filter(|d| d.at == 0)
+  let first_tempo = opening.find(|d| d.el.tag == "metronome")
+  let song_tempo = first_tempo != nil
+    ? direction_items(first_tempo, "measure {ms[0].number}", report)[0].tempo
+    : music.tempo_of(opening.find(|d| d.sound?.attrs?.has("tempo") ??
+      false)?.sound?.attrs?.tempo ??
+      "120")
+
+  # A first measure the score marks implicit, shorter than its meter, is the
+  # song's pickup when only the melody plays in it; else a bar that rests
+  # until the measure starts.
+  let plays_in = |li, mi| lines[li].events[mi].any(|e| !e.rest)
+  let first = ms[0]
+  let short = first.implicit &&
+    first.content > 0 &&
+    first.content < first.len &&
+    ms.size() > 1
+  let pickup = short && !iota(1, lines.size()).any(|li| plays_in(li, 0))
+  let start = pickup ? 1 : 0
+  let blocks = blocks_of(ms, start)
+
+  # Each line's items, measure by measure, its directions with them. Kauai
+  # joins slurred notes in the order the song plays: each ending goes on
+  # from where its section's body leaves its slur, and a slur still open
+  # where a section ends ends on its last note there (that note no longer
+  # joined to the next), as the next section may follow another.
+  let states = lines.map(|_| {mut depth: 0, mut wedge: false})
+  # Line `li`'s items in measure `mi`, its directions with them.
+  let line_measure = fn (li, mi) {
+    let l = lines[li]
+    let m = parts[l.part].measures[mi]
+    let where = "measure {m.number}"
+    let marks = m
+      .directions
+      .filter(|d| staff_line(l.part, d.staff) == li)
+      .filter(|d| !(mi == 0 && d == first_tempo))
+      .map(|d| {at: d.at, items: direction_items(d, where, report)})
+      .filter(|x| !x.items.empty())
+    # A hairpin's stop where a dynamic ends it anyway says nothing more.
+    let ends = |x| x.items.any(|it| it.has("direction") &&
+      LEVELS.values().contains(it.direction))
+    let kept = marks.filter(|x| !(x.items == [{direction: "!", tempo: nil}] &&
+      marks.any(|y| y.at == x.at && ends(y))))
+    items_of(
+      l.events[mi],
+      mi == 0 && short ? first.content : m.len,
+      m.res,
+      kept,
+      states[li],
+      where,
+      report,
+    )
+  }
+  # Whether the bars write line `li`'s items in measure `mi`: the melody's
+  # where its voice is in the measure, a part's where it plays.
+  let written_in = |li, mi| li == 0
+    ? !lines[0].events[mi].empty()
+    : plays_in(li, mi)
+  # The measures of each block's body (the first's from the pickup), and of
+  # its last run: its last ending, else its body.
+  let bodies = iota(blocks.size()).map(|k| k == 0 && pickup
+    ? [0, ...blocks[0].body]
+    : blocks[k].body)
+  let last_run = |k| blocks[k].endings.empty()
+    ? bodies[k]
+    : blocks[k].endings[-1].measures
+  # Ends line `li`'s open slur where `run` (a section's body or one ending)
+  # ends, in the last measure of it whose bar writes the line: after its last
+  # note, else after its last item (Kauai ends a slur on the note before a
+  # `)`). A run that writes the line nowhere holds no open slur, as a body
+  # ends its slur itself when some ending of it does not write the line.
+  let cut = fn (li, items, run, where) {
+    let st = states[li]
+    return nil if st.depth == 0
+    let mi = run.filter(|k| written_in(li, k)).get(-1, nil)
+    throw "kauai convert: {where}: a slur in a line no bar of its section writes" if mi ==
+      nil
+    let at = items[mi]
+    let last = iota(at.size())
+      .filter(|k| at[k].has("pitches"))
+      .get(-1, at.size() - 1)
+    at.insert(last + 1, {slur: "stop"})
+    report(
+      "a slur cut where its section ends, its last note no longer joined to the next",
+      where,
+    )
+    st.depth = 0
+  }
+  let line_items = iota(lines.size()).map(fn (li) {
+    let st = states[li]
+    let items = ms.map(|_| [])
+    let fill = fn (mi) {
+      items[mi] = line_measure(li, mi)
+    }
+    let cut_before = |mi, run| cut(li, items, run, "measure {ms[mi].number}")
+    fill(0) if pickup
+    for k, b in blocks.enumerate() {
+      cut_before(b.from, last_run(k - 1)) if k > 0
+      b.body.for_each(fill)
+      # An ending that does not write the line cannot go on with the body's
+      # slur, so the body ends it before every ending.
+      cut_before(
+        b.endings[0].measures[0],
+        bodies[k],
+      ) if b.endings.any(|e| !e.measures.any(|mi| written_in(li, mi)))
+      let left = st.depth
+      for n, e in b.endings.enumerate() {
+        if n > 0 {
+          cut_before(e.measures[0], b.endings[n - 1].measures)
+          st.depth = left if !b.body.empty()
+        }
+        e.measures.for_each(fill)
+      }
+    }
+    items
+  })
+  # A hairpin the score never ends ends with the song, and a slur it ends in
+  # another voice ends there too.
+  for li, st in states.enumerate() {
+    cut(li, line_items[li], last_run(blocks.size() - 1), "the song's end")
+    line_items[li][-1].push({direction: "!", tempo: nil}) if st.wedge
+  }
+  if short && !pickup {
+    let gap = (first.len - first.content) * QUARTER / first.res
+    for li in iota(lines.size()) {
+      line_items[li][0] = [...rests_for(0, gap), ...line_items[li][0]]
+    }
+  }
+
+  let chords = chords_of(ms, parts, report)
+
+  # The bars, each as Audio.Kauai.parse gives one.
+  mut swing = nil
+  let bars = iota(ms.size()).map(fn (mi) {
+    let m = ms[mi]
+    swing = cond {
+      m.swing == "straight" => nil,
+      m.swing != nil => m.swing,
+      _ => swing,
+    }
+    {
+      meter: m.meter,
+      swing,
+      groove: {name: nil, bar: 0, named: false},
+      chords: chords[mi],
+      melody: line_items[0][mi],
+      parts: iota(1, lines.size())
+        .filter(|li| plays_in(li, mi))
+        .map(|li| {name: lines[li].name, notes: line_items[li][mi]}),
+      hits: nil,
+      repeat: nil,
+      times: [],
+    }
+  })
+
+  # The sections: a block is a section, one that is the same as one before
+  # played again by its name.
+  let sections = []
+  mut letter = 0
+  let song_key = ms[start].key ?? "C"
+  # A block whose endings are all the same is one run of bars, played again.
+  let bars_of = |measures| measures.map(|mi| bars[mi])
+  let alike = blocks.map(|b| b.endings.size() > 1 &&
+    b.endings.all(|e| bars_of(e.measures) == bars_of(b.endings[0].measures)))
+  let block_names = iota(blocks.size()).map(fn (k) {
+    let b = blocks[k]
+    let named = ms[b.from].rehearsal
+    let content = {
+      key: ms[b.from].key == song_key ? nil : ms[b.from].key,
+      pickup: b.from == start && pickup ? {melody: line_items[0][0]} : nil,
+      bars: [
+        ...bars_of(b.body),
+        ...(alike[k] ? bars_of(b.endings[0].measures) : []),
+      ],
+      endings: alike[k]
+        ? []
+        : b.endings.map(|e| {
+          number: e.numbers[0],
+          as_written: false,
+          bars: bars_of(e.measures),
+        }),
+    }
+    let same = sections.find(|s| {
+      key: s.key,
+      pickup: s.pickup,
+      bars: s.bars,
+      endings: s.endings,
+    } ==
+      content &&
+      (named == nil || s.name.starts_with(name_of(named, "S"))))
+    let name = same?.name ?? fn () {
+      mut base = named == nil ? nil : name_of(named, "S")
+      while base == nil || sections.any(|s| s.name == base) {
+        if named == nil {
+          base = letter < 26
+            ? CAPITALS.slice(letter, letter + 1).to_string()
+            : "S{letter + 1}"
+          letter += 1
+        } else {
+          base += "2"
+        }
+      }
+      base
+    }()
+    sections.push({name, ...content}) if same == nil
+    name
+  })
+
+  let plays = plays_of(ms, blocks, block_names, alike)
+  let about = about_of(doc)
+  let score = {
+    about,
+    song: {
+      name: name_of(about.title ?? "", "Song"),
+      tempo: song_tempo,
+      meter: ms[start].meter,
+      key: song_key,
+      swing: bars[start].swing,
+      band: "Score",
+      groove: nil,
+      loop: false,
+      room: nil,
+      plays,
+    },
+    sections,
+    arrangement: band_of(lines),
+  }
+  let dropped = order.map(fn (what) {
+    let at = left_out[what].iter().distinct().collect()
+    "{what}: {at.slice(0, 3).join(", ")}" +
+      (at.size() > 3 ? " and {at.size() - 3} more" : "")
+  })
+  {score, dropped}
+}
+
+export {read, score_text}

@@ -118,10 +118,28 @@ the end of the bar before it.
 
 Not written yet: the band's dynamics (the melody's staff has them), a line's
 parameters (`\bright=`), and the song's own lines (`mark`, `with`, `loop`,
-`room`); `\rit N` and `\accel N` are a rit. or accel. without the tempo they
-reach. Writing a compressed `.mxl` and reading MusicXML back are to come.
+`room`). A `\rit N` or `\accel N` is a rit. or accel., the tempo it reaches
+kept where Kauai reads it back. Writing a compressed `.mxl` is to come.
 [`convert/musicxml-4.0/`](convert/musicxml-4.0/) holds the schema the tests
 check every score against.
+
+```bash
+kauai convert score.musicxml song.kau   # .musicxml, .xml or .mxl
+```
+
+[`convert/musicxml_read.cul`](convert/musicxml_read.cul) reads a score back as
+a song. Each voice of each part is a line: the first part's first voice is the
+melody, every other a part, and the song gets a band that plays them (single
+notes on the chip channels while they last, chords on `external Ep`). The
+staves a Kauai band played are left out. Rehearsal marks, repeat signs,
+endings, D.S., D.C., To Coda and Fine make the sections and the order the
+song plays them in. What the score holds that Kauai does not play is an
+error (a 64th, a trill, a 7:3 tuplet); what Kauai leaves out that plays the
+same (lyrics, words, a chord it spells another way) is said, and so is a
+slur Kauai has to end where a section ends. The tests read the scores in
+[`convert/scores/`](convert/scores/): a selection of the MusicXML test suite,
+and the OpenScore *Je te veux*, which plays as `tests/kauai/jetveux.expect`
+says.
 
 ## I want to play an instrument from a MIDI controller
 

@@ -6,22 +6,19 @@
 # in the order it plays, a section each time the song plays it, folded into
 # repeat signs and endings where every time through is the same.
 
-let WHOLE = 1920  # Kauai's units in a whole note: a quarter's 480 are the score's divisions
+import music from './music.cul'
+
+let WHOLE = music.WHOLE
+let PC = music.PC
+let units = music.units
+let number_text = music.number_text
+let gcd = music.gcd
+let tempo_text = music.tempo_text
+let sounding = music.sounding
 let LETTERS = ["C", "D", "E", "F", "G", "A", "B"]
-let PC = {C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11}
 let FIFTHS = {F: -1, C: 0, G: 1, D: 2, A: 3, E: 4, B: 5}
 # A dynamic's level as <sound dynamics> gives it, a percent of forte.
 let LEVELS = {pp: 40, p: 55, mp: 70, mf: 85, f: 100, ff: 115}
-let ARTICULATIONS = {
-  staccato: "staccato",
-  accent: "accent",
-  tenuto: "tenuto",
-  marcato: "strong-accent",
-  scoop: "scoop",
-  plop: "plop",
-  doit: "doit",
-  fall: "falloff",
-}
 let WEDGES = {cresc: "crescendo", dim: "diminuendo"}
 let TEMPOS = ["tempo", "rit", "accel"]
 let PLAIN = {actual: 1, normal: 1}  # the time a note not in a tuplet plays in
@@ -35,8 +32,6 @@ fn node(tag, children, attrs = {}) {
 }
 
 let leaf = |tag, value| node(tag, ["{value}"])
-let number_text = |x| x == Math.floor(x) ? "{to_long(x)}" : "{x}"
-let units = |v| WHOLE / v.value * 2 - WHOLE / v.value / (1 << v.dots)
 
 fn type_name(value) {
   match value {
@@ -54,7 +49,6 @@ fn type_name(value) {
 # --- spelling ------------------------------------------------------------------
 
 let natural = |step, octave| 12 * (octave + 1) + PC[step]
-let sounding = |p| natural(p.step, p.octave) + p.alter
 let floor_div = |a, b| (a - Math.wrap(a, b)) / b
 # The semitones from `b` to `a` the nearer way, -6 to 5.
 let semis_from = |a, b| Math.wrap(a - b + 6, 12) - 6
@@ -76,20 +70,8 @@ fn fifths_of(key) {
   FIFTHS[k.step] + 7 * k.alter - (k.minor ? 3 : 0)
 }
 
-# `f` of one argument, answering from what it answered before for an
-# argument written the same: a song names a few keys and chords many times.
-# The answers are shared, so they are only read.
-fn remembered(f) {
-  let answers = {}
-  fn (x) {
-    let k = "{x}"
-    answers[k] ??= f(x)
-    answers[k]
-  }
-}
-
 # The alteration key signature `key` gives each letter.
-let key_alters = remembered(fn (key) {
+let key_alters = music.remembered(fn (key) {
   let n = fifths_of(key)
   let order = n >= 0
     ? ["F", "C", "G", "D", "A", "E", "B"]
@@ -131,7 +113,7 @@ fn moved(p, iv) {
 
 fn moved_name(name, iv) {
   let p = moved({...spelled(name), octave: 4}, iv)
-  p.step + (p.alter > 0 ? "#".repeat(p.alter) : "b".repeat(-p.alter))
+  p.step + music.accidental(p.alter)
 }
 
 fn moved_items(items, iv) {
@@ -236,7 +218,7 @@ fn degrees_of(intervals) {
 
 # Chord `intervals` as MusicXML's kind and the degrees that add to it, alter
 # it or take from it: the kind that needs the fewest, the first of those.
-let kind_of = remembered(fn (intervals) {
+let kind_of = music.remembered(fn (intervals) {
   let tones = degrees_of(intervals)
   KINDS.map(fn (k) {
     let used = []
@@ -673,10 +655,6 @@ fn kit_of(drums, part) {
   })
 }
 
-fn gcd(a, b) {
-  b == 0 ? a : gcd(b, a % b)
-}
-
 # The beat a measure in `meter` is counted in: a dotted one in 3/8, 6/8,
 # 9/8 and 12/8, else the meter's own.
 let beat_of = |meter| meter.value >= 8 && meter.beats % 3 == 0
@@ -986,8 +964,8 @@ fn tuplet_els(e) {
 
 fn mark_els(marks) {
   let arts = marks
-    .filter(|m| ARTICULATIONS.has(m))
-    .map(|m| node(ARTICULATIONS[m], []))
+    .filter(|m| music.ARTICULATIONS.has(m))
+    .map(|m| node(music.ARTICULATIONS[m], []))
   [
     ...(arts.empty() ? [] : [node("articulations", arts)]),
     ...(marks.contains("fermata") ? [node("fermata", [])] : []),
@@ -1141,9 +1119,24 @@ fn direction_els(e, song) {
       "above",
       tempo_sound(song.tempo),
     )],
+    # The tempo a rit. or accel. reaches, which MusicXML has no element
+    # for, goes where Kauai reads it back.
     "rit" | "accel" => [direction(
       [leaf("words", "{d}."), node("dashes", [], {type: "start"})],
       "above",
+      e.mark.tempo == nil
+        ? nil
+        : node(
+          "sound",
+          [node(
+            "play",
+            [node(
+              "other-play",
+              ["{d} {tempo_text(e.mark.tempo)}"],
+              {type: "kauai"},
+            )],
+          )],
+        ),
     )],
     _ if WEDGES.has(d) => [direction(
       [node("wedge", [], {type: WEDGES[d]})],
@@ -1409,13 +1402,18 @@ fn repeat_signs(order, rendered, line) {
   out
 }
 
-fn about_els(about, song) {
+# The song's about, and the parts its band plays (`band`, their ids), which a
+# reader leaves out as Kauai's own.
+fn about_els(about, song, band) {
   let creators = ["composer", "lyricist", "arranger"]
     .filter(|k| about[k] != nil)
     .map(|k| node("creator", ["{about[k]}"], {type: k}))
-  let fields = ["year", "note"]
-    .filter(|k| about[k] != nil)
-    .map(|k| node("miscellaneous-field", ["{about[k]}"], {name: k}))
+  let fields = [
+    ...["year", "note"]
+      .filter(|k| about[k] != nil)
+      .map(|k| node("miscellaneous-field", ["{about[k]}"], {name: k})),
+    ...(band.empty() ? [] : [node("miscellaneous-field", [band.join(" ")], {name: "kauai-band"})]),
+  ]
   [
     node("work", [leaf("work-title", about.title ?? song.name)]),
     node(
@@ -1447,8 +1445,9 @@ fn write(score) {
     ...band.voices,
     ...(band.drums.empty() ? [] : ["Drums"]),
   ]
+  let part_id = |line| "P{line + 1}"
   let drum_line = band.drums.empty() ? -1 : staves.size() - 1
-  let kit = kit_of(band.drums, "P{drum_line + 1}")
+  let kit = kit_of(band.drums, part_id(drum_line))
   for items in band_lines(band, measures, kit) {
     for k, m in measures.enumerate() {
       m.lines.push(events_of(items[k]))
@@ -1558,17 +1557,21 @@ fn write(score) {
         leaf("part-name", staves[line]),
         ...(line == drum_line ? instruments : []),
       ],
-      {id: "P{line + 1}"},
+      {id: part_id(line)},
     )),
   )
   let parts = lines.map(|line| node(
     "part",
     iota(order.size()).map(|n| measure_el(n, line)),
-    {id: "P{line + 1}"},
+    {id: part_id(line)},
   ))
   let doc = node(
     "score-partwise",
-    [...about_els(score.about, song), part_list, ...parts],
+    [
+      ...about_els(score.about, song, iota(band_from, staves.size()).map(part_id)),
+      part_list,
+      ...parts,
+    ],
     {version: "4.0"},
   )
   XML
