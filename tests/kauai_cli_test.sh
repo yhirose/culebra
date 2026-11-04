@@ -130,6 +130,9 @@ for lane in "${lanes[@]}"; do
   run cli live FmBrass --breath
   check "$lane option, no value: status" 2 "$rc"
   check "$lane option, no value: stderr" "kauai: --breath needs a value" "$err"
+  run cli live FmBrass --gain loud
+  check "$lane gain, not a number: status" 2 "$rc"
+  check "$lane gain, not a number: stderr" "kauai: --gain is from -60 to 24 dB, not loud" "$err"
   run cli "$TMP/duo.kau" --wav
   check "$lane wav, no value: status" 2 "$rc"
   check "$lane wav, no value: stderr" "kauai: --wav needs a value" "$err"

@@ -34,7 +34,10 @@ let usage = "Usage: kauai <song.kau> [options]
   --midi <name>        the MIDI input whose name has <name> (the one
                        there is, when there is one)
   --breath <from>      where the breath comes from: cc2 (breath, the
-                       default), cc7, cc11 or pressure"
+                       default), cc7, cc11 or pressure
+  --gain <dB>          how much louder than the instrument's own level
+                       (6 by default, to stand over a song played
+                       alongside); a limit keeps the loudest unclipped"
 
 let args = Sys.argv
 
@@ -79,6 +82,12 @@ if args[0] == "live" {
     IO.eprintln("kauai: --breath is cc2, cc7, cc11 or pressure, not {breath}")
     Sys.exit(2)
   }
+  let gain_text = option("--gain", nil)
+  let db = try { gain_text == nil ? live.GAIN : to_float(gain_text) } catch _ { nil }
+  if db == nil || !(db >= -60.0 && db <= 24.0) {
+    IO.eprintln("kauai: --gain is from -60 to 24 dB, not {gain_text}")
+    Sys.exit(2)
+  }
   let wanted = option("--midi", nil)
   let inputs = MIDI.inputs()
   let named = wanted == nil ? inputs : inputs.filter(|p| p.name.lower().contains(wanted.lower()))
@@ -90,7 +99,7 @@ if args[0] == "live" {
   }
   let player = found.live()
   println("playing {found.name} from {named[0].name} (Ctrl+C stops)")
-  live.play(player, MIDI.Input.new(named[0].id), breath)
+  live.play(player, MIDI.Input.new(named[0].id), breath, db)
 }
 
 let path = args[0]

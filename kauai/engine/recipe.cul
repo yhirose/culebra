@@ -556,13 +556,14 @@ class Recipe {
   }
 
   # start()'s note made ahead, silent and not playing, so that begin()
-  # only has to move what depends on the pitch and the level.
+  # only has to move what depends on the pitch and the level. A volume
+  # above 1 is held under full scale by a limit.
   prepare(params = {}, steady: Array = []) {
     let env = {pitch: 60.0, f: hz(60), dur: 0.0, level: 1.0, ...self.knob_values(params)}
     let w = self._wire(env, |v, name, where| live_course(v, env, steady, name, where))
     let g = w.graph
     let gain = g.gain(w.out, 0.0)
-    g.output(g.filter("high", gain, cutoff: DC_CUT))
+    g.output(g.limit(g.filter("high", gain, cutoff: DC_CUT)))
     Held(self, params, g, w.values, gain.gain, env, steady)
   }
 

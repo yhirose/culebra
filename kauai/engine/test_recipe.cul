@@ -262,17 +262,23 @@ let live = r.Recipe.new({
 
 @test
 fn a_note_made_ahead_and_begun_sounds_as_the_same_note_written() {
-  # Begun at a pitch and a level, at a volume of that level, it is the note
-  # of that pitch and level for as long as it is held.
-  for (pitch, level) in [(48, 0.5), (72, 1.5)] {
-    let held = live.prepare().begin(pitch, level, level)
+  # Begun at a pitch and a level, it is the note of that pitch and level for
+  # as long as it is held, at its volume where the note written is at its
+  # level.
+  for (pitch, level, volume) in [(48, 0.5, 0.5), (72, 1.5, 0.5)] {
+    let held = live.prepare().begin(pitch, level, volume)
     let heard = held.graph.render(0.1)
     held.graph.stop()
     # The note written goes on into its `off`.
     let written = live.note(pitch, 0.1, level)
     assert_eq(heard.size(), 4410)
-    assert_true(iota(heard.size()).all(|i| Math.abs(heard[i] - written[i]) < 1e-12))
+    assert_true(iota(heard.size()).all(|i| Math.abs(heard[i] - written[i] * volume / level) < 1e-12))
   }
+  # Louder than full scale (2.25 at its peak), it is held under it.
+  let loud = live.prepare().begin(72, 1.5, 1.5)
+  let peak = loud.graph.render(0.1).map(|x| Math.abs(x)).max()
+  loud.graph.stop()
+  assert_true(peak > 0.8 && peak <= 0.9, peak)
 }
 
 @test

@@ -230,7 +230,7 @@ class LiveNote {
     @_airs = @_narrows.map(|two| g.gain(two[1], 0.0))
     @_fine = g.gain(g.mix([...@_tones, ...@_airs]), 1.0)
     @_volume = g.gain(@_fine, 0.0)
-    g.output(@_volume)
+    g.output(g.limit(@_volume))  # a volume above 1 held under full scale
     @_pitch = 60.0
     @_bend = 0.0
     @_x = nil  # the breath, nil until the first

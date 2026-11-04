@@ -89,9 +89,12 @@ kauai live FmBrass --breath pressure  # the breath from the channel's pressure
 
 [`cli/live.cul`](cli/live.cul) plays an instrument as a wind controller plays
 it, one note at a time. The breath (CC 2 unless `--breath` says CC 7, CC 11
-or the channel's pressure) is the volume, as General MIDI turns a volume
-into a gain (40 log10 of it); how hard to blow for full is the controller's
-own breath gain. A note played while another is held moves to the new
+or the channel's pressure) is the volume, in proportion: half the breath
+is half the amplitude, 6 dB under full; how hard to blow for full is the
+controller's own breath gain. It plays 6 dB over the instrument's own
+level (`--gain` says how many), so that it stands over a song played
+alongside, and a limit at its output (`Audio.Graph`'s `limit`) keeps the
+loudest breath from clipping. A note played while another is held moves to the new
 pitch without starting over, and a note blown harder is brighter: a
 recipe's breath turns its `bright` knob. A saxophone plays each note as a
 song's phrase would, slurred from the note before

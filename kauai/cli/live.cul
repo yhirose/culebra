@@ -1,7 +1,7 @@
 # `kauai live`: an instrument played from a MIDI controller, one note at a
-# time, as a wind controller plays. The breath is the volume, as General MIDI
-# turns a volume (CC 7) into a gain (40 log10 of it), and what else it does is
-# the instrument's. How hard to blow for full is the controller's own breath
+# time, as a wind controller plays. The breath is the volume, in proportion
+# (half the breath is half the amplitude), and what else it does is the
+# instrument's. How hard to blow for full is the controller's own breath
 # gain. Each note is made ahead, so a note played only begins it.
 #
 # An instrument is played through a player, which has
@@ -23,15 +23,23 @@ let PERIOD = 0.003
 # The fewest seconds between two changes of a note by the breath.
 let BREATH_EVERY = 0.01
 
-# The breath, 0.0 to 1.0, as the output's level.
-fn loudness(x) {
-  Math.clamp(x, 0.0, 1.0) ** 2
+# How many dB over the instrument's own level a full breath plays by
+# default: an instrument made as loud as a song's lead at full breath is
+# then over a song's whole band at the breath blown most, and the limit at
+# its output keeps the loudest under full scale.
+let GAIN = 6.0
+
+# The breath, 0.0 to 1.0, as the output's level times `gain` (not dB), in
+# proportion: squared, the breath blown most sounded 14 dB under full.
+fn loudness(x, gain) {
+  Math.clamp(x, 0.0, 1.0) * gain
 }
 
 # Plays `player`'s instrument from `input` until the program is stopped.
 # `breath` is where the breath comes from: "cc2", "cc7", "cc11" or
-# "pressure".
-fn play(player, input, breath) {
+# "pressure"; `db`, how many dB over its own level the instrument plays.
+fn play(player, input, breath, db) {
+  let gain = 10.0 ** (db / 20.0)
   Audio.latency(PERIOD)
   # The device opens on the first play(), which takes a while: open it now,
   # with a silent graph, rather than on the first note.
@@ -76,7 +84,7 @@ fn play(player, input, breath) {
           }
           channel = m.channel
           let level = Math.clamp(2.0 * m.velocity, 0.05, 2.0)
-          held = ready.begin(m.note, level, loudness(blown(channel)))
+          held = ready.begin(m.note, level, loudness(blown(channel), gain))
           held_pitch = m.note
           turned_for = nil
           ready = player.prepare()
@@ -108,7 +116,7 @@ fn play(player, input, breath) {
     behind = false
     if held != nil {
       let x = blown(channel)
-      held.volume(loudness(x))
+      held.volume(loudness(x, gain))
       if x != turned_for {
         if turned_for == nil || Time.monotonic() - turned >= BREATH_EVERY {
           player.breath(held, x)
@@ -128,4 +136,4 @@ fn play(player, input, breath) {
   }
 }
 
-export {play}
+export {play, GAIN}
