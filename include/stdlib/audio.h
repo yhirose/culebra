@@ -1453,7 +1453,7 @@ inline constexpr size_t kGraphLiveRoom = 256;
 struct GraphPart {
   PartKind kind;
   std::vector<int> inputs;       // parts made before it, added together
-  std::vector<int> modulators;   // parts made before it that move it: a wave's phase, a delay's time
+  std::vector<int> modulators;   // parts made before it that move it: a wave's phase, a delay's time, a gain's gain
   Param values[2];               // a wave's freq and feedback, a filter's cutoff, a gain's gain, a string's freq and ring, a delay's time
   std::variant<std::monostate, Oscillator, Noise, Svf, Resonance, PluckString, DelayLine, Limiter> processor;
   double out[kGraphBlock] = {};
@@ -1549,7 +1549,7 @@ class Graph {
           break;
         }
         case PartKind::Gain:
-          for (int i = 0; i < n; i++) p.out[i] = in[i] * v0[i];
+          for (int i = 0; i < n; i++) p.out[i] = in[i] * (v0[i] + mod[i]);
           break;
         case PartKind::Resonate: {
           auto& r = std::get<Resonance>(p.processor);

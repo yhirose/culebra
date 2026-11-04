@@ -135,14 +135,16 @@ arguments, under the same names.
 | `wave` | `modulators` (a list) | `freq` (`f`), `feedback` (0) | `kind`: `sine`, `saw`, `square` or `triangle` (`sine`); `phase` (0, radians) |
 | `noise` | | | `seed` (1) |
 | `filter` | `input` | `cutoff` (1000) | `kind`: `low`, `high` or `band` (`low`); `q` (0.707) |
-| `gain` | `input` | `gain` (1) | |
+| `gain` | `input`, `modulators` (a list) | `gain` (1) | |
 | `mix` | `inputs` (a list) | `gain` (1) | |
 | `pluck` | `input` | `freq` (`f`), `ring` (2) | |
 | `delay` | `input`, `modulators` (a list) | `time` (0, seconds) | |
 
 A field that takes in parts holds their names. A wave's `modulators` move its
-phase and a delay's move its time. A wave's `freq` and a pluck's
-are the note's own (`f`) unless the recipe says otherwise.
+phase, a delay's move its time and a gain's add to its gain: a slow wave
+makes a tremolo, which starts with each note, as a synthesizer's LFO in key
+sync does, since each note is a graph of its own. A wave's `freq` and a
+pluck's are the note's own (`f`) unless the recipe says otherwise.
 
 ## Values
 

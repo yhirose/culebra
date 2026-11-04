@@ -294,8 +294,12 @@ let _audio_module = fn () {
       p.cutoff = @_value(p, 0)
       p
     }
-    gain(input: AudioGraphPart, gain: Long | Float = 1.0) {
-      let p = @_part("gain", "", [input], [gain])
+    gain(
+      input: AudioGraphPart,
+      gain: Long | Float = 1.0,
+      modulators: Array = [],
+    ) {
+      let p = @_part("gain", "", [input], [gain], modulators)
       p.gain = @_value(p, 0)
       p
     }

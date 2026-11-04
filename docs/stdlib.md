@@ -9016,7 +9016,7 @@ it or to any of its parts and values.
 | `g.wave(kind = "sine", freq = 440.0, modulators = [], feedback = 0.0, phase = 0.0)` | a wave from -1 to 1 at `freq` Hz, starting `phase` radians on: `"sine"`, `"saw"` or `"square"` (their jumps smoothed, so little folds back from above half the rate), or `"triangle"`. The sum of the `modulators` (parts made before it) moves its phase, in radians, and so does `feedback` times the mean of its own last two samples: with sines, FM as a DX7 makes it. An index is a `gain` between a modulator and the wave it moves |
 | `g.noise(seed = 1)` | white noise from -1 to 1, the same from the same `seed` |
 | `g.filter(kind, input, cutoff = 1000.0, q = 0.707)` | `input` through `Audio.filter`'s filter |
-| `g.gain(input, gain = 1.0)` | `input` times `gain` |
+| `g.gain(input, gain = 1.0, modulators = [])` | `input` times the sum of `gain` and the `modulators` (parts made before it), which may pass 0: a slow wave as a modulator makes a tremolo, as Web Audio wires an oscillator to a `GainNode`'s `gain` |
 | `g.mix(inputs: Array, gain = 1.0)` | the `inputs` added together, times `gain` |
 | `g.resonate(input, modes: Array, dry = 0.0)` | `input` through `Audio.resonate`'s bank of resonances |
 | `g.pluck(input, freq = 220.0, ring = 2.0)` | `Audio.pluck`'s string, `input` added into it as a strike is |

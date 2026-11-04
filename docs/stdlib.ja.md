@@ -8647,7 +8647,7 @@ println(Math.round(Audio.integrated_loudness(both)))                     # => -1
 | `g.wave(kind = "sine", freq = 440.0, modulators = [], feedback = 0.0, phase = 0.0)` | `freq` Hzの-1から1の波で、`phase`ラジアン進んだところから始まる。`"sine"`、`"saw"`、`"square"`（この2つは段差をなめらかにして、`rate`の半分より上からの折り返しを抑えてある）、`"triangle"`。`modulators`（この波より前に作った部品）の出力の和が位相をラジアンで動かし、自分の直近2サンプルの平均に`feedback`を掛けたものも位相を動かす。sineなら、DX7のFMになる。変調の深さ（index）は、変調器とそれが動かす波の間に置く`gain`で決める |
 | `g.noise(seed = 1)` | -1から1の白色雑音。同じ`seed`なら同じになる |
 | `g.filter(kind, input, cutoff = 1000.0, q = 0.707)` | `input`を`Audio.filter`と同じフィルタに通す |
-| `g.gain(input, gain = 1.0)` | `input`を`gain`倍する |
+| `g.gain(input, gain = 1.0, modulators = [])` | `input`を「`gain`と`modulators`（この部品より前に作った部品）の出力の和」倍する。和は0をまたいでもよい。遅い波をつなぐとトレモロになる。Web Audioで`GainNode`の`gain`に発振器をつなぐのと同じ |
 | `g.mix(inputs: Array, gain = 1.0)` | `inputs`を足し合わせて`gain`倍する |
 | `g.resonate(input, modes: Array, dry = 0.0)` | `input`を`Audio.resonate`と同じ共鳴の集まりに通す |
 | `g.pluck(input, freq = 220.0, ring = 2.0)` | `Audio.pluck`と同じ弦。`input`をストロークと同じように弦に足し込む |

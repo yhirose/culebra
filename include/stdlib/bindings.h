@@ -6182,10 +6182,10 @@ inline JitValue _ns_audio_graph_new(JitValue* a, int64_t) {
 // A part of `family` ("wave", "noise", "filter", "gain", "resonate", "pluck",
 // "delay" or "limit"), `kind` naming the wave or the filter, wired by `wires`,
 // two lists of parts made before it: those it takes in and those that move it
-// (a wave's phase, a delay's time). It is set up by the numbers `options`: a
-// wave's freq, feedback and phase, a noise's seed, a filter's cutoff and q, a
-// gain's gain, a resonance's dry and modes, a string's freq and ring, a
-// delay's time, a limit's ceiling and release.
+// (a wave's phase, a delay's time, a gain's gain). It is set up by the numbers
+// `options`: a wave's freq, feedback and phase, a noise's seed, a filter's
+// cutoff and q, a gain's gain, a resonance's dry and modes, a string's freq
+// and ring, a delay's time, a limit's ceiling and release.
 inline JitValue _ns_audio_graph_part(JitValue* a, int64_t) {
   namespace ad = culebra::_audio_detail;
   auto& g = _ns_audio_graph(a[0]);

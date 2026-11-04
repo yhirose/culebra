@@ -136,6 +136,26 @@ fn a_chord_is_its_notes_mixed_headroom_down_under_full_scale() {
   assert_true(xs.all(|x| Math.abs(x) < 0.95))
 }
 
+@test
+fn a_gain_takes_modulators_as_the_graph_does() {
+  # A tremolo: a 5 Hz wave at 0.3 added to a gain of 0.6.
+  let trem = made({
+    recipe: 1,
+    parts: {
+      w: {part: "wave"},
+      lfo: {part: "wave", freq: 5},
+      depth: {part: "gain", input: "lfo", gain: 0.3},
+      g: {part: "gain", input: "w", gain: 0.6, modulators: ["depth"]},
+    },
+    out: "g",
+  })
+  let by_hand = Audio.Graph.new(rate: RATE)
+  let depth = by_hand.gain(by_hand.wave(freq: 5.0), 0.3)
+  let g = by_hand.gain(by_hand.wave(freq: 440.0), 0.6, modulators: [depth])
+  by_hand.output(by_hand.filter("high", by_hand.gain(g, 1.0), cutoff: 20.0))
+  assert_eq(trem.note(69, 0.3), by_hand.render(0.3))
+}
+
 # A drum whose values' `on` last 0.02 s (the freq), 0.08 s (a gain) and
 # 0.05 s (the gain it plays, then its `off` of 0.1 s).
 let struck = made({

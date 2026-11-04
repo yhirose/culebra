@@ -87,8 +87,9 @@ let PARTS = {
   },
   gain: {
     one: ["input"],
+    many: ["modulators"],
     values: {gain: 1.0},
-    make: |g, x| g.gain(x.input, gain: x.gain),
+    make: |g, x| g.gain(x.input, gain: x.gain, modulators: x.modulators),
   },
   mix: {
     many: ["inputs"],
