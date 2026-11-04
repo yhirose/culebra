@@ -1,0 +1,47 @@
+# The songs the converters are tested on: every song in the repository
+# (run*.kau are bands that cruise and sprint use) and one that writes every
+# notation.
+let SONGS = [
+  "kauai/convert/notations.kau",
+  "examples/kauai/songs/features.kau",
+  "examples/kauai/songs/first.kau",
+  "examples/kauai/songs/guitar.kau",
+  "examples/kauai/songs/jetveux.kau",
+  "examples/kauai/songs/jetveux_piano.kau",
+  "examples/kauai/songs/sax.kau",
+  "examples/kauai/songs/strings.kau",
+  "examples/kauai/songs/trio.kau",
+  "examples/games/retro-run/assets/ballad.kau",
+  "examples/games/retro-run/assets/cruise.kau",
+  "examples/games/retro-run/assets/sprint.kau",
+  "kauai/sounds/alto_sax/songs/fast_lane.kau",
+  "kauai/sounds/alto_sax/songs/harbor_lights.kau",
+  "kauai/sounds/alto_sax/songs/ocean_highway.kau",
+]
+
+# The external instruments a band names, each answering no sound: enough to
+# read a song and list what it plays.
+fn silent(arrangement) {
+  mut voices = {}
+  mut drums = {}
+  for line in arrangement.split("\n") {
+    let w = line.split_whitespace()
+    let at = w.index_of("external")
+    continue if at < 0 || at + 1 >= w.size()
+    let key = w[at + 1].lower()
+    if w[0] == "drum" {
+      drums[key] = |params| nil
+    } else {
+      voices[key] = |pitch, params| nil
+    }
+  }
+  {voices: voices, drums: drums}
+}
+
+# What song `path` plays, its external instruments silent.
+fn events_of(path, arrangement) {
+  let sounds = silent(arrangement)
+  Audio.Kauai.load(path, voices: sounds.voices, drums: sounds.drums).events()
+}
+
+export {SONGS, silent, events_of}

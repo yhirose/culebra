@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- musicxml.xsd imports these two by URL; this catalog finds them here,
+     so a validator needs no network. -->
+<catalog xmlns="urn:oasis:names:tc:entity:xmlns:xml:catalog">
+  <uri name="http://www.musicxml.org/xsd/xml.xsd" uri="xml.xsd"/>
+  <uri name="http://www.musicxml.org/xsd/xlink.xsd" uri="xlink.xsd"/>
+</catalog>

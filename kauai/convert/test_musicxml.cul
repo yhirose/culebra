@@ -1,0 +1,587 @@
+import mx from './musicxml.cul'
+import corpus from './corpus.cul'
+
+let STEP = {C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11}
+let SCHEMA = "kauai/convert/musicxml-4.0"
+let WRITTEN = {}
+
+# Song `path`'s score and its MusicXML, made once for the tests that read
+# every song.
+fn written(path) {
+  WRITTEN[path] ??= fn () {
+    let score = Audio.Kauai.parse_file(path)
+    {score, text: mx.write(score)}
+  }()
+  WRITTEN[path]
+}
+
+# --- playing a score -------------------------------------------------------------
+
+# A part's measures in the order they play, its repeats and endings taken.
+fn unfolded(measures) {
+  let out = []
+  mut i = 0
+  mut start = 0
+  mut pass = 1
+  while i < measures.size() {
+    let m = measures[i]
+    if m.find("barline[@location='left']/repeat[@direction='forward']") != nil &&
+        i != start {
+      start = i
+      pass = 1
+    }
+    let ending = m.find("barline[@location='left']/ending[@type='start']")
+    if ending != nil &&
+        !ending
+          .attrs
+          .number
+          .split(",")
+          .map(|s| to_long(s.trim()))
+          .contains(pass) {
+      while measures[i].find("barline[@location='right']/ending") == nil {
+        i += 1
+      }
+      i += 1
+      continue
+    }
+    out.push(m)
+    let back = m.find("barline[@location='right']/repeat[@direction='backward']")
+    if back != nil && pass < to_long(back.attrs.get("times", "2")) {
+      pass += 1
+      i = start
+      continue
+    }
+    i += 1
+  }
+  out
+}
+
+# The pitches a part strikes, as [onset in divisions, MIDI pitch]: its
+# grace notes a sixty-fourth (30) apart before their note, as Kauai plays
+# them.
+fn struck(part) {
+  let out = []
+  mut graces = []
+  mut t = 0
+  mut at = 0
+  for m in unfolded(part.find_all("measure")) {
+    for n in m.find_all("note") {
+      let p = n.find("pitch")
+      let pitch = p == nil
+        ? nil
+        : 12 * (to_long(p.text("octave")) + 1) +
+          STEP[p.text("step")] +
+          to_long(p.text("alter") ?? "0")
+      if n.find("grace") != nil {
+        graces = [...graces, pitch]
+        continue
+      }
+      if n.find("chord") == nil {
+        out.extend(iota(graces.size()).map(|k| [t + 30 * k, graces[k]]))
+        at = t + 30 * graces.size()
+        graces = []
+        t += to_long(n.text("duration"))
+      }
+      out.push([
+        at,
+        pitch,
+      ]) if pitch != nil && n.find("tie[@type='stop']") == nil
+    }
+  }
+  out
+}
+
+# The voices of a band that play only lines a score writes, each with the
+# names of its lines: `Melody` for the melody, else its parts.
+fn line_voices(arrangement) {
+  arrangement.lines().map(|l| l
+    .split_whitespace()
+    .map(|w| w.to_string())).filter(|w| w.size() > 1 &&
+    w[0] == "voice").flat_map(fn (w) {
+    let plays = iota(w.size() - 1).filter(|i| w[i] == "plays").map(|i| w[i + 1])
+    return [] if plays.empty() || plays.any(|p| p != "melody" && p != "part")
+    let from = w.index_of("part")
+    let parts = from < 0
+      ? []
+      : w
+        .slice(from + 1, w.size())
+        .iter()
+        .take_while(|x| x.slice(0, 1).to_string() !=
+          x.slice(0, 1).to_string().lower())
+        .collect()
+    [{
+      voice: w[1],
+      lines: [...(plays.contains("melody") ? ["Melody"] : []), ...parts],
+    }]
+  })
+}
+
+# Every song's score plays the notes the song does, in the same order: each
+# voice that plays only the melody or parts strikes the pitches the score's
+# lines do, with its repeats and endings taken. (Kauai's times are seconds,
+# with swing and articulations in them, so the order is what is compared.)
+@test
+fn every_score_plays_the_notes_of_its_song() {
+  for path in corpus.SONGS {
+    let (score, doc) = (written(path).score, XML.parse(written(path).text))
+    let names = doc
+      .find_all("part-list/score-part")
+      .map(|p| p.text("part-name"))
+    let parts = doc.find_all("part")
+    let events = corpus.events_of(path, score.arrangement)
+    let voices = line_voices(score.arrangement)
+    assert_true(
+      voices.any(|v| v.lines.contains("Melody")),
+      "{path} has a melody voice",
+    )
+    for v in voices {
+      let played = events
+        .filter(|e| e.by == v.voice)
+        .sorted_by(|e| (e.at, e.pitch))
+        .map(|e| e.pitch)
+      let written = v
+        .lines
+        .flat_map(|n| struck(parts[names.index_of(n)]))
+        .sorted_by(|x| (x[0], x[1]))
+        .map(|x| x[1])
+      assert_eq(written, played, "{path}: {v.voice} plays {v.lines}")
+    }
+  }
+}
+
+# Every score is MusicXML 4.0 as its schema defines it, checked with xmllint
+# where there is one.
+@test
+fn every_score_is_valid_musicxml_4() {
+  let found = try {
+    Proc.run(["xmllint", "--version"]).ok
+  } catch _ {
+    false
+  }
+  return println("no xmllint, so the scores are not checked against the schema") if !found
+  let dir = FS.mkdtemp("kauai_musicxml_")
+  defer {
+    FS.remove(dir, recursive: true)
+  }
+  let files = corpus.SONGS.map(fn (path) {
+    let file = FS.join(dir, "{FS.stem(path)}.musicxml")
+    FS.write(file, written(path).text)
+    file
+  })
+  let r = Proc.run(
+    [
+      "xmllint",
+      "--nonet",
+      "--noout",
+      "--schema",
+      "{SCHEMA}/musicxml.xsd",
+      ...files,
+    ],
+    env: {XML_CATALOG_FILES: "{SCHEMA}/catalog.xml"},
+  )
+  assert_true(r.ok, r.stderr)
+}
+
+# --- what a score writes ---------------------------------------------------------
+
+let BAND = 'band B {
+  voice Lead  pulse  plays melody  poly  vol 20
+}
+
+'
+
+# Song text (its song and sections, after a band of one voice) as the
+# score's document.
+fn scored(text) {
+  XML.parse(mx.write(Audio.Kauai.parse(BAND + text)))
+}
+
+let notes = |m| m.find_all("note")
+
+@test
+fn notes_show_their_accidentals_ties_and_tuplets() {
+  let doc = scored('song S {
+  tempo 120
+  key F
+  band B
+  melody in C4..B4
+
+  A
+}
+
+section A {
+  F    bb4 b b f#~
+  C    f#2 3[e8 d c] .~<c e g>4
+  G    (\fall !g4 a) @r2
+}
+')
+  let (
+    one,
+    two,
+    three,
+  ) = (
+    doc.find("part/measure[1]"),
+    doc.find("part/measure[2]"),
+    doc.find("part/measure[3]"),
+  )
+  assert_eq(one.find("attributes/clef").children.map(|c| c.text()), ["G", "2"])
+  assert_eq(one.find("attributes/time").children.map(|c| c.text()), ["4", "4"])
+  let shown = |n| n.text("accidental")
+  assert_eq(notes(one).map(shown), [nil, "natural", nil, "sharp"])
+  assert_eq(notes(one)[3].find("tie").attrs, {type: "start"})
+  assert_eq(notes(one)[3].find("notations/tied").attrs, {type: "start"})
+  let held = notes(two)[0]
+  assert_eq(held.find("tie").attrs, {type: "stop"})
+  assert_eq(held.find("notations/tied").attrs, {type: "stop"})
+  assert_eq(shown(held), nil, "a note a tie holds shows no accidental")
+  let triplet = notes(two).slice(1, 4)
+  assert_eq(triplet.map(|n| n.text("duration")), ["160", "160", "160"])
+  assert_eq(
+    triplet.map(|n| [
+      n.text("time-modification/actual-notes"),
+      n.text("time-modification/normal-notes"),
+    ]),
+    [["3", "2"], ["3", "2"], ["3", "2"]],
+  )
+  assert_eq(triplet[0].find("notations/tuplet").attrs.type, "start")
+  assert_eq(triplet[2].find("notations/tuplet").attrs.type, "stop")
+  let chord = notes(two).slice(4, 7)
+  assert_eq(chord.map(|n| n.find("chord") != nil), [false, true, true])
+  assert_eq(
+    chord.map(|n| n.find("notations/arpeggiate") != nil),
+    [true, true, true],
+  )
+  assert_eq(
+    chord.map(|n| n.find("notations/articulations/staccato") != nil),
+    [true, false, false],
+  )
+  let (g, a, rest) = (notes(three)[0], notes(three)[1], notes(three)[2])
+  assert_eq(
+    g.find("notations/articulations").children.map(|c| c.tag),
+    ["accent", "falloff"],
+  )
+  assert_eq(g.find("notations/slur").attrs, {type: "start", number: "1"})
+  assert_eq(a.find("notations/slur").attrs, {type: "stop", number: "1"})
+  assert_true(rest.find("notations/fermata") != nil, "a fermata over a rest")
+}
+
+@test
+fn chords_are_harmony_with_their_kind_and_degrees() {
+  let doc = scored('song S {
+  tempo 120
+  band B
+  melody in C4..B4
+
+  A
+}
+
+section A {
+  F Gm7         c2 d
+  C7(b9)/E      c1
+  Bb6/9 / N.C. /  c1
+}
+')
+  let h = doc.find_all("part/measure/harmony")
+  let said = |x| [
+    x.text("root/root-step"),
+    x.text("root/root-alter"),
+    x.text("kind"),
+    x.find("kind").attrs.text,
+    x.text("bass/bass-step"),
+  ]
+  assert_eq(
+    h.map(said),
+    [
+      ["F", nil, "major", "", nil],
+      ["G", nil, "minor-seventh", "m7", nil],
+      ["C", nil, "dominant", "7(b9)", "E"],
+      ["B", "-1", "major-sixth", "6/9", nil],
+      ["C", nil, "none", "N.C.", nil],
+    ],
+  )
+  let degrees = |x| x
+    .find_all("degree")
+    .map(|d| [
+      d.text("degree-value"),
+      d.text("degree-alter"),
+      d.text("degree-type"),
+    ])
+  assert_eq(degrees(h[2]), [["9", "-1", "add"]])
+  assert_eq(degrees(h[3]), [["9", "0", "add"]])
+  assert_eq(
+    h[4].text("offset"),
+    "960",
+    "N.C. comes in halfway through the whole note",
+  )
+  assert_eq(
+    doc
+      .find("part/measure[1]")
+      .children
+      .filter(|c| c.tag == "harmony" || c.tag == "note")
+      .map(|c| c.tag),
+    ["harmony", "note", "harmony", "note"],
+  )
+}
+
+@test
+fn the_form_folds_where_every_time_is_the_same() {
+  let doc = scored('song S {
+  tempo 120
+  band B
+  melody in C4..B4
+
+  A x3
+  B ending 1
+  B ending 2
+  C x2
+}
+
+section A {
+  C    c1
+}
+
+section B {
+  F    f1
+  ending 1 {
+    G  g1
+  }
+  ending 2 {
+    C  c1
+  }
+}
+
+section C {
+  N.C. e1
+  2nd: d1
+}
+')
+  let ms = doc.find_all("part/measure")
+  assert_eq(ms.size(), 6, "A once, B with its two endings, C twice")
+  let at = |m, path| m.find(path)?.attrs
+  assert_eq(
+    at(ms[0], "barline[@location='left']/repeat"),
+    {direction: "forward"},
+  )
+  assert_eq(
+    at(ms[0], "barline[@location='right']/repeat"),
+    {direction: "backward", times: "3"},
+  )
+  assert_eq(
+    at(ms[1], "barline[@location='left']/repeat"),
+    {direction: "forward"},
+  )
+  assert_eq(
+    at(ms[2], "barline[@location='left']/ending"),
+    {number: "1", type: "start"},
+  )
+  assert_eq(
+    at(ms[2], "barline[@location='right']/ending"),
+    {number: "1", type: "stop"},
+  )
+  assert_eq(
+    at(ms[2], "barline[@location='right']/repeat"),
+    {direction: "backward"},
+  )
+  assert_eq(
+    at(ms[3], "barline[@location='left']/ending"),
+    {number: "2", type: "start"},
+  )
+  assert_eq(
+    at(ms[3], "barline[@location='right']/ending"),
+    {number: "2", type: "discontinue"},
+  )
+  assert_eq(
+    ms.map(|m| m.text("direction/direction-type/rehearsal")),
+    ["A", "B", nil, nil, "C", "C"],
+  )
+  assert_eq(
+    ms.slice(4, 6).map(|m| m.find("barline/repeat")),
+    [nil, nil],
+    "C changes the second time, so it is written out",
+  )
+  let chord = |m| m.find("harmony") == nil
+    ? nil
+    : m.text("harmony/root/root-step") + " " + m.text("harmony/kind")
+  assert_eq(
+    ms.map(chord),
+    ["C major", "F major", "G major", "C major", "C none", "C none"],
+    "each pass and ending names its chord, N.C. too",
+  )
+  assert_eq(ms[0].text("barline[@location='left']/bar-style"), "heavy-light")
+}
+
+@test
+fn a_pickup_opens_the_song_or_goes_into_the_bar_before_it() {
+  let doc = scored('song S {
+  tempo 120
+  key F
+  band B
+  melody in C4..B4
+
+  A
+  A in D
+}
+
+section A {
+  pickup  c8 d
+  F    e2. r4
+  C    c2. r4
+}
+')
+  let ms = doc.find_all("part/measure")
+  assert_eq(ms[0].attrs, {number: "0", implicit: "yes"})
+  let named = |n| n.text("rest") != nil
+    ? "r"
+    : n.text("pitch/step") +
+      ["bb", "b", "", "#", "##"][to_long(n.text("pitch/alter") ?? "0") + 2] +
+      n.text("pitch/octave")
+  assert_eq(notes(ms[0]).map(named), ["C4", "D4"])
+  assert_eq(
+    notes(ms[2]).map(named),
+    ["C4", "A3", "B3"],
+    "the second time's pickup, moved down to D, in place of the rest",
+  )
+  assert_eq(ms[3].text("attributes/key/fifths"), "2")
+  assert_eq(notes(ms[3]).map(named), ["C#4", "r"])
+  assert_eq(
+    ms[3].text("note/accidental"),
+    nil,
+    "D's key signature has the sharp",
+  )
+  assert_eq(ms[3].text("harmony/root/root-step"), "D")
+  # A pickup of a dotted thirty-second leaves a sixty-fourth's rest before it.
+  let short = scored('song S {
+  tempo 120
+  band B
+  melody in C4..B4
+
+  A x2
+}
+
+section A {
+  pickup  b32.
+  C    c2. r4
+}
+')
+  let two = short.find_all("part/measure")[1]
+  assert_eq(
+    notes(two).map(|n| n.text("type")),
+    ["half", "eighth", "16th", "64th", "32nd"],
+  )
+}
+
+@test
+fn directions_say_how_it_plays() {
+  let doc = scored('song S {
+  tempo 4.=60
+  meter 6/8
+  swing 8
+  band B
+  melody in C4..B4
+
+  A
+}
+
+section A {
+  C   \p c4. \cresc d4.
+  C   e4. \f f4.
+  C   \rit 50 g4. a4.
+  C   \tempo \dim b4. \pp a4.
+}
+')
+  let ms = doc.find_all("part/measure")
+  let one = ms[0]
+  assert_eq(one.text("direction/direction-type/metronome/beat-unit"), "quarter")
+  assert_true(one.find("direction/direction-type/metronome/beat-unit-dot") !=
+    nil)
+  assert_eq(
+    one.find("direction/sound[@tempo]").attrs,
+    {tempo: "90"},
+    "60 dotted quarters are 90 quarters",
+  )
+  assert_eq(
+    one.find("direction/sound/swing").children.map(|c| [c.tag, c.text()]),
+    [["first", "2"], ["second", "1"], ["swing-type", "eighth"]],
+  )
+  assert_eq(one.find("direction/sound[@dynamics]").attrs, {dynamics: "55"})
+  assert_eq(
+    one.find("direction/direction-type/wedge").attrs,
+    {type: "crescendo"},
+  )
+  let two = ms[1].find_all("direction")
+  assert_eq(
+    two.map(|d| d.find("direction-type").children[0].tag),
+    ["wedge", "dynamics"],
+    "the hairpin ends at the f",
+  )
+  assert_eq(
+    ms[2].find("direction").find_all("direction-type").map(|t| t.children[0]),
+    [
+      {tag: "words", ns: nil, attrs: {}, children: ["rit."]},
+      {tag: "dashes", ns: nil, attrs: {type: "start"}, children: []},
+    ],
+  )
+  let four = ms[3].find_all("direction")
+  assert_eq(four[0].find("direction-type/dashes").attrs, {type: "stop"})
+  assert_eq(four[1].text("direction-type/words"), "a tempo")
+  assert_eq(four[1].find("sound").attrs, {tempo: "90"})
+  assert_eq(
+    four
+      .slice(2, 5)
+      .map(|d| d.find("direction-type").children[0])
+      .map(|t| [t.tag, t.attrs.get("type", nil)]),
+    [["wedge", "diminuendo"], ["wedge", "stop"], ["dynamics", nil]],
+  )
+}
+
+@test
+fn a_repeat_sign_and_the_songs_about() {
+  let doc = scored('about {
+  title     The Tune
+  composer  Someone
+  year      1902
+}
+
+song S {
+  tempo 120
+  band B
+  melody in C3..B3
+
+  A
+}
+
+section A {
+  C    c4 d e f
+  %
+  meter 3/4
+  G    g2.
+}
+')
+  let ms = doc.find_all("part/measure")
+  assert_eq(
+    ms[1].find("attributes/measure-style/measure-repeat").attrs,
+    {type: "start"},
+  )
+  assert_eq(ms[1].text("attributes/measure-style/measure-repeat"), "1")
+  assert_eq(
+    ms[2].find("attributes/measure-style/measure-repeat").attrs,
+    {type: "stop"},
+  )
+  assert_eq(notes(ms[1]).size(), 4, "a repeated measure still holds its notes")
+  assert_eq(
+    ms.map(|m| m.find("attributes/time")?.children?.map(|c| c.text())),
+    [["4", "4"], nil, ["3", "4"]],
+  )
+  assert_eq(
+    ms[0].find("attributes/clef").children.map(|c| c.text()),
+    ["F", "4"],
+    "a melody below middle C",
+  )
+  assert_eq(doc.text("work/work-title"), "The Tune")
+  assert_eq(doc.find("identification/creator").attrs, {type: "composer"})
+  assert_eq(doc.text("identification/creator"), "Someone")
+  assert_eq(
+    doc.text("identification/miscellaneous/miscellaneous-field[@name='year']"),
+    "1902",
+  )
+}

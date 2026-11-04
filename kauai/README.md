@@ -82,6 +82,35 @@ names them as `external SopranoSax` or `drum Kick external Kick`;
 instrument of your own is added to `cli/main.cul` and the binary built again,
 because a compiled program loads no module of its own at run time.
 
+## I want a score to print or edit
+
+```bash
+kauai convert song.kau score.musicxml   # or culebra kauai/cli/main.cul convert ...
+```
+
+[`convert/musicxml.cul`](convert/musicxml.cul) writes the song as a MusicXML
+4.0 score, which MuseScore, Dorico, Sibelius and the browser libraries
+(OpenSheetMusicDisplay, Verovio) open. The melody is the first staff and
+each part the song writes out another; the chords are chord symbols over the
+melody, with the quality as written for their text. The notes keep their
+ties, tuplets, grace notes, slurs, rolled chords and marks (the jazz
+articulations too), and the dynamics, hairpins, tempo marks, swing, meters
+and keys are where the song writes them. A `%` is drawn as a repeat sign.
+
+The score is the song in the order it plays: each time it plays a section,
+named by a rehearsal mark, with `in` spelled in the new key. Times through a
+section that are all the same are written once in repeat signs, and times
+that differ only in their ending have first and second endings; any other
+time is written out. A pickup that starts the song is a short first bar, and
+a later one goes into the rests at the end of the bar before it.
+
+Not written yet: the band and its grooves, hits, voicings, a line's
+parameters (`\bright=`), and the song's own lines (`mark`, `with`, `loop`,
+`room`); `\rit N` and `\accel N` are a rit. or accel. without the tempo they
+reach. Writing a compressed `.mxl` and reading MusicXML back are to come.
+[`convert/musicxml-4.0/`](convert/musicxml-4.0/) holds the schema the tests
+check every score against.
+
 ## I want to play an instrument from a MIDI controller
 
 ```bash
@@ -118,6 +147,7 @@ than through a headphone jack.
 | `recipes/` | the instruments written as recipes, one JSON file each, and the drums in `recipes/drums/` |
 | `tools/` | the tools for measuring, checking and comparing |
 | `cli/` | the command line `just kauai-build` compiles |
+| `convert/` | a song as a score (MusicXML) and back to `.kau` |
 | `sounds/` | the finished external instruments, one folder each |
 | `skills/make-instrument/` | the skill for making an instrument with Claude |
 | `harness/` | the agents' roles and the `main.cul` template, for building with one job to an agent |

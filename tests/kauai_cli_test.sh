@@ -170,6 +170,18 @@ for lane in "${lanes[@]}"; do
   [[ "$err" == "ValueError: Audio.Kauai: $TMP/organ.kau:2: voice Lead plays \`external Organ\`, and voices: has no \`organ\` (it has "*"altosax, "*"mellowfmbrass"*")" ]] || {
     echo "FAIL $lane no instrument: stderr [$err]"; fail=1; }
 
+  # A song as a MusicXML score, the same from the binary as from the script.
+  run cli convert "$TMP/duo.kau" "$TMP/$lane.musicxml"
+  check "$lane convert: status" 0 "$rc"
+  check "$lane convert: stdout" "$TMP/duo.kau: written to $TMP/$lane.musicxml" "$out"
+  grep -q '^<score-partwise version="4.0">$' "$TMP/$lane.musicxml" || {
+    echo "FAIL $lane convert: no score in $TMP/$lane.musicxml"; fail=1; }
+  cmp -s "$TMP/script.musicxml" "$TMP/$lane.musicxml" || {
+    echo "FAIL $lane convert: the binary's score is not the script's"; fail=1; }
+  run cli convert "$TMP/bad.kau" "$TMP/bad.musicxml"
+  check "$lane convert, a song that does not read: status" 1 "$rc"
+  [[ "$err" == "KauaiError: "* ]] || { echo "FAIL $lane convert, a song that does not read: stderr [$err]"; fail=1; }
+
   # The WAV, whole and in part, is the one `culebra play` writes.
   run play --wav "$TMP/play.wav" "$TMP/duo.kau"
   run cli "$TMP/duo.kau" --wav "$TMP/cli.wav"

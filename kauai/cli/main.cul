@@ -1,17 +1,21 @@
 # The Kauai command line: `kauai song.kau` plays a song, and `--check`, `--wav`,
-# `--from` and `--to` do what they do under `culebra play`. `just kauai-build`
+# `--from` and `--to` do what they do under `culebra play`; `kauai convert`
+# writes a song as a MusicXML score. `just kauai-build`
 # compiles it into one binary. The sound packages it knows are compiled in, so
 # the binary reads no module at run time and needs no culebra.
 import soprano from '../sounds/soprano_sax/main.cul'
 import alto from '../sounds/alto_sax/main.cul'
 import recipes from '../recipes/main.cul'
 import live from './live.cul'
+import musicxml from '../convert/musicxml.cul'
 
 let packages = [soprano, alto, recipes]
 
 # Every bundled instrument, by the name a song gives it (`external SopranoSax`),
 # and the drums, which only the recipes have (`external Kick`).
-let voices = packages.flat_map(|p| p.voices.keys().map(|k| (k, p.voices[k]))).to_object()
+let voices = packages
+  .flat_map(|p| p.voices.keys().map(|k| (k, p.voices[k])))
+  .to_object()
 let drums = recipes.drums
 
 # The same, as `kauai instruments` lists them.
@@ -26,6 +30,10 @@ let usage = "Usage: kauai <song.kau> [options]
                        minutes and seconds (1:23.5) or a mark's name
   --to <at>            with --wav, write the part until <at>, and what
                        starts before it ringing on
+
+       kauai convert <song.kau> <score.musicxml>
+  write the song as a MusicXML score (.musicxml or .xml) that notation
+  programs open: its melody, parts and chords, in the order it plays them
 
        kauai instruments
   the instruments and drums a song names after `external`; live plays
@@ -65,6 +73,32 @@ fn option(name, fallback) {
   args[at + 1]
 }
 
+fn refuse(e) {
+  IO.eprintln("{e.kind}: {e.message}")
+  Sys.exit(1)
+}
+
+if args[0] == "convert" {
+  let paths = args.slice(1, args.size())
+  if paths.size() != 2 ||
+      !paths[0].ends_with(".kau") ||
+      ![".musicxml", ".xml"].any(|x| paths[1].ends_with(x)) {
+    IO.eprintln("kauai: convert writes a song (.kau) as a MusicXML score (.musicxml or .xml): kauai convert song.kau score.musicxml")
+    Sys.exit(2)
+  }
+  try {
+    FS.write(paths[1], musicxml.write(Audio.Kauai.parse_file(paths[0])))
+  } catch e: KauaiError | IOError {
+    refuse(e)
+  } catch e: String {
+    # A song a score cannot hold.
+    IO.eprintln(e)
+    Sys.exit(1)
+  }
+  println("{paths[0]}: written to {paths[1]}")
+  Sys.exit(0)
+}
+
 if args[0] == "instruments" {
   let width = instruments.map(|i| i.name.size()).max()
   for i in instruments {
@@ -90,17 +124,25 @@ if args[0] == "live" {
     Sys.exit(2)
   }
   let gain_text = option("--gain", nil)
-  let db = try { gain_text == nil ? live.GAIN : to_float(gain_text) } catch _ { nil }
+  let db = try {
+    gain_text == nil ? live.GAIN : to_float(gain_text)
+  } catch _ {
+    nil
+  }
   if db == nil || !(db >= -60.0 && db <= 24.0) {
     IO.eprintln("kauai: --gain is from -60 to 24 dB, not {gain_text}")
     Sys.exit(2)
   }
   let wanted = option("--midi", nil)
   let inputs = MIDI.inputs()
-  let named = wanted == nil ? inputs : inputs.filter(|p| p.name.lower().contains(wanted.lower()))
+  let named = wanted == nil
+    ? inputs
+    : inputs.filter(|p| p.name.lower().contains(wanted.lower()))
   if named.size() != 1 {
     let there = inputs.empty() ? "none" : inputs.map(|p| p.name).join(", ")
-    let which = wanted == nil ? "one MIDI input to play from" : "one MIDI input named like {wanted}"
+    let which = wanted == nil
+      ? "one MIDI input to play from"
+      : "one MIDI input named like {wanted}"
     IO.eprintln("kauai: live needs {which}; there are {there}")
     Sys.exit(1)
   }
@@ -127,11 +169,6 @@ if (from_at != nil || to_at != nil) && wav == nil {
 fn clock(secs) {
   let s = Math.round(secs)
   "{s / 60}:{s % 60 < 10 ? "0" : ""}{s % 60}"
-}
-
-fn refuse(e) {
-  IO.eprintln("{e.kind}: {e.message}")
-  Sys.exit(1)
 }
 
 let song = try {

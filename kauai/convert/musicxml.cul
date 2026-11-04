@@ -1,0 +1,1195 @@
+# A Kauai song's score, as Audio.Kauai.parse gives it, as a MusicXML 4.0
+# partwise score. The melody is the first part and each part the song writes
+# out another; the chords are <harmony> over the melody. The song is written
+# in the order it plays, a section each time the song plays it, folded into
+# repeat signs and endings where every time through is the same.
+
+let WHOLE = 1920  # Kauai's units in a whole note: a quarter's 480 are the score's divisions
+let LETTERS = ["C", "D", "E", "F", "G", "A", "B"]
+let PC = {C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11}
+let FIFTHS = {F: -1, C: 0, G: 1, D: 2, A: 3, E: 4, B: 5}
+# A dynamic's level as <sound dynamics> gives it, a percent of forte.
+let LEVELS = {pp: 40, p: 55, mp: 70, mf: 85, f: 100, ff: 115}
+let ARTICULATIONS = {
+  staccato: "staccato",
+  accent: "accent",
+  tenuto: "tenuto",
+  marcato: "strong-accent",
+  scoop: "scoop",
+  plop: "plop",
+  doit: "doit",
+  fall: "falloff",
+}
+let WEDGES = {cresc: "crescendo", dim: "diminuendo"}
+let TEMPOS = ["tempo", "rit", "accel"]
+let PLAIN = {actual: 1, normal: 1}  # the time a note not in a tuplet plays in
+let UNMOVED = {semis: 0, steps: 0}  # the interval a section played as written moves by
+let DOCTYPE = '<!DOCTYPE score-partwise PUBLIC "-//Recordare//DTD MusicXML 4.0 Partwise//EN" "http://www.musicxml.org/dtds/partwise.dtd">'
+
+# --- XML -----------------------------------------------------------------------
+
+fn node(tag, children, attrs = {}) {
+  {tag, attrs, children}
+}
+
+let leaf = |tag, value| node(tag, ["{value}"])
+let number_text = |x| x == Math.floor(x) ? "{to_long(x)}" : "{x}"
+let units = |v| WHOLE / v.value * 2 - WHOLE / v.value / (1 << v.dots)
+
+fn type_name(value) {
+  match value {
+    1 => "whole",
+    2 => "half",
+    4 => "quarter",
+    8 => "eighth",
+    16 => "16th",
+    32 => "32nd",
+    64 => "64th",
+    _ => "128th",
+  }
+}
+
+# --- spelling ------------------------------------------------------------------
+
+let natural = |step, octave| 12 * (octave + 1) + PC[step]
+let sounding = |p| natural(p.step, p.octave) + p.alter
+let floor_div = |a, b| (a - Math.wrap(a, b)) / b
+
+# A key or a chord root ("Eb", "F#m", "Bb") as its letter, its alteration
+# and whether it is minor.
+fn spelled(name) {
+  let minor = name.ends_with("m")
+  let acc = name.slice(1, name.size() - (minor ? 1 : 0)).to_string()
+  {
+    step: name.slice(0, 1).to_string(),
+    alter: acc.count("#") - acc.count("b"),
+    minor,
+  }
+}
+
+fn fifths_of(key) {
+  let k = spelled(key)
+  FIFTHS[k.step] + 7 * k.alter - (k.minor ? 3 : 0)
+}
+
+# `f` of one argument, answering from what it answered before for an
+# argument written the same: a song names a few keys and chords many times.
+# The answers are shared, so they are only read.
+fn remembered(f) {
+  let answers = {}
+  fn (x) {
+    let k = "{x}"
+    answers[k] ??= f(x)
+    answers[k]
+  }
+}
+
+# The alteration key signature `key` gives each letter.
+let key_alters = remembered(fn (key) {
+  let n = fifths_of(key)
+  let order = n >= 0
+    ? ["F", "C", "G", "D", "A", "E", "B"]
+    : ["B", "E", "A", "D", "G", "C", "F"]
+  LETTERS
+    .map(|s| (
+      s,
+      iota(Math.abs(n)).filter(|i| order[i % 7] == s).size() * Math.sign(n),
+    ))
+    .to_object()
+})
+
+# What `in` moves a section by, from key `from` to key `to`: the semitones,
+# the smaller way and up to a tritone up as the song plays it, and the
+# letters that spell them.
+fn interval_of(from, to) {
+  let (f, t) = (spelled(from), spelled(to))
+  let up = Math.wrap(PC[t.step] + t.alter - PC[f.step] - f.alter, 12)
+  let semis = up > 6 ? up - 12 : up
+  let steps = Math.wrap(LETTERS.index_of(t.step) - LETTERS.index_of(f.step), 7)
+  {semis, steps: [steps, steps - 7].min_by(|s| Math.abs(s * 12 - semis * 7))}
+}
+
+# Pitch `p` ({step, alter, octave}) moved by interval `iv`, spelled.
+fn moved(p, iv) {
+  let at = LETTERS.index_of(p.step) + iv.steps
+  let step = LETTERS[Math.wrap(at, 7)]
+  let octave = p.octave + floor_div(at, 7)
+  {
+    ...p,
+    step,
+    octave,
+    alter: p.alter +
+      iv.semis -
+      natural(step, octave) +
+      natural(p.step, p.octave),
+  }
+}
+
+fn moved_name(name, iv) {
+  let p = moved({...spelled(name), octave: 4}, iv)
+  p.step + (p.alter > 0 ? "#".repeat(p.alter) : "b".repeat(-p.alter))
+}
+
+fn moved_items(items, iv) {
+  items.map(|it| cond {
+    it.has("items") => {...it, items: moved_items(it.items, iv)},
+    it.has("pitches") => {
+      ...it,
+      pitches: it.pitches.map(|p| moved(p, iv)),
+      graces: it.graces.map(|g| moved(g, iv)),
+    },
+    _ => it,
+  })
+}
+
+fn moved_chord(c, iv) {
+  return nil if c == nil
+  let root = moved_name(c.root, iv)
+  let bass = c.bass == nil ? nil : moved_name(c.bass, iv)
+  {...c, symbol: root + c.quality + (bass == nil ? "" : "/{bass}"), root, bass}
+}
+
+# --- chords ----------------------------------------------------------------------
+
+# MusicXML's chord kinds, as their degrees and each one's semitones over the
+# root. A dominant or major 13th leaves out the 11th, as charts mean it.
+let KINDS = [
+  {kind: "major", tones: [[3, 4], [5, 7]]},
+  {kind: "minor", tones: [[3, 3], [5, 7]]},
+  {kind: "augmented", tones: [[3, 4], [5, 8]]},
+  {kind: "diminished", tones: [[3, 3], [5, 6]]},
+  {kind: "suspended-second", tones: [[2, 2], [5, 7]]},
+  {kind: "suspended-fourth", tones: [[4, 5], [5, 7]]},
+  {kind: "dominant", tones: [[3, 4], [5, 7], [7, 10]]},
+  {kind: "major-seventh", tones: [[3, 4], [5, 7], [7, 11]]},
+  {kind: "minor-seventh", tones: [[3, 3], [5, 7], [7, 10]]},
+  {kind: "diminished-seventh", tones: [[3, 3], [5, 6], [7, 9]]},
+  {kind: "augmented-seventh", tones: [[3, 4], [5, 8], [7, 10]]},
+  {kind: "half-diminished", tones: [[3, 3], [5, 6], [7, 10]]},
+  {kind: "major-minor", tones: [[3, 3], [5, 7], [7, 11]]},
+  {kind: "major-sixth", tones: [[3, 4], [5, 7], [6, 9]]},
+  {kind: "minor-sixth", tones: [[3, 3], [5, 7], [6, 9]]},
+  {kind: "dominant-ninth", tones: [[3, 4], [5, 7], [7, 10], [9, 14]]},
+  {kind: "major-ninth", tones: [[3, 4], [5, 7], [7, 11], [9, 14]]},
+  {kind: "minor-ninth", tones: [[3, 3], [5, 7], [7, 10], [9, 14]]},
+  {kind: "dominant-11th", tones: [[3, 4], [5, 7], [7, 10], [9, 14], [11, 17]]},
+  {kind: "major-11th", tones: [[3, 4], [5, 7], [7, 11], [9, 14], [11, 17]]},
+  {kind: "minor-11th", tones: [[3, 3], [5, 7], [7, 10], [9, 14], [11, 17]]},
+  {kind: "dominant-13th", tones: [[3, 4], [5, 7], [7, 10], [9, 14], [13, 21]]},
+  {kind: "major-13th", tones: [[3, 4], [5, 7], [7, 11], [9, 14], [13, 21]]},
+  {
+    kind: "minor-13th",
+    tones: [[3, 3], [5, 7], [7, 10], [9, 14], [11, 17], [13, 21]],
+  },
+  {kind: "power", tones: [[5, 7]]},
+]
+
+# A degree's semitones in a dominant seventh chord, which MusicXML alters an
+# added degree from.
+fn dominant(degree) {
+  match degree {
+    2 => 2,
+    3 => 4,
+    4 => 5,
+    5 => 7,
+    6 => 9,
+    7 => 10,
+    9 => 14,
+    11 => 17,
+    _ => 21,
+  }
+}
+
+# A chord's `intervals` (semitones over its root) as [degree, semitones]: in
+# the octave a third, fourth, fifth, sixth or seventh, and above it a ninth,
+# eleventh or thirteenth. The root and its octaves are left out.
+fn degrees_of(intervals) {
+  let has = |i| intervals.contains(i)
+  intervals.filter(|i| i % 12 != 0).map(fn (i) {
+    let degree = match i {
+      1 => 9,
+      2 => 2,
+      3 => has(4) ? 9 : 3,
+      4 => 3,
+      5 => 4,
+      6 => has(7) ? 11 : 5,
+      7 => 5,
+      8 => has(7) ? 13 : 5,
+      9 => has(3) && has(6) && !has(10) && !has(11) ? 7 : 6,
+      10 | 11 => 7,
+      _ => match i % 12 {
+        1 | 2 | 3 => 9,
+        4 => 3,
+        5 | 6 => 11,
+        7 => 5,
+        8 | 9 => 13,
+        _ => 7,
+      },
+    }
+    [degree, i]
+  })
+}
+
+# Chord `intervals` as MusicXML's kind and the degrees that add to it, alter
+# it or take from it: the kind that needs the fewest, the first of those.
+let kind_of = remembered(fn (intervals) {
+  let tones = degrees_of(intervals)
+  let alter = |a, b| Math.wrap(a - b + 6, 12) - 6
+  KINDS.map(fn (k) {
+    let used = []
+    let edits = []
+    for t in k.tones {
+      let at = iota(tones.size()).find(|i| !used.contains(i) &&
+        tones[i][0] == t[0])
+      if at == nil {
+        edits.push({value: t[0], alter: 0, type: "subtract"})
+      } else {
+        used.push(at)
+        let by = alter(tones[at][1], t[1])
+        edits.push({value: t[0], alter: by, type: "alter"}) if by != 0
+      }
+    }
+    for i in iota(tones.size()).filter(|i| !used.contains(i)) {
+      edits.push({
+        value: tones[i][0],
+        alter: alter(tones[i][1], dominant(tones[i][0])),
+        type: "add",
+      })
+    }
+    {kind: k.kind, degrees: edits.sorted_by(|e| e.value)}
+  }).min_by(|k| k.degrees.size())
+})
+
+fn alter_els(tag, alter) {
+  alter == 0 ? [] : [leaf(tag, alter)]
+}
+
+# A chord's root or bass ("Bb") as element `tag`.
+fn pitch_name_el(tag, name) {
+  let n = spelled(name)
+  node(tag, [leaf("{tag}-step", n.step), ...alter_els("{tag}-alter", n.alter)])
+}
+
+# Chord `c` (nil for N.C.) as <harmony>, `offset` after the note it is
+# written before. Its kind's text is the quality as written, which says all
+# its degrees do, so they are not printed.
+fn harmony_el(c, offset) {
+  let at = offset == 0 ? [] : [leaf("offset", offset)]
+  if c == nil {
+    return node(
+      "harmony",
+      [
+        node("root", [node("root-step", ["C"], {text: ""})]),
+        node("kind", ["none"], {text: "N.C."}),
+        ...at,
+      ],
+    )
+  }
+  let k = kind_of(c.intervals)
+  node(
+    "harmony",
+    [
+      pitch_name_el("root", c.root),
+      node("kind", [k.kind], {text: c.quality}),
+      ...(c.bass == nil ? [] : [pitch_name_el("bass", c.bass)]),
+      ...k.degrees.map(|d| (
+      node("degree", [leaf("degree-value", d.value), leaf("degree-alter", d.alter), leaf("degree-type", d.type)], {"print-object": "no"})
+    )),
+      ...at,
+    ],
+  )
+}
+
+# --- the song as it plays ------------------------------------------------------
+
+# Bar `b` as the song plays it the `time`th time: its chords, melody and
+# parts that time, moved by `iv` (nil: as written) and in key `key`.
+fn played_bar(b, time, iv, key) {
+  let t = b.times.find(|later| later.time == time)
+  let changed = t?.parts ?? []
+  let parts = [
+    ...b.parts.map(|p| changed.find(|q| q.name == p.name) ?? p),
+    ...changed.filter(|q| !b.parts.any(|p| p.name == q.name)),
+  ].filter(|p| !p.notes.empty())
+  let move = |items| moved_items(items, iv)
+  {
+    meter: b.meter,
+    swing: b.swing,
+    key,
+    repeat: b.repeat,
+    chords: (t?.chords ?? b.chords).map(|c| moved_chord(c, iv)),
+    melody: move(t?.melody ?? b.melody),
+    parts: parts.map(|p| {name: p.name, notes: move(p.notes)}),
+  }
+}
+
+# Each time the song plays a section, in order: the section's name, its bars
+# as they play that time (its ending's after its body's), how many of them
+# are its body's, and its pickup.
+fn passes_of(score) {
+  let song = score.song
+  let sections = score.sections.map(|s| (s.name, s)).to_object()
+  let played = {}
+  song.plays.filter(|p| !p.has("mark")).flat_map(fn (p) {
+    let sec = sections[p.section]
+    let written = sec.key ?? song.key
+    let iv = interval_of(written, p.key ?? written)
+    let key = p.key ?? written
+    let ending = p.ending == nil
+      ? nil
+      : sec.endings.find(|e| e.number == p.ending)
+    iota(p.times).map(fn (_) {
+      played[p.section] = played.get(p.section, 0) + 1
+      let time = played[p.section]
+      let closing = ending == nil
+        ? []
+        : ending.bars.map(|b| ending.as_written
+          ? played_bar(b, time, UNMOVED, written)
+          : played_bar(b, time, iv, key))
+      {
+        section: sec.name,
+        bars: [...sec.bars.map(|b| played_bar(b, time, iv, key)), ...closing],
+        body: sec.bars.size(),
+        pickup: sec.pickup == nil ? nil : moved_items(sec.pickup.melody, iv),
+      }
+    })
+  })
+}
+
+# The names of the parts the song writes out, in the order they first come.
+fn part_names(score) {
+  let bars = score.sections.flat_map(|s| [
+    ...s.bars,
+    ...s.endings.flat_map(|e| e.bars),
+  ])
+  bars
+    .flat_map(|b| [...b.parts, ...b.times.flat_map(|t| t.parts)])
+    .iter()
+    .map(|p| p.name)
+    .distinct()
+    .collect()
+}
+
+# --- events --------------------------------------------------------------------
+
+# A note or a rest at `at` units into its measure, `len` long as it sounds,
+# in tuplets that make `ratio` of it; the tuplets it starts and stops, and
+# what the part's notes around it join it to.
+fn note_event(at, len, item, ratio) {
+  {at, len, item, ratio, starts: [], stops: [], mut tied_from: [], slurs: []}
+}
+
+# A direction, a parameter or a slur's end, and the hairpin or dashes it
+# ends.
+fn mark_event(at, mark) {
+  {at, mark, closes: []}
+}
+
+fn put_events(items, st, ratio, depth) {
+  for it in items {
+    cond {
+      it.has("items") => {
+        let first = st.out.size()
+        put_events(
+          it.items,
+          st,
+          {
+            actual: ratio.actual * it.tuplet.actual,
+            normal: ratio.normal * it.tuplet.normal,
+          },
+          depth + 1,
+        )
+        let notes = st.out.slice(first, st.out.size()).filter(|e| e.has("len"))
+        let bracket = {
+          number: depth,
+          actual: it.tuplet.actual,
+          normal: it.tuplet.normal,
+        }
+        notes[0].starts.push(bracket)
+        notes[-1].stops.push(bracket)
+      },
+      it.has("pitches") || it.has("rest") => {
+        let len = units(it) * ratio.normal / ratio.actual
+        st.out.push(note_event(st.at, len, it, ratio))
+        st.at += len
+      },
+      _ => st.out.push(mark_event(st.at, it)),
+    }
+  }
+}
+
+# A line of Kauai's notes (items) as events from the start of its bar.
+fn events_of(items) {
+  let st = {mut at: 0, out: []}
+  put_events(items, st, PLAIN, 1)
+  st.out
+}
+
+let length_of = |events| events.filter(|e| e.has("len")).map(|e| e.len).sum()
+
+# Rests from `from` to `to` units into a bar, each as long as fits and
+# starting on a multiple of its length.
+fn rests_between(from, to) {
+  let out = []
+  mut at = from
+  while at < to {
+    let v = [
+      1, 2, 4, 8, 16, 32, 64, 128,
+    ].find(|n| WHOLE / n <= to - at && at % (WHOLE / n) == 0)
+    throw "kauai convert: a rest of {to - at} units at {at} is not a note value" if v ==
+      nil
+    out.push(note_event(
+      at,
+      WHOLE / v,
+      {rest: true, value: v, dots: 0, marks: []},
+      PLAIN,
+    ))
+    at += WHOLE / v
+  }
+  out
+}
+
+# Line `events` of a measure `len` long with pickup `notes` in place of the
+# rests it ends with, which Kauai has the bar before a pickup keep.
+fn with_pickup(events, len, notes, section) {
+  let cut = len - length_of(notes)
+  let past = events.filter(|e| e.has("len") && e.at + e.len > cut)
+  if past.any(|e| !e.item.has("rest") || e.ratio != PLAIN) {
+    throw "kauai convert: {section}'s pickup goes over rests in a tuplet, which a score cannot hold apart"
+  }
+  let kept = events.filter(|e| !e.has("len") || e.at + e.len <= cut)
+  [
+    ...kept,
+    ...rests_between(length_of(kept), cut),
+    ...notes.map(|e| ({...e, at: e.at + cut})),
+  ]
+}
+
+# The song's measures in the order it plays them, each with the events of
+# its lines (the melody's, then each part's, nil where the part is not
+# written): a measure for the pickup the song opens with, then each pass's
+# bars. A later pickup goes into the rests at the end of the measure before
+# it.
+fn measures_of(passes, names) {
+  let out = []
+  for i, pass in passes.enumerate() {
+    if pass.pickup != nil {
+      let notes = events_of(pass.pickup)
+      if out.empty() {
+        let b = pass.bars[0]
+        out.push({
+          pass: i,
+          at: -1,
+          len: length_of(notes),
+          key: b.key,
+          meter: b.meter,
+          swing: b.swing,
+          bar: nil,
+          lines: [notes, ...names.map(|_| nil)],
+          mut merged: false,
+        })
+      } else {
+        let before = out[-1]
+        before.lines[0] = with_pickup(
+          before.lines[0],
+          before.len,
+          notes,
+          pass.section,
+        )
+        before.merged = true
+      }
+    }
+    for at, b in pass.bars.enumerate() {
+      out.push({
+        pass: i,
+        at,
+        len: b.meter.beats * WHOLE / b.meter.value,
+        key: b.key,
+        meter: b.meter,
+        swing: b.swing,
+        bar: b,
+        lines: [
+          events_of(b.melody),
+          ...names.map(|n| b.parts.find(|p| p.name == n)?.notes).map(|notes| notes == nil ? nil : events_of(notes)),
+        ],
+        mut merged: false,
+      })
+    }
+  }
+  out
+}
+
+let same_pitch = |p, q| sounding(p) == sounding(q)
+
+# Joins the events of line `line` along the song, in the order it plays:
+# each note to the notes its ties come from and to its slurs, and a direction
+# to the hairpin or the dashes of a rit. it ends. One still open at the end
+# ends there.
+fn join_line(measures, line) {
+  mut tied = []
+  mut slur_next = false
+  mut last = nil
+  mut wedge = false
+  mut dashes = false
+  mut tail = nil  # the last measure the line is in
+  for m in measures {
+    let events = m.lines[line]
+    if events == nil {
+      tied = []
+      continue
+    }
+    tail = m
+    for e in events {
+      cond {
+        e.has("mark") && e.mark.has("slur") => {
+          if e.mark.slur == "start" {
+            slur_next = true
+          } else {
+            last.slurs.push("stop")
+          }
+        },
+        e.has("mark") && e.mark.has("direction") => {
+          let d = e.mark.direction
+          if LEVELS.has(d) || WEDGES.has(d) || d == "!" {
+            e.closes.push("wedge") if wedge
+            wedge = WEDGES.has(d)
+          }
+          if TEMPOS.contains(d) {
+            e.closes.push("dashes") if dashes
+            dashes = d != "tempo"
+          }
+        },
+        e.has("mark") => nil,
+        e.item.has("pitches") => {
+          e.tied_from = e.item.pitches.filter(|p| tied.any(|q| same_pitch(
+            p,
+            q,
+          )))
+          tied = e.item.pitches.filter(|p| p.tie)
+          if slur_next {
+            e.slurs.push("start")
+            slur_next = false
+          }
+          last = e
+        },
+        _ => nil,
+      }
+    }
+  }
+  let open = [...(wedge ? ["wedge"] : []), ...(dashes ? ["dashes"] : [])]
+  if !open.empty() {
+    let end = mark_event(tail.len, {})
+    end.closes.extend(open)
+    tail.lines[line].push(end)
+  }
+}
+
+# The tempo direction in force where each measure starts, nil for the song's
+# tempo.
+fn tempos_at(measures) {
+  let out = []
+  mut now = nil
+  for m in measures {
+    out.push(now)
+    let marks = m
+      .lines
+      .filter(|l| l != nil)
+      .flat_map(|l| l.filter(|e| e.has("mark") &&
+        e.mark.has("direction") &&
+        TEMPOS.contains(e.mark.direction)))
+    now = marks.empty() ? now : marks.max_by(|e| e.at).mark
+  }
+  out
+}
+
+# --- notes ---------------------------------------------------------------------
+
+let pitch_el = |p| node(
+  "pitch",
+  [
+    leaf("step", p.step),
+    ...alter_els("alter", p.alter),
+    leaf("octave", p.octave),
+  ],
+)
+let dot_els = |it| repeat(it.dots, node("dot", []))
+let notations = |els| els.empty() ? [] : [node("notations", els)]
+
+fn accidental_name(alter) {
+  match alter {
+    -3 => "triple-flat",
+    -2 => "flat-flat",
+    -1 => "flat",
+    0 => "natural",
+    1 => "sharp",
+    2 => "double-sharp",
+    _ => "triple-sharp",
+  }
+}
+
+# The accidental pitch `p` shows after the key's and those before it in the
+# measure (`acc`); a note a tie holds on shows none.
+fn accidental_els(p, acc, held) {
+  return [] if held
+  let at = "{p.step}{p.octave}"
+  return [] if acc.shown.get(at, acc.key[p.step]) == p.alter
+  acc.shown[at] = p.alter
+  [leaf("accidental", accidental_name(p.alter))]
+}
+
+fn time_els(e) {
+  return [] if e.ratio == PLAIN
+  [node(
+    "time-modification",
+    [
+      leaf("actual-notes", e.ratio.actual),
+      leaf("normal-notes", e.ratio.normal),
+    ],
+  )]
+}
+
+fn tuplet_els(e) {
+  let starts = e
+    .starts
+    .sorted_by(|b| b.number)
+    .map(|b| node(
+      "tuplet",
+      [
+        node("tuplet-actual", [leaf("tuplet-number", b.actual)]),
+        node("tuplet-normal", [leaf("tuplet-number", b.normal)]),
+      ],
+      {type: "start", number: b.number, bracket: "yes"},
+    ))
+  [
+    ...starts,
+    ...e.stops.sorted_by(|b| -b.number).map(|b| node("tuplet", [], {type: "stop", number: b.number})),
+  ]
+}
+
+fn mark_els(marks) {
+  let arts = marks
+    .filter(|m| ARTICULATIONS.has(m))
+    .map(|m| node(ARTICULATIONS[m], []))
+  [
+    ...(arts.empty() ? [] : [node("articulations", arts)]),
+    ...(marks.contains("fermata") ? [node("fermata", [])] : []),
+  ]
+}
+
+# Note or rest event `e` as <note>s: its grace notes, then a <note> for each
+# of its pitches, the second and later a <chord/>.
+fn note_els(e, acc) {
+  let it = e.item
+  if it.has("rest") {
+    return [node(
+      "note",
+      [
+        node("rest", []),
+        leaf("duration", e.len),
+        leaf("voice", 1),
+        leaf("type", type_name(it.value)),
+        ...dot_els(it),
+        ...time_els(e),
+        ...notations([...tuplet_els(e), ...mark_els(it.marks)]),
+      ],
+    )]
+  }
+  let one = it.graces.size() == 1
+  let graces = it.graces.map(|g| node(
+    "note",
+    [
+      node("grace", [], one ? {slash: "yes"} : {}),
+      pitch_el(g),
+      leaf("voice", 1),
+      leaf("type", one ? "eighth" : "16th"),
+      ...accidental_els(g, acc, false),
+    ],
+  ))
+  let chord = iota(it.pitches.size()).map(fn (k) {
+    let p = it.pitches[k]
+    let held = e.tied_from.any(|q| same_pitch(p, q))
+    let ties = [...(held ? ["stop"] : []), ...(p.tie ? ["start"] : [])]
+    node(
+      "note",
+      [
+        ...(k > 0 ? [node("chord", [])] : []),
+        pitch_el(p),
+        leaf("duration", e.len),
+        ...ties.map(|t| node("tie", [], {type: t})),
+        leaf("voice", 1),
+        leaf("type", type_name(it.value)),
+        ...dot_els(it),
+        ...accidental_els(p, acc, held),
+        ...time_els(e),
+        ...notations([
+        ...ties.map(|t| node("tied", [], {type: t})),
+        ...(k > 0 ? [] : [...e.slurs.map(|s| node("slur", [], {type: s, number: 1})), ...tuplet_els(e), ...mark_els(it.marks)]),
+        ...(it.arpeggio ? [node("arpeggiate", [])] : []),
+      ]),
+      ],
+    )
+  })
+  [...graces, ...chord]
+}
+
+# --- directions ----------------------------------------------------------------
+
+fn direction(types, placement, sound = nil) {
+  node(
+    "direction",
+    [
+      ...types.map(|t| node("direction-type", [t])),
+      ...(sound == nil ? [] : [sound]),
+    ],
+    {placement},
+  )
+}
+
+let quarters = |t| t.per * units(t) / (WHOLE / 4)
+let tempo_sound = |t| node("sound", [], {tempo: number_text(quarters(t))})
+
+fn metronome_el(t) {
+  let beat = [
+    leaf("beat-unit", type_name(t.value)),
+    ...repeat(t.dots, node("beat-unit-dot", [])),
+  ]
+  direction(
+    [node("metronome", [...beat, leaf("per-minute", number_text(t.per))])],
+    "above",
+    tempo_sound(t),
+  )
+}
+
+fn swing_el(sw) {
+  if sw == nil {
+    return direction(
+      [leaf("words", "Straight")],
+      "above",
+      node("sound", [node("swing", [node("straight", [])])]),
+    )
+  }
+  let ratio = sw.first == 2 && sw.second == 1 ? "" : " {sw.first}:{sw.second}"
+  let swing = node(
+    "swing",
+    [
+      leaf("first", sw.first),
+      leaf("second", sw.second),
+      leaf("swing-type", type_name(sw.unit)),
+    ],
+  )
+  direction(
+    [leaf("words", "Swing{sw.unit == 16 ? " 16ths" : ""}{ratio}")],
+    "above",
+    node("sound", [swing]),
+  )
+}
+
+# Mark event `e` as <direction>s: the hairpin or dashes it ends, then what it
+# says. A parameter and a slur's end write nothing here, and `\!` nothing
+# more than the hairpin it ends.
+fn direction_els(e, song) {
+  let closes = e.closes.map(|c| direction(
+    [node(c, [], {type: "stop"})],
+    "below",
+  ))
+  let d = e.mark.direction
+  let says = match d {
+    "tempo" if e.mark.tempo != nil => [metronome_el(e.mark.tempo)],
+    "tempo" => [direction(
+      [leaf("words", "a tempo")],
+      "above",
+      tempo_sound(song.tempo),
+    )],
+    "rit" | "accel" => [direction(
+      [leaf("words", "{d}."), node("dashes", [], {type: "start"})],
+      "above",
+    )],
+    _ if WEDGES.has(d) => [direction(
+      [node("wedge", [], {type: WEDGES[d]})],
+      "below",
+    )],
+    _ if LEVELS.has(d) => [direction(
+      [node("dynamics", [node(d, [])])],
+      "below",
+      node("sound", [], {dynamics: LEVELS[d]}),
+    )],
+    _ => [],
+  }
+  [...closes, ...says]
+}
+
+# --- measures ------------------------------------------------------------------
+
+# The chords measure `mi` shows, at the beats they start on: where they
+# change, and every one at the start of a pass or an ending.
+fn harmonies(measures, mi, passes) {
+  let m = measures[mi]
+  return [] if m.bar == nil
+  let chords = m.bar.chords
+  let starts = m.at == 0 || m.at == passes[m.pass].body
+  let before = starts ? nil : measures[mi - 1].bar.chords[-1]
+  iota(chords.size())
+    .filter(|k| k == 0 && starts ||
+      chords[k] != (k == 0 ? before : chords[k - 1]))
+    .map(|k| {at: k * WHOLE / m.meter.value, chord: chords[k]})
+}
+
+# What line `line` holds in measure `mi`: on the melody the section's name
+# where a pass starts and the chords, then the notes and directions.
+fn content_of(measures, mi, line, passes, song) {
+  let m = measures[mi]
+  let events = m.lines[line] ?? []
+  let chords = line == 0 ? harmonies(measures, mi, passes) : []
+  let acc = {key: key_alters(m.key), shown: {}}
+  let out = []
+  if line == 0 && m.at == 0 {
+    out.push(direction([leaf("rehearsal", passes[m.pass].section)], "above"))
+  }
+  mut h = 0
+  for e in events {
+    if e.has("mark") {
+      out.extend(direction_els(e, song))
+      continue
+    }
+    while h < chords.size() && chords[h].at < e.at + e.len {
+      out.push(harmony_el(chords[h].chord, chords[h].at - e.at))
+      h += 1
+    }
+    out.extend(note_els(e, acc))
+  }
+  if !events.any(|e| e.has("len")) {
+    out.extend(chords.map(|c| harmony_el(c.chord, c.at)))
+    out.push(node(
+      "note",
+      [
+        node("rest", [], {measure: "yes"}),
+        leaf("duration", m.len),
+        leaf("voice", 1),
+      ],
+    ))
+  }
+  out
+}
+
+# How many bars the `%` sign over measure `mi` repeats, 0 for none: a `%`
+# is drawn when each bar of its sign plays as the bar it repeats, so not when
+# a pickup has gone into one or a later time changes one.
+fn repeats(measures, mi) {
+  let r = measures[mi].bar?.repeat
+  return 0 if r == nil
+  let first = mi - r.index
+  let same = |a, b| a.chords == b.chords &&
+    a.melody == b.melody &&
+    a.parts == b.parts
+  let drawn = iota(r.bars).all(fn (k) {
+    let (
+      copy,
+      source,
+    ) = (measures.get(first + k, nil), measures[first + k - r.bars])
+    copy?.bar?.repeat == {bars: r.bars, index: k} &&
+      copy.pass == source.pass &&
+      !copy.merged &&
+      !source.merged &&
+      same(copy.bar, source.bar)
+  })
+  drawn ? r.bars : 0
+}
+
+# --- the form ------------------------------------------------------------------
+
+# How passes `i` to `j` of the same section fold: nil when they do not, or
+# the passes each ending is written for ([] when every pass is the same and a
+# repeat sign is enough). They fold when they start at the same tempo, their
+# bodies are the same, and the endings that differ are the passes' last.
+fn fold_of(passes, spans, rendered, tempos, i, j) {
+  let ps = iota(i, j + 1)
+  return nil if !ps.all(|q| passes[q].section == passes[i].section)
+  let same = |xs, ys| xs.map(|mi| rendered[mi]) == ys.map(|mi| rendered[mi])
+  let body = |q| spans[q].body
+  let tail = |q| spans[q].tail
+  return nil if body(i).empty()
+  return nil if !ps.all(|q| same(body(q), body(i)) &&
+    tempos[body(q)[0]] == tempos[body(i)[0]])
+  return [] if ps.all(|q| same(tail(q), tail(i)))
+  let groups = []
+  for q in ps {
+    if !groups.empty() && same(tail(q), tail(groups[-1][0])) {
+      groups[-1].push(q - i + 1)
+    } else {
+      groups.push([q - i + 1])
+    }
+  }
+  return nil if groups[-1].size() != 1 || ps.any(|q| tail(q).empty())
+  groups
+}
+
+# The measures as the score writes them, in order: each with the barlines
+# around it, and the measures the music comes into it from (-1 at the start),
+# which say what the measure has to restate.
+fn layout(passes, measures, rendered, tempos) {
+  # Each pass's measures, and those of its body and of its ending.
+  let spans = iota(passes.size()).map(fn (q) {
+    let all = iota(measures.size()).filter(|mi| measures[mi].pass == q &&
+      measures[mi].at >= 0)
+    let (body, tail) = all.partition(|mi| measures[mi].at < passes[q].body)
+    {all, body, tail}
+  })
+  let out = []
+  mut prev = -1
+  let put = fn (mi, enter) {
+    let o = {
+      mi,
+      enter,
+      mut forward: false,
+      mut ending: nil,
+      mut closing: nil,
+      mut backward: 0,
+      mut style: nil,
+    }
+    out.push(o)
+    prev = mi
+    o
+  }
+  put(0, [-1]) if measures[0].at < 0
+  mut i = 0
+  while i < passes.size() {
+    let last = iota(i + 1, passes.size())
+      .filter(|j| fold_of(passes, spans, rendered, tempos, i, j) != nil)
+      .reduce(i, Math.max)
+    let groups = last == i
+      ? nil
+      : fold_of(passes, spans, rendered, tempos, i, last)
+    let k = last - i + 1
+    if groups == nil {
+      for mi in spans[i].all {
+        put(mi, [prev])
+      }
+      out[-1].style = "light-light" if !spans[i].all.empty()
+    } else {
+      # The body in repeat signs (the whole pass when every time is the
+      # same), which the music comes back into from where each time but the
+      # last ends; then each ending, written for the times it plays.
+      let body = groups.empty() ? spans[i].all : spans[i].body
+      let tail = |g| spans[i + g[0] - 1].tail
+      let ends = groups.empty()
+        ? [body[-1]]
+        : groups.slice(0, groups.size() - 1).map(|g| tail(g)[-1])
+      let first = put(body[0], [prev, ...ends])
+      first.forward = true
+      for mi in body.slice(1, body.size()) {
+        put(mi, [prev])
+      }
+      out[-1].backward = k if groups.empty()
+      let body_end = body[-1]
+      for n, g in groups.enumerate() {
+        let t = tail(g)
+        let number = g.map(|q| "{q}").join(", ")
+        let start = put(t[0], [body_end])
+        start.ending = number
+        for mi in t.slice(1, t.size()) {
+          put(mi, [prev])
+        }
+        let last_bar = out[-1]
+        if n < groups.size() - 1 {
+          last_bar.closing = {number, type: "stop"}
+          last_bar.backward = k
+        } else {
+          last_bar.closing = {number, type: "discontinue"}
+          last_bar.style = "light-light"
+        }
+      }
+    }
+    i = last + 1
+  }
+  out
+}
+
+# --- the score -----------------------------------------------------------------
+
+fn barline_els(location, style, ending, repeat) {
+  let inside = [
+    style == nil ? nil : leaf("bar-style", style),
+    ending,
+    repeat,
+  ].filter(|x| x != nil)
+  inside.empty() ? [] : [node("barline", inside, {location})]
+}
+
+let key_el = |key| node(
+  "key",
+  [
+    leaf("fifths", fifths_of(key)),
+    leaf("mode", spelled(key).minor ? "minor" : "major"),
+  ],
+)
+let time_el = |meter| node(
+  "time",
+  [leaf("beats", meter.beats), leaf("beat-type", meter.value)],
+)
+
+# The clef for line `line`: the bass clef if its notes are below middle C on
+# average, else the treble.
+fn clef_el(measures, line) {
+  let pitches = measures.flat_map(|m| (m.lines[line] ?? [])
+    .filter(|e| e.has("len") && e.item.has("pitches"))
+    .flat_map(|e| e.item.pitches))
+  let low = !pitches.empty() &&
+    pitches.map(sounding).sum() < 60 * pitches.size()
+  node(
+    "clef",
+    low
+      ? [leaf("sign", "F"), leaf("line", 4)]
+      : [leaf("sign", "G"), leaf("line", 2)],
+  )
+}
+
+# The `%` signs along the score: for each measure, where one starts or stops.
+fn repeat_signs(order, rendered) {
+  let out = []
+  mut on = 0
+  for o in order {
+    let r = rendered[o.mi].repeats
+    let stop = on > 0 && r != on
+      ? [node("measure-repeat", [], {type: "stop"})]
+      : []
+    let start = r > 0 && r != on
+      ? [node("measure-repeat", ["{r}"], {type: "start"})]
+      : []
+    out.push([...stop, ...start].map(|s| node("measure-style", [s])))
+    on = r
+  }
+  out
+}
+
+fn about_els(about, song) {
+  let creators = ["composer", "lyricist", "arranger"]
+    .filter(|k| about[k] != nil)
+    .map(|k| node("creator", ["{about[k]}"], {type: k}))
+  let fields = ["year", "note"]
+    .filter(|k| about[k] != nil)
+    .map(|k| node("miscellaneous-field", ["{about[k]}"], {name: k}))
+  [
+    node("work", [leaf("work-title", about.title ?? song.name)]),
+    node(
+      "identification",
+      [
+        ...creators,
+        ...(about.license == nil ? [] : [leaf("rights", about.license)]),
+        node("encoding", [leaf("software", "Kauai")]),
+        ...(about.source == nil ? [] : [leaf("source", about.source)]),
+        ...(fields.empty() ? [] : [node("miscellaneous", fields)]),
+      ],
+    ),
+  ]
+}
+
+# The song `score` (Audio.Kauai.parse's) as MusicXML text.
+fn write(score) {
+  let song = score.song
+  let names = part_names(score)
+  let passes = passes_of(score)
+  let measures = measures_of(passes, names)
+  let lines = iota(names.size() + 1)
+  for line in lines {
+    join_line(measures, line)
+  }
+  let rendered = iota(measures.size()).map(fn (mi) {
+    let m = measures[mi]
+    {
+      key: m.key,
+      meter: m.meter,
+      swing: m.swing,
+      repeats: repeats(measures, mi),
+      lines: lines.map(|line| content_of(measures, mi, line, passes, song)),
+    }
+  })
+  let order = layout(passes, measures, rendered, tempos_at(measures))
+  let signs = repeat_signs(order, rendered)
+  let clefs = lines.map(|line| clef_el(measures, line))
+  let first_number = measures[0].at < 0 ? 0 : 1
+
+  let measure_el = fn (n, line) {
+    let o = order[n]
+    let m = measures[o.mi]
+    let from = o.enter.map(|k| k < 0 ? nil : measures[k])
+    let restate = |f| from.any(|s| s == nil || f(s) != f(m))
+    let first = n == 0
+    let attrs = [
+      ...(first ? [leaf("divisions", WHOLE / 4)] : []),
+      ...(restate(|s| s.key) ? [key_el(m.key)] : []),
+      ...(restate(|s| s.meter) ? [time_el(m.meter)] : []),
+      ...(first ? [clefs[line]] : []),
+      ...signs[n],
+    ]
+    let heads = line > 0
+      ? []
+      : [
+        ...(first ? [metronome_el(song.tempo)] : []),
+        ...(from.any(|s| s?.swing != m.swing) ? [swing_el(m.swing)] : []),
+      ]
+    let last = n == order.size() - 1
+    let next_opens = !last && order[n + 1].forward
+    let style = cond {
+      o.backward > 0 || last => "light-heavy",
+      next_opens => nil,
+      _ => o.style,
+    }
+    let left = barline_els(
+      "left",
+      o.forward ? "heavy-light" : nil,
+      o.ending == nil
+        ? nil
+        : node("ending", ["{o.ending}."], {number: o.ending, type: "start"}),
+      o.forward ? node("repeat", [], {direction: "forward"}) : nil,
+    )
+    let backward = o.backward > 2
+      ? {direction: "backward", times: o.backward}
+      : {direction: "backward"}
+    let right = barline_els(
+      "right",
+      style,
+      o.closing == nil
+        ? nil
+        : node("ending", [], {number: o.closing.number, type: o.closing.type}),
+      o.backward > 0 ? node("repeat", [], backward) : nil,
+    )
+    let number = m.at < 0
+      ? {number: "0", implicit: "yes"}
+      : {number: "{n + first_number}"}
+    node(
+      "measure",
+      [
+        ...left,
+        ...(attrs.empty() ? [] : [node("attributes", attrs)]),
+        ...heads,
+        ...rendered[o.mi].lines[line],
+        ...right,
+      ],
+      number,
+    )
+  }
+
+  let part_list = node(
+    "part-list",
+    lines.map(|line| node(
+      "score-part",
+      [leaf("part-name", line == 0 ? "Melody" : names[line - 1])],
+      {id: "P{line + 1}"},
+    )),
+  )
+  let parts = lines.map(|line| node(
+    "part",
+    iota(order.size()).map(|n| measure_el(n, line)),
+    {id: "P{line + 1}"},
+  ))
+  let doc = node(
+    "score-partwise",
+    [...about_els(score.about, song), part_list, ...parts],
+    {version: "4.0"},
+  )
+  XML
+    .stringify(doc, indent: 2, declaration: true)
+    .replace_first("\n", "\n{DOCTYPE}\n")
+}
+
+export {write}

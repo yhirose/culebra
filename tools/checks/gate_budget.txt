@@ -319,4 +319,6 @@ languages.samples 130
 # written as words, and the MIDI that asks for and changes them, 0.05 s).
 # 51 since kauai/convert/test_kau.cul (every song in the repository written
 # back from its score reads to the same score and plays the same, 1.2 s).
-examples.suites 51
+# 52 since kauai/convert/test_musicxml.cul (every song's MusicXML score plays
+# its notes and is valid MusicXML 4.0, and what a score writes, 1.2 s).
+examples.suites 52
