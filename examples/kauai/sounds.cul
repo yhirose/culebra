@@ -1,8 +1,10 @@
-# The external sounds the songs in songs/ name, for Audio.Kauai.load's
+# The external sounds for play.cul and jukebox.cul, as Audio.Kauai.load's
 # `voices:` and `drums:`: `external Ep` (an electric piano, `bright=` how hard
-# its hammer bites) and the drums `external Kick`, `Snare`, `Hat`, `Ride`,
-# `Crash` and `Tom`.
-# Each is synthesised once, as a song asks for it.
+# its hammer bites), synthesised here once for each pitch and `bright` a song
+# asks for, and the drums of Kauai's kit (`external Kick`, `Snare`, `CrossStick`, `Hat`,
+# `PedalHat`, `OpenHat`, `Ride`, `Crash`, `Tom` and the rest), which
+# kauai/recipe.md lists.
+import recipes from '../../kauai/recipes/main.cul'
 
 let RATE = 22050
 
@@ -68,35 +70,10 @@ fn electric_piano(pitch, bright) {
   Audio.mix([pair(f), pair(f * 1.0025)], rate: RATE)
 }
 
-# A drum: a pitch that falls from `f0` to `f1`, and noise, each dying away
-# over `secs`.
-fn drum(secs, f0, f1, tone, noise) {
-  let n = Math.round(RATE * secs)
-  mut phase = 0.0
-  iota(n).map(fn (i) {
-    let t = i.to_float() / n
-    phase += 2.0 * Math.pi * (f0 + (f1 - f0) * t) / RATE
-    let env = Math.exp(-t * 5.0) * Math.min(1.0, i / 20.0)
-    (Math.sin(phase) * tone + Random.uniform(-1.0, 1.0) * noise) * env
-  })
-}
-
-let DRUMS = {
-  kick: || drum(0.35, 140.0, 45.0, 0.9, 0.05),
-  snare: || drum(0.2, 220.0, 160.0, 0.35, 0.5),
-  hat: || drum(0.06, 8000.0, 8000.0, 0.0, 0.35),
-  ride: || drum(0.8, 5200.0, 5000.0, 0.08, 0.2),
-  crash: || drum(1.4, 4000.0, 3000.0, 0.05, 0.4),
-  tom: || drum(0.3, 180.0, 110.0, 0.8, 0.1),
-}
-
 let voices = {ep: |pitch, params| Audio.Sound(
   electric_piano(pitch, params.get("bright", 1.0)),
   rate: RATE,
 )}
-let drums = DRUMS
-  .keys()
-  .map(|k| (k, |params| Audio.Sound(DRUMS[k](), rate: RATE)))
-  .to_object()
+let drums = recipes.drums
 
 export {voices, drums}
