@@ -1,0 +1,161 @@
+# Audio.Kauai.parse: a song as its score, as written. One small song with a
+# pickup, a 6/8 meter, a dotted tempo, a duplet, a tie, a slur, a part, a
+# `2nd:` line, slashes, hits and a `%`.
+
+let SONG = `
+band Duo {
+  voice Tune  pulse     plays melody               vol 20
+  voice Keys  external Ep  plays part Fill  poly    vol 15
+  voice Bass  triangle  plays roots in E2..D#3     vol 30
+}
+
+song Probe {
+  tempo 4.=60
+  meter 6/8
+  key F
+  band Duo
+  groove Lilt
+  melody in C4..B4
+
+  Verse x2
+  Coda in G
+}
+
+groove Lilt {
+  Bass  1 - - 1 - -
+}
+
+section Verse {
+  pickup  c8
+  F             .f4 (g8 a4.)
+    Fill:       r2.
+    2nd:        Bb  bb4. a
+  C7            2:3[c8 d] e4.~
+  C7 / / / / F  e4. \p r
+    hits:       !x4~ x8 r4.
+  %
+}
+
+section Coda {
+  meter 9/8
+  F             f4 \rit 40 e cb' \tempo 4.=50 d4.
+    Fill:       <f a c'>2. r4.
+}
+
+section Unplayed {
+  C             c1
+}
+`
+
+let score = Audio.Kauai.parse(SONG)
+let note = |step, alter, octave, tie| ({step: step, alter: alter, octave: octave, tie: tie})
+let struck = |pitches, value, dots, marks| ({pitches: pitches, value: value, dots: dots, marks: marks, graces: [], arpeggio: false})
+let F = {symbol: "F", root: "F", quality: "", bass: nil, intervals: [0, 4, 7, 12]}
+let C7 = {symbol: "C7", root: "C", quality: "7", bass: nil, intervals: [0, 4, 7, 10]}
+
+# The song's line, its plays, and only the sections it plays.
+assert_eq(score.song.tempo, {value: 4, dots: 1, per: 60.0})
+assert_eq(score.song.meter, {beats: 6, value: 8})
+assert_eq(score.song.key, "F")
+assert_eq(score.song.plays[0], {section: "Verse", times: 2, ending: nil, with: nil, key: nil})
+assert_eq(score.song.plays[1], {section: "Coda", times: 1, ending: nil, with: nil, key: "G"})
+assert_eq(score.sections.map(|s| s.name), ["Verse", "Coda"])
+assert_true(score.arrangement.starts_with("band Duo \{\n  voice Tune  pulse"))
+assert_eq(score.about.title, nil)
+
+let verse = score.sections[0]
+assert_eq(verse.pickup.melody, [struck([note("C", 0, 4, false)], 8, 0, [])])
+
+# A bar: its chords one a beat, its notes spelled in the range, a mark and a
+# slur in their places, its part, and what the 2nd time plays.
+let first = verse.bars[0]
+assert_eq(first.meter, {beats: 6, value: 8})
+assert_eq(first.groove, {name: "Lilt", bar: 0, named: false})
+assert_eq(first.chords, [F, F, F, F, F, F])
+assert_eq(first.melody[0], struck([note("F", 0, 4, false)], 4, 0, ["staccato"]))
+assert_eq(first.melody[1], {slur: "start"})
+assert_eq(first.melody[4], {slur: "stop"})
+assert_eq(first.parts, [{name: "Fill", notes: [{rest: true, value: 2, dots: 1, marks: []}]}])
+let again = first.times[0]
+assert_eq([again.time, again.parts, again.hits], [2, [], nil])
+assert_eq(again.chords[0].symbol, "Bb")
+assert_eq(again.melody[0], struck([note("B", -1, 4, false)], 4, 1, []))
+
+# A duplet as its ratio, its notes as written; a tie on its note.
+let second = verse.bars[1]
+assert_eq(second.melody[0].tuplet, {actual: 2, normal: 3})
+assert_eq(second.melody[0].items.map(|n| n.pitches[0].step), ["C", "D"])
+assert_eq(second.melody[1], struck([note("E", 0, 4, true)], 4, 1, []))
+
+# Slashes as the chord on each beat, a direction, the hits, and a `%`.
+let third = verse.bars[2]
+assert_eq(third.chords, [C7, C7, C7, C7, C7, F])
+assert_eq(third.melody[1], {direction: "p", tempo: nil})
+assert_eq(third.hits[0], {hit: true, tie: true, value: 4, dots: 0, marks: ["accent"]})
+assert_eq(third.hits[1], {hit: true, tie: false, value: 8, dots: 0, marks: []})
+assert_eq(third.repeat, nil)
+assert_eq(verse.bars[3].repeat, {bars: 1, index: 0})
+assert_eq(verse.bars[3].groove.bar, 3)
+assert_eq(verse.bars[3].melody, third.melody)
+
+# A meter of its own; tempo directions with their tempos, as the song's; a
+# flat that spells a note of the octave below (C flat 5 is B4); a chord, in a
+# part (whose range is the melody's here). `in G` moves no pitch.
+let coda = score.sections[1].bars[0]
+assert_eq(coda.meter, {beats: 9, value: 8})
+assert_eq(coda.melody[1], {direction: "rit", tempo: {value: 4, dots: 0, per: 40.0}})
+assert_eq(coda.melody[3], struck([note("C", -1, 5, false)], 4, 0, []))
+assert_eq(coda.melody[4], {direction: "tempo", tempo: {value: 4, dots: 1, per: 50.0}})
+let chord = coda.parts[0].notes[0]
+assert_eq(chord.pitches, [note("F", 0, 4, false), note("A", 0, 4, false), note("C", 0, 5, false)])
+
+# Plain data, as JSON.parse gives: its fields are not written to.
+assert_eq(JSON.parse(JSON.stringify(score)), score)
+assert_throws("ImmutableError", fn () {
+  score.song.name = "Other"
+})
+
+# Each parse its own: changing what one answers changes no other.
+score.sections[0].bars[0].chords[0].intervals.push(99)
+assert_eq(Audio.Kauai.parse(SONG).sections[0].bars[0].chords[0].intervals, [0, 4, 7, 12])
+
+# A section or an ending with no bars reads, as new() reads it.
+let BARE = `
+band B {
+  voice T  pulse  plays melody  vol 20
+}
+
+song S {
+  tempo 100
+  band B
+  melody in C4..B4
+
+  A ending 1
+  Rest
+}
+
+section A {
+  C  c1
+  ending 1 {
+  }
+}
+
+section Rest {
+  meter 3/4
+}
+`
+let bare = Audio.Kauai.parse(BARE)
+assert_eq(bare.sections[0].endings, [{number: "1", as_written: false, bars: []}])
+assert_eq(bare.sections[1].bars, [])
+
+# What new() would raise, parse raises.
+let broken = SONG.replace("e4. \\p r", "e4. \\p r4")
+let raised = |f| try {
+  f()
+  nil
+} catch e {
+  e.message
+}
+let from_new = raised(|| Audio.Kauai.new(broken))
+assert_true(from_new != nil)
+assert_eq(raised(|| Audio.Kauai.parse(broken)), from_new)

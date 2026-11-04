@@ -1,0 +1,134 @@
+// Every way a song writes its music, for the converters to carry: what
+// kauai/convert's tests write back and read again. It plays, but it is a
+// test, not a tune.
+
+about {
+  title     Every notation
+  composer  Kauai's tests
+  lyricist  nobody
+  arranger  the converter
+  year      2026
+  source    written for kauai/convert
+  license   CC0
+  note      each way a bar, a section or a song writes its music
+}
+
+voicings {
+  6add11  0 4 7 9 17
+}
+
+band Combo {
+  voice Lead    pulse                   plays melody                                vol 20
+  voice Second  pulse2                                                              vol 9
+  voice Bass    triangle                plays roots in E2..D#3                      vol 30
+  voice Keys    external Ep bright=0.8  plays chords from C4  plays part Fill Pad  poly  vol 25
+
+  Second echoes Lead      late 3/16  level 70%
+  Second harmonizes Lead  under m3
+
+  drum Kick   noise 120       len 1  vol 20  env 0 3 2  plays hits
+  drum Snare  noise 900->500  len 3  vol 12
+}
+
+groove Swing {
+  Bass   1 - 5 -
+  Keys   . x . x
+  Kick   x... x...
+  Snare  ..x. ..x.
+  first {
+    Snare  .... ....
+  }
+  last {
+    Kick   x... ....
+  }
+}
+
+groove Waltz {
+  Bass  1 - -
+  Keys  . x x
+}
+
+song Notations {
+  tempo 96
+  key Bb
+  swing 8 3:2
+  band Combo
+  groove Swing
+  loop
+  room 30%
+
+  Intro
+  mark Drive
+  Verse x2 with echo
+  Bridge ending 1
+  Bridge ending 2 in C
+  Outro with harmony
+}
+
+// Straight eighths, N.C., slashes, a two-bar repeat, a meter and a groove
+// changing.
+section Intro {
+  melody in A4..G#5
+  straight
+  N.C.          r1
+  Bb6 / / F7    \p bb4 c d f
+  %%
+  meter 3/4
+  groove Waltz
+  Eb            g4 r2
+  %
+}
+
+// A pickup, slurs, the 2nd time's chords and notes, hits, tensions, a part
+// under its bars and one in a block, and a `%` the block writes over.
+section Verse {
+  melody in F4..E5
+  part Pad in C4..B4
+  pickup  \mf (f8 g
+  Bb            a4) bb c2
+    2nd:        Gm7
+    hits:       !x4 r x2
+    2nd hits:   .
+  Eb7(b9,#11)   3[g8 f eb] d2.~
+    2nd:        d1~
+  F7sus4 F7/A   d2 \cresc c4 r4
+    Fill:       r2 <c e g>4 r
+    2nd Fill:   .
+  %
+
+  part Pad {
+    r1
+    .
+    <d f a>1
+    .
+  }
+}
+
+// Its own key, swing and endings; grace notes, jazz articulations, an
+// instrument's parameters, a rolled chord, a partial tie and a fermata.
+section Bridge key G {
+  melody in D4..C#5
+  swing 8
+  G             {f#}g4 \scoop a8 b \bright=1.2 c4 \bright=0.8 d'
+    2nd:        Em7  e4 f# g a
+  D7/F#         \plop d'2 \doit a4 \fall g
+    Fill:       ~<d g b>2 <d~ f# a>4 <d a>
+  ending 1 {
+    Cmaj7       g2 @r2
+  }
+  ending 2 as written {
+    straight
+    C           c1
+  }
+}
+
+// Tuplets in tuplets, a ratio, a voicing of the song's own, a mid-bar N.C.,
+// double accidentals, and the tempo moving.
+section Outro {
+  melody in C4..B4
+  Bb6add11      3[c8 d 5[e32 f g a b]] a2 bb4
+  C7(b9) / N.C. /  2:3[e8 f] g8 \dim f e \! \ff d4
+  meter 6/8
+  F             \accel 120 c4. \rit 80 d4.
+  Bb            \tempo 4.=60 e##4. fbb4.
+}

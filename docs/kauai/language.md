@@ -1132,6 +1132,80 @@ time a file is saved, for writing it by ear. The external sounds come from
 the module `--sounds` names
 ([Tooling §9](../tooling.md#9-playing-a-song-culebra-play)).
 
+### The score as data
+
+`Audio.Kauai.parse(text)` reads a song given as text, and
+`Audio.Kauai.parse_file(path, dir:)` a song file and the files it uses, as
+`new` and `load` do. They check it as a song that plays is checked, and raise
+the same `KauaiError`, but build no sound, so an `external` instrument needs
+no function. What they answer is the song's score as written, in plain
+`Object`s and `Array`s whose fields are not written to, as `JSON.parse`
+gives: for a program that writes the song in another notation, or reads one
+into Kauai.
+
+```culebra
+let score = Audio.Kauai.parse(`
+band Solo {
+  voice Tune  pulse  plays melody  vol 20
+}
+
+song Little {
+  tempo 4.=60
+  meter 6/8
+  band Solo
+  melody in C4..B4
+
+  A x2
+}
+
+section A {
+  F   .f4 (g8 a4.)
+  C7  2:3[c8 d] \p e4.
+}
+`)
+let bar = score.sections[0].bars[0]
+println(score.song.tempo)  # => {value: 4, dots: 1, per: 60.0}
+println(bar.chords[0])     # => {symbol: 'F', root: 'F', quality: '', bass: nil, intervals: [0, 4, 7, 12]}
+println(bar.melody[0])     # => {pitches: [{step: 'F', alter: 0, octave: 4, tie: false}], value: 4, dots: 0, marks: ['staccato'], graces: [], arpeggio: false}
+println(bar.melody[1])     # => {slur: 'start'}
+println(score.sections[0].bars[1].melody[0].tuplet)  # => {actual: 2, normal: 3}
+```
+
+| Key | What it holds |
+|---|---|
+| `about` | `title` `composer` `lyricist` `arranger` `year` `source` `license` `note`, `nil` for one the song does not write |
+| `song` | `name`; `tempo`, `{value, dots, per}`: `per` beats a minute of a `value` with `dots` (`tempo 96` a quarter's); `meter` `{beats, value}` (4/4 when the song writes none); `key` (`'C'` when it writes none); `swing` `{unit, first, second}` or `nil`; `band`; `groove`; `loop`; `room`; and `plays`, its lines that play, each `{section, times, ending, with, key}` (`ending` as written, `'2'`; `key` the one `in` plays it in) or `{mark}` |
+| `sections` | the sections the song plays, in the file's order, each `{name, key, pickup, bars, endings}`: `key` `nil` when the section writes none, `pickup` `{melody}` or `nil`, `endings` the ones it plays, each `{number, as_written, bars}`, `number` as written (`'2'`) |
+| `arrangement` | the `band`, `groove` and `voicings` blocks as text, as they were read (comments left out), the ones from the files the song uses with them |
+
+A bar:
+
+| Key | What it holds |
+|---|---|
+| `meter`, `swing` | as they stand at the bar |
+| `groove` | `{name, bar, named}`: the groove the bar plays (`nil` for none), the bars since it started (at its section's start or at a `groove` line), and whether a `groove` line named it |
+| `chords` | a chord for each beat, `nil` for N.C.: `{symbol, root, quality, bass, intervals}`, `symbol` as written and the rest with `b` and `#` for `♭` and `♯` (`C7(b9)/E` is root `C`, quality `7(b9)` and bass `E`), `intervals` its semitones over the root |
+| `melody` | its notes; none in a bar of chords alone, where the melody rests |
+| `parts` | the parts written in it, each `{name, notes}` |
+| `hits` | its hits, or `nil` |
+| `repeat` | `{bars, index}` for a bar a `%` (`bars` 1) or `%%` (2) plays again, `index` which of them, or `nil` |
+| `times` | what a later time the section plays changes, each `{time, chords, melody, parts, hits}`: `chords` and `melody` the bar as a `2nd:` line plays it, else `nil`; `parts` the parts that time writes, `notes` empty for one it leaves out; `hits` `nil` where they stay, `[]` where that time has none |
+
+A bar's notes, a part's and a pickup's are its items, in order:
+
+| Item | What it holds |
+|---|---|
+| a note | `pitches`, each `{step, alter, octave, tie}`: the letter, the accidentals in semitones, the octave the letter is in (`cb` just under `c` in a range from D4 is C flat in octave 5) and whether a tie holds it on; `value` and `dots` as written; `marks` (`staccato` `accent` `tenuto` `marcato` `fermata` `scoop` `plop` `doit` `fall`); `graces` `{step, alter, octave}`; `arpeggio` |
+| a rest | `rest` (`true`), `value`, `dots` and `marks` |
+| a hit | `hit` (`true`), `tie`, `value`, `dots` and `marks` |
+| a tuplet | `{tuplet, items}`, `tuplet` `{actual, normal}`: `actual` notes in the time of `normal`, as `p:q[` writes it (`3[c8 d e]` is `{actual: 3, normal: 2}`) |
+| a slur | `{slur}`, `'start'` or `'stop'` |
+| a direction | `{direction, tempo}`: the word after the `\` (`p`, `cresc`, `!`, `rit` ...), and the tempo `\tempo`, `\rit` and `\accel` write, as the song's, else `nil` |
+| a parameter | `{param, value}` |
+
+The pitches are as written: neither a play's `in` nor a voice's `octave down`
+moves them. A section or an ending the song does not play is left out.
+
 ## Appendix A: Chord qualities
 
 The table below is what `plays chords` voices and what degrees are read from.

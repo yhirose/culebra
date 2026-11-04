@@ -8788,6 +8788,8 @@ loop {
 | --- | --- |
 | `Audio.Kauai.new(text: String, voices = nil, drums = nil)` | 文字列から曲を作る。ほかのファイルは取り込めない |
 | `Audio.Kauai.load(path: String, voices = nil, drums = nil, dir = nil)` | 曲のファイルと、そこから`use`しているファイルを読み込む。読み込み元はディスクか、`dir`（任意の`Dir`、または`exists(name)`と`read(name)`を持つオブジェクト） |
+| `Audio.Kauai.parse(text: String)` | 書いたとおりの曲の楽譜を素のデータで返す。`new`と同じように読んで検査し、音声は作らない（[楽譜をデータとして読む](kauai/language.ja.md#楽譜をデータとして読む)） |
+| `Audio.Kauai.parse_file(path: String, dir = nil)` | 同じことを、曲のファイルと、そこから`use`しているファイルについて行う。読み方は`load`と同じ |
 
 曲に誤りがあると`KauaiError`になり、メッセージにはファイル名と行番号が付きます。
 曲のオブジェクトには`play()`、`stop()`、`volume(v)`、`playing()`、

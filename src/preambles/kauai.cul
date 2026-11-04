@@ -284,8 +284,9 @@ let _kauai_module = fn () {
     "69": "6/9",
   }
 
-  # A chord symbol ("F#m7/A") as {root, bass, shape}, pitch classes. The bass
-  # is after a `/` that a capital letter follows; `C6/9` is a quality.
+  # A chord symbol ("F#m7/A") as {root, bass, shape}, pitch classes, and as
+  # written: its symbol, and its root, quality and bass spelled. The bass is
+  # after a `/` that a capital letter follows; `C6/9` is a quality.
   fn chord(written_sym, line) {
     return nil if written_sym == "N.C."
     let sym = written_sym.tr("♭♯", "b#")
@@ -295,7 +296,8 @@ let _kauai_module = fn () {
     let (root, written) = split_root(name.to_string(), line)
     let shape = quality_shape(written, written_sym, line)
     let bass = over == nil ? root : split_root(over.to_string(), line)[0]
-    {root: root, bass: bass, shape: shape}
+    let spelled = {symbol: written_sym, root: name.slice(0, name.size() - written.size()).to_string(), quality: written, bass: over}
+    {root: root, bass: bass, shape: shape, spelled: spelled}
   }
 
   # A quality's intervals: a quality from the table and tensions in
@@ -348,7 +350,8 @@ let _kauai_module = fn () {
 
   fn transposed(c, n) {
     return nil if c == nil
-    {...c, root: Math.wrap(c.root + n, 12), bass: Math.wrap(c.bass + n, 12)}
+    # Moved, it is no longer spelled as written.
+    {...c, root: Math.wrap(c.root + n, 12), bass: Math.wrap(c.bass + n, 12), spelled: nil}
   }
 
   # The chord's `tok` degree over its root in semitones: 3 5 7 9 as the chord
@@ -518,15 +521,8 @@ let _kauai_module = fn () {
     if !digits.empty() {
       let n = to_long(digits)
       fail(line, "{n} is not a note value (1 2 4 8 16 32)") if !NOTE_VALUES.contains(n)
-      let base = WHOLE / n
-      fail(line, "{tok} is too short to play") if base % (1 << dots) != 0
-      mut total = base
-      mut add = base
-      for _ in 0..dots {
-        add /= 2
-        total += add
-      }
-      length = total
+      fail(line, "{tok} is too short to play") if WHOLE / n % (1 << dots) != 0
+      length = dotted_len(n, dots)
     } else {
       fail(line, "dots follow a note value: {tok}") if dots > 0
     }
@@ -606,15 +602,38 @@ let _kauai_module = fn () {
 
   let TEMPO_FORM = "a tempo is N, or a value and N: 4.=64"
 
-  # A tempo as quarter notes a minute: `96`, or `4.=64` for a value's beats a
-  # minute (a dotted quarter's here); nil for a word that is no tempo.
-  fn tempo_of(t, line) {
+  # A tempo as written: `96`, or `4.=64` for a value's beats a minute (a dotted
+  # quarter's here), as {value, dots, per}; nil for a word that is no tempo.
+  fn tempo_written(t, line) {
     let parts = halves(t, "=")
-    return is_number(t) ? to_float(t) : nil if parts == nil
+    return is_number(t) ? {value: 4, dots: 0, per: to_float(t)} : nil if parts == nil
     let (v, n) = (parts[0].to_string(), parts[1].to_string())
     fail(line, TEMPO_FORM) if !is_number(n) || v.empty() || !all_of(v, "0123456789.")
-    let value = melody_token("c{v}", line).length ?? fail(line, TEMPO_FORM)
-    to_float(n) * value / (WHOLE / 4)
+    let beat = value_of(melody_token("c{v}", line).length ?? fail(line, TEMPO_FORM))
+    {value: beat.value, dots: beat.dots, per: to_float(n)}
+  }
+
+  # A tempo as written, as quarter notes a minute.
+  fn quarters_of(t) {
+    t.value == 4 && t.dots == 0 ? t.per : t.per * dotted_len(t.value, t.dots) / (WHOLE / 4)
+  }
+
+  # How long note value `n` with `dots` dots is, in units.
+  fn dotted_len(n, dots) {
+    WHOLE / n * 2 - WHOLE / n / (1 << dots)
+  }
+
+  # A written length in units as its note value and dots: 1440 is a dotted
+  # half's {value: 2, dots: 1}.
+  fn value_of(units) {
+    for v in NOTE_VALUES {
+      mut dots = 0
+      while WHOLE / v % (1 << dots) == 0 {
+        return {value: v, dots: dots} if dotted_len(v, dots) == units
+        dots += 1
+      }
+    }
+    nil
   }
 
   # The items of a bar from `at`, up to a `]` or the end: notes and rests with
@@ -661,9 +680,10 @@ let _kauai_module = fn () {
         t.starts_with('\') => {
           let word = t.slice(1, t.size()).to_string()
           let takes = word == "tempo" || word == "rit" || word == "accel"
-          let arg = takes && i + 1 < toks.size() ? tempo_of(toks[i + 1], line) : nil
+          let written = takes && i + 1 < toks.size() ? tempo_written(toks[i + 1], line) : nil
+          let arg = written == nil ? nil : quarters_of(written)
           fail(line, "\\{word} takes a tempo: \\{word} 100") if (word == "rit" || word == "accel") && arg == nil
-          items.push({direct: word, arg: arg})
+          items.push({direct: word, arg: arg, written: written})
           i += arg == nil ? 1 : 2
         },
         _ => {
@@ -755,6 +775,21 @@ let _kauai_module = fn () {
     fail(line, "a ] without its [") if end < toks.size()
     let events = fold_bends(timeline(items, 1, 1, line), line)
     (events, events.filter(|e| e.has("length")).map(|e| e.length).sum())
+  }
+
+  # A bar's hits as the notes they are read as: `x` (the band strikes) a note,
+  # `r` (it rests) a rest, with their values, marks and jazz articulations.
+  fn hit_text(text, line) {
+    lex(text).map(fn (t) {
+      return t if t == "]" || t.ends_with("[") || t.starts_with("\\") && BENDS.contains(t.strip_prefix("\\"))
+      mut i = 0
+      while i < t.size() && ".!-^".contains(t.slice(i, i + 1).to_string()) {
+        i += 1
+      }
+      let head = t.slice(i, i + 1).to_string()
+      fail(line, "hits are x (strike) and r (rest), with a value, the marks . ! - ^ and a jazz articulation: {t}") if head != "x" && head != "r"
+      head == "x" ? t.slice(0, i).to_string() + "c" + t.slice(i + 1, t.size()).to_string() : t
+    }).join(" ")
   }
 
   # A new phrase's number; every voice's phrases are numbered apart.
@@ -1146,6 +1181,8 @@ let _kauai_module = fn () {
     mut pickup = nil
     mut body = []
     mut endings = {}
+    # The endings played as written, not moved by the song's `in`.
+    mut written_endings = []
     mut part_blocks = []
     # A bar line is its chords, then its notes. The chords are the words up
     # front that start with a capital letter (or are N.C.), and `/`, a beat more
@@ -1250,9 +1287,10 @@ let _kauai_module = fn () {
       return nil if w.size() != 1 || (w[0] != "%" && w[0] != "%%")
       let span_bars = w[0].size()
       fail(it.line, "{w[0]} repeats the {span_bars == 1 ? "bar" : "two bars"} before it in its section or ending") if bars_in.size() < span_bars
-      bars_in.slice(bars_in.size() - span_bars, bars_in.size()).map(fn (src) {
+      iota(span_bars).map(fn (k) {
+        let src = bars_in[bars_in.size() - span_bars + k]
         let again_parts = src.parts_again.keys().map(|t| (t, {...src.parts_again[t]})).to_object()
-        {...src, line: it.line, parts: {...src.parts}, again: {...src.again}, parts_again: again_parts, hits: {...src.hits}, repeat: w[0]}
+        {...src, line: it.line, parts: {...src.parts}, again: {...src.again}, parts_again: again_parts, hits: {...src.hits}, repeat: w[0], repeat_index: k}
       })
     }
     # A `part NAME { ... }` block: a line a bar of its section or ending, `.`
@@ -1350,6 +1388,7 @@ let _kauai_module = fn () {
           add_block(rows, blk)
         }
         endings[it.head[1]] = rows
+        written_endings.push(it.head[1]) if written
       } else if it.words[0] == "groove" {
         groove = name_at(it.words, 1, it.line, "a groove")
         named = true
@@ -1381,7 +1420,7 @@ let _kauai_module = fn () {
     for blk in part_blocks {
       add_block(body, blk)
     }
-    {name: name, key: key, pickup: pickup, body: body, endings: endings, latest: latest}
+    {name: name, key: key, pickup: pickup, body: body, endings: endings, written_endings: written_endings, latest: latest}
   }
 
   # `swing 8`, `swing 16 3:2` from word `at`: {unit (a note value), first,
@@ -1438,16 +1477,15 @@ let _kauai_module = fn () {
   }
 
   fn parse_song(b) {
-    mut song = {name: name_at(b.head, 1, b.line, "a song"), line: b.line, mut loop: false, plays: [], part_low: {}}
+    mut song = {name: name_at(b.head, 1, b.line, "a song"), line: b.line, mut loop: false, plays: [], part_low: {}, mut meter: {beats: 4, beat: WHOLE / 4}, mut key: "C"}
     for it in b.body {
       let w = it.words
       match w[0] {
-        "tempo" => song.tempo = (w.size() > 1 ? tempo_of(w[1], it.line) : nil) ?? fail(it.line, TEMPO_FORM),
-        "meter" => {
-          let m = parse_meter(w, it.line)
-          song.beats = m.beats
-          song.beat = m.beat
+        "tempo" => {
+          song.tempo_written = (w.size() > 1 ? tempo_written(w[1], it.line) : nil) ?? fail(it.line, TEMPO_FORM)
+          song.tempo = quarters_of(song.tempo_written)
         },
+        "meter" => song.meter = parse_meter(w, it.line),
         "key" => song.key = w[1],
         "band" => song.band = w[1],
         "groove" => song.groove = name_at(w, 1, it.line, "a groove"),
@@ -1503,6 +1541,24 @@ let _kauai_module = fn () {
     about
   }
 
+  # Bar `r`'s swing: its section's, else the song's; `straight` none.
+  fn swing_at(r, song) {
+    r.swing == nil ? song.get("swing", nil) : (r.swing.has("straight") ? nil : r.swing)
+  }
+
+  # The range part `pname` reads its notes in, in bar `r`: its section's, else
+  # the song's, else the melody's, `melody_low`.
+  fn part_low_at(r, pname, song, melody_low) {
+    r.part_low.get(pname, nil) ?? song.part_low.get(pname, nil) ?? melody_low
+  }
+
+  # The groove bar `r` plays, by name: the one its section names with
+  # `groove`; else the groove of the section's own name; else the song's;
+  # else none (nil).
+  fn groove_at(r, grooves, song) {
+    r.named_groove || grooves.has(r.groove) ? r.groove : song.get("groove", nil)
+  }
+
   # Bar `r` as it plays the `nth` time its section plays: its `2nd:` line if it
   # has one for that time, and its parts with that time's lines over them (a
   # `.` there leaves the part out).
@@ -1533,7 +1589,9 @@ let _kauai_module = fn () {
   }
 
   fn parse(src, file, load) {
-    mut out = {bands: {}, grooves: {}, sections: {}, songs: [], mut about: nil}
+    # `arrangement` keeps the band, groove and voicings blocks as they were
+    # read, which the score gives back as written.
+    mut out = {bands: {}, grooves: {}, sections: {}, songs: [], mut about: nil, arrangement: []}
     qualities = {...CLOSE}
     # Two of a kind may not share a name; a groove and a section may.
     let define = fn (kind, table, name, line) {
@@ -1574,14 +1632,14 @@ let _kauai_module = fn () {
         },
         k => fail(top.line, "unknown block {k}"),
       }
+      out.arrangement.push(top) if ["band", "groove", "voicings"].contains(top.head[0])
     }
     out
   }
 
-  # The file's song expanded: its notes, rows and hits in units, and what
-  # times them.
-  fn expand(src, file, load) {
-    let s = parse(src, file, load)
+  # The file's song expanded, from what parse() read of it: its notes, rows and
+  # hits in units, and what times them.
+  fn expand(s, file) {
     fail(where(file, 1), "a file that plays holds one song") if s.songs.size() != 1
     let song = s.songs[0]
     fail(song.line, "a song needs its tempo: tempo 120") if !song.has("tempo")
@@ -1606,9 +1664,7 @@ let _kauai_module = fn () {
         fail(song.line, "{v.name} follows {d.of}, and the melody is {melody_v.name}'s") if d != nil && d.of != melody_v.name
       }
     }
-    let song_key = key_pc(song.key ?? "C", song.line)
-    let BEATS = song.get("beats", 4)
-    let BEAT = song.get("beat", WHOLE / 4)
+    let song_key = key_pc(song.key, song.line)
 
     # Every bar the song plays, in order, each from unit `at` for `len` units
     # in its own meter.
@@ -1652,7 +1708,7 @@ let _kauai_module = fn () {
           let pk = sec.pickup
           # The pickup's first note without a value is a beat of the bar it
           # leads into.
-          let into = rows[0].meter ?? {beats: BEATS, beat: BEAT}
+          let into = rows[0].meter ?? song.meter
           let (events, len) = melody_notes(pk.notes, pk.line, into.beat)
           if bars.empty() {
             # At the very start the song begins with the pickup: a bar of its
@@ -1672,7 +1728,7 @@ let _kauai_module = fn () {
           let r = as_played(written_bar, nth)
           let n = r.as_written ? 0 : shift
           fail(r.line, "a bar line holds one bar") if r.notes.contains("|")
-          let m = r.meter ?? {beats: BEATS, beat: BEAT}
+          let m = r.meter ?? song.meter
           let blen = m.beats * m.beat
           fail(r.line, "with slashes, a bar gives a chord or a / for each of its {m.beats} beats") if r.slashes && r.chords.size() != m.beats
           fail(r.line, "{r.chords.size()} chords do not share {m.beats} beats evenly") if m.beats % r.chords.size() != 0
@@ -1692,7 +1748,7 @@ let _kauai_module = fn () {
             if plen != blen {
               fail(pt.line, "{pname}'s bar is {plen * 1.0 / m.beat} beats long, want {m.beats}")
             }
-            let plow = r.part_low.get(pname, nil) ?? song.part_low.get(pname, nil) ?? low_of(r)
+            let plow = part_low_at(r, pname, song, low_of(r))
             write_melody(pev, plow, n, pt.line, base, tempos, song_tempo, part_states[pname])
           }
           bars.push({
@@ -1707,7 +1763,7 @@ let _kauai_module = fn () {
             with: p.with,
             with_line: p.line,
             # The section's swing, else the song's; `straight` none.
-            swing: r.swing == nil ? song.get("swing", nil) : (r.swing.has("straight") ? nil : r.swing),
+            swing: swing_at(r, song),
           })
           pos += blen
         }
@@ -1886,18 +1942,7 @@ let _kauai_module = fn () {
     # holding a hit on.
     let hits_of = fn (b) {
       let h = b.band_hits
-      let toks = lex(h.text)
-      let written = toks.map(fn (t) {
-        return t if t == "]" || t.ends_with("[") || t.starts_with("\\") && BENDS.contains(t.strip_prefix("\\"))
-        mut i = 0
-        while i < t.size() && ".!-^".contains(t.slice(i, i + 1).to_string()) {
-          i += 1
-        }
-        let head = t.slice(i, i + 1).to_string()
-        fail(h.line, "hits are x (strike) and r (rest), with a value, the marks . ! - ^ and a jazz articulation: {t}") if head != "x" && head != "r"
-        head == "x" ? t.slice(0, i).to_string() + "c" + t.slice(i + 1, t.size()).to_string() : t
-      }).join(" ")
-      let (events, len) = melody_notes(written, h.line, b.beat)
+      let (events, len) = melody_notes(hit_text(h.text, h.line), h.line, b.beat)
       fail(h.line, "the hits are {len * 1.0 / b.beat} beats long, want {b.beats}") if len != b.len
       mut out = []
       mut at_unit = 0
@@ -1976,16 +2021,9 @@ let _kauai_module = fn () {
     }
     mut grooves_checked = {}
     for bi, b in bars.enumerate() {
-      # A bar plays the groove its section names; else the groove of the
-      # section's own name; else the song's; else no accompaniment.
-      let g = cond {
-        # The band does not play under a pickup that starts the song.
-        b.has("lead_in") => {rows: {}, first: {}, last: {}},
-        b.named_groove => s.grooves.get(b.groove, nil) ?? fail(b.line, "no groove {b.groove}"),
-        s.grooves.has(b.groove) => s.grooves[b.groove],
-        song.get("groove", nil) != nil => s.grooves.get(song.groove, nil) ?? fail(song.line, "no groove {song.groove}"),
-        _ => {rows: {}, first: {}, last: {}},
-      }
+      # The band does not play under a pickup that starts the song.
+      let gname = b.has("lead_in") ? nil : groove_at(b, s.grooves, song)
+      let g = gname == nil ? {rows: {}, first: {}, last: {}} : s.grooves.get(gname, nil) ?? fail(b.named_groove ? b.line : song.line, "no groove {gname}")
       # A row for something the band does not have would never be read; say so
       # instead of leaving it in the file doing nothing.
       let gkey = g.get("name", "")
@@ -2142,6 +2180,196 @@ let _kauai_module = fn () {
       part_level_at: part_level,
       swung: swung_time,
       heard: heard,
+    }
+  }
+
+  # --- the score as written -----------------------------------------------------
+
+  fn gcd(a, b) {
+    b == 0 ? a : gcd(b, a % b)
+  }
+
+  # A note name read in range `low`: its letter, its accidentals in semitones,
+  # and the octave its letter is in, so `cb` just under `c` in a range from D4
+  # is C flat 5.
+  fn spelled_note(name, low, line) {
+    let (letter, shift, _, _) = note_parts(name, line)
+    let p = melody_note(name, low, line)
+    (LETTERS.slice(letter, letter + 1).to_string(), shift, (p - shift) / 12 - 1)
+  }
+
+  # Items of a bar (as items_from reads them) as the score gives them: notes
+  # with their pitches spelled in range `low`, rests, and with `hit` the
+  # band's hits, which have no pitch; tuplets, slurs, directions and
+  # parameters in their places. A jazz articulation written before a note is
+  # one of its marks, as the note plays it; `bends` holds those not yet
+  # placed.
+  fn score_items(items, low, line, hit, bends) {
+    items.flat_map(fn (it) {
+      cond {
+        it.has("group") => {
+          let (heard, notated) = (sounding(it), written_len(it.group))
+          let count = it.group.filter(|g| g.has("length") || g.has("group")).size()
+          let d = gcd(notated, heard)
+          let ratio = cond {
+            it.p != nil => {actual: it.p, normal: it.q},
+            count * heard % notated == 0 => {actual: count, normal: count * heard / notated},
+            _ => {actual: notated / d, normal: heard / d},
+          }
+          [{tuplet: ratio, items: score_items(it.group, low, line, hit, bends)}]
+        },
+        it.has("slur") => [{slur: it.slur == "(" ? "start" : "stop"}],
+        it.has("param") => [{param: it.param, value: it.value}],
+        it.has("direct") && BENDS.contains(it.direct) => {
+          bends.held.push(it.direct)
+          []
+        },
+        it.has("direct") => [{direction: it.direct, tempo: it.written}],
+        _ => {
+          let v = value_of(it.length)
+          let marks = [...it.marks, ...bends.held]
+          bends.held = []
+          let grace = fn (nm) {
+            let (step, alter, octave) = spelled_note(nm, low, line)
+            {step: step, alter: alter, octave: octave}
+          }
+          let struck = fn (k) {
+            let (step, alter, octave) = spelled_note(it.names[k], low, line)
+            {step: step, alter: alter, octave: octave, tie: it.tie || it.ties[k]}
+          }
+          cond {
+            it.rest => [{rest: true, value: v.value, dots: v.dots, marks: marks}],
+            hit => [{hit: true, tie: it.tie, value: v.value, dots: v.dots, marks: marks}],
+            _ => [{pitches: iota(it.names.size()).map(struck), value: v.value, dots: v.dots, marks: marks, graces: it.graces.map(grace), arpeggio: it.arpeggio}],
+          }
+        },
+      }
+    })
+  }
+
+  # A block as its lines again, as they were read (comments left out).
+  fn block_lines(b, indent) {
+    return ["{indent}{b.text}"] if !b.has("head")
+    ["{indent}{b.head.join(" ")} \{", ...b.body.flat_map(|x| block_lines(x, indent + "  ")), "{indent}}"]
+  }
+
+  # The song parse() read, as a score: its sections and endings the song
+  # plays, each bar's chords (one a beat), melody, parts and hits, its notes
+  # spelled; the song's line and its plays; and its band, grooves and voicings
+  # as written.
+  fn score_of(s) {
+    let sg = s.songs[0]
+    let meter_of = |m| ({beats: m.beats, value: WHOLE / m.beat})
+    let low_of = |r| r.low ?? sg.low
+    let notes = fn (text, line, beat, low, hit = false) {
+      let (items, _, _) = items_from(lex(hit ? hit_text(text, line) : text), 0, beat, line)
+      score_items(items, low, line, hit, {mut held: []})
+    }
+    # Each chord a record of its own, its intervals a copy of the table's.
+    let chord_of = fn (c) {
+      return nil if c == nil
+      let w = c.spelled
+      {symbol: w.symbol, root: w.root, quality: w.quality, bass: w.bass, intervals: [...c.shape]}
+    }
+    let per_beat = |chords, beats| iota(beats).map(|k| chord_of(chords[k * chords.size() / beats]))
+    # What a bar plays, apart from where it stands: its chords, its notes and
+    # its parts', its hits, and what a later time changes (nil for what it
+    # keeps, [] for a part or hits it leaves out).
+    let content_of = fn (r) {
+      let m = r.meter ?? sg.meter
+      let melody_of = |text, line| text.empty() ? [] : notes(text, line, m.beat, low_of(r))
+      let parts_of = |parts| parts.keys().map(|pn| ({name: pn, notes: parts[pn].notes == "." ? [] : notes(parts[pn].notes, parts[pn].line, m.beat, part_low_at(r, pn, sg, low_of(r)))}))
+      let hits_of = |h| h.text == "." ? [] : notes(h.text, h.line, m.beat, low_of(r), hit: true)
+      let nths = [...[...r.again.keys(), ...r.parts_again.keys(), ...r.hits.keys()].filter(|k| k != "all").to_set()]
+      let base_hits = r.hits.get("all", nil)
+      {
+        chords: per_beat(r.chords, m.beats),
+        melody: melody_of(r.notes, r.line),
+        parts: parts_of(r.parts.keys().filter(|pn| r.parts[pn].notes != ".").map(|pn| (pn, r.parts[pn])).to_object()),
+        hits: base_hits == nil || base_hits.text == "." ? nil : hits_of(base_hits),
+        times: nths.sorted_by(|k| to_long(k)).map(fn (nth) {
+          let a = r.again.get(nth, nil)
+          {
+            time: to_long(nth),
+            chords: a == nil ? nil : per_beat(a.chords, m.beats),
+            melody: a == nil ? nil : melody_of(a.notes, a.line),
+            parts: r.parts_again.has(nth) ? parts_of(r.parts_again[nth]) : [],
+            hits: r.hits.has(nth) ? hits_of(r.hits[nth]) : nil,
+          }
+        }),
+      }
+    }
+    # A run of rows (a section's body or an ending's) as bars. A `%` or `%%`
+    # is one where its bars are the ones before them again, with what is under
+    # them; a part block can write a part over it, and then the bars are their
+    # own.
+    let bars_of = fn (rows) {
+      let contents = rows.map(content_of)
+      let repeat_at = fn (i) {
+        let r = rows[i]
+        return nil if !r.has("repeat")
+        let (n, head) = (r.repeat.size(), i - r.repeat_index)
+        iota(n).all(|k| contents[head + k] == contents[head - n + k]) ? {bars: n, index: r.repeat_index} : nil
+      }
+      iota(rows.size()).map(fn (i) {
+        let (r, c) = (rows[i], contents[i])
+        {
+          meter: meter_of(r.meter ?? sg.meter),
+          swing: swing_at(r, sg),
+          groove: {name: groove_at(r, s.grooves, sg), bar: r.groove_bar, named: r.named_groove},
+          chords: c.chords,
+          melody: c.melody,
+          parts: c.parts,
+          hits: c.hits,
+          repeat: repeat_at(i),
+          times: c.times,
+        }
+      })
+    }
+    let plays = sg.plays.filter(|p| !p.has("mark"))
+    let sections = s.sections.keys().filter(|sn| plays.any(|p| p.section == sn)).map(fn (sn) {
+      let sec = s.sections[sn]
+      let endings = sec.endings.keys().filter(|n| plays.any(|p| p.section == sn && p.ending == n))
+      let pk = sec.pickup
+      # A pickup's first note without a value is a beat of the bar it leads into.
+      let pickup_of = fn () {
+        let rows = [...sec.body, ...endings.flat_map(|n| sec.endings[n])]
+        {melody: notes(pk.notes, pk.line, ((rows.empty() ? nil : rows[0].meter) ?? sg.meter).beat, low_of(pk))}
+      }
+      {
+        name: sn,
+        key: sec.key,
+        pickup: pk == nil ? nil : pickup_of(),
+        bars: bars_of(sec.body),
+        endings: endings.map(|n| ({number: n, as_written: sec.written_endings.contains(n), bars: bars_of(sec.endings[n])})),
+      }
+    })
+    let said = s.about ?? {}
+    {
+      about: {
+        title: said.get("title", nil),
+        composer: said.get("composer", nil),
+        lyricist: said.get("lyricist", nil),
+        arranger: said.get("arranger", nil),
+        year: said.get("year", nil),
+        source: said.get("source", nil),
+        license: said.get("license", nil),
+        note: said.get("note", nil),
+      },
+      song: {
+        name: sg.name,
+        tempo: sg.tempo_written,
+        meter: meter_of(sg.meter),
+        key: sg.key,
+        swing: sg.get("swing", nil),
+        band: sg.band,
+        groove: sg.get("groove", nil),
+        loop: sg.loop,
+        room: sg.get("room", nil),
+        plays: sg.plays.map(|p| p.has("mark") ? {mark: p.mark} : {section: p.section, times: p.times, ending: p.ending, with: p.with, key: p.key}),
+      },
+      sections: sections,
+      arrangement: s.arrangement.map(|b| block_lines(b, "").join("\n")).join("\n\n"),
     }
   }
 
@@ -2783,27 +3011,46 @@ let _kauai_module = fn () {
       _ => FS.join(dir, name),
     }
   }
+  # Song file `path`'s text, and a reader of the files it uses, relative to
+  # it: from the disk, or from `dir` (a `Dir.embedded`, or anything with
+  # `exists(name)` and `read(name)`).
+  fn song_file(path, dir) {
+    let exists = dir == nil ? |n| FS.exists(n) : |n| dir.exists(n)
+    let read = dir == nil ? |n| FS.read(n) : |n| dir.read(n)
+    __raise("IOError", "Audio.Kauai: no song file {path}") if !exists(path)
+    let load_used = fn (name, from, line) {
+      let file = beside(from, name, dir != nil)
+      fail(line, "no file {file} to use") if !exists(file)
+      (read(file), file)
+    }
+    (read(path), load_used)
+  }
+
+  # A song given as text uses no other files.
+  fn no_files(name, from, line) {
+    fail(line, "a song given as text uses no files: use '{name}'")
+  }
+
+  # The song's score, checked as a song that plays is.
+  fn score(src, file, load) {
+    let s = parse(src, file, load)
+    expand(s, file)
+    score_of(s)
+  }
   {
-    # A song file, and the files it uses, relative to it: from the disk, or
-    # from `dir` (a `Dir.embedded`, or anything with `exists(name)` and
-    # `read(name)`).
     load: fn (path: String, voices = nil, drums = nil, dir = nil) {
-      let exists = dir == nil ? |n| FS.exists(n) : |n| dir.exists(n)
-      let read = dir == nil ? |n| FS.read(n) : |n| dir.read(n)
-      __raise("IOError", "Audio.Kauai: no song file {path}") if !exists(path)
-      let load_used = fn (name, from, line) {
-        let file = beside(from, name, dir != nil)
-        fail(line, "no file {file} to use") if !exists(file)
-        (read(file), file)
-      }
-      Song.new(expand(read(path), path, load_used), voices, drums)
+      let (src, load_used) = song_file(path, dir)
+      Song.new(expand(parse(src, path, load_used), path), voices, drums)
     },
-    # A song given as text, which uses no other files.
     new: fn (text: String, voices = nil, drums = nil) {
-      let no_files = fn (name, from, line) {
-        fail(line, "a song given as text uses no files: use '{name}'")
-      }
-      Song.new(expand(text, nil, no_files), voices, drums)
+      Song.new(expand(parse(text, nil, no_files), nil), voices, drums)
+    },
+    parse: fn (text: String) {
+      score(text, nil, no_files)
+    },
+    parse_file: fn (path: String, dir = nil) {
+      let (src, load_used) = song_file(path, dir)
+      score(src, path, load_used)
     },
   }
 }

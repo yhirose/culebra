@@ -1,0 +1,315 @@
+# A Kauai song from a score as Audio.Kauai.parse gives one: the text that
+# parse reads back to the same score. Each section reads its notes in ranges
+# chosen to need the fewest octave marks, a bar names its chords where they
+# change, and parts are written under their bars.
+
+let WHOLE = 1920  # Kauai's units in a whole note
+let PC = {C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11}
+let SHARPS = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
+let TOUCHES = {staccato: ".", accent: "!", tenuto: "-", marcato: "^", fermata: "@"}
+let BENDS = ["scoop", "plop", "doit", "fall"]
+let ABOUT = ["title", "composer", "lyricist", "arranger", "year", "source", "license", "note"]
+
+# --- notes ---------------------------------------------------------------------
+
+let natural = |p| 12 * (p.octave + 1) + PC[p.step]
+
+# The octave marks natural note `n` takes in a range from `low`.
+let octaves = |n, low| (n - low - Math.wrap(n - low, 12)) / 12
+
+# `n` written as `up` that many times, or as `down` for each under 0.
+let signed = |n, up, down| n > 0 ? up.repeat(n) : down.repeat(-n)
+
+fn name_of(p, low) {
+  p.step.lower() + signed(p.alter, "#", "b") + signed(octaves(natural(p), low), "'", ",")
+}
+
+# The range, as its lowest note, that writes `pitches` with the fewest octave
+# marks, the lowest such; C4 for none.
+fn range_for(pitches) {
+  return 60 if pitches.empty()
+  let naturals = pitches.map(natural)
+  let (lo, hi) = (naturals.min(), naturals.max())
+  let cost = |low| naturals.map(|n| Math.abs(octaves(n, low))).sum()
+  iota(lo - 12, hi + 1)
+    .filter(|low| PC.values().any(|pc| pc == Math.wrap(low, 12)))
+    .min_by(|low| (cost(low), Math.abs(low - lo)))
+}
+
+let range_text = |low| "{SHARPS[low % 12]}{low / 12 - 1}..{SHARPS[(low + 11) % 12]}{(low + 11) / 12 - 1}"
+
+# Every pitch in `items`, their grace notes too.
+fn pitches_in(items) {
+  items.flat_map(fn (it) {
+    cond {
+      it.has("items") => pitches_in(it.items),
+      it.has("pitches") => [...it.pitches, ...it.graces],
+      _ => [],
+    }
+  })
+}
+
+let units = |v| WHOLE / v.value * 2 - WHOLE / v.value / (1 << v.dots)
+let value_text = |v| "{v.value}" + ".".repeat(v.dots)
+
+# How long `items` are as written, a tuplet as long as it sounds.
+fn written_units(items) {
+  items.map(fn (it) {
+    cond {
+      it.has("items") => written_units(it.items) * it.tuplet.normal / it.tuplet.actual,
+      it.has("value") => units(it),
+      _ => 0,
+    }
+  }).sum()
+}
+
+# The longest plain note value no longer than `u`: what a tuplet without a
+# ratio is fitted into.
+fn fitted(u) {
+  mut target = WHOLE
+  while target > u {
+    target /= 2
+  }
+  target
+}
+
+fn number_text(x) {
+  x == Math.floor(x) ? "{to_long(x)}" : "{x}"
+}
+
+fn tempo_text(t) {
+  t.value == 4 && t.dots == 0 ? number_text(t.per) : "{value_text(t)}={number_text(t.per)}"
+}
+
+# A note's token in range `low`, its value `shown` (or none, to keep the one
+# before): grace notes, then marks, then the note, its value and its tie.
+fn note_token(it, low, shown) {
+  let touches = it.marks.filter(|m| !BENDS.contains(m)).map(|m| TOUCHES[m]).join("")
+  let graces = !it.has("graces") || it.graces.empty() ? "" : "\{" + it.graces.map(|g| name_of(g, low)).join(" ") + "}"
+  let body = cond {
+    it.has("rest") => "r" + shown,
+    it.has("hit") => "x" + shown + (it.tie ? "~" : ""),
+    it.pitches.size() == 1 => name_of(it.pitches[0], low) + shown + (it.pitches[0].tie ? "~" : ""),
+    _ => {
+      let all_tied = it.pitches.all(|p| p.tie)
+      let inner = it.pitches.map(|p| name_of(p, low) + (p.tie && !all_tied ? "~" : "")).join(" ")
+      (it.arpeggio ? "~" : "") + "<" + inner + ">" + shown + (all_tied ? "~" : "")
+    },
+  }
+  graces + touches + body
+}
+
+# The tokens of `items` in range `low`, onto `st.out` in the order the items
+# are in: a slur's `(` and a tuplet's `3[` join the token after them, and a
+# `)` or `]` the one before. `st.value` is the value the last note was
+# written with, which the next may leave out.
+fn put_tokens(items, low, st) {
+  let put = fn (tok) {
+    st.out.push(st.opening + tok)
+    st.opening = ""
+  }
+  let close = fn (s) {
+    if st.out.empty() || !st.opening.empty() {
+      put(s)
+    } else {
+      st.out[st.out.size() - 1] = st.out[-1] + s
+    }
+  }
+  for it in items {
+    cond {
+      it.has("slur") && it.slur == "start" => st.opening += "(",
+      it.has("slur") => close(")"),
+      it.has("param") => put("\\{it.param}={it.value}"),
+      it.has("direction") => put("\\{it.direction}" + (it.tempo == nil ? "" : " {tempo_text(it.tempo)}")),
+      it.has("items") => {
+        let count = it.items.filter(|x| x.has("value") || x.has("items")).size()
+        let inner = written_units(it.items) * it.tuplet.actual / it.tuplet.normal
+        let short = it.tuplet.actual == count && fitted(inner) * it.tuplet.actual == inner * it.tuplet.normal
+        st.opening += short ? "{count}[" : "{it.tuplet.actual}:{it.tuplet.normal}["
+        put_tokens(it.items, low, st)
+        close("]")
+      },
+      _ => {
+        let v = value_text(it)
+        let shown = v == st.value ? "" : v
+        st.value = v
+        for b in it.marks.filter(|m| BENDS.contains(m)) {
+          put("\\{b}")
+        }
+        put(note_token(it, low, shown))
+      },
+    }
+  }
+}
+
+fn notes_text(items, low) {
+  let st = {mut out: [], mut opening: "", mut value: nil}
+  put_tokens(items, low, st)
+  st.out.join(" ")
+}
+
+# --- bars ----------------------------------------------------------------------
+
+let symbol = |c| c == nil ? "N.C." : c.symbol
+
+# A bar's chords, one a beat, as the bar writes them: as many as share its
+# beats evenly, no two the same side by side; else a chord or a `/` for each
+# beat.
+fn chords_text(chords) {
+  let beats = chords.size()
+  let even = iota(1, beats + 1).filter(|n| beats % n == 0).find(fn (n) {
+    let span = beats / n
+    iota(beats).all(|k| chords[k] == chords[k / span * span]) &&
+      iota(n - 1).all(|k| chords[k * span] != chords[(k + 1) * span])
+  })
+  return iota(even).map(|k| symbol(chords[k * (beats / even)])).join(" ") if even != nil
+  iota(beats).map(|k| k > 0 && chords[k] == chords[k - 1] ? "/" : symbol(chords[k])).join(" ")
+}
+
+fn ordinal(n) {
+  let suffix = cond {
+    n % 100 >= 11 && n % 100 <= 13 => "th",
+    n % 10 == 1 => "st",
+    n % 10 == 2 => "nd",
+    n % 10 == 3 => "rd",
+    _ => "th",
+  }
+  "{n}{suffix}"
+}
+
+fn swing_text(sw) {
+  sw == nil ? "straight" : "swing {sw.unit}" + (sw.first == 2 && sw.second == 1 ? "" : " {sw.first}:{sw.second}")
+}
+
+# The lines of a run of bars (a section's body or an ending's), with `ranges`
+# ({melody, parts}, lowest notes) to write their notes in. `state` ({meter,
+# swing}) is where the run starts, and is left where it ends.
+fn bar_lines(bars, state, ranges, indent) {
+  let out = []
+  mut before = nil
+  let parts_lines = fn (parts, head) {
+    parts.map(|p| "{indent}  {head}{p.name}: " + (p.notes.empty() ? "." : notes_text(p.notes, ranges.parts[p.name])))
+  }
+  for b in bars {
+    if b.groove.named && b.groove.bar == 0 {
+      out.push("{indent}groove {b.groove.name}")
+    }
+    if b.meter != state.meter {
+      out.push("{indent}meter {b.meter.beats}/{b.meter.value}")
+      state.meter = b.meter
+    }
+    if b.swing != state.swing {
+      out.push("{indent}{swing_text(b.swing)}")
+      state.swing = b.swing
+    }
+    if b.repeat != nil {
+      out.push("{indent}" + "%".repeat(b.repeat.bars)) if b.repeat.index == 0
+      before = b.chords
+      continue
+    }
+    let melody = notes_text(b.melody, ranges.melody)
+    let chords = before == b.chords && !melody.empty() ? "" : chords_text(b.chords)
+    out.push((chords.size() >= 14 ? "{indent}{chords}  {melody}" : "{indent}{chords:<14}{melody}").trim_end())
+    out.extend(parts_lines(b.parts, ""))
+    out.push("{indent}  hits: {notes_text(b.hits, ranges.melody)}") if b.hits != nil
+    for t in b.times {
+      let when = ordinal(t.time)
+      if t.chords != nil {
+        let same_notes = t.melody == b.melody
+        let line = cond {
+          same_notes => chords_text(t.chords),
+          t.chords == b.chords => notes_text(t.melody, ranges.melody),
+          _ => "{chords_text(t.chords)}  {notes_text(t.melody, ranges.melody)}",
+        }
+        out.push("{indent}  {when}: {line}")
+      }
+      out.extend(parts_lines(t.parts, "{when} "))
+      if t.hits != nil {
+        out.push("{indent}  {when} hits: " + (t.hits.empty() ? "." : notes_text(t.hits, ranges.melody)))
+      }
+    }
+    before = b.chords
+  }
+  out
+}
+
+# The bars of `bars` and each time that changes them: what a range has to
+# hold.
+fn every_take(bars) {
+  bars.flat_map(|b| [b, ...b.times])
+}
+
+fn section_lines(sec, song) {
+  let runs = [sec.bars, ...sec.endings.map(|e| e.bars)]
+  let takes = runs.flat_map(every_take)
+  let melody = range_for([
+    ...pitches_in(sec.pickup?.melody ?? []),
+    ...takes.flat_map(|b| pitches_in(b.melody ?? [])),
+  ])
+  let by_name = takes.flat_map(|b| b.parts).group_by(|p| p.name)
+  let parts = by_name.keys().map(|pn| (pn, range_for(by_name[pn].flat_map(|p| pitches_in(p.notes))))).to_object()
+  let ranges = {melody: melody, parts: parts}
+  let state = {mut meter: song.meter, mut swing: song.swing}
+  let body = bar_lines(sec.bars, state, ranges, "  ")
+  let endings = sec.endings.flat_map(fn (e) {
+    let lines = bar_lines(e.bars, {mut meter: state.meter, mut swing: state.swing}, ranges, "    ")
+    ["", "  ending {e.number}" + (e.as_written ? " as written" : "") + " \{", ...lines, "  }"]
+  })
+  [
+    "section {sec.name}" + (sec.key == nil ? "" : " key {sec.key}") + " \{",
+    "  melody in {range_text(melody)}",
+    ...parts.keys().map(|pn| "  part {pn} in {range_text(parts[pn])}"),
+    ...(sec.pickup == nil ? [] : ["  pickup  {notes_text(sec.pickup.melody, melody)}"]),
+    ...body,
+    ...endings,
+    "}",
+  ]
+}
+
+# --- the song ------------------------------------------------------------------
+
+fn play_line(p) {
+  return "  mark {p.mark}" if p.has("mark")
+  "  {p.section}" +
+    (p.times > 1 ? " x{p.times}" : "") +
+    (p.ending == nil ? "" : " ending {p.ending}") +
+    (p.with == nil ? "" : " with {p.with}") +
+    (p.key == nil ? "" : " in {p.key}")
+}
+
+fn song_lines(song) {
+  let m = song.meter
+  [
+    "song {song.name} \{",
+    "  tempo {tempo_text(song.tempo)}",
+    ...(m.beats == 4 && m.value == 4 ? [] : ["  meter {m.beats}/{m.value}"]),
+    ...(song.key == "C" ? [] : ["  key {song.key}"]),
+    ...(song.swing == nil ? [] : ["  {swing_text(song.swing)}"]),
+    "  band {song.band}",
+    ...(song.groove == nil ? [] : ["  groove {song.groove}"]),
+    ...(song.loop ? ["  loop"] : []),
+    ...(song.room == nil ? [] : ["  room {Math.round(song.room * 100)}%"]),
+    "",
+    ...song.plays.map(play_line),
+    "}",
+  ]
+}
+
+fn about_lines(about) {
+  let keys = ABOUT.filter(|k| about[k] != nil)
+  return [] if keys.empty()
+  ["about \{", ...keys.map(|k| "  {k:<9} {about[k]}"), "}", ""]
+}
+
+# The song `score` (Audio.Kauai.parse's) as Kauai text.
+fn write(score) {
+  [
+    ...about_lines(score.about),
+    ...(score.arrangement.empty() ? [] : [score.arrangement, ""]),
+    ...song_lines(score.song),
+    ...score.sections.flat_map(|sec| ["", ...section_lines(sec, score.song)]),
+  ].join("\n") +
+    "\n"
+}
+
+export {write}

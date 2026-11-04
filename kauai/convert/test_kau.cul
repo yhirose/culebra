@@ -1,0 +1,62 @@
+import kau from './kau.cul'
+
+# Every song in the repository (run*.kau are bands that cruise and sprint
+# use), written back from its score: the text reads to the same score, and
+# plays the same notes.
+let SONGS = [
+  "kauai/convert/notations.kau",
+  "examples/kauai/songs/features.kau",
+  "examples/kauai/songs/first.kau",
+  "examples/kauai/songs/guitar.kau",
+  "examples/kauai/songs/jetveux.kau",
+  "examples/kauai/songs/jetveux_piano.kau",
+  "examples/kauai/songs/sax.kau",
+  "examples/kauai/songs/strings.kau",
+  "examples/kauai/songs/trio.kau",
+  "examples/games/retro-run/assets/ballad.kau",
+  "examples/games/retro-run/assets/cruise.kau",
+  "examples/games/retro-run/assets/sprint.kau",
+  "kauai/sounds/alto_sax/songs/fast_lane.kau",
+  "kauai/sounds/alto_sax/songs/harbor_lights.kau",
+  "kauai/sounds/alto_sax/songs/ocean_highway.kau",
+]
+
+# The external instruments a band names, each answering no sound: enough to
+# read a song and list what it plays.
+fn silent(arrangement) {
+  mut voices = {}
+  mut drums = {}
+  for line in arrangement.split("\n") {
+    let w = line.split_whitespace()
+    let at = w.index_of("external")
+    continue if at < 0 || at + 1 >= w.size()
+    let key = w[at + 1].lower()
+    if w[0] == "drum" {
+      drums[key] = |params| nil
+    } else {
+      voices[key] = |pitch, params| nil
+    }
+  }
+  {voices: voices, drums: drums}
+}
+
+@test
+fn every_song_reads_back_from_its_written_score() {
+  for path in SONGS {
+    let score = Audio.Kauai.parse_file(path)
+    let text = kau.write(score)
+    let again = try {
+      Audio.Kauai.parse(text)
+    } catch e {
+      println("{path} written:\n{text}")
+      throw e
+    }
+    if again != score {
+      println("{path} written:\n{text}")
+    }
+    assert_eq(again, score)
+    let sounds = silent(score.arrangement)
+    let played = Audio.Kauai.load(path, voices: sounds.voices, drums: sounds.drums).events()
+    assert_eq(Audio.Kauai.new(text, voices: sounds.voices, drums: sounds.drums).events(), played)
+  }
+}

@@ -136,7 +136,9 @@
 # named only inside a bound, a union, a return type or a supertrait list).
 # 337 since test_midi.cul (MIDI with the device closed: no inputs, and an
 # input not there refused, naming those there are).
-tests.cul 337
+# 338 since test_audio_kauai_parse.cul (Audio.Kauai.parse: a song's score as
+# written, as plain data, and the errors new() raises, 0.2 s).
+tests.cul 338
 
 # tests/isolate/*.cul — run on both engines, plus the over-cap modes.
 # 21 since test_xml_isolate.cul (an XML element keeps its methods across an
@@ -272,7 +274,8 @@ ctest.entries 38
 # 1134 since §41 MIDI shows the inputs and a wind controller played (skipped:
 # needs a device), in en and ja. 1136 since §41 shows a device's settings
 # read with a sysex and changed (skipped: needs a device), in en and ja.
-docs.blocks 1136
+# 1138 since the Kauai spec's §10 reads a song's score as data, in en and ja.
+docs.blocks 1138
 
 # The samples the language front ends are run over (examples/languages/*).
 languages.samples 130
@@ -314,4 +317,6 @@ languages.samples 130
 # (each bundled recipe plays, and Kauai plays a song with them, 0.5 s).
 # 50 since kauai/tools/test_ewi_usb.cul (an EWI USB's settings read and
 # written as words, and the MIDI that asks for and changes them, 0.05 s).
-examples.suites 50
+# 51 since kauai/convert/test_kau.cul (every song in the repository written
+# back from its score reads to the same score and plays the same, 1.2 s).
+examples.suites 51

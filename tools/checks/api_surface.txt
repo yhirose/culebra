@@ -1119,6 +1119,8 @@ mic.waiting() -> Long
 mic.read(frames = nil) -> Array
 Audio.Kauai.new(text: String, voices = nil, drums = nil)
 Audio.Kauai.load(path: String, voices = nil, drums = nil, dir = nil)
+Audio.Kauai.parse(text: String)
+Audio.Kauai.parse_file(path: String, dir = nil)
 MIDI.inputs() -> Array
 MIDI.Input.new(id, sysex: false)
 input.read() -> Array

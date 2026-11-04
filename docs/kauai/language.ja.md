@@ -1126,6 +1126,78 @@ Kauaiは、
 聞きながら書くのに使えます。外部の楽器の音声は、`--sounds`で指定したモジュールが用意します
 ([ツール §9](../tooling.ja.md#9-曲の再生-culebra-play))。
 
+### 楽譜をデータとして読む
+
+`Audio.Kauai.parse(text)`は文字列で渡した曲を、`Audio.Kauai.parse_file(path, dir:)`は
+曲のファイルとそれが使うファイルを、`new`と`load`と同じように読みます。再生する曲と
+同じ検査をして同じ`KauaiError`を出しますが、音声は作らないので、`external`の楽器に
+関数は要りません。返すのは書いたとおりの曲の楽譜で、`JSON.parse`が返すのと同じく、
+フィールドを書き換えない素の`Object`と`Array`でできています。曲をほかの記法で書き出す
+プログラムや、ほかの記法からKauaiに読み込むプログラムが使います。
+
+```culebra
+let score = Audio.Kauai.parse(`
+band Solo {
+  voice Tune  pulse  plays melody  vol 20
+}
+
+song Little {
+  tempo 4.=60
+  meter 6/8
+  band Solo
+  melody in C4..B4
+
+  A x2
+}
+
+section A {
+  F   .f4 (g8 a4.)
+  C7  2:3[c8 d] \p e4.
+}
+`)
+let bar = score.sections[0].bars[0]
+println(score.song.tempo)  # => {value: 4, dots: 1, per: 60.0}
+println(bar.chords[0])     # => {symbol: 'F', root: 'F', quality: '', bass: nil, intervals: [0, 4, 7, 12]}
+println(bar.melody[0])     # => {pitches: [{step: 'F', alter: 0, octave: 4, tie: false}], value: 4, dots: 0, marks: ['staccato'], graces: [], arpeggio: false}
+println(bar.melody[1])     # => {slur: 'start'}
+println(score.sections[0].bars[1].melody[0].tuplet)  # => {actual: 2, normal: 3}
+```
+
+| キー | 中身 |
+|---|---|
+| `about` | `title` `composer` `lyricist` `arranger` `year` `source` `license` `note`。曲が書いていない項目は`nil` |
+| `song` | `name`。`tempo`は`{value, dots, per}`で、`dots`の付いた`value`の音符が1分に`per`拍（`tempo 96`は4分音符）。`meter`は`{beats, value}`（書いていなければ4/4）。`key`（書いていなければ`'C'`）。`swing`は`{unit, first, second}`か`nil`。`band`、`groove`、`loop`、`room`。`plays`は演奏する行で、それぞれ`{section, times, ending, with, key}`（`ending`は書いたとおりの`'2'`、`key`は`in`で弾く調）か`{mark}` |
+| `sections` | 曲が演奏するセクションをファイルの順に。それぞれ`{name, key, pickup, bars, endings}`で、`key`はセクションが書いていなければ`nil`、`pickup`は`{melody}`か`nil`、`endings`は演奏するendingで、それぞれ`{number, as_written, bars}`。`number`は書いたとおり（`'2'`） |
+| `arrangement` | `band`、`groove`、`voicings`のブロックを、読んだとおりの文字列で（コメントは除く）。曲が使うファイルにあるものも含む |
+
+小節:
+
+| キー | 中身 |
+|---|---|
+| `meter`、`swing` | その小節での拍子とスウィング |
+| `groove` | `{name, bar, named}`。小節が弾くgroove（なければ`nil`）、それが始まってから（セクションの頭か`groove`の行から）何小節目か、`groove`の行で名前を指定したか |
+| `chords` | 1拍ごとのコード。N.C.は`nil`。`{symbol, root, quality, bass, intervals}`で、`symbol`は書いたとおり、ほかは`♭`と`♯`を`b`と`#`にしたもの（`C7(b9)/E`はrootが`C`、qualityが`7(b9)`、bassが`E`）。`intervals`は根音からの半音数 |
+| `melody` | 音符。コードだけの小節（メロディが休む）では空 |
+| `parts` | 小節に書いたパート。それぞれ`{name, notes}` |
+| `hits` | キメ。なければ`nil` |
+| `repeat` | `%`（`bars`が1）や`%%`（2）でもう一度弾く小節なら`{bars, index}`で、`index`はそのうちの何小節目か。それ以外は`nil` |
+| `times` | セクションを2回目以降に弾くときの変化。それぞれ`{time, chords, melody, parts, hits}`。`chords`と`melody`は`2nd:`の行で弾く小節で、なければ`nil`。`parts`はその回に書いたパートで、その回は弾かないパートは`notes`が空。`hits`はそのままなら`nil`、その回はキメがなければ`[]` |
+
+小節、パート、弱起の音符は、次の要素を順に並べたものです。
+
+| 要素 | 中身 |
+|---|---|
+| 音符 | `pitches`はそれぞれ`{step, alter, octave, tie}`で、音名の文字、臨時記号の半音数、文字の属するオクターブ（D4からの音域で`c`のすぐ下の`cb`は、オクターブ5のC♭）、タイで次につながるか。`value`と`dots`は書いたとおり。`marks`（`staccato` `accent` `tenuto` `marcato` `fermata` `scoop` `plop` `doit` `fall`）。`graces`は`{step, alter, octave}`。`arpeggio` |
+| 休符 | `rest`（`true`）、`value`、`dots`、`marks` |
+| キメの1打 | `hit`（`true`）、`tie`、`value`、`dots`、`marks` |
+| 連符 | `{tuplet, items}`。`tuplet`は`{actual, normal}`で、`normal`個分の時間に`actual`個。`p:q[`の書き方と同じ向き（`3[c8 d e]`は`{actual: 3, normal: 2}`） |
+| スラー | `{slur}`。`'start'`か`'stop'` |
+| 指示 | `{direction, tempo}`。`\`の後の語（`p`、`cresc`、`!`、`rit`など）と、`\tempo`、`\rit`、`\accel`が書くテンポ（曲の`tempo`と同じ形）。なければ`nil` |
+| パラメータ | `{param, value}` |
+
+音高は書いたとおりで、演奏の行の`in`も、楽器の`octave down`も動かしません。曲が
+演奏しないセクションとendingは含みません。
+
 ## 付録 A: コードの種類
 
 `plays chords`で和音を積むときや、ベースの行で度数を読むときに使う表です。
