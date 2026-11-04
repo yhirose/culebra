@@ -18,8 +18,8 @@ it is made, then what it is.
 - How it is made: `Fm` for frequency modulation, `Analog` for oscillators
   through a filter. An instrument made from recordings has none: it is the
   instrument itself (`SopranoSax`, `AltoSax`).
-- How it sounds: for a preset, `Mellow` or `Bright`, the ends of its
-  `bright` knob; for a recipe of its own that is another tone of an
+- How it sounds: for a preset, the end of its knob, `Mellow` or `Bright`
+  for `bright` and `Dry` for `chorus` at 0; for a recipe of its own that is another tone of an
   instrument Kauai has, a word for how it differs, `Clear` for a clean, light
   one (`ClearAnalogLead` beside `AnalogLead`).
 
@@ -27,8 +27,10 @@ No name holds a product's, a maker's, a player's or a song's name.
 
 | Recipe | A song names it | What it is | Knobs: default (range) |
 |---|---|---|---|
-| `analog_lead` | `external AnalogLead` | an analog lead, two saws a hair apart and a square an octave under them through a low-pass that opens at the attack and follows the note | `bright` 0.5 (0 to 1): the low-pass opened wider, at about the same loudness |
-| `clear_analog_lead` | `external ClearAnalogLead` | a lighter, clearer lead, two saws a hair apart over a triangle, with a sine an octave up for its shine, through a low-pass that opens at the attack and follows the note | `bright` 1 (0 to 1): the low-pass opened wider and more of the octave |
+| `analog_lead` | `external AnalogLead` | an analog lead, two saws a hair apart over a triangle through a low-pass that opens at the attack and follows the note, with a chorus | `bright` 0.5 (0 to 1): the low-pass opened wider, at about the same loudness; `chorus` 1 (0 to 1): a copy a little later, its delay swaying, and the saws drifting slowly in pitch, at the same loudness |
+| `dry_analog_lead` | `external DryAnalogLead` | `analog_lead`, dry | `chorus` 0 (0 to 1) |
+| `clear_analog_lead` | `external ClearAnalogLead` | a lighter, clearer lead, sounding an octave above the note written: two saws a hair apart over a triangle, with a sine an octave up for its shine, through a low-pass that opens at the attack and follows the note, with a chorus | `bright` 1 (0 to 1): the low-pass opened wider and more of the octave; `chorus` 1 (0 to 1): as `analog_lead`'s |
+| `dry_clear_analog_lead` | `external DryClearAnalogLead` | `clear_analog_lead`, dry | `chorus` 0 (0 to 1) |
 | `fm_brass` | `external FmBrass` | a synth brass, two FM pairs a hair apart and a third with its modulator an octave up | `bright` 0.5 (0 to 1): deeper modulation and more feedback, at the same loudness |
 | `mellow_fm_brass` | `external MellowFmBrass` | `fm_brass`, mellow | `bright` 0 (0 to 1) |
 | `bright_fm_brass` | `external BrightFmBrass` | `fm_brass`, bright | `bright` 1 (0 to 1) |

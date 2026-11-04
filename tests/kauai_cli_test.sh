@@ -114,8 +114,9 @@ for lane in "${lanes[@]}"; do
   # device is closed, so there is no MIDI input).
   run cli instruments
   check "$lane instruments: status" 0 "$rc"
-  [[ "$out" == *$'\n''FmBrass          a recipe; bright 0.5 (0.0 to 1.0)'$'\n'* &&
-     "$out" == 'AltoSax          an alto saxophone, from recordings'* ]] || {
+  # (the names padded to the longest one's width, whatever it is now)
+  [[ "$out" == *$'\n''FmBrass   '*' a recipe; bright 0.5 (0.0 to 1.0)'$'\n'* &&
+     "$out" == 'AltoSax   '*' an alto saxophone, from recordings'* ]] || {
     echo "FAIL $lane instruments: stdout [$out]"; fail=1; }
   run cli live AltoSax --midi EWI
   check "$lane live, from recordings: stderr" "kauai: live needs one MIDI input named like EWI; there are none" "$err"
