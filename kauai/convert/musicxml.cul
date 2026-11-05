@@ -1640,4 +1640,4 @@ fn write(score) {
     .replace_first("\n", "\n{DOCTYPE}\n")
 }
 
-export {write, passes_of, as_played, part_names, events_of, moved_items, moved_chord}
+export {write, passes_of, as_played, part_names, events_of, moved_items, moved_chord, UNMOVED}

@@ -900,6 +900,81 @@ fn visits_of(ms, blocks) {
   visits
 }
 
+# --- pickups ---------------------------------------------------------------------
+
+let bar_units = |meter| meter.beats * WHOLE / meter.value
+
+# `items` split where `cut` units of them have sounded: (those before, those
+# from there), the end of a slur there with the notes before it; nil where a
+# note or a tuplet goes on over it.
+fn split_at(items, cut) {
+  let (head, tail) = ([], [])
+  mut at = 0
+  for it in items {
+    let len = length_of([it])
+    return nil if at < cut && at + len > cut
+    let before = at < cut || at == cut && it.get("slur", nil) == "stop"
+    (before ? head : tail).push(it)
+    at += len
+  }
+  (head, tail)
+}
+
+# A bar's `melody` (in `meter`) that holds a pickup `len` long at its end,
+# as {bar, pickup}: the bar as a song writes it before the pickup goes into
+# its rests (its rests from where its notes end), and the pickup; nil where
+# a note goes on over where the pickup starts.
+fn into_pickup(melody, meter, len) {
+  let whole = bar_units(meter)
+  let halves = split_at(melody, whole - len)
+  return nil if halves == nil
+  let (head, pickup) = halves
+  mut n = head.size()
+  while n > 0 &&
+      head[n - 1].get("rest", false) == true &&
+      head[n - 1].marks.empty() {
+    n -= 1
+  }
+  let notes = head[..n]
+  let end = length_of(notes)
+  {bar: [...notes, ...rests_for(end, whole - end)], pickup}
+}
+
+# A meter `units` long, counted in `meter`'s beats where they fit, else in
+# the longest value that does.
+fn meter_of(units, meter) {
+  mut value = meter.value
+  while units % (WHOLE / value) != 0 {
+    value *= 2
+  }
+  {beats: units / (WHOLE / value), value}
+}
+
+# Whether a bar's `items` rest from `at` units to the bar's end, as Kauai
+# has a bar rest where a pickup plays into it: no note sounds there.
+fn rests_from(items, at) {
+  return false if at < 0
+  mut from = 0
+  for it in items {
+    let len = length_of([it])
+    let pitched = it.has("pitches") ||
+      it.has("items") && it.items.any(|x| x.has("pitches") || x.has("items"))
+    return false if pitched && from + len > at
+    from += len
+  }
+  true
+}
+
+# `items` without the ends of slurs they close last: a pickup as a bar holds
+# it at a section's end, which ends the slur the pickup opens.
+fn open_ended(items) {
+  mut n = items.size()
+  while n > 0 && items[n - 1].get("slur", nil) == "stop" {
+    n -= 1
+  }
+  items[..n]
+}
+
 # --- the song --------------------------------------------------------------------
 
 let one_line = |s| s.split_whitespace().join(" ")
@@ -1381,24 +1456,21 @@ fn reading(doc, voicings) {
   played_into(sections, visits, names, into, alike)
 
   # The plays, each run of visits to a block that takes the same ending.
-  let plays = []
-  let play = fn (section, ending) {
-    let last = plays.get(-1, nil)
-    if last != nil && last.section == section && last.ending == ending {
-      plays[plays.size() - 1] = {...last, times: last.times + 1}
-    } else {
-      plays.push({section, times: 1, ending, with: nil, key: nil})
-    }
-  }
+  let visited = []
   for k, v in visits.enumerate() {
-    play(lead_bar(), nil) if crowded(k)
-    play(
-      names[k],
-      v.ending == nil || alike[v.block]
+    visited.push({section: lead_bar(), ending: nil}) if crowded(k)
+    visited.push({
+      section: names[k],
+      ending: v.ending == nil || alike[v.block]
         ? nil
         : blocks[v.block].endings[v.ending].numbers[0],
-    )
+    })
   }
+  let plays = visited
+    .iter()
+    .chunk_by(|x| x)
+    .map(|run| {...run[0], times: run.size(), with: nil, key: nil})
+    .collect()
   let order = [...(pickup ? [0] : []), ...visits.flat_map(measures_of)]
   let about = about_of(doc)
   let score = {
@@ -1424,84 +1496,10 @@ fn reading(doc, voicings) {
 # --- the song the score carries ------------------------------------------------------
 
 let back_by = |iv| {semis: -iv.semis, steps: -iv.steps}
-# The interval a measure the score shows as it is moves by.
-let AS_SHOWN = {semis: 0, steps: 0}
 # Measure `mi` of reading `x`, as a report names it.
 let measure_at = |x, mi| "measure {x.ms[mi].number}"
-let bar_units = |meter| meter.beats * WHOLE / meter.value
 let capitalized = |w| w.slice(0, 1).to_string() !=
   w.slice(0, 1).to_string().lower()
-
-# `items` split where `cut` units of them have sounded: (those before, those
-# from there), the end of a slur there with the notes before it; nil where a
-# note or a tuplet goes on over it.
-fn split_at(items, cut) {
-  let (head, tail) = ([], [])
-  mut at = 0
-  for it in items {
-    let len = length_of([it])
-    return nil if at < cut && at + len > cut
-    let before = at < cut || at == cut && it.get("slur", nil) == "stop"
-    (before ? head : tail).push(it)
-    at += len
-  }
-  (head, tail)
-}
-
-# A bar's `melody` (in `meter`) that holds a pickup `len` long at its end,
-# as {bar, pickup}: the bar as a song writes it before the pickup goes into
-# its rests (its rests from where its notes end), and the pickup; nil where
-# a note goes on over where the pickup starts.
-fn into_pickup(melody, meter, len) {
-  let whole = bar_units(meter)
-  let halves = split_at(melody, whole - len)
-  return nil if halves == nil
-  let (head, pickup) = halves
-  mut n = head.size()
-  while n > 0 &&
-      head[n - 1].get("rest", false) == true &&
-      head[n - 1].marks.empty() {
-    n -= 1
-  }
-  let notes = head[..n]
-  let end = length_of(notes)
-  {bar: [...notes, ...rests_for(end, whole - end)], pickup}
-}
-
-# A meter `units` long, counted in `meter`'s beats where they fit, else in
-# the longest value that does.
-fn meter_of(units, meter) {
-  mut value = meter.value
-  while units % (WHOLE / value) != 0 {
-    value *= 2
-  }
-  {beats: units / (WHOLE / value), value}
-}
-
-# Whether a bar's `items` rest from `at` units to the bar's end, as Kauai
-# has a bar rest where a pickup plays into it: no note sounds there.
-fn rests_from(items, at) {
-  return false if at < 0
-  mut from = 0
-  for it in items {
-    let len = length_of([it])
-    let pitched = it.has("pitches") ||
-      it.has("items") && it.items.any(|x| x.has("pitches") || x.has("items"))
-    return false if pitched && from + len > at
-    from += len
-  }
-  true
-}
-
-# `items` without the ends of slurs they close last: a pickup as a bar holds
-# it at a section's end, which ends the slur the pickup opens.
-fn open_ended(items) {
-  mut n = items.size()
-  while n > 0 && items[n - 1].get("slur", nil) == "stop" {
-    n -= 1
-  }
-  items[..n]
-}
 
 # What of a song's `items` a score does not show: its parameters, and its
 # rit.s and accel.s, whose tempo it has no place for; each with how far into
@@ -1667,7 +1665,7 @@ fn lines_of(lines, passes, alone) {
 # song answers)}.
 fn brought(c, r, r0) {
   let reports = []
-  let say = |what, at| reports.push({what, where: at})
+  let report = |what, at| reports.push({what, where: at})
   let passes = mx.passes_of(c)
   # The runs of reading `x`'s measures that start at `firsts`.
   let runs_from = |x, firsts| iota(firsts.size()).map(|k| x.order[firsts[k]..firsts.get(
@@ -1691,7 +1689,7 @@ fn brought(c, r, r0) {
     starts.get(0, r.order.size()) == (r.pickup ? 1 : 0) &&
     runs.size() == passes.size()
   if !fits_form {
-    say(
+    report(
       "the order the song plays its sections in, which the score changes: the sections as the score has them",
       "the score",
     )
@@ -1835,7 +1833,7 @@ fn brought(c, r, r0) {
         tail == nil ? nil : mx.moved_items(tail, back_by(passes[p].iv))
       })
       if takes.any(|t| t != takes[0]) {
-        say(
+        report(
           "a pickup the score plays otherwise from time to time, played as the first time",
           held(edits[0]),
         )
@@ -1888,7 +1886,7 @@ fn brought(c, r, r0) {
           meter: b.meter,
           swing: b.swing,
           groove: {name: playing, bar: since, named: line},
-          ...from_score(p, a, AS_SHOWN, nil),
+          ...from_score(p, a, mx.UNMOVED, nil),
           hits: nil,
           repeat: nil,
           times: [],
@@ -1909,7 +1907,7 @@ fn brought(c, r, r0) {
       while same == nil && taken.contains(name) {
         name += "2"
       }
-      say(
+      report(
         "a time through a section that no longer fits it, a section of its own (its hits and parameters left out)",
         "{where(p, 0)} ({sec.name} as {name})",
       )
@@ -2022,6 +2020,16 @@ fn band_staves(doc) {
     .to_object()
 }
 
+# Kauai text `text` read as a song's score, and why it does not read (nil
+# where it does).
+fn parsed(text) {
+  try {
+    (Audio.Kauai.parse(text), nil)
+  } catch e: KauaiError {
+    (nil, e.message)
+  }
+}
+
 # Score `score` (`c`'s song as reading `r` shows it) with `c`'s band where
 # that band plays every part and the song reads, else a band made for the
 # score's lines: {score, reports}. The band's staves show what the band
@@ -2029,20 +2037,14 @@ fn band_staves(doc) {
 # note of theirs), that is said.
 fn banded(score, c, r, r0, voicings) {
   let reports = []
+  let report = |what, where| reports.push({what, where})
   # A part the song did not have, which no voice plays.
   let played = parts_played(score.arrangement, score.song.band)
   let had = mx.part_names(c)
   let missing = mx
     .part_names(score)
     .filter(|n| !played.contains(n) && !had.contains(n))
-  # Score `s` read as a song, and why it does not read (nil where it does).
-  let read_song = fn (s) {
-    try {
-      (Audio.Kauai.parse(kau.write(s)), nil)
-    } catch e: KauaiError {
-      (nil, e.message)
-    }
-  }
+  let read_song = |s| parsed(kau.write(s))
   let same = kau.write(score) == kau.write(c)
   let (song, unread) = same ? (c, nil) : read_song(score)
   let problem = missing.empty()
@@ -2052,12 +2054,12 @@ fn banded(score, c, r, r0, voicings) {
     # The band is what does not fit where the song reads without it.
     let plain = without_band(score, r.lines)
     let blamed = !missing.empty() || read_song(plain)[1] == nil
-    reports.push({
-      what: blamed
+    report(
+      blamed
         ? "the song's band, which does not play the score ({problem}): a band made for its lines"
         : "the song as the score has it, which does not read ({problem})",
-      where: "the score",
-    })
+      "the score",
+    )
     return {score: blamed ? plain : score, reports}
   }
   let r1 = same ? r0 : reading(XML.parse(mx.write(song)), voicings)
@@ -2070,10 +2072,10 @@ fn banded(score, c, r, r0, voicings) {
   for j in iota(Math.min(r.order.size(), r1.order.size())) {
     let (mi, mi1) = (r.order[j], r1.order[j])
     if staves.any(|n| notes_at(shown, n, mi) != notes_at(plays, n, mi1)) {
-      reports.push({
-        what: "the band's staves, where the band plays otherwise (Kauai plays it from the chords and grooves)",
-        where: measure_at(r, mi),
-      })
+      report(
+        "the band's staves, where the band plays otherwise (Kauai plays it from the chords and grooves)",
+        measure_at(r, mi),
+      )
     }
   }
   {score, reports}
@@ -2112,15 +2114,7 @@ fn read(text) {
   throw "kauai convert: only a partwise score (<score-partwise>) is read, not <{doc.tag}>" if doc.tag !=
     "score-partwise"
   let carried = field(doc, "kauai-song")
-  mut c = nil
-  mut unread = nil
-  if carried != nil {
-    try {
-      c = Audio.Kauai.parse(carried)
-    } catch e: KauaiError {
-      unread = e.message
-    }
-  }
+  let (c, unread) = carried == nil ? (nil, nil) : parsed(carried)
   if c == nil {
     let r = reading(doc, "")
     let said = unread == nil

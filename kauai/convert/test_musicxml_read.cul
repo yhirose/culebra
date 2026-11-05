@@ -853,28 +853,13 @@ fn the_bands_staves_show_what_it_plays() {
 fn what_no_longer_fits_the_song_is_the_scores() {
   # A's 2nd time a measure shorter, the measures after it counted again, as
   # a score editor does.
-  let cut = Regex.replace_all(
-    "(?s)<measure number=\"7\">.*?</measure>\\s*",
-    EDITED_SCORE,
-    "",
-  )
-  let shorter = song_of(iota(
-    8,
-    15,
-  ).reduce(
-    cut,
-    |text, n| text.replace(
-      "<measure number=\"{n}\"",
-      "<measure number=\"{n - 1}\"",
-    ),
-  ))
-  let block = |text, head| text.split("\n\n").find(|b| b.starts_with(head))
+  let shorter = song_of(without_measure(EDITED_SCORE, 7, 14))
   assert_true(
     shorter.text.contains("\n  A\n  A2\n  B with echo in D\n"),
     shorter.text,
   )
   assert_eq(
-    block(shorter.text, "section A2").lines(),
+    block(shorter.text, "section A2"),
     [
       "section A2 \{",
       "  melody in C4..B4",
@@ -890,10 +875,9 @@ fn what_no_longer_fits_the_song_is_the_scores() {
     "the score's measures, the groove A plays by its name",
   )
   assert_true(
-    block(
-      shorter.text,
-      "section A ",
-    ).ends_with("\\tempo c2. r4\n    2nd: c1\n}"),
+    block(shorter.text, "section A ")
+      .join("\n")
+      .ends_with("\\tempo c2. r4\n    2nd: c1\n}"),
     "A's 3rd time is its 2nd now",
   )
   assert_eq(
