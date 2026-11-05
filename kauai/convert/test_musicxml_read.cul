@@ -954,6 +954,23 @@ fn what_no_longer_fits_the_song_is_the_scores() {
     reordered.dropped.contains("the order the song plays its sections in, which the score changes: the sections as the score has them: the score"),
     "{reordered.dropped}",
   )
+  # B's first bar in 5/4, whose groove Push no longer steps through.
+  let time = |beats| "><attributes><time><beats>{beats}</beats><beat-type>4</beat-type></time></attributes>"
+  let longer = song_of(edited(
+    edited(EDITED_SCORE, "P1", 9, ">", time(5)),
+    "P1",
+    10,
+    ">",
+    time(4),
+  ).replace_first(
+    "<alter>1</alter>\n          <octave>4</octave>\n        </pitch>\n        <duration>480</duration>\n        <voice>1</voice>\n        <type>quarter</type>\n      </note>",
+    "<alter>1</alter>\n          <octave>4</octave>\n        </pitch>\n        <duration>480</duration>\n        <voice>1</voice>\n        <type>quarter</type>\n      </note><note><rest/><duration>480</duration><voice>1</voice><type>quarter</type></note>",
+  ))
+  assert_true(longer.text.contains("band Score"), longer.text)
+  assert_true(
+    longer.dropped.any(|d| d.starts_with("the song's band, which does not play the score (line ")),
+    "{longer.dropped}",
+  )
 }
 
 let ONE_VOICE = 'band B {

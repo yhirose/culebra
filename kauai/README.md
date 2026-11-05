@@ -170,11 +170,11 @@ own as the score shows it, one for the times it shows the same, named by its
 rehearsal mark where that changed; the song keeps its key. The band's staves
 are not read: the band plays from the chords and the grooves, and the
 measures where its staves show otherwise are said. What no longer fits is
-said and left out: a band that does not play every part of the score, or
-without which the song reads where it does not with it, gives way to one
-made for its lines, as for a score Kauai did not write; an order of sections
-the score changes, to the sections and the order the score shows; and a
-song text that does not read, to the score alone.
+said and left out. The song's band gives way to one made for the score's
+lines, as for a score Kauai did not write, where the score has a part the
+band does not play or the song reads only without the band; an order of
+sections the score changes, to the sections and the order the score shows;
+and a song text that does not read, to the score alone.
 
 ## I want to play an instrument from a MIDI controller
 
