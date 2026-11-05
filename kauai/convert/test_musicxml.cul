@@ -1304,6 +1304,11 @@ section A {
   ])
   assert_eq(ms[0].text("attributes/clef/sign"), "percussion")
   assert_eq(
+    ms[0].find("attributes/key").attrs,
+    {"print-object": "no"},
+    "no key shown on the drums",
+  )
+  assert_eq(
     drummed(ms[0]),
     [
       ["F4", nil, "eighth", "P5-I1"],
@@ -1368,6 +1373,11 @@ section A {
   let ms = part_measures(doc, "Hits")
   assert_eq(ms[0].text("attributes/clef/sign"), "percussion")
   assert_eq(ms[0].text("attributes/staff-details/staff-lines"), "1")
+  assert_eq(
+    doc.find_all("part").map(|p| p.find("measure/attributes/key").attrs),
+    [{}, {"print-object": "no"}],
+    "no key shown on the hits",
+  )
   let slashed = |m| notes(m).map(|n| [
     n.find("rest") != nil
       ? "r"

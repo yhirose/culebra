@@ -1576,12 +1576,14 @@ fn barline_els(location, style, ending, repeat) {
   inside.empty() ? [] : [node("barline", inside, {location})]
 }
 
-let key_el = |key| node(
+# The key, not shown on a staff of unpitched notes (`unpitched`).
+let key_el = |key, unpitched| node(
   "key",
   [
     leaf("fifths", fifths_of(key)),
     leaf("mode", spelled(key).minor ? "minor" : "major"),
   ],
+  unpitched ? {"print-object": "no"} : {},
 )
 let time_el = |meter| node(
   "time",
@@ -1719,7 +1721,9 @@ fn write(score) {
     let first = n == 0
     let attrs = [
       ...(first ? [leaf("divisions", WHOLE / 4)] : []),
-      ...(restate(|s| s.key) ? [key_el(m.key)] : []),
+      ...(restate(|s| s.key)
+        ? [key_el(m.key, line == drum_line || line == hits_line)]
+        : []),
       ...(restate(|s| s.meter) ? [time_el(m.meter)] : []),
       ...(first ? [clefs[line]] : []),
       ...(first && line == hits_line
