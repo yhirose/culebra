@@ -267,7 +267,6 @@ inline std::string _jit_class_meta_names(const JitObject* o) {
 //   is_value          restored: with the meta's flags
 //   methods_drop      restored: the seal recounts it from the methods
 //   refcount          the receiver's own
-//   gc_slot           the receiver's own
 //   mut_count         the receiver's own
 //   owned_idx         the receiver's own owned stack
 //   cls               restored: an instance's class, when it takes it along

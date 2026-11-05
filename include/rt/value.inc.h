@@ -311,9 +311,6 @@ struct JitArray {
   size_t size;
   size_t capacity;
   JitValue* items;
-  // Reserved unused trailing i64. Left in place to avoid perturbing the
-  // established `JitArray` IR struct layout that codegen accesses by GEP index.
-  int64_t gc_slot = -1;
 
   // Route allocation through the per-Runtime slab (rt_slab.h). Member
   // operators keep every `new JitArray()` / `delete a` call site unchanged
@@ -322,16 +319,15 @@ struct JitArray {
   static void* operator new(size_t n) { return _slab().alloc(n); }
   static void operator delete(void* p, size_t n) { _slab().free(p, n); }
 };
-static_assert(sizeof(JitArray) <= 48 && !std::is_polymorphic_v<JitArray>);
+static_assert(sizeof(JitArray) <= 32 && !std::is_polymorphic_v<JitArray>);
 
 // Refcounted Tensor handle for the JIT runtime. `impl` is a shared_ptr
 // so a graph node's `inputs` (also shared_ptr<TensorImpl>) and the JIT
 // handle can co-own a TensorImpl across both interp and JIT paths.
-// JIT-emitted IR only GEPs refcount/gc_slot — `impl` is touched from
-// C++ runtime fns only.
+// JIT-emitted IR only GEPs refcount — `impl` is touched from C++ runtime
+// fns only.
 struct JitTensor {
   int64_t refcount;
-  int64_t gc_slot = -1;
   culebra::TensorPtr impl;
 
   static void* operator new(size_t n) { return _slab().alloc(n); }
@@ -641,11 +637,9 @@ struct JitObject {
     return JitHashedKey::name(
         {/*TAG_STRING*/ 4, reinterpret_cast<int64_t>(_intern_str(name))});
   }
-  int64_t gc_slot = -1;  // see JitArray::gc_slot
   // Bumps on add/delete (not value updates). object_iter snapshots
   // this and fails-fast on per-step mismatch — matches Python dict
-  // semantics. Trailing field so existing JitObject IR layout is
-  // undisturbed.
+  // semantics.
   int64_t mut_count = 0;
   // @packable handle discriminators — set once at construction. O(1)
   // type checks for the object get/set/index helpers, avoiding a
@@ -1119,7 +1113,6 @@ struct JitPropSetIC {
 struct JitCell {
   int64_t refcount;
   JitValue value;
-  int64_t gc_slot = -1;  // see JitArray::gc_slot
 
   static void* operator new(size_t n) { return _slab().alloc(n); }
   static void operator delete(void* p, size_t n) { _slab().free(p, n); }
@@ -1719,7 +1712,6 @@ struct JitSet {
   int64_t refcount;
   std::vector<JitHashedKey> members;
   JitSetIndex* index = nullptr;
-  int64_t gc_slot = -1;
 
   static void* operator new(size_t n) { return _slab().alloc(n); }
   static void operator delete(void* p, size_t n) { _slab().free(p, n); }

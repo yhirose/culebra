@@ -2527,9 +2527,10 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_array_set_or_push(
 // after the header, in the same slab block (CPython's tuple layout): one
 // allocation, `items` pointing into it, and `capacity` fixed at `n`, since a
 // Tuple is built to its own size and never grows.
-inline size_t _jit_tuple_bytes(size_t n) {
+constexpr size_t _jit_tuple_bytes(size_t n) {
   return sizeof(JitArray) + n * sizeof(JitValue);
 }
+static_assert(_jit_tuple_bytes(2) <= 64, "a pair Tuple stays in the 64-byte slab class");
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_tuple_new(int64_t n) {
   const size_t cap = n > 0 ? static_cast<size_t>(n) : 0;
@@ -3080,7 +3081,7 @@ _culebra_parse_tensor_ctor_args(const JitValue* args, int64_t n, int64_t line,
 
 
 inline JitTensor* _culebra_jit_tensor_register(culebra::TensorPtr impl) {
-  auto* t = new JitTensor{1, -1, std::move(impl)};
+  auto* t = new JitTensor{1, std::move(impl)};
   _gc_register(t, GC_TAG_TENSOR);
   return t;
 }
