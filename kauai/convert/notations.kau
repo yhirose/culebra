@@ -79,8 +79,9 @@ section Intro {
   %
 }
 
-// A pickup, slurs, the 2nd time's chords and notes, hits, tensions, a part
-// under its bars and one in a block, and a `%` the block writes over.
+// A pickup, slurs, the 2nd time's chords and notes, hits, tensions, a
+// parameter in a tuplet, a part under its bars and one in a block, and a `%`
+// the block writes over.
 section Verse {
   melody in F4..E5
   part Pad in C4..B4
@@ -89,7 +90,7 @@ section Verse {
     2nd:        Gm7
     hits:       !x4 r x2
     2nd hits:   .
-  Eb7(b9,#11)   3[g8 f eb] d2.~
+  Eb7(b9,#11)   3[g8 \bright=1.1 f eb] d2.~
     2nd:        d1~
   F7sus4 F7/A   d2 \cresc c4 r4
     Fill:       r2 <c e g>4 r

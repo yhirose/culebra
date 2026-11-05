@@ -633,6 +633,29 @@ section A {
   )
 }
 
+# An ending played `as written` keeps the key it is written in, where `in`
+# moves its section's body.
+@test
+fn an_ending_as_written_keeps_its_key() {
+  let ms = scored('song S {
+  tempo 120
+  band B
+  melody in C4..B4
+
+  A ending 1 in D
+}
+
+section A {
+  C    c1
+  ending 1 as written {
+    G    g1
+  }
+}
+').find_all("part/measure")
+  assert_eq(ms.map(|m| m.text("attributes/key/fifths")), ["2", "0"])
+  assert_eq(notes(ms[1]).map(|n| n.text("pitch/step")), ["G"])
+}
+
 @test
 fn directions_say_how_it_plays() {
   let doc = scored('song S {

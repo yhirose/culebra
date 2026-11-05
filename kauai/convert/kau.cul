@@ -55,17 +55,6 @@ fn pitches_in(items) {
 
 let value_text = |v| "{v.value}" + ".".repeat(v.dots)
 
-# How long `items` are as written, a tuplet as long as it sounds.
-fn written_units(items) {
-  items.map(fn (it) {
-    cond {
-      it.has("items") => written_units(it.items) * it.tuplet.normal / it.tuplet.actual,
-      it.has("value") => units(it),
-      _ => 0,
-    }
-  }).sum()
-}
-
 # The longest plain note value no longer than `u`: what a tuplet without a
 # ratio is fitted into.
 fn fitted(u) {
@@ -117,9 +106,10 @@ fn put_tokens(items, low, st) {
       it.has("param") => put("\\{it.param}={it.value}"),
       it.has("direction") => put("\\{it.direction}" + (it.tempo == nil ? "" : " {tempo_text(it.tempo)}")),
       it.has("items") => {
-        let count = it.items.filter(|x| x.has("value") || x.has("items")).size()
-        let inner = written_units(it.items) * it.tuplet.actual / it.tuplet.normal
-        let short = it.tuplet.actual == count && fitted(inner) * it.tuplet.actual == inner * it.tuplet.normal
+        let count = it.items.filter(music.lasts).size()
+        # `3[` fits the notes as written into the longest value no longer.
+        let written = music.length_of(it.items)
+        let short = it.tuplet.actual == count && fitted(written) * it.tuplet.actual == written * it.tuplet.normal
         st.opening += short ? "{count}[" : "{it.tuplet.actual}:{it.tuplet.normal}["
         put_tokens(it.items, low, st)
         close("]")

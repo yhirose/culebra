@@ -6,7 +6,8 @@
 # in the order it plays, a section each time the song plays it, folded into
 # repeat signs and endings where every time through is the same. The song's
 # Kauai text goes with it, for what a score does not hold (its band, its
-# sections and the order it plays them in).
+# sections and the order it plays them in), which
+# kauai/convert/musicxml_read.cul reads back.
 
 import music from './music.cul'
 import kau from './kau.cul'
@@ -137,7 +138,7 @@ fn moved_chord(c, iv) {
   return nil if c == nil
   let root = moved_name(c.root, iv)
   let bass = c.bass == nil ? nil : moved_name(c.bass, iv)
-  {...c, symbol: root + c.quality + (bass == nil ? "" : "/{bass}"), root, bass}
+  {...c, ...music.chord(root, c.quality, bass)}
 }
 
 # --- chords ----------------------------------------------------------------------
@@ -292,35 +293,50 @@ fn harmony_el(c, offset) {
 
 # --- the song as it plays ------------------------------------------------------
 
-# Bar `b` as the song plays it the `time`th time: its chords, melody and
-# parts that time, moved by `iv` (nil: as written) and in key `key`.
-fn played_bar(b, time, iv, key) {
+# Bar `b` (a song's) as the song plays it the `time`th time: its chords,
+# melody, parts and hits.
+fn as_played(b, time) {
   let t = b.times.find(|later| later.time == time)
   let changed = t?.parts ?? []
-  let parts = [
-    ...b.parts.map(|p| changed.find(|q| q.name == p.name) ?? p),
-    ...changed.filter(|q| !b.parts.any(|p| p.name == q.name)),
-  ].filter(|p| !p.notes.empty())
+  {
+    chords: t?.chords ?? b.chords,
+    melody: t?.melody ?? b.melody,
+    parts: [
+      ...b.parts.map(|p| changed.find(|q| q.name == p.name) ?? p),
+      ...changed.filter(|q| !b.parts.any(|p| p.name == q.name)),
+    ].filter(|p| !p.notes.empty()),
+    hits: t?.hits == nil ? b.hits : t.hits.empty() ? nil : t.hits,
+  }
+}
+
+# Bar `b` as the song plays it the `time`th time, moved by `iv` (nil: as
+# written) and in key `key`.
+fn played_bar(b, time, iv, key) {
+  let v = as_played(b, time)
   let move = |items| moved_items(items, iv)
   {
     meter: b.meter,
     swing: b.swing,
     key,
     repeat: b.repeat,
-    chords: (t?.chords ?? b.chords).map(|c| moved_chord(c, iv)),
-    melody: move(t?.melody ?? b.melody),
-    parts: parts.map(|p| {name: p.name, notes: move(p.notes)}),
+    chords: v.chords.map(|c| moved_chord(c, iv)),
+    melody: move(v.melody),
+    parts: v.parts.map(|p| {name: p.name, notes: move(p.notes)}),
   }
 }
 
 # Each time the song plays a section, in order: the section's name, its bars
 # as they play that time (its ending's after its body's), how many of them
-# are its body's, its pickup, and the derived part it plays `with`.
+# are its body's, its pickup, and the derived part it plays `with`; and
+# where it comes from: the index of its line in the song's plays, which time
+# of the section's it is, its ending, and the interval `in` moves its pickup
+# by (`iv`) and each of its bars (`moves`).
 fn passes_of(score) {
   let song = score.song
   let sections = score.sections.map(|s| (s.name, s)).to_object()
   let played = {}
-  song.plays.filter(|p| !p.has("mark")).flat_map(fn (p) {
+  iota(song.plays.size()).filter(|i| !song.plays[i].has("mark")).flat_map(fn (i) {
+    let p = song.plays[i]
     let sec = sections[p.section]
     let written = sec.key ?? song.key
     let iv = interval_of(written, p.key ?? written)
@@ -328,20 +344,33 @@ fn passes_of(score) {
     let ending = p.ending == nil
       ? nil
       : sec.endings.find(|e| e.number == p.ending)
+    # An ending played as written is not moved.
+    let as_written = ending?.as_written == true
+    let ending_iv = as_written ? UNMOVED : iv
+    let ending_bars = ending?.bars ?? []
     iota(p.times).map(fn (_) {
       played[p.section] = played.get(p.section, 0) + 1
       let time = played[p.section]
-      let closing = ending == nil
-        ? []
-        : ending.bars.map(|b| ending.as_written
-          ? played_bar(b, time, UNMOVED, written)
-          : played_bar(b, time, iv, key))
+      let closing = ending_bars.map(|b| played_bar(
+        b,
+        time,
+        ending_iv,
+        as_written ? written : key,
+      ))
       {
         section: sec.name,
         bars: [...sec.bars.map(|b| played_bar(b, time, iv, key)), ...closing],
         body: sec.bars.size(),
         pickup: sec.pickup == nil ? nil : moved_items(sec.pickup.melody, iv),
         with: p.with,
+        play: i,
+        time,
+        ending: p.ending,
+        iv,
+        moves: [
+          ...repeat(sec.bars.size(), iv),
+          ...repeat(closing.size(), ending_iv),
+        ],
       }
     })
   })
@@ -1156,24 +1185,11 @@ fn direction_els(e, song) {
       "above",
       tempo_sound(song.tempo),
     )],
-    # The tempo a rit. or accel. reaches, which MusicXML has no element
-    # for, goes where Kauai reads it back.
+    # MusicXML has no element for the tempo a rit. or accel. reaches, which
+    # the song's Kauai text keeps.
     "rit" | "accel" => [direction(
       [leaf("words", "{d}."), node("dashes", [], {type: "start"})],
       "above",
-      e.mark.tempo == nil
-        ? nil
-        : node(
-          "sound",
-          [node(
-            "play",
-            [node(
-              "other-play",
-              ["{d} {tempo_text(e.mark.tempo)}"],
-              {type: "kauai"},
-            )],
-          )],
-        ),
     )],
     _ if WEDGES.has(d) => [direction(
       [node("wedge", [], {type: WEDGES[d]})],
@@ -1624,4 +1640,4 @@ fn write(score) {
     .replace_first("\n", "\n{DOCTYPE}\n")
 }
 
-export {write}
+export {write, passes_of, as_played, part_names, events_of, moved_items, moved_chord}

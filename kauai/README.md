@@ -120,14 +120,14 @@ The band's staves have the dynamics and hairpins of the bar lines, which the
 whole band plays at, each drawn where it falls and placed before the first
 note it reaches. A section played `with echo` or `with harmony` says so in
 small italics where it starts, and a song that loops says `loop` after its
-last note. A `\rit N` or `\accel N` is a rit. or accel., the tempo it
-reaches kept where Kauai reads it back.
+last note. A `\rit N` or `\accel N` is a rit. or accel.
 
 What a score has no place for (the band, its grooves and voicings, a line's
 parameters such as `\bright=`, the hits, the sections and the order the song
-plays them in, `mark` and `room`) goes with it as the song's Kauai text, in a
-`<miscellaneous-field>` named `kauai-song`, which MuseScore keeps when it
-saves the score again. Writing a compressed `.mxl` is to come.
+plays them in, `mark` and `room`, the tempo a rit. reaches) goes with it as the
+song's Kauai text, in a `<miscellaneous-field>` named `kauai-song`, which
+MuseScore keeps when it saves the score again. Writing a compressed `.mxl` is
+to come.
 [`convert/musicxml-4.0/`](convert/musicxml-4.0/) holds the schema the tests
 check every score against.
 
@@ -148,6 +148,26 @@ slur Kauai has to end where a section ends. The tests read the scores in
 [`convert/scores/`](convert/scores/): a selection of the MusicXML test suite,
 and the OpenScore *Je te veux*, which plays as `tests/kauai/jetveux.expect`
 says.
+
+A score Kauai wrote reads back as the song it carries, with its band,
+grooves, voicings, sections and lines. Each measure is set beside the score
+Kauai writes for that song: where the score shows the same, the measure is
+the song's own bar; where it shows otherwise (a note or a chord changed in
+MuseScore), it is the score's, written for the time through its section it
+is in (`2nd:`, or `1st:` where the other times play as the song does), in
+the section's key where `in` moved it, with the song's parameters and the
+tempo its rit.s reach. A time through a section that no longer fits it
+(another rehearsal mark, measure count, meter, key or swing, or a note in
+the measure before it held over where its pickup starts) is a section of its
+own as the score shows it, one for the times it shows the same, named by its
+rehearsal mark where that changed; the song keeps its key. The band's staves
+are not read: the band plays from the chords and the grooves, and the
+measures where its staves show otherwise are said. What no longer fits is
+said and left out: a band that does not play every part of the score, or
+without which the song reads where it does not with it, gives way to one
+made for its lines, as for a score Kauai did not write; an order of sections
+the score changes, to the sections and the order the score shows; and a
+song text that does not read, to the score alone.
 
 ## I want to play an instrument from a MIDI controller
 

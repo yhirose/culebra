@@ -19,6 +19,33 @@ let ARTICULATIONS = {
 # Value `v` ({value, dots}) in units.
 let units = |v| WHOLE / v.value * 2 - WHOLE / v.value / (1 << v.dots)
 
+# Whether item `it` of a song's line takes time: a note, a rest, a hit or a
+# tuplet (where a parameter has a `value` too).
+let lasts = |it| it.has("pitches") ||
+  it.has("rest") ||
+  it.has("hit") ||
+  it.has("items")
+
+# How long `items` of a song's line sound, a tuplet's as its ratio plays them.
+fn length_of(items) {
+  items.map(|it| cond {
+    it.has("items") => length_of(it.items) *
+      it.tuplet.normal /
+      it.tuplet.actual,
+    lasts(it) => units(it),
+    _ => 0,
+  }).sum()
+}
+
+# A chord ({symbol, root, quality, bass}) from its root, quality and bass
+# (nil for none), its symbol as Kauai writes them.
+let chord = |root, quality, bass| {
+  symbol: root + quality + (bass == nil ? "" : "/{bass}"),
+  root,
+  quality,
+  bass,
+}
+
 # Pitch `p` ({step, alter, octave}) as a MIDI number.
 let sounding = |p| 12 * (p.octave + 1) + PC[p.step] + p.alter
 
@@ -64,4 +91,4 @@ fn tempo_of(text) {
   }
 }
 
-export {WHOLE, QUARTER, PC, ARTICULATIONS, units, sounding, accidental, number_text, gcd, remembered, tempo_text, tempo_of}
+export {WHOLE, QUARTER, PC, ARTICULATIONS, units, lasts, length_of, chord, sounding, accidental, number_text, gcd, remembered, tempo_text, tempo_of}

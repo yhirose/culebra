@@ -14,15 +14,29 @@ fn song_of(text) {
   {text: kau.write(r.score), dropped: r.dropped, score: r.score}
 }
 
-# Song `path`'s score and that written as a MusicXML score and read back,
-# made once for the tests that read songs back.
+# A score's MusicXML text without the song's Kauai text: the score as
+# another program that left it out would have it.
+let bare = |text| Regex.replace_all(
+  "<miscellaneous-field name=\"kauai-song\">[^<]*</miscellaneous-field>",
+  text,
+  "",
+)
+
+# Song `path`'s score, that written as a MusicXML score (`xml`), and that
+# read back from what the score shows alone, made once for the tests that
+# read songs back.
 fn read_back(path) {
   READ_BACK[path] ??= fn () {
     let score = Audio.Kauai.parse_file(path)
-    {score, back: song_of(mx.write(score))}
+    let xml = mx.write(score)
+    {score, xml, back: song_of(bare(xml))}
   }()
   READ_BACK[path]
 }
+
+# A song's text as it plays without its rit.s and accel.s, which a score
+# shows without the tempo they reach.
+let steady = |text| Regex.replace_all("\\\\(rit|accel) [0-9.=]+", text, "")
 
 # The notes voices `by` play, as (pitch, start, length) in milliseconds, in
 # order.
@@ -45,15 +59,31 @@ fn line_voices(arrangement) {
 }
 
 # Every song in the repository, written as a MusicXML score and read back,
-# plays its melody and its parts as the song does, and leaves out the band's
-# staves: the song's band plays the lines the score writes, each a voice of
-# the line's name.
+# is the song as it was written, and nothing is said to be left out.
+@test
+fn every_song_reads_back_from_its_score_as_written() {
+  for path in corpus.SONGS {
+    let w = read_back(path)
+    let back = song_of(w.xml)
+    assert_eq(back.text, kau.write(w.score), path)
+    assert_eq(back.dropped, [], path)
+  }
+}
+
+# Every song in the repository, read back from what its score shows alone,
+# plays its melody and its parts as the song does (but its rit.s and
+# accel.s), and leaves out the band's staves: the song's band plays the
+# lines the score writes, each a voice of the line's name.
 @test
 fn every_song_read_back_from_its_score_plays_its_lines() {
   for path in corpus.SONGS {
     let (score, back) = (read_back(path).score, read_back(path).back)
     let heard = Audio.Kauai.new(back.text, voices: silent).events()
-    let played = corpus.events_of(path, score.arrangement)
+    let sounds = corpus.silent(score.arrangement)
+    let played = Audio
+      .Kauai
+      .new(steady(kau.write(score)), voices: sounds.voices, drums: sounds.drums)
+      .events()
     for v in line_voices(score.arrangement) {
       assert_eq(
         notes_of(heard, v.lines),
@@ -77,12 +107,13 @@ fn every_song_read_back_from_its_score_plays_its_lines() {
   }
 }
 
-# A song read from a score reads back from its own score as the same text.
+# A song read from what a score shows alone reads back from its own score,
+# shown alone, as the same text.
 @test
 fn a_song_read_from_a_score_is_its_own_scores_song() {
   for path in ["kauai/convert/notations.kau", "examples/games/retro-run/assets/cruise.kau", "examples/kauai/songs/sax.kau"] {
     let once = read_back(path).back.text
-    assert_eq(song_of(mx.write(Audio.Kauai.parse(once))).text, once, path)
+    assert_eq(song_of(bare(mx.write(Audio.Kauai.parse(once)))).text, once, path)
   }
 }
 
@@ -423,5 +454,612 @@ fn the_band_plays_single_lines_on_chips_and_the_rest_on_the_piano() {
       "  voice Horn  external Ep  plays part Horn  poly  vol 38",
       "}",
     ],
+  )
+}
+
+# --- a score Kauai wrote, edited -------------------------------------------------
+
+let EDITED = 'band Combo {
+  voice Lead  pulse     plays melody            vol 20
+  voice Echo  pulse2                            vol 9
+  voice Bass  triangle  plays roots in E2..D#3  vol 18
+  voice Alt   saw       plays part Alto         vol 10
+  Echo echoes Lead  late 1/8  level 70%
+  drum Kick   noise 120  len 1  vol 20  env 0 3 2  plays hits
+}
+
+groove A {
+  Bass  1 - - -  5 - - -  1 - - -  5 - - -
+  Kick  x... x... x... x...
+}
+
+groove Push {
+  Bass  1 - 1 -  5 - 5 -  1 - 1 -  5 - 5 -
+}
+
+song Edit {
+  tempo 120
+  band Combo
+  melody in C4..B4
+
+  A x2
+  B with echo in D
+  mark Out
+  A
+}
+
+section A {
+  pickup  g8 a
+  C     \bright=1.2 c4 d e f
+  F     f2 \rit 90 a2
+    Alto: c4 d e f
+  G7    6[c8 d e f g \bright=0.9 a] g2
+    hits: !x4 r r2
+  C     \tempo c2. r4
+    3rd: c1
+}
+
+section B {
+  groove Push
+  Am    a4 g f e
+  Dm    d2. r4
+}
+'
+
+# The score EDITED is written as: a pickup measure 0, then A's three times
+# in measures 1-4, 5-8 and 11-14 and B's in 9-10.
+let EDITED_SCORE = mx.write(Audio.Kauai.parse(EDITED))
+let EDITED_TEXT = kau.write(Audio.Kauai.parse(EDITED))
+
+# `text` with the first `from` in measure `number` of part `part` made `to`.
+fn edited(text, part, number, from, to) {
+  let (head, rest) = text.split_once("<part id=\"{part}\">")
+  let (before, measure) = rest.split_once("<measure number=\"{number}\"")
+  assert_true(measure.contains(from), "{part} measure {number} has {from}")
+  "{head}<part id=\"{part}\">{before}<measure number=\"{number}\"" +
+    measure.replace_first(from, to)
+}
+
+# The lines of song text `text` that are not lines of EDITED's.
+let new_lines = |text| text.lines().filter(|l| !EDITED_TEXT.lines().contains(l))
+
+let BAND_STAVES = "the band's staves, where the band plays otherwise (Kauai plays it from the chords and grooves)"
+
+# A measure the score shows otherwise is the score's, in the time it is in,
+# with what a score does not show of the song's bar (a parameter, the tempo
+# a rit. reaches); the times the score shows as the song plays them are the
+# song's. A bar is written as most times play it.
+@test
+fn an_edited_measure_is_the_scores_in_its_time() {
+  let second = song_of(edited(
+    EDITED_SCORE,
+    "P1",
+    6,
+    "<step>F</step>",
+    "<step>E</step>",
+  ))
+  assert_eq(new_lines(second.text), ["    2nd: e2 \\rit 90 a"])
+  assert_eq(second.dropped, [])
+  let first = song_of(edited(
+    EDITED_SCORE,
+    "P1",
+    1,
+    "<step>D</step>",
+    "<step>B</step>",
+  ))
+  assert_eq(
+    new_lines(first.text),
+    ["    1st: \\bright=1.2 c4 b e f"],
+    "the time the score changes, the others as the song plays them",
+  )
+  let moved = song_of(edited(
+    EDITED_SCORE,
+    "P1",
+    9,
+    "<step>B</step>",
+    "<step>A</step>",
+  ))
+  assert_eq(
+    new_lines(moved.text),
+    ["  Am            g4 g f e"],
+    "back in the section's key, where `in D` plays it",
+  )
+  let part = song_of(edited(
+    EDITED_SCORE,
+    "P2",
+    6,
+    "<step>F</step>",
+    "<step>G</step>",
+  ))
+  assert_eq(new_lines(part.text), ["    2nd Alto: c4 d e g"])
+  let hit = song_of(edited(
+    EDITED_SCORE,
+    "P1",
+    7,
+    "<step>C</step>",
+    "<step>D</step>",
+  ))
+  assert_eq(
+    new_lines(hit.text),
+    ["    2nd: 6[d8 d e f g \\bright=0.9 a] g2"],
+    "the hits the song's bar has, and its parameter in the tuplet",
+  )
+  let tempo = song_of(EDITED_SCORE.replace_first(
+    "<per-minute>120</per-minute>",
+    "<per-minute>100</per-minute>",
+  ))
+  assert_eq(
+    new_lines(tempo.text),
+    ["  tempo 100"],
+    "the tempo the score starts at",
+  )
+}
+
+# The band's staves show what the band plays; the band plays from the chords
+# and the grooves, and where the staves show otherwise, that is said.
+@test
+fn the_bands_staves_show_what_it_plays() {
+  let bass = song_of(edited(
+    EDITED_SCORE,
+    "P4",
+    1,
+    "<step>C</step>",
+    "<step>D</step>",
+  ))
+  assert_eq(bass.text, EDITED_TEXT)
+  assert_eq(bass.dropped, ["{BAND_STAVES}: measure 1"])
+  let chord = song_of(edited(
+    EDITED_SCORE,
+    "P1",
+    2,
+    "<root-step>F</root-step>",
+    "<root-step>G</root-step>",
+  ))
+  assert_eq(new_lines(chord.text), ["    1st: G"])
+  assert_eq(chord.dropped, ["{BAND_STAVES}: measure 2"])
+}
+
+# A time that no longer fits its section is a section of its own; a pickup
+# is played one way; and a band that does not play the score, a song text
+# that does not read, or an order the score changes, is not used.
+@test
+fn what_no_longer_fits_the_song_is_the_scores() {
+  # A's 2nd time a measure shorter, the measures after it counted again, as
+  # a score editor does.
+  let cut = Regex.replace_all(
+    "(?s)<measure number=\"7\">.*?</measure>\\s*",
+    EDITED_SCORE,
+    "",
+  )
+  let shorter = song_of(iota(
+    8,
+    15,
+  ).reduce(
+    cut,
+    |text, n| text.replace(
+      "<measure number=\"{n}\"",
+      "<measure number=\"{n - 1}\"",
+    ),
+  ))
+  let block = |text, head| text.split("\n\n").find(|b| b.starts_with(head))
+  assert_true(
+    shorter.text.contains("\n  A\n  A2\n  B with echo in D\n"),
+    shorter.text,
+  )
+  assert_eq(
+    block(shorter.text, "section A2").lines(),
+    [
+      "section A2 \{",
+      "  melody in C4..B4",
+      "  part Alto in C4..B4",
+      "  pickup  g8 a",
+      "  groove A",
+      "  C             c4 d e f",
+      "  F             f2 a",
+      "    Alto: c4 d e f",
+      "  C             \\tempo c2. r4",
+      "}",
+    ],
+    "the score's measures, the groove A plays by its name",
+  )
+  assert_true(
+    block(
+      shorter.text,
+      "section A ",
+    ).ends_with("\\tempo c2. r4\n    2nd: c1\n}"),
+    "A's 3rd time is its 2nd now",
+  )
+  assert_eq(
+    shorter.dropped,
+    [
+      "a rit. or accel. that says no tempo it reaches: measure 6",
+      "a time through a section that no longer fits it, a section of its own (its hits and parameters left out): measure 5 (A as A2)",
+    ],
+  )
+  let key = song_of(edited(
+    EDITED_SCORE,
+    "P1",
+    11,
+    "<attributes>",
+    "<attributes><key><fifths>2</fifths></key>",
+  ))
+  assert_eq(
+    new_lines(key.text).filter(|l| l.starts_with("section")),
+    ["section A2 key D \{"],
+    "in the key the score shows",
+  )
+  let coda = song_of(edited(
+    EDITED_SCORE,
+    "P1",
+    11,
+    "<rehearsal>A</rehearsal>",
+    "<rehearsal>Coda</rehearsal>",
+  ))
+  assert_true(
+    coda.text.contains("  mark Out\n  Coda\n}") &&
+      coda.text.contains("section Coda \{"),
+    coda.text,
+  )
+  let pickup = song_of(edited(
+    EDITED_SCORE,
+    "P1",
+    10,
+    "<step>A</step>",
+    "<step>B</step>",
+  ))
+  assert_eq(pickup.text, EDITED_TEXT)
+  assert_eq(
+    pickup.dropped,
+    ["a pickup the score plays otherwise from time to time, played as the first time: measure 10"],
+  )
+  let renamed = song_of(EDITED_SCORE.replace_first(
+    "<part-name>Alto</part-name>",
+    "<part-name>Flute</part-name>",
+  ))
+  assert_true(renamed.text.contains("plays part Flute") &&
+    !renamed.text.contains("Combo"))
+  assert_true(
+    renamed.dropped.contains("the song's band, which does not play the score (it plays no part Flute): a band made for its lines: the score"),
+    "{renamed.dropped}",
+  )
+  let unread = song_of(EDITED_SCORE.replace_first(
+    "song Edit \{",
+    "song Edit \{\n  bogus",
+  ))
+  assert_true(unread.text.contains("band Score"))
+  assert_true(
+    unread.dropped[0].starts_with("the song's Kauai text, which does not read (line 20: "),
+    "{unread.dropped}",
+  )
+  let reordered = song_of(edited(
+    EDITED_SCORE,
+    "P1",
+    11,
+    "<rehearsal>A</rehearsal>",
+    "<words>here</words>",
+  ))
+  assert_true(reordered.text.contains("band Combo"))
+  assert_true(
+    reordered.dropped.contains("the order the song plays its sections in, which the score changes: the sections as the score has them: the score"),
+    "{reordered.dropped}",
+  )
+}
+
+let ONE_VOICE = 'band B {
+  voice V  pulse  plays melody  vol 9
+}
+
+'
+
+# Song `song` (its song and sections) written as a score by a band of one
+# voice.
+let small = |song| mx.write(Audio.Kauai.parse(ONE_VOICE + song))
+
+# Score `text` without measure `number`, the measures after it up to `last`
+# counted again, as a score editor does.
+fn without_measure(text, number, last) {
+  let cut = Regex.replace_all(
+    "(?s)<measure number=\"{number}\">.*?</measure>\\s*",
+    text,
+    "",
+  )
+  iota(
+    number + 1,
+    last + 1,
+  ).reduce(
+    cut,
+    |t, n| t.replace("<measure number=\"{n}\"", "<measure number=\"{n - 1}\""),
+  )
+}
+
+# The lines of song text `text` from the one that starts with `head` to the
+# next blank line.
+let block = |text, head| text
+  .split("\n\n")
+  .find(|b| b.starts_with(head))
+  .lines()
+
+# A `%` says the bars before it again until the score shows it or them
+# otherwise; then the bar is written out.
+@test
+fn a_repeat_sign_says_the_bars_before_it_again_until_they_differ() {
+  let repeated = small('song R {
+  tempo 120
+  band B
+  melody in C4..B4
+
+  A
+}
+
+section A {
+  C  c4 d e f
+  %
+  G  g1
+}
+')
+  let bars = |text| block(text, "section A").slice(2, 5)
+  let own = song_of(edited(
+    repeated,
+    "P1",
+    2,
+    "<step>D</step>",
+    "<step>B</step>",
+  ))
+  assert_eq(
+    bars(own.text),
+    [
+      "  C             c4 d e f",
+      "  C             c4 b e f",
+      "  G             g1",
+    ],
+  )
+  let source = song_of(edited(
+    repeated,
+    "P1",
+    1,
+    "<step>D</step>",
+    "<step>B</step>",
+  ))
+  assert_eq(
+    bars(source.text),
+    [
+      "  C             c4 b e f",
+      "  C             c4 d e f",
+      "  G             g1",
+    ],
+  )
+  let both = song_of(edited(
+    edited(repeated, "P1", 1, "<step>D</step>", "<step>B</step>"),
+    "P1",
+    2,
+    "<step>F</step>",
+    "<step>G</step>",
+  ))
+  assert_eq(
+    bars(both.text),
+    [
+      "  C             c4 b e f",
+      "                c4 d e g",
+      "  G             g1",
+    ],
+    "both read otherwise, and otherwise from each other",
+  )
+  # A `%%` is its two bars together, written out where either of them, or
+  # either it repeats, reads otherwise.
+  let twice = small('song R {
+  tempo 120
+  band B
+  melody in C4..B4
+
+  A
+}
+
+section A {
+  C  c4 d e f
+  G  g4 a b a
+  %%
+  F  f1
+}
+')
+  let body = |text| block(text, "section A").slice(2, 7)
+  let at = |number, from, to| body(song_of(edited(
+    twice,
+    "P1",
+    number,
+    from,
+    to,
+  )).text)
+  assert_eq(
+    at(3, "<step>D</step>", "<step>B</step>"),
+    [
+      "  C             c4 d e f",
+      "  G             g4 a b a",
+      "  C             c4 b e f",
+      "  G             g4 a b a",
+      "  F             f1",
+    ],
+  )
+  assert_eq(
+    at(4, "<step>A</step>", "<step>C</step>")[2..4],
+    ["  C             c4 d e f", "  G             g4 c b a"],
+  )
+  assert_eq(
+    at(2, "<step>B</step>", "<step>C</step>")[1..4],
+    [
+      "  G             g4 a c a",
+      "  C             c4 d e f",
+      "  G             g4 a b a",
+    ],
+  )
+}
+
+# A time that no longer fits its section is a section as the score shows
+# it: in the key the score shows (the song's key the song's still), one
+# for the times it shows the same, without a pickup the measure before it
+# no longer leaves room for; and a report that is the score's own is said
+# where the measures are counted again.
+@test
+fn a_time_that_no_longer_fits_is_as_the_score_shows_it() {
+  let two_keys = small('song K {
+  tempo 120
+  band B
+  melody in C4..B4
+
+  A
+  B in D
+}
+
+section A {
+  C  c2. r4
+}
+
+section B {
+  pickup  d4
+  C  e1
+}
+')
+  let keyed = song_of(edited(
+    two_keys,
+    "P1",
+    1,
+    "<fifths>0</fifths>",
+    "<fifths>1</fifths>",
+  ))
+  assert_eq(block(keyed.text, "song"), ["song K \{", "  tempo 120", "  band B"])
+  assert_true(keyed.text.contains("\n  A2\n  B in D\n"), keyed.text)
+  assert_eq(block(keyed.text, "section A2")[0], "section A2 key G \{")
+  assert_eq(
+    block(keyed.text, "section B")[2..4],
+    ["  pickup  d4", "  C             e1"],
+  )
+  let moved = song_of(edited(
+    two_keys,
+    "P1",
+    2,
+    "<fifths>2</fifths>",
+    "<fifths>4</fifths>",
+  ))
+  assert_true(moved.text.contains("\n  A\n  B2\n}"), "no `in`: {moved.text}")
+  assert_eq(
+    block(moved.text, "section B2").slice(0, 4).filter(|l| !l.contains(" in ")),
+    ["section B2 key E \{", "  pickup  e4", "  D             f#1"],
+    "the notes as the score shows them, where `in D` moved them",
+  )
+  let folded = song_of(without_measure(
+    small('song F {
+  tempo 120
+  band B
+  melody in C4..B4
+
+  A x2
+  B
+}
+
+section A {
+  C  c1
+  F  f1
+  G  g1
+}
+
+section B {
+  C  e1
+}
+'),
+    2,
+    4,
+  ))
+  assert_true(folded.text.contains("\n  A2 x2\n  B\n"), folded.text)
+  assert_true(!folded.text.contains("A22"), folded.text)
+  # The same with a pickup, which the first time's last bar holds.
+  let led = song_of(without_measure(
+    small('song P {
+  tempo 120
+  band B
+  melody in C4..B4
+
+  A x2
+  B
+}
+
+section A {
+  pickup  g4
+  C  c1
+  F  f1
+  G  g2 r2
+}
+
+section B {
+  C  e1
+}
+'),
+    2,
+    5,
+  ))
+  assert_true(led.text.contains("\n  A2 x2\n  B\n"), led.text)
+  assert_eq(
+    block(led.text, "section A2")[2..5],
+    ["  pickup  g4", "  C             c1", "  G             g2 r"],
+  )
+  let picked = small('song P {
+  tempo 120
+  band B
+  melody in C4..B4
+
+  A x2
+}
+
+section A {
+  pickup  g4
+  C  c1
+  G  g2 r2
+}
+')
+  # The first time's last rest and the pickup in it, a half note A.
+  let over = song_of(Regex.replace_first(
+    "(?s)(<measure number=\"2\">.*?)<note>\\s*<rest/>.*?</note>\\s*<note>.*?</note>",
+    picked,
+    "$1<note><pitch><step>A</step><octave>4</octave></pitch><duration>960</duration><voice>1</voice><type>half</type></note>",
+  ))
+  Audio.Kauai.parse(over.text)
+  assert_true(over.text.contains("\n  A\n  A2\n}"), over.text)
+  assert_eq(
+    block(over.text, "section A ")[2..],
+    ["  pickup  g4", "  C             c1", "  G             g2 a", "}"],
+  )
+  assert_eq(
+    block(over.text, "section A2")[2..],
+    ["  C             c1", "  G             g2 r", "}"],
+  )
+  let ritted = without_measure(
+    small('song T {
+  tempo 120
+  band B
+  melody in C4..B4
+
+  A
+  B
+}
+
+section A {
+  C  c1
+  C  c1
+  F  \rit 90 f1
+}
+
+section B {
+  C  \tempo e1
+  C  e1
+}
+'),
+    2,
+    5,
+  )
+  let (head, rest) = ritted.split_once("<measure number=\"3\">")
+  let said = song_of(head +
+    "<measure number=\"3\"><direction><direction-type><words>rit.</words></direction-type></direction>" +
+    rest)
+  assert_true(
+    said.dropped.contains("a rit. or accel. that says no tempo it reaches: measure 2, measure 3"),
+    "{said.dropped}",
   )
 }

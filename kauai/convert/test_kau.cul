@@ -23,3 +23,11 @@ fn every_song_reads_back_from_its_written_score() {
     assert_eq(Audio.Kauai.new(text, voices: sounds.voices, drums: sounds.drums).events(), played)
   }
 }
+
+# A tuplet as many notes as its ratio says is written short, a parameter in
+# it not counted as a note.
+@test
+fn a_tuplet_with_a_parameter_in_it_is_written_short() {
+  let text = kau.write(Audio.Kauai.parse_file("kauai/convert/notations.kau"))
+  assert_true(text.contains(" 3[g8 \\bright=1.1 f eb] "), text)
+}
