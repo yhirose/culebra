@@ -229,6 +229,9 @@ of its pitch at or above `NOTE`, and each tone after it the lowest of its
 pitch above the one before. With `plays chords from C4`, `Fmaj7` is F4 A4 C5
 E5; with `plays chords rootless from E3`, `Abmaj9` is C4 Eb4 G4 Bb4.
 
+Any number of voices may play roots or chords, as a guitar and a keyboard
+both comp: each reads its own row of the groove, voiced its own way.
+
 | Option | Meaning | Default |
 |---|---|---|
 | `duty 1/8` `1/4` `1/2` `3/4` | the pulse wave's duty cycle | `1/2` |
@@ -242,7 +245,8 @@ An external voice plays each note's sound through to its end, so it takes no
 that hears it ([section 10](#10-playing-from-culebra)). It may carry parameters
 of its own as `name=value` words after its name (`external Ep bright=0.8`), a
 word and a number; Kauai hands them to the program with every note, and a
-score can change them from a note on ([Directions](#directions)).
+score can change them from a note on ([Directions](#directions)). A voice on
+a tone channel takes none.
 
 ### Derived parts
 
@@ -256,6 +260,10 @@ song chooses which one plays, section by section ([section 8](#8-songs)).
 | `V harmonizes SOURCE under m3` | for each SOURCE note, the highest tone of the chord under it (in any octave) at least the interval below it, for as long |
 
 An echo's `level` is a whole percent with its `%`: `70%`, `100%`, `150%` (louder than V's `vol`). A number without the `%`, or a fraction (`0.7`, `70.5%`), is an error.
+
+A harmony takes the chord's tones as the band's first voice that `plays
+chords` voices it, so a `rootless` one leaves the root out of the harmony
+too.
 
 Intervals are written `m2 M2 m3 M3 P4 TT P5 m6 M6 m7 M7 P8`. An echo reads
 its source across section boundaries, and in a looping song the song's first
@@ -327,11 +335,12 @@ two. A groove's bars are counted from the first bar of the section, or from
 the `groove` line that names it, and each row goes through its own bars, so
 a row of one bar plays in every bar under a row of two. Every row reads `-` as
 holding the note before and `.` as silence. A voice with no row in a groove
-is silent while it plays.
+is silent while it plays. A row is a drum's, or a voice's that plays roots or
+chords: a row for any other voice would never sound, and is an error.
 
 ### Bass rows
 
-The voice that `plays roots` reads chord degrees:
+A voice that `plays roots` reads chord degrees:
 
 | Token | The note |
 |---|---|
@@ -349,7 +358,7 @@ chord the chord table does not give a degree takes a default: 4, 7, 10 and
 
 ### Chord rows
 
-The voice that `plays chords` reads places in its voicing, counted from the
+A voice that `plays chords` reads places in its voicing, counted from the
 bottom: `1 2 3 ...` (a number past the top is the top tone), or `x` for the
 whole chord at once, which needs a `poly` voice.
 
@@ -678,7 +687,14 @@ each section or ending, and a block has exactly as many lines as its bars.
 
 A part's notes are written as a melody's are. Those without `'` or `,` are
 in the part's range: the last `part NAME in LO..HI` above the bar in the
-section, else the song's, else the melody's.
+section, else the song's, else the melody's. A tie holds a part's note into
+the part's next bar, which has to be the next bar the song plays and write
+the part.
+
+Every part the song writes needs a voice of its band that plays it, and a
+range is for a part written where it applies (a section's for one the
+section writes, the song's for one the song writes): either written for nothing would never
+be heard, so each is an error.
 
 ### Hits and breaks
 
@@ -692,13 +708,16 @@ In that bar the band plays the hits in place of its groove:
 
 | Who | On each hit |
 |---|---|
-| the voice that `plays roots` | the chord's bass note, the `1` of a bass row |
-| the voice that `plays chords` | the chord, voiced as a chord row's `x`; its top note on a voice that is not `poly` |
+| each voice that `plays roots` | the chord's bass note, the `1` of a bass row |
+| each voice that `plays chords` | the chord, voiced as a chord row's `x`; its top note on a voice that is not `poly` |
 | a drum that `plays hits` | a hit |
 | the other drums | nothing: they rest through the bar |
 
 A hit sounds for its value (`x4` a quarter), and a tie holds it on
-(`x8~ x8`). Its marks play it as they play a note: `.` half of it, `!` a level
+(`x8~ x8`), over the bar line too, into the next bar's hits (`x1~` under one
+bar and `x1` under the next is one hit, two bars long), as a tie holds a note
+on: a tie into a rest, into a bar with no hits or past the song's end is an
+error. Its marks play it as they play a note: `.` half of it, `!` a level
 louder, on the drums too; an external instrument that hears marks is told them,
 a drum's as well, so a crash can ring on under a long hit and be caught by
 the hand on a short one. Each hit takes the chord sounding at its moment, and
@@ -914,11 +933,11 @@ under.
 - a bar whose notes are not as long as its meter says, or whose chords do not share its beats evenly (`C F G` in 4/4); a bar with slashes that has other than a chord or a `/` for each beat (`C / G7` in 4/4)
 - a note, a length, a chord or a direction that does not parse; a note in capital letters reads as a chord, and is an error there; a chord quality the table does not have (`Cdim9`); a tension not in the table of [Tensions](#tensions) (`C7(10)`, `C7(b11)`), or one written twice
 - a note both sharp and flat (`c#b`), or with more than two sharps or flats
-- a mark other than a fermata on a rest, a mark on a note a tie holds on, a tie to a different note or into a rest, or a tie still open when the song ends
+- a mark other than a fermata on a rest, a mark on a note a tie holds on, a tie to a different note or into a rest, or a tie still open when the song ends; in the hits and in a part as well, and a tie into a bar that writes no hits, or not the part
 - a `(` while a slur is open, a `)` with none open, or a slur still open when the song ends
 - a tuplet without a ratio that holds other than its number of notes, or a ratio that is not two counts above zero (`2:3`)
 - a chord of one note, or notes sounding together on a voice that is not `poly`, a chord row's `x` among them
-- a part written both under its bars and in a block, a part block with other than its bars' number of lines, or a part line before any bar
+- a part written both under its bars and in a block, a part block with other than its bars' number of lines, or a part line before any bar; a part no voice of the band plays, or a range for a part the song (or, in a section, the section) never writes
 - an arpeggio on a single note, grace notes before a rest or a tied note, or a note too short for its grace notes or its roll
 - a `2nd:` line before any bar or line it could change, one with neither chords nor notes, a time the song never plays the section (`3rd:` under a section it plays twice), or a time spelt otherwise than `1st` `2nd` `3rd` `4th` ...
 - a `hits:` line of other than `x` and `r`, not as long as its bar, before any bar, or written twice under one; `plays hits` on a voice
@@ -929,18 +948,21 @@ under.
 - a `\!` with no `cresc` or `dim` going, a `cresc` or `dim` still going when the song ends, or a `\rit` or `\accel` without its tempo (`\rit 104`)
 - a parameter, on a voice or in a direction, that is not a word and a number (`bright=0.8`)
 - a tempo counted in what is no note value (`tempo 3=60`)
-- a groove, voice, drum, section, band, ending or derived part that is not defined, or a name defined twice
-- a groove row with a bar of no tokens, or of tokens that come to no note value (15 in 4/4)
+- a groove, voice, drum, section, band, ending or derived part that is not defined, or a name defined twice (a voice and a drum of one name too); `ending N` on a section with no endings
+- a word a line does not take, or a line with words past its form (`voice Lead pulse loud vol 20`, `tempo 120 140`, `section A extra {`); a parameter on a voice on a tone channel or on a noise drum
+- a song's line that says a setting twice (`tempo` on two lines), a mark or a part's range written twice in a song, a groove row or a `first` or `last` block written twice, an ending, a pickup, a voice's echo or harmony, or a `2nd:` line for the same bar or part written twice
+- a groove row with a bar of no tokens, or of tokens that come to no note value (15 in 4/4); a row for a name the band does not have, or for a voice that plays neither roots nor chords; a chord row's token other than a place, `x`, `-` or `.`
 - two noise drums hitting at the same moment, or two voices of a band on one channel
 - an external voice with an `env`, a `gap` or a `duty`; an external drum without a sound, with a `len` or an `env`, or with a `choke` of other than one name; a `choke` on a noise drum; a voice's or a drum's `vol` written as a percentage
 - no voice that plays melody, or more than one; `plays melody` followed by other than `octave up` or `down`, or `N octaves up` or `down` for N of 2 or more
 - a range that is not one octave, or that starts on a sharp or a flat
 - a `meter` whose beat is not a note value (`3/5`)
 - `>` or `<` before `N.C.`
-- an option said twice on a line of the song (`in D in E`)
+- an option said twice on a line of the song (`in D in E`), or an `xN` whose `N` is not a count above zero
+- a key that is not a pitch name with `m` for minor (`key Bbx`)
 - a `song` in a file that is used, or more than one in a file
 - an `about` in a file that is used or twice in a file; an item it does not have, one written twice or without its text, or a `year` that is not a number
-- a `voicings` name that starts with `#` or `b`, or that the chord table already has
+- a `voicings` name that starts with `#` or `b`, or that the chord table already has, or an interval of it that is not a number of semitones
 - a `room` that is not a percentage from 1% to 100%
 - a `swing` on other than `8` or `16`, a ratio that is not long to short (`3:2`), or a swing whose pairs do not fill the bar (`swing 8` in 3/8)
 

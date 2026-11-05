@@ -11,8 +11,6 @@ band Highway {
   voice Alto   external AltoSax  plays melody                              vol 60
   voice Bass   saw            plays roots in F1..E2                     vol 28  env 0 3 2  gap 1
   voice Keys   pulse          plays chords rootless from G3  duty 1/4   vol 10  env 0 4 6  gap 1
-  voice Keys2  pulse2         plays chords rootless from G3  duty 1/8   vol 8   env 0 4 6  gap 1
-  voice Bell   triangle       plays chords from C5                      vol 9   env 0 2 6  gap 1
 
   drum Kick   noise 110->40    len 4   vol 34  env 0 3 2
   drum Snare  noise 2000       len 3   vol 20  env 0 2 3
@@ -28,7 +26,6 @@ band Highway {
 groove Drive {
   Bass   1 - . 1 - . 8 . . 1 - 5 8 . > .
   Keys   . . 1 - . . 1 . . . 1 - . 1 . .
-  Keys2  . . 3 - . . 3 . . . 3 - . 3 . .
   Kick   x.....x...x.....
   Snare  ....x.......x...
   Ghost  .........x....x.
@@ -49,8 +46,6 @@ groove Drive {
 groove Shine {
   Bass   1 - . 1 - . 8 . . 1 - 5 8 . > .
   Keys   . . 1 - . . 1 . . . 1 - . 1 . .
-  Keys2  . . 3 - . . 3 . . . 3 - . 3 . .
-  Bell   1 2 3 4 2 3 4 3
   Kick   x.....x...x.....
   Snare  ....x.......x...
   Ghost  .........x....x.
@@ -71,7 +66,6 @@ groove Shine {
 groove Cruise {
   Bass   1 - - . . 1 . . 5 - - . 8 . > .
   Keys   . . 1 - . . 1 . . . 1 - . . . .
-  Keys2  . . 3 - . . 3 . . . 3 - . . . .
   Kick   x.......x.x.....
   Snare  ....x.......x...
   Ghost  .............x..
@@ -87,7 +81,6 @@ groove Cruise {
 groove Rise {
   Bass   1 - 1 - 8 - 1 - 1 - 1 - 8 - > -
   Keys   1
-  Keys2  3
   Kick   x.......x.......
   Snare  ....x.......x...
   Ghost  .......x.......x

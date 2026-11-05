@@ -9,8 +9,6 @@ band Turbo {
   voice Alto   external AltoSax  plays melody                                         vol 60
   voice Bass   saw            plays roots in G1..F#2                               vol 28  env 0 3 2  gap 1
   voice Gtr    pulse2         plays chords from G3  plays part Unison  duty 1/4    vol 9   env 0 3 4  gap 1
-  voice Brass  pulse          plays chords rootless from Bb3           duty 1/2    vol 8   env 1 4 6  gap 1
-  voice Pad    triangle       plays chords rootless from G4                        vol 7   env 6 6 12
 
   drum Kick   noise 110->40    len 4   vol 36  env 0 3 2
   drum Snare  noise 1800       len 4   vol 22  env 0 2 4
@@ -55,8 +53,6 @@ groove Street {
 groove Blaze {
   Bass   1 1 8 1 1 1 8 >
   Gtr    1 3 4 3 1 3 4 3
-  Brass  2 - - - - - - - 2 - - - - - - -
-  Pad    1
   Kick   x.....x.x.......
   Snare  ....x.......x...
   Hat    ..x.......x...xx

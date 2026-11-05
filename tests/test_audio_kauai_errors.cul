@@ -80,8 +80,8 @@ let fails = |text, message| assert_eq(error_of(text), "KauaiError: " + message)
 
 # Notes, chords and ranges.
 fails(
-  play("  melody in F#4..F5\n  T", "C c1"),
-  "line 11: a range starts on a natural note: F#4..F5",
+  play("  T", "melody in F#4..F5\n  C c1"),
+  "line 18: a range starts on a natural note: F#4..F5",
 )
 fails(play("  T", "C c#b1"), "line 18: a note is sharp or flat, not both: c#b")
 fails(play("  T", "C F G c1"), "line 18: 3 chords do not share 4 beats evenly")
@@ -294,3 +294,57 @@ fails(
   with_hits("C c1").replace("drum Kick external Kick plays hits vol 80", "drum Kick noise 120 len 1 vol 20 choke Hats"),
   "line 5: a noise drum sounds one at a time already; choke groups external drums",
 )
+
+# What is written is read, or it is an error: never left unread, never put in
+# place of what is written before it, never written for nothing.
+# A word a line does not take, or past the line's form.
+let base = play("  T", "C c1")
+fails(base.replace("pulse        plays melody", "pulse loud   plays melody"), "line 2: a voice takes no `loud`")
+fails(base.replace("external Ep  plays chords", "external Ep warm plays chords"), "line 4: a voice takes no `warm`")
+fails(base.replace("poly  vol 40", "poly x vol 40"), "line 4: a voice takes no `x`")
+fails(
+  base.replace("pulse        plays melody", "pulse bright=1 plays melody"),
+  "line 2: a voice on a tone channel plays as written and takes no parameter: bright=1 is an external instrument's",
+)
+fails(with_hits("C c1").replace("external Kick plays hits", "external Kick big plays hits"), "line 5: a drum takes no `big`")
+fails(
+  with_hits("C c1").replace("drum Kick external Kick plays hits vol 80", "drum Kick noise 120 tone=1 len 1 vol 20"),
+  "line 5: a noise drum plays as written and takes no parameter: tone=1 is an external instrument's",
+)
+fails(base.replace("  voice Ch", "  M echoes M soon late 1/8 level 50%\n  voice Ch"), "line 4: an echo takes no `soon`")
+fails(play("  T now", "C c1"), "line 11: a line that plays a section takes no `now`")
+fails(play("  T ending 1 2", "C c1"), "line 11: ending takes a word: ending ...")
+fails(play("  T x0", "C c1"), "line 11: `xN` plays it N times, N a count: x2")
+fails(play("  loop now\n  T", "C c1"), "line 11: `loop` stands alone")
+fails(play("  key Bbx\n  T", "C c1"), "line 11: a key is a pitch name, with m for minor: Eb, F#m; not Bbx")
+fails(play("  T", "melody up C4..B4\n  C c1"), "line 18: `melody in LO..HI`")
+fails(base.replace("section T \{", "section T now \{"), "line 17: a section is `section NAME \{`, or `section NAME key K \{`")
+fails(play("  T ending 1", "C c1\n  ending 1 again \{\n    C c1\n  }"), "line 19: an ending is `ending N \{`, or `ending N as written \{`")
+fails(base + "\nvoicings \{\n  wide 0 M3\n}", "line 21: a voicing's intervals are semitones over the root: M3")
+# Written twice.
+fails(play("  tempo 90\n  T", "C c1"), "line 11: the song's tempo is written twice")
+fails(base.replace("  Bs 1 5\n", "  Bs 1 5\n  Bs 5 1\n"), "line 15: row Bs is written twice")
+fails(play("  T ending 1", "C c1\n  ending 1 \{\n    C c1\n  }\n  ending 1 \{\n    C c1\n  }"), "line 22: ending 1 is written twice")
+fails(play("  T", "pickup c4\n  pickup d4\n  C c1"), "line 19: a pickup is written twice")
+fails(with_hits("C c1").replace("drum Kick external", "drum P external"), "line 5: P names a voice already, and a drum may not share it")
+fails(
+  base.replace("poly  vol 40", "poly  vol 40\n  Ch echoes M late 1/8 level 50%\n  Ch echoes M late 1/4 level 50%"),
+  "line 6: an echo for Ch is written twice",
+)
+# Written for nothing.
+fails(base.replace("  Ch x -", "  Ch x -\n  M 1 1"), "line 16: M plays neither roots nor chords, so it has no groove row to play")
+fails(base.replace("  Ch x -", "  Ch x 0"), "line 15: Ch plays `0` under the bar at line 18: a chord row is places 1 2 3 ..., x, - and .")
+fails(play("  T", "C c1\n    Fill: c1"), "line 19: no voice of B plays part Fill: give one `plays part Fill`")
+fails(play("  part Fil in C4..B4\n  T", "C c1"), "line 11: a range for part Fil, which the song never writes")
+fails(play("  T ending 2", "C c1"), "line 11: T has no endings, so no ending 2")
+# A tie in the hits or a part is a melody's: it holds into the line's next
+# bar, and only into a note.
+fails(with_hits("C c1\n  hits: x4~ r4 x2"), "line 19: a tie into a rest")
+fails(with_hits("C c1\n  hits: x1~"), "line 19: the hits: a tie at the end of the song, with no note to tie to")
+fails(with_hits("C c1\n  hits: x1~\n  C c1"), "line 19: a tie holds the hits on into a bar that has none")
+fails(with_hits("C c1\n  hits: x2~ !x2"), "line 19: a note held by a tie is not struck, and takes no marks")
+fails(with_hits("C c1\n  A: c1~\n  C c1"), "line 19: a tie holds part A on into a bar that has none")
+fails(base.replace("  Bs 1 5\n", "  Bs 1 ~\n"), "line 18: not a degree: ~")
+fails(twice("C c1\n  2nd: d1\n  2nd: e1"), "line 15: `2nd:` under one bar is written twice")
+fails(twice("C c1\n    2nd A: d1\n    2nd A: e1"), "line 15: `2nd A:` under one bar is written twice")
+fails(play("  T", "part Fill in C4..B4\n  C c1"), "line 18: a range for part Fill, which section T never writes")

@@ -144,6 +144,54 @@ assert_eq(notes(combo, "Kick").map(|n| n[0]), [0.0, 1.0, 4.0])
 assert_eq(notes(combo, "Hat").map(|n| n[0]), [4.5, 5.5])
 assert_eq(notes(combo, "Echo"), [(0.25, 2.0, 72, 5.0)])
 
+# Any number of voices play roots or chords, each its own row and voicing; in
+# a bar of hits each of them plays the hits, and a tie holds a hit over the
+# bar line, so the band strikes once and holds the chord it struck.
+let comp = Audio.Kauai.new(lines([
+  'band Comp {',
+  '  voice Lead  pulse         plays melody                    vol 20',
+  '  voice Bass  triangle      plays roots in E2..D#3          vol 30',
+  '  voice Sub   saw           plays roots in E1..D#2          vol 30',
+  '  voice Keys  pulse2        plays chords from C4            vol 10',
+  '  voice Gtr   external Gtr  plays chords rootless from E3  poly  vol 40',
+  '  drum Kick   noise 120  len 1  vol 20  plays hits',
+  '}',
+  'groove Beat {',
+  '  Bass  1 - - -',
+  '  Sub   1 . 1 .',
+  '  Keys  1 2 3 4',
+  '  Gtr   . x . x',
+  '}',
+  'song Comp {', '  tempo 120', '  band Comp', '  groove Beat', '  melody in C5..B5', '  A', '}',
+  'section A {',
+  '  C  c1',
+  '  F  r1',
+  '    hits:  x1~',
+  '  G  r1',
+  '    hits:  x2 r',
+  '}',
+]), voices: {gtr: |pitch, params| nil})
+let struck = |by| notes(comp, by).map(|n| (n[0], n[1], n[2]))
+assert_eq(struck("Bass"), [(0.0, 2.0, 48), (2.0, 3.0, 41)])
+assert_eq(struck("Sub"), [(0.0, 0.5, 36), (1.0, 0.5, 36), (2.0, 3.0, 29)])
+assert_eq(struck("Keys"), [(0.0, 0.5, 60), (0.5, 0.5, 64), (1.0, 0.5, 67), (1.5, 0.5, 72), (2.0, 3.0, 77)])
+assert_eq(struck("Gtr"), [(0.5, 0.5, 52), (0.5, 0.5, 55), (1.5, 0.5, 52), (1.5, 0.5, 55), (2.0, 3.0, 57), (2.0, 3.0, 60)])
+assert_eq(struck("Kick").map(|n| n[0]), [2.0])
+# A harmony takes the chord as the band's first chord voice voices it: here
+# rootless, so under E5 it is G4, not the C5 the second voice has.
+let harm = Audio.Kauai.new(lines([
+  'band Harm {',
+  '  voice Lead    pulse     plays melody                   vol 20',
+  '  voice Keys    pulse2    plays chords rootless from C4  vol 10',
+  '  voice Gtr     saw       plays chords from C4           vol 10',
+  '  voice Second  triangle                                 vol 10',
+  '  Second harmonizes Lead under m3',
+  '}',
+  'song Harm {', '  tempo 120', '  band Harm', '  melody in C5..B5', '  A with harmony', '}',
+  'section A {', '  C  e1', '}',
+]))
+assert_eq(notes(harm, "Second").map(|n| n[2]), [67])
+
 # A voice plays the melody octaves from where it is written, and what echoes
 # or harmonizes it follows.
 let at_octaves = fn (how) {
