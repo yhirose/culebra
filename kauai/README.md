@@ -32,8 +32,10 @@ it to a WAV file with `culebra play --wav out.wav song.kau`.
 
   Play a song with one: `culebra play --sounds kauai/sounds/soprano_sax song.kau`.
 - **Recipes**: synthesized instruments written as data, a synth brass, a synth
-  string section and an electric piano, with a `bright` knob, and a drum kit
-  (`Kick`, `Snare`, `CrossStick`, three hi-hats, two cymbals, toms). Play a
+  string section, analog leads, FM electric pianos and a vintage tine one,
+  an FM bass, clean, overdriven and distorted electric guitars, with knobs
+  such as `bright`, and a drum kit (`Kick`, `Snare`, `CrossStick`, three
+  hi-hats, two cymbals, toms, and a wave on the shore). Play a
   song with them: `culebra play --sounds kauai/recipes song.kau`.
   [`recipe.md`](recipe.md) lists them and says how to write one.
 - [`docs/guides/kauai-sounds.md`](../docs/guides/kauai-sounds.md): the sounds a

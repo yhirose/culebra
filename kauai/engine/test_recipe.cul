@@ -156,6 +156,40 @@ fn a_gain_takes_modulators_as_the_graph_does() {
   assert_eq(trem.note(69, 0.3), by_hand.render(0.3))
 }
 
+@test
+fn a_pluck_takes_modulators_as_the_graph_does() {
+  # A vibrato: a 5 Hz wave at 4 Hz added to the string's freq.
+  let bent = made({
+    recipe: 1,
+    parts: {
+      kick: {part: "noise", seed: 3},
+      lfo: {part: "wave", freq: 5},
+      depth: {part: "gain", input: "lfo", gain: 4},
+      s: {part: "pluck", input: "kick", modulators: ["depth"]},
+    },
+    out: "s",
+  })
+  let by_hand = Audio.Graph.new(rate: RATE)
+  let depth = by_hand.gain(by_hand.wave(freq: 5.0), 4.0)
+  let s = by_hand.pluck(by_hand.noise(seed: 3), freq: 440.0, modulators: [depth])
+  by_hand.output(by_hand.filter("high", by_hand.gain(s, 1.0), cutoff: 20.0))
+  assert_eq(bent.note(69, 0.3), by_hand.render(0.3))
+}
+
+@test
+fn a_drive_is_the_graph_drive_at_its_gain() {
+  # Driven at 3 times the level, then (as every note) played at the level.
+  let bent = made({
+    recipe: 1,
+    parts: {w: {part: "wave"}, d: {part: "drive", input: "w", gain: "3 * level"}},
+    out: "d",
+  })
+  let by_hand = Audio.Graph.new(rate: RATE)
+  let d = by_hand.drive(by_hand.wave(freq: 440.0), 1.5)
+  by_hand.output(by_hand.filter("high", by_hand.gain(d, 0.5), cutoff: 20.0))
+  assert_eq(bent.note(69, 0.1, 0.5), by_hand.render(0.1))
+}
+
 # A drum whose values' `on` last 0.02 s (the freq), 0.08 s (a gain) and
 # 0.05 s (the gain it plays, then its `off` of 0.1 s).
 let struck = made({
@@ -411,4 +445,6 @@ fn live_the_breath_is_the_attack_and_the_brightness_of_a_recipe_with_one() {
   struck.breath(other, 1.0)
   assert_close(peak(other.graph.render(0.5)[-441..]), 0.5 * 0.8, 0.002)
   other.graph.stop()
+  # An attack that fades away by itself, as a plucked bass's, is struck too.
+  assert_false(r.LivePlayer(r.Recipe.new(doc({on: [[0, 0], [0.01, 0.8], [2, 0.01]]}), name: "t")).legato)
 }

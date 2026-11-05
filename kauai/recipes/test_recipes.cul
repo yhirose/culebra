@@ -53,6 +53,23 @@ fn the_open_hat_rings_until_it_is_closed() {
   assert_eq(open.hit(1.0, 0.1).size(), Math.round(0.15 * open.rate))
 }
 
+# A muted stroke (`mute` 1) is its head alone: as loud at first, and still by
+# 0.1 s, where the open string rings on.
+@test
+fn a_muted_guitar_stroke_is_its_head_alone() {
+  let g = recipes.recipe("distortion_guitar")
+  let level = fn (xs, from, to) {
+    let part = xs.slice(Math.round(from * g.rate), Math.round(to * g.rate))
+    Math.sqrt(part.map(|x| x * x).sum() / part.size())
+  }
+  for pitch in [40, 60] {
+    let open = g.note(pitch, 0.5)
+    let muted = g.note(pitch, 0.5, params: {mute: 1})
+    assert_true(level(muted, 0.0, 0.03) > 0.5 * level(open, 0.0, 0.03), pitch)
+    assert_true(level(muted, 0.1, 0.3) < 0.01 * level(open, 0.1, 0.3), pitch)
+  }
+}
+
 @test
 fn a_preset_is_its_recipe_with_its_knob_set() {
   let mellow = recipes.recipe("mellow_fm_brass").note(60, 0.3)

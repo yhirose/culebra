@@ -18,11 +18,17 @@ it is made, then what it is.
   them (`ElectricPiano`, `Strings`, `Brass`, `Lead`, `Bass`, `Guitar`).
 - How it is made: `Fm` for frequency modulation, `Analog` for oscillators
   through a filter. An instrument made from recordings has none: it is the
-  instrument itself (`SopranoSax`, `AltoSax`).
+  instrument itself (`SopranoSax`, `AltoSax`). Nor has a recipe that is
+  another kind of an instrument, named for it by its age:
+  `VintageElectricPiano` is the older tine piano, though FM makes it.
 - How it sounds: for a preset, the end of its knob, `Mellow` or `Bright`
-  for `bright` and `Dry` for `chorus` at 0; for a recipe of its own that is another tone of an
+  for `bright`, `Dry` for `chorus` at 0, `Sparkling` for `sparkle` at 1 and
+  `Light` for `drive` turned down;
+  for a recipe of its own that is another tone of an
   instrument Kauai has, a word for how it differs, `Clear` for a clean, light
-  one (`ClearAnalogLead` beside `AnalogLead`).
+  one (`ClearAnalogLead` beside `AnalogLead`). A guitar is named for the amp's
+  sound it is played through, as guitarists name them: `Clean`, `Overdrive`,
+  `Distortion`.
 
 No name holds a product's, a maker's, a player's or a song's name.
 
@@ -38,7 +44,14 @@ No name holds a product's, a maker's, a player's or a song's name.
 | `fm_strings` | `external FmStrings` | a synth string section, three FM voices a hair apart and an octave over them | `bright` 0.5 (0 to 1): deeper modulation and the octave louder, at about the same loudness |
 | `mellow_fm_strings` | `external MellowFmStrings` | `fm_strings`, mellow | `bright` 0 (0 to 1) |
 | `bright_fm_strings` | `external BrightFmStrings` | `fm_strings`, bright | `bright` 1 (0 to 1) |
-| `fm_electric_piano` | `external FmElectricPiano` | the electric piano of the Kauai examples, as two FM pairs, its tone decaying faster the higher the note | `bright` 1 (0 to 2): the depth of its FM, most at the attack and settling as the note goes on |
+| `fm_electric_piano` | `external FmElectricPiano` | an FM electric piano with sparkle: two FM pairs a hair apart for its body, its tone decaying faster the higher the note, and a third with its modulator three octaves up for the sparkle, with a chorus | `bright` 1 (0 to 2): the depth of its FM, most at the attack and settling as the note goes on; `sparkle` 0.5 (0 to 1): more of the sparkle, ringing longer, and the body decaying more slowly; `chorus` 1 (0 to 1): a copy a little later, its delay swaying, at about the same loudness |
+| `sparkling_fm_electric_piano` | `external SparklingFmElectricPiano` | `fm_electric_piano`, sparkling | `sparkle` 1 (0 to 1) |
+| `vintage_electric_piano` | `external VintageElectricPiano` | a tine electric piano: an FM pair whose tone grows from near a sine, struck softly, to a bark, struck hard, and is richer toward the bass, the tine's own ring off the harmonics on the harder notes, decaying sooner the harder and the higher, with a tremolo and a chorus | `bright` 1 (0 to 2): the depth of its FM; `tremolo` 0.8 (0 to 1): how deep the swell of its loudness is; `speed` 3 (1 to 10): how many times a second it swells; `chorus` 1 (0 to 1): a copy a little later, its delay swaying |
+| `fm_bass` | `external FmBass` | an electric bass: an FM pair fed back on itself, rich in harmonics, its tone settling as the note rings on for a few seconds | `bright` 0.5 (0 to 1): deeper modulation and more feedback |
+| `clean_guitar` | `external CleanGuitar` | a clean electric guitar: a string struck by a pick, its second polarization a hair sharp, heard by two pickups (neck and middle, each taking out the harmonics with a node under it), through a clean amp and a speaker | `bright` 0.5 (0 to 1): a brighter pick and tone; `chorus` 0 (0 to 1): two copies a little later, their delays swaying; `release` 1.5 (0.1 to 4): the seconds a note rings on after it ends |
+| `overdrive_guitar` | `external OverdriveGuitar` | an overdriven guitar: a string and the same two pickups, its mids raised into an overdrive, through a speaker | `bright` 0.5 (0 to 1): a brighter pick; `drive` 1 (0 to 2): how hard it is driven, 0 near clean; `chorus` 0 (0 to 1) and `release` 1.5 (0.1 to 4): as `clean_guitar`'s |
+| `distortion_guitar` | `external DistortionGuitar` | a distorted guitar, for a lead or for chords: a string driven in two stages, its mids raised in a hill after them; a note of 0.6 s or more pushed up from a semitone below in 0.15 s (one from 0.4 s, from less far) (a choke); a vibrato that only raises the pitch, as a finger pushing the string does, from 0.35 s; an echo 0.3 s later that rings on past the note; a chorus | `bright` 0.5 (0 to 1): a brighter pick; `drive` 1 (0 to 2): both stages driven harder, 0 near clean; `vibrato` 1 (0 to 1): how deep, up to 20 cents; `choke` 1 (0 to 1): how far a long note starts below, 0 for chords; `chorus` 0.5 (0 to 1): a copy a little later, its delay swaying; `echo` 0.6 (0 to 1): how loud the echo is; `mute` 0 (0 to 1): the left hand on the strings, 1 a muted stroke (the string still in 0.03 s, the pick's chk through the amp), 0.5 about a palm mute |
+| `light_distortion_guitar` | `external LightDistortionGuitar` | `distortion_guitar`, picked softly and driven lightly | `bright` 0 (0 to 1), `drive` 0.3 (0 to 2) |
 
 A preset is its recipe with the knob's default set, so its knob still turns:
 `external MellowFmBrass bright=0.2` is `fm_brass` at 0.2.
@@ -72,6 +85,7 @@ Bass Drum is `Kick`, its Side Stick `CrossStick`.
 | `crash` | `external Crash` | a crash cymbal, darkening as it fades over 2.6 s | |
 | `tom` | `external Tom` | a tom: the head falling to its pitch, a second mode over it, and the stick | `tune` 147 (60 to 400): the head's pitch, in Hz |
 | `high_tom`, `mid_tom`, `low_tom` | `external HighTom`, `MidTom`, `LowTom` | `tom` tuned high, in the middle (as `Tom`) and low | `tune` 196, 147 and 98 |
+| `sea_wave` | `external SeaWave` | a wave on a shore, for a song's opening or close: noise through a band that rises to 1.3 kHz as the wave breaks and falls back over 5.5 s, with the foam's hiss on the break | |
 
 A drum is struck at middle C (`f` is 261.63 Hz); one that is tuned has a
 knob for it, as the toms' `tune`. A hit holds the recipe for as long as the
@@ -136,15 +150,19 @@ arguments, under the same names.
 | `noise` | | | `seed` (1) |
 | `filter` | `input` | `cutoff` (1000) | `kind`: `low`, `high` or `band` (`low`); `q` (0.707) |
 | `gain` | `input`, `modulators` (a list) | `gain` (1) | |
+| `drive` | `input` | `gain` (1) | |
 | `mix` | `inputs` (a list) | `gain` (1) | |
-| `pluck` | `input` | `freq` (`f`), `ring` (2) | |
+| `pluck` | `input`, `modulators` (a list) | `freq` (`f`), `ring` (2) | |
 | `delay` | `input`, `modulators` (a list) | `time` (0, seconds) | |
 
 A field that takes in parts holds their names. A wave's `modulators` move its
-phase, a delay's move its time and a gain's add to its gain: a slow wave
-makes a tremolo, which starts with each note, as a synthesizer's LFO in key
+phase, a delay's move its time, a gain's add to its gain and a pluck's add
+to its freq, in Hz, as a finger bends a string: a slow wave makes a tremolo
+or a vibrato, which starts with each note, as a synthesizer's LFO in key
 sync does, since each note is a graph of its own. A wave's `freq` and a
-pluck's are the note's own (`f`) unless the recipe says otherwise.
+pluck's are the note's own (`f`) unless the recipe says otherwise. A drive
+bends what comes in, times its `gain`, as an overdrive does
+(`Audio.Graph`'s `drive`).
 
 ## Values
 

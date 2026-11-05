@@ -91,6 +91,11 @@ let PARTS = {
     values: {gain: 1.0},
     make: |g, x| g.gain(x.input, gain: x.gain, modulators: x.modulators),
   },
+  drive: {
+    one: ["input"],
+    values: {gain: 1.0},
+    make: |g, x| g.drive(x.input, gain: x.gain),
+  },
   mix: {
     many: ["inputs"],
     values: {gain: 1.0},
@@ -98,8 +103,9 @@ let PARTS = {
   },
   pluck: {
     one: ["input"],
+    many: ["modulators"],
     values: {freq: "f", ring: 2.0},
-    make: |g, x| g.pluck(x.input, freq: x.freq, ring: x.ring),
+    make: |g, x| g.pluck(x.input, freq: x.freq, ring: x.ring, modulators: x.modulators),
   },
   delay: {
     one: ["input"],
@@ -818,16 +824,24 @@ class Held {
   }
 }
 
+# Whether a value's `on` holds where it ends, at half its peak or more (as
+# `env` reads it), rather than fading away by itself.
+fn holds(v, env) {
+  let vs = v.on.map(|p| Math.abs(p[1](env)))
+  vs[-1] >= 0.5 * vs.max()
+}
+
 # A recipe as `kauai live` plays it (kauai/cli/live.cul says how a player is
-# used). When the recipe's output gain has an attack, the breath is that
-# attack instead (the gain starts where its `on` ends) and turns the
-# `bright` knob from its least to its most, and a note played while another
-# is held moves it to the new pitch (legato). A recipe whose sound fades by
-# itself, as a piano's, strikes every note anew.
+# used). When the recipe's output gain has an attack that it holds, the
+# breath is that attack instead (the gain starts where its `on` ends) and
+# turns the `bright` knob from its least to its most, and a note played
+# while another is held moves it to the new pitch (legato). A recipe whose
+# sound fades by itself, as a piano's or a plucked bass's, strikes every
+# note anew.
 class LivePlayer {
   new(@recipe) {
     let out_gain = @recipe.parts[@recipe.out].values.get("gain", nil)
-    @legato = out_gain != nil && out_gain.on.size() > 1
+    @legato = out_gain != nil && out_gain.on.size() > 1 && holds(out_gain, @recipe._env(60, 1.0, 1.0, {}))
     @every = nil  # a held note's course is scheduled whole
     @_steady = @legato ? [@recipe.out] : []
     @_bright = @legato ? @recipe.knobs.get("bright", nil) : nil
