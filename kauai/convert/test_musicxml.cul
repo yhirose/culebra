@@ -24,12 +24,18 @@ let part_names = |doc| doc
 
 # --- playing a score -------------------------------------------------------------
 
-# A part's measures in the order they play, its repeats and endings taken.
-fn unfolded(measures) {
+# The order a score's measures play in, by index, as its first part's
+# `measures` say: its repeats and endings taken, and its jumps, once back to
+# the start or the segno, then through each repeat once and its last
+# ending, to the coda or Fine. Every part plays in that order.
+fn played_order(measures) {
   let out = []
+  let sound = |m, k| m.find("direction/sound[@{k}]") != nil
+  let find = |k| iota(measures.size()).find(|j| sound(measures[j], k))
   mut i = 0
   mut start = 0
   mut pass = 1
+  mut jumped = false
   while i < measures.size() {
     let m = measures[i]
     if m.find("barline[@location='left']/repeat[@direction='forward']") != nil &&
@@ -38,24 +44,34 @@ fn unfolded(measures) {
       pass = 1
     }
     let ending = m.find("barline[@location='left']/ending[@type='start']")
-    if ending != nil &&
-        !ending
-          .attrs
-          .number
-          .split(",")
-          .map(|s| to_long(s.trim()))
-          .contains(pass) {
-      while measures[i].find("barline[@location='right']/ending") == nil {
-        i += 1
+    if ending != nil {
+      mut close = i
+      while measures[close].find("barline[@location='right']/ending") == nil {
+        close += 1
       }
-      i += 1
-      continue
+      let closing = measures[close].find("barline[@location='right']/ending")
+      let last = closing.attrs.type == "discontinue"
+      let numbers = ending.attrs.number.split(",").map(|s| to_long(s.trim()))
+      if jumped ? !last : !numbers.contains(pass) {
+        i = close + 1
+        continue
+      }
     }
-    out.push(m)
+    out.push(i)
     let back = m.find("barline[@location='right']/repeat[@direction='backward']")
-    if back != nil && pass < to_long(back.attrs.get("times", "2")) {
+    if back != nil && !jumped && pass < to_long(back.attrs.get("times", "2")) {
       pass += 1
       i = start
+      continue
+    }
+    break if jumped && sound(m, "fine")
+    if jumped && sound(m, "tocoda") {
+      i = find("coda")
+      continue
+    }
+    if !jumped && (sound(m, "dacapo") || sound(m, "dalsegno")) {
+      jumped = true
+      i = sound(m, "dacapo") ? 0 : find("segno")
       continue
     }
     i += 1
@@ -72,15 +88,17 @@ fn midi_of(n) {
     to_long(p.text("alter") ?? "0")
 }
 
-# What a part strikes, as [onset in divisions, what `sound_of` hears in the
-# note (nil for none), its MIDI pitch unless said]: its grace notes a
-# sixty-fourth (30) apart before their note, as Kauai plays them.
-fn struck(part, sound_of = midi_of) {
+# What a part strikes, its measures in `order`, as [onset in divisions,
+# what `sound_of` hears in the note (nil for none), its MIDI pitch unless
+# said]: its grace notes a sixty-fourth (30) apart before their note, as
+# Kauai plays them.
+fn struck(part, order, sound_of = midi_of) {
   let out = []
   mut graces = []
   mut t = 0
   mut at = 0
-  for m in unfolded(part.find_all("measure")) {
+  let measures = part.find_all("measure")
+  for m in order.map(|i| measures[i]) {
     for n in m.find_all("note") {
       let pitch = sound_of(n)
       if n.find("grace") != nil {
@@ -134,6 +152,7 @@ fn every_score_plays_the_notes_of_its_song() {
     let (score, doc) = (written(path).score, written(path).doc)
     let names = part_names(doc)
     let parts = doc.find_all("part")
+    let order = played_order(parts[0].find_all("measure"))
     let events = corpus.events_of(path, score.arrangement)
     let voices = voice_parts(score.arrangement, score.played, names)
     assert_true(
@@ -147,7 +166,7 @@ fn every_score_plays_the_notes_of_its_song() {
         .map(|e| e.pitch)
       let written = v
         .parts
-        .flat_map(|i| struck(parts[i]))
+        .flat_map(|i| struck(parts[i], order))
         .sorted_by(|x| (x[0], x[1]))
         .map(|x| x[1])
       assert_eq(
@@ -169,7 +188,7 @@ fn every_score_plays_the_notes_of_its_song() {
     let drum = |n| n.find("rest") != nil
       ? nil
       : named[n.find("instrument").attrs.id]
-    let drummed = struck(parts[-1], drum)
+    let drummed = struck(parts[-1], order, drum)
       .sorted_by(|x| (x[0], x[1]))
       .map(|x| x[1])
     assert_eq(drummed, heard, "{path}: the drums")
@@ -590,6 +609,116 @@ section E {
     "E's first two times end the same, its third differently",
   )
   assert_eq(ms.size(), 23)
+}
+
+let JUMPS_TO = 'section A {
+  C    c2. r4
+}
+
+section B {
+  F    f1
+  G    g1
+}
+
+section C {
+  Am   a2. r4
+}
+
+section D {
+  C    c2 e
+}
+
+section P {
+  pickup  g4
+  C    c1
+}
+
+section S {
+  C    \tempo 90 c1
+}
+'
+
+let JUMP_KINDS = ["segno", "coda", "dacapo", "dalsegno", "tocoda", "fine"]
+
+# The order a score's first part shows: each measure's number and the
+# signs and jumps (the words of them) it has, a segno or a coda first.
+fn jumps_shown(doc) {
+  doc.find_all("part")[0].find_all("measure").map(fn (m) {
+    let shown = m.find_all("direction").flat_map(fn (d) {
+      let s = d.find("sound")
+      return [] if s == nil
+      let sign = d.find("direction-type/segno") ?? d.find("direction-type/coda")
+      let k = JUMP_KINDS.find(|x| s.attrs.has(x))
+      return [] if k == nil
+      ["{sign?.tag ?? d.text("direction-type/words")}={k}:{s.attrs[k]}"]
+    })
+    [m.attrs.number, ...shown]
+  })
+}
+
+# A song whose last times play again, as they are, times it played before
+# is written with a jump back: a D.C. from its start or a D.S. from a segno,
+# to its end (al Fine) or to a coda after the times played again. A jump
+# goes back where nothing would play twice: not to the pickup a song opens
+# with, and not in a song that loops.
+@test
+fn a_song_played_again_jumps_back() {
+  let song = |plays| scored("song S \{\n  tempo 120\n  band B\n  melody in C4..B4\n{plays}\n}\n\n" +
+    JUMPS_TO)
+  assert_eq(
+    jumps_shown(song("\n  A\n  B\n  A")),
+    [["1", "Fine=fine:yes"], ["2"], ["3", "D.C. al Fine=dacapo:yes"]],
+  )
+  assert_eq(
+    jumps_shown(song("\n  A\n  B\n  C\n  B\n  D")),
+    [
+      ["1"],
+      ["2", "segno=segno:segno"],
+      ["3", "To Coda=tocoda:coda"],
+      ["4", "D.S. al Coda=dalsegno:segno"],
+      ["5", "coda=coda:coda"],
+    ],
+  )
+  assert_eq(
+    jumps_shown(song("\n  A\n  B\n  A\n  B")),
+    [["1"], ["2"], ["3", "D.C.=dacapo:yes"]],
+    "back to the start and on to the end",
+  )
+  assert_eq(
+    jumps_shown(song("\n  A\n  B\n  A\n  B\n  C")),
+    [
+      ["1"],
+      ["2", "segno=segno:segno"],
+      ["3", "To Coda=tocoda:coda"],
+      ["4", "D.S. al Coda=dalsegno:segno"],
+      ["5", "coda=coda:coda"],
+    ],
+    "a coda after the bar it is jumped to from, not that bar's own",
+  )
+  assert_eq(
+    jumps_shown(song("\n  A\n  P\n  C\n  P")),
+    [
+      ["1"],
+      ["2", "segno=segno:segno", "Fine=fine:yes"],
+      ["3", "D.S. al Fine=dalsegno:segno"],
+    ],
+    "the bar before the segno holds the pickup, as the one before the D.S. does",
+  )
+  assert_eq(
+    jumps_shown(song("\n  P\n  C\n  P")).size(),
+    4,
+    "no D.C. to the pickup a song opens with",
+  )
+  assert_eq(
+    jumps_shown(song("\n  A\n  S\n  A")).size(),
+    3,
+    "nor back to a tempo the music is not in",
+  )
+  assert_eq(
+    jumps_shown(song("  loop\n\n  A\n  B\n  A")).size(),
+    4,
+    "no jump in a song that loops",
+  )
 }
 
 @test

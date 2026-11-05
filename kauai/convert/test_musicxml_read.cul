@@ -896,6 +896,43 @@ section A {
   assert_eq(raw.dropped, [])
 }
 
+# A score Kauai writes with a jump back reads as the song's order, its segno,
+# coda and words being the jumps it reads, not something left out.
+@test
+fn a_jump_back_reads_as_the_order_it_plays() {
+  let raw = song_of(bare(mx.write(Audio.Kauai.parse(ONE_VOICE +
+    'song S {
+  tempo 120
+  band B
+  melody in C4..B4
+
+  A
+  B
+  C
+  B
+  D
+}
+
+section A {
+  C   c1
+}
+
+section B {
+  F   f1
+}
+
+section C {
+  G   g1
+}
+
+section D {
+  C   c1
+}
+'))))
+  assert_true(raw.text.contains("\n  A\n  B\n  C\n  B\n  D\n}"), raw.text)
+  assert_eq(raw.dropped, [])
+}
+
 # A time that no longer fits its section is a section of its own; a pickup
 # is played one way; and a band that does not play the score, a song text
 # that does not read, or an order the score changes, is not used.

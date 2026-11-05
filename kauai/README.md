@@ -118,9 +118,14 @@ section that are all the same, band and all, are written once in repeat
 signs. Times that differ only toward their end have first and second endings
 from the bar where they start to differ (or from the section's own endings,
 where those come first), as long as at least half of the section's body
-stays in the repeat signs; any other time is written out. A pickup that
-starts the song is a short first bar, and a later one goes into the rests at
-the end of the bar before it.
+stays in the repeat signs; any other time is written out. Where the song's
+last times through play again, as they are, times it played before, the
+score goes back for them, wherever that leaves out the most measures: a
+D.C. to the start or a D.S. to a segno, then to the end (al Fine) or to a
+coda after them (al Coda). A song that loops is written out, and so is a
+D.C. to a pickup the song opens with, which the bar before would hold too.
+A pickup that starts the song is a short first bar, and a later one goes
+into the rests at the end of the bar before it.
 
 The band's staves have the dynamics and hairpins of the bar lines, which the
 whole band plays at, each drawn where it falls and placed before the first

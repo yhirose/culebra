@@ -106,6 +106,10 @@ let MINOR = [
 let NO_TEMPO = "a rit. or accel. that says no tempo it reaches"
 # Words for a rit. or an accel.
 let TEMPO_CHANGES = ["rit.", "rit", "ritard.", "rall.", "accel."]
+# Whether <sound> `s` makes a jump or names where one goes, which the sign
+# or the words beside it show.
+let JUMPS = ["segno", "coda", "dalsegno", "dacapo", "tocoda", "fine"]
+let jumps_in = |s| s != nil && JUMPS.any(|k| s.attrs.has(k))
 let CAPITALS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 let ALNUM = CAPITALS + CAPITALS.lower() + "0123456789"
 
@@ -424,7 +428,8 @@ fn read_measures(part, report, hits = false) {
           report(
             "a segno or a coda sign",
             where,
-          ) if c.find("segno") != nil || c.find("coda") != nil
+          ) if (c.find("segno") != nil || c.find("coda") != nil) &&
+            !jumps_in(c.find("sound"))
           jumps(c.find("sound"), bar)
         },
         "sound" => jumps(c, bar),
@@ -577,6 +582,7 @@ fn direction_items(d, where, report) {
     "words" => {
       let w = el.text().trim().lower()
       cond {
+        jumps_in(d.sound) => [],
         w.starts_with("swing") || w == "straight" => [],
         w == "a tempo" => [{direction: "tempo", tempo: nil}],
         TEMPO_CHANGES.contains(w) => {
@@ -591,7 +597,7 @@ fn direction_items(d, where, report) {
     },
     "rehearsal" | "dashes" => [],
     "segno" | "coda" => {
-      report("a segno or a coda sign", where)
+      report("a segno or a coda sign", where) if !jumps_in(d.sound)
       []
     },
     "octave-shift" => throw "kauai convert: {where}: an octave shift (8va) is not read yet",

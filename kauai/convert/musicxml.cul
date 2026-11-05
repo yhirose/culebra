@@ -4,7 +4,8 @@
 # band's that plays its grooves, echoes and harmonies, and a drum set for
 # its drums; the chords are <harmony> over the melody. The song is written
 # in the order it plays, a section each time the song plays it, folded into
-# repeat signs and endings where every time through is the same. The song's
+# repeat signs and endings where every time through is the same, and into a
+# D.C. or D.S. where its last times play earlier ones again. The song's
 # Kauai text goes with it, for what a score does not hold (its band, its
 # sections and the order it plays them in), which
 # kauai/convert/musicxml_read.cul reads back.
@@ -1367,10 +1368,78 @@ fn fold_of(passes, spans, rendered, tempos, i, j) {
   {cut, groups}
 }
 
+# Passes `from` to `to` (not that one) in the runs that fold, each {i,
+# last, fold}: passes `i` to `last`, and how they fold (nil for one alone).
+fn blocks_of(passes, spans, rendered, tempos, from, to) {
+  let out = []
+  mut i = from
+  while i < to {
+    let last = iota(i + 1, to)
+      .filter(|j| fold_of(passes, spans, rendered, tempos, i, j) != nil)
+      .reduce(i, Math.max)
+    let fold = last == i
+      ? nil
+      : fold_of(passes, spans, rendered, tempos, i, last)
+    out.push({i, last, fold})
+    i = last + 1
+  }
+  out
+}
+
+# The D.C. or D.S. that leaves out the most measures, nil for none: the
+# passes from `t` on played again from block `from` of those before them
+# (`blocks`), `count` blocks through as each was played last; then to the
+# end (al Fine) or to the passes after, a coda (`coda`, their blocks). A
+# block played again is its last time's measures, as after a jump a repeat
+# is played once and the last ending taken. The music goes back to where
+# it came from: the same section, at the same tempo. A D.C. is not to a
+# song that opens with a pickup, which the bar before it holds too.
+fn jump_of(passes, spans, rendered, tempos) {
+  let drawn = |q| spans[q].map(|mi| rendered[mi])
+  let saved = |t, count| iota(t, t + count).map(|q| spans[q].size()).sum()
+  mut best = nil
+  for t in iota(1, passes.size()) {
+    continue if spans[t].empty()
+    let blocks = blocks_of(passes, spans, rendered, tempos, 0, t)
+    for from in iota(blocks.size()) {
+      let first = blocks[from]
+      continue if from == 0 && passes[0].pickup != nil
+      continue if spans[first.i].empty() ||
+        tempos[spans[first.i][0]] != tempos[spans[t][0]]
+      # How many blocks from `from` the passes from `t` play again.
+      let most = Math.min(blocks.size() - from, passes.size() - t)
+      let count = iota(most).iter().take_while(fn (k) {
+        let q = blocks[from + k].last
+        !spans[t + k].empty() &&
+          passes[t + k].section == passes[q].section &&
+          drawn(t + k) == drawn(q)
+      }).count()
+      continue if count == 0
+      let rest = t + count
+      let ends = rest == passes.size()
+      # A coda needs a block left to jump over.
+      continue if !ends && from + count == blocks.size()
+      continue if best != nil && saved(t, count) <= saved(best.t, best.count)
+      best = {
+        t,
+        blocks,
+        from,
+        count,
+        coda: ends
+          ? nil
+          : blocks_of(passes, spans, rendered, tempos, rest, passes.size()),
+      }
+    }
+  }
+  best
+}
+
 # The measures as the score writes them, in order: each with the barlines
-# around it, and the measures the music comes into it from (-1 at the start),
-# which say what the measure has to restate.
-fn layout(passes, measures, rendered, tempos) {
+# around it, the measures the music comes into it from (-1 at the start),
+# which say what the measure has to restate, and the jump it starts or ends
+# with: a segno or the coda it is, or a D.C. or D.S., To Coda or Fine. A
+# song that loops is written without a jump.
+fn layout(passes, measures, rendered, tempos, loops) {
   # Each pass's measures.
   let spans = iota(passes.size()).map(|q| iota(measures.size())
     .filter(|mi| measures[mi].pass == q)
@@ -1386,67 +1455,117 @@ fn layout(passes, measures, rendered, tempos) {
       mut closing: nil,
       mut backward: 0,
       mut style: nil,
+      mut sign: nil,
+      mut jump: nil,
     }
     out.push(o)
     prev = mi
     o
   }
-  put(0, [-1]) if measures[0].at < 0
-  mut i = 0
-  while i < passes.size() {
-    let last = iota(i + 1, passes.size())
-      .filter(|j| fold_of(passes, spans, rendered, tempos, i, j) != nil)
-      .reduce(i, Math.max)
-    let fold = last == i
-      ? nil
-      : fold_of(passes, spans, rendered, tempos, i, last)
-    let k = last - i + 1
-    if fold == nil {
-      for mi in spans[i] {
-        put(mi, [prev])
-      }
-      out[-1].style = "light-light" if !spans[i].empty()
-    } else {
-      # The body in repeat signs (the whole pass when every time is the
-      # same), which the music comes back into from where each time but the
-      # last ends; then each ending, written for the times it plays.
-      let groups = fold.groups
-      let body = groups.empty() ? spans[i] : spans[i][..fold.cut]
-      let tail = |g| spans[g[0]][fold.cut..]
-      let ends = groups.empty()
-        ? [body[-1]]
-        : groups.slice(0, groups.size() - 1).map(|g| tail(g)[-1])
-      let first = put(body[0], [prev, ...ends])
-      first.forward = true
-      for mi in body.slice(1, body.size()) {
-        put(mi, [prev])
-      }
-      out[-1].backward = k if groups.empty()
-      let body_end = body[-1]
-      for n, g in groups.enumerate() {
-        let t = tail(g)
-        let number = g.map(|q| "{q - i + 1}").join(", ")
-        let start = put(t[0], [body_end])
-        start.ending = number
-        for mi in t.slice(1, t.size()) {
+  # Writes `blocks`, giving the out index each starts at.
+  let write_blocks = fn (blocks) {
+    blocks.map(fn (bl) {
+      let at = out.size()
+      let (i, last, fold) = (bl.i, bl.last, bl.fold)
+      let k = last - i + 1
+      if fold == nil {
+        for mi in spans[i] {
           put(mi, [prev])
         }
-        let last_bar = out[-1]
-        if n < groups.size() - 1 {
-          last_bar.closing = {number, type: "stop"}
-          last_bar.backward = k
-        } else {
-          last_bar.closing = {number, type: "discontinue"}
-          last_bar.style = "light-light"
+        out[-1].style = "light-light" if !spans[i].empty()
+      } else {
+        # The body in repeat signs (the whole pass when every time is the
+        # same), which the music comes back into from where each time but
+        # the last ends; then each ending, written for the times it plays.
+        let groups = fold.groups
+        let body = groups.empty() ? spans[i] : spans[i][..fold.cut]
+        let tail = |g| spans[g[0]][fold.cut..]
+        let ends = groups.empty()
+          ? [body[-1]]
+          : groups.slice(0, groups.size() - 1).map(|g| tail(g)[-1])
+        let first = put(body[0], [prev, ...ends])
+        first.forward = true
+        for mi in body.slice(1, body.size()) {
+          put(mi, [prev])
+        }
+        out[-1].backward = k if groups.empty()
+        let body_end = body[-1]
+        for n, g in groups.enumerate() {
+          let t = tail(g)
+          let number = g.map(|q| "{q - i + 1}").join(", ")
+          let start = put(t[0], [body_end])
+          start.ending = number
+          for mi in t.slice(1, t.size()) {
+            put(mi, [prev])
+          }
+          let last_bar = out[-1]
+          if n < groups.size() - 1 {
+            last_bar.closing = {number, type: "stop"}
+            last_bar.backward = k
+          } else {
+            last_bar.closing = {number, type: "discontinue"}
+            last_bar.style = "light-light"
+          }
         }
       }
-    }
-    i = last + 1
+      at
+    })
+  }
+  put(0, [-1]) if measures[0].at < 0
+  let jump = loops ? nil : jump_of(passes, spans, rendered, tempos)
+  if jump == nil {
+    write_blocks(blocks_of(passes, spans, rendered, tempos, 0, passes.size()))
+    return out
+  }
+  let starts = write_blocks(jump.blocks)
+  let back = out[-1]
+  let target = out[starts[jump.from]]
+  target.enter.push(back.mi)
+  let capo = jump.from == 0
+  target.sign = capo ? nil : "segno"
+  let through = jump.from + jump.count
+  # Where the music leaves the blocks played again: the last measure of
+  # the last one.
+  let leave = through == jump.blocks.size() ? back : out[starts[through] - 1]
+  let al = cond {
+    jump.coda != nil => " al Coda",
+    leave == back => "",
+    _ => " al Fine",
+  }
+  back.jump = {
+    kind: capo ? "dacapo" : "dalsegno",
+    text: (capo ? "D.C." : "D.S.") + al,
+  }
+  if jump.coda != nil {
+    leave.jump = {kind: "tocoda", text: "To Coda"}
+    prev = leave.mi
+    out[write_blocks(jump.coda)[0]].sign = "coda"
+  } else if leave != back {
+    leave.jump = {kind: "fine", text: "Fine"}
   }
   out
 }
 
 # --- the score -----------------------------------------------------------------
+
+# The segno or the coda a measure starts with, by its name.
+let sign_el = |name| direction(
+  [node(name, [])],
+  "above",
+  node("sound", [], name == "segno" ? {segno: name} : {coda: name}),
+)
+
+# The jump a measure ends with ({kind, text}), as its words say it and
+# <sound> makes it: a D.C., to the segno or the coda, or Fine.
+fn jump_el(jump) {
+  let sound = match jump.kind {
+    "dacapo" => {dacapo: "yes"},
+    "dalsegno" => {dalsegno: "segno"},
+    "tocoda" => {tocoda: "coda"},
+    _ => {fine: "yes"},
+  }
+  direction([leaf("words", jump.text)], "above", node("sound", [], sound))
+}
 
 fn barline_els(location, style, ending, repeat) {
   let inside = [
@@ -1581,7 +1700,7 @@ fn write(score) {
       )),
     }
   })
-  let order = layout(passes, measures, rendered, tempos_at(measures))
+  let order = layout(passes, measures, rendered, tempos_at(measures), song.loop)
   # An ending names its chords where it starts, which only the layout knows.
   for o in order.filter(|o| o.ending != nil) {
     rendered[o.mi].lines[0] = content_of(measures, o.mi, 0, passes, song, true)
@@ -1649,8 +1768,10 @@ fn write(score) {
         ...left,
         ...(attrs.empty() ? [] : [node("attributes", attrs)]),
         ...heads,
+        ...(line == 0 && o.sign != nil ? [sign_el(o.sign)] : []),
         ...rendered[o.mi].lines[line],
         ...(last && line == 0 && song.loop ? [remark_el("loop")] : []),
+        ...(line == 0 && o.jump != nil ? [jump_el(o.jump)] : []),
         ...right,
       ],
       number,
