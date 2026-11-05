@@ -5,9 +5,11 @@
 # frames (10 ms), level (dB), vib (cents peak to peak), from, to, ...}),
 # `inst.lib_in[i]` and `inst.lib_out[i]` how it is entered and left ("rest",
 # "tongue", or a slur's kind: "up leap", "up step", "down leap", "down step",
-# "same", "legato"), `inst.lib_dip[i]` how far its loudness falls inside it
-# (dB), `inst.lib_head_dip[i]` and `inst.lib_tail_dip[i]` at its start and its
-# end, `inst.attack_of[i]` its attack (or nil), `inst.lib_louder` how much
+# "same", "legato"), `inst.judged(i, mt, ends)` how far the frames a note of
+# mt frames plays of it go under and over the level it holds ({under, over},
+# dB; `ends`, the note ends its phrase), `inst.lib_head_dip[i]` and
+# `inst.lib_tail_dip[i]` how far its first and last frames fall,
+# `inst.attack_of[i]` its attack (or nil), `inst.lib_louder` how much
 # louder the recorded notes' levels read than a note's asked for,
 # `inst.vibrato_wanted(v)` the vibrato (cents peak to peak) a note asks of
 # the note it borrows (or nil), `inst.slur_kind(semitones)` a slur's kind.
@@ -42,8 +44,10 @@
 #                tongued after it); a phrase's first note may follow either
 #   no_attack    a phrase's first note or a tongued one without an attack of
 #                its own
-#   dip_from,    a dip inside it (a breath or the tongue): the dB it may fall,
-#   dip_db       and beyond that the dB that cost 1
+#   dip_from,    a dip in what the note plays of it (a breath or the tongue,
+#   dip_db       or its release played before a note that follows): the dB it
+#                may fall under the level held, and beyond that the dB that
+#                cost 1
 #   crisp,       how much a start that is not crisp costs, for a note not
 #                asked to begin softly (0, off: a soprano's "poa", a soft
 #                start that fills out, is its own; an alto's tongued note
@@ -53,10 +57,11 @@
 #   round_from,  and beyond that the frames that cost 1; and how round its
 #   round_db     attack may be (dB under the same harmonics 70 ms on), and
 #                beyond that the dB that cost 1
-#   crest_from,  a peak inside it (a puff of breath or a thump at its start):
-#   crest_db     the dB its loudest frame may stand over its level, and
-#                beyond that the dB that cost 1; the level asked is set by
-#                the note's middle, so a peak plays that much over it
+#   crest_from,  for a note not slurred into, a peak in what it plays of the
+#   crest_db     recording (a puff of breath or a thump at its start): the dB
+#                it may stand over the level held, and beyond that the dB that
+#                cost 1, dearer than a semitone: the level asked is set by the
+#                level held, so a peak plays that much over it
 #   edge_from,   for a slur in or out, a recording that dips at its start or
 #   edge_db      at its end (`inst.lib_head_dip[i]`, `inst.lib_tail_dip[i]`:
 #                one that began after a break, or faded): the dB it may fall,
@@ -80,8 +85,8 @@ let CHOICE = {
   no_attack: 1.5,
   dip_from: 3.0,
   dip_db: 3.0,
-  crest_from: 8.0,
-  crest_db: 3.0,
+  crest_from: 9.0,
+  crest_db: 0.5,
   edge_from: 10.0,
   edge_db: 3.0,
   crisp: 0.0,
@@ -129,18 +134,26 @@ fn borrow_for(inst, notes, k, before) {
   let way_out = slurred_out
     ? inst.slur_kind(notes[k + 1].semi - v.semi)
     : v.to
+  # How far what the note plays of a recording goes under and over the level
+  # it holds (a breath or the tongue inside it, its release where it is
+  # played; a puff or a thump): a note that ends its phrase plays a release.
+  let ends = v.to == "rest" || v.to == "open"
   let cost = fn (i) {
     let e = inst.lib.notes[i]
+    let played = inst.judged(i, mt, ends)
     let ratio = Math.log(e.frames * 1.0 / mt) / Math.log(2.0)
     mut c = w.pitch * Math.abs(e.semi - v.semi) +
       (ratio >= 0.0 ? w.squeeze * ratio : -w.stretch * ratio) +
       Math.abs(e.level - want_level) / w.level_db +
       way_cost(w, inst.lib_in[i], way_in) +
       way_cost(w, inst.lib_out[i], way_out) +
-      Math.max(0.0, inst.lib_dip[i] - w.dip_from) / w.dip_db +
-      Math.max(0.0, inst.lib_crest[i] - w.crest_from) / w.crest_db
+      Math.max(0.0, played.under - w.dip_from) / w.dip_db
+    # A thump or a puff comes with a struck start; slurred into, a rise is the
+    # take's own swell.
     if slurred_in {
       c += Math.max(0.0, inst.lib_head_dip[i] - w.edge_from) / w.edge_db
+    } else {
+      c += Math.max(0.0, played.over - w.crest_from) / w.crest_db
     }
     if slurred_out {
       c += Math.max(0.0, inst.lib_tail_dip[i] - w.edge_from) / w.edge_db

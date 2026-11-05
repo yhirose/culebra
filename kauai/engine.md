@@ -70,7 +70,7 @@ These six are required. The rest have defaults (`DEFAULTS` in
 - `level_db`: the cost of loudness that differs from the one asked
 - `slur_other`, `slur_none`, `tongue_slur`, `rest_tongue`: the cost of a join that does not match the note's entry and exit
 - `same_take`: a bonus for the take that followed the previous borrowed note in the recording, so one player sounds through a slur
-- `crest_from`, `crest_db`: the cost of a note whose loudest frame stands far over its level (a puff of breath at its start), since the loudness asked is set by its middle
+- `crest_from`, `crest_db`: for a note not slurred into, the cost of a peak in what the note plays of the recording over the level it holds (a puff of breath at its start), by default 2 per dB from 9 dB; slurred into, a rise is the take's own swell and costs nothing
 - `edge_from`, `edge_db`: for a slur in or out, the cost of a recording that dips far at its start or its end (one that began after a break, or faded); the dip stays in the note and is heard as a gap in the slur, while a slur's own small dip (up to 10 dB) costs nothing
 - `crisp` (0, off): the cost of a start that is not crisp (frames to come within 3 dB of its level, and how round its attack is), for a note not asked to begin softly. The soprano's soft start, its "poa", is its own and stays off; the alto's tongued notes begin crisply (`1`)
 

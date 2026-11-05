@@ -438,22 +438,22 @@ class Instrument {
       e.rec &&
       Math.abs(a.t0 - e.t0) < 0.006))
 
-    # How far each library note's loudness falls under its median away from its
-    # first and last 60 ms (a breath or the tongue inside it, as written down).
-    @lib_dip = iota(@lib.notes.size()).map(fn (i) {
-      let e = @lib.notes[i]
+    # The median of each library note's loudness (dB).
+    @lib_med = iota(@lib.notes.size()).map(|i| @note_db(i).sorted()[@lib.notes[i].frames / 2])
+
+    # Where each library note's release begins: its last frame within 3 dB of
+    # the median of its loudness. A long note's steady part ends there
+    # (steady_to), and so does what a note filled out plays of it.
+    @lib_held = iota(@lib.notes.size()).map(fn (i) {
       let ds = @note_db(i)
-      let med = ds.sorted()[ds.size() / 2]
-      let inner = iota(6, e.frames - 6)
-      inner.empty() ? 0.0 : inner.map(|j| med - ds[j]).max()
+      let held = iota(ds.size()).filter(|j| ds[j] >= @lib_med[i] - 3.0)
+      held.empty() ? ds.size() - 1 : held[-1]
     })
 
-    # How far each library note's loudest frame stands over its level (the
-    # median of its middle, which the loudness asked is set to): a puff of
-    # breath or a thump at its start, 20 dB over, would play 20 dB over what
-    # the song asked.
-    @lib_crest = iota(@lib.notes.size()).map(|i| @note_db(i).max() -
-      @lib.notes[i].level)
+    # Each library note's loudness read for judged(), and the extremes of the
+    # own middle a note filled out plays of it: made when first asked.
+    @profile_cache = @lib.notes.map(|_| nil)
+    @middle_cache = @lib.notes.map(|_| nil)
 
     # How far each library note's first and last JOIN_NEAR frames fall under
     # its level: a slur into a recording that began after a break, or out of
@@ -468,20 +468,25 @@ class Instrument {
       @lib.notes[i].level - ds.slice(Math.max(0, ds.size() - JOIN_NEAR), ds.size()).min()
     })
 
-    # Long notes' steady parts, for a note longer than the one it borrows: the
-    # frames from 150 ms in to 100 ms before the end, cut at the vibrato's
-    # upward zero crossings (its pitch's mean over 30 ms less its mean over
-    # 210 ms), so pieces join where their vibratos are in step.
-    @steady = iota(@lib.notes.size()).filter(|i| @lib.notes[i].frames >=
-      40 &&
-      @lib_dip[i] <= 6.0)
-
     @ups_cache = @lib.notes.map(|_| nil)
+
+    # Long notes' steady parts, for a note longer than the one it borrows: the
+    # frames from 150 ms in to where the release begins (steady_to), cut at
+    # the vibrato's upward zero crossings (its pitch's mean over 30 ms less its
+    # mean over 210 ms), so pieces join where their vibratos are in step; a
+    # note with a breath or the tongue inside that part (a fall of over 6 dB
+    # under its median) gives none.
+    @steady = iota(@lib.notes.size()).filter(fn (i) {
+      let e = @lib.notes[i]
+      let ds = @note_db(i)
+      let part = iota(15, @steady_to(i))
+      e.frames >= 40 && (part.empty() || part.map(|j| @lib_med[i] - ds[j]).max() <= 6.0)
+    })
 
     @start_cache = @lib.notes.map(|_| nil)
 
     # A library note's own average over its steady part (from 150 ms in to
-    # 100 ms before its end, or its middle half when short): the loudness (dB)
+    # where its release begins, or its middle half when short): the loudness (dB)
     # and each harmonic's log. A piece of another note filling a note's middle
     # keeps its own moves but takes the borrowed note's averages: the note keeps
     # one timbre and one level through its pieces, rather than changing vowel
@@ -563,7 +568,7 @@ class Instrument {
     let e = @lib.notes[i]
     let m = e.frames
     let dbs = @note_parts(i).db
-    let med = dbs.sorted()[m / 2]
+    let med = @lib_med[i]
     let at = iota(Math.min(e.gains, 80)).find(fn (k) {
       let x = Math.clamp((k - 5) / 10.0, 0.0, m - 1.0)
       let j = Math.floor(x)
@@ -609,7 +614,13 @@ class Instrument {
     let mean_of = |a, b| c[Math.max(0, a)..Math.min(m, b)].sum() /
       Math.max(1, Math.min(m, b) - Math.max(0, a))
     let sw = iota(m).map(|j| mean_of(j - 1, j + 2) - mean_of(j - 10, j + 11))
-    iota(16, m - 10).filter(|j| sw[j - 1] < 0.0 && sw[j] >= 0.0)
+    iota(16, @steady_to(i)).filter(|j| sw[j - 1] < 0.0 && sw[j] >= 0.0)
+  }
+
+  # Where library note i's steady part ends: where its release begins, and
+  # 100 ms before its end at the latest.
+  steady_to(i) {
+    Math.min(@lib.notes[i].frames - 10, @lib_held[i])
   }
 
   ups_of(i) {
@@ -621,7 +632,7 @@ class Instrument {
     if @steady_means_cache[i] == nil {
       let e = @lib.notes[i]
       let a = e.frames > 25 ? 15 : e.frames / 4
-      let b = e.frames > 25 ? e.frames - 10 : Math.max(a + 1, e.frames * 3 / 4)
+      let b = Math.max(a + 1, e.frames > 25 ? @steady_to(i) : e.frames * 3 / 4)
       let js = iota(a, b)
       let dbs = @note_parts(i).db
       let shapes = @note_shapes(i)
@@ -760,6 +771,126 @@ class Instrument {
     slur_kind(d)
   }
 
+  # Whether a note of mt frames borrowing library note i is filled out with
+  # pieces of others: longer than it and than 250 ms.
+  fills(i, mt) {
+    mt > @lib.notes[i].frames && mt > 25
+  }
+
+  # Which of library note i's frames a note of mt frames plays (borrow_frames
+  # is made of these): `head`, from its start; `middle`, its own steady part
+  # in a note filled out (to its vibrato's last upward crossing before the
+  # release); and its `tail` frames, read from `from` to its end (tail_x). A
+  # note that ends its phrase (`ends`) ends with the recording's release,
+  # from where it begins, read faster; one another follows ends with the
+  # recording's last frames. Squeezed, the head is the note less its tail (up
+  # to 100 ms, a third of the note at most); stretched (a short note), the
+  # head is all of it; filled out, the head is up to 150 ms and the tail up to
+  # 100 ms, half of it each at most.
+  own_spans(i, mt, ends) {
+    let ml = @lib.notes[i].frames
+    let ending = |tail| {tail: tail, from: ends ? Math.clamp(@lib_held[i] + 1, ml / 2, ml - tail) : ml - tail}
+    if mt <= ml {
+      let tail = Math.min(10, mt / 3)
+      return {head: mt - tail, middle: nil, ...ending(tail)}
+    }
+    if !@fills(i, mt) {
+      return {head: ml, middle: nil, tail: 0, from: ml}
+    }
+    let head = Math.min(15, ml / 2)
+    {head: head, middle: @own_middle(i), ...ending(Math.min(10, ml - head))}
+  }
+
+  # The own steady part a note filled out plays of library note i (to its
+  # vibrato's last upward crossing before the release), or nil when short.
+  own_middle(i) {
+    return nil if @lib.notes[i].frames <= 25
+    let ups = @ups_of(i)
+    [15, ups.empty() ? @steady_to(i) : ups[-1]]
+  }
+
+  # The level a note of mt frames borrowing library note i holds, which the
+  # level asked is set to: the recording's, or in a note filled out its steady
+  # part's mean, which the pieces are brought to.
+  held_level(i, mt) {
+    @fills(i, mt) ? @steady_means(i).db : @lib.notes[i].level
+  }
+
+  # The recording's frame a note's j-th tail frame reads (own_spans).
+  tail_x(i, spans, j) {
+    let ml = @lib.notes[i].frames
+    spans.from + (ml - spans.from) * j * 1.0 / spans.tail
+  }
+
+  # Library note i's loudness for judged(): its median, the lowest frame from
+  # its 7th (past its first 60 ms) to each frame, and the loudest from its
+  # first.
+  profile(i) {
+    if @profile_cache[i] == nil {
+      let ds = @note_db(i)
+      let n = ds.size()
+      mut low = repeat(n + 1, 1.0e9)
+      mut high = repeat(n + 1, -1.0e9)
+      for j in 0..n {
+        low[j + 1] = j >= 6 ? Math.min(low[j], ds[j]) : low[j]
+        high[j + 1] = Math.max(high[j], ds[j])
+      }
+      @profile_cache[i] = {low: low, high: high}
+    }
+    @profile_cache[i]
+  }
+
+  # The lowest and the loudest frame of the own middle a note filled out plays
+  # of library note i (away from its last 60 ms).
+  middle_extent(i) {
+    if @middle_cache[i] == nil {
+      let ds = @note_db(i)
+      let n = ds.size()
+      let middle = @own_middle(i)
+      let js = iota(middle[0], middle[1])
+      let inner = js.filter(|j| j < n - 6)
+      @middle_cache[i] = {
+        low: inner.empty() ? 1.0e9 : inner.map(|j| ds[j]).min(),
+        high: js.empty() ? -1.0e9 : js.map(|j| ds[j]).max(),
+      }
+    }
+    @middle_cache[i]
+  }
+
+  # How far the frames a note of mt frames plays of library note i go under
+  # and over the level it holds (dB): `under` past the recording's first and
+  # last 60 ms (a breath or the tongue inside it, a cliff into its tail, or
+  # its last frames before a note that follows), `over` anywhere (a puff of
+  # breath or a thump at its start). The level held is the recording's (its
+  # median under, its level over), and a note filled out holds its steady
+  # part's mean, which its pieces are brought to. A note that ends its phrase
+  # (`ends`) ends with the recording's release, whose fall is not under.
+  judged(i, mt, ends) {
+    let e = @lib.notes[i]
+    let ml = e.frames
+    let spans = @own_spans(i, mt, ends)
+    let p = @profile(i)
+    let held = @held_level(i, mt)
+    mut low = p.low[Math.min(spans.head, Math.max(6, ml - 6))]
+    mut high = p.high[spans.head]
+    if spans.middle != nil {
+      let m = @middle_extent(i)
+      low = Math.min(low, m.low)
+      high = Math.max(high, m.high)
+    }
+    # Its tail: where it starts against the level held (a step down there is
+    # a cliff whatever follows), and below that, unless it is a release.
+    let ds = @note_db(i)
+    for j in 0..spans.tail {
+      let x = Math.round(@tail_x(i, spans, j))
+      high = Math.max(high, ds[x])
+      if (j == 0 || !ends) && x >= 6 && x < ml - 6 {
+        low = Math.min(low, ds[x])
+      }
+    }
+    {under: Math.max(0.0, (@fills(i, mt) ? held : @lib_med[i]) - low), over: high - held}
+  }
+
   # Where each of a note's mt frames comes from, borrowing note `i`: a list of
   # {i, x} (a library note and a frame in it, maybe between frames), and for
   # a frame where one piece joins the next, the one it comes from as {from}
@@ -767,39 +898,37 @@ class Instrument {
   # short, is stretched or squeezed as borrow_warp says; a longer one keeps
   # the borrowed one's head and tail and fills its middle with steady pieces
   # of long notes near its pitch (a semitone), level and vibrato, joined at
-  # their vibratos' upward crossings and faded over 30 ms. (A borrowed note
-  # of 250 ms or less gives a head of up to 150 ms and a tail of up to 100 ms,
-  # half of it each at most, and no middle of its own.)
-  borrow_frames(i, mt, want_vib, seed) {
+  # their vibratos' upward crossings and faded over 30 ms (the spans as own_spans
+  # says).
+  borrow_frames(i, mt, want_vib, seed, ends) {
     let a = @lib.notes[i]
     let ml = a.frames
+    let spans = @own_spans(i, mt, ends)
     # A note no longer than the borrowed one: its head as it was, then its
-    # tail (up to 100 ms, a third of the note at most), the frames between
-    # left out and the cut faded over 20 ms.
+    # tail, the frames between left out and the cut faded over 20 ms.
     if mt <= ml {
-      let tail = Math.min(10, mt / 3)
-      let head = mt - tail
+      let tail = spans.tail
+      let head = spans.head
       return [
         ...iota(head).map(|j| {i: i, x: j * 1.0, w: 1.0}),
         ...iota(tail).map(fn (j) {
-          let x = (ml - tail + j) * 1.0
+          let x = @tail_x(i, spans, j)
           j < 2 && head > 0 ? {i: i, x: x, w: (j + 1) / 3.0, from: {i: i, x: Math.min(ml - 1.0, head + j * 1.0)}} : {i: i, x: x, w: 1.0}
         }),
       ]
     }
-    if mt <= 25 {
+    if !@fills(i, mt) {
       return iota(mt).map(|j| {i: i, x: borrow_warp(j, mt, ml), w: 1.0})
     }
-    let head = Math.min(15, ml / 2)
-    let tail = Math.min(10, ml - head)
+    let head = spans.head
+    let tail = spans.tail
     let need = mt - head - tail
     mut middle = []
     mut used = {}
-    # The borrowed note's own middle, up to its last upward crossing.
-    if ml > 25 {
-      let own_ups = @ups_of(i)
-      let own_end = own_ups.empty() ? ml - 10 : own_ups[-1]
-      for x in 15..own_end {
+    # The borrowed note's own middle, up to its last upward crossing before
+    # its release.
+    if spans.middle != nil {
+      for x in spans.middle[0]..spans.middle[1] {
         middle.push({i: i, x: x * 1.0, w: 1.0})
       }
       used["{i}"] = [[0, ml]]
@@ -828,13 +957,12 @@ class Instrument {
       : !wider.empty() ? wider : !@steady.empty() ? @steady : [i]
     let spans_of = fn (p) {
       let ups = @ups_of(p)
-      let e = @lib.notes[p]
       if ups.size() >= 3 {
         return iota(ups.size()).flat_map(|u0| iota(2, 5)
           .filter(|n| u0 + n < ups.size())
           .map(|n| (ups[u0], ups[u0 + n])))
       }
-      let (lo, hi) = (15, e.frames - 10)
+      let (lo, hi) = (15, @steady_to(p))
       let cuts = range(lo, Math.max(lo + 1, hi - 20), step: 5)
         .collect()
         .flat_map(|s0| [20, 30, 40]
@@ -892,7 +1020,7 @@ class Instrument {
     [
       ...iota(head).map(|j| {i: i, x: j * 1.0, w: 1.0}),
       ...middle[..need],
-      ...iota(tail).map(|j| {i: i, x: (ml - tail + j) * 1.0, w: 1.0}),
+      ...iota(tail).map(|j| {i: i, x: @tail_x(i, spans, j), w: 1.0}),
     ]
   }
 
@@ -909,17 +1037,15 @@ class Instrument {
     @note_shapes(src.i)[Math.clamp(Math.round(src.x), 0, e.frames - 1)]
   }
 
-  # A frame source's loudness (dB against the borrowed note `own`'s level)
-  # and harmonics' logs, a piece of another note brought to `own`'s averages.
-  src_db(src, own) {
-    let e = @lib.notes[src.i]
+  # A frame source's loudness (dB against `held`, the level the note
+  # borrowing `own` holds: own's level, or its steady part's mean in a note
+  # filled out) and harmonics' logs, a piece of another note brought to
+  # `own`'s averages.
+  src_db(src, own, held) {
     let raw = lib_at(@note_parts(src.i).db, src.x)
     src.i == own
-      ? raw - e.level
-      : raw -
-        @steady_means(src.i).db +
-        @steady_means(own).db -
-        @lib.notes[own].level
+      ? raw - held
+      : raw - @steady_means(src.i).db + @steady_means(own).db - held
   }
 
   src_logs(src, own) {
@@ -1025,7 +1151,12 @@ class Instrument {
         mt,
         @vibrato_wanted(v),
         note_seed(v, 40),
+        v.to == "rest" || v.to == "open",
       )
+      # The level the note holds, which the level asked is set to: the
+      # recording's, or in a note filled out its steady part's mean, which the
+      # pieces are brought to.
+      let held = @held_level(chosen[k], mt)
       let shift = k == 0 ? skip : 0.0
       let plan = shift == 0.0 ? plan0 : iota(mt).map(fn (j) {
         let p = plan0[j]
@@ -1063,7 +1194,7 @@ class Instrument {
           : @bend(v.marks, v.from, j * 0.01, (v.e - u) * 0.01)
         base[u] = base_pitch(notes, k, u) + bent
         let own_i = chosen[k]
-        db[u] = @mixed(|s| @src_db(s, own_i), src)
+        db[u] = @mixed(|s| @src_db(s, own_i, held), src)
         written[u] = {
           level: v.level,
           swell: (v.level_end - v.level) * j / Math.max(1, mt),
@@ -1615,7 +1746,13 @@ class Instrument {
       continue if real <= 0.0
       let g = tone / real
       let tone_part = out[c0..c1]
-      for q in Math.max(0, on - pre + d)..c1 {
+      # The attack is the note's head from where its own frames begin (the
+      # phrase's start for its first note): a recording's frames can sound
+      # before its attack does (the note before it in the take, still
+      # ringing), and that would sound and then be cut where the attack
+      # begins.
+      let own_from = k == 0 ? 0 : Math.round(((v.s - 1) * 0.01 + c.lead) * RATE)
+      for q in Math.max(0, Math.min(on - pre + d, own_from))..c1 {
         let wq = q < c0
           ? 1.0
           : 0.5 * (1.0 + Math.cos(Math.pi * (q - c0) / (c1 - c0)))
