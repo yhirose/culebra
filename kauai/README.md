@@ -214,5 +214,6 @@ than through a headphone jack.
 | `cli/` | the command line `just kauai-build` compiles |
 | `convert/` | a song as a score (MusicXML) and back to `.kau` |
 | `sounds/` | the finished external instruments, one folder each |
+| `sample_songs/` | songs to hear the instruments in and try one against another |
 | `skills/make-instrument/` | the skill for making an instrument with Claude |
 | `harness/` | the agents' roles and the `main.cul` template, for building with one job to an agent |

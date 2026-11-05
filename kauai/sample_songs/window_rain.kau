@@ -1,0 +1,126 @@
+about {
+  title  Window Rain
+  note   a slow jazz ballad in Eb for electric piano, the tune, the chords and the bass all on one: two A sections, a bridge that turns to Gb, the A again at its height, and a soft close
+}
+
+band Lounge {
+  voice Keys   external VintageElectricPiano bright=0.8  plays melody                        vol 44
+  voice Comp   external VintageElectricPiano bright=0.5  plays chords rootless from E3  poly  vol 22
+  voice Bass   external VintageElectricPiano bright=0.6  plays roots in E2..D#3              vol 30
+
+  drum Kick      external Kick      vol 10
+  drum Ride      external Ride      vol 9
+  drum PedalHat  external PedalHat  vol 5  choke Hats
+  drum OpenHat   external OpenHat   vol 6  choke Hats
+  drum Crash     external Crash     vol 8
+}
+
+groove Ballad {
+  Bass      1 - - - 5 - - -
+  Comp      x - - - x - - x
+  Ride      x . x x x . x x
+  PedalHat  . . x . . . x .
+  last {
+    OpenHat . . . . . . . x
+  }
+}
+
+groove Lift {
+  Bass      1 - - 5 1 - 5 -
+  Comp      x - - x - - x -
+  Kick      x . . . x . . .
+  Ride      x . x x x . x x
+  PedalHat  . . x . . . x .
+  first {
+    Crash   x . . . . . . .
+  }
+  last {
+    OpenHat . . . . . . . x
+  }
+}
+
+groove Still {
+  Bass   1 - - - - - - -
+  Comp   x - - - - - - -
+}
+
+song WindowRain {
+  tempo 64
+  meter 4/4
+  key Eb
+  swing 8
+  band Lounge
+  groove Ballad
+  melody in C4..B4
+  room 40%
+
+  Intro
+  mark A
+  First
+  Second
+  mark B
+  Bridge
+  mark Last
+  Height
+  Close
+}
+
+section Intro {
+  groove Still
+  Abmaj9          \p r1
+  Gm7 C7b9        r1
+  Fm9             r1
+  Bb7sus4 Bb13    r2 r4 3[bb8 c' eb']
+}
+
+section First {
+  Ebmaj9          \mp (d'2. 3[c'8 bb g]
+  Ab13            f4. gb8 f8 eb8 c4)
+  Gm7 C7b9        (bb4 d'8 f'8~ f'4 e'8 db'8
+  Fm9 Bb13        c'4 ab8 g8~ g4) r8 f8
+  Bbm9 Eb7b9      -f4. (db'8 c'4 3[bb8 g e]
+  Abmaj7#11       !eb'2 d'4 c'4)
+  Gm7 Gbdim7      (bb4. g8 a4 c'8 eb'8
+  Fm9 Bb7sus4     g2) r4 3[bb8 c' eb']
+}
+
+section Second {
+  Ebmaj9          (d'4. f'8~ f'2
+  Ab13            eb'8 f'8 eb'8 c'8 bb4 gb4)
+  Gm7 C7b9        (f4 g8 bb8 db'4 c'8 bb8
+  Fm9 Bb13        ab4. g8~ g2)
+  Am7b5 D7b9      -eb'4. (c'8 f#4 a8 c'8
+  Gm9 C13         bb2 a4 g8 e8)
+  Fm9 Bb13        (ab4 c'8 eb'8~ eb'4 d'8 c'8
+  Ebmaj9 Bb7sus4  bb2) r4 3[c'8 d' eb']
+}
+
+section Bridge {
+  groove Lift
+  Abm9 Db13       \mf (eb'4 gb'8 f'8~ f'4 eb'8 cb'8
+  Gbmaj7          bb2.) db'8 eb'8
+  Fm7b5 Bb7b9     (f'4 eb'8 cb'8~ cb'4 d'8 f'8
+  Ebm9 Ab13       gb'4. f'8 eb'4 c'4)
+  Dbmaj7          \cresc !f'2 (eb'8 db'8 c'8 ab8
+  Dm7b5 G7alt     c'4 ab4 b4 eb'4)
+  Cm9 F13         \f !g'2 (f'4 d'4
+  Fm9 Bb7b9       \dim c'4. bb8 ab4 g4)
+}
+
+section Height {
+  Ebmaj9          \mp d'2 r8 (bb8 c'8 d'8
+  Ab13            eb'4. f'8 gb'4 f'4)
+  Gm7 C7b9        \mf !bb'2 (a'4 g'4
+  Fm9 Bb13        f'4. eb'8 d'4 c'4)
+  Bbm9 Eb7b9      (db'4 f'8 ab'8~ ab'4 g'8 e'8
+  Abmaj7#11       -g'2 d'2)
+  Gm7 C7b9        \dim (bb4 g4 db'4 bb4
+  Fm9 Bb7sus4     \rit 54 c'2 bb2)
+}
+
+section Close {
+  groove Still
+  Abmaj9          \p (c'2 bb4 g4
+  Abm6            cb'2 bb4 f4)
+  Ebmaj9          \pp @g1
+}

@@ -1,0 +1,95 @@
+about {
+  title  Late Terrace
+  note   a bossa nova in F for electric piano, the tune, the comping and the bass all on one
+}
+
+band Terrace {
+  voice Keys   external VintageElectricPiano bright=0.9  plays melody                        vol 37
+  voice Comp   external VintageElectricPiano bright=0.6  plays chords rootless from E3  poly  vol 22
+  voice Bass   external VintageElectricPiano bright=0.6  plays roots in E2..D#3              vol 25
+
+  drum Kick  external Kick  vol 22
+  drum Hat   external Hat   vol 4
+  drum Rim   external CrossStick  vol 10
+}
+
+groove Bossa {
+  Bass   1 - - 5  1 - - 5
+  Comp   x . . x  . . x .  . x . .  x . . . | . . x .  . x . .  x . . x  . . . .
+  Kick   x . . x  x . . x  x . . x  x . . x
+  Hat    x . x .  x . x .  x . x .  x . x .
+  Rim    x . . x  . . x .  . . x .  . x . . | . . x .  . x . .  x . . .  . . . .
+}
+
+groove Soft {
+  Bass   1 - - - - - - -  5 - - - - - - -
+  Comp   x . . . . . . .  . . . . . . . .
+  Hat    x . x .  x . x .  x . x .  x . x .
+}
+
+song LateTerrace {
+  tempo 128
+  meter 4/4
+  key F
+  band Terrace
+  groove Bossa
+  melody in C4..B4
+  room 30%
+
+  Intro
+  mark A
+  Theme
+  mark B
+  Bridge
+  mark Last
+  Return
+  Outro
+}
+
+section Intro {
+  Gm9         r1
+  C13         r1
+  Fmaj9       r1
+  D7b9        r2 r4 a8 c'8
+}
+
+section Theme {
+  Fmaj7       e'4. d'8~ d'4 c'8 a8~
+  Fmaj7       a2 r4 g8 a8
+  Gm9         bb4. a8~ a4 bb8 d'8~
+  C13         d'2 r4 c'8 d'8
+  Am7         e'4. d'8~ d'4 c'8 b8~
+  Abdim7      b2 r4 d'8 c'8
+  Gm9         bb4 a8 bb8~ bb4 c'8 a8~
+  C7b9        a2 r2
+}
+
+section Bridge {
+  Bbmaj7      d'4. c'8~ c'4 a4
+  Bbm6        db'4. c'8~ c'2
+  Am7         c'4 e'8 d'8~ d'4 c'4
+  D7b9        eb'2 d'4 c'4
+  Gm7         bb4. a8~ a4 g4
+  C7          e4 g8 bb8~ bb4 a4
+  Fmaj7       a2. r4
+  Em7b5 A7    g4 bb4 c#'4 e'4
+}
+
+section Return {
+  Dm9         f'4. e'8~ e'4 d'4
+  G13         e'2 d'4 b4
+  Gm9         a4. bb8~ bb4 c'4
+  C13         d'2 r4 c'8 d'8
+  Am7 D7b9    e'4 c'4 eb'4 d'4
+  Gm7 C7b9    bb4 d'4 db'4 bb4
+  Fmaj9       a1~
+  Fmaj9       a2 r2
+}
+
+section Outro {
+  groove Soft
+  Gm9         r4 bb8 a8~ a4 g4
+  C13         e2 r2
+  Fmaj9       r1
+  Fmaj9       r1
+}

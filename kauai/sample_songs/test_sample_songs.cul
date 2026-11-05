@@ -1,0 +1,18 @@
+import recipes from '../recipes/main.cul'
+import alto from '../sounds/alto_sax/main.cul'
+import soprano from '../sounds/soprano_sax/main.cul'
+
+# Every sample song here reads with Kauai's bundled instruments and drums
+# (the recipes and both saxophones): its notes and chords, and each
+# instrument it names.
+@test
+fn each_sample_song_reads_with_the_bundled_instruments() {
+  let here = Dir.embedded('.')
+  let songs = here.glob("*.kau")
+  let voices = {...recipes.voices, ...alto.voices, ...soprano.voices}
+  assert_true(songs.contains("window_rain.kau"))
+  for name in songs {
+    let song = Audio.Kauai.load(name, voices:, drums: recipes.drums, dir: here)
+    assert_true(song.length() > 30.0, (name, song.length()))
+  }
+}

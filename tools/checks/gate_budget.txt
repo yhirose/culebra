@@ -324,4 +324,6 @@ languages.samples 130
 # 53 since kauai/convert/test_musicxml_read.cul (every song read back from its
 # score plays its lines, Je te veux plays its score, the test suite's scores
 # read, and jumps, 2.2 s).
-examples.suites 53
+# 54 since kauai/sample_songs/test_sample_songs.cul (each sample song reads
+# with the bundled instruments and drums, 0.4 s).
+examples.suites 54
