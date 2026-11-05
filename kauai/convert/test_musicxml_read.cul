@@ -747,6 +747,14 @@ fn edited(text, part, number, from, to) {
     measure.replace_first(from, to)
 }
 
+# The id of the part named `name` in score text `text`.
+let id_of = |text, name| XML
+  .parse(text)
+  .find_all("part-list/score-part")
+  .find(|p| p.text("part-name") == name)
+  .attrs
+  .id
+
 # The lines of song text `text` that are not lines of EDITED's.
 let new_lines = |text| text.lines().filter(|l| !EDITED_TEXT.lines().contains(l))
 
@@ -828,7 +836,7 @@ fn an_edited_measure_is_the_scores_in_its_time() {
 fn the_bands_staves_show_what_it_plays() {
   let bass = song_of(edited(
     EDITED_SCORE,
-    "P4",
+    id_of(EDITED_SCORE, "Bass"),
     1,
     "<step>C</step>",
     "<step>D</step>",
@@ -846,20 +854,22 @@ fn the_bands_staves_show_what_it_plays() {
   assert_eq(chord.dropped, ["{BAND_STAVES}: measure 2"])
 }
 
-# The Hits staff is the bars' hits: an edit of it is the score's, and a
-# score without the song's text has its hits too, a break's rest among them.
+# The staff a score Kauai wrote marks as its hits, else one named Hits, is
+# the bars' hits: an edit of it is the score's, a score with no field of
+# Kauai's has its hits too, a break's rest among them, and a part the song
+# names Hits stays a part.
 @test
 fn the_hits_staff_is_the_bars_hits() {
-  let staff = |text| text.split_once("<part-name>Hits</part-name>")[1]
-  assert_true(staff(EDITED_SCORE).contains("<notehead>slash</notehead>"))
-  let id = EDITED_SCORE
-    .split_once("<part-name>Hits</part-name>")[0]
-    .split("<score-part id=\"")[-1]
-    .split("\"")[0]
+  let id = id_of(EDITED_SCORE, "Hits")
   let plain = song_of(edited(EDITED_SCORE, id, 7, "<accent/>", ""))
   assert_eq(new_lines(plain.text), ["    2nd hits: x4 r r2"])
   assert_eq(plain.dropped, [])
-  let raw = song_of(bare(mx.write(Audio.Kauai.parse(ONE_VOICE +
+  let unmarked = |text| Regex.replace_all(
+    "<miscellaneous-field name=\"kauai-hits\">[^<]*</miscellaneous-field>",
+    bare(text),
+    "",
+  )
+  let raw = song_of(unmarked(mx.write(Audio.Kauai.parse(ONE_VOICE +
     'song S {
   tempo 120
   band B
@@ -894,6 +904,33 @@ section A {
     ],
   )
   assert_eq(raw.dropped, [])
+  # A part the song names Hits stays a part, beside the hits.
+  let named = Audio.Kauai.parse('band B {
+  voice Lead  pulse  plays melody     vol 20
+  voice H     saw    plays part Hits  vol 10
+}
+
+song S {
+  tempo 120
+  band B
+  melody in C4..B4
+
+  A
+}
+
+section A {
+  C   c1
+    hits: x1
+    Hits: e4 f g a
+}
+')
+  let both = mx.write(named)
+  assert_eq(song_of(both).text, kau.write(named))
+  let lines = song_of(bare(both)).text.lines()
+  assert_true(
+    lines.contains("    Hits: e4 f g a") && lines.contains("    hits: x1"),
+    "{lines}",
+  )
 }
 
 # A score Kauai writes with a jump back reads as the song's order, its segno,

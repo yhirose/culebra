@@ -30,7 +30,8 @@ let dynamic = |d| LEVELS.has(d) || WEDGES.has(d) || d == "!"
 let TEMPOS = ["tempo", "rit", "accel"]
 let PLAIN = {actual: 1, normal: 1}  # the time a note not in a tuplet plays in
 let UNMOVED = {semis: 0, steps: 0}  # the interval a section played as written moves by
-let HIT = {step: "B", octave: 4}    # where a hit stands on the hits' one-line staff
+let HITS = "Hits"                   # the name of the hits' staff
+let HIT = {step: "B", octave: 4}    # where a hit stands on that one-line staff
 let DOCTYPE = '<!DOCTYPE score-partwise PUBLIC "-//Recordare//DTD MusicXML 4.0 Partwise//EN" "http://www.musicxml.org/dtds/partwise.dtd">'
 
 # --- XML -----------------------------------------------------------------------
@@ -579,7 +580,6 @@ let same_pitch = |p, q| sounding(p) == sounding(q)
 # ends there.
 fn join_line(measures, line) {
   mut tied = []
-  mut hit_tied = false
   mut slur_next = false
   mut last = nil
   mut wedge = false
@@ -589,7 +589,6 @@ fn join_line(measures, line) {
     let events = m.lines[line]
     if events == nil {
       tied = []
-      hit_tied = false
       continue
     }
     tail = m
@@ -627,8 +626,8 @@ fn join_line(measures, line) {
           last = e
         },
         e.item.has("hit") => {
-          e.tied_from = hit_tied ? [e.item] : []
-          hit_tied = e.item.tie
+          e.tied_from = tied
+          tied = e.item.tie ? [e.item] : []
         },
         _ => nil,
       }
@@ -979,6 +978,10 @@ let pitch_el = |p| node(
     leaf("octave", p.octave),
   ],
 )
+let unpitched_el = |p| node(
+  "unpitched",
+  [leaf("display-step", p.step), leaf("display-octave", p.octave)],
+)
 let dot_els = |it| repeat(it.dots, node("dot", []))
 let notations = |els| els.empty() ? [] : [node("notations", els)]
 
@@ -1070,10 +1073,7 @@ fn note_els(e, acc) {
     return [node(
       "note",
       [
-        node(
-          "unpitched",
-          [leaf("display-step", HIT.step), leaf("display-octave", HIT.octave)],
-        ),
+        unpitched_el(HIT),
         leaf("duration", e.len),
         ...ties.map(|t| node("tie", [], {type: t})),
         leaf("voice", 1),
@@ -1096,10 +1096,7 @@ fn note_els(e, acc) {
         "note",
         [
           ...(k > 0 ? [node("chord", [])] : []),
-          node(
-            "unpitched",
-            [leaf("display-step", d.step), leaf("display-octave", d.octave)],
-          ),
+          unpitched_el(d),
           leaf("duration", e.len),
           node("instrument", [], {id: d.id}),
           leaf("voice", 1),
@@ -1466,7 +1463,7 @@ fn layout(passes, measures, rendered, tempos, loops) {
   let write_blocks = fn (blocks) {
     blocks.map(fn (bl) {
       let at = out.size()
-      let (i, last, fold) = (bl.i, bl.last, bl.fold)
+      let {i, last, fold} = bl
       let k = last - i + 1
       if fold == nil {
         for mi in spans[i] {
@@ -1526,22 +1523,22 @@ fn layout(passes, measures, rendered, tempos, loops) {
   let through = jump.from + jump.count
   # Where the music leaves the blocks played again: the last measure of
   # the last one.
-  let leave = through == jump.blocks.size() ? back : out[starts[through] - 1]
+  let to_end = through == jump.blocks.size()
+  let leave = to_end ? back : out[starts[through] - 1]
   let al = cond {
     jump.coda != nil => " al Coda",
-    leave == back => "",
+    to_end => "",
     _ => " al Fine",
   }
-  back.jump = {
-    kind: capo ? "dacapo" : "dalsegno",
-    text: (capo ? "D.C." : "D.S.") + al,
-  }
+  back.jump = capo
+    ? {text: "D.C." + al, sound: {dacapo: "yes"}}
+    : {text: "D.S." + al, sound: {dalsegno: "segno"}}
   if jump.coda != nil {
-    leave.jump = {kind: "tocoda", text: "To Coda"}
+    leave.jump = {text: "To Coda", sound: {tocoda: "coda"}}
     prev = leave.mi
     out[write_blocks(jump.coda)[0]].sign = "coda"
-  } else if leave != back {
-    leave.jump = {kind: "fine", text: "Fine"}
+  } else if !to_end {
+    leave.jump = {text: "Fine", sound: {fine: "yes"}}
   }
   out
 }
@@ -1555,17 +1552,13 @@ let sign_el = |name| direction(
   node("sound", [], name == "segno" ? {segno: name} : {coda: name}),
 )
 
-# The jump a measure ends with ({kind, text}), as its words say it and
+# The jump a measure ends with ({text, sound}), as its words say it and
 # <sound> makes it: a D.C., to the segno or the coda, or Fine.
-fn jump_el(jump) {
-  let sound = match jump.kind {
-    "dacapo" => {dacapo: "yes"},
-    "dalsegno" => {dalsegno: "segno"},
-    "tocoda" => {tocoda: "coda"},
-    _ => {fine: "yes"},
-  }
-  direction([leaf("words", jump.text)], "above", node("sound", [], sound))
-}
+let jump_el = |jump| direction(
+  [leaf("words", jump.text)],
+  "above",
+  node("sound", [], jump.sound),
+)
 
 fn barline_els(location, style, ending, repeat) {
   let inside = [
@@ -1626,9 +1619,11 @@ fn repeat_signs(order, rendered, line) {
 }
 
 # The song's about, the parts its band plays (`band`, their ids), which a
-# reader leaves out as Kauai's own, and the song as Kauai text (a field, as
-# MuseScore keeps a score's fields when it saves it again).
-fn about_els(score, band) {
+# reader leaves out as Kauai's own, the part its hits are on (`hits`, its
+# id, "" for none), so that a part the song names Hits stays a part, and the
+# song as Kauai text (fields, as MuseScore keeps a score's fields when it
+# saves it again).
+fn about_els(score, band, hits) {
   let {about, song} = score
   let creators = ["composer", "lyricist", "arranger"]
     .filter(|k| about[k] != nil)
@@ -1637,6 +1632,7 @@ fn about_els(score, band) {
   let fields = [
     ...["year", "note"].filter(|k| about[k] != nil).map(|k| field(k, about[k])),
     ...(band.empty() ? [] : [field("kauai-band", band.join(" "))]),
+    field("kauai-hits", hits),
     field("kauai-song", kau.write(score)),
   ]
   [
@@ -1669,7 +1665,7 @@ fn write(score) {
   let staves = [
     "Melody",
     ...names,
-    ...(hits ? ["Hits"] : []),
+    ...(hits ? [HITS] : []),
     ...band.voices,
     ...(band.drums.empty() ? [] : ["Drums"]),
   ]
@@ -1708,7 +1704,8 @@ fn write(score) {
     rendered[o.mi].lines[0] = content_of(measures, o.mi, 0, passes, song, true)
   }
   let signs = lines.map(|line| repeat_signs(order, rendered, line))
-  let clefs = lines.map(|line| line == drum_line || line == hits_line
+  let unpitched = |line| line == drum_line || line == hits_line
+  let clefs = lines.map(|line| unpitched(line)
     ? node("clef", [leaf("sign", "percussion")])
     : clef_el(measures, line))
   let first_number = measures[0].at < 0 ? 0 : 1
@@ -1722,7 +1719,7 @@ fn write(score) {
     let attrs = [
       ...(first ? [leaf("divisions", WHOLE / 4)] : []),
       ...(restate(|s| s.key)
-        ? [key_el(m.key, line == drum_line || line == hits_line)]
+        ? [key_el(m.key, unpitched(line))]
         : []),
       ...(restate(|s| s.meter) ? [time_el(m.meter)] : []),
       ...(first ? [clefs[line]] : []),
@@ -1811,7 +1808,11 @@ fn write(score) {
   let doc = node(
     "score-partwise",
     [
-      ...about_els(score, iota(band_from, staves.size()).map(part_id)),
+      ...about_els(
+        score,
+        iota(band_from, staves.size()).map(part_id),
+        hits ? part_id(hits_line) : "",
+      ),
       part_list,
       ...parts,
     ],
@@ -1845,4 +1846,4 @@ fn mxl(text) {
   })
 }
 
-export {write, mxl, passes_of, as_played, part_names, events_of, moved_items, moved_chord, UNMOVED}
+export {write, mxl, passes_of, as_played, part_names, events_of, moved_items, moved_chord, UNMOVED, HIT, HITS}

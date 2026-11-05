@@ -286,6 +286,10 @@ fn scored(text, band = BAND) {
 }
 
 let notes = |m| m.find_all("note")
+# Unpitched note `n` as where it stands ("F4"), or "r" for a rest.
+let struck_at = |n| n.find("rest") != nil
+  ? "r"
+  : "{n.text("unpitched/display-step")}{n.text("unpitched/display-octave")}"
 
 @test
 fn notes_show_their_accidentals_ties_and_tuplets() {
@@ -1295,9 +1299,7 @@ section A {
   )
   let ms = part_measures(doc, "Drums")
   let drummed = |m| notes(m).map(|n| [
-    n.find("rest") != nil
-      ? "r"
-      : "{n.text("unpitched/display-step")}{n.text("unpitched/display-octave")}",
+    struck_at(n),
     n.text("notehead"),
     n.text("type"),
     n.find("instrument")?.attrs?.id,
@@ -1379,9 +1381,7 @@ section A {
     "no key shown on the hits",
   )
   let slashed = |m| notes(m).map(|n| [
-    n.find("rest") != nil
-      ? "r"
-      : "{n.text("unpitched/display-step")}{n.text("unpitched/display-octave")}",
+    struck_at(n),
     n.text("notehead"),
     n.text("type"),
     n.find_all("tie").map(|t| t.attrs.type),

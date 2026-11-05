@@ -1,11 +1,12 @@
 # A MusicXML score as a Kauai song's score, the data Audio.Kauai.parse
 # gives (kauai/convert/kau.cul writes it as Kauai text). Each voice of each
 # part is a line: the first part's first voice is the melody, every other
-# line a part of the song, and a staff named Hits the bars' hits. The parts
-# a score marks as a Kauai band's own (kauai/convert/musicxml.cul writes
-# the mark) are left out, as what the band plays. Rehearsal marks, repeat signs, key changes, segnos and codas
-# make the sections, and D.S., D.C., To Coda and Fine the order the song
-# plays them in; the song is given a band that plays its lines. A score
+# line a part of the song, and the staff of hits (the one a score Kauai
+# wrote marks, else a staff named Hits) the bars' hits. The parts a score
+# marks as a Kauai band's own (kauai/convert/musicxml.cul writes the marks)
+# are left out, as what the band plays. Rehearsal marks, repeat signs, key
+# changes, segnos and codas make the sections, and D.S., D.C., To Coda and
+# Fine the order the song plays them in; the song is given a band that plays its lines. A score
 # Kauai wrote reads as the song it carries (`kauai-song`), with the
 # measures the score shows otherwise read from the score.
 #
@@ -442,7 +443,7 @@ fn read_measures(part, report, hits = false) {
             !hits
           let tie = c.find("tie[@type='start']") != nil
           let p = cond {
-            unpitched => {step: "B", alter: 0, octave: 4, tie},
+            unpitched => {...mx.HIT, alter: 0, tie},
             pitch == nil => nil,
             _ => {...pitch_at(pitch), tie},
           }
@@ -1132,8 +1133,12 @@ fn reading(doc, voicings) {
   let report = |what, where| reports.push({what, where})
   let band = band_ids(doc)
   let names = staff_names(doc)
-  # A staff named Hits holds the bars' hits, after every other part.
-  let of_hits = |p| names.get(p.attrs.id, nil) == "Hits"
+  # The staff of the bars' hits, after every other part: the one a score
+  # Kauai wrote marks, else a staff named Hits.
+  let marked = field(doc, "kauai-hits")
+  let of_hits = |p| marked != nil
+    ? p.attrs.id == marked
+    : names.get(p.attrs.id, nil) == mx.HITS
   let parts = doc
     .find_all("part")
     .filter(|p| !band.contains(p.attrs.id))

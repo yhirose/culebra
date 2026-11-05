@@ -35,8 +35,8 @@ let usage = "Usage: kauai <song.kau> [options]
 
        kauai convert <song.kau> <score.musicxml>
   write the song as a MusicXML score (.musicxml, .xml or a compressed .mxl)
-  that notation programs open: its melody, parts, chords and band, in the order it plays
-  them
+  that notation programs open: its melody, parts, chords and band, in the
+  order it plays them
 
        kauai convert <score.musicxml> <song.kau>
   write a MusicXML score (.musicxml, .xml or .mxl) as a song, with a band
