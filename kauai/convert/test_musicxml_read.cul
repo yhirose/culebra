@@ -846,6 +846,56 @@ fn the_bands_staves_show_what_it_plays() {
   assert_eq(chord.dropped, ["{BAND_STAVES}: measure 2"])
 }
 
+# The Hits staff is the bars' hits: an edit of it is the score's, and a
+# score without the song's text has its hits too, a break's rest among them.
+@test
+fn the_hits_staff_is_the_bars_hits() {
+  let staff = |text| text.split_once("<part-name>Hits</part-name>")[1]
+  assert_true(staff(EDITED_SCORE).contains("<notehead>slash</notehead>"))
+  let id = EDITED_SCORE
+    .split_once("<part-name>Hits</part-name>")[0]
+    .split("<score-part id=\"")[-1]
+    .split("\"")[0]
+  let plain = song_of(edited(EDITED_SCORE, id, 7, "<accent/>", ""))
+  assert_eq(new_lines(plain.text), ["    2nd hits: x4 r r2"])
+  assert_eq(plain.dropped, [])
+  let raw = song_of(bare(mx.write(Audio.Kauai.parse(ONE_VOICE +
+    'song S {
+  tempo 120
+  band B
+  melody in C4..B4
+
+  A x2
+}
+
+section A {
+  C   c1
+    hits:  x4. !x8~ x2
+  C   c1
+    2nd hits:  r1
+}
+'))))
+  assert_eq(
+    raw.text.split_once("section A \{\n")[1].lines(),
+    [
+      "  melody in C4..B4",
+      "  C             c1",
+      "    hits: x4. !x8~ x2",
+      "",
+      "  ending 1 \{",
+      "    C             c1",
+      "  }",
+      "",
+      "  ending 2 \{",
+      "    C             c1",
+      "      hits: r1",
+      "  }",
+      "}",
+    ],
+  )
+  assert_eq(raw.dropped, [])
+}
+
 # A time that no longer fits its section is a section of its own; a pickup
 # is played one way; and a band that does not play the score, a song text
 # that does not read, or an order the score changes, is not used.
@@ -884,7 +934,7 @@ fn what_no_longer_fits_the_song_is_the_scores() {
     shorter.dropped,
     [
       "a rit. or accel. that says no tempo it reaches: measure 6",
-      "a time through a section that no longer fits it, a section of its own (its hits and parameters left out): measure 5 (A as A2)",
+      "a time through a section that no longer fits it, a section of its own (its parameters left out): measure 5 (A as A2)",
     ],
   )
   let key = song_of(edited(
@@ -929,6 +979,10 @@ fn what_no_longer_fits_the_song_is_the_scores() {
   ))
   assert_true(renamed.text.contains("plays part Flute") &&
     !renamed.text.contains("Combo"))
+  assert_true(
+    renamed.text.contains("    hits: !x4 r r2\n"),
+    "the hits stay with a band made for the lines",
+  )
   assert_true(
     renamed.dropped.contains("the song's band, which does not play the score (it plays no part Flute): a band made for its lines: the score"),
     "{renamed.dropped}",

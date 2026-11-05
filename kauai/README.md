@@ -99,6 +99,9 @@ melody, with the quality as written for their text. The notes keep their
 ties, tuplets, grace notes, slurs, rolled chords and marks (the jazz
 articulations too), and the dynamics, hairpins, tempo marks, swing, meters
 and keys are where the song writes them. A `%` is drawn as a repeat sign.
+A song with `hits:` has a one-line staff named Hits after its parts: a slash
+for each hit, with its marks and ties, the rest of a break, and an unseen
+rest in a bar with no hits.
 
 The band follows: a staff for each voice that plays its grooves, echoes and
 harmonies, with the notes it plays, spelled from the chord they are in (else
@@ -126,7 +129,7 @@ small italics where it starts, and a song that loops says `loop` after its
 last note. A `\rit N` or `\accel N` is a rit. or accel.
 
 What a score has no place for (the band, its grooves and voicings, a line's
-parameters such as `\bright=`, the hits, the sections and the order the song
+parameters such as `\bright=`, the sections and the order the song
 plays them in, `mark` and `room`, the tempo a rit. reaches) goes with it as the
 song's Kauai text, in a `<miscellaneous-field>` named `kauai-song`, which
 MuseScore keeps when it saves the score again. An `.mxl` is the score and the
@@ -142,8 +145,9 @@ kauai convert score.musicxml song.kau   # .musicxml, .xml or .mxl
 [`convert/musicxml_read.cul`](convert/musicxml_read.cul) reads a score back as
 a song. Each voice of each part is a line: the first part's first voice is the
 melody, every other a part, and the song gets a band that plays them (single
-notes on the chip channels while they last, chords on `external Ep`). The
-staves a Kauai band played are left out. Rehearsal marks, repeat signs,
+notes on the chip channels while they last, chords on `external Ep`). A
+staff named Hits is the bars' hits, and the staves a Kauai band played are
+left out. Rehearsal marks, repeat signs,
 endings, D.S., D.C., To Coda and Fine make the sections and the order the
 song plays them in. A pickup the song starts with plays again where the
 score goes back to it (a D.C., a repeat from the start) or writes it again

@@ -1,9 +1,9 @@
 # A MusicXML score as a Kauai song's score, the data Audio.Kauai.parse
 # gives (kauai/convert/kau.cul writes it as Kauai text). Each voice of each
 # part is a line: the first part's first voice is the melody, every other
-# line a part of the song. The parts a score marks as a Kauai band's own
-# (kauai/convert/musicxml.cul writes the mark) are left out, as what the
-# band plays. Rehearsal marks, repeat signs, key changes, segnos and codas
+# line a part of the song, and a staff named Hits the bars' hits. The parts
+# a score marks as a Kauai band's own (kauai/convert/musicxml.cul writes
+# the mark) are left out, as what the band plays. Rehearsal marks, repeat signs, key changes, segnos and codas
 # make the sections, and D.S., D.C., To Coda and Fine the order the song
 # plays them in; the song is given a band that plays its lines. A score
 # Kauai wrote reads as the song it carries (`kauai-song`), with the
@@ -318,8 +318,9 @@ fn jumps(s, bar) {
 # dalsegno, tocoda, dacapo, fine, res}: times from the measure's start in
 # ticks, `res` of them to a quarter, which every duration the part writes is
 # a whole number of (a tuplet's notes need not be a whole number of Kauai's
-# units).
-fn read_measures(part, report) {
+# units). On a staff of `hits`, an unpitched note is a hit, read as the B4
+# it is written on.
+fn read_measures(part, report, hits = false) {
   let res = part
     .find_all("measure/attributes/divisions")
     .map(|d| to_long(d.text().trim()))
@@ -431,11 +432,15 @@ fn read_measures(part, report) {
           let voice = text_at(c, "voice") ?? "1"
           continue if c.find("cue") != nil
           let pitch = c.find("pitch")
-          throw "kauai convert: {where}: an unpitched note (a drum) is not read; a drum part goes in a Kauai band" if c.find("unpitched") !=
-            nil
-          let p = pitch == nil
-            ? nil
-            : {...pitch_at(pitch), tie: c.find("tie[@type='start']") != nil}
+          let unpitched = c.find("unpitched") != nil
+          throw "kauai convert: {where}: an unpitched note (a drum) is not read; a drum part goes in a Kauai band, and hits on a staff named Hits" if unpitched &&
+            !hits
+          let tie = c.find("tie[@type='start']") != nil
+          let p = cond {
+            unpitched => {step: "B", alter: 0, octave: 4, tie},
+            pitch == nil => nil,
+            _ => {...pitch_at(pitch), tie},
+          }
           let slurs = |type| c
             .find_all("notations/slur")
             .filter(|s| s.attrs.get("type", "") == type)
@@ -497,6 +502,7 @@ fn read_measures(part, report) {
             arpeggio: c.find("notations/arpeggiate") != nil,
             graces: p == nil ? [] : graces.get(voice, []),
             staff: text_at(c, "staff") ?? "1",
+            shown: c.attrs.get("print-object", "yes") != "no",
           }
           graces[voice] = []
           grace_slurs[voice] = 0
@@ -758,6 +764,28 @@ fn items_of(events, len, res, marks, state, where, report) {
   marks_until(len)
   rests_to(len) if t < len && !stack[0].items.empty()
   stack[0].items
+}
+
+# Items `items` read from the Hits staff (in measure `where`) as a bar's
+# hits: each note a hit. What else the staff has is said and left out.
+fn hit_items(items, where, report) {
+  items.flat_map(fn (it) {
+    cond {
+      it.has("items") => [{...it, items: hit_items(it.items, where, report)}],
+      it.has("pitches") => [{
+        hit: true,
+        tie: it.pitches[0].tie,
+        value: it.value,
+        dots: it.dots,
+        marks: it.marks,
+      }],
+      it.has("rest") => [it],
+      _ => {
+        report("a direction or a slur on the Hits staff", where)
+        []
+      },
+    }
+  })
 }
 
 # --- the form --------------------------------------------------------------------
@@ -1098,14 +1126,20 @@ fn reading(doc, voicings) {
   let report = |what, where| reports.push({what, where})
   let band = band_ids(doc)
   let names = staff_names(doc)
+  # A staff named Hits holds the bars' hits, after every other part.
+  let of_hits = |p| names.get(p.attrs.id, nil) == "Hits"
   let parts = doc
     .find_all("part")
     .filter(|p| !band.contains(p.attrs.id))
+    .sorted_by(|p| of_hits(p) ? 1 : 0)
     .map(|p| {
       name: names.get(p.attrs.id, "Part"),
-      measures: read_measures(p, report),
+      hits: of_hits(p),
+      measures: read_measures(p, report, hits: of_hits(p)),
     })
   throw "kauai convert: the score has no parts" if parts.empty()
+  let hits_staves = parts.filter(|p| p.hits).size()
+  throw "kauai convert: the score has two staves named Hits" if hits_staves > 1
   let ms = parts[0].measures
   throw "kauai convert: the score has no measures" if ms.empty()
   for p in parts {
@@ -1113,16 +1147,19 @@ fn reading(doc, voicings) {
       ms.size()
   }
 
-  # The lines: each part's voices that play, in the order they start.
+  # The lines: each part's voices that play, in the order they start; the
+  # hits' last, its voice the one the score shows (a break is its rests).
   let lines = []
   for pi, p in parts.enumerate() {
     let voices = []
     for m in p.measures {
       for v in m.voices {
         voices.push(v.voice) if !voices.contains(v.voice) &&
-          v.events.any(|e| !e.rest)
+          v.events.any(|e| p.hits ? e.shown : !e.rest)
       }
     }
+    throw "kauai convert: the Hits staff has more than one voice" if p.hits &&
+      voices.size() > 1
     for vi, v in voices.enumerate() {
       let base = pi == 0 && vi == 0
         ? "Melody"
@@ -1133,7 +1170,13 @@ fn reading(doc, voicings) {
         name = "{base}{n}"
         n += 1
       }
-      lines.push({part: pi, voice: v, name, events: events_in(p.measures, v)})
+      lines.push({
+        part: pi,
+        voice: v,
+        name,
+        hits: p.hits,
+        events: events_in(p.measures, v),
+      })
     }
   }
   # A score that only rests still has a melody: its first voice's rests.
@@ -1286,6 +1329,17 @@ fn reading(doc, voicings) {
     }
   }
 
+  # The hits, out of the lines: each measure's where the score shows some.
+  let hits = lines.get(-1, nil)?.hits == true
+    ? iota(ms.size()).map(|mi| lines[-1].events[mi].any(|e| e.shown)
+      ? hit_items(line_items[-1][mi], "measure {ms[mi].number}", report)
+      : nil)
+    : nil
+  if hits != nil {
+    lines.pop()
+    line_items.pop()
+  }
+
   let chords = chords_of(ms, parts, report, voicings)
 
   # The bars, each as Audio.Kauai.parse gives one.
@@ -1306,7 +1360,7 @@ fn reading(doc, voicings) {
       parts: iota(1, lines.size())
         .filter(|li| plays_in(li, mi))
         .map(|li| {name: lines[li].name, notes: line_items[li][mi]}),
-      hits: nil,
+      hits: hits?.get(mi, nil),
       repeat: nil,
       times: [],
     }
@@ -1739,13 +1793,18 @@ fn brought(c, r, r0) {
   }
 
   # Measure `a` of pass `p` in reading `x` (its runs `rs`): its chords,
-  # melody and parts, and the pickup into the next pass it holds, cut off
-  # (nil where a note goes over where it starts).
+  # melody, parts and hits, and the pickup into the next pass it holds, cut
+  # off (nil where a note goes over where it starts).
   let view = fn (x, rs, p, a) {
     let b = x.bars[rs[p][a]]
     let next = a == rs[p].size() - 1 ? passes.get(p + 1, nil) : nil
     let held = next?.pickup
-    let plain = {chords: b.chords, melody: b.melody, parts: b.parts}
+    let plain = {
+      chords: b.chords,
+      melody: b.melody,
+      parts: b.parts,
+      hits: b.hits,
+    }
     return {...plain, pickup: nil} if held == nil
     let cut = into_pickup(b.melody, b.meter, length_of(held))
     return {...plain, pickup: nil, broken: true} if cut == nil
@@ -1790,6 +1849,7 @@ fn brought(c, r, r0) {
           q.notes,
         ),
       }),
+      hits: v.hits,
     }
   }
 
@@ -1808,10 +1868,7 @@ fn brought(c, r, r0) {
       let contents = uses.map(fn (p) {
         let played = mx.as_played(b, passes[p].time)
         return played if !edits.contains(p)
-        {
-          ...from_score(p, a, back_by(passes[p].moves[a]), played),
-          hits: played.hits,
-        }
+        from_score(p, a, back_by(passes[p].moves[a]), played)
       })
       let (base, times) = written_as(contents, uses.map(now))
       {...b, ...base, times}
@@ -1887,7 +1944,6 @@ fn brought(c, r, r0) {
           swing: b.swing,
           groove: {name: playing, bar: since, named: line},
           ...from_score(p, a, mx.UNMOVED, nil),
-          hits: nil,
           repeat: nil,
           times: [],
         }
@@ -1908,7 +1964,7 @@ fn brought(c, r, r0) {
         name += "2"
       }
       report(
-        "a time through a section that no longer fits it, a section of its own (its hits and parameters left out)",
+        "a time through a section that no longer fits it, a section of its own (its parameters left out)",
         "{where(p, 0)} ({sec.name} as {name})",
       )
       alone[p] = name
@@ -1943,17 +1999,9 @@ fn brought(c, r, r0) {
 }
 
 # Score `score` with a band made for `lines` in place of its own, which
-# plays no groove, echo, harmony or hits.
+# plays no groove, echo or harmony (the hits stay, as a score shows them).
 fn without_band(score, lines) {
-  let plain = |b| {
-    ...b,
-    groove: {name: nil, bar: 0, named: false},
-    hits: nil,
-    times: b
-      .times
-      .map(|t| {...t, hits: nil})
-      .filter(|t| t.chords != nil || !t.parts.empty()),
-  }
+  let plain = |b| {...b, groove: {name: nil, bar: 0, named: false}}
   {
     ...score,
     song: {

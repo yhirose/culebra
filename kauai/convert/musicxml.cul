@@ -1,8 +1,8 @@
 # A Kauai song's score, as Audio.Kauai.parse gives it, as a MusicXML 4.0
 # partwise score. The melody is the first part, each part the song writes
-# out another, then each voice of the band's that plays its grooves, echoes
-# and harmonies, and a drum set for its drums; the chords are <harmony> over
-# the melody. The song is written
+# out another, its hits on a staff of their own, then each voice of the
+# band's that plays its grooves, echoes and harmonies, and a drum set for
+# its drums; the chords are <harmony> over the melody. The song is written
 # in the order it plays, a section each time the song plays it, folded into
 # repeat signs and endings where every time through is the same. The song's
 # Kauai text goes with it, for what a score does not hold (its band, its
@@ -29,6 +29,7 @@ let dynamic = |d| LEVELS.has(d) || WEDGES.has(d) || d == "!"
 let TEMPOS = ["tempo", "rit", "accel"]
 let PLAIN = {actual: 1, normal: 1}  # the time a note not in a tuplet plays in
 let UNMOVED = {semis: 0, steps: 0}  # the interval a section played as written moves by
+let HIT = {step: "B", octave: 4}    # where a hit stands on the hits' one-line staff
 let DOCTYPE = '<!DOCTYPE score-partwise PUBLIC "-//Recordare//DTD MusicXML 4.0 Partwise//EN" "http://www.musicxml.org/dtds/partwise.dtd">'
 
 # --- XML -----------------------------------------------------------------------
@@ -322,6 +323,7 @@ fn played_bar(b, time, iv, key) {
     chords: v.chords.map(|c| moved_chord(c, iv)),
     melody: move(v.melody),
     parts: v.parts.map(|p| {name: p.name, notes: move(p.notes)}),
+    hits: v.hits,
   }
 }
 
@@ -429,7 +431,10 @@ fn put_events(items, st, ratio, depth) {
         notes[0].starts.push(bracket)
         notes[-1].stops.push(bracket)
       },
-      it.has("pitches") || it.has("rest") || it.has("drums") => {
+      it.has("pitches") ||
+        it.has("rest") ||
+        it.has("drums") ||
+        it.has("hit") => {
         let len = units(it) * ratio.normal / ratio.actual
         st.out.push(note_event(st.at, len, it, ratio))
         st.at += len
@@ -511,10 +516,11 @@ fn with_pickup(events, len, notes, section) {
 
 # The song's measures in the order it plays them, each with the events of
 # its lines (the melody's, then each part's, nil where the part is not
-# written): a measure for the pickup the song opens with, then each pass's
-# bars. A later pickup goes into the rests at the end of the measure before
-# it.
-fn measures_of(passes, names) {
+# written, then the hits' where the song has `hits`): a measure for the
+# pickup the song opens with, then each pass's bars. A later pickup goes
+# into the rests at the end of the measure before it.
+fn measures_of(passes, names, hits) {
+  let hits_line = |b| hits ? [b?.hits == nil ? nil : events_of(b.hits)] : []
   let out = []
   for i, pass in passes.enumerate() {
     if pass.pickup != nil {
@@ -529,7 +535,7 @@ fn measures_of(passes, names) {
           meter: b.meter,
           swing: b.swing,
           bar: nil,
-          lines: [notes, ...names.map(|_| nil)],
+          lines: [notes, ...names.map(|_| nil), ...hits_line(nil)],
           mut merged: false,
         })
       } else {
@@ -555,6 +561,7 @@ fn measures_of(passes, names) {
         lines: [
           events_of(b.melody),
           ...names.map(|n| b.parts.find(|p| p.name == n)?.notes).map(|notes| notes == nil ? nil : events_of(notes)),
+          ...hits_line(b),
         ],
         mut merged: false,
       })
@@ -571,6 +578,7 @@ let same_pitch = |p, q| sounding(p) == sounding(q)
 # ends there.
 fn join_line(measures, line) {
   mut tied = []
+  mut hit_tied = false
   mut slur_next = false
   mut last = nil
   mut wedge = false
@@ -580,6 +588,7 @@ fn join_line(measures, line) {
     let events = m.lines[line]
     if events == nil {
       tied = []
+      hit_tied = false
       continue
     }
     tail = m
@@ -615,6 +624,10 @@ fn join_line(measures, line) {
             slur_next = false
           }
           last = e
+        },
+        e.item.has("hit") => {
+          e.tied_from = hit_tied ? [e.item] : []
+          hit_tied = e.item.tie
         },
         _ => nil,
       }
@@ -1047,6 +1060,34 @@ fn note_els(e, acc) {
       ],
     )]
   }
+  if it.has("hit") {
+    # A slash on the line of the hits' staff.
+    let ties = [
+      ...(e.tied_from.empty() ? [] : ["stop"]),
+      ...(it.tie ? ["start"] : []),
+    ]
+    return [node(
+      "note",
+      [
+        node(
+          "unpitched",
+          [leaf("display-step", HIT.step), leaf("display-octave", HIT.octave)],
+        ),
+        leaf("duration", e.len),
+        ...ties.map(|t| node("tie", [], {type: t})),
+        leaf("voice", 1),
+        leaf("type", type_name(it.value)),
+        ...dot_els(it),
+        ...time_els(e),
+        leaf("notehead", "slash"),
+        ...notations([
+          ...ties.map(|t| node("tied", [], {type: t})),
+          ...tuplet_els(e),
+          ...mark_els(it.marks),
+        ]),
+      ],
+    )]
+  }
   if it.has("drums") {
     return iota(it.drums.size()).map(fn (k) {
       let d = it.drums[k]
@@ -1226,8 +1267,9 @@ fn harmonies(measures, mi, passes, opens) {
 
 # What line `line` holds in measure `mi`: on the melody the section's name
 # where a pass starts (and the derived part it plays with) and the chords,
-# then the notes and directions.
-fn content_of(measures, mi, line, passes, song, opens = false) {
+# then the notes and directions. A measure the line is not in rests (a
+# `quiet` line's unseen: a bar with no hits, unlike a break's rest).
+fn content_of(measures, mi, line, passes, song, opens = false, quiet = false) {
   let m = measures[mi]
   let events = m.lines[line] ?? []
   let chords = line == 0 ? harmonies(measures, mi, passes, opens) : []
@@ -1259,6 +1301,7 @@ fn content_of(measures, mi, line, passes, song, opens = false) {
         leaf("duration", m.len),
         leaf("voice", 1),
       ],
+      quiet && m.lines[line] == nil ? {"print-object": "no"} : {},
     ))
   }
   out
@@ -1275,7 +1318,8 @@ fn repeats(measures, mi, line, band_from) {
   let first = mi - r.index
   let same = |a, b| a.chords == b.chords &&
     a.melody == b.melody &&
-    a.parts == b.parts
+    a.parts == b.parts &&
+    a.hits == b.hits
   let drawn = iota(r.bars).all(fn (k) {
     let (
       copy,
@@ -1497,11 +1541,14 @@ fn write(score) {
   let band = score.played
   let names = part_names(score)
   let passes = passes_of(score)
-  let measures = measures_of(passes, names)
-  let band_from = names.size() + 1
+  let hits = passes.any(|p| p.bars.any(|b| b.hits != nil))
+  let measures = measures_of(passes, names, hits)
+  let hits_line = hits ? names.size() + 1 : -1
+  let band_from = names.size() + 1 + (hits ? 1 : 0)
   let staves = [
     "Melody",
     ...names,
+    ...(hits ? ["Hits"] : []),
     ...band.voices,
     ...(band.drums.empty() ? [] : ["Drums"]),
   ]
@@ -1524,7 +1571,14 @@ fn write(score) {
       meter: m.meter,
       swing: m.swing,
       repeats: lines.map(|line| repeats(measures, mi, line, band_from)),
-      lines: lines.map(|line| content_of(measures, mi, line, passes, song)),
+      lines: lines.map(|line| content_of(
+        measures,
+        mi,
+        line,
+        passes,
+        song,
+        quiet: line == hits_line,
+      )),
     }
   })
   let order = layout(passes, measures, rendered, tempos_at(measures))
@@ -1533,7 +1587,7 @@ fn write(score) {
     rendered[o.mi].lines[0] = content_of(measures, o.mi, 0, passes, song, true)
   }
   let signs = lines.map(|line| repeat_signs(order, rendered, line))
-  let clefs = lines.map(|line| line == drum_line
+  let clefs = lines.map(|line| line == drum_line || line == hits_line
     ? node("clef", [leaf("sign", "percussion")])
     : clef_el(measures, line))
   let first_number = measures[0].at < 0 ? 0 : 1
@@ -1549,6 +1603,9 @@ fn write(score) {
       ...(restate(|s| s.key) ? [key_el(m.key)] : []),
       ...(restate(|s| s.meter) ? [time_el(m.meter)] : []),
       ...(first ? [clefs[line]] : []),
+      ...(first && line == hits_line
+        ? [node("staff-details", [leaf("staff-lines", 1)])]
+        : []),
       ...signs[line][n],
     ]
     let heads = line > 0

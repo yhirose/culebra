@@ -1155,13 +1155,13 @@ section A {
     part
       .find_all("score-instrument")
       .map(|s| [s.attrs.id, s.text("instrument-name")]),
-    [["P4-I1", "Kick"], ["P4-I2", "Hat"], ["P4-I3", "Cowbell"]],
+    [["P5-I1", "Kick"], ["P5-I2", "Hat"], ["P5-I3", "Cowbell"]],
   )
   assert_eq(
     part
       .find_all("midi-instrument")
       .map(|s| [s.attrs.id, s.text("midi-unpitched")]),
-    [["P4-I1", "37"], ["P4-I2", "43"]],
+    [["P5-I1", "37"], ["P5-I2", "43"]],
     "General MIDI's keys, none for a drum the kit does not name",
   )
   let ms = part_measures(doc, "Drums")
@@ -1177,21 +1177,21 @@ section A {
   assert_eq(
     drummed(ms[0]),
     [
-      ["F4", nil, "eighth", "P4-I1"],
-      ["G5", "x", "eighth", "P4-I2"],
+      ["F4", nil, "eighth", "P5-I1"],
+      ["G5", "x", "eighth", "P5-I2"],
       ["r", nil, "eighth", nil],
-      ["G5", "x", "eighth", "P4-I2"],
-      ["F4", nil, "quarter", "P4-I1"],
-      ["D5", nil, "quarter", "P4-I3"],
+      ["G5", "x", "eighth", "P5-I2"],
+      ["F4", nil, "quarter", "P5-I1"],
+      ["D5", nil, "quarter", "P5-I3"],
     ],
     "a hit lasts until the next one or the beat",
   )
   assert_eq(
     drummed(ms[1]),
     [
-      ["D5", nil, "quarter", "P4-I3"],
+      ["D5", nil, "quarter", "P5-I3"],
       ["r", nil, "eighth", nil],
-      ["D5", nil, "eighth", "P4-I3"],
+      ["D5", nil, "eighth", "P5-I3"],
       ["r", nil, "half", nil],
     ],
     "the drum that plays the hits, alone",
@@ -1212,6 +1212,63 @@ section A {
   )
   assert_eq(heard(bass[2]), [["C3", "whole"]])
   assert_eq(accented(bass[2]), [false], "and not where a tie holds it on")
+}
+
+# A song's hits are slashes on a one-line staff of their own, after its
+# parts: as each time plays them, a break's rest seen and a bar with none
+# an unseen one.
+@test
+fn hits_are_slashes_on_a_staff_of_their_own() {
+  let doc = scored('song S {
+  tempo 120
+  band B
+  melody in C4..B4
+
+  A x2
+}
+
+section A {
+  C   c1
+    hits:  x4. !x8~ x2
+  C   c1
+    2nd hits:  r1
+  C   c1
+}
+')
+  assert_eq(part_names(doc), ["Melody", "Hits"])
+  let ms = part_measures(doc, "Hits")
+  assert_eq(ms[0].text("attributes/clef/sign"), "percussion")
+  assert_eq(ms[0].text("attributes/staff-details/staff-lines"), "1")
+  let slashed = |m| notes(m).map(|n| [
+    n.find("rest") != nil
+      ? "r"
+      : "{n.text("unpitched/display-step")}{n.text("unpitched/display-octave")}",
+    n.text("notehead"),
+    n.text("type"),
+    n.find_all("tie").map(|t| t.attrs.type),
+    n.find("notations/articulations/accent") != nil,
+    n.find("rest")?.attrs?.get("measure", nil),
+    n.attrs.get("print-object", nil),
+  ])
+  assert_eq(
+    slashed(ms[0]),
+    [
+      ["B4", "slash", "quarter", [], false, nil, nil],
+      ["B4", "slash", "eighth", ["start"], true, nil, nil],
+      ["B4", "slash", "half", ["stop"], false, nil, nil],
+    ],
+  )
+  assert_eq(
+    slashed(ms[1]),
+    [["r", nil, nil, [], false, "yes", "no"]],
+    "a bar with no hits",
+  )
+  assert_eq(ms.size(), 6, "the times written out, as the 2nd plays a break")
+  assert_eq(
+    slashed(ms[4]),
+    [["r", nil, "whole", [], false, nil, nil]],
+    "a break",
+  )
 }
 
 @test
