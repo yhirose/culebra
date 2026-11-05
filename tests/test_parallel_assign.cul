@@ -78,4 +78,80 @@ assert_eq(head, [1, 10])
 assert_eq(middle, [[2]])
 assert_eq(tail, [3, 30])
 
+// A literal on both sides compiles without the Tuple (resolve_shape_test);
+// what the Tuple used to guarantee must still hold. The right side runs left
+// to right, once each, before any target is written.
+mut order = []
+fn note(tag, v) {
+  order.push(tag)
+  v
+}
+mut sa = 1
+mut sb = 2
+(sa, sb) = (note("x", sb), note("y", sa))
+assert_eq(order, ["x", "y"])
+assert_eq([sa, sb], [2, 1])
+
+// An ImmutableError mid-write leaves the targets before it written, through
+// both statement forms.
+mut w1 = 0
+assert_eq(try { (w1, imm) = (5, 6); nil } catch er { er.kind }, "ImmutableError")
+assert_eq(w1, 5)
+mut w2 = 0
+assert_eq(try { [w2, imm] = [7, 8]; nil } catch er { er.kind }, "ImmutableError")
+assert_eq(w2, 7)
+
+// A target's old value is dropped by its own write; the new values live on in
+// the targets, and a swap drops nothing.
+mut drops = []
+class Dropped {
+  name: String
+  new(@name) {}
+  drop() { drops.push(@name) }
+}
+mut d1 = Dropped("a")
+mut d2 = Dropped("b")
+(d1, d2) = (Dropped("c"), Dropped("d"))
+assert_eq(drops, ["a", "b"])
+(d1, d2) = (d2, d1)
+let (d3, d4) = (Dropped("e"), Dropped("f"))
+assert_eq(drops, ["a", "b"])
+assert_eq([d1.name, d2.name, d3.name, d4.name], ["d", "c", "e", "f"])
+
+// Elements still held when the statement unwinds are dropped in element
+// order, as the Tuple drops them: a throw while the right side runs, and an
+// ImmutableError between the writes.
+fn boom() { throw "boom" }
+drops = []
+try { (d1, d2, d3) = (Dropped("g"), Dropped("h"), boom()) } catch _ {}
+assert_eq(drops, ["g", "h"])
+drops = []
+try { (d1, imm, d2) = (Dropped("i"), Dropped("j"), Dropped("k")) } catch _ {}
+assert_eq(drops, ["d", "j", "k"])
+
+// The last statement of an `if` arm, and `let` reading the outer names.
+if true {
+  (sa, sb) = (sb, sa)
+}
+assert_eq([sa, sb], [1, 2])
+let (sb, sa) = (sa, sb)
+assert_eq([sa, sb], [2, 1])
+
+// A sized Array literal's children are not the targets' values: `[7](2)` is
+// `[7, nil]`, through both statement forms.
+let [z1, z2] = [7](2)
+assert_eq([z1, z2], [7, nil])
+mut y1 = 0
+mut y2 = 0
+[y1, y2] = [8](2)
+assert_eq([y1, y2], [8, nil])
+
+// A destructure whose value is read still evaluates to the right side.
+fn swapped() {
+  mut p = 1
+  mut q = 2
+  (p, q) = (q, p)
+}
+assert_eq(swapped(), (2, 1))
+
 IO.inspect("test_parallel_assign OK")

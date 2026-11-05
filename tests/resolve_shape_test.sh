@@ -146,5 +146,33 @@ fn f() {
 println(f())' \
 ' ValueBox ' 1
 
+# A destructuring statement with a literal on both sides builds no Tuple: the
+# elements go to the targets directly, the last statement of an `if` arm
+# included.
+check "literal destructure builds no Tuple" \
+'mut a = 1
+mut b = 2
+(a, b) = (b, a)
+let (c, d) = (a, b)
+[a, b] = [d, c]
+if a < b {
+  (a, b) = (b, a)
+}
+println(a + b + c + d)' \
+' (TupleNew|ArrayNew|SeqChk) ' 0
+
+# ...and the forms that still need it: a `_` target, whose element the Tuple
+# releases in its own order, and a statement whose value is read (a
+# function's last one is its result).
+check "a sink or a read value keeps the Tuple" \
+'let (x, _) = (1, 2)
+fn f() {
+  mut p = 1
+  mut q = 2
+  (p, q) = (q, p)
+}
+println([x, f()])' \
+' TupleNew ' 2
+
 if [[ $fail -eq 0 ]]; then echo "resolve_shape_test OK"; exit 0; fi
 exit 1

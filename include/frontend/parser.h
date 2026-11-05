@@ -3142,14 +3142,15 @@ inline void pattern_binding_names(const peg::Ast& pattern,
 // empty tokens when absent.
 struct DestructureView {
   bool declares;            // `let` or `mut` in front
+  bool is_mut;              // `mut` in front
   const peg::Ast* pattern;
   const peg::Ast* rhs;
 };
 
 inline DestructureView view_destructure(const peg::Ast& d) {
-  return DestructureView{
-      d.nodes[0]->token == "let" || d.nodes[1]->token == "mut",
-      d.nodes[2].get(), d.nodes[3].get()};
+  bool is_mut = d.nodes[1]->token == "mut";
+  return DestructureView{d.nodes[0]->token == "let" || is_mut, is_mut,
+                         d.nodes[2].get(), d.nodes[3].get()};
 }
 
 // The names a declaring site (an ASSIGNMENT or a DESTRUCTURE_ASSIGN) binds:
@@ -3161,10 +3162,9 @@ inline void for_each_site_declaration(const peg::Ast& site, F&& f) {
   using namespace peg::udl;
   if (site.tag == "DESTRUCTURE_ASSIGN"_) {
     auto dv = view_destructure(site);
-    bool is_mut = site.nodes[1]->token == "mut";
     if (dv.declares)
       for_each_pattern_leaf(*dv.pattern, [&](const peg::Ast& id, bool) {
-        f(id, is_mut, false);
+        f(id, dv.is_mut, false);
       });
     return;
   }

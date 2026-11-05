@@ -7160,6 +7160,12 @@ class Compiler {
         if (!r.unboxed_class) store_into(dst, r, /*dst_is_fresh=*/true);
         break;
       }
+      case "DESTRUCTURE_ASSIGN"_:
+      case "PLACE_ASSIGN"_:
+        // Unread, a literal right side builds no value, and `dst` stays nil.
+        if (read || !compile_literal_destructure(ast))
+          store_into(dst, compile_expr(ast), /*dst_is_fresh=*/true);
+        break;
       default:
         store_into(dst, read ? compile_expr(ast) : compile_unread(ast),
                    /*dst_is_fresh=*/true);
@@ -7346,6 +7352,10 @@ class Compiler {
         emit(Op::Ret, rv);
         break;
       }
+      case "DESTRUCTURE_ASSIGN"_:
+      case "PLACE_ASSIGN"_:
+        if (!compile_literal_destructure(ast)) compile_unread(ast);
+        break;
       default:
         compile_unread(ast);  // expression statement; temps swept by the caller
         break;
@@ -10155,8 +10165,23 @@ class Compiler {
       elems[i] = alloc_temp(t);
       emit(Op::SeqGet, elems[i], rv, static_cast<int32_t>(i));
     }
-    for (size_t i = 0; i < pv.count; ++i) {
-      const auto& t = *ast.nodes[i];
+    write_place_targets(ast, elems);
+    size_t done = emit(Op::Jump);
+    for (size_t ix : fail) patch_to_here(ix);
+    emit(Op::DestrErr);
+    patch_to_here(done);
+    return {rv, false};
+  }
+
+  // A parallel assignment's writes, left to right: one element temp per
+  // target in `targets`, -1 for a `_`, which writes nothing. A `let` / `mut`
+  // literal destructure binds through here too, declaring.
+  void write_place_targets(const peg::Ast& targets,
+                           const std::vector<int32_t>& elems,
+                           bool is_mut = false, bool declares = false) {
+    using namespace peg::udl;
+    for (size_t i = 0; i < elems.size(); ++i) {
+      const auto& t = *targets.nodes[i];
       if (elems[i] < 0) continue;
       if (t.tag == "PLACE"_) {
         compile_place_target(t, elems[i]);
@@ -10165,14 +10190,72 @@ class Compiler {
       // Bare name: `x = v` semantics, declare included. The element temp's
       // +1 moves into the binding; an immutable name throws here, after
       // the earlier targets already wrote (left-to-right).
-      bind_pattern_name(t, t, elems[i], /*src_owned=*/true, /*is_mut=*/false,
-                        /*declares=*/false);
+      bind_pattern_name(t, t, elems[i], /*src_owned=*/true, is_mut, declares);
     }
-    size_t done = emit(Op::Jump);
-    for (size_t ix : fail) patch_to_here(ix);
-    emit(Op::DestrErr);
-    patch_to_here(done);
-    return {rv, false};
+  }
+
+  // `(a, b) = (b, a)`, `let (x, y) = (y, x)`: a destructuring statement whose
+  // value nothing reads, with a literal right side of the targets' own count
+  // and a name or a place for every target. The Tuple (or Array) it would
+  // build is never seen, so its elements go to the targets directly (CPython's
+  // BUILD_TUPLE + UNPACK_SEQUENCE peephole, Ruby's newarray + expandarray).
+  // Each element is held as its own +1 in a temp, left to right, before the
+  // first write, so a target the right side reads still reads the old value,
+  // as TuplePush's retain made it. The temps are taken before any element
+  // runs, the first element's highest: what the statement still holds when
+  // it unwinds (a throw in the right side, an ImmutableError between the
+  // writes) is released highest slot first, so in element order, as the
+  // Tuple releases it. Nothing can mismatch and no target tests, so there is
+  // no DestrErr edge: a typed or nested target tests, and keeps the general
+  // path. So does a `_`, whose element would outlive the writes to the
+  // statement's end, where the sweep's order is not the Tuple's. False when
+  // the statement does not qualify, having emitted nothing.
+  bool compile_literal_destructure(const peg::Ast& ast) {
+    using namespace peg::udl;
+    bool place = ast.tag == "PLACE_ASSIGN"_;
+    const peg::Ast* targets = &ast;
+    const peg::Ast* rhs = nullptr;
+    size_t count = 0;
+    bool is_mut = false;
+    bool declares = false;
+    if (place) {
+      auto pv = culebra::view_place_assign(ast);
+      rhs = pv.rhs;
+      count = pv.count;
+    } else {
+      auto dv = culebra::view_destructure(ast);
+      if (dv.pattern->tag != "TUPLE_PATTERN"_ &&
+          dv.pattern->tag != "ARRAY_PATTERN"_)
+        return false;
+      targets = dv.pattern;
+      rhs = dv.rhs;
+      count = dv.pattern->nodes.size();
+      is_mut = dv.is_mut;
+      declares = dv.declares;
+    }
+    // The literal's elements: a Tuple's are its children, an Array's its
+    // SEQUENCE's (a sized `[v](n)` has more children, and never qualifies).
+    const peg::Ast* values = rhs;
+    if (rhs->tag == "ARRAY"_ && rhs->nodes.size() == 1)
+      values = rhs->nodes[0].get();
+    else if (rhs->tag != "TUPLE"_)
+      return false;
+    if (values->nodes.size() != count) return false;
+    for (size_t i = 0; i < count; ++i) {
+      const auto& t = *targets->nodes[i];
+      bool name = t.tag == "IDENTIFIER"_ && !culebra::is_sink_name(t.token);
+      if (values->nodes[i]->tag == "SPREAD_ELEM"_ ||
+          !(name || (place && t.tag == "PLACE"_)))
+        return false;
+    }
+    StampGuard pos(*this, ast);
+    std::vector<int32_t> elems(count);
+    for (size_t i = count; i-- > 0;) elems[i] = alloc_temp(*values->nodes[i]);
+    for (size_t i = 0; i < count; ++i)
+      store_into(elems[i], compile_expr(*values->nodes[i]),
+                 /*dst_is_fresh=*/true);
+    write_place_targets(*targets, elems, is_mut, declares);
+    return true;
   }
 
   // One PLACE target's write with an element temp as the value — the
@@ -14125,10 +14208,10 @@ class Compiler {
   // and every fail edge release-free (nothing but statement temps is live).
   // Evaluates to the right-hand value, like the other assignment forms.
   ExprResult compile_destructure_assign(const peg::Ast& ast) {
-    bool declares =
-        ast.nodes[0]->token == "let" || ast.nodes[1]->token == "mut";
-    bool is_mut = ast.nodes[1]->token == "mut";
-    const auto& pat = *ast.nodes[2];
+    auto dv = culebra::view_destructure(ast);
+    bool declares = dv.declares;
+    bool is_mut = dv.is_mut;
+    const auto& pat = *dv.pattern;
     // Both of this statement's throws — the mismatch and a leaf's
     // ImmutableError — report the destructure node, so the walks run under
     // its stamp (the RHS's own guards restore it).
@@ -14136,7 +14219,7 @@ class Compiler {
     // The value lands in a temp before the pattern names exist, so
     // `let [x] = x` reads the outer `x` (compile_assignment's rule).
     int32_t rv = alloc_temp(ast);
-    store_into(rv, compile_expr(*ast.nodes[3]), /*dst_is_fresh=*/true);
+    store_into(rv, compile_expr(*dv.rhs), /*dst_is_fresh=*/true);
     std::vector<size_t> fail;
     compile_pattern_test(pat, rv, fail);
     // The subject is the statement's value too, so the walk borrows it; the
