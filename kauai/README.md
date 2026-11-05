@@ -149,7 +149,7 @@ is an error (a 64th, a trill, a 7:3 tuplet); what Kauai leaves out that
 plays the same (lyrics, words, a chord it spells another way) is said, and
 so is a slur Kauai has to end where a section ends. Where the bar before
 a pickup the score goes back to does not rest where it plays, the
-pickup's measure is a bar of its own (`meter 1/4` for a quarter). The
+pickup's measure is a bar of its own (`meter 1/4` for a quarter in 4/4). The
 tests read the scores in [`convert/scores/`](convert/scores/): a selection
 of the MusicXML test suite, and the OpenScore *Je te veux*, which plays as
 `tests/kauai/jetveux.expect` says.

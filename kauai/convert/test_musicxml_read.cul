@@ -526,6 +526,27 @@ fn a_pickup_plays_again_where_the_score_writes_it() {
     ("", note("C", "whole", 8)),
     ("", note("E", "whole", 8) + back),
   ])
+  # A pickup longer than the bar before it.
+  let long = partwise([
+    (
+      opening[0],
+      note("G", "quarter", 1) +
+        note("A", "quarter", 1) +
+        note("B", "quarter", 1),
+    ),
+    ("", note("C", "whole", 4)),
+    (
+      "",
+      "<attributes><time><beats>2</beats><beat-type>4</beat-type></time></attributes>" +
+        quarter_rest +
+        quarter_rest +
+        back,
+    ),
+  ])
+  assert_true(
+    text(long).contains("  meter 3/4\n  N.C.          g4 a b\n"),
+    text(long),
+  )
   # A half note's pickup changing chord, and slurred into the first bar: its
   # bar has both chords and ends the slur.
   let chorded = partwise([

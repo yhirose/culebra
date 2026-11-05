@@ -1352,12 +1352,11 @@ fn reading(doc, voicings) {
   # Visits the score plays the pickup's own measure before where the bar
   # before it does not rest: that measure is a bar of its own, as long as
   # the pickup, played before the section without it.
-  let crowded = |k| later(k) &&
-    replays(k) &&
-    !rests_from(
-      bars[last_of(visits[k - 1])].melody,
-      bar_units(bars[last_of(visits[k - 1])].meter) - length_of(lead),
-    )
+  let crowded = fn (k) {
+    return false if !later(k) || !replays(k)
+    let before = bars[last_of(visits[k - 1])]
+    !rests_from(before.melody, bar_units(before.meter) - length_of(lead))
+  }
   let names = iota(visits.size()).map(fn (k) {
     let played = !later(k) || (replays(k) ? !crowded(k) : into[k - 1] != nil)
     played
@@ -1383,24 +1382,22 @@ fn reading(doc, voicings) {
 
   # The plays, each run of visits to a block that takes the same ending.
   let plays = []
-  for k, v in visits.enumerate() {
-    plays.push({
-      section: lead_bar(),
-      times: 1,
-      ending: nil,
-      with: nil,
-      key: nil,
-    }) if crowded(k)
-    let section = names[k]
-    let ending = v.ending == nil || alike[v.block]
-      ? nil
-      : blocks[v.block].endings[v.ending].numbers[0]
+  let play = fn (section, ending) {
     let last = plays.get(-1, nil)
     if last != nil && last.section == section && last.ending == ending {
       plays[plays.size() - 1] = {...last, times: last.times + 1}
     } else {
       plays.push({section, times: 1, ending, with: nil, key: nil})
     }
+  }
+  for k, v in visits.enumerate() {
+    play(lead_bar(), nil) if crowded(k)
+    play(
+      names[k],
+      v.ending == nil || alike[v.block]
+        ? nil
+        : blocks[v.block].endings[v.ending].numbers[0],
+    )
   }
   let order = [...(pickup ? [0] : []), ...visits.flat_map(measures_of)]
   let about = about_of(doc)
@@ -1484,6 +1481,7 @@ fn meter_of(units, meter) {
 # Whether a bar's `items` rest from `at` units to the bar's end, as Kauai
 # has a bar rest where a pickup plays into it: no note sounds there.
 fn rests_from(items, at) {
+  return false if at < 0
   mut from = 0
   for it in items {
     let len = length_of([it])
