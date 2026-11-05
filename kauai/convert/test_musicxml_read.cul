@@ -504,15 +504,57 @@ fn a_pickup_plays_again_where_the_score_writes_it() {
       (64, 25.0),
     ],
   )
-  # A bar before it that does not rest there leaves no room for it.
+  # Where the bar before it does not rest there, the pickup's measure is a
+  # bar of its own, as long as the pickup.
   let crowded = partwise([opening, first, ("", note("E", "whole", 4) + back)])
   assert_eq(
     heard(crowded),
-    [(67, 0.0), (60, 1.0), (64, 5.0), (60, 9.0), (64, 13.0)],
+    [(67, 0.0), (60, 1.0), (64, 5.0), (67, 9.0), (60, 10.0), (64, 14.0)],
+  )
+  assert_eq(song_of(crowded).dropped, [])
+  assert_true(
+    text(crowded).contains("\n  A\n  C\n  B\n}") &&
+      text(crowded).contains("  meter 1/4\n  N.C.          g4\n"),
+    text(crowded),
+  )
+  let eighth = partwise([
+    (
+      opening[0],
+      "<attributes><divisions>2</divisions></attributes>" +
+        note("G", "eighth", 1),
+    ),
+    ("", note("C", "whole", 8)),
+    ("", note("E", "whole", 8) + back),
+  ])
+  # A half note's pickup changing chord, and slurred into the first bar: its
+  # bar has both chords and ends the slur.
+  let chorded = partwise([
+    (
+      opening[0],
+      "<harmony><root><root-step>C</root-step></root><kind>major</kind></harmony>" +
+        note(
+          "G",
+          "quarter",
+          1,
+          "<notations><slur type=\"start\"/></notations>",
+        ) +
+        "<harmony><root><root-step>F</root-step></root><kind>major</kind></harmony>" +
+        note("A", "quarter", 1),
+    ),
+    ("", note("C", "whole", 4, "<notations><slur type=\"stop\"/></notations>")),
+    ("", note("E", "whole", 4) + back),
+  ])
+  assert_true(
+    text(chorded).contains("  meter 2/4\n  C F           (g4 a)\n"),
+    text(chorded),
   )
   assert_eq(
-    song_of(crowded).dropped,
-    ["a pickup a repeat plays again where the bar before it does not rest, left out: measure 3"],
+    song_of(chorded).dropped,
+    ["a slur cut where its section ends, its last note no longer joined to the next: measure 1"],
+  )
+  assert_true(
+    text(eighth).contains("  meter 1/8\n  N.C.          g8\n"),
+    "in the longest value it is: {text(eighth)}",
   )
 
   # A slur from the pickup into the first bar, where the pickup is written

@@ -1335,11 +1335,13 @@ fn reading(doc, voicings) {
     ms[blocks[k].from].rehearsal,
   ))
 
+  # The slurs the pickup opens, which the first bar after it ends.
+  let slurs = |s| (lead ?? []).filter(|it| it.get("slur", nil) == s).size()
+  let open_slurs = slurs("start") - slurs("stop")
   # The first section without its pickup, nor the ends of the slurs the
   # pickup opens: a later time the pickup does not play before.
   let unled = fn () {
-    let slurs = |s| lead.filter(|it| it.get("slur", nil) == s).size()
-    mut open = slurs("start") - slurs("stop")
+    mut open = open_slurs
     let unslurred = content_of(0).bars.map(|b| {...b, melody: b.melody.filter(fn (it) {
       return true if open == 0 || it.get("slur", nil) != "stop"
       open -= 1
@@ -1347,24 +1349,48 @@ fn reading(doc, voicings) {
     })})
     {...content_of(0), pickup: nil, bars: unslurred}
   }
+  # Visits the score plays the pickup's own measure before where the bar
+  # before it does not rest: that measure is a bar of its own, as long as
+  # the pickup, played before the section without it.
+  let crowded = |k| later(k) &&
+    replays(k) &&
+    !rests_from(
+      bars[last_of(visits[k - 1])].melody,
+      bar_units(bars[last_of(visits[k - 1])].meter) - length_of(lead),
+    )
   let names = iota(visits.size()).map(fn (k) {
-    let before = later(k) ? bars[last_of(visits[k - 1])] : nil
-    let played = !later(k) ||
-      (replays(k)
-        ? rests_from(before.melody, bar_units(before.meter) - length_of(lead))
-        : into[k - 1] != nil)
-    return block_names[visits[k].block] if played
-    report(
-      "a pickup a repeat plays again where the bar before it does not rest, left out",
-      "measure {ms[last_of(visits[k - 1])].number}",
-    ) if replays(k)
-    name_for(unled(), ms[blocks[0].from].rehearsal)
+    let played = !later(k) || (replays(k) ? !crowded(k) : into[k - 1] != nil)
+    played
+      ? block_names[visits[k].block]
+      : name_for(unled(), ms[blocks[0].from].rehearsal)
   })
+  let lead_bar = fn () {
+    let meter = meter_of(length_of(lead), bars[0].meter)
+    let beat = |j| j * (WHOLE / meter.value) / (WHOLE / bars[0].meter.value)
+    report(
+      "a slur cut where its section ends, its last note no longer joined to the next",
+      "measure {ms[0].number}",
+    ) if open_slurs > 0
+    let bar = {
+      ...bars[0],
+      meter,
+      chords: iota(meter.beats).map(|j| bars[0].chords[beat(j)]),
+      melody: [...lead, ...repeat(open_slurs, {slur: "stop"})],
+    }
+    name_for({key: nil, pickup: nil, bars: [bar], endings: []}, nil)
+  }
   played_into(sections, visits, names, into, alike)
 
   # The plays, each run of visits to a block that takes the same ending.
   let plays = []
   for k, v in visits.enumerate() {
+    plays.push({
+      section: lead_bar(),
+      times: 1,
+      ending: nil,
+      with: nil,
+      key: nil,
+    }) if crowded(k)
     let section = names[k]
     let ending = v.ending == nil || alike[v.block]
       ? nil
@@ -1443,6 +1469,16 @@ fn into_pickup(melody, meter, len) {
   let notes = head[..n]
   let end = length_of(notes)
   {bar: [...notes, ...rests_for(end, whole - end)], pickup}
+}
+
+# A meter `units` long, counted in `meter`'s beats where they fit, else in
+# the longest value that does.
+fn meter_of(units, meter) {
+  mut value = meter.value
+  while units % (WHOLE / value) != 0 {
+    value *= 2
+  }
+  {beats: units / (WHOLE / value), value}
 }
 
 # Whether a bar's `items` rest from `at` units to the bar's end, as Kauai
