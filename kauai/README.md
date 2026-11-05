@@ -88,6 +88,7 @@ because a compiled program loads no module of its own at run time.
 
 ```bash
 kauai convert song.kau score.musicxml   # or culebra kauai/cli/main.cul convert ...
+kauai convert song.kau score.mxl        # compressed
 ```
 
 [`convert/musicxml.cul`](convert/musicxml.cul) writes the song as a MusicXML
@@ -128,8 +129,9 @@ What a score has no place for (the band, its grooves and voicings, a line's
 parameters such as `\bright=`, the hits, the sections and the order the song
 plays them in, `mark` and `room`, the tempo a rit. reaches) goes with it as the
 song's Kauai text, in a `<miscellaneous-field>` named `kauai-song`, which
-MuseScore keeps when it saves the score again. Writing a compressed `.mxl` is
-to come.
+MuseScore keeps when it saves the score again. An `.mxl` is the score and the
+`META-INF/container.xml` that names it, without the `mimetype` file MusicXML
+asks for but does not need.
 [`convert/musicxml-4.0/`](convert/musicxml-4.0/) holds the schema the tests
 check every score against.
 

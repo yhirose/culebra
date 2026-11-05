@@ -189,6 +189,14 @@ for lane in "${lanes[@]}"; do
   run cli "$TMP/$lane.kau" --check
   check "$lane convert back: the song reads" 0 "$rc"
 
+  # The same through a compressed .mxl.
+  run cli convert "$TMP/duo.kau" "$TMP/$lane.mxl"
+  check "$lane convert to .mxl: status" 0 "$rc"
+  run cli convert "$TMP/$lane.mxl" "$TMP/$lane-mxl.kau"
+  check "$lane convert .mxl back: status" 0 "$rc"
+  cmp -s "$TMP/$lane.kau" "$TMP/$lane-mxl.kau" || {
+    echo "FAIL $lane convert .mxl back: not the song the .musicxml gives"; fail=1; }
+
   # The WAV, whole and in part, is the one `culebra play` writes.
   run play --wav "$TMP/play.wav" "$TMP/duo.kau"
   run cli "$TMP/duo.kau" --wav "$TMP/cli.wav"

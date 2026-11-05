@@ -34,8 +34,8 @@ let usage = "Usage: kauai <song.kau> [options]
                        starts before it ringing on
 
        kauai convert <song.kau> <score.musicxml>
-  write the song as a MusicXML score (.musicxml or .xml) that notation
-  programs open: its melody, parts, chords and band, in the order it plays
+  write the song as a MusicXML score (.musicxml, .xml or a compressed .mxl)
+  that notation programs open: its melody, parts, chords and band, in the order it plays
   them
 
        kauai convert <score.musicxml> <song.kau>
@@ -90,18 +90,21 @@ if args[0] == "convert" {
   let is_score = |p| [".musicxml", ".xml", ".mxl"].any(|x| p.ends_with(x))
   let to_score = paths.size() == 2 &&
     paths[0].ends_with(".kau") &&
-    is_score(paths[1]) &&
-    !paths[1].ends_with(".mxl")
+    is_score(paths[1])
   let to_song = paths.size() == 2 &&
     is_score(paths[0]) &&
     paths[1].ends_with(".kau")
   if !to_score && !to_song {
-    IO.eprintln("kauai: convert writes a song (.kau) as a MusicXML score (.musicxml or .xml), or a score (.musicxml, .xml or .mxl) as a song: kauai convert song.kau score.musicxml")
+    IO.eprintln("kauai: convert writes a song (.kau) as a MusicXML score (.musicxml, .xml or .mxl), or a score (.musicxml, .xml or .mxl) as a song: kauai convert song.kau score.musicxml")
     Sys.exit(2)
   }
   try {
     if to_score {
-      FS.write(paths[1], musicxml.write(Audio.Kauai.parse_file(paths[0])))
+      let score = musicxml.write(Audio.Kauai.parse_file(paths[0]))
+      FS.write(
+        paths[1],
+        paths[1].ends_with(".mxl") ? musicxml.mxl(score) : score,
+      )
     } else {
       let read = musicxml_read.read(musicxml_read.score_text(FS.read(paths[0])))
       let text = kau.write(read.score)

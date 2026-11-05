@@ -231,6 +231,25 @@ fn every_score_is_valid_musicxml_4() {
     env: {XML_CATALOG_FILES: "{SCHEMA}/catalog.xml"},
   )
   assert_true(r.ok, r.stderr)
+
+  # An .mxl holds the score, which its container names first.
+  let score = written(corpus.SONGS[0]).text
+  let zip = Dir.zip(bytes: mx.mxl(score))
+  let container = FS.join(dir, "container.xml")
+  FS.write(container, zip.read("META-INF/container.xml"))
+  let named = XML
+    .parse(zip.read("META-INF/container.xml"))
+    .find("rootfiles/rootfile")
+  assert_eq(zip.read(named.attrs["full-path"]), score)
+  let c = Proc.run([
+    "xmllint",
+    "--nonet",
+    "--noout",
+    "--schema",
+    "{SCHEMA}/container.xsd",
+    container,
+  ])
+  assert_true(c.ok, c.stderr)
 }
 
 # --- what a score writes ---------------------------------------------------------
