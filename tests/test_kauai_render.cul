@@ -1,4 +1,4 @@
-# Audio.Kauai's render(from:, to:): a part of a song, as the whole song
+# Kauai's render(from:, to:): a part of a song, as the whole song
 # sounds there (docs/kauai/language.md, section 10), built from only the
 # external sounds the part plays. Rendering needs no device, and the test
 # harness keeps it closed (CULEBRA_AUDIO=off).
@@ -21,7 +21,7 @@ let DUO = lines([
 # starts before `to` ends. The song is mixed from its top all the same, so
 # from `from` until `to` it is the whole song's samples. Three bars of two
 # seconds, with a mark before the second and the third.
-let parted = Audio.Kauai.new(lines([
+let parted = Kauai.new(lines([
   DUO,
   'song First {', '  tempo 120', '  band Duo', '  groove Walk', '  melody in C5..B5',
   '  Verse', '  mark Second', '  Verse', '  mark Third', '  Verse', '}',
@@ -52,7 +52,7 @@ let parts = fn () {
   } catch e: ValueError {
     e.message
   }
-  assert_eq(unmarked, "Audio.Kauai: the song has no mark Fourth (it has Second, Third)")
+  assert_eq(unmarked, "Kauai: the song has no mark Fourth (it has Second, Third)")
   assert_eq(part.slice(44100, 3 * 44100), whole.slice(2 * 44100, 4 * 44100))
   let lead = part.slice(0, 44100)
   assert_eq(lead, iota(44100).map(|i| whole[44100 + i] * (0.5 - 0.5 * Math.cos(Math.pi * i / 44100))))
@@ -100,7 +100,7 @@ let bowed = fn () {
     },
     hears: [],
   }
-  (Audio.Kauai.new(SPREAD, voices: {fiddle: fiddle}), asked)
+  (Kauai.new(SPREAD, voices: {fiddle: fiddle}), asked)
 }
 let second_only = ['pitch 65, at 0.0', 'pitch 65, at 0.0 / pitch 67, at 1.0', 'pitch 69, at 0.0']
 let (bowing, bowed_notes) = bowed()
@@ -116,7 +116,7 @@ assert_eq(crossed_notes.sorted(), second_only)
 # instrument, and what the instrument is handed, which is what it is called
 # with (and the note it is weighed by besides).
 let handed = []
-let listing = Audio.Kauai.new(SPREAD, voices: {
+let listing = Kauai.new(SPREAD, voices: {
   fiddle: {
     phrase: fn (notes, params) {
       handed.push(JSON.stringify([notes, params]))
@@ -141,4 +141,4 @@ assert_true(listing.external_sounds(from: "Second", to: "Third").all(|s| handed.
 assert_throws("ValueError", fn () { listing.external_sounds(from: "Fourth") })
 assert_throws("ValueError", fn () { listing.external_sounds(from: 2, to: 1) })
 
-print("audio kauai render ok\n")
+print("kauai render ok\n")

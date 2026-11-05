@@ -1,7 +1,7 @@
 # Je te veux (Erik Satie, 1897), the songs in examples/kauai/songs, against
 # its score note for note. The tests/kauai/*.expect files were written from the
 # OpenScore Lieder score (CC0) alone, reading no Kauai, so a mistake in
-# Audio.Kauai cannot reach them: every note as [MIDI pitch, start, length],
+# Kauai cannot reach them: every note as [MIDI pitch, start, length],
 # in quarter notes from the song's start, and where the score rolls a chord
 # or has a grace note.
 #
@@ -9,7 +9,7 @@
 # that seconds map to quarters. Times compare in sixty-fourths (a sixteenth
 # of a quarter), the finest the song writes.
 #
-# gc-stress: skip — two whole scores over test_audio_kauai.cul's paths
+# gc-stress: skip — two whole scores over test_kauai.cul's paths
 
 let read = |name| FS.read(FS.join("tests/kauai", name))
 let song_file = |name| FS.read(FS.join("examples/kauai/songs", name))
@@ -25,7 +25,7 @@ let played = |song, by| song
   .filter(|e| e.by == by)
   .map(|e| (e.pitch, at_64(e.at), at_64(e.len)))
 let written = |n| (to_long(n[0]), q64(n[1]), q64(n[2]))
-let external = |text| Audio.Kauai.new(
+let external = |text| Kauai.new(
   one_tempo(text),
   voices: {ep: |pitch, params| nil},
 )

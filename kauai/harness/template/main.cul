@@ -32,7 +32,7 @@ let INSTRUMENT = engine.Instrument.new(DATA, CONFIG.play)
 # with the voice's parameters as they stand at its first note.
 let phrase_samples = |phrase, params| INSTRUMENT.phrase_samples(phrase, params)
 
-# The instrument, as Audio.Kauai.load's `voices:` takes it.
+# The instrument, as Kauai.load's `voices:` takes it.
 let voices = {voice: {
   phrase: |notes, params| Audio.Sound(
     phrase_samples(notes, params),

@@ -86,7 +86,7 @@ finish; when it is done, the sea comes in and stays until the restart.
 The songs are written in Kauai, a language for music as a band plays it
 (`docs/kauai/language.md`): `assets/cruise.kau` and `assets/sprint.kau` for the
 laps, which share the band in `assets/run.kau`, and `assets/ballad.kau` for the
-theme. `Audio.Kauai` reads them from the same directory as the art, so a
+theme. `Kauai` reads them from the same directory as the art, so a
 `--assets` directory can bring songs of its own, and plays them on the audio
 stream's own clock.
 

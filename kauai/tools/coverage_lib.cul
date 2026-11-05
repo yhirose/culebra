@@ -128,7 +128,7 @@ fn asked_of(song, only = nil) {
 # status, and anything else the program does (an error) into "could not".
 fn run(sounds, arg) {
   let c = JSON.parse(arg)
-  let song = Audio.Kauai.load(c.song, voices: sounds.voices ?? {}, drums: sounds.drums ?? {})
+  let song = Kauai.load(c.song, voices: sounds.voices ?? {}, drums: sounds.drums ?? {})
   let notes = c.measured.flat_map(|path| JSON.parse(FS.read(path)).notes)
   let got = song_coverage(notes, asked_of(song, c.external), c.needs)
   let names = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]

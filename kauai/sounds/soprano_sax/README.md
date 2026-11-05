@@ -27,7 +27,7 @@ From a program, import `main.cul` and hand its `voices` to Kauai:
 # doctest: skip (the path is the program's own)
 import sax from './kauai/sounds/soprano_sax/main.cul'
 
-let song = Audio.Kauai.load("song.kau", voices: sax.voices)
+let song = Kauai.load("song.kau", voices: sax.voices)
 ```
 
 `phrase_samples(notes, params)` gives a phrase's samples (mono, `RATE` a

@@ -41,7 +41,7 @@ fn silent(arrangement) {
 # What song `path` plays, its external instruments silent.
 fn events_of(path, arrangement) {
   let sounds = silent(arrangement)
-  Audio.Kauai.load(path, voices: sounds.voices, drums: sounds.drums).events()
+  Kauai.load(path, voices: sounds.voices, drums: sounds.drums).events()
 }
 
 # The voices of a band, each {voice, plays (the word after each `plays`),

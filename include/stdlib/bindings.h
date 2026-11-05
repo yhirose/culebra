@@ -6347,16 +6347,16 @@ inline JitValue _ns_audio_graph_now(JitValue* a, int64_t) {
   double t = _ns_audio_graph_clock(_ns_adapt::take_long(a[0]));
   return _ns_adapt::v_float(std::isnan(t) ? 0.0 : t);
 }
-// Audio.Kauai's song as both mixers take it (kScheduleStride, stdlib/audio.h),
+// Kauai's song as both mixers take it (kScheduleStride, stdlib/audio.h),
 // refused out of time order, or when it is not a whole number of rows.
 inline void _ns_audio_schedule_events(JitValue v, std::vector<double>& out) {
   namespace ad = culebra::_audio_detail;
   _ns_audio_numbers(v, out, ad::kScheduleEventsError);
   constexpr size_t stride = ad::kScheduleStride;
   if (out.size() % stride != 0)
-    _ns_audio_fail(("Audio.Kauai: a song's events are rows of " + std::to_string(stride) + " numbers").c_str());
+    _ns_audio_fail(("Kauai: a song's events are rows of " + std::to_string(stride) + " numbers").c_str());
   for (size_t i = stride; i < out.size(); i += stride)
-    if (out[i] < out[i - stride]) _ns_audio_fail("Audio.Kauai: a song's events are out of time order");
+    if (out[i] < out[i - stride]) _ns_audio_fail("Kauai: a song's events are out of time order");
 }
 
 // How many numbers a row of a schedule takes (kScheduleStride, stdlib/audio.h).
@@ -6364,7 +6364,7 @@ inline JitValue _ns_audio_schedule_stride(JitValue*, int64_t) {
   return _ns_adapt::v_long(culebra::_audio_detail::kScheduleStride);
 }
 
-// Audio.Kauai's timed notes.
+// Kauai's timed notes.
 inline JitValue _ns_audio_schedule_new(JitValue* a, int64_t) {
   namespace ad = culebra::_audio_detail;
   std::vector<double> events;
@@ -6375,7 +6375,7 @@ inline JitValue _ns_audio_schedule_new(JitValue* a, int64_t) {
   return _ns_adapt::v_long(id);
 }
 
-// A schedule rendered to samples as it would play (schedule_render): Audio.Kauai's
+// A schedule rendered to samples as it would play (schedule_render): Kauai's
 // list, the bytes of each Sound it plays as [handle, data, handle, data, ...],
 // its length, its room's wet, its volume, and the second the samples start at.
 inline JitValue _ns_audio_schedule_render(JitValue* a, int64_t) {
@@ -6395,8 +6395,8 @@ inline JitValue _ns_audio_schedule_render(JitValue* a, int64_t) {
                         _ns_adapt::take_double(a[2]), _ns_adapt::take_double(a[3]),
                         _ns_adapt::take_double(a[4]), _ns_adapt::take_double(a[5]), sounds,
                         out))
-    culebra::throw_runtime_error_at("ValueError", "Audio.Kauai: render() is not available in this build", 0, 0);
-  return _ns_adapt::v_array(_ns_audio_floats(out.data(), out.size(), "Audio.Kauai render() result"));
+    culebra::throw_runtime_error_at("ValueError", "Kauai: render() is not available in this build", 0, 0);
+  return _ns_adapt::v_array(_ns_audio_floats(out.data(), out.size(), "Kauai render() result"));
 }
 
 inline JitValue _ns_canvas_width(JitValue*, int64_t) {
@@ -13613,7 +13613,7 @@ inline const std::unordered_set<std::string_view>& builtin_var_names() {
       // interp's builtin_names skip. See _jit_namespace_get_or_build.
       "Time",    "Args",      "Regex",     "PEG",       "FST",      "Term",
       "Log",
-      "Path",    "Canvas",    "Audio",     "MIDI",      "__Eff",     "Vector2",   "Vector3",
+      "Path",    "Canvas",    "Audio",     "Kauai",     "MIDI",      "__Eff",     "Vector2",   "Vector3",
       "Deque",
       "PriorityQueue", "StateMachine", "Dir",
       // The bare function globals from those same source modules (assert_*,

@@ -399,6 +399,28 @@ expect_absent audio "$window_syms" "the window and SDL, for Audio alone"
 expect_absent audio "$fmt_machinery" "libstdc++'s formatter, Audio"
 expect_output audio "false"
 
+# Kauai plays its songs on the Audio runtime: naming Kauai alone, never Audio,
+# force-loads the same archive, as its preamble calls `_Audio` (else the weak
+# silent bodies play the song).
+build kauai 'let song = Kauai.new(`
+band Solo {
+  voice Lead  pulse  plays melody  vol 20
+}
+song Tune {
+  tempo 120
+  band Solo
+  melody in C5..B5
+  Theme
+}
+section Theme {
+  C  e4 g c2
+}
+`)
+IO.print(song.length())'
+expect_present kauai "$audio_syms" "Kauai named, Audio not"
+expect_absent kauai "$window_syms" "the window and SDL, for Kauai alone"
+expect_output kauai "2.0"
+
 # The wrap fixture: naming __Foreign force-loads its archive, and the
 # registrar has to have run for the namespace to resolve at all.
 build foreign 'let c = __Foreign.Counter.new(10)

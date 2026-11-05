@@ -1,4 +1,4 @@
-# Bowed strings for Audio.Kauai.load's `voices:`: `external Violin`,
+# Bowed strings for Kauai.load's `voices:`: `external Violin`,
 # `external Viola` and `external Cello`. Each is an instrument that plays a
 # phrase at a time, the
 # notes a slur joins under one bow: the bow takes hold, a note swells into its

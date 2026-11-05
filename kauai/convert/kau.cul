@@ -1,4 +1,4 @@
-# A Kauai song from a score as Audio.Kauai.parse gives one: the text that
+# A Kauai song from a score as Kauai.parse gives one: the text that
 # parse reads back to the same score. Each section reads its notes in ranges
 # chosen to need the fewest octave marks, a bar names its chords where they
 # change, and parts are written under their bars.
@@ -286,7 +286,7 @@ fn about_lines(about) {
   ["about \{", ...keys.map(|k| "  {k:<9} {about[k]}"), "}", ""]
 }
 
-# The song `score` (Audio.Kauai.parse's) as Kauai text.
+# The song `score` (Kauai.parse's) as Kauai text.
 fn write(score) {
   [
     ...about_lines(score.about),

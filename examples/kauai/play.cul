@@ -30,7 +30,7 @@ if Sys.argv.empty() {
 }
 let path = Sys.argv[0]
 let song = try {
-  Audio.Kauai.load(path, voices: sounds.voices, drums: sounds.drums)
+  Kauai.load(path, voices: sounds.voices, drums: sounds.drums)
 } catch e {
   println("{e.kind}: {e.message}")
   Sys.exit(1)

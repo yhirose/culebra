@@ -6,10 +6,10 @@ import corpus from './corpus.cul'
 @test
 fn every_song_reads_back_from_its_written_score() {
   for path in corpus.SONGS {
-    let score = Audio.Kauai.parse_file(path)
+    let score = Kauai.parse_file(path)
     let text = kau.write(score)
     let again = try {
-      Audio.Kauai.parse(text)
+      Kauai.parse(text)
     } catch e {
       println("{path} written:\n{text}")
       throw e
@@ -20,7 +20,7 @@ fn every_song_reads_back_from_its_written_score() {
     assert_eq(again, score)
     let sounds = corpus.silent(score.arrangement)
     let played = corpus.events_of(path, score.arrangement)
-    assert_eq(Audio.Kauai.new(text, voices: sounds.voices, drums: sounds.drums).events(), played)
+    assert_eq(Kauai.new(text, voices: sounds.voices, drums: sounds.drums).events(), played)
   }
 }
 
@@ -28,6 +28,6 @@ fn every_song_reads_back_from_its_written_score() {
 # it not counted as a note.
 @test
 fn a_tuplet_with_a_parameter_in_it_is_written_short() {
-  let text = kau.write(Audio.Kauai.parse_file("kauai/convert/notations.kau"))
+  let text = kau.write(Kauai.parse_file("kauai/convert/notations.kau"))
   assert_true(text.contains(" 3[g8 \\bright=1.1 f eb] "), text)
 }

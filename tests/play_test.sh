@@ -4,7 +4,7 @@
 # `external` sounds it has or lacks. The device stays closed
 # (CULEBRA_AUDIO=off), so nothing here sounds and the play path itself ends
 # at "no audio device"; the .cul sweeps cover what a song plays
-# (tests/test_audio_kauai*.cul).
+# (tests/test_kauai*.cul).
 # Usage: play_test.sh <path-to-culebra>
 set -u
 CULEBRA="${1:?usage: play_test.sh <culebra-binary>}"
@@ -155,13 +155,13 @@ check "$ENGINE mistake: stdout" "" "$out"
 
 run --check "$TMP/absent.kau"
 check "$ENGINE absent: status" 1 "$rc"
-check "$ENGINE absent: stderr" "IOError: Audio.Kauai: no song file $TMP/absent.kau" "$err"
+check "$ENGINE absent: stderr" "IOError: Kauai: no song file $TMP/absent.kau" "$err"
 
 # An external sound nobody supplies: the song's error, then where sounds come
 # from.
 run --check "$TMP/external.kau"
 check "$ENGINE external, no sounds: status" 1 "$rc"
-[[ "$err" == "ValueError: Audio.Kauai: "*'plays `external '*$'\n'"culebra play: --sounds "* ]] || {
+[[ "$err" == "ValueError: Kauai: "*'plays `external '*$'\n'"culebra play: --sounds "* ]] || {
   echo "FAIL $ENGINE external, no sounds: stderr [$err]"; fail=1; }
 
 run --check --sounds "$TMP/sounds.cul" "$TMP/external.kau"
@@ -182,7 +182,7 @@ check "$ENGINE external, a folder: stderr" "" "$err"
 run --check --sounds "$TMP/voices_only.cul" "$TMP/external.kau"
 check "$ENGINE external, voices only: status" 1 "$rc"
 check "$ENGINE external, voices only: stderr" \
-  "ValueError: Audio.Kauai: $TMP/external.kau:4: drum Kick plays \`external Kick\`, and drums: has no \`kick\` (it has none)" "$err"
+  "ValueError: Kauai: $TMP/external.kau:4: drum Kick plays \`external Kick\`, and drums: has no \`kick\` (it has none)" "$err"
 
 # --watch reads the song again whenever a file in its folder changes, says
 # which, and watches on through a mistake until Ctrl+C.

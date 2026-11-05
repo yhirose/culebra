@@ -1,13 +1,13 @@
 # Kauai 言語仕様
 
-> **Status: Draft.** KauaiはCulebraの`Audio.Kauai`として実装済みです。
+> **Status: Draft.** KauaiはCulebraの`Kauai`として実装済みです。
 > ただし、リリースまでに言語やAPIが変わる可能性があります。[付録C](#付録-c-完全な曲)の
 > 曲は、元のゲームや楽譜と1音ずつ照合してあります。
 
 Kauaiは、バンドの演奏をそのまま書き表すための言語です。コードとメロディは
 リードシートとして書き、バンドがそれにどう伴奏を付けるかはgrooveとして
 書きます。Kauaiのファイルは拡張子`.kau`のプレーンテキストで、Culebraの
-プログラムから`Audio.Kauai`で再生できます（[10章](#10-culebra-から再生する)）。
+プログラムから`Kauai`で再生できます（[10章](#10-culebra-から再生する)）。
 
 名前はハワイのカウアイ島（Kauaʻi）から取りました。Culebraという名前が
 プエルトリコの島から来ているのにならっています。コードやファイル名では
@@ -963,7 +963,7 @@ section Bridge {
 ## 10. Culebra から再生する
 
 ```culebra
-let song = Audio.Kauai.new(`
+let song = Kauai.new(`
 band Duo {
   voice Tune  pulse     plays melody            vol 20
   voice Bass  triangle  plays roots in E2..D#3  vol 30
@@ -994,8 +994,8 @@ println(song.events()[0])  # => {at: 0.0, len: 0.6, by: 'Tune', pitch: 76, vol: 
 song.play()
 ```
 
-`Audio.Kauai.new(text)`は曲を文字列で受け取ります。この場合、`use`でほかの
-ファイルを取り込むことはできません。`Audio.Kauai.load(path)`は曲のファイルを
+`Kauai.new(text)`は曲を文字列で受け取ります。この場合、`use`でほかの
+ファイルを取り込むことはできません。`Kauai.load(path)`は曲のファイルを
 読み込み、そのファイルが`use`で指定したファイルも、そこからの相対パスで
 読み込みます。`dir:`を渡すと、ファイルシステムの代わりに`Dir`から読み込みます。
 `Dir.embedded`なら1つのバイナリにビルドしたプログラムにも曲を同梱でき、
@@ -1029,7 +1029,7 @@ runtimeは、すべての音を音声ストリーム自身のクロックに合�
 
 ```culebra
 # doctest: skip (reads ballad.kau, and electric_piano is the program's own)
-let song = Audio.Kauai.load("ballad.kau", voices: {
+let song = Kauai.load("ballad.kau", voices: {
   ep: |pitch, params| Audio.Sound(electric_piano(pitch, params.bright)),
 })
 song.prepare()          # build one external sound; answers how many remain
@@ -1054,7 +1054,7 @@ song.reached("Drive")   # has the song passed `mark Drive`?
 
 ```culebra
 # doctest: skip (reads ballad.kau)
-let song = Audio.Kauai.load("ballad.kau")
+let song = Kauai.load("ballad.kau")
 song.marks()                                   # => {Drive: 32.0, Peak: 64.0}
 let drive = song.render(from: "Drive", to: "Peak")
 let bars = song.render(from: 40.5, to: 48.0)   # seconds from the start
@@ -1093,7 +1093,7 @@ song.seconds("1:04")                           # => 64.0
 
 ```culebra
 # doctest: skip (bowedはプログラム側で用意するもの)
-let song = Audio.Kauai.load("trio.kau", voices: {
+let song = Kauai.load("trio.kau", voices: {
   violin: {phrase: |notes, params| Audio.Sound(bowed(notes)), hears: ["len", "level", "next"]},
 })
 ```
@@ -1147,7 +1147,7 @@ Kauaiは、
 
 ### 楽譜をデータとして読む
 
-`Audio.Kauai.parse(text)`は文字列で渡した曲を、`Audio.Kauai.parse_file(path, dir:)`は
+`Kauai.parse(text)`は文字列で渡した曲を、`Kauai.parse_file(path, dir:)`は
 曲のファイルとそれが使うファイルを、`new`と`load`と同じように読みます。再生する曲と
 同じ検査をして同じ`KauaiError`を出しますが、音声は作らないので、`external`の楽器に
 関数は要りません。返すのは書いたとおりの曲の楽譜で、`JSON.parse`が返すのと同じく、
@@ -1155,7 +1155,7 @@ Kauaiは、
 プログラムや、ほかの記法からKauaiに読み込むプログラムが使います。
 
 ```culebra
-let score = Audio.Kauai.parse(`
+let score = Kauai.parse(`
 band Solo {
   voice Tune  pulse  plays melody  vol 20
 }

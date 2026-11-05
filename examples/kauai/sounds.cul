@@ -1,4 +1,4 @@
-# The external sounds for play.cul and jukebox.cul, as Audio.Kauai.load's
+# The external sounds for play.cul and jukebox.cul, as Kauai.load's
 # `voices:` and `drums:`: `external Ep` (an electric piano, `bright=` how hard
 # its hammer bites), synthesised here once for each pitch and `bright` a song
 # asks for, and the drums of Kauai's kit (`external Kick`, `Snare`, `CrossStick`, `Hat`,

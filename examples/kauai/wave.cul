@@ -1,6 +1,6 @@
 # What the instruments beside it share: the sample rate, a pitch's frequency,
 # a noise source that sounds the same every time, when to work out a
-# phrase's controls, and a voice for Audio.Kauai made from a function that
+# phrase's controls, and a voice for Kauai made from a function that
 # plays a phrase. The room they sound in is the song's own (`room 90%`), not
 # theirs.
 

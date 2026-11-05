@@ -25,7 +25,7 @@
 # 288 since test_key_hash_once.cul (a key is hashed once, entering a lookup or
 # a container; a stored key keeps its hash and is never hashed again).
 # 289 since test_xml.cul (the XML namespace: parse, events, paths, stringify).
-# 290 since test_audio_kauai.cul (Audio.Kauai reads, times and plays a song).
+# 290 since test_audio_kauai.cul (Kauai reads, times and plays a song).
 # 291 since test_string_pack.cul (String.pack / String.unpack: fixed-width
 # scalars to bytes and back). 292 since test_fixedarray.cul (FixedArray<T, N>
 # is exactly N; the count that varies is BoundedArray's).
@@ -136,7 +136,7 @@
 # named only inside a bound, a union, a return type or a supertrait list).
 # 337 since test_midi.cul (MIDI with the device closed: no inputs, and an
 # input not there refused, naming those there are).
-# 338 since test_audio_kauai_parse.cul (Audio.Kauai.parse: a song's score as
+# 338 since test_audio_kauai_parse.cul (Kauai.parse: a song's score as
 # written, as plain data, and the errors new() raises, 0.2 s).
 tests.cul 338
 
@@ -203,11 +203,11 @@ ctest.entries 38
 # and ja.
 # 980 since stdlib's XML chapter shows parse, errors, events, paths with and
 # without namespaces, text and stringify: seven blocks, in en and ja.
-# 982 since the Kauai spec shows its planned Audio.Kauai API, skipped, in en
+# 982 since the Kauai spec shows its planned Kauai API, skipped, in en
 # and ja.
 # 984 since Audio's Capture section shows a microphone loop (skipped, but
 # counted), in en and ja.
-# 988 since stdlib's Audio.Kauai section shows the API as built, in en and ja.
+# 988 since stdlib's Kauai section shows the API as built, in en and ja.
 # 986 since §18.1 shows String.pack / String.unpack, in en and ja.
 # 990 since §18.1 and stdlib's @packable section show a record packed and
 # read back, in en and ja. 992 since the @packable section shows a

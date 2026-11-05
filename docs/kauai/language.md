@@ -1,6 +1,6 @@
 # Kauai Language Specification
 
-> **Status: Draft.** Kauai is implemented in Culebra as `Audio.Kauai`; the
+> **Status: Draft.** Kauai is implemented in Culebra as `Kauai`; the
 > language and its API may still change before a release. The songs in
 > [Appendix C](#appendix-c-complete-songs) were checked note for note
 > against the game they came from and against the score.
@@ -8,7 +8,7 @@
 Kauai is a language for writing music as a band plays it: a lead sheet of
 chords and melody, and grooves that say how the band accompanies them. A
 Kauai file is plain text with the extension `.kau`. A program written in
-Culebra plays it through `Audio.Kauai` ([section 10](#10-playing-from-culebra)).
+Culebra plays it through `Kauai` ([section 10](#10-playing-from-culebra)).
 
 The language is named after Kauaʻi, an island of Hawaiʻi, as Culebra is named
 after an island of Puerto Rico. In code and file names it is written `kauai`
@@ -969,7 +969,7 @@ under.
 ## 10. Playing from Culebra
 
 ```culebra
-let song = Audio.Kauai.new(`
+let song = Kauai.new(`
 band Duo {
   voice Tune  pulse     plays melody            vol 20
   voice Bass  triangle  plays roots in E2..D#3  vol 30
@@ -1000,8 +1000,8 @@ println(song.events()[0])  # => {at: 0.0, len: 0.6, by: 'Tune', pitch: 76, vol: 
 song.play()
 ```
 
-`Audio.Kauai.new(text)` takes a song as a string, which cannot `use` other
-files. `Audio.Kauai.load(path)` reads a song file, and the files it names
+`Kauai.new(text)` takes a song as a string, which cannot `use` other
+files. `Kauai.load(path)` reads a song file, and the files it names
 with `use`, relative to it; with `dir:` it reads them from a `Dir`
 instead (a `Dir.embedded`, so a program built into one binary carries its
 songs, or `Dir.memory` for songs written in the program), or from any
@@ -1033,7 +1033,7 @@ follow the clock from `play()`, whether or not a device plays it.
 
 ```culebra
 # doctest: skip (reads ballad.kau, and electric_piano is the program's own)
-let song = Audio.Kauai.load("ballad.kau", voices: {
+let song = Kauai.load("ballad.kau", voices: {
   ep: |pitch, params| Audio.Sound(electric_piano(pitch, params.bright)),
 })
 song.prepare()          # build one external sound; answers how many remain
@@ -1056,7 +1056,7 @@ built: those that start before `to:` and play notes in the second before
 
 ```culebra
 # doctest: skip (reads ballad.kau)
-let song = Audio.Kauai.load("ballad.kau")
+let song = Kauai.load("ballad.kau")
 song.marks()                                   # => {Drive: 32.0, Peak: 64.0}
 let drive = song.render(from: "Drive", to: "Peak")
 let bars = song.render(from: 40.5, to: 48.0)   # seconds from the start
@@ -1097,7 +1097,7 @@ given as `{hit: |n, params| ..., hears: [...]}`, `n` one hit.
 
 ```culebra
 # doctest: skip (bowed is the program's own)
-let song = Audio.Kauai.load("trio.kau", voices: {
+let song = Kauai.load("trio.kau", voices: {
   violin: {phrase: |notes, params| Audio.Sound(bowed(notes)), hears: ["len", "level", "next"]},
 })
 ```
@@ -1156,8 +1156,8 @@ the module `--sounds` names
 
 ### The score as data
 
-`Audio.Kauai.parse(text)` reads a song given as text, and
-`Audio.Kauai.parse_file(path, dir:)` a song file and the files it uses, as
+`Kauai.parse(text)` reads a song given as text, and
+`Kauai.parse_file(path, dir:)` a song file and the files it uses, as
 `new` and `load` do. They check it as a song that plays is checked, and raise
 the same `KauaiError`, but build no sound, so an `external` instrument needs
 no function. What they answer is the song's score as written, in plain
@@ -1166,7 +1166,7 @@ gives: for a program that writes the song in another notation, or reads one
 into Kauai.
 
 ```culebra
-let score = Audio.Kauai.parse(`
+let score = Kauai.parse(`
 band Solo {
   voice Tune  pulse  plays melody  vol 20
 }

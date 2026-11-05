@@ -74,7 +74,7 @@ Add marks by putting them before a note, and directions by starting a word
 with a backslash. A direction takes effect from the note after it.
 
 ```culebra
-let song = Audio.Kauai.new(`
+let song = Kauai.new(`
 band Duo {
   voice Tune  pulse     plays melody            vol 20
   voice Bass  triangle  plays roots in E2..D#3  vol 30
@@ -118,12 +118,12 @@ println(song.length())
 
 ## Playing from a program
 
-A program plays a song with `Audio.Kauai`. `Audio.Kauai.new` takes the text of
-a song, and `Audio.Kauai.load` takes a file. Before it plays, a song can tell
+A program plays a song with `Kauai`. `Kauai.new` takes the text of
+a song, and `Kauai.load` takes a file. Before it plays, a song can tell
 you its length and the notes it will play:
 
 ```culebra
-let song = Audio.Kauai.new(`
+let song = Kauai.new(`
 band Duo {
   voice Tune  pulse     plays melody            vol 20
   voice Bass  triangle  plays roots in E2..D#3  vol 30

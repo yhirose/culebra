@@ -167,7 +167,7 @@ for lane in "${lanes[@]}"; do
   # An instrument it does not have: the song's line and the ones it has.
   run cli "$TMP/organ.kau" --check
   check "$lane no instrument: status" 1 "$rc"
-  [[ "$err" == "ValueError: Audio.Kauai: $TMP/organ.kau:2: voice Lead plays \`external Organ\`, and voices: has no \`organ\` (it has "*"altosax, "*"mellowfmbrass"*")" ]] || {
+  [[ "$err" == "ValueError: Kauai: $TMP/organ.kau:2: voice Lead plays \`external Organ\`, and voices: has no \`organ\` (it has "*"altosax, "*"mellowfmbrass"*")" ]] || {
     echo "FAIL $lane no instrument: stderr [$err]"; fail=1; }
 
   # A song as a MusicXML score, the same from the binary as from the script.

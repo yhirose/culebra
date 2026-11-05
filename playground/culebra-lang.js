@@ -29,7 +29,7 @@ const BUILTINS = new Set([
   "Math", "IO", "FS", "File", "Time", "Random", "Sys", "Tensor", "JSON", "Args", "Proc", "Path", "Dir",
   "Isolate", "Channel", "Parallel", "Signal", "SharedBuffer", "Shared", "GC", "Regex", "Http",
   "Encoding", "Compress", "Hash", "CSV", "Env", "UUID", "Term", "Log", "TOML", "XML", "SQLite", "Llama",
-  "Canvas", "Audio", "MIDI", "Scene", "Net", "Desktop", "Webview", "Vector2", "Vector3", "Deque", "PriorityQueue", "StateMachine",
+  "Canvas", "Audio", "Kauai", "MIDI", "Scene", "Net", "Desktop", "Webview", "Vector2", "Vector3", "Deque", "PriorityQueue", "StateMachine",
   "PEG", "FST", "Search", "Range", "Set", "LLM",
 ]);
 // === END AUTO-KEYWORDS

@@ -174,7 +174,7 @@ int64_t g_pos = 0;           // samples rendered so far
 
 // --- Schedule: a song's notes, on the stream's own clock ---------------------
 //
-// Audio.Kauai hands a whole song over at once, every note already timed, and
+// Kauai hands a whole song over at once, every note already timed, and
 // the mixer below starts each one on its sample: the music keeps time however
 // long a frame runs, and plays in a program with no frame loop. A note is a
 // tone on one of the channels, or a sample (an Audio.Sound's decoded PCM)
@@ -1043,7 +1043,7 @@ std::shared_ptr<const std::vector<float>> mixer_samples(Wave& w) {
   return pcm;
 }
 
-// A schedule from Audio.Kauai's list (kScheduleStride), a Sound's samples found by
+// A schedule from Kauai's list (kScheduleStride), a Sound's samples found by
 // its handle in `pcm` (one it does not hold, which the device could not
 // decode, is left out).
 using PcmByHandle = std::unordered_map<int64_t, std::shared_ptr<const std::vector<float>>>;

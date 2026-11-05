@@ -10,7 +10,7 @@ let WRITTEN = {}
 # tests that read every song.
 fn written(path) {
   WRITTEN[path] ??= fn () {
-    let score = Audio.Kauai.parse_file(path)
+    let score = Kauai.parse_file(path)
     let text = mx.write(score)
     {score, text, doc: XML.parse(text)}
   }()
@@ -282,7 +282,7 @@ let BAND = 'band B {
 # Song text (its song and sections, after `band`, by default one voice) as
 # the score's document.
 fn scored(text, band = BAND) {
-  XML.parse(mx.write(Audio.Kauai.parse(band + text)))
+  XML.parse(mx.write(Kauai.parse(band + text)))
 }
 
 let notes = |m| m.find_all("note")

@@ -27,7 +27,7 @@ let bare = |text| Regex.replace_all(
 # read songs back.
 fn read_back(path) {
   READ_BACK[path] ??= fn () {
-    let score = Audio.Kauai.parse_file(path)
+    let score = Kauai.parse_file(path)
     let xml = mx.write(score)
     {score, xml, back: song_of(bare(xml))}
   }()
@@ -78,10 +78,9 @@ fn every_song_reads_back_from_its_score_as_written() {
 fn every_song_read_back_from_its_score_plays_its_lines() {
   for path in corpus.SONGS {
     let (score, back) = (read_back(path).score, read_back(path).back)
-    let heard = Audio.Kauai.new(back.text, voices: silent).events()
+    let heard = Kauai.new(back.text, voices: silent).events()
     let sounds = corpus.silent(score.arrangement)
-    let played = Audio
-      .Kauai
+    let played = Kauai
       .new(steady(kau.write(score)), voices: sounds.voices, drums: sounds.drums)
       .events()
     for v in line_voices(score.arrangement) {
@@ -113,7 +112,7 @@ fn every_song_read_back_from_its_score_plays_its_lines() {
 fn a_song_read_from_a_score_is_its_own_scores_song() {
   for path in ["kauai/convert/notations.kau", "examples/games/retro-run/assets/cruise.kau", "examples/kauai/songs/sax.kau"] {
     let once = read_back(path).back.text
-    assert_eq(song_of(bare(mx.write(Audio.Kauai.parse(once)))).text, once, path)
+    assert_eq(song_of(bare(mx.write(Kauai.parse(once)))).text, once, path)
   }
 }
 
@@ -130,8 +129,7 @@ fn je_te_veux_plays_its_score() {
   )
   let per_second = song.score.song.tempo.per / 60.0 * 16
   let at_64 = |seconds| Math.round(seconds * per_second)
-  let played = Audio
-    .Kauai
+  let played = Kauai
     .new(steady, voices: silent)
     .events()
     .filter(|e| e.by == "Melody")
@@ -170,7 +168,7 @@ fn the_test_suites_scores_read_as_songs() {
     let name = FS.basename(path)
     let outcome = try {
       let song = song_of(FS.read(path))
-      Audio.Kauai.new(song.text, voices: silent)
+      Kauai.new(song.text, voices: silent)
       song.dropped
     } catch e: String {
       e
@@ -226,8 +224,7 @@ let note = |step, type, duration, more = ""| "<note><pitch><step>{step}</step><o
 let barline = |where, what| "<barline location=\"{where}\">{what}</barline>"
 
 # What the melody plays, as (pitch, start in quarters at 120 a minute).
-let heard = |text| Audio
-  .Kauai
+let heard = |text| Kauai
   .new(song_of(text).text, voices: silent)
   .events()
   .filter(|e| e.by == "Melody")
@@ -350,7 +347,7 @@ fn a_slur_an_ending_closes_keeps_its_start() {
   assert_eq(heard(voice_left_out).map(|n| n[0]), [60, 62, 60, 67, 71])
   # What the second voice plays.
   let lower_heard = |text| notes_of(
-    Audio.Kauai.new(song_of(text).text, voices: silent).events(),
+    Kauai.new(song_of(text).text, voices: silent).events(),
     ["Voice2"],
   ).map(|n| n[0])
   let voice_rests = partwise([
@@ -735,8 +732,8 @@ section B {
 
 # The score EDITED is written as: a pickup measure 0, then A's three times
 # in measures 1-4, 5-8 and 11-14 and B's in 9-10.
-let EDITED_SCORE = mx.write(Audio.Kauai.parse(EDITED))
-let EDITED_TEXT = kau.write(Audio.Kauai.parse(EDITED))
+let EDITED_SCORE = mx.write(Kauai.parse(EDITED))
+let EDITED_TEXT = kau.write(Kauai.parse(EDITED))
 
 # `text` with the first `from` in measure `number` of part `part` made `to`.
 fn edited(text, part, number, from, to) {
@@ -869,7 +866,7 @@ fn the_hits_staff_is_the_bars_hits() {
     bare(text),
     "",
   )
-  let raw = song_of(unmarked(mx.write(Audio.Kauai.parse(ONE_VOICE +
+  let raw = song_of(unmarked(mx.write(Kauai.parse(ONE_VOICE +
     'song S {
   tempo 120
   band B
@@ -905,7 +902,7 @@ section A {
   )
   assert_eq(raw.dropped, [])
   # A part the song names Hits stays a part, beside the hits.
-  let named = Audio.Kauai.parse('band B {
+  let named = Kauai.parse('band B {
   voice Lead  pulse  plays melody     vol 20
   voice H     saw    plays part Hits  vol 10
 }
@@ -937,7 +934,7 @@ section A {
 # coda and words being the jumps it reads, not something left out.
 @test
 fn a_jump_back_reads_as_the_order_it_plays() {
-  let raw = song_of(bare(mx.write(Audio.Kauai.parse(ONE_VOICE +
+  let raw = song_of(bare(mx.write(Kauai.parse(ONE_VOICE +
     'song S {
   tempo 120
   band B
@@ -1109,7 +1106,7 @@ let ONE_VOICE = 'band B {
 
 # Song `song` (its song and sections) written as a score by a band of one
 # voice.
-let small = |song| mx.write(Audio.Kauai.parse(ONE_VOICE + song))
+let small = |song| mx.write(Kauai.parse(ONE_VOICE + song))
 
 # Score `text` without measure `number`, the measures after it up to `last`
 # counted again, as a score editor does.
@@ -1376,7 +1373,7 @@ section A {
     picked,
     "$1<note><pitch><step>A</step><octave>4</octave></pitch><duration>960</duration><voice>1</voice><type>half</type></note>",
   ))
-  Audio.Kauai.parse(over.text)
+  Kauai.parse(over.text)
   assert_true(over.text.contains("\n  A\n  A2\n}"), over.text)
   assert_eq(
     block(over.text, "section A ")[2..],

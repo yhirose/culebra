@@ -1,4 +1,4 @@
-# A Kauai song's score, as Audio.Kauai.parse gives it, as a MusicXML 4.0
+# A Kauai song's score, as Kauai.parse gives it, as a MusicXML 4.0
 # partwise score. The melody is the first part, each part the song writes
 # out another, its hits on a staff of their own, then each voice of the
 # band's that plays its grooves, echoes and harmonies, and a drum set for
@@ -1650,7 +1650,7 @@ fn about_els(score, band, hits) {
   ]
 }
 
-# The song `score` (Audio.Kauai.parse's) as MusicXML text: a part for the
+# The song `score` (Kauai.parse's) as MusicXML text: a part for the
 # melody, each part the song writes out, each voice of the band's that plays
 # its grooves, echoes and harmonies, and its drums.
 fn write(score) {

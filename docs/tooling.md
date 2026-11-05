@@ -1200,7 +1200,7 @@ in the command line is status `2`, except a `--to` that is not after
 
 An `external` instrument is one the program supplies, and `culebra play` has
 none of its own. `--sounds` names a module that exports `voices`, `drums`
-or both: the objects `Audio.Kauai.load` takes under those names
+or both: the objects `Kauai.load` takes under those names
 ([Kauai §10](kauai/language.md#10-playing-from-culebra)).
 
 ```culebra

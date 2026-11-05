@@ -39,7 +39,7 @@ let ALTO = instrument()
 # with the voice's parameters as they stand at its first note.
 let phrase_samples = |phrase, params| ALTO.phrase_samples(phrase, params)
 
-# The instrument, as Audio.Kauai.load's `voices:` takes it: `external AltoSax`.
+# The instrument, as Kauai.load's `voices:` takes it: `external AltoSax`.
 let voices = {altosax: {
   phrase: |notes, params| Audio.Sound(
     phrase_samples(notes, params),

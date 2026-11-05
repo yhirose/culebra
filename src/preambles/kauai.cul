@@ -1,8 +1,8 @@
-# Audio.Kauai: the Kauai language (docs/kauai/language.md), read, checked and
+# Kauai: the Kauai language (docs/kauai/language.md), read, checked and
 # played. A song is expanded to its notes, each timed in seconds, and handed to
 # the runtime whole as a schedule (_Audio.schedule_*), which starts every note on
-# the audio stream's own clock. Spliced in front of audio.cul, whose module
-# builds it (misc/gen_preambles.sh).
+# the audio stream's own clock. A namespace of its own, beside Audio, whose
+# runtime it plays on.
 let _kauai_module = fn () {
   let WHOLE = 1920  # time units in a whole note: a sixty-fourth is 30, a triplet eighth 160
   let GRACE = WHOLE / 64  # what an arpeggio rolls by, and what a grace note takes
@@ -2729,17 +2729,17 @@ let _kauai_module = fn () {
     let f = table.get(key, nil)
     if f == nil {
       let has = table.empty() ? "none" : table.keys().join(", ")
-      __raise("ValueError", "Audio.Kauai: {player.line}: {what} plays `external {name}`, and {kind.kwarg}: has no `{key}` (it has {has})")
+      __raise("ValueError", "Kauai: {player.line}: {what} plays `external {name}`, and {kind.kwarg}: has no `{key}` (it has {has})")
     }
     return {make: f, hears: nil, key: key} if f is Function
     if type_of(f) != "Object" || f.get(kind.call, nil) !is Function {
-      __raise("ValueError", "Audio.Kauai: {kind.kwarg}: `{key}` is a function or an object whose `{kind.call}` is one")
+      __raise("ValueError", "Kauai: {kind.kwarg}: `{key}` is a function or an object whose `{kind.call}` is one")
     }
     let hears = f.get("hears", [])
-    __raise("ValueError", "Audio.Kauai: {kind.kwarg}: `{key}` hears an Array of names") if hears !is Array
+    __raise("ValueError", "Kauai: {kind.kwarg}: `{key}` hears an Array of names") if hears !is Array
     let heard = hears.filter(|h| !kind.may.contains(h))
     if !heard.empty() {
-      __raise("ValueError", "Audio.Kauai: {kind.kwarg}: `{key}` hears {heard[0]}; it can hear {kind.may.join(", ")}")
+      __raise("ValueError", "Kauai: {kind.kwarg}: `{key}` hears {heard[0]}; it can hear {kind.may.join(", ")}")
     }
     {make: f[kind.call], hears: hears, key: key}
   }
@@ -2914,7 +2914,7 @@ let _kauai_module = fn () {
   # held to that width: a row of any other is read from the wrong place.
   let STRIDE = _Audio.schedule_stride()
   fn schedule_row(fields) {
-    __raise("RuntimeError", "Audio.Kauai: a schedule row is {fields.size()} numbers, the engine reads {STRIDE}") if fields.size() != STRIDE
+    __raise("RuntimeError", "Kauai: a schedule row is {fields.size()} numbers, the engine reads {STRIDE}") if fields.size() != STRIDE
     fields
   }
   # Seconds a part of a song is heard from before it starts.
@@ -2949,7 +2949,7 @@ let _kauai_module = fn () {
         if type_of(s) != "Sound" {
           __raise(
             "TypeError",
-            "Audio.Kauai: an external instrument answers an Audio.Sound, not {type_of(s)}",
+            "Kauai: an external instrument answers an Audio.Sound, not {type_of(s)}",
           )
         }
         s
@@ -3005,7 +3005,7 @@ let _kauai_module = fn () {
     # Seconds into the song at mark `name`.
     _mark(name) {
       let has = @_marks.empty() ? "none" : @_marks.keys().join(", ")
-      @_marks.get(name, nil) ?? __raise("ValueError", "Audio.Kauai: the song has no mark {name} (it has {has})")
+      @_marks.get(name, nil) ?? __raise("ValueError", "Kauai: the song has no mark {name} (it has {has})")
     }
 
     # Seconds into the song at `p`: seconds, or a String of a mark's name, of
@@ -3017,7 +3017,7 @@ let _kauai_module = fn () {
       let secs = seconds_of(s)
       let whole = (halves(s, ".") ?? (s, ""))[0]
       if secs == nil || (m != nil && !(all_digits(m) && whole.size() == 2 && to_long(whole) < 60)) {
-        __raise("ValueError", "Audio.Kauai: a point in a song is seconds (83.5), minutes and seconds (1:23.5) or a mark's name, not '{p}'")
+        __raise("ValueError", "Kauai: a point in a song is seconds (83.5), minutes and seconds (1:23.5) or a mark's name, not '{p}'")
       }
       (m == nil ? 0 : to_long(m) * 60) + secs
     }
@@ -3105,10 +3105,10 @@ let _kauai_module = fn () {
       let first = from == nil ? 0.0 : @_point(from)
       let last = to == nil ? nil : @_point(to)
       if first < 0 || first >= @_length {
-        __raise("ValueError", "Audio.Kauai: {what}(from:) is at {first} seconds, outside the song's 0 to {@_length}")
+        __raise("ValueError", "Kauai: {what}(from:) is at {first} seconds, outside the song's 0 to {@_length}")
       }
       if last != nil && last <= first {
-        __raise("ValueError", "Audio.Kauai: {what}(to:) is at {last} seconds, not after from: at {first}")
+        __raise("ValueError", "Kauai: {what}(to:) is at {last} seconds, not after from: at {first}")
       }
       let start = Math.max(0.0, first - LEAD)
       {
@@ -3169,7 +3169,7 @@ let _kauai_module = fn () {
   fn song_file(path, dir) {
     let exists = dir == nil ? |n| FS.exists(n) : |n| dir.exists(n)
     let read = dir == nil ? |n| FS.read(n) : |n| dir.read(n)
-    __raise("IOError", "Audio.Kauai: no song file {path}") if !exists(path)
+    __raise("IOError", "Kauai: no song file {path}") if !exists(path)
     let load_used = fn (name, from, line) {
       let file = beside(from, name, dir != nil)
       fail(line, "no file {file} to use") if !exists(file)
@@ -3247,3 +3247,5 @@ let _kauai_module = fn () {
     },
   }
 }
+
+let Kauai = _kauai_module()

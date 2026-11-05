@@ -88,7 +88,7 @@ fn wrap(s, n) {
 
 fn load(e) {
   e.song = try {
-    Audio.Kauai.load(e.path, voices: sounds.voices, drums: sounds.drums)
+    Kauai.load(e.path, voices: sounds.voices, drums: sounds.drums)
   } catch err {
     e.error = err.message
     nil

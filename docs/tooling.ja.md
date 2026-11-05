@@ -1115,7 +1115,7 @@ culebra play --sounds sounds.cul ballad.kau # 外部の楽器を使う曲
 
 外部の楽器（`external`）はプログラムが用意するもので、`culebra play`自身は
 1つも持っていません。`--sounds`には、`voices`か`drums`、または両方をexportするモジュールを
-指定します。`Audio.Kauai.load`が同じ名前で受け取るオブジェクトです
+指定します。`Kauai.load`が同じ名前で受け取るオブジェクトです
 ([Kauai §10](kauai/language.ja.md#10-culebra-から再生する))。
 
 ```culebra

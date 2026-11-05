@@ -1,4 +1,4 @@
-# A MusicXML score as a Kauai song's score, the data Audio.Kauai.parse
+# A MusicXML score as a Kauai song's score, the data Kauai.parse
 # gives (kauai/convert/kau.cul writes it as Kauai text). Each voice of each
 # part is a line: the first part's first voice is the melody, every other
 # line a part of the song, and the staff of hits (the one a score Kauai
@@ -230,11 +230,7 @@ section A {
 let reads_as_chord = music.remembered(fn (asked) {
   let (voicings, quality) = asked
   try {
-    Audio.Kauai.parse(voicings +
-      CHORD_BAND +
-      CHORD_SONG +
-      quality +
-      "  c1\n}\n")
+    Kauai.parse(voicings + CHORD_BAND + CHORD_SONG + quality + "  c1\n}\n")
     true
   } catch _ {
     false
@@ -1353,7 +1349,7 @@ fn reading(doc, voicings) {
 
   let chords = chords_of(ms, parts, report, voicings)
 
-  # The bars, each as Audio.Kauai.parse gives one.
+  # The bars, each as Kauai.parse gives one.
   mut swing = nil
   let bars = iota(ms.size()).map(fn (mi) {
     let m = ms[mi]
@@ -1610,7 +1606,7 @@ fn with_unshown(items, extra) {
 }
 
 # A run of a section's `bars` with each `%` kept where its bars are the ones
-# before them again, all they hold and every time, as Audio.Kauai.parse
+# before them again, all they hold and every time, as Kauai.parse
 # keeps one; written out where they are not.
 fn repeats_kept(bars) {
   let held = |b| [b.chords, b.melody, b.parts, b.hits, b.times]
@@ -2083,7 +2079,7 @@ fn band_staves(doc) {
 # where it does).
 fn parsed(text) {
   try {
-    (Audio.Kauai.parse(text), nil)
+    (Kauai.parse(text), nil)
   } catch e: KauaiError {
     (nil, e.message)
   }
@@ -2166,7 +2162,7 @@ fn dropped_of(reports) {
 }
 
 # The score MusicXML `text` holds, as {score, dropped}: the song's score, as
-# Audio.Kauai.parse gives one, and what Kauai leaves out of it or changes a
+# Kauai.parse gives one, and what Kauai leaves out of it or changes a
 # little, each said once with the measures it is in.
 fn read(text) {
   let doc = XML.parse(text)

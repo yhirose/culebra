@@ -100,7 +100,7 @@ if args[0] == "convert" {
   }
   try {
     if to_score {
-      let score = musicxml.write(Audio.Kauai.parse_file(paths[0]))
+      let score = musicxml.write(Kauai.parse_file(paths[0]))
       FS.write(
         paths[1],
         paths[1].ends_with(".mxl") ? musicxml.mxl(score) : score,
@@ -108,7 +108,7 @@ if args[0] == "convert" {
     } else {
       let read = musicxml_read.read(musicxml_read.score_text(FS.read(paths[0])))
       let text = kau.write(read.score)
-      Audio.Kauai.parse(text)
+      Kauai.parse(text)
       FS.write(paths[1], text)
       for what in read.dropped {
         IO.eprintln("left out or changed: {what}")
@@ -198,7 +198,7 @@ fn clock(secs) {
 }
 
 let song = try {
-  Audio.Kauai.load(path, voices:, drums:)
+  Kauai.load(path, voices:, drums:)
 } catch e: KauaiError {
   refuse(e)
 } catch e: IOError {

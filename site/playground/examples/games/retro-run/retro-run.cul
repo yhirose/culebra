@@ -681,7 +681,7 @@ let ep_samples = fn (pitch, bark) {
 # built-in ones.
 let SONGS = ART.exists("cruise.kau") ? ART : Dir.embedded("assets")
 let ep = |pitch, params| Audio.Sound(pcm_wav(ep_samples(pitch, params.bright)))
-let kauai = |name| Audio.Kauai.load(name, dir: SONGS, voices: {ep: ep})
+let kauai = |name| Kauai.load(name, dir: SONGS, voices: {ep: ep})
 
 # Each lap's song twice: on the chip, and with a saxophone leading
 # (sax_tunes.cul: a soprano for the first lap, an alto for the second), nil

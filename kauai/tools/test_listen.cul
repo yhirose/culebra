@@ -159,8 +159,7 @@ fn two_ways_are_heard_as_1_and_2_and_the_one_kept_goes_on() {
   let fresh = 3 - before
   assert_eq(record().from, "Second")
   # The one before is the song as it is, as Kauai renders it.
-  let made = Audio
-    .Kauai
+  let made = Kauai
     .load(o.songs[0], voices: SOUNDS.voices)
     .render(from: "Second")
   let heard = samples_of(wav(1, before))

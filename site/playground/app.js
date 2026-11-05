@@ -1172,7 +1172,7 @@ function startTrack(id, t, offset) {
   t.wantPlay = false;
 }
 
-// --- Audio.Kauai: a song's notes, each started on the context's own clock ---
+// --- Kauai: a song's notes, each started on the context's own clock ---
 // A schedule arrives whole, in time order, with the width of an event
 // (stdlib/audio.h's kScheduleStride, which says what one holds), and a timer
 // puts each note on the context's clock a little ahead of when it sounds, the

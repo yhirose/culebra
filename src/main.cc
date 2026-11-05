@@ -2561,7 +2561,7 @@ fn refuse(e, hint = nil) {
 # The song, playing; nil when there is none to wait on.
 fn play() {
   let song = try {
-    Audio.Kauai.load(path, voices: made.voices, drums: made.drums)
+    Kauai.load(path, voices: made.voices, drums: made.drums)
   } catch e: KauaiError {
     return refuse(e)
   } catch e: IOError {
@@ -2681,7 +2681,7 @@ int run_play(int argc, const char** argv) {
                  "Usage: culebra play [options] <song.kau>\n"
                  "  --sounds <file.cul>  the module whose exports `voices` and `drums`\n"
                  "                       make the song's `external` sounds\n"
-                 "                       (Audio.Kauai.load's arguments of those names);\n"
+                 "                       (Kauai.load's arguments of those names);\n"
                  "                       a folder names its main.cul\n"
                  "  --check              read and check the song, and play nothing\n"
                  "  --wav <file.wav>     write the song once through to a WAV file, as it\n"

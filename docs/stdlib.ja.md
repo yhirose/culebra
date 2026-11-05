@@ -82,8 +82,9 @@
 42. [`Dir`](#42-dir) — ディスク・メモリ・バイナリへの焼き込み・ZIPアーカイブのどこにあるファイルの集まりも、同じ読み方で（`Dir.disk` / `Dir.memory` / `Dir.embedded` / `Dir.zip`と`Dir` trait）
 43. [`LLM`](#43-llm) — LLMのクライアント。提供元（Messages APIかChat Completions）への1ステップ、関数をツールとして使う会話、素通しのリクエスト
 44. [`Llama`](#44-llama) — このプロセス内で動くモデル。GGUFを読んで`generate`か`chat`（ビルドオプション）
-45. [設計上の注記](#45-設計上の注記)
-46. [未収録（将来検討）](#46-未収録将来検討)
+45. [`Kauai`](#45-kauai) — Kauaiで書いた曲を読み、検査し、`Audio`のruntimeで演奏する
+46. [設計上の注記](#46-設計上の注記)
+47. [未収録（将来検討）](#47-未収録将来検討)
 
 **目的別索引**
 
@@ -130,6 +131,7 @@
 | デスクトップGUI（ネイティブWebView + ローカルサーバ） | [§30 Desktop](#30-desktop--webview) — `Desktop.run({title, assets, routes})` |
 | MIDIの鍵盤やウインドコントローラで演奏する | [§41 MIDI](#41-midi) — `MIDI.inputs()` / `MIDI.Input.new(id).messages()` / `input.control(2)` |
 | 音を鳴らす（tone・効果音・音楽）、音を合成する | [§40 Audio](#40-audio) — `Audio.tone(440, 10)` / `Audio.Sound.new(bytes).play()` / `Audio.Music.new(bytes)` / `Audio.PCM.new(44100, 1, 1024)` / `Audio.Capture.new(44100)` |
+| Kauaiで書いた曲を演奏する | [§45 Kauai](#45-kauai) — `Kauai.new(text).play()` / `Kauai.load(path)` |
 | ヒープ情報・リークチェック | [§7 GC](#gc--ヒープ情報の取得) — `GC.stat()` → `{live_objects, rc_objects, heap_bytes}` |
 | 2D/3Dベクトル演算（dot、length、normalize、distance） | [§31 `Vector2`](#31-vector2) / [§32 `Vector3`](#32-vector3) |
 | FIFOキュー、スライディングウィンドウ、前後両端のスタック | [§33 `Deque`](#33-deque) — `Deque.new()` — `push_back`/`pop_front` |
@@ -8320,7 +8322,8 @@ isolateごとに別の索引を持たせてください。
 ## 40. `Audio`
 
 どのプログラムでも使える音を扱います。WASM-4流のtone、ワンショットのサンプル、ストリーム
-再生の音楽、スクリプトが合成するPCMとそれを組み立てるネイティブの部品、部品をつないで鳴らしながら計算するグラフ、マイク、Kauaiで書いた曲です。`Audio`は音声デバイスを単独で持ち、
+再生の音楽、スクリプトが合成するPCMとそれを組み立てるネイティブの部品、部品をつないで鳴らしながら計算するグラフ、マイクです。Kauaiで書いた曲は
+[`Kauai`](#45-kauai)がこの上で演奏します。`Audio`は音声デバイスを単独で持ち、
 ウィンドウを必要としないので、`Canvas`で描くプログラムでも、`Scene`で描く
 プログラムでも、何も描かないプログラムでも同じように動きます。デバイスは初回使用時に
 開き、何も鳴らさないプログラムはデバイスを開きません。
@@ -8493,7 +8496,7 @@ Canvas.run(160, 160, fn () {
 
 ### 音を組み立てる部品
 
-自分で音を作るプログラム（`Audio.Kauai`の楽器や、`PCM`のブロックを埋める
+自分で音を作るプログラム（`Kauai`の楽器や、`PCM`のブロックを埋める
 ループ）は、音を1サンプルずつ計算し、そのループに時間のほとんどを使います。ここに
 挙げる関数は、そうした音を組み立てる部品です。どれもサンプル（1秒に`rate`個
 並んだ数）の配列全体をネイティブで処理し、`Float`の配列を返します。返した配列は
@@ -8682,7 +8685,7 @@ gainの`gain`、弦の`freq`と`ring`、遅延の`time`、driveの`gain`が、�
 これは`Audio.filter`や`Audio.envelope`のエンベロープの点と同じ扱いです。`Audio.pluck`は
 チューニングを最も近いサンプルに置くので、2つのサンプルの間の時刻で調律を変えた
 弦は、グラフでは1サンプル遅れて変わることがあります。Web Audioの`setValueAtTime`、
-`linearRampToValueAtTime`、`cancelAndHoldAtTime`にあたるので、曲の音符は`Audio.Kauai`がしているように
+`linearRampToValueAtTime`、`cancelAndHoldAtTime`にあたるので、曲の音符は`Kauai`がしているように
 前もって予約できます。
 
 次はどれも`ValueError`になります。名前の挙がっていない種類。別のグラフの部品。
@@ -8770,51 +8773,6 @@ loop {
   }
   Time.sleep(0.02)
 }
-```
-
-### Kauai
-
-> **Status: Draft.** リリースまでに、言語とAPIが変わることがある。
-
-`Audio.Kauai`は、Kauaiで書いた曲を演奏します。Kauaiはバンドの演奏をそのまま
-書き表すための言語で、コードとメロディに加えて、バンドがそれにどう伴奏を
-付けるかをgrooveとして書きます（[Kauai言語仕様](kauai/language.ja.md)）。曲は
-まず全体を読み込んで検査し、それからruntimeに渡します。runtimeは、音声ストリーム
-自身のクロックに合わせて各音を`tone`のチャンネルで鳴らし、外部の楽器の音は、
-プログラムが用意した音声をサンプルとして重ねます。
-コマンドラインからは`culebra play song.kau`で曲のファイルを再生できます
-([ツール §9](tooling.ja.md#9-曲の再生-culebra-play))。
-
-| 関数 | 動作 |
-| --- | --- |
-| `Audio.Kauai.new(text: String, voices = nil, drums = nil)` | 文字列から曲を作る。ほかのファイルは取り込めない |
-| `Audio.Kauai.load(path: String, voices = nil, drums = nil, dir = nil)` | 曲のファイルと、そこから`use`しているファイルを読み込む。読み込み元はディスクか、`dir`（任意の`Dir`、または`exists(name)`と`read(name)`を持つオブジェクト） |
-| `Audio.Kauai.parse(text: String)` | 書いたとおりの曲の楽譜と、バンドが小節ごとに弾く音を素のデータで返す。`new`と同じように読んで検査し、音声は作らない（[楽譜をデータとして読む](kauai/language.ja.md#楽譜をデータとして読む)） |
-| `Audio.Kauai.parse_file(path: String, dir = nil)` | 同じことを、曲のファイルと、そこから`use`しているファイルについて行う。読み方は`load`と同じ |
-
-曲に誤りがあると`KauaiError`になり、メッセージにはファイル名と行番号が付きます。
-曲のオブジェクトには`play()`、`stop()`、`volume(v)`、`playing()`、
-`reached(mark)`、`prepare()`、`length()`、`about()`、`events()`があり、音声デバイスで
-実際に鳴っているかどうかに関係なく、自分で経過時間を管理します。詳しくは仕様の
-[10章](kauai/language.ja.md#10-culebra-から再生する)を参照してください。
-
-```culebra
-let song = Audio.Kauai.new(`
-band Solo {
-  voice Lead  pulse  plays melody  vol 20
-}
-song Tune {
-  tempo 120
-  band Solo
-  melody in C5..B5
-  Theme
-}
-section Theme {
-  C  e4 g c'2
-}
-`)
-println(song.length())  # => 2.0
-song.play()
 ```
 
 ## 41. `MIDI`
@@ -9018,7 +8976,7 @@ inspect(Greetings().glob('b*'))  # => ['b.txt']
 
 trait注釈が受け付けるのはクラスのインスタンスで、Objectリテラルは含みません。
 とはいえライブラリの多くは`Dir`ほどを求めません。名前でファイルを引くだけの
-読み手（`Audio.Kauai.load(dir:)`）は、`exists(path)`と`read(path)`を持つもの
+読み手（`Kauai.load(dir:)`）は、`exists(path)`と`read(path)`を持つもの
 なら何でも受け取ります（Objectリテラルを含む）。リテラルで書いたファイルを
 完全な`Dir`にするには`Dir.memory`に渡します。
 
@@ -9680,7 +9638,52 @@ if d.reason != nil {
 
 含まないもの: ツール呼び出し（形の決まった結果には`grammar:`を使います）、画像と音声、埋め込み。
 
-## 45. 設計上の注記
+## 45. `Kauai`
+
+> **Status: Draft.** リリースまでに、言語とAPIが変わることがある。
+
+`Kauai`は、Kauaiで書いた曲を演奏します。Kauaiはバンドの演奏をそのまま
+書き表すための言語で、コードとメロディに加えて、バンドがそれにどう伴奏を
+付けるかをgrooveとして書きます（[Kauai言語仕様](kauai/language.ja.md)）。曲は
+まず全体を読み込んで検査し、それから`Audio`のruntimeに渡します。runtimeは、音声ストリーム
+自身のクロックに合わせて各音を`tone`のチャンネルで鳴らし、外部の楽器の音は、
+プログラムが用意した音声をサンプルとして重ねます。
+コマンドラインからは`culebra play song.kau`で曲のファイルを再生できます
+([ツール §9](tooling.ja.md#9-曲の再生-culebra-play))。
+
+| 関数 | 動作 |
+| --- | --- |
+| `Kauai.new(text: String, voices = nil, drums = nil)` | 文字列から曲を作る。ほかのファイルは取り込めない |
+| `Kauai.load(path: String, voices = nil, drums = nil, dir = nil)` | 曲のファイルと、そこから`use`しているファイルを読み込む。読み込み元はディスクか、`dir`（任意の`Dir`、または`exists(name)`と`read(name)`を持つオブジェクト） |
+| `Kauai.parse(text: String)` | 書いたとおりの曲の楽譜と、バンドが小節ごとに弾く音を素のデータで返す。`new`と同じように読んで検査し、音声は作らない（[楽譜をデータとして読む](kauai/language.ja.md#楽譜をデータとして読む)） |
+| `Kauai.parse_file(path: String, dir = nil)` | 同じことを、曲のファイルと、そこから`use`しているファイルについて行う。読み方は`load`と同じ |
+
+曲に誤りがあると`KauaiError`になり、メッセージにはファイル名と行番号が付きます。
+曲のオブジェクトには`play()`、`stop()`、`volume(v)`、`playing()`、
+`reached(mark)`、`prepare()`、`length()`、`about()`、`events()`があり、音声デバイスで
+実際に鳴っているかどうかに関係なく、自分で経過時間を管理します。詳しくは仕様の
+[10章](kauai/language.ja.md#10-culebra-から再生する)を参照してください。
+
+```culebra
+let song = Kauai.new(`
+band Solo {
+  voice Lead  pulse  plays melody  vol 20
+}
+song Tune {
+  tempo 120
+  band Solo
+  melody in C5..B5
+  Theme
+}
+section Theme {
+  C  e4 g c'2
+}
+`)
+println(song.length())  # => 2.0
+song.play()
+```
+
+## 46. 設計上の注記
 
 ### 名前空間ファースト、グローバルは出力の3つだけ
 
@@ -9737,7 +9740,7 @@ run_with(IO, "via parameter")
 
 ---
 
-## 46. 未収録（将来検討）
+## 47. 未収録（将来検討）
 
 ### 重量級データ構造
 

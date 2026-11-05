@@ -1648,11 +1648,658 @@ inline constexpr const char* CANVAS_MODULE_SOURCE = R"=culpre=(let _canvas_modul
 let Canvas = _canvas_module()
 )=culpre=";
 
-inline constexpr const char* AUDIO_MODULE_SOURCE = R"=culpre=(# Audio.Kauai: the Kauai language (docs/kauai/language.md), read, checked and
+inline constexpr const char* AUDIO_MODULE_SOURCE = R"=culpre=(let _audio_module = fn () {
+  # tone's channels: WASM-4's two pulse waves, triangle and noise, plus the
+  # culebra-only sawtooth. The values pass straight through to the host.
+  let PULSE = 0   # pulse 1
+  let PULSE2 = 1  # pulse 2
+  let TRIANGLE = 2
+  let NOISE = 3
+  let SAWTOOTH = 4
+  # Duty cycles for the pulse channels.
+  let DUTY_EIGHTH = 0
+  let DUTY_QUARTER = 1
+  let DUTY_HALF = 2
+  let DUTY_THREE_QUARTER = 3
+
+  # Play a tone: WASM-4's APU, in WASM-4's units. tone(freq, dur) is a
+  # `dur`-tick note at `freq` (a tick is 1/60 s). The optional args expose the
+  # full envelope: the note slides `freq` -> `end_freq` while an ADSR envelope
+  # (attack/decay/release in ticks, `dur` the sustain) shapes the level from 0
+  # up to `peak`, down to the sustain `vol`, and back to 0 (both 0..100).
+  # `wave` picks the channel and `duty` the pulse shape.
+  let tone = fn (
+    freq,
+    dur,
+    vol = 100,
+    wave = 0,
+    end_freq = nil,
+    attack = 0,
+    decay = 0,
+    release = 0,
+    peak = nil,
+    duty = 2,
+  ) {
+    let ef = if end_freq == nil {
+      freq
+    } else {
+      end_freq
+    }
+    let pk = if peak == nil {
+      vol
+    } else {
+      peak
+    }
+    _Audio.tone(freq, ef, attack, decay, dur, release, vol, pk, wave, duty)
+  }
+
+  # A mode list as resonate's natives take it, three numbers a mode.
+  let flat_modes = fn (modes: Array, who: String) {
+    modes.flat_map(fn (m) {
+      if type_of(m) != "Object" {
+        __raise(
+          "TypeError",
+          "{who}: a mode is \{freq, width, gain}, each a number",
+        )
+      }
+      [m.freq, m.width, m.gain]
+    })
+  }
+
+  # `samples` through a bank of resonances, as a guitar's body rings with its
+  # strings: each mode {freq, width, gain} is a two-pole resonator ringing at
+  # `freq` Hz, `width` Hz wide, its peak about `gain`; `dry` of the samples
+  # themselves is added. The answer is as long as `samples`.
+  let resonate = fn (
+    samples: Array,
+    modes: Array,
+    dry: Long | Float = 0.0,
+    rate: Long | Float = 44100,
+  ) {
+    _Audio.resonate(samples, flat_modes(modes, "Audio.resonate"), dry, rate)
+  }
+
+  # A plucked string (Karplus-Strong), `seconds` long: `tunings` say what it
+  # is tuned to from when, {at, freq, ring} (seconds, Hz, and seconds to ring
+  # down by 60 dB), in the order they come, the first from the start; each
+  # strike {at, samples} is added into the string from `at` on. A change of
+  # tuning keeps the string moving, as a finger hammering on does.
+  let pluck = fn (
+    seconds: Long | Float,
+    tunings: Array,
+    strikes: Array = [],
+    rate: Long | Float = 44100,
+  ) {
+    let flat = tunings.flat_map(fn (t) {
+      if type_of(t) != "Object" {
+        __raise(
+          "TypeError",
+          "Audio.pluck: a tuning is \{at, freq, ring}, each a number",
+        )
+      }
+      [t.at, t.freq, t.ring]
+    })
+    for s in strikes {
+      if type_of(s) != "Object" || s.samples !is Array {
+        __raise(
+          "TypeError",
+          "Audio.pluck: a strike is \{at, samples}, its samples numbers",
+        )
+      }
+    }
+    _Audio.pluck(
+      seconds,
+      flat,
+      strikes.flat_map(|s| [s.at, s.samples.size()]),
+      strikes.flat_map(|s| s.samples),
+      rate,
+    )
+  }
+
+  # A harmonic tone `seconds` long, its controls given as points it moves
+  # between in straight lines: `freq` and `gain` envelopes of (at, value);
+  # `spectrum` of (at, amps), the k-th amp the partial at k times the freq;
+  # and `noise` {low, high, seed, steady, pulsed}, band noise from `low` to
+  # `high` Hz whose level is heard steadily and pulsing with the tone's
+  # wave, each an envelope.
+  let partials = fn (
+    seconds: Long | Float,
+    freq: Array,
+    spectrum: Array,
+    gain: Array = [],
+    noise = nil,
+    rate: Long | Float = 44100,
+  ) {
+    for p in spectrum {
+      if p !is Tuple || p.size() != 2 || p[1] !is Array {
+        __raise(
+          "TypeError",
+          "Audio.partials: a spectrum is a list of (at, amps), amps a list of numbers",
+        )
+      }
+    }
+    let quiet = noise == nil
+    if !quiet && type_of(noise) != "Object" {
+      __raise(
+        "TypeError",
+        "Audio.partials: the noise is \{low, high, seed, steady, pulsed}",
+      )
+    }
+    _Audio.partials(
+      seconds,
+      freq,
+      gain,
+      spectrum.flat_map(|p| [p[0], p[1].size()]),
+      spectrum.flat_map(|p| p[1]),
+      quiet ? [] : [noise.low, noise.high, noise.get("seed", 1)],
+      quiet ? [] : noise.get("steady", []),
+      quiet ? [] : noise.get("pulsed", []),
+      rate,
+    )
+  }
+
+  # `samples` through a two-pole filter: "low" lets through what is below
+  # `cutoff` Hz, "high" what is above it, "band" what is about it. `cutoff`
+  # is a number or an envelope of (at, value), and `q` the resonance.
+  let filter = fn (
+    samples: Array,
+    kind: String,
+    cutoff: Long | Float | Array,
+    q: Long | Float = 0.707,
+    rate: Long | Float = 44100,
+  ) {
+    let at = cutoff is Array ? cutoff : [(0.0, cutoff)]
+    _Audio.filter(samples, kind, at, q, rate)
+  }
+
+  # `samples` times `gain`, an envelope of (at, value) it moves between in
+  # straight lines.
+  let envelope = fn (samples: Array, gain: Array, rate: Long | Float = 44100) {
+    _Audio.envelope(samples, gain, rate)
+  }
+
+  # The `parts` added together, each samples or {samples, at, gain}: from
+  # `at` seconds on (0 if left out), times `gain` (1). The answer runs to the
+  # end of the part that ends last.
+  let mix = fn (parts: Array, rate: Long | Float = 44100) {
+    let each = parts.map(|p| type_of(p) == "Object" ? p : {samples: p})
+    _Audio.mix(
+      each.map(|p| p.get("samples", nil)),
+      each.flat_map(|p| [p.get("at", 0.0), p.get("gain", 1.0)]),
+      rate,
+    )
+  }
+
+  # One value a part of a graph reads, moved by changes scheduled on the
+  # graph's clock, in seconds from its start: set(at, value) jumps to
+  # `value` at `at`; ramp(at, value) arrives there in a straight line from
+  # the change before; cancel(at) drops the changes after `at` and holds the
+  # value it has there. Each answers the value, so changes chain.
+  class AudioGraphValue {
+    new(graph, part: Long, index: Long) {
+      @_graph = graph
+      @_part = part
+      @_index = index
+    }
+    set(at: Long | Float, value: Long | Float) {
+      self._change(0, at, value)
+    }
+    ramp(at: Long | Float, value: Long | Float) {
+      self._change(1, at, value)
+    }
+    cancel(at: Long | Float) {
+      self._change(2, at, 0)
+    }
+    # A change as _Audio.graph_schedule takes it: `how` 0 sets, 1 ramps and
+    # 2 cancels.
+    _change(how, at, to) {
+      _Audio.graph_schedule(@_graph._id, [@_part, @_index, how, at, to])
+      self
+    }
+  }
+
+  # A part of a graph, which keeps its graph as an AudioGraphValue does.
+  # What moves in it is an AudioGraphValue: a wave's freq and feedback, a
+  # filter's cutoff, a gain's gain, a string's freq and ring, a delay's time,
+  # a drive's gain.
+  class AudioGraphPart {
+    freq = nil
+    feedback = nil
+    cutoff = nil
+    gain = nil
+    ring = nil
+    time = nil
+    new(graph, index: Long) {
+      @_graph = graph
+      @_index = index
+    }
+  }
+
+  # Parts wired together, which the runtime works out as they play (play)
+  # or ahead of time (render), the same either way. It is freed, and stops,
+  # with the last reference to it or to any of its parts and values.
+  class AudioGraph {
+    new(rate: Long | Float = 44100) {
+      @_id = _Audio.graph_new(rate)
+    }
+    # `inputs`, the parts the part takes in, and `modulators`, those that
+    # move it, as their indexes in the graph.
+    _part(
+      family: String,
+      kind: String,
+      inputs: Array,
+      options: Array,
+      modulators: Array = [],
+    ) {
+      let wires = [
+        @_indexes("inputs", inputs),
+        @_indexes("modulators", modulators),
+      ]
+      AudioGraphPart.new(
+        self,
+        _Audio.graph_part(@_id, family, kind, wires, options),
+      )
+    }
+    _indexes(name: String, parts: Array) {
+      for p in parts {
+        if class_of(p) != AudioGraphPart {
+          __raise(
+            "TypeError",
+            "type error: parameter '{name}' expects an Array of AudioGraphPart",
+          )
+        }
+        if p._graph._id != @_id {
+          __raise(
+            "ValueError",
+            "Audio.Graph: a part takes in parts of its own graph",
+          )
+        }
+      }
+      parts.map(|p| p._index)
+    }
+    _value(part: AudioGraphPart, index: Long) {
+      AudioGraphValue.new(self, part._index, index)
+    }
+    wave(
+      kind: String = "sine",
+      freq: Long | Float = 440.0,
+      modulators: Array = [],
+      feedback: Long | Float = 0.0,
+      phase: Long | Float = 0.0,
+    ) {
+      let p = @_part("wave", kind, [], [freq, feedback, phase], modulators)
+      p.freq = @_value(p, 0)
+      p.feedback = @_value(p, 1)
+      p
+    }
+    noise(seed: Long = 1) {
+      @_part("noise", "", [], [seed])
+    }
+    filter(
+      kind: String,
+      input: AudioGraphPart,
+      cutoff: Long | Float = 1000.0,
+      q: Long | Float = 0.707,
+    ) {
+      let p = @_part("filter", kind, [input], [cutoff, q])
+      p.cutoff = @_value(p, 0)
+      p
+    }
+    gain(
+      input: AudioGraphPart,
+      gain: Long | Float = 1.0,
+      modulators: Array = [],
+    ) {
+      let p = @_part("gain", "", [input], [gain], modulators)
+      p.gain = @_value(p, 0)
+      p
+    }
+    mix(inputs: Array, gain: Long | Float = 1.0) {
+      let p = @_part("gain", "", inputs, [gain])
+      p.gain = @_value(p, 0)
+      p
+    }
+    resonate(input: AudioGraphPart, modes: Array, dry: Long | Float = 0.0) {
+      @_part(
+        "resonate",
+        "",
+        [input],
+        [dry, ...flat_modes(modes, "Audio.Graph.resonate")],
+      )
+    }
+    pluck(
+      input: AudioGraphPart,
+      freq: Long | Float = 220.0,
+      ring: Long | Float = 2.0,
+      modulators: Array = [],
+    ) {
+      let p = @_part("pluck", "", [input], [freq, ring], modulators)
+      p.freq = @_value(p, 0)
+      p.ring = @_value(p, 1)
+      p
+    }
+    delay(
+      input: AudioGraphPart,
+      time: Long | Float = 0.0,
+      modulators: Array = [],
+    ) {
+      let p = @_part(
+        "delay",
+        "",
+        [input],
+        [time],
+        modulators,
+      )
+      p.time = @_value(p, 0)
+      p
+    }
+    drive(input: AudioGraphPart, gain: Long | Float = 1.0) {
+      let p = @_part("drive", "", [input], [gain])
+      p.gain = @_value(p, 0)
+      p
+    }
+    limit(
+      input: AudioGraphPart,
+      ceiling: Long | Float = 0.9,
+      release: Long | Float = 0.2,
+    ) {
+      @_part("limit", "", [input], [ceiling, release])
+    }
+    output(part: AudioGraphPart) {
+      if part._graph._id != @_id {
+        __raise(
+          "ValueError",
+          "Audio.Graph: the output is a part of its own graph",
+        )
+      }
+      _Audio.graph_output(@_id, part._index)
+    }
+    render(seconds: Long | Float) {
+      _Audio.graph_render(@_id, seconds)
+    }
+    play() {
+      _Audio.graph_play(@_id)
+    }
+    stop() {
+      _Audio.graph_stop(@_id)
+    }
+    now() {
+      _Audio.graph_now(@_id)
+    }
+    drop() {
+      _Audio.graph_free(@_id) if @_id != nil
+    }
+  }
+
+  # A one-shot sample decoded once from WAV, MP3 or Ogg bytes (a String, e.g.
+  # from FS.read or a Dir) and played per call. One voice: play() restarts
+  # it. Raises ValueError when the bytes are none of the three formats.
+  class Sound {
+    new(data: String) {
+      @_id = _Audio.sound_load(data)
+      @_data = data
+    }
+    # One from samples the program made: -1.0..1.0, mono, `rate` a second,
+    # kept as 16 bits as a WAV file keeps them.
+    new(samples: Array, rate: Long = 44100) {
+      let made = _Audio.sound_samples(samples, rate)
+      @_id = made[0]
+      @_data = made[1]
+    }
+    # The bytes it was made from: the WAV, MP3 or Ogg it was given, or the
+    # 16-bit WAV of the samples. Audio.Sound.new(s.data()) is the same sound.
+    data() {
+      @_data
+    }
+    play() {
+      _Audio.sound_play(@_id)
+    }
+    stop() {
+      _Audio.sound_stop(@_id)
+    }
+    playing() {
+      _Audio.sound_playing(@_id)
+    }
+    volume(v: Long | Float) {
+      _Audio.sound_volume(@_id, v)
+    }
+    pitch(p: Long | Float) {
+      _Audio.sound_pitch(@_id, p)
+    }
+    pan(p: Long | Float) {
+      _Audio.sound_pan(@_id, p)
+    }
+    # Free the decoded sample with the last reference (a constructor that
+    # threw drops before _id was ever set).
+    drop() {
+      _Audio.sound_free(@_id) if @_id != nil
+    }
+  }
+
+  # A streamed file from MP3 or Ogg bytes. The runtime keeps it fed, so a
+  # program with no frame loop keeps its music. stop() rewinds; pause() holds
+  # the position. Raises ValueError when the bytes are neither format.
+  class Music {
+    new(data: String, loop: Bool = true) {
+      @_id = _Audio.music_load(data, loop)
+    }
+    play() {
+      _Audio.music_play(@_id)
+    }
+    stop() {
+      _Audio.music_stop(@_id)
+    }
+    pause() {
+      _Audio.music_pause(@_id)
+    }
+    resume() {
+      _Audio.music_resume(@_id)
+    }
+    playing() {
+      _Audio.music_playing(@_id)
+    }
+    seek(seconds: Long | Float) {
+      _Audio.music_seek(@_id, seconds)
+    }
+    volume(v: Long | Float) {
+      _Audio.music_volume(@_id, v)
+    }
+    pitch(p: Long | Float) {
+      _Audio.music_pitch(@_id, p)
+    }
+    pan(p: Long | Float) {
+      _Audio.music_pan(@_id, p)
+    }
+    drop() {
+      _Audio.music_free(@_id) if @_id != nil
+    }
+  }
+
+  # PCM the script synthesises, a block at a time. push takes the whole frames
+  # in `samples` (stereo: interleaved L,R) and answers how many it took; with
+  # no audio device nothing plays, and the block still counts.
+  class PCM {
+    new(rate: Long, channels: Long, buffer: Long) {
+      @_id = _Audio.pcm_new(rate, channels, buffer)
+    }
+    ready() {
+      _Audio.pcm_ready(@_id)
+    }
+    needed() {
+      _Audio.pcm_needed(@_id)
+    }
+    push(samples: Array) {
+      _Audio.pcm_push(@_id, samples)
+    }
+    submit() {
+      _Audio.pcm_submit(@_id)
+    }
+    latency() {
+      _Audio.pcm_latency(@_id)
+    }
+    play() {
+      _Audio.pcm_play(@_id)
+    }
+    stop() {
+      _Audio.pcm_stop(@_id)
+    }
+    pause() {
+      _Audio.pcm_pause(@_id)
+    }
+    resume() {
+      _Audio.pcm_resume(@_id)
+    }
+    playing() {
+      _Audio.pcm_playing(@_id)
+    }
+    volume(v: Long | Float) {
+      _Audio.pcm_volume(@_id, v)
+    }
+    pitch(p: Long | Float) {
+      _Audio.pcm_pitch(@_id, p)
+    }
+    pan(p: Long | Float) {
+      _Audio.pcm_pan(@_id, p)
+    }
+    drop() {
+      _Audio.pcm_free(@_id) if @_id != nil
+    }
+  }
+
+  # The microphone, read a block at a time. The runtime keeps the last second
+  # of samples (Floats in -1..1, stereo interleaved L,R) while it runs; read
+  # takes up to `frames` of them (all that are waiting when omitted) and
+  # answers an Array, empty when none are. `rate` is a request, met by
+  # resampling. With no microphone, or none the program may open, nothing
+  # arrives: ready() says which, and Audio.capture_available() says before.
+  class Capture {
+    new(rate: Long = 44100, channels: Long = 1) {
+      @_id = _Audio.capture_new(rate, channels)
+    }
+    ready() {
+      _Audio.capture_ready(@_id)
+    }
+    start() {
+      _Audio.capture_start(@_id)
+    }
+    stop() {
+      _Audio.capture_stop(@_id)
+    }
+    running() {
+      _Audio.capture_running(@_id)
+    }
+    waiting() {
+      _Audio.capture_waiting(@_id)
+    }
+    read(frames = nil) {
+      _Audio.capture_read(@_id, frames == nil ? -1 : frames)
+    }
+    drop() {
+      _Audio.capture_free(@_id) if @_id != nil
+    }
+  }
+
+  {
+    available: fn () {
+      _Audio.available()
+    },
+    # latency(seconds) asks for the device's period before it opens;
+    # latency() answers the one it runs at, nil when it is not open.
+    latency: fn (seconds: Long | Float | Nil = nil) {
+      return _Audio.latency() if seconds == nil
+      if !(seconds > 0 && seconds <= 0.5) {
+        __raise("ValueError", "Audio.latency: a period is above 0 and at most 0.5 seconds, not {seconds}")
+      }
+      if !_Audio.latency_ask(seconds) {
+        __raise("ValueError", "Audio.latency: the device is open already; ask before the first sound")
+      }
+      nil
+    },
+    capture_available: fn () {
+      _Audio.capture_present()
+    },
+    tone: tone,
+    resonate: resonate,
+    pluck: pluck,
+    partials: partials,
+    filter: filter,
+    envelope: envelope,
+    mix: mix,
+    # A recording's bytes (WAV, MP3 or Ogg) as it is: {rate, channels}, each
+    # channel its samples, -1.0..1.0.
+    decode: fn (data: String) {
+      let made = _Audio.decode(data)
+      {rate: made[0], channels: made.slice(1, made.size())}
+    },
+    # The magnitudes of `samples` a frame at a time: frames[t][k] is bin k
+    # (k * rate / size Hz) of the `size` samples from t * hop on.
+    spectrum: fn (samples: Array, size: Long = 2048, hop: Long = 512) {
+      _Audio.spectrum(samples, size, hop)
+    },
+    # The same frames' bins as they are: {re, im}, re[t][k] and im[t][k]
+    # bin k's real and imaginary parts.
+    stft: fn (samples: Array, size: Long = 2048, hop: Long = 512) {
+      let read = _Audio.stft(samples, size, hop)
+      {re: read[0], im: read[1]}
+    },
+    # The samples frames of bins stand for, as Audio.stft answers them: each
+    # frame's inverse through the window, overlap-added and divided by the
+    # window's squares there.
+    istft: fn (re: Array, im: Array, size: Long = 2048, hop: Long = 512) {
+      _Audio.istft(re, im, size, hop)
+    },
+    # `samples` taken `from` times a second, as they are taken `to` times.
+    resample: fn (samples: Array, from: Long | Float, to: Long | Float) {
+      _Audio.resample(samples, from, to)
+    },
+    # The pitch of `samples` every 10 ms, searched from `low` to `high` Hz:
+    # {hz, clarity}, hz[t] the pitch about t * 0.01 s (nil where there is
+    # none) and clarity[t] how periodic the sound is there, 0 to 1.
+    pitch: fn (samples: Array, low: Long | Float, high: Long | Float, rate: Long | Float = 44100) {
+      let read = _Audio.pitch(samples, low, high, rate)
+      {hz: read[0], clarity: read[1]}
+    },
+    # The harmonics of `samples` along their pitch every 10 ms (`f0`, as
+    # Audio.pitch's hz: nil where there is none): {harmonics, rest},
+    # harmonics[t] the amplitudes of frame t's `count` harmonics (nil where
+    # it has no pitch) and rest the samples with the harmonics taken out.
+    harmonics: fn (samples: Array, f0: Array, count: Long = 40, rate: Long | Float = 44100) {
+      let read = _Audio.harmonics(samples, f0, count, rate)
+      {harmonics: read[0], rest: read[1]}
+    },
+    # How loud `samples` are at their loudest, in LUFS; nil when silent.
+    loudness: fn (samples: Array, rate: Long | Float = 44100) {
+      _Audio.loudness(samples, rate)
+    },
+    # How loud `samples` are over their whole length, in LUFS (BS.1770's
+    # integrated loudness, gated); nil when silent.
+    integrated_loudness: fn (samples: Array, rate: Long | Float = 44100) {
+      _Audio.integrated_loudness(samples, rate)
+    },
+    Graph: AudioGraph,
+    Sound: Sound,
+    Music: Music,
+    PCM: PCM,
+    Capture: Capture,
+    PULSE: PULSE,
+    PULSE2: PULSE2,
+    TRIANGLE: TRIANGLE,
+    NOISE: NOISE,
+    SAWTOOTH: SAWTOOTH,
+    DUTY_EIGHTH: DUTY_EIGHTH,
+    DUTY_QUARTER: DUTY_QUARTER,
+    DUTY_HALF: DUTY_HALF,
+    DUTY_THREE_QUARTER: DUTY_THREE_QUARTER,
+  }
+}
+let Audio = _audio_module()
+)=culpre=";
+
+inline constexpr const char* KAUAI_MODULE_SOURCE = R"=culpre=(# Kauai: the Kauai language (docs/kauai/language.md), read, checked and
 # played. A song is expanded to its notes, each timed in seconds, and handed to
 # the runtime whole as a schedule (_Audio.schedule_*), which starts every note on
-# the audio stream's own clock. Spliced in front of audio.cul, whose module
-# builds it (misc/gen_preambles.sh).
+# the audio stream's own clock. A namespace of its own, beside Audio, whose
+# runtime it plays on.
 let _kauai_module = fn () {
   let WHOLE = 1920  # time units in a whole note: a sixty-fourth is 30, a triplet eighth 160
   let GRACE = WHOLE / 64  # what an arpeggio rolls by, and what a grace note takes
@@ -4379,17 +5026,17 @@ let _kauai_module = fn () {
     let f = table.get(key, nil)
     if f == nil {
       let has = table.empty() ? "none" : table.keys().join(", ")
-      __raise("ValueError", "Audio.Kauai: {player.line}: {what} plays `external {name}`, and {kind.kwarg}: has no `{key}` (it has {has})")
+      __raise("ValueError", "Kauai: {player.line}: {what} plays `external {name}`, and {kind.kwarg}: has no `{key}` (it has {has})")
     }
     return {make: f, hears: nil, key: key} if f is Function
     if type_of(f) != "Object" || f.get(kind.call, nil) !is Function {
-      __raise("ValueError", "Audio.Kauai: {kind.kwarg}: `{key}` is a function or an object whose `{kind.call}` is one")
+      __raise("ValueError", "Kauai: {kind.kwarg}: `{key}` is a function or an object whose `{kind.call}` is one")
     }
     let hears = f.get("hears", [])
-    __raise("ValueError", "Audio.Kauai: {kind.kwarg}: `{key}` hears an Array of names") if hears !is Array
+    __raise("ValueError", "Kauai: {kind.kwarg}: `{key}` hears an Array of names") if hears !is Array
     let heard = hears.filter(|h| !kind.may.contains(h))
     if !heard.empty() {
-      __raise("ValueError", "Audio.Kauai: {kind.kwarg}: `{key}` hears {heard[0]}; it can hear {kind.may.join(", ")}")
+      __raise("ValueError", "Kauai: {kind.kwarg}: `{key}` hears {heard[0]}; it can hear {kind.may.join(", ")}")
     }
     {make: f[kind.call], hears: hears, key: key}
   }
@@ -4564,7 +5211,7 @@ let _kauai_module = fn () {
   # held to that width: a row of any other is read from the wrong place.
   let STRIDE = _Audio.schedule_stride()
   fn schedule_row(fields) {
-    __raise("RuntimeError", "Audio.Kauai: a schedule row is {fields.size()} numbers, the engine reads {STRIDE}") if fields.size() != STRIDE
+    __raise("RuntimeError", "Kauai: a schedule row is {fields.size()} numbers, the engine reads {STRIDE}") if fields.size() != STRIDE
     fields
   }
   # Seconds a part of a song is heard from before it starts.
@@ -4599,7 +5246,7 @@ let _kauai_module = fn () {
         if type_of(s) != "Sound" {
           __raise(
             "TypeError",
-            "Audio.Kauai: an external instrument answers an Audio.Sound, not {type_of(s)}",
+            "Kauai: an external instrument answers an Audio.Sound, not {type_of(s)}",
           )
         }
         s
@@ -4655,7 +5302,7 @@ let _kauai_module = fn () {
     # Seconds into the song at mark `name`.
     _mark(name) {
       let has = @_marks.empty() ? "none" : @_marks.keys().join(", ")
-      @_marks.get(name, nil) ?? __raise("ValueError", "Audio.Kauai: the song has no mark {name} (it has {has})")
+      @_marks.get(name, nil) ?? __raise("ValueError", "Kauai: the song has no mark {name} (it has {has})")
     }
 
     # Seconds into the song at `p`: seconds, or a String of a mark's name, of
@@ -4667,7 +5314,7 @@ let _kauai_module = fn () {
       let secs = seconds_of(s)
       let whole = (halves(s, ".") ?? (s, ""))[0]
       if secs == nil || (m != nil && !(all_digits(m) && whole.size() == 2 && to_long(whole) < 60)) {
-        __raise("ValueError", "Audio.Kauai: a point in a song is seconds (83.5), minutes and seconds (1:23.5) or a mark's name, not '{p}'")
+        __raise("ValueError", "Kauai: a point in a song is seconds (83.5), minutes and seconds (1:23.5) or a mark's name, not '{p}'")
       }
       (m == nil ? 0 : to_long(m) * 60) + secs
     }
@@ -4755,10 +5402,10 @@ let _kauai_module = fn () {
       let first = from == nil ? 0.0 : @_point(from)
       let last = to == nil ? nil : @_point(to)
       if first < 0 || first >= @_length {
-        __raise("ValueError", "Audio.Kauai: {what}(from:) is at {first} seconds, outside the song's 0 to {@_length}")
+        __raise("ValueError", "Kauai: {what}(from:) is at {first} seconds, outside the song's 0 to {@_length}")
       }
       if last != nil && last <= first {
-        __raise("ValueError", "Audio.Kauai: {what}(to:) is at {last} seconds, not after from: at {first}")
+        __raise("ValueError", "Kauai: {what}(to:) is at {last} seconds, not after from: at {first}")
       }
       let start = Math.max(0.0, first - LEAD)
       {
@@ -4819,7 +5466,7 @@ let _kauai_module = fn () {
   fn song_file(path, dir) {
     let exists = dir == nil ? |n| FS.exists(n) : |n| dir.exists(n)
     let read = dir == nil ? |n| FS.read(n) : |n| dir.read(n)
-    __raise("IOError", "Audio.Kauai: no song file {path}") if !exists(path)
+    __raise("IOError", "Kauai: no song file {path}") if !exists(path)
     let load_used = fn (name, from, line) {
       let file = beside(from, name, dir != nil)
       fail(line, "no file {file} to use") if !exists(file)
@@ -4897,653 +5544,8 @@ let _kauai_module = fn () {
     },
   }
 }
-let _audio_module = fn () {
-  # tone's channels: WASM-4's two pulse waves, triangle and noise, plus the
-  # culebra-only sawtooth. The values pass straight through to the host.
-  let PULSE = 0   # pulse 1
-  let PULSE2 = 1  # pulse 2
-  let TRIANGLE = 2
-  let NOISE = 3
-  let SAWTOOTH = 4
-  # Duty cycles for the pulse channels.
-  let DUTY_EIGHTH = 0
-  let DUTY_QUARTER = 1
-  let DUTY_HALF = 2
-  let DUTY_THREE_QUARTER = 3
 
-  # Play a tone: WASM-4's APU, in WASM-4's units. tone(freq, dur) is a
-  # `dur`-tick note at `freq` (a tick is 1/60 s). The optional args expose the
-  # full envelope: the note slides `freq` -> `end_freq` while an ADSR envelope
-  # (attack/decay/release in ticks, `dur` the sustain) shapes the level from 0
-  # up to `peak`, down to the sustain `vol`, and back to 0 (both 0..100).
-  # `wave` picks the channel and `duty` the pulse shape.
-  let tone = fn (
-    freq,
-    dur,
-    vol = 100,
-    wave = 0,
-    end_freq = nil,
-    attack = 0,
-    decay = 0,
-    release = 0,
-    peak = nil,
-    duty = 2,
-  ) {
-    let ef = if end_freq == nil {
-      freq
-    } else {
-      end_freq
-    }
-    let pk = if peak == nil {
-      vol
-    } else {
-      peak
-    }
-    _Audio.tone(freq, ef, attack, decay, dur, release, vol, pk, wave, duty)
-  }
-
-  # A mode list as resonate's natives take it, three numbers a mode.
-  let flat_modes = fn (modes: Array, who: String) {
-    modes.flat_map(fn (m) {
-      if type_of(m) != "Object" {
-        __raise(
-          "TypeError",
-          "{who}: a mode is \{freq, width, gain}, each a number",
-        )
-      }
-      [m.freq, m.width, m.gain]
-    })
-  }
-
-  # `samples` through a bank of resonances, as a guitar's body rings with its
-  # strings: each mode {freq, width, gain} is a two-pole resonator ringing at
-  # `freq` Hz, `width` Hz wide, its peak about `gain`; `dry` of the samples
-  # themselves is added. The answer is as long as `samples`.
-  let resonate = fn (
-    samples: Array,
-    modes: Array,
-    dry: Long | Float = 0.0,
-    rate: Long | Float = 44100,
-  ) {
-    _Audio.resonate(samples, flat_modes(modes, "Audio.resonate"), dry, rate)
-  }
-
-  # A plucked string (Karplus-Strong), `seconds` long: `tunings` say what it
-  # is tuned to from when, {at, freq, ring} (seconds, Hz, and seconds to ring
-  # down by 60 dB), in the order they come, the first from the start; each
-  # strike {at, samples} is added into the string from `at` on. A change of
-  # tuning keeps the string moving, as a finger hammering on does.
-  let pluck = fn (
-    seconds: Long | Float,
-    tunings: Array,
-    strikes: Array = [],
-    rate: Long | Float = 44100,
-  ) {
-    let flat = tunings.flat_map(fn (t) {
-      if type_of(t) != "Object" {
-        __raise(
-          "TypeError",
-          "Audio.pluck: a tuning is \{at, freq, ring}, each a number",
-        )
-      }
-      [t.at, t.freq, t.ring]
-    })
-    for s in strikes {
-      if type_of(s) != "Object" || s.samples !is Array {
-        __raise(
-          "TypeError",
-          "Audio.pluck: a strike is \{at, samples}, its samples numbers",
-        )
-      }
-    }
-    _Audio.pluck(
-      seconds,
-      flat,
-      strikes.flat_map(|s| [s.at, s.samples.size()]),
-      strikes.flat_map(|s| s.samples),
-      rate,
-    )
-  }
-
-  # A harmonic tone `seconds` long, its controls given as points it moves
-  # between in straight lines: `freq` and `gain` envelopes of (at, value);
-  # `spectrum` of (at, amps), the k-th amp the partial at k times the freq;
-  # and `noise` {low, high, seed, steady, pulsed}, band noise from `low` to
-  # `high` Hz whose level is heard steadily and pulsing with the tone's
-  # wave, each an envelope.
-  let partials = fn (
-    seconds: Long | Float,
-    freq: Array,
-    spectrum: Array,
-    gain: Array = [],
-    noise = nil,
-    rate: Long | Float = 44100,
-  ) {
-    for p in spectrum {
-      if p !is Tuple || p.size() != 2 || p[1] !is Array {
-        __raise(
-          "TypeError",
-          "Audio.partials: a spectrum is a list of (at, amps), amps a list of numbers",
-        )
-      }
-    }
-    let quiet = noise == nil
-    if !quiet && type_of(noise) != "Object" {
-      __raise(
-        "TypeError",
-        "Audio.partials: the noise is \{low, high, seed, steady, pulsed}",
-      )
-    }
-    _Audio.partials(
-      seconds,
-      freq,
-      gain,
-      spectrum.flat_map(|p| [p[0], p[1].size()]),
-      spectrum.flat_map(|p| p[1]),
-      quiet ? [] : [noise.low, noise.high, noise.get("seed", 1)],
-      quiet ? [] : noise.get("steady", []),
-      quiet ? [] : noise.get("pulsed", []),
-      rate,
-    )
-  }
-
-  # `samples` through a two-pole filter: "low" lets through what is below
-  # `cutoff` Hz, "high" what is above it, "band" what is about it. `cutoff`
-  # is a number or an envelope of (at, value), and `q` the resonance.
-  let filter = fn (
-    samples: Array,
-    kind: String,
-    cutoff: Long | Float | Array,
-    q: Long | Float = 0.707,
-    rate: Long | Float = 44100,
-  ) {
-    let at = cutoff is Array ? cutoff : [(0.0, cutoff)]
-    _Audio.filter(samples, kind, at, q, rate)
-  }
-
-  # `samples` times `gain`, an envelope of (at, value) it moves between in
-  # straight lines.
-  let envelope = fn (samples: Array, gain: Array, rate: Long | Float = 44100) {
-    _Audio.envelope(samples, gain, rate)
-  }
-
-  # The `parts` added together, each samples or {samples, at, gain}: from
-  # `at` seconds on (0 if left out), times `gain` (1). The answer runs to the
-  # end of the part that ends last.
-  let mix = fn (parts: Array, rate: Long | Float = 44100) {
-    let each = parts.map(|p| type_of(p) == "Object" ? p : {samples: p})
-    _Audio.mix(
-      each.map(|p| p.get("samples", nil)),
-      each.flat_map(|p| [p.get("at", 0.0), p.get("gain", 1.0)]),
-      rate,
-    )
-  }
-
-  # One value a part of a graph reads, moved by changes scheduled on the
-  # graph's clock, in seconds from its start: set(at, value) jumps to
-  # `value` at `at`; ramp(at, value) arrives there in a straight line from
-  # the change before; cancel(at) drops the changes after `at` and holds the
-  # value it has there. Each answers the value, so changes chain.
-  class AudioGraphValue {
-    new(graph, part: Long, index: Long) {
-      @_graph = graph
-      @_part = part
-      @_index = index
-    }
-    set(at: Long | Float, value: Long | Float) {
-      self._change(0, at, value)
-    }
-    ramp(at: Long | Float, value: Long | Float) {
-      self._change(1, at, value)
-    }
-    cancel(at: Long | Float) {
-      self._change(2, at, 0)
-    }
-    # A change as _Audio.graph_schedule takes it: `how` 0 sets, 1 ramps and
-    # 2 cancels.
-    _change(how, at, to) {
-      _Audio.graph_schedule(@_graph._id, [@_part, @_index, how, at, to])
-      self
-    }
-  }
-
-  # A part of a graph, which keeps its graph as an AudioGraphValue does.
-  # What moves in it is an AudioGraphValue: a wave's freq and feedback, a
-  # filter's cutoff, a gain's gain, a string's freq and ring, a delay's time,
-  # a drive's gain.
-  class AudioGraphPart {
-    freq = nil
-    feedback = nil
-    cutoff = nil
-    gain = nil
-    ring = nil
-    time = nil
-    new(graph, index: Long) {
-      @_graph = graph
-      @_index = index
-    }
-  }
-
-  # Parts wired together, which the runtime works out as they play (play)
-  # or ahead of time (render), the same either way. It is freed, and stops,
-  # with the last reference to it or to any of its parts and values.
-  class AudioGraph {
-    new(rate: Long | Float = 44100) {
-      @_id = _Audio.graph_new(rate)
-    }
-    # `inputs`, the parts the part takes in, and `modulators`, those that
-    # move it, as their indexes in the graph.
-    _part(
-      family: String,
-      kind: String,
-      inputs: Array,
-      options: Array,
-      modulators: Array = [],
-    ) {
-      let wires = [
-        @_indexes("inputs", inputs),
-        @_indexes("modulators", modulators),
-      ]
-      AudioGraphPart.new(
-        self,
-        _Audio.graph_part(@_id, family, kind, wires, options),
-      )
-    }
-    _indexes(name: String, parts: Array) {
-      for p in parts {
-        if class_of(p) != AudioGraphPart {
-          __raise(
-            "TypeError",
-            "type error: parameter '{name}' expects an Array of AudioGraphPart",
-          )
-        }
-        if p._graph._id != @_id {
-          __raise(
-            "ValueError",
-            "Audio.Graph: a part takes in parts of its own graph",
-          )
-        }
-      }
-      parts.map(|p| p._index)
-    }
-    _value(part: AudioGraphPart, index: Long) {
-      AudioGraphValue.new(self, part._index, index)
-    }
-    wave(
-      kind: String = "sine",
-      freq: Long | Float = 440.0,
-      modulators: Array = [],
-      feedback: Long | Float = 0.0,
-      phase: Long | Float = 0.0,
-    ) {
-      let p = @_part("wave", kind, [], [freq, feedback, phase], modulators)
-      p.freq = @_value(p, 0)
-      p.feedback = @_value(p, 1)
-      p
-    }
-    noise(seed: Long = 1) {
-      @_part("noise", "", [], [seed])
-    }
-    filter(
-      kind: String,
-      input: AudioGraphPart,
-      cutoff: Long | Float = 1000.0,
-      q: Long | Float = 0.707,
-    ) {
-      let p = @_part("filter", kind, [input], [cutoff, q])
-      p.cutoff = @_value(p, 0)
-      p
-    }
-    gain(
-      input: AudioGraphPart,
-      gain: Long | Float = 1.0,
-      modulators: Array = [],
-    ) {
-      let p = @_part("gain", "", [input], [gain], modulators)
-      p.gain = @_value(p, 0)
-      p
-    }
-    mix(inputs: Array, gain: Long | Float = 1.0) {
-      let p = @_part("gain", "", inputs, [gain])
-      p.gain = @_value(p, 0)
-      p
-    }
-    resonate(input: AudioGraphPart, modes: Array, dry: Long | Float = 0.0) {
-      @_part(
-        "resonate",
-        "",
-        [input],
-        [dry, ...flat_modes(modes, "Audio.Graph.resonate")],
-      )
-    }
-    pluck(
-      input: AudioGraphPart,
-      freq: Long | Float = 220.0,
-      ring: Long | Float = 2.0,
-      modulators: Array = [],
-    ) {
-      let p = @_part("pluck", "", [input], [freq, ring], modulators)
-      p.freq = @_value(p, 0)
-      p.ring = @_value(p, 1)
-      p
-    }
-    delay(
-      input: AudioGraphPart,
-      time: Long | Float = 0.0,
-      modulators: Array = [],
-    ) {
-      let p = @_part(
-        "delay",
-        "",
-        [input],
-        [time],
-        modulators,
-      )
-      p.time = @_value(p, 0)
-      p
-    }
-    drive(input: AudioGraphPart, gain: Long | Float = 1.0) {
-      let p = @_part("drive", "", [input], [gain])
-      p.gain = @_value(p, 0)
-      p
-    }
-    limit(
-      input: AudioGraphPart,
-      ceiling: Long | Float = 0.9,
-      release: Long | Float = 0.2,
-    ) {
-      @_part("limit", "", [input], [ceiling, release])
-    }
-    output(part: AudioGraphPart) {
-      if part._graph._id != @_id {
-        __raise(
-          "ValueError",
-          "Audio.Graph: the output is a part of its own graph",
-        )
-      }
-      _Audio.graph_output(@_id, part._index)
-    }
-    render(seconds: Long | Float) {
-      _Audio.graph_render(@_id, seconds)
-    }
-    play() {
-      _Audio.graph_play(@_id)
-    }
-    stop() {
-      _Audio.graph_stop(@_id)
-    }
-    now() {
-      _Audio.graph_now(@_id)
-    }
-    drop() {
-      _Audio.graph_free(@_id) if @_id != nil
-    }
-  }
-
-  # A one-shot sample decoded once from WAV, MP3 or Ogg bytes (a String, e.g.
-  # from FS.read or a Dir) and played per call. One voice: play() restarts
-  # it. Raises ValueError when the bytes are none of the three formats.
-  class Sound {
-    new(data: String) {
-      @_id = _Audio.sound_load(data)
-      @_data = data
-    }
-    # One from samples the program made: -1.0..1.0, mono, `rate` a second,
-    # kept as 16 bits as a WAV file keeps them.
-    new(samples: Array, rate: Long = 44100) {
-      let made = _Audio.sound_samples(samples, rate)
-      @_id = made[0]
-      @_data = made[1]
-    }
-    # The bytes it was made from: the WAV, MP3 or Ogg it was given, or the
-    # 16-bit WAV of the samples. Audio.Sound.new(s.data()) is the same sound.
-    data() {
-      @_data
-    }
-    play() {
-      _Audio.sound_play(@_id)
-    }
-    stop() {
-      _Audio.sound_stop(@_id)
-    }
-    playing() {
-      _Audio.sound_playing(@_id)
-    }
-    volume(v: Long | Float) {
-      _Audio.sound_volume(@_id, v)
-    }
-    pitch(p: Long | Float) {
-      _Audio.sound_pitch(@_id, p)
-    }
-    pan(p: Long | Float) {
-      _Audio.sound_pan(@_id, p)
-    }
-    # Free the decoded sample with the last reference (a constructor that
-    # threw drops before _id was ever set).
-    drop() {
-      _Audio.sound_free(@_id) if @_id != nil
-    }
-  }
-
-  # A streamed file from MP3 or Ogg bytes. The runtime keeps it fed, so a
-  # program with no frame loop keeps its music. stop() rewinds; pause() holds
-  # the position. Raises ValueError when the bytes are neither format.
-  class Music {
-    new(data: String, loop: Bool = true) {
-      @_id = _Audio.music_load(data, loop)
-    }
-    play() {
-      _Audio.music_play(@_id)
-    }
-    stop() {
-      _Audio.music_stop(@_id)
-    }
-    pause() {
-      _Audio.music_pause(@_id)
-    }
-    resume() {
-      _Audio.music_resume(@_id)
-    }
-    playing() {
-      _Audio.music_playing(@_id)
-    }
-    seek(seconds: Long | Float) {
-      _Audio.music_seek(@_id, seconds)
-    }
-    volume(v: Long | Float) {
-      _Audio.music_volume(@_id, v)
-    }
-    pitch(p: Long | Float) {
-      _Audio.music_pitch(@_id, p)
-    }
-    pan(p: Long | Float) {
-      _Audio.music_pan(@_id, p)
-    }
-    drop() {
-      _Audio.music_free(@_id) if @_id != nil
-    }
-  }
-
-  # PCM the script synthesises, a block at a time. push takes the whole frames
-  # in `samples` (stereo: interleaved L,R) and answers how many it took; with
-  # no audio device nothing plays, and the block still counts.
-  class PCM {
-    new(rate: Long, channels: Long, buffer: Long) {
-      @_id = _Audio.pcm_new(rate, channels, buffer)
-    }
-    ready() {
-      _Audio.pcm_ready(@_id)
-    }
-    needed() {
-      _Audio.pcm_needed(@_id)
-    }
-    push(samples: Array) {
-      _Audio.pcm_push(@_id, samples)
-    }
-    submit() {
-      _Audio.pcm_submit(@_id)
-    }
-    latency() {
-      _Audio.pcm_latency(@_id)
-    }
-    play() {
-      _Audio.pcm_play(@_id)
-    }
-    stop() {
-      _Audio.pcm_stop(@_id)
-    }
-    pause() {
-      _Audio.pcm_pause(@_id)
-    }
-    resume() {
-      _Audio.pcm_resume(@_id)
-    }
-    playing() {
-      _Audio.pcm_playing(@_id)
-    }
-    volume(v: Long | Float) {
-      _Audio.pcm_volume(@_id, v)
-    }
-    pitch(p: Long | Float) {
-      _Audio.pcm_pitch(@_id, p)
-    }
-    pan(p: Long | Float) {
-      _Audio.pcm_pan(@_id, p)
-    }
-    drop() {
-      _Audio.pcm_free(@_id) if @_id != nil
-    }
-  }
-
-  # The microphone, read a block at a time. The runtime keeps the last second
-  # of samples (Floats in -1..1, stereo interleaved L,R) while it runs; read
-  # takes up to `frames` of them (all that are waiting when omitted) and
-  # answers an Array, empty when none are. `rate` is a request, met by
-  # resampling. With no microphone, or none the program may open, nothing
-  # arrives: ready() says which, and Audio.capture_available() says before.
-  class Capture {
-    new(rate: Long = 44100, channels: Long = 1) {
-      @_id = _Audio.capture_new(rate, channels)
-    }
-    ready() {
-      _Audio.capture_ready(@_id)
-    }
-    start() {
-      _Audio.capture_start(@_id)
-    }
-    stop() {
-      _Audio.capture_stop(@_id)
-    }
-    running() {
-      _Audio.capture_running(@_id)
-    }
-    waiting() {
-      _Audio.capture_waiting(@_id)
-    }
-    read(frames = nil) {
-      _Audio.capture_read(@_id, frames == nil ? -1 : frames)
-    }
-    drop() {
-      _Audio.capture_free(@_id) if @_id != nil
-    }
-  }
-
-  {
-    available: fn () {
-      _Audio.available()
-    },
-    # latency(seconds) asks for the device's period before it opens;
-    # latency() answers the one it runs at, nil when it is not open.
-    latency: fn (seconds: Long | Float | Nil = nil) {
-      return _Audio.latency() if seconds == nil
-      if !(seconds > 0 && seconds <= 0.5) {
-        __raise("ValueError", "Audio.latency: a period is above 0 and at most 0.5 seconds, not {seconds}")
-      }
-      if !_Audio.latency_ask(seconds) {
-        __raise("ValueError", "Audio.latency: the device is open already; ask before the first sound")
-      }
-      nil
-    },
-    capture_available: fn () {
-      _Audio.capture_present()
-    },
-    tone: tone,
-    resonate: resonate,
-    pluck: pluck,
-    partials: partials,
-    filter: filter,
-    envelope: envelope,
-    mix: mix,
-    # A recording's bytes (WAV, MP3 or Ogg) as it is: {rate, channels}, each
-    # channel its samples, -1.0..1.0.
-    decode: fn (data: String) {
-      let made = _Audio.decode(data)
-      {rate: made[0], channels: made.slice(1, made.size())}
-    },
-    # The magnitudes of `samples` a frame at a time: frames[t][k] is bin k
-    # (k * rate / size Hz) of the `size` samples from t * hop on.
-    spectrum: fn (samples: Array, size: Long = 2048, hop: Long = 512) {
-      _Audio.spectrum(samples, size, hop)
-    },
-    # The same frames' bins as they are: {re, im}, re[t][k] and im[t][k]
-    # bin k's real and imaginary parts.
-    stft: fn (samples: Array, size: Long = 2048, hop: Long = 512) {
-      let read = _Audio.stft(samples, size, hop)
-      {re: read[0], im: read[1]}
-    },
-    # The samples frames of bins stand for, as Audio.stft answers them: each
-    # frame's inverse through the window, overlap-added and divided by the
-    # window's squares there.
-    istft: fn (re: Array, im: Array, size: Long = 2048, hop: Long = 512) {
-      _Audio.istft(re, im, size, hop)
-    },
-    # `samples` taken `from` times a second, as they are taken `to` times.
-    resample: fn (samples: Array, from: Long | Float, to: Long | Float) {
-      _Audio.resample(samples, from, to)
-    },
-    # The pitch of `samples` every 10 ms, searched from `low` to `high` Hz:
-    # {hz, clarity}, hz[t] the pitch about t * 0.01 s (nil where there is
-    # none) and clarity[t] how periodic the sound is there, 0 to 1.
-    pitch: fn (samples: Array, low: Long | Float, high: Long | Float, rate: Long | Float = 44100) {
-      let read = _Audio.pitch(samples, low, high, rate)
-      {hz: read[0], clarity: read[1]}
-    },
-    # The harmonics of `samples` along their pitch every 10 ms (`f0`, as
-    # Audio.pitch's hz: nil where there is none): {harmonics, rest},
-    # harmonics[t] the amplitudes of frame t's `count` harmonics (nil where
-    # it has no pitch) and rest the samples with the harmonics taken out.
-    harmonics: fn (samples: Array, f0: Array, count: Long = 40, rate: Long | Float = 44100) {
-      let read = _Audio.harmonics(samples, f0, count, rate)
-      {harmonics: read[0], rest: read[1]}
-    },
-    # How loud `samples` are at their loudest, in LUFS; nil when silent.
-    loudness: fn (samples: Array, rate: Long | Float = 44100) {
-      _Audio.loudness(samples, rate)
-    },
-    # How loud `samples` are over their whole length, in LUFS (BS.1770's
-    # integrated loudness, gated); nil when silent.
-    integrated_loudness: fn (samples: Array, rate: Long | Float = 44100) {
-      _Audio.integrated_loudness(samples, rate)
-    },
-    Graph: AudioGraph,
-    Sound: Sound,
-    Music: Music,
-    PCM: PCM,
-    Capture: Capture,
-    # Songs in the Kauai language (src/preambles/kauai.cul).
-    Kauai: _kauai_module(),
-    PULSE: PULSE,
-    PULSE2: PULSE2,
-    TRIANGLE: TRIANGLE,
-    NOISE: NOISE,
-    SAWTOOTH: SAWTOOTH,
-    DUTY_EIGHTH: DUTY_EIGHTH,
-    DUTY_QUARTER: DUTY_QUARTER,
-    DUTY_HALF: DUTY_HALF,
-    DUTY_THREE_QUARTER: DUTY_THREE_QUARTER,
-  }
-}
-let Audio = _audio_module()
+let Kauai = _kauai_module()
 )=culpre=";
 
 inline constexpr const char* MIDI_MODULE_SOURCE = R"=culpre=(# MIDI: input from a MIDI controller and output to one (docs/stdlib.md),

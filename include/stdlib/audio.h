@@ -2,7 +2,7 @@
 
 // The Audio namespace's backend choke: the one owner of the sound device and
 // of everything that plays through it (tone, Sound, Music, PCM, and the
-// schedules Audio.Kauai plays) or listens on the microphone (Capture). The
+// schedules Kauai plays) or listens on the microphone (Capture). The
 // script-facing surface is src/preambles/audio.cul and the natives are in
 // stdlib/bindings.h; this header picks the backend.
 //
@@ -315,7 +315,7 @@ inline double tone_loudness(double freq) {
   return loudness(x.data(), n, kMixerRate);
 }
 
-// The schedule: all the engine knows of a song Audio.Kauai plays, as a flat
+// The schedule: all the engine knows of a song Kauai plays, as a flat
 // list of numbers in rows of kScheduleStride, one row for each sound that
 // starts. A row is its time in seconds, then a tone's channel, start and end
 // frequency, attack, decay, sustain and release in seconds, vol, peak and
@@ -323,7 +323,7 @@ inline double tone_loudness(double freq) {
 // come in time order, since the mixers read them from the head; the binding
 // refuses a list out of it or not a whole number of rows.
 //
-// The width is defined here alone. Audio.Kauai asks the binding for it
+// The width is defined here alone. Kauai asks the binding for it
 // (_Audio.schedule_stride) and checks each row it builds against it, and the
 // page is sent it with the list. The entry points, all on _Audio:
 // schedule_new(list, length, loop_at) -> id, schedule_play/stop/free(id),

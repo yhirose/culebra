@@ -68,7 +68,7 @@ culebra play first.kau
 効きます。
 
 ```culebra
-let song = Audio.Kauai.new(`
+let song = Kauai.new(`
 band Duo {
   voice Tune  pulse     plays melody            vol 20
   voice Bass  triangle  plays roots in E2..D#3  vol 30
@@ -112,12 +112,12 @@ println(song.length())
 
 ## プログラムから鳴らす
 
-プログラムは`Audio.Kauai`で曲を鳴らします。`Audio.Kauai.new`は曲の文字列を、
-`Audio.Kauai.load`はファイルを受け取ります。鳴らす前に、曲の長さや、鳴る音の並びを
+プログラムは`Kauai`で曲を鳴らします。`Kauai.new`は曲の文字列を、
+`Kauai.load`はファイルを受け取ります。鳴らす前に、曲の長さや、鳴る音の並びを
 調べられます。
 
 ```culebra
-let song = Audio.Kauai.new(`
+let song = Kauai.new(`
 band Duo {
   voice Tune  pulse     plays melody            vol 20
   voice Bass  triangle  plays roots in E2..D#3  vol 30

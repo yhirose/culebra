@@ -45,7 +45,7 @@ let SAX = instrument()
 # with the voice's parameters as they stand at its first note.
 let phrase_samples = |phrase, params| SAX.phrase_samples(phrase, params)
 
-# The instrument, as Audio.Kauai.load's `voices:` takes it: `external SopranoSax`.
+# The instrument, as Kauai.load's `voices:` takes it: `external SopranoSax`.
 let voices = {sopranosax: {
   phrase: |notes, params| Audio.Sound(
     phrase_samples(notes, params),

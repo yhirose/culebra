@@ -84,8 +84,9 @@ Conventions used below:
 42. [`Dir`](#42-dir) — a read-only set of files on disk, in memory, baked into the binary or in a ZIP archive, read one way (`Dir.disk` / `Dir.memory` / `Dir.embedded` / `Dir.zip`, and the `Dir` trait)
 43. [`LLM`](#43-llm) — a client for LLMs: one step with a provider (the Messages API or Chat Completions), a conversation that runs your functions as tools, or a request as it is
 44. [`Llama`](#44-llama) — a model run in this process: load a GGUF file, then `generate` or `chat` (a build option)
-45. [Design notes](#45-design-notes)
-46. [Not included (yet)](#46-not-included-yet)
+45. [`Kauai`](#45-kauai) — songs written in Kauai, read, checked and played on the Audio runtime
+46. [Design notes](#46-design-notes)
+47. [Not included (yet)](#47-not-included-yet)
 
 **Where to find what**
 
@@ -134,6 +135,7 @@ Conventions used below:
 | Desktop GUI (native WebView + local server) | [§30 Desktop](#30-desktop--webview) — `Desktop.run({title, assets, routes})` |
 | Play from a MIDI keyboard or wind controller | [§41 MIDI](#41-midi) — `MIDI.inputs()` / `MIDI.Input.new(id).messages()` / `input.control(2)` |
 | Play a tone, a sound effect or music; synthesise audio | [§40 Audio](#40-audio) — `Audio.tone(440, 10)` / `Audio.Sound.new(bytes).play()` / `Audio.Music.new(bytes)` / `Audio.PCM.new(44100, 1, 1024)` / `Audio.Capture.new(44100)` |
+| Play a song written in Kauai | [§45 Kauai](#45-kauai) — `Kauai.new(text).play()` / `Kauai.load(path)` |
 | Heap introspection / leak checks | [§7 GC](#gc--heap-introspection) — `GC.stat()` → `{live_objects, rc_objects, heap_bytes}` |
 | 2D/3D vector math (dot, length, normalize, distance) | [§31 `Vector2`](#31-vector2) / [§32 `Vector3`](#32-vector3) |
 | FIFO queue, sliding window, front+back stack | [§33 `Deque`](#33-deque) — `Deque.new()` — `push_back`/`pop_front` |
@@ -8663,7 +8665,8 @@ built it. Give each isolate its own.
 ## 40. `Audio`
 
 Sound for any program: WASM-4-style tones, one-shot samples, streamed music,
-PCM the script synthesises, native parts to build a sound from and graphs of them worked out as they play, the microphone, and songs written in Kauai. `Audio` owns the sound device on its own and
+PCM the script synthesises, native parts to build a sound from and graphs of them worked out as they play, and the microphone; songs written in Kauai play on it through
+[`Kauai`](#45-kauai). `Audio` owns the sound device on its own and
 needs no window, so it works the same whether a program draws with `Canvas`,
 with `Scene`, or not at all. The device opens on first use; a program that
 never plays anything never opens it.
@@ -8845,7 +8848,7 @@ browser, where it answers as a machine with no audio device does.
 
 ### Building a sound
 
-A program that synthesises its own sound, as an instrument for `Audio.Kauai`
+A program that synthesises its own sound, as an instrument for `Kauai`
 does or a loop that fills a `PCM`'s blocks, computes it a sample at a time,
 and that loop is where its time goes. The functions here are parts such a
 sound is built from: each runs natively over a whole Array of samples
@@ -9057,7 +9060,7 @@ time, as a point of `Audio.filter`'s or `Audio.envelope`'s envelope does;
 re-tuned between two samples can change one sample later in a graph. These
 are Web Audio's `setValueAtTime`, `linearRampToValueAtTime` and
 `cancelAndHoldAtTime`, so a song's
-notes can be scheduled ahead, as `Audio.Kauai` schedules its own.
+notes can be scheduled ahead, as `Kauai` schedules its own.
 
 A kind other than those named, a part from another graph, a value out of
 range (a wave's freq below 0 or not below half the rate, a feedback below 0
@@ -9147,52 +9150,6 @@ loop {
   }
   Time.sleep(0.02)
 }
-```
-
-### Kauai
-
-> **Status: Draft.** The language and its API may still change before a
-> release.
-
-`Audio.Kauai` plays songs written in Kauai, a language for music as a band
-plays it: chords and a melody, and grooves that say how the band accompanies
-them ([the Kauai specification](kauai/language.md)). A song is read and
-checked whole, then handed to the runtime, which starts each note on the
-audio stream's own clock through `tone`'s channels, and plays the sounds the
-program supplies for `external` instruments as samples mixed alongside them.
-`culebra play song.kau` plays a song file from the command line
-([Tooling §9](tooling.md#9-playing-a-song-culebra-play)).
-
-| Function | Effect |
-| --- | --- |
-| `Audio.Kauai.new(text: String, voices = nil, drums = nil)` | a song from its text, which uses no other files |
-| `Audio.Kauai.load(path: String, voices = nil, drums = nil, dir = nil)` | a song file and the files it `use`s, from the disk or from `dir` (any `Dir`, or any object with `exists(name)` and `read(name)`) |
-| `Audio.Kauai.parse(text: String)` | a song's score as written, and what its band plays bar by bar, as plain data, read and checked as `new` reads it, with no sound built ([the score as data](kauai/language.md#the-score-as-data)) |
-| `Audio.Kauai.parse_file(path: String, dir = nil)` | the same, of a song file and the files it `use`s, read as `load` reads them |
-
-A song's mistake raises `KauaiError`, its message naming the file and the
-line. The song answers `play()`, `stop()`, `volume(v)`, `playing()`,
-`reached(mark)`, `prepare()`, `length()`, `about()` and `events()`, and keeps its own
-time whether or not a device plays it; the specification's
-[section 10](kauai/language.md#10-playing-from-culebra) has them all.
-
-```culebra
-let song = Audio.Kauai.new(`
-band Solo {
-  voice Lead  pulse  plays melody  vol 20
-}
-song Tune {
-  tempo 120
-  band Solo
-  melody in C5..B5
-  Theme
-}
-section Theme {
-  C  e4 g c'2
-}
-`)
-println(song.length())  # => 2.0
-song.play()
 ```
 
 ## 41. `MIDI`
@@ -9402,7 +9359,7 @@ Built-in traits, has the whole rule).
 
 A trait annotation accepts a class instance, and an Object literal is not one.
 Much of the library asks for less than a Dir anyway: a reader that only looks
-files up by name (`Audio.Kauai.load(dir:)`) takes anything with
+files up by name (`Kauai.load(dir:)`) takes anything with
 `exists(path)` and `read(path)`, an Object literal included. To make a set of
 literal files a full Dir, hand them to `Dir.memory`.
 
@@ -10110,7 +10067,53 @@ Closing twice is fine; a call on a closed model is a `LlamaError`.
 Not included: tool calls (use `grammar:` for a result with a fixed shape),
 images and audio, embeddings.
 
-## 45. Design notes
+## 45. `Kauai`
+
+> **Status: Draft.** The language and its API may still change before a
+> release.
+
+`Kauai` plays songs written in Kauai, a language for music as a band
+plays it: chords and a melody, and grooves that say how the band accompanies
+them ([the Kauai specification](kauai/language.md)). A song is read and
+checked whole, then handed to the `Audio` runtime, which starts each note on the
+audio stream's own clock through `tone`'s channels, and plays the sounds the
+program supplies for `external` instruments as samples mixed alongside them.
+`culebra play song.kau` plays a song file from the command line
+([Tooling §9](tooling.md#9-playing-a-song-culebra-play)).
+
+| Function | Effect |
+| --- | --- |
+| `Kauai.new(text: String, voices = nil, drums = nil)` | a song from its text, which uses no other files |
+| `Kauai.load(path: String, voices = nil, drums = nil, dir = nil)` | a song file and the files it `use`s, from the disk or from `dir` (any `Dir`, or any object with `exists(name)` and `read(name)`) |
+| `Kauai.parse(text: String)` | a song's score as written, and what its band plays bar by bar, as plain data, read and checked as `new` reads it, with no sound built ([the score as data](kauai/language.md#the-score-as-data)) |
+| `Kauai.parse_file(path: String, dir = nil)` | the same, of a song file and the files it `use`s, read as `load` reads them |
+
+A song's mistake raises `KauaiError`, its message naming the file and the
+line. The song answers `play()`, `stop()`, `volume(v)`, `playing()`,
+`reached(mark)`, `prepare()`, `length()`, `about()` and `events()`, and keeps its own
+time whether or not a device plays it; the specification's
+[section 10](kauai/language.md#10-playing-from-culebra) has them all.
+
+```culebra
+let song = Kauai.new(`
+band Solo {
+  voice Lead  pulse  plays melody  vol 20
+}
+song Tune {
+  tempo 120
+  band Solo
+  melody in C5..B5
+  Theme
+}
+section Theme {
+  C  e4 g c'2
+}
+`)
+println(song.length())  # => 2.0
+song.play()
+```
+
+## 46. Design notes
 
 ### Namespace-first, with three global shortcuts
 
@@ -10166,7 +10169,7 @@ sentinel values for "found or not" predicates (`IO.input()` returns
 
 ---
 
-## 46. Not included (yet)
+## 47. Not included (yet)
 
 ### Heavier data structures
 

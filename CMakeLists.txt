@@ -2441,7 +2441,7 @@ add_test(NAME sys_argv_test
 # `culebra play`'s streams and statuses, for a song that reads, one that does
 # not, one whose external sounds it has or lacks, and one it watches. The
 # device stays closed, so
-# what a song plays is the .cul sweeps' to check (tests/test_audio_kauai*.cul).
+# what a song plays is the .cul sweeps' to check (tests/test_kauai*.cul).
 add_test(NAME play_test
          COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/play_test.sh
                  $<TARGET_FILE:culebra>)
@@ -2508,7 +2508,7 @@ if(CULEBRA_ENABLE_JIT)
   # linked into every built binary, not only the ones that use it. The
   # __*Trait ones are built-in traits the splice selects like a module.
   set(_baked_names __Traits __EqTrait __ComparableTrait __DirTrait
-                   Time Term Canvas Audio MIDI Args Regex PEG FST Log Path Vector2
+                   Time Term Canvas Audio Kauai MIDI Args Regex PEG FST Log Path Vector2
                    Vector3
                    Deque PriorityQueue StateMachine Dir __Eff __Matchers
                    __StringFns)

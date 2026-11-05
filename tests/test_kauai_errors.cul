@@ -1,4 +1,4 @@
-# Audio.Kauai's mistakes (section 9 of docs/kauai/language.md): each is found
+# Kauai's mistakes (section 9 of docs/kauai/language.md): each is found
 # before anything plays, and says what is wrong and on which line. The line
 # numbers count the lines of the song each case builds.
 
@@ -66,7 +66,7 @@ let twice = fn (second) {
 }
 let error_of = fn (text) {
   try {
-    Audio.Kauai.new(
+    Kauai.new(
       text,
       voices: {ep: |pitch, params| nil},
       drums: {kick: |params| nil},
@@ -208,7 +208,7 @@ for opt in ["env 1 2 3", "gap 2", "duty 1/4"] {
 }
 # An external sound the program does not supply is the program's ValueError,
 # on the line of the voice or drum that plays it, with the names it does.
-let unsupplied = |what| "ValueError: Audio.Kauai: " + what
+let unsupplied = |what| "ValueError: Kauai: " + what
 assert_eq(
   error_of(play("  T", "C c1").replace("external Ep", "external Organ")),
   unsupplied("line 4: voice Ch plays `external Organ`, and voices: has no `organ` (it has ep)"),
@@ -218,7 +218,7 @@ assert_eq(
   unsupplied("line 5: drum Kick plays `external Snare`, and drums: has no `snare` (it has kick)"),
 )
 assert_eq(
-  try { Audio.Kauai.new(play("  T", "C c1")); nil } catch e { "{e.kind}: {e.message}" },
+  try { Kauai.new(play("  T", "C c1")); nil } catch e { "{e.kind}: {e.message}" },
   unsupplied("line 4: voice Ch plays `external Ep`, and voices: has no `ep` (it has none)"),
 )
 # A vol is the tones' 0 to 100, an external voice's and drum's too: a

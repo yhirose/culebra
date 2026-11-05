@@ -33,12 +33,12 @@ let {names, find, recipe} = shelf("")
 # The drums' names, and the one `name` whole.
 let {names: drum_names, recipe: drum} = shelf("drums/")
 
-# A name as a song gives it after `external`, and as Audio.Kauai.load's
+# A name as a song gives it after `external`, and as Kauai.load's
 # keys are: mellow_fm_brass is MellowFmBrass, and mellowfmbrass.
 let title = |name| name.split("_").map(|w| w.capitalize()).join("")
 let key = |name| name.replace("_", "")
 
-# The instruments, as Audio.Kauai.load's `voices:` and `drums:` take them.
+# The instruments, as Kauai.load's `voices:` and `drums:` take them.
 let voices = names.map(|n| (key(n), recipe(n).voice())).to_object()
 let drums = drum_names.map(|n| (key(n), drum(n).drum())).to_object()
 

@@ -1,4 +1,4 @@
-# Audio.Kauai: songs in the Kauai language (docs/kauai/language.md). The test
+# Kauai: songs in the Kauai language (docs/kauai/language.md). The test
 # harness keeps the device closed (CULEBRA_AUDIO=off), so nothing sounds; a
 # song still reads, checks and times its notes, and keeps its own time while
 # it "plays".
@@ -28,7 +28,7 @@ let song_of = fn (body) {
 # Notes, their marks and the band's dynamics: a quarter is half a second at
 # tempo 120, a staccato keeps its time, and an accent after \f is a level
 # above f, as the bass and the drums after \f are at f.
-let first = Audio.Kauai.new(lines([
+let first = Kauai.new(lines([
   song_of(['  Verse', '  mark End']),
   'section Verse {',
   "  C     e4 .g \\f !c'2",
@@ -53,7 +53,7 @@ let rendered = fn () {
   first.volume(0.5)
   assert_eq(first.render(), dry.map(|v| v * 0.5))
   first.volume(1)
-  let roomy = Audio.Kauai.new(lines([
+  let roomy = Kauai.new(lines([
     song_of(['  room 40%', '  Verse']),
     'section Verse {',
     "  C     e4 .g \\f !c'2",
@@ -82,12 +82,12 @@ assert_throws("TypeError", fn () {
 
 # A tempo change, a fermata and swing all move the notes in time.
 let timed = fn (bar) {
-  notes(Audio.Kauai.new(lines([song_of(['  Verse']), 'section Verse {', "  C  {bar}", '}'])), "Tune")
+  notes(Kauai.new(lines([song_of(['  Verse']), 'section Verse {', "  C  {bar}", '}'])), "Tune")
     .map(|n| n[0])
 }
 assert_eq(timed('c4 d \tempo 60 e f'), [0.0, 0.5, 1.0, 2.0])
 assert_eq(timed('c4 @d e f'), [0.0, 0.5, 1.5, 2.0])
-let swung = Audio.Kauai.new(lines([
+let swung = Kauai.new(lines([
   song_of(['  swing 8', '  Verse']),
   'section Verse {',
   '  C  c8 d e f g a b c',
@@ -96,7 +96,7 @@ let swung = Audio.Kauai.new(lines([
 assert_eq(notes(swung, "Tune").map(|n| n[0]), [0.0, 0.333, 0.5, 0.833, 1.0, 1.333, 1.5, 1.833])
 
 # A song that loops plays the pickup it starts with again over its end.
-let looped = Audio.Kauai.new(lines([
+let looped = Kauai.new(lines([
   song_of(['  loop', '  Verse']),
   'section Verse {',
   '  pickup g8',
@@ -127,7 +127,7 @@ let BAND = lines([
   '  Hat   .x.x',
   '}',
 ])
-let combo = Audio.Kauai.new(lines([
+let combo = Kauai.new(lines([
   BAND,
   'song Combo {', '  tempo 120', '  band Combo', '  groove Beat', '  melody in C5..B5', '  Kime with echo', '}',
   'section Kime {',
@@ -147,7 +147,7 @@ assert_eq(notes(combo, "Echo"), [(0.25, 2.0, 72, 5.0)])
 # Any number of voices play roots or chords, each its own row and voicing; in
 # a bar of hits each of them plays the hits, and a tie holds a hit over the
 # bar line, so the band strikes once and holds the chord it struck.
-let comp = Audio.Kauai.new(lines([
+let comp = Kauai.new(lines([
   'band Comp {',
   '  voice Lead  pulse         plays melody                    vol 20',
   '  voice Bass  triangle      plays roots in E2..D#3          vol 30',
@@ -179,7 +179,7 @@ assert_eq(struck("Gtr"), [(0.5, 0.5, 52), (0.5, 0.5, 55), (1.5, 0.5, 52), (1.5, 
 assert_eq(struck("Kick").map(|n| n[0]), [2.0])
 # A harmony takes the chord as the band's first chord voice voices it: here
 # rootless, so under E5 it is G4, not the C5 the second voice has.
-let harm = Audio.Kauai.new(lines([
+let harm = Kauai.new(lines([
   'band Harm {',
   '  voice Lead    pulse     plays melody                   vol 20',
   '  voice Keys    pulse2    plays chords rootless from C4  vol 10',
@@ -195,7 +195,7 @@ assert_eq(notes(harm, "Second").map(|n| n[2]), [67])
 # A voice plays the melody octaves from where it is written, and what echoes
 # or harmonizes it follows.
 let at_octaves = fn (how) {
-  let song = Audio.Kauai.new(lines([
+  let song = Kauai.new(lines([
     'band Trio {',
     "  voice Lead   pulse     plays melody {how}  vol 20",
     '  voice Echo   pulse2                     vol 10',
@@ -220,7 +220,7 @@ assert_eq(at_octaves('2 octaves down'), moved(-24))
 # Mistakes are found before anything plays, and name their line.
 let error_of = fn (text) {
   try {
-    Audio.Kauai.new(text)
+    Kauai.new(text)
     nil
   } catch e {
     (e.kind, e.message)
@@ -273,13 +273,13 @@ assert_eq(error_of(lines(['band B {', '  voice V pulse plays melody vol 10', '  
 assert_eq(error_of(lines([DUO, 'song S {', '  tempo 100', '  band Duo', '  melody in C5..B5', '  V with echo', '}', 'section V {', '  C  c1', '}'])),
   ("KauaiError", "line 14: `with echo` needs a voice that echoes the melody"))
 assert_throws("TypeError", fn () {
-  Audio.Kauai.new(42)
+  Kauai.new(42)
 })
 
 # `about` says what the song is, each item's text to the end of its line; a
 # `//` starts a comment at the start of a line or after a space, and a `#` is
 # a sharp.
-let about = Audio.Kauai.new(lines([
+let about = Kauai.new(lines([
   'about {',
   '  title     Etude Op. 10 #3  // not the title',
   '  composer  Frédéric Chopin',
@@ -323,21 +323,21 @@ let files = {
   "songs/third.kau": lines(["use 'about.kau'"]),
 }
 let dir = Dir.memory(files)
-assert_eq(notes(Audio.Kauai.load("songs/first.kau", dir: dir), "Tune"), [(0.0, 2.0, 72, 20.0)])
+assert_eq(notes(Kauai.load("songs/first.kau", dir: dir), "Tune"), [(0.0, 2.0, 72, 20.0)])
 let readable = {exists: |name| files.has(name), read: |name| files[name]}
-assert_eq(notes(Audio.Kauai.load("songs/first.kau", dir: readable), "Tune"), [(0.0, 2.0, 72, 20.0)])
+assert_eq(notes(Kauai.load("songs/first.kau", dir: readable), "Tune"), [(0.0, 2.0, 72, 20.0)])
 assert_throws("IOError", fn () {
-  Audio.Kauai.load("songs/none.kau", dir: dir)
+  Kauai.load("songs/none.kau", dir: dir)
 })
 let used_song = try {
-  Audio.Kauai.load("songs/second.kau", dir: dir)
+  Kauai.load("songs/second.kau", dir: dir)
   nil
 } catch e {
   e.message
 }
 assert_eq(used_song, "songs/first.kau:2: a file that is used holds no song")
 let used_about = try {
-  Audio.Kauai.load("songs/third.kau", dir: dir)
+  Kauai.load("songs/third.kau", dir: dir)
   nil
 } catch e {
   e.message
@@ -360,7 +360,7 @@ let EXTERNAL = lines([
   'section Solo {', '  C  <c e g>2 c', '}',
 ])
 mut asked = []
-let external = Audio.Kauai.new(EXTERNAL, voices: {
+let external = Kauai.new(EXTERNAL, voices: {
   ep: fn (pitch, params) {
     asked.push((pitch, params.bright))
     Audio.Sound.new(WAV)
@@ -374,13 +374,13 @@ assert_eq(asked.map(|a| a[0]).sorted(), [60, 64, 67])
 assert_eq(asked[0][1], 0.8)
 external.stop()
 assert_throws("ValueError", fn () {
-  Audio.Kauai.new(EXTERNAL, drums: {ride: |params| Audio.Sound.new(WAV)})
+  Kauai.new(EXTERNAL, drums: {ride: |params| Audio.Sound.new(WAV)})
 })
 # An external sound renders where it starts, as loud each time it plays: the
 # ride's second hit, two seconds (two beats at tempo 60) after its first, is
 # the first one again, sample for sample.
 let tick = Audio.Sound(iota(2205).map(|i| 0.3 * Math.sin(i * 0.2)))
-let ticked = Audio.Kauai.new(EXTERNAL, voices: {ep: |pitch, params| Audio.Sound([0.0])}, drums: {ride: |params| tick})
+let ticked = Kauai.new(EXTERNAL, voices: {ep: |pitch, params| Audio.Sound([0.0])}, drums: {ride: |params| tick})
 let ticks = fn () {
   let heard = ticked.render()
   assert_true(heard.slice(0, 2205).map(|v| Math.abs(v)).max() > 0.01)
@@ -390,7 +390,7 @@ let ticks = fn () {
 ticks()
 # Tones and external sounds go to the mixers in one time order: a sound is
 # not left behind every tone. A list out of order is refused on the way in.
-let mixed = Audio.Kauai.new(lines([
+let mixed = Kauai.new(lines([
   'band Mixed {',
   '  voice Tune  pulse  plays melody  vol 20',
   '  drum Ride   external Ride        vol 50',
@@ -417,14 +417,14 @@ let refused = fn (f) {
     e.message
   }
 }
-let out_of_order = "Audio.Kauai: a song's events are out of time order"
+let out_of_order = "Kauai: a song's events are out of time order"
 assert_eq(refused(fn () { _Audio.schedule_new(backwards, 2.0, -1.0) }), out_of_order)
 assert_eq(refused(fn () { _Audio.schedule_render(backwards, [], 2.0, 0.0, 1.0, 0.0) }), out_of_order)
 # A list that is not a whole number of rows is refused as well.
-let not_rows = "Audio.Kauai: a song's events are rows of {stride} numbers"
+let not_rows = "Kauai: a song's events are rows of {stride} numbers"
 assert_eq(refused(fn () { _Audio.schedule_new([...events[0], 0.0], 2.0, -1.0) }), not_rows)
 assert_eq(refused(fn () { _Audio.schedule_render(events[0].slice(0, stride - 1), [], 2.0, 0.0, 1.0, 0.0) }), not_rows)
-let not_a_sound = Audio.Kauai.new(EXTERNAL, voices: {ep: |pitch, params| 1}, drums: {ride: |params| 1})
+let not_a_sound = Kauai.new(EXTERNAL, voices: {ep: |pitch, params| 1}, drums: {ride: |params| 1})
 assert_throws("TypeError", fn () {
   not_a_sound.prepare()
 })
@@ -450,7 +450,7 @@ let said = |n| n.keys().map(|k| "{k} {n[k]}").join(", ")
 let phrase_said = |notes| notes.map(said).join(" / ")
 mut heard = []
 mut struck = []
-let played = Audio.Kauai.new(PLAYED, voices: {
+let played = Kauai.new(PLAYED, voices: {
   fiddle: {
     phrase: fn (notes, params) {
       heard.push(notes)
@@ -483,7 +483,7 @@ played.stop()
 # Hearing nothing, an instrument still hears where each note of a phrase
 # starts, and the notes' vol keeps the dynamic.
 mut plain = []
-let unheard = Audio.Kauai.new(PLAYED, voices: {
+let unheard = Kauai.new(PLAYED, voices: {
   fiddle: {
     phrase: fn (notes, params) {
       plain.push(notes)
@@ -509,7 +509,7 @@ let pulse_at = fn (pitch, amp) {
   iota(22050).map(|i| (i * f / 44100.0) % 1.0 < 0.5 ? amp : -amp)
 }
 let weight_of = fn (amp) {
-  let song = Audio.Kauai.new(lines([
+  let song = Kauai.new(lines([
     'band Solo {', '  voice Lead  external Square  plays melody  vol 50', '  drum Tick  external Tick  vol 50', '}',
     'groove Time {', '  Tick  x...', '}',
     'song Weigh {', '  tempo 60', '  band Solo', '  groove Time', '  melody in C4..B4', '  Weigh', '}',
@@ -526,7 +526,7 @@ assert_eq(weight_of(0.0), {Lead: 1.0, Tick: 1.0})
 
 # A slur from one chord to the next is one phrase of all their tones.
 mut chords = []
-let chorded = Audio.Kauai.new(lines([
+let chorded = Kauai.new(lines([
   'band Keys {',
   '  voice Organ  external Organ  plays melody  vol 50  poly',
   '}',
@@ -554,7 +554,7 @@ chorded.stop()
 # middle of the pitches is the one the instrument is weighed by.)
 let phrased = fn (bar) {
   mut got = []
-  let song = Audio.Kauai.new(lines([
+  let song = Kauai.new(lines([
     'band Solo {',
     '  voice Reed  external Reed  plays melody  vol 50',
     '}',
@@ -579,7 +579,7 @@ assert_eq(phrased('(c4 d r e)'), ['60 62', '62', '64'])
 # Notes struck together are a phrase too, a chord in a part or in a groove,
 # its tones in order from the lowest.
 mut struck_together = []
-let keyed = Audio.Kauai.new(lines([
+let keyed = Kauai.new(lines([
   'band Keys {',
   '  voice Organ  external Organ  plays melody  vol 50  poly',
   '  voice Comp   external Organ  plays chords from C3  vol 50  poly',
@@ -606,7 +606,7 @@ assert_eq(struck_together.sorted(), ['48@0.0 52@0.0 55@0.0 60@0.0', '55@0.0', '6
 # plays next; a drum hears when it, or its choke group, hits next.
 mut told = []
 mut hit_told = []
-let marked = Audio.Kauai.new(lines([
+let marked = Kauai.new(lines([
   'band Combo {',
   '  voice Horn   external Horn   plays melody  vol 50',
   '  drum Open    external Hat    vol 40  choke Hats',
@@ -661,7 +661,7 @@ assert_eq(hit_told.sorted(), ['next 2.0', 'next nil', 'next nil', 'ride next 1.0
 # articulation among them; a drum that plays hits is told them too.
 mut plucked = []
 mut crashed = []
-let kime = Audio.Kauai.new(lines([
+let kime = Kauai.new(lines([
   'band Duo {',
   '  voice Lead  pulse  plays melody  vol 20',
   '  voice Bass  external Pluck  plays roots in E2..D#3  vol 50',
@@ -694,7 +694,7 @@ kime.stop()
 # tones start apart and keep their lines, and a note a tie holds keeps its
 # own while the struck ones take the rest.
 mut lined = []
-let rolled = Audio.Kauai.new(lines([
+let rolled = Kauai.new(lines([
   'band Solo {', '  voice Harp  external Harp  plays melody  poly  vol 50', '}',
   'song Roll {', '  tempo 60', '  band Solo', '  melody in C4..B4', '  Roll', '}',
   'section Roll {', '  C  ~<c~ e g>2 <c d f>2', '}',
@@ -724,7 +724,7 @@ assert_eq(lined.sorted(), [
 # at 62 with breath=0.2).
 let settings = |p| p.keys().sorted().map(|k| "{k}={p[k]}").join(" ")
 mut keyed = []
-let set = Audio.Kauai.new(lines([
+let set = Kauai.new(lines([
   'band Duo {',
   '  voice Lead  external Ep bright=0.8     plays melody     vol 50',
   '  voice Alto  external Reed breath=0.2  plays part Alto  vol 50',
@@ -784,7 +784,7 @@ assert_eq(crashed.sorted(), [
 # `meter` line does: the bars before it, and the pickup, keep the range they
 # were written in; a repeat sign plays the bar it repeats as written, and an
 # ending starts in the range its section's body ends in.
-let ranged = Audio.Kauai.new(lines([
+let ranged = Kauai.new(lines([
   'band Pair {',
   '  voice Lead  pulse     plays melody  vol 20',
   '  voice Alto  triangle  plays part A  vol 20',
@@ -817,7 +817,7 @@ assert_eq(pitches_of("Alto"), [64, 52, 52, 52, 64, 52, 52])
 
 let refused = fn (voices, drums) {
   try {
-    Audio.Kauai.new(PLAYED, voices: voices, drums: drums)
+    Kauai.new(PLAYED, voices: voices, drums: drums)
     nil
   } catch e: ValueError {
     e.message
@@ -827,19 +827,19 @@ let snare = {snare: |params| Audio.Sound.new(WAV)}
 let fiddle = {fiddle: |pitch, params| Audio.Sound.new(WAV)}
 assert_eq(
   refused({fiddle: {phrase: |notes, params| nil, hears: ["slur"]}}, snare),
-  "Audio.Kauai: voices: `fiddle` hears slur; it can hear len, level, line, marks, next, params",
+  "Kauai: voices: `fiddle` hears slur; it can hear len, level, line, marks, next, params",
 )
 assert_eq(
   refused(fiddle, {snare: {hit: |n, params| nil, hears: ["len"]}}),
-  "Audio.Kauai: drums: `snare` hears len; it can hear level, marks, next",
+  "Kauai: drums: `snare` hears len; it can hear level, marks, next",
 )
 assert_eq(
   refused({fiddle: {note: |n, params| nil, hears: ["len"]}}, snare),
-  "Audio.Kauai: voices: `fiddle` is a function or an object whose `phrase` is one",
+  "Kauai: voices: `fiddle` is a function or an object whose `phrase` is one",
 )
 assert_eq(
   refused(fiddle, {snare: {phrase: |notes, params| nil}}),
-  "Audio.Kauai: drums: `snare` is a function or an object whose `hit` is one",
+  "Kauai: drums: `snare` is a function or an object whose `hit` is one",
 )
 
-print("audio kauai ok\n")
+print("kauai ok\n")

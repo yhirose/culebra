@@ -405,7 +405,7 @@ let sax = {
   },
   hears: made.hears,
 }
-let song = Audio.Kauai.load("song.kau", dir: dir, voices: {sax: sax})
+let song = Kauai.load("song.kau", dir: dir, voices: {sax: sax})
 ```
 
 A key that is not there is a song changed since its sounds were made: make

@@ -71,7 +71,7 @@ section Verse {
     }
     sax.voices.sopranosax.phrase(notes, params)
   }, hears: sax.voices.sopranosax.hears}}
-  let song = Audio.Kauai.load(
+  let song = Kauai.load(
     "tune.kau",
     voices:,
     dir: Dir.memory({"tune.kau": song_text}),

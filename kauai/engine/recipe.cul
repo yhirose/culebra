@@ -655,7 +655,7 @@ class Recipe {
     )
   }
 
-  # The instrument, as Audio.Kauai.load's `voices:` takes it.
+  # The instrument, as Kauai.load's `voices:` takes it.
   voice() {
     let recipe = self
     {
@@ -664,7 +664,7 @@ class Recipe {
     }
   }
 
-  # The instrument as a drum, as Audio.Kauai.load's `drums:` takes it: each
+  # The instrument as a drum, as Kauai.load's `drums:` takes it: each
   # hit is hit()'s, its `next` the deadline Kauai gives.
   drum() {
     let recipe = self

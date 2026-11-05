@@ -104,7 +104,7 @@ section Verse {
 }
 '
 
-  let song = Audio.Kauai.load(
+  let song = Kauai.load(
     "tune.kau",
     voices: recipes.voices,
     drums: recipes.drums,

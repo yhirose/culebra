@@ -44,7 +44,7 @@ band Run {
 プログラムからバンドを鳴らして、音を確かめられます。
 
 ```culebra
-let song = Audio.Kauai.new(`
+let song = Kauai.new(`
 band Run {
   voice Lead    pulse     plays melody            duty 1/4  vol 15  env 1 2 4  gap 2
   voice Second  pulse2                            duty 1/8  vol 9   env 1 2 6  gap 2
@@ -99,7 +99,7 @@ println(song.events()[0])          # => {at: 0.0, len: 0.6, by: 'Lead', pitch: 7
 受け取り、その音の音を返します。
 
 ```culebra
-let song = Audio.Kauai.new(`
+let song = Kauai.new(`
 band Lead {
   voice Ep  external Ep bright=0.5  plays melody  vol 40
 }
@@ -167,7 +167,7 @@ let organ = |notes, params| {
   ))
 }
 
-let song = Audio.Kauai.new(`
+let song = Kauai.new(`
 band Pipe {
   voice Organ  external Organ  plays melody  vol 60
 }

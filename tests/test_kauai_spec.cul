@@ -3,7 +3,7 @@
 # block that is not a whole song is played in the smallest song around it;
 # the chord table of Appendix A voices every spelling as the table says.
 #
-# gc-stress: skip — ~1M allocations over test_audio_kauai.cul's paths
+# gc-stress: skip — ~1M allocations over test_kauai.cul's paths
 
 let lines = |xs| xs.join("\n")
 
@@ -69,7 +69,7 @@ fn externals(text) {
   }
   out
 }
-let song_of = |text| Audio.Kauai.new(
+let song_of = |text| Kauai.new(
   text,
   voices: externals(text),
   drums: externals(text),
@@ -219,7 +219,7 @@ fn song_alone(b) {
 fn with_use(b) {
   let files = {"songs/run.kau": run_kau, "songs/song.kau": b}
   let dir = {exists: |name| files.has(name), read: |name| files[name]}
-  Audio.Kauai.load(
+  Kauai.load(
     "songs/song.kau",
     voices: externals(b),
     drums: externals(b),

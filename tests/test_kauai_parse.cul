@@ -1,4 +1,4 @@
-# Audio.Kauai.parse: a song as its score, as written. One small song with a
+# Kauai.parse: a song as its score, as written. One small song with a
 # pickup, a 6/8 meter, a dotted tempo, a duplet, a tie, a slur, a part, a
 # `2nd:` line, slashes, hits and a `%`.
 
@@ -47,7 +47,7 @@ section Unplayed {
 }
 `
 
-let score = Audio.Kauai.parse(SONG)
+let score = Kauai.parse(SONG)
 let note = |step, alter, octave, tie| ({step: step, alter: alter, octave: octave, tie: tie})
 let struck = |pitches, value, dots, marks| ({pitches: pitches, value: value, dots: dots, marks: marks, graces: [], arpeggio: false})
 let F = {symbol: "F", root: "F", quality: "", bass: nil, intervals: [0, 4, 7, 12]}
@@ -128,7 +128,7 @@ assert_true(played.bars.all(|b| b.drums.empty()))
 
 # A voice that plays roots and echoes the melody too plays both, in time; a
 # looping song's last note echoes into its first bar.
-let round = Audio.Kauai.parse(`
+let round = Kauai.parse(`
 band Pair {
   voice Tune  pulse   plays melody            vol 20
   voice Low   pulse2  plays roots in E2..D#3  vol 9
@@ -169,7 +169,7 @@ assert_throws("ImmutableError", fn () {
 
 # Each parse its own: changing what one answers changes no other.
 score.sections[0].bars[0].chords[0].intervals.push(99)
-assert_eq(Audio.Kauai.parse(SONG).sections[0].bars[0].chords[0].intervals, [0, 4, 7, 12])
+assert_eq(Kauai.parse(SONG).sections[0].bars[0].chords[0].intervals, [0, 4, 7, 12])
 
 # A section or an ending with no bars reads, as new() reads it.
 let BARE = `
@@ -196,7 +196,7 @@ section Rest {
   meter 3/4
 }
 `
-let bare = Audio.Kauai.parse(BARE)
+let bare = Kauai.parse(BARE)
 assert_eq(bare.sections[0].endings, [{number: "1", as_written: false, bars: []}])
 assert_eq(bare.sections[1].bars, [])
 
@@ -208,6 +208,10 @@ let raised = |f| try {
 } catch e {
   e.message
 }
-let from_new = raised(|| Audio.Kauai.new(broken))
+let from_new = raised(|| Kauai.new(broken))
 assert_true(from_new != nil)
-assert_eq(raised(|| Audio.Kauai.parse(broken)), from_new)
+assert_eq(raised(|| Kauai.parse(broken)), from_new)
+
+# A song file reads as its text does, here from a Dir held in memory.
+let files = Dir.memory({"song.kau": SONG})
+assert_eq(Kauai.parse_file("song.kau", dir: files), Kauai.parse(SONG))

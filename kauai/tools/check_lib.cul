@@ -438,7 +438,7 @@ fn findings(sounds, w, from, to, limits = {}) {
     made[key]
   })
   let played = instrument.told(sounds, w.set, kept)
-  let song = Audio.Kauai.load(
+  let song = Kauai.load(
     w.song,
     voices: played.voices,
     drums: played.drums,
