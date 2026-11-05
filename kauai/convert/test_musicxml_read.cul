@@ -376,6 +376,170 @@ fn a_slur_an_ending_closes_keeps_its_start() {
 
 let sound = |attrs| "<direction><direction-type><words>x</words></direction-type><sound {attrs}/></direction>"
 
+# A pickup plays again into a repeat from the first bar where the score
+# writes it at the end of the bar before, in a first ending or in the last
+# bar of the repeat (and there the last time too, as written); a repeat the
+# score writes no pickup before plays none. A repeat from the start, or a
+# D.C., plays the pickup's own measure again, where the bar before rests.
+@test
+fn a_pickup_plays_again_where_the_score_writes_it() {
+  let opening = (" implicit=\"yes\"", note("G", "quarter", 1))
+  let again = (
+    "",
+    barline("left", "<repeat direction=\"forward\"/>") + note("C", "whole", 4),
+  )
+  let back = barline("right", "<repeat direction=\"backward\"/>")
+  let quarter_rest = "<note><rest/><duration>1</duration><voice>1</voice><type>quarter</type></note>"
+  let into = note("E", "half", 2) + quarter_rest + note("G", "quarter", 1)
+  # The repeat with the pickup in its first ending, the second holding
+  # `second`.
+  let endings = |second| partwise([
+    opening,
+    again,
+    (
+      "",
+      barline("left", "<ending number=\"1\" type=\"start\"/>") +
+        into +
+        barline(
+          "right",
+          "<ending number=\"1\" type=\"stop\"/><repeat direction=\"backward\"/>",
+        ),
+    ),
+    ("", barline("left", "<ending number=\"2\" type=\"start\"/>") + second),
+  ])
+  let plain = partwise([opening, again, ("", into + back)])
+  assert_eq(
+    heard(plain),
+    [
+      (67, 0.0),
+      (60, 1.0),
+      (64, 5.0),
+      (67, 8.0),
+      (60, 9.0),
+      (64, 13.0),
+      (67, 16.0),
+    ],
+  )
+  let ended = endings(note("C", "whole", 4))
+  assert_eq(
+    heard(ended),
+    [(67, 0.0), (60, 1.0), (64, 5.0), (67, 8.0), (60, 9.0), (60, 13.0)],
+  )
+  # Two endings the same but for the pickup in the first: one run, twice.
+  let same = endings(note("E", "half", 2) +
+    "<note><rest/><duration>2</duration><voice>1</voice><type>half</type></note>")
+  assert_eq(
+    heard(same),
+    [(67, 0.0), (60, 1.0), (64, 5.0), (67, 8.0), (60, 9.0), (64, 13.0)],
+  )
+  let unled = partwise([opening, again, ("", note("E", "whole", 4) + back)])
+  assert_eq(
+    heard(unled),
+    [(67, 0.0), (60, 1.0), (64, 5.0), (60, 9.0), (64, 13.0)],
+  )
+  # As Kauai writes them: the pickup the section's, the bar before it its
+  # rests, the last time as the score writes it.
+  let text = |score| song_of(score).text
+  assert_true(text(plain).contains("\n  A x2\n}"), text(plain))
+  assert_true(
+    text(plain).contains("  N.C.          c1\n                e2 r\n    2nd: e2 r4 g\n"),
+    text(plain),
+  )
+  assert_true(
+    text(ended).contains("\n  A ending 1\n  A ending 2\n}"),
+    text(ended),
+  )
+  assert_true(
+    text(ended).contains("  ending 1 \{\n    N.C.          e2 r\n  }"),
+    text(ended),
+  )
+  assert_true(text(unled).contains("\n  A\n  B\n}"), text(unled))
+  assert_true(text(same).contains("\n  A x2\n}"), text(same))
+
+  # Back to the pickup's own measure: the bar before rests where it plays.
+  let resting = ("", note("E", "half", 2) + quarter_rest)
+  let first = ("", note("C", "whole", 4))
+  let from_start = partwise([opening, first, (resting[0], resting[1] + back)])
+  assert_eq(
+    heard(from_start),
+    [(67, 0.0), (60, 1.0), (64, 5.0), (67, 8.0), (60, 9.0), (64, 13.0)],
+  )
+  assert_true(text(from_start).contains("\n  A x2\n}"), text(from_start))
+  let marked = partwise([
+    (
+      opening[0],
+      barline("left", "<repeat direction=\"forward\"/>") + opening[1],
+    ),
+    first,
+    (resting[0], resting[1] + back),
+  ])
+  assert_eq(heard(marked), heard(from_start), "a repeat sign on the pickup")
+  let da_capo = partwise([
+    opening,
+    ("", note("C", "whole", 4) + sound("fine=\"yes\"")),
+    (resting[0], resting[1] + sound("dacapo=\"yes\"")),
+  ])
+  assert_eq(
+    heard(da_capo),
+    [(67, 0.0), (60, 1.0), (64, 5.0), (67, 8.0), (60, 9.0)],
+  )
+  # A D.C. goes back to the very start, past a repeat from the first bar.
+  let past = partwise([
+    opening,
+    again,
+    ("", note("E", "whole", 4) + back + sound("fine=\"yes\"")),
+    ("", note("D", "half", 2) + quarter_rest + sound("dacapo=\"yes\"")),
+  ])
+  assert_eq(
+    heard(past),
+    [
+      (67, 0.0),
+      (60, 1.0),
+      (64, 5.0),
+      (60, 9.0),
+      (64, 13.0),
+      (62, 17.0),
+      (67, 20.0),
+      (60, 21.0),
+      (64, 25.0),
+    ],
+  )
+  # A bar before it that does not rest there leaves no room for it.
+  let crowded = partwise([opening, first, ("", note("E", "whole", 4) + back)])
+  assert_eq(
+    heard(crowded),
+    [(67, 0.0), (60, 1.0), (64, 5.0), (60, 9.0), (64, 13.0)],
+  )
+  assert_eq(
+    song_of(crowded).dropped,
+    ["a pickup a repeat plays again where the bar before it does not rest, left out: measure 3"],
+  )
+
+  # A slur from the pickup into the first bar, where the pickup is written
+  # again and where it is not.
+  let slurred = |last| partwise([
+    (
+      opening[0],
+      note("G", "quarter", 1, "<notations><slur type=\"start\"/></notations>"),
+    ),
+    (
+      "",
+      barline("left", "<repeat direction=\"forward\"/>") +
+        note("C", "whole", 4, "<notations><slur type=\"stop\"/></notations>"),
+    ),
+    ("", last + back),
+  ])
+  let led = slurred(note("E", "half", 2) +
+    quarter_rest +
+    note("G", "quarter", 1, "<notations><slur type=\"start\"/></notations>"))
+  assert_eq(heard(led), heard(plain))
+  assert_true(
+    text(led).contains("  pickup  (g4\n  N.C.          c1)\n                e2 r\n    2nd: e2 r4 (g)\n"),
+    text(led),
+  )
+  assert_eq(heard(slurred(note("E", "whole", 4))), heard(unled))
+}
+
 # D.S. goes back to the segno, and after it To Coda goes to the coda; D.C.
 # goes back to the start, and after it Fine ends the song.
 @test

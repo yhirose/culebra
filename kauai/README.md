@@ -141,13 +141,17 @@ melody, every other a part, and the song gets a band that plays them (single
 notes on the chip channels while they last, chords on `external Ep`). The
 staves a Kauai band played are left out. Rehearsal marks, repeat signs,
 endings, D.S., D.C., To Coda and Fine make the sections and the order the
-song plays them in. What the score holds that Kauai does not play is an
-error (a 64th, a trill, a 7:3 tuplet); what Kauai leaves out that plays the
-same (lyrics, words, a chord it spells another way) is said, and so is a
-slur Kauai has to end where a section ends. The tests read the scores in
-[`convert/scores/`](convert/scores/): a selection of the MusicXML test suite,
-and the OpenScore *Je te veux*, which plays as `tests/kauai/jetveux.expect`
-says.
+song plays them in. A pickup the song starts with plays again where the
+score goes back to it (a D.C., a repeat from the start) or writes it again
+at the end of the bar before (a first ending, the last bar of a repeat),
+and not where it does neither. What the score holds that Kauai does not play
+is an error (a 64th, a trill, a 7:3 tuplet); what Kauai leaves out that
+plays the same (lyrics, words, a chord it spells another way) is said, and
+so is a slur Kauai has to end where a section ends, and a pickup a repeat
+plays again where the bar before it does not rest. The tests read the
+scores in [`convert/scores/`](convert/scores/): a selection of the MusicXML
+test suite, and the OpenScore *Je te veux*, which plays as
+`tests/kauai/jetveux.expect` says.
 
 A score Kauai wrote reads back as the song it carries, with its band,
 grooves, voicings, sections and lines. Each measure is set beside the score

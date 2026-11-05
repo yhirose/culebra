@@ -984,6 +984,35 @@ let staff_names = |doc| doc
   .map(|p| (p.attrs.id, text_at(p, "part-name") ?? p.attrs.id))
   .to_object()
 
+# Writes the last bar of each visit before a time the song's pickup plays
+# into it (`into`, by visit: that bar as it plays then) into `sections` (a
+# reading's) as most times through it play it, each other time in a line of
+# its own. `names` is the section each visit plays, and `alike` whether a
+# block's endings are one run of bars.
+fn played_into(sections, visits, names, into, alike) {
+  # The ending each visit's last bar is in, nil for the section's bars.
+  let place = |k| alike[visits[k].block] ? nil : visits[k].ending
+  let by_name = iota(visits.size()).group_by(|k| names[k])
+  for s in sections {
+    let ks = by_name.get(s.name, [])
+    # The time visit `k` is of its section's.
+    let time = |k| ks.index_of(k) + 1
+    for e in ks.filter(|k| into[k] != nil).map(place).iter().distinct() {
+      let through = ks.filter(|k| place(k) == e)
+      let bars = e == nil ? s.bars : s.endings[e].bars
+      let b = bars[-1]
+      let contents = through.map(|k| {
+        chords: b.chords,
+        melody: into[k] ?? b.melody,
+        parts: b.parts,
+        hits: nil,
+      })
+      let (base, times) = written_as(contents, through.map(time))
+      bars[bars.size() - 1] = {...b, ...base, times}
+    }
+  }
+}
+
 # The song score `doc` shows, read from what it shows alone (the qualities
 # `voicings` adds read as chords): {score, reports ({what, where}, in
 # order), ms (the first part's measures), bars (each measure's bar, as the
@@ -1208,33 +1237,59 @@ fn reading(doc, voicings) {
     }
   })
 
+  # The song's pickup plays before each time through its section, into the
+  # rests of the bar before it. A time the score goes back to the pickup's
+  # own measure for (a D.C., a repeat from the start) plays it from there,
+  # where the bar before rests. A time it goes back to after the pickup for
+  # (a D.S., a repeat from the first bar) plays it where the score writes
+  # it at the end of the bar before, and that bar is the rests it was
+  # before: `into`, for each visit before such a time, the bar as it plays
+  # then, and `written`, the bars, each so where every time through it
+  # plays so. A later time the pickup does not play before is the section
+  # without it.
+  let visits = visits_of(ms, blocks)
+  let lead = pickup ? line_items[0][0] : nil
+  let measures_of = |v| [
+    ...blocks[v.block].body,
+    ...(v.ending == nil ? [] : blocks[v.block].endings[v.ending].measures),
+  ]
+  let last_of = |v| measures_of(v)[-1]
+  let later = |k| lead != nil &&
+    k > 0 &&
+    k < visits.size() &&
+    visits[k].block == 0
+  # Whether the music goes back to the pickup's measure for visit `k`.
+  let replays = fn (k) {
+    let m = ms[last_of(visits[k - 1])]
+    m.dacapo || m.dalsegno == nil && !ms[blocks[0].from].forward
+  }
+  let into = iota(visits.size()).map(fn (k) {
+    return nil if !later(k + 1) || replays(k + 1)
+    let b = bars[last_of(visits[k])]
+    let split = into_pickup(b.melody, b.meter, length_of(lead))
+    split != nil && open_ended(split.pickup) == open_ended(lead)
+      ? split.bar
+      : nil
+  })
+  let ending_in = iota(visits.size()).group_by(|k| last_of(visits[k]))
+  let written = iota(ms.size()).map(fn (mi) {
+    let ks = ending_in.get(mi, [])
+    let all_into = !ks.empty() && ks.all(|k| into[k] != nil)
+    all_into ? {...bars[mi], melody: into[ks[0]]} : bars[mi]
+  })
+
   # The sections: a block is a section, one that is the same as one before
   # played again by its name.
   let sections = []
   mut letter = 0
   let song_key = ms[start].key ?? "C"
   # A block whose endings are all the same is one run of bars, played again.
-  let bars_of = |measures| measures.map(|mi| bars[mi])
+  let bars_of = |measures| measures.map(|mi| written[mi])
   let alike = blocks.map(|b| b.endings.size() > 1 &&
     b.endings.all(|e| bars_of(e.measures) == bars_of(b.endings[0].measures)))
-  let block_names = iota(blocks.size()).map(fn (k) {
-    let b = blocks[k]
-    let named = ms[b.from].rehearsal
-    let content = {
-      key: ms[b.from].key == song_key ? nil : ms[b.from].key,
-      pickup: b.from == start && pickup ? {melody: line_items[0][0]} : nil,
-      bars: [
-        ...bars_of(b.body),
-        ...(alike[k] ? bars_of(b.endings[0].measures) : []),
-      ],
-      endings: alike[k]
-        ? []
-        : b.endings.map(|e| {
-          number: e.numbers[0],
-          as_written: false,
-          bars: bars_of(e.measures),
-        }),
-    }
+  # The name of a section of `content` that a rehearsal mark `named` (nil
+  # for none) starts: one before of the same content's, else a new one.
+  let name_for = fn (content, named) {
     let same = sections.find(|s| {
       key: s.key,
       pickup: s.pickup,
@@ -1259,13 +1314,58 @@ fn reading(doc, voicings) {
     }()
     sections.push({name, ...content}) if same == nil
     name
+  }
+  let content_of = |k| {
+    key: ms[blocks[k].from].key == song_key ? nil : ms[blocks[k].from].key,
+    pickup: k == 0 && lead != nil ? {melody: lead} : nil,
+    bars: [
+      ...bars_of(blocks[k].body),
+      ...(alike[k] ? bars_of(blocks[k].endings[0].measures) : []),
+    ],
+    endings: alike[k]
+      ? []
+      : blocks[k].endings.map(|e| {
+        number: e.numbers[0],
+        as_written: false,
+        bars: bars_of(e.measures),
+      }),
+  }
+  let block_names = iota(blocks.size()).map(|k| name_for(
+    content_of(k),
+    ms[blocks[k].from].rehearsal,
+  ))
+
+  # The first section without its pickup, nor the ends of the slurs the
+  # pickup opens: a later time the pickup does not play before.
+  let unled = fn () {
+    let slurs = |s| lead.filter(|it| it.get("slur", nil) == s).size()
+    mut open = slurs("start") - slurs("stop")
+    let unslurred = content_of(0).bars.map(|b| {...b, melody: b.melody.filter(fn (it) {
+      return true if open == 0 || it.get("slur", nil) != "stop"
+      open -= 1
+      false
+    })})
+    {...content_of(0), pickup: nil, bars: unslurred}
+  }
+  let names = iota(visits.size()).map(fn (k) {
+    let before = later(k) ? bars[last_of(visits[k - 1])] : nil
+    let played = !later(k) ||
+      (replays(k)
+        ? rests_from(before.melody, bar_units(before.meter) - length_of(lead))
+        : into[k - 1] != nil)
+    return block_names[visits[k].block] if played
+    report(
+      "a pickup a repeat plays again where the bar before it does not rest, left out",
+      "measure {ms[last_of(visits[k - 1])].number}",
+    ) if replays(k)
+    name_for(unled(), ms[blocks[0].from].rehearsal)
   })
+  played_into(sections, visits, names, into, alike)
 
   # The plays, each run of visits to a block that takes the same ending.
-  let visits = visits_of(ms, blocks)
   let plays = []
-  for v in visits {
-    let section = block_names[v.block]
+  for k, v in visits.enumerate() {
+    let section = names[k]
     let ending = v.ending == nil || alike[v.block]
       ? nil
       : blocks[v.block].endings[v.ending].numbers[0]
@@ -1276,13 +1376,7 @@ fn reading(doc, voicings) {
       plays.push({section, times: 1, ending, with: nil, key: nil})
     }
   }
-  let order = [
-    ...(pickup ? [0] : []),
-    ...visits.flat_map(|v| [
-      ...blocks[v.block].body,
-      ...(v.ending == nil ? [] : blocks[v.block].endings[v.ending].measures),
-    ]),
-  ]
+  let order = [...(pickup ? [0] : []), ...visits.flat_map(measures_of)]
   let about = about_of(doc)
   let score = {
     about,
@@ -1329,6 +1423,50 @@ fn split_at(items, cut) {
     at += len
   }
   (head, tail)
+}
+
+# A bar's `melody` (in `meter`) that holds a pickup `len` long at its end,
+# as {bar, pickup}: the bar as a song writes it before the pickup goes into
+# its rests (its rests from where its notes end), and the pickup; nil where
+# a note goes on over where the pickup starts.
+fn into_pickup(melody, meter, len) {
+  let whole = bar_units(meter)
+  let halves = split_at(melody, whole - len)
+  return nil if halves == nil
+  let (head, pickup) = halves
+  mut n = head.size()
+  while n > 0 &&
+      head[n - 1].get("rest", false) == true &&
+      head[n - 1].marks.empty() {
+    n -= 1
+  }
+  let notes = head[..n]
+  let end = length_of(notes)
+  {bar: [...notes, ...rests_for(end, whole - end)], pickup}
+}
+
+# Whether a bar's `items` rest from `at` units to the bar's end, as Kauai
+# has a bar rest where a pickup plays into it: no note sounds there.
+fn rests_from(items, at) {
+  mut from = 0
+  for it in items {
+    let len = length_of([it])
+    let pitched = it.has("pitches") ||
+      it.has("items") && it.items.any(|x| x.has("pitches") || x.has("items"))
+    return false if pitched && from + len > at
+    from += len
+  }
+  true
+}
+
+# `items` without the ends of slurs they close last: a pickup as a bar holds
+# it at a section's end, which ends the slur the pickup opens.
+fn open_ended(items) {
+  mut n = items.size()
+  while n > 0 && items[n - 1].get("slur", nil) == "stop" {
+    n -= 1
+  }
+  items[..n]
 }
 
 # What of a song's `items` a score does not show: its parameters, and its
@@ -1388,6 +1526,19 @@ fn repeats_kept(bars) {
       held(bars[head + k]) == held(bars[head - r.bars + k]))
     again ? bars[i] : {...bars[i], repeat: nil}
   })
+}
+
+# A bar as `contents` (each time that plays it, at `times`) play it: written
+# as most of them play it, the first of those if more do, and what each
+# other time changes of it.
+fn written_as(contents, times) {
+  let base = contents.max_by(|x| contents.filter(|y| y == x).size())
+  let changes = iota(contents.size()).map(|k| change_of(
+    base,
+    contents[k],
+    times[k],
+  ))
+  (base, changes.filter(|t| t != nil))
 }
 
 # What time `time` of a bar written as `base` changes of it to play `v`, as a
@@ -1564,22 +1715,9 @@ fn brought(c, r, r0) {
     let held = next?.pickup
     let plain = {chords: b.chords, melody: b.melody, parts: b.parts}
     return {...plain, pickup: nil} if held == nil
-    let len = bar_units(b.meter)
-    let cut = len - length_of(held)
-    let halves = split_at(b.melody, cut)
-    return {...plain, pickup: nil, broken: true} if halves == nil
-    # The bar as the song writes it before the pickup went into its rests:
-    # its rests from where its notes end.
-    let (head, tail) = halves
-    mut n = head.size()
-    while n > 0 &&
-        head[n - 1].get("rest", false) == true &&
-        head[n - 1].marks.empty() {
-      n -= 1
-    }
-    let notes = head[..n]
-    let end = length_of(notes)
-    {...plain, melody: [...notes, ...rests_for(end, len - end)], pickup: tail}
+    let cut = into_pickup(b.melody, b.meter, length_of(held))
+    return {...plain, pickup: nil, broken: true} if cut == nil
+    {...plain, melody: cut.bar, pickup: cut.pickup}
   }
   # Pass `p`'s pickup in reading `x`: the song's first measure, or what the
   # measure before it holds.
@@ -1643,15 +1781,8 @@ fn brought(c, r, r0) {
           hits: played.hits,
         }
       })
-      # Written as most of the times play it, the first of those if more do.
-      let base = contents.max_by(|x| contents.filter(|y| y == x).size())
-      {
-        ...b,
-        ...base,
-        times: iota(uses.size())
-          .map(|k| change_of(base, contents[k], now(uses[k])))
-          .filter(|t| t != nil),
-      }
+      let (base, times) = written_as(contents, uses.map(now))
+      {...b, ...base, times}
     }
     # The pickup, the song's unless the score plays it otherwise.
     let pickup_of = fn () {
