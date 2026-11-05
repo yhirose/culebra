@@ -1,6 +1,6 @@
 # Kauai 言語仕様
 
-> **Status: Draft.** KauaiはCulebraの`Kauai`として実装済みです。
+> **Status: Draft.** KauaiはCulebraの`Kauai`名前空間として実装済みです。
 > ただし、リリースまでに言語やAPIが変わる可能性があります。[付録C](#付録-c-完全な曲)の
 > 曲は、元のゲームや楽譜と1音ずつ照合してあります。
 

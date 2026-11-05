@@ -1,7 +1,7 @@
 # Kauai Language Specification
 
-> **Status: Draft.** Kauai is implemented in Culebra as `Kauai`; the
-> language and its API may still change before a release. The songs in
+> **Status: Draft.** Kauai is implemented in Culebra as the `Kauai`
+> namespace; the language and its API may still change before a release. The songs in
 > [Appendix C](#appendix-c-complete-songs) were checked note for note
 > against the game they came from and against the score.
 
