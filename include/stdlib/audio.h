@@ -1423,10 +1423,39 @@ class Limiter {
   double gain_ = 1.0;
 };
 
-enum class PartKind { Wave, Noise, Filter, Gain, Resonate, Pluck, Delay, Limit };
+// What comes in times `gain` (a value), rounded by tanh: near that while it is
+// small, never past ±1, as an overdrive bends a loud signal. Each sample is
+// tanh averaged over the straight line from the sample before, the step of its
+// antiderivative (log cosh) over the step of the input: first-order
+// antiderivative anti-aliasing, which folds back far less of what tanh adds
+// above half the rate, at the cost of half a sample's delay.
+class Drive {
+ public:
+  double step(double x, double gain) {
+    const double u = x * gain;
+    const double f = log_cosh(u);
+    const double d = u - u_;
+    const double y = std::abs(d) > 1e-6 ? (f - f_) / d : std::tanh(0.5 * (u + u_));
+    u_ = u;
+    f_ = f;
+    return std::clamp(y, -1.0, 1.0);  // a step's rounding can pass ±1 a little
+  }
+
+ private:
+  // log(cosh(u)), which does not overflow however large u is.
+  static double log_cosh(double u) {
+    const double a = std::abs(u);
+    return a + std::log1p(std::exp(-2.0 * a)) - std::numbers::ln2;
+  }
+  double u_ = 0;
+  double f_ = 0;
+};
+
+enum class PartKind { Wave, Noise, Filter, Gain, Resonate, Pluck, Delay, Limit, Drive };
 
 // How many values a part of `kind` reads: a wave's freq and feedback, a
-// filter's cutoff, a gain's gain, a string's freq and ring, a delay's time.
+// filter's cutoff, a gain's gain, a string's freq and ring, a delay's time, a
+// drive's gain.
 inline int value_count(PartKind kind) {
   switch (kind) {
     case PartKind::Noise:
@@ -1453,9 +1482,9 @@ inline constexpr size_t kGraphLiveRoom = 256;
 struct GraphPart {
   PartKind kind;
   std::vector<int> inputs;       // parts made before it, added together
-  std::vector<int> modulators;   // parts made before it that move it: a wave's phase, a delay's time, a gain's gain
-  Param values[2];               // a wave's freq and feedback, a filter's cutoff, a gain's gain, a string's freq and ring, a delay's time
-  std::variant<std::monostate, Oscillator, Noise, Svf, Resonance, PluckString, DelayLine, Limiter> processor;
+  std::vector<int> modulators;   // parts made before it that move it: a wave's phase, a delay's time, a gain's gain, a string's freq
+  Param values[2];               // a wave's freq and feedback, a filter's cutoff, a gain's gain, a string's freq and ring, a delay's time, a drive's gain
+  std::variant<std::monostate, Oscillator, Noise, Svf, Resonance, PluckString, DelayLine, Limiter, Drive> processor;
   double out[kGraphBlock] = {};
 };
 
@@ -1559,7 +1588,7 @@ class Graph {
         case PartKind::Pluck: {
           auto& s = std::get<PluckString>(p.processor);
           for (int i = 0; i < n; i++) {
-            s.tune(v0[i], v1[i]);
+            s.tune(std::clamp(v0[i] + mod[i], kGraphPluckLowest, 0.5 * rate_), v1[i]);
             p.out[i] = s.step(in[i]);
           }
           break;
@@ -1572,6 +1601,11 @@ class Graph {
         case PartKind::Limit: {
           auto& l = std::get<Limiter>(p.processor);
           for (int i = 0; i < n; i++) p.out[i] = l.step(in[i]);
+          break;
+        }
+        case PartKind::Drive: {
+          auto& d = std::get<Drive>(p.processor);
+          for (int i = 0; i < n; i++) p.out[i] = d.step(in[i], v0[i]);
           break;
         }
       }

@@ -9019,8 +9019,9 @@ it or to any of its parts and values.
 | `g.gain(input, gain = 1.0, modulators = [])` | `input` times the sum of `gain` and the `modulators` (parts made before it), which may pass 0: a slow wave as a modulator makes a tremolo, as Web Audio wires an oscillator to a `GainNode`'s `gain` |
 | `g.mix(inputs: Array, gain = 1.0)` | the `inputs` added together, times `gain` |
 | `g.resonate(input, modes: Array, dry = 0.0)` | `input` through `Audio.resonate`'s bank of resonances |
-| `g.pluck(input, freq = 220.0, ring = 2.0)` | `Audio.pluck`'s string, `input` added into it as a strike is |
+| `g.pluck(input, freq = 220.0, ring = 2.0, modulators = [])` | `Audio.pluck`'s string, `input` added into it as a strike is. The sum of the `modulators` (parts made before it) adds to the freq, in Hz; the freq they move it to is held from 20 Hz to half the rate. The string rings on as its tuning moves, as a player's finger bends it: a slow wave as a modulator makes a vibrato |
 | `g.delay(input, time = 0.0, modulators = [])` | `input` as it was `time` seconds before, read between two samples in a straight line (silence before the start). The sum of the `modulators` (parts made before it) adds to the time, in seconds; the time they move it to is held from 0 to 1. A slow wave as a modulator makes a chorus, as Web Audio wires an oscillator to a `DelayNode`'s `delayTime` |
+| `g.drive(input, gain = 1.0)` | `input` times `gain` through tanh, as an overdrive bends a loud signal: close to that while it is small, rounded more the louder it is, never past ±1. Each sample is tanh averaged over the straight line from the sample before (first-order antiderivative anti-aliasing), so little of what the bending adds above half the rate folds back, and the part is half a sample late |
 | `g.limit(input, ceiling = 0.9, release = 0.2)` | `input` kept at or under `ceiling`, as an output stage keeps a sound from clipping: its gain drops at the sample that would go over, by as much as it takes, and comes back to 1 exponentially, with 1/e of the way left after each `release` seconds. It does not look ahead, so it adds no delay |
 | `g.output(part)` | the part the graph plays (silence until there is one) |
 | `g.render(seconds) -> Array` | the graph's first `seconds`, worked out now from its start |
@@ -9029,8 +9030,8 @@ it or to any of its parts and values.
 | `g.now() -> Float` | where on the graph's clock a change made now lands; `0.0` when it is not playing |
 
 What moves in a part is a value: a wave's `freq` and `feedback`, a filter's
-`cutoff`, a gain's `gain`, a string's `freq` and `ring`, and a delay's `time`,
-each a field of the part. A
+`cutoff`, a gain's `gain`, a string's `freq` and `ring`, a delay's `time`, and
+a drive's `gain`, each a field of the part. A
 value is what the part was made with until its first change, and changes are
 scheduled on the graph's clock, in seconds from its start:
 
@@ -9062,7 +9063,7 @@ A kind other than those named, a part from another graph, a value out of
 range (a wave's freq below 0 or not below half the rate, a feedback below 0
 or not a finite number, a cutoff not above 0 and below half the rate, a gain that is not a finite number, a string's
 freq below 20 Hz or not below half the rate, a ring not above 0, a delay's
-time below 0 or above 1), a wave's phase that is not a finite number, a time
+time below 0 or above 1, a drive's gain below 0 or not a finite number), a wave's phase that is not a finite number, a time
 below 0, or a `q` not above 0 raises `ValueError`, and so does a mode as
 `Audio.resonate` refuses one; an input that is not a part of a graph, or a
 mode that is not an object of three numbers, raises `TypeError`. A graph

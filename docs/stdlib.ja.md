@@ -8650,8 +8650,9 @@ println(Math.round(Audio.integrated_loudness(both)))                     # => -1
 | `g.gain(input, gain = 1.0, modulators = [])` | `input`を「`gain`と`modulators`（この部品より前に作った部品）の出力の和」倍する。和は0をまたいでもよい。遅い波をつなぐとトレモロになる。Web Audioで`GainNode`の`gain`に発振器をつなぐのと同じ |
 | `g.mix(inputs: Array, gain = 1.0)` | `inputs`を足し合わせて`gain`倍する |
 | `g.resonate(input, modes: Array, dry = 0.0)` | `input`を`Audio.resonate`と同じ共鳴の集まりに通す |
-| `g.pluck(input, freq = 220.0, ring = 2.0)` | `Audio.pluck`と同じ弦。`input`をストロークと同じように弦に足し込む |
+| `g.pluck(input, freq = 220.0, ring = 2.0, modulators = [])` | `Audio.pluck`と同じ弦。`input`をストロークと同じように弦に足し込む。`modulators`（この部品より前に作った部品）の出力の和をHzとしてfreqに足し、動いたfreqは20 Hzから`rate`の半分までに収める。弦はチューニングが動いても鳴り続けるので、指で弦を押し上げたのと同じになる。遅い波をつなぐとビブラートになる |
 | `g.delay(input, time = 0.0, modulators = [])` | `time`秒前の`input`。2つのサンプルの間は直線で読む（始まりより前は無音）。`modulators`（この部品より前に作った部品）の出力の和を秒として遅れに足し、動いた遅れは0から1の間に収める。遅い波をつなぐとコーラスになる。Web Audioで`DelayNode`の`delayTime`に発振器をつなぐのと同じ |
+| `g.drive(input, gain = 1.0)` | `input`を`gain`倍してtanhに通したもの。オーバードライブが大きな信号を曲げるのと同じで、小さいうちはほぼそのまま、大きいほど丸められ、±1は超えない。各サンプルは、1つ前のサンプルからの直線の上でtanhを平均した値にする（1次の原始関数によるエイリアシング低減）。これで、曲げて足された成分のうち`rate`の半分を超えるものがほとんど折り返さず、その代わり半サンプル遅れる |
 | `g.limit(input, ceiling = 0.9, release = 0.2)` | `ceiling`以下に収めた`input`。出力段が音の割れを防ぐのと同じで、超えそうなサンプルでその分だけ音量を下げ、`release`秒で1までの残りが1/eになる速さで指数的に1へ戻す。先読みしないので遅れは足さない |
 | `g.output(part)` | グラフが鳴らす部品（決めるまでは無音） |
 | `g.render(seconds) -> Array` | グラフの最初の`seconds`秒を、始まりから今計算する |
@@ -8660,7 +8661,7 @@ println(Math.round(Audio.integrated_loudness(both)))                     # => -1
 | `g.now() -> Float` | 今行った変更が、グラフの時計のどこに入るか。鳴っていなければ`0.0` |
 
 部品の中で動かせるものを値と呼びます。波の`freq`と`feedback`、フィルタの`cutoff`、
-gainの`gain`、弦の`freq`と`ring`、遅延の`time`が、それぞれ部品のフィールドになっています。値は最初の変更まで
+gainの`gain`、弦の`freq`と`ring`、遅延の`time`、driveの`gain`が、それぞれ部品のフィールドになっています。値は最初の変更まで
 部品を作ったときの値のままで、変更はグラフの時計（始まりからの秒）の上に予約します。
 
 | メソッド | 効果 |
@@ -8687,7 +8688,7 @@ gainの`gain`、弦の`freq`と`ring`、遅延の`time`が、それぞれ部品�
 次はどれも`ValueError`になります。名前の挙がっていない種類。別のグラフの部品。
 範囲外の値（波のfreqが0未満か`rate`の半分以上、feedbackが0未満か有限の数でない、
 cutoffが0以下か`rate`の半分以上、
-gainが有限の数でない、弦のfreqが20 Hz未満か`rate`の半分以上、ringが0以下、遅延のtimeが0未満か1より大きい）。
+gainが有限の数でない、弦のfreqが20 Hz未満か`rate`の半分以上、ringが0以下、遅延のtimeが0未満か1より大きい、driveのgainが0未満か有限の数でない）。
 有限の数でない波のphase。0未満の時刻。0以下の`q`。`Audio.resonate`が受け付けないモード。グラフの部品で
 ない入力と、3つの数を持つオブジェクトでないモードは`TypeError`です。グラフは`rate`が44100のときだけ鳴らせ、
 同時に鳴らせるのは64個まで（超えると`ValueError`）です。デバイスが無いときは何も

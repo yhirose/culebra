@@ -6161,6 +6161,8 @@ inline const char* _ns_audio_graph_bad_value(culebra::_audio_detail::PartKind ki
     case ad::PartKind::Delay:
       return value == 0 && v >= 0 && v <= ad::kGraphDelayLongest ? nullptr
                                                                  : "Audio.Graph: a delay's time is from 0 to 1";
+    case ad::PartKind::Drive:
+      return value == 0 && v >= 0 && std::isfinite(v) ? nullptr : "Audio.Graph: a drive's gain is 0 or more";
     default:
       return "Audio.Graph: that part has no value to change";
   }
@@ -6180,12 +6182,13 @@ inline JitValue _ns_audio_graph_new(JitValue* a, int64_t) {
   return _ns_adapt::v_long(id);
 }
 // A part of `family` ("wave", "noise", "filter", "gain", "resonate", "pluck",
-// "delay" or "limit"), `kind` naming the wave or the filter, wired by `wires`,
-// two lists of parts made before it: those it takes in and those that move it
-// (a wave's phase, a delay's time, a gain's gain). It is set up by the numbers
-// `options`: a wave's freq, feedback and phase, a noise's seed, a filter's
-// cutoff and q, a gain's gain, a resonance's dry and modes, a string's freq
-// and ring, a delay's time, a limit's ceiling and release.
+// "delay", "limit" or "drive"), `kind` naming the wave or the filter, wired by
+// `wires`, two lists of parts made before it: those it takes in and those that
+// move it (a wave's phase, a delay's time, a gain's gain, a string's freq). It
+// is set up by the numbers `options`: a wave's freq, feedback and phase, a
+// noise's seed, a filter's cutoff and q, a gain's gain, a resonance's dry and
+// modes, a string's freq and ring, a delay's time, a limit's ceiling and
+// release, a drive's gain.
 inline JitValue _ns_audio_graph_part(JitValue* a, int64_t) {
   namespace ad = culebra::_audio_detail;
   auto& g = _ns_audio_graph(a[0]);
@@ -6206,7 +6209,7 @@ inline JitValue _ns_audio_graph_part(JitValue* a, int64_t) {
   // dry and then three a mode (-1 here).
   static constexpr std::pair<std::string_view, int> kFamilies[] = {
       {"wave", 3}, {"noise", 1}, {"filter", 2}, {"gain", 1}, {"resonate", -1}, {"pluck", 2}, {"delay", 1},
-      {"limit", 2}};
+      {"limit", 2}, {"drive", 1}};
   auto fam = std::ranges::find(kFamilies, family, &std::pair<std::string_view, int>::first);
   if (fam == std::end(kFamilies)) {
     auto message = culebra::format("Audio.Graph: no part {}", family);
@@ -6256,6 +6259,7 @@ inline JitValue _ns_audio_graph_part(JitValue* a, int64_t) {
     if (!(opt[1] > 0 && std::isfinite(opt[1]))) _ns_audio_fail("Audio.Graph: a limit's release is above 0");
     return made(ad::PartKind::Limit, ad::Limiter(opt[0], opt[1], rate));
   }
+  if (family == "drive") return made(ad::PartKind::Drive, ad::Drive{}, opt[0]);
   // pluck
   int64_t size = ad::PluckString::loop_length(ad::kGraphPluckLowest, rate) + 1;
   return made(ad::PartKind::Pluck, ad::PluckString(size, rate), opt[0], opt[1]);

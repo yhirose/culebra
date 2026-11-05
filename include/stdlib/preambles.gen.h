@@ -4960,7 +4960,8 @@ let _audio_module = fn () {
 
   # A part of a graph, which keeps its graph as an AudioGraphValue does.
   # What moves in it is an AudioGraphValue: a wave's freq and feedback, a
-  # filter's cutoff, a gain's gain, a string's freq and ring, a delay's time.
+  # filter's cutoff, a gain's gain, a string's freq and ring, a delay's time,
+  # a drive's gain.
   class AudioGraphPart {
     freq = nil
     feedback = nil
@@ -5070,8 +5071,9 @@ let _audio_module = fn () {
       input: AudioGraphPart,
       freq: Long | Float = 220.0,
       ring: Long | Float = 2.0,
+      modulators: Array = [],
     ) {
-      let p = @_part("pluck", "", [input], [freq, ring])
+      let p = @_part("pluck", "", [input], [freq, ring], modulators)
       p.freq = @_value(p, 0)
       p.ring = @_value(p, 1)
       p
@@ -5089,6 +5091,11 @@ let _audio_module = fn () {
         modulators,
       )
       p.time = @_value(p, 0)
+      p
+    }
+    drive(input: AudioGraphPart, gain: Long | Float = 1.0) {
+      let p = @_part("drive", "", [input], [gain])
+      p.gain = @_value(p, 0)
       p
     }
     limit(
