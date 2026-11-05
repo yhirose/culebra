@@ -125,7 +125,7 @@ enum class Op : uint8_t {
                // ValueError) filling with regs[c], or nil when c == -1.
                // The default is borrowed — each filled slot retains its own
                // alias ref. Positioned at the count expression's node.
-  TupleNew,    // regs[a] = fresh empty Tuple (+1)
+  TupleNew,    // regs[a] = fresh empty Tuple (+1) with room for b elements
   TuplePush,   // append regs[b] into tuple regs[a]; regs[b] = nil (absorbed)
   ObjectNew,   // regs[a] = fresh empty Object (+1)
   ObjectNewShaped, // regs[a] = fresh Object (+1) whose Shape and (nil,
@@ -14856,7 +14856,7 @@ class Compiler {
         return compile_range(ast);
       case "TUPLE"_: {
         int32_t t = alloc_temp(ast);
-        emit(Op::TupleNew, t);
+        emit(Op::TupleNew, t, static_cast<int32_t>(ast.nodes.size()));
         for (const auto& n : ast.nodes) {
           auto v = compile_expr(*n);
           emit(Op::TuplePush, t, owned_src(*n, v));
@@ -16868,7 +16868,7 @@ struct Exec {
           [[maybe_unused]] const Insn& in = *ip;
           regs[in.a] = JitValue{
               TAG_TUPLE,
-              reinterpret_cast<int64_t>(culebra_runtime_tuple_new())};
+              reinterpret_cast<int64_t>(culebra_runtime_tuple_new(in.b))};
           ++ip;
           break;
         } while (0);

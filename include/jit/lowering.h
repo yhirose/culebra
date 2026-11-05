@@ -1379,8 +1379,8 @@ struct Lowering {
         }
         case Op::TupleNew: {
           auto tup = j.emit_call(
-              j.module_->getOrInsertFunction(rt::tuple_new, ptrTy), {},
-              "tup");
+              j.module_->getOrInsertFunction(rt::tuple_new, ptrTy, i64Ty),
+              {b.getInt64(in.b)}, "tup");
           b.CreateStore(j.make_tuple(tup), slots[in.a]);
           break;
         }

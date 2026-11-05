@@ -84,4 +84,27 @@ let err = try {
 }
 assert_eq(err, true)
 
+// A Tuple's elements share its own block, whose size follows the count: one
+// element, and 62, past the allocator's largest size class.
+let wide = (0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18,
+  19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37,
+  38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56,
+  57, 58, 59, 60, [61])
+assert_eq(wide.size(), 62)
+assert_eq(wide[61], [61])
+assert_eq((["one"],)[0], ["one"])
+
+// A Tuple in a cycle goes to the collector, which frees its block with the
+// elements in it.
+fn tuple_cycle_cost() {
+  let before = GC.stat().rc_objects
+  for _ in 0..50 {
+    let box = []
+    box.push((box, [1]))
+  }
+  GC.stat().rc_objects - before
+}
+tuple_cycle_cost()
+assert_eq(tuple_cycle_cost(), 0)
+
 IO.inspect("test_tuple OK")

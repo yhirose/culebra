@@ -9777,7 +9777,7 @@ inline JitValue _ns_peg_load(JitValue* a, int64_t) {
   // Nothing below is rooted until the Tuple that is returned holds it.
   culebra::gc::Heap::CollectPause pause(_gc_heap());
   auto tuple = [](std::initializer_list<JitValue> items) {
-    auto* t = culebra_runtime_tuple_new();
+    auto* t = culebra_runtime_tuple_new(static_cast<int64_t>(items.size()));
     for (JitValue v : items) culebra_runtime_tuple_push(t, v.tag, v.data);
     return JitValue{TAG_TUPLE, reinterpret_cast<int64_t>(t)};
   };
@@ -10028,7 +10028,7 @@ inline JitValue _ns_peg_run(JitValue* a, int64_t) {
   auto ast = _ns_adapt::require_long(a[3], "ast");
   auto p = _jit_peg_run(a[0], a[1], a[2], a[4], a[5], ast != 0,
                         ast >= 2 ? std::optional<bool>(ast == 2) : std::nullopt);
-  auto* tup = culebra_runtime_tuple_new();
+  auto* tup = culebra_runtime_tuple_new(2);
   culebra_runtime_tuple_push(tup, TAG_BOOL, p.r.ok ? 1 : 0);
   culebra_runtime_tuple_push(tup, p.value.tag, p.value.data);
   return {TAG_TUPLE, reinterpret_cast<int64_t>(tup)};

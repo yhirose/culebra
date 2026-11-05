@@ -402,7 +402,7 @@ inline JitValue _jit_fm_iter_next(JitBufViewIter& it) {
   int64_t slot = _jit_table_iter_take(it, p);
   JitValue k = _jit_coll_read(l, p, slot);
   JitValue val = _jit_coll_read_val(l, p, slot);
-  auto* tup = culebra_runtime_tuple_new();
+  auto* tup = culebra_runtime_tuple_new(2);
   culebra_runtime_tuple_push(tup, k.tag, k.data);
   culebra_runtime_tuple_push(tup, val.tag, val.data);
   return {TAG_TUPLE, reinterpret_cast<int64_t>(tup)};

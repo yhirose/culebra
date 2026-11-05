@@ -665,8 +665,11 @@ inline JitOwnedVal jit_deserialize(const sendable::SendNode& n, JitDeCtx& ctx) {
     for (const auto& e : n.elems) add(c, jit_deserialize(e, ctx).consume());
     return out;
   };
-  auto push = [](JitArray* a, JitValue v) {
+  auto array_push = [](JitArray* a, JitValue v) {
     culebra_runtime_array_push(a, v.tag, v.data);
+  };
+  auto tuple_push = [](JitArray* t, JitValue v) {
+    culebra_runtime_tuple_push(t, v.tag, v.data);
   };
   switch (n.kind) {
     case K::Nil:   return JitOwnedVal(TAG_NIL, 0);
@@ -677,8 +680,11 @@ inline JitOwnedVal jit_deserialize(const sendable::SendNode& n, JitDeCtx& ctx) {
     case K::Str:
       return JitOwnedVal(TAG_STRING,
                          reinterpret_cast<int64_t>(_culebra_heap_str(n.s)));
-    case K::Array: return fill(culebra_runtime_array_new(), TAG_ARRAY, push);
-    case K::Tuple: return fill(culebra_runtime_tuple_new(), TAG_TUPLE, push);
+    case K::Array: return fill(culebra_runtime_array_new(), TAG_ARRAY, array_push);
+    case K::Tuple:
+      return fill(culebra_runtime_tuple_new(
+                      static_cast<int64_t>(n.elems.size())),
+                  TAG_TUPLE, tuple_push);
     case K::Set: {
       JitOwnedVal out(TAG_SET,
                       reinterpret_cast<int64_t>(culebra_runtime_set_new()));
@@ -2072,10 +2078,13 @@ struct JitSvThaw {
       case K::Tuple: {
         auto* a = n.kind == K::Array
                       ? culebra_runtime_array_new_reserved(n.count)
-                      : culebra_runtime_tuple_new();
+                      : culebra_runtime_tuple_new(n.count);
         for (uint32_t i = 0; i < n.count; i++) {
           JitValue ev = cell(cells[i]);
-          culebra_runtime_array_push(a, ev.tag, ev.data);
+          if (n.kind == K::Array)
+            culebra_runtime_array_push(a, ev.tag, ev.data);
+          else
+            culebra_runtime_tuple_push(a, ev.tag, ev.data);
         }
         return {n.kind == K::Array ? TAG_ARRAY : TAG_TUPLE,
                 reinterpret_cast<int64_t>(a)};
@@ -2507,7 +2516,7 @@ inline bool _jit_sv_step(const JitResolvedNode& rn, int64_t at,
   }
   JitValue kv = _jit_sv_materialize(*rn.tree, rn.key(pos));
   JitValue vv = _jit_shared_val_read(rn, rn.cell(pos));
-  auto* pair = culebra_runtime_tuple_new();
+  auto* pair = culebra_runtime_tuple_new(2);
   // Each push absorbs its +1, so the pair is the sole owner — releasing
   // here would free a container value out from under it.
   culebra_runtime_tuple_push(pair, kv.tag, kv.data);
@@ -2971,11 +2980,11 @@ inline JitValue culebra_jit_channel_new(int64_t n, JitValue* args,
         "Channel.new: capacity must be >= 0", line, col);
   }
   auto* core = new ChannelCore(static_cast<size_t>(cap));  // the two ends'
-  auto* tup = culebra_runtime_tuple_new();
+  auto* tup = culebra_runtime_tuple_new(2);
   JitValue tx = _jit_make_channel_endpoint(core, 0);
   JitValue rx = _jit_make_channel_endpoint(core, 1);
-  culebra_runtime_array_push(tup, tx.tag, tx.data);  // adopts the +1
-  culebra_runtime_array_push(tup, rx.tag, rx.data);
+  culebra_runtime_tuple_push(tup, tx.tag, tx.data);  // adopts the +1
+  culebra_runtime_tuple_push(tup, rx.tag, rx.data);
   return {TAG_TUPLE, reinterpret_cast<int64_t>(tup)};
 }
 

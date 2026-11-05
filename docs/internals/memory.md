@@ -148,7 +148,10 @@ lock-free because a `Runtime` — and with it the heap, the collector, the
 defer stack and the exception carrier — is one per thread. The
 collector's own per-object metadata lives outside the object in an
 address-keyed registry (§6.3), so the retain/release code never touches
-a header it does not own.
+a header it does not own. A tuple is built to the element count it is
+created with and never grows, so its elements sit right after its
+`JitArray` header in the same block (CPython's layout); an array's
+elements live in a buffer of their own, which can grow.
 
 Deterministic `drop` rides on the same count: an object whose refcount
 reaches zero runs its `drop` before its children are released. Objects

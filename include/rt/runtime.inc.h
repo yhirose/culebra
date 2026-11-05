@@ -2520,30 +2520,70 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_array_new_reserved(
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_array_set_or_push(
     JitArray* arr, int64_t idx, int8_t tag, int64_t data);
 
-// Tuple sits on the same JitArray storage but is registered under
-// GC_TAG_TUPLE so the collector's per-type dispatch treats it as a Tuple.
-// Caller-visible immutability is enforced by the IR (mutation ops only
-// accept TAG_ARRAY) — there is no mutating runtime entry for Tuple.
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_tuple_new() {
-  auto* arr = new JitArray();
+// Tuple sits on the JitArray header but is registered under GC_TAG_TUPLE so
+// the collector's per-type dispatch treats it as a Tuple. Caller-visible
+// immutability is enforced by the IR (mutation ops only accept TAG_ARRAY) —
+// there is no mutating runtime entry for Tuple. Its `n` elements live right
+// after the header, in the same slab block (CPython's tuple layout): one
+// allocation, `items` pointing into it, and `capacity` fixed at `n`, since a
+// Tuple is built to its own size and never grows.
+inline size_t _jit_tuple_bytes(size_t n) {
+  return sizeof(JitArray) + n * sizeof(JitValue);
+}
+
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_tuple_new(int64_t n) {
+  const size_t cap = n > 0 ? static_cast<size_t>(n) : 0;
+  auto* arr = ::new (_slab().alloc(_jit_tuple_bytes(cap))) JitArray();
   arr->refcount = 1;
   arr->size = 0;
-  arr->capacity = 0;
-  arr->items = nullptr;
+  arr->capacity = cap;
+  arr->items = reinterpret_cast<JitValue*>(arr + 1);
   _gc_register(arr, GC_TAG_TUPLE);
   return arr;
 }
 
-// Build-time element append. Reuses array_push internals (forward
-// declared and defined below) because the layout is identical; only
-// the GC tag differs.
+// Whether `a`'s elements sit in its own block — a Tuple's, from
+// culebra_runtime_tuple_new. Read off the layout, not the tag: a Tuple slice
+// is an Array copy tagged Tuple, with a buffer of its own like every Array's.
+inline bool _jit_items_inline(const JitArray* a) {
+  return a->items == reinterpret_cast<const JitValue*>(a + 1);
+}
+
+// Frees an Array or Tuple header whose elements are already released (or
+// swept), together with where they lived.
+inline void _jit_array_free(JitArray* a) {
+  if (_jit_items_inline(a)) {
+    _slab().free(a, _jit_tuple_bytes(a->capacity));
+    return;
+  }
+  delete[] a->items;
+  delete a;
+}
+
+// Forward declared for the helpers below; defined after _jit_array_adopt_items.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_array_push(JitArray* arr,
                                                              int8_t tag,
                                                              int64_t data);
+
+// Out of line: the one caller's hot path keeps a compare and a call.
+[[noreturn, gnu::noinline, gnu::cold]] inline void _jit_tuple_overfilled() {
+  std::fprintf(stderr,
+               "culebra: internal error: a Tuple got more elements than it was "
+               "built with\n");
+  std::abort();
+}
+
+// Build-time element append, absorbing the value's +1: the only way a Tuple
+// is filled. It never grows, its elements being part of its block, so a push
+// past the count it was built with stops the program in every build; the
+// compare is the one array_push makes before it grows.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_tuple_push(JitArray* arr,
                                                              int8_t tag,
                                                              int64_t data) {
-  culebra_runtime_array_push(arr, tag, data);
+  if (arr->size >= arr->capacity) _jit_tuple_overfilled();
+  arr->items[arr->size].tag = tag;
+  arr->items[arr->size].data = data;
+  arr->size++;
 }
 
 // Set runtime: insertion-ordered with O(1) membership.
@@ -2736,6 +2776,8 @@ inline void _culebra_value_release_impl(int8_t tag, int64_t data);
 
 // Move `arr`'s elements into `items`, a block of `cap` slots, and own it.
 inline void _jit_array_adopt_items(JitArray* arr, JitValue* items, size_t cap) {
+  assert(!_jit_items_inline(arr) &&
+         "a Tuple is filled by tuple_push and never grows");
   if (arr->items) {
     std::memcpy(items, arr->items, arr->size * sizeof(JitValue));
     delete[] arr->items;

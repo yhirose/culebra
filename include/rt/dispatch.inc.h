@@ -1279,12 +1279,9 @@ inline void _jit_gc_sweep_object(void* obj, uint8_t tag) {
       break;
     }
     case GC_TAG_ARRAY:
-    case GC_TAG_TUPLE: {
-      auto* a = static_cast<JitArray*>(obj);
-      delete[] a->items;
-      delete a;
+    case GC_TAG_TUPLE:
+      _jit_array_free(static_cast<JitArray*>(obj));
       break;
-    }
     case GC_TAG_OBJECT: {
       auto* o = static_cast<JitObject*>(obj);
       _jit_owned_unregister(o);  // owned-stack tombstone (sweep path)

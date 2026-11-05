@@ -90,8 +90,8 @@ class SlabAllocator {
   // All multiples of alignof(std::max_align_t) (16), so every carved block is
   // 16-aligned (a safe superset of what malloc/new guaranteed). JitObject
   // (~112B) -> 128, JitClosure/JitArray/JitSet -> 48, JitCell/JitTensor -> 32,
-  // and the small JitValue[] / captures buffers spread across the lower
-  // classes.
+  // and a Tuple, header and elements in one block, by its element count (two
+  // to five -> 128).
   static constexpr size_t kClasses[] = {16, 32, 48, 64, 128, 256, 512, 1024};
   static constexpr int kNumClasses = static_cast<int>(std::size(kClasses));
   static constexpr size_t kChunkBytes = 64 * 1024;

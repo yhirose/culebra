@@ -476,9 +476,8 @@ inline void _culebra_value_release_node(int8_t tag, int64_t data) {
         for (size_t i = 0; i < a->size; i++) {
           _culebra_value_release_impl(a->items[i].tag, a->items[i].data);
         }
-        delete[] a->items;
         _gc_note_free(heap, a, tag);
-        delete a;
+        _jit_array_free(a);
       }
       break;
     }

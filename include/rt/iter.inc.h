@@ -1333,7 +1333,7 @@ inline void _iter_enumerate_fast_fn(JitClosure* cls, JitValue, bool* done,
   }
   // Yield `(index, value)` as a Tuple. tuple_push takes ownership of the
   // value's +1 (same as object_set did before), so no extra retain.
-  auto* pair = culebra_runtime_tuple_new();
+  auto* pair = culebra_runtime_tuple_new(2);
   culebra_runtime_tuple_push(pair, TAG_LONG, idx_cell->value.data);
   culebra_runtime_tuple_push(pair, tag, data);
   idx_cell->value.data++;
@@ -1930,7 +1930,7 @@ inline void _iter_words_fast_fn(JitClosure* cls, JitValue, bool* done,
   win_start_cell->value.data = byte_off;
 
   // tuple_push takes ownership of the value's +1 (same as enumerate above).
-  auto* pair = culebra_runtime_tuple_new();
+  auto* pair = culebra_runtime_tuple_new(2);
   culebra_runtime_tuple_push(pair, TAG_STRINGVIEW, reinterpret_cast<int64_t>(v));
   culebra_runtime_tuple_push(pair, TAG_BOOL, is_word ? 1 : 0);
 
@@ -2202,7 +2202,7 @@ inline void _iter_from_object_pairs_fast_fn(JitClosure* cls, JitValue,
   *done = !_jit_obj_snapshot_next(cls, &key, &vt, &vd);
   if (*done) return;
   culebra_runtime_value_retain(key.tag, key.data);
-  auto* pair = culebra_runtime_tuple_new();
+  auto* pair = culebra_runtime_tuple_new(2);
   culebra_runtime_tuple_push(pair, key.tag, key.data);
   culebra_runtime_tuple_push(pair, vt, vd);
   *out_tag = TAG_TUPLE;
@@ -2796,7 +2796,7 @@ inline void _grid_fast_fn(JitClosure* cls, JitValue, bool* done,
   x_cur->value.data = x.cur;
   if (x.exhausted) x_exh->value.data = 1;
   *done = false;
-  auto* tup = culebra_runtime_tuple_new();
+  auto* tup = culebra_runtime_tuple_new(2);
   culebra_runtime_tuple_push(tup, TAG_LONG, xv);
   culebra_runtime_tuple_push(tup, TAG_LONG, cur_y->value.data);
   *out_tag = TAG_TUPLE;
@@ -4175,7 +4175,7 @@ inline JitArray* _collect_partition_jit(Each each, int8_t pt, int64_t pd,
     auto owned = vg.consume();
     culebra_runtime_array_push(hit ? yes : no, owned.tag, owned.data);
   });
-  auto* out = culebra_runtime_tuple_new();
+  auto* out = culebra_runtime_tuple_new(2);
   culebra_runtime_tuple_push(out, TAG_ARRAY, yg.consume().data);
   culebra_runtime_tuple_push(out, TAG_ARRAY, ng.consume().data);
   return out;
@@ -4223,7 +4223,7 @@ inline JitArray* _collect_unzip_jit(Each each, int64_t line, int64_t col) {
     culebra_runtime_array_push(firsts, a.tag, a.data);
     culebra_runtime_array_push(seconds, b.tag, b.data);
   });
-  auto* out = culebra_runtime_tuple_new();
+  auto* out = culebra_runtime_tuple_new(2);
   culebra_runtime_tuple_push(out, TAG_ARRAY, fg.consume().data);
   culebra_runtime_tuple_push(out, TAG_ARRAY, sg.consume().data);
   return out;
