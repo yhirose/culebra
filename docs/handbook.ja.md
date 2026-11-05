@@ -1721,7 +1721,7 @@ inspect(JSON.stringify({a: 1}))     # => '{"a":1}'
 | 並行 | `Isolate`、`Channel`、`Parallel`、`Shared`、`SharedBuffer` |
 | ストレージ | `SQLite`、`Search`（全文検索） |
 | 時刻・CLI・ログ | `Time`、`Args`、`Log` |
-| 端末・グラフィクス・音 | `Term`、`Canvas`、`Scene`、`Audio`、`Desktop` |
+| 端末・グラフィクス・音 | `Term`、`Canvas`、`Scene`、`Audio`、`Kauai`（曲）、`Desktop` |
 
 いずれも[`stdlib.ja.md`](stdlib.ja.md)が記述します。目次が名前空間を順に並べ、その直下の「用途から探す」表が、やりたいこと(ハッシュを取る、
 設定ファイルを読む、サブプロセスを走らせる)を、それを行う節に対応付けます。意図的にまだ入れていないものも、同じ文書の末尾に記録してあります。
