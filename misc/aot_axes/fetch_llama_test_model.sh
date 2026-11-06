@@ -8,10 +8,11 @@ url=https://huggingface.co/ggml-org/models/resolve/main/tinyllamas/stories260K.g
 want=270cba1bd5109f42d03350f60406024560464db173c0e387d91f0426d3bd256d
 
 curl -fsSL --retry 5 --retry-delay 5 -o "$dest" "$url"
+# Read from stdin: given a Windows path, sha256sum escapes its line with a "\".
 if command -v sha256sum >/dev/null; then
-  got=$(sha256sum "$dest" | cut -d' ' -f1)
+  got=$(sha256sum < "$dest" | cut -d' ' -f1)
 else
-  got=$(shasum -a 256 "$dest" | cut -d' ' -f1)
+  got=$(shasum -a 256 < "$dest" | cut -d' ' -f1)
 fi
 [ "$got" = "$want" ] || { echo "fetch_llama_test_model: $dest is $got, expected $want" >&2; exit 1; }
 echo "fetched $dest"
