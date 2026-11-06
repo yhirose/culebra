@@ -1470,7 +1470,7 @@ jobs:
           let bad = Proc.run(["cmd", "/c", "exit 3"])
           check(!bad.ok && bad.code == 3, "Proc.run non-zero exit")
           # stdin is fed to the child (findstr echoes lines matching the pattern).
-          let f = Proc.run(["findstr", "x"], stdin: "x marks\nno match\n")
+          let f = Proc.run(["findstr", "x"], input: "x marks\nno match\n")
           check(f.stdout.contains("x marks") && !f.stdout.contains("no match"),
                 "Proc.run stdin feed")
           # allSettled batch of two concurrent children, results in input order.
