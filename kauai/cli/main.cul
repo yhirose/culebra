@@ -59,18 +59,6 @@ if args.empty() {
   Sys.exit(2)
 }
 
-# The word after option `name`, or `fallback` without the option; the option
-# with no word after it ends the program.
-fn option(name, fallback) {
-  let at = args.index_of(name)
-  return fallback if at < 0
-  if at + 1 >= args.size() {
-    IO.eprintln("kauai: {name} needs a value")
-    Sys.exit(2)
-  }
-  args[at + 1]
-}
-
 fn refuse(e) {
   IO.eprintln("{e.kind}: {e.message}")
   Sys.exit(1)
@@ -125,32 +113,39 @@ if args[0] == "instruments" {
 }
 
 if args[0] == "live" {
-  let name = args.size() > 1 ? args[1] : ""
+  let spec = {
+    name: "kauai",
+    args: [
+      {name: "instrument", positional: true, default: ""},
+      {name: "midi", default: nil},
+      {name: "breath", default: "cc2"},
+      {name: "gain", default: nil},
+    ],
+  }
+  let opts = cmdline.parse(args[1..], spec)
+  let quit = |msg| cmdline.quit("kauai", msg)
+  let name = opts.instrument
   let found = instruments.find(|i| i.name.lower() == name.lower())
   if found == nil {
-    IO.eprintln("kauai: no instrument `{name}`; `kauai instruments` lists them")
-    Sys.exit(2)
+    quit("no instrument `{name}`; `kauai instruments` lists them")
   }
   if found.live == nil {
-    IO.eprintln("kauai: `{found.name}` is a drum, which live does not play")
-    Sys.exit(2)
+    quit("`{found.name}` is a drum, which live does not play")
   }
-  let breath = option("--breath", "cc2")
+  let breath = opts.breath
   if !["cc2", "cc7", "cc11", "pressure"].contains(breath) {
-    IO.eprintln("kauai: --breath is cc2, cc7, cc11 or pressure, not {breath}")
-    Sys.exit(2)
+    quit("--breath is cc2, cc7, cc11 or pressure, not {breath}")
   }
-  let gain_text = option("--gain", nil)
+  let gain_text = opts.gain
   let db = try {
     gain_text == nil ? live.GAIN : to_float(gain_text)
   } catch _ {
     nil
   }
   if db == nil || !(db >= -60.0 && db <= 24.0) {
-    IO.eprintln("kauai: --gain is from -60 to 24 dB, not {gain_text}")
-    Sys.exit(2)
+    quit("--gain is from -60 to 24 dB, not {gain_text}")
   }
-  let wanted = option("--midi", nil)
+  let wanted = opts.midi
   let inputs = MIDI.inputs()
   let named = wanted == nil
     ? inputs

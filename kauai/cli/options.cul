@@ -16,88 +16,57 @@ fn is_point(s) {
     re'^[0-9]+:[0-5][0-9](\.[0-9]+)?$'.test(s)
 }
 
-# What a command line after the command asks for: {song, check, wav, from,
-# to}, and, where `more` holds them, {sounds, watch}. Options may come before
-# or after the song, as `--wav out.wav` or `--wav=out.wav`. A mistake on it
-# ends the program with status 2, before any song is read.
-fn options(args, name, more = []) {
-  let usage = fn () {
-    IO.eprintln("{name}: give one song (.kau); --help says how")
-    Sys.exit(2)
+# Ends the program with status 2, saying `msg` after the command's name.
+fn quit(name, msg) {
+  IO.eprintln("{name}: {msg}")
+  Sys.exit(2)
+}
+
+# `args` read by Args against `spec`, a mistake ending the program as quit
+# does; an option given as `--x=` with nothing after it is one.
+fn parse(args, spec) {
+  let opts = try {
+    Args.try_parse(args, spec)
+  } catch e: ArgParseError {
+    quit(spec.name, e.message)
   }
-  let quit = fn (msg) {
-    IO.eprintln("{name}: {msg}")
-    Sys.exit(2)
-  }
-  let needs = {
-    "--wav": "a file to write",
-    "--sounds": "a file or a folder",
-    "--from": nil,
-    "--to": nil,
-  }
-  let opts = {
-    mut song: nil,
-    mut check: false,
-    mut wav: nil,
-    mut from: nil,
-    mut to: nil,
-    mut sounds: nil,
-    mut watch: false,
-  }
-  mut i = 0
-  while i < args.size() {
-    let arg = args[i]
-    i += 1
-    let eq = arg.index_of("=")
-    let key = arg.starts_with("--") && eq > 0
-      ? arg.slice(0, eq).to_string()
-      : arg
-    let takes = needs.has(key) && (key != "--sounds" || more.contains(key))
-    if takes {
-      mut value = nil
-      if eq > 0 {
-        # `--wav=` says no more than `--wav` does.
-        let given = arg.slice(eq + 1, arg.size()).to_string()
-        value = given.empty() ? nil : given
-      } else if i < args.size() {
-        value = args[i]
-        i += 1
-      }
-      if key == "--from" || key == "--to" {
-        if value == nil || !is_point(value) {
-          let what = value == nil ? "" : ", not '{value}'"
-          quit("{key} takes seconds (83.5), minutes and seconds (1:23.5) or a mark's name{what}")
-        }
-      } else if value == nil {
-        quit("{key} needs {needs[key]}")
-      }
-      match key {
-        "--wav" => opts.wav = value,
-        "--sounds" => opts.sounds = value,
-        "--from" => opts.from = value,
-        _ => opts.to = value,
-      }
-    } else if arg == "--check" {
-      opts.check = true
-    } else if arg == "--watch" && more.contains(arg) {
-      opts.watch = true
-    } else if arg.starts_with("-") {
-      quit("unknown option '{arg}'")
-    } else if opts.song != nil {
-      quit("one song at a time, got '{opts.song}' and '{arg}'")
-    } else {
-      opts.song = arg
+  for arg in spec.args.filter(|a| a.positional != true) {
+    if opts[arg.name] == "" {
+      quit(spec.name, "option '--{arg.name}' expects a value")
     }
-  }
-  usage() if opts.song == nil
-  if opts.wav != nil && (opts.check || opts.watch) {
-    quit("--wav writes the song and plays nothing, so not with {opts.check ? "--check" : "--watch"}")
-  }
-  if (opts.from != nil || opts.to != nil) && opts.wav == nil {
-    let which = opts.from != nil ? "--from" : "--to"
-    quit("{which} chooses the part --wav writes, so it needs --wav")
   }
   opts
 }
 
-export {options, is_mark}
+# The song and the options for it, in Args's form.
+let SONG = [
+  {name: "song", positional: true},
+  {name: "check", type: "Bool", default: false},
+  {name: "wav", default: nil},
+  {name: "from", default: nil},
+  {name: "to", default: nil},
+]
+
+# What a command line after the command asks for: {song, check, wav, from,
+# to}, and the options `more` adds (Args's form). Options may come before or
+# after the song, as `--wav out.wav` or `--wav=out.wav`. A mistake on it ends
+# the program with status 2, before any song is read.
+fn options(args, name, more = []) {
+  let stop = |msg| quit(name, msg)
+  let opts = parse(args, {name: name, args: SONG + more})
+  for key in ["from", "to"] {
+    if opts[key] != nil && !is_point(opts[key]) {
+      stop("--{key} takes seconds (83.5), minutes and seconds (1:23.5) or a mark's name, not '{opts[key]}'")
+    }
+  }
+  if opts.wav != nil && (opts.check || opts.watch == true) {
+    stop("--wav writes the song and plays nothing, so not with {opts.check ? "--check" : "--watch"}")
+  }
+  if (opts.from != nil || opts.to != nil) && opts.wav == nil {
+    let which = opts.from != nil ? "--from" : "--to"
+    stop("{which} chooses the part --wav writes, so it needs --wav")
+  }
+  opts
+}
+
+export {options, parse, quit, is_mark}

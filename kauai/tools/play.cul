@@ -45,13 +45,19 @@ if Sys.argv.empty() {
 }
 
 let here = FS.dirname(FS.abspath(Sys.script))
-let opts = cmdline.options(Sys.argv, "play", more: ["--sounds", "--watch"])
+let opts = cmdline.options(
+  Sys.argv,
+  "play",
+  more: [
+    {name: "sounds", default: nil},
+    {name: "watch", type: "Bool", default: false},
+  ],
+)
 let module = opts.sounds == nil
   ? FS.abspath(FS.join(here, "..", "cli", "bundled.cul"))
   : instrument.module_at(opts.sounds)
 if module == nil {
-  IO.eprintln("play: no sounds file '{opts.sounds}'")
-  Sys.exit(2)
+  cmdline.quit("play", "no sounds file '{opts.sounds}'")
 }
 
 # The folders to watch, as they were given: the song's, and the module's where
