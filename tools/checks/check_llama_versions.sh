@@ -46,9 +46,9 @@ if [[ "$tag" != "$version"* || ! ${tag#"$version"} =~ ^(\.[0-9]+)?$ ]]; then
   exit 1
 fi
 
-# The tag claims the llama.cpp release it was tested against; its own build
-# file is where it fetches that release from.
-fetched=$(awk '$1 == "GIT_TAG" { print $2; exit }' "$lib/CMakeLists.txt")
+# The tag claims the llama.cpp release it was tested against; the wrapper's own
+# script reads the release its build file fetches.
+fetched=$("$lib/scripts/llama-cpp-version.sh" get || true)
 if [[ "$fetched" != "$version" ]]; then
   echo "llama-versions FAIL: $lib/CMakeLists.txt fetches llama.cpp ${fetched:-nothing}, not $version" >&2
   exit 1
