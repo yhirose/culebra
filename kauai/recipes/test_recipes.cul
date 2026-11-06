@@ -70,6 +70,23 @@ fn a_muted_guitar_stroke_is_its_head_alone() {
   }
 }
 
+# A folder of one's own: its recipes and drums by the names a song gives
+# them, a base from Kauai's where the folder has none, and none of Kauai's.
+@test
+fn a_folder_of_ones_own_plays_its_recipes_over_kauais() {
+  let mine = recipes.folder(Dir.memory({
+    "warm_brass.json": '{"base": "fm_brass", "knobs": {"bright": {"default": 0}}}',
+    "drums/deep_kick.json": '{"base": "kick"}',
+  }))
+  assert_eq(mine.voices.keys(), ["warmbrass"])
+  assert_eq(mine.drums.keys(), ["deepkick"])
+  assert_eq(
+    mine.recipe("warm_brass").note(60, 0.3),
+    recipes.recipe("mellow_fm_brass").note(60, 0.3),
+  )
+  assert_eq(mine.drum("deep_kick").hit(), recipes.drum("kick").hit())
+}
+
 @test
 fn a_preset_is_its_recipe_with_its_knob_set() {
   let mellow = recipes.recipe("mellow_fm_brass").note(60, 0.3)

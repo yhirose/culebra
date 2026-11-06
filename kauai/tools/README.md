@@ -5,10 +5,10 @@
 `play.cul` plays a song as the `kauai` command does (`--check`, `--wav`,
 `--from`, `--to`), with the instruments the module `--sounds` names in
 place of the ones `kauai` bundles: the module being made, before it is
-bundled. `--watch` plays the song again from the top whenever a `.kau` or
-`.cul` file changes in the song's folder or the module's, so an edit is
-heard on save; a mistake in either is said, and the watching goes on until
-Ctrl+C.
+bundled. `--watch` plays the song again from the top whenever a `.kau`,
+`.cul` or `.json` file changes in the song's folder or the module's (and in
+a module folder's `drums/` and `data/`), so an edit is heard on save; a
+mistake in either is said, and the watching goes on until Ctrl+C.
 
 ```sh
 culebra kauai/tools/play.cul --sounds kauai/sounds/alto_sax song.kau

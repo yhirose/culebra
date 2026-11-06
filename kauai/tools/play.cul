@@ -2,7 +2,8 @@
 # it: what the kauai command does (kauai/cli/play.cul), with the sounds
 # --sounds names (a .cul file, or a folder and its main.cul) in place of the
 # instruments it bundles, and --watch to play the song again from the top
-# whenever a .kau or .cul file changes in the song's folder or the module's.
+# whenever a .kau, .cul or .json file changes in the song's folder or the
+# module's (and in a module folder's drums/ and data/).
 #
 #   culebra kauai/tools/play.cul --sounds kauai/sounds/alto_sax song.kau
 #   culebra kauai/tools/play.cul --sounds kauai/sounds/alto_sax --watch song.kau
@@ -23,8 +24,9 @@ let USAGE = "Usage: culebra kauai/tools/play.cul [options] <song.kau>
                        main.cul. Without it, the instruments the kauai
                        command bundles
   --watch              read it again and play it from the top whenever
-                       a .kau or .cul file changes in the song's folder
-                       or the sounds module's
+                       a .kau, .cul or .json file changes in the song's
+                       folder or the sounds module's (and in a sounds
+                       folder's drums/ and data/)
   --check              read and check the song, and play nothing
   --wav <file.wav>     write the song once through to a WAV file, as it
                        would sound, and play nothing; no device needed
@@ -61,15 +63,17 @@ if module == nil {
 }
 
 # The folders to watch, as they were given: the song's, and the module's where
-# --sounds names one.
+# --sounds names one, with its drums/ (recipes) and data/ (an instrument
+# from recordings) where it names a folder; not its songs/ or work/, whose
+# recordings and scratch can be tens of megabytes.
+let given = [opts.song, opts.sounds]
+  .filter(|f| f != nil)
+  .map(|f| FS.dirname(FS.is_dir(f) ? FS.join(f, "main.cul") : f))
+let inside = opts.sounds != nil && FS.is_dir(opts.sounds)
+  ? ["drums", "data"].map(|n| FS.join(opts.sounds, n)).filter(|p| FS.is_dir(p))
+  : []
 let folders = opts.watch
-  ? [opts.song, opts.sounds]
-    .filter(|f| f != nil)
-    .map(|f| FS.dirname(FS.is_dir(f) ? FS.join(f, "main.cul") : f))
-    .map(|d| d.empty() ? "." : d)
-    .iter()
-    .distinct()
-    .collect()
+  ? (given + inside).map(|d| d.empty() ? "." : d).iter().distinct().collect()
   : []
 let call = JSON.stringify({
   opts: opts,

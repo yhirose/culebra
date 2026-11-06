@@ -219,6 +219,34 @@ there.
 A base may have a base of its own. What the recipe and its bases make is
 checked whole, as any recipe is.
 
+## Recipes of your own
+
+Recipes of your own can live in a folder of your own, outside the
+repository, laid out as `recipes/` is: an instrument in each `.json` file,
+a drum in each in `drums/`, named the same way (`soft_pad.json` is
+`external SoftPad`). A `main.cul` beside them makes the folder a module that
+`kauai/tools/play.cul` plays a song with:
+
+```culebra
+# doctest: skip (the import names where your copy of the repository is)
+import recipes from '/path/to/culebra/kauai/recipes/main.cul'
+let {voices, drums} = recipes.folder(Dir.embedded('.'))
+export {voices, drums}
+```
+
+```sh
+culebra kauai/tools/play.cul --sounds my_recipes --watch song.kau
+```
+
+`Dir.embedded('.')` is the folder of the file that calls it, so `main.cul`
+reads the folder it is in. A `base` names a recipe of the folder, or else
+one Kauai comes with, so `{"base": "fm_brass", ...}` starts from Kauai's
+own. Give yours names Kauai's do not have: a `fm_brass.json` of yours
+takes the place of Kauai's, and cannot have Kauai's as its base.
+`--watch` plays the song again when a `.json` file in the folder or its
+`drums/` changes. The `kauai` binary plays only the recipes it is built
+with.
+
 ## Errors
 
 A recipe is checked when it is loaded, and an error says where in it:

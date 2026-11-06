@@ -8,52 +8,93 @@
 #     voice Lead  external FmBrass  plays melody  bright=0.3
 #     drum Kick   external Kick     vol 30
 #   }
+#
+# folder() reads a folder of one's own the same way, for --sounds.
 
 import engine from '../engine/recipe.cul'
 
-let DIR = Dir.embedded('.')
-
-# The recipes in `folder` ("" for this one, "drums/" for the drums):
+# The recipes in `folder` of `dir` ("" for its own, "drums/" for the drums):
 # {names, find, recipe}, `names` their files' names without `.json`,
-# `find(name)` one as JSON reads it (nil for none), and `recipe(name)` one
-# whole (its base, from the same folder, under it) and checked.
-fn shelf(folder) {
+# `find(name)` one as JSON reads it (`fallback(name)` where `dir` has none),
+# and `recipe(name)` one whole (its base, found the same way, under it) and
+# checked.
+fn shelf(dir, folder, fallback) {
   let path = |name| "{folder}{name}.json"
-  let find = |name| DIR.is_file(path(name)) ? JSON.parse(DIR.read(path(name))) : nil
+  let find = |name| dir.is_file(path(name))
+    ? JSON.parse(dir.read(path(name)))
+    : fallback(name)
   {
-    names: DIR.glob(path("*")).map(|p| FS.stem(p)),
+    names: dir.glob(path("*")).map(|p| FS.stem(p)),
     find,
     recipe: |name| engine.Recipe.new(engine.resolved(name, find), name:),
   }
 }
-
-# The voices' names, the one `name` as JSON reads it, and whole.
-let {names, find, recipe} = shelf("")
-
-# The drums' names, and the one `name` whole.
-let {names: drum_names, recipe: drum} = shelf("drums/")
 
 # A name as a song gives it after `external`, and as Kauai.load's
 # keys are: mellow_fm_brass is MellowFmBrass, and mellowfmbrass.
 let title = |name| name.split("_").map(|w| w.capitalize()).join("")
 let key = |name| name.replace("_", "")
 
-# The instruments, as Kauai.load's `voices:` and `drums:` take them.
-let voices = names.map(|n| (key(n), recipe(n).voice())).to_object()
-let drums = drum_names.map(|n| (key(n), drum(n).drum())).to_object()
-
 # What `kauai instruments` says of recipe `r`: `what` it is, and its knobs.
 fn about(what, r) {
-  let knobs = r.knobs.keys().map(|k| "{k} {r.knobs[k].fallback} ({r.knobs[k].min} to {r.knobs[k].max})")
+  let knobs = r
+    .knobs
+    .keys()
+    .map(|k| "{k} {r.knobs[k].fallback} ({r.knobs[k].min} to {r.knobs[k].max})")
   knobs.empty() ? what : "{what}; {knobs.join(", ")}"
 }
 
-# Each recipe as `kauai instruments` lists it: the name a song writes, what
-# it is and its knobs, and its player for `kauai live` (nil for a drum,
-# which live does not play).
-let instruments = [
-  ...names.map(|n| {name: title(n), live: || engine.LivePlayer(recipe(n)), about: about("a recipe", recipe(n))}),
-  ...drum_names.map(|n| {name: title(n), live: nil, about: about("a drum", drum(n))}),
-]
+# No recipes: where a recipe's base is looked for last.
+let NONE = {find: |name| nil, drum_find: |name| nil}
 
-export {voices, drums, names, drum_names, recipe, drum, find, instruments}
+# The recipes of `dir` (a Dir), with `under`'s finds for the bases `dir` has
+# not: {voices, drums} as Kauai.load's `voices:` and `drums:` take them, the
+# shelves (`names`, `find`, `recipe`, and the drums' `drum_names`,
+# `drum_find`, `drum`), and `instruments` as `kauai instruments` lists them,
+# with each one's player for `kauai live` (nil for a drum, which live does
+# not play).
+fn recipes_in(dir, under = NONE) {
+  let {names, find, recipe} = shelf(dir, "", under.find)
+  let {
+    names: drum_names,
+    find: drum_find,
+    recipe: drum,
+  } = shelf(dir, "drums/", under.drum_find)
+  let made = names.map(|n| (n, recipe(n))).to_object()
+  let made_drums = drum_names.map(|n| (n, drum(n))).to_object()
+  {
+    voices: names.map(|n| (key(n), made[n].voice())).to_object(),
+    drums: drum_names.map(|n| (key(n), made_drums[n].drum())).to_object(),
+    names,
+    find,
+    recipe,
+    drum_names,
+    drum_find,
+    drum,
+    instruments: [
+      ...names.map(|n| {name: title(n), live: || engine.LivePlayer(recipe(n)), about: about("a recipe", made[n])}),
+      ...drum_names.map(|n| {name: title(n), live: nil, about: about("a drum", made_drums[n])}),
+    ],
+  }
+}
+
+let {
+  voices,
+  drums,
+  names,
+  drum_names,
+  recipe,
+  drum,
+  find,
+  drum_find,
+  instruments,
+} = recipes_in(Dir.embedded('.'))
+
+# The recipes of a folder of one's own (`dir`, as Dir.embedded('.') reads
+# the folder of the file that calls it), named as these are; a base it has
+# not is one of these. Kauai.load takes its {voices, drums}.
+fn folder(dir) {
+  recipes_in(dir, under: {find, drum_find})
+}
+
+export {voices, drums, names, drum_names, recipe, drum, find, instruments, folder}

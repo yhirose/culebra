@@ -100,8 +100,9 @@ export {voices}
 EOF
 # An instrument that brings files of its own: a folder, its main.cul the
 # module, which reads what lies beside it (here, before it makes a sound).
-mkdir -p "$TMP/instrument"
+mkdir -p "$TMP/instrument/data"
 printf 'tines\n' > "$TMP/instrument/kind.txt"
+printf '{"bright": 0}\n' > "$TMP/instrument/data/style.json"
 cat > "$TMP/instrument/main.cul" <<'EOF'
 let kind = Dir.embedded('.').read('kind.txt')
 let sound = || Audio.Sound(String.from_bytes([]))
@@ -196,6 +197,11 @@ retempo fast
 seen 1 "KauaiError: $song:9: "
 retempo 120
 seen 2 "$song: 0:04 once through"
+# A .json file in a folder of the module's: its data, a recipe's drums/.
+printf '{"bright": 1}\n' > "$TMP/watch/next.tmp"
+mv "$TMP/watch/next.tmp" "$TMP/instrument/data/style.json"
+seen 1 "$TMP/instrument/data/style.json changed"
+seen 3 "$song: 0:04 once through"
 kill -INT "$pid"
 wait "$pid"; rc=$?
 check "watch: status" 130 "$rc"

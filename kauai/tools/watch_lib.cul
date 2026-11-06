@@ -1,9 +1,9 @@
 # Watching folders for a change, as kauai/tools/play.cul --watch does: the
-# .kau and .cul files in each, with what each holds (an mtime is whole
+# .kau, .cul and .json files in each, with what each holds (an mtime is whole
 # seconds, too coarse for two saves in one), and a wait until one changes,
 # comes or goes.
 
-# The .kau and .cul files of `folders`, each with what it holds.
+# The .kau, .cul and .json files of `folders`, each with what it holds.
 fn files_in(folders) {
   folders.flat_map(fn (d) {
     let names = try {
@@ -12,7 +12,7 @@ fn files_in(folders) {
       []
     }
     names
-      .filter(|f| f.ends_with(".kau") || f.ends_with(".cul"))
+      .filter(|f| [".kau", ".cul", ".json"].contains(FS.extension(f)))
       .map(|f| FS.join(d, f))
   }).map(fn (f) {
     let held = try {
