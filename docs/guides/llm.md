@@ -5,8 +5,8 @@ Claude over its API, and one run in the culebra process itself from a GGUF
 file, with no server, no key and no network. Both go through the same `LLM`
 namespace, so a program written against one runs against the other by changing
 one line. The local half uses the `Llama` namespace, which the full downloads
-carry (on the GPU through Vulkan on Linux and Windows and through Metal on macOS) and
-the slim downloads do not. [`examples/llm-local/`](../../examples/llm-local/)
+carry (on the GPU through Vulkan on Linux and Windows and through Metal on
+macOS) and the slim downloads do not. [`examples/llm-local/`](../../examples/llm-local/)
 has five finished programs built from the pieces here.
 
 This guide covers *using* `LLM` and `Llama`. For the API reference see

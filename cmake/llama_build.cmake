@@ -50,10 +50,6 @@ elseif(_llama_metal)
   add_library(culebra_llama_gpu_metal STATIC ./src/runtime/llama_gpu_metal.cc)
   list(APPEND _llama_gpu_targets culebra_llama_gpu_metal)
 endif()
-set(_llama_gpu_lib culebra_llama_gpu_none)
-if(_llama_gpu)
-  set(_llama_gpu_lib culebra_llama_gpu_${_llama_gpu})
-endif()
 foreach(_t IN LISTS _llama_gpu_targets)
   target_compile_features(${_t} PRIVATE cxx_std_23)
   target_compile_options(${_t} PRIVATE -ffunction-sections -fdata-sections)
@@ -66,7 +62,7 @@ endforeach()
 # reach the same rows through bindings.h, so they link the statics as well.
 # Everything that compiles those rows waits for the headers llama.cpp installs.
 foreach(_t culebra smoke_suite)
-  target_link_libraries(${_t} ${_llama_a} ${_llama_gpu_lib} ${_llama_system_libs})
+  target_link_libraries(${_t} ${_llama_a} ${_llama_gpu_half} ${_llama_system_libs})
   if(TARGET llama_ext)
     add_dependencies(${_t} llama_ext)
   endif()
@@ -76,14 +72,14 @@ endforeach()
 # cannot be loaded is the wrapper's ModelLoadError.
 add_executable(llama_smoke test/llama_smoke.cc)
 target_compile_features(llama_smoke PRIVATE cxx_std_23)
-target_link_libraries(llama_smoke ${_llama_a} ${_llama_gpu_lib} ${_llama_system_libs})
+target_link_libraries(llama_smoke ${_llama_a} ${_llama_gpu_half} ${_llama_system_libs})
 add_test(NAME llama_smoke COMMAND llama_smoke)
 
 # The model handle of stdlib/llama.h. The part that needs a model runs when
 # CULEBRA_TEST_MODEL names a GGUF file.
 add_executable(llama_test test/llama_test.cc)
 target_compile_features(llama_test PRIVATE cxx_std_23)
-target_link_libraries(llama_test ${_llama_a} ${_llama_gpu_lib} ${_llama_system_libs})
+target_link_libraries(llama_test ${_llama_a} ${_llama_gpu_half} ${_llama_system_libs})
 add_test(NAME llama_test COMMAND llama_test)
 
 foreach(_t llama_smoke llama_test)

@@ -16,18 +16,14 @@ if [ ! -f "$build/libculebra_rt_llama.a" ]; then
   grep -i llama "$build/CMakeCache.txt" >&2 || true
   exit 1
 fi
-if [ "$(uname -s)" = Darwin ]; then
-  if [ ! -f "$build/libculebra_llama_gpu_metal.a" ]; then
-    echo "${prefix}Llama was built without its Metal backend" >&2
-    grep -i metal "$build/CMakeCache.txt" >&2 || true
-    exit 1
-  fi
-else
-  if [ ! -f "$build/libculebra_llama_gpu_vulkan.a" ]; then
-    echo "${prefix}Llama was built without its Vulkan backend" >&2
-    grep -i vulkan "$build/CMakeCache.txt" >&2 || true
-    exit 1
-  fi
+gpu=vulkan
+[ "$(uname -s)" = Darwin ] && gpu=metal
+if [ ! -f "$build/libculebra_llama_gpu_$gpu.a" ]; then
+  echo "${prefix}Llama was built without its $gpu backend" >&2
+  grep -i "$gpu" "$build/CMakeCache.txt" >&2 || true
+  exit 1
+fi
+if [ "$gpu" = vulkan ]; then
   bash "$(dirname "$0")/../../tools/checks/check_llama_vulkan_dynload.sh" "$build"
 fi
 echo "OK: Llama axis built"

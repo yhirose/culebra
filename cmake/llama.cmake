@@ -62,12 +62,19 @@ if(APPLE AND CULEBRA_LLAMA_METAL)
 endif()
 
 # The one GPU backend this build carries ("" for none): it names the backend's
-# archive and the GPU half (culebra_llama_gpu_<backend>, cmake/llama_build.cmake).
+# archive and the GPU half the Llama bodies call by name (cmake/llama_build.cmake);
+# _llama_gpu_libs is what the backend links against beyond the CPU's.
 set(_llama_gpu "")
+set(_llama_gpu_libs "")
 if(_llama_vulkan)
   set(_llama_gpu vulkan)
 elseif(_llama_metal)
   set(_llama_gpu metal)
+  set(_llama_gpu_libs "-framework Metal" "-framework MetalKit")
+endif()
+set(_llama_gpu_half culebra_llama_gpu_none)
+if(_llama_gpu)
+  set(_llama_gpu_half culebra_llama_gpu_${_llama_gpu})
 endif()
 
 # The configuration is part of the key: a flag change builds into a new
@@ -129,11 +136,11 @@ set(_llama_a
   "${_ggml}ggml-base.a")
 # For tools/checks/check_llama_vulkan_dynload.sh, which compares the forwarders
 # with what the archive names ("" without the backend).
-set(_llama_vulkan_a "")
 if(_llama_vulkan)
-  set(_llama_vulkan_a "${_llama_gpu_a}")
+  set(CULEBRA_LLAMA_VULKAN_ARCHIVE "${_llama_gpu_a}" CACHE INTERNAL "")
+else()
+  set(CULEBRA_LLAMA_VULKAN_ARCHIVE "" CACHE INTERNAL "")
 endif()
-set(CULEBRA_LLAMA_VULKAN_ARCHIVE "${_llama_vulkan_a}" CACHE INTERNAL "")
 set(_llama_system_libs "")
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   list(APPEND _llama_system_libs Threads::Threads ${CMAKE_DL_LIBS})
@@ -141,12 +148,7 @@ elseif(APPLE)
   # The CPU backend's matrix routines.
   list(APPEND _llama_system_libs "-framework Accelerate" "-framework Foundation")
 endif()
-# What the Metal backend links against (ggml-metal's own CMakeLists).
-set(_llama_metal_frameworks "")
-if(_llama_metal)
-  set(_llama_metal_frameworks "-framework Metal" "-framework MetalKit")
-  list(APPEND _llama_system_libs ${_llama_metal_frameworks})
-endif()
+list(APPEND _llama_system_libs ${_llama_gpu_libs})
 
 # What `culebra build` appends to the link of a program that names Llama: the
 # statics by embedded name (@libllama.a@, see _rt_embed_extern in
@@ -157,9 +159,9 @@ endif()
 # name (cmake/llama_build.cmake builds these archives; the driver embeds them).
 set(_llama_gpu_archives culebra_llama_gpu_none)
 if(_llama_gpu)
-  list(APPEND _llama_gpu_archives culebra_llama_gpu_${_llama_gpu})
+  list(APPEND _llama_gpu_archives ${_llama_gpu_half})
 endif()
-function(_llama_fragment out archives gpu_half frameworks)
+function(_llama_fragment out archives gpu_half gpu_libs)
   set(_f "")
   foreach(_a IN LISTS archives)
     cmake_path(GET _a FILENAME _a_name)
@@ -171,16 +173,15 @@ function(_llama_fragment out archives gpu_half frameworks)
   elseif(APPLE)
     string(APPEND _f " -framework Accelerate -framework Foundation")
   endif()
-  foreach(_fw IN LISTS frameworks)
-    string(APPEND _f " ${_fw}")
+  foreach(_l IN LISTS gpu_libs)
+    string(APPEND _f " ${_l}")
   endforeach()
   set(${out} "${_f}" PARENT_SCOPE)
 endfunction()
 _llama_fragment(_llama_cpu_link "${_llama_aot_a}" culebra_llama_gpu_none "")
 set(_llama_link "${_llama_cpu_link}")
 if(_llama_gpu)
-  _llama_fragment(_llama_link "${_llama_a}" culebra_llama_gpu_${_llama_gpu}
-                  "${_llama_metal_frameworks}")
+  _llama_fragment(_llama_link "${_llama_a}" ${_llama_gpu_half} "${_llama_gpu_libs}")
 endif()
 
 # Every translation unit that reaches stdlib/bindings.h compiles the Llama rows

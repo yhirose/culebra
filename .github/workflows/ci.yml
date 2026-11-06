@@ -467,12 +467,8 @@ jobs:
           restore-keys: |
             linux-llama-ccache-
 
-      # Pinned by hash: a model file is code that is run on this machine.
       - name: Fetch the test model
-        run: |
-          curl -fsSL --retry 5 --retry-delay 5 -o "$CULEBRA_TEST_MODEL" \
-            https://huggingface.co/ggml-org/models/resolve/main/tinyllamas/stories260K.gguf
-          echo "270cba1bd5109f42d03350f60406024560464db173c0e387d91f0426d3bd256d  $CULEBRA_TEST_MODEL" | sha256sum -c -
+        run: misc/aot_axes/fetch_llama_test_model.sh
 
       # ON, not AUTO: a runner that lost the tools fails here instead of
       # building, and passing, without the backend.
@@ -1027,10 +1023,7 @@ jobs:
       # Llama with the Metal backend: the only macOS lane that builds it. Not
       # pinned to a GPU reason: the runner may or may not have a GPU Metal can use.
       - name: Fetch the Llama test model
-        run: |
-          curl -fsSL --retry 5 --retry-delay 5 -o "$CULEBRA_TEST_MODEL" \
-            https://huggingface.co/ggml-org/models/resolve/main/tinyllamas/stories260K.gguf
-          echo "270cba1bd5109f42d03350f60406024560464db173c0e387d91f0426d3bd256d  $CULEBRA_TEST_MODEL" | shasum -a 256 -c -
+        run: misc/aot_axes/fetch_llama_test_model.sh
       - name: Test — Llama (tests/llama on vm / JIT, an AOT program)
         run: |
           ./build/culebra --vm tests/llama/test_llama.cul
@@ -1881,12 +1874,8 @@ jobs:
       - name: Verify Llama and its Vulkan backend are in this build
         run: misc/aot_axes/verify_llama_axis.sh build-win-aot
 
-      # Pinned by hash: a model file is code that is run on this machine.
       - name: Fetch the Llama test model
-        run: |
-          curl -fsSL --retry 5 --retry-delay 5 -o "$CULEBRA_TEST_MODEL" \
-            https://huggingface.co/ggml-org/models/resolve/main/tinyllamas/stories260K.gguf
-          echo "270cba1bd5109f42d03350f60406024560464db173c0e387d91f0426d3bd256d  $CULEBRA_TEST_MODEL" | sha256sum -c -
+        run: misc/aot_axes/fetch_llama_test_model.sh
       - name: Test — Llama (ctest, tests/llama on vm / JIT, an AOT program)
         env:
           # No Vulkan driver is listed, so a model asked for a GPU says why it got none.
