@@ -10,6 +10,10 @@ if(NOT EXISTS "${_llama_install}/lib/libllama.a")
     URL_HASH "SHA256=${CULEBRA_LLAMA_CPP_SHA256}"
     DOWNLOAD_DIR "${_llama_root}/downloads"
     DOWNLOAD_NAME "llama.cpp-${CULEBRA_LLAMA_CPP_VERSION}.tar.gz"
+    # Sources stamped at extraction: with the archive's own times, a version
+    # bump in an existing build dir kept the previous release's objects and
+    # linked them.
+    DOWNLOAD_EXTRACT_TIMESTAMP FALSE
     PREFIX "${CMAKE_CURRENT_BINARY_DIR}/llama_ext_build"
     CMAKE_ARGS
       ${_llama_cmake_args}
