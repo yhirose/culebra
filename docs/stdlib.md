@@ -2461,15 +2461,15 @@ spawned, not just the direct child. A descendant that starts its own group
 or job (a daemonizing server, for instance) opts itself back out and has to
 be reached another way.
 
-### `Proc.run(cmd: Array<String>, cwd=nil, env=nil, stdin="", check=false, timeout=0, share=nil, inherit_env=true) -> Object`
+### `Proc.run(cmd: Array<String>, cwd=nil, env=nil, input="", check=false, timeout=0, share=nil, inherit_env=true, stdin="pipe", stdout="pipe", stderr="pipe") -> Object`
 
 Runs `cmd` to completion and returns a result Object:
 
 | field | type | meaning |
 |---|---|---|
 | `code` | `Long` | exit status on normal exit; `-1` when killed by a signal |
-| `stdout` | `String` | everything the command wrote to stdout (captured whole) |
-| `stderr` | `String` | everything it wrote to stderr |
+| `stdout` | `String` | everything the command wrote to stdout (captured whole); `""` unless `stdout` is `"pipe"` |
+| `stderr` | `String` | everything it wrote to stderr; `""` unless `stderr` is `"pipe"` |
 | `ok` | `Bool` | `true` iff `code == 0` and `signal == nil` |
 | `signal` | `String?` | signal name (`"SIGTERM"`, `"SIGKILL"`, …) if killed, else `nil` |
 | `error` | `String?` | spawn-failure message; `nil` whenever the command actually ran. Only `Proc.all` sets this (its allSettled errors) — for `Proc.run` it is always `nil`, since a spawn failure throws instead. |
@@ -2496,8 +2496,26 @@ Keyword arguments:
   empties, and together they build one exact environment. Buffers passed
   with `share` travel as environment variables of their own and reach the
   child either way.
-- `stdin: String` — bytes written to the child's standard input, which
+- `input: String` — bytes written to the child's standard input, which
   is then closed (default: empty).
+- `stdin`, `stdout`, `stderr: String` — where each of the child's
+  standard streams goes (default: `"pipe"` for all three):
+  - `"pipe"`: a pipe to this program. stdin is fed `input`; what the child
+    writes to stdout or stderr is kept for the result.
+  - `"inherit"`: this program's own stream, so the child reads the same
+    terminal or writes to it as it runs, in order with what this program
+    wrote before. The result's `stdout` or `stderr` is then `""`, and with
+    `check: true` the error has no stderr to quote.
+  - `"null"`: nothing; the child reads an empty stdin, and what it writes
+    is dropped.
+
+  Any other word throws `ValueError`, and so does `input` with a `stdin`
+  other than `"pipe"`. A child that inherits any of the three stays in this
+  program's process group, since one in a group of its own is stopped when
+  it reads the terminal or sets its modes (a pager, a password prompt). So
+  Ctrl+C reaches it directly, and a `timeout` stops it alone, not the
+  processes it started; the call still waits for any of those that hold a
+  pipe of its own.
 - `check: Bool` — when `true`, a non-zero exit, signal death, or timeout
   throws `ProcessError` instead of returning a `{ok: false}` result (default: `false`).
 - `timeout: Long` — milliseconds; if the command runs longer it is killed
@@ -2505,8 +2523,7 @@ Keyword arguments:
   `ok: false` and `timed_out: true` (default: `0` = no limit). The whole
   process tree is killed — the command runs in its own process group
   (POSIX) or job object (Windows), and any descendant that hasn't broken
-  out of it (by starting its own group/job) dies too. A process that closes
-  stdout/stderr but keeps running may not be reached by the timeout.
+  out of it (by starting its own group/job) dies too.
 
 A **non-zero exit** or **signal death** is a normal result, not an error —
 branch on `ok` / `code` / `signal`. Only a **spawn failure** (e.g. the
@@ -2524,8 +2541,11 @@ if r.ok {
 }
 
 # Feed stdin and read the transformed output.
-let up = Proc.run(["tr", "a-z", "A-Z"], stdin: "hello\n")
+let up = Proc.run(["tr", "a-z", "A-Z"], input: "hello\n")
 assert_eq(up.stdout, "HELLO\n")
+
+# Show a long build's progress as it runs, and keep only whether it passed.
+let build = Proc.run(["make", "-j8"], stdout: "inherit", stderr: "inherit")
 
 # Run in a directory with an extra env var; throw on failure.
 Proc.run(
@@ -2536,9 +2556,9 @@ Proc.run(
 )
 ```
 
-Output is buffered in full, so a command that emits gigabytes will use
-that much memory. stdout and stderr are drained concurrently, so a
-command that fills both will not deadlock.
+Output kept for the result is buffered in full, so a command that emits
+gigabytes to a pipe will use that much memory. stdout and stderr are drained
+concurrently, so a command that fills both will not deadlock.
 
 `share: {name: buf}` hands one or more `SharedBuffer.shared(...)` buffers to the
 child process (which re-attaches each with `SharedBuffer.receive(name, Class)`).
@@ -2608,7 +2628,7 @@ let fastest = Proc.race([
 IO.print(fastest.stdout)
 ```
 
-### `Proc.spawn(cmd: Array<String>, cwd=nil, env=nil, stdin="", share=nil, inherit_env=true) -> handle`
+### `Proc.spawn(cmd: Array<String>, cwd=nil, env=nil, input="", share=nil, inherit_env=true, stdin="pipe", stdout="pipe", stderr="pipe") -> handle`
 
 Starts a command and returns immediately with a **live handle**, without
 waiting for it. The handle has three methods:
@@ -2622,8 +2642,9 @@ waiting for it. The handle has three methods:
 `wait()` / `poll()` are idempotent — once the child has been reaped, both
 return the same cached result Object (the usual `{code, stdout, stderr, ok,
 signal, error, timed_out}`). A spawn failure throws `ProcessError`, like
-`Proc.run`, whose `cwd` / `env` / `stdin` / `share` / `inherit_env` mean the
-same here. A handle that is dropped without ever being waited on is reaped by
+`Proc.run`, whose `cwd` / `env` / `input` / `share` / `inherit_env` and
+`stdin` / `stdout` / `stderr` mean the same here. A handle that is dropped
+without ever being waited on is reaped by
 the GC (the child is `SIGKILL`ed), so it won't linger as a zombie — but
 explicitly `wait()`ing or `kill()`ing is clearer. As with `Proc.run`'s
 `timeout:`, `kill()` (and the GC's own `SIGKILL`) reaches the whole process
@@ -2644,7 +2665,7 @@ while job.poll() == nil {
 }
 ```
 
-`stdin` is fed once at spawn time and then closed. Incremental streaming I/O
+`input` is fed once at spawn time and then closed. Incremental streaming I/O
 and pipelines (`a | b`) are planned.
 
 ---

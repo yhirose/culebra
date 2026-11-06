@@ -186,7 +186,9 @@ vm_cases 191
 # 37 since kauai_cli_test (the Kauai command line gives `culebra play`'s
 # streams, statuses and WAV bytes; its AOT build runs in the aot lane).
 # 38 since midi_test (MIDI input end to end through a virtual source, macOS).
-ctest.entries 38
+# 39 since proc_stdio_test (a child Proc.run lets write to and read the
+# program's own streams, seen from outside, on each engine and AOT).
+ctest.entries 39
 
 # ```culebra blocks under docs/ — `just doctest` runs the runnable ones on both
 # engines, and the JIT lane costs one LLVM module per block.

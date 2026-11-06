@@ -22,7 +22,7 @@ assert_eq(f.code, 1)
 assert_eq(f.signal, nil)
 
 // --- stdin is fed to the child and then closed ---
-let c = Proc.run(["cat"], stdin: "abc\ndef\n")
+let c = Proc.run(["cat"], input: "abc\ndef\n")
 assert_eq(c.stdout, "abc\ndef\n")
 assert_true(c.ok)
 
@@ -282,7 +282,7 @@ assert_false(FS.exists(hk_marker))
 FS.remove(hk_scratch, recursive: true)
 
 // stdin is fed at spawn time.
-let pipe = Proc.spawn(["cat"], stdin: "fed\n")
+let pipe = Proc.spawn(["cat"], input: "fed\n")
 assert_eq(pipe.wait().stdout, "fed\n")
 
 // A spawn failure throws (like Proc.run).
@@ -297,5 +297,57 @@ fn spawn_and_drop() {
 for i in range(10) {
   spawn_and_drop()
 }
+
+// --- stdin / stdout / stderr: where each stream goes ---
+// "null": the child reads nothing, and what it writes is dropped.
+let quiet = Proc.run(["sh", "-c", "cat; echo out; echo err >&2"],
+                     stdin: "null", stdout: "null", stderr: "null")
+assert_true(quiet.ok)
+assert_eq([quiet.stdout, quiet.stderr], ["", ""])
+// One stream dropped, the other still kept for the result.
+let half = Proc.run(["sh", "-c", "echo out; echo err >&2"], stderr: "null")
+assert_eq([half.stdout, half.stderr], ["out\n", ""])
+// A child with no pipe at all is waited on to its exit: its code and its
+// timeout are as a piped child's.
+assert_eq(Proc.run(["sh", "-c", "exit 3"], stdin: "null", stdout: "null",
+                   stderr: "null").code, 3)
+let slow = Proc.run(["sleep", "5"], stdin: "null", stdout: "null",
+                    stderr: "null", timeout: 100)
+assert_true(slow.timed_out)
+// The same for a live handle.
+let live = Proc.spawn(["sh", "-c", "echo out; exit 4"], stdout: "null")
+let done = live.wait()
+assert_eq([done.code, done.stdout], [4, ""])
+// A quick child with no pipe is reaped as it exits, not on a later tick: 20
+// of them take well under the 2 s a 100 ms wait each would.
+let started = Time.monotonic()
+for i in range(20) {
+  Proc.run(["true"], stdin: "null", stdout: "null", stderr: "null")
+}
+assert_true(Time.monotonic() - started < 1.5)
+// Proc.all's timeout reaches a child that closed its output and ran on.
+let closed = Proc.all([["sh", "-c", "exec >&- 2>&-; sleep 3"]], timeout: 300)
+assert_true(closed[0].timed_out)
+
+// Any other word is refused; on stdin the message names input:, where the
+// text a child reads goes.
+let refused = |f| try {
+  f()
+  nil
+} catch e: ValueError {
+  e.message
+}
+assert_eq(
+  refused(|| Proc.run(["cat"], stdin: "abc")),
+  "Proc.run: stdin is \"pipe\", \"inherit\" or \"null\", not \"abc\" (the text a child reads is input:)",
+)
+assert_eq(
+  refused(|| Proc.spawn(["cat"], stdout: "capture")),
+  "Proc.spawn: stdout is \"pipe\", \"inherit\" or \"null\", not \"capture\"",
+)
+assert_eq(
+  refused(|| Proc.run(["cat"], input: "abc", stdin: "null")),
+  "Proc.run: input is read through stdin \"pipe\", not \"null\"",
+)
 
 IO.inspect("test_proc OK")

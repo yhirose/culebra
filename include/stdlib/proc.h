@@ -7,9 +7,10 @@
 // representation. Keeping this header value-neutral lets the binding layer and
 // stdlib_rt.h include it without pulling each other in.
 //
-//   run_command — one command, blocking. Captures stdout/stderr without
-//                 deadlocking (poll-multiplexed drain), optionally feeds stdin,
-//                 reports signal death distinctly from a normal exit code.
+//   run_command — one command, blocking. Each standard stream is piped
+//                 (stdout/stderr captured without deadlocking, stdin fed),
+//                 inherited or null, per Stdio; reports signal death
+//                 distinctly from a normal exit code.
 //   run_all     — N commands, <= limit concurrent, allSettled, input order.
 //   run_race    — N commands, first to finish wins; the rest are killed.
 //
@@ -28,6 +29,8 @@
 #include <chrono>
 #include <csignal>
 #include <cstdint>
+#include <cstdio>
+#include <iostream>
 #include <string>
 #include <system_error>
 #include <utility>
@@ -99,6 +102,29 @@ struct EnvSpec {
   // Nothing to build when the parent's own block already is the answer.
   bool is_default() const { return inherit && vars.empty(); }
 };
+
+// Where one of a child's standard streams goes (Proc.run's and Proc.spawn's
+// stdin, stdout and stderr): a pipe to this program (stdin fed the input,
+// stdout and stderr kept for the result), this program's own stream, or
+// nothing (the null device).
+enum class Stream : uint8_t { Pipe, Inherit, Null };
+struct Stdio {
+  Stream in = Stream::Pipe, out = Stream::Pipe, err = Stream::Pipe;
+
+  bool inherits() const {
+    return in == Stream::Inherit || out == Stream::Inherit ||
+           err == Stream::Inherit;
+  }
+};
+
+// This program's buffered output, written out before a child that writes to
+// the same streams starts, so the two land in the order they were made.
+inline void flush_own_output() {
+  std::cout.flush();
+  std::cerr.flush();
+  std::fflush(stdout);
+  std::fflush(stderr);
+}
 
 #if !defined(_WIN32)
 inline std::string signal_name(int sig) {
@@ -350,6 +376,10 @@ struct Child {
   // True when `pid` leads its own process group (== pid), so a kill can
   // reach any grandchildren it spawned via killpg — see spawn_child.
   bool own_pgroup = false;
+  // Its wait status, once a non-blocking wait has reaped it (pid is then -1,
+  // so no signal can reach a pid the system has handed to another process).
+  bool reaped = false;
+  int status = 0;
 
   Child() = default;
   Child(Child&& o) noexcept { *this = std::move(o); }
@@ -362,6 +392,7 @@ struct Child {
       outcome = std::move(o.outcome); done = o.done;
       deadline_ms = o.deadline_ms; kill_deadline_ms = o.kill_deadline_ms;
       timed_out = o.timed_out; own_pgroup = o.own_pgroup;
+      reaped = o.reaped; status = o.status;
       o.pid = -1; o.in_fd = o.out_fd = o.err_fd = -1;
       o.in_open = o.out_open = o.err_open = false;
     }
@@ -381,15 +412,20 @@ struct Slots { int out = -1, err = -1, in = -1; };
 
 // Forks+execs one command. On any pre-exec failure returns a Child with
 // done=true and outcome.spawned=false (its slot still occupies index). On
-// success returns a live Child with out/err_open=true and in_open iff a
-// non-empty stdin payload was given.
+// success returns a live Child with out/err_open for the streams `io` pipes
+// and in_open iff it pipes stdin and a non-empty payload was given. A child
+// that shares one of this program's streams stays in its process group: one
+// in a group of its own is not the terminal's foreground job, and the system
+// stops it when it reads the terminal or sets its modes (a pager, a password
+// prompt). A kill or a timeout then reaches it alone, not what it started.
 inline Child spawn_child(
     const std::vector<std::string>& argv,
     const std::string* cwd,
     const EnvSpec* env,
     const std::string* stdin_data,
     size_t index,
-    const std::vector<int>* inherit_fds = nullptr) {
+    const std::vector<int>* inherit_fds = nullptr,
+    const Stdio& io = {}) {
   Child c;
   c.index = index;
   c.stdin_data = stdin_data;
@@ -432,6 +468,7 @@ inline Child spawn_child(
 
   int out_pipe[2] = {-1, -1}, err_pipe[2] = {-1, -1};
   int in_pipe[2] = {-1, -1}, exec_pipe[2] = {-1, -1};
+  int null_fd = -1;
   auto close_pair = [](int p[2]) {
     if (p[0] >= 0) close(p[0]);
     if (p[1] >= 0) close(p[1]);
@@ -444,12 +481,20 @@ inline Child spawn_child(
     close_pair(err_pipe);
     close_pair(in_pipe);
     close_pair(exec_pipe);
+    if (null_fd >= 0) close(null_fd);
     return std::move(c);
   };
-  if (pipe(out_pipe) != 0) return fail("pipe");
-  if (pipe(err_pipe) != 0) return fail("pipe");
-  if (pipe(in_pipe) != 0) return fail("pipe");
+  if (io.out == Stream::Pipe && pipe(out_pipe) != 0) return fail("pipe");
+  if (io.err == Stream::Pipe && pipe(err_pipe) != 0) return fail("pipe");
+  if (io.in == Stream::Pipe && pipe(in_pipe) != 0) return fail("pipe");
   if (pipe(exec_pipe) != 0) return fail("pipe");
+  if (io.in == Stream::Null || io.out == Stream::Null ||
+      io.err == Stream::Null) {
+    null_fd = open("/dev/null", O_RDWR | O_CLOEXEC);
+    if (null_fd < 0) return fail("open /dev/null");
+  }
+  const bool own_group = !io.inherits();
+  if (io.inherits()) flush_own_output();
 
   // exec_pipe carries the child's errno to the parent on exec/chdir failure;
   // CLOEXEC closes it automatically on a successful exec (parent sees EOF).
@@ -473,10 +518,15 @@ inline Child spawn_child(
     // grandchildren it spawns via killpg — the parent makes the matching call
     // below too (setpgid is async-signal-safe either side of the race; the
     // parent's return value is the one spawn_child trusts, see below).
-    setpgid(0, 0);
-    dup2(in_pipe[0], STDIN_FILENO);
-    dup2(out_pipe[1], STDOUT_FILENO);
-    dup2(err_pipe[1], STDERR_FILENO);
+    if (own_group) setpgid(0, 0);
+    // Each stream its pipe end, the null device, or (inherited) left as is.
+    auto place = [&](Stream how, int pipe_end, int target) {
+      if (how == Stream::Pipe) dup2(pipe_end, target);
+      else if (how == Stream::Null) dup2(null_fd, target);
+    };
+    place(io.in, in_pipe[0], STDIN_FILENO);
+    place(io.out, out_pipe[1], STDOUT_FILENO);
+    place(io.err, err_pipe[1], STDERR_FILENO);
     // Closes the pipe fds above (dup2 already gave the child its own copy at
     // 0/1/2, so the originals are unlisted) and anything unrelated the process
     // had open — see close_unlisted_fds.
@@ -513,10 +563,11 @@ inline Child spawn_child(
   // anything else (EPERM from a sandbox that forbids process groups, ESRCH
   // because the child already died) falls back to signalling `pid` alone,
   // the pre-existing behavior, rather than trust a pgid that may not exist.
-  c.own_pgroup = (setpgid(pid, pid) == 0) || errno == EACCES;
-  close(in_pipe[0]);
-  close(out_pipe[1]);
-  close(err_pipe[1]);
+  c.own_pgroup = own_group && ((setpgid(pid, pid) == 0) || errno == EACCES);
+  if (in_pipe[0] >= 0) close(in_pipe[0]);
+  if (out_pipe[1] >= 0) close(out_pipe[1]);
+  if (err_pipe[1] >= 0) close(err_pipe[1]);
+  if (null_fd >= 0) close(null_fd);
   close(exec_pipe[1]);
 
   int child_errno = 0;
@@ -526,9 +577,9 @@ inline Child spawn_child(
   } while (er < 0 && errno == EINTR);
   close(exec_pipe[0]);
   if (er == static_cast<ssize_t>(sizeof(child_errno))) {
-    close(in_pipe[1]);
-    close(out_pipe[0]);
-    close(err_pipe[0]);
+    if (in_pipe[1] >= 0) close(in_pipe[1]);
+    if (out_pipe[0] >= 0) close(out_pipe[0]);
+    if (err_pipe[0] >= 0) close(err_pipe[0]);
     int st = 0;
     while (waitpid(pid, &st, 0) < 0 && errno == EINTR) {}
     c.pid = -1;
@@ -541,17 +592,17 @@ inline Child spawn_child(
   // Success: retain the parent ends. CLOEXEC so a later fork (sibling child)
   // does NOT inherit them — otherwise the sibling holds this child's pipe read
   // ends open and this child's EOF never arrives (multi-child deadlock).
-  c.out_fd = out_pipe[0];
-  c.err_fd = err_pipe[0];
-  c.in_fd = in_pipe[1];
-  c.out_open = c.err_open = c.in_open = true;
-  fcntl(c.out_fd, F_SETFD, FD_CLOEXEC);
-  fcntl(c.err_fd, F_SETFD, FD_CLOEXEC);
-  fcntl(c.in_fd, F_SETFD, FD_CLOEXEC);
-  set_nonblocking(c.out_fd);
-  set_nonblocking(c.err_fd);
-  set_nonblocking(c.in_fd);
-  if (!stdin_data || stdin_data->empty()) {
+  auto keep = [](int fd, int& slot, bool& open_flag) {
+    slot = fd;
+    open_flag = fd >= 0;
+    if (fd < 0) return;
+    fcntl(fd, F_SETFD, FD_CLOEXEC);
+    set_nonblocking(fd);
+  };
+  keep(out_pipe[0], c.out_fd, c.out_open);
+  keep(err_pipe[0], c.err_fd, c.err_open);
+  keep(in_pipe[1], c.in_fd, c.in_open);
+  if (c.in_open && (!stdin_data || stdin_data->empty())) {
     close(c.in_fd);
     c.in_fd = -1;
     c.in_open = false;
@@ -683,14 +734,17 @@ inline int deadline_poll_timeout(std::vector<Child>& running) {
   return (next < 0) ? -1 : static_cast<int>(next > now ? next - now : 0);
 }
 
-// waitpid the child (EINTR-safe), decode status into outcome, close stray fds.
-// Call only once both pipes are EOF. Returns the filled RunOutcome.
+// waitpid the child (EINTR-safe) unless try_reap_child already has, decode
+// status into outcome, close stray fds. Call only once its pipes are EOF.
+// Returns the filled RunOutcome.
 inline RunOutcome reap_child(Child& c) {
   if (c.in_fd >= 0)  { close(c.in_fd);  c.in_fd = -1; }
   if (c.out_fd >= 0) { close(c.out_fd); c.out_fd = -1; }
   if (c.err_fd >= 0) { close(c.err_fd); c.err_fd = -1; }
-  int status = 0;
-  while (waitpid(c.pid, &status, 0) < 0 && errno == EINTR) {}
+  int status = c.status;
+  if (!c.reaped) {
+    while (waitpid(c.pid, &status, 0) < 0 && errno == EINTR) {}
+  }
   c.pid = -1;
   ProcResult r = decode_result(status, std::move(c.out), std::move(c.err));
   r.timed_out = c.timed_out;
@@ -698,6 +752,71 @@ inline RunOutcome reap_child(Child& c) {
   c.outcome.result = std::move(r);
   c.done = true;
   return std::move(c.outcome);
+}
+
+// Non-blocking: returns true and fills `status` if the child has exited (and
+// reaps it); false if it is still running.
+inline bool try_reap(int64_t pid, int& status) {
+  pid_t r;
+  do {
+    r = waitpid(static_cast<pid_t>(pid), &status, WNOHANG);
+  } while (r < 0 && errno == EINTR);
+  return r == static_cast<pid_t>(pid);
+}
+
+// Reaps `c` if it has exited, without waiting: true once it has (its status
+// kept for reap_child, its pid retired).
+inline bool try_reap_child(Child& c) {
+  if (c.reaped) return true;
+  if (!try_reap(c.pid, c.status)) return false;
+  c.reaped = true;
+  c.pid = -1;
+  return true;
+}
+
+// Whether `c` is done: its pipes at EOF (or never piped) and the child reaped.
+inline bool finished(const Child& c) {
+  return !c.out_open && !c.err_open && !c.in_open && c.reaped;
+}
+
+// One step of waiting on `running`: drains the pipes still open, and reaps a
+// child whose pipes are all closed once it has exited, which a child with no
+// pipe (its streams inherited or null) is waited on for alone. Sleeps at most
+// `pto` ms, and while a child waits only to be reaped at most `nap`, which
+// doubles from 1 ms on each step that finds one waiting: a quick child is not
+// kept a whole tick, and a long one is not polled hard. False on a fatal
+// poll() error (the caller stops, and reap_child's blocking wait takes over).
+inline bool wait_step(std::vector<Child>& running, char* buf, size_t buflen,
+                      int pto, int& nap) {
+  auto pipes_open = [](const Child& c) {
+    return c.out_open || c.err_open || c.in_open;
+  };
+  bool reaping = std::any_of(running.begin(), running.end(), [&](const Child& c) {
+    return !pipes_open(c) && !c.reaped;
+  });
+  int wait = reaping ? std::min(nap, pto) : pto;
+  if (std::any_of(running.begin(), running.end(), pipes_open)) {
+    if (!poll_step(running, buf, buflen, wait)) return false;
+  } else {
+    poll(nullptr, 0, wait);
+  }
+  for (auto& c : running) {
+    if (!pipes_open(c)) try_reap_child(c);
+  }
+  nap = reaping ? std::min(nap * 2, kInterruptPollMs) : 1;
+  return true;
+}
+
+// Runs running[0], one child, to its end (see wait_step). Wakes at least
+// every kInterruptPollMs to honor a pending Ctrl+C or cancel and to enforce
+// its deadline.
+inline void run_to_exit(std::vector<Child>& running, char* buf, size_t buflen) {
+  int nap = 1;
+  while (!finished(running[0])) {
+    if (interrupt_pending()) throw_if_interrupted();  // the caller's killer reaps
+    int pto = clamp_interrupt_timeout(deadline_poll_timeout(running));
+    if (!wait_step(running, buf, buflen, pto, nap)) return;
+  }
 }
 
 // SIGKILL every survivor, then reap them all. Two passes so they die in
@@ -745,21 +864,25 @@ struct ScopeKiller {
 //                    parent's unchanged. Its vars land on the parent's
 //                    environment when EnvSpec::inherit (so PATH survives) and
 //                    on an empty one when it does not.
-//   stdin_data     : bytes written to the child's stdin, then closed.
+//   stdin_data     : bytes written to the child's stdin, then closed (when
+//                    `io` pipes it).
 //   timeout_ms     : kill (SIGTERM then SIGKILL) the child if it runs longer
 //                    than this many ms; 0 == no timeout. A timed-out result has
 //                    ok:false and timed_out:true.
+//   io             : where each of the child's standard streams goes; a stream
+//                    not piped leaves its part of the result empty.
 inline RunOutcome run_command(
     const std::vector<std::string>& argv,
     const std::string* cwd,
     const EnvSpec* env,
     const std::string& stdin_data,
     int64_t timeout_ms = 0,
-    const std::vector<int>* inherit_fds = nullptr) {
+    const std::vector<int>* inherit_fds = nullptr,
+    const Stdio& io = {}) {
   _detail::SigpipeGuard guard;
   const std::string* sp = stdin_data.empty() ? nullptr : &stdin_data;
   _detail::Child c =
-      _detail::spawn_child(argv, cwd, env, sp, 0, inherit_fds);
+      _detail::spawn_child(argv, cwd, env, sp, 0, inherit_fds, io);
   if (c.done) return std::move(c.outcome);
   if (timeout_ms > 0) c.deadline_ms = _detail::now_ms() + timeout_ms;
 
@@ -767,11 +890,7 @@ inline RunOutcome run_command(
   running.push_back(std::move(c));
   _detail::ScopeKiller killer(running);  // SIGKILL + reap the child if we throw.
   char buf[65536];
-  while (running[0].out_open || running[0].err_open || running[0].in_open) {
-    if (interrupt_pending()) throw_if_interrupted();  // killer reaps
-    int pto = _detail::clamp_interrupt_timeout(_detail::deadline_poll_timeout(running));
-    if (!_detail::poll_step(running, buf, sizeof(buf), pto)) break;
-  }
+  _detail::run_to_exit(running, buf, sizeof(buf));
   RunOutcome oc = _detail::reap_child(running[0]);
   killer.disarm();
   throw_if_interrupted();  // a Ctrl+C that landed as the child finished
@@ -820,15 +939,16 @@ inline std::vector<RunOutcome> run_all(
   sched.fill();
 
   char buf[65536];
+  int nap = 1;
   while (sched.finished < n && sched.failed_index < 0) {
     if (interrupt_pending()) throw_if_interrupted();  // killer reaps survivors
     int pto = _detail::clamp_interrupt_timeout(
         _detail::deadline_poll_timeout(sched.running));
-    if (!_detail::poll_step(sched.running, buf, sizeof(buf), pto)) break;
-    // Reap finished children (both pipes EOF), then backfill to keep <= limit.
+    if (!_detail::wait_step(sched.running, buf, sizeof(buf), pto, nap)) break;
+    // Take the finished children's outcomes, then backfill to keep <= limit.
     for (size_t k = 0; k < sched.running.size();) {
       _detail::Child& c = sched.running[k];
-      if (!c.out_open && !c.err_open && !c.in_open) {
+      if (_detail::finished(c)) {
         size_t idx = c.index;
         RunOutcome oc = _detail::reap_child(c);
         sched.running.erase(sched.running.begin() + k);
@@ -886,14 +1006,15 @@ inline std::pair<size_t, RunOutcome> run_race(
   }
 
   char buf[65536];
+  int nap = 1;
   while (winner == SIZE_MAX && !running.empty()) {
     if (interrupt_pending()) throw_if_interrupted();  // killer reaps survivors
-    if (!_detail::poll_step(running, buf, sizeof(buf),
-                            _detail::clamp_interrupt_timeout(-1)))
+    if (!_detail::wait_step(running, buf, sizeof(buf),
+                            _detail::clamp_interrupt_timeout(-1), nap))
       break;
     for (size_t k = 0; k < running.size(); k++) {
       _detail::Child& c = running[k];
-      if (!c.out_open && !c.err_open && !c.in_open) {
+      if (_detail::finished(c)) {
         winner = c.index;
         win_oc = _detail::reap_child(c);
         running.erase(running.begin() + k);
@@ -1009,10 +1130,12 @@ inline std::string build_env_block(const EnvSpec* spec) {
   return block;
 }
 
-// Low-level spawn: create the three redirected pipes, CreateProcess, close the
-// child's ends in the parent, and hand back the process handle + parent-side
-// read ends + stdin write end. Does NOT start reader threads or feed stdin — the
-// caller does that against a stable buffer address (blocking child vs live
+// Low-level spawn: give each standard stream the handle `io` asks for (a pipe,
+// an inheritable copy of this program's own, or the NUL device),
+// CreateProcess, close the child's ends in the parent, and hand back the
+// process handle + the parent-side read ends + stdin write end of the streams
+// piped (null for the others). Does NOT start reader threads or feed stdin —
+// the caller does that against a stable buffer address (blocking child vs live
 // registry entry). ok=false with err_no/err_what on any failure.
 struct SpawnHandles {
   HANDLE hProcess = nullptr, out_rd = nullptr, err_rd = nullptr, in_wr = nullptr;
@@ -1029,7 +1152,7 @@ struct SpawnHandles {
 };
 inline SpawnHandles spawn_process(
     const std::vector<std::string>& argv, const std::string* cwd,
-    const EnvSpec* env) {
+    const EnvSpec* env, const Stdio& io = {}) {
   SpawnHandles h;
   if (argv.empty()) { h.err_no = ERROR_INVALID_PARAMETER; h.err_what = "argv"; return h; }
 
@@ -1042,14 +1165,40 @@ inline SpawnHandles spawn_process(
     close_handle(err_wr); close_handle(in_rd); close_handle(in_wr);
     return h;
   };
-  if (!CreatePipe(&out_rd, &out_wr, &sa, 0)) return fail("pipe");
-  if (!CreatePipe(&err_rd, &err_wr, &sa, 0)) return fail("pipe");
-  if (!CreatePipe(&in_rd, &in_wr, &sa, 0)) return fail("pipe");
-  // The parent ends must not be inherited by the child — else the child keeps a
-  // copy open and the pipe never reports EOF to the reader.
-  SetHandleInformation(out_rd, HANDLE_FLAG_INHERIT, 0);
-  SetHandleInformation(err_rd, HANDLE_FLAG_INHERIT, 0);
-  SetHandleInformation(in_wr, HANDLE_FLAG_INHERIT, 0);
+  // The child's end of one stream: a pipe whose other end the parent keeps
+  // (not inherited — else the child holds a copy open and the reader never
+  // sees EOF), an inheritable copy of this program's own handle (the NUL
+  // device where it has none, as a program without a console does), or NUL.
+  auto child_end = [&](Stream how, DWORD std_id, bool child_reads,
+                       HANDLE& parent_end, HANDLE& child_end_out) -> bool {
+    if (how == Stream::Pipe) {
+      HANDLE rd = nullptr, wr = nullptr;
+      if (!CreatePipe(&rd, &wr, &sa, 0)) return false;
+      parent_end = child_reads ? wr : rd;
+      child_end_out = child_reads ? rd : wr;
+      SetHandleInformation(parent_end, HANDLE_FLAG_INHERIT, 0);
+      return true;
+    }
+    if (how == Stream::Inherit) {
+      HANDLE own = GetStdHandle(std_id);
+      if (own && own != INVALID_HANDLE_VALUE &&
+          DuplicateHandle(GetCurrentProcess(), own, GetCurrentProcess(),
+                          &child_end_out, 0, TRUE, DUPLICATE_SAME_ACCESS))
+        return true;
+    }
+    child_end_out = CreateFileA("NUL", GENERIC_READ | GENERIC_WRITE,
+                                FILE_SHARE_READ | FILE_SHARE_WRITE, &sa,
+                                OPEN_EXISTING, 0, nullptr);
+    if (child_end_out == INVALID_HANDLE_VALUE) {
+      child_end_out = nullptr;
+      return false;
+    }
+    return true;
+  };
+  if (!child_end(io.out, STD_OUTPUT_HANDLE, false, out_rd, out_wr)) return fail("pipe");
+  if (!child_end(io.err, STD_ERROR_HANDLE, false, err_rd, err_wr)) return fail("pipe");
+  if (!child_end(io.in, STD_INPUT_HANDLE, true, in_wr, in_rd)) return fail("pipe");
+  if (io.inherits()) flush_own_output();
 
   std::string cmdline_s = build_command_line(argv);
   std::vector<char> cmdline(cmdline_s.begin(), cmdline_s.end());
@@ -1089,8 +1238,12 @@ inline SpawnHandles spawn_process(
   // spawn a grandchild — before AssignProcessToJobObject below places it (and
   // so far only it) in the job. Assigning after an unsuspended CreateProcess
   // would race a fast-exiting or fast-forking child.
+  // A child that writes to or reads this program's own streams keeps its
+  // console (a console handle is of no use to a process without one); the
+  // others run without a window, as before.
+  DWORD window = io.inherits() ? 0 : CREATE_NO_WINDOW;
   BOOL ok = CreateProcessA(nullptr, cmdline.data(), nullptr, nullptr, TRUE,
-                           CREATE_NO_WINDOW | CREATE_SUSPENDED |
+                           window | CREATE_SUSPENDED |
                                EXTENDED_STARTUPINFO_PRESENT,
                            envblock.empty() ? nullptr : envblock.data(),
                            cwds.empty() ? nullptr : cwds.c_str(),
@@ -1192,19 +1345,19 @@ struct WinChild {
 inline WinChild spawn_child(
     const std::vector<std::string>& argv, const std::string* cwd,
     const EnvSpec* env,
-    const std::string* stdin_data, size_t index) {
+    const std::string* stdin_data, size_t index, const Stdio& io = {}) {
   WinChild c;
   c.index = index;
-  SpawnHandles h = spawn_process(argv, cwd, env);
+  SpawnHandles h = spawn_process(argv, cwd, env, io);
   if (!h.ok) {
     c.outcome.err_no = h.err_no; c.outcome.err_what = h.err_what; c.done = true;
     return c;
   }
   c.hProcess = h.hProcess; c.out_rd = h.out_rd; c.err_rd = h.err_rd;
   c.hJob = h.hJob;
-  c.out_th = std::thread(drain_pipe, h.out_rd, c.out.get());
-  c.err_th = std::thread(drain_pipe, h.err_rd, c.err.get());
-  feed_and_close_stdin(h.in_wr, stdin_data);
+  if (h.out_rd) c.out_th = std::thread(drain_pipe, h.out_rd, c.out.get());
+  if (h.err_rd) c.err_th = std::thread(drain_pipe, h.err_rd, c.err.get());
+  if (h.in_wr) feed_and_close_stdin(h.in_wr, stdin_data);
   return c;
 }
 
@@ -1309,9 +1462,9 @@ inline RunOutcome run_command(
     const std::vector<std::string>& argv, const std::string* cwd,
     const EnvSpec* env,
     const std::string& stdin_data, int64_t timeout_ms = 0,
-    const std::vector<int>* = nullptr) {
+    const std::vector<int>* = nullptr, const Stdio& io = {}) {
   const std::string* sp = stdin_data.empty() ? nullptr : &stdin_data;
-  _detail::WinChild c = _detail::spawn_child(argv, cwd, env, sp, 0);
+  _detail::WinChild c = _detail::spawn_child(argv, cwd, env, sp, 0, io);
   if (c.done) return std::move(c.outcome);
   if (timeout_ms > 0) c.deadline_ms = _detail::now_ms() + timeout_ms;
 
@@ -1434,17 +1587,19 @@ inline std::pair<size_t, RunOutcome> run_race(
 #if !defined(_WIN32)
 
 // Spawns a child without waiting: writes stdin_data then closes the child's
-// stdin, and returns the live pid + out/err fds (parent keeps them open). On a
-// spawn failure returns spawned=false with errno/step.
+// stdin, and returns the live pid + the out/err fds `io` pipes (parent keeps
+// them open; -1 for a stream not piped). On a spawn failure returns
+// spawned=false with errno/step.
 inline SpawnResult spawn_detached(
     const std::vector<std::string>& argv, const std::string* cwd,
     const EnvSpec* env,
     const std::string& stdin_data,
-    const std::vector<int>* inherit_fds = nullptr) {
+    const std::vector<int>* inherit_fds = nullptr,
+    const Stdio& io = {}) {
   _detail::SigpipeGuard guard;
   const std::string* sp = stdin_data.empty() ? nullptr : &stdin_data;
   _detail::Child c = _detail::spawn_child(argv, cwd, env, sp, 0,
-                                          inherit_fds);
+                                          inherit_fds, io);
   SpawnResult sr;
   if (c.done) {
     sr.err_no = c.outcome.err_no;
@@ -1487,15 +1642,7 @@ inline void kill_pid(int64_t pid, int sig, bool own_pgroup) {
   else kill(static_cast<pid_t>(pid), sig);
 }
 
-// Non-blocking: returns true and fills `status` if the child has exited (and
-// reaps it); false if it is still running.
-inline bool try_reap(int64_t pid, int& status) {
-  pid_t r;
-  do {
-    r = waitpid(static_cast<pid_t>(pid), &status, WNOHANG);
-  } while (r < 0 && errno == EINTR);
-  return r == static_cast<pid_t>(pid);
-}
+using _detail::try_reap;
 
 // Adopts pid + out/err fds into a Child to reuse the drain+reap machinery.
 inline _detail::Child _adopt(int64_t pid, int& out_fd, int& err_fd,
@@ -1524,12 +1671,7 @@ inline ProcResult wait_handle(int64_t pid, int& out_fd, int& err_fd,
   running.push_back(_adopt(pid, out_fd, err_fd, own_pgroup));
   _detail::ScopeKiller killer(running);
   char buf[65536];
-  while (running[0].out_open || running[0].err_open) {
-    if (interrupt_pending()) throw_if_interrupted();  // killer reaps
-    if (!_detail::poll_step(running, buf, sizeof(buf),
-                            _detail::clamp_interrupt_timeout(-1)))
-      break;
-  }
+  _detail::run_to_exit(running, buf, sizeof(buf));
   ProcResult r = std::move(_detail::reap_child(running[0]).result);
   killer.disarm();
   throw_if_interrupted();  // a Ctrl+C that landed as the child finished
@@ -1593,9 +1735,10 @@ inline void live_join_close(WinLive& lv) {
 inline SpawnResult spawn_detached(
     const std::vector<std::string>& argv, const std::string* cwd,
     const EnvSpec* env,
-    const std::string& stdin_data, const std::vector<int>* = nullptr) {
+    const std::string& stdin_data, const std::vector<int>* = nullptr,
+    const Stdio& io = {}) {
   SpawnResult sr;
-  _detail::SpawnHandles h = _detail::spawn_process(argv, cwd, env);
+  _detail::SpawnHandles h = _detail::spawn_process(argv, cwd, env, io);
   if (!h.ok) { sr.err_no = h.err_no; sr.err_what = h.err_what; return sr; }
   int64_t id;
   _detail::WinLive* lv;
@@ -1606,10 +1749,10 @@ inline SpawnResult spawn_detached(
   }
   lv->hProcess = h.hProcess; lv->out_rd = h.out_rd; lv->err_rd = h.err_rd;
   lv->hJob = h.hJob;
-  lv->out_th = std::thread(_detail::drain_pipe, h.out_rd, &lv->out);
-  lv->err_th = std::thread(_detail::drain_pipe, h.err_rd, &lv->err);
+  if (h.out_rd) lv->out_th = std::thread(_detail::drain_pipe, h.out_rd, &lv->out);
+  if (h.err_rd) lv->err_th = std::thread(_detail::drain_pipe, h.err_rd, &lv->err);
   const std::string* sp = stdin_data.empty() ? nullptr : &stdin_data;
-  _detail::feed_and_close_stdin(h.in_wr, sp);
+  if (h.in_wr) _detail::feed_and_close_stdin(h.in_wr, sp);
   sr.spawned = true;
   sr.pid = id;
   sr.out_fd = (int)id;  // drain_reaped keys off the fd; err_fd is unused.

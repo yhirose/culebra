@@ -87,7 +87,7 @@ fn text_symbol_sizes(nm_out) {
 # Demangle a batch of mangled C++ names via one c++filt invocation.
 fn demangle(names) {
   Proc
-    .run(["c++filt"], stdin: names.join("\n"))
+    .run(["c++filt"], input: names.join("\n"))
     .stdout
     .trim_end("\n")
     .split("\n")

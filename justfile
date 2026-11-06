@@ -1121,6 +1121,9 @@ _run-tests BACKEND:
         # The sweep above runs every binary with no arguments, so this is the
         # one place an AOT build is asked what it does with some.
         closes_ok sys_argv_test {{nice_cmd}} bash tests/sys_argv_test.sh "$BIN" --aot
+        # A child's "inherit" streams in a binary, as the executor and JIT
+        # lanes of the same script see them.
+        closes_ok proc_stdio_test {{nice_cmd}} bash tests/proc_stdio_test.sh "$BIN" --aot
         # The Kauai command line as an AOT binary (about a minute to build: the
         # instruments' recordings are embedded), against `culebra play`.
         {{nice_cmd}} bash tests/kauai_cli_test.sh "$BIN" --aot || exit 1

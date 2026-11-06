@@ -2395,15 +2395,15 @@ let r = try {
 新たに作る子孫（デーモン化するサーバなど）はそこから抜けるので、別の
 手段で届かせる必要があります。
 
-### `Proc.run(cmd: Array<String>, cwd=nil, env=nil, stdin="", check=false, timeout=0, share=nil, inherit_env=true) -> Object`
+### `Proc.run(cmd: Array<String>, cwd=nil, env=nil, input="", check=false, timeout=0, share=nil, inherit_env=true, stdin="pipe", stdout="pipe", stderr="pipe") -> Object`
 
 `cmd`を完了まで実行し、結果Objectを返します:
 
 | フィールド | 型 | 意味 |
 |---|---|---|
 | `code` | `Long` | 正常終了時の終了コード。シグナル死した場合は`-1` |
-| `stdout` | `String` | コマンドがstdoutに書いた全内容（一括取得） |
-| `stderr` | `String` | stderrに書いた全内容 |
+| `stdout` | `String` | コマンドがstdoutに書いた全内容（一括取得）。`stdout`が`"pipe"`でなければ`""` |
+| `stderr` | `String` | stderrに書いた全内容。`stderr`が`"pipe"`でなければ`""` |
 | `ok` | `Bool` | `code == 0`かつ`signal == nil`のとき`true` |
 | `signal` | `String?` | シグナル死した場合のシグナル名（`"SIGTERM"`等）、それ以外は`nil` |
 | `error` | `String?` | 起動失敗時のメッセージ。コマンドが実際に走った場合は常に`nil`。これを設定するのは`Proc.all`（allSettledのエラー表現）のみで、`Proc.run`では起動失敗はthrowされるため常に`nil`。 |
@@ -2428,16 +2428,31 @@ let r = try {
   2つは独立しています。`env`だけなら追加、`inherit_env: false`だけなら空、
   両方でちょうど1つの環境を組み立てます。`share`で渡したバッファはそれ自身が
   環境変数として運ばれるので、どちらの場合も子に届きます。
-- `stdin: String`: 子プロセスの標準入力に書き込むバイト列。書き込み後にクローズ
+- `input: String`: 子プロセスの標準入力に書き込むバイト列。書き込み後にクローズ
   されます（既定: 空）。
+- `stdin`、`stdout`、`stderr: String`: 子プロセスの標準入出力それぞれの行き先
+  （既定: 3つとも`"pipe"`）。
+  - `"pipe"`: このプログラムとのパイプ。stdinには`input`を渡し、stdoutと
+    stderrに書かれたものは結果に取っておきます。
+  - `"inherit"`: このプログラム自身のもの。子は同じ端末から読み、同じ端末へ
+    実行中に書きます。このプログラムが先に書いたものとの順番も保たれます。
+    結果の`stdout`や`stderr`は`""`になり、`check: true`のエラーにも
+    stderrの内容は載りません。
+  - `"null"`: どこにもつながりません。子のstdinは空で、書いたものは捨てられます。
+
+  ほかの語は`ValueError`をthrowします。`stdin`が`"pipe"`でないのに`input`を
+  渡した場合も同じです。3つのどれかを引き継ぐ子は、このプログラムのプロセス
+  グループに入ります。自分専用のグループにいる子は、端末を読んだり端末の設定を
+  変えたりすると止められるためです（ページャやパスワードの入力など）。そのため
+  Ctrl+Cは子にも直接届き、`timeout`で止まるのは子だけで、子が起動したプロセスは
+  止まりません。そのプロセスが子のパイプを握っている間は、呼び出しも待ち続けます。
 - `check: Bool`: `true`のとき、非0終了・シグナル死・timeoutで`{ok: false}`を
   返す代わりに`ProcessError`をthrowします（既定: `false`）。
 - `timeout: Long`: ミリ秒。これを超えて走るとコマンドはkillされ（`SIGTERM` →
   短い猶予の後`SIGKILL`）、結果は`ok: false` / `timed_out: true`になります
   （既定: `0` = 無制限）。**プロセスツリー全体**がkillされます。コマンドは
   自分専用のプロセスグループ（POSIX）／ジョブオブジェクト（Windows）の中で
-  走るので、そこから抜けていない子孫も道連れになります。stdout/stderrを
-  早期に閉じて走り続けるプロセスにはtimeoutが届かないことがあります。
+  走るので、そこから抜けていない子孫も道連れになります。
 
 **非0終了**や**シグナル死**はエラーではなく通常の結果です。`ok` / `code` /
 `signal`で分岐してください。**起動失敗**（実行ファイルが存在しない等）や
@@ -2454,8 +2469,11 @@ if r.ok {
 }
 
 # 標準入力を渡して変換結果を読む。
-let up = Proc.run(["tr", "a-z", "A-Z"], stdin: "hello\n")
+let up = Proc.run(["tr", "a-z", "A-Z"], input: "hello\n")
 assert_eq(up.stdout, "HELLO\n")
+
+# 長いビルドの進み具合をその場で見せ、通ったかどうかだけを取っておく。
+let build = Proc.run(["make", "-j8"], stdout: "inherit", stderr: "inherit")
 
 # ディレクトリと環境変数を指定し、失敗時に throw。
 Proc.run(
@@ -2466,8 +2484,9 @@ Proc.run(
 )
 ```
 
-出力は全量バッファされるため、巨大な出力はそのぶんメモリを使います。stdoutと
-stderrは並行して読み出すので、両方を埋めるコマンドでもデッドロックしません。
+結果に取っておく出力は全量バッファされるため、パイプへの巨大な出力はそのぶん
+メモリを使います。stdoutとstderrは並行して読み出すので、両方を埋めるコマンドでも
+デッドロックしません。
 
 `share: {名前: buf}`は1つ以上の`SharedBuffer.shared(...)` bufferを子プロセス
 へ渡します（子は`SharedBuffer.receive(name, Class)`で再アタッチします）。子はculebra
@@ -2530,7 +2549,7 @@ let fastest = Proc.race([
 IO.print(fastest.stdout)
 ```
 
-### `Proc.spawn(cmd: Array<String>, cwd=nil, env=nil, stdin="", share=nil, inherit_env=true) -> handle`
+### `Proc.spawn(cmd: Array<String>, cwd=nil, env=nil, input="", share=nil, inherit_env=true, stdin="pipe", stdout="pipe", stderr="pipe") -> handle`
 
 コマンドを起動し、完了を待たずに即座に**ライブハンドル**を返します。ハンドルは
 3つのメソッドを持ちます:
@@ -2543,8 +2562,8 @@ IO.print(fastest.stdout)
 
 `wait()` / `poll()`は冪等で、子をreapした後はどちらも同じキャッシュ済み結果
 Object（通常の`{code, stdout, stderr, ok, signal, error, timed_out}`）を返します。
-起動失敗は`Proc.run`と同様`ProcessError`をthrowし、`cwd` / `env` / `stdin` /
-`share` / `inherit_env`の意味も`Proc.run`と同じです。一度もwaitされずに
+起動失敗は`Proc.run`と同様`ProcessError`をthrowし、`cwd` / `env` / `input` /
+`share` / `inherit_env`と`stdin` / `stdout` / `stderr`の意味も`Proc.run`と同じです。一度もwaitされずに
 捨てられたハンドルはGCがreapし（子を`SIGKILL`）、ゾンビとして残りません。ただし
 明示的に`wait()` / `kill()`する方が明快です。`Proc.run`の`timeout:`と同様、
 `kill()`（およびGC自身の`SIGKILL`）はプロセスツリー全体に届きます。詳細は
@@ -2565,7 +2584,7 @@ while job.poll() == nil {
 }
 ```
 
-`stdin`はspawn時に一度だけ渡されてクローズされます。逐次streaming I/Oと
+`input`はspawn時に一度だけ渡されてクローズされます。逐次streaming I/Oと
 パイプライン（`a | b`）は将来追加予定です。
 
 ---

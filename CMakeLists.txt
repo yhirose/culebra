@@ -2446,6 +2446,13 @@ add_test(NAME play_test
          COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/play_test.sh
                  $<TARGET_FILE:culebra>)
 
+# Proc.run's and Proc.spawn's "inherit" streams seen from outside the program:
+# the child writes to and reads its streams in order, on each engine and in a
+# binary `culebra build` makes.
+add_test(NAME proc_stdio_test
+         COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/proc_stdio_test.sh
+                 $<TARGET_FILE:culebra>)
+
 # The Kauai command line (kauai/cli/main.cul) against `culebra play`: the same
 # streams, statuses and WAV bytes, run as a script and, where this build can
 # make one, as the binary `culebra build` makes of it.

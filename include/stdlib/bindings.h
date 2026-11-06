@@ -1880,6 +1880,15 @@ class _JitKwargResolver {
     return true;
   }
 
+  // The stdin / stdout / stderr words of Proc.run and Proc.spawn into
+  // `words`, each left as it is ("pipe") when absent.
+  void take_stdio(std::string (&words)[3]) {
+    static constexpr std::string_view kNames[3] = {"stdin", "stdout", "stderr"};
+    for (int k = 0; k < 3; k++) {
+      if (auto v = take_string(kNames[k])) words[k] = std::move(*v);
+    }
+  }
+
   // Throw if any kwargs went unread — i.e. unknown to this built-in.
   void validate_consumed() {
     if (merged_.empty()) return;
@@ -2048,6 +2057,42 @@ inline std::vector<std::vector<std::string>> _culebra_proc_parse_commands(
   return commands;
 }
 
+// Where a child's standard stream goes, from the word Proc.run's and
+// Proc.spawn's stdin / stdout / stderr take: "pipe", "inherit" or "null".
+// Any other word raises; on stdin it says where the text a child reads goes
+// (stdin: took that text before it took a word).
+inline culebra::proc::Stream _culebra_proc_stream(
+    std::string_view word, std::string_view which, const char* ctx,
+    int64_t line, int64_t col) {
+  if (word == "pipe") return culebra::proc::Stream::Pipe;
+  if (word == "inherit") return culebra::proc::Stream::Inherit;
+  if (word == "null") return culebra::proc::Stream::Null;
+  throw culebra::CulebraError("ValueError",
+      culebra::format("{}: {} is \"pipe\", \"inherit\" or \"null\", not \"{}\"{}",
+                      ctx, which, word,
+                      which == "stdin" ? " (the text a child reads is input:)" : ""),
+      line, col);
+}
+
+// The three streams from their words (stdin, stdout, stderr), with `input`
+// held to them: a child reads it only through a stdin pipe, so input with
+// stdin "inherit" or "null" says two things.
+inline culebra::proc::Stdio _culebra_proc_stdio(
+    const std::string (&words)[3], const std::string& input, const char* ctx,
+    int64_t line, int64_t col) {
+  culebra::proc::Stdio io{
+      _culebra_proc_stream(words[0], "stdin", ctx, line, col),
+      _culebra_proc_stream(words[1], "stdout", ctx, line, col),
+      _culebra_proc_stream(words[2], "stderr", ctx, line, col)};
+  if (io.in != culebra::proc::Stream::Pipe && !input.empty()) {
+    throw culebra::CulebraError("ValueError",
+        culebra::format("{}: input is read through stdin \"pipe\", not \"{}\"",
+                        ctx, words[0]),
+        line, col);
+  }
+  return io;
+}
+
 // Shared core for both Proc.run JIT paths (positional trampoline + kwarg
 // adapter). `cmd` must be a TAG_ARRAY of TAG_STRING; cwd/env_over may be
 // null. A spawn failure (or `check` on a non-ok result) throws ProcessError;
@@ -2056,9 +2101,10 @@ inline std::vector<std::vector<std::string>> _culebra_proc_parse_commands(
 inline JitValue _culebra_proc_run_impl(
     int8_t cmd_tag, int64_t cmd_data, const std::string* cwd,
     const culebra::proc::EnvSpec* env_over,
-    const std::string& stdin_data, bool check, int64_t timeout,
+    const std::string& input, bool check, int64_t timeout,
     int64_t line, int64_t col,
-    const std::vector<int>* inherit_fds = nullptr) {
+    const std::vector<int>* inherit_fds = nullptr,
+    const culebra::proc::Stdio& io = {}) {
   if (cmd_tag != TAG_ARRAY) {
     throw culebra::CulebraError("TypeError",
         "Proc.run: cmd must be Array", line, col);
@@ -2079,8 +2125,9 @@ inline JitValue _culebra_proc_run_impl(
         "Proc.run: empty command", line, col);
   }
 
-  auto oc = culebra::proc::run_command(argv, cwd, env_over, stdin_data,
-                                       timeout > 0 ? timeout : 0, inherit_fds);
+  auto oc = culebra::proc::run_command(argv, cwd, env_over, input,
+                                       timeout > 0 ? timeout : 0, inherit_fds,
+                                       io);
   if (!oc.spawned) {
     throw culebra::CulebraError("ProcessError",
         culebra::format("Proc.run: {} failed: {}.", oc.err_what,
@@ -2113,9 +2160,10 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_proc_run_kw(
     int64_t line, int64_t col) {
   _JitKwargResolver kw(n_kw, kw_keys, kw_vals, n_splat, splat_objs, line, col,
                        "Proc.run");
-  // Resolve in param-declaration order (cwd, env, stdin, check, timeout,
-  // share, inherit_env) so that when several kwargs are ill-typed the *first*
-  // reported error is the one the canonical binder reports.
+  // Resolve in param-declaration order (cwd, env, input, check, timeout,
+  // share, inherit_env, stdin, stdout, stderr) so that when several kwargs
+  // are ill-typed the *first* reported error is the one the canonical binder
+  // reports.
   std::string cwd_str;
   const std::string* cwd_ptr = nullptr;
   if (auto v = kw.take_string_or_nil("cwd")) {
@@ -2124,9 +2172,9 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_proc_run_kw(
   }
   culebra::proc::EnvSpec env_spec;
   kw.take_env(env_spec.vars);
-  std::string stdin_data;
-  if (auto v = kw.take_string("stdin")) {
-    stdin_data = std::move(*v);
+  std::string input;
+  if (auto v = kw.take_string("input")) {
+    input = std::move(*v);
   }
   bool check = false;
   if (auto v = kw.take_typed("check", TAG_BOOL, "Bool")) {
@@ -2144,9 +2192,12 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_proc_run_kw(
   const culebra::proc::EnvSpec* env_ptr =
       env_spec.is_default() ? nullptr : &env_spec;
   const std::vector<int>* fds_ptr = share_fds.empty() ? nullptr : &share_fds;
+  std::string stdio[3] = {"pipe", "pipe", "pipe"};
+  kw.take_stdio(stdio);
   kw.validate_consumed();
+  auto io = _culebra_proc_stdio(stdio, input, "Proc.run", line, col);
   return _culebra_proc_run_impl(cmd_tag, cmd_data, cwd_ptr, env_ptr,
-                                stdin_data, check, timeout, line, col, fds_ptr);
+                                input, check, timeout, line, col, fds_ptr, io);
 }
 
 // Proc.all core (shared by trampoline + kwarg adapter). `commands` is not
@@ -3946,8 +3997,9 @@ inline JitValue _culebra_net_build_udp_handle(int64_t id,
 inline JitValue _culebra_proc_spawn_build(
     int8_t cmd_tag, int64_t cmd_data, const std::string* cwd,
     const culebra::proc::EnvSpec* env_over,
-    const std::string& stdin_data, int64_t line, int64_t col,
-    const std::vector<int>* inherit_fds = nullptr) {
+    const std::string& input, int64_t line, int64_t col,
+    const std::vector<int>* inherit_fds = nullptr,
+    const culebra::proc::Stdio& io = {}) {
   if (cmd_tag != TAG_ARRAY) {
     throw culebra::CulebraError("TypeError",
         "Proc.spawn: cmd must be Array", line, col);
@@ -3967,8 +4019,8 @@ inline JitValue _culebra_proc_spawn_build(
     throw culebra::CulebraError("ValueError",
         "Proc.spawn: empty command", line, col);
   }
-  auto sr = culebra::proc::spawn_detached(argv, cwd, env_over, stdin_data,
-                                          inherit_fds);
+  auto sr = culebra::proc::spawn_detached(argv, cwd, env_over, input,
+                                          inherit_fds, io);
   if (!sr.spawned) {
     throw culebra::CulebraError("ProcessError",
         culebra::format("Proc.spawn: {} failed: {}.", sr.err_what,
@@ -3985,15 +4037,16 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_proc_spawn(
                                    std::string(), line, col);
 }
 
-// Kwarg adapter for Proc.spawn (cwd/env/stdin). `cmd` is not consumed.
+// Kwarg adapter for Proc.spawn (cwd/env/input/.../stdin/stdout/stderr).
+// `cmd` is not consumed.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_proc_spawn_kw(
     int8_t cmd_tag, int64_t cmd_data,
     int64_t n_kw, const char* const* kw_keys, JitValue* kw_vals,
     int64_t n_splat, JitValue* splat_objs, int64_t line, int64_t col) {
   _JitKwargResolver kw(n_kw, kw_keys, kw_vals, n_splat, splat_objs, line, col,
                        "Proc.spawn");
-  // Param-declaration order: cwd, env, stdin, share, inherit_env (see the
-  // Proc.run note).
+  // Param-declaration order: cwd, env, input, share, inherit_env, stdin,
+  // stdout, stderr (see the Proc.run note).
   std::string cwd_str;
   const std::string* cwd_ptr = nullptr;
   if (auto v = kw.take_string_or_nil("cwd")) {
@@ -4002,8 +4055,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_proc_spawn_kw(
   }
   culebra::proc::EnvSpec env_spec;
   kw.take_env(env_spec.vars);
-  std::string stdin_data;
-  if (auto v = kw.take_string("stdin")) stdin_data = std::move(*v);
+  std::string input;
+  if (auto v = kw.take_string("input")) input = std::move(*v);
   std::vector<int> share_fds;
   kw.take_share(env_spec.vars, share_fds);
   if (auto v = kw.take_typed("inherit_env", TAG_BOOL, "Bool")) {
@@ -4012,9 +4065,12 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_proc_spawn_kw(
   const culebra::proc::EnvSpec* env_ptr =
       env_spec.is_default() ? nullptr : &env_spec;
   const std::vector<int>* fds_ptr = share_fds.empty() ? nullptr : &share_fds;
+  std::string stdio[3] = {"pipe", "pipe", "pipe"};
+  kw.take_stdio(stdio);
   kw.validate_consumed();
+  auto io = _culebra_proc_stdio(stdio, input, "Proc.spawn", line, col);
   return _culebra_proc_spawn_build(cmd_tag, cmd_data, cwd_ptr, env_ptr,
-                                   stdin_data, line, col, fds_ptr);
+                                   input, line, col, fds_ptr, io);
 }
 
 }  // extern "C"
@@ -6729,8 +6785,8 @@ inline bool env_slot(JitValue v,
   return true;
 }
 
-// The `share` slot of a positional slab: the second-to-last canonical
-// parameter of every Proc entry point (`inherit_env` follows it). Borrows the
+// The `share` slot of a positional slab: the parameter of every Proc entry
+// point that `inherit_env` follows. Borrows the
 // Object; the dispatch releases the slab afterwards. Returns whether anything
 // was shared, so the caller knows to hand the impl its env spec.
 inline bool share_slot(JitValue sv, std::string_view ctx,
@@ -6744,11 +6800,20 @@ inline bool share_slot(JitValue sv, std::string_view ctx,
   return true;
 }
 
-// The `inherit_env` slot: the last canonical parameter of every Proc entry
-// point. Absent (past the slab's end) reads as the `true` default, so an
-// old-shaped call keeps inheriting.
+// The `inherit_env` slot of every Proc entry point. Absent (past the slab's
+// end) reads as the `true` default, so an old-shaped call keeps inheriting.
 inline bool inherit_env_slot(JitValue v) {
   return !(v.tag == TAG_BOOL && v.data == 0);
+}
+
+// The stdin, stdout and stderr slots of Proc.run and Proc.spawn, from slot
+// `first` on, with `input` held to them. An absent or nil slot is "pipe".
+inline culebra::proc::Stdio stdio_slots(JitValue* a, int64_t n, int64_t first,
+                                        const std::string& input,
+                                        const char* ctx) {
+  std::string words[3] = {"pipe", "pipe", "pipe"};
+  for (int64_t k = 0; k < 3; k++) str_slot(at(a, n, first + k), words[k]);
+  return _culebra_proc_stdio(words, input, ctx, 0, 0);
 }
 
 }  // namespace _proc_adapt
@@ -6838,14 +6903,15 @@ inline JitValue _ns_net_resolve(JitValue* a, int64_t) {
 }
 
 inline JitValue _ns_proc_run(JitValue* a, int64_t n) {
-  // slab: cmd, cwd, env, stdin, check, timeout, share, inherit_env
+  // slab: cmd, cwd, env, input, check, timeout, share, inherit_env, stdin,
+  // stdout, stderr
   std::string cwd_str;
   const std::string* cwd = _proc_adapt::str_slot(_proc_adapt::at(a, n, 1),
                                                  cwd_str) ? &cwd_str : nullptr;
   culebra::proc::EnvSpec spec;
   _proc_adapt::env_slot(_proc_adapt::at(a, n, 2), spec.vars, 0, 0);
-  std::string stdin_data;
-  _proc_adapt::str_slot(_proc_adapt::at(a, n, 3), stdin_data);
+  std::string input;
+  _proc_adapt::str_slot(_proc_adapt::at(a, n, 3), input);
   JitValue chk = _proc_adapt::at(a, n, 4);
   bool check = chk.tag == TAG_BOOL && chk.data != 0;
   JitValue to = _proc_adapt::at(a, n, 5);
@@ -6853,10 +6919,11 @@ inline JitValue _ns_proc_run(JitValue* a, int64_t n) {
   std::vector<int> fds;
   _proc_adapt::share_slot(_proc_adapt::at(a, n, 6), "Proc.run", spec.vars, fds);
   spec.inherit = _proc_adapt::inherit_env_slot(_proc_adapt::at(a, n, 7));
+  auto io = _proc_adapt::stdio_slots(a, n, 8, input, "Proc.run");
   const auto* env = spec.is_default() ? nullptr : &spec;
-  return _culebra_proc_run_impl(a[0].tag, a[0].data, cwd, env, stdin_data,
+  return _culebra_proc_run_impl(a[0].tag, a[0].data, cwd, env, input,
                                 check, timeout, 0, 0,
-                                fds.empty() ? nullptr : &fds);
+                                fds.empty() ? nullptr : &fds, io);
 }
 inline JitValue _ns_proc_all(JitValue* a, int64_t n) {
   // slab: commands, limit, timeout, fail_fast, retries, share, inherit_env
@@ -8270,20 +8337,21 @@ inline JitValue _ns_parallel_race(JitValue* a, int64_t n) {
   return _ns_parallel_dispatch(a, n, culebra::PMode::Race);
 }
 inline JitValue _ns_proc_spawn(JitValue* a, int64_t n) {
-  // slab: cmd, cwd, env, stdin, share, inherit_env
+  // slab: cmd, cwd, env, input, share, inherit_env, stdin, stdout, stderr
   std::string cwd_str;
   const std::string* cwd = _proc_adapt::str_slot(_proc_adapt::at(a, n, 1),
                                                  cwd_str) ? &cwd_str : nullptr;
   culebra::proc::EnvSpec spec;
   _proc_adapt::env_slot(_proc_adapt::at(a, n, 2), spec.vars, 0, 0);
-  std::string stdin_data;
-  _proc_adapt::str_slot(_proc_adapt::at(a, n, 3), stdin_data);
+  std::string input;
+  _proc_adapt::str_slot(_proc_adapt::at(a, n, 3), input);
   std::vector<int> fds;
   _proc_adapt::share_slot(_proc_adapt::at(a, n, 4), "Proc.spawn", spec.vars, fds);
   spec.inherit = _proc_adapt::inherit_env_slot(_proc_adapt::at(a, n, 5));
+  auto io = _proc_adapt::stdio_slots(a, n, 6, input, "Proc.spawn");
   const auto* env = spec.is_default() ? nullptr : &spec;
-  return _culebra_proc_spawn_build(a[0].tag, a[0].data, cwd, env, stdin_data,
-                                   0, 0, fds.empty() ? nullptr : &fds);
+  return _culebra_proc_spawn_build(a[0].tag, a[0].data, cwd, env, input,
+                                   0, 0, fds.empty() ? nullptr : &fds, io);
 }
 
 // JSON.stringify(v, indent=0, sort_keys=false, lines=false): the resolver
