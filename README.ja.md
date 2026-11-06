@@ -266,7 +266,6 @@ Canvas.run(160, 160, fn () {
 | `culebra toolchain` | `build`がこのホストでリンクするのに要るものを確認・導入・削除する |
 | `culebra wrap` | 自前のC++クラスを公開する拡張バイナリをビルドする |
 | `culebra embed-flags` | C++ホストにエンジンを埋め込むためのコンパイラ・リンカのフラグを出力する |
-| `culebra play <song.kau>` | Kauaiで書いた曲を再生する、またはWAVファイルに書き出す |
 | `culebra serve` | 静的ファイルのディレクトリを配信する |
 
 詳細は[`docs/tooling.ja.md`](docs/tooling.ja.md)にあります。

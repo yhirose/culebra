@@ -7,8 +7,8 @@ README section (`kauai/tools/README.md`) with every option.
 ## Rendering a song or a passage
 
 ```sh
-culebra play --sounds kauai/sounds/alto_sax --wav out.wav song.kau
-culebra play --sounds kauai/sounds/alto_sax --wav part.wav --from Theme --to Bridge song.kau
+culebra kauai/tools/play.cul --sounds kauai/sounds/alto_sax --wav out.wav song.kau
+culebra kauai/tools/play.cul --sounds kauai/sounds/alto_sax --wav part.wav --from Theme --to Bridge song.kau
 ```
 
 `--from` and `--to` are a mark's name, seconds (`83.5`), or minutes and

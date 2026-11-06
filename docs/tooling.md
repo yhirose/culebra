@@ -16,7 +16,6 @@ is the reference for those development subcommands.
 | `culebra lsp` | serve diagnostics, hover and formatting to an editor over stdio | [§8](#8-editor-support-culebra-lsp) |
 | `culebra docs [topic]` | read and search the embedded reference docs | [§5](#5-reading-the-docs-culebra-docs) |
 | `culebra serve [-p PORT] [-d DIR]` | serve a directory of static files | [§6](#6-serving-static-files-culebra-serve) |
-| `culebra play <song.kau>` | play a song written in Kauai | [§9](#9-playing-a-song-culebra-play) |
 | `culebra build <in.cul> -o <out>` | compile ahead-of-time into a standalone executable | [`deployment.md` §1](deployment.md#1-standalone-binary-build-culebra-build) |
 | `culebra toolchain [status]` | report, install or remove what `build` needs to link on this host | [`deployment.md` §1](deployment.md#culebra-toolchain) |
 | `culebra wrap` | build an extended binary exposing your own C++ classes | [`deployment.md` §3](deployment.md#3-wrapping-c-libraries-culebra-wrap) |
@@ -55,7 +54,6 @@ Contents
    * [The Share button](#the-share-button)
 8. [Editor support (`culebra lsp`)](#8-editor-support-culebra-lsp)
    * [Setting it up](#setting-it-up)
-9. [Playing a song (`culebra play`)](#9-playing-a-song-culebra-play)
 
 ---
 
@@ -1167,66 +1165,3 @@ VSCode, Neovim and Zed along with the rest of the editor integration.
   ```
 - **Any other LSP client** — run `culebra lsp` for the `culebra` language,
   files ending in `.cul`.
-
----
-
-## 9. Playing a song (`culebra play`)
-
-`culebra play <song.kau>` plays a song written in
-[Kauai](kauai/language.md) and exits when the song ends; Ctrl+C stops one
-that loops. It reads the file and the files it names with `use`, checks
-the song, and prints its length before the first note.
-
-```
-culebra play first.kau                      # play it
-culebra play --check first.kau              # read and check it, and play nothing
-culebra play --wav first.wav first.kau      # write it to a WAV file, and play nothing
-culebra play --wav drive.wav --from Drive --to 1:20 ballad.kau  # write a part
-culebra play --sounds sounds.cul ballad.kau # a song with `external` instruments
-```
-
-| Option | Effect |
-|---|---|
-| `--check` | reads and checks the song, prints its length, and plays nothing; it needs no audio device |
-| `--wav <file.wav>` | writes the song once through to a 16-bit WAV file as it would sound (`render()`, [Kauai §10](kauai/language.md#10-playing-from-culebra)), and plays nothing; it needs no audio device |
-| `--from <at>`, `--to <at>` | with `--wav`, write only the part of the song from `<at>` or until it, as `render(from:, to:)` does: heard from a second before `--from`, and what starts before `--to` ringing on. `<at>` is seconds (`83.5`), minutes and seconds (`1:23.5`), or a mark's name (`Drive`) |
-| `--sounds <file.cul>` | the module that makes the song's `external` sounds; a folder names its `main.cul` |
-| `--watch` | reads the song and the module again, and plays from the top, whenever a `.kau` or `.cul` file changes in the song's folder or the module's |
-
-A song's mistake goes to stderr as `KauaiError: FILE:LINE: ...` and the
-exit status is `1`, as it is on a machine with no audio device. A mistake
-in the command line is status `2`, except a `--to` that is not after
-`--from`, which is status `1`.
-
-An `external` instrument is one the program supplies, and `culebra play` has
-none of its own. `--sounds` names a module that exports `voices`, `drums`
-or both: the objects `Kauai.load` takes under those names
-([Kauai §10](kauai/language.md#10-playing-from-culebra)).
-
-```culebra
-# doctest: skip (a module for --sounds; electric_piano and kick are its own)
-let voices = {ep: |pitch, params| Audio.Sound(electric_piano(pitch, params.bright))}
-let drums = {kick: |params| Audio.Sound(kick())}
-export {voices, drums}
-```
-
-An instrument that brings files of its own (the recordings it plays, say) is
-a folder: its `main.cul` is the module, and it reads the files beside it with
-`Dir.embedded`, which resolves from the file that calls it
-([stdlib §41](stdlib.md#embedded-assets)), so
-`culebra play --sounds path/to/instrument song.kau` plays it from anywhere.
-
-A song that names an external sound the module does not make, or any
-external sound when no module is given, is refused before anything plays.
-
-`--watch` is for writing a song or its instruments while listening to them.
-The song plays as it would without it; when a `.kau` or `.cul` file in the
-song's folder or the module's is saved, the player names the file, stops
-the song, reads the song and the module again, and plays from the top. A
-mistake in either, or an error out of an instrument, is reported and the
-player waits for the next save instead of ending, and Ctrl+C ends it. With
-`--check` it checks the song again on each save, and plays nothing.
-
-```
-culebra play --watch --sounds sounds.cul ballad.kau
-```

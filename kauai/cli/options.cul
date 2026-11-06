@@ -1,0 +1,103 @@
+# The command line of a song played, as `kauai song.kau` and
+# kauai/tools/play.cul read it. Apart from play.cul, which plays the song, so
+# that a program that only reads its options (the tool's own, before it runs
+# the one that plays) does not load Kauai.
+
+# Whether `s` names a mark: a mark's name starts with a capital letter.
+fn is_mark(s) {
+  re'^[A-Z]'.test(s)
+}
+
+# Whether `s` is a point in a song as --from and --to take it: seconds (83,
+# 83.5), minutes and seconds (1:23, 1:23.5), or a mark's name.
+fn is_point(s) {
+  is_mark(s) ||
+    re'^[0-9]+(\.[0-9]+)?$'.test(s) ||
+    re'^[0-9]+:[0-5][0-9](\.[0-9]+)?$'.test(s)
+}
+
+# What a command line after the command asks for: {song, check, wav, from,
+# to}, and, where `more` holds them, {sounds, watch}. Options may come before
+# or after the song, as `--wav out.wav` or `--wav=out.wav`. A mistake on it
+# ends the program with status 2, before any song is read.
+fn options(args, name, more = []) {
+  let usage = fn () {
+    IO.eprintln("{name}: give one song (.kau); --help says how")
+    Sys.exit(2)
+  }
+  let quit = fn (msg) {
+    IO.eprintln("{name}: {msg}")
+    Sys.exit(2)
+  }
+  let needs = {
+    "--wav": "a file to write",
+    "--sounds": "a file or a folder",
+    "--from": nil,
+    "--to": nil,
+  }
+  let opts = {
+    mut song: nil,
+    mut check: false,
+    mut wav: nil,
+    mut from: nil,
+    mut to: nil,
+    mut sounds: nil,
+    mut watch: false,
+  }
+  mut i = 0
+  while i < args.size() {
+    let arg = args[i]
+    i += 1
+    let eq = arg.index_of("=")
+    let key = arg.starts_with("--") && eq > 0
+      ? arg.slice(0, eq).to_string()
+      : arg
+    let takes = needs.has(key) && (key != "--sounds" || more.contains(key))
+    if takes {
+      mut value = nil
+      if eq > 0 {
+        # `--wav=` says no more than `--wav` does.
+        let given = arg.slice(eq + 1, arg.size()).to_string()
+        value = given.empty() ? nil : given
+      } else if i < args.size() {
+        value = args[i]
+        i += 1
+      }
+      if key == "--from" || key == "--to" {
+        if value == nil || !is_point(value) {
+          let what = value == nil ? "" : ", not '{value}'"
+          quit("{key} takes seconds (83.5), minutes and seconds (1:23.5) or a mark's name{what}")
+        }
+      } else if value == nil {
+        quit("{key} needs {needs[key]}")
+      }
+      match key {
+        "--wav" => opts.wav = value,
+        "--sounds" => opts.sounds = value,
+        "--from" => opts.from = value,
+        _ => opts.to = value,
+      }
+    } else if arg == "--check" {
+      opts.check = true
+    } else if arg == "--watch" && more.contains(arg) {
+      opts.watch = true
+    } else if arg.starts_with("-") {
+      quit("unknown option '{arg}'")
+    } else if opts.song != nil {
+      quit("one song at a time, got '{opts.song}' and '{arg}'")
+    } else {
+      opts.song = arg
+    }
+  }
+  usage() if opts.song == nil
+  if opts.wav != nil && (opts.check || opts.watch) {
+    quit("--wav writes the song and plays nothing, so not with {opts.check ? "--check" : "--watch"}")
+  }
+  if (opts.from != nil || opts.to != nil) && opts.wav == nil {
+    let which = opts.from != nil ? "--from" : "--to"
+    quit("{which} chooses the part --wav writes, so it needs --wav")
+  }
+  opts
+}
+
+export {options, is_mark}

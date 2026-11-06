@@ -38,7 +38,7 @@ let parts = fn () {
   let part = parted.render(from: "Second", to: "Third")
   assert_eq(parted.render(from: 2, to: 4.0), part)
   # A point is a mark's name or seconds, or a String of seconds or of minutes
-  # and seconds, as `culebra play --from` takes it; seconds() reads one.
+  # and seconds, as `kauai --from` takes it; seconds() reads one.
   assert_eq(
     [parted.seconds("Third"), parted.seconds("0:02.5"), parted.seconds("3"), parted.seconds(1)],
     [4.0, 2.5, 3.0, 1.0],

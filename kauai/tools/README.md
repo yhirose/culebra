@@ -1,5 +1,25 @@
 # Kauai tools
 
+## play.cul: a song played with an instrument of one's own
+
+`play.cul` plays a song as the `kauai` command does (`--check`, `--wav`,
+`--from`, `--to`), with the instruments the module `--sounds` names in
+place of the ones `kauai` bundles: the module being made, before it is
+bundled. `--watch` plays the song again from the top whenever a `.kau` or
+`.cul` file changes in the song's folder or the module's, so an edit is
+heard on save; a mistake in either is said, and the watching goes on until
+Ctrl+C.
+
+```sh
+culebra kauai/tools/play.cul --sounds kauai/sounds/alto_sax song.kau
+culebra kauai/tools/play.cul --sounds my_sax --watch song.kau
+culebra kauai/tools/play.cul --sounds my_sax --wav part.wav --from Theme --to 1:20 song.kau
+```
+
+An import names its module when the program is written, so `play.cul`
+writes a program that imports the module and plays the song, and runs it
+with its own terminal, again after each change.
+
 ## listen.cul: two ways of a passage, heard as 1 and 2
 
 `listen.cul` renders one passage of a song two ways that differ in one
@@ -17,14 +37,14 @@ culebra kauai/tools/listen.cul next breath --set breath=1
 ```
 
 `start NAME` renders the two ways. A way is a song, the instrument module
-that makes its `external` sounds (as `culebra play --sounds` takes one),
-and parameters set over the song's. `--song` and `--sounds` given once are
-both ways'; given twice, the first is the one before and the second the
-new one. `--set NAME=VALUE` is the new one's: every instrument of its
-module plays with the parameter at that value, whatever the song's band
+that makes its `external` sounds (as [`play.cul`](play.cul)'s `--sounds`
+takes one), and parameters set over the song's. `--song` and `--sounds`
+given once are both ways'; given twice, the first is the one before and the
+second the new one. `--set NAME=VALUE` is the new one's: every instrument of
+its module plays with the parameter at that value, whatever the song's band
 line and directions set it to. `--from` and `--to` choose the passage, each
-a mark's name, seconds, or minutes and seconds (`1:23.5`), as
-`culebra play --from` and `song.render(from:, to:)` take them.
+a mark's name, seconds, or minutes and seconds (`1:23.5`), as `kauai --from`
+and `song.render(from:, to:)` take them.
 
 | Command | What it does |
 |---|---|
@@ -52,7 +72,7 @@ new one is made as loud as the one before, since a louder version tends to
 sound better whatever else differs. Kauai has weighed each instrument by one
 sound already, so what is evened out is how the passage plays. Where either
 would then pass full scale, both are lowered alike. A song is rendered as
-`culebra play --wav` renders it, on the VM, the two side by side.
+`play.cul --wav` renders it, on the VM, the two side by side.
 
 ## check.cul: what is wrong, measured before listening
 
@@ -272,7 +292,7 @@ culebra kauai/tools/compare.cul --low 200 --high 1400 --yardstick \
 ```
 
 Both are read every 10 ms (the frames line up when the score is the same,
-so render both with `culebra play --wav`), and the distance is taken over
+so render both with `play.cul --wav`), and the distance is taken over
 the frames where either sounds (within 50 dB of its loudest). `--low` and
 `--high` bound the pitch searched, as `measure.cul`'s do.
 
@@ -358,7 +378,7 @@ culebra kauai/tools/make_sounds.cul --sounds kauai/sounds/soprano_sax \
 
 | Option | What it does |
 |---|---|
-| `--sounds <module>` | the instrument module: a `.cul` file, or a folder and its `main.cul`, as for `culebra play --sounds` |
+| `--sounds <module>` | the instrument module: a `.cul` file, or a folder and its `main.cul`, as for `play.cul --sounds` |
 | `--out <dir>` | where the index and the sounds go |
 | `--name <name>` | the index is `NAME.json` and the sounds go in `NAME/` (`sounds`) |
 | `--use FILE=OTHER` | where the songs `use` FILE, read OTHER beside it: a band with an external lead in place of the one the songs name (any number of these) |

@@ -12,7 +12,7 @@ range up (82, A#5) are played as overtones of the fingering an octave down,
 as a player does to keep them round.
 
 ```sh
-culebra play --sounds kauai/sounds/soprano_sax song.kau
+culebra kauai/tools/play.cul --sounds kauai/sounds/soprano_sax song.kau
 ```
 
 ```kau

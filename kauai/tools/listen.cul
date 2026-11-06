@@ -55,7 +55,7 @@ let SPEC = {
           type: 'String',
           default: [],
           repeated: true,
-          doc: 'the instrument module, as for culebra play --sounds; twice, the one before and the new one',
+          doc: 'the instrument module, as for kauai/tools/play.cul --sounds; twice, the one before and the new one',
         },
         SET,
         {

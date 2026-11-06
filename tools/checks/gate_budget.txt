@@ -188,6 +188,8 @@ vm_cases 191
 # 38 since midi_test (MIDI input end to end through a virtual source, macOS).
 # 39 since proc_stdio_test (a child Proc.run lets write to and read the
 # program's own streams, seen from outside, on each engine and AOT).
+# 39 still since kauai_play_test took play_test's place (`culebra play` went;
+# kauai/tools/play.cul plays a song with a module of one's own).
 ctest.entries 39
 
 # ```culebra blocks under docs/ — `just doctest` runs the runnable ones on both
@@ -277,7 +279,9 @@ ctest.entries 39
 # needs a device), in en and ja. 1136 since §41 shows a device's settings
 # read with a sysex and changed (skipped: needs a device), in en and ja.
 # 1138 since the Kauai spec's §10 reads a song's score as data, in en and ja.
-docs.blocks 1138
+# 1136 since tooling's §9, `culebra play`, went with the subcommand (its
+# sounds module, in en and ja).
+docs.blocks 1136
 
 # The samples the language front ends are run over (examples/languages/*).
 languages.samples 130

@@ -4,7 +4,7 @@ A recipe is an instrument written as data: a JSON file that wires
 `Audio.Graph`'s parts together. The engine
 ([`engine/recipe.cul`](engine/recipe.cul)) checks it whole when it is loaded,
 then builds the graph for each note and renders it. No code is loaded, so a
-recipe plays the same under `culebra play` and in the `kauai` binary.
+recipe plays the same under `kauai/tools/play.cul` and in the `kauai` binary.
 
 The recipes Kauai comes with are in [`recipes/`](recipes), and its drums in
 [`recipes/drums/`](recipes/drums) ([Drums](#drums)). A file's name is the
@@ -63,8 +63,8 @@ band Pads {
 }
 ```
 
-`culebra play --sounds kauai/recipes song.kau` plays a song with them and the
-drums, and the `kauai` binary has them built in.
+`culebra kauai/tools/play.cul --sounds kauai/recipes song.kau` plays a song
+with them and the drums, and the `kauai` binary has them built in.
 
 ## Drums
 

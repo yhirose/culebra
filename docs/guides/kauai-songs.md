@@ -46,10 +46,10 @@ section Verse {
 }
 ```
 
-Play it with the command line:
+Play it with the Kauai command line, `kauai`:
 
 ```sh
-culebra play first.kau
+kauai first.kau
 ```
 
 Read it this way:
@@ -154,8 +154,8 @@ println(song.events()[0])          # => {at: 0.0, len: 0.6, by: 'Tune', pitch: 7
 ```
 
 `song.render()` gives the song as samples, with no audio device, so a program
-can save it to a file. `culebra play --wav first.wav first.kau` does the same
-from the command line.
+can save it to a file. `kauai first.kau --wav first.wav` does the same from
+the command line.
 
 ## When something is wrong
 

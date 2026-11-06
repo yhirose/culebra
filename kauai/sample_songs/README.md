@@ -14,7 +14,7 @@ another.
 ```bash
 kauai kauai/sample_songs/window_rain.kau                       # play it
 kauai kauai/sample_songs/window_rain.kau --wav rain.wav        # write it to a WAV
-culebra play --sounds kauai/recipes kauai/sample_songs/late_terrace.kau
+culebra kauai/tools/play.cul --sounds kauai/recipes kauai/sample_songs/late_terrace.kau
 ```
 
 ## Trying another sound

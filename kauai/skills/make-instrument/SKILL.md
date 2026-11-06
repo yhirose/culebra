@@ -1,6 +1,6 @@
 ---
 name: make-instrument
-description: Make or improve an external instrument for Kauai, Culebra's music language, as a package under kauai/sounds/ that plays songs with a real instrument's sound (an alto or soprano saxophone, a flute, a bowed string, an electric piano), using Culebra alone, from royalty-free recordings. Use this skill whenever someone asks for a new instrument sound for Kauai or culebra play, wants an existing external instrument to sound more natural or more like a player or a style ("mellow like Kenny G", "the lead alto of a fusion band"), reports a noise or an artificial tone in one (a hiss, a click, "it sounds electronic"), or wants to compare two versions of an instrument by ear, even if they do not say "skill" or "external".
+description: Make or improve an external instrument for Kauai, Culebra's music language, as a package under kauai/sounds/ that plays songs with a real instrument's sound (an alto or soprano saxophone, a flute, a bowed string, an electric piano), using Culebra alone, from royalty-free recordings. Use this skill whenever someone asks for a new instrument sound for Kauai or the kauai command, wants an existing external instrument to sound more natural or more like a player or a style ("mellow like Kenny G", "the lead alto of a fusion band"), reports a noise or an artificial tone in one (a hiss, a click, "it sounds electronic"), or wants to compare two versions of an instrument by ear, even if they do not say "skill" or "external".
 ---
 
 # Making a Kauai instrument
@@ -133,7 +133,7 @@ person says. Read it before the first comparison.
 
 | Tool | For |
 |---|---|
-| `culebra play --sounds <pkg> --wav F --from A --to B song.kau` | render a song, or a passage of it, to a WAV |
+| `culebra kauai/tools/play.cul --sounds <pkg> --wav F --from A --to B song.kau` | render a song, or a passage of it, to a WAV |
 | `culebra kauai/tools/check.cul --sounds <pkg> song.kau` | what measuring finds: pitch off the score, dropouts, dips, bumps, abrupt edges, clicks, clipping, silence |
 | `culebra kauai/tools/coverage.cul --sounds <pkg> --song song.kau <pkg>/data/notes.json` | what a song asks of the recordings, pitch by pitch, and where they are short |
 | `culebra kauai/tools/sweep.cul --sounds <pkg> --low N --high N` | single notes over the range, the lengths and the levels, each measured |

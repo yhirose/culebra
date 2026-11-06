@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The Kauai command line (kauai/cli/main.cul) against `culebra play`: the same
+# The Kauai command line (kauai/cli/main.cul) against kauai/tools/play.cul: the same
 # streams, statuses and WAV bytes for a song that reads, one that does not, a
 # part of one, and one that plays a bundled instrument. The program runs as a
 # script, and with --aot again as the binary `culebra build` makes of it (which
@@ -29,7 +29,7 @@ run() {
 cli() {
   if [[ $lane == aot ]]; then "$TMP/kauai" "$@"; else "$CULEBRA" --vm "$CLI" "$@"; fi
 }
-play() { "$CULEBRA" play --vm "$@"; }
+play() { "$CULEBRA" --vm "$HERE/../kauai/tools/play.cul" "$@"; }
 same_wav() {  # same_wav <label> <wav> <wav>
   cmp -s "$2" "$3" || { echo "FAIL $1: $2 and $3 differ"; fail=1; }
 }
@@ -163,7 +163,7 @@ for lane in "${lanes[@]}"; do
   check "$lane gain, not a number: stderr" "kauai: --gain is from -60 to 24 dB, not loud" "$err"
   run cli "$TMP/duo.kau" --wav
   check "$lane wav, no value: status" 2 "$rc"
-  check "$lane wav, no value: stderr" "kauai: --wav needs a value" "$err"
+  check "$lane wav, no value: stderr" "kauai: --wav needs a file to write" "$err"
   # An instrument it does not have: the song's line and the ones it has.
   run cli "$TMP/organ.kau" --check
   check "$lane no instrument: status" 1 "$rc"
@@ -197,7 +197,7 @@ for lane in "${lanes[@]}"; do
   cmp -s "$TMP/$lane.kau" "$TMP/$lane-mxl.kau" || {
     echo "FAIL $lane convert .mxl back: not the song the .musicxml gives"; fail=1; }
 
-  # The WAV, whole and in part, is the one `culebra play` writes.
+  # The WAV, whole and in part, is the one kauai/tools/play.cul writes.
   run play --wav "$TMP/play.wav" "$TMP/duo.kau"
   run cli "$TMP/duo.kau" --wav "$TMP/cli.wav"
   check "$lane wav: status" 0 "$rc"

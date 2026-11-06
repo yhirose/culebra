@@ -8,7 +8,7 @@ The notes come from a jazz alto player's improvisations, so a slur borrows a
 recorded slur's moves and a tongued note a recorded tongued attack.
 
 ```
-culebra play --sounds kauai/sounds/alto_sax song.kau
+culebra kauai/tools/play.cul --sounds kauai/sounds/alto_sax song.kau
 ```
 
 ```

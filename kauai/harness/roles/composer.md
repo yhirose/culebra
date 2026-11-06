@@ -15,7 +15,7 @@ overtones, or the recordings thin out) and the bottom. A number about the
 top of the range is decided only by songs that go there: the first
 soprano made by this harness got it wrong because its tune songs stopped
 three semitones short, and nothing it was fitted on showed it (fit_style
-now says so, but only a song can fix it). Plays each with an instrument that exists (`culebra play --check`, then
+now says so, but only a song can fix it). Plays each with an instrument that exists (`kauai --check`, then
 `--wav`) so that the song itself is known to be good before it judges
 anything. Splits them into `tune` songs (adjusted on) and `eval` songs
 (never adjusted on): at least one of each character in each.
@@ -30,7 +30,7 @@ from a note a tone down, shifted, and sounded out of reach. A last chorus
 moved up a tone must keep to the new key's covered pitches as well. A bar that does not add up, a chord the table lacks,
 a drum that hits with another on the one noise channel (kick, snare, hats
 and crash on different sixteenths of a bar, in a `first` and a `last` too),
-and a `#` comment (Kauai's are `//`) are all found by `culebra play --check`
+and a `#` comment (Kauai's are `//`) are all found by `kauai --check`
 or `--wav`; run it after every section, not after the song. Gives the song a
 shape that can be heard as music: a motif a bar or two long that comes back
 and is varied (a sequence, a step higher, a different ending), a section
@@ -40,7 +40,7 @@ the section (a crash on its first bar, a fill on its last), and an ending.
 **Gives**: the `.kau` files under the case's `songs/` and `tune` / `eval` in
 `case.json`.
 
-**Stops** when every song reads (`culebra play --check`), `coverage.cul
+**Stops** when every song reads (`kauai --check`), `coverage.cul
 --song` finds nothing short in it, the `tune` songs together ask for every
 semitone from the lowest to the highest the aim needs (a list of the pitches
 asked for, checked against the range), and the person has heard them to be

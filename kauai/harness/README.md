@@ -62,11 +62,12 @@ says what each step does in either case.
    Without, it reads `check.cul`'s findings and `sweep.cul`, and has the
    person hear two renderings of a passage (`listen.cul`); the round ends
    when the person keeps the version they hear.
-6. **skeptic** plays the `eval` songs (`culebra play --wav`), which nothing was
-   adjusted on, looks for ways the result is not what it seems (a number met
-   by a trick, a song it only just passes), and reports pass or fail. Without
-   targets, nothing is a number to pass: it runs `check.cul` and `sweep.cul`
-   on them and asks the person to hear them.
+6. **skeptic** plays the `eval` songs (`culebra kauai/tools/play.cul
+   --sounds <package> --wav`),
+   which nothing was adjusted on, looks for ways the result is not what it
+   seems (a number met by a trick, a song it only just passes), and reports
+   pass or fail. Without targets, nothing is a number to pass: it runs
+   `check.cul` and `sweep.cul` on them and asks the person to hear them.
 7. **the person** listens to what the numbers cannot judge (`listen.cul`) and
    decides.
 

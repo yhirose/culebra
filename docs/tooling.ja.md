@@ -15,7 +15,6 @@
 | `culebra lsp` | エディタに診断・ホバー・整形をstdioで提供する | [§8](#8-エディタ支援-culebra-lsp) |
 | `culebra docs [topic]` | 埋め込まれたリファレンスを読む・検索する | [§5](#5-ドキュメントを読む-culebra-docs) |
 | `culebra serve [-p PORT] [-d DIR]` | ディレクトリを静的ファイルとして配信する | [§6](#6-静的ファイルの配信-culebra-serve) |
-| `culebra play <song.kau>` | Kauaiで書いた曲を再生する | [§9](#9-曲の再生-culebra-play) |
 | `culebra build <in.cul> -o <out>` | AOTコンパイルして単体実行ファイルを作る | [`deployment.ja.md` §1](deployment.ja.md#1-standalone-バイナリビルドculebra-build) |
 | `culebra toolchain [status]` | `build`がこのホストでリンクするのに要るものを確認・導入・削除する | [`deployment.ja.md` §1](deployment.ja.md#culebra-toolchain) |
 | `culebra wrap` | 自前のC++クラスを組み込んだ拡張バイナリを作る | [`deployment.ja.md` §3](deployment.ja.md#3-c-ライブラリのラッピングculebra-wrap) |
@@ -54,7 +53,6 @@
    * [Shareボタン](#shareボタン)
 8. [エディタ支援 (`culebra lsp`)](#8-エディタ支援-culebra-lsp)
    * [設定](#設定)
-9. [曲の再生 (`culebra play`)](#9-曲の再生-culebra-play)
 
 ---
 
@@ -1083,63 +1081,3 @@ culebra lsp        # 標準入出力でLSPを話す
   ```
 - **ほかのLSPクライアント** — `culebra`言語（拡張子`.cul`のファイル）に対して
   `culebra lsp`を起動します。
-
----
-
-## 9. 曲の再生 (`culebra play`)
-
-`culebra play <song.kau>`は[Kauai](kauai/language.ja.md)で書いた曲を再生し、
-曲が終わると終了します。ループする曲はCtrl+Cで止めます。ファイルと、
-そのファイルが`use`で名指すファイルを読み、曲を検査し、最初の音の前に
-曲の長さを表示します。
-
-```
-culebra play first.kau                      # 再生する
-culebra play --check first.kau              # 読んで検査するだけで、鳴らさない
-culebra play --wav first.wav first.kau      # WAVファイルに書き出すだけで、鳴らさない
-culebra play --wav drive.wav --from Drive --to 1:20 ballad.kau  # 区間だけを書き出す
-culebra play --sounds sounds.cul ballad.kau # 外部の楽器を使う曲
-```
-
-| オプション | 効果 |
-|---|---|
-| `--check` | 曲を読んで検査し、長さを表示して、何も鳴らさない。音声デバイスは不要 |
-| `--wav <file.wav>` | 曲を1回通して、鳴らしたときの音そのまま16ビットのWAVファイルに書き出し、何も鳴らさない（`render()`、[Kauai §10](kauai/language.ja.md#10-culebra-から再生する)）。音声デバイスは不要 |
-| `--from <at>`、`--to <at>` | `--wav`と一緒に使い、曲のうち`<at>`から、または`<at>`までの区間だけを書き出す（`render(from:, to:)`と同じ）。`--from`の1秒前から書き出し、`--to`より前に始まった音は最後まで鳴らす。`<at>`は秒数（`83.5`）、分と秒（`1:23.5`）、マーク名（`Drive`）のどれか |
-| `--sounds <file.cul>` | 曲の外部の楽器の音声を作るモジュール。フォルダならその中の`main.cul` |
-| `--watch` | 曲のフォルダかモジュールのフォルダの`.kau`や`.cul`のファイルが変わるたびに、曲とモジュールを読み直して頭から鳴らす |
-
-曲の誤りは`KauaiError: FILE:LINE: ...`としてstderrに出て、終了ステータスは
-`1`です。音声デバイスが無いマシンでも`1`です。コマンドラインの誤りは`2`です。ただし`--to`が`--from`より後ろでない
-場合は`1`です。
-
-外部の楽器（`external`）はプログラムが用意するもので、`culebra play`自身は
-1つも持っていません。`--sounds`には、`voices`か`drums`、または両方をexportするモジュールを
-指定します。`Kauai.load`が同じ名前で受け取るオブジェクトです
-([Kauai §10](kauai/language.ja.md#10-culebra-から再生する))。
-
-```culebra
-# doctest: skip (--sounds用のモジュール。electric_pianoとkickはこのモジュールのもの)
-let voices = {ep: |pitch, params| Audio.Sound(electric_piano(pitch, params.bright))}
-let drums = {kick: |params| Audio.Sound(kick())}
-export {voices, drums}
-```
-
-自分のファイル（鳴らす録音など）を伴う楽器はフォルダにします。その中の`main.cul`が
-モジュールで、隣のファイルを`Dir.embedded`で読みます。`Dir.embedded`は呼んだ
-ファイルを基準に解決するので（[stdlib §41](stdlib.ja.md#埋め込みアセット)）、
-`culebra play --sounds path/to/instrument song.kau`はどこからでもその楽器を鳴らせます。
-
-モジュールが作らない外部の楽器の音声を使う曲と、モジュールを指定せずに外部の
-楽器の音声を使う曲は、何も鳴らす前に断ります。
-
-`--watch`は、曲や楽器を聞きながら書くためのものです。曲はふだんと同じように
-鳴ります。曲のフォルダかモジュールのフォルダの`.kau`や`.cul`のファイルが保存
-されると、そのファイル名を表示して曲を止め、曲とモジュールを読み直して、頭から
-鳴らします。どちらかに誤りがあったり、楽器がエラーを出したりしたときは、それを
-表示して終わらずに次の保存を待ちます。終えるときはCtrl+Cです。`--check`と一緒に
-使うと、保存のたびに曲を検査し直し、何も鳴らしません。
-
-```
-culebra play --watch --sounds sounds.cul ballad.kau
-```

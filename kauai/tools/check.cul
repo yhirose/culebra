@@ -22,7 +22,7 @@ let SPEC = {
       name: 'sounds',
       type: 'String',
       default: nil,
-      doc: 'the instrument module, as for culebra play --sounds',
+      doc: 'the instrument module, as for kauai/tools/play.cul --sounds',
     },
     {
       name: 'set',

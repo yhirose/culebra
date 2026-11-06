@@ -4,8 +4,8 @@ Says how far the instrument is from its target and what to change.
 
 **Gets**: the package, the case, the `tune` targets if it has any, `work/journal.md`.
 
-**Does**: plays each `tune` song with the package (`culebra play --sounds
-<pkg> --wav`). With targets, reads `kauai/tools/compare.cul`'s numbers
+**Does**: plays each `tune` song with the package (`culebra
+kauai/tools/play.cul --sounds <pkg> --wav`). With targets, reads `kauai/tools/compare.cul`'s numbers
 against the target, and its worst seconds. Without, there is no distance: it
 reads `check.cul`'s findings and `sweep.cul`, and has the person hear two
 renderings of a passage with `listen.cul`. Cuts out a bad second and looks at it (`--from`,

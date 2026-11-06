@@ -5,7 +5,7 @@ Tries to show the result is not what it seems, then says pass or fail.
 **Gets**: the package, the case with its `eval` songs (which
 nothing was adjusted on), `work/journal.md`.
 
-**Does**: plays the `eval` songs (`culebra play --wav`) and reads `check.cul`'s findings
+**Does**: plays the `eval` songs (`culebra kauai/tools/play.cul --sounds <package> --wav`) and reads `check.cul`'s findings
 and, where a target rendering exists, `compare.cul`'s numbers.
 Then looks for what a number can hide:
 - a `tune` number that is met and an `eval` number that is not (it was fitted

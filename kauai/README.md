@@ -1,7 +1,7 @@
 # Kauai
 
 Kauai is Culebra's music language: a song is a lead sheet and the grooves a
-band plays it with, and `culebra play song.kau` plays it. This folder holds
+band plays it with, and `kauai song.kau` plays it. This folder holds
 what goes beyond the built-in instruments. Find what you want to do below.
 
 ## I want to write a song
@@ -14,8 +14,8 @@ language (draft, with a Japanese version):
 - [`docs/guides/kauai-songs.md`](../docs/guides/kauai-songs.md): a walkthrough
   of writing a song, with the English and Japanese versions beside it
 
-Its section 2 is a first song. Play it with `culebra play song.kau`, or write
-it to a WAV file with `culebra play --wav out.wav song.kau`.
+Its section 2 is a first song. Play it with `kauai song.kau`, or write it to
+a WAV file with `kauai song.kau --wav out.wav` (the `kauai` command is below).
 
 ## I want to play a song with a sound
 
@@ -30,13 +30,13 @@ it to a WAV file with `culebra play --wav out.wav song.kau`.
   | [`sounds/soprano_sax`](sounds/soprano_sax) | `SopranoSax` | a soprano saxophone, from royalty-free recordings |
   | [`sounds/alto_sax`](sounds/alto_sax) | `AltoSax` | an alto saxophone, from a jazz player's improvisations (CC0 and CC BY) |
 
-  Play a song with one: `culebra play --sounds kauai/sounds/soprano_sax song.kau`.
+  The `kauai` command plays a song with them: `kauai song.kau`.
 - **Recipes**: synthesized instruments written as data, a synth brass, a synth
   string section, analog leads, FM electric pianos and a vintage tine one,
   an FM bass, clean, overdriven and distorted electric guitars, with knobs
   such as `bright`, and a drum kit (`Kick`, `Snare`, `CrossStick`, three
   hi-hats, two cymbals, toms, and a wave on the shore). Play a
-  song with them: `culebra play --sounds kauai/recipes song.kau`.
+  song with them: `kauai song.kau`.
   [`recipe.md`](recipe.md) lists them and says how to write one.
 - [`docs/guides/kauai-sounds.md`](../docs/guides/kauai-sounds.md): the sounds a
   song plays, shaping them, supplying an `external` instrument, a model, and a
@@ -75,7 +75,9 @@ kauai song.kau --wav out.wav        # write it to a WAV file, no device needed
 kauai song.kau --wav out.wav --from Chorus --to 1:30
 ```
 
-It takes the options `culebra play` takes, except `--sounds` and `--watch`.
+It takes `--check`, `--wav`, `--from` and `--to`, before or after the song.
+[`tools/play.cul`](tools/play.cul) takes the same, and plays a song with a
+module of your own (`--sounds`) or again whenever a file changes (`--watch`).
 The instruments in `sounds/` (`SopranoSax`, `AltoSax`), the recipes in
 `recipes/` (`FmBrass`, `FmStrings` and the rest) and the drums in
 `recipes/drums/` (`Kick`, `Snare` and the rest) are compiled in, and a song

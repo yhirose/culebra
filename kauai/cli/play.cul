@@ -1,0 +1,101 @@
+# A song played from the command line, as `kauai song.kau` and
+# kauai/tools/play.cul play one: read and checked (--check), written once
+# through to a WAV file (--wav, the part --from and --to choose), or played
+# to its end. A mistake is said with the command's `name` before it.
+
+import cmdline from './options.cul'
+
+# Seconds as m:ss.
+fn clock(secs) {
+  let s = Math.round(secs)
+  "{s / 60}:{s % 60 < 10 ? "0" : ""}{s % 60}"
+}
+
+# Song `opts.song`, its external sounds from `voices` and `drums`: checked,
+# written, or started, as `opts` says. Answers the song while it plays, nil
+# otherwise. A mistake in the song ends the program with status 1, or, where
+# `watching`, is said and answers nil, to wait for the next change; `hint`,
+# where given, follows an external instrument the sounds lack.
+fn start(opts, voices, drums, name, watching = false, hint = nil) {
+  let path = opts.song
+  let refuse = fn (e, more = nil) {
+    IO.eprintln("{e.kind}: {e.message}")
+    IO.eprintln(more) if more != nil
+    Sys.exit(1) if !watching
+    nil
+  }
+  let song = try {
+    Kauai.load(path, voices: voices, drums: drums)
+  } catch e: KauaiError {
+    return refuse(e)
+  } catch e: IOError {
+    return refuse(e)
+  } catch e: ValueError {
+    # An external instrument the sounds do not have.
+    return refuse(e, hint)
+  }
+  if opts.check {
+    println("{path}: {clock(song.length())} once through")
+    return nil
+  }
+  if opts.wav == nil && !Audio.available() {
+    IO.eprintln("{path}: no audio device, so nothing plays")
+    Sys.exit(1) if !watching
+    return nil
+  }
+  # The part --from and --to choose, in seconds. A point the song does not
+  # have ends the program: they come with --wav alone, never watched.
+  let marks = song.marks()
+  let point = fn (s) {
+    return nil if s == nil
+    if cmdline.is_mark(s) && !marks.has(s) {
+      let has = marks.empty() ? "none" : marks.keys().join(", ")
+      IO.eprintln("{name}: {path} has no mark {s} (it has {has})")
+      Sys.exit(1)
+    }
+    song.seconds(s)
+  }
+  let from = point(opts.from)
+  let to = point(opts.to)
+  if from != nil && from >= song.length() {
+    IO.eprintln("{name}: --from {opts.from} is past the song's end ({clock(song.length())})")
+    Sys.exit(1)
+  }
+  if to != nil && to <= (from ?? 0.0) {
+    let after = from == nil ? "the song's start" : "--from {opts.from}"
+    IO.eprintln("{name}: --to {opts.to} is not after {after}")
+    Sys.exit(1)
+  }
+  # The external sounds are built first, and a terminal shows how far along
+  # that is. A part builds only its own, as it renders.
+  let shown = IO.stdout_is_terminal()
+  mut left = from == nil && to == nil ? song.prepare() : 0
+  while left > 0 {
+    print("\rpreparing sounds: {left} left ") if shown
+    left = song.prepare()
+  }
+  print("\r") if shown
+  if opts.wav != nil {
+    let samples = song.render(from: from, to: to)
+    try {
+      FS.write(opts.wav, Audio.Sound(samples).data())
+    } catch e: IOError {
+      return refuse(e)
+    }
+    println("{path}: {clock(samples.size() / 44100.0)} written to {opts.wav}")
+    return nil
+  }
+  println("playing {path} ({clock(song.length())} once through)")
+  song.play()
+  song
+}
+
+# Waits for a playing `song` (nil: none) to end.
+fn wait(song) {
+  return nil if song == nil
+  while song.playing() {
+    Time.sleep(0.1)
+  }
+}
+
+export {start, wait}

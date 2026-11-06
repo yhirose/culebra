@@ -9667,8 +9667,8 @@ if d.reason != nil {
 まず全体を読み込んで検査し、それから`Audio`のruntimeに渡します。runtimeは、音声ストリーム
 自身のクロックに合わせて各音を`tone`のチャンネルで鳴らし、外部の楽器の音は、
 プログラムが用意した音声をサンプルとして重ねます。
-コマンドラインからは`culebra play song.kau`で曲のファイルを再生できます
-([ツール §9](tooling.ja.md#9-曲の再生-culebra-play))。
+Kauaiのコマンドライン`kauai song.kau`は、プログラムを書かずに曲のファイルを
+再生します（リポジトリの`kauai/README.md`）。
 
 | 関数 | 動作 |
 | --- | --- |

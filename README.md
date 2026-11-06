@@ -269,7 +269,6 @@ Every subcommand below is part of the executable that runs a program.
 | `culebra toolchain` | report, install or remove what `build` needs to link on this host |
 | `culebra wrap` | build an extended binary exposing your own C++ classes |
 | `culebra embed-flags` | print the compiler and linker flags a C++ host needs to embed the engine |
-| `culebra play <song.kau>` | play a song written in Kauai, or write it to a WAV file |
 | `culebra serve` | serve a directory of static files |
 
 Details are in [`docs/tooling.md`](docs/tooling.md).

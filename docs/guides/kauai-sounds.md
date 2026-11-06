@@ -138,8 +138,9 @@ hears it, and `vol` still sets the level.
 
 ### Playing a song with an external sound from the command line
 
-`culebra play` has no instrument of its own for an `external` voice. Give it a
-module that exports `voices`, and it plays the song with them:
+The `kauai` command plays an `external` voice only with the instruments it
+bundles. The tool `kauai/tools/play.cul` in the repository takes a module that
+exports `voices` in their place, and plays the song with them:
 
 ```culebra
 # doctest: skip (a module for --sounds; electric_piano is the program's own)
@@ -148,7 +149,7 @@ export {voices}
 ```
 
 ```sh
-culebra play --sounds sounds.cul song.kau
+culebra kauai/tools/play.cul --sounds sounds.cul song.kau
 ```
 
 A song that names an external sound the module does not make is refused before

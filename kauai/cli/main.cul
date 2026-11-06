@@ -1,27 +1,18 @@
-# The Kauai command line: `kauai song.kau` plays a song, and `--check`, `--wav`,
-# `--from` and `--to` do what they do under `culebra play`; `kauai convert`
-# writes a song as a MusicXML score, or a score as a song. `just kauai-build`
-# compiles it into one binary. The sound packages it knows are compiled in, so
-# the binary reads no module at run time and needs no culebra.
-import soprano from '../sounds/soprano_sax/main.cul'
-import alto from '../sounds/alto_sax/main.cul'
-import recipes from '../recipes/main.cul'
+# The Kauai command line: `kauai song.kau` plays a song (options.cul reads its
+# options, play.cul plays it), with the instruments it bundles (bundled.cul); `kauai convert` writes a song as a
+# MusicXML score, or a score as a song. `just kauai-build` compiles it into
+# one binary. The sound packages it knows are compiled in, so the binary reads
+# no module at run time and needs no culebra; kauai/tools/play.cul plays a
+# song with a module of one's own.
+import bundled from './bundled.cul'
+import cmdline from './options.cul'
+import play from './play.cul'
 import live from './live.cul'
 import musicxml from '../convert/musicxml.cul'
 import musicxml_read from '../convert/musicxml_read.cul'
 import kau from '../convert/kau.cul'
 
-let packages = [soprano, alto, recipes]
-
-# Every bundled instrument, by the name a song gives it (`external SopranoSax`),
-# and the drums, which only the recipes have (`external Kick`).
-let voices = packages
-  .flat_map(|p| p.voices.keys().map(|k| (k, p.voices[k])))
-  .to_object()
-let drums = recipes.drums
-
-# The same, as `kauai instruments` lists them.
-let instruments = packages.flat_map(|p| p.instruments).sorted_by(|i| i.name)
+let instruments = bundled.instruments
 
 let usage = "Usage: kauai <song.kau> [options]
   --check              read and check the song, and play nothing
@@ -63,7 +54,7 @@ if args.contains("-h") || args.contains("--help") {
   println(usage)
   Sys.exit(0)
 }
-if args.empty() || args[0].starts_with("-") {
+if args.empty() {
   IO.eprintln(usage)
   Sys.exit(2)
 }
@@ -177,93 +168,9 @@ if args[0] == "live" {
   live.play(player, MIDI.Input.new(named[0].id), breath, db)
 }
 
-let path = args[0]
-let check = args.contains("--check")
-let wav = option("--wav", nil)
-let from_at = option("--from", nil)
-let to_at = option("--to", nil)
-
-if wav != nil && check {
-  IO.eprintln("kauai: --wav writes the song and plays nothing, so not with --check")
-  Sys.exit(2)
-}
-if (from_at != nil || to_at != nil) && wav == nil {
-  IO.eprintln("kauai: --from and --to choose the part --wav writes, so they need --wav")
-  Sys.exit(2)
-}
-
-fn clock(secs) {
-  let s = Math.round(secs)
-  "{s / 60}:{s % 60 < 10 ? "0" : ""}{s % 60}"
-}
-
-let song = try {
-  Kauai.load(path, voices:, drums:)
-} catch e: KauaiError {
-  refuse(e)
-} catch e: IOError {
-  refuse(e)
-} catch e: ValueError {
-  # An external instrument the program does not have.
-  refuse(e)
-}
-
-if check {
-  println("{path}: {clock(song.length())} once through")
-  Sys.exit(0)
-}
-if wav == nil && !Audio.available() {
-  IO.eprintln("{path}: no audio device, so nothing plays")
-  Sys.exit(1)
-}
-
-# A point in the song, in seconds, from a number of seconds, minutes and
-# seconds, or a mark's name. A mistake ends the program.
-let marks = song.marks()
-fn point(name, s) {
-  return nil if s == nil
-  if !"0123456789".contains(s.slice(0, 1).to_string()) && !marks.has(s) {
-    let has = marks.empty() ? "none" : marks.keys().join(", ")
-    IO.eprintln("kauai: {path} has no mark {s} (it has {has})")
-    Sys.exit(1)
-  }
-  song.seconds(s)
-}
-let from = point("--from", from_at)
-let to = point("--to", to_at)
-if from != nil && from >= song.length() {
-  IO.eprintln("kauai: --from {from_at} is past the song's end ({clock(song.length())})")
-  Sys.exit(1)
-}
-if to != nil && to <= (from ?? 0.0) {
-  let after = from == nil ? "the song's start" : "--from {from_at}"
-  IO.eprintln("kauai: --to {to_at} is not after {after}")
-  Sys.exit(1)
-}
-
-# The external sounds are built first, and a terminal shows how far along
-# that is. A part builds only its own, as it renders.
-let watched = IO.stdout_is_terminal()
-mut left = from == nil && to == nil ? song.prepare() : 0
-while left > 0 {
-  print("\rpreparing sounds: {left} left ") if watched
-  left = song.prepare()
-}
-print("\r") if watched
-
-if wav != nil {
-  let samples = song.render(from: from, to: to)
-  try {
-    FS.write(wav, Audio.Sound(samples).data())
-  } catch e: IOError {
-    refuse(e)
-  }
-  println("{path}: {clock(samples.size() / 44100.0)} written to {wav}")
-  Sys.exit(0)
-}
-
-println("playing {path} ({clock(song.length())} once through)")
-song.play()
-while song.playing() {
-  Time.sleep(0.1)
-}
+play.wait(play.start(
+  cmdline.options(args, "kauai"),
+  bundled.voices,
+  bundled.drums,
+  "kauai",
+))

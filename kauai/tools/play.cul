@@ -1,0 +1,100 @@
+# Play a song with an instrument module of one's own, as one makes or tunes
+# it: what the kauai command does (kauai/cli/play.cul), with the sounds
+# --sounds names (a .cul file, or a folder and its main.cul) in place of the
+# instruments it bundles, and --watch to play the song again from the top
+# whenever a .kau or .cul file changes in the song's folder or the module's.
+#
+#   culebra kauai/tools/play.cul --sounds kauai/sounds/alto_sax song.kau
+#   culebra kauai/tools/play.cul --sounds kauai/sounds/alto_sax --watch song.kau
+#   culebra kauai/tools/play.cul --sounds my_sax --wav out.wav --from Theme song.kau
+#
+# An import names its module when the program is written, so this writes a
+# program that imports the one given (instrument_lib.cul) and runs it with
+# this program's terminal, again after each change.
+
+import instrument from './instrument_lib.cul'
+import cmdline from '../cli/options.cul'
+import watch from './watch_lib.cul'
+
+let USAGE = "Usage: culebra kauai/tools/play.cul [options] <song.kau>
+  --sounds <file.cul>  the module whose exports `voices` and `drums`
+                       make the song's `external` sounds (Kauai.load's
+                       arguments of those names); a folder names its
+                       main.cul. Without it, the instruments the kauai
+                       command bundles
+  --watch              read it again and play it from the top whenever
+                       a .kau or .cul file changes in the song's folder
+                       or the sounds module's
+  --check              read and check the song, and play nothing
+  --wav <file.wav>     write the song once through to a WAV file, as it
+                       would sound, and play nothing; no device needed
+  --from <at>          with --wav, write the part from <at> on, heard
+                       from a second before it: seconds (83.5),
+                       minutes and seconds (1:23.5) or a mark's name
+  --to <at>            with --wav, write the part until <at>, and what
+                       starts before it ringing on
+Ctrl+C stops a song that loops, and the watching."
+
+if Sys.argv.contains("-h") || Sys.argv.contains("--help") {
+  println(USAGE)
+  Sys.exit(0)
+}
+if Sys.argv.empty() {
+  IO.eprintln(USAGE)
+  Sys.exit(2)
+}
+
+let here = FS.dirname(FS.abspath(Sys.script))
+let opts = cmdline.options(Sys.argv, "play", more: ["--sounds", "--watch"])
+let module = opts.sounds == nil
+  ? FS.abspath(FS.join(here, "..", "cli", "bundled.cul"))
+  : instrument.module_at(opts.sounds)
+if module == nil {
+  IO.eprintln("play: no sounds file '{opts.sounds}'")
+  Sys.exit(2)
+}
+
+# The folders to watch, as they were given: the song's, and the module's where
+# --sounds names one.
+let folders = opts.watch
+  ? [opts.song, opts.sounds]
+    .filter(|f| f != nil)
+    .map(|f| FS.dirname(FS.is_dir(f) ? FS.join(f, "main.cul") : f))
+    .map(|d| d.empty() ? "." : d)
+    .iter()
+    .distinct()
+    .collect()
+  : []
+let call = JSON.stringify({
+  opts: opts,
+  folders: folders,
+  hint: opts.sounds == nil,
+})
+let run = try {
+  instrument.program(module, FS.join(here, "play_lib.cul"), "run", call)
+} catch e: String {
+  IO.eprintln("play: {e}")
+  Sys.exit(2)
+}
+
+# Runs the program, with this program's streams, as often as a change asks:
+# once without --watch, its status this one's.
+fn main() {
+  defer {
+    FS.remove(run.entry)
+  }
+  while true {
+    let before = watch.files_in(folders)
+    let r = Proc.run(
+      run.cmd,
+      stdin: "inherit",
+      stdout: "inherit",
+      stderr: "inherit",
+    )
+    return r.code if !opts.watch
+    # A program that ended without waiting (its module did not read, say)
+    # waits here instead.
+    watch.wait_for_change(folders, before) if !r.ok
+  }
+}
+Sys.exit(main())

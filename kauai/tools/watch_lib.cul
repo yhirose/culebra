@@ -1,0 +1,40 @@
+# Watching folders for a change, as kauai/tools/play.cul --watch does: the
+# .kau and .cul files in each, with what each holds (an mtime is whole
+# seconds, too coarse for two saves in one), and a wait until one changes,
+# comes or goes.
+
+# The .kau and .cul files of `folders`, each with what it holds.
+fn files_in(folders) {
+  folders.flat_map(fn (d) {
+    let names = try {
+      FS.list_dir(d)
+    } catch e: IOError {
+      []
+    }
+    names
+      .filter(|f| f.ends_with(".kau") || f.ends_with(".cul"))
+      .map(|f| FS.join(d, f))
+  }).map(fn (f) {
+    let held = try {
+      FS.read(f)
+    } catch e: IOError {
+      nil
+    }
+    (f, held)
+  }).to_object()
+}
+
+# Waits until the files of `folders` are no longer `before` (files_in's),
+# and says which one changed.
+fn wait_for_change(folders, before) {
+  mut now = files_in(folders)
+  while now == before {
+    Time.sleep(0.25)
+    now = files_in(folders)
+  }
+  let changed = now.keys().find(|f| before.get(f, nil) != now[f]) ??
+    before.keys().find(|f| !now.has(f))
+  println("{changed.strip_prefix("./")} changed")
+}
+
+export {files_in, wait_for_change}

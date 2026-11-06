@@ -6,7 +6,7 @@
 #     assets/cruise.kau assets/sprint.kau
 #
 # The module is a .cul file, or a folder whose main.cul it is, as for
-# `culebra play --sounds`. An import names its module when the program is
+# `play.cul --sounds`. An import names its module when the program is
 # written, so this writes a program that imports the one given and runs it.
 
 import instrument from './instrument_lib.cul'

@@ -10,7 +10,7 @@
 #     voice Lead  external AltoSax  plays melody  vol 60
 #   }
 #
-#   culebra play --sounds kauai/sounds/alto_sax song.kau
+#   culebra kauai/tools/play.cul --sounds kauai/sounds/alto_sax song.kau
 #
 # The playing is the engine's (kauai/engine/borrow.cul, which lists the
 # voice's parameters); this package is its recordings and its style, both in

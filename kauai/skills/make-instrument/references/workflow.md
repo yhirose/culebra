@@ -174,10 +174,10 @@ made it worse, work from the word to a number and back to the ear
 real thing and ours measured with one tool, one change at the strength the
 person last called good.
 
-Now and then, have a whole song heard (`culebra play --wav` without
-`--from`): some things are only heard in context, as a phrase sounding
-mechanical when it repeats, or a level that is right alone and wrong in
-the band.
+Now and then, have a whole song heard (`culebra kauai/tools/play.cul --wav`
+without `--from`): some things are only heard in context, as a phrase
+sounding mechanical when it repeats, or a level that is right alone and
+wrong in the band.
 
 When the person says something sounds wrong, find where and why before
 changing anything: cut out the passage, measure it, compare it with the

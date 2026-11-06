@@ -1,0 +1,19 @@
+# The instruments the kauai command bundles: the two saxophones and the
+# recipes, each by the name a song gives it (`external SopranoSax`), and the
+# drums, which only the recipes have (`external Kick`). kauai/tools/play.cul
+# plays a song with them when it is given no other sounds.
+import soprano from '../sounds/soprano_sax/main.cul'
+import alto from '../sounds/alto_sax/main.cul'
+import recipes from '../recipes/main.cul'
+
+let packages = [soprano, alto, recipes]
+
+let voices = packages
+  .flat_map(|p| p.voices.keys().map(|k| (k, p.voices[k])))
+  .to_object()
+let drums = recipes.drums
+
+# The same, as `kauai instruments` lists them.
+let instruments = packages.flat_map(|p| p.instruments).sorted_by(|i| i.name)
+
+export {voices, drums, instruments}

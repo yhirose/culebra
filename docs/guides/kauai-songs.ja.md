@@ -43,10 +43,10 @@ section Verse {
 }
 ```
 
-コマンドラインで鳴らします。
+Kauaiのコマンドライン`kauai`で鳴らします。
 
 ```sh
-culebra play first.kau
+kauai first.kau
 ```
 
 読み方は次のとおりです。
@@ -148,7 +148,7 @@ println(song.events()[0])          # => {at: 0.0, len: 0.6, by: 'Tune', pitch: 7
 ```
 
 `song.render()`は、音声デバイスを使わずに、曲をサンプルの配列として返します。プログラムは
-これをファイルに保存できます。コマンドラインでは`culebra play --wav first.wav first.kau`が
+これをファイルに保存できます。コマンドラインでは`kauai first.kau --wav first.wav`が
 同じことをします。
 
 ## 間違いがあったとき

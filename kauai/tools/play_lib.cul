@@ -1,0 +1,33 @@
+# What kauai/tools/play.cul runs as a program of its own, with the
+# instrument module it was given imported: the song played as the kauai
+# command plays it (kauai/cli/play.cul), and, watching, a wait for the next
+# change once it has played, or failed to.
+
+import play from '../cli/play.cul'
+import watch from './watch_lib.cul'
+
+let HINT = "play: --sounds <file.cul> names the module that makes a song's external sounds"
+
+# Plays the song `call` (JSON: {opts, folders, hint}) with `sounds`' voices
+# and drums: `hint` says where sounds come from when the song names one they
+# lack and no module was named.
+fn run(sounds, call) {
+  let c = JSON.parse(call)
+  let watching = !c.folders.empty()
+  let before = watch.files_in(c.folders)
+  let song = play.start(
+    c.opts,
+    sounds.voices ?? {},
+    sounds.drums ?? {},
+    "play",
+    watching: watching,
+    hint: c.hint ? HINT : nil,
+  )
+  if watching {
+    watch.wait_for_change(c.folders, before)
+  } else {
+    play.wait(song)
+  }
+}
+
+export {run}

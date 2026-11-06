@@ -129,8 +129,9 @@ println(song.events()[0])          # => {at: 0.0, len: 0.5, by: 'Ep', pitch: 60,
 
 ### コマンドラインで外部の音を使う
 
-`culebra play`は、`external`の声の楽器を持っていません。`voices`を書き出したモジュールを
-渡すと、その声で曲を鳴らします。
+`kauai`コマンドは、`external`の声を同梱の楽器でしか鳴らしません。リポジトリのツール
+`kauai/tools/play.cul`は、代わりに`voices`を書き出したモジュールを受け取り、その声で
+曲を鳴らします。
 
 ```culebra
 # doctest: skip (a module for --sounds; electric_piano is the program's own)
@@ -139,7 +140,7 @@ export {voices}
 ```
 
 ```sh
-culebra play --sounds sounds.cul song.kau
+culebra kauai/tools/play.cul --sounds sounds.cul song.kau
 ```
 
 モジュールが作らない外部の音を曲が指定していると、何も鳴る前に拒否されます。すぐに間違いが分かります。

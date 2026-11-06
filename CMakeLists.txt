@@ -2438,12 +2438,12 @@ add_test(NAME sys_argv_test
          COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/sys_argv_test.sh
                  $<TARGET_FILE:culebra>)
 
-# `culebra play`'s streams and statuses, for a song that reads, one that does
-# not, one whose external sounds it has or lacks, and one it watches. The
-# device stays closed, so
-# what a song plays is the .cul sweeps' to check (tests/test_kauai*.cul).
-add_test(NAME play_test
-         COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/play_test.sh
+# kauai/tools/play.cul's streams and statuses, for a song that reads, one that
+# does not, one whose external sounds it has or lacks, and one it watches. The
+# device stays closed, so what a song plays is the .cul sweeps' to check
+# (tests/test_kauai*.cul).
+add_test(NAME kauai_play_test
+         COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/kauai_play_test.sh
                  $<TARGET_FILE:culebra>)
 
 # Proc.run's and Proc.spawn's "inherit" streams seen from outside the program:
@@ -2453,9 +2453,9 @@ add_test(NAME proc_stdio_test
          COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/proc_stdio_test.sh
                  $<TARGET_FILE:culebra>)
 
-# The Kauai command line (kauai/cli/main.cul) against `culebra play`: the same
-# streams, statuses and WAV bytes, run as a script and, where this build can
-# make one, as the binary `culebra build` makes of it.
+# The Kauai command line (kauai/cli/main.cul) against kauai/tools/play.cul:
+# the same streams, statuses and WAV bytes, run as a script and, where this
+# build can make one, as the binary `culebra build` makes of it.
 add_test(NAME kauai_cli_test
          COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/kauai_cli_test.sh
                  $<TARGET_FILE:culebra>)

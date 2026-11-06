@@ -1125,7 +1125,7 @@ _run-tests BACKEND:
         # lanes of the same script see them.
         closes_ok proc_stdio_test {{nice_cmd}} bash tests/proc_stdio_test.sh "$BIN" --aot
         # The Kauai command line as an AOT binary (about a minute to build: the
-        # instruments' recordings are embedded), against `culebra play`.
+        # instruments' recordings are embedded), against kauai/tools/play.cul.
         {{nice_cmd}} bash tests/kauai_cli_test.sh "$BIN" --aot || exit 1
         # The self-contained axes are silent when lost (no link error, no
         # ldd); tools/checks/check_aot_feature_axes.sh reads the linked outputs.

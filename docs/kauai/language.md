@@ -1044,7 +1044,7 @@ song.reached("Drive")   # has the song passed `mark Drive`?
 `render(from:, to:)` renders a part of the song, to hear one passage
 without waiting for the whole song. `from:` and `to:` are each a mark's
 name or seconds from the start, the seconds a number or a `String`, of
-seconds or of minutes and seconds (`"1:23.5"`), as `culebra play --from`
+seconds or of minutes and seconds (`"1:23.5"`), as `kauai --from`
 takes them; either can be left out for the top or the end. The samples start a second before `from:` (or at the top, if it
 is nearer), rising from silence over that second, so the part is heard at
 its full level from `from:` on. Notes that start before `to:` play to
@@ -1147,12 +1147,12 @@ whose loudness cannot be known before it plays (silence, or an MP3 or Ogg,
 which a backend decodes only as it plays) plays at `vol / 100` of its own
 level.
 
-A song file plays without a program of one's own: `culebra play song.kau`
-plays it, `culebra play --check song.kau` reads and checks it and plays
-nothing, and `culebra play --watch song.kau` plays it again from the top each
-time a file is saved, for writing it by ear. The external sounds come from
-the module `--sounds` names
-([Tooling §9](../tooling.md#9-playing-a-song-culebra-play)).
+A song file plays without a program of one's own, with the Kauai command
+line (`kauai/README.md` in the repository): `kauai song.kau` plays it with
+the instruments it bundles, and `kauai song.kau --check` reads and checks it
+and plays nothing. The tool `kauai/tools/play.cul` plays it with the external
+sounds a module of one's own makes (`--sounds`), and with `--watch` plays it
+again from the top each time a file is saved, for writing it by ear.
 
 ### The score as data
 

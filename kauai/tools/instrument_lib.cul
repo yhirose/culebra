@@ -3,7 +3,7 @@
 # through a function of the tool's own.
 
 # The module at `path`: a .cul file, or a folder and its main.cul, as for
-# `culebra play --sounds`; its absolute path, nil where there is none.
+# `play.cul --sounds`; its absolute path, nil where there is none.
 fn module_at(path) {
   let file = FS.is_dir(path) ? FS.join(path, "main.cul") : path
   FS.exists(file) ? FS.abspath(file) : nil
