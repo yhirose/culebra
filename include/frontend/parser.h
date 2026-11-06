@@ -2980,31 +2980,36 @@ inline std::shared_ptr<peg::Ast> parse_undesugared(
     std::vector<ParseFailure>& failures) {
   auto& parser = get_parser();
 
-  parser.set_error_reporter([&](const peg::ErrorReport& r) {
+  const peg::ErrorReporter report = [&](const peg::ErrorReport& r) {
     failures.push_back(
         {r.line, codepoint_column_to_byte(expr, r.line, r.col),
          reword_parse_depth_error(culebra_syntax_error(r),
                                   kCulebraParseDepthLimit) +
              open_string_note(expr, failed_string(), r.position, r.line)});
-  });
-  failed_string() = {};
+  };
 
-  std::shared_ptr<peg::Ast> ast;
   // The newline normalization throws on a bare `\r`, which bypasses the
   // reporter. Convert it here so every caller sees one failure shape
   // (failures + nullptr) — fmt/lint/doctest/repl/dap would each need their own
   // catch otherwise.
   try {
     normalize_source_newlines(expr);
-    if (!parser.parse_n(expr.data(), expr.size(), ast, path.c_str())) {
-      return nullptr;
+    // Without a reporter, peglib notes nothing of where each attempt failed,
+    // which is much of a parse's time; nearly every source parses, so the
+    // reporter comes in only to parse a failed one again.
+    for (const bool reports : {false, true}) {
+      parser.set_error_reporter(reports ? report : peg::ErrorReporter{});
+      failed_string() = {};
+      std::shared_ptr<peg::Ast> ast;
+      if (parser.parse_n(expr.data(), expr.size(), ast, path.c_str())) {
+        return ast;
+      }
     }
   } catch (const CulebraError& e) {
     failures.push_back({static_cast<size_t>(e.line), static_cast<size_t>(e.col),
                         e.what()});
-    return nullptr;
   }
-  return ast;
+  return nullptr;
 }
 
 inline std::shared_ptr<peg::Ast> parse(const std::string& path,
