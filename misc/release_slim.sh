@@ -29,7 +29,7 @@ tag=${3:--}
       cmake --build build-slim --target culebra \
         -j"${CULEBRA_BUILD_JOBS:-$(misc/jobs_within.sh 2000000000)}"
       bin=build-slim/culebra
-      if [ "$os" = macos ]; then misc/verify_standalone_macho.sh "$bin"; fi
+      if [ "$os" = macos ]; then misc/verify_standalone_macho.sh --check-minos "$bin"; fi
       ;;
     *)
       echo "release_slim: unknown os '$os'" >&2

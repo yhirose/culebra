@@ -356,7 +356,7 @@ jobs:
 
   # linux-slim on macOS: the macOS slim download, as released.
   macos-slim:
-    runs-on: macos-latest
+    runs-on: macos-15  # release.yml's runner (see macos-arm64 there)
     timeout-minutes: 45
     env:
       CCACHE_DIR: ${{ github.workspace }}/.ccache
@@ -936,7 +936,7 @@ jobs:
   # AOT binary, but with the window OFF, so the culebra_rt_canvas force-load
   # is macOS-uncovered.
   macos-canvas-window:
-    runs-on: macos-latest
+    runs-on: macos-15  # release.yml's runner (see macos-arm64 there)
     timeout-minutes: 60
     env:
       # Deliberately no CULEBRA_CANVAS_WINDOW_DEFAULT — CMake's own macOS
@@ -992,9 +992,10 @@ jobs:
 
       # The download's load-time contract, on the configuration that links the
       # most (the window's frameworks, Webview): nothing outside macOS itself.
-      # test-macos reaches the same script through the gate table.
+      # test-macos reaches the same script through the gate table, without
+      # --check-minos (it runs on macos-latest).
       - name: Verify the binary loads only system libraries
-        run: misc/verify_standalone_macho.sh build/culebra
+        run: misc/verify_standalone_macho.sh --check-minos build/culebra
 
       # A window-enabled binary must still take the headless path on demand,
       # byte-identically, on every engine. Set explicitly — the binary is

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Every Linux job names its Ubuntu, and all of them the same one.
+# Every Linux job names its Ubuntu, and all of them the same one. The macOS
+# jobs that build a download name the oldest macOS it supports (below).
 #
 # A runner label like ubuntu-latest moves when GitHub says so: when it moved
 # to 26.04 (2026-10), the new CMake linked the static OpenSSL with a library
@@ -31,4 +32,21 @@ if (( n < 10 )); then
   echo "runner-pins FAIL: expected the workflows to name $PIN, found $n" >&2
   exit 1
 fi
-echo "runner-pins OK ($n labels, all $PIN)"
+
+# The macOS jobs that build a download, release.yml's and ci.yml's mirrors of
+# them, run on the oldest macOS it supports, since a build starts on the macOS
+# it was built on and later. The others stay on macos-latest, unpinned.
+MAC_PIN=macos-$(sed -n 's/^oldest_macos=\([0-9]*\).*/\1/p' misc/verify_standalone_macho.sh)
+mac_labels=$(grep -nHoE "macos-[0-9]+" "${files[@]}" || true)
+mac_bad=$(printf '%s\n' "$mac_labels" | grep -v ":$MAC_PIN\$" | grep . || true)
+mac_n=$(printf '%s\n' "$mac_labels" | grep -c ":$MAC_PIN\$" || true)
+if [[ -n "$mac_bad" ]]; then
+  printf 'runner-pins FAIL: %s\n' $mac_bad >&2
+  echo "  A pinned macOS job runs on $MAC_PIN (oldest_macos in misc/verify_standalone_macho.sh)." >&2
+  exit 1
+fi
+if (( mac_n < 4 )); then
+  echo "runner-pins FAIL: expected the workflows to name $MAC_PIN, found $mac_n" >&2
+  exit 1
+fi
+echo "runner-pins OK ($n labels, all $PIN; $mac_n labels, all $MAC_PIN)"

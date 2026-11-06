@@ -80,7 +80,9 @@ jobs:
 
   macos-arm64:
     needs: prepare
-    runs-on: macos-latest
+    # The oldest macOS the download supports: it starts on the macOS it was
+    # built on and later (misc/verify_standalone_macho.sh --check-minos).
+    runs-on: macos-15
     timeout-minutes: 60
     env:
       # The 7 GB runner swaps compiling >2 LLVM-header-heavy TUs (~3 GB each).
@@ -105,14 +107,15 @@ jobs:
         with:
           path: ${{ github.workspace }}/.ccache
           key: release-macos-ccache-${{ github.sha }}
-          # Fall back to the cache ci.yml keeps warm on master. A tag ref can
-          # read the default branch's caches but not another tag's, so without
-          # this second key every release would be a cold build — the release-*
-          # entries this run writes are unreadable from the next tag. Same
-          # `just build` flags and same env here, so most objects hit.
+          # Fall back to the cache ci.yml's macos-canvas-window keeps warm on
+          # master. A tag ref can read the default branch's caches but not
+          # another tag's, so without this second key every release would be a
+          # cold build — the release-* entries this run writes are unreadable
+          # from the next tag. Same `just build` flags, env and runner image
+          # there, so most objects hit.
           restore-keys: |
             release-macos-ccache-
-            ${{ runner.os }}-ccache-
+            macos-canvas-ccache-
       # The vendored statics (SDL3, raylib, llama.cpp) as ci.yml's
       # macos-canvas-window publishes them. Restore only: that job keeps it current.
       - name: Restore the vendored statics
@@ -137,7 +140,7 @@ jobs:
       # that has this runner's Homebrew (v0.7.0 shipped needing its libz3 and
       # libzstd).
       - name: Verify the binary loads only system libraries
-        run: misc/verify_standalone_macho.sh build/culebra
+        run: misc/verify_standalone_macho.sh --check-minos build/culebra
       - name: Package and upload
         env:
           GH_TOKEN: ${{ github.token }}
@@ -453,7 +456,7 @@ jobs:
 
   macos-arm64-slim:
     needs: prepare
-    runs-on: macos-latest
+    runs-on: macos-15  # macos-arm64's reason
     timeout-minutes: 45
     env:
       CULEBRA_BUILD_JOBS: "2"

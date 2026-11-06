@@ -100,7 +100,7 @@ that has never built anything does not have
 
 | Platform | Full | Slim |
 |---|---|---|
-| macOS (Apple Silicon) | [culebra-macos-arm64.tar.gz](https://github.com/yhirose/culebra/releases/latest/download/culebra-macos-arm64.tar.gz) | [culebra-macos-arm64-slim.tar.gz](https://github.com/yhirose/culebra/releases/latest/download/culebra-macos-arm64-slim.tar.gz) |
+| macOS 15+ (Apple Silicon) | [culebra-macos-arm64.tar.gz](https://github.com/yhirose/culebra/releases/latest/download/culebra-macos-arm64.tar.gz) | [culebra-macos-arm64-slim.tar.gz](https://github.com/yhirose/culebra/releases/latest/download/culebra-macos-arm64-slim.tar.gz) |
 | Linux (x86-64) | [culebra-linux-x64.tar.gz](https://github.com/yhirose/culebra/releases/latest/download/culebra-linux-x64.tar.gz) | [culebra-linux-x64-slim.tar.gz](https://github.com/yhirose/culebra/releases/latest/download/culebra-linux-x64-slim.tar.gz) |
 | Windows (x86-64) | [culebra-windows-x64.zip](https://github.com/yhirose/culebra/releases/latest/download/culebra-windows-x64.zip) | [culebra-windows-x64-slim.zip](https://github.com/yhirose/culebra/releases/latest/download/culebra-windows-x64-slim.zip) |
 
