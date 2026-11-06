@@ -271,7 +271,9 @@ The driver can also run a model on a GPU through Vulkan
 (`-DCULEBRA_LLAMA_VULKAN`, on where the Vulkan headers, `glslc` and the SPIR-V
 headers are found). The Vulkan loader is opened when the first model is loaded
 rather than linked, so `ldd` does not list it, and a binary with the backend
-starts, and runs models on the CPU, on a machine without a GPU driver. What a
+starts, and runs models on the CPU, on a machine without a GPU driver. On
+macOS the backend is Metal (`-DCULEBRA_LLAMA_METAL`, on by default), which the
+system provides; it links the Metal frameworks, as the window does. What a
 machine needs for the GPU is in
 [`model.device()`](stdlib.md#modeldevice---object).
 

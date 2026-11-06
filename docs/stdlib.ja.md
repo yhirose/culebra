@@ -9534,7 +9534,7 @@ IO.println(LLM.ask("Translate into Japanese: Good morning.", provider: provider)
 
 このプロセスの中で動く言語モデルです。GGUFファイルを読み込んで、問い合わせます。中身はllama.cppで、
 サーバーも、キーも、ネットワークも要りません。全部入り版のダウンロードには入っています（LinuxとWindowsは
-VulkanのGPUバックエンドつき、macOSはCPUで動きます）。スリム版には入っていません。ソースからのビルドでは、
+GPUバックエンドつき。LinuxとWindowsはVulkan、macOSはMetalです）。スリム版には入っていません。ソースからのビルドでは、
 `-DCULEBRA_ENABLE_LLAMA=ON`でconfigureしたときだけ入ります（既定はOFF。最初のビルドで、llama.cppの
 リリースをダウンロードしてコンパイルします）。入っていないビルドでは、`Llama`は未定義の名前です。
 モデルは、読み込んだisolateに属するハンドルで、別の
@@ -9557,8 +9557,11 @@ NVIDIA、AMD、IntelのどのGPUでも同じです。ドライバは最初のモ
 ならなぜかは、`model.device()`でわかります。その機械で最初に動かすときは、GPUのドライバがバックエンドの
 シェーダーをコンパイルするので数秒かかります。ドライバはそれを保存するので、2回目からはかかりません。
 
+macOSでは、モデルはMetalを通してGPUに載ります（`-DCULEBRA_LLAMA_METAL`。既定でON）。Metalはシステムの一部なので、
+入れるものはありません。仮想マシンのように、MetalがGPUを使えないMacでは、モデルはCPUで動きます。
+
 `culebra build`でも使えます。`Llama`を名指しするプログラムにはllama.cppが静的にリンクされ、ビルドする
-culebraがVulkanのバックエンドを持っていれば、それも入ります（全部で約49MB）。`culebra build --llama-cpu`は
+culebraがGPUのバックエンドを持っていれば、それも入ります（LinuxのVulkanで全部で約49MB）。`culebra build --llama-cpu`は
 バックエンドを外し（約6.5MB）、バイナリはモデルをCPUだけで動かします。名指ししないプログラムには何も
 入りません。モデルのファイルはバイナリの外に置きます。
 
@@ -9628,9 +9631,9 @@ let verdict = m.generate("Is the sky blue? ", grammar: 'root ::= "yes" | "no"').
 
 | フィールド | |
 |---|---|
-| `backend` | `"vulkan"`か`"cpu"` |
+| `backend` | `"vulkan"`、`"metal"`、`"cpu"`のどれか |
 | `name` | GPUの名前（`"NVIDIA GeForce RTX 3090"`）。モデルを複数のGPUに分けて載せたときは、名前を`", "`でつないだもの。CPUなら`"CPU"` |
-| `reason` | モデルがGPUにあれば`nil`。そうでなければ理由で、`"gpu: false"`、`"built without GPU support"`、`"no Vulkan driver"`（この機械にVulkanのローダーがない）、`"no Vulkan device"`（ローダーはあるが、使えるGPUがない）のどれか |
+| `reason` | モデルがGPUにあれば`nil`。そうでなければ理由で、`"gpu: false"`、`"built without GPU support"`、`"no Vulkan driver"`（この機械にVulkanのローダーがない）、`"no Vulkan device"`（ローダーはあるが、使えるGPUがない）、`"no Metal device"`（macOSで、Metalが使えるGPUがない）のどれか |
 
 ```culebra
 # doctest: skip — GGUFのモデルファイルと、Llama入りのビルドが要る
@@ -9649,7 +9652,8 @@ NVIDIAのドライバと、AMDとIntelのGPU向けのMesaが持っています�
 |---|---|
 | `"no Vulkan driver"` | Windows：GPUメーカーのドライバ。Linux：Vulkanのローダー（`sudo apt install libvulkan1`。たいていのデスクトップには入っています） |
 | `"no Vulkan device"` | GPUメーカーのドライバ。LinuxのAMDかIntelのGPUなら`sudo apt install mesa-vulkan-drivers` |
-| `"built without GPU support"` | 機械に入れるものはありません。このculebraがVulkanのバックエンドなしでビルドされています |
+| `"no Metal device"` | 入れられるものはありません。MetalがGPUを使えないMacです（仮想マシンなど） |
+| `"built without GPU support"` | 機械に入れるものはありません。このculebraがGPUのバックエンドなしでビルドされています |
 
 ### `model.close()`
 

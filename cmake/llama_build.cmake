@@ -32,11 +32,11 @@ endif()
 
 # The GPU half (stdlib/llama_gpu.h), linked after the statics so it resolves
 # their references to it: the answer that there is no GPU backend, or the
-# Vulkan loader forwarders. Two small archives rather than code in the Llama
-# bodies, because the bodies call the half by name: the driver links the one it
-# carries, and `culebra build` names one in its link fragment (_llama_link,
-# _llama_cpu_link), so --llama-cpu changes the link and nothing else. Both are
-# embedded for that (CMakeLists, _rt_embed_files).
+# backend's own (the Vulkan loader forwarders, Metal's names). Small archives
+# rather than code in the Llama bodies, because the bodies call the half by
+# name: the driver links the one it carries, and `culebra build` names one in
+# its link fragment (_llama_link, _llama_cpu_link), so --llama-cpu changes the
+# link and nothing else. All are embedded for that (CMakeLists, _rt_embed_files).
 add_library(culebra_llama_gpu_none STATIC ./src/runtime/llama_gpu_none.cc)
 set(_llama_gpu_targets culebra_llama_gpu_none)
 if(_llama_vulkan)
@@ -46,9 +46,13 @@ if(_llama_vulkan)
   target_compile_options(culebra_llama_gpu_vulkan PRIVATE -fvisibility=hidden)
   target_link_libraries(culebra_llama_gpu_vulkan ${CMAKE_DL_LIBS})
   list(APPEND _llama_gpu_targets culebra_llama_gpu_vulkan)
-  set(_llama_gpu_lib culebra_llama_gpu_vulkan)
-else()
-  set(_llama_gpu_lib culebra_llama_gpu_none)
+elseif(_llama_metal)
+  add_library(culebra_llama_gpu_metal STATIC ./src/runtime/llama_gpu_metal.cc)
+  list(APPEND _llama_gpu_targets culebra_llama_gpu_metal)
+endif()
+set(_llama_gpu_lib culebra_llama_gpu_none)
+if(_llama_gpu)
+  set(_llama_gpu_lib culebra_llama_gpu_${_llama_gpu})
 endif()
 foreach(_t IN LISTS _llama_gpu_targets)
   target_compile_features(${_t} PRIVATE cxx_std_23)

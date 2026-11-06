@@ -1607,8 +1607,8 @@ inline const auto FS = ::cpp_embedlib::EmbeddedFS{_entries};
     list(APPEND _rt_embed_extern "${_raylib_a}" "${_sdl_a}")
   endif()
   if(CULEBRA_ENABLE_LLAMA)
-    # The Vulkan backend too, which the default link names ("" without it).
-    list(APPEND _rt_embed_extern ${_llama_aot_a} ${_llama_vulkan_a})
+    # The GPU backend too, which the default link names ("" without one).
+    list(APPEND _rt_embed_extern ${_llama_aot_a} ${_llama_gpu_a})
   endif()
   # Every feature archive is force-loaded next to the core archive, so the two
   # must not both define the same symbol: mingw's ld rejects the duplicate and

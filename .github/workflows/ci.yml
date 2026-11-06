@@ -950,6 +950,7 @@ jobs:
       CMAKE_CXX_COMPILER_LAUNCHER: ccache
       CULEBRA_DEPS_CACHE: ${{ github.workspace }}/.deps-cache
       CULEBRA_BUILD_JOBS: "2"  # the runner swaps above 2; see test-macos
+      CULEBRA_TEST_MODEL: ${{ github.workspace }}/stories260K.gguf
     steps:
       - uses: actions/checkout@v5
         with:
@@ -1022,6 +1023,19 @@ jobs:
 
       - name: AOT link + run (Canvas force-load axis)
         run: misc/aot_axes/probe_canvas_aot_link.sh ./build/culebra .
+
+      # Llama with the Metal backend: the only macOS lane that builds it. Not
+      # pinned to a GPU reason: the runner may or may not have a GPU Metal can use.
+      - name: Fetch the Llama test model
+        run: |
+          curl -fsSL --retry 5 --retry-delay 5 -o "$CULEBRA_TEST_MODEL" \
+            https://huggingface.co/ggml-org/models/resolve/main/tinyllamas/stories260K.gguf
+          echo "270cba1bd5109f42d03350f60406024560464db173c0e387d91f0426d3bd256d  $CULEBRA_TEST_MODEL" | shasum -a 256 -c -
+      - name: Test — Llama (tests/llama on vm / JIT, an AOT program)
+        run: |
+          ./build/culebra --vm tests/llama/test_llama.cul
+          ./build/culebra --jit tests/llama/test_llama.cul
+          misc/aot_axes/probe_llama_aot.sh build/culebra
 
       # The packaging release.yml runs on this binary — the macOS branch of the
       # script (shasum, the tarball) otherwise runs only under a `v*` tag, and

@@ -71,7 +71,7 @@ culebra init
 | Windows (x86-64) | [culebra-windows-x64.zip](https://github.com/yhirose/culebra/releases/latest/download/culebra-windows-x64.zip) | [culebra-windows-x64-slim.zip](https://github.com/yhirose/culebra/releases/latest/download/culebra-windows-x64-slim.zip) |
 
 全部入り版は、ドキュメントが説明するものをすべて含みます。2つのエンジン、`culebra build`、Canvasの窓、
-`Scene`、`Audio`、`Webview`、`Llama`（プロセスの中で動く言語モデル。LinuxとWindowsではVulkanでGPUを使います）です。
+`Scene`、`Audio`、`Webview`、`Llama`（プロセスの中で動く言語モデル。LinuxとWindowsではVulkanで、macOSではMetalでGPUを使います）です。
 スリム版は、バイトコードVMと、それ以外の標準ライブラリ（`Http`、`SQLite`、`FS`など）だけです。
 ファイルが小さく起動が速いので、スクリプトの実行（コーディングエージェントからの実行も含む）に向きます。
 LLVMを含まないので、`--jit`と`culebra build`はありません。`install.sh`は、`CULEBRA_FLAVOR=slim`を

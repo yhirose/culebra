@@ -58,12 +58,13 @@ fn with_a_model(path) {
   let g = gm.device()
   gm.close()
   if g.reason == nil {
-    assert_eq(g.backend, "vulkan")
+    assert_eq(["vulkan", "metal"].contains(g.backend), true)
     assert_eq(g.name.empty(), false)
   } else {
     assert_eq([g.backend, g.name], ["cpu", "CPU"])
-    assert_eq(["no Vulkan driver", "no Vulkan device", "built without GPU support"]
-                .contains(g.reason), true)
+    let reasons = ["no Vulkan driver", "no Vulkan device", "no Metal device",
+                   "built without GPU support"]
+    assert_eq(reasons.contains(g.reason), true)
   }
   let pinned = Sys.env("CULEBRA_TEST_GPU_REASON")
   if !pinned.empty() {

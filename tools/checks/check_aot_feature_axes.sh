@@ -557,6 +557,7 @@ else
   # Vulkan backend (what the default link runs on is probe_llama_aot.sh's).
   build llama_cpu "$llama_prog" --llama-cpu
   expect_absent llama_cpu ' _?vk[A-Z][A-Za-z0-9]*$' "Vulkan, --llama-cpu"
+  expect_absent llama_cpu ' _?ggml_metal_[a-z]' "Metal, --llama-cpu"
   expect_output llama_cpu "LlamaError"
 fi
 

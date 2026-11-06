@@ -237,7 +237,9 @@ CIがビルドしたLinux x86-64のCPUのみで、`Llama.load`を呼ぶプログ
 ドライバは、Vulkanを通してモデルをGPUで動かすこともできます（`-DCULEBRA_LLAMA_VULKAN`。Vulkanのヘッダー、
 `glslc`、SPIR-Vのヘッダーが見つかれば入ります）。Vulkanのローダーはリンクせず、最初のモデルを読み込む
 ときに開くので、`ldd`には現れません。バックエンドを持つバイナリも、GPUのドライバがない機械で起動し、
-モデルをCPUで動かします。GPUを使うために機械に要るものは[`model.device()`](stdlib.ja.md#modeldevice---object)にあります。
+モデルをCPUで動かします。macOSのバックエンドはMetalで（`-DCULEBRA_LLAMA_METAL`。既定でON）、システムが
+持っています。窓と同じく、Metalのフレームワークをリンクします。GPUを使うために機械に要るものは
+[`model.device()`](stdlib.ja.md#modeldevice---object)にあります。
 
 モデルはGPUがないと遅いので、このドライバがビルドするプログラムにもバックエンドが入ります。上の`Llama`を
 名指しするプログラムは、6.5MBではなく48.9MBになります。CPUだけのものは`--llama-cpu`で作れます。

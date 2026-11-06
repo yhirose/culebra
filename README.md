@@ -74,7 +74,7 @@ install by hand, download the archive for your platform:
 The full download is everything the documentation describes: both engines,
 `culebra build`, the Canvas window, `Scene`, `Audio`, `Webview`, and `Llama`
 (a language model run in the process, on the GPU through Vulkan on Linux and
-Windows). The slim download is the bytecode VM alone, with the rest of the
+Windows and through Metal on macOS). The slim download is the bytecode VM alone, with the rest of the
 standard library (`Http`, `SQLite`, `FS` and so on): a small file that starts
 fast, for running scripts, a coding agent's included. Without LLVM it has no
 `--jit` and no `culebra build`. `install.sh` installs the slim one when

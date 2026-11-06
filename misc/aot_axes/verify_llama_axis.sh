@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Assert a build really has the Llama namespace in it, and off macOS its Vulkan
-# backend, opened at run time rather than linked.
+# Assert a build really has the Llama namespace in it, and its GPU backend:
+# Metal on macOS, Vulkan elsewhere (its loader opened at run time, not linked).
 #
 # Usage: misc/aot_axes/verify_llama_axis.sh <build dir>
 #
@@ -16,7 +16,13 @@ if [ ! -f "$build/libculebra_rt_llama.a" ]; then
   grep -i llama "$build/CMakeCache.txt" >&2 || true
   exit 1
 fi
-if [ "$(uname -s)" != Darwin ]; then
+if [ "$(uname -s)" = Darwin ]; then
+  if [ ! -f "$build/libculebra_llama_gpu_metal.a" ]; then
+    echo "${prefix}Llama was built without its Metal backend" >&2
+    grep -i metal "$build/CMakeCache.txt" >&2 || true
+    exit 1
+  fi
+else
   if [ ! -f "$build/libculebra_llama_gpu_vulkan.a" ]; then
     echo "${prefix}Llama was built without its Vulkan backend" >&2
     grep -i vulkan "$build/CMakeCache.txt" >&2 || true

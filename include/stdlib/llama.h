@@ -75,7 +75,7 @@ struct Result {
 
 // Where a model runs, decided when it is loaded.
 struct Device {
-  std::string backend;  // "vulkan" or "cpu"
+  std::string backend;  // "vulkan", "metal" or "cpu"
   std::string name;     // the GPUs' descriptions, ", "-separated, or "CPU"
   std::string reason;   // empty when a GPU is used; otherwise why not
 };

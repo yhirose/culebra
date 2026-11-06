@@ -9951,8 +9951,8 @@ prompt the chat template makes of the request, system prompt included.
 
 A language model run in this process: load a GGUF file, then ask it. It is
 llama.cpp underneath, and it needs no server, no key and no network. The full
-downloads carry it (with the Vulkan GPU backend on Linux and Windows, on the
-CPU on macOS); the slim downloads do not. A source build has it when
+downloads carry it (with the GPU backend: Vulkan on Linux and Windows, Metal
+on macOS); the slim downloads do not. A source build has it when
 configured with `-DCULEBRA_ENABLE_LLAMA=ON` (off by default: the first such
 build downloads the llama.cpp release and compiles it). Where it is absent,
 `Llama` is an undefined name. A model is a
@@ -9979,10 +9979,16 @@ and why not a GPU. The first run on a machine spends a few seconds while the
 GPU driver compiles the backend's shaders; the driver keeps them, so later runs
 do not.
 
+On macOS a model goes to the GPU through Metal (`-DCULEBRA_LLAMA_METAL`, on by
+default), which is part of the system, so there is nothing to install. A Mac
+whose GPU Metal cannot use, such as a virtual machine, runs the model on the
+CPU.
+
 `culebra build` works with it. A program that names `Llama` links llama.cpp
-statically into the binary, with the Vulkan backend when the culebra building it
-has one (about 49 MB in all; `culebra build --llama-cpu` leaves the backend out,
-about 6.5 MB, and the binary runs models on the CPU only). A program that does
+statically into the binary, with the GPU backend when the culebra building it
+has one (with Vulkan, about 49 MB in all on Linux; `culebra build --llama-cpu`
+leaves the backend out, about 6.5 MB, and the binary runs models on the CPU
+only). A program that does
 not name `Llama` carries none of it. The model file stays outside the binary.
 
 ### `Llama.load(path, n_ctx=2048, gpu=true, n_batch=0, n_slots=1) -> LlamaModel`
@@ -10058,9 +10064,9 @@ Where the model runs, decided when it was loaded:
 
 | Field | |
 |---|---|
-| `backend` | `"vulkan"` or `"cpu"` |
+| `backend` | `"vulkan"`, `"metal"` or `"cpu"` |
 | `name` | the GPU's name (`"NVIDIA GeForce RTX 3090"`), the names joined with `", "` when the model is spread over several, or `"CPU"` |
-| `reason` | `nil` when the model is on a GPU; otherwise why not: `"gpu: false"`, `"built without GPU support"`, `"no Vulkan driver"` (no Vulkan loader on this machine) or `"no Vulkan device"` (a loader, but no GPU it can use) |
+| `reason` | `nil` when the model is on a GPU; otherwise why not: `"gpu: false"`, `"built without GPU support"`, `"no Vulkan driver"` (no Vulkan loader on this machine), `"no Vulkan device"` (a loader, but no GPU it can use) or `"no Metal device"` (macOS: no GPU Metal can use) |
 
 ```culebra
 # doctest: skip — needs a GGUF model file and a build with Llama
@@ -10080,7 +10086,8 @@ commands for Debian and Ubuntu):
 |---|---|
 | `"no Vulkan driver"` | Windows: the GPU vendor's driver. Linux: the Vulkan loader (`sudo apt install libvulkan1`; most desktops have it) |
 | `"no Vulkan device"` | The GPU vendor's driver. Linux with an AMD or Intel GPU: `sudo apt install mesa-vulkan-drivers` |
-| `"built without GPU support"` | Nothing on the machine: this culebra was built without the Vulkan backend |
+| `"no Metal device"` | Nothing that can be installed: the Mac has no GPU Metal can use (a virtual machine, say) |
+| `"built without GPU support"` | Nothing on the machine: this culebra was built without a GPU backend |
 
 ### `model.close()`
 

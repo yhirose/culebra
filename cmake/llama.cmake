@@ -16,7 +16,7 @@
 include(${CMAKE_CURRENT_LIST_DIR}/llama_cpp.cmake)
 _culebra_require_submodules(cpp-llamalib)
 
-# GPU backend off macOS (macOS gets Metal, U5). ggml-vulkan needs the Vulkan
+# The GPU backend: Metal on macOS, Vulkan elsewhere. ggml-vulkan needs the Vulkan
 # headers and glslc to build; at run time the loader is opened, not linked
 # (src/runtime/llama_vulkan_dynload.cc), so the binary still starts, and runs
 # Llama on the CPU, where no Vulkan driver exists. Like CULEBRA_TENSOR_CUDA,
@@ -52,6 +52,24 @@ if(NOT APPLE AND NOT CULEBRA_LLAMA_VULKAN STREQUAL "OFF")
   endif()
 endif()
 
+# Metal is part of macOS and its SDK, so there is nothing to look for; the
+# shaders are embedded in the archive (GGML_METAL_EMBED_LIBRARY), so the binary
+# needs no file beside it.
+option(CULEBRA_LLAMA_METAL "Metal GPU backend for Llama on macOS" ON)
+set(_llama_metal OFF)
+if(APPLE AND CULEBRA_LLAMA_METAL)
+  set(_llama_metal ON)
+endif()
+
+# The one GPU backend this build carries ("" for none): it names the backend's
+# archive and the GPU half (culebra_llama_gpu_<backend>, cmake/llama_build.cmake).
+set(_llama_gpu "")
+if(_llama_vulkan)
+  set(_llama_gpu vulkan)
+elseif(_llama_metal)
+  set(_llama_gpu metal)
+endif()
+
 # The configuration is part of the key: a flag change builds into a new
 # directory instead of being served stale bytes.
 set(_llama_cmake_args
@@ -66,7 +84,8 @@ set(_llama_cmake_args
   # Portable code: not tuned to the machine that builds it. (On x86 that still
   # means AVX2; stdlib/llama.h checks the CPU for it before loading a model.)
   -DGGML_NATIVE=OFF
-  -DGGML_CUDA=OFF -DGGML_METAL=OFF -DGGML_VULKAN=${_llama_vulkan} -DGGML_BLAS=OFF)
+  -DGGML_CUDA=OFF -DGGML_METAL=${_llama_metal} -DGGML_METAL_EMBED_LIBRARY=${_llama_metal}
+  -DGGML_VULKAN=${_llama_vulkan} -DGGML_BLAS=OFF)
 string(MD5 _llama_args_hash "${_llama_cmake_args}")
 string(SUBSTRING "${_llama_args_hash}" 0 8 _llama_args_hash)
 string(SUBSTRING "${CULEBRA_LLAMA_CPP_SHA256}" 0 12 _llama_src_hash)
@@ -82,7 +101,7 @@ message(STATUS "llama.cpp ${CULEBRA_LLAMA_CPP_VERSION} deps cache: ${_llama_root
 
 # Link order matters for static archives: llama needs ggml, which needs the
 # backends and the base, which the backends need in turn. _llama_aot_a is the
-# CPU backend only, whose one reference into the Vulkan backend
+# CPU backend only, whose one reference into the GPU backend (its registry)
 # src/runtime/llama_gpu_none.cc answers (`culebra build --llama-cpu`).
 #
 # ggml drops the lib prefix from its archives on every WIN32 build (its own
@@ -98,18 +117,22 @@ set(_llama_aot_a
   "${_ggml}ggml.a"
   "${_ggml}ggml-cpu.a"
   "${_ggml}ggml-base.a")
-set(_llama_vulkan_a "")
-if(_llama_vulkan)
-  set(_llama_vulkan_a "${_ggml}ggml-vulkan.a")
+set(_llama_gpu_a "")
+if(_llama_gpu)
+  set(_llama_gpu_a "${_ggml}ggml-${_llama_gpu}.a")
 endif()
 set(_llama_a
   "${_llama_install}/lib/libllama.a"
   "${_ggml}ggml.a"
-  ${_llama_vulkan_a}
+  ${_llama_gpu_a}
   "${_ggml}ggml-cpu.a"
   "${_ggml}ggml-base.a")
 # For tools/checks/check_llama_vulkan_dynload.sh, which compares the forwarders
 # with what the archive names ("" without the backend).
+set(_llama_vulkan_a "")
+if(_llama_vulkan)
+  set(_llama_vulkan_a "${_llama_gpu_a}")
+endif()
 set(CULEBRA_LLAMA_VULKAN_ARCHIVE "${_llama_vulkan_a}" CACHE INTERNAL "")
 set(_llama_system_libs "")
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
@@ -118,19 +141,25 @@ elseif(APPLE)
   # The CPU backend's matrix routines.
   list(APPEND _llama_system_libs "-framework Accelerate" "-framework Foundation")
 endif()
+# What the Metal backend links against (ggml-metal's own CMakeLists).
+set(_llama_metal_frameworks "")
+if(_llama_metal)
+  set(_llama_metal_frameworks "-framework Metal" "-framework MetalKit")
+  list(APPEND _llama_system_libs ${_llama_metal_frameworks})
+endif()
 
 # What `culebra build` appends to the link of a program that names Llama: the
 # statics by embedded name (@libllama.a@, see _rt_embed_extern in
 # CMakeLists.txt) and the system libraries, never a path of this machine.
 # _llama_link is the default: the driver's own set, so a program gets the GPU
-# where the driver has the Vulkan backend. _llama_cpu_link, for `--llama-cpu`,
+# where the driver has a GPU backend. _llama_cpu_link, for `--llama-cpu`,
 # leaves the backend out. Each ends with the GPU half the Llama bodies call by
 # name (cmake/llama_build.cmake builds these archives; the driver embeds them).
 set(_llama_gpu_archives culebra_llama_gpu_none)
-if(_llama_vulkan)
-  list(APPEND _llama_gpu_archives culebra_llama_gpu_vulkan)
+if(_llama_gpu)
+  list(APPEND _llama_gpu_archives culebra_llama_gpu_${_llama_gpu})
 endif()
-function(_llama_fragment out archives gpu_half)
+function(_llama_fragment out archives gpu_half frameworks)
   set(_f "")
   foreach(_a IN LISTS archives)
     cmake_path(GET _a FILENAME _a_name)
@@ -142,12 +171,16 @@ function(_llama_fragment out archives gpu_half)
   elseif(APPLE)
     string(APPEND _f " -framework Accelerate -framework Foundation")
   endif()
+  foreach(_fw IN LISTS frameworks)
+    string(APPEND _f " ${_fw}")
+  endforeach()
   set(${out} "${_f}" PARENT_SCOPE)
 endfunction()
-_llama_fragment(_llama_cpu_link "${_llama_aot_a}" culebra_llama_gpu_none)
+_llama_fragment(_llama_cpu_link "${_llama_aot_a}" culebra_llama_gpu_none "")
 set(_llama_link "${_llama_cpu_link}")
-if(_llama_vulkan)
-  _llama_fragment(_llama_link "${_llama_a}" culebra_llama_gpu_vulkan)
+if(_llama_gpu)
+  _llama_fragment(_llama_link "${_llama_a}" culebra_llama_gpu_${_llama_gpu}
+                  "${_llama_metal_frameworks}")
 endif()
 
 # Every translation unit that reaches stdlib/bindings.h compiles the Llama rows

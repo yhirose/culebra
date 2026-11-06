@@ -10,9 +10,9 @@
 # prints device().reason, with no Vulkan driver listed:
 #
 #   - the default link is the driver's own: the binary answers what the driver
-#     does ("no Vulkan device" where it has the Vulkan backend, "built without
-#     GPU support" where it has none), and never needs the Vulkan loader to
-#     start;
+#     does ("no Vulkan device" where it has the Vulkan backend; on macOS, Metal's
+#     answer, nil on a GPU; "built without GPU support" where it has none), and
+#     never needs the Vulkan loader to start;
 #   - --llama-cpu leaves the GPU half out: "built without GPU support".
 #
 # Sibling of probe_scene_aot_link.sh; tools/checks/check_aot_feature_axes.sh
@@ -68,8 +68,11 @@ check() {  # binary, expected reason, label
 }
 
 driver_reason=$(run "$exe" --vm llama_aot.cul | sed -n 2p)
-case "$driver_reason" in
-  "no Vulkan device" | "built without GPU support") ;;
+# On macOS Metal needs no driver to be hidden, so a runner with a GPU it can use
+# runs the model there (reason nil).
+case "$(uname -s):$driver_reason" in
+  *":no Vulkan device" | *":built without GPU support") ;;
+  "Darwin:no Metal device" | "Darwin:nil") ;;
   *) fail "the driver itself answered [$driver_reason]" ;;
 esac
 "$exe" build llama_aot.cul -o llama_aot
