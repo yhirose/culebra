@@ -54,18 +54,18 @@ class Session {
   // line), less the entries already registered.
   bool run_stdlib_delta(const std::unordered_set<std::string_view>& tokens,
                         std::vector<std::string>& msgs) {
-    std::string text;
-    for_each_new_stdlib_entry(tokens, [&](auto&& source) {
-      text.append(source());
+    std::vector<StdlibEntry> entries;
+    for_each_new_stdlib_entry(tokens, [&](std::string_view name, auto&& source) {
+      entries.push_back({name, source()});
     });
-    if (text.empty()) return true;
+    if (entries.empty()) return true;
     std::vector<std::string> parse_msgs;
-    auto pre = parse_preamble(std::move(text), parse_msgs);
-    if (!pre.ast) {  // the stdlib is trusted; a parse failure is a build bug
+    const auto* pre = cached_stdlib_module(entries, parse_msgs);
+    if (!pre) {  // the stdlib is trusted; a parse failure is a build bug
       msgs.insert(msgs.end(), parse_msgs.begin(), parse_msgs.end());
       return false;
     }
-    return run_unit(pre.ast, pre.source, /*session=*/false, msgs);
+    return run_unit(pre->ast, pre->source, /*session=*/false, msgs);
   }
 
   // Note `tokens` as seen, and hand `f` each entry the selection now takes
@@ -78,7 +78,8 @@ class Session {
     });
     for_each_stdlib_entry(select_stdlib_modules(seen_),
                           [&](std::string_view name, auto&& source) {
-                            if (registered_.insert(name).second) f(source);
+                            if (registered_.insert(name).second)
+                              f(name, source);
                           });
   }
 
@@ -124,7 +125,7 @@ class Session {
     return run_reported(msgs, [&] {
       auto prog =
           std::make_unique<VmProgram>(Compiler::compile_session_modules(modules));
-      if (spliced) for_each_new_stdlib_entry(tokens, [](auto&&) {});
+      if (spliced) for_each_new_stdlib_entry(tokens, [](auto&&, auto&&) {});
       retained_modules_.push_back(modules);  // shared_ptrs: sources + ASTs
       auto& kept = retained_.keep(nullptr, modules.back().ast, std::move(prog));
       Exec::run(*kept.prog);
@@ -160,28 +161,23 @@ class Session {
   }
 
  private:
-  // A preamble text and the AST whose tokens point into it.
-  struct ParsedPreamble {
-    std::shared_ptr<std::string> source;
-    std::shared_ptr<peg::Ast> ast;
-  };
-
-  // Parsing is the expensive half and depends on nothing but the text, so it
-  // is cached by that text and the AST run into each session that asks —
+  // The module depends on nothing but which entries it holds, so it is built
+  // once per set and run into each session that asks —
   // parse_builtin_traits_preamble's bargain, for a set that isn't fixed. The
-  // sessions `culebra test` opens per file mostly name the same few modules,
-  // and without this each re-parses the whole preamble it splices.
+  // sessions `culebra test` opens per file mostly name the same few modules.
   //
   // Per thread, because an embedding may run sessions on several and the cache
   // grows as it is read.
-  static ParsedPreamble parse_preamble(std::string text,
-                                       std::vector<std::string>& parse_msgs) {
-    static thread_local std::map<std::string, ParsedPreamble, std::less<>> cache;
-    if (auto it = cache.find(text); it != cache.end()) return it->second;
-    auto src = std::make_shared<std::string>(std::move(text));
-    auto ast = parse_with_transforms(kStdlibPreamblePath, *src, parse_msgs);
-    if (!ast) return {};
-    return cache.emplace(*src, ParsedPreamble{src, ast}).first->second;
+  static const LoadedModule* cached_stdlib_module(
+      const std::vector<StdlibEntry>& entries,
+      std::vector<std::string>& parse_msgs) {
+    static thread_local std::map<std::string, LoadedModule, std::less<>> cache;
+    std::string key;
+    for (const auto& e : entries) (key += e.name) += ' ';
+    if (auto it = cache.find(key); it != cache.end()) return &it->second;
+    auto m = stdlib_module(entries, parse_msgs);
+    if (!m) return nullptr;
+    return &cache.emplace(std::move(key), std::move(*m)).first->second;
   }
 
   // Run `body`, reporting what it throws the way interpret() reports it. An

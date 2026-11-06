@@ -13,13 +13,20 @@
 #include <frontend/parser.h>         // parse_with_transforms, peg::Ast
 #include <base/shared.h>  // LazyFnGroup, BuiltinTraitUnit, trim_ascii
 #include <interop/wrap_registry.h>  // wrapped_class_names
+#include <stdlib/preamble_ast.h>     // AstData, instantiate_ast
 
 #include <algorithm>
 #include <cctype>
+#include <cstdio>
+#include <cstdlib>
+#include <iterator>
 #include <memory>
+#include <mutex>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -380,16 +387,6 @@ inline void for_each_stdlib_entry(const StdlibSelection& sel, F&& f) {
     f(g->name, [g] { return stdlib_module_source(*g); });
 }
 
-inline std::string stdlib_preamble_for(
-    const std::unordered_set<std::string_view>& names) {
-  std::string preamble;
-  for_each_stdlib_entry(select_stdlib_modules(names),
-                        [&](std::string_view, auto&& source) {
-                          preamble.append(source());
-                        });
-  return preamble;
-}
-
 // --- Baked preamble (the JIT/AOT lanes) -------------------------------------
 //
 // A stdlib module compiled into this binary at build time (CMake's
@@ -430,6 +427,128 @@ inline const BakedPreamble* baked_preamble(std::string_view name) {
   return nullptr;
 }
 
+// One entry of a `<stdlib>` module: its name and its registration source.
+struct StdlibEntry {
+  std::string_view name;
+  std::string source;
+};
+
+inline std::vector<StdlibEntry> stdlib_entries_for(
+    const std::unordered_set<std::string_view>& names) {
+  std::vector<StdlibEntry> entries;
+  for_each_stdlib_entry(select_stdlib_modules(names),
+                        [&](std::string_view name, auto&& source) {
+                          entries.push_back({name, source()});
+                        });
+  return entries;
+}
+
+// One entry parsed alone, as records — what the build bakes, and what an
+// entry the binary did not bake is built from.
+inline std::optional<FlatAst> parse_stdlib_entry(std::string source,
+                                                 std::vector<std::string>& msgs) {
+  auto ast = parse_with_transforms(kStdlibPreamblePath, source, msgs);
+  if (!ast) return std::nullopt;
+  auto flat = flatten_ast(*ast, source);
+  if (!flat) msgs.push_back("<stdlib>: a module too large to record");
+  return flat;
+}
+
+// The parsed AST of one entry alone, as records: baked into this binary at
+// build time, or else parsed once per process — a module's synthesized
+// tokens view the records' strings for as long as the module lives, which
+// may be past the thread that built it (an embedder's session).
+// CULEBRA_PREAMBLE_SOURCE=1, the lanes' A/B switch, takes the parse here too.
+inline std::optional<AstData> stdlib_entry_ast(const StdlibEntry& e,
+                                               std::vector<std::string>& msgs) {
+  if (!std::getenv("CULEBRA_PREAMBLE_SOURCE"))
+    if (const auto* b = baked_preamble_ast(e.name)) return b->data;
+  static std::mutex mu;
+  static std::unordered_map<std::string, FlatAst> parsed;
+  std::lock_guard lock(mu);
+  auto it = parsed.find(std::string(e.name));
+  if (it == parsed.end()) {
+    auto flat = parse_stdlib_entry(e.source, msgs);
+    if (!flat) return std::nullopt;
+    it = parsed.emplace(e.name, std::move(*flat)).first;
+  }
+  return it->second.data();
+}
+
+// CULEBRA_CHECK_BAKED_AST=1: every entry this binary baked against its parse,
+// and none missing where the build bakes (it bakes the ASTs beside the native
+// objects). Losing the bake is silent otherwise — the executor just parses
+// again — and a stale one would compile code the source no longer says. Read
+// once, at the first `<stdlib>` module.
+inline void check_baked_preamble_asts() {
+  static const bool checked = [] {
+    if (!std::getenv("CULEBRA_CHECK_BAKED_AST") || baked_preambles().empty())
+      return true;
+    auto fail = [](std::string_view what, std::string_view name) {
+      std::fprintf(stderr, "baked stdlib AST: %.*s '%.*s'\n",
+                   static_cast<int>(what.size()), what.data(),
+                   static_cast<int>(name.size()), name.data());
+      std::exit(1);
+    };
+    for_each_stdlib_entry(
+        all_stdlib_entries(), [&](std::string_view name, auto&& source) {
+          const auto* baked = baked_preamble_ast(name);
+          if (!baked) fail("missing", name);
+          std::vector<std::string> msgs;
+          auto flat = parse_stdlib_entry(source(), msgs);
+          if (!flat || !(flat->data() == baked->data))
+            fail("differs from the parse of", name);
+        });
+    return true;
+  }();
+  (void)checked;
+}
+
+// The `<stdlib>` module of `entries`: each one's AST, built from its records
+// at the offset its source takes in the module's, under one root as the
+// parse of the concatenation would have them — the lines inside are each
+// entry's own, as in the baked native objects; an error raised in the stdlib
+// reports at the user's call into it anyway (is_library_path). Nullopt, with
+// the parse messages, if an entry fails to parse — a build bug.
+inline std::optional<LoadedModule> stdlib_module(
+    const std::vector<StdlibEntry>& entries, std::vector<std::string>& msgs) {
+  using namespace peg::udl;
+  check_baked_preamble_asts();
+  auto src = std::make_shared<std::string>();
+  for (const auto& e : entries) src->append(e.source);
+  std::vector<std::shared_ptr<peg::Ast>> statements;
+  size_t offset = 0;
+  for (const auto& e : entries) {
+    auto data = stdlib_entry_ast(e, msgs);
+    if (!data) return std::nullopt;
+    auto ast = instantiate_ast(*data, *src, offset);
+    offset += e.source.size();
+    if (ast->tag == "STATEMENTS"_) {
+      std::ranges::move(ast->nodes, std::back_inserter(statements));
+    } else {
+      // A lone statement the parse collapsed onto its root.
+      ast->original_name = "STATEMENT";
+      ast->original_tag = "STATEMENT"_;
+      statements.push_back(std::move(ast));
+    }
+  }
+  LoadedModule m;
+  m.abs_path = kStdlibPreamblePath;
+  if (statements.size() == 1) {
+    m.ast = statements.front();
+  } else {
+    m.ast = std::make_shared<peg::Ast>(
+        kStdlibPreamblePath, 1, 1, "STATEMENTS",
+        std::vector<std::shared_ptr<peg::Ast>>{}, 0, src->size());
+    m.ast->nodes = std::move(statements);
+    for (auto& s : m.ast->nodes) s->parent = m.ast;
+  }
+  m.ast->original_name = "PROGRAM";
+  m.ast->original_tag = "PROGRAM"_;
+  m.source = std::move(src);
+  return m;
+}
+
 // The core built-in traits (shared.h's builtin_traits_preamble) as a baked
 // entry. They are not part of the splice — every program registers them,
 // whatever it names — so they never reach `baked` through
@@ -465,8 +584,8 @@ inline BakedEntries with_baked_traits(
 
 // The split a lane that can call the baked entries makes: the stdlib modules
 // `names` pulls in, as the entries this binary baked plus the source of the
-// rest — in the order stdlib_preamble_for emits, so the registrations still
-// run in that order. The one place the split lives: the splice prunes with
+// rest — in the order stdlib_entries_for lists them, so the registrations
+// still run in that order. The one place the split lives: the splice prunes with
 // it (a lane that calls an entry must not also compile its source) and
 // resolve_baked_preamble takes it back out of an already-spliced list, and
 // they cannot disagree about what a program pulled in. Everything stays
@@ -474,13 +593,13 @@ inline BakedEntries with_baked_traits(
 // CULEBRA_DEV_NO_RT driver — or where an A/B run asked for the splice.
 struct StdlibPlan {
   std::vector<const BakedPreamble*> baked;
-  std::string rest;
+  std::vector<StdlibEntry> rest;
 };
 inline StdlibPlan plan_stdlib_preamble(
     const std::unordered_set<std::string_view>& names) {
   StdlibPlan p;
   if (baked_preambles().empty() || std::getenv("CULEBRA_PREAMBLE_SOURCE")) {
-    p.rest = stdlib_preamble_for(names);
+    p.rest = stdlib_entries_for(names);
     return p;
   }
   for_each_stdlib_entry(select_stdlib_modules(names),
@@ -488,7 +607,7 @@ inline StdlibPlan plan_stdlib_preamble(
                           if (auto* b = baked_preamble(name))
                             p.baked.push_back(b);
                           else
-                            p.rest.append(source());
+                            p.rest.push_back({name, source()});
                         });
   return p;
 }
@@ -518,25 +637,19 @@ inline void splice_stdlib_preamble(
   // (or `Time`, ...) must pull that namespace's preamble in too, even when
   // the entry module never names it.
   auto names = program_tokens(modules);
-  std::string preamble;
+  std::vector<StdlibEntry> entries;
   if (baked) {
     auto plan = plan_stdlib_preamble(names);
     *baked = std::move(plan.baked);
-    preamble = std::move(plan.rest);
+    entries = std::move(plan.rest);
   } else {
-    preamble = stdlib_preamble_for(names);
+    entries = stdlib_entries_for(names);
   }
-  if (preamble.empty()) return;
-
-  auto buf = std::make_shared<std::string>(std::move(preamble));
+  if (entries.empty()) return;
   std::vector<std::string> msgs;
-  auto ast = parse_with_transforms(kStdlibPreamblePath, *buf, msgs);
-  if (!ast) return;  // stdlib is trusted; a parse failure is a build bug
-  LoadedModule pre;
-  pre.abs_path = kStdlibPreamblePath;
-  pre.source = std::move(buf);
-  pre.ast = std::move(ast);
-  modules.insert(modules.begin(), std::move(pre));
+  auto pre = stdlib_module(entries, msgs);
+  if (!pre) return;  // stdlib is trusted; a parse failure is a build bug
+  modules.insert(modules.begin(), std::move(*pre));
 }
 
 // A module list as the lanes run it, the `<stdlib>` module in front when the
@@ -576,20 +689,17 @@ inline BakedResolution resolve_baked_preamble(
   auto plan = plan_stdlib_preamble(program_tokens(modules));
   if (plan.baked.empty()) return r;
   r.baked = std::move(plan.baked);
-  std::string rest = std::move(plan.rest);
-  if (rest.empty()) {
+  if (plan.rest.empty()) {
     r.modules.erase(r.modules.begin());
     return r;
   }
-  auto buf = std::make_shared<std::string>(std::move(rest));
   std::vector<std::string> msgs;
-  auto ast = parse_with_transforms(kStdlibPreamblePath, *buf, msgs);
-  if (!ast) {  // a build bug; keep the full splice rather than lose a module
+  auto rest = stdlib_module(plan.rest, msgs);
+  if (!rest) {  // a build bug; keep the full splice rather than lose a module
     r.baked.clear();
     return r;  // r.modules is still the caller's list
   }
-  r.modules.front().source = std::move(buf);
-  r.modules.front().ast = std::move(ast);
+  r.modules.front() = std::move(*rest);
   return r;
 }
 
@@ -601,27 +711,19 @@ inline BakedResolution resolve_baked_preamble(
 // Parsed, never compiled or run: the baked entry still carries the module's
 // code and registrations, this only restores what the splice would have seen
 // (Compiler::register_stdlib_value_decls consumes the ASTs). The raw-source
-// scan over-approximates — a mention in a comment costs one small parse.
+// scan over-approximates — a mention in a comment costs one small module.
 inline std::vector<LoadedModule> parse_baked_value_decls(
     std::span<const BakedPreamble* const> baked) {
   std::vector<LoadedModule> decls;
-  for (const auto* b : baked) {
-    std::string src;
+  for (const auto* b : baked)
     for (const auto& m : lazy_ns_modules())
       if (std::string_view(m.name) == b->name &&
-          std::string_view(m.source).find("@value") != std::string_view::npos)
-        src = stdlib_module_source(m);
-    if (src.empty()) continue;  // bare-function groups carry no classes
-    auto buf = std::make_shared<std::string>(std::move(src));
-    std::vector<std::string> msgs;
-    auto ast = parse_with_transforms(kStdlibPreamblePath, *buf, msgs);
-    if (!ast) continue;  // stdlib is trusted; a parse failure is a build bug
-    LoadedModule d;
-    d.abs_path = kStdlibPreamblePath;
-    d.source = std::move(buf);
-    d.ast = std::move(ast);
-    decls.push_back(std::move(d));
-  }
+          std::string_view(m.source).find("@value") != std::string_view::npos) {
+        std::vector<std::string> msgs;
+        // stdlib is trusted; a parse failure is a build bug
+        if (auto d = stdlib_module({{m.name, stdlib_module_source(m)}}, msgs))
+          decls.push_back(std::move(*d));
+      }
   return decls;
 }
 

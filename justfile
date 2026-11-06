@@ -1641,6 +1641,11 @@ _run-tests BACKEND:
     # as every JIT test crashing at once.
     run_jit_host_symbols() { bash tools/checks/check_jit_host_symbols.sh "$BIN"; }
 
+    # The executor builds its <stdlib> module from the ASTs the build baked;
+    # losing them is silent (it parses again), and a stale one compiles what
+    # the source no longer says (tools/checks/check_baked_ast.sh).
+    run_baked_ast() { bash tools/checks/check_baked_ast.sh "$BIN"; }
+
     # The macOS driver loads nothing but what macOS ships: with a Homebrew
     # dylib among its load commands it starts only where Homebrew has that
     # dylib, and every machine that builds this does
@@ -1764,6 +1769,7 @@ _run-tests BACKEND:
       "run_optional_ns|optional ns (the tests/*.cul sweep names no optional namespace)|static|check,dev,test|buildtree|-|0"
       "run_clean_covers_ignored|clean covers ignored (each .gitignore pattern is cleaned or kept on purpose)|static|check,dev,test|buildtree|-|0"
       "run_jit_host_symbols|jit host symbols (driver defines what codegen names)|binary|dev,test|light|-|0"
+      "run_baked_ast|baked AST (every baked stdlib AST matches its parse)|binary|check,dev,test|light|-|1"
       "run_standalone_macho|standalone macho (the macOS driver loads only system libraries)|binary|dev,test|light|-|0"
       "run_eh_balance|eh balance (every begin_catch is closed)|binary|dev,test|light|-|2"
       "run_alloca_discipline|alloca discipline (scratch slots stay entry-block)|binary|dev,test|light|-|0"

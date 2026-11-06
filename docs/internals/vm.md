@@ -143,6 +143,18 @@ includes them in a fixed order and nothing else includes them at all.
    `CULEBRA_PREAMBLE_SOURCE=1` makes the lowering lanes splice again — the
    traits included, which is what `check_baked_preamble.sh` reads the
    switch off.
+   What the executor does not repeat is the parse. The same build step
+   writes each module's parsed AST as data (`stdlib/preamble_ast.h`), and
+   `stdlib_module` builds the `<stdlib>` module from it: each entry's AST
+   on its own, its positions moved to where its source sits in the
+   module's and its source tokens pointing there, side by side under one
+   root as the parse of the concatenation would have them. An entry the
+   binary did not bake (a build without the JIT) is parsed once per process
+   and goes through the same records. Lines inside the module are each
+   entry's own, as in the baked objects; an error raised there reports at
+   the user's call into it. `CULEBRA_PREAMBLE_SOURCE=1` takes the parse
+   here too, and `CULEBRA_CHECK_BAKED_AST=1` holds every baked AST to its
+   parse (`check_baked_ast.sh`, in `just check`).
    One compile-time fact survives the resolution: the `@value` class
    declarations of the baked modules. `parse_baked_value_decls` parses
    (never compiles) each baked module whose source mentions `@value`, and
