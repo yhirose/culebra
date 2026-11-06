@@ -60,7 +60,7 @@ expect_syntax_message "missing operand"     'y = (1 +' \
 expect_syntax_message "operator as operand" 'x = 1 +* 2' \
   ", unexpected '*', expecting an expression."
 expect_syntax_message "empty argument list" 'foo(' \
-  ", expecting '**', ')', <IDENTIFIER> or an expression."
+  ", expecting '**', ')' or an expression."
 expect_syntax_message "dangling else"       'if x { 1 } else' \
   ", expecting 'if' or '{'."
 expect_syntax_message "condition, no block" 'while true 1' \

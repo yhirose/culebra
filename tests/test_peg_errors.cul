@@ -32,22 +32,22 @@ assert_true(e[0].starts_with("1:4: syntax error"))
 assert_eq(PEG.parser(calc).parse("1 +"), (false, nil))
 
 // --- what a failure expected is listed whole, a control character among it
-// spelled as its escape; at the end of the input a rule named with a leading
-// underscore stays out ---
+// spelled as its escape and the token a digit would go on as its rule; at
+// the end of the input a rule named with a leading underscore stays out ---
 assert_eq(errors_of(`
   List  <- '[' _ Item (_ ',' _ Item)* _ ']'
   Item  <- < [0-9]+ >
   ~_    <- (Space / EOL)*
   Space <- ' ' / '\t'
   EOL   <- '\n'
-`, "[1, 2"), ["1:6: syntax error, expecting ' ', '\\t', '\\n', ',' or ']'."])
+`, "[1, 2"), ["1:6: syntax error, expecting ' ', '\\t', '\\n', ',', ']' or <Item>."])
 assert_eq(errors_of(`
   List   <- '[' _ Item (_ ',' _ Item)* _ ']'
   Item   <- < [0-9]+ >
   ~_     <- (_Space / _EOL)*
   _Space <- ' ' / '\t'
   _EOL   <- '\n'
-`, "[1, 2"), ["1:6: syntax error, expecting ',' or ']'."])
+`, "[1, 2"), ["1:6: syntax error, expecting ',', ']' or <Item>."])
 
 // --- a malformed grammar: load_grammar answers false and the logger is told
 // where in the grammar, at load and not at the first parse ---
