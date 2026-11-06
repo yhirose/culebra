@@ -10,7 +10,7 @@ macOS) and the slim downloads do not. [`examples/llm-local/`](../../examples/llm
 has five finished programs built from the pieces here.
 
 This guide covers *using* `LLM` and `Llama`. For the API reference see
-[`stdlib.md` §42](../stdlib.md#42-llm) and [§43](../stdlib.md#43-llama).
+[`stdlib.md` §43](../stdlib.md#43-llm) and [§44](../stdlib.md#44-llama).
 
 Contents
 --------
@@ -347,9 +347,9 @@ try {
 
 ## Where to go next
 
-- [`stdlib.md` §42 `LLM`](../stdlib.md#42-llm): every argument, the message
+- [`stdlib.md` §43 `LLM`](../stdlib.md#43-llm): every argument, the message
   format, writing a provider, the reply's fields.
-- [`stdlib.md` §43 `Llama`](../stdlib.md#43-llama): `generate` without a chat
+- [`stdlib.md` §44 `Llama`](../stdlib.md#44-llama): `generate` without a chat
   template, sampling, the cache, `device()`.
 - [`examples/llm-local/`](../../examples/llm-local/): translate, chat,
   summarize, ask and classify, as programs that take a model path.

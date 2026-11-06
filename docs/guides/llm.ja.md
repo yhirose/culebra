@@ -9,7 +9,7 @@ culebraから言語モデルを呼ぶ手順を、順に追います。相手は2
 [`examples/llm-local/`](../../examples/llm-local/)にあります。
 
 このガイドは`LLM`と`Llama`の*使い方*を扱います。APIのリファレンスは
-[`stdlib.ja.md` §42](../stdlib.ja.md#42-llm)と[§43](../stdlib.ja.md#43-llama)を見てください。
+[`stdlib.ja.md` §43](../stdlib.ja.md#43-llm)と[§44](../stdlib.ja.md#44-llama)を見てください。
 
 目次
 ----
@@ -327,9 +327,9 @@ try {
 
 ## この先
 
-- [`stdlib.ja.md` §42 `LLM`](../stdlib.ja.md#42-llm): すべての引数、メッセージの形式、providerの書き方、
+- [`stdlib.ja.md` §43 `LLM`](../stdlib.ja.md#43-llm): すべての引数、メッセージの形式、providerの書き方、
   返答のフィールド。
-- [`stdlib.ja.md` §43 `Llama`](../stdlib.ja.md#43-llama): チャットテンプレートなしの`generate`、
+- [`stdlib.ja.md` §44 `Llama`](../stdlib.ja.md#44-llama): チャットテンプレートなしの`generate`、
   サンプリング、キャッシュ、`device()`。
 - [`examples/llm-local/`](../../examples/llm-local/): 翻訳、チャット、要約、質問、分類を、モデルの
   パスを受け取るプログラムとして。
