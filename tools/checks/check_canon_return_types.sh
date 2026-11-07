@@ -65,10 +65,13 @@ def table_rows():
         if m:
             cur = m.group(1)
             continue
-        if not line.startswith('  {"'):
+        if line.startswith('};'):
+            cur = None
             continue
-        f = line.strip().rstrip(',').lstrip('{').rstrip('}').split(', ')
-        rows[cur].append((f[2].strip('"'), f[5].strip('"')))
+        # {"ns", "sub", "name", params, "return type"}
+        m = re.match(r'^  \{"\w*", "\w*", "(\w+)", [^,]+, "([^"]*)"\},$', line)
+        if cur and m:
+            rows[cur].append((m.group(1), m.group(2)))
     return rows
 
 

@@ -2064,65 +2064,6 @@ inline ParamNameLoc extract_param_name_loc(const peg::Ast& p) {
   return {id.token, id.line, id.column};
 }
 
-// Returns the index of the first kw-only parameter (the cap on
-// allowed positional arguments), or nullopt if there is no `*`
-// separator. Templated so it works for both the canonical-signature Parameter
-// and JIT-local ParamInfo, which share a `kw_only` field.
-template <class P>
-inline std::optional<size_t> first_kw_only_index(
-    const std::vector<P>& params) {
-  for (size_t i = 0; i < params.size(); i++) {
-    if (params[i].kw_only) return i;
-  }
-  return std::nullopt;
-}
-
-// Count of regular (positional-bindable) params — those with neither
-// `kw_only` nor `kwargs_rest` set. This is where overflow positionals
-// stop being consumed by formal slots and start flowing to __ARGS__.
-template <class P>
-inline size_t regular_param_count(const std::vector<P>& params) {
-  size_t n = 0;
-  for (auto& p : params) {
-    if (!p.kw_only && !p.kwargs_rest && !p.args_rest) n++;
-  }
-  return n;
-}
-
-// True if the parameter list declares a `*args` positional catch-all.
-// When present, there is no cap on positional arguments — the overflow
-// flows into the `*args` Array rather than being rejected.
-template <class P>
-inline bool has_args_rest(const std::vector<P>& params) {
-  for (auto& p : params) {
-    if (p.args_rest) return true;
-  }
-  return false;
-}
-
-// Positional arity bounds for a built-in (fixed-shape) method, derived
-// from its declared parameters — the single source of truth both
-// backends consult. `min` counts the required positional params (no
-// default, not kw-only/rest); `max` is the regular positional count;
-// `variadic` is true when a `*args` catch-all removes the upper bound.
-// A param carries a default when either a default expression (user
-// source) or a literal default Value (C++-built stdlib entry) is set.
-struct ArityBounds {
-  long min;
-  long max;
-  bool variadic;
-};
-template <class P>
-inline ArityBounds builtin_arity_bounds(const std::vector<P>& params) {
-  long required = 0;
-  for (const auto& p : params) {
-    if (p.kw_only || p.kwargs_rest || p.args_rest) continue;
-    if (p.default_expr == nullptr && p.default_value == nullptr) required++;
-  }
-  return {required, static_cast<long>(regular_param_count(params)),
-          has_args_rest(params)};
-}
-
 // Built-in methods bind their arguments positionally — `'ab'.repeat(2)`, never
 // `'ab'.repeat(n: 2)`. The one name a keyword argument may carry is a
 // KEYWORD-ONLY parameter, which has no positional slot to bind through

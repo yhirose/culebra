@@ -7,7 +7,8 @@
 // binding and diagnostics; it was derived from the tree-walker's own
 // parameter tables while both engines existed (Phase 4 B7-a), and the data
 // lives in canon_sigs_table.h, maintained by hand since B7-f (the generator
-// read the deleted engine; a signature change edits the table directly).
+// read the deleted engine; a signature change edits the table directly,
+// one parameter array per signature).
 //
 // Nothing here touches the interpreter, LLVM, or the GC — plain std types
 // over constexpr arrays — so vm::Compiler, the JIT runtime, and the AOT
@@ -47,23 +48,45 @@ struct CanonParam {
   std::string_view default_str;
 };
 
-// One method's full signature. `min_arity`/`max_arity`/`variadic` are the
-// `builtin_arity_bounds` result precomputed at generation time; the three
-// indices are first-occurrence positions (-1 = none), matching what the
-// kwarg resolver derives today.
+// One method's full signature, made from its parameters: everything but
+// ns/sub/name/return_type is derived from them here, so a row names its
+// parameters and nothing that counts them. `max_arity` counts the regular
+// parameters (not keyword-only, `*args` or `**kwargs`), `min_arity` those
+// of them without a default, `variadic` whether there is a `*args`; the
+// three indices are first-occurrence positions (-1 = none).
 struct CanonSig {
   std::string_view ns;    // "" = bare global / value-type table entry
   std::string_view sub;   // "" = no nested sub-namespace
   std::string_view name;
-  const CanonParam* params;
-  int n_params;
+  const CanonParam* params = nullptr;
+  int n_params = 0;
   std::string_view return_type;  // "" = none declared
-  int min_arity;
-  int max_arity;
-  bool variadic;
-  int kwargs_rest_idx;    // -1 = none
-  int first_kw_only_idx;  // -1 = none
-  int args_rest_idx;      // -1 = none
+  int min_arity = 0;
+  int max_arity = 0;
+  bool variadic = false;
+  int kwargs_rest_idx = -1;
+  int first_kw_only_idx = -1;
+  int args_rest_idx = -1;
+
+  constexpr CanonSig(std::string_view ns, std::string_view sub,
+                     std::string_view name, std::span<const CanonParam> ps,
+                     std::string_view return_type)
+      : ns(ns), sub(sub), name(name),
+        params(ps.empty() ? nullptr : ps.data()),
+        n_params(static_cast<int>(ps.size())), return_type(return_type) {
+    for (int i = 0; i < n_params; i++) {
+      const CanonParam& p = ps[static_cast<size_t>(i)];
+      if (p.kwargs_rest && kwargs_rest_idx < 0) kwargs_rest_idx = i;
+      if (p.kw_only && first_kw_only_idx < 0) first_kw_only_idx = i;
+      if (p.args_rest) {
+        variadic = true;
+        if (args_rest_idx < 0) args_rest_idx = i;
+      }
+      if (p.kw_only || p.kwargs_rest || p.args_rest) continue;
+      max_arity++;
+      if (!p.has_default) min_arity++;
+    }
+  }
 };
 
 // The first keyword-only parameter's name, which a surplus positional's

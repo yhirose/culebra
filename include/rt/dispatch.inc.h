@@ -2383,7 +2383,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_call_with_kwargs(
   size_t arity = meta->n_params;
   // Positionals only reach the regular parameters: a keyword-only slot and
   // the `**rest` catch-all are named-only, so anything past the last regular
-  // one is an overflow argument (the interp's regular_param_count boundary).
+  // one is an overflow argument.
   size_t regular_end = arity;
   if (meta->first_kw_only_idx >= 0)
     regular_end = static_cast<size_t>(meta->first_kw_only_idx);

@@ -11212,11 +11212,8 @@ inline const CanonSig* _canon_sig(const NsMethod* m) {
                                 false, false, row.param_types[i],
                                 CanonDefault::None, 0, {}});
       }
-      int n = static_cast<int>(ps.size());
-      r.wrap_sigs.push_back(CanonSig{row.ns, row.sub, row.name,
-                                     ps.empty() ? nullptr : ps.data(), n,
-                                     row.return_type, n, n, false, -1, -1,
-                                     -1});
+      r.wrap_sigs.push_back(
+          CanonSig{row.ns, row.sub, row.name, ps, row.return_type});
       r.table.emplace(culebra::canon_sig_key(row.ns, row.sub, row.name),
                       &r.wrap_sigs.back());
     }
@@ -12497,9 +12494,9 @@ inline bool _jit_ns_kwarg_resolve(
 }
 
 // Callback-arity bounds for an ns-method closure handed to a HOF. Reads the
-// SAME canonical bounds interp's check_callback_arity derived (the sig's
-// builtin_arity_bounds result, precomputed at generation), so both backends
-// gate an ns-method callback identically. Returns false for non-ns closures.
+// sig's min_arity/max_arity/variadic (derived by CanonSig's constructor), so
+// both backends gate an ns-method callback identically. Returns false for
+// non-ns closures.
 // Goes through _ns_type_meta (pointer-keyed, covers every method) rather
 // than _canon_sig — this runs once per HOF call, and the string-keyed
 // registry lookup would allocate on that path.
