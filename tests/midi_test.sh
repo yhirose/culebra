@@ -25,12 +25,25 @@ cat > "$TMP/read.cul" <<'EOF'
 # Open the test source once it is listed, say so on the FIFO, and print the
 # messages it sends, rounded; then send to the test destination.
 let fifo = Sys.argv[0]
-mut port = nil
-let until = Time.monotonic() + 5.0
-while port == nil && Time.monotonic() < until {
-  port = MIDI.inputs().find(|p| p.name == "culebra midi test")
-  Time.sleep(0.01) if port == nil
+
+# The test's port among `ports()`, once it is listed. The MIDI server tells
+# this program of the source and the destination the sender made one at a
+# time, and a server busy with other programs' clients (the gate starts the
+# kauai command beside this) can list the source well before the
+# destination, and take seconds to list either. The limit is for a port that
+# never comes, not a measure of how soon one does.
+fn listed(ports) {
+  mut port = nil
+  let until = Time.monotonic() + 30.0
+  while port == nil && Time.monotonic() < until {
+    port = ports().find(|p| p.name == "culebra midi test")
+    Time.sleep(0.01) if port == nil
+  }
+  throw "no port named culebra midi test after 30 s" if port == nil
+  port
 }
+
+let port = listed(|| MIDI.inputs())
 let input = MIDI.Input.new(port.id, sysex: true)
 FS.write(fifo, "ready\n")
 let r3 = |x| Math.round(x * 1000) / 1000.0
@@ -63,7 +76,7 @@ let after = try { input.wait(0.1); "waited" } catch e { e.kind }
 println("after drop: {after}")
 
 let refused = |f| try { f(); "sent" } catch e { "{e.kind}: {e.message}" }
-let dest = MIDI.outputs().find(|p| p.name == "culebra midi test")
+let dest = listed(|| MIDI.outputs())
 let no_output = refused(|| MIDI.Output.new(port.id))
 println(no_output.starts_with("ValueError: MIDI.Output: no output {port.id}; there are ") && no_output.contains("{dest.id} (culebra midi test)"))
 let out = MIDI.Output.new(dest.id)
@@ -118,7 +131,7 @@ done
 cat > "$TMP/wait.cul" <<'EOF'
 defer { IO.eprint("DEFER\n") }
 mut port = nil
-let until = Time.monotonic() + 5.0
+let until = Time.monotonic() + 30.0
 while port == nil && Time.monotonic() < until {
   port = MIDI.inputs().find(|p| p.name == "culebra midi test")
   Time.sleep(0.01) if port == nil
@@ -138,7 +151,8 @@ for engine in --vm --jit; do
   sender=$!
   CULEBRA_AUDIO=on "$CULEBRA" "$engine" "$TMP/wait.cul" "$TMP/ready" > "$TMP/waited" 2>&1 &
   pid=$!
-  for _ in $(seq 50); do grep -q waiting "$TMP/waited" && break; sleep 0.1; done
+  # As long as the program may take to see the source (wait.cul's 30 s).
+  for _ in $(seq 300); do grep -q waiting "$TMP/waited" && break; sleep 0.1; done
   sleep 0.3
   kill -INT $pid
   for _ in $(seq 20); do kill -0 $pid 2>/dev/null || break; sleep 0.1; done
