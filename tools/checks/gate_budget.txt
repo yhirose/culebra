@@ -284,8 +284,10 @@ ctest.entries 40
 # 1136 since tooling's §9, `culebra play`, went with the subcommand (its
 # sounds module, in en and ja). 1162 since the guide to language models
 # (docs/guides/llm*.md), 13 blocks in en and ja, of which only the
-# scripted-provider test runs (the rest need a model or a key).
-docs.blocks 1162
+# scripted-provider test runs (the rest need a model or a key). 1164 since
+# the Kauai spec's §10 plays a song early (skipped: reads a song file), in
+# en and ja.
+docs.blocks 1164
 
 # The samples the language front ends are run over (examples/languages/*).
 languages.samples 130
