@@ -1126,8 +1126,11 @@ end.
 Kauai builds
 one sound for each phrase the instrument hears differently: a note alone
 that hears nothing is built once for each pitch, as a function is, and one
-that hears `len` once for each pitch and length. The sound plays through to
-its end from the phrase's first note, so an instrument that hears `len`
+that hears `len` once for each pitch and length. It builds them in an order
+of its own, and for a part of the song only those the part plays, so an
+instrument is to answer the same sound for the same phrase, whatever it was
+asked for before. The sound plays through to its end from the phrase's
+first note, so an instrument that hears `len`
 holds the last note as long as it is held, and lets it ring on as it is let
 go. A dynamic the instrument hears is its own to sound: the notes' `vol` is
 then the voice's `vol` alone, where otherwise Kauai scales the sound by the
