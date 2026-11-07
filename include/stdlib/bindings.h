@@ -6238,28 +6238,25 @@ inline JitValue _ns_audio_graph_new(JitValue* a, int64_t) {
   return _ns_adapt::v_long(id);
 }
 // A part of `family` ("wave", "noise", "filter", "gain", "resonate", "pluck",
-// "delay", "limit" or "drive"), `kind` naming the wave or the filter, wired by
-// `wires`, two lists of parts made before it: those it takes in and those that
-// move it (a wave's phase, a delay's time, a gain's gain, a string's freq). It
-// is set up by the numbers `options`: a wave's freq, feedback and phase, a
-// noise's seed, a filter's cutoff and q, a gain's gain, a resonance's dry and
-// modes, a string's freq and ring, a delay's time, a limit's ceiling and
-// release, a drive's gain.
+// "delay", "limit" or "drive"), `kind` naming the wave or the filter, wired to
+// parts made before it: `inputs`, those it takes in, and `modulators`, those
+// that move it (a wave's phase, a delay's time, a gain's gain, a string's
+// freq). It is set up by the numbers `options`: a wave's freq, feedback and
+// phase, a noise's seed, a filter's cutoff and q, a gain's gain, a resonance's
+// dry and modes, a string's freq and ring, a delay's time, a limit's ceiling
+// and release, a drive's gain.
 inline JitValue _ns_audio_graph_part(JitValue* a, int64_t) {
   namespace ad = culebra::_audio_detail;
   auto& g = _ns_audio_graph(a[0]);
   auto family = _ns_adapt::take_sv(a[1]);
   auto kind = _ns_adapt::take_sv(a[2]);
-  constexpr const char* kWiresError = "type error: an Audio.Graph part takes in parts of its graph";
-  auto* wires = _ns_adapt::take_array(a[3]);
-  if (!wires || wires->size != 2) culebra::throw_runtime_error_at("TypeError", kWiresError, 0, 0);
   std::vector<double> ins, opt;
   std::vector<int> inputs, modulators;
-  for (auto [k, into] : {std::pair{size_t{0}, &inputs}, std::pair{size_t{1}, &modulators}}) {
-    _ns_audio_numbers(wires->items[k], ins, kWiresError);
+  for (auto [k, into] : {std::pair{3, &inputs}, std::pair{4, &modulators}}) {
+    _ns_audio_numbers(a[k], ins, "type error: an Audio.Graph part takes in parts of its graph");
     for (double p : ins) into->push_back(_ns_audio_graph_index(g, p));
   }
-  _ns_audio_numbers(a[4], opt, "type error: an Audio.Graph part is set up by numbers");
+  _ns_audio_numbers(a[5], opt, "type error: an Audio.Graph part is set up by numbers");
   double rate = g.rate();
   // Each family and the options it takes, in number; a resonance takes its
   // dry and then three a mode (-1 here).
@@ -11759,7 +11756,7 @@ inline const NsMethod kNsRows_Audio_native[] = {
   {"_Audio", "harmonics",      4, &_ns_audio_harmonics},
   {"_Audio", "tone_loudness",  1, &_ns_audio_tone_loudness},
   {"_Audio", "graph_new",      1, &_ns_audio_graph_new},
-  {"_Audio", "graph_part",     5, &_ns_audio_graph_part},
+  {"_Audio", "graph_part",     6, &_ns_audio_graph_part},
   {"_Audio", "graph_output",   2, &_ns_audio_graph_output},
   {"_Audio", "graph_schedule", 2, &_ns_audio_graph_schedule},
   {"_Audio", "graph_render",   2, &_ns_audio_graph_render},

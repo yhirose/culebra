@@ -241,13 +241,16 @@ let _audio_module = fn () {
       options: Array,
       modulators: Array = [],
     ) {
-      let wires = [
-        @_indexes("inputs", inputs),
-        @_indexes("modulators", modulators),
-      ]
       AudioGraphPart.new(
         self,
-        _Audio.graph_part(@_id, family, kind, wires, options),
+        _Audio.graph_part(
+          @_id,
+          family,
+          kind,
+          @_indexes("inputs", inputs),
+          @_indexes("modulators", modulators),
+          options,
+        ),
       )
     }
     _indexes(name: String, parts: Array) {

@@ -1891,13 +1891,16 @@ inline constexpr const char* AUDIO_MODULE_SOURCE = R"=culpre=(let _audio_module 
       options: Array,
       modulators: Array = [],
     ) {
-      let wires = [
-        @_indexes("inputs", inputs),
-        @_indexes("modulators", modulators),
-      ]
       AudioGraphPart.new(
         self,
-        _Audio.graph_part(@_id, family, kind, wires, options),
+        _Audio.graph_part(
+          @_id,
+          family,
+          kind,
+          @_indexes("inputs", inputs),
+          @_indexes("modulators", modulators),
+          options,
+        ),
       )
     }
     _indexes(name: String, parts: Array) {
