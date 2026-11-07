@@ -25,6 +25,7 @@
 #include <memory>
 #include <mutex>
 #include <numbers>
+#include <optional>
 #include <span>
 #include <unordered_map>
 #include <vector>
@@ -159,7 +160,9 @@ inline Note make_note(double start_freq, double end_freq, int64_t attack, int64_
 // the mixer below starts each one on its sample: the music keeps time however
 // long a frame runs, and plays in a program with no frame loop. A note is a
 // tone on one of the channels, or a sample (an Audio.Sound's decoded PCM)
-// mixed in alongside them, as many at once as the song asks for.
+// mixed in alongside them, as many at once as the song asks for. A song can
+// start before its samples are all made (open_schedule): it waits for one
+// that has not come, as a video waits for its next frames.
 // The room a schedule plays in (Freeverb: eight damped combs in parallel, then
 // four allpasses in series, at Jezar's delays and gain), heard `wet` strong
 // alongside the schedule's own sound. The schedule's tones and samples add into
@@ -233,24 +236,47 @@ struct ScheduleEvent {
   int64_t at = 0;    // samples from the schedule's start
   int channel = -1;  // a tone channel, or -1 for a sample
   Note note;         // a tone
-  std::shared_ptr<const std::vector<float>> pcm;  // a sample, mono at kSampleRate
+  size_t slot = 0;   // a sample's: the schedule's slot it plays
   double gain = 0;   // a sample's
+};
+
+using Pcm = std::shared_ptr<const std::vector<float>>;  // a sample, mono at kSampleRate
+
+// A sound a schedule plays, by the slot its samples name. A schedule made
+// with a slot empty (open_schedule) has it filled later, on the main thread,
+// while the mixer may be playing it: the main thread keeps the samples, and
+// publishes them to the mixer by `pcm`.
+struct Slot {
+  Pcm kept;                                         // main thread
+  std::atomic<const std::vector<float>*> pcm{nullptr};  // kept's, once it is filled
 };
 
 struct Schedule {
   std::vector<ScheduleEvent> events;  // ordered by `at`
+  std::vector<Slot> slots;         // sized when it is made, never after
   int64_t length = 0;              // samples in one time through
   int64_t loop_at = -1;            // where a loop goes back to; -1 plays once
   std::atomic<double> volume{1.0};
   std::unique_ptr<Room> room = std::make_unique<Room>();
+  // Samples it has held since it last started, waiting for a slot (Mixer::advance).
+  std::atomic<int64_t> held{0};
+
+  // Main thread: slot `k` filled, from the mixer's next sample on; a slot is
+  // filled once.
+  void fill(size_t k, Pcm samples) {
+    assert(samples);
+    if (k >= slots.size() || slots[k].kept) return;
+    slots[k].kept = std::move(samples);
+    slots[k].pcm.store(slots[k].kept.get(), std::memory_order_release);
+  }
 };
 
-// A schedule from Kauai's list (kScheduleStride), a Sound's samples found by
-// its handle in `pcm` (one it does not hold, which the device could not
-// decode, is left out).
-using PcmByHandle = std::unordered_map<int64_t, std::shared_ptr<const std::vector<float>>>;
-inline std::shared_ptr<Schedule> build_schedule(const double* events, int64_t count, double length,
-                                                double loop_at, const PcmByHandle& pcm) {
+// A schedule from Kauai's list (kScheduleStride), each sample's row naming
+// the slot `slot_of(the row's third number)` answers, the row left out when
+// it answers none. The caller gives it its slots.
+template <class SlotOf>
+std::shared_ptr<Schedule> schedule_of(const double* events, int64_t count, double length,
+                                      double loop_at, SlotOf slot_of) {
   auto samples = [](double seconds) {
     return static_cast<int64_t>(std::max(0.0, seconds) * kSampleRate);
   };
@@ -261,9 +287,9 @@ inline std::shared_ptr<Schedule> build_schedule(const double* events, int64_t co
     ev.at = samples(e[0]);
     ev.channel = static_cast<int>(e[1]);
     if (ev.channel < 0) {
-      auto it = pcm.find(static_cast<int64_t>(e[2]));
-      if (it == pcm.end()) continue;
-      ev.pcm = it->second;
+      auto slot = slot_of(e[2]);
+      if (!slot) continue;
+      ev.slot = *slot;
       ev.gain = std::max(0.0, e[3]);
     } else {
       if (ev.channel > 4) continue;
@@ -274,6 +300,41 @@ inline std::shared_ptr<Schedule> build_schedule(const double* events, int64_t co
   }
   s->length = samples(length);
   s->loop_at = loop_at < 0 ? -1 : samples(loop_at);
+  return s;
+}
+
+// A schedule from Kauai's list, a Sound's samples found by its handle in
+// `pcm` (one it does not hold, which the device could not decode, is left
+// out): a slot for each, filled.
+using PcmByHandle = std::unordered_map<int64_t, Pcm>;
+inline std::shared_ptr<Schedule> build_schedule(const double* events, int64_t count, double length,
+                                                double loop_at, const PcmByHandle& pcm) {
+  std::unordered_map<int64_t, size_t> slot_by_handle;
+  std::vector<Pcm> filled;
+  auto s = schedule_of(events, count, length, loop_at,
+                       [&](double handle) -> std::optional<size_t> {
+                         auto it = pcm.find(static_cast<int64_t>(handle));
+                         if (it == pcm.end()) return std::nullopt;
+                         auto [entry, added] = slot_by_handle.try_emplace(it->first, filled.size());
+                         if (added) filled.push_back(it->second);
+                         return entry->second;
+                       });
+  s->slots = std::vector<Slot>(filled.size());
+  for (size_t k = 0; k < filled.size(); k++) s->fill(k, filled[k]);
+  return s;
+}
+
+// A schedule from Kauai's list whose samples' rows name a slot, 0 to `slots`
+// - 1 (a row naming none is left out), every slot empty: it plays as its
+// sounds come, holding where one has not (Mixer::advance).
+inline std::shared_ptr<Schedule> open_schedule(const double* events, int64_t count, int64_t slots,
+                                               double length, double loop_at) {
+  size_t n = static_cast<size_t>(std::max<int64_t>(0, slots));
+  auto s = schedule_of(events, count, length, loop_at, [n](double k) -> std::optional<size_t> {
+    if (!(k >= 0 && k < static_cast<double>(n))) return std::nullopt;
+    return static_cast<size_t>(k);
+  });
+  s->slots = std::vector<Slot>(n);
   return s;
 }
 
@@ -331,8 +392,19 @@ struct Mixer {
 };
 
 inline bool Mixer::advance(PlayingSchedule& ps, int64_t p) {
-  const Schedule& s = *ps.schedule;
+  Schedule& s = *ps.schedule;
   for (;;) {
+    // A sample due whose slot is still empty holds the schedule: its clock
+    // stands still, nothing due starts until the slot fills (so what starts
+    // together still does), and what sounds already sounds on.
+    for (size_t k = ps.next; k < s.events.size() && ps.origin + s.events[k].at <= p; k++) {
+      const ScheduleEvent& e = s.events[k];
+      if (e.channel < 0 && !s.slots[e.slot].pcm.load(std::memory_order_acquire)) {
+        ps.origin++;
+        s.held.fetch_add(1, std::memory_order_relaxed);
+        return true;
+      }
+    }
     while (ps.next < s.events.size() && ps.origin + s.events[ps.next].at <= p) {
       const ScheduleEvent& e = s.events[ps.next++];
       double v = s.volume.load(std::memory_order_relaxed);
@@ -344,7 +416,8 @@ inline bool Mixer::advance(PlayingSchedule& ps, int64_t p) {
         n.room = s.room.get();
         voice[e.channel] = n;
       } else {
-        start(Sampler{ps.id, *e.pcm, 0, e.gain * v, s.room.get()});
+        start(Sampler{ps.id, *s.slots[e.slot].pcm.load(std::memory_order_acquire), 0, e.gain * v,
+                      s.room.get()});
       }
     }
     if (p < ps.origin + s.length) return true;
@@ -432,6 +505,9 @@ inline void render_schedule(const double* events, int64_t count, double length, 
                             double volume, double from, const PcmByHandle& pcm,
                             std::vector<float>& out) {
   auto schedule = build_schedule(events, count, length, -1, pcm);
+  // Every slot filled, so it never holds: held, it would never end.
+  assert(std::ranges::all_of(schedule->slots,
+                             [](const Slot& slot) { return slot.kept != nullptr; }));
   schedule->volume.store(std::max(0.0, volume));
   schedule->room->wet.store(std::max(0.0, wet));
   Mixer m;
@@ -614,6 +690,17 @@ class Engine {
     auto it = schedules_.find(id);
     if (it != schedules_.end()) it->second->room->wet.store(std::max(0.0, wet));
   }
+  // Slot `slot` of schedule `id` (open_schedule's) filled with `samples`.
+  void schedule_fill(int64_t id, int64_t slot, Pcm samples) {
+    auto it = schedules_.find(id);
+    if (it != schedules_.end() && slot >= 0)
+      it->second->fill(static_cast<size_t>(slot), std::move(samples));
+  }
+  // Samples schedule `id` has held since it last started; 0 for none.
+  int64_t schedule_held(int64_t id) {
+    auto it = schedules_.find(id);
+    return it == schedules_.end() ? 0 : it->second->held.load(std::memory_order_relaxed);
+  }
 
   // The copy of graph `id` (graph_def's) plays from the next sample the
   // stream can start it on.
@@ -734,6 +821,7 @@ class Engine {
         mix_.cut(cmd.id);
         if (cmd.schedule) {
           cmd.schedule->room->reset();
+          cmd.schedule->held.store(0, std::memory_order_relaxed);
           assert(mix_.playing.size() < mix_.playing.capacity());  // LongerList's room
           mix_.playing.push_back(PlayingSchedule{cmd.id, std::move(cmd.schedule), cmd.start, 0});
         }

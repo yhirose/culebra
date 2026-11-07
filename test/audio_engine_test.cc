@@ -18,6 +18,8 @@
 #include <memory>
 #include <new>
 #include <random>
+#include <thread>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -304,6 +306,108 @@ void stolen_sample_fades() {
   }
 }
 
+// A song with its sounds still to come: a tone ends, and then at 0.2 s a tone
+// and a sample (slot 0) start together, and at 0.5 s another sample (slot 1);
+// rendered offline with the slots' samples given by handle.
+struct LateSong {
+  std::vector<double> rows = {
+      0.0, 0, 440, 440, 0, 0, 0.05, 0, 80, 80, 2,
+      0.2, 1, 660, 660, 0, 0, 0.05, 0, 80, 80, 2,
+      0.2, -1, 0, 0.5, 0, 0, 0, 0, 0, 0, 0,
+      0.5, -1, 1, 0.5, 0, 0, 0, 0, 0, 0, 0,
+  };
+  ad::PcmByHandle pcm = [] {
+    auto by = song_pcm();
+    return ad::PcmByHandle{{0, by[1]}, {1, by[2]}};
+  }();
+  std::vector<float> want = rendered(rows, pcm, 0.8, 0.0, 1.0);
+  static constexpr int64_t kFirst = 8820, kSecond = 22050;  // the samples' starts
+
+  std::shared_ptr<ad::Schedule> open() const {
+    return ad::open_schedule(rows.data(), static_cast<int64_t>(rows.size()), 2, 0.8, -1);
+  }
+  // What plays when it held `holds` (where, in samples of the song, and for how long).
+  std::vector<float> held(std::vector<std::pair<int64_t, int64_t>> holds) const {
+    auto out = want;
+    for (auto it = holds.rbegin(); it != holds.rend(); ++it)
+      out.insert(out.begin() + it->first, static_cast<size_t>(it->second), 0.0f);
+    return out;
+  }
+};
+
+// A song whose sounds come late waits for each: its clock stands still from
+// the sample a sound should start on until it comes, and then it plays on as
+// it renders, the tone due with that sound starting with it.
+void open_schedule_waits_for_its_sounds() {
+  LateSong song;
+  Device device(song.want.size() + 60000);
+  device.run(500);
+  int64_t start = device.pos();
+  auto& engine = *device.engine;
+  engine.schedule_new(1, song.open());
+  engine.schedule_play(1);
+  device.run(13230);
+  const int64_t first = 13230 - LateSong::kFirst;
+  CHECK(engine.schedule_held(1) == first, "held %lld samples for slot 0, not %lld",
+        static_cast<long long>(engine.schedule_held(1)), static_cast<long long>(first));
+  engine.schedule_fill(1, 0, song.pcm.at(0));
+  device.run(22050);
+  const int64_t second = 13230 + 22050 - first - LateSong::kSecond;
+  CHECK(engine.schedule_held(1) == first + second, "held %lld samples in all, not %lld",
+        static_cast<long long>(engine.schedule_held(1)), static_cast<long long>(first + second));
+  engine.schedule_fill(1, 1, song.pcm.at(1));
+  device.run(static_cast<int64_t>(song.want.size()) + 10000);
+  hears("the song that waited", device.heard, start,
+        song.held({{LateSong::kFirst, first}, {LateSong::kSecond, second}}));
+  CHECK(device.heap_calls == 0, "the renders made %ld heap calls", device.heap_calls);
+  // Played again, it counts what it holds from its new start.
+  engine.schedule_play(1);
+  device.run(100);
+  CHECK(engine.schedule_held(1) == 0, "played again, held %lld samples",
+        static_cast<long long>(engine.schedule_held(1)));
+}
+
+// Sounds come from the main thread while the audio thread renders: the song
+// waits as long as it has to, and is the same song after.
+void filled_while_it_renders() {
+  LateSong song;
+  const size_t most = 10 * 44100;
+  Device device(most);
+  auto& engine = *device.engine;
+  engine.schedule_new(1, song.open());
+  engine.schedule_play(1);
+  // The audio thread renders until the song has played through after its
+  // sounds came; it alone touches `device` until it is joined. A main thread
+  // late past 30000 samples finds it paused there, as a stalled device would
+  // be, so the song is still to play on when the sounds come.
+  std::atomic<size_t> rendered_to{0};
+  std::atomic<bool> filled{false}, done{false};
+  std::thread audio([&] {
+    while (!done.load(std::memory_order_acquire)) {
+      if (!filled.load(std::memory_order_acquire) && device.heard.size() >= 30000) {
+        std::this_thread::yield();
+        continue;
+      }
+      device.run(512);
+      rendered_to.store(device.heard.size(), std::memory_order_release);
+    }
+  });
+  auto wait_for = [&](size_t n) {
+    while (rendered_to.load(std::memory_order_acquire) < n) std::this_thread::yield();
+  };
+  wait_for(20000);
+  engine.schedule_fill(1, 1, song.pcm.at(1));
+  engine.schedule_fill(1, 0, song.pcm.at(0));
+  filled = true;
+  wait_for(rendered_to.load() + 512 + song.want.size());
+  done = true;
+  audio.join();
+  int64_t held = engine.schedule_held(1);
+  CHECK(held >= 20000 - LateSong::kFirst, "held %lld samples", static_cast<long long>(held));
+  hears("the song filled as it rendered", device.heard, 0, song.held({{LateSong::kFirst, held}}));
+  CHECK(device.heap_calls == 0, "the renders made %ld heap calls", device.heap_calls);
+}
+
 }  // namespace
 
 int main() {
@@ -312,6 +416,8 @@ int main() {
   graph_plays_as_it_renders();
   many_play_at_once();
   stolen_sample_fades();
+  open_schedule_waits_for_its_sounds();
+  filled_while_it_renders();
   if (failures) {
     std::printf("audio_engine_test: %d failure(s)\n", failures);
     return 1;
