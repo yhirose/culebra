@@ -2053,6 +2053,23 @@ inline constexpr CanonParam kCanonParams_Audio_native_schedule_new[] = {
   {"loop_at", false, false, false, false, false, "Long|Float", CanonDefault::None, 0, {}},
 };
 
+inline constexpr CanonParam kCanonParams_Audio_native_schedule_open[] = {
+  {"events", false, false, false, false, false, "Array", CanonDefault::None, 0, {}},
+  {"slots", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
+  {"length", false, false, false, false, false, "Long|Float", CanonDefault::None, 0, {}},
+  {"loop_at", false, false, false, false, false, "Long|Float", CanonDefault::None, 0, {}},
+};
+
+inline constexpr CanonParam kCanonParams_Audio_native_schedule_fill[] = {
+  {"id", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
+  {"slot", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
+  {"sound", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
+};
+
+inline constexpr CanonParam kCanonParams_Audio_native_schedule_held[] = {
+  {"id", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
+};
+
 inline constexpr CanonParam kCanonParams_Audio_native_schedule_free[] = {
   {"id", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
 };
@@ -2305,6 +2322,9 @@ inline constexpr CanonSig kCanonSigs_Audio_native[] = {
   {"_Audio", "", "schedule_stop", kCanonParams_Audio_native_schedule_stop, ""},
   {"_Audio", "", "schedule_volume", kCanonParams_Audio_native_schedule_volume, ""},
   {"_Audio", "", "schedule_room", kCanonParams_Audio_native_schedule_room, ""},
+  {"_Audio", "", "schedule_open", kCanonParams_Audio_native_schedule_open, "Long?"},
+  {"_Audio", "", "schedule_fill", kCanonParams_Audio_native_schedule_fill, ""},
+  {"_Audio", "", "schedule_held", kCanonParams_Audio_native_schedule_held, "Float"},
   {"_Audio", "", "resonate", kCanonParams_Audio_native_resonate, "Array"},
   {"_Audio", "", "pluck", kCanonParams_Audio_native_pluck, "Array"},
   {"_Audio", "", "partials", kCanonParams_Audio_native_partials, "Array"},

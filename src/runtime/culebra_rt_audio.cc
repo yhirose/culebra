@@ -545,6 +545,25 @@ void schedule_stop(int64_t id) { g_engine.schedule_stop(id); }
 void schedule_volume(int64_t id, double v) { g_engine.schedule_volume(id, v); }
 void schedule_room(int64_t id, double wet) { g_engine.schedule_room(id, wet); }
 
+// A song with its Sounds to come. With no device it plays nowhere, as
+// schedule_new's, and its slots fill nothing.
+bool schedule_open(int64_t id, const double* events, int64_t count, int64_t slots, double length,
+                   double loop_at) {
+  ensure_tone_stream();
+  if (g_tone_ready) g_engine.schedule_new(id, open_schedule(events, count, slots, length, loop_at));
+  return true;
+}
+// A Sound the device could not decode fills its slot with silence, so the
+// song does not wait for it.
+void schedule_fill(int64_t id, int64_t slot, int64_t sound) {
+  auto it = g_sound_pcm.find(sound);
+  g_engine.schedule_fill(id, slot,
+                         it != g_sound_pcm.end() ? it->second : std::make_shared<Pcm::element_type>());
+}
+double schedule_held(int64_t id) {
+  return static_cast<double>(g_engine.schedule_held(id)) / kSampleRate;
+}
+
 void graph_play(int64_t id) {
   ensure_tone_stream();
   if (!g_tone_ready) return;

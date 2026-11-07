@@ -6428,6 +6428,28 @@ inline JitValue _ns_audio_schedule_new(JitValue* a, int64_t) {
   return _ns_adapt::v_long(id);
 }
 
+// Kauai's timed notes with their Sounds to come (schedule_open, stdlib/audio.h):
+// nil where this build cannot hold a song for one, which Kauai then makes whole.
+inline JitValue _ns_audio_schedule_open(JitValue* a, int64_t) {
+  namespace ad = culebra::_audio_detail;
+  std::vector<double> events;
+  _ns_audio_schedule_events(a[0], events);
+  int64_t id = ad::alloc_id();
+  if (!ad::schedule_open(id, events.data(), static_cast<int64_t>(events.size()),
+                         _ns_adapt::take_long(a[1]), _ns_adapt::take_double(a[2]),
+                         _ns_adapt::take_double(a[3])))
+    return _ns_adapt::v_nil();
+  return _ns_adapt::v_long(id);
+}
+inline JitValue _ns_audio_schedule_fill(JitValue* a, int64_t) {
+  culebra::_audio_detail::schedule_fill(_ns_adapt::take_long(a[0]), _ns_adapt::take_long(a[1]),
+                                        _ns_adapt::take_long(a[2]));
+  return _ns_adapt::v_nil();
+}
+inline JitValue _ns_audio_schedule_held(JitValue* a, int64_t) {
+  return _ns_adapt::v_float(culebra::_audio_detail::schedule_held(_ns_adapt::take_long(a[0])));
+}
+
 // A schedule rendered to samples as it would play (schedule_render): Kauai's
 // list, the bytes of each Sound it plays as [handle, data, handle, data, ...],
 // its length, its room's wet, its volume, and the second the samples start at.
@@ -11736,6 +11758,9 @@ inline const NsMethod kNsRows_Audio_native[] = {
   {"_Audio", "schedule_stop",     1, &_ns_audio_on<culebra::_audio_detail::schedule_stop>},
   {"_Audio", "schedule_volume",   2, &_ns_audio_set<culebra::_audio_detail::schedule_volume>},
   {"_Audio", "schedule_room",     2, &_ns_audio_set<culebra::_audio_detail::schedule_room>},
+  {"_Audio", "schedule_open",     4, &_ns_audio_schedule_open},
+  {"_Audio", "schedule_fill",     3, &_ns_audio_schedule_fill},
+  {"_Audio", "schedule_held",     1, &_ns_audio_schedule_held},
   {"_Audio", "schedule_render",   6, &_ns_audio_schedule_render},
   {"_Audio", "resonate",       4, &_ns_audio_resonate},
   {"_Audio", "pluck",          5, &_ns_audio_pluck},

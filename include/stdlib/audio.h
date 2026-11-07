@@ -328,6 +328,14 @@ inline double tone_loudness(double freq) {
 // page is sent it with the list. The entry points, all on _Audio:
 // schedule_new(list, length, loop_at) -> id, schedule_play/stop/free(id),
 // schedule_volume/room(id, x), schedule_render(...) -> samples, schedule_stride().
+//
+// A song can also start before its Sounds are all made: schedule_open(list,
+// slots, length, loop_at) takes a list whose Sound rows name a slot, 0 to
+// slots - 1, in place of a handle; schedule_fill(id, slot, sound) gives a
+// slot its Sound as it comes; the mixer holds the song where it reaches a
+// slot still empty, and schedule_held(id) answers for how long, in seconds,
+// since it last started. Only a native mixer holds a song (schedule_open
+// answers false elsewhere, and the song is made whole with schedule_new).
 inline constexpr int64_t kScheduleStride = 11;
 
 // A Sound a schedule plays, by the bytes it was made from, for schedule_render: the
@@ -1794,6 +1802,10 @@ inline void schedule_stop(int64_t id) { _wasm_audio_schedule(1, static_cast<int>
 inline void schedule_free(int64_t id) { _wasm_audio_schedule(2, static_cast<int>(id), 0); }
 inline void schedule_volume(int64_t id, double x) { _wasm_audio_schedule(3, static_cast<int>(id), x); }
 inline void schedule_room(int64_t id, double x) { _wasm_audio_schedule(4, static_cast<int>(id), x); }
+// The page plays a song whole.
+inline bool schedule_open(int64_t, const double*, int64_t, int64_t, double, double) { return false; }
+inline void schedule_fill(int64_t, int64_t, int64_t) {}
+inline double schedule_held(int64_t) { return 0.0; }
 // The page mixes a schedule in WebAudio, which renders nothing back to the program.
 inline bool schedule_render(const double*, int64_t, double, double, double, double,
                          const std::vector<SoundBytes>&, std::vector<float>&) {
@@ -1889,6 +1901,12 @@ void schedule_stop(int64_t id);
 void schedule_volume(int64_t id, double v);
 // How much of the room the schedule plays in is heard with it, 0 for none.
 void schedule_room(int64_t id, double wet);
+// A schedule with its Sounds to come (see kScheduleStride above), a slot
+// filled, and the seconds it has held since it last started.
+bool schedule_open(int64_t id, const double* events, int64_t count, int64_t slots, double length,
+                   double loop_at);
+void schedule_fill(int64_t id, int64_t slot, int64_t sound);
+double schedule_held(int64_t id);
 // A schedule (schedule_new's list and length) rendered into `out`, which arrives
 // empty, as the stream would play it once through at `volume` in a room heard
 // `wet` strong: mono at kMixerRate, from `from` seconds on until its last
@@ -1955,6 +1973,12 @@ CULEBRA_RT_AUDIO_LINKAGE void schedule_play(int64_t) {}
 CULEBRA_RT_AUDIO_LINKAGE void schedule_stop(int64_t) {}
 CULEBRA_RT_AUDIO_LINKAGE void schedule_volume(int64_t, double) {}
 CULEBRA_RT_AUDIO_LINKAGE void schedule_room(int64_t, double) {}
+CULEBRA_RT_AUDIO_LINKAGE bool schedule_open(int64_t, const double*, int64_t, int64_t, double,
+                                            double) {
+  return false;
+}
+CULEBRA_RT_AUDIO_LINKAGE void schedule_fill(int64_t, int64_t, int64_t) {}
+CULEBRA_RT_AUDIO_LINKAGE double schedule_held(int64_t) { return 0.0; }
 CULEBRA_RT_AUDIO_LINKAGE bool schedule_render(const double*, int64_t, double, double,
                                            double, double, const std::vector<SoundBytes>&,
                                            std::vector<float>&) {
