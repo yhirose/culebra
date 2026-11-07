@@ -132,7 +132,7 @@
 | MIDIの鍵盤やウインドコントローラで演奏する | [§41 MIDI](#41-midi) — `MIDI.inputs()` / `MIDI.Input.new(id).messages()` / `input.control(2)` |
 | 音を鳴らす（tone・効果音・音楽）、音を合成する | [§40 Audio](#40-audio) — `Audio.tone(440, 10)` / `Audio.Sound.new(bytes).play()` / `Audio.Music.new(bytes)` / `Audio.PCM.new(44100, 1, 1024)` / `Audio.Capture.new(44100)` |
 | Kauaiで書いた曲を演奏する | [§45 Kauai](#45-kauai) — `Kauai.new(text).play()` / `Kauai.load(path)` |
-| ヒープ情報・リークチェック | [§7 GC](#gc--ヒープ情報の取得) — `GC.stat()` → `{live_objects, rc_objects, heap_bytes}` |
+| ヒープ情報・リークチェック | [§7 GC](#gc--ヒープ情報の取得) — `GC.stat()` → `{live_objects, rc_objects, heap_bytes, shapes}` |
 | 2D/3Dベクトル演算（dot、length、normalize、distance） | [§31 `Vector2`](#31-vector2) / [§32 `Vector3`](#32-vector3) |
 | FIFOキュー、スライディングウィンドウ、前後両端のスタック | [§33 `Deque`](#33-deque) — `Deque.new()` — `push_back`/`pop_front` |
 | 優先度スケジューリング、イベントシミュレーション、最短経路探索 | [§34 `PriorityQueue`](#34-priorityqueue) — `PriorityQueue.new()` — `push`/`pop` |
@@ -1456,6 +1456,7 @@ inspect(Sys.time() - t0 >= 0.0)  # => true
 | `live_objects` | `Long` | 到達可能なヒープオブジェクト数 |
 | `rc_objects` | `Long` | 到達可能な *参照カウント* オブジェクト数（traced-onlyなString/StringViewを除く） |
 | `heap_bytes` | `Long` | それらが占めるバイト数 |
+| `shapes` | `Long` | これまでに作られたオブジェクト配置の数（プロセス内の全isolateの分） |
 
 先にコレクションを走らせるので、数値はsweep待ちの循環残渣ではなく
 *到達可能な* 状態を表します。呼び出し自体が結果`Object`を確保するため、
@@ -1481,6 +1482,13 @@ inspect(GC.stat().live_objects - base)  # 構造が保持しているオブジ�
 これはリーク回帰テストの土台になります。多数の反復をまたいでdeltaが有界に
 留まることをassertします。メモリはそれ以外は自動管理です。メモリモデルと
 確定的`drop`は言語仕様を参照してください。
+
+`shapes`はヒープ上のオブジェクトの数ではありません。プログラムのObjectが
+これまでに必要とした固定スロット配置の数で、配置はプロセスが終わるまで
+残るので、この値は増えるだけです。ウォームアップを終えたプログラムでは
+止まります。増え続けるなら、キーの組ごとに配置を作っているということで、
+これは他のどの数にも表れません。最初の`GC.stat()`は自分の結果に要る
+配置をいくつか作ります。
 
 `GC.refcount(value)`はヒープ値が開いている参照の数を返します。参照カウントを
 持たない値では`nil`です。`Long`・`Float`・`Bool`・`nil`は即値で、`String`は

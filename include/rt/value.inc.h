@@ -218,6 +218,13 @@ struct ShapeRegistry {
     return raw;
   }
 
+  // How many Shapes have been interned (GC.stat().shapes): none is ever
+  // freed, so this only grows.
+  size_t size() {
+    std::lock_guard<std::mutex> lk(mu_);
+    return owned_.size();
+  }
+
   // The one copy of a Named slot's annotation, for the life of the process
   // as the Shapes that point at it: the pointer is what tells two Shapes'
   // declared types apart.

@@ -136,7 +136,7 @@ Conventions used below:
 | Play from a MIDI keyboard or wind controller | [§41 MIDI](#41-midi) — `MIDI.inputs()` / `MIDI.Input.new(id).messages()` / `input.control(2)` |
 | Play a tone, a sound effect or music; synthesise audio | [§40 Audio](#40-audio) — `Audio.tone(440, 10)` / `Audio.Sound.new(bytes).play()` / `Audio.Music.new(bytes)` / `Audio.PCM.new(44100, 1, 1024)` / `Audio.Capture.new(44100)` |
 | Play a song written in Kauai | [§45 Kauai](#45-kauai) — `Kauai.new(text).play()` / `Kauai.load(path)` |
-| Heap introspection / leak checks | [§7 GC](#gc--heap-introspection) — `GC.stat()` → `{live_objects, rc_objects, heap_bytes}` |
+| Heap introspection / leak checks | [§7 GC](#gc--heap-introspection) — `GC.stat()` → `{live_objects, rc_objects, heap_bytes, shapes}` |
 | 2D/3D vector math (dot, length, normalize, distance) | [§31 `Vector2`](#31-vector2) / [§32 `Vector3`](#32-vector3) |
 | FIFO queue, sliding window, front+back stack | [§33 `Deque`](#33-deque) — `Deque.new()` — `push_back`/`pop_front` |
 | Priority scheduling, event simulation, shortest-path search | [§34 `PriorityQueue`](#34-priorityqueue) — `PriorityQueue.new()` — `push`/`pop` |
@@ -1497,6 +1497,7 @@ live heap right after it:
 | `live_objects` | `Long` | number of reachable heap objects |
 | `rc_objects` | `Long` | reachable *refcounted* objects (excludes traced-only Strings/StringViews) |
 | `heap_bytes` | `Long` | bytes those objects occupy |
+| `shapes` | `Long` | object layouts made so far, by every isolate in the process |
 
 Because it collects first, the numbers report *reachable* state, not cycle
 residue still awaiting sweep. The call itself allocates the result `Object`,
@@ -1524,6 +1525,13 @@ This is the foundation for leak-regression tests: assert that a delta
 stays bounded across many iterations. Memory is otherwise managed
 automatically — see the language spec for the memory model and
 deterministic `drop`.
+
+`shapes` is not a count of heap objects. It is the number of fixed-slot
+layouts the program's Objects have needed so far, and a layout is kept
+for the life of the process, so the figure only grows. In a program that
+has warmed up it stays put; one that keeps rising is making a layout per
+set of keys, which no other count shows. The first `GC.stat()` makes the
+few its own result needs.
 
 `GC.refcount(value)` reports how many references a heap value is holding
 open, or `nil` for one that carries no count — `Long`, `Float`, `Bool` and

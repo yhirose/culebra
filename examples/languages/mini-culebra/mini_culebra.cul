@@ -102,8 +102,9 @@
 # error is already unwinding), cycles of resources dropped at the scope
 # exit that owns them (every block and function body is a scope), a
 # program's top-level bindings kept to the end without drop, GC.stat (a
-# full collection, then {live_objects, rc_objects, heap_bytes}; the
-# namespace has no other member), the callback arity check of the
+# full collection, then {live_objects, rc_objects, heap_bytes, shapes},
+# shapes 0 since this runtime's objects intern no layout; the namespace
+# has no other member), the callback arity check of the
 # higher-order methods (fnarity), a fn declared inside a block, a tuple
 # sliced by a range, and property reads on Strings, Arrays and Functions
 # answering nil.
@@ -4944,7 +4945,7 @@ fn __gc_ns() {
     __collect()
     let s = __heapstats()
     {live_objects: s['live_objects'], rc_objects: s['live_objects'],
-     heap_bytes: s['heap_bytes']}
+     heap_bytes: s['heap_bytes'], shapes: 0}
   }}
   ns["\zN"] = 'GC'
   ns

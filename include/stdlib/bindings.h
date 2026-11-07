@@ -6730,11 +6730,12 @@ inline JitValue _ns_sys_set_env(JitValue* a, int64_t) {
 }
 
 // GC.stat() — heap introspection. Returns an Object with `live_objects`
-// (net live refcounted heap objects = births − frees, deterministic) and
-// `heap_bytes` (those objects' struct sizes summed — element buffers and
-// allocator overhead excluded, so it's a structural approximation). Snapshot
-// the counters before allocating the result object so the container itself
-// isn't included in its own report.
+// (net live refcounted heap objects = births − frees, deterministic),
+// `rc_objects` (the refcounted subset), `heap_bytes` (those objects' struct
+// sizes summed — element buffers and allocator overhead excluded, so it's a
+// structural approximation) and `shapes` (ShapeRegistry::size,
+// process-wide). Snapshot the counters before allocating the result object so
+// the container itself isn't included in its own report.
 inline JitValue _ns_gc_stat(JitValue*, int64_t) {
   auto& gc = _gc_heap();
   // Refcount-seeded: what this collection reclaims (and so which orphaned
@@ -6744,6 +6745,7 @@ inline JitValue _ns_gc_stat(JitValue*, int64_t) {
   int64_t live = static_cast<int64_t>(gc.live_count());
   int64_t rc_live = static_cast<int64_t>(gc.rc_live_count());
   int64_t bytes = static_cast<int64_t>(gc.live_bytes());
+  int64_t shapes = static_cast<int64_t>(culebra::shape_registry().size());
   auto* obj = culebra_runtime_object_new();
   culebra_runtime_object_set(obj, "live_objects", /*mut=*/false, TAG_LONG,
                              live, 0, 0);
@@ -6755,6 +6757,8 @@ inline JitValue _ns_gc_stat(JitValue*, int64_t) {
                              rc_live, 0, 0);
   culebra_runtime_object_set(obj, "heap_bytes", /*mut=*/false, TAG_LONG,
                              bytes, 0, 0);
+  culebra_runtime_object_set(obj, "shapes", /*mut=*/false, TAG_LONG, shapes,
+                             0, 0);
   return {TAG_OBJECT, reinterpret_cast<int64_t>(obj)};
 }
 
