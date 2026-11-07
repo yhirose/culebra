@@ -17,14 +17,24 @@ let PHRASE = [{
 
 let rms = |xs| Math.sqrt(xs.map(|v| v * v).sum() / xs.size())
 
+# The synthetic performance made into an instrument once for the whole file,
+# in a folder of its own that goes with it: the tests only read what it made.
+class Made {
+  new() {
+    @dir = FS.join(FS.temp_dir(), "engine-test-{UUID.v4()}")
+    FS.mkdir(@dir)
+    @data = synthetic.made_into(@dir).data
+  }
+  drop() {
+    FS.remove(@dir, recursive: true) if FS.exists(@dir)
+  }
+}
+
+let MADE = Made.new()
+
 @test
 fn an_instrument_made_from_one_performance_plays_a_phrase_in_tune() {
-  let dir = FS.join(FS.temp_dir(), "engine-test-{UUID.v4()}")
-  defer {
-    FS.remove(dir, recursive: true) if FS.exists(dir)
-  }
-  FS.mkdir(dir)
-  let data = synthetic.made_into(dir).data
+  let data = MADE.data
   let one = engine.Instrument.new(data, STYLE)
   let s = one.phrase_samples(PHRASE, {})
   assert_true(s.size() >= 0.8 * RATE)
@@ -70,12 +80,7 @@ fn an_instrument_made_from_one_performance_plays_a_phrase_in_tune() {
 
 @test
 fn a_note_longer_than_every_recording_plays_with_no_steady_one() {
-  let dir = FS.join(FS.temp_dir(), "engine-test-{UUID.v4()}")
-  defer {
-    FS.remove(dir, recursive: true) if FS.exists(dir)
-  }
-  FS.mkdir(dir)
-  let one = engine.Instrument.new(synthetic.made_into(dir).data, STYLE)
+  let one = engine.Instrument.new(MADE.data, STYLE)
   # Recordings of single notes that each swell or fade inside are none of
   # them steady; the note is filled out from the one it borrows.
   one.steady = []
@@ -108,12 +113,7 @@ fn a_bend_keeps_the_instruments_resonances_where_they_were_in_hz() {
 
 @test
 fn a_fall_ends_airy_dim_and_unsteady() {
-  let dir = FS.join(FS.temp_dir(), "engine-test-{UUID.v4()}")
-  defer {
-    FS.remove(dir, recursive: true) if FS.exists(dir)
-  }
-  FS.mkdir(dir)
-  let inst = engine.Instrument.new(synthetic.made_into(dir).data, STYLE)
+  let inst = engine.Instrument.new(MADE.data, STYLE)
   let held = inst.borrowed_curves([{...PHRASE[0], len: 1.0}], 0.0, 0, 0.0)
   let fall = inst.borrowed_curves([{...PHRASE[0], len: 1.0, marks: ["fall"]}], 0.0, 0, 0.0)
   let mean = |xs| xs.sum() / xs.size()
@@ -141,12 +141,7 @@ fn a_fall_ends_airy_dim_and_unsteady() {
 
 @test
 fn a_bent_frames_harmonics_are_the_unbent_ones_reshaped_and_dimmed() {
-  let dir = FS.join(FS.temp_dir(), "engine-test-{UUID.v4()}")
-  defer {
-    FS.remove(dir, recursive: true) if FS.exists(dir)
-  }
-  FS.mkdir(dir)
-  let inst = engine.Instrument.new(synthetic.made_into(dir).data, STYLE)
+  let inst = engine.Instrument.new(MADE.data, STYLE)
   let held = inst.borrowed_curves([{...PHRASE[0], len: 1.0}], 0.0, 0, 0.0)
   let fall = inst.borrowed_curves([{...PHRASE[0], len: 1.0, marks: ["fall"]}], 0.0, 0, 0.0)
   # Frame 85, 0.15 s into the fall of the last 0.3 s: the bend's pitch and
@@ -160,12 +155,7 @@ fn a_bent_frames_harmonics_are_the_unbent_ones_reshaped_and_dimmed() {
 
 @test
 fn a_fall_in_a_note_follows_the_falls_course() {
-  let dir = FS.join(FS.temp_dir(), "engine-test-{UUID.v4()}")
-  defer {
-    FS.remove(dir, recursive: true) if FS.exists(dir)
-  }
-  FS.mkdir(dir)
-  let inst = engine.Instrument.new(synthetic.made_into(dir).data, STYLE)
+  let inst = engine.Instrument.new(MADE.data, STYLE)
   # In a note of 1 s the fall takes its last 0.3 s: at half way (0.15 s left)
   # the pitch gathering speed is a quarter of the way down while the loudness
   # has fallen to under half.
@@ -197,12 +187,7 @@ fn a_style_without_a_number_it_needs_is_said_so() {
 # a crescendo by two thirds and lifted a fall's tail.
 @test
 fn slow_kept_leaves_a_crescendo_and_a_fall_as_written() {
-  let dir = FS.join(FS.temp_dir(), "engine-test-{UUID.v4()}")
-  defer {
-    FS.remove(dir, recursive: true) if FS.exists(dir)
-  }
-  FS.mkdir(dir)
-  let inst = engine.Instrument.new(synthetic.made_into(dir).data, STYLE)
+  let inst = engine.Instrument.new(MADE.data, STYLE)
   let held = {...PHRASE[0], len: 2.0, level: 0.7, level_end: 0.7}
   # What a note's marks and swell move its loudness by, a frame at a time,
   # with the slow course kept whole or mostly taken out (the borrowed note is

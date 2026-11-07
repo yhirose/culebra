@@ -40,11 +40,13 @@ lane=(test --doc --only-skipped --vm)
 run_capped() {
     local secs="$1"; shift
     "$@" & local pid=$!
-    local waited=0
-    while (( waited < secs )); do
+    # Looked at every tenth of a second: at every second, a lane that ends
+    # just after a look waits out most of a second more.
+    local tenths=0
+    while (( tenths < secs * 10 )); do
         kill -0 "$pid" 2> /dev/null || { wait "$pid"; return $?; }
-        sleep 1
-        waited=$((waited + 1))
+        sleep 0.1
+        tenths=$((tenths + 1))
     done
     kill -9 "$pid" 2> /dev/null
     wait "$pid" 2> /dev/null
