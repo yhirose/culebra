@@ -393,9 +393,11 @@ class Heap {
   // De-register an object whose memory the CALLER frees (RC release-to-zero
   // `delete`s the struct, then calls forget). No free/poison here — the
   // memory is not the heap's to reclaim.
-  void forget(void* p) {
+  // Answers the type tag `p` was adopted under (255: it was not registered).
+  uint8_t forget(void* p) {
     if (!dying_.empty() && dying_.back() == p) dying_.pop_back();
-    unregister(p);
+    auto h = unregister(p);
+    return h ? h->type_tag : 255;
   }
 
   // Free one heap-owned object (standalone alloc / Phase 1 sweep of

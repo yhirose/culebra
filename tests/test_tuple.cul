@@ -107,4 +107,9 @@ fn tuple_cycle_cost() {
 tuple_cycle_cost()
 assert_eq(tuple_cycle_cost(), 0)
 
+// An iterator reads a Tuple as an Array and is the last to let it go; the
+// Tuple is freed as the block it was made in all the same.
+let held = (1, 2, 3).iter()
+assert_eq(held.collect(), [1, 2, 3])
+
 IO.inspect("test_tuple OK")

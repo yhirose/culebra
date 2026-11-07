@@ -476,11 +476,9 @@ inline void _culebra_value_release_node(int8_t tag, int64_t data) {
         for (size_t i = 0; i < a->size; i++) {
           _culebra_value_release_impl(a->items[i].tag, a->items[i].data);
         }
-        assert(!(heap.header(a) &&
-                 heap.header(a)->type_tag != static_cast<uint8_t>(tag)) &&
-               "an Array or Tuple is released under the tag it was made with");
-        _gc_note_free(heap, a, tag);
-        _jit_array_free(a, tag);
+        // The tag it was made under, not `tag`: a Tuple read as an Array (an
+        // iterator over it, for one) is released as one.
+        _jit_array_free(a, static_cast<int8_t>(_gc_note_free(heap, a, tag)));
       }
       break;
     }

@@ -117,10 +117,12 @@ inline culebra::gc::Heap& _gc_note_teardown(void* obj) {
 // De-register `obj` from the registry just before the release path `delete`s
 // it (the conservative heap owns no memory — RC's `delete` frees it). Ends
 // the teardown _gc_note_teardown began. Doubles as the owned-stack tombstone
-// chokepoint for objects.
-inline void _gc_note_free(culebra::gc::Heap& heap, void* obj, int8_t tag) {
+// chokepoint for objects. Answers the tag `obj` was registered under, which
+// says how it was allocated where the value's own tag may not: a Tuple is
+// read as an Array in many places, and released under that tag.
+inline uint8_t _gc_note_free(culebra::gc::Heap& heap, void* obj, int8_t tag) {
   if (tag == GC_TAG_OBJECT)
     _jit_owned_unregister(static_cast<JitObject*>(obj));
-  heap.forget(obj);
+  return heap.forget(obj);
 }
 

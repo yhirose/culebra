@@ -2528,10 +2528,12 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_array_set_or_push(
 // allocation, `items` pointing into it, and `capacity` fixed at `n`, since a
 // Tuple is built to its own size and never grows.
 //
-// Every Tuple is made here, and no Array is, so the tag alone says where the
-// elements live. The layout cannot say it: an Array's own buffer may begin
-// right after its header (a slab page ending where a malloc'd block starts),
-// and reading that as a Tuple freed the header into the wrong allocator.
+// Every Tuple is made here, and no Array is, so the tag it is registered
+// under says where the elements live (not the tag a value carries: a Tuple is
+// read as an Array in many places). The layout cannot say it: an Array's own
+// buffer may begin right after its header (a slab page ending where a
+// malloc'd block starts), and reading that as a Tuple freed the header into
+// the wrong allocator.
 constexpr size_t _jit_tuple_bytes(size_t n) {
   return sizeof(JitArray) + n * sizeof(JitValue);
 }
@@ -2548,8 +2550,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_tuple_new(int64_t n)
   return arr;
 }
 
-// Frees an Array or a Tuple (`tag`) whose elements are already released (or
-// swept), together with where they lived.
+// Frees an Array or a Tuple (`tag`, the one it was registered under) whose
+// elements are already released (or swept), together with where they lived.
 inline void _jit_array_free(JitArray* a, int8_t tag) {
   if (tag == GC_TAG_TUPLE) {
     assert(a->items == reinterpret_cast<JitValue*>(a + 1) &&
