@@ -2271,6 +2271,17 @@ target_compile_features(format_test PRIVATE cxx_std_23)
 target_include_directories(format_test PRIVATE include)
 add_test(NAME format_test COMMAND format_test)
 
+# The audio engine (include/stdlib/audio_engine.h) driven as a device drives
+# it, with no device: what it plays against what renders offline, sample for
+# sample, and no heap call in a render. Header-only, no raylib.
+add_executable(audio_engine_test test/audio_engine_test.cc)
+target_compile_features(audio_engine_test PRIVATE cxx_std_23)
+target_include_directories(audio_engine_test PRIVATE include)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  target_link_libraries(audio_engine_test Threads::Threads)
+endif()
+add_test(NAME audio_engine_test COMMAND audio_engine_test)
+
 # Search.segmenter's model store (include/stdlib/search_model.h): a name
 # resolves to a cached, digest-checked file, fetched on consent. Confirm and
 # fetch are injected, so the whole discipline runs offline; the argument is

@@ -190,7 +190,9 @@ vm_cases 191
 # program's own streams, seen from outside, on each engine and AOT).
 # 39 still since kauai_play_test took play_test's place (`culebra play` went;
 # kauai/tools/play.cul plays a song with a module of one's own).
-ctest.entries 39
+# 40 since audio_engine_test (the audio engine plays what it renders offline,
+# sample for sample, and a render makes no heap call).
+ctest.entries 40
 
 # ```culebra blocks under docs/ — `just doctest` runs the runnable ones on both
 # engines, and the JIT lane costs one LLVM module per block.
