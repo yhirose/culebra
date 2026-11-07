@@ -229,12 +229,47 @@ void graph_plays_as_it_renders() {
   ad::graph_defs().erase(id);
 }
 
+// More songs and graphs playing at once than the mixer's lists first held:
+// the main thread hands the audio thread longer lists before they could fill,
+// and frees the ones they replace.
+void many_play_at_once() {
+  auto pcm = song_pcm();
+  Device device(400000);
+  auto& engine = *device.engine;
+  device.run(100);
+  for (int64_t id = 1; id <= 40; id++) {
+    engine.schedule_new(id, song(song_rows(0.3, static_cast<unsigned>(id)), pcm, 0.3));
+    engine.schedule_play(id);
+    device.run(50);
+  }
+  device.run(20000);
+  CHECK(device.heap_calls == 0, "40 songs: the renders made %ld heap calls", device.heap_calls);
+  device.heap_calls = 0;
+  ad::Graph def(ad::kMixerRate);
+  def.output(def.add(ad::PartKind::Wave, {}, {}, ad::Oscillator{ad::WaveKind::Sine}, 330, 0));
+  for (int64_t id = 9100; id < 9200; id++) {
+    ad::graph_defs().insert_or_assign(id, def);
+    engine.graph_play(id);
+    if (id % 10 == 0) device.run(50);
+  }
+  device.run(20000);
+  CHECK(device.heap_calls == 0, "100 graphs: the renders made %ld heap calls", device.heap_calls);
+  for (int64_t id = 1; id <= 40; id++) engine.schedule_free(id);
+  for (int64_t id = 9100; id < 9200; id++) engine.graph_stop(id);
+  device.heap_calls = 0;
+  device.run(5000);
+  engine.release_retired();
+  CHECK(device.heap_calls == 0, "stopped: the renders made %ld heap calls", device.heap_calls);
+  for (int64_t id = 9100; id < 9200; id++) ad::graph_defs().erase(id);
+}
+
 }  // namespace
 
 int main() {
   schedule_plays_as_it_renders();
   tone_starts_when_asked();
   graph_plays_as_it_renders();
+  many_play_at_once();
   if (failures) {
     std::printf("audio_engine_test: %d failure(s)\n", failures);
     return 1;

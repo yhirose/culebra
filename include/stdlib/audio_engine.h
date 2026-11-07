@@ -18,6 +18,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cassert>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -427,10 +428,11 @@ inline void render_schedule(const double* events, int64_t count, double length, 
 // it was played with reach the copy through the posts. Parts added, and a new
 // output, wait for the next play(). The main thread keeps a reference to each
 // copy (in live_graphs_, then retired_graphs_) so that, as with schedules, the
-// free happens there. The audio thread's list of them is reserved for
-// kGraphsPlaying, a copy's values have room for the changes made while it
-// plays (graph_post sends a longer list before they could run out), and the
-// posts, and the lists they bring back, are freed on the main thread.
+// free happens there. The audio thread's list of them grows by a longer list
+// the main thread sends (LongerList), as its list of the schedules playing
+// does; a copy's values have room for the changes made while it plays
+// (graph_post sends a longer list before they could run out); and the posts,
+// and the lists they bring back, are freed on the main thread.
 struct GraphCommand {
   int64_t id = 0;
   std::shared_ptr<Graph> graph;  // play; null stops
@@ -466,6 +468,54 @@ struct ScheduleCommand {
 // The samples the mixer asks for at once, at most; a longer ask is split.
 inline constexpr unsigned kMixChunk = 4096;
 
+// A list the audio thread adds to (the schedules or the graphs playing),
+// kept from ever growing there by the handover graph_post's longer lists use:
+// the main thread, which knows how long the list can get, sends a longer one
+// before it could fill; the audio thread moves into it and sends its old one
+// back, which the main thread frees.
+template <class T>
+class LongerList {
+ public:
+  // Main thread: a list with room for `n` when the audio thread's might not
+  // have it, to send(); empty when it has.
+  std::vector<T> longer_for(size_t n) {
+    std::vector<T> longer;
+    if (n <= room_) return longer;
+    longer.reserve(2 * n);
+    room_ = longer.capacity();
+    return longer;
+  }
+  // Main thread, under the lock: `longer` sent, coming back holding what it
+  // displaces (one sent and not yet taken, or one come back), for the caller
+  // to free once the lock is let go.
+  void send(std::vector<T>& longer) {
+    if (longer.capacity() == 0) return;
+    sent_.swap(longer);
+    back_ = false;
+  }
+  // Audio thread, under the lock: `items` moved into the list sent, if one
+  // was, which stands in for it from now on; the old one goes back.
+  void take(std::vector<T>& items) {
+    if (back_ || sent_.capacity() == 0) return;
+    for (auto& x : items) sent_.push_back(std::move(x));
+    items.swap(sent_);
+    sent_.clear();
+    back_ = true;
+  }
+  // Main thread, under the lock: the old list into `old`, once it has come
+  // back, for the caller to free once the lock is let go.
+  void reclaim(std::vector<T>& old) {
+    if (!back_) return;
+    old.swap(sent_);
+    back_ = false;
+  }
+
+ private:
+  std::vector<T> sent_;  // guarded by the lock: a longer list sent, or the old one back
+  bool back_ = false;    // guarded by the lock: `sent_` is the old one
+  size_t room_ = 0;      // main thread: what the audio thread's list holds once it takes sent_
+};
+
 // --- Engine: the live mixer and what the main thread hands it ---------------
 //
 // One per stream. The main thread's half (tone, the schedule_ and graph_
@@ -486,9 +536,7 @@ class Engine {
   // is not measured from the epoch and scheduled past any sample this
   // process will ever render.
   void open() {
-    mix_.playing.reserve(16);
     mix_.samplers.reserve(kMaxSamplers);
-    graphs_.reserve(kGraphsPlaying);
     std::lock_guard<std::mutex> lock(mutex_);
     stream_at_ = now_();
   }
@@ -526,7 +574,11 @@ class Engine {
     release_retired();
     auto it = schedules_.find(id);
     if (it == schedules_.end()) return;
+    // A schedule plays only while it is not freed (schedule_free stops it
+    // first), so no more play at once than there are schedules.
+    auto longer = playing_.longer_for(schedules_.size());
     std::lock_guard<std::mutex> lock(mutex_);
+    playing_.send(longer);
     schedule_inbox_.push_back(ScheduleCommand{id, it->second, stream_now()});
   }
   void schedule_stop(int64_t id) {
@@ -552,7 +604,10 @@ class Engine {
     auto live = std::make_shared<Graph>(*def);
     std::vector<size_t> room;
     live->make_room(room);
+    // No more play at once than are live (graph_stop stops one as it lets go).
+    auto longer = graphs_playing_.longer_for(live_graphs_.size() + 1);
     std::lock_guard<std::mutex> lock(mutex_);
+    graphs_playing_.send(longer);
     int64_t start = stream_now();
     live_graphs_[id] = LiveGraph{live, start, def->size(), std::move(room)};
     graph_inbox_.push_back(GraphCommand{id, std::move(live), start});
@@ -593,13 +648,17 @@ class Engine {
   }
 
   // Called from the main thread's audio calls, so a freed song goes soon after
-  // the mixer lets go of it.
+  // the mixer lets go of it, and the lists the mixer has outgrown with it.
   void release_retired() {
+    std::vector<PlayingSchedule> old_playing;
+    std::vector<PlayingGraph> old_graphs;
     {
       std::lock_guard<std::mutex> lock(mutex_);
       graph_posts_.erase(graph_posts_.begin(),
                          graph_posts_.begin() + static_cast<std::ptrdiff_t>(graph_posts_taken_));
       graph_posts_taken_ = 0;
+      playing_.reclaim(old_playing);
+      graphs_playing_.reclaim(old_graphs);
     }
     std::erase_if(retired_, [](const auto& s) { return s.use_count() == 1; });
     std::erase_if(retired_graphs_, [](const auto& g) { return g.use_count() == 1; });
@@ -634,6 +693,9 @@ class Engine {
     }
     {
       std::lock_guard<std::mutex> lock(mutex_);
+      // Longer lists first, so the commands below have room.
+      playing_.take(mix_.playing);
+      graphs_playing_.take(graphs_);
       // Losing the oldest keeps the newest, which is what a channel would be
       // sounding by the time the queue drained anyway.
       int drop = pending_count_ + inbox_count_ - kQueueCap;
@@ -652,6 +714,7 @@ class Engine {
         mix_.cut(cmd.id);
         if (cmd.schedule) {
           cmd.schedule->room->reset();
+          assert(mix_.playing.size() < mix_.playing.capacity());  // LongerList's room
           mix_.playing.push_back(PlayingSchedule{cmd.id, std::move(cmd.schedule), cmd.start, 0});
         }
       }
@@ -659,7 +722,9 @@ class Engine {
       // A graph played again starts over; one stopped goes silent at once.
       for (auto& cmd : graph_inbox_) {
         std::erase_if(graphs_, [&](const PlayingGraph& pg) { return pg.id == cmd.id; });
-        if (cmd.graph) graphs_.push_back(PlayingGraph{cmd.id, std::move(cmd.graph), cmd.start});
+        if (!cmd.graph) continue;
+        assert(graphs_.size() < graphs_.capacity());  // LongerList's room
+        graphs_.push_back(PlayingGraph{cmd.id, std::move(cmd.graph), cmd.start});
       }
       graph_inbox_.clear();
       // Each change has room in its copy (graph_post sees to it).
@@ -723,6 +788,8 @@ class Engine {
   std::vector<GraphCommand> graph_inbox_;
   std::vector<GraphPost> graph_posts_;
   size_t graph_posts_taken_ = 0;  // the posts the mixer is done with
+  LongerList<PlayingSchedule> playing_;      // for mix_.playing
+  LongerList<PlayingGraph> graphs_playing_;  // for graphs_
 
   // The audio thread's. The notes still waiting for their sample (the voices
   // they start on are mix_'s).
