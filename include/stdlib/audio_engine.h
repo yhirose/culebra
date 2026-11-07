@@ -293,8 +293,15 @@ struct Sampler {
   size_t pos = 0;
   double gain = 0;
   Room* room = nullptr;        // the owner's
+  int fade = -1;               // samples left of the fade it goes with once stolen; -1 before
 };
-inline constexpr size_t kMaxSamplers = 64;  // the oldest goes, as a channel's note would
+// The samples sounding at once; past them the oldest goes, as a channel's note
+// would, fading out over kStealFade samples (some 3 ms), as a cut would click.
+inline constexpr size_t kMaxSamplers = 64;
+inline constexpr int kStealFade = 128;
+// The mixer's room for samplers, those fading out too: past it, one already
+// fading goes at once, which takes as many steals inside one fade.
+inline constexpr size_t kSamplerSlots = 2 * kMaxSamplers;
 
 // The mixing: the voice sounding on each channel, the schedules playing and the
 // samples they started, and the noise channel's generator. A stream has one,
@@ -307,11 +314,15 @@ struct Mixer {
   std::vector<Sampler> samplers;
   uint32_t rng = 0x9e3779b9u;
 
+  Mixer() { samplers.reserve(kSamplerSlots); }  // start() never grows it
+
   // Start what schedule `ps` has due at sample `p`, and go round again at its
   // end if it loops; false once it has played through and its sounds ended.
   bool advance(PlayingSchedule& ps, int64_t p);
   // Silence what schedule `id` started: its tones on their channels, its samples.
   void cut(int64_t id);
+  // A sample starting, stealing from the oldest past kMaxSamplers.
+  void start(const Sampler& s);
   // Sample `p`: the schedules' notes due then started, the samples and the
   // channels sounding, `extra`, and the rooms' echoes. Not yet clamped.
   double sample(int64_t p, double extra);
@@ -333,8 +344,7 @@ inline bool Mixer::advance(PlayingSchedule& ps, int64_t p) {
         n.room = s.room.get();
         voice[e.channel] = n;
       } else {
-        if (samplers.size() == kMaxSamplers) samplers.erase(samplers.begin());
-        samplers.push_back(Sampler{ps.id, *e.pcm, 0, e.gain * v, s.room.get()});
+        start(Sampler{ps.id, *e.pcm, 0, e.gain * v, s.room.get()});
       }
     }
     if (p < ps.origin + s.length) return true;
@@ -349,6 +359,17 @@ inline bool Mixer::advance(PlayingSchedule& ps, int64_t p) {
                                [](const ScheduleEvent& e, int64_t at) { return e.at < at; }) -
               s.events.begin();
   }
+}
+
+inline void Mixer::start(const Sampler& s) {
+  auto sounding = [](const Sampler& x) { return x.fade < 0; };
+  if (static_cast<size_t>(std::ranges::count_if(samplers, sounding)) == kMaxSamplers)
+    std::ranges::find_if(samplers, sounding)->fade = kStealFade;
+  // Full, the samplers are kMaxSamplers sounding at most and the rest fading.
+  if (samplers.size() == kSamplerSlots)
+    samplers.erase(std::ranges::find_if(samplers, [&](const Sampler& x) { return !sounding(x); }));
+  assert(samplers.size() < samplers.capacity());
+  samplers.push_back(s);
 }
 
 inline void Mixer::cut(int64_t id) {
@@ -378,10 +399,11 @@ inline double Mixer::sample(int64_t p, double extra) {
   for (auto& s : samplers) {
     if (s.pos >= s.pcm.size()) continue;
     double v = s.pcm[s.pos++] * s.gain;
+    if (s.fade >= 0) v *= static_cast<double>(s.fade--) / kStealFade;
     mixed += v;
     if (s.room) s.room->send += v;
   }
-  std::erase_if(samplers, [](const Sampler& s) { return s.pos >= s.pcm.size(); });
+  std::erase_if(samplers, [](const Sampler& s) { return s.pos >= s.pcm.size() || s.fade == 0; });
   for (int c = 0; c < 5; c++) {
     Note& n = voice[c];
     if (!n.active || n.elapsed >= n.total) {
@@ -531,12 +553,10 @@ class Engine {
 
   // --- main thread ---
 
-  // Before the device can call back: the lists the mixer adds to reserved,
-  // and the stream clock dated, so a tone() issued ahead of the first buffer
-  // is not measured from the epoch and scheduled past any sample this
-  // process will ever render.
+  // Before the device can call back: the stream clock dated, so a tone()
+  // issued ahead of the first buffer is not measured from the epoch and
+  // scheduled past any sample this process will ever render.
   void open() {
-    mix_.samplers.reserve(kMaxSamplers);
     std::lock_guard<std::mutex> lock(mutex_);
     stream_at_ = now_();
   }

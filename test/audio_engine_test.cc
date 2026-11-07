@@ -10,6 +10,7 @@
 #include <stdlib/audio_engine.h>
 
 #include <atomic>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -263,6 +264,46 @@ void many_play_at_once() {
   for (int64_t id = 9100; id < 9200; id++) ad::graph_defs().erase(id);
 }
 
+// Past kMaxSamplers sounding at once the oldest goes, and it fades out
+// rather than stopping dead: 64 samples hold a level, a 65th (silent) starts,
+// and the level falls by the oldest's share without a step. A flood of
+// samples starting together stays within the mixer's room. Played live,
+// both are what renders offline.
+void stolen_sample_fades() {
+  ad::PcmByHandle pcm;
+  pcm[1] = std::make_shared<const std::vector<float>>(2 * 44100, 0.5f);
+  pcm[2] = std::make_shared<const std::vector<float>>(44100 / 2, 0.0f);
+  auto rows_of = [](int held, int more) {
+    std::vector<double> rows;
+    for (int k = 0; k < held; k++) rows.insert(rows.end(), {0, -1, 1, 0.02, 0, 0, 0, 0, 0, 0, 0});
+    for (int k = 0; k < more; k++) rows.insert(rows.end(), {0.5, -1, 2, 0.02, 0, 0, 0, 0, 0, 0, 0});
+    return rows;
+  };
+  const size_t steal = 44100 / 2;
+
+  auto rows = rows_of(static_cast<int>(ad::kMaxSamplers), 1);
+  auto want = rendered(rows, pcm, 2.0, 0.0, 1.0);
+  double step = 0;
+  for (size_t i = steal - 2; i < steal + 200; i++)
+    step = std::max(step, std::abs(static_cast<double>(want[i + 1]) - want[i]));
+  CHECK(step < 0.001, "the level steps by %g where the oldest goes (its share is 0.01)", step);
+  CHECK(std::abs(want[steal + 200] - 0.63) < 1e-5, "the oldest is gone after its fade: %g",
+        static_cast<double>(want[steal + 200]));
+
+  auto flood = rows_of(static_cast<int>(ad::kMaxSamplers), 3 * static_cast<int>(ad::kMaxSamplers));
+  for (auto* r : {&rows, &flood}) {
+    Device device(4 * 44100);
+    device.run(300);
+    int64_t start = device.pos();
+    device.engine->schedule_new(1, song(*r, pcm, 2.0));
+    device.engine->schedule_play(1);
+    device.run(3 * 44100);
+    hears(r == &rows ? "the stolen sample" : "the flood", device.heard, start,
+          rendered(*r, pcm, 2.0, 0.0, 1.0));
+    CHECK(device.heap_calls == 0, "the renders made %ld heap calls", device.heap_calls);
+  }
+}
+
 }  // namespace
 
 int main() {
@@ -270,6 +311,7 @@ int main() {
   tone_starts_when_asked();
   graph_plays_as_it_renders();
   many_play_at_once();
+  stolen_sample_fades();
   if (failures) {
     std::printf("audio_engine_test: %d failure(s)\n", failures);
     return 1;
