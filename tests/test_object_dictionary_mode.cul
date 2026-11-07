@@ -2,10 +2,11 @@
 // it has to stay correct — and stay linear — when its keys come from data
 // rather than from source.
 //
-// Past a property threshold an object stops transitioning shapes and keeps
-// a hash index of its own instead. Everything below has to behave the same
-// on both sides of that flip, so each case spans it: the threshold is 64
-// and these objects hold 200.
+// Past a property threshold, or once it loses a key, a plain object stops
+// transitioning shapes and keeps a hash index of its own instead. Everything
+// below has to behave the same on both sides of that flip, so each case
+// spans it: the threshold is 64 and these objects hold 200 (the removal
+// cases at the end flip by removing).
 
 let n = 200
 
@@ -125,3 +126,23 @@ for i in 0..n {
 assert_eq(b.double(), 42)        // the method still resolves
 assert_eq(b["f199"], 199)
 assert_eq(b.n, 21)
+
+// --- a removal mints no layout ----------------------------------------------
+
+// Layouts are interned for the life of the process, and the key set a
+// removal leaves is one no other object shares, so an Object that loses a
+// key becomes a dictionary instead: one whose keys churn (a cache, a memo
+// table) used to intern a fresh chain of layouts on every removal.
+mut cache = {}
+for i in 0..21 {
+  cache["c{i}"] = i
+}
+cache.remove("c0")  // a dictionary from here on, so the baseline sees no shaped insert
+GC.stat()  // interns the layout of its own result
+let churn_base = GC.stat().shapes
+for i in 21..221 {
+  cache["c{i}"] = i
+  cache.remove("c{i - 20}")
+}
+assert_eq(GC.stat().shapes - churn_base, 0)
+assert_eq(cache["c220"], 220)

@@ -3737,13 +3737,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_eff_copy(
     // A dictionary's names live on the object, not in the shape, so the
     // copy needs its own index. (`shape` above is the shared sentinel,
     // which carries no names at all.)
-    auto* d = new DictIndex();
-    d->index.reserve(src->dict_->index.size() * 2);
-    d->names.reserve(src->dict_->names.size());
-    for (size_t i = 0; i < src->dict_->names.size(); i++) {
-      auto it = d->index.emplace(*src->dict_->names[i], i).first;
-      d->names.push_back(&it->first);
-    }
+    auto* d = new DictIndex(src->prop_size());
+    for (size_t i = 0; i < src->prop_size(); i++) d->add(src->prop_name(i), i);
     o->dict_ = d;
     o->is_dict = true;
     // Interned String keys carry no ref, so the order record copies flat.

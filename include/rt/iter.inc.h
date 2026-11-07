@@ -3866,25 +3866,21 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_remove(
   if (std::string_view(key) == "drop") _jit_owned_unbind_drop(obj);
 }
 
-// Drop a key from `key_order` if present: a String key by its name, any
-// other by the very value the sidecar stored (the two hold the same key), so
-// no user `eq` runs.
+// Whether `key_order`, once it exists, names every key the object holds and
+// no other: what a removal must leave behind.
+inline bool _jit_key_order_whole(const JitObject* obj) {
+  return !obj->key_order ||
+         obj->key_order->size() ==
+             obj->prop_size() +
+                 (obj->non_string_props ? obj->non_string_props->size() : 0);
+}
+
+// Drop a sidecar key from `key_order` (JitObject::erase drops a String
+// key's): by the very value the sidecar stored (the two hold the same key),
+// so no user `eq` runs. A refcounted (Tuple) key holds a +1 there.
 inline void _key_order_erase(JitObject* obj, const JitValue& key) {
-  if (!obj->key_order) return;
-  auto& ko = *obj->key_order;
-  bool strlike = key.tag == TAG_STRING || key.tag == TAG_STRINGVIEW;
-  for (auto it = ko.begin(); it != ko.end(); ++it) {
-    const JitValue& k = it->value();
-    bool same = strlike ? JitValueEq{}(k, key)
-                        : k.tag == key.tag && k.data == key.data;
-    if (same) {
-      // Refcounted (Tuple) keys hold a +1 here — release before erasing.
-      if (_is_refcounted_value_tag(k.tag))
-        _culebra_value_release_impl(k.tag, k.data);
-      ko.erase(it);
-      return;
-    }
-  }
+  if (obj->drop_order_entry(key) && _is_refcounted_value_tag(key.tag))
+    _culebra_value_release_impl(key.tag, key.data);
 }
 
 // dict.get(key, fallback): read-only. Returns the stored value (retained +1)
@@ -4025,7 +4021,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_remove_any(
   if (const char* name = _jit_key_name(tag, data, _kbuf)) {
     if (obj->find_slot(name) != static_cast<size_t>(-1)) {
       culebra_runtime_object_remove(obj, name);
-      _key_order_erase(obj, {tag, data});
+      assert(_jit_key_order_whole(obj));
     }
     return;
   }
@@ -4041,6 +4037,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_remove_any(
   JitValue value = it->second.value;
   obj->non_string_props->erase(it);
   _key_order_erase(obj, stored);
+  assert(_jit_key_order_whole(obj));
   _culebra_value_release_impl(value.tag, value.data);
   _culebra_value_release_impl(stored.tag, stored.data);
   _culebra_value_release_impl(tag, data);

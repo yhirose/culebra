@@ -659,14 +659,7 @@ inline bool _jit_object_set_hashed(JitObject* obj, const JitHashedKey& key,
     // First non-String key: activate key_order and back-fill with the
     // String keys already present so interleaved order survives. A
     // dictionary-mode object already keeps key_order eagerly.
-    if (!obj->key_order) {
-      obj->key_order = new std::vector<JitHashedKey>();
-      if (obj->shape) {
-        obj->key_order->reserve(obj->prop_size() + 1);
-        for (size_t i = 0; i < obj->prop_size(); i++)
-          obj->key_order->push_back(JitObject::name_key(obj->prop_name(i)));
-      }
-    }
+    obj->materialize_key_order();
   }
   auto [it, inserted] = obj->non_string_props->try_emplace(
       key, JitObjectEntry{val, mut});

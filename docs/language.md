@@ -1405,12 +1405,13 @@ Non-String keys live in a sidecar map. Compound forms (`obj[k] += v`)
 update the slot in place and require the key to already exist
 (`KeyError` otherwise) and the slot to be mutable.
 
-An Object built this way is a dictionary and performs like one: insert,
-read and delete stay O(1) as it grows, whatever the key type. The
-fixed-slot layout an Object literal or a class instance gets is a
-different representation, and an object leaves it once it holds enough
-keys that the layout no longer pays — a change of representation only,
-with no change in behaviour.
+An Object built this way is a dictionary and performs like one: insert
+and read stay O(1) as it grows, whatever the key type, and a delete is
+O(n), since the entries after it keep their order. The fixed-slot
+layout an Object literal or a class instance gets is a different
+representation, and a plain Object leaves it once it holds enough keys
+that the layout no longer pays, or once a key is removed from it — a
+change of representation only, with no change in behaviour.
 
 
 ### Methods and UFCS

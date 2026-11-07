@@ -512,9 +512,10 @@ inline const char* _intern_str(std::string_view s);
 // name vector per key, so building an n-key dictionary cost O(n^2) in both
 // time and memory (20,000 String keys: 1.15 s and 4.0 GB peak, against
 // 0.0023 s for the same n Long keys, which have always used a hash
-// sidecar). Past `kDictAt` properties an object stops transitioning shapes
-// and keeps a hash index of its own. Values stay in `slots`, so every
-// caller that resolves a name to a slot index is unaffected.
+// sidecar). Past `kDictAt` properties, or once it loses one (`erase`), a
+// plain Object stops transitioning shapes and keeps a hash index of its own.
+// Values stay in `slots`, so every caller that resolves a name to a slot
+// index is unaffected.
 struct DictKeyHash {
   using is_transparent = void;
   size_t operator()(std::string_view s) const {
@@ -528,10 +529,27 @@ struct DictKeyEq {
   }
 };
 struct DictIndex {
-  // Owns the names; `unordered_map` keeps its keys at stable addresses, so
-  // `names` can point into it.
-  std::unordered_map<std::string, size_t, DictKeyHash, DictKeyEq> index;
-  std::vector<const std::string*> names;  // slot -> name
+  using Map = std::unordered_map<std::string, size_t, DictKeyHash, DictKeyEq>;
+  // Owns the names; `unordered_map` keeps its entries at stable addresses,
+  // so `entries` can point into it.
+  Map index;
+  std::vector<Map::value_type*> entries;  // slot -> (name, slot)
+
+  explicit DictIndex(size_t n) {
+    index.reserve(n * 2);
+    entries.reserve(n);
+  }
+
+  std::string_view name(size_t slot) const { return entries[slot]->first; }
+  void add(std::string_view name, size_t slot) {
+    entries.push_back(&*index.emplace(std::string(name), slot).first);
+  }
+  // Every later slot shifts down one, as the object's `slots` do.
+  void remove(size_t slot) {
+    index.erase(index.find(name(slot)));
+    entries.erase(entries.begin() + static_cast<ptrdiff_t>(slot));
+    for (size_t i = slot; i < entries.size(); i++) entries[i]->second = i;
+  }
 };
 
 // Every dictionary-mode object shares this shape. It is never interned and
@@ -795,8 +813,16 @@ struct JitObject {
   // The name of slot `i`. The shape stops recording names once an object
   // is in dictionary mode, so every enumeration goes through here.
   std::string_view prop_name(size_t i) const {
-    return is_dict ? std::string_view(*dict_->names[i])
-                   : std::string_view(shape->names[i]);
+    return is_dict ? dict_->name(i) : std::string_view(shape->names[i]);
+  }
+
+  // The lazy insertion-order record made real: every String key, in slot
+  // order, as name_key() writes each.
+  void materialize_key_order() {
+    if (key_order) return;
+    key_order = new std::vector<JitHashedKey>();
+    key_order->reserve(prop_size() + 1);
+    for (size_t i = 0; i < prop_size(); i++) key_order->push_back(name_key(prop_name(i)));
   }
 
   // Class instances reach their methods through a proto; dictionaries use
@@ -833,29 +859,22 @@ struct JitObject {
   // Shape that nothing else will ever share.
   static constexpr size_t kDictAt = 64;
 
+  // Only a plain Object flips: a class instance's proto is where the index
+  // would go. An empty one (no shape yet, a received dictionary) flips too.
   void become_dict() {
-    auto* d = new DictIndex();
-    d->index.reserve(slots.size() * 2);
-    d->names.reserve(slots.size());
-    for (size_t i = 0; i < slots.size(); i++) {
-      auto it = d->index.emplace(shape->names[i], i).first;
-      d->names.push_back(&it->first);
-    }
+    assert(!is_dict && !proto_);
+    auto* d = new DictIndex(slots.size());
+    for (size_t i = 0; i < slots.size(); i++) d->add(shape->names[i], i);
     // `key_order` is the only insertion-order record once the shape stops
-    // growing, so materialize it here if it is still lazy.
-    if (!key_order) {
-      key_order = new std::vector<JitHashedKey>();
-      key_order->reserve(slots.size() + 1);
-      for (const auto& name : shape->names) key_order->push_back(name_key(name));
-    }
+    // growing, so it is made real here if it is still lazy.
+    materialize_key_order();
     dict_ = d;
     is_dict = true;
     shape = dict_shape();
   }
 
   size_t append_dict(std::string_view key, JitValue value, bool mut) {
-    auto it = dict_->index.emplace(std::string(key), slots.size()).first;
-    dict_->names.push_back(&it->first);
+    dict_->add(key, slots.size());
     if (slots.capacity() == 0) slots.reserve(8);
     slots.push_back({value, mut});
     ++mut_count;
@@ -896,33 +915,43 @@ struct JitObject {
     for (size_t i = 0; i < slots.size(); i++) f(prop_name(i), slots[i]);
   }
 
-  // Remove a property by rebuilding the shape from its root. Slow path
-  // (`Object.remove` is rare); cycle members invoked via the cycle
-  // collector use the unified release path which clears slots wholesale
-  // instead.
+  // Drop the `key_order` entry holding this very value (no `eq` runs); true
+  // if there was one.
+  bool drop_order_entry(JitValue key) {
+    if (!key_order) return false;
+    auto it = std::find_if(
+        key_order->begin(), key_order->end(), [&](const JitHashedKey& e) {
+          return e.value().tag == key.tag && e.value().data == key.data;
+        });
+    if (it == key_order->end()) return false;
+    key_order->erase(it);
+    return true;
+  }
+
+  // Remove a String-keyed property, its `key_order` entry with it. The
+  // caller has released the value.
+  //
+  // The key set left behind is one no other object is likely to share, and
+  // Shapes are interned for the life of the process, so a removal never
+  // mints one: a plain Object becomes a dictionary first, as V8 normalizes an
+  // object on `delete` (an object whose keys churn, a cache or a memo table,
+  // otherwise interned a fresh chain of Shapes on every removal).
   void erase(std::string_view key) {
     auto idx = find_slot(key);
     if (idx == static_cast<size_t>(-1)) return;
+    if (!is_dict && !proto_) become_dict();
+    // A String key's entry is the interned name, so identity finds it.
+    if (key_order) drop_order_entry(name_key(key).value());
+    ++mut_count;
     if (is_dict) {
-      // Every later slot shifts down, so the index is rebuilt wholesale --
-      // the same O(n) the shaped path below pays.
-      auto* d = new DictIndex();
-      d->index.reserve(slots.size() * 2);
-      d->names.reserve(slots.size() - 1);
-      decltype(slots) new_slots;
-      new_slots.reserve(slots.size() - 1);
-      for (size_t i = 0; i < slots.size(); i++) {
-        if (i == idx) continue;
-        auto it = d->index.emplace(*dict_->names[i], new_slots.size()).first;
-        d->names.push_back(&it->first);
-        new_slots.push_back(std::move(slots[i]));
-      }
-      delete dict_;
-      dict_ = d;
-      slots = std::move(new_slots);
-      ++mut_count;
+      dict_->remove(idx);
+      slots.erase(slots.begin() + static_cast<ptrdiff_t>(idx));
       return;
     }
+    // A class instance keeps its proto where a dictionary keeps its index,
+    // so it rebuilds its shape from the root. Its fields come from source,
+    // which bounds the Shapes this can make, unless it is used as a
+    // dictionary itself.
     auto* new_shape = shape->tree_root();
     decltype(slots) new_slots;
     new_slots.reserve(slots.size() - 1);
@@ -938,7 +967,6 @@ struct JitObject {
     }
     shape = new_shape;
     slots = std::move(new_slots);
-    ++mut_count;
   }
 
   static void* operator new(size_t n) { return _slab().alloc(n); }
