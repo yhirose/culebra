@@ -55,65 +55,65 @@ let GRAMMAR = `
   %whitespace <- [ \t]*
 `
 
-# The parts a recipe may use, each with what it has of: its kind's default
-# (`kind`, for a part with kinds), the field that names one other part
-# (`one`), the fields that name a list of them (`many`), the values that may
-# move and the numbers it is made with once (with their defaults), and how
-# the graph makes it. part() reads what an entry leaves out as none.
+# The parts a recipe may use: the Audio.Graph method that makes each, and
+# what a recipe gives it that the method does not (a wave's and a pluck's
+# freq is the note's own, and a filter is a low-pass). The rest of a part,
+# its fields and which of them move, is the method's own: SHAPES reads it.
 let PARTS = {
-  wave: {
-    kind: "sine",
-    many: ["modulators"],
-    values: {freq: "f", feedback: 0.0},
-    fixed: {phase: 0.0},
-    make: |g, x| g.wave(
-      x.kind,
-      freq: x.freq,
-      modulators: x.modulators,
-      feedback: x.feedback,
-      phase: x.phase,
-    ),
-  },
-  noise: {
-    fixed: {seed: 1.0},
-    make: |g, x| g.noise(seed: to_long(Math.round(x.seed))),
-  },
-  filter: {
-    kind: "low",
-    one: ["input"],
-    values: {cutoff: 1000.0},
-    fixed: {q: 0.707},
-    make: |g, x| g.filter(x.kind, x.input, cutoff: x.cutoff, q: x.q),
-  },
-  gain: {
-    one: ["input"],
-    many: ["modulators"],
-    values: {gain: 1.0},
-    make: |g, x| g.gain(x.input, gain: x.gain, modulators: x.modulators),
-  },
-  drive: {
-    one: ["input"],
-    values: {gain: 1.0},
-    make: |g, x| g.drive(x.input, gain: x.gain),
-  },
-  mix: {
-    many: ["inputs"],
-    values: {gain: 1.0},
-    make: |g, x| g.mix(x.inputs, gain: x.gain),
-  },
-  pluck: {
-    one: ["input"],
-    many: ["modulators"],
-    values: {freq: "f", ring: 2.0},
-    make: |g, x| g.pluck(x.input, freq: x.freq, ring: x.ring, modulators: x.modulators),
-  },
-  delay: {
-    one: ["input"],
-    many: ["modulators"],
-    values: {time: 0.0},
-    make: |g, x| g.delay(x.input, time: x.time, modulators: x.modulators),
-  },
+  wave: {make: |g| g.wave, defaults: {freq: "f"}},
+  noise: {make: |g| g.noise},
+  filter: {make: |g| g.filter, defaults: {kind: "low"}},
+  gain: {make: |g| g.gain},
+  drive: {make: |g| g.drive},
+  mix: {make: |g| g.mix},
+  pluck: {make: |g| g.pluck, defaults: {freq: "f"}},
+  delay: {make: |g| g.delay},
 }
+
+# What a field of a part holds, by the type its method declares for it: a
+# word (a kind), the name of a part it takes in, a list of them, a whole
+# number, or a number.
+let ROLES = {
+  String: "word",
+  AudioGraphPart: "one",
+  Array: "many",
+  Long: "whole",
+  "Long | Float": "number",
+}
+
+# A part's fields as its method declares them, by role (ROLES), and of its
+# numbers those that may move (`values`) and those it is made with once
+# (`fixed`, with the whole numbers). Which move is what a part made once
+# has: an Audio.Graph part has a value for each of them.
+fn shape(spec) {
+  let g = Audio.Graph.new()
+  let src = g.noise()
+  let defaults = spec.get("defaults", {})
+  let method = spec.make(g)
+  let ps = method.params
+  let odd = ps.find(|p| !ROLES.has(p.type))
+  throw "Audio.Graph: no field of a recipe holds a {odd.type} ({odd.name})" if odd !=
+    nil
+  let by = |role| ps.filter(|p| ROLES[p.type] == role).map(|p| p.name)
+  let needs = ps
+    .filter(|p| !p.has_default)
+    .map(|p| (p.name, match ROLES[p.type] { "one" => src, "many" => [], _ => defaults[p.name] }))
+  let probe = method(**needs.to_object())
+  let moves = |k| probe.get(k, nil) != nil
+  {
+    fields: ps.map(|p| p.name),
+    word: by("word"),
+    one: by("one"),
+    many: by("many"),
+    whole: by("whole"),
+    values: by("number").filter(moves),
+    fixed: [...by("whole"), ...by("number").filter(|k| !moves(k))],
+    defaults: defaults,
+    make: spec.make,
+  }
+}
+
+let SHAPES = PARTS.keys().map(|k| (k, shape(PARTS[k]))).to_object()
 
 let hz = |pitch| 440.0 * 2.0 ** ((pitch - 69) / 12.0)
 
@@ -377,39 +377,41 @@ fn part(x, names, where) {
   throw "{where}: a part is an Object with a `part`" if type_of(x) !=
     "Object" ||
     !x.has("part")
-  let spec = PARTS.get(x.part, nil)
-  throw "{where}.part: no part `{x.part}`; there are {PARTS.keys().join(", ")}" if spec ==
+  let s = SHAPES.get(x.part, nil)
+  throw "{where}.part: no part `{x.part}`; there are {SHAPES.keys().join(", ")}" if s ==
     nil
-  let base = spec.get("kind", nil)
-  let one = spec.get("one", [])
-  let many = spec.get("many", [])
-  let values = spec.get("values", {})
-  let fixed = spec.get("fixed", {})
-  let fields = ["part", ...one, ...many, ...values.keys(), ...fixed.keys()]
-  only(x, base == nil ? fields : ["kind", ...fields], where, "a {x.part}")
-  for k in one {
+  only(x, ["part", ...s.fields], where, "a {x.part}")
+  for k in s.one {
     throw "{where}.{k}: the name of a part" if x.get(k, nil) !is String
   }
-  for k in many {
+  for k in s.many {
     let xs = x.get(k, [])
     throw "{where}.{k}: a list of names of parts" if xs !is Array ||
       !xs.all(|n| n is String)
   }
-  let kind = base == nil ? nil : x.get("kind", base)
-  throw "{where}.kind: a word" if base != nil && kind !is String
+  # A field the part leaves out goes to its method as its own default.
+  let given = {...s.defaults, ...x}
+  let has = |k| given.has(k)
+  let words = s.word.filter(has)
+  for k in words {
+    throw "{where}.{k}: a word" if given[k] !is String
+  }
   {
-    kind: kind,
-    one: one.map(|k| (k, x[k])).to_object(),
-    many: many.map(|k| (k, x.get(k, []))).to_object(),
-    values: values
-      .keys()
-      .map(|k| (k, value(x.get(k, values[k]), names, "{where}.{k}")))
+    words: words.map(|k| (k, given[k])).to_object(),
+    one: s.one.map(|k| (k, x[k])).to_object(),
+    many: s.many.map(|k| (k, x.get(k, []))).to_object(),
+    values: s.values
+      .filter(has)
+      .map(|k| (k, value(given[k], names, "{where}.{k}")))
       .to_object(),
-    fixed: fixed
-      .keys()
-      .map(|k| (k, term(x.get(k, fixed[k]), names, "{where}.{k}")))
+    fixed: s.fixed
+      .filter(has)
+      .map(fn (k) {
+        let t = term(given[k], names, "{where}.{k}")
+        (k, s.whole.contains(k) ? |env| Math.round(t(env)) : t)
+      })
       .to_object(),
-    make: spec.make,
+    make: s.make,
   }
 }
 
@@ -613,15 +615,15 @@ class Recipe {
       let p = @parts[name]
       let where = "recipe {@name}.parts.{name}"
       let courses = p.values.keys().map(|k| (k, plan(p.values[k], name, "{where}.{k}"))).to_object()
-      let x = {
-        kind: p.kind,
+      let args = {
+        ...p.words,
         ...p.one.keys().map(|k| (k, made[p.one[k]])).to_object(),
         ...p.many.keys().map(|k| (k, p.many[k].map(|n| made[n]))).to_object(),
         ...courses.keys().map(|k| (k, courses[k][0][1])).to_object(),
         ...p.fixed.keys().map(|k| (k, p.fixed[k](env))).to_object(),
       }
       try {
-        let built = p.make(g, x)
+        let built = p.make(g)(**args)
         for k in courses.keys() {
           scheduled(built[k], courses[k])
           values.push({value: built[k], def: p.values[k], part: name, course: courses[k], where: "{where}.{k}"})

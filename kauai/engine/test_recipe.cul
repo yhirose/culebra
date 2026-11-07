@@ -228,7 +228,7 @@ fn a_recipe_is_checked_whole_before_it_plays() {
   says(doc({w: {part: "wav"}}, "w"), "recipe t.parts.w.part: no part `wav`")
   says(
     doc({w: {part: "wave", frq: 3}}, "w"),
-    "recipe t.parts.w: a wave has kind, part, modulators, freq, feedback, phase, not `frq`",
+    "recipe t.parts.w: a wave has part, kind, freq, modulators, feedback, phase, not `frq`",
   )
   says(doc({w: wave}, "v"), "recipe t.parts: out: no part `v`")
   says(
@@ -264,6 +264,13 @@ fn a_recipe_is_checked_whole_before_it_plays() {
     doc({w: {part: "wave", freq: {on: [[0]]}}}, "w"),
     "recipe t.parts.w.freq.on[0]: a point is",
   )
+  # What moves is what Audio.Graph's part has a value for: a wave's
+  # feedback does, its phase does not.
+  says(
+    doc({w: {part: "wave", phase: {on: [[0, 1]]}}}, "w"),
+    "recipe t.parts.w.phase: a number or an expression",
+  )
+  assert_eq(thrown(|| made(doc({w: {part: "wave", feedback: {on: [[0, 1]]}}}, "w"))), nil)
   says(
     {
       recipe: 1,
