@@ -666,6 +666,54 @@ if ! diff -u "$TMP/blk2_want.cul" "$TMP/blk2_got.cul" > "$TMP/blk2_diff" 2>&1; t
   fail=1
 fi
 
+# --- 1j'. Golden fixture: only an argument list hugs its block --------------
+# An object, an array or a tuple with one block among its elements goes one
+# element per line: hugged, its other elements would be held to the block's
+# first line, each breaking inside itself when that line runs long.
+cat > "$TMP/blk3_in.cul" <<'EOF'
+let m = {one: 1, two: fn (k) {
+  k
+}}
+let a = [1, fn (k) {
+  k
+}]
+let t = (1, fn (k) {
+  k
+})
+run(1, fn (k) {
+  k
+})
+EOF
+cat > "$TMP/blk3_want.cul" <<'EOF'
+let m = {
+  one: 1,
+  two: fn (k) {
+    k
+  },
+}
+let a = [
+  1,
+  fn (k) {
+    k
+  },
+]
+let t = (
+  1,
+  fn (k) {
+    k
+  },
+)
+run(1, fn (k) {
+  k
+})
+EOF
+"$CULEBRA" fmt "$TMP/blk3_in.cul" > "$TMP/blk3_got.cul" 2>"$TMP/blk3_err"
+if ! diff -u "$TMP/blk3_want.cul" "$TMP/blk3_got.cul" > "$TMP/blk3_diff" 2>&1; then
+  echo "FAIL golden (block hugged only by an argument list): formatted output differs"
+  cat "$TMP/blk3_diff"
+  fail=1
+fi
+
 # --- 1k. Golden fixture: a block inside a wrappable enclosing construct -----
 # Method chains, binary chains and ternaries each group their parts so they can
 # wrap when too wide, and each indents the continuation. A block argument makes

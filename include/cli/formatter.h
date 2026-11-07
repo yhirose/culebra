@@ -1152,9 +1152,10 @@ class Printer {
   }
 
   // A comma-separated, group-wrappable list: `( a, b, c )` style. `open`/`close`
-  // are the delimiters; each element is already a Doc.
+  // are the delimiters; each element is already a Doc. `call_args` is a call's
+  // argument list, the one list that keeps a block hugged (below).
   DocP print_delimited(const std::string& open, std::vector<DocP> items,
-                       const std::string& close) {
+                       const std::string& close, bool call_args = false) {
     if (items.empty()) return doc_text(open + close);
     // Breaking after the delimiter never helps a lone element: an atom is just
     // as wide on its own line, and a nested list breaks inside itself. Keep it
@@ -1174,8 +1175,10 @@ class Printer {
     // `assert_throws(fn () { ... }, "TypeError")` are written. Allowing one
     // element after the block is what keeps a trailing option (`workers: 4`,
     // `frames: 36000`) from costing the whole list its shape — dart's formatter
-    // draws the line in the same place, for the same reason.
-    if (blocks == 1 && block + 2 >= items.size()) {
+    // draws the line in the same place, for the same reason. Only an argument
+    // list, as with prettier and dart: hugged, an object's or an array's
+    // other elements would be held to one line with the block.
+    if (call_args && blocks == 1 && block + 2 >= items.size()) {
       std::vector<DocP> hug{doc_text(open)};
       for (size_t i = 0; i < items.size(); i++) {
         if (i) hug.push_back(doc_text(", "));
@@ -1240,7 +1243,7 @@ class Printer {
     if (on == "ARGUMENTS") {
       std::vector<DocP> args;
       for (auto& a : seg.nodes) args.push_back(print_arg(*a));
-      return print_delimited("(", std::move(args), ")");
+      return print_delimited("(", std::move(args), ")", /*call_args=*/true);
     }
     return verbatim(seg);
   }

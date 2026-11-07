@@ -458,7 +458,10 @@ brackets of its own, so it wraps only at the `||` / `&&` / `??` joints of its
 own chain — never between the two sides of a comparison — and indents its
 continuation past the body. An object literal that holds a comment
 is written one entry per line, with the comment kept where you put it; one
-without comments stays compact.
+without comments stays compact. A call whose one function body is its last
+argument, or is followed by one more, keeps the body against its
+parentheses (`srv.get("/path", fn (req) {`); an object, array or tuple with
+other elements beside a function body goes one element per line.
 
 An array literal holding nothing but numbers is a table. When it does not
 fit on its line it fills rows instead of taking a line per number: every
