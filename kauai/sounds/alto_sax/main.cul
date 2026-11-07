@@ -23,21 +23,23 @@ import live from '../../engine/borrow_live.cul'
 
 let RATE = engine.RATE
 
-let DATA = Dir.embedded('data')
-
-let CONFIG = JSON.parse(DATA.read('instrument.json'))
-
 # The instrument, made anew: for a worker (an isolate) that plays it too.
 fn instrument() {
-  engine.Instrument.new(Dir.embedded('data'), CONFIG.play)
+  let data = Dir.embedded('data')
+  engine.Instrument.new(data, JSON.parse(data.read('instrument.json')).play)
 }
 
-let ALTO = instrument()
+# The instrument this program plays, made the first time it plays: a run
+# that only checks a song or lists the instruments reads no recording.
+let made = {}
+fn alto() {
+  made.alto ??= instrument()
+}
 
 # A phrase's samples, mono, RATE a second: the phrase as Kauai hands it to
 # an instrument (each note's `pitch` and `at`, and what `hears` asks for),
 # with the voice's parameters as they stand at its first note.
-let phrase_samples = |phrase, params| ALTO.phrase_samples(phrase, params)
+let phrase_samples = |phrase, params| alto().phrase_samples(phrase, params)
 
 # The instrument, as Kauai.load's `voices:` takes it: `external AltoSax`.
 let voices = {altosax: {
@@ -49,6 +51,6 @@ let voices = {altosax: {
 }}
 
 # As `kauai instruments` lists it, and its player for `kauai live`.
-let instruments = [{name: "AltoSax", live: || live.LivePlayer(ALTO, instrument), about: "an alto saxophone, from recordings"}]
+let instruments = [{name: "AltoSax", live: || live.LivePlayer(alto(), instrument), about: "an alto saxophone, from recordings"}]
 
 export {voices, phrase_samples, RATE, instruments, instrument}

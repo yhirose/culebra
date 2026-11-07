@@ -218,3 +218,10 @@ fn live_a_slur_borrows_the_note_the_recording_played_next() {
   let course = live.course_of(inst, {pitch: 60, level: 0.86, len: 0.4, borrow: nil, prev})
   assert_eq(course.borrow, 2)
 }
+
+# `instrument` goes to a worker (an isolate) from whatever imports the
+# package, so nothing it can reach may be a mutable binding.
+@test
+fn the_instrument_maker_crosses_to_a_worker() {
+  assert_eq(Isolate.spawn(|make| 1, alto.instrument).join(), 1)
+}

@@ -86,3 +86,10 @@ section Verse {
   assert_eq(song.length(), 4.0)
   assert_eq(heard, Set(60, 62, 64, 67, 71))
 }
+
+# `instrument` goes to a worker (an isolate) from whatever imports the
+# package, so nothing it can reach may be a mutable binding.
+@test
+fn the_instrument_maker_crosses_to_a_worker() {
+  assert_eq(Isolate.spawn(|make| 1, sax.instrument).join(), 1)
+}
