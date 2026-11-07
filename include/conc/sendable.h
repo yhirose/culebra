@@ -606,6 +606,8 @@ inline void _jit_rebuilt_put(JitObject* o, const culebra::ObjectFacts& f,
                               decl->annotation_at(nth)),
         v, mut);
   } else {
+    // No Shape declared a String key: the sender's Object was a dictionary.
+    if (!o->is_dict) o->become_dict();
     o->append_slot(key, v, mut);
   }
   ++nth;

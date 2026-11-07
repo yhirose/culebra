@@ -146,3 +146,16 @@ for i in 21..221 {
 }
 assert_eq(GC.stat().shapes - churn_base, 0)
 assert_eq(cache["c220"], 220)
+assert_eq(cache.keys()[0], "c201")
+
+// A copy that crosses a message is a dictionary where the sent one was, so
+// receiving one mints no layout for its keys either.
+let (dict_tx, dict_rx) = Channel.new(1)
+let send_base = GC.stat().shapes
+for i in 0..50 {
+  dict_tx.send(cache)
+  dict_rx.recv()
+  cache["s{i}"] = i
+  cache.remove(cache.keys()[0])
+}
+assert_eq(GC.stat().shapes - send_base, 0)
