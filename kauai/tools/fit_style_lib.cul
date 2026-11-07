@@ -78,12 +78,15 @@ fn derived(inst) {
 # Object, gets a key for each pitch asked for.
 fn rendered(inst, name, path, seconds, dir = nil, seen = {}) {
   let voices = {}
-  voices[name] = {phrase: fn (notes, params) {
-    for n in notes {
-      seen[n.pitch] = true
-    }
-    Audio.Sound(inst.phrase_samples(notes, params), rate: RATE)
-  }, hears: ["len", "level", "marks", "next", "params"]}
+  voices[name] = {
+    phrase: fn (notes, params) {
+      for n in notes {
+        seen[n.pitch] = true
+      }
+      Audio.Sound(inst.phrase_samples(notes, params), rate: RATE)
+    },
+    hears: ["len", "level", "marks", "next", "params"],
+  }
   Kauai.load(path, voices:, dir:).render(to: seconds)
 }
 

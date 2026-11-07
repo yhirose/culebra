@@ -32,11 +32,14 @@ assert_eq(in_call_arg(true), 1)
 assert_eq(in_call_arg(false), 2)
 
 fn in_array(c) {
-  a = [9, if c {
-    return 1
-  } else {
-    2
-  }]
+  a = [
+    9,
+    if c {
+      return 1
+    } else {
+      2
+    },
+  ]
   a[1]
 }
 assert_eq(in_array(true), 1)

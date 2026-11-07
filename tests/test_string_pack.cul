@@ -273,9 +273,12 @@ fn hdr_with(f) {
   f(h)
   h
 }
-assert_eq(err(|| String.pack(Hdr, [hd, hdr_with(fn (h) {
-  h.size = -1
-})])), "ValueError: String.pack: record 1, field `size`: -1 is out of range for UInt32 (0 to 4294967295).")
+assert_eq(err(|| String.pack(Hdr, [
+  hd,
+  hdr_with(fn (h) {
+    h.size = -1
+  }),
+])), "ValueError: String.pack: record 1, field `size`: -1 is out of range for UInt32 (0 to 4294967295).")
 assert_eq(err(|| String.pack(Hdr, [hdr_with(fn (h) {
   h.magic = "B"
 })])), "ValueError: String.pack: record 0, field `magic`: Bytes<2> takes exactly 2 bytes, got 1.")

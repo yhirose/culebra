@@ -257,9 +257,12 @@ assert_eq({a: 1}.drop(), nil)
 let (ntx6, nrx6) = Channel.new(2)
 fn roundtrip6() {
   let (tx, rx) = Channel.new(1)
-  tx.send({x: 1, drop: fn () {
-    ntx6.send("dropped")
-  }})
+  tx.send({
+    x: 1,
+    drop: fn () {
+      ntx6.send("dropped")
+    },
+  })
   let o = rx.recv()
   assert_eq(o.x, 1)
   nil  # sender's copy and the received copy both drop by here

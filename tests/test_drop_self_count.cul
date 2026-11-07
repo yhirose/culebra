@@ -140,9 +140,12 @@ fn dsc_plain() {
 assert_eq(dsc_plain(), 0)
 mut dsc_fired = 0
 fn dsc_literal() {
-  let r = {id: 1, drop: fn () {
-    dsc_fired += 1
-  }}
+  let r = {
+    id: 1,
+    drop: fn () {
+      dsc_fired += 1
+    },
+  }
   let before = GC.refcount(r)
   r.drop()
   GC.refcount(r) - before

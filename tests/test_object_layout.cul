@@ -38,9 +38,12 @@ assert_throws('DropContractError', fn () {
 
 mut dropped = []
 fn scope() {
-  let r = {name: 'r', drop: fn () {
-    dropped.push('r')
-  }}
+  let r = {
+    name: 'r',
+    drop: fn () {
+      dropped.push('r')
+    },
+  }
   r.name
 }
 assert_eq(scope(), 'r')
@@ -175,9 +178,12 @@ assert_throws('TypeError', fn () {
 })
 
 # a plain object with a dunder key dispatches by name, as always
-let plain = {v: 1, __add__: fn (o) {
-  self.v + o
-}}
+let plain = {
+  v: 1,
+  __add__: fn (o) {
+    self.v + o
+  },
+}
 assert_eq(plain + 2, 3)
 
 # `drop` declared on the class registers each instance

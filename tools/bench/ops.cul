@@ -59,9 +59,12 @@ fn decl1(a) {
   a
 }
 
-let lit = {f: fn (a) {
-  a
-}, v: 1.0}
+let lit = {
+  f: fn (a) {
+    a
+  },
+  v: 1.0,
+}
 
 class Inst {
   new() {

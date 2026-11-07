@@ -13,10 +13,13 @@
 # collect runs while the holder's release is still on the stack.
 let ev1 = []
 make_lam = fn () {
-  let res = {id: 'lam', drop: fn () {
-    GC.stat()
-    ev1.push('lam')
-  }}
+  let res = {
+    id: 'lam',
+    drop: fn () {
+      GC.stat()
+      ev1.push('lam')
+    },
+  }
   let g = fn () {
     res.id
   }
@@ -36,10 +39,14 @@ assert_eq(ev1.size(), 1)
 # the reference held across the call keeps the object until the body returns.
 let ev2 = []
 make_self = fn () {
-  let cyc = {id: 'c', mut me: nil, drop: fn () {
-    self.me = nil
-    ev2.push('d')
-  }}
+  let cyc = {
+    id: 'c',
+    mut me: nil,
+    drop: fn () {
+      self.me = nil
+      ev2.push('d')
+    },
+  }
   cyc.me = cyc
   let g = fn () {
     cyc.id
@@ -62,9 +69,12 @@ assert_eq(ev2.size(), 1)
 let ev3 = []
 fn make_replace(tag) {
   mut use_res = nil
-  let res = {id: tag, drop: fn () {
-    ev3.push(use_res())
-  }}
+  let res = {
+    id: tag,
+    drop: fn () {
+      ev3.push(use_res())
+    },
+  }
   fn helper() {
     res.id
   }
@@ -88,13 +98,16 @@ mut depth = 0
 fn make_forget() {
   mut h = nil
   {
-    let res = {id: 'r', drop: fn () {
-      ev4.push('drop')
-      if depth < 1 {
-        depth = depth + 1
-        make_forget()
-      }
-    }}
+    let res = {
+      id: 'r',
+      drop: fn () {
+        ev4.push('drop')
+        if depth < 1 {
+          depth = depth + 1
+          make_forget()
+        }
+      },
+    }
     fn helper() {
       res.id
     }
@@ -115,17 +128,26 @@ assert_eq(ev4.size(), 2)  # outer drop + one recursive make's drop
 let ev5 = []
 let keep5 = {x: [1, 2]}
 fn run_array_holder() {
-  let holder = [keep5, {id: 'a', drop: fn () {
-    GC.stat()
-    ev5.push('a')
-  }}]
+  let holder = [
+    keep5,
+    {
+      id: 'a',
+      drop: fn () {
+        GC.stat()
+        ev5.push('a')
+      },
+    },
+  ]
   nil
 }
 fn run_cell_holder() {
-  let res = {id: 'c', drop: fn () {
-    GC.stat()
-    ev5.push('c')
-  }}
+  let res = {
+    id: 'c',
+    drop: fn () {
+      GC.stat()
+      ev5.push('c')
+    },
+  }
   let g = fn () {
     res.id
   }

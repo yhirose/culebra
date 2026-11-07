@@ -6,9 +6,13 @@
 
 test_call = fn () {
   ret = fn () {
-    [1, fn () {
-      [4, 5, 6]
-    }, 3]
+    [
+      1,
+      fn () {
+        [4, 5, 6]
+      },
+      3,
+    ]
   }()[1]()[1]
   assert_eq(ret, 5)
 }
@@ -985,9 +989,13 @@ test_drop = fn () {
   make_parent = fn () {
     let c1 = make_thing('c1')
     let c2 = make_thing('c2')
-    {c1: c1, c2: c2, drop: fn () {
-      events.push('p')
-    }}
+    {
+      c1: c1,
+      c2: c2,
+      drop: fn () {
+        events.push('p')
+      },
+    }
   }
   {
     let _p = make_parent()
@@ -1045,12 +1053,18 @@ test_drop = fn () {
   make_pair = fn () {
     mut a = nil
     mut b = nil
-    a = {id: 'cyc-a', drop: fn () {
-      events.push('cyc-a')
-    }}
-    b = {id: 'cyc-b', drop: fn () {
-      events.push('cyc-b')
-    }}
+    a = {
+      id: 'cyc-a',
+      drop: fn () {
+        events.push('cyc-a')
+      },
+    }
+    b = {
+      id: 'cyc-b',
+      drop: fn () {
+        events.push('cyc-b')
+      },
+    }
     a.other = b
     b.other = a
     a

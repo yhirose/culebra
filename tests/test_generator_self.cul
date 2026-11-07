@@ -24,9 +24,12 @@ assert_eq(g_kwarg().collect()[0], 5)
 // A nested fn value keeps its own dynamic-receiver contract: called as an
 // object-literal method, its `self` is that object.
 fn g_method() {
-  let o = {name: "obj", m: fn () {
-    self.name
-  }}
+  let o = {
+    name: "obj",
+    m: fn () {
+      self.name
+    },
+  }
   yield o.m()
 }
 assert_eq(g_method().collect()[0], "obj")
@@ -235,9 +238,12 @@ assert_eq(read_has_next(), false)
 
 // An ordinary object is unaffected — a function-valued field still binds the
 // object it is read off, and each read is a fresh wrapper.
-let obj = {tag: "obj", m: fn () {
-  self.tag
-}}
+let obj = {
+  tag: "obj",
+  m: fn () {
+    self.tag
+  },
+}
 assert_eq(obj.m(), "obj")
 assert_eq(obj.m == obj.m, false)
 let stolen = {tag: "other"}

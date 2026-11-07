@@ -32,9 +32,12 @@ assert_eq(
 
 # A receiver's own `replace` wins over the stdlib free function, exactly as it
 # does for a user-defined one: UFCS is the fallback, never the override.
-let obj = {tag: "own", replace: fn (pat, repl) {
-  "{self.tag}:{pat}->{repl}"
-}}
+let obj = {
+  tag: "own",
+  replace: fn (pat, repl) {
+    "{self.tag}:{pat}->{repl}"
+  },
+}
 assert_eq(obj.replace("a", "b"), "own:a->b")
 
 # The free function is one value, wherever it is read from.

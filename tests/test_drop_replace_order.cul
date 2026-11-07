@@ -6,9 +6,12 @@
 
 mut seen = []
 let tracked = fn (id, look) {
-  {id: id, drop: fn () {
-    seen.push("{id}:{look()}")
-  }}
+  {
+    id: id,
+    drop: fn () {
+      seen.push("{id}:{look()}")
+    },
+  }
 }
 
 # --- the drop sees the replacement, whatever the container ---
@@ -49,11 +52,14 @@ assert_eq(seen, ['a:b'])
 
 mut grown = [nil]
 let grow_arr = fn (id) {
-  {id: id, drop: fn () {
-    for n in 0..1000 {
-      grown.push(n)
-    }
-  }}
+  {
+    id: id,
+    drop: fn () {
+      for n in 0..1000 {
+        grown.push(n)
+      }
+    },
+  }
 }
 grown[0] = grow_arr('a')
 grown[0] = grow_arr('b')
@@ -61,11 +67,14 @@ assert_eq([grown[0].id, grown.size()], ['b', 1001])
 
 mut wide = {mut v: nil}
 let grow_obj = fn (id) {
-  {id: id, drop: fn () {
-    for n in 0..50 {
-      wide["k{n}"] = n
-    }
-  }}
+  {
+    id: id,
+    drop: fn () {
+      for n in 0..50 {
+        wide["k{n}"] = n
+      }
+    },
+  }
 }
 let set_wide = fn (x) {
   wide.v = x

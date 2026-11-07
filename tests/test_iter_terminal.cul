@@ -327,9 +327,12 @@ assert_eq(walked({iter: 1}), [('iter', 1)])
 # ...and an iterator whose `has_next` is data is a broken iterator, reported
 # where it is opened rather than called through its payload
 let half_data = fn () {
-  {has_next: 1, next: fn () {
-    0
-  }}
+  {
+    has_next: 1,
+    next: fn () {
+      0
+    },
+  }
 }
 assert_throws("TypeError", fn () {
   for x in {iter: half_data} {

@@ -32,9 +32,12 @@ assert_eq(dd_rx.drain(), [])
 
 # --- a plain Object holding a `drop` is still a resource there ---------------
 let (od_tx, od_rx) = Channel.new(16)
-let od = {name: "obj", drop: fn () {
-  od_tx.send("dropped")
-}}
+let od = {
+  name: "obj",
+  drop: fn () {
+    od_tx.send("dropped")
+  },
+}
 Isolate.spawn(|o| o.name, od).join()
 assert_eq(od_rx.drain(), ["dropped"])
 

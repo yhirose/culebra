@@ -195,11 +195,14 @@ assert_throws("TypeError", fn () {
 // A drop run by the replaced element may grow the Array under the write.
 mut holder = [nil, 0]
 let grower = fn (id) {
-  {id: id, drop: fn () {
-    for n in 0..1000 {
-      holder.push(n)
-    }
-  }}
+  {
+    id: id,
+    drop: fn () {
+      for n in 0..1000 {
+        holder.push(n)
+      }
+    },
+  }
 }
 holder[0] = grower('a')
 holder[0] = grower('b')

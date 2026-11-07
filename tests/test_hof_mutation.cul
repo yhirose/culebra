@@ -4,9 +4,12 @@
 // the member vector growing under a user `hash`.
 
 fn mk(n) {
-  {n: n, drop: fn () {
-    nil
-  }}
+  {
+    n: n,
+    drop: fn () {
+      nil
+    },
+  }
 }
 
 // filter: the callback pops the element it was handed; it is still the one

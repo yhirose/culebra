@@ -5352,9 +5352,12 @@ fn emit_stmt(m, node, f) {
         step.nodes.size() > 0 => step.nodes[0],
         _ => nil,
       }
-      loop_ctx[f].push({step: fn (m2) {
-        for_step_ids(m2, f, slots, step_node, node)
-      }, labels: take_pending_labels(f)})
+      loop_ctx[f].push({
+        step: fn (m2) {
+          for_step_ids(m2, f, slots, step_node, node)
+        },
+        labels: take_pending_labels(f),
+      })
       let b = emit_sub(m, body, f)
       loop_ctx[f].pop()
       mut body_ids = [b]

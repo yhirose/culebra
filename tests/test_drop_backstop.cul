@@ -15,9 +15,12 @@
 # --- 1) Closure-held cycle: `g` captures the scope that binds `res`. ---
 let ev1 = []
 make_lam = fn () {
-  let res = {id: 'lam', drop: fn () {
-    ev1.push('lam')
-  }}
+  let res = {
+    id: 'lam',
+    drop: fn () {
+      ev1.push('lam')
+    },
+  }
   let g = fn () {
     res.id
   }
@@ -39,9 +42,12 @@ for e in ev1 {
 # --- 2) Nested `fn name` (multimethod) capturing a resource. ---
 let ev2 = []
 make_nf = fn () {
-  let res = {id: 'nf', drop: fn () {
-    ev2.push('nf')
-  }}
+  let res = {
+    id: 'nf',
+    drop: fn () {
+      ev2.push('nf')
+    },
+  }
   fn use_res() {
     res.id
   }
@@ -69,9 +75,12 @@ assert_eq(ev2.size(), n3)
 # --- 4) Several orphans in one collection: all fire, order unspecified. ---
 let ev4 = []
 make_each = fn (tag) {
-  let res = {id: tag, drop: fn () {
-    ev4.push(tag)
-  }}
+  let res = {
+    id: tag,
+    drop: fn () {
+      ev4.push(tag)
+    },
+  }
   fn use_res() {
     res.id
   }
@@ -132,9 +141,12 @@ let keeper = {drop: fn () {
 }}
 fn run_cyc() {
   {
-    let cyc = {drop: fn () {
-      ev6.push('dead')
-    }, keep: keeper}
+    let cyc = {
+      drop: fn () {
+        ev6.push('dead')
+      },
+      keep: keeper,
+    }
     cyc.me = cyc
   }
   nil

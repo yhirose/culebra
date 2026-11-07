@@ -1478,11 +1478,14 @@ fn reading(doc, voicings) {
   # pickup opens: a later time the pickup does not play before.
   let unled = fn () {
     mut open = open_slurs
-    let unslurred = content_of(0).bars.map(|b| {...b, melody: b.melody.filter(fn (it) {
-      return true if open == 0 || it.get("slur", nil) != "stop"
-      open -= 1
-      false
-    })})
+    let unslurred = content_of(0).bars.map(|b| {
+      ...b,
+      melody: b.melody.filter(fn (it) {
+        return true if open == 0 || it.get("slur", nil) != "stop"
+        open -= 1
+        false
+      }),
+    })
     {...content_of(0), pickup: nil, bars: unslurred}
   }
   # Visits the score plays the pickup's own measure before where the bar

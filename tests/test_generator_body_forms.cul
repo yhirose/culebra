@@ -385,10 +385,13 @@ let gk_squares = fn (n) {
   }
 }
 assert_eq(gk_squares(4).collect(), [0, 1, 4, 9])
-let gk_obj = {tag: "o", items: fn () {
-  yield self.tag
-  yield 2
-}}
+let gk_obj = {
+  tag: "o",
+  items: fn () {
+    yield self.tag
+    yield 2
+  },
+}
 assert_eq(gk_obj.items().collect(), ["o", 2])
 
 // a trait's default method
