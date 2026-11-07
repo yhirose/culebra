@@ -367,6 +367,10 @@ inline int64_t sample_at(double seconds, double rate) {
 // many times slower, and a part that plays on never leaves them.
 inline double settled(double x) { return std::abs(x) < 1e-30 ? 0.0 : x; }
 
+// The slot after `i` in a ring of `size`, without a division.
+template <class I>
+constexpr I ring_next(I i, I size) { return i + 1 == size ? 0 : i + 1; }
+
 // A change scheduled for a value, `at` seconds in: from then on it is
 // `value`, or (`ramp`) it arrives there in a straight line from the change
 // before. Web Audio's setValueAtTime and linearRampToValueAtTime. A change
@@ -443,6 +447,22 @@ class Param {
     if (events_.size() == events_.capacity() && !frees) return false;
     schedule(e);
     return true;
+  }
+  // at() for each of `n` times that only go forward, into `out`. When the next
+  // change comes after the last of them, the value holds through them (a set)
+  // or moves on one line (a ramp), with nothing to check between.
+  void fill(const double* times, int n, double* out) {
+    if (next_ == events_.size() || (!events_[next_].ramp && events_[next_].at > times[n - 1])) {
+      std::fill(out, out + n, value_);
+      return;
+    }
+    const ParamEvent& e = events_[next_];
+    if (e.at > times[n - 1]) {
+      for (int i = 0; i < n; i++)
+        out[i] = from_value_ + (e.value - from_value_) * (times[i] - from_at_) / (e.at - from_at_);
+      return;
+    }
+    for (int i = 0; i < n; i++) out[i] = at(times[i]);
   }
   double at(double t) {
     while (next_ < events_.size()) {
@@ -544,14 +564,15 @@ class PluckString {
   }
   double step(double kick) {
     auto size = static_cast<int64_t>(buf_.size());
-    double read = buf_[static_cast<size_t>((w_ - len_ + size) % size)];
+    int64_t back = w_ - len_;
+    double read = buf_[static_cast<size_t>(back < 0 ? back + size : back)];
     double v = 0.5 * (read + prev_) * loss_;
     prev_ = read;
     double ap = settled(c_ * v + ap_in_ - c_ * ap_out_);
     ap_in_ = v;
     ap_out_ = ap;
     buf_[static_cast<size_t>(w_)] = ap + kick;
-    w_ = (w_ + 1) % size;
+    w_ = ring_next(w_, size);
     dc_out_ = settled(read - dc_in_ + pole_ * dc_out_);
     dc_in_ = read;
     return dc_out_;
@@ -1356,24 +1377,42 @@ struct Oscillator {
   double phase = 0;
   double last[2] = {0, 0};
 
-  double step(double freq, double rate, double mod = 0, double feedback = 0) {
-    double dt = freq / rate, y;
-    double t = phase + (mod + feedback * 0.5 * (last[0] + last[1])) / (2.0 * std::numbers::pi);
-    t -= std::floor(t);
+  // The next `n` samples into `out`, at `freq` Hz, moved by `mod` and, unless
+  // it is null, by `feedback` (each `n` long). With no feedback no sample's
+  // phase waits on the output before it, so the samples are worked out side
+  // by side. The state stays in locals for the block.
+  void run(int n, const double* freq, const double* mod, const double* feedback, double rate, double* out) {
+    double ph = phase, y0 = last[0], y1 = last[1];
+    auto next = [&](double t, double dt) {
+      t -= std::floor(t);
+      double y = shape(t, dt);
+      ph = ph + dt - std::floor(ph + dt);
+      y1 = y0;
+      y0 = y;
+      return y;
+    };
+    if (feedback)
+      for (int i = 0; i < n; i++)
+        out[i] = next(ph + (mod[i] + feedback[i] * 0.5 * (y0 + y1)) / (2.0 * std::numbers::pi), freq[i] / rate);
+    else
+      for (int i = 0; i < n; i++) out[i] = next(ph + mod[i] / (2.0 * std::numbers::pi), freq[i] / rate);
+    phase = ph;
+    last[0] = y0;
+    last[1] = y1;
+  }
+
+ private:
+  // The wave at phase `t` (0..1), stepping `dt` a sample.
+  double shape(double t, double dt) const {
     switch (kind) {
-      case WaveKind::Sine: y = std::sin(2.0 * std::numbers::pi * t); break;
-      case WaveKind::Saw: y = 2.0 * t - 1.0 - poly_blep(t, dt); break;
+      case WaveKind::Sine: return std::sin(2.0 * std::numbers::pi * t);
+      case WaveKind::Saw: return 2.0 * t - 1.0 - poly_blep(t, dt);
       case WaveKind::Square: {
         double half = t + 0.5 - std::floor(t + 0.5);
-        y = (t < 0.5 ? 1.0 : -1.0) + poly_blep(t, dt) - poly_blep(half, dt);
-        break;
+        return (t < 0.5 ? 1.0 : -1.0) + poly_blep(t, dt) - poly_blep(half, dt);
       }
-      default: y = 4.0 * std::abs(t - std::floor(t + 0.5)) - 1.0; break;
+      default: return 4.0 * std::abs(t - std::floor(t + 0.5)) - 1.0;
     }
-    phase = phase + dt - std::floor(phase + dt);
-    last[1] = last[0];
-    last[0] = y;
-    return y;
   }
 };
 
@@ -1391,8 +1430,8 @@ class DelayLine {
     if (r < 0) r += static_cast<double>(size);
     const auto i = static_cast<size_t>(r);
     const double frac = r - static_cast<double>(i);
-    const double y = buf_[i] + (buf_[(i + 1) % size] - buf_[i]) * frac;
-    w_ = (w_ + 1) % size;
+    const double y = buf_[i] + (buf_[ring_next(i, size)] - buf_[i]) * frac;
+    w_ = ring_next(w_, size);
     return y;
   }
 
@@ -1545,7 +1584,8 @@ class Graph {
 
  private:
   void block(int n) {
-    double in[kGraphBlock], mod[kGraphBlock], v0[kGraphBlock], v1[kGraphBlock];
+    double in[kGraphBlock], mod[kGraphBlock], v0[kGraphBlock], v1[kGraphBlock], time[kGraphBlock];
+    for (int i = 0; i < n; i++) time[i] = static_cast<double>(pos_ + i) / rate_;
     auto sum = [&](const std::vector<int>& from, double* into) {
       std::fill(into, into + n, 0.0);
       for (int k : from)
@@ -1554,14 +1594,12 @@ class Graph {
     for (auto& p : parts_) {
       sum(p.inputs, in);
       sum(p.modulators, mod);
-      if (value_count(p.kind) > 0)
-        for (int i = 0; i < n; i++) v0[i] = p.values[0].at(static_cast<double>(pos_ + i) / rate_);
-      if (value_count(p.kind) > 1)
-        for (int i = 0; i < n; i++) v1[i] = p.values[1].at(static_cast<double>(pos_ + i) / rate_);
+      if (value_count(p.kind) > 0) p.values[0].fill(time, n, v0);
+      if (value_count(p.kind) > 1) p.values[1].fill(time, n, v1);
       switch (p.kind) {
         case PartKind::Wave: {
-          auto& w = std::get<Oscillator>(p.processor);
-          for (int i = 0; i < n; i++) p.out[i] = w.step(v0[i], rate_, mod[i], v1[i]);
+          bool feeds = std::any_of(v1, v1 + n, [](double feedback) { return feedback != 0.0; });
+          std::get<Oscillator>(p.processor).run(n, v0, mod, feeds ? v1 : nullptr, rate_, p.out);
           break;
         }
         case PartKind::Noise: {

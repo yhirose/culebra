@@ -286,6 +286,14 @@ let fed = late_fb.wave("sine", freq: 300.0)
 fed.feedback.set(0.025, 1.5)
 late_fb.output(fed)
 assert_samples(late_fb.render(0.05), fed_sine(400, 8000.0, 300.0, 200, 1.5))
+// The same from sample 256 (0.032 s), the first of a block of 128: the block
+// before it runs without feedback and must still keep its last two outputs
+// for this one to feed back.
+let edge_fb = Audio.Graph.new(rate: 8000)
+let edged = edge_fb.wave("sine", freq: 300.0)
+edged.feedback.set(0.032, 1.5)
+edge_fb.output(edged)
+assert_samples(edge_fb.render(0.05), fed_sine(400, 8000.0, 300.0, 256, 1.5))
 
 // A wave starts from its `phase`, in radians: a sine a quarter turn on is
 // the cosine, and a turn more is the same.
