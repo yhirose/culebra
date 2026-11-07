@@ -5235,30 +5235,57 @@ let _kauai_module = fn () {
       @_plays = external.plays
       @_weighed = external.weighed
       @_weights = nil
-      @_todo = @_build.keys()
+      # Each sound's voice or drum, and when it first plays.
+      @_by = {}
+      @_first = {}
+      for p in @_plays.sorted_by(|p| p.at) {
+        @_by[p.sound] = p.by
+        @_first.get_or_put(p.sound, || p.at)
+      }
+      for by, w in @_weighed {
+        @_by[w.sound] = by
+      }
+      let weigh = @_weighed.values().map(|w| w.sound).collect()
+      # What prepare() builds, the next last: the sounds the others are
+      # weighed by, then each in the order it first plays.
+      @_todo = [...weigh, ...@_first.keys().filter(|k| !weigh.contains(k))]
+      @_todo.reverse()
+      # Seconds the sounds built so far took, and how many, by voice or drum.
+      @_took = {}
+      @_now = || _Time.monotonic()
       @_sounds = {}
       @_schedule = nil
+      @_slots = nil
       @_started = nil
       @_volume = 1.0
     }
 
-    # External sound `key`, built the first time it is asked for.
+    # External sound `key`, built the first time it is asked for, and given to
+    # the song playing early when it is one of its sounds.
     _sound(key) {
-      @_sounds.get_or_put(key, fn () {
-        let s = @_build[key]()
-        if type_of(s) != "Sound" {
-          __raise(
-            "TypeError",
-            "Kauai: an external instrument answers an Audio.Sound, not {type_of(s)}",
-          )
-        }
-        s
-      })
+      return @_sounds[key] if @_sounds.has(key)
+      let began = @_now()
+      let s = @_build[key]()
+      if type_of(s) != "Sound" {
+        __raise(
+          "TypeError",
+          "Kauai: an external instrument answers an Audio.Sound, not {type_of(s)}",
+        )
+      }
+      let (took, n) = @_took.get(@_by[key], (0.0, 0))
+      @_took[@_by[key]] = (took + @_now() - began, n + 1)
+      @_sounds[key] = s
+      _Audio.schedule_fill(@_schedule, @_slots[key], s._id) if @_slots != nil && @_slots.has(key)
+      s
     }
 
     # Build one external sound the song still needs; answers how many remain.
+    # One whose building throws is still to build.
     prepare() {
-      @_sound(@_todo.pop()) if !@_todo.empty()
+      if !@_todo.empty() {
+        @_sound(@_todo[-1])
+        @_todo.pop()
+      }
       @_todo.size()
     }
 
@@ -5271,35 +5298,74 @@ let _kauai_module = fn () {
     # known (silence, or compressed audio not yet decoded) at vol / 100 of its
     # own level.
     _list(plays, to) {
-      let needed = Set()
-      for p in plays {
-        needed.add(p.sound)
-      }
-      for w in @_weighed.values() {
-        needed.add(w.sound)
-      }
-      # Built in the order prepare() takes them, which an instrument may hear.
+      @_weigh()
+      @_need(plays.map(|p| p.sound))
+      @_rows(plays, to, |key| @_sounds[key]._id)
+    }
+
+    # The sounds `keys` built, in the order prepare() takes them.
+    _need(keys) {
+      let needed = keys.to_set()
       for i in 0..@_todo.size() {
         let key = @_todo[-1 - i]
         @_sound(key) if needed.contains(key)
       }
-      # And one whose building prepare() took, and that threw.
-      for key in needed {
-        @_sound(key)
-      }
-      if @_weights == nil {
-        @_weights = @_weighed.keys().map(fn (by) {
-          let w = @_weighed[by]
-          let l = _Audio.sound_loudness(@_sounds[w.sound]._id)
-          (by, l == nil ? 1.0 : 10.0 ** ((tone_loudness(w.pitch) - l) / 20.0))
-        }).to_object()
-      }
       # What prepare() has left is what is still not built.
       @_todo = @_todo.filter(|k| !@_sounds.has(k))
+    }
+
+    # Each voice's and drum's weight, from the sound it is weighed by.
+    _weigh() {
+      return nil if @_weights != nil
+      @_need(@_weighed.values().map(|w| w.sound))
+      @_weights = @_weighed.keys().map(fn (by) {
+        let w = @_weighed[by]
+        let l = _Audio.sound_loudness(@_sounds[w.sound]._id)
+        (by, l == nil ? 1.0 : 10.0 ** ((tone_loudness(w.pitch) - l) / 20.0))
+      }).to_object()
+    }
+
+    # The rows of `plays` and of the tones that start before `to` (nil: every
+    # one), a sound named by `id(key)`.
+    _rows(plays, to, id) {
       let tones = @_events.filter(|e| e.has("tone") && (to == nil || e.at < to)).map(|e| schedule_row([e.at, ...e.tone]))
-      let sounds = plays.map(|p| schedule_row([p.at, -1, @_sounds[p.sound]._id, p.vol / 100.0 * @_weights[p.by], 0, 0, 0, 0, 0, 0, 0]))
+      let sounds = plays.map(|p| schedule_row([p.at, -1, id(p.sound), p.vol / 100.0 * @_weights[p.by], 0, 0, 0, 0, 0, 0, 0]))
       # In time order: the mixers read it from the head.
       [...tones, ...sounds].sorted_by(|e| e[0]).flat_map(|e| e)
+    }
+
+    # The schedule of a song played early: its external sounds in slots the
+    # mixer waits on until each is built (those built already given), after
+    # building the sounds the others are weighed by; nil where the build
+    # cannot hold a song for a sound.
+    _open() {
+      @_weigh()
+      let slots = {}
+      for p in @_plays {
+        slots.get_or_put(p.sound, || slots.size())
+      }
+      let id = _Audio.schedule_open(@_rows(@_plays, nil, |key| slots[key]), slots.size(), @_length, @_loop_at)
+      return nil if id == nil
+      @_slots = slots
+      for key, slot in slots {
+        _Audio.schedule_fill(id, slot, @_sounds[key]._id) if @_sounds.has(key)
+      }
+      id
+    }
+
+    # Whether the song can start: each sound still to build, built from now in
+    # the order prepare() takes them, comes in half the time the song takes
+    # to reach it. A sound is reckoned to take as long as its voice's or
+    # drum's sounds have on average: the one it is weighed by is built first.
+    _ahead() {
+      mut ready = 0.0
+      for i in 0..@_todo.size() {
+        let key = @_todo[-1 - i]
+        let (spent, n) = @_took[@_by[key]]
+        ready += spent / n
+        return false if 2.0 * ready > @_first[key]
+      }
+      true
     }
 
     # Seconds into the song at mark `name`.
@@ -5322,15 +5388,22 @@ let _kauai_module = fn () {
       (m == nil ? 0 : to_long(m) * 60) + secs
     }
 
-    # Play from the top (again, if it is playing), after building what is left.
-    play() {
+    # Play from the top (again, if it is playing), after building what is
+    # left; `early`, once what is left can be built ahead of the song, which
+    # prepare() then builds as it plays: the song waits where a sound is not
+    # built yet. Where the mixer cannot wait (the browser), it builds what is
+    # left first all the same.
+    play(early: Bool = false) {
       if @_schedule == nil {
-        @_schedule = _Audio.schedule_new(@_list(@_plays, nil), @_length, @_loop_at)
+        @_schedule = (early ? @_open() : nil) ?? _Audio.schedule_new(@_list(@_plays, nil), @_length, @_loop_at)
         _Audio.schedule_volume(@_schedule, @_volume)
         _Audio.schedule_room(@_schedule, @_room)
       }
+      while !@_todo.empty() && !(early && @_ahead()) {
+        @prepare()
+      }
       _Audio.schedule_play(@_schedule)
-      @_started = _Time.monotonic()
+      @_started = @_now()
     }
 
     # The song once through as play() sounds it, until its last sound and its
@@ -5378,13 +5451,18 @@ let _kauai_module = fn () {
 
     # Whether it is playing: from play() until stop(), or its end.
     playing() {
-      @_started != nil && (@_loop_at >= 0 || _Time.monotonic() - @_started < @_length)
+      @_started != nil && (@_loop_at >= 0 || @_played() < @_length)
     }
 
     # Whether it has played as far as `mark NAME`.
     reached(name: String) {
       let t = @_mark(name)
-      @_started != nil && _Time.monotonic() - @_started >= t
+      @_started != nil && @_played() >= t
+    }
+
+    # Seconds into the song since play(), less those it waited for a sound.
+    _played() {
+      @_now() - @_started - _Audio.schedule_held(@_schedule)
     }
 
     # Where each `mark NAME` is: {NAME: seconds into the song}, in its order.

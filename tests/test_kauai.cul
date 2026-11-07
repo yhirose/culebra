@@ -425,9 +425,57 @@ let not_rows = "Kauai: a song's events are rows of {stride} numbers"
 assert_eq(refused(fn () { _Audio.schedule_new([...events[0], 0.0], 2.0, -1.0) }), not_rows)
 assert_eq(refused(fn () { _Audio.schedule_render(events[0].slice(0, stride - 1), [], 2.0, 0.0, 1.0, 0.0) }), not_rows)
 let not_a_sound = Kauai.new(EXTERNAL, voices: {ep: |pitch, params| 1}, drums: {ride: |params| 1})
+let unbuilt = not_a_sound._todo.size()
 assert_throws("TypeError", fn () {
   not_a_sound.prepare()
 })
+# A sound whose building threw is still to build.
+assert_eq(not_a_sound._todo.size(), unbuilt)
+
+# prepare() builds the sound a voice is weighed by first, then each in the
+# order it first plays.
+mut built = []
+let ordered = Kauai.new(lines([
+  'band Solo {', '  voice Lead  external Lead  plays melody  vol 50', '}',
+  'song Run {', '  tempo 60', '  band Solo', '  melody in C4..B4', '  Run', '}',
+  'section Run {', '  C  g4 c e d', '}',
+]), voices: {lead: fn (pitch, params) {
+  built.push(pitch)
+  Audio.Sound([0.0])
+}})
+while ordered.prepare() > 0 {}
+assert_eq(built, [64, 67, 60, 62])
+
+# play(early: true) starts once each sound left, built from then on in the
+# order prepare() takes them, comes in half the time the song takes to reach
+# it, a sound reckoned as long as its voice's took so far; prepare() builds
+# the rest as it plays. A clock the test moves stands in for the time each
+# build takes. A note a second, eight pitches: the one at 4 s is weighed by;
+# the drum, built first and dear, does not make the voice's sounds dear.
+let left_at_start = fn (cost) {
+  mut now = 0.0
+  let song = Kauai.new(lines([
+    'band Solo {', '  voice Lead  external Lead  plays melody  vol 50', '  drum Kick  external Kick  vol 50', '}',
+    'groove Time {', '  Kick  x...', '}',
+    'song Run {', '  tempo 60', '  band Solo', '  groove Time', '  melody in C4..B4', '  Run', '}',
+    'section Run {', '  C  c4 d e f', "  C  g a b c'", '}',
+  ]), voices: {lead: fn (pitch, params) {
+    now += cost
+    Audio.Sound([0.0])
+  }}, drums: {kick: fn (params) {
+    now += 3.0
+    Audio.Sound([0.0])
+  }})
+  song._now = || now
+  song.play(early: true)
+  let left = song._todo.size()
+  assert_true(song.playing())
+  assert_eq(song.prepare(), Math.max(0, left - 1))
+  now += song.length()
+  assert_false(song.playing())
+  left
+}
+assert_eq([0.1, 1.0, 2.0, 10.0].map(left_at_start), [6, 3, 1, 0])
 
 # An instrument plays a phrase at a time: the notes a slur joins, or a note
 # alone. It hears what it names of each, and a sound is made for each phrase
