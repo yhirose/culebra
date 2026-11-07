@@ -2527,6 +2527,11 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_array_set_or_push(
 // after the header, in the same slab block (CPython's tuple layout): one
 // allocation, `items` pointing into it, and `capacity` fixed at `n`, since a
 // Tuple is built to its own size and never grows.
+//
+// Every Tuple is made here, and no Array is, so the tag alone says where the
+// elements live. The layout cannot say it: an Array's own buffer may begin
+// right after its header (a slab page ending where a malloc'd block starts),
+// and reading that as a Tuple freed the header into the wrong allocator.
 constexpr size_t _jit_tuple_bytes(size_t n) {
   return sizeof(JitArray) + n * sizeof(JitValue);
 }
@@ -2543,17 +2548,12 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_tuple_new(int64_t n)
   return arr;
 }
 
-// Whether `a`'s elements sit in its own block — a Tuple's, from
-// culebra_runtime_tuple_new. Read off the layout, not the tag: a Tuple slice
-// is an Array copy tagged Tuple, with a buffer of its own like every Array's.
-inline bool _jit_items_inline(const JitArray* a) {
-  return a->items == reinterpret_cast<const JitValue*>(a + 1);
-}
-
-// Frees an Array or Tuple header whose elements are already released (or
+// Frees an Array or a Tuple (`tag`) whose elements are already released (or
 // swept), together with where they lived.
-inline void _jit_array_free(JitArray* a) {
-  if (_jit_items_inline(a)) {
+inline void _jit_array_free(JitArray* a, int8_t tag) {
+  if (tag == GC_TAG_TUPLE) {
+    assert(a->items == reinterpret_cast<JitValue*>(a + 1) &&
+           "a Tuple is made by culebra_runtime_tuple_new");
     _slab().free(a, _jit_tuple_bytes(a->capacity));
     return;
   }
@@ -2777,7 +2777,8 @@ inline void _culebra_value_release_impl(int8_t tag, int64_t data);
 
 // Move `arr`'s elements into `items`, a block of `cap` slots, and own it.
 inline void _jit_array_adopt_items(JitArray* arr, JitValue* items, size_t cap) {
-  assert(!_jit_items_inline(arr) &&
+  assert(!(_gc_heap().header(arr) &&
+           _gc_heap().header(arr)->type_tag == GC_TAG_TUPLE) &&
          "a Tuple is filled by tuple_push and never grows");
   if (arr->items) {
     std::memcpy(items, arr->items, arr->size * sizeof(JitValue));
@@ -3015,8 +3016,18 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_slice(
     int64_t lo = _slice_bound(sv, 0, line, col);
     int64_t hi = _slice_bound(ev, static_cast<int64_t>(src->size), line, col);
     auto [s, e] = culebra::_slice_bounds(lo, hi, inclusive, src->size);
-    auto* r = culebra_runtime_array_slice(src, static_cast<int64_t>(s),
-                                          static_cast<int64_t>(e - s));
+    JitArray* r;
+    if (tag == TAG_TUPLE) {
+      r = culebra_runtime_tuple_new(static_cast<int64_t>(e - s));
+      for (size_t i = s; i < e; i++) {
+        auto& v = src->items[i];
+        culebra_runtime_value_retain(v.tag, v.data);
+        culebra_runtime_tuple_push(r, v.tag, v.data);
+      }
+    } else {
+      r = culebra_runtime_array_slice(src, static_cast<int64_t>(s),
+                                      static_cast<int64_t>(e - s));
+    }
     *out_tag = tag;
     *out_data = reinterpret_cast<int64_t>(r);
     return;

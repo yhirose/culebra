@@ -1280,7 +1280,7 @@ inline void _jit_gc_sweep_object(void* obj, uint8_t tag) {
     }
     case GC_TAG_ARRAY:
     case GC_TAG_TUPLE:
-      _jit_array_free(static_cast<JitArray*>(obj));
+      _jit_array_free(static_cast<JitArray*>(obj), static_cast<int8_t>(tag));
       break;
     case GC_TAG_OBJECT: {
       auto* o = static_cast<JitObject*>(obj);
