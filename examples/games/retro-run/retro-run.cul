@@ -654,7 +654,10 @@ let pcm_wav = fn (samples) {
 # the slow chorus of a real instrument; the modulation index starts high and
 # falls away after the hammer (the bark, the band's `bright=`) to a warm sine;
 # a bell partial rings for an instant above notes low enough to keep it
-# under the Nyquist limit; higher keys die away sooner.
+# under the Nyquist limit; higher keys die away sooner. Kauai's
+# kauai/recipes/fm_electric_piano.json grew from this piano; it stays written
+# out here so the game needs nothing outside its own directory, which is what
+# the Playground serves.
 let ep_samples = fn (pitch, bark) {
   let freq = 440.0 * Math.exp((pitch - 69) / 12.0 * Math.log(2.0))
   let n = EP_RATE * 3

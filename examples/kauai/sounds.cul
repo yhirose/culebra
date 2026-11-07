@@ -1,79 +1,11 @@
 # The external sounds for play.cul and jukebox.cul, as Kauai.load's
-# `voices:` and `drums:`: `external Ep` (an electric piano, `bright=` how hard
-# its hammer bites), synthesised here once for each pitch and `bright` a song
-# asks for, and the drums of Kauai's kit (`external Kick`, `Snare`, `CrossStick`, `Hat`,
+# `voices:` and `drums:`: `external Ep` is Kauai's `FmElectricPiano`, and the
+# drums are Kauai's kit (`external Kick`, `Snare`, `CrossStick`, `Hat`,
 # `PedalHat`, `OpenHat`, `Ride`, `Crash`, `Tom` and the rest), which
-# kauai/recipe.md lists.
+# kauai/recipe.md lists with their knobs.
 import recipes from '../../kauai/recipes/main.cul'
 
-let RATE = 22050
-
-fn hz(pitch) {
-  440.0 * Math.exp((pitch - 69) / 12.0 * Math.log(2.0))
-}
-
-# J(n, x), the Bessel function of the first kind, from its series.
-fn bessel(n, x) {
-  let h = x / 2.0
-  mut term = iota(n).reduce(1.0, |p, k| p * h / (k + 1))
-  mut sum = term
-  for j in 1..20 {
-    term *= -h * h / (j * (j + n))
-    sum += term
-  }
-  sum
-}
-
-let PARTIALS = 12
-
-# An FM pair whose modulator runs at its carrier's frequency,
-# sin(θ + I sin θ), is a harmonic tone: its m-th partial is
-# J(m - 1, I) + (-1)^m J(m + 1, I).
-fn fm_partials(index) {
-  iota(1, PARTIALS + 1).map(fn (m) {
-    bessel(m - 1, index) + (-1) ** m * bessel(m + 1, index)
-  })
-}
-
-# The electric piano's spectrum, a point every 10 ms of its three seconds as
-# the hammer's bite falls away, worked out once for each `bright`.
-mut spectra = {}
-fn spectrum(bright) {
-  spectra.get_or_put("{bright}", || iota(301).map(fn (k) {
-    let t = k * 0.01
-    (t, fm_partials(bright * (1.4 * Math.exp(-t * 6.0) + 0.25)))
-  }))
-}
-
-# Three seconds of an electric piano's note: two FM pairs a hair apart for the
-# chorus of a real instrument, the modulation falling away after the hammer.
-fn electric_piano(pitch, bright) {
-  let f = hz(pitch)
-  let decay = 1.1 * Math.sqrt(f / 261.63)
-  let seconds = 3.0
-  let rise = 40.0 / RATE
-  let fade = seconds - 800.0 / RATE
-  let level = |t| 0.25 * Math.exp(-t * decay)
-  let times = iota(1, 300).map(|k| k * 0.01).filter(|t| t > rise && t < fade)
-  let gain = [
-    (0.0, 0.0),
-    ...[rise, ...times, fade].map(|t| (t, level(t))),
-    (seconds, 0.0),
-  ]
-  let pair = |freq| Audio.partials(
-    seconds,
-    [(0.0, freq)],
-    spectrum(bright),
-    gain:,
-    rate: RATE,
-  )
-  Audio.mix([pair(f), pair(f * 1.0025)], rate: RATE)
-}
-
-let voices = {ep: |pitch, params| Audio.Sound(
-  electric_piano(pitch, params.get("bright", 1.0)),
-  rate: RATE,
-)}
+let voices = {ep: recipes.voices.fmelectricpiano}
 let drums = recipes.drums
 
 export {voices, drums}
