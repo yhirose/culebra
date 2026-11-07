@@ -24,6 +24,7 @@ fn run(sounds, call) {
     hint: c.hint ? HINT : nil,
   )
   if watching {
+    play.build_rest(song)
     watch.wait_for_change(c.folders, before)
   } else {
     play.wait(song)

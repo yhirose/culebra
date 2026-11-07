@@ -66,16 +66,17 @@ fn start(opts, voices, drums, name, watching = false, hint = nil) {
     IO.eprintln("{name}: --to {opts.to} is not after {after}")
     Sys.exit(1)
   }
-  # The external sounds are built first, and a terminal shows how far along
-  # that is. A part builds only its own, as it renders.
+  # Written, the external sounds are built first, and a terminal shows how
+  # far along that is (a part builds only its own, as it renders). Played,
+  # the song starts once the rest can be built as it plays (build_rest()).
   let shown = IO.stdout_is_terminal()
-  mut left = from == nil && to == nil ? song.prepare() : 0
-  while left > 0 {
-    print("\rpreparing sounds: {left} left ") if shown
-    left = song.prepare()
-  }
-  print("\r") if shown
   if opts.wav != nil {
+    mut left = from == nil && to == nil ? song.prepare() : 0
+    while left > 0 {
+      print("\rpreparing sounds: {left} left ") if shown
+      left = song.prepare()
+    }
+    print("\r") if shown
     let samples = song.render(from: from, to: to)
     try {
       FS.write(opts.wav, Audio.Sound(samples).data())
@@ -85,17 +86,26 @@ fn start(opts, voices, drums, name, watching = false, hint = nil) {
     println("{path}: {clock(samples.size() / 44100.0)} written to {opts.wav}")
     return nil
   }
+  print("preparing sounds ") if shown
+  song.play(early: true)
+  print("\r") if shown
   println("playing {path} ({clock(song.length())} once through)")
-  song.play()
   song
 }
 
-# Waits for a playing `song` (nil: none) to end.
+# Builds what a playing `song` (nil: none) has left, as it plays.
+fn build_rest(song) {
+  return nil if song == nil
+  while song.prepare() > 0 {}
+}
+
+# Waits for a playing `song` (nil: none) to end, building what it has left.
 fn wait(song) {
   return nil if song == nil
+  build_rest(song)
   while song.playing() {
     Time.sleep(0.1)
   }
 }
 
-export {start, wait}
+export {start, build_rest, wait}

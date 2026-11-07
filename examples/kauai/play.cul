@@ -8,9 +8,9 @@
 # piano written out (jetveux_piano.kau); retro-run's music is in
 # examples/games/retro-run/assets.
 #
-# The song is read and checked, then handed to the runtime whole, which keeps
-# time on the audio stream's own clock: this script only waits for the end
-# (Ctrl+C stops a song that loops).
+# The song is read and checked, then handed to the runtime, which keeps time
+# on the audio stream's own clock: this script builds its external sounds as
+# it plays, and waits for the end (Ctrl+C stops a song that loops).
 #
 # A band that plays `external` instruments names sounds that sounds.cul
 # supplies; jukebox.cul plays the same songs from a window, and
@@ -39,15 +39,11 @@ if !Audio.available() {
   println("{path}: no audio device, so nothing plays")
   Sys.exit(1)
 }
-# Build the external sounds first, saying how far along it is: play() would
-# build them all the same, only in silence.
-mut left = song.prepare()
-while left > 0 {
-  print("\rpreparing sounds: {left} left ")
-  left = song.prepare()
-}
-println("\rplaying {path} ({clock(song.length())} once through)")
-song.play()
+# It starts once the external sounds left can be built ahead of it, and
+# prepare() builds them as it plays.
+song.play(early: true)
+println("playing {path} ({clock(song.length())} once through)")
+while song.prepare() > 0 {}
 while song.playing() {
   Time.sleep(0.1)
 }
