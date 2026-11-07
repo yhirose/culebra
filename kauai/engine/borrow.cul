@@ -114,6 +114,27 @@ fn note_seed(v, i) {
   x - Math.floor(x)
 }
 
+# Whole numbers folded into one from 0 below 2^31 - 1 (a prime), the same for
+# the same: the polynomial they are the coefficients of, at 1000003, mod it.
+let folded = |ks| ks.reduce(0, |h, k| Math.wrap(h * 1000003 + k, 2147483647))
+
+# A phrase's own seed for its noise, from each note's start, length, pitch and
+# loudness and when the next phrase comes, to the millisecond and the
+# hundredth Kauai hands them in: the same phrase gets the same, whatever was
+# voiced before it.
+fn phrase_seed(phrase) {
+  let ms = |t| t == nil ? -1 : Math.round(t * 1000.0)
+  let hundredths = |v| v == nil ? -1 : Math.round(v * 100.0)
+  folded(phrase.flat_map(|x| [
+    ms(x.at),
+    ms(x.len),
+    hundredths(x.pitch),
+    hundredths(x.get("level", nil)),
+    hundredths(x.get("level_end", nil)),
+    ms(x.get("next", nil)),
+  ]))
+}
+
 # A number from 0 to 1 for whole number i and a seed.
 let hash01 = |i, seed| Math.abs((Math.sin(i * 12.9898 + seed * 78.233) *
   43758.5453) %
@@ -496,10 +517,8 @@ class Instrument {
     @restyle(style)
   }
 
-  # The instrument played in `style` (see above) from here on, its phrases'
-  # noise numbered from the first again, so that a song sounds the same every
-  # time it is made. The recordings stay loaded: a style is tried, and tried
-  # again, without reading them.
+  # The instrument played in `style` (see above) from here on. The recordings
+  # stay loaded: a style is tried, and tried again, without reading them.
   restyle(style) {
     for key in REQUIRED {
       throw "style lacks `{key}`" if !style.has(key)
@@ -522,8 +541,6 @@ class Instrument {
     @choice = s.choice
     # Where a recorded note's onset is depends on `onset_from_t0`.
     @lib_onset_cache = @lib.notes.map(|_| nil)
-    # Each phrase its own noise: the n-th phrase voiced gets seed n.
-    @phrase_seed = 0
   }
 
   # Attack e's samples.
@@ -1523,8 +1540,7 @@ class Instrument {
     let chosen = c.chosen
     let gains_n = c.gains_n
     let gain = c.gain
-    @phrase_seed += 1
-    let seed = @phrase_seed
+    let seed = phrase_seed(phrase)
     # The wander, subtle: the pitch's on its own, the loudness's and the
     # brightness's together (the breath's pressure).
     let pitch_w = iota(total).map(|u| wander *
@@ -1610,7 +1626,7 @@ class Instrument {
           seconds,
           points,
           [(0.0, [0.0])],
-          noise: {low: @breath_info.noise[0], high: @breath_info.noise[1], seed: seed * 7 + q, steady: [(0.0, kappa * (1.0 - sigma))], pulsed: [(0.0, kappa * sigma)]},
+          noise: {low: @breath_info.noise[0], high: @breath_info.noise[1], seed: folded([seed, q]), steady: [(0.0, kappa * (1.0 - sigma))], pulsed: [(0.0, kappa * sigma)]},
           rate: RATE,
         )
       })

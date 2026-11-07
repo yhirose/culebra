@@ -56,7 +56,11 @@ start far from its note's pitch, so the pitch is read frame by frame). The
 air left in was heard as a rushing "zah-zah" at each tongued note of the
 soprano. It also reads how the breath pulses with the tone's wave in each
 band (the noise between the harmonics swells and fades once a period, more
-in the high bands), which the soprano makes its breath with.
+in the high bands), which the soprano makes its breath with. The breath's
+noise, and the wander's, are seeded from the phrase itself (its notes'
+times, pitches and levels), never from a count of the phrases played: Kauai
+builds the phrases in an order of its own, and a part of a song only those
+it plays, so the same phrase must sound the same whatever came before it.
 
 To be written: grafting the attack onto the borrowed note; how much breath
 to hear with the tone.

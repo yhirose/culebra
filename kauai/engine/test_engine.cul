@@ -56,13 +56,14 @@ fn an_instrument_made_from_one_performance_plays_a_phrase_in_tune() {
   assert_true(Math.abs(20.0 * Math.log(rms(t) / rms(s)) / Math.log(10.0) -
     10.0) <
     1.0)
-  # Each phrase has its own noise, numbered per instrument: another
-  # instrument's first phrase is the first one's, whatever was voiced between.
+  # A phrase's noise is its own: the same phrase sounds the same on another
+  # instrument in the same style, whatever that one voiced before it.
   let again = engine.Instrument.new(data, STYLE)
+  again.phrase_samples([{...PHRASE[0], pitch: 74, len: 0.2}], {})
   assert_eq(again.phrase_samples(PHRASE, {}), s)
 
-  # A style put on an instrument that has played is the style's sound again
-  # from the first phrase, as a new instrument's.
+  # A style put on an instrument that has played is the style's sound, as a
+  # new instrument's.
   one.restyle({...STYLE, mf_db: STYLE.mf_db + 10.0})
   assert_true(rms(one.phrase_samples(PHRASE, {})) > 2.0 * rms(s))
   one.restyle(STYLE)
