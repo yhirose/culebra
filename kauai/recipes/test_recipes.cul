@@ -70,6 +70,76 @@ fn a_muted_guitar_stroke_is_its_head_alone() {
   }
 }
 
+# `pluck` is where along the string, from the bridge as a fraction of its
+# length, a guitar is struck: a song says it (`external Guitar pluck=0.3`,
+# `\pluck=0.12`), as it does for the native guitar. Left at 0 the string is
+# struck as it was before the knob; struck at the middle it has no even
+# harmonics, as a real string plucked there has none.
+@test
+fn a_guitar_is_plucked_where_a_song_says() {
+  # The amplitude at `hz` over 0.05 to 0.45 s.
+  let amp = fn (xs, hz, rate) {
+    let from = Math.round(0.05 * rate)
+    let to = Math.round(0.45 * rate)
+    mut re = 0.0
+    mut im = 0.0
+    for i in from..to {
+      let a = 2.0 * Math.pi * hz * i / rate
+      re += xs[i] * Math.cos(a)
+      im += xs[i] * Math.sin(a)
+    }
+    Math.sqrt(re * re + im * im) / (to - from)
+  }
+  # How far the 2nd harmonic, against the 1st, falls when struck at the middle.
+  # The distortion clips hard and makes harmonics of its own, so it falls less.
+  let falls_to = {clean_guitar: 0.05, overdrive_guitar: 0.05, distortion_guitar: 0.5}
+  for name in falls_to.keys() {
+    let g = recipes.recipe(name)
+    for pitch in [45, 57] {
+      let hz = 440.0 * Math.exp((pitch - 69) / 12.0 * Math.log(2.0))
+      let second = fn (p) {
+        let xs = g.note(pitch, 0.8, params: {pluck: p})
+        amp(xs, 2 * hz, g.rate) / amp(xs, hz, g.rate)
+      }
+      assert_eq(g.note(pitch, 0.5, params: {pluck: 0}), g.note(pitch, 0.5), (name, pitch))
+      assert_true(g.note(pitch, 0.5, params: {pluck: 0.12}) != g.note(pitch, 0.5), (name, pitch))
+      assert_true(second(0.5) < falls_to[name] * second(0), (name, pitch, second(0.5), second(0)))
+    }
+  }
+}
+
+# A song written for the native guitar plays on a guitar recipe: its voice's
+# `pluck=` and a score's `\pluck=` reach each phrase.
+@test
+fn a_song_for_the_native_guitar_plays_on_a_guitar_recipe() {
+  let song_text = 'band Duo {
+  voice Lead  external Guitar pluck=0.3  plays melody  vol 12
+}
+song Tune {
+  tempo 120
+  band Duo
+  melody in C4..B4
+  Verse
+}
+section Verse {
+  C     c4 e g e
+  G     \pluck=0.12 d4 g b g
+}
+'
+  let song = Kauai.load(
+    "tune.kau",
+    voices: {guitar: recipes.voices.cleanguitar},
+    drums: recipes.drums,
+    dir: Dir.memory({"tune.kau": song_text}),
+  )
+  mut left = song.prepare()
+  while left > 0 {
+    left = song.prepare()
+  }
+  let plucks = song.external_sounds().map(|s| s.args[1].pluck)
+  assert_eq(plucks, [0.3, 0.3, 0.3, 0.3, 0.12, 0.12, 0.12, 0.12])
+}
+
 # A folder of one's own: its recipes and drums by the names a song gives
 # them, a base from Kauai's where the folder has none, and none of Kauai's.
 @test
