@@ -1,0 +1,21 @@
+# How far a change reaches, by path: the one list `just land` (misc/land.sh)
+# and CI (.github/workflows/ci.yml) consult to run only the checks a change
+# can affect. misc/change_scope.sh reads it; check_change_scopes.sh keeps
+# ci.yml's push `paths-ignore` equal to the `none` globs below.
+#
+#   none   read by no build, test or CI job; only the two whole-tree greps
+#          (check-header-naming, check-pipefail-readers) look at it
+#   light  read by the docs, site and example checks, never compiled: CI
+#          runs build-ubuntu, its ci-light lane, doctest, docs-cpp and the
+#          Playground smoke, and skips the per-OS and heavy lanes
+#
+# A path that matches no glob is `full`. A change's scope is the widest of
+# its paths' scopes, and an empty change is `full`.
+#
+# <scope> <glob>   (bash pattern: `*` also crosses `/`)
+none   .claude/*
+none   CLAUDE.md
+light  docs/*
+light  site/*
+light  examples/*
+light  kauai/*

@@ -24,7 +24,7 @@ culebra は個人の趣味プロジェクト（プログラミング言語処理
 5. マージ = **rebase → 再テスト → ff-only**。textual に無衝突でも意味的に正しいとは限らないので rebase 後は必ず再テストする。ただし**再テストは既定で `just test-dev`（~125s）**であって全ゲートではない（下の「どこまで回すか」）。master は他セッションで頻繁に動くので、rebase のたびに全ゲートを回すとマシンが占有され全員が止まる
 6. 完了後 `ExitWorktree` を `action: "remove"` で呼ぶ（worktree と branch を消して cwd を main tree に戻す）
 
-**Step 5-6 は `/ff-merge` skill で自動化されている**（`disable-model-invocation` なのでユーザーが明示的に呼ぶ）。内部で `just land`（`misc/land.sh`）が rebase → `just test-dev` → ff-only merge を machine-wide ロック下で1プロセス実行し、着地レース（他セッションが先に master を進めた場合）は自動リトライする。全て commit 済みならこれを使う。上記 5-6 は手動でやる場合の内訳。
+**Step 5-6 は `/ff-merge` skill で自動化されている**（`disable-model-invocation` なのでユーザーが明示的に呼ぶ）。内部で `just land`（`misc/land.sh`）が rebase → `just test-dev` → ff-only merge を machine-wide ロック下で1プロセス実行し、着地レース（他セッションが先に master を進めた場合）は自動リトライする。全て commit 済みならこれを使う。上記 5-6 は手動でやる場合の内訳。再テストの範囲は変更の種類で決まる（`tools/checks/change_scopes.txt`）：`.claude/` と CLAUDE.md だけの変更は、それを読む全体の grep 2本だけを回してビルドしない。CI も同じ表を読み、push は `.claude/` と CLAUDE.md だけなら起動せず、docs/・site/・examples/・kauai/ だけなら OS ごとの重いレーンを省く（ci.yml の `scope` ジョブ）。
 
 **Claude Code の sandbox について**: `git worktree add`／`submodule update`／`just dev`／`just test-dev` は `.claude/settings.local.json` の `sandbox.filesystem.allowWrite`（ccache tmp dir 追加済み）と `sandbox.network.allowLocalBinding` で sandbox 有効のまま通る。**Bash からの `git worktree remove` だけは例外** — `.git/worktrees/` 配下の削除は sandbox 下で常に拒否される（`.git` メタデータ削除への意図的な保護とみられる）ので、`ExitWorktree` の `remove` が使えず手で消すときはこの一手だけ `dangerouslyDisableSandbox` が要る。ただし sandbox の内と外を切り替えると、ソースを変えていなくても `just dev` が全部作り直す（平均5.4分、原因は調査中）。ビルドとテストは `just land` と同じ外側にそろえる。
 

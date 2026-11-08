@@ -64,8 +64,17 @@ for attempt in $(seq 1 "$max_attempts"); do
   echo "land: rebasing $branch onto master (attempt $attempt/$max_attempts)" >&2
   rebase_onto_master
 
-  echo "land: build + test-dev" >&2
-  ( cd "$worktree" && just test-dev )
+  # Run what the change can affect (tools/checks/change_scopes.txt): a change
+  # no build, test or CI job reads is checked by the two greps that do read
+  # the whole tree, and lands without building.
+  scope=$(git -C "$worktree" diff --name-only master...HEAD | "$worktree/misc/change_scope.sh")
+  if [ "$scope" = none ]; then
+    echo "land: scope none -- the whole-tree greps only" >&2
+    ( cd "$worktree" && just check-header-naming check-pipefail-readers )
+  else
+    echo "land: scope $scope -- build + test-dev" >&2
+    ( cd "$worktree" && just test-dev )
+  fi
 
   if git -C "$main_repo" merge --ff-only "$branch"; then
     # The merge moves gitlinks but checks out nothing for a submodule the main

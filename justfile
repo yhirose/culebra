@@ -233,6 +233,14 @@ check-header-naming:
 check-pipefail-readers:
     tools/checks/check_pipefail_readers.sh
 
+# `just land` and CI each decide from tools/checks/change_scopes.txt which
+# checks a change can affect; ci.yml can only say it as `paths-ignore`, so
+# this keeps that copy equal to the table.
+[group("test")]
+[doc("Verify ci.yml's paths-ignore is the none scope of change_scopes.txt")]
+check-change-scopes:
+    tools/checks/check_change_scopes.sh
+
 # `catch IOError` takes an engine error by its kind, and the kinds that work
 # as type names are a list (culebra::is_error_kind_name). A kind the sources
 # raise and the list lacks is never caught by name, and nothing else says so.
@@ -366,7 +374,7 @@ check-docs-cpp:
 # the workflow-coverage ratchet. Cheap enough to gate both test recipes:
 # well under a second once the grammar-blob tool is ccache-warm.
 [private]
-check-generated: check-grammar-sync check-preambles check-blob check-site-version check-site-playground-sync check-difftest-coverage check-gate-budget check-release-coverage check-spec-examples check-api-coverage check-canon-return-types check-registrar-rooted check-pe-exports-gen check-interrupt-discipline check-thrown-value-discipline check-docs-cpp-includes check-header-naming check-pipefail-readers check-error-kinds check-search-splitter check-layering check-codegen-enums check-vm-dispatch-table check-protocol-member-door check-value-equal-door check-value-order-door check-source-anchor-door check-object-facts check-portable-closure-door check-native-entry-door check-runner-pins check-llama-versions
+check-generated: check-grammar-sync check-preambles check-blob check-site-version check-site-playground-sync check-difftest-coverage check-gate-budget check-release-coverage check-spec-examples check-api-coverage check-canon-return-types check-registrar-rooted check-pe-exports-gen check-interrupt-discipline check-thrown-value-discipline check-docs-cpp-includes check-header-naming check-pipefail-readers check-change-scopes check-error-kinds check-search-splitter check-layering check-codegen-enums check-vm-dispatch-table check-protocol-member-door check-value-equal-door check-value-order-door check-source-anchor-door check-object-facts check-portable-closure-door check-native-entry-door check-runner-pins check-llama-versions
 
 # The slim download (CULEBRA_SLIM: the VM alone, no LLVM, window, 3D, audio,
 # Webview or Llama), built as a release is (-O3, LTO). Its own dir: the JIT
