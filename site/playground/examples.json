@@ -207,11 +207,13 @@
           "path": "examples/kauai/play_recipes.cul",
           "uses": [
             "kauai/engine/recipe.cul",
-            "kauai/recipes",
+            "kauai/recipes/main.cul",
+            "kauai/recipes/*.json",
             "examples/kauai/songs/strings.kau"
           ],
           "assets": [
             "kauai/engine/recipe.cul",
+            "kauai/recipes/main.cul",
             "kauai/recipes/analog_lead.json",
             "kauai/recipes/bright_fm_brass.json",
             "kauai/recipes/bright_fm_strings.json",
@@ -238,12 +240,10 @@
             "kauai/recipes/fm_electric_piano.json",
             "kauai/recipes/fm_strings.json",
             "kauai/recipes/light_distortion_guitar.json",
-            "kauai/recipes/main.cul",
             "kauai/recipes/mellow_fm_brass.json",
             "kauai/recipes/mellow_fm_strings.json",
             "kauai/recipes/overdrive_guitar.json",
             "kauai/recipes/sparkling_fm_electric_piano.json",
-            "kauai/recipes/test_recipes.cul",
             "kauai/recipes/vintage_electric_piano.json",
             "examples/kauai/songs/strings.kau"
           ]

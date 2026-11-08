@@ -64,7 +64,7 @@
         {
           "title": "Kauai: a song on recipe instruments",
           "path": "examples/kauai/play_recipes.cul",
-          "uses": ["kauai/engine/recipe.cul", "kauai/recipes", "examples/kauai/songs/strings.kau"]
+          "uses": ["kauai/engine/recipe.cul", "kauai/recipes/main.cul", "kauai/recipes/*.json", "examples/kauai/songs/strings.kau"]
         }
       ]
     },

@@ -36,21 +36,22 @@ mv "$OUT/index.html.tmp" "$OUT/index.html"
 # (<name>/<name>.cul) brings the whole directory — imported modules and data
 # alike — and the served copy gets that list as `assets` for the worker to
 # fetch; the source examples.json names no file by hand, but for an example's
-# optional "uses" (what it reads from elsewhere in the repo: files or
-# directories, found the same way). The directory is the
-# unit because a program finds its files by its own path, so anything beside
-# it is fair game; the naming rule is what keeps examples/tensor/tensors.cul
-# from dragging mnist/weights/ along. The directory is read through git, so a
+# optional "uses" (what it reads from elsewhere in the repo: git pathspecs,
+# found the same way). The directory is the unit because a program finds its
+# files by its own path, so anything beside it is fair game; the naming rule
+# is what keeps examples/tensor/tensors.cul from dragging mnist/weights/
+# along. The directory is read through git, so a
 # gitignored file (generated assets, __pycache__) cannot make one machine's
 # copy differ from a checkout's; dotfiles are skipped for the same reason.
 echo "[playground] copying example sources and assets…"
 python3 - "$OUT" <<'PY'
 import json, pathlib, shutil, subprocess, sys
 
-def checkout_files(d):  # tracked, or untracked but not ignored
+def checkout_files(d):  # files under pathspec d: tracked, or untracked but not ignored; no dotfile in any segment (.DS_Store, .cache/, .venv/)
   out = subprocess.run(["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", str(d)],
                        check=True, capture_output=True).stdout
-  return {pathlib.Path(p) for p in out.decode().split("\0") if p}
+  paths = (pathlib.Path(p) for p in out.decode().split("\0") if p)
+  return sorted((p for p in paths if p.is_file() and not any(s.startswith(".") for s in p.parts)), key=str)
 
 out = pathlib.Path(sys.argv[1])
 catalog = json.loads(pathlib.Path("playground/examples.json").read_text())
@@ -62,13 +63,11 @@ for category in catalog["categories"]:
       missing.append("%s (%s)" % (entry, example["title"]))
       continue
     own = entry.parent.name == entry.stem
-    def visible(p):  # no dotfile in any segment: .DS_Store, .cache/, .venv/
-      return p.is_file() and not any(s.startswith(".") for s in p.relative_to(entry.parent).parts)
-    files = sorted(filter(visible, checkout_files(entry.parent)), key=str) if own else [entry]
+    files = checkout_files(entry.parent) if own else [entry]
     # An example may also name what it reads from elsewhere in the repo
-    # ("uses": files or directories), mirrored the same way.
-    for used in map(pathlib.Path, example.get("uses", [])):
-      found = sorted(filter(lambda p: p.is_file() and not any(s.startswith(".") for s in p.parts), checkout_files(used)), key=str)
+    # ("uses": git pathspecs, so files, directories or globs), mirrored the same way.
+    for used in example.get("uses", []):
+      found = checkout_files(used)
       if not found:
         missing.append("%s (uses of %s)" % (used, example["title"]))
       files += [p for p in found if p not in files]

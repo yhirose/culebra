@@ -69,36 +69,30 @@ assert.equal(projectFiles(tree, "README.md").length, 6);
 // --- the catalog's derived file lists ----------------------------------------
 // copy-frontend.sh writes `assets` for every example that lives in its own
 // directory (<name>/<name>.cul) and for what an entry `uses`; the source
-// examples.json carries no other.
+// examples.json carries none.
 
 const source = JSON.parse(fs.readFileSync(path.join(root, "playground/examples.json"), "utf8"));
 const served = JSON.parse(fs.readFileSync(path.join(root, "site/playground/examples.json"), "utf8"));
 const entries = (catalog) => Object.fromEntries(
   catalog.categories.flatMap((c) => c.examples.map((e) => [e.path, e])));
 const src = entries(source), out = entries(served);
+// What copy-frontend.sh mirrors for git pathspec `d`: what a checkout holds
+// (tracked, or untracked but not ignored), files only, no dotfile in any segment.
+const mirrored = (d) => execFileSync("git", ["ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", d],
+                                     { cwd: root, encoding: "utf8" })
+  .split("\0")
+  .filter((f) => f && fs.statSync(path.join(root, f), { throwIfNoEntry: false })?.isFile())
+  .filter((f) => !f.split("/").some((s) => s.startsWith(".")))
+  .sort();
 assert.deepEqual(Object.keys(src), Object.keys(out), "same entries, same order");
 for (const [p, e] of Object.entries(src)) {
   assert.equal(e.assets, undefined, `${p}: assets are derived, not written`);
   const m = /^(.*\/)?([^/]+)\/\2\.cul$/.exec(p);
-  if (e.uses) {
-    const used = execFileSync("git", ["ls-files", "-z", "--", ...e.uses], { cwd: root, encoding: "utf8" })
-      .split("\0").filter(Boolean).sort();
-    assert.ok(used.length >= e.uses.length, `${p}: each use names tracked files`);
-    assert.deepEqual([...out[p].assets].sort(), used, p);
-    continue;
-  }
-  if (!m) { assert.deepEqual(out[p].assets, [], p); continue; }
-  const dir = path.join(root, (m[1] ?? "") + m[2]);
-  // What a checkout holds (tracked, or untracked but not ignored), minus
-  // dotfiles: the same rules copy-frontend.sh applies.
-  const onDisk = execFileSync("git", ["ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", dir],
-                              { cwd: root, encoding: "utf8" })
-    .split("\0")
-    .filter((f) => f && fs.statSync(path.join(root, f), { throwIfNoEntry: false })?.isFile())
-    .filter((f) => f !== p && !path.relative(dir, path.join(root, f)).split(path.sep).some((s) => s.startsWith(".")))
-    .sort();
-  assert.deepEqual(out[p].assets, onDisk, p);
-  assert.ok(onDisk.length > 0, `${p}: the directory has files beside the entry`);
+  const own = m ? mirrored((m[1] ?? "") + m[2]).filter((f) => f !== p) : [];
+  if (m) assert.ok(own.length > 0, `${p}: the directory has files beside the entry`);
+  for (const u of e.uses ?? []) assert.ok(mirrored(u).length > 0, `${p}: ${u} holds no file`);
+  const want = [...new Set([...own, ...(e.uses ?? []).flatMap(mirrored)])].filter((f) => f !== p);
+  assert.deepEqual(out[p].assets, want, p);
 }
 assert.ok(out["examples/games/retro-run/retro-run.cul"].assets.includes("examples/games/retro-run/assets/sprites.png"));
 

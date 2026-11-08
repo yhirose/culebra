@@ -20,9 +20,10 @@ mut left = 1
 while left > 0 {
   left = song.prepare()
   built += 1
-  println("built {built} sounds, {left} to go")
+  println("{built} built, {left} to go")
 }
-println("built in {Math.round((Time.monotonic() - began) * 1000)} ms")
+let ms = Math.round((Time.monotonic() - began) * 1000)
+println("built in {ms} ms")
 
 if !Audio.available() {
   println("no audio device, so nothing plays")
