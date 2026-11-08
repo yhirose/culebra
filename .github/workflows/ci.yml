@@ -119,35 +119,13 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-ccache-
 
-      - name: Check grammar sync (misc/culebra.peg and misc/culebra.vim)
-        run: just check-grammar-sync
-
-      - name: Check stdlib preambles sync (src/preambles -> gen.h)
-        run: just check-preambles
-
-      # A stale blob still runs correctly, it just falls back to load_grammar()
-      # and costs ~10 ms on every startup — no other gate can see that.
-      - name: Check grammar blob sync (grammar_def.h -> grammar_blob.gen.h)
-        run: just check-blob
-
-      # Regenerating the served page needs emsdk, which no runner has, so a
-      # version bump can land with it still naming the old version.
-      - name: Check Playground version sync (culebra.h -> site/playground)
-        run: just check-site-version
-
-      # The same gap for the rest of what build.sh copies: the frontend and
-      # the mirrored examples can be edited at their source and shipped stale.
-      - name: Check Playground copy sync (playground/ -> site/playground)
-        run: just check-site-playground-sync
-
-      # vendor/cpp-vmlib is a submodule: a bump can hand scripts a new IR
-      # vocabulary member with nothing documenting it, or a new Tag with no
-      # builder and no reader at all. Needs no build, so it runs here with the
-      # rest of check-generated's members -- check-generated itself is not run
-      # as a unit anywhere in CI (the test jobs below call `just _run-tests`
-      # directly), so this is the only place this specific member is checked.
-      - name: Check CodeGen IR vocabulary coverage (vmlib.h -> CodeGen)
-        run: just check-codegen-enums
+      # Every generated file and source ratchet (grammar sync, stdlib
+      # preambles, the grammar blob, the Playground copies, the CodeGen IR
+      # vocabulary and the rest): the same unit `just land` runs before its
+      # build, and none of it needs a build. Run whole, so a member added to
+      # check-generated is checked in CI without a step of its own here.
+      - name: Check generated files and source ratchets
+        run: just check-generated
 
       # mold (Rui Ueyama's modern linker, ~2-3x faster than lld on Linux) for
       # the LLVM-heavy static link step.

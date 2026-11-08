@@ -41,6 +41,17 @@ if [ "${1:-}" = "--check" ]; then
     printf '%s\n' "$report" >&2
     exit "$status"
   fi
+elif [ "${1:-}" = "--if-changed" ]; then
+  # `just dev` runs this first, so an edited .cul is what the build bakes
+  # (the bake depends on the header, not the .cul). The header is rewritten
+  # only when its text changes: a new mtime alone would re-bake every module.
+  tmp=$(mktemp "${TMPDIR:-/tmp}/gen_preambles.XXXXXX")
+  trap 'rm -f "$tmp"' EXIT
+  gen > "$tmp"
+  if ! cmp -s "$tmp" "$OUT"; then
+    mv "$tmp" "$OUT"
+    echo "wrote $OUT (src/preambles changed)"
+  fi
 else
   gen > "$OUT"
   echo "wrote $OUT"

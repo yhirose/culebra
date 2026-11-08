@@ -75,6 +75,7 @@ build *extra:
 # when only ephemeral mtimes changed.
 [group("build")]
 dev *extra:
+    @misc/gen_preambles.sh --if-changed
     mkdir -p build-dev
     cd build-dev && cmake -DCMAKE_BUILD_TYPE=Release -DCULEBRA_ENABLE_JIT=ON -DCULEBRA_LTO=OFF -DCULEBRA_DEV_NO_RT=ON -DCULEBRA_DEV_O1=ON {{extra}} .. > /dev/null
     cd build-dev && {{nice_cmd}} make -j{{build_jobs}} culebra
@@ -623,6 +624,7 @@ phase +WORDS: dev
 [group("test")]
 test-dev BACKEND='fast': check-generated dev
     @BIN=./build-dev/culebra just _check-quick-guide
+    @BIN=./build-dev/culebra just _doctest
     @BIN=./build-dev/culebra CULEBRA_TEST_SKIP_HEAVY=1 just _run-tests {{BACKEND}}
 
 # The same sweep as test-dev against the assert-enabled binary (`just
@@ -2031,17 +2033,17 @@ _doctest LANE="all":
 # namespaces it carries inline. `check-quick-guide` is the CI gate for both.
 [doc("Regenerate the signature index in docs/quick-guide.md (en+ja)")]
 [group("docs")]
-gen-quick-guide: build
-    ./build/culebra --vm misc/gen_quick_guide.cul
+gen-quick-guide: dev
+    ./build-dev/culebra --vm misc/gen_quick_guide.cul
 
 [doc("Fail if the quick-guide index or tools/checks/api_surface.txt is stale")]
 [group("docs")]
-check-quick-guide: build
-    @BIN=./build/culebra just _check-quick-guide
+check-quick-guide: dev
+    @BIN=./build-dev/culebra just _check-quick-guide
 
 # The check alone, against $BIN — for the callers that already have a binary
 # (test-dev's build-dev/, CI's downloaded artifact) and must not trigger the
-# `build` prerequisite above.
+# `dev` prerequisite above.
 [private]
 _check-quick-guide:
     @"${BIN:-./build/culebra}" --vm misc/gen_quick_guide.cul --check
