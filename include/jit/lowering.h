@@ -3932,36 +3932,25 @@ struct Lowering {
           // Per-callsite transitioning-write IC (JitPropSetIC): the same
           // "a plain `self.x = value` at this exact site always sees the
           // same starting shape" observation fix 4 already exploited for
-          // property reads, applied to writes. Sentinel (void*)1 for both
-          // shape fields — never null, never a real heap Shape* — so a
-          // cold cache can't spuriously match a freshly-allocated
-          // instance's shape == nullptr (JitPropIC's own convention).
-          auto icTy = llvm::StructType::get(
-              j.ctx_, {ptrTy, ptrTy, i64Ty, i8Ty, i8Ty});
-          enum : unsigned { kExpected };
-          static_assert(offsetof(JitPropSetIC, result_shape) == 8 &&
-                        offsetof(JitPropSetIC, offset) == 16 &&
-                        offsetof(JitPropSetIC, prop_mut) == 24 &&
-                        offsetof(JitPropSetIC, declared) == 25);
-          auto* sentinelPtr = llvm::ConstantExpr::getIntToPtr(
-              llvm::ConstantInt::get(i64Ty, 1), ptrTy);
+          // property reads, applied to writes. The entry starts at kIcCold,
+          // which matches no shape — a freshly-allocated instance's null
+          // included (JitPropIC's own convention).
+          auto icTy = llvm::StructType::get(j.ctx_, {i64Ty, ptrTy});
+          static_assert(offsetof(JitPropSetIC, result) == 8 &&
+                        sizeof(JitPropSetIC) == 16);
           auto* icInit = llvm::ConstantStruct::get(
-              icTy, {sentinelPtr, sentinelPtr,
-                     llvm::ConstantInt::get(i64Ty, 0), b.getInt8(0),
-                     b.getInt8(0)});
+              icTy, {llvm::ConstantInt::get(i64Ty, kIcCold),
+                     llvm::ConstantPointerNull::get(ptrTy)});
           auto* icGlobal = new llvm::GlobalVariable(
               *j.module_, icTy, /*isConstant=*/false,
               llvm::GlobalValue::PrivateLinkage, icInit,
               ".prop.set.ic." + std::to_string(j.prop_set_ic_counter_++));
 
-          auto shapeFieldPtr = b.CreateConstInBoundsGEP1_64(
-              i8Ty, objPtr, offsetof(JitObject, shape), "pset.shape.fieldp");
-          auto objShape = b.CreateLoad(ptrTy, shapeFieldPtr, "pset.obj.shape");
-          auto icExpectedPtr =
-              b.CreateStructGEP(icTy, icGlobal, kExpected, "pset.ic.exp.p");
-          auto icExpected = b.CreateLoad(ptrTy, icExpectedPtr, "pset.ic.exp");
-          auto shapeMatch =
-              b.CreateICmpEQ(objShape, icExpected, "pset.shape.match");
+          // The helpers act on probe.entry, the word the guard approved,
+          // never on a re-read another isolate may have changed since.
+          auto probe = j.emit_ic_probe(objPtr, icTy, icGlobal);
+          auto icEntry = probe.entry;
+          auto shapeMatch = probe.match;
 
           auto fastBB = BasicBlock::Create(j.ctx_, "pset.fast", fn);
           auto slowBB = BasicBlock::Create(j.ctx_, "pset.slow", fn);
@@ -3979,16 +3968,16 @@ struct Lowering {
             auto callBB = BasicBlock::Create(j.ctx_, "pset.call", fn);
             auto updated = j.emit_call(
                 j.module_->getFunction(rt::object_set_update),
-                {objPtr, icGlobal, valTag, valData}, "pset.updated");
+                {objPtr, icEntry, valTag, valData}, "pset.updated");
             b.CreateCondBr(updated, mergeBB, callBB);
             b.SetInsertPoint(callBB);
           }
           j.emit_call(
               j.module_->getOrInsertFunction(
                   rt::object_set_fast, b.getVoidTy(), ptrTy, ptrTy, ptrTy,
-                  i8Ty, i64Ty, i64Ty, i64Ty, b.getInt1Ty(), b.getInt1Ty(),
-                  i8Ty),
-              {objPtr, keyPtr, icGlobal, valTag, valData,
+                  i64Ty, i8Ty, i64Ty, i64Ty, i64Ty, b.getInt1Ty(),
+                  b.getInt1Ty(), i8Ty),
+              {objPtr, keyPtr, icGlobal, icEntry, valTag, valData,
                j.current_line_val(),
                j.current_column_val(), b.getInt1(true), b.getInt1(false),
                b.getInt8(key_kind)});
@@ -4021,16 +4010,14 @@ struct Lowering {
           auto [icTy, icGlobal] = j.emit_prop_ic_global();
           // The read's own-slot arm: prop_wr primes the cache from plain
           // Objects only, whose shapes no view shares.
-          auto shapeMatch =
-              j.emit_prop_ic_shape_match(objPtr, icTy, icGlobal).second;
+          auto probe = j.emit_ic_probe(objPtr, icTy, icGlobal);
           auto fastBB = BasicBlock::Create(j.ctx_, "pwr.fast", fn);
           auto slowBB = BasicBlock::Create(j.ctx_, "pwr.slow", fn);
           auto mergeBB = BasicBlock::Create(j.ctx_, "pwr.merge", fn);
-          b.CreateCondBr(shapeMatch, fastBB, slowBB);
+          b.CreateCondBr(probe.match, fastBB, slowBB);
 
           b.SetInsertPoint(fastBB);
-          auto [fastTag, fastData] =
-              j.emit_prop_ic_own_slot(objPtr, icTy, icGlobal);
+          auto [fastTag, fastData] = j.emit_prop_ic_own_slot(objPtr, probe.entry);
           b.CreateBr(mergeBB);
           auto fastEnd = b.GetInsertBlock();
 
@@ -4644,17 +4631,16 @@ struct Lowering {
           break;
         }
         case Op::FieldsInit: {
-          // The site's two-shape cache is a private global pair, filled on
-          // first execution the same lazy way ObjectNewShaped's is (a Shape*
-          // is a per-process pointer); the zero values are an immutable
+          // The site's shape cache is a private global, filled on first
+          // execution the same lazy way ObjectNewShaped's is (a Shape* is a
+          // per-process pointer); the zero values are an immutable
           // `[2n x i64]` of (tag, data) pairs, the C-side JitValue layout.
           const auto& spec = c.field_layout_specs[in.b];
           auto n = static_cast<int64_t>(spec.keys.size());
-          auto cacheTy = ArrayType::get(ptrTy, 2);
           auto* cacheGlobal = new llvm::GlobalVariable(
-              *j.module_, cacheTy, /*isConstant=*/false,
+              *j.module_, ptrTy, /*isConstant=*/false,
               llvm::GlobalValue::PrivateLinkage,
-              llvm::ConstantAggregateZero::get(cacheTy),
+              llvm::ConstantPointerNull::get(ptrTy),
               ".fields.init.cache." + std::to_string(j.fields_init_counter_++));
           std::vector<Constant*> keyPtrs;
           for (const char* k : spec.keys)

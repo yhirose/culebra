@@ -162,7 +162,9 @@ tests.cul 338
 # made test_send_object_facts.cul five times slower).
 # 27 since test_send_variant.cul (an enum's constructor and the enum itself
 # cross, and the variants it declared name the copy there).
-tests.isolate 27
+# 28 since test_shared_inline_caches.cul (isolates priming one property
+# read or write site at once never leave a shape paired with another's slot).
+tests.isolate 28
 
 # tests/gen_frames/*.cul: the generator probes held to frozen outputs, on both
 # engines in the landing gate and under the collector's axes and `culebra

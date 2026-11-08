@@ -3673,20 +3673,23 @@ inline JitObject* _jit_range_meta() {
 // culebra_runtime_materialize_value in rt_fixed.inc.h): `*shape_cache` starts
 // null and is resolved on the callsite's first execution, then reused
 // forever — the Shape a given (static) key list resolves to never changes,
-// so a benign race refills it with the identical canonical pointer on every
-// path (same argument as JitPropIC's cache; `transition_add` interning is
-// what makes concurrent resolution idempotent). A Shape* is a per-process
+// so a race refills it with the identical canonical pointer on every path
+// (`transition_add` interning is what makes concurrent resolution
+// idempotent); the word is atomic, and acquire because the reader goes on
+// to read the Shape another thread may have made. A Shape* is a per-process
 // pointer, so this laziness is load-bearing for AOT: the value baked at
 // `culebra build` time would be garbage in the binary's own run.
 inline culebra::Shape* _jit_resolve_cached_shape(void** shape_cache,
                                                  const char* const* keys,
                                                  int64_t n_keys) {
-  auto* shape = reinterpret_cast<culebra::Shape*>(*shape_cache);
+  std::atomic_ref<void*> cache(*shape_cache);
+  auto* shape = static_cast<culebra::Shape*>(
+      cache.load(std::memory_order_acquire));
   if (!shape) {
     shape = culebra::shape_registry().root();
     for (int64_t i = 0; i < n_keys; i++)
       shape = culebra::shape_registry().transition_add(shape, keys[i]);
-    *shape_cache = shape;
+    cache.store(shape, std::memory_order_release);
   }
   return shape;
 }

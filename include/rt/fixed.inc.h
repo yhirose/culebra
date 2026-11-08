@@ -1134,23 +1134,24 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_object_get_for_coalesce(
   return false;
 }
 
-// The annotation of the slot an update IC writes, read only when the slot
-// is Named (its shape then carries the slot; nothing else needs it).
-inline const culebra::FieldAnnotation* _jit_ic_annotation(
-    const JitPropSetIC* ic) {
-  if (static_cast<culebra::FieldType>(ic->declared) != culebra::FieldType::Named)
-    return nullptr;
-  return static_cast<culebra::Shape*>(ic->result_shape)->annotations[ic->offset];
-}
+// Forward: object_set_fast hands a transition whose target it cannot trust
+// to the slow path.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_set_ic(
+    JitObject* obj, const char* key, JitPropSetIC* ic, bool mut,
+    int8_t tag, int64_t data, int64_t line, int64_t col, bool is_init,
+    int64_t mem_line, int64_t mem_col);
 
 // Fast path for the property-write IC. Caller (JIT-emitted IR) has
-// already verified `obj->shape == ic->expected_shape`, so this just
-// dispatches on the cached mode:
-//   * update (expected == result): overwrite slots[offset], honoring
-//     the existing entry's mut flag.
-//   * transition (expected != result): grow `slots` by one (the
-//     reserved capacity from append_slot's first-call reserve(8)
-//     usually means no realloc), bump shape to result_shape.
+// already verified that `obj->shape` is the shape `entry` (the word it
+// loaded from `ic` and compared) guards on, so this just dispatches on the
+// entry's mode:
+//   * update: overwrite slots[slot], honoring the existing entry's mut
+//     flag; the slot's declared type is obj's own shape's.
+//   * transition: grow `slots` by one (the reserved capacity from
+//     append_slot's first-call reserve(8) usually means no realloc), bump
+//     shape to the IC's result -- or, when that result is not this shape's
+//     child (another thread primed it since the IR read `entry`), take the
+//     slow path, which primes the site again.
 // `key` is borrowed only for the immutable-error message; never freed.
 // Mirrors culebra_runtime_object_set's two contract obligations exactly —
 // check_wk on the update path, the well-known check before a new own slot
@@ -1168,20 +1169,26 @@ inline const culebra::FieldAnnotation* _jit_ic_annotation(
 // loop reached this function twice through `strlen` on a string the emitter
 // already knew.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_set_fast(
-    JitObject* obj, const char* key, JitPropSetIC* ic, int8_t tag,
-    int64_t data, int64_t line, int64_t col, bool mut, bool is_init,
-    int8_t key_kind) {
-  if (ic->expected_shape == ic->result_shape) {
-    _jit_check_field_write(key, static_cast<culebra::FieldType>(ic->declared),
-                           _jit_ic_annotation(ic), tag, data, line, col);
-    _jit_overwrite_slot(obj->slots[ic->offset], key, tag, data, mut, is_init,
+    JitObject* obj, const char* key, JitPropSetIC* ic, uint64_t entry,
+    int8_t tag, int64_t data, int64_t line, int64_t col, bool mut,
+    bool is_init, int8_t key_kind) {
+  auto slot = _ic_slot(entry);
+  if (!(entry & kIcTransition)) {
+    _jit_check_slot_write(key, obj->shape, slot, tag, data, line, col);
+    _jit_overwrite_slot(obj->slots[slot], key, tag, data, mut, is_init,
                         line, col, /*check_wk=*/(key_kind & 1) != 0);
   } else {
+    auto* to = ic->result_from(obj->shape);
+    if (!to) {
+      culebra_runtime_object_set_ic(obj, key, ic, mut, tag, data, line, col,
+                                    is_init, line, col);
+      return;
+    }
     _jit_reject_value_add(obj, key, tag, data, line, col, is_init);
     if (key_kind & 1) _culebra_check_well_known_prop(key, tag, data);
     if (obj->slots.capacity() == 0) obj->slots.reserve(8);
-    obj->slots.push_back({JitValue{tag, data}, ic->prop_mut != 0});
-    obj->shape = static_cast<culebra::Shape*>(ic->result_shape);
+    obj->slots.push_back({JitValue{tag, data}, mut});
+    obj->shape = to;
     if (obj->key_order)
       obj->key_order->push_back(
           JitObject::name_key(obj->prop_name(obj->prop_size() - 1)));
@@ -1193,16 +1200,18 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_set_fast(
 // true after the store (its +1 absorbed), false and nothing touched for a
 // transition, a value the slot's type does not surely admit, or an immutable
 // slot — the caller then takes object_set_fast, which settles the type and
-// words the error. The shape test comes first: a transition's offset is past
+// words the error. The mode test comes first: a transition's slot is past
 // the end of slots. Never throws.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_object_set_update(
-    JitObject* obj, JitPropSetIC* ic, int8_t tag, int64_t data) {
-  if (ic->expected_shape != ic->result_shape) return false;
-  if (!_jit_value_surely_fits_field(tag, data,
-                                    static_cast<culebra::FieldType>(ic->declared),
-                                    _jit_ic_annotation(ic)))
+    JitObject* obj, uint64_t entry, int8_t tag, int64_t data) {
+  if (entry & kIcTransition) return false;
+  auto slot = _ic_slot(entry);
+  auto t = obj->shape->type_at(slot);
+  if (t != culebra::FieldType::Any &&
+      !_jit_value_surely_fits_field(tag, data, t,
+                                    obj->shape->annotation_at(slot)))
     return false;
-  auto& e = obj->slots[ic->offset];
+  auto& e = obj->slots[slot];
   if (!e.mut) return false;
   _jit_replace_value(e.value, tag, data);
   return true;
@@ -1230,19 +1239,22 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_slot_init(
 // put on a fresh instance in one step — each holding its type's zero,
 // mutable, in declaration order, exactly what the run of per-field
 // `self.x = zero` stores in `new`'s prologue produced, one shape
-// transition at a time. The site caches the two shapes it moves between (the
-// one an instance arrives with — none at all for a fresh one, the usual case
-// — and the one the field list transitions it to, whose presence says the
-// pair is set); an instance arriving with any other shape, or with any state
-// the fast path does not reproduce, takes the per-field stores.
+// transition at a time. The site caches the shape the field list takes an
+// instance to; the shape it came from (none at all for a fresh one, the usual
+// case) is that one's ancestor `n_keys` up, so the cache is one word, which
+// no other isolate priming the site can leave half-written. An instance
+// arriving with any other shape, or with any state the fast path does not
+// reproduce, takes the per-field stores.
 // `zeros[i]` is `keys[i]`'s value: a scalar, or the borrowed `''` literal.
 // `annotations[i]` is a Named field's annotation (null otherwise).
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_fields_init(
     JitObject* obj, void** shape_cache, const char* const* keys,
     int64_t n_keys, const JitValue* zeros, const uint8_t* types,
     const char* const* annotations) {
-  auto* to = static_cast<culebra::Shape*>(shape_cache[1]);
-  if (to && obj->shape == shape_cache[0] && !obj->key_order && !obj->frozen) {
+  auto* to = static_cast<culebra::Shape*>(
+      std::atomic_ref<void*>(*shape_cache).load(std::memory_order_acquire));
+  if (to && !obj->key_order && !obj->frozen &&
+      to->extends(obj->shape, static_cast<size_t>(n_keys))) {
     obj->slots.reserve(obj->slots.size() + static_cast<size_t>(n_keys));
     for (int64_t i = 0; i < n_keys; i++)
       obj->slots.push_back({zeros[i], /*mut=*/true});
@@ -1250,7 +1262,6 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_fields_init(
     obj->mut_count += n_keys;
     return;
   }
-  auto* before = obj->shape;
   size_t n_before = obj->slots.size();
   for (int64_t i = 0; i < n_keys; i++) {
     auto type = static_cast<culebra::FieldType>(types[i]);
@@ -1271,8 +1282,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_fields_init(
     if (std::string_view(keys[i]) == "drop") drop = true;
   if (!obj->is_dict && !obj->key_order && obj->shape && !drop &&
       obj->slots.size() == n_before + static_cast<size_t>(n_keys)) {
-    shape_cache[0] = before;
-    shape_cache[1] = obj->shape;
+    std::atomic_ref<void*>(*shape_cache)
+        .store(obj->shape, std::memory_order_release);
   }
 }
 
@@ -1339,29 +1350,15 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_set_ic(
     // `append_slot` owns the shape transition, and the flip into dictionary
     // mode past `kDictAt` properties.
     idx = obj->append_slot(key, JitValue{tag, data}, mut);
-    // A dictionary shares one sentinel shape with every other dictionary, so
-    // priming here would let this site's cache match a different object and
-    // read its slot `idx`. Leave the cache cold; a dictionary write is a
-    // hash insert either way.
-    if (!obj->is_dict) {
-      ic->expected_shape = before;
-      ic->result_shape = obj->shape;
-      ic->offset = idx;
-      ic->prop_mut = mut ? 1 : 0;
-      ic->declared = static_cast<uint8_t>(culebra::FieldType::Any);
-    }
+    // A dictionary's write is a hash insert either way: its shared sentinel
+    // shape primes nothing (_ic_entry), and neither does the write that
+    // made the object one.
+    if (!obj->is_dict) ic->prime(before, idx, obj->shape);
   } else {
-    auto declared = before ? before->type_at(idx) : culebra::FieldType::Any;
     if (before) _jit_check_slot_write(key, before, idx, tag, data, line, col);
     _jit_overwrite_slot(obj->slots[idx], key, tag, data, mut, is_init, line,
                         col, /*check_wk=*/true);
-    if (!obj->is_dict) {
-      ic->expected_shape = before;
-      ic->result_shape = before;
-      ic->offset = idx;
-      ic->prop_mut = obj->slots[idx].mut ? 1 : 0;
-      ic->declared = static_cast<uint8_t>(declared);
-    }
+    ic->prime(before, idx, before);
   }
   if (std::string_view(key) == "drop") _jit_owned_bind_drop(obj);
 }
@@ -1457,9 +1454,7 @@ inline JitValue _jit_shared_view_get(JitObject* view, std::string_view key,
   auto* meta = view->proto();
   auto idx = meta->find_slot(key);
   if (idx != static_cast<size_t>(-1)) {
-    ic->owner_shape = view->shape;
-    ic->proto_shape = meta->shape;
-    ic->proto_offset = idx;
+    ic->prime_proto(view->shape, meta->shape, idx);
     return meta->slots[idx].value;
   }
   // +0-borrowed: a string leaf is a fresh heap string (leak-bounded by design
@@ -1482,7 +1477,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_get(
 }
 
 // Slow path for the per-callsite IC emitted by emit_property_get.
-// On an own-property hit, refreshes `ic->shape` / `ic->offset` so the
+// On an own-property hit, refreshes the cache's own entry so the
 // next read with the same shape stays on the inlined fast path. Proto
 // hits don't update the cache because the fast path keys on
 // `obj->shape`; caching the proto's offset there would load the wrong
@@ -1551,23 +1546,20 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_object_get_ic(
   // name.
   if (obj->is_shared_val) return _jit_shared_view_get(obj, key, ic, line, col);
   // Cached proto hit: this receiver shape's own scan missed last time and the
-  // proto resolved `key` at proto_offset, and neither shape has changed since
+  // proto resolved `key` at the slot its entry records, and neither shape has
+  // changed since
   // — so both linear scans are already answered. This is the shape a class
   // instance's every method read has (data in own slots, methods on the
   // shared meta behind `proto`).
-  if (obj->shape == ic->owner_shape && obj->proto() &&
-      obj->proto()->shape == ic->proto_shape) {
-    return obj->proto()->slots[ic->proto_offset].value;
+  auto proto_entry = _ic_load(ic->proto);
+  if (obj->shape == _ic_load(ic->owner_shape) &&
+      obj->proto() && _ic_matches(proto_entry, obj->proto()->shape)) {
+    return obj->proto()->slots[_ic_slot(proto_entry)].value;
   }
   if (obj->shape) {
     auto idx = obj->find_slot(key);
     if (idx != static_cast<size_t>(-1)) {
-      // Same reason as the write cache: every dictionary carries the same
-      // sentinel shape, so it must never prime a per-site cache.
-      if (!obj->is_dict) {
-        ic->shape = obj->shape;
-        ic->offset = idx;
-      }
+      ic->prime_own(obj->shape, idx);
       return obj->slots[idx].value;
     }
   }
@@ -1577,9 +1569,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_object_get_ic(
     // it answers from a second level falls through to the walk below.
     auto idx = obj->proto()->find_slot(key);
     if (idx != static_cast<size_t>(-1)) {
-      ic->owner_shape = obj->shape;
-      ic->proto_shape = obj->proto()->shape;
-      ic->proto_offset = idx;
+      ic->prime_proto(obj->shape, obj->proto()->shape, idx);
       return obj->proto()->slots[idx].value;
     }
     if (auto* proto_entry = _find_property(obj->proto(), key))

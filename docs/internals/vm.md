@@ -257,6 +257,14 @@ The heap objects a VM needs are the runtime's existing ones:
   The read half of a compound step (`o.k op= v`, `Op::PropWr`) has the
   read site's own-slot arm; its miss is `prop_wr`, which is the
   executor's whole step and primes the site from a plain Object only.
+  Isolates run the same compiled code, so they share these caches and
+  can prime one site at once. Each cache entry is therefore one word,
+  stored and loaded whole: a Shape pointer in the low 48 bits and the
+  slot recorded with it above. A reader never sees one shape with
+  another's slot. A write site's transition target is a second word,
+  trusted only while its parent (`Shape::parent`) is the shape the
+  entry guarded on. A class's declared-field layout (`Op::FieldsInit`)
+  caches only the shape it leads to, the same way.
 - `JitArray`, `JitSet`, tuples, `JitTensor`.
 
 Objects are allocated from a per-`Runtime` slab allocator
@@ -1193,10 +1201,10 @@ its first occurrence and still overwrites last-wins.
 Float }` does not open with one `ObjectSet` per field, each a shape
 transition, on every `new`. A maximal run of
 initializer-less fields is one `FieldsInit` over a
-`Chunk::FieldLayoutSpec` — the names, each type's zero value, and a pair
-of Shapes the site caches on its first execution (the one an instance
-arrives with — none at all for a fresh instance — and the one the run
-transitions it to). A field with an initializer keeps its own store, in place, so
+`Chunk::FieldLayoutSpec` — the names, each type's zero value, and the
+Shape the site caches on its first execution: the one the run transitions
+an instance to, whose ancestor `n` up is the shape the instance must
+arrive with (none at all for a fresh instance). A field with an initializer keeps its own store, in place, so
 declaration order and what an initializer sees of the fields below it
 (`nil`, docs/language.md §10) are unchanged — preceded, when its declared
 type is checked (a scalar, or a `FieldType::Named` annotation, which the

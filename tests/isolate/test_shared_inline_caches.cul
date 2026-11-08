@@ -1,0 +1,54 @@
+# Isolates run the same compiled code, so they share its property caches:
+# a read or write site that two isolates reach with differently shaped
+# objects is primed by both at once. Each cache entry has to come whole: a
+# shape seen with the slot another shape recorded read `x` from the wrong
+# slot (`a` of the wide object) or from past the end of the narrow one, and a
+# write went to `a`, which is immutable, or past the end.
+#
+# One site each, `x` at slot 0 in one shape and slot 2 in the other, so every
+# call re-primes the cache; four isolates race on it.
+
+fn read_x(o) {
+  o.x
+}
+
+fn write_x(o, v) {
+  o.x = v
+}
+
+fn reads(n) {
+  let narrow = {x: 1}
+  let wide = {a: 999, b: 998, x: 2}
+  mut bad = []
+  for _ in 0..n {
+    let x1 = read_x(narrow)
+    let x2 = read_x(wide)
+    if x1 != 1 && bad.size() < 3 {
+      bad.push("narrow.x: {x1}")
+    }
+    if x2 != 2 && bad.size() < 3 {
+      bad.push("wide.x: {x2}")
+    }
+  }
+  bad
+}
+
+fn writes(n) {
+  let narrow = {mut x: 0}
+  let wide = {a: 999, b: 998, mut x: 0}
+  mut bad = []
+  for i in 0..n {
+    write_x(narrow, i)
+    write_x(wide, i)
+    if (narrow.x != i || wide.x != i || wide.a != 999) && bad.size() < 3 {
+      bad.push("{i}: {narrow} {wide}")
+    }
+  }
+  bad
+}
+
+let n = 100000
+let readers = [0, 1, 2, 3].map(|_| Isolate.spawn(reads, n))
+assert_eq(readers.map(|h| h.join()), [[], [], [], []])
+let writers = [0, 1, 2, 3].map(|_| Isolate.spawn(writes, n))
+assert_eq(writers.map(|h| h.join()), [[], [], [], []])

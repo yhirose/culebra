@@ -132,6 +132,13 @@ struct Shape {
   // rebuild after a removal stays on the object's own tree.
   Shape* root = nullptr;
   Shape* tree_root() { return root ? root : this; }
+  // The Shape this one adds its last property to (null on a root): what lets
+  // a cache that records a transition's target check it against the shape it
+  // starts from, with no second word to tear from the first.
+  Shape* parent = nullptr;
+  // Whether this Shape is `from` (null meaning the plain root) plus `n` more
+  // properties.
+  bool extends(const Shape* from, size_t n) const;
 
   static bool is_special_name(std::string_view name) {
     return (name.size() > 4 && name.substr(0, 2) == "__" &&
@@ -212,6 +219,7 @@ struct ShapeRegistry {
     next->annotations.push_back(annotation);
     next->any_special = current->any_special || Shape::is_special_name(name);
     next->root = current->tree_root();
+    next->parent = current;
     auto* raw = next.get();
     owned_.push_back(std::move(next));
     current->adopt(raw);
@@ -244,6 +252,12 @@ struct ShapeRegistry {
 };
 
 inline ShapeRegistry& shape_registry() { return ShapeRegistry::instance(); }
+
+inline bool Shape::extends(const Shape* from, size_t n) const {
+  const Shape* s = this;
+  for (; n > 0 && s; n--) s = s->parent;
+  return s && s == (from ? from : shape_registry().root());
+}
 
 }  // namespace culebra
 
@@ -553,9 +567,9 @@ struct DictIndex {
 };
 
 // Every dictionary-mode object shares this shape. It is never interned and
-// never primes an inline cache (see the three `ic->` assignments in
-// rt_fixed.inc.h), so a cached shape can never match a dictionary and read a
-// stale slot -- which is what lets dictionary mode leave codegen alone.
+// never primes an inline cache (_ic_entry refuses it), so a cached shape can
+// never match a dictionary and read a stale slot -- which is what lets
+// dictionary mode leave codegen alone.
 inline culebra::Shape* dict_shape() {
   static culebra::Shape s;
   return &s;
@@ -1095,53 +1109,119 @@ inline constexpr int64_t kClassMetaLoweredState = 1;
 inline constexpr int64_t kClassMetaNamesClass = 2;
 inline constexpr int64_t kClassMetaValue = 4;
 
+// One inline-cache entry is one word: a Shape* in the low 48 bits, the slot
+// recorded with it in the 15 above, and in the top bit whether a write site
+// appends there (kIcTransition). The code that
+// holds the caches is shared by every isolate, so two threads can prime one
+// site at once; a word is stored and loaded whole, so a reader never pairs
+// one shape with another shape's slot (as two fields did: a wrong value, or a
+// read and a write past the end of `slots`). Nothing on the hit path
+// dereferences the Shape, so relaxed is enough.
+inline constexpr uint64_t kIcCold = 1;  // matches no shape, null included
+inline constexpr unsigned kIcShapeBits = 48;
+inline constexpr uint64_t kIcShapeMask = (uint64_t{1} << kIcShapeBits) - 1;
+inline constexpr uint64_t kIcTransition = uint64_t{1} << 63;
+inline constexpr size_t kIcMaxSlot = (size_t{1} << 15) - 1;
+
+// The entry for `slot` of `shape`, or kIcCold when there can be none: a
+// dictionary's shared sentinel (it would match any other dictionary, whose
+// slot `slot` holds something else), a slot past 15 bits, or a pointer that
+// does not fit 48 (a tagged one).
+inline uint64_t _ic_entry(const culebra::Shape* shape, size_t slot,
+                          bool transition = false) {
+  auto bits = reinterpret_cast<uintptr_t>(shape);
+  if (shape == dict_shape() || slot > kIcMaxSlot || (bits & ~kIcShapeMask))
+    return kIcCold;
+  return bits | (uint64_t{slot} << kIcShapeBits) |
+         (transition ? kIcTransition : 0);
+}
+template <class T>
+inline void _ic_store(T& word, T value) {
+  std::atomic_ref<T>(word).store(value, std::memory_order_relaxed);
+}
+template <class T>
+inline T _ic_load(T& word) {
+  return std::atomic_ref<T>(word).load(std::memory_order_relaxed);
+}
+inline bool _ic_matches(uint64_t entry, const void* shape) {
+  return ((entry ^ reinterpret_cast<uintptr_t>(shape)) & kIcShapeMask) == 0;
+}
+inline size_t _ic_slot(uint64_t entry) {
+  return (entry & ~kIcTransition) >> kIcShapeBits;
+}
+
 // Per-callsite inline cache for `obj.prop` reads. Allocated as a JIT module
-// global per property-get site; the IR fast path reads only the first two
-// fields (load obj->shape, compare, load slots[offset]), so
-// emit_property_get's `icTy` must mirror this layout field for field. The
-// proto trio is filled and read only by culebra_runtime_object_get_ic: a
-// class instance keeps data in own slots and methods on the shared meta
-// behind `proto`, so `inst.method` missed the own-slot cache on every call
-// and re-ran two linear Shape::offset scans.
+// global per property-get site; the IR reads all three words (the own slot,
+// then the proto hit), so emit_prop_ic_global's `icTy` mirrors this layout
+// word for word. The proto half answers a class instance's method read: data
+// in own slots and methods on the shared meta behind `proto`, so
+// `inst.method` would otherwise miss the own-slot cache on every call and
+// re-run two linear Shape::offset scans.
 //
 // A Shape fixes the own-name set exactly, which is what makes skipping the
 // recorded miss sound — a shape that gained the name is a different shape,
 // so shadowing still works. The lookup indexes `obj->proto`, never a cached
 // object pointer, so two metas sharing a shape stay correct.
 //
-// Every shape field starts at the non-null sentinel `(void*)1`, not 0: a
-// real Shape* is heap-allocated and never 1, while a fresh Object has
-// shape == null and would spuriously hit a zero-initialized cache.
+// Every word starts at kIcCold, not 0: a zero entry is the null shape's
+// slot 0, which a fresh Object (shape == null) would spuriously hit.
+//
+// The owner and the proto entry are separate words, and a reader may see one
+// thread's owner with another's proto entry. Any such pair still answers
+// right: "this receiver shape has no own `key`" is a fact about that shape
+// alone, and "this proto shape holds `key` at that slot" one about the other.
 struct JitPropIC {
-  void* shape = reinterpret_cast<void*>(1);  // own-slot hit (read by the IR)
-  uint64_t offset = 0;                       // slot index for that shape
-  void* owner_shape = reinterpret_cast<void*>(1);  // receiver shape whose own
-                                                   // scan missed
-  void* proto_shape = reinterpret_cast<void*>(1);  // its proto's shape then
-  uint64_t proto_offset = 0;                       // slot index in the proto
+  uint64_t own = kIcCold;  // own-slot hit: the receiver shape and its slot
+  void* owner_shape = reinterpret_cast<void*>(kIcCold);  // receiver shape
+                                                         // whose own scan
+                                                         // missed
+  uint64_t proto = kIcCold;  // its proto's shape and the slot there
+
+  // An entry that cannot be made (_ic_entry) leaves the cache as it was.
+  void prime_own(const culebra::Shape* shape, size_t slot) {
+    if (auto e = _ic_entry(shape, slot); e != kIcCold) _ic_store(own, e);
+  }
+  void prime_proto(const culebra::Shape* owner,
+                   const culebra::Shape* proto_shape, size_t slot) {
+    auto e = _ic_entry(proto_shape, slot);
+    if (e == kIcCold) return;
+    _ic_store(owner_shape,
+              static_cast<void*>(const_cast<culebra::Shape*>(owner)));
+    _ic_store(proto, e);
+  }
 };
 
-// Per-callsite inline cache for `obj.prop = ...` writes. Two modes:
-//   update    — `expected == result`; `obj.prop` already exists at
-//               slot `offset` and we overwrite it.
-//   transition — `expected != result`; this site appends the new prop,
-//               so `obj` must currently have shape `expected` and we
-//               grow it to `result` (offset is implicit but stored).
-// Fast path IR inlines a single shape compare; on match, it dispatches
-// to a small fast helper (`object_set_fast`) that handles both modes
-// without the `find_slot` linear scan or `transition_add` lookup. On
-// miss, the slow helper (`object_set_ic`) does the full work and fills
+// Per-callsite inline cache for `obj.prop = ...` writes. `entry` is the
+// shape `obj` must have and a slot, flagged when the site appends:
+//   update     — `obj.prop` already exists at the slot and is overwritten;
+//                its declared type is the guarded shape's (obj's own).
+//   transition — the site appends the prop at the slot and grows `obj` to
+//                `result`, which is trusted only while its parent is the
+//                shape the entry guarded on, so one thread's `result` met
+//                with another's `entry` is caught and goes the slow way.
+// Fast path IR inlines a single shape compare; on match, it dispatches the
+// entry it compared to a small fast helper (`object_set_fast`) that handles
+// both modes without the `find_slot` linear scan or `transition_add` lookup.
+// On miss, the slow helper (`object_set_ic`) does the full work and fills
 // the IC.
 struct JitPropSetIC {
-  void* expected_shape;  // shape `obj` must have for the fast path
-  void* result_shape;    // shape after this write (== expected for update)
-  uint64_t offset;       // slot to write (slots[offset] for update;
-                         // equals expected->names.size() for transition)
-  uint8_t prop_mut;      // `mut` flag for the new entry (transition only)
-  // The slot's declared type (culebra::FieldType), carried here so the write
-  // checks it without reading the Shape again. Settled with the rest of the
-  // entry: the shape the site guards on decides it.
-  uint8_t declared;
+  uint64_t entry = kIcCold;
+  culebra::Shape* result = nullptr;
+
+  void prime(const culebra::Shape* before, size_t slot, culebra::Shape* after) {
+    auto e = _ic_entry(before, slot, /*transition=*/after != before);
+    if (e == kIcCold) return;
+    if (after != before)
+      std::atomic_ref<culebra::Shape*>(result).store(after,
+                                                     std::memory_order_release);
+    _ic_store(entry, e);
+  }
+  // The transition's target for an object of shape `from`, or null.
+  culebra::Shape* result_from(const culebra::Shape* from) {
+    auto* r = std::atomic_ref<culebra::Shape*>(result).load(
+        std::memory_order_acquire);
+    return r && r->extends(from, 1) ? r : nullptr;
+  }
 };
 
 

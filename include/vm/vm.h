@@ -2644,8 +2644,8 @@ struct Chunk {
   // execution of the same literal walks the identical name sequence, so the
   // Shape it resolves to is always the same canonical pointer
   // (ShapeRegistry::transition_add interns, which already makes that
-  // resolution idempotent), the same "benign race, no atomics needed"
-  // argument the property IC (JitPropIC) already relies on. A Shape* is a
+  // resolution idempotent; _jit_resolve_cached_shape reads and writes the
+  // word atomically, as isolates share the chunk). A Shape* is a
   // per-PROCESS pointer, not a per-program one — the JIT lowering must
   // resolve it the same lazy way, never bake it at AOT-compile time.
   // `mutable`: the executor reaches this through a `const Chunk&` (the
@@ -2670,11 +2670,12 @@ struct Chunk {
   std::vector<ValueBoxSpec> value_box_specs;
   // One entry per Op::FieldsInit site (emit_declared_field_layout): the
   // declared field names in declaration order, each one's zero value
-  // (a scalar, or the borrowed `''` literal out of `consts`), and the pair
-  // of Shapes the site moves an instance between — resolved lazily on the
-  // first execution, like ObjectShapeSpec's, and for the same reason.
+  // (a scalar, or the borrowed `''` literal out of `consts`), and the Shape
+  // the site moves an instance to — resolved lazily on the first execution,
+  // like ObjectShapeSpec's, and for the same reason (see
+  // culebra_runtime_object_fields_init).
   struct FieldLayoutSpec {
-    mutable void* shape[2] = {nullptr, nullptr};
+    mutable void* shape = nullptr;
     std::vector<const char*> keys;
     std::vector<JitValue> zeros;
     // Each field's declared type (culebra::FieldType), which the slot the
@@ -18384,7 +18385,7 @@ struct Exec {
           [[maybe_unused]] const Insn& in = *ip;
           auto& spec = c.field_layout_specs[in.b];
           culebra_runtime_object_fields_init(
-              reinterpret_cast<JitObject*>(regs[in.a].data), spec.shape,
+              reinterpret_cast<JitObject*>(regs[in.a].data), &spec.shape,
               spec.keys.data(), static_cast<int64_t>(spec.keys.size()),
               spec.zeros.data(), spec.types.data(), spec.annotations.data());
           ++ip;

@@ -1632,7 +1632,7 @@ struct JIT {
   // Counter for per-callsite Op::ValueBox shape-cache globals.
   int value_box_counter_ = 0;
 
-  // Counter for per-callsite Op::FieldsInit shape-pair globals.
+  // Counter for per-callsite Op::FieldsInit shape-cache globals.
   int fields_init_counter_ = 0;
 
   // Counter for per-callsite property-write transitioning-IC globals.
@@ -3358,8 +3358,8 @@ struct JIT {
                                  builder_.getInt64Ty());
 
     module_->getOrInsertFunction(rt::object_set_update, builder_.getInt1Ty(),
-                                 ptrTy, ptrTy, builder_.getInt8Ty(),
-                                 builder_.getInt64Ty());
+                                 ptrTy, builder_.getInt64Ty(),
+                                 builder_.getInt8Ty(), builder_.getInt64Ty());
 
     // These never raise a culebra exception (object_set_update refuses by
     // answering false), so mark them nounwind: emit_call then drops the
@@ -5058,24 +5058,21 @@ struct JIT {
     return make_value(static_cast<uint8_t>(want), extract_data(view));
   }
 
-  // A read site's own inline cache; the layout mirrors JitPropIC field for
-  // field. The IR reads all five (emit_property_get: the own slot, then the
-  // proto hit) and the runtime helper fills them, so a value it writes there
-  // is one the IR indexes with. All three shape fields are seeded to the non-null sentinel
-  // `(void*)1` so the first read always misses to the slow path: real Shape*
-  // are heap-allocated (8-byte aligned, never == 1) and a freshly-allocated
-  // Object has shape == null, so the sentinel can never spuriously fast-path
-  // into an OOB slots[0].
+  // A read site's own inline cache; the layout mirrors JitPropIC word for
+  // word. The IR reads all three (emit_property_get: the own slot, then the
+  // proto hit) and the runtime helper fills them, so a slot it writes there
+  // is one the IR indexes with. Every word starts at kIcCold, which matches
+  // no shape (null included), so the first read always misses to the slow
+  // path and can never fast-path into an OOB slots[0].
   std::pair<llvm::StructType*, llvm::GlobalVariable*> emit_prop_ic_global() {
     auto ptrTy = llvm::PointerType::get(ctx_, 0);
     auto i64Ty = builder_.getInt64Ty();
-    auto icTy =
-        llvm::StructType::get(ctx_, {ptrTy, i64Ty, ptrTy, ptrTy, i64Ty});
-    auto* sentinelPtr = llvm::ConstantExpr::getIntToPtr(
-        llvm::ConstantInt::get(i64Ty, 1), ptrTy);
+    auto icTy = llvm::StructType::get(ctx_, {i64Ty, ptrTy, i64Ty});
+    static_assert(offsetof(JitPropIC, owner_shape) == 8 &&
+                  offsetof(JitPropIC, proto) == 16 && sizeof(JitPropIC) == 24);
+    auto* cold = llvm::ConstantInt::get(i64Ty, kIcCold);
     auto* icInit = llvm::ConstantStruct::get(
-        icTy, {sentinelPtr, llvm::ConstantInt::get(i64Ty, 0), sentinelPtr,
-               sentinelPtr, llvm::ConstantInt::get(i64Ty, 0)});
+        icTy, {cold, llvm::ConstantExpr::getIntToPtr(cold, ptrTy), cold});
     auto* icGlobal = new llvm::GlobalVariable(
         *module_, icTy, /*isConstant=*/false,
         llvm::GlobalValue::PrivateLinkage, icInit,
@@ -5091,10 +5088,42 @@ struct JIT {
     return {extract_tag(v), extract_data(v)};
   }
 
-  // The receiver's shape, and whether it is the one a read site's cache
-  // recorded an own slot for.
-  std::pair<llvm::Value*, llvm::Value*> emit_prop_ic_shape_match(
-      llvm::Value* objPtr, llvm::StructType* icTy, llvm::GlobalVariable* ic) {
+  // One word of an inline cache, loaded whole: other isolates running this
+  // code may be priming it (see kIcCold). `unordered` is a plain load that
+  // cannot tear and that the optimizer still treats as one.
+  llvm::Value* emit_ic_load(llvm::Type* ty, llvm::Value* ptr,
+                            const llvm::Twine& name) {
+    auto* ld = builder_.CreateLoad(ty, ptr, name);
+    ld->setAtomic(llvm::AtomicOrdering::Unordered);
+    ld->setAlignment(llvm::Align(8));
+    return ld;
+  }
+
+  // Whether cache `entry` guards on `shape` (_ic_matches).
+  llvm::Value* emit_ic_matches(llvm::Value* entry, llvm::Value* shape,
+                               const llvm::Twine& name) {
+    auto i64Ty = builder_.getInt64Ty();
+    auto diff = builder_.CreateXor(entry, builder_.CreatePtrToInt(shape, i64Ty));
+    return builder_.CreateICmpEQ(
+        builder_.CreateAnd(diff, llvm::ConstantInt::get(i64Ty, kIcShapeMask)),
+        llvm::ConstantInt::get(i64Ty, 0), name);
+  }
+
+  // The slot a read cache's `entry` recorded (_ic_slot: no read entry carries
+  // the transition bit).
+  llvm::Value* emit_ic_slot(llvm::Value* entry, const llvm::Twine& name) {
+    return builder_.CreateLShr(entry, kIcShapeBits, name);
+  }
+
+  // The receiver's shape, a site's cache entry (word 0 of a read or a write
+  // cache), and whether that entry guards on this shape.
+  struct IcProbe {
+    llvm::Value* obj_shape;
+    llvm::Value* entry;
+    llvm::Value* match;
+  };
+  IcProbe emit_ic_probe(llvm::Value* objPtr, llvm::StructType* icTy,
+                        llvm::GlobalVariable* ic) {
     auto ptrTy = llvm::PointerType::get(ctx_, 0);
     auto objShape = builder_.CreateLoad(
         ptrTy,
@@ -5102,26 +5131,25 @@ struct JIT {
                                             offsetof(JitObject, shape),
                                             "shape.fieldp"),
         "obj.shape");
-    auto icShape = builder_.CreateLoad(
-        ptrTy, builder_.CreateStructGEP(icTy, ic, 0, "ic.shape.p"), "ic.shape");
-    return {objShape, builder_.CreateICmpEQ(objShape, icShape, "shape.match")};
+    auto entry =
+        emit_ic_load(builder_.getInt64Ty(),
+                     builder_.CreateStructGEP(icTy, ic, 0, "ic.entry.p"),
+                     "ic.entry");
+    return {objShape, entry, emit_ic_matches(entry, objShape, "shape.match")};
   }
 
-  // The own slot that cache recorded, for a receiver whose shape matched.
+  // The own slot that entry recorded, for a receiver whose shape matched.
   std::pair<llvm::Value*, llvm::Value*> emit_prop_ic_own_slot(
-      llvm::Value* objPtr, llvm::StructType* icTy, llvm::GlobalVariable* ic) {
-    auto offset = builder_.CreateLoad(
-        builder_.getInt64Ty(),
-        builder_.CreateStructGEP(icTy, ic, 1, "ic.off.p"), "ic.off");
-    return emit_object_slot(objPtr, offset);
+      llvm::Value* objPtr, llvm::Value* entry) {
+    return emit_object_slot(objPtr, emit_ic_slot(entry, "ic.off"));
   }
 
   // Get a property from an object (TAG_OBJECT required).
   //
   // Inlines a V8/SpiderMonkey-style monomorphic inline cache: each call
-  // site owns a private IC global of `{Shape*, slot_offset}`. Fast path
-  // (no runtime call): load `obj->shape`, compare with the cached
-  // shape, and on hit load `slots.data()[offset].value` directly. Slow
+  // site owns a private IC global (JitPropIC). Fast path (no runtime
+  // call): load `obj->shape`, compare it with the own entry's shape bits,
+  // and on hit load `slots.data()[slot].value` directly. Slow
   // path: call `culebra_runtime_object_get_ic`, which looks up the
   // shape and refreshes the IC. Layout assumption: std::vector's first
   // member is its data pointer (true on libc++/libstdc++/MSVC STL).
@@ -5204,12 +5232,11 @@ struct JIT {
     // Object: take the fast path only when its shape matches the cache.
     builder_.SetInsertPoint(objBB);
     auto objPtr = builder_.CreateIntToPtr(recvData, ptrTy);
-    auto [objShape, shapeMatch] =
-        emit_prop_ic_shape_match(objPtr, icTy, icGlobal);
-    builder_.CreateCondBr(shapeMatch, fastBB, protoBB);
+    auto probe = emit_ic_probe(objPtr, icTy, icGlobal);
+    builder_.CreateCondBr(probe.match, fastBB, protoBB);
 
     builder_.SetInsertPoint(fastBB);
-    auto [fastTag, fastData] = emit_prop_ic_own_slot(objPtr, icTy, icGlobal);
+    auto [fastTag, fastData] = emit_prop_ic_own_slot(objPtr, probe.entry);
     builder_.CreateBr(mergeBB);
     auto fastEnd = builder_.GetInsertBlock();
 
@@ -5220,11 +5247,11 @@ struct JIT {
     // dictionary keeps its index in that word, so its flag is checked
     // first), and that proto's shape is the one the answer was cached for.
     builder_.SetInsertPoint(protoBB);
-    auto icOwnerShape = builder_.CreateLoad(
-        ptrTy, builder_.CreateStructGEP(icTy, icGlobal, 2, "ic.owner.p"),
+    auto icOwnerShape = emit_ic_load(
+        ptrTy, builder_.CreateStructGEP(icTy, icGlobal, 1, "ic.owner.p"),
         "ic.owner");
     auto ownerMatch =
-        builder_.CreateICmpEQ(objShape, icOwnerShape, "owner.match");
+        builder_.CreateICmpEQ(probe.obj_shape, icOwnerShape, "owner.match");
     // One block, not two: the three tests fold into one condition.
     auto [hasProto, shapeHolder] = emit_proto_or_self(objPtr);
     auto protoShape = builder_.CreateLoad(
@@ -5232,19 +5259,17 @@ struct JIT {
         builder_.CreateConstInBoundsGEP1_64(
             i8Ty, shapeHolder, offsetof(JitObject, shape), "proto.shape.p"),
         "proto.shape");
-    auto icProtoShape = builder_.CreateLoad(
-        ptrTy, builder_.CreateStructGEP(icTy, icGlobal, 3, "ic.pshape.p"),
-        "ic.pshape");
+    auto icProto = emit_ic_load(
+        i64Ty, builder_.CreateStructGEP(icTy, icGlobal, 2, "ic.proto.p"),
+        "ic.proto");
     auto protoMatch = builder_.CreateAnd(
         builder_.CreateAnd(ownerMatch, hasProto),
-        builder_.CreateICmpEQ(protoShape, icProtoShape), "proto.match");
+        emit_ic_matches(icProto, protoShape, "pshape.match"), "proto.match");
     builder_.CreateCondBr(protoMatch, protoFastBB, slowBB);
 
     builder_.SetInsertPoint(protoFastBB);
-    auto icProtoOffset = builder_.CreateLoad(
-        i64Ty, builder_.CreateStructGEP(icTy, icGlobal, 4, "ic.poff.p"),
-        "ic.poff");
-    auto [protoTag, protoData] = emit_object_slot(shapeHolder, icProtoOffset);
+    auto [protoTag, protoData] =
+        emit_object_slot(shapeHolder, emit_ic_slot(icProto, "ic.poff"));
     builder_.CreateBr(mergeBB);
     auto protoEnd = builder_.GetInsertBlock();
 

@@ -3796,10 +3796,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_prop_wr(
   if (kind == 0) {
     auto idx = obj->find_slot(key);
     if (idx != static_cast<size_t>(-1)) {
-      if (!obj->is_dict) {
-        ic->shape = obj->shape;
-        ic->offset = idx;
-      }
+      ic->prime_own(obj->shape, idx);
       return obj->slots[idx].value;
     }
   }
