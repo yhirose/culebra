@@ -12,7 +12,7 @@ SKILL.mdの原則と手順をculebraに当てはめるための事実。今のma
 
 **中心ヘッダ**：`include/`の133本のうち、`preamble_cc.cc`からも辿れる96本は、触るとdevが278秒の直列の作り直しになる（preamble_cc.cc → 焼き込み → main.cc）。`main.cc`だけが辿る30本は約111秒＋リンク、残りの7本はほぼ0（2026-11-08、ed17896eのdevの依存ファイルから）。C++を1か所直すたびのdevは、中央値3.9分、p90 5.0分（312回）なので、直しはまとめてからビルドする。
 
-**サンドボックス**：内と外を切り替えると、ソースを変えていなくてもdevが全部作り直す（平均5.4分、記録の中で78回、1週あたり約130分。原因は調査中）。原因が直るまで、ビルドとテストは全部サンドボックスの外で回す（`just land`と同じ側）。`gh`（中ではTLSで必ず失敗する）、`ps`、`sysctl`、`nice`（中では`setpriority`が失敗し、codegenの比較の結果を壊す）、submoduleの初期化も外で。`diff -`やプロセス置換`<(…)`も中では失敗するので、比べる両側をファイルに書いてから比べる。一時ファイルは`$TMPDIR`かscratchpadに。
+**サンドボックス**：ビルドは内でも外でも同じ（2026-11-08まで、内外を切り替えるたびにdevが全部作り直していた。平均5.4分、記録の中で78回。CMakeのアーキテクチャの既定が`sysctl`に頼っていたのが原因で、CMakeLists.txtの先頭で固定して直した）。`gh`（中ではTLSで必ず失敗する）、`ps`、`sysctl`、`nice`（中では`setpriority`が失敗し、codegenの比較の結果を壊す）、submoduleの初期化も外で。`diff -`やプロセス置換`<(…)`も中では失敗するので、比べる両側をファイルに書いてから比べる。一時ファイルは`$TMPDIR`かscratchpadに。
 
 ## 2. 後処理の特性表（SKILL.md原則3で選ぶ。担当にはこの中から選んで「Checks for this subtask」に書く）
 
@@ -77,7 +77,7 @@ SKILL.mdの原則と手順をculebraに当てはめるための事実。今のma
 Project rules (culebra):
 - Read CLAUDE.md first. Work in your own worktree with absolute paths under it.
 - Setup: run `git submodule update --init --recursive` outside the sandbox, and confirm `git log --oneline -1` equals master <SHA>.
-- Builds and tests: plain `just` recipes only. Never wrap them in `misc/one_at_a_time.sh` or `lockf` yourself. Run every build and test outside the sandbox (the same side as `just land`); switching sides forces a full rebuild.
+- Builds and tests: plain `just` recipes only. Never wrap them in `misc/one_at_a_time.sh` or `lockf` yourself.
 - Expected times: a dev build after a header change takes about 4.5 min, a release build about 7 min. If something takes more than 1.5× that, find out what it waits on before retrying: `lsof "$TMPDIR/culebra-heavy-lane.lock"`, and `ps` outside the sandbox.
 - `just phase <word>` runs every gate row whose function or label contains the word; pick one that hits only the rows you want, and read the `>>> [Ns] <label>` lines to see what ran. Never hand-write a sweep loop.
 - Run only the checks listed under "Checks for this subtask"; the coordinator runs the rest.
