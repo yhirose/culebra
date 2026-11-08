@@ -31,19 +31,19 @@ SKILL.mdの原則と手順をculebraに当てはめるための事実。今のma
 | 設計や計画のレビュー | 独立した担当1人に、主張を一次資料で確かめさせる | 計画の誤り、見落とし | 4〜11分／トークン12万〜26万 | |
 | 性能 | `just build`（`-O3`＋LTO）でだけ測る（`build-dev/`は`-O1`） | ホットパスの時間とピークのメモリ（ホットパスを触った変更だけが読む対象） | 約7分＋測定／マシン（全ツリーのビルド） | 負荷の高いときは揺れる |
 | userの感覚での確認 | 音の変わる変更は、変更前後のWAVを聞き比べてもらう | 音、見た目 | 数分の手間、数時間の遅れ／user | |
-| 着地のゲート | `just land`（rebase → `just test-dev` → 早送り） | 生成物のずれ、JIT対称の部分集合、codegen、ctestのCLIの半分、isolate、rebaseで混ざった他人の変更との組み合わせ | 約2〜7分／着地のロック、マシン | 負荷で落ちるものがある（§8） |
-| CI | ci/かmasterへのpush（決まりは§5） | 手元で回らないもの：Ubuntuの`just test`（difftest、AOT、leak系、wrap）、assertを有効にしたビルド、Windows、各OSのリリース構成、C++の埋め込み例。**`.claude/`は読まない** | 約35分／CIの枠（macOS 4/5）。手元のマシンは使わない | 直近100回で失敗10（原因はばらばら） |
+| 着地のゲート | `just land`（rebase → スコープで決まる検査 → 早送り。スコープは`tools/checks/change_scopes.txt`） | 生成物のずれ、JIT対称の部分集合、codegen、ctestのCLIの半分、isolate、docsのdoctest、rebaseで混ざった他人の変更との組み合わせ。スコープnoneなら全体のgrep 2本だけ | 約2〜7分／着地のロック、マシン | 負荷で落ちるものがある（§8） |
+| CI | ci/かmasterへのpush（決まりは§5）。スコープnoneなら起動しない、lightならOSごとの重いレーンを省く（ci.ymlの`scope`ジョブ） | 手元で回らないもの：Ubuntuの`just test`（difftest、AOT、leak系、wrap）、assertを有効にしたビルド、Windows、各OSのリリース構成、C++の埋め込み例。**`.claude/`は読まない** | 約35分／CIの枠（macOS 4/5）。手元のマシンは使わない | 直近100回で失敗10（原因はばらばら） |
 
 ### 変更の種類から引く（最小のビルドと、着地の前に回すもの）
 
 | 変更 | 最小のビルド | 着地の前に回す | ci/ |
 |---|---|---|---|
-| `.claude/`だけ | なし | なし（着地は早送りで足りる。CIは起動しない） | 不要 |
-| `docs/`だけ | なし（`docs_test`だけはdevで埋め込みの1TU） | `just doctest`、`just check-generated`（着地のゲートはdoctestを回さない） | 不要 |
-| `site/` | なし | `just check-generated`、`just check-playground ./build-dev/culebra`（PagesはCIを待たずに公開される） | 不要 |
-| `examples/`、`kauai/`の`.cul` | なし（今のbuild-devで回す） | 該当のスイート。`examples/languages/`なら`just phase languages` | 不要 |
+| `.claude/`、`CLAUDE.md`だけ（スコープnone） | なし | なし。`just land`が全体のgrep 2本だけを回してビルドしない。CIは起動しない | 不要 |
+| `docs/`だけ（スコープlight） | なし（`docs_test`だけはdevで埋め込みの1TU） | 着地のゲートが回す（doctestを含む）。CIは重いレーンを省く | 不要 |
+| `site/`（スコープlight） | なし | `just check-playground ./build-dev/culebra`（PagesはCIを待たずに公開される） | 不要 |
+| `examples/`、`kauai/`の`.cul`（スコープlight） | なし（今のbuild-devで回す） | 該当のスイート。`examples/languages/`なら`just phase languages` | 不要 |
 | `tests/*.cul`、`tests/*_test.sh` | なし | 単発の実行、`bash tests/<name>_test.sh build-dev/culebra`（pl0、mini_*、scene、wrapのスクリプトは着地で回らない） | 不要 |
-| `src/preambles/*.cul` | `just gen-preambles`の後にdev（278秒）。忘れると`check`と`phase`が古い標準ライブラリで黙って通る | `just check`、該当のphase | 不要 |
+| `src/preambles/*.cul` | dev（278秒。`just dev`がヘッダを作り直すので、`gen-preambles`を別に回さなくてよい） | `just check`、該当のphase | 不要 |
 | 中心ヘッダ（`include/`の133本のうち96本） | dev 278秒 | 該当の後処理 | §5の種類に当たれば要る |
 | main.ccだけが読むヘッダ（30本）、`src/main.cc` | dev約111秒＋リンク | 該当の後処理 | 同上 |
 | runtime archiveだけのソース（`src/runtime/culebra_rt*.cc`、`include/aot/bootstrap.h`） | devでは一切コンパイルされない | `build-gate`か、CIに任せる | 要る |
@@ -64,10 +64,10 @@ SKILL.mdの原則と手順をculebraに当てはめるための事実。今のma
 - **ci/ブランチは要るときだけ**：CLAUDE.mdの「どこまで回すか」の表に当たる変更と、次の変更（ランタイムのメモリ管理と並行性、音声スレッド、runtime archiveに入るヘッダ、AOT、CMake、window backend）で、主ブランチが赤になると困るとき。それ以外（`.cul`、テスト、スクリプト、docsだけの変更など）はci/を通さず、着地してpushし、masterのCIの1回に任せる。
 - ci/ のpushのたびに、CIのccacheが10 GBの割り当てに保存され、masterの分を追い出す（冷えた状態ではbuild-ubuntuが81→506秒、macOSが319→870秒）。重ねて本数を減らす。
 - 同じci/ブランチにpushし直すと、走っているrunは取り消される（`cancel-in-progress`）。runの途中で積み増さない。重ねてからpushする。
-- **CIが読まないファイル**：`.claude/`の下（skills、commands、設定）。CIのワークフローは`paths-ignore`で、これだけを変えたpushでは起動しない。計画と見積もりにCIの待ちを入れない。
+- **CIが読まないファイル**：スコープnone（`.claude/`の下と`CLAUDE.md`）。これだけを変えたpushではCIは起動しない。計画と見積もりにCIの待ちを入れない。
 - 同時に流すrunは2本まで（3本目からはmacOSの枠で待つ）。pushの前に`gh run list`を見る。
-- **着地の前に回す静的な検査**：`just check`は`check-generated`も`_check-quick-guide`も回さないが、着地のゲート（test-dev）は回す。着地の失敗の約3分の1はこれだった（記録の約30回中10回）。着地の前に`just check-generated`を回し、docs、テスト、標準ライブラリ、文法を変えたら`just _check-quick-guide`も回す。
-- **どのゲートも読まない変更**（`.claude/`だけなど）は、着地のゲートの守備範囲の外。`just land`ではなく、mainのツリーで`git merge --ff-only <branch>`して早送りする（サンドボックスの外。mainのツリーは早送りにだけ使う）。
+- **着地の前に回す静的な検査**：`just check`は`check-generated`も`_check-quick-guide`も回さないが、着地のゲート（test-dev）は回す。着地の失敗の約3分の1はこれだった（記録の約30回中10回）。着地の前に`just check-generated`を回し、docs、テスト、標準ライブラリ、文法を変えたら`just check-quick-guide`も回す。
+- **変更のスコープ**（`tools/checks/change_scopes.txt`）で、着地とCIは回す範囲を自分で絞る。`just land`のままでよい。表を変えたら`just check-change-scopes`。
 - **後片付け**：リモートのci/ブランチの削除は自動判定に拒否されるので、まとめてuserに頼む。worktreeは`ExitWorktree`の`remove`で消す（`rm -rf`は使わない）。担当のworktreeは、担当が終わるまで消せない。
 - pushは着地のたびに行い、CIの読むファイルが変わっていればCIを見る。pushの前に`git log origin/master..master`で、自分の分以外がないかを見る。
 
