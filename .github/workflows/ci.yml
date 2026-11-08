@@ -8,6 +8,10 @@ on:
     # PR just to trigger CI. Feature branches don't auto-run (avoids CI spend on
     # every push across the concurrent worktrees); opt in by the `ci/` prefix.
     branches: [master, 'ci/**']
+    # A push that changes only Claude Code's skills, commands and settings
+    # starts nothing: no job reads .claude/, and a run is ~35 min of the
+    # account's 20-job (5 macOS) slots that other pushes wait on.
+    paths-ignore: ['.claude/**']
   pull_request:
   # Manual trigger for any branch (no PR, no rename needed):
   #   gh workflow run ci.yml --ref <branch>
