@@ -75,9 +75,18 @@ jobs:
   # the commit before it (master's runs are never cancelled); any other push
   # with master, because a newer push to the same branch cancels the older
   # run, which must not leave its changes checked only lightly.
+  #
+  # A push to master of a commit a ci/ branch has already put through this
+  # workflow with every job green (`just land` fast-forwards, so the commit is
+  # the same one) is `verified`: nothing runs again, since the same tree has
+  # already passed the same jobs. A landing that had to rebase is a different
+  # commit, and runs in full.
   scope:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
     outputs:
       scope: ${{ steps.scope.outputs.scope }}
     steps:
@@ -112,6 +121,11 @@ jobs:
              [ "$(printf '%s\n' "$files" | sed '/^$/d' | wc -l)" -lt 300 ]; then
             scope=$(printf '%s\n' "$files" | misc/change_scope.sh)
           fi
+          if [ "$EVENT" = push ] && [ "$GITHUB_REF" = "refs/heads/$DEFAULT_BRANCH" ]; then
+            green=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs?head_sha=$GITHUB_SHA&event=push&status=success" \
+                      --jq '[.workflow_runs[] | select(.name == "CI" and (.head_branch | startswith("ci/")))] | length') || green=0
+            if [ "${green:-0}" -gt 0 ]; then scope=verified; fi
+          fi
           echo "change scope: $scope"
           echo "scope=$scope" >> "$GITHUB_OUTPUT"
 
@@ -124,6 +138,8 @@ jobs:
   # download, and runs the phases that need the CMake build tree itself
   # (`_run-tests ci-buildtree`).
   build-ubuntu:
+    needs: scope
+    if: needs.scope.outputs.scope != 'verified'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
@@ -566,16 +582,17 @@ jobs:
   # independent implementation that cannot drift with the working tree
   # (docs/internals/vm.md §10.3).
   #
-  # master pushes only. It compares against a release, so it says nothing about
-  # a topic branch that has not landed yet, and what the default-engine switch
-  # needs watched is exactly the landed commits.
+  # master and ci/ pushes. A landing whose commit a ci/ run has already put
+  # through the workflow is not run again (the scope job), so this gate has to
+  # run there too, or it would never see that commit; a behaviour change it
+  # flags is one for release_diff_allow.txt, better learnt before landing.
   #
   # The two binaries are configured differently — a release is built with the
   # Canvas desktop window on, build-ubuntu's artifact with it off — and the
   # corpus does not notice, because its Canvas cases only ever read and write
   # an offscreen framebuffer. Nothing in the corpus opens a window.
   release-diff:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/master' && needs.scope.outputs.scope == 'full'
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/heads/ci/')) && needs.scope.outputs.scope == 'full'
     needs: [build-ubuntu, scope]
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -770,6 +787,8 @@ jobs:
   # `just dev` (no LTO, -O1, runtime archives skipped) is enough, and cheaper
   # than the LTO build test-macos needs.
   docs-cpp-macos:
+    needs: scope
+    if: needs.scope.outputs.scope != 'verified'
     runs-on: macos-latest
     timeout-minutes: 40
     env:

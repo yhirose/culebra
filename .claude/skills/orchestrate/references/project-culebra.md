@@ -41,7 +41,8 @@ SKILL.mdの原則と手順をculebraに当てはめるための事実。今のma
 | `.claude/`、`CLAUDE.md`だけ（スコープnone） | なし | なし。`just land`が全体のgrep 2本だけを回してビルドしない。CIは起動しない | 不要 |
 | `docs/`だけ（スコープlight） | なし（`docs_test`だけはdevで埋め込みの1TU） | 着地のゲートが回す（doctestを含む）。CIは重いレーンを省く | 不要 |
 | `site/`（スコープlight） | なし | `just check-playground ./build-dev/culebra`（PagesはCIを待たずに公開される） | 不要 |
-| `examples/`、`kauai/`の`.cul`（スコープlight） | なし（今のbuild-devで回す） | 該当のスイート。`examples/languages/`なら`just phase languages` | 不要 |
+| `examples/`の`.cul`（スコープlight。`examples/wrap/`と`examples/tensor/mnist/`はfull） | なし（今のbuild-devで回す） | 該当のスイート。`examples/languages/`なら`just phase languages` | 不要 |
+| `kauai/`（スコープfull。aotレーンがKauaiのCLIをビルドする） | なし（今のbuild-devで回す） | `bash tests/kauai_cli_test.sh build-dev/culebra`、`kauai_play_test`。AOTの確認はCIのaotレーン | 不要 |
 | `tests/*.cul`、`tests/*_test.sh` | なし | 単発の実行、`bash tests/<name>_test.sh build-dev/culebra`（pl0、mini_*、scene、wrapのスクリプトは着地で回らない） | 不要 |
 | `src/preambles/*.cul` | dev（278秒。`just dev`がヘッダを作り直すので、`gen-preambles`を別に回さなくてよい） | `just check`、該当のphase | 不要 |
 | 中心ヘッダ（`include/`の133本のうち96本） | dev 278秒 | 該当の後処理 | §5の種類に当たれば要る |
@@ -62,6 +63,7 @@ SKILL.mdの原則と手順をculebraに当てはめるための事実。今のma
 ## 5. CIと着地の決まり
 - **着地（`/ff-merge`、`just land`）は要るときだけ**：後続の作業がその変更に依存する、ほかのセッションやuserが使う、束が仕上がった、溜めすぎて壊れたときに切り分けにくくなる手前（目安は束に2〜3の変更）。小さな修正のたびには着地しない。
 - **ci/ブランチは要るときだけ**：CLAUDE.mdの「どこまで回すか」の表に当たる変更と、次の変更（ランタイムのメモリ管理と並行性、音声スレッド、runtime archiveに入るヘッダ、AOT、CMake、window backend）で、主ブランチが赤になると困るとき。それ以外（`.cul`、テスト、スクリプト、docsだけの変更など）はci/を通さず、着地してpushし、masterのCIの1回に任せる。
+- **ci/で緑だったコミットは、masterでCIを回し直さない**：ci/ブランチで全ジョブが緑だったコミットを、`just land`の早送りでそのままmasterに入れると、masterのCIは何も回さない（scopeジョブが`verified`を出す）。着地でrebaseが入って別のコミットになったら、全部が回る。だからci/ブランチは、着地の直前にmasterの先頭へrebaseしてから出す。`release-diff`はci/ブランチでも走る。
 - ci/ のpushのたびに、CIのccacheが10 GBの割り当てに保存され、masterの分を追い出す（冷えた状態ではbuild-ubuntuが81→506秒、macOSが319→870秒）。重ねて本数を減らす。
 - 同じci/ブランチにpushし直すと、走っているrunは取り消される（`cancel-in-progress`）。runの途中で積み増さない。重ねてからpushする。
 - **CIが読まないファイル**：スコープnone（`.claude/`の下と`CLAUDE.md`）。これだけを変えたpushではCIは起動しない。計画と見積もりにCIの待ちを入れない。
