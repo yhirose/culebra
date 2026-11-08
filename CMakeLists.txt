@@ -1,4 +1,17 @@
 cmake_minimum_required(VERSION 3.20)
+
+# Name the macOS architecture instead of taking CMake's default, which adds
+# `-arch <host>` only when `sysctl hw.optional.arm64` succeeds. A sandbox that
+# denies sysctl configures without it, so moving a build dir into or out of one
+# rewrites every flags.make and recompiles the tree. uname answers alike on both
+# sides (x86_64 under Rosetta, as CMake's default would).
+if(CMAKE_HOST_APPLE AND NOT CMAKE_TOOLCHAIN_FILE AND NOT CMAKE_OSX_ARCHITECTURES
+   AND NOT DEFINED ENV{CMAKE_OSX_ARCHITECTURES})
+  cmake_host_system_information(RESULT _host_arch QUERY OS_PLATFORM)
+  set(CMAKE_OSX_ARCHITECTURES "${_host_arch}" CACHE STRING
+      "macOS architectures to build for (default: the host's)" FORCE)
+endif()
+
 project(culebra)
 
 set(CMAKE_CXX_STANDARD 23)
@@ -746,7 +759,10 @@ endfunction()
 # were built for and by (gcc- and clang-built statics must not share a cache).
 function(_culebra_deps_platform_key out)
   set(_k "${CMAKE_SYSTEM_NAME}" "${CMAKE_SYSTEM_PROCESSOR}")
-  if(CMAKE_OSX_ARCHITECTURES)
+  # The host's own architecture (what the top of this file pins on macOS) is
+  # the default build, not a variant: it keeps the key it had while unset.
+  if(CMAKE_OSX_ARCHITECTURES AND
+     NOT CMAKE_OSX_ARCHITECTURES STREQUAL CMAKE_SYSTEM_PROCESSOR)
     list(APPEND _k "${CMAKE_OSX_ARCHITECTURES}")
   endif()
   if(CMAKE_OSX_DEPLOYMENT_TARGET)
