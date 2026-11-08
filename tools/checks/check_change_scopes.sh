@@ -30,7 +30,10 @@ expect() {
 }
 expect none  .claude/skills/x/SKILL.md CLAUDE.md
 expect light docs/language.md .claude/x
-expect light site/index.html examples/a.cul kauai/songs/b.kau
+expect light site/index.html examples/a.cul examples/languages/pl0/pl0.cul
+expect full  kauai/cli/main.cul
+expect full  examples/wrap/demo.cul
+expect full  examples/tensor/mnist/assets/Inter-SemiBold-subset.ttf
 expect full  docs/language.md include/rt/value.inc.h
 expect full  CLAUDE.md.bak
 expect full  docs

@@ -75,7 +75,7 @@ build *extra:
 # when only ephemeral mtimes changed.
 [group("build")]
 dev *extra:
-    @misc/gen_preambles.sh --if-changed
+    @misc/gen_preambles.sh
     mkdir -p build-dev
     cd build-dev && cmake -DCMAKE_BUILD_TYPE=Release -DCULEBRA_ENABLE_JIT=ON -DCULEBRA_LTO=OFF -DCULEBRA_DEV_NO_RT=ON -DCULEBRA_DEV_O1=ON {{extra}} .. > /dev/null
     cd build-dev && {{nice_cmd}} make -j{{build_jobs}} culebra
@@ -240,6 +240,11 @@ check-pipefail-readers:
 [doc("Verify ci.yml's paths-ignore is the none scope of change_scopes.txt")]
 check-change-scopes:
     tools/checks/check_change_scopes.sh
+
+# What a `none` change (tools/checks/change_scopes.txt) can still break: the
+# checks that read the whole tree. misc/land.sh runs only this for one.
+[private]
+check-none-scope: check-header-naming check-pipefail-readers
 
 # `catch IOError` takes an engine error by its kind, and the kinds that work
 # as type names are a list (culebra::is_error_kind_name). A kind the sources
@@ -702,33 +707,9 @@ _run-tests BACKEND:
     # of gc-stress's CPU was the same two compiles over again.
     #
     # The cache is kept from run to run, beside ccache's and shared by every
-    # worktree: an object is keyed by the module the backend was handed and by
-    # that backend (docs/internals/vm.md §7), so the next run, of this build
-    # or a later one, compiles only what changed. CULEBRA_GATE_JIT_CACHE names
-    # another directory, or `off` for one that lasts the run. A directory that
-    # cannot be written — a sandbox that was not told of it — is said and
-    # passed over for the run's own, rather than left to fail a write at a
-    # time, silently, and take the sharing inside the run with it.
-    jit_cache="$job_dir/jit-cache"
-    jit_cache_kept="${CULEBRA_GATE_JIT_CACHE:-}"
-    if [[ -z "$jit_cache_kept" ]]; then
-        case "$(uname -s)" in
-          Darwin) jit_cache_kept="${HOME:-}/Library/Caches/culebra/gate-jit" ;;
-          *)      jit_cache_kept="${XDG_CACHE_HOME:-${HOME:-}/.cache}/culebra/gate-jit" ;;
-        esac
-    fi
-    if [[ "$jit_cache_kept" != off ]]; then
-        if mkdir -p "$jit_cache_kept" 2>/dev/null \
-           && ( : > "$jit_cache_kept/.probe.$$" ) 2>/dev/null; then
-            rm -f "$jit_cache_kept/.probe.$$"
-            jit_cache="$jit_cache_kept"
-        else
-            echo "jit cache: cannot write $jit_cache_kept; this run keeps its own" >&2
-        fi
-    fi
-    # Several builds' worth: the corpus is 72 MB of objects, and an entry no
-    # run has read for longest is the first to go.
-    export CULEBRA_JIT_CACHE_MAX_MB="${CULEBRA_JIT_CACHE_MAX_MB:-2048}"
+    # worktree (misc/gate_jit_cache.sh decides where), so the next run, of
+    # this build or a later one, compiles only what changed.
+    source misc/gate_jit_cache.sh "$job_dir/jit-cache"
     cul_cached() { CULEBRA_JIT_CACHE="$jit_cache" cul "$@"; }
     export -f cul_cached
     export jit_cache
@@ -2012,6 +1993,12 @@ _doctest LANE="all":
     # serially it is minutes against seconds for the other lane. The runner
     # keeps the report in source order whatever the shards finish in.
     JOBS="${JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 8)}"
+    # The JIT lane compiles about 880 modules; the gate's shared object cache
+    # turns that into links on every run after the first (misc/gate_jit_cache.sh).
+    fallback="${TMPDIR:-/tmp}/culebra-doctest-jit.$$"
+    trap 'rm -rf "$fallback"' EXIT
+    source misc/gate_jit_cache.sh "$fallback"
+    export CULEBRA_JIT_CACHE="$jit_cache"
     run_lane() {
       local label="$1"; shift
       echo ">>> doctest ($label)"

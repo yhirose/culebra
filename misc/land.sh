@@ -65,12 +65,13 @@ for attempt in $(seq 1 "$max_attempts"); do
   rebase_onto_master
 
   # Run what the change can affect (tools/checks/change_scopes.txt): a change
-  # no build, test or CI job reads is checked by the two greps that do read
-  # the whole tree, and lands without building.
-  scope=$(git -C "$worktree" diff --name-only master...HEAD | "$worktree/misc/change_scope.sh")
+  # no build, test or CI job reads is checked by the whole-tree checks that
+  # do read it, and lands without building.
+  # --no-renames: a moved file counts at the path it left too.
+  scope=$(git -C "$worktree" diff --no-renames --name-only master...HEAD | "$worktree/misc/change_scope.sh")
   if [ "$scope" = none ]; then
-    echo "land: scope none -- the whole-tree greps only" >&2
-    ( cd "$worktree" && just check-header-naming check-pipefail-readers )
+    echo "land: scope none -- the whole-tree checks only" >&2
+    ( cd "$worktree" && just check-none-scope )
   else
     echo "land: scope $scope -- build + test-dev" >&2
     ( cd "$worktree" && just test-dev )

@@ -3,19 +3,23 @@
 # can affect. misc/change_scope.sh reads it; check_change_scopes.sh keeps
 # ci.yml's push `paths-ignore` equal to the `none` globs below.
 #
-#   none   read by no build, test or CI job; only the two whole-tree greps
-#          (check-header-naming, check-pipefail-readers) look at it
-#   light  read by the docs, site and example checks, never compiled: CI
-#          runs build-ubuntu, its ci-light lane, doctest, docs-cpp and the
-#          Playground smoke, and skips the per-OS and heavy lanes
+#   none   read by no build, test or CI job; only the whole-tree checks
+#          (`just check-none-scope`) look at it
+#   light  read only by build-ubuntu (its ctests), the ci-light lane, the
+#          doctests, docs-cpp and the Playground smoke; CI skips the per-OS
+#          and heavy lanes for it. Anything a heavy lane also reads (an AOT
+#          build, the wrap lane, a Scene test's asset) is listed as `full`
+#          above the `light` glob that would otherwise take it.
 #
-# A path that matches no glob is `full`. A change's scope is the widest of
-# its paths' scopes, and an empty change is `full`.
+# The first glob a path matches decides it, and a path that matches none is
+# `full` (so is all of kauai/: the aot lane builds its CLI). A change's scope
+# is the widest of its paths' scopes, and an empty change is `full`.
 #
 # <scope> <glob>   (bash pattern: `*` also crosses `/`)
 none   .claude/*
 none   CLAUDE.md
+full   examples/wrap/*
+full   examples/tensor/mnist/*
 light  docs/*
 light  site/*
 light  examples/*
-light  kauai/*

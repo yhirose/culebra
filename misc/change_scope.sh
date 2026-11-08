@@ -8,7 +8,7 @@
 set -euo pipefail
 
 table="$(dirname "$0")/../tools/checks/change_scopes.txt"
-rank() { case "$1" in none) echo 0 ;; light) echo 1 ;; *) echo 2 ;; esac; }
+scopes=(none light full)  # narrowest first; a change gets its paths' widest
 
 widest=-1
 while IFS= read -r path; do
@@ -19,12 +19,9 @@ while IFS= read -r path; do
     # shellcheck disable=SC2053  # the glob is the point
     if [[ $path == $glob ]]; then scope=$s; break; fi
   done < "$table"
-  r=$(rank "$scope")
+  for r in "${!scopes[@]}"; do [ "${scopes[r]}" = "$scope" ] && break; done
   (( r > widest )) && widest=$r
 done
 
-case "$widest" in
-  0) echo none ;;
-  1) echo light ;;
-  *) echo full ;;  # also an empty change: nothing to go on, so check it all
-esac
+(( widest >= 0 )) || widest=2  # an empty change: nothing to go on, so check it all
+echo "${scopes[widest]}"

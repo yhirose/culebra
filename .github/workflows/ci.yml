@@ -70,8 +70,11 @@ jobs:
   # that touches only docs/, site/, examples/ or kauai/ is `light`: the jobs
   # gated on `full` below compile and run what such a change cannot reach,
   # so they skip it, and test-ubuntu keeps only its ci-light lane. Anything
-  # this cannot tell (a schedule, a manual run, a new branch, a compare it
-  # cannot fetch or one of 300 files or more) is `full`.
+  # this cannot tell (a schedule, a manual run, a compare it cannot fetch or
+  # one of 300 files or more) is `full`. A push to master is compared with
+  # the commit before it (master's runs are never cancelled); any other push
+  # with master, because a newer push to the same branch cancels the older
+  # run, which must not leave its changes checked only lightly.
   scope:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -89,17 +92,23 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           EVENT: ${{ github.event_name }}
           PUSH_BEFORE: ${{ github.event.before }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           PR_BASE: ${{ github.event.pull_request.base.sha }}
           PR_HEAD: ${{ github.event.pull_request.head.sha }}
         run: |
           case "$EVENT" in
-            push)         base=$PUSH_BEFORE head=$GITHUB_SHA ;;
-            pull_request) base=$PR_BASE     head=$PR_HEAD ;;
+            push)
+              if [ "$GITHUB_REF" = "refs/heads/$DEFAULT_BRANCH" ]; then base=$PUSH_BEFORE
+              else base=$DEFAULT_BRANCH; fi
+              head=$GITHUB_SHA ;;
+            pull_request) base=$PR_BASE head=$PR_HEAD ;;
             *)            base= head= ;;
           esac
           scope=full
+          # A renamed file counts at the path it left too (previous_filename).
           if [ -n "$base" ] && [ "$base" != 0000000000000000000000000000000000000000 ] &&
-             files=$(gh api "repos/$GITHUB_REPOSITORY/compare/$base...$head" --jq '.files[].filename') &&
+             files=$(gh api "repos/$GITHUB_REPOSITORY/compare/$base...$head" \
+                       --jq '.files[] | .filename, (.previous_filename // empty)') &&
              [ "$(printf '%s\n' "$files" | sed '/^$/d' | wc -l)" -lt 300 ]; then
             scope=$(printf '%s\n' "$files" | misc/change_scope.sh)
           fi

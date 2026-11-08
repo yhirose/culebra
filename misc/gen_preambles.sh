@@ -4,8 +4,9 @@
 # embedded verbatim as a `<NAME>_MODULE_SOURCE` raw-string constant, so the
 # single self-contained `culebra` binary keeps carrying them. Most are stdlib
 # modules, listed in lazy_ns_modules() / lazy_fn_groups(); test_ambient.cul is
-# not — `culebra test` runs it directly. Run after editing a .cul; `--check`
-# (CI gate) fails if the committed header is stale.
+# not — `culebra test` runs it directly. `just dev` runs it before every
+# build, so an edited .cul is what gets baked; `--check` (CI gate) fails if
+# the committed header is stale.
 set -eu
 DIR=$(cd "$(dirname "$0")/.." && pwd)
 SRC="$DIR/src/preambles"
@@ -21,13 +22,13 @@ gen() {
     printf ')=culpre=";\n\n'
   done
 }
+# Both modes generate into a real file first. --check compares it: BSD diff
+# spools a `-` operand through the darwin temp dir, which a sandboxed run
+# cannot write, and that failure looked identical to "out of sync".
+tmp=$(mktemp "${TMPDIR:-/tmp}/gen_preambles.XXXXXX")
+trap 'rm -f "$tmp"' EXIT
+gen > "$tmp"
 if [ "${1:-}" = "--check" ]; then
-  # Compare two real files: BSD diff spools a `-` operand through the darwin
-  # temp dir, which a sandboxed run cannot write — and that failure looked
-  # identical to "out of sync". Keep could-not-compare as its own outcome.
-  tmp=$(mktemp "${TMPDIR:-/tmp}/gen_preambles.XXXXXX")
-  trap 'rm -f "$tmp"' EXIT
-  gen > "$tmp"
   report=$(diff -u "$OUT" "$tmp" 2>&1) && status=0 || status=$?
   if [ "$status" -eq 0 ]; then
     echo "stdlib_preambles.gen.h in sync"
@@ -41,18 +42,10 @@ if [ "${1:-}" = "--check" ]; then
     printf '%s\n' "$report" >&2
     exit "$status"
   fi
-elif [ "${1:-}" = "--if-changed" ]; then
-  # `just dev` runs this first, so an edited .cul is what the build bakes
-  # (the bake depends on the header, not the .cul). The header is rewritten
-  # only when its text changes: a new mtime alone would re-bake every module.
-  tmp=$(mktemp "${TMPDIR:-/tmp}/gen_preambles.XXXXXX")
-  trap 'rm -f "$tmp"' EXIT
-  gen > "$tmp"
-  if ! cmp -s "$tmp" "$OUT"; then
-    mv "$tmp" "$OUT"
-    echo "wrote $OUT (src/preambles changed)"
-  fi
-else
-  gen > "$OUT"
+elif ! cmp -s "$tmp" "$OUT"; then
+  # Written only when its text changes: `just dev` runs this before every
+  # build (the bake depends on the header, not the .cul), and a new mtime
+  # alone would re-bake every module.
+  mv "$tmp" "$OUT"
   echo "wrote $OUT"
 fi
