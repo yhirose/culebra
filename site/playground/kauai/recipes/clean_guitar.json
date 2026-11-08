@@ -2,6 +2,7 @@
   "recipe": 1,
   "knobs": {
     "bright": {"default": 0.5, "min": 0, "max": 1},
+    "pluck": {"default": 0, "min": 0, "max": 0.5},
     "chorus": {"default": 0, "min": 0, "max": 1},
     "release": {"default": 1.5, "min": 0.1, "max": 4}
   },
@@ -9,8 +10,11 @@
     "pick": {"part": "noise", "seed": 5},
     "picka": {"part": "gain", "input": "pick", "gain": {"on": [[0, 0], [0.0003, 1], [0.002, 0, -4]]}},
     "pickt": {"part": "filter", "kind": "low", "input": "picka", "cutoff": "min(4000 * (0.5 + bright) * (0.6 + 0.4 * level), 16000)"},
-    "string": {"part": "pluck", "input": "pickt", "ring": "12 * (261.63 / f) ^ 0.5"},
-    "string2": {"part": "pluck", "input": "pickt", "freq": "f * 1.0007", "ring": "9 * (261.63 / f) ^ 0.5"},
+    "pickseen": {"part": "delay", "input": "pickt", "time": "pluck / f"},
+    "pickback": {"part": "gain", "input": "pickseen", "gain": "0 - clamp(pluck / 0.001, 0, 1)"},
+    "pickc": {"part": "mix", "inputs": ["pickt", "pickback"]},
+    "string": {"part": "pluck", "input": "pickc", "ring": "12 * (261.63 / f) ^ 0.5"},
+    "string2": {"part": "pluck", "input": "pickc", "freq": "f * 1.0007", "ring": "9 * (261.63 / f) ^ 0.5"},
     "string2l": {"part": "gain", "input": "string2", "gain": 0.4},
     "strings": {"part": "mix", "inputs": ["string", "string2l"]},
     "neckseen": {"part": "delay", "input": "strings", "time": "0.25 / f"},
