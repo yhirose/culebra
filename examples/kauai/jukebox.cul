@@ -9,8 +9,8 @@
 # the slider, the - and + buttons, or the - and = keys.
 #
 # The songs load one a frame, so the window opens at once. A song's external
-# sounds (sounds.cul) are built one a frame too before it plays, with a bar
-# that shows how many are left.
+# sounds (sounds.cul) are built a few each frame before it plays, with a
+# count of how many are left.
 
 import sounds from './sounds.cul'
 
@@ -19,6 +19,9 @@ let H = 320
 let ROW = 16
 let ROWS = 10
 let LIST_Y = 36
+
+# How long a frame spends building a song's sounds before it is drawn.
+let BUILD_SECONDS = 0.01
 
 let BG = Canvas.rgba(18, 20, 28)
 let PANEL = Canvas.rgba(30, 34, 46)
@@ -281,7 +284,11 @@ Canvas.run(W, H, fn () {
     loaded += 1
   }
   if building {
+    let until = Time.monotonic() + BUILD_SECONDS
     left = playing.song.prepare()
+    while left > 0 && Time.monotonic() < until {
+      left = playing.song.prepare()
+    }
     if left == 0 {
       building = false
       playing.song.play()
