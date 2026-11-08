@@ -68,7 +68,8 @@ assert.equal(projectFiles(tree, "README.md").length, 6);
 
 // --- the catalog's derived file lists ----------------------------------------
 // copy-frontend.sh writes `assets` for every example that lives in its own
-// directory (<name>/<name>.cul); the source examples.json carries none.
+// directory (<name>/<name>.cul) and for what an entry `uses`; the source
+// examples.json carries no other.
 
 const source = JSON.parse(fs.readFileSync(path.join(root, "playground/examples.json"), "utf8"));
 const served = JSON.parse(fs.readFileSync(path.join(root, "site/playground/examples.json"), "utf8"));
@@ -79,6 +80,13 @@ assert.deepEqual(Object.keys(src), Object.keys(out), "same entries, same order")
 for (const [p, e] of Object.entries(src)) {
   assert.equal(e.assets, undefined, `${p}: assets are derived, not written`);
   const m = /^(.*\/)?([^/]+)\/\2\.cul$/.exec(p);
+  if (e.uses) {
+    const used = execFileSync("git", ["ls-files", "-z", "--", ...e.uses], { cwd: root, encoding: "utf8" })
+      .split("\0").filter(Boolean).sort();
+    assert.ok(used.length >= e.uses.length, `${p}: each use names tracked files`);
+    assert.deepEqual([...out[p].assets].sort(), used, p);
+    continue;
+  }
   if (!m) { assert.deepEqual(out[p].assets, [], p); continue; }
   const dir = path.join(root, (m[1] ?? "") + m[2]);
   // What a checkout holds (tracked, or untracked but not ignored), minus

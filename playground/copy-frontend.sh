@@ -35,7 +35,9 @@ mv "$OUT/index.html.tmp" "$OUT/index.html"
 # under $OUT keeps both readings true. An example in its own directory
 # (<name>/<name>.cul) brings the whole directory — imported modules and data
 # alike — and the served copy gets that list as `assets` for the worker to
-# fetch; the source examples.json names no file by hand. The directory is the
+# fetch; the source examples.json names no file by hand, but for an example's
+# optional "uses" (what it reads from elsewhere in the repo: files or
+# directories, found the same way). The directory is the
 # unit because a program finds its files by its own path, so anything beside
 # it is fair game; the naming rule is what keeps examples/tensor/tensors.cul
 # from dragging mnist/weights/ along. The directory is read through git, so a
@@ -63,6 +65,13 @@ for category in catalog["categories"]:
     def visible(p):  # no dotfile in any segment: .DS_Store, .cache/, .venv/
       return p.is_file() and not any(s.startswith(".") for s in p.relative_to(entry.parent).parts)
     files = sorted(filter(visible, checkout_files(entry.parent)), key=str) if own else [entry]
+    # An example may also name what it reads from elsewhere in the repo
+    # ("uses": files or directories), mirrored the same way.
+    for used in map(pathlib.Path, example.get("uses", [])):
+      found = sorted(filter(lambda p: p.is_file() and not any(s.startswith(".") for s in p.parts), checkout_files(used)), key=str)
+      if not found:
+        missing.append("%s (uses of %s)" % (used, example["title"]))
+      files += [p for p in found if p not in files]
     example["assets"] = [str(p) for p in files if p != entry]
     for src in files:
       dst = out / src

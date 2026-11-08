@@ -1,0 +1,18 @@
+{
+  "recipe": 1,
+  "parts": {
+    "head": {"part": "wave", "freq": {
+      "on": [[0, 150]],
+      "off": [[0.015, 92, -2], [0.09, 54, -3], [0.3, 47]]}},
+    "heada": {"part": "gain", "input": "head", "gain": {
+      "on": [[0, 0], [0.001, 1]],
+      "off": [[0.38, 0, -5]]}},
+    "beater": {"part": "noise", "seed": 2},
+    "beaterb": {"part": "filter", "kind": "band", "q": 0.8, "input": "beater", "cutoff": "mix(1500, 3500, clamp(level, 0, 1.5) / 1.5)"},
+    "beatera": {"part": "gain", "input": "beaterb", "gain": {
+      "on": [[0, 0], [0.0005, 0.35]],
+      "off": [[0.008, 0, -4]]}},
+    "all": {"part": "mix", "inputs": ["heada", "beatera"], "gain": 0.45}
+  },
+  "out": "all"
+}

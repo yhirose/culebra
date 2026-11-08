@@ -1,0 +1,16 @@
+{
+  "recipe": 1,
+  "parts": {
+    "water": {"part": "noise", "seed": 21},
+    "rush": {"part": "filter", "kind": "band", "q": 0.7, "input": "water",
+             "cutoff": {"on": [[0, 300], [1.1, 1300, 2], [2.4, 600, -2], [5.5, 350, -2]]}},
+    "rusha": {"part": "gain", "input": "rush",
+              "gain": {"on": [[0, 0], [1.1, 1, 2], [1.6, 0.6, -2], [5.5, 0, -3]]}},
+    "foam": {"part": "noise", "seed": 22},
+    "hiss": {"part": "filter", "kind": "high", "q": 0.7, "input": "foam", "cutoff": 3500},
+    "hissa": {"part": "gain", "input": "hiss",
+              "gain": {"on": [[0, 0], [0.9, 0], [1.25, 0.35, 2], [3.8, 0, -3]]}},
+    "all": {"part": "mix", "inputs": ["rusha", "hissa"], "gain": 0.6}
+  },
+  "out": "all"
+}

@@ -1,0 +1,34 @@
+{
+  "recipe": 1,
+  "knobs": {
+    "bright": {"default": 1, "min": 0, "max": 2},
+    "tremolo": {"default": 0.8, "min": 0, "max": 1},
+    "speed": {"default": 3, "min": 1, "max": 10},
+    "chorus": {"default": 1, "min": 0, "max": 1}
+  },
+  "parts": {
+    "m1": {"part": "wave", "feedback": 0.3},
+    "i1": {"part": "gain", "input": "m1",
+           "gain": {"on": [[0, "bright * 1.25 * level ^ 2.5 * min(3, (261.63 / f) ^ 1.6)"],
+                           [3, "0.5 * bright * 1.25 * level ^ 2.5 * min(3, (261.63 / f) ^ 1.6)", -2]]}},
+    "c1": {"part": "wave", "modulators": ["i1"]},
+    "ping": {"part": "wave", "freq": "min(7.5 * f, 1300 + 2.6 * f)"},
+    "pingl": {"part": "gain", "input": "ping",
+              "gain": {"on": [[0, 0], [0.001, "0.08 * level ^ 3"], [0.4, 0, -5]]}},
+    "both": {"part": "mix", "inputs": ["c1", "pingl"]},
+    "amp": {"part": "gain", "input": "both",
+            "gain": {"on": [[0, 0], [0.001, 0.3],
+                            ["(7 - 2.5 * level) * (261.63 / f) ^ 0.4", 0.03, -2.3],
+                            ["2 * (7 - 2.5 * level) * (261.63 / f) ^ 0.4", 0.003, -2.3]],
+                     "off": [[0.2, 0, -4]]}},
+    "lfo": {"part": "wave", "freq": "speed"},
+    "depth": {"part": "gain", "input": "lfo", "gain": "0.25 * tremolo"},
+    "trem": {"part": "gain", "input": "amp", "gain": "1 - 0.25 * tremolo", "modulators": ["depth"]},
+    "sweep": {"part": "wave", "freq": 0.6},
+    "sweepl": {"part": "gain", "input": "sweep", "gain": 0.002},
+    "copy": {"part": "delay", "input": "trem", "time": 0.012, "modulators": ["sweepl"]},
+    "copyl": {"part": "gain", "input": "copy", "gain": "0.35 * chorus"},
+    "ensemble": {"part": "mix", "inputs": ["trem", "copyl"], "gain": "1 / sqrt(1 + 0.1225 * chorus)"}
+  },
+  "out": "ensemble"
+}

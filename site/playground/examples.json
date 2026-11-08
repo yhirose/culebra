@@ -201,6 +201,52 @@
           "title": "Canvas: Piano",
           "path": "examples/audio/piano.cul",
           "assets": []
+        },
+        {
+          "title": "Kauai: a song on recipe instruments",
+          "path": "examples/kauai/play_recipes.cul",
+          "uses": [
+            "kauai/engine/recipe.cul",
+            "kauai/recipes",
+            "examples/kauai/songs/strings.kau"
+          ],
+          "assets": [
+            "kauai/engine/recipe.cul",
+            "kauai/recipes/analog_lead.json",
+            "kauai/recipes/bright_fm_brass.json",
+            "kauai/recipes/bright_fm_strings.json",
+            "kauai/recipes/clean_guitar.json",
+            "kauai/recipes/clear_analog_lead.json",
+            "kauai/recipes/distortion_guitar.json",
+            "kauai/recipes/drums/crash.json",
+            "kauai/recipes/drums/cross_stick.json",
+            "kauai/recipes/drums/hat.json",
+            "kauai/recipes/drums/high_tom.json",
+            "kauai/recipes/drums/kick.json",
+            "kauai/recipes/drums/low_tom.json",
+            "kauai/recipes/drums/mid_tom.json",
+            "kauai/recipes/drums/open_hat.json",
+            "kauai/recipes/drums/pedal_hat.json",
+            "kauai/recipes/drums/ride.json",
+            "kauai/recipes/drums/sea_wave.json",
+            "kauai/recipes/drums/snare.json",
+            "kauai/recipes/drums/tom.json",
+            "kauai/recipes/dry_analog_lead.json",
+            "kauai/recipes/dry_clear_analog_lead.json",
+            "kauai/recipes/fm_bass.json",
+            "kauai/recipes/fm_brass.json",
+            "kauai/recipes/fm_electric_piano.json",
+            "kauai/recipes/fm_strings.json",
+            "kauai/recipes/light_distortion_guitar.json",
+            "kauai/recipes/main.cul",
+            "kauai/recipes/mellow_fm_brass.json",
+            "kauai/recipes/mellow_fm_strings.json",
+            "kauai/recipes/overdrive_guitar.json",
+            "kauai/recipes/sparkling_fm_electric_piano.json",
+            "kauai/recipes/test_recipes.cul",
+            "kauai/recipes/vintage_electric_piano.json",
+            "examples/kauai/songs/strings.kau"
+          ]
         }
       ]
     },

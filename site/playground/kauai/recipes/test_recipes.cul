@@ -1,0 +1,138 @@
+import recipes from './main.cul'
+
+let peak = |xs| Math.max(xs.max(), -xs.min())
+
+# A recipe's knobs at their defaults, and each knob at each of its ends.
+let settings = |r| [{}, ...r.knobs.keys().flat_map(|k| [r.knobs[k].min, r.knobs[k].max].map(|v| [(k, v)].to_object()))]
+
+# Every recipe here is whole and checked (main.cul made each one already),
+# and plays a note, at its knobs' defaults and at each knob's ends, that is
+# heard and does not clip.
+@test
+fn each_recipe_plays_a_note_at_each_end_of_its_knobs() {
+  assert_true(recipes.names.contains("fm_brass"))
+  for name in recipes.names {
+    let r = recipes.recipe(name)
+    for params in settings(r) {
+      let p = peak(r.note(60, 0.3, params:))
+      assert_true(p > 0.01 && p < 1.0, (name, params, p))
+    }
+  }
+}
+
+# Every drum in drums/ plays a hit, at its knobs' defaults and at each
+# knob's ends, that is heard and does not clip at the loudest level Kauai
+# hands a drum (an accented ff, 1.56; 1.6 here, for a margin).
+@test
+fn each_drum_plays_a_hit_at_each_end_of_its_knobs() {
+  assert_true(recipes.drum_names.contains("kick"))
+  for name in recipes.drum_names {
+    let r = recipes.drum(name)
+    for params in settings(r) {
+      let p = peak(r.hit(1.6, params:))
+      assert_true(p > 0.01 && p < 1.0, (name, params, p))
+    }
+  }
+}
+
+# The toms are one recipe tuned high, in the middle and low; Tom is MidTom.
+@test
+fn the_toms_are_the_tom_tuned() {
+  let tom = recipes.drum("tom")
+  for (name, tune) in [("high_tom", 196), ("mid_tom", 147), ("low_tom", 98)] {
+    assert_eq(recipes.drum(name).hit(), tom.hit(params: {tune}))
+  }
+}
+
+# The open hi-hat rings for more than a second struck alone, and closes
+# 50 ms after the pedal comes (its choke group's next hit).
+@test
+fn the_open_hat_rings_until_it_is_closed() {
+  let open = recipes.drum("open_hat")
+  assert_true(open.hit().size() > open.rate)
+  assert_eq(open.hit(1.0, 0.1).size(), Math.round(0.15 * open.rate))
+}
+
+# A muted stroke (`mute` 1) is its head alone: as loud at first, and still by
+# 0.1 s, where the open string rings on.
+@test
+fn a_muted_guitar_stroke_is_its_head_alone() {
+  let g = recipes.recipe("distortion_guitar")
+  let level = fn (xs, from, to) {
+    let part = xs.slice(Math.round(from * g.rate), Math.round(to * g.rate))
+    Math.sqrt(part.map(|x| x * x).sum() / part.size())
+  }
+  for pitch in [40, 60] {
+    let open = g.note(pitch, 0.5)
+    let muted = g.note(pitch, 0.5, params: {mute: 1})
+    assert_true(level(muted, 0.0, 0.03) > 0.5 * level(open, 0.0, 0.03), pitch)
+    assert_true(level(muted, 0.1, 0.3) < 0.01 * level(open, 0.1, 0.3), pitch)
+  }
+}
+
+# A folder of one's own: its recipes and drums by the names a song gives
+# them, a base from Kauai's where the folder has none, and none of Kauai's.
+@test
+fn a_folder_of_ones_own_plays_its_recipes_over_kauais() {
+  let mine = recipes.folder(Dir.memory({
+    "warm_brass.json": '{"base": "fm_brass", "knobs": {"bright": {"default": 0}}}',
+    "drums/deep_kick.json": '{"base": "kick"}',
+  }))
+  assert_eq(mine.voices.keys(), ["warmbrass"])
+  assert_eq(mine.drums.keys(), ["deepkick"])
+  assert_eq(
+    mine.recipe("warm_brass").note(60, 0.3),
+    recipes.recipe("mellow_fm_brass").note(60, 0.3),
+  )
+  assert_eq(mine.drum("deep_kick").hit(), recipes.drum("kick").hit())
+}
+
+@test
+fn a_preset_is_its_recipe_with_its_knob_set() {
+  let mellow = recipes.recipe("mellow_fm_brass").note(60, 0.3)
+  let brass = recipes.recipe("fm_brass").note(60, 0.3, params: {bright: 0.0})
+  assert_eq(mellow, brass)
+}
+
+@test
+fn kauai_plays_a_song_with_them() {
+  let song_text = 'band Pads {
+  voice Lead  external MellowFmBrass  plays melody  vol 60  bright=0.2
+  voice Pad   external FmStrings      plays chords from C3  vol 40
+  drum Kick     external Kick     vol 30
+  drum Hat      external Hat      vol 10  choke Hats
+  drum OpenHat  external OpenHat  vol 10  choke Hats
+}
+groove Beat {
+  Kick     x . . . x . . .
+  Hat      x . x . x . . .
+  OpenHat  . . . . . . x .
+}
+song Tune {
+  tempo 120
+  band Pads
+  groove Beat
+  melody in C4..B4
+  Verse
+}
+section Verse {
+  C     c4 e g e
+  G     d4 g b g
+}
+'
+
+  let song = Kauai.load(
+    "tune.kau",
+    voices: recipes.voices,
+    drums: recipes.drums,
+    dir: Dir.memory({"tune.kau": song_text}),
+  )
+  mut left = song.prepare()
+  while left > 0 {
+    left = song.prepare()
+  }
+  assert_true(song.length() > 1.5)
+  # The open hi-hat is told when the hat closes it.
+  let open = song.external_sounds().find(|s| s.external == "openhat")
+  assert_eq(open.args[0], {level: 1.0, next: 0.5})
+}

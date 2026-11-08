@@ -60,7 +60,12 @@
       "examples": [
         { "title": "Tones and effects", "path": "examples/audio/tones.cul" },
         { "title": "A sample, built in memory", "path": "examples/audio/sound.cul" },
-        { "title": "Canvas: Piano", "path": "examples/audio/piano.cul" }
+        { "title": "Canvas: Piano", "path": "examples/audio/piano.cul" },
+        {
+          "title": "Kauai: a song on recipe instruments",
+          "path": "examples/kauai/play_recipes.cul",
+          "uses": ["kauai/engine/recipe.cul", "kauai/recipes", "examples/kauai/songs/strings.kau"]
+        }
       ]
     },
     {

@@ -1,0 +1,864 @@
+# Instruments written as data. A recipe is a graph of Audio.Graph's parts,
+# an Object as JSON reads it; each value of a part is a number, an
+# expression of the note, or an envelope. `Recipe.new(doc, name)` checks a
+# recipe whole before it plays, and builds and renders the graph for each
+# note. ../recipe.md says how a recipe is written.
+
+let RATE = 44100
+
+# How long a straight piece of a curved stretch of an envelope is (s).
+let STEP = 0.01
+
+# Whether a curve this near 0 is a straight line.
+let straight = |curve| Math.abs(curve) < 0.001
+
+# Where every recipe's output is cut below (Hz), as a synthesizer's output
+# stage cuts its offset: a sine moved by one of its own freq (1:1 FM) has one.
+let DC_CUT = 20.0
+
+# How far down a phrase's notes are mixed (12 dB), room for a chord of
+# several at ff under the full scale a Sound keeps: Kauai weighs an
+# instrument by one of its phrases, so its loudness in a song does not change.
+let HEADROOM = 0.25
+
+# The format a recipe's `recipe` names.
+let FORMAT = 1
+
+# What an expression may name of the note it plays.
+let NOTE_NAMES = ["pitch", "f", "dur", "level"]
+
+# Each function an expression may call: how many arguments, and what it is.
+let FUNCTIONS = {
+  exp: (1, |a| Math.exp(a[0])),
+  log: (1, |a| Math.log(a[0])),
+  sqrt: (1, |a| Math.sqrt(a[0])),
+  abs: (1, |a| Math.abs(a[0])),
+  min: (2, |a| Math.min(a[0], a[1])),
+  max: (2, |a| Math.max(a[0], a[1])),
+  clamp: (3, |a| Math.clamp(a[0], a[1], a[2])),
+  mix: (3, |a| a[0] + (a[1] - a[0]) * a[2]),
+}
+
+let GRAMMAR = `
+  Expr    <- Sum
+  Sum     <- Product (AddOp Product)*
+  Product <- Unary (MulOp Unary)*
+  Unary   <- Neg / Power
+  Neg     <- '-' Unary { no_ast_opt }
+  Power   <- Atom ('^' Unary)?
+  Atom    <- Call / Number / Name / '(' Sum ')'
+  Call    <- Name '(' Sum (',' Sum)* ')'
+  AddOp   <- < [-+] >
+  MulOp   <- < [*/] >
+  Number  <- < [0-9]+ ('.' [0-9]+)? ([eE] [-+]? [0-9]+)? >
+  Name    <- < [a-z_] [a-z0-9_]* >
+  %whitespace <- [ \t]*
+`
+
+# The parts a recipe may use: the Audio.Graph method that makes each, and
+# what a recipe gives it that the method does not (a wave's and a pluck's
+# freq is the note's own, and a filter is a low-pass). The rest of a part,
+# its fields and which of them move, is the method's own: SHAPES reads it.
+let PARTS = {
+  wave: {make: |g| g.wave, defaults: {freq: "f"}},
+  noise: {make: |g| g.noise},
+  filter: {make: |g| g.filter, defaults: {kind: "low"}},
+  gain: {make: |g| g.gain},
+  drive: {make: |g| g.drive},
+  mix: {make: |g| g.mix},
+  pluck: {make: |g| g.pluck, defaults: {freq: "f"}},
+  delay: {make: |g| g.delay},
+}
+
+# What a field of a part holds, by the type its method declares for it: a
+# word (a kind), the name of a part it takes in, a list of them, a whole
+# number, or a number.
+let ROLES = {
+  String: "word",
+  AudioGraphPart: "one",
+  Array: "many",
+  Long: "whole",
+  "Long | Float": "number",
+}
+
+# A part's fields as its method declares them, by role (ROLES), and of its
+# numbers those that may move (`values`) and those it is made with once
+# (`fixed`, with the whole numbers). Which move is what a part made once
+# has: an Audio.Graph part has a value for each of them.
+fn shape(spec) {
+  let g = Audio.Graph.new()
+  let src = g.noise()
+  let defaults = spec.get("defaults", {})
+  let method = spec.make(g)
+  let ps = method.params
+  let odd = ps.find(|p| !ROLES.has(p.type))
+  throw "Audio.Graph: no field of a recipe holds a {odd.type} ({odd.name})" if odd !=
+    nil
+  let by = |role| ps.filter(|p| ROLES[p.type] == role).map(|p| p.name)
+  let needs = ps
+    .filter(|p| !p.has_default)
+    .map(|p| (p.name, match ROLES[p.type] { "one" => src, "many" => [], _ => defaults[p.name] }))
+  let probe = method(**needs.to_object())
+  let moves = |k| probe.get(k, nil) != nil
+  {
+    fields: ps.map(|p| p.name),
+    word: by("word"),
+    one: by("one"),
+    many: by("many"),
+    whole: by("whole"),
+    values: by("number").filter(moves),
+    fixed: [...by("whole"), ...by("number").filter(|k| !moves(k))],
+    defaults: defaults,
+    make: spec.make,
+  }
+}
+
+let SHAPES = PARTS.keys().map(|k| (k, shape(PARTS[k]))).to_object()
+
+let hz = |pitch| 440.0 * 2.0 ** ((pitch - 69) / 12.0)
+
+# --- expressions ------------------------------------------------------------
+
+# The tree of expression `text`, its names among `names`.
+fn parsed(text, names, where) {
+  let p = PEG.parser()
+  mut errors = []
+  p.set_logger(|line, col, msg| errors.push("column {col}: {msg}"))
+  p.load_grammar(GRAMMAR)
+  p.enable_ast(true)
+  let (ok, tree) = p.parse(text)
+  throw "{where}: cannot read `{text}`: {errors.empty() ? "" : errors[0]}" if !ok
+  checked(tree, names, "{where}: `{text}`")
+  tree
+}
+
+fn checked(node, names, where) {
+  if node.name == "Name" && !names.contains(node.token) {
+    throw "{where}: no name `{node.token}`; it may name {names.join(", ")}"
+  }
+  let call = node.name == "Call"
+  if call {
+    let name = node.nodes[0].token
+    let f = FUNCTIONS.get(name, nil)
+    throw "{where}: no function `{name}`; there are {FUNCTIONS.keys().join(", ")}" if f ==
+      nil
+    let given = node.nodes.size() - 1
+    throw "{where}: `{name}` takes {f[0]}, given {given}" if given != f[0]
+  }
+  for k in (call ? 1 : 0)..node.nodes.size() {
+    checked(node.nodes[k], names, where)
+  }
+}
+
+fn evaluated(node, env) {
+  let at = |k| evaluated(node.nodes[k], env)
+  let n = node.nodes.size()
+  if node.name == "Number" {
+    return to_float(node.token)
+  }
+  if node.name == "Name" {
+    return env[node.token]
+  }
+  if node.name == "Neg" {
+    return -at(0)
+  }
+  if node.name == "Power" {
+    return at(0) ** at(1)
+  }
+  if node.name == "Call" {
+    return FUNCTIONS[node.nodes[0].token][1](iota(1, n).map(at))
+  }
+  # A Sum or a Product: operands with an operator between each two.
+  mut v = at(0)
+  for k in 0..n / 2 {
+    let op = node.nodes[2 * k + 1].token
+    let r = at(2 * k + 2)
+    v = cond {
+      op == "+" => v + r,
+      op == "-" => v - r,
+      op == "*" => v * r,
+      _ => v / r,
+    }
+  }
+  v
+}
+
+# A number or an expression, as a function of the note.
+fn term(x, names, where) {
+  if x is Long || x is Float {
+    let v = to_float(x)
+    return |env| v
+  }
+  throw "{where}: a number or an expression, not {x}" if x !is String
+  let tree = parsed(x, names, where)
+  |env| evaluated(tree, env)
+}
+
+# --- envelopes --------------------------------------------------------------
+
+# A list of points, each [time, value] or [time, value, curve], as terms.
+fn points(xs, names, where) {
+  throw "{where}: a list of points, [time, value] or [time, value, curve]" if xs !is Array ||
+    xs.empty()
+  xs.enumerate().map(fn ((k, p)) {
+    let at = "{where}[{k}]"
+    throw "{at}: a point is [time, value] or [time, value, curve]" if p !is Array ||
+      p.size() < 2 ||
+      p.size() > 3
+    p.enumerate().map(|(j, x)| term(x, names, "{at}[{j}]")).collect()
+  }).collect()
+}
+
+# A value that may move: a number, an expression, or an envelope
+# {on: points, off: points}.
+fn value(x, names, where) {
+  if type_of(x) != "Object" {
+    let t = term(x, names, where)
+    return {on: [[|env| 0.0, t]], off: nil}
+  }
+  only(x, ["on", "off"], where, "an envelope")
+  throw "{where}: an envelope has `on`" if !x.has("on")
+  {
+    on: points(x.on, names, "{where}.on"),
+    off: x.has("off") ? points(x.off, names, "{where}.off") : nil,
+  }
+}
+
+# Points made numbers for the note: (time, value, curve), times from `from`.
+fn knots(ps, env, from, where) {
+  let ks = ps.map(|p| (
+    from + p[0](env),
+    p[1](env),
+    p.size() > 2 ? p[2](env) : 0.0,
+  ))
+  for k in 1..ks.size() {
+    throw "{where}[{k}]: its time is before the point's before it" if ks[k][0] <
+      ks[k - 1][0]
+  }
+  ks
+}
+
+# The value of a stretch from (ta, va) to (tb, vb) with `curve` at `t`: a
+# straight line for 0; otherwise SuperCollider's Env curve, early for a
+# curve below 0 (an exponential decay: e^(curve u) over the stretch).
+fn on_curve(ta, va, tb, vb, curve, t) {
+  return vb if tb <= ta
+  let u = Math.clamp((t - ta) / (tb - ta), 0.0, 1.0)
+  return va + (vb - va) * u if straight(curve)
+  va + (vb - va) * (1.0 - Math.exp(curve * u)) / (1.0 - Math.exp(curve))
+}
+
+# Knots as straight pieces up to `until`: [(time, value)], from the first
+# knot's time, held at the last knot's value.
+fn drawn(ks, until) {
+  mut out = [(ks[0][0], ks[0][1])]
+  for k in 1..ks.size() {
+    let (ta, va, _) = ks[k - 1]
+    let (tb, vb, c) = ks[k]
+    break if ta >= until
+    let end = Math.min(tb, until)
+    if !straight(c) {
+      mut t = ta + STEP
+      while t < end {
+        out.push((t, on_curve(ta, va, tb, vb, c, t)))
+        t += STEP
+      }
+    }
+    out.push((end, on_curve(ta, va, tb, vb, c, end)))
+  }
+  let (last_t, last_v) = out[out.size() - 1]
+  out.push((until, last_v)) if last_t < until
+  out
+}
+
+# A value's `on` as knots from 0.
+fn on_knots(v, env, where) {
+  let on = knots(v.on, env, 0.0, "{where}.on")
+  on[0][0] > 0.0 ? [(0.0, on[0][1], 0.0), ...on] : on
+}
+
+# A value's `off` from `at`, where `on` was cut at `cut`: [(time, value)]
+# from `at`.
+fn released(v, env, at, cut, where) {
+  let off = knots(v.off, env, at, "{where}.off")
+  drawn([(at, cut, 0.0), ...off], off[-1][0])
+}
+
+# A value's course for a note `dur` long: [(time, value)] from 0. `on` is
+# held while the note is held and cut where it ends; `off` starts there
+# from the value it was cut at.
+fn course(v, env, dur, where) {
+  let held = drawn(on_knots(v, env, where), dur)
+  return held if v.off == nil
+  let rest = released(v, env, dur, held[-1][1], where)
+  [...held, ...rest.slice(1, rest.size())]
+}
+
+# A value's `on` for a note held until it is let go: [(time, value)] from 0
+# to its last knot, where it stays.
+fn held_course(v, env, where) {
+  let ks = on_knots(v, env, where)
+  drawn(ks, ks[-1][0])
+}
+
+# Where a value's `on` ends, which a held note's value stays at: its last
+# point's value, the one number a held note reads of it.
+fn on_end(v, env) {
+  v.on[-1][1](env)
+}
+
+# A held note's course for a value of part `name`: held_course, or, for a
+# part in `steady`, where it ends from the start.
+fn live_course(v, env, steady, name, where) {
+  let c = held_course(v, env, where)
+  steady.contains(name) ? [(0.0, c[-1][1])] : c
+}
+
+# A course's value at `t`: straight between its points, held past them.
+fn course_at(c, t) {
+  mut k = 1
+  while k < c.size() && c[k][0] < t {
+    k += 1
+  }
+  return c[-1][1] if k == c.size()
+  let (ta, va) = c[k - 1]
+  let (tb, vb) = c[k]
+  on_curve(ta, va, tb, vb, 0.0, t)
+}
+
+# A course's changes after its first point, scheduled on graph value `v`:
+# a point at the time of the one before is a step, any other a ramp.
+fn scheduled(v, c) {
+  for j in 1..c.size() {
+    let (t, y) = c[j]
+    if t <= c[j - 1][0] {
+      v.set(t, y)
+    } else {
+      v.ramp(t, y)
+    }
+  }
+}
+
+# --- recipes ----------------------------------------------------------------
+
+# Nothing in Object `x` but the fields `known`: `what`, at `where`, has them.
+fn only(x, known, where, what) {
+  let stray = x.keys().filter(|k| !known.contains(k))
+  throw "{where}: {what} has {known.join(", ")}, not `{stray[0]}`" if !stray.empty()
+}
+
+# A knob a recipe declares: {default, min, max}.
+fn knob(name, x, where) {
+  throw "{where}: a knob's name is a word in lower case, as bright" if !Regex.test(
+    "^[a-z][a-z0-9]*$",
+    name,
+  )
+  throw "{where}: `{name}` names the note; a knob needs another name" if NOTE_NAMES.contains(name)
+  throw "{where}: a knob is an Object of default, min and max" if type_of(x) !=
+    "Object"
+  only(x, ["default", "min", "max"], where, "a knob")
+  let number = fn (field) {
+    let v = x.get(field, nil)
+    throw "{where}.{field}: a number" if v !is Long && v !is Float
+    to_float(v)
+  }
+  let made = {
+    fallback: number("default"),
+    min: number("min"),
+    max: number("max"),
+  }
+  throw "{where}: the default is from min to max" if made.fallback < made.min ||
+    made.fallback > made.max
+  made
+}
+
+# A part of a recipe, its fields checked and its values made terms.
+fn part(x, names, where) {
+  throw "{where}: a part is an Object with a `part`" if type_of(x) !=
+    "Object" ||
+    !x.has("part")
+  let s = SHAPES.get(x.part, nil)
+  throw "{where}.part: no part `{x.part}`; there are {SHAPES.keys().join(", ")}" if s ==
+    nil
+  only(x, ["part", ...s.fields], where, "a {x.part}")
+  for k in s.one {
+    throw "{where}.{k}: the name of a part" if x.get(k, nil) !is String
+  }
+  for k in s.many {
+    let xs = x.get(k, [])
+    throw "{where}.{k}: a list of names of parts" if xs !is Array ||
+      !xs.all(|n| n is String)
+  }
+  # A field the part leaves out goes to its method as its own default.
+  let given = {...s.defaults, ...x}
+  let has = |k| given.has(k)
+  let words = s.word.filter(has)
+  for k in words {
+    throw "{where}.{k}: a word" if given[k] !is String
+  }
+  {
+    words: words.map(|k| (k, given[k])).to_object(),
+    one: s.one.map(|k| (k, x[k])).to_object(),
+    many: s.many.map(|k| (k, x.get(k, []))).to_object(),
+    values: s.values
+      .filter(has)
+      .map(|k| (k, value(given[k], names, "{where}.{k}")))
+      .to_object(),
+    fixed: s.fixed
+      .filter(has)
+      .map(fn (k) {
+        let t = term(given[k], names, "{where}.{k}")
+        (k, s.whole.contains(k) ? |env| Math.round(t(env)) : t)
+      })
+      .to_object(),
+    make: s.make,
+  }
+}
+
+# The names of the parts part `p` takes in, or that move it.
+fn wired(p) {
+  [...p.one.keys().map(|k| p.one[k]), ...p.many.keys().flat_map(|k| p.many[k])]
+}
+
+# The parts in an order each comes after those it takes in, from `out`
+# back; a part `out` does not reach, a name no part has, or a loop is an
+# error.
+fn ordered(parts, out, where) {
+  let walk = {order: [], state: {}}
+  visit(parts, out, "{where}: out", where, walk)
+  let idle = parts.keys().filter(|n| !walk.state.has(n))
+  throw "{where}: `{idle[0]}` does not reach out" if !idle.empty()
+  walk.order
+}
+
+fn visit(parts, name, from, where, walk) {
+  throw "{from}: no part `{name}`" if !parts.has(name)
+  let s = walk.state.get(name, nil)
+  return nil if s == "done"
+  throw "{where}: `{name}` takes itself in, through the parts it takes in" if s ==
+    "open"
+  walk.state[name] = "open"
+  for n in wired(parts[name]) {
+    visit(parts, n, "{where}.{name}", where, walk)
+  }
+  walk.state[name] = "done"
+  walk.order.push(name)
+}
+
+# --- recipes over others ----------------------------------------------------
+
+# `patch` over `target` as JSON Merge Patch (RFC 7386) puts it: an Object
+# goes over an Object field by field, a null takes a field away, and
+# anything else takes the place of what was there.
+fn merged(target, patch) {
+  return patch if type_of(patch) != "Object"
+  mut out = type_of(target) == "Object" ? {...target} : {}
+  for k in patch.keys() {
+    if patch[k] == nil {
+      out.remove(k) if out.has(k)
+    } else {
+      out[k] = merged(out.get(k, nil), patch[k])
+    }
+  }
+  out
+}
+
+# The recipe `name` whole: one with a `base` is that recipe with the rest of
+# it over it, merged. `find(name)` answers a recipe as JSON reads it, nil for
+# none.
+fn resolved(name, find, seen = []) {
+  let where = "recipe {name}"
+  throw "{where}: its base is itself, through {seen.join(", ")}" if seen.contains(name)
+  let doc = find(name)
+  throw "{where}: no recipe of that name" if doc == nil
+  return doc if type_of(doc) != "Object" || !doc.has("base")
+  let base = doc.base
+  throw "{where}.base: the name of a recipe" if base !is String
+  mut patch = {...doc}
+  patch.remove("base")
+  merged(resolved(base, find, [...seen, name]), patch)
+}
+
+class Recipe {
+  # `doc`, a recipe as JSON reads it; `name`, what its errors call it.
+  new(doc, name: String, rate: Long | Float = RATE) {
+    @name = name
+    @rate = rate
+    let where = "recipe {name}"
+    throw "{where}: a recipe is an Object" if type_of(doc) != "Object"
+    only(doc, ["recipe", "knobs", "parts", "out"], where, "a recipe")
+    throw "{where}: `recipe` is {FORMAT}, the format it is written in" if doc.get(
+      "recipe",
+      nil,
+    ) !=
+      FORMAT
+    let ks = doc.get("knobs", {})
+    throw "{where}.knobs: an Object" if type_of(ks) != "Object"
+    @knobs = ks
+      .keys()
+      .map(|k| (k, knob(k, ks[k], "{where}.knobs.{k}")))
+      .to_object()
+    let names = [...NOTE_NAMES, ...@knobs.keys()]
+    let ps = doc.get("parts", nil)
+    throw "{where}.parts: an Object of parts" if type_of(ps) != "Object" ||
+      ps.keys().empty()
+    @parts = ps
+      .keys()
+      .map(|k| (k, part(ps[k], names, "{where}.parts.{k}")))
+      .to_object()
+    throw "{where}.out: the name of a part" if doc.get("out", nil) !is String
+    @out = doc.out
+    @order = ordered(@parts, @out, "{where}.parts")
+  }
+
+  # The knobs' values: their defaults with `params` over them.
+  knob_values(params) {
+    let where = "recipe {@name}"
+    for k in params.keys() {
+      throw "{where}: no knob `{k}`; it has {@knobs.keys().join(", ")}" if !@knobs.has(k)
+      let kb = @knobs[k]
+      let v = params[k]
+      throw "{where}: {k} is from {kb.min} to {kb.max}, not {v}" if v <
+        kb.min ||
+        v > kb.max
+    }
+    @knobs
+      .keys()
+      .map(|k| (k, to_float(params.get(k, @knobs[k].fallback))))
+      .to_object()
+  }
+
+  # The samples of one note, `rate` a second: `pitch` held `dur` seconds,
+  # at `level` (1 for mf), with the knobs at `params` (their defaults for
+  # those it leaves out), and then for as long as its longest `off`. What
+  # `out` plays, times `level`, passes a high-pass at DC_CUT.
+  note(
+    pitch: Long | Float,
+    dur: Long | Float,
+    level: Long | Float = 1.0,
+    params = {},
+  ) {
+    let env = self._env(pitch, dur, level, params)
+    let w = self._wire(env, |v, _, where| course(v, env, env.dur, where))
+    # A course ends where its `off` does, or where the note does.
+    let longest = [0.0, ...w.values.map(|x| x.course[-1][0] - env.dur)].max()
+    let g = w.graph
+    g.output(g.filter("high", g.gain(w.out, env.level), cutoff: DC_CUT))
+    g.render(env.dur + longest)
+  }
+
+  # The samples of one hit, as a drum is struck: the recipe at `level`
+  # with the knobs at `params`, held for as long as the `on` of its values
+  # lasts, or for `next` seconds if that is sooner (the drum, or its choke
+  # group, struck again: an open hi-hat closed), and then for as long as
+  # its longest `off`. A drum is struck at middle C; one that is tuned has
+  # a knob for it.
+  hit(level: Long | Float = 1.0, next = nil, params = {}) {
+    let env = self._env(60, 0.0, level, params)
+    let ends = @order.flat_map(fn (name) {
+      let vs = @parts[name].values
+      vs.keys().map(|k| on_knots(vs[k], env, "recipe {@name}.parts.{name}.{k}")[-1][0])
+    })
+    let lasts = [0.0, ...ends].max()
+    self.note(60, next == nil ? lasts : Math.min(next, lasts), level, params)
+  }
+
+  # A note held until it is let go, playing on the device from now:
+  # `pitch` at `level` (1 for mf), with the knobs at `params`, its `on`
+  # scheduled from the start and its output at `volume`. The parts named in
+  # `steady` start where their `on` ends, as when the player's breath is
+  # the attack. A note held has no `dur`; an expression that names it
+  # reads 0.
+  start(
+    pitch: Long | Float,
+    level: Long | Float = 1.0,
+    params = {},
+    volume: Long | Float = 1.0,
+    steady: Array = [],
+  ) {
+    self.prepare(params, steady).begin(pitch, level, volume)
+  }
+
+  # start()'s note made ahead, silent and not playing, so that begin()
+  # only has to move what depends on the pitch and the level. A volume
+  # above 1 is held under full scale by a limit.
+  prepare(params = {}, steady: Array = []) {
+    let env = self._env(60, 0.0, 1.0, params)
+    let w = self._wire(env, |v, name, where| live_course(v, env, steady, name, where))
+    let g = w.graph
+    let gain = g.gain(w.out, 0.0)
+    g.output(g.limit(g.filter("high", gain, cutoff: DC_CUT)))
+    Held(self, params, g, w.values, gain.gain, env, steady)
+  }
+
+  # What a note's expressions may name: its pitch, f, dur and level, and
+  # the knobs at `params` (their defaults for those it leaves out).
+  _env(pitch, dur, level, params) {
+    {
+      pitch: to_float(pitch),
+      f: hz(pitch),
+      dur: to_float(dur),
+      level: to_float(level),
+      ...self.knob_values(params),
+    }
+  }
+
+  # A note's graph: each part made in order, with its values where their
+  # courses start and the rest of each course scheduled, a course being
+  # `plan(value, part's name, where)`. Answers {graph, out, values},
+  # `values` each {value, def, part, course, where} for a value of a part.
+  _wire(env, plan) {
+    let g = Audio.Graph.new(rate: @rate)
+    mut made = {}
+    mut values = []
+    for name in @order {
+      let p = @parts[name]
+      let where = "recipe {@name}.parts.{name}"
+      let courses = p.values.keys().map(|k| (k, plan(p.values[k], name, "{where}.{k}"))).to_object()
+      let args = {
+        ...p.words,
+        ...p.one.keys().map(|k| (k, made[p.one[k]])).to_object(),
+        ...p.many.keys().map(|k| (k, p.many[k].map(|n| made[n]))).to_object(),
+        ...courses.keys().map(|k| (k, courses[k][0][1])).to_object(),
+        ...p.fixed.keys().map(|k| (k, p.fixed[k](env))).to_object(),
+      }
+      try {
+        let built = p.make(g)(**args)
+        for k in courses.keys() {
+          scheduled(built[k], courses[k])
+          values.push({value: built[k], def: p.values[k], part: name, course: courses[k], where: "{where}.{k}"})
+        }
+        made[name] = built
+      } catch {kind: "ValueError", message} {
+        throw "{where}: {message}"
+      }
+    }
+    {graph: g, out: made[@out], values: values}
+  }
+
+  # A phrase as Kauai hands it to an instrument that hears len, level and
+  # params, as one Sound, its notes mixed HEADROOM down.
+  phrase(notes, params) {
+    Audio.Sound(
+      Audio.mix(
+        notes.map(|n| {
+          samples: self.note(
+            n.pitch,
+            n.len,
+            n.get("level", 1.0),
+            n.get("params", params),
+          ),
+          at: n.at,
+          gain: HEADROOM,
+        }),
+        rate: @rate,
+      ),
+      rate: @rate,
+    )
+  }
+
+  # The instrument, as Kauai.load's `voices:` takes it.
+  voice() {
+    let recipe = self
+    {
+      phrase: |notes, params| recipe.phrase(notes, params),
+      hears: ["len", "level", "params"],
+    }
+  }
+
+  # The instrument as a drum, as Kauai.load's `drums:` takes it: each
+  # hit is hit()'s, its `next` the deadline Kauai gives.
+  drum() {
+    let recipe = self
+    {
+      hit: |n, params| Audio.Sound(recipe.hit(n.level, n.next, params), rate: recipe.rate),
+      hears: ["level", "next"],
+    }
+  }
+}
+
+# How far ahead of a playing graph's clock a change made now is put, so the
+# audio thread has not passed it yet (s).
+let LEAD = 0.003
+
+# How long a new pitch, a bend or a volume takes to arrive (s).
+let GLIDE = 0.005
+
+# A note Recipe.prepare() made, played from begin() and held until
+# release(): its values can follow a new pitch (legato), a bend, a knob
+# turned and a volume while it sounds.
+class Held {
+  new(recipe, params, graph, values, volume, env, steady) {
+    @_recipe = recipe
+    @_params = params
+    @graph = graph
+    @_values = values
+    @_volume = volume
+    @_env = env
+    @_steady = steady
+    @_bend = 1.0
+    @_ends = values.map(|x| x.course[-1][1])
+    # The values that follow the note's freq: an octave up, twice as high.
+    let up = {...env, pitch: env.pitch + 12.0, f: env.f * 2.0}
+    @_pitched = values.map(fn (x) {
+      let end = x.course[-1][1]
+      end != 0.0 && Math.abs(on_end(x.def, up) / end - 2.0) < 1e-9
+    })
+    # For each knob turned, the values that read it (found when it is first).
+    @_reads = {}
+    @_begun = false
+    @_until = nil
+  }
+
+  # Play from now, once: `pitch` at `level`, its output at `volume`. Only the
+  # values whose course the pitch or the level changes are scheduled again.
+  begin(pitch: Long | Float, level: Long | Float = 1.0, volume: Long | Float = 1.0) {
+    throw "a held note begins once; prepare() another" if @_begun
+    @_begun = true
+    let env = {...@_env, pitch: to_float(pitch), f: hz(pitch), level: to_float(level)}
+    for i, x in @_values.enumerate() {
+      let c = live_course(x.def, env, @_steady, x.part, x.where)
+      if c != x.course {
+        x.value.cancel(0.0).set(0.0, c[0][1])
+        scheduled(x.value, c)
+        @_values[i] = {...x, course: c}
+        @_ends[i] = c[-1][1]
+      }
+    }
+    @_volume.cancel(0.0).set(0.0, to_float(volume))
+    @_env = env
+    @graph.play()
+    self
+  }
+
+  _at() {
+    @graph.now() + LEAD
+  }
+
+  # Graph value `value` moved to `to` from `t`, over GLIDE.
+  _glide(value, to, t) {
+    value.cancel(t).ramp(t + GLIDE, to)
+  }
+
+  # The value at `i` moved to `to`, which its course then holds, so that
+  # release() starts its `off` from there.
+  _move(i, to, t) {
+    let x = @_values[i]
+    self._glide(x.value, to, t)
+    @_values[i] = {...x, course: [(0.0, to)]}
+  }
+
+  # Play `pitch` from now without starting over: each value that depends on
+  # the pitch moves to where the new pitch holds it.
+  retune(pitch: Long | Float) {
+    self._follow({...@_env, pitch: to_float(pitch), f: hz(pitch)}, iota(@_values.size()))
+  }
+
+  # Turn knob `name` to `v` while the note sounds, as a player's breath
+  # turns a brightness: each value that reads it moves to where it holds it.
+  knob(name: String, v: Long | Float) {
+    let turned = {...@_params}
+    turned[name] = v
+    let env = {...@_env, ...@_recipe.knob_values(turned)}
+    # A value reads the knob if it ends elsewhere at the knob's least and
+    # most, at the note as it is when the knob is first turned: one whose
+    # end is the same at both (`abs(bright - 0.5)`, or one clamped at this
+    # pitch) is left alone. The recipes Kauai has read `bright` through
+    # mix() and products only.
+    let reads = @_reads.get_or_put(name, fn () {
+      let (lo, hi) = ({...env}, {...env})
+      lo[name] = @_recipe.knobs[name].min
+      hi[name] = @_recipe.knobs[name].max
+      iota(@_values.size()).filter(|i| on_end(@_values[i].def, lo) != on_end(@_values[i].def, hi))
+    })
+    self._follow(env, reads)
+    @_params = turned
+  }
+
+  # The values at `which` moved to where `env` holds them at the end of
+  # their `on`.
+  _follow(env, which) {
+    let t = self._at()
+    for i in which {
+      let x = @_values[i]
+      let end = on_end(x.def, env)
+      if end != @_ends[i] {
+        @_ends[i] = end
+        self._move(i, @_pitched[i] ? end * @_bend : end, t)
+      }
+    }
+    @_env = env
+  }
+
+  # Bend the pitch `semitones` from the note's own.
+  bend(semitones: Long | Float) {
+    @_bend = 2.0 ** (to_float(semitones) / 12.0)
+    let t = self._at()
+    for i in 0..@_values.size() {
+      self._move(i, @_ends[i] * @_bend, t) if @_pitched[i]
+    }
+  }
+
+  # The output's level from now.
+  volume(v: Long | Float) {
+    self._glide(@_volume, to_float(v), self._at())
+  }
+
+  # Let the note go: each value with an `off` runs it from where it is now.
+  # Answers when, on the graph's clock, the last of them ends.
+  release() {
+    let t = self._at()
+    mut until = t
+    for x in @_values {
+      continue if x.def.off == nil
+      let rest = released(x.def, @_env, t, course_at(x.course, t), x.where)
+      x.value.cancel(t)
+      scheduled(x.value, rest)
+      until = Math.max(until, rest[-1][0])
+    }
+    @_until = until
+    until
+  }
+
+  # Whether it was let go and its `off` has ended.
+  done() {
+    @_until != nil && @graph.now() > @_until
+  }
+}
+
+# Whether a value's `on` holds where it ends, at half its peak or more (as
+# `env` reads it), rather than fading away by itself.
+fn holds(v, env) {
+  let vs = v.on.map(|p| Math.abs(p[1](env)))
+  vs[-1] >= 0.5 * vs.max()
+}
+
+# A recipe as `kauai live` plays it (kauai/cli/live.cul says how a player is
+# used). When the recipe's output gain has an attack that it holds, the
+# breath is that attack instead (the gain starts where its `on` ends) and
+# turns the `bright` knob from its least to its most, and a note played
+# while another is held moves it to the new pitch (legato). A recipe whose
+# sound fades by itself, as a piano's or a plucked bass's, strikes every
+# note anew.
+class LivePlayer {
+  new(@recipe) {
+    let out_gain = @recipe.parts[@recipe.out].values.get("gain", nil)
+    @legato = out_gain != nil && out_gain.on.size() > 1 && holds(out_gain, @recipe._env(60, 1.0, 1.0, {}))
+    @every = nil  # a held note's course is scheduled whole
+    @_steady = @legato ? [@recipe.out] : []
+    @_bright = @legato ? @recipe.knobs.get("bright", nil) : nil
+  }
+
+  # The next note, made ahead.
+  prepare() {
+    @recipe.prepare({}, @_steady)
+  }
+
+  # Held note `held` played with the breath at `x`, 0 to 1.
+  breath(held, x) {
+    return if @_bright == nil
+    held.knob("bright", @_bright.min + x * (@_bright.max - @_bright.min))
+  }
+}
+
+export {Recipe, Held, LivePlayer, RATE, HEADROOM, resolved, merged, value, course, live_course}

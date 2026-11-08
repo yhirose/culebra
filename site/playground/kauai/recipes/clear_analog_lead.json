@@ -1,0 +1,34 @@
+{
+  "recipe": 1,
+  "knobs": {
+    "bright": {"default": 1, "min": 0, "max": 1},
+    "chorus": {"default": 1, "min": 0, "max": 1}
+  },
+  "parts": {
+    "drift1": {"part": "wave", "freq": 0.31},
+    "drift1l": {"part": "gain", "input": "drift1", "gain": "chorus * 2 * 0.0015 * f / 0.31"},
+    "drift2": {"part": "wave", "freq": 0.47, "phase": 2},
+    "drift2l": {"part": "gain", "input": "drift2", "gain": "chorus * 2 * 0.0015 * f / 0.47"},
+    "saw1": {"part": "wave", "kind": "saw", "freq": "2 * f * 0.999", "modulators": ["drift1l"]},
+    "saw2": {"part": "wave", "kind": "saw", "freq": "2 * f * 1.001", "modulators": ["drift2l"]},
+    "body": {"part": "wave", "kind": "triangle", "freq": "2 * f"},
+    "bodyl": {"part": "gain", "input": "body", "gain": 0.8},
+    "octave": {"part": "wave", "freq": "4 * f * 1.002"},
+    "over": {"part": "gain", "input": "octave", "gain": "0.35 * bright"},
+    "osc": {"part": "mix", "inputs": ["saw1", "saw2", "bodyl", "over"], "gain": 0.18},
+    "vcf": {"part": "filter", "kind": "low", "q": 1.0, "input": "osc", "cutoff": {
+      "on": [[0, "min(f * mix(2, 4, bright), 16000)"],
+             [0.02, "min(f * mix(5, 20, bright), 16000)", -3],
+             [0.2, "min(f * mix(2, 6, bright), 16000)", -2]],
+      "off": [[0.15, "f", -3]]}},
+    "sweep": {"part": "wave", "freq": 0.6},
+    "sweepl": {"part": "gain", "input": "sweep", "gain": 0.002},
+    "copy": {"part": "delay", "input": "vcf", "time": 0.012, "modulators": ["sweepl"]},
+    "copyl": {"part": "gain", "input": "copy", "gain": "0.5 * chorus"},
+    "ensemble": {"part": "mix", "inputs": ["vcf", "copyl"], "gain": "1 / sqrt(1 + 0.25 * chorus)"},
+    "amp": {"part": "gain", "input": "ensemble", "gain": {
+      "on": [[0, 0], [0.012, 1]],
+      "off": [[0.15, 0, -4]]}}
+  },
+  "out": "amp"
+}

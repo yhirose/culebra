@@ -1,0 +1,20 @@
+{
+  "recipe": 1,
+  "parts": {
+    "o1": {"part": "wave", "kind": "square", "freq": 317},
+    "o2": {"part": "wave", "kind": "square", "freq": 452},
+    "o3": {"part": "wave", "kind": "square", "freq": 589},
+    "o4": {"part": "wave", "kind": "square", "freq": 731},
+    "o5": {"part": "wave", "kind": "square", "freq": 853},
+    "o6": {"part": "wave", "kind": "square", "freq": 1093},
+    "air": {"part": "noise", "seed": 11},
+    "airl": {"part": "gain", "input": "air", "gain": 0.3},
+    "metal": {"part": "mix", "inputs": ["o1", "o2", "o3", "o4", "o5", "o6", "airl"], "gain": 0.2},
+    "band": {"part": "filter", "kind": "band", "q": 1.0, "input": "metal", "cutoff": 7500},
+    "high": {"part": "filter", "kind": "high", "q": 0.7, "input": "band", "cutoff": 5000},
+    "amp": {"part": "gain", "input": "high", "gain": {
+      "on": [[0, 0], [0.001, 1]],
+      "off": [[0.05, 0, -7]]}}
+  },
+  "out": "amp"
+}

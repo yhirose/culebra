@@ -1,0 +1,40 @@
+{
+  "recipe": 1,
+  "knobs": {
+    "bright": {"default": 0.5, "min": 0, "max": 1},
+    "drive": {"default": 1, "min": 0, "max": 2},
+    "chorus": {"default": 0, "min": 0, "max": 1},
+    "release": {"default": 1.5, "min": 0.1, "max": 4}
+  },
+  "parts": {
+    "pick": {"part": "noise", "seed": 5},
+    "picka": {"part": "gain", "input": "pick", "gain": {"on": [[0, 0], [0.0005, 1], [0.004, 0, -4]]}},
+    "pickt": {"part": "filter", "kind": "low", "input": "picka", "cutoff": "2500 * (0.5 + bright) * (0.6 + 0.4 * level)"},
+    "string": {"part": "pluck", "input": "pickt", "ring": "20 * (261.63 / f) ^ 0.5"},
+    "neckseen": {"part": "delay", "input": "string", "time": "0.25 / f"},
+    "neckback": {"part": "gain", "input": "neckseen", "gain": -1},
+    "neck": {"part": "mix", "inputs": ["string", "neckback"]},
+    "middleseen": {"part": "delay", "input": "string", "time": "0.15 / f"},
+    "middleback": {"part": "gain", "input": "middleseen", "gain": -1},
+    "middle": {"part": "mix", "inputs": ["string", "middleback"]},
+    "pickups": {"part": "mix", "inputs": ["neck", "middle"], "gain": 0.5},
+    "tight": {"part": "filter", "kind": "high", "input": "pickups", "cutoff": 120},
+    "hump": {"part": "filter", "kind": "band", "q": 0.8, "input": "pickups", "cutoff": 800},
+    "pre": {"part": "mix", "inputs": ["tight", "hump"]},
+    "bend": {"part": "drive", "input": "pre", "gain": "(1 + 5 * drive) * (0.4 + 0.6 * level)"},
+    "cab1": {"part": "filter", "kind": "low", "input": "bend", "cutoff": 4500},
+    "cab2": {"part": "filter", "kind": "low", "input": "cab1", "cutoff": 4500},
+    "body": {"part": "filter", "kind": "high", "input": "cab2", "cutoff": 90},
+    "sweep1": {"part": "wave", "freq": 0.7},
+    "sweep1l": {"part": "gain", "input": "sweep1", "gain": 0.003},
+    "copy1": {"part": "delay", "input": "body", "time": 0.012, "modulators": ["sweep1l"]},
+    "copy1l": {"part": "gain", "input": "copy1", "gain": "0.7 * chorus"},
+    "sweep2": {"part": "wave", "freq": 1.1, "phase": 1.5},
+    "sweep2l": {"part": "gain", "input": "sweep2", "gain": 0.004},
+    "copy2": {"part": "delay", "input": "body", "time": 0.021, "modulators": ["sweep2l"]},
+    "copy2l": {"part": "gain", "input": "copy2", "gain": "0.5 * chorus"},
+    "ensemble": {"part": "mix", "inputs": ["body", "copy1l", "copy2l"], "gain": "0.5 / sqrt(1 + 0.74 * chorus)"},
+    "amp": {"part": "gain", "input": "ensemble", "gain": {"on": [[0, 1]], "off": [["release", 0, -3]]}}
+  },
+  "out": "amp"
+}

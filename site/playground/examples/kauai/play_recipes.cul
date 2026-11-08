@@ -1,0 +1,37 @@
+# A Kauai song whose instruments are recipes (kauai/recipe.md): each sound is
+# rendered from a recipe's graph, one per note group, before the song starts,
+# and the song plays once all of them are built. Building the bowed trio takes
+# a few seconds in the browser, so it prints its progress as it goes.
+#
+#   culebra examples/kauai/play_recipes.cul
+
+import recipes from '../../kauai/recipes/main.cul'
+
+let strings = recipes.voices.fmstrings
+let song = Kauai.load(
+  FS.join(FS.dirname(Sys.script), 'songs/strings.kau'),
+  voices: {violin: strings, viola: strings, cello: strings},
+  drums: recipes.drums,
+)
+
+let began = Time.monotonic()
+mut built = 0
+mut left = 1
+while left > 0 {
+  left = song.prepare()
+  built += 1
+  println("built {built} sounds, {left} to go")
+}
+println("built in {Math.round((Time.monotonic() - began) * 1000)} ms")
+
+if !Audio.available() {
+  println("no audio device, so nothing plays")
+  Sys.exit(1)
+}
+song.play()
+println("playing {song.about().title} ({Math.round(song.length())} s)")
+while song.playing() {
+  Time.sleep(0.1)
+}
+# The last notes ring out past the song's length.
+Time.sleep(1.0)

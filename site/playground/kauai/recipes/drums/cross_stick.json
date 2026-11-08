@@ -1,0 +1,20 @@
+{
+  "recipe": 1,
+  "parts": {
+    "tock": {"part": "wave", "kind": "triangle", "freq": 470},
+    "tocka": {"part": "gain", "input": "tock", "gain": {
+      "on": [[0, 0], [0.0005, 0.6], [0.001, 0.6]],
+      "off": [[0.05, 0, -6]]}},
+    "ring": {"part": "wave", "freq": 1680},
+    "ringa": {"part": "gain", "input": "ring", "gain": {
+      "on": [[0, 0], [0.0005, 0.3]],
+      "off": [[0.03, 0, -6]]}},
+    "click": {"part": "noise", "seed": 6},
+    "clickb": {"part": "filter", "kind": "band", "q": 2.5, "input": "click", "cutoff": 2600},
+    "clicka": {"part": "gain", "input": "clickb", "gain": {
+      "on": [[0, 0], [0.0003, 1.5]],
+      "off": [[0.012, 0, -5]]}},
+    "all": {"part": "mix", "inputs": ["tocka", "ringa", "clicka"], "gain": 0.6}
+  },
+  "out": "all"
+}
