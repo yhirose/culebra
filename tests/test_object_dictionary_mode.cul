@@ -186,3 +186,101 @@ GC.stat()
 let keys_base = GC.stat().live_objects
 assert_true(live_with_dict(100) - keys_base >= 100)  // the keys, alive with it
 assert_true(GC.stat().live_objects - keys_base < 50)  // and gone with it
+
+// --- keys from data make a bounded number of layouts ---------------------------
+
+// A layout is kept for the life of the process, so the ones a key from data
+// asks for are budgeted: 8,192 for the whole process. Past it, a plain Object
+// that would need a layout no Object has had becomes a dictionary instead. So
+// this section spends the budget first, whatever earlier code left of it.
+let data_budget = 8192
+GC.stat()
+let budget_base = GC.stat().shapes
+for i in 0..data_budget + 100 {
+  mut one = {}
+  one["spend{i}"] = i
+}
+assert_true(GC.stat().shapes - budget_base <= data_budget)
+
+// Every way a key from data reaches an Object stops making layouts there,
+// and the Object it builds still reads, lists and shows the same.
+fn layouts_made(build) {
+  let before = GC.stat().shapes
+  build()
+  GC.stat().shapes - before
+}
+
+assert_eq(layouts_made(fn () {
+  for i in 0..50 {
+    mut o = {}
+    o["sub{i}"] = i
+    o["sub{i}b"] = i + 1
+    assert_eq(o["sub{i}"] + o["sub{i}b"], 2 * i + 1)
+    assert_eq(o.keys(), ["sub{i}", "sub{i}b"])
+  }
+}), 0)
+
+assert_eq(layouts_made(fn () {
+  for i in 0..50 {
+    let o = JSON.parse("\{\"json{i}\": {i}, \"json{i}b\": 1}")
+    assert_eq(o["json{i}"], i)
+    assert_eq(JSON.stringify(o), "\{\"json{i}\":{i},\"json{i}b\":1}")
+  }
+}), 0)
+
+assert_eq(layouts_made(fn () {
+  for i in 0..50 {
+    let o = [("pair{i}", i)].iter().to_object()
+    assert_eq(o["pair{i}"], i)
+  }
+}), 0)
+
+assert_eq(layouts_made(fn () {
+  for i in 0..50 {
+    let g = ["g{i}a", "g{i}b"].group_by(|w| w)
+    assert_eq(g.keys(), ["g{i}a", "g{i}b"])
+  }
+}), 0)
+
+assert_eq(layouts_made(fn () {
+  for i in 0..50 {
+    mut o = {}
+    o.get_or_put("put{i}", || []).push(i)
+    assert_eq(o["put{i}"], [i])
+  }
+}), 0)
+
+assert_eq(layouts_made(fn () {
+  for i in 0..50 {
+    let src = JSON.parse("\{\"spread{i}\": {i}}")
+    let o = {...src}
+    assert_eq(o["spread{i}"], i)
+  }
+}), 0)
+
+// Each parser's own first call makes the few layouts it always uses.
+TOML.parse("warm = 1")
+Env.parse("WARM=1")
+CSV.parse("warm\n1", header: true)
+assert_eq(layouts_made(fn () {
+  for i in 0..50 {
+    assert_eq(TOML.parse("toml{i} = {i}")["toml{i}"], i)
+    assert_eq(Env.parse("ENV{i}=v")["ENV{i}"], 'v')
+    assert_eq(CSV.parse("csv{i}\n1", header: true)[0]["csv{i}"], '1')
+  }
+}), 0)
+
+// A name the program spells is never limited: a literal's keys, quoted ones
+// included, `o.name = v` and a class's fields still take their layouts once
+// the budget is spent.
+assert_eq(layouts_made(|| {after_budget_literal: 1}), 1)
+assert_eq(layouts_made(|| {"after-budget-quoted": 1, n: 2}), 2)
+assert_eq(layouts_made(fn () {
+  mut o = {}
+  o.after_budget_named = 2
+}), 1)
+
+class AfterBudget {
+  new(@after_budget_field) {}
+}
+assert_eq(layouts_made(|| AfterBudget(7).after_budget_field), 1)

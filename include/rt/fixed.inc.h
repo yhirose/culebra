@@ -751,8 +751,8 @@ inline void _jit_object_set_any(JitObject* obj, const char* name,
         return;
       }
     }
-    culebra_runtime_object_set(obj, name, mut, val_tag, val_data, line, col,
-                               is_init);
+    _jit_object_set_keyed(obj, name, mut, val_tag, val_data, line, col,
+                          is_init);
     return;
   }
   culebra_runtime_set_op_pos(line, col);  // a key's hash/eq entry site
@@ -829,8 +829,8 @@ inline void _jit_copy_own_entries(JitObject* dst, JitObject* src, bool mut,
         if (skipped(name)) return;
         JitValue v = entry.value;
         culebra_runtime_value_retain(v.tag, v.data);
-        culebra_runtime_object_set(dst, std::string(name).c_str(), mut, v.tag,
-                                   v.data, line, col, /*is_init=*/true);
+        _jit_object_set_keyed(dst, std::string(name).c_str(), mut, v.tag,
+                              v.data, line, col, /*is_init=*/true);
       },
       [&](const JitHashedKey& k, const JitObjectEntry& entry) {
         JitValue v = entry.value;

@@ -207,23 +207,33 @@ struct ShapeRegistry {
     if (auto* known = current->child(name, type, annotation)) return known;
     std::lock_guard<std::mutex> lk(mu_);
     if (auto* known = current->child(name, type, annotation)) return known;
-    auto next = std::make_unique<Shape>();
-    next->names = current->names;
-    next->names.push_back(std::string(name));
-    size_t before = next->names.size() - 1;
-    next->types = current->types;
-    next->types.resize(before, static_cast<uint8_t>(FieldType::Any));
-    next->types.push_back(static_cast<uint8_t>(type));
-    next->annotations = current->annotations;
-    next->annotations.resize(before, nullptr);
-    next->annotations.push_back(annotation);
-    next->any_special = current->any_special || Shape::is_special_name(name);
-    next->root = current->tree_root();
-    next->parent = current;
-    auto* raw = next.get();
-    owned_.push_back(std::move(next));
-    current->adopt(raw);
-    return raw;
+    return mint(current, name, type, annotation);
+  }
+
+  // How many Shapes a key from data may make, process-wide. A name the
+  // program spells is bounded by its source; one a program computes (a
+  // subscript's key, a parsed document's, a request's) is not, and a Shape
+  // lives as long as the process. Past the budget such a key follows only a
+  // transition some Object has made already, as Ruby's "too complex" shapes
+  // and V8's keyed-store normalization bound the same growth.
+  static constexpr size_t kDataShapeBudget = 8192;
+
+  // transition_add for a key from data: the Shape that exists, or a new one
+  // while the budget lasts, else null (the caller keeps the key elsewhere).
+  // Once it is spent a miss takes no lock: a child another thread is adding
+  // just then only means one more dictionary.
+  Shape* transition_keyed(Shape* current, std::string_view name) {
+    if (auto* known = current->child(name, FieldType::Any, nullptr))
+      return known;
+    if (data_shapes_.load(std::memory_order_relaxed) == kDataShapeBudget)
+      return nullptr;
+    std::lock_guard<std::mutex> lk(mu_);
+    if (auto* known = current->child(name, FieldType::Any, nullptr))
+      return known;
+    if (data_shapes_.load(std::memory_order_relaxed) == kDataShapeBudget)
+      return nullptr;
+    data_shapes_.fetch_add(1, std::memory_order_relaxed);
+    return mint(current, name, FieldType::Any, nullptr);
   }
 
   // How many Shapes have been interned (GC.stat().shapes): none is ever
@@ -244,10 +254,33 @@ struct ShapeRegistry {
         view_root_(std::make_unique<Shape>()) {}
 
  private:
+  // The child of `current` that adds `name`, made under `mu_`.
+  Shape* mint(Shape* current, std::string_view name, FieldType type,
+              const FieldAnnotation* annotation) {
+    auto next = std::make_unique<Shape>();
+    next->names = current->names;
+    next->names.push_back(std::string(name));
+    size_t before = next->names.size() - 1;
+    next->types = current->types;
+    next->types.resize(before, static_cast<uint8_t>(FieldType::Any));
+    next->types.push_back(static_cast<uint8_t>(type));
+    next->annotations = current->annotations;
+    next->annotations.resize(before, nullptr);
+    next->annotations.push_back(annotation);
+    next->any_special = current->any_special || Shape::is_special_name(name);
+    next->root = current->tree_root();
+    next->parent = current;
+    auto* raw = next.get();
+    owned_.push_back(std::move(next));
+    current->adopt(raw);
+    return raw;
+  }
+
   std::mutex mu_;
   std::unique_ptr<Shape> root_;
   std::unique_ptr<Shape> view_root_;
   std::vector<std::unique_ptr<Shape>> owned_;  // keeps non-root shapes alive
+  std::atomic<size_t> data_shapes_{0};  // made by transition_keyed
   std::map<std::string, FieldAnnotation, std::less<>> annotations_;  // nodes stay put
 };
 
@@ -529,8 +562,9 @@ inline const char* _intern_str(std::string_view s);
 // name vector per key, so building an n-key dictionary cost O(n^2) in both
 // time and memory (20,000 String keys: 1.15 s and 4.0 GB peak, against
 // 0.0023 s for the same n Long keys, which have always used a hash
-// sidecar). Past `kDictAt` properties, or once it loses one (`erase`), a
-// plain Object stops transitioning shapes and keeps a hash index of its own.
+// sidecar). Past `kDictAt` properties, once it loses one (`erase`), or once
+// a key from data finds the Shape budget spent (`append_keyed`), a plain
+// Object stops transitioning shapes and keeps a hash index of its own.
 // Values stay in `slots`, so every caller that resolves a name to a slot
 // index is unaffected.
 //
@@ -874,6 +908,21 @@ struct JitObject {
     return append_slot_shaped(culebra::shape_registry().transition_add(
                                   shape, key, type, annotation),
                               value, mut);
+  }
+
+  // append_slot for a key from data (a subscript's, a parsed document's): it
+  // takes a Shape another Object already reached, and a new one only while
+  // the process's budget for those lasts (ShapeRegistry::transition_keyed).
+  // Past it a plain Object becomes a dictionary rather than mint one; a
+  // class instance cannot, so it takes its Shape as a named key does.
+  size_t append_keyed(std::string_view key, JitValue value, bool mut) {
+    if (!is_dict && !proto_ && slots.size() < kDictAt) {
+      if (!shape) shape = culebra::shape_registry().root();
+      if (auto* next = culebra::shape_registry().transition_keyed(shape, key))
+        return append_slot_shaped(next, value, mut);
+      become_dict();
+    }
+    return append_slot(key, value, mut);
   }
 
   // Past this many properties the shape tree costs more than it saves: each

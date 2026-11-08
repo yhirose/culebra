@@ -1530,8 +1530,12 @@ deterministic `drop`.
 layouts the program's Objects have needed so far, and a layout is kept
 for the life of the process, so the figure only grows. In a program that
 has warmed up it stays put; one that keeps rising is making a layout per
-set of keys, which no other count shows. The first `GC.stat()` makes the
-few its own result needs.
+set of keys, which no other count shows. Keys the program computes (a
+subscript's, a parsed document's) make at most 8,192 layouts in a
+process; past that, an Object that would need a new one keeps its keys
+in a hash table of its own (see the language spec's Objects section), so
+the figure levels off there too. The first `GC.stat()` makes the few its
+own result needs.
 
 `GC.refcount(value)` reports how many references a heap value is holding
 open, or `nil` for one that carries no count — `Long`, `Float`, `Bool` and

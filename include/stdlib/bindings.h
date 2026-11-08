@@ -1640,8 +1640,8 @@ struct _JitJsonBuilder {
   static JitObject* object_new() { return culebra_runtime_object_new(); }
   static void object_set(JitObject*& o, const std::string& key, JitValue&& v) {
     // is_init: a repeated key replaces the earlier one, as in an object literal.
-    culebra_runtime_object_set(o, key.c_str(), false, v.tag, v.data, 0, 0,
-                               /*is_init=*/true);
+    _jit_object_set_keyed(o, key.c_str(), false, v.tag, v.data, 0, 0,
+                          /*is_init=*/true);
   }
   static JitValue object_done(JitObject*&& o) {
     return {TAG_OBJECT, reinterpret_cast<int64_t>(o)};
@@ -2339,7 +2339,7 @@ inline JitObject* _culebra_http_result_to_object(
       reinterpret_cast<int64_t>(_culebra_heap_str(r.body)), line, col);
   auto* headers = culebra_runtime_object_new();
   for (auto& [k, v] : r.headers) {
-    culebra_runtime_object_set(headers, k.c_str(), false, TAG_STRING,
+    _jit_object_set_keyed(headers, k.c_str(), false, TAG_STRING,
         reinterpret_cast<int64_t>(_culebra_heap_str(v)), line, col);
   }
   culebra_runtime_object_set(o, "headers", false, TAG_OBJECT,
@@ -3325,8 +3325,8 @@ inline JitValue _jit_sqlite_collect_rows(int64_t stmt_id, int64_t line,
     auto* row = culebra_runtime_object_new();
     for (int i = 0; i < ncol; i++) {
       JitValue v = _jit_sqlite_cell_to_value(culebra::sqlite::column(stmt_id, i));
-      culebra_runtime_object_set(row, names[i].c_str(), false, v.tag, v.data,
-                                 line, col);
+      _jit_object_set_keyed(row, names[i].c_str(), false, v.tag, v.data, line,
+                            col);
     }
     culebra_runtime_array_push(arr, TAG_OBJECT, reinterpret_cast<int64_t>(row));
   }
@@ -7344,14 +7344,15 @@ inline JitObject* _jit_http_request_to_object(
       reinterpret_cast<int64_t>(_culebra_heap_str(q.path)), 0, 0);
   culebra_runtime_object_set(o, "body", false, TAG_STRING,
       reinterpret_cast<int64_t>(_culebra_heap_str(q.body)), 0, 0);
-  // culebra_runtime_object_set is a codegen-facing ABI symbol and takes a
-  // `const char*`, but only ever reads it as a string_view and interns the
-  // name into the shape — so the NUL-terminated temporary below is enough.
+  // The client chooses these names, so each map is a dictionary from the
+  // start: a name it makes up takes no Shape, which would outlive the request.
   auto to_object = [](const culebra::http::HeaderViews& m) {
     auto* obj = culebra_runtime_object_new();
+    if (!m.empty()) obj->become_dict();
     for (const auto& [k, v] : m)
-      culebra_runtime_object_set(obj, std::string(k).c_str(), false,
-          TAG_STRING, reinterpret_cast<int64_t>(_culebra_heap_str(v)), 0, 0);
+      _jit_object_set_keyed(obj, std::string(k).c_str(), false, TAG_STRING,
+                            reinterpret_cast<int64_t>(_culebra_heap_str(v)),
+                            0, 0);
     return obj;
   };
   culebra_runtime_object_set(o, "headers", false, TAG_OBJECT,
@@ -8730,8 +8731,7 @@ inline JitValue _ns_csv_parse(JitValue* a, int64_t n) {
             0, 0);
       }
       JitValue v = _csv_coerced_to_jit(cc);
-      culebra_runtime_object_set(obj, head[c].c_str(), false, v.tag, v.data, 0,
-                                 0);
+      _jit_object_set_keyed(obj, head[c].c_str(), false, v.tag, v.data, 0, 0);
     }
     culebra_runtime_array_push(outer, TAG_OBJECT,
                                reinterpret_cast<int64_t>(obj));
@@ -8791,8 +8791,8 @@ inline JitValue _toml_node_to_jit(const culebra::toml::Node& n) {
       auto* obj = culebra_runtime_object_new();
       for (const auto& kv : n.items) {
         auto v = _toml_node_to_jit(kv.second);
-        culebra_runtime_object_set(obj, kv.first.c_str(), false, v.tag, v.data,
-                                   0, 0);
+        _jit_object_set_keyed(obj, kv.first.c_str(), false, v.tag, v.data, 0,
+                              0);
       }
       return {TAG_OBJECT, reinterpret_cast<int64_t>(obj)};
     }
@@ -9252,9 +9252,9 @@ inline JitObject* _env_build_object(
     const std::vector<std::pair<std::string, std::string>>& pairs) {
   auto* o = culebra_runtime_object_new();
   for (const auto& [k, v] : pairs)
-    culebra_runtime_object_set(o, k.c_str(), /*mut=*/false, TAG_STRING,
-                               reinterpret_cast<int64_t>(_culebra_heap_str(v)),
-                               0, 0);
+    _jit_object_set_keyed(o, k.c_str(), /*mut=*/false, TAG_STRING,
+                          reinterpret_cast<int64_t>(_culebra_heap_str(v)), 0,
+                          0);
   return o;
 }
 inline JitValue _ns_env_parse(JitValue* a, int64_t) {
@@ -9674,8 +9674,8 @@ inline JitValue _jit_regex_match(
   auto* named_o = culebra_runtime_object_new();
   for (const auto& kv : named) {
     auto gv = _jit_regex_group(subject, row[kv.second]);
-    culebra_runtime_object_set(named_o, kv.first.c_str(), false, gv.tag, gv.data,
-                               0, 0);
+    _jit_object_set_keyed(named_o, kv.first.c_str(), false, gv.tag, gv.data, 0,
+                          0);
   }
   culebra_runtime_object_set(o, "named", false, TAG_OBJECT,
                              reinterpret_cast<int64_t>(named_o), 0, 0);

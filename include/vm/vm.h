@@ -14949,10 +14949,10 @@ class Compiler {
       }
       case "OBJECT"_: {
         int32_t t = alloc_temp(ast);
-        // A literal whose properties are all plain IDENTIFIER keys — the
-        // same subset the loop below always routes through Op::ObjectSet,
-        // never ObjectSetAny (non-IDENTIFIER key) or ObjectMerge (spread) —
-        // has an entirely static final key set. Pre-build its Shape and
+        // A literal whose properties are all plain IDENTIFIER keys — a
+        // subset of the ones the loop below routes through Op::ObjectSet
+        // (never ObjectSetAny or ObjectMerge (spread)) — has an entirely
+        // static final key set. Pre-build its Shape and
         // slots once instead of transitioning through one Shape per key on
         // every execution (see ObjectNewShaped).
         bool all_static_keys = true;
@@ -14998,9 +14998,16 @@ class Compiler {
             continue;
           }
           auto pv = culebra::view_object_property(*prop);
-          if (pv.key->tag != "IDENTIFIER"_) {
-            // Non-IDENTIFIER literal key (String/Float/Number/Nil/Bool/
-            // Tuple) — object_set_any. Both key and value are absorbed.
+          // A String key spelled whole ('k', `k`, "k") is a name the program
+          // wrote, as an IDENTIFIER is, and is stored as one: by name, so
+          // its layout is never one budgeted for keys from data.
+          std::string name(pv.key->token);
+          bool named = pv.key->tag == "IDENTIFIER"_ ||
+                       culebra::_ast_literal_string(*pv.key, name);
+          if (!named) {
+            // Any other literal key (Float/Number/Nil/Bool/Tuple, or a
+            // String with an interpolation) — object_set_any. Both key and
+            // value are absorbed.
             auto key = compile_expr(*pv.key);
             auto val = compile_expr(*pv.value);
             // Hashing an unhashable key throws positionless, and a String
@@ -15013,13 +15020,13 @@ class Compiler {
                  owned_src(*pv.value, val), pv.is_mut ? 1 : 0);
             continue;
           }
-          // IDENTIFIER key: shorthand `{x}` reads the variable through the
+          // A named key. Shorthand `{x}` reads the variable through the
           // ordinary identifier path (lookup / stdlib global / the same
           // compile-time "unresolved identifier" reject as a bare read —
           // interp's shorthand is a plain scope read too, so an undefined
           // name never reaches a runtime NameError in this slice).
           auto val = compile_expr(*pv.value);
-          if (culebra::is_well_known_prop(pv.key->token)) {
+          if (culebra::is_well_known_prop(name)) {
             // The contract error is positionless; publish this literal's
             // position first (emit_object_set's condition — confined to the
             // four protocol names, a plain property pays nothing).
@@ -15043,8 +15050,8 @@ class Compiler {
                       culebra::prop_key_kind(pv.key->token)}));
             continue;
           }
-          emit(Op::ObjectSet, t, owned_src(*pv.value, val),
-               kconst_str(pv.key->token), pv.is_mut ? 1 : 0);
+          emit(Op::ObjectSet, t, owned_src(*pv.value, val), kconst_str(name),
+               pv.is_mut ? 1 : 0);
         }
         return {t, true};
       }

@@ -2484,8 +2484,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_call_with_kwargs(
   if (meta->kwargs_rest_idx >= 0) {
     auto* rest_obj = culebra_runtime_object_new();
     for (auto& [k, v] : merged) {
-      culebra_runtime_object_set(rest_obj, std::string(k).c_str(),
-                                  /*mut=*/false, v.tag, v.data, line, col);
+      _jit_object_set_keyed(rest_obj, std::string(k).c_str(),
+                            /*mut=*/false, v.tag, v.data, line, col);
     }
     merged.clear();
     // TAG_KWREST, not TAG_OBJECT: the callee prologue reads this slot to tell

@@ -1407,11 +1407,23 @@ update the slot in place and require the key to already exist
 
 An Object built this way is a dictionary and performs like one: insert
 and read stay O(1) as it grows, whatever the key type, and a delete is
-O(n), since the entries after it keep their order. The fixed-slot
-layout an Object literal or a class instance gets is a different
-representation, and a plain Object leaves it once it holds enough keys
-that the layout no longer pays, or once a key is removed from it — a
-change of representation only, with no change in behaviour.
+O(n), since the entries after it keep their order.
+
+How an Object is stored can change as it grows; what it does cannot.
+An Object starts in a fixed-slot layout, which every Object with the
+same keys in the same order shares and which is kept for the life of
+the process. A plain Object leaves it for a hash table of its own once
+it grows past 64 keys, once a key is removed from it, or when a key
+from data would need a layout no Object has had before and the process
+has already made 8,192 such layouts. A key comes from data when the
+program computes it rather than spells it: a subscript store
+(`o[k] = v`, a literal `k` included), a spread, `get_or_put`,
+`to_object`, `group_by`, `JSON.parse` and the other parsers. A name
+written as `o.name = v`, in an Object literal or as a class field is never
+held to that limit, and a class instance keeps its layout however many
+keys it gets. An `Http.server` handler's `req.query`, `req.headers` and
+`req.params`, whose keys the client chooses, are hash tables from the
+start. `GC.stat().shapes` counts the layouts made so far.
 
 
 ### Methods and UFCS

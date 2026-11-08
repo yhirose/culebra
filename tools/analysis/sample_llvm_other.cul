@@ -70,10 +70,7 @@ for (n, s) in other[..30] {
   println("  {fmt.commas(s):>8}  {n[..200]}")
 }
 
-# Second-level namespace under llvm:: — group_by + reduce instead of a
-# Counter loop (Object properties inserted via `o[k] = v` are immutable
-# by default, so a `counts[k] = counts.get(k, 0) + v` re-assign throws
-# ImmutableError on the second hit for the same key).
+# Second-level namespace under llvm:: — group_by + reduce.
 let ns2_pat = re'\bllvm::(\(anonymous namespace\)::)?([A-Za-z0-9_]+)'
 fn ns2_key((n, s)) {
   ns2_pat.find(n)?[2] ?? '<other>'

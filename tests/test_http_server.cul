@@ -145,6 +145,18 @@ assert_eq(r3.status.to_string() + " | " + r3.body, '200 | payload-123')
 r4 = Http.get(BASE + "/q", params: { name: "alice" })
 assert_eq(r4.status.to_string() + " | " + r4.body, '200 | name=alice')
 
+// The client chooses a request's query, header and path parameter names, and
+// a layout made for one is kept for the life of the process: `req.query`,
+// `req.headers` and `req.params` are dictionaries from the start, so a client
+// sending new names makes none.
+Http.get(BASE + "/q?name=warm")
+GC.stat()  // interns the layout of its own result
+let query_base = GC.stat().shapes
+for i in 0..40 {
+  assert_eq(Http.get(BASE + "/q?name=x&fresh{i}=1").body, 'name=x')
+}
+assert_eq(GC.stat().shapes - query_base, 0)
+
 r5 = Http.get(BASE + "/method")
 assert_eq(r5.body, 'GET')
 

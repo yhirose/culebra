@@ -4047,6 +4047,10 @@ inline void _jit_packed_view_set(JitBufView& view, const char* key,
 // when it is Named). Only a class's own declaration has one, and it reaches
 // here from C++ (object_fields_init); culebra_runtime_object_set below is the
 // ABI codegen names, and its parameter list must stay as codegen declares it.
+// `kFromData` is _jit_object_set_keyed's, a template argument so a named
+// write carries no branch for it.
+extern "C++" {  // a template cannot have C linkage; we sit in extern "C"
+template <bool kFromData = false>
 inline void _jit_object_set_declared(
     JitObject* obj, const char* key, bool mut, int8_t tag, int64_t data,
     int64_t line, int64_t col, bool is_init, culebra::FieldType declared,
@@ -4070,7 +4074,10 @@ inline void _jit_object_set_declared(
     _jit_reject_value_add(obj, key, tag, data, line, col, is_init);
     _culebra_check_well_known_prop(key, tag, data);
     _jit_check_field_write(key, declared, annotation, tag, data, line, col);
-    obj->append_slot(key, JitValue{tag, data}, mut, declared, annotation);
+    if constexpr (kFromData)
+      obj->append_keyed(key, JitValue{tag, data}, mut);
+    else
+      obj->append_slot(key, JitValue{tag, data}, mut, declared, annotation);
   } else {
     if (obj->shape)
       _jit_check_slot_write(key, obj->shape, idx, tag, data, line, col);
@@ -4079,6 +4086,7 @@ inline void _jit_object_set_declared(
   }
   if (std::string_view(key) == "drop") _jit_owned_bind_drop(obj);
 }
+}  // extern "C++"
 
 // A read that trusted a declared type found something else: the receiver
 // passed a class-typed check by wearing the class's name, but its property
@@ -4098,6 +4106,16 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_set(
     int64_t line, int64_t col, bool is_init = false) {
   _jit_object_set_declared(obj, key, mut, tag, data, line, col, is_init,
                            culebra::FieldType::Any);
+}
+
+// object_set for a name the program computed rather than spelled: a
+// subscript's key, a spread's, one a builder read from data (JSON.parse, a
+// request's query). The Shape it takes is budgeted (JitObject::append_keyed).
+inline void _jit_object_set_keyed(JitObject* obj, const char* key, bool mut,
+                                  int8_t tag, int64_t data, int64_t line,
+                                  int64_t col, bool is_init = false) {
+  _jit_object_set_declared</*kFromData=*/true>(
+      obj, key, mut, tag, data, line, col, is_init, culebra::FieldType::Any);
 }
 
 // --- @packable SharedBuffer: handle objects + raw bytes <-> JitValue -----

@@ -51,15 +51,12 @@ let component_res = fmt.llvm_component_patterns.map(|(
   pat,
 )| (k, Regex.compile(pat)))
 
-# [symbol_count, byte_count] cells, keyed by target/component name. Built
-# via to_object from (key, cell) pairs rather than a Counter-style
-# increment loop — see sample_llvm_other.cul for why a bare `o[k] += v`
-# doesn't work here (Object slots inserted via subscript default to
-# immutable). Mutating the cell array in place, never reassigning the
-# slot, sidesteps that. byte_count starts as a Float 0.0 rather than
-# Long 0 so `cell[1] += size` promotes to Float on the first add (Either
-# operand Float -> Float) — the display math below wants MB and %, and
-# this way it never needs a per-print to_float(b).
+# [symbol_count, byte_count] cells, keyed by target/component name, built
+# via to_object from (key, cell) pairs and mutated in place. byte_count
+# starts as a Float 0.0 rather than Long 0 so `cell[1] += size` promotes
+# to Float on the first add (either operand Float -> Float) — the display
+# math below wants MB and %, and this way it never needs a per-print
+# to_float(b).
 let target_size = target_res.map(|(t, _)| (t, [0, 0.0])).to_object()
 let comp_size = component_res.map(|(k, _)| (k, [0, 0.0])).to_object()
 mut llvm_other = [0, 0.0]

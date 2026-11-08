@@ -501,8 +501,8 @@ inline JitValue to_jit(const char* s) { return to_jit(std::string_view(s)); }
 inline JitValue to_jit(Value v) { return v.release(); }
 inline JitValue to_jit(std::nullptr_t) { return {TAG_NIL, 0}; }
 
-// `{mut k: v}` — the object-literal seat, shared by the two ways a host
-// builds one. `mut` because what the host builds is the host's own data.
+// `{mut k: v}` — the object-literal seat (Value::object). `mut` because what
+// the host builds is the host's own data.
 inline void _object_put(JitObject* obj, const char* key, JitValue v) {
   culebra_runtime_object_set(obj, key, /*mut=*/true, v.tag, v.data, 0, 0,
                              /*is_init=*/true);
@@ -525,7 +525,12 @@ template <class T>
 JitValue to_jit(const std::map<std::string, T>& m) {
   auto* obj = culebra_runtime_object_new();
   Value guard = Value::adopt({TAG_OBJECT, reinterpret_cast<int64_t>(obj)});
-  for (const auto& [k, x] : m) _object_put(obj, k.c_str(), to_jit(x));
+  // A map's keys are data, not names the host spelled.
+  for (const auto& [k, x] : m) {
+    JitValue v = to_jit(x);
+    _jit_object_set_keyed(obj, k.c_str(), /*mut=*/true, v.tag, v.data, 0, 0,
+                          /*is_init=*/true);
+  }
   return guard.release();
 }
 template <class T>
