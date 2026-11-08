@@ -26,9 +26,13 @@ culebra は個人の趣味プロジェクト（プログラミング言語処理
 
 **Step 5-6 は `/ff-merge` skill で自動化されている**（`disable-model-invocation` なのでユーザーが明示的に呼ぶ）。内部で `just land`（`misc/land.sh`）が rebase → `just test-dev` → ff-only merge を machine-wide ロック下で1プロセス実行し、着地レース（他セッションが先に master を進めた場合）は自動リトライする。全て commit 済みならこれを使う。上記 5-6 は手動でやる場合の内訳。
 
-**Claude Code の sandbox について**: `git worktree add`／`submodule update`／`just dev`／`just test-dev` は `.claude/settings.local.json` の `sandbox.filesystem.allowWrite`（ccache tmp dir 追加済み）と `sandbox.network.allowLocalBinding` で sandbox 有効のまま通る。**Bash からの `git worktree remove` だけは例外** — `.git/worktrees/` 配下の削除は sandbox 下で常に拒否される（`.git` メタデータ削除への意図的な保護とみられる）ので、`ExitWorktree` の `remove` が使えず手で消すときはこの一手だけ `dangerouslyDisableSandbox` が要る。
+**Claude Code の sandbox について**: `git worktree add`／`submodule update`／`just dev`／`just test-dev` は `.claude/settings.local.json` の `sandbox.filesystem.allowWrite`（ccache tmp dir 追加済み）と `sandbox.network.allowLocalBinding` で sandbox 有効のまま通る。**Bash からの `git worktree remove` だけは例外** — `.git/worktrees/` 配下の削除は sandbox 下で常に拒否される（`.git` メタデータ削除への意図的な保護とみられる）ので、`ExitWorktree` の `remove` が使えず手で消すときはこの一手だけ `dangerouslyDisableSandbox` が要る。ただし sandbox の内と外を切り替えると、ソースを変えていなくても `just dev` が全部作り直す（平均5.4分、原因は調査中）。ビルドとテストは `just land` と同じ外側にそろえる。
 
 複数セッションが同じ repo で並行作業しうる。作業開始時は `git log --oneline master` と `git worktree list` を確認し、`git status` に自分が作っていない未コミット変更がある場合はそれを触らずユーザーに確認する。
+
+## 作業の段取り
+
+バグ修正や機能追加を始めるときは、`.claude/skills/orchestrate` スキルで計画する（小さな仕事でも、作業・見込み・後処理と着地の3行を書いてから動く）。後処理（テスト、レビュー、docs の同期、CI、着地）とビルドは、変更が守備範囲に入るものだけを、最も安い段で回す。どの変更に何が要るかは、スキルの `references/project-culebra.md` を引く。着地と ci/ ブランチは要るときだけ（後続が依存する、ほかの人が使う、束が仕上がった）、/simplify は束ねた差分に1回。仕事が終わるたびに、スキルの `references/log/` へ記録を1件残す。
 
 ## ビルド
 
