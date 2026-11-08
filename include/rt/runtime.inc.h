@@ -3739,13 +3739,11 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_eff_copy(
   if (src->is_dict) {
     // A dictionary's names live on the object, not in the shape, so the
     // copy needs its own index. (`shape` above is the shared sentinel,
-    // which carries no names at all.)
-    auto* d = new DictIndex(src->prop_size());
-    for (size_t i = 0; i < src->prop_size(); i++) d->add(src->prop_name(i), i);
-    o->dict_ = d;
-    o->is_dict = true;
-    // Interned String keys carry no ref, so the order record copies flat.
-    if (src->key_order) o->key_order = new std::vector<JitHashedKey>(*src->key_order);
+    // which carries no names at all.) A String key is traced rather than
+    // counted, so the order record copies flat and both objects hold the
+    // name Strings the copy's index views.
+    o->key_order = new std::vector<JitHashedKey>(*src->key_order);
+    o->become_dict();
   }
   for (auto& e : o->slots) {
     culebra_runtime_value_retain(e.value.tag, e.value.data);

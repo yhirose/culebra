@@ -515,7 +515,10 @@ struct JitSpecialTable {
 // inline length header). Referenced by value formatting / equality / inspect
 // above.
 inline uint64_t _str_len(const char* data);
+inline std::string_view _str_sv(const char* s);
 inline char* _str_alloc(uint64_t len);
+inline const char* _culebra_heap_str(std::string_view s);
+inline culebra::gc::Heap& _gc_heap();
 inline const char* _intern_str(std::string_view s);
 
 // Dictionary mode.
@@ -530,22 +533,15 @@ inline const char* _intern_str(std::string_view s);
 // plain Object stops transitioning shapes and keeps a hash index of its own.
 // Values stay in `slots`, so every caller that resolves a name to a slot
 // index is unaffected.
-struct DictKeyHash {
-  using is_transparent = void;
-  size_t operator()(std::string_view s) const {
-    return std::hash<std::string_view>{}(s);
-  }
-};
-struct DictKeyEq {
-  using is_transparent = void;
-  bool operator()(std::string_view a, std::string_view b) const {
-    return a == b;
-  }
-};
+//
+// The index owns no name. Each is a String the object's `key_order` holds
+// (JitObject::name_key), which the collector keeps for as long as the object
+// keeps the key; a name interned instead would outlive every object that ever
+// held it, and a dictionary's keys are data that need not repeat.
 struct DictIndex {
-  using Map = std::unordered_map<std::string, size_t, DictKeyHash, DictKeyEq>;
-  // Owns the names; `unordered_map` keeps its entries at stable addresses,
-  // so `entries` can point into it.
+  using Map = std::unordered_map<std::string_view, size_t>;
+  // `unordered_map` keeps its entries at stable addresses, so `entries` can
+  // point into it.
   Map index;
   std::vector<Map::value_type*> entries;  // slot -> (name, slot)
 
@@ -554,9 +550,13 @@ struct DictIndex {
     entries.reserve(n);
   }
 
+  // The index over an insertion-order record's String entries: the i-th of
+  // them names slot i, as an Object's String keys fill its slots in order.
+  static DictIndex* over(const std::vector<JitHashedKey>& order, size_t n);
+
   std::string_view name(size_t slot) const { return entries[slot]->first; }
   void add(std::string_view name, size_t slot) {
-    entries.push_back(&*index.emplace(std::string(name), slot).first);
+    entries.push_back(&*index.emplace(name, slot).first);
   }
   // Every later slot shifts down one, as the object's `slots` do.
   void remove(size_t slot) {
@@ -663,18 +663,26 @@ struct JitObject {
   struct AnyKeyMap;  // forward decl; full definition below
   AnyKeyMap* non_string_props = nullptr;
   // Unified key insertion order — every key (String and non-String)
-  // in the order it was first set. String keys are stored as TAG_STRING
-  // JitValues pointing into the shared shape name pool (no retain, no hash).
-  // Non-String keys are stored as their literal JitValue with the hash the
-  // sidecar holds; Tuple keys hold a +1 retain so the cycle GC and
-  // destruction paths can release them via this vector. The shape
-  // (for String) and `non_string_props` (for non-String) remain for
-  // O(1) lookup.
+  // in the order it was first set. String keys are stored as Strings of
+  // the object's own (name_key: traced like any value it holds, so no
+  // retain, and no hash). Non-String keys are stored as their literal
+  // JitValue with the hash the sidecar holds; Tuple keys hold a +1 retain
+  // so the cycle GC and destruction paths can release them via this
+  // vector. The shape (for String) and `non_string_props` (for
+  // non-String) remain for O(1) lookup.
   std::vector<JitHashedKey>* key_order = nullptr;
-  // A String key's `key_order` entry: its name interned.
+  // A String key's `key_order` entry: a String made for it, and never one
+  // interned, which would stay for the life of the process. Making it never
+  // collects (the next allocation does): a collection runs `drop` bodies,
+  // which could reach this object while a caller has it half changed.
   static JitHashedKey name_key(std::string_view name) {
+    culebra::gc::Heap::CollectPause pause(_gc_heap());
     return JitHashedKey::name(
-        {/*TAG_STRING*/ 4, reinterpret_cast<int64_t>(_intern_str(name))});
+        {/*TAG_STRING*/ 4, reinterpret_cast<int64_t>(_culebra_heap_str(name))});
+  }
+  // The name a String key's entry holds.
+  static std::string_view name_of(const JitHashedKey& entry) {
+    return _str_sv(reinterpret_cast<const char*>(entry.value().data));
   }
   // Bumps on add/delete (not value updates). object_iter snapshots
   // this and fails-fast on per-step mismatch — matches Python dict
@@ -877,22 +885,22 @@ struct JitObject {
   // would go. An empty one (no shape yet, a received dictionary) flips too.
   void become_dict() {
     assert(!is_dict && !proto_);
-    auto* d = new DictIndex(slots.size());
-    for (size_t i = 0; i < slots.size(); i++) d->add(shape->names[i], i);
     // `key_order` is the only insertion-order record once the shape stops
-    // growing, so it is made real here if it is still lazy.
+    // growing, so it is made real here if it is still lazy; its Strings are
+    // the names the index views.
     materialize_key_order();
-    dict_ = d;
+    dict_ = DictIndex::over(*key_order, slots.size());
     is_dict = true;
     shape = dict_shape();
   }
 
   size_t append_dict(std::string_view key, JitValue value, bool mut) {
-    dict_->add(key, slots.size());
+    auto entry = name_key(key);
+    key_order->push_back(entry);
+    dict_->add(name_of(entry), slots.size());
     if (slots.capacity() == 0) slots.reserve(8);
     slots.push_back({value, mut});
     ++mut_count;
-    key_order->push_back(name_key(key));
     return slots.size() - 1;
   }
 
@@ -929,17 +937,22 @@ struct JitObject {
     for (size_t i = 0; i < slots.size(); i++) f(prop_name(i), slots[i]);
   }
 
-  // Drop the `key_order` entry holding this very value (no `eq` runs); true
-  // if there was one.
-  bool drop_order_entry(JitValue key) {
+  // Drop the first `key_order` entry `match` accepts; true if there was one.
+  template <class Match>
+  bool drop_order_entry_if(Match&& match) {
     if (!key_order) return false;
-    auto it = std::find_if(
-        key_order->begin(), key_order->end(), [&](const JitHashedKey& e) {
-          return e.value().tag == key.tag && e.value().data == key.data;
-        });
+    auto it = std::find_if(key_order->begin(), key_order->end(), match);
     if (it == key_order->end()) return false;
     key_order->erase(it);
     return true;
+  }
+
+  // Drop the `key_order` entry holding this very value (no `eq` runs); true
+  // if there was one.
+  bool drop_order_entry(JitValue key) {
+    return drop_order_entry_if([&](const JitHashedKey& e) {
+      return e.value().tag == key.tag && e.value().data == key.data;
+    });
   }
 
   // Remove a String-keyed property, its `key_order` entry with it. The
@@ -954,8 +967,11 @@ struct JitObject {
     auto idx = find_slot(key);
     if (idx == static_cast<size_t>(-1)) return;
     if (!is_dict && !proto_) become_dict();
-    // A String key's entry is the interned name, so identity finds it.
-    if (key_order) drop_order_entry(name_key(key).value());
+    // A String key's entry holds a String of its own, found by its bytes.
+    // The index below still views it: nothing collects in between.
+    drop_order_entry_if([&](const JitHashedKey& e) {
+      return e.value().tag == /*TAG_STRING*/ 4 && name_of(e) == key;
+    });
     ++mut_count;
     if (is_dict) {
       dict_->remove(idx);
@@ -996,6 +1012,16 @@ struct JitObject {
   }
 };
 static_assert(sizeof(JitObject) <= 128 && !std::is_polymorphic_v<JitObject>);
+
+inline DictIndex* DictIndex::over(const std::vector<JitHashedKey>& order,
+                                  size_t n) {
+  auto* d = new DictIndex(n);
+  for (const auto& e : order)
+    if (e.value().tag == /*TAG_STRING*/ 4)
+      d->add(JitObject::name_of(e), d->entries.size());
+  assert(d->entries.size() == n);
+  return d;
+}
 
 // A generator's frame (rt/gen.inc.h), as the collector and the release path
 // reach it through the object it hangs off (JitObject::gen_frame).
@@ -1769,7 +1795,7 @@ inline void _jit_each_entry(JitObject* obj, Named&& named, Keyed&& keyed) {
   for (size_t i = 0; obj->key_order && i < obj->key_order->size(); i++) {
     JitHashedKey k = (*obj->key_order)[i];
     if (k.value().tag == TAG_STRING) {
-      std::string_view name(reinterpret_cast<const char*>(k.value().data));
+      auto name = JitObject::name_of(k);
       auto idx = obj->find_slot(name);
       if (idx != static_cast<size_t>(-1)) named(name, obj->slots[idx]);
     } else if (auto* entry = _jit_sidecar_own(obj, k)) {

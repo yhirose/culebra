@@ -159,3 +159,30 @@ for i in 0..50 {
   cache.remove(cache.keys()[0])
 }
 assert_eq(GC.stat().shapes - send_base, 0)
+
+// --- a dictionary's keys are its own ------------------------------------------
+
+// A dictionary holds each key as a String of its own, reclaimed with it. Keys
+// that never repeat (ids, timestamps) used to be interned for the life of the
+// process instead, one copy per distinct key, under a lock every isolate shared.
+fn fresh_dict(n) {
+  mut d = {}
+  d['flip'] = 0
+  d.remove('flip')  // a dictionary from here on
+  for i in 0..n {
+    d["fresh{i}"] = i
+  }
+  d
+}
+
+fn live_with_dict(n) {
+  let d = fresh_dict(n)
+  let live = GC.stat().live_objects
+  assert_eq(d.keys()[n - 1], "fresh{n - 1}")
+  live
+}
+
+GC.stat()
+let keys_base = GC.stat().live_objects
+assert_true(live_with_dict(100) - keys_base >= 100)  // the keys, alive with it
+assert_true(GC.stat().live_objects - keys_base < 50)  // and gone with it
