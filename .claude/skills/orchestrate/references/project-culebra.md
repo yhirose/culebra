@@ -59,6 +59,8 @@ SKILL.mdの原則と手順をculebraに当てはめるための事実。今のma
 - ロックの持ち主：`lsof "$TMPDIR/culebra-heavy-lane.lock"`（重いビルド。`TMPDIR`はサンドボックスの内と外で違う）、`lsof "$(git rev-parse --git-common-dir)/culebra-land.lock"`（着地）。待っている側も一覧に出る。
 - プロセス：`ps -p <pid>`（サンドボックスの外）。
 - CI：`gh run list`（サンドボックスの外）。コミットで絞るときは`--commit <完全なSHA>`（短いSHAでは何も返らない）。待つときは`timeout 3600 gh run watch <id> --exit-status --compact -i 30`を、サンドボックスの外のバックグラウンドで。終了コード124は期限切れ。
+- **CIの待ちは、runのIDで。** pushした直後は、ブランチ名で最新のrunを引くと、前回の完了済みのrunを拾う（masterで起きた）。`gh run list --commit <完全なSHA>`でIDを取ってから、`gh run watch <id>`で待つ。
+- **外のサービスの障害でCIが落ちたとき**（例：`Install just`が、GitHubのリリース配布の504で8分間失敗した）：ログで原因を確かめ、ジョブの中身が一度も走っていなければ、`gh run rerun <id> --failed`で、失敗したジョブだけを再実行する（約10分）。
 
 ## 5. CIと着地の決まり
 - **着地（`/ff-merge`、`just land`）は要るときだけ**：後続の作業がその変更に依存する、ほかのセッションやuserが使う、束が仕上がった、溜めすぎて壊れたときに切り分けにくくなる手前（目安は束に2〜3の変更）。小さな修正のたびには着地しない。
