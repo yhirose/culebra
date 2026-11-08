@@ -70,11 +70,8 @@ fn a_muted_guitar_stroke_is_its_head_alone() {
   }
 }
 
-# `pluck` is where along the string, from the bridge as a fraction of its
-# length, a guitar is struck: a song says it (`external Guitar pluck=0.3`,
-# `\pluck=0.12`), as it does for the native guitar. Left at 0 the string is
-# struck as it was before the knob; struck at the middle it has no even
-# harmonics, as a real string plucked there has none.
+# `pluck`, where along the string a guitar is struck: 0 leaves the pick as it
+# was (the comb fades in over the first 0.001), 0.5 has no even harmonics.
 @test
 fn a_guitar_is_plucked_where_a_song_says() {
   # The amplitude at `hz` over 0.05 to 0.45 s.
@@ -101,9 +98,12 @@ fn a_guitar_is_plucked_where_a_song_says() {
         let xs = g.note(pitch, 0.8, params: {pluck: p})
         amp(xs, 2 * hz, g.rate) / amp(xs, hz, g.rate)
       }
-      assert_eq(g.note(pitch, 0.5, params: {pluck: 0}), g.note(pitch, 0.5), (name, pitch))
-      assert_true(g.note(pitch, 0.5, params: {pluck: 0.12}) != g.note(pitch, 0.5), (name, pitch))
-      assert_true(second(0.5) < falls_to[name] * second(0), (name, pitch, second(0.5), second(0)))
+      let plain = g.note(pitch, 0.5)
+      assert_eq(g.note(pitch, 0.5, params: {pluck: 0}), plain, (name, pitch))
+      assert_true(g.note(pitch, 0.5, params: {pluck: 0.12}) != plain, (name, pitch))
+      let middle = second(0.5)
+      let bridge = second(0)
+      assert_true(middle < falls_to[name] * bridge, (name, pitch, middle, bridge))
     }
   }
 }
