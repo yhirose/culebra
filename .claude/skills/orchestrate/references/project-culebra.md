@@ -14,24 +14,25 @@ SKILL.mdの原則と手順をculebraに当てはめるための事実。今のma
 
 **サンドボックス**：内と外を切り替えると、ソースを変えていなくてもdevが全部作り直す（約5分。原因は調査中）。原因が直るまで、ビルドとテストは全部サンドボックスの外で回す（`just land`と同じ側）。原因が直るまでは、CLAUDE.mdの「Claude Codeのsandboxについて」（中でも通る、という記述）よりこちらを優先する。`gh`（中ではTLSで必ず失敗する）、`ps`、submoduleの初期化も外で。一時ファイルは`$TMPDIR`かscratchpadに。
 
-## 2. 検証の層のコマンドと守備範囲（担当には、この中から選んで「Checks for this subtask」に書く）
+## 2. 後処理の特性表（SKILL.md原則3で選ぶ。担当にはこの中から選んで「Checks for this subtask」に書く）
 
-| 層 | culebraでのやり方 | 守備範囲（何を読み、何を捕まえるか） | 目安 |
-|---|---|---|---|
-| 単発の実行 | `./build-dev/culebra <file>.cul`（`--jit`も） | その1ファイルの振る舞い。手元のmacOSだけ | 数分 |
-| 修正前に落ちることの確認 | 修正前のバイナリ（§3）で新しいテストを回す。作り直しは要らない | 新しいテストが本当に効くか | 数分 |
-| 使う側の洗い出し | `git grep -n '<変えた名前や項目>' -- src include examples docs tests tools`。見つかった場所を確かめるゲートの行のうち、着地のゲートが回さない行（ゲート表の段が`test`だけのもの。例：`examples/languages`を全部回す行）は、`just phase <語>`でci/の前に回す | 変えた不変条件の写しやまね。ゲートの行がない場所は洗い出しだけが頼り | 数分＋該当する行 |
-| 変更のたびの検査 | `just check` | sourceとIRのラチェット、`tests/*.cul`全体のassert（executor）、examples | 約20秒＋devのビルド |
-| 触った領域 | `just phase <語>`（語は、ゲート表の関数名かラベルに含まれる行を全部選ぶ。複数の語は「または」。狙った行だけに当たる語を選び、`>>> [Ns] <label>`の行で実際に回った行を確かめる） | 選んだゲートの行の範囲 | ゲート表の数字＋devのビルド |
-| docs | enとjaの両方を書き、`just doctest` | `docs/`のコードブロック（dev用のバイナリで2レーン）。C++の埋め込み例は読まない（CIのdoctest-ubuntuとdocs-cpp-macosだけ） | 数分 |
-| ゲートの数の上限 | テストやdocsのコードブロックを足したら`just check-gate-budget`を回し、`tools/checks/gate_budget.txt`を理由と一緒に直し、足したテストの時間を測る | ゲートが掃く数（`gate_budget.txt`） | 数分 |
-| 直接回すテスト | シェルで動くテスト（`tests/*_test.sh`）は`bash tests/<name>_test.sh build-dev/culebra`。`check`と`phase`では回らない | そのスクリプト | 数分 |
-| レビュー | `/simplify` | 差分のコードの質（重複、命名、効率）。動作は確かめない。テストとdocsだけの変更には回さない | 5〜8分 |
-| 全体のスイープ | ゲート表の行を使う。全テストのvm/jit対称は`just phase run_diff_vm_jit`（被覆の部分集合の行と全体の行の両方が回る）。手書きのループで回さない | 全`tests/*.cul`のレーン間の一致 | 10分以上 |
-| 性能 | `just build`（`-O3`＋LTO）でだけ測る。`build-dev/`は`-O1` | ホットパスの時間とピークのメモリ | 約7分＋測定 |
-| userの感覚での確認 | 音の変わる変更は、変更前後のWAVをuserに聞き比べてもらう | 音、見た目 | userしだい |
-| 着地 | `just land`（rebase → `just test-dev` → 早送り） | 生成物のずれ、JIT対称の部分集合、codegen、ctestのCLIの半分、isolate。rebaseで混ざった他人の変更との組み合わせ | 約2〜7分 |
-| CI（ci/かmasterへのpush） | CLAUDE.mdの「どこまで回すか」 | 手元では回らないもの：Ubuntuの`just test`（difftest、AOT、leak系、wrap）、assertを有効にしたビルド、Windows、各OSのリリース構成、C++の埋め込み例。**`.claude/`は読まない** | 約35分 |
+| 後処理 | やり方 | 守備範囲（何を読み、何を捕まえるか） | 費用（時間／占める資源） | 確実さ |
+|---|---|---|---|---|
+| 単発の実行 | `./build-dev/culebra <file>.cul`（`--jit`も） | その1ファイルの振る舞い。手元のmacOSだけ | 数分／マシン（devのビルドが要る） | |
+| テストの効き目 | 修正前のバイナリ（§3）で新しいテストを回す | 新しいテストが本当に効くか | 数分／なし（作り直し不要） | |
+| 使う側の洗い出し | `git grep -n '<変えた名前や項目>' -- src include examples docs tests tools`。見つかった場所を確かめるゲートの行のうち、着地のゲートが回さない行（段が`test`だけ。例：`examples/languages`を全部回す行）は`just phase <語>`でci/の前に回す | 変えた不変条件の写しやまね。ゲートの行がない場所は、これだけが読む | 数分＋該当する行／マシン | |
+| 変更のたびの検査 | `just check` | sourceとIRのラチェット、`tests/*.cul`全体のassert（executor）、examples | 約20秒＋devのビルド／マシン | |
+| 触った領域 | `just phase <語>`（語を関数名かラベルに含む行を全部選ぶ。複数の語は「または」。狙った行だけに当たる語を選び、`>>> [Ns] <label>`で実際に回った行を確かめる） | 選んだゲートの行 | ゲート表の数字＋devのビルド／マシン | |
+| 直接回すテスト | `bash tests/<name>_test.sh build-dev/culebra` | そのシェルのテスト（`check`と`phase`では回らない） | 数分／マシン | 負荷で落ちるものがある（§8） |
+| 全体のスイープ | ゲート表の行（全テストのvm/jit対称は`just phase run_diff_vm_jit`）。手書きのループで回さない | 全`tests/*.cul`のレーン間の一致 | 10分以上／マシン | |
+| docsの同期 | 機能の変更と同じ変更で、enとjaの両方とメモリを直し、`just doctest` | `docs/`のコードブロック（devのバイナリで2レーン）。C++の埋め込み例は読まない（CIだけ） | 数分／マシン | |
+| ゲートの数の上限 | `just check-gate-budget`。足した分は`tools/checks/gate_budget.txt`を理由と一緒に直し、足したテストの時間を測る | ゲートが掃くテストとdocsのブロックの数 | 数分／なし | |
+| コードのレビュー | `/simplify`（3人並列） | コードの差分の質（重複、命名、効率）。テストとdocsの差分、動作は読まない | 5〜8分／トークン約25万 | |
+| 設計や計画のレビュー | 独立した担当1人に、主張を一次資料で確かめさせる | 計画の誤り、見落とし | 4〜11分／トークン12万〜26万 | |
+| 性能 | `just build`（`-O3`＋LTO）でだけ測る（`build-dev/`は`-O1`） | ホットパスの時間とピークのメモリ（ホットパスを触った変更だけが読む対象） | 約7分＋測定／マシン（全ツリーのビルド） | 負荷の高いときは揺れる |
+| userの感覚での確認 | 音の変わる変更は、変更前後のWAVを聞き比べてもらう | 音、見た目 | 数分の手間、数時間の遅れ／user | |
+| 着地のゲート | `just land`（rebase → `just test-dev` → 早送り） | 生成物のずれ、JIT対称の部分集合、codegen、ctestのCLIの半分、isolate、rebaseで混ざった他人の変更との組み合わせ | 約2〜7分／着地のロック、マシン | 負荷で落ちるものがある（§8） |
+| CI | ci/かmasterへのpush（決まりは§5） | 手元で回らないもの：Ubuntuの`just test`（difftest、AOT、leak系、wrap）、assertを有効にしたビルド、Windows、各OSのリリース構成、C++の埋め込み例。**`.claude/`は読まない** | 約35分／CIの枠（macOS 4/5）。手元のマシンは使わない | 直近100回で失敗10（原因はばらばら） |
 
 ## 3. 共有の準備
 - 修正前のリリースビルド：同じSHAのものがあれば使い回す。なければ専用のworktree（`.claude/worktrees/baseline`）でサンドボックスの外から`just build`し、`<worktree>/build/culebra`を渡す。
@@ -63,7 +64,7 @@ Project rules (culebra):
 - Commits: English, no Claude-derived trailers. Do not push, do not land, do not touch master.
 ```
 
-## 7. 振り返りの記録のありか（SKILL.md §7）
+## 7. 振り返りの記録のありか（SKILL.md §6）
 - 自分の会話：`~/.claude/projects/-Users-yuji-Projects-culebra/<session id>.jsonl`。担当の記録は、その下の`subagents/`と、作業中の`tasks/<id>.output`。各行の`timestamp`で、道具の呼び出しと通知の時刻が取れる。大きいので、丸ごと読まずにスクリプトで抜き出す。
 - CI：`gh run list --json createdAt,updatedAt`、ジョブごとは`gh run view <id> --json jobs`（待ちと実行の時間が分かる）。
 - ビルドのログ：担当がscratchpadに残した`*.log`。
@@ -98,3 +99,4 @@ Project rules (culebra):
 | worktreeの安全装置による拒否 | 担当1人あたり4〜14回 | Bashは単純な形で打つ（変数、ループ、パイプをgitと混ぜない） |
 | サンドボックス | `gh`、`ps`、submoduleの一部のファイル、既定の`mktemp`が失敗する | §1のとおり外で回す |
 | 自動判定の拒否 | `kill`は拒否された | 自分の処理は`TaskStop`で止める。待ちに期限を付け、止める必要が出ないようにする |
+| 負荷で時々落ちるテスト | JITのコンパイル時間ゲート、`signal_test`（メモリより）。`midi_test`の負荷落ちはbfa3cb4aで直した | 時間切れなら単独で回し直す（SKILL.md §4）。再発したら原因を調べる |

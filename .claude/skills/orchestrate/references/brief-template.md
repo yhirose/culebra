@@ -3,7 +3,7 @@
 担当（サブエージェント）はプロジェクトの指示ファイル（CLAUDE.mdなど）を読むが、司令塔のメモリと会話は見ない。必要な文脈は全部ここに書く。全員同じひな形から作り、`<…>`だけを埋める。
 
 - 「Project rules」には、プロジェクトの一覧（例：`project-culebra.md`）の「担当に渡す決まり」をそのまま貼る。
-- 「Checks for this subtask」には、SKILL.md §2の「検証の深さ」で決めた層だけを書く。書いていない検証は、担当にさせない。
+- 「Checks for this subtask」には、SKILL.md §2の「後処理を選ぶ」で担当ごとに置いたものだけを書く。書いていない検証は、担当にさせない。
 
 ```text
 <Purpose in 1–2 sentences, and why it is needed>
