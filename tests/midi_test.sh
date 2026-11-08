@@ -149,6 +149,10 @@ for engine in --vm --jit; do
   mkfifo "$TMP/ready"
   "$TMP/sender" "$TMP/ready" > /dev/null &
   sender=$!
+  # Emptied here, before the launch: the background `>` truncates only once
+  # the child runs, and the poll below could read the previous engine's
+  # "waiting" first and press Ctrl+C before this program got that far.
+  : > "$TMP/waited"
   CULEBRA_AUDIO=on "$CULEBRA" "$engine" "$TMP/wait.cul" "$TMP/ready" > "$TMP/waited" 2>&1 &
   pid=$!
   # As long as the program may take to see the source (wait.cul's 30 s).
