@@ -12,22 +12,42 @@
 # at a time.
 #
 # The lock is advisory. By default it's one file in TMPDIR, shared by every
-# worktree; CULEBRA_LOCK_PATH overrides the path (`just land` points it at a
-# path under the shared .git dir instead, so it's the same file regardless of
-# each session's own TMPDIR). It is held only for the wrapped command and
-# released when it exits, including on Ctrl-C — lockf/flock lock through the
-# kernel, which drops the lock with the process, so a killed run cannot leave
-# it behind.
+# worktree; CULEBRA_LOCK_PATH overrides the path for every heavy lane. A lock
+# of another kind is named with --lock (`just land` points it under the shared
+# .git dir, so it's the same file regardless of each session's own TMPDIR);
+# an option rather than the variable, because the command it wraps inherits
+# the environment and may take the heavy-lane lock itself. It is held only for
+# the wrapped command and released when it exits, including on Ctrl-C —
+# lockf/flock lock through the kernel, which drops the lock with the process,
+# so a killed run cannot leave it behind.
+#
+# Reentrant: a command already under a lock may run something that asks for
+# the same one (`one_at_a_time.sh just build`, whose recipe wraps make again).
+# The lock belongs to the outer process, so waiting for it would wait forever;
+# CULEBRA_LOCKS_HELD lists the locks held up the process tree, and a lock on
+# that list runs the command straight away.
 #
 # Escape hatch: CULEBRA_GATE_LOCK=0 (or "off") runs unlocked. The fast inner
 # loop (`just dev` / `just test-dev`) is deliberately NOT wrapped: it has to
 # stay responsive even while someone else's gate — or a `just land` — is
 # running.
+#
+# Usage: one_at_a_time.sh [--lock <path>] [--wait-msg <text>] <command> [args...]
 
 set -euo pipefail
 
+lock="${CULEBRA_LOCK_PATH:-${TMPDIR:-/tmp}/culebra-heavy-lane.lock}"
+wait_msg="waiting: another culebra build/gate holds this machine…"
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --lock) lock="${2:?--lock needs a path}"; shift 2 ;;
+    --wait-msg) wait_msg="${2:?--wait-msg needs a text}"; shift 2 ;;
+    *) break ;;
+  esac
+done
+
 if [ $# -eq 0 ]; then
-  echo "usage: one_at_a_time.sh <command> [args...]" >&2
+  echo "usage: one_at_a_time.sh [--lock <path>] [--wait-msg <text>] <command> [args...]" >&2
   exit 2
 fi
 
@@ -35,8 +55,14 @@ case "${CULEBRA_GATE_LOCK:-1}" in
   ""|0|off) exec "$@" ;;
 esac
 
-lock="${CULEBRA_LOCK_PATH:-${TMPDIR:-/tmp}/culebra-heavy-lane.lock}"
-wait_msg="${CULEBRA_LOCK_WAIT_MSG:-waiting: another culebra build/gate holds this machine…}"
+# One spelling per file, so CULEBRA_LOCKS_HELD sees /tmp and /private/tmp
+# (macOS) as one lock.
+lockdir="$(cd "$(dirname "$lock")" && pwd -P)" || exit 1
+lock="$lockdir/$(basename "$lock")"
+case ":${CULEBRA_LOCKS_HELD:-}:" in
+  *":$lock:"*) exec "$@" ;;
+esac
+export CULEBRA_LOCKS_HELD="${CULEBRA_LOCKS_HELD:+$CULEBRA_LOCKS_HELD:}$lock"
 
 # BSD lockf (macOS) and util-linux flock (Linux) both take "lockfile command".
 # Probing with `true` rather than with the real command keeps the two concerns

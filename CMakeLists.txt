@@ -2450,6 +2450,13 @@ add_test(NAME jit_cache_test
          COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/jit_cache_test.sh
                  $<TARGET_FILE:culebra>)
 
+# misc/one_at_a_time.sh, the lock around the heavy lanes: two processes queue,
+# and a command already under a lock that asks for it again does not wait on
+# itself. Drives the script alone; no binary.
+add_test(NAME one_at_a_time_test
+         COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/one_at_a_time_test.sh
+                 ${CMAKE_CURRENT_SOURCE_DIR}/misc/one_at_a_time.sh)
+
 # examples/languages/pl0/pl0_codegen.cul against examples/languages/pl0/pl0.cul — two independent
 # implementations of PL/0, each the other's oracle — across interp / JIT / AOT
 # (needs `culebra build` for the AOT leg, and a stdin pipe for read.pas, so a

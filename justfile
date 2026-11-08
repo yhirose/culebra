@@ -650,16 +650,16 @@ test-assert BACKEND='fast': build-assert
 # Land BRANCH onto local master: rebase, rebuild + test-dev, then fast-forward
 # merge (misc/land.sh), retrying the rebase if master moves again before the
 # merge lands. Runs under its own machine-wide lock — a different lock file
-# than build/build-gate/test's (CULEBRA_LOCK_PATH), so landing one branch
-# doesn't queue behind someone else's unrelated gate, and the lock path lives
-# under the shared .git dir rather than TMPDIR so every session's `just land`
-# contends for the same file regardless of its own TMPDIR.
+# than build/build-gate/test's, so landing one branch doesn't queue behind
+# someone else's unrelated gate, and the lock path lives under the shared .git
+# dir rather than TMPDIR so every session's `just land` contends for the same
+# file regardless of its own TMPDIR.
 [doc("Land BRANCH onto local master: rebase + test-dev + ff-only merge, retried if master moves mid-test")]
 [group("land")]
 land BRANCH:
-    CULEBRA_LOCK_PATH="$(git rev-parse --git-common-dir)/culebra-land.lock" \
-    CULEBRA_LOCK_WAIT_MSG="waiting: another culebra session is landing onto master…" \
-        {{lock_cmd}} misc/land.sh {{BRANCH}}
+    {{lock_cmd}} --lock "$(git rev-parse --git-common-dir)/culebra-land.lock" \
+        --wait-msg "waiting: another culebra session is landing onto master…" \
+        misc/land.sh {{BRANCH}}
 
 [private]
 _run-tests BACKEND:

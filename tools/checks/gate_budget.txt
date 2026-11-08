@@ -194,7 +194,9 @@ vm_cases 191
 # kauai/tools/play.cul plays a song with a module of one's own).
 # 40 since audio_engine_test (the audio engine plays what it renders offline,
 # sample for sample, and a render makes no heap call).
-ctest.entries 40
+# 41 since one_at_a_time_test (the heavy-lane lock queues two processes and
+# does not wait on itself when a command under it asks for it again).
+ctest.entries 41
 
 # ```culebra blocks under docs/ — `just doctest` runs the runnable ones on both
 # engines, and the JIT lane costs one LLVM module per block.
