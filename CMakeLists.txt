@@ -1266,7 +1266,7 @@ if(CULEBRA_ENABLE_JIT)
   # CulebraRT::FS makes `culebra build` (AOT) fail with a clear
   # "embedded runtime archive ... not found" instead of crashing.
   set(_dev_rt_stub_dir "${CMAKE_CURRENT_BINARY_DIR}/dev_rt_stub")
-  file(WRITE "${_dev_rt_stub_dir}/culebra_rt_assets.h"
+  file(CONFIGURE OUTPUT "${_dev_rt_stub_dir}/culebra_rt_assets.h" @ONLY CONTENT
 "// Auto-generated dev stub (CULEBRA_DEV_NO_RT). No AOT runtime embedded.
 #pragma once
 #include <cpp-embedlib/cpp-embedlib.h>
