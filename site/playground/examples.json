@@ -247,6 +247,35 @@
             "kauai/recipes/vintage_electric_piano.json",
             "examples/kauai/songs/strings.kau"
           ]
+        },
+        {
+          "title": "Kauai: an alto saxophone from recordings",
+          "path": "examples/kauai/play_alto_sax.cul",
+          "uses": [
+            "kauai/engine/borrow.cul",
+            "kauai/engine/borrow_live.cul",
+            "kauai/engine/data_format.cul",
+            "kauai/engine/choose.cul",
+            "kauai/engine/bend.cul",
+            "kauai/sounds/alto_sax/main.cul",
+            "kauai/sounds/alto_sax/data/*",
+            "kauai/sounds/alto_sax/songs/harbor_lights.kau"
+          ],
+          "assets": [
+            "kauai/engine/borrow.cul",
+            "kauai/engine/borrow_live.cul",
+            "kauai/engine/data_format.cul",
+            "kauai/engine/choose.cul",
+            "kauai/engine/bend.cul",
+            "kauai/sounds/alto_sax/main.cul",
+            "kauai/sounds/alto_sax/data/attacks.i16",
+            "kauai/sounds/alto_sax/data/attacks.json",
+            "kauai/sounds/alto_sax/data/breath.json",
+            "kauai/sounds/alto_sax/data/instrument.json",
+            "kauai/sounds/alto_sax/data/notes.i16",
+            "kauai/sounds/alto_sax/data/notes.json",
+            "kauai/sounds/alto_sax/songs/harbor_lights.kau"
+          ]
         }
       ]
     },

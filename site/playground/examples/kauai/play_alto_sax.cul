@@ -1,0 +1,37 @@
+# A Kauai song with an alto saxophone played from recordings
+# (kauai/sounds/alto_sax): each note of a phrase borrows the recorded note
+# nearest to it. The song plays once all its sounds are built, which takes
+# about 20 seconds in the browser, so it prints its progress as it goes.
+#
+#   culebra examples/kauai/play_alto_sax.cul
+
+import alto from '../../kauai/sounds/alto_sax/main.cul'
+
+let song = Kauai.load(
+  FS.join(FS.dirname(Sys.script), '../../kauai/sounds/alto_sax/songs/harbor_lights.kau'),
+  voices: alto.voices,
+)
+
+println("building {song.about().title}, about 20 seconds...")
+let began = Time.monotonic()
+mut built = 0
+mut left = 1
+while left > 0 {
+  left = song.prepare()
+  built += 1
+  println("{built} built, {left} to go")
+}
+let ms = Math.round((Time.monotonic() - began) * 1000)
+println("built in {ms} ms")
+
+if !Audio.available() {
+  println("no audio device, so nothing plays")
+  Sys.exit(1)
+}
+song.play()
+println("playing {song.about().title} ({Math.round(song.length())} s)")
+while song.playing() {
+  Time.sleep(0.1)
+}
+# The last notes ring out past the song's length.
+Time.sleep(1.0)

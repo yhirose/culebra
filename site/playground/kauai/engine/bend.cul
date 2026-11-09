@@ -1,0 +1,24 @@
+# The course a saxophone fall takes, as the engine (borrow.cul) draws it.
+#
+# The pitch and the loudness are not on one curve. The pitch gathers speed
+# (slow at first, quicker as it goes); the loudness is greatest at the start,
+# begins to fall at once, and thins out softly, with no step, to nothing.
+# When both slid down together on one curve the fall sounded like a wind
+# controller's glide. A fall shaped as eight falls of a jazz alto measure (a
+# hard push on landing 8 dB up and a collapse to breath) was heard as a blunt
+# "buh" and given up: the measure is a guide to what changes (the tone dims
+# and goes to breath: borrow.cul's BEND), not to how hard.
+
+# How long a fall takes, from where it leaves the note to silence (seconds).
+let LENGTH = 0.3
+
+# The fall's course at `at`, 0 where it leaves the note to 1 at silence:
+# `semis`, the pitch against the note (semitones), and `gain`, the loudness
+# against the note (a factor).
+fn fall_course(at) {
+  # Past the end of the fall it is over: silent, where it landed.
+  let u = Math.clamp(at, 0.0, 1.0)
+  {semis: -9.0 * u * u, gain: (1.0 - u) ** 1.4}
+}
+
+export {LENGTH, fall_course}

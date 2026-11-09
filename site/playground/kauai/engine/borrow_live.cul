@@ -1,0 +1,406 @@
+# A borrowed-note instrument (borrow.cul) as `kauai live` plays it
+# (kauai/cli/live.cul says how a player is used). A note plays the phrase
+# engine's own curves (borrowed_curves) for it: the recorded note it borrows,
+# its pitch's own moves, loudness, timbre, breath and fine gain, slurred from
+# the note before as the engine slurs two notes of a phrase. A player has not
+# decided how long a note is, so a note is worked out twice: its first HEAD
+# seconds now, to sound at once, and the same note held LONG seconds by a
+# worker (an isolate with an Instrument of its own), which the note fades
+# into when it comes; a note held longer goes back and forth over the end of
+# that. The engine's vibrato is left out (the player's), and so are its
+# borrowed attacks (recorded sound, which a graph does not play).
+#
+# The breath a note starts with is the level it borrows at (louder recordings
+# are brighter); from then on the breath is the volume (live.cul's) and the
+# brightness, as the engine dims a tone that loses (dimmed). A bend moves the
+# harmonics and leaves the resonances where they are (reshaped).
+
+import engine from './borrow.cul'
+
+# A note worked out at once, and by the worker (s).
+let HEAD = 0.4
+let LONG = 3.0
+
+# The note before, slurred into a note: how long it is taken to be (s).
+let PREV = 0.3
+
+# The frames a borrowed note ends with (its own release) are not played.
+let TAIL = 10
+
+# Frames the head fades into the long note over.
+let FADE = 5
+
+# Frames gone back and forth over past the end of the long note.
+let LOOP = 100
+
+# A frame (s), the recordings' step.
+let FRAME = 0.01
+
+# The fine gain's steps a frame, one a millisecond.
+let FINE = 10
+
+# How far ahead of the clock frames are scheduled (s).
+let AHEAD = 0.03
+
+# A note's RMS at full volume: about as loud as the recipes' strings.
+let LEVEL = 0.25
+
+# How far ahead of a playing graph's clock a change made now is put (s).
+let LEAD = 0.003
+
+# How long a bend takes to arrive at most, past the frame it lands on (s).
+let GLIDE = 0.005
+
+# How long a note let go takes to fall silent (s).
+let FALL = 0.03
+
+# Below this a harmonic is heard, above it left out (Hz).
+let TOP = 18000.0
+
+fn hz(p) {
+  440.0 * 2.0 ** ((p - 69.0) / 12.0)
+}
+
+# The level (Kauai's, 1 for mf) a breath of x, 0 to 1, borrows at.
+fn level_of(x) {
+  0.4 + 1.2 * Math.clamp(x, 0.0, 1.0)
+}
+
+# Frame `u` of `n`, played back and forth.
+fn bounced(u, n) {
+  return 0 if n <= 1
+  let k = u % (2 * (n - 1))
+  k < n ? k : 2 * (n - 1) - k
+}
+
+# Frame j of `frames`: past their end, back and forth over the last LOOP.
+fn held_at(frames, j) {
+  let n = frames.size()
+  return frames[j] if j < n
+  let m = Math.min(LOOP, n)
+  frames[n - 1 - bounced(j - (n - 1), m)]
+}
+
+let mix = |a, b, w| a * (1.0 - w) + b * w
+
+# Frames a and b, w of the way to b.
+fn blend(a, b, w) {
+  {
+    semis: mix(a.semis, b.semis, w),
+    logs: iota(a.logs.size()).map(|h| mix(a.logs[h], b.logs[h], w)),
+    db: mix(a.db, b.db, w),
+    breath: iota(a.breath.size()).map(|q| mix(a.breath[q], b.breath[q], w)),
+    fine: iota(FINE).map(|m| mix(a.fine[m], b.fine[m], w)),
+  }
+}
+
+# The course of a note asked by `req` ({pitch, level, len, borrow: a recorded
+# note or nil, prev: the note slurred from, {pitch, level, borrow}, or nil}),
+# as instrument `inst` voices it in a phrase: {borrow: the recorded note it
+# borrowed, frames}, each frame {semis (against the pitch), logs, db
+# (against the level), breath, fine: the fine gain each millisecond}.
+fn course_of(inst, req) {
+  let note = |pitch, at, len, level, borrow, open| ({
+    pitch,
+    at,
+    len,
+    level,
+    level_end: level,
+    marks: [],
+    next: nil,
+    params: {vibrato: 0.0},
+    borrow,
+    open,
+  })
+  let prev = req.prev
+  let phrase = prev == nil
+    ? [note(req.pitch, 0.0, req.len, req.level, req.borrow, true)]
+    : [
+      note(prev.pitch, 0.0, PREV, prev.level, prev.borrow, false),
+      note(req.pitch, PREV, req.len, req.level, req.borrow, true),
+    ]
+  let c = inst.borrowed_curves(phrase, 0.0, inst.overtone_from, 0.0)
+  let v = c.notes[-1]
+  let first_ms = Math.round((v.s * FRAME + c.lead) * 1000.0)
+  {
+    borrow: c.chosen[-1],
+    frames: iota(Math.max(1, v.e - v.s - TAIL)).map(fn (j) {
+      let u = v.s + j
+      let ms = first_ms + FINE * j
+      {
+        semis: c.base[u] + c.cents[u] / 100.0 - req.pitch,
+        logs: c.logs[u],
+        db: c.db[u] - v.level,
+        breath: c.breath[u],
+        fine: iota(FINE).map(|m| ms + m < c.gains_n ? c.gain[ms + m] : 1.0),
+      }
+    }),
+  }
+}
+
+# A worker: an Instrument made by `make`, answering on `tx` each request on
+# `rx` with its course, the newest of those waiting only (the others' notes
+# have moved on).
+fn serve(make, rx, tx) {
+  let inst = make()
+  while true {
+    let first = rx.recv()
+    return nil if first == nil
+    let ask = [first, ...rx.drain()][-1]
+    tx.send({id: ask.id, course: course_of(inst, ask.req)})
+  }
+}
+
+class LivePlayer {
+  # Instrument `inst` (borrow.cul's) live, `make` a free function that makes
+  # it anew, for the worker.
+  new(@inst, make) {
+    @legato = true
+    @every = FRAME
+    @harmonics = inst.lh
+    @air_top = inst.breath_info.bands[-1][1]  # breath is heard below this (Hz)
+    let (ask_tx, ask_rx) = Channel.new(64)
+    let (answer_tx, answer_rx) = Channel.new(64)
+    @_worker = Isolate.spawn(serve, make, ask_rx, answer_tx)
+    ask_rx.drop()
+    answer_tx.drop()
+    @_ask = ask_tx
+    @_answers = answer_rx
+    @_asked = 0
+    @_waiting = {}  # the requests still wanted, by id: their answers, or false
+  }
+
+  # Request `req` (course_of's) sent to the worker; answers its id.
+  ask(req) {
+    @_asked += 1
+    @_ask.send({id: @_asked, req})
+    @_waiting[to_string(@_asked)] = false
+    @_asked
+  }
+
+  # The course the worker answered request `id` with, or nil (not yet, or
+  # passed over for a newer one).
+  answer(id) {
+    for a in @_answers.drain() {
+      let key = to_string(a.id)
+      @_waiting[key] = a.course if @_waiting.has(key)
+    }
+    let course = @_waiting.get(to_string(id), false)
+    return nil if course == false
+    self.forget(id)
+    course
+  }
+
+  # Request `id` no longer wanted: its answer, come or to come, is dropped.
+  forget(id) {
+    @_waiting.remove(to_string(id))
+  }
+
+  # The next note, made ahead.
+  prepare() {
+    LiveNote(self)
+  }
+
+  # Note `note` played with the breath at `x`, 0 to 1.
+  breath(note, x) {
+    note.breath(x)
+  }
+
+  # Note `note`'s frames scheduled ahead of its clock.
+  feed(note) {
+    note.feed()
+  }
+}
+
+# A note LivePlayer.prepare() made, played from begin() and held until
+# release(), as the recipes' Held is; it sounds from the first breath, and
+# feed() every FRAME keeps it sounding.
+class LiveNote {
+  new(@player) {
+    let g = Audio.Graph.new()
+    @graph = g
+    @_waves = iota(@player.harmonics).map(|h| g.wave("sine", freq: 440.0 * (h + 1)))
+    @_tones = @_waves.map(|w| g.gain(w, 0.0))
+    let noise = g.noise()
+    @_narrows = iota(@player.harmonics).map(fn (h) {
+      let q = (h + 1) * engine.NARROW
+      let one = g.filter("band", noise, cutoff: 440.0 * (h + 1), q:)
+      [one, g.filter("band", one, cutoff: 440.0 * (h + 1), q:)]
+    })
+    @_airs = @_narrows.map(|two| g.gain(two[1], 0.0))
+    @_fine = g.gain(g.mix([...@_tones, ...@_airs]), 1.0)
+    @_volume = g.gain(@_fine, 0.0)
+    g.output(g.limit(@_volume))  # a volume above 1 held under full scale
+    @_pitch = 60.0
+    @_bend = 0.0
+    @_x = nil  # the breath, nil until the first
+    @_level = 1.0  # what the course was borrowed at
+    @_head = nil  # the course's frames worked out at once
+    @_long = nil  # the worker's, once they come
+    @_borrow = nil
+    @_wanted = nil  # the request the worker is answering for this course
+    @_switch = 0  # the frame the head fades into the long course at
+    @_t0 = 0.0  # when the course's frame 0 sounds
+    @_next = 0  # the next frame to schedule
+    @_begun = false
+    @_until = nil
+  }
+
+  # The course's frame j: the head's, faded into the long one's.
+  _frame(j) {
+    let head = held_at(@_head, j)
+    return head if @_long == nil || j < @_switch
+    let long = held_at(@_long, j)
+    let w = (j - @_switch + 1) / (FADE + 1.0)
+    w >= 1.0 ? long : blend(head, long, w)
+  }
+
+  # Frame j scheduled at `t`: every value ramps to it (or steps, for the
+  # first).
+  _put(t, j, first) {
+    let fr = self._frame(j)
+    let lost = 20.0 * Math.log(@_level / level_of(@_x)) / Math.log(10.0)
+    let shaped = engine.dimmed(fr.logs, Math.clamp(lost, -engine.BEND.loss_max, engine.BEND.loss_max))
+    let logs = @_bend == 0.0 ? shaped : engine.reshaped(shaped, 2.0 ** (@_bend / 12.0))
+    let sh = logs.map(|l| Math.exp(l))
+    let scale = LEVEL / Math.sqrt(Math.max(sh.map(|z| z * z / 2.0).sum(), 1e-12)) * 10.0 ** (fr.db / 20.0)
+    let amps = sh.map(|z| z * scale)
+    let f = hz(@_pitch + @_bend + fr.semis)
+    let air = @player.inst.breath_levels(amps, f, fr.breath, engine.BREATH)
+    let to = |v, x| first ? v.set(t, x) : v.ramp(t, x)
+    for h in 0..@player.harmonics {
+      let fh = f * (h + 1)
+      to(@_waves[h].freq, Math.min(fh, TOP))
+      to(@_tones[h].gain, fh < TOP ? amps[h] : 0.0)
+      let centre = Math.min(fh, 0.45 * engine.RATE)
+      to(@_narrows[h][0].cutoff, centre)
+      to(@_narrows[h][1].cutoff, centre)
+      to(@_airs[h].gain, fh < @player.air_top ? air[h] : 0.0)
+    }
+    to(@_fine.gain, fr.fine[0])
+    for m in 1..FINE {
+      @_fine.gain.ramp(t + m * FRAME / FINE, fr.fine[m])
+    }
+  }
+
+  # Frames scheduled until AHEAD past `now`.
+  _feed_until(now) {
+    while @_t0 + @_next * FRAME < now + AHEAD {
+      self._put(@_t0 + @_next * FRAME, @_next, false)
+      @_next += 1
+    }
+  }
+
+  # What was scheduled from `t` on dropped.
+  _cancel(t) {
+    for w in @_waves {
+      w.freq.cancel(t)
+    }
+    for two in @_narrows {
+      two[0].cutoff.cancel(t)
+      two[1].cutoff.cancel(t)
+    }
+    for a in [...@_tones, ...@_airs, @_fine] {
+      a.gain.cancel(t)
+    }
+  }
+
+  # A course from now: the note at @_pitch slurred from `prev` (nil: from
+  # nothing), its head worked out now and its long course asked for. It
+  # sounds from when the head is ready, or from `at`.
+  _start(prev, at = nil) {
+    @_level = level_of(@_x)
+    let req = {pitch: @_pitch, level: @_level, len: HEAD, borrow: nil, prev}
+    let head = course_of(@player.inst, req)
+    @_head = head.frames
+    @_borrow = head.borrow
+    @_long = nil
+    @player.forget(@_wanted) if @_wanted != nil
+    @_wanted = @player.ask({...req, len: LONG, borrow: @_borrow})
+    let t = at ?? self._at()
+    self._cancel(t)
+    @_t0 = t
+    self._put(t, 0, prev == nil)
+    @_next = 1
+    self._feed_until(t)
+  }
+
+  # Frames scheduled ahead of the clock, the long course taken up once it
+  # comes.
+  feed() {
+    return if @_head == nil
+    if @_long == nil {
+      let long = @player.answer(@_wanted)
+      if long != nil {
+        @_long = long.frames
+        @_switch = @_next
+      }
+    }
+    self._feed_until(@graph.now())
+  }
+
+  _at() {
+    @graph.now() + LEAD
+  }
+
+  # Play from now, once: `pitch` with its output at `volume`, sounding from
+  # the first breath. The level is the breath's, so `level` is not heard.
+  begin(pitch: Long | Float, level: Long | Float = 1.0, volume: Long | Float = 1.0) {
+    throw "a held note begins once; prepare() another" if @_begun
+    @_begun = true
+    @_pitch = to_float(pitch)
+    @_volume.gain.cancel(0.0).set(0.0, to_float(volume))
+    @graph.play()
+    self
+  }
+
+  # Play `pitch` from now without starting over: slurred to it, as a phrase
+  # slurs two notes.
+  retune(pitch: Long | Float) {
+    let prev = {pitch: @_pitch, level: @_level, borrow: @_borrow}
+    @_pitch = to_float(pitch)
+    return if @_head == nil
+    self._start(prev)
+  }
+
+  # Bend the pitch `semitones` from the note's own.
+  bend(semitones: Long | Float) {
+    @_bend = to_float(semitones)
+    return if @_head == nil
+    let t = self._at()
+    self._cancel(t)
+    @_next = Math.max(0, Math.ceil((t + GLIDE - @_t0) / FRAME))
+    self._feed_until(t)
+  }
+
+  # The breath, 0 to 1: the first starts the note; later ones brighten or dim
+  # it from the next frame scheduled.
+  breath(x: Long | Float) {
+    @_x = to_float(x)
+    self._start(nil) if @_head == nil
+  }
+
+  # The output's level from now.
+  volume(v: Long | Float) {
+    let t = self._at()
+    @_volume.gain.cancel(t).ramp(t + GLIDE, to_float(v))
+  }
+
+  # Let the note go. Answers when, on the graph's clock, it is silent.
+  release() {
+    let t = self._at()
+    @_volume.gain.cancel(t).ramp(t + FALL, 0.0)
+    @_until = t + FALL
+    @_until
+  }
+
+  # Whether it was let go and is silent; then it stops.
+  done() {
+    return false if @_until == nil || @graph.now() <= @_until
+    @graph.stop()
+    @player.forget(@_wanted) if @_wanted != nil
+    true
+  }
+}
+
+export {LivePlayer, LiveNote, course_of}
