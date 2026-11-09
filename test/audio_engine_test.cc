@@ -232,6 +232,42 @@ void graph_plays_as_it_renders() {
   ad::graph_defs().erase(id);
 }
 
+// A graph with a loop played is the graph rendered, and the loop (worked out a
+// sample at a time, through a delay's two halves) makes no heap call on the
+// audio thread: a saw into a mix that takes back its own echo through a
+// low-pass, a delay of 200 samples and a gain, and a short delay of its own.
+void loop_plays_as_it_renders() {
+  const int64_t id = 9002;
+  ad::Graph def(ad::kMixerRate);
+  int saw = def.add(ad::PartKind::Wave, {}, ad::Oscillator{ad::WaveKind::Saw}, 220, 0);
+  int mix = def.add(ad::PartKind::Gain, {saw}, std::monostate{}, 1.0);
+  int line = def.add(ad::PartKind::Delay, {mix}, ad::DelayLine(ad::kMixerRate + 1), 200.0 / ad::kMixerRate);
+  int lowpass = def.add(ad::PartKind::Filter, {line}, ad::Svf(ad::FilterKind::Low, 0.9), 2000);
+  int back = def.add(ad::PartKind::Gain, {lowpass}, std::monostate{}, 0.6);
+  CHECK(def.connect(back, mix, -1), "a loop through a delay is refused");
+  int short_line = def.add(ad::PartKind::Delay, {back}, ad::DelayLine(ad::kMixerRate + 1), 37.0 / ad::kMixerRate);
+  CHECK(def.connect(short_line, short_line, -1), "a delay taking itself in is refused");
+  CHECK(!def.connect(back, back, -1), "a gain taking itself in is not refused");
+  def.output(mix);
+  ad::graph_defs().insert_or_assign(id, def);
+
+  Device device(200000);
+  device.run(3000);
+  int64_t start = device.pos();
+  device.engine->graph_play(id);
+  device.run(30000);
+
+  ad::Graph copy(*ad::graph_def(id));
+  std::vector<double> samples(static_cast<size_t>(device.pos() - start));
+  copy.render(samples.data(), static_cast<int64_t>(samples.size()));
+  std::vector<float> want;
+  for (double x : samples) want.push_back(static_cast<float>(std::clamp(0.0 + x, -1.0, 1.0)));
+  hears("the loop", device.heard, start, want);
+  CHECK(device.heap_calls == 0, "the renders made %ld heap calls", device.heap_calls);
+  device.engine->graph_stop(id);
+  ad::graph_defs().erase(id);
+}
+
 // More songs and graphs playing at once than the mixer's lists first held:
 // the main thread hands the audio thread longer lists before they could fill,
 // and frees the ones they replace.
@@ -414,6 +450,7 @@ int main() {
   schedule_plays_as_it_renders();
   tone_starts_when_asked();
   graph_plays_as_it_renders();
+  loop_plays_as_it_renders();
   many_play_at_once();
   stolen_sample_fades();
   open_schedule_waits_for_its_sounds();

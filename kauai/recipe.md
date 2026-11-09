@@ -135,9 +135,11 @@ each drum by one hit, as it does an instrument by one note.
 | `parts` | the parts, by name |
 | `out` | the part that is heard |
 
-Every part is reached from `out`, and a part takes in only parts made before
-it: one that `out` does not reach, a name no part has, or a part that takes
-itself in through others is an error.
+Every part is reached from `out`: one that `out` does not reach, or a name no
+part has, is an error. A part takes in the parts it names, and a loop is
+allowed only if it passes through a delay (below): a ring of parts with no
+delay's `input` in it is an error, found when the recipe is read or, for a
+ring closed by `modulators`, when a note's graph is made.
 
 ## Parts
 
@@ -166,6 +168,18 @@ wave's `freq` and a pluck's are the note's own (`f`) unless the recipe says
 otherwise. A drive
 bends what comes in, times its `gain`, as an overdrive does
 (`Audio.Graph`'s `drive`).
+
+A loop is how an echo, or a string made of a delay, is written: a delay's
+`input` and the parts in `modulators` may be parts that come after it, and a
+loop has to pass through a delay, which answers from what went in before
+(`Audio.Graph`'s loops). A loop that does not is an error where it is closed,
+and the delay's own answer into its own `time` is one too.
+
+```json
+"both": {"part": "mix",   "inputs": ["src", "back"]},
+"echo": {"part": "delay", "input": "both", "time": 0.25},
+"back": {"part": "gain",  "input": "echo", "gain": 0.5}
+```
 
 ## Values
 

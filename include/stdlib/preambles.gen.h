@@ -1874,9 +1874,10 @@ inline constexpr const char* AUDIO_MODULE_SOURCE = R"=culpre=(let _audio_module 
       @_graph = graph
       @_index = index
     }
-    # Adds what this part answers into `target`, a part made after it: into
-    # what the part takes in, or into the value, on top of its schedule, as
-    # Web Audio's AudioNode.connect does. Answers `target`.
+    # Adds what this part answers into `target`: into what the part takes
+    # in, or into the value, on top of its schedule, as Web Audio's
+    # AudioNode.connect does. A loop has to pass through a delay. Answers
+    # `target`.
     connect(target: AudioGraphPart | AudioGraphValue) {
       if target._graph._id != @_graph._id {
         __raise(
@@ -1980,8 +1981,10 @@ inline constexpr const char* AUDIO_MODULE_SOURCE = R"=culpre=(let _audio_module 
       p.ring = @_value(p, 1)
       p
     }
-    delay(input: AudioGraphPart, time: Long | Float = 0.0) {
-      let p = @_part("delay", "", [input], [time])
+    # `input` may be left for a later connect: a loop takes in a part made
+    # after the delay.
+    delay(input: AudioGraphPart | Nil = nil, time: Long | Float = 0.0) {
+      let p = @_part("delay", "", input == nil ? [] : [input], [time])
       p.time = @_value(p, 0)
       p
     }

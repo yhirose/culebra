@@ -6320,17 +6320,16 @@ inline JitValue _ns_audio_graph_part(JitValue* a, int64_t) {
   return made(ad::PartKind::Pluck, ad::PluckString(size, rate), opt[0], opt[1]);
 }
 // Part `from`'s output added into part `to`: what it takes in when `value` is
-// -1, its value `value` otherwise. A part is connected from parts made before
-// it.
+// -1, its value `value` otherwise. A loop has to pass through a delay.
 inline JitValue _ns_audio_graph_connect(JitValue* a, int64_t) {
   namespace ad = culebra::_audio_detail;
   auto& g = _ns_audio_graph(a[0]);
   int from = _ns_audio_graph_index(g, static_cast<double>(_ns_adapt::take_long(a[1])));
   int to = _ns_audio_graph_index(g, static_cast<double>(_ns_adapt::take_long(a[2])));
   int64_t v = _ns_adapt::take_long(a[3]);
-  if (!(from < to)) _ns_audio_fail("Audio.Graph: a part is connected from parts made before it");
   if (v < 0 && !ad::takes_in(g.kind(to))) _ns_audio_fail("Audio.Graph: a wave or a noise takes nothing in");
-  g.connect(from, to, v < 0 ? -1 : _ns_audio_graph_value(g, to, static_cast<double>(v)));
+  if (!g.connect(from, to, v < 0 ? -1 : _ns_audio_graph_value(g, to, static_cast<double>(v))))
+    _ns_audio_fail("Audio.Graph: a loop passes through a delay");
   return _ns_adapt::v_nil();
 }
 inline JitValue _ns_audio_graph_output(JitValue* a, int64_t) {

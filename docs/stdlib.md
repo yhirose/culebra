@@ -9059,10 +9059,10 @@ it or to any of its parts and values.
 | `g.mix(inputs: Array, gain = 1.0)` | the `inputs` added together, times `gain` |
 | `g.resonate(input, modes: Array, dry = 0.0)` | `input` through `Audio.resonate`'s bank of resonances |
 | `g.pluck(input, freq = 220.0, ring = 2.0)` | `Audio.pluck`'s string, `input` added into it as a strike is. The string rings on as its tuning moves, as a player's finger bends it: a slow wave connected to `freq` makes a vibrato |
-| `g.delay(input, time = 0.0)` | `input` as it was `time` seconds before, read between two samples in a straight line (silence before the start). A slow wave connected to `time` makes a chorus |
+| `g.delay(input = nil, time = 0.0)` | `input` as it was `time` seconds before, read between two samples in a straight line (silence before the start). A slow wave connected to `time` makes a chorus. `input` may be left out and connected later, as a loop needs (below) |
 | `g.drive(input, gain = 1.0)` | `input` times `gain` through tanh, as an overdrive bends a loud signal: close to that while it is small, rounded more the louder it is, never past ±1. Each sample is tanh averaged over the straight line from the sample before (first-order antiderivative anti-aliasing), so little of what the bending adds above half the rate folds back, and the part is half a sample late |
 | `g.limit(input, ceiling = 0.9, release = 0.2)` | `input` kept at or under `ceiling`, as an output stage keeps a sound from clipping: its gain drops at the sample that would go over, by as much as it takes, and comes back to 1 exponentially, with 1/e of the way left after each `release` seconds. It does not look ahead, so it adds no delay |
-| `part.connect(target) -> target` | adds what `part` answers into `target`, a part made after it: into what that part takes in (a wave or a noise takes nothing in), or into one of its values (below) |
+| `part.connect(target) -> target` | adds what `part` answers into `target`: into what that part takes in (a wave or a noise takes nothing in), or into one of its values (below). A part may be connected from any part, but a loop has to pass through a delay (below) |
 | `g.output(part)` | the part the graph plays (silence until there is one) |
 | `g.render(seconds) -> Array` | the graph's first `seconds`, worked out now from its start |
 | `g.play()` | play the graph from its start (again, if it is playing) |
@@ -9106,14 +9106,40 @@ are Web Audio's `setValueAtTime`, `linearRampToValueAtTime` and
 `cancelAndHoldAtTime`, so a song's
 notes can be scheduled ahead, as `Kauai` schedules its own.
 
+A part may be connected from any part, a later one too, so a graph can feed
+back on itself: an echo, a comb, a plucked string made of a delay. A loop has
+to pass through a delay, which answers from what went in before. The line
+that would close a loop with none (or a delay's own answer into its own
+`time`, which it needs to answer) raises `ValueError` where it is made, and
+connects nothing. In a loop a delay answers from a sample before at the
+soonest, and takes in only a number a little above silence: an infinity or a
+`NaN`, or a state too small to hear, is let go (as every part's state is), so
+the loop sounds on. A loop is worked out a sample at a time, the rest of the
+graph a block at a time; nothing is heard of the difference.
+
+```culebra
+# An echo: a click (a steady 1 for the first sample) mixed with a delay of
+# 100 samples of its own mix, taken back at half, so each echo is half the
+# one before it.
+let g = Audio.Graph.new(rate: 1000)
+let click = g.gain(g.wave("square", freq: 0.0), 0.0)
+click.gain.set(0.0, 1.0).set(0.0005, 0.0)
+let both = g.mix([click])
+let line = g.delay(both, 0.1)
+g.gain(line, 0.5).connect(both)
+g.output(both)
+let heard = g.render(0.3)
+println([heard[0], heard[100], heard[200]])  # => [1.0, 0.5, 0.25]
+```
+
 A kind other than those named, a part from another graph, a value out of
 range (a wave's freq below 0 or not below half the rate, a feedback below 0
 or not a finite number, a cutoff not above 0 and below half the rate, a gain that is not a finite number, a string's
 freq below 20 Hz or not below half the rate, a ring not above 0, a delay's
 time below 0 or above 1, a drive's gain below 0 or not a finite number), a wave's phase that is not a finite number, a time
 below 0, or a `q` not above 0 raises `ValueError`, and so does a mode as
-`Audio.resonate` refuses one, a part connected from itself or from a part
-made after it, or one connected into a wave or a noise; an input that is not a part of a
+`Audio.resonate` refuses one, a loop that does not pass through a delay, or
+a part connected into a wave or a noise; an input that is not a part of a
 graph, a target that is neither a part nor a value, or a mode that is not
 an object of three numbers, raises `TypeError`. A graph
 plays at a rate of 44100, and at most 64 play at once (`ValueError`

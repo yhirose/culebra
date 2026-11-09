@@ -32,7 +32,12 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <functional>
+#include <limits>
+#include <map>
 #include <numbers>
+#include <optional>
+#include <queue>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -373,7 +378,12 @@ inline int64_t sample_at(double seconds, double rate) {
 // A part's state too small to hear (-600 dB) is silence. Kept, a state left
 // with nothing going in decays into subnormal numbers, which x86 works out
 // many times slower, and a part that plays on never leaves them.
-inline double settled(double x) { return std::abs(x) < 1e-30 ? 0.0 : x; }
+// A value that is not a number, or infinite, is let go too: in a state that
+// feeds back it would stay, and the part would never sound again.
+inline double settled(double x) {
+  const double a = std::abs(x);
+  return a >= 1e-30 && a <= std::numeric_limits<double>::max() ? x : 0.0;
+}
 
 // The slot after `i` in a ring of `size`, without a division.
 template <class I>
@@ -1426,24 +1436,34 @@ struct Oscillator {
 
 // What went in `samples` samples ago, read between two samples in a straight
 // line so the time may move smoothly; held from 0 to the longest the line
-// keeps.
+// keeps. step() takes a sample in and answers (0 samples is that sample);
+// in a loop, read() answers from what went in before and write() takes the
+// sample in after, one sample or more apart.
 class DelayLine {
  public:
   explicit DelayLine(size_t longest) : buf_(longest + 2, 0.0) {}
   double step(double x, double samples) {
-    const size_t size = buf_.size();
     buf_[w_] = x;
+    const double y = read(samples);
+    write_on();
+    return y;
+  }
+  double read(double samples) const {
+    const size_t size = buf_.size();
     samples = std::clamp(samples, 0.0, static_cast<double>(size - 2));
     double r = static_cast<double>(w_) - samples;
     if (r < 0) r += static_cast<double>(size);
     const auto i = static_cast<size_t>(r);
     const double frac = r - static_cast<double>(i);
-    const double y = buf_[i] + (buf_[ring_next(i, size)] - buf_[i]) * frac;
-    w_ = ring_next(w_, size);
-    return y;
+    return buf_[i] + (buf_[ring_next(i, size)] - buf_[i]) * frac;
+  }
+  void write(double x) {
+    buf_[w_] = x;
+    write_on();
   }
 
  private:
+  void write_on() { w_ = ring_next(w_, buf_.size()); }
   std::vector<double> buf_;
   size_t w_ = 0;
 };
@@ -1549,24 +1569,116 @@ inline constexpr size_t kGraphLiveRoom = 256;
 
 struct GraphPart {
   PartKind kind;
-  std::vector<int> inputs;  // parts made before it, added together
+  std::vector<int> inputs;  // parts added together as what it takes in
   // A wave's freq, feedback and phase, a filter's cutoff, a gain's gain, a
   // string's freq and ring, a delay's time, a drive's gain; each is its
-  // schedule plus the sum of the parts connected to it (made before it).
+  // schedule plus the sum of the parts connected to it.
   Param values[kGraphValues];
   std::vector<int> connected[kGraphValues];
   std::variant<std::monostate, Oscillator, Noise, Svf, Resonance, PluckString, DelayLine, Limiter, Drive> processor;
   double out[kGraphBlock] = {};
 };
 
+// How a part is worked out: for the samples of a block at once (Block), or in
+// a loop a sample at a time (Sample), a delay then in two halves: Read, what
+// it answers from what went in before, and Write, the sample it takes in.
+enum class GraphPhase : uint8_t { Block, Sample, Read, Write };
+
+// One step of a block: a part worked out for the whole block, or a loop, its
+// parts worked out one sample after another in the order given.
+struct GraphStep {
+  int part = -1;  // the part, when this is not a loop
+  std::vector<std::pair<int, GraphPhase>> loop;
+};
+
+// The strongly connected sets of a graph, `out[v]` the nodes v leads to
+// (Tarjan's, without recursion): `set[v]` is the set of v, and the number of
+// sets is answered.
+inline int strongly_connected(const std::vector<std::vector<int>>& out, std::vector<int>& set) {
+  const auto n = static_cast<int>(out.size());
+  std::vector<int> index(n, -1), low(n, 0), stack;
+  std::vector<char> open(n, 0);
+  set.assign(n, -1);
+  struct Frame {
+    int node;
+    size_t next;
+  };
+  std::vector<Frame> calls;
+  int counter = 0, sets = 0;
+  for (int root = 0; root < n; root++) {
+    if (index[root] >= 0) continue;
+    index[root] = low[root] = counter++;
+    stack.push_back(root);
+    open[root] = 1;
+    calls.push_back({root, 0});
+    while (!calls.empty()) {
+      const int v = calls.back().node;
+      if (calls.back().next < out[v].size()) {
+        const int w = out[v][calls.back().next++];
+        if (index[w] < 0) {
+          index[w] = low[w] = counter++;
+          stack.push_back(w);
+          open[w] = 1;
+          calls.push_back({w, 0});
+        } else if (open[w]) {
+          low[v] = std::min(low[v], index[w]);
+        }
+        continue;
+      }
+      if (low[v] == index[v]) {
+        for (int w = -1; w != v;) {
+          w = stack.back();
+          stack.pop_back();
+          open[w] = 0;
+          set[w] = sets;
+        }
+        sets++;
+      }
+      calls.pop_back();
+      if (!calls.empty()) low[calls.back().node] = std::min(low[calls.back().node], low[v]);
+    }
+  }
+  return sets;
+}
+
+// The nodes 0 to key.size() - 1 in an order each comes after those with a line
+// (from, to) to it, the one with the smallest `key` first among those with
+// nothing left before them (the keys are different); none when the lines make
+// a cycle.
+inline std::optional<std::vector<int>> smallest_first_order(const std::vector<int>& key,
+                                                            const std::vector<std::pair<int, int>>& lines) {
+  const auto count = static_cast<int>(key.size());
+  std::vector<std::vector<int>> next(count);
+  std::vector<int> waiting(count, 0);
+  for (const auto& [from, to] : lines) {
+    next[from].push_back(to);
+    waiting[to]++;
+  }
+  std::priority_queue<std::pair<int, int>, std::vector<std::pair<int, int>>, std::greater<>> ready;
+  for (int v = 0; v < count; v++)
+    if (waiting[v] == 0) ready.push({key[v], v});
+  std::vector<int> order;
+  while (!ready.empty()) {
+    const int v = ready.top().second;
+    ready.pop();
+    order.push_back(v);
+    for (int w : next[v])
+      if (--waiting[w] == 0) ready.push({key[w], w});
+  }
+  if (static_cast<int>(order.size()) != count) return std::nullopt;
+  return order;
+}
+
 // Parts wired together, each reading the sum of the parts it takes in, and
 // each of its values the sum of the parts connected to it on top of its
-// schedule (all made before it), as Web Audio's AudioParam does; what the
-// graph answers is one part's. Every part and value is
-// worked out a sample at a time, in blocks that fall at the same samples
-// however the samples are asked for, so a graph played and a graph rendered
-// answer the same. The graph a program builds is never worked out itself:
-// rendering or playing one works out a copy, from the start.
+// schedule, as Web Audio's AudioParam does; what the graph answers is one
+// part's. A part may be connected from any part, but a loop has to pass
+// through a delay, which answers from what went in at least a sample before.
+// Every part and value is worked out a sample at a time, in blocks that fall
+// at the same samples however the samples are asked for, so a graph played
+// and a graph rendered answer the same. The graph a program builds is never
+// worked out itself: rendering or playing one works out a copy, from the
+// start.
 class Graph {
  public:
   explicit Graph(double rate) : rate_(rate) {}
@@ -1574,18 +1686,32 @@ class Graph {
   size_t size() const { return parts_.size(); }
   PartKind kind(int part) const { return parts_[static_cast<size_t>(part)].kind; }
 
+  // A part taking in `inputs`, parts made before it.
   int add(PartKind kind, std::vector<int> inputs, decltype(GraphPart::processor) processor, double rest0 = 0,
           double rest1 = 0, double rest2 = 0) {
     parts_.push_back(
         GraphPart{kind, std::move(inputs), {Param(rest0), Param(rest1), Param(rest2)}, {}, std::move(processor)});
+    steps_.push_back(GraphStep{static_cast<int>(parts_.size()) - 1, {}});
     return static_cast<int>(parts_.size()) - 1;
   }
   // `from`'s output added into `to`: what it takes in when `value` is -1, its
-  // value `value` otherwise. `from` is made before `to`.
-  void connect(int from, int to, int value) {
-    assert(from < to && (value < 0 ? takes_in(kind(to)) : value < value_count(kind(to))));
-    auto& p = parts_[static_cast<size_t>(to)];
-    (value < 0 ? p.inputs : p.connected[value]).push_back(from);
+  // value `value` otherwise. False, and nothing connected, when that closes a
+  // loop that does not pass through a delay.
+  bool connect(int from, int to, int value) {
+    assert(value < 0 ? takes_in(kind(to)) : value < value_count(kind(to)));
+    auto& list = value < 0 ? parts_[static_cast<size_t>(to)].inputs : parts_[static_cast<size_t>(to)].connected[value];
+    list.push_back(from);
+    // A line to a later part cannot close a loop, and while every line is
+    // one, the parts run in the order they were made.
+    if (forward_ && from < to) return true;
+    std::vector<GraphStep> steps;
+    if (!order(steps)) {
+      list.pop_back();
+      return false;
+    }
+    forward_ = false;
+    steps_ = std::move(steps);
+    return true;
   }
   void output(int part) { out_ = part; }
   void schedule(int part, int value, ParamEvent e) {
@@ -1625,79 +1751,203 @@ class Graph {
 
  private:
   void block(int n) {
-    double in[kGraphBlock], signal[kGraphBlock], v[kGraphValues][kGraphBlock], time[kGraphBlock];
-    double *v0 = v[0], *v1 = v[1], *v2 = v[2];
+    double time[kGraphBlock];
     for (int i = 0; i < n; i++) time[i] = static_cast<double>(pos_ + i) / rate_;
-    auto sum = [&](const std::vector<int>& from, double* into) {
-      std::fill(into, into + n, 0.0);
-      for (int k : from)
-        for (int i = 0; i < n; i++) into[i] += parts_[static_cast<size_t>(k)].out[i];
-    };
-    for (auto& p : parts_) {
-      sum(p.inputs, in);
-      for (int k = 0; k < value_count(p.kind); k++) {
-        p.values[k].fill(time, n, v[k]);
-        if (p.connected[k].empty()) continue;
-        sum(p.connected[k], signal);
-        for (int i = 0; i < n; i++) v[k][i] = held_value(p.kind, k, v[k][i] + signal[i], rate_);
+    for (const auto& step : steps_) {
+      if (step.part >= 0) {
+        work<GraphPhase::Block>(parts_[static_cast<size_t>(step.part)], 0, n, time);
+        continue;
       }
-      switch (p.kind) {
-        case PartKind::Wave: {
-          bool feeds = std::any_of(v1, v1 + n, [](double feedback) { return feedback != 0.0; });
-          std::get<Oscillator>(p.processor).run(n, v0, v2, feeds ? v1 : nullptr, rate_, p.out);
-          break;
-        }
-        case PartKind::Noise: {
-          auto& z = std::get<Noise>(p.processor);
-          for (int i = 0; i < n; i++) p.out[i] = z.next();
-          break;
-        }
-        case PartKind::Filter: {
-          auto& f = std::get<Svf>(p.processor);
-          for (int i = 0; i < n; i++) {
-            f.tune(v0[i], rate_);
-            p.out[i] = f.step(in[i]);
+      for (int i = 0; i < n; i++) {
+        for (const auto& [part, phase] : step.loop) {
+          auto& p = parts_[static_cast<size_t>(part)];
+          switch (phase) {
+            case GraphPhase::Block:  // a loop has none: it is worked out a sample at a time
+            case GraphPhase::Sample: work<GraphPhase::Sample>(p, i, 1, time); break;
+            case GraphPhase::Read: work<GraphPhase::Read>(p, i, 1, time); break;
+            case GraphPhase::Write: work<GraphPhase::Write>(p, i, 1, time); break;
           }
-          break;
-        }
-        case PartKind::Gain:
-          for (int i = 0; i < n; i++) p.out[i] = in[i] * v0[i];
-          break;
-        case PartKind::Resonate: {
-          auto& r = std::get<Resonance>(p.processor);
-          for (int i = 0; i < n; i++) p.out[i] = r.step(in[i]);
-          break;
-        }
-        case PartKind::Pluck: {
-          auto& s = std::get<PluckString>(p.processor);
-          for (int i = 0; i < n; i++) {
-            s.tune(v0[i], v1[i]);
-            p.out[i] = s.step(in[i]);
-          }
-          break;
-        }
-        case PartKind::Delay: {
-          auto& d = std::get<DelayLine>(p.processor);
-          for (int i = 0; i < n; i++) p.out[i] = d.step(in[i], v0[i] * rate_);
-          break;
-        }
-        case PartKind::Limit: {
-          auto& l = std::get<Limiter>(p.processor);
-          for (int i = 0; i < n; i++) p.out[i] = l.step(in[i]);
-          break;
-        }
-        case PartKind::Drive: {
-          auto& d = std::get<Drive>(p.processor);
-          for (int i = 0; i < n; i++) p.out[i] = d.step(in[i], v0[i]);
-          break;
         }
       }
     }
     pos_ += n;
   }
 
+  // Part `p` for `n` samples from `offset` samples into the block (a Block is
+  // the whole block, from 0), `time` the block's seconds. A delay's Read takes
+  // no input and its Write no values: they come at different points of a
+  // loop. `phase` is a template argument, and a Block's offset a constant, so
+  // that the block-at-a-time path, all but loops, is worked out as it was
+  // before loops.
+  template <GraphPhase phase>
+  void work(GraphPart& p, int offset, int n, const double* time) {
+    const int a = phase == GraphPhase::Block ? 0 : offset;
+    double in[kGraphBlock], signal[kGraphBlock], v[kGraphValues][kGraphBlock];
+    double *v0 = v[0], *v1 = v[1], *v2 = v[2];
+    auto sum = [&](const std::vector<int>& from, double* into) {
+      std::fill(into, into + n, 0.0);
+      for (int k : from) {
+        const double* out = parts_[static_cast<size_t>(k)].out + a;
+        for (int i = 0; i < n; i++) into[i] += out[i];
+      }
+    };
+    if (phase != GraphPhase::Read) sum(p.inputs, in);
+    if (phase != GraphPhase::Write) {
+      for (int k = 0; k < value_count(p.kind); k++) {
+        p.values[k].fill(time + a, n, v[k]);
+        if (p.connected[k].empty()) continue;
+        sum(p.connected[k], signal);
+        for (int i = 0; i < n; i++) v[k][i] = held_value(p.kind, k, v[k][i] + signal[i], rate_);
+      }
+    }
+    double* out = p.out + a;
+    switch (p.kind) {
+      case PartKind::Wave: {
+        bool feeds = std::any_of(v1, v1 + n, [](double feedback) { return feedback != 0.0; });
+        std::get<Oscillator>(p.processor).run(n, v0, v2, feeds ? v1 : nullptr, rate_, out);
+        break;
+      }
+      case PartKind::Noise: {
+        auto& z = std::get<Noise>(p.processor);
+        for (int i = 0; i < n; i++) out[i] = z.next();
+        break;
+      }
+      case PartKind::Filter: {
+        auto& f = std::get<Svf>(p.processor);
+        for (int i = 0; i < n; i++) {
+          f.tune(v0[i], rate_);
+          out[i] = f.step(in[i]);
+        }
+        break;
+      }
+      case PartKind::Gain:
+        for (int i = 0; i < n; i++) out[i] = in[i] * v0[i];
+        break;
+      case PartKind::Resonate: {
+        auto& r = std::get<Resonance>(p.processor);
+        for (int i = 0; i < n; i++) out[i] = r.step(in[i]);
+        break;
+      }
+      case PartKind::Pluck: {
+        auto& s = std::get<PluckString>(p.processor);
+        for (int i = 0; i < n; i++) {
+          s.tune(v0[i], v1[i]);
+          out[i] = s.step(in[i]);
+        }
+        break;
+      }
+      case PartKind::Delay: {
+        auto& d = std::get<DelayLine>(p.processor);
+        // In a loop it answers from what went in a sample before at the
+        // soonest, and takes in only what is a number, a bit more than silence.
+        if (phase == GraphPhase::Read)
+          for (int i = 0; i < n; i++) out[i] = d.read(std::max(v0[i] * rate_, 1.0));
+        else if (phase == GraphPhase::Write)
+          for (int i = 0; i < n; i++) d.write(settled(in[i]));
+        else
+          for (int i = 0; i < n; i++) out[i] = d.step(in[i], v0[i] * rate_);
+        break;
+      }
+      case PartKind::Limit: {
+        auto& l = std::get<Limiter>(p.processor);
+        for (int i = 0; i < n; i++) out[i] = l.step(in[i]);
+        break;
+      }
+      case PartKind::Drive: {
+        auto& d = std::get<Drive>(p.processor);
+        for (int i = 0; i < n; i++) out[i] = d.step(in[i], v0[i]);
+        break;
+      }
+    }
+  }
+
+  // A delay answers from what went in before, so it cuts a loop: in a loop it
+  // is two nodes, its Read (what it answers, with its time), which is also the
+  // node of any other part, and its Write (what it takes in).
+  static constexpr int read_node(int part) { return 2 * part; }
+  static constexpr int write_node(int part) { return 2 * part + 1; }
+  static constexpr int part_of(int node) { return node / 2; }
+
+  // The steps of a block in the order they run in, from the lines between the
+  // parts, into `steps`; false when a loop does not pass through a delay.
+  //
+  // Loops are the strongly connected sets of parts. A loop is in order when its
+  // nodes are: a line into a delay's input goes to its Write, a line into its
+  // time or a line out of it to its Read, so a loop with no delay (or with only
+  // a delay's own answer into its own time) has no order. The sets are then
+  // put in order, each a part that is not in a loop or a loop, ties going to
+  // the part made first, so a graph with only lines to later parts runs as
+  // made.
+  bool order(std::vector<GraphStep>& steps) const {
+    const auto n = static_cast<int>(parts_.size());
+    struct Line {
+      int from, to;
+      bool input;  // into what the part takes in, not into one of its values
+    };
+    std::vector<Line> lines;
+    for (int t = 0; t < n; t++) {
+      const auto& p = parts_[t];
+      for (int s : p.inputs) lines.push_back({s, t, true});
+      for (const auto& list : p.connected)
+        for (int s : list) lines.push_back({s, t, false});
+    }
+    // The node a line goes to.
+    auto goes_to = [&](const Line& l) {
+      return l.input && kind(l.to) == PartKind::Delay ? write_node(l.to) : read_node(l.to);
+    };
+
+    std::vector<std::vector<int>> out(n);
+    for (const auto& l : lines) out[l.from].push_back(l.to);
+    std::vector<int> set;
+    const int sets = strongly_connected(out, set);
+    std::vector<std::vector<int>> members(sets);  // the first made first
+    for (int p = 0; p < n; p++) members[set[p]].push_back(p);
+    std::vector<char> loops(sets, 0);
+    for (int s = 0; s < sets; s++) loops[s] = members[s].size() > 1;
+    for (const auto& l : lines)
+      if (l.from == l.to) loops[set[l.from]] = 1;
+
+    std::vector<std::vector<std::pair<int, GraphPhase>>> ordered(sets);
+    for (int s = 0; s < sets; s++) {
+      if (!loops[s]) continue;
+      std::vector<int> nodes;  // the loop's, smallest first
+      for (int p : members[s]) {
+        nodes.push_back(read_node(p));
+        if (kind(p) == PartKind::Delay) nodes.push_back(write_node(p));
+      }
+      auto slot = [&](int node) { return static_cast<int>(std::lower_bound(nodes.begin(), nodes.end(), node) - nodes.begin()); };
+      std::vector<std::pair<int, int>> inside;
+      for (const auto& l : lines)
+        if (set[l.from] == s && set[l.to] == s) inside.emplace_back(slot(read_node(l.from)), slot(goes_to(l)));
+      std::vector<int> key(nodes.size());
+      for (size_t i = 0; i < key.size(); i++) key[i] = static_cast<int>(i);
+      const auto sorted = smallest_first_order(key, inside);
+      if (!sorted) return false;
+      for (int i : *sorted) {
+        const int node = nodes[i], p = part_of(node);
+        ordered[s].emplace_back(p, kind(p) != PartKind::Delay ? GraphPhase::Sample
+                                   : node == read_node(p)     ? GraphPhase::Read
+                                                              : GraphPhase::Write);
+      }
+    }
+
+    std::vector<std::pair<int, int>> between;
+    for (const auto& l : lines)
+      if (set[l.from] != set[l.to]) between.emplace_back(set[l.from], set[l.to]);
+    std::vector<int> first(sets);
+    for (int s = 0; s < sets; s++) first[s] = members[s].front();
+    const auto sets_in_order = smallest_first_order(first, between);
+    assert(sets_in_order);  // the sets of a graph have no cycle between them
+    steps.clear();
+    for (int s : *sets_in_order)
+      steps.push_back(loops[s] ? GraphStep{-1, std::move(ordered[s])} : GraphStep{members[s].front(), {}});
+    return true;
+  }
+
   double rate_;
   std::vector<GraphPart> parts_;
+  std::vector<GraphStep> steps_;  // the order a block runs in
+  bool forward_ = true;           // every line goes to a later part, so steps_ is the order the parts were made
   int out_ = -1;
   int64_t pos_ = 0;
 };

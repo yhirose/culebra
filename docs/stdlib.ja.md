@@ -8687,10 +8687,10 @@ println(Math.round(Audio.integrated_loudness(both)))                     # => -1
 | `g.mix(inputs: Array, gain = 1.0)` | `inputs`を足し合わせて`gain`倍する |
 | `g.resonate(input, modes: Array, dry = 0.0)` | `input`を`Audio.resonate`と同じ共鳴の集まりに通す |
 | `g.pluck(input, freq = 220.0, ring = 2.0)` | `Audio.pluck`と同じ弦。`input`をストロークと同じように弦に足し込む。弦はチューニングが動いても鳴り続けるので、指で弦を押し上げたのと同じになる。`freq`に遅い波をつなぐとビブラートになる |
-| `g.delay(input, time = 0.0)` | `time`秒前の`input`。2つのサンプルの間は直線で読む（始まりより前は無音）。`time`に遅い波をつなぐとコーラスになる |
+| `g.delay(input = nil, time = 0.0)` | `time`秒前の`input`。2つのサンプルの間は直線で読む（始まりより前は無音）。`time`に遅い波をつなぐとコーラスになる。`input`は省いて後から`connect`してもよい。ループはこうして作る（下記） |
 | `g.drive(input, gain = 1.0)` | `input`を`gain`倍してtanhに通したもの。オーバードライブが大きな信号を曲げるのと同じで、小さいうちはほぼそのまま、大きいほど丸められ、±1は超えない。各サンプルは、1つ前のサンプルからの直線の上でtanhを平均した値にする（1次の原始関数によるエイリアシング低減）。これで、曲げて足された成分のうち`rate`の半分を超えるものがほとんど折り返さず、その代わり半サンプル遅れる |
 | `g.limit(input, ceiling = 0.9, release = 0.2)` | `ceiling`以下に収めた`input`。出力段が音の割れを防ぐのと同じで、超えそうなサンプルでその分だけ音量を下げ、`release`秒で1までの残りが1/eになる速さで指数的に1へ戻す。先読みしないので遅れは足さない |
-| `part.connect(target) -> target` | `part`の出力を、`part`より後に作った`target`に足す。`target`が部品ならその入力に（waveとnoiseは入力を取らない）、値（下記）ならその値に足す |
+| `part.connect(target) -> target` | `part`の出力を`target`に足す。`target`が部品ならその入力に（waveとnoiseは入力を取らない）、値（下記）ならその値に足す。どの部品からでもつなげるが、ループは遅延を通らなければならない（下記） |
 | `g.output(part)` | グラフが鳴らす部品（決めるまでは無音） |
 | `g.render(seconds) -> Array` | グラフの最初の`seconds`秒を、始まりから今計算する |
 | `g.play()` | グラフを始まりから鳴らす（鳴っていれば始まりからやり直す） |
@@ -8726,12 +8726,33 @@ gainの`gain`、弦の`freq`と`ring`、遅延の`time`、driveの`gain`が、�
 `linearRampToValueAtTime`、`cancelAndHoldAtTime`にあたるので、曲の音符は`Kauai`がしているように
 前もって予約できます。
 
+どの部品からでも、後に作った部品からでもつなげるので、グラフは自分に戻せます。エコー、コムフィルタ、遅延でできた弦などです。
+ループは、それより前に入った音だけを答える遅延を通らなければなりません。遅延を通らないループを閉じる線（遅延が
+自分の答えを自分の`time`につなぐ線も、答えるのに`time`が要るので同じです）は、つないだ場所で`ValueError`になり、
+何もつながりません。ループの中の遅延は、早くても1サンプル前の音を答え、数でない値や無限大、聞こえないほど小さい状態は
+取り込まずに0にします（どの部品の状態もそうです）。そのため、ループは鳴り続けます。ループは1サンプルずつ、
+それ以外のグラフは1ブロックずつ計算しますが、その違いは聞こえません。
+
+```culebra
+# エコー: クリック（最初の1サンプルだけ1）に、自分の和を100サンプル遅らせて半分にして戻す。
+# エコーは1つ前の半分の大きさで続く。
+let g = Audio.Graph.new(rate: 1000)
+let click = g.gain(g.wave("square", freq: 0.0), 0.0)
+click.gain.set(0.0, 1.0).set(0.0005, 0.0)
+let both = g.mix([click])
+let line = g.delay(both, 0.1)
+g.gain(line, 0.5).connect(both)
+g.output(both)
+let heard = g.render(0.3)
+println([heard[0], heard[100], heard[200]])  # => [1.0, 0.5, 0.25]
+```
+
 次はどれも`ValueError`になります。名前の挙がっていない種類。別のグラフの部品。
 範囲外の値（波のfreqが0未満か`rate`の半分以上、feedbackが0未満か有限の数でない、
 cutoffが0以下か`rate`の半分以上、
 gainが有限の数でない、弦のfreqが20 Hz未満か`rate`の半分以上、ringが0以下、遅延のtimeが0未満か1より大きい、driveのgainが0未満か有限の数でない）。
 有限の数でない波のphase。0未満の時刻。0以下の`q`。`Audio.resonate`が受け付けないモード。
-自分自身や後に作った部品からのつなぎと、waveやnoiseへのつなぎ。グラフの部品でない入力、部品でも値でもない
+遅延を通らないループと、waveやnoiseへのつなぎ。グラフの部品でない入力、部品でも値でもない
 つなぎ先、3つの数を持つオブジェクトでないモードは`TypeError`です。グラフは`rate`が44100のときだけ鳴らせ、
 同時に鳴らせるのは64個まで（超えると`ValueError`）です。デバイスが無いときは何も
 鳴らず、`now()`は`play()`からの時間を返します。ブラウザではグラフは`render`できますが、

@@ -491,6 +491,87 @@ let mixed = Audio.Graph.new(rate: 8000)
 mixed.output(mixed.mix([mixed.wave("sine", freq: 700.0), mixed.wave("saw", freq: 300.0)]))
 assert_samples(ins.render(0.01), mixed.render(0.01))
 
+// A loop has to pass through a delay, which answers from what went in before.
+// An echo: a click (a steady 1 for the first sample) mixed with a delay of 100
+// samples, taken back at half; each echo comes exactly 100 samples after the
+// one before it, half as loud.
+fn clicked(rate) {
+  let (g, click) = steady(rate)
+  click.gain.set(0.0, 1.0).set(0.5 / rate, 0.0)
+  (g, click)
+}
+fn echoes(period, samples, back) {
+  iota(samples).map(|i| i % period == 0 ? back ** (i / period) : 0.0)
+}
+let (loop_g, loop_click) = clicked(8000)
+let mixed_in = loop_g.mix([loop_click])
+let line = loop_g.delay(mixed_in, 100.0 / 8000.0)
+let taken_back = loop_g.gain(line, 0.5)
+assert_eq(taken_back.connect(mixed_in), mixed_in)
+loop_g.output(mixed_in)
+assert_samples(loop_g.render(0.04), echoes(100, 320, 0.5))
+// The same loop made in another order, the delay first and its input given
+// last, is the same samples.
+let (late_g, late_click) = clicked(8000)
+let late_line = late_g.delay(time: 100.0 / 8000.0)
+let late_back = late_g.gain(late_line, 0.5)
+let late_mix = late_g.mix([late_click, late_back])
+late_mix.connect(late_line)
+late_g.output(late_mix)
+assert_samples(late_g.render(0.04), echoes(100, 320, 0.5))
+// A loop through two delays is as long as both: 30 and 50 samples, an echo
+// every 80.
+let (two_g, two_click) = clicked(8000)
+let two_mix = two_g.mix([two_click])
+let first_line = two_g.delay(two_mix, 30.0 / 8000.0)
+let second_line = two_g.delay(first_line, 50.0 / 8000.0)
+two_g.gain(second_line, 0.5).connect(two_mix)
+two_g.output(two_mix)
+assert_samples(two_g.render(0.04), echoes(80, 320, 0.5))
+// A delay may take itself in: its click comes round every 100 samples.
+let (own_g, own_click) = clicked(8000)
+let own = own_g.delay(own_click, 100.0 / 8000.0)
+own.connect(own)
+own_g.output(own)
+assert_samples(own_g.render(0.04), iota(320).map(|i| i % 100 == 0 && i > 0 ? 1.0 : 0.0))
+// What is not a loop through a delay is refused where it is closed, and
+// nothing is connected: a part to itself, parts in a ring, and a delay's own
+// answer into its time (it needs the time to answer). A later delay's
+// answer into an earlier delay's time is a loop through the later one.
+let ring = Audio.Graph.new()
+let ring_a = ring.gain(ring.wave())
+let ring_b = ring.gain(ring_a)
+for refused in [|| ring_a.connect(ring_a), || ring_b.connect(ring_a), || ring_b.connect(ring_a.gain)] {
+  assert_eq(caught(refused), ("ValueError", "Audio.Graph: a loop passes through a delay"))
+}
+let timed = ring.delay(ring_b, 0.001)
+assert_eq(
+  caught(|| timed.connect(timed.time)),
+  ("ValueError", "Audio.Graph: a loop passes through a delay"),
+)
+let timed_late = ring.delay(timed, 0.001)
+assert_eq(timed_late.connect(timed.time), timed.time)
+ring.output(timed_late)
+assert_eq(ring.render(0.01).size(), 441)
+// A delay in a loop answers from a sample before at the soonest, whatever it
+// is asked: 0 seconds here is the click one sample on.
+let (soon_g, soon_click) = clicked(8000)
+let soon_mix = soon_g.mix([soon_click])
+let soon_line = soon_g.delay(soon_mix, 0.0)
+soon_g.gain(soon_line, 0.5).connect(soon_mix)
+soon_g.output(soon_mix)
+assert_samples(soon_g.render(0.001), echoes(1, 8, 0.5))
+// A value that is not a number does not stay in a loop: an infinity through a
+// filter inside it is let go, and the loop sounds on.
+let (inf_g, inf_click) = clicked(8000)
+let inf_mix = inf_g.mix([inf_g.gain(inf_g.gain(inf_click, 1.0e308), 1.0e10)])
+let inf_filter = inf_g.filter("low", inf_mix, cutoff: 1000.0)
+let inf_line = inf_g.delay(inf_filter, 0.005)
+inf_g.gain(inf_line, 0.5).connect(inf_mix)
+inf_g.output(inf_mix)
+let inf_out = inf_g.render(0.1)
+assert_true(inf_out.slice(100, inf_out.size()).all(|x| x - x == 0.0))
+
 // A part keeps its graph: the graph lives on after the variable that held it.
 fn lone_wave() {
   let g = Audio.Graph.new()
@@ -518,7 +599,7 @@ for (
   call,
   kind,
   message,
-) in [(|| Audio.Graph.new(rate: 0), "ValueError", "the rate is above 0"), (|| g.wave("zigzag"), "ValueError", "a wave is \"sine\", \"saw\", \"square\" or \"triangle\", not zigzag"), (|| g.wave(freq: 30000.0), "ValueError", "a wave's freq is 0 or more and below half the rate"), (|| g.wave(feedback: -1.0), "ValueError", "a wave's feedback is 0 or more"), (|| w.feedback.ramp(0.5, Math.nan), "ValueError", "a wave's feedback is 0 or more"), (|| elsewhere.connect(w.freq), "ValueError", "a part connects to parts of its own graph"), (|| w.connect(g.wave()), "ValueError", "a wave or a noise takes nothing in"), (|| w.connect(g.noise()), "ValueError", "a wave or a noise takes nothing in"), (|| g.gain(w).connect(w.freq), "ValueError", "a part is connected from parts made before it"), (|| w.connect(w.phase), "ValueError", "a part is connected from parts made before it"),(|| w.phase.ramp(0.5, Math.inf), "ValueError", "a wave's phase is a finite number"), (|| g.wave(phase: Math.inf), "ValueError", "a wave's phase is a finite number"), (|| g.delay(w, 1.5), "ValueError", "a delay's time is from 0 to 1"), (|| g.delay(w).time.ramp(0.5, -0.1), "ValueError", "a delay's time is from 0 to 1"), (|| g.limit(w, 0.0), "ValueError", "a limit's ceiling is above 0"), (|| g.limit(w, release: Math.inf), "ValueError", "a limit's release is above 0"), (|| g.drive(w, -1.0), "ValueError", "a drive's gain is 0 or more"), (|| g.drive(w).gain.ramp(0.5, Math.inf), "ValueError", "a drive's gain is 0 or more"), (|| g.noise(seed: -1), "ValueError", "a noise's seed is a whole number from 0 below 2^31"), (|| g.filter("notch", w), "ValueError", "a filter is \"low\", \"high\" or \"band\", not notch"), (|| g.filter("low", w, cutoff: 0.0), "ValueError", "a cutoff is above 0 and below half the rate"), (|| g.filter("low", w, q: 0.0), "ValueError", "the q is above 0"), (|| g.gain(w, Math.nan), "ValueError", "a gain is a finite number"), (|| g.pluck(w, freq: 10.0), "ValueError", "a string's freq is 20 or more and below half the rate"), (|| g.pluck(w, ring: 0.0), "ValueError", "a string's ring is above 0"), (|| g.resonate(w, [{freq: 0.0, width: 10.0, gain: 1.0}]), "ValueError", "a mode's freq is above 0 and below half the rate"), (|| g.resonate(w, [{freq: 300.0, width: 0.0, gain: 1.0}]), "ValueError", "a mode's width is above 0"), (|| g.filter("low", elsewhere), "ValueError", "a part takes in parts of its own graph"), (|| g.mix([w, elsewhere]), "ValueError", "a part takes in parts of its own graph"), (|| g.output(elsewhere), "ValueError", "the output is a part of its own graph"), (|| w.freq.set(-0.5, 220.0), "ValueError", "a change's time is 0 or more"), (|| w.freq.cancel(-0.5), "ValueError", "a change's time is 0 or more"), (|| w.freq.ramp(0.5, -220.0), "ValueError", "a wave's freq is 0 or more and below half the rate"), (|| Audio.Graph.new(rate: 22050).play(), "ValueError", "a graph plays at a rate of 44100"), (|| g.render(-1.0), "ValueError", "the seconds are 0 or more")] {
+) in [(|| Audio.Graph.new(rate: 0), "ValueError", "the rate is above 0"), (|| g.wave("zigzag"), "ValueError", "a wave is \"sine\", \"saw\", \"square\" or \"triangle\", not zigzag"), (|| g.wave(freq: 30000.0), "ValueError", "a wave's freq is 0 or more and below half the rate"), (|| g.wave(feedback: -1.0), "ValueError", "a wave's feedback is 0 or more"), (|| w.feedback.ramp(0.5, Math.nan), "ValueError", "a wave's feedback is 0 or more"), (|| elsewhere.connect(w.freq), "ValueError", "a part connects to parts of its own graph"), (|| w.connect(g.wave()), "ValueError", "a wave or a noise takes nothing in"), (|| w.connect(g.noise()), "ValueError", "a wave or a noise takes nothing in"), (|| g.gain(w).connect(w.freq), "ValueError", "a loop passes through a delay"), (|| w.connect(w.phase), "ValueError", "a loop passes through a delay"), (|| w.phase.ramp(0.5, Math.inf), "ValueError", "a wave's phase is a finite number"), (|| g.wave(phase: Math.inf), "ValueError", "a wave's phase is a finite number"), (|| g.delay(w, 1.5), "ValueError", "a delay's time is from 0 to 1"), (|| g.delay(w).time.ramp(0.5, -0.1), "ValueError", "a delay's time is from 0 to 1"), (|| g.limit(w, 0.0), "ValueError", "a limit's ceiling is above 0"), (|| g.limit(w, release: Math.inf), "ValueError", "a limit's release is above 0"), (|| g.drive(w, -1.0), "ValueError", "a drive's gain is 0 or more"), (|| g.drive(w).gain.ramp(0.5, Math.inf), "ValueError", "a drive's gain is 0 or more"), (|| g.noise(seed: -1), "ValueError", "a noise's seed is a whole number from 0 below 2^31"), (|| g.filter("notch", w), "ValueError", "a filter is \"low\", \"high\" or \"band\", not notch"), (|| g.filter("low", w, cutoff: 0.0), "ValueError", "a cutoff is above 0 and below half the rate"), (|| g.filter("low", w, q: 0.0), "ValueError", "the q is above 0"), (|| g.gain(w, Math.nan), "ValueError", "a gain is a finite number"), (|| g.pluck(w, freq: 10.0), "ValueError", "a string's freq is 20 or more and below half the rate"), (|| g.pluck(w, ring: 0.0), "ValueError", "a string's ring is above 0"), (|| g.resonate(w, [{freq: 0.0, width: 10.0, gain: 1.0}]), "ValueError", "a mode's freq is above 0 and below half the rate"), (|| g.resonate(w, [{freq: 300.0, width: 0.0, gain: 1.0}]), "ValueError", "a mode's width is above 0"), (|| g.filter("low", elsewhere), "ValueError", "a part takes in parts of its own graph"), (|| g.mix([w, elsewhere]), "ValueError", "a part takes in parts of its own graph"), (|| g.output(elsewhere), "ValueError", "the output is a part of its own graph"), (|| w.freq.set(-0.5, 220.0), "ValueError", "a change's time is 0 or more"), (|| w.freq.cancel(-0.5), "ValueError", "a change's time is 0 or more"), (|| w.freq.ramp(0.5, -220.0), "ValueError", "a wave's freq is 0 or more and below half the rate"), (|| Audio.Graph.new(rate: 22050).play(), "ValueError", "a graph plays at a rate of 44100"), (|| g.render(-1.0), "ValueError", "the seconds are 0 or more")] {
   assert_eq(caught(call), (kind, "Audio.Graph: " + message))
 }
 assert_eq(caught(|| g.resonate(w, [1.0]))[0], "TypeError")

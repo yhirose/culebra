@@ -1101,7 +1101,7 @@ g.gain(input, gain = 1.0)
 g.mix(inputs: Array, gain = 1.0)
 g.resonate(input, modes: Array, dry = 0.0)
 g.pluck(input, freq = 220.0, ring = 2.0)
-g.delay(input, time = 0.0)
+g.delay(input = nil, time = 0.0)
 g.drive(input, gain = 1.0)
 g.limit(input, ceiling = 0.9, release = 0.2)
 part.connect(target) -> target

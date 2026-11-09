@@ -201,6 +201,73 @@ fn a_pluck_takes_modulators_as_the_graph_does() {
 }
 
 @test
+fn a_loop_through_a_delay_is_the_graph_loop() {
+  # An echo: a sine mixed with a delay of its own mix, taken back at half. The
+  # delay is made before the part it takes in, and takes it in when all are.
+  let echo = made({
+    recipe: 1,
+    parts: {
+      src: {part: "wave"},
+      both: {part: "mix", inputs: ["src", "back"]},
+      d: {part: "delay", input: "both", time: 0.01},
+      back: {part: "gain", input: "d", gain: 0.5},
+    },
+    out: "both",
+  })
+  let by_hand = Audio.Graph.new(rate: RATE)
+  let d = by_hand.delay(time: 0.01)
+  let back = by_hand.gain(d, 0.5)
+  let both = by_hand.mix([by_hand.wave(freq: 440.0), back])
+  both.connect(d)
+  by_hand.output(by_hand.filter("high", by_hand.gain(both, 1.0), cutoff: 20.0))
+  assert_eq(echo.note(69, 0.3), by_hand.render(0.3))
+  # Moving a delay's time by a part that answers after it is a loop through it.
+  let wobble = made({
+    recipe: 1,
+    parts: {
+      w: {part: "wave"},
+      lfo: {part: "gain", input: "e", gain: 0.001},
+      d: {part: "delay", input: "w", time: 0.01, modulators: {time: ["lfo"]}},
+      e: {part: "delay", input: "d", time: 0.005},
+    },
+    out: "e",
+  })
+  assert_eq(wobble.note(69, 0.3).size(), 2400)
+}
+
+@test
+fn a_loop_not_through_a_delay_is_refused() {
+  let doc = |parts| {recipe: 1, parts: parts, out: "a"}
+  # What a note of the recipe throws: the graph is made when a note is.
+  let says_at_note = fn (recipe, text) {
+    let e = thrown(|| made(recipe).note(69, 0.1))
+    assert_true(e is String && e.contains(text), e)
+  }
+  # Taken in by their constructors, parts in a ring have no order to be made in.
+  says(
+    doc({a: {part: "gain", input: "b"}, b: {part: "gain", input: "a"}}),
+    "recipe t.parts: `a` takes itself in",
+  )
+  # Connected, they are made and then the line that closes the ring is refused.
+  says_at_note(
+    doc({
+      w: {part: "wave"},
+      a: {part: "gain", input: "w", modulators: {gain: ["b"]}},
+      b: {part: "gain", input: "a"},
+    }),
+    "recipe t.parts.a: Audio.Graph: a loop passes through a delay",
+  )
+  # A delay's time needs its answer, so its own answer cannot move it.
+  says_at_note(
+    doc({
+      w: {part: "wave"},
+      a: {part: "delay", input: "w", modulators: {time: ["a"]}},
+    }),
+    "recipe t.parts.a: Audio.Graph: a loop passes through a delay",
+  )
+}
+
+@test
 fn a_drive_is_the_graph_drive_at_its_gain() {
   # Driven at 3 times the level, then (as every note) played at the level.
   let bent = made({
@@ -279,8 +346,8 @@ fn a_recipe_is_checked_whole_before_it_plays() {
   says(
     doc(
       {
-        a: {part: "wave", modulators: {phase: ["b"]}},
-        b: {part: "wave", modulators: {phase: ["a"]}},
+        a: {part: "gain", input: "b"},
+        b: {part: "gain", input: "a"},
       },
       "a",
     ),

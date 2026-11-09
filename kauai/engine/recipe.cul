@@ -67,7 +67,8 @@ let PARTS = {
   drive: {make: |g| g.drive},
   mix: {make: |g| g.mix},
   pluck: {make: |g| g.pluck, defaults: {freq: "f"}},
-  delay: {make: |g| g.delay},
+  # A delay answers from what went in before, so a loop closes at its `input`.
+  delay: {make: |g| g.delay, cut: "input"},
 }
 
 # What a field of a part holds, by the type its method declares for it: a
@@ -76,6 +77,7 @@ let PARTS = {
 let ROLES = {
   String: "word",
   AudioGraphPart: "one",
+  "AudioGraphPart | Nil": "one",
   Array: "many",
   Long: "whole",
   "Long | Float": "number",
@@ -111,6 +113,7 @@ fn shape(spec) {
     values: values,
     fixed: [...by("whole"), ...by("number").filter(|k| !moves(k))],
     defaults: defaults,
+    cut: spec.get("cut", nil),
     make: spec.make,
   }
 }
@@ -421,39 +424,59 @@ fn part(x, names, where) {
         (k, s.whole.contains(k) ? |env| Math.round(t(env)) : t)
       })
       .to_object(),
+    cut: s.cut,
     make: s.make,
   }
 }
 
-# The names of the parts part `p` takes in, or that move it.
+# The parts part `p` takes in or is moved by, as (name, loose): a loose line,
+# a delay's input or a part moving a value, is made once both parts are, so
+# it may close a loop. The rest are made with the part.
 fn wired(p) {
   [
-    ...p.one.keys().map(|k| p.one[k]),
-    ...p.many.keys().flat_map(|k| p.many[k]),
-    ...p.modulators.keys().flat_map(|k| p.modulators[k]),
+    ...p.one.keys().map(|k| (p.one[k], k == p.cut)),
+    ...p.many.keys().flat_map(|k| p.many[k].map(|n| (n, false))),
+    ...p.modulators.keys().flat_map(|k| p.modulators[k].map(|n| (n, true))),
   ]
 }
 
-# The parts in an order each comes after those it takes in, from `out`
-# back; a part `out` does not reach, a name no part has, or a loop is an
-# error.
+# The parts in an order each comes after those it takes in at its making
+# (not by a loose line), from `out` back; a part `out` does not reach, a name
+# no part has, or a ring of parts made with each other is an error. (Whether
+# a loop passes through a delay is Audio.Graph's to say, when the line is
+# made: a ring of tight lines never does.)
 fn ordered(parts, out, where) {
-  let walk = {order: [], state: {}}
-  visit(parts, out, "{where}: out", where, walk)
-  let idle = parts.keys().filter(|n| !walk.state.has(n))
+  let reached = {}
+  reach(parts, out, "{where}: out", where, reached)
+  let idle = parts.keys().filter(|n| !reached.has(n))
   throw "{where}: `{idle[0]}` does not reach out" if !idle.empty()
+  let walk = {order: [], state: {}}
+  for name in [out, ...parts.keys()] {
+    visit(parts, name, where, walk)
+  }
   walk.order
 }
 
-fn visit(parts, name, from, where, walk) {
+# Every part `name` leads to, by any line, into `reached`.
+fn reach(parts, name, from, where, reached) {
   throw "{from}: no part `{name}`" if !parts.has(name)
+  return nil if reached.has(name)
+  reached[name] = true
+  for (n, _) in wired(parts[name]) {
+    reach(parts, n, "{where}.{name}", where, reached)
+  }
+}
+
+fn visit(parts, name, where, walk) {
   let s = walk.state.get(name, nil)
   return nil if s == "done"
   throw "{where}: `{name}` takes itself in, through the parts it takes in" if s ==
     "open"
   walk.state[name] = "open"
-  for n in wired(parts[name]) {
-    visit(parts, n, "{where}.{name}", where, walk)
+  for (n, loose) in wired(parts[name]) {
+    if !loose {
+      visit(parts, n, where, walk)
+    }
   }
   walk.state[name] = "done"
   walk.order.push(name)
@@ -619,28 +642,42 @@ class Recipe {
 
   # A note's graph: each part made in order, with its values where their
   # courses start and the rest of each course scheduled, a course being
-  # `plan(value, part's name, where)`. Answers {graph, out, values},
-  # `values` each {value, def, part, course, where} for a value of a part.
+  # `plan(value, part's name, where)`. A line to a part not made yet (a
+  # delay's input, or a part moving a value, that closes a loop) is made when
+  # all are. Answers {graph, out, values}, `values` each
+  # {value, def, part, course, where} for a value of a part.
   _wire(env, plan) {
     let g = Audio.Graph.new(rate: @rate)
     mut made = {}
     mut values = []
+    mut later = []
     for name in @order {
       let p = @parts[name]
       let where = "recipe {@name}.parts.{name}"
       let courses = p.values.keys().map(|k| (k, plan(p.values[k], name, "{where}.{k}"))).to_object()
       let args = {
         ...p.words,
-        ...p.one.keys().map(|k| (k, made[p.one[k]])).to_object(),
+        ...p.one.keys().filter(|k| made.has(p.one[k])).map(|k| (k, made[p.one[k]])).to_object(),
         ...p.many.keys().map(|k| (k, p.many[k].map(|n| made[n]))).to_object(),
         ...courses.keys().map(|k| (k, courses[k][0][1])).to_object(),
         ...p.fixed.keys().map(|k| (k, p.fixed[k](env))).to_object(),
       }
       try {
         let built = p.make(g)(**args)
+        # Only a delay's input can be missing: ordered() made every other line's
+        # part first.
+        for k in p.one.keys() {
+          if !args.has(k) {
+            later.push((p.one[k], name, built))
+          }
+        }
         for k, ns in p.modulators {
           for n in ns {
-            made[n].connect(built[k])
+            if made.has(n) {
+              made[n].connect(built[k])
+            } else {
+              later.push((n, name, built[k]))
+            }
           }
         }
         for k in courses.keys() {
@@ -650,6 +687,13 @@ class Recipe {
         made[name] = built
       } catch {kind: "ValueError", message} {
         throw "{where}: {message}"
+      }
+    }
+    for (from, name, target) in later {
+      try {
+        made[from].connect(target)
+      } catch {kind: "ValueError", message} {
+        throw "recipe {@name}.parts.{name}: {message}"
       }
     }
     {graph: g, out: made[@out], values: values}
