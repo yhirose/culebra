@@ -290,8 +290,10 @@ ctest.entries 41
 # (docs/guides/llm*.md), 13 blocks in en and ja, of which only the
 # scripted-provider test runs (the rest need a model or a key). 1164 since
 # the Kauai spec's §10 plays a song early (skipped: reads a song file), in
-# en and ja.
-docs.blocks 1164
+# en and ja. 1166 since Audio.Graph's loops have an echo to run, in en and ja:
+# it is the only place the docs show a loop worked out, and the doctest holds
+# its three samples (1.0, 0.5, 0.25) to the code in both lanes.
+docs.blocks 1166
 
 # The samples the language front ends are run over (examples/languages/*).
 languages.samples 130
