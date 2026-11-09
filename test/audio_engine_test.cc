@@ -203,8 +203,8 @@ void tone_starts_when_asked() {
 void graph_plays_as_it_renders() {
   const int64_t id = 9001;
   ad::Graph def(ad::kMixerRate);
-  int wave = def.add(ad::PartKind::Wave, {}, {}, ad::Oscillator{ad::WaveKind::Saw}, 220, 0);
-  int lowpass = def.add(ad::PartKind::Filter, {wave}, {}, ad::Svf(ad::FilterKind::Low, 0.9), 1200);
+  int wave = def.add(ad::PartKind::Wave, {}, ad::Oscillator{ad::WaveKind::Saw}, 220, 0);
+  int lowpass = def.add(ad::PartKind::Filter, {wave}, ad::Svf(ad::FilterKind::Low, 0.9), 1200);
   def.output(lowpass);
   ad::graph_defs().insert_or_assign(id, def);
 
@@ -249,7 +249,7 @@ void many_play_at_once() {
   CHECK(device.heap_calls == 0, "40 songs: the renders made %ld heap calls", device.heap_calls);
   device.heap_calls = 0;
   ad::Graph def(ad::kMixerRate);
-  def.output(def.add(ad::PartKind::Wave, {}, {}, ad::Oscillator{ad::WaveKind::Sine}, 330, 0));
+  def.output(def.add(ad::PartKind::Wave, {}, ad::Oscillator{ad::WaveKind::Sine}, 330, 0));
   for (int64_t id = 9100; id < 9200; id++) {
     ad::graph_defs().insert_or_assign(id, def);
     engine.graph_play(id);

@@ -9049,27 +9049,35 @@ it or to any of its parts and values.
 | Function / method | Effect |
 | --- | --- |
 | `Audio.Graph.new(rate = 44100)` | an empty graph |
-| `g.wave(kind = "sine", freq = 440.0, modulators = [], feedback = 0.0, phase = 0.0)` | a wave from -1 to 1 at `freq` Hz, starting `phase` radians on: `"sine"`, `"saw"` or `"square"` (their jumps smoothed, so little folds back from above half the rate), or `"triangle"`. The sum of the `modulators` (parts made before it) moves its phase, in radians, and so does `feedback` times the mean of its own last two samples: with sines, FM as a DX7 makes it. An index is a `gain` between a modulator and the wave it moves |
+| `g.wave(kind = "sine", freq = 440.0, feedback = 0.0, phase = 0.0)` | a wave from -1 to 1 at `freq` Hz, `phase` radians on: `"sine"`, `"saw"` or `"square"` (their jumps smoothed, so little folds back from above half the rate), or `"triangle"`. `feedback` times the mean of its own last two samples moves its phase too: with sines, a part connected to `phase` makes FM as a DX7 does, and a `gain` between them is the index |
 | `g.noise(seed = 1)` | white noise from -1 to 1, the same from the same `seed` |
 | `g.filter(kind, input, cutoff = 1000.0, q = 0.707)` | `input` through `Audio.filter`'s filter |
-| `g.gain(input, gain = 1.0, modulators = [])` | `input` times the sum of `gain` and the `modulators` (parts made before it), which may pass 0: a slow wave as a modulator makes a tremolo, as Web Audio wires an oscillator to a `GainNode`'s `gain` |
+| `g.gain(input, gain = 1.0)` | `input` times `gain`, which may pass 0: a slow wave connected to `gain` makes a tremolo |
 | `g.mix(inputs: Array, gain = 1.0)` | the `inputs` added together, times `gain` |
 | `g.resonate(input, modes: Array, dry = 0.0)` | `input` through `Audio.resonate`'s bank of resonances |
-| `g.pluck(input, freq = 220.0, ring = 2.0, modulators = [])` | `Audio.pluck`'s string, `input` added into it as a strike is. The sum of the `modulators` (parts made before it) adds to the freq, in Hz; the freq they move it to is held from 20 Hz to half the rate. The string rings on as its tuning moves, as a player's finger bends it: a slow wave as a modulator makes a vibrato |
-| `g.delay(input, time = 0.0, modulators = [])` | `input` as it was `time` seconds before, read between two samples in a straight line (silence before the start). The sum of the `modulators` (parts made before it) adds to the time, in seconds; the time they move it to is held from 0 to 1. A slow wave as a modulator makes a chorus, as Web Audio wires an oscillator to a `DelayNode`'s `delayTime` |
+| `g.pluck(input, freq = 220.0, ring = 2.0)` | `Audio.pluck`'s string, `input` added into it as a strike is. The string rings on as its tuning moves, as a player's finger bends it: a slow wave connected to `freq` makes a vibrato |
+| `g.delay(input, time = 0.0)` | `input` as it was `time` seconds before, read between two samples in a straight line (silence before the start). A slow wave connected to `time` makes a chorus |
 | `g.drive(input, gain = 1.0)` | `input` times `gain` through tanh, as an overdrive bends a loud signal: close to that while it is small, rounded more the louder it is, never past ±1. Each sample is tanh averaged over the straight line from the sample before (first-order antiderivative anti-aliasing), so little of what the bending adds above half the rate folds back, and the part is half a sample late |
 | `g.limit(input, ceiling = 0.9, release = 0.2)` | `input` kept at or under `ceiling`, as an output stage keeps a sound from clipping: its gain drops at the sample that would go over, by as much as it takes, and comes back to 1 exponentially, with 1/e of the way left after each `release` seconds. It does not look ahead, so it adds no delay |
+| `part.connect(target) -> target` | adds what `part` answers into `target`, a part made after it: into what that part takes in (a wave or a noise takes nothing in), or into one of its values (below) |
 | `g.output(part)` | the part the graph plays (silence until there is one) |
 | `g.render(seconds) -> Array` | the graph's first `seconds`, worked out now from its start |
 | `g.play()` | play the graph from its start (again, if it is playing) |
 | `g.stop()` | silence it |
 | `g.now() -> Float` | where on the graph's clock a change made now lands; `0.0` when it is not playing |
 
-What moves in a part is a value: a wave's `freq` and `feedback`, a filter's
-`cutoff`, a gain's `gain`, a string's `freq` and `ring`, a delay's `time`, and
-a drive's `gain`, each a field of the part. A
-value is what the part was made with until its first change, and changes are
-scheduled on the graph's clock, in seconds from its start:
+What moves in a part is a value: a wave's `freq`, `feedback` and `phase`, a
+filter's `cutoff`, a gain's `gain`, a string's `freq` and `ring`, a delay's
+`time`, and a drive's `gain`, each a field of the part. A value is its
+schedule plus what the parts connected to it answer, sample by sample, as
+Web Audio's `AudioParam` is: `lfo.connect(w.freq)` adds the lfo to the
+wave's freq, in Hz, as `lfo.connect(d.time)` adds it to a delay's time, in
+seconds. What they move a value to is held where the part stays sound: a
+wave's freq and a cutoff from 0 to half the rate, a string's freq from 20 Hz
+to half the rate, a delay's time from 0 to 1, and a feedback, a ring and a
+drive's gain at 0 or more. The schedule is what the part was made with until
+its first change, and changes are scheduled on the graph's clock, in seconds
+from its start:
 
 | Method | Effect |
 | --- | --- |
@@ -9086,8 +9094,8 @@ what has been heard stays. A graph keeps every change made to it and works
 them out from its start whenever it renders or plays; a change made while it
 plays reaches the playing graph too, and one for a time already past takes
 effect at once. What a graph plays is wired as it was at `play()`: a part
-added, or an `output` set, while it plays is heard from the next `play()`,
-and so are changes to such a part's values. A change takes effect at the first sample at or after its
+added, a part connected, or an `output` set, while it plays is heard from the
+next `play()`, and so are changes to such a part's values. A change takes effect at the first sample at or after its
 time, as a point of `Audio.filter`'s or `Audio.envelope`'s envelope does;
 `Audio.pluck` puts a tuning on the nearest sample instead, so a string
 re-tuned between two samples can change one sample later in a graph. These
@@ -9101,8 +9109,10 @@ or not a finite number, a cutoff not above 0 and below half the rate, a gain tha
 freq below 20 Hz or not below half the rate, a ring not above 0, a delay's
 time below 0 or above 1, a drive's gain below 0 or not a finite number), a wave's phase that is not a finite number, a time
 below 0, or a `q` not above 0 raises `ValueError`, and so does a mode as
-`Audio.resonate` refuses one; an input that is not a part of a graph, or a
-mode that is not an object of three numbers, raises `TypeError`. A graph
+`Audio.resonate` refuses one, a part connected from itself or from a part
+made after it, or one connected into a wave or a noise; an input that is not a part of a
+graph, a target that is neither a part nor a value, or a mode that is not
+an object of three numbers, raises `TypeError`. A graph
 plays at a rate of 44100, and at most 64 play at once (`ValueError`
 otherwise). With no device nothing sounds and `now()` follows the clock from
 `play()`; in the browser a graph renders but does not play yet.
@@ -9130,7 +9140,9 @@ println(iota(22050).all(|i| Math.abs(sound[i] - faded[i]) < 1e-9))  # => true
 # is the index, in radians, and the first one feeds itself a little.
 let fm = Audio.Graph.new()
 let op1 = fm.wave("sine", freq: 220.0, feedback: 0.5)
-let op2 = fm.wave("sine", freq: 220.0, modulators: [fm.gain(op1, 2.0)])
+let index = fm.gain(op1, 2.0)
+let op2 = fm.wave("sine", freq: 220.0)
+index.connect(op2.phase)
 fm.output(fm.gain(op2, 0.5))
 println(fm.render(0.1).size())  # => 4410
 
@@ -9139,8 +9151,10 @@ println(fm.render(0.1).size())  # => 4410
 let ch = Audio.Graph.new()
 let saw2 = ch.wave("saw", freq: 220.0)
 let copies = iota(3).map(fn (k) {
-  let lfo = ch.wave("sine", freq: 0.6, phase: 2.0 * Math.pi * k / 3.0)
-  ch.delay(saw2, 0.015, modulators: [ch.gain(lfo, 0.003)])
+  let lfo = ch.gain(ch.wave("sine", freq: 0.6, phase: 2.0 * Math.pi * k / 3.0), 0.003)
+  let copy = ch.delay(saw2, 0.015)
+  lfo.connect(copy.time)
+  copy
 })
 ch.output(ch.mix([saw2, ...copies], gain: 0.25))
 println(ch.render(0.1).size())  # => 4410

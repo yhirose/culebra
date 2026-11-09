@@ -8677,25 +8677,30 @@ println(Math.round(Audio.integrated_loudness(both)))                     # => -1
 | 関数・メソッド | 効果 |
 | --- | --- |
 | `Audio.Graph.new(rate = 44100)` | 空のグラフ |
-| `g.wave(kind = "sine", freq = 440.0, modulators = [], feedback = 0.0, phase = 0.0)` | `freq` Hzの-1から1の波で、`phase`ラジアン進んだところから始まる。`"sine"`、`"saw"`、`"square"`（この2つは段差をなめらかにして、`rate`の半分より上からの折り返しを抑えてある）、`"triangle"`。`modulators`（この波より前に作った部品）の出力の和が位相をラジアンで動かし、自分の直近2サンプルの平均に`feedback`を掛けたものも位相を動かす。sineなら、DX7のFMになる。変調の深さ（index）は、変調器とそれが動かす波の間に置く`gain`で決める |
+| `g.wave(kind = "sine", freq = 440.0, feedback = 0.0, phase = 0.0)` | `freq` Hzの-1から1の波で、`phase`ラジアン進めた位置で鳴る。`"sine"`、`"saw"`、`"square"`（この2つは段差をなめらかにして、`rate`の半分より上からの折り返しを抑えてある）、`"triangle"`。自分の直近2サンプルの平均に`feedback`を掛けたものも位相を動かす。sineなら、`phase`に部品をつなぐとDX7のFMになり、間に置く`gain`が変調の深さ（index）になる |
 | `g.noise(seed = 1)` | -1から1の白色雑音。同じ`seed`なら同じになる |
 | `g.filter(kind, input, cutoff = 1000.0, q = 0.707)` | `input`を`Audio.filter`と同じフィルタに通す |
-| `g.gain(input, gain = 1.0, modulators = [])` | `input`を「`gain`と`modulators`（この部品より前に作った部品）の出力の和」倍する。和は0をまたいでもよい。遅い波をつなぐとトレモロになる。Web Audioで`GainNode`の`gain`に発振器をつなぐのと同じ |
+| `g.gain(input, gain = 1.0)` | `input`を`gain`倍する。`gain`は0をまたいでもよい。`gain`に遅い波をつなぐとトレモロになる |
 | `g.mix(inputs: Array, gain = 1.0)` | `inputs`を足し合わせて`gain`倍する |
 | `g.resonate(input, modes: Array, dry = 0.0)` | `input`を`Audio.resonate`と同じ共鳴の集まりに通す |
-| `g.pluck(input, freq = 220.0, ring = 2.0, modulators = [])` | `Audio.pluck`と同じ弦。`input`をストロークと同じように弦に足し込む。`modulators`（この部品より前に作った部品）の出力の和をHzとしてfreqに足し、動いたfreqは20 Hzから`rate`の半分までに収める。弦はチューニングが動いても鳴り続けるので、指で弦を押し上げたのと同じになる。遅い波をつなぐとビブラートになる |
-| `g.delay(input, time = 0.0, modulators = [])` | `time`秒前の`input`。2つのサンプルの間は直線で読む（始まりより前は無音）。`modulators`（この部品より前に作った部品）の出力の和を秒として遅れに足し、動いた遅れは0から1の間に収める。遅い波をつなぐとコーラスになる。Web Audioで`DelayNode`の`delayTime`に発振器をつなぐのと同じ |
+| `g.pluck(input, freq = 220.0, ring = 2.0)` | `Audio.pluck`と同じ弦。`input`をストロークと同じように弦に足し込む。弦はチューニングが動いても鳴り続けるので、指で弦を押し上げたのと同じになる。`freq`に遅い波をつなぐとビブラートになる |
+| `g.delay(input, time = 0.0)` | `time`秒前の`input`。2つのサンプルの間は直線で読む（始まりより前は無音）。`time`に遅い波をつなぐとコーラスになる |
 | `g.drive(input, gain = 1.0)` | `input`を`gain`倍してtanhに通したもの。オーバードライブが大きな信号を曲げるのと同じで、小さいうちはほぼそのまま、大きいほど丸められ、±1は超えない。各サンプルは、1つ前のサンプルからの直線の上でtanhを平均した値にする（1次の原始関数によるエイリアシング低減）。これで、曲げて足された成分のうち`rate`の半分を超えるものがほとんど折り返さず、その代わり半サンプル遅れる |
 | `g.limit(input, ceiling = 0.9, release = 0.2)` | `ceiling`以下に収めた`input`。出力段が音の割れを防ぐのと同じで、超えそうなサンプルでその分だけ音量を下げ、`release`秒で1までの残りが1/eになる速さで指数的に1へ戻す。先読みしないので遅れは足さない |
+| `part.connect(target) -> target` | `part`の出力を、`part`より後に作った`target`に足す。`target`が部品ならその入力に（waveとnoiseは入力を取らない）、値（下記）ならその値に足す |
 | `g.output(part)` | グラフが鳴らす部品（決めるまでは無音） |
 | `g.render(seconds) -> Array` | グラフの最初の`seconds`秒を、始まりから今計算する |
 | `g.play()` | グラフを始まりから鳴らす（鳴っていれば始まりからやり直す） |
 | `g.stop()` | 止める |
 | `g.now() -> Float` | 今行った変更が、グラフの時計のどこに入るか。鳴っていなければ`0.0` |
 
-部品の中で動かせるものを値と呼びます。波の`freq`と`feedback`、フィルタの`cutoff`、
-gainの`gain`、弦の`freq`と`ring`、遅延の`time`、driveの`gain`が、それぞれ部品のフィールドになっています。値は最初の変更まで
-部品を作ったときの値のままで、変更はグラフの時計（始まりからの秒）の上に予約します。
+部品の中で動かせるものを値と呼びます。波の`freq`、`feedback`、`phase`、フィルタの`cutoff`、
+gainの`gain`、弦の`freq`と`ring`、遅延の`time`、driveの`gain`が、それぞれ部品のフィールドになっています。
+値は、予約した値に、つないだ部品の出力の和をサンプルごとに足したものです。Web Audioの`AudioParam`と同じです。
+`lfo.connect(w.freq)`はlfoを波のfreqにHzとして足し、`lfo.connect(d.time)`は遅延のtimeに秒として足します。
+つないだ部品が動かした値は、部品が壊れない範囲に収めます。波のfreqとcutoffは0から`rate`の半分、
+弦のfreqは20 Hzから`rate`の半分、遅延のtimeは0から1、feedbackとringとdriveのgainは0以上です。
+予約した値は最初の変更まで部品を作ったときの値のままで、変更はグラフの時計（始まりからの秒）の上に予約します。
 
 | メソッド | 効果 |
 | --- | --- |
@@ -8710,7 +8715,7 @@ gainの`gain`、弦の`freq`と`ring`、遅延の`time`、driveの`gain`が、�
 部分は変わりません。グラフは予約をすべて覚えていて、`render`するときも鳴らすときも
 始まりから計算します。鳴っている間の予約は鳴っているグラフにも届き、過ぎた時刻の
 予約はすぐに効きます。鳴っているグラフのつなぎ方は`play()`の時点のままで、鳴っている
-間に足した部品や`output`の変更は、その部品の値の予約も含めて、次の`play()`から
+間に足した部品やつないだ部品、`output`の変更は、その部品の値の予約も含めて、次の`play()`から
 聞こえます。予約は、その時刻と同じかそれより後の最初のサンプルから効きます。
 これは`Audio.filter`や`Audio.envelope`のエンベロープの点と同じ扱いです。`Audio.pluck`は
 チューニングを最も近いサンプルに置くので、2つのサンプルの間の時刻で調律を変えた
@@ -8722,8 +8727,9 @@ gainの`gain`、弦の`freq`と`ring`、遅延の`time`、driveの`gain`が、�
 範囲外の値（波のfreqが0未満か`rate`の半分以上、feedbackが0未満か有限の数でない、
 cutoffが0以下か`rate`の半分以上、
 gainが有限の数でない、弦のfreqが20 Hz未満か`rate`の半分以上、ringが0以下、遅延のtimeが0未満か1より大きい、driveのgainが0未満か有限の数でない）。
-有限の数でない波のphase。0未満の時刻。0以下の`q`。`Audio.resonate`が受け付けないモード。グラフの部品で
-ない入力と、3つの数を持つオブジェクトでないモードは`TypeError`です。グラフは`rate`が44100のときだけ鳴らせ、
+有限の数でない波のphase。0未満の時刻。0以下の`q`。`Audio.resonate`が受け付けないモード。
+自分自身や後に作った部品からのつなぎと、waveやnoiseへのつなぎ。グラフの部品でない入力、部品でも値でもない
+つなぎ先、3つの数を持つオブジェクトでないモードは`TypeError`です。グラフは`rate`が44100のときだけ鳴らせ、
 同時に鳴らせるのは64個まで（超えると`ValueError`）です。デバイスが無いときは何も
 鳴らず、`now()`は`play()`からの時間を返します。ブラウザではグラフは`render`できますが、
 まだ鳴らせません。
@@ -8751,7 +8757,9 @@ println(iota(22050).all(|i| Math.abs(sound[i] - faded[i]) < 1e-9))  # => true
 # is the index, in radians, and the first one feeds itself a little.
 let fm = Audio.Graph.new()
 let op1 = fm.wave("sine", freq: 220.0, feedback: 0.5)
-let op2 = fm.wave("sine", freq: 220.0, modulators: [fm.gain(op1, 2.0)])
+let index = fm.gain(op1, 2.0)
+let op2 = fm.wave("sine", freq: 220.0)
+index.connect(op2.phase)
 fm.output(fm.gain(op2, 0.5))
 println(fm.render(0.1).size())  # => 4410
 
@@ -8760,8 +8768,10 @@ println(fm.render(0.1).size())  # => 4410
 let ch = Audio.Graph.new()
 let saw2 = ch.wave("saw", freq: 220.0)
 let copies = iota(3).map(fn (k) {
-  let lfo = ch.wave("sine", freq: 0.6, phase: 2.0 * Math.pi * k / 3.0)
-  ch.delay(saw2, 0.015, modulators: [ch.gain(lfo, 0.003)])
+  let lfo = ch.gain(ch.wave("sine", freq: 0.6, phase: 2.0 * Math.pi * k / 3.0), 0.003)
+  let copy = ch.delay(saw2, 0.015)
+  lfo.connect(copy.time)
+  copy
 })
 ch.output(ch.mix([saw2, ...copies], gain: 0.25))
 println(ch.render(0.1).size())  # => 4410

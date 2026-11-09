@@ -119,7 +119,7 @@ each drum by one hit, as it does an instrument by one note.
     "depth": {"part": "gain", "input": "mod",
               "gain": {"on": [[0, 0.5], [0.06, 1], [0.18, "3 + 1.5 * bright"], [0.45, 2.2]],
                        "off": [[0.12, 0.6]]}},
-    "car":   {"part": "wave", "modulators": ["depth"]},
+    "car":   {"part": "wave", "modulators": {"phase": ["depth"]}},
     "amp":   {"part": "gain", "input": "car",
               "gain": {"on": [[0, 0], [0.07, 1], [0.2, 0.85]],
                        "off": [[0.12, 0, -4]]}}
@@ -146,21 +146,24 @@ arguments, under the same names.
 
 | `part` | Takes in | Values that may move | Made with once |
 |---|---|---|---|
-| `wave` | `modulators` (a list) | `freq` (`f`), `feedback` (0) | `kind`: `sine`, `saw`, `square` or `triangle` (`sine`); `phase` (0, radians) |
+| `wave` | | `freq` (`f`), `feedback` (0), `phase` (0, radians) | `kind`: `sine`, `saw`, `square` or `triangle` (`sine`) |
 | `noise` | | | `seed` (1) |
 | `filter` | `input` | `cutoff` (1000) | `kind`: `low`, `high` or `band` (`low`); `q` (0.707) |
-| `gain` | `input`, `modulators` (a list) | `gain` (1) | |
+| `gain` | `input` | `gain` (1) | |
 | `drive` | `input` | `gain` (1) | |
 | `mix` | `inputs` (a list) | `gain` (1) | |
-| `pluck` | `input`, `modulators` (a list) | `freq` (`f`), `ring` (2) | |
-| `delay` | `input`, `modulators` (a list) | `time` (0, seconds) | |
+| `pluck` | `input` | `freq` (`f`), `ring` (2) | |
+| `delay` | `input` | `time` (0, seconds) | |
 
-A field that takes in parts holds their names. A wave's `modulators` move its
-phase, a delay's move its time, a gain's add to its gain and a pluck's add
-to its freq, in Hz, as a finger bends a string: a slow wave makes a tremolo
-or a vibrato, which starts with each note, as a synthesizer's LFO in key
-sync does, since each note is a graph of its own. A wave's `freq` and a
-pluck's are the note's own (`f`) unless the recipe says otherwise. A drive
+A field that takes in parts holds their names. A part with values may also
+have `modulators`: for each of its values, the parts connected to it, which
+add to it as `Audio.Graph`'s `connect` does (`{"phase": ["depth"]}`). Into a
+wave's `phase` they make FM, into a gain's `gain` a tremolo, into a pluck's
+`freq` (in Hz, as a finger bends a string) a vibrato, into a delay's `time` a
+chorus and into a filter's `cutoff` a wah; each starts with its note, as a
+synthesizer's LFO in key sync does, since each note is a graph of its own. A
+wave's `freq` and a pluck's are the note's own (`f`) unless the recipe says
+otherwise. A drive
 bends what comes in, times its `gain`, as an overdrive does
 (`Audio.Graph`'s `drive`).
 

@@ -100,13 +100,15 @@ fn shape(spec) {
     .map(|p| (p.name, match ROLES[p.type] { "one" => src, "many" => [], _ => defaults[p.name] }))
   let probe = method(**needs.to_object())
   let moves = |k| probe.get(k, nil) != nil
+  let values = by("number").filter(moves)
   {
-    fields: ps.map(|p| p.name),
+    # `modulators` is the recipe's own: the parts each value is connected from.
+    fields: [...ps.map(|p| p.name), ...(values.empty() ? [] : ["modulators"])],
     word: by("word"),
     one: by("one"),
     many: by("many"),
     whole: by("whole"),
-    values: by("number").filter(moves),
+    values: values,
     fixed: [...by("whole"), ...by("number").filter(|k| !moves(k))],
     defaults: defaults,
     make: spec.make,
@@ -389,6 +391,13 @@ fn part(x, names, where) {
     throw "{where}.{k}: a list of names of parts" if xs !is Array ||
       !xs.all(|n| n is String)
   }
+  let mods = x.get("modulators", {})
+  let named = |ns| ns is Array && ns.all(|n| n is String)
+  throw "{where}.modulators: an Object of the values it moves, each a list of names of parts (\{\"phase\": [\"depth\"]})" if mods !is Object ||
+    !mods.values().all(named)
+  for k in mods.keys() {
+    throw "{where}.modulators.{k}: no value `{k}`; a {x.part} moves {s.values.join(", ")}" if !s.values.contains(k)
+  }
   # A field the part leaves out goes to its method as its own default.
   let given = {...s.defaults, ...x}
   let has = |k| given.has(k)
@@ -400,6 +409,7 @@ fn part(x, names, where) {
     words: words.map(|k| (k, given[k])).to_object(),
     one: s.one.map(|k| (k, x[k])).to_object(),
     many: s.many.map(|k| (k, x.get(k, []))).to_object(),
+    modulators: mods,
     values: s.values
       .filter(has)
       .map(|k| (k, value(given[k], names, "{where}.{k}")))
@@ -417,7 +427,11 @@ fn part(x, names, where) {
 
 # The names of the parts part `p` takes in, or that move it.
 fn wired(p) {
-  [...p.one.keys().map(|k| p.one[k]), ...p.many.keys().flat_map(|k| p.many[k])]
+  [
+    ...p.one.keys().map(|k| p.one[k]),
+    ...p.many.keys().flat_map(|k| p.many[k]),
+    ...p.modulators.keys().flat_map(|k| p.modulators[k]),
+  ]
 }
 
 # The parts in an order each comes after those it takes in, from `out`
@@ -624,6 +638,11 @@ class Recipe {
       }
       try {
         let built = p.make(g)(**args)
+        for k, ns in p.modulators {
+          for n in ns {
+            made[n].connect(built[k])
+          }
+        }
         for k in courses.keys() {
           scheduled(built[k], courses[k])
           values.push({value: built[k], def: p.values[k], part: name, course: courses[k], where: "{where}.{k}"})

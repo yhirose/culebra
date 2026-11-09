@@ -9,8 +9,8 @@
     "drift1l": {"part": "gain", "input": "drift1", "gain": "chorus * 0.0015 * f / 0.31"},
     "drift2": {"part": "wave", "freq": 0.47, "phase": 2},
     "drift2l": {"part": "gain", "input": "drift2", "gain": "chorus * 0.0015 * f / 0.47"},
-    "saw1": {"part": "wave", "kind": "saw", "freq": "f * 0.997", "modulators": ["drift1l"]},
-    "saw2": {"part": "wave", "kind": "saw", "freq": "f * 1.003", "modulators": ["drift2l"]},
+    "saw1": {"part": "wave", "kind": "saw", "freq": "f * 0.997", "modulators": {"phase": ["drift1l"]}},
+    "saw2": {"part": "wave", "kind": "saw", "freq": "f * 1.003", "modulators": {"phase": ["drift2l"]}},
     "body": {"part": "wave", "kind": "triangle"},
     "osc": {"part": "mix", "inputs": ["saw1", "saw2", "body"], "gain": 0.2},
     "vcf": {"part": "filter", "kind": "low", "q": 1.2, "input": "osc", "cutoff": {
@@ -20,7 +20,7 @@
       "off": [[0.15, "f", -3]]}},
     "sweep": {"part": "wave", "freq": 0.6},
     "sweepl": {"part": "gain", "input": "sweep", "gain": 0.002},
-    "copy": {"part": "delay", "input": "vcf", "time": 0.012, "modulators": ["sweepl"]},
+    "copy": {"part": "delay", "input": "vcf", "time": 0.012, "modulators": {"time": ["sweepl"]}},
     "copyl": {"part": "gain", "input": "copy", "gain": "0.5 * chorus"},
     "ensemble": {"part": "mix", "inputs": ["vcf", "copyl"], "gain": "1 / sqrt(1 + 0.25 * chorus)"},
     "amp": {"part": "gain", "input": "ensemble", "gain": {

@@ -162,12 +162,14 @@ assert_samples(
     [{at: 0.0, samples: kick}],
   ),
 )
-// A string's modulators add to its freq, in Hz: the same hammer-on as 110 Hz
-// added from 50 ms on.
+// A part connected to a string's freq adds to it, in Hz: the same hammer-on
+// as 110 Hz added from 50 ms on.
 fn moved_string(lift, at) {
   let (g, push) = steady(44100)
   push.gain.set(at, lift)
-  g.output(g.pluck(burst(g), freq: 220.0, ring: 1.5, modulators: [push]))
+  let s = g.pluck(burst(g), freq: 220.0, ring: 1.5)
+  push.connect(s.freq)
+  g.output(s)
   g.render(0.1)
 }
 assert_samples(moved_string(110.0, 0.05), string.render(0.1))
@@ -252,7 +254,9 @@ fn fm_reference(n, rate, f_mod, f_car, feedback, index) {
 }
 let fm = Audio.Graph.new(rate: 8000)
 let modulator = fm.wave("sine", freq: 300.0, feedback: 1.5)
-let carrier = fm.wave("sine", freq: 700.0, modulators: [fm.gain(modulator, 2.0)])
+let index = fm.gain(modulator, 2.0)
+let carrier = fm.wave("sine", freq: 700.0)
+assert_eq(index.connect(carrier.phase), carrier.phase)
 fm.output(carrier)
 assert_samples(
   fm.render(0.05),
@@ -304,8 +308,8 @@ for start in [Math.pi / 2.0, Math.pi / 2.0 + 2.0 * Math.pi] {
 }
 
 // A delay answers what went in `time` seconds ago, read between two samples
-// in a straight line, silence before the start; the sum of its modulators
-// moves the time. Against a 700 Hz sine, sample by sample.
+// in a straight line, silence before the start; the sum of the parts
+// connected to its time moves it. Against a 700 Hz sine, sample by sample.
 let tone = |i| i < 0 ? 0.0 : Math.sin(2.0 * Math.pi * 700.0 * i / 8000.0)
 fn delayed(n, samples_at) {
   iota(n).map(fn (i) {
@@ -318,7 +322,9 @@ fn delayed(n, samples_at) {
 for (time, wobble) in [(3.0 / 8000.0, 0.0), (2.5 / 8000.0, 0.0), (0.001, 0.0005)] {
   let echo = Audio.Graph.new(rate: 8000)
   let lfo = echo.gain(echo.wave("sine", freq: 50.0), wobble)
-  echo.output(echo.delay(echo.wave("sine", freq: 700.0), time, modulators: [lfo]))
+  let d = echo.delay(echo.wave("sine", freq: 700.0), time)
+  lfo.connect(d.time)
+  echo.output(d)
   let want = delayed(400, |i| (time + wobble * Math.sin(2.0 * Math.pi * 50.0 * i / 8000.0)) * 8000.0)
   assert_samples(echo.render(0.05), want)
 }
@@ -329,11 +335,13 @@ let line = moved.delay(moved.wave("sine", freq: 700.0))
 line.time.set(0.005, 2.0 / 8000.0)
 moved.output(line)
 assert_samples(moved.render(0.01), iota(80).map(|i| tone(i < 40 ? i : i - 2)))
-// The time a modulator moves it to is held from 0 to 1 s: pushed below 0
-// (a sine at 0 Hz a quarter turn on is a steady 1), it is 0.
+// The time a connected part moves it to is held from 0 to 1 s: pushed below
+// 0 (a sine at 0 Hz a quarter turn on is a steady 1), it is 0.
 let held = Audio.Graph.new(rate: 8000)
 let push = held.gain(held.wave("sine", freq: 0.0, phase: Math.pi / 2.0), -0.5)
-held.output(held.delay(held.wave("sine", freq: 700.0), 0.001, modulators: [push]))
+let late = held.delay(held.wave("sine", freq: 700.0), 0.001)
+push.connect(late.time)
+held.output(late)
 assert_samples(held.render(0.01), iota(80).map(tone))
 
 // A limit keeps what comes in at or under its ceiling without delaying it:
@@ -406,12 +414,82 @@ assert_true(hard.render(0.1).all(|x| Math.abs(x) <= 1.0))
 drive.gain.set(0.0, 0.0)
 assert_true(dg.render(0.01).all(|x| x == 0.0))
 
-// A gain's modulators add to its gain, sample by sample: a 700 Hz sine at
-// 0.25 moved by a 50 Hz sine at 0.5, a tremolo whose gain passes 0.
+// A part connected to a gain adds to its gain, sample by sample: a 700 Hz
+// sine at 0.25 moved by a 50 Hz sine at 0.5, a tremolo whose gain passes 0.
 let trem = Audio.Graph.new(rate: 8000)
 let lfo = trem.gain(trem.wave("sine", freq: 50.0), 0.5)
-trem.output(trem.gain(trem.wave("sine", freq: 700.0), 0.25, modulators: [lfo]))
+let tremolo = trem.gain(trem.wave("sine", freq: 700.0), 0.25)
+lfo.connect(tremolo.gain)
+trem.output(tremolo)
 assert_samples(trem.render(0.05), iota(400).map(|i| tone(i) * (0.25 + 0.5 * Math.sin(2.0 * Math.pi * 50.0 * i / 8000.0))))
+
+// Every value takes what is connected to it on top of its schedule. A
+// wave's freq: a 5 Hz sine at 50 Hz added to 700 Hz, the phase running on at
+// the freq of each sample.
+fn vibrato(n, rate) {
+  mut ph = 0.0
+  iota(n).map(fn (i) {
+    let y = Math.sin(2.0 * Math.pi * ph)
+    ph += (700.0 + 50.0 * Math.sin(2.0 * Math.pi * 5.0 * i / rate)) / rate
+    ph -= Math.floor(ph)
+    y
+  })
+}
+let vib = Audio.Graph.new(rate: 8000)
+let wobble = vib.gain(vib.wave("sine", freq: 5.0), 50.0)
+let voice = vib.wave("sine", freq: 700.0)
+wobble.connect(voice.freq)
+vib.output(voice)
+assert_samples(vib.render(0.05), vibrato(400, 8000.0))
+// A steady `by` connected to a 700 Hz wave's freq. Pushed below 0 the freq
+// is held at 0, and past half the rate at half.
+fn pushed_wave(by) {
+  let (g, push) = steady(8000)
+  push.gain.set(0.0, by)
+  let w = g.wave("sine", freq: 700.0)
+  push.connect(w.freq)
+  g.output(w)
+  g.render(0.01)
+}
+assert_true(pushed_wave(-1000.0).all(|x| x == 0.0))
+assert_eq(pushed_wave(1.0e6), pushed_wave(3300.0))
+assert_true(pushed_wave(1.0e6) != pushed_wave(3299.0))
+// A cutoff: a steady 600 connected to a cutoff of 400 is a cutoff of 1000.
+fn swept(cutoff, by) {
+  let (g, push) = steady(8000)
+  push.gain.set(0.0, by)
+  let lp = g.filter("low", g.wave("saw", freq: 300.0), cutoff: cutoff)
+  push.connect(lp.cutoff)
+  g.output(lp)
+  g.render(0.02)
+}
+assert_samples(swept(400.0, 600.0), swept(1000.0, 0.0))
+// Held from 0, where a low-pass passes nothing, to half the rate, where it
+// stays sound.
+assert_true(swept(400.0, -1000.0).all(|x| x == 0.0))
+assert_eq(swept(400.0, 1.0e6), swept(400.0, 3600.0))
+assert_true(swept(400.0, 1.0e6).all(|x| Math.abs(x) < 10.0))
+// A wave's phase is a value: a quarter turn from sample 4 on turns the sine
+// into its cosine there.
+let turn = Audio.Graph.new(rate: 8000)
+let tw = turn.wave("sine", freq: 1000.0)
+tw.phase.set(0.0005, Math.pi / 2.0)
+turn.output(tw)
+assert_samples(
+  turn.render(0.002),
+  iota(16).map(|i| i < 4 ? Math.sin(2.0 * Math.pi * i / 8.0) : Math.cos(2.0 * Math.pi * i / 8.0)),
+)
+// A part connected to another adds to what that one takes in: a mix of one
+// with a second connected is the mix of both.
+let ins = Audio.Graph.new(rate: 8000)
+let first = ins.wave("sine", freq: 700.0)
+let second = ins.wave("saw", freq: 300.0)
+let both = ins.mix([first])
+assert_eq(second.connect(both), both)
+ins.output(both)
+let mixed = Audio.Graph.new(rate: 8000)
+mixed.output(mixed.mix([mixed.wave("sine", freq: 700.0), mixed.wave("saw", freq: 300.0)]))
+assert_samples(ins.render(0.01), mixed.render(0.01))
 
 // A part keeps its graph: the graph lives on after the variable that held it.
 fn lone_wave() {
@@ -440,7 +518,7 @@ for (
   call,
   kind,
   message,
-) in [(|| Audio.Graph.new(rate: 0), "ValueError", "the rate is above 0"), (|| g.wave("zigzag"), "ValueError", "a wave is \"sine\", \"saw\", \"square\" or \"triangle\", not zigzag"), (|| g.wave(freq: 30000.0), "ValueError", "a wave's freq is 0 or more and below half the rate"), (|| g.wave(feedback: -1.0), "ValueError", "a wave's feedback is 0 or more"), (|| w.feedback.ramp(0.5, Math.nan), "ValueError", "a wave's feedback is 0 or more"), (|| g.wave(modulators: [elsewhere]), "ValueError", "a part takes in parts of its own graph"), (|| g.wave(phase: Math.inf), "ValueError", "a wave's phase is a finite number"), (|| g.delay(w, 1.5), "ValueError", "a delay's time is from 0 to 1"), (|| g.delay(w).time.ramp(0.5, -0.1), "ValueError", "a delay's time is from 0 to 1"), (|| g.delay(w, modulators: [elsewhere]), "ValueError", "a part takes in parts of its own graph"), (|| g.gain(w, modulators: [elsewhere]), "ValueError", "a part takes in parts of its own graph"), (|| g.limit(w, 0.0), "ValueError", "a limit's ceiling is above 0"), (|| g.limit(w, release: Math.inf), "ValueError", "a limit's release is above 0"), (|| g.drive(w, -1.0), "ValueError", "a drive's gain is 0 or more"), (|| g.drive(w).gain.ramp(0.5, Math.inf), "ValueError", "a drive's gain is 0 or more"), (|| g.noise(seed: -1), "ValueError", "a noise's seed is a whole number from 0 below 2^31"), (|| g.filter("notch", w), "ValueError", "a filter is \"low\", \"high\" or \"band\", not notch"), (|| g.filter("low", w, cutoff: 0.0), "ValueError", "a cutoff is above 0 and below half the rate"), (|| g.filter("low", w, q: 0.0), "ValueError", "the q is above 0"), (|| g.gain(w, Math.nan), "ValueError", "a gain is a finite number"), (|| g.pluck(w, freq: 10.0), "ValueError", "a string's freq is 20 or more and below half the rate"), (|| g.pluck(w, ring: 0.0), "ValueError", "a string's ring is above 0"), (|| g.pluck(w, modulators: [elsewhere]), "ValueError", "a part takes in parts of its own graph"), (|| g.resonate(w, [{freq: 0.0, width: 10.0, gain: 1.0}]), "ValueError", "a mode's freq is above 0 and below half the rate"), (|| g.resonate(w, [{freq: 300.0, width: 0.0, gain: 1.0}]), "ValueError", "a mode's width is above 0"), (|| g.filter("low", elsewhere), "ValueError", "a part takes in parts of its own graph"), (|| g.mix([w, elsewhere]), "ValueError", "a part takes in parts of its own graph"), (|| g.output(elsewhere), "ValueError", "the output is a part of its own graph"), (|| w.freq.set(-0.5, 220.0), "ValueError", "a change's time is 0 or more"), (|| w.freq.cancel(-0.5), "ValueError", "a change's time is 0 or more"), (|| w.freq.ramp(0.5, -220.0), "ValueError", "a wave's freq is 0 or more and below half the rate"), (|| Audio.Graph.new(rate: 22050).play(), "ValueError", "a graph plays at a rate of 44100"), (|| g.render(-1.0), "ValueError", "the seconds are 0 or more")] {
+) in [(|| Audio.Graph.new(rate: 0), "ValueError", "the rate is above 0"), (|| g.wave("zigzag"), "ValueError", "a wave is \"sine\", \"saw\", \"square\" or \"triangle\", not zigzag"), (|| g.wave(freq: 30000.0), "ValueError", "a wave's freq is 0 or more and below half the rate"), (|| g.wave(feedback: -1.0), "ValueError", "a wave's feedback is 0 or more"), (|| w.feedback.ramp(0.5, Math.nan), "ValueError", "a wave's feedback is 0 or more"), (|| elsewhere.connect(w.freq), "ValueError", "a part connects to parts of its own graph"), (|| w.connect(g.wave()), "ValueError", "a wave or a noise takes nothing in"), (|| w.connect(g.noise()), "ValueError", "a wave or a noise takes nothing in"), (|| g.gain(w).connect(w.freq), "ValueError", "a part is connected from parts made before it"), (|| w.connect(w.phase), "ValueError", "a part is connected from parts made before it"),(|| w.phase.ramp(0.5, Math.inf), "ValueError", "a wave's phase is a finite number"), (|| g.wave(phase: Math.inf), "ValueError", "a wave's phase is a finite number"), (|| g.delay(w, 1.5), "ValueError", "a delay's time is from 0 to 1"), (|| g.delay(w).time.ramp(0.5, -0.1), "ValueError", "a delay's time is from 0 to 1"), (|| g.limit(w, 0.0), "ValueError", "a limit's ceiling is above 0"), (|| g.limit(w, release: Math.inf), "ValueError", "a limit's release is above 0"), (|| g.drive(w, -1.0), "ValueError", "a drive's gain is 0 or more"), (|| g.drive(w).gain.ramp(0.5, Math.inf), "ValueError", "a drive's gain is 0 or more"), (|| g.noise(seed: -1), "ValueError", "a noise's seed is a whole number from 0 below 2^31"), (|| g.filter("notch", w), "ValueError", "a filter is \"low\", \"high\" or \"band\", not notch"), (|| g.filter("low", w, cutoff: 0.0), "ValueError", "a cutoff is above 0 and below half the rate"), (|| g.filter("low", w, q: 0.0), "ValueError", "the q is above 0"), (|| g.gain(w, Math.nan), "ValueError", "a gain is a finite number"), (|| g.pluck(w, freq: 10.0), "ValueError", "a string's freq is 20 or more and below half the rate"), (|| g.pluck(w, ring: 0.0), "ValueError", "a string's ring is above 0"), (|| g.resonate(w, [{freq: 0.0, width: 10.0, gain: 1.0}]), "ValueError", "a mode's freq is above 0 and below half the rate"), (|| g.resonate(w, [{freq: 300.0, width: 0.0, gain: 1.0}]), "ValueError", "a mode's width is above 0"), (|| g.filter("low", elsewhere), "ValueError", "a part takes in parts of its own graph"), (|| g.mix([w, elsewhere]), "ValueError", "a part takes in parts of its own graph"), (|| g.output(elsewhere), "ValueError", "the output is a part of its own graph"), (|| w.freq.set(-0.5, 220.0), "ValueError", "a change's time is 0 or more"), (|| w.freq.cancel(-0.5), "ValueError", "a change's time is 0 or more"), (|| w.freq.ramp(0.5, -220.0), "ValueError", "a wave's freq is 0 or more and below half the rate"), (|| Audio.Graph.new(rate: 22050).play(), "ValueError", "a graph plays at a rate of 44100"), (|| g.render(-1.0), "ValueError", "the seconds are 0 or more")] {
   assert_eq(caught(call), (kind, "Audio.Graph: " + message))
 }
 assert_eq(caught(|| g.resonate(w, [1.0]))[0], "TypeError")
@@ -449,11 +527,6 @@ assert_eq(
   caught(|| g.mix([w, 5])),
   ("TypeError", "type error: parameter 'inputs' expects an Array of AudioGraphPart"),
 )
-for call in [|| g.wave(modulators: [5]), || g.delay(w, modulators: [w, 5]), || g.gain(w, modulators: [5])] {
-  assert_eq(
-    caught(call),
-    ("TypeError", "type error: parameter 'modulators' expects an Array of AudioGraphPart"),
-  )
-}
+assert_eq(caught(|| w.connect(5))[0], "TypeError")
 
 print("audio graph ok\n")

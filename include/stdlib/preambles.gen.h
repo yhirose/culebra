@@ -1859,12 +1859,13 @@ inline constexpr const char* AUDIO_MODULE_SOURCE = R"=culpre=(let _audio_module 
   }
 
   # A part of a graph, which keeps its graph as an AudioGraphValue does.
-  # What moves in it is an AudioGraphValue: a wave's freq and feedback, a
-  # filter's cutoff, a gain's gain, a string's freq and ring, a delay's time,
-  # a drive's gain.
+  # What moves in it is an AudioGraphValue: a wave's freq, feedback and
+  # phase, a filter's cutoff, a gain's gain, a string's freq and ring, a
+  # delay's time, a drive's gain.
   class AudioGraphPart {
     freq = nil
     feedback = nil
+    phase = nil
     cutoff = nil
     gain = nil
     ring = nil
@@ -1872,6 +1873,23 @@ inline constexpr const char* AUDIO_MODULE_SOURCE = R"=culpre=(let _audio_module 
     new(graph, index: Long) {
       @_graph = graph
       @_index = index
+    }
+    # Adds what this part answers into `target`, a part made after it: into
+    # what the part takes in, or into the value, on top of its schedule, as
+    # Web Audio's AudioNode.connect does. Answers `target`.
+    connect(target: AudioGraphPart | AudioGraphValue) {
+      if target._graph._id != @_graph._id {
+        __raise(
+          "ValueError",
+          "Audio.Graph: a part connects to parts of its own graph",
+        )
+      }
+      if target is AudioGraphValue {
+        _Audio.graph_connect(@_graph._id, @_index, target._part, target._index)
+      } else {
+        _Audio.graph_connect(@_graph._id, @_index, target._index, -1)
+      }
+      target
     }
   }
 
@@ -1882,33 +1900,19 @@ inline constexpr const char* AUDIO_MODULE_SOURCE = R"=culpre=(let _audio_module 
     new(rate: Long | Float = 44100) {
       @_id = _Audio.graph_new(rate)
     }
-    # `inputs`, the parts the part takes in, and `modulators`, those that
-    # move it, as their indexes in the graph.
-    _part(
-      family: String,
-      kind: String,
-      inputs: Array,
-      options: Array,
-      modulators: Array = [],
-    ) {
+    # `inputs`, the parts the part takes in, as their indexes in the graph.
+    _part(family: String, kind: String, inputs: Array, options: Array) {
       AudioGraphPart.new(
         self,
-        _Audio.graph_part(
-          @_id,
-          family,
-          kind,
-          @_indexes("inputs", inputs),
-          @_indexes("modulators", modulators),
-          options,
-        ),
+        _Audio.graph_part(@_id, family, kind, @_indexes(inputs), options),
       )
     }
-    _indexes(name: String, parts: Array) {
+    _indexes(parts: Array) {
       for p in parts {
         if class_of(p) != AudioGraphPart {
           __raise(
             "TypeError",
-            "type error: parameter '{name}' expects an Array of AudioGraphPart",
+            "type error: parameter 'inputs' expects an Array of AudioGraphPart",
           )
         }
         if p._graph._id != @_id {
@@ -1926,13 +1930,13 @@ inline constexpr const char* AUDIO_MODULE_SOURCE = R"=culpre=(let _audio_module 
     wave(
       kind: String = "sine",
       freq: Long | Float = 440.0,
-      modulators: Array = [],
       feedback: Long | Float = 0.0,
       phase: Long | Float = 0.0,
     ) {
-      let p = @_part("wave", kind, [], [freq, feedback, phase], modulators)
+      let p = @_part("wave", kind, [], [freq, feedback, phase])
       p.freq = @_value(p, 0)
       p.feedback = @_value(p, 1)
+      p.phase = @_value(p, 2)
       p
     }
     noise(seed: Long = 1) {
@@ -1948,12 +1952,8 @@ inline constexpr const char* AUDIO_MODULE_SOURCE = R"=culpre=(let _audio_module 
       p.cutoff = @_value(p, 0)
       p
     }
-    gain(
-      input: AudioGraphPart,
-      gain: Long | Float = 1.0,
-      modulators: Array = [],
-    ) {
-      let p = @_part("gain", "", [input], [gain], modulators)
+    gain(input: AudioGraphPart, gain: Long | Float = 1.0) {
+      let p = @_part("gain", "", [input], [gain])
       p.gain = @_value(p, 0)
       p
     }
@@ -1974,25 +1974,14 @@ inline constexpr const char* AUDIO_MODULE_SOURCE = R"=culpre=(let _audio_module 
       input: AudioGraphPart,
       freq: Long | Float = 220.0,
       ring: Long | Float = 2.0,
-      modulators: Array = [],
     ) {
-      let p = @_part("pluck", "", [input], [freq, ring], modulators)
+      let p = @_part("pluck", "", [input], [freq, ring])
       p.freq = @_value(p, 0)
       p.ring = @_value(p, 1)
       p
     }
-    delay(
-      input: AudioGraphPart,
-      time: Long | Float = 0.0,
-      modulators: Array = [],
-    ) {
-      let p = @_part(
-        "delay",
-        "",
-        [input],
-        [time],
-        modulators,
-      )
+    delay(input: AudioGraphPart, time: Long | Float = 0.0) {
+      let p = @_part("delay", "", [input], [time])
       p.time = @_value(p, 0)
       p
     }

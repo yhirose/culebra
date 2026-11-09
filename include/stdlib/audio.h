@@ -1376,10 +1376,10 @@ inline double poly_blep(double t, double dt) {
 
 // A wave from -1 to 1: a sine, a saw or a square whose jumps are smoothed so
 // little of it folds back from above half the rate (polyBLEP), or a triangle.
-// `mod` radians move its phase for a sample (the parts that modulate it), and
-// so do `feedback` times the mean of its last two outputs (as the DX7's
-// operator feeds itself); the phase it keeps runs on at `freq` regardless,
-// from `phase` (in turns) at the start.
+// `mod` radians move its phase for a sample (its phase value, the parts
+// connected to it among them), and so do `feedback` times the mean of its
+// last two outputs (as the DX7's operator feeds itself); the phase it keeps,
+// in turns, runs on at `freq` regardless.
 struct Oscillator {
   WaveKind kind;
   double phase = 0;
@@ -1500,19 +1500,24 @@ class Drive {
 
 enum class PartKind { Wave, Noise, Filter, Gain, Resonate, Pluck, Delay, Limit, Drive };
 
-// How many values a part of `kind` reads: a wave's freq and feedback, a
-// filter's cutoff, a gain's gain, a string's freq and ring, a delay's time, a
-// drive's gain.
+// How many values a part of `kind` reads: a wave's freq, feedback and phase,
+// a filter's cutoff, a gain's gain, a string's freq and ring, a delay's time,
+// a drive's gain.
 inline int value_count(PartKind kind) {
   switch (kind) {
     case PartKind::Noise:
     case PartKind::Resonate:
     case PartKind::Limit: return 0;
-    case PartKind::Wave:
+    case PartKind::Wave: return 3;
     case PartKind::Pluck: return 2;
     default: return 1;
   }
 }
+inline constexpr int kGraphValues = 3;  // the most value_count answers
+
+// Whether a part of `kind` takes in what is connected to it; a wave and a
+// noise make their own.
+inline bool takes_in(PartKind kind) { return kind != PartKind::Wave && kind != PartKind::Noise; }
 
 inline constexpr int kGraphBlock = 128;
 // The lowest a graph's string is tuned, which sizes its loop.
@@ -1520,6 +1525,22 @@ inline constexpr double kGraphPluckLowest = 20.0;
 // The longest a graph's delay holds what went in, in seconds (Web Audio's
 // DelayNode's default).
 inline constexpr double kGraphDelayLongest = 1.0;
+
+// Value `value` of a part of `kind` once the parts connected to it have moved
+// it to `x`, held where the part stays sound: a wave's freq, a cutoff and a
+// string's freq from 0 (a string's from its lowest) to half the rate, a
+// delay's time from 0 to its longest, and a wave's feedback, a string's ring
+// and a drive's gain at 0 or more.
+inline double held_value(PartKind kind, int value, double x, double rate) {
+  switch (kind) {
+    case PartKind::Wave: return value == 0 ? std::clamp(x, 0.0, 0.5 * rate) : value == 1 ? std::max(x, 0.0) : x;
+    case PartKind::Filter: return std::clamp(x, 0.0, 0.5 * rate);
+    case PartKind::Pluck: return value == 0 ? std::clamp(x, kGraphPluckLowest, 0.5 * rate) : std::max(x, 0.0);
+    case PartKind::Delay: return std::clamp(x, 0.0, kGraphDelayLongest);
+    case PartKind::Drive: return std::max(x, 0.0);
+    default: return x;
+  }
+}
 // How many graphs play at once: the mixer's list of them never grows.
 inline constexpr size_t kGraphsPlaying = 64;
 // Room for changes a copy being played makes in each value at the start, on
@@ -1528,16 +1549,20 @@ inline constexpr size_t kGraphLiveRoom = 256;
 
 struct GraphPart {
   PartKind kind;
-  std::vector<int> inputs;       // parts made before it, added together
-  std::vector<int> modulators;   // parts made before it that move it: a wave's phase, a delay's time, a gain's gain, a string's freq
-  Param values[2];               // a wave's freq and feedback, a filter's cutoff, a gain's gain, a string's freq and ring, a delay's time, a drive's gain
+  std::vector<int> inputs;  // parts made before it, added together
+  // A wave's freq, feedback and phase, a filter's cutoff, a gain's gain, a
+  // string's freq and ring, a delay's time, a drive's gain; each is its
+  // schedule plus the sum of the parts connected to it (made before it).
+  Param values[kGraphValues];
+  std::vector<int> connected[kGraphValues];
   std::variant<std::monostate, Oscillator, Noise, Svf, Resonance, PluckString, DelayLine, Limiter, Drive> processor;
   double out[kGraphBlock] = {};
 };
 
 // Parts wired together, each reading the sum of the parts it takes in, and
-// the sum of those that move it (all made before it); what the graph answers
-// is one part's. Every part and value is
+// each of its values the sum of the parts connected to it on top of its
+// schedule (all made before it), as Web Audio's AudioParam does; what the
+// graph answers is one part's. Every part and value is
 // worked out a sample at a time, in blocks that fall at the same samples
 // however the samples are asked for, so a graph played and a graph rendered
 // answer the same. The graph a program builds is never worked out itself:
@@ -1549,11 +1574,18 @@ class Graph {
   size_t size() const { return parts_.size(); }
   PartKind kind(int part) const { return parts_[static_cast<size_t>(part)].kind; }
 
-  int add(PartKind kind, std::vector<int> inputs, std::vector<int> modulators,
-          decltype(GraphPart::processor) processor, double rest0 = 0, double rest1 = 0) {
-    parts_.push_back(GraphPart{kind, std::move(inputs), std::move(modulators), {Param(rest0), Param(rest1)},
-                               std::move(processor)});
+  int add(PartKind kind, std::vector<int> inputs, decltype(GraphPart::processor) processor, double rest0 = 0,
+          double rest1 = 0, double rest2 = 0) {
+    parts_.push_back(
+        GraphPart{kind, std::move(inputs), {Param(rest0), Param(rest1), Param(rest2)}, {}, std::move(processor)});
     return static_cast<int>(parts_.size()) - 1;
+  }
+  // `from`'s output added into `to`: what it takes in when `value` is -1, its
+  // value `value` otherwise. `from` is made before `to`.
+  void connect(int from, int to, int value) {
+    assert(from < to && (value < 0 ? takes_in(kind(to)) : value < value_count(kind(to))));
+    auto& p = parts_[static_cast<size_t>(to)];
+    (value < 0 ? p.inputs : p.connected[value]).push_back(from);
   }
   void output(int part) { out_ = part; }
   void schedule(int part, int value, ParamEvent e) {
@@ -1566,11 +1598,12 @@ class Graph {
   size_t changes(int part, int value) const { return parts_[static_cast<size_t>(part)].values[value].size(); }
   // Room in every value for `kGraphLiveRoom` changes more, so a copy being
   // played takes changes without allocating; how many each can hold goes
-  // into `room`, two a part.
+  // into `room`, kGraphValues a part.
   void make_room(std::vector<size_t>& room) {
     room.clear();
     for (auto& p : parts_)
-      for (int k = 0; k < 2; k++) room.push_back(k < value_count(p.kind) ? p.values[k].make_room(kGraphLiveRoom) : 0);
+      for (int k = 0; k < kGraphValues; k++)
+        room.push_back(k < value_count(p.kind) ? p.values[k].make_room(kGraphLiveRoom) : 0);
   }
   // A change to a copy being played, on the audio thread, into `longer` when
   // it comes with one (Param::take_list): false when there is no room.
@@ -1592,7 +1625,8 @@ class Graph {
 
  private:
   void block(int n) {
-    double in[kGraphBlock], mod[kGraphBlock], v0[kGraphBlock], v1[kGraphBlock], time[kGraphBlock];
+    double in[kGraphBlock], signal[kGraphBlock], v[kGraphValues][kGraphBlock], time[kGraphBlock];
+    double *v0 = v[0], *v1 = v[1], *v2 = v[2];
     for (int i = 0; i < n; i++) time[i] = static_cast<double>(pos_ + i) / rate_;
     auto sum = [&](const std::vector<int>& from, double* into) {
       std::fill(into, into + n, 0.0);
@@ -1601,13 +1635,16 @@ class Graph {
     };
     for (auto& p : parts_) {
       sum(p.inputs, in);
-      sum(p.modulators, mod);
-      if (value_count(p.kind) > 0) p.values[0].fill(time, n, v0);
-      if (value_count(p.kind) > 1) p.values[1].fill(time, n, v1);
+      for (int k = 0; k < value_count(p.kind); k++) {
+        p.values[k].fill(time, n, v[k]);
+        if (p.connected[k].empty()) continue;
+        sum(p.connected[k], signal);
+        for (int i = 0; i < n; i++) v[k][i] = held_value(p.kind, k, v[k][i] + signal[i], rate_);
+      }
       switch (p.kind) {
         case PartKind::Wave: {
           bool feeds = std::any_of(v1, v1 + n, [](double feedback) { return feedback != 0.0; });
-          std::get<Oscillator>(p.processor).run(n, v0, mod, feeds ? v1 : nullptr, rate_, p.out);
+          std::get<Oscillator>(p.processor).run(n, v0, v2, feeds ? v1 : nullptr, rate_, p.out);
           break;
         }
         case PartKind::Noise: {
@@ -1624,7 +1661,7 @@ class Graph {
           break;
         }
         case PartKind::Gain:
-          for (int i = 0; i < n; i++) p.out[i] = in[i] * (v0[i] + mod[i]);
+          for (int i = 0; i < n; i++) p.out[i] = in[i] * v0[i];
           break;
         case PartKind::Resonate: {
           auto& r = std::get<Resonance>(p.processor);
@@ -1634,14 +1671,14 @@ class Graph {
         case PartKind::Pluck: {
           auto& s = std::get<PluckString>(p.processor);
           for (int i = 0; i < n; i++) {
-            s.tune(std::clamp(v0[i] + mod[i], kGraphPluckLowest, 0.5 * rate_), v1[i]);
+            s.tune(v0[i], v1[i]);
             p.out[i] = s.step(in[i]);
           }
           break;
         }
         case PartKind::Delay: {
           auto& d = std::get<DelayLine>(p.processor);
-          for (int i = 0; i < n; i++) p.out[i] = d.step(in[i], (v0[i] + mod[i]) * rate_);
+          for (int i = 0; i < n; i++) p.out[i] = d.step(in[i], v0[i] * rate_);
           break;
         }
         case PartKind::Limit: {

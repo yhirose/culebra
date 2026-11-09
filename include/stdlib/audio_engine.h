@@ -553,7 +553,7 @@ struct LiveGraph {
   std::shared_ptr<Graph> graph;
   int64_t origin = 0;
   size_t parts = 0;  // the copy's, which a change's part must be one of
-  std::vector<size_t> room;  // how many changes each value of the copy holds, two a part
+  std::vector<size_t> room;  // how many changes each value of the copy holds, kGraphValues a part
 };
 
 // Asked for on the main thread, carried out at the next buffer.
@@ -736,7 +736,7 @@ class Engine {
     auto it = live_graphs_.find(id);
     if (it == live_graphs_.end() || static_cast<size_t>(part) >= it->second.parts) return;
     size_t need = graph_def(id)->changes(part, value);
-    size_t& room = it->second.room[2 * static_cast<size_t>(part) + static_cast<size_t>(value)];
+    size_t& room = it->second.room[kGraphValues * static_cast<size_t>(part) + static_cast<size_t>(value)];
     std::vector<ParamEvent> longer;
     if (need > room) {
       room = 2 * need + kGraphLiveRoom;

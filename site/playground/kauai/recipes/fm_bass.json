@@ -6,7 +6,7 @@
     "i1": {"part": "gain", "input": "m1",
            "gain": {"on": [[0, "(0.5 + bright) * level"], [0.25, "(0.5 + bright) * level", -4],
                            [4, "0.6 * (0.5 + bright) * level", -2]]}},
-    "c1": {"part": "wave", "modulators": ["i1"]},
+    "c1": {"part": "wave", "modulators": {"phase": ["i1"]}},
     "amp": {"part": "gain", "input": "c1",
             "gain": {"on": [[0, 0], [0.004, 0.5], [3.5, 0.05, -2.3], [7, 0.005, -2.3]],
                      "off": [[0.25, 0, -4]]}}
