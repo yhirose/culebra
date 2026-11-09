@@ -525,6 +525,15 @@ inline sendable::SendNode jit_serialize(JitValue v, JitSerCtx& ctx) {
                               /*as_meta=*/false);
     case TAG_FUNC: {
       auto* c = reinterpret_cast<JitClosure*>(v.data);
+      // `obj.f` binds `obj` to `f`; when `f` never reads it, send `f` alone
+      // (as `obj["f"]` is). A namespace's wrapper (not PORTABLE) stays behind.
+      if (c->fn_ptr == reinterpret_cast<void*>(&_jit_bound_method_thunk) &&
+          (c->flags & JIT_CLOSURE_PORTABLE)) {
+        auto* m = reinterpret_cast<JitClosure*>(c->captures[1]->value.data);
+        if (_jit_method_ignores_receiver(m))
+          return jit_serialize(
+              JitValue{TAG_FUNC, reinterpret_cast<int64_t>(m)}, ctx);
+      }
       n.kind = K::Closure;
       if (!ctx.first(c, n)) return n;  // a recursive fn refers back to itself
       // Closure chains nest through captures, not containers, so the

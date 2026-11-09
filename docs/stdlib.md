@@ -2740,7 +2740,7 @@ closure returns or throws:
 | a free function (`fn name(...)`), captured by reference | a generator (send what it yields, or call the generator function on the other side) |
 | a class, as a copy (its statics included) | a `@packable` class |
 | an `enum`, as a copy, and its constructors (`Shape.Circle`) | a standard library function as a value (`Math.abs`, `Time.now`, `println`) |
-| a method read as a value (`p.area`, `C.new`), with a copy of its receiver | |
+| a method read as a value (`p.area`, `C.new`), with a copy of its receiver (a plain function that never mentions `self` crosses without it) | |
 
 What arrives is a copy that reads as the original does: an Object keeps
 its entries in the order it held them, whatever their keys, and a Set
@@ -2803,7 +2803,10 @@ enum answers `nil`.
 
 A method read as a value (`let area = p.area`) is bound to its receiver and
 crosses with a copy of it, so what the method changes there stays there. One
-whose receiver cannot cross (`f.read` of a `File`) cannot either.
+whose receiver cannot cross (`f.read` of a `File`) cannot either. A plain
+function that never mentions `self` (`{n: 1, f: fn () { 42 }}` read as `o.f`)
+is the exception: nothing can read the receiver, so the function crosses
+alone, whatever else the object holds. A class's methods always keep theirs.
 
 A `@value` instance arrives as a value: frozen as it was, and equal to the
 one that was sent, compared and hashed by its fields. It is Sendable once

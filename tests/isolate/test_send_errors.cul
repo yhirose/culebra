@@ -264,3 +264,93 @@ assert_eq(caught(fn () {
   }
   thrown_fanned.join()
 }), "SendError: a native/builtin function is not Sendable")
+
+# --- A bound method crosses without its receiver when it never reads it -------
+# `o.f` read as a value is a wrapper binding `o` to `f`, and a message copies
+# both. A plain function that never mentions `self` has nothing to read the
+# receiver with, so it crosses alone: it was as unsendable as `o` itself (any
+# sibling member capturing a `mut`), and `o["f"]` already crossed.
+mut bound_hits = 0
+let bound_bumper = fn () {
+  bound_hits += 1
+}
+fn bound_run(g) {
+  g()
+}
+fn bound_run2(g) {
+  g(20)
+}
+fn bound_dbl(x) {
+  x * 2
+}
+fn bound_dbl(x, y) {
+  x * y
+}
+fn bound_selfy(a) {
+  self.n + a
+}
+fn bound_selfy(a, b) {
+  a + b
+}
+let mutable_capture = "SendError: Isolate.spawn: closure captures the mutable"
+
+# `f` captures nothing, so it crosses although a sibling captures a mut.
+let bound_plain = {f: fn () { 42 }, bump: bound_bumper}
+assert_eq(Isolate.spawn(bound_run, bound_plain["f"]).join(), 42)
+assert_eq(Isolate.spawn(bound_run, bound_plain.f).join(), 42)
+# Overloads: the dispatcher carries no flag, its bodies do.
+assert_eq(Isolate.spawn(bound_run2, {f: bound_dbl, bump: bound_bumper}.f).join(), 40)
+# A wrapper of a wrapper.
+let bound_twice = {g: bound_plain.f, bump: bound_bumper}
+assert_eq(Isolate.spawn(bound_run, bound_twice.g).join(), 42)
+# The other direction, child to parent.
+let from_child = Isolate.spawn(fn () {
+  mut c = 0
+  let o = {f: fn () { 7 }, bump: fn () {
+    c += 1
+  }}
+  o.f
+}).join()
+assert_eq(from_child(), 7)
+
+# The receiver still travels when the function reads it, however it does.
+let bound_reads = {
+  self_read: {x: 5, f: fn () { self.x }},
+  at_read: {x: 5, f: fn () { @x }},
+  nested: {x: 5, f: fn () {
+    let h = || self.x
+    h()
+  }},
+  default_param: {x: 5, f: fn (a = self.x) { a }},
+}
+for name in bound_reads.keys() {
+  let ok = bound_reads[name]
+  assert_eq(Isolate.spawn(bound_run, ok.f).join(), 5, name)
+}
+let bound_reads_bad = {
+  self_read: {x: 5, f: fn () { self.x }, bump: bound_bumper},
+  at_read: {x: 5, f: fn () { @x }, bump: bound_bumper},
+  nested: {x: 5, f: fn () {
+    let h = || self.x
+    h()
+  }, bump: bound_bumper},
+  default_param: {x: 5, f: fn (a = self.x) { a }, bump: bound_bumper},
+}
+for name in bound_reads_bad.keys() {
+  let bad = bound_reads_bad[name]
+  assert_true(caught(|| Isolate.spawn(bound_run, bad.f).join()).starts_with(mutable_capture), name)
+}
+# One overload reading `self` keeps it for the whole dispatcher.
+assert_eq(Isolate.spawn(bound_run2, {n: 5, f: bound_selfy}.f).join(), 25)
+assert_true(caught(|| Isolate.spawn(bound_run2, {n: 5, f: bound_selfy, bump: bound_bumper}.f).join()).starts_with(mutable_capture))
+# A class's methods always keep theirs.
+class BoundHolder {
+  new(b) {
+    self.b = b
+  }
+  get() {
+    3
+  }
+}
+let bound_holder = BoundHolder.new(bound_bumper)
+assert_true(caught(|| Isolate.spawn(bound_run, bound_holder.get).join()).starts_with(mutable_capture))

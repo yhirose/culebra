@@ -1362,6 +1362,9 @@ inline constexpr uint64_t JIT_CLOSURE_DERIVED = 1ull << 2;
 // jit_serialize). tools/checks/check_portable_closure_door.sh holds the mark
 // to the few constructors that build such closures.
 inline constexpr uint64_t JIT_CLOSURE_PORTABLE = 1ull << 3;
+// SELFLESS — a plain function that never reads its receiver, so a bound-method
+// wrapper over it may be sent without it (jit_serialize). Absent means unknown.
+inline constexpr uint64_t JIT_CLOSURE_SELFLESS = 1ull << 4;
 
 // Sentinel `arity` for a variadic closure (a builtin ns-method that accepts a
 // range of arg counts, e.g. range/iota/Math.min). Higher-order callback

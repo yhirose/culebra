@@ -1995,6 +1995,22 @@ inline JitClosure* _jit_unwrap_bound_method(JitClosure* cls) {
   return cls;
 }
 
+// Does this method never read the receiver a bound-method wrapper supplies?
+// A wrapper does not (it binds its own); a plain function marked SELFLESS
+// does not, nor does an overloaded one whose every body is (the dispatcher
+// carries no flags, its bodies do). Unknown is no: methods and natives may.
+inline bool _jit_method_ignores_receiver(JitClosure* method) {
+  if (method->fn_ptr == reinterpret_cast<void*>(&_jit_bound_method_thunk))
+    return true;
+  if (const auto* rec = _jit_dispatcher_record(method)) {
+    if (rec->methods.empty()) return false;
+    for (const auto& e : rec->methods)
+      if (!e.body || !(e.body->flags & JIT_CLOSURE_SELFLESS)) return false;
+    return true;
+  }
+  return method->flags & JIT_CLOSURE_SELFLESS;
+}
+
 // The candidate's half of the UFCS gate (§10 step 2): is `cand` a Function
 // whose first parameter accepts `recv`? The test is the one the callee's own
 // entry check applies to that argument, so the gate declines exactly the

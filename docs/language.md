@@ -1648,7 +1648,8 @@ the implicit recursion handle `fn` keeps the receiver the call came
 with: in a method-invoked frame `fn` is the bound wrapper, so
 recursing through `fn(...)` or returning `fn` keeps the current
 receiver. A bound method crosses an isolate with a copy of its receiver,
-when the receiver can cross ([stdlib §12](stdlib.md#12-isolate)).
+when the receiver can cross, except a plain function that never mentions
+`self`, which crosses alone ([stdlib §12](stdlib.md#12-isolate)).
 
 **JIT**: UFCS is supported under `--jit`. Resolution happens at
 runtime: if the receiver carries a property by that name the method

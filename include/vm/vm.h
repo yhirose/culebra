@@ -2831,6 +2831,8 @@ struct Chunk {
   // over this chunk rather than yielding a bound method. Read at MakeClosure
   // by both lanes (chunk_closure_flags).
   bool is_getter = false;
+  // No `self` among a plain function's free vars (JIT_CLOSURE_SELFLESS).
+  bool selfless = false;
   // Method-name tables for ClassMeta, indexed by its `d` operand. Stable
   // storage: the executor hands build_class_meta an array of these c_str()s.
   std::vector<std::vector<std::string>> name_tables;
@@ -3035,7 +3037,8 @@ struct Chunk {
 // so the answer cannot depend on which of them is running — nor on where the
 // body's code happened to land.
 inline uint64_t chunk_closure_flags(const Chunk& c) {
-  return c.is_getter ? JIT_CLOSURE_GETTER : 0u;
+  return (c.is_getter ? JIT_CLOSURE_GETTER : 0u) |
+         (c.selfless ? JIT_CLOSURE_SELFLESS : 0u);
 }
 
 // The argument positions the call at `ix` published, or null when it has
@@ -3601,6 +3604,8 @@ inline bool pos_index_agrees(const VmProgram& p) {
 // ABI's `self`.
 struct MemberOpts {
   bool receiver = false;
+  // A free function or lambda; members get `self` through the ABI instead.
+  bool plain = false;
   // This chunk is a class's `new` body: the one parameter list a field
   // parameter (`@x`) may appear in.
   bool ctor = false;
@@ -7768,6 +7773,7 @@ class Compiler {
     // type_params), so two arities of `id` still overload.
     auto name = std::string(head.outer);
     MemberOpts mo;
+    mo.plain = true;
     // At the REPL the session IS the enclosing scope: a `fn f(a)` line
     // appends to the dispatcher an earlier `fn f()` installed, so the name
     // is not the sole declaration of its dispatcher however this line reads.
@@ -8914,6 +8920,9 @@ class Compiler {
     fc.chunk_.arity =
         params ? static_cast<int32_t>(params->nodes.size()) : 0;
     fc.chunk_.capture_src_slots = std::move(caps.slots);
+    fc.chunk_.selfless =
+        mo.plain && std::find(info.free_vars.begin(), info.free_vars.end(),
+                              "self") == info.free_vars.end();
     for (size_t i = 0; i < caps.muts.size() && i < info.free_vars.size(); ++i)
       if (caps.muts[i]) fc.chunk_.mut_capture_names.push_back(info.free_vars[i]);
     // A captured receiver gets a cell of its own, copied from self_slot.
@@ -15252,8 +15261,8 @@ class Compiler {
       case "FUNCTION"_:
       case "LAMBDA"_: {
         // [PARAMETERS, RETURN_TYPE?, BLOCK] — the body is always last.
-        int32_t idx =
-            compile_fn_chunk(ast, ast.nodes[0].get(), *ast.nodes.back());
+        int32_t idx = compile_fn_chunk(ast, ast.nodes[0].get(),
+                                       *ast.nodes.back(), {.plain = true});
         int32_t t = alloc_temp(ast);
         emit(Op::MakeClosure, t, idx);
         return {t, true, idx};
