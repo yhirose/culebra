@@ -2917,9 +2917,14 @@ let _kauai_module = fn () {
     (k, to_float(v))
   }
 
-  # The parameters as a key, the same whatever order they were set in.
+  # The parameters as a key, the same whatever order they were set in; read
+  # by subscript, since a parameter may be named `keys`.
   fn params_key(params) {
-    params.keys().sorted().map(|k| "{k}={params[k]}").join(" ")
+    mut set = []
+    for k, x in params {
+      set.push((k, x))
+    }
+    set.sorted_by(|p| p[0]).map(|p| "{p[0]}={p[1]}").join(" ")
   }
 
   let TEMPO_FORM = "a tempo is N, or a value and N: 4.=64"
