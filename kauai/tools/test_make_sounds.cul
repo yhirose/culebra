@@ -41,16 +41,16 @@ section Verse \{
 let CHIP_BAND = "band Duo \{
   voice Lead  pulse     plays melody         vol 20
   voice Keys  triangle  plays chords from C4  vol 20
-  drum Kick   noise 120  len 1  vol 20
-  drum Snare  noise 800  len 3  vol 13
+  drum Kick   noise freq=120  len=1  vol 20
+  drum Snare  noise freq=800  len=3  vol 13
 }
 "
 
 let BAND = "band Duo \{
-  voice Lead  external Lead  plays melody         vol 20
-  voice Keys  external Keys  plays chords from C4  poly  vol 20
-  drum Kick   external Kick   vol 20
-  drum Snare  external Snare  vol 13
+  voice Lead  Lead           plays melody         vol 20
+  voice Keys  Keys           plays chords from C4  poly  vol 20
+  drum Kick   Kick            vol 20
+  drum Snare  Snare           vol 13
 }
 "
 

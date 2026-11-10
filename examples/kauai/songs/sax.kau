@@ -4,13 +4,13 @@ about {
 }
 
 band Quartet {
-  voice Sax   external Sax   plays melody            vol 57
-  voice Bass  external Bass  plays roots in E2..D#3  vol 48
+  voice Sax   Sax            plays melody            vol 57
+  voice Bass  Bass           plays roots in E2..D#3  vol 48
 
-  drum Ride     external Ride     vol 18
-  drum Hat      external Hat      vol 4   choke Hats
-  drum OpenHat  external OpenHat  vol 8   choke Hats
-  drum Crash    external Crash    vol 22  plays hits
+  drum Ride     Ride              vol 18
+  drum Hat      Hat               vol 4   choke Hats
+  drum OpenHat  OpenHat           vol 8   choke Hats
+  drum Crash    Crash             vol 22  plays hits
 }
 
 groove Walk {

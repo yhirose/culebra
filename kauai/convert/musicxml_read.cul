@@ -1067,8 +1067,8 @@ fn band_of(lines) {
     let plays_what = li == 0 ? "plays melody" : "plays part {l.name}"
     let source = chips.get(li, nil)
     source == nil
-      ? "  voice {l.name}  external Ep  {plays_what}  poly  vol 38"
-      : "  voice {l.name}  {source}  {plays_what}  vol {li == 0 ? 20 : 14}  gap 1"
+      ? "  voice {l.name}  Ep  {plays_what}  poly  vol 38"
+      : "  voice {l.name}  {source}  {plays_what}  vol {li == 0 ? 20 : 14}  gap=1"
   }
   ["band Score \{", ...iota(lines.size()).map(voice_line), "}"].join("\n")
 }

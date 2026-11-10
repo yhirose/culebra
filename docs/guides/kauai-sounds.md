@@ -1,7 +1,7 @@
 # Writing a sound in Kauai
 
 A guide to the sounds a Kauai song plays: the four built-in voices, how to
-shape them, and how a program or a folder supplies an `external` instrument.
+shape them, and how a program or a folder supplies an instrument of its own.
 It starts from the built-in sounds, which need nothing else, and ends with
 where an instrument made from recordings comes from. The complete reference is
 [the language specification](../kauai/language.md), and the songs themselves
@@ -14,10 +14,10 @@ ones, and then the options that shape it:
 
 ```kauai
 band Run {
-  voice Lead    pulse     plays melody            duty 1/4  vol 15  env 1 2 4  gap 2
-  voice Second  pulse2                            duty 1/8  vol 9   env 1 2 6  gap 2
-  voice Bass    saw       plays roots in E2..D#3            vol 18  env 0 3 3  gap 3
-  voice Arp     triangle  plays roots in C3..B3            vol 7   env 1 4 6  gap 4
+  voice Lead    pulse     plays melody            duty=1/4  vol 15  env=1,2,4  gap=2
+  voice Second  pulse2                            duty=1/8  vol 9   env=1,2,6  gap=2
+  voice Bass    saw       plays roots in E2..D#3            vol 18  env=0,3,3  gap=3
+  voice Arp     triangle  plays roots in C3..B3            vol 7   env=1,4,6  gap=4
 }
 ```
 
@@ -28,15 +28,16 @@ band Run {
 | `triangle` | a triangle wave |
 | `saw` | a sawtooth wave |
 
-A voice takes these options. `vol` is required.
+A voice takes these knobs, written `name=value` after its instrument, and
+these options. `vol` is required.
 
-| Option | Meaning | Default |
+| Knob or option | Meaning | Default |
 |---|---|---|
-| `duty 1/8`, `1/4`, `1/2`, `3/4` | the pulse wave's duty cycle | `1/2` |
+| `duty=1/8`, `1/4`, `1/2`, `3/4` | the pulse wave's duty cycle | `1/2` |
 | `vol N` | the level at `mf`, from `0` to `100` | (required) |
-| `env A D R` | attack, decay and release, in ticks of 1/60 second | `0 0 0` |
-| `gap N` | ticks cut from the end of every note, so notes sound apart | `0` |
-| `poly` | for a voice that sounds several notes at once, a tone voice or an external one | one note at a time |
+| `env=A,D,R` | attack, decay and release, in ticks of 1/60 second | `0,0,0` |
+| `gap=N` | ticks cut from the end of every note, so notes sound apart | `0` |
+| `poly` | for a voice that sounds several notes at once, a tone voice or one on an instrument the program supplies | one note at a time |
 
 A channel plays one note at a time, and two voices of a band cannot share a
 channel. A voice that says `plays melody` plays the melody, `plays roots`
@@ -49,10 +50,10 @@ Play the band in a program, and check what it sounds like:
 ```culebra
 let song = Kauai.new(`
 band Run {
-  voice Lead    pulse     plays melody            duty 1/4  vol 15  env 1 2 4  gap 2
-  voice Second  pulse2                            duty 1/8  vol 9   env 1 2 6  gap 2
-  voice Bass    saw       plays roots in E2..D#3            vol 18  env 0 3 3  gap 3
-  voice Arp     triangle  plays roots in C3..B3            vol 7   env 1 4 6  gap 4
+  voice Lead    pulse     plays melody            duty=1/4  vol 15  env=1,2,4  gap=2
+  voice Second  pulse2                            duty=1/8  vol 9   env=1,2,6  gap=2
+  voice Bass    saw       plays roots in E2..D#3            vol 18  env=0,3,3  gap=3
+  voice Arp     triangle  plays roots in C3..B3            vol 7   env=1,4,6  gap=4
 }
 
 song Sound {
@@ -98,17 +99,17 @@ A direction changes the band's dynamic, or one part's, from its note on. The
 dynamic in a bar line is the whole band's; the same mark inside a part's line
 sets that part alone.
 
-## External voices
+## Instruments the program supplies
 
-A `voice` can take its sound from a program instead: `external NAME` names an
-instrument the program supplies. The program gives the song a function for
-each name, under `voices`. The function takes a pitch and the instrument's
+A `voice` can take its sound from a program instead: an instrument named with
+a capital letter (`Ep`) is one the program supplies. The program gives the
+song a function for each name, under `voices`. The function takes a pitch and the instrument's
 parameters, and answers the sound of that note:
 
 ```culebra
 let song = Kauai.new(`
 band Lead {
-  voice Ep  external Ep bright=0.5  plays melody  vol 40
+  voice Ep  Ep bright=0.5           plays melody  vol 40
 }
 
 song Test {
@@ -129,16 +130,16 @@ println(song.events()[0])          # => {at: 0.0, len: 0.5, by: 'Ep', pitch: 60,
 
 Here the function is a stand-in: it returns four samples, and a real
 instrument would synthesise the note at `pitch`, shaped by `params`. The
-parameters come from the band's line (`external Ep bright=0.5`), and a score
+parameters come from the band's line (`Ep bright=0.5`), and a score
 can change them from a note on, with a direction such as `\bright=1.3`.
 
-An external voice plays each note's sound through to its end, so it takes no
-`env`, `gap` or `duty`. The note's length applies only to an instrument that
-hears it, and `vol` still sets the level.
+Such a voice plays each note's sound through to its end, and takes the knobs
+its instrument names as numbers. The note's length applies only to an
+instrument that hears it, and `vol` still sets the level.
 
-### Playing a song with an external sound from the command line
+### Playing a song with a supplied instrument from the command line
 
-The `kauai` command plays an `external` voice only with the instruments it
+The `kauai` command plays a voice on a supplied instrument only with the instruments it
 bundles. The tool `kauai/tools/play.cul` in the repository takes a module that
 exports `voices` in their place, and plays the song with them:
 
@@ -181,7 +182,7 @@ let organ = |notes, params| {
 
 let song = Kauai.new(`
 band Pipe {
-  voice Organ  external Organ  plays melody  vol 60
+  voice Organ  Organ           plays melody  vol 60
 }
 
 song Test {

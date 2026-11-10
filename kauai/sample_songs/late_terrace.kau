@@ -4,13 +4,13 @@ about {
 }
 
 band Terrace {
-  voice Keys   external VintageElectricPiano bright=0.9  plays melody                        vol 37
-  voice Comp   external VintageElectricPiano bright=0.6  plays chords rootless from E3  poly  vol 22
-  voice Bass   external VintageElectricPiano bright=0.6  plays roots in E2..D#3              vol 25
+  voice Keys   VintageElectricPiano bright=0.9           plays melody                        vol 37
+  voice Comp   VintageElectricPiano bright=0.6           plays chords rootless from E3  poly  vol 22
+  voice Bass   VintageElectricPiano bright=0.6           plays roots in E2..D#3              vol 25
 
-  drum Kick  external Kick  vol 22
-  drum Hat   external Hat   vol 4
-  drum Rim   external CrossStick  vol 10
+  drum Kick  Kick           vol 22
+  drum Hat   Hat            vol 4
+  drum Rim   CrossStick           vol 10
 }
 
 groove Bossa {

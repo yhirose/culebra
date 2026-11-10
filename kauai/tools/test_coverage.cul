@@ -128,7 +128,7 @@ fn scratch() {
   FS.mkdir(dir)
   FS.write(FS.join(dir, "tone.cul"), "let voices = \{tone: |pitch, params| Audio.Sound([0.0, 0.1])}\nexport \{voices}\n")
   FS.write(FS.join(dir, "line.kau"), "band Solo \{
-  voice Lead  external Tone  plays melody  vol 60
+  voice Lead  Tone           plays melody  vol 60
 }
 song Line \{
   tempo 240

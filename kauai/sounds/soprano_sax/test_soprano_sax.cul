@@ -49,7 +49,7 @@ fn a_phrase_sounds_as_long_as_it_is_written() {
 @test
 fn kauai_plays_a_song_with_it() {
   let song_text = 'band Solo {
-  voice Lead  external SopranoSax  plays melody octave down  vol 60
+  voice Lead  SopranoSax           plays melody octave down  vol 60
 }
 song Tune {
   tempo 120

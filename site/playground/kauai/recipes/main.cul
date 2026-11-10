@@ -1,12 +1,12 @@
 # The instruments Kauai comes with that are recipes: each .json file here
 # is one, played by the engine's interpreter (kauai/engine/recipe.cul), and
 # each in drums/ is a drum. A file's name is the instrument's, without its
-# underscores: mellow_fm_brass.json is `external MellowFmBrass`, and
-# drums/open_hat.json is `external OpenHat`.
+# underscores: mellow_fm_brass.json is `MellowFmBrass`, and
+# drums/open_hat.json is `OpenHat`.
 #
 #   band Pads {
-#     voice Lead  external FmBrass  plays melody  bright=0.3
-#     drum Kick   external Kick     vol 30
+#     voice Lead  FmBrass           plays melody  bright=0.3
+#     drum Kick   Kick              vol 30
 #   }
 #
 # folder() reads a folder of one's own the same way, for --sounds.

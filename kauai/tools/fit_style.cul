@@ -52,7 +52,7 @@ let SPEC = {
       name: 'voice',
       type: 'String',
       default: 'sax',
-      doc: "the instrument's name in the songs, lower case (`external Sax` is sax)",
+      doc: "the instrument's name in the songs, lower case (`Sax` is sax)",
     },
     {
       name: 'log',

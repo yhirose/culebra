@@ -4,13 +4,13 @@ about {
 }
 
 band Trio {
-  voice Piano  external VintageElectricPiano bright=0.8      plays chords rootless from E3  poly  vol 22
-  voice Sing   external FmElectricPiano bright=1.0 sparkle=0.7  plays melody               poly  vol 30
-  voice Bass   external FmBass bright=0.3                    plays roots in E1..D#2                vol 36
+  voice Piano  VintageElectricPiano bright=0.8               plays chords rootless from E3  poly  vol 22
+  voice Sing   FmElectricPiano bright=1.0 sparkle=0.7           plays melody               poly  vol 30
+  voice Bass   FmBass bright=0.3                             plays roots in E1..D#2                vol 36
 
-  drum Brush  external PedalHat  vol 5
-  drum Ride   external Ride      vol 6
-  drum Sea    external SeaWave   vol 14
+  drum Brush  PedalHat           vol 5
+  drum Ride   Ride               vol 6
+  drum Sea    SeaWave            vol 14
 }
 
 song Theme {

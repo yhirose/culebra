@@ -6,9 +6,9 @@
 let lines = |xs| xs.join("\n")
 let DUO = lines([
   'band Duo {',
-  '  voice Tune  pulse     plays melody            vol 20  gap 2',
+  '  voice Tune  pulse     plays melody            vol 20  gap=2',
   '  voice Bass  triangle  plays roots in E2..D#3  vol 30',
-  '  drum Kick   noise 120  len 1  vol 20',
+  '  drum Kick   noise freq=120  len=1  vol 20',
   '}',
   'groove Walk {',
   '  Bass  1 - 5 -',
@@ -83,7 +83,7 @@ let said = |n| n.keys().map(|k| "{k} {n[k]}").join(", ")
 let phrase_said = |notes| notes.map(said).join(" / ")
 let SPREAD = lines([
   'band Strings {',
-  '  voice Fiddle  external Fiddle  plays melody  vol 50',
+  '  voice Fiddle  Fiddle           plays melody  vol 50',
   '}',
   'song Bow {', '  tempo 60', '  band Strings', '  melody in C4..B4',
   '  First', '  mark Second', '  Second', '  mark Third', '  Third', '}',

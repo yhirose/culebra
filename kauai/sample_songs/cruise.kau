@@ -4,21 +4,21 @@ about {
 }
 
 band Fusion {
-  voice Lead    external SopranoSax       plays melody octave down    vol 32
-  voice Second  external ClearAnalogLead                              vol 20
-  voice Bass    external FmBass           plays roots in E1..D#2      vol 36
-  voice Guitar  external DistortionGuitar choke=0 vibrato=0 echo=0  plays chords rootless from G3  poly  vol 16
-  voice Mute    external DistortionGuitar mute=1 choke=0 vibrato=0 echo=0  plays chords rootless from G3  plays part Tacet  poly  vol 8
+  voice Lead    SopranoSax                plays melody octave down    vol 32
+  voice Second  ClearAnalogLead                                       vol 20
+  voice Bass    FmBass                    plays roots in E1..D#2      vol 36
+  voice Guitar  DistortionGuitar choke=0 vibrato=0 echo=0           plays chords rootless from G3  poly  vol 16
+  voice Mute    DistortionGuitar mute=1 choke=0 vibrato=0 echo=0           plays chords rootless from G3  plays part Tacet  poly  vol 8
 
   Second harmonizes Lead  under m3
 
-  drum Kick   external Kick     vol 27  plays hits
-  drum Snare  external Snare    vol 22  plays hits
-  drum Hat    external Hat      vol 7   choke Hats
-  drum Open   external OpenHat  vol 7   choke Hats
-  drum Crash  external Crash    vol 13  plays hits
-  drum Tom    external HighTom  vol 18
-  drum Floor  external LowTom   vol 20
+  drum Kick   Kick              vol 27  plays hits
+  drum Snare  Snare             vol 22  plays hits
+  drum Hat    Hat               vol 7   choke Hats
+  drum Open   OpenHat           vol 7   choke Hats
+  drum Crash  Crash             vol 13  plays hits
+  drum Tom    HighTom           vol 18
+  drum Floor  LowTom            vol 20
 }
 
 song Cruise {

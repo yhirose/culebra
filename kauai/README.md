@@ -23,9 +23,9 @@ a WAV file with `kauai song.kau --wav out.wav` (the `kauai` command is below).
   `triangle`, `saw` and the rest) need nothing else. See the language
   specification's section on voices.
 - **External sounds**: an instrument made from recordings, given to a song as
-  `external NAME`. Today there are two:
+  `NAME`. Today there are two:
 
-  | Instrument | `external` | What it is |
+  | Instrument | In a song | What it is |
   |---|---|---|
   | [`sounds/soprano_sax`](sounds/soprano_sax) | `SopranoSax` | a soprano saxophone, from royalty-free recordings |
   | [`sounds/alto_sax`](sounds/alto_sax) | `AltoSax` | an alto saxophone, from a jazz player's improvisations (CC0 and CC BY) |
@@ -81,7 +81,7 @@ module of your own (`--sounds`) or again whenever a file changes (`--watch`).
 The instruments in `sounds/` (`SopranoSax`, `AltoSax`), the recipes in
 `recipes/` (`FmBrass`, `FmStrings` and the rest) and the drums in
 `recipes/drums/` (`Kick`, `Snare` and the rest) are compiled in, and a song
-names them as `external SopranoSax` or `drum Kick external Kick`;
+names them as `SopranoSax` or `drum Kick Kick`;
 `kauai instruments` lists them. An
 instrument of your own is added to `cli/main.cul` and the binary built again,
 because a compiled program loads no module of its own at run time.
@@ -153,7 +153,7 @@ kauai convert score.musicxml song.kau   # .musicxml, .xml or .mxl
 [`convert/musicxml_read.cul`](convert/musicxml_read.cul) reads a score back as
 a song. Each voice of each part is a line: the first part's first voice is the
 melody, every other a part, and the song gets a band that plays them (single
-notes on the chip channels while they last, chords on `external Ep`). The
+notes on the chip channels while they last, chords on `Ep`). The
 staff Kauai wrote the hits on (in a score from elsewhere, a staff named
 Hits) is the bars' hits, and the staves a Kauai band played are left out.
 Rehearsal marks, repeat signs, endings, D.S., D.C., To Coda and Fine make

@@ -339,7 +339,7 @@ culebra kauai/tools/fit_style.cul --sounds kauai/sounds/alto_sax \
   --tune work/songs/tune_b.kau=work/targets/tune_b.wav --log work/fit.json
 ```
 
-`--voice` is the instrument's name in the songs, lower case (`external Alto`
+`--voice` is the instrument's name in the songs, lower case (`Alto`
 is `alto`; the default is `sax`), and `--rounds` (3) the rounds over the
 numbers. The package's `data/` must be made and hold `instrument.json` with a `make`
 (its `make.measure` is the pitch range). With no `play`, or with `--derive`,
@@ -457,7 +457,7 @@ of them are held (0.4 s or more, the length of the recorded notes a longer
 note is filled from), against the recordings'. It reads what Kauai hands the
 instruments, so it needs the module (`--sounds`), and builds no sound; the
 recordings may be a package's `data/notes.json`. `--external` keeps to one
-instrument (`alto` for `external Alto`).
+instrument (`alto` for `Alto`).
 
 ```sh
 culebra kauai/tools/coverage.cul --sounds kauai/sounds/alto_sax \

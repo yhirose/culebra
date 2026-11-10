@@ -190,28 +190,35 @@ may share a name.
 
 ```kauai
 band Run {
-  voice Lead    pulse     plays melody            duty 1/4  vol 15  env 1 2 4  gap 2
-  voice Second  pulse2                            duty 1/8  vol 9   env 1 2 6  gap 2
-  voice Bass    saw       plays roots in E2..D#3            vol 18  env 0 3 3  gap 3
-  voice Arp     triangle  plays chords from C4              vol 7   env 1 4 6  gap 4
+  voice Lead    pulse     plays melody            duty=1/4  vol 15  env=1,2,4  gap=2
+  voice Second  pulse2                            duty=1/8  vol 9   env=1,2,6  gap=2
+  voice Bass    saw       plays roots in E2..D#3            vol 18  env=0,3,3  gap=3
+  voice Arp     triangle  plays chords from C4              vol 7   env=1,4,6  gap=4
 
   Second echoes Lead      late 3/16  level 70%
   Second harmonizes Lead  under m3
 
-  drum Kick   noise 120       len 1  vol 20  env 0 3 2
-  drum Tom    noise 900->500  len 3  vol 12  env 0 0 4
+  drum Kick   noise freq=120  len=1  vol 20  env=0,3,2
+  drum Tom    noise freq=900->500  len=3  vol 12  env=0,0,4
 }
 ```
 
 ### Voices
 
-`voice NAME SOURCE [plays ...] OPTIONS...`
+`voice NAME INSTRUMENT [name=value...] [plays ...] OPTIONS...`
 
-The source is one of [`Audio.tone`](../stdlib.md#tones)'s channels, `pulse`,
-`pulse2`, `triangle` or `saw`, or `external NAME` for an instrument the program
-supplies ([section 10](#10-playing-from-culebra)). A channel plays one note at
-a time, and two voices of a band may not share one; the drums take the
-`noise` channel.
+The instrument is one of [`Audio.tone`](../stdlib.md#tones)'s channels, `pulse`,
+`pulse2`, `triangle` or `saw`, or an instrument the program supplies, named
+with a capital letter (`Ep`; [section 10](#10-playing-from-culebra)). An
+instrument the program supplies under a mixer instrument's name (`pulse:` in
+`voices:`) is the one the line means. A channel plays one note at a time, and
+two voices of a band may not share one; the drums take the `noise` channel.
+
+An instrument takes the knobs it declares, as `name=value` words after its
+name. The mixer's voices declare `duty`, `env` and `gap` (below); an instrument
+the program supplies takes any it names, a word and a number. `vol`, `plays`
+and `poly` are the song's own words, and are written the same for every
+instrument.
 
 **What a voice plays** decides how its lines are read:
 
@@ -232,21 +239,21 @@ E5; with `plays chords rootless from E3`, `Abmaj9` is C4 Eb4 G4 Bb4.
 Any number of voices may play roots or chords, as a guitar and a keyboard
 both comp: each reads its own row of the groove, voiced its own way.
 
-| Option | Meaning | Default |
+| Knob or option | Meaning | Default |
 |---|---|---|
-| `duty 1/8` `1/4` `1/2` `3/4` | the pulse wave's duty cycle | `1/2` |
-| `vol N` | the level at `mf`: `0` to `100` as in `Audio.tone`, an external voice's too ([section 10](#10-playing-from-culebra) says how its instrument is weighed) | (required) |
-| `env A D R` | attack, decay and release, in ticks of 1/60 second | `0 0 0` |
-| `gap N` | ticks cut from the end of every note, so that notes are heard apart | `0` |
-| `poly` | the voice sounds several notes at once: a chord in the melody, a chord row's `x`. Any voice may carry it, a tone voice as well as an external one | one note at a time |
+| `duty=1/8` `1/4` `1/2` `3/4` | the pulse wave's duty cycle (a mixer voice's knob) | `1/2` |
+| `env=A,D,R` | attack, decay and release, in ticks of 1/60 second (a mixer voice's knob) | `0,0,0` |
+| `gap=N` | ticks cut from the end of every note, so that notes are heard apart (a mixer voice's knob) | `0` |
+| `vol N` | the level at `mf`: `0` to `100` as in `Audio.tone`, an instrument the program supplies too ([section 10](#10-playing-from-culebra) says how it is weighed) | (required) |
+| `poly` | the voice sounds several notes at once: a chord in the melody, a chord row's `x`. Any voice may carry it, a tone voice as well as a supplied one | one note at a time |
 
-An external voice plays each note's sound through to its end, so it takes no
-`env`, `gap` or `duty`, and the note's length applies only to an instrument
-that hears it ([section 10](#10-playing-from-culebra)). It may carry parameters
-of its own as `name=value` words after its name (`external Ep bright=0.8`), a
-word and a number; Kauai hands them to the program with every note, and a
-score can change them from a note on ([Directions](#directions)). A voice on
-a tone channel takes none.
+An instrument the program supplies plays each note's sound through to its end,
+and the note's length applies only to one that hears it
+([section 10](#10-playing-from-culebra)). Its knobs are words and numbers
+(`Ep bright=0.8`); Kauai hands them to the program with every note, and a
+score can change them from a note on ([Directions](#directions)). A voice on a
+mixer instrument takes only the knobs that instrument declares; `bright=0.8`
+on `pulse` is an error.
 
 ### Derived parts
 
@@ -273,27 +280,30 @@ octave down too.
 
 ### Drums
 
-`drum NAME noise FREQ[->END] len N vol V [env A D R] [plays hits]`
-`drum NAME external SOUND [name=value...] vol V [choke GROUP] [plays hits]`
+`drum NAME INSTRUMENT [name=value...] vol V [choke GROUP] [plays hits]`
 
-A noise drum is a hit on the noise channel: `FREQ` in Hz, sliding to `END`
-if given, held for `len` ticks. The channel sounds one drum at a time, so two
-noise drums may not hit at the same moment.
+A drum plays on `noise`, or on an instrument the program supplies, named with
+a capital letter. A noise drum is a hit on the noise channel, and declares the
+knobs `freq=FREQ[->END]` (in Hz, sliding to `END` if given), `len=N` (held for
+that many ticks) and `env=A,D,R`, as in
+`drum Tom noise freq=900->500 len=3 env=0,0,4 vol 12`; `freq` and `len` are
+required. The channel sounds one drum at a time, so two noise drums may not hit
+at the same moment.
 
-An external drum plays a sound the program supplies
+A drum on an instrument the program supplies plays a sound
 ([section 10](#10-playing-from-culebra)) through to its end, at its `vol` on
-the tones' scale, as an external voice does. External drums hit together, with
-each other and with a noise drum, as the drums of a kit do:
+the tones' scale, as a supplied voice does. Such drums hit together, with each
+other and with a noise drum, as the drums of a kit do:
 
 ```kauai
 band Combo {
-  voice Keys  external Ep bright=0.8  plays chords rootless from E3  poly  vol 40
+  voice Keys  Ep bright=0.8           plays chords rootless from E3  poly  vol 40
   voice Bass  triangle                plays roots in E2..D#3            vol 30
 
-  drum Kick     external Kick     vol 64
-  drum Ride     external Ride     vol 20
-  drum Hat      external Hat      vol 7   choke Hats
-  drum OpenHat  external OpenHat  vol 10  choke Hats
+  drum Kick     Kick              vol 64
+  drum Ride     Ride              vol 20
+  drum Hat      Hat               vol 7   choke Hats
+  drum OpenHat  OpenHat           vol 10  choke Hats
 }
 ```
 
@@ -745,12 +755,12 @@ The drums that play hits are named in the band:
 ```kauai
 band Fusion {
   voice Lead  saw                     plays melody                     vol 12
-  voice Keys  external Ep  poly       plays chords from C4             vol 38
+  voice Keys  Ep           poly       plays chords from C4             vol 38
   voice Bass  triangle                plays roots in E2..D#3           vol 30
 
-  drum Kick   external Kick   vol 64  plays hits
-  drum Crash  external Crash  vol 56  plays hits
-  drum Hat    external Hat    vol 7
+  drum Kick   Kick            vol 64  plays hits
+  drum Crash  Crash           vol 56  plays hits
+  drum Hat    Hat             vol 7
 }
 ```
 
@@ -949,11 +959,11 @@ under.
 - a parameter, on a voice or in a direction, that is not a word and a number (`bright=0.8`)
 - a tempo counted in what is no note value (`tempo 3=60`)
 - a groove, voice, drum, section, band, ending or derived part that is not defined, or a name defined twice (a voice and a drum of one name too); `ending N` on a section with no endings
-- a word a line does not take, or a line with words past its form (`voice Lead pulse loud vol 20`, `tempo 120 140`, `section A extra {`); a parameter on a voice on a tone channel or on a noise drum
+- a word a line does not take, or a line with words past its form (`voice Lead pulse loud vol 20`, `tempo 120 140`, `section A extra {`); a knob a mixer voice or a noise drum does not declare (`voice Lead pulse bright=0.8 ...`)
 - a song's line that says a setting twice (`tempo` on two lines), a mark or a part's range written twice in a song, a groove row or a `first` or `last` block written twice, an ending, a pickup, a voice's echo or harmony, or a `2nd:` line for the same bar or part written twice
 - a groove row with a bar of no tokens, or of tokens that come to no note value (15 in 4/4); a row for a name the band does not have, or for a voice that plays neither roots nor chords; a chord row's token other than a place, `x`, `-` or `.`
 - two noise drums hitting at the same moment, or two voices of a band on one channel
-- an external voice with an `env`, a `gap` or a `duty`; an external drum without a sound, with a `len` or an `env`, or with a `choke` of other than one name; a `choke` on a noise drum; a voice's or a drum's `vol` written as a percentage
+- an instrument the program supplies given a knob that is no word and number (`env=1,2,4`); a `duty`, `env` or `gap` that is none (`duty=1/3`, `env=1,2`); a noise drum without its `freq` or its `len`; a `choke` of other than one name, or on a noise drum; a voice's or a drum's `vol` written as a percentage
 - no voice that plays melody, or more than one; `plays melody` followed by other than `octave up` or `down`, or `N octaves up` or `down` for N of 2 or more
 - a range that is not one octave, or that starts on a sharp or a flat
 - a `meter` whose beat is not a note value (`3/5`)
@@ -1074,8 +1084,8 @@ plays at two settings is built once for each.
 An external drum is built once: the function given for its sound under
 `drums:` (`drums: {kick: fn (params) { ... }}`) is called with the drum's
 `name=value` parameters, and returns the `Audio.Sound` to play. The keys of
-`voices:` and `drums:` are the names after `external`, in lower case:
-`external Ep` is `ep:`, `external HiHat` is `hihat:`; a song whose external
+`voices:` and `drums:` are the instrument's name on the line, in lower case:
+`Ep` is `ep:`, `HiHat` is `hihat:`; a song whose external
 sound has no function is a
 `ValueError` when it is read, which names the line of the voice or drum and
 the keys there are. `prepare()` builds one sound and answers how
@@ -1350,18 +1360,16 @@ AboutItem  <- 'title' / 'composer' / 'lyricist' / 'arranger' / 'year'
 Voicings   <- 'voicings' '{' EOL (!('#' / 'b') Quality Int+ EOL)* '}' EOL
 Band       <- 'band' Name '{' EOL (Voice / Drum / Derived / EOL)* '}' EOL
 Voice      <- 'voice' Name Source VoiceWord* EOL
-Source     <- 'pulse' / 'pulse2' / 'triangle' / 'saw' / 'external' Name Param*
-Param      <- Word '=' Number
-VoiceWord  <- 'plays' Plays / 'duty' Ratio / 'vol' Int / 'env' Int Int Int
-            / 'gap' Int / 'poly'
+Source     <- 'pulse' / 'pulse2' / 'triangle' / 'saw' / Name
+Knob       <- Word '=' Value        # the mixer's: duty=Ratio, env=Int,Int,Int, gap=Int
+VoiceWord  <- 'plays' Plays / 'vol' Int / 'poly' / Knob
 Plays      <- 'melody' Octaves? / 'roots' 'in' Range / 'chords' 'rootless'? 'from' Pitch
             / 'part' Name+
 Octaves    <- ('octave' / Int 'octaves') ('up' / 'down')   # Int: 2 or more
 Derived    <- Name 'echoes' Name 'late' Ratio 'level' Percent EOL
             / Name 'harmonizes' Name 'under' Interval EOL
-Drum       <- 'drum' Name ('noise' Int ('->' Int)? 'len' Int 'vol' Int
-              ('env' Int Int Int)? / 'external' Name Param* 'vol' Int ('choke' Name)?)
-              ('plays' 'hits')? EOL
+Drum       <- 'drum' Name ('noise' / Name) (Knob / 'vol' Int / 'choke' Name)*
+              ('plays' 'hits')? EOL   # noise's: freq=Int('->'Int)?, len=Int, env=Int,Int,Int
 
 Groove     <- 'groove' Name '{' EOL (Row / Edge / EOL)* '}' EOL
 Edge       <- ('first' / 'last') '{' EOL (Row / EOL)* '}' EOL
@@ -1450,21 +1458,21 @@ The band both laps use.
 
 ```kauai
 band Run {
-  voice Lead    pulse     plays melody            duty 1/4  vol 15  env 1 2 4  gap 2
-  voice Second  pulse2                            duty 1/8  vol 9   env 1 2 6  gap 2
-  voice Bass    saw       plays roots in E2..D#3            vol 18  env 0 3 3  gap 3
-  voice Arp     triangle  plays chords from C4              vol 7   env 1 4 6  gap 4
+  voice Lead    pulse     plays melody            duty=1/4  vol 15  env=1,2,4  gap=2
+  voice Second  pulse2                            duty=1/8  vol 9   env=1,2,6  gap=2
+  voice Bass    saw       plays roots in E2..D#3            vol 18  env=0,3,3  gap=3
+  voice Arp     triangle  plays chords from C4              vol 7   env=1,4,6  gap=4
 
   Second echoes Lead      late 3/16  level 70%
   Second harmonizes Lead  under m3
 
-  drum Kick   noise 120       len 1  vol 20  env 0 3 2
-  drum Snare  noise 800       len 3  vol 13  env 0 2 2
-  drum Hat    noise 3000      len 1  vol 5   env 0 0 1
-  drum Open   noise 3000      len 3  vol 6   env 0 0 3
-  drum Crash  noise 5000      len 4  vol 11  env 0 0 30
-  drum Tom    noise 900->500  len 3  vol 12  env 0 0 4
-  drum Floor  noise 500->250  len 3  vol 13  env 0 0 5
+  drum Kick   noise freq=120  len=1  vol 20  env=0,3,2
+  drum Snare  noise freq=800  len=3  vol 13  env=0,2,2
+  drum Hat    noise freq=3000  len=1  vol 5   env=0,0,1
+  drum Open   noise freq=3000  len=3  vol 6   env=0,0,3
+  drum Crash  noise freq=5000  len=4  vol 11  env=0,0,30
+  drum Tom    noise freq=900->500  len=3  vol 12  env=0,0,4
+  drum Floor  noise freq=500->250  len=3  vol 13  env=0,0,5
 }
 ```
 
@@ -1720,7 +1728,7 @@ section Chorus {
 
 ### ballad.kau
 
-The ending theme. The electric piano is an external voice (`Ep`) that plays chords, and the melody is played on it too, brighter.
+The ending theme. The electric piano is a voice on an instrument the program supplies (`Ep`) that plays chords, and the melody is played on it too, brighter.
 
 ```kauai
 about {
@@ -1729,12 +1737,12 @@ about {
 }
 
 band Trio {
-  voice Piano  external Ep bright=0.8  plays chords rootless from E3  poly  vol 11
-  voice Sing   external Ep bright=1.3  plays melody                    poly  vol 14
-  voice Bass   triangle                plays roots in E2..D#3          vol 34  env 3 0 14  gap 3
+  voice Piano  Ep bright=0.8           plays chords rootless from E3  poly  vol 11
+  voice Sing   Ep bright=1.3           plays melody                    poly  vol 14
+  voice Bass   triangle                plays roots in E2..D#3          vol 34  env=3,0,14  gap=3
 
-  drum Brush  noise 4000  len 2  vol 4  env 0 0 5
-  drum Ride   noise 6000  len 1  vol 3  env 0 0 10
+  drum Brush  noise freq=4000  len=2  vol 4  env=0,0,5
+  drum Ride   noise freq=6000  len=1  vol 3  env=0,0,10
 }
 
 song Theme {
@@ -1830,9 +1838,9 @@ voicings {
 }
 
 band Salon {
-  voice Singer  pulse                   plays melody                           duty 1/2  vol 22  env 2 2 8
-  voice Bass    triangle                plays roots in E1..D#2                           vol 32  env 0 2 6
-  voice Piano   external Ep bright=0.9  plays chords from E3  plays part Fill  poly      vol 29
+  voice Singer  pulse                   plays melody                           duty=1/2  vol 22  env=2,2,8
+  voice Bass    triangle                plays roots in E1..D#2                           vol 32  env=0,2,6
+  voice Piano   Ep bright=0.9           plays chords from E3  plays part Fill  poly      vol 29
 }
 
 song JeTeVeux {

@@ -19,16 +19,16 @@ let SONGS = [
   "kauai/sounds/alto_sax/songs/ocean_highway.kau",
 ]
 
-# The external instruments a band names, each answering no sound: enough to
-# read a song and list what it plays.
+# The instruments a band names with a capital letter (the program's, not the
+# mixer's), each answering no sound: enough to read a song and list what it
+# plays.
 fn silent(arrangement) {
   mut voices = {}
   mut drums = {}
   for line in arrangement.split("\n") {
     let w = line.split_whitespace()
-    let at = w.index_of("external")
-    continue if at < 0 || at + 1 >= w.size()
-    let key = w[at + 1].lower()
+    continue if w.size() < 3 || !["voice", "drum"].contains(w[0]) || !"ABCDEFGHIJKLMNOPQRSTUVWXYZ".contains(w[2].slice(0, 1).to_string())
+    let key = w[2].lower()
     if w[0] == "drum" {
       drums[key] = |params| nil
     } else {

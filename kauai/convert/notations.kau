@@ -21,13 +21,13 @@ band Combo {
   voice Lead    pulse                   plays melody                                vol 20
   voice Second  pulse2                                                              vol 9
   voice Bass    triangle                plays roots in E2..D#3                      vol 30
-  voice Keys    external Ep bright=0.8  plays chords from C4  plays part Fill Pad  poly  vol 25
+  voice Keys    Ep bright=0.8           plays chords from C4  plays part Fill Pad  poly  vol 25
 
   Second echoes Lead      late 3/16  level 70%
   Second harmonizes Lead  under m3
 
-  drum Kick   noise 120       len 1  vol 20  env 0 3 2  plays hits
-  drum Snare  noise 900->500  len 3  vol 12
+  drum Kick   noise freq=120  len=1  vol 20  env=0,3,2  plays hits
+  drum Snare  noise freq=900->500  len=3  vol 12
 }
 
 groove Swing {

@@ -12,9 +12,9 @@ let notes = fn (song, by) {
 
 let DUO = lines([
   'band Duo {',
-  '  voice Tune  pulse     plays melody            vol 20  gap 2',
+  '  voice Tune  pulse     plays melody            vol 20  gap=2',
   '  voice Bass  triangle  plays roots in E2..D#3  vol 30',
-  '  drum Kick   noise 120  len 1  vol 20',
+  '  drum Kick   noise freq=120  len=1  vol 20',
   '}',
   'groove Walk {',
   '  Bass  1 - 5 -',
@@ -118,8 +118,8 @@ let BAND = lines([
   '  voice Echo  pulse2                            vol 10',
   '  voice Bass  triangle  plays roots in E2..D#3  plays part Fill  vol 30',
   '  Echo echoes Lead  late 1/8  level 50%',
-  '  drum Kick   noise 120   len 1  vol 20  plays hits',
-  '  drum Hat    noise 3000  len 1  vol 5',
+  '  drum Kick   noise freq=120  len=1  vol 20  plays hits',
+  '  drum Hat    noise freq=3000  len=1  vol 5',
   '}',
   'groove Beat {',
   '  Bass  1 - - -',
@@ -153,8 +153,8 @@ let comp = Kauai.new(lines([
   '  voice Bass  triangle      plays roots in E2..D#3          vol 30',
   '  voice Sub   saw           plays roots in E1..D#2          vol 30',
   '  voice Keys  pulse2        plays chords from C4            vol 10',
-  '  voice Gtr   external Gtr  plays chords rootless from E3  poly  vol 40',
-  '  drum Kick   noise 120  len 1  vol 20  plays hits',
+  '  voice Gtr   Gtr           plays chords rootless from E3  poly  vol 40',
+  '  drum Kick   noise freq=120  len=1  vol 20  plays hits',
   '}',
   'groove Beat {',
   '  Bass  1 - - -',
@@ -236,7 +236,7 @@ assert_eq(error_of(song_of(['  Chorus'])), ("KauaiError", "line 15: no section C
 let band_error = |line| error_of(lines(['band B {', line, '}', 'song S {', '  tempo 100', '  band B', '}']))
 assert_eq(band_error('  voice V pulse plays melody'), ("KauaiError", "line 2: a voice needs its vol: vol 20"))
 assert_eq(band_error('  voice V noise plays melody vol 10'),
-  ("KauaiError", "line 2: a voice plays on pulse, pulse2, triangle or saw, or an external instrument; not noise"))
+  ("KauaiError", "line 2: a voice plays on pulse, pulse2, triangle, saw or an instrument named with a capital letter, not noise"))
 # A key said twice would silently drop the first; a groove row the band has no
 # drum or voice for would never be read.
 assert_eq(band_error('  voice V pulse plays melody plays roots in E2..D#3 vol 10'),
@@ -245,7 +245,7 @@ assert_eq(band_error('  voice V pulse plays melody vol 10 vol 20'),
   ("KauaiError", "line 2: `vol` is said once a line"))
 assert_eq(band_error('  voice V pulse plays melody vol 150'),
   ("KauaiError", "line 2: a voice's vol is 0 to 100, as Audio.tone's: vol 20"))
-assert_eq(band_error('  drum K noise 120 len 1 vol 101'),
+assert_eq(band_error('  drum K noise freq=120 len=1 vol 101'),
   ("KauaiError", "line 2: a drum's vol is 0 to 100, as Audio.tone's: vol 20"))
 assert_eq(band_error('  voice V pulse plays melody vol 100'), nil)
 # An echo's level is a whole percent: a bare 70 would have meant 70 times the
@@ -268,7 +268,7 @@ assert_eq(octave_error('octave sideways'), ("KauaiError", "{OCTAVES}: octave sid
 assert_eq(octave_error('1 octaves down'), ("KauaiError", "{OCTAVES}: 1 octaves down"))
 assert_eq(octave_error('octaves down'), ("KauaiError", "{OCTAVES}: octaves down"))
 assert_eq(octave_error('loud'), ("KauaiError", "{OCTAVES}: loud"))
-assert_eq(error_of(lines(['band B {', '  voice V pulse plays melody vol 10', '  voice W pulse vol 10', '}'])),
+assert_eq(error_of(lines(['band B {', '  voice V pulse plays melody vol 10', '  voice W pulse vol 10', '}', 'song S {', '  tempo 100', '  band B', '}'])),
   ("KauaiError", "line 3: W and V both play on pulse"))
 assert_eq(error_of(lines([DUO, 'song S {', '  tempo 100', '  band Duo', '  melody in C5..B5', '  V with echo', '}', 'section V {', '  C  c1', '}'])),
   ("KauaiError", "line 14: `with echo` needs a voice that echoes the melody"))
@@ -350,8 +350,8 @@ let WAV = Encoding.hex.decode("524946462800000057415645666d742010000000010001004
   "1f0000401f000001000800646174610400000080c8803c")
 let EXTERNAL = lines([
   'band Keys {',
-  '  voice Piano  external Ep bright=0.8  plays melody  poly  vol 40',
-  '  drum Ride    external Ride           vol 50',
+  '  voice Piano  Ep bright=0.8           plays melody  poly  vol 40',
+  '  drum Ride    Ride                    vol 50',
   '}',
   'groove Time {',
   '  Ride  x.x.',
@@ -393,7 +393,7 @@ ticks()
 let mixed = Kauai.new(lines([
   'band Mixed {',
   '  voice Tune  pulse  plays melody  vol 20',
-  '  drum Ride   external Ride        vol 50',
+  '  drum Ride   Ride                 vol 50',
   '}',
   'groove Time {',
   '  Ride  x.x.',
@@ -436,7 +436,7 @@ assert_eq(not_a_sound._todo.size(), unbuilt)
 # order it first plays.
 mut built = []
 let ordered = Kauai.new(lines([
-  'band Solo {', '  voice Lead  external Lead  plays melody  vol 50', '}',
+  'band Solo {', '  voice Lead  Lead           plays melody  vol 50', '}',
   'song Run {', '  tempo 60', '  band Solo', '  melody in C4..B4', '  Run', '}',
   'section Run {', '  C  g4 c e d', '}',
 ]), voices: {lead: fn (pitch, params) {
@@ -455,7 +455,7 @@ assert_eq(built, [64, 67, 60, 62])
 let left_at_start = fn (cost) {
   mut now = 0.0
   let song = Kauai.new(lines([
-    'band Solo {', '  voice Lead  external Lead  plays melody  vol 50', '  drum Kick  external Kick  vol 50', '}',
+    'band Solo {', '  voice Lead  Lead           plays melody  vol 50', '  drum Kick  Kick           vol 50', '}',
     'groove Time {', '  Kick  x...', '}',
     'song Run {', '  tempo 60', '  band Solo', '  groove Time', '  melody in C4..B4', '  Run', '}',
     'section Run {', '  C  c4 d e f', "  C  g a b c'", '}',
@@ -485,8 +485,8 @@ assert_eq([0.1, 1.0, 2.0, 10.0].map(left_at_start), [6, 3, 1, 0])
 # at mf is one the song plays already).
 let PLAYED = lines([
   'band Strings {',
-  '  voice Fiddle  external Fiddle  plays melody  vol 50',
-  '  drum Snare    external Snare   vol 40',
+  '  voice Fiddle  Fiddle           plays melody  vol 50',
+  '  drum Snare    Snare            vol 40',
   '}',
   'groove Time {',
   '  Snare  x..x',
@@ -558,7 +558,7 @@ let pulse_at = fn (pitch, amp) {
 }
 let weight_of = fn (amp) {
   let song = Kauai.new(lines([
-    'band Solo {', '  voice Lead  external Square  plays melody  vol 50', '  drum Tick  external Tick  vol 50', '}',
+    'band Solo {', '  voice Lead  Square           plays melody  vol 50', '  drum Tick  Tick           vol 50', '}',
     'groove Time {', '  Tick  x...', '}',
     'song Weigh {', '  tempo 60', '  band Solo', '  groove Time', '  melody in C4..B4', '  Weigh', '}',
     'section Weigh {', "  C  c4 e g c'", '}',
@@ -576,7 +576,7 @@ assert_eq(weight_of(0.0), {Lead: 1.0, Tick: 1.0})
 mut chords = []
 let chorded = Kauai.new(lines([
   'band Keys {',
-  '  voice Organ  external Organ  plays melody  vol 50  poly',
+  '  voice Organ  Organ           plays melody  vol 50  poly',
   '}',
   'song Hold {', '  tempo 60', '  band Keys', '  melody in C4..B4', '  Hold', '}',
   'section Hold {', '  C  (<c e>4 <d f>) g2', '}',
@@ -604,7 +604,7 @@ let phrased = fn (bar) {
   mut got = []
   let song = Kauai.new(lines([
     'band Solo {',
-    '  voice Reed  external Reed  plays melody  vol 50',
+    '  voice Reed  Reed           plays melody  vol 50',
     '}',
     'song Breath {', '  tempo 60', '  band Solo', '  melody in C4..B4', '  Breath', '}',
     'section Breath {', "  C  {bar}", '}',
@@ -629,8 +629,8 @@ assert_eq(phrased('(c4 d r e)'), ['60 62', '62', '64'])
 mut struck_together = []
 let keyed = Kauai.new(lines([
   'band Keys {',
-  '  voice Organ  external Organ  plays melody  vol 50  poly',
-  '  voice Comp   external Organ  plays chords from C3  vol 50  poly',
+  '  voice Organ  Organ           plays melody  vol 50  poly',
+  '  voice Comp   Organ           plays chords from C3  vol 50  poly',
   '}',
   'groove Stab {', '  Comp  x . . .', '}',
   'song Hold {', '  tempo 60', '  band Keys', '  groove Stab', '  melody in C4..B4', '  Hold', '}',
@@ -656,10 +656,10 @@ mut told = []
 mut hit_told = []
 let marked = Kauai.new(lines([
   'band Combo {',
-  '  voice Horn   external Horn   plays melody  vol 50',
-  '  drum Open    external Hat    vol 40  choke Hats',
-  '  drum Closed  external Hat    vol 40  choke Hats',
-  '  drum Ride    external Ride   vol 40',
+  '  voice Horn   Horn            plays melody  vol 50',
+  '  drum Open    Hat             vol 40  choke Hats',
+  '  drum Closed  Hat             vol 40  choke Hats',
+  '  drum Ride    Ride            vol 40',
   '}',
   'groove Time {',
   '  Open    x . . .',
@@ -712,8 +712,8 @@ mut crashed = []
 let kime = Kauai.new(lines([
   'band Duo {',
   '  voice Lead  pulse  plays melody  vol 20',
-  '  voice Bass  external Pluck  plays roots in E2..D#3  vol 50',
-  '  drum Crash  external Crash  vol 50  plays hits',
+  '  voice Bass  Pluck           plays roots in E2..D#3  vol 50',
+  '  drum Crash  Crash           vol 50  plays hits',
   '}',
   'groove Walk {', '  Bass  1 1 1 1', '}',
   'song Kime {', '  tempo 60', '  band Duo', '  groove Walk', '  melody in C4..B4', '  Kime', '}',
@@ -743,7 +743,7 @@ kime.stop()
 # own while the struck ones take the rest.
 mut lined = []
 let rolled = Kauai.new(lines([
-  'band Solo {', '  voice Harp  external Harp  plays melody  poly  vol 50', '}',
+  'band Solo {', '  voice Harp  Harp           plays melody  poly  vol 50', '}',
   'song Roll {', '  tempo 60', '  band Solo', '  melody in C4..B4', '  Roll', '}',
   'section Roll {', '  C  ~<c~ e g>2 <c d f>2', '}',
 ]), voices: {
@@ -774,8 +774,8 @@ let settings = |p| p.keys().sorted().map(|k| "{k}={p[k]}").join(" ")
 mut keyed = []
 let set = Kauai.new(lines([
   'band Duo {',
-  '  voice Lead  external Ep bright=0.8     plays melody     vol 50',
-  '  voice Alto  external Reed breath=0.2  plays part Alto  vol 50',
+  '  voice Lead  Ep bright=0.8              plays melody     vol 50',
+  '  voice Alto  Reed breath=0.2           plays part Alto  vol 50',
   '}',
   'song Set {', '  tempo 60', '  band Duo', '  melody in C4..B4', '  Set', '}',
   'section Set {',

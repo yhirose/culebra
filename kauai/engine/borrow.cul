@@ -41,7 +41,7 @@
 # wander_style, and `choice`: an Object of numbers for choose.cul, which
 # reads them (with defaults of its own) as `inst.choice`.
 
-# The voice's parameters, on the band's line (`external Sax breath=0.5`)
+# The voice's parameters, on the band's line (`Sax breath=0.5`)
 # or in the score from a note on (`\vibrato=12`):
 #
 #   breath         the breath heard with the tone: 0 none, 1 as recorded

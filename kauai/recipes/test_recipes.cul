@@ -113,7 +113,7 @@ fn a_guitar_is_plucked_where_a_song_says() {
 @test
 fn a_song_for_the_native_guitar_plays_on_a_guitar_recipe() {
   let song_text = 'band Duo {
-  voice Lead  external Guitar pluck=0.3  plays melody  vol 12
+  voice Lead  Guitar pluck=0.3           plays melody  vol 12
 }
 song Tune {
   tempo 120
@@ -167,11 +167,11 @@ fn a_preset_is_its_recipe_with_its_knob_set() {
 @test
 fn kauai_plays_a_song_with_them() {
   let song_text = 'band Pads {
-  voice Lead  external MellowFmBrass  plays melody  vol 60  bright=0.2
-  voice Pad   external FmStrings      plays chords from C3  vol 40
-  drum Kick     external Kick     vol 30
-  drum Hat      external Hat      vol 10  choke Hats
-  drum OpenHat  external OpenHat  vol 10  choke Hats
+  voice Lead  MellowFmBrass           plays melody  vol 60  bright=0.2
+  voice Pad   FmStrings               plays chords from C3  vol 40
+  drum Kick     Kick              vol 30
+  drum Hat      Hat               vol 10  choke Hats
+  drum OpenHat  OpenHat           vol 10  choke Hats
 }
 groove Beat {
   Kick     x . . . x . . .

@@ -1,12 +1,12 @@
-# Plucked strings for Kauai.load's `voices:`: `external Guitar` (nylon
-# strings on a wooden body), `external Steel` (bright strings and no body)
-# and `external Bass`, playing a phrase at a time. A string is
+# Plucked strings for Kauai.load's `voices:`: `Guitar` (nylon
+# strings on a wooden body), `Steel` (bright strings and no body)
+# and `Bass`, playing a phrase at a time. A string is
 # Audio.pluck's, a loop of delay that loses a little of its brightness on
 # every pass (Karplus-Strong): a pluck fills it with the shape the string is
 # let go from, and it rings down by itself. A finger draws a nylon string
 # aside to a point, a triangle whose upper harmonics are weak; a pick's
 # scrape is noise, bright in all of them. A voice's `pluck=` says how far
-# along the string from the bridge it is plucked (`external Guitar pluck=0.3`,
+# along the string from the bridge it is plucked (`Guitar pluck=0.3`,
 # over the soundhole and mellow), and a score's `\pluck=0.12` moves the hand
 # toward the bridge from a note on. Under a slur the string is not plucked
 # again: a finger hammers on or pulls off, the loop changes length with the

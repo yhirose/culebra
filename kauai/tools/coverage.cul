@@ -75,7 +75,7 @@ let SPEC = {
       type: 'String',
       default: "",
       positional: false,
-      doc: "with --song, the one instrument to cover (its key, `alto` for `external Alto`); all when left out",
+      doc: "with --song, the one instrument to cover (its key, `alto` for `Alto`); all when left out",
     },
     {
       name: 'measured',

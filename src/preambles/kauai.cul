@@ -160,20 +160,6 @@ let _kauai_module = fn () {
     level_in_range(number_of(word, line, "vol"), line, who)
   }
 
-  # An option's one number, or `dflt` when the option is not there.
-  fn option_number(o, key, line, dflt) {
-    return dflt if !o.has(key)
-    fail(line, "{key} takes a number") if o[key].size() != 1
-    number_of(o[key][0], line, key)
-  }
-
-  # `env A D R`, in ticks.
-  fn env_of(o, line) {
-    let env = o.get("env", nil) ?? ["0", "0", "0"]
-    fail(line, "env is attack, decay and release: env 0 3 2") if env.size() != 3
-    env.map(|x| number_of(x, line, "env"))
-  }
-
   # --- pitch -----------------------------------------------------------------
 
   let LETTERS = "CDEFGAB"
@@ -991,17 +977,71 @@ let _kauai_module = fn () {
 
   # --- band --------------------------------------------------------------------
 
-  let WAVES = {pulse: 0, pulse2: 1, triangle: 2, noise: 3, saw: 4}
+  # The instruments the mixer plays, by the channel each is: a voice's and a
+  # drum's. An instrument the program gives under `voices:` or `drums:` of the
+  # same name is the one a line means.
+  let CHIP_VOICES = {pulse: 0, pulse2: 1, triangle: 2, saw: 4}
+  let CHIP_DRUMS = {noise: 3}
   let DUTIES = {"1/8": 0, "1/4": 1, "1/2": 2, "3/4": 3}
   # The options of a voice line that take words; `poly` takes none.
-  let VOICE_KEYS = ["plays", "duty", "vol", "env", "gap"]
+  let VOICE_KEYS = ["plays", "vol"]
+  # What the mixer's instruments take as `name=value`: the knobs they declare.
+  let CHIP_VOICE_KNOBS = ["duty", "env", "gap"]
+  let NOISE_KNOBS = ["freq", "len", "env"]
 
-  # An external instrument's own parameters, `name=value`, handed to the
-  # program as is; `who` says what plays on a tone channel, which takes none.
-  fn external_params(words, external, line, who) {
-    let written = words.filter(|x| x.contains("="))
-    fail(line, "{who} plays as written and takes no parameter: {written[0]} is an external instrument's") if !external && !written.empty()
-    written.map(|x| param_of(x, line)).to_object()
+  # The `name=value` words of a line, as (name, value) pairs: a name said
+  # once, and its value as written, which the instrument the line plays reads
+  # (an instrument the program gives reads a number, one of the mixer's what it
+  # declares). Pairs and not an object, since a knob may be named `keys`.
+  fn knobs_of(words, line) {
+    mut out = []
+    for x in words.filter(|x| x.contains("=")) {
+      let (k, v) = halves(x, "=") ?? ("", "")
+      fail(line, "a knob is a word and its value, bright=0.8: {x}") if k.empty() || v.empty() || !all_of(k, "abcdefghijklmnopqrstuvwxyz0123456789")
+      fail(line, "`{k}` is said once a line") if out.any(|p| p[0] == k)
+      out.push((k, v))
+    }
+    out
+  }
+
+  # A knob's value as written, or nil for a knob not written.
+  fn knob(knobs, key) {
+    let p = knobs.find(|x| x[0] == key)
+    p == nil ? nil : p[1]
+  }
+
+  # The knobs an instrument the program gives is handed, as numbers.
+  fn params_of(knobs, line) {
+    knobs.map(|p| param_of("{p[0]}={p[1]}", line)).to_object()
+  }
+
+  # An instrument of the mixer takes the knobs it declares, and no other.
+  fn only_knobs(knobs, declared, what, line) {
+    for p in knobs {
+      fail(line, "{what} takes {declared.join(", ")}, not {p[0]}") if !declared.contains(p[0])
+    }
+  }
+
+  fn knob_number(knobs, key, line, dflt) {
+    let text = knob(knobs, key)
+    text == nil ? dflt : number_of(text, line, key)
+  }
+
+  # `env=A,D,R`, in ticks, as {attack, decay, release}.
+  fn knob_env(knobs, line) {
+    let env = (knob(knobs, "env") ?? "0,0,0").split(",")
+    fail(line, "env is attack, decay and release: env=0,3,2") if env.size() != 3
+    let n = env.map(|x| number_of(x, line, "env"))
+    {attack: n[0], decay: n[1], release: n[2]}
+  }
+
+  # The instrument a voice or a drum line plays: one of the mixer's `chips`, or
+  # a name for the program's.
+  fn instrument_at(words, chips, who, line) {
+    let form = "{who} plays on {chips.keys().join(", ")} or an instrument named with a capital letter"
+    fail(line, form) if words.size() < 3
+    fail(line, "{form}, not {words[2]}") if !chips.has(words[2]) && !is_name(words[2])
+    words[2]
   }
 
   # How many octaves from where it is written a voice plays the melody, from
@@ -1022,8 +1062,7 @@ let _kauai_module = fn () {
 
   fn parse_voice(words, line) {
     let name = name_at(words, 1, line, "a voice")
-    let external = words.size() > 2 && words[2] == "external"
-    let params = external_params(words, external, line, "a voice on a tone channel")
+    let knobs = knobs_of(words, line)
     # `plays part NAME` (any number of them): the voice plays that part where
     # a section writes it.
     let plain = words.filter(|x| !x.contains("="))
@@ -1044,26 +1083,16 @@ let _kauai_module = fn () {
         pi += 1
       }
     }
-    fail(line, "a voice plays on pulse, pulse2, triangle, saw or an external instrument") if w.size() < 3
-    let o = options(w, external ? 4 : 3, VOICE_KEYS, ["poly"], "a voice", line)
-    let env = env_of(o, line)
-    let vol = vol_option(o, line, "a voice")
-    if external {
-      fail(line, "an external voice plays its sound through: no env, gap or duty") if o.has("env") || o.has("gap") || o.has("duty")
-    }
-    let duty = option_word(o, "duty", line, "1/2")
+    let plays_on = instrument_at(w, CHIP_VOICES, "a voice", line)
+    let o = options(w, 3, VOICE_KEYS, ["poly"], "a voice", line)
+    # Which instrument it is, mixer's or the program's, and what its knobs
+    # mean, `resolve_band` says once the program's instruments are known.
     mut v = {
       name: name,
-      external: external ? name_at(w, 3, line, "an external instrument") : nil,
-      wave: external ? nil : (w[2] == "noise" ? nil : WAVES.get(w[2], nil)) ?? fail(line, "a voice plays on pulse, pulse2, triangle or saw, or an external instrument; not {w[2]}"),
+      instrument: plays_on,
+      knobs: knobs,
       poly: o.has("poly"),
-      duty: DUTIES.get(duty, nil) ?? fail(line, "a duty is 1/8, 1/4, 1/2 or 3/4: {duty}"),
-      vol: vol,
-      attack: env[0],
-      decay: env[1],
-      release: env[2],
-      gap: option_number(o, "gap", line, 0),
-      params: params,
+      vol: vol_option(o, line, "a voice"),
       parts: parts,
       line: line,
       mut role: nil,
@@ -1124,53 +1153,27 @@ let _kauai_module = fn () {
         w[0] == "voice" => {
           let v = parse_voice(w, item.line)
           fresh_name("voice", v.name, item.line)
-          # A channel plays one note at a time, so it is one voice's.
-          let sharing = voices.values().find(|u| v.wave != nil && u.wave == v.wave)
-          fail(item.line, "{v.name} and {sharing?.name} both play on {w[2]}") if sharing != nil
           voices[v.name] = v
         },
-        # `drum NAME external SOUND [name=value...] vol V [choke GROUP]`: a
-        # sound the program supplies, played through to its end; the drums of
-        # a choke group stop each other, as an instrument that hears `next`
-        # does.
-        w[0] == "drum" && w.size() > 2 && w[2] == "external" => {
-          let dn = name_at(w, 1, item.line, "a drum")
-          fresh_name("drum", dn, item.line)
-          let plain = w.filter(|x| !x.contains("="))
-          let sound = name_at(plain, 3, item.line, "an external drum's sound")
-          let o = options(plain, 4, ["len", "vol", "env", "choke"], [], "a drum", item.line)
-          fail(item.line, "an external drum plays its sound through: no len or env") if o.has("len") || o.has("env")
-          let choke = o.get("choke", nil)
-          fail(item.line, "a choke group is one name: choke Hats") if choke != nil && (choke.size() != 1 || !is_name(choke[0]))
-          let vol = vol_option(o, item.line, "a drum")
-          drums[dn] = {
-            on_hits: at_hits != nil,
-            external: sound,
-            params: external_params(w, true, item.line, "a drum"),
-            line: item.line,
-            vol: vol,
-            choke: choke == nil ? dn : choke[0],
-          }
-        },
+        # `drum NAME INSTRUMENT [name=value...] vol V [choke GROUP]`: the
+        # mixer's noise, or a sound the program supplies, played through to
+        # its end; the drums of a choke group stop each other, as an
+        # instrument that hears `next` does.
         w[0] == "drum" => {
           let dn = name_at(w, 1, item.line, "a drum")
           fresh_name("drum", dn, item.line)
-          fail(item.line, "a drum plays on noise, or an external sound") if w.size() < 4 || w[2] != "noise"
-          fail(item.line, "a noise drum sounds one at a time already; choke groups external drums") if w.contains("choke")
-          external_params(w, false, item.line, "a noise drum")
-          let o = options(w, 4, ["len", "vol", "env"], [], "a drum", item.line)
-          let (f0, f1) = halves(w[3], "->") ?? (w[3], w[3])
-          let env = env_of(o, item.line)
-          fail(item.line, "a noise drum needs its len and its vol: len 1  vol 20") if !o.has("len") || !o.has("vol")
+          let plain = w.filter(|x| !x.contains("="))
+          let plays_on = instrument_at(plain, CHIP_DRUMS, "a drum", item.line)
+          let o = options(plain, 3, ["vol", "choke"], [], "a drum", item.line)
+          let choke = o.get("choke", nil)
+          fail(item.line, "a choke group is one name: choke Hats") if choke != nil && (choke.size() != 1 || !is_name(choke[0]))
           drums[dn] = {
             on_hits: at_hits != nil,
-            freq: number_of(f0, item.line, "a drum's frequency"),
-            end_freq: number_of(f1, item.line, "a drum's frequency"),
-            dur: option_number(o, "len", item.line, 0),
-            vol: level_in_range(option_number(o, "vol", item.line, 0), item.line, "a drum"),
-            attack: env[0],
-            decay: env[1],
-            release: env[2],
+            instrument: plays_on,
+            knobs: knobs_of(w, item.line),
+            vol: vol_option(o, item.line, "a drum"),
+            choke: choke == nil ? nil : choke[0],
+            line: item.line,
           }
         },
         verb == "echoes" => {
@@ -1757,14 +1760,77 @@ let _kauai_module = fn () {
     out
   }
 
+  # A voice or a drum of the band as it plays: an instrument the program gives
+  # under its name in `voices:` or `drums:` is that, and else the mixer's
+  # (pulse, pulse2, triangle, saw; noise), whose knobs are those it declares.
+  # What each takes is read here, as the line says it.
+  fn is_given(p, given, chips) {
+    given.has(p.instrument.lower()) || !chips.has(p.instrument)
+  }
+
+  fn as_given(p) {
+    {...p, external: p.instrument, params: params_of(p.knobs, p.line)}
+  }
+
+  fn resolve_voice(v, given) {
+    return as_given(v) if is_given(v, given, CHIP_VOICES)
+    only_knobs(v.knobs, CHIP_VOICE_KNOBS, "a voice on {v.instrument}", v.line)
+    let duty = knob(v.knobs, "duty") ?? "1/2"
+    {
+      ...v,
+      ...knob_env(v.knobs, v.line),
+      external: nil,
+      wave: CHIP_VOICES[v.instrument],
+      duty: DUTIES.get(duty, nil) ?? fail(v.line, "a duty is 1/8, 1/4, 1/2 or 3/4: {duty}"),
+      gap: knob_number(v.knobs, "gap", v.line, 0),
+      params: {},
+    }
+  }
+
+  fn resolve_drum(name, d, given) {
+    return {...as_given(d), choke: d.choke ?? name} if is_given(d, given, CHIP_DRUMS)
+    fail(d.line, "a noise drum sounds one at a time already; choke groups external drums") if d.choke != nil
+    only_knobs(d.knobs, NOISE_KNOBS, "a noise drum", d.line)
+    let freq = knob(d.knobs, "freq")
+    let len = knob(d.knobs, "len")
+    fail(d.line, "a noise drum needs its freq and its len: freq=120 len=1") if freq == nil || len == nil
+    let (f0, f1) = halves(freq, "->") ?? (freq, freq)
+    {
+      ...d,
+      ...knob_env(d.knobs, d.line),
+      freq: number_of(f0, d.line, "freq"),
+      end_freq: number_of(f1, d.line, "freq"),
+      dur: number_of(len, d.line, "len"),
+    }
+  }
+
+  fn resolve_band(band, given_voices, given_drums) {
+    let voices = given_voices ?? {}
+    let drums = given_drums ?? {}
+    let resolved = band.voices.keys().map(|k| (k, resolve_voice(band.voices[k], voices))).to_object()
+    # A channel plays one note at a time, so it is one voice's.
+    mut on_channel = {}
+    for v in resolved.values() {
+      continue if v.external != nil
+      let sharing = on_channel.get(v.wave, nil)
+      fail(v.line, "{v.name} and {sharing} both play on {v.instrument}") if sharing != nil
+      on_channel[v.wave] = v.name
+    }
+    {
+      ...band,
+      voices: resolved,
+      drums: band.drums.keys().map(|k| (k, resolve_drum(k, band.drums[k], drums))).to_object(),
+    }
+  }
+
   # The file's song expanded, from what parse() read of it: its notes, rows and
   # hits in units, and what times them.
-  fn expand(s, file) {
+  fn expand(s, file, given_voices = nil, given_drums = nil) {
     fail(where(file, 1), "a file that plays holds one song") if s.songs.size() != 1
     let song = s.songs[0]
     fail(song.line, "a song needs its tempo: tempo 120") if !song.has("tempo")
     fail(song.line, "a song needs its band: band NAME") if !song.has("band")
-    let band = s.bands.get(song.band, nil) ?? fail(song.line, "no band {song.band}")
+    let band = resolve_band(s.bands.get(song.band, nil) ?? fail(song.line, "no band {song.band}"), given_voices, given_drums)
     let voices = band.voices
     # The voices that play `which`, in the band's order: any number play roots
     # or chords, each from its own row of the groove.
@@ -2704,7 +2770,7 @@ let _kauai_module = fn () {
       } else {
         out.push({
           at: at(hit.at), len: d.dur / 60.0, by: hit.name, pitch: nil, vol: hit_vol,
-          tone: [3, d.freq, d.end_freq, d.attack / 60.0, d.decay / 60.0, d.dur / 60.0, d.release / 60.0, hit_vol, hit_vol, 2],
+          tone: [CHIP_DRUMS.noise, d.freq, d.end_freq, d.attack / 60.0, d.decay / 60.0, d.dur / 60.0, d.release / 60.0, hit_vol, hit_vol, 2],
         })
       }
     }
@@ -2729,7 +2795,7 @@ let _kauai_module = fn () {
     let f = table.get(key, nil)
     if f == nil {
       let has = table.empty() ? "none" : table.keys().join(", ")
-      __raise("ValueError", "Kauai: {player.line}: {what} plays `external {name}`, and {kind.kwarg}: has no `{key}` (it has {has})")
+      __raise("ValueError", "Kauai: {player.line}: {what} plays {name}, which the mixer has not, and {kind.kwarg}: has no `{key}` (it has {has})")
     }
     return {make: f, hears: nil, key: key} if f is Function
     if type_of(f) != "Object" || f.get(kind.call, nil) !is Function {
@@ -3311,10 +3377,10 @@ let _kauai_module = fn () {
   {
     load: fn (path: String, voices = nil, drums = nil, dir = nil) {
       let (src, load_used) = song_file(path, dir)
-      Song.new(expand(parse(src, path, load_used), path), voices, drums)
+      Song.new(expand(parse(src, path, load_used), path, voices, drums), voices, drums)
     },
     new: fn (text: String, voices = nil, drums = nil) {
-      Song.new(expand(parse(text, nil, no_files), nil), voices, drums)
+      Song.new(expand(parse(text, nil, no_files), nil, voices, drums), voices, drums)
     },
     parse: fn (text: String) {
       score(text, nil, no_files)

@@ -8,17 +8,17 @@ about {
 // the tune keeps to Eb major's, and the last chorus, in F, to F major's
 // without its E.
 band Highway {
-  voice Alto   external AltoSax  plays melody                              vol 60
-  voice Bass   saw            plays roots in F1..E2                     vol 28  env 0 3 2  gap 1
-  voice Keys   pulse          plays chords rootless from G3  duty 1/4   vol 10  env 0 4 6  gap 1
+  voice Alto   AltoSax           plays melody                              vol 60
+  voice Bass   saw            plays roots in F1..E2                     vol 28  env=0,3,2  gap=1
+  voice Keys   pulse          plays chords rootless from G3  duty=1/4   vol 10  env=0,4,6  gap=1
 
-  drum Kick   noise 110->40    len 4   vol 34  env 0 3 2
-  drum Snare  noise 2000       len 3   vol 20  env 0 2 3
-  drum Ghost  noise 2200       len 1   vol 7
-  drum Hat    noise 8500       len 1   vol 6
-  drum Tom    noise 600->250   len 5   vol 18  env 0 2 4
-  drum Crash  noise 6000->3000 len 20  vol 9   env 0 4 20
-  drum Hit    noise 5000->2500 len 12  vol 12  env 0 3 12  plays hits
+  drum Kick   noise freq=110->40  len=4   vol 34  env=0,3,2
+  drum Snare  noise freq=2000  len=3   vol 20  env=0,2,3
+  drum Ghost  noise freq=2200  len=1   vol 7
+  drum Hat    noise freq=8500  len=1   vol 6
+  drum Tom    noise freq=600->250  len=5   vol 18  env=0,2,4
+  drum Crash  noise freq=6000->3000 len=20  vol 9   env=0,4,20
+  drum Hit    noise freq=5000->2500 len=12  vol 12  env=0,3,12  plays hits
 }
 
 // One noise channel plays one drum at a time, so the kick, the snare, the

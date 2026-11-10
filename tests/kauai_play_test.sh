@@ -69,8 +69,8 @@ awk '{ print } /^  Verse$/ { print "  mark Again"; print "  Verse" }' "$TMP/duo.
 cat > "$TMP/external.kau" <<'EOF'
 band Duo {
   voice Tune  pulse     plays melody            vol 20
-  voice Keys  external Ep bright=0.8  plays chords from C4  poly  vol 40
-  drum Kick   external Kick  vol 64
+  voice Keys  Ep bright=0.8           plays chords from C4  poly  vol 40
+  drum Kick   Kick           vol 64
 }
 groove Walk {
   Keys  x - x -
@@ -160,7 +160,7 @@ check "absent: stderr" "IOError: Kauai: no song file $TMP/absent.kau" "$err"
 # sounds come from.
 run --check "$TMP/external.kau"
 check "external, no sounds: status" 1 "$rc"
-[[ "$err" == "ValueError: Kauai: "*'plays `external Ep'*$'\n'"play: --sounds "* ]] || {
+[[ "$err" == "ValueError: Kauai: "*'plays Ep, which the mixer has not'*$'\n'"play: --sounds "* ]] || {
   echo "FAIL external, no sounds: stderr [$err]"; fail=1; }
 
 run --check --sounds "$TMP/sounds.cul" "$TMP/external.kau"
@@ -181,7 +181,7 @@ check "external, a folder: stderr" "" "$err"
 run --check --sounds "$TMP/voices_only.cul" "$TMP/external.kau"
 check "external, voices only: status" 1 "$rc"
 check "external, voices only: stderr" \
-  "ValueError: Kauai: $TMP/external.kau:4: drum Kick plays \`external Kick\`, and drums: has no \`kick\` (it has none)" "$err"
+  "ValueError: Kauai: $TMP/external.kau:4: drum Kick plays Kick, which the mixer has not, and drums: has no \`kick\` (it has none)" "$err"
 
 # --watch reads the song again whenever a file in its folder changes, says
 # which, and watches on through a mistake until Ctrl+C.

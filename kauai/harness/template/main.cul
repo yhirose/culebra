@@ -3,7 +3,7 @@
 # what the instrument is.
 #
 #   band Smooth {
-#     voice Lead  external VOICE  plays melody  vol 60
+#     voice Lead  VOICE           plays melody  vol 60
 #   }
 #
 #   culebra kauai/tools/play.cul --sounds kauai/sounds/PACKAGE song.kau
@@ -15,7 +15,7 @@
 # whose `make` is what kauai/tools/make_data.cul makes them with.
 #
 # Copy this file to the package as main.cul, and in it change the name of the
-# voice (`voice` below: the lower-case form of `external VOICE`).
+# voice (`voice` below: the lower-case form of `VOICE`).
 
 import engine from '../../engine/borrow.cul'
 

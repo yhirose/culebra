@@ -13,7 +13,7 @@ culebra kauai/tools/play.cul --sounds kauai/sounds/alto_sax song.kau
 
 ```
 band Smooth {
-  voice Lead  external AltoSax  plays melody  vol 60
+  voice Lead  AltoSax           plays melody  vol 60
 }
 ```
 

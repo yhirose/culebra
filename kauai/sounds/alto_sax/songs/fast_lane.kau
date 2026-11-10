@@ -6,16 +6,16 @@ about {
 // G minor, whose pitches the recorded alto has many notes of (the D7's F#
 // is left to the band).
 band Turbo {
-  voice Alto   external AltoSax  plays melody                                         vol 60
-  voice Bass   saw            plays roots in G1..F#2                               vol 28  env 0 3 2  gap 1
-  voice Gtr    pulse2         plays chords from G3  plays part Unison  duty 1/4    vol 9   env 0 3 4  gap 1
+  voice Alto   AltoSax           plays melody                                         vol 60
+  voice Bass   saw            plays roots in G1..F#2                               vol 28  env=0,3,2  gap=1
+  voice Gtr    pulse2         plays chords from G3  plays part Unison  duty=1/4    vol 9   env=0,3,4  gap=1
 
-  drum Kick   noise 110->40    len 4   vol 36  env 0 3 2
-  drum Snare  noise 1800       len 4   vol 22  env 0 2 4
-  drum Hat    noise 8500       len 1   vol 6
-  drum Tom    noise 600->250   len 5   vol 18  env 0 2 4
-  drum Crash  noise 6000->3000 len 20  vol 10  env 0 4 20
-  drum Hit    noise 5000->2500 len 10  vol 13  env 0 3 10  plays hits
+  drum Kick   noise freq=110->40  len=4   vol 36  env=0,3,2
+  drum Snare  noise freq=1800  len=4   vol 22  env=0,2,4
+  drum Hat    noise freq=8500  len=1   vol 6
+  drum Tom    noise freq=600->250  len=5   vol 18  env=0,2,4
+  drum Crash  noise freq=6000->3000 len=20  vol 10  env=0,4,20
+  drum Hit    noise freq=5000->2500 len=10  vol 13  env=0,3,10  plays hits
 }
 
 groove Turbo {

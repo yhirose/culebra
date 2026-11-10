@@ -1,7 +1,7 @@
 # Kauaiで音を作る
 
 Kauaiの曲が鳴らす音についての案内です。内蔵の4つの声、音の形の整え方、そして
-プログラムやフォルダが`external`の楽器を提供する方法を扱います。最初は、ほかに何も
+プログラムやフォルダが独自の楽器を提供する方法を扱います。最初は、ほかに何も
 要らない内蔵の音から始め、最後に録音から作る楽器の入り口を示します。言語の完全な仕様は
 [言語仕様](../kauai/language.ja.md)にあり、曲の書き方は[Kauaiで曲を書く](kauai-songs.ja.md)にあります。
 
@@ -12,10 +12,10 @@ Kauaiの曲が鳴らす音についての案内です。内蔵の4つの声、�
 
 ```kauai
 band Run {
-  voice Lead    pulse     plays melody            duty 1/4  vol 15  env 1 2 4  gap 2
-  voice Second  pulse2                            duty 1/8  vol 9   env 1 2 6  gap 2
-  voice Bass    saw       plays roots in E2..D#3            vol 18  env 0 3 3  gap 3
-  voice Arp     triangle  plays roots in C3..B3            vol 7   env 1 4 6  gap 4
+  voice Lead    pulse     plays melody            duty=1/4  vol 15  env=1,2,4  gap=2
+  voice Second  pulse2                            duty=1/8  vol 9   env=1,2,6  gap=2
+  voice Bass    saw       plays roots in E2..D#3            vol 18  env=0,3,3  gap=3
+  voice Arp     triangle  plays roots in C3..B3            vol 7   env=1,4,6  gap=4
 }
 ```
 
@@ -26,15 +26,15 @@ band Run {
 | `triangle` | 三角波 |
 | `saw` | のこぎり波 |
 
-声には、次のオプションを付けられます。`vol`は必須です。
+声には、次のつまみ（楽器名の後ろに`name=value`で書く）とオプションを付けられます。`vol`は必須です。
 
-| オプション | 意味 | 既定値 |
+| つまみ・オプション | 意味 | 既定値 |
 |---|---|---|
-| `duty 1/8`、`1/4`、`1/2`、`3/4` | パルス波のデューティ比 | `1/2` |
+| `duty=1/8`、`1/4`、`1/2`、`3/4` | パルス波のデューティ比 | `1/2` |
 | `vol N` | `mf`での音量。`0`から`100`まで | （必須） |
-| `env A D R` | アタック、ディケイ、リリース。単位は1/60秒 | `0 0 0` |
-| `gap N` | 各音の末尾を切る長さ。音を離して聞こえさせます | `0` |
-| `poly` | 一度に複数の音を鳴らす声のため。音色の声にも外部の声にも付けられる | 一度に1音 |
+| `env=A,D,R` | アタック、ディケイ、リリース。単位は1/60秒 | `0,0,0` |
+| `gap=N` | 各音の末尾を切る長さ。音を離して聞こえさせます | `0` |
+| `poly` | 一度に複数の音を鳴らす声のため。音色の声にもプログラムが用意する楽器の声にも付けられる | 一度に1音 |
 
 1つの音源は一度に1つの音しか鳴らせず、バンドの2つの声が同じ音源を共有することはできません。
 `plays melody`と書いた声はメロディを、`plays roots`は各和音の下のベースを、
@@ -46,10 +46,10 @@ band Run {
 ```culebra
 let song = Kauai.new(`
 band Run {
-  voice Lead    pulse     plays melody            duty 1/4  vol 15  env 1 2 4  gap 2
-  voice Second  pulse2                            duty 1/8  vol 9   env 1 2 6  gap 2
-  voice Bass    saw       plays roots in E2..D#3            vol 18  env 0 3 3  gap 3
-  voice Arp     triangle  plays roots in C3..B3            vol 7   env 1 4 6  gap 4
+  voice Lead    pulse     plays melody            duty=1/4  vol 15  env=1,2,4  gap=2
+  voice Second  pulse2                            duty=1/8  vol 9   env=1,2,6  gap=2
+  voice Bass    saw       plays roots in E2..D#3            vol 18  env=0,3,3  gap=3
+  voice Arp     triangle  plays roots in C3..B3            vol 7   env=1,4,6  gap=4
 }
 
 song Sound {
@@ -94,14 +94,14 @@ println(song.events()[0])          # => {at: 0.0, len: 0.6, by: 'Lead', pitch: 7
 
 ## 外部の声
 
-`voice`は、音源をプログラムから受け取れます。`external NAME`は、プログラムが用意する楽器を指します。
+`voice`は、音源をプログラムから受け取れます。大文字で始まる楽器名（`Ep`など）は、プログラムが用意する楽器を指します。
 プログラムは、名前ごとに関数を`voices`の下で曲に渡します。関数は、音の高さと楽器のパラメータを
 受け取り、その音の音を返します。
 
 ```culebra
 let song = Kauai.new(`
 band Lead {
-  voice Ep  external Ep bright=0.5  plays melody  vol 40
+  voice Ep  Ep bright=0.5           plays melody  vol 40
 }
 
 song Test {
@@ -121,15 +121,15 @@ println(song.events()[0])          # => {at: 0.0, len: 0.5, by: 'Ep', pitch: 60,
 ```
 
 ここでの関数は仮のものです。4つのサンプルを返しているだけで、実際の楽器なら
-`pitch`の音を`params`に従って合成します。パラメータは、バンドの行（`external Ep bright=0.5`）から
+`pitch`の音を`params`に従って合成します。パラメータは、バンドの行（`Ep bright=0.5`）から
 来ます。楽譜は、音符の途中で`\bright=1.3`のような指示を書くことで、それを変えられます。
 
-外部の声は、各音の音を最後まで鳴らします。そのため、`env`、`gap`、`duty`は受け付けません。
+この声は、各音の音を最後まで鳴らし、楽器が宣言した名前のつまみを数で受け取ります。
 音符の長さは、それを聞く楽器にだけ効きます。`vol`は、ふつうどおり音量を決めます。
 
 ### コマンドラインで外部の音を使う
 
-`kauai`コマンドは、`external`の声を同梱の楽器でしか鳴らしません。リポジトリのツール
+`kauai`コマンドは、プログラムが用意する楽器の声を同梱の楽器でしか鳴らしません。リポジトリのツール
 `kauai/tools/play.cul`は、代わりに`voices`を書き出したモジュールを受け取り、その声で
 曲を鳴らします。
 
@@ -170,7 +170,7 @@ let organ = |notes, params| {
 
 let song = Kauai.new(`
 band Pipe {
-  voice Organ  external Organ  plays melody  vol 60
+  voice Organ  Organ           plays melody  vol 60
 }
 
 song Test {

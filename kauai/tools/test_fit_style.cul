@@ -8,7 +8,7 @@ let STYLE = synthetic.STYLE
 
 # A tune over the range the synthetic performance plays: A, C and E above.
 let SONG = 'band Solo {
-  voice Lead  external Sax  plays melody  vol 60
+  voice Lead  Sax           plays melody  vol 60
 }
 song Tune {
   tempo 120

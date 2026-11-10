@@ -5,7 +5,7 @@
 let SONG = `
 band Duo {
   voice Tune  pulse     plays melody               vol 20
-  voice Keys  external Ep  plays part Fill  poly    vol 15
+  voice Keys  Ep           plays part Fill  poly    vol 15
   voice Bass  triangle  plays roots in E2..D#3     vol 30
 }
 

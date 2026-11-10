@@ -79,7 +79,7 @@ song.
 
 ## Voice parameters
 
-These are set on the band's line (`external Sax breath=0.5`) or in the score
+These are set on the band's line (`Sax breath=0.5`) or in the score
 (`\vibrato=12`):
 
 | Parameter | Meaning |

@@ -9,7 +9,7 @@ recipe plays the same under `kauai/tools/play.cul` and in the `kauai` binary.
 The recipes Kauai comes with are in [`recipes/`](recipes), and its drums in
 [`recipes/drums/`](recipes/drums) ([Drums](#drums)). A file's name is the
 instrument's, without its underscores: `mellow_fm_brass.json` is
-`external MellowFmBrass`.
+`MellowFmBrass`.
 
 An instrument's name is plain English in its usual order: how it sounds, how
 it is made, then what it is.
@@ -34,32 +34,32 @@ No name holds a product's, a maker's, a player's or a song's name.
 
 | Recipe | A song names it | What it is | Knobs: default (range) |
 |---|---|---|---|
-| `analog_lead` | `external AnalogLead` | an analog lead, two saws a hair apart over a triangle through a low-pass that opens at the attack and follows the note, with a chorus | `bright` 0.5 (0 to 1): the low-pass opened wider, at about the same loudness; `chorus` 1 (0 to 1): a copy a little later, its delay swaying, and the saws drifting slowly in pitch, at the same loudness |
-| `dry_analog_lead` | `external DryAnalogLead` | `analog_lead`, dry | `chorus` 0 (0 to 1) |
-| `clear_analog_lead` | `external ClearAnalogLead` | a lighter, clearer lead, sounding an octave above the note written: two saws a hair apart over a triangle, with a sine an octave up for its shine, through a low-pass that opens at the attack and follows the note, with a chorus | `bright` 1 (0 to 1): the low-pass opened wider and more of the octave; `chorus` 1 (0 to 1): as `analog_lead`'s |
-| `dry_clear_analog_lead` | `external DryClearAnalogLead` | `clear_analog_lead`, dry | `chorus` 0 (0 to 1) |
-| `fm_brass` | `external FmBrass` | a synth brass, two FM pairs a hair apart and a third with its modulator an octave up | `bright` 0.5 (0 to 1): deeper modulation and more feedback, at the same loudness |
-| `mellow_fm_brass` | `external MellowFmBrass` | `fm_brass`, mellow | `bright` 0 (0 to 1) |
-| `bright_fm_brass` | `external BrightFmBrass` | `fm_brass`, bright | `bright` 1 (0 to 1) |
-| `fm_strings` | `external FmStrings` | a synth string section, three FM voices a hair apart and an octave over them | `bright` 0.5 (0 to 1): deeper modulation and the octave louder, at about the same loudness |
-| `mellow_fm_strings` | `external MellowFmStrings` | `fm_strings`, mellow | `bright` 0 (0 to 1) |
-| `bright_fm_strings` | `external BrightFmStrings` | `fm_strings`, bright | `bright` 1 (0 to 1) |
-| `fm_electric_piano` | `external FmElectricPiano` | an FM electric piano with sparkle: two FM pairs a hair apart for its body, its tone decaying faster the higher the note, and a third with its modulator three octaves up for the sparkle, with a chorus | `bright` 1 (0 to 2): the depth of its FM, most at the attack and settling as the note goes on; `sparkle` 0.5 (0 to 1): more of the sparkle, ringing longer, and the body decaying more slowly; `chorus` 1 (0 to 1): a copy a little later, its delay swaying, at about the same loudness |
-| `sparkling_fm_electric_piano` | `external SparklingFmElectricPiano` | `fm_electric_piano`, sparkling | `sparkle` 1 (0 to 1) |
-| `vintage_electric_piano` | `external VintageElectricPiano` | a tine electric piano: an FM pair whose tone grows from near a sine, struck softly, to a bark, struck hard, and is richer toward the bass, the tine's own ring off the harmonics on the harder notes, decaying sooner the harder and the higher, with a tremolo and a chorus | `bright` 1 (0 to 2): the depth of its FM; `tremolo` 0.8 (0 to 1): how deep the swell of its loudness is; `speed` 3 (1 to 10): how many times a second it swells; `chorus` 1 (0 to 1): a copy a little later, its delay swaying |
-| `fm_bass` | `external FmBass` | an electric bass: an FM pair fed back on itself, rich in harmonics, its tone settling as the note rings on for a few seconds | `bright` 0.5 (0 to 1): deeper modulation and more feedback |
-| `clean_guitar` | `external CleanGuitar` | a clean electric guitar: a string struck by a pick, its second polarization a hair sharp, heard by two pickups (neck and middle, each taking out the harmonics with a node under it), through a clean amp and a speaker | `bright` 0.5 (0 to 1): a brighter pick and tone; `pluck` 0 (0 to 0.5): where along the string, from the bridge, it is struck, as a song's `pluck=` says (0 leaves the pick as it is, 0.5 has no even harmonics); `chorus` 0 (0 to 1): two copies a little later, their delays swaying; `release` 1.5 (0.1 to 4): the seconds a note rings on after it ends |
-| `overdrive_guitar` | `external OverdriveGuitar` | an overdriven guitar: a string and the same two pickups, its mids raised into an overdrive, through a speaker | `bright` 0.5 (0 to 1): a brighter pick; `pluck` 0 (0 to 0.5): as `clean_guitar`'s; `drive` 1 (0 to 2): how hard it is driven, 0 near clean; `chorus` 0 (0 to 1) and `release` 1.5 (0.1 to 4): as `clean_guitar`'s |
-| `distortion_guitar` | `external DistortionGuitar` | a distorted guitar, for a lead or for chords: a string driven in two stages, its mids raised in a hill after them; a note of 0.6 s or more pushed up from a semitone below in 0.15 s (one from 0.4 s, from less far) (a choke); a vibrato that only raises the pitch, as a finger pushing the string does, from 0.35 s; an echo 0.3 s later that rings on past the note; a chorus | `bright` 0.5 (0 to 1): a brighter pick; `pluck` 0 (0 to 0.5): as `clean_guitar`'s; `drive` 1 (0 to 2): both stages driven harder, 0 near clean; `vibrato` 1 (0 to 1): how deep, up to 20 cents; `choke` 1 (0 to 1): how far a long note starts below, 0 for chords; `chorus` 0.5 (0 to 1): a copy a little later, its delay swaying; `echo` 0.6 (0 to 1): how loud the echo is; `mute` 0 (0 to 1): the left hand on the strings, 1 a muted stroke (the string still in 0.03 s, the pick's chk through the amp), 0.5 about a palm mute |
-| `light_distortion_guitar` | `external LightDistortionGuitar` | `distortion_guitar`, picked softly and driven lightly | `bright` 0 (0 to 1), `drive` 0.3 (0 to 2) |
+| `analog_lead` | `AnalogLead` | an analog lead, two saws a hair apart over a triangle through a low-pass that opens at the attack and follows the note, with a chorus | `bright` 0.5 (0 to 1): the low-pass opened wider, at about the same loudness; `chorus` 1 (0 to 1): a copy a little later, its delay swaying, and the saws drifting slowly in pitch, at the same loudness |
+| `dry_analog_lead` | `DryAnalogLead` | `analog_lead`, dry | `chorus` 0 (0 to 1) |
+| `clear_analog_lead` | `ClearAnalogLead` | a lighter, clearer lead, sounding an octave above the note written: two saws a hair apart over a triangle, with a sine an octave up for its shine, through a low-pass that opens at the attack and follows the note, with a chorus | `bright` 1 (0 to 1): the low-pass opened wider and more of the octave; `chorus` 1 (0 to 1): as `analog_lead`'s |
+| `dry_clear_analog_lead` | `DryClearAnalogLead` | `clear_analog_lead`, dry | `chorus` 0 (0 to 1) |
+| `fm_brass` | `FmBrass` | a synth brass, two FM pairs a hair apart and a third with its modulator an octave up | `bright` 0.5 (0 to 1): deeper modulation and more feedback, at the same loudness |
+| `mellow_fm_brass` | `MellowFmBrass` | `fm_brass`, mellow | `bright` 0 (0 to 1) |
+| `bright_fm_brass` | `BrightFmBrass` | `fm_brass`, bright | `bright` 1 (0 to 1) |
+| `fm_strings` | `FmStrings` | a synth string section, three FM voices a hair apart and an octave over them | `bright` 0.5 (0 to 1): deeper modulation and the octave louder, at about the same loudness |
+| `mellow_fm_strings` | `MellowFmStrings` | `fm_strings`, mellow | `bright` 0 (0 to 1) |
+| `bright_fm_strings` | `BrightFmStrings` | `fm_strings`, bright | `bright` 1 (0 to 1) |
+| `fm_electric_piano` | `FmElectricPiano` | an FM electric piano with sparkle: two FM pairs a hair apart for its body, its tone decaying faster the higher the note, and a third with its modulator three octaves up for the sparkle, with a chorus | `bright` 1 (0 to 2): the depth of its FM, most at the attack and settling as the note goes on; `sparkle` 0.5 (0 to 1): more of the sparkle, ringing longer, and the body decaying more slowly; `chorus` 1 (0 to 1): a copy a little later, its delay swaying, at about the same loudness |
+| `sparkling_fm_electric_piano` | `SparklingFmElectricPiano` | `fm_electric_piano`, sparkling | `sparkle` 1 (0 to 1) |
+| `vintage_electric_piano` | `VintageElectricPiano` | a tine electric piano: an FM pair whose tone grows from near a sine, struck softly, to a bark, struck hard, and is richer toward the bass, the tine's own ring off the harmonics on the harder notes, decaying sooner the harder and the higher, with a tremolo and a chorus | `bright` 1 (0 to 2): the depth of its FM; `tremolo` 0.8 (0 to 1): how deep the swell of its loudness is; `speed` 3 (1 to 10): how many times a second it swells; `chorus` 1 (0 to 1): a copy a little later, its delay swaying |
+| `fm_bass` | `FmBass` | an electric bass: an FM pair fed back on itself, rich in harmonics, its tone settling as the note rings on for a few seconds | `bright` 0.5 (0 to 1): deeper modulation and more feedback |
+| `clean_guitar` | `CleanGuitar` | a clean electric guitar: a string struck by a pick, its second polarization a hair sharp, heard by two pickups (neck and middle, each taking out the harmonics with a node under it), through a clean amp and a speaker | `bright` 0.5 (0 to 1): a brighter pick and tone; `pluck` 0 (0 to 0.5): where along the string, from the bridge, it is struck, as a song's `pluck=` says (0 leaves the pick as it is, 0.5 has no even harmonics); `chorus` 0 (0 to 1): two copies a little later, their delays swaying; `release` 1.5 (0.1 to 4): the seconds a note rings on after it ends |
+| `overdrive_guitar` | `OverdriveGuitar` | an overdriven guitar: a string and the same two pickups, its mids raised into an overdrive, through a speaker | `bright` 0.5 (0 to 1): a brighter pick; `pluck` 0 (0 to 0.5): as `clean_guitar`'s; `drive` 1 (0 to 2): how hard it is driven, 0 near clean; `chorus` 0 (0 to 1) and `release` 1.5 (0.1 to 4): as `clean_guitar`'s |
+| `distortion_guitar` | `DistortionGuitar` | a distorted guitar, for a lead or for chords: a string driven in two stages, its mids raised in a hill after them; a note of 0.6 s or more pushed up from a semitone below in 0.15 s (one from 0.4 s, from less far) (a choke); a vibrato that only raises the pitch, as a finger pushing the string does, from 0.35 s; an echo 0.3 s later that rings on past the note; a chorus | `bright` 0.5 (0 to 1): a brighter pick; `pluck` 0 (0 to 0.5): as `clean_guitar`'s; `drive` 1 (0 to 2): both stages driven harder, 0 near clean; `vibrato` 1 (0 to 1): how deep, up to 20 cents; `choke` 1 (0 to 1): how far a long note starts below, 0 for chords; `chorus` 0.5 (0 to 1): a copy a little later, its delay swaying; `echo` 0.6 (0 to 1): how loud the echo is; `mute` 0 (0 to 1): the left hand on the strings, 1 a muted stroke (the string still in 0.03 s, the pick's chk through the amp), 0.5 about a palm mute |
+| `light_distortion_guitar` | `LightDistortionGuitar` | `distortion_guitar`, picked softly and driven lightly | `bright` 0 (0 to 1), `drive` 0.3 (0 to 2) |
 
 A preset is its recipe with the knob's default set, so its knob still turns:
-`external MellowFmBrass bright=0.2` is `fm_brass` at 0.2.
+`MellowFmBrass bright=0.2` is `fm_brass` at 0.2.
 
 ```
 band Pads {
-  voice Lead  external FmBrass    plays melody          vol 60  bright=0.3
-  voice Pad   external FmStrings  plays chords from C3  vol 40
+  voice Lead  FmBrass             plays melody          vol 60  bright=0.3
+  voice Pad   FmStrings           plays chords from C3  vol 40
 }
 ```
 
@@ -69,23 +69,23 @@ with them and the drums, and the `kauai` binary has them built in.
 ## Drums
 
 A drum is a recipe in `recipes/drums/`, named as the others are, and a song
-gives it as a drum: `drums/open_hat.json` is `drum OpenHat external OpenHat`.
+gives it as a drum: `drums/open_hat.json` is `drum OpenHat OpenHat`.
 A drum's name is the drum itself, as a drummer calls it: General MIDI's
 Bass Drum is `Kick`, its Side Stick `CrossStick`.
 
 | Recipe | A song names it | What it is | Knobs: default (range) |
 |---|---|---|---|
-| `kick` | `external Kick` | a bass drum: a sine falling from 150 Hz to 47 Hz, and the beater's thump, brighter the harder it is struck | |
-| `snare` | `external Snare` | two modes of the head falling in pitch, and the wires' noise, brighter the harder it is struck | |
-| `cross_stick` | `external CrossStick` | the stick laid on the head and struck on the rim: a wooden knock and a click | |
-| `hat` | `external Hat` | a closed hi-hat: six square waves at unrelated pitches for the metal, and noise, high and short | |
-| `pedal_hat` | `external PedalHat` | the hi-hat closed by its pedal: shorter and lower than `hat` | |
-| `open_hat` | `external OpenHat` | an open hi-hat, ringing until it is closed | |
-| `ride` | `external Ride` | a ride cymbal: the metal's wash, its ping and the stick | |
-| `crash` | `external Crash` | a crash cymbal, darkening as it fades over 2.6 s | |
-| `tom` | `external Tom` | a tom: the head falling to its pitch, a second mode over it, and the stick | `tune` 147 (60 to 400): the head's pitch, in Hz |
-| `high_tom`, `mid_tom`, `low_tom` | `external HighTom`, `MidTom`, `LowTom` | `tom` tuned high, in the middle (as `Tom`) and low | `tune` 196, 147 and 98 |
-| `sea_wave` | `external SeaWave` | a wave on a shore, for a song's opening or close: noise through a band that rises to 1.3 kHz as the wave breaks and falls back over 5.5 s, with the foam's hiss on the break | |
+| `kick` | `Kick` | a bass drum: a sine falling from 150 Hz to 47 Hz, and the beater's thump, brighter the harder it is struck | |
+| `snare` | `Snare` | two modes of the head falling in pitch, and the wires' noise, brighter the harder it is struck | |
+| `cross_stick` | `CrossStick` | the stick laid on the head and struck on the rim: a wooden knock and a click | |
+| `hat` | `Hat` | a closed hi-hat: six square waves at unrelated pitches for the metal, and noise, high and short | |
+| `pedal_hat` | `PedalHat` | the hi-hat closed by its pedal: shorter and lower than `hat` | |
+| `open_hat` | `OpenHat` | an open hi-hat, ringing until it is closed | |
+| `ride` | `Ride` | a ride cymbal: the metal's wash, its ping and the stick | |
+| `crash` | `Crash` | a crash cymbal, darkening as it fades over 2.6 s | |
+| `tom` | `Tom` | a tom: the head falling to its pitch, a second mode over it, and the stick | `tune` 147 (60 to 400): the head's pitch, in Hz |
+| `high_tom`, `mid_tom`, `low_tom` | `HighTom`, `MidTom`, `LowTom` | `tom` tuned high, in the middle (as `Tom`) and low | `tune` 196, 147 and 98 |
+| `sea_wave` | `SeaWave` | a wave on a shore, for a song's opening or close: noise through a band that rises to 1.3 kHz as the wave breaks and falls back over 5.5 s, with the foam's hiss on the break | |
 
 A drum is struck at middle C (`f` is 261.63 Hz); one that is tuned has a
 knob for it, as the toms' `tune`. A hit holds the recipe for as long as the
@@ -97,10 +97,10 @@ pedal:
 
 ```
 band Kit {
-  drum Hat       external Hat       vol 10  choke Hats
-  drum PedalHat  external PedalHat  vol 8   choke Hats
-  drum OpenHat   external OpenHat   vol 10  choke Hats
-  drum Ride      external Ride      vol 9
+  drum Hat       Hat                vol 10  choke Hats
+  drum PedalHat  PedalHat           vol 8   choke Hats
+  drum OpenHat   OpenHat            vol 10  choke Hats
+  drum Ride      Ride               vol 9
 }
 ```
 
@@ -241,7 +241,7 @@ checked whole, as any recipe is.
 Recipes of your own can live in a folder of your own, outside the
 repository, laid out as `recipes/` is: an instrument in each `.json` file,
 a drum in each in `drums/`, named the same way (`soft_pad.json` is
-`external SoftPad`). A `main.cul` beside them makes the folder a module that
+`SoftPad`). A `main.cul` beside them makes the folder a module that
 `kauai/tools/play.cul` plays a song with:
 
 ```culebra

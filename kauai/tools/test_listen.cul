@@ -26,7 +26,7 @@ let SOUNDS = {voices: {beep: |pitch, params| Audio.Sound(
 # Two bars of two seconds, a mark before the second; the band's line sets
 # top=3.
 let SONG = "band Duo \{
-  voice Lead  external Beep top=3  plays melody  vol 100
+  voice Lead  Beep top=3           plays melody  vol 100
 }
 song First \{
   tempo 120

@@ -1,6 +1,6 @@
 # The external sounds for play.cul and jukebox.cul, as Kauai.load's
-# `voices:` and `drums:`: `external Ep` is Kauai's `FmElectricPiano`, and the
-# drums are Kauai's kit (`external Kick`, `Snare`, `CrossStick`, `Hat`,
+# `voices:` and `drums:`: `Ep` is Kauai's `FmElectricPiano`, and the
+# drums are Kauai's kit (`Kick`, `Snare`, `CrossStick`, `Hat`,
 # `PedalHat`, `OpenHat`, `Ride`, `Crash`, `Tom` and the rest), which
 # kauai/recipe.md lists with their knobs.
 import recipes from '../../kauai/recipes/main.cul'

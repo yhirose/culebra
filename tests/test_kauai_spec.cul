@@ -28,7 +28,7 @@ fn chords(defs, syms) {
     defs,
     'band B {',
     '  voice M pulse plays melody vol 10',
-    '  voice Ch external Ep plays chords from C4 poly vol 40',
+    '  voice Ch Ep plays chords from C4 poly vol 40',
     '}',
     'song S {',
     '  tempo 100',
@@ -57,15 +57,15 @@ let defines = |b, kind| b
   .split("\n")
   .any(|l| l.to_string().starts_with(kind + " "))
 
-# External instruments are the program's; nothing here builds their sounds,
-# so a table that names each one is enough.
+let CAPITALS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+# An instrument named with a capital letter is the program's; nothing here
+# builds their sounds, so a table that names each one is enough.
 fn externals(text) {
   mut out = {}
   for line in text.split("\n") {
     let w = words_of(line)
-    for i in 0..w.size() - 1 {
-      out[w[i + 1].lower()] = |a, b = nil| nil if w[i] == "external"
-    }
+    continue if w.size() < 3 || !["voice", "drum"].contains(w[0]) || !CAPITALS.contains(w[2].slice(0, 1))
+    out[w[2].lower()] = |a, b = nil| nil
   }
   out
 }
@@ -86,7 +86,6 @@ let appendix_song = |name| blocks.find(|b| b.contains(song_line(name)) &&
 # each of its endings, or twice if it has `2nd` lines, by a melody voice and
 # a voice for the parts it names, in 4/4 or else 3/4. A bar of rest between
 # the plays leaves room for a pickup.
-let CAPITALS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 fn sections_alone(b) {
   mut sections = []
   mut parts = []
@@ -112,12 +111,12 @@ fn sections_alone(b) {
   })
   let players = parts.empty()
     ? []
-    : ["  voice P external Pad plays part {parts.to_set().to_array().join(" ")} poly vol 50"]
+    : ["  voice P Pad plays part {parts.to_set().to_array().join(" ")} poly vol 50"]
   mut failed = []
   for (meter, rest) in [("4/4", "r1"), ("3/4", "r2.")] {
     let text = lines([
       'band Doc {',
-      '  voice M external Lead plays melody poly vol 50',
+      '  voice M Lead plays melody poly vol 50',
       ...players,
       '}',
       'song Doc {',
@@ -162,7 +161,7 @@ fn band_alone(b) {
     ? b
     : lines([
       b.slice(0, b.size() - 1) +
-        '  voice DocTune external Lead plays melody vol 50',
+        '  voice DocTune Lead plays melody vol 50',
       '}',
     ])
   song_of(lines([own, one_bar(name, []), 'section T {', '  C  c1', '}']))
@@ -172,7 +171,7 @@ fn groove_alone(b) {
   let kit = run_kau.split("\n").map(fn (l) {
     let w = words_of(l)
     return l.to_string() if w.get(0, "") != "drum"
-    "  drum {w[1]} external {w[1]} vol 50"
+    "  drum {w[1]} {w[1]} vol 50"
   })
   song_of(lines([
     lines(kit),

@@ -85,7 +85,7 @@ let SOUNDS = {voices: {tone: fn (pitch, params) {
 
 # A note every quarter of a second, C5 to C6.
 let SONG = "band Solo \{
-  voice Lead  external Tone  plays melody  vol 60
+  voice Lead  Tone           plays melody  vol 60
 }
 song Line \{
   tempo 240

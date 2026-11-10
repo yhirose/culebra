@@ -74,7 +74,7 @@ fn derived(inst) {
 }
 
 # The first `seconds` of song `path` (or `dir`'s) as `inst` plays it, as the
-# voice `name` (its lower-case key in the song's `external Name`). `seen`, an
+# voice `name` (its lower-case key in the song's `Name`). `seen`, an
 # Object, gets a key for each pitch asked for.
 fn rendered(inst, name, path, seconds, dir = nil, seen = {}) {
   let voices = {}

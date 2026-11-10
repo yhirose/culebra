@@ -670,12 +670,12 @@ fn the_band_plays_single_lines_on_chips_and_the_rest_on_the_piano() {
     arrangement.split("\n").map(|l| l.to_string()),
     [
       "band Score \{",
-      "  voice Melody  pulse  plays melody  vol 20  gap 1",
-      "  voice Keys  external Ep  plays part Keys  poly  vol 38",
-      "  voice Alto  pulse2  plays part Alto  vol 14  gap 1",
-      "  voice Tenor  saw  plays part Tenor  vol 14  gap 1",
-      "  voice Bass  triangle  plays part Bass  vol 14  gap 1",
-      "  voice Horn  external Ep  plays part Horn  poly  vol 38",
+      "  voice Melody  pulse  plays melody  vol 20  gap=1",
+      "  voice Keys  Ep  plays part Keys  poly  vol 38",
+      "  voice Alto  pulse2  plays part Alto  vol 14  gap=1",
+      "  voice Tenor  saw  plays part Tenor  vol 14  gap=1",
+      "  voice Bass  triangle  plays part Bass  vol 14  gap=1",
+      "  voice Horn  Ep  plays part Horn  poly  vol 38",
       "}",
     ],
   )
@@ -689,7 +689,7 @@ let EDITED = 'band Combo {
   voice Bass  triangle  plays roots in E2..D#3  vol 18
   voice Alt   saw       plays part Alto         vol 10
   Echo echoes Lead  late 1/8  level 70%
-  drum Kick   noise 120  len 1  vol 20  env 0 3 2  plays hits
+  drum Kick   noise freq=120  len=1  vol 20  env=0,3,2  plays hits
 }
 
 groove A {

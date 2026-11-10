@@ -68,7 +68,7 @@ printf 'band Duo {\n  voice Tune  nosuchwave  plays melody  vol 20\n}\n' > "$TMP
 # One note on a bundled instrument.
 cat > "$TMP/alto.kau" <<'EOF'
 band Solo {
-  voice Lead  external AltoSax  plays melody  vol 40
+  voice Lead  AltoSax           plays melody  vol 40
 }
 song Tune {
   tempo 120
@@ -84,10 +84,10 @@ EOF
 # open hi-hat in the first bar that the hat closes in the second.
 cat > "$TMP/kit.kau" <<'EOF'
 band Kit {
-  voice Lead    external MellowFmBrass  plays melody  vol 40
-  drum Kick     external Kick     vol 30
-  drum Hat      external Hat      vol 10  choke Hats
-  drum OpenHat  external OpenHat  vol 10  choke Hats
+  voice Lead    MellowFmBrass           plays melody  vol 40
+  drum Kick     Kick              vol 30
+  drum Hat      Hat               vol 10  choke Hats
+  drum OpenHat  OpenHat           vol 10  choke Hats
 }
 groove Beat {
   Kick     x . . . x . . .
@@ -107,7 +107,7 @@ section Theme {
 }
 EOF
 # An instrument the program does not have.
-sed -e 's/external AltoSax/external Organ/' "$TMP/alto.kau" > "$TMP/organ.kau"
+sed -e 's/voice Lead  AltoSax/voice Lead  Organ/' "$TMP/alto.kau" > "$TMP/organ.kau"
 
 for lane in "${lanes[@]}"; do
   # What the two print and leave for a song that reads, one that is not
@@ -170,7 +170,7 @@ for lane in "${lanes[@]}"; do
   # An instrument it does not have: the song's line and the ones it has.
   run cli "$TMP/organ.kau" --check
   check "$lane no instrument: status" 1 "$rc"
-  [[ "$err" == "ValueError: Kauai: $TMP/organ.kau:2: voice Lead plays \`external Organ\`, and voices: has no \`organ\` (it has "*"altosax, "*"mellowfmbrass"*")" ]] || {
+  [[ "$err" == "ValueError: Kauai: $TMP/organ.kau:2: voice Lead plays Organ, which the mixer has not, and voices: has no \`organ\` (it has "*"altosax, "*"mellowfmbrass"*")" ]] || {
     echo "FAIL $lane no instrument: stderr [$err]"; fail=1; }
 
   # A song as a MusicXML score, the same from the binary as from the script.
