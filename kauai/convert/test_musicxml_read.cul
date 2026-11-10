@@ -79,7 +79,7 @@ fn every_song_read_back_from_its_score_plays_its_lines() {
   for path in corpus.SONGS {
     let (score, back) = (read_back(path).score, read_back(path).back)
     let heard = Kauai.new(back.text, voices: silent).events()
-    let sounds = corpus.silent(score.arrangement)
+    let sounds = corpus.silent(score.arrangement, kau.write(score))
     let played = Kauai
       .new(steady(kau.write(score)), voices: sounds.voices, drums: sounds.drums)
       .events()

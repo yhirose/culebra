@@ -153,12 +153,13 @@ let named = |voices| Kauai.new(lines([
   '  C  \keys=3 c4 d \get=4 e f',
   '}',
 ]), voices: voices)
-let handed_note = named({ep: |pitch, params| nil}).external_sounds().map(|s| s.args[1])
+let words = ["keys", "has", "get"].map(|n| (n, {default: 0.0, min: 0.0, max: 10.0})).to_object()
+let handed_note = named({ep: {note: |pitch, params| nil, knobs: words}}).external_sounds().map(|s| s.args[1])
 assert_eq(handed_note.size(), 4)
 assert_eq(handed_note[0]["keys"], 3.0)
 assert_eq(handed_note[0]["has"], 2.0)
 assert_eq(handed_note[3]["get"], 4.0)
-let handed_phrase = named({ep: {phrase: |notes, params| nil, hears: ["len"]}}).external_sounds().map(|s| s.args[1])
+let handed_phrase = named({ep: {phrase: |notes, params| nil, hears: ["len"], knobs: words}}).external_sounds().map(|s| s.args[1])
 assert_eq(handed_phrase.size(), 4)
 assert_eq(handed_phrase[0]["keys"], 3.0)
 assert_eq(handed_phrase[0]["has"], 2.0)

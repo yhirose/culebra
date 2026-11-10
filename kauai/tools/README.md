@@ -386,8 +386,10 @@ culebra kauai/tools/make_sounds.cul --sounds kauai/sounds/soprano_sax \
 | `--pack` | all the sounds one after another in `NAME.bin`, in place of a file each |
 
 The index says, for each instrument the songs asked, what it hears (an
-instrument given as `{phrase:}` or `{hit:}`) and where each of its sounds
-is, keyed by the JSON of what Kauai handed the instrument:
+instrument given as `{phrase:}` or `{hit:}`), the `knobs` it declares and
+whether it is weighed (`weigh`, only when false), and where each of its
+sounds is, keyed by the JSON of what Kauai handed the instrument (the knobs
+among it, at their defaults where a song writes none):
 
 ```json
 {"voices": {"sax": {"hears": ["len", "level", "marks", "next", "params"],
@@ -424,6 +426,8 @@ let sax = {
     Audio.Sound(bytes.slice(at[0], at[0] + at[1]).to_string())
   },
   hears: made.hears,
+  knobs: made.get("knobs", {}),
+  weigh: made.get("weigh", true),
 }
 let song = Kauai.load("song.kau", dir: dir, voices: {sax: sax})
 ```

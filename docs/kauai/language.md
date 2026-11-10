@@ -1078,12 +1078,15 @@ An external voice is built one pitch at a time: for each pitch the song
 needs, the function given under `voices:` for the voice's instrument is
 called with the pitch, a MIDI note number (`60` is middle C), and the voice's
 parameters as an object, and returns the `Audio.Sound` to play. The
-parameters are the voice's `name=value` words with what the score's
-directions set over them, as they stand at the note, so a pitch the score
-plays at two settings is built once for each.
+parameters are the knobs the instrument declares ([Knobs](#knobs-and-weight)),
+each at the voice's `name=value` word, or at its default where the line says
+none, with what the score's directions set over them, as they stand at the
+note, so a pitch the score plays at two settings is built once for each.
 An external drum is built once: the function given for its sound under
 `drums:` (`drums: {kick: fn (params) { ... }}`) is called with the drum's
-`name=value` parameters, and returns the `Audio.Sound` to play. The keys of
+parameters, and returns the `Audio.Sound` to play. A function alone declares
+no knob, so it takes none; `{note: fn (pitch, params) { ... }}` is the same
+voice as an object, and `{hit: fn (n, params) { ... }}` a drum. The keys of
 `voices:` and `drums:` are the instrument's name on the line, in lower case:
 `Ep` is `ep:`, `HiHat` is `hihat:`; a song whose external
 sound has no function is a
@@ -1178,7 +1181,45 @@ as loud as a pulse at a half's duty at `vol 100` and the same pitch (a drum's
 against A4). A sound the song plays already is not asked for again. A sound
 whose loudness cannot be known before it plays (silence, or an MP3 or Ogg,
 which a backend decodes only as it plays) plays at `vol / 100` of its own
-level.
+level. An instrument that says `weigh: false` is not weighed, and plays at
+`vol / 100` of its own level whatever its loudness ([Knobs and weight](#knobs-and-weight)).
+
+### Knobs and weight
+
+An instrument given as an object says which knobs it takes with `knobs`, each
+a `default` within a `min` and a `max`, and whether Kauai weighs it with
+`weigh`:
+
+```culebra
+# doctest: skip (bowed is the program's own)
+let violin = {
+  phrase: |notes, params| Audio.Sound(bowed(notes, params.bow)),
+  hears: ["len", "level", "next", "params"],
+  knobs: {bow: {default: 0.5, min: 0.0, max: 1.0}},
+  weigh: true,
+}
+```
+
+A band's line writes a knob as `name=value` (`voice Lead Violin bow=0.7`), and
+a score's direction sets it from a note on (`\bow=0.3`). Kauai holds both to
+what the instrument declares when the song is read, and says on which line:
+a knob the instrument does not declare (`Violin takes bow, not bwo`), or a
+value outside its `min` and `max`, is a `KauaiError`. A direction sets the
+knobs of the instruments of the line that declare it, and is an error only
+where no instrument of the band does. The instrument is handed all its knobs,
+the defaults of those the song does not write too, so it needs no defaults of
+its own, and a note written with a knob at its default sounds as one written
+without it. The names are words (lower case, letters and digits), as a line
+writes them; a knob may be called `keys` or `get`, as Kauai reads them by
+name. An instrument given as a function declares none, so it takes none.
+
+`weigh: false` (true when it is not said) plays the instrument at its own
+level, `vol / 100` of what its sounds hold, and asks it for no sound to
+weigh. The mixer's tones are not weighed.
+
+The recipes of `kauai/recipes` declare the knobs their files give, and the
+saxophones those of `kauai/engine/borrow.cul`, so a song written for them is
+checked as it is read.
 
 A song file plays without a program of one's own, with the Kauai command
 line (`kauai/README.md` in the repository): `kauai song.kau` plays it with
@@ -1193,7 +1234,8 @@ again from the top each time a file is saved, for writing it by ear.
 `Kauai.parse_file(path, dir:)` a song file and the files it uses, as
 `new` and `load` do. They check it as a song that plays is checked, and raise
 the same `KauaiError`, but build no sound, so an `external` instrument needs
-no function. What they answer is the song's score as written, in plain
+no function (and, with none to declare them, its knobs are held to being
+numbers only). What they answer is the song's score as written, in plain
 `Object`s and `Array`s whose fields are not written to, as `JSON.parse`
 gives: for a program that writes the song in another notation, or reads one
 into Kauai.

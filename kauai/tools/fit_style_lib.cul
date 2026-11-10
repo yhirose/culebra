@@ -76,7 +76,7 @@ fn derived(inst) {
 # The first `seconds` of song `path` (or `dir`'s) as `inst` plays it, as the
 # voice `name` (its lower-case key in the song's `Name`). `seen`, an
 # Object, gets a key for each pitch asked for.
-fn rendered(inst, name, path, seconds, dir = nil, seen = {}) {
+fn rendered(inst, name, path, seconds, dir = nil, seen = {}, style = nil) {
   let voices = {}
   voices[name] = {
     phrase: fn (notes, params) {
@@ -86,6 +86,9 @@ fn rendered(inst, name, path, seconds, dir = nil, seen = {}) {
       Audio.Sound(inst.phrase_samples(notes, params), rate: RATE)
     },
     hears: ["len", "level", "marks", "next", "params"],
+    # The knobs a song may write for it, as the instrument's package declares
+    # them in the style being tried.
+    knobs: style == nil ? {} : engine.knobs(style),
   }
   Kauai.load(path, voices:, dir:).render(to: seconds)
 }
@@ -109,7 +112,7 @@ fn value_at(style, path) {
 fn tried(inst, name, style, pairs, seconds, seen) {
   inst.restyle(style)
   let ds = pairs.map(fn (p) {
-    let samples = rendered(inst, name, p.song, seconds, p.dir, seen)
+    let samples = rendered(inst, name, p.song, seconds, p.dir, seen, style)
     compare.distance(p.target, compare.features(samples, RATE, p.low, p.high))
   })
   {cost: ds.map(|d| cost(d)).sum() / ds.size(), distances: ds}

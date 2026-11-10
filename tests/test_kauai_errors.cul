@@ -64,11 +64,13 @@ let twice = fn (second) {
     sec("T", "  F  c1\n  " + second),
   ])
 }
+# An instrument that takes `bright`, 0 to 2 (the songs here write `bright=0.8`).
+let bright = {bright: {default: 0.5, min: 0.0, max: 2.0}}
 let error_of = fn (text) {
   try {
     Kauai.new(
       text,
-      voices: {ep: |pitch, params| nil},
+      voices: {ep: {note: |pitch, params| nil, knobs: bright}},
       drums: {kick: |params| nil},
     )
     nil
@@ -200,14 +202,28 @@ fails(
   play("  T", "C c1").replace("  voice Ch  Ep           plays chords from C4  poly", "  voice Ch  Ep           plays chords from C4"),
   "line 15: Ch plays x, the whole chord, under the bar at line 18, and is not poly",
 )
-# The knobs an instrument takes are its own: the program's take numbers, so
-# the mixer's `env=1,2,3` and `duty=1/4` are no knob of an instrument it gives.
-for knob in ["env=1,2,3", "duty=1/4"] {
+# The knobs an instrument takes are the ones it declares (here `bright`, 0 to
+# 2): the mixer's `env` and `duty` are no knob of an instrument it gives, and
+# a value is held to the range.
+for knob in ["env=1,2,3", "duty=1/4", "warm=1"] {
   fails(
     play("  T", "C c1").replace("poly  vol 40", "poly  {knob}  vol 40"),
-    "line 4: a parameter is a word and a number, bright=0.8: {knob}",
+    "line 4: Ep takes bright, not {knob.split("=")[0]}",
   )
 }
+for value in ["2.1", "5"] {
+  fails(
+    play("  T", "C c1").replace("poly  vol 40", "poly  bright={value}  vol 40"),
+    "line 4: bright is from 0.0 to 2.0, not {value.contains(".") ? value : value + ".0"}",
+  )
+}
+# A direction in the score is held to the declared range too; a knob that no
+# instrument of the band declares is an error, and one only another declares
+# is that one's.
+let melody_on_ep = |text| text.replace("pulse        plays melody", "Ep           plays melody")
+fails(melody_on_ep(play("  T", "C \\bright=9 c1")), "line 18: bright is from 0.0 to 2.0, not 9.0")
+fails(melody_on_ep(play("  T", "C \\warm=1 c1")), "line 18: no instrument of the band takes warm")
+fails(play("  T", "C \\warm=1 c1"), "line 18: no instrument of the band takes warm")
 # The mixer's take what they declare, as the line writes it.
 for knob in ["duty=1/3", "env=1,2", "env=1,2,x", "gap=x"] {
   let expect = cond {
@@ -230,7 +246,7 @@ fails(
 # The program's instrument of a mixer instrument's name is the one played.
 let takes_pulse = Kauai.new(
   play("  T", "C c1").replace("pulse        plays melody", "pulse bright=0.5 plays melody"),
-  voices: {ep: |pitch, params| nil, pulse: |pitch, params| nil},
+  voices: {ep: {note: |pitch, params| nil, knobs: bright}, pulse: {note: |pitch, params| nil, knobs: bright}},
   drums: {kick: |params| nil},
 )
 assert_eq(takes_pulse.external_sounds().filter(|s| s.by == "M").map(|s| s.external)[0], "pulse")

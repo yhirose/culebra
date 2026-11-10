@@ -32,7 +32,7 @@ fn load(name, songs, voices) {
       return Audio.Sound([0.0])
     }
     Audio.Sound(bytes.slice(at[0], at[0] + at[1]).to_string())
-  }, hears: made.hears}
+  }, hears: made.hears, knobs: made.get("knobs", {}), weigh: made.get("weigh", true)}
   let as_led = |n| n == "run.kau" ? lead.band : n
   let dir = {
     exists: |n| songs.exists(as_led(n)),

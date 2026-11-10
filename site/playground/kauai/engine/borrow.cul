@@ -1811,4 +1811,20 @@ class Instrument {
   }
 }
 
-export {Instrument, RATE, DEFAULTS, reshaped, dimmed, bend_shake, join_reads, eased, BREATH, NARROW, BEND}
+# The voice's parameters (listed at the top) as an instrument declares them to
+# Kauai.load: each {default, min, max}, by the `style` it plays in, which says
+# the vibrato and the overtone's note its defaults come from.
+fn knobs(style) {
+  {
+    breath: {default: BREATH, min: 0.0, max: 2.0},
+    wander: {default: 0.0, min: 0.0, max: 10.0},
+    vibrato: {default: style.vibrato.depth, min: 0.0, max: 200.0},
+    straight: {default: style.vibrato.straight, min: 0.0, max: 1.0},
+    vibcap: {default: 0.0, min: 0.0, max: 200.0},
+    overtone: {default: style.overtone_from, min: 0.0, max: 127.0},
+    overtonequiet: {default: 0.0, min: 0.0, max: 60.0},
+    soft: {default: 0.0, min: 0.0, max: 1.0},
+  }
+}
+
+export {Instrument, RATE, DEFAULTS, knobs, reshaped, dimmed, bend_shake, join_reads, eased, BREATH, NARROW, BEND}

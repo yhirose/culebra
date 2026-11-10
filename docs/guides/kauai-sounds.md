@@ -103,8 +103,10 @@ sets that part alone.
 
 A `voice` can take its sound from a program instead: an instrument named with
 a capital letter (`Ep`) is one the program supplies. The program gives the
-song a function for each name, under `voices`. The function takes a pitch and the instrument's
-parameters, and answers the sound of that note:
+song an instrument for each name, under `voices`: an object whose `note` is a
+function that takes a pitch and the instrument's knobs, and answers the sound
+of that note, and whose `knobs` declare the knobs a band's line may write,
+each with its default and range:
 
 ```culebra
 let song = Kauai.new(`
@@ -123,19 +125,27 @@ song Test {
 section Line {
   C  c4 e g c4
 }
-`, {ep: |pitch, params| Audio.Sound([0.0, 0.5, 0.0, -0.5], rate: 44100)})
+`, {ep: {
+  note: |pitch, params| Audio.Sound([0.0, 0.5, 0.0, -0.5], rate: 44100),
+  knobs: {bright: {default: 0.5, min: 0.0, max: 2.0}},
+}})
 println(song.length())             # => 2.0
 println(song.events()[0])          # => {at: 0.0, len: 0.5, by: 'Ep', pitch: 60, vol: 40.0}
 ```
 
 Here the function is a stand-in: it returns four samples, and a real
 instrument would synthesise the note at `pitch`, shaped by `params`. The
-parameters come from the band's line (`Ep bright=0.5`), and a score
-can change them from a note on, with a direction such as `\bright=1.3`.
+knobs come from the band's line (`Ep bright=0.5`), at their defaults where it
+writes none, and a score can change them from a note on, with a direction
+such as `\bright=1.3`. Kauai holds both to what the instrument declares when
+the song is read: `Ep bright=5` is an error on its line, as is a knob the
+instrument does not declare. A function given alone declares no knob and takes
+none.
 
-Such a voice plays each note's sound through to its end, and takes the knobs
-its instrument names as numbers. The note's length applies only to an
-instrument that hears it, and `vol` still sets the level.
+Such a voice plays each note's sound through to its end. The note's length
+applies only to an instrument that hears it, and `vol` still sets the level.
+An instrument that says `weigh: false` plays at its own level; the
+[specification](../kauai/language.md#knobs-and-weight) has the rest.
 
 ### Playing a song with a supplied instrument from the command line
 

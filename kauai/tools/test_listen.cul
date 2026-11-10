@@ -12,16 +12,16 @@ let beep = |pitch, params| Audio.Sound(
   iota(4000).map(|i| (pitch >= 84 ? params.get('top', 1.0) : 1.0) * 0.3 * Math.sin(2.0 * Math.pi * 440.0 * 2.0 ** ((pitch - 69) / 12.0) * i / 8000)),
   rate: 8000,
 )
-let voices = \{beep: beep}
+let voices = \{beep: \{note: beep, knobs: \{top: \{default: 1.0, min: 0.0, max: 10.0}}}}
 export \{voices}
 "
 
-let SOUNDS = {voices: {beep: |pitch, params| Audio.Sound(
+let SOUNDS = {voices: {beep: {note: |pitch, params| Audio.Sound(
   iota(4000).map(|i| (pitch >= 84 ? params.get('top', 1.0) : 1.0) *
     0.3 *
     Math.sin(2.0 * Math.pi * 440.0 * 2.0 ** ((pitch - 69) / 12.0) * i / 8000)),
   rate: 8000,
-)}}
+), knobs: {top: {default: 1.0, min: 0.0, max: 10.0}}}}}
 
 # Two bars of two seconds, a mark before the second; the band's line sets
 # top=3.

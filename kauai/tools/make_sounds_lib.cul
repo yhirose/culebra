@@ -138,12 +138,15 @@ fn make(songs, sounds, out, opts = {}) {
   let wrap = fn (kind, ins, f) {
     let id = "{kind}:{ins}"
     let drum = kind == "drums"
-    let call = f is Function ? nil : drum ? "hit" : "phrase"
+    # A function, or a voice of a note at a time, is called with the pitch.
+    let call = f is Function || f.get("note", nil) is Function ? nil : drum ? "hit" : "phrase"
     made[id] = {
       kind: kind,
       ins: ins,
       hears: call == nil ? nil : f.get("hears", []),
       call: call,
+      knobs: f is Function ? {} : f.get("knobs", {}),
+      weigh: f is Function ? true : f.get("weigh", true),
       sounds: {},
     }
     instrument.calls_through(
@@ -209,9 +212,14 @@ fn make(songs, sounds, out, opts = {}) {
     }
     if n == 0 {
       index[it.kind] = index.get(it.kind, {})
-      index[it.kind][it.ins] = it.hears == nil
-        ? {sounds: {}}
-        : {hears: it.hears, sounds: {}}
+      # What the instrument declares goes with its sounds: the knobs Kauai
+      # hands them as (so the keys of the sounds match) and `weigh`.
+      index[it.kind][it.ins] = {
+        ...(it.hears == nil ? {} : {hears: it.hears}),
+        ...(it.knobs.empty() ? {} : {knobs: it.knobs}),
+        ...(it.weigh ? {} : {weigh: false}),
+        sounds: {},
+      }
     }
     index[it.kind][it.ins].sounds[o.key] = entry
   }

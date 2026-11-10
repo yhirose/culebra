@@ -63,7 +63,13 @@ fn broken(m, limits) {
 # pitch, len, level, next}]}, by kind (KINDS' order), the worst of each first.
 fn sweep(sounds, name, low, high, step = 3, limits = LIMITS, rate = 44100) {
   let f = sounds.voices[name]
-  let phrase = f is Function ? nil : f.phrase
+  let per_note = f is Function ? f : f.get("note", nil)
+  let phrase = f is Function ? nil : f.get("phrase", nil)
+  # What Kauai hands it when a band's line says nothing: each knob's default.
+  mut params = {}
+  for k, d in f is Function ? {} : f.get("knobs", {}) {
+    params[k] = d["default"]
+  }
   mut count = 0
   let findings = []
   for pitch in range(low, high + 1, step:) {
@@ -78,9 +84,9 @@ fn sweep(sounds, name, low, high, step = 3, limits = LIMITS, rate = 44100) {
             level_end: level,
             marks: [],
             next: next == nil ? nil : len * next,
-            params: {},
+            params: params,
           }
-          let sound = phrase == nil ? f(pitch, {}) : phrase([note], {})
+          let sound = phrase == nil ? per_note(pitch, params) : phrase([note], params)
           count += 1
           for b in broken(measures(sound, pitch, len, rate), limits) {
             findings.push({...b, pitch: pitch, len: len, level: level, next: note.next})

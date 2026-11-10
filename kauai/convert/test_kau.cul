@@ -18,7 +18,7 @@ fn every_song_reads_back_from_its_written_score() {
       println("{path} written:\n{text}")
     }
     assert_eq(again, score)
-    let sounds = corpus.silent(score.arrangement)
+    let sounds = corpus.silent(score.arrangement, text)
     let played = corpus.events_of(path, score.arrangement)
     assert_eq(Kauai.new(text, voices: sounds.voices, drums: sounds.drums).events(), played)
   }

@@ -90,12 +90,12 @@ section Verse {
 EOF
 cat > "$TMP/sounds.cul" <<'EOF'
 let sound = || Audio.Sound(String.from_bytes([]))
-let voices = {ep: |pitch, params| sound()}
+let voices = {ep: {note: |pitch, params| sound(), knobs: {bright: {default: 0.5, min: 0.0, max: 2.0}}}}
 let drums = {kick: |params| sound()}
 export {voices, drums}
 EOF
 cat > "$TMP/voices_only.cul" <<'EOF'
-let voices = {ep: |pitch, params| nil}
+let voices = {ep: {note: |pitch, params| nil, knobs: {bright: {default: 0.5, min: 0.0, max: 2.0}}}}
 export {voices}
 EOF
 # An instrument that brings files of its own: a folder, its main.cul the
@@ -106,7 +106,7 @@ printf '{"bright": 0}\n' > "$TMP/instrument/data/style.json"
 cat > "$TMP/instrument/main.cul" <<'EOF'
 let kind = Dir.embedded('.').read('kind.txt')
 let sound = || Audio.Sound(String.from_bytes([]))
-let voices = {ep: |pitch, params| kind == "tines\n" ? sound() : nil}
+let voices = {ep: {note: |pitch, params| kind == "tines\n" ? sound() : nil, knobs: {bright: {default: 0.5, min: 0.0, max: 2.0}}}}
 let drums = {kick: |params| sound()}
 export {voices, drums}
 EOF

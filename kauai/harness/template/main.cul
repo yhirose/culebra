@@ -39,6 +39,7 @@ let voices = {voice: {
     rate: RATE,
   ),
   hears: ["len", "level", "marks", "next", "params"],
+  knobs: engine.knobs(CONFIG.play),
 }}
 
 export {voices, phrase_samples, RATE}

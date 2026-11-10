@@ -29,10 +29,14 @@ import live from '../../engine/borrow_live.cul'
 
 let RATE = engine.RATE
 
+# The style it plays in, which is data (a small file, not the recordings).
+fn style() {
+  JSON.parse(Dir.embedded('data').read('instrument.json')).play
+}
+
 # The instrument, made anew: for a worker (an isolate) that plays it too.
 fn instrument() {
-  let data = Dir.embedded('data')
-  engine.Instrument.new(data, JSON.parse(data.read('instrument.json')).play)
+  engine.Instrument.new(Dir.embedded('data'), style())
 }
 
 # The instrument this program plays, made the first time it plays: a run
@@ -54,6 +58,7 @@ let voices = {sopranosax: {
     rate: RATE,
   ),
   hears: ["len", "level", "marks", "next", "params"],
+  knobs: engine.knobs(style()),
 }}
 
 # As `kauai instruments` lists it, and its player for `kauai live`.

@@ -128,9 +128,12 @@ let BASS = {
 # `kind` as a voice's `pluck=` asks: plucked that far along the string from
 # the bridge, 0.3 over the soundhole and mellow, 0.1 by the bridge and bright.
 fn played(kind, params) {
-  let at = params.get("pluck", nil)
-  at == nil ? kind : {...kind, position: Math.clamp(at, 0.05, 0.5)}
+  {...kind, position: params.get("pluck", kind.position)}
 }
+
+# The knob each string declares: `pluck`, 0.05 to 0.5, by default where the
+# string is plucked as it is.
+let knobs_of = |kind| {pluck: {default: kind.position, min: 0.05, max: 0.5}}
 
 let sounds = {
   guitar: |notes, params| Audio.resonate(
@@ -141,9 +144,10 @@ let sounds = {
   steel: |notes, params| pluck(notes, played(STEEL, params)),
   bass: |notes, params| pluck(notes, played(BASS, params)),
 }
+let kinds = {guitar: NYLON, steel: STEEL, bass: BASS}
 let voices = sounds
   .keys()
-  .map(|k| (k, wave.voice(sounds[k], wave.HEARS)))
+  .map(|k| (k, wave.voice(sounds[k], wave.HEARS, knobs_of(kinds[k]))))
   .to_object()
 
 export {voices, sounds}

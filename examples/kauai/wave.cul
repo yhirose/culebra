@@ -85,11 +85,13 @@ fn control_times(seconds, starts, corners) {
 let HEARS = ["len", "level", "line", "marks", "next"]
 
 # `voices:`'s instrument for `play(notes, params)`, which answers a phrase's
-# samples: it hears what `hears` names of each note.
-fn voice(play, hears) {
+# samples: it hears what `hears` names of each note, and takes the `knobs` it
+# declares ({name: {default, min, max}}).
+fn voice(play, hears, knobs = {}) {
   {
     phrase: |notes, params| Audio.Sound(play(notes, params), rate: RATE),
     hears: hears,
+    knobs: knobs,
   }
 }
 

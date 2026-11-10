@@ -588,6 +588,11 @@ let _kauai_module = fn () {
     t.iter().map(|ch| ch.to_string()).collect().all(|ch| set.contains(ch))
   }
 
+  # Whether `k` is a knob's name: a word in lower case, as `bright`.
+  fn is_word(k) {
+    !k.empty() && all_of(k.slice(0, 1).to_string(), "abcdefghijklmnopqrstuvwxyz") && all_of(k, "abcdefghijklmnopqrstuvwxyz0123456789")
+  }
+
   fn is_number(t) {
     !t.empty() && all_of(t, "0123456789.")
   }
@@ -619,7 +624,7 @@ let _kauai_module = fn () {
   fn param_of(text, line) {
     let (k, v) = halves(text, "=") ?? ("", "")
     let (whole, frac) = halves(v, ".") ?? (v, "0")
-    let word = !k.empty() && all_of(k.slice(0, 1).to_string(), "abcdefghijklmnopqrstuvwxyz") && all_of(k, "abcdefghijklmnopqrstuvwxyz0123456789")
+    let word = is_word(k)
     let number = !whole.empty() && !frac.empty() && all_of(whole, "0123456789") && all_of(frac, "0123456789")
     fail(line, "a parameter is a word and a number, bright=0.8: {text}") if !word || !number
     (k, to_float(v))
@@ -1765,20 +1770,80 @@ let _kauai_module = fn () {
     out
   }
 
+  # The entry `key` of `table` (`voices:` or `drums:` as given), nil for none.
+  # Read by iteration: a table is named by the program's instruments, and one
+  # may be called `keys` or `get`.
+  fn entry_of(table, key) {
+    for k, f in table {
+      return f if k == key
+    }
+    nil
+  }
+
+  # The knobs an instrument the program gives is handed, from what a line
+  # writes: each as a number held to the range `declared` gives it, over the
+  # declared defaults; a knob not declared is an error.
+  fn knob_params(declared, knobs, line, who) {
+    mut names = []
+    mut out = {}
+    for name, d in declared {
+      names.push(name)
+      out[name] = d.fallback
+    }
+    for p in knobs {
+      fail(line, "{who} takes {names.empty() ? "no knobs" : names.join(", ")}, not {p[0]}") if !names.contains(p[0])
+      let (k, v) = param_of("{p[0]}={p[1]}", line)
+      out[k] = in_range(declared[k], k, v, line)
+    }
+    out
+  }
+
+  # `v` for knob `k`, held to the range `d` ({fallback, min, max}) declares.
+  fn in_range(d, k, v, line) {
+    fail(line, "{k} is from {d.min} to {d.max}, not {v}") if v < d.min || v > d.max
+    v
+  }
+
+  # What a note's direction (`\bright=1.3`) sets for voice `v`: the knobs its
+  # instrument declares, held to their ranges. A knob only another instrument
+  # of the band declares is that one's (a line sets them for its instruments),
+  # and one none declares is an error. `voices` is the band's.
+  fn directed(v, params, voices, line) {
+    # An instrument not known yet (Kauai.parse reads no tables) takes them all.
+    return params if v.external != nil && v.declared == nil
+    mut mine = {}
+    for k, val in params {
+      let d = v.external == nil ? nil : entry_of(v.declared, k)
+      if d != nil {
+        mine[k] = in_range(d, k, val, line)
+      } else {
+        let elsewhere = voices.values().any(|u| u.external != nil && (u.declared == nil || entry_of(u.declared, k) != nil))
+        fail(line, "no instrument of the band takes {k}") if !elsewhere
+      }
+    }
+    mine
+  }
+
   # A voice or a drum of the band as it plays: an instrument the program gives
   # under its name in `voices:` or `drums:` is that, and else the mixer's
   # (pulse, pulse2, triangle, saw; noise), whose knobs are those it declares.
-  # What each takes is read here, as the line says it.
+  # What each takes is read here, as the line says it. An instrument the
+  # program gives takes the knobs it declares and is handed them all, the
+  # defaults too; one the tables do not have is not known yet (it is an error
+  # when the sounds are made), and its knobs are numbers.
   fn is_given(p, given, chips) {
-    given.has(p.instrument.lower()) || !chips.has(p.instrument)
+    entry_of(given, p.instrument.lower()) != nil || !chips.has(p.instrument)
   }
 
-  fn as_given(p) {
-    {...p, external: p.instrument, params: params_of(p.knobs, p.line)}
+  fn as_given(p, given, kind) {
+    let f = entry_of(given, p.instrument.lower())
+    return {...p, external: p.instrument, params: params_of(p.knobs, p.line), declared: nil} if f == nil
+    let ins = instrument_of(kind, p.instrument.lower(), f)
+    {...p, external: p.instrument, params: knob_params(ins.knobs, p.knobs, p.line, "{p.instrument}"), declared: ins.knobs}
   }
 
   fn resolve_voice(v, given) {
-    return as_given(v) if is_given(v, given, CHIP_VOICES)
+    return as_given(v, given, VOICE_KIND) if is_given(v, given, CHIP_VOICES)
     only_knobs(v.knobs, CHIP_VOICE_KNOBS, "a voice on {v.instrument}", v.line)
     let duty = knob(v.knobs, "duty") ?? "1/2"
     {
@@ -1793,7 +1858,7 @@ let _kauai_module = fn () {
   }
 
   fn resolve_drum(name, d, given) {
-    return {...as_given(d), choke: d.choke ?? name} if is_given(d, given, CHIP_DRUMS)
+    return {...as_given(d, given, DRUM_KIND), choke: d.choke ?? name} if is_given(d, given, CHIP_DRUMS)
     fail(d.line, "a noise drum sounds one at a time already; choke groups external drums") if d.choke != nil
     only_knobs(d.knobs, NOISE_KNOBS, "a noise drum", d.line)
     let freq = knob(d.knobs, "freq")
@@ -2722,7 +2787,7 @@ let _kauai_module = fn () {
         legato: nt.legato != nil && nt.legato.on,
         phrase: nt.phrase == nil ? nil : "{v.name} {nt.phrase} {shift}",
         rank: nt.rank,
-        params: nt.params,
+        params: directed(v, nt.params, x.voices, nt.line),
       })
     }
     let melody = x.melody
@@ -2788,31 +2853,63 @@ let _kauai_module = fn () {
   # hit it strikes, and when it, or its choke group, hits next.
   let VOICE_HEARS = ["len", "level", "line", "marks", "next", "params"]
   let DRUM_HEARS = ["level", "marks", "next"]
+  # What an entry of `voices:` or `drums:` calls to make a sound: a voice's
+  # `note` (a note at a time) or `phrase` (a phrase at a time, hearing what it
+  # asks for); a drum's `hit`.
+  let VOICE_KIND = {kwarg: "voices", calls: ["note", "phrase"], may: VOICE_HEARS}
+  let DRUM_KIND = {kwarg: "drums", calls: ["hit"], may: DRUM_HEARS}
+
+  # An entry of `voices:` or `drums:` as Kauai reads it, `key` its name:
+  # {make, hears, knobs, weigh}. It is a function (a voice's, called with the
+  # pitch and the knobs; a drum's, with the knobs), which takes no knobs, or
+  # an object: the call that makes its sound (`note`, `phrase` or `hit`),
+  # `hears` (a phrase's or a hit's: what of the notes it asks for), `knobs`
+  # (its parameters, each {default, min, max}: a line's `name=value` is held to
+  # them, and all are handed to it, the defaults too) and `weigh` (false to
+  # play at its own level, not matched to a pulse's: the default is true).
+  # `hears` is nil for what makes its sound a note or a function at a time.
+  fn instrument_of(kind, key, f) {
+    let bad = |why| __raise("ValueError", "Kauai: {kind.kwarg}: `{key}` {why}")
+    return {make: f, hears: nil, knobs: {}, weigh: true} if f is Function
+    let calls = kind.calls.map(|c| "`{c}`").join(" or ")
+    bad("is a function or an object with {calls}, a function") if type_of(f) != "Object"
+    let made = kind.calls.filter(|c| f.get(c, nil) is Function)
+    bad("has one of {calls}, a function") if made.size() != 1
+    let hears = f.get("hears", nil)
+    bad("hears an Array of names") if hears != nil && hears !is Array
+    bad("makes a sound a note at a time, which hears nothing: no `hears`") if made[0] == "note" && hears != nil
+    let heard = (hears ?? []).filter(|h| !kind.may.contains(h))
+    bad("hears {heard[0]}; it can hear {kind.may.join(", ")}") if !heard.empty()
+    let weigh = f.get("weigh", true)
+    bad("weighs or not, true or false") if weigh !is Bool
+    let declared = f.get("knobs", {})
+    bad("has knobs as an Object, each of default, min and max") if type_of(declared) != "Object"
+    mut knobs = {}
+    for name, d in declared {
+      bad("has a knob `{name}`: a word") if !is_word(name)
+      bad("has a knob `{name}`: an Object of default, min and max") if type_of(d) != "Object" || !["default", "min", "max"].all(|n| d.get(n, nil) is Long || d.get(n, nil) is Float)
+      let (lo, init, hi) = (to_float(d["min"]), to_float(d["default"]), to_float(d["max"]))
+      bad("has a knob `{name}`: the default is from min to max") if init < lo || init > hi
+      knobs[name] = {fallback: init, min: lo, max: hi}
+    }
+    {make: f[made[0]], hears: made[0] == "note" ? nil : (hears ?? []), knobs: knobs, weigh: weigh}
+  }
 
   # How external sound `name` is made, from `kind.table` (the `voices:` or
-  # `drums:` given): a function, or an instrument `{phrase: ..., hears: [...]}`
-  # (`hit:` for a drum), under `key` in the table. `hears` is nil for a
-  # function. `player` is the voice or drum, with the line it is defined on.
+  # `drums:` given), under `key` in the table: `instrument_of`'s, with the
+  # key. `player` is the voice or drum, with the line it is defined on.
   fn instrument(kind, player, what) {
     let name = player.external
     let key = name.lower()
-    let table = kind.table ?? {}
-    let f = table.get(key, nil)
+    let f = entry_of(kind.table ?? {}, key)
     if f == nil {
-      let has = table.empty() ? "none" : table.keys().join(", ")
-      __raise("ValueError", "Kauai: {player.line}: {what} plays {name}, which the mixer has not, and {kind.kwarg}: has no `{key}` (it has {has})")
+      mut names = []
+      for k, _ in kind.table ?? {} {
+        names.push(k)
+      }
+      __raise("ValueError", "Kauai: {player.line}: {what} plays {name}, which the mixer has not, and {kind.kwarg}: has no `{key}` (it has {names.empty() ? "none" : names.join(", ")})")
     }
-    return {make: f, hears: nil, key: key} if f is Function
-    if type_of(f) != "Object" || f.get(kind.call, nil) !is Function {
-      __raise("ValueError", "Kauai: {kind.kwarg}: `{key}` is a function or an object whose `{kind.call}` is one")
-    }
-    let hears = f.get("hears", [])
-    __raise("ValueError", "Kauai: {kind.kwarg}: `{key}` hears an Array of names") if hears !is Array
-    let heard = hears.filter(|h| !kind.may.contains(h))
-    if !heard.empty() {
-      __raise("ValueError", "Kauai: {kind.kwarg}: `{key}` hears {heard[0]}; it can hear {kind.may.join(", ")}")
-    }
-    {make: f[kind.call], hears: hears, key: key}
+    {...instrument_of(kind, key, f), key: key}
   }
 
   # The external sounds the song needs: `build`, key -> how to build one;
@@ -2831,8 +2928,8 @@ let _kauai_module = fn () {
   # instrument's as they stand at the phrase's first note (and at each note,
   # for one that hears them).
   fn external_sounds(x, events, voices, drums) {
-    let VOICE = {table: voices, kwarg: "voices", call: "phrase", may: VOICE_HEARS}
-    let DRUM = {table: drums, kwarg: "drums", call: "hit", may: DRUM_HEARS}
+    let VOICE = {...VOICE_KIND, table: voices}
+    let DRUM = {...DRUM_KIND, table: drums}
     let ms = |t| Math.round(t * 1000) / 1000.0
     let hundredths = |v| Math.round(v * 100) / 100.0
     mut build = {}
@@ -2863,7 +2960,7 @@ let _kauai_module = fn () {
       cond {
         ins.hears == nil && drum => sound(e.by, e.by, e.at, e.at, e.vol, ins, [params]),
         ins.hears == nil => sound(
-          "{e.by} {e.pitch} {params_key(e.params)}",
+          "{e.by} {e.pitch} {params_key({...params, ...e.params})}",
           e.by,
           e.at,
           e.at + e.len,
@@ -2919,18 +3016,24 @@ let _kauai_module = fn () {
       }))
       let params = {...band, ...head.params}
       let until = members.map(|e| e.at + e.len).max()
-      sound("{head.by} {notes} {params_key(head.params)}", head.by, head.at, until, head.vol, kinds[head.by], [notes, params])
+      sound("{head.by} {notes} {params_key(params)}", head.by, head.at, until, head.vol, kinds[head.by], [notes, params])
     }
     # What each is weighed by: a voice's note at the middle of the pitches it
     # plays, a second long at mf, and a drum's hit at mf, each as the song
     # would ask for it with the band's parameters (so one the song plays
     # already is not built again).
     mut weighed = {}
+    mut unweighed = []
     for by in kinds.keys() {
       let ins = kinds[by]
       let drum = x.drums.has(by)
       let params = drum ? x.drums[by].params : x.voices[by].params
       let make = ins.make
+      # One that says not to be weighed plays at its own level.
+      if !ins.weigh {
+        unweighed.push(by)
+        continue
+      }
       if drum && ins.hears == nil {
         weighed[by] = {sound: by, pitch: 69}
         continue
@@ -2950,7 +3053,7 @@ let _kauai_module = fn () {
       let pitches = events.filter(|e| e.by == by && !e.has("tone")).map(|e| e.pitch).sorted()
       let pitch = pitches[pitches.size() / 2]
       if ins.hears == nil {
-        let key = "{by} {pitch} {params_key({})}"
+        let key = "{by} {pitch} {params_key(params)}"
         build[key] = || make(pitch, params) if !build.has(key)
         weighed[by] = {sound: key, pitch: pitch}
         continue
@@ -2966,11 +3069,11 @@ let _kauai_module = fn () {
         ...(hears.contains("next") ? {next: nil} : {}),
         ...(hears.contains("params") ? {params: params} : {}),
       }]
-      let key = "{by} {notes} {params_key({})}"
+      let key = "{by} {notes} {params_key(params)}"
       build[key] = || make(notes, params) if !build.has(key)
       weighed[by] = {sound: key, pitch: pitch}
     }
-    {build: build, plays: plays, weighed: weighed}
+    {build: build, plays: plays, weighed: weighed, unweighed: unweighed}
   }
 
   # How loud a tone of pitch `pitch` is at vol 100 on a pulse at a half's
@@ -3005,6 +3108,7 @@ let _kauai_module = fn () {
       @_build = external.build
       @_plays = external.plays
       @_weighed = external.weighed
+      @_unweighed = external.unweighed
       @_weights = nil
       # Each sound's voice or drum, and when it first plays.
       @_by = {}
@@ -3089,11 +3193,12 @@ let _kauai_module = fn () {
     _weigh() {
       return nil if @_weights != nil
       @_need(@_weighed.values().map(|w| w.sound))
-      @_weights = @_weighed.keys().map(fn (by) {
+      let weighed = @_weighed.keys().map(fn (by) {
         let w = @_weighed[by]
         let l = _Audio.sound_loudness(@_sounds[w.sound]._id)
         (by, l == nil ? 1.0 : 10.0 ** ((tone_loudness(w.pitch) - l) / 20.0))
       }).to_object()
+      @_weights = {...@_unweighed.map(|by| (by, 1.0)).to_object(), ...weighed}
     }
 
     # The rows of `plays` and of the tones that start before `to` (nil: every

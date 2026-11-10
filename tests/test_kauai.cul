@@ -359,12 +359,14 @@ let EXTERNAL = lines([
   'song Solo {', '  tempo 60', '  band Keys', '  groove Time', '  melody in C4..B4', '  Solo', '}',
   'section Solo {', '  C  <c e g>2 c', '}',
 ])
+# An instrument of a note at a time that takes `bright`, as the band above writes.
+let ep = |f| {note: f, knobs: {bright: {default: 0.5, min: 0.0, max: 2.0}}}
 mut asked = []
 let external = Kauai.new(EXTERNAL, voices: {
-  ep: fn (pitch, params) {
+  ep: ep(fn (pitch, params) {
     asked.push((pitch, params.bright))
     Audio.Sound.new(WAV)
-  },
+  }),
 }, drums: {ride: |params| Audio.Sound.new(WAV)})
 assert_eq(notes(external, "Piano"), [(0.0, 2.0, 60, 40.0), (0.0, 2.0, 64, 40.0), (0.0, 2.0, 67, 40.0), (2.0, 2.0, 60, 40.0)])
 assert_eq(notes(external, "Ride").map(|n| (n[0], n[3])), [(0.0, 50.0), (2.0, 50.0)])
@@ -380,7 +382,7 @@ assert_throws("ValueError", fn () {
 # ride's second hit, two seconds (two beats at tempo 60) after its first, is
 # the first one again, sample for sample.
 let tick = Audio.Sound(iota(2205).map(|i| 0.3 * Math.sin(i * 0.2)))
-let ticked = Kauai.new(EXTERNAL, voices: {ep: |pitch, params| Audio.Sound([0.0])}, drums: {ride: |params| tick})
+let ticked = Kauai.new(EXTERNAL, voices: {ep: ep(|pitch, params| Audio.Sound([0.0]))}, drums: {ride: |params| tick})
 let ticks = fn () {
   let heard = ticked.render()
   assert_true(heard.slice(0, 2205).map(|v| Math.abs(v)).max() > 0.01)
@@ -424,7 +426,7 @@ assert_eq(refused(fn () { _Audio.schedule_render(backwards, [], 2.0, 0.0, 1.0, 0
 let not_rows = "Kauai: a song's events are rows of {stride} numbers"
 assert_eq(refused(fn () { _Audio.schedule_new([...events[0], 0.0], 2.0, -1.0) }), not_rows)
 assert_eq(refused(fn () { _Audio.schedule_render(events[0].slice(0, stride - 1), [], 2.0, 0.0, 1.0, 0.0) }), not_rows)
-let not_a_sound = Kauai.new(EXTERNAL, voices: {ep: |pitch, params| 1}, drums: {ride: |params| 1})
+let not_a_sound = Kauai.new(EXTERNAL, voices: {ep: ep(|pitch, params| 1)}, drums: {ride: |params| 1})
 let unbuilt = not_a_sound._todo.size()
 assert_throws("TypeError", fn () {
   not_a_sound.prepare()
@@ -785,16 +787,17 @@ let set = Kauai.new(lines([
   '    Alto:  c1',
   '}',
 ]), voices: {
-  ep: fn (pitch, params) {
+  ep: ep(fn (pitch, params) {
     keyed.push("{pitch} {settings(params)}")
     Audio.Sound.new(WAV)
-  },
+  }),
   reed: {
     phrase: fn (notes, params) {
       keyed.push("{notes.map(|n| "{n.pitch} {settings(n.params)}").join(" / ")} | {settings(params)}")
       Audio.Sound.new(WAV)
     },
     hears: ["params"],
+    knobs: {breath: {default: 0.25, min: 0.0, max: 2.0}},
   },
 })
 set.play()
@@ -883,11 +886,46 @@ assert_eq(
 )
 assert_eq(
   refused({fiddle: {note: |n, params| nil, hears: ["len"]}}, snare),
-  "Kauai: voices: `fiddle` is a function or an object whose `phrase` is one",
+  "Kauai: voices: `fiddle` makes a sound a note at a time, which hears nothing: no `hears`",
+)
+assert_eq(
+  refused({fiddle: {play: |n, params| nil}}, snare),
+  "Kauai: voices: `fiddle` has one of `note` or `phrase`, a function",
+)
+assert_eq(
+  refused({fiddle: {note: |n, params| nil, phrase: |n, params| nil}}, snare),
+  "Kauai: voices: `fiddle` has one of `note` or `phrase`, a function",
+)
+assert_eq(
+  refused({fiddle: 3}, snare),
+  "Kauai: voices: `fiddle` is a function or an object with `note` or `phrase`, a function",
 )
 assert_eq(
   refused(fiddle, {snare: {phrase: |notes, params| nil}}),
-  "Kauai: drums: `snare` is a function or an object whose `hit` is one",
+  "Kauai: drums: `snare` has one of `hit`, a function",
+)
+# An instrument's knobs are each a default within a min and a max, named as a
+# line names them; its `weigh` is true or false.
+let knobbed = |knobs| {fiddle: {note: |n, params| nil, knobs: knobs}}
+assert_eq(
+  refused(knobbed({bright: {default: 3, min: 0, max: 2}}), snare),
+  "Kauai: voices: `fiddle` has a knob `bright`: the default is from min to max",
+)
+assert_eq(
+  refused(knobbed({bright: {default: 1, min: 0}}), snare),
+  "Kauai: voices: `fiddle` has a knob `bright`: an Object of default, min and max",
+)
+assert_eq(
+  refused(knobbed({Bright: {default: 1, min: 0, max: 2}}), snare),
+  "Kauai: voices: `fiddle` has a knob `Bright`: a word",
+)
+assert_eq(
+  refused(knobbed(3), snare),
+  "Kauai: voices: `fiddle` has knobs as an Object, each of default, min and max",
+)
+assert_eq(
+  refused({fiddle: {note: |n, params| nil, weigh: 1}}, snare),
+  "Kauai: voices: `fiddle` weighs or not, true or false",
 )
 
 print("kauai ok\n")

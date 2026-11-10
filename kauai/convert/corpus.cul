@@ -20,9 +20,17 @@ let SONGS = [
 ]
 
 # The instruments a band names with a capital letter (the program's, not the
-# mixer's), each answering no sound: enough to read a song and list what it
-# plays.
-fn silent(arrangement) {
+# mixer's), each answering no sound and taking every knob the band's lines
+# write or `text`, the song, sets with a direction (`\name=value`), over any
+# range: enough to read a song and list what it plays.
+fn silent(arrangement, text) {
+  let named = |words, mark| words
+    .filter(|x| x.starts_with(mark) && x.contains("="))
+    .map(|x| x.slice(mark.size(), x.size()).to_string().split("=")[0])
+  let knobs = [
+    ...named(arrangement.split_whitespace(), ""),
+    ...named(text.split_whitespace(), "\\"),
+  ].map(|k| (k, {default: 0.0, min: 0.0, max: 1.0e9})).to_object()
   mut voices = {}
   mut drums = {}
   for line in arrangement.split("\n") {
@@ -30,9 +38,9 @@ fn silent(arrangement) {
     continue if w.size() < 3 || !["voice", "drum"].contains(w[0]) || !"ABCDEFGHIJKLMNOPQRSTUVWXYZ".contains(w[2].slice(0, 1).to_string())
     let key = w[2].lower()
     if w[0] == "drum" {
-      drums[key] = |params| nil
+      drums[key] = {hit: |n, params| nil, knobs: knobs}
     } else {
-      voices[key] = |pitch, params| nil
+      voices[key] = {note: |pitch, params| nil, knobs: knobs}
     }
   }
   {voices: voices, drums: drums}
@@ -40,7 +48,7 @@ fn silent(arrangement) {
 
 # What song `path` plays, its external instruments silent.
 fn events_of(path, arrangement) {
-  let sounds = silent(arrangement)
+  let sounds = silent(arrangement, FS.read(path))
   Kauai.load(path, voices: sounds.voices, drums: sounds.drums).events()
 }
 

@@ -36,8 +36,9 @@ fn program(module, lib, name, arg) {
 # Instrument `f` of a module (a drum when `drum`) made to hand each sound
 # Kauai asks it for to `through(args, make)`: `args` is what Kauai handed it,
 # [params], [pitch, params], [n, params] or [notes, params] by how it is
-# given (a function, or an object with `hit` or `phrase`), and `make(args)`
-# the instrument's sound for those.
+# given (a function, or an object with `note`, `hit` or `phrase`), and
+# `make(args)` the instrument's sound for those. An object keeps the rest of
+# what it declares (its knobs, `hears`, `weigh`).
 fn calls_through(f, drum, through) {
   let function = f is Function
   cond {
@@ -46,6 +47,10 @@ fn calls_through(f, drum, through) {
     drum => {
       ...f,
       hit: |n, params| through([n, params], |a| f.hit(a[0], a[1])),
+    },
+    f.get("note", nil) is Function => {
+      ...f,
+      note: |pitch, params| through([pitch, params], |a| f.note(a[0], a[1])),
     },
     _ => {
       ...f,

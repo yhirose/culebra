@@ -720,12 +720,22 @@ class Recipe {
     )
   }
 
+  # Its knobs as an instrument declares them (Kauai.load's `voices:` and
+  # `drums:`): each {default, min, max}.
+  declared() {
+    @knobs
+      .keys()
+      .map(|k| (k, {default: @knobs[k].fallback, min: @knobs[k].min, max: @knobs[k].max}))
+      .to_object()
+  }
+
   # The instrument, as Kauai.load's `voices:` takes it.
   voice() {
     let recipe = self
     {
       phrase: |notes, params| recipe.phrase(notes, params),
       hears: ["len", "level", "params"],
+      knobs: self.declared(),
     }
   }
 
@@ -736,6 +746,7 @@ class Recipe {
     {
       hit: |n, params| Audio.Sound(recipe.hit(n.level, n.next, params), rate: recipe.rate),
       hears: ["level", "next"],
+      knobs: self.declared(),
     }
   }
 }

@@ -27,7 +27,7 @@ let played = |song, by| song
 let written = |n| (to_long(n[0]), q64(n[1]), q64(n[2]))
 let external = |text| Kauai.new(
   one_tempo(text),
-  voices: {ep: |pitch, params| nil},
+  voices: {ep: {note: |pitch, params| nil, knobs: {bright: {default: 0.5, min: 0.0, max: 2.0}}}},
 )
 
 # The voice, as the song Appendix C of the spec prints writes it, and as the

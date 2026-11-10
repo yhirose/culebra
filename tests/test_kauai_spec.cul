@@ -61,13 +61,23 @@ let CAPITALS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 # An instrument named with a capital letter is the program's; nothing here
 # builds their sounds, so a table that names each one is enough.
 fn externals(text) {
+  let any_range = |name| (name, {default: 0.0, min: 0.0, max: 1.0e9})
+  let rows = text.split("\n").map(|line| words_of(line))
+  # Each takes every knob a band line writes (`name=value`) or a direction in
+  # the text sets (`\name=value`), over any range.
+  let directed = rows.flat_map(|w| w.filter(|x| x.starts_with("\\") && x.contains("="))).map(|x| any_range(x.slice(1, x.size()).to_string().split("=")[0]))
+  mut knobs = {}
   mut out = {}
-  for line in text.split("\n") {
-    let w = words_of(line)
+  for w in rows {
     continue if w.size() < 3 || !["voice", "drum"].contains(w[0]) || !CAPITALS.contains(w[2].slice(0, 1))
-    out[w[2].lower()] = |a, b = nil| nil
+    let key = w[2].lower()
+    out[key] = true
+    let written = w.filter(|x| x.contains("=")).map(|x| any_range(x.split("=")[0]))
+    for k, v in [...written, ...directed].to_object() {
+      knobs[k] = v
+    }
   }
-  out
+  out.keys().map(|key| (key, {note: |a, b = nil| nil, hit: |n, b = nil| nil, knobs: knobs})).to_object()
 }
 let song_of = |text| Kauai.new(
   text,

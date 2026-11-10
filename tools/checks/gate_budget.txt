@@ -296,8 +296,10 @@ ctest.entries 41
 # the Kauai spec's §10 plays a song early (skipped: reads a song file), in
 # en and ja. 1166 since Audio.Graph's loops have an echo to run, in en and ja:
 # it is the only place the docs show a loop worked out, and the doctest holds
-# its three samples (1.0, 0.5, 0.25) to the code in both lanes.
-docs.blocks 1166
+# its three samples (1.0, 0.5, 0.25) to the code in both lanes. 1168 since
+# the Kauai spec's "Knobs and weight" shows an instrument that declares its
+# knobs (skipped: bowed is the program's own), in en and ja.
+docs.blocks 1168
 
 # The samples the language front ends are run over (examples/languages/*).
 languages.samples 130
