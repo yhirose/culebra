@@ -9738,6 +9738,7 @@ Kauaiのコマンドライン`kauai song.kau`は、プログラムを書かず�
 | `Kauai.load(path: String, voices = nil, drums = nil, dir = nil)` | 曲のファイルと、そこから`use`しているファイルを読み込む。読み込み元はディスクか、`dir`（任意の`Dir`、または`exists(name)`と`read(name)`を持つオブジェクト） |
 | `Kauai.parse(text: String)` | 書いたとおりの曲の楽譜と、バンドが小節ごとに弾く音を素のデータで返す。`new`と同じように読んで検査し、音声は作らない（[楽譜をデータとして読む](kauai/language.ja.md#楽譜をデータとして読む)） |
 | `Kauai.parse_file(path: String, dir = nil)` | 同じことを、曲のファイルと、そこから`use`しているファイルについて行う。読み方は`load`と同じ |
+| `Kauai.instrument(entry, drum: Bool = false, name: String = "instrument")` | `voices:`（`drum: true`なら`drums:`）の項目をKauaiと同じように読み、`{call, make, hears, knobs, weigh}`を返す。楽器を包んだり中継したりするプログラム向け（[つまみと重み付け](kauai/language.ja.md#つまみと重み付け)） |
 
 曲に誤りがあると`KauaiError`になり、メッセージにはファイル名と行番号が付きます。
 曲のオブジェクトには`play()`、`stop()`、`volume(v)`、`playing()`、

@@ -71,7 +71,7 @@ let error_of = fn (text) {
     Kauai.new(
       text,
       voices: {ep: {note: |pitch, params| nil, knobs: bright}},
-      drums: {kick: |params| nil},
+      drums: {kick: |n, params| nil},
     )
     nil
   } catch e {
@@ -247,7 +247,7 @@ fails(
 let takes_pulse = Kauai.new(
   play("  T", "C c1").replace("pulse        plays melody", "pulse bright=0.5 plays melody"),
   voices: {ep: {note: |pitch, params| nil, knobs: bright}, pulse: {note: |pitch, params| nil, knobs: bright}},
-  drums: {kick: |params| nil},
+  drums: {kick: |n, params| nil},
 )
 assert_eq(takes_pulse.external_sounds().filter(|s| s.by == "M").map(|s| s.external)[0], "pulse")
 # An instrument the program does not supply is the program's ValueError,

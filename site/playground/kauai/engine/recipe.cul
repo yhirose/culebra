@@ -368,12 +368,12 @@ fn knob(name, x, where) {
     to_float(v)
   }
   let made = {
-    fallback: number("default"),
+    default: number("default"),
     min: number("min"),
     max: number("max"),
   }
-  throw "{where}: the default is from min to max" if made.fallback < made.min ||
-    made.fallback > made.max
+  throw "{where}: the default is from min to max" if made.default < made.min ||
+    made.default > made.max
   made
 }
 
@@ -561,7 +561,7 @@ class Recipe {
     }
     @knobs
       .keys()
-      .map(|k| (k, to_float(params.get(k, @knobs[k].fallback))))
+      .map(|k| (k, to_float(params.get(k, @knobs[k].default))))
       .to_object()
   }
 
@@ -720,22 +720,14 @@ class Recipe {
     )
   }
 
-  # Its knobs as an instrument declares them (Kauai.load's `voices:` and
-  # `drums:`): each {default, min, max}.
-  declared() {
-    @knobs
-      .keys()
-      .map(|k| (k, {default: @knobs[k].fallback, min: @knobs[k].min, max: @knobs[k].max}))
-      .to_object()
-  }
-
-  # The instrument, as Kauai.load's `voices:` takes it.
+  # The instrument, as Kauai.load's `voices:` takes it: its knobs are the
+  # recipe's, each {default, min, max} as an instrument declares them.
   voice() {
     let recipe = self
     {
       phrase: |notes, params| recipe.phrase(notes, params),
       hears: ["len", "level", "params"],
-      knobs: self.declared(),
+      knobs: recipe.knobs,
     }
   }
 
@@ -746,7 +738,7 @@ class Recipe {
     {
       hit: |n, params| Audio.Sound(recipe.hit(n.level, n.next, params), rate: recipe.rate),
       hears: ["level", "next"],
-      knobs: self.declared(),
+      knobs: recipe.knobs,
     }
   }
 }

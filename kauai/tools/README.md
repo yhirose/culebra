@@ -386,7 +386,7 @@ culebra kauai/tools/make_sounds.cul --sounds kauai/sounds/soprano_sax \
 | `--pack` | all the sounds one after another in `NAME.bin`, in place of a file each |
 
 The index says, for each instrument the songs asked, what it hears (an
-instrument given as `{phrase:}` or `{hit:}`), the `knobs` it declares and
+instrument that is not a note-at-a-time voice), the `knobs` it declares and
 whether it is weighed (`weigh`, only when false), and where each of its
 sounds is, keyed by the JSON of what Kauai handed the instrument (the knobs
 among it, at their defaults where a song writes none):
@@ -394,12 +394,12 @@ among it, at their defaults where a song writes none):
 ```json
 {"voices": {"sax": {"hears": ["len", "level", "marks", "next", "params"],
                     "sounds": {"[[{\"pitch\":62,\"at\":0.0, ...}],{}]": "made/sax_0.ogg", ...}}},
- "drums": {"kick": {"sounds": {"[{}]": "made/kick_0.wav"}}}}
+ "drums": {"kick": {"hears": [], "sounds": {"[{},{}]": "made/kick_0.wav"}}}}
 ```
 
 The key is `JSON.stringify([notes, params])` for a voice given as
-`{phrase:}`, `[pitch, params]` for one given as a function, `[n, params]`
-for a drum given as `{hit:}`, and `[params]` for one given as a function.
+`{phrase:}`, `[pitch, params]` for one given as `{note:}` or a function, and
+`[n, params]` for a drum, given as `{hit:}` or a function.
 A sound is a file name beside the index or, with `--pack`, its
 `[offset, size]` in `NAME.bin`.
 

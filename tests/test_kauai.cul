@@ -367,7 +367,7 @@ let external = Kauai.new(EXTERNAL, voices: {
     asked.push((pitch, params.bright))
     Audio.Sound.new(WAV)
   }),
-}, drums: {ride: |params| Audio.Sound.new(WAV)})
+}, drums: {ride: |n, params| Audio.Sound.new(WAV)})
 assert_eq(notes(external, "Piano"), [(0.0, 2.0, 60, 40.0), (0.0, 2.0, 64, 40.0), (0.0, 2.0, 67, 40.0), (2.0, 2.0, 60, 40.0)])
 assert_eq(notes(external, "Ride").map(|n| (n[0], n[3])), [(0.0, 50.0), (2.0, 50.0)])
 assert_eq(external.prepare(), 3)
@@ -376,13 +376,13 @@ assert_eq(asked.map(|a| a[0]).sorted(), [60, 64, 67])
 assert_eq(asked[0][1], 0.8)
 external.stop()
 assert_throws("ValueError", fn () {
-  Kauai.new(EXTERNAL, drums: {ride: |params| Audio.Sound.new(WAV)})
+  Kauai.new(EXTERNAL, drums: {ride: |n, params| Audio.Sound.new(WAV)})
 })
 # An external sound renders where it starts, as loud each time it plays: the
 # ride's second hit, two seconds (two beats at tempo 60) after its first, is
 # the first one again, sample for sample.
 let tick = Audio.Sound(iota(2205).map(|i| 0.3 * Math.sin(i * 0.2)))
-let ticked = Kauai.new(EXTERNAL, voices: {ep: ep(|pitch, params| Audio.Sound([0.0]))}, drums: {ride: |params| tick})
+let ticked = Kauai.new(EXTERNAL, voices: {ep: ep(|pitch, params| Audio.Sound([0.0]))}, drums: {ride: |n, params| tick})
 let ticks = fn () {
   let heard = ticked.render()
   assert_true(heard.slice(0, 2205).map(|v| Math.abs(v)).max() > 0.01)
@@ -402,7 +402,7 @@ let mixed = Kauai.new(lines([
   '}',
   'song Mixed {', '  tempo 60', '  band Mixed', '  groove Time', '  melody in C4..B4', '  Solo', '}',
   'section Solo {', '  C  c4 d e f', '}',
-]), drums: {ride: |params| tick})
+]), drums: {ride: |n, params| tick})
 let stride = _Audio.schedule_stride()
 let events = mixed._list(mixed._plays, nil).iter().chunks(stride).collect()
 let times = events.map(|e| e[0])
@@ -426,7 +426,7 @@ assert_eq(refused(fn () { _Audio.schedule_render(backwards, [], 2.0, 0.0, 1.0, 0
 let not_rows = "Kauai: a song's events are rows of {stride} numbers"
 assert_eq(refused(fn () { _Audio.schedule_new([...events[0], 0.0], 2.0, -1.0) }), not_rows)
 assert_eq(refused(fn () { _Audio.schedule_render(events[0].slice(0, stride - 1), [], 2.0, 0.0, 1.0, 0.0) }), not_rows)
-let not_a_sound = Kauai.new(EXTERNAL, voices: {ep: ep(|pitch, params| 1)}, drums: {ride: |params| 1})
+let not_a_sound = Kauai.new(EXTERNAL, voices: {ep: ep(|pitch, params| 1)}, drums: {ride: |n, params| 1})
 let unbuilt = not_a_sound._todo.size()
 assert_throws("TypeError", fn () {
   not_a_sound.prepare()
@@ -464,7 +464,7 @@ let left_at_start = fn (cost) {
   ]), voices: {lead: fn (pitch, params) {
     now += cost
     Audio.Sound([0.0])
-  }}, drums: {kick: fn (params) {
+  }}, drums: {kick: fn (n, params) {
     now += 3.0
     Audio.Sound([0.0])
   }})
@@ -541,7 +541,7 @@ let unheard = Kauai.new(PLAYED, voices: {
     },
     hears: [],
   },
-}, drums: {snare: |params| Audio.Sound.new(WAV)})
+}, drums: {snare: |n, params| Audio.Sound.new(WAV)})
 assert_eq(notes(unheard, "Fiddle").map(|n| n[3]), [50.0, 50.0, 50.0, 58.824])
 assert_eq(unheard.prepare(), 2)
 unheard.play()
@@ -564,7 +564,7 @@ let weight_of = fn (amp) {
     'groove Time {', '  Tick  x...', '}',
     'song Weigh {', '  tempo 60', '  band Solo', '  groove Time', '  melody in C4..B4', '  Weigh', '}',
     'section Weigh {', "  C  c4 e g c'", '}',
-  ]), voices: {square: |pitch, params| Audio.Sound.new(pulse_at(pitch, amp))}, drums: {tick: |params| Audio.Sound.new(pulse_at(69, amp))})
+  ]), voices: {square: |pitch, params| Audio.Sound.new(pulse_at(pitch, amp))}, drums: {tick: |n, params| Audio.Sound.new(pulse_at(69, amp))})
   song.play()
   song.stop()
   song._weights
@@ -874,7 +874,7 @@ let refused = fn (voices, drums) {
     e.message
   }
 }
-let snare = {snare: |params| Audio.Sound.new(WAV)}
+let snare = {snare: |n, params| Audio.Sound.new(WAV)}
 let fiddle = {fiddle: |pitch, params| Audio.Sound.new(WAV)}
 assert_eq(
   refused({fiddle: {phrase: |notes, params| nil, hears: ["slur"]}}, snare),
@@ -926,6 +926,34 @@ assert_eq(
 assert_eq(
   refused({fiddle: {note: |n, params| nil, weigh: 1}}, snare),
   "Kauai: voices: `fiddle` weighs or not, true or false",
+)
+
+# Kauai.instrument reads an entry as a song does: what makes its sound, what it
+# hears, its knobs and whether it is weighed. A function stands for a voice's
+# `note` or a drum's `hit` (called with what the hit hears, nothing, and the
+# knobs), and an entry that is none is the ValueError a song raises, by `name`.
+let f_note = |pitch, params| 1
+let as_note = Kauai.instrument(f_note)
+assert_eq((as_note.call, as_note.hears, as_note.knobs, as_note.weigh), ("note", nil, {}, true))
+assert_eq(as_note.make(60, {}), 1)
+let as_hit = Kauai.instrument(|n, params| [n, params], drum: true)
+assert_eq((as_hit.call, as_hit.hears, as_hit.knobs, as_hit.weigh), ("hit", [], {}, true))
+assert_eq(as_hit.make({}, {x: 1}), [{}, {x: 1}])
+let as_phrase = Kauai.instrument({
+  phrase: |notes, params| nil,
+  hears: ["len"],
+  knobs: {bow: {default: 1, min: 0, max: 2}},
+  weigh: false,
+})
+assert_eq((as_phrase.call, as_phrase.hears, as_phrase.weigh), ("phrase", ["len"], false))
+assert_eq(as_phrase.knobs["bow"], {default: 1.0, min: 0.0, max: 2.0})
+assert_eq(
+  try { Kauai.instrument({play: f_note}, name: "viola"); nil } catch e: ValueError { e.message },
+  "Kauai: voices: `viola` has one of `note` or `phrase`, a function",
+)
+assert_eq(
+  try { Kauai.instrument({note: f_note}, drum: true, name: "kick"); nil } catch e: ValueError { e.message },
+  "Kauai: drums: `kick` has one of `hit`, a function",
 )
 
 print("kauai ok\n")

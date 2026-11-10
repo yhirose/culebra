@@ -7,7 +7,7 @@
 # The index (NAME.json) holds, under `voices` and `drums`, each instrument
 # the songs asked: what it hears (one given as `{phrase:}` or `{hit:}`) and
 # its sounds, keyed by the JSON of what Kauai handed it ([notes, params],
-# [pitch, params], [n, params] or [params]), each the file beside the index
+# [pitch, params] or [n, params]), each the file beside the index
 # that holds it (NAME/<instrument>_<n>.wav, .ogg, ...) or, packed, where its
 # bytes are in NAME.bin ([offset, size]).
 #
@@ -29,17 +29,16 @@ let kind_of = fn (bytes) {
 }
 
 # Whether Kauai could weigh an instrument by the sound it asked for with
-# `args`: a drum's at mf (a function drum's one sound), a voice's one note a
-# second long at mf and at `middles`, the middle pitches of the song's voices.
+# `args`: a drum's at mf, a voice's one note a second long at mf and at
+# `middles`, the middle pitches of the song's voices.
 let weighs_by = fn (drum, call, args, middles) {
-  return true if drum && call == nil
   if drum {
     let n = args[0]
     return n.get("level", 1.0) == 1.0 &&
       n.get("marks", []).empty() &&
       n.get("next", nil) == nil
   }
-  return middles.contains(args[0]) if call == nil
+  return middles.contains(args[0]) if call == "note"
   let notes = args[0]
   return false if notes.size() != 1
   let n = notes[0]
@@ -135,18 +134,17 @@ fn make(songs, sounds, out, opts = {}) {
     order.push({id: id, key: key})
     sound
   }
-  let wrap = fn (kind, ins, f) {
-    let id = "{kind}:{ins}"
+  let wrap = fn (kind, who, f) {
+    let id = "{kind}:{who}"
     let drum = kind == "drums"
-    # A function, or a voice of a note at a time, is called with the pitch.
-    let call = f is Function || f.get("note", nil) is Function ? nil : drum ? "hit" : "phrase"
+    let ins = Kauai.instrument(f, drum:, name: who)
     made[id] = {
       kind: kind,
-      ins: ins,
-      hears: call == nil ? nil : f.get("hears", []),
-      call: call,
-      knobs: f is Function ? {} : f.get("knobs", {}),
-      weigh: f is Function ? true : f.get("weigh", true),
+      ins: who,
+      hears: ins.hears,
+      call: ins.call,
+      knobs: ins.knobs,
+      weigh: ins.weigh,
       sounds: {},
     }
     instrument.calls_through(

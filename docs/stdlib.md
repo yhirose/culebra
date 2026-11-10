@@ -10184,6 +10184,7 @@ program (`kauai/README.md` in the repository).
 | `Kauai.load(path: String, voices = nil, drums = nil, dir = nil)` | a song file and the files it `use`s, from the disk or from `dir` (any `Dir`, or any object with `exists(name)` and `read(name)`) |
 | `Kauai.parse(text: String)` | a song's score as written, and what its band plays bar by bar, as plain data, read and checked as `new` reads it, with no sound built ([the score as data](kauai/language.md#the-score-as-data)) |
 | `Kauai.parse_file(path: String, dir = nil)` | the same, of a song file and the files it `use`s, read as `load` reads them |
+| `Kauai.instrument(entry, drum: Bool = false, name: String = "instrument")` | an entry of `voices:` (of `drums:`, with `drum: true`) as Kauai reads it: `{call, make, hears, knobs, weigh}`, for a program that wraps or relays instruments ([Knobs and weight](kauai/language.md#knobs-and-weight)) |
 
 A song's mistake raises `KauaiError`, its message naming the file and the
 line. The song answers `play()`, `stop()`, `volume(v)`, `playing()`,

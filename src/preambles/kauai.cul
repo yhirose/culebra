@@ -1788,7 +1788,7 @@ let _kauai_module = fn () {
     mut out = {}
     for name, d in declared {
       names.push(name)
-      out[name] = d.fallback
+      out[name] = d.default
     }
     for p in knobs {
       fail(line, "{who} takes {names.empty() ? "no knobs" : names.join(", ")}, not {p[0]}") if !names.contains(p[0])
@@ -1798,7 +1798,7 @@ let _kauai_module = fn () {
     out
   }
 
-  # `v` for knob `k`, held to the range `d` ({fallback, min, max}) declares.
+  # `v` for knob `k`, held to the range `d` ({default, min, max}) declares.
   fn in_range(d, k, v, line) {
     fail(line, "{k} is from {d.min} to {d.max}, not {v}") if v < d.min || v > d.max
     v
@@ -1837,9 +1837,10 @@ let _kauai_module = fn () {
 
   fn as_given(p, given, kind) {
     let f = entry_of(given, p.instrument.lower())
-    return {...p, external: p.instrument, params: params_of(p.knobs, p.line), declared: nil} if f == nil
-    let ins = instrument_of(kind, p.instrument.lower(), f)
-    {...p, external: p.instrument, params: knob_params(ins.knobs, p.knobs, p.line, "{p.instrument}"), declared: ins.knobs}
+    return {...p, external: p.instrument, params: params_of(p.knobs, p.line), declared: nil, ins: nil} if f == nil
+    let key = p.instrument.lower()
+    let ins = instrument_of(kind, key, f)
+    {...p, external: p.instrument, params: knob_params(ins.knobs, p.knobs, p.line, "{p.instrument}"), declared: ins.knobs, ins: {...ins, key: key}}
   }
 
   fn resolve_voice(v, given) {
@@ -2856,21 +2857,24 @@ let _kauai_module = fn () {
   # What an entry of `voices:` or `drums:` calls to make a sound: a voice's
   # `note` (a note at a time) or `phrase` (a phrase at a time, hearing what it
   # asks for); a drum's `hit`.
-  let VOICE_KIND = {kwarg: "voices", calls: ["note", "phrase"], may: VOICE_HEARS}
-  let DRUM_KIND = {kwarg: "drums", calls: ["hit"], may: DRUM_HEARS}
+  let VOICE_KIND = {kwarg: "voices", calls: ["note", "phrase"], short: "note", may: VOICE_HEARS}
+  let DRUM_KIND = {kwarg: "drums", calls: ["hit"], short: "hit", may: DRUM_HEARS}
 
   # An entry of `voices:` or `drums:` as Kauai reads it, `key` its name:
-  # {make, hears, knobs, weigh}. It is a function (a voice's, called with the
-  # pitch and the knobs; a drum's, with the knobs), which takes no knobs, or
-  # an object: the call that makes its sound (`note`, `phrase` or `hit`),
+  # {call, make, hears, knobs, weigh}, `call` the name of what makes its sound.
+  # It is a function, which stands for `note` (a voice's, called with the
+  # pitch and the knobs) or `hit` (a drum's, called with what the hit hears,
+  # nothing, and the knobs) and takes no knobs, or an object: the call that
+  # makes its sound (`note`, `phrase` or `hit`),
   # `hears` (a phrase's or a hit's: what of the notes it asks for), `knobs`
   # (its parameters, each {default, min, max}: a line's `name=value` is held to
   # them, and all are handed to it, the defaults too) and `weigh` (false to
   # play at its own level, not matched to a pulse's: the default is true).
-  # `hears` is nil for what makes its sound a note or a function at a time.
+  # `hears` is nil for what makes its sound a note at a time (a voice's function
+  # too); a drum's function hears nothing, `[]`.
   fn instrument_of(kind, key, f) {
     let bad = |why| __raise("ValueError", "Kauai: {kind.kwarg}: `{key}` {why}")
-    return {make: f, hears: nil, knobs: {}, weigh: true} if f is Function
+    return {call: kind.short, make: f, hears: kind.short == "hit" ? [] : nil, knobs: {}, weigh: true} if f is Function
     let calls = kind.calls.map(|c| "`{c}`").join(" or ")
     bad("is a function or an object with {calls}, a function") if type_of(f) != "Object"
     let made = kind.calls.filter(|c| f.get(c, nil) is Function)
@@ -2890,26 +2894,23 @@ let _kauai_module = fn () {
       bad("has a knob `{name}`: an Object of default, min and max") if type_of(d) != "Object" || !["default", "min", "max"].all(|n| d.get(n, nil) is Long || d.get(n, nil) is Float)
       let (lo, init, hi) = (to_float(d["min"]), to_float(d["default"]), to_float(d["max"]))
       bad("has a knob `{name}`: the default is from min to max") if init < lo || init > hi
-      knobs[name] = {fallback: init, min: lo, max: hi}
+      knobs[name] = {default: init, min: lo, max: hi}
     }
-    {make: f[made[0]], hears: made[0] == "note" ? nil : (hears ?? []), knobs: knobs, weigh: weigh}
+    {call: made[0], make: f[made[0]], hears: made[0] == "note" ? nil : (hears ?? []), knobs: knobs, weigh: weigh}
   }
 
-  # How external sound `name` is made, from `kind.table` (the `voices:` or
-  # `drums:` given), under `key` in the table: `instrument_of`'s, with the
-  # key. `player` is the voice or drum, with the line it is defined on.
+  # How external sound `name` is made: the instrument `resolve_band` read for
+  # `player` (the voice or drum, with the line it is defined on), `instrument_of`'s
+  # with its key under `voices:` or `drums:`. One the table does not have is
+  # the program's ValueError, which names the keys it has.
   fn instrument(kind, player, what) {
+    return player.ins if player.ins != nil
     let name = player.external
-    let key = name.lower()
-    let f = entry_of(kind.table ?? {}, key)
-    if f == nil {
-      mut names = []
-      for k, _ in kind.table ?? {} {
-        names.push(k)
-      }
-      __raise("ValueError", "Kauai: {player.line}: {what} plays {name}, which the mixer has not, and {kind.kwarg}: has no `{key}` (it has {names.empty() ? "none" : names.join(", ")})")
+    mut names = []
+    for k, _ in kind.table ?? {} {
+      names.push(k)
     }
-    {...instrument_of(kind, key, f), key: key}
+    __raise("ValueError", "Kauai: {player.line}: {what} plays {name}, which the mixer has not, and {kind.kwarg}: has no `{name.lower()}` (it has {names.empty() ? "none" : names.join(", ")})")
   }
 
   # The external sounds the song needs: `build`, key -> how to build one;
@@ -2958,7 +2959,6 @@ let _kauai_module = fn () {
       )
       let params = player.params
       cond {
-        ins.hears == nil && drum => sound(e.by, e.by, e.at, e.at, e.vol, ins, [params]),
         ins.hears == nil => sound(
           "{e.by} {e.pitch} {params_key({...params, ...e.params})}",
           e.by,
@@ -3032,10 +3032,6 @@ let _kauai_module = fn () {
       # One that says not to be weighed plays at its own level.
       if !ins.weigh {
         unweighed.push(by)
-        continue
-      }
-      if drum && ins.hears == nil {
-        weighed[by] = {sound: by, pitch: 69}
         continue
       }
       if drum {
@@ -3498,6 +3494,11 @@ let _kauai_module = fn () {
     parse_file: fn (path: String, dir = nil) {
       let (src, load_used) = song_file(path, dir)
       score(src, path, load_used)
+    },
+    # An entry of `voices:` (or `drums:`, with `drum: true`) as Kauai reads it:
+    # {call, make, hears, knobs, weigh}. `name` is what a ValueError calls it.
+    instrument: fn (entry, drum: Bool = false, name: String = "instrument") {
+      instrument_of(drum ? DRUM_KIND : VOICE_KIND, name, entry)
     },
   }
 }

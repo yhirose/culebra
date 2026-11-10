@@ -91,7 +91,7 @@ EOF
 cat > "$TMP/sounds.cul" <<'EOF'
 let sound = || Audio.Sound(String.from_bytes([]))
 let voices = {ep: {note: |pitch, params| sound(), knobs: {bright: {default: 0.5, min: 0.0, max: 2.0}}}}
-let drums = {kick: |params| sound()}
+let drums = {kick: |n, params| sound()}
 export {voices, drums}
 EOF
 cat > "$TMP/voices_only.cul" <<'EOF'
@@ -107,7 +107,7 @@ cat > "$TMP/instrument/main.cul" <<'EOF'
 let kind = Dir.embedded('.').read('kind.txt')
 let sound = || Audio.Sound(String.from_bytes([]))
 let voices = {ep: {note: |pitch, params| kind == "tines\n" ? sound() : nil, knobs: {bright: {default: 0.5, min: 0.0, max: 2.0}}}}
-let drums = {kick: |params| sound()}
+let drums = {kick: |n, params| sound()}
 export {voices, drums}
 EOF
 

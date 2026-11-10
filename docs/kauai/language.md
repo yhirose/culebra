@@ -1028,7 +1028,7 @@ check the song and raise the first error of [section 9](#9-errors) as a
 | `playing()` | whether it is playing: from `play()` until `stop()`, or until its end if it does not `loop`; a song waiting for a sound (below) is playing, its end that much later |
 | `reached(NAME)` | whether it has played as far as `mark NAME` |
 | `marks()` | where each `mark NAME` is, as an object of seconds from the start in the song's order: `{Drive: 32.0, Peak: 64.0}` |
-| `external_sounds(from:, to:)` | the external sounds `render(from:, to:)` builds, in the order they start: `{at, until, by, external, args}`, `at` the seconds from the start the sound plays from and `until` those its notes end at (a hit's when it strikes), `by` the voice or drum, `external` its instrument's key under `voices:` or `drums:`, and `args` what the instrument is handed for it, `[notes, params]`, `[pitch, params]`, `[n, params]` or `[params]` by how it is given (below); without `from:` and `to:`, every one the song plays. The sound Kauai weighs an instrument by is not one of them |
+| `external_sounds(from:, to:)` | the external sounds `render(from:, to:)` builds, in the order they start: `{at, until, by, external, args}`, `at` the seconds from the start the sound plays from and `until` those its notes end at (a hit's when it strikes), `by` the voice or drum, `external` its instrument's key under `voices:` or `drums:`, and `args` what the instrument is handed for it, `[notes, params]`, `[pitch, params]` or `[n, params]` by how it makes its sound (a phrase, a note or a hit; below); without `from:` and `to:`, every one the song plays. The sound Kauai weighs an instrument by is not one of them |
 | `seconds(at)` | how many seconds from the start a point in the song is: a mark's name, seconds, or a `String` of seconds (`"83.5"`) or of minutes and seconds (`"1:23.5"`), as `render(from:, to:)` takes it; a mark the song does not have, or a `String` of neither form (`"1:5"`), is a `ValueError` |
 | `prepare()` | builds one external sound, and answers how many remain: those the sounds are weighed by first, then each in the order it first plays. One whose building throws is still to build |
 | `render(from:, to:)` | the song once through as `play()` would sound it, until its last sound and its room's echoes end: an `Array` of mono samples, `44100` a second, from the same mixer, with no audio device; a song that loops is heard once. `FS.write("song.wav", Audio.Sound(song.render()).data())` saves it. With `from:` or `to:`, each a point as `seconds(at)` reads one, only that part of the song (below). Not in the browser, where the page plays a song (`ValueError`) |
@@ -1083,10 +1083,10 @@ each at the voice's `name=value` word, or at its default where the line says
 none, with what the score's directions set over them, as they stand at the
 note, so a pitch the score plays at two settings is built once for each.
 An external drum is built once: the function given for its sound under
-`drums:` (`drums: {kick: fn (params) { ... }}`) is called with the drum's
-parameters, and returns the `Audio.Sound` to play. A function alone declares
-no knob, so it takes none; `{note: fn (pitch, params) { ... }}` is the same
-voice as an object, and `{hit: fn (n, params) { ... }}` a drum. The keys of
+`drums:` (`drums: {kick: fn (n, params) { ... }}`) is called with what the hit
+hears (nothing, so `n` is empty) and the drum's parameters, and returns the
+`Audio.Sound` to play. A function alone stands for `{note: fn}` of a voice and
+`{hit: fn}` of a drum, and declares no knob, so it takes none. The keys of
 `voices:` and `drums:` are the instrument's name on the line, in lower case:
 `Ep` is `ep:`, `HiHat` is `hihat:`; a song whose external
 sound has no function is a
@@ -1216,6 +1216,14 @@ name. An instrument given as a function declares none, so it takes none.
 `weigh: false` (true when it is not said) plays the instrument at its own
 level, `vol / 100` of what its sounds hold, and asks it for no sound to
 weigh. The mixer's tones are not weighed.
+
+`Kauai.instrument(entry, drum: false, name: "instrument")` reads an entry as
+Kauai does and answers `{call, make, hears, knobs, weigh}`: `call` is `"note"`,
+`"phrase"` or `"hit"` (what a function stands for, by `drum:`), `make` the
+function that makes the sound, `hears` the names it hears (`nil` for a note)
+and `knobs` as declared. A program that wraps or relays instruments reads them
+with it and need not know the forms. An entry that is none raises the
+`ValueError` a song does, naming it `name`.
 
 The recipes of `kauai/recipes` declare the knobs their files give, and the
 saxophones those of `kauai/engine/borrow.cul`, so a song written for them is

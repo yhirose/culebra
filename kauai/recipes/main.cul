@@ -40,7 +40,7 @@ fn about(what, r) {
   let knobs = r
     .knobs
     .keys()
-    .map(|k| "{k} {r.knobs[k].fallback} ({r.knobs[k].min} to {r.knobs[k].max})")
+    .map(|k| "{k} {r.knobs[k].default} ({r.knobs[k].min} to {r.knobs[k].max})")
   knobs.empty() ? what : "{what}; {knobs.join(", ")}"
 }
 

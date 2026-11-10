@@ -869,7 +869,7 @@ inspect(match 9 {
 | `MIDI` | 10 | MIDIの鍵盤やウインドコントローラからの入力と、それへの出力 |
 | `LLM` | 15 | LLMのクライアント。提供元（Messages APIかChat Completions）への1ステップ、関数をツールとして使う会話、素通しのリクエスト |
 | `Llama` | 8 | このプロセス内で動くモデル。GGUFを読んで`generate`か`chat`（ビルドオプション） |
-| `Kauai` | 4 | Kauaiで書いた曲を読み、検査し、`Audio`のruntimeで演奏する |
+| `Kauai` | 5 | Kauaiで書いた曲を読み、検査し、`Audio`のruntimeで演奏する |
 
 <!-- END GENERATED -->
 

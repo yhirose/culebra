@@ -35,31 +35,16 @@ fn program(module, lib, name, arg) {
 
 # Instrument `f` of a module (a drum when `drum`) made to hand each sound
 # Kauai asks it for to `through(args, make)`: `args` is what Kauai handed it,
-# [params], [pitch, params], [n, params] or [notes, params] by how it is
-# given (a function, or an object with `note`, `hit` or `phrase`), and
-# `make(args)` the instrument's sound for those. An object keeps the rest of
-# what it declares (its knobs, `hears`, `weigh`).
+# [pitch, params], [notes, params] or [n, params] by what the instrument
+# makes its sound with (`Kauai.instrument`'s `call`: note, phrase or hit), and
+# `make(args)` the instrument's sound for those. What it declares (its knobs,
+# `hears`, `weigh`) stays; a function is made an object.
 fn calls_through(f, drum, through) {
-  let function = f is Function
-  cond {
-    function && drum => |params| through([params], |a| f(a[0])),
-    function => |pitch, params| through([pitch, params], |a| f(a[0], a[1])),
-    drum => {
-      ...f,
-      hit: |n, params| through([n, params], |a| f.hit(a[0], a[1])),
-    },
-    f.get("note", nil) is Function => {
-      ...f,
-      note: |pitch, params| through([pitch, params], |a| f.note(a[0], a[1])),
-    },
-    _ => {
-      ...f,
-      phrase: |notes, params| through(
-        [notes, params],
-        |a| f.phrase(a[0], a[1]),
-      ),
-    },
-  }
+  let ins = Kauai.instrument(f, drum: drum)
+  mut out = {knobs: ins.knobs, weigh: ins.weigh}
+  out[ins.call] = |what, params| through([what, params], |a| ins.make(a[0], a[1]))
+  out["hears"] = ins.hears if ins.hears != nil
+  out
 }
 
 # The `voices` and `drums` of module `sounds`, each instrument as
