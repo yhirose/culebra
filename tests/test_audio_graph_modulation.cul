@@ -1,0 +1,295 @@
+// Audio.Graph: a wave's phase, delays, limits, drives, and what connects to a value. Split from test_audio_graph.cul, whose --jit
+// compile had grown past the gate's budget as one flat script; see
+// test_audio_graph.cul for the rest. The harness keeps the device closed
+// (CULEBRA_AUDIO=off), so play() sounds nothing and now() follows the clock.
+
+// A part's samples against the same computation done another way: the same
+// but for the last bits of rounding (see test_audio.cul).
+fn assert_samples(got, want) {
+  assert_eq(got.size(), want.size())
+  for i in 0..got.size() {
+    assert_close(got[i], want[i], 1e-9)
+  }
+}
+
+// What `call` raised, as (kind, message).
+fn caught(call) {
+  try {
+    call()
+    nil
+  } catch e {
+    (e.kind, e.message)
+  }
+}
+
+// A value is its start until its first change; set jumps, ramp arrives in a
+// straight line from the change before (or from the start), and changes
+// made in any order are heard in the order of their times. A square at 0 Hz
+// is a steady 1.0, so the gain shows through.
+fn steady(rate) {
+  let g = Audio.Graph.new(rate: rate)
+  let amp = g.gain(g.wave("square", freq: 0.0), 0.0)
+  g.output(amp)
+  (g, amp)
+}
+
+// A wave's phase moves by the sum of the parts that modulate it, in radians:
+// two sines, the second's phase moved by the first's output times an index,
+// are the sines the formula says. The modulator has the carrier's freq and a
+// feedback of its own, as a DX7 operator has: its phase also moves by
+// `feedback` times the mean of its last two outputs.
+fn fm_reference(n, rate, f_mod, f_car, feedback, index) {
+  mut ph_mod = 0.0
+  mut ph_car = 0.0
+  mut y1 = 0.0
+  mut y2 = 0.0
+  iota(n).map(fn (_) {
+    let m = Math.sin(2.0 * Math.pi * ph_mod + feedback * 0.5 * (y1 + y2))
+    y2 = y1
+    y1 = m
+    let c = Math.sin(2.0 * Math.pi * ph_car + index * m)
+    ph_mod += f_mod / rate
+    ph_mod -= Math.floor(ph_mod)
+    ph_car += f_car / rate
+    ph_car -= Math.floor(ph_car)
+    c
+  })
+}
+let fm = Audio.Graph.new(rate: 8000)
+let modulator = fm.wave("sine", freq: 300.0, feedback: 1.5)
+let index = fm.gain(modulator, 2.0)
+let carrier = fm.wave("sine", freq: 700.0)
+assert_eq(index.connect(carrier.phase), carrier.phase)
+fm.output(carrier)
+assert_samples(
+  fm.render(0.05),
+  fm_reference(400, 8000.0, 300.0, 700.0, 1.5, 2.0),
+)
+// Without a modulator or feedback a wave is as it was: the carrier alone.
+let plain = Audio.Graph.new(rate: 8000)
+plain.output(plain.wave("sine", freq: 700.0))
+assert_samples(
+  plain.render(0.05),
+  fm_reference(400, 8000.0, 300.0, 700.0, 0.0, 0.0),
+)
+// Feedback is a value, moved on the graph's clock like the others: 0 until
+// sample 200 (0.025 s), then 1.5.
+fn fed_sine(n, rate, freq, from, feedback) {
+  mut ph = 0.0
+  mut y1 = 0.0
+  mut y2 = 0.0
+  iota(n).map(fn (i) {
+    let fb = i >= from ? feedback : 0.0
+    let y = Math.sin(2.0 * Math.pi * ph + fb * 0.5 * (y1 + y2))
+    y2 = y1
+    y1 = y
+    ph += freq / rate
+    ph -= Math.floor(ph)
+    y
+  })
+}
+let late_fb = Audio.Graph.new(rate: 8000)
+let fed = late_fb.wave("sine", freq: 300.0)
+fed.feedback.set(0.025, 1.5)
+late_fb.output(fed)
+assert_samples(late_fb.render(0.05), fed_sine(400, 8000.0, 300.0, 200, 1.5))
+// The same from sample 256 (0.032 s), the first of a block of 128: the block
+// before it runs without feedback and must still keep its last two outputs
+// for this one to feed back.
+let edge_fb = Audio.Graph.new(rate: 8000)
+let edged = edge_fb.wave("sine", freq: 300.0)
+edged.feedback.set(0.032, 1.5)
+edge_fb.output(edged)
+assert_samples(edge_fb.render(0.05), fed_sine(400, 8000.0, 300.0, 256, 1.5))
+
+// A wave starts from its `phase`, in radians: a sine a quarter turn on is
+// the cosine, and a turn more is the same.
+for start in [Math.pi / 2.0, Math.pi / 2.0 + 2.0 * Math.pi] {
+  let turned = Audio.Graph.new(rate: 8000)
+  turned.output(turned.wave("sine", freq: 1000.0, phase: start))
+  assert_samples(turned.render(0.002), iota(16).map(|i| Math.cos(2.0 * Math.pi * i / 8.0)))
+}
+
+// A delay answers what went in `time` seconds ago, read between two samples
+// in a straight line, silence before the start; the sum of the parts
+// connected to its time moves it. Against a 700 Hz sine, sample by sample.
+let tone = |i| i < 0 ? 0.0 : Math.sin(2.0 * Math.pi * 700.0 * i / 8000.0)
+fn delayed(n, samples_at) {
+  iota(n).map(fn (i) {
+    let r = i - samples_at(i)
+    let j = Math.floor(r)
+    let frac = r - j
+    tone(j) + (tone(j + 1) - tone(j)) * frac
+  })
+}
+for (time, wobble) in [(3.0 / 8000.0, 0.0), (2.5 / 8000.0, 0.0), (0.001, 0.0005)] {
+  let echo = Audio.Graph.new(rate: 8000)
+  let lfo = echo.gain(echo.wave("sine", freq: 50.0), wobble)
+  let d = echo.delay(echo.wave("sine", freq: 700.0), time)
+  lfo.connect(d.time)
+  echo.output(d)
+  let want = delayed(400, |i| (time + wobble * Math.sin(2.0 * Math.pi * 50.0 * i / 8000.0)) * 8000.0)
+  assert_samples(echo.render(0.05), want)
+}
+// The time is a value like the others: 0, the input itself, until sample 40,
+// then two samples.
+let moved = Audio.Graph.new(rate: 8000)
+let line = moved.delay(moved.wave("sine", freq: 700.0))
+line.time.set(0.005, 2.0 / 8000.0)
+moved.output(line)
+assert_samples(moved.render(0.01), iota(80).map(|i| tone(i < 40 ? i : i - 2)))
+// The time a connected part moves it to is held from 0 to 1 s: pushed below
+// 0 (a sine at 0 Hz a quarter turn on is a steady 1), it is 0.
+let held = Audio.Graph.new(rate: 8000)
+let push = held.gain(held.wave("sine", freq: 0.0, phase: Math.pi / 2.0), -0.5)
+let late = held.delay(held.wave("sine", freq: 700.0), 0.001)
+push.connect(late.time)
+held.output(late)
+assert_samples(held.render(0.01), iota(80).map(tone))
+
+// A limit keeps what comes in at or under its ceiling without delaying it:
+// the gain drops at the sample that would go over, by as much as it takes,
+// and comes back to 1 with 1/e of the way left after each `release`
+// seconds. A sine at 2 that falls to 0.3 at 0.01 s, sample by sample
+// against that.
+fn limited(xs, ceiling, release, rate) {
+  let back = 1.0 - Math.exp(-1.0 / (release * rate))
+  mut gain = 1.0
+  mut out = []
+  for x in xs {
+    gain += (1.0 - gain) * back
+    if Math.abs(x) * gain > ceiling {
+      gain = ceiling / Math.abs(x)
+      out.push(x < 0 ? -ceiling : ceiling)
+    } else {
+      out.push(x * gain)
+    }
+  }
+  out
+}
+fn loud(limit) {
+  let lg = Audio.Graph.new(rate: 8000)
+  let level = lg.gain(lg.wave("sine", freq: 300.0), 2.0)
+  level.gain.set(0.01, 0.3)
+  lg.output(limit == nil ? level : lg.limit(level, limit[0], limit[1]))
+  lg.render(0.05)
+}
+let unlimited = loud(nil)
+let kept_under = loud((0.9, 0.005))
+assert_samples(kept_under, limited(unlimited, 0.9, 0.005, 8000.0))
+assert_true(kept_under.all(|x| Math.abs(x) <= 0.9))
+// What stays under the ceiling passes as it is.
+assert_samples(loud((2.5, 0.005)), unlimited)
+
+// A drive is tanh of what comes in times its gain, each sample averaged over
+// the line from the sample before: the step of log cosh over the step of the
+// input, or tanh of the middle when the input stands still. A 300 Hz sine at
+// 0.8 driven at 4, then held at 1 (a steady input, the second branch).
+fn log_cosh(u) { Math.abs(u) + Math.log(1.0 + Math.exp(-2.0 * Math.abs(u))) - Math.log(2.0) }
+fn tanh(u) { (u < 0 ? -1.0 : 1.0) * (1.0 - Math.exp(-2.0 * Math.abs(u))) / (1.0 + Math.exp(-2.0 * Math.abs(u))) }
+fn driven(xs, gain) {
+  mut (u0, f0) = (0.0, 0.0)
+  mut out = []
+  for x in xs {
+    let u = x * gain
+    let f = log_cosh(u)
+    out.push(Math.abs(u - u0) > 1e-6 ? (f - f0) / (u - u0) : tanh(0.5 * (u + u0)))
+    (u0, f0) = (u, f)
+  }
+  out
+}
+let (dg, held_one) = steady(8000)
+held_one.gain.set(0.02, 1.0)
+let dry = dg.gain(dg.wave("sine", freq: 300.0), 0.8)
+dry.gain.set(0.02, 0.0)
+let into = dg.mix([dry, held_one])
+let drive = dg.drive(into, 4.0)
+dg.output(into)
+let clean = dg.render(0.04)
+dg.output(drive)
+let bent = dg.render(0.04)
+assert_samples(bent, driven(clean, 4.0))
+// Driven hard, a step's rounding can pass ±1; it is held there.
+let hard = Audio.Graph.new()
+hard.output(hard.drive(hard.wave("sine", freq: 5.0), 30.0))
+assert_true(hard.render(0.1).all(|x| Math.abs(x) <= 1.0))
+// At gain 0 it is silent; its gain is a value like the others.
+drive.gain.set(0.0, 0.0)
+assert_true(dg.render(0.01).all(|x| x == 0.0))
+
+// A part connected to a gain adds to its gain, sample by sample: a 700 Hz
+// sine at 0.25 moved by a 50 Hz sine at 0.5, a tremolo whose gain passes 0.
+let trem = Audio.Graph.new(rate: 8000)
+let lfo = trem.gain(trem.wave("sine", freq: 50.0), 0.5)
+let tremolo = trem.gain(trem.wave("sine", freq: 700.0), 0.25)
+lfo.connect(tremolo.gain)
+trem.output(tremolo)
+assert_samples(trem.render(0.05), iota(400).map(|i| tone(i) * (0.25 + 0.5 * Math.sin(2.0 * Math.pi * 50.0 * i / 8000.0))))
+
+// Every value takes what is connected to it on top of its schedule. A
+// wave's freq: a 5 Hz sine at 50 Hz added to 700 Hz, the phase running on at
+// the freq of each sample.
+fn vibrato(n, rate) {
+  mut ph = 0.0
+  iota(n).map(fn (i) {
+    let y = Math.sin(2.0 * Math.pi * ph)
+    ph += (700.0 + 50.0 * Math.sin(2.0 * Math.pi * 5.0 * i / rate)) / rate
+    ph -= Math.floor(ph)
+    y
+  })
+}
+let vib = Audio.Graph.new(rate: 8000)
+let wobble = vib.gain(vib.wave("sine", freq: 5.0), 50.0)
+let voice = vib.wave("sine", freq: 700.0)
+wobble.connect(voice.freq)
+vib.output(voice)
+assert_samples(vib.render(0.05), vibrato(400, 8000.0))
+// A steady `by` connected to a 700 Hz wave's freq. Pushed below 0 the freq
+// is held at 0, and past half the rate at half.
+fn pushed_wave(by) {
+  let (g, push) = steady(8000)
+  push.gain.set(0.0, by)
+  let w = g.wave("sine", freq: 700.0)
+  push.connect(w.freq)
+  g.output(w)
+  g.render(0.01)
+}
+assert_true(pushed_wave(-1000.0).all(|x| x == 0.0))
+assert_eq(pushed_wave(1.0e6), pushed_wave(3300.0))
+assert_true(pushed_wave(1.0e6) != pushed_wave(3299.0))
+// A cutoff: a steady 600 connected to a cutoff of 400 is a cutoff of 1000.
+fn swept(cutoff, by) {
+  let (g, push) = steady(8000)
+  push.gain.set(0.0, by)
+  let lp = g.filter("low", g.wave("saw", freq: 300.0), cutoff: cutoff)
+  push.connect(lp.cutoff)
+  g.output(lp)
+  g.render(0.02)
+}
+assert_samples(swept(400.0, 600.0), swept(1000.0, 0.0))
+// Held from 0, where a low-pass passes nothing, to half the rate, where it
+// stays sound.
+assert_true(swept(400.0, -1000.0).all(|x| x == 0.0))
+assert_eq(swept(400.0, 1.0e6), swept(400.0, 3600.0))
+assert_true(swept(400.0, 1.0e6).all(|x| Math.abs(x) < 10.0))
+// A wave's phase is a value: a quarter turn from sample 4 on turns the sine
+// into its cosine there.
+let turn = Audio.Graph.new(rate: 8000)
+let tw = turn.wave("sine", freq: 1000.0)
+tw.phase.set(0.0005, Math.pi / 2.0)
+turn.output(tw)
+assert_samples(
+  turn.render(0.002),
+  iota(16).map(|i| i < 4 ? Math.sin(2.0 * Math.pi * i / 8.0) : Math.cos(2.0 * Math.pi * i / 8.0)),
+)
+// A part connected to another adds to what that one takes in: a mix of one
+// with a second connected is the mix of both.
+let ins = Audio.Graph.new(rate: 8000)
+let first = ins.wave("sine", freq: 700.0)
+let second = ins.wave("saw", freq: 300.0)
+let both = ins.mix([first])
+assert_eq(second.connect(both), both)
+ins.output(both)
+let mixed = Audio.Graph.new(rate: 8000)
+mixed.output(mixed.mix([mixed.wave("sine", freq: 700.0), mixed.wave("saw", freq: 300.0)]))
+assert_samples(ins.render(0.01), mixed.render(0.01))

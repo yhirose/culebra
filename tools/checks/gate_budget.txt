@@ -138,7 +138,11 @@
 # input not there refused, naming those there are).
 # 338 since test_audio_kauai_parse.cul (Kauai.parse: a song's score as
 # written, as plain data, and the errors new() raises, 0.2 s).
-tests.cul 338
+# 340 since test_audio_graph.cul was cut at section boundaries into
+# test_audio_graph_modulation.cul and test_audio_graph_loops.cul: its --jit
+# compile was 25 s of CPU idle (65 and 80 s in CI, over the 60 s a file may
+# take), and is 4.8 s at most in three (12.7 s together), the same assertions.
+tests.cul 340
 
 # tests/isolate/*.cul — run on both engines, plus the over-cap modes.
 # 21 since test_xml_isolate.cul (an XML element keeps its methods across an
