@@ -320,18 +320,29 @@ jobs:
 
       # An object is keyed by the optimized module and the backend (vm.md §7),
       # not by this build, so a run that changed no lowering finds the last
-      # run's objects and compiles only what changed. The newest entry is
-      # restored (restore-keys), and this run's is saved under its sha. Only
-      # ci-gc compiles the corpus (340 files, 95 MB of objects, 20 MB saved):
-      # with the cache its vm/jit sweep took 198 s, from 476 s cold.
+      # run's objects and compiles only what changed. The backend is also the
+      # host CPU the JIT compiles for, and the runners are not all one model: an
+      # object made on another model is never read, and restoring it only
+      # doubled the directory (190 MB, 1360 files, on a rerun that hit nothing).
+      # So the cache is one per CPU: its key names the model and the flags the
+      # JIT reads, the newest entry of that CPU is restored (restore-keys), and
+      # this run's is saved under its sha. Only ci-gc compiles the corpus (340
+      # files, 95 MB of objects, 20 MB saved).
+      - name: Name the runner's CPU
+        if: matrix.lane == 'ci-gc'
+        id: cpu
+        run: |
+          grep -m1 '^model name' /proc/cpuinfo
+          echo "key=$( (grep -m1 '^model name' /proc/cpuinfo; grep -m1 '^flags' /proc/cpuinfo) | sha256sum | cut -c1-12 )" >> "$GITHUB_OUTPUT"
+
       - name: Restore JIT object cache
         if: matrix.lane == 'ci-gc'
         uses: actions/cache@v4
         with:
           path: ${{ github.workspace }}/.gate-jit
-          key: ${{ runner.os }}-gate-jit-${{ matrix.lane }}-${{ github.sha }}
+          key: ${{ runner.os }}-gate-jit-${{ matrix.lane }}-${{ steps.cpu.outputs.key }}-${{ github.sha }}
           restore-keys: |
-            ${{ runner.os }}-gate-jit-${{ matrix.lane }}-
+            ${{ runner.os }}-gate-jit-${{ matrix.lane }}-${{ steps.cpu.outputs.key }}-
 
       - name: Download the built culebra
         uses: ./.github/actions/download-culebra
