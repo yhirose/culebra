@@ -336,14 +336,18 @@ jobs:
 
       - name: JIT object cache before the run
         if: contains(fromJSON('["ci-light","ci-gc"]'), matrix.lane)
-        run: du -sh .gate-jit 2>/dev/null || echo "jit cache: cold"; ls .gate-jit 2>/dev/null | wc -l
+        run: |
+          du -sh .gate-jit 2>/dev/null || echo "jit cache is cold"
+          ls .gate-jit 2>/dev/null | wc -l
 
       - name: Test (${{ matrix.lane }})
         run: BIN=./build/culebra just _run-tests ${{ matrix.lane }}
 
       - name: JIT object cache after the run
         if: always() && contains(fromJSON('["ci-light","ci-gc"]'), matrix.lane)
-        run: du -sh .gate-jit 2>/dev/null; ls .gate-jit 2>/dev/null | wc -l
+        run: |
+          du -sh .gate-jit 2>/dev/null
+          ls .gate-jit 2>/dev/null | wc -l
 
   # Both halves of `just doctest`: the ```culebra examples in docs/ and the
   # ```cpp blocks a host author copies. Neither needs build-ubuntu's build
