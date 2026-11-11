@@ -186,10 +186,15 @@ compile, the IR pipeline being run every time to arrive at the key.
 CI runs start cold, so the ci-gc lane of `test-ubuntu`, the one that
 compiles the corpus, carries the directory between runs with `actions/cache`
 (a copy saved per run, the newest one restored, capped at 300 MB by
-`CULEBRA_JIT_CACHE_MAX_MB`; 95 MB of objects, 20 MB saved). Rerun on the same
-commit, its full vm/jit sweep took 198 s where the cold run took 476 s, and
-the lane 743 s where it took 1032 s; gc-stress, which runs more than it
-compiles, did not change.
+`CULEBRA_JIT_CACHE_MAX_MB`; 95 MB of objects, 20 MB saved). The backend is
+also the host CPU, and the runners are of at least two models (an Intel
+and an AMD model): an object made on one is never read on the
+other, and restoring them together doubled the directory. So there is one
+cache per CPU, its key naming the model and the flags the JIT reads. Measured
+on one commit, rerun: a cold run's full vm/jit sweep took 392 to 403 s, and
+one that found its CPU's cache 188 s, the lane 878 and 799 s cold against
+658 s; gc-stress, which runs more than it compiles, did not change. The
+directory stayed at 95 to 97 MB throughout.
 `CULEBRA_GATE_JIT_CACHE` names another directory, or `off` for one that
 lasts the run; a directory the check cannot write is said in one line and
 passed over the same way. Two things follow from keeping it. The
