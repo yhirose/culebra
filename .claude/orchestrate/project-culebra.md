@@ -74,7 +74,8 @@ SKILL.mdの原則と手順をculebraに当てはめるための事実。今のma
 - **着地の前に回す静的な検査**：`just check`は`check-generated`も`_check-quick-guide`も回さないが、着地のゲート（test-dev）は回す。着地の失敗の約3分の1はこれだった（記録の約30回中10回）。着地の前に`just check-generated`を回し、docs、テスト、標準ライブラリ、文法を変えたら`just check-quick-guide`も回す。
 - **変更のスコープ**（`tools/checks/change_scopes.txt`）で、着地とCIは回す範囲を自分で絞る。`just land`のままでよい。表を変えたら`just check-change-scopes`。
 - **後片付け**：リモートのci/ブランチの削除は自動判定に拒否されるので、まとめてuserに頼む。worktreeは`ExitWorktree`の`remove`で消す（`rm -rf`は使わない）。担当のworktreeは、担当が終わるまで消せない。
-- pushは着地のたびに行い、CIの読むファイルが変わっていればCIを見る。pushの前に`git log origin/master..master`で、自分の分以外がないかを見る。
+- **pushの単位は束で、着地ごとではない。** 同じ話題の連続した着地（決定の追加、フォローアップ、`ci/`で検証済みの設定）は、ローカルのmasterに着地するだけにして、束が仕上がってからpushを1回にする。pushのたびに全ジョブのCI（macOSが約40分）が走るので、着地ごとにpushすると同じ木のCIが並ぶ（2026-11-11：3回のpushでCIが3本並び、1回で済んだ）。ローカルの着地は`just test-dev`を通っているので、pushを遅らせても壊れたmasterにはならない。着地のたびにpushするのは、後続の作業がその着地に依存する、ほかのセッションやuserが使う、赤になったときの切り分けが難しくなる大きさ、のどれかのとき。userの「着地ごとにpushしてよい」は許可であって、毎回pushする義務ではない。
+- pushしたら、CIの読むファイルが変わっていればCIを見る。pushの前に`git log origin/master..master`で、自分の分以外がないかを見る。後のpushが同じ木を含み、古いmasterのrunの結果が要らないときは、`gh run cancel <id>`で止めてよい（完了済みのrunは止められない）。
 
 ## 6. 担当に渡す決まり（brief-templateの「Project rules」に貼る）
 
