@@ -1637,6 +1637,11 @@ _run-tests BACKEND:
     # the source no longer says (tools/checks/check_baked_ast.sh).
     run_baked_ast() { bash tools/checks/check_baked_ast.sh "$BIN"; }
 
+    # A preamble that does not compile (a name shadowing an outer one) stops
+    # the build at the end of its 4 to 5 minutes; `culebra lint` says so from
+    # the source at once (tools/checks/check_preamble_lint.sh).
+    run_preamble_lint() { bash tools/checks/check_preamble_lint.sh "$BIN"; }
+
     # The macOS driver loads nothing but what macOS ships: with a Homebrew
     # dylib among its load commands it starts only where Homebrew has that
     # dylib, and every machine that builds this does
@@ -1760,6 +1765,7 @@ _run-tests BACKEND:
       "run_optional_ns|optional ns (the tests/*.cul sweep names no optional namespace)|static|check,dev,test|buildtree|-|0"
       "run_clean_covers_ignored|clean covers ignored (each .gitignore pattern is cleaned or kept on purpose)|static|check,dev,test|buildtree|-|0"
       "run_jit_host_symbols|jit host symbols (driver defines what codegen names)|binary|dev,test|light|-|0"
+      "run_preamble_lint|preamble lint (a preamble compiles: no shadowed name, no static error)|binary|check,dev,test|light|-|0"
       "run_baked_ast|baked AST (every baked stdlib AST matches its parse)|binary|check,dev,test|light|-|1"
       "run_standalone_macho|standalone macho (the macOS driver loads only system libraries)|binary|dev,test|light|-|0"
       "run_eh_balance|eh balance (every begin_catch is closed)|binary|dev,test|light|-|2"
