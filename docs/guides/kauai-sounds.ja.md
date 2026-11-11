@@ -12,10 +12,10 @@ Kauaiの曲が鳴らす音についての案内です。内蔵の4つの声、�
 
 ```kauai
 band Run {
-  voice Lead    pulse     plays melody            duty=1/4  vol 15  env=1,2,4  gap=2
-  voice Second  pulse2                            duty=1/8  vol 9   env=1,2,6  gap=2
-  voice Bass    saw       plays roots in E2..D#3            vol 18  env=0,3,3  gap=3
-  voice Arp     triangle  plays roots in C3..B3            vol 7   env=1,4,6  gap=4
+  voice Lead    pulse(duty=1/4 env=1,2,4 gap=2) plays melody  vol 15
+  voice Second  pulse2(duty=1/8 env=1,2,6 gap=2)            vol 9
+  voice Bass    saw(env=0,3,3 gap=3) plays roots in E2..D#3            vol 18
+  voice Arp     triangle(env=1,4,6 gap=4) plays roots in C3..B3            vol 7
 }
 ```
 
@@ -26,7 +26,7 @@ band Run {
 | `triangle` | 三角波 |
 | `saw` | のこぎり波 |
 
-声には、次のつまみ（楽器名の後ろに`name=value`で書く）とオプションを付けられます。`vol`は必須です。
+声には、次のつまみ（楽器名の後ろの括弧の中に`name=value`で書く）とオプションを付けられます。`vol`は必須です。
 
 | つまみ・オプション | 意味 | 既定値 |
 |---|---|---|
@@ -46,10 +46,10 @@ band Run {
 ```culebra
 let song = Kauai.new(`
 band Run {
-  voice Lead    pulse     plays melody            duty=1/4  vol 15  env=1,2,4  gap=2
-  voice Second  pulse2                            duty=1/8  vol 9   env=1,2,6  gap=2
-  voice Bass    saw       plays roots in E2..D#3            vol 18  env=0,3,3  gap=3
-  voice Arp     triangle  plays roots in C3..B3            vol 7   env=1,4,6  gap=4
+  voice Lead    pulse(duty=1/4 env=1,2,4 gap=2) plays melody  vol 15
+  voice Second  pulse2(duty=1/8 env=1,2,6 gap=2)            vol 9
+  voice Bass    saw(env=0,3,3 gap=3) plays roots in E2..D#3            vol 18
+  voice Arp     triangle(env=1,4,6 gap=4) plays roots in C3..B3            vol 7
 }
 
 song Sound {
@@ -102,7 +102,7 @@ println(song.events()[0])          # => {at: 0.0, len: 0.6, by: 'Lead', pitch: 7
 ```culebra
 let song = Kauai.new(`
 band Lead {
-  voice Ep  Ep bright=0.5           plays melody  vol 40
+  voice Ep  Ep(bright=0.5)          plays melody  vol 40
 }
 
 song Test {
@@ -125,10 +125,10 @@ println(song.events()[0])          # => {at: 0.0, len: 0.5, by: 'Ep', pitch: 60,
 ```
 
 ここでの関数は仮のものです。4つのサンプルを返しているだけで、実際の楽器なら
-`pitch`の音を`params`に従って合成します。つまみは、バンドの行（`Ep bright=0.5`）から
+`pitch`の音を`params`に従って合成します。つまみは、バンドの行（`Ep(bright=0.5)`）から
 来て、書かなければ既定値になります。楽譜は、音符の途中で`\bright=1.3`のような指示を書くことで、
 それを変えられます。Kauaiは、曲を読み込んだ時点で、どちらも楽器の宣言に照らして検査します。
-`Ep bright=5`は、その行のエラーです。楽器が宣言していないつまみも同じです。関数だけを
+`Ep(bright=5)`は、その行のエラーです。楽器が宣言していないつまみも同じです。関数だけを
 渡した楽器は、つまみを宣言しないので、つまみを受け取りません。
 
 この声は、各音の音を最後まで鳴らします。音符の長さは、それを聞く楽器にだけ効きます。

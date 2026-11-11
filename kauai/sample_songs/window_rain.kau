@@ -4,9 +4,9 @@ about {
 }
 
 band Lounge {
-  voice Keys   VintageElectricPiano bright=0.8           plays melody                        vol 44
-  voice Comp   VintageElectricPiano bright=0.5           plays chords rootless from E3  poly  vol 22
-  voice Bass   VintageElectricPiano bright=0.6           plays roots in E2..D#3              vol 30
+  voice Keys   VintageElectricPiano(bright=0.8)          plays melody                        vol 44
+  voice Comp   VintageElectricPiano(bright=0.5)          plays chords rootless from E3  poly  vol 22
+  voice Bass   VintageElectricPiano(bright=0.6)          plays roots in E2..D#3              vol 30
 
   drum Kick      Kick               vol 10
   drum Ride      Ride               vol 9

@@ -70,9 +70,11 @@ fn externals(text) {
   mut out = {}
   for w in rows {
     continue if w.size() < 3 || !["voice", "drum"].contains(w[0]) || !CAPITALS.contains(w[2].slice(0, 1))
-    let key = w[2].lower()
+    let key = w[2].split("(")[0].lower()
     out[key] = true
-    let written = w.filter(|x| x.contains("=")).map(|x| any_range(x.split("=")[0]))
+    # `Ep(bright=0.8 sparkle=1)`: the knobs are the words with an `=`, the first
+    # of them after the `(`.
+    let written = w.filter(|x| x.contains("=")).map(|x| any_range(x.split("(")[-1].split("=")[0]))
     for k, v in [...written, ...directed].to_object() {
       knobs[k] = v
     }

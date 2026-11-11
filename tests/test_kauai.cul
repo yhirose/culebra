@@ -12,9 +12,9 @@ let notes = fn (song, by) {
 
 let DUO = lines([
   'band Duo {',
-  '  voice Tune  pulse     plays melody            vol 20  gap=2',
+  '  voice Tune  pulse(gap=2) plays melody            vol 20',
   '  voice Bass  triangle  plays roots in E2..D#3  vol 30',
-  '  drum Kick   noise freq=120  len=1  vol 20',
+  '  drum Kick   noise(freq=120 len=1)  vol 20',
   '}',
   'groove Walk {',
   '  Bass  1 - 5 -',
@@ -118,8 +118,8 @@ let BAND = lines([
   '  voice Echo  pulse2                            vol 10',
   '  voice Bass  triangle  plays roots in E2..D#3  plays part Fill  vol 30',
   '  Echo echoes Lead  late 1/8  level 50%',
-  '  drum Kick   noise freq=120  len=1  vol 20  plays hits',
-  '  drum Hat    noise freq=3000  len=1  vol 5',
+  '  drum Kick   noise(freq=120 len=1)  vol 20  plays hits',
+  '  drum Hat    noise(freq=3000 len=1)  vol 5',
   '}',
   'groove Beat {',
   '  Bass  1 - - -',
@@ -154,7 +154,7 @@ let comp = Kauai.new(lines([
   '  voice Sub   saw           plays roots in E1..D#2          vol 30',
   '  voice Keys  pulse2        plays chords from C4            vol 10',
   '  voice Gtr   Gtr           plays chords rootless from E3  poly  vol 40',
-  '  drum Kick   noise freq=120  len=1  vol 20  plays hits',
+  '  drum Kick   noise(freq=120 len=1)  vol 20  plays hits',
   '}',
   'groove Beat {',
   '  Bass  1 - - -',
@@ -245,7 +245,7 @@ assert_eq(band_error('  voice V pulse plays melody vol 10 vol 20'),
   ("KauaiError", "line 2: `vol` is said once a line"))
 assert_eq(band_error('  voice V pulse plays melody vol 150'),
   ("KauaiError", "line 2: a voice's vol is 0 to 100, as Audio.tone's: vol 20"))
-assert_eq(band_error('  drum K noise freq=120 len=1 vol 101'),
+assert_eq(band_error('  drum K noise(freq=120 len=1) vol 101'),
   ("KauaiError", "line 2: a drum's vol is 0 to 100, as Audio.tone's: vol 20"))
 assert_eq(band_error('  voice V pulse plays melody vol 100'), nil)
 # An echo's level is a whole percent: a bare 70 would have meant 70 times the
@@ -350,7 +350,7 @@ let WAV = Encoding.hex.decode("524946462800000057415645666d742010000000010001004
   "1f0000401f000001000800646174610400000080c8803c")
 let EXTERNAL = lines([
   'band Keys {',
-  '  voice Piano  Ep bright=0.8           plays melody  poly  vol 40',
+  '  voice Piano  Ep(bright=0.8)          plays melody  poly  vol 40',
   '  drum Ride    Ride                    vol 50',
   '}',
   'groove Time {',
@@ -776,8 +776,8 @@ let settings = |p| p.keys().sorted().map(|k| "{k}={p[k]}").join(" ")
 mut keyed = []
 let set = Kauai.new(lines([
   'band Duo {',
-  '  voice Lead  Ep bright=0.8              plays melody     vol 50',
-  '  voice Alto  Reed breath=0.2           plays part Alto  vol 50',
+  '  voice Lead  Ep(bright=0.8)             plays melody     vol 50',
+  '  voice Alto  Reed(breath=0.2)          plays part Alto  vol 50',
   '}',
   'song Set {', '  tempo 60', '  band Duo', '  melody in C4..B4', '  Set', '}',
   'section Set {',

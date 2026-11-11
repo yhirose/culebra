@@ -1054,6 +1054,42 @@ let _kauai_module = fn () {
     words[2]
   }
 
+  # A knob is written in the parentheses after its instrument, so a `name=value`
+  # word anywhere else on the line is one that has lost its parentheses.
+  fn no_stray_knobs(rest, name, line) {
+    for x in rest {
+      fail(line, "a knob is written in parentheses after its instrument, {name}({x}), and not on its own") if x.contains("=")
+    }
+  }
+
+  # The words of a voice or a drum line with the knobs taken out of the
+  # parentheses after the instrument: `Snare noise(freq=4000 len=3) vol 20`
+  # reads as `Snare noise freq=4000 len=3 vol 20`, as the rest of the parser
+  # reads them. The knobs are separated by spaces, `pulse` and `pulse()` take
+  # none, and the ( follows the name with no space.
+  fn open_knobs(words, line) {
+    return words if words.size() < 3
+    fail(line, "the ( of an instrument's knobs follows its name with no space: {words[2]}{words[3]}") if words.size() > 3 && words[3].starts_with("(")
+    let head = halves(words[2], "(")
+    if head == nil {
+      no_stray_knobs(words.slice(3, words.size()), words[2], line)
+      return words
+    }
+    let (name, first) = head
+    fail(line, "a voice or a drum names its instrument before the (: {words[2]}") if name.empty()
+    # The words from the instrument's on, the first without what the ( opened.
+    let tail = [first, ...words.slice(3, words.size())]
+    let close = iota(tail.size()).find(|i| tail[i].contains(")")) ?? fail(line, "the knobs of {name} end with a ): {name}(name=value ...)")
+    let (given, after) = halves(tail.slice(0, close + 1).join(" "), ")")
+    fail(line, "{name}({given}) is followed by a space, or nothing: {after}") if !after.empty()
+    let knobs = given.split_whitespace()
+    let odd = knobs.find(|x| !x.contains("="))
+    fail(line, "the parentheses after {name} hold knobs, name=value, and nothing else: {odd}") if odd != nil
+    let rest = tail.slice(close + 1, tail.size())
+    no_stray_knobs(rest, name, line)
+    [...words.slice(0, 2), name, ...knobs, ...rest]
+  }
+
   # How many octaves from where it is written a voice plays the melody, from
   # the words after `plays melody`: none, `octave up` or `down`, or `N
   # octaves up` or `down` for N of 2 or more.
@@ -1070,7 +1106,8 @@ let _kauai_module = fn () {
     n
   }
 
-  fn parse_voice(words, line) {
+  fn parse_voice(written, line) {
+    let words = open_knobs(written, line)
     let name = name_at(words, 1, line, "a voice")
     let knobs = knobs_of(words, line)
     # `plays part NAME` (any number of them): the voice plays that part where
@@ -1165,14 +1202,15 @@ let _kauai_module = fn () {
           fresh_name("voice", v.name, item.line)
           voices[v.name] = v
         },
-        # `drum NAME INSTRUMENT [name=value...] vol V [choke GROUP]`: the
+        # `drum NAME INSTRUMENT[(name=value ...)] vol V [choke GROUP]`: the
         # mixer's noise, or a sound the program supplies, played through to
         # its end; the drums of a choke group stop each other, as an
         # instrument that hears `next` does.
         w[0] == "drum" => {
-          let dn = name_at(w, 1, item.line, "a drum")
+          let dw = open_knobs(w, item.line)
+          let dn = name_at(dw, 1, item.line, "a drum")
           fresh_name("drum", dn, item.line)
-          let plain = w.filter(|x| !x.contains("="))
+          let plain = dw.filter(|x| !x.contains("="))
           let plays_on = instrument_at(plain, CHIP_DRUMS, "a drum", item.line)
           let o = options(plain, 3, ["vol", "choke"], [], "a drum", item.line)
           let choke = o.get("choke", nil)
@@ -1180,7 +1218,7 @@ let _kauai_module = fn () {
           drums[dn] = {
             on_hits: at_hits != nil,
             instrument: plays_on,
-            knobs: knobs_of(w, item.line),
+            knobs: knobs_of(dw, item.line),
             vol: vol_option(o, item.line, "a drum"),
             choke: choke == nil ? nil : choke[0],
             line: item.line,

@@ -14,10 +14,10 @@ ones, and then the options that shape it:
 
 ```kauai
 band Run {
-  voice Lead    pulse     plays melody            duty=1/4  vol 15  env=1,2,4  gap=2
-  voice Second  pulse2                            duty=1/8  vol 9   env=1,2,6  gap=2
-  voice Bass    saw       plays roots in E2..D#3            vol 18  env=0,3,3  gap=3
-  voice Arp     triangle  plays roots in C3..B3            vol 7   env=1,4,6  gap=4
+  voice Lead    pulse(duty=1/4 env=1,2,4 gap=2) plays melody  vol 15
+  voice Second  pulse2(duty=1/8 env=1,2,6 gap=2)            vol 9
+  voice Bass    saw(env=0,3,3 gap=3) plays roots in E2..D#3            vol 18
+  voice Arp     triangle(env=1,4,6 gap=4) plays roots in C3..B3            vol 7
 }
 ```
 
@@ -28,7 +28,7 @@ band Run {
 | `triangle` | a triangle wave |
 | `saw` | a sawtooth wave |
 
-A voice takes these knobs, written `name=value` after its instrument, and
+A voice takes these knobs, written `name=value` in parentheses after its instrument, and
 these options. `vol` is required.
 
 | Knob or option | Meaning | Default |
@@ -50,10 +50,10 @@ Play the band in a program, and check what it sounds like:
 ```culebra
 let song = Kauai.new(`
 band Run {
-  voice Lead    pulse     plays melody            duty=1/4  vol 15  env=1,2,4  gap=2
-  voice Second  pulse2                            duty=1/8  vol 9   env=1,2,6  gap=2
-  voice Bass    saw       plays roots in E2..D#3            vol 18  env=0,3,3  gap=3
-  voice Arp     triangle  plays roots in C3..B3            vol 7   env=1,4,6  gap=4
+  voice Lead    pulse(duty=1/4 env=1,2,4 gap=2) plays melody  vol 15
+  voice Second  pulse2(duty=1/8 env=1,2,6 gap=2)            vol 9
+  voice Bass    saw(env=0,3,3 gap=3) plays roots in E2..D#3            vol 18
+  voice Arp     triangle(env=1,4,6 gap=4) plays roots in C3..B3            vol 7
 }
 
 song Sound {
@@ -111,7 +111,7 @@ each with its default and range:
 ```culebra
 let song = Kauai.new(`
 band Lead {
-  voice Ep  Ep bright=0.5           plays melody  vol 40
+  voice Ep  Ep(bright=0.5)          plays melody  vol 40
 }
 
 song Test {
@@ -135,10 +135,10 @@ println(song.events()[0])          # => {at: 0.0, len: 0.5, by: 'Ep', pitch: 60,
 
 Here the function is a stand-in: it returns four samples, and a real
 instrument would synthesise the note at `pitch`, shaped by `params`. The
-knobs come from the band's line (`Ep bright=0.5`), at their defaults where it
+knobs come from the band's line (`Ep(bright=0.5)`), at their defaults where it
 writes none, and a score can change them from a note on, with a direction
 such as `\bright=1.3`. Kauai holds both to what the instrument declares when
-the song is read: `Ep bright=5` is an error on its line, as is a knob the
+the song is read: `Ep(bright=5)` is an error on its line, as is a knob the
 instrument does not declare. A function given alone declares no knob and takes
 none.
 

@@ -12,9 +12,9 @@ voicings {
 }
 
 band Salon {
-  voice Singer  pulse                   plays melody                           duty=1/2  vol 22  env=2,2,8
-  voice Bass    triangle                plays roots in E1..D#2                           vol 32  env=0,2,6
-  voice Piano   Ep bright=0.9           plays chords from E3  plays part Fill  poly      vol 29
+  voice Singer  pulse(duty=1/2 env=2,2,8) plays melody  vol 22
+  voice Bass    triangle(env=0,2,6)     plays roots in E1..D#2                           vol 32
+  voice Piano   Ep(bright=0.9)          plays chords from E3  plays part Fill  poly      vol 29
 }
 
 song JeTeVeux {

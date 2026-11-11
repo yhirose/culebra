@@ -5,7 +5,7 @@
 # drums/open_hat.json is `OpenHat`.
 #
 #   band Pads {
-#     voice Lead  FmBrass           plays melody  bright=0.3
+#     voice Lead  FmBrass(bright=0.3) plays melody
 #     drum Kick   Kick              vol 30
 #   }
 #

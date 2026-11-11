@@ -1068,7 +1068,7 @@ fn band_of(lines) {
     let source = chips.get(li, nil)
     source == nil
       ? "  voice {l.name}  Ep  {plays_what}  poly  vol 38"
-      : "  voice {l.name}  {source}  {plays_what}  vol {li == 0 ? 20 : 14}  gap=1"
+      : "  voice {l.name}  {source}(gap=1) {plays_what}  vol {li == 0 ? 20 : 14}"
   }
   ["band Score \{", ...iota(lines.size()).map(voice_line), "}"].join("\n")
 }

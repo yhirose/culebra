@@ -207,13 +207,13 @@ fails(
 # a value is held to the range.
 for knob in ["env=1,2,3", "duty=1/4", "warm=1"] {
   fails(
-    play("  T", "C c1").replace("poly  vol 40", "poly  {knob}  vol 40"),
+    play("  T", "C c1").replace("Ep           plays", "Ep({knob}) plays"),
     "line 4: Ep takes bright, not {knob.split("=")[0]}",
   )
 }
 for value in ["2.1", "5"] {
   fails(
-    play("  T", "C c1").replace("poly  vol 40", "poly  bright={value}  vol 40"),
+    play("  T", "C c1").replace("Ep           plays", "Ep(bright={value}) plays"),
     "line 4: bright is from 0.0 to 2.0, not {value.contains(".") ? value : value + ".0"}",
   )
 }
@@ -232,20 +232,53 @@ for knob in ["duty=1/3", "env=1,2", "env=1,2,x", "gap=x"] {
     knob == "env=1,2,x" => "line 2: env takes a number: x",
     _ => "line 2: gap takes a number: x",
   }
-  fails(play("  T", "C c1").replace("pulse        plays melody", "pulse {knob} plays melody"), expect)
+  fails(play("  T", "C c1").replace("pulse        plays melody", "pulse({knob}) plays melody"), expect)
 }
 # A knob is read by its name, whatever the name: `keys` is no method of the line.
 fails(
-  play("  T", "C c1").replace("pulse        plays melody", "pulse keys=1 plays melody"),
+  play("  T", "C c1").replace("pulse        plays melody", "pulse(keys=1) plays melody"),
   "line 2: a voice on pulse takes duty, env, gap, not keys",
 )
 fails(
-  play("  T", "C c1").replace("pulse        plays melody", "pulse gap=1 gap=2 plays melody"),
+  play("  T", "C c1").replace("pulse        plays melody", "pulse(gap=1 gap=2) plays melody"),
   "line 2: `gap` is said once a line",
 )
+# A knob is written in the parentheses after its instrument, and only there.
+let on_pulse = |written| play("  T", "C c1").replace("pulse        plays melody", written)
+fails(
+  on_pulse("pulse duty=1/4 plays melody"),
+  "line 2: a knob is written in parentheses after its instrument, pulse(duty=1/4), and not on its own",
+)
+fails(
+  on_pulse("pulse(duty=1/4) gap=2 plays melody"),
+  "line 2: a knob is written in parentheses after its instrument, pulse(gap=2), and not on its own",
+)
+fails(on_pulse("pulse(duty=1/4 plays melody"), "line 2: the knobs of pulse end with a ): pulse(name=value ...)")
+fails(
+  on_pulse("pulse (duty=1/4) plays melody"),
+  "line 2: the ( of an instrument's knobs follows its name with no space: pulse(duty=1/4)",
+)
+fails(on_pulse("pulse(duty=1/4)plays melody"), "line 2: pulse(duty=1/4) is followed by a space, or nothing: plays")
+# Only knobs stand in the parentheses: a word that is none would be read as one
+# of the line's own options (`vol`, `plays`), and an instrument has a name.
+fails(
+  on_pulse("pulse(vol 10) plays melody"),
+  "line 2: the parentheses after pulse hold knobs, name=value, and nothing else: vol",
+)
+fails(
+  on_pulse("pulse(duty=1/4 plays melody vol 10)"),
+  "line 2: the parentheses after pulse hold knobs, name=value, and nothing else: plays",
+)
+fails(on_pulse("() plays melody"), "line 2: a voice or a drum names its instrument before the (: ()")
+fails(on_pulse("(duty=1/4) plays melody"), "line 2: a voice or a drum names its instrument before the (: (duty=1/4)")
+# An instrument with no knob needs no parentheses, and may have empty ones; the
+# knobs may stand apart with spaces inside.
+for written in ["pulse plays melody", "pulse() plays melody", "pulse( ) plays melody", "pulse( duty=1/4  gap=2 ) plays melody"] {
+  assert_eq(Kauai.new(on_pulse(written), voices: {ep: {note: |pitch, params| nil, knobs: bright}}, drums: {kick: |n, params| nil}).events().size() > 0, true)
+}
 # The program's instrument of a mixer instrument's name is the one played.
 let takes_pulse = Kauai.new(
-  play("  T", "C c1").replace("pulse        plays melody", "pulse bright=0.5 plays melody"),
+  play("  T", "C c1").replace("pulse        plays melody", "pulse(bright=0.5) plays melody"),
   voices: {ep: {note: |pitch, params| nil, knobs: bright}, pulse: {note: |pitch, params| nil, knobs: bright}},
   drums: {kick: |n, params| nil},
 )
@@ -279,7 +312,7 @@ for bad in ["bright=", "Bright=1", "bright=x", "=1", "bright=1.", "bright=.5"] {
   # the number an instrument the program gives is handed.
   let on_line = ["bright=", "Bright=1", "=1"].contains(bad)
   fails(
-    play("  T", "C c1").replace("voice Ch  Ep", "voice Ch  Ep {bad}"),
+    play("  T", "C c1").replace("voice Ch  Ep", "voice Ch  Ep({bad})"),
     on_line ? "line 4: a knob is a word and its value, bright=0.8: {bad}" : "line 4: a parameter is a word and a number, bright=0.8: {bad}",
   )
   fails(play("  T", "C \\{bad} c1"), "line 18: a parameter is a word and a number, bright=0.8: {bad}")
@@ -338,7 +371,7 @@ fails(
   "line 5: a choke group is one name: choke Hats",
 )
 fails(
-  with_hits("C c1").replace("drum Kick Kick plays hits vol 80", "drum Kick noise freq=120 len=1 vol 20 choke Hats"),
+  with_hits("C c1").replace("drum Kick Kick plays hits vol 80", "drum Kick noise(freq=120 len=1) vol 20 choke Hats"),
   "line 5: a noise drum sounds one at a time already; choke groups external drums",
 )
 
@@ -350,16 +383,16 @@ fails(base.replace("pulse        plays melody", "pulse loud   plays melody"), "l
 fails(base.replace("Ep           plays chords", "Ep warm plays chords"), "line 4: a voice takes no `warm`")
 fails(base.replace("poly  vol 40", "poly x vol 40"), "line 4: a voice takes no `x`")
 fails(
-  base.replace("pulse        plays melody", "pulse bright=1 plays melody"),
+  base.replace("pulse        plays melody", "pulse(bright=1) plays melody"),
   "line 2: a voice on pulse takes duty, env, gap, not bright",
 )
 fails(with_hits("C c1").replace("Kick plays hits", "Kick big plays hits"), "line 5: a drum takes no `big`")
 fails(
-  with_hits("C c1").replace("drum Kick Kick plays hits vol 80", "drum Kick noise freq=120 tone=1 len=1 vol 20"),
+  with_hits("C c1").replace("drum Kick Kick plays hits vol 80", "drum Kick noise(freq=120 tone=1 len=1) vol 20"),
   "line 5: a noise drum takes freq, len, env, not tone",
 )
 fails(
-  with_hits("C c1").replace("drum Kick Kick plays hits vol 80", "drum Kick noise len=1 vol 20"),
+  with_hits("C c1").replace("drum Kick Kick plays hits vol 80", "drum Kick noise(len=1) vol 20"),
   "line 5: a noise drum needs its freq and its len: freq=120 len=1",
 )
 fails(base.replace("  voice Ch", "  M echoes M soon late 1/8 level 50%\n  voice Ch"), "line 4: an echo takes no `soon`")

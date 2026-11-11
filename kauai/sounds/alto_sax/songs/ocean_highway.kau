@@ -9,16 +9,16 @@ about {
 // without its E.
 band Highway {
   voice Alto   AltoSax           plays melody                              vol 60
-  voice Bass   saw            plays roots in F1..E2                     vol 28  env=0,3,2  gap=1
-  voice Keys   pulse          plays chords rootless from G3  duty=1/4   vol 10  env=0,4,6  gap=1
+  voice Bass   saw(env=0,3,2 gap=1) plays roots in F1..E2                     vol 28
+  voice Keys   pulse(duty=1/4 env=0,4,6 gap=1) plays chords rootless from G3   vol 10
 
-  drum Kick   noise freq=110->40  len=4   vol 34  env=0,3,2
-  drum Snare  noise freq=2000  len=3   vol 20  env=0,2,3
-  drum Ghost  noise freq=2200  len=1   vol 7
-  drum Hat    noise freq=8500  len=1   vol 6
-  drum Tom    noise freq=600->250  len=5   vol 18  env=0,2,4
-  drum Crash  noise freq=6000->3000 len=20  vol 9   env=0,4,20
-  drum Hit    noise freq=5000->2500 len=12  vol 12  env=0,3,12  plays hits
+  drum Kick   noise(freq=110->40 len=4 env=0,3,2) vol 34
+  drum Snare  noise(freq=2000 len=3 env=0,2,3) vol 20
+  drum Ghost  noise(freq=2200 len=1)   vol 7
+  drum Hat    noise(freq=8500 len=1)   vol 6
+  drum Tom    noise(freq=600->250 len=5 env=0,2,4) vol 18
+  drum Crash  noise(freq=6000->3000 len=20 env=0,4,20) vol 9
+  drum Hit    noise(freq=5000->2500 len=12 env=0,3,12) vol 12  plays hits
 }
 
 // One noise channel plays one drum at a time, so the kick, the snare, the

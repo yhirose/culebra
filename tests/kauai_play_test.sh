@@ -69,7 +69,7 @@ awk '{ print } /^  Verse$/ { print "  mark Again"; print "  Verse" }' "$TMP/duo.
 cat > "$TMP/external.kau" <<'EOF'
 band Duo {
   voice Tune  pulse     plays melody            vol 20
-  voice Keys  Ep bright=0.8           plays chords from C4  poly  vol 40
+  voice Keys  Ep(bright=0.8)          plays chords from C4  poly  vol 40
   drum Kick   Kick           vol 64
 }
 groove Walk {

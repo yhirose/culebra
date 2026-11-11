@@ -20,10 +20,10 @@ culebra kauai/tools/play.cul --sounds kauai/recipes kauai/sample_songs/late_terr
 ## Trying another sound
 
 Each line of a song's band names its instrument and sets the
-instrument's knobs with `name=value`:
+instrument's knobs with `name=value` in parentheses:
 
 ```
-voice Keys   VintageElectricPiano bright=0.8           plays melody  vol 44
+voice Keys   VintageElectricPiano(bright=0.8)          plays melody  vol 44
 ```
 
 Put another instrument in its place (`FmElectricPiano`,

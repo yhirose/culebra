@@ -7,7 +7,7 @@ band Fusion {
   voice Lead    AltoSax               plays melody octave down    vol 34
   voice Second  FmBrass                                           vol 17
   voice Bass    FmBass                plays roots in E1..D#2      vol 34
-  voice Guitar  DistortionGuitar choke=0 vibrato=0           plays chords from C3  vol 15
+  voice Guitar  DistortionGuitar(choke=0 vibrato=0)          plays chords from C3  vol 15
 
   Second harmonizes Lead  under m3
 

@@ -4,9 +4,9 @@ about {
 }
 
 band Terrace {
-  voice Keys   VintageElectricPiano bright=0.9           plays melody                        vol 37
-  voice Comp   VintageElectricPiano bright=0.6           plays chords rootless from E3  poly  vol 22
-  voice Bass   VintageElectricPiano bright=0.6           plays roots in E2..D#3              vol 25
+  voice Keys   VintageElectricPiano(bright=0.9)          plays melody                        vol 37
+  voice Comp   VintageElectricPiano(bright=0.6)          plays chords rootless from E3  poly  vol 22
+  voice Bass   VintageElectricPiano(bright=0.6)          plays roots in E2..D#3              vol 25
 
   drum Kick  Kick           vol 22
   drum Hat   Hat            vol 4

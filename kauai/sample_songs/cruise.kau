@@ -7,8 +7,8 @@ band Fusion {
   voice Lead    SopranoSax                plays melody octave down    vol 32
   voice Second  ClearAnalogLead                                       vol 20
   voice Bass    FmBass                    plays roots in E1..D#2      vol 36
-  voice Guitar  DistortionGuitar choke=0 vibrato=0 echo=0           plays chords rootless from G3  poly  vol 16
-  voice Mute    DistortionGuitar mute=1 choke=0 vibrato=0 echo=0           plays chords rootless from G3  plays part Tacet  poly  vol 8
+  voice Guitar  DistortionGuitar(choke=0 vibrato=0 echo=0)          plays chords rootless from G3  poly  vol 16
+  voice Mute    DistortionGuitar(mute=1 choke=0 vibrato=0 echo=0)          plays chords rootless from G3  plays part Tacet  poly  vol 8
 
   Second harmonizes Lead  under m3
 

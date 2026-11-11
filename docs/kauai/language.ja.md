@@ -187,22 +187,22 @@ about {
 
 ```kauai
 band Run {
-  voice Lead    pulse     plays melody            duty=1/4  vol 15  env=1,2,4  gap=2
-  voice Second  pulse2                            duty=1/8  vol 9   env=1,2,6  gap=2
-  voice Bass    saw       plays roots in E2..D#3            vol 18  env=0,3,3  gap=3
-  voice Arp     triangle  plays chords from C4              vol 7   env=1,4,6  gap=4
+  voice Lead    pulse(duty=1/4 env=1,2,4 gap=2) plays melody  vol 15
+  voice Second  pulse2(duty=1/8 env=1,2,6 gap=2)            vol 9
+  voice Bass    saw(env=0,3,3 gap=3) plays roots in E2..D#3            vol 18
+  voice Arp     triangle(env=1,4,6 gap=4) plays chords from C4              vol 7
 
   Second echoes Lead      late 3/16  level 70%
   Second harmonizes Lead  under m3
 
-  drum Kick   noise freq=120  len=1  vol 20  env=0,3,2
-  drum Tom    noise freq=900->500  len=3  vol 12  env=0,0,4
+  drum Kick   noise(freq=120 len=1 env=0,3,2) vol 20
+  drum Tom    noise(freq=900->500 len=3 env=0,0,4) vol 12
 }
 ```
 
 ### ボイス
 
-`voice NAME INSTRUMENT [name=value...] [plays ...] OPTIONS...`
+`voice NAME INSTRUMENT[(name=value ...)] [plays ...] OPTIONS...`
 
 楽器には、[`Audio.tone`](../stdlib.ja.md#tone)のチャンネル（`pulse`、
 `pulse2`、`triangle`、`saw`）のどれかか、外部の楽器（プログラム側で用意する楽器）を、
@@ -212,7 +212,9 @@ band Run {
 中で2つの楽器が同じチャンネルを使うことはできません。ドラムは`noise`チャンネルを
 使います。
 
-楽器は、自分が宣言するつまみを、名前の後ろに`name=value`の形で受け取ります。
+楽器は、自分が宣言するつまみを、名前の後ろの括弧の中に`name=value`の形で受け取ります。
+括弧は名前に空白を挟まずに続け、つまみは空白で区切ります（`pulse(duty=1/4 gap=2)`）。
+つまみのない楽器は括弧なしで書きます（`pulse`。`pulse()`でもよい）。
 ミキサーの楽器が宣言するのは`duty`、`env`、`gap`です（下の表）。プログラムが
 用意する楽器は、自分で宣言した語と数のつまみだけを受け取ります（[つまみと重み付け](#つまみと重み付け)）。`vol`、
 `plays`、`poly`は曲の側の語で、どの楽器でも同じ書き方です。
@@ -247,7 +249,7 @@ C4 Eb4 G4 Bb4になります。
 
 外部の楽器は、音ごとに用意された音声を最後まで鳴らします。
 音符の長さは、長さを聞く楽器（[10章](#10-culebra-から再生する)）にだけ効きます。
-つまみは、楽器が宣言した語と数です（`Ep bright=0.8`）。名前は英小文字で始まる語、
+つまみは、楽器が宣言した語と数です（`Ep(bright=0.8)`）。名前は英小文字で始まる語、
 値は数です。このつまみは、音ごとにKauaiからプログラムへ渡されます。楽譜の中で、
 ある音から先の値を変えることもできます（[指示](#指示)）。どの楽器の声にも、
 その楽器が宣言したつまみだけを書けます。`pulse`に`bright=0.8`を書くとエラーです。
@@ -275,13 +277,13 @@ harmonyが使うコードの構成音は、bandで最初に書いた`plays chord
 
 ### ドラム
 
-`drum NAME INSTRUMENT [name=value...] vol V [choke GROUP] [plays hits]`
+`drum NAME INSTRUMENT[(name=value ...)] vol V [choke GROUP] [plays hits]`
 
 ドラムの楽器は、`noise`か、外部の楽器（大文字で始まる名前）です。
 noiseのドラムは、ノイズチャンネルで鳴らす打音で、つまみ`freq=FREQ[->END]`
 （高さ（Hz）。`END`を書くとそこまで音程を滑らせる）、`len=N`（鳴らすtick数）、
 `env=A,D,R`を宣言します。たとえば
-`drum Tom noise freq=900->500 len=3 env=0,0,4 vol 12`です。`freq`と`len`は
+`drum Tom noise(freq=900->500 len=3 env=0,0,4) vol 12`です。`freq`と`len`は
 必須です。チャンネルは一度に1つのドラムしか鳴らせないので、noiseのドラム2つを
 同時に鳴らすことはできません。
 
@@ -292,7 +294,7 @@ noiseのドラムとも同時に鳴らせます。
 
 ```kauai
 band Combo {
-  voice Keys  Ep bright=0.8           plays chords rootless from E3  poly  vol 40
+  voice Keys  Ep(bright=0.8)          plays chords rootless from E3  poly  vol 40
   voice Bass  triangle                plays roots in E2..D#3            vol 30
 
   drum Kick     Kick              vol 64
@@ -617,7 +619,7 @@ section Tag {
 `\cresc a b c \! \f d`と書くと、`mp`までしか上がらず、`d`で`f`に跳びます。
 
 パラメータの指示は、書いた行の音を外部の楽器がどう弾くかを変えます。楽器の
-`name=value`がすべての音に効くのと同じ働きを、途中から変える形です。
+括弧の中のつまみがすべての音に効くのと同じ働きを、途中から変える形です。
 `\bright=1.3`と書くと、次の音から先は、bandの行の値の代わりに`bright`が1.3に
 なります。同じ行でもう一度`\bright=`と書くまで続きます。小節をまたいでも、次に
 演奏されるsectionに入っても続くので、ひとまとまりのフレーズを同じ値で弾けます。
@@ -952,7 +954,7 @@ section Bridge {
 - 楽器や指示に書いたパラメータが、語と数になっていない（`bright=0.8`のように書く）
 - 音価でないもので数えたテンポ（`tempo 3=60`）
 - 定義されていないgroove、楽器、ドラム、section、band、ending、派生パート。2回定義された名前（同じ名前の楽器とドラムも）。endingのないsectionに付けた`ending N`
-- その行が受け付けない語や、決まった形より後ろに続く語（`voice Lead pulse loud vol 20`、`tempo 120 140`、`section A extra {`）。ミキサーの楽器やnoiseのドラムが宣言していないつまみ（`voice Lead pulse bright=0.8 ...`）
+- その行が受け付けない語や、決まった形より後ろに続く語（`voice Lead pulse loud vol 20`、`tempo 120 140`、`section A extra {`）。ミキサーの楽器やnoiseのドラムが宣言していないつまみ（`voice Lead pulse(bright=0.8) ...`）。楽器の後ろの括弧の外に書いたつまみ（`voice Lead pulse duty=1/4`）、空白を挟んだ`(`、閉じていない`(`、`)`の後ろに空白以外が続く形（`pulse(duty=1/4)plays`）
 - songで2回書いた設定（2つの行の`tempo`）。songで2回書いたmarkやパートの音の範囲。2回書いたgrooveの行、`first`や`last`のブロック、ending、弱起、楽器のechoやharmony、同じ小節やパートの`2nd:`の行
 - トークンのない小節や、トークンの長さが音価にならない小節（4/4で15個）を含むgrooveの行。bandにない名前の行や、rootsもchordsも弾かない楽器の行。位置、`x`、`-`、`.`以外のトークンを含む和音の行
 - 同時に鳴るnoiseのドラム2つ。同じチャンネルを使う1つのbandの楽器2つ
@@ -1075,7 +1077,7 @@ song.seconds("1:04")                           # => 64.0
 ついて、`voices:`に渡した関数のうち、その楽器の行に書いた楽器名に
 対応するものを呼び出します。引数は、音の高さ（MIDIのノート番号。`60`が中央のド）と、その楽器の
 パラメータをまとめたオブジェクトです。パラメータは、楽器が宣言したつまみ
-（[つまみと重み付け](#つまみと重み付け)）を、行に書いた`name=value`の値で（書かなければ既定値で）持ち、
+（[つまみと重み付け](#つまみと重み付け)）を、行に書いたつまみの値で（書かなければ既定値で）持ち、
 楽譜の指示で変えた値を重ねたもので、その音の時点の値です。そのため、楽譜が2通りの値で
 弾く高さは、値ごとに1回ずつ作ります。関数が返した`Audio.Sound`を
 その高さの音として鳴らします。外部のドラムの音声は1回だけ作ります。`drums:`に
@@ -1189,7 +1191,7 @@ let violin = {
 }
 ```
 
-bandの行は、つまみを`name=value`で書きます（`voice Lead Violin bow=0.7`）。楽譜の指示は、
+bandの行は、つまみを楽器の後ろの括弧の中に`name=value`で書きます（`voice Lead Violin(bow=0.7)`）。楽譜の指示は、
 ある音から先の値を変えます（`\bow=0.3`）。Kauaiは、曲を読み込んだ時点で、どちらも
 楽器の宣言に照らして検査し、何行目かを示します。楽器が宣言していないつまみ
 （`Violin takes bow, not bwo`）や、`min`から`max`の外の値は`KauaiError`です。
@@ -1490,21 +1492,21 @@ Text       <- (!EOL .)+                     # to the end of the line, no quotes
 
 ```kauai
 band Run {
-  voice Lead    pulse     plays melody            duty=1/4  vol 15  env=1,2,4  gap=2
-  voice Second  pulse2                            duty=1/8  vol 9   env=1,2,6  gap=2
-  voice Bass    saw       plays roots in E2..D#3            vol 18  env=0,3,3  gap=3
-  voice Arp     triangle  plays chords from C4              vol 7   env=1,4,6  gap=4
+  voice Lead    pulse(duty=1/4 env=1,2,4 gap=2) plays melody  vol 15
+  voice Second  pulse2(duty=1/8 env=1,2,6 gap=2)            vol 9
+  voice Bass    saw(env=0,3,3 gap=3) plays roots in E2..D#3            vol 18
+  voice Arp     triangle(env=1,4,6 gap=4) plays chords from C4              vol 7
 
   Second echoes Lead      late 3/16  level 70%
   Second harmonizes Lead  under m3
 
-  drum Kick   noise freq=120  len=1  vol 20  env=0,3,2
-  drum Snare  noise freq=800  len=3  vol 13  env=0,2,2
-  drum Hat    noise freq=3000  len=1  vol 5   env=0,0,1
-  drum Open   noise freq=3000  len=3  vol 6   env=0,0,3
-  drum Crash  noise freq=5000  len=4  vol 11  env=0,0,30
-  drum Tom    noise freq=900->500  len=3  vol 12  env=0,0,4
-  drum Floor  noise freq=500->250  len=3  vol 13  env=0,0,5
+  drum Kick   noise(freq=120 len=1 env=0,3,2) vol 20
+  drum Snare  noise(freq=800 len=3 env=0,2,2) vol 13
+  drum Hat    noise(freq=3000 len=1 env=0,0,1) vol 5
+  drum Open   noise(freq=3000 len=3 env=0,0,3) vol 6
+  drum Crash  noise(freq=5000 len=4 env=0,0,30) vol 11
+  drum Tom    noise(freq=900->500 len=3 env=0,0,4) vol 12
+  drum Floor  noise(freq=500->250 len=3 env=0,0,5) vol 13
 }
 ```
 
@@ -1769,12 +1771,12 @@ about {
 }
 
 band Trio {
-  voice Piano  Ep bright=0.8           plays chords rootless from E3  poly  vol 11
-  voice Sing   Ep bright=1.3           plays melody                    poly  vol 14
-  voice Bass   triangle                plays roots in E2..D#3          vol 34  env=3,0,14  gap=3
+  voice Piano  Ep(bright=0.8)          plays chords rootless from E3  poly  vol 11
+  voice Sing   Ep(bright=1.3)          plays melody                    poly  vol 14
+  voice Bass   triangle(env=3,0,14 gap=3) plays roots in E2..D#3          vol 34
 
-  drum Brush  noise freq=4000  len=2  vol 4  env=0,0,5
-  drum Ride   noise freq=6000  len=1  vol 3  env=0,0,10
+  drum Brush  noise(freq=4000 len=2 env=0,0,5) vol 4
+  drum Ride   noise(freq=6000 len=1 env=0,0,10) vol 3
 }
 
 song Theme {
@@ -1870,9 +1872,9 @@ voicings {
 }
 
 band Salon {
-  voice Singer  pulse                   plays melody                           duty=1/2  vol 22  env=2,2,8
-  voice Bass    triangle                plays roots in E1..D#2                           vol 32  env=0,2,6
-  voice Piano   Ep bright=0.9           plays chords from E3  plays part Fill  poly      vol 29
+  voice Singer  pulse(duty=1/2 env=2,2,8) plays melody  vol 22
+  voice Bass    triangle(env=0,2,6)     plays roots in E1..D#2                           vol 32
+  voice Piano   Ep(bright=0.9)          plays chords from E3  plays part Fill  poly      vol 29
 }
 
 song JeTeVeux {

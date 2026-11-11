@@ -26,7 +26,7 @@ let SONGS = [
 fn silent(arrangement, text) {
   let named = |words, mark| words
     .filter(|x| x.starts_with(mark) && x.contains("="))
-    .map(|x| x.slice(mark.size(), x.size()).to_string().split("=")[0])
+    .map(|x| x.slice(mark.size(), x.size()).to_string().split("(")[-1].split("=")[0])
   let knobs = [
     ...named(arrangement.split_whitespace(), ""),
     ...named(text.split_whitespace(), "\\"),
@@ -36,7 +36,8 @@ fn silent(arrangement, text) {
   for line in arrangement.split("\n") {
     let w = line.split_whitespace()
     continue if w.size() < 3 || !["voice", "drum"].contains(w[0]) || !"ABCDEFGHIJKLMNOPQRSTUVWXYZ".contains(w[2].slice(0, 1).to_string())
-    let key = w[2].lower()
+    # `Ep(bright=0.8)`: the instrument is what comes before the `(`.
+    let key = w[2].split("(")[0].lower()
     if w[0] == "drum" {
       drums[key] = {hit: |n, params| nil, knobs: knobs}
     } else {

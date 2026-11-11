@@ -54,11 +54,11 @@ No name holds a product's, a maker's, a player's or a song's name.
 | `light_distortion_guitar` | `LightDistortionGuitar` | `distortion_guitar`, picked softly and driven lightly | `bright` 0 (0 to 1), `drive` 0.3 (0 to 2) |
 
 A preset is its recipe with the knob's default set, so its knob still turns:
-`MellowFmBrass bright=0.2` is `fm_brass` at 0.2.
+`MellowFmBrass(bright=0.2)` is `fm_brass` at 0.2.
 
 ```
 band Pads {
-  voice Lead  FmBrass             plays melody          vol 60  bright=0.3
+  voice Lead  FmBrass(bright=0.3) plays melody          vol 60
   voice Pad   FmStrings           plays chords from C3  vol 40
 }
 ```

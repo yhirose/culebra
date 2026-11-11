@@ -6,15 +6,15 @@ about {
 // Bb major, whose seven pitches the recorded alto has many long notes of.
 band Evening {
   voice Alto   AltoSax           plays melody                                vol 60
-  voice Bass   triangle       plays roots in A1..G#2                      vol 32  env=1,4,8
-  voice Arp    pulse          plays chords rootless from Bb3  duty=1/8    vol 9   env=1,6,10  gap=2
-  voice Pad    pulse2         plays chords rootless from G3   duty=1/8    vol 5   env=12,8,20
-  voice Str    saw            plays chords rootless from D4               vol 4   env=20,10,30
+  voice Bass   triangle(env=1,4,8) plays roots in A1..G#2                      vol 32
+  voice Arp    pulse(duty=1/8 env=1,6,10 gap=2) plays chords rootless from Bb3    vol 9
+  voice Pad    pulse2(duty=1/8 env=12,8,20) plays chords rootless from G3    vol 5
+  voice Str    saw(env=20,10,30) plays chords rootless from D4               vol 4
 
-  drum Kick   noise freq=90->40  len=4   vol 26  env=0,3,3
-  drum Rim    noise freq=3200  len=1   vol 10
-  drum Hat    noise freq=9000  len=1   vol 4
-  drum Swell  noise freq=4000->2000 len=30  vol 6   env=10,6,24
+  drum Kick   noise(freq=90->40 len=4 env=0,3,3) vol 26
+  drum Rim    noise(freq=3200 len=1)   vol 10
+  drum Hat    noise(freq=9000 len=1)   vol 4
+  drum Swell  noise(freq=4000->2000 len=30 env=10,6,24) vol 6
 }
 
 groove Dawn {

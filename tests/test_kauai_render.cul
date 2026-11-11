@@ -6,9 +6,9 @@
 let lines = |xs| xs.join("\n")
 let DUO = lines([
   'band Duo {',
-  '  voice Tune  pulse     plays melody            vol 20  gap=2',
+  '  voice Tune  pulse(gap=2) plays melody            vol 20',
   '  voice Bass  triangle  plays roots in E2..D#3  vol 30',
-  '  drum Kick   noise freq=120  len=1  vol 20',
+  '  drum Kick   noise(freq=120 len=1)  vol 20',
   '}',
   'groove Walk {',
   '  Bass  1 - 5 -',
@@ -146,7 +146,7 @@ assert_throws("ValueError", fn () { listing.external_sounds(from: 2, to: 1) })
 # the program gives is handed it, whether it plays a note or a phrase.
 let named = |voices| Kauai.new(lines([
   'band Named {',
-  '  voice Tune  Ep keys=1 has=2  plays melody  vol 20',
+  '  voice Tune  Ep(keys=1 has=2) plays melody  vol 20',
   '}',
   'song Named {', '  tempo 120', '  band Named', '  melody in C5..B5', '  Part', '}',
   'section Part {',

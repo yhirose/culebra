@@ -4,7 +4,7 @@ about {
 }
 
 band Trio {
-  voice Lead    Guitar pluck=0.3           plays melody                    vol 12
+  voice Lead    Guitar(pluck=0.3)          plays melody                    vol 12
   voice Chords  Guitar                     plays chords rootless from E3  poly  vol 8
   voice Thumb   Guitar                     plays roots in E2..D#3          vol 17
 }
