@@ -1,7 +1,7 @@
 # Writing a sound in Kauai
 
 A guide to the sounds a Kauai song plays: the four built-in voices, how to
-shape them, and how a program or a folder supplies an instrument of its own.
+shape them, and how a program or a folder supplies an external instrument.
 It starts from the built-in sounds, which need nothing else, and ends with
 where an instrument made from recordings comes from. The complete reference is
 [the language specification](../kauai/language.md), and the songs themselves
@@ -37,7 +37,7 @@ these options. `vol` is required.
 | `vol N` | the level at `mf`, from `0` to `100` | (required) |
 | `env=A,D,R` | attack, decay and release, in ticks of 1/60 second | `0,0,0` |
 | `gap=N` | ticks cut from the end of every note, so notes sound apart | `0` |
-| `poly` | for a voice that sounds several notes at once, a tone voice or one on an instrument the program supplies | one note at a time |
+| `poly` | for a voice that sounds several notes at once, a tone voice or one on an external instrument | one note at a time |
 
 A channel plays one note at a time, and two voices of a band cannot share a
 channel. A voice that says `plays melody` plays the melody, `plays roots`
@@ -99,10 +99,10 @@ A direction changes the band's dynamic, or one part's, from its note on. The
 dynamic in a bar line is the whole band's; the same mark inside a part's line
 sets that part alone.
 
-## Instruments the program supplies
+## External instruments
 
 A `voice` can take its sound from a program instead: an instrument named with
-a capital letter (`Ep`) is one the program supplies. The program gives the
+a capital letter (`Ep`) is an external one, which the program supplies. The program gives the
 song an instrument for each name, under `voices`: an object whose `note` is a
 function that takes a pitch and the instrument's knobs, and answers the sound
 of that note, and whose `knobs` declare the knobs a band's line may write,
@@ -147,9 +147,9 @@ applies only to an instrument that hears it, and `vol` still sets the level.
 An instrument that says `weigh: false` plays at its own level; the
 [specification](../kauai/language.md#knobs-and-weight) has the rest.
 
-### Playing a song with a supplied instrument from the command line
+### Playing a song with an external instrument from the command line
 
-The `kauai` command plays a voice on a supplied instrument only with the instruments it
+The `kauai` command plays a voice on an external instrument only with the instruments it
 bundles. The tool `kauai/tools/play.cul` in the repository takes a module that
 exports `voices` in their place, and plays the song with them:
 

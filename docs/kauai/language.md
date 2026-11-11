@@ -208,15 +208,15 @@ band Run {
 `voice NAME INSTRUMENT [name=value...] [plays ...] OPTIONS...`
 
 The instrument is one of [`Audio.tone`](../stdlib.md#tones)'s channels, `pulse`,
-`pulse2`, `triangle` or `saw`, or an instrument the program supplies, named
-with a capital letter (`Ep`; [section 10](#10-playing-from-culebra)). An
-instrument the program supplies under a mixer instrument's name (`pulse:` in
+`pulse2`, `triangle` or `saw`, or an external instrument, one the program
+supplies, named with a capital letter (`Ep`; [section 10](#10-playing-from-culebra)). An
+external instrument given under a mixer instrument's name (`pulse:` in
 `voices:`) is the one the line means. A channel plays one note at a time, and
 two voices of a band may not share one; the drums take the `noise` channel.
 
 An instrument takes the knobs it declares, as `name=value` words after its
-name. The mixer's voices declare `duty`, `env` and `gap` (below); an instrument
-the program supplies takes any it names, a word and a number. `vol`, `plays`
+name. The mixer's voices declare `duty`, `env` and `gap` (below); an external
+instrument takes any it names, a word and a number. `vol`, `plays`
 and `poly` are the song's own words, and are written the same for every
 instrument.
 
@@ -244,10 +244,10 @@ both comp: each reads its own row of the groove, voiced its own way.
 | `duty=1/8` `1/4` `1/2` `3/4` | the pulse wave's duty cycle (a mixer voice's knob) | `1/2` |
 | `env=A,D,R` | attack, decay and release, in ticks of 1/60 second (a mixer voice's knob) | `0,0,0` |
 | `gap=N` | ticks cut from the end of every note, so that notes are heard apart (a mixer voice's knob) | `0` |
-| `vol N` | the level at `mf`: `0` to `100` as in `Audio.tone`, an instrument the program supplies too ([section 10](#10-playing-from-culebra) says how it is weighed) | (required) |
-| `poly` | the voice sounds several notes at once: a chord in the melody, a chord row's `x`. Any voice may carry it, a tone voice as well as a supplied one | one note at a time |
+| `vol N` | the level at `mf`: `0` to `100` as in `Audio.tone`, an external instrument too ([section 10](#10-playing-from-culebra) says how it is weighed) | (required) |
+| `poly` | the voice sounds several notes at once: a chord in the melody, a chord row's `x`. Any voice may carry it, a tone voice as well as an external one | one note at a time |
 
-An instrument the program supplies plays each note's sound through to its end,
+An external instrument plays each note's sound through to its end,
 and the note's length applies only to one that hears it
 ([section 10](#10-playing-from-culebra)). Its knobs are words and numbers
 (`Ep bright=0.8`); Kauai hands them to the program with every note, and a
@@ -282,7 +282,7 @@ octave down too.
 
 `drum NAME INSTRUMENT [name=value...] vol V [choke GROUP] [plays hits]`
 
-A drum plays on `noise`, or on an instrument the program supplies, named with
+A drum plays on `noise`, or on an external instrument, named with
 a capital letter. A noise drum is a hit on the noise channel, and declares the
 knobs `freq=FREQ[->END]` (in Hz, sliding to `END` if given), `len=N` (held for
 that many ticks) and `env=A,D,R`, as in
@@ -290,9 +290,9 @@ that many ticks) and `env=A,D,R`, as in
 required. The channel sounds one drum at a time, so two noise drums may not hit
 at the same moment.
 
-A drum on an instrument the program supplies plays a sound
+A drum on an external instrument plays a sound
 ([section 10](#10-playing-from-culebra)) through to its end, at its `vol` on
-the tones' scale, as a supplied voice does. Such drums hit together, with each
+the tones' scale, as an external voice does. Such drums hit together, with each
 other and with a noise drum, as the drums of a kit do:
 
 ```kauai
@@ -963,7 +963,7 @@ under.
 - a song's line that says a setting twice (`tempo` on two lines), a mark or a part's range written twice in a song, a groove row or a `first` or `last` block written twice, an ending, a pickup, a voice's echo or harmony, or a `2nd:` line for the same bar or part written twice
 - a groove row with a bar of no tokens, or of tokens that come to no note value (15 in 4/4); a row for a name the band does not have, or for a voice that plays neither roots nor chords; a chord row's token other than a place, `x`, `-` or `.`
 - two noise drums hitting at the same moment, or two voices of a band on one channel
-- an instrument the program supplies given a knob that is no word and number (`env=1,2,4`); a `duty`, `env` or `gap` that is none (`duty=1/3`, `env=1,2`); a noise drum without its `freq` or its `len`; a `choke` of other than one name, or on a noise drum; a voice's or a drum's `vol` written as a percentage
+- an external instrument given a knob that is no word and number (`env=1,2,4`); a `duty`, `env` or `gap` that is none (`duty=1/3`, `env=1,2`); a noise drum without its `freq` or its `len`; a `choke` of other than one name, or on a noise drum; a voice's or a drum's `vol` written as a percentage
 - no voice that plays melody, or more than one; `plays melody` followed by other than `octave up` or `down`, or `N octaves up` or `down` for N of 2 or more
 - a range that is not one octave, or that starts on a sharp or a flat
 - a `meter` whose beat is not a note value (`3/5`)
@@ -1778,7 +1778,7 @@ section Chorus {
 
 ### ballad.kau
 
-The ending theme. The electric piano is a voice on an instrument the program supplies (`Ep`) that plays chords, and the melody is played on it too, brighter.
+The ending theme. The electric piano is a voice on an external instrument (`Ep`) that plays chords, and the melody is played on it too, brighter.
 
 ```kauai
 about {
