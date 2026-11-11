@@ -207,6 +207,9 @@ band Run {
 
 `voice NAME INSTRUMENT[(name=value ...)] [plays ...] OPTIONS...`
 
+The instrument is the third word, ahead of every option: a line that opens
+with `plays part` or another option instead of an instrument is an error.
+
 The instrument is one of [`Audio.tone`](../stdlib.md#tones)'s channels, `pulse`,
 `pulse2`, `triangle` or `saw`, or an external instrument, one the program
 supplies, named with a capital letter (`Ep`; [section 10](#10-playing-from-culebra)). An

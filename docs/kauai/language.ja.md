@@ -204,6 +204,9 @@ band Run {
 
 `voice NAME INSTRUMENT[(name=value ...)] [plays ...] OPTIONS...`
 
+楽器は3語目で、どのオプションよりも前に置きます。楽器の代わりに`plays part`などの
+オプションで始まる行は、エラーです。
+
 楽器には、[`Audio.tone`](../stdlib.ja.md#tone)のチャンネル（`pulse`、
 `pulse2`、`triangle`、`saw`）のどれかか、外部の楽器（プログラム側で用意する楽器）を、
 大文字で始まる名前（`Ep`）で指定します（[10章](#10-culebra-から再生する)）。

@@ -269,7 +269,15 @@ fails(
   on_pulse("pulse(duty=1/4 plays melody vol 10)"),
   "line 2: the parentheses after pulse hold knobs, name=value, and nothing else: plays",
 )
-fails(on_pulse("() plays melody"), "line 2: a voice or a drum names its instrument before the (: ()")
+# The instrument is the third word: a `plays part` ahead of it is no instrument,
+# with knobs or without.
+for written in ["plays part A pulse plays melody", "plays part A pulse(duty=1/4) plays melody"] {
+  fails(
+    on_pulse(written),
+    "line 2: a voice plays on pulse, pulse2, triangle, saw or an instrument named with a capital letter, not plays",
+  )
+}
+fails(on_pulse("() plays melody"),"line 2: a voice or a drum names its instrument before the (: ()")
 fails(on_pulse("(duty=1/4) plays melody"), "line 2: a voice or a drum names its instrument before the (: (duty=1/4)")
 # An instrument with no knob needs no parentheses, and may have empty ones; the
 # knobs may stand apart with spaces inside.

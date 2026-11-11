@@ -3339,10 +3339,17 @@ let _kauai_module = fn () {
 
   # The instrument a voice or a drum line plays: one of the mixer's `chips`, or
   # a name for the program's.
+  fn instrument_form(chips, who) {
+    "{who} plays on {chips.keys().join(", ")} or an instrument named with a capital letter"
+  }
+
+  fn check_instrument(name, chips, who, line) {
+    fail(line, "{instrument_form(chips, who)}, not {name}") if !chips.has(name) && !is_name(name)
+  }
+
   fn instrument_at(words, chips, who, line) {
-    let form = "{who} plays on {chips.keys().join(", ")} or an instrument named with a capital letter"
-    fail(line, form) if words.size() < 3
-    fail(line, "{form}, not {words[2]}") if !chips.has(words[2]) && !is_name(words[2])
+    fail(line, instrument_form(chips, who)) if words.size() < 3
+    check_instrument(words[2], chips, who, line)
     words[2]
   }
 
@@ -3358,17 +3365,21 @@ let _kauai_module = fn () {
   # parentheses after the instrument: `Snare noise(freq=4000 len=3) vol 20`
   # reads as `Snare noise freq=4000 len=3 vol 20`, as the rest of the parser
   # reads them. The knobs are separated by spaces, `pulse` and `pulse()` take
-  # none, and the ( follows the name with no space.
-  fn open_knobs(words, line) {
+  # none, and the ( follows the name with no space. The instrument is the third
+  # word, one of `chips` or a name, which is said before anything is said of its
+  # knobs.
+  fn open_knobs(words, chips, who, line) {
     return words if words.size() < 3
     fail(line, "the ( of an instrument's knobs follows its name with no space: {words[2]}{words[3]}") if words.size() > 3 && words[3].starts_with("(")
     let head = halves(words[2], "(")
     if head == nil {
+      check_instrument(words[2], chips, who, line)
       no_stray_knobs(words.slice(3, words.size()), words[2], line)
       return words
     }
     let (name, first) = head
     fail(line, "a voice or a drum names its instrument before the (: {words[2]}") if name.empty()
+    check_instrument(name, chips, who, line)
     # The words from the instrument's on, the first without what the ( opened.
     let tail = [first, ...words.slice(3, words.size())]
     let close = iota(tail.size()).find(|i| tail[i].contains(")")) ?? fail(line, "the knobs of {name} end with a ): {name}(name=value ...)")
@@ -3399,7 +3410,7 @@ let _kauai_module = fn () {
   }
 
   fn parse_voice(written, line) {
-    let words = open_knobs(written, line)
+    let words = open_knobs(written, CHIP_VOICES, "a voice", line)
     let name = name_at(words, 1, line, "a voice")
     let knobs = knobs_of(words, line)
     # `plays part NAME` (any number of them): the voice plays that part where
@@ -3422,7 +3433,9 @@ let _kauai_module = fn () {
         pi += 1
       }
     }
-    let plays_on = instrument_at(w, CHIP_VOICES, "a voice", line)
+    # The instrument is the third word, as the line's form says: a `plays part`
+    # before it is no instrument.
+    let plays_on = instrument_at(words, CHIP_VOICES, "a voice", line)
     let o = options(w, 3, VOICE_KEYS, ["poly"], "a voice", line)
     # Which instrument it is, mixer's or the program's, and what its knobs
     # mean, `resolve_band` says once the program's instruments are known.
@@ -3499,7 +3512,7 @@ let _kauai_module = fn () {
         # its end; the drums of a choke group stop each other, as an
         # instrument that hears `next` does.
         w[0] == "drum" => {
-          let dw = open_knobs(w, item.line)
+          let dw = open_knobs(w, CHIP_DRUMS, "a drum", item.line)
           let dn = name_at(dw, 1, item.line, "a drum")
           fresh_name("drum", dn, item.line)
           let plain = dw.filter(|x| !x.contains("="))
