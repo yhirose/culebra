@@ -274,6 +274,12 @@ jobs:
       CCACHE_DIR: ${{ github.workspace }}/.ccache
       CMAKE_C_COMPILER_LAUNCHER: ccache
       CMAKE_CXX_COMPILER_LAUNCHER: ccache
+      # The JIT object cache the gate shares within a run (justfile, jit_cache),
+      # pinned under the workspace like ccache so actions/cache can carry it to
+      # the next run. The corpus is ~72 MB of objects; the cap keeps the saved
+      # copy (one per lane per run, against the repository's 10 GB quota) small.
+      CULEBRA_GATE_JIT_CACHE: ${{ github.workspace }}/.gate-jit
+      CULEBRA_JIT_CACHE_MAX_MB: "300"
     steps:
       - uses: actions/checkout@v5
         with:
@@ -312,11 +318,32 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-ccache-
 
+      # An object is keyed by the optimized module and the backend (vm.md §7),
+      # not by this build, so a run that changed no lowering finds the last
+      # run's objects and compiles only what changed. The newest entry of the
+      # lane is restored (restore-keys), and this run's is saved under its sha.
+      - name: Restore JIT object cache
+        if: contains(fromJSON('["ci-light","ci-gc"]'), matrix.lane)
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.gate-jit
+          key: ${{ runner.os }}-gate-jit-${{ matrix.lane }}-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-gate-jit-${{ matrix.lane }}-
+
       - name: Download the built culebra
         uses: ./.github/actions/download-culebra
 
+      - name: JIT object cache before the run
+        if: contains(fromJSON('["ci-light","ci-gc"]'), matrix.lane)
+        run: du -sh .gate-jit 2>/dev/null || echo "jit cache: cold"; ls .gate-jit 2>/dev/null | wc -l
+
       - name: Test (${{ matrix.lane }})
         run: BIN=./build/culebra just _run-tests ${{ matrix.lane }}
+
+      - name: JIT object cache after the run
+        if: always() && contains(fromJSON('["ci-light","ci-gc"]'), matrix.lane)
+        run: du -sh .gate-jit 2>/dev/null; ls .gate-jit 2>/dev/null | wc -l
 
   # Both halves of `just doctest`: the ```culebra examples in docs/ and the
   # ```cpp blocks a host author copies. Neither needs build-ubuntu's build
