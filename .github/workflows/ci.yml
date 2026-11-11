@@ -320,10 +320,12 @@ jobs:
 
       # An object is keyed by the optimized module and the backend (vm.md §7),
       # not by this build, so a run that changed no lowering finds the last
-      # run's objects and compiles only what changed. The newest entry of the
-      # lane is restored (restore-keys), and this run's is saved under its sha.
+      # run's objects and compiles only what changed. The newest entry is
+      # restored (restore-keys), and this run's is saved under its sha. Only
+      # ci-gc compiles the corpus (340 files, 95 MB of objects, 20 MB saved):
+      # with the cache its vm/jit sweep took 198 s, from 476 s cold.
       - name: Restore JIT object cache
-        if: contains(fromJSON('["ci-light","ci-gc"]'), matrix.lane)
+        if: matrix.lane == 'ci-gc'
         uses: actions/cache@v4
         with:
           path: ${{ github.workspace }}/.gate-jit
@@ -335,7 +337,7 @@ jobs:
         uses: ./.github/actions/download-culebra
 
       - name: JIT object cache before the run
-        if: contains(fromJSON('["ci-light","ci-gc"]'), matrix.lane)
+        if: matrix.lane == 'ci-gc'
         run: |
           du -sh .gate-jit 2>/dev/null || echo "jit cache is cold"
           ls .gate-jit 2>/dev/null | wc -l
@@ -344,7 +346,7 @@ jobs:
         run: BIN=./build/culebra just _run-tests ${{ matrix.lane }}
 
       - name: JIT object cache after the run
-        if: always() && contains(fromJSON('["ci-light","ci-gc"]'), matrix.lane)
+        if: always() && matrix.lane == 'ci-gc'
         run: |
           du -sh .gate-jit 2>/dev/null
           ls .gate-jit 2>/dev/null | wc -l

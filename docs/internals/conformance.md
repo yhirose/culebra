@@ -183,6 +183,13 @@ from what an earlier one compiled: an object is keyed by the optimized
 module and the backend ([vm.md](vm.md) §7), a rebuild that changes
 neither finds it, and what it skips is the backend — 53% of the corpus's
 compile, the IR pipeline being run every time to arrive at the key.
+CI runs start cold, so the ci-gc lane of `test-ubuntu`, the one that
+compiles the corpus, carries the directory between runs with `actions/cache`
+(a copy saved per run, the newest one restored, capped at 300 MB by
+`CULEBRA_JIT_CACHE_MAX_MB`; 95 MB of objects, 20 MB saved). Rerun on the same
+commit, its full vm/jit sweep took 198 s where the cold run took 476 s, and
+the lane 743 s where it took 1032 s; gc-stress, which runs more than it
+compiles, did not change.
 `CULEBRA_GATE_JIT_CACHE` names another directory, or `off` for one that
 lasts the run; a directory the check cannot write is said in one line and
 passed over the same way. Two things follow from keeping it. The
