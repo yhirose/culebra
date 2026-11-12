@@ -762,6 +762,44 @@ let _synth_module = fn () {
     }
   }
 
+  # How many of `xs`, in order of `key`, come before `x`: those whose key is
+  # below it, or at most it with `through` (a binary search).
+  fn count_before(xs, key, x, through) {
+    mut lo = 0
+    mut hi = xs.size()
+    while lo < hi {
+      let mid = (lo + hi) / 2
+      let k = key(xs[mid])
+      if k < x || (through && k == x) {
+        lo = mid + 1
+      } else {
+        hi = mid
+      }
+    }
+    lo
+  }
+
+  # A voice's notes never overlap (a note sounds until the next starts at the
+  # latest), and are kept in order of their start: so the note sounding at
+  # `t` is the last to start by then, and the voice is free from `from` to
+  # `to` when the last to start before `to` has ended by `from`.
+  let start_of = |n| n.start
+  let at_of = |e| e.at
+  # A note number as the key of the notes held: 60 and 60.0 are one note.
+  let held_key = |note| "{note + 0.0}"
+  fn sounding_at(v, t) {
+    let i = count_before(v.notes, start_of, t, true)
+    i > 0 && v.notes[i - 1].free > t ? v.notes[i - 1] : nil
+  }
+  fn free_between(v, from, to) {
+    let i = count_before(v.notes, start_of, to, false)
+    i == 0 || v.notes[i - 1].free <= from
+  }
+  fn next_start(v, t) {
+    let i = count_before(v.notes, start_of, t, true)
+    i < v.notes.size() ? v.notes[i].start : Math.inf
+  }
+
   # `count` voices, each the expression `builder` returns for its freq (a
   # signal in Hz each note sets): a note goes to a voice free for as long as
   # it sounds, or else takes the voice whose sounding note began first. A
@@ -780,6 +818,8 @@ let _synth_module = fn () {
       })
       @_events = []
       @_playing = []
+      # The notes held, by note number, each with its voice, to let go.
+      @_held = {}
     }
     # Where a note made now starts: the clock of the last play of it still
     # playing, or 0.
@@ -794,25 +834,28 @@ let _synth_module = fn () {
     note_on(note: Long | Float, at: Long | Float | Nil = nil) {
       __raise("ValueError", "Synth.Voices: note is a finite number") if !finite(note)
       let t = self._time(at)
-      let next_of = |v| v.notes.filter(|n| n.start > t).reduce(Math.inf, |m, n| Math.min(m, n.start))
-      let sounding_on = |v| v.notes.find(|n| n.start <= t && t < n.free)
-      mut voice = @_voices.find(|v| !v.notes.any(|n| n.start < t + v.natural && n.free > t))
+      mut voice = @_voices.find(|v| free_between(v, t, t + v.natural))
       mut start = t
       mut cut = nil
       if voice == nil {
-        let silent = @_voices.filter(|v| sounding_on(v) == nil)
+        let silent = @_voices.filter(|v| sounding_at(v, t) == nil)
         if !silent.empty() {
-          voice = silent.max_by(next_of)
-          cut = next_of(voice)
+          voice = silent.max_by(|v| next_start(v, t))
+          cut = next_start(voice, t)
         } else {
-          voice = @_voices.min_by(|v| sounding_on(v).start)
-          let taken = sounding_on(voice)
-          start = t + STEAL_FADE
+          voice = @_voices.min_by(|v| sounding_at(v, t).start)
+          let taken = sounding_at(voice, t)
+          # The fade ends by the voice's next note at the latest, so the notes
+          # stay in order however close they come.
+          start = Math.min(t + STEAL_FADE, next_start(voice, t))
           taken.free = start
           taken.held = false
         }
       }
-      voice.notes.push({note: note, at: t, start: start, mut free: Math.min(start + voice.natural, next_of(voice)), mut held: true})
+      let placed = {note: note, at: t, start: start, mut free: Math.min(start + voice.natural, next_start(voice, t)), mut held: true}
+      # After those starting by `t`: nothing else starts before `placed` ends.
+      voice.notes.insert(count_before(voice.notes, start_of, t, true), placed)
+      @_held.get_or_put(held_key(note), []).push({voice: voice, note: placed})
       self._add({kind: "on", voice: voice.index, at: t, start: start, note: note})
       self._add({kind: "cut", voice: voice.index, at: Math.max(t, cut - STEAL_FADE), until: cut}) if cut != nil
     }
@@ -820,9 +863,15 @@ let _synth_module = fn () {
     # gated envelopes fall to 0 over their release.
     note_off(note: Long | Float, at: Long | Float | Nil = nil) {
       let t = self._time(at)
-      let held = @_voices.flat_map(|v| v.notes.filter(|n| n.held && n.note == note && n.at <= t).map(|n| (v, n)))
-      return nil if held.empty()
-      let (voice, chosen) = held.min_by(|vn| vn[1].start)
+      # Those let go or taken over are held no more; of the rest made for `t`
+      # or before, the one that started first (on the first voice of a tie)
+      # is let go.
+      let held = @_held.get(held_key(note), []).filter(|h| h.note.held)
+      @_held[held_key(note)] = held
+      let ready = held.filter(|h| h.note.at <= t)
+      return nil if ready.empty()
+      let first = ready.min_by(|h| (h.note.start, h.voice.index))
+      let (voice, chosen) = (first.voice, first.note)
       chosen.held = false
       let from = Math.max(t, chosen.start)
       # A note another has taken the voice from has nothing left to let go.
@@ -845,7 +894,7 @@ let _synth_module = fn () {
     }
     # When the notes made so far have ended, Math.inf while one is held.
     ends() {
-      @_voices.flat_map(|v| v.notes.map(|n| n.free)).reduce(0.0, |m, f| Math.max(m, f))
+      @_voices.reduce(0.0, |m, v| v.notes.empty() ? m : Math.max(m, v.notes[v.notes.size() - 1].free))
     }
     _time(at) {
       __raise("ValueError", "Synth.Voices: at is a finite number of seconds, 0 or more") if at != nil && !nonnegative(at)
@@ -859,13 +908,12 @@ let _synth_module = fn () {
     # A note's event kept in time order. A playing graph hears it, and then
     # its voice's events made for later, which the event's cancels dropped.
     _add(e) {
-      mut i = @_events.size()
-      while i > 0 && @_events[i - 1].at > e.at {
-        i -= 1
-      }
+      let i = count_before(@_events, at_of, e.at, true)
       @_events.insert(i, e)
+      let live = self._live()
+      return nil if live.empty()
       let later = @_events.slice(i + 1, @_events.size()).filter(|x| x.voice == e.voice)
-      for p in self._live() {
+      for p in live {
         apply_note(p.built, e)
         let from = Math.max(e.at, p.built.g.now())
         later.filter(|x| x.at > from).for_each(|x| apply_note(p.built, x))

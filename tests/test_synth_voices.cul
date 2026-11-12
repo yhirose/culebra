@@ -116,6 +116,79 @@ assert_true(strength(ahead, hz(64), 0.02, 0.15) > 0.2)
 assert_true(strength(ahead, hz(60), 1.02, 1.15) > 0.2)
 assert_close(backwards.ends(), 1.21, 1e-9)
 
+# What a Voices finds its voices by: each voice's notes in order of their
+# start, none sounding past the next one's start, whatever order notes are
+# made in and however they are taken over.
+fn assert_voices_ordered(vs) {
+  for v in vs._voices {
+    for k in 1..v.notes.size() {
+      assert_true(v.notes[k - 1].start <= v.notes[k].start)
+      assert_true(v.notes[k - 1].free <= v.notes[k].start)
+    }
+  }
+}
+for v in [layered, backwards, pads, twice, short] {
+  assert_voices_ordered(v)
+}
+let busy = Voices(3, |f| saw(f) * adsr(0.01, 0.05, 0.5, 0.1) * 0.1)
+for i in 0..40 {
+  # Made out of time order, overlapping, some held past others, some let go.
+  let t = (i * 7 % 40) * 0.05
+  busy.note_on(48 + i % 12, at: t)
+  busy.note_off(48 + i % 12, at: t + 0.03 * (i % 5)) if i % 3 != 0
+}
+assert_voices_ordered(busy)
+
+# A note that ends just as the next starts leaves its voice free for it.
+let exact = Voices(1, |f| sine(f) * perc(0.0, 0.25, curve: 0.0))
+exact.note_on(69, at: 0.0)
+exact.note_on(76, at: 0.25)
+assert_close(exact.ends(), 0.5, 1e-9)
+assert_eq(exact._voices[0].notes.map(|n| n.start), [0.0, 0.25])
+assert_eq(render(exact, 0.5).size(), 22050)
+# A note off for before its note on lets nothing go.
+let early_off = Voices(1, |f| sine(f) * adsr(0.01, 0.05, 0.5, 0.1))
+early_off.note_on(60, at: 1.0)
+early_off.note_off(60, at: 0.5)
+assert_eq(early_off.ends(), Math.inf)
+# A note taken over is held no more: the note off goes to the same note
+# played again later.
+let retaken = Voices(1, |f| sine(f) * adsr(0.01, 0.05, 0.5, 0.1))
+retaken.note_on(60, at: 0.0)
+retaken.note_on(64, at: 0.1)
+retaken.note_on(60, at: 0.2)
+retaken.note_off(60, at: 0.5)
+assert_close(retaken.ends(), 0.6, 1e-9)
+# Notes at one time, or within a fade, on one voice: each takes it over, and
+# the notes stay in order (the one held keeps it sounding).
+let chord = Voices(1, |f| sine(f) * adsr(0.01, 0.05, 0.5, 0.1))
+chord.note_on(60, at: 0.0)
+chord.note_on(64, at: 1.0)
+chord.note_on(67, at: 1.0)
+chord.note_on(71, at: 1.002)
+assert_voices_ordered(chord)
+assert_eq(chord.ends(), Math.inf)
+chord.note_off(64, at: 2.0)
+assert_close(chord.ends(), 2.1, 1e-9)
+# A voice that ends on its own (perc) is let go too, by its gated envelope.
+let both_ways = Voices(1, |f| sine(f) * perc(0.0, 1.0) * adsr(0.01, 0.05, 0.5, 0.1))
+both_ways.note_on(60, at: 0.0)
+both_ways.note_off(60, at: 0.2)
+assert_close(both_ways.ends(), 0.3, 1e-9)
+# 60 and 60.0 are one note.
+let same_note = Voices(1, |f| sine(f) * adsr(0.01, 0.05, 0.5, 0.1))
+same_note.note_on(60, at: 0.0)
+same_note.note_off(60.0, at: 0.2)
+assert_close(same_note.ends(), 0.3, 1e-9)
+# Of two notes started at once, the note off lets go the one on the first voice.
+let tie = Voices(2, |f| sine(f) * adsr(0.01, 0.05, 0.5, 0.1))
+tie.note_on(50, at: 0.5)
+tie.note_on(60, at: 0.0)
+tie.note_on(60, at: 0.0)
+tie.note_off(60, at: 0.2)
+assert_close(tie._voices[0].notes[0].free, 0.3, 1e-9)
+assert_eq(tie._voices[1].notes[0].free, Math.inf)
+
 # A voice is silent until its first note, an envelope or not.
 let drone = Voices(1, |f| sine(f) * 0.2)
 drone.note_on(69, at: 0.3)
