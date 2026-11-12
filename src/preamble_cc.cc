@@ -110,6 +110,14 @@ void default_body_tokens(const peg::Ast& ast,
   for (const auto& n : ast.nodes) default_body_tokens(*n, out);
 }
 
+// A `let {*} = NS` pattern anywhere in the module, or null.
+const peg::Ast* find_wildcard_pattern(const peg::Ast& ast) {
+  if (culebra::is_wildcard_pattern(ast)) return &ast;
+  for (const auto& n : ast.nodes)
+    if (const auto* w = find_wildcard_pattern(*n)) return w;
+  return nullptr;
+}
+
 // The names a module's code uses: its tokens less its literals' text (a word
 // in a message names nothing).
 void code_tokens(const peg::Ast& ast,
@@ -284,6 +292,15 @@ int main(int argc, char** argv) {
   require(types.values, culebra::is_stdlib_value_class_name,
           "is_stdlib_value_class_name");
   if (!listed) return 1;
+  // A stdlib module names the members it takes: `let {*} = NS` would read
+  // NS's members while its own parse is under way.
+  if (const auto* w = find_wildcard_pattern(*ast)) {
+    std::fprintf(stderr,
+                 "culebra_preamble_cc: stdlib module '%s' takes a namespace "
+                 "whole at line %zu (`let {*}`); name the members it uses\n",
+                 name.c_str(), w->line);
+    return 1;
+  }
   // A namespace module gets another one only through its `needs`: the
   // selection reads the table, not the module's code.
   for (const auto& m : culebra::lazy_ns_modules()) {

@@ -497,6 +497,106 @@ inline std::optional<AstData> stdlib_entry_ast(const StdlibEntry& e,
   return it->second.data();
 }
 
+// The object literal a stdlib module's builder returns — its public members —
+// wherever the module's statements sit: the source alone (the catalog reads
+// that), or inside the registration wrapping it (the baked AST), or null when
+// the builder ends with anything else (a class, a call).
+inline const peg::Ast* namespace_module_object(const peg::Ast& node,
+                                               std::string_view builder) {
+  using namespace peg::udl;
+  if (node.tag == "STATEMENTS"_) {
+    const peg::Ast* body = nullptr;
+    for (const auto& s : node.nodes) {
+      if (s->tag == "ASSIGNMENT"_) {
+        auto av = view_assignment(*s);
+        const auto* t = assign_name_target(*s, av);
+        if (t && t->token == builder && av.rhs->tag == "FUNCTION"_)
+          body = view_function(*av.rhs).body.get();
+      } else if (s->tag == "MULTIFN_DECL"_) {
+        size_t i = first_non_decorator_index(*s);
+        if (i < s->nodes.size() && s->nodes[i]->token == builder)
+          body = s->nodes.back().get();
+      }
+    }
+    if (body) {
+      const peg::Ast* tail = body->tag == "STATEMENTS"_ && !body->nodes.empty()
+                                 ? body->nodes.back().get()
+                                 : body;
+      return tail->tag == "OBJECT"_ ? tail : nullptr;
+    }
+  }
+  for (const auto& n : node.nodes)
+    if (const auto* o = namespace_module_object(*n, builder)) return o;
+  return nullptr;
+}
+
+// What `let {*} = NS` takes from a stdlib namespace written in Culebra: the
+// public members of the object its builder returns (a name, not starting
+// with `_`, as the catalog lists them), read off the module's AST (baked, or
+// parsed once) the first time a program takes them, and kept for the
+// process — the parse's tokens view them. nullopt for a name no such module
+// has, and for a module whose builder answers something else (a class) or
+// spreads another object into its own. The module is read outside the lock
+// (reading may parse it), and a read that comes back to a module it is
+// already reading answers nullopt rather than wait on itself.
+inline std::optional<std::span<const std::string_view>> lazy_namespace_members(
+    std::string_view ns) {
+  using namespace peg::udl;
+  const LazyNsModule* mod = nullptr;
+  for (const auto& m : lazy_ns_modules())
+    if (ns == m.name) mod = &m;
+  if (!mod) return std::nullopt;
+  struct Members {
+    bool closed = false;
+    std::vector<std::string> names;
+    std::vector<std::string_view> views;
+  };
+  auto answer = [](const Members& m)
+      -> std::optional<std::span<const std::string_view>> {
+    if (!m.closed) return std::nullopt;
+    return std::span<const std::string_view>(m.views);
+  };
+  static std::mutex mu;
+  static std::unordered_map<std::string_view, Members> known;
+  {
+    std::lock_guard lock(mu);
+    if (auto it = known.find(mod->name); it != known.end())
+      return answer(it->second);
+  }
+  thread_local std::set<std::string_view> reading;
+  if (!reading.insert(mod->name).second) return std::nullopt;
+  Members read;
+  std::vector<std::string> msgs;
+  std::string source = stdlib_module_source(*mod);
+  if (auto data = stdlib_entry_ast({mod->name, source}, msgs)) {
+    auto ast = instantiate_ast(*data, source, 0);
+    if (const auto* object = namespace_module_object(*ast, mod->builder)) {
+      read.closed = std::ranges::all_of(object->nodes, [](const auto& p) {
+        return p->tag == "OBJECT_PROPERTY"_;
+      });
+      for (const auto& p : object->nodes) {
+        if (p->tag != "OBJECT_PROPERTY"_) continue;
+        auto key = view_object_property(*p).key;
+        if (key->tag == "IDENTIFIER"_ && !key->token.starts_with("_"))
+          read.names.emplace_back(key->token);
+      }
+    }
+  }
+  reading.erase(mod->name);
+  std::lock_guard lock(mu);
+  auto [it, fresh] = known.try_emplace(mod->name, std::move(read));
+  if (fresh)
+    for (const auto& n : it->second.names) it->second.views.push_back(n);
+  return answer(it->second);
+}
+
+// Every binary that has the stdlib's namespaces lets its parse expand
+// `let {*} = NS` over them, whatever host it runs in (the CLI, an embedder,
+// the Playground): the hook is a constant-initialized pointer, so setting it
+// here, at static initialization, cannot race its first read.
+inline const bool _namespace_members_installed =
+    (namespace_members_hook = lazy_namespace_members, true);
+
 // CULEBRA_CHECK_BAKED_AST=1: every entry this binary baked against its parse,
 // and none missing where the build bakes (it bakes the ASTs beside the native
 // objects). Losing the bake is silent otherwise — the executor just parses

@@ -1,0 +1,55 @@
+# `let {*} = NS` takes every member of a namespace written in Culebra, as
+# `let {a, b, ...} = NS` naming them all would. The mistakes it refuses are
+# load-time errors, checked in tests/lint_test.sh.
+
+# In a block: the names are the namespace's own, and stay in the block.
+{
+  let {*} = Synth
+  assert_eq(hz(69), 440.0)
+  assert_eq(db(0.0), 1.0)
+  assert_eq(render(sine(440.0) * 0.5, 0.01), Synth.render(Synth.sine(440.0) * 0.5, 0.01))
+  # A function taken whole reaches a value as a method does (UFCS).
+  assert_eq(render([saw(110.0), saw(110.77)].mix(), 0.01), render(mix([saw(110.0), saw(110.77)]), 0.01))
+}
+
+# In a function's body.
+fn level(x) {
+  let {*} = Synth
+  db(x)
+}
+assert_close(level(-6.0), 0.5011872336272722, 1e-12)
+
+# Two namespaces whose names differ, in one block.
+{
+  let {*} = Synth
+  let {*} = Kauai
+  assert_true(parse is Function)
+  assert_eq(hz(57), 220.0)
+}
+
+# In a handle body and in a generator, which the effect lowering rewrites:
+# the names it takes live across a `perform` and a `yield`.
+effect fn ask()
+let asked = handle {
+  let {*} = Synth
+  let n = perform ask()
+  hz(n)
+} with ask(resume) { resume(69) }
+assert_eq(asked, 440.0)
+fn notes() {
+  let {*} = Synth
+  yield hz(57)
+  yield hz(69)
+}
+assert_eq(notes().collect(), [220.0, 440.0])
+
+# The same as naming the members one by one.
+fn by_name() {
+  let {sine, render} = Synth
+  render(sine(330.0), 0.005)
+}
+fn taken() {
+  let {*} = Synth
+  render(sine(330.0), 0.005)
+}
+assert_eq(taken(), by_name())

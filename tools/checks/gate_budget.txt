@@ -145,7 +145,10 @@
 # 341 since test_synth.cul (Synth: an expression renders as the graph wired
 # by hand would, envelopes on their curves, operators, and the mistakes;
 # 0.07 s under --vm, 6.2 s under --jit).
-tests.cul 341
+# 342 since test_wildcard.cul (`let {*} = NS` in a block, a function's body,
+# two namespaces in one block, and the same as naming the members; 0.09 s
+# under --vm, 1.0 s under --jit).
+tests.cul 342
 
 # tests/isolate/*.cul — run on both engines, plus the over-cap modes.
 # 21 since test_xml_isolate.cul (an XML element keeps its methods across an

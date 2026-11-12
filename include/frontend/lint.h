@@ -987,6 +987,34 @@ inline void shadows(const resolve::Resolution& res,
   sort_by_position(diags, first);
 }
 
+// A name `let {*} = NS` takes that already means something where it is
+// taken: a name this scope or an enclosing one declares (an earlier `{*}`'s
+// included), or a builtin global. Each is refused, unlike a `let` that
+// shadows: a name the block never wrote must not change what it reads.
+inline void wildcard_collisions(
+    const resolve::Resolution& res,
+    const std::set<std::string, std::less<>>* globals,
+    std::vector<Diagnostic>& diags) {
+  size_t first = diags.size();
+  for (const auto& d : res.declarations) {
+    auto pattern = d.node->parent.lock();
+    if (!pattern || !is_wildcard_pattern(*pattern)) continue;
+    const auto& name = res.symbols[d.symbol].name;
+    if (d.shadows == resolve::kNone && !(globals && globals->contains(name)))
+      continue;
+    auto statement = pattern->parent.lock();
+    std::string_view ns = statement ? statement->nodes[3]->token : "NS";
+    diags.push_back(Diagnostic{
+        "ShadowError",
+        std::format("`let {{*}} = {0}` takes `{1}`, a name already meant "
+                    "here: take the names one by one, `let {{a, b}} = {0}`",
+                    ns, name),
+        static_cast<long>(d.node->line), static_cast<long>(d.node->column),
+        Severity::Error});
+  }
+  sort_by_position(diags, first);
+}
+
 inline void reserved_name(const peg::Ast& at, std::string_view name,
                           std::vector<Diagnostic>& diags) {
   diags.push_back(Diagnostic{
@@ -1972,6 +2000,7 @@ inline std::vector<Diagnostic> scope_diagnostics(const peg::Ast& authored) {
   if (const auto* globals = builtin_names())
     _detail::undefined_reads(res, *globals, diags);
   _detail::shadows(res, diags);
+  _detail::wildcard_collisions(res, builtin_names(), diags);
   return diags;
 }
 
@@ -2067,6 +2096,7 @@ inline std::set<long> removable_import_lines(const peg::Ast& root) {
 inline void check_resolution(const resolve::Resolution& res) {
   std::vector<Diagnostic> diags;
   _detail::shadows(res, diags);
+  _detail::wildcard_collisions(res, builtin_names(), diags);
   _detail::reserved_binds(res, diags);
   _detail::sort_by_position(diags, 0);
   if (!diags.empty())

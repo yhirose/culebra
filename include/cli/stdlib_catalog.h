@@ -117,32 +117,6 @@ class StdlibCatalog final : public infer::Catalog {
     return modules_.back().get();
   }
 
-  // The object literal a module's builder returns: its public members.
-  static const peg::Ast* module_object(const peg::Ast& root,
-                                       std::string_view builder) {
-    using namespace peg::udl;
-    const peg::Ast* body = nullptr;
-    auto consider = [&](const peg::Ast& s) {
-      if (s.tag == "ASSIGNMENT"_) {
-        auto av = view_assignment(s);
-        const auto* t = assign_name_target(s, av);
-        if (t && t->token == builder && av.rhs->tag == "FUNCTION"_)
-          body = view_function(*av.rhs).body.get();
-      } else if (s.tag == "MULTIFN_DECL"_) {
-        size_t i = first_non_decorator_index(s);
-        if (i < s.nodes.size() && s.nodes[i]->token == builder)
-          body = s.nodes.back().get();
-      }
-    };
-    if (root.tag == "STATEMENTS"_)
-      for (const auto& c : root.nodes) consider(*c);
-    if (!body) return nullptr;
-    const peg::Ast* tail = body->tag == "STATEMENTS"_ && !body->nodes.empty()
-                               ? body->nodes.back().get()
-                               : body;
-    return tail->tag == "OBJECT"_ ? tail : nullptr;
-  }
-
   infer::Member describe_value(const Module& mod, std::string key,
                                const peg::Ast& value) {
     infer::Type t = mod.inference->expr_type(value);
@@ -163,7 +137,7 @@ class StdlibCatalog final : public infer::Catalog {
     using namespace peg::udl;
     Module* mod = parse_module(name, source);
     if (!mod) return;
-    const peg::Ast* object = module_object(*mod->ast, builder);
+    const peg::Ast* object = namespace_module_object(*mod->ast, builder);
     if (!object) return;
     auto& ms = namespaces_[std::string(name)];
     for (const auto& p : object->nodes) {

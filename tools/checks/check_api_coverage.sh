@@ -67,19 +67,29 @@ cat "$WORK/sigs.txt" "$WORK/kw.txt" > "$WORK/want.txt"
 #
 # A name a file takes out of a namespace (`let {sine, render} = Synth`) and
 # then calls (`sine(` or `.sine(`) is a call of `Synth.sine`, so each such
-# call also emits that dotted token. Per file: the names one file takes are
-# not another's.
+# call also emits that dotted token. `let {*} = Synth` takes every member,
+# so after it a call of any name emits `Synth.<name>` (one the namespace does
+# not have is no name step 4 looks for). Per file: the names one file takes
+# are not another's.
 QUALIFY='
   { print }
   match($0, /let[[:space:]]+\{[^}]*\}[[:space:]]*=[[:space:]]*[A-Z][A-Za-z0-9_]*[[:space:]]*$/) {
     names = substr($0, RSTART, RLENGTH); ns = names
     sub(/^[^{]*\{/, "", names); sub(/\}.*/, "", names)
     sub(/.*=[[:space:]]*/, "", ns); sub(/[[:space:]]*$/, "", ns)
+    if (names ~ /^[[:space:]]*\*[[:space:]]*$/) { whole[ns] = 1; any_whole = 1; next }
     n = split(names, taken, /[[:space:],]+/)
     for (i = 1; i <= n; i++) if (taken[i] ~ /^[a-z_][A-Za-z0-9_]*$/) ns_of[taken[i]] = ns
     next
   }
-  { for (name in ns_of) if ($0 ~ ("(^|[^A-Za-z0-9_])" name "\\(")) print ns_of[name] "." name }'
+  { for (name in ns_of) if ($0 ~ ("(^|[^A-Za-z0-9_])" name "\\(")) print ns_of[name] "." name
+    if (!any_whole) next
+    rest = $0
+    while (match(rest, /[A-Za-z0-9_]+\(/)) {
+      call = substr(rest, RSTART, RLENGTH - 1)
+      if (call ~ /^[a-z_]/) for (ns in whole) print ns "." call
+      rest = substr(rest, RSTART + RLENGTH)
+    } }'
 {
   find tests -name '*.cul' -o -name '*.sh' | while read -r f; do awk "$QUALIFY" "$f"; done
   for f in docs/*.md docs/guides/*.md; do

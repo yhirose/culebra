@@ -545,7 +545,7 @@ class EffectsLowerer {
     // From the callee on, which is renamed in place.
     std::vector<SourceEdit> edits;
     collect_promoted_edits(call, src_, rewrite, edits, EditSite::Expr);
-    auto name_at = static_cast<size_t>(call.nodes[0]->token.data() - src_.data());
+    auto name_at = source_offset(*call.nodes[0], src_);
     edits.push_back(
         {name_at, call.nodes[0]->token.size(), "__eff_comp_" + callee});
     su.call_src = anchored(splice_source(
@@ -1733,7 +1733,7 @@ class EffectsLowerer {
         out.push_back({written_at(s, src), 1, to + "."});
         return false;
       }
-      auto at = static_cast<size_t>(s.token.data() - src.data());
+      auto at = source_offset(s, src);
       out.push_back({at, 4, shorthand ? "self: " + to : to});
       return false;
     });

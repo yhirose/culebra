@@ -2747,6 +2747,98 @@ inline std::shared_ptr<peg::Ast> desugar_kwarg_shorthand(
   return at.grp("KWARG", "KWARG", {name, value}, node->position, node->length);
 }
 
+// The members `let {*} = NS` takes: the names a namespace written in Culebra
+// gives (the keys of the object its builder returns), as views that outlive
+// every parse, or nullopt where `NS` is no such namespace. The stdlib layer,
+// which owns the namespaces, installs it (preamble.h, at static
+// initialization, in every binary that has them); without it `{*}` is
+// refused as for a name that is not one.
+inline std::optional<std::span<const std::string_view>> (
+    *namespace_members_hook)(std::string_view) = nullptr;
+
+// The pattern of a `let {*} = NS` the desugar below has expanded.
+inline bool is_wildcard_pattern(const peg::Ast& n) {
+  using namespace peg::udl;
+  return n.original_tag == "WILDCARD_PATTERN"_;
+}
+
+[[noreturn]] inline void refuse_wildcard(const peg::Ast& at,
+                                         std::string message) {
+  throw CulebraError("SyntaxError", std::move(message),
+                     static_cast<long>(at.line), static_cast<long>(at.column));
+}
+
+// `let {*} = NS` is `let {m1, m2, …} = NS` over every member of the
+// namespace `NS` names, so every later stage sees the destructuring it
+// already handles. A member named like a keyword is left out (it stays
+// `NS.name`), as the provider leaves out a private `_name`. The pattern keeps
+// WILDCARD_PATTERN as its original name: the mark the collision check reads
+// (lint.h, wildcard_collisions), and a stage that edits the source text
+// writes the pattern out whole, since its names are not views of that text.
+// Such a `let` heads its block: one after another statement is refused, so
+// what the block's names mean is settled where it opens.
+inline std::shared_ptr<peg::Ast> desugar_wildcard_imports(
+    std::shared_ptr<peg::Ast> node) {
+  using namespace peg::udl;
+  auto wildcard_of = [](const peg::Ast& pattern) -> const peg::Ast* {
+    if (pattern.tag == "WILDCARD_PATTERN"_) return &pattern;
+    if (pattern.tag == "OBJECT_PATTERN"_ && pattern.nodes.size() == 1 &&
+        pattern.nodes[0]->tag == "WILDCARD_PATTERN"_)
+      return pattern.nodes[0].get();
+    return nullptr;
+  };
+  if (node->tag == "DESTRUCTURE_ASSIGN"_) {
+    if (const auto* star = wildcard_of(*node->nodes[2])) {
+      const auto& rhs = *node->nodes[3];
+      if (node->nodes[0]->token != "let" || !node->nodes[1]->token.empty() ||
+          rhs.tag != "IDENTIFIER"_)
+        refuse_wildcard(*star,
+                        "`{*}` takes the members of the namespace a plain "
+                        "`let` names on its right: `let {*} = Synth`");
+      std::optional<std::span<const std::string_view>> members;
+      if (namespace_members_hook) members = namespace_members_hook(rhs.token);
+      if (!members)
+        refuse_wildcard(
+            rhs, std::format("`let {{*}}` takes the members of a namespace "
+                             "written in Culebra, and `{0}` is not one: take "
+                             "its names one by one, `let {{a, b}} = {0}`",
+                             rhs.token));
+      SynthNode at{node->path.c_str(), star->line, star->column};
+      std::vector<std::shared_ptr<peg::Ast>> entries;
+      for (auto name : *members)
+        if (!is_keyword(name))
+          entries.push_back(at.tok("IDENTIFIER", "OBJECT_PAT_ENTRY", name,
+                                   star->line, star->column));
+      const size_t position = node->nodes[2]->position;
+      const size_t length = node->nodes[2]->length;
+      auto pattern = at.grp("OBJECT_PATTERN", "WILDCARD_PATTERN",
+                            std::move(entries), position, length);
+      for (auto& e : pattern->nodes) e->parent = pattern;
+      pattern->parent = node;
+      node->nodes[2] = std::move(pattern);
+      return node;
+    }
+  }
+  if (node->tag == "WILDCARD_PATTERN"_)
+    refuse_wildcard(*node,
+                    "`{*}` takes a namespace's members only in `let {*} = NS`");
+  for (auto& child : node->nodes) child = desugar_wildcard_imports(child);
+  if (node->tag == "STATEMENTS"_) {
+    bool other = false;
+    for (const auto& s : node->nodes) {
+      bool wildcard = s->tag == "DESTRUCTURE_ASSIGN"_ &&
+                      is_wildcard_pattern(*s->nodes[2]);
+      if (wildcard && other)
+        refuse_wildcard(*s,
+                        "`let {*} = NS` comes before the other statements of "
+                        "its block, so what the block's names mean is settled "
+                        "where it opens");
+      other |= !wildcard;
+    }
+  }
+  return node;
+}
+
 // `x is P` / `x !is P` is the `match` it abbreviates:
 // `match x { P => true, _ => false }` (the arms swapped for `!is`). Reading it
 // as a `match` gives every later stage the type test it already has, and a
@@ -2961,8 +3053,8 @@ inline std::shared_ptr<peg::Ast> parse(const std::string& path,
   // The postfix modifier goes last: it re-parents a statement already read as
   // the form it will run as.
   return ast ? desugar_postfix_modifiers(desugar_is_test(
-                   desugar_kwarg_shorthand(
-                       desugar_regex_literals(desugar_self_sigil(ast)))))
+                   desugar_kwarg_shorthand(desugar_regex_literals(
+                       desugar_wildcard_imports(desugar_self_sigil(ast))))))
              : nullptr;
 }
 

@@ -136,7 +136,7 @@ The entry points, all in namespace `culebra`, return a
 | function | does |
 |---|---|
 | `parse_undesugared` | the shared core: parse, normalize newlines, fill a `vector<ParseFailure>` (`line`, `col` as a byte column, `message`) |
-| `parse` | `parse_undesugared`, then `desugar_regex_literals` and `desugar_postfix_modifiers`; one overload formats failures as `path:line:col: message` |
+| `parse` | `parse_undesugared`, then the desugarings in order: `desugar_self_sigil`, `desugar_wildcard_imports` (`let {*} = NS` as the pattern naming every member, read through `namespace_members_hook`, which the stdlib's `preamble.h` points at its `lazy_namespace_members` when the binary starts), `desugar_regex_literals`, `desugar_kwarg_shorthand`, `desugar_is_test` and `desugar_postfix_modifiers`; one overload formats failures as `path:line:col: message` |
 | `parse_for_format` | no desugaring, and a brace Set is a syntax error here; the formatter only |
 | `parse_with_transforms` | `parse` plus `apply_transforms` (§6); used by the REPL, the debugger, the test runner, the stdlib preamble and lint |
 

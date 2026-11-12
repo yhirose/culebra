@@ -391,7 +391,11 @@ const auto grammar_ = R"(
   # a bare identifier (shorthand for `name: name`).
   # `...rest` (the REST_PATTERN an array pattern has) comes last and binds the
   # keys no entry named, as a new Object.
+  # `{*}` takes every member of a namespace (`let {*} = Synth`): the parse
+  # desugars it to the pattern naming them all (desugar_wildcard_imports).
   OBJECT_PATTERN           <-  '{' _ (((OBJECT_PAT_ENTRY _ ',' _)* REST_PATTERN / OBJECT_PAT_ENTRY (_ ',' _ OBJECT_PAT_ENTRY)*) _ ','?)? _ '}'
+                            /  '{' _ WILDCARD_PATTERN _ '}'
+  WILDCARD_PATTERN         <-  '*'
   OBJECT_PAT_ENTRY         <-  IDENTIFIER _ ':' _ PATTERN
                             /  IDENTIFIER
 

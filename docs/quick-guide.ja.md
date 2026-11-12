@@ -753,6 +753,7 @@ inspect(match 9 {
 | `match n { k if k < 10 => … }` / `x >= lo && x < hi` | `match n { ..10 => … }`（範囲パターン）。判定だけなら`(lo..hi).contains(x)` |
 | `{k1: v1, k2: obj.k2, k3: obj.k3}`（1つ変えるために全フィールドを手コピー） | `{...obj, k1: v1}` |
 | `mut o = {}`から、1つを除く全キーをコピー | `let {password, ...safe} = user`。オブジェクトパターンの`...rest`が、名指ししなかったエントリを束縛する |
+| ブロックの中の呼び出しのたびに`Synth.` | ブロックの先頭に`let {*} = Synth`（Culebraで書いた標準ライブラリの名前空間） |
 | `if cond { stmt }` — `else`なしの単文 | `stmt if cond`（否定は`stmt unless cond`） |
 | `if x == nil { x = v }` / `if !d.has(k) { d[k] = v }` | `x ??= v` / `d[k] ??= v`（`obj.key`にも使える） |
 | `"{a.b(c).d ?? e}"`（長く入れ子になった式をそのまま埋め込む） | `let x = a.b(c).d ?? e`としてから`"{x}"` |

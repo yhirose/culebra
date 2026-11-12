@@ -567,6 +567,47 @@ expect_shadow_accept "defer body catch binding"   'fn f() { defer { try { throw 
 f()'
 expect_shadow_reject "defer body shadows fn let"  'fn f() { let r = 1; defer { let r = 2 } }'
 
+# `let {*} = NS` takes names the block never wrote, so one that already means
+# something where it is taken is refused, on every lane, before eval: a name
+# an enclosing scope declares (the top level included, unlike a plain `let`),
+# a parameter, an earlier `{*}`'s. Its misuses are SyntaxErrors at the parse.
+expect_shadow_reject "wildcard over a top-level let" 'let sine = 1
+{
+  let {*} = Synth
+  inspect(hz(69))
+}'
+expect_shadow_reject "wildcard over a parameter"     'fn f(render) {
+  let {*} = Synth
+  render
+}'
+expect_shadow_reject "wildcard twice in a block"     '{
+  let {*} = Synth
+  let {*} = Synth
+}'
+expect_shadow_accept "wildcard beside other names"   'let tone = 1
+{
+  let {*} = Synth
+  inspect(hz(69) + tone)
+}'
+expect_wildcard_syntax_reject() {
+  printf 'inspect("RAN")\n{\n%s\n}\n' "$3" > "$TMP/t.cul"
+  for be in "--vm" "--jit"; do
+    out=$("$CULEBRA" $be "$TMP/t.cul" 2>&1)
+    if [[ "$out" == *RAN* || "$out" != *SyntaxError* || "$out" != *"$2"* ]]; then
+      echo "FAIL wildcard-syntax-reject [$1 ${be#--}]: $out"; fail=1
+    fi
+  done
+}
+expect_wildcard_syntax_reject "after a statement" "comes before the other statements" 'let x = 1
+let {*} = Synth'
+expect_wildcard_syntax_reject "a parameter"       "only in \`let {*} = NS\`" 'fn f({*}) { 1 }'
+expect_wildcard_syntax_reject "a loop variable"   "only in \`let {*} = NS\`" 'for {*} in [1] { }'
+expect_wildcard_syntax_reject "a match pattern"   "unexpected '*'" 'match 1 { {*} => 1, _ => 2 }'
+expect_wildcard_syntax_reject "mut"               "a plain \`let\` names" 'let mut {*} = Synth'
+expect_wildcard_syntax_reject "an expression"     "a plain \`let\` names" 'let {*} = Synth.render'
+expect_wildcard_syntax_reject "a native namespace" "\`Math\` is not one" 'let {*} = Math'
+expect_wildcard_syntax_reject "a variable"        "\`o\` is not one" 'let {*} = o'
+
 # --- Undefined variable (sound subset): a name bound in no enclosing scope
 # and not a builtin is certain to raise NameError, so it aborts before eval
 # (like ShadowError, and regardless of whether the code is reachable). That

@@ -23,6 +23,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cassert>
 #include <cctype>
 #include <charconv>
 #include <format>
@@ -940,6 +941,16 @@ inline std::string destructure_temp(const peg::Ast& pat, std::string_view name) 
   return std::format("_g_d{}_{}", pat.position, name);
 }
 
+// The byte of `src` a token was written at. Only a token the parse took from
+// `src` has one: a desugaring's own (`self` for `@`, the names `{*}` stands
+// for) is placed by its node, never here.
+inline size_t source_offset(const peg::Ast& token, const std::string& src) {
+  assert(token.token.data() >= src.data() &&
+         token.token.data() + token.token.size() <= src.data() + src.size() &&
+         "a token the source does not hold has no offset in it");
+  return static_cast<size_t>(token.token.data() - src.data());
+}
+
 // Bind `pat`'s promoted leaves to temporaries (destructure_temp): push the
 // edits that rename them, and return the copies through their targets
 // (PromotedLocals::reference), each after `sep`, left to right as a plain
@@ -951,18 +962,29 @@ inline MappedSource rename_pattern_leaves(const peg::Ast& pat,
                                          std::vector<SourceEdit>& out,
                                          std::string_view sep, size_t stmt_at) {
   MappedSource copies;
+  // `{*}` wrote none of the leaves desugar_wildcard_imports names, so the
+  // pattern is written out whole over the `{*}` it stands for.
+  const bool whole = is_wildcard_pattern(pat);
+  std::string spelled;
+  bool renamed = false;
   for_each_pattern_leaf(pat, [&](const peg::Ast& id, bool shorthand) {
     const auto* slot = promoted.slot(id);
-    if (!slot) return;
     auto name = std::string(id.token);
     auto temp = destructure_temp(pat, name);
-    auto pos = static_cast<size_t>(id.token.data() - src.data());
-    out.push_back({pos, id.token.size(),
-                   shorthand ? std::format("{}: {}", name, temp) : temp});
+    if (whole)
+      spelled += (spelled.empty() ? "" : ", ") +
+                 (slot ? std::format("{}: {}", name, temp) : name);
+    if (!slot) return;
+    renamed = true;
+    if (!whole)
+      out.push_back({source_offset(id, src), id.token.size(),
+                     shorthand ? std::format("{}: {}", name, temp) : temp});
     copies += std::format("{} ", sep);
     copies += MappedSource::standing_for(
         std::format("{} = {}", promoted.reference(id), temp), src, stmt_at);
   });
+  if (whole && renamed)
+    out.push_back({pat.position, pat.length, "{" + spelled + "}"});
   return copies;
 }
 
@@ -1025,7 +1047,7 @@ inline void collect_promoted_edits(const peg::Ast& n, const std::string& src,
                                    EditSite site) {
   using namespace peg::udl;
   auto at = [&](const peg::Ast& t) {
-    return static_cast<size_t>(t.token.data() - src.data());
+    return source_offset(t, src);
   };
   auto is_promoted = [&](const peg::Ast& id) {
     return id.tag == "IDENTIFIER"_ && id.is_token && promoted.slot(id);

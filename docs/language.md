@@ -2272,6 +2272,26 @@ a new `Object` (the pattern table has the rules):
     # name == 'Rex', others == {age: 3, kind: 'dog'}
     let {password, ...safe} = user       # `user` without `password`
 
+**A namespace whole.** `let {*} = NS` takes every member of a namespace the
+standard library writes in Culebra (`Synth`, `Kauai`, `Time`, …), as a
+pattern naming them all would:
+
+    {
+      let {*} = Synth
+      let samples = render(sine(hz(69)) * 0.2, 0.01)
+    }
+
+Its right side is the namespace's name, after a plain `let`, and it heads
+its block (the module, a function's body, a `{ }`): it comes before the
+block's other statements, so what the block's names mean is settled where
+it opens. A member named like a keyword, or with a leading `_`, is left out
+(`NS.name` still reaches it). A name it takes that already means something there — one the block or
+an enclosing scope declares (the top level included, unlike a plain `let`'s
+shadowing), one an earlier `{*}` took, a builtin — is a `ShadowError` before
+the program runs; name the members one by one then (`let {a, b} = NS`). A
+native namespace (`Math`, `IO`, …) has no member list ahead of the run, so
+`let {*} = Math` is a `SyntaxError` that asks for the names one by one.
+
 **Parallel / swap assignment.** Dropping `let` reassigns *existing*
 variables instead of declaring new ones — the RHS is fully evaluated
 before any binding, so swaps and rotates need no temporary:
