@@ -9809,12 +9809,12 @@ sine(5.0))`は、0から1の間で揺れるトレモロです。同じ値を2回
 | `Synth.line(lo, hi, dur, curve = 0.0)` | `env([lo, hi], [dur], curve)` |
 | `Synth.xline(lo, hi, dur)` | `env([lo, hi], [dur], "exp")`。値は`lo * (hi / lo) ^ (t / dur)`で、2つは同じ符号で0でない |
 | `Synth.perc(attack, release, peak = 1.0, curve = -4.0)` | `env([0, peak, 0], [attack, release], curve)`。打つ音のエンベロープ |
-| `Synth.adsr(attack, decay, sustain, release, peak = 1.0, curve = -4.0)` | ゲートつきのエンベロープ。`peak`まで上がり、`sustain * peak`まで下がり、離すまでそこに留まり、`release`秒で0まで下がる。`e.hold(secs)`は、始まりから`secs`秒で離す（その時点の値から下がる）。離す時刻がないままでは、音の終わりが離す場所でだけ使え、それ以外では`ValueError` |
+| `Synth.adsr(attack, decay, sustain, release, peak = 1.0, curve = -4.0)` | ゲートつきのエンベロープ。`peak`まで上がり、`sustain * peak`まで下がり、離すまでそこに留まり、`release`秒で0まで下がる。`e.hold(secs)`は、始まりから`secs`秒で離す（その時点の値から下がる）。離す時刻がないままでは、ノートオフが離す`Voices`の中でだけ使え、それ以外では`ValueError` |
 | `Synth.control(name, init, lo = nil, hi = nil)` | `name`という名前の値。`play`が返すハンドルで設定するまでは`init`（`lo`と`hi`があれば、その範囲に収め、`init`もその中）。1つの式の中の同じ名前の`control`は同じ値で、同じ引数で作る |
-| `Synth.play(expr, wait = true, secs = nil) -> SynthHandle` | 式を、`secs`まで、なければ自然な終わり（下の説明）まで鳴らす。`wait`なら終わってから戻り、`wait: false`ならすぐ戻って、終わるか止めるまで鳴り続ける。自然に終わらない音（発振器、ループ）は`secs`か`wait: false`が要り、なければ`ValueError`。デバイスがなければ、鳴らさずにすぐ戻る |
+| `Synth.play(expr, wait = true, secs = nil) -> SynthHandle` | 式（または下の`Voices`）を、`secs`まで、なければ自然な終わり（下の説明）まで鳴らす。`wait`なら終わってから戻り、`wait: false`ならすぐ戻って、終わるか止めるまで鳴り続ける（`Voices`は、ノートが来うるので止めるまで）。自然に終わらない音（発振器、ループ、押さえたままのノート）は`secs`か`wait: false`が要り、なければ`ValueError`。デバイスがなければ、鳴らさずにすぐ戻る |
 | `Synth.hz(note) -> Float` | ノート番号の周波数。69が440 Hzで、半音は1オクターブの12分の1 |
 | `Synth.db(x) -> Float` | デシベルを音量の倍率にする。0が1.0、-6がおよそ0.5 |
-| `Synth.render(expr, seconds, rate = 44100) -> Array` | 式（部品かエンベロープ）の最初の`seconds`秒。`Audio.Graph`の`render`と同じに計算する |
+| `Synth.render(expr, seconds, rate = 44100) -> Array` | 式（部品、エンベロープ、`Voices`）の最初の`seconds`秒。`Audio.Graph`の`render`と同じに計算する |
 
 | 部品のメソッド | 動作 |
 | --- | --- |
@@ -9873,6 +9873,36 @@ println(render(echo, 1.0).slice(13230, 15435).map(|v| Math.abs(v)).max() > 0.5) 
   h.set("freq", 660.0, at: 0.5)
   h.stop()
 }
+```
+
+`Synth.Voices(count, builder)`はノートを鳴らします。`builder(freq)`は、声の
+`freq`（ノートごとに設定されるHzの信号）に対する式を返し、`Voices`を作る
+ときに声の数だけ呼ばれます。ノートオンは、声のエンベロープを最初の値
+から始め、ゲートつきのもの（`adsr`）はノートオフまで保ってから、その時点の値
+から下がります。ノートは、鳴っている間ずっと空いている声に入り、なければ、
+始まる時点で無音の声に入ってその声の次のノートまで鳴り（その前の5 msで
+フェードアウトする）、それもなければ、鳴っているノートがいちばん早く始まった
+声を5 msでフェードアウトさせて、そこに入ります。声は最初のノートまで無音で、
+すべての声が共有する部品（ビブラートのように`builder`の外で作ったもの）は、
+エンベロープも含めて先頭から動きます。`Voices`は、作った順にかかわらず
+ノートを時刻の順に持っているので（同じ時刻から始まる2つの`sequence`は声を
+分け合う）、`render`と`play`はそのノートつきでグラフを作り、鳴らしている間に
+作ったノートは、そのグラフの時計に合わせて、鳴っている音にも入ります。
+
+| `Voices`のメソッド | 動作 |
+| --- | --- |
+| `v.note_on(note, at = nil)` | `note`（ノート番号。`hz(note)` Hz）を`at`秒から鳴らす。`nil`ならいま（鳴らしている`play`の時計、鳴らす前は0） |
+| `v.note_off(note, at = nil)` | `note`をいちばん長く鳴らしている声を、`at`から離す |
+| `v.sequence(notes: Array, step, len = nil, at = nil)` | `at`から`step`秒おきに`notes`を鳴らし、それぞれ`len`秒（`nil`なら`step`）で離す。`nil`のノートは休符 |
+| `v.ends()` | それまでに作ったノートが、余韻を含めて終わる時刻。押さえたままのノートがあれば`Math.inf` |
+| `v.now() -> Float` | いま作るノートが始まる時刻 |
+
+```culebra
+let {sine, adsr, Voices, render} = Synth
+let lead = Voices(4, |f| sine(f) * adsr(0.01, 0.1, 0.6, 0.2) * 0.2)
+lead.sequence([60, 64, 67, nil, 72], step: 0.25, len: 0.2)
+println(lead.ends())  # => 1.4
+println(render(lead, 1.4).size())  # => 61740
 ```
 
 エンベロープは、`t`秒の値を返す`e.at(t)`と、全体の長さを返す`e.duration()`を

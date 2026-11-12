@@ -1,0 +1,177 @@
+# Synth's Voices: notes on voices built ahead, each voice's envelopes started
+# at its notes. The harness keeps the device closed (CULEBRA_AUDIO=off).
+
+let {*} = Synth
+
+fn caught(call) {
+  try {
+    call()
+    nil
+  } catch e {
+    (e.kind, e.message)
+  }
+}
+
+# The largest |x| in samples[from..to) of 44100 a second.
+fn peak(xs, from, to) {
+  xs.slice(Math.floor(from * 44100), Math.floor(to * 44100)).map(|x| Math.abs(x)).max()
+}
+
+# How strong a sine of `freq` is in samples[from..to), from its correlation.
+fn strength(xs, freq, from, to) {
+  let (a, b) = (Math.floor(from * 44100), Math.floor(to * 44100))
+  let w = 2.0 * Math.pi * freq / 44100.0
+  let re = iota(a, b).map(|i| xs[i] * Math.cos(w * i)).sum()
+  let im = iota(a, b).map(|i| xs[i] * Math.sin(w * i)).sum()
+  2.0 * Math.sqrt(re * re + im * im) / (b - a)
+}
+
+# Four short notes in turn: each window holds its own pitch and no other.
+let blips = Voices(4, |f| sine(f) * env([0.0, 0.3, 0.0], [0.01, 0.2]))
+blips.sequence([60, 64, 67, 72], step: 0.25)
+let four = render(blips, 1.1)
+for i, note in [60, 64, 67, 72].enumerate() {
+  for j, other in [60, 64, 67, 72].enumerate() {
+    let s = strength(four, hz(other), 0.25 * i + 0.03, 0.25 * i + 0.2)
+    if i == j {
+      assert_close(s, 0.142, 0.01)
+    } else {
+      assert_true(s < 0.005)
+    }
+  }
+}
+# Between notes the envelope is back at 0.
+assert_true(peak(four, 0.215, 0.248) < 0.01)
+# The notes end where the last one's envelope does.
+assert_close(blips.ends(), 0.96, 1e-9)
+
+# Two voices, three held notes: the third takes the voice playing longest.
+let pads = Voices(2, |f| sine(f) * adsr(0.01, 0.05, 0.6, 0.1) * 0.3)
+pads.note_on(60, at: 0.0)
+pads.note_on(64, at: 0.1)
+pads.note_on(67, at: 0.2)
+assert_eq(pads.ends(), Math.inf)
+pads.note_off(60, at: 0.8)
+pads.note_off(64, at: 0.9)
+pads.note_off(67, at: 1.0)
+let held = render(pads, 1.4)
+assert_true(strength(held, hz(60), 0.14, 0.19) > 0.1)
+assert_true(strength(held, hz(64), 0.14, 0.19) > 0.1)
+assert_true(strength(held, hz(67), 0.14, 0.19) < 0.03)
+assert_true(strength(held, hz(60), 0.3, 0.7) < 0.03)
+assert_true(strength(held, hz(64), 0.3, 0.7) > 0.1)
+assert_true(strength(held, hz(67), 0.3, 0.7) > 0.1)
+# A note off for a note taken over lets nothing go; the others release.
+assert_true(peak(held, 0.95, 0.99) < peak(held, 0.85, 0.89))
+assert_true(peak(held, 1.11, 1.4) < 1e-6)
+assert_close(pads.ends(), 1.1, 1e-9)
+# The voice taken over fades out over 5 ms rather than jumping.
+let steps = iota(Math.floor(0.19 * 44100), Math.floor(0.21 * 44100)).map(|i| Math.abs(held[i] - held[i - 1]))
+assert_true(steps.max() < 0.03)
+
+# A note off lets go the voice playing that note longest: what is left
+# is the later one alone.
+let twice = Voices(2, |f| sine(f) * adsr(0.01, 0.05, 0.6, 0.05))
+twice.note_on(60, at: 0.0)
+twice.note_on(60, at: 0.1)
+twice.note_off(60, at: 0.2)
+let later = Voices(1, |f| sine(f) * adsr(0.01, 0.05, 0.6, 0.05))
+later.note_on(60, at: 0.1)
+let (both, alone) = (render(twice, 0.4), render(later, 0.4))
+assert_true(iota(Math.floor(0.3 * 44100), Math.floor(0.4 * 44100)).all(|i| Math.abs(both[i] - alone[i]) < 1e-9))
+
+# Let go before its attack is done, a note falls from where it is, not
+# from its sustain.
+# (At 0.1 the attack of curve -4 is at 0.88; 3.5 ms into the release, a
+# fall from there is above 0.6, from the sustain of 0.3 below 0.45.)
+let short = Voices(1, |f| sine(f) * adsr(0.2, 0.1, 0.3, 0.1))
+short.note_on(69, at: 0.0)
+short.note_off(69, at: 0.1)
+let fell = render(short, 0.3)
+assert_close(peak(fell, 0.097, 0.1), 0.88, 0.02)
+assert_true(peak(fell, 0.1035, 0.1065) > 0.55)
+assert_true(peak(fell, 0.2, 0.3) < 1e-6)
+
+# Notes are kept in time order, whatever order they are made in: two
+# sequences from one start share the voices, and a note made for before a
+# later one on its voice plays ahead of it.
+let layered = Voices(2, |f| sine(f) * adsr(0.01, 0.05, 0.6, 0.05) * 0.3)
+layered.sequence([60, 62], step: 0.51)
+layered.sequence([67, 69], step: 0.51)
+let both_lines = render(layered, 1.0)
+for note in [60, 67] {
+  assert_true(strength(both_lines, hz(note), 0.1, 0.4) > 0.1)
+}
+for note in [62, 69] {
+  assert_true(strength(both_lines, hz(note), 0.61, 0.9) > 0.1)
+}
+# (At 0.51 the releases overlap the next notes: one note is cut where its
+# voice's next note starts, one voice is taken over; both fade, neither jumps.)
+assert_true(iota(Math.floor(0.49 * 44100), Math.floor(0.53 * 44100)).map(|i| Math.abs(both_lines[i] - both_lines[i - 1])).max() < 0.05)
+let backwards = Voices(1, |f| sine(f) * perc(0.01, 0.2))
+backwards.note_on(60, at: 1.0)
+backwards.note_on(64, at: 0.0)
+let ahead = render(backwards, 1.3)
+assert_true(strength(ahead, hz(64), 0.02, 0.15) > 0.2)
+assert_true(strength(ahead, hz(60), 1.02, 1.15) > 0.2)
+assert_close(backwards.ends(), 1.21, 1e-9)
+
+# A voice is silent until its first note, an envelope or not.
+let drone = Voices(1, |f| sine(f) * 0.2)
+drone.note_on(69, at: 0.3)
+let hum = render(drone, 0.4)
+assert_true(peak(hum, 0.0, 0.3) < 1e-9)
+assert_close(peak(hum, 0.3, 0.4), 0.2, 0.001)
+
+# A part every voice shares (made outside the builder) runs from the start,
+# as anywhere else, its envelope too; the voice's own start at its notes.
+let swell = mix([line(0.0, 1.0, 1.0)])
+let shared = Voices(2, |f| sine(f) * perc(0.0, 2.0, curve: 0.0) * swell)
+shared.note_on(69, at: 0.5)
+let late = render(shared, 0.6)
+assert_true(peak(late, 0.0, 0.5) < 1e-9)
+assert_close(peak(late, 0.5, 0.52), 0.5, 0.03)
+
+# A Voices renders at any rate, its notes kept.
+assert_eq(render(blips, 0.5, rate: 8000).size(), 4000)
+
+# play waits for the notes made, and without wait plays until stopped.
+assert_close((blips |> play()).ends(), 0.96, 1e-9)
+let live = Voices(2, |f| sine(f) * perc(0.01, 0.2))
+let h = live |> play(wait: false)
+assert_eq(h.ends(), nil)
+Time.sleep(0.05)
+live.note_on(69)
+let since = h.now()
+assert_true(strength(h.render(since + 0.15), 440.0, since + 0.02, since + 0.12) > 0.3)
+# A note made while it plays for before one already made there plays ahead
+# of it, and the later one still plays.
+live.note_on(72, at: since + 0.6)
+live.note_on(76, at: since + 0.3)
+live.note_on(79, at: since + 0.3)
+let heard = h.render(since + 0.9)
+assert_true(strength(heard, hz(76), since + 0.32, since + 0.45) > 0.1)
+assert_true(strength(heard, hz(72), since + 0.62, since + 0.75) > 0.1)
+h.stop()
+# A play waited for takes no later notes, and is let go: plays past the 64
+# graphs that play at once at most are fine, and now() is 0 again.
+for i in 0..70 {
+  blips |> play()
+}
+assert_eq(blips.now(), 0.0)
+
+# Mistakes.
+assert_throws("ValueError", || Voices(0, |f| sine(f)))
+assert_throws("TypeError", || Voices(1, |f| 1.0))
+assert_throws("ValueError", || Voices(1, |f| sine([f, f * 2.0])))
+let leaked = {mut f: nil}
+let noted = Voices(1, fn (f) {
+  leaked.f = f
+  sine(f) * perc(0.01, 0.1)
+})
+assert_eq(caught(|| render(sine(leaked.f), 0.1)), ("ValueError", "Synth.Voices: a voice's freq is heard only in what its builder returns"))
+# A note still held never ends, so play waits for it only told how long.
+let holding = Voices(1, |f| sine(f) * adsr(0.01, 0.1, 0.5, 0.2))
+holding.note_on(60, at: 0.0)
+assert_throws("ValueError", || holding |> play())
+assert_close((holding |> play(secs: 0.2)).ends(), 0.2, 1e-9)

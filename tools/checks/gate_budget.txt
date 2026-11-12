@@ -155,7 +155,9 @@
 # sound ends, play with no device, a handle's set and render).
 # 345 since test_synth_loop.cul (Synth's feedback against a loop wired by
 # hand, nested loops and the loops refused, channels from an Array, .range).
-tests.cul 345
+# 346 since test_synth_voices.cul (Synth's Voices: a note per window, a voice
+# taken over and the note offs, notes made while it plays).
+tests.cul 346
 
 # tests/isolate/*.cul — run on both engines, plus the over-cap modes.
 # 21 since test_xml_isolate.cul (an XML element keeps its methods across an
@@ -320,7 +322,8 @@ ctest.entries 41
 # 1176 since Synth's chapter plays a sound it does not wait for, in en and ja:
 # a control set on its handle and the end its envelope gives it. 1178 since
 # its channels and loops, in en and ja: detuned saws mixed, and an echo.
-docs.blocks 1178
+# 1180 since its Voices, in en and ja: a sequence and when it ends.
+docs.blocks 1180
 
 # The samples the language front ends are run over (examples/languages/*).
 languages.samples 130

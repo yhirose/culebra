@@ -6207,40 +6207,68 @@ let _synth_module = fn () {
 
   # ---- from an expression to an Audio.Graph
 
+  # One segment of an envelope on a graph value, from `l0` at `t` to `l1`
+  # `len` later: a ramp when straight, CURVE_STEPS ramps when curved (a
+  # segment 0 long jumps, as a ramp to the time of the change before does).
+  let segment = fn (value, t, l0, l1, len, c) {
+    if c == 0 {
+      value.ramp(t + len, l1)
+    } else {
+      for j in iota(CURVE_STEPS) {
+        let x = (j + 1) / (CURVE_STEPS + 0.0)
+        value.ramp(t + len * x, shape(l0, l1, c, x))
+      }
+    }
+  }
+
+  # An envelope on a graph value from `t0`, a gated one up to its sustain.
+  let run = fn (value, e, t0) {
+    value.set(t0, e.levels[0])
+    mut t = t0
+    for i, len in e.times.enumerate() {
+      segment(value, t, e.levels[i], e.levels[i + 1], len, e.curves[i])
+      t += len
+    }
+  }
+
+  # An envelope on a graph value from the start; a gated one has no time to
+  # be let go here.
+  let schedule = fn (value, e) {
+    if e.release != nil {
+      __raise("ValueError", "Synth: an adsr envelope is held until it is let go: give it the time, adsr(...).hold(secs)")
+    }
+    run(value, e, 0.0)
+  }
+
+  # A graph being built: the graph, the parts built so far by the number
+  # of the SynthPart they stand for, the controls by name, the one constant
+  # source every level is a gain of (made when the first level is), and the
+  # voice of a Voices being built, if one is.
+  fn build_of(g) {
+    {g: g, parts: {}, controls: {}, mut one: nil, mut voice: nil}
+  }
+
   # What a value is made with in the graph: a number as itself, an envelope
   # from its first level, a signal from the value's floor (taken off again
   # in feed).
   let base_of = |spec, floor| spec is SynthPart ? floor : (spec is SynthEnvelope ? spec.levels[0] : spec)
 
-  # An envelope scheduled on a graph value from `t0`: straight segments as
-  # ramps, curved ones as CURVE_STEPS ramps (a segment 0 long jumps, as a
-  # ramp to the time of the change before does). A gated one has no time to
-  # be let go here.
-  let schedule = fn (value, e, t0) {
-    if e.release != nil {
-      __raise("ValueError", "Synth: an adsr envelope is held until it is let go: give it the time, adsr(...).hold(secs)")
-    }
-    value.set(t0, e.levels[0])
-    mut t = t0
-    for i in iota(e.times.size()) {
-      let (l0, l1, len, c) = (e.levels[i], e.levels[i + 1], e.times[i], e.curves[i])
-      if c == 0 {
-        value.ramp(t + len, l1)
-      } else {
-        for j in iota(CURVE_STEPS) {
-          let x = (j + 1) / (CURVE_STEPS + 0.0)
-          value.ramp(t + len * x, shape(l0, l1, c, x))
-        }
-      }
-      t += len
-    }
+  # Whether an envelope on `owner` starts at each of a voice's notes: the
+  # owner is a part the voice's builder made (numbered from the voice's
+  # freq on, the builder having made nothing before it). An envelope on a
+  # part every voice shares runs from the start, as elsewhere.
+  fn owned(b, owner) {
+    b.voice != nil && owner != nil && owner.id >= b.voice.pitch_id
   }
 
-  # A graph being built: the graph, the parts built so far by the number
-  # of the SynthPart they stand for, the controls by name, and the one
-  # constant source every level is a gain of (made when the first level is).
-  fn build_of(g) {
-    {g: g, parts: {}, controls: {}, mut one: nil}
+  # An envelope on a graph value of `owner`: kept for a voice's notes to
+  # start, or run from the start.
+  fn envelope_on(b, owner, value, e) {
+    if owned(b, owner) {
+      b.voice.triggers.push({value: value, envelope: e})
+    } else {
+      schedule(value, e)
+    }
   }
 
   # A constant `v`: a square wave at 0 Hz answers 1 at every sample.
@@ -6249,23 +6277,24 @@ let _synth_module = fn () {
     b.g.gain(b.one, v)
   }
 
-  # A number, an envelope or a part, as a part of the graph that answers it.
-  fn signal(b, v) {
+  # A number, an envelope or a part (of `owner`), as a part of the graph that
+  # answers it.
+  fn signal(b, v, owner) {
     match v {
       SynthPart => part(b, v),
       SynthEnvelope => {
         let p = level(b, v.levels[0])
-        schedule(p.gain, v, 0.0)
+        envelope_on(b, owner, p.gain, v)
         p
       },
       _ => level(b, v),
     }
   }
 
-  # A graph value read as `spec` says, its base already base_of(spec, floor).
-  fn feed(b, value, spec, floor) {
+  # A graph value of `owner` read as `spec` says, its base already base_of's.
+  fn feed(b, owner, value, spec, floor) {
     if spec is SynthEnvelope {
-      schedule(value, spec, 0.0)
+      envelope_on(b, owner, value, spec)
     } else if spec is SynthPart {
       part(b, spec).connect(value)
       level(b, -floor).connect(value) if floor != 0.0
@@ -6292,6 +6321,17 @@ let _synth_module = fn () {
     known.part
   }
 
+  # A voice's freq: a level each note sets, heard only in the voice whose
+  # builder was given it.
+  fn pitch_part(b, p) {
+    if b.voice == nil || b.voice.pitch_id != p.id {
+      __raise("ValueError", "Synth.Voices: a voice's freq is heard only in what its builder returns")
+    }
+    let q = level(b, 440.0)
+    b.voice.pitch = q.gain
+    q
+  }
+
   # A feedback's x is a mix its expression's answer is connected back into,
   # made before the expression so the expression can read it.
   fn close_loop(b, p) {
@@ -6309,67 +6349,75 @@ let _synth_module = fn () {
     match p.kind {
       "wave" => {
         let w = g.wave(o.kind, freq: base_of(v.freq, 0.0), feedback: base_of(v.feedback, 0.0), phase: base_of(v.phase, 0.0))
-        feed(b, w.freq, v.freq, 0.0)
-        feed(b, w.feedback, v.feedback, 0.0)
-        feed(b, w.phase, v.phase, 0.0)
+        feed(b, p, w.freq, v.freq, 0.0)
+        feed(b, p, w.feedback, v.feedback, 0.0)
+        feed(b, p, w.phase, v.phase, 0.0)
         w
       },
       "noise" => g.noise(o.seed),
-      "level" => signal(b, v.level),
+      "level" => signal(b, v.level, p),
       "control" => control_part(b, o),
+      "pitch" => pitch_part(b, p),
       # close_loop builds x; graph_of has refused an x outside its loop.
       "loop" => __raise("ValueError", "Synth.feedback: x is heard only in the expression its function returns"),
       "mix" => g.mix(p.inputs.map(|i| part(b, i))),
       "gain" => {
         let q = g.gain(input, base_of(v.gain, 0.0))
-        feed(b, q.gain, v.gain, 0.0)
+        feed(b, p, q.gain, v.gain, 0.0)
         q
       },
       "filter" => {
         # A cutoff is more than 0 Hz: a signal's base is 1 Hz, taken off again.
         let q = g.filter(o.kind, input, cutoff: base_of(v.cutoff, 1.0), q: o.q)
-        feed(b, q.cutoff, v.cutoff, 1.0)
+        feed(b, p, q.cutoff, v.cutoff, 1.0)
         q
       },
       "delay" => {
         let q = g.delay(input, base_of(v.time, 0.0))
-        feed(b, q.time, v.time, 0.0)
+        feed(b, p, q.time, v.time, 0.0)
         q
       },
       "pluck" => {
         # A string's freq is 20 Hz or more: a signal's base is 20 Hz.
         let q = g.pluck(input, freq: base_of(v.freq, 20.0), ring: base_of(v.ring, 0.0))
-        feed(b, q.freq, v.freq, 20.0)
-        feed(b, q.ring, v.ring, 0.0)
+        feed(b, p, q.freq, v.freq, 20.0)
+        feed(b, p, q.ring, v.ring, 0.0)
         q
       },
       "resonate" => g.resonate(input, o.modes, dry: o.dry),
       "drive" => {
         let q = g.drive(input, base_of(v.gain, 0.0))
-        feed(b, q.gain, v.gain, 0.0)
+        feed(b, p, q.gain, v.gain, 0.0)
         q
       },
       _ => g.limit(input, ceiling: o.ceiling, release: o.release),
     }
   }
 
-  # The graph an expression stands for, its output set, and its controls.
-  fn graph_of(expr, rate) {
+  # An expression that plays as one sound: one channel, its loops closed.
+  let check_playable = fn (expr) {
     if expr is SynthPart && expr.kind == "bundle" {
       __raise("ValueError", "Synth: {expr.inputs.size()} channels play mixed to one, .mix()")
     }
     if expr is SynthPart && !open_loops(expr).empty() {
       __raise("ValueError", "Synth.feedback: x is heard only in the expression its function returns")
     }
+  }
+
+  # The graph an expression stands for, its output set: the graph, its
+  # controls and its output part.
+  fn graph_of(expr, rate) {
+    check_playable(expr)
     let g = Audio.Graph(rate)
     let b = build_of(g)
-    g.output(signal(b, expr))
-    {g: g, controls: b.controls}
+    let out = signal(b, expr, nil)
+    g.output(out)
+    {g: g, controls: b.controls, out: out}
   }
 
   # The first `seconds` of `expr`, as samples: what play would play.
-  let render = fn (expr: SynthPart | SynthEnvelope, seconds: Long | Float, rate: Long | Float = 44100) {
-    graph_of(expr, rate).g.render(seconds)
+  let render = fn (expr: SynthPart | SynthEnvelope | SynthVoices, seconds: Long | Float, rate: Long | Float = 44100) {
+    (expr is SynthVoices ? expr._built(rate) : graph_of(expr, rate)).g.render(seconds)
   }
 
   # ---- when an expression ends
@@ -6380,13 +6428,20 @@ let _synth_module = fn () {
   # input (the longest delay, the string's 60 dB ring), as a resonance does
   # (60 dB of a mode `width` Hz wide is 6.91 / (pi * width) seconds), a
   # filter's `cutoff / q` wide at its lowest cutoff (one a signal moves adds
-  # none: the input's end decides).
-  fn ending(expr) {
+  # none: the input's end decides). A gated envelope ends once it is let go,
+  # `held` seconds from its start, and never while it is held.
+  fn ending(expr, held = nil) {
     let known = {}
+    fn envelope_end(e) {
+      if e.release != nil {
+        return held == nil ? Math.inf : envelope_end(e.hold(held))
+      }
+      e.levels[e.levels.size() - 1] == 0 ? e.duration() : Math.inf
+    }
     fn value_end(v) {
       match v {
         SynthPart => tail(v),
-        SynthEnvelope => v.levels[v.levels.size() - 1] == 0 ? v.duration() : Math.inf,
+        SynthEnvelope => envelope_end(v),
         _ => v == 0 ? 0.0 : Math.inf,
       }
     }
@@ -6489,21 +6544,198 @@ let _synth_module = fn () {
     })
   }
 
+  # ---- voices
+
+  # How long a voice taken from the note it plays fades out first.
+  let STEAL_FADE = 0.005
+
+  # A note's change to a Voices' graph: a note on starts the voice's
+  # envelopes and sets its freq (after fading the voice out, when the note
+  # takes it from another), a note off lets its gated envelopes go as
+  # `hold` does, and a cut fades the voice out until its next note. On a
+  # playing graph the cancels land at its clock at the earliest, so what
+  # follows them starts from there.
+  fn apply_note(built, e) {
+    let v = built.voices[e.voice]
+    if e.kind == "cut" {
+      v.gate.cancel(e.at)
+      v.gate.ramp(Math.max(e.until, built.g.now()), 0.0)
+    } else if e.kind == "on" {
+      v.gate.cancel(e.at)
+      v.pitch.cancel(e.at) if v.pitch != nil
+      v.triggers.for_each(|tr| tr.value.cancel(e.at))
+      let start = Math.max(e.at, built.g.now()) + (e.start - e.at)
+      v.gate.ramp(start, 0.0) if e.start > e.at
+      v.gate.set(start, 1.0)
+      v.pitch.set(start, hz(e.note)) if v.pitch != nil
+      v.triggers.for_each(|tr| run(tr.value, tr.envelope, start))
+    } else {
+      v.gated.for_each(|tr| tr.value.cancel(e.at))
+      let t = Math.max(e.at, built.g.now())
+      for tr in v.gated {
+        let held = tr.envelope.hold(e.held + t - e.at)
+        let last = held.times.size() - 1
+        segment(tr.value, t, held.levels[last], 0.0, held.times[last], held.curves[last])
+      }
+    }
+  }
+
+  # `count` voices, each the expression `builder` returns for its freq (a
+  # signal in Hz each note sets): a note goes to a voice free for as long as
+  # it sounds, or else takes the voice whose sounding note began first. A
+  # Voices keeps its notes, by voice and in time order, so render and play
+  # build its graph with them; a note made while it plays is heard there too.
+  class SynthVoices {
+    new(count: Long, builder: Function) {
+      __raise("ValueError", "Synth.Voices: count is 1 or more") if count < 1
+      @_voices = iota(count).map(fn (i) {
+        let pitch = SynthPart("pitch", [], {}, {})
+        let expr = builder(pitch)
+        __raise("TypeError", "type error: Synth.Voices' builder returns a SynthPart or a SynthEnvelope") unless expr is SynthPart | SynthEnvelope
+        let sound = to_part(expr)
+        check_playable(sound)
+        {index: i, pitch_id: pitch.id, expr: sound, natural: ending(sound), notes: []}
+      })
+      @_events = []
+      @_playing = []
+    }
+    # Where a note made now starts: the clock of the last play of it still
+    # playing, or 0.
+    now() {
+      let live = self._live()
+      live.empty() ? 0.0 : live[live.size() - 1].handle.now()
+    }
+    # `note` (a note number) from `at` (now when nil): on a voice free for as
+    # long as it sounds; or else on one silent then, until that voice's next
+    # note (fading out over the STEAL_FADE before it); or else on the voice
+    # whose sounding note began first, which fades out first.
+    note_on(note: Long | Float, at: Long | Float | Nil = nil) {
+      __raise("ValueError", "Synth.Voices: note is a finite number") if !finite(note)
+      let t = self._time(at)
+      let next_of = |v| v.notes.filter(|n| n.start > t).reduce(Math.inf, |m, n| Math.min(m, n.start))
+      let sounding_on = |v| v.notes.find(|n| n.start <= t && t < n.free)
+      mut voice = @_voices.find(|v| !v.notes.any(|n| n.start < t + v.natural && n.free > t))
+      mut start = t
+      mut cut = nil
+      if voice == nil {
+        let silent = @_voices.filter(|v| sounding_on(v) == nil)
+        if !silent.empty() {
+          voice = silent.max_by(next_of)
+          cut = next_of(voice)
+        } else {
+          voice = @_voices.min_by(|v| sounding_on(v).start)
+          let taken = sounding_on(voice)
+          start = t + STEAL_FADE
+          taken.free = start
+          taken.held = false
+        }
+      }
+      voice.notes.push({note: note, at: t, start: start, mut free: Math.min(start + voice.natural, next_of(voice)), mut held: true})
+      self._add({kind: "on", voice: voice.index, at: t, start: start, note: note})
+      self._add({kind: "cut", voice: voice.index, at: Math.max(t, cut - STEAL_FADE), until: cut}) if cut != nil
+    }
+    # The note `note` held longest let go from `at` (now when nil): its
+    # gated envelopes fall to 0 over their release.
+    note_off(note: Long | Float, at: Long | Float | Nil = nil) {
+      let t = self._time(at)
+      let held = @_voices.flat_map(|v| v.notes.filter(|n| n.held && n.note == note && n.at <= t).map(|n| (v, n)))
+      return nil if held.empty()
+      let (voice, chosen) = held.min_by(|vn| vn[1].start)
+      chosen.held = false
+      let from = Math.max(t, chosen.start)
+      # A note another has taken the voice from has nothing left to let go.
+      return nil if from >= chosen.free
+      chosen.free = Math.min(chosen.free, chosen.start + ending(voice.expr, from - chosen.start))
+      self._add({kind: "off", voice: voice.index, at: from, held: from - chosen.start})
+    }
+    # `notes` one `step` apart from `at` (now when nil), each `len` long (a
+    # step when nil); a nil note is a rest.
+    sequence(notes: Array, step: Long | Float, len: Long | Float | Nil = nil, at: Long | Float | Nil = nil) {
+      __raise("ValueError", "Synth.Voices.sequence: step is more than 0") if !(finite(step) && step > 0)
+      __raise("ValueError", "Synth.Voices.sequence: len is more than 0") if len != nil && !(finite(len) && len > 0)
+      let t0 = self._time(at)
+      for i, note in notes.enumerate() {
+        if note != nil {
+          self.note_on(note, at: t0 + step * i)
+          self.note_off(note, at: t0 + step * i + (len ?? step))
+        }
+      }
+    }
+    # When the notes made so far have ended, Math.inf while one is held.
+    ends() {
+      @_voices.flat_map(|v| v.notes.map(|n| n.free)).reduce(0.0, |m, f| Math.max(m, f))
+    }
+    _time(at) {
+      __raise("ValueError", "Synth.Voices: at is a finite number of seconds, 0 or more") if at != nil && !nonnegative(at)
+      at ?? self.now()
+    }
+    # The plays not waited for that still play; the others are let go.
+    _live() {
+      @_playing = @_playing.filter(|p| p.handle.playing())
+      @_playing
+    }
+    # A note's event kept in time order. A playing graph hears it, and then
+    # its voice's events made for later, which the event's cancels dropped.
+    _add(e) {
+      mut i = @_events.size()
+      while i > 0 && @_events[i - 1].at > e.at {
+        i -= 1
+      }
+      @_events.insert(i, e)
+      let later = @_events.slice(i + 1, @_events.size()).filter(|x| x.voice == e.voice)
+      for p in self._live() {
+        apply_note(p.built, e)
+        let from = Math.max(e.at, p.built.g.now())
+        later.filter(|x| x.at > from).for_each(|x| apply_note(p.built, x))
+      }
+    }
+    # The graph at `rate`, with the notes made so far: a gain per voice (0
+    # until its first note, its gate) and their mix the output.
+    _built(rate) {
+      let g = Audio.Graph(rate)
+      let b = build_of(g)
+      let voices = @_voices.map(fn (v) {
+        b.voice = {pitch_id: v.pitch_id, mut pitch: nil, triggers: []}
+        let gate = g.gain(part(b, v.expr), 0.0)
+        let triggers = b.voice.triggers
+        let voice = {part: gate, gate: gate.gain, pitch: b.voice.pitch, triggers: triggers, gated: triggers.filter(|tr| tr.envelope.release != nil)}
+        b.voice = nil
+        voice
+      })
+      let out = g.mix(voices.map(|v| v.part))
+      g.output(out)
+      let built = {g: g, controls: b.controls, out: out, voices: voices}
+      @_events.for_each(|e| apply_note(built, e))
+      built
+    }
+    _played(built, handle) {
+      @_playing.push({built: built, handle: handle})
+    }
+  }
+
   # `expr` played: until `secs`, or else until it ends on its own. With
   # `wait`, play returns when it has ended (at once when no device plays);
-  # without, it returns the handle and the sound plays on.
-  let play = fn (expr: SynthPart | SynthEnvelope, wait: Bool = true, secs: Long | Float | Nil = nil) {
+  # without, it returns the handle and the sound plays on (a Voices until it
+  # is stopped, as notes may come).
+  let play = fn (expr: SynthPart | SynthEnvelope | SynthVoices, wait: Bool = true, secs: Long | Float | Nil = nil) {
     let_go_ended()
     __raise("ValueError", "Synth.play: secs is a finite number, 0 or more") if secs != nil && !nonnegative(secs)
-    # Told `secs`, silent from then on, on the graph's own clock.
-    let built = graph_of(secs == nil ? expr : to_part(expr) * env([1.0, 1.0, 0.0], [secs, 0.0]), 44100)
-    let natural = ending(expr)
+    let voices = expr is SynthVoices
+    let built = voices ? expr._built(44100) : graph_of(expr, 44100)
+    if secs != nil {
+      # Silent from `secs` on, on the graph's own clock.
+      let muted = built.g.gain(built.out, 1.0)
+      schedule(muted.gain, env([1.0, 1.0, 0.0], [secs, 0.0]))
+      built.g.output(muted)
+    }
+    let natural = voices ? (wait ? expr.ends() : Math.inf) : ending(expr)
     let ends = secs ?? (natural == Math.inf ? nil : natural)
     if wait && ends == nil {
-      __raise("ValueError", "Synth.play: the sound does not end on its own (an oscillator or a loop plays on); give it secs, or play it with wait: false")
+      __raise("ValueError", "Synth.play: the sound does not end on its own (an oscillator, a loop or a held note plays on); give it secs, or play it with wait: false")
     }
     built.g.play()
     let h = SynthHandle(built.g, built.controls, ends)
+    expr._played(built, h) if voices && !wait
     if !wait {
       unwaited.handles.push(h)
     } else if Audio.available() {
@@ -6528,6 +6760,7 @@ let _synth_module = fn () {
     control: control,
     mix: mix,
     feedback: feedback_loop,
+    Voices: SynthVoices,
     hz: hz,
     db: db,
     render: render,

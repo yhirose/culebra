@@ -1201,3 +1201,8 @@ h.ends()
 h.now() -> Float
 h.set(name, v, secs = 0.0, at = nil)
 h.render(seconds) -> Array
+v.note_on(note, at = nil)
+v.note_off(note, at = nil)
+v.sequence(notes: Array, step, len = nil, at = nil)
+v.ends()
+v.now() -> Float

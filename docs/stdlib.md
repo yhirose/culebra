@@ -10256,12 +10256,12 @@ check, when `render` builds it at its rate, with the graph's `ValueError`.
 | `Synth.line(lo, hi, dur, curve = 0.0)` | `env([lo, hi], [dur], curve)` |
 | `Synth.xline(lo, hi, dur)` | `env([lo, hi], [dur], "exp")`: `lo * (hi / lo) ^ (t / dur)`, the two of one sign and not 0 |
 | `Synth.perc(attack, release, peak = 1.0, curve = -4.0)` | `env([0, peak, 0], [attack, release], curve)`: a struck sound's envelope |
-| `Synth.adsr(attack, decay, sustain, release, peak = 1.0, curve = -4.0)` | a gated envelope: up to `peak`, down to `sustain * peak`, held there until it is let go, then down to 0 over `release`. `e.hold(secs)` lets it go `secs` from its start (from the level it has then); unheld, it plays only where a note's end lets it go, and is a `ValueError` elsewhere |
+| `Synth.adsr(attack, decay, sustain, release, peak = 1.0, curve = -4.0)` | a gated envelope: up to `peak`, down to `sustain * peak`, held there until it is let go, then down to 0 over `release`. `e.hold(secs)` lets it go `secs` from its start (from the level it has then); unheld, it plays in a `Voices`, whose note off lets it go, and is a `ValueError` elsewhere |
 | `Synth.control(name, init, lo = nil, hi = nil)` | a value named `name`, `init` until the handle `play` gave sets it (kept to `lo..hi` when they are given, `init` among them); controls of one name in an expression are one value, and are made alike |
-| `Synth.play(expr, wait = true, secs = nil) -> SynthHandle` | the expression played until `secs`, or else until it ends on its own (below); with `wait` it returns once it has ended, without it at once, the sound playing on until it ends or is stopped. A sound that does not end on its own (an oscillator, a loop) needs `secs` or `wait: false`, else `ValueError`. With no device nothing sounds and it returns at once |
+| `Synth.play(expr, wait = true, secs = nil) -> SynthHandle` | the expression (or a `Voices`, below) played until `secs`, or else until it ends on its own (below); with `wait` it returns once it has ended, without it at once, the sound playing on until it ends or is stopped (a `Voices` until it is stopped, as notes may come). A sound that does not end on its own (an oscillator, a loop, a note still held) needs `secs` or `wait: false`, else `ValueError`. With no device nothing sounds and it returns at once |
 | `Synth.hz(note) -> Float` | a note number's frequency: 69 is 440 Hz, a semitone a twelfth of an octave |
 | `Synth.db(x) -> Float` | decibels as a gain: 0 is 1.0, -6 about 0.5 |
-| `Synth.render(expr, seconds, rate = 44100) -> Array` | the first `seconds` of the expression (a part or an envelope), as `Audio.Graph`'s `render` works them out |
+| `Synth.render(expr, seconds, rate = 44100) -> Array` | the first `seconds` of the expression (a part, an envelope or a `Voices`), as `Audio.Graph`'s `render` works them out |
 
 | Method of a part | Effect |
 | --- | --- |
@@ -10321,6 +10321,37 @@ it is silent from then on, on the graph's own clock.
   h.set("freq", 660.0, at: 0.5)
   h.stop()
 }
+```
+
+`Synth.Voices(count, builder)` plays notes: `builder(freq)` returns a
+voice's expression for its `freq`, a signal in Hz each note sets, and it is
+called once per voice when the `Voices` is made. A note on starts a
+voice's envelopes from their first level; a gated one (`adsr`) holds until
+the note's off, then falls from where it is. A note goes to a voice free
+for as long as it sounds; or else to one silent when it starts, until that
+voice's next note (fading out over the 5 ms before it); or else to the
+voice whose sounding note began first, which fades out over 5 ms first. A
+voice is silent until its first note, and a part every voice shares (made
+outside the builder, as a vibrato) runs from the start, its envelopes too.
+A `Voices` keeps its notes in time order, whatever order they are made in
+(two sequences from one start share the voices), so `render` and `play`
+build its graph with them; a note made while it plays is heard there too,
+from the graph's clock.
+
+| Method of a `Voices` | Effect |
+| --- | --- |
+| `v.note_on(note, at = nil)` | `note` (a note number, `hz(note)` Hz) from `at` seconds, now when `nil` (the clock of the play of it still playing, 0 before one) |
+| `v.note_off(note, at = nil)` | the voice playing `note` longest let go from `at` |
+| `v.sequence(notes: Array, step, len = nil, at = nil)` | the notes `step` seconds apart from `at`, each `len` long (a `step` when `nil`); a `nil` note is a rest |
+| `v.ends()` | when the notes made so far have ended, their tails included; `Math.inf` while one is held |
+| `v.now() -> Float` | where a note made now starts |
+
+```culebra
+let {sine, adsr, Voices, render} = Synth
+let lead = Voices(4, |f| sine(f) * adsr(0.01, 0.1, 0.6, 0.2) * 0.2)
+lead.sequence([60, 64, 67, nil, 72], step: 0.25, len: 0.2)
+println(lead.ends())  # => 1.4
+println(render(lead, 1.4).size())  # => 61740
 ```
 
 An envelope answers `e.at(t)`, its level at `t` seconds, and `e.duration()`.
