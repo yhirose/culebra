@@ -10420,6 +10420,37 @@ println(lead.ends())  # => 1.4
 println(render(lead, 1.4).size())  # => 61740
 ```
 
+`Synth.Proxy(fade = 0.05)` is a box whose sound is replaced while it plays.
+`box.set(expr)` plays `expr` (a part, an envelope or a `Voices`) and fades
+out the sound the box played before, in a straight line over `fade`
+seconds, as `expr` fades in over the same; a sound that ends on its own
+starts at full, so a stroke keeps its attack. The first `set` starts the
+box, and `box.stop()` fades out what it plays and leaves it empty until the
+next `set`. A `set` that fails (a sound that does not build, or one graph
+more than may play) leaves the box as it was. While a sound fades out the
+box plays two graphs, and one that has faded out keeps its graph, silent,
+until the next `play` or `set` lets it go: from its second `set` a box
+counts as two of the 64 graphs that play at once. A box dropped while it
+plays plays on, as a sound played without `wait` does, and a `Voices` set
+again is built anew, its notes from the new graph's start, as a second
+`play` of it is. A `fade` that is not a finite number, 0 or more, is a
+`ValueError`.
+
+| Method of a `Proxy` | Effect |
+| --- | --- |
+| `box.set(expr)` | `expr` played, the sound before it faded out over `fade` as `expr` fades in (at once when it ends on its own) |
+| `box.stop()` | what it plays faded out over `fade`, and the box empty; nothing when it is empty |
+
+```culebra
+{
+  let {*} = Synth
+  let box = Proxy(fade: 0.05)
+  box.set(saw(110.0).lowpass(800.0) * 0.2)
+  box.set(saw([110.0, 110.77]).mix().lowpass(1200.0) * 0.1)  # crossfades
+  box.stop()
+}
+```
+
 The five functions that take a part or samples let samples chain as a
 part does once their names are in scope: `samples.lowpass(800.0)` is
 `Audio.filter(samples, "low", 800.0)`, and a part's `.lowpass` is its own

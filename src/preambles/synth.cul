@@ -756,16 +756,17 @@ let _synth_module = fn () {
   # ---- playing
 
   # A sound playing: stop() silences it, set() moves a control, and the
-  # graph's clock says where it is.
+  # graph's clock says where it is. `fader` is the gain of its output.
   class SynthHandle {
-    new(graph, controls: Object, ends: Long | Float | Nil) {
+    new(graph, controls: Object, fader, ends: Long | Float | Nil) {
       @_graph = graph
       @_controls = controls
+      @_fader = fader
       @_ends = ends
       @_stopped = false
     }
-    # When it ends (at play's secs, or else on its own), in seconds from its
-    # start; nil for never.
+    # When it ends (at play's secs, once a Proxy has faded it out, or else on
+    # its own), in seconds from its start; nil for never.
     ends() {
       @_ends
     }
@@ -785,15 +786,7 @@ let _synth_module = fn () {
       let c = @_controls.get(name, nil)
       __raise("ValueError", "Synth.set: no control named `{name}` in what plays") if c == nil
       __raise("ValueError", "Synth.set: secs is a finite number, 0 or more") if !nonnegative(secs)
-      let to = Math.clamp(v, c.lo ?? -Math.inf, c.hi ?? Math.inf)
-      c.value.cancel(at ?? @_graph.now())
-      # A playing graph's cancel lands at its clock at the earliest; from there.
-      let t = Math.max(at ?? 0.0, @_graph.now())
-      if secs > 0 {
-        c.value.ramp(t + secs, to)
-      } else {
-        c.value.set(t, to)
-      }
+      self._move(c.value, Math.clamp(v, c.lo ?? -Math.inf, c.hi ?? Math.inf), at ?? @_graph.now(), secs)
     }
     # Its first `seconds`, as what plays them works them out, the changes
     # made to it so far included.
@@ -804,6 +797,29 @@ let _synth_module = fn () {
       while @_graph.now() < @_ends {
         Time.sleep(Math.max(0.005, @_ends - @_graph.now()))
       }
+    }
+    # Up from silence at its start to full over `over` seconds (before it
+    # plays, so the first block is silent too).
+    _fade_in(over: Long | Float) {
+      @_fader.set(0.0, 0.0).ramp(over, 1.0)
+    }
+    # Down to silence from `at` in a straight line over `over` seconds, where
+    # it ends.
+    _end(at: Long | Float, over: Long | Float) {
+      @_ends = self._move(@_fader, 0.0, at, over)
+    }
+    # `value` to `to` from `at`, in a straight line over `secs` when more than
+    # 0; when it gets there. A playing graph's cancel lands at its clock at
+    # the earliest, so the move starts from there.
+    _move(value, to: Long | Float, at: Long | Float, secs: Long | Float) {
+      value.cancel(at)
+      let t = Math.max(at, @_graph.now())
+      if secs > 0 {
+        value.ramp(t + secs, to)
+      } else {
+        value.set(t, to)
+      }
+      t + secs
     }
   }
 
@@ -1053,6 +1069,32 @@ let _synth_module = fn () {
     built.g.render(secs)
   }
 
+  # `expr` built to play, not yet playing: its graph's output goes through
+  # a gain the handle keeps at 1 until told otherwise, and the handle ends
+  # when the sound does on its own (never for a Voices not waited for, as
+  # notes may come).
+  fn prepared(expr, wait) {
+    let built = built_of(expr, 44100)
+    let fader = built.g.gain(built.out, 1.0)
+    built.g.output(fader)
+    let natural = expr is SynthVoices && !wait ? Math.inf : natural_end(expr)
+    {expr, built, handle: SynthHandle(built.g, built.controls, fader.gain, natural == Math.inf ? nil : natural)}
+  }
+
+  # A prepared sound played: waited for until it ends, or else kept until
+  # it ends, so that it plays on when nothing holds its handle.
+  fn started(p, wait) {
+    p.built.g.play()
+    p.expr._played(p.built, p.handle) if p.expr is SynthVoices && !wait
+    if !wait {
+      unwaited.handles.push(p.handle)
+    } else if Audio.available() {
+      p.handle._wait()
+      p.handle.stop()
+    }
+    p.handle
+  }
+
   # `expr` played: until `secs`, or else until it ends on its own. With
   # `wait`, play returns when it has ended (at once when no device plays);
   # without, it returns the handle and the sound plays on (a Voices until it
@@ -1060,29 +1102,42 @@ let _synth_module = fn () {
   let play = fn (expr: SynthPart | SynthEnvelope | SynthVoices, wait: Bool = true, secs: Long | Float | Nil = nil) {
     let_go_ended()
     __raise("ValueError", "Synth.play: secs is a finite number, 0 or more") if secs != nil && !nonnegative(secs)
-    let voices = expr is SynthVoices
-    let built = built_of(expr, 44100)
-    if secs != nil {
-      # Silent from `secs` on, on the graph's own clock.
-      let muted = built.g.gain(built.out, 1.0)
-      schedule(muted.gain, env([1.0, 1.0, 0.0], [secs, 0.0]))
-      built.g.output(muted)
+    let p = prepared(expr, wait)
+    # Silent from `secs` on, on the graph's own clock.
+    p.handle._end(secs, 0.0) if secs != nil
+    __raise("ValueError", "Synth.play: {NO_END}; give it secs, or play it with wait: false") if wait && p.handle.ends() == nil
+    started(p, wait)
+  }
+
+  # A sound whose expression is replaced while it plays: set(expr) plays
+  # `expr` and fades out the one before over `fade` seconds as `expr` fades
+  # in (at once when it ends on its own), and stop() fades it out. What has
+  # faded out is let go at the next play or set.
+  class SynthProxy {
+    new(fade: Long | Float = 0.05) {
+      __raise("ValueError", "Synth.Proxy: fade is a finite number, 0 or more") if !nonnegative(fade)
+      @_fade = fade
+      @_current = nil
     }
-    let natural = voices && !wait ? Math.inf : natural_end(expr)
-    let ends = secs ?? (natural == Math.inf ? nil : natural)
-    if wait && ends == nil {
-      __raise("ValueError", "Synth.play: {NO_END}; give it secs, or play it with wait: false")
+    # A sound that fails to build or to play leaves the box as it was.
+    set(expr: SynthPart | SynthEnvelope | SynthVoices) {
+      let_go_ended()
+      let p = prepared(expr, false)
+      p.handle._fade_in(@_fade) if p.handle.ends() == nil
+      let h = started(p, false)
+      self._fade_out()
+      @_current = h
+      nil
     }
-    built.g.play()
-    let h = SynthHandle(built.g, built.controls, ends)
-    expr._played(built, h) if voices && !wait
-    if !wait {
-      unwaited.handles.push(h)
-    } else if Audio.available() {
-      h._wait()
-      h.stop()
+    stop() {
+      self._fade_out()
+      @_current = nil
     }
-    h
+    # An ended sound is left as it is: its end stays where it was.
+    _fade_out() {
+      let h = @_current
+      h._end(h.now(), @_fade) if h != nil && h.playing()
+    }
   }
 
   {
@@ -1105,6 +1160,7 @@ let _synth_module = fn () {
     mix: mix,
     feedback: feedback_loop,
     Voices: SynthVoices,
+    Proxy: SynthProxy,
     lowpass: lowpass,
     highpass: highpass,
     bandpass: bandpass,

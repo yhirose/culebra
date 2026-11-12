@@ -1226,3 +1226,5 @@ v.note_off(note, at = nil)
 v.sequence(notes: Array, step, len = nil, at = nil)
 v.ends()
 v.now() -> Float
+box.set(expr)
+box.stop()

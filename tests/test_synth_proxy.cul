@@ -1,0 +1,124 @@
+# Synth.Proxy: a sound replaced while it plays. The harness keeps the
+# device closed (CULEBRA_AUDIO=off), so each graph's clock runs from its
+# play; what a box's graphs play is checked through their handles' render.
+
+let {*} = Synth
+
+let RATE = 44100
+# 1 at every sample, so what a box plays is the level of its output.
+let one = sine(0.0, phase: Math.pi / 2.0)
+let level = |s, t| s[Math.floor(t * RATE)]
+
+# The first set fades in over the box's fade, a sound with no end of its own.
+let box = Proxy(fade: 0.01)
+box.set(one)
+let first = box._current
+let s1 = first.render(0.05)
+assert_close(level(s1, 0.0), 0.0, 1e-9)
+assert_close(level(s1, 0.005), 0.5, 0.01)
+assert_close(level(s1, 0.02), 1.0, 1e-9)
+assert_eq(first.ends(), nil)
+
+# The next set fades the one before out from its clock, as the new one fades in.
+Time.sleep(0.03)
+box.set(one * 0.5)
+let second = box._current
+let switched = first.ends() - 0.01
+let old = first.render(switched + 0.03)
+assert_close(level(old, switched - 0.005), 1.0, 1e-9)
+assert_close(level(old, switched + 0.005), 0.5, 0.01)
+assert_true(old.slice(Math.ceil((switched + 0.01) * RATE), old.size()).all(|x| x == 0.0))
+let fresh = second.render(0.03)
+assert_close(level(fresh, 0.0), 0.0, 1e-9)
+assert_close(level(fresh, 0.005), 0.25, 0.01)
+assert_close(level(fresh, 0.02), 0.5, 1e-9)
+
+# stop fades it out, and the box is empty: a stop then does nothing, and a
+# set plays again, fading in.
+Time.sleep(0.03)
+box.stop()
+let stopped = second.ends() - 0.01
+assert_close(level(second.render(stopped + 0.03), stopped + 0.005), 0.25, 0.01)
+assert_eq(box._current, nil)
+box.stop()
+box.set(one)
+assert_close(level(box._current.render(0.01), 0.0), 0.0, 1e-9)
+box.stop()
+
+# Replaced while it fades in, a sound fades out from the level it has.
+let slow = Proxy(fade: 0.1)
+slow.set(one)
+let rising = slow._current
+Time.sleep(0.03)
+slow.set(one)
+let cut = rising.ends() - 0.1
+let held = cut / 0.1
+let fall = rising.render(cut + 0.12)
+assert_close(level(fall, cut), held, 0.01)
+assert_close(level(fall, cut + 0.05), held * 0.5, 0.01)
+slow.stop()
+
+# A sound that ends on its own starts at once, and ends where it did, even
+# when it is let go after it has ended.
+let once = Proxy(fade: 0.05)
+once.set(one * line(1.0, 0.0, 0.01))
+let short = once._current
+assert_close(level(short.render(0.01), 0.0), 1.0, 1e-9)
+assert_close(short.ends(), 0.01, 1e-9)
+Time.sleep(0.02)
+once.stop()
+assert_close(short.ends(), 0.01, 1e-9)
+
+# With no fade, a set switches at once: full from the start, and silent for
+# good from the switch.
+let cuts = Proxy(fade: 0.0)
+cuts.set(one)
+let before = cuts._current
+assert_close(level(before.render(0.01), 0.0), 1.0, 1e-9)
+Time.sleep(0.01)
+cuts.set(one)
+let at = before.ends()
+let after = before.render(at + 0.1)
+assert_close(level(after, at - 0.001), 1.0, 1e-9)
+assert_true(after.slice(Math.ceil(at * RATE) + 1, after.size()).all(|x| x == 0.0))
+# What it replaced is let go at the next set: 70 sets keep fewer than the
+# 64 graphs that play at once.
+for _ in 0..70 {
+  cuts.set(one)
+}
+cuts.stop()
+
+# A set that fails leaves the box as it was, the sound before it playing on.
+let kept = Proxy(fade: 0.01)
+kept.set(one)
+let playing = kept._current
+assert_throws("ValueError", || kept.set(sine(440.0) * adsr(0.01, 0.1, 0.5, 0.2)), message: "Synth: an adsr envelope is held until it is let go: give it the time, adsr(...).hold(secs)")
+assert_eq(playing.ends(), nil)
+let fill = []
+for _ in 0..64 {
+  try {
+    fill.push(one * 0.5 |> play(wait: false))
+  } catch _ {
+    break
+  }
+}
+assert_throws("ValueError", || kept.set(one), message: "Audio.Graph: 64 graphs play at once at most")
+fill.for_each(|h| h.stop())
+assert_eq(kept._current, playing)
+assert_eq(playing.ends(), nil)
+assert_true(playing.render(0.1).slice(882, 4410).all(|x| x == 1.0))
+kept.stop()
+
+# A Voices in a box plays the notes made while it is there.
+let lead = Voices(2, |f| sine(f) * perc(0.001, 0.05))
+let band = Proxy()
+band.set(lead)
+let notes = band._current
+lead.note_on(69)
+let from = Math.ceil(lead.now() * RATE)
+assert_true(notes.render(lead.now() + 0.03).slice(from, from + 1000).any(|x| x != 0.0))
+band.stop()
+
+# The fade is a finite number of seconds, 0 or more.
+assert_throws("ValueError", || Proxy(fade: -1.0), message: "Synth.Proxy: fade is a finite number, 0 or more")
+assert_throws("ValueError", || Proxy(fade: Math.inf), message: "Synth.Proxy: fade is a finite number, 0 or more")

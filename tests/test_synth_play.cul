@@ -89,6 +89,7 @@ assert_close(timed.ends(), 0.1, 1e-9)
 let after = timed.render(0.2)
 assert_true(after.slice(0, 4400).any(|x| x != 0.0))
 assert_true(after.slice(4410, 8820).all(|x| x == 0.0))
+assert_true(after[4409] != 0.0)
 
 # set moves a control, at a time or from now, within its range.
 let tone = sine(control("freq", 440.0, lo: 100.0, hi: 1000.0)) * 0.2 |> play(wait: false)
