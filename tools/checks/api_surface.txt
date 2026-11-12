@@ -1200,7 +1200,7 @@ Synth.resonate(x, modes: Array, dry = 0.0, rate = nil)
 Synth.envelope(x, gain, rate = nil)
 Synth.hz(note) -> Float
 Synth.db(x) -> Float
-Synth.render(expr, seconds, rate = 44100) -> Array
+Synth.render(expr, seconds = nil, rate = 44100) -> Array
 p.lowpass(cutoff = 1000.0, q = 0.707)
 p.filter(kind, cutoff = 1000.0, q = 0.707)
 p.delay(time = 0.0)

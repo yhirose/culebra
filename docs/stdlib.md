@@ -10297,7 +10297,7 @@ check, when `render` builds it at its rate, with the graph's `ValueError`.
 | `Synth.envelope(x, gain, rate = nil)` | `x * gain` for a part; `Audio.envelope(x, gain, rate)` for samples, `gain` an envelope of `(at, value)` |
 | `Synth.hz(note) -> Float` | a note number's frequency: 69 is 440 Hz, a semitone a twelfth of an octave |
 | `Synth.db(x) -> Float` | decibels as a gain: 0 is 1.0, -6 about 0.5 |
-| `Synth.render(expr, seconds, rate = 44100) -> Array` | the first `seconds` of the expression (a part, an envelope or a `Voices`), as `Audio.Graph`'s `render` works them out |
+| `Synth.render(expr, seconds = nil, rate = 44100) -> Array` | the first `seconds` of the expression (a part, an envelope or a `Voices`), as `Audio.Graph`'s `render` works them out; without `seconds`, until it ends on its own (below), and a `ValueError` for one that does not |
 
 | Method of a part | Effect |
 | --- | --- |
@@ -10351,6 +10351,20 @@ work out.
 `play` leaves a sound it does not wait for playing even when nothing holds
 its handle, and lets it go at a later `play` once it has ended; told `secs`,
 it is silent from then on, on the graph's own clock.
+`render` without `seconds` runs to the same end, so a sound that dies away,
+as a `perc` or a `pluck` does, becomes an `Audio.Sound` with no length
+written. A Kauai external instrument is such a sound: it is built once for
+each pitch, and is not told how long the note is held
+([section 10 of the Kauai specification](kauai/language.md#10-playing-from-culebra)).
+
+```culebra
+let {noise, perc, hz, render} = Synth
+let plucked = {
+  note: |pitch, params| Audio.Sound(render(noise() * perc(0.001, 0.01) |> pluck(hz(pitch), ring: params.ring))),
+  knobs: {ring: {default: 0.5, min: 0.1, max: 2.0}},
+}
+println(render(noise() * perc(0.001, 0.01) |> pluck(220.0, ring: 0.5)).size())  # => 22535
+```
 
 | Method of a handle | Effect |
 | --- | --- |

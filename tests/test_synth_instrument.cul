@@ -1,0 +1,63 @@
+# Synth's render with no seconds: the sound until it ends on its own, which
+# is what a Kauai external instrument made from an expression needs, as the
+# sound of a note is built once for its pitch and is not told how long the
+# note is held.
+
+let {*} = Synth
+let RATE = 44100
+
+# Lengths worked out by hand: a perc is its attack and release; a string
+# rings its `ring` after what strikes it; a delay adds its time.
+assert_eq(render(sine(440.0) * perc(0.01, 0.5)).size(), 22491)
+assert_eq(render(noise() * perc(0.001, 0.01) |> pluck(220.0, ring: 0.5)).size(), 22535)
+let blip = sine(660.0) * line(0.2, 0.0, 0.2)
+assert_eq(render(blip + blip.delay(0.3) * 0.5).size(), 22050)
+assert_eq(render(sine(440.0) * perc(0.01, 0.5), rate: 22050).size(), 11246)
+# A Voices until its last note has ended.
+let lead = Voices(2, |f| sine(f) * perc(0.01, 0.2))
+lead.sequence([60, 64], step: 0.25)
+assert_eq(render(lead).size(), 20286)
+
+# What never ends needs its seconds: an oscillator, a loop, a held note.
+let no_end = "Synth.render: the sound does not end on its own (an oscillator, a loop or a held note plays on); give it seconds"
+assert_throws("ValueError", || render(sine(440.0)), message: no_end)
+assert_throws("ValueError", || render(feedback(|x| blip + x.delay(0.1) * 0.5)), message: no_end)
+let held = Voices(1, |f| sine(f) * adsr(0.01, 0.1, 0.5, 0.2))
+held.note_on(60)
+assert_throws("ValueError", || render(held), message: no_end)
+# Channels are mixed to one before an end is worked out for them.
+assert_throws("ValueError", || render(sine([440.0, 660.0]) * perc(0.01, 0.1)), message: "Synth: 2 channels play mixed to one, .mix()")
+
+# A Kauai voice whose notes are an expression: each pitch's sound rings to
+# its own end, the knobs the band's line and the score set handed in.
+let heard = []
+let plucked = {
+  note: fn (pitch, params) {
+    heard.push("{pitch} {params.ring}")
+    Audio.Sound(render(noise() * perc(0.001, 0.01) |> pluck(hz(pitch), ring: params.ring)))
+  },
+  knobs: {ring: {default: 0.5, min: 0.1, max: 2.0}},
+}
+let song = Kauai.new(`
+band Duo {
+  voice Pl  Pl(ring=0.3)  plays melody  vol 30
+}
+
+song T {
+  tempo 120
+  band Duo
+  melody in C4..B4
+
+  Line
+}
+
+section Line {
+  C  c4 e \ring=1.0 g c'4
+}
+`, {pl: plucked})
+let samples = song.render()
+# The last note starts at 1.5 s and rings 0.011 + 1.0 s.
+assert_close(samples.size(), 2.511 * RATE, 2.0)
+for note in ["60 0.3", "64 0.3", "67 1.0", "72 1.0"] {
+  assert_true(heard.contains(note), note)
+}

@@ -135,6 +135,54 @@ println(song.events()[0])          # => {at: 0.0, len: 0.5, by: 'Ep', pitch: 60,
 `vol`は、ふつうどおり音量を決めます。`weigh: false`と宣言した楽器は、自分の音量で鳴ります。
 詳しくは[言語仕様](../kauai/language.ja.md#つまみと重み付け)にあります。
 
+### Synthの式で書く楽器
+
+叩いて減衰する音は、[`Synth`](../stdlib.ja.md#46-synth)の式で書けます。
+`Synth.render(expr)`は、秒数を渡さなければ、式が自然に終わるまで描きます。
+`perc`ならリリースの終わりまで、`pluck`なら`ring`が尽きるまでです。そのため楽器は
+長さを自分で決めなくて済み、音符の長さを受け取らない音ごとの関数に合います。
+`hz(pitch)`は、音の高さの周波数です。
+
+```culebra
+let {noise, sine, xline, perc, hz, render} = Synth
+
+let plucked = {
+  note: |pitch, params| Audio.Sound(render(noise() * perc(0.001, 0.01) |> pluck(hz(pitch), ring: params.ring))),
+  knobs: {ring: {default: 0.5, min: 0.1, max: 2.0}},
+}
+let kick = |n, params| Audio.Sound(render(sine(xline(150.0, 40.0, 0.3)) * perc(0.001, 0.3)))
+
+let song = Kauai.new(`
+band Duo {
+  voice Lead  Pluck(ring=0.8)  plays melody  vol 30
+  drum  Kick  Kick             vol 40
+}
+
+song Test {
+  tempo 120
+  band Duo
+  groove Beat
+  melody in C4..B4
+
+  Line
+}
+
+groove Beat {
+  Kick  x . x .
+}
+
+section Line {
+  C  c4 e \ring=1.5 g c'4
+}
+`, {pluck: plucked}, {kick: kick})
+println(song.length())             # => 2.0
+```
+
+バンドの行が`ring`を0.8にし、楽譜の`\ring=1.5`が最後の2音を長く響かせます。
+自然に終わらない音（発振器だけ、ループ、離さない`adsr`）は、曲がその音を作るときに
+`ValueError`になります。そうした音は音符の長さに従うもので、音ごとの関数はそれを
+受け取らないからです。
+
 ### コマンドラインで外部の音を使う
 
 `kauai`コマンドは、外部の楽器の声を同梱の楽器でしか鳴らしません。リポジトリのツール

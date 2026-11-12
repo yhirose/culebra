@@ -38,9 +38,14 @@ a WAV file with `kauai song.kau --wav out.wav` (the `kauai` command is below).
   hi-hats, two cymbals, toms, and a wave on the shore). Play a
   song with them: `kauai song.kau`.
   [`recipe.md`](recipe.md) lists them and says how to write one.
+- **Synth expressions**: a sound that is struck and dies away, written as a
+  `Synth` expression (`noise() * perc(0.001, 0.01) |> pluck(hz(pitch))`) and
+  given to a song from a program; `Synth.render(expr)` renders it until it
+  ends on its own. The guide below has an example.
 - [`docs/guides/kauai-sounds.md`](../docs/guides/kauai-sounds.md): the sounds a
-  song plays, shaping them, supplying an `external` instrument, a model, and a
-  recorded instrument made with the harness.
+  song plays, shaping them, supplying an `external` instrument, one written
+  as a `Synth` expression, a model, and a recorded instrument made with the
+  harness.
   [`engine.md`](engine.md) lists the voice parameters (`breath`, `wander`, `vibrato` and five more).
 
 ## I want to make a new instrument

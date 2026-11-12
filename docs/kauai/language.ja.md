@@ -1095,6 +1095,18 @@ song.seconds("1:04")                           # => 64.0
 残りの数を返すので、ゲームでは音声の準備を複数のフレームに分けられます。
 `play()`は、残っている音声をすべて作ってから演奏を始めます。
 
+音声は[`Synth`](../stdlib.ja.md#46-synth)の式でも書けます。`Synth.render(expr)`は、
+秒数を渡さなければ式が自然に終わるまで描くので、減衰する音（`perc`、`pluck`）は
+長さを自分で決めなくて済みます。
+
+```culebra
+# doctest: skip (plays the program's own song.kau)
+let {noise, perc, hz, render} = Synth
+let song = Kauai.load("song.kau", voices: {
+  pluck: |pitch, params| Audio.Sound(render(noise() * perc(0.001, 0.01) |> pluck(hz(pitch), ring: 0.8))),
+})
+```
+
 音声を作るのに時間がかかる長い曲は、すべて作り終える前に演奏を始められます。
 `play(early: true)`は最初のいくつかを作り、残りをこれから順に作っても、
 どの音声も曲がそこへ着くまでの時間の半分で用意できる見込みが立った時点で演奏を

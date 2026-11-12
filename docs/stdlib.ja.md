@@ -9847,7 +9847,7 @@ sine(5.0))`は、0から1の間で揺れるトレモロです。同じ値を2回
 | `Synth.envelope(x, gain, rate = nil)` | 部品には`x * gain`、サンプルには`Audio.envelope(x, gain, rate)`（`gain`は`(at, value)`のエンベロープ） |
 | `Synth.hz(note) -> Float` | ノート番号の周波数。69が440 Hzで、半音は1オクターブの12分の1 |
 | `Synth.db(x) -> Float` | デシベルを音量の倍率にする。0が1.0、-6がおよそ0.5 |
-| `Synth.render(expr, seconds, rate = 44100) -> Array` | 式（部品、エンベロープ、`Voices`）の最初の`seconds`秒。`Audio.Graph`の`render`と同じに計算する |
+| `Synth.render(expr, seconds = nil, rate = 44100) -> Array` | 式（部品、エンベロープ、`Voices`）の最初の`seconds`秒。`Audio.Graph`の`render`と同じに計算する。`seconds`を省くと自然な終わり（下の説明）まで描き、自然に終わらない式は`ValueError` |
 
 | 部品のメソッド | 動作 |
 | --- | --- |
@@ -9898,6 +9898,19 @@ lagとdecayはその時間の分だけ続き、大きさ（`abs`）と、0を含
 lfnoiseは終わりません。ループは、終わりを決められないまま鳴り続けます。`play`は、待たずに鳴らした
 音を、ハンドルを誰も持たなくても鳴らし続け、終わったあとの次の`play`で手放します。
 `secs`を渡すと、その時刻からはGraph自身の時計で無音になります。
+`render`も、`seconds`を省くと同じ終わりまで描くので、`perc`や`pluck`で
+減衰する音は、長さを書かずに`Audio.Sound`にできます。Kauaiの外部の楽器は、音の
+高さごとに音を1つ作り、音符の長さを受け取らないので、この形で書けます
+（[Kauai言語仕様の10章](kauai/language.ja.md#10-culebra-から再生する)）。
+
+```culebra
+let {noise, perc, hz, render} = Synth
+let plucked = {
+  note: |pitch, params| Audio.Sound(render(noise() * perc(0.001, 0.01) |> pluck(hz(pitch), ring: params.ring))),
+  knobs: {ring: {default: 0.5, min: 0.1, max: 2.0}},
+}
+println(render(noise() * perc(0.001, 0.01) |> pluck(220.0, ring: 0.5)).size())  # => 22535
+```
 
 | ハンドルのメソッド | 動作 |
 | --- | --- |

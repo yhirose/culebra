@@ -147,6 +147,56 @@ applies only to an instrument that hears it, and `vol` still sets the level.
 An instrument that says `weigh: false` plays at its own level; the
 [specification](../kauai/language.md#knobs-and-weight) has the rest.
 
+### An instrument written as a Synth expression
+
+A sound that is struck and dies away can be written as a
+[`Synth`](../stdlib.md#46-synth) expression. `Synth.render(expr)`, given no
+seconds, renders the expression until it ends on its own: a `perc` at the
+end of its release, a `pluck` when its `ring` is over. So the instrument
+needs no length of its own, which suits a note's function, as it is not
+told how long the note is held. `hz(pitch)` is the pitch's frequency.
+
+```culebra
+let {noise, sine, xline, perc, hz, render} = Synth
+
+let plucked = {
+  note: |pitch, params| Audio.Sound(render(noise() * perc(0.001, 0.01) |> pluck(hz(pitch), ring: params.ring))),
+  knobs: {ring: {default: 0.5, min: 0.1, max: 2.0}},
+}
+let kick = |n, params| Audio.Sound(render(sine(xline(150.0, 40.0, 0.3)) * perc(0.001, 0.3)))
+
+let song = Kauai.new(`
+band Duo {
+  voice Lead  Pluck(ring=0.8)  plays melody  vol 30
+  drum  Kick  Kick             vol 40
+}
+
+song Test {
+  tempo 120
+  band Duo
+  groove Beat
+  melody in C4..B4
+
+  Line
+}
+
+groove Beat {
+  Kick  x . x .
+}
+
+section Line {
+  C  c4 e \ring=1.5 g c'4
+}
+`, {pluck: plucked}, {kick: kick})
+println(song.length())             # => 2.0
+```
+
+The band's line sets `ring` to 0.8, and the score's `\ring=1.5` lets the
+last two notes ring longer. A sound that never ends on its own (an
+oscillator alone, a loop, an `adsr` that is not let go) is a `ValueError`
+when the song builds it: such a sound follows how long the note is held,
+which a note's function is not told.
+
 ### Playing a song with an external instrument from the command line
 
 The `kauai` command plays a voice on an external instrument only with the instruments it

@@ -166,7 +166,10 @@
 # out; 0.06 s under --vm, 3.3 s under --jit) and test_synth_sources.cul
 # (Synth's impulse, dust, lfnoise, pulse, .lag, .decay2, .clip, .abs and
 # .exprange, their channels and ends; 0.06 s under --vm, 3.2 s under --jit).
-tests.cul 350
+# 351 since test_synth_instrument.cul (Synth's render to a sound's own end, the
+# ends refused, and a Kauai voice made from an expression; 0.13 s under --vm,
+# 1.5 s under --jit).
+tests.cul 351
 
 # tests/isolate/*.cul — run on both engines, plus the over-cap modes.
 # 21 since test_xml_isolate.cul (an XML element keeps its methods across an
@@ -332,8 +335,11 @@ ctest.entries 41
 # a control set on its handle and the end its envelope gives it. 1178 since
 # its channels and loops, in en and ja: detuned saws mixed, and an echo.
 # 1180 since its Voices, in en and ja: a sequence and when it ends. 1182
-# since samples chained through its filters, in en and ja.
-docs.blocks 1182
+# since samples chained through its filters, in en and ja. 1188 since a sound
+# rendered to its own end as a Kauai voice, in en and ja: in Synth's chapter,
+# in the Kauai specification (skipped, it reads a song file) and in the
+# sounds guide (a voice and a drum playing a song).
+docs.blocks 1188
 
 # The samples the language front ends are run over (examples/languages/*).
 languages.samples 130

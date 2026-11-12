@@ -1099,6 +1099,18 @@ the keys there are. `prepare()` builds one sound and answers how
 many remain, so a game can spread the work over frames; `play()` builds
 whatever is left first.
 
+A sound can be written as a [`Synth`](../stdlib.md#46-synth) expression:
+`Synth.render(expr)`, given no seconds, renders it until it ends on its own,
+so a note that dies away (a `perc`, a `pluck`) needs no length of its own.
+
+```culebra
+# doctest: skip (plays the program's own song.kau)
+let {noise, perc, hz, render} = Synth
+let song = Kauai.load("song.kau", voices: {
+  pluck: |pitch, params| Audio.Sound(render(noise() * perc(0.001, 0.01) |> pluck(hz(pitch), ring: 0.8))),
+})
+```
+
 A long song whose sounds take long to build can start before they are all
 built: `play(early: true)` builds the first ones, and starts once each
 sound left, built one after another from then on, would be ready in half

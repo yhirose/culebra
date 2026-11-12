@@ -6572,11 +6572,6 @@ let _synth_module = fn () {
     {g: g, controls: b.controls, out: out}
   }
 
-  # The first `seconds` of `expr`, as samples: what play would play.
-  let render = fn (expr: SynthPart | SynthEnvelope | SynthVoices, seconds: Long | Float, rate: Long | Float = 44100) {
-    (expr is SynthVoices ? expr._built(rate) : graph_of(expr, rate)).g.render(seconds)
-  }
-
   # ---- when an expression ends
 
   # The seconds after which `expr` is silent for good, Math.inf when never:
@@ -6930,6 +6925,21 @@ let _synth_module = fn () {
     }
   }
 
+  # When `expr` (a Voices with the notes made so far) ends on its own, in
+  # seconds from its start: Math.inf for never.
+  let natural_end = |expr| expr is SynthVoices ? expr.ends() : ending(expr)
+  let NO_END = "the sound does not end on its own (an oscillator, a loop or a held note plays on)"
+  let built_of = |expr, rate| expr is SynthVoices ? expr._built(rate) : graph_of(expr, rate)
+
+  # The first `seconds` of `expr`, as samples: what play would play. Without
+  # `seconds`, until it ends on its own.
+  let render = fn (expr: SynthPart | SynthEnvelope | SynthVoices, seconds: Long | Float | Nil = nil, rate: Long | Float = 44100) {
+    let built = built_of(expr, rate)
+    let secs = seconds ?? natural_end(expr)
+    __raise("ValueError", "Synth.render: {NO_END}; give it seconds") if seconds == nil && secs == Math.inf
+    built.g.render(secs)
+  }
+
   # `expr` played: until `secs`, or else until it ends on its own. With
   # `wait`, play returns when it has ended (at once when no device plays);
   # without, it returns the handle and the sound plays on (a Voices until it
@@ -6938,17 +6948,17 @@ let _synth_module = fn () {
     let_go_ended()
     __raise("ValueError", "Synth.play: secs is a finite number, 0 or more") if secs != nil && !nonnegative(secs)
     let voices = expr is SynthVoices
-    let built = voices ? expr._built(44100) : graph_of(expr, 44100)
+    let built = built_of(expr, 44100)
     if secs != nil {
       # Silent from `secs` on, on the graph's own clock.
       let muted = built.g.gain(built.out, 1.0)
       schedule(muted.gain, env([1.0, 1.0, 0.0], [secs, 0.0]))
       built.g.output(muted)
     }
-    let natural = voices ? (wait ? expr.ends() : Math.inf) : ending(expr)
+    let natural = voices && !wait ? Math.inf : natural_end(expr)
     let ends = secs ?? (natural == Math.inf ? nil : natural)
     if wait && ends == nil {
-      __raise("ValueError", "Synth.play: the sound does not end on its own (an oscillator, a loop or a held note plays on); give it secs, or play it with wait: false")
+      __raise("ValueError", "Synth.play: {NO_END}; give it secs, or play it with wait: false")
     }
     built.g.play()
     let h = SynthHandle(built.g, built.controls, ends)
