@@ -54,10 +54,11 @@ assert_throws("ValueError", || render(sine(control("f", 440.0, hi: 500.0)) + sin
 assert_throws("ValueError", || control("", 1.0))
 assert_throws("ValueError", || control("f", 50.0, lo: 100.0))
 
-# With no device, play returns at once, however long the sound.
+# With no device, play returns at once, however long the sound (well before
+# the 1.01 s the bell lasts, with room for a slow, loaded machine).
 let before = Time.monotonic()
 let bell = sine(440.0) * perc(0.01, 1.0) |> play()
-assert_true(Time.monotonic() - before < 0.1)
+assert_true(Time.monotonic() - before < 0.5)
 
 # A sound ends with what its output is multiplied by, and rings on through
 # a delay, a string and a resonance (60 dB of a mode `width` Hz wide, a

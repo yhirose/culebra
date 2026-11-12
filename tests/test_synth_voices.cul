@@ -141,17 +141,27 @@ let live = Voices(2, |f| sine(f) * perc(0.01, 0.2))
 let h = live |> play(wait: false)
 assert_eq(h.ends(), nil)
 Time.sleep(0.05)
+# A note made with no time starts where the clock is as it is made: between
+# the clock read before and the one after, however long making it took.
+let before = h.now()
+let live_now = live.now()
 live.note_on(69)
-let since = h.now()
-assert_true(strength(h.render(since + 0.15), 440.0, since + 0.02, since + 0.12) > 0.3)
+let after = h.now()
+assert_true(live_now >= before && live_now <= after)
+let first = h.render(after + 0.3)
+let onset = iota(first.size()).find(|i| Math.abs(first[i]) > 1e-4) / 44100.0
+assert_true(onset >= before && onset <= after + 1.0 / 44100)
+assert_true(strength(first, 440.0, onset + 0.02, onset + 0.12) > 0.3)
 # A note made while it plays for before one already made there plays ahead
-# of it, and the later one still plays.
-live.note_on(72, at: since + 0.6)
-live.note_on(76, at: since + 0.3)
-live.note_on(79, at: since + 0.3)
-let heard = h.render(since + 0.9)
-assert_true(strength(heard, hz(76), since + 0.32, since + 0.45) > 0.1)
-assert_true(strength(heard, hz(72), since + 0.62, since + 0.75) > 0.1)
+# of it, and the later one still plays. (Seconds ahead, so the clock is still
+# short of them when they are made.)
+let base = h.now()
+live.note_on(72, at: base + 3.0)
+live.note_on(76, at: base + 2.0)
+live.note_on(79, at: base + 2.0)
+let heard = h.render(base + 3.3)
+assert_true(strength(heard, hz(76), base + 2.02, base + 2.15) > 0.1)
+assert_true(strength(heard, hz(72), base + 3.02, base + 3.15) > 0.1)
 h.stop()
 # A play waited for takes no later notes, and is let go: plays past the 64
 # graphs that play at once at most are fine, and now() is 0 again.
