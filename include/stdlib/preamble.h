@@ -711,14 +711,27 @@ inline BakedResolution resolve_baked_preamble(
 // Parsed, never compiled or run: the baked entry still carries the module's
 // code and registrations, this only restores what the splice would have seen
 // (Compiler::register_stdlib_value_decls consumes the ASTs). The raw-source
-// scan over-approximates — a mention in a comment costs one small module.
+// scan over-approximates — a mention in a comment costs one small module —
+// but takes `@value` as a word, so a field like `@values` is not one.
+inline bool _source_mentions_value_decorator(std::string_view src) {
+  constexpr std::string_view kWord = "@value";
+  for (size_t at = src.find(kWord); at != std::string_view::npos;
+       at = src.find(kWord, at + 1)) {
+    size_t end = at + kWord.size();
+    if (end == src.size() ||
+        !(std::isalnum(static_cast<unsigned char>(src[end])) || src[end] == '_'))
+      return true;
+  }
+  return false;
+}
+
 inline std::vector<LoadedModule> parse_baked_value_decls(
     std::span<const BakedPreamble* const> baked) {
   std::vector<LoadedModule> decls;
   for (const auto* b : baked)
     for (const auto& m : lazy_ns_modules())
       if (std::string_view(m.name) == b->name &&
-          std::string_view(m.source).find("@value") != std::string_view::npos) {
+          _source_mentions_value_decorator(m.source)) {
         std::vector<std::string> msgs;
         // stdlib is trusted; a parse failure is a build bug
         if (auto d = stdlib_module({{m.name, stdlib_module_source(m)}}, msgs))
