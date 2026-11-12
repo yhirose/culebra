@@ -12,6 +12,12 @@
 # floor and the floor taken off again, so the value is the signal). Ranges
 # are checked by the graph when render builds it, where the rate is known,
 # under the graph's own rules.
+#
+# A value or an input given as an Array is one channel per item: the part
+# made of it is a bundle, a part per channel, and what is one channel goes
+# to each (`sine([440.0, 660.0]) * 0.2` is two sines, each at 0.2). A bundle
+# is a SynthPart of kind "bundle" whose inputs are its channels, so every
+# method takes it as it takes a part, and `.mix()` adds the channels to one.
 let _synth_module = fn () {
   # The number every Part is made with: render keeps the parts it built by
   # it, which is what makes a value used twice one part.
@@ -114,7 +120,49 @@ let _synth_module = fn () {
 
   # A value as a part reads it: a number, a Part (the signal) or an Envelope.
   let to_part = fn (v) { v is SynthPart ? v : SynthPart("level", [], {level: v}, {}) }
-  let negate = |v| v is SynthEnvelope ? SynthEnvelope(v.levels.map(|l| -l), v.times, v.curves, "-", v.release) : -v
+  fn negate(v) {
+    match v {
+      Array => channels_of(v).map(negate),
+      SynthEnvelope => SynthEnvelope(v.levels.map(|l| -l), v.times, v.curves, "-", v.release),
+      _ => -v,
+    }
+  }
+
+  # The channels a value or an input gives: an Array's items or a bundle's
+  # parts; nil for one channel.
+  fn channels_of(v) {
+    if v is Array {
+      __raise("ValueError", "Synth: an Array of channels has one or more") if v.empty()
+      if !v.all(|c| (c is Long | Float | SynthEnvelope) || (c is SynthPart && c.kind != "bundle")) {
+        __raise("TypeError", "type error: a channel is one Long | Float | SynthPart | SynthEnvelope")
+      }
+      return v
+    }
+    v is SynthPart && v.kind == "bundle" ? v.inputs : nil
+  }
+
+  # A part of `kind` made of `inputs` and `values`, the one place a part is
+  # made from what a caller gave: an Array or a bundle among them makes a
+  # part per channel, as a bundle (multichannel expansion), what is one
+  # channel going to each; one channel is the part itself. Channels of two
+  # counts at once are a ValueError.
+  fn node(kind, inputs, values, options) {
+    mut count = nil
+    for v in inputs + values.values().collect() {
+      let channels = channels_of(v)
+      if channels != nil {
+        __raise("ValueError", "Synth: {count} channels and {channels.size()} at once") if count != nil && count != channels.size()
+        count = channels.size()
+      }
+    }
+    if count == nil {
+      return SynthPart(kind, inputs.map(to_part), values, options)
+    }
+    # Channel `i` of what the loop above has checked.
+    let pick = |v, i| v is Array ? v[i] : (v is SynthPart && v.kind == "bundle" ? v.inputs[i] : v)
+    let parts = iota(count).map(|i| node(kind, inputs.map(|v| pick(v, i)), values.keys().map(|k| (k, pick(values[k], i))).to_object(), options))
+    count == 1 ? parts[0] : SynthPart("bundle", parts, {}, {})
+  }
 
   # A sound or a signal, as a node of an expression: `kind` names the graph
   # part it becomes, `inputs` the parts it takes in, `values` what it reads
@@ -128,41 +176,41 @@ let _synth_module = fn () {
       @values = values
       @options = options
     }
-    filter(kind: String, cutoff: Long | Float | SynthPart | SynthEnvelope = 1000.0, q: Long | Float = 0.707) {
-      SynthPart("filter", [self], {cutoff: cutoff}, {kind: kind, q: q})
+    filter(kind: String, cutoff: Long | Float | SynthPart | SynthEnvelope | Array = 1000.0, q: Long | Float = 0.707) {
+      node("filter", [self], {cutoff: cutoff}, {kind: kind, q: q})
     }
-    lowpass(cutoff: Long | Float | SynthPart | SynthEnvelope = 1000.0, q: Long | Float = 0.707) {
+    lowpass(cutoff: Long | Float | SynthPart | SynthEnvelope | Array = 1000.0, q: Long | Float = 0.707) {
       self.filter("low", cutoff, q)
     }
-    highpass(cutoff: Long | Float | SynthPart | SynthEnvelope = 1000.0, q: Long | Float = 0.707) {
+    highpass(cutoff: Long | Float | SynthPart | SynthEnvelope | Array = 1000.0, q: Long | Float = 0.707) {
       self.filter("high", cutoff, q)
     }
-    bandpass(cutoff: Long | Float | SynthPart | SynthEnvelope = 1000.0, q: Long | Float = 0.707) {
+    bandpass(cutoff: Long | Float | SynthPart | SynthEnvelope | Array = 1000.0, q: Long | Float = 0.707) {
       self.filter("band", cutoff, q)
     }
-    delay(time: Long | Float | SynthPart | SynthEnvelope = 0.0) {
-      SynthPart("delay", [self], {time: time}, {})
+    delay(time: Long | Float | SynthPart | SynthEnvelope | Array = 0.0) {
+      node("delay", [self], {time: time}, {})
     }
-    pluck(freq: Long | Float | SynthPart | SynthEnvelope = 220.0, ring: Long | Float | SynthPart | SynthEnvelope = 2.0) {
-      SynthPart("pluck", [self], {freq: freq, ring: ring}, {})
+    pluck(freq: Long | Float | SynthPart | SynthEnvelope | Array = 220.0, ring: Long | Float | SynthPart | SynthEnvelope | Array = 2.0) {
+      node("pluck", [self], {freq: freq, ring: ring}, {})
     }
     resonate(modes: Array, dry: Long | Float = 0.0) {
-      SynthPart("resonate", [self], {}, {modes: modes, dry: dry})
+      node("resonate", [self], {}, {modes: modes, dry: dry})
     }
-    drive(gain: Long | Float | SynthPart | SynthEnvelope = 1.0) {
-      SynthPart("drive", [self], {gain: gain}, {})
+    drive(gain: Long | Float | SynthPart | SynthEnvelope | Array = 1.0) {
+      node("drive", [self], {gain: gain}, {})
     }
     limit(ceiling: Long | Float = 0.9, release: Long | Float = 0.2) {
-      SynthPart("limit", [self], {}, {ceiling: ceiling, release: release})
+      node("limit", [self], {}, {ceiling: ceiling, release: release})
     }
-    __add__(other: Long | Float | SynthPart | SynthEnvelope) {
-      SynthPart("mix", [self, to_part(other)], {}, {})
+    __add__(other: Long | Float | SynthPart | SynthEnvelope | Array) {
+      node("mix", [self, other], {}, {})
     }
-    __sub__(other: Long | Float | SynthPart | SynthEnvelope) {
+    __sub__(other: Long | Float | SynthPart | SynthEnvelope | Array) {
       self + negate(other)
     }
-    __mul__(other: Long | Float | SynthPart | SynthEnvelope) {
-      SynthPart("gain", [self], {gain: other}, {})
+    __mul__(other: Long | Float | SynthPart | SynthEnvelope | Array) {
+      node("gain", [self], {gain: other}, {})
     }
     __div__(other: Long | Float) {
       __raise("ValueError", "Synth: a part divided by 0") if other == 0
@@ -171,30 +219,39 @@ let _synth_module = fn () {
     __neg__() {
       self * -1.0
     }
+    # A signal from -1 to 1 taken to `lo`..`hi` in a straight line.
+    range(lo: Long | Float, hi: Long | Float) {
+      __raise("ValueError", "Synth.range: lo and hi are finite numbers") if !finite(lo) || !finite(hi)
+      self * ((hi - lo) / 2.0) + (hi + lo) / 2.0
+    }
+    # A bundle's channels added to one part; a part is one already.
+    mix() {
+      @kind == "bundle" ? SynthPart("mix", @inputs, {}, {}) : self
+    }
   }
 
   let wave = fn (
     kind: String = "sine",
-    freq: Long | Float | SynthPart | SynthEnvelope = 440.0,
-    feedback: Long | Float | SynthPart | SynthEnvelope = 0.0,
-    phase: Long | Float | SynthPart | SynthEnvelope = 0.0,
+    freq: Long | Float | SynthPart | SynthEnvelope | Array = 440.0,
+    feedback: Long | Float | SynthPart | SynthEnvelope | Array = 0.0,
+    phase: Long | Float | SynthPart | SynthEnvelope | Array = 0.0,
   ) {
-    SynthPart("wave", [], {freq: freq, feedback: feedback, phase: phase}, {kind: kind})
+    node("wave", [], {freq: freq, feedback: feedback, phase: phase}, {kind: kind})
   }
   let sine = fn (
-    freq: Long | Float | SynthPart | SynthEnvelope = 440.0,
-    phase: Long | Float | SynthPart | SynthEnvelope = 0.0,
-    feedback: Long | Float | SynthPart | SynthEnvelope = 0.0,
+    freq: Long | Float | SynthPart | SynthEnvelope | Array = 440.0,
+    phase: Long | Float | SynthPart | SynthEnvelope | Array = 0.0,
+    feedback: Long | Float | SynthPart | SynthEnvelope | Array = 0.0,
   ) {
     wave("sine", freq, feedback, phase)
   }
-  let saw = fn (freq: Long | Float | SynthPart | SynthEnvelope = 440.0, phase: Long | Float | SynthPart | SynthEnvelope = 0.0) {
+  let saw = fn (freq: Long | Float | SynthPart | SynthEnvelope | Array = 440.0, phase: Long | Float | SynthPart | SynthEnvelope | Array = 0.0) {
     wave("saw", freq, 0.0, phase)
   }
-  let square = fn (freq: Long | Float | SynthPart | SynthEnvelope = 440.0, phase: Long | Float | SynthPart | SynthEnvelope = 0.0) {
+  let square = fn (freq: Long | Float | SynthPart | SynthEnvelope | Array = 440.0, phase: Long | Float | SynthPart | SynthEnvelope | Array = 0.0) {
     wave("square", freq, 0.0, phase)
   }
-  let triangle = fn (freq: Long | Float | SynthPart | SynthEnvelope = 440.0, phase: Long | Float | SynthPart | SynthEnvelope = 0.0) {
+  let triangle = fn (freq: Long | Float | SynthPart | SynthEnvelope | Array = 440.0, phase: Long | Float | SynthPart | SynthEnvelope | Array = 0.0) {
     wave("triangle", freq, 0.0, phase)
   }
   let noise = fn (seed: Long = 1) {
@@ -202,8 +259,22 @@ let _synth_module = fn () {
   }
   let mix = fn (parts: Array) {
     __raise("ValueError", "Synth.mix: nothing to mix") if parts.empty()
-    __raise("TypeError", "type error: Synth.mix takes an Array of Long | Float | SynthPart | SynthEnvelope") unless parts.all(|p| p is Long | Float | SynthPart | SynthEnvelope)
-    SynthPart("mix", parts.map(to_part), {}, {})
+    __raise("TypeError", "type error: Synth.mix takes an Array of Long | Float | SynthPart | SynthEnvelope | Array") unless parts.all(|p| p is Long | Float | SynthPart | SynthEnvelope | Array)
+    node("mix", parts, {}, {})
+  }
+
+  # A loop: `f` gets x, a stand-in for what the expression it returns
+  # answers, and the expression hears x through a delay (x.delay(t) is that
+  # answer t seconds back). Each feedback has its own x, so loops nest.
+  let feedback_loop = fn (f: Function) {
+    let x = SynthPart("loop", [], {}, {})
+    let body = f(x)
+    __raise("TypeError", "type error: Synth.feedback's function returns a SynthPart") unless body is SynthPart
+    __raise("ValueError", "Synth.feedback: a loop is one channel; mix the channels first, .mix()") if body.kind == "bundle"
+    if undelayed(body, x) {
+      __raise("ValueError", "Synth.feedback: the expression hears x with no delay between (x.delay(t) hears it t seconds back)")
+    }
+    SynthPart("feedback", [body], {}, {loop: x})
   }
 
   let env = fn (levels: Array, times: Array, curve: Long | Float | String | Array = 0.0) {
@@ -247,6 +318,31 @@ let _synth_module = fn () {
     fail("lo and hi are finite, lo at most hi") if (lo != nil && !finite(lo)) || (hi != nil && !finite(hi)) || (lo != nil && hi != nil && lo > hi)
     fail("init is within lo..hi") if (lo != nil && init < lo) || (hi != nil && init > hi)
     SynthPart("control", [], {}, {name: name, init: init, lo: lo, hi: hi})
+  }
+
+  # Whether `p` hears `x` with no delay between: through its inputs (but a
+  # delay's, which answer from before) and the parts its values read (a
+  # delay's time too, which it needs to answer).
+  fn undelayed(p, x) {
+    let known = {}
+    fn walk(q) {
+      known[q.id] ??= q.id == x.id || (q.kind == "delay" ? [] : q.inputs).any(walk) || q.values.values().any(|v| v is SynthPart && walk(v))
+    }
+    walk(p)
+  }
+
+  # The loops `p` hears whose feedback is not within it, by their x's
+  # number: a feedback closes its own loop only for what is inside it.
+  fn open_loops(p) {
+    let known = {}
+    fn walk(q) {
+      known[q.id] ??= match q.kind {
+        "loop" => [q.id],
+        "feedback" => walk(q.inputs[0]).filter(|id| id != q.options.loop.id),
+        _ => (q.inputs + q.values.values().filter(|v| v is SynthPart).collect()).iter().flat_map(walk).distinct().collect(),
+      }
+    }
+    walk(p)
   }
 
   let hz = fn (note: Long | Float) {
@@ -345,7 +441,18 @@ let _synth_module = fn () {
     known.part
   }
 
+  # A feedback's x is a mix its expression's answer is connected back into,
+  # made before the expression so the expression can read it.
+  fn close_loop(b, p) {
+    let x = b.g.mix([])
+    b.parts[p.options.loop.id] = x
+    let answer = part(b, p.inputs[0])
+    answer.connect(x)
+    answer
+  }
+
   fn lower(b, p) {
+    return close_loop(b, p) if p.kind == "feedback"
     let (g, v, o) = (b.g, p.values, p.options)
     let input = p.inputs.size() == 1 ? part(b, p.inputs[0]) : nil
     match p.kind {
@@ -359,6 +466,8 @@ let _synth_module = fn () {
       "noise" => g.noise(o.seed),
       "level" => signal(b, v.level),
       "control" => control_part(b, o),
+      # close_loop builds x; graph_of has refused an x outside its loop.
+      "loop" => __raise("ValueError", "Synth.feedback: x is heard only in the expression its function returns"),
       "mix" => g.mix(p.inputs.map(|i| part(b, i))),
       "gain" => {
         let q = g.gain(input, base_of(v.gain, 0.0))
@@ -395,6 +504,12 @@ let _synth_module = fn () {
 
   # The graph an expression stands for, its output set, and its controls.
   fn graph_of(expr, rate) {
+    if expr is SynthPart && expr.kind == "bundle" {
+      __raise("ValueError", "Synth: {expr.inputs.size()} channels play mixed to one, .mix()")
+    }
+    if expr is SynthPart && !open_loops(expr).empty() {
+      __raise("ValueError", "Synth.feedback: x is heard only in the expression its function returns")
+    }
     let g = Audio.Graph(rate)
     let b = build_of(g)
     g.output(signal(b, expr))
@@ -534,7 +649,7 @@ let _synth_module = fn () {
     let natural = ending(expr)
     let ends = secs ?? (natural == Math.inf ? nil : natural)
     if wait && ends == nil {
-      __raise("ValueError", "Synth.play: the sound does not end on its own (an oscillator plays on); give it secs, or play it with wait: false")
+      __raise("ValueError", "Synth.play: the sound does not end on its own (an oscillator or a loop plays on); give it secs, or play it with wait: false")
     }
     built.g.play()
     let h = SynthHandle(built.g, built.controls, ends)
@@ -561,6 +676,7 @@ let _synth_module = fn () {
     perc: perc,
     control: control,
     mix: mix,
+    feedback: feedback_loop,
     hz: hz,
     db: db,
     render: render,

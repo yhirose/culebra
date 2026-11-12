@@ -153,7 +153,9 @@
 # and range operators and above the comparisons, a leading `|>`, a lambda).
 # 344 since test_synth_play.cul (Synth's adsr, perc and hold, controls, when a
 # sound ends, play with no device, a handle's set and render).
-tests.cul 344
+# 345 since test_synth_loop.cul (Synth's feedback against a loop wired by
+# hand, nested loops and the loops refused, channels from an Array, .range).
+tests.cul 345
 
 # tests/isolate/*.cul — run on both engines, plus the over-cap modes.
 # 21 since test_xml_isolate.cul (an XML element keeps its methods across an
@@ -316,8 +318,9 @@ ctest.entries 41
 # the pipe in language.md's precedence section, in en and ja: a free
 # function, an operator's result and a leading `|>`, each with its value.
 # 1176 since Synth's chapter plays a sound it does not wait for, in en and ja:
-# a control set on its handle and the end its envelope gives it.
-docs.blocks 1176
+# a control set on its handle and the end its envelope gives it. 1178 since
+# its channels and loops, in en and ja: detuned saws mixed, and an echo.
+docs.blocks 1178
 
 # The samples the language front ends are run over (examples/languages/*).
 languages.samples 130

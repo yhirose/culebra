@@ -9788,7 +9788,7 @@ println(render(pad, 0.5).size())  # => 22050
 
 部品が読む値（波の`freq`、`feedback`、`phase`、フィルタの`cutoff`、遅延の
 `time`、弦の`freq`と`ring`、`drive`の`gain`、音量）は、数、部品、
-エンベロープのどれでも受け取ります。数はそのまま値に、エンベロープは時刻0からの
+エンベロープ、またはそれらの配列（要素ごとに1チャンネル。下の説明）を受け取ります。数はそのまま値に、エンベロープは時刻0からの
 値の変化になります。部品を渡すと、信号そのものが値になります。グラフの
 `connect`のように基準値へ足すのではないので、`sine(330.0) * (0.5 + 0.5 *
 sine(5.0))`は、0から1の間で揺れるトレモロです。同じ値を2回使うと、
@@ -9803,14 +9803,15 @@ sine(5.0))`は、0から1の間で揺れるトレモロです。同じ値を2回
 | `Synth.sine(freq = 440.0, phase = 0.0, feedback = 0.0)` | `wave("sine", ...)`。`phase`に部品を渡すとFM、`feedback`は自分自身への帰還 |
 | `Synth.saw(freq = 440.0, phase = 0.0)` / `square` / `triangle` | その種類の`wave` |
 | `Synth.noise(seed = 1)` | -1から1のホワイトノイズ。同じ`seed`からは同じノイズ |
-| `Synth.mix(parts: Array)` | 部品を足し合わせる（数とエンベロープは、その値の信号）。`mix`を取り込めば`[a, b].mix()`とも書ける |
+| `Synth.mix(parts: Array)` | 部品を足し合わせる（数とエンベロープは、その値の信号。束はチャンネルごと）。`mix`を取り込めば`[a, b].mix()`とも書ける |
+| `Synth.feedback(f)` | ループ。`f(x)`が式を返し、`x`はその式の出力を表す。式は`x`を遅延を通して聞く（`x.delay(t)`は`t`秒前の出力）。ループごとに自分の`x`を持つので、入れ子にできる。`x`から出力まで遅延を通らない道があれば、ここで`ValueError`。`x`を式の外で使うと、`render`のときに`ValueError` |
 | `Synth.env(levels: Array, times: Array, curve = 0.0)` | エンベロープ。`levels`を、長さ`times`秒の区間でつなぎ、最後の値を保つ。`curve`は0（直線）、曲げる数`c`（区間の`x`の位置で`l0 + (l1 - l0) * (1 - exp(c * x)) / (1 - exp(c))`。負なら初めに速く、正なら初めにゆっくり動く）、`"exp"`、または区間ごとのそれらの配列 |
 | `Synth.line(lo, hi, dur, curve = 0.0)` | `env([lo, hi], [dur], curve)` |
 | `Synth.xline(lo, hi, dur)` | `env([lo, hi], [dur], "exp")`。値は`lo * (hi / lo) ^ (t / dur)`で、2つは同じ符号で0でない |
 | `Synth.perc(attack, release, peak = 1.0, curve = -4.0)` | `env([0, peak, 0], [attack, release], curve)`。打つ音のエンベロープ |
 | `Synth.adsr(attack, decay, sustain, release, peak = 1.0, curve = -4.0)` | ゲートつきのエンベロープ。`peak`まで上がり、`sustain * peak`まで下がり、離すまでそこに留まり、`release`秒で0まで下がる。`e.hold(secs)`は、始まりから`secs`秒で離す（その時点の値から下がる）。離す時刻がないままでは、音の終わりが離す場所でだけ使え、それ以外では`ValueError` |
 | `Synth.control(name, init, lo = nil, hi = nil)` | `name`という名前の値。`play`が返すハンドルで設定するまでは`init`（`lo`と`hi`があれば、その範囲に収め、`init`もその中）。1つの式の中の同じ名前の`control`は同じ値で、同じ引数で作る |
-| `Synth.play(expr, wait = true, secs = nil) -> SynthHandle` | 式を、`secs`まで、なければ自然な終わり（下の説明）まで鳴らす。`wait`なら終わってから戻り、`wait: false`ならすぐ戻って、終わるか止めるまで鳴り続ける。自然に終わらない音（発振器）は`secs`か`wait: false`が要り、なければ`ValueError`。デバイスがなければ、鳴らさずにすぐ戻る |
+| `Synth.play(expr, wait = true, secs = nil) -> SynthHandle` | 式を、`secs`まで、なければ自然な終わり（下の説明）まで鳴らす。`wait`なら終わってから戻り、`wait: false`ならすぐ戻って、終わるか止めるまで鳴り続ける。自然に終わらない音（発振器、ループ）は`secs`か`wait: false`が要り、なければ`ValueError`。デバイスがなければ、鳴らさずにすぐ戻る |
 | `Synth.hz(note) -> Float` | ノート番号の周波数。69が440 Hzで、半音は1オクターブの12分の1 |
 | `Synth.db(x) -> Float` | デシベルを音量の倍率にする。0が1.0、-6がおよそ0.5 |
 | `Synth.render(expr, seconds, rate = 44100) -> Array` | 式（部品かエンベロープ）の最初の`seconds`秒。`Audio.Graph`の`render`と同じに計算する |
@@ -9824,13 +9825,34 @@ sine(5.0))`は、0から1の間で揺れるトレモロです。同じ値を2回
 | `p.resonate(modes: Array, dry = 0.0)` | `p`を、`Audio.resonate`の共鳴の束に通す |
 | `p.drive(gain = 1.0)` | `p`に`gain`を掛けてtanhに通す。`Audio.Graph`の`drive`と同じ |
 | `p.limit(ceiling = 0.9, release = 0.2)` | `p`を`ceiling`以下に保つ。`Audio.Graph`の`limit`と同じ |
-| `p + x`、`p - x`、`p * x`、`p / n`、`-p` | 部品の和、差、積（音量）。右は数、部品、エンベロープ。`+`と`*`は数が左でもよい。`/`は数で割るときだけで、0なら`ValueError` |
+| `p.range(lo, hi)` | -1から1の信号を、`lo`から`hi`へ直線で写す。`lo + (hi - lo) * (p + 1) / 2` |
+| `p.mix()` | 束のチャンネルを足して1つの部品にする。部品はそのまま |
+| `p + x`、`p - x`、`p * x`、`p / n`、`-p` | 部品の和、差、積（音量）。右は数、部品、エンベロープ、配列。`+`と`*`は数が左でもよい。`/`は数で割るときだけで、0なら`ValueError` |
+
+値や部品の場所に配列を渡すと、要素ごとに1チャンネルになり、作られるものは束
+（チャンネルごとの部品）です。1チャンネルのものは、各チャンネルに渡ります。
+`sine([440.0, 660.0]) * [0.2, 0.1]`は、それぞれの音量の2つのサイン波で、
+`saw([110.0, 110.77]).mix()`は2つのノコギリ波の和です。要素が1つの配列は、
+その1つの部品です。束は、部品が持つ
+メソッドを、チャンネルごとにすべて持ちます。チャンネルの数が違うものを同時に
+渡すと（`sine([440.0, 660.0]) * [0.2]`）`ValueError`で、束は`.mix()`で
+1チャンネルにしてから、鳴らしたり`render`したりします。
+
+```culebra
+let {saw, sine, line, feedback, render} = Synth
+let detuned = saw([110.0, 110.77, 109.4]).mix() * 0.1
+println(render(detuned, 0.5).size())  # => 22050
+let blip = sine(800.0) * line(1.0, 0.0, 0.05)
+let echo = feedback(|x| blip + x.delay(0.3) * 0.6)
+println(render(echo, 1.0).slice(13230, 15435).map(|v| Math.abs(v)).max() > 0.5)  # => true
+```
 
 音の自然な終わりは、出力がそれ以降ずっと0になる時刻です。積は、因子のうち最初に
 終わるもので終わり（0で終わるエンベロープはそこで、0はすぐに）、和は最後に
 終わるもので終わります。遅延は最も長い遅れの分、弦は`ring`の分、共鳴は最も
 狭いモードが60 dB減衰する分だけ、余韻が続きます（フィルタは、最も低い`cutoff`での
-幅`cutoff / q`のモードとして数え、信号で動く`cutoff`は余韻を足しません）。`play`は、待たずに鳴らした
+幅`cutoff / q`のモードとして数え、信号で動く`cutoff`は余韻を足しません）。
+ループは、終わりを決められないまま鳴り続けます。`play`は、待たずに鳴らした
 音を、ハンドルを誰も持たなくても鳴らし続け、終わったあとの次の`play`で手放します。
 `secs`を渡すと、その時刻からはGraph自身の時計で無音になります。
 

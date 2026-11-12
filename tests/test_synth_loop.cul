@@ -1,0 +1,110 @@
+# Synth's loops (feedback), channels (an Array where a value goes) and
+# .range, each against the Audio.Graph written out by hand.
+
+let {*} = Synth
+
+fn assert_samples(got, want) {
+  assert_eq(got.size(), want.size())
+  for i in 0..got.size() {
+    assert_close(got[i], want[i], 1e-9)
+  }
+}
+
+fn caught(call) {
+  try {
+    call()
+    nil
+  } catch e {
+    (e.kind, e.message)
+  }
+}
+
+# The largest |x| in samples[from..to) of 44100 a second.
+fn peak(xs, from, to) {
+  xs.slice(Math.floor(from * 44100), Math.floor(to * 44100)).map(|x| Math.abs(x)).max()
+}
+
+# An echo: what the expression answers comes back 0.3 s later at 0.6.
+let blip = sine(800.0) * line(1.0, 0.0, 0.05)
+let echo = render(feedback(|x| blip + x.delay(0.3) * 0.6), 1.5)
+fn echo_by_hand() {
+  let g = Audio.Graph()
+  let s = g.gain(g.wave("sine", freq: 800.0), 1.0)
+  s.gain.ramp(0.05, 0.0)
+  let both = g.mix([s])
+  g.gain(g.delay(both, 0.3), 0.6).connect(both)
+  g.output(both)
+  g.render(1.5)
+}
+assert_samples(echo, echo_by_hand())
+assert_close(peak(echo, 0.0, 0.1), 0.993, 0.001)
+assert_close(peak(echo, 0.3, 0.4), 0.596, 0.001)
+assert_close(peak(echo, 0.6, 0.7), 0.358, 0.001)
+
+# Loops nest, each with its own x: an echo of an echo. In its first 0.6 s
+# the outer loop has gone round once.
+let inner = feedback(|x| blip + x.delay(0.1) * 0.5)
+assert_close(peak(render(inner, 0.15), 0.1, 0.15), 0.5 * 0.993, 0.001)
+assert_samples(render(feedback(|y| inner + y.delay(0.4) * 0.5), 0.6), render(inner + inner.delay(0.4) * 0.5, 0.6))
+
+# A loop with no delay in it is refused where it is made; so is x heard
+# outside its loop.
+assert_throws("ValueError", || feedback(|x| blip + x * 0.5))
+assert_throws("ValueError", || feedback(|x| x))
+assert_throws("ValueError", || feedback(|x| blip + blip.delay(x)))
+let outside = {mut x: nil}
+let kept = feedback(fn (x) {
+  outside.x = x
+  blip + x.delay(0.1)
+})
+let x_outside = ("ValueError", "Synth.feedback: x is heard only in the expression its function returns")
+assert_eq(caught(|| render(outside.x * 0.5 + kept, 0.1)), x_outside)
+assert_eq(caught(|| render(kept + outside.x * 0.5, 0.1)), x_outside)
+assert_eq(caught(|| render(kept + sine(220.0 + outside.x), 0.1)), x_outside)
+assert_eq(caught(|| render(kept + feedback(|z| outside.x + z.delay(0.1)), 0.1)), x_outside)
+# An inner loop's x heard by the outer loop is outside the inner one.
+let captured = {mut y: nil}
+let crossed = feedback(fn (x) {
+  let inner = feedback(fn (y) {
+    captured.y = y
+    x + y.delay(0.1)
+  })
+  blip + inner.delay(0.1) * 0.5 + captured.y
+})
+assert_eq(caught(|| render(crossed, 0.1)), x_outside)
+assert_throws("TypeError", || feedback(|x| 1.0))
+
+# A loop rings on: play needs it ended (here by an envelope), secs, or
+# wait: false.
+assert_throws("ValueError", || feedback(|x| blip + x.delay(0.3) * 0.6) |> play())
+assert_close((feedback(|x| blip + x.delay(0.3) * 0.6) * perc(0.0, 2.0) |> play()).ends(), 2.0, 1e-9)
+
+# An Array where a value goes is a part per channel; .mix() adds them.
+let detuned = render(saw([110.0, 110.77]).mix() * 0.5, 0.2)
+fn detuned_by_hand() {
+  let g = Audio.Graph()
+  g.output(g.gain(g.mix([g.wave("saw", freq: 110.0), g.wave("saw", freq: 110.77)]), 0.5))
+  g.render(0.2)
+}
+assert_samples(detuned, detuned_by_hand())
+# Channels meet channels item by item, and one channel goes to each.
+assert_samples(render((sine([440.0, 660.0]) * [0.2, 0.1]).mix(), 0.1), render(sine(440.0) * 0.2 + sine(660.0) * 0.1, 0.1))
+assert_samples(render((saw([110.0, 220.0]) |> lowpass([800.0, 1600.0], q: 2.0)).mix() * 0.5, 0.1), render((saw(110.0).lowpass(800.0, q: 2.0) + saw(220.0).lowpass(1600.0, q: 2.0)) * 0.5, 0.1))
+assert_samples(render(mix([sine([440.0, 660.0]), 0.25]).mix(), 0.05), render(sine(440.0) + 0.25 + sine(660.0) + 0.25, 0.05))
+assert_samples(render((sine([440.0, 660.0]) - [0.1, 0.2]).mix(), 0.05), render(sine(440.0) - 0.1 + sine(660.0) - 0.2, 0.05))
+assert_eq(sine(440.0).mix().kind, "wave")
+# One channel is the part itself.
+assert_samples(render(sine([440.0]), 0.05), render(sine(440.0), 0.05))
+let not_a_channel = ("TypeError", "type error: a channel is one Long | Float | SynthPart | SynthEnvelope")
+assert_eq(caught(|| sine(1.0) + ["a"]), not_a_channel)
+assert_eq(caught(|| sine(1.0) - ["a"]), not_a_channel)
+assert_eq(caught(|| sine([440.0, 660.0]) * [0.2]), ("ValueError", "Synth: 2 channels and 1 at once"))
+assert_throws("ValueError", || sine([]))
+assert_throws("TypeError", || sine([[440.0, 660.0]]))
+assert_eq(caught(|| render(sine([440.0, 660.0]), 0.1)), ("ValueError", "Synth: 2 channels play mixed to one, .mix()"))
+assert_throws("ValueError", || feedback(|x| sine([440.0, 660.0]) + x.delay(0.1)))
+
+# .range takes a signal from -1..1 to lo..hi.
+assert_samples(render(sine(3.0).range(300.0, 900.0), 0.05), render(sine(3.0) * 300.0 + 600.0, 0.05))
+assert_samples(render(sine(sine(3.0).range(300.0, 900.0)), 0.1), render(sine(600.0 + 300.0 * sine(3.0)), 0.1))
+assert_throws("ValueError", || sine(3.0).range(0.0, Math.inf))

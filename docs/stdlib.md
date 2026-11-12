@@ -10234,7 +10234,8 @@ println(render(pad, 0.5).size())  # => 22050
 
 A value a part reads (a wave's `freq`, `feedback` and `phase`, a filter's
 `cutoff`, a delay's `time`, a string's `freq` and `ring`, a drive's `gain`,
-and a gain) takes a number, a part or an envelope. A number is the value; an
+and a gain) takes a number, a part, an envelope or an Array of them (one
+channel each, below). A number is the value; an
 envelope is its schedule from the start; a part is the signal itself, not
 something added to a base as `connect` adds in a graph, so
 `sine(330.0) * (0.5 + 0.5 * sine(5.0))` is a tremolo between 0 and 1. A
@@ -10249,14 +10250,15 @@ check, when `render` builds it at its rate, with the graph's `ValueError`.
 | `Synth.sine(freq = 440.0, phase = 0.0, feedback = 0.0)` | `wave("sine", ...)`; a part given to `phase` is FM, a `feedback` the wave's own |
 | `Synth.saw(freq = 440.0, phase = 0.0)` / `square` / `triangle` | `wave` of that kind |
 | `Synth.noise(seed = 1)` | white noise from -1 to 1, the same from the same `seed` |
-| `Synth.mix(parts: Array)` | the parts added together (numbers and envelopes are levels); `[a, b].mix()` once `mix` is in scope |
+| `Synth.mix(parts: Array)` | the parts added together (numbers and envelopes are levels, bundles a channel each); `[a, b].mix()` once `mix` is in scope |
+| `Synth.feedback(f)` | a loop: `f(x)` returns an expression, and `x` stands for what that expression answers, heard through a delay (`x.delay(t)` is the answer `t` seconds back). Each loop has its own `x`, so loops nest. A way from `x` to the answer with no delay on it raises `ValueError` here, as `x` heard outside the expression does where it renders |
 | `Synth.env(levels: Array, times: Array, curve = 0.0)` | an envelope: `levels` joined by segments `times` seconds long, holding the last level after; `curve` is 0 (straight), a number `c` that bends it (`l0 + (l1 - l0) * (1 - exp(c * x)) / (1 - exp(c))` at `x` of the way: below 0 it moves fast first, above 0 slow first), `"exp"`, or one of those per segment |
 | `Synth.line(lo, hi, dur, curve = 0.0)` | `env([lo, hi], [dur], curve)` |
 | `Synth.xline(lo, hi, dur)` | `env([lo, hi], [dur], "exp")`: `lo * (hi / lo) ^ (t / dur)`, the two of one sign and not 0 |
 | `Synth.perc(attack, release, peak = 1.0, curve = -4.0)` | `env([0, peak, 0], [attack, release], curve)`: a struck sound's envelope |
 | `Synth.adsr(attack, decay, sustain, release, peak = 1.0, curve = -4.0)` | a gated envelope: up to `peak`, down to `sustain * peak`, held there until it is let go, then down to 0 over `release`. `e.hold(secs)` lets it go `secs` from its start (from the level it has then); unheld, it plays only where a note's end lets it go, and is a `ValueError` elsewhere |
 | `Synth.control(name, init, lo = nil, hi = nil)` | a value named `name`, `init` until the handle `play` gave sets it (kept to `lo..hi` when they are given, `init` among them); controls of one name in an expression are one value, and are made alike |
-| `Synth.play(expr, wait = true, secs = nil) -> SynthHandle` | the expression played until `secs`, or else until it ends on its own (below); with `wait` it returns once it has ended, without it at once, the sound playing on until it ends or is stopped. A sound that does not end on its own (an oscillator) needs `secs` or `wait: false`, else `ValueError`. With no device nothing sounds and it returns at once |
+| `Synth.play(expr, wait = true, secs = nil) -> SynthHandle` | the expression played until `secs`, or else until it ends on its own (below); with `wait` it returns once it has ended, without it at once, the sound playing on until it ends or is stopped. A sound that does not end on its own (an oscillator, a loop) needs `secs` or `wait: false`, else `ValueError`. With no device nothing sounds and it returns at once |
 | `Synth.hz(note) -> Float` | a note number's frequency: 69 is 440 Hz, a semitone a twelfth of an octave |
 | `Synth.db(x) -> Float` | decibels as a gain: 0 is 1.0, -6 about 0.5 |
 | `Synth.render(expr, seconds, rate = 44100) -> Array` | the first `seconds` of the expression (a part or an envelope), as `Audio.Graph`'s `render` works them out |
@@ -10270,14 +10272,34 @@ check, when `render` builds it at its rate, with the graph's `ValueError`.
 | `p.resonate(modes: Array, dry = 0.0)` | `p` through `Audio.resonate`'s bank of resonances |
 | `p.drive(gain = 1.0)` | `p` times `gain` through tanh, as `Audio.Graph`'s `drive` |
 | `p.limit(ceiling = 0.9, release = 0.2)` | `p` kept at or under `ceiling`, as `Audio.Graph`'s `limit` |
-| `p + x`, `p - x`, `p * x`, `p / n`, `-p` | parts added, subtracted and multiplied (a gain), with a number, a part or an envelope on the right, and a number on the left of `+` and `*`; `/` by a number only, `ValueError` for 0 |
+| `p.range(lo, hi)` | a signal from -1 to 1 taken to `lo`..`hi` in a straight line: `lo + (hi - lo) * (p + 1) / 2` |
+| `p.mix()` | a bundle's channels added to one part; a part as it is |
+| `p + x`, `p - x`, `p * x`, `p / n`, `-p` | parts added, subtracted and multiplied (a gain), with a number, a part, an envelope or an Array on the right, and a number on the left of `+` and `*`; `/` by a number only, `ValueError` for 0 |
+
+An Array where a value or a part goes is a channel per item, and what is
+made of it is a bundle: a part per channel, what is one channel going to
+each, so `sine([440.0, 660.0]) * [0.2, 0.1]` is two sines at their own
+gains and `saw([110.0, 110.77]).mix()` two saws added; an Array of one is
+that one part. A bundle takes every
+method a part takes, channel by channel. Channels of two counts at once
+(`sine([440.0, 660.0]) * [0.2]`) raise `ValueError`, and a bundle plays or
+renders once `.mix()` makes it one channel.
+
+```culebra
+let {saw, sine, line, feedback, render} = Synth
+let detuned = saw([110.0, 110.77, 109.4]).mix() * 0.1
+println(render(detuned, 0.5).size())  # => 22050
+let blip = sine(800.0) * line(1.0, 0.0, 0.05)
+let echo = feedback(|x| blip + x.delay(0.3) * 0.6)
+println(render(echo, 1.0).slice(13230, 15435).map(|v| Math.abs(v)).max() > 0.5)  # => true
+```
 
 A sound ends on its own where its output is 0 for good: a product with the
 first of its factors to end (an envelope ending at 0 ends there, a 0 at
 once), a sum with the last; a delay rings on for its longest delay, a
 string for its `ring`, and a resonance for 60 dB of its narrowest mode (a
 filter's is `cutoff / q` wide at its lowest cutoff; one a signal moves
-adds none).
+adds none). A loop rings on with no end it can work out.
 `play` leaves a sound it does not wait for playing even when nothing holds
 its handle, and lets it go at a later `play` once it has ended; told `secs`,
 it is silent from then on, on the graph's own clock.
