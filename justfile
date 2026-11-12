@@ -1706,7 +1706,8 @@ _run-tests BACKEND:
     # source, so the same statement is run in a fn, a generator body and an
     # effect body, and what each prints or raises (with its position) must
     # agree, but for the forms listed as known to differ
-    # (tools/checks/lowering_diff.py, lowering_diff_allow.txt).
+    # (tools/checks/lowering_diff.py, lowering_diff_allow.txt). Source-to-
+    # source lowering on the executor, the same on every OS: heavy.
     run_lowering_diff() {
         JOBS="$JOBS" {{nice_cmd}} python3 tools/checks/lowering_diff.py "$BIN"
     }
@@ -1723,6 +1724,7 @@ _run-tests BACKEND:
     # statement) does: the corpus and a generated grid of scope shapes,
     # compiled with the check on, against a list of the known differences
     # (tools/checks/scope_agreement.py, include/frontend/scope_check.h).
+    # Compile only, the same on every OS: heavy.
     run_scope_agreement() {
         JOBS="$JOBS" {{nice_cmd}} python3 tools/checks/scope_agreement.py "$BIN"
     }
@@ -1795,8 +1797,8 @@ _run-tests BACKEND:
       "run_codegen_backends|codegen backends (-O0, fast vs --vm)|binary|dev,test|light|-|24"
       "run_gen_frames probes|generator frames (probes == frozen on both engines)|binary|dev,test|light|-|12"
       "run_gen_frames full|generator frames (the probes under the GC axes, and built)|binary|test|gc|heavy|42"
-      "run_scope_agreement|scope agreement (the compiler resolves names as resolve.h does)|binary|test|light|-|15"
-      "run_lowering_diff|lowering diff (a statement in a fn, a generator and an effect body)|binary|test|light|-|65"
+      "run_scope_agreement|scope agreement (the compiler resolves names as resolve.h does)|binary|test|light|heavy|15"
+      "run_lowering_diff|lowering diff (a statement in a fn, a generator and an effect body)|binary|test|light|heavy|65"
       "run_difftest|difftest (generated corpus)|binary|test|diff|heavy|143"
       "run_difftest_refs|difftest (refcount lane)|binary||leak|-|146"
       "run_leak_fuzz|leak-fuzz (corpus RC-leak regression)|binary||diff|-|146"
@@ -1932,8 +1934,9 @@ _run-tests BACKEND:
       # Order: cheap tests first, then AOT (slowest + most env-sensitive,
       # so a failure there shouldn't mask matcher regressions).
       # CULEBRA_TEST_SKIP_HEAVY skips the platform-independent heavy phases
-      # (the generated difftest and its refcount lane, the gc-stress sweep, and the
-      # per-test AOT links). CI sets it on the slow macOS runner — those run on
+      # (the generated difftest and its refcount lane, the gc-stress sweep, the
+      # per-test AOT links, and the compiler-only checks: lowering diff, scope
+      # agreement). CI sets it on the slow macOS runner — those run on
       # Linux CI and in local dev. It also takes the vm/jit sweep down to the
       # op cover (the `reduced` row), which is not platform-independent: an
       # arm64-only break in a file outside the cover goes unseen on a push.
