@@ -590,12 +590,12 @@ inline std::optional<std::span<const std::string_view>> lazy_namespace_members(
   return answer(it->second);
 }
 
-// Every binary that has the stdlib's namespaces lets its parse expand
-// `let {*} = NS` over them, whatever host it runs in (the CLI, an embedder,
-// the Playground): the hook is a constant-initialized pointer, so setting it
-// here, at static initialization, cannot race its first read.
-inline const bool _namespace_members_installed =
-    (namespace_members_hook = lazy_namespace_members, true);
+// Lets the parse expand `let {*} = NS` over the stdlib's namespaces. Each
+// host calls it where it sets up the stdlib, before it parses a program (the
+// CLI's main, Embed, the Playground); a parse without it refuses `{*}`.
+inline void install_namespace_members() {
+  namespace_members_hook = lazy_namespace_members;
+}
 
 // CULEBRA_CHECK_BAKED_AST=1: every entry this binary baked against its parse,
 // and none missing where the build bakes (it bakes the ASTs beside the native

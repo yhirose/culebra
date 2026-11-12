@@ -114,6 +114,7 @@ EMSCRIPTEN_KEEPALIVE int run_culebra(const char* src_c, const char* path_c,
   // Outside the Runtime below, so it lands in the process-wide default hooks
   // every per-run Runtime falls back to rather than in one run's copy.
   culebra::install_jit_stdlib();
+  culebra::install_namespace_members();
 
   // A run is independent of every other, the way a doctest block is: the
   // namespace caches and the class / overload registries live in the Runtime,

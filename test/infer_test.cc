@@ -304,7 +304,13 @@ void measure_corpus(const std::filesystem::path& root) {
       auto a = std::make_unique<Analysed>();
       a->src = read_file(it->path());
       std::vector<ParseFailure> pf;
-      a->ast = parse(it->path().string(), a->src, pf);
+      // Without the stdlib, a file a desugaring refuses here (`let {*}` needs
+      // the stdlib's namespaces) is skipped, as one that does not parse is.
+      try {
+        a->ast = parse(it->path().string(), a->src, pf);
+      } catch (const CulebraError&) {
+        continue;
+      }
       if (!a->ast) continue;
       a->res = resolve::resolve_module(*a->ast, a->src);
       // No catalog: a stdlib namespace's call counts as unknown here.

@@ -687,6 +687,7 @@ class Embed {
  public:
   Embed() {
     install_jit_stdlib();
+    install_namespace_members();
     Swap in(*this);
     std::vector<std::string> msgs;
     if (!units_.run_builtin_traits(msgs)) {
