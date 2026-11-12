@@ -7305,7 +7305,8 @@ inline constexpr const char* MATCHERS_MODULE_SOURCE = R"=culpre=(// assert_throw
 // is handed and reads `f.params`, and its failure message already names the
 // expected and the actual kind. The comparison matchers are native (see
 // kBuiltinFns in stdlib_rt.h).
-let assert_throws = fn (kind, f) {
+// `message:` is keyword-only: a third positional elsewhere is a label.
+let assert_throws = fn (kind, f, *, message: String? = nil) {
   if f.params.size() != 0 {
     __raise(
       "ArityError",
@@ -7313,16 +7314,12 @@ let assert_throws = fn (kind, f) {
     )
   }
   let mut threw = false
-  let mut actual_kind = ""
+  let mut thrown = nil
   try {
     f()
   } catch e {
     threw = true
-    actual_kind = if type_of(e) == "Object" && e.has("kind") {
-      e.kind
-    } else {
-      type_of(e)
-    }
+    thrown = e
   }
   if !threw {
     __raise(
@@ -7330,12 +7327,35 @@ let assert_throws = fn (kind, f) {
       "assert_throws('{kind}', fn): expected throw but fn returned normally",
     )
   }
+  let actual_kind = if type_of(thrown) == "Object" && thrown.has("kind") {
+    thrown.kind
+  } else {
+    type_of(thrown)
+  }
   if actual_kind != kind {
     __raise(
       "AssertionError",
       "assert_throws: expected kind '{kind}' but got '{actual_kind}'",
     )
   }
+  if message != nil {
+    // A scalar's property read throws, while anything else (a class instance
+    // included) answers nil for a missing one; catching instead would also
+    // hide a TypeError from a user `get message()`.
+    let actual = if ["Long", "Float", "Bool", "Nil"].contains(type_of(thrown)) {
+      nil
+    } else {
+      thrown.message
+    }
+    if actual != message {
+      let shown = if actual == nil { "nil" } else { "'{actual}'" }
+      __raise(
+        "AssertionError",
+        "assert_throws: expected message '{message}' but got {shown}",
+      )
+    }
+  }
+  thrown
 }
 )=culpre=";
 

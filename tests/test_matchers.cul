@@ -1,0 +1,112 @@
+# Conformance: stdlib §13 (Matchers): what assert_throws hands back and
+# checks, and assert_close over Arrays. These run on every lane; the
+# culebra-test self suite (tests/culebra_test_self/) runs on --vm only.
+
+# What a call raised, as "Kind: message". assert_throws's own checks go
+# through this rather than through assert_throws, which they are testing.
+fn failure(thunk) {
+  try {
+    thunk()
+    'no error'
+  } catch e {
+    "{e.kind}: {e.message}"
+  }
+}
+
+# --- assert_throws returns what was thrown ---
+
+let zde = assert_throws("ZeroDivisionError", || 1 / 0)
+assert_eq(zde.kind, "ZeroDivisionError")
+assert_eq(zde.message, "divide by 0 error")
+
+let thrown = {kind: "MyError", message: "boom", code: 7}
+assert_eq(assert_throws("MyError", fn () { throw thrown }).code, 7)
+
+# --- message: is compared exactly ---
+
+assert_throws("ZeroDivisionError", || 1 / 0, message: "divide by 0 error")
+assert_eq(
+  failure(|| assert_throws("ZeroDivisionError", || 1 / 0, message: "divide")),
+  "AssertionError: assert_throws: expected message 'divide' but got 'divide by 0 error'",
+)
+
+# A thrown value without a message has none to match: an Object without the
+# key, and every scalar.
+assert_eq(
+  failure(|| assert_throws("MyError", fn () { throw {kind: "MyError"} }, message: "x")),
+  "AssertionError: assert_throws: expected message 'x' but got nil",
+)
+assert_eq(
+  failure(|| assert_throws("Long", fn () { throw 42 }, message: "x")),
+  "AssertionError: assert_throws: expected message 'x' but got nil",
+)
+assert_eq(
+  failure(|| assert_throws("Bool", fn () { throw true }, message: "x")),
+  "AssertionError: assert_throws: expected message 'x' but got nil",
+)
+assert_eq(
+  failure(|| assert_throws("Nil", fn () { throw nil }, message: "x")),
+  "AssertionError: assert_throws: expected message 'x' but got nil",
+)
+
+# The kind is checked first, and the other failures read as before.
+assert_eq(
+  failure(|| assert_throws("TypeError", || 1 / 0, message: "divide by 0 error")),
+  "AssertionError: assert_throws: expected kind 'TypeError' but got 'ZeroDivisionError'",
+)
+assert_eq(
+  failure(|| assert_throws("TypeError", || 1, message: "x")),
+  "AssertionError: assert_throws('TypeError', fn): expected throw but fn returned normally",
+)
+
+# message is keyword-only: a third positional (a label, by analogy with the
+# other matchers) is refused rather than read as a message.
+assert_eq(
+  failure(|| assert_throws("ZeroDivisionError", || 1 / 0, "label")),
+  "TypeError: takes 2 positional arguments but 3 given ('message' is keyword-only: write message: ...)",
+)
+
+# A failure is reported at the matcher's call, the line a sibling error on
+# the same line reports.
+let at_call = [try { assert_throws("TypeError", || 1 / 0) } catch e { e }, try { [][1] } catch e { e }]
+assert_eq(at_call[0].line, at_call[1].line)
+
+# --- assert_close compares Arrays element by element ---
+
+assert_close([1.0, 2.0, 3.0], [1.0, 2.0000001, 3.0], 1e-6)
+assert_close([[1, 2], [3, 4]], [[1, 2], [3, 4.5]], 0.5)
+assert_close([], [], 0.0)
+
+assert_throws("AssertionError", || assert_close([1.0, 2.0, 3.0], [1.0, 2.5, 3.0], 0.1),
+  message: "assert_close failed:\n  at:   [1]\n  a:    2.0\n  b:    2.5\n  diff: 0.5 (> tol 0.1)")
+assert_throws("AssertionError", || assert_close([[1, 2], [3, 4]], [[1, 2], [3, 9]], 1, "rows"),
+  message: "assert_close failed: rows\n  at:   [1][1]\n  a:    4\n  b:    9\n  diff: 5 (> tol 1)")
+assert_throws("AssertionError", || assert_close([1.0, 2.0], [1.0], 0.1),
+  message: "assert_close failed:\n  size: 2 vs 1")
+assert_throws("AssertionError", || assert_close([[1.0], [2.0]], [[1.0], [2.0, 3.0]], 0.1),
+  message: "assert_close failed:\n  at:   [1]\n  size: 1 vs 2")
+
+# A NaN element fails, as a NaN scalar does.
+let nan = (-1.0) ** 0.5
+assert_throws("AssertionError", || assert_close([nan], [1.0], 1e-9))
+
+# Anything but two Arrays is the scalar comparison, unchanged.
+assert_throws("AssertionError", || assert_close(1.0, 2.0, 0.5),
+  message: "assert_close failed:\n  a:    1.0\n  b:    2.0\n  diff: 1.0 (> tol 0.5)")
+assert_throws("TypeError", || assert_close([1.0], 1.0, 0.5))
+
+# A user `-` and `<=` are what compare the elements, and `to_string` names them.
+class Money {
+  new(@cents) {}
+  __sub__(o) { Money(self.cents - o.cents) }
+  __le__(o) { self.cents <= o }
+  __str__() { "${self.cents}" }
+}
+assert_close([Money(100)], [Money(101)], 1)
+assert_throws("AssertionError", || assert_close([Money(105)], [Money(100)], 1),
+  message: "assert_close failed:\n  at:   [0]\n  a:    $105\n  b:    $100\n  diff: $5 (> tol 1)")
+
+# An Array that holds itself ends in ValueError, not a crash.
+mut loop = [1.0]
+loop.push(loop)
+assert_throws("ValueError", || assert_close(loop, loop, 0.1))

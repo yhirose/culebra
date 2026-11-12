@@ -3829,12 +3829,18 @@ inspect(r.message)
 #   right: bar'
 ```
 
-### `assert_throws(kind: String, f: Function) -> Nil`
+### `assert_throws(kind: String, f: Function, *, message: String? = nil) -> Any`
 
 Invoke 0-arg `f()` and assert it throws an error whose `kind` matches
 `kind`. Built-in errors (`ZeroDivisionError`, `TypeError`, etc.)
 expose `e.kind` directly; user `throw {kind: "X", ...}` matches the
 same way. `f` must take 0 parameters — otherwise `ArityError`.
+
+It returns what was thrown, so a test can go on to check any part of
+it. With `message:`, the error's `message` must also equal it exactly;
+a thrown value with no `message` (a number, or an Object without the
+key) fails. `message` is keyword-only, unlike the other matchers'
+trailing `label`.
 
 ```culebra
 assert_throws("ZeroDivisionError", fn () {
@@ -3843,16 +3849,24 @@ assert_throws("ZeroDivisionError", fn () {
 assert_throws("MyError", fn () {
   throw {kind: "MyError", message: "boom"}
 })
+assert_throws("ZeroDivisionError", || 1 / 0, message: "divide by 0 error")
+let e = assert_throws("TypeError", || 'ab' * 3)
+assert_true(e.message.contains("String"))
 ```
 
-### `assert_close(a: Float, b: Float, tol: Float, label: String? = nil) -> Nil`
+### `assert_close(a, b, tol: Float, label: String? = nil) -> Nil`
 
 Pass if `|a - b| <= tol`. NaN in `a`, `b`, or `tol` deliberately
 fails (a naive `diff > tol` check would silently pass NaN). Use this
 in place of `assert_eq` for floating-point comparisons.
 
+When `a` and `b` are both Arrays, they are compared element by
+element, nested Arrays included: the sizes must match, and the failure
+names the index of the first element out of tolerance (`at:   [1][0]`).
+
 ```culebra
 assert_close(3.14, 3.1415, 0.01)
+assert_close([1.0, [2.0, 3.0]], [1.0, [2.0, 3.0000001]], 1e-6)
 ```
 
 ### Implementation note

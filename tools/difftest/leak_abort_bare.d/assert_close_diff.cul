@@ -1,0 +1,13 @@
+# assert_close's difference is a value of its own when `-` builds one: a
+# Tensor, or what a user `__sub__` returns. It is released on every way out,
+# a pass, a failure, and an error from the comparison after it.
+class Money {
+  new(@cents) {}
+  __sub__(o) { Money(self.cents - o.cents) }
+  __le__(o) { self.cents <= o }
+}
+assert_close(Money(101), Money(100), 1)
+assert_close([Money(101)], [Money(100)], 1)
+let failed = try { assert_close([Money(105)], [Money(100)], 1) } catch e { e.kind }
+let refused = try { assert_close(Tensor.zeros([2]), Tensor.zeros([2]), 0.1) } catch e { e.kind }
+IO.inspect([failed, refused])

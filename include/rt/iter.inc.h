@@ -3016,9 +3016,10 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_array_map(
 }
 
 // An element a helper keeps using after the callback returns (filter's
-// kept one, find's answer, min_by's running best), held owned across the
-// call: the callback may pop it from the receiver, whose ref was the only
-// one. The one borrow -> +1 crossing of the Array HOFs (check_rc_discipline).
+// kept one, find's answer, min_by's running best, the pair assert_close
+// compares), held owned across the call: the callback may pop it from the
+// receiver, whose ref was the only one. The one borrow -> +1 crossing of the
+// Array walks (check_rc_discipline).
 inline JitOwnedVal _held_element(JitArray* arr, size_t i) {
   return JitOwnedVal::from_borrowed(arr->items[i]);
 }

@@ -159,7 +159,9 @@
 # taken over and the note offs, notes made while it plays).
 # 347 since test_synth_samples.cul (Synth's filters, resonate and envelope on
 # samples, each against Audio's function, and on a part against its method).
-tests.cul 347
+# 348 since test_matchers.cul (what assert_throws hands back and its message:,
+# assert_close over Arrays; the culebra-test self suite runs on --vm only).
+tests.cul 348
 
 # tests/isolate/*.cul — run on both engines, plus the over-cap modes.
 # 21 since test_xml_isolate.cul (an XML element keeps its methods across an

@@ -4701,44 +4701,77 @@ CUL_DEF_ORD_MATCHER(gt, greater)
 CUL_DEF_ORD_MATCHER(ge, geq)
 #undef CUL_DEF_ORD_MATCHER
 
-// |a - b| <= tol, with the preamble's NaN handling: a NaN anywhere fails,
-// since the comparison it wrote (`diff != diff || tol != tol || diff > tol`)
-// is true for one.
-inline JitValue _ns_assert_close(JitValue* a, int64_t n) {
-  // `a - b` through the same subtraction the preamble wrote, so a Long pair
-  // stays Long (the runtime's generic helper coerces to double, which would
-  // both print `3.0` for an integer difference and lose exactness past 2^53)
-  // and a non-numeric operand raises the arithmetic type error, not a
-  // matcher-specific one.
-  JitValue diff;
-  if (a[0].tag == TAG_LONG && a[1].tag == TAG_LONG) {
-    diff = {TAG_LONG, a[0].data - a[1].data};
-    if (diff.data < 0) diff.data = -diff.data;
-  } else {
-    diff = culebra_runtime_num_sub_borrow(a[0].tag, a[0].data, a[1].tag,
-                                          a[1].data, _jit_thread.call_line,
-                                          _jit_thread.call_col);
-    double d = _culebra_float_to_double(diff.data);
-    if (d < 0) diff.data = _culebra_double_to_bits(-d);
-  }
-  // The preamble's `diff != diff || tol != tol || diff > tol`: a NaN on
-  // either side fails, since every comparison against one is false.
+// Where and why assert_close failed: `at` is the index path into the Arrays
+// (empty for scalars), `lines` the report under it.
+struct _AssertCloseMiss {
+  std::string at, lines;
+};
+
+// One pair: nothing when |a - b| <= tol. A Long pair subtracts as Long (the
+// generic helper would make it a Float, printing `3.0` and losing exactness
+// past 2^53); anything else takes the plain expression's subtraction, so a
+// non-numeric operand raises the arithmetic type error. The difference is
+// owned, since a Tensor or a user `__sub__` hands back a counted value. A NaN
+// on either side fails.
+inline std::optional<_AssertCloseMiss> _assert_close_pair(JitValue a,
+                                                          JitValue b,
+                                                          JitValue tol) {
+  const int64_t line = _jit_thread.call_line, col = _jit_thread.call_col;
+  JitOwnedVal diff =
+      a.tag == TAG_LONG && b.tag == TAG_LONG
+          ? JitOwnedVal{TAG_LONG, a.data - b.data}
+          : JitOwnedVal{culebra_runtime_num_sub_borrow(a.tag, a.data, b.tag,
+                                                       b.data, line, col)};
+  if (diff.v.tag == TAG_LONG || diff.v.tag == TAG_FLOAT)
+    diff.v = culebra_runtime_math_abs(diff.v.tag, diff.v.data, line, col);
   auto is_nan = [](JitValue v) {
     return v.tag == TAG_FLOAT &&
            _culebra_float_to_double(v.data) != _culebra_float_to_double(v.data);
   };
-  bool bad = is_nan(diff) || is_nan(a[2]) ||
-             culebra_runtime_value_greater_borrow(
-                 diff.tag, diff.data, a[2].tag, a[2].data, _jit_thread.call_line,
-                 _jit_thread.call_col);
-  if (bad) {
-    _assert_adapt::fail(culebra::format(
-        "assert_close failed:{}\n  a:    {}\n  b:    {}\n  diff: {} (> tol {})",
-        _assert_adapt::label_of(a, n, 3), _assert_adapt::disp(a[0]),
-        _assert_adapt::disp(a[1]), _assert_adapt::disp(diff),
-        _assert_adapt::disp(a[2])));
+  JitValue d = diff.borrow();
+  if (!is_nan(d) && !is_nan(tol) &&
+      !culebra_runtime_value_greater_borrow(d.tag, d.data, tol.tag, tol.data,
+                                            line, col))
+    return std::nullopt;
+  return _AssertCloseMiss{
+      {},
+      culebra::format("  a:    {}\n  b:    {}\n  diff: {} (> tol {})",
+                      _assert_adapt::disp(a), _assert_adapt::disp(b),
+                      _assert_adapt::disp(d), _assert_adapt::disp(tol))};
+}
+
+// Two Arrays, element by element and nested Arrays level by level. Walks as
+// _culebra_items_equal does; each pair is held for its step because `-`,
+// `>` and `to_string` may run user code that resizes either Array.
+inline std::optional<_AssertCloseMiss> _assert_close_walk(JitValue a,
+                                                          JitValue b,
+                                                          JitValue tol) {
+  if (a.tag != TAG_ARRAY || b.tag != TAG_ARRAY)
+    return _assert_close_pair(a, b, tol);
+  culebra::ValueWalkFrame depth;
+  auto* xs = reinterpret_cast<JitArray*>(a.data);
+  auto* ys = reinterpret_cast<JitArray*>(b.data);
+  for (size_t i = 0; xs->size == ys->size && i < xs->size; i++) {
+    JitOwnedVal x = _held_element(xs, i);
+    JitOwnedVal y = _held_element(ys, i);
+    if (auto miss = _assert_close_walk(x.borrow(), y.borrow(), tol)) {
+      miss->at.insert(0, culebra::format("[{}]", i));
+      return miss;
+    }
   }
-  return _ns_adapt::v_nil();
+  if (xs->size != ys->size)
+    return _AssertCloseMiss{
+        {}, culebra::format("  size: {} vs {}", xs->size, ys->size)};
+  return std::nullopt;
+}
+
+inline JitValue _ns_assert_close(JitValue* a, int64_t n) {
+  auto miss = _assert_close_walk(a[0], a[1], a[2]);
+  if (!miss) return _ns_adapt::v_nil();
+  _assert_adapt::fail(culebra::format(
+      "assert_close failed:{}{}\n{}", _assert_adapt::label_of(a, n, 3),
+      miss->at.empty() ? std::string() : "\n  at:   " + miss->at,
+      miss->lines));
 }
 
 // Whole-file read/write convenience on FS (open+read/write+close). Reuses

@@ -3717,12 +3717,18 @@ inspect(r.message)
 #   right: bar'
 ```
 
-### `assert_throws(kind: String, f: Function) -> Nil`
+### `assert_throws(kind: String, f: Function, *, message: String? = nil) -> Any`
 
 0引数`f()`を呼び、`kind`に一致する`kind`を持つエラーがthrow
 されることを表明します。組み込みエラー（`ZeroDivisionError`, `TypeError`
 等）は`e.kind`を持ち、ユーザの`throw {kind: "X", ...}`も同じように
 照合します。`f`の引数数が0以外なら`ArityError`です。
+
+throwされた値を返すので、テストはその先でエラーのどの部分でも確かめられます。
+`message:`を渡すと、エラーの`message`がそれと完全に一致することも表明します。
+`message`を持たない値（数値や、そのキーの無いObject）がthrowされた場合は
+失敗です。`message`はキーワード専用で、他のmatcherの末尾の`label`とは
+違います。
 
 ```culebra
 assert_throws("ZeroDivisionError", fn () {
@@ -3731,16 +3737,24 @@ assert_throws("ZeroDivisionError", fn () {
 assert_throws("MyError", fn () {
   throw {kind: "MyError", message: "boom"}
 })
+assert_throws("ZeroDivisionError", || 1 / 0, message: "divide by 0 error")
+let e = assert_throws("TypeError", || 'ab' * 3)
+assert_true(e.message.contains("String"))
 ```
 
-### `assert_close(a: Float, b: Float, tol: Float, label: String? = nil) -> Nil`
+### `assert_close(a, b, tol: Float, label: String? = nil) -> Nil`
 
 `|a - b| <= tol`ならpassします。`a` / `b` / `tol`のいずれかがNaNなら
 **故意に失敗**します（素朴な`diff > tol`だとNaNがsilentlyにpassして
 しまうため）。浮動小数の比較には`assert_eq`ではなくこちらを使ってください。
 
+`a`と`b`が両方ともArrayなら、入れ子のArrayも含めて要素ごとに比べます。
+長さが一致している必要があり、失敗したときは許容差を超えた最初の要素の
+添字を示します（`at:   [1][0]`）。
+
 ```culebra
 assert_close(3.14, 3.1415, 0.01)
+assert_close([1.0, [2.0, 3.0]], [1.0, [2.0, 3.0000001]], 1e-6)
 ```
 
 ### 実装ノート
