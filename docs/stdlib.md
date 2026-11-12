@@ -10259,6 +10259,9 @@ check, when `render` builds it at its rate, with the graph's `ValueError`.
 | `Synth.adsr(attack, decay, sustain, release, peak = 1.0, curve = -4.0)` | a gated envelope: up to `peak`, down to `sustain * peak`, held there until it is let go, then down to 0 over `release`. `e.hold(secs)` lets it go `secs` from its start (from the level it has then); unheld, it plays in a `Voices`, whose note off lets it go, and is a `ValueError` elsewhere |
 | `Synth.control(name, init, lo = nil, hi = nil)` | a value named `name`, `init` until the handle `play` gave sets it (kept to `lo..hi` when they are given, `init` among them); controls of one name in an expression are one value, and are made alike |
 | `Synth.play(expr, wait = true, secs = nil) -> SynthHandle` | the expression (or a `Voices`, below) played until `secs`, or else until it ends on its own (below); with `wait` it returns once it has ended, without it at once, the sound playing on until it ends or is stopped (a `Voices` until it is stopped, as notes may come). A sound that does not end on its own (an oscillator, a loop, a note still held) needs `secs` or `wait: false`, else `ValueError`. With no device nothing sounds and it returns at once |
+| `Synth.lowpass(x, cutoff = 1000.0, q = 0.707, rate = nil)` / `highpass` / `bandpass` | a part's method of that name for a part; for samples (an Array of numbers), `Audio.filter(x, kind, cutoff, q, rate)`, `rate` 44100 when `nil`. A part's rate is the one `render` or `play` gives, so a `rate` given with a part is a `ValueError` (so in the two below) |
+| `Synth.resonate(x, modes: Array, dry = 0.0, rate = nil)` | `x.resonate(modes, dry)` for a part; `Audio.resonate(x, modes, dry, rate)` for samples |
+| `Synth.envelope(x, gain, rate = nil)` | `x * gain` for a part; `Audio.envelope(x, gain, rate)` for samples, `gain` an envelope of `(at, value)` |
 | `Synth.hz(note) -> Float` | a note number's frequency: 69 is 440 Hz, a semitone a twelfth of an octave |
 | `Synth.db(x) -> Float` | decibels as a gain: 0 is 1.0, -6 about 0.5 |
 | `Synth.render(expr, seconds, rate = 44100) -> Array` | the first `seconds` of the expression (a part, an envelope or a `Voices`), as `Audio.Graph`'s `render` works them out |
@@ -10352,6 +10355,19 @@ let lead = Voices(4, |f| sine(f) * adsr(0.01, 0.1, 0.6, 0.2) * 0.2)
 lead.sequence([60, 64, 67, nil, 72], step: 0.25, len: 0.2)
 println(lead.ends())  # => 1.4
 println(render(lead, 1.4).size())  # => 61740
+```
+
+The five functions that take a part or samples let samples chain as a
+part does once their names are in scope: `samples.lowpass(800.0)` is
+`Audio.filter(samples, "low", 800.0)`, and a part's `.lowpass` is its own
+method. Anything else is a `TypeError`. There is no `filter` among them, as
+an Array's own `filter` comes first.
+
+```culebra
+let {lowpass, envelope} = Synth
+let tone = Audio.partials(0.5, [(0.0, 220.0)], [(0.0, [1.0, 0.5, 0.25])])
+let shaped = tone.lowpass(800.0, q: 2.0).envelope([(0.0, 0.0), (0.01, 1.0), (0.5, 0.0)])
+println(shaped.size())  # => 22050
 ```
 
 An envelope answers `e.at(t)`, its level at `t` seconds, and `e.duration()`.

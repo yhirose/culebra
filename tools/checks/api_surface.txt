@@ -1183,6 +1183,9 @@ Synth.perc(attack, release, peak = 1.0, curve = -4.0)
 Synth.adsr(attack, decay, sustain, release, peak = 1.0, curve = -4.0)
 Synth.control(name, init, lo = nil, hi = nil)
 Synth.play(expr, wait = true, secs = nil) -> SynthHandle
+Synth.lowpass(x, cutoff = 1000.0, q = 0.707, rate = nil)
+Synth.resonate(x, modes: Array, dry = 0.0, rate = nil)
+Synth.envelope(x, gain, rate = nil)
 Synth.hz(note) -> Float
 Synth.db(x) -> Float
 Synth.render(expr, seconds, rate = 44100) -> Array

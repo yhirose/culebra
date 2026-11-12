@@ -6196,6 +6196,39 @@ let _synth_module = fn () {
     walk(p)
   }
 
+  # ---- for a part or for samples
+
+  # The functions below take a part or samples: a part takes the method of
+  # their name, samples (an Array of numbers, which Audio's function checks)
+  # Audio's function, so with the name in scope `samples.lowpass(800.0)` reads
+  # as `part.lowpass(800.0)` does. A part's rate is render's or play's.
+  fn part_rate(x, rate, who) {
+    __raise("ValueError", "Synth.{who}: a part's rate is the one render or play gives") if x is SynthPart && rate != nil
+    rate ?? 44100
+  }
+  let lowpass = fn (x: SynthPart | Array, cutoff = 1000.0, q: Long | Float = 0.707, rate: Long | Float | Nil = nil) {
+    let r = part_rate(x, rate, "lowpass")
+    x is SynthPart ? x.lowpass(cutoff, q) : Audio.filter(x, "low", cutoff, q, r)
+  }
+  let highpass = fn (x: SynthPart | Array, cutoff = 1000.0, q: Long | Float = 0.707, rate: Long | Float | Nil = nil) {
+    let r = part_rate(x, rate, "highpass")
+    x is SynthPart ? x.highpass(cutoff, q) : Audio.filter(x, "high", cutoff, q, r)
+  }
+  let bandpass = fn (x: SynthPart | Array, cutoff = 1000.0, q: Long | Float = 0.707, rate: Long | Float | Nil = nil) {
+    let r = part_rate(x, rate, "bandpass")
+    x is SynthPart ? x.bandpass(cutoff, q) : Audio.filter(x, "band", cutoff, q, r)
+  }
+  let resonate = fn (x: SynthPart | Array, modes: Array, dry: Long | Float = 0.0, rate: Long | Float | Nil = nil) {
+    let r = part_rate(x, rate, "resonate")
+    x is SynthPart ? x.resonate(modes, dry) : Audio.resonate(x, modes, dry, r)
+  }
+  # Samples times an envelope of (at, value) points, as Audio.envelope; a
+  # part times its gain, as `*`.
+  let envelope = fn (x: SynthPart | Array, gain, rate: Long | Float | Nil = nil) {
+    let r = part_rate(x, rate, "envelope")
+    x is SynthPart ? x * gain : Audio.envelope(x, gain, r)
+  }
+
   let hz = fn (note: Long | Float) {
     __raise("ValueError", "Synth.hz: note is a finite number") if !finite(note)
     440.0 * Math.exp(Math.log(2.0) * (note - 69) / 12.0)
@@ -6761,6 +6794,11 @@ let _synth_module = fn () {
     mix: mix,
     feedback: feedback_loop,
     Voices: SynthVoices,
+    lowpass: lowpass,
+    highpass: highpass,
+    bandpass: bandpass,
+    resonate: resonate,
+    envelope: envelope,
     hz: hz,
     db: db,
     render: render,

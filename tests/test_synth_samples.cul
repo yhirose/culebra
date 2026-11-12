@@ -1,0 +1,47 @@
+# Synth's lowpass, highpass, bandpass, resonate and envelope take samples
+# as well as a part: with the names in scope, samples chain through them as
+# a part does, and give what Audio's functions give.
+
+let {*} = Synth
+
+fn assert_samples(got, want) {
+  assert_eq(got.size(), want.size())
+  for i in 0..got.size() {
+    assert_close(got[i], want[i], 1e-12)
+  }
+}
+
+let tone = Audio.partials(0.3, [(0.0, 220.0)], [(0.0, [1.0, 0.5, 0.25])])
+let modes = [{freq: 440.0, width: 4.0, gain: 1.0}]
+
+# Each is Audio's function of the same name, the samples first.
+assert_samples(tone.lowpass(800.0, q: 2.0), Audio.filter(tone, "low", 800.0, q: 2.0))
+assert_samples(tone.highpass(300.0), Audio.filter(tone, "high", 300.0))
+assert_samples(tone.bandpass(440.0, q: 4.0), Audio.filter(tone, "band", 440.0, q: 4.0))
+assert_samples(tone.resonate(modes, dry: 0.5), Audio.resonate(tone, modes, dry: 0.5))
+let fade = [(0.0, 0.0), (0.01, 1.0), (0.3, 0.0)]
+assert_samples(tone.envelope(fade), Audio.envelope(tone, fade))
+# They chain, a cutoff swept as Audio.filter's envelope of points.
+let sweep = [(0.0, 4000.0), (0.3, 300.0)]
+assert_samples(tone.lowpass(sweep, q: 2.0).envelope(fade), Audio.envelope(Audio.filter(tone, "low", sweep, q: 2.0), fade))
+assert_samples(tone.lowpass(800.0, rate: 22050), Audio.filter(tone, "low", 800.0, rate: 22050))
+
+# A part takes its method; envelope is `*`.
+assert_samples(render(lowpass(saw(110.0), 800.0, q: 2.0), 0.1), render(saw(110.0).lowpass(800.0, q: 2.0), 0.1))
+assert_samples(render(highpass(saw(110.0), 300.0), 0.1), render(saw(110.0).highpass(300.0), 0.1))
+assert_samples(render(bandpass(saw(110.0), 440.0), 0.1), render(saw(110.0).bandpass(440.0), 0.1))
+assert_samples(render(resonate(noise() * perc(0.0, 0.01), modes), 0.1), render((noise() * perc(0.0, 0.01)).resonate(modes), 0.1))
+assert_samples(render(envelope(sine(440.0), perc(0.01, 0.2)), 0.3), render(sine(440.0) * perc(0.01, 0.2), 0.3))
+
+# Neither a part nor samples; a rate for a part, whose rate is render's.
+assert_throws("TypeError", || lowpass(["a"], 800.0))
+assert_throws("TypeError", || envelope([sine(440.0)], perc(0.01, 0.2)))
+assert_throws("ValueError", || lowpass(saw(110.0), 800.0, rate: 22050))
+assert_throws("ValueError", || envelope(sine(440.0), perc(0.01, 0.2), rate: 22050))
+
+# Taken in inside a function, they reach samples there too.
+fn filtered(xs) {
+  let {lowpass} = Synth
+  xs.lowpass(800.0)
+}
+assert_samples(filtered(tone), Audio.filter(tone, "low", 800.0))

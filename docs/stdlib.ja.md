@@ -9812,6 +9812,9 @@ sine(5.0))`は、0から1の間で揺れるトレモロです。同じ値を2回
 | `Synth.adsr(attack, decay, sustain, release, peak = 1.0, curve = -4.0)` | ゲートつきのエンベロープ。`peak`まで上がり、`sustain * peak`まで下がり、離すまでそこに留まり、`release`秒で0まで下がる。`e.hold(secs)`は、始まりから`secs`秒で離す（その時点の値から下がる）。離す時刻がないままでは、ノートオフが離す`Voices`の中でだけ使え、それ以外では`ValueError` |
 | `Synth.control(name, init, lo = nil, hi = nil)` | `name`という名前の値。`play`が返すハンドルで設定するまでは`init`（`lo`と`hi`があれば、その範囲に収め、`init`もその中）。1つの式の中の同じ名前の`control`は同じ値で、同じ引数で作る |
 | `Synth.play(expr, wait = true, secs = nil) -> SynthHandle` | 式（または下の`Voices`）を、`secs`まで、なければ自然な終わり（下の説明）まで鳴らす。`wait`なら終わってから戻り、`wait: false`ならすぐ戻って、終わるか止めるまで鳴り続ける（`Voices`は、ノートが来うるので止めるまで）。自然に終わらない音（発振器、ループ、押さえたままのノート）は`secs`か`wait: false`が要り、なければ`ValueError`。デバイスがなければ、鳴らさずにすぐ戻る |
+| `Synth.lowpass(x, cutoff = 1000.0, q = 0.707, rate = nil)` / `highpass` / `bandpass` | 部品には、その名前のメソッド。サンプル（数の配列）には`Audio.filter(x, kind, cutoff, q, rate)`（`rate`が`nil`なら44100）。部品のサンプルレートは`render`か`play`が決めるので、部品に`rate`を渡すと`ValueError`（下の2つも同じ） |
+| `Synth.resonate(x, modes: Array, dry = 0.0, rate = nil)` | 部品には`x.resonate(modes, dry)`、サンプルには`Audio.resonate(x, modes, dry, rate)` |
+| `Synth.envelope(x, gain, rate = nil)` | 部品には`x * gain`、サンプルには`Audio.envelope(x, gain, rate)`（`gain`は`(at, value)`のエンベロープ） |
 | `Synth.hz(note) -> Float` | ノート番号の周波数。69が440 Hzで、半音は1オクターブの12分の1 |
 | `Synth.db(x) -> Float` | デシベルを音量の倍率にする。0が1.0、-6がおよそ0.5 |
 | `Synth.render(expr, seconds, rate = 44100) -> Array` | 式（部品、エンベロープ、`Voices`）の最初の`seconds`秒。`Audio.Graph`の`render`と同じに計算する |
@@ -9903,6 +9906,19 @@ let lead = Voices(4, |f| sine(f) * adsr(0.01, 0.1, 0.6, 0.2) * 0.2)
 lead.sequence([60, 64, 67, nil, 72], step: 0.25, len: 0.2)
 println(lead.ends())  # => 1.4
 println(render(lead, 1.4).size())  # => 61740
+```
+
+部品とサンプルの両方を受ける5つの関数は、名前を取り込めば、サンプルを部品と
+同じようにつなげます。`samples.lowpass(800.0)`は
+`Audio.filter(samples, "low", 800.0)`で、部品の`.lowpass`は部品自身のメソッドです。
+それ以外を渡すと`TypeError`です。配列の組み込みの`filter`が先に呼ばれるので、
+`filter`は含めていません。
+
+```culebra
+let {lowpass, envelope} = Synth
+let tone = Audio.partials(0.5, [(0.0, 220.0)], [(0.0, [1.0, 0.5, 0.25])])
+let shaped = tone.lowpass(800.0, q: 2.0).envelope([(0.0, 0.0), (0.01, 1.0), (0.5, 0.0)])
+println(shaped.size())  # => 22050
 ```
 
 エンベロープは、`t`秒の値を返す`e.at(t)`と、全体の長さを返す`e.duration()`を
