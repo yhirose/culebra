@@ -1,0 +1,340 @@
+# Synth: sound written as an expression. `sine(440.0) * 0.2` is a Part, a
+# value that holds no graph; render walks it and builds an Audio.Graph, the
+# part a value names made once however often the expression uses it
+# (sharing by identity: `let a = sine(440.0)` then `a + a` is one wave, where
+# `sine(440.0) + sine(440.0)` is two). Parts and envelopes never change once
+# made, so an expression can be kept, reused and combined freely.
+#
+# A value a part reads (a wave's freq, a filter's cutoff, a gain) takes a
+# number, a Part or an Envelope. A number is the value; an Envelope is its
+# schedule from the start; a Part is the signal itself, not something added
+# to a base (Audio.Graph's connect adds; here the base is kept at the value's
+# floor and the floor taken off again, so the value is the signal). Ranges
+# are checked by the graph when render builds it, where the rate is known,
+# under the graph's own rules.
+let _synth_module = fn () {
+  # The number every Part is made with: render keeps the parts it built by
+  # it, which is what makes a value used twice one part.
+  let made = {mut count: 0}
+
+  # How many straight lines a curved segment of an envelope becomes: the
+  # graph's values only ramp in straight lines, and 20 keep a curve of -4
+  # within 0.5% of its full swing.
+  let CURVE_STEPS = 20
+
+  let is_number = |v| v is Long | Float
+  # Neither NaN (unequal to itself) nor an infinity.
+  let finite = |x| x == x && x != Math.inf && x != -Math.inf
+
+  # The level a curved segment from `l0` to `l1` has at `x` of its way
+  # (0..1): a straight line (curve 0), bent by a curve number c (fast first
+  # below 0, slow first above), or "exp".
+  let shape = fn (l0, l1, c, x) {
+    if c == "exp" {
+      l0 * Math.exp(Math.log(l1 / l0) * x)
+    } else if c == 0 {
+      l0 + (l1 - l0) * x
+    } else {
+      l0 + (l1 - l0) * (1.0 - Math.exp(c * x)) / (1.0 - Math.exp(c))
+    }
+  }
+
+  # A shape a value follows in time: `levels` joined by segments `times`
+  # long, each straight (curve 0), bent by a curve number, or
+  # exponential ("exp"). It holds its last level after the end.
+  class SynthEnvelope {
+    new(levels: Array, times: Array, curve, who: String) {
+      let fail = |msg| __raise("ValueError", "Synth.{who}: {msg}")
+      fail("an envelope has two levels or more") if levels.size() < 2
+      fail("times has one fewer than levels ({levels.size() - 1})") if times.size() != levels.size() - 1
+      fail("a level is a finite number") unless levels.all(|l| is_number(l) && finite(l))
+      fail("a time is a finite number of seconds, 0 or more") unless times.all(|t| is_number(t) && finite(t) && t >= 0)
+      let curves = curve is Array ? curve : repeat(times.size(), curve)
+      fail("curve has one per segment ({times.size()})") if curves.size() != times.size()
+      for i, c in curves.enumerate() {
+        if c == "exp" {
+          let (a, b) = (levels[i], levels[i + 1])
+          fail("an \"exp\" segment runs between levels of one sign, never 0") if a == 0 || b == 0 || (a < 0) != (b < 0)
+        } else {
+          fail("a curve is a finite number or \"exp\"") if !is_number(c) || !finite(c)
+        }
+      }
+      @levels = levels
+      @times = times
+      @curves = curves
+    }
+    duration() {
+      @times.sum()
+    }
+    # The level at `t` seconds from the start.
+    at(t: Long | Float) {
+      mut start = 0.0
+      for i, len in @times.enumerate() {
+        if t < start + len {
+          return t <= start ? @levels[i] : shape(@levels[i], @levels[i + 1], @curves[i], (t - start) / len)
+        }
+        start += len
+      }
+      t < 0 ? @levels[0] : @levels[@levels.size() - 1]
+    }
+  }
+
+  # A value as a part reads it: a number, a Part (the signal) or an Envelope.
+  let to_part = fn (v) { v is SynthPart ? v : SynthPart("level", [], {level: v}, {}) }
+  let negate = |v| v is SynthEnvelope ? SynthEnvelope(v.levels.map(|l| -l), v.times, v.curves, "-") : -v
+
+  # A sound or a signal, as a node of an expression: `kind` names the graph
+  # part it becomes, `inputs` the parts it takes in, `values` what it reads
+  # (each a number, a Part or an Envelope) and `options` its fixed settings.
+  class SynthPart {
+    new(kind: String, inputs: Array, values: Object, options: Object) {
+      made.count += 1
+      @id = made.count
+      @kind = kind
+      @inputs = inputs
+      @values = values
+      @options = options
+    }
+    filter(kind: String, cutoff: Long | Float | SynthPart | SynthEnvelope = 1000.0, q: Long | Float = 0.707) {
+      SynthPart("filter", [self], {cutoff: cutoff}, {kind: kind, q: q})
+    }
+    lowpass(cutoff: Long | Float | SynthPart | SynthEnvelope = 1000.0, q: Long | Float = 0.707) {
+      self.filter("low", cutoff, q)
+    }
+    highpass(cutoff: Long | Float | SynthPart | SynthEnvelope = 1000.0, q: Long | Float = 0.707) {
+      self.filter("high", cutoff, q)
+    }
+    bandpass(cutoff: Long | Float | SynthPart | SynthEnvelope = 1000.0, q: Long | Float = 0.707) {
+      self.filter("band", cutoff, q)
+    }
+    delay(time: Long | Float | SynthPart | SynthEnvelope = 0.0) {
+      SynthPart("delay", [self], {time: time}, {})
+    }
+    pluck(freq: Long | Float | SynthPart | SynthEnvelope = 220.0, ring: Long | Float | SynthPart | SynthEnvelope = 2.0) {
+      SynthPart("pluck", [self], {freq: freq, ring: ring}, {})
+    }
+    resonate(modes: Array, dry: Long | Float = 0.0) {
+      SynthPart("resonate", [self], {}, {modes: modes, dry: dry})
+    }
+    drive(gain: Long | Float | SynthPart | SynthEnvelope = 1.0) {
+      SynthPart("drive", [self], {gain: gain}, {})
+    }
+    limit(ceiling: Long | Float = 0.9, release: Long | Float = 0.2) {
+      SynthPart("limit", [self], {}, {ceiling: ceiling, release: release})
+    }
+    __add__(other: Long | Float | SynthPart | SynthEnvelope) {
+      SynthPart("mix", [self, to_part(other)], {}, {})
+    }
+    __sub__(other: Long | Float | SynthPart | SynthEnvelope) {
+      self + negate(other)
+    }
+    __mul__(other: Long | Float | SynthPart | SynthEnvelope) {
+      SynthPart("gain", [self], {gain: other}, {})
+    }
+    __div__(other: Long | Float) {
+      __raise("ValueError", "Synth: a part divided by 0") if other == 0
+      self * (1.0 / other)
+    }
+    __neg__() {
+      self * -1.0
+    }
+  }
+
+  let wave = fn (
+    kind: String = "sine",
+    freq: Long | Float | SynthPart | SynthEnvelope = 440.0,
+    feedback: Long | Float | SynthPart | SynthEnvelope = 0.0,
+    phase: Long | Float | SynthPart | SynthEnvelope = 0.0,
+  ) {
+    SynthPart("wave", [], {freq: freq, feedback: feedback, phase: phase}, {kind: kind})
+  }
+  let sine = fn (
+    freq: Long | Float | SynthPart | SynthEnvelope = 440.0,
+    phase: Long | Float | SynthPart | SynthEnvelope = 0.0,
+    feedback: Long | Float | SynthPart | SynthEnvelope = 0.0,
+  ) {
+    wave("sine", freq, feedback, phase)
+  }
+  let saw = fn (freq: Long | Float | SynthPart | SynthEnvelope = 440.0, phase: Long | Float | SynthPart | SynthEnvelope = 0.0) {
+    wave("saw", freq, 0.0, phase)
+  }
+  let square = fn (freq: Long | Float | SynthPart | SynthEnvelope = 440.0, phase: Long | Float | SynthPart | SynthEnvelope = 0.0) {
+    wave("square", freq, 0.0, phase)
+  }
+  let triangle = fn (freq: Long | Float | SynthPart | SynthEnvelope = 440.0, phase: Long | Float | SynthPart | SynthEnvelope = 0.0) {
+    wave("triangle", freq, 0.0, phase)
+  }
+  let noise = fn (seed: Long = 1) {
+    SynthPart("noise", [], {}, {seed: seed})
+  }
+  let mix = fn (parts: Array) {
+    __raise("ValueError", "Synth.mix: nothing to mix") if parts.empty()
+    __raise("TypeError", "type error: Synth.mix takes an Array of Long | Float | SynthPart | SynthEnvelope") unless parts.all(|p| p is Long | Float | SynthPart | SynthEnvelope)
+    SynthPart("mix", parts.map(to_part), {}, {})
+  }
+
+  let env = fn (levels: Array, times: Array, curve: Long | Float | String | Array = 0.0) {
+    SynthEnvelope(levels, times, curve, "env")
+  }
+  let line = fn (lo: Long | Float, hi: Long | Float, dur: Long | Float, curve: Long | Float = 0.0) {
+    __raise("ValueError", "Synth.line: dur is more than 0 seconds") if !(dur > 0)
+    SynthEnvelope([lo, hi], [dur], curve, "line")
+  }
+  let xline = fn (lo: Long | Float, hi: Long | Float, dur: Long | Float) {
+    __raise("ValueError", "Synth.xline: dur is more than 0 seconds") if !(dur > 0)
+    SynthEnvelope([lo, hi], [dur], "exp", "xline")
+  }
+
+  let hz = fn (note: Long | Float) {
+    __raise("ValueError", "Synth.hz: note is a finite number") if !finite(note)
+    440.0 * Math.exp(Math.log(2.0) * (note - 69) / 12.0)
+  }
+  let db = fn (x: Long | Float) {
+    __raise("ValueError", "Synth.db: x is a finite number") if !finite(x)
+    Math.exp(Math.log(10.0) * x / 20.0)
+  }
+
+  # ---- from an expression to an Audio.Graph
+
+  # What a value is made with in the graph: a number as itself, an envelope
+  # from its first level, a signal from the value's floor (taken off again
+  # in feed).
+  let base_of = |spec, floor| spec is SynthPart ? floor : (spec is SynthEnvelope ? spec.levels[0] : spec)
+
+  # An envelope scheduled on a graph value from `t0`: straight segments as
+  # ramps, curved ones as CURVE_STEPS ramps (a segment 0 long jumps, as a
+  # ramp to the time of the change before does).
+  let schedule = fn (value, e, t0) {
+    value.set(t0, e.levels[0])
+    mut t = t0
+    for i in iota(e.times.size()) {
+      let (l0, l1, len, c) = (e.levels[i], e.levels[i + 1], e.times[i], e.curves[i])
+      if c == 0 {
+        value.ramp(t + len, l1)
+      } else {
+        for j in iota(CURVE_STEPS) {
+          let x = (j + 1) / (CURVE_STEPS + 0.0)
+          value.ramp(t + len * x, shape(l0, l1, c, x))
+        }
+      }
+      t += len
+    }
+  }
+
+  # A graph being built: the graph, the parts built so far by the number
+  # of the SynthPart they stand for, and the one constant source every
+  # level is a gain of (made when the first level is).
+  fn build_of(g) {
+    {g: g, parts: {}, mut one: nil}
+  }
+
+  # A constant `v`: a square wave at 0 Hz answers 1 at every sample.
+  fn level(b, v) {
+    b.one ??= b.g.wave("square", freq: 0.0)
+    b.g.gain(b.one, v)
+  }
+
+  # A number, an envelope or a part, as a part of the graph that answers it.
+  fn signal(b, v) {
+    match v {
+      SynthPart => part(b, v),
+      SynthEnvelope => {
+        let p = level(b, v.levels[0])
+        schedule(p.gain, v, 0.0)
+        p
+      },
+      _ => level(b, v),
+    }
+  }
+
+  # A graph value read as `spec` says, its base already base_of(spec, floor).
+  fn feed(b, value, spec, floor) {
+    if spec is SynthEnvelope {
+      schedule(value, spec, 0.0)
+    } else if spec is SynthPart {
+      part(b, spec).connect(value)
+      level(b, -floor).connect(value) if floor != 0.0
+    }
+  }
+
+  # The graph part a SynthPart stands for, built once.
+  fn part(b, p) {
+    b.parts[p.id] ??= lower(b, p)
+  }
+
+  fn lower(b, p) {
+    let (g, v, o) = (b.g, p.values, p.options)
+    let input = p.inputs.size() == 1 ? part(b, p.inputs[0]) : nil
+    match p.kind {
+      "wave" => {
+        let w = g.wave(o.kind, freq: base_of(v.freq, 0.0), feedback: base_of(v.feedback, 0.0), phase: base_of(v.phase, 0.0))
+        feed(b, w.freq, v.freq, 0.0)
+        feed(b, w.feedback, v.feedback, 0.0)
+        feed(b, w.phase, v.phase, 0.0)
+        w
+      },
+      "noise" => g.noise(o.seed),
+      "level" => signal(b, v.level),
+      "mix" => g.mix(p.inputs.map(|i| part(b, i))),
+      "gain" => {
+        let q = g.gain(input, base_of(v.gain, 0.0))
+        feed(b, q.gain, v.gain, 0.0)
+        q
+      },
+      "filter" => {
+        # A cutoff is more than 0 Hz: a signal's base is 1 Hz, taken off again.
+        let q = g.filter(o.kind, input, cutoff: base_of(v.cutoff, 1.0), q: o.q)
+        feed(b, q.cutoff, v.cutoff, 1.0)
+        q
+      },
+      "delay" => {
+        let q = g.delay(input, base_of(v.time, 0.0))
+        feed(b, q.time, v.time, 0.0)
+        q
+      },
+      "pluck" => {
+        # A string's freq is 20 Hz or more: a signal's base is 20 Hz.
+        let q = g.pluck(input, freq: base_of(v.freq, 20.0), ring: base_of(v.ring, 0.0))
+        feed(b, q.freq, v.freq, 20.0)
+        feed(b, q.ring, v.ring, 0.0)
+        q
+      },
+      "resonate" => g.resonate(input, o.modes, dry: o.dry),
+      "drive" => {
+        let q = g.drive(input, base_of(v.gain, 0.0))
+        feed(b, q.gain, v.gain, 0.0)
+        q
+      },
+      _ => g.limit(input, ceiling: o.ceiling, release: o.release),
+    }
+  }
+
+  # The graph an expression stands for, its output set.
+  fn graph_of(expr, rate) {
+    let g = Audio.Graph(rate)
+    g.output(signal(build_of(g), expr))
+    g
+  }
+
+  # The first `seconds` of `expr`, as samples: what play would play.
+  let render = fn (expr: SynthPart | SynthEnvelope, seconds: Long | Float, rate: Long | Float = 44100) {
+    graph_of(expr, rate).render(seconds)
+  }
+
+  {
+    wave: wave,
+    sine: sine,
+    saw: saw,
+    square: square,
+    triangle: triangle,
+    noise: noise,
+    env: env,
+    line: line,
+    xline: xline,
+    mix: mix,
+    hz: hz,
+    db: db,
+    render: render,
+  }
+}
+let Synth = _synth_module()

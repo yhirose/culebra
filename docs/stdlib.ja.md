@@ -83,8 +83,9 @@
 43. [`LLM`](#43-llm) — LLMのクライアント。提供元（Messages APIかChat Completions）への1ステップ、関数をツールとして使う会話、素通しのリクエスト
 44. [`Llama`](#44-llama) — このプロセス内で動くモデル。GGUFを読んで`generate`か`chat`（ビルドオプション）
 45. [`Kauai`](#45-kauai) — Kauaiで書いた曲を読み、検査し、`Audio`のruntimeで演奏する
-46. [設計上の注記](#46-設計上の注記)
-47. [未収録（将来検討）](#47-未収録将来検討)
+46. [`Synth`](#46-synth) — 音を式として書き、`render`のときに`Audio.Graph`として組み立てる
+47. [設計上の注記](#47-設計上の注記)
+48. [未収録（将来検討）](#48-未収録将来検討)
 
 **目的別索引**
 
@@ -9765,7 +9766,77 @@ println(song.length())  # => 2.0
 song.play()
 ```
 
-## 46. 設計上の注記
+## 46. `Synth`
+
+> **Status: Draft.** リリースまでに、APIが変わることがある。
+
+`Synth`は、音を式として書きます。`Synth.sine(440.0) * 0.2`は部品の式で、
+グラフを持たない値です。`render`が式をたどって、それが表す`Audio.Graph`を
+組み立て、計算します。部品は作ったあと変わらないので、式を取っておいたり、
+使い回したり、組み合わせたりできます。メソッドの受け手が、その入力です
+（`saw(110.0).lowpass(800.0)`は、ノコギリ波をフィルタに通す）。分割代入の
+`let`で取り込めば、`Synth.`を書かずに済みます。
+
+```culebra
+let {sine, saw, line, env, render} = Synth
+let sweep = sine(line(980.0, 20.0, 1.0, curve: -4.0)) * env([0.0, 0.2, 0.0], [0.01, 1.0])
+let samples = render(sweep, 1.01)
+println(samples.size())  # => 44541
+let pad = saw(110.0).lowpass(800.0, q: 2.0) * 0.2
+println(render(pad, 0.5).size())  # => 22050
+```
+
+部品が読む値（波の`freq`、`feedback`、`phase`、フィルタの`cutoff`、遅延の
+`time`、弦の`freq`と`ring`、`drive`の`gain`、音量）は、数、部品、
+エンベロープのどれでも受け取ります。数はそのまま値に、エンベロープは時刻0からの
+値の変化になります。部品を渡すと、信号そのものが値になります。グラフの
+`connect`のように基準値へ足すのではないので、`sine(330.0) * (0.5 + 0.5 *
+sine(5.0))`は、0から1の間で揺れるトレモロです。同じ値を2回使うと、
+グラフの部品と同じく1つの部品になります。`let a = sine(440.0)`のあとの
+`a + a`は1つの波を2回足したもので、`sine(440.0) + sine(440.0)`は波を2つ
+作ります。数が部品の範囲を外れているかは、`render`がそのサンプルレートで
+グラフを組み立てるときに、グラフ自身が検査し、グラフの`ValueError`になります。
+
+| 関数 | 動作 |
+| --- | --- |
+| `Synth.wave(kind = "sine", freq = 440.0, feedback = 0.0, phase = 0.0)` | -1から1の波。`Audio.Graph`の`wave`と同じで、`"sine"`、`"saw"`、`"square"`、`"triangle"` |
+| `Synth.sine(freq = 440.0, phase = 0.0, feedback = 0.0)` | `wave("sine", ...)`。`phase`に部品を渡すとFM、`feedback`は自分自身への帰還 |
+| `Synth.saw(freq = 440.0, phase = 0.0)` / `square` / `triangle` | その種類の`wave` |
+| `Synth.noise(seed = 1)` | -1から1のホワイトノイズ。同じ`seed`からは同じノイズ |
+| `Synth.mix(parts: Array)` | 部品を足し合わせる（数とエンベロープは、その値の信号）。`mix`を取り込めば`[a, b].mix()`とも書ける |
+| `Synth.env(levels: Array, times: Array, curve = 0.0)` | エンベロープ。`levels`を、長さ`times`秒の区間でつなぎ、最後の値を保つ。`curve`は0（直線）、曲げる数`c`（区間の`x`の位置で`l0 + (l1 - l0) * (1 - exp(c * x)) / (1 - exp(c))`。負なら初めに速く、正なら初めにゆっくり動く）、`"exp"`、または区間ごとのそれらの配列 |
+| `Synth.line(lo, hi, dur, curve = 0.0)` | `env([lo, hi], [dur], curve)` |
+| `Synth.xline(lo, hi, dur)` | `env([lo, hi], [dur], "exp")`。値は`lo * (hi / lo) ^ (t / dur)`で、2つは同じ符号で0でない |
+| `Synth.hz(note) -> Float` | ノート番号の周波数。69が440 Hzで、半音は1オクターブの12分の1 |
+| `Synth.db(x) -> Float` | デシベルを音量の倍率にする。0が1.0、-6がおよそ0.5 |
+| `Synth.render(expr, seconds, rate = 44100) -> Array` | 式（部品かエンベロープ）の最初の`seconds`秒。`Audio.Graph`の`render`と同じに計算する |
+
+| 部品のメソッド | 動作 |
+| --- | --- |
+| `p.lowpass(cutoff = 1000.0, q = 0.707)` / `highpass` / `bandpass` | `p`を、その種類の`Audio.filter`のフィルタに通す |
+| `p.filter(kind, cutoff = 1000.0, q = 0.707)` | 同じことを、種類（`"low"`、`"high"`、`"band"`）を渡して行う |
+| `p.delay(time = 0.0)` | `time`秒（0から1）前の`p` |
+| `p.pluck(freq = 220.0, ring = 2.0)` | `p`で弾いた`Audio.pluck`の弦 |
+| `p.resonate(modes: Array, dry = 0.0)` | `p`を、`Audio.resonate`の共鳴の束に通す |
+| `p.drive(gain = 1.0)` | `p`に`gain`を掛けてtanhに通す。`Audio.Graph`の`drive`と同じ |
+| `p.limit(ceiling = 0.9, release = 0.2)` | `p`を`ceiling`以下に保つ。`Audio.Graph`の`limit`と同じ |
+| `p + x`、`p - x`、`p * x`、`p / n`、`-p` | 部品の和、差、積（音量）。右は数、部品、エンベロープ。`+`と`*`は数が左でもよい。`/`は数で割るときだけで、0なら`ValueError` |
+
+エンベロープは、`t`秒の値を返す`e.at(t)`と、全体の長さを返す`e.duration()`を
+持ちます。グラフの値は直線でしか動かないので、曲がった区間は20本の直線になり、
+curve -4で振れ幅の0.5%以内に収まります。エンベロープの誤り（値が2つ未満、
+`times`の長さが合わない、負の時間、0をまたぐ`"exp"`の区間）は、作るときに
+`ValueError`になります。
+
+```culebra
+let {sine, xline, hz, render} = Synth
+println(hz(69))  # => 440.0
+println(xline(4000.0, 300.0, 3.0).at(3.0))  # => 300.0
+let a = sine(220.0)
+println(render(a + a, 0.001) == render(a * 2.0, 0.001))  # => true
+```
+
+## 47. 設計上の注記
 
 ### 名前空間ファースト、グローバルは出力の3つだけ
 
@@ -9822,7 +9893,7 @@ run_with(IO, "via parameter")
 
 ---
 
-## 47. 未収録（将来検討）
+## 48. 未収録（将来検討）
 
 ### 重量級データ構造
 

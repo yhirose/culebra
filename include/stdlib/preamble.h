@@ -146,6 +146,9 @@ struct LazyNsModule {
   std::span<const std::string_view> needs = {};
 };
 
+// Synth builds its sounds as Audio.Graphs.
+inline constexpr std::string_view kSynthNeeds[] = {"Audio"};
+
 inline std::span<const LazyNsModule> lazy_ns_modules() {
   static constexpr LazyNsModule kModules[] = {
       {"Time", TIME_MODULE_SOURCE, "_time_module"},
@@ -156,6 +159,9 @@ inline std::span<const LazyNsModule> lazy_ns_modules() {
       // a namespace of its own, so a program that only plays tones does
       // not read its 3000 lines.
       {"Kauai", KAUAI_MODULE_SOURCE, "_kauai_module"},
+      // Sound written as an expression, built as an Audio.Graph when it
+      // renders or plays.
+      {"Synth", SYNTH_MODULE_SOURCE, "_synth_module", kSynthNeeds},
       {"MIDI", MIDI_MODULE_SOURCE, "_midi_module"},
       {"Args", ARGS_MODULE_SOURCE, "_args_module"},
       {"Regex", REGEX_MODULE_SOURCE, "_regex_module"},

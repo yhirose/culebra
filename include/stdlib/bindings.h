@@ -13720,7 +13720,7 @@ inline const std::unordered_set<std::string_view>& builtin_var_names() {
       // interp's builtin_names skip. See _jit_namespace_get_or_build.
       "Time",    "Args",      "Regex",     "PEG",       "FST",      "Term",
       "Log",
-      "Path",    "Canvas",    "Audio",     "Kauai",     "MIDI",      "__Eff",     "Vector2",   "Vector3",
+      "Path",    "Canvas",    "Audio",     "Kauai",     "Synth",     "MIDI",      "__Eff",     "Vector2",   "Vector3",
       "Deque",
       "PriorityQueue", "StateMachine", "Dir",
       // The bare function globals from those same source modules (assert_*,

@@ -1,0 +1,147 @@
+# Synth: sound written as an expression, built as an Audio.Graph when it
+# renders. What an expression renders is checked against the same graph
+# wired by hand, against the formulas it follows, and against what the
+# graph itself checks.
+
+let {wave, sine, saw, square, triangle, noise, env, line, xline, mix, hz, db, render} = Synth
+
+fn assert_samples(got, want) {
+  assert_eq(got.size(), want.size())
+  for i in 0..got.size() {
+    assert_close(got[i], want[i], 1e-9)
+  }
+}
+
+# What `call` raised, as (kind, message).
+fn caught(call) {
+  try {
+    call()
+    nil
+  } catch e {
+    (e.kind, e.message)
+  }
+}
+
+let peak = |xs| xs.map(|x| Math.abs(x)).max()
+
+# The frequency of a sine in samples[from..to): its rising zero crossings
+# over the time between the first and the last of them.
+fn pitch(samples, rate, from, to) {
+  let ups = iota(from + 1, to).filter(|i| samples[i - 1] < 0.0 && samples[i] >= 0.0)
+  (ups.size() - 1) * rate / (ups[ups.size() - 1] - ups[0] + 0.0)
+}
+
+# A chain is the graph wired by hand: a method's receiver is its input.
+let hand = Audio.Graph()
+hand.output(hand.gain(hand.filter("low", hand.wave("saw", freq: 110.0), cutoff: 800.0, q: 2.0), 0.2))
+assert_samples(render(saw(110.0).lowpass(800.0, q: 2.0) * 0.2, 0.05), hand.render(0.05))
+let band = Audio.Graph()
+band.output(band.filter("band", band.wave("square", freq: 220.0), cutoff: 600.0))
+assert_samples(render(square(220.0).bandpass(600.0), 0.02), band.render(0.02))
+assert_samples(render(square(220.0).filter("band", 600.0), 0.02), band.render(0.02))
+
+# A part given to a value is the value: FM is a wave's phase moved by
+# another wave, and the index is what that wave is multiplied by.
+let fm = Audio.Graph()
+let index = fm.gain(fm.wave("sine", freq: 1540.0), 2.0)
+let carrier = fm.wave("sine", freq: 440.0)
+index.connect(carrier.phase)
+fm.output(fm.gain(carrier, 0.3))
+assert_samples(render(sine(440.0, phase: sine(1540.0) * 2.0) * 0.3, 0.02), fm.render(0.02))
+
+# A tremolo: the level is the signal 0.5 + 0.5 * lfo, not the gain's base
+# plus it.
+let trem = Audio.Graph()
+let half = trem.gain(trem.wave("square", freq: 0.0), 0.5)
+let level = trem.mix([trem.gain(trem.wave("sine", freq: 5.0), 0.5), half])
+let amp = trem.gain(trem.wave("sine", freq: 330.0), 0.0)
+level.connect(amp.gain)
+trem.output(trem.gain(amp, 0.3))
+assert_samples(render(sine(330.0) * (0.5 + 0.5 * sine(5.0)) * 0.3, 0.3), trem.render(0.3))
+
+# A value used twice is one part: the echo's source is one wave, delayed
+# twice, as wired by hand.
+let echo = fn (s) { s + s.delay(0.3) * 0.5 + s.delay(0.6) * 0.25 }
+let e = Audio.Graph()
+let src = e.wave("sine", freq: 660.0)
+e.output(e.mix([src, e.gain(e.delay(src, 0.3), 0.5), e.gain(e.delay(src, 0.6), 0.25)]))
+assert_samples(render(sine(660.0).echo(), 0.7), e.render(0.7))
+
+# An Array of parts mixes by mix, or by .mix() when mix is in scope.
+let pair = Audio.Graph()
+pair.output(pair.gain(pair.mix([pair.wave("saw", freq: 110.0), pair.wave("saw", freq: 110.77)]), 0.5))
+assert_samples(render([saw(110.0), saw(110.77)].mix() * 0.5, 0.05), pair.render(0.05))
+assert_samples(render(mix([saw(110.0), saw(110.77)]) * 0.5, 0.05), pair.render(0.05))
+assert_samples(render(mix([saw(110.0), 0.25]), 0.01), render(saw(110.0) + 0.25, 0.01))
+
+# Operators: a number on either side of + and *, a part's negative, a part
+# less a number or a part, and a part over a number.
+let a = triangle(220.0)
+let base = render(a, 0.01)
+assert_samples(render(a + a, 0.01), base.map(|x| 2.0 * x))
+assert_samples(render(0.5 * a, 0.01), base.map(|x| 0.5 * x))
+assert_samples(render(0.25 + a, 0.01), base.map(|x| x + 0.25))
+assert_samples(render(-a, 0.01), base.map(|x| -x))
+assert_samples(render(a - 0.25, 0.01), base.map(|x| x - 0.25))
+assert_samples(render(a - a * 0.5, 0.01), base.map(|x| 0.5 * x))
+assert_samples(render(a - env([0.25, 0.25], [1.0]), 0.01), base.map(|x| x - 0.25))
+assert_samples(render(a / 4.0, 0.01), base.map(|x| x / 4.0))
+assert_eq(caught(|| a / 0), ("ValueError", "Synth: a part divided by 0"))
+
+# A signal given to a value with a floor (a cutoff over 0 Hz, a string's
+# 20 Hz) is the value all the same: a steady part of 800 Hz is a cutoff of
+# 800, and one of 220 Hz a string of 220.
+let steady = |v| sine(0.0) * 0.0 + v
+assert_samples(render(saw(110.0).lowpass(steady(800.0)), 0.02), render(saw(110.0).lowpass(800.0), 0.02))
+let strike = noise() * env([0.3, 0.0], [0.01])
+assert_samples(render(strike.pluck(steady(220.0), ring: 1.5), 0.1), render(strike.pluck(220.0, ring: 1.5), 0.1))
+assert_samples(render(saw(110.0).drive(steady(2.0)), 0.01), render(saw(110.0).drive(2.0), 0.01))
+assert_samples(render(saw(110.0).delay(steady(0.001)), 0.01), render(saw(110.0).delay(0.001), 0.01))
+
+# An envelope given to a value is its schedule: the sweep of 980 Hz down to
+# 20 Hz in a second on a curve of -4, under 10 ms up and a second down.
+let sweep = render(sine(line(980.0, 20.0, 1.0, curve: -4.0)) * env([0.0, 0.2, 0.0], [0.01, 1.0]), 1.0)
+assert_close(peak(sweep), 0.2, 0.001)
+let curve_at = |t| 980.0 + (20.0 - 980.0) * (1.0 - Math.exp(-4.0 * t)) / (1.0 - Math.exp(-4.0))
+assert_close(pitch(sweep, 44100, 8820, 11025), curve_at(0.225), 15.0)
+assert_close(pitch(sweep, 44100, 39690, 44100), curve_at(0.95), 3.0)
+
+# An envelope alone renders as the signal it is: a curve becomes straight
+# segments within 0.5% of its swing, an exponential line too.
+let rate = 1000
+let curved = line(0.0, 1.0, 1.0, curve: -4.0)
+let drawn = render(curved, 1.0, rate)
+assert_true(iota(rate).all(|i| Math.abs(drawn[i] - curved.at(i / (rate + 0.0))) < 0.005))
+let falling = xline(4000.0, 300.0, 3.0)
+assert_close(falling.at(1.5), Math.sqrt(4000.0 * 300.0), 1e-9)
+assert_close(falling.at(-1.0), 4000.0, 1e-9)
+assert_close(falling.at(9.0), 300.0, 1e-9)
+assert_eq(falling.duration(), 3.0)
+let swell = env([0.0, 1.0, 0.5], [0.5, 1.0], [0.0, "exp"])
+assert_close(swell.at(0.25), 0.5, 1e-9)
+assert_close(swell.at(1.0), Math.sqrt(0.5), 1e-9)
+assert_samples(render(env([0.0, 1.0, 1.0], [0.0, 1.0]), 0.002, 1000), [1.0, 1.0])
+assert_eq(render(wave("sine", 0.0), 0.002, 1000), [0.0, 0.0])
+
+# Note numbers and decibels.
+assert_eq(hz(69), 440.0)
+assert_close(hz(60), 261.6255653005986, 1e-9)
+assert_close(db(-6.0), 0.5011872336272722, 1e-12)
+assert_close(db(20.0), 10.0, 1e-12)
+
+# An envelope's mistakes are named where it is made; a number out of a
+# part's range is the graph's to name, where render builds it at its rate.
+assert_eq(caught(|| env([1.0], [])), ("ValueError", "Synth.env: an envelope has two levels or more"))
+assert_eq(caught(|| env([1.0, 0.0], [1.0, 1.0])), ("ValueError", "Synth.env: times has one fewer than levels (1)"))
+assert_eq(caught(|| env([1.0, 0.0], [-1.0])), ("ValueError", "Synth.env: a time is a finite number of seconds, 0 or more"))
+assert_eq(caught(|| env([1.0, Math.nan], [1.0])), ("ValueError", "Synth.env: a level is a finite number"))
+assert_eq(caught(|| env([1.0, 0.0], [1.0], "fast")), ("ValueError", "Synth.env: a curve is a finite number or \"exp\""))
+assert_eq(caught(|| env([1.0, 0.0], [1.0], [0.0, 0.0])), ("ValueError", "Synth.env: curve has one per segment (1)"))
+assert_eq(caught(|| xline(0.0, 1.0, 1.0)), ("ValueError", "Synth.xline: an \"exp\" segment runs between levels of one sign, never 0"))
+assert_eq(caught(|| line(0.0, 1.0, 0.0)), ("ValueError", "Synth.line: dur is more than 0 seconds"))
+assert_eq(caught(|| hz(Math.inf)), ("ValueError", "Synth.hz: note is a finite number"))
+assert_throws("TypeError", || sine("x"))
+assert_eq(caught(|| mix([])), ("ValueError", "Synth.mix: nothing to mix"))
+assert_throws("TypeError", || mix(["x"]))
+assert_throws("ValueError", || render(sine(99999.0), 0.01))
+assert_throws("ValueError", || render(wave("cosine"), 0.01))

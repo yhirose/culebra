@@ -85,8 +85,9 @@ Conventions used below:
 43. [`LLM`](#43-llm) — a client for LLMs: one step with a provider (the Messages API or Chat Completions), a conversation that runs your functions as tools, or a request as it is
 44. [`Llama`](#44-llama) — a model run in this process: load a GGUF file, then `generate` or `chat` (a build option)
 45. [`Kauai`](#45-kauai) — songs written in Kauai, read, checked and played on the Audio runtime
-46. [Design notes](#46-design-notes)
-47. [Not included (yet)](#47-not-included-yet)
+46. [`Synth`](#46-synth) — sound written as an expression, built as an `Audio.Graph` when it renders
+47. [Design notes](#47-design-notes)
+48. [Not included (yet)](#48-not-included-yet)
 
 **Where to find what**
 
@@ -10211,7 +10212,77 @@ println(song.length())  # => 2.0
 song.play()
 ```
 
-## 46. Design notes
+## 46. `Synth`
+
+> **Status: Draft.** The API may still change before a release.
+
+`Synth` writes a sound as an expression: `Synth.sine(440.0) * 0.2` is a
+part, a value that holds no graph, and `render` walks the expression and
+builds the `Audio.Graph` it stands for, then works it out. Parts never
+change once made, so an expression can be kept, reused and combined; a
+method's receiver is its input (`saw(110.0).lowpass(800.0)` filters the
+saw). The names are written without `Synth.` after a destructuring `let`.
+
+```culebra
+let {sine, saw, line, env, render} = Synth
+let sweep = sine(line(980.0, 20.0, 1.0, curve: -4.0)) * env([0.0, 0.2, 0.0], [0.01, 1.0])
+let samples = render(sweep, 1.01)
+println(samples.size())  # => 44541
+let pad = saw(110.0).lowpass(800.0, q: 2.0) * 0.2
+println(render(pad, 0.5).size())  # => 22050
+```
+
+A value a part reads (a wave's `freq`, `feedback` and `phase`, a filter's
+`cutoff`, a delay's `time`, a string's `freq` and `ring`, a drive's `gain`,
+and a gain) takes a number, a part or an envelope. A number is the value; an
+envelope is its schedule from the start; a part is the signal itself, not
+something added to a base as `connect` adds in a graph, so
+`sine(330.0) * (0.5 + 0.5 * sine(5.0))` is a tremolo between 0 and 1. A
+value used twice is one part, as a graph's part is: with `let a =
+sine(440.0)`, `a + a` is one wave added to itself, where `sine(440.0) +
+sine(440.0)` makes two. Numbers out of a part's range are the graph's to
+check, when `render` builds it at its rate, with the graph's `ValueError`.
+
+| Function | Effect |
+| --- | --- |
+| `Synth.wave(kind = "sine", freq = 440.0, feedback = 0.0, phase = 0.0)` | a wave from -1 to 1, as `Audio.Graph`'s `wave`: `"sine"`, `"saw"`, `"square"` or `"triangle"` |
+| `Synth.sine(freq = 440.0, phase = 0.0, feedback = 0.0)` | `wave("sine", ...)`; a part given to `phase` is FM, a `feedback` the wave's own |
+| `Synth.saw(freq = 440.0, phase = 0.0)` / `square` / `triangle` | `wave` of that kind |
+| `Synth.noise(seed = 1)` | white noise from -1 to 1, the same from the same `seed` |
+| `Synth.mix(parts: Array)` | the parts added together (numbers and envelopes are levels); `[a, b].mix()` once `mix` is in scope |
+| `Synth.env(levels: Array, times: Array, curve = 0.0)` | an envelope: `levels` joined by segments `times` seconds long, holding the last level after; `curve` is 0 (straight), a number `c` that bends it (`l0 + (l1 - l0) * (1 - exp(c * x)) / (1 - exp(c))` at `x` of the way: below 0 it moves fast first, above 0 slow first), `"exp"`, or one of those per segment |
+| `Synth.line(lo, hi, dur, curve = 0.0)` | `env([lo, hi], [dur], curve)` |
+| `Synth.xline(lo, hi, dur)` | `env([lo, hi], [dur], "exp")`: `lo * (hi / lo) ^ (t / dur)`, the two of one sign and not 0 |
+| `Synth.hz(note) -> Float` | a note number's frequency: 69 is 440 Hz, a semitone a twelfth of an octave |
+| `Synth.db(x) -> Float` | decibels as a gain: 0 is 1.0, -6 about 0.5 |
+| `Synth.render(expr, seconds, rate = 44100) -> Array` | the first `seconds` of the expression (a part or an envelope), as `Audio.Graph`'s `render` works them out |
+
+| Method of a part | Effect |
+| --- | --- |
+| `p.lowpass(cutoff = 1000.0, q = 0.707)` / `highpass` / `bandpass` | `p` through `Audio.filter`'s filter of that kind |
+| `p.filter(kind, cutoff = 1000.0, q = 0.707)` | the same, the kind (`"low"`, `"high"`, `"band"`) given |
+| `p.delay(time = 0.0)` | `p` as it was `time` seconds before (0 to 1) |
+| `p.pluck(freq = 220.0, ring = 2.0)` | `Audio.pluck`'s string, struck by `p` |
+| `p.resonate(modes: Array, dry = 0.0)` | `p` through `Audio.resonate`'s bank of resonances |
+| `p.drive(gain = 1.0)` | `p` times `gain` through tanh, as `Audio.Graph`'s `drive` |
+| `p.limit(ceiling = 0.9, release = 0.2)` | `p` kept at or under `ceiling`, as `Audio.Graph`'s `limit` |
+| `p + x`, `p - x`, `p * x`, `p / n`, `-p` | parts added, subtracted and multiplied (a gain), with a number, a part or an envelope on the right, and a number on the left of `+` and `*`; `/` by a number only, `ValueError` for 0 |
+
+An envelope answers `e.at(t)`, its level at `t` seconds, and `e.duration()`.
+A graph's values move in straight lines, so a curved segment becomes 20 of
+them, within 0.5% of its swing at a curve of -4. An envelope's mistakes
+(fewer than two levels, `times` of the wrong length, a negative time, an
+`"exp"` segment through 0) raise `ValueError` where it is made.
+
+```culebra
+let {sine, xline, hz, render} = Synth
+println(hz(69))  # => 440.0
+println(xline(4000.0, 300.0, 3.0).at(3.0))  # => 300.0
+let a = sine(220.0)
+println(render(a + a, 0.001) == render(a * 2.0, 0.001))  # => true
+```
+
+## 47. Design notes
 
 ### Namespace-first, with three global shortcuts
 
@@ -10267,7 +10338,7 @@ sentinel values for "found or not" predicates (`IO.input()` returns
 
 ---
 
-## 47. Not included (yet)
+## 48. Not included (yet)
 
 ### Heavier data structures
 

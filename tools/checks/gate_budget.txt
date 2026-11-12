@@ -142,7 +142,10 @@
 # test_audio_graph_modulation.cul and test_audio_graph_loops.cul: its --jit
 # compile was 25 s of CPU idle (65 and 80 s in CI, over the 60 s a file may
 # take), and is 4.8 s at most in three (12.7 s together), the same assertions.
-tests.cul 340
+# 341 since test_synth.cul (Synth: an expression renders as the graph wired
+# by hand would, envelopes on their curves, operators, and the mistakes;
+# 0.07 s under --vm, 6.2 s under --jit).
+tests.cul 341
 
 # tests/isolate/*.cul — run on both engines, plus the over-cap modes.
 # 21 since test_xml_isolate.cul (an XML element keeps its methods across an
@@ -298,8 +301,11 @@ ctest.entries 41
 # it is the only place the docs show a loop worked out, and the doctest holds
 # its three samples (1.0, 0.5, 0.25) to the code in both lanes. 1168 since
 # the Kauai spec's "Knobs and weight" shows an instrument that declares its
-# knobs (skipped: bowed is the program's own), in en and ja.
-docs.blocks 1168
+# knobs (skipped: bowed is the program's own), in en and ja. 1172 since
+# Synth's chapter renders a sweep and a pad, and shows hz, xline and a part
+# used twice, in en and ja: the only programs the doctest runs that name
+# Synth and never Audio, so they hold Synth's needs to both lanes.
+docs.blocks 1172
 
 # The samples the language front ends are run over (examples/languages/*).
 languages.samples 130

@@ -52,7 +52,7 @@
 ((type) @type.builtin
  (#match? @type.builtin "^(Encoding|Compress|Hash|CSV|Env|UUID|Term|Log|TOML|XML|SQLite|Llama)$"))
 ((type) @type.builtin
- (#match? @type.builtin "^(Canvas|Audio|Kauai|MIDI|Scene|Net|Desktop|Webview|Vector2|Vector3|Deque|PriorityQueue|StateMachine)$"))
+ (#match? @type.builtin "^(Canvas|Audio|Kauai|Synth|MIDI|Scene|Net|Desktop|Webview|Vector2|Vector3|Deque|PriorityQueue|StateMachine)$"))
 ((type) @type.builtin
  (#match? @type.builtin "^(PEG|FST|Search|Range|Set|LLM)$"))
 ; === END AUTO-BUILTINS ===

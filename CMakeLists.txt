@@ -2590,7 +2590,7 @@ if(CULEBRA_ENABLE_JIT)
   # linked into every built binary, not only the ones that use it. The
   # __*Trait ones are built-in traits the splice selects like a module.
   set(_baked_names __Traits __EqTrait __ComparableTrait __DirTrait
-                   Time Term Canvas Audio Kauai MIDI Args Regex PEG FST Log Path Vector2
+                   Time Term Canvas Audio Kauai Synth MIDI Args Regex PEG FST Log Path Vector2
                    Vector3
                    Deque PriorityQueue StateMachine Dir __Eff __Matchers
                    __StringFns)

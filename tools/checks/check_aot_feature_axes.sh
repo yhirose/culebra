@@ -421,6 +421,14 @@ expect_present kauai "$audio_syms" "Kauai named, Audio not"
 expect_absent kauai "$window_syms" "the window and SDL, for Kauai alone"
 expect_output kauai "2.0"
 
+# Synth builds its sounds as Audio.Graphs: a program that names Synth alone
+# gets Audio through Synth's needs (preamble.h), and with it the archive.
+build synth 'let {sine, render} = Synth
+IO.print(render(sine(440.0) * 0.5, 0.01).size())'
+expect_present synth "$audio_syms" "Synth named, Audio not"
+expect_absent synth "$window_syms" "the window and SDL, for Synth alone"
+expect_output synth "441"
+
 # The wrap fixture: naming __Foreign force-loads its archive, and the
 # registrar has to have run for the namespace to resolve at all.
 build foreign 'let c = __Foreign.Counter.new(10)
