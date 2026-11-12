@@ -22,7 +22,7 @@ lock_cmd := justfile_directory() / "misc/one_at_a_time.sh"
 # it; CI caps the memory-tight macOS runner that way.
 build_jobs := "${CULEBRA_BUILD_JOBS:-$(" + justfile_directory() / "misc/jobs_within.sh" + " 2000000000)}"
 
-# Compiler for the one tool built outside CMake (tools/gen_grammar_blob.cc).
+# Compiler for tools/gen_grammar_blob.cc, a tool built outside CMake.
 blob_cxx := if path_exists("/opt/homebrew/opt/llvm/bin/clang++") == "true" { "/opt/homebrew/opt/llvm/bin/clang++" } else { env_var_or_default("CXX", "c++") }
 
 # Share ccache entries between worktrees of the same commit: every -I CMake
@@ -263,6 +263,15 @@ check-error-kinds:
 check-search-splitter:
     tools/checks/check_search_splitter_standalone.sh
 
+# bench-audio-graph compares this checkout with a ref by building the ref's
+# own bench, so a version whose bench no longer builds against its audio.h
+# could never be compared with again: build it here, unoptimized, and render
+# each graph briefly.
+[group("test")]
+[doc("Verify the Audio.Graph bench builds and renders against this audio.h")]
+check-bench-audio-graph:
+    tools/bench/audio_graph/run.sh --check
+
 # include/ is ten directories and the directory is the layer, so an include
 # either goes down the stack or is one of the three recorded inversions. This
 # is the check the directories were for: while the tree was flat, which layer
@@ -377,9 +386,10 @@ check-docs-cpp:
 
 # Every committed file a generator produces, checked against its source, plus
 # the workflow-coverage ratchet. Cheap enough to gate both test recipes:
-# well under a second once the grammar-blob tool is ccache-warm.
+# well under a second once the grammar-blob tool and the Audio.Graph bench are
+# ccache-warm.
 [private]
-check-generated: check-grammar-sync check-preambles check-blob check-site-version check-site-playground-sync check-difftest-coverage check-gate-budget check-release-coverage check-spec-examples check-api-coverage check-canon-return-types check-registrar-rooted check-pe-exports-gen check-interrupt-discipline check-thrown-value-discipline check-docs-cpp-includes check-header-naming check-pipefail-readers check-change-scopes check-error-kinds check-search-splitter check-layering check-codegen-enums check-vm-dispatch-table check-protocol-member-door check-value-equal-door check-value-order-door check-source-anchor-door check-object-facts check-portable-closure-door check-native-entry-door check-runner-pins check-llama-versions
+check-generated: check-grammar-sync check-preambles check-blob check-site-version check-site-playground-sync check-difftest-coverage check-gate-budget check-release-coverage check-spec-examples check-api-coverage check-canon-return-types check-registrar-rooted check-pe-exports-gen check-interrupt-discipline check-thrown-value-discipline check-docs-cpp-includes check-header-naming check-pipefail-readers check-change-scopes check-error-kinds check-search-splitter check-bench-audio-graph check-layering check-codegen-enums check-vm-dispatch-table check-protocol-member-door check-value-equal-door check-value-order-door check-source-anchor-door check-object-facts check-portable-closure-door check-native-entry-door check-runner-pins check-llama-versions
 
 # The slim download (CULEBRA_SLIM: the VM alone, no LLVM, window, 3D, audio,
 # Webview or Llama), built as a release is (-O3, LTO). Its own dir: the JIT
@@ -2180,6 +2190,16 @@ bench-langs reps="3": build
 [group("bench")]
 bench-tensor device="gpu" rounds="5": build
     ./benchmarks/tensor/run.sh --device {{device}} --rounds {{rounds}}
+
+# Audio.Graph's engine alone (include/stdlib/audio.h), built in seconds
+# without culebra: run it before the dev build when audio.h changes. With a
+# ref, this checkout against that one, per graph: whether the samples are the
+# same, and ns a sample now over then (against HEAD itself it shows the noise
+# floor). tools/bench/audio_graph/bench.cc says what it reads.
+[doc("Audio.Graph's engine: samples and ns a sample per graph, or against a ref (report, not a gate)")]
+[group("bench")]
+bench-audio-graph ref="":
+    tools/bench/audio_graph/run.sh {{ref}}
 
 # Smoke: run microgpt 5 training steps (no inference) on both compiled
 # lanes to catch regressions in the value-ownership / special-method

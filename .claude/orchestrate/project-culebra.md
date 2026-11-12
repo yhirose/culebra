@@ -29,6 +29,7 @@ SKILL.mdの原則と手順をculebraに当てはめるための事実。今のma
 | ゲートの数の上限 | `just check-gate-budget`。足した分は`tools/checks/gate_budget.txt`を理由と一緒に直し、足したテストの時間を測る | ゲートが掃くテストとdocsのブロックの数 | 数分／なし | |
 | コードのレビュー | `/simplify`（3人並列） | コードの差分の質（重複、命名、効率）。テストとdocsの差分、動作は読まない | 5〜8分／トークン約25万（大半が1回ごとの固定費） | まとめて回す：後続が積む境目と、着地の前の束に1回 |
 | 設計や計画のレビュー | 独立した担当1人に、主張を一次資料で確かめさせる | 計画の誤り、見落とし | 4〜11分／トークン12万〜26万 | |
+| エンジンの単体ベンチ | `just bench-audio-graph <ref>`（`<ref>`は変更の前、ふつうはmaster）。devのビルドの前に回す | Audio.Graphのエンジン（`include/stdlib/audio.h`）が、決まったグラフの一式で前と同じサンプルを出すか（違えば最大の差と最初のサンプル）と、1サンプルあたりの時間の前との比。オフラインの描画だけを読み、再生中のエンジン、bindings.hの検査、Synthの側の費用は読まない | 約10秒（2026-11-12、7グラフ、4往復）／マシン（ビルドは要らない） | 比べるのは同じマシンの前後だけ（libmの末尾の桁がOSで違う）。時間の揺れは、同じrefどうし（`just bench-audio-graph HEAD`）で見る。arm64ではサブノーマルの遅さが見えない |
 | 性能 | `just build`（`-O3`＋LTO）でだけ測る（`build-dev/`は`-O1`） | ホットパスの時間とピークのメモリ（ホットパスを触った変更だけが読む対象） | 約7分＋測定／マシン（全ツリーのビルド） | 負荷の高いときは揺れる |
 | userの感覚での確認 | 音の変わる変更は、変更前後のWAVを聞き比べてもらう | 音、見た目 | 数分の手間、数時間の遅れ／user | |
 | 着地のゲート | `just land`（rebase → スコープで決まる検査 → 早送り。スコープは`tools/checks/change_scopes.txt`） | 生成物のずれ、JIT対称の部分集合、codegen、ctestのCLIの半分、isolate、docsのdoctest、rebaseで混ざった他人の変更との組み合わせ。スコープnoneなら全体のgrep 2本だけ | 約2〜7分／着地のロック、マシン | 負荷で落ちるものがある（§8） |
@@ -46,6 +47,7 @@ SKILL.mdの原則と手順をculebraに当てはめるための事実。今のma
 | `kauai/recipes/`・`examples/kauai/`（`site/playground/`に写しがある） | なし | 着地前に`playground/copy-frontend.sh site/playground`で写しを揃えてコミット（check-generatedが落とす。emsdk不要） | 不要 |
 | `tests/*.cul`、`tests/*_test.sh` | なし | 単発の実行、`bash tests/<name>_test.sh build-dev/culebra`（pl0、mini_*、scene、wrapのスクリプトは着地で回らない） | 不要 |
 | `src/preambles/*.cul` | dev（278秒。`just dev`がヘッダを作り直すので、`gen-preambles`を別に回さなくてよい） | `just check`、該当のphase | 不要 |
+| `include/stdlib/audio.h`（中心ヘッダ） | dev 278秒。その前に`just bench-audio-graph master`（ビルド不要、約10秒） | エンジンの単体ベンチ、該当の後処理 | §5の種類（音声スレッド）に当たれば要る |
 | 中心ヘッダ（`include/`の133本のうち96本） | dev 278秒 | 該当の後処理 | §5の種類に当たれば要る |
 | main.ccだけが読むヘッダ（30本）、`src/main.cc` | dev約111秒＋リンク | 該当の後処理 | 同上 |
 | runtime archiveだけのソース（`src/runtime/culebra_rt*.cc`、`include/aot/bootstrap.h`） | devでは一切コンパイルされない | `build-gate`か、CIに任せる | 要る |
