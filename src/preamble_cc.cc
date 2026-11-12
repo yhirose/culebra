@@ -110,6 +110,17 @@ void default_body_tokens(const peg::Ast& ast,
   for (const auto& n : ast.nodes) default_body_tokens(*n, out);
 }
 
+// The names a module's code uses: its tokens less its literals' text (a word
+// in a message names nothing).
+void code_tokens(const peg::Ast& ast,
+                 std::unordered_set<std::string_view>& out) {
+  if (ast.is_token) {
+    if (!culebra::_token_is_literal_text(ast)) culebra::collect_ast_tokens(ast, out);
+    return;
+  }
+  for (const auto& n : ast.nodes) code_tokens(*n, out);
+}
+
 // The first field two ASTs over `src` differ in, as "<node> <field>", or
 // empty: a token the source holds has to be at the same place in it, any
 // other has to have the same text. `parent` is left out: the desugars move a
@@ -272,6 +283,25 @@ int main(int argc, char** argv) {
   require(types.others, culebra::is_stdlib_type_name, "is_stdlib_type_name");
   require(types.values, culebra::is_stdlib_value_class_name,
           "is_stdlib_value_class_name");
+  if (!listed) return 1;
+  // A namespace module gets another one only through its `needs`: the
+  // selection reads the table, not the module's code.
+  for (const auto& m : culebra::lazy_ns_modules()) {
+    if (name != m.name) continue;
+    std::unordered_set<std::string_view> used;
+    code_tokens(*ast, used);
+    for (const auto& other : culebra::lazy_ns_modules()) {
+      std::string_view o = other.name;
+      if (o == m.name || !used.contains(o) ||
+          std::ranges::find(m.needs, o) != m.needs.end())
+        continue;
+      std::fprintf(stderr,
+                   "culebra_preamble_cc: stdlib module '%s' names `%s`, which "
+                   "its needs in lazy_ns_modules (preamble.h) lack\n",
+                   m.name, other.name);
+      listed = false;
+    }
+  }
   if (!listed) return 1;
   if (!ast_out.empty() && !write_ast(*ast, *src, ast_out)) return 1;
   auto prog = culebra::vm::Compiler::compile_stdlib_prologue(*ast);

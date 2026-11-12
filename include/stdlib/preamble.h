@@ -135,10 +135,15 @@ inline std::string _wrap_lazy_ns_module(std::string_view src, const char* pub,
 // One list for both backends — the interp's lazy bindings and the JIT/AOT
 // builder registrations read it — so a module added to one cannot go missing
 // from the other.
+// `needs`: the other modules of this list its code names. A program gets the
+// modules it names, and each of those brings its needs with it;
+// culebra_preamble_cc refuses to bake a module that names one it does not
+// list here.
 struct LazyNsModule {
   const char* name;
   const char* source;
   const char* builder;
+  std::span<const std::string_view> needs = {};
 };
 
 inline std::span<const LazyNsModule> lazy_ns_modules() {
@@ -324,8 +329,19 @@ inline StdlibSelection select_stdlib_modules(
   StdlibSelection sel;
   for (const auto& u : builtin_trait_units())
     if (builtin_trait_unit_selected(u, names)) sel.traits.push_back(&u);
+  // The modules named, with what they need, to a fixed point; listed in the
+  // table's order, which is the order they register in.
+  std::unordered_set<std::string_view> chosen;
   for (const auto& m : lazy_ns_modules())
-    if (names.contains(m.name)) sel.modules.push_back(&m);
+    if (names.contains(m.name)) chosen.insert(m.name);
+  for (bool grew = true; grew;) {
+    grew = false;
+    for (const auto& m : lazy_ns_modules())
+      if (chosen.contains(m.name))
+        for (auto need : m.needs) grew |= chosen.insert(need).second;
+  }
+  for (const auto& m : lazy_ns_modules())
+    if (chosen.contains(m.name)) sel.modules.push_back(&m);
   for (const auto& g : lazy_fn_groups())
     if (std::any_of(g.members.begin(), g.members.end(),
                     [&](std::string_view n) { return names.contains(n); }))
