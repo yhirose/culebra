@@ -161,7 +161,12 @@
 # samples, each against Audio's function, and on a part against its method).
 # 348 since test_matchers.cul (what assert_throws hands back and its message:,
 # assert_close over Arrays; the culebra-test self suite runs on --vm only).
-tests.cul 348
+# 350 since test_audio_graph_sources.cul (Audio.Graph's impulse, dust,
+# lfnoise, lag, decay, abs, clip and exp against the computations written
+# out; 0.06 s under --vm, 3.3 s under --jit) and test_synth_sources.cul
+# (Synth's impulse, dust, lfnoise, pulse, .lag, .decay2, .clip, .abs and
+# .exprange, their channels and ends; 0.06 s under --vm, 3.2 s under --jit).
+tests.cul 350
 
 # tests/isolate/*.cul — run on both engines, plus the over-cap modes.
 # 21 since test_xml_isolate.cul (an XML element keeps its methods across an

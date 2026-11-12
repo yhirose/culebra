@@ -211,7 +211,8 @@ let _audio_module = fn () {
   # A part of a graph, which keeps its graph as an AudioGraphValue does.
   # What moves in it is an AudioGraphValue: a wave's freq, feedback and
   # phase, a filter's cutoff, a gain's gain, a string's freq and ring, a
-  # delay's time, a drive's gain.
+  # delay's time, a drive's gain, an impulse's and an lfnoise's freq, a
+  # dust's density.
   class AudioGraphPart {
     freq = nil
     feedback = nil
@@ -220,6 +221,7 @@ let _audio_module = fn () {
     gain = nil
     ring = nil
     time = nil
+    density = nil
     new(graph, index: Long) {
       @_graph = graph
       @_index = index
@@ -349,6 +351,40 @@ let _audio_module = fn () {
       release: Long | Float = 0.2,
     ) {
       @_part("limit", "", [input], [ceiling, release])
+    }
+    impulse(freq: Long | Float = 1.0, phase: Long | Float = 0.0) {
+      let p = @_part("impulse", "", [], [freq, phase])
+      p.freq = @_value(p, 0)
+      p
+    }
+    dust(density: Long | Float = 1.0, seed: Long = 1) {
+      let p = @_part("dust", "", [], [density, seed])
+      p.density = @_value(p, 0)
+      p
+    }
+    lfnoise(kind: String = "step", freq: Long | Float = 1.0, seed: Long = 1) {
+      let p = @_part("lfnoise", kind, [], [freq, seed])
+      p.freq = @_value(p, 0)
+      p
+    }
+    lag(input: AudioGraphPart, time: Long | Float = 0.1) {
+      @_part("lag", "", [input], [time])
+    }
+    decay(input: AudioGraphPart, time: Long | Float = 1.0) {
+      @_part("decay", "", [input], [time])
+    }
+    abs(input: AudioGraphPart) {
+      @_part("math", "abs", [input], [-1.0, 1.0])
+    }
+    clip(
+      input: AudioGraphPart,
+      lo: Long | Float = -1.0,
+      hi: Long | Float = 1.0,
+    ) {
+      @_part("math", "clip", [input], [lo, hi])
+    }
+    exp(input: AudioGraphPart) {
+      @_part("math", "exp", [input], [-1.0, 1.0])
     }
     output(part: AudioGraphPart) {
       if part._graph._id != @_id {

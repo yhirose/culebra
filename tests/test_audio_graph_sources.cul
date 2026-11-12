@@ -1,0 +1,210 @@
+// Audio.Graph: the sources that are not waves (impulse, dust, lfnoise) and
+// the parts that shape what comes in (lag, decay, abs, clip, exp), each
+// against the computation it stands for written out. The
+// harness keeps the device closed (CULEBRA_AUDIO=off).
+
+let RATE = 8000
+
+fn assert_samples(got, want) {
+  assert_eq(got.size(), want.size())
+  for i in 0..got.size() {
+    assert_close(got[i], want[i], 1e-12)
+  }
+}
+
+// What `call` raised, as (kind, message).
+fn caught(call) {
+  try {
+    call()
+    nil
+  } catch e {
+    (e.kind, e.message)
+  }
+}
+
+// The first `seconds` of the part `make(g)` answers, in a graph of its own.
+fn render(make, seconds) {
+  let g = Audio.Graph.new(rate: RATE)
+  g.output(make(g))
+  g.render(seconds)
+}
+
+// A state too small to hear goes to 0, as the graph's filters let it go.
+let settled = |y| Math.abs(y) < 1e-30 ? 0.0 : y
+
+// ---- impulse: 1 at the first sample of each period, phase the part of a
+// period gone by at the start (0 fires at once), freq 0 once.
+
+fn impulse_reference(n, freqs, start) {
+  mut phase = start == 0.0 ? 1.0 : start
+  iota(n).map(fn (i) {
+    mut y = 0.0
+    if phase >= 1.0 {
+      phase -= Math.floor(phase)
+      y = 1.0
+    }
+    phase += freqs[i] / RATE
+    y
+  })
+}
+let impulse_n = RATE / 2
+assert_samples(render(|g| g.impulse(100.0), 0.5), impulse_reference(impulse_n, repeat(impulse_n, 100.0), 0.0))
+assert_samples(render(|g| g.impulse(100.0, 0.25), 0.5), impulse_reference(impulse_n, repeat(impulse_n, 100.0), 0.25))
+let once = render(|g| g.impulse(0.0), 0.5)
+assert_eq(once[0], 1.0)
+assert_eq(once.sum(), 1.0)
+// A freq ramped from 50 to 400 Hz: each sample's freq moves the phase after
+// that sample.
+let swept = render(fn (g) {
+  let p = g.impulse(50.0)
+  p.freq.ramp(0.5, 400.0)
+  p
+}, 0.5)
+assert_samples(swept, impulse_reference(impulse_n, iota(impulse_n).map(|i| 50.0 + 350.0 * i / impulse_n), 0.0))
+
+// ---- dust: impulses at random samples, each 0 to 1, density a second on
+// average, the same from the same seed.
+
+let dust = render(|g| g.dust(400.0), 2.0)
+let fired = dust.filter(|x| x != 0.0)
+assert_true(dust.all(|x| x >= 0.0 && x < 1.0))
+assert_true(fired.size() > 700 && fired.size() < 900)
+// Each the draw over the chance, so from 0 to 1 evenly.
+assert_close(fired.sum() / fired.size(), 0.5, 0.05)
+assert_eq(render(|g| g.dust(400.0), 2.0), dust)
+assert_true(render(|g| g.dust(400.0, seed: 2), 2.0) != dust)
+assert_true(render(|g| g.dust(0.0), 0.5).all(|x| x == 0.0))
+// At a density of the rate every sample fires, as its draw: the draws are
+// not a noise's of the same seed, so the two do not move together.
+let every = render(|g| g.dust(RATE), 0.5)
+let noise = render(|g| g.noise(1), 0.5).map(|x| 0.5 * (x + 1.0))
+assert_true(every.all(|x| x > 0.0))
+assert_true(iota(every.size()).filter(|i| every[i] == noise[i]).size() < 4)
+// Its density is a value: from silence to firing.
+let opened = render(fn (g) {
+  let p = g.dust(0.0)
+  p.density.set(0.25, 400.0)
+  p
+}, 0.5)
+assert_true(opened[0..RATE / 4].all(|x| x == 0.0))
+assert_true(opened[RATE / 4..].any(|x| x != 0.0))
+// A part connected to it moves it no further than the rate: past it, every
+// sample fires as at the rate.
+let pushed = render(fn (g) {
+  let p = g.dust(0.0)
+  g.gain(g.wave("square", freq: 0.0), 2.0 * RATE).connect(p.density)
+  p
+}, 0.25)
+assert_eq(pushed, render(|g| g.dust(RATE), 0.25))
+
+// ---- lfnoise: a new number from -1 to 1 each time its phase, running down
+// from 1 at freq a second, passes 0, held ("step"), in a straight line from
+// the one before ("linear"), or through the four about it ("cubic"). The
+// three draw the same numbers from one seed, a cubic 0.8 of each, so the
+// step's levels give the others.
+
+let freq = 100.0
+let span = RATE / 100
+let step = render(|g| g.lfnoise("step", freq), 0.5)
+assert_true(step.all(|x| x >= -1.0 && x < 1.0))
+// A level each 80 samples, starting at the first.
+let levels = iota(step.size() / span).map(|k| step[k * span])
+assert_true(iota(step.size()).all(|i| step[i] == levels[i / span]))
+assert_true(iota(levels.size() - 1).all(|k| levels[k] != levels[k + 1]))
+assert_eq(render(|g| g.lfnoise("step", freq, seed: 1), 0.5), step)
+assert_true(render(|g| g.lfnoise("step", freq, seed: 2), 0.5) != step)
+
+// The phase as the part counts it, sample by sample (the first sample
+// passes 0 and draws).
+mut phase = 0.0
+let phases = iota(step.size()).map(fn (_) {
+  phase -= freq / RATE
+  phase -= Math.floor(phase) if phase < 0.0
+  phase
+})
+// A linear one starts on the first number and goes to the next, so sample i
+// goes from level k to level k + 1 (k = i / span).
+let linear = render(|g| g.lfnoise("linear", freq), 0.5)
+let linear_want = iota(step.size() - span).map(fn (i) {
+  let k = i / span
+  levels[k + 1] + phases[i] * (levels[k] - levels[k + 1])
+})
+assert_samples(linear[0..linear_want.size()], linear_want)
+// A cubic draws four to start, so sample i reads levels k .. k + 4 (each
+// 0.8 of the draw), from the second to the third.
+let cubic = render(|g| g.lfnoise("cubic", freq), 0.5)
+let hermite = fn (x, y0, y1, y2, y3) {
+  let c1 = 0.5 * (y2 - y0)
+  let c2 = y0 - 2.5 * y1 + 2.0 * y2 - 0.5 * y3
+  let c3 = 0.5 * (y3 - y0) + 1.5 * (y1 - y2)
+  ((c3 * x + c2) * x + c1) * x + y1
+}
+let cubic_want = iota(step.size() - 4 * span).map(fn (i) {
+  let k = i / span
+  let l = |j| 0.8 * levels[k + j]
+  hermite(1.0 - phases[i], l(1), l(2), l(3), l(4))
+})
+assert_samples(cubic[0..cubic_want.size()], cubic_want)
+assert_true(cubic.all(|x| Math.abs(x) <= 1.0))
+// Its freq is a value: held at 0 the step stays at its start, 0.
+let held = render(|g| g.lfnoise("step", 0.0), 0.25)
+assert_true(held.all(|x| x == 0.0))
+
+// ---- lag and decay: one-pole filters whose pole falls 60 dB in their time.
+// A lag starts from the first sample in; a decay from 0.
+
+let pole = |t| t == 0.0 ? 0.0 : Math.exp(Math.log(0.001) / (t * RATE))
+let wobble = |g| g.gain(g.wave("square", freq: 30.0), 0.5)
+let input = render(wobble, 0.5)
+fn one_pole(xs, b, start, lag) {
+  mut y = start
+  xs.map(fn (x) {
+    y = settled(lag ? x + b * (y - x) : x + b * y)
+    y
+  })
+}
+let lagged = one_pole(input, pole(0.02), input[0], true)
+assert_samples(render(|g| g.lag(wobble(g), 0.02), 0.5), lagged)
+assert_eq(render(|g| g.lag(wobble(g), 0.0), 0.5), input)
+// A lagged constant starts where it is, not from 0.
+assert_true(render(|g| g.lag(g.gain(g.wave("square", freq: 0.0), 440.0), 0.1), 0.1).all(|x| x == 440.0))
+let ticks = |g| g.impulse(4.0)
+let ticked = render(ticks, 1.0)
+let decayed = one_pole(ticked, pole(0.1), 0.0, false)
+assert_samples(render(|g| g.decay(ticks(g), 0.1), 1.0), decayed)
+// 60 dB down in its time.
+assert_close(decayed[RATE / 10], 0.001, 1e-6)
+
+// ---- abs, clip, exp
+
+let sine = |g| g.wave("sine", freq: 50.0)
+let s = render(sine, 0.1)
+assert_samples(render(|g| g.abs(sine(g)), 0.1), s.map(|x| Math.abs(x)))
+assert_samples(render(|g| g.clip(sine(g), -0.25, 0.5), 0.1), s.map(|x| Math.clamp(x, -0.25, 0.5)))
+assert_samples(render(|g| g.exp(sine(g)), 0.1), s.map(|x| Math.exp(x)))
+
+// ---- what is checked
+
+let g = Audio.Graph.new(rate: RATE)
+let w = g.wave()
+for (call, kind, message) in [
+  (|| g.impulse(4000.0), "ValueError", "an impulse's freq is 0 or more and below half the rate"),
+  (|| g.impulse(-1.0), "ValueError", "an impulse's freq is 0 or more and below half the rate"),
+  (|| g.impulse(1.0, 1.0), "ValueError", "an impulse's phase is from 0 to below 1"),
+  (|| g.impulse().freq.ramp(0.5, 5000.0), "ValueError", "an impulse's freq is 0 or more and below half the rate"),
+  (|| g.dust(-1.0), "ValueError", "a dust's density is from 0 to the rate"),
+  (|| g.dust(9000.0), "ValueError", "a dust's density is from 0 to the rate"),
+  (|| g.dust(seed: -1), "ValueError", "a dust's seed is a whole number from 0 below 2^31"),
+  (|| g.lfnoise("smooth"), "ValueError", "an lfnoise is \"step\", \"linear\" or \"cubic\", not smooth"),
+  (|| g.lfnoise(freq: 4000.0), "ValueError", "an lfnoise's freq is 0 or more and below half the rate"),
+  (|| g.lfnoise(seed: -1), "ValueError", "an lfnoise's seed is a whole number from 0 below 2^31"),
+  (|| g.lag(w, -0.1), "ValueError", "a lag's time is 0 or more"),
+  (|| g.decay(w, Math.inf), "ValueError", "a decay's time is 0 or more"),
+  (|| g.clip(w, 1.0, -1.0), "ValueError", "a clip's lo and hi are finite, lo at most hi"),
+  (|| g.clip(w, hi: Math.inf), "ValueError", "a clip's lo and hi are finite, lo at most hi"),
+  (|| w.connect(g.impulse()), "ValueError", "a source (a wave, a noise, an impulse, a dust or an lfnoise) takes nothing in"),
+  (|| w.connect(g.dust()), "ValueError", "a source (a wave, a noise, an impulse, a dust or an lfnoise) takes nothing in"),
+  (|| w.connect(g.lfnoise()), "ValueError", "a source (a wave, a noise, an impulse, a dust or an lfnoise) takes nothing in"),
+] {
+  assert_eq(caught(call), (kind, "Audio.Graph: {message}"))
+}

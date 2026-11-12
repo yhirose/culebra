@@ -1861,7 +1861,8 @@ inline constexpr const char* AUDIO_MODULE_SOURCE = R"=culpre=(let _audio_module 
   # A part of a graph, which keeps its graph as an AudioGraphValue does.
   # What moves in it is an AudioGraphValue: a wave's freq, feedback and
   # phase, a filter's cutoff, a gain's gain, a string's freq and ring, a
-  # delay's time, a drive's gain.
+  # delay's time, a drive's gain, an impulse's and an lfnoise's freq, a
+  # dust's density.
   class AudioGraphPart {
     freq = nil
     feedback = nil
@@ -1870,6 +1871,7 @@ inline constexpr const char* AUDIO_MODULE_SOURCE = R"=culpre=(let _audio_module 
     gain = nil
     ring = nil
     time = nil
+    density = nil
     new(graph, index: Long) {
       @_graph = graph
       @_index = index
@@ -1999,6 +2001,40 @@ inline constexpr const char* AUDIO_MODULE_SOURCE = R"=culpre=(let _audio_module 
       release: Long | Float = 0.2,
     ) {
       @_part("limit", "", [input], [ceiling, release])
+    }
+    impulse(freq: Long | Float = 1.0, phase: Long | Float = 0.0) {
+      let p = @_part("impulse", "", [], [freq, phase])
+      p.freq = @_value(p, 0)
+      p
+    }
+    dust(density: Long | Float = 1.0, seed: Long = 1) {
+      let p = @_part("dust", "", [], [density, seed])
+      p.density = @_value(p, 0)
+      p
+    }
+    lfnoise(kind: String = "step", freq: Long | Float = 1.0, seed: Long = 1) {
+      let p = @_part("lfnoise", kind, [], [freq, seed])
+      p.freq = @_value(p, 0)
+      p
+    }
+    lag(input: AudioGraphPart, time: Long | Float = 0.1) {
+      @_part("lag", "", [input], [time])
+    }
+    decay(input: AudioGraphPart, time: Long | Float = 1.0) {
+      @_part("decay", "", [input], [time])
+    }
+    abs(input: AudioGraphPart) {
+      @_part("math", "abs", [input], [-1.0, 1.0])
+    }
+    clip(
+      input: AudioGraphPart,
+      lo: Long | Float = -1.0,
+      hi: Long | Float = 1.0,
+    ) {
+      @_part("math", "clip", [input], [lo, hi])
+    }
+    exp(input: AudioGraphPart) {
+      @_part("math", "exp", [input], [-1.0, 1.0])
     }
     output(part: AudioGraphPart) {
       if part._graph._id != @_id {
@@ -6011,7 +6047,10 @@ let _synth_module = fn () {
     }
     # Channel `i` of what the loop above has checked.
     let pick = |v, i| v is Array ? v[i] : (v is SynthPart && v.kind == "bundle" ? v.inputs[i] : v)
-    let parts = iota(count).map(|i| node(kind, inputs.map(|v| pick(v, i)), values.keys().map(|k| (k, pick(values[k], i))).to_object(), options))
+    # A part that draws numbers draws its own on each channel, from its seed
+    # plus the channel's number.
+    let drawing = |i| options.has("seed") ? {...options, seed: (options.seed + i) % 2147483648} : options
+    let parts = iota(count).map(|i| node(kind, inputs.map(|v| pick(v, i)), values.keys().map(|k| (k, pick(values[k], i))).to_object(), drawing(i)))
     count == 1 ? parts[0] : SynthPart("bundle", parts, {}, {})
   }
 
@@ -6053,6 +6092,37 @@ let _synth_module = fn () {
     }
     limit(ceiling: Long | Float = 0.9, release: Long | Float = 0.2) {
       node("limit", [self], {}, {ceiling: ceiling, release: release})
+    }
+    # Followed by a one-pole filter that closes 60 dB of a step in `time`
+    # seconds, from where it starts; 0 is the part itself.
+    lag(time: Long | Float) {
+      time == 0 ? self : node("lag", [self], {}, {time: time})
+    }
+    # Impulses as an envelope that rises in about `attack` seconds and falls
+    # 60 dB in `decay`: two decays, the shorter taken off.
+    decay2(attack: Long | Float, decay: Long | Float) {
+      __raise("ValueError", "Synth.decay2: attack is above 0 and below decay") unless attack > 0 && attack < decay
+      self._decay(decay) - self._decay(attack)
+    }
+    _decay(time) {
+      node("decay", [self], {}, {time: time})
+    }
+    # The signal held within `lo`..`hi`.
+    clip(lo: Long | Float, hi: Long | Float) {
+      node("math", [self], {}, {kind: "clip", lo: lo, hi: hi})
+    }
+    # The signal's size.
+    abs() {
+      node("math", [self], {}, {kind: "abs", lo: -1.0, hi: 1.0})
+    }
+    # A signal from -1 to 1 taken to `lo`..`hi` along a curve that multiplies
+    # by the same at each step, as a pitch or a cutoff is heard:
+    # lo * (hi / lo) ^ ((x + 1) / 2).
+    exprange(lo: Long | Float, hi: Long | Float) {
+      if !finite(lo) || !finite(hi) || lo == 0 || hi == 0 || (lo < 0) != (hi < 0) {
+        __raise("ValueError", "Synth.exprange: lo and hi are finite numbers of one sign, never 0")
+      }
+      node("math", [self.range(0.0, Math.log(hi / lo))], {}, {kind: "exp", lo: -1.0, hi: 1.0}) * lo
     }
     __add__(other: Long | Float | SynthPart | SynthEnvelope | Array) {
       node("mix", [self, other], {}, {})
@@ -6107,6 +6177,35 @@ let _synth_module = fn () {
   }
   let noise = fn (seed: Long = 1) {
     SynthPart("noise", [], {}, {seed: seed})
+  }
+  # 1 at the first sample of each period of `freq` Hz, 0 elsewhere:
+  # `phase`, 0 to below 1, is the part of a period gone by at the
+  # start, 0 firing at once. A freq of 0 fires once, at the start, with a
+  # phase of 0, and never with another.
+  let impulse = fn (freq: Long | Float | SynthPart | SynthEnvelope | Array = 1.0, phase: Long | Float = 0.0) {
+    node("impulse", [], {freq: freq}, {phase: phase})
+  }
+  # Impulses from 0 to 1 at random samples, `density` a second on average.
+  let dust = fn (density: Long | Float | SynthPart | SynthEnvelope | Array, seed: Long = 1) {
+    node("dust", [], {density: density}, {seed: seed})
+  }
+  # A new number from -1 to 1 `freq` times a second, held ("step"), in a
+  # straight line to the next ("linear") or along a curve ("cubic").
+  let lfnoise = fn (freq: Long | Float | SynthPart | SynthEnvelope | Array, kind: String = "step", seed: Long = 1) {
+    node("lfnoise", [], {freq: freq}, {kind: kind, seed: seed})
+  }
+  # A pulse wave from -1 to 1, high for `width` of each period, its jumps
+  # smoothed as a square's: a saw `width` of a period behind, less a saw,
+  # plus the step the width makes (2 width - 1). A width of 0.5 is a square.
+  let pulse = fn (freq: Long | Float | SynthPart | SynthEnvelope | Array = 440.0, width: Long | Float | SynthPart | Array = 0.5) {
+    let numbers = width is Array ? width.filter(is_number) : (is_number(width) ? [width] : [])
+    __raise("ValueError", "Synth.pulse: a width is above 0 and below 1") unless numbers.all(|w| w > 0 && w < 1)
+    # `v` times `k` plus `c`, channel by channel (nothing added for a `c` of 0).
+    let affine = |w, k, c| c == 0.0 ? w * k : w * k + c
+    let scaled = |v, k, c| v is Array ? v.map(|w| affine(w, k, c)) : affine(v, k, c)
+    let saws = [saw(freq, phase: scaled(width, -2.0 * Math.pi, 0.0)), -saw(freq)]
+    let step = scaled(width, 2.0, -1.0)
+    node("mix", step == 0.0 ? saws : saws + [step], {}, {})
   }
   let mix = fn (parts: Array) {
     __raise("ValueError", "Synth.mix: nothing to mix") if parts.empty()
@@ -6355,12 +6454,14 @@ let _synth_module = fn () {
   }
 
   # A voice's freq: a level each note sets, heard only in the voice whose
-  # builder was given it.
+  # builder was given it. It starts at the voice's first note made before
+  # the graph is built (440 Hz with none), so what follows it (a lag) starts
+  # there too.
   fn pitch_part(b, p) {
     if b.voice == nil || b.voice.pitch_id != p.id {
       __raise("ValueError", "Synth.Voices: a voice's freq is heard only in what its builder returns")
     }
-    let q = level(b, 440.0)
+    let q = level(b, b.voice.first)
     b.voice.pitch = q.gain
     q
   }
@@ -6423,7 +6524,30 @@ let _synth_module = fn () {
         feed(b, p, q.gain, v.gain, 0.0)
         q
       },
-      _ => g.limit(input, ceiling: o.ceiling, release: o.release),
+      "limit" => g.limit(input, ceiling: o.ceiling, release: o.release),
+      "impulse" => {
+        let q = g.impulse(base_of(v.freq, 0.0), o.phase)
+        feed(b, p, q.freq, v.freq, 0.0)
+        q
+      },
+      "dust" => {
+        let q = g.dust(base_of(v.density, 0.0), o.seed)
+        feed(b, p, q.density, v.density, 0.0)
+        q
+      },
+      "lfnoise" => {
+        let q = g.lfnoise(o.kind, base_of(v.freq, 0.0), o.seed)
+        feed(b, p, q.freq, v.freq, 0.0)
+        q
+      },
+      "lag" => g.lag(input, o.time),
+      "decay" => g.decay(input, o.time),
+      "math" => match o.kind {
+        "abs" => g.abs(input),
+        "clip" => g.clip(input, o.lo, o.hi),
+        _ => g.exp(input),
+      },
+      _ => __raise("ValueError", "Synth: no graph part for a {p.kind}"),
     }
   }
 
@@ -6461,7 +6585,9 @@ let _synth_module = fn () {
   # input (the longest delay, the string's 60 dB ring), as a resonance does
   # (60 dB of a mode `width` Hz wide is 6.91 / (pi * width) seconds), a
   # filter's `cutoff / q` wide at its lowest cutoff (one a signal moves adds
-  # none: the input's end decides). A gated envelope ends once it is let go,
+  # none: the input's end decides), and a lag and a decay for their time; a
+  # size, and a clip that holds 0, end with their input; an impulse and a
+  # dust end when their freq or density is 0. A gated envelope ends once it is let go,
   # `held` seconds from its start, and never while it is held.
   fn ending(expr, held = nil) {
     let known = {}
@@ -6504,6 +6630,15 @@ let _synth_module = fn () {
         "delay" => tail(p.inputs[0]) + Math.min(longest(p.values.time), 1.0),
         "pluck" => tail(p.inputs[0]) + longest(p.values.ring),
         "resonate" => tail(p.inputs[0]) + p.options.modes.reduce(0.0, |t, m| Math.max(t, ring(m.width))),
+        # An impulse at 0 Hz fires once, at the start; a dust at 0 never.
+        "impulse" => value_end(p.values.freq),
+        "dust" => value_end(p.values.density),
+        "lag" | "decay" => tail(p.inputs[0]) + p.options.time,
+        "math" => match p.options.kind {
+          "abs" => tail(p.inputs[0]),
+          "clip" => p.options.lo <= 0 && p.options.hi >= 0 ? tail(p.inputs[0]) : Math.inf,
+          _ => Math.inf,
+        },
         _ => Math.inf,
       }
     }
@@ -6776,7 +6911,8 @@ let _synth_module = fn () {
       let g = Audio.Graph(rate)
       let b = build_of(g)
       let voices = @_voices.map(fn (v) {
-        b.voice = {pitch_id: v.pitch_id, mut pitch: nil, triggers: []}
+        let first = v.notes.empty() ? 440.0 : hz(v.notes[0].note)
+        b.voice = {pitch_id: v.pitch_id, first: first, mut pitch: nil, triggers: []}
         let gate = g.gain(part(b, v.expr), 0.0)
         let triggers = b.voice.triggers
         let voice = {part: gate, gate: gate.gain, pitch: b.voice.pitch, triggers: triggers, gated: triggers.filter(|tr| tr.envelope.release != nil)}
@@ -6833,6 +6969,10 @@ let _synth_module = fn () {
     square: square,
     triangle: triangle,
     noise: noise,
+    impulse: impulse,
+    dust: dust,
+    lfnoise: lfnoise,
+    pulse: pulse,
     env: env,
     line: line,
     xline: xline,

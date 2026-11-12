@@ -1,0 +1,165 @@
+# Synth's impulse, dust, lfnoise and pulse, and .lag, .decay2, .clip, .abs
+# and .exprange, each against the Audio.Graph written out by hand or the
+# formula it follows.
+
+let {*} = Synth
+
+let RATE = 8000
+
+fn assert_samples(got, want) {
+  assert_eq(got.size(), want.size())
+  for i in 0..got.size() {
+    assert_close(got[i], want[i], 1e-9)
+  }
+}
+
+fn caught(call) {
+  try {
+    call()
+    nil
+  } catch e {
+    (e.kind, e.message)
+  }
+}
+
+let at_rate = |expr, seconds| render(expr, seconds, rate: RATE)
+fn by_hand(make, seconds) {
+  let g = Audio.Graph(RATE)
+  g.output(make(g))
+  g.render(seconds)
+}
+let settled = |y| Math.abs(y) < 1e-30 ? 0.0 : y
+
+# ---- the sources are the graph's parts
+
+assert_eq(at_rate(impulse(100.0, 0.25), 0.25), by_hand(|g| g.impulse(100.0, 0.25), 0.25))
+assert_eq(at_rate(dust(300.0, seed: 3), 0.25), by_hand(|g| g.dust(300.0, seed: 3), 0.25))
+assert_eq(at_rate(lfnoise(50.0, kind: "cubic"), 0.25), by_hand(|g| g.lfnoise("cubic", 50.0), 0.25))
+# A freq that moves: an impulse whose freq a line ramps.
+let ramped = by_hand(fn (g) {
+  let p = g.impulse(10.0)
+  p.freq.ramp(0.5, 200.0)
+  p
+}, 0.5)
+assert_samples(at_rate(impulse(line(10.0, 200.0, 0.5)), 0.5), ramped)
+
+# Each channel of a part that draws numbers draws its own, from its seed
+# plus the channel's number.
+let two = dust([300.0, 300.0])
+assert_eq(two.kind, "bundle")
+assert_eq(at_rate(two.inputs[0], 0.25), at_rate(dust(300.0), 0.25))
+assert_eq(at_rate(two.inputs[1], 0.25), at_rate(dust(300.0, seed: 2), 0.25))
+assert_true(at_rate(lfnoise([20.0, 20.0]).inputs[1], 0.25) != at_rate(lfnoise(20.0), 0.25))
+
+# ---- decay2: (x + ba·ya) - (x + bb·yb), each from 0, to the bit.
+
+let pole = |t| Math.exp(Math.log(0.001) / (t * RATE))
+fn decay2_reference(xs, attack, decay) {
+  let (ba, bb) = (pole(decay), pole(attack))
+  mut ya = 0.0
+  mut yb = 0.0
+  xs.map(fn (x) {
+    ya = settled(x + ba * ya)
+    yb = settled(x + bb * yb)
+    ya - yb
+  })
+}
+let ticks = at_rate(impulse(4.0), 1.0)
+let env2 = at_rate(impulse(4.0).decay2(0.01, 0.2), 1.0)
+assert_eq(env2, decay2_reference(ticks, 0.01, 0.2))
+assert_true(env2.max() > 0.5 && env2.min() >= 0.0)
+
+# ---- lag: a one-pole filter from the first sample in.
+
+fn lag_reference(xs, t) {
+  let b = pole(t)
+  mut y = xs[0]
+  xs.map(fn (x) {
+    y = settled(x + b * (y - x))
+    y
+  })
+}
+let stepped = square(20.0) * 0.5
+assert_samples(at_rate(stepped.lag(0.03), 0.25), lag_reference(at_rate(stepped, 0.25), 0.03))
+# A control lagged starts at its value, not from 0, and 0 is no lag.
+assert_true(at_rate(control("freq", 440.0).lag(0.1), 0.1).all(|x| x == 440.0))
+assert_eq(stepped.lag(0.0), stepped)
+
+# A voice's freq starts at the voice's first note, so a lag on it does not
+# slide there from anywhere.
+let gliding = Voices(1, |f| f.lag(0.05) * 0.001)
+gliding.note_on(60, at: 0.1)
+let heard = at_rate(gliding, 0.2)
+assert_close(heard[RATE * 15 / 100], hz(60) * 0.001, 1e-12)
+
+# ---- pulse: high for width of each period, its jumps smoothed as a
+# square's (polyBLEP), a square at 0.5.
+
+assert_samples(at_rate(pulse(110.0), 0.25), at_rate(square(110.0), 0.25))
+fn blep(t, dt) {
+  if t < dt {
+    let x = t / dt
+    return x + x - x * x - 1.0
+  }
+  if t > 1.0 - dt {
+    let x = (t - 1.0) / dt
+    return x * x + x + x + 1.0
+  }
+  0.0
+}
+fn pulse_reference(n, f, w) {
+  let dt = f / RATE
+  mut t = 0.0
+  iota(n).map(fn (_) {
+    let back = t - w - Math.floor(t - w)
+    let y = (t < w ? 1.0 : -1.0) + blep(t, dt) - blep(back, dt)
+    t = t + dt - Math.floor(t + dt)
+    y
+  })
+}
+assert_samples(at_rate(pulse(110.0, 0.25), 0.25), pulse_reference(RATE / 4, 110.0, 0.25))
+# A width per channel, and a width a signal moves.
+let widths = pulse(110.0, [0.25, 0.75])
+assert_samples(at_rate(widths.inputs[1], 0.25), pulse_reference(RATE / 4, 110.0, 0.75))
+let wobbling = at_rate(pulse(110.0, lfnoise(2.0, kind: "linear").range(0.2, 0.8)), 0.5)
+assert_true(wobbling.all(|x| Math.abs(x) < 1.2) && wobbling.any(|x| x > 0.9) && wobbling.any(|x| x < -0.9))
+
+# ---- clip, abs, exprange
+
+let s = sine(50.0)
+let raw = at_rate(s, 0.1)
+assert_samples(at_rate(s.clip(-0.25, 0.5), 0.1), raw.map(|x| Math.clamp(x, -0.25, 0.5)))
+assert_samples(at_rate(s.abs(), 0.1), raw.map(|x| Math.abs(x)))
+assert_samples(at_rate(s.exprange(100.0, 1600.0), 0.1), raw.map(|x| 100.0 * Math.exp(Math.log(16.0) * (x + 1.0) / 2.0)))
+assert_samples(at_rate(s.exprange(-2.0, -8.0), 0.1), raw.map(|x| -2.0 * Math.exp(Math.log(4.0) * (x + 1.0) / 2.0)))
+
+# ---- when they end: play needs no secs for one that ends on its own.
+
+fn ends(expr) {
+  let h = play(expr, wait: false)
+  h.stop()
+  h.ends()
+}
+assert_close(ends(impulse(0.0).decay2(0.001, 0.05) * sine(800.0)), 0.05, 1e-12)
+assert_eq(ends(dust(0.0)), 0.0)
+assert_close(ends((sine(440.0) * perc(0.01, 0.1)).lag(0.05).abs().clip(-0.5, 0.5)), 0.16, 1e-12)
+for expr in [dust(10.0), lfnoise(4.0), impulse(4.0), (sine(440.0) * perc(0.01, 0.1)).clip(0.1, 0.5), (sine(440.0) * perc(0.01, 0.1)).exprange(1.0, 2.0)] {
+  assert_eq(caught(|| play(expr))[0], "ValueError")
+}
+
+# ---- what is checked
+
+for (call, message) in [
+  (|| pulse(width: 1.0), "Synth.pulse: a width is above 0 and below 1"),
+  (|| pulse(width: [0.5, 0.0]), "Synth.pulse: a width is above 0 and below 1"),
+  (|| s.decay2(0.2, 0.01), "Synth.decay2: attack is above 0 and below decay"),
+  (|| s.decay2(0.0, 0.1), "Synth.decay2: attack is above 0 and below decay"),
+  (|| s.exprange(0.0, 1.0), "Synth.exprange: lo and hi are finite numbers of one sign, never 0"),
+  (|| s.exprange(-1.0, 1.0), "Synth.exprange: lo and hi are finite numbers of one sign, never 0"),
+  (|| at_rate(impulse(phase: 1.0), 0.1), "Audio.Graph: an impulse's phase is from 0 to below 1"),
+  (|| at_rate(lfnoise(1.0, kind: "smooth"), 0.1), "Audio.Graph: an lfnoise is \"step\", \"linear\" or \"cubic\", not smooth"),
+  (|| at_rate(s.lag(-1.0), 0.1), "Audio.Graph: a lag's time is 0 or more"),
+  (|| at_rate(s.clip(1.0, 0.0), 0.1), "Audio.Graph: a clip's lo and hi are finite, lo at most hi"),
+] {
+  assert_eq(caught(call), ("ValueError", message))
+}

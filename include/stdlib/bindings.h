@@ -5680,13 +5680,24 @@ inline void _ns_audio_numbers(JitValue v, std::vector<double>& out,
 }
 // The checks a part's arguments share wherever the part is made (an array
 // function or a graph), `who` starting the message.
+// The kind `name` names among `names`, or a ValueError, from `who`, that
+// lists them: "<who>: <what> is "a", "b" or "c", not <name>".
+template <class K, size_t N>
+K _ns_audio_named(std::string_view name, const std::pair<std::string_view, K> (&names)[N], const char* who,
+                  const char* what) {
+  for (auto [n, k] : names)
+    if (name == n) return k;
+  std::string list;
+  for (size_t i = 0; i < N; i++)
+    list += culebra::format("{}\"{}\"", i == 0 ? "" : i + 1 == N ? " or " : ", ", names[i].first);
+  auto message = culebra::format("{}: {} is {}, not {}", who, what, list, name);
+  _ns_audio_fail(message.c_str());
+}
 inline culebra::_audio_detail::FilterKind _ns_audio_filter_kind(std::string_view name, const char* who) {
   namespace ad = culebra::_audio_detail;
-  if (name == "low") return ad::FilterKind::Low;
-  if (name == "high") return ad::FilterKind::High;
-  if (name == "band") return ad::FilterKind::Band;
-  auto message = culebra::format("{}: a filter is \"low\", \"high\" or \"band\", not {}", who, name);
-  _ns_audio_fail(message.c_str());
+  static constexpr std::pair<std::string_view, ad::FilterKind> kFilters[] = {
+      {"low", ad::FilterKind::Low}, {"high", ad::FilterKind::High}, {"band", ad::FilterKind::Band}};
+  return _ns_audio_named(name, kFilters, who, "a filter");
 }
 // `count` modes, three numbers each: a freq above 0 and below half the
 // rate, and a width above 0.
@@ -6253,9 +6264,22 @@ inline const char* _ns_audio_graph_bad_value(culebra::_audio_detail::PartKind ki
                                                                  : "Audio.Graph: a delay's time is from 0 to 1";
     case ad::PartKind::Drive:
       return value == 0 && v >= 0 && std::isfinite(v) ? nullptr : "Audio.Graph: a drive's gain is 0 or more";
-    default:
-      return "Audio.Graph: that part has no value to change";
+    case ad::PartKind::Impulse:
+      return value == 0 && v >= 0 && v < half ? nullptr
+                                              : "Audio.Graph: an impulse's freq is 0 or more and below half the rate";
+    case ad::PartKind::LfNoise:
+      return value == 0 && v >= 0 && v < half ? nullptr
+                                              : "Audio.Graph: an lfnoise's freq is 0 or more and below half the rate";
+    case ad::PartKind::Dust:
+      return value == 0 && v >= 0 && v <= rate ? nullptr : "Audio.Graph: a dust's density is from 0 to the rate";
+    case ad::PartKind::Noise:
+    case ad::PartKind::Resonate:
+    case ad::PartKind::Limit:
+    case ad::PartKind::Lag:
+    case ad::PartKind::Decay:
+    case ad::PartKind::Math: break;
   }
+  return "Audio.Graph: that part has no value to change";
 }
 // A part of the graph, by its number.
 inline int _ns_audio_graph_index(const culebra::_audio_detail::Graph& g, double part) {
@@ -6278,11 +6302,14 @@ inline JitValue _ns_audio_graph_new(JitValue* a, int64_t) {
   return _ns_adapt::v_long(id);
 }
 // A part of `family` ("wave", "noise", "filter", "gain", "resonate", "pluck",
-// "delay", "limit" or "drive"), `kind` naming the wave or the filter, taking
-// in `inputs`, parts made before it. It is set up by the numbers `options`: a
-// wave's freq, feedback and phase, a noise's seed, a filter's cutoff and q, a
-// gain's gain, a resonance's dry and modes, a string's freq and ring, a
-// delay's time, a limit's ceiling and release, a drive's gain.
+// "delay", "limit", "drive", "impulse", "dust", "lfnoise", "lag", "decay" or
+// "math"), `kind` naming the wave, the filter, the lfnoise or the math,
+// taking in `inputs`, parts made before it. It is set up by the numbers
+// `options`: a wave's freq, feedback and phase, a noise's seed, a filter's
+// cutoff and q, a gain's gain, a resonance's dry and modes, a string's freq
+// and ring, a delay's time, a limit's ceiling and release, a drive's gain, an
+// impulse's freq and phase, a dust's density and seed, an lfnoise's freq and
+// seed, a lag's and a decay's time, a math's lo and hi.
 inline JitValue _ns_audio_graph_part(JitValue* a, int64_t) {
   namespace ad = culebra::_audio_detail;
   auto& g = _ns_audio_graph(a[0]);
@@ -6297,8 +6324,9 @@ inline JitValue _ns_audio_graph_part(JitValue* a, int64_t) {
   // Each family and the options it takes, in number; a resonance takes its
   // dry and then three a mode (-1 here).
   static constexpr std::pair<std::string_view, int> kFamilies[] = {
-      {"wave", 3}, {"noise", 1}, {"filter", 2}, {"gain", 1}, {"resonate", -1}, {"pluck", 2}, {"delay", 1},
-      {"limit", 2}, {"drive", 1}};
+      {"wave", 3},    {"noise", 1}, {"filter", 2},  {"gain", 1}, {"resonate", -1},
+      {"pluck", 2},   {"delay", 1}, {"limit", 2},   {"drive", 1}, {"impulse", 2},
+      {"dust", 2},    {"lfnoise", 2}, {"lag", 1},   {"decay", 1}, {"math", 2}};
   auto fam = std::ranges::find(kFamilies, family, &std::pair<std::string_view, int>::first);
   if (fam == std::end(kFamilies)) {
     auto message = culebra::format("Audio.Graph: no part {}", family);
@@ -6319,10 +6347,8 @@ inline JitValue _ns_audio_graph_part(JitValue* a, int64_t) {
     static constexpr std::pair<std::string_view, ad::WaveKind> kWaves[] = {
         {"sine", ad::WaveKind::Sine}, {"saw", ad::WaveKind::Saw},
         {"square", ad::WaveKind::Square}, {"triangle", ad::WaveKind::Triangle}};
-    for (auto [name, w] : kWaves)
-      if (kind == name) return made(ad::PartKind::Wave, ad::Oscillator{w}, opt[0], opt[1], opt[2]);
-    auto message = culebra::format("Audio.Graph: a wave is \"sine\", \"saw\", \"square\" or \"triangle\", not {}", kind);
-    _ns_audio_fail(message.c_str());
+    return made(ad::PartKind::Wave, ad::Oscillator{_ns_audio_named(kind, kWaves, "Audio.Graph", "a wave")}, opt[0],
+                opt[1], opt[2]);
   }
   if (family == "noise") {
     return made(ad::PartKind::Noise, ad::Noise{_ns_audio_seed(opt[0], "Audio.Graph: a noise's seed")});
@@ -6338,19 +6364,43 @@ inline JitValue _ns_audio_graph_part(JitValue* a, int64_t) {
     return made(ad::PartKind::Resonate,
                 ad::Resonance(opt.data() + 1, static_cast<int64_t>((opt.size() - 1) / 3), opt[0], rate));
   }
-  if (family == "delay") {
-    auto longest = static_cast<size_t>(std::ceil(ad::kGraphDelayLongest * rate));
-    return made(ad::PartKind::Delay, ad::DelayLine(longest), opt[0]);
-  }
+  if (family == "delay") return made(ad::PartKind::Delay, ad::graph_delay_line(rate), opt[0]);
   if (family == "limit") {
     if (!(opt[0] > 0 && std::isfinite(opt[0]))) _ns_audio_fail("Audio.Graph: a limit's ceiling is above 0");
     if (!(opt[1] > 0 && std::isfinite(opt[1]))) _ns_audio_fail("Audio.Graph: a limit's release is above 0");
     return made(ad::PartKind::Limit, ad::Limiter(opt[0], opt[1], rate));
   }
   if (family == "drive") return made(ad::PartKind::Drive, ad::Drive{}, opt[0]);
+  if (family == "impulse") {
+    if (!(opt[1] >= 0 && opt[1] < 1)) _ns_audio_fail("Audio.Graph: an impulse's phase is from 0 to below 1");
+    return made(ad::PartKind::Impulse, ad::Impulse(opt[1]), opt[0]);
+  }
+  if (family == "dust") {
+    auto seed = _ns_audio_seed(opt[1], "Audio.Graph: a dust's seed");
+    return made(ad::PartKind::Dust, ad::Dust{ad::noise_stream(seed, ad::kDustStream)}, opt[0]);
+  }
+  if (family == "lfnoise") {
+    static constexpr std::pair<std::string_view, ad::LfNoiseKind> kNoises[] = {
+        {"step", ad::LfNoiseKind::Step}, {"linear", ad::LfNoiseKind::Linear}, {"cubic", ad::LfNoiseKind::Cubic}};
+    auto seed = _ns_audio_seed(opt[1], "Audio.Graph: an lfnoise's seed");
+    auto k = _ns_audio_named(kind, kNoises, "Audio.Graph", "an lfnoise");
+    return made(ad::PartKind::LfNoise, ad::LfNoise(k, ad::noise_stream(seed, ad::kLfNoiseStream)), opt[0]);
+  }
+  if (family == "lag" || family == "decay") {
+    if (!(opt[0] >= 0 && std::isfinite(opt[0]))) {
+      _ns_audio_fail(family == "lag" ? "Audio.Graph: a lag's time is 0 or more" : "Audio.Graph: a decay's time is 0 or more");
+    }
+    return family == "lag" ? made(ad::PartKind::Lag, ad::Lag(opt[0], rate)) : made(ad::PartKind::Decay, ad::Decay(opt[0], rate));
+  }
+  if (family == "math") {
+    static constexpr std::pair<std::string_view, ad::MathKind> kMaths[] = {
+        {"abs", ad::MathKind::Abs}, {"clip", ad::MathKind::Clip}, {"exp", ad::MathKind::Exp}};
+    if (!(std::isfinite(opt[0]) && std::isfinite(opt[1]) && opt[0] <= opt[1]))
+      _ns_audio_fail("Audio.Graph: a clip's lo and hi are finite, lo at most hi");
+    return made(ad::PartKind::Math, ad::MathOp{_ns_audio_named(kind, kMaths, "Audio.Graph", "a math"), opt[0], opt[1]});
+  }
   // pluck
-  int64_t size = ad::PluckString::loop_length(ad::kGraphPluckLowest, rate) + 1;
-  return made(ad::PartKind::Pluck, ad::PluckString(size, rate), opt[0], opt[1]);
+  return made(ad::PartKind::Pluck, ad::graph_string(rate), opt[0], opt[1]);
 }
 // Part `from`'s output added into part `to`: what it takes in when `value` is
 // -1, its value `value` otherwise. A loop has to pass through a delay.
@@ -6360,7 +6410,7 @@ inline JitValue _ns_audio_graph_connect(JitValue* a, int64_t) {
   int from = _ns_audio_graph_index(g, static_cast<double>(_ns_adapt::take_long(a[1])));
   int to = _ns_audio_graph_index(g, static_cast<double>(_ns_adapt::take_long(a[2])));
   int64_t v = _ns_adapt::take_long(a[3]);
-  if (v < 0 && !ad::takes_in(g.kind(to))) _ns_audio_fail("Audio.Graph: a wave or a noise takes nothing in");
+  if (v < 0 && !ad::takes_in(g.kind(to))) _ns_audio_fail("Audio.Graph: a source (a wave, a noise, an impulse, a dust or an lfnoise) takes nothing in");
   if (!g.connect(from, to, v < 0 ? -1 : _ns_audio_graph_value(g, to, static_cast<double>(v))))
     _ns_audio_fail("Audio.Graph: a loop passes through a delay");
   return _ns_adapt::v_nil();

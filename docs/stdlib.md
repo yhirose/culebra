@@ -9077,7 +9077,15 @@ it or to any of its parts and values.
 | `g.delay(input = nil, time = 0.0)` | `input` as it was `time` seconds before, read between two samples in a straight line (silence before the start). A slow wave connected to `time` makes a chorus. `input` may be left out and connected later, as a loop needs (below) |
 | `g.drive(input, gain = 1.0)` | `input` times `gain` through tanh, as an overdrive bends a loud signal: close to that while it is small, rounded more the louder it is, never past ±1. Each sample is tanh averaged over the straight line from the sample before (first-order antiderivative anti-aliasing), so little of what the bending adds above half the rate folds back, and the part is half a sample late |
 | `g.limit(input, ceiling = 0.9, release = 0.2)` | `input` kept at or under `ceiling`, as an output stage keeps a sound from clipping: its gain drops at the sample that would go over, by as much as it takes, and comes back to 1 exponentially, with 1/e of the way left after each `release` seconds. It does not look ahead, so it adds no delay |
-| `part.connect(target) -> target` | adds what `part` answers into `target`: into what that part takes in (a wave or a noise takes nothing in), or into one of its values (below). A part may be connected from any part, but a loop has to pass through a delay (below) |
+| `g.impulse(freq = 1.0, phase = 0.0)` | 1 at the first sample of each period of `freq` Hz, 0 at the others: `phase`, from 0 to below 1, is how much of a period has gone by at the start, so 0 fires at the first sample. At a `freq` of 0 it fires once, at the start, when `phase` is 0, and never otherwise |
+| `g.dust(density = 1.0, seed = 1)` | impulses at random samples, `density` a second on average, each from 0 to 1: the same from the same `seed` |
+| `g.lfnoise(kind = "step", freq = 1.0, seed = 1)` | a new number from -1 to 1 `freq` times a second: `"step"` holds each, `"linear"` goes to the next in a straight line, `"cubic"` along a curve through the four about it (its numbers 0.8 of the draw, so it stays within ±1). A `freq` that moves takes effect at once. The same from the same `seed` |
+| `g.lag(input, time = 0.1)` | `input` followed by a one-pole filter that closes 60 dB of a step in `time` seconds, from `input`'s first sample (not from 0): a control that jumps, glided. A `time` of 0 is `input` as it is |
+| `g.decay(input, time = 1.0)` | `input` plus what the part answered a sample before, times what falls 60 dB in `time` seconds, from 0: an impulse in rings down. Two of them, one taken off the other, make an envelope with an attack |
+| `g.abs(input)` | the size of `input` |
+| `g.clip(input, lo = -1.0, hi = 1.0)` | `input` held within `lo`..`hi` |
+| `g.exp(input)` | e to the power of `input` |
+| `part.connect(target) -> target` | adds what `part` answers into `target`: into what that part takes in (a source, a wave, a noise, an impulse, a dust or an lfnoise, takes nothing in), or into one of its values (below). A part may be connected from any part, but a loop has to pass through a delay (below) |
 | `g.output(part)` | the part the graph plays (silence until there is one) |
 | `g.render(seconds) -> Array` | the graph's first `seconds`, worked out now from its start |
 | `g.play()` | play the graph from its start (again, if it is playing) |
@@ -9086,13 +9094,15 @@ it or to any of its parts and values.
 
 What moves in a part is a value: a wave's `freq`, `feedback` and `phase`, a
 filter's `cutoff`, a gain's `gain`, a string's `freq` and `ring`, a delay's
-`time`, and a drive's `gain`, each a field of the part. A value is its
+`time`, a drive's `gain`, an impulse's and an lfnoise's `freq`, and a dust's
+`density`, each a field of the part. A value is its
 schedule plus what the parts connected to it answer, sample by sample, as
 Web Audio's `AudioParam` is: `lfo.connect(w.freq)` adds the lfo to the
 wave's freq, in Hz, as `lfo.connect(d.time)` adds it to a delay's time, in
 seconds. What they move a value to is held where the part stays sound: a
-wave's freq and a cutoff from 0 to half the rate, a string's freq from 20 Hz
-to half the rate, a delay's time from 0 to 1, and a feedback, a ring and a
+wave's, an impulse's and an lfnoise's freq and a cutoff from 0 to half the
+rate, a dust's density from 0 to the rate, a string's freq from 20 Hz to half
+the rate, a delay's time from 0 to 1, and a feedback, a ring and a
 drive's gain at 0 or more. The schedule is what the part was made with until
 its first change, and changes are scheduled on the graph's clock, in seconds
 from its start:
@@ -9151,10 +9161,15 @@ A kind other than those named, a part from another graph, a value out of
 range (a wave's freq below 0 or not below half the rate, a feedback below 0
 or not a finite number, a cutoff not above 0 and below half the rate, a gain that is not a finite number, a string's
 freq below 20 Hz or not below half the rate, a ring not above 0, a delay's
-time below 0 or above 1, a drive's gain below 0 or not a finite number), a wave's phase that is not a finite number, a time
+time below 0 or above 1, a drive's gain below 0 or not a finite number, an
+impulse's or an lfnoise's freq below 0 or not below half the rate, a dust's
+density below 0 or above the rate), a wave's phase that is not a finite
+number, an impulse's phase not from 0 to below 1, a lag's or a decay's time
+below 0 or not a finite number, a clip's `lo` above its `hi` or either not a
+finite number, a seed that is not a whole number from 0 below 2^31, a time
 below 0, or a `q` not above 0 raises `ValueError`, and so does a mode as
 `Audio.resonate` refuses one, a loop that does not pass through a delay, or
-a part connected into a wave or a noise; an input that is not a part of a
+a part connected into a source; an input that is not a part of a
 graph, a target that is neither a part nor a value, or a mode that is not
 an object of three numbers, raises `TypeError`. A graph
 plays at a rate of 44100, and at most 64 play at once (`ValueError`
@@ -10248,7 +10263,7 @@ println(render(pad, 0.5).size())  # => 22050
 
 A value a part reads (a wave's `freq`, `feedback` and `phase`, a filter's
 `cutoff`, a delay's `time`, a string's `freq` and `ring`, a drive's `gain`,
-and a gain) takes a number, a part, an envelope or an Array of them (one
+an impulse's and an lfnoise's `freq`, a dust's `density`, and a gain) takes a number, a part, an envelope or an Array of them (one
 channel each, below). A number is the value; an
 envelope is its schedule from the start; a part is the signal itself, not
 something added to a base as `connect` adds in a graph, so
@@ -10264,6 +10279,10 @@ check, when `render` builds it at its rate, with the graph's `ValueError`.
 | `Synth.sine(freq = 440.0, phase = 0.0, feedback = 0.0)` | `wave("sine", ...)`; a part given to `phase` is FM, a `feedback` the wave's own |
 | `Synth.saw(freq = 440.0, phase = 0.0)` / `square` / `triangle` | `wave` of that kind |
 | `Synth.noise(seed = 1)` | white noise from -1 to 1, the same from the same `seed` |
+| `Synth.pulse(freq = 440.0, width = 0.5)` | a pulse wave from -1 to 1, high for `width` of each period (above 0, below 1; a part, not an envelope, moves it), its jumps smoothed as a square's: a width of 0.5 is `square` |
+| `Synth.impulse(freq = 1.0, phase = 0.0)` | `Audio.Graph`'s `impulse`: 1 at the first sample of each period, `phase` (0 to below 1, a part of a period, not radians) gone by at the start; at a `freq` of 0, once at the start when `phase` is 0 |
+| `Synth.dust(density, seed = 1)` | `Audio.Graph`'s `dust`: impulses from 0 to 1 at random samples, `density` a second on average |
+| `Synth.lfnoise(freq, kind = "step", seed = 1)` | `Audio.Graph`'s `lfnoise`: a new number from -1 to 1 `freq` times a second, held (`"step"`), in a straight line (`"linear"`) or along a curve (`"cubic"`) |
 | `Synth.mix(parts: Array)` | the parts added together (numbers and envelopes are levels, bundles a channel each); `[a, b].mix()` once `mix` is in scope |
 | `Synth.feedback(f)` | a loop: `f(x)` returns an expression, and `x` stands for what that expression answers, heard through a delay (`x.delay(t)` is the answer `t` seconds back). Each loop has its own `x`, so loops nest. A way from `x` to the answer with no delay on it raises `ValueError` here, as `x` heard outside the expression does where it renders |
 | `Synth.env(levels: Array, times: Array, curve = 0.0)` | an envelope: `levels` joined by segments `times` seconds long, holding the last level after; `curve` is 0 (straight), a number `c` that bends it (`l0 + (l1 - l0) * (1 - exp(c * x)) / (1 - exp(c))` at `x` of the way: below 0 it moves fast first, above 0 slow first), `"exp"`, or one of those per segment |
@@ -10290,6 +10309,11 @@ check, when `render` builds it at its rate, with the graph's `ValueError`.
 | `p.drive(gain = 1.0)` | `p` times `gain` through tanh, as `Audio.Graph`'s `drive` |
 | `p.limit(ceiling = 0.9, release = 0.2)` | `p` kept at or under `ceiling`, as `Audio.Graph`'s `limit` |
 | `p.range(lo, hi)` | a signal from -1 to 1 taken to `lo`..`hi` in a straight line: `lo + (hi - lo) * (p + 1) / 2` |
+| `p.exprange(lo, hi)` | a signal from -1 to 1 taken to `lo`..`hi` along a curve that multiplies by the same at each step, as a pitch or a cutoff is heard: `lo * (hi / lo) ^ ((p + 1) / 2)`, the two finite, of one sign and not 0 |
+| `p.lag(time)` | `p` glided, as `Audio.Graph`'s `lag`: 60 dB of a step closed in `time` seconds, from where `p` starts; 0 is `p` itself |
+| `p.decay2(attack, decay)` | impulses in `p` made an envelope that rises in about `attack` seconds and falls 60 dB in `decay` (0 < `attack` < `decay`): `Audio.Graph`'s `decay` over `decay`, less the one over `attack`. Its peak is below 1, and nearer 1 the further apart the two are |
+| `p.clip(lo, hi)` | `p` held within `lo`..`hi` |
+| `p.abs()` | the size of `p` |
 | `p.mix()` | a bundle's channels added to one part; a part as it is |
 | `p + x`, `p - x`, `p * x`, `p / n`, `-p` | parts added, subtracted and multiplied (a gain), with a number, a part, an envelope or an Array on the right, and a number on the left of `+` and `*`; `/` by a number only, `ValueError` for 0 |
 
@@ -10300,7 +10324,11 @@ gains and `saw([110.0, 110.77]).mix()` two saws added; an Array of one is
 that one part. A bundle takes every
 method a part takes, channel by channel. Channels of two counts at once
 (`sine([440.0, 660.0]) * [0.2]`) raise `ValueError`, and a bundle plays or
-renders once `.mix()` makes it one channel.
+renders once `.mix()` makes it one channel. What a part is made with that is
+not a value (a time, `lo` and `hi`, a kind, a seed) is one for every
+channel; a part that draws numbers (`dust`, `lfnoise`) draws its own on each,
+from its `seed` plus the channel's number, so `dust([5.0, 5.0])` is two
+dusts that do not fire together.
 
 ```culebra
 let {saw, sine, line, feedback, render} = Synth
@@ -10314,9 +10342,12 @@ println(render(echo, 1.0).slice(13230, 15435).map(|v| Math.abs(v)).max() > 0.5) 
 A sound ends on its own where its output is 0 for good: a product with the
 first of its factors to end (an envelope ending at 0 ends there, a 0 at
 once), a sum with the last; a delay rings on for its longest delay, a
-string for its `ring`, and a resonance for 60 dB of its narrowest mode (a
+string for its `ring`, a resonance for 60 dB of its narrowest mode (a
 filter's is `cutoff / q` wide at its lowest cutoff; one a signal moves
-adds none). A loop rings on with no end it can work out.
+adds none), and a lag and a decay for their time; a size, and a clip that
+holds 0, end with their input. An impulse or a dust ends when its `freq` or
+`density` is 0, and an lfnoise never. A loop rings on with no end it can
+work out.
 `play` leaves a sound it does not wait for playing even when nothing holds
 its handle, and lets it go at a later `play` once it has ended; told `secs`,
 it is silent from then on, on the graph's own clock.
@@ -10350,6 +10381,10 @@ voice's next note (fading out over the 5 ms before it); or else to the
 voice whose sounding note began first, which fades out over 5 ms first. A
 voice is silent until its first note, and a part every voice shares (made
 outside the builder, as a vibrato) runs from the start, its envelopes too.
+A voice's graph is made once, not per note, so what keeps a state carries it
+from one note to the next: a `freq.lag(t)` glides from the voice's last note
+(a portamento), and from its first note's freq at the start, as `freq`
+starts there (440 Hz for a voice with no note yet when the graph is built).
 A `Voices` keeps its notes in time order, whatever order they are made in
 (two sequences from one start share the voices), so `render` and `play`
 build its graph with them; a note made while it plays is heard there too,

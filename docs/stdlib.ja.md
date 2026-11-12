@@ -8705,7 +8705,15 @@ println(Math.round(Audio.integrated_loudness(both)))                     # => -1
 | `g.delay(input = nil, time = 0.0)` | `time`秒前の`input`。2つのサンプルの間は直線で読む（始まりより前は無音）。`time`に遅い波をつなぐとコーラスになる。`input`は省いて後から`connect`してもよい。ループはこうして作る（下記） |
 | `g.drive(input, gain = 1.0)` | `input`を`gain`倍してtanhに通したもの。オーバードライブが大きな信号を曲げるのと同じで、小さいうちはほぼそのまま、大きいほど丸められ、±1は超えない。各サンプルは、1つ前のサンプルからの直線の上でtanhを平均した値にする（1次の原始関数によるエイリアシング低減）。これで、曲げて足された成分のうち`rate`の半分を超えるものがほとんど折り返さず、その代わり半サンプル遅れる |
 | `g.limit(input, ceiling = 0.9, release = 0.2)` | `ceiling`以下に収めた`input`。出力段が音の割れを防ぐのと同じで、超えそうなサンプルでその分だけ音量を下げ、`release`秒で1までの残りが1/eになる速さで指数的に1へ戻す。先読みしないので遅れは足さない |
-| `part.connect(target) -> target` | `part`の出力を`target`に足す。`target`が部品ならその入力に（waveとnoiseは入力を取らない）、値（下記）ならその値に足す。どの部品からでもつなげるが、ループは遅延を通らなければならない（下記） |
+| `g.impulse(freq = 1.0, phase = 0.0)` | `freq` Hzの周期ごとに、最初のサンプルだけ1、ほかは0。`phase`（0以上1未満）は、始まりの時点で過ぎている周期の割合で、0なら最初のサンプルで1になる。`freq`が0なら、`phase`が0のときに始まりで1回だけ（ほかは鳴らない） |
+| `g.dust(density = 1.0, seed = 1)` | ランダムなサンプルに出る、1秒あたり平均`density`個のインパルス。大きさは0から1。同じ`seed`なら同じになる |
+| `g.lfnoise(kind = "step", freq = 1.0, seed = 1)` | 1秒に`freq`回、-1から1の新しい数を選ぶ。`"step"`は次まで保ち、`"linear"`は次へ直線で、`"cubic"`は前後4つを通る曲線で進む（数は引いた値の0.8倍で、±1を超えない）。`freq`を動かすとすぐに効く。同じ`seed`なら同じになる |
+| `g.lag(input, time = 0.1)` | `input`を1極のフィルタでなめらかに追わせる。段差の60 dBを`time`秒で詰め、`input`の最初のサンプルから始まる（0からではない）。跳ぶコントロールをなめらかにする。`time`が0なら`input`のまま |
+| `g.decay(input, time = 1.0)` | `input`に、1サンプル前の出力の、`time`秒で60 dB下がる分を足す（0から始まる）。インパルスを入れると、減衰して鳴り終わる。2つの差を取ると、立ち上がりのあるエンベロープになる |
+| `g.abs(input)` | `input`の大きさ |
+| `g.clip(input, lo = -1.0, hi = 1.0)` | `lo`から`hi`の間に収めた`input` |
+| `g.exp(input)` | eの`input`乗 |
+| `part.connect(target) -> target` | `part`の出力を`target`に足す。`target`が部品ならその入力に（音源、つまりwave、noise、impulse、dust、lfnoiseは入力を取らない）、値（下記）ならその値に足す。どの部品からでもつなげるが、ループは遅延を通らなければならない（下記） |
 | `g.output(part)` | グラフが鳴らす部品（決めるまでは無音） |
 | `g.render(seconds) -> Array` | グラフの最初の`seconds`秒を、始まりから今計算する |
 | `g.play()` | グラフを始まりから鳴らす（鳴っていれば始まりからやり直す） |
@@ -8713,11 +8721,12 @@ println(Math.round(Audio.integrated_loudness(both)))                     # => -1
 | `g.now() -> Float` | 今行った変更が、グラフの時計のどこに入るか。鳴っていなければ`0.0` |
 
 部品の中で動かせるものを値と呼びます。波の`freq`、`feedback`、`phase`、フィルタの`cutoff`、
-gainの`gain`、弦の`freq`と`ring`、遅延の`time`、driveの`gain`が、それぞれ部品のフィールドになっています。
+gainの`gain`、弦の`freq`と`ring`、遅延の`time`、driveの`gain`、impulseとlfnoiseの`freq`、
+dustの`density`が、それぞれ部品のフィールドになっています。
 値は、予約した値に、つないだ部品の出力の和をサンプルごとに足したものです。Web Audioの`AudioParam`と同じです。
 `lfo.connect(w.freq)`はlfoを波のfreqにHzとして足し、`lfo.connect(d.time)`は遅延のtimeに秒として足します。
-つないだ部品が動かした値は、部品が壊れない範囲に収めます。波のfreqとcutoffは0から`rate`の半分、
-弦のfreqは20 Hzから`rate`の半分、遅延のtimeは0から1、feedbackとringとdriveのgainは0以上です。
+つないだ部品が動かした値は、部品が壊れない範囲に収めます。波とimpulseとlfnoiseのfreqとcutoffは0から`rate`の半分、
+dustのdensityは0から`rate`、弦のfreqは20 Hzから`rate`の半分、遅延のtimeは0から1、feedbackとringとdriveのgainは0以上です。
 予約した値は最初の変更まで部品を作ったときの値のままで、変更はグラフの時計（始まりからの秒）の上に予約します。
 
 | メソッド | 効果 |
@@ -8765,9 +8774,11 @@ println([heard[0], heard[100], heard[200]])  # => [1.0, 0.5, 0.25]
 次はどれも`ValueError`になります。名前の挙がっていない種類。別のグラフの部品。
 範囲外の値（波のfreqが0未満か`rate`の半分以上、feedbackが0未満か有限の数でない、
 cutoffが0以下か`rate`の半分以上、
-gainが有限の数でない、弦のfreqが20 Hz未満か`rate`の半分以上、ringが0以下、遅延のtimeが0未満か1より大きい、driveのgainが0未満か有限の数でない）。
-有限の数でない波のphase。0未満の時刻。0以下の`q`。`Audio.resonate`が受け付けないモード。
-遅延を通らないループと、waveやnoiseへのつなぎ。グラフの部品でない入力、部品でも値でもない
+gainが有限の数でない、弦のfreqが20 Hz未満か`rate`の半分以上、ringが0以下、遅延のtimeが0未満か1より大きい、driveのgainが0未満か有限の数でない、
+impulseやlfnoiseのfreqが0未満か`rate`の半分以上、dustのdensityが0未満か`rate`より大きい）。
+有限の数でない波のphase。0以上1未満でないimpulseのphase。0未満か有限の数でないlagやdecayのtime。
+`lo`が`hi`より大きいか、どちらかが有限の数でないclip。0以上2^31未満の整数でないseed。0未満の時刻。0以下の`q`。`Audio.resonate`が受け付けないモード。
+遅延を通らないループと、音源へのつなぎ。グラフの部品でない入力、部品でも値でもない
 つなぎ先、3つの数を持つオブジェクトでないモードは`TypeError`です。グラフは`rate`が44100のときだけ鳴らせ、
 同時に鳴らせるのは64個まで（超えると`ValueError`）です。デバイスが無いときは何も
 鳴らず、`now()`は`play()`からの時間を返します。ブラウザではグラフは`render`できますが、
@@ -9801,7 +9812,8 @@ println(render(pad, 0.5).size())  # => 22050
 ```
 
 部品が読む値（波の`freq`、`feedback`、`phase`、フィルタの`cutoff`、遅延の
-`time`、弦の`freq`と`ring`、`drive`の`gain`、音量）は、数、部品、
+`time`、弦の`freq`と`ring`、`drive`の`gain`、`impulse`と`lfnoise`の`freq`、
+`dust`の`density`、音量）は、数、部品、
 エンベロープ、またはそれらの配列（要素ごとに1チャンネル。下の説明）を受け取ります。数はそのまま値に、エンベロープは時刻0からの
 値の変化になります。部品を渡すと、信号そのものが値になります。グラフの
 `connect`のように基準値へ足すのではないので、`sine(330.0) * (0.5 + 0.5 *
@@ -9817,6 +9829,10 @@ sine(5.0))`は、0から1の間で揺れるトレモロです。同じ値を2回
 | `Synth.sine(freq = 440.0, phase = 0.0, feedback = 0.0)` | `wave("sine", ...)`。`phase`に部品を渡すとFM、`feedback`は自分自身への帰還 |
 | `Synth.saw(freq = 440.0, phase = 0.0)` / `square` / `triangle` | その種類の`wave` |
 | `Synth.noise(seed = 1)` | -1から1のホワイトノイズ。同じ`seed`からは同じノイズ |
+| `Synth.pulse(freq = 440.0, width = 0.5)` | -1から1のパルス波。各周期の`width`（0より大きく1より小さい。エンベロープでなく部品で動かせる）の間だけ高く、跳びは`square`と同じくなめらかにする。`width`が0.5なら`square` |
+| `Synth.impulse(freq = 1.0, phase = 0.0)` | `Audio.Graph`の`impulse`。周期ごとに最初のサンプルだけ1。`phase`は始まりの時点で過ぎている周期の割合（0以上1未満。ラジアンではない）。`freq`が0なら、`phase`が0のときに始まりで1回だけ |
+| `Synth.dust(density, seed = 1)` | `Audio.Graph`の`dust`。ランダムなサンプルに出る、0から1のインパルス。1秒あたり平均`density`個 |
+| `Synth.lfnoise(freq, kind = "step", seed = 1)` | `Audio.Graph`の`lfnoise`。1秒に`freq`回、-1から1の新しい数を選び、保つ（`"step"`）、直線で進む（`"linear"`）、曲線で進む（`"cubic"`） |
 | `Synth.mix(parts: Array)` | 部品を足し合わせる（数とエンベロープは、その値の信号。束はチャンネルごと）。`mix`を取り込めば`[a, b].mix()`とも書ける |
 | `Synth.feedback(f)` | ループ。`f(x)`が式を返し、`x`はその式の出力を表す。式は`x`を遅延を通して聞く（`x.delay(t)`は`t`秒前の出力）。ループごとに自分の`x`を持つので、入れ子にできる。`x`から出力まで遅延を通らない道があれば、ここで`ValueError`。`x`を式の外で使うと、`render`のときに`ValueError` |
 | `Synth.env(levels: Array, times: Array, curve = 0.0)` | エンベロープ。`levels`を、長さ`times`秒の区間でつなぎ、最後の値を保つ。`curve`は0（直線）、曲げる数`c`（区間の`x`の位置で`l0 + (l1 - l0) * (1 - exp(c * x)) / (1 - exp(c))`。負なら初めに速く、正なら初めにゆっくり動く）、`"exp"`、または区間ごとのそれらの配列 |
@@ -9843,6 +9859,11 @@ sine(5.0))`は、0から1の間で揺れるトレモロです。同じ値を2回
 | `p.drive(gain = 1.0)` | `p`に`gain`を掛けてtanhに通す。`Audio.Graph`の`drive`と同じ |
 | `p.limit(ceiling = 0.9, release = 0.2)` | `p`を`ceiling`以下に保つ。`Audio.Graph`の`limit`と同じ |
 | `p.range(lo, hi)` | -1から1の信号を、`lo`から`hi`へ直線で写す。`lo + (hi - lo) * (p + 1) / 2` |
+| `p.exprange(lo, hi)` | -1から1の信号を、`lo`から`hi`へ、一歩ごとに同じ比で増える曲線で写す（音の高さやcutoffの聞こえ方に合う）。`lo * (hi / lo) ^ ((p + 1) / 2)`。2つは有限で、同じ符号で、0でない |
+| `p.lag(time)` | `Audio.Graph`の`lag`のように、`p`をなめらかに追わせる。段差の60 dBを`time`秒で詰め、`p`の始まりの値から始まる。0なら`p`そのもの |
+| `p.decay2(attack, decay)` | `p`のインパルスを、約`attack`秒で立ち上がり`decay`秒で60 dB下がるエンベロープにする（0 < `attack` < `decay`）。`decay`秒の`Audio.Graph`の`decay`から、`attack`秒のものを引いたもの。山は1より低く、2つが離れるほど1に近い |
+| `p.clip(lo, hi)` | `lo`から`hi`の間に収めた`p` |
+| `p.abs()` | `p`の大きさ |
 | `p.mix()` | 束のチャンネルを足して1つの部品にする。部品はそのまま |
 | `p + x`、`p - x`、`p * x`、`p / n`、`-p` | 部品の和、差、積（音量）。右は数、部品、エンベロープ、配列。`+`と`*`は数が左でもよい。`/`は数で割るときだけで、0なら`ValueError` |
 
@@ -9853,7 +9874,10 @@ sine(5.0))`は、0から1の間で揺れるトレモロです。同じ値を2回
 その1つの部品です。束は、部品が持つ
 メソッドを、チャンネルごとにすべて持ちます。チャンネルの数が違うものを同時に
 渡すと（`sine([440.0, 660.0]) * [0.2]`）`ValueError`で、束は`.mix()`で
-1チャンネルにしてから、鳴らしたり`render`したりします。
+1チャンネルにしてから、鳴らしたり`render`したりします。部品を作るときの、
+値でない数（時間、`lo`と`hi`、種類、seed）は全チャンネルで同じです。乱数を引く部品
+（`dust`、`lfnoise`）は、チャンネルごとに`seed`にチャンネルの番号を足した種から
+引くので、`dust([5.0, 5.0])`の2つは同じ時刻に鳴りません。
 
 ```culebra
 let {saw, sine, line, feedback, render} = Synth
@@ -9869,7 +9893,9 @@ println(render(echo, 1.0).slice(13230, 15435).map(|v| Math.abs(v)).max() > 0.5) 
 終わるもので終わります。遅延は最も長い遅れの分、弦は`ring`の分、共鳴は最も
 狭いモードが60 dB減衰する分だけ、余韻が続きます（フィルタは、最も低い`cutoff`での
 幅`cutoff / q`のモードとして数え、信号で動く`cutoff`は余韻を足しません）。
-ループは、終わりを決められないまま鳴り続けます。`play`は、待たずに鳴らした
+lagとdecayはその時間の分だけ続き、大きさ（`abs`）と、0を含む範囲の`clip`は
+入力と一緒に終わります。impulseとdustは、`freq`や`density`が0なら終わり、
+lfnoiseは終わりません。ループは、終わりを決められないまま鳴り続けます。`play`は、待たずに鳴らした
 音を、ハンドルを誰も持たなくても鳴らし続け、終わったあとの次の`play`で手放します。
 `secs`を渡すと、その時刻からはGraph自身の時計で無音になります。
 
@@ -9901,7 +9927,11 @@ println(render(echo, 1.0).slice(13230, 15435).map(|v| Math.abs(v)).max() > 0.5) 
 フェードアウトする）、それもなければ、鳴っているノートがいちばん早く始まった
 声を5 msでフェードアウトさせて、そこに入ります。声は最初のノートまで無音で、
 すべての声が共有する部品（ビブラートのように`builder`の外で作ったもの）は、
-エンベロープも含めて先頭から動きます。`Voices`は、作った順にかかわらず
+エンベロープも含めて先頭から動きます。声のグラフはノートごとではなく1度だけ作るので、
+状態を持つ部品は、その状態をノートからノートへ引き継ぎます。`freq.lag(t)`は
+その声の前のノートから滑り（ポルタメント）、最初は声の最初のノートの高さから
+始まります。`freq`がそこから始まるためです（グラフを作る時点でノートのない声は440 Hz）。
+`Voices`は、作った順にかかわらず
 ノートを時刻の順に持っているので（同じ時刻から始まる2つの`sequence`は声を
 分け合う）、`render`と`play`はそのノートつきでグラフを作り、鳴らしている間に
 作ったノートは、そのグラフの時計に合わせて、鳴っている音にも入ります。

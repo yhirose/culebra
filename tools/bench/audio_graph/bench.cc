@@ -57,12 +57,10 @@ struct Build {
     return g.add(ad::PartKind::Gain, std::move(in), std::monostate{}, gain);
   }
   int delay(std::vector<int> in, double time) {
-    auto longest = static_cast<size_t>(std::ceil(ad::kGraphDelayLongest * kRate));
-    return g.add(ad::PartKind::Delay, std::move(in), ad::DelayLine(longest), time);
+    return g.add(ad::PartKind::Delay, std::move(in), ad::graph_delay_line(kRate), time);
   }
   int pluck(std::vector<int> in, double freq, double ring) {
-    int64_t size = ad::PluckString::loop_length(ad::kGraphPluckLowest, kRate) + 1;
-    return g.add(ad::PartKind::Pluck, std::move(in), ad::PluckString(size, kRate), freq, ring);
+    return g.add(ad::PartKind::Pluck, std::move(in), ad::graph_string(kRate), freq, ring);
   }
   int resonate(std::vector<int> in, const std::vector<double>& modes, double dry) {
     return g.add(ad::PartKind::Resonate, std::move(in),
@@ -71,6 +69,20 @@ struct Build {
   int drive(std::vector<int> in, double gain) { return g.add(ad::PartKind::Drive, std::move(in), ad::Drive{}, gain); }
   int limit(std::vector<int> in, double ceiling, double release) {
     return g.add(ad::PartKind::Limit, std::move(in), ad::Limiter(ceiling, release, kRate));
+  }
+  int impulse(double freq, double phase) { return g.add(ad::PartKind::Impulse, {}, ad::Impulse(phase), freq); }
+  int dust(double density, int64_t seed) {
+    return g.add(ad::PartKind::Dust, {}, ad::Dust{ad::noise_stream(seed, ad::kDustStream)}, density);
+  }
+  int lfnoise(ad::LfNoiseKind kind, double freq, int64_t seed) {
+    return g.add(ad::PartKind::LfNoise, {}, ad::LfNoise(kind, ad::noise_stream(seed, ad::kLfNoiseStream)), freq);
+  }
+  int lag(std::vector<int> in, double time) { return g.add(ad::PartKind::Lag, std::move(in), ad::Lag(time, kRate)); }
+  int decay(std::vector<int> in, double time) {
+    return g.add(ad::PartKind::Decay, std::move(in), ad::Decay(time, kRate));
+  }
+  int math(ad::MathKind kind, std::vector<int> in, double lo = -1, double hi = 1) {
+    return g.add(ad::PartKind::Math, std::move(in), ad::MathOp{kind, lo, hi});
   }
   // Synth's constant: a gain of a square at 0 Hz, which answers 1.
   int level(double v) {
@@ -283,6 +295,39 @@ ad::Graph decay_tail() {
   return std::move(b.g);
 }
 
+// The sources and the shaping parts as Synth builds them (synth.cul):
+// impulses through decay2 (two decays, one taken off the other) as the level
+// of a sine whose freq a cubic lfnoise moves (`.range`), dust through a
+// bandpass, a pulse whose width a linear lfnoise moves (two saws, one's phase
+// moved by the width, and the step the width makes), a stepped lfnoise
+// lagged, taken through `.exprange` (`exp`), and a sine's size and its clip.
+ad::Graph sources() {
+  Build b;
+  int ticks = b.impulse(4.0, 0.0);
+  int env = b.gain({b.decay({ticks}, 0.3), b.gain({b.decay({ticks}, 0.01)}, -1.0)}, 1.0);
+  int sweep = b.lfnoise(ad::LfNoiseKind::Cubic, 8.0, 1);
+  int sine = b.wave(ad::WaveKind::Sine, 0);
+  b.connect(b.gain({sweep}, 300.0), sine, 0);
+  b.connect(b.level(600.0), sine, 0);
+  int ticked = b.gain({sine}, 0);
+  b.connect(env, ticked, 0);
+  int dust = b.filter(ad::FilterKind::Band, {b.dust(20.0, 1)}, 2000, 4.0);
+  int width = b.gain({b.lfnoise(ad::LfNoiseKind::Linear, 0.5, 1)}, 0.4);
+  int moved = b.level(0.5);
+  int w = b.gain({width, moved}, 1.0);
+  int early = b.wave(ad::WaveKind::Saw, 110);
+  b.connect(b.gain({w}, -2.0 * std::numbers::pi), early, 2);
+  int late = b.wave(ad::WaveKind::Saw, 110);
+  int pulse = b.gain({early, b.gain({late}, -1.0), b.gain({w}, 2.0), b.level(-1.0)}, 0.1);
+  int glide = b.lag({b.lfnoise(ad::LfNoiseKind::Step, 2.0, 2)}, 0.1);
+  int curved = b.gain({b.math(ad::MathKind::Exp, {b.gain({b.gain({glide}, 0.5), b.level(0.5)}, std::log(8.0))})}, 0.05);
+  int sized = b.math(ad::MathKind::Clip, {b.math(ad::MathKind::Abs, {b.wave(ad::WaveKind::Sine, 3.0)})}, 0.0, 0.7);
+  int lifted = b.gain({curved}, 0);
+  b.connect(sized, lifted, 0);
+  b.g.output(b.limit({b.gain({ticked, dust, pulse, lifted}, 0.5)}, 0.9, 0.2));
+  return std::move(b.g);
+}
+
 struct Case {
   const char* name;
   ad::Graph (*make)();
@@ -290,7 +335,7 @@ struct Case {
 const Case kCases[] = {
     {"fm_piano", fm_piano},       {"fm_piano_looped", fm_piano_looped}, {"echo_loop", echo_loop},
     {"strings", strings},         {"waves_swept", waves_swept},         {"voices", voices},
-    {"decay_tail", decay_tail},
+    {"decay_tail", decay_tail},   {"sources", sources},
 };
 
 constexpr double kSeconds = 4.0;

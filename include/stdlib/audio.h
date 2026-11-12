@@ -699,6 +699,21 @@ struct Noise {
   }
 };
 
+// The streams of the graph parts that draw numbers, so that parts of two
+// kinds given one seed draw different numbers (a noise draws from its seed
+// itself).
+inline constexpr uint64_t kDustStream = 1;
+inline constexpr uint64_t kLfNoiseStream = 2;
+
+// A Noise for `stream` from `seed`: the seed and the stream mixed
+// (SplitMix64's finalizer), so nearby seeds start far apart.
+inline Noise noise_stream(int64_t seed, uint64_t stream) {
+  uint64_t z = static_cast<uint64_t>(seed) + stream * 0x9E3779B97F4A7C15ull;
+  z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ull;
+  z = (z ^ (z >> 27)) * 0x94D049BB133111EBull;
+  return Noise{static_cast<int64_t>((z ^ (z >> 31)) % 2147483648ull)};
+}
+
 // The pieces of a harmonic tone for partials(): its spectra, `count` amps
 // each starting at `from` in `amps`, and the noise heard with it.
 struct PartialsSpectrum {
@@ -1518,26 +1533,193 @@ class Drive {
   double f_ = 0;
 };
 
-enum class PartKind { Wave, Noise, Filter, Gain, Resonate, Pluck, Delay, Limit, Drive };
+// 1 at the first sample of each period of its freq, 0 at the others:
+// `start`, from 0 to 1, is how much of a period has gone by at the
+// first sample, 0 making it fire there. A freq of 0 fires once, at the start
+// when `start` is 0.
+class Impulse {
+ public:
+  explicit Impulse(double start) : phase_(start == 0 ? 1.0 : start) {}
+  double step(double freq, double rate) {
+    double y = 0;
+    if (phase_ >= 1) {
+      phase_ -= std::floor(phase_);
+      y = 1;
+    }
+    phase_ += freq / rate;
+    return y;
+  }
+
+ private:
+  double phase_;
+};
+
+// Impulses at random samples, `density` a second on average, each 0 to 1:
+// a sample's number from 0 to 1, when under its chance, is
+// the impulse, scaled by the chance to 0..1.
+struct Dust {
+  Noise noise;
+  double step(double density, double rate) {
+    const double chance = density / rate;
+    const double z = 0.5 * (noise.next() + 1.0);
+    return z < chance ? z / chance : 0.0;
+  }
+};
+
+// How LfNoise moves between its numbers: it holds each, goes to the next in a
+// straight line, or through the four about it (cubic).
+enum class LfNoiseKind { Step, Linear, Cubic };
+
+// A new number from -1 to 1 at freq Hz: its
+// phase runs down from 1 at freq a second, and each time it passes 0 the
+// numbers move on by one. A cubic reads the four about it by 4-point Hermite,
+// which goes at most 1.25 times past them, so its numbers are 0.8 of the draw
+// and it stays within ±1.
+class LfNoise {
+ public:
+  LfNoise(LfNoiseKind kind, Noise noise) : kind_(kind), noise_(noise) {
+    if (kind == LfNoiseKind::Linear) d_ = draw();
+    if (kind == LfNoiseKind::Cubic)
+      for (double* v : {&a_, &b_, &c_, &d_}) *v = draw();
+  }
+  double step(double freq, double rate) {
+    phase_ -= freq / rate;
+    if (phase_ < 0) {
+      phase_ -= std::floor(phase_);
+      a_ = b_;
+      b_ = c_;
+      c_ = d_;
+      d_ = draw();
+    }
+    switch (kind_) {
+      case LfNoiseKind::Step: return d_;
+      case LfNoiseKind::Linear: return d_ + phase_ * (c_ - d_);
+      case LfNoiseKind::Cubic: {
+        const double x = 1.0 - phase_;
+        const double c1 = 0.5 * (c_ - a_);
+        const double c2 = a_ - 2.5 * b_ + 2.0 * c_ - 0.5 * d_;
+        const double c3 = 0.5 * (d_ - a_) + 1.5 * (b_ - c_);
+        return ((c3 * x + c2) * x + c1) * x + b_;
+      }
+    }
+    return 0.0;
+  }
+
+ private:
+  double draw() { return kind_ == LfNoiseKind::Cubic ? 0.8 * noise_.next() : noise_.next(); }
+  LfNoiseKind kind_;
+  Noise noise_;
+  double phase_ = 0, a_ = 0, b_ = 0, c_ = 0, d_ = 0;
+};
+
+// The pole of a one-pole filter that falls 60 dB in `seconds`, 0 for 0
+// seconds.
+inline double pole_60db(double seconds, double rate) {
+  return seconds == 0 ? 0.0 : std::exp(std::log(0.001) / (seconds * rate));
+}
+
+// What comes in, followed by a one-pole filter that closes 60 dB of a step in
+// its time, from the first sample in rather than from 0.
+class Lag {
+ public:
+  Lag(double seconds, double rate) : b_(pole_60db(seconds, rate)) {}
+  double step(double x) {
+    if (!started_) {
+      y_ = x;
+      started_ = true;
+    }
+    y_ = settled(x + b_ * (y_ - x));
+    return y_;
+  }
+
+ private:
+  double b_, y_ = 0;
+  bool started_ = false;
+};
+
+// What comes in plus what it answered a sample before, times the pole that
+// falls 60 dB in its time: an impulse in rings down.
+class Decay {
+ public:
+  Decay(double seconds, double rate) : b_(pole_60db(seconds, rate)) {}
+  double step(double x) {
+    y_ = settled(x + b_ * y_);
+    return y_;
+  }
+
+ private:
+  double b_, y_ = 0;
+};
+
+// What a Math part answers for what comes in: its size, it held within lo..hi,
+// or e to its power.
+enum class MathKind { Abs, Clip, Exp };
+
+struct MathOp {
+  MathKind kind;
+  double lo = -1, hi = 1;
+  double step(double x) const {
+    switch (kind) {
+      case MathKind::Abs: return std::abs(x);
+      case MathKind::Clip: return std::clamp(x, lo, hi);
+      case MathKind::Exp: return std::exp(x);
+    }
+    return 0.0;
+  }
+};
+
+enum class PartKind { Wave, Noise, Filter, Gain, Resonate, Pluck, Delay, Limit, Drive, Impulse, Dust, LfNoise, Lag, Decay, Math };
 
 // How many values a part of `kind` reads: a wave's freq, feedback and phase,
 // a filter's cutoff, a gain's gain, a string's freq and ring, a delay's time,
-// a drive's gain.
+// a drive's gain, an impulse's and an lfnoise's freq, a dust's density.
+// (Every kind is named here and below, so a kind added is a -Wswitch error in
+// check-bench-audio-graph, which builds this header with -Werror, until each
+// says what it is.)
 inline int value_count(PartKind kind) {
   switch (kind) {
     case PartKind::Noise:
     case PartKind::Resonate:
-    case PartKind::Limit: return 0;
-    case PartKind::Wave: return 3;
+    case PartKind::Limit:
+    case PartKind::Lag:
+    case PartKind::Decay:
+    case PartKind::Math: return 0;
+    case PartKind::Filter:
+    case PartKind::Gain:
+    case PartKind::Delay:
+    case PartKind::Drive:
+    case PartKind::Impulse:
+    case PartKind::Dust:
+    case PartKind::LfNoise: return 1;
     case PartKind::Pluck: return 2;
-    default: return 1;
+    case PartKind::Wave: return 3;
   }
+  return 0;
 }
 inline constexpr int kGraphValues = 3;  // the most value_count answers
 
-// Whether a part of `kind` takes in what is connected to it; a wave and a
-// noise make their own.
-inline bool takes_in(PartKind kind) { return kind != PartKind::Wave && kind != PartKind::Noise; }
+// Whether a part of `kind` takes in what is connected to it; a source (a
+// wave, a noise, an impulse, a dust, an lfnoise) makes its own.
+inline bool takes_in(PartKind kind) {
+  switch (kind) {
+    case PartKind::Wave:
+    case PartKind::Noise:
+    case PartKind::Impulse:
+    case PartKind::Dust:
+    case PartKind::LfNoise: return false;
+    case PartKind::Filter:
+    case PartKind::Gain:
+    case PartKind::Resonate:
+    case PartKind::Pluck:
+    case PartKind::Delay:
+    case PartKind::Limit:
+    case PartKind::Drive:
+    case PartKind::Lag:
+    case PartKind::Decay:
+    case PartKind::Math: return true;
+  }
+  return false;
+}
 
 inline constexpr int kGraphBlock = 128;
 // The lowest a graph's string is tuned, which sizes its loop.
@@ -1546,20 +1728,40 @@ inline constexpr double kGraphPluckLowest = 20.0;
 // DelayNode's default).
 inline constexpr double kGraphDelayLongest = 1.0;
 
+// The parts' processors as a graph makes them for `rate`: a delay as long as
+// a graph's delay can be, a string as low as a graph's string can be tuned.
+inline DelayLine graph_delay_line(double rate) {
+  return DelayLine(static_cast<size_t>(std::ceil(kGraphDelayLongest * rate)));
+}
+inline PluckString graph_string(double rate) {
+  return PluckString(PluckString::loop_length(kGraphPluckLowest, rate) + 1, rate);
+}
+
 // Value `value` of a part of `kind` once the parts connected to it have moved
-// it to `x`, held where the part stays sound: a wave's freq, a cutoff and a
-// string's freq from 0 (a string's from its lowest) to half the rate, a
-// delay's time from 0 to its longest, and a wave's feedback, a string's ring
-// and a drive's gain at 0 or more.
+// it to `x`, held where the part stays sound: a wave's, an impulse's and an
+// lfnoise's freq, a cutoff and a string's freq from 0 (a string's from its
+// lowest) to half the rate, a dust's density from 0 to the rate, a delay's
+// time from 0 to its longest, and a wave's feedback, a string's ring and a
+// drive's gain at 0 or more.
 inline double held_value(PartKind kind, int value, double x, double rate) {
   switch (kind) {
     case PartKind::Wave: return value == 0 ? std::clamp(x, 0.0, 0.5 * rate) : value == 1 ? std::max(x, 0.0) : x;
-    case PartKind::Filter: return std::clamp(x, 0.0, 0.5 * rate);
+    case PartKind::Filter:
+    case PartKind::Impulse:
+    case PartKind::LfNoise: return std::clamp(x, 0.0, 0.5 * rate);
+    case PartKind::Dust: return std::clamp(x, 0.0, rate);
     case PartKind::Pluck: return value == 0 ? std::clamp(x, kGraphPluckLowest, 0.5 * rate) : std::max(x, 0.0);
     case PartKind::Delay: return std::clamp(x, 0.0, kGraphDelayLongest);
     case PartKind::Drive: return std::max(x, 0.0);
-    default: return x;
+    case PartKind::Gain: return x;
+    case PartKind::Noise:
+    case PartKind::Resonate:
+    case PartKind::Limit:
+    case PartKind::Lag:
+    case PartKind::Decay:
+    case PartKind::Math: break;  // no values
   }
+  return x;
 }
 // How many graphs play at once: the mixer's list of them never grows.
 inline constexpr size_t kGraphsPlaying = 64;
@@ -1571,11 +1773,14 @@ struct GraphPart {
   PartKind kind;
   std::vector<int> inputs;  // parts added together as what it takes in
   // A wave's freq, feedback and phase, a filter's cutoff, a gain's gain, a
-  // string's freq and ring, a delay's time, a drive's gain; each is its
-  // schedule plus the sum of the parts connected to it.
+  // string's freq and ring, a delay's time, a drive's gain, an impulse's and
+  // an lfnoise's freq, a dust's density; each is its schedule plus the sum
+  // of the parts connected to it.
   Param values[kGraphValues];
   std::vector<int> connected[kGraphValues];
-  std::variant<std::monostate, Oscillator, Noise, Svf, Resonance, PluckString, DelayLine, Limiter, Drive> processor;
+  std::variant<std::monostate, Oscillator, Noise, Svf, Resonance, PluckString, DelayLine, Limiter, Drive, Impulse, Dust,
+               LfNoise, Lag, Decay, MathOp>
+      processor;
   double out[kGraphBlock] = {};
 };
 
@@ -1801,6 +2006,13 @@ class Graph {
       }
     }
     double* out = p.out + a;
+    // A processor stepped by what comes in, and a source stepped by its value.
+    auto each_in = [&](auto& q) {
+      for (int i = 0; i < n; i++) out[i] = q.step(in[i]);
+    };
+    auto each_value = [&](auto& q) {
+      for (int i = 0; i < n; i++) out[i] = q.step(v0[i], rate_);
+    };
     switch (p.kind) {
       case PartKind::Wave: {
         bool feeds = std::any_of(v1, v1 + n, [](double feedback) { return feedback != 0.0; });
@@ -1823,11 +2035,7 @@ class Graph {
       case PartKind::Gain:
         for (int i = 0; i < n; i++) out[i] = in[i] * v0[i];
         break;
-      case PartKind::Resonate: {
-        auto& r = std::get<Resonance>(p.processor);
-        for (int i = 0; i < n; i++) out[i] = r.step(in[i]);
-        break;
-      }
+      case PartKind::Resonate: each_in(std::get<Resonance>(p.processor)); break;
       case PartKind::Pluck: {
         auto& s = std::get<PluckString>(p.processor);
         for (int i = 0; i < n; i++) {
@@ -1848,16 +2056,18 @@ class Graph {
           for (int i = 0; i < n; i++) out[i] = d.step(in[i], v0[i] * rate_);
         break;
       }
-      case PartKind::Limit: {
-        auto& l = std::get<Limiter>(p.processor);
-        for (int i = 0; i < n; i++) out[i] = l.step(in[i]);
-        break;
-      }
+      case PartKind::Limit: each_in(std::get<Limiter>(p.processor)); break;
       case PartKind::Drive: {
         auto& d = std::get<Drive>(p.processor);
         for (int i = 0; i < n; i++) out[i] = d.step(in[i], v0[i]);
         break;
       }
+      case PartKind::Impulse: each_value(std::get<Impulse>(p.processor)); break;
+      case PartKind::Dust: each_value(std::get<Dust>(p.processor)); break;
+      case PartKind::LfNoise: each_value(std::get<LfNoise>(p.processor)); break;
+      case PartKind::Lag: each_in(std::get<Lag>(p.processor)); break;
+      case PartKind::Decay: each_in(std::get<Decay>(p.processor)); break;
+      case PartKind::Math: each_in(std::get<MathOp>(p.processor)); break;
     }
   }
 
