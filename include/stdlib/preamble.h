@@ -146,8 +146,8 @@ struct LazyNsModule {
   std::span<const std::string_view> needs = {};
 };
 
-// Synth builds its sounds as Audio.Graphs.
-inline constexpr std::string_view kSynthNeeds[] = {"Audio"};
+// Synth builds its sounds as Audio.Graphs, and waits for them on Time.
+inline constexpr std::string_view kSynthNeeds[] = {"Audio", "Time"};
 
 inline std::span<const LazyNsModule> lazy_ns_modules() {
   static constexpr LazyNsModule kModules[] = {

@@ -10253,6 +10253,10 @@ check, when `render` builds it at its rate, with the graph's `ValueError`.
 | `Synth.env(levels: Array, times: Array, curve = 0.0)` | an envelope: `levels` joined by segments `times` seconds long, holding the last level after; `curve` is 0 (straight), a number `c` that bends it (`l0 + (l1 - l0) * (1 - exp(c * x)) / (1 - exp(c))` at `x` of the way: below 0 it moves fast first, above 0 slow first), `"exp"`, or one of those per segment |
 | `Synth.line(lo, hi, dur, curve = 0.0)` | `env([lo, hi], [dur], curve)` |
 | `Synth.xline(lo, hi, dur)` | `env([lo, hi], [dur], "exp")`: `lo * (hi / lo) ^ (t / dur)`, the two of one sign and not 0 |
+| `Synth.perc(attack, release, peak = 1.0, curve = -4.0)` | `env([0, peak, 0], [attack, release], curve)`: a struck sound's envelope |
+| `Synth.adsr(attack, decay, sustain, release, peak = 1.0, curve = -4.0)` | a gated envelope: up to `peak`, down to `sustain * peak`, held there until it is let go, then down to 0 over `release`. `e.hold(secs)` lets it go `secs` from its start (from the level it has then); unheld, it plays only where a note's end lets it go, and is a `ValueError` elsewhere |
+| `Synth.control(name, init, lo = nil, hi = nil)` | a value named `name`, `init` until the handle `play` gave sets it (kept to `lo..hi` when they are given, `init` among them); controls of one name in an expression are one value, and are made alike |
+| `Synth.play(expr, wait = true, secs = nil) -> SynthHandle` | the expression played until `secs`, or else until it ends on its own (below); with `wait` it returns once it has ended, without it at once, the sound playing on until it ends or is stopped. A sound that does not end on its own (an oscillator) needs `secs` or `wait: false`, else `ValueError`. With no device nothing sounds and it returns at once |
 | `Synth.hz(note) -> Float` | a note number's frequency: 69 is 440 Hz, a semitone a twelfth of an octave |
 | `Synth.db(x) -> Float` | decibels as a gain: 0 is 1.0, -6 about 0.5 |
 | `Synth.render(expr, seconds, rate = 44100) -> Array` | the first `seconds` of the expression (a part or an envelope), as `Audio.Graph`'s `render` works them out |
@@ -10267,6 +10271,35 @@ check, when `render` builds it at its rate, with the graph's `ValueError`.
 | `p.drive(gain = 1.0)` | `p` times `gain` through tanh, as `Audio.Graph`'s `drive` |
 | `p.limit(ceiling = 0.9, release = 0.2)` | `p` kept at or under `ceiling`, as `Audio.Graph`'s `limit` |
 | `p + x`, `p - x`, `p * x`, `p / n`, `-p` | parts added, subtracted and multiplied (a gain), with a number, a part or an envelope on the right, and a number on the left of `+` and `*`; `/` by a number only, `ValueError` for 0 |
+
+A sound ends on its own where its output is 0 for good: a product with the
+first of its factors to end (an envelope ending at 0 ends there, a 0 at
+once), a sum with the last; a delay rings on for its longest delay, a
+string for its `ring`, and a resonance for 60 dB of its narrowest mode (a
+filter's is `cutoff / q` wide at its lowest cutoff; one a signal moves
+adds none).
+`play` leaves a sound it does not wait for playing even when nothing holds
+its handle, and lets it go at a later `play` once it has ended; told `secs`,
+it is silent from then on, on the graph's own clock.
+
+| Method of a handle | Effect |
+| --- | --- |
+| `h.stop()` | silence it |
+| `h.playing() -> Bool` | not stopped, and not yet ended |
+| `h.ends()` | when it ends on its own (or at `secs`), in seconds from its start; `nil` for never |
+| `h.now() -> Float` | where on its clock a change made now lands |
+| `h.set(name, v, secs = 0.0, at = nil)` | the control `name` at `v` from `at` (now when `nil`), in a straight line over `secs` when more than 0; a time already past is now, as for `Audio.Graph`'s values |
+| `h.render(seconds) -> Array` | its first `seconds`, the changes made to it so far included |
+
+```culebra
+{
+  let {*} = Synth
+  let h = sine(control("freq", 440.0)) * perc(0.01, 1.0) |> play(wait: false)
+  println(h.ends())  # => 1.01
+  h.set("freq", 660.0, at: 0.5)
+  h.stop()
+}
+```
 
 An envelope answers `e.at(t)`, its level at `t` seconds, and `e.duration()`.
 A graph's values move in straight lines, so a curved segment becomes 20 of

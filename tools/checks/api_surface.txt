@@ -1178,6 +1178,10 @@ Synth.mix(parts: Array)
 Synth.env(levels: Array, times: Array, curve = 0.0)
 Synth.line(lo, hi, dur, curve = 0.0)
 Synth.xline(lo, hi, dur)
+Synth.perc(attack, release, peak = 1.0, curve = -4.0)
+Synth.adsr(attack, decay, sustain, release, peak = 1.0, curve = -4.0)
+Synth.control(name, init, lo = nil, hi = nil)
+Synth.play(expr, wait = true, secs = nil) -> SynthHandle
 Synth.hz(note) -> Float
 Synth.db(x) -> Float
 Synth.render(expr, seconds, rate = 44100) -> Array
@@ -1188,3 +1192,9 @@ p.pluck(freq = 220.0, ring = 2.0)
 p.resonate(modes: Array, dry = 0.0)
 p.drive(gain = 1.0)
 p.limit(ceiling = 0.9, release = 0.2)
+h.stop()
+h.playing() -> Bool
+h.ends()
+h.now() -> Float
+h.set(name, v, secs = 0.0, at = nil)
+h.render(seconds) -> Array

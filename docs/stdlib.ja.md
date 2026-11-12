@@ -9807,6 +9807,10 @@ sine(5.0))`は、0から1の間で揺れるトレモロです。同じ値を2回
 | `Synth.env(levels: Array, times: Array, curve = 0.0)` | エンベロープ。`levels`を、長さ`times`秒の区間でつなぎ、最後の値を保つ。`curve`は0（直線）、曲げる数`c`（区間の`x`の位置で`l0 + (l1 - l0) * (1 - exp(c * x)) / (1 - exp(c))`。負なら初めに速く、正なら初めにゆっくり動く）、`"exp"`、または区間ごとのそれらの配列 |
 | `Synth.line(lo, hi, dur, curve = 0.0)` | `env([lo, hi], [dur], curve)` |
 | `Synth.xline(lo, hi, dur)` | `env([lo, hi], [dur], "exp")`。値は`lo * (hi / lo) ^ (t / dur)`で、2つは同じ符号で0でない |
+| `Synth.perc(attack, release, peak = 1.0, curve = -4.0)` | `env([0, peak, 0], [attack, release], curve)`。打つ音のエンベロープ |
+| `Synth.adsr(attack, decay, sustain, release, peak = 1.0, curve = -4.0)` | ゲートつきのエンベロープ。`peak`まで上がり、`sustain * peak`まで下がり、離すまでそこに留まり、`release`秒で0まで下がる。`e.hold(secs)`は、始まりから`secs`秒で離す（その時点の値から下がる）。離す時刻がないままでは、音の終わりが離す場所でだけ使え、それ以外では`ValueError` |
+| `Synth.control(name, init, lo = nil, hi = nil)` | `name`という名前の値。`play`が返すハンドルで設定するまでは`init`（`lo`と`hi`があれば、その範囲に収め、`init`もその中）。1つの式の中の同じ名前の`control`は同じ値で、同じ引数で作る |
+| `Synth.play(expr, wait = true, secs = nil) -> SynthHandle` | 式を、`secs`まで、なければ自然な終わり（下の説明）まで鳴らす。`wait`なら終わってから戻り、`wait: false`ならすぐ戻って、終わるか止めるまで鳴り続ける。自然に終わらない音（発振器）は`secs`か`wait: false`が要り、なければ`ValueError`。デバイスがなければ、鳴らさずにすぐ戻る |
 | `Synth.hz(note) -> Float` | ノート番号の周波数。69が440 Hzで、半音は1オクターブの12分の1 |
 | `Synth.db(x) -> Float` | デシベルを音量の倍率にする。0が1.0、-6がおよそ0.5 |
 | `Synth.render(expr, seconds, rate = 44100) -> Array` | 式（部品かエンベロープ）の最初の`seconds`秒。`Audio.Graph`の`render`と同じに計算する |
@@ -9821,6 +9825,33 @@ sine(5.0))`は、0から1の間で揺れるトレモロです。同じ値を2回
 | `p.drive(gain = 1.0)` | `p`に`gain`を掛けてtanhに通す。`Audio.Graph`の`drive`と同じ |
 | `p.limit(ceiling = 0.9, release = 0.2)` | `p`を`ceiling`以下に保つ。`Audio.Graph`の`limit`と同じ |
 | `p + x`、`p - x`、`p * x`、`p / n`、`-p` | 部品の和、差、積（音量）。右は数、部品、エンベロープ。`+`と`*`は数が左でもよい。`/`は数で割るときだけで、0なら`ValueError` |
+
+音の自然な終わりは、出力がそれ以降ずっと0になる時刻です。積は、因子のうち最初に
+終わるもので終わり（0で終わるエンベロープはそこで、0はすぐに）、和は最後に
+終わるもので終わります。遅延は最も長い遅れの分、弦は`ring`の分、共鳴は最も
+狭いモードが60 dB減衰する分だけ、余韻が続きます（フィルタは、最も低い`cutoff`での
+幅`cutoff / q`のモードとして数え、信号で動く`cutoff`は余韻を足しません）。`play`は、待たずに鳴らした
+音を、ハンドルを誰も持たなくても鳴らし続け、終わったあとの次の`play`で手放します。
+`secs`を渡すと、その時刻からはGraph自身の時計で無音になります。
+
+| ハンドルのメソッド | 動作 |
+| --- | --- |
+| `h.stop()` | 止める |
+| `h.playing() -> Bool` | 止めておらず、まだ終わっていない |
+| `h.ends()` | 自然に（または`secs`で）終わる時刻。始まりからの秒数で、終わらなければ`nil` |
+| `h.now() -> Float` | いま行う変更が、その時計のどこに入るか |
+| `h.set(name, v, secs = 0.0, at = nil)` | `control`の`name`を、`at`（`nil`ならいま）から`v`にする。`secs`が0より大きければ、その秒数をかけて直線で動かす。過ぎた時刻は、`Audio.Graph`の値と同じく、いまになる |
+| `h.render(seconds) -> Array` | 最初の`seconds`秒。それまでに行った変更を含む |
+
+```culebra
+{
+  let {*} = Synth
+  let h = sine(control("freq", 440.0)) * perc(0.01, 1.0) |> play(wait: false)
+  println(h.ends())  # => 1.01
+  h.set("freq", 660.0, at: 0.5)
+  h.stop()
+}
+```
 
 エンベロープは、`t`秒の値を返す`e.at(t)`と、全体の長さを返す`e.duration()`を
 持ちます。グラフの値は直線でしか動かないので、曲がった区間は20本の直線になり、

@@ -25,6 +25,7 @@ let _synth_module = fn () {
   let is_number = |v| v is Long | Float
   # Neither NaN (unequal to itself) nor an infinity.
   let finite = |x| x == x && x != Math.inf && x != -Math.inf
+  let nonnegative = |x| finite(x) && x >= 0
 
   # The level a curved segment from `l0` to `l1` has at `x` of its way
   # (0..1): a straight line (curve 0), bent by a curve number c (fast first
@@ -41,14 +42,16 @@ let _synth_module = fn () {
 
   # A shape a value follows in time: `levels` joined by segments `times`
   # long, each straight (curve 0), bent by a curve number, or
-  # exponential ("exp"). It holds its last level after the end.
+  # exponential ("exp"). It holds its last level after the end. A gated one
+  # (adsr's) holds its last level until it is let go, then falls to 0 over
+  # `release` seconds, `hold(secs)` from its start.
   class SynthEnvelope {
-    new(levels: Array, times: Array, curve, who: String) {
+    new(levels: Array, times: Array, curve, who: String, release: Long | Float | Nil = nil) {
       let fail = |msg| __raise("ValueError", "Synth.{who}: {msg}")
       fail("an envelope has two levels or more") if levels.size() < 2
       fail("times has one fewer than levels ({levels.size() - 1})") if times.size() != levels.size() - 1
       fail("a level is a finite number") unless levels.all(|l| is_number(l) && finite(l))
-      fail("a time is a finite number of seconds, 0 or more") unless times.all(|t| is_number(t) && finite(t) && t >= 0)
+      fail("a time is a finite number of seconds, 0 or more") unless times.all(|t| is_number(t) && nonnegative(t))
       let curves = curve is Array ? curve : repeat(times.size(), curve)
       fail("curve has one per segment ({times.size()})") if curves.size() != times.size()
       for i, c in curves.enumerate() {
@@ -59,12 +62,42 @@ let _synth_module = fn () {
           fail("a curve is a finite number or \"exp\"") if !is_number(c) || !finite(c)
         }
       }
+      fail("release is a finite number of seconds, 0 or more") if release != nil && !nonnegative(release)
       @levels = levels
       @times = times
       @curves = curves
+      @release = release
     }
     duration() {
       @times.sum()
+    }
+    # The same gated envelope let go `secs` seconds from its start: the
+    # shape up to then (sustaining once it is done), and from the level it
+    # has there, its release to 0.
+    hold(secs: Long | Float) {
+      __raise("ValueError", "Synth.hold: only a gated envelope (adsr) is held") if @release == nil
+      __raise("ValueError", "Synth.hold: secs is a finite number, 0 or more") if !nonnegative(secs)
+      let (levels, times, curves) = ([@levels[0]], [], [])
+      mut start = 0.0
+      for i, len in @times.enumerate() {
+        if start >= secs && len > 0 {
+          break
+        }
+        let upto = Math.min(start + len, secs)
+        levels.push(upto == start + len ? @levels[i + 1] : self.at(upto))
+        times.push(upto - start)
+        curves.push(@curves[i])
+        start = upto
+      }
+      if start < secs {
+        levels.push(levels[levels.size() - 1])
+        times.push(secs - start)
+        curves.push(0.0)
+      }
+      levels.push(0.0)
+      times.push(@release)
+      curves.push(@curves[@curves.size() - 1])
+      SynthEnvelope(levels, times, curves, "hold")
     }
     # The level at `t` seconds from the start.
     at(t: Long | Float) {
@@ -81,7 +114,7 @@ let _synth_module = fn () {
 
   # A value as a part reads it: a number, a Part (the signal) or an Envelope.
   let to_part = fn (v) { v is SynthPart ? v : SynthPart("level", [], {level: v}, {}) }
-  let negate = |v| v is SynthEnvelope ? SynthEnvelope(v.levels.map(|l| -l), v.times, v.curves, "-") : -v
+  let negate = |v| v is SynthEnvelope ? SynthEnvelope(v.levels.map(|l| -l), v.times, v.curves, "-", v.release) : -v
 
   # A sound or a signal, as a node of an expression: `kind` names the graph
   # part it becomes, `inputs` the parts it takes in, `values` what it reads
@@ -185,6 +218,37 @@ let _synth_module = fn () {
     SynthEnvelope([lo, hi], [dur], "exp", "xline")
   }
 
+  # An attack to `peak`, a decay to `sustain` of it, held there until the
+  # envelope is let go, then a release to 0: gated, so it plays as
+  # `.hold(secs)`, which says when.
+  let adsr = fn (
+    attack: Long | Float,
+    decay: Long | Float,
+    sustain: Long | Float,
+    release: Long | Float,
+    peak: Long | Float = 1.0,
+    curve: Long | Float = -4.0,
+  ) {
+    __raise("ValueError", "Synth.adsr: sustain is a finite number, 0 or more") if !nonnegative(sustain)
+    SynthEnvelope([0.0, peak, sustain * peak], [attack, decay], curve, "adsr", release)
+  }
+  # An attack to `peak`, then a release to 0: a struck sound's envelope.
+  let perc = fn (attack: Long | Float, release: Long | Float, peak: Long | Float = 1.0, curve: Long | Float = -4.0) {
+    SynthEnvelope([0.0, peak, 0.0], [attack, release], curve, "perc")
+  }
+
+  # A value named `name`, `init` until a handle play gave sets it (clamped to
+  # lo..hi when they are given). Two controls of one name in an expression are
+  # one value.
+  let control = fn (name: String, init: Long | Float, lo: Long | Float | Nil = nil, hi: Long | Float | Nil = nil) {
+    let fail = |msg| __raise("ValueError", "Synth.control: {msg}")
+    fail("a name is not empty") if name.empty()
+    fail("init is a finite number") if !finite(init)
+    fail("lo and hi are finite, lo at most hi") if (lo != nil && !finite(lo)) || (hi != nil && !finite(hi)) || (lo != nil && hi != nil && lo > hi)
+    fail("init is within lo..hi") if (lo != nil && init < lo) || (hi != nil && init > hi)
+    SynthPart("control", [], {}, {name: name, init: init, lo: lo, hi: hi})
+  }
+
   let hz = fn (note: Long | Float) {
     __raise("ValueError", "Synth.hz: note is a finite number") if !finite(note)
     440.0 * Math.exp(Math.log(2.0) * (note - 69) / 12.0)
@@ -203,8 +267,12 @@ let _synth_module = fn () {
 
   # An envelope scheduled on a graph value from `t0`: straight segments as
   # ramps, curved ones as CURVE_STEPS ramps (a segment 0 long jumps, as a
-  # ramp to the time of the change before does).
+  # ramp to the time of the change before does). A gated one has no time to
+  # be let go here.
   let schedule = fn (value, e, t0) {
+    if e.release != nil {
+      __raise("ValueError", "Synth: an adsr envelope is held until it is let go: give it the time, adsr(...).hold(secs)")
+    }
     value.set(t0, e.levels[0])
     mut t = t0
     for i in iota(e.times.size()) {
@@ -222,10 +290,10 @@ let _synth_module = fn () {
   }
 
   # A graph being built: the graph, the parts built so far by the number
-  # of the SynthPart they stand for, and the one constant source every
-  # level is a gain of (made when the first level is).
+  # of the SynthPart they stand for, the controls by name, and the one
+  # constant source every level is a gain of (made when the first level is).
   fn build_of(g) {
-    {g: g, parts: {}, mut one: nil}
+    {g: g, parts: {}, controls: {}, mut one: nil}
   }
 
   # A constant `v`: a square wave at 0 Hz answers 1 at every sample.
@@ -262,6 +330,21 @@ let _synth_module = fn () {
     b.parts[p.id] ??= lower(b, p)
   }
 
+  # A control is a level whose gain a handle sets; the controls of one name
+  # are one.
+  fn control_part(b, o) {
+    let known = b.controls.get(o.name, nil)
+    if known == nil {
+      let p = level(b, o.init)
+      b.controls[o.name] = {part: p, value: p.gain, init: o.init, lo: o.lo, hi: o.hi}
+      return p
+    }
+    if (known.init, known.lo, known.hi) != (o.init, o.lo, o.hi) {
+      __raise("ValueError", "Synth.control: `{o.name}` is made two ways, ({known.init}, {known.lo}, {known.hi}) and ({o.init}, {o.lo}, {o.hi})")
+    }
+    known.part
+  }
+
   fn lower(b, p) {
     let (g, v, o) = (b.g, p.values, p.options)
     let input = p.inputs.size() == 1 ? part(b, p.inputs[0]) : nil
@@ -275,6 +358,7 @@ let _synth_module = fn () {
       },
       "noise" => g.noise(o.seed),
       "level" => signal(b, v.level),
+      "control" => control_part(b, o),
       "mix" => g.mix(p.inputs.map(|i| part(b, i))),
       "gain" => {
         let q = g.gain(input, base_of(v.gain, 0.0))
@@ -309,16 +393,158 @@ let _synth_module = fn () {
     }
   }
 
-  # The graph an expression stands for, its output set.
+  # The graph an expression stands for, its output set, and its controls.
   fn graph_of(expr, rate) {
     let g = Audio.Graph(rate)
-    g.output(signal(build_of(g), expr))
-    g
+    let b = build_of(g)
+    g.output(signal(b, expr))
+    {g: g, controls: b.controls}
   }
 
   # The first `seconds` of `expr`, as samples: what play would play.
   let render = fn (expr: SynthPart | SynthEnvelope, seconds: Long | Float, rate: Long | Float = 44100) {
-    graph_of(expr, rate).render(seconds)
+    graph_of(expr, rate).g.render(seconds)
+  }
+
+  # ---- when an expression ends
+
+  # The seconds after which `expr` is silent for good, Math.inf when never:
+  # a product ends with its first factor to, a sum with its last; an
+  # envelope ending at 0 ends there; a delay and a string ring on after their
+  # input (the longest delay, the string's 60 dB ring), as a resonance does
+  # (60 dB of a mode `width` Hz wide is 6.91 / (pi * width) seconds), a
+  # filter's `cutoff / q` wide at its lowest cutoff (one a signal moves adds
+  # none: the input's end decides).
+  fn ending(expr) {
+    let known = {}
+    fn value_end(v) {
+      match v {
+        SynthPart => tail(v),
+        SynthEnvelope => v.levels[v.levels.size() - 1] == 0 ? v.duration() : Math.inf,
+        _ => v == 0 ? 0.0 : Math.inf,
+      }
+    }
+    fn longest(v) {
+      match v {
+        SynthPart => Math.inf,
+        SynthEnvelope => v.levels.max(),
+        _ => v,
+      }
+    }
+    let ring = |width| 6.91 / (Math.pi * width)
+    fn filter_ring(p) {
+      let cutoff = p.values.cutoff
+      match cutoff {
+        SynthPart => 0.0,
+        SynthEnvelope => ring(cutoff.levels.min() / p.options.q),
+        _ => ring(cutoff / p.options.q),
+      }
+    }
+    fn tail(p) {
+      known[p.id] ??= match p.kind {
+        "level" => value_end(p.values.level),
+        "mix" => p.inputs.map(|i| tail(i)).max(),
+        "gain" => Math.min(tail(p.inputs[0]), value_end(p.values.gain)),
+        "filter" => tail(p.inputs[0]) + filter_ring(p),
+        "drive" | "limit" => tail(p.inputs[0]),
+        "delay" => tail(p.inputs[0]) + Math.min(longest(p.values.time), 1.0),
+        "pluck" => tail(p.inputs[0]) + longest(p.values.ring),
+        "resonate" => tail(p.inputs[0]) + p.options.modes.reduce(0.0, |t, m| Math.max(t, ring(m.width))),
+        _ => Math.inf,
+      }
+    }
+    value_end(expr)
+  }
+
+  # ---- playing
+
+  # A sound playing: stop() silences it, set() moves a control, and the
+  # graph's clock says where it is.
+  class SynthHandle {
+    new(graph, controls: Object, ends: Long | Float | Nil) {
+      @_graph = graph
+      @_controls = controls
+      @_ends = ends
+      @_stopped = false
+    }
+    # When it ends (at play's secs, or else on its own), in seconds from its
+    # start; nil for never.
+    ends() {
+      @_ends
+    }
+    now() {
+      @_graph.now()
+    }
+    playing() {
+      !@_stopped && (@_ends == nil || @_graph.now() < @_ends)
+    }
+    stop() {
+      @_graph.stop()
+      @_stopped = true
+    }
+    # The control `name` at `v` (within its lo..hi), from `at` (now when nil),
+    # in a straight line over `secs` when more than 0.
+    set(name: String, v: Long | Float, secs: Long | Float = 0.0, at: Long | Float | Nil = nil) {
+      let c = @_controls.get(name, nil)
+      __raise("ValueError", "Synth.set: no control named `{name}` in what plays") if c == nil
+      __raise("ValueError", "Synth.set: secs is a finite number, 0 or more") if !nonnegative(secs)
+      let to = Math.clamp(v, c.lo ?? -Math.inf, c.hi ?? Math.inf)
+      c.value.cancel(at ?? @_graph.now())
+      # A playing graph's cancel lands at its clock at the earliest; from there.
+      let t = Math.max(at ?? 0.0, @_graph.now())
+      if secs > 0 {
+        c.value.ramp(t + secs, to)
+      } else {
+        c.value.set(t, to)
+      }
+    }
+    # Its first `seconds`, as what plays them works them out, the changes
+    # made to it so far included.
+    render(seconds: Long | Float) {
+      @_graph.render(seconds)
+    }
+    _wait() {
+      while @_graph.now() < @_ends {
+        Time.sleep(Math.max(0.005, @_ends - @_graph.now()))
+      }
+    }
+  }
+
+  # What plays without being waited for, kept until it ends (a graph stops
+  # with the last reference to it), and let go at the next play.
+  let unwaited = {mut handles: []}
+  let let_go_ended = fn () {
+    unwaited.handles = unwaited.handles.filter(fn (h) {
+      if h.playing() {
+        return true
+      }
+      h.stop()
+      false
+    })
+  }
+
+  # `expr` played: until `secs`, or else until it ends on its own. With
+  # `wait`, play returns when it has ended (at once when no device plays);
+  # without, it returns the handle and the sound plays on.
+  let play = fn (expr: SynthPart | SynthEnvelope, wait: Bool = true, secs: Long | Float | Nil = nil) {
+    let_go_ended()
+    __raise("ValueError", "Synth.play: secs is a finite number, 0 or more") if secs != nil && !nonnegative(secs)
+    # Told `secs`, silent from then on, on the graph's own clock.
+    let built = graph_of(secs == nil ? expr : to_part(expr) * env([1.0, 1.0, 0.0], [secs, 0.0]), 44100)
+    let natural = ending(expr)
+    let ends = secs ?? (natural == Math.inf ? nil : natural)
+    if wait && ends == nil {
+      __raise("ValueError", "Synth.play: the sound does not end on its own (an oscillator plays on); give it secs, or play it with wait: false")
+    }
+    built.g.play()
+    let h = SynthHandle(built.g, built.controls, ends)
+    if !wait {
+      unwaited.handles.push(h)
+    } else if Audio.available() {
+      h._wait()
+      h.stop()
+    }
+    h
   }
 
   {
@@ -331,10 +557,14 @@ let _synth_module = fn () {
     env: env,
     line: line,
     xline: xline,
+    adsr: adsr,
+    perc: perc,
+    control: control,
     mix: mix,
     hz: hz,
     db: db,
     render: render,
+    play: play,
   }
 }
 let Synth = _synth_module()

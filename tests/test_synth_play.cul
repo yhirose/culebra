@@ -1,0 +1,120 @@
+# Synth's envelopes, controls and play. The harness keeps the device closed
+# (CULEBRA_AUDIO=off), so play sounds nothing and returns at once; what it
+# would play is checked through its handle's render.
+
+let {*} = Synth
+
+fn assert_samples(got, want) {
+  assert_eq(got.size(), want.size())
+  for i in 0..got.size() {
+    assert_close(got[i], want[i], 1e-9)
+  }
+}
+
+fn caught(call) {
+  try {
+    call()
+    nil
+  } catch e {
+    (e.kind, e.message)
+  }
+}
+
+# The frequency of a sine in samples[from..to), from its rising crossings.
+fn pitch(samples, rate, from, to) {
+  let ups = iota(from + 1, to).filter(|i| samples[i - 1] < 0.0 && samples[i] >= 0.0)
+  (ups.size() - 1) * rate / (ups[ups.size() - 1] - ups[0] + 0.0)
+}
+
+# perc is the envelope it names; adsr is gated, and .hold lets it go.
+assert_samples(render(sine(330.0) * perc(0.01, 0.2), 0.3), render(sine(330.0) * env([0.0, 1.0, 0.0], [0.01, 0.2], -4.0), 0.3))
+let held = adsr(0.1, 0.1, 0.5, 0.2, curve: 0.0).hold(0.5)
+assert_close(held.at(0.05), 0.5, 1e-9)
+assert_close(held.at(0.15), 0.75, 1e-9)
+assert_close(held.at(0.4), 0.5, 1e-9)
+assert_close(held.at(0.6), 0.25, 1e-9)
+assert_close(held.at(0.8), 0.0, 1e-9)
+assert_close(held.duration(), 0.7, 1e-9)
+# Let go before it has risen all the way, it falls from where it is.
+let early = adsr(0.1, 0.1, 0.5, 0.2, curve: 0.0).hold(0.05)
+assert_close(early.at(0.05), 0.5, 1e-9)
+assert_close(early.at(0.15), 0.25, 1e-9)
+assert_close(early.duration(), 0.25, 1e-9)
+# Let go where a segment 0 long jumps, it falls from after the jump.
+assert_close(adsr(0.0, 0.1, 0.5, 0.2, curve: 0.0).hold(0.0).at(0.0), 1.0, 1e-9)
+assert_close(adsr(0.1, 0.0, 0.5, 0.2, curve: 0.0).hold(0.1).at(0.2), 0.25, 1e-9)
+assert_throws("ValueError", || render(sine(330.0) * adsr(0.1, 0.1, 0.5, 0.2), 0.1))
+assert_eq(caught(|| perc(0.1, 0.2).hold(1.0)), ("ValueError", "Synth.hold: only a gated envelope (adsr) is held"))
+
+# A control is its init until set; two of one name are one value.
+assert_samples(render(sine(control("f", 440.0)), 0.01), render(sine(440.0), 0.01))
+assert_samples(render(sine(control("f", 440.0)) + sine(control("f", 440.0)) * 0.5, 0.01), render(sine(440.0) * 1.5, 0.01))
+assert_throws("ValueError", || render(sine(control("f", 440.0)) + sine(control("f", 220.0)), 0.01))
+assert_throws("ValueError", || render(sine(control("f", 440.0, hi: 500.0)) + sine(control("f", 440.0, hi: 2000.0)), 0.01))
+assert_throws("ValueError", || control("", 1.0))
+assert_throws("ValueError", || control("f", 50.0, lo: 100.0))
+
+# With no device, play returns at once, however long the sound.
+let before = Time.monotonic()
+let bell = sine(440.0) * perc(0.01, 1.0) |> play()
+assert_true(Time.monotonic() - before < 0.1)
+
+# A sound ends with what its output is multiplied by, and rings on through
+# a delay, a string and a resonance (60 dB of a mode `width` Hz wide, a
+# filter's `cutoff / q`).
+assert_close(bell.ends(), 1.01, 1e-9)
+let blip = sine(660.0) * env([0.2, 0.0], [0.2])
+assert_close((blip + blip.delay(0.3) * 0.5 + blip.delay(0.6) * 0.25 |> play()).ends(), 0.8, 1e-9)
+let click = noise() * perc(0.0, 0.01)
+assert_close((click |> pluck(220.0, ring: 1.5) |> play()).ends(), 1.51, 1e-9)
+assert_close((click |> resonate([{freq: 300.0, width: 2.0, gain: 1.0}, {freq: 500.0, width: 4.0, gain: 1.0}]) |> play()).ends(), 0.01 + 6.91 / (Math.pi * 2.0), 1e-9)
+assert_close((click |> resonate([]) |> play()).ends(), 0.01, 1e-9)
+assert_close((click |> bandpass(200.0, q: 40.0) |> play()).ends(), 0.01 + 6.91 / (Math.pi * 5.0), 1e-9)
+assert_close((click |> lowpass(line(800.0, 200.0, 0.5), q: 2.0) |> play()).ends(), 0.01 + 6.91 / (Math.pi * 100.0), 1e-9)
+# The graph checks what plays before its end is worked out.
+assert_eq(caught(|| sine(440.0) * adsr(0.01, 0.1, 0.5, 0.3) |> play()), ("ValueError", "Synth: an adsr envelope is held until it is let go: give it the time, adsr(...).hold(secs)"))
+assert_eq(caught(|| click |> resonate([{freq: 300.0, width: 0.0, gain: 1.0}]) |> play())[0], caught(|| render(click |> resonate([{freq: 300.0, width: 0.0, gain: 1.0}]), 0.1))[0])
+
+# One that never ends waits for nothing only when told how long, or not to.
+assert_throws("ValueError", || sine(440.0) |> play())
+let drone = sine(440.0) * 0.2 |> play(wait: false)
+assert_eq(drone.ends(), nil)
+assert_true(drone.playing())
+drone.stop()
+assert_false(drone.playing())
+# Told how long, it is silent from then on.
+let timed = sine(440.0) * 0.2 |> play(secs: 0.1)
+assert_close(timed.ends(), 0.1, 1e-9)
+let after = timed.render(0.2)
+assert_true(after.slice(0, 4400).any(|x| x != 0.0))
+assert_true(after.slice(4410, 8820).all(|x| x == 0.0))
+
+# set moves a control, at a time or from now, within its range.
+let tone = sine(control("freq", 440.0, lo: 100.0, hi: 1000.0)) * 0.2 |> play(wait: false)
+tone.set("freq", 880.0, at: 0.25)
+let sung = tone.render(0.5)
+assert_close(pitch(sung, 44100, 0, 11025), 440.0, 2.0)
+assert_close(pitch(sung, 44100, 11025, 22050), 880.0, 4.0)
+tone.set("freq", 5000.0, at: 2.0)
+assert_close(pitch(tone.render(2.1), 44100, 88200, 92610), 1000.0, 5.0)
+assert_throws("ValueError", || tone.set("gain", 1.0))
+tone.stop()
+# From now, and from a time already past, it moves from where the clock is:
+# what was heard stays (with no device, the clock is the time since play).
+let late = sine(control("freq", 440.0)) * 0.2 |> play(wait: false)
+Time.sleep(0.05)
+late.set("freq", 880.0)
+let moved = late.now()
+assert_close(pitch(late.render(moved + 0.2), 44100, Math.ceil(moved * 44100), Math.floor((moved + 0.2) * 44100)), 880.0, 4.0)
+late.set("freq", 220.0, at: 0.0, secs: 0.5)
+let from = late.now()
+let swept = late.render(from + 0.6)
+# Half way through the half second it ramps over, it is half way down.
+let mid = Math.floor((from + 0.25) * 44100)
+assert_close(pitch(swept, 44100, mid - 1000, mid + 1000), 550.0, 20.0)
+late.stop()
+# Two controls of one name are one value: setting it moves both.
+let pair = (sine(control("f", 440.0)) + sine(control("f", 440.0))) * 0.5 |> play(wait: false)
+pair.set("f", 880.0, at: 2.0)
+assert_close(pitch(pair.render(2.1), 44100, 88200, 92610), 880.0, 4.0)
+pair.stop()

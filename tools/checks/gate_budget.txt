@@ -151,7 +151,9 @@
 # 343 since test_pipe.cul (`a |> f(b)` is `(a).f(b)`: free functions and
 # methods, a postfix chain after it, its place below the arithmetic, bitwise
 # and range operators and above the comparisons, a leading `|>`, a lambda).
-tests.cul 343
+# 344 since test_synth_play.cul (Synth's adsr, perc and hold, controls, when a
+# sound ends, play with no device, a handle's set and render).
+tests.cul 344
 
 # tests/isolate/*.cul — run on both engines, plus the over-cap modes.
 # 21 since test_xml_isolate.cul (an XML element keeps its methods across an
@@ -313,7 +315,9 @@ ctest.entries 41
 # Synth and never Audio, so they hold Synth's needs to both lanes. 1174 since
 # the pipe in language.md's precedence section, in en and ja: a free
 # function, an operator's result and a leading `|>`, each with its value.
-docs.blocks 1174
+# 1176 since Synth's chapter plays a sound it does not wait for, in en and ja:
+# a control set on its handle and the end its envelope gives it.
+docs.blocks 1176
 
 # The samples the language front ends are run over (examples/languages/*).
 languages.samples 130
