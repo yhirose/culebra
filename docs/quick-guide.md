@@ -677,7 +677,7 @@ produces something else, in Culebra.
 | `'text {x}'` interpolating | only `"..."` interpolates; `'...'` is literal |
 | `puts` / `console.log` / `print(x)` adding a newline | `inspect(x)` quoted debug form, `println(x)` raw + newline, `print(x)` raw |
 | `this` | `self` |
-| `x \|> f()` | UFCS: `x.f()`. There is no pipeline operator |
+| `x \|> f()` on one term | `x.f()`; `\|>` is a low `.`, for going on after an operator: `a * b \|> f()` is `(a * b).f()` |
 | `{1, 2}` / `{3}` as a Set | Braces are an Object's. A Set is `Set(1, 2)`, `Set(x)`, `Set()` |
 | `a \| b`, `a & b` on sets | methods: `a.union(b)`, `a.intersect(b)`, `a.diff(b)` |
 | `{a: 1} + {b: 2}` | `TypeError`. There is no Object merge operator |

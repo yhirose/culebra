@@ -274,6 +274,12 @@ expect_syntax_reject "duplicate label" "duplicate loop label 'dup'" \
   'dup: for i in [1] { dup: for j in [1] { break dup } }'
 expect_syntax_reject "duplicate label across loop forms" \
   "duplicate loop label 'dup'" 'dup: while true { dup: for j in [1] { break } }'
+# `|>` takes a name and its arguments on its right: a name alone, a call an
+# operator goes on after, or a parenthesized expression is no step.
+expect_syntax_reject "pipe to a bare name" "expecting '('" 'let a = 1 |> to_string
+inspect(a)'
+expect_syntax_reject "pipe then an operator" "unexpected '*'" 'let a = 1 |> to_string() * 2'
+expect_syntax_reject "pipe to an expression" "expecting <IDENTIFIER>" 'let a = 1 |> (to_string())'
 # A label reaches no further than the enclosing function, so this is the plain
 # no-loop-here rejection rather than an unknown label.
 expect_loop_reject "labelled break in fn in loop" \

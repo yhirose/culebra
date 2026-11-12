@@ -609,27 +609,28 @@ class Printer {
     if (name == "LOGICAL_OR") return 3;
     if (name == "LOGICAL_AND") return 4;
     if (name == "CONDITION" || name == "IS_TEST") return 5;
-    if (name == "BIT_OR") return 6;
-    if (name == "BIT_XOR") return 7;
-    if (name == "BIT_AND") return 8;
-    if (name == "SHIFT") return 9;
+    if (name == "PIPE") return 6;
+    if (name == "BIT_OR") return 7;
+    if (name == "BIT_XOR") return 8;
+    if (name == "BIT_AND") return 9;
+    if (name == "SHIFT") return 10;
     // The bare `..` collapses to its RANGE_OPERATOR, still a range operand:
     // `(..).contains(x)` without its parentheses reads `...contains(x)`.
-    if (name == "RANGE" || name == "RANGE_OPERATOR") return 10;
-    if (name == "ADDITIVE") return 11;
-    if (name == "MULTIPLICATIVE") return 12;
+    if (name == "RANGE" || name == "RANGE_OPERATOR") return 11;
+    if (name == "ADDITIVE") return 12;
+    if (name == "MULTIPLICATIVE") return 13;
     if (name == "UNARY_PLUS" || name == "UNARY_MINUS" || name == "UNARY_NOT" ||
         name == "UNARY_BNOT")
-      return 13;
-    if (name == "POWER") return 14;
-    if (name == "CALL") return 15;
-    return 16;
+      return 14;
+    if (name == "POWER") return 15;
+    if (name == "CALL") return 16;
+    return 17;
   }
 
   static bool is_binary_explicit(const std::string& n) {
     return n == "ADDITIVE" || n == "MULTIPLICATIVE" || n == "CONDITION" ||
-           n == "BIT_OR" || n == "BIT_XOR" || n == "BIT_AND" || n == "SHIFT" ||
-           n == "POWER";
+           n == "PIPE" || n == "BIT_OR" || n == "BIT_XOR" || n == "BIT_AND" ||
+           n == "SHIFT" || n == "POWER";
   }
   static bool is_binary_implicit(const std::string& n) {
     return n == "LOGICAL_OR" || n == "LOGICAL_AND" || n == "NIL_COALESCE";
@@ -1068,11 +1069,19 @@ class Printer {
     // Breaking *before* the operator would change parsing: the `+`-family
     // operators sit on a no-newline (`_h_`) rung, so a newline preceding one
     // ends the expression. The post-operator `_` always permits the newline,
-    // so trailing the operator is safe for every binary operator.
+    // so trailing the operator is safe for every binary operator. A pipe
+    // breaks before each `|>` instead, as a chain breaks before each `.`:
+    // its rung permits the newline there, and each step heads its own line.
+    const bool pipe = node.name == "PIPE";
     std::vector<DocP> cont;
     for (size_t k = 1; k < m; k++) {
-      cont.push_back(doc_text(" " + ops[k - 1]));
-      cont.push_back(doc_line());
+      if (pipe) {
+        cont.push_back(doc_line());
+        cont.push_back(doc_text(ops[k - 1] + " "));
+      } else {
+        cont.push_back(doc_text(" " + ops[k - 1]));
+        cont.push_back(doc_line());
+      }
       cont.push_back(std::move(ods[k]));
     }
     return doc_group(doc_concat({
@@ -1283,6 +1292,18 @@ class Printer {
                         ? print_at_self(*node.nodes[1])
                         : print_operand(*node.nodes[0], /*parent_prec=*/prec("CALL"),
                                         /*assoc_safe=*/true, /*parent_name=*/"CALL");
+    return print_chain(std::move(receiver), node, first, 0);
+  }
+
+  // A pipe's right side, `name(args)…`: a call's chain whose first member
+  // is written without its dot, and is a call of its own.
+  DocP print_pipe_step(const peg::Ast& step) {
+    return print_chain(doc_text(std::string(step.nodes[0]->token)), step, 1, 1);
+  }
+
+  // `head` and the postfix segments of `node` from `first` on. `calls` counts
+  // the method calls `head` already holds.
+  DocP print_chain(DocP head, const peg::Ast& node, size_t first, int calls) {
     auto is_dot = [](const peg::Ast& s) {
       return s.original_name == "DOT" || s.original_name == "SAFE_DOT";
     };
@@ -1290,12 +1311,11 @@ class Printer {
     // wrappable: when too wide it breaks before each `.` (DOT sits on a rung
     // that permits a preceding newline), keeping each call on its own line
     // instead of wrapping one call's arguments mid-chain.
-    int calls = 0;
     for (size_t i = first; i + 1 < node.nodes.size(); i++)
       if (is_dot(*node.nodes[i]) && node.nodes[i + 1]->original_name == "ARGUMENTS")
         calls++;
 
-    std::vector<DocP> segs{receiver};
+    std::vector<DocP> segs{head};
     for (size_t i = first; i < node.nodes.size(); i++)
       segs.push_back(print_postfix(*node.nodes[i]));
 
@@ -1310,7 +1330,7 @@ class Printer {
       if (is_dot(*node.nodes[i])) cont.push_back(doc_softline());  // break before `.`
       cont.push_back(std::move(segs[i - first + 1]));
     }
-    return doc_group(doc_concat({receiver, doc_indent(kIndent, doc_concat(std::move(cont)))}));
+    return doc_group(doc_concat({head, doc_indent(kIndent, doc_concat(std::move(cont)))}));
   }
 
   // An lvalue chain held in `node`'s children [off, off + cnt): the head
@@ -1524,18 +1544,19 @@ class Printer {
     else
       for (auto& t : types.nodes)
         text += (text.empty() ? "" : " | ") + std::string(tight_span(*t));
-    return doc_concat({print_operand(*node.nodes[0], prec("BIT_OR"),
+    return doc_concat({print_operand(*node.nodes[0], prec("PIPE"),
                                      /*assoc_safe=*/true),
                        doc_text(" " + std::string(node.nodes[1]->token) + " " + text)});
   }
 
-  // Whether `n`, printed bare, puts a `|` or an `is` on the ladder parameter
-  // defaults parse on (the one that copies the levels below `??` and lacks
-  // both): at its top, or as an operand of a level that has no brackets of its
-  // own. A bare `a && (x is T)` loses the inner parentheses, so the whole
-  // default takes them.
+  // Whether `n`, printed bare, puts a `|`, a `|>` or an `is` on the ladder
+  // parameter defaults parse on (the one that copies the levels below `??`
+  // and lacks all three): at its top, or as an operand of a level that has no
+  // brackets of its own. A bare `a && (x is T)` loses the inner parentheses,
+  // so the whole default takes them.
   static bool needs_full_ladder(const peg::Ast& n) {
-    if (n.name == "BIT_OR" || n.name == "IS_TEST") return true;
+    if (n.name == "BIT_OR" || n.name == "PIPE" || n.name == "IS_TEST")
+      return true;
     if (!is_bare_chain(n.name)) return false;
     return std::any_of(n.nodes.begin(), n.nodes.end(),
                        [](const auto& c) { return needs_full_ladder(*c); });
@@ -2005,6 +2026,7 @@ class Printer {
 
     // Expressions
     if (n == "CALL") return print_call(node);
+    if (n == "PIPE_STEP") return print_pipe_step(node);
     if (n == "CONDITIONAL") return print_ternary(node);
     if (n == "IS_TEST") return print_is_test(node);
     if (n == "RANGE") return print_range(node);

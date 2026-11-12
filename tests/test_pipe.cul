@@ -1,0 +1,72 @@
+# `a |> f(b)` is `(a).f(b)`: a method of the value, else a free function that
+# takes it first, below every arithmetic, bitwise and range operator and above
+# the comparisons. Its syntax errors are checked in tests/lint_test.sh.
+
+fn double(x) { x * 2 }
+fn add(x, n) { x + n }
+
+class Box {
+  new(@v) {}
+  twice() { Box(@v * 2) }
+  plus(n) { Box(@v + n) }
+}
+
+# A free function, as `.` finds it.
+assert_eq(3 |> double(), 6)
+assert_eq(3 |> double(), 3.double())
+assert_eq(4 |> add(3) |> double(), 14)
+
+# A method, before a free function of the same name would be.
+assert_eq((Box(1) |> twice()).v, 2)
+assert_eq((Box(1) |> twice() |> plus(3)).v, 5)
+# The right side goes on as a postfix chain.
+assert_eq((Box(1) |> twice().plus(3)).v, 5)
+assert_eq(Box(1) |> twice().v, 2)
+
+# Below the arithmetic, bitwise and range operators: the whole left side is
+# what the call takes.
+assert_eq(1 + 2 |> double(), 6)
+assert_eq(2 * 3 |> add(1), 7)
+assert_eq(1 | 2 |> double(), 6)
+assert_eq(1 << 2 |> double(), 8)
+assert_true(0..3 |> contains(2))
+assert_false(0..2 |> contains(2))
+
+# Above the comparisons and the type test.
+assert_true(4 |> double() > 7)
+assert_true(2 |> double() == 4)
+assert_true(2 |> double() is Long)
+assert_false(2 |> to_string() is Long)
+
+# The left side is a value: a nil a `?.` answers is passed on, not skipped.
+let none = nil
+assert_eq(none?.v |> to_string(), "nil")
+
+# A `|>` at the head of the next line continues the expression.
+let ten = 5
+  |> double()
+assert_eq(ten, 10)
+let steps = 1
+  |> add(1)
+  |> double()
+assert_eq(steps, 4)
+
+# Where the parse collapses a node onto the pipe (an index, parentheses, a
+# body of one expression), the call stands where that node stood; so does a
+# type test's `match`.
+assert_eq([10, 20, 30][0 |> add(1)], 20)
+assert_eq([10, 20, 30][(0 |> add(2))], 30)
+assert_eq({true: "yes", false: "no"}[1 is Long], "yes")
+effect fn ask()
+assert_eq(handle { 4 |> double() } with ask(resume) { resume(1) }, 8)
+assert_eq(handle {
+  let n = (3 |> double()) + perform ask()
+  n
+} with ask(resume) { resume(10) }, 16)
+
+# In a lambda's body the pipe is part of the body.
+let bump = |v| v + 1 |> double()
+assert_eq(bump(1), 4)
+# Wrapped in parentheses, a lambda's default may hold one.
+let scale = |v, by = (2 |> double())| v * by
+assert_eq(scale(3), 12)

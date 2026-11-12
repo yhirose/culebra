@@ -668,7 +668,7 @@ inspect(show('hi'))  # => 'hi'
 | `'text {x}'`の補間 | 補間されるのは`"..."`のみ。`'...'`はリテラル |
 | `puts` / `console.log` / 改行付きの`print(x)` | `inspect(x)`はクォート付きデバッグ形式、`println(x)`は生+改行、`print(x)`は生 |
 | `this` | `self` |
-| `x \|> f()` | UFCSの`x.f()`。パイプライン演算子は無い |
+| 1つの項に`x \|> f()` | `x.f()`。`\|>`は演算子の後に続ける: `a * b \|> f()`は`(a * b).f()` |
 | Setとして`{1, 2}`・`{3}` | 波括弧はObjectのもの。Setは`Set(1, 2)`・`Set(x)`・`Set()` |
 | 集合の`a \| b` / `a & b` | メソッド: `a.union(b)` / `a.intersect(b)` / `a.diff(b)` |
 | `{a: 1} + {b: 2}` | `TypeError`。Objectのマージ演算子は無い |

@@ -129,7 +129,7 @@ cpp-peglibが文法を読むには文法テキストのメタパースが必要�
 | 関数 | 役割 |
 |---|---|
 | `parse_undesugared` | 共通の核。パースし、改行を正規化し、`vector<ParseFailure>`（`line`、バイト列での`col`、`message`）を埋める |
-| `parse` | `parse_undesugared`の後に、脱糖をこの順で行う: `desugar_self_sigil`、`desugar_wildcard_imports`（`let {*} = NS`を、全メンバーを並べたパターンにする。メンバーは`namespace_members_hook`から読み、標準ライブラリの`preamble.h`が、バイナリの起動時にそれを`lazy_namespace_members`に向ける）、`desugar_regex_literals`、`desugar_kwarg_shorthand`、`desugar_is_test`、`desugar_postfix_modifiers`。失敗を`path:line:col: message`に整形するオーバーロードがある |
+| `parse` | `parse_undesugared`の後に、脱糖をこの順で行う: `desugar_self_sigil`、`desugar_pipes`（`a |> f(b)`を`(a).f(b)`のCALLにする）、`desugar_wildcard_imports`（`let {*} = NS`を、全メンバーを並べたパターンにする。メンバーは`namespace_members_hook`から読み、各ホスト（CLIのmain、`Embed`、Playground）が、標準ライブラリを用意するときに`install_namespace_members`でそれを`lazy_namespace_members`に向ける）、`desugar_regex_literals`、`desugar_kwarg_shorthand`、`desugar_is_test`、`desugar_postfix_modifiers`。失敗を`path:line:col: message`に整形するオーバーロードがある |
 | `parse_for_format` | 脱糖なし。ここではbraceのSetが構文エラーになる。フォーマッタ専用 |
 | `parse_with_transforms` | `parse`に`apply_transforms`（§6）を足したもの。REPL、デバッガ、テストランナー、stdlibのpreamble、lintが使う |
 

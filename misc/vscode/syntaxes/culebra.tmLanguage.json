@@ -222,7 +222,7 @@
       "patterns": [
         {
           "comment": "Multi-char operators first so prefixes don't shadow them.",
-          "match": "&&|\\|\\||\\?\\?|\\*\\*|=>|->|\\.\\.\\.|\\.\\.=?",
+          "match": "&&|\\|\\||\\|>|\\?\\?|\\*\\*|=>|->|\\.\\.\\.|\\.\\.=?",
           "name": "keyword.operator.culebra"
         },
         {

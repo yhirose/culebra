@@ -267,13 +267,37 @@ and `x = c ? a : b` is `x = (c ? a : b)`.
 2. `&&`
 3. `==`, `!=`, `<`, `<=`, `>`, `>=`, and the type test `is` / `!is` (§13;
    it does not chain with the comparisons)
-4. Binary `+`, `-`
-5. Binary `*`, `/`, `%`, `@` (matmul)
-6. Unary `+`, `-`, `!`, `~` (right-associative)
-7. `**` (right-associative). Binds tighter than a unary prefix —
+4. The pipe `|>` (left-associative; below it, the bitwise and range
+   operators)
+5. Binary `+`, `-`
+6. Binary `*`, `/`, `%`, `@` (matmul)
+7. Unary `+`, `-`, `!`, `~` (right-associative)
+8. `**` (right-associative). Binds tighter than a unary prefix —
    `-2**2 == -4` — but the RHS of `**` itself accepts one, so
    `2 ** -1 == 0.5` and `2 ** -3 ** 2 == 0.00195…` both parse.
-8. Call / index / dot (`x(...)`, `x[i]`, `x.k`) — left-associative
+9. Call / index / dot (`x(...)`, `x[i]`, `x.k`) — left-associative
+
+**The pipe.** `a |> f(b)` is `(a).f(b)`: the same call, a method of the
+value first and then a free function taking it first (UFCS), but with the
+precedence of item 4, so a chain goes on after an operator without
+parentheses. Its right side is a name and its arguments, which a postfix
+chain may follow (`a |> f(b).g()` is `(a).f(b).g()`); anything else there,
+`a |> f` or `a |> f() * 2`, is a `SyntaxError`. A `|>` may start the next
+line. Write `.` while the receiver is one term, and `|>` to go on after an
+operator:
+
+```culebra
+let scaled = [3, 1, 2].sorted() |> map(|x| x * 10)
+println(scaled)  # => [10, 20, 30]
+let total = 1 + 2 |> to_string()
+println(total)  # => 3
+let label = [1, 2, 3].size() * 2
+  |> to_string()
+println(label)  # => 6
+```
+
+A lambda's parameter default cannot hold a bare `|>` (as it cannot hold a
+bare `|`): wrap it in parentheses.
 
 A unary prefix binds tighter than `*`, so `-a * b` is `(-a) * b`. For
 numbers the two readings agree, but a type defining `__neg__` and

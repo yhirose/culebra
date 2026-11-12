@@ -201,9 +201,14 @@ example is a rule that also gets copied.
 
 Several decisions look arbitrary until they are read as removing a choice.
 
-- There is no pipeline operator. Chaining methods does the job (the
-  uniform call syntax lets any function be called as `x.f()`), which is
-  the reason the project recorded for leaving it out.
+- The pipeline operator was left out for a long time, because chaining
+  methods does the job (the uniform call syntax lets any function be
+  called as `x.f()`). It came in, for sound written as expressions
+  (`Synth`), as a `.` of low precedence: `a |> f(b)` is `(a).f(b)`, the
+  same call found the same way, so it gives no second way to name a
+  call, only a way to go on after an operator without parentheses
+  (`sine(440.0) * 0.2 |> play()`). The rule that picks between the two is
+  what stands on the left: one term takes `.`, an operator's result `|>`.
 - A Set is written `Set(a, b)` and in no other way. Braces are an Object's.
 - `culebra fmt` has no style options.
 - There is no manifest and no `import` for the standard library.

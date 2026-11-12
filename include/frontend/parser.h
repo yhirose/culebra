@@ -2472,6 +2472,18 @@ struct SynthNode {
         peg::Ast(path, ln, col, name, std::move(kids), position, length),
         orig, position, length);
   }
+  // A group standing where `written` stood, with its span and, when the AST
+  // optimizer collapsed a parent onto it (an INDEX, a parenthesized operand,
+  // a block of one statement), that parent's original name, which the
+  // backends and the stages that slice source text by position read. `orig`
+  // names a node nothing collapsed onto.
+  std::shared_ptr<peg::Ast> replacing(
+      const peg::Ast& written, const char* name, const char* orig,
+      std::vector<std::shared_ptr<peg::Ast>> kids) const {
+    const bool collapsed = written.original_name != written.name;
+    return grp(name, collapsed ? written.original_name.c_str() : orig,
+               std::move(kids), written.position, written.length);
+  }
 };
 
 // A `re'...'` / `re"..."` / `` re`...` `` literal is desugared, after AST
@@ -2750,9 +2762,9 @@ inline std::shared_ptr<peg::Ast> desugar_kwarg_shorthand(
 // The members `let {*} = NS` takes: the names a namespace written in Culebra
 // gives (the keys of the object its builder returns), as views that outlive
 // every parse, or nullopt where `NS` is no such namespace. The stdlib layer,
-// which owns the namespaces, installs it (preamble.h, at static
-// initialization, in every binary that has them); without it `{*}` is
-// refused as for a name that is not one.
+// which owns the namespaces, installs it as each host sets the stdlib up
+// (install_namespace_members, preamble.h); without it `{*}` is refused as
+// for a name that is not one.
 inline std::optional<std::span<const std::string_view>> (
     *namespace_members_hook)(std::string_view) = nullptr;
 
@@ -2760,6 +2772,34 @@ inline std::optional<std::span<const std::string_view>> (
 inline bool is_wildcard_pattern(const peg::Ast& n) {
   using namespace peg::udl;
   return n.original_tag == "WILDCARD_PATTERN"_;
+}
+
+// `a |> f(b).g()` is `(a).f(b).g()`: one CALL per `|>`, left to right, its
+// head what the left side answers and its chain the step's, so every later
+// stage sees the call it already compiles (a method, then a free function).
+// Each CALL stands at its step, where its errors point, and spans the source
+// from the left side through its step; the last stands where the pipe stood
+// (SynthNode::replacing).
+inline std::shared_ptr<peg::Ast> desugar_pipes(std::shared_ptr<peg::Ast> node) {
+  using namespace peg::udl;
+  for (auto& child : node->nodes) child = desugar_pipes(child);
+  if (node->tag != "PIPE"_) return node;
+  const size_t from = node->nodes[0]->position;
+  auto acc = node->nodes[0];
+  for (const auto& step : node->nodes) {
+    if (step->tag != "PIPE_STEP"_) continue;
+    std::vector<std::shared_ptr<peg::Ast>> chain{acc};
+    chain.insert(chain.end(), step->nodes.begin(), step->nodes.end());
+    SynthNode at{node->path.c_str(), step->line, step->column};
+    auto call = step == node->nodes.back()
+                    ? at.replacing(*node, "CALL", "PIPE", std::move(chain))
+                    : at.grp("CALL", "PIPE", std::move(chain), from,
+                             step->position + step->length - from);
+    for (auto& k : call->nodes) k->parent = call;
+    acc = std::move(call);
+  }
+  acc->parent = node->parent;
+  return acc;
 }
 
 [[noreturn]] inline void refuse_wildcard(const peg::Ast& at,
@@ -2864,8 +2904,7 @@ inline std::shared_ptr<peg::Ast> desugar_is_test(
                          node->line, node->column);
   auto arms = at.grp("MATCH_ARMS", "MATCH_ARMS",
                      {arm(node->nodes[2], !negated), arm(wildcard, negated)});
-  return at.grp("MATCH", "EXPRESSION", {node->nodes[0], arms}, node->position,
-                node->length);
+  return at.replacing(*node, "MATCH", "EXPRESSION", {node->nodes[0], arms});
 }
 
 // Rules never collapsed onto a single child when get_parser's enable_ast
@@ -3054,7 +3093,8 @@ inline std::shared_ptr<peg::Ast> parse(const std::string& path,
   // the form it will run as.
   return ast ? desugar_postfix_modifiers(desugar_is_test(
                    desugar_kwarg_shorthand(desugar_regex_literals(
-                       desugar_wildcard_imports(desugar_self_sigil(ast))))))
+                       desugar_wildcard_imports(
+                           desugar_pipes(desugar_self_sigil(ast)))))))
              : nullptr;
 }
 

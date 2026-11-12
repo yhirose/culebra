@@ -148,7 +148,10 @@
 # 342 since test_wildcard.cul (`let {*} = NS` in a block, a function's body,
 # two namespaces in one block, and the same as naming the members; 0.09 s
 # under --vm, 1.0 s under --jit).
-tests.cul 342
+# 343 since test_pipe.cul (`a |> f(b)` is `(a).f(b)`: free functions and
+# methods, a postfix chain after it, its place below the arithmetic, bitwise
+# and range operators and above the comparisons, a leading `|>`, a lambda).
+tests.cul 343
 
 # tests/isolate/*.cul — run on both engines, plus the over-cap modes.
 # 21 since test_xml_isolate.cul (an XML element keeps its methods across an
@@ -307,8 +310,10 @@ ctest.entries 41
 # knobs (skipped: bowed is the program's own), in en and ja. 1172 since
 # Synth's chapter renders a sweep and a pad, and shows hz, xline and a part
 # used twice, in en and ja: the only programs the doctest runs that name
-# Synth and never Audio, so they hold Synth's needs to both lanes.
-docs.blocks 1172
+# Synth and never Audio, so they hold Synth's needs to both lanes. 1174 since
+# the pipe in language.md's precedence section, in en and ja: a free
+# function, an operator's result and a leading `|>`, each with its value.
+docs.blocks 1174
 
 # The samples the language front ends are run over (examples/languages/*).
 languages.samples 130

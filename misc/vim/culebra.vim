@@ -33,7 +33,7 @@ syn region  culRegex        matchgroup=culRegexDelim start=+\<re"+ end=+"[ims]*\
 syn region  culRegex        matchgroup=culRegexDelim start=+\<re`+ end=+`[ims]*\|$+ contains=culRegexEscape,culRegexInterp
 
 " Operators (multi-char first so prefixes don't shadow them)
-syn match   culOperator     "&&\|||\|??\|\*\*\|=>\|->\|\.\.\.\|\.\.=\?"
+syn match   culOperator     "&&\|||\||>\|??\|\*\*\|=>\|->\|\.\.\.\|\.\.=\?"
 syn match   culOperator     "[-+*/%@!=<>^|&]=\?"
 
 " Comments — defined after operators so '//' and '/*' win the '/' over culOperator.
