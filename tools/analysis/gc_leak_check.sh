@@ -4,8 +4,8 @@
 # An object that a *correct* refcount would free, but that survives because a
 # codegen path leaked its release, stays alive with a non-zero refcount. The
 # collector's quiescent-point audit (CULEBRA_GC_LEAK_ABORT=1, gc.h
-# audit_inflated_rc) classifies exactly that: an object the conservative scan
-# finds unreachable whose refcount still exceeds the references the heap holds
+# audit_inflated_rc) classifies exactly that: an object the precise roots
+# do not reach whose refcount still exceeds the references the heap holds
 # to it — a phantom +1 — and aborts naming its birth site. Each pattern runs
 # once under that audit, with the collector otherwise off (CULEBRA_GC_NEVER=1)
 # so no background collection reclaims the leaked garbage before the audit
@@ -21,9 +21,8 @@
 #   gc_leak_check.sh path/to/program.cul  # audit one program
 #   CULEBRA=./build-gate/culebra gc_leak_check.sh  # pick the binary (default build-dev)
 #
-# Pass a NO-LTO binary (build-dev/ or build-gate/): the audit rides the
-# conservative scan's completeness, and LTO's altered stack layout aliases
-# leaked objects as live and under-reports.
+# Any build gives the same verdict: the audit marks the live set from the
+# precise roots, never the machine stack.
 #
 # Exit status: 0 = no leak detected, 1 = at least one leaking pattern.
 

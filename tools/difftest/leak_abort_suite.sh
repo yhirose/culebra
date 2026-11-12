@@ -18,21 +18,17 @@
 # label. A label is either allowlisted (a known structural wall — see the
 # allowlist) or a NEW leak that fails the gate.
 #
-# Pass a NO-LTO binary (build-dev/ or build-gate/). The audit rides the
-# conservative scan's completeness; LTO's altered stack layout aliases leaked
-# objects as live and under-reports (build/ shows 0). The `just test` gate runs
-# this against build-gate.
+# The audit runs at the JIT's teardown (`--jit` only) and marks the live set
+# from the precise roots, never the machine stack, so any build gives the same
+# verdict.
 #
 # Usage:
 #   tools/difftest/leak_abort_suite.sh [culebra-binary]           # gate
 #   tools/difftest/leak_abort_suite.sh [culebra-binary] --update-allowlist
 set -uo pipefail
 
-# Default to the no-LTO dev build: the audit/growth oracles under-report on
-# an LTO binary (stale-stack aliasing), so a stale ./build/ default has caused
-# false-green runs twice. Pass build-gate/culebra explicitly from the gate.
 CULEBRA="${1:-./build-dev/culebra}"
-[ -x "$CULEBRA" ] || { echo "error: $CULEBRA not found/executable — pass a no-LTO culebra binary" >&2; exit 1; }
+[ -x "$CULEBRA" ] || { echo "error: $CULEBRA not found/executable" >&2; exit 1; }
 [ "${2:-}" = --update-allowlist ] && UPDATE=1 || UPDATE=0
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WORK="${LEAKFUZZ_WORK:-build/leakabort-suite}"
@@ -45,9 +41,9 @@ mkdir -p "$WORK"
 # corpus cannot express "an uncaught error leaves the top-level frame". These
 # run as whole programs, with no preamble and no wrapper. A fixture leaks only
 # if leak_abort_bare_allow.txt says it may; one that stops leaking is reported
-# so the entry can be dropped. Both compiled lanes run (the executor took the
-# tree-walker's seat in B7-c): the audit fires on either, and a divergence in
-# what the two print is a bug either way.
+# so the entry can be dropped. Both lanes run: the audit fires at the JIT's
+# teardown only (the executor has none), and a divergence in what the two
+# print is a bug either way.
 BARE_ALLOW="$HERE/leak_abort_bare_allow.txt"
 bare_fail=0
 for bf in "$HERE"/leak_abort_bare.d/*.cul; do
@@ -59,9 +55,9 @@ for bf in "$HERE"/leak_abort_bare.d/*.cul; do
   bj=$(CULEBRA_GC_NEVER=1 CULEBRA_GC_LEAK_ABORT=1 ASAN_OPTIONS=detect_leaks=0 \
          "$CULEBRA" --jit "$bf" 2>&1); bj_rc=$?
   # SIGABRT (134) is the audit firing; anything else is the program's own exit.
-  if [ "$bj_rc" = 134 ] || [ "$bi_rc" = 134 ]; then
+  if [ "$bj_rc" = 134 ]; then
     if [ "$allowed" = 0 ]; then
-      echo "leak-abort-suite: FAIL — $name leaked (vm rc=$bi_rc jit rc=$bj_rc)" >&2
+      echo "leak-abort-suite: FAIL — $name leaked (jit rc=$bj_rc)" >&2
       printf '%s\n' "$bj" | sed 's/^/    /' >&2
       bare_fail=1
     fi

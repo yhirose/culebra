@@ -9,19 +9,14 @@
 # fixed 3-case guard so a change that breaks the detector — or its zero-false-
 # positive property — fails the build.
 #
-# Pass a NO-LTO binary (build-dev/ or build-gate/). The audit rides the
-# conservative scan's completeness (best-effort); LTO's altered stack layout
-# lets the teardown scan alias leaked objects as live and under-report, so the
-# fires-on-leak case would spuriously "pass as clean" under an LTO build.
+# The audit marks the live set from the precise roots, never the machine
+# stack, so any build (LTO or not) gives the same verdict.
 #
 # Usage: tools/difftest/leak_abort.sh [culebra-binary]
 set -uo pipefail
 
-# Default to the no-LTO dev build: the audit/growth oracles under-report on
-# an LTO binary (stale-stack aliasing), so a stale ./build/ default has caused
-# false-green runs twice. Pass build-gate/culebra explicitly from the gate.
 CULEBRA="${1:-./build-dev/culebra}"
-[ -x "$CULEBRA" ] || { echo "error: $CULEBRA not found/executable — pass a no-LTO culebra binary" >&2; exit 1; }
+[ -x "$CULEBRA" ] || { echo "error: $CULEBRA not found/executable" >&2; exit 1; }
 WORK="${LEAKFUZZ_WORK:-build/leakfuzz}"
 mkdir -p "$WORK"
 fail=0
@@ -41,9 +36,9 @@ run_audit() {
 # dropped-Shared property read, the `self`-named parameter shadow, then the
 # heap-operand comparison chain). With those classes closed, the fixture is
 # now self-contained: CULEBRA_GC_TEST_LEAK=1 (a debug-only knob in
-# run_modules) mints eight deliberately orphaned +1 arrays at startup, which
-# survive to the teardown audit under run_audit's CULEBRA_GC_NEVER=1. Eight is
-# above the conservative-scan aliasing knee, so the abort is deterministic.
+# run_modules) mints one deliberately orphaned +1 array at startup, which
+# survives to the teardown audit under run_audit's CULEBRA_GC_NEVER=1. One is
+# enough: the audit reads no machine stack, so nothing can alias it as live.
 cat > "$WORK/abort_leak.cul" <<'EOF'
 IO.inspect("fixture ran")
 EOF

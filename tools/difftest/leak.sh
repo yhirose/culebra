@@ -30,11 +30,8 @@
 #   tools/difftest/leak.sh [culebra-binary] --update-baseline
 set -uo pipefail
 
-# Default to the no-LTO dev build: the audit/growth oracles under-report on
-# an LTO binary (stale-stack aliasing), so a stale ./build/ default has caused
-# false-green runs twice. Pass build-gate/culebra explicitly from the gate.
 CULEBRA="${1:-./build-dev/culebra}"
-[ -x "$CULEBRA" ] || { echo "error: $CULEBRA not found/executable — pass a no-LTO culebra binary" >&2; exit 1; }
+[ -x "$CULEBRA" ] || { echo "error: $CULEBRA not found/executable" >&2; exit 1; }
 [ "${2:-}" = --update-baseline ] && UPDATE=1 || UPDATE=0
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WORK="${LEAKFUZZ_WORK:-build/leakfuzz}"

@@ -491,10 +491,14 @@ refcount and otherwise dead" unambiguously means "leaked" rather than
 "not yet observed to be reachable" — `Heap::maybe_audit_leaks` runs the
 classifier and aborts with the leaked object's birth site if it finds
 one. `tools/difftest/leak_abort_suite.sh` runs the whole generated
-corpus under it, throw paths included, on both lanes; every case that
+corpus under it, throw paths included; every case that
 aborts must be named in `leak_abort_allow.txt`, and that list is empty.
-The audit needs a non-LTO build, because LTO's altered stack layout
-under-reports conservative roots; production builds keep reclaiming
+The audit runs at the `--jit` lane's teardown, and it marks what is live
+from the precise roots alone, never from the machine stack: no frame is
+open there, so a stack word could only be a stale alias hiding a leak.
+Its verdict is therefore the same on every build (LTO or not), compiler
+and architecture, and it checks that no frame is open before it starts.
+Production builds keep reclaiming
 leaked objects quietly rather than aborting, since an abort would be a
 denial-of-service vector in a shipped binary.
 

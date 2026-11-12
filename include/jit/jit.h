@@ -6034,20 +6034,11 @@ struct JIT {
     if (time_passes()) reportAndResetTimings();
     time_phase("codegen", phase_t);
     // GAP5 detector fixture (debug/tests only): CULEBRA_GC_TEST_LEAK=1 mints
-    // a handful of deliberately orphaned +1 arrays here, before the program
-    // body runs, so the teardown audit has a guaranteed inflated-RC leak to
-    // fire on. The smoke test's fires-on-leak case used to piggyback on a
-    // real open product leak and needed a new fixture every time one closed;
-    // this knob makes the detector's own regression test self-contained.
-    // Run it under CULEBRA_GC_NEVER=1 for a deterministic fixture — without
-    // it a mid-run collect may sweep the conservatively-dead orphans before
-    // the audit (whether one runs depends on the program's allocation
-    // volume). Eight of them: a single orphan can alias a stale stack slot
-    // in the conservative scan and under-report (the same knee
-    // leak_abort_suite.sh works around), so mint enough that the audit fires
-    // deterministically.
+    // one orphaned +1 array before the program body runs, so the teardown
+    // audit has a leak to fire on. Run it under CULEBRA_GC_NEVER=1, or a
+    // mid-run collect may sweep the orphan first.
     if (std::getenv("CULEBRA_GC_TEST_LEAK")) {
-      for (int i = 0; i < 8; i++) (void)culebra_runtime_array_new();
+      (void)culebra_runtime_array_new();
     }
     // Force a collect while the LLJIT (and therefore every closure's
     // `fn_ptr`) is still alive — on BOTH success and throw paths. Without
@@ -6075,7 +6066,7 @@ struct JIT {
         // at their birth site (no-op unless CULEBRA_GC_LEAK_ABORT=1). Do it
         // BEFORE the reclaiming collect, while the leaked residue is still live.
         _gc_heap().assert_quiescent();
-        _gc_heap().maybe_audit_leaks();
+        _gc_heap().maybe_audit_leaks(_jit_thread.depth);
         bool saved = _jit_drop_suppressed();
         _jit_drop_suppressed() = true;
         _gc_heap().collect();  // reclaim leaked residue before module teardown

@@ -2099,10 +2099,8 @@ leak-fuzz: build
 # residue first. Use this to localize a leak the corpus gate (leak-fuzz)
 # reports. With no FILE, runs the 3-case detector smoke test.
 #
-# Uses the no-LTO build-dev/ binary on purpose: the audit rides the conservative
-# scan's completeness (best-effort), and LTO's altered stack layout lets the
-# teardown scan alias leaked objects as live, so it under-reports. GAP5 is a
-# debug/CI (no-LTO) tool — the gate runs it against the no-LTO build-gate too.
+# Any build gives the same verdict: the audit marks the live set from the
+# precise roots, never the machine stack.
 [doc("Run a script under the GAP5 loud inflated-RC leak detector (birth-site abort)")]
 [group("test")]
 leak-abort FILE='': dev
@@ -2121,8 +2119,7 @@ leak-fuzz-update: build
 # Suite-wide GAP5 gate: run the whole difftest corpus under the loud inflated-RC
 # audit (CULEBRA_GC_LEAK_ABORT=1) and fail on any acyclic RC leak whose case
 # label is not in tools/difftest/leak_abort_allow.txt. Unlike leak-fuzz (growth-
-# based, skips throwing cases), this measures the throw-path leaks too. Uses the
-# no-LTO build-gate/ binary (LTO under-reports the conservative-scan audit).
+# based, skips throwing cases), this measures the throw-path leaks too.
 [doc("Suite-wide GAP5 gate: corpus inflated-RC leaks vs allowlist (throw-paths)")]
 [group("test")]
 leak-abort-suite: build-gate

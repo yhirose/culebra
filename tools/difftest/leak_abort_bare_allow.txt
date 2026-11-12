@@ -7,8 +7,3 @@
 # on its way out. The fixtures below leak_abort_bare.d cover that path — a bare
 # `throw`, a runtime error, a top-level `defer` that still has to fire, and a
 # binding declared in an `if` arm — and all of them must stay clean.
-#
-# The audit rides the conservative stack scan, which under-reports when a
-# stranded object happens to be aliased as live — so decide an entry from the
-# gate's own binary (build-gate), not whichever build is at hand. build-dev
-# reported toplevel_throw_defer as clean while build-gate did not.

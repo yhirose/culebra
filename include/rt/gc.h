@@ -553,9 +553,9 @@ class Heap {
     }
     if (roots == Roots::kRefcounts || gc_refs_mode()) return collect_refs();
     // Experimental precise-only mode (Phase 3 dry-run): seed solely from the
-    // precise roots — the JIT shadow stack plus the non-stack tables — with NO
-    // conservative stack scan. A missing root frees a live object, so this is
-    // the brutal coverage test for the shadow stack; off by default.
+    // precise roots (seed_nonstack_roots) with NO conservative stack scan. A
+    // missing root frees a live object, so this is the brutal coverage test
+    // for the precise roots mid-program; off by default.
     if (precise_only()) {
       return collect_impl([this](auto&& push) { seed_nonstack_roots(push); });
     }
@@ -578,19 +578,20 @@ class Heap {
   // classify the heap for inflated-RC leaks and, if any survive, abort with
   // their birth sites. No-op otherwise (zero cost when off).
   //
-  // MUST be called at a QUIESCENT safepoint — the mutator between top-level
-  // statements or at program teardown, with the top-level env still rooted and
-  // NO expression in flight. The classifier is only zero-false-positive there:
-  // mid-expression, a freshly allocated object legitimately has refcount 1 and
-  // zero internal refs (inflated) while its only reference sits in a register
-  // the conservative scan may not have spilled yet — indistinguishable from a
-  // true orphan at a single snapshot. At a quiescent point every such newborn
-  // has been rooted or released, so an inflated-and-dead object is a real leak.
-  // This is why it is NOT wired into the per-allocation collect() path. Runs
-  // regardless of CULEBRA_GC_NEVER (the audit does not itself reclaim), so the
-  // fuzzer's backstop-off mode still gets a loud teardown check.
-  void maybe_audit_leaks() {
-    if (leak_abort()) audit_inflated_rc();
+  // The live set comes from the precise roots alone, never the machine stack,
+  // so the verdict is the same on every build; that needs no culebra frame
+  // open (`open_frames`), which is checked rather than trusted. Runs under
+  // CULEBRA_GC_NEVER too: the audit does not itself reclaim.
+  void maybe_audit_leaks(int64_t open_frames) {
+    if (!leak_abort()) return;
+    if (open_frames != 0) {
+      std::fprintf(stderr,
+          "[gc-leak-abort] audit asked for with %lld culebra frame(s) open; "
+          "it is only sound at a quiescent point\n",
+          (long long)open_frames);
+      std::abort();
+    }
+    audit_inflated_rc();
   }
 
   // Quiescent-point invariant: every release-to-zero ran through to forget(),
@@ -740,7 +741,7 @@ class Heap {
 
   // GAP5 — loud leak detection. With
   // CULEBRA_GC_LEAK_ABORT=1, the teardown quiescent-point audit (see
-  // maybe_audit_leaks) classifies the conservative-dead-but-refcount-reachable
+  // maybe_audit_leaks) classifies the unreachable-but-refcount-reachable
   // objects; any *inflated-RC* one (a phantom +1 = a definite acyclic RC leak,
   // distinct from a benign cycle) is reported with its allocation backtrace and
   // the process aborts. This turns the backstop's silent masking into an
@@ -762,24 +763,25 @@ class Heap {
   }
 
   // Classify why gc_refs over-retains: mark the gc_refs-reachable set and the
-  // conservative-reachable set; every object gc_refs keeps that the
-  // conservative scan would free is a leak. Split them: an *inflated-RC* object
-  // (refcount exceeds its counted internal references) carries a phantom +1 =
+  // set reachable from `live_seed`; every object gc_refs keeps that the seed
+  // does not reach is a leak. Split them: an *inflated-RC* object (refcount
+  // exceeds its counted internal references) carries a phantom +1 =
   // a definite acyclic RC leak; a *transitively-held* one (refcount == internal
   // count, gc_refs residue 0) is kept only via a retained-live ancestor — the
   // shape a benign reference cycle takes, not an RC bug. Fills `inflated` with
   // the former and `by_tag` with the per-type leak histogram; returns the total
   // leaked count. This is the zero-false-positive detector GAP5 makes loud.
+  template <class Seed>
   size_t classify_leaks(std::vector<void*>& inflated, size_t by_tag[256],
-                        int64_t& transitively_held) {
+                        int64_t& transitively_held, Seed&& live_seed) {
     compute_gc_refs();
-    std::unordered_set<void*> refs_live, cons_live;
+    std::unordered_set<void*> refs_live, live;
     mark_reachable(refs_live, [this](auto&& push) { seed_refs_roots(push); });
-    mark_reachable(cons_live, [this](auto&& push) { scan_roots(push); });
+    mark_reachable(live, live_seed);
     size_t leak = 0;
     transitively_held = 0;
     for (void* o : refs_live) {
-      if (cons_live.count(o)) continue;  // genuinely live — keep
+      if (live.count(o)) continue;  // genuinely live — keep
       leak++;
       size_t i = objects_.find_slot(o);
       if (i != GcRegistry::kNpos) by_tag[objects_.header_at(i).type_tag]++;
@@ -797,7 +799,9 @@ class Heap {
     std::vector<void*> inflated;
     size_t by_tag[256] = {0};
     int64_t transitively_held = 0;
-    size_t leak = classify_leaks(inflated, by_tag, transitively_held);
+    // Mid-program, so frames may hold live values: the stack is a root here.
+    size_t leak = classify_leaks(inflated, by_tag, transitively_held,
+                                 [this](auto&& push) { scan_roots(push); });
     std::fprintf(stderr,
         "[gc-refs-diag] heap=%zu leak=%lld "
         "(inflated_rc=%zu transitively_held=%lld) tags:",
@@ -818,7 +822,10 @@ class Heap {
     std::vector<void*> inflated;
     size_t by_tag[256] = {0};
     int64_t transitively_held = 0;
-    classify_leaks(inflated, by_tag, transitively_held);
+    // No frame is open (maybe_audit_leaks checked): a stack word could only be
+    // a stale alias hiding a leak.
+    classify_leaks(inflated, by_tag, transitively_held,
+                   [this](auto&& push) { seed_nonstack_roots(push); });
     if (inflated.empty()) return;
     std::fprintf(stderr,
         "\n[gc-leak-abort] %zu inflated-RC object(s) detected — a phantom +1 "
@@ -852,9 +859,10 @@ class Heap {
   }
 
   // The non-stack root sources: registered global slots plus the runtime's
-  // extra-roots enumerator (module/namespace tables, defer stack, exception
-  // carrier, and the precise JIT shadow stack). This is the conservative
-  // scan minus the machine-stack walk — the seed for precise collection.
+  // extra-roots enumerator (module/namespace tables, the VM stack, trait
+  // impls, defer stack, exception carrier, effect aborts). This is the
+  // conservative scan minus the machine-stack walk — the seed for precise
+  // collection and for the teardown leak audit.
   template <class Cb>
   void seed_nonstack_roots(Cb&& cb) {
     for (void** slot : global_roots_) {
