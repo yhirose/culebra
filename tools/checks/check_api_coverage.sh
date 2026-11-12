@@ -64,8 +64,24 @@ cat "$WORK/sigs.txt" "$WORK/kw.txt" > "$WORK/want.txt"
 # are stripped first so a name mentioned only in prose doesn't count as a
 # call — the false-"covered" a first pass over this gave for `Sys.exit`,
 # which appeared only in a comment in tests/lint_test.sh.
+#
+# A name a file takes out of a namespace (`let {sine, render} = Synth`) and
+# then calls (`sine(` or `.sine(`) is a call of `Synth.sine`, so each such
+# call also emits that dotted token. Per file: the names one file takes are
+# not another's.
+QUALIFY='
+  { print }
+  match($0, /let[[:space:]]+\{[^}]*\}[[:space:]]*=[[:space:]]*[A-Z][A-Za-z0-9_]*[[:space:]]*$/) {
+    names = substr($0, RSTART, RLENGTH); ns = names
+    sub(/^[^{]*\{/, "", names); sub(/\}.*/, "", names)
+    sub(/.*=[[:space:]]*/, "", ns); sub(/[[:space:]]*$/, "", ns)
+    n = split(names, taken, /[[:space:],]+/)
+    for (i = 1; i <= n; i++) if (taken[i] ~ /^[a-z_][A-Za-z0-9_]*$/) ns_of[taken[i]] = ns
+    next
+  }
+  { for (name in ns_of) if ($0 ~ ("(^|[^A-Za-z0-9_])" name "\\(")) print ns_of[name] "." name }'
 {
-  find tests -name '*.cul' -o -name '*.sh' | xargs cat
+  find tests -name '*.cul' -o -name '*.sh' | while read -r f; do awk "$QUALIFY" "$f"; done
   for f in docs/*.md docs/guides/*.md; do
     case "$f" in *.ja.md) continue ;; esac
     awk '
@@ -74,7 +90,7 @@ cat "$WORK/sigs.txt" "$WORK/kw.txt" > "$WORK/want.txt"
       infence {
         if (leading) { leading = 0; if ($0 ~ /^# doctest: skip/) { infence = 0; next } }
         print
-      }' "$f"
+      }' "$f" | awk "$QUALIFY"
   done
 } | grep -vE '^[[:space:]]*(#|//)' > "$WORK/corpus.txt"
 
