@@ -110,14 +110,16 @@ assert_eq(playing.ends(), nil)
 assert_true(playing.render(0.1).slice(882, 4410).all(|x| x == 1.0))
 kept.stop()
 
-# A Voices in a box plays the notes made while it is there.
+# A Voices in a box plays the notes made while it is there (one a second
+# ahead, so it is heard where it was put however slowly the lines run).
 let lead = Voices(2, |f| sine(f) * perc(0.001, 0.05))
 let band = Proxy()
 band.set(lead)
 let notes = band._current
-lead.note_on(69)
-let from = Math.ceil(lead.now() * RATE)
-assert_true(notes.render(lead.now() + 0.03).slice(from, from + 1000).any(|x| x != 0.0))
+let ahead = lead.now() + 1.0
+lead.note_on(69, at: ahead)
+let from = Math.ceil(ahead * RATE)
+assert_true(notes.render(ahead + 0.03).slice(from, from + 1000).any(|x| x != 0.0))
 band.stop()
 
 # The fade is a finite number of seconds, 0 or more.
