@@ -1674,50 +1674,53 @@ class ReverbTank {
   static constexpr double kInput = 0.015;
 
   ReverbTank(double rate, int side) {
-    auto length = [&](int d) {
-      return std::max<size_t>(1, static_cast<size_t>(std::lround((d + side * kSpread) * rate / 44100.0)));
-    };
-    for (int k = 0; k < 8; k++) combs_[k].assign(length(kCombs[k]), 0.0f);
-    for (int k = 0; k < 4; k++) passes_[k].assign(length(kPasses[k]), 0.0f);
+    uint32_t start = 0;
+    for (int k = 0; k < kLines; k++) {
+      const int d = k < 8 ? kCombs[k] : kPasses[k - 8];
+      const auto length = std::max<uint32_t>(1, static_cast<uint32_t>(std::lround((d + side * kSpread) * rate / 44100.0)));
+      line_.insert(line_.end(), {start, length, 0});
+      start += length;
+    }
+    state_.assign(start + 8, 0.0f);
   }
   // Silent again.
   void reset() {
-    for (int k = 0; k < 8; k++) {
-      std::ranges::fill(combs_[k], 0.0f);
-      damped_[k] = 0;
-      comb_at_[k] = 0;
-    }
-    for (int k = 0; k < 4; k++) {
-      std::ranges::fill(passes_[k], 0.0f);
-      pass_at_[k] = 0;
-    }
+    std::ranges::fill(state_, 0.0f);
+    for (int k = 0; k < kLines; k++) line_[3 * k + 2] = 0;
   }
   // The echo this sample, of `x` and what came in before it.
   double step(double x, double feedback, double damp) {
+    float* damped = state_.data() + state_.size() - 8;
+    // Line k's sample now, which `put` then replaces before it moves on.
+    auto line = [&](int k) -> float& { return state_[line_[3 * k] + line_[3 * k + 2]]; };
+    auto on = [&](int k) { line_[3 * k + 2] = ring_next(line_[3 * k + 2], line_[3 * k + 1]); };
     double into = x * kInput;
     double echo = 0;
     for (int k = 0; k < 8; k++) {
-      auto& buf = combs_[k];
-      double y = buf[comb_at_[k]];
-      damped_[k] = static_cast<float>(settled(y * (1.0 - damp) + damped_[k] * damp));
-      buf[comb_at_[k]] = static_cast<float>(settled(into + damped_[k] * feedback));
-      comb_at_[k] = ring_next(comb_at_[k], buf.size());
+      float& at = line(k);
+      double y = at;
+      damped[k] = static_cast<float>(settled(y * (1.0 - damp) + damped[k] * damp));
+      at = static_cast<float>(settled(into + damped[k] * feedback));
+      on(k);
       echo += y;
     }
-    for (int k = 0; k < 4; k++) {
-      auto& buf = passes_[k];
-      double held = buf[pass_at_[k]];
-      buf[pass_at_[k]] = static_cast<float>(settled(echo + held * 0.5));
-      pass_at_[k] = ring_next(pass_at_[k], buf.size());
+    for (int k = 8; k < kLines; k++) {
+      float& at = line(k);
+      double held = at;
+      at = static_cast<float>(settled(echo + held * 0.5));
+      on(k);
       echo = held - echo;
     }
     return echo;
   }
 
  private:
-  std::vector<float> combs_[8], passes_[4];
-  float damped_[8] = {};
-  size_t comb_at_[8] = {}, pass_at_[4] = {};
+  static constexpr int kLines = 12;  // the combs, then the allpasses
+  // The lines end to end, then the combs' damped samples; and each line's
+  // start, length and place, three numbers a line. Kept out of the part
+  // itself, so a graph's parts stay small whatever kind they are.
+  std::vector<float> state_;
+  std::vector<uint32_t> line_;
 };
 
 // What a Math part answers for what comes in: its size, it held within lo..hi,
@@ -1809,32 +1812,37 @@ inline PluckString graph_string(double rate) {
   return PluckString(PluckString::loop_length(kGraphPluckLowest, rate) + 1, rate);
 }
 
-// Value `value` of a part of `kind` once the parts connected to it have moved
-// it to `x`, held where the part stays sound: a wave's, an impulse's and an
+// Where value `value` of a part of `kind` is held once the parts connected
+// to it have moved it, so the part stays sound: a wave's, an impulse's and an
 // lfnoise's freq, a cutoff and a string's freq from 0 (a string's from its
 // lowest) to half the rate, a dust's density from 0 to the rate, a delay's
 // time from 0 to its longest, a room's size and damp from 0 to 1, and a
-// wave's feedback, a string's ring and a drive's gain at 0 or more.
-inline double held_value(PartKind kind, int value, double x, double rate) {
+// wave's feedback, a string's ring and a drive's gain at 0 or more. Found
+// as the part is made, so the samples are only clamped.
+struct ValueRange {
+  double lo = -std::numeric_limits<double>::infinity(), hi = std::numeric_limits<double>::infinity();
+};
+inline ValueRange held_range(PartKind kind, int value, double rate) {
+  constexpr double kUp = std::numeric_limits<double>::infinity();
   switch (kind) {
-    case PartKind::Wave: return value == 0 ? std::clamp(x, 0.0, 0.5 * rate) : value == 1 ? std::max(x, 0.0) : x;
+    case PartKind::Wave: return value == 0 ? ValueRange{0.0, 0.5 * rate} : value == 1 ? ValueRange{0.0, kUp} : ValueRange{};
     case PartKind::Filter:
     case PartKind::Impulse:
-    case PartKind::LfNoise: return std::clamp(x, 0.0, 0.5 * rate);
-    case PartKind::Dust: return std::clamp(x, 0.0, rate);
-    case PartKind::Pluck: return value == 0 ? std::clamp(x, kGraphPluckLowest, 0.5 * rate) : std::max(x, 0.0);
-    case PartKind::Delay: return std::clamp(x, 0.0, kGraphDelayLongest);
-    case PartKind::Drive: return std::max(x, 0.0);
-    case PartKind::Room: return std::clamp(x, 0.0, 1.0);
-    case PartKind::Gain: return x;
+    case PartKind::LfNoise: return {0.0, 0.5 * rate};
+    case PartKind::Dust: return {0.0, rate};
+    case PartKind::Pluck: return value == 0 ? ValueRange{kGraphPluckLowest, 0.5 * rate} : ValueRange{0.0, kUp};
+    case PartKind::Delay: return {0.0, kGraphDelayLongest};
+    case PartKind::Drive: return {0.0, kUp};
+    case PartKind::Room: return {0.0, 1.0};
+    case PartKind::Gain:
     case PartKind::Noise:
     case PartKind::Resonate:
     case PartKind::Limit:
     case PartKind::Lag:
     case PartKind::Decay:
-    case PartKind::Math: break;  // no values
+    case PartKind::Math: break;  // a gain's is any number; the rest have no values
   }
-  return x;
+  return {};
 }
 // How many graphs play at once: the mixer's list of them never grows.
 inline constexpr size_t kGraphsPlaying = 64;
@@ -1851,6 +1859,7 @@ struct GraphPart {
   // schedule plus the sum of the parts connected to it.
   Param values[kGraphValues];
   std::vector<int> connected[kGraphValues];
+  ValueRange held[kGraphValues];  // where each value is held (held_range's)
   std::variant<std::monostate, Oscillator, Noise, Svf, Resonance, PluckString, DelayLine, Limiter, Drive, Impulse, Dust,
                LfNoise, Lag, Decay, MathOp, ReverbTank>
       processor;
@@ -1967,8 +1976,9 @@ class Graph {
   // A part taking in `inputs`, parts made before it.
   int add(PartKind kind, std::vector<int> inputs, decltype(GraphPart::processor) processor, double rest0 = 0,
           double rest1 = 0, double rest2 = 0) {
-    parts_.push_back(
-        GraphPart{kind, std::move(inputs), {Param(rest0), Param(rest1), Param(rest2)}, {}, std::move(processor)});
+    parts_.push_back(GraphPart{kind, std::move(inputs), {Param(rest0), Param(rest1), Param(rest2)}, {},
+                               {held_range(kind, 0, rate_), held_range(kind, 1, rate_), held_range(kind, 2, rate_)},
+                               std::move(processor)});
     steps_.push_back(GraphStep{static_cast<int>(parts_.size()) - 1, {}});
     return static_cast<int>(parts_.size()) - 1;
   }
@@ -2088,7 +2098,12 @@ class Graph {
         p.values[k].fill(time + a, n, v[k]);
         if (p.connected[k].empty()) continue;
         sum(p.connected[k], signal);
-        for (int i = 0; i < n; i++) v[k][i] = held_value(p.kind, k, v[k][i] + signal[i], rate_);
+        const auto [lo, hi] = p.held[k];
+        if (std::isinf(lo) && std::isinf(hi)) {
+          for (int i = 0; i < n; i++) v[k][i] += signal[i];
+        } else {
+          for (int i = 0; i < n; i++) v[k][i] = std::clamp(v[k][i] + signal[i], lo, hi);
+        }
       }
     }
     double* out = p.out + a;
