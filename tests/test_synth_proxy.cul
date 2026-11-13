@@ -45,17 +45,18 @@ box.set(one)
 assert_close(level(box._current.render(0.01), 0.0), 0.0, 1e-9)
 box.stop()
 
-# Replaced while it fades in, a sound fades out from the level it has.
-let slow = Proxy(fade: 0.1)
+# Replaced while it fades in, a sound fades out from the level it has (a
+# fade long enough that the switch lands in it however late the sleep ends).
+let slow = Proxy(fade: 1.0)
 slow.set(one)
 let rising = slow._current
 Time.sleep(0.03)
 slow.set(one)
-let cut = rising.ends() - 0.1
-let held = cut / 0.1
-let fall = rising.render(cut + 0.12)
+let cut = rising.ends() - 1.0
+let held = Math.min(cut, 1.0)
+let fall = rising.render(cut + 0.6)
 assert_close(level(fall, cut), held, 0.01)
-assert_close(level(fall, cut + 0.05), held * 0.5, 0.01)
+assert_close(level(fall, cut + 0.5), held * 0.5, 0.01)
 slow.stop()
 
 # A sound that ends on its own starts at once, and ends where it did, even
