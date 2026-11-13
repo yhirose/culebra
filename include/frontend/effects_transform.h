@@ -330,6 +330,14 @@ class EffectsLowerer {
   // one, and inside a function the user wrote in one (transform()).
   std::string own_effect_fn_;
 
+  // The operations whose declaration the walk has already lowered, shared by
+  // every lowerer of one program. The helpers lowered beside a declaration
+  // (`__eff_args_op`) are plain `fn`s spliced where it stands, which code
+  // written ahead of it cannot reach (the same order an effect fn is called
+  // in), so a `perform` binds through one only after it.
+  std::shared_ptr<std::set<std::string, std::less<>>> lowered_ops_ =
+      std::make_shared<std::set<std::string, std::less<>>>();
+
   // A lowerer over another buffer for the same body: every lowerer this one
   // makes comes from here, so each knows which effect fn it is in. It starts
   // with no names around it (names_); sub_lowerer also hands it this one's.
@@ -338,6 +346,7 @@ class EffectsLowerer {
                               std::string path = "") const {
     EffectsLowerer sub(src, decls_, src_is_original, std::move(path));
     sub.own_effect_fn_ = own_effect_fn_;
+    sub.lowered_ops_ = lowered_ops_;
     return sub;
   }
   // lowerer_over, at the same place in the program (names_ too).
@@ -439,6 +448,11 @@ class EffectsLowerer {
     return decls_.ops.contains(op.token) && !rewrite.slot(op) &&
            names_.sees(op.token);
   }
+  // sees_operation, and its lowered helpers already stand ahead of here.
+  bool reaches_operation(const peg::Ast& op,
+                         const PromotedLocals& rewrite) const {
+    return sees_operation(op, rewrite) && lowered_ops_->contains(op.token);
+  }
 
   // A `perform`'s arguments, as source, and the check its resumed value
   // passes through (resume_check).
@@ -454,7 +468,7 @@ class EffectsLowerer {
     using namespace peg::udl;
     const auto& op = *perform.nodes[0];
     const auto& arguments = *perform.nodes[1];
-    bool bound = sees_operation(op, rewrite);
+    bool bound = reaches_operation(op, rewrite);
     MappedSource out =
         bound ? standing_at("__eff_args_" + std::string(op.token) + "(",
                             perform, src_)
@@ -1971,6 +1985,7 @@ class EffectsLowerer {
   std::shared_ptr<peg::Ast> lower_effect_fn_decl(std::shared_ptr<peg::Ast> ast) {
     using namespace peg::udl;
     std::string name = effect_fn_name(*ast);
+    lowered_ops_->insert(name);
     const auto& params_ast = *ast->nodes[1];
     auto params = anchored(source_of(params_ast));
     auto param_names = collect_bound_param_names(params_ast);

@@ -103,3 +103,13 @@ assert_eq(op_outcome(op_local_handle),
           ['ArityError',
            "handler clause for 'op_local' takes 1 argument before `resume`, " +
              'but `perform op_local` passes 2'])
+
+// A perform written ahead of its declaration runs once the declaration has:
+// the binder is spliced where the declaration stands, so the perform before it
+// takes its arguments as written (run standalone, a plain fn ahead of the
+// declaration cannot reach the binder).
+fn perform_ahead() {
+  handle { perform ahead_op(7) } with ahead_op(v, k) { k(v + 1) }
+}
+effect fn ahead_op(v)
+assert_eq(perform_ahead(), 8)
