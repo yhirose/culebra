@@ -1,0 +1,35 @@
+# kauai live's room: a part played live rings in a song's room, a side each
+# for the left and the right, each kept under full scale by a limit.
+import live from './live.cul'
+
+# A strike, its room heard `wet` strong: [left, right].
+fn struck(wet) {
+  let g = Audio.Graph.new()
+  let strike = g.gain(g.noise(), 0.0)
+  strike.gain.set(0.0, 0.8).set(0.01, 0.0)
+  let sides = live.in_room(g, strike, wet)
+  g.output(sides[0], sides[1])
+  g.render(1.0, channels: 2)
+}
+
+@test
+fn the_room_is_a_songs_with_its_feedback_and_damp() {
+  assert_close(0.7 + 0.28 * live.ROOM_SIZE, 0.86, 1e-12)
+  assert_close(0.4 * live.ROOM_DAMP, 0.25, 1e-12)
+}
+
+@test
+fn the_sides_ring_apart_past_the_strike_and_none_rings_with_no_room() {
+  let roomed = struck(0.4)
+  assert_true(roomed[0] != roomed[1])
+  assert_true(roomed[0].slice(22050, 44100).any(|x| x != 0.0))
+  let dry = struck(0.0)
+  assert_eq(dry[0], dry[1])
+  assert_true(dry[0].slice(22050, 44100).all(|x| x == 0.0))
+}
+
+@test
+fn a_limit_keeps_each_side_under_full_scale() {
+  let loud = struck(1.0)
+  assert_true(loud.all(|side| side.all(|x| Math.abs(x) <= 0.9 + 1e-9)))
+}

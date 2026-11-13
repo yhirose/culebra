@@ -164,6 +164,11 @@ for lane in "${lanes[@]}"; do
   run cli live FmBrass --gain loud
   check "$lane gain, not a number: status" 2 "$rc"
   check "$lane gain, not a number: stderr" "kauai: --gain is from -60 to 24 dB, not loud" "$err"
+  run cli live FmBrass --room 120
+  check "$lane room, past 100: status" 2 "$rc"
+  check "$lane room, past 100: stderr" "kauai: --room is a percentage from 0 to 100, not 120" "$err"
+  run cli live FmBrass --room 40% --midi EWI
+  check "$lane room, a percentage: stderr" "kauai: live needs one MIDI input named like EWI; there are none" "$err"
   run cli "$TMP/duo.kau" --wav
   check "$lane wav, no value: status" 2 "$rc"
   check "$lane wav, no value: stderr" "kauai: option '--wav' expects a value" "$err"

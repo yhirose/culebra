@@ -201,6 +201,7 @@ and a song text that does not read, to the score alone.
 kauai live FmBrass                  # from the one MIDI input there is
 kauai live FmBrass --midi EWI       # from the input whose name has EWI
 kauai live FmBrass --breath pressure  # the breath from the channel's pressure
+kauai live FmBrass --room 30         # in a song's room, its echo at 30%
 ```
 
 [`cli/live.cul`](cli/live.cul) plays an instrument as a wind controller plays
@@ -210,7 +211,10 @@ is half the amplitude, 6 dB under full; how hard to blow for full is the
 controller's own breath gain. It plays 6 dB over the instrument's own
 level (`--gain` says how many), so that it stands over a song played
 alongside, and a limit at its output (`Audio.Graph`'s `limit`) keeps the
-loudest breath from clipping. A note played while another is held moves to the new
+loudest breath from clipping. With `--room` (0 to 100, as a song's `room 30%`)
+it plays in a song's room: the notes play into an `Audio.Bus` that one graph
+reads and plays in the room, its two sides ringing on past each note, with a
+limit on each side. A note played while another is held moves to the new
 pitch without starting over, and a note blown harder is brighter: a
 recipe's breath turns its `bright` knob. A saxophone plays each note as a
 song's phrase would, slurred from the note before

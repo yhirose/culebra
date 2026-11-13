@@ -344,13 +344,14 @@ class LiveNote {
   }
 
   # Play from now, once: `pitch` with its output at `volume`, sounding from
-  # the first breath. The level is the breath's, so `level` is not heard.
-  begin(pitch: Long | Float, level: Long | Float = 1.0, volume: Long | Float = 1.0) {
+  # the first breath, to the device or into the bus `to`. The level is the
+  # breath's, so `level` is not heard.
+  begin(pitch: Long | Float, level: Long | Float = 1.0, volume: Long | Float = 1.0, to: Audio.Bus | Nil = nil) {
     throw "a held note begins once; prepare() another" if @_begun
     @_begun = true
     @_pitch = to_float(pitch)
     @_volume.gain.cancel(0.0).set(0.0, to_float(volume))
-    @graph.play()
+    @graph.play(to:)
     self
   }
 
