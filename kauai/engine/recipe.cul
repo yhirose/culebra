@@ -776,9 +776,10 @@ class Held {
     @_until = nil
   }
 
-  # Play from now, once: `pitch` at `level`, its output at `volume`. Only the
-  # values whose course the pitch or the level changes are scheduled again.
-  begin(pitch: Long | Float, level: Long | Float = 1.0, volume: Long | Float = 1.0) {
+  # Play from now, once: `pitch` at `level`, its output at `volume`, to the
+  # device or into the bus `to`. Only the values whose course the pitch or
+  # the level changes are scheduled again.
+  begin(pitch: Long | Float, level: Long | Float = 1.0, volume: Long | Float = 1.0, to: Audio.Bus | Nil = nil) {
     throw "a held note begins once; prepare() another" if @_begun
     @_begun = true
     let env = {...@_env, pitch: to_float(pitch), f: hz(pitch), level: to_float(level)}
@@ -793,7 +794,7 @@ class Held {
     }
     @_volume.cancel(0.0).set(0.0, to_float(volume))
     @_env = env
-    @graph.play()
+    @graph.play(to:)
     self
   }
 

@@ -13,8 +13,9 @@
 #   every         nil, or how often (s) a sounding note needs feed(n)
 #   feed(n)       note n kept sounding, as `every` asks
 #
-# and a note has begin(pitch, level, volume), retune(pitch), bend(semitones),
-# volume(v), release() and done(), as the recipes' Held has them.
+# and a note has begin(pitch, level, volume, to:), retune(pitch),
+# bend(semitones), volume(v), release() and done(), as the recipes' Held has
+# them (`to:` a bus it plays into, nil for the device).
 
 # The device's period asked for: a note starts this much after it is played,
 # besides the device's own delay.
@@ -35,12 +36,40 @@ fn loudness(x, gain) {
   Math.clamp(x, 0.0, 1.0) * gain
 }
 
+# A song's room (its feedback 0.86 and damp 0.25), so a part played live
+# rings as it does in a song.
+let ROOM_SIZE = 4.0 / 7.0
+let ROOM_DAMP = 0.625
+
+# `dry` in a song's room heard `wet` strong (0.0 to 1.0) on each side, the
+# left and the right, each held under full scale by a limit as each note is.
+fn in_room(g, dry, wet) {
+  let side = |k| g.limit(g.mix([dry, g.gain(g.room(dry, size: ROOM_SIZE, damp: ROOM_DAMP, side: k), wet)]))
+  [side(0), side(1)]
+}
+
+# A graph that plays what is played into `bus` in a song's room, `wet`
+# strong.
+fn room_graph(bus, wet) {
+  let g = Audio.Graph.new()
+  let sides = in_room(g, g.input(bus), wet)
+  g.output(sides[0], sides[1])
+  g
+}
+
 # Plays `player`'s instrument from `input` until the program is stopped.
 # `breath` is where the breath comes from: "cc2", "cc7", "cc11" or
-# "pressure"; `db`, how many dB over its own level the instrument plays.
-fn play(player, input, breath, db) {
+# "pressure"; `db`, how many dB over its own level the instrument plays;
+# `room`, how strong its room's echo is heard, 0.0 (none) to 1.0. In a room
+# the notes play into a bus that one graph reads and plays in the room, so
+# the room rings on past each note.
+fn play(player, input, breath, db, room = 0.0) {
   let gain = 10.0 ** (db / 20.0)
   Audio.latency(PERIOD)
+  let bus = room > 0.0 ? Audio.Bus(1) : nil
+  # Kept while the instrument plays: a graph stops with its last reference.
+  let hall = bus == nil ? nil : room_graph(bus, room)
+  hall?.play()
   # The device opens on the first play(), which takes a while: open it now,
   # with a silent graph, rather than on the first note.
   let silence = Audio.Graph.new()
@@ -84,7 +113,7 @@ fn play(player, input, breath, db) {
           }
           channel = m.channel
           let level = Math.clamp(2.0 * m.velocity, 0.05, 2.0)
-          held = ready.begin(m.note, level, loudness(blown(channel), gain))
+          held = ready.begin(m.note, level, loudness(blown(channel), gain), to: bus)
           held_pitch = m.note
           turned_for = nil
           ready = player.prepare()
@@ -136,4 +165,4 @@ fn play(player, input, breath, db) {
   }
 }
 
-export {play, GAIN}
+export {play, GAIN, in_room, ROOM_SIZE, ROOM_DAMP}
