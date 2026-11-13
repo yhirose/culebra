@@ -171,7 +171,11 @@
 # 1.5 s under --jit). 352 since test_synth_proxy.cul (Synth.Proxy's fades in and
 # out, a set that fails, and what it replaced let go; 0.21 s under --vm, 3.7 s
 # under --jit).
-tests.cul 352
+# 354 since test_xml.cul split into three at its sections (test_xml_paths.cul,
+# test_xml_stringify.cul): the JIT compiles a flat top-level script in time
+# that grows faster than its size, so one 22 s file became 5.2 s + 4.9 s +
+# 0.6 s.
+tests.cul 354
 
 # tests/isolate/*.cul — run on both engines, plus the over-cap modes.
 # 21 since test_xml_isolate.cul (an XML element keeps its methods across an

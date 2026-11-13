@@ -1,0 +1,110 @@
+// XML namespace: stringify. See test_xml.cul for the parser.
+
+// The same, with the document position a parse error carries.
+fn perr(f) {
+  try {
+    f()
+    'no error'
+  } catch e {
+    "{e.kind}: {e.message} @{e.line}:{e.col}"
+  }
+}
+
+// The prolog test_xml.cul parses, written out again by its round trip.
+let prolog = "<?xml version=\"1.0\" encoding=\"utf-8\" standalone=\"yes\"?>\n<!-- lead -->\n<!DOCTYPE r [\n  <!ENTITY e \"boom\">\n  <!-- ] > -->\n]>\n<?pi x?>\n<r/>\n<!-- trail -->\n"
+
+// --- stringify ---
+assert_eq(
+  XML.stringify(XML.parse('<a x="1"><b/>t&amp;<c>&lt;</c></a>')),
+  '<a x="1"><b/>t&amp;<c>&lt;</c></a>',
+)
+assert_eq(
+  XML.stringify({
+    tag: 'e',
+    attrs: {q: 'a"b<c&d>', ws: "l1\nl2\r\tx"},
+    children: ["1 < 2 > 0 & \r"],
+  }),
+  '<e q="a&quot;b&lt;c&amp;d>" ws="l1&#10;l2&#13;&#9;x">1 &lt; 2 &gt; 0 &amp; &#13;</e>',
+)
+assert_eq(
+  XML.stringify({tag: 'n', attrs: {l: 1, f: 2.5, b: true}, children: []}),
+  '<n l="1" f="2.5" b="true"/>',
+)
+assert_eq(XML.stringify({tag: 'br'}), '<br/>')
+assert_eq(
+  XML.stringify(XML.parse('<r/>'), declaration: true),
+  "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<r/>",
+)
+// Indentation applies only where every child is an element; an element
+// holding text keeps its content on one line.
+let pretty = XML.parse('<r><a><b/><c>x<d/>y</c></a><e>t</e></r>')
+assert_eq(
+  XML.stringify(pretty, indent: 2),
+  "<r>\n  <a>\n    <b/>\n    <c>x<d/>y</c>\n  </a>\n  <e>t</e>\n</r>",
+)
+assert_eq(
+  XML.stringify(XML.parse('<m>t<a><b/></a></m>'), 2),
+  '<m>t<a><b/></a></m>',
+)
+assert_eq(
+  XML.stringify(pretty, 4, true).split("\n")[0],
+  '<?xml version="1.0" encoding="UTF-8"?>',
+)
+assert_throws("TypeError", || XML.stringify({children: []}),
+  message: "XML.stringify: an element's tag must be a String, got Nil")
+assert_throws("TypeError", || XML.stringify({tag: 3}),
+  message: "XML.stringify: an element's tag must be a String, got Long")
+assert_throws("TypeError", || XML.stringify({tag: 'a', children: 'x'}),
+  message: 'XML.stringify: children must be an Array, got String')
+assert_throws("TypeError", || XML.stringify({tag: 'a', children: [1]}),
+  message: 'XML.stringify: a child must be an element Object or a String, got Long')
+assert_throws("TypeError", || XML.stringify({tag: 'a', attrs: {x: [1]}}),
+  message: "XML.stringify: attribute 'x' must be a String, Long, Float or Bool, got Array")
+assert_throws("TypeError", || XML.stringify({tag: 'a', attrs: [1]}),
+  message: 'XML.stringify: attrs must be an Object, got Array')
+mut tower = {tag: 'x', children: []}
+for _ in range(1000) {
+  tower = {tag: 'x', children: [tower]}
+}
+assert_throws("ValueError", || XML.stringify(tower),
+  message: 'XML.stringify: nesting too deep (limit 1000)')
+assert_throws("ValueError", || XML.find_all(tower, './/x'),
+  message: 'XML.find_all: nesting too deep (limit 1000)')
+// stringify writes only what parse reads back: names are QNames (a
+// TypeError otherwise, like a tag that is not a String), and a character no
+// XML document can hold is a ValueError.
+assert_eq(XML.stringify({tag: 'é', attrs: {'日': 'v'}}), '<é 日="v"/>')
+assert_throws("TypeError", || XML.stringify({tag: 'a b'}),
+  message: "XML.stringify: invalid element name 'a b'")
+assert_throws("TypeError", || XML.stringify({tag: ''}),
+  message: "XML.stringify: invalid element name ''")
+assert_throws("TypeError", || XML.stringify({tag: 'p:a:b'}),
+  message: "XML.stringify: invalid element name 'p:a:b'")
+assert_throws("TypeError", || XML.stringify({tag: 'a', attrs: {'x"y': '1'}}),
+  message: "XML.stringify: invalid attribute name 'x\"y'")
+assert_throws("ValueError", || XML.stringify({tag: 'a', children: [String.from_code_point(1)]}),
+  message: 'XML.stringify: invalid character U+0001')
+assert_throws("ValueError", || XML.stringify({tag: 'a', attrs: {k: String.from_code_point(0)}}),
+  message: 'XML.stringify: invalid character U+0000')
+assert_throws("ValueError", || XML.stringify({tag: 'a', children: [Encoding.hex.decode('ff')]}),
+  message: 'XML.stringify: invalid UTF-8')
+
+// Round trip: parse(stringify(parse(s))) == parse(s), indented or not.
+let samples = [
+  '<note id="7"><to>Tove</to><body>Hi <b>there</b>!</body></note>',
+  prolog,
+  '<a v="x&#10;y&#9;z&#13;" w="&quot;&apos;&lt;&gt;&amp;">1&#13;2 &lt;tag&gt; <![CDATA[]]>]]&gt;</a>',
+  '<root xmlns="urn:d" xmlns:x="urn:x"><x:item x:k="v">1</x:item><plain xmlns=""/></root>',
+  '<p>  lead <i> mid </i> trail  </p>',
+]
+for s in samples {
+  let once = XML.parse(s)
+  assert_eq(XML.parse(XML.stringify(once)), once)
+  assert_eq(XML.parse(XML.stringify(once, indent: 2)), once)
+  let spaced_once = XML.parse(s, keep_space: true)
+  assert_eq(
+    XML.parse(XML.stringify(spaced_once), keep_space: true),
+    spaced_once,
+  )
+}
+
