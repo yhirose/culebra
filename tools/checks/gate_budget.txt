@@ -188,7 +188,10 @@
 # and the right, .pan at a number, a signal and an envelope, a handle's fader
 # and a Voices' gates one value for both; 0.08 s under --vm, 4.9 s under
 # --jit, 14 CPU s for the three gc-stress runs).
-tests.cul 362
+# 364 since test_effects_call_forms.cul and test_effects_op_params.cul (an
+# effect fn and an operation bind and check as a plain fn does, from ordinary
+# code and from an effect body; 0.02 s under --vm, about 3 s each under --jit).
+tests.cul 364
 
 # tests/isolate/*.cul — run on both engines, plus the over-cap modes.
 # 21 since test_xml_isolate.cul (an XML element keeps its methods across an
@@ -360,7 +363,9 @@ ctest.entries 41
 # sounds guide (a voice and a drum playing a song). 1190 since its Proxy, in
 # en and ja: a sound replaced while it plays, and stopped. 1192 since its
 # stereo, in en and ja: two parts panned apart, rendered as both channels.
-docs.blocks 1192
+# 1194 since an operation's declaration binds what `perform` passes, in en and
+# ja: a keyword-only parameter's default filling in for a handler.
+docs.blocks 1194
 
 # The samples the language front ends are run over (examples/languages/*).
 languages.samples 130
