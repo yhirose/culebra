@@ -247,8 +247,7 @@ assert_eq(try {
 // --- (17) an op named like a dict method (get/has/…) dispatches correctly:
 // the handler index keys must not let such a name shadow the methods the
 // runtime calls on that index ---
-effect fn get()
-effect fn has(k)
+effect fn has(k)  // `get` is declared at (2)
 fn uses_get() {
   perform get()
 }
