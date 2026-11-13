@@ -5883,6 +5883,15 @@ inline JitValue _ns_audio_samples(const std::vector<double>& xs,
                                   const char* what) {
   return _ns_adapt::v_array(_ns_audio_floats(xs.data(), xs.size(), what));
 }
+// Samples as an Array of Floats, or with `right` [left, right].
+template <class T>
+inline JitValue _ns_audio_sides(const std::vector<T>& left, const std::vector<T>* right, const char* what) {
+  if (!right) return _ns_adapt::v_array(_ns_audio_floats(left.data(), left.size(), what));
+  auto* r = _jit_array_new_reserved(2, what);
+  for (auto* x : {&left, right})
+    culebra_runtime_array_push(r, TAG_ARRAY, reinterpret_cast<int64_t>(_ns_audio_floats(x->data(), x->size(), what)));
+  return _ns_adapt::v_array(r);
+}
 // A recording's bytes as [rate, channel 0's samples, channel 1's, ...].
 inline JitValue _ns_audio_decode(JitValue* a, int64_t) {
   namespace ad = culebra::_audio_detail;
@@ -6303,6 +6312,9 @@ inline const char* _ns_audio_graph_bad_value(culebra::_audio_detail::PartKind ki
                                               : "Audio.Graph: an lfnoise's freq is 0 or more and below half the rate";
     case ad::PartKind::Dust:
       return value == 0 && v >= 0 && v <= rate ? nullptr : "Audio.Graph: a dust's density is from 0 to the rate";
+    case ad::PartKind::Room:
+      if (v >= 0 && v <= 1) return nullptr;
+      return value == 0 ? "Audio.Graph: a room's size is from 0 to 1" : "Audio.Graph: a room's damp is from 0 to 1";
     case ad::PartKind::Noise:
     case ad::PartKind::Resonate:
     case ad::PartKind::Limit:
@@ -6333,14 +6345,15 @@ inline JitValue _ns_audio_graph_new(JitValue* a, int64_t) {
   return _ns_adapt::v_long(id);
 }
 // A part of `family` ("wave", "noise", "filter", "gain", "resonate", "pluck",
-// "delay", "limit", "drive", "impulse", "dust", "lfnoise", "lag", "decay" or
-// "math"), `kind` naming the wave, the filter, the lfnoise or the math,
+// "delay", "limit", "drive", "impulse", "dust", "lfnoise", "lag", "decay",
+// "math" or "room"), `kind` naming the wave, the filter, the lfnoise or the math,
 // taking in `inputs`, parts made before it. It is set up by the numbers
 // `options`: a wave's freq, feedback and phase, a noise's seed, a filter's
 // cutoff and q, a gain's gain, a resonance's dry and modes, a string's freq
 // and ring, a delay's time, a limit's ceiling and release, a drive's gain, an
 // impulse's freq and phase, a dust's density and seed, an lfnoise's freq and
-// seed, a lag's and a decay's time, a math's lo and hi.
+// seed, a lag's and a decay's time, a math's lo and hi, a room's size, damp
+// and side.
 inline JitValue _ns_audio_graph_part(JitValue* a, int64_t) {
   namespace ad = culebra::_audio_detail;
   auto& g = _ns_audio_graph(a[0]);
@@ -6357,7 +6370,8 @@ inline JitValue _ns_audio_graph_part(JitValue* a, int64_t) {
   static constexpr std::pair<std::string_view, int> kFamilies[] = {
       {"wave", 3},    {"noise", 1}, {"filter", 2},  {"gain", 1}, {"resonate", -1},
       {"pluck", 2},   {"delay", 1}, {"limit", 2},   {"drive", 1}, {"impulse", 2},
-      {"dust", 2},    {"lfnoise", 2}, {"lag", 1},   {"decay", 1}, {"math", 2}};
+      {"dust", 2},    {"lfnoise", 2}, {"lag", 1},   {"decay", 1}, {"math", 2},
+      {"room", 3}};
   auto fam = std::ranges::find(kFamilies, family, &std::pair<std::string_view, int>::first);
   if (fam == std::end(kFamilies)) {
     auto message = culebra::format("Audio.Graph: no part {}", family);
@@ -6422,6 +6436,10 @@ inline JitValue _ns_audio_graph_part(JitValue* a, int64_t) {
       _ns_audio_fail(family == "lag" ? "Audio.Graph: a lag's time is 0 or more" : "Audio.Graph: a decay's time is 0 or more");
     }
     return family == "lag" ? made(ad::PartKind::Lag, ad::Lag(opt[0], rate)) : made(ad::PartKind::Decay, ad::Decay(opt[0], rate));
+  }
+  if (family == "room") {
+    if (opt[2] != 0 && opt[2] != 1) _ns_audio_fail("Audio.Graph: a room's side is 0 (the left) or 1 (the right)");
+    return made(ad::PartKind::Room, ad::ReverbTank(rate, static_cast<int>(opt[2])), opt[0], opt[1]);
   }
   if (family == "math") {
     static constexpr std::pair<std::string_view, ad::MathKind> kMaths[] = {
@@ -6509,12 +6527,7 @@ inline JitValue _ns_audio_graph_render(JitValue* a, int64_t) {
   const auto n = static_cast<size_t>(ad::sample_at(seconds, g.rate()));
   std::vector<double> left(n), right(channels == 2 ? n : 0);
   g.render(left.data(), channels == 2 ? right.data() : nullptr, static_cast<int64_t>(n));
-  if (channels == 1) return _ns_audio_samples(left, "Audio.Graph.render() result");
-  auto* r = _jit_array_new_reserved(2, "Audio.Graph.render() result");
-  for (auto* x : {&left, &right})
-    culebra_runtime_array_push(r, TAG_ARRAY,
-                               reinterpret_cast<int64_t>(_ns_audio_floats(x->data(), n, "Audio.Graph.render() result")));
-  return _ns_adapt::v_array(r);
+  return _ns_audio_sides(left, channels == 2 ? &right : nullptr, "Audio.Graph.render() result");
 }
 // Checked here, so a program answers the same with or without a device.
 inline JitValue _ns_audio_graph_play(JitValue* a, int64_t) {
@@ -6595,9 +6608,11 @@ inline JitValue _ns_audio_schedule_held(JitValue* a, int64_t) {
 
 // A schedule rendered to samples as it would play (schedule_render): Kauai's
 // list, the bytes of each Sound it plays as [handle, data, handle, data, ...],
-// its length, its room's wet, its volume, and the second the samples start at.
+// its length, its room's wet, its volume, the second the samples start at,
+// and 2 for [left, right] (Kauai.render has checked it), else the left.
 inline JitValue _ns_audio_schedule_render(JitValue* a, int64_t) {
   namespace ad = culebra::_audio_detail;
+  int64_t channels = _ns_adapt::take_long(a[6]);
   std::vector<double> events;
   _ns_audio_schedule_events(a[0], events);
   ::JitArray* list = _ns_adapt::take_array(a[1]);
@@ -6608,13 +6623,13 @@ inline JitValue _ns_audio_schedule_render(JitValue* a, int64_t) {
     if (const char* fmt = ad::sound_format(p, sv.size()))
       sounds.push_back({_ns_adapt::take_long(list->items[i]), p, static_cast<int64_t>(sv.size()), fmt});
   }
-  std::vector<float> out;
+  std::vector<float> left, right;
   if (!ad::schedule_render(events.data(), static_cast<int64_t>(events.size()),
                         _ns_adapt::take_double(a[2]), _ns_adapt::take_double(a[3]),
                         _ns_adapt::take_double(a[4]), _ns_adapt::take_double(a[5]), sounds,
-                        out))
+                        left, channels == 2 ? &right : nullptr))
     culebra::throw_runtime_error_at("ValueError", "Kauai: render() is not available in this build", 0, 0);
-  return _ns_adapt::v_array(_ns_audio_floats(out.data(), out.size(), "Kauai render() result"));
+  return _ns_audio_sides(left, channels == 2 ? &right : nullptr, "Kauai render() result");
 }
 
 inline JitValue _ns_canvas_width(JitValue*, int64_t) {
@@ -11908,7 +11923,7 @@ inline const NsMethod kNsRows_Audio_native[] = {
   {"_Audio", "schedule_open",     4, &_ns_audio_schedule_open},
   {"_Audio", "schedule_fill",     3, &_ns_audio_schedule_fill},
   {"_Audio", "schedule_held",     1, &_ns_audio_schedule_held},
-  {"_Audio", "schedule_render",   6, &_ns_audio_schedule_render},
+  {"_Audio", "schedule_render",   7, &_ns_audio_schedule_render},
   {"_Audio", "resonate",       4, &_ns_audio_resonate},
   {"_Audio", "pluck",          5, &_ns_audio_pluck},
   {"_Audio", "partials",       9, &_ns_audio_partials},

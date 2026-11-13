@@ -59,7 +59,15 @@ let rendered = fn () {
     "  C     e4 .g \\f !c'2",
     '}',
   ]))
-  assert_true(roomy.render().size() > dry.size() + 22050)
+  let roomed = roomy.render()
+  assert_true(roomed.size() > dry.size() + 22050)
+  # With channels: 2, [left, right]: the left is render()'s, and the room's
+  # sides ring apart; with no room the sides are one.
+  let sides = roomy.render(channels: 2)
+  assert_eq(sides[0], roomed)
+  assert_true(sides[1] != roomed && sides[1].size() == roomed.size())
+  assert_eq(first.render(channels: 2), [dry, dry])
+  assert_throws("ValueError", fn () { first.render(channels: 3) })
 }
 rendered()
 
@@ -421,11 +429,11 @@ let refused = fn (f) {
 }
 let out_of_order = "Kauai: a song's events are out of time order"
 assert_eq(refused(fn () { _Audio.schedule_new(backwards, 2.0, -1.0) }), out_of_order)
-assert_eq(refused(fn () { _Audio.schedule_render(backwards, [], 2.0, 0.0, 1.0, 0.0) }), out_of_order)
+assert_eq(refused(fn () { _Audio.schedule_render(backwards, [], 2.0, 0.0, 1.0, 0.0, 1) }), out_of_order)
 # A list that is not a whole number of rows is refused as well.
 let not_rows = "Kauai: a song's events are rows of {stride} numbers"
 assert_eq(refused(fn () { _Audio.schedule_new([...events[0], 0.0], 2.0, -1.0) }), not_rows)
-assert_eq(refused(fn () { _Audio.schedule_render(events[0].slice(0, stride - 1), [], 2.0, 0.0, 1.0, 0.0) }), not_rows)
+assert_eq(refused(fn () { _Audio.schedule_render(events[0].slice(0, stride - 1), [], 2.0, 0.0, 1.0, 0.0, 1) }), not_rows)
 let not_a_sound = Kauai.new(EXTERNAL, voices: {ep: ep(|pitch, params| 1)}, drums: {ride: |n, params| 1})
 let unbuilt = not_a_sound._todo.size()
 assert_throws("TypeError", fn () {

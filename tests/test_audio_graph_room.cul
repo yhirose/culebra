@@ -1,0 +1,77 @@
+# Audio.Graph's room part: one side of a room (Freeverb), which answers only
+# its echoes. The right side's delays are longer, so the sides ring apart;
+# the size sets how long it rings and the damp how soon its highs go, and the
+# delays follow the graph's rate. Each check keeps its samples in its block.
+
+fn caught(call) {
+  try {
+    call()
+    nil
+  } catch e {
+    (e.kind, e.message)
+  }
+}
+
+# A click into a room of `size` and `damp` on `side` at `rate`: the echoes.
+fn echoes(size, damp, side, rate = 44100, seconds = 1.5) {
+  let g = Audio.Graph(rate)
+  let click = g.gain(g.impulse(0.0), 1.0)
+  g.output(g.room(click, size:, damp:, side:))
+  g.render(seconds)
+}
+
+# The seconds until the echoes stay 60 dB under their loudest, in 10 ms windows.
+fn rings(xs, rate = 44100) {
+  let w = Math.round(rate / 100)
+  let windows = iota(xs.size() / w).map(fn (k) {
+    let s = xs.slice(k * w, (k + 1) * w)
+    Math.max(s.max(), -s.min())
+  })
+  let peak = windows.max()
+  let loud = iota(windows.size()).filter(|k| windows[k] > peak / 1000.0)
+  (loud[loud.size() - 1] + 1) * 0.01
+}
+
+# Nothing until the shortest comb's delay has passed, and the sides differ.
+{
+  let left = echoes(0.5, 0.5, 0, seconds: 0.2)
+  let right = echoes(0.5, 0.5, 1, seconds: 0.2)
+  assert_true(left.slice(0, 1116).all(|x| x == 0.0))
+  assert_true(left[1116] != 0.0)
+  assert_true(right.slice(0, 1139).all(|x| x == 0.0))
+  assert_true(right[1139] != 0.0)
+}
+
+# A larger size rings longer; a larger damp, a little shorter. The delays
+# follow the rate, so a room rings as long at 22050.
+{
+  let small = rings(echoes(0.25, 0.5, 0))
+  let large = rings(echoes(0.75, 0.5, 0, seconds: 3.0))
+  assert_true(large > small * 1.8)
+  assert_true(rings(echoes(0.5, 1.0, 0)) < rings(echoes(0.5, 0.0, 0)))
+  assert_close(rings(echoes(0.5, 0.5, 0, rate: 22050), rate: 22050), rings(echoes(0.5, 0.5, 0)), 0.05)
+}
+
+# Its size and damp are values: a part moving one adds to its schedule, and
+# the sum is held within 0..1, so a size pushed past 1 rings as 1 does.
+{
+  let g = Audio.Graph()
+  let click = g.gain(g.impulse(0.0), 1.0)
+  let r = g.room(click, size: 0.4)
+  g.gain(g.wave(freq: 0.0, phase: Math.pi / 2.0), 0.25).connect(r.size)
+  g.output(r)
+  assert_eq(g.render(0.5), echoes(0.65, 0.5, 0, seconds: 0.5))
+  r.size.set(0.0, 0.9)
+  assert_eq(g.render(0.5), echoes(1.0, 0.5, 0, seconds: 0.5))
+}
+
+# What it takes: a size and a damp from 0 to 1, a side of 0 or 1.
+{
+  let g = Audio.Graph()
+  let n = g.noise()
+  assert_eq(caught(|| g.room(n, size: 1.5)), ("ValueError", "Audio.Graph: a room's size is from 0 to 1"))
+  assert_eq(caught(|| g.room(n, damp: -0.5)), ("ValueError", "Audio.Graph: a room's damp is from 0 to 1"))
+  assert_eq(caught(|| g.room(n, side: 2)), ("ValueError", "Audio.Graph: a room's side is 0 (the left) or 1 (the right)"))
+  let r = g.room(n)
+  assert_eq(caught(|| r.size.set(0.0, 2.0)), ("ValueError", "Audio.Graph: a room's size is from 0 to 1"))
+}

@@ -150,6 +150,21 @@ std::vector<float> rendered(const std::vector<double>& rows, const ad::PcmByHand
                       pcm, out);
   return out;
 }
+// Rendered on both sides: the left (what `rendered` gives) and the right.
+std::pair<std::vector<float>, std::vector<float>> rendered_sides(const std::vector<double>& rows,
+                                                                 const ad::PcmByHandle& pcm, double seconds,
+                                                                 double wet, double volume) {
+  std::vector<float> left, right;
+  ad::render_schedule(rows.data(), static_cast<int64_t>(rows.size()), seconds, wet, volume, 0.0,
+                      pcm, left, &right);
+  return {std::move(left), std::move(right)};
+}
+// How many samples of `a` and `b` differ.
+long differing(const std::vector<float>& a, const std::vector<float>& b) {
+  long n = 0;
+  for (size_t i = 0; i < std::min(a.size(), b.size()); i++) n += a[i] != b[i];
+  return n;
+}
 
 bool same_bits(float a, float b) { return std::memcmp(&a, &b, sizeof a) == 0; }
 
@@ -180,12 +195,17 @@ void hears(const char* what, const Device& device, int64_t from, const std::vect
 }
 
 // A song played on the stream is the song rendered once through: the same
-// samples from the one it starts on, whatever sizes the buffers come in.
+// samples on each side from the one it starts on, whatever sizes the
+// buffers come in. Its room's sides ring apart, and a render of the left
+// alone is the left.
 void schedule_plays_as_it_renders() {
   auto rows = song_rows(3.0, 1);
   auto pcm = song_pcm();
-  auto want = rendered(rows, pcm, 3.0, 0.3, 0.8);
+  auto [want, want_right] = rendered_sides(rows, pcm, 3.0, 0.3, 0.8);
   CHECK(want.size() > 3 * 44100, "the room rings on past the song (%zu samples)", want.size());
+  hears("the left rendered alone", rendered(rows, pcm, 3.0, 0.3, 0.8), 0, want);
+  CHECK(differing(want, want_right) > 44100, "the room's sides ring apart (%ld samples differ)",
+        differing(want, want_right));
 
   Device device(want.size() + 50000);
   device.run(777);
@@ -195,8 +215,64 @@ void schedule_plays_as_it_renders() {
   device.engine->schedule_room(1, 0.3);
   device.engine->schedule_play(1);
   device.run(static_cast<int64_t>(want.size()) + 20000);
-  hears("the song", device, start, want);
+  hears("the song, left", device.left, start, want);
+  hears("the song, right", device.right, start, want_right);
   CHECK(device.heap_calls == 0, "the renders made %ld heap calls", device.heap_calls);
+}
+
+// Each side of Kauai's room is the room it was before it had two: the tank
+// below is the one Room ran (its feedback and damp, Jezar's delays), and
+// ReverbTank's left side answers it bit for bit; the right rings apart.
+void room_left_is_the_room_it_was() {
+  struct OldRoom {
+    std::vector<float> combs[8], passes[4];
+    float damped[8] = {};
+    size_t comb_at[8] = {}, pass_at[4] = {};
+    OldRoom() {
+      for (int k = 0; k < 8; k++) combs[k].assign(ad::ReverbTank::kCombs[k], 0.0f);
+      for (int k = 0; k < 4; k++) passes[k].assign(ad::ReverbTank::kPasses[k], 0.0f);
+    }
+    double step(double x) {
+      double into = x * 0.015;
+      double echo = 0;
+      for (int k = 0; k < 8; k++) {
+        auto& buf = combs[k];
+        double y = buf[comb_at[k]];
+        damped[k] = static_cast<float>(y * (1.0 - 0.25) + damped[k] * 0.25);
+        buf[comb_at[k]] = static_cast<float>(into + damped[k] * 0.86);
+        comb_at[k] = (comb_at[k] + 1) % buf.size();
+        echo += y;
+      }
+      for (int k = 0; k < 4; k++) {
+        auto& buf = passes[k];
+        double held = buf[pass_at[k]];
+        buf[pass_at[k]] = static_cast<float>(echo + held * 0.5);
+        pass_at[k] = (pass_at[k] + 1) % buf.size();
+        echo = held - echo;
+      }
+      return echo;
+    }
+  };
+  OldRoom old, old_room;
+  ad::ReverbTank left(ad::kSampleRate, 0), right(ad::kSampleRate, 1);
+  ad::Room room;
+  room.wet.store(1.0);
+  std::mt19937 rng(3);
+  std::uniform_real_distribution<double> u(-1.0, 1.0);
+  long wrong = 0, apart = 0, wrong_room = 0;
+  for (int i = 0; i < 5 * ad::kSampleRate; i++) {
+    double x = i < 2 * ad::kSampleRate ? u(rng) : 0.0;
+    double a = old.step(x), b = left.step(x, ad::Room::kFeedback, ad::Room::kDamp);
+    wrong += std::memcmp(&a, &b, sizeof a) != 0;
+    apart += right.step(x, ad::Room::kFeedback, ad::Room::kDamp) != b;
+    // The Room, which stops once it has rung kTail past its sound.
+    room.send = x;
+    double c = room.step().left, d = old_room.step(x);
+    wrong_room += room.ringing() ? std::memcmp(&c, &d, sizeof c) != 0 : c != 0;
+  }
+  CHECK(wrong == 0, "the left side differs from the room it was in %ld samples", wrong);
+  CHECK(apart > ad::kSampleRate, "the right side rings apart from the left (%ld samples differ)", apart);
+  CHECK(wrong_room == 0, "the Room's left differs from the room it was in %ld samples", wrong_room);
 }
 
 // A tone starts on the sample the clock says it was asked for on, and sounds
@@ -317,24 +393,31 @@ void stereo_graph_plays_as_it_renders() {
   ad::graph_defs().erase(id);
 }
 
-// Two songs at once, each with its room: on both channels the stream is what
-// the mixer sums of them, the same bit for bit (a sound in no graph is mono).
+// Two songs at once: with no room the right is the left bit for bit (a sound
+// in no graph is mono), and each in its room the sides ring apart.
 void two_songs_on_both_channels() {
   auto pcm = song_pcm();
   auto rows1 = song_rows(1.0, 11), rows2 = song_rows(1.0, 12);
-  Device device(200000);
-  device.run(1000);
-  for (int64_t id : {1, 2}) {
-    device.engine->schedule_new(id, song(id == 1 ? rows1 : rows2, pcm, 1.0));
-    device.engine->schedule_room(id, 0.4);
-    device.engine->schedule_play(id);
-    device.run(1234);
+  for (double wet : {0.0, 0.4}) {
+    Device device(200000);
+    device.run(1000);
+    for (int64_t id : {1, 2}) {
+      device.engine->schedule_new(id, song(id == 1 ? rows1 : rows2, pcm, 1.0));
+      device.engine->schedule_room(id, wet);
+      device.engine->schedule_play(id);
+      device.run(1234);
+    }
+    device.run(4 * 44100);
+    auto loud = std::ranges::count_if(device.left, [](float v) { return v != 0; });
+    CHECK(loud > 44100, "the songs sound (%ld samples)", static_cast<long>(loud));
+    if (wet == 0) {
+      hears("two songs, the right against the left", device.right, 0, device.left);
+    } else {
+      CHECK(differing(device.left, device.right) > 44100, "two songs in their rooms: %ld samples differ",
+            differing(device.left, device.right));
+    }
+    CHECK(device.heap_calls == 0, "the renders made %ld heap calls", device.heap_calls);
   }
-  device.run(4 * 44100);
-  auto loud = std::ranges::count_if(device.left, [](float v) { return v != 0; });
-  CHECK(loud > 44100, "the songs sound (%ld samples)", static_cast<long>(loud));
-  hears("two songs, the right against the left", device.right, 0, device.left);
-  CHECK(device.heap_calls == 0, "the renders made %ld heap calls", device.heap_calls);
 }
 
 // More songs and graphs playing at once than the mixer's lists first held:
@@ -517,6 +600,7 @@ void filled_while_it_renders() {
 
 int main() {
   schedule_plays_as_it_renders();
+  room_left_is_the_room_it_was();
   tone_starts_when_asked();
   graph_plays_as_it_renders();
   loop_plays_as_it_renders();

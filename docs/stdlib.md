@@ -9090,6 +9090,7 @@ it or to any of its parts and values.
 | `g.abs(input)` | the size of `input` |
 | `g.clip(input, lo = -1.0, hi = 1.0)` | `input` held within `lo`..`hi` |
 | `g.exp(input)` | e to the power of `input` |
+| `g.room(input, size = 0.5, damp = 0.5, side = 0)` | one side of a room (Freeverb: eight damped combs, then four allpasses), answering only the echoes of `input`. `side` 0 is the left and 1 the right, whose delays are 23 samples longer, so two sides of one input ring apart; the delays follow the graph's rate. `size` (0 to 1) sets how long it rings (60 dB in about 0.7 s at 0, 1.5 s at 0.5 and 12 s at 1) and `damp` (0 to 1) how soon its highs go. A room is worked out as long as it plays |
 | `part.connect(target) -> target` | adds what `part` answers into `target`: into what that part takes in (a source, a wave, a noise, an impulse, a dust or an lfnoise, takes nothing in), or into one of its values (below). A part may be connected from any part, but a loop has to pass through a delay (below) |
 | `g.output(left, right = nil)` | the part the graph plays (silence until there is one), or with `right` the part on each side, which makes the graph stereo. A graph with one output plays it on both sides |
 | `g.render(seconds, channels = 1) -> Array` | the graph's first `seconds`, worked out now from its start. With `channels: 2`, `[left, right]`, each an Array of samples (a graph with one output gives the same on both); a stereo graph renders only so (`ValueError` with 1) |
@@ -9099,16 +9100,16 @@ it or to any of its parts and values.
 
 What moves in a part is a value: a wave's `freq`, `feedback` and `phase`, a
 filter's `cutoff`, a gain's `gain`, a string's `freq` and `ring`, a delay's
-`time`, a drive's `gain`, an impulse's and an lfnoise's `freq`, and a dust's
-`density`, each a field of the part. A value is its
+`time`, a drive's `gain`, an impulse's and an lfnoise's `freq`, a dust's
+`density`, and a room's `size` and `damp`, each a field of the part. A value is its
 schedule plus what the parts connected to it answer, sample by sample, as
 Web Audio's `AudioParam` is: `lfo.connect(w.freq)` adds the lfo to the
 wave's freq, in Hz, as `lfo.connect(d.time)` adds it to a delay's time, in
 seconds. What they move a value to is held where the part stays sound: a
 wave's, an impulse's and an lfnoise's freq and a cutoff from 0 to half the
 rate, a dust's density from 0 to the rate, a string's freq from 20 Hz to half
-the rate, a delay's time from 0 to 1, and a feedback, a ring and a
-drive's gain at 0 or more. The schedule is what the part was made with until
+the rate, a delay's time and a room's size and damp from 0 to 1, and a
+feedback, a ring and a drive's gain at 0 or more. The schedule is what the part was made with until
 its first change, and changes are scheduled on the graph's clock, in seconds
 from its start:
 
@@ -10321,6 +10322,7 @@ check, when `render` builds it at its rate, with the graph's `ValueError`.
 | `p.abs()` | the size of `p` |
 | `p.mix()` | a bundle's channels added to one part; a part as it is |
 | `p.pan(pos)` | stereo, `p` placed at `pos` from -1 (left) to 1 (right) at equal power: the left times sin((1 - pos)π/4), the right times sin((1 + pos)π/4), so 0 is about 0.707 on each side. A bundle of two is turned down side by side, each channel on its own side. `pos` is a number from -1 to 1 (`ValueError` past it), or a part or an envelope, held within -1..1 |
+| `p.reverb(mix = 0.33, room = 0.5, damp = 0.5)` | stereo, `p` in a room: its channels' sum goes into a room of each side (`Audio.Graph`'s `room`), and each side is `1 - mix` of its dry sound (one channel on both sides) and `mix` of its room. `room` (0 to 1) sets how long the room rings and `damp` (0 to 1) how soon its highs go; a part or an envelope moves them, held within 0..1. `mix` is a number from 0 to 1, and 0 makes no room. A bundle of more than two is a `ValueError` |
 | `p + x`, `p - x`, `p * x`, `p / n`, `-p` | parts added, subtracted and multiplied (a gain), with a number, a part, an envelope or an Array on the right, and a number on the left of `+` and `*`; `/` by a number only, `ValueError` for 0 |
 
 An Array where a value or a part goes is a channel per item, and what is
@@ -10375,7 +10377,9 @@ first of its factors to end (an envelope ending at 0 ends there, a 0 at
 once), a sum with the last; a delay rings on for its longest delay, a
 string for its `ring`, a resonance for 60 dB of its narrowest mode (a
 filter's is `cutoff / q` wide at its lowest cutoff; one a signal moves
-adds none), and a lag and a decay for their time; a size, and a clip that
+adds none), a lag and a decay for their time, and a room for 60 dB of its
+ring at its largest size (its longest comb losing what it feeds back each
+time round, then its longest allpass; 1.6 s at 0.5); a size, and a clip that
 holds 0, end with their input. An impulse or a dust ends when its `freq` or
 `density` is 0, and an lfnoise never. A loop rings on with no end it can
 work out.

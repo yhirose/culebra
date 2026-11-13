@@ -1862,7 +1862,7 @@ inline constexpr const char* AUDIO_MODULE_SOURCE = R"=culpre=(let _audio_module 
   # What moves in it is an AudioGraphValue: a wave's freq, feedback and
   # phase, a filter's cutoff, a gain's gain, a string's freq and ring, a
   # delay's time, a drive's gain, an impulse's and an lfnoise's freq, a
-  # dust's density.
+  # dust's density, a room's size and damp.
   class AudioGraphPart {
     freq = nil
     feedback = nil
@@ -1872,6 +1872,8 @@ inline constexpr const char* AUDIO_MODULE_SOURCE = R"=culpre=(let _audio_module 
     ring = nil
     time = nil
     density = nil
+    size = nil
+    damp = nil
     new(graph, index: Long) {
       @_graph = graph
       @_index = index
@@ -2035,6 +2037,20 @@ inline constexpr const char* AUDIO_MODULE_SOURCE = R"=culpre=(let _audio_module 
     }
     exp(input: AudioGraphPart) {
       @_part("math", "exp", [input], [-1.0, 1.0])
+    }
+    # One side of a room (Freeverb): `side` 0 the left, 1 the right, whose
+    # delays are longer. `size` (0 to 1) sets how long it rings and `damp`
+    # (0 to 1) how soon its highs go; it answers only the echoes.
+    room(
+      input: AudioGraphPart,
+      size: Long | Float = 0.5,
+      damp: Long | Float = 0.5,
+      side: Long = 0,
+    ) {
+      let p = @_part("room", "", [input], [size, damp, side])
+      p.size = @_value(p, 0)
+      p.damp = @_value(p, 1)
+      p
     }
     # The part heard, or with `right` the left and the right.
     output(left: AudioGraphPart, right: AudioGraphPart | Nil = nil) {
@@ -5661,14 +5677,16 @@ let _kauai_module = fn () {
     }
 
     # The song once through as play() sounds it, until its last sound and its
-    # room's echoes end: mono samples, 44100 a second, from the mixer that
-    # plays it, with no device. A song that loops is heard once. From `from`
-    # until `to` (each a point, as seconds() reads one), it is that part of
-    # the song, heard from LEAD seconds before `from` (rising from silence
-    # over them) until what starts before `to` ends: of the external sounds,
-    # only those that start before `to` and play notes LEAD seconds before
-    # `from` or later are built.
-    render(from: String | Long | Float | Nil = nil, to: String | Long | Float | Nil = nil) {
+    # room's echoes end: samples, 44100 a second, from the mixer that plays
+    # it, with no device: the left channel, or with `channels: 2` [left,
+    # right] (the room's echoes are what tell them apart). A song that loops
+    # is heard once. From `from` until `to` (each a point, as seconds() reads
+    # one), it is that part of the song, heard from LEAD seconds before
+    # `from` (rising from silence over them) until what starts before `to`
+    # ends: of the external sounds, only those that start before `to` and
+    # play notes LEAD seconds before `from` or later are built.
+    render(from: String | Long | Float | Nil = nil, to: String | Long | Float | Nil = nil, channels: Long = 1) {
+      __raise("ValueError", "Kauai: render(channels:) is 1 or 2") unless channels == 1 || channels == 2
       let part = @_part("render", from, to)
       let (first, last, start, plays) = (part.first, part.last, part.start, part.plays)
       let list = @_list(plays, last)
@@ -5683,11 +5701,13 @@ let _kauai_module = fn () {
         sounds.push(s.data())
       }
       let length = last == nil ? @_length : Math.min(last, @_length)
-      let out = _Audio.schedule_render(list, sounds, length, @_room, @_volume, start)
+      let out = _Audio.schedule_render(list, sounds, length, @_room, @_volume, start, channels)
       # The lead rises as half a cosine, to the level `from` is heard at.
       let rise = Math.round((first - start) * RATE)
-      for i in 0..Math.min(rise, out.size()) {
-        out[i] = out[i] * (0.5 - 0.5 * Math.cos(Math.pi * i / rise))
+      for side in channels == 2 ? out : [out] {
+        for i in 0..Math.min(rise, side.size()) {
+          side[i] = side[i] * (0.5 - 0.5 * Math.cos(Math.pi * i / rise))
+        }
       }
       out
     }
@@ -6181,6 +6201,25 @@ let _synth_module = fn () {
       __raise("ValueError", "Synth.pan: a bundle pans with two channels (left and right), not {count}") if count > 2
       self * pan_gains(pos)
     }
+    # Stereo, in a room (Freeverb): the channels' sum goes into a room of
+    # each side, and each side is (1 - mix) of its dry sound (one channel
+    # on both) and `mix` of its room. `room` (0 to 1) sets how long the room
+    # rings and `damp` (0 to 1) how soon its highs go; a part or an envelope
+    # moves them within 0..1. A mix of 0 makes no room.
+    reverb(mix: Long | Float = 0.33, room: Long | Float | SynthPart | SynthEnvelope = 0.5, damp: Long | Float | SynthPart | SynthEnvelope = 0.5) {
+      let fail = |msg| __raise("ValueError", "Synth.reverb: {msg}")
+      fail("mix is a number from 0 to 1") unless finite(mix) && mix >= 0 && mix <= 1
+      fail("room is a number from 0 to 1") if is_number(room) && !(room >= 0 && room <= 1)
+      fail("damp is a number from 0 to 1") if is_number(damp) && !(damp >= 0 && damp <= 1)
+      fail("room and damp are one channel") if [room, damp].any(|v| v is SynthPart && v.kind == "bundle")
+      let dry = channels_or_one(self)
+      fail("a bundle goes into a room with two channels (left and right), not {dry.size()}") if dry.size() > 2
+      let into = self.mix()
+      let dry_side = |side| dry.get(side, dry[0]) * (1.0 - mix)
+      let wet = |side| SynthPart("room", [into], {size: room, damp: damp}, {side: side}) * mix
+      let sides = iota(2).map(|side| mix == 0 ? dry_side(side) : dry_side(side) + wet(side))
+      SynthPart("bundle", sides, {}, {})
+    }
   }
 
   let wave = fn (
@@ -6239,7 +6278,7 @@ let _synth_module = fn () {
     let step = scaled(width, 2.0, -1.0)
     node("mix", step == 0.0 ? saws : saws + [step], {}, {})
   }
-  let mix = fn (parts: Array) {
+  let mix_parts = fn (parts: Array) {
     __raise("ValueError", "Synth.mix: nothing to mix") if parts.empty()
     __raise("TypeError", "type error: Synth.mix takes an Array of Long | Float | SynthPart | SynthEnvelope | Array") unless parts.all(|p| p is Long | Float | SynthPart | SynthEnvelope | Array)
     node("mix", parts, {}, {})
@@ -6574,6 +6613,12 @@ let _synth_module = fn () {
       },
       "lag" => g.lag(input, o.time),
       "decay" => g.decay(input, o.time),
+      "room" => {
+        let q = g.room(input, size: base_of(v.size, 0.0), damp: base_of(v.damp, 0.0), side: o.side)
+        feed(b, p, q.size, v.size, 0.0)
+        feed(b, p, q.damp, v.damp, 0.0)
+        q
+      },
       "math" => match o.kind {
         "abs" => g.abs(input),
         "clip" => g.clip(input, o.lo, o.hi),
@@ -6636,8 +6681,10 @@ let _synth_module = fn () {
   # filter's `cutoff / q` wide at its lowest cutoff (one a signal moves adds
   # none: the input's end decides), and a lag and a decay for their time; a
   # size, and a clip that holds 0, end with their input; an impulse and a
-  # dust end when their freq or density is 0. A gated envelope ends once it is let go,
-  # `held` seconds from its start, and never while it is held.
+  # dust end when their freq or density is 0; a room rings on 60 dB past
+  # its input, as long as its longest comb does at its largest size. A gated
+  # envelope ends once it is let go, `held` seconds from its start, and
+  # never while it is held.
   fn ending(expr, held = nil) {
     let known = {}
     fn envelope_end(e) {
@@ -6661,6 +6708,11 @@ let _synth_module = fn () {
       }
     }
     let ring = |width| 6.91 / (Math.pi * width)
+    # A room's 60 dB at `size`: its longest comb (the right side's 1617 + 23
+    # samples at 44100) losing what it feeds back each time round, which
+    # bounds what its damped highs do, and then its longest allpass (579
+    # samples) ringing 60 dB at a half each time round.
+    let room_ring = |size| 3.0 * 1640.0 / 44100.0 / -Math.log(0.7 + 0.28 * Math.clamp(size, 0.0, 1.0)) * Math.log(10.0) + 10.0 * 579.0 / 44100.0
     fn filter_ring(p) {
       let cutoff = p.values.cutoff
       match cutoff {
@@ -6683,6 +6735,7 @@ let _synth_module = fn () {
         "impulse" => value_end(p.values.freq),
         "dust" => value_end(p.values.density),
         "lag" | "decay" => tail(p.inputs[0]) + p.options.time,
+        "room" => tail(p.inputs[0]) + room_ring(longest(p.values.size)),
         "math" => match p.options.kind {
           "abs" => tail(p.inputs[0]),
           "clip" => p.options.lo <= 0 && p.options.hi >= 0 ? tail(p.inputs[0]) : Math.inf,
@@ -7117,7 +7170,7 @@ let _synth_module = fn () {
     adsr: adsr,
     perc: perc,
     control: control,
-    mix: mix,
+    mix: mix_parts,
     feedback: feedback_loop,
     Voices: SynthVoices,
     Proxy: SynthProxy,

@@ -2221,6 +2221,7 @@ inline constexpr CanonParam kCanonParams_Audio_native_schedule_render[] = {
   {"wet", false, false, false, false, false, "Long|Float", CanonDefault::None, 0, {}},
   {"volume", false, false, false, false, false, "Long|Float", CanonDefault::None, 0, {}},
   {"from", false, false, false, false, false, "Long|Float", CanonDefault::None, 0, {}},
+  {"channels", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
 };
 
 inline constexpr CanonParam kCanonParams_Audio_native_decode[] = {

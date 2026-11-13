@@ -1655,6 +1655,71 @@ class Decay {
   double b_, y_ = 0;
 };
 
+// A room's feedback and damp at `size` and `damp`, each 0 to 1 (Freeverb's
+// scaling: size 4/7 and damp 0.625 are Kauai's room).
+inline double reverb_feedback(double size) { return 0.7 + 0.28 * size; }
+inline double reverb_damp(double damp) { return 0.4 * damp; }
+
+// One side of a room (Freeverb, Jezar's): eight damped combs in parallel,
+// then four allpasses in series, what comes in taken in at kInput. The right
+// side (`side` 1) has every delay kSpread samples longer, so the two sides
+// ring apart; the delays are Jezar's at 44100 and in proportion at another
+// rate. Kauai's Room plays a song in two of these, and a graph's room part is
+// one. `feedback` sets how long it rings and `damp` how soon its highs go.
+class ReverbTank {
+ public:
+  static constexpr int kCombs[8] = {1116, 1188, 1277, 1356, 1422, 1491, 1557, 1617};
+  static constexpr int kPasses[4] = {556, 441, 341, 225};
+  static constexpr int kSpread = 23;
+  static constexpr double kInput = 0.015;
+
+  ReverbTank(double rate, int side) {
+    auto length = [&](int d) {
+      return std::max<size_t>(1, static_cast<size_t>(std::lround((d + side * kSpread) * rate / 44100.0)));
+    };
+    for (int k = 0; k < 8; k++) combs_[k].assign(length(kCombs[k]), 0.0f);
+    for (int k = 0; k < 4; k++) passes_[k].assign(length(kPasses[k]), 0.0f);
+  }
+  // Silent again.
+  void reset() {
+    for (int k = 0; k < 8; k++) {
+      std::ranges::fill(combs_[k], 0.0f);
+      damped_[k] = 0;
+      comb_at_[k] = 0;
+    }
+    for (int k = 0; k < 4; k++) {
+      std::ranges::fill(passes_[k], 0.0f);
+      pass_at_[k] = 0;
+    }
+  }
+  // The echo this sample, of `x` and what came in before it.
+  double step(double x, double feedback, double damp) {
+    double into = x * kInput;
+    double echo = 0;
+    for (int k = 0; k < 8; k++) {
+      auto& buf = combs_[k];
+      double y = buf[comb_at_[k]];
+      damped_[k] = static_cast<float>(settled(y * (1.0 - damp) + damped_[k] * damp));
+      buf[comb_at_[k]] = static_cast<float>(settled(into + damped_[k] * feedback));
+      comb_at_[k] = ring_next(comb_at_[k], buf.size());
+      echo += y;
+    }
+    for (int k = 0; k < 4; k++) {
+      auto& buf = passes_[k];
+      double held = buf[pass_at_[k]];
+      buf[pass_at_[k]] = static_cast<float>(settled(echo + held * 0.5));
+      pass_at_[k] = ring_next(pass_at_[k], buf.size());
+      echo = held - echo;
+    }
+    return echo;
+  }
+
+ private:
+  std::vector<float> combs_[8], passes_[4];
+  float damped_[8] = {};
+  size_t comb_at_[8] = {}, pass_at_[4] = {};
+};
+
 // What a Math part answers for what comes in: its size, it held within lo..hi,
 // or e to its power.
 enum class MathKind { Abs, Clip, Exp };
@@ -1672,11 +1737,12 @@ struct MathOp {
   }
 };
 
-enum class PartKind { Wave, Noise, Filter, Gain, Resonate, Pluck, Delay, Limit, Drive, Impulse, Dust, LfNoise, Lag, Decay, Math };
+enum class PartKind { Wave, Noise, Filter, Gain, Resonate, Pluck, Delay, Limit, Drive, Impulse, Dust, LfNoise, Lag, Decay, Math, Room };
 
 // How many values a part of `kind` reads: a wave's freq, feedback and phase,
 // a filter's cutoff, a gain's gain, a string's freq and ring, a delay's time,
-// a drive's gain, an impulse's and an lfnoise's freq, a dust's density.
+// a drive's gain, an impulse's and an lfnoise's freq, a dust's density, a
+// room's size and damp.
 // (Every kind is named here and below, so a kind added is a -Wswitch error in
 // check-bench-audio-graph, which builds this header with -Werror, until each
 // says what it is.)
@@ -1695,7 +1761,8 @@ inline int value_count(PartKind kind) {
     case PartKind::Impulse:
     case PartKind::Dust:
     case PartKind::LfNoise: return 1;
-    case PartKind::Pluck: return 2;
+    case PartKind::Pluck:
+    case PartKind::Room: return 2;
     case PartKind::Wave: return 3;
   }
   return 0;
@@ -1720,7 +1787,8 @@ inline bool takes_in(PartKind kind) {
     case PartKind::Drive:
     case PartKind::Lag:
     case PartKind::Decay:
-    case PartKind::Math: return true;
+    case PartKind::Math:
+    case PartKind::Room: return true;
   }
   return false;
 }
@@ -1745,8 +1813,8 @@ inline PluckString graph_string(double rate) {
 // it to `x`, held where the part stays sound: a wave's, an impulse's and an
 // lfnoise's freq, a cutoff and a string's freq from 0 (a string's from its
 // lowest) to half the rate, a dust's density from 0 to the rate, a delay's
-// time from 0 to its longest, and a wave's feedback, a string's ring and a
-// drive's gain at 0 or more.
+// time from 0 to its longest, a room's size and damp from 0 to 1, and a
+// wave's feedback, a string's ring and a drive's gain at 0 or more.
 inline double held_value(PartKind kind, int value, double x, double rate) {
   switch (kind) {
     case PartKind::Wave: return value == 0 ? std::clamp(x, 0.0, 0.5 * rate) : value == 1 ? std::max(x, 0.0) : x;
@@ -1757,6 +1825,7 @@ inline double held_value(PartKind kind, int value, double x, double rate) {
     case PartKind::Pluck: return value == 0 ? std::clamp(x, kGraphPluckLowest, 0.5 * rate) : std::max(x, 0.0);
     case PartKind::Delay: return std::clamp(x, 0.0, kGraphDelayLongest);
     case PartKind::Drive: return std::max(x, 0.0);
+    case PartKind::Room: return std::clamp(x, 0.0, 1.0);
     case PartKind::Gain: return x;
     case PartKind::Noise:
     case PartKind::Resonate:
@@ -1778,12 +1847,12 @@ struct GraphPart {
   std::vector<int> inputs;  // parts added together as what it takes in
   // A wave's freq, feedback and phase, a filter's cutoff, a gain's gain, a
   // string's freq and ring, a delay's time, a drive's gain, an impulse's and
-  // an lfnoise's freq, a dust's density; each is its schedule plus the sum
-  // of the parts connected to it.
+  // an lfnoise's freq, a dust's density, a room's size and damp; each is its
+  // schedule plus the sum of the parts connected to it.
   Param values[kGraphValues];
   std::vector<int> connected[kGraphValues];
   std::variant<std::monostate, Oscillator, Noise, Svf, Resonance, PluckString, DelayLine, Limiter, Drive, Impulse, Dust,
-               LfNoise, Lag, Decay, MathOp>
+               LfNoise, Lag, Decay, MathOp, ReverbTank>
       processor;
   double out[kGraphBlock] = {};
 };
@@ -2085,6 +2154,11 @@ class Graph {
       case PartKind::Lag: each_in(std::get<Lag>(p.processor)); break;
       case PartKind::Decay: each_in(std::get<Decay>(p.processor)); break;
       case PartKind::Math: each_in(std::get<MathOp>(p.processor)); break;
+      case PartKind::Room: {
+        auto& t = std::get<ReverbTank>(p.processor);
+        for (int i = 0; i < n; i++) out[i] = t.step(in[i], reverb_feedback(v0[i]), reverb_damp(v1[i]));
+        break;
+      }
     }
   }
 
@@ -2322,7 +2396,7 @@ inline void schedule_fill(int64_t, int64_t, int64_t) {}
 inline double schedule_held(int64_t) { return 0.0; }
 // The page mixes a schedule in WebAudio, which renders nothing back to the program.
 inline bool schedule_render(const double*, int64_t, double, double, double, double,
-                         const std::vector<SoundBytes>&, std::vector<float>&) {
+                         const std::vector<SoundBytes>&, std::vector<float>&, std::vector<float>*) {
   return false;
 }
 // The page's decoder answers later, and to the page.
@@ -2423,14 +2497,15 @@ void schedule_fill(int64_t id, int64_t slot, int64_t sound);
 double schedule_held(int64_t id);
 // A schedule (schedule_new's list and length) rendered into `out`, which arrives
 // empty, as the stream would play it once through at `volume` in a room heard
-// `wet` strong: mono at kMixerRate, from `from` seconds on until its last
+// `wet` strong: the left at kMixerRate into `out` (and the right into
+// `right` unless it is null), from `from` seconds on until its last
 // sound and its room's echoes end. It is mixed from the top all the same, so
 // what sounds from `from` on is what the whole schedule sounds there. Its Sounds
 // are decoded from `sounds` as sound_load decodes them, so it needs no
 // device. False where there is no mixer to render with.
 bool schedule_render(const double* events, int64_t count, double length, double wet,
                   double volume, double from, const std::vector<SoundBytes>& sounds,
-                  std::vector<float>& out);
+                  std::vector<float>& out, std::vector<float>* right);
 // A recording's bytes (`fmt` sound_format's) read with the decoders a Sound
 // plays through, as floats at its own rate and channels. Needs no device.
 DecodeResult decode(const uint8_t* data, int64_t len, const char* fmt, Recording& out);
@@ -2495,7 +2570,7 @@ CULEBRA_RT_AUDIO_LINKAGE void schedule_fill(int64_t, int64_t, int64_t) {}
 CULEBRA_RT_AUDIO_LINKAGE double schedule_held(int64_t) { return 0.0; }
 CULEBRA_RT_AUDIO_LINKAGE bool schedule_render(const double*, int64_t, double, double,
                                            double, double, const std::vector<SoundBytes>&,
-                                           std::vector<float>&) {
+                                           std::vector<float>&, std::vector<float>*) {
   return false;
 }
 CULEBRA_RT_AUDIO_LINKAGE DecodeResult decode(const uint8_t*, int64_t, const char*,

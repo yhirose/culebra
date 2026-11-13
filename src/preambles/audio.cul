@@ -212,7 +212,7 @@ let _audio_module = fn () {
   # What moves in it is an AudioGraphValue: a wave's freq, feedback and
   # phase, a filter's cutoff, a gain's gain, a string's freq and ring, a
   # delay's time, a drive's gain, an impulse's and an lfnoise's freq, a
-  # dust's density.
+  # dust's density, a room's size and damp.
   class AudioGraphPart {
     freq = nil
     feedback = nil
@@ -222,6 +222,8 @@ let _audio_module = fn () {
     ring = nil
     time = nil
     density = nil
+    size = nil
+    damp = nil
     new(graph, index: Long) {
       @_graph = graph
       @_index = index
@@ -385,6 +387,20 @@ let _audio_module = fn () {
     }
     exp(input: AudioGraphPart) {
       @_part("math", "exp", [input], [-1.0, 1.0])
+    }
+    # One side of a room (Freeverb): `side` 0 the left, 1 the right, whose
+    # delays are longer. `size` (0 to 1) sets how long it rings and `damp`
+    # (0 to 1) how soon its highs go; it answers only the echoes.
+    room(
+      input: AudioGraphPart,
+      size: Long | Float = 0.5,
+      damp: Long | Float = 0.5,
+      side: Long = 0,
+    ) {
+      let p = @_part("room", "", [input], [size, damp, side])
+      p.size = @_value(p, 0)
+      p.damp = @_value(p, 1)
+      p
     }
     # The part heard, or with `right` the left and the right.
     output(left: AudioGraphPart, right: AudioGraphPart | Nil = nil) {

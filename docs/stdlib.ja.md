@@ -8716,6 +8716,7 @@ println(Math.round(Audio.integrated_loudness(both)))                     # => -1
 | `g.abs(input)` | `input`の大きさ |
 | `g.clip(input, lo = -1.0, hi = 1.0)` | `lo`から`hi`の間に収めた`input` |
 | `g.exp(input)` | eの`input`乗 |
+| `g.room(input, size = 0.5, damp = 0.5, side = 0)` | 部屋の片側（Freeverb。減衰つきの櫛形フィルタ8本と全域通過4本）。`input`の響きだけを返す。`side`は0が左、1が右で、右は遅延が23サンプル長いので、同じ入力の左右が別々に響く。遅延の長さはグラフのレートに比例する。`size`（0から1）は響きの長さ（60 dBまで、0で約0.7秒、0.5で1.5秒、1で12秒）、`damp`（0から1）は高い音が消える速さ。鳴っている間はずっと計算する |
 | `part.connect(target) -> target` | `part`の出力を`target`に足す。`target`が部品ならその入力に（音源、つまりwave、noise、impulse、dust、lfnoiseは入力を取らない）、値（下記）ならその値に足す。どの部品からでもつなげるが、ループは遅延を通らなければならない（下記） |
 | `g.output(left, right = nil)` | グラフが鳴らす部品（決めるまでは無音）。`right`を渡すと左右それぞれの部品で、グラフはステレオになる。出力が1つのグラフは、それを左右の両方で鳴らす |
 | `g.render(seconds, channels = 1) -> Array` | グラフの最初の`seconds`秒を、始まりから今計算する。`channels: 2`なら、サンプルの配列の組`[左, 右]`（出力が1つのグラフは両方に同じもの）。ステレオのグラフはこの形でだけ描ける（1なら`ValueError`） |
@@ -8725,11 +8726,11 @@ println(Math.round(Audio.integrated_loudness(both)))                     # => -1
 
 部品の中で動かせるものを値と呼びます。波の`freq`、`feedback`、`phase`、フィルタの`cutoff`、
 gainの`gain`、弦の`freq`と`ring`、遅延の`time`、driveの`gain`、impulseとlfnoiseの`freq`、
-dustの`density`が、それぞれ部品のフィールドになっています。
+dustの`density`、roomの`size`と`damp`が、それぞれ部品のフィールドになっています。
 値は、予約した値に、つないだ部品の出力の和をサンプルごとに足したものです。Web Audioの`AudioParam`と同じです。
 `lfo.connect(w.freq)`はlfoを波のfreqにHzとして足し、`lfo.connect(d.time)`は遅延のtimeに秒として足します。
 つないだ部品が動かした値は、部品が壊れない範囲に収めます。波とimpulseとlfnoiseのfreqとcutoffは0から`rate`の半分、
-dustのdensityは0から`rate`、弦のfreqは20 Hzから`rate`の半分、遅延のtimeは0から1、feedbackとringとdriveのgainは0以上です。
+dustのdensityは0から`rate`、弦のfreqは20 Hzから`rate`の半分、遅延のtimeとroomのsizeとdampは0から1、feedbackとringとdriveのgainは0以上です。
 予約した値は最初の変更まで部品を作ったときの値のままで、変更はグラフの時計（始まりからの秒）の上に予約します。
 
 | メソッド | 効果 |
@@ -9869,6 +9870,7 @@ sine(5.0))`は、0から1の間で揺れるトレモロです。同じ値を2回
 | `p.abs()` | `p`の大きさ |
 | `p.mix()` | 束のチャンネルを足して1つの部品にする。部品はそのまま |
 | `p.pan(pos)` | `p`を、-1（左）から1（右）の`pos`に等パワーで置いたステレオ。左はsin((1 - pos)π/4)倍、右はsin((1 + pos)π/4)倍で、0なら左右とも約0.707倍。2チャンネルの束は、各チャンネルを自分の側で絞る。`pos`は-1から1の数（範囲の外は`ValueError`）、または部品かエンベロープで、-1..1に収める |
+| `p.reverb(mix = 0.33, room = 0.5, damp = 0.5)` | `p`を部屋に置いたステレオ。チャンネルの和を左右それぞれの部屋（`Audio.Graph`の`room`）に入れ、各側は乾いた音（1チャンネルなら左右とも）の`1 - mix`と、自分の部屋の`mix`の和。`room`（0から1）は響きの長さ、`damp`（0から1）は高い音が消える速さで、部品かエンベロープで動かすと0..1に収める。`mix`は0から1の数で、0なら部屋を作らない。3チャンネル以上の束は`ValueError` |
 | `p + x`、`p - x`、`p * x`、`p / n`、`-p` | 部品の和、差、積（音量）。右は数、部品、エンベロープ、配列。`+`と`*`は数が左でもよい。`/`は数で割るときだけで、0なら`ValueError` |
 
 値や部品の場所に配列を渡すと、要素ごとに1チャンネルになり、作られるものは束
@@ -9920,7 +9922,7 @@ let sound = Audio.Sound.new(sides)  # ステレオのSound
 終わるもので終わります。遅延は最も長い遅れの分、弦は`ring`の分、共鳴は最も
 狭いモードが60 dB減衰する分だけ、余韻が続きます（フィルタは、最も低い`cutoff`での
 幅`cutoff / q`のモードとして数え、信号で動く`cutoff`は余韻を足しません）。
-lagとdecayはその時間の分だけ続き、大きさ（`abs`）と、0を含む範囲の`clip`は
+lagとdecayはその時間の分、roomは最も大きいsizeでの響きが60 dB下がる分（最も長い櫛形フィルタが1周ごとに帰す分で減り、続いて最も長い全域通過が鳴る分。0.5で1.6秒）だけ続き、大きさ（`abs`）と、0を含む範囲の`clip`は
 入力と一緒に終わります。impulseとdustは、`freq`や`density`が0なら終わり、
 lfnoiseは終わりません。ループは、終わりを決められないまま鳴り続けます。`play`は、待たずに鳴らした
 音を、ハンドルを誰も持たなくても鳴らし続け、終わったあとの次の`play`で手放します。

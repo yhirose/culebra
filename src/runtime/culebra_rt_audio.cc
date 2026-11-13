@@ -517,7 +517,7 @@ void schedule_new(int64_t id, const double* events, int64_t count, double length
 // sound_load decodes them, so no device is needed.
 bool schedule_render(const double* events, int64_t count, double length, double wet,
                   double volume, double from, const std::vector<SoundBytes>& sounds,
-                  std::vector<float>& out) {
+                  std::vector<float>& out, std::vector<float>* right) {
   PcmByHandle pcm;
   for (const SoundBytes& b : sounds) {
     Wave w = LoadWaveFromMemory(b.fmt, b.data, static_cast<int>(b.len));
@@ -525,7 +525,7 @@ bool schedule_render(const double* events, int64_t count, double length, double 
     if (auto p = mixer_samples(w)) pcm[b.handle] = std::move(p);
     UnloadWave(w);
   }
-  render_schedule(events, count, length, wet, volume, from, pcm, out);
+  render_schedule(events, count, length, wet, volume, from, pcm, out, right);
   return true;
 }
 DecodeResult decode(const uint8_t* data, int64_t len, const char* fmt, Recording& out) {

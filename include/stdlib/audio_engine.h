@@ -163,72 +163,44 @@ inline Note make_note(double start_freq, double end_freq, int64_t attack, int64_
 // mixed in alongside them, as many at once as the song asks for. A song can
 // start before its samples are all made (open_schedule): it waits for one
 // that has not come, as a video waits for its next frames.
-// The room a schedule plays in (Freeverb: eight damped combs in parallel, then
-// four allpasses in series, at Jezar's delays and gain), heard `wet` strong
-// alongside the schedule's own sound. The schedule's tones and samples add into
-// `send` as they render, and step() runs the room one sample on. It is a
-// schedule's own, so a song's echoes are its own, and ring on after its last
-// sound. Audio thread only, but for `wet`.
+// One sample of the left and the right channel.
+struct Frame {
+  double left, right;
+};
+
+// The room a schedule plays in, heard `wet` strong alongside the schedule's
+// own sound: a ReverbTank a side, both taking in the schedule's sound. The
+// schedule's tones and samples add into `send` as they render, and step()
+// runs the room one sample on. It is a schedule's own, so a song's echoes are
+// its own, and ring on after its last sound. Audio thread only, but for `wet`.
 struct Room {
-  static constexpr int kCombs[8] = {1116, 1188, 1277, 1356, 1422, 1491, 1557, 1617};
-  static constexpr int kPasses[4] = {556, 441, 341, 225};
-  static constexpr double kFeedback = 0.86, kDamp = 0.25, kInput = 0.015;
-  // Samples it rings on after the last of its sound: some 90 dB down.
+  // The tanks' feedback and damp (a graph room's size 4/7, damp 0.625).
+  static constexpr double kFeedback = 0.86, kDamp = 0.25;
+  // Samples it rings on after the last of its sound: some 90 dB down on the
+  // left, 85 on the right (whose longer delays ring a little longer).
   static constexpr int64_t kTail = 2 * kSampleRate;
 
   std::atomic<double> wet{0.0};
-  std::vector<float> combs[8];
-  std::vector<float> passes[4];
-  float damped[8] = {};
-  size_t comb_at[8] = {};
-  size_t pass_at[4] = {};
+  ReverbTank left{kSampleRate, 0}, right{kSampleRate, 1};
   double send = 0;
   int64_t quiet = kTail;  // samples since `send` last had sound in it
 
-  Room() {
-    for (int k = 0; k < 8; k++) combs[k].assign(kCombs[k], 0.0f);
-    for (int k = 0; k < 4; k++) passes[k].assign(kPasses[k], 0.0f);
-  }
   // Silent again, for a schedule played from the top.
   void reset() {
-    for (int k = 0; k < 8; k++) {
-      std::ranges::fill(combs[k], 0.0f);
-      damped[k] = 0;
-      comb_at[k] = 0;
-    }
-    for (int k = 0; k < 4; k++) {
-      std::ranges::fill(passes[k], 0.0f);
-      pass_at[k] = 0;
-    }
+    left.reset();
+    right.reset();
     send = 0;
     quiet = kTail;
   }
   bool ringing() const { return quiet < kTail; }
-  // The echoes this sample, of `send` and what came before it.
-  double step() {
+  // The echoes this sample on each side, of `send` and what came before it.
+  Frame step() {
     double x = send;
     send = 0;
     double w = wet.load(std::memory_order_relaxed);
     quiet = w <= 0 ? kTail : x != 0 ? 0 : std::min(quiet + 1, kTail);
-    if (!ringing()) return 0;
-    double into = x * kInput;
-    double echo = 0;
-    for (int k = 0; k < 8; k++) {
-      auto& buf = combs[k];
-      double y = buf[comb_at[k]];
-      damped[k] = static_cast<float>(y * (1.0 - kDamp) + damped[k] * kDamp);
-      buf[comb_at[k]] = static_cast<float>(into + damped[k] * kFeedback);
-      comb_at[k] = (comb_at[k] + 1) % buf.size();
-      echo += y;
-    }
-    for (int k = 0; k < 4; k++) {
-      auto& buf = passes[k];
-      double held = buf[pass_at[k]];
-      buf[pass_at[k]] = static_cast<float>(echo + held * 0.5);
-      pass_at[k] = (pass_at[k] + 1) % buf.size();
-      echo = held - echo;
-    }
-    return echo * w;
+    if (!ringing()) return {0, 0};
+    return {left.step(x, kFeedback, kDamp) * w, right.step(x, kFeedback, kDamp) * w};
   }
 };
 
@@ -364,11 +336,6 @@ inline constexpr int kStealFade = 128;
 // fading goes at once, which takes as many steals inside one fade.
 inline constexpr size_t kSamplerSlots = 2 * kMaxSamplers;
 
-// One sample of the left and the right channel.
-struct Frame {
-  double left, right;
-};
-
 // The mixing: the voice sounding on each channel, the schedules playing and the
 // samples they started, and the noise channel's generator. A stream has one,
 // which its audio thread alone touches; a schedule rendered to samples
@@ -391,8 +358,8 @@ struct Mixer {
   void start(const Sampler& s);
   // Sample `p` of each channel: the schedules' notes due then started, the
   // samples and the channels sounding (one sound, on both), `left` or
-  // `right`, and the rooms' echoes (on both). Each channel is summed in the
-  // order a mono mix was, so a mono sound is the same on both, bit for bit.
+  // `right`, and the rooms' echoes (each side its tank's). The left is
+  // summed in the order a mono mix was, so it is that mix bit for bit.
   // Not yet clamped.
   Frame sample(int64_t p, double left, double right);
   // The noise channel's next sample, from the mixer's own generator.
@@ -502,9 +469,9 @@ inline Frame Mixer::sample(int64_t p, double left, double right) {
   }
   Frame f{mixed + left, mixed + right};
   for (auto& ps : playing) {
-    double echo = ps.schedule->room->step();
-    f.left += echo;
-    f.right += echo;
+    Frame echo = ps.schedule->room->step();
+    f.left += echo.left;
+    f.right += echo.right;
   }
   return f;
 }
@@ -512,10 +479,11 @@ inline Frame Mixer::sample(int64_t p, double left, double right) {
 // A schedule (schedule_new's list and length) played once through by a mixer
 // of its own, at `volume` in a room heard `wet` strong: from sample 0 until
 // it lets go of it (its last sound and its room's echoes over), as the stream
-// would, keeping the samples from `from` seconds on.
+// would, keeping the samples from `from` seconds on: the left into `out`, and
+// the right into `right` unless it is null.
 inline void render_schedule(const double* events, int64_t count, double length, double wet,
                             double volume, double from, const PcmByHandle& pcm,
-                            std::vector<float>& out) {
+                            std::vector<float>& out, std::vector<float>* right = nullptr) {
   auto schedule = build_schedule(events, count, length, -1, pcm);
   // Every slot filled, so it never holds: held, it would never end.
   assert(std::ranges::all_of(schedule->slots,
@@ -526,8 +494,10 @@ inline void render_schedule(const double* events, int64_t count, double length, 
   m.playing.push_back(PlayingSchedule{1, std::move(schedule), 0, 0});
   const int64_t first = std::llround(std::max(0.0, from) * kSampleRate);
   for (int64_t p = 0; !m.playing.empty(); p++) {
-    double v = m.sample(p, 0.0, 0.0).left;
-    if (p >= first) out.push_back(static_cast<float>(std::clamp(v, -1.0, 1.0)));
+    Frame f = m.sample(p, 0.0, 0.0);
+    if (p < first) continue;
+    out.push_back(static_cast<float>(std::clamp(f.left, -1.0, 1.0)));
+    if (right) right->push_back(static_cast<float>(std::clamp(f.right, -1.0, 1.0)));
   }
 }
 

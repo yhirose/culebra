@@ -1112,6 +1112,7 @@ g.decay(input, time = 1.0)
 g.abs(input)
 g.clip(input, lo = -1.0, hi = 1.0)
 g.exp(input)
+g.room(input, size = 0.5, damp = 0.5, side = 0)
 part.connect(target) -> target
 g.output(left, right = nil)
 g.render(seconds, channels = 1) -> Array
@@ -1216,6 +1217,7 @@ p.clip(lo, hi)
 p.abs()
 p.mix()
 p.pan(pos)
+p.reverb(mix = 0.33, room = 0.5, damp = 0.5)
 h.stop()
 h.playing() -> Bool
 h.ends()
