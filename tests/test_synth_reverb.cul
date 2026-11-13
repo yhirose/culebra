@@ -1,0 +1,98 @@
+# Synth's .reverb: a part in a room of two sides (Freeverb), always stereo.
+# The channels' sum goes into each side's room, each side is (1 - mix) of
+# its dry sound and mix of its room, and the sound ends 60 dB into the
+# room's ring past its input. Each check keeps its samples in its own block,
+# so that gc-stress does not walk them for the rest of the file.
+
+let {*} = Synth
+
+fn caught(call) {
+  try {
+    call()
+    nil
+  } catch e {
+    (e.kind, e.message)
+  }
+}
+
+let both = |expr, secs| render(expr, secs, channels: 2)
+let strike = noise() * perc(0.001, 0.02)
+
+# Always two channels: one renders as both, and only as both.
+{
+  let sides = both(strike.reverb(), 0.3)
+  assert_eq(sides.size(), 2)
+  assert_true(sides[0] != sides[1])
+  assert_eq(caught(|| render(strike.reverb(), 0.1)), ("ValueError", "Synth.render: the sound is two channels (left and right); render it with channels: 2, or mix them to one first, .mix()"))
+}
+
+# mix 0 is the dry sound on both sides; a bundle's dry sound stays on its side.
+{
+  let dry = render(strike, 0.2)
+  assert_eq(both(strike.reverb(mix: 0.0), 0.2), [dry, dry])
+  let unroomed = play(strike.reverb(mix: 0.0), wait: false)
+  assert_close(unroomed.ends(), 0.021, 1e-9)
+  unroomed.stop()
+  let pair = sine([440.0, 660.0]) * 0.2
+  assert_eq(both(pair.reverb(mix: 0.0), 0.05), both(pair, 0.05))
+}
+
+# mix 1 is each side's room alone, as Audio.Graph's room parts answer it,
+# taking in the channels' sum.
+{
+  let g = Audio.Graph()
+  let src = g.gain(g.noise(), 0.3)
+  g.output(g.room(src, size: 0.7, damp: 0.2, side: 0), g.room(src, size: 0.7, damp: 0.2, side: 1))
+  let by_hand = g.render(0.3, channels: 2)
+  assert_eq(both((noise() * 0.3).reverb(mix: 1.0, room: 0.7, damp: 0.2), 0.3), by_hand)
+  # A part that answers a number moves room and damp as the number does.
+  let held = |v| sine(0.0, phase: Math.pi / 2.0) * v
+  assert_eq(both((noise() * 0.3).reverb(mix: 1.0, room: held(0.7), damp: held(0.2)), 0.3), by_hand)
+}
+{
+  let pair = sine([440.0, 660.0]) * 0.2
+  let rooms = both(pair.reverb(mix: 1.0), 0.2)
+  assert_eq(rooms, both(pair.mix().reverb(mix: 1.0), 0.2))
+  # Between, each side is its own dry channel and its own room.
+  let halves = both(pair.reverb(mix: 0.5), 0.2)
+  let dry_pair = both(pair, 0.2)
+  for side in 0..2 {
+    assert_true(iota(8820).all(|i| Math.abs(halves[side][i] - (dry_pair[side][i] * 0.5 + rooms[side][i] * 0.5)) < 1e-12))
+  }
+}
+
+# The sound ends when the room has rung 60 dB down past its input: its
+# longest comb at the size it has, room 0.5 here. By then it is 60 dB under
+# its loudest.
+{
+  let bound = |size| 3.0 * 1640.0 / 44100.0 / -Math.log(0.7 + 0.28 * size) * Math.log(10.0) + 10.0 * 579.0 / 44100.0
+  let wet = strike.reverb()
+  let h = play(wet, wait: false)
+  assert_close(h.ends(), 0.021 + bound(0.5), 1e-9)
+  h.stop()
+  # A moving size rings as long as its largest: 1 for a part, the
+  # envelope's highest level for an envelope.
+  let moved = play(strike.reverb(room: lfnoise(1.0).range(0.2, 0.8)), wait: false)
+  assert_close(moved.ends(), 0.021 + bound(1.0), 1e-9)
+  moved.stop()
+  let swept = play(strike.reverb(room: line(0.2, 0.9, 1.0)), wait: false)
+  assert_close(swept.ends(), 0.021 + bound(0.9), 1e-9)
+  swept.stop()
+  let sides = render(wet, channels: 2)
+  assert_eq(sides[0].size(), Math.round((0.021 + bound(0.5)) * 44100))
+  let peak = sides[0].map(|x| Math.abs(x)).max()
+  let tail = sides[0].slice(sides[0].size() - 441, sides[0].size()).map(|x| Math.abs(x)).max()
+  assert_true(tail < peak / 1000.0)
+}
+
+# What it takes: mix from 0 to 1, room and damp from 0 to 1 (a part or an
+# envelope is held within), each one channel; one channel or two in.
+{
+  let fails = |call, msg| assert_eq(caught(call), ("ValueError", "Synth.reverb: {msg}"))
+  fails(|| strike.reverb(mix: 1.5), "mix is a number from 0 to 1")
+  fails(|| strike.reverb(room: -0.1), "room is a number from 0 to 1")
+  fails(|| strike.reverb(damp: 2.0), "damp is a number from 0 to 1")
+  fails(|| strike.reverb(room: sine([1.0, 2.0])), "room and damp are one channel")
+  fails(|| sine([220.0, 330.0, 440.0]).reverb(), "a bundle goes into a room with two channels (left and right), not 3")
+  assert_eq(both(strike.reverb(room: sine(3.0) * 4.0, damp: env([0.0, 1.0], [0.1])), 0.05)[0].size(), 2205)
+}

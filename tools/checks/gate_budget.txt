@@ -188,7 +188,13 @@
 # and the right, .pan at a number, a signal and an envelope, a handle's fader
 # and a Voices' gates one value for both; 0.08 s under --vm, 4.9 s under
 # --jit, 14 CPU s for the three gc-stress runs).
-tests.cul 362
+# 364 since test_audio_graph_room.cul (Audio.Graph's room part: its sides, how
+# long a size rings, its values held within 0..1, at another rate; 0.08 s
+# under --vm, 0.9 s under --jit, 2 CPU s for the three gc-stress runs) and
+# test_synth_reverb.cul (Synth's .reverb: always stereo, the dry sound and
+# each side's room by mix, the channels' sum in, its end 60 dB into the ring;
+# 0.08 s under --vm, 2.5 s under --jit, 8 CPU s for the three gc-stress runs).
+tests.cul 364
 
 # tests/isolate/*.cul — run on both engines, plus the over-cap modes.
 # 21 since test_xml_isolate.cul (an XML element keeps its methods across an

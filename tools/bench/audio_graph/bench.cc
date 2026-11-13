@@ -84,6 +84,9 @@ struct Build {
   int math(ad::MathKind kind, std::vector<int> in, double lo = -1, double hi = 1) {
     return g.add(ad::PartKind::Math, std::move(in), ad::MathOp{kind, lo, hi});
   }
+  int room(std::vector<int> in, double size, double damp, int side) {
+    return g.add(ad::PartKind::Room, std::move(in), ad::ReverbTank(kRate, side), size, damp);
+  }
   // Synth's constant: a gain of a square at 0 Hz, which answers 1.
   int level(double v) {
     if (one < 0) one = wave(ad::WaveKind::Square, 0);
@@ -328,6 +331,24 @@ ad::Graph sources() {
   return std::move(b.g);
 }
 
+// Plucks in a room as `.reverb` builds one (synth.cul): both sides take in
+// the dry sound, the size moved by a slow lfnoise, and each side's echoes
+// mixed with the dry sound.
+ad::Graph room() {
+  Build b;
+  int burst = b.gain({b.noise(5)}, 0);
+  for (int k = 0; k < 4; k++) {
+    b.set(burst, 0, 0.5 * k, 0.5);
+    b.set(burst, 0, 0.5 * k + 0.004, 0);
+  }
+  int dry = b.pluck({burst}, 220, 0.8);
+  int left = b.room({dry}, 0.5, 0.5, 0), right = b.room({dry}, 0.5, 0.5, 1);
+  int moved = b.gain({b.lfnoise(ad::LfNoiseKind::Linear, 0.5, 3)}, 0.3);
+  for (int side : {left, right}) b.connect(moved, side, 0);
+  b.g.output(b.gain({b.gain({dry}, 0.67), b.gain({left}, 0.33), b.gain({right}, 0.33)}, 1.0));
+  return std::move(b.g);
+}
+
 struct Case {
   const char* name;
   ad::Graph (*make)();
@@ -335,7 +356,7 @@ struct Case {
 const Case kCases[] = {
     {"fm_piano", fm_piano},       {"fm_piano_looped", fm_piano_looped}, {"echo_loop", echo_loop},
     {"strings", strings},         {"waves_swept", waves_swept},         {"voices", voices},
-    {"decay_tail", decay_tail},   {"sources", sources},
+    {"decay_tail", decay_tail},   {"sources", sources},                 {"room", room},
 };
 
 constexpr double kSeconds = 4.0;

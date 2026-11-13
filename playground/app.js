@@ -1183,35 +1183,39 @@ const schedules = new Map();  // id -> { events, stride, length, loopAt, volume,
 
 // The room a schedule plays in, as the native mixer has it (Freeverb: eight
 // damped combs in parallel, then four allpasses in series, at Jezar's delays
-// and gain, scaled to the context's rate): its echoes of a single click,
-// 2.3 seconds of them, which a convolver plays against the schedule's sound.
+// and gain, scaled to the context's rate; the right side's delays 23 samples
+// longer): its echoes of a single click, 2.3 seconds of them on each side,
+// which a convolver plays against the schedule's sound (one channel in, the
+// left and the right out).
 const roomEchoes = new Map();  // sample rate -> AudioBuffer
 function roomEcho(rate) {
   if (roomEchoes.has(rate)) return roomEchoes.get(rate);
-  const at = (d) => Math.round(d * rate / 44100);
-  const combs = [1116, 1188, 1277, 1356, 1422, 1491, 1557, 1617].map((d) => new Float32Array(at(d)));
-  const passes = [556, 441, 341, 225].map((d) => new Float32Array(at(d)));
-  const damped = new Float32Array(combs.length);
   const n = Math.round(2.3 * rate);
-  const buf = audioCtx.createBuffer(1, n, rate);
-  const out = buf.getChannelData(0);
-  for (let i = 0; i < n; i++) {
-    const into = (i === 0 ? 1 : 0) * 0.015;
-    let echo = 0;
-    combs.forEach((c, k) => {
-      const j = i % c.length;
-      const y = c[j];
-      damped[k] = y * 0.75 + damped[k] * 0.25;
-      c[j] = into + damped[k] * 0.86;
-      echo += y;
-    });
-    for (const p of passes) {
-      const j = i % p.length;
-      const held = p[j];
-      p[j] = echo + held * 0.5;
-      echo = held - echo;
+  const buf = audioCtx.createBuffer(2, n, rate);
+  for (const side of [0, 1]) {
+    const at = (d) => Math.round((d + 23 * side) * rate / 44100);
+    const combs = [1116, 1188, 1277, 1356, 1422, 1491, 1557, 1617].map((d) => new Float32Array(at(d)));
+    const passes = [556, 441, 341, 225].map((d) => new Float32Array(at(d)));
+    const damped = new Float32Array(combs.length);
+    const out = buf.getChannelData(side);
+    for (let i = 0; i < n; i++) {
+      const into = (i === 0 ? 1 : 0) * 0.015;
+      let echo = 0;
+      combs.forEach((c, k) => {
+        const j = i % c.length;
+        const y = c[j];
+        damped[k] = y * 0.75 + damped[k] * 0.25;
+        c[j] = into + damped[k] * 0.86;
+        echo += y;
+      });
+      for (const p of passes) {
+        const j = i % p.length;
+        const held = p[j];
+        p[j] = echo + held * 0.5;
+        echo = held - echo;
+      }
+      out[i] = echo;
     }
-    out[i] = echo;
   }
   roomEchoes.set(rate, buf);
   return buf;
@@ -1226,6 +1230,10 @@ function scheduleBus(e) {
   if (e.room > 0) {
     const verb = audioCtx.createConvolver();
     verb.normalize = false;
+    // One channel in, as the native room takes a song's sound: a stereo
+    // sample is its two sides' mean, and each side's echoes come out.
+    verb.channelCount = 1;
+    verb.channelCountMode = "explicit";
     verb.buffer = roomEcho(audioCtx.sampleRate);
     const wet = audioCtx.createGain();
     wet.gain.value = e.room;

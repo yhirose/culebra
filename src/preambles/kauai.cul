@@ -3330,14 +3330,16 @@ let _kauai_module = fn () {
     }
 
     # The song once through as play() sounds it, until its last sound and its
-    # room's echoes end: mono samples, 44100 a second, from the mixer that
-    # plays it, with no device. A song that loops is heard once. From `from`
-    # until `to` (each a point, as seconds() reads one), it is that part of
-    # the song, heard from LEAD seconds before `from` (rising from silence
-    # over them) until what starts before `to` ends: of the external sounds,
-    # only those that start before `to` and play notes LEAD seconds before
-    # `from` or later are built.
-    render(from: String | Long | Float | Nil = nil, to: String | Long | Float | Nil = nil) {
+    # room's echoes end: samples, 44100 a second, from the mixer that plays
+    # it, with no device: the left channel, or with `channels: 2` [left,
+    # right] (the room's echoes are what tell them apart). A song that loops
+    # is heard once. From `from` until `to` (each a point, as seconds() reads
+    # one), it is that part of the song, heard from LEAD seconds before
+    # `from` (rising from silence over them) until what starts before `to`
+    # ends: of the external sounds, only those that start before `to` and
+    # play notes LEAD seconds before `from` or later are built.
+    render(from: String | Long | Float | Nil = nil, to: String | Long | Float | Nil = nil, channels: Long = 1) {
+      __raise("ValueError", "Kauai: render(channels:) is 1 or 2") unless channels == 1 || channels == 2
       let part = @_part("render", from, to)
       let (first, last, start, plays) = (part.first, part.last, part.start, part.plays)
       let list = @_list(plays, last)
@@ -3352,11 +3354,13 @@ let _kauai_module = fn () {
         sounds.push(s.data())
       }
       let length = last == nil ? @_length : Math.min(last, @_length)
-      let out = _Audio.schedule_render(list, sounds, length, @_room, @_volume, start)
+      let out = _Audio.schedule_render(list, sounds, length, @_room, @_volume, start, channels)
       # The lead rises as half a cosine, to the level `from` is heard at.
       let rise = Math.round((first - start) * RATE)
-      for i in 0..Math.min(rise, out.size()) {
-        out[i] = out[i] * (0.5 - 0.5 * Math.cos(Math.pi * i / rise))
+      for side in channels == 2 ? out : [out] {
+        for i in 0..Math.min(rise, side.size()) {
+          side[i] = side[i] * (0.5 - 0.5 * Math.cos(Math.pi * i / rise))
+        }
       }
       out
     }
