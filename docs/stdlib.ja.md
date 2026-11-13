@@ -8436,7 +8436,10 @@ Ogg Vorbisの`String`。`FS.read`や`Dir`から、あるいはプログラムが
 側の対応物です。`Audio.Sound.new(samples, rate = 44100)`は、代わりにプログラムが
 計算したサンプルから作ります。サンプルは-1.0から1.0の数の配列で、モノラル、1秒に
 `rate`個です。WAVファイルと同じく16ビットで持ちます（-1.0..1.0を超えるサンプルはその端に
-とどめ、NaNは無音になります）。
+とどめ、NaNは無音になります）。数の配列を1つか2つ、同じ長さで並べた配列は、チャンネルごとの
+サンプルです。`[左, 右]`はステレオの音で、`Audio.decode`の`channels`や
+`render(..., channels: 2)`の結果と同じ形です（2チャンネルの`rate`は2^30未満）。Kauaiの曲は、
+ステレオのWAVファイルと同じく、ステレオの音を左右の平均の1チャンネルで鳴らします。
 
 | メソッド | 効果 |
 | --- | --- |
@@ -8444,7 +8447,7 @@ Ogg Vorbisの`String`。`FS.read`や`Dir`から、あるいはプログラムが
 | `sound.stop()` | 停止 |
 | `sound.playing() -> Bool` | まだ鳴っているか |
 | `sound.volume(v)` / `sound.pitch(p)` / `sound.pan(p)` | 上記の単位。次の`play`から、および鳴っている音にも効く |
-| `sound.data() -> String` | 作った元のバイト列。渡されたWAV・MP3・Oggそのもの、サンプルから作ったものはその16ビットWAV。`Audio.Sound.new(s.data())`で同じ音がもう1つ作れ、`FS.write("note.wav", s.data())`でプログラムが作った音を保存できる |
+| `sound.data() -> String` | 作った元のバイト列。渡されたWAV・MP3・Oggそのもの、サンプルから作ったものはその16ビットWAV（ステレオなら両チャンネル）。`Audio.Sound.new(s.data())`で同じ音がもう1つ作れ、`FS.write("note.wav", s.data())`でプログラムが作った音を保存できる |
 
 各`Sound`は1ボイスで、デコード済みサンプルは最後の参照とともに解放され、
 そのとき音も止まります。鳴らしたい間はハンドルを持ち続けてください。3形式のどれでもない
@@ -8689,7 +8692,7 @@ println(Math.round(Audio.integrated_loudness(both)))                     # => -1
 
 グラフの下のメソッドは、それぞれ部品を1つ足し、それを`AudioGraphPart`として返します。
 部品は、渡された部品を足し合わせたものを受け取ります。グラフが鳴らす部品は
-`output(part)`で決めます。グラフは、グラフ自身とその部品・値への最後の参照が
+`output(part)`で決め、`output(left, right)`でステレオにします。グラフは、グラフ自身とその部品・値への最後の参照が
 なくなったときに止まり、解放されます。
 
 | 関数・メソッド | 効果 |
@@ -8714,8 +8717,8 @@ println(Math.round(Audio.integrated_loudness(both)))                     # => -1
 | `g.clip(input, lo = -1.0, hi = 1.0)` | `lo`から`hi`の間に収めた`input` |
 | `g.exp(input)` | eの`input`乗 |
 | `part.connect(target) -> target` | `part`の出力を`target`に足す。`target`が部品ならその入力に（音源、つまりwave、noise、impulse、dust、lfnoiseは入力を取らない）、値（下記）ならその値に足す。どの部品からでもつなげるが、ループは遅延を通らなければならない（下記） |
-| `g.output(part)` | グラフが鳴らす部品（決めるまでは無音） |
-| `g.render(seconds) -> Array` | グラフの最初の`seconds`秒を、始まりから今計算する |
+| `g.output(left, right = nil)` | グラフが鳴らす部品（決めるまでは無音）。`right`を渡すと左右それぞれの部品で、グラフはステレオになる。出力が1つのグラフは、それを左右の両方で鳴らす |
+| `g.render(seconds, channels = 1) -> Array` | グラフの最初の`seconds`秒を、始まりから今計算する。`channels: 2`なら、サンプルの配列の組`[左, 右]`（出力が1つのグラフは両方に同じもの）。ステレオのグラフはこの形でだけ描ける（1なら`ValueError`） |
 | `g.play()` | グラフを始まりから鳴らす（鳴っていれば始まりからやり直す） |
 | `g.stop()` | 止める |
 | `g.now() -> Float` | 今行った変更が、グラフの時計のどこに入るか。鳴っていなければ`0.0` |
@@ -9841,13 +9844,13 @@ sine(5.0))`は、0から1の間で揺れるトレモロです。同じ値を2回
 | `Synth.perc(attack, release, peak = 1.0, curve = -4.0)` | `env([0, peak, 0], [attack, release], curve)`。打つ音のエンベロープ |
 | `Synth.adsr(attack, decay, sustain, release, peak = 1.0, curve = -4.0)` | ゲートつきのエンベロープ。`peak`まで上がり、`sustain * peak`まで下がり、離すまでそこに留まり、`release`秒で0まで下がる。`e.hold(secs)`は、始まりから`secs`秒で離す（その時点の値から下がる）。離す時刻がないままでは、ノートオフが離す`Voices`の中でだけ使え、それ以外では`ValueError` |
 | `Synth.control(name, init, lo = nil, hi = nil)` | `name`という名前の値。`play`が返すハンドルで設定するまでは`init`（`lo`と`hi`があれば、その範囲に収め、`init`もその中）。1つの式の中の同じ名前の`control`は同じ値で、同じ引数で作る |
-| `Synth.play(expr, wait = true, secs = nil) -> SynthHandle` | 式（または下の`Voices`）を、`secs`まで、なければ自然な終わり（下の説明）まで鳴らす。`wait`なら終わってから戻り、`wait: false`ならすぐ戻って、終わるか止めるまで鳴り続ける（`Voices`は、ノートが来うるので止めるまで）。自然に終わらない音（発振器、ループ、押さえたままのノート）は`secs`か`wait: false`が要り、なければ`ValueError`。デバイスがなければ、鳴らさずにすぐ戻る |
+| `Synth.play(expr, wait = true, secs = nil) -> SynthHandle` | 式（または下の`Voices`）を、`secs`まで、なければ自然な終わり（下の説明）まで鳴らす。`wait`なら終わってから戻り、`wait: false`ならすぐ戻って、終わるか止めるまで鳴り続ける（`Voices`は、ノートが来うるので止めるまで）。自然に終わらない音（発振器、ループ、押さえたままのノート）は`secs`か`wait: false`が要り、なければ`ValueError`。2チャンネルの束は左右で鳴る（下の説明）。デバイスがなければ、鳴らさずにすぐ戻る |
 | `Synth.lowpass(x, cutoff = 1000.0, q = 0.707, rate = nil)` / `highpass` / `bandpass` | 部品には、その名前のメソッド。サンプル（数の配列）には`Audio.filter(x, kind, cutoff, q, rate)`（`rate`が`nil`なら44100）。部品のサンプルレートは`render`か`play`が決めるので、部品に`rate`を渡すと`ValueError`（下の2つも同じ） |
 | `Synth.resonate(x, modes: Array, dry = 0.0, rate = nil)` | 部品には`x.resonate(modes, dry)`、サンプルには`Audio.resonate(x, modes, dry, rate)` |
 | `Synth.envelope(x, gain, rate = nil)` | 部品には`x * gain`、サンプルには`Audio.envelope(x, gain, rate)`（`gain`は`(at, value)`のエンベロープ） |
 | `Synth.hz(note) -> Float` | ノート番号の周波数。69が440 Hzで、半音は1オクターブの12分の1 |
 | `Synth.db(x) -> Float` | デシベルを音量の倍率にする。0が1.0、-6がおよそ0.5 |
-| `Synth.render(expr, seconds = nil, rate = 44100) -> Array` | 式（部品、エンベロープ、`Voices`）の最初の`seconds`秒。`Audio.Graph`の`render`と同じに計算する。`seconds`を省くと自然な終わり（下の説明）まで描き、自然に終わらない式は`ValueError` |
+| `Synth.render(expr, seconds = nil, rate = 44100, channels = 1) -> Array` | 式（部品、エンベロープ、`Voices`）の最初の`seconds`秒。`Audio.Graph`の`render`と同じに計算する。`seconds`を省くと自然な終わり（下の説明）まで描き、自然に終わらない式は`ValueError`。`channels: 2`なら`[左, 右]`（下の説明） |
 
 | 部品のメソッド | 動作 |
 | --- | --- |
@@ -9865,6 +9868,7 @@ sine(5.0))`は、0から1の間で揺れるトレモロです。同じ値を2回
 | `p.clip(lo, hi)` | `lo`から`hi`の間に収めた`p` |
 | `p.abs()` | `p`の大きさ |
 | `p.mix()` | 束のチャンネルを足して1つの部品にする。部品はそのまま |
+| `p.pan(pos)` | `p`を、-1（左）から1（右）の`pos`に等パワーで置いたステレオ。左はsin((1 - pos)π/4)倍、右はsin((1 + pos)π/4)倍で、0なら左右とも約0.707倍。2チャンネルの束は、各チャンネルを自分の側で絞る。`pos`は-1から1の数（範囲の外は`ValueError`）、または部品かエンベロープで、-1..1に収める |
 | `p + x`、`p - x`、`p * x`、`p / n`、`-p` | 部品の和、差、積（音量）。右は数、部品、エンベロープ、配列。`+`と`*`は数が左でもよい。`/`は数で割るときだけで、0なら`ValueError` |
 
 値や部品の場所に配列を渡すと、要素ごとに1チャンネルになり、作られるものは束
@@ -9873,7 +9877,7 @@ sine(5.0))`は、0から1の間で揺れるトレモロです。同じ値を2回
 `saw([110.0, 110.77]).mix()`は2つのノコギリ波の和です。要素が1つの配列は、
 その1つの部品です。束は、部品が持つ
 メソッドを、チャンネルごとにすべて持ちます。チャンネルの数が違うものを同時に
-渡すと（`sine([440.0, 660.0]) * [0.2]`）`ValueError`で、束は`.mix()`で
+渡すと（`sine([440.0, 660.0]) * [0.2]`）`ValueError`で、3チャンネル以上の束は`.mix()`で
 1チャンネルにしてから、鳴らしたり`render`したりします。部品を作るときの、
 値でない数（時間、`lo`と`hi`、種類、seed）は全チャンネルで同じです。乱数を引く部品
 （`dust`、`lfnoise`）は、チャンネルごとに`seed`にチャンネルの番号を足した種から
@@ -9886,6 +9890,29 @@ println(render(detuned, 0.5).size())  # => 22050
 let blip = sine(800.0) * line(1.0, 0.0, 0.05)
 let echo = feedback(|x| blip + x.delay(0.3) * 0.6)
 println(render(echo, 1.0).slice(13230, 15435).map(|v| Math.abs(v)).max() > 0.5)  # => true
+```
+
+2チャンネルの束はステレオです。`play`は左と右で鳴らし、
+`render(expr, seconds, channels: 2)`（ハンドルの`render`も）は`[左, 右]`を返します。
+`Audio.decode`が返し、`Audio.Sound.new`が受け取るのと同じ形です。
+`sine([440.0, 660.0])`は左が440 Hz、右が660 Hzで、1チャンネルを2チャンネルに足すと
+両方へ入ります。1チャンネルを`channels: 2`で描くと左右に同じサンプルが入り、
+2チャンネルは`channels: 2`でだけ描けます（`channels: 1`なら`ValueError`）。
+`p.pan(pos)`は1チャンネルから等パワーで左右の組を作るので、`p.pan(0)`は、左右とも
+全音量で鳴る`p`だけのときより3 dB小さくなります。デバイスはストリームの中央を左右とも
+全音量の0.6875倍で鳴らすので、`p.pan(-1)`は左で0.6875、`Audio.Sound`の`pan(-1)`は1.0で、
+約3.3 dBの差があります。ステレオをモノにする方法は2つあり、`.mix()`はチャンネルを足し
+（`pan(0)`の音は元の部品の1.414倍に戻る）、Kauaiの曲はステレオの`Audio.Sound`を左右の平均
+で鳴らします。`Voices`の`builder`は2チャンネルを返してよく、声のゲートは左右で1つです。
+ループ（`feedback`）は1チャンネルです。
+
+```culebra
+let {saw, sine, mix, render} = Synth
+let wide = mix([saw(110.0).pan(-0.5), saw(110.77).pan(0.5)]) * 0.1
+let sides = render(wide, 0.5, channels: 2)
+println((sides.size(), sides[0].size()))  # => (2, 22050)
+println(render(sine(440.0).pan(-1.0), 0.01, channels: 2)[1].all(|v| v == 0.0))  # => true
+let sound = Audio.Sound.new(sides)  # ステレオのSound
 ```
 
 音の自然な終わりは、出力がそれ以降ずっと0になる時刻です。積は、因子のうち最初に
@@ -9919,7 +9946,7 @@ println(render(noise() * perc(0.001, 0.01) |> pluck(220.0, ring: 0.5)).size())  
 | `h.ends()` | 自然に（または`secs`で）終わる時刻。始まりからの秒数で、終わらなければ`nil` |
 | `h.now() -> Float` | いま行う変更が、その時計のどこに入るか |
 | `h.set(name, v, secs = 0.0, at = nil)` | `control`の`name`を、`at`（`nil`ならいま）から`v`にする。`secs`が0より大きければ、その秒数をかけて直線で動かす。過ぎた時刻は、`Audio.Graph`の値と同じく、いまになる |
-| `h.render(seconds) -> Array` | 最初の`seconds`秒。それまでに行った変更を含む |
+| `h.render(seconds, channels = 1) -> Array` | 最初の`seconds`秒。それまでに行った変更を含む。`channels: 2`なら`[左, 右]` |
 
 ```culebra
 {

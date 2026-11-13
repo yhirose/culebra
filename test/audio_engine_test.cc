@@ -18,6 +18,7 @@
 #include <memory>
 #include <new>
 #include <random>
+#include <string>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -69,29 +70,34 @@ Clock::time_point g_now{};
 Clock::time_point fake_now() { return g_now; }
 
 // The device: an engine on the clock above, and buffers of 1 to three
-// kMixChunks rendered into one recording, each render's heap calls counted.
+// kMixChunks of frames (the left and the right in turn) rendered and kept
+// as two recordings, each render's heap calls counted. Positions are frames.
 struct Device {
   std::unique_ptr<ad::Engine> engine = std::make_unique<ad::Engine>(fake_now);
-  std::vector<float> heard;
+  std::vector<float> left, right;
+  std::vector<float> buffer = std::vector<float>(2 * 3 * ad::kMixChunk);
   std::mt19937 rng{12345};
   long heap_calls = 0;
 
   explicit Device(size_t most) {
     engine->open();
-    heard.reserve(most);
+    left.reserve(most);
+    right.reserve(most);
   }
-  int64_t pos() const { return static_cast<int64_t>(heard.size()); }
+  int64_t pos() const { return static_cast<int64_t>(left.size()); }
   void run(int64_t frames) {
     std::uniform_int_distribution<unsigned> size(1, 3 * ad::kMixChunk);
     while (frames > 0) {
       unsigned n = static_cast<unsigned>(std::min<int64_t>(size(rng), frames));
-      size_t at = heard.size();
-      heard.resize(at + n);
       g_heap_calls = 0;
       g_counting = true;
-      engine->render(heard.data() + at, n);
+      engine->render(buffer.data(), n);
       g_counting = false;
       heap_calls += g_heap_calls;
+      for (unsigned i = 0; i < n; i++) {
+        left.push_back(buffer[2 * i]);
+        right.push_back(buffer[2 * i + 1]);
+      }
       frames -= n;
     }
   }
@@ -147,6 +153,13 @@ std::vector<float> rendered(const std::vector<double>& rows, const ad::PcmByHand
 
 bool same_bits(float a, float b) { return std::memcmp(&a, &b, sizeof a) == 0; }
 
+// A graph's samples as the stream plays them: held to -1..1, as floats.
+std::vector<float> as_played(const std::vector<double>& x) {
+  std::vector<float> out;
+  for (double v : x) out.push_back(static_cast<float>(std::clamp(0.0 + v, -1.0, 1.0)));
+  return out;
+}
+
 // `heard` from `from` on is `want`, and silent before and after it.
 void hears(const char* what, const std::vector<float>& heard, int64_t from,
            const std::vector<float>& want) {
@@ -158,6 +171,12 @@ void hears(const char* what, const std::vector<float>& heard, int64_t from,
   }
   CHECK(wrong == 0, "%s: %zu of %zu samples differ, the first at %zu", what, wrong,
         heard.size(), first);
+}
+// Both channels hear `want` (a mono sound is the same on both).
+void hears(const char* what, const Device& device, int64_t from, const std::vector<float>& want) {
+  std::string name = what;
+  hears((name + ", left").c_str(), device.left, from, want);
+  hears((name + ", right").c_str(), device.right, from, want);
 }
 
 // A song played on the stream is the song rendered once through: the same
@@ -176,7 +195,7 @@ void schedule_plays_as_it_renders() {
   device.engine->schedule_room(1, 0.3);
   device.engine->schedule_play(1);
   device.run(static_cast<int64_t>(want.size()) + 20000);
-  hears("the song", device.heard, start, want);
+  hears("the song", device, start, want);
   CHECK(device.heap_calls == 0, "the renders made %ld heap calls", device.heap_calls);
 }
 
@@ -194,7 +213,7 @@ void tone_starts_when_asked() {
   int64_t start = device.pos() + 441;
   device.run(30000);
   g_now = {};
-  hears("the tone", device.heard, start, want);
+  hears("the tone", device, start, want);
   CHECK(device.heap_calls == 0, "the renders made %ld heap calls", device.heap_calls);
 }
 
@@ -224,9 +243,8 @@ void graph_plays_as_it_renders() {
   ad::Graph copy(live);
   std::vector<double> samples(static_cast<size_t>(device.pos() - start));
   copy.render(samples.data(), static_cast<int64_t>(samples.size()));
-  std::vector<float> want;
-  for (double x : samples) want.push_back(static_cast<float>(std::clamp(0.0 + x, -1.0, 1.0)));
-  hears("the graph", device.heard, start, want);
+  auto want = as_played(samples);
+  hears("the graph", device, start, want);
   CHECK(device.heap_calls == 0, "the renders made %ld heap calls", device.heap_calls);
   device.engine->graph_stop(id);
   ad::graph_defs().erase(id);
@@ -260,12 +278,63 @@ void loop_plays_as_it_renders() {
   ad::Graph copy(*ad::graph_def(id));
   std::vector<double> samples(static_cast<size_t>(device.pos() - start));
   copy.render(samples.data(), static_cast<int64_t>(samples.size()));
-  std::vector<float> want;
-  for (double x : samples) want.push_back(static_cast<float>(std::clamp(0.0 + x, -1.0, 1.0)));
-  hears("the loop", device.heard, start, want);
+  auto want = as_played(samples);
+  hears("the loop", device, start, want);
   CHECK(device.heap_calls == 0, "the renders made %ld heap calls", device.heap_calls);
   device.engine->graph_stop(id);
   ad::graph_defs().erase(id);
+}
+
+// A graph with a left and a right output, played from partway into a buffer,
+// is the graph rendered, each channel its own: a saw on the left and a sine
+// on the right, both silent before it starts.
+void stereo_graph_plays_as_it_renders() {
+  const int64_t id = 9003;
+  ad::Graph def(ad::kMixerRate);
+  int saw = def.add(ad::PartKind::Wave, {}, ad::Oscillator{ad::WaveKind::Saw}, 220, 0);
+  int left = def.add(ad::PartKind::Gain, {saw}, std::monostate{}, 0.3);
+  int sine = def.add(ad::PartKind::Wave, {}, ad::Oscillator{ad::WaveKind::Sine}, 330, 0);
+  int right = def.add(ad::PartKind::Gain, {sine}, std::monostate{}, 0.4);
+  def.output(left, right);
+  ad::graph_defs().insert_or_assign(id, def);
+
+  Device device(100000);
+  device.run(3000);
+  g_now += std::chrono::milliseconds(10);
+  device.engine->graph_play(id);
+  int64_t start = device.pos() + 441;
+  device.run(30000);
+  g_now = {};
+
+  ad::Graph copy(*ad::graph_def(id));
+  size_t n = static_cast<size_t>(device.pos() - start);
+  std::vector<double> l(n), r(n);
+  copy.render(l.data(), r.data(), static_cast<int64_t>(n));
+  hears("the stereo graph, left", device.left, start, as_played(l));
+  hears("the stereo graph, right", device.right, start, as_played(r));
+  CHECK(device.heap_calls == 0, "the renders made %ld heap calls", device.heap_calls);
+  device.engine->graph_stop(id);
+  ad::graph_defs().erase(id);
+}
+
+// Two songs at once, each with its room: on both channels the stream is what
+// the mixer sums of them, the same bit for bit (a sound in no graph is mono).
+void two_songs_on_both_channels() {
+  auto pcm = song_pcm();
+  auto rows1 = song_rows(1.0, 11), rows2 = song_rows(1.0, 12);
+  Device device(200000);
+  device.run(1000);
+  for (int64_t id : {1, 2}) {
+    device.engine->schedule_new(id, song(id == 1 ? rows1 : rows2, pcm, 1.0));
+    device.engine->schedule_room(id, 0.4);
+    device.engine->schedule_play(id);
+    device.run(1234);
+  }
+  device.run(4 * 44100);
+  auto loud = std::ranges::count_if(device.left, [](float v) { return v != 0; });
+  CHECK(loud > 44100, "the songs sound (%ld samples)", static_cast<long>(loud));
+  hears("two songs, the right against the left", device.right, 0, device.left);
+  CHECK(device.heap_calls == 0, "the renders made %ld heap calls", device.heap_calls);
 }
 
 // More songs and graphs playing at once than the mixer's lists first held:
@@ -336,7 +405,7 @@ void stolen_sample_fades() {
     device.engine->schedule_new(1, song(*r, pcm, 2.0));
     device.engine->schedule_play(1);
     device.run(3 * 44100);
-    hears(r == &rows ? "the stolen sample" : "the flood", device.heard, start,
+    hears(r == &rows ? "the stolen sample" : "the flood", device, start,
           rendered(*r, pcm, 2.0, 0.0, 1.0));
     CHECK(device.heap_calls == 0, "the renders made %ld heap calls", device.heap_calls);
   }
@@ -393,7 +462,7 @@ void open_schedule_waits_for_its_sounds() {
         static_cast<long long>(engine.schedule_held(1)), static_cast<long long>(first + second));
   engine.schedule_fill(1, 1, song.pcm.at(1));
   device.run(static_cast<int64_t>(song.want.size()) + 10000);
-  hears("the song that waited", device.heard, start,
+  hears("the song that waited", device, start,
         song.held({{LateSong::kFirst, first}, {LateSong::kSecond, second}}));
   CHECK(device.heap_calls == 0, "the renders made %ld heap calls", device.heap_calls);
   // Played again, it counts what it holds from its new start.
@@ -420,12 +489,12 @@ void filled_while_it_renders() {
   std::atomic<bool> filled{false}, done{false};
   std::thread audio([&] {
     while (!done.load(std::memory_order_acquire)) {
-      if (!filled.load(std::memory_order_acquire) && device.heard.size() >= 30000) {
+      if (!filled.load(std::memory_order_acquire) && device.left.size() >= 30000) {
         std::this_thread::yield();
         continue;
       }
       device.run(512);
-      rendered_to.store(device.heard.size(), std::memory_order_release);
+      rendered_to.store(device.left.size(), std::memory_order_release);
     }
   });
   auto wait_for = [&](size_t n) {
@@ -440,7 +509,7 @@ void filled_while_it_renders() {
   audio.join();
   int64_t held = engine.schedule_held(1);
   CHECK(held >= 20000 - LateSong::kFirst, "held %lld samples", static_cast<long long>(held));
-  hears("the song filled as it rendered", device.heard, 0, song.held({{LateSong::kFirst, held}}));
+  hears("the song filled as it rendered", device, 0, song.held({{LateSong::kFirst, held}}));
   CHECK(device.heap_calls == 0, "the renders made %ld heap calls", device.heap_calls);
 }
 
@@ -451,6 +520,8 @@ int main() {
   tone_starts_when_asked();
   graph_plays_as_it_renders();
   loop_plays_as_it_renders();
+  stereo_graph_plays_as_it_renders();
+  two_songs_on_both_channels();
   many_play_at_once();
   stolen_sample_fades();
   open_schedule_waits_for_its_sounds();

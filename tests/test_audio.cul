@@ -268,6 +268,20 @@ let pcm24 = String.pack("u8", [4194304, 1, -8388608].flat_map(|v| [v & 255, (v >
 assert_eq(Audio.decode(wav_of(pcm24, 1, 48000, 24)).channels, [[0.5, 1.0 / 8388608, -1.0]])
 let both_sides = Audio.decode(wav_of(String.pack("i16", [16384, -8192, -16384, 0]), 2, 8000, 16))
 assert_eq(both_sides, {rate: 8000, channels: [[0.5, -0.5], [-0.25, 0.0]]})
+// A Sound from two channels, [left, right] as decode gives them, is a stereo
+// WAV that decodes to them again, as loud as their mean; one channel in an
+// Array is the mono Sound, and two empty ones a silent handle.
+let lr = [[0.5, -0.25], [-0.5, 0.0]]
+assert_eq(Audio.Sound.new(lr, rate: 8000).data(), wav_of(String.pack("i16", [16384, -16384, -8192, 0]), 2, 8000, 16))
+assert_eq(Audio.decode(Audio.Sound.new(lr, rate: 8000).data()), {rate: 8000, channels: lr})
+assert_eq(Audio.Sound.new([tone]).data(), Audio.Sound.new(tone).data())
+assert_eq(_Audio.sound_loudness(Audio.Sound.new([tone, tone])._id), _Audio.loudness(tone, 44100))
+assert_eq(Audio.Sound.new([[], []]).data().size(), 44)
+assert_throws("ValueError", || Audio.Sound.new([[0.0], [0.0], [0.0]]), message: "Audio.Sound: a sound is one channel or two")
+assert_throws("ValueError", || Audio.Sound.new([[0.0], [0.0, 0.0]]), message: "Audio.Sound: the channels are one length")
+assert_throws("ValueError", || Audio.Sound.new(lr, rate: 1073741824), message: "Audio.Sound: the rate is from 1 below 2^30 for two channels")
+assert_throws("TypeError", || Audio.Sound.new([[0.0], "x"]))
+assert_throws("TypeError", || Audio.Sound.new([[0.0, "x"]]))
 let mp3 = Audio.decode(MP3)
 assert_eq((mp3.rate, mp3.channels.size(), mp3.channels[0].size()), (8000, 1, 2880))
 assert_true(mp3.channels[0].all(|v| Math.abs(v) <= 1.0))

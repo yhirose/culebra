@@ -184,7 +184,11 @@
 # 361 since test_audio (16 s under --jit) split into itself and
 # test_audio_dsp.cul, whose samples are each checked against the same
 # computation written out in the script.
-tests.cul 361
+# 362 since test_synth_stereo.cul (Synth's stereo: a bundle of two as the left
+# and the right, .pan at a number, a signal and an envelope, a handle's fader
+# and a Voices' gates one value for both; 0.08 s under --vm, 4.9 s under
+# --jit, 14 CPU s for the three gc-stress runs).
+tests.cul 362
 
 # tests/isolate/*.cul — run on both engines, plus the over-cap modes.
 # 21 since test_xml_isolate.cul (an XML element keeps its methods across an
@@ -354,8 +358,9 @@ ctest.entries 41
 # rendered to its own end as a Kauai voice, in en and ja: in Synth's chapter,
 # in the Kauai specification (skipped, it reads a song file) and in the
 # sounds guide (a voice and a drum playing a song). 1190 since its Proxy, in
-# en and ja: a sound replaced while it plays, and stopped.
-docs.blocks 1190
+# en and ja: a sound replaced while it plays, and stopped. 1192 since its
+# stereo, in en and ja: two parts panned apart, rendered as both channels.
+docs.blocks 1192
 
 # The samples the language front ends are run over (examples/languages/*).
 languages.samples 130

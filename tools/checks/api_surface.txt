@@ -1113,8 +1113,8 @@ g.abs(input)
 g.clip(input, lo = -1.0, hi = 1.0)
 g.exp(input)
 part.connect(target) -> target
-g.output(part)
-g.render(seconds) -> Array
+g.output(left, right = nil)
+g.render(seconds, channels = 1) -> Array
 g.play()
 g.stop()
 g.now() -> Float
@@ -1200,7 +1200,7 @@ Synth.resonate(x, modes: Array, dry = 0.0, rate = nil)
 Synth.envelope(x, gain, rate = nil)
 Synth.hz(note) -> Float
 Synth.db(x) -> Float
-Synth.render(expr, seconds = nil, rate = 44100) -> Array
+Synth.render(expr, seconds = nil, rate = 44100, channels = 1) -> Array
 p.lowpass(cutoff = 1000.0, q = 0.707)
 p.filter(kind, cutoff = 1000.0, q = 0.707)
 p.delay(time = 0.0)
@@ -1215,12 +1215,13 @@ p.decay2(attack, decay)
 p.clip(lo, hi)
 p.abs()
 p.mix()
+p.pan(pos)
 h.stop()
 h.playing() -> Bool
 h.ends()
 h.now() -> Float
 h.set(name, v, secs = 0.0, at = nil)
-h.render(seconds) -> Array
+h.render(seconds, channels = 1) -> Array
 v.note_on(note, at = nil)
 v.note_off(note, at = nil)
 v.sequence(notes: Array, step, len = nil, at = nil)

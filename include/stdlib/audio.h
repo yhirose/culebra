@@ -85,30 +85,34 @@ inline const char* sound_format(const uint8_t* p, size_t n) {
 inline constexpr auto kSoundFormatError =
     "not a valid WAV, MP3 or Ogg audio stream";
 
-// Samples (-1..1, mono, `rate` a second) as the 16-bit WAV file a program
-// would load, so a Sound made from samples decodes as one from bytes does.
-inline std::vector<uint8_t> wav16(const double* x, size_t n, uint32_t rate) {
+// Samples (-1..1, `rate` a second, `frames` of each channel, the channels
+// interleaved) as the 16-bit WAV file a program would load, so a Sound made
+// from samples decodes as one from bytes does.
+inline std::vector<uint8_t> wav16(const std::vector<const double*>& channels, size_t frames, uint32_t rate) {
+  const auto count = static_cast<uint32_t>(channels.size());
   std::vector<uint8_t> out;
-  out.reserve(44 + 2 * n);
+  out.reserve(44 + 2 * count * frames);
   auto put = [&](uint32_t v, int bytes) {
     for (int i = 0; i < bytes; i++) out.push_back(static_cast<uint8_t>(v >> (8 * i)));
   };
-  auto data = static_cast<uint32_t>(2 * n);
+  auto data = static_cast<uint32_t>(2 * count * frames);
   out.insert(out.end(), {'R', 'I', 'F', 'F'});
   put(36 + data, 4);
   out.insert(out.end(), {'W', 'A', 'V', 'E', 'f', 'm', 't', ' '});
   put(16, 4);
   put(1, 2);  // PCM
-  put(1, 2);  // mono
+  put(count, 2);
   put(rate, 4);
-  put(rate * 2, 4);
-  put(2, 2);
+  put(rate * 2 * count, 4);
+  put(2 * count, 2);
   put(16, 2);
   out.insert(out.end(), {'d', 'a', 't', 'a'});
   put(data, 4);
-  for (size_t i = 0; i < n; i++) {
-    double v = std::isnan(x[i]) ? 0.0 : std::clamp(x[i], -1.0, 1.0);
-    put(static_cast<uint16_t>(static_cast<int16_t>(std::nearbyint(v * 32767))), 2);
+  for (size_t i = 0; i < frames; i++) {
+    for (const double* x : channels) {
+      double v = std::isnan(x[i]) ? 0.0 : std::clamp(x[i], -1.0, 1.0);
+      put(static_cast<uint16_t>(static_cast<int16_t>(std::nearbyint(v * 32767))), 2);
+    }
   }
   return out;
 }
@@ -1918,7 +1922,12 @@ class Graph {
     steps_ = std::move(steps);
     return true;
   }
-  void output(int part) { out_ = part; }
+  // The output: one part, or a left and a right (`right` -1 for one).
+  void output(int left, int right = -1) {
+    out_ = left;
+    out_right_ = right;
+  }
+  bool stereo() const { return out_right_ >= 0; }
   void schedule(int part, int value, ParamEvent e) {
     parts_[static_cast<size_t>(part)].values[value].schedule(e);
   }
@@ -1944,12 +1953,20 @@ class Graph {
     return v.schedule_in_place(e);
   }
 
-  // The next `n` samples into `out`.
-  void render(double* out, int64_t n) {
+  // The next `n` samples into `out`: the left, or the one output.
+  void render(double* out, int64_t n) { render(out, nullptr, n); }
+  // The next `n` samples of each channel; `right` may be null. A graph with
+  // one output answers it on both.
+  void render(double* left, double* right, int64_t n) {
+    const int r = stereo() ? out_right_ : out_;
+    auto copy = [&](int part, double* into, int m) {
+      for (int i = 0; i < m; i++) into[i] = part >= 0 ? parts_[static_cast<size_t>(part)].out[i] : 0.0;
+    };
     for (int64_t done = 0; done < n;) {
       int m = static_cast<int>(std::min<int64_t>(kGraphBlock - pos_ % kGraphBlock, n - done));
       block(m);
-      for (int i = 0; i < m; i++) out[done + i] = out_ >= 0 ? parts_[static_cast<size_t>(out_)].out[i] : 0.0;
+      copy(out_, left + done, m);
+      if (right) copy(r, right + done, m);
       done += m;
     }
   }
@@ -2158,7 +2175,7 @@ class Graph {
   std::vector<GraphPart> parts_;
   std::vector<GraphStep> steps_;  // the order a block runs in
   bool forward_ = true;           // every line goes to a later part, so steps_ is the order the parts were made
-  int out_ = -1;
+  int out_ = -1, out_right_ = -1;
   int64_t pos_ = 0;
 };
 

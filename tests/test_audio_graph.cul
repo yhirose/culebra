@@ -31,6 +31,28 @@ assert_samples(
 )
 // Rendering starts from the start every time.
 assert_eq(sine.render(0.0005), sine.render(0.001)[..4])
+
+// A left and a right output render, with channels: 2, as [left, right]; a
+// graph of one output is the same on both, and one of two renders only so.
+let pair = Audio.Graph.new(rate: 8000)
+let pair_wave = pair.wave("sine", freq: 1000.0)
+pair.output(pair_wave, pair.gain(pair_wave, -0.5))
+let sides = pair.render(0.001, channels: 2)
+assert_samples(sides[0], sine.render(0.001))
+assert_samples(sides[1], sine.render(0.001).map(|x| -0.5 * x))
+assert_eq(sine.render(0.001, channels: 2), [sine.render(0.001), sine.render(0.001)])
+assert_eq(
+  caught(|| pair.render(0.001)),
+  ("ValueError", "Audio.Graph: a graph with a left and a right output renders with channels: 2"),
+)
+assert_eq(caught(|| sine.render(0.001, channels: 3)), ("ValueError", "Audio.Graph: channels is 1 or 2"))
+assert_eq(
+  caught(|| pair.output(pair_wave, sine.wave())),
+  ("ValueError", "Audio.Graph: the output is a part of its own graph"),
+)
+// One output again is one channel.
+pair.output(pair_wave)
+assert_samples(pair.render(0.001), sine.render(0.001))
 assert_eq(Audio.Graph.new().render(0.001), repeat(44, 0.0))
 
 // A value is its start until its first change; set jumps, ramp arrives in a

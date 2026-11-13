@@ -246,7 +246,7 @@ assert_eq(blips.now(), 0.0)
 # Mistakes.
 assert_throws("ValueError", || Voices(0, |f| sine(f)))
 assert_throws("TypeError", || Voices(1, |f| 1.0))
-assert_throws("ValueError", || Voices(1, |f| sine([f, f * 2.0])))
+assert_throws("ValueError", || Voices(1, |f| sine([f, f * 2.0, f * 3.0])), message: "Synth: a sound plays as one channel or two (left and right), not 3; mix them, .mix()")
 let leaked = {mut f: nil}
 let noted = Voices(1, fn (f) {
   leaked.f = f

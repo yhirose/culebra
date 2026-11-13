@@ -101,7 +101,8 @@ assert_eq(caught(|| sine(1.0) - ["a"]), not_a_channel)
 assert_eq(caught(|| sine([440.0, 660.0]) * [0.2]), ("ValueError", "Synth: 2 channels and 1 at once"))
 assert_throws("ValueError", || sine([]))
 assert_throws("TypeError", || sine([[440.0, 660.0]]))
-assert_eq(caught(|| render(sine([440.0, 660.0]), 0.1)), ("ValueError", "Synth: 2 channels play mixed to one, .mix()"))
+assert_eq(caught(|| render(sine([440.0, 660.0]), 0.1)), ("ValueError", "Synth.render: the sound is two channels (left and right); render it with channels: 2, or mix them to one first, .mix()"))
+assert_eq(caught(|| render(sine([440.0, 550.0, 660.0]), 0.1, channels: 2)), ("ValueError", "Synth: a sound plays as one channel or two (left and right), not 3; mix them, .mix()"))
 assert_throws("ValueError", || feedback(|x| sine([440.0, 660.0]) + x.delay(0.1)))
 
 # .range takes a signal from -1..1 to lo..hi.

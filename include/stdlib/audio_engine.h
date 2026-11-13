@@ -364,6 +364,11 @@ inline constexpr int kStealFade = 128;
 // fading goes at once, which takes as many steals inside one fade.
 inline constexpr size_t kSamplerSlots = 2 * kMaxSamplers;
 
+// One sample of the left and the right channel.
+struct Frame {
+  double left, right;
+};
+
 // The mixing: the voice sounding on each channel, the schedules playing and the
 // samples they started, and the noise channel's generator. A stream has one,
 // which its audio thread alone touches; a schedule rendered to samples
@@ -384,9 +389,12 @@ struct Mixer {
   void cut(int64_t id);
   // A sample starting, stealing from the oldest past kMaxSamplers.
   void start(const Sampler& s);
-  // Sample `p`: the schedules' notes due then started, the samples and the
-  // channels sounding, `extra`, and the rooms' echoes. Not yet clamped.
-  double sample(int64_t p, double extra);
+  // Sample `p` of each channel: the schedules' notes due then started, the
+  // samples and the channels sounding (one sound, on both), `left` or
+  // `right`, and the rooms' echoes (on both). Each channel is summed in the
+  // order a mono mix was, so a mono sound is the same on both, bit for bit.
+  // Not yet clamped.
+  Frame sample(int64_t p, double left, double right);
   // The noise channel's next sample, from the mixer's own generator.
   double noise(Note& n, double cutoff);
 };
@@ -466,7 +474,7 @@ inline double Mixer::noise(Note& n, double cutoff) {
   return n.lp_state;
 }
 
-inline double Mixer::sample(int64_t p, double extra) {
+inline Frame Mixer::sample(int64_t p, double left, double right) {
   std::erase_if(playing, [&](PlayingSchedule& ps) { return !advance(ps, p); });
   double mixed = 0.0;
   for (auto& s : samplers) {
@@ -492,9 +500,13 @@ inline double Mixer::sample(int64_t p, double extra) {
     if (n.room) n.room->send += raw * g;
     n.elapsed++;
   }
-  mixed += extra;
-  for (auto& ps : playing) mixed += ps.schedule->room->step();
-  return mixed;
+  Frame f{mixed + left, mixed + right};
+  for (auto& ps : playing) {
+    double echo = ps.schedule->room->step();
+    f.left += echo;
+    f.right += echo;
+  }
+  return f;
 }
 
 // A schedule (schedule_new's list and length) played once through by a mixer
@@ -514,7 +526,7 @@ inline void render_schedule(const double* events, int64_t count, double length, 
   m.playing.push_back(PlayingSchedule{1, std::move(schedule), 0, 0});
   const int64_t first = std::llround(std::max(0.0, from) * kSampleRate);
   for (int64_t p = 0; !m.playing.empty(); p++) {
-    double v = m.sample(p, 0.0);
+    double v = m.sample(p, 0.0, 0.0).left;
     if (p >= first) out.push_back(static_cast<float>(std::clamp(v, -1.0, 1.0)));
   }
 }
@@ -788,14 +800,14 @@ class Engine {
 
   // --- audio thread ---
 
-  // Fill `frames` mono float samples. The lock is held only to take the
-  // handover, never across the render, so a long buffer cannot delay tone()
-  // on the main thread. Everything the render touches after that belongs to
-  // this thread alone.
+  // Fill `frames` frames of float samples, the left and the right in turn.
+  // The lock is held only to take the handover, never across the render, so
+  // a long buffer cannot delay tone() on the main thread. Everything the
+  // render touches after that belongs to this thread alone.
   void render(float* out, unsigned int frames) {
     if (frames > kMixChunk) {
       render(out, kMixChunk);
-      render(out + kMixChunk, frames - kMixChunk);
+      render(out + 2 * kMixChunk, frames - kMixChunk);
       return;
     }
     {
@@ -847,10 +859,14 @@ class Engine {
 
     // The graphs, each from the sample it starts on.
     std::fill(graph_mix_, graph_mix_ + frames, 0.0);
+    std::fill(graph_mix_right_, graph_mix_right_ + frames, 0.0);
     for (auto& pg : graphs_) {
       int64_t skip = std::clamp<int64_t>(pg.origin - pos_, 0, frames);
-      pg.graph->render(graph_samples_, frames - skip);
-      for (int64_t i = skip; i < frames; i++) graph_mix_[i] += graph_samples_[i - skip];
+      pg.graph->render(graph_samples_, graph_samples_right_, frames - skip);
+      for (int64_t i = skip; i < frames; i++) {
+        graph_mix_[i] += graph_samples_[i - skip];
+        graph_mix_right_[i] += graph_samples_right_[i - skip];
+      }
     }
 
     int head = 0;   // pending_ is ordered by start, so only the head can be due
@@ -863,7 +879,9 @@ class Engine {
         mix_.voice[pending_[head].channel] = pending_[head].note;
         head++;
       }
-      out[i] = static_cast<float>(std::clamp(mix_.sample(p, graph_mix_[i]), -1.0, 1.0));
+      Frame f = mix_.sample(p, graph_mix_[i], graph_mix_right_[i]);
+      out[2 * i] = static_cast<float>(std::clamp(f.left, -1.0, 1.0));
+      out[2 * i + 1] = static_cast<float>(std::clamp(f.right, -1.0, 1.0));
     }
 
     std::move(pending_ + head, pending_ + pending_count_, pending_);
@@ -907,6 +925,7 @@ class Engine {
   Mixer mix_;
   std::vector<PlayingGraph> graphs_;
   double graph_mix_[kMixChunk], graph_samples_[kMixChunk];
+  double graph_mix_right_[kMixChunk], graph_samples_right_[kMixChunk];
 
   // The main thread's: the schedules by handle, and the graphs' live copies.
   // A schedule holds its samples' PCM itself, so a Sound freed while a song

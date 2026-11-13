@@ -2165,7 +2165,8 @@ inline constexpr CanonParam kCanonParams_Audio_native_graph_connect[] = {
 
 inline constexpr CanonParam kCanonParams_Audio_native_graph_output[] = {
   {"id", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
-  {"part", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
+  {"left", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
+  {"right", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
 };
 
 inline constexpr CanonParam kCanonParams_Audio_native_graph_schedule[] = {
@@ -2176,6 +2177,7 @@ inline constexpr CanonParam kCanonParams_Audio_native_graph_schedule[] = {
 inline constexpr CanonParam kCanonParams_Audio_native_graph_render[] = {
   {"id", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
   {"seconds", false, false, false, false, false, "Long|Float", CanonDefault::None, 0, {}},
+  {"channels", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
 };
 
 inline constexpr CanonParam kCanonParams_Audio_native_graph_play[] = {

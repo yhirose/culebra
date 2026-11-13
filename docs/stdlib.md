@@ -8787,7 +8787,12 @@ plays it per call: the recorded-sample counterpart to `tone`'s synthesis.
 `Audio.Sound.new(samples, rate = 44100)` makes one from samples the program
 worked out instead: an Array of numbers from -1.0 to 1.0, mono, `rate` of
 them a second, kept as 16 bits as a WAV file keeps them (a sample past
--1.0..1.0 is held there, and NaN is silence).
+-1.0..1.0 is held there, and NaN is silence). An Array of one or two Arrays
+of numbers, of one length, is a channel each: `[left, right]` is a stereo
+sound, as `Audio.decode` gives its channels and `render(..., channels: 2)`
+its samples (two channels take a `rate` below 2^30). A Kauai song plays a
+stereo sound as one channel, the mean of the two, as it does a stereo WAV
+file.
 
 | Method | Effect |
 | --- | --- |
@@ -8795,7 +8800,7 @@ them a second, kept as 16 bits as a WAV file keeps them (a sample past
 | `sound.stop()` | stop the voice |
 | `sound.playing() -> Bool` | still audible? |
 | `sound.volume(v)` / `sound.pitch(p)` / `sound.pan(p)` | as above; they apply from the next `play` and to the voice now sounding |
-| `sound.data() -> String` | the bytes it was made from: the WAV, MP3 or Ogg it was given, or a 16-bit WAV of its samples; `Audio.Sound.new(s.data())` is the same sound again, and `FS.write("note.wav", s.data())` saves one a program made |
+| `sound.data() -> String` | the bytes it was made from: the WAV, MP3 or Ogg it was given, or a 16-bit WAV of its samples (of both channels for a stereo one); `Audio.Sound.new(s.data())` is the same sound again, and `FS.write("note.wav", s.data())` saves one a program made |
 
 Each `Sound` is one voice, and the decoded sample is freed with the last
 reference, which also stops it: keep the handle for as long as it should be
@@ -9061,7 +9066,7 @@ plays.
 
 Each method below on a graph adds a part, which takes in the sum of the
 parts given to it, and answers it as an `AudioGraphPart`; `output(part)` says which
-part the graph plays. A graph stops, and is freed, with the last reference to
+part the graph plays, and `output(left, right)` makes it stereo. A graph stops, and is freed, with the last reference to
 it or to any of its parts and values.
 
 | Function / method | Effect |
@@ -9086,8 +9091,8 @@ it or to any of its parts and values.
 | `g.clip(input, lo = -1.0, hi = 1.0)` | `input` held within `lo`..`hi` |
 | `g.exp(input)` | e to the power of `input` |
 | `part.connect(target) -> target` | adds what `part` answers into `target`: into what that part takes in (a source, a wave, a noise, an impulse, a dust or an lfnoise, takes nothing in), or into one of its values (below). A part may be connected from any part, but a loop has to pass through a delay (below) |
-| `g.output(part)` | the part the graph plays (silence until there is one) |
-| `g.render(seconds) -> Array` | the graph's first `seconds`, worked out now from its start |
+| `g.output(left, right = nil)` | the part the graph plays (silence until there is one), or with `right` the part on each side, which makes the graph stereo. A graph with one output plays it on both sides |
+| `g.render(seconds, channels = 1) -> Array` | the graph's first `seconds`, worked out now from its start. With `channels: 2`, `[left, right]`, each an Array of samples (a graph with one output gives the same on both); a stereo graph renders only so (`ValueError` with 1) |
 | `g.play()` | play the graph from its start (again, if it is playing) |
 | `g.stop()` | silence it |
 | `g.now() -> Float` | where on the graph's clock a change made now lands; `0.0` when it is not playing |
@@ -10291,13 +10296,13 @@ check, when `render` builds it at its rate, with the graph's `ValueError`.
 | `Synth.perc(attack, release, peak = 1.0, curve = -4.0)` | `env([0, peak, 0], [attack, release], curve)`: a struck sound's envelope |
 | `Synth.adsr(attack, decay, sustain, release, peak = 1.0, curve = -4.0)` | a gated envelope: up to `peak`, down to `sustain * peak`, held there until it is let go, then down to 0 over `release`. `e.hold(secs)` lets it go `secs` from its start (from the level it has then); unheld, it plays in a `Voices`, whose note off lets it go, and is a `ValueError` elsewhere |
 | `Synth.control(name, init, lo = nil, hi = nil)` | a value named `name`, `init` until the handle `play` gave sets it (kept to `lo..hi` when they are given, `init` among them); controls of one name in an expression are one value, and are made alike |
-| `Synth.play(expr, wait = true, secs = nil) -> SynthHandle` | the expression (or a `Voices`, below) played until `secs`, or else until it ends on its own (below); with `wait` it returns once it has ended, without it at once, the sound playing on until it ends or is stopped (a `Voices` until it is stopped, as notes may come). A sound that does not end on its own (an oscillator, a loop, a note still held) needs `secs` or `wait: false`, else `ValueError`. With no device nothing sounds and it returns at once |
+| `Synth.play(expr, wait = true, secs = nil) -> SynthHandle` | the expression (or a `Voices`, below) played until `secs`, or else until it ends on its own (below); with `wait` it returns once it has ended, without it at once, the sound playing on until it ends or is stopped (a `Voices` until it is stopped, as notes may come). A sound that does not end on its own (an oscillator, a loop, a note still held) needs `secs` or `wait: false`, else `ValueError`. A bundle of two channels plays as the left and the right (below). With no device nothing sounds and it returns at once |
 | `Synth.lowpass(x, cutoff = 1000.0, q = 0.707, rate = nil)` / `highpass` / `bandpass` | a part's method of that name for a part; for samples (an Array of numbers), `Audio.filter(x, kind, cutoff, q, rate)`, `rate` 44100 when `nil`. A part's rate is the one `render` or `play` gives, so a `rate` given with a part is a `ValueError` (so in the two below) |
 | `Synth.resonate(x, modes: Array, dry = 0.0, rate = nil)` | `x.resonate(modes, dry)` for a part; `Audio.resonate(x, modes, dry, rate)` for samples |
 | `Synth.envelope(x, gain, rate = nil)` | `x * gain` for a part; `Audio.envelope(x, gain, rate)` for samples, `gain` an envelope of `(at, value)` |
 | `Synth.hz(note) -> Float` | a note number's frequency: 69 is 440 Hz, a semitone a twelfth of an octave |
 | `Synth.db(x) -> Float` | decibels as a gain: 0 is 1.0, -6 about 0.5 |
-| `Synth.render(expr, seconds = nil, rate = 44100) -> Array` | the first `seconds` of the expression (a part, an envelope or a `Voices`), as `Audio.Graph`'s `render` works them out; without `seconds`, until it ends on its own (below), and a `ValueError` for one that does not |
+| `Synth.render(expr, seconds = nil, rate = 44100, channels = 1) -> Array` | the first `seconds` of the expression (a part, an envelope or a `Voices`), as `Audio.Graph`'s `render` works them out; without `seconds`, until it ends on its own (below), and a `ValueError` for one that does not. With `channels: 2`, `[left, right]` (below) |
 
 | Method of a part | Effect |
 | --- | --- |
@@ -10315,6 +10320,7 @@ check, when `render` builds it at its rate, with the graph's `ValueError`.
 | `p.clip(lo, hi)` | `p` held within `lo`..`hi` |
 | `p.abs()` | the size of `p` |
 | `p.mix()` | a bundle's channels added to one part; a part as it is |
+| `p.pan(pos)` | stereo, `p` placed at `pos` from -1 (left) to 1 (right) at equal power: the left times sin((1 - pos)π/4), the right times sin((1 + pos)π/4), so 0 is about 0.707 on each side. A bundle of two is turned down side by side, each channel on its own side. `pos` is a number from -1 to 1 (`ValueError` past it), or a part or an envelope, held within -1..1 |
 | `p + x`, `p - x`, `p * x`, `p / n`, `-p` | parts added, subtracted and multiplied (a gain), with a number, a part, an envelope or an Array on the right, and a number on the left of `+` and `*`; `/` by a number only, `ValueError` for 0 |
 
 An Array where a value or a part goes is a channel per item, and what is
@@ -10323,8 +10329,8 @@ each, so `sine([440.0, 660.0]) * [0.2, 0.1]` is two sines at their own
 gains and `saw([110.0, 110.77]).mix()` two saws added; an Array of one is
 that one part. A bundle takes every
 method a part takes, channel by channel. Channels of two counts at once
-(`sine([440.0, 660.0]) * [0.2]`) raise `ValueError`, and a bundle plays or
-renders once `.mix()` makes it one channel. What a part is made with that is
+(`sine([440.0, 660.0]) * [0.2]`) raise `ValueError`; a bundle of more than
+two plays or renders once `.mix()` makes it one channel. What a part is made with that is
 not a value (a time, `lo` and `hi`, a kind, a seed) is one for every
 channel; a part that draws numbers (`dust`, `lfnoise`) draws its own on each,
 from its `seed` plus the channel's number, so `dust([5.0, 5.0])` is two
@@ -10337,6 +10343,31 @@ println(render(detuned, 0.5).size())  # => 22050
 let blip = sine(800.0) * line(1.0, 0.0, 0.05)
 let echo = feedback(|x| blip + x.delay(0.3) * 0.6)
 println(render(echo, 1.0).slice(13230, 15435).map(|v| Math.abs(v)).max() > 0.5)  # => true
+```
+
+A bundle of two channels is stereo: `play` plays it as the left and the
+right, and `render(expr, seconds, channels: 2)` (a handle's `render` too)
+answers `[left, right]`, the shape `Audio.decode` gives and
+`Audio.Sound.new` takes. So `sine([440.0, 660.0])` is 440 Hz on the left
+and 660 Hz on the right, and one channel added to two goes to both. One
+channel renders with `channels: 2` as the same samples on both; two render
+only so, and with `channels: 1` raise `ValueError`. `p.pan(pos)` makes a
+pair from one channel at equal power, so `p.pan(0)` is 3 dB below `p`
+alone, which plays at full on both sides. The device plays its stream's
+centre at 0.6875 of full on each side, so `p.pan(-1)` is heard at 0.6875 on
+the left where `Audio.Sound`'s `pan(-1)` is heard at 1.0, some 3.3 dB
+louder. A stereo sound is made mono two ways: `.mix()` adds its channels (a
+`pan(0)` comes back at 1.414 times the part), and a Kauai song plays a
+stereo `Audio.Sound` as their mean. A `Voices` builder may return two
+channels, a voice's gate one for both; a loop (`feedback`) is one channel.
+
+```culebra
+let {saw, sine, mix, render} = Synth
+let wide = mix([saw(110.0).pan(-0.5), saw(110.77).pan(0.5)]) * 0.1
+let sides = render(wide, 0.5, channels: 2)
+println((sides.size(), sides[0].size()))  # => (2, 22050)
+println(render(sine(440.0).pan(-1.0), 0.01, channels: 2)[1].all(|v| v == 0.0))  # => true
+let sound = Audio.Sound.new(sides)  # a stereo Sound
 ```
 
 A sound ends on its own where its output is 0 for good: a product with the
@@ -10373,7 +10404,7 @@ println(render(noise() * perc(0.001, 0.01) |> pluck(220.0, ring: 0.5)).size())  
 | `h.ends()` | when it ends on its own (or at `secs`), in seconds from its start; `nil` for never |
 | `h.now() -> Float` | where on its clock a change made now lands |
 | `h.set(name, v, secs = 0.0, at = nil)` | the control `name` at `v` from `at` (now when `nil`), in a straight line over `secs` when more than 0; a time already past is now, as for `Audio.Graph`'s values |
-| `h.render(seconds) -> Array` | its first `seconds`, the changes made to it so far included |
+| `h.render(seconds, channels = 1) -> Array` | its first `seconds`, the changes made to it so far included; with `channels: 2`, `[left, right]` |
 
 ```culebra
 {

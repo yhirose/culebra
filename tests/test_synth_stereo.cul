@@ -1,0 +1,141 @@
+# Synth's stereo: a bundle of two channels plays and renders as the left and
+# the right, .pan places one channel (or turns two down) at equal power, and
+# a handle's fader and a Voices' gates move both channels as one.
+
+let {*} = Synth
+
+fn assert_samples(got, want) {
+  assert_eq(got.size(), want.size())
+  for i in 0..got.size() {
+    assert_close(got[i], want[i], 1e-9)
+  }
+}
+
+fn caught(call) {
+  try {
+    call()
+    nil
+  } catch e {
+    (e.kind, e.message)
+  }
+}
+
+let both = |expr, secs| render(expr, secs, channels: 2)
+let at_pos = |pos| [Math.sin((1 - pos) * Math.pi / 4), Math.sin((1 + pos) * Math.pi / 4)]
+# `samples` times each side's gain at `pos`, or at each of `pos` samples:
+# sin((1 + k pos) pi/4), k -1 on the left and 1 on the right.
+fn panned(samples, pos) {
+  let at = |i| pos is Array ? pos[i] : pos
+  [-1.0, 1.0].map(|k| iota(samples.size()).map(|i| samples[i] * Math.sin((1 + k * at(i)) * Math.pi / 4)))
+}
+
+# A bundle of two renders as [left, right], each channel alone; one channel
+# renders the same on both.
+let lr = both(sine([440.0, 660.0]) * 0.2, 0.02)
+assert_samples(lr[0], render(sine(440.0) * 0.2, 0.02))
+assert_samples(lr[1], render(sine(660.0) * 0.2, 0.02))
+let mono = render(saw(110.0) * 0.3, 0.02)
+assert_eq(both(saw(110.0) * 0.3, 0.02), [mono, mono])
+
+# Two channels render only as both, three play only mixed, and the shape is
+# checked before the end (two channels that never end).
+let two = "Synth.render: the sound is two channels (left and right); render it with channels: 2, or mix them to one first, .mix()"
+assert_eq(caught(|| render(sine([440.0, 660.0]), 0.02)), ("ValueError", two))
+assert_eq(caught(|| render(sine([440.0, 660.0]))), ("ValueError", two))
+let three = "Synth: a sound plays as one channel or two (left and right), not 3; mix them, .mix()"
+assert_eq(caught(|| both(sine([440.0, 550.0, 660.0]), 0.02)), ("ValueError", three))
+assert_eq(caught(|| render(sine(440.0), 0.02, channels: 3)), ("ValueError", "Audio.Graph: channels is 1 or 2"))
+
+# One channel added to two goes to both.
+let sum = both(sine([440.0, 660.0]) * 0.2 + saw(110.0) * 0.1, 0.02)
+assert_samples(sum[0], render(sine(440.0) * 0.2 + saw(110.0) * 0.1, 0.02))
+assert_samples(sum[1], render(sine(660.0) * 0.2 + saw(110.0) * 0.1, 0.02))
+
+# .pan at a number: the left times sin((1 - pos) pi/4), the right times
+# sin((1 + pos) pi/4); at an end the other side is silent, and at 0 both are
+# the same, 3 dB down.
+let x = saw(220.0) * 0.5
+let dry = render(x, 0.02)
+for pos in [-1.0, -0.5, 0.3, 1.0] {
+  let st = both(x.pan(pos), 0.02)
+  let want = panned(dry, pos)
+  assert_samples(st[0], want[0])
+  assert_samples(st[1], want[1])
+}
+assert_true(both(x.pan(-1.0), 0.02)[1].all(|v| v == 0.0))
+assert_true(both(x.pan(1), 0.02)[0].all(|v| v == 0.0))
+let center = both(x.pan(0), 0.02)
+assert_eq(center[0], center[1])
+assert_samples(center[0], dry.map(|v| v * Math.sqrt(0.5)))
+assert_eq(caught(|| x.pan(1.5)), ("ValueError", "Synth.pan: pos is a number from -1 to 1"))
+assert_eq(caught(|| x.pan(Math.nan)), ("ValueError", "Synth.pan: pos is a number from -1 to 1"))
+assert_eq(caught(|| x.pan(sine([1.0, 2.0]))), ("ValueError", "Synth.pan: pos is one channel"))
+
+# A pos that moves: each sample's gains from where it is then, held within
+# -1..1 (a pos swinging to 3 sits at the ends, its phase never turned over),
+# and an envelope sweeping from the left to the right.
+let p = render(sine(30.0), 0.02)
+let moving = both(x.pan(sine(30.0)), 0.02)
+let want_moving = panned(dry, p)
+assert_samples(moving[0], want_moving[0])
+assert_samples(moving[1], want_moving[1])
+let wide = both(x.pan(sine(30.0) * 3.0), 0.02)
+let want_wide = panned(dry, p.map(|v| Math.clamp(v * 3.0, -1.0, 1.0)))
+assert_samples(wide[0], want_wide[0])
+assert_samples(wide[1], want_wide[1])
+let sweep = line(-1.0, 1.0, 0.02)
+let swept = both(x.pan(sweep), 0.02)
+# The line at each sample, -1 + 2 t / 0.02 (sweep.at(t) a sample at a time
+# allocates as much as the rest of the file under gc-stress).
+let want_swept = panned(dry, iota(dry.size()).map(|i| -1.0 + 2.0 * (i / 44100.0 / 0.02)))
+assert_samples(swept[0], want_swept[0])
+assert_samples(swept[1], want_swept[1])
+
+# Two channels are each turned down on their own side, not mixed; three are
+# not a pair.
+let turned = both((sine([440.0, 660.0]) * 0.2).pan(0.5), 0.02)
+let g = at_pos(0.5)
+assert_samples(turned[0], lr[0].map(|v| v * g[0]))
+assert_samples(turned[1], lr[1].map(|v| v * g[1]))
+let not_a_pair = "Synth.pan: a bundle pans with two channels (left and right), not 3"
+assert_eq(caught(|| sine([1.0, 2.0, 3.0]).pan(0.0)), ("ValueError", not_a_pair))
+
+# Parts placed apart and mixed: each side the sum of the parts on it.
+let spread = both(mix([saw(110.0).pan(-0.5), saw(111.0).pan(0.5)]) * 0.2, 0.02)
+let (a, b) = (at_pos(-0.5), at_pos(0.5))
+assert_samples(spread[0], render((saw(110.0) * a[0] + saw(111.0) * b[0]) * 0.2, 0.02))
+assert_samples(spread[1], render((saw(110.0) * a[1] + saw(111.0) * b[1]) * 0.2, 0.02))
+
+# Two channels end with the slower, and .pan keeps its input's end.
+let tails = render(sine([440.0, 660.0]) * [perc(0.01, 0.05), perc(0.01, 0.1)], channels: 2)
+assert_eq((tails[0].size(), tails[1].size()), (4851, 4851))
+assert_eq(render(sine(440.0) * perc(0.01, 0.1) |> pan(sine(2.0)), channels: 2)[0].size(), 4851)
+
+# Played, a stereo sound's handle renders as both, and its fader is one
+# value for both channels: secs silences both from one sample.
+let held = play(sine([440.0, 660.0]) * 0.2, wait: false)
+assert_samples(held.render(0.02, channels: 2)[1], lr[1])
+assert_eq(caught(|| held.render(0.02)), ("ValueError", two))
+held.stop()
+let timed = play(sine([440.0, 660.0]) * 0.2, wait: false, secs: 0.01).render(0.02, channels: 2)
+for side in [0, 1] {
+  assert_samples(timed[side][..441], lr[side][..441])
+  assert_true(timed[side][441..].all(|v| v == 0.0))
+}
+
+# A Voices whose builder answers two channels: each note on both sides, its
+# gate one value for both.
+let notes = [60, 64]
+let stereo_voices = Voices(2, |f| (sine(f) * perc(0.005, 0.03)).pan(-0.5))
+stereo_voices.sequence(notes, step: 0.02)
+let mono_voices = Voices(2, |f| sine(f) * perc(0.005, 0.03))
+mono_voices.sequence(notes, step: 0.02)
+let heard = render(stereo_voices, channels: 2)
+let want_voices = panned(render(mono_voices), -0.5)
+assert_samples(heard[0], want_voices[0])
+assert_samples(heard[1], want_voices[1])
+
+# A box takes a stereo sound as play does.
+let box = Proxy()
+box.set(sine([440.0, 660.0]) * 0.1)
+box.stop()

@@ -25,8 +25,8 @@ assert_throws("ValueError", || render(feedback(|x| blip + x.delay(0.1) * 0.5)), 
 let held = Voices(1, |f| sine(f) * adsr(0.01, 0.1, 0.5, 0.2))
 held.note_on(60)
 assert_throws("ValueError", || render(held), message: no_end)
-# Channels are mixed to one before an end is worked out for them.
-assert_throws("ValueError", || render(sine([440.0, 660.0]) * perc(0.01, 0.1)), message: "Synth: 2 channels play mixed to one, .mix()")
+# Two channels end with the slower.
+assert_eq(render(sine([440.0, 660.0]) * [perc(0.01, 0.1), perc(0.01, 0.5)], channels: 2)[0].size(), 22491)
 
 # A Kauai voice whose notes are an expression: each pitch's sound rings to
 # its own end, the knobs the band's line and the score set handed in.

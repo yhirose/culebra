@@ -124,7 +124,7 @@ void tone_callback(void* buffer_data, unsigned int frames) {
 void ensure_tone_stream() {
   ensure_device();
   if (!g_ready || g_tone_ready) return;
-  g_tone_stream = load_stream(kSampleRate, 1, 0);  // 32-bit float, mono
+  g_tone_stream = load_stream(kSampleRate, 2, 0);  // 32-bit float, left and right in turn
   g_engine.open();
   SetAudioStreamCallback(g_tone_stream, tone_callback);
   PlayAudioStream(g_tone_stream);

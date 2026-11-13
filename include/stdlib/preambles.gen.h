@@ -2036,17 +2036,19 @@ inline constexpr const char* AUDIO_MODULE_SOURCE = R"=culpre=(let _audio_module 
     exp(input: AudioGraphPart) {
       @_part("math", "exp", [input], [-1.0, 1.0])
     }
-    output(part: AudioGraphPart) {
-      if part._graph._id != @_id {
+    # The part heard, or with `right` the left and the right.
+    output(left: AudioGraphPart, right: AudioGraphPart | Nil = nil) {
+      if left._graph._id != @_id || (right != nil && right._graph._id != @_id) {
         __raise(
           "ValueError",
           "Audio.Graph: the output is a part of its own graph",
         )
       }
-      _Audio.graph_output(@_id, part._index)
+      _Audio.graph_output(@_id, left._index, right == nil ? -1 : right._index)
     }
-    render(seconds: Long | Float) {
-      _Audio.graph_render(@_id, seconds)
+    # The first `seconds` as samples; with `channels: 2`, [left, right].
+    render(seconds: Long | Float, channels: Long = 1) {
+      _Audio.graph_render(@_id, seconds, channels)
     }
     play() {
       _Audio.graph_play(@_id)
@@ -2070,8 +2072,9 @@ inline constexpr const char* AUDIO_MODULE_SOURCE = R"=culpre=(let _audio_module 
       @_id = _Audio.sound_load(data)
       @_data = data
     }
-    # One from samples the program made: -1.0..1.0, mono, `rate` a second,
-    # kept as 16 bits as a WAV file keeps them.
+    # One from samples the program made: -1.0..1.0, `rate` a second, kept as
+    # 16 bits as a WAV file keeps them. Numbers are one channel; an Array of
+    # one or two Arrays of numbers is a channel each, [left, right].
     new(samples: Array, rate: Long = 44100) {
       let made = _Audio.sound_samples(samples, rate)
       @_id = made[0]
@@ -5905,6 +5908,8 @@ inline constexpr const char* SYNTH_MODULE_SOURCE = R"=culpre=(# Synth: sound wri
 # to each (`sine([440.0, 660.0]) * 0.2` is two sines, each at 0.2). A bundle
 # is a SynthPart of kind "bundle" whose inputs are its channels, so every
 # method takes it as it takes a part, and `.mix()` adds the channels to one.
+# A bundle of two is stereo: it plays and renders as the left and the right,
+# and `.pan(pos)` makes one.
 let _synth_module = fn () {
   # The number every Part is made with: render keeps the parts it built by
   # it, which is what makes a value used twice one part.
@@ -6027,6 +6032,26 @@ let _synth_module = fn () {
     }
     v is SynthPart && v.kind == "bundle" ? v.inputs : nil
   }
+  # The channels a value gives, one being itself.
+  fn channels_or_one(v) {
+    channels_of(v) ?? [v]
+  }
+
+  # The gains of the left and the right at `pos` (-1 left .. 1 right), at
+  # equal power: sin((1 - pos) pi/4) and sin((1 + pos) pi/4), which are
+  # cos t and sin t for t = (pos + 1) pi/4, written so that a side at an end
+  # is 0 exactly. A pos that moves (a part or an envelope) is held within
+  # -1..1, and its sines are 0 Hz sines whose phase it is.
+  fn pan_gains(pos) {
+    if is_number(pos) {
+      __raise("ValueError", "Synth.pan: pos is a number from -1 to 1") unless finite(pos) && pos >= -1 && pos <= 1
+      return [Math.sin((1 - pos) * Math.pi / 4), Math.sin((1 + pos) * Math.pi / 4)]
+    }
+    __raise("ValueError", "Synth.pan: pos is one channel") if pos is SynthPart && pos.kind == "bundle"
+    let q = to_part(pos).clip(-1.0, 1.0)
+    let side = |k| node("wave", [], {freq: 0.0, feedback: 0.0, phase: q * (k * Math.pi / 4) + Math.pi / 4}, {kind: "sine"})
+    [side(-1.0), side(1.0)]
+  }
 
   # A part of `kind` made of `inputs` and `values`, the one place a part is
   # made from what a caller gave: an Array or a bundle among them makes a
@@ -6148,6 +6173,13 @@ let _synth_module = fn () {
     # A bundle's channels added to one part; a part is one already.
     mix() {
       @kind == "bundle" ? SynthPart("mix", @inputs, {}, {}) : self
+    }
+    # Stereo, placed at `pos` from -1 (left) to 1 (right) at equal power: one
+    # channel goes to both sides, and two are each turned down on their own.
+    pan(pos: Long | Float | SynthPart | SynthEnvelope) {
+      let count = channels_or_one(self).size()
+      __raise("ValueError", "Synth.pan: a bundle pans with two channels (left and right), not {count}") if count > 2
+      self * pan_gains(pos)
     }
   }
 
@@ -6551,25 +6583,47 @@ let _synth_module = fn () {
     }
   }
 
-  # An expression that plays as one sound: one channel, its loops closed.
+  # An expression that plays as one sound: one channel or two (the left and
+  # the right), its loops closed.
   let check_playable = fn (expr) {
-    if expr is SynthPart && expr.kind == "bundle" {
-      __raise("ValueError", "Synth: {expr.inputs.size()} channels play mixed to one, .mix()")
-    }
+    let count = channels_or_one(expr).size()
+    __raise("ValueError", "Synth: a sound plays as one channel or two (left and right), not {count}; mix them, .mix()") if count > 2
     if expr is SynthPart && !open_loops(expr).empty() {
       __raise("ValueError", "Synth.feedback: x is heard only in the expression its function returns")
     }
   }
 
-  # The graph an expression stands for, its output set: the graph, its
-  # controls and its output part.
+  # A graph's output: its one part, or its left and right.
+  let output_to = |g, outs| g.output(outs[0], outs.get(1, nil))
+
+  # A gain on each of `parts` (one channel or two) and the one graph value
+  # that moves them all, so a change lands on both channels at one time: on
+  # one, the gain's own; on two, a level made first whose output the
+  # channels' gains take as theirs (0 plus the level).
+  fn shared_gain(b, parts, init) {
+    if parts.size() == 1 {
+      let q = b.g.gain(parts[0], init)
+      return {parts: [q], value: q.gain}
+    }
+    let lead = level(b, init)
+    let gains = parts.map(fn (p) {
+      let q = b.g.gain(p, 0.0)
+      lead.connect(q.gain)
+      q
+    })
+    {parts: gains, value: lead.gain}
+  }
+
+  # The graph an expression stands for, its output set: the graph, how it
+  # was built (its controls among it) and its output parts (one, or the left
+  # and the right).
   fn graph_of(expr, rate) {
     check_playable(expr)
     let g = Audio.Graph(rate)
     let b = build_of(g)
-    let out = signal(b, expr, nil)
-    g.output(out)
-    {g: g, controls: b.controls, out: out}
+    let outs = channels_or_one(expr).map(|c| signal(b, c, nil))
+    output_to(g, outs)
+    {g: g, b: b, outs: outs}
   }
 
   # ---- when an expression ends
@@ -6618,7 +6672,7 @@ let _synth_module = fn () {
     fn tail(p) {
       known[p.id] ??= match p.kind {
         "level" => value_end(p.values.level),
-        "mix" => p.inputs.map(|i| tail(i)).max(),
+        "mix" | "bundle" => p.inputs.map(|i| tail(i)).max(),
         "gain" => Math.min(tail(p.inputs[0]), value_end(p.values.gain)),
         "filter" => tail(p.inputs[0]) + filter_ring(p),
         "drive" | "limit" => tail(p.inputs[0]),
@@ -6642,14 +6696,21 @@ let _synth_module = fn () {
 
   # ---- playing
 
+  # A sound of two channels renders as both; mixed to one, it is one.
+  let check_channels = fn (width, channels) {
+    __raise("ValueError", "Synth.render: the sound is two channels (left and right); render it with channels: 2, or mix them to one first, .mix()") if width == 2 && channels == 1
+  }
+
   # A sound playing: stop() silences it, set() moves a control, and the
-  # graph's clock says where it is. `fader` is the gain of its output.
+  # graph's clock says where it is. `fader` is the value of its output's gain
+  # (one for both channels), and `width` how many channels it has.
   class SynthHandle {
-    new(graph, controls: Object, fader, ends: Long | Float | Nil) {
+    new(graph, controls: Object, fader, ends: Long | Float | Nil, width: Long) {
       @_graph = graph
       @_controls = controls
       @_fader = fader
       @_ends = ends
+      @_width = width
       @_stopped = false
     }
     # When it ends (at play's secs, once a Proxy has faded it out, or else on
@@ -6676,9 +6737,10 @@ let _synth_module = fn () {
       self._move(c.value, Math.clamp(v, c.lo ?? -Math.inf, c.hi ?? Math.inf), at ?? @_graph.now(), secs)
     }
     # Its first `seconds`, as what plays them works them out, the changes
-    # made to it so far included.
-    render(seconds: Long | Float) {
-      @_graph.render(seconds)
+    # made to it so far included; with `channels: 2`, [left, right].
+    render(seconds: Long | Float, channels: Long = 1) {
+      check_channels(@_width, channels)
+      @_graph.render(seconds, channels)
     }
     _wait() {
       while @_graph.now() < @_ends {
@@ -6916,23 +6978,26 @@ let _synth_module = fn () {
         later.filter(|x| x.at > from).for_each(|x| apply_note(p.built, x))
       }
     }
-    # The graph at `rate`, with the notes made so far: a gain per voice (0
-    # until its first note, its gate) and their mix the output.
+    # The graph at `rate`, with the notes made so far: a gain per voice and
+    # channel (0 until its first note; its gate, one value for its channels)
+    # and their mix the output, a channel each when a voice has two (a voice
+    # of one goes to both).
     _built(rate) {
       let g = Audio.Graph(rate)
       let b = build_of(g)
       let voices = @_voices.map(fn (v) {
         let first = v.notes.empty() ? 440.0 : hz(v.notes[0].note)
         b.voice = {pitch_id: v.pitch_id, first: first, mut pitch: nil, triggers: []}
-        let gate = g.gain(part(b, v.expr), 0.0)
+        let gate = shared_gain(b, channels_or_one(v.expr).map(|c| part(b, c)), 0.0)
         let triggers = b.voice.triggers
-        let voice = {part: gate, gate: gate.gain, pitch: b.voice.pitch, triggers: triggers, gated: triggers.filter(|tr| tr.envelope.release != nil)}
+        let voice = {parts: gate.parts, gate: gate.value, pitch: b.voice.pitch, triggers: triggers, gated: triggers.filter(|tr| tr.envelope.release != nil)}
         b.voice = nil
         voice
       })
-      let out = g.mix(voices.map(|v| v.part))
-      g.output(out)
-      let built = {g: g, controls: b.controls, out: out, voices: voices}
+      let width = voices.map(|v| v.parts.size()).max()
+      let outs = iota(width).map(|i| g.mix(voices.map(|v| v.parts.get(i, v.parts[0]))))
+      output_to(g, outs)
+      let built = {g: g, b: b, outs: outs, voices: voices}
       @_events.for_each(|e| apply_note(built, e))
       built
     }
@@ -6948,24 +7013,32 @@ let _synth_module = fn () {
   let built_of = |expr, rate| expr is SynthVoices ? expr._built(rate) : graph_of(expr, rate)
 
   # The first `seconds` of `expr`, as samples: what play would play. Without
-  # `seconds`, until it ends on its own.
-  let render = fn (expr: SynthPart | SynthEnvelope | SynthVoices, seconds: Long | Float | Nil = nil, rate: Long | Float = 44100) {
+  # `seconds`, until it ends on its own. With `channels: 2`, [left, right]
+  # (a sound of one channel on both).
+  let render = fn (
+    expr: SynthPart | SynthEnvelope | SynthVoices,
+    seconds: Long | Float | Nil = nil,
+    rate: Long | Float = 44100,
+    channels: Long = 1,
+  ) {
     let built = built_of(expr, rate)
+    check_channels(built.outs.size(), channels)
     let secs = seconds ?? natural_end(expr)
     __raise("ValueError", "Synth.render: {NO_END}; give it seconds") if seconds == nil && secs == Math.inf
-    built.g.render(secs)
+    built.g.render(secs, channels)
   }
 
   # `expr` built to play, not yet playing: its graph's output goes through
-  # a gain the handle keeps at 1 until told otherwise, and the handle ends
-  # when the sound does on its own (never for a Voices not waited for, as
-  # notes may come).
+  # a gain (one value for its channels) the handle keeps at 1 until told
+  # otherwise, and the handle ends when the sound does on its own (never for
+  # a Voices not waited for, as notes may come).
   fn prepared(expr, wait) {
     let built = built_of(expr, 44100)
-    let fader = built.g.gain(built.out, 1.0)
-    built.g.output(fader)
+    let fader = shared_gain(built.b, built.outs, 1.0)
+    output_to(built.g, fader.parts)
     let natural = expr is SynthVoices && !wait ? Math.inf : natural_end(expr)
-    {expr, built, handle: SynthHandle(built.g, built.controls, fader.gain, natural == Math.inf ? nil : natural)}
+    let ends = natural == Math.inf ? nil : natural
+    {expr, built, handle: SynthHandle(built.g, built.b.controls, fader.value, ends, built.outs.size())}
   }
 
   # A prepared sound played: waited for until it ends, or else kept until

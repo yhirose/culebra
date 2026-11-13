@@ -5722,20 +5722,51 @@ inline int64_t _ns_audio_seed(double x, const char* what) {
   return static_cast<int64_t>(x);
 }
 // A Sound from samples goes to every backend as the WAV bytes of a file; no
-// samples is a silent handle, with nothing for a decoder to refuse. Answers
-// [handle, the WAV's bytes]: the Sound keeps the bytes as its data().
+// samples is a silent handle, with nothing for a decoder to refuse. The
+// samples are numbers (one channel) or an Array of each channel's numbers
+// (one or two, of one length, as Audio.decode gives them). Answers [handle,
+// the WAV's bytes]: the Sound keeps the bytes as its data(). How loud it is
+// is measured on its channels' mean, as a WAV file's is.
 inline JitValue _ns_audio_sound_samples(JitValue* a, int64_t) {
   namespace ad = culebra::_audio_detail;
-  std::vector<double> xs;
-  _ns_audio_numbers(a[0], xs, ad::kSamplesError);
+  std::vector<std::vector<double>> channels(1);
+  auto* given = _ns_adapt::take_array(a[0]);
+  if (given && given->size > 0 && given->items[0].tag == TAG_ARRAY) {
+    if (given->size > 2) _ns_audio_fail("Audio.Sound: a sound is one channel or two");
+    channels.resize(given->size);
+    for (size_t c = 0; c < given->size; c++) {
+      const auto& e = given->items[c];
+      if (e.tag != TAG_ARRAY) culebra::throw_runtime_error_at("TypeError", ad::kSamplesError, 0, 0);
+      _ns_audio_numbers(e, channels[c], ad::kSamplesError);
+    }
+    if (channels.size() == 2 && channels[0].size() != channels[1].size())
+      _ns_audio_fail("Audio.Sound: the channels are one length");
+  } else {
+    _ns_audio_numbers(a[0], channels[0], ad::kSamplesError);
+  }
   int64_t rate = _ns_adapt::take_long(a[1]);
-  if (!(rate >= 1 && rate <= INT32_MAX)) _ns_audio_fail("Audio.Sound: the rate is from 1 below 2^31");
-  culebra::narrow_or_too_large(44 + 2 * static_cast<int64_t>(xs.size()), "Audio.Sound: the sound", 0, 0);
+  // The WAV holds its bytes a second in 32 bits.
+  if (channels.size() == 1 && !(rate >= 1 && rate <= INT32_MAX))
+    _ns_audio_fail("Audio.Sound: the rate is from 1 below 2^31");
+  if (channels.size() == 2 && !(rate >= 1 && rate < (int64_t{1} << 30)))
+    _ns_audio_fail("Audio.Sound: the rate is from 1 below 2^30 for two channels");
+  const size_t frames = channels[0].size();
+  culebra::narrow_or_too_large(44 + 2 * static_cast<int64_t>(channels.size() * frames), "Audio.Sound: the sound",
+                               0, 0);
+  std::vector<const double*> from;
+  for (auto& c : channels) from.push_back(c.data());
   int64_t id = ad::alloc_id();
-  auto wav = ad::wav16(xs.data(), xs.size(), static_cast<uint32_t>(rate));
-  if (!xs.empty()) {
+  auto wav = ad::wav16(from, frames, static_cast<uint32_t>(rate));
+  if (frames > 0) {
     ad::sound_load(id, wav.data(), static_cast<int64_t>(wav.size()), ".wav");
-    _ns_audio_keep_loudness(id, xs.data(), xs.size(), static_cast<double>(rate));
+    const double* heard = channels[0].data();
+    std::vector<double> mean;
+    if (channels.size() == 2) {
+      mean.resize(frames);
+      for (size_t i = 0; i < frames; i++) mean[i] = (channels[0][i] + channels[1][i]) / 2;
+      heard = mean.data();
+    }
+    _ns_audio_keep_loudness(id, heard, frames, static_cast<double>(rate));
   }
   auto* r = culebra_runtime_array_new_reserved(2);
   culebra_runtime_array_push(r, TAG_LONG, id);
@@ -6415,9 +6446,12 @@ inline JitValue _ns_audio_graph_connect(JitValue* a, int64_t) {
     _ns_audio_fail("Audio.Graph: a loop passes through a delay");
   return _ns_adapt::v_nil();
 }
+// The output: a part, or a left and a right (`right` -1 for one).
 inline JitValue _ns_audio_graph_output(JitValue* a, int64_t) {
   auto& g = _ns_audio_graph(a[0]);
-  g.output(_ns_audio_graph_index(g, static_cast<double>(_ns_adapt::take_long(a[1]))));
+  int left = _ns_audio_graph_index(g, static_cast<double>(_ns_adapt::take_long(a[1])));
+  int64_t right = _ns_adapt::take_long(a[2]);
+  g.output(left, right < 0 ? -1 : _ns_audio_graph_index(g, static_cast<double>(right)));
   return _ns_adapt::v_nil();
 }
 // Where a playing graph's clock is (the device's, or without one the time
@@ -6461,15 +6495,26 @@ inline JitValue _ns_audio_graph_schedule(JitValue* a, int64_t) {
   }
   return _ns_adapt::v_nil();
 }
-// The graph's first `seconds`, worked out from a copy.
+// The graph's first `seconds`, worked out from a copy: the samples, or with
+// `channels` 2 [left, right] (a graph with one output on both).
 inline JitValue _ns_audio_graph_render(JitValue* a, int64_t) {
   namespace ad = culebra::_audio_detail;
   ad::Graph g = _ns_audio_graph(a[0]);
   double seconds = _ns_adapt::take_double(a[1]);
+  int64_t channels = _ns_adapt::take_long(a[2]);
+  if (channels != 1 && channels != 2) _ns_audio_fail("Audio.Graph: channels is 1 or 2");
   if (!(seconds >= 0 && seconds * g.rate() < 1e10)) _ns_audio_fail("Audio.Graph: the seconds are 0 or more");
-  std::vector<double> out(static_cast<size_t>(ad::sample_at(seconds, g.rate())));
-  g.render(out.data(), static_cast<int64_t>(out.size()));
-  return _ns_audio_samples(out, "Audio.Graph.render() result");
+  if (channels == 1 && g.stereo())
+    _ns_audio_fail("Audio.Graph: a graph with a left and a right output renders with channels: 2");
+  const auto n = static_cast<size_t>(ad::sample_at(seconds, g.rate()));
+  std::vector<double> left(n), right(channels == 2 ? n : 0);
+  g.render(left.data(), channels == 2 ? right.data() : nullptr, static_cast<int64_t>(n));
+  if (channels == 1) return _ns_audio_samples(left, "Audio.Graph.render() result");
+  auto* r = _jit_array_new_reserved(2, "Audio.Graph.render() result");
+  for (auto* x : {&left, &right})
+    culebra_runtime_array_push(r, TAG_ARRAY,
+                               reinterpret_cast<int64_t>(_ns_audio_floats(x->data(), n, "Audio.Graph.render() result")));
+  return _ns_adapt::v_array(r);
 }
 // Checked here, so a program answers the same with or without a device.
 inline JitValue _ns_audio_graph_play(JitValue* a, int64_t) {
@@ -11885,9 +11930,9 @@ inline const NsMethod kNsRows_Audio_native[] = {
   {"_Audio", "graph_new",      1, &_ns_audio_graph_new},
   {"_Audio", "graph_part",     5, &_ns_audio_graph_part},
   {"_Audio", "graph_connect",  4, &_ns_audio_graph_connect},
-  {"_Audio", "graph_output",   2, &_ns_audio_graph_output},
+  {"_Audio", "graph_output",   3, &_ns_audio_graph_output},
   {"_Audio", "graph_schedule", 2, &_ns_audio_graph_schedule},
-  {"_Audio", "graph_render",   2, &_ns_audio_graph_render},
+  {"_Audio", "graph_render",   3, &_ns_audio_graph_render},
   {"_Audio", "graph_play",     1, &_ns_audio_graph_play},
   {"_Audio", "graph_stop",     1, &_ns_audio_on<_ns_audio_graph_stop_id>},
   {"_Audio", "graph_free",     1, &_ns_audio_on<_ns_audio_graph_free>},

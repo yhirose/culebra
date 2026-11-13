@@ -386,17 +386,19 @@ let _audio_module = fn () {
     exp(input: AudioGraphPart) {
       @_part("math", "exp", [input], [-1.0, 1.0])
     }
-    output(part: AudioGraphPart) {
-      if part._graph._id != @_id {
+    # The part heard, or with `right` the left and the right.
+    output(left: AudioGraphPart, right: AudioGraphPart | Nil = nil) {
+      if left._graph._id != @_id || (right != nil && right._graph._id != @_id) {
         __raise(
           "ValueError",
           "Audio.Graph: the output is a part of its own graph",
         )
       }
-      _Audio.graph_output(@_id, part._index)
+      _Audio.graph_output(@_id, left._index, right == nil ? -1 : right._index)
     }
-    render(seconds: Long | Float) {
-      _Audio.graph_render(@_id, seconds)
+    # The first `seconds` as samples; with `channels: 2`, [left, right].
+    render(seconds: Long | Float, channels: Long = 1) {
+      _Audio.graph_render(@_id, seconds, channels)
     }
     play() {
       _Audio.graph_play(@_id)
@@ -420,8 +422,9 @@ let _audio_module = fn () {
       @_id = _Audio.sound_load(data)
       @_data = data
     }
-    # One from samples the program made: -1.0..1.0, mono, `rate` a second,
-    # kept as 16 bits as a WAV file keeps them.
+    # One from samples the program made: -1.0..1.0, `rate` a second, kept as
+    # 16 bits as a WAV file keeps them. Numbers are one channel; an Array of
+    # one or two Arrays of numbers is a channel each, [left, right].
     new(samples: Array, rate: Long = 44100) {
       let made = _Audio.sound_samples(samples, rate)
       @_id = made[0]
