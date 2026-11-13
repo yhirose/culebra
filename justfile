@@ -1511,6 +1511,14 @@ _run-tests BACKEND:
     # CI shard with this phase. Without it ahead — `just phase gc-stress` —
     # the first leg compiles and the second links.
     #
+    # Each run is a task of its own, so the phase's wall time comes close to
+    # its CPU time over $JOBS: a file's three runs in one task, dealt out in
+    # name order, left its heaviest file running alone at the end
+    # (test_synth_voices, the last 42 of 209 s: the runs' CPU on build-dev
+    # dealt to 4 jobs as on CI, 2026-11-13). Every file's conservative --jit
+    # run is dealt first, and its refs-vm and refs-jit runs after them all,
+    # so the refs-jit run links the object its conservative run compiled.
+    #
     # A file whose leading comment says `# gc-stress: skip — <why>` stays out
     # of this sweep and runs on every other lane. It is for a file that repeats
     # what the rest of the corpus already does under the collector, at a cost
@@ -1543,21 +1551,21 @@ _run-tests BACKEND:
         fi
         # Only crash/no-crash matters here (correctness is covered by the
         # vm-vs-JIT diff), so discard stdout and keep stderr for triage.
-        printf '%s\n' "${files[@]}" | xargs -n1 -P "$JOBS" -I '{}' bash -c '
-            f="$1"; d="$2"
-            name=$(basename "$f" .cul)
+        {
+            for f in "${files[@]}"; do printf '%s jit\n' "$f"; done
+            for f in "${files[@]}"; do printf '%s refs-vm\n%s refs-jit\n' "$f" "$f"; done
+        } | xargs -n2 -P "$JOBS" bash -c '
+            d="$1"; f="$2"; run="$3"
+            out="$d/$(basename "$f" .cul).$run"
+            export CULEBRA_GC_STRESS=1
+            if [[ "$run" == refs-* ]]; then export CULEBRA_GC_REFS=1; fi
             TIMEFORMAT="%U %S"
-            { time CULEBRA_GC_STRESS=1 cul_cached --jit "$f" > /dev/null 2> "$d/$name.err"; } 2> "$d/$name.jit.gccpu" \
-                || touch "$d/$name.fail"
-            for lane in vm jit; do
-                { time CULEBRA_GC_REFS=1 CULEBRA_GC_STRESS=1 cul_cached --$lane "$f" > /dev/null 2> "$d/$name.refs-$lane.err"; } \
-                    2> "$d/$name.refs-$lane.gccpu" || touch "$d/$name.refs-$lane.fail"
-            done
-        ' _ '{}' "$d"
+            { time cul_cached --"${run#refs-}" "$f" > /dev/null 2> "$out.err"; } 2> "$out.gccpu" || touch "$out.fail"
+        ' _ "$d"
         collect_failures "$d" "(gc-stress)" || exit 1
         check_cpu_budget "$d" gccpu "${CULEBRA_GC_STRESS_FILE_BUDGET_MS:-120000}" "(gc-stress)" \
             "a tests/*.cul run's CPU time under a collection at every allocation" \
-            "every collection walks the live heap, so a file that keeps what it allocates costs the square of it: drop what the test does not need to keep, or, if the file only repeats paths others take, give it a \`# gc-stress: skip — <why>\` header."
+            "every collection walks the live heap, so a file that keeps what it allocates costs the square of it: drop what the test does not need to keep (what a section makes, in a block \`{ ... }\` of its own, is let go at its end; see tests/test_synth_voices.cul), or, if the file only repeats paths others take, give it a \`# gc-stress: skip — <why>\` header."
         echo "test (gc-stress) OK (jit conservative; vm + jit refcount-seeded; $skipped skipped by their header)"
     }
 
