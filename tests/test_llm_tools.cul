@@ -113,7 +113,8 @@ LLM.run_tools([w], [call("a", "nope", {})], approve: fn (c) {
 assert_eq(asked_for_unknown, [])
 ran = []
 assert_throws("ValueError", || LLM.run_tools([w, d], [call("a", "weather", {city: "Tokyo"}), call("b", "delete", {path: "x"})],
-            approve: fn (c) { c.name == "delete" ? __raise("ValueError", "stop here") : true }), message: "stop here")
+            approve: fn (c) { c.name == "delete" ? __raise("ValueError", "stop here") : true }),
+  message: "stop here")
 assert_eq(ran, ["weather Tokyo"])
 
 # A call whose arguments could not be read is not run, and approve is not asked

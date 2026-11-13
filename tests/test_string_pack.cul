@@ -1,14 +1,5 @@
 # String.pack / String.unpack: an Array of fixed-width scalars <-> its bytes.
 
-fn err(f) {
-  try {
-    f()
-    nil
-  } catch e {
-    "{e.kind}: {e.message}"
-  }
-}
-
 # --- byte layout: little-endian by default, big on request ---
 assert_eq(String.pack("u16", [0x1234]).bytes().collect(), [0x34, 0x12])
 assert_eq(
@@ -123,7 +114,8 @@ assert_throws("TypeError", || String.unpack("u8", [1, 2]))
 assert_throws("TypeError", || String.unpack("u8", "ab", into: "x"))
 # a failed unpack leaves `into` as it was
 let keep = [1, 2, 3]
-err(|| String.unpack("u16", "ab", into: keep))
+assert_throws("IndexError", || String.unpack("u16", "ab", into: keep),
+  message: "String.unpack: 3 u16 from 0 run past the end (2 bytes remain).")
 assert_eq(keep, [1, 2, 3])
 
 # --- @packable records: declaration order, no padding, one byte order ---

@@ -163,7 +163,8 @@ let c14 = LLM.chat(provider: p14)
 assert_throws("LLMError", || c14.ask("go"), message: "LLM: the model declined to answer: not this")
 assert_eq(c14.messages, [])
 assert_throws("LLMError", || LLM.chat(provider: scripted([reply([], "refusal",
-            {stop_details: {type: "refusal", category: "cyber"}})])).ask("go"), message: "LLM: the model declined to answer: cyber")
+            {stop_details: {type: "refusal", category: "cyber"}})])).ask("go"),
+  message: "LLM: the model declined to answer: cyber")
 assert_throws("LLMError", || LLM.chat(provider: scripted([reply([], "refusal")])).ask("go"),
   message: "LLM: the model declined to answer")
 

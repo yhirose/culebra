@@ -1,16 +1,6 @@
 // XML namespace: stringify. See test_xml.cul for the parser.
 
-// The same, with the document position a parse error carries.
-fn perr(f) {
-  try {
-    f()
-    'no error'
-  } catch e {
-    "{e.kind}: {e.message} @{e.line}:{e.col}"
-  }
-}
 
-// The prolog test_xml.cul parses, written out again by its round trip.
 let prolog = "<?xml version=\"1.0\" encoding=\"utf-8\" standalone=\"yes\"?>\n<!-- lead -->\n<!DOCTYPE r [\n  <!ENTITY e \"boom\">\n  <!-- ] > -->\n]>\n<?pi x?>\n<r/>\n<!-- trail -->\n"
 
 // --- stringify ---

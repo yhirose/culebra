@@ -110,15 +110,6 @@ fn ask(model, **more) {
   LLM.turn(P, model: model, messages: [{role: "user", content: "hi"}], **more)
 }
 
-fn failure(thunk) {
-  try {
-    thunk()
-    "no error"
-  } catch e {
-    "{e.kind}: {e.message}"
-  }
-}
-
 # The part for a call whose arguments the model wrote as '{oops'.
 let UNREAD = {type: "tool_call", id: "c1", name: "weather", args: {}, raw: '{oops',
               error: "the arguments are not JSON"}
@@ -221,9 +212,9 @@ fn preset_cases() {
   for v in vars {
     Sys.set_env(v, "")
   }
-  let no_key = |v| "LLMError: LLM: no API key: set {v} or pass api_key:"
-  assert_eq(failure(fn () { LLM.openai() }), no_key("OPENAI_API_KEY"))
-  assert_eq(failure(fn () { LLM.openrouter(api_key: "") }), no_key("OPENROUTER_API_KEY"))
+  let no_key = |v| "LLM: no API key: set {v} or pass api_key:"
+  assert_throws("LLMError", fn () { LLM.openai() }, message: no_key("OPENAI_API_KEY"))
+  assert_throws("LLMError", fn () { LLM.openrouter(api_key: "") }, message: no_key("OPENROUTER_API_KEY"))
 
   # Defaults, without a request: the server each one is on.
   assert_eq(LLM.openai(api_key: "k").base_url, "https://api.openai.com/v1")

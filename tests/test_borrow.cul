@@ -4,15 +4,6 @@
 # user-visible failure is ClosedError, for both "parent dropped"
 # and "parent mutated since the borrow was taken".
 
-fn closed_msg(thunk) {
-  try {
-    thunk()
-    'NO ERROR'
-  } catch e {
-    "{e.kind}: {e.message}"
-  }
-}
-
 # --- A borrow reads and writes THROUGH to the parent's member. -------------
 {
   let b = __Foreign.Box.new(5)
@@ -35,8 +26,8 @@ fn closed_msg(thunk) {
   c.drop()
   assert_eq(__Foreign.Counter.live(), live0 + 1)  # ~Counter did NOT run
   assert_eq(b.inner().value(), 1)                 # the Box is untouched
-  assert_eq(closed_msg(fn () { c.value() }),      # but this borrow is closed
-            'ClosedError: Counter borrow is no longer valid (its owner was dropped or mutated)')
+  assert_throws('ClosedError', fn () { c.value() },  # but this borrow is closed
+    message: 'Counter borrow is no longer valid (its owner was dropped or mutated)')
 }
 
 # --- Parent dropped → every borrow is ClosedError. --------------------------

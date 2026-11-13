@@ -1,15 +1,6 @@
 // XML namespace: the path language (find / find_all / find_iter / text), and
 // the parameter types of the namespace. See test_xml.cul for the parser.
 
-// The same, with the document position a parse error carries.
-fn perr(f) {
-  try {
-    f()
-    'no error'
-  } catch e {
-    "{e.kind}: {e.message} @{e.line}:{e.col}"
-  }
-}
 
 // --- paths ---
 let lib = XML.parse('<lib><shelf id="s1"><book lang="en" year="2001"><title>A</title><author>X</author></book><book lang="fr"><title>B</title></book><note>n1</note></shelf><shelf id="s2"><book lang="en"><title>C</title><author>Y</author><author>Z</author></book></shelf></lib>')

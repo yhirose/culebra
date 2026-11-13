@@ -4,16 +4,6 @@
 # A file of its own: the same assertions cost twice as much to compile under
 # --jit inside test_llm.cul as they do here.
 
-# What a call raised, as "Kind: message".
-fn failure(thunk) {
-  try {
-    thunk()
-    "no error"
-  } catch e {
-    "{e.kind}: {e.message}"
-  }
-}
-
 fn weather(city: String) {
   "{city}: sunny"
 }
@@ -132,23 +122,25 @@ assert_throws("TypeError", || tn_turn(tn_fake(), messages: [{role: "user", conte
 assert_throws("ValueError", || tn_turn(tn_fake(), messages: [{role: "user", content: [{type: "image"}]}]),
   message: "LLM.turn: messages[0].content[0]: unknown part type 'image'")
 assert_throws("ValueError", || tn_turn(tn_fake(),
-            messages: [tn_user("hi"), {role: "assistant", content: [{type: "tool_result", id: "a"}]}]), message: "LLM.turn: messages[1].content[0]: a tool_result part is not allowed in a assistant message")
+            messages: [tn_user("hi"), {role: "assistant", content: [{type: "tool_result", id: "a"}]}]),
+  message: "LLM.turn: messages[1].content[0]: a tool_result part is not allowed in a assistant message")
 assert_throws("ValueError", || tn_turn(tn_fake(), messages: [{role: "user", content: [{type: "tool_call", id: "a"}]}]),
   message: "LLM.turn: messages[0].content[0]: a tool_call part is not allowed in a user message")
 assert_throws("ValueError", || tn_turn(tn_fake(),
-            messages: [tn_user("hi"), {role: "tool", content: [{type: "text", text: "x"}]}]), message: "LLM.turn: messages[1].content[0]: a text part is not allowed in a tool message")
+            messages: [tn_user("hi"), {role: "tool", content: [{type: "text", text: "x"}]}]),
+  message: "LLM.turn: messages[1].content[0]: a text part is not allowed in a tool message")
 assert_throws("ValueError", || tn_turn(tn_fake(), messages: [tn_user("hi"), {role: "tool", content: "x"}]),
   message: "LLM.turn: messages[1]: a tool message holds tool_result parts, not a String")
 
 # A call and its result must pair up, which LLM.repair can make so.
-assert_eq(failure(|| tn_turn(tn_fake(),
-            messages: [tn_user("hi"), tn_call("a"), tn_result("a"), tn_say("done")])), "no error")
+tn_turn(tn_fake(), messages: [tn_user("hi"), tn_call("a"), tn_result("a"), tn_say("done")])
 assert_throws("LLMError", || tn_turn(tn_fake(), messages: [tn_user("hi"), tn_result("a")]),
   message: "LLM.turn: messages[1]: the tool_result 'a' is not paired with a tool_call just before it (see LLM.repair)")
 assert_throws("LLMError", || tn_turn(tn_fake(), messages: [tn_user("hi"), tn_call("a"), tn_user("again")]),
   message: "LLM.turn: messages[1]: the tool_call 'a' is not paired with a tool_result just after it (see LLM.repair)")
 assert_throws("LLMError", || tn_turn(tn_fake(),
-            messages: [tn_user("hi"), {role: "assistant", content: [{type: "tool_call", name: "w"}]}]), message: "LLM.turn: messages[1]: the tool_call without an id is not paired with a tool_result just after it (see LLM.repair)")
+            messages: [tn_user("hi"), {role: "assistant", content: [{type: "tool_call", name: "w"}]}]),
+  message: "LLM.turn: messages[1]: the tool_call without an id is not paired with a tool_result just after it (see LLM.repair)")
 
 # What the provider says it takes is checked before it is asked.
 assert_throws("LLMError", || tn_turn(tn_fake({}), messages: [tn_user("hi")], tools: [w]),
@@ -159,9 +151,9 @@ assert_throws("LLMError", || tn_turn(tn_plain, messages: [tn_user("hi")], tools:
   message: "LLM.turn: plain does not take tools")
 
 # The arguments.
-let tn_not_provider = "TypeError: type error: parameter 'provider' expects a provider (an object with a turn method)"
-assert_eq(failure(|| tn_turn(3, messages: [tn_user("hi")])), tn_not_provider)
-assert_eq(failure(|| tn_turn({name: "x"}, messages: [tn_user("hi")])), tn_not_provider)
+let tn_not_provider = "type error: parameter 'provider' expects a provider (an object with a turn method)"
+assert_throws("TypeError", || tn_turn(3, messages: [tn_user("hi")]), message: tn_not_provider)
+assert_throws("TypeError", || tn_turn({name: "x"}, messages: [tn_user("hi")]), message: tn_not_provider)
 assert_throws("TypeError", || LLM.turn(tn_fake(), model: 3, messages: [tn_user("hi")]),
   message: "type error: parameter 'model' expects String | Nil")
 assert_throws("TypeError", || tn_turn(tn_fake(), system: 3, messages: [tn_user("hi")]),
@@ -222,7 +214,8 @@ assert_throws("LLMError", || cn_count(tn_fake(), messages: []),
 assert_throws("LLMError", || cn_count(tn_plain, messages: [tn_user("hi")]),
   message: "LLM.count_tokens: plain does not count tokens")
 assert_throws("LLMError", || cn_count({name: "x", capabilities: {count_tokens: true},
-                              turn: fn (request, on_text) { TN_REPLY }}, messages: [tn_user("hi")]), message: "LLM.count_tokens: x does not count tokens")
+                              turn: fn (request, on_text) { TN_REPLY }}, messages: [tn_user("hi")]),
+  message: "LLM.count_tokens: x does not count tokens")
 
 # Its answer is a count.
 assert_throws("LLMError", || cn_count(cn_fake({count_tokens: true}, "many"), messages: [tn_user("hi")]),
