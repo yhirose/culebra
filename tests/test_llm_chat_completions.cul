@@ -197,11 +197,12 @@ fn setup_cases() {
   assert_eq([body.get("max_completion_tokens", nil), body.get("max_tokens", nil)], [7, nil])
   assert_eq(P.name, "openai_compatible")
   assert_eq(LLM.openai_compatible(base_url: BASE, name: "x").name, "x")
-  assert_eq(failure(fn () { LLM.count_tokens(P, model: "m", messages: [{role: "user", content: "hi"}]) }),
-            "LLMError: LLM.count_tokens: openai_compatible does not count tokens")
-  assert_eq(failure(fn () { LLM.openai_compatible() }), "ArityError: missing required argument 'base_url'")
-  assert_eq(failure(fn () { LLM.openai_compatible(base_url: 1) }),
-            "TypeError: type error: parameter 'base_url' expects String")
+  assert_throws("LLMError", fn () { LLM.count_tokens(P, model: "m", messages: [{role: "user", content: "hi"}]) },
+    message: "LLM.count_tokens: openai_compatible does not count tokens")
+  assert_throws("ArityError", fn () { LLM.openai_compatible() },
+    message: "missing required argument 'base_url'")
+  assert_throws("TypeError", fn () { LLM.openai_compatible(base_url: 1) },
+    message: "type error: parameter 'base_url' expects String")
 }
 setup_cases()
 
@@ -291,14 +292,15 @@ fn reply_cases() {
   assert_eq(list.message.content[0].raw, "[1]")
 
   assert_eq(ask("nousage").usage, nil)
-  assert_eq(failure(fn () { ask("busy") }), "LLMError: LLM: 529 server_error: busy")
-  assert_eq(failure(fn () { ask("textual") }), "LLMError: LLM: 500 plain text")
-  assert_eq(failure(fn () { ask("gateway") }), "LLMError: LLM: 502 <h1>bad gateway</h1>")
-  assert_eq(failure(fn () { ask("choice_error") }), "LLMError: LLM: upstream died")
+  assert_throws("LLMError", fn () { ask("busy") }, message: "LLM: 529 server_error: busy")
+  assert_throws("LLMError", fn () { ask("textual") }, message: "LLM: 500 plain text")
+  assert_throws("LLMError", fn () { ask("gateway") }, message: "LLM: 502 <h1>bad gateway</h1>")
+  assert_throws("LLMError", fn () { ask("choice_error") }, message: "LLM: upstream died")
 
   assert_eq(ask("weird").stop, nil)
   assert_eq(ask("weird").raw.choices[0].finish_reason, "weird")
-  assert_eq(failure(fn () { ask("nochoices") }), "LLMError: LLM: the API answered with no choices")
+  assert_throws("LLMError", fn () { ask("nochoices") },
+    message: "LLM: the API answered with no choices")
 
   # A server that answers whole when asked to stream: the whole answer, heard once.
   let whole = []
@@ -313,7 +315,7 @@ reply_cases()
 fn chat_cases() {
   let c = LLM.chat(provider: P, model: "noid", tools: [LLM.tool(weather, "the weather", city: "a city")],
                    max_turns: 1)
-  assert_eq(failure(fn () { c.ask("go") }), "LLMError: LLM: no answer within max_turns (1)")
+  assert_throws("LLMError", fn () { c.ask("go") }, message: "LLM: no answer within max_turns (1)")
   assert_eq(LLM.ask("hi", provider: P, model: "plain"), "model plain")
 
   # A call the model wrote badly is not run or asked about; the model is told.

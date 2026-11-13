@@ -4,16 +4,6 @@
 # This file names only LLM. Under `culebra build` that has to be enough to link
 # what LLM is written over, which the last check below proves.
 
-# What a call raised, as "Kind: message".
-fn failure(thunk) {
-  try {
-    thunk()
-    "no error"
-  } catch e {
-    "{e.kind}: {e.message}"
-  }
-}
-
 # --- a tool's schema comes from its annotations ---------------------------------
 
 fn weather(note, city: String, days: Long = 1, unit: String? = nil, ok: Bool = true) {
@@ -55,48 +45,48 @@ assert_eq(JSON.stringify(LLM.tool(now, "the time").input_schema),
 
 # --- refused before any request -----------------------------------------------------
 
-assert_eq(failure(|| LLM.tool(weather, "w", cty: "typo")),
-          "ValueError: LLM.tool: weather has no parameter 'cty'")
-assert_eq(failure(|| LLM.tool(|x| x, "anonymous")),
-          "ValueError: LLM.tool: the function has no name; declare it with `fn name(...)`")
-assert_eq(failure(|| LLM.tool("weather", "w")),
-          "TypeError: type error: parameter 'f' expects Function")
-assert_eq(failure(|| LLM.chat()), "ArityError: missing required argument 'provider'")
-assert_eq(failure(|| LLM.anthropic(api_key: "")),
-          "LLMError: LLM: no API key: set ANTHROPIC_API_KEY or pass api_key:")
+assert_throws("ValueError", || LLM.tool(weather, "w", cty: "typo"),
+  message: "LLM.tool: weather has no parameter 'cty'")
+assert_throws("ValueError", || LLM.tool(|x| x, "anonymous"),
+  message: "LLM.tool: the function has no name; declare it with `fn name(...)`")
+assert_throws("TypeError", || LLM.tool("weather", "w"),
+  message: "type error: parameter 'f' expects Function")
+assert_throws("ArityError", || LLM.chat(), message: "missing required argument 'provider'")
+assert_throws("LLMError", || LLM.anthropic(api_key: ""),
+  message: "LLM: no API key: set ANTHROPIC_API_KEY or pass api_key:")
 
 # A wrong argument is the TypeError a typed parameter raises.
 let nowhere = {api_key: "k", base_url: "http://127.0.0.1:1"}
 let nowhere_provider = LLM.anthropic(**nowhere)
-assert_eq(failure(|| LLM.chat(provider: nowhere_provider, model: "m", tools: [weather])),
-          "TypeError: LLM.chat: tools takes what LLM.tool makes, got Function")
-assert_eq(failure(|| LLM.chat(provider: 3, model: "m")),
-          "TypeError: type error: parameter 'provider' expects a provider (an object with a turn method)")
-assert_eq(failure(|| LLM.chat(provider: nowhere_provider)),
-          "LLMError: LLM: model: is required for anthropic")
-assert_eq(failure(|| LLM.ask("hi", provider: nowhere_provider)),
-          "LLMError: LLM: model: is required for anthropic")
-assert_eq(failure(|| LLM.chat(provider: nowhere_provider, model: 3)),
-          "TypeError: type error: parameter 'model' expects String | Nil")
-assert_eq(failure(|| LLM.chat(provider: nowhere_provider, model: "m", system: 3)),
-          "TypeError: type error: parameter 'system' expects String | Nil")
-assert_eq(failure(|| LLM.chat(provider: nowhere_provider, model: "m", max_tokens: "9")),
-          "TypeError: type error: parameter 'max_tokens' expects Long")
-assert_eq(failure(|| LLM.chat(provider: nowhere_provider, model: "m", max_turns: "9")),
-          "TypeError: type error: parameter 'max_turns' expects Long")
-assert_eq(failure(|| LLM.ask(3, provider: nowhere_provider, model: "m")),
-          "TypeError: type error: parameter 'prompt' expects String")
-assert_eq(failure(|| LLM.ask("hi", provider: nowhere_provider, model: "m", on_text: 3)),
-          "TypeError: type error: parameter 'on_text' expects Function | Nil")
-assert_eq(failure(|| LLM.request([], provider: nowhere_provider)),
-          "TypeError: type error: parameter 'body' expects Object")
-assert_eq(failure(|| LLM.request({}, provider: nowhere_provider, headers: "x")),
-          "TypeError: type error: parameter 'headers' expects Object | Nil")
-assert_eq(failure(|| LLM.request({}, provider: 3)),
-          "TypeError: type error: parameter 'provider' expects a provider (an object with a turn method)")
+assert_throws("TypeError", || LLM.chat(provider: nowhere_provider, model: "m", tools: [weather]),
+  message: "LLM.chat: tools takes what LLM.tool makes, got Function")
+assert_throws("TypeError", || LLM.chat(provider: 3, model: "m"),
+  message: "type error: parameter 'provider' expects a provider (an object with a turn method)")
+assert_throws("LLMError", || LLM.chat(provider: nowhere_provider),
+  message: "LLM: model: is required for anthropic")
+assert_throws("LLMError", || LLM.ask("hi", provider: nowhere_provider),
+  message: "LLM: model: is required for anthropic")
+assert_throws("TypeError", || LLM.chat(provider: nowhere_provider, model: 3),
+  message: "type error: parameter 'model' expects String | Nil")
+assert_throws("TypeError", || LLM.chat(provider: nowhere_provider, model: "m", system: 3),
+  message: "type error: parameter 'system' expects String | Nil")
+assert_throws("TypeError", || LLM.chat(provider: nowhere_provider, model: "m", max_tokens: "9"),
+  message: "type error: parameter 'max_tokens' expects Long")
+assert_throws("TypeError", || LLM.chat(provider: nowhere_provider, model: "m", max_turns: "9"),
+  message: "type error: parameter 'max_turns' expects Long")
+assert_throws("TypeError", || LLM.ask(3, provider: nowhere_provider, model: "m"),
+  message: "type error: parameter 'prompt' expects String")
+assert_throws("TypeError", || LLM.ask("hi", provider: nowhere_provider, model: "m", on_text: 3),
+  message: "type error: parameter 'on_text' expects Function | Nil")
+assert_throws("TypeError", || LLM.request([], provider: nowhere_provider),
+  message: "type error: parameter 'body' expects Object")
+assert_throws("TypeError", || LLM.request({}, provider: nowhere_provider, headers: "x"),
+  message: "type error: parameter 'headers' expects Object | Nil")
+assert_throws("TypeError", || LLM.request({}, provider: 3),
+  message: "type error: parameter 'provider' expects a provider (an object with a turn method)")
 # A provider takes a request as it is only if it says how.
-assert_eq(failure(|| LLM.request({}, provider: {name: "plain", turn: fn (request, on_text) { {} }})),
-          "LLMError: LLM.request: plain does not take a request as it is")
+assert_throws("LLMError", || LLM.request({}, provider: {name: "plain", turn: fn (request, on_text) { {} }}),
+  message: "LLM.request: plain does not take a request as it is")
 let rq_seen = []
 let rq_provider = {name: "own", turn: fn (request, on_text) { {} },
                    request: fn (body, headers) { rq_seen.push([body, headers]); {ok: true} }}
@@ -205,19 +195,19 @@ for i, history in rp_histories.enumerate() {
   assert_eq(LLM.repair(LLM.repair(history)), LLM.repair(history))
 }
 
-assert_eq(failure(|| LLM.repair("x")),
-          "TypeError: type error: parameter 'messages' expects Array")
-assert_eq(failure(|| LLM.repair([rp_user("hi"), 3])),
-          "TypeError: type error: messages[1] expects Object")
+assert_throws("TypeError", || LLM.repair("x"),
+  message: "type error: parameter 'messages' expects Array")
+assert_throws("TypeError", || LLM.repair([rp_user("hi"), 3]),
+  message: "type error: messages[1] expects Object")
 
 # --- LLM is a namespace, as Time and Log are ---------------------------------------
 
 # A member it does not have is an error, not nil, and a function read off it
 # stays in the isolate that read it, as every library function does.
-assert_eq(failure(|| LLM.asks), "AttributeError: namespace 'LLM' has no member 'asks'")
+assert_throws("AttributeError", || LLM.asks, message: "namespace 'LLM' has no member 'asks'")
 let llm_ask = LLM.ask
-assert_eq(failure(|| Isolate.spawn(|| llm_ask("hi", model: "m")).join()),
-  "SendError: Isolate.spawn: a native/builtin function is not Sendable")
+assert_throws("SendError", || Isolate.spawn(|| llm_ask("hi", model: "m")).join(),
+  message: "Isolate.spawn: a native/builtin function is not Sendable")
 
 # --- a transport failure is the transport's ----------------------------------------
 

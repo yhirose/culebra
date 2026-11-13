@@ -11,15 +11,6 @@ let FILES = {
   'docs/index.html': '<h1>docs</h1>',
 }
 
-fn caught(thunk) {
-  try {
-    thunk()
-    'NO ERROR'
-  } catch e {
-    "{e.kind}: {e.message}"
-  }
-}
-
 # Serves `dir` at /s next to one route, and hands `check` the base URL.
 # The server is closed, not only stopped, so the archive file it opened is
 # let go before the temporary directory is removed (Windows refuses to
@@ -115,14 +106,10 @@ srv.close()
 # A closed archive cannot be served; neither can what is no Dir.
 let closed = Dir.zip(bytes: data)
 closed.close()
-assert_eq(
-  caught(|| Http.server().static("/", closed)),
-  'ClosedError: Dir.zip: the archive is closed',
-)
-assert_eq(
-  caught(|| Http.server().static("/", 5)),
-  'TypeError: server.static: dir must be a String path or a Dir',
-)
+assert_throws("ClosedError", || Http.server().static("/", closed),
+  message: 'Dir.zip: the archive is closed')
+assert_throws("TypeError", || Http.server().static("/", 5),
+  message: 'server.static: dir must be a String path or a Dir')
 
 # A Dir of the program's own is sent to the server's workers with the
 # routes, and each reads its copy through its methods; a throw from them
@@ -186,20 +173,16 @@ class Holding {
 
 let unsendable = Http.server()
 unsendable.static("/h", Holding(Http.server()))
-assert_eq(
-  caught(|| unsendable.listen_async(0)),
-  'SendError: server.listen_async: the Dir served at /h is not Sendable: a native handle is not Sendable',
-)
+assert_throws("SendError", || unsendable.listen_async(0),
+  message: 'server.listen_async: the Dir served at /h is not Sendable: a native handle is not Sendable')
 unsendable.close()
 
 # An object that is no Dir is refused when it is handed over.
 class NotADir {
   new(@name) {}
 }
-assert_eq(
-  caught(|| Http.server().static("/", NotADir('x'))),
-  'TypeError: server.static: dir must be a String path or a Dir',
-)
+assert_throws("TypeError", || Http.server().static("/", NotADir('x')),
+  message: 'server.static: dir must be a String path or a Dir')
 
 # A Dir sent to an isolate is served there the same way.
 let (tx, rx) = Channel.new(1)

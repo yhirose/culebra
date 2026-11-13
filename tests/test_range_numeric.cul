@@ -35,8 +35,7 @@ let not_numeric = "TypeError: type error: expected Long or Float, got String"
 assert_eq(error_of(|| 'a'..hit()), not_numeric)
 assert_eq(hits, [])
 assert_eq(error_of(|| Range('a', 1)), not_numeric)
-assert_eq(error_of(|| 0..1 by 0.5),
-          "TypeError: type error: expected Long, got Float")
+assert_throws("TypeError", || 0..1 by 0.5, message: "type error: expected Long, got Float")
 
 # Iteration needs Long endpoints; an open end is reported first.
 let expected_long = "TypeError: type error: expected Long, got Float"
@@ -48,15 +47,13 @@ assert_eq(error_of(fn () {
 assert_eq(error_of(|| floaty.iter()), expected_long)
 assert_eq(error_of(|| [1, 2].iter().zip(0..1.5).collect()), expected_long)
 assert_eq(error_of(|| grid(0.5..2, 0..2)), expected_long)
-assert_eq(error_of(|| (0.5..).iter()),
-          "TypeError: cannot iterate an unbounded range")
+assert_throws("TypeError", || (0.5..).iter(), message: "cannot iterate an unbounded range")
 
 # So does slicing; the receiver is still checked before the bounds.
 assert_eq(error_of(|| [1, 2, 3][0.5..2]), expected_long)
 assert_eq(error_of(|| [1, 2, 3][..1.5]), expected_long)
 assert_eq(error_of(|| 'abc'[0..1.5]), expected_long)
-assert_eq(error_of(|| 5[0.5..1]),
-          "TypeError: type error: expected Array, got Long")
+assert_throws("TypeError", || 5[0.5..1], message: "type error: expected Array, got Long")
 assert_eq([1, 2, 3][1..], [2, 3])
 
 // A range's bounds are the `<` and `<=` the range is written as, exactly:

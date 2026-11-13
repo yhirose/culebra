@@ -2,16 +2,6 @@
 //
 // JSON.stringify / JSON.parse round-trip (Phase 8-C — JIT binding added).
 
-// What a call raised, as "Kind: message".
-fn failure(thunk) {
-  try {
-    thunk()
-    'no error'
-  } catch e {
-    "{e.kind}: {e.message}"
-  }
-}
-
 let v = {name: "alice", age: 30, active: true, score: 3.14, parent: nil}
 let s = JSON.stringify(v)
 let v2 = JSON.parse(s)
@@ -126,13 +116,8 @@ assert_true(parsed.size() == 3 && parsed[0] == 1)
 // backends (compile-time path's literal splats throw before catch in
 // JIT, but the runtime adapter throws after entry).
 let bad = {bogus: 1}
-let r = try {
-  JSON.stringify({a: 1}, **bad)
-  nil
-} catch e {
-  e
-}
-assert_true(r.kind == 'TypeError' && r.message.contains('bogus'))
+let r = assert_throws('TypeError', || JSON.stringify({a: 1}, **bad))
+assert_true(r.message.contains('bogus'))
 
 // --- Full signature symmetry: positional / multi-positional / as-value ------
 // Both backends route stringify/parse through the one canonical resolver, so
@@ -145,10 +130,8 @@ assert_eq(JSON.stringify([2, 1], 0, true), '[2,1]')  # sort_keys positional
 assert_eq(JSON.parse("[1, 2]"), [1, 2])
 // `lines` is the 2nd positional of parse (Bool); a non-Bool is a type error
 // at that argument, naming the param — same kind/message/wording on both.
-assert_eq(
-  failure(|| JSON.parse("[1]", 2)),
-  "TypeError: type error: parameter 'lines' expects Bool",
-)
+assert_throws("TypeError", || JSON.parse("[1]", 2),
+  message: "type error: parameter 'lines' expects Bool")
 // `lines: true` as a positional Bool works (JSON Lines mode).
 assert_eq(JSON.parse("1\n2\n", true), [1, 2])
 
@@ -158,19 +141,11 @@ assert_eq(strfy({a: 1}, 2), strfy({a: 1}, indent: 2))  # 2nd positional == inden
 let parse = JSON.parse
 assert_eq(parse("[1, 2]", number_mode: "float"), [1.0, 2.0])
 // A wrong-typed kwarg through the value path is the interp's typed-param error.
-assert_eq(
-  failure(|| strfy({a: 1}, indent: "no")),
-  "TypeError: type error: parameter 'indent' expects Long",
-)
+assert_throws("TypeError", || strfy({a: 1}, indent: "no"),
+  message: "type error: parameter 'indent' expects Long")
 // An invalid `number_mode` is a ValueError on both backends (the JIT used to
 // silently treat any non-"float" value as "auto").
-let nme = try {
-  JSON.parse("[1]", number_mode: "bogus")
-  nil
-} catch e {
-  e
-}
-assert_eq(nme.kind, 'ValueError')
+let nme = assert_throws('ValueError', || JSON.parse("[1]", number_mode: "bogus"))
 assert_true(nme.message.contains("number_mode must be 'auto' or 'float'"))
 
 // --- JSONC: comments + trailing commas via `jsonc: true` --------------------
@@ -213,79 +188,47 @@ assert_eq(JSON.parse("[1, /* c */ 2,]", false, "auto", true), [1, 2])
 // Exact wording + position pins for the parser/stringify error surface.
 // The logic is single-sourced in json.h; these keep kind, message, and
 // 1-based line:col identical across interp/JIT/AOT.
-let pe1 = try {
-  JSON.parse(`{"a" 1}`)
-  nil
-} catch e {
-  e
-}
-assert_true(pe1.kind == 'ValueError' &&
-  pe1.message == "JSON.parse: expected ':'" &&
-  pe1.line == 1 &&
-  pe1.col == 6)
-let pe2 = try {
-  JSON.parse("[1,\n 2,,]")
-  nil
-} catch e {
-  e
-}  // error on line 2
-assert_true(pe2.kind == 'ValueError' &&
-  pe2.message == 'JSON.parse: expected value' &&
-  pe2.line == 2 &&
-  pe2.col == 4)
-let pe3 = try {
-  JSON.parse(`"a\q"`)
-  nil
-} catch e {
-  e
-}
-assert_true(pe3.kind == 'ValueError' && pe3.message == 'JSON.parse: bad escape')
-let pe4 = try {
-  JSON.parse("[1")
-  nil
-} catch e {
-  e
-}
-assert_true(pe4.kind == 'ValueError' &&
-  pe4.message == "JSON.parse: expected ',' or ']'")
-let pe5 = try {
-  JSON.parse("1 x")
-  nil
-} catch e {
-  e
-}
-assert_true(pe5.kind == 'ValueError' &&
-  pe5.message == 'JSON.parse: trailing characters' &&
-  pe5.line == 1 &&
-  pe5.col == 3)
-let se1 = try {
-  JSON.stringify(to_float("inf"))
-  nil
-} catch e {
-  e
-}
-assert_true(se1.kind == 'ValueError' &&
-  se1.message == 'JSON.stringify: non-finite Float')
+let pe1 = assert_throws(
+  'ValueError',
+  || JSON.parse(`{"a" 1}`),
+  message: "JSON.parse: expected ':'",
+)
+assert_eq([pe1.line, pe1.col], [1, 6])
+let pe2 = assert_throws(
+  'ValueError',
+  || JSON.parse("[1,\n 2,,]"),  // error on line 2
+  message: 'JSON.parse: expected value',
+)
+assert_eq([pe2.line, pe2.col], [2, 4])
+assert_throws('ValueError', || JSON.parse(`"a\q"`), message: 'JSON.parse: bad escape')
+assert_throws(
+  'ValueError',
+  || JSON.parse("[1"),
+  message: "JSON.parse: expected ',' or ']'",
+)
+let pe5 = assert_throws(
+  'ValueError',
+  || JSON.parse("1 x"),
+  message: 'JSON.parse: trailing characters',
+)
+assert_eq([pe5.line, pe5.col], [1, 3])
+assert_throws(
+  'ValueError',
+  || JSON.stringify(to_float("inf")),
+  message: 'JSON.stringify: non-finite Float',
+)
 let nsk = {}
 nsk[(1, 2)] = "x"
-let se2 = try {
-  JSON.stringify(nsk)
-  nil
-} catch e {
-  e
-}
-assert_true(se2.kind == 'TypeError' &&
-  se2.message == 'JSON.stringify: Object has non-String keys')
-let se3 = try {
-  JSON.stringify(fn () {
-    1
-  })
-  nil
-} catch e {
-  e
-}
-assert_true(se3.kind == 'TypeError' &&
-  se3.message == 'JSON.stringify: cannot serialize Function')
+assert_throws(
+  'TypeError',
+  || JSON.stringify(nsk),
+  message: 'JSON.stringify: Object has non-String keys',
+)
+assert_throws(
+  'TypeError',
+  || JSON.stringify(fn () { 1 }),
+  message: 'JSON.stringify: cannot serialize Function',
+)
 
 // --- nesting depth guard: an error, not a C-stack overflow ---
 // 1000 nested containers are the limit; the 1001st is a ValueError whose
@@ -294,30 +237,23 @@ assert_eq(
   JSON.stringify(JSON.parse('['.repeat(1000) + ']'.repeat(1000))),
   '['.repeat(1000) + ']'.repeat(1000),
 )
-let de1 = try {
-  JSON.parse('['.repeat(1001))
-  nil
-} catch e {
-  e
-}
-assert_true(de1.kind == 'ValueError' &&
-  de1.message == 'JSON.parse: nesting too deep (limit 1000)' &&
-  de1.line == 1 &&
-  de1.col == 1001)
+let de1 = assert_throws(
+  'ValueError',
+  || JSON.parse('['.repeat(1001)),
+  message: 'JSON.parse: nesting too deep (limit 1000)',
+)
+assert_eq([de1.line, de1.col], [1, 1001])
 assert_throws("ValueError", || JSON.parse('{"a":'.repeat(1001)))
 // stringify walks values a loop can build deeper than any parse.
 mut deep = []
 for _ in 0..1001 {
   deep = [deep]
 }
-let de2 = try {
-  JSON.stringify(deep)
-  nil
-} catch e {
-  e
-}
-assert_true(de2.kind == 'ValueError' &&
-  de2.message == 'JSON.stringify: nesting too deep (limit 1000)')
+assert_throws(
+  'ValueError',
+  || JSON.stringify(deep),
+  message: 'JSON.stringify: nesting too deep (limit 1000)',
+)
 
 // --- `\uXXXX` escapes -----------------------------------------------------
 // JSON's one way to name a character by number, and the only escape whose
@@ -336,27 +272,20 @@ let one_emoji = JSON.parse('"' + bs + 'uD83D' + bs + 'uDE00"')
 assert_eq(one_emoji.graphemes().collect().size(), 1)
 
 // Half a pair names no character, whichever half it is, and whatever follows.
-let lone_high = try {
-  JSON.parse('"' + bs + 'uD83D"')
-  nil
-} catch e {
-  e
-}
-assert_true(lone_high.kind == 'ValueError' &&
-  lone_high.message ==
-    'JSON.parse: unicode escape U+D83D is not a Unicode scalar value')
+assert_throws(
+  'ValueError',
+  || JSON.parse('"' + bs + 'uD83D"'),
+  message: 'JSON.parse: unicode escape U+D83D is not a Unicode scalar value',
+)
 assert_throws('ValueError', || JSON.parse('"' + bs + 'uDE00"'))
 assert_throws('ValueError', || JSON.parse('"' + bs + 'uD83D' + bs + 'u0041"'))
 
 // A body that is not four hex digits is a different complaint.
-let short_escape = try {
-  JSON.parse('"' + bs + 'u00"')
-  nil
-} catch e {
-  e
-}
-assert_true(short_escape.kind == 'ValueError' &&
-  short_escape.message == 'JSON.parse: bad unicode escape')
+assert_throws(
+  'ValueError',
+  || JSON.parse('"' + bs + 'u00"'),
+  message: 'JSON.parse: bad unicode escape',
+)
 assert_throws('ValueError', || JSON.parse('"' + bs + 'u00zz"'))
 // An escape letter that means nothing still says so.
 assert_throws('ValueError', || JSON.parse('"' + bs + 'x41"'))
@@ -372,9 +301,9 @@ assert_eq(JSON.parse(JSON.stringify(control)), control)
 // number RFC 8259 does not write.
 assert_eq(JSON.parse('12345678901234567890'), 12345678901234567890.0)
 assert_eq(JSON.parse('-9223372036854775808'), -9223372036854775807 - 1)
-assert_eq(try { JSON.parse('1e999') } catch e { e.kind }, "ValueError")
+assert_throws("ValueError", || JSON.parse('1e999'))
 for bad in ['1.', '01', '1e', '1.5e+', '-'] {
-  assert_eq(try { JSON.parse(bad) } catch e { e.kind }, "ValueError")
+  assert_throws("ValueError", || JSON.parse(bad))
 }
 assert_eq(JSON.parse('-0'), 0)
 assert_eq(JSON.parse('1.5E-3'), 0.0015)

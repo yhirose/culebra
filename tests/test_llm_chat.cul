@@ -2,16 +2,6 @@
 # runs the tools a model asks for, what ends it, and what a failure leaves of
 # the history. No network, no key; the Messages API is in test_llm_server.cul.
 
-# What a call raised, as "Kind: message".
-fn failure(thunk) {
-  try {
-    thunk()
-    "no error"
-  } catch e {
-    "{e.kind}: {e.message}"
-  }
-}
-
 fn user(t) {
   {role: "user", content: t}
 }
@@ -150,7 +140,7 @@ assert_eq(c10.messages[2].content[0].content, '{"city":"Tokyo","days":[1,2]}')
 # An interrupt is the user's: it is not the model's to be told of.
 let p11 = scripted([reply([call("a", "stopped", {city: "Tokyo"})], "tool_calls")])
 let c11 = LLM.chat(provider: p11, tools: [LLM.tool(stopped, "s")])
-assert_eq(failure(|| c11.ask("go")), "Interrupted: stop")
+assert_throws("Interrupted", || c11.ask("go"), message: "stop")
 assert_eq(c11.messages, [])
 
 # Calls are run whatever the stop reason says, unless the reply was cut off.
@@ -170,19 +160,18 @@ assert_eq(c13.messages.map(|m| m.role), ["user", "assistant", "assistant"])
 # A refusal says why, when the reply does, and takes the question back.
 let p14 = scripted([reply([], "refusal", {stop_details: {type: "refusal", explanation: "not this"}})])
 let c14 = LLM.chat(provider: p14)
-assert_eq(failure(|| c14.ask("go")), "LLMError: LLM: the model declined to answer: not this")
+assert_throws("LLMError", || c14.ask("go"), message: "LLM: the model declined to answer: not this")
 assert_eq(c14.messages, [])
-assert_eq(failure(|| LLM.chat(provider: scripted([reply([], "refusal",
-            {stop_details: {type: "refusal", category: "cyber"}})])).ask("go")),
-          "LLMError: LLM: the model declined to answer: cyber")
-assert_eq(failure(|| LLM.chat(provider: scripted([reply([], "refusal")])).ask("go")),
-          "LLMError: LLM: the model declined to answer")
+assert_throws("LLMError", || LLM.chat(provider: scripted([reply([], "refusal",
+            {stop_details: {type: "refusal", category: "cyber"}})])).ask("go"), message: "LLM: the model declined to answer: cyber")
+assert_throws("LLMError", || LLM.chat(provider: scripted([reply([], "refusal")])).ask("go"),
+  message: "LLM: the model declined to answer")
 
 # A call cut off is not run, and a text cut off is still the answer.
 ran = []
 let p17 = scripted([reply([call("a", "weather", {city: "To"})], "length")])
 let c17 = LLM.chat(provider: p17, tools: [w])
-assert_eq(failure(|| c17.ask("go")), "LLMError: LLM: a tool call was cut off at max_tokens")
+assert_throws("LLMError", || c17.ask("go"), message: "LLM: a tool call was cut off at max_tokens")
 assert_eq(ran, [])
 assert_eq(c17.messages, [])
 let c18 = LLM.chat(provider: scripted([reply([text("half an ans")], "length")]))
@@ -195,7 +184,7 @@ let p19 = scripted([reply([call("a", "weather", {city: "Tokyo"})], "tool_calls")
                     reply([call("b", "weather", {city: "Tokyo"})], "tool_calls"),
                     reply([text("never")], "end")])
 let c19 = LLM.chat(provider: p19, tools: [w], max_turns: 2)
-assert_eq(failure(|| c19.ask("go")), "LLMError: LLM: no answer within max_turns (2)")
+assert_throws("LLMError", || c19.ask("go"), message: "LLM: no answer within max_turns (2)")
 assert_eq(ran, ["Tokyo", "Tokyo"])
 assert_eq(c19.messages, [])
 
@@ -203,7 +192,7 @@ assert_eq(c19.messages, [])
 let p20 = scripted([reply([text("first")], "end"), fn () { __raise("HttpError", "down") }])
 let c20 = LLM.chat(provider: p20)
 c20.ask("one")
-assert_eq(failure(|| c20.ask("two")), "HttpError: down")
+assert_throws("HttpError", || c20.ask("two"), message: "down")
 assert_eq(c20.messages, [user("one"), say("first")])
 
 # --- the history is the program's ----------------------------------------------------------------
@@ -218,9 +207,9 @@ assert_eq(c21.messages.size(), 4)
 # --- the arguments ------------------------------------------------------------------------------------
 
 let c22 = LLM.chat(provider: scripted([reply([text("x")], "end")]))
-assert_eq(failure(|| c22.ask(3)), "TypeError: type error: parameter 'prompt' expects String")
-assert_eq(failure(|| c22.ask("hi", on_text: 3)),
-          "TypeError: type error: parameter 'on_text' expects Function | Nil")
+assert_throws("TypeError", || c22.ask(3), message: "type error: parameter 'prompt' expects String")
+assert_throws("TypeError", || c22.ask("hi", on_text: 3),
+  message: "type error: parameter 'on_text' expects Function | Nil")
 assert_eq(c22.messages, [])
-assert_eq(failure(|| LLM.chat(provider: scripted([]), tools: 3)),
-          "TypeError: type error: parameter 'tools' expects Array")
+assert_throws("TypeError", || LLM.chat(provider: scripted([]), tools: 3),
+  message: "type error: parameter 'tools' expects Array")

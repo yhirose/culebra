@@ -7,28 +7,19 @@
 
 let huge = 1 << 62
 
-fn too_large(f) {
-  try {
-    f()
-    'no error'
-  } catch e {
-    "{e.kind}: {e.message}"
-  }
-}
-
 # --- Arrays built from a count ---
-assert_eq(too_large(fn () {
+assert_throws("ValueError", fn () {
   repeat(huge, 0)
-}), 'ValueError: repeat() result is too large')
-assert_eq(too_large(fn () {
+}, message: 'repeat() result is too large')
+assert_throws("ValueError", fn () {
   iota(huge)
-}), 'ValueError: iota() result is too large')
-assert_eq(too_large(fn () {
+}, message: 'iota() result is too large')
+assert_throws("ValueError", fn () {
   'ab'.repeat(huge)
-}), 'ValueError: repeat() result is too large')
-assert_eq(too_large(fn () {
+}, message: 'repeat() result is too large')
+assert_throws("ValueError", fn () {
   [0](huge)
-}), 'ValueError: array size is too large')
+}, message: 'array size is too large')
 assert_eq(repeat(3, 'x'), ['x', 'x', 'x'])
 assert_eq(iota(3), [0, 1, 2])
 assert_eq([](3, 7), [7, 7, 7])
@@ -37,40 +28,40 @@ assert_eq([](3, 7), [7, 7, 7])
 # Past 2^31 a side used to wrap to a negative int and give a 0x0 sprite that
 # still reported the width asked for; 24000x24000 is past the 2 GiB an image
 # may hold, the limit its drawing code counts in.
-assert_eq(too_large(fn () {
+assert_throws("ValueError", fn () {
   Canvas.Sprite.blank(1 << 31, 3)
-}), 'ValueError: Canvas.Sprite: 2147483648x3 is too large')
-assert_eq(too_large(fn () {
+}, message: 'Canvas.Sprite: 2147483648x3 is too large')
+assert_throws("ValueError", fn () {
   Canvas.Sprite.blank(24000, 24000)
-}), 'ValueError: Canvas.Sprite: 24000x24000 is too large')
-assert_eq(too_large(fn () {
+}, message: 'Canvas.Sprite: 24000x24000 is too large')
+assert_throws("ValueError", fn () {
   Canvas.Sprite([1], (1 << 32) + 1, 1)
-}), 'ValueError: Canvas.Sprite: 4294967297x1 is too large')
-assert_eq(too_large(fn () {
+}, message: 'Canvas.Sprite: 4294967297x1 is too large')
+assert_throws("ValueError", fn () {
   Canvas.init(1 << 32, 1)
-}), 'ValueError: Canvas.init: 4294967296x1 is too large')
+}, message: 'Canvas.init: 4294967296x1 is too large')
 # a negative side is a sprite with no pixels, and says so
 let none = Canvas.Sprite.blank(-1, 3)
 assert_eq([none.width(), none.height()], [0, 3])
 
 # --- JSON: the indent is a count of spaces per level, not an int to wrap ---
-assert_eq(too_large(fn () {
+assert_throws("ValueError", fn () {
   JSON.stringify([[1]], huge)
-}), 'ValueError: JSON.stringify() result is too large')
+}, message: 'JSON.stringify() result is too large')
 assert_eq(JSON.stringify([1], 1), "[\n 1\n]")
 
 # --- Audio.PCM: the block is `buffer` frames, counted in int ---
-assert_eq(too_large(fn () {
+assert_throws("ValueError", fn () {
   Audio.PCM.new(44100, 1, 1 << 31)
-}), 'ValueError: Audio.PCM: buffer is too large')
-assert_eq(too_large(fn () {
+}, message: 'Audio.PCM: buffer is too large')
+assert_throws("ValueError", fn () {
   Audio.PCM.new(1 << 31, 1, 1024)
-}), 'ValueError: Audio.PCM: rate is too large')
+}, message: 'Audio.PCM: rate is too large')
 
 # --- CodeGen: a function's slot counts size its name tables ---
 let cg = CodeGen.Module.new()
 let cg_body = cg.block(stmts: cg.list_new(), line: 1, col: 1)
-assert_eq(too_large(fn () {
+assert_throws("ValueError", fn () {
   cg.add_func(
     name: 'f',
     num_locals: -1,
@@ -79,8 +70,8 @@ assert_eq(too_large(fn () {
     num_params: 0,
     body: cg_body,
   )
-}), 'ValueError: CodeGen: num_locals must not be negative, got -1')
-assert_eq(too_large(fn () {
+}, message: 'CodeGen: num_locals must not be negative, got -1')
+assert_throws("ValueError", fn () {
   cg.add_func(
     name: 'f',
     num_locals: 0,
@@ -89,21 +80,21 @@ assert_eq(too_large(fn () {
     num_params: 0,
     body: cg_body,
   )
-}), 'ValueError: CodeGen: num_captures is too large')
+}, message: 'CodeGen: num_captures is too large')
 
 # --- Tensor: a buffer the shape asks for, now or when a lazy op runs ---
-assert_eq(too_large(fn () {
+assert_throws("ValueError", fn () {
   Tensor.zeros(1 << 40, 1 << 20)
-}), 'ValueError: Tensor: shape is too large')
+}, message: 'Tensor: shape is too large')
 # 2^62 elements are 2^64 bytes: the byte count used to wrap to a 0-byte buffer
 # every element was then written into
-assert_eq(too_large(fn () {
+assert_throws("ValueError", fn () {
   Tensor.zeros(1 << 40, 1 << 22)
-}), 'ValueError: Tensor: shape is too large')
+}, message: 'Tensor: shape is too large')
 let padded = Tensor.zeros(2).pad([0, 0, 1 << 60])
-assert_eq(too_large(fn () {
+assert_throws("ValueError", fn () {
   Tensor.eval(padded)
-}), 'ValueError: Tensor: shape is too large')
+}, message: 'Tensor: shape is too large')
 
 # --- SharedBuffer: the product is checked, not just the allocation ---
 @packable
@@ -115,9 +106,9 @@ class Rec {
 # more wraps to 16. Only counts the arithmetic refuses are here — whether an
 # allocation that does not wrap fails is the operating system's to decide.
 for count in [huge, 1 << 60, (1 << 60) + 1] {
-  assert_eq(too_large(fn () {
+  assert_throws("ValueError", fn () {
     SharedBuffer.new(count, Rec)
-  }), 'ValueError: SharedBuffer.new: count is too large')
+  }, message: 'SharedBuffer.new: count is too large')
 }
 let small = SharedBuffer.new(4, Rec)
 assert_eq(small.size, 4)

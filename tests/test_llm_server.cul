@@ -168,16 +168,6 @@ fn opts(model) {
   {provider: PROVIDER, model: model}
 }
 
-# What a call raised, as "Kind: message".
-fn failure(thunk) {
-  try {
-    thunk()
-    "no error"
-  } catch e {
-    "{e.kind}: {e.message}"
-  }
-}
-
 # --- one question ---------------------------------------------------------------
 
 # The request carries the model, the default max_tokens, the key and the
@@ -246,23 +236,23 @@ assert_eq(unknown.ask("weather?"), "done: no tool named 'nope' (error)")
 
 asked = []
 let cut = LLM.chat(tools: [weather_tool], **opts("cut"))
-assert_eq(failure(|| cut.ask("weather?")),
-          "LLMError: LLM: a tool call was cut off at max_tokens")
+assert_throws("LLMError", || cut.ask("weather?"),
+  message: "LLM: a tool call was cut off at max_tokens")
 assert_eq(asked, [])
 assert_eq(cut.messages, [])
 
 let loop = LLM.chat(tools: [weather_tool], max_turns: 2, **opts("loop"))
-assert_eq(failure(|| loop.ask("weather?")), "LLMError: LLM: no answer within max_turns (2)")
+assert_throws("LLMError", || loop.ask("weather?"), message: "LLM: no answer within max_turns (2)")
 assert_eq(loop.messages, [])
 
-assert_eq(failure(|| LLM.ask("hi", **opts("refuse"))),
-          "LLMError: LLM: the model declined to answer: not this")
-assert_eq(failure(|| LLM.ask("hi", **opts("busy"))),
-          "LLMError: LLM: 529 overloaded_error: busy")
-assert_eq(failure(|| LLM.ask("hi", on_text: |t| nil, **opts("busy"))),
-          "LLMError: LLM: 529 overloaded_error: busy")
-assert_eq(failure(|| LLM.ask("hi", **opts("gateway"))),
-          "LLMError: LLM: 502 <h1>bad gateway</h1>")
+assert_throws("LLMError", || LLM.ask("hi", **opts("refuse")),
+  message: "LLM: the model declined to answer: not this")
+assert_throws("LLMError", || LLM.ask("hi", **opts("busy")),
+  message: "LLM: 529 overloaded_error: busy")
+assert_throws("LLMError", || LLM.ask("hi", on_text: |t| nil, **opts("busy")),
+  message: "LLM: 529 overloaded_error: busy")
+assert_throws("LLMError", || LLM.ask("hi", **opts("gateway")),
+  message: "LLM: 502 <h1>bad gateway</h1>")
 
 # A failed ask after a good one keeps the good one.
 let mixed = LLM.chat(**opts("story"))
@@ -383,8 +373,8 @@ fn an_cases() {
              '"content":[{"type":"text","text":"yo"}]},{"role":"user","content":"again"}],' +
              '"system":"be brief","tools":[{"name":"search","description":"Search the notes",' +
              '"input_schema":{"type":"object"}}]}').size())
-  assert_eq(failure(|| LLM.count_tokens(an_p, model: "busy", messages: [an_user("hi")])),
-            "LLMError: LLM: 529 overloaded_error: busy")
+  assert_throws("LLMError", || LLM.count_tokens(an_p, model: "busy", messages: [an_user("hi")]),
+    message: "LLM: 529 overloaded_error: busy")
 
   # What the API is asked beyond the history.
   let an_options = JSON.parse(an_sent([an_user("hi")], max_tokens: 50, stop: ["x"], temperature: 0.5,
@@ -452,20 +442,20 @@ fn an_cases() {
   }
 
   # What the API refuses is an LLMError, and what the call lacks is refused first.
-  assert_eq(failure(|| LLM.turn(an_p, model: "busy", messages: [an_user("hi")])),
-            "LLMError: LLM: 529 overloaded_error: busy")
-  assert_eq(failure(|| LLM.turn(an_p, model: "busy", messages: [an_user("hi")], on_text: |t| nil)),
-            "LLMError: LLM: 529 overloaded_error: busy")
-  assert_eq(failure(|| LLM.turn(an_p, model: "gateway", messages: [an_user("hi")])),
-            "LLMError: LLM: 502 <h1>bad gateway</h1>")
-  assert_eq(failure(|| LLM.turn(an_p, messages: [an_user("hi")])),
-            "LLMError: LLM: model: is required for anthropic")
-  assert_eq(failure(|| LLM.anthropic(api_key: "")),
-            "LLMError: LLM: no API key: set ANTHROPIC_API_KEY or pass api_key:")
-  assert_eq(failure(|| LLM.anthropic(api_key: 3)),
-            "TypeError: type error: parameter 'api_key' expects String | Nil")
-  assert_eq(failure(|| LLM.anthropic(api_key: "k", timeout: "9")),
-            "TypeError: type error: parameter 'timeout' expects Long")
+  assert_throws("LLMError", || LLM.turn(an_p, model: "busy", messages: [an_user("hi")]),
+    message: "LLM: 529 overloaded_error: busy")
+  assert_throws("LLMError", || LLM.turn(an_p, model: "busy", messages: [an_user("hi")], on_text: |t| nil),
+    message: "LLM: 529 overloaded_error: busy")
+  assert_throws("LLMError", || LLM.turn(an_p, model: "gateway", messages: [an_user("hi")]),
+    message: "LLM: 502 <h1>bad gateway</h1>")
+  assert_throws("LLMError", || LLM.turn(an_p, messages: [an_user("hi")]),
+    message: "LLM: model: is required for anthropic")
+  assert_throws("LLMError", || LLM.anthropic(api_key: ""),
+    message: "LLM: no API key: set ANTHROPIC_API_KEY or pass api_key:")
+  assert_throws("TypeError", || LLM.anthropic(api_key: 3),
+    message: "type error: parameter 'api_key' expects String | Nil")
+  assert_throws("TypeError", || LLM.anthropic(api_key: "k", timeout: "9"),
+    message: "type error: parameter 'timeout' expects Long")
 
   # A chat keeps what the provider asked to have back, a quotation here, whether
   # the answer was streamed or not.

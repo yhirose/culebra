@@ -87,27 +87,15 @@ fn check_dir(d) {
   }
 
   # The IOErrors, worded the same by every kind.
-  assert_eq(caught(|| d.read('nope')), "IOError: Dir.read: no such file 'nope'")
-  assert_eq(
-    caught(|| d.read('../a.txt')),
-    "IOError: Dir.read: no such file '../a.txt'",
-  )
-  assert_eq(caught(|| d.read('img')), "IOError: Dir.read: 'img' is a directory")
-  assert_eq(caught(|| d.read('')), "IOError: Dir.read: '' is a directory")
-  assert_eq(caught(|| d.size('nope')), "IOError: Dir.size: no such file 'nope'")
-  assert_eq(caught(|| d.size('img')), "IOError: Dir.size: 'img' is a directory")
-  assert_eq(
-    caught(|| d.list_dir('a.txt')),
-    "IOError: Dir.list_dir: 'a.txt' is a file",
-  )
-  assert_eq(
-    caught(|| d.list_dir('nope')),
-    "IOError: Dir.list_dir: no such directory 'nope'",
-  )
-  assert_eq(
-    caught(|| d.list_dir('/')),
-    "IOError: Dir.list_dir: no such directory '/'",
-  )
+  assert_throws("IOError", || d.read('nope'), message: "Dir.read: no such file 'nope'")
+  assert_throws("IOError", || d.read('../a.txt'), message: "Dir.read: no such file '../a.txt'")
+  assert_throws("IOError", || d.read('img'), message: "Dir.read: 'img' is a directory")
+  assert_throws("IOError", || d.read(''), message: "Dir.read: '' is a directory")
+  assert_throws("IOError", || d.size('nope'), message: "Dir.size: no such file 'nope'")
+  assert_throws("IOError", || d.size('img'), message: "Dir.size: 'img' is a directory")
+  assert_throws("IOError", || d.list_dir('a.txt'), message: "Dir.list_dir: 'a.txt' is a file")
+  assert_throws("IOError", || d.list_dir('nope'), message: "Dir.list_dir: no such directory 'nope'")
+  assert_throws("IOError", || d.list_dir('/'), message: "Dir.list_dir: no such directory '/'")
 
   # glob: files only, `*` `?` `[...]` within a segment, `**` across them.
   assert_eq(d.glob('*.txt'), ['a.txt', 'b-c.txt', 'empty.txt', 'foo..txt'])
@@ -165,10 +153,8 @@ let missing = FS.join(root, 'nope')
 let a_file = FS.join(root, 'a.txt')
 assert_true(caught(|| Dir.disk(missing)).starts_with("IOError: Dir.disk: no such directory"))
 assert_true(caught(|| Dir.disk(a_file)).starts_with("IOError: Dir.disk: no such directory"))
-assert_eq(
-  caught(|| Dir.disk(5)),
-  'TypeError: type error: Dir.disk expects String|Path, got Long',
-)
+assert_throws("TypeError", || Dir.disk(5),
+  message: 'type error: Dir.disk expects String|Path, got Long')
 
 # --- Dir.memory ---
 let mem = Dir.memory(FILES)
@@ -176,31 +162,19 @@ assert_eq(type_of(mem), 'MemoryDir')
 check_dir(mem)
 # Keys are normalized when the Dir is made.
 assert_eq(Dir.memory({'./a//b.txt': 'x'}).files(), ['a/b.txt'])
-assert_eq(
-  caught(|| Dir.memory(5)),
-  'TypeError: type error: Dir.memory expects Object, got Long',
-)
-assert_eq(
-  caught(|| Dir.memory({img: {'x.png': 'x'}})),
-  "TypeError: Dir.memory: 'img' holds Object, not String (a file in a subdirectory is a key like 'sub/name.txt')",
-)
+assert_throws("TypeError", || Dir.memory(5),
+  message: 'type error: Dir.memory expects Object, got Long')
+assert_throws("TypeError", || Dir.memory({img: {'x.png': 'x'}}),
+  message: "Dir.memory: 'img' holds Object, not String (a file in a subdirectory is a key like 'sub/name.txt')")
 assert_true(caught(|| Dir.memory({'a': 1})).starts_with("TypeError: Dir.memory: 'a' holds Long"))
-assert_eq(
-  caught(|| Dir.memory({'../x': 'y'})),
-  "ValueError: Dir.memory: '../x' is not a file inside the directory",
-)
-assert_eq(
-  caught(|| Dir.memory({'.': 'y'})),
-  "ValueError: Dir.memory: '.' is not a file inside the directory",
-)
-assert_eq(
-  caught(|| Dir.memory({'a/b': 'x', 'a//b': 'y'})),
-  "ValueError: Dir.memory: 'a//b' names a file another key already names",
-)
-assert_eq(
-  caught(|| Dir.memory({'a': 'x', 'a/b': 'y'})),
-  "ValueError: Dir.memory: 'a' is both a file and a directory",
-)
+assert_throws("ValueError", || Dir.memory({'../x': 'y'}),
+  message: "Dir.memory: '../x' is not a file inside the directory")
+assert_throws("ValueError", || Dir.memory({'.': 'y'}),
+  message: "Dir.memory: '.' is not a file inside the directory")
+assert_throws("ValueError", || Dir.memory({'a/b': 'x', 'a//b': 'y'}),
+  message: "Dir.memory: 'a//b' names a file another key already names")
+assert_throws("ValueError", || Dir.memory({'a': 'x', 'a/b': 'y'}),
+  message: "Dir.memory: 'a' is both a file and a directory")
 assert_eq(Dir.memory({}).files(), [])
 # glob's character is a code point, as FS.glob's is.
 let accents = Dir.memory({'é.txt': '', 'ab.txt': '', 'ü.md': ''})
@@ -213,10 +187,8 @@ assert_eq(named.read('keys'), 'k')
 assert_true(named.is_dir('has'))
 assert_eq(named.list_dir('has'), ['x'])
 assert_eq(named.size('size'), 1)
-assert_eq(
-  caught(|| Dir.memory({'has': 'h', 'has/x': 'x'})),
-  "ValueError: Dir.memory: 'has' is both a file and a directory",
-)
+assert_throws("ValueError", || Dir.memory({'has': 'h', 'has/x': 'x'}),
+  message: "Dir.memory: 'has' is both a file and a directory")
 assert_eq(Dir.memory({}).list_dir(''), [])
 
 # --- Dir.embedded ---
@@ -226,16 +198,12 @@ let emb = Dir.embedded('dir_fixture')
 assert_eq(type_of(emb), 'EmbedDir')
 assert_eq(emb.keys(), ['name'])
 check_dir(emb)
-assert_eq(
-  caught(|| Dir.embedded(5)),
-  'TypeError: type error: Dir.embedded expects String, got Long',
-)
+assert_throws("TypeError", || Dir.embedded(5),
+  message: 'type error: Dir.embedded expects String, got Long')
 # A native Dir's method binds its arguments as any function does.
-assert_eq(
-  caught(|| emb.read(42)),
-  "TypeError: type error: parameter 'path' expects StringLike",
-)
-assert_eq(caught(|| emb.exists()), "ArityError: missing required argument 'path'")
+assert_throws("TypeError", || emb.read(42),
+  message: "type error: parameter 'path' expects StringLike")
+assert_throws("ArityError", || emb.exists(), message: "missing required argument 'path'")
 
 # Dir.embedded names the directory next to the file that calls it, as import
 # names a module: tests/embed_module/reader.cul reads the data/ beside it,
@@ -304,21 +272,15 @@ let trap = FS.mkdtemp('culebra-dir-leak')
 defer {
   FS.remove(trap, recursive: true)
 }
-assert_eq(
-  caught(|| Leaky().copy_to(FS.join(trap, 'in'))),
-  "ValueError: copy_to: '../escaped.txt' is not a path inside the directory",
-)
+assert_throws("ValueError", || Leaky().copy_to(FS.join(trap, 'in')),
+  message: "copy_to: '../escaped.txt' is not a path inside the directory")
 assert_false(FS.exists(FS.join(trap, 'escaped.txt')))
 assert_false(FS.exists(FS.join(trap, 'in')))
 # The destination is a path on disk.
-assert_eq(
-  caught(|| own.copy_to(nil)),
-  "TypeError: type error: parameter 'dest' expects String | Path",
-)
-assert_eq(
-  caught(|| own.glob(5)),
-  "TypeError: type error: parameter 'pattern' expects StringLike",
-)
+assert_throws("TypeError", || own.copy_to(nil),
+  message: "type error: parameter 'dest' expects String | Path")
+assert_throws("TypeError", || own.glob(5),
+  message: "type error: parameter 'pattern' expects StringLike")
 
 # Dir.disk follows a symlink while it leads somewhere inside the root; one
 # that leads out is not there, and a loop is walked once.
@@ -342,10 +304,7 @@ if FS.sep() == '/' {
   assert_eq(linked.read('alias/f.txt'), 'f')
   assert_false(linked.exists('outlink'))
   assert_false(linked.exists('outlink/leak.txt'))
-  assert_eq(
-    caught(|| linked.read('leak.txt')),
-    "IOError: Dir.read: no such file 'leak.txt'",
-  )
+  assert_throws("IOError", || linked.read('leak.txt'), message: "Dir.read: no such file 'leak.txt'")
   assert_true(linked.is_dir('sub/up'))
 }
 

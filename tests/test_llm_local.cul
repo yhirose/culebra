@@ -174,12 +174,12 @@ let p3 = LLM.local(quiet)
 fn lc_weather(city: String) {
   "{city}: sunny"
 }
-assert_eq(lc_failure(|| LLM.chat(provider: p3, tools: [LLM.tool(lc_weather, "the weather")]).ask("hi")),
-          "LLMError: LLM.turn: local does not take tools")
-assert_eq(lc_failure(|| LLM.turn(p3, messages: [lc_user("hi")], extra: {a: 1})),
-          "LLMError: LLM.turn: local does not take extra:")
-assert_eq(lc_failure(|| LLM.request({a: 1}, provider: p3)),
-          "LLMError: LLM.request: local does not take a request as it is")
+assert_throws("LLMError", || LLM.chat(provider: p3, tools: [LLM.tool(lc_weather, "the weather")]).ask("hi"),
+  message: "LLM.turn: local does not take tools")
+assert_throws("LLMError", || LLM.turn(p3, messages: [lc_user("hi")], extra: {a: 1}),
+  message: "LLM.turn: local does not take extra:")
+assert_throws("LLMError", || LLM.request({a: 1}, provider: p3),
+  message: "LLM.request: local does not take a request as it is")
 assert_eq(quiet.chats.size(), 0)
 
 # Tokens, counted by the engine on the prompt it would be given.

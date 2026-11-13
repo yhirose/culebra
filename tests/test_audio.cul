@@ -25,23 +25,17 @@ let WAV = Encoding.hex.decode("524946462800000057415645666d742010000000010001004
 // latency: the device's period, asked for before it opens. available() above
 // opened it if there is one, so a period is too late to ask for; with none,
 // it is asked for and nil is the period.
-fn refused(call) {
-  try {
-    call()
-    nil
-  } catch e {
-    "{e.kind}: {e.message}"
-  }
-}
 if live {
   assert_true(Audio.latency() > 0.0)
-  assert_eq(refused(|| Audio.latency(0.003)), "ValueError: Audio.latency: the device is open already; ask before the first sound")
+  assert_throws("ValueError", || Audio.latency(0.003),
+    message: "Audio.latency: the device is open already; ask before the first sound")
 } else {
   assert_eq(Audio.latency(), nil)
   assert_eq(Audio.latency(0.003), nil)
 }
 for bad in [0, -0.01, 0.6] {
-  assert_eq(refused(|| Audio.latency(bad)), "ValueError: Audio.latency: a period is above 0 and at most 0.5 seconds, not {bad}")
+  assert_throws("ValueError", || Audio.latency(bad),
+    message: "Audio.latency: a period is above 0 and at most 0.5 seconds, not {bad}")
 }
 
 // tone: WASM-4's APU and its constants.

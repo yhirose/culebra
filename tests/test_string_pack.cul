@@ -86,69 +86,39 @@ assert_eq(objs, [5, 6])
 assert_eq(String.unpack("u32", "", into: []), [])
 
 # --- errors ---
-assert_eq(
-  err(|| String.pack("u16", [65536])),
-  "ValueError: String.pack: 65536 at index 0 is out of range for u16 (0 to 65535).",
-)
-assert_eq(
-  err(|| String.pack("u8", [1, -1])),
-  "ValueError: String.pack: -1 at index 1 is out of range for u8 (0 to 255).",
-)
-assert_eq(
-  err(|| String.pack("i8", [128])),
-  "ValueError: String.pack: 128 at index 0 is out of range for i8 (-128 to 127).",
-)
-assert_eq(
-  err(|| String.pack("u16", [1, 2.0])),
-  "TypeError: String.pack: u16 takes Long elements, got Float at index 1.",
-)
-assert_eq(
-  err(|| String.pack("f32", ["x"])),
-  "TypeError: String.pack: f32 takes Long or Float elements, got String at index 0.",
-)
-assert_eq(
-  err(|| String.pack("bool", [1])),
-  "TypeError: String.pack: bool takes Bool elements, got Long at index 0.",
-)
-assert_eq(
-  err(|| String.pack("u64", [1])),
-  "ValueError: String.pack: unknown type 'u64' (one of u8, i8, u16, i16, u32, i32, i64, f32, f64, bool).",
-)
-assert_eq(
-  err(|| String.pack("u16", [1], endian: "native")),
-  "ValueError: String.pack: endian must be 'little' or 'big', not 'native'.",
-)
+assert_throws("ValueError", || String.pack("u16", [65536]),
+  message: "String.pack: 65536 at index 0 is out of range for u16 (0 to 65535).")
+assert_throws("ValueError", || String.pack("u8", [1, -1]),
+  message: "String.pack: -1 at index 1 is out of range for u8 (0 to 255).")
+assert_throws("ValueError", || String.pack("i8", [128]),
+  message: "String.pack: 128 at index 0 is out of range for i8 (-128 to 127).")
+assert_throws("TypeError", || String.pack("u16", [1, 2.0]),
+  message: "String.pack: u16 takes Long elements, got Float at index 1.")
+assert_throws("TypeError", || String.pack("f32", ["x"]),
+  message: "String.pack: f32 takes Long or Float elements, got String at index 0.")
+assert_throws("TypeError", || String.pack("bool", [1]),
+  message: "String.pack: bool takes Bool elements, got Long at index 0.")
+assert_throws("ValueError", || String.pack("u64", [1]),
+  message: "String.pack: unknown type 'u64' (one of u8, i8, u16, i16, u32, i32, i64, f32, f64, bool).")
+assert_throws("ValueError", || String.pack("u16", [1], endian: "native"),
+  message: "String.pack: endian must be 'little' or 'big', not 'native'.")
 assert_throws("TypeError", || String.pack("u16", "ab"))
 assert_throws("TypeError", || String.pack(16, [1]))
 
-assert_eq(
-  err(|| String.unpack("u16", "abc")),
-  "ValueError: String.unpack: the 3 bytes from 0 are not a whole number of u16 (2 bytes each).",
-)
-assert_eq(
-  err(|| String.unpack("u16", "abcd", at: 5)),
-  "IndexError: String.unpack: at 5 is outside the 4 bytes of data.",
-)
-assert_eq(
-  err(|| String.unpack("u16", "abcd", at: -1)),
-  "IndexError: String.unpack: at -1 is outside the 4 bytes of data.",
-)
-assert_eq(
-  err(|| String.unpack("u32", "abcdef", at: 1, count: 2)),
-  "IndexError: String.unpack: 2 u32 from 1 run past the end (5 bytes remain).",
-)
-assert_eq(
-  err(|| String.unpack("u16", "abcd", into: [0, 0, 0])),
-  "IndexError: String.unpack: 3 u16 from 0 run past the end (4 bytes remain).",
-)
-assert_eq(
-  err(|| String.unpack("u8", "ab", count: -1)),
-  "ValueError: String.unpack: count must not be negative, got -1.",
-)
-assert_eq(
-  err(|| String.unpack("u8", "ab", count: 1, into: [0])),
-  "ValueError: String.unpack: pass count or into, not both.",
-)
+assert_throws("ValueError", || String.unpack("u16", "abc"),
+  message: "String.unpack: the 3 bytes from 0 are not a whole number of u16 (2 bytes each).")
+assert_throws("IndexError", || String.unpack("u16", "abcd", at: 5),
+  message: "String.unpack: at 5 is outside the 4 bytes of data.")
+assert_throws("IndexError", || String.unpack("u16", "abcd", at: -1),
+  message: "String.unpack: at -1 is outside the 4 bytes of data.")
+assert_throws("IndexError", || String.unpack("u32", "abcdef", at: 1, count: 2),
+  message: "String.unpack: 2 u32 from 1 run past the end (5 bytes remain).")
+assert_throws("IndexError", || String.unpack("u16", "abcd", into: [0, 0, 0]),
+  message: "String.unpack: 3 u16 from 0 run past the end (4 bytes remain).")
+assert_throws("ValueError", || String.unpack("u8", "ab", count: -1),
+  message: "String.unpack: count must not be negative, got -1.")
+assert_throws("ValueError", || String.unpack("u8", "ab", count: 1, into: [0]),
+  message: "String.unpack: pass count or into, not both.")
 assert_throws("TypeError", || String.unpack("u8", [1, 2]))
 assert_throws("TypeError", || String.unpack("u8", "ab", into: "x"))
 # a failed unpack leaves `into` as it was
@@ -273,36 +243,30 @@ fn hdr_with(f) {
   f(h)
   h
 }
-assert_eq(err(|| String.pack(Hdr, [
+assert_throws("ValueError", || String.pack(Hdr, [
   hd,
   hdr_with(fn (h) {
     h.size = -1
   }),
-])), "ValueError: String.pack: record 1, field `size`: -1 is out of range for UInt32 (0 to 4294967295).")
-assert_eq(err(|| String.pack(Hdr, [hdr_with(fn (h) {
+]), message: "String.pack: record 1, field `size`: -1 is out of range for UInt32 (0 to 4294967295).")
+assert_throws("ValueError", || String.pack(Hdr, [hdr_with(fn (h) {
   h.magic = "B"
-})])), "ValueError: String.pack: record 0, field `magic`: Bytes<2> takes exactly 2 bytes, got 1.")
-assert_eq(err(|| String.pack(Hdr, [hdr_with(fn (h) {
+})]), message: "String.pack: record 0, field `magic`: Bytes<2> takes exactly 2 bytes, got 1.")
+assert_throws("CapacityError", || String.pack(Hdr, [hdr_with(fn (h) {
   h.name = "toolong"
-})])), "CapacityError: String.pack: record 0, field `name`: BoundedString<6> holds up to 6 bytes, got 7.")
-assert_eq(err(|| String.pack(Hdr, [hdr_with(fn (h) {
+})]), message: "String.pack: record 0, field `name`: BoundedString<6> holds up to 6 bytes, got 7.")
+assert_throws("TypeError", || String.pack(Hdr, [hdr_with(fn (h) {
   h.magic = 5
-})])), "TypeError: String.pack: record 0, field `magic`: Bytes<2> takes a String, got Long.")
-assert_eq(
-  err(|| String.pack(Pt, [pt(1, 2), hd])),
-  "TypeError: String.pack: Pt takes Pt records, got Hdr at index 1.",
-)
+})]), message: "String.pack: record 0, field `magic`: Bytes<2> takes a String, got Long.")
+assert_throws("TypeError", || String.pack(Pt, [pt(1, 2), hd]),
+  message: "String.pack: Pt takes Pt records, got Hdr at index 1.")
 class NotPackable {
   x = 1
 }
-assert_eq(
-  err(|| String.pack(NotPackable, [])),
-  "TypeError: String.pack: type must be a scalar type's name or a @packable class, got Object.",
-)
-assert_eq(
-  err(|| String.unpack(Pt, "abcde")),
-  "ValueError: String.unpack: the 5 bytes from 0 are not a whole number of Pt (4 bytes each).",
-)
+assert_throws("TypeError", || String.pack(NotPackable, []),
+  message: "String.pack: type must be a scalar type's name or a @packable class, got Object.")
+assert_throws("ValueError", || String.unpack(Pt, "abcde"),
+  message: "String.unpack: the 5 bytes from 0 are not a whole number of Pt (4 bytes each).")
 
 # a record is laid out by its own class: another class of the same name,
 # declared later, does not change what this one's records are
@@ -331,10 +295,8 @@ assert_eq([String.pack_size(pa), String.pack_size(pb)], [4, 8])
 let two = String.unpack(pa, String.pack("i16", [1, 2, 30, 40]))
 assert_eq(two.map(|r| r.sum()), [3, 70])
 assert_eq(String.unpack(pb, "abcdefgh")[0].raw, "abcdefgh")
-assert_eq(
-  err(|| String.pack(pa, String.unpack(pb, "abcdefgh"))),
-  "TypeError: String.pack: P takes P records, got P at index 0.",
-)
+assert_throws("TypeError", || String.pack(pa, String.unpack(pb, "abcdefgh")),
+  message: "String.pack: P takes P records, got P at index 0.")
 
 # UInt16 / UInt32 are @packable scalars in a SharedBuffer too
 @packable

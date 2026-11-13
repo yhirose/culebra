@@ -44,9 +44,9 @@ fn closed_msg(thunk) {
   let b = __Foreign.Box.new(7)
   let c = b.inner()
   b.drop()
-  assert_eq(closed_msg(fn () {
+  assert_throws("ClosedError", fn () {
     c.value()
-  }), 'ClosedError: Counter borrow is no longer valid (its owner was dropped or mutated)')
+  }, message: 'Counter borrow is no longer valid (its owner was dropped or mutated)')
 }
 
 # --- An escaped borrow keeps its owner alive (escape-based ownership):
@@ -70,9 +70,9 @@ fn closed_msg(thunk) {
   let c = b.inner()
   assert_eq(c.value(), 3)
   b.reset(9)  # non-const: gen++
-  assert_eq(closed_msg(fn () {
+  assert_throws("ClosedError", fn () {
     c.value()
-  }), 'ClosedError: Counter borrow is no longer valid (its owner was dropped or mutated)')
+  }, message: 'Counter borrow is no longer valid (its owner was dropped or mutated)')
   assert_eq(b.inner().value(), 9)  # a fresh borrow sees the new state
 }
 
@@ -91,9 +91,9 @@ fn closed_msg(thunk) {
   let r = b.read_inner()
   assert_eq(r.value(), 6)
   b.reset(1)
-  assert_eq(closed_msg(fn () {
+  assert_throws("ClosedError", fn () {
     r.value()
-  }), 'ClosedError: Counter borrow is no longer valid (its owner was dropped or mutated)')
+  }, message: 'Counter borrow is no longer valid (its owner was dropped or mutated)')
 }
 
 # --- Mutating THROUGH a borrow does not invalidate its siblings. -------------

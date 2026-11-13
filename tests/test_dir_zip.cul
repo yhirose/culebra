@@ -62,47 +62,31 @@ class Two {
 }
 assert_eq(Dir.zip(bytes: Compress.zip(Two())).read('two'), 'body of two')
 
-assert_eq(
-  caught(|| Compress.zip(5)),
-  'TypeError: type error: Compress.zip expects Object|Dir, got Long',
-)
-assert_eq(
-  caught(|| Compress.zip([1])),
-  'TypeError: type error: Compress.zip expects Object|Dir, got Array',
-)
+assert_throws("TypeError", || Compress.zip(5),
+  message: 'type error: Compress.zip expects Object|Dir, got Long')
+assert_throws("TypeError", || Compress.zip([1]),
+  message: 'type error: Compress.zip expects Object|Dir, got Array')
 class NotADir {
   new(@x) {}
 }
-assert_eq(
-  caught(|| Compress.zip(NotADir(1))),
-  'TypeError: type error: Compress.zip expects Object|Dir, got NotADir',
-)
-assert_eq(
-  caught(|| Compress.zip({a: {b: 'c'}})),
-  "TypeError: Compress.zip: 'a' holds Object, not String",
-)
-assert_eq(
-  caught(|| Compress.zip({'../x': 'y'})),
-  "ValueError: Compress.zip: '../x' is not a file inside the archive",
-)
+assert_throws("TypeError", || Compress.zip(NotADir(1)),
+  message: 'type error: Compress.zip expects Object|Dir, got NotADir')
+assert_throws("TypeError", || Compress.zip({a: {b: 'c'}}),
+  message: "Compress.zip: 'a' holds Object, not String")
+assert_throws("ValueError", || Compress.zip({'../x': 'y'}),
+  message: "Compress.zip: '../x' is not a file inside the archive")
 assert_true(caught(|| Compress.zip({
   'a/b': 'x',
   './a/b': 'y',
 })).starts_with("ValueError: Compress.zip: "))
 # What Dir.memory refuses, and names a reader would take for a separator or a
 # root.
-assert_eq(
-  caught(|| Compress.zip({'a': 'x', 'a/b': 'y'})),
-  "ValueError: Compress.zip: 'a' is both a file and a directory",
-)
-assert_eq(
-  caught(|| Compress.zip(Dir.memory({"a\\b.txt": 'x'}))),
-  "ValueError: Compress.zip: 'a\\b.txt' holds a backslash, which an archive reads as a separator",
-)
-assert_eq(
-  caught(|| Compress.zip({'C:x.txt': 'x'})),
-  "ValueError: Compress.zip: 'C:x.txt' is not a file inside the archive",
-)
+assert_throws("ValueError", || Compress.zip({'a': 'x', 'a/b': 'y'}),
+  message: "Compress.zip: 'a' is both a file and a directory")
+assert_throws("ValueError", || Compress.zip(Dir.memory({"a\\b.txt": 'x'})),
+  message: "Compress.zip: 'a\\b.txt' holds a backslash, which an archive reads as a separator")
+assert_throws("ValueError", || Compress.zip({'C:x.txt': 'x'}),
+  message: "Compress.zip: 'C:x.txt' is not a file inside the archive")
 # No files make an archive of no entries, which reads back.
 assert_eq(Dir.zip(bytes: Compress.zip({})).files(), [])
 assert_eq(Dir.zip(bytes: Compress.zip({})).list_dir(''), [])
@@ -127,10 +111,8 @@ class Shadowed {
     path == ''
   }
 }
-assert_eq(
-  caught(|| Compress.zip(Shadowed())),
-  "TypeError: Compress.zip: the Dir's files is not a method",
-)
+assert_throws("TypeError", || Compress.zip(Shadowed()),
+  message: "Compress.zip: the Dir's files is not a method")
 
 # --- an archive another tool wrote: a MusicXML score ---
 let mxl = Dir.zip(bytes: FIX.read('sample.mxl'))
@@ -176,16 +158,12 @@ assert_true(clash.is_dir('d') && !clash.is_file('d'))
 
 # What cannot be read says why; asking about it costs nothing.
 assert_eq(crafted.size('bz.txt'), 10)
-assert_eq(
-  caught(|| crafted.read('bz.txt')),
-  "ValueError: Dir.zip: 'bz.txt': the entry is compressed with method 12, which only stored (0) and deflate (8) are read",
-)
+assert_throws("ValueError", || crafted.read('bz.txt'),
+  message: "Dir.zip: 'bz.txt': the entry is compressed with method 12, which only stored (0) and deflate (8) are read")
 let enc = Dir.zip(bytes: FIX.read('encrypted.zip'))
 assert_eq(enc.files(), ['secret.txt'])
-assert_eq(
-  caught(|| enc.read('secret.txt')),
-  "ValueError: Dir.zip: 'secret.txt': the entry is encrypted",
-)
+assert_throws("ValueError", || enc.read('secret.txt'),
+  message: "Dir.zip: 'secret.txt': the entry is encrypted")
 
 # A damaged entry: the archive opens, the entry does not read.
 let long = 'the quick brown fox jumps over the lazy dog '.repeat(20)
@@ -194,40 +172,26 @@ mut bytes = good.bytes().collect()
 bytes[45] = (bytes[45] + 1) % 256
 let damaged = Dir.zip(bytes: String.from_bytes(bytes))
 assert_eq(damaged.files(), ['x.txt'])
-assert_eq(
-  caught(|| damaged.read('x.txt')),
-  "ValueError: Dir.zip: 'x.txt': the data does not match its CRC",
-)
+assert_throws("ValueError", || damaged.read('x.txt'),
+  message: "Dir.zip: 'x.txt': the data does not match its CRC")
 # An entry whose data ends short of its recorded size, where minizip never
 # reaches the CRC.
 let short = Dir.zip(bytes: FIX.read('short.zip'))
 assert_eq(short.size('short.txt'), 10)
-assert_eq(
-  caught(|| short.read('short.txt')),
-  "ValueError: Dir.zip: 'short.txt': the data does not match its recorded size",
-)
+assert_throws("ValueError", || short.read('short.txt'),
+  message: "Dir.zip: 'short.txt': the data does not match its recorded size")
 
 # Not an archive at all.
-assert_eq(
-  caught(|| Dir.zip(bytes: 'not a zip')),
-  'ValueError: Dir.zip: not a ZIP archive, or a damaged one',
-)
-assert_eq(
-  caught(|| Dir.zip(bytes: '')),
-  'ValueError: Dir.zip: not a ZIP archive, or a damaged one',
-)
-assert_eq(
-  caught(|| Dir.zip()),
-  'TypeError: type error: Dir.zip takes a path or bytes:, one of the two',
-)
-assert_eq(
-  caught(|| Dir.zip('a.zip', bytes: packed)),
-  'TypeError: type error: Dir.zip takes a path or bytes:, one of the two',
-)
-assert_eq(
-  caught(|| Dir.zip(bytes: 5)),
-  'TypeError: type error: Dir.zip bytes: expects String, got Long',
-)
+assert_throws("ValueError", || Dir.zip(bytes: 'not a zip'),
+  message: 'Dir.zip: not a ZIP archive, or a damaged one')
+assert_throws("ValueError", || Dir.zip(bytes: ''),
+  message: 'Dir.zip: not a ZIP archive, or a damaged one')
+assert_throws("TypeError", || Dir.zip(),
+  message: 'type error: Dir.zip takes a path or bytes:, one of the two')
+assert_throws("TypeError", || Dir.zip('a.zip', bytes: packed),
+  message: 'type error: Dir.zip takes a path or bytes:, one of the two')
+assert_throws("TypeError", || Dir.zip(bytes: 5),
+  message: 'type error: Dir.zip bytes: expects String, got Long')
 
 # --- Dir.zip(path): a file, read off its central directory ---
 let tmp = FS.mkdtemp('culebra-dir-zip')
@@ -240,16 +204,12 @@ let zf = Dir.zip(zpath)
 assert_eq(zf.path, FS.abspath(zpath))
 assert_eq(zf.files(), z.files())
 assert_eq(zf.read('img/x.png'), FILES['img/x.png'])
-assert_eq(
-  caught(|| Dir.zip(FS.join(tmp, 'missing.zip'))),
-  "IOError: Dir.zip: no such file '{FS.join(tmp, 'missing.zip')}'",
-)
+assert_throws("IOError", || Dir.zip(FS.join(tmp, 'missing.zip')),
+  message: "Dir.zip: no such file '{FS.join(tmp, 'missing.zip')}'")
 FS.write(FS.join(tmp, 'text.zip'), 'plain text')
-assert_eq(
-  caught(|| Dir.zip(FS.join(tmp, 'text.zip'))),
-  "ValueError: Dir.zip: '{FS.join(tmp, 'text.zip')}': not a ZIP archive, or a damaged one",
-)
-assert_eq(caught(|| Dir.zip(tmp)), "IOError: Dir.zip: no such file '{tmp}'")
+assert_throws("ValueError", || Dir.zip(FS.join(tmp, 'text.zip')),
+  message: "Dir.zip: '{FS.join(tmp, 'text.zip')}': not a ZIP archive, or a damaged one")
+assert_throws("IOError", || Dir.zip(tmp), message: "Dir.zip: no such file '{tmp}'")
 
 # --- copy_to extracts, and an entry that climbs cannot ---
 let escape = Dir.zip(bytes: FIX.read('escape.zip'))
@@ -304,19 +264,14 @@ let alike = Compress.zip({
 assert_eq(alike.size(), packed.size())
 for other in [alike, 'not a zip', nil, 5] {
   inplace.bytes = other
-  assert_eq(
-    caught(|| inplace.read('a.txt')),
-    "ValueError: Dir.zip: 'a.txt': not a ZIP archive, or a damaged one",
-  )
+  assert_throws("ValueError", || inplace.read('a.txt'),
+    message: "Dir.zip: 'a.txt': not a ZIP archive, or a damaged one")
 }
 assert_eq(inplace.files(), z.files())
 # close() lets the bytes go with the archive.
 inplace.close()
 assert_eq(inplace.bytes, nil)
-assert_eq(
-  caught(|| inplace.read('a.txt')),
-  'ClosedError: Dir.zip: the archive is closed',
-)
+assert_throws("ClosedError", || inplace.read('a.txt'), message: 'Dir.zip: the archive is closed')
 
 # --- an archive sent to an isolate opens again there ---
 # From its bytes and from its file; the sender's stays open, and closing
@@ -376,11 +331,8 @@ assert_eq(
 assert_eq(type_of(z), 'ZipArchive')
 z.close()
 z.close()
-assert_eq(
-  caught(|| z.read('a.txt')),
-  'ClosedError: Dir.zip: the archive is closed',
-)
-assert_eq(caught(|| z.files()), 'ClosedError: Dir.zip: the archive is closed')
+assert_throws("ClosedError", || z.read('a.txt'), message: 'Dir.zip: the archive is closed')
+assert_throws("ClosedError", || z.files(), message: 'Dir.zip: the archive is closed')
 # A closed archive arrives closed.
 assert_eq(
   Isolate.spawn(|d| caught(|| d.read('b.txt')), z).join(),

@@ -194,16 +194,15 @@ fn po_two(s: String, *, base = 10) {
 fn po_two(n: Long, *, base = 10) {
   n
 }
-assert_eq(po_said(fn () { po_two('ff', 16) }),
-          "DispatchError: no matching method for `po_two`")
+assert_throws("DispatchError", fn () { po_two('ff', 16) },
+  message: "no matching method for `po_two`")
 
 // Too few is a count and nothing else, and a `**rest` is not a name to write.
-assert_eq(po_said(fn () { to_long() }),
-          "ArityError: expected 1 positional argument, got 0")
+assert_throws("ArityError", fn () { to_long() }, message: "expected 1 positional argument, got 0")
 let po_rest = fn (s, *, **opts) {
   s
 }
-assert_eq(po_said(fn () { po_rest(1, 2) }),
-          "TypeError: takes 1 positional argument but 2 given")
+assert_throws("TypeError", fn () { po_rest(1, 2) },
+  message: "takes 1 positional argument but 2 given")
 
 IO.inspect("test_positional_overflow OK")

@@ -2,15 +2,6 @@
 # either type inside the interval: exactly what `Range#contains` answers for
 # the same bounds. Anything that is not a number falls through, never raises.
 
-fn error_of(f) {
-  try {
-    f()
-    "no error"
-  } catch e {
-    "{e.kind}: {e.message}"
-  }
-}
-
 # The case the syntax exists for: cumulative thresholds, tried top to bottom.
 fn fern(r) {
   match r {
@@ -74,8 +65,8 @@ assert_eq(match Reading.Good(0.25) { Good(0.0..1.0) => 'unit', _ => 'other' },
           'unit')
 
 # Inside a destructuring pattern, a miss is the usual ValueError.
-assert_eq(error_of(fn () { let [0..1, a] = [5, 1] }),
-          "ValueError: destructure pattern did not match value")
+assert_throws("ValueError", fn () { let [0..1, a] = [5, 1] },
+  message: "destructure pattern did not match value")
 
 # Neighbouring syntax still parses as before.
 assert_eq(match [1, 2, 3] { [...rest] => rest.size(), _ => 0 }, 3)

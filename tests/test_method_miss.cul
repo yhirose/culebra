@@ -52,9 +52,9 @@ assert_eq(mm_log, ['arg ran'])
 
 # --- what it does not change ---
 # A member that is there and is not a function: the value's type, no name.
-assert_eq(mm_said(|| mm_obj.m()), 'TypeError: type error: expected Function, got Long')
+assert_throws("TypeError", || mm_obj.m(), message: 'type error: expected Function, got Long')
 # A plain call on nil has no member to name.
-assert_eq(mm_said(|| mm_nil()), 'TypeError: type error: expected Function, got Nil')
+assert_throws("TypeError", || mm_nil(), message: 'type error: expected Function, got Nil')
 # Nor has one in an effect body, where the lowering keeps the body's locals
 # on a state object and `cb(n)` reaches the call as a method call on it: by
 # position and by keyword, the two ways that call compiles.
@@ -67,10 +67,10 @@ effect fn mm_run_kw(cb) {
   let n = perform mm_ask()
   cb(k: n)
 }
-assert_eq(mm_said(|| handle { mm_run(nil) } with mm_ask(k) { k(1) }),
-          'TypeError: type error: expected Function, got Nil')
-assert_eq(mm_said(|| handle { mm_run_kw(nil) } with mm_ask(k) { k(1) }),
-          'TypeError: type error: expected Function, got Nil')
+assert_throws("TypeError", || handle { mm_run(nil) } with mm_ask(k) { k(1) },
+  message: 'type error: expected Function, got Nil')
+assert_throws("TypeError", || handle { mm_run_kw(nil) } with mm_ask(k) { k(1) },
+  message: 'type error: expected Function, got Nil')
 # A method that is missing there is still named.
 effect fn mm_run_miss(xs) {
   let n = perform mm_ask()
@@ -79,8 +79,8 @@ effect fn mm_run_miss(xs) {
 assert_eq(mm_said(|| handle { mm_run_miss([1]) } with mm_ask(k) { k(1) }),
           mm_miss('nope', 'Array'))
 # A scalar has no members at all, which is reported before the call.
-assert_eq(mm_said(|| mm_nil.foo()),
-          'TypeError: type error: expected Object, Array, or Tensor, got Nil')
+assert_throws("TypeError", || mm_nil.foo(),
+  message: 'type error: expected Object, Array, or Tensor, got Nil')
 # And a method that is there is called.
 assert_eq(mm_p.area(), 6)
 

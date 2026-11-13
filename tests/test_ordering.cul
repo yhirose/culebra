@@ -3,15 +3,6 @@
 // min_by / max_by, the fields of a derived `cmp`. Two Tuples order by their
 // first pair that is not `==`.
 
-fn message(f) {
-  try {
-    f()
-    'no error'
-  } catch e {
-    "{e.kind}: {e.message}"
-  }
-}
-
 fn drain(a) {
   while !a.empty() {
     a.pop()
@@ -46,38 +37,23 @@ assert_true(((1, 2), 3) < ((1, 2), 4))
 assert_true((0, 0) < (0, 1) < (1, 0))
 
 // --- a shorter Tuple is not a smaller one ---
-assert_eq(
-  message(|| (1, 2) < (1, 2, 3)),
-  'TypeError: type error: cannot compare Tuple and Tuple (lengths 2 and 3)',
-)
-assert_eq(
-  message(|| (1, 2, 3) >= (9, 9)),
-  'TypeError: type error: cannot compare Tuple and Tuple (lengths 3 and 2)',
-)
+assert_throws("TypeError", || (1, 2) < (1, 2, 3),
+  message: 'type error: cannot compare Tuple and Tuple (lengths 2 and 3)')
+assert_throws("TypeError", || (1, 2, 3) >= (9, 9),
+  message: 'type error: cannot compare Tuple and Tuple (lengths 3 and 2)')
 // ...decided before any element is looked at.
-assert_eq(
-  message(|| (1, 'a') < (2, 0, 0)),
-  'TypeError: type error: cannot compare Tuple and Tuple (lengths 2 and 3)',
-)
+assert_throws("TypeError", || (1, 'a') < (2, 0, 0),
+  message: 'type error: cannot compare Tuple and Tuple (lengths 2 and 3)')
 assert_false((1, 2) == (1, 2, 3))
 
 // --- a pair `<` refuses is the same TypeError inside a Tuple ---
-assert_eq(
-  message(|| (1, 'a') < (1, 2)),
-  'TypeError: type error: cannot compare String and Long',
-)
-assert_eq(
-  message(|| (1, [1]) < (1, [2])),
-  'TypeError: type error: cannot compare Array and Array',
-)
-assert_eq(
-  message(|| (1, 2) < 3),
-  'TypeError: type error: cannot compare Tuple and Long',
-)
-assert_eq(
-  message(|| (1, 2) < [1, 3]),
-  'TypeError: type error: cannot compare Tuple and Array',
-)
+assert_throws("TypeError", || (1, 'a') < (1, 2),
+  message: 'type error: cannot compare String and Long')
+assert_throws("TypeError", || (1, [1]) < (1, [2]),
+  message: 'type error: cannot compare Array and Array')
+assert_throws("TypeError", || (1, 2) < 3, message: 'type error: cannot compare Tuple and Long')
+assert_throws("TypeError", || (1, 2) < [1, 3],
+  message: 'type error: cannot compare Tuple and Array')
 // Only the deciding pair is ordered: a later one is never reached, and an
 // equal one is never asked.
 assert_true((1, 'a') < (2, 0))
@@ -85,10 +61,8 @@ assert_false((1, [1]) < (1, [1]))
 assert_true((1, [1]) <= (1, [1]))
 
 // An Array is still not ordered.
-assert_eq(
-  message(|| [1, 2] < [1, 3]),
-  'TypeError: type error: cannot compare Array and Array',
-)
+assert_throws("TypeError", || [1, 2] < [1, 3],
+  message: 'type error: cannot compare Array and Array')
 
 // `nil` elements are equal, so they pass to the next pair; NaN is not.
 assert_true((nil, 1) < (nil, 2))
@@ -144,10 +118,8 @@ assert_eq(pairs, [(1, 'y'), (2, 'x')])
 
 // A key Tuple of the wrong shape reports like `<`, and leaves the receiver.
 let ragged = [3, 1, 2]
-assert_eq(
-  message(|| ragged.sort_by(|n| n == 1 ? (n,) : (n, n))),
-  'TypeError: type error: cannot compare Tuple and Tuple (lengths 1 and 2)',
-)
+assert_throws("TypeError", || ragged.sort_by(|n| n == 1 ? (n,) : (n, n)),
+  message: 'type error: cannot compare Tuple and Tuple (lengths 1 and 2)')
 assert_eq(ragged, [3, 1, 2])
 
 // --- a key with `cmp` orders by it, as `<` does ---
@@ -169,10 +141,8 @@ assert_eq(
   ['c', 'd', 'b', 'a'],
 )
 // A key with neither is still refused.
-assert_eq(
-  message(|| notes.sorted_by(|n| n)),
-  'TypeError: type error: cannot compare Object and Object',
-)
+assert_throws("TypeError", || notes.sorted_by(|n| n),
+  message: 'type error: cannot compare Object and Object')
 
 // --- a derived `cmp` orders each field by `<` ---
 @derive(Comparable)
@@ -183,10 +153,8 @@ assert_true(Entry(Key(1, 1), 9) < Entry(Key(1, 2), 0))
 assert_true(Entry((1, 1), 9) < Entry((1, 2), 0))
 assert_eq(Entry((1, 1), 2).cmp(Entry((1, 1), 2)), 0)
 assert_eq(Entry(Money(3), 0).cmp(Entry(Money(1), 0)), 1)
-assert_eq(
-  message(|| Entry([1], 0) < Entry([2], 0)),
-  'TypeError: type error: cannot compare Array and Array',
-)
+assert_throws("TypeError", || Entry([1], 0) < Entry([2], 0),
+  message: 'type error: cannot compare Array and Array')
 
 // --- min / max: the elements compare by `<` ---
 assert_eq([(2, 1), (1, 2)].min(), (1, 2))
@@ -221,22 +189,12 @@ assert_eq([5, 2, Num(1)].min().n, 1)
 // One element is compared with nothing.
 assert_eq([[1]].min(), [1])
 assert_eq([nil].iter().max(), nil)
-assert_eq(
-  message(|| [1, 'a'].min()),
-  'TypeError: type error: cannot compare String and Long',
-)
-assert_eq(
-  message(|| [1, 'a'].max()),
-  'TypeError: type error: cannot compare Long and String',
-)
-assert_eq(
-  message(|| [1, 'a'].iter().min()),
-  'TypeError: type error: cannot compare String and Long',
-)
-assert_eq(
-  message(|| [[1], [2]].min()),
-  'TypeError: type error: cannot compare Array and Array',
-)
+assert_throws("TypeError", || [1, 'a'].min(), message: 'type error: cannot compare String and Long')
+assert_throws("TypeError", || [1, 'a'].max(), message: 'type error: cannot compare Long and String')
+assert_throws("TypeError", || [1, 'a'].iter().min(),
+  message: 'type error: cannot compare String and Long')
+assert_throws("TypeError", || [[1], [2]].min(),
+  message: 'type error: cannot compare Array and Array')
 
 // --- min_by / max_by: the keys compare by `<` ---
 assert_eq(notes.min_by(|n| (n.bar, n.beat)).name, 'a')
@@ -245,14 +203,10 @@ assert_eq(notes.min_by(|n| n.name).name, 'a')
 assert_eq(notes.max_by(|n| Key(n.bar, n.beat)).name, 'c')
 assert_eq(notes.iter().min_by(|n| (n.bar, n.beat)).name, 'a')
 assert_eq(notes.iter().max_by(|n| n.name).name, 'd')
-assert_eq(
-  message(|| [1, 2].min_by(|n| n == 1 ? 'k' : 0)),
-  'TypeError: type error: cannot compare Long and String',
-)
-assert_eq(
-  message(|| [1, 2].iter().max_by(|n| n == 1 ? 'k' : 0)),
-  'TypeError: type error: cannot compare String and Long',
-)
+assert_throws("TypeError", || [1, 2].min_by(|n| n == 1 ? 'k' : 0),
+  message: 'type error: cannot compare Long and String')
+assert_throws("TypeError", || [1, 2].iter().max_by(|n| n == 1 ? 'k' : 0),
+  message: 'type error: cannot compare String and Long')
 
 // --- a `cmp` that empties the Array mid-min: the elements in hand stay ---
 let shrinking = []

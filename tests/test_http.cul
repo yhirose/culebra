@@ -8,38 +8,20 @@
 // errors, and connection refused — which exercise the namespace and the
 // error-object construction identically across all three backends.
 
-// What a call raised, as "Kind: message".
-fn failure(thunk) {
-  try {
-    thunk()
-    'no error'
-  } catch e {
-    "{e.kind}: {e.message}"
-  }
-}
-
 // --- URL validation: a missing scheme is an HttpError, not a crash ---
-assert_eq(
-  failure(|| Http.get("example.com")),
-  'HttpError: Http.get: Http: URL must include a scheme (http:// or https://): example.com',
-)
+assert_throws("HttpError", || Http.get("example.com"),
+  message: 'Http.get: Http: URL must include a scheme (http:// or https://): example.com')
 
 // Http.request shares the same validation, tagged with its own context.
-assert_eq(
-  failure(|| Http.request("PATCH", "example.com")),
-  'HttpError: Http.request: Http: URL must include a scheme (http:// or https://): example.com',
-)
+assert_throws("HttpError", || Http.request("PATCH", "example.com"),
+  message: 'Http.request: Http: URL must include a scheme (http:// or https://): example.com')
 
 // --- headers kwarg: must be an Object of String (checked before any I/O) ---
-assert_eq(
-  failure(|| Http.get("http://127.0.0.1:1", headers: "nope")),
-  'TypeError: Http.get: headers must be an Object of String',
-)
+assert_throws("TypeError", || Http.get("http://127.0.0.1:1", headers: "nope"),
+  message: 'Http.get: headers must be an Object of String')
 
-assert_eq(
-  failure(|| Http.get("http://127.0.0.1:1", headers: {X: 1})),
-  'TypeError: Http.get: header values must be String',
-)
+assert_throws("TypeError", || Http.get("http://127.0.0.1:1", headers: {X: 1}),
+  message: 'Http.get: header values must be String')
 
 // --- transport failure: connection refused surfaces as HttpError ---
 // Port 1 is never listening, so connect() fails immediately and offline.
@@ -130,46 +112,32 @@ assert_throws("TypeError", fn () {
 //     server; here, the kwarg type/shape errors and the failure model. ---
 
 // files: must be an Object of parts.
-assert_eq(
-  failure(|| Http.post("http://127.0.0.1:1/x", files: "nope")),
-  'TypeError: Http.post: files must be an Object',
-)
+assert_throws("TypeError", || Http.post("http://127.0.0.1:1/x", files: "nope"),
+  message: 'Http.post: files must be an Object')
 
 // a part value must be a String, Object, or Array.
-assert_eq(
-  failure(|| Http.post("http://127.0.0.1:1/x", files: {a: 1})),
-  "TypeError: Http.post: files['a'] must be a String, Object, or Array",
-)
+assert_throws("TypeError", || Http.post("http://127.0.0.1:1/x", files: {a: 1}),
+  message: "Http.post: files['a'] must be a String, Object, or Array")
 
 // a part Object needs exactly one of content / path / stream. The count check
 // runs before any field type-check (so a wrong-typed second source still
 // reports "needs exactly one", not a per-field error) — verified symmetric.
-assert_eq(
-  failure(|| Http.post("http://127.0.0.1:1/x", files: {a: {filename: "x"}})),
-  "TypeError: Http.post: files['a'] needs exactly one of content, path, stream",
-)
-assert_eq(
-  failure(|| Http.post("http://127.0.0.1:1/x", files: {a: {content: 1, path: "y"}})),
-  "TypeError: Http.post: files['a'] needs exactly one of content, path, stream",
-)
+assert_throws("TypeError", || Http.post("http://127.0.0.1:1/x", files: {a: {filename: "x"}}),
+  message: "Http.post: files['a'] needs exactly one of content, path, stream")
+assert_throws("TypeError", || Http.post("http://127.0.0.1:1/x", files: {a: {content: 1, path: "y"}}),
+  message: "Http.post: files['a'] needs exactly one of content, path, stream")
 
 // content / path must be a String — the message names the part and the field
 // (interp/JIT must agree exactly, so assert the full text, not just the kind).
-assert_eq(
-  failure(|| Http.post("http://127.0.0.1:1/x", files: {a: {content: 1}})),
-  "TypeError: Http.post: files['a'].content must be a String",
-)
+assert_throws("TypeError", || Http.post("http://127.0.0.1:1/x", files: {a: {content: 1}}),
+  message: "Http.post: files['a'].content must be a String")
 
-assert_eq(
-  failure(|| Http.post("http://127.0.0.1:1/x", files: {a: {path: 9}})),
-  "TypeError: Http.post: files['a'].path must be a String",
-)
+assert_throws("TypeError", || Http.post("http://127.0.0.1:1/x", files: {a: {path: 9}}),
+  message: "Http.post: files['a'].path must be a String")
 
 // stream must be a Function (producer).
-assert_eq(
-  failure(|| Http.post("http://127.0.0.1:1/x", files: {a: {stream: 1}})),
-  "TypeError: Http.post: files['a'].stream must be a Function (producer)",
-)
+assert_throws("TypeError", || Http.post("http://127.0.0.1:1/x", files: {a: {stream: 1}}),
+  message: "Http.post: files['a'].stream must be a Function (producer)")
 
 // path that can't be opened is an IOError (before any I/O).
 assert_throws("IOError", fn () {
@@ -206,24 +174,16 @@ assert_throws("HttpError", fn () {
 //     model, per slab layout. The stream itself is in test_http_server.cul. ---
 
 // events must be a Function (checked before any I/O).
-assert_eq(
-  failure(|| Http.get("http://127.0.0.1:1/x", events: 1)),
-  'TypeError: Http.get: events must be a Function',
-)
-assert_eq(
-  failure(|| Http.post("http://127.0.0.1:1/x", json: {}, events: 'x')),
-  'TypeError: Http.post: events must be a Function',
-)
-assert_eq(
-  failure(|| Http.request("PATCH", "http://127.0.0.1:1/x", events: 1)),
-  'TypeError: Http.request: events must be a Function',
-)
+assert_throws("TypeError", || Http.get("http://127.0.0.1:1/x", events: 1),
+  message: 'Http.get: events must be a Function')
+assert_throws("TypeError", || Http.post("http://127.0.0.1:1/x", json: {}, events: 'x'),
+  message: 'Http.post: events must be a Function')
+assert_throws("TypeError", || Http.request("PATCH", "http://127.0.0.1:1/x", events: 1),
+  message: 'Http.request: events must be a Function')
 
 // into and events both claim the body: at most one, before the file opens.
-assert_eq(
-  failure(|| Http.get("http://127.0.0.1:1/x", into: "tmp/_no_such_dir_/f", events: |e| nil)),
-  'TypeError: Http.get: pass at most one of into, events',
-)
+assert_throws("TypeError", || Http.get("http://127.0.0.1:1/x", into: "tmp/_no_such_dir_/f", events: |e| nil),
+  message: 'Http.get: pass at most one of into, events')
 
 // with a Function, a transport failure is still an HttpError.
 assert_throws("HttpError", fn () {
@@ -236,10 +196,8 @@ assert_throws("HttpError", fn () {
 //     model and the per-method kwarg type errors (tagged with a client.* ctx). ---
 
 // a bad base_url (no scheme) fails to open with an HttpError.
-assert_eq(
-  failure(|| Http.client("example.com")),
-  'HttpError: Http.client: Http: URL must include a scheme (http:// or https://): example.com',
-)
+assert_throws("HttpError", || Http.client("example.com"),
+  message: 'Http.client: Http: URL must include a scheme (http:// or https://): example.com')
 
 // a transport failure on a client request surfaces as HttpError (dead port).
 let cl = Http.client("http://127.0.0.1:1")
@@ -248,54 +206,35 @@ assert_throws("HttpError", fn () {
 })
 
 // a client method's headers kwarg must be an Object of String (client.* ctx).
-assert_eq(
-  failure(|| cl.get("/x", headers: "nope")),
-  'TypeError: client.get: headers must be an Object of String',
-)
-assert_eq(
-  failure(|| cl.get("/x", headers: {X: 1})),
-  'TypeError: client.get: header values must be String',
-)
+assert_throws("TypeError", || cl.get("/x", headers: "nope"),
+  message: 'client.get: headers must be an Object of String')
+assert_throws("TypeError", || cl.get("/x", headers: {X: 1}),
+  message: 'client.get: header values must be String')
 
 // params likewise.
-assert_eq(
-  failure(|| cl.get("/x", params: 1)),
-  'TypeError: client.get: params must be an Object of String',
-)
+assert_throws("TypeError", || cl.get("/x", params: 1),
+  message: 'client.get: params must be an Object of String')
 
 // at most one of body / json / form / files on a client post (client.post ctx).
-assert_eq(
-  failure(|| cl.post("/x", body: "y", json: {a: 1})),
-  'TypeError: client.post: pass at most one of body, json, form, files',
-)
+assert_throws("TypeError", || cl.post("/x", body: "y", json: {a: 1}),
+  message: 'client.post: pass at most one of body, json, form, files')
 
 // events on each client method shape (client.* ctx).
-assert_eq(
-  failure(|| cl.get("/x", events: 1)),
-  'TypeError: client.get: events must be a Function',
-)
-assert_eq(
-  failure(|| cl.post("/x", into: |c| nil, events: |e| nil)),
-  'TypeError: client.post: pass at most one of into, events',
-)
-assert_eq(
-  failure(|| cl.request("PATCH", "/x", events: 1)),
-  'TypeError: client.request: events must be a Function',
-)
+assert_throws("TypeError", || cl.get("/x", events: 1),
+  message: 'client.get: events must be a Function')
+assert_throws("TypeError", || cl.post("/x", into: |c| nil, events: |e| nil),
+  message: 'client.post: pass at most one of into, events')
+assert_throws("TypeError", || cl.request("PATCH", "/x", events: 1),
+  message: 'client.request: events must be a Function')
 
 // `path` is a typed String param: a StringView (e.g. a slice) is rejected, the
 // same as the free Http.* functions' typed url (interp/JIT must agree).
 let cl_pathstr = "/abc"
-assert_eq(
-  failure(|| cl.get(cl_pathstr[0..2])),
-  "TypeError: type error: parameter 'path' expects String",
-)
+assert_throws("TypeError", || cl.get(cl_pathstr[0..2]),
+  message: "type error: parameter 'path' expects String")
 
 // a closed client errors cleanly (no crash) on further use.
 cl.close()
-assert_eq(
-  failure(|| cl.get("/x")),
-  'HttpError: client.get: Http: client is closed',
-)
+assert_throws("HttpError", || cl.get("/x"), message: 'client.get: Http: client is closed')
 
 inspect("test_http: ok")
