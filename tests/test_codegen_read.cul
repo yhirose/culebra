@@ -204,7 +204,7 @@ let {stmt_block} = cg
     m.unary(op: read_back, operand: lit, line: 1, col: 1)
   }
 
-  for name in ['print', 'readint', 'len', 'tostr', 'typeof', 'toint', 'todouble', 'fmod', 'pow', 'printraw', 'arraypush', 'arraypop', 'objecthas', 'objectkeys', 'objectremove', 'arrayconcat', 'arrayfill', 'strupper', 'strlower', 'genresume', 'genreturn', 'genthrow', 'argcount', 'same', 'fnarity', 'collect', 'heapstats', 'enqueue'] {
+  for name in ['print', 'readint', 'len', 'tostr', 'typeof', 'toint', 'todouble', 'pow', 'printraw', 'arraypush', 'arraypop', 'objecthas', 'objectkeys', 'objectremove', 'arrayconcat', 'arrayfill', 'strupper', 'strlower', 'genresume', 'genreturn', 'genthrow', 'argcount', 'same', 'fnarity', 'collect', 'heapstats', 'enqueue'] {
     let n = m.intrinsic(name: name, args: m.list_new(), line: 1, col: 1)
     let read_back = m.node_op(node: n)
     assert_eq(read_back, name)

@@ -79,6 +79,7 @@ inline bool register_codegen_binding() {
       .method<&codegen::Module::double_literal>("double_literal",
                                                 {"v", {"at", nullptr}, {"line", 1L}, {"col", 1L}})
       .method<&codegen::Module::nil_literal>("nil_literal", {{"at", nullptr}, {"line", 1L}, {"col", 1L}})
+      .method<&codegen::Module::void_literal>("void_literal", {{"at", nullptr}, {"line", 1L}, {"col", 1L}})
       .method<&codegen::Module::str_literal>("str_literal",
                                              {"s", {"at", nullptr}, {"line", 1L}, {"col", 1L}})
       .method<&codegen::Module::var_ref>("var_ref",
@@ -136,6 +137,14 @@ inline bool register_codegen_binding() {
           "make_continue", {{"at", nullptr}, {"line", 1L}, {"col", 1L}, {"depth", 0L}})
       .method<&codegen::Module::make_throw>("make_throw",
                                             {"value", {"at", nullptr}, {"line", 1L}, {"col", 1L}})
+      .method<&codegen::Module::call_spread>(
+          "call_spread", {"callee", "args", "spread", {"at", nullptr}, {"line", 1L}, {"col", 1L}})
+      .method<&codegen::Module::new_temp>("new_temp")
+      .method<&codegen::Module::make_let>(
+          "make_let", {"temp", "init", "body", {"at", nullptr}, {"line", 1L}, {"col", 1L}})
+      .method<&codegen::Module::let_ref>(
+          "let_ref", {"temp", {"at", nullptr}, {"line", 1L}, {"col", 1L}})
+      .method<&codegen::Module::let_temp>("let_temp", {"node"})
       .method<&codegen::Module::make_try>(
           "make_try", {"caught_local", "body", "handler", {"at", nullptr}, {"line", 1L}, {"col", 1L}})
       .method<&codegen::Module::make_defer>("make_defer",

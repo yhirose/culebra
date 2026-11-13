@@ -68,10 +68,13 @@ fn tostr_node(m, v) {
   let tb = m.list_new()
   m.list_push(tb, m.double_literal(v: -2.9, line: 1, col: 1))
   let toint_node = m.intrinsic(name: 'toint', args: tb, line: 1, col: 1)
-  let tc = m.list_new()
-  m.list_push(tc, m.double_literal(v: 5.5, line: 1, col: 1))
-  m.list_push(tc, m.literal(v: 2, line: 1, col: 1))
-  let fmod_node = m.intrinsic(name: 'fmod', args: tc, line: 1, col: 1)
+  let dmod_node = m.binary(
+    op: 'mod',
+    lhs: m.double_literal(v: 5.5, line: 1, col: 1),
+    rhs: m.literal(v: 2, line: 1, col: 1),
+    line: 1,
+    col: 1,
+  )
   let byte_node = m.index(
     recv: m.str_literal(s: 'abc', line: 1, col: 1),
     key: m.literal(v: 1, line: 1, col: 1),
@@ -90,7 +93,7 @@ fn tostr_node(m, v) {
       print_stmt(m, m.nil_literal(line: 1, col: 1)),
       print_stmt(m, type_node),
       print_stmt(m, toint_node),
-      print_stmt(m, fmod_node),
+      print_stmt(m, dmod_node),
       raw_node,
       print_stmt(m, byte_node),
     ],

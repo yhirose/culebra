@@ -80,6 +80,7 @@ constkind_members=$(extract_members ConstKind)
 # Self-check: a parse that stopped matching vmlib.h must fail loudly, never
 # pass with an empty (or truncated) list. Floors are each enum's member
 # count as of this writing; cpp-vmlib only grows these.
+TAG_FLOOR=31  # Tag members, and so TAG_MAP rows
 check_floor() {
   local name="$1" list="$2" floor="$3"
   local n
@@ -88,12 +89,12 @@ check_floor() {
     note "its own parse of ${name} found only ${n} member(s) (expected >= ${floor}) -- fix this script before trusting it"
   fi
 }
-check_floor Tag "$tag_members" 28
-check_floor UnOp "$unop_members" 8
-check_floor BinOp "$binop_members" 23
-check_floor IntrinsicId "$intrinsic_members" 36
+check_floor Tag "$tag_members" "$TAG_FLOOR"
+check_floor UnOp "$unop_members" 10
+check_floor BinOp "$binop_members" 25
+check_floor IntrinsicId "$intrinsic_members" 43
 check_floor VarKind "$varkind_members" 3
-check_floor ConstKind "$constkind_members" 5
+check_floor ConstKind "$constkind_members" 6
 
 # Every method codegen_binding.h binds, by its SCRIPT-VISIBLE name (the
 # string literal, not the C++ member). Joined with spaces first: several
@@ -201,6 +202,9 @@ Defer|defer|make_defer|node_tag
 CellFresh|cellfresh|cell_fresh|cell_index
 Yield|yield|make_yield|node_tag
 NativeRef|nativeref|native_ref|native_index
+CallSpread|callspread|call_spread|node_tag
+Let|let|make_let|let_temp
+LetRef|letref|let_ref|let_temp
 "
 
 mapped_members=$(echo "$TAG_MAP" | awk -F'|' 'NF==4{print $1}')
@@ -234,8 +238,8 @@ while IFS= read -r m; do
   fi
 done <<< "$mapped_members"
 
-if [ "$n_mapped" -lt 28 ]; then
-  note "TAG_MAP has only ${n_mapped} row(s) (expected >= 28) -- its own table shrank"
+if [ "$n_mapped" -lt "$TAG_FLOOR" ]; then
+  note "TAG_MAP has only ${n_mapped} row(s) (expected >= ${TAG_FLOOR}) -- its own table shrank"
 fi
 
 if [ "$fail" -ne 0 ]; then

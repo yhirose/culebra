@@ -42,7 +42,7 @@
 # (__add__/__sub__/__mul__/__neg__/__lt__/__eq__/__index__/__str__),
 # @derive accepted as a no-op (the default == is already structural), and
 # deterministic drop() -- carried to the VM's drop contract, which calls
-# a hidden-key closure the moment an instance's refcount reaches zero.
+# the destructor dropset gave the moment an instance's refcount reaches zero.
 # The generator batch adds: `yield` / `yield from` in named fns, the
 # iter/has_next/next/dispose protocol object, and for-in / yield-from
 # disposing their iterator on every exit path. The iterator batch adds:
@@ -568,13 +568,8 @@ fn __mod(a, b, line, col) {
   if __inst_dunder(a, '__mod__') { return __dunder2(a, '__mod__', b, line, col) }
   __arith_ok('%', a, b, line, col)
   if __zero(b) { __raise('ZeroDivisionError', 'divide by 0 error', line, col) }
-  if __both_int(a, b) {
-    if a == (1 << 63) {
-      if b == -1 { return 0 }
-    }
-    return a % b
-  }
-  __fmod(a, b)
+  if __both_int(a, b) && a == (1 << 63) && b == -1 { return 0 }
+  a % b
 }
 
 fn __ipow(base, exp) {
@@ -724,13 +719,7 @@ fn __construct(cls, pos, kws, apos, line, col) {
       i = i + 1
     }
   }
-  # the VM's drop contract: a "\zd" prefix cannot be spelled by programs,
-  # and the executor calls the stored method with the instance when its
-  # refcount hits zero
-  if __objecthas(cls['methods'], 'drop') {
-    let dm = cls['methods']['drop']
-    inst["\zdrop"] = fn (o) { __drop_once(o, dm) }
-  }
+  if __objecthas(cls['methods'], 'drop') { __arm_drop(inst, cls['methods']['drop']) }
   __spread_self(picked[0], inst, picked[1], line, col)
   # a @value instance is frozen the moment new() returns
   if __objecthas(cls, 'value') { inst["\zv"] = true }
@@ -2157,8 +2146,7 @@ fn __gen_wrap(raw) {
     }
   }
   # released half-way, a generator still runs its pending defers
-  let dispose = obj['dispose']
-  obj["\zdrop"] = fn (o) { __drop_once(o, dispose) }
+  __arm_drop(obj, obj['dispose'])
   obj
 }
 
@@ -5441,6 +5429,13 @@ fn __fnval_println() { fn (v) { println(v) } }
 fn __fnval_print() { fn (v) { print(v) } }
 
 
+# "\zdrop" marks a resource for an explicit drop(); the destructor itself
+# is in dropset's slot, which no key reaches.
+fn __arm_drop(o, dm) {
+  o["\zdrop"] = true
+  __dropset(o, fn (o2) { __drop_once(o2, dm) })
+}
+
 fn __drop_once(o, dm) {
   if __objecthas(o, "\zdd") { return nil }
   o["\zdd"] = true
@@ -5489,7 +5484,7 @@ fn __bind_contract(o, key, f, line, col) {
     __raise('DropContractError',
             "type error: '" + key + "' must be a Function taking no arguments.", line, col)
   }
-  if key == 'drop' { o["\zdrop"] = fn (o2) { __drop_once(o2, f) } }
+  if key == 'drop' { __arm_drop(o, f) }
   nil
 }
 
@@ -5849,7 +5844,6 @@ let intrinsics = {
   __len: ('len', 1),
   __toint: ('toint', 1),
   __todouble: ('todouble', 1),
-  __fmod: ('fmod', 2),
   __fpow: ('pow', 2),
   __arraypush: ('arraypush', 2),
   __arraypop: ('arraypop', 1),
@@ -5863,6 +5857,7 @@ let intrinsics = {
   __fnarity: ('fnarity', 1),
   __collect: ('collect', 0),
   __heapstats: ('heapstats', 0),
+  __dropset: ('dropset', 2),
 }
 
 # Global builtins user code calls by name; each lowers to the prelude
@@ -9515,26 +9510,29 @@ fn emit_postfix_step(m, f, value, step, at) {
             [sref(), ir.str_literal(name.token, name)],
             step,
           )
-          let [
-            posv,
-            kwsv,
-            aposv,
-          ] = emit_call_shape(m, f, step.nodes[1].nodes, step)
+          # a static candidate dispatches over the call's own arguments;
+          # otherwise both arms pass the one shape, each reading it through
+          # a Let (one node under both arms is refused)
+          let dispatches = r.kind == 'fn' && !has_splat(step.nodes[1].nodes)
+          let shape = emit_call_shape(m, f, step.nodes[1].nodes, step)
+          let temps = cond {
+            dispatches => [],
+            _ => [ir.new_temp(), ir.new_temp(), ir.new_temp()],
+          }
+          fn args() {
+            cond {
+              dispatches => shape,
+              _ => temps.map(|t| ir.let_ref(t, step)),
+            }
+          }
           let nl_ = ir.literal(name.line, step)
           let nc_ = ir.literal(name.column, step)
+          let ma = args()
           let via_method = call_pre(
             m,
             f,
             '__method',
-            [
-              sref(),
-              ir.str_literal(name.token, name),
-              posv,
-              kwsv,
-              aposv,
-              pl,
-              pc,
-            ],
+            [sref(), ir.str_literal(name.token, name), ma[0], ma[1], ma[2], pl, pc],
             step,
           )
           # the candidate as a value: the gate asks it, the dynamic arm calls
@@ -9554,8 +9552,7 @@ fn emit_postfix_step(m, f, value, step, at) {
             step,
           )
           let via_ufcs = cond {
-            r.kind == 'fn' &&
-              !has_splat(step.nodes[1].nodes) => emit_dispatch(
+            dispatches => emit_dispatch(
               m,
               f,
               name.token,
@@ -9564,13 +9561,16 @@ fn emit_postfix_step(m, f, value, step, at) {
               {slot: slot, value: sref()},
               step,
             ),
-            _ => call_pre(
-              m,
-              f,
-              '__ufcs_call',
-              [candidate(), sref(), nl_, nc_, posv, kwsv, aposv, pl, pc],
-              step,
-            ),
+            _ => {
+              let ua = args()
+              call_pre(
+                m,
+                f,
+                '__ufcs_call',
+                [candidate(), sref(), nl_, nc_, ua[0], ua[1], ua[2], pl, pc],
+                step,
+              )
+            },
           }
           # UFCS needs both answers: the receiver has no method of that name,
           # and the candidate's first parameter accepts it. Anything else is
@@ -9581,10 +9581,14 @@ fn emit_postfix_step(m, f, value, step, at) {
             takes,
             step,
           )
-          ir.block(
-            [store, ir.make_if_else(ufcs, via_ufcs, via_method, step)],
-            step,
-          )
+          mut chosen = ir.make_if_else(ufcs, via_ufcs, via_method, step)
+          if !dispatches {
+            # inits run in order: positionals, keywords, their positions
+            chosen = ir.make_let(temps[2], shape[2], chosen, step)
+            chosen = ir.make_let(temps[1], shape[1], chosen, step)
+            chosen = ir.make_let(temps[0], shape[0], chosen, step)
+          }
+          ir.block([store, chosen], step)
         },
         _ => {
           let [

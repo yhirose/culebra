@@ -7509,10 +7509,10 @@ inspect(m.node_col(sum))  # => 3
 | --- | --- |
 | `CodeGen.Module.new()` | 空のmodule |
 | `m.literal(v:, at:)` | 整数定数 |
-| `m.bool_literal(v:, at:)` / `m.double_literal(v:, at:)` / `m.nil_literal(at:)` / `m.str_literal(s:, at:)` | 残りのスカラー定数 |
+| `m.bool_literal(v:, at:)` / `m.double_literal(v:, at:)` / `m.nil_literal(at:)` / `m.void_literal(at:)` / `m.str_literal(s:, at:)` | 残りのスカラー定数。`void`はnilに似た2つ目の値(JavaScriptの`null`、Schemeの未規定値)で、明示的な`void_literal`だけが作る。条件では偽になる |
 | `m.var_ref(kind:, index:, at:)` | local/captureスロット`index`の読み |
-| `m.unary(op:, operand:, at:)` | `op`は`'neg'`/`'bitnot'`/`'not'` ——`not`は条件が見るのと同じ真偽判定を反転したBoolを返すので、Bool以外の値にも答える —— または`wrapi8 wrapi16 wrapi32 wrapu8 wrapu16 wrapu32`のいずれか —— Longをその幅に切り詰め、符号拡張(`wrapi*`)またはゼロ拡張(`wrapu*`)して戻す。固定幅の`int`/`uint`(C#/Java/Goのサブセットなど)を下ろすフロントエンド向け。オペランドは既にLongでなければならず、これらはどれも`lt`/`le`/`gt`/`ge`/`div`/`mod`/`shr`が自前のwrapなしに前提とする正規化済みの形にスロットの値を保つ |
-| `m.binary(op:, lhs:, rhs:, at:)` | `op`は`add sub mul div mod eq ne lt le gt ge bitand bitor bitxor shl shr`のいずれか(ビット演算はLong専用。シフト量は下位6ビットでマスクされ、`shr`は算術シフト)、または`udiv umod ushr ult ule ugt uge`のいずれか —— `uint64`に必要な符号なし版。そのビットパターンは、幅の狭い符号なし値が正規化済みで既にそうであるのとは違い、符号付きLongの大小順に乗らないため |
+| `m.unary(op:, operand:, at:)` | `op`は`'neg'`/`'bitnot'`/`'not'`/`'truth'` ——`truth`と`not`は条件が見る真偽判定とその反転をBoolで返すので、Bool以外の値にも答える —— または`wrapi8 wrapi16 wrapi32 wrapu8 wrapu16 wrapu32`のいずれか —— Longをその幅に切り詰め、符号拡張(`wrapi*`)またはゼロ拡張(`wrapu*`)して戻す。固定幅の`int`/`uint`(C#/Java/Goのサブセットなど)を下ろすフロントエンド向け。オペランドは既にLongでなければならず、これらはどれも`lt`/`le`/`gt`/`ge`/`div`/`mod`/`shr`が自前のwrapなしに前提とする正規化済みの形にスロットの値を保つ |
+| `m.binary(op:, lhs:, rhs:, at:)` | `op`は`add sub mul div mod floordiv floormod eq ne lt le gt ge bitand bitor bitxor shl shr`のいずれか(`floordiv`は負の無限大へ丸め、`floormod`は除数の符号に従う。PythonとLuaの`//`と`%`で、`div`と`mod`は0方向へ切り捨てる。doubleの`mod`はIEEE fmod。整数同士で除数が0なら失敗する。ビット演算はLong専用。シフト量は下位6ビットでマスクされ、`shr`は算術シフト)、または`udiv umod ushr ult ule ugt uge`のいずれか —— `uint64`に必要な符号なし版。そのビットパターンは、幅の狭い符号なし値が正規化済みで既にそうであるのとは違い、符号付きLongの大小順に乗らないため |
 | `m.assign(kind:, index:, value:, at:)` | local/captureスロット`index`への書き |
 | `m.make_if(cond:, then_branch:, at:)` | `else`の無い`if` |
 | `m.make_if_else(cond:, then_branch:, else_branch:, at:)` | `if`/`else` |
@@ -7524,7 +7524,7 @@ inspect(m.node_col(sum))  # => 3
 | `m.call_value(callee:, args:, at:)` | `callee`の評価結果が何であれ呼ぶ。引数はステージング用listを消費 |
 | `m.declare_native(name:)` | このモジュールが`name`というホスト関数を呼ぶことを宣言し、そのindexを答える。モジュールが持つのは名前だけで、何に解決されるかは実行ごとに`Program.run`の`natives:`が渡す。だから同じモジュールがその時々の実装に対して走り、1つも宣言しなければ何も要らない |
 | `m.native_ref(index:, at:)` | 宣言済みnative `index`を指す値。呼ぶときは通常の`call_value`。`declare_native`が配っていないindexは`verify()`が弾く |
-| `m.intrinsic(name:, args:, at:)` | `name`は`'print'`/`'len'`/`'tostr'`/`'typeof'`/`'toint'`/`'todouble'`/`'tofloat32'`(各引数1個)・`'readint'`(引数0個)・`'fmod'`/`'pow'`(引数2個)。`'printraw'`は改行なしの`'print'`。コンテナのprimitiveは`'arraypush'`/`'objecthas'`/`'objectremove'`(引数2個)と`'arraypop'`/`'objectkeys'`(引数1個)。空配列のpopは失敗、keysは挿入順。`'len'`はmapの要素数も、文字列や配列の長さと同じように答える。`'arrayconcat'`(引数2個)は2つ目の配列の要素を1つ目へその場で追加して値を返さず、`'arrayfill'`(引数2個: 個数と値)はその個数だけその値が入った新しい配列を作る —— どちらも`arraypush`のループで書くしかなかった形。`'mapnew'`(引数0個)はmapを作る —— キーが名前でなく値そのものである2つ目のキー付きコンテナで、nil・bool・int・double・文字列は値で、それ以外は同一性で比較する。読み書きはobjectと同じ`index`/`set_index`、問い合わせも同じ`'len'`/`'objecthas'`/`'objectkeys'`/`'objectremove'`が答える。`'strslice'`/`'arrayslice'`(引数3個: 文字列または配列と、開始・終了index)は半開区間をコピーして取り出し、`'strbyte'`(引数2個)/`'strfrombyte'`(引数1個)は文字列から1バイト読む・1バイトの文字列を作る。`'strupper'`/`'strlower'`(引数1個)はASCIIのA-Zとa-zだけを移し、他のバイトはそのまま残すので、複数バイトの文字はまるごと通り、ASCIIより上で大文字小文字が何を意味するかはfront end自身の判断のまま。コードポイントでなくバイトなので、独自のテキストモデルを持つfront end自身がデコードする。`'same'`(引数2個)は参照の同一性 —— 同じヒープオブジェクトか、スカラーなら同じタグと中身か —— を答える(`eq`はオブジェクト同士を拒む)。`'argcount'`(引数0個)は実行中の関数が呼ばれたときの実引数の個数(`set_lenient_arity`を参照)。`'genresume'`/`'genreturn'`/`'genthrow'`(引数2個)はgeneratorの活性化を駆動する(`set_generator`を参照)。`'enqueue'`(引数1個、引数0個のクロージャ)はそれを実行のジョブキューに積む —— エントリ関数が戻ったあとにFIFO順で消化され、各ジョブは次に移る前に最後まで走るので、ジョブ自身が積んだものは待っている全ジョブの後ろに並ぶ —— 値は`nil`。`'fnarity'`(引数1個)はクロージャの宣言上の仮引数の個数(関数以外は失敗)。`'collect'`(引数0個)はその場で完全なtracing collectionを走らせ、解放したオブジェクト数を返す(回収対象のdrop hookを新しいものから順に先に走らせる)。`'heapstats'`(引数0個)はランタイムのヒープの`{live_objects, heap_bytes}`を返す。`tostr`は整数値のdoubleを`4.0`でなく`4`と整形するので、表示規則が異なるフロントエンドは後処理する。`typeof`はタグを文字列(`'int'`・`'double'`・`'string'`…)で返す。`toint`はゼロ方向へ切り捨て、NaN・∞・範囲外は失敗。`fmod`はIEEE fmod(0除数は整数modと同じ失敗)。`pow`はdouble上。`tofloat32`はDouble(整数引数は`todouble`と同様まず幅拡張される)を最も近い`float`へ丸め、その値をちょうど保持するDoubleへ戻す —— `float`と`double`の両方を持つフロントエンドが自前では作れない丸め —— `float`自身の最大/最小値へ飽和し、実際のオーバーフロー境界を超えたときだけ+-infinityになる。NaNはそのまま通る |
+| `m.intrinsic(name:, args:, at:)` | `name`は`'print'`/`'len'`/`'tostr'`/`'typeof'`/`'toint'`/`'todouble'`/`'tofloat32'`(各引数1個)・`'readint'`(引数0個)・`'pow'`(引数2個)。`'printraw'`は改行なしの`'print'`。コンテナのprimitiveは`'arraypush'`/`'objecthas'`/`'objectremove'`(引数2個)と`'arraypop'`/`'objectkeys'`(引数1個)。空配列のpopは失敗、keysは挿入順。`'len'`はmapの要素数も、文字列や配列の長さと同じように答える。`'arrayconcat'`(引数2個)は2つ目の配列の要素を1つ目へその場で追加して値を返さず、`'arrayfill'`(引数2個: 個数と値)はその個数だけその値が入った新しい配列を作る —— どちらも`arraypush`のループで書くしかなかった形。`'mapnew'`(引数0個)はmapを作る —— キーが名前でなく値そのものである2つ目のキー付きコンテナで、nil・bool・int・double・文字列は値で、それ以外は同一性で比較する。読み書きはobjectと同じ`index`/`set_index`、問い合わせも同じ`'len'`/`'objecthas'`/`'objectkeys'`/`'objectremove'`が答える。`'strslice'`/`'arrayslice'`(引数3個: 文字列または配列と、開始・終了index)は半開区間をコピーして取り出し、`'strbyte'`(引数2個)/`'strfrombyte'`(引数1個)は文字列から1バイト読む・1バイトの文字列を作る。`'strupper'`/`'strlower'`(引数1個)はASCIIのA-Zとa-zだけを移し、他のバイトはそのまま残すので、複数バイトの文字はまるごと通り、ASCIIより上で大文字小文字が何を意味するかはfront end自身の判断のまま。コードポイントでなくバイトなので、独自のテキストモデルを持つfront end自身がデコードする。`'same'`(引数2個)は参照の同一性 —— 同じヒープオブジェクトか、スカラーなら同じタグと中身か —— を答える(`eq`はオブジェクト同士を拒む)。`'argcount'`(引数0個)は実行中の関数が呼ばれたときの実引数の個数(`set_lenient_arity`を参照)。`'genresume'`/`'genreturn'`/`'genthrow'`(引数2個)はgeneratorの活性化を駆動する(`set_generator`を参照)。`'enqueue'`(引数1個、引数0個のクロージャ)はそれを実行のジョブキューに積む —— エントリ関数が戻ったあとにFIFO順で消化され、各ジョブは次に移る前に最後まで走るので、ジョブ自身が積んだものは待っている全ジョブの後ろに並ぶ —— 値は`nil`。`'fnarity'`(引数1個)はクロージャの宣言上の仮引数の個数(関数以外は失敗)。`'collect'`(引数0個)はその場で完全なtracing collectionを走らせ、解放したオブジェクト数を返す(回収対象のdrop hookを新しいものから順に先に走らせる)。`'heapstats'`(引数0個)はランタイムのヒープの`{live_objects, heap_bytes}`を返す。`tostr`は整数値のdoubleを`4.0`でなく`4`と整形するので、表示規則が異なるフロントエンドは後処理する。`typeof`はタグを文字列(`'int'`・`'double'`・`'string'`…)で返す。`toint`はゼロ方向へ切り捨て、NaN・∞・範囲外は失敗。`pow`はdouble上。`tofloat32`はDouble(整数引数は`todouble`と同様まず幅拡張される)を最も近い`float`へ丸め、その値をちょうど保持するDoubleへ戻す —— `float`と`double`の両方を持つフロントエンドが自前では作れない丸め —— `float`自身の最大/最小値へ飽和し、実際のオーバーフロー境界を超えたときだけ+-infinityになる。NaNはそのまま通る。`'integralkey'`(引数1個)は整数キー指定の`index`がキーを解釈するのと同じ変換で、整数を保持するDoubleをその整数として読む。`'metaget'`(引数1個)と`'metaset'`(引数2個: オブジェクトかmap、値)は、どのキーからも届かないオブジェクト/mapの1スロットを読み書きし、`metaget`は未設定の場合や値にスロットが無い場合にnilを返す。`'dropset'`(引数2個: オブジェクト、callableかnil)はオブジェクトが死ぬときにそれを引数に呼ばれる関数を与え、nilなら外す |
 | `m.array_lit(items:, at:)` / `m.object_lit(kv:, at:)` | 要素のステージング用listから配列を、key, value, key, value, …を持つlistからオブジェクトを組み立てる |
 | `m.index(recv:, key:, at:)` / `m.set_index(recv:, key:, value:, at:)` | 読みと書き。`recv`の実体でディスパッチする: 配列はLongのindex(範囲外は失敗)、オブジェクトはStringのkey(無いkeyの読みは`nil`)、文字列は1バイトを文字列として読み出す(書きは拒否) |
 | `m.field_get(recv:, slot:, name:, at:)` / `m.field_set(recv:, slot:, name:, value:, at:)` | フロントエンド自身が採番した`slot`にあるstructフィールド(localスロットの番号付けと同じ契約) —— `index`/`set_index`のkey比較ではなく直接読み書きするので、`recv`はどちらかがそこに届く前に、その通りのslot順で`object_lit`によって全フィールドが組み立て済みでなければならない。`name`はトラップメッセージ("field 'next' of …")のためだけに保持され、実行には一切使われない |
@@ -7534,6 +7534,8 @@ inspect(m.node_col(sum))  # => 3
 | `m.make_break(line:, col:, depth: 0)` / `m.make_continue(line:, col:, depth: 0)` | `while`を抜ける/再判定する。`depth`は外側のループをいくつ飛ばすかで、`0`(既定)が最も内側。自前でラベルを解決したfront endはdepthで答えればよく、IR側にラベル表は要らない。途中のスコープはどちらの場合も出る際に離れる。ループ本体の外や、実際に開いているより深いループを名指したものは`verify()`が弾く |
 | `m.make_throw(value:, at:)` | 任意の値を送出する |
 | `m.make_try(caught_local:, body:, handler:, at:)` | `body`を保護する。throw(またはexecutorのトラップ —— 0除算・型違いのオペランド)が運んだ値がlocalスロット`caught_local`に入り、`handler`で実行が再開する。トラップの値は`{message, line, col}`のオブジェクト。完了した側の子の値を返す |
+| `m.call_spread(callee:, args:, spread:, at:)` | 最後の引数の配列を引数列へ展開する呼び出し。`args`が先頭側の引数、`spread`がその配列 |
+| `m.new_temp()` / `m.make_let(temp:, init:, body:, at:)` / `m.let_ref(temp:, at:)` | 1つの式のあいだ値を保持する仕組み。`new_temp`でidを得て、`make_let`が`init`を1回だけ評価し、その上に`body`を組む。`body`内の`let_ref`はどれもその値を読む(呼ぶたびに新しいノード)。`verify()`は`make_let`の本体の外にある`let_ref`を拒否する |
 | `m.make_defer(value:, at:)` | 引数0個のcallableを、囲む`scope()`の脱出時に走るよう登録する —— fall-through・`break`・`continue`・`return`・throwのunwindのいずれでも走る。scopeの外のdeferは`verify()`が拒否する |
 | `m.cell_fresh(cell:, at:)` | フレームのcell 1個を新しいboxに置き換える —— 「ループの反復ごとの束縛」の正体。過去の反復で作られたクロージャは古いcellを保持し続ける |
 | `m.make_yield(value:, at:)` | 実行中のgenerator関数を中断し、再開した側に`value`を渡す。ノード自身の値は次の再開で送り込まれた値。generatorの外では`verify()`が拒む |
@@ -7556,7 +7558,7 @@ inspect(m.node_col(sum))  # => 3
 | `m.dump_ir()` | 木の可読なダンプ(デバッグ用) |
 | `m.dump_bc()` | コンパイル済みbytecodeの可読なダンプ(デバッグ用) |
 
-executorはdrop契約も履行します。`"\x01drop"`キーにクロージャを持つオブジェクトは、refcountが0になった瞬間・解放の前に、そのオブジェクト自身を引数としてクロージャが呼ばれます。throwするデストラクタはstderrに報告して飲み込みます。デストラクタが引数をどこかへ保存したら復活扱いで解放はスキップされます。
+executorはdrop契約も履行します。`'dropset'` intrinsicでデストラクタを与えたオブジェクトは(デストラクタはキーとは別の専用の枠に置かれ、プログラムが書くどのキーからも届かない)、refcountが0になった瞬間・解放の前に、そのオブジェクト自身を引数としてデストラクタが呼ばれます。throwするデストラクタはstderrに報告して飲み込みます。デストラクタが引数をどこかへ保存したら復活扱いで解放はスキップされます。
 
 `kind:`は`'local'`(その関数自身のスロット)、`'cell'`(同じくその関数自身の
 スロットだが、この関数が行う呼び出しがcaptureできるようbox化したもの)、
@@ -7582,7 +7584,7 @@ Dumperと同じ経路で木を辿れます。不正なnode/func/cmap id、ある
 | `m.node_col(node:)` | そのノード自身のソース列 |
 | `m.num_children(node:)` | `node`の子の数 |
 | `m.child(node:, index:)` | `index`番目の子。ノードidで返る |
-| `m.const_kind(node:)` | `literal`ノードが持つ5種のどれか —— `'nil'`/`'int'`/`'bool'`/`'double'`/`'str'` |
+| `m.const_kind(node:)` | `literal`ノードが持つ6種のどれか —— `'nil'`/`'int'`/`'bool'`/`'double'`/`'str'`/`'void'` |
 | `m.int_const(node:)` | int literalの値。他の種類では失敗する |
 | `m.bool_const(node:)` | bool literalの値。他の種類では失敗する |
 | `m.double_const(node:)` | double literalの値。他の種類では失敗する |
@@ -7599,6 +7601,7 @@ Dumperと同じ経路で木を辿れます。不正なnode/func/cmap id、ある
 | `m.field_set_value(node:)` | `fieldset`ノードの値(ノードid) |
 | `m.scope_first_local(node:)` | `scope`ノードが所有する最初のlocalスロット |
 | `m.scope_end_local(node:)` | `scope`ノードが所有する最後のlocalスロットの1つ先 |
+| `m.let_temp(node:)` | `let`または`letref`ノードの一時値id |
 | `m.try_caught_local(node:)` | `try`ノードの捕捉値localスロット |
 | `m.closure_func(node:)` | `makeclosure`ノードの関数index |
 | `m.closure_cmap(node:)` | `makeclosure`ノードのcapture-map index |

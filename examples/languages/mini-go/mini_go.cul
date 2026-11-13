@@ -723,8 +723,9 @@ fn emit_block(f, stmts_node) {
   m.block(ids, stmts_node)
 }
 
-# `case 1, 2:` shares one body between two keys, which the IR's Switch takes
-# directly: its arms are key/body pairs and two keys may name the same body.
+# `case 1, 2:` gives each key a body of its own, built from the same
+# statements: the IR's Switch arms are key/body pairs, and verify() refuses
+# a body under two keys (it would be compiled once per key all the same).
 fn emit_switch(f, node, nodes) {
   let (subj, sty) = emit_expr(f, nodes[0])
   if !numeric.has(sty) {
@@ -735,10 +736,9 @@ fn emit_switch(f, node, nodes) {
   for c in nodes.slice(1, nodes.size()) {
     cond {
       c.name == 'case' => {
-        let body = emit_block(f, c.nodes[1])
         for v in c.nodes[0].nodes {
           arms.push(m.literal(to_long(v.token), v))
-          arms.push(body)
+          arms.push(emit_block(f, c.nodes[1]))
         }
       },
       _ => dflt = emit_block(f, c.nodes[0]),

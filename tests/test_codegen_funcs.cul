@@ -709,4 +709,58 @@ fn native_catch_module(m, name, args, key) {
   })
 }
 
+# --- Let: a value held for one expression, built body first. Both reads see
+# the one value; let_temp reads the id back from the Let and from a LetRef.
+{
+  let m = CodeGen.Module.new()
+  let t = m.new_temp()
+  let sum = m.binary(op: 'add', lhs: m.let_ref(temp: t, line: 1, col: 1),
+                     rhs: m.let_ref(temp: t, line: 1, col: 1), line: 1, col: 1)
+  let held = m.make_let(temp: t, init: m.literal(v: 20, line: 1, col: 1),
+                        body: sum, line: 1, col: 1)
+  assert_eq(m.node_tag(node: held), 'let')
+  assert_eq(m.let_temp(node: held), t)
+  let ref = m.child(node: m.child(node: held, index: 1), index: 0)
+  assert_eq(m.node_tag(node: ref), 'letref')
+  assert_eq(m.let_temp(node: ref), t)
+  assert_throws('IrError', || m.let_temp(node: m.literal(v: 1, line: 1, col: 1)))
+  assert_true(m.new_temp() != t)
+  add_main(m, print_stmt(m, held))
+  m.verify()
+  assert_eq(IO.capture(fn () { m.run() }), "40\n")
+}
+
+# --- call_spread: leading arguments, then an array spread into the rest.
+{
+  let m = CodeGen.Module.new()
+  let empty = m.add_capture_map(m.capture_map_new())
+  let one = m.list_new()
+  m.list_push(one, m.literal(v: 1, line: 1, col: 1))
+  let rest = m.list_new()
+  m.list_push(rest, m.literal(v: 2, line: 1, col: 1))
+  let spread = m.array_lit(items: rest, line: 1, col: 1)
+  let call = m.call_spread(
+    callee: m.make_closure(func: 1, cmap: empty, line: 1, col: 1),
+    args: one, spread: spread, line: 1, col: 1)
+  assert_eq(m.node_tag(node: call), 'callspread')
+  add_main(m, print_stmt(m, call))
+  m.add_func(
+    name: 'add', num_locals: 2, num_captures: 0, num_cells: 0, num_params: 2,
+    body: m.make_return(value: m.binary(
+      op: 'add',
+      lhs: m.var_ref(kind: 'local', index: 0, line: 1, col: 1),
+      rhs: m.var_ref(kind: 'local', index: 1, line: 1, col: 1),
+      line: 1, col: 1), line: 1, col: 1))
+  m.verify()
+  assert_eq(IO.capture(fn () { m.run() }), "3\n")
+}
+
+# --- void_literal: the second nil-like value, apart from nil.
+{
+  let m = CodeGen.Module.new()
+  let v = m.void_literal(line: 1, col: 1)
+  assert_eq(m.const_kind(node: v), 'void')
+  assert_eq(m.const_kind(node: m.nil_literal(line: 1, col: 1)), 'nil')
+}
+
 println('test_codegen_funcs OK')

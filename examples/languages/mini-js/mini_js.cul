@@ -600,7 +600,7 @@ function __mod32(v) {
   var d = __tonum(v);
   if (d !== d || d === __inf() || d === 0.0 - __inf()) return 0.0;
   var t = d < 0.0 ? 0.0 - __todouble(__toint_safe(0.0 - d)) : __todouble(__toint_safe(d));
-  var m = __fmod(t, 4294967296.0);
+  var m = t % 4294967296.0;
   if (m < 0.0) m = m + 4294967296.0;
   return m;
 }
@@ -645,7 +645,7 @@ function __mod(a, b) {
   if (x !== x || y !== y || y === 0.0 || x === __inf() || x === 0.0 - __inf()) return __nan();
   if (y === __inf() || y === 0.0 - __inf()) return x;
   if (x === 0.0) return x;
-  return __fmod(x, y);
+  return x % y;
 }
 function __powop(a, b) {
   var x = __tonum(a);
@@ -2572,7 +2572,6 @@ let intrinsics = {
   __len: 'len',
   __toint: 'toint',
   __todouble: 'todouble',
-  __fmod: 'fmod',
   __pow: 'pow',
   __arraypush: 'arraypush',
   __arraypop: 'arraypop',
@@ -3777,7 +3776,6 @@ fn emit_binop(m, f, tok, l, r, at) {
   cond {
     in_prelude => cond {
       tok == '**' => ir.intrinsic('pow', [l, r], at),
-      tok == '%' => ir.intrinsic('fmod', [l, r], at),
       _ => ir.binary(binop_raw[tok], l, r, at),
     },
     tok == '!==' => ir_not(m, call_pre(m, f, '__seq', [l, r], at), at),

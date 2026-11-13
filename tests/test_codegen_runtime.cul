@@ -103,23 +103,15 @@ let {stmt_block, print_stmt, add_main, call_intr} = cg
 {
   fn make_drop_module(m) {
     let obj = m.object_lit(kv: m.list_new(), line: 1, col: 1)
-    let key = m.str_literal(s: "\x01drop", line: 1, col: 1)
     let dropfn_body = print_stmt(
       m,
       m.str_literal(s: 'dropped', line: 1, col: 1),
     )
     let cmap = m.add_capture_map(m.capture_map_new())
     let dropfn = m.make_closure(func: 1, cmap: cmap, line: 1, col: 1)
-    let loc = m.var_ref(kind: 'local', index: 0, line: 1, col: 1)
-    let assign = m.assign(kind: 'local', index: 0, value: obj, line: 1, col: 1)
-    let setdrop = m.set_index(
-      recv: loc,
-      key: key,
-      value: dropfn,
-      line: 1,
-      col: 1,
-    )
-    let body = stmt_block(m, [assign, setdrop])
+    # dropset answers the object, so one expression builds and arms it.
+    let armed = call_intr(m, 'dropset', [obj, dropfn])
+    let body = m.assign(kind: 'local', index: 0, value: armed, line: 1, col: 1)
     add_main(m, body, 1)
     m.add_func(
       name: 'ondrop',

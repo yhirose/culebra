@@ -873,7 +873,7 @@ from a signature produces code that lints and does not run.
 | `Vector2` | 9 | minimal 2D float vector for graphics/game code (also stands in for a "Point") |
 | `Vector3` | 9 | the 3D counterpart of `Vector2` |
 | `PEG` | 32 | PEG parser generator: write a grammar, get a syntax tree |
-| `CodeGen` | 144 | build a small language's IR by hand and run it |
+| `CodeGen` | 150 | build a small language's IR by hand and run it |
 | `StateMachine` | 8 | hierarchical state machine, with a text DSL |
 | `FST` | 14 | compiled read-only dictionary: prefix, predictive and fuzzy search |
 | `Search` | 9 | full-text index over your own documents, ranked |

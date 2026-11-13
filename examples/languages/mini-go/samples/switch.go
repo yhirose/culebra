@@ -3,7 +3,7 @@ package main
 import "fmt"
 
 // A dense set of int32 keys (1, 2, 3), plus a default -- and case 1, 2:
-// shares one body between two keys, README's "Go's case a, b:" recipe.
+// one body per key, README's "Go's case a, b:" recipe.
 func classify(n int32) int32 {
 	switch n {
 	case 1, 2:

@@ -357,6 +357,10 @@ class Module {
     coreir::Builder b(m_);
     return id(b.nil_literal(pos(line, col, at)));
   }
+  int64_t void_literal(JitObjectArg at, int64_t line, int64_t col) {
+    coreir::Builder b(m_);
+    return id(b.void_literal(pos(line, col, at)));
+  }
 
   int64_t str_literal(std::string_view s, JitObjectArg at, int64_t line, int64_t col) {
     coreir::Builder b(m_);
@@ -553,6 +557,31 @@ class Module {
     coreir::Builder b(m_);
     return id(b.make_try(idx32(caught_local), node(body), node(handler),
                          pos(line, col, at)));
+  }
+
+  int64_t call_spread(int64_t callee, JitListArg args, int64_t spread,
+                      JitObjectArg at, int64_t line, int64_t col) {
+    coreir::Builder b(m_);
+    return id(b.call_spread(node(callee), take_list(args), node(spread),
+                            pos(line, col, at)));
+  }
+
+  // A value held for one expression, built a piece at a time: new_temp hands
+  // out the id, let_ref reads it (each call a fresh node), and make_let wraps
+  // the body in the Let that binds it. let_temp reads the id back from either.
+  int64_t new_temp() {
+    coreir::Builder b(m_);
+    return b.new_temp();
+  }
+  int64_t make_let(int64_t temp, int64_t init, int64_t body, JitObjectArg at,
+                   int64_t line, int64_t col) {
+    coreir::Builder b(m_);
+    return id(b.let_with(idx32(temp), node(init), node(body),
+                         pos(line, col, at)));
+  }
+  int64_t let_ref(int64_t temp, JitObjectArg at, int64_t line, int64_t col) {
+    coreir::Builder b(m_);
+    return id(b.let_ref(idx32(temp), pos(line, col, at)));
   }
 
   int64_t make_defer(int64_t value, JitObjectArg at, int64_t line, int64_t col) {
@@ -885,6 +914,17 @@ class Module {
     return coreir::view_try(
                m_, require_tag(node, coreir::Tag::TryCatch, "try_caught_local"))
         .caught_local;
+  }
+  int64_t let_temp(int64_t node) const {
+    const coreir::NodeId n = checked_node(node);
+    const coreir::Tag tag = m_.at(n).tag;
+    if (tag == coreir::Tag::Let) return coreir::view_let(m_, n).temp;
+    if (tag == coreir::Tag::LetRef) return coreir::view_let_ref(m_, n);
+    throw culebra::CulebraError(
+        "IrError",
+        culebra::format("node #{} is {}, not a let or letref (let_temp)", node,
+                        describe(coreir::name_of(tag))),
+        0, 0);
   }
   int64_t break_depth(int64_t node) const {
     return coreir::view_break(
