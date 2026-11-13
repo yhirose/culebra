@@ -6052,8 +6052,21 @@ let _synth_module = fn () {
     }
   }
 
-  # A value as a part reads it: a number, a Part (the signal) or an Envelope.
-  let to_part = fn (v) { v is SynthPart ? v : SynthPart("level", [], {level: v}, {}) }
+  # A value as an expression reads it: a Proxy box as its signal (what it
+  # plays, read from its bus), an Array with its boxes so, the rest as it is.
+  # Every place a caller's value enters an expression goes through here.
+  fn as_signal(v) {
+    match v {
+      SynthProxy => v._signal(),
+      Array => v.map(as_signal),
+      _ => v,
+    }
+  }
+
+  # A value as a part reads it: a number, a Part (the signal) or an Envelope;
+  # part_of takes one already a signal.
+  fn to_part(v) { part_of(as_signal(v)) }
+  fn part_of(s) { s is SynthPart ? s : SynthPart("level", [], {level: s}, {}) }
   fn negate(v) {
     match v {
       Array => channels_of(v).map(negate),
@@ -6063,8 +6076,9 @@ let _synth_module = fn () {
   }
 
   # The channels a value or an input gives: an Array's items or a bundle's
-  # parts; nil for one channel.
-  fn channels_of(v) {
+  # parts; nil for one channel. channels_in takes one already a signal.
+  fn channels_of(value) { channels_in(as_signal(value)) }
+  fn channels_in(v) {
     if v is Array {
       __raise("ValueError", "Synth: an Array of channels has one or more") if v.empty()
       if !v.all(|c| (c is Long | Float | SynthEnvelope) || (c is SynthPart && c.kind != "bundle")) {
@@ -6076,7 +6090,7 @@ let _synth_module = fn () {
   }
   # The channels a value gives, one being itself.
   fn channels_or_one(v) {
-    channels_of(v) ?? [v]
+    channels_of(v) ?? [as_signal(v)]
   }
 
   # The gains of the left and the right at `pos` (-1 left .. 1 right), at
@@ -6089,7 +6103,7 @@ let _synth_module = fn () {
       __raise("ValueError", "Synth.pan: pos is a number from -1 to 1") unless finite(pos) && pos >= -1 && pos <= 1
       return [Math.sin((1 - pos) * Math.pi / 4), Math.sin((1 + pos) * Math.pi / 4)]
     }
-    __raise("ValueError", "Synth.pan: pos is one channel") if pos is SynthPart && pos.kind == "bundle"
+    __raise("ValueError", "Synth.pan: pos is one channel") if channels_of(pos) != nil
     let q = to_part(pos).clip(-1.0, 1.0)
     let side = |k| node("wave", [], {freq: 0.0, feedback: 0.0, phase: q * (k * Math.pi / 4) + Math.pi / 4}, {kind: "sine"})
     [side(-1.0), side(1.0)]
@@ -6099,71 +6113,69 @@ let _synth_module = fn () {
   # made from what a caller gave: an Array or a bundle among them makes a
   # part per channel, as a bundle (multichannel expansion), what is one
   # channel going to each; one channel is the part itself. Channels of two
-  # counts at once are a ValueError.
+  # counts at once are a ValueError. What a caller gave is made signals once,
+  # here; made_of takes them so.
   fn node(kind, inputs, values, options) {
+    made_of(kind, inputs.map(as_signal), values.keys().map(|k| (k, as_signal(values[k]))).to_object(), options)
+  }
+  fn made_of(kind, inputs, values, options) {
     mut count = nil
     for v in inputs + values.values().collect() {
-      let channels = channels_of(v)
+      let channels = channels_in(v)
       if channels != nil {
         __raise("ValueError", "Synth: {count} channels and {channels.size()} at once") if count != nil && count != channels.size()
         count = channels.size()
       }
     }
     if count == nil {
-      return SynthPart(kind, inputs.map(to_part), values, options)
+      return SynthPart(kind, inputs.map(part_of), values, options)
     }
     # Channel `i` of what the loop above has checked.
     let pick = |v, i| v is Array ? v[i] : (v is SynthPart && v.kind == "bundle" ? v.inputs[i] : v)
     # A part that draws numbers draws its own on each channel, from its seed
     # plus the channel's number.
     let drawing = |i| options.has("seed") ? {...options, seed: (options.seed + i) % 2147483648} : options
-    let parts = iota(count).map(|i| node(kind, inputs.map(|v| pick(v, i)), values.keys().map(|k| (k, pick(values[k], i))).to_object(), drawing(i)))
+    let parts = iota(count).map(|i| made_of(kind, inputs.map(|v| pick(v, i)), values.keys().map(|k| (k, pick(values[k], i))).to_object(), drawing(i)))
     count == 1 ? parts[0] : SynthPart("bundle", parts, {}, {})
   }
 
-  # A sound or a signal, as a node of an expression: `kind` names the graph
-  # part it becomes, `inputs` the parts it takes in, `values` what it reads
-  # (each a number, a Part or an Envelope) and `options` its fixed settings.
-  class SynthPart {
-    new(kind: String, inputs: Array, values: Object, options: Object) {
-      made.count += 1
-      @id = made.count
-      @kind = kind
-      @inputs = inputs
-      @values = values
-      @options = options
-    }
-    filter(kind: String, cutoff: Long | Float | SynthPart | SynthEnvelope | Array = 1000.0, q: Long | Float = 0.707) {
+  # A signal an expression is made of: a part, or a Proxy box (what it
+  # plays). Its methods make the parts that follow it, the same for both;
+  # `_signal()` is the part (or bundle) it stands for. Each class has its
+  # own operators, which a trait's methods do not stand in for.
+  trait SynthSignal {
+    _signal()
+    filter(kind: String, cutoff: Long | Float | SynthSignal | SynthEnvelope | Array = 1000.0, q: Long | Float = 0.707) {
       node("filter", [self], {cutoff: cutoff}, {kind: kind, q: q})
     }
-    lowpass(cutoff: Long | Float | SynthPart | SynthEnvelope | Array = 1000.0, q: Long | Float = 0.707) {
+    lowpass(cutoff: Long | Float | SynthSignal | SynthEnvelope | Array = 1000.0, q: Long | Float = 0.707) {
       self.filter("low", cutoff, q)
     }
-    highpass(cutoff: Long | Float | SynthPart | SynthEnvelope | Array = 1000.0, q: Long | Float = 0.707) {
+    highpass(cutoff: Long | Float | SynthSignal | SynthEnvelope | Array = 1000.0, q: Long | Float = 0.707) {
       self.filter("high", cutoff, q)
     }
-    bandpass(cutoff: Long | Float | SynthPart | SynthEnvelope | Array = 1000.0, q: Long | Float = 0.707) {
+    bandpass(cutoff: Long | Float | SynthSignal | SynthEnvelope | Array = 1000.0, q: Long | Float = 0.707) {
       self.filter("band", cutoff, q)
     }
-    delay(time: Long | Float | SynthPart | SynthEnvelope | Array = 0.0) {
+    delay(time: Long | Float | SynthSignal | SynthEnvelope | Array = 0.0) {
       node("delay", [self], {time: time}, {})
     }
-    pluck(freq: Long | Float | SynthPart | SynthEnvelope | Array = 220.0, ring: Long | Float | SynthPart | SynthEnvelope | Array = 2.0) {
+    pluck(freq: Long | Float | SynthSignal | SynthEnvelope | Array = 220.0, ring: Long | Float | SynthSignal | SynthEnvelope | Array = 2.0) {
       node("pluck", [self], {freq: freq, ring: ring}, {})
     }
     resonate(modes: Array, dry: Long | Float = 0.0) {
       node("resonate", [self], {}, {modes: modes, dry: dry})
     }
-    drive(gain: Long | Float | SynthPart | SynthEnvelope | Array = 1.0) {
+    drive(gain: Long | Float | SynthSignal | SynthEnvelope | Array = 1.0) {
       node("drive", [self], {gain: gain}, {})
     }
     limit(ceiling: Long | Float = 0.9, release: Long | Float = 0.2) {
       node("limit", [self], {}, {ceiling: ceiling, release: release})
     }
     # Followed by a one-pole filter that closes 60 dB of a step in `time`
-    # seconds, from where it starts; 0 is the part itself.
+    # seconds, from where it starts; 0 is the signal itself.
     lag(time: Long | Float) {
-      time == 0 ? self : node("lag", [self], {}, {time: time})
+      time == 0 ? self._signal() : node("lag", [self], {}, {time: time})
     }
     # Impulses as an envelope that rises in about `attack` seconds and falls
     # 60 dB in `decay`: two decays, the shorter taken off.
@@ -6191,22 +6203,6 @@ let _synth_module = fn () {
       }
       node("math", [self.range(0.0, Math.log(hi / lo))], {}, {kind: "exp", lo: -1.0, hi: 1.0}) * lo
     }
-    __add__(other: Long | Float | SynthPart | SynthEnvelope | Array) {
-      node("mix", [self, other], {}, {})
-    }
-    __sub__(other: Long | Float | SynthPart | SynthEnvelope | Array) {
-      self + negate(other)
-    }
-    __mul__(other: Long | Float | SynthPart | SynthEnvelope | Array) {
-      node("gain", [self], {gain: other}, {})
-    }
-    __div__(other: Long | Float) {
-      __raise("ValueError", "Synth: a part divided by 0") if other == 0
-      self * (1.0 / other)
-    }
-    __neg__() {
-      self * -1.0
-    }
     # A signal from -1 to 1 taken to `lo`..`hi` in a straight line.
     range(lo: Long | Float, hi: Long | Float) {
       __raise("ValueError", "Synth.range: lo and hi are finite numbers") if !finite(lo) || !finite(hi)
@@ -6214,11 +6210,12 @@ let _synth_module = fn () {
     }
     # A bundle's channels added to one part; a part is one already.
     mix() {
-      @kind == "bundle" ? SynthPart("mix", @inputs, {}, {}) : self
+      let s = self._signal()
+      s.kind == "bundle" ? SynthPart("mix", s.inputs, {}, {}) : s
     }
     # Stereo, placed at `pos` from -1 (left) to 1 (right) at equal power: one
     # channel goes to both sides, and two are each turned down on their own.
-    pan(pos: Long | Float | SynthPart | SynthEnvelope) {
+    pan(pos: Long | Float | SynthSignal | SynthEnvelope) {
       let count = channels_or_one(self).size()
       __raise("ValueError", "Synth.pan: a bundle pans with two channels (left and right), not {count}") if count > 2
       self * pan_gains(pos)
@@ -6228,44 +6225,77 @@ let _synth_module = fn () {
     # on both) and `mix` of its room. `room` (0 to 1) sets how long the room
     # rings and `damp` (0 to 1) how soon its highs go; a part or an envelope
     # moves them within 0..1. A mix of 0 makes no room.
-    reverb(mix: Long | Float = 0.33, room: Long | Float | SynthPart | SynthEnvelope = 0.5, damp: Long | Float | SynthPart | SynthEnvelope = 0.5) {
+    reverb(mix: Long | Float = 0.33, room: Long | Float | SynthSignal | SynthEnvelope = 0.5, damp: Long | Float | SynthSignal | SynthEnvelope = 0.5) {
       let fail = |msg| __raise("ValueError", "Synth.reverb: {msg}")
       fail("mix is a number from 0 to 1") unless finite(mix) && mix >= 0 && mix <= 1
       fail("room is a number from 0 to 1") if is_number(room) && !(room >= 0 && room <= 1)
       fail("damp is a number from 0 to 1") if is_number(damp) && !(damp >= 0 && damp <= 1)
-      fail("room and damp are one channel") if [room, damp].any(|v| v is SynthPart && v.kind == "bundle")
+      fail("room and damp are one channel") if [room, damp].any(|v| channels_of(v) != nil)
       let dry = channels_or_one(self)
       fail("a bundle goes into a room with two channels (left and right), not {dry.size()}") if dry.size() > 2
       let into = self.mix()
       let dry_side = |side| dry.get(side, dry[0]) * (1.0 - mix)
-      let wet = |side| SynthPart("room", [into], {size: room, damp: damp}, {side: side}) * mix
+      let wet = |side| SynthPart("room", [into], {size: as_signal(room), damp: as_signal(damp)}, {side: side}) * mix
       let sides = iota(2).map(|side| mix == 0 ? dry_side(side) : dry_side(side) + wet(side))
       SynthPart("bundle", sides, {}, {})
     }
   }
 
+  # A sound or a signal, as a node of an expression: `kind` names the graph
+  # part it becomes, `inputs` the parts it takes in, `values` what it reads
+  # (each a number, a Part or an Envelope) and `options` its fixed settings.
+  class SynthPart {
+    new(kind: String, inputs: Array, values: Object, options: Object) {
+      made.count += 1
+      @id = made.count
+      @kind = kind
+      @inputs = inputs
+      @values = values
+      @options = options
+    }
+    _signal() {
+      self
+    }
+    __add__(other: Long | Float | SynthSignal | SynthEnvelope | Array) {
+      node("mix", [self, other], {}, {})
+    }
+    __sub__(other: Long | Float | SynthSignal | SynthEnvelope | Array) {
+      self + negate(other)
+    }
+    __mul__(other: Long | Float | SynthSignal | SynthEnvelope | Array) {
+      node("gain", [self], {gain: other}, {})
+    }
+    __div__(other: Long | Float) {
+      __raise("ValueError", "Synth: a part divided by 0") if other == 0
+      self * (1.0 / other)
+    }
+    __neg__() {
+      self * -1.0
+    }
+  }
+
   let wave = fn (
     kind: String = "sine",
-    freq: Long | Float | SynthPart | SynthEnvelope | Array = 440.0,
-    feedback: Long | Float | SynthPart | SynthEnvelope | Array = 0.0,
-    phase: Long | Float | SynthPart | SynthEnvelope | Array = 0.0,
+    freq: Long | Float | SynthSignal | SynthEnvelope | Array = 440.0,
+    feedback: Long | Float | SynthSignal | SynthEnvelope | Array = 0.0,
+    phase: Long | Float | SynthSignal | SynthEnvelope | Array = 0.0,
   ) {
     node("wave", [], {freq: freq, feedback: feedback, phase: phase}, {kind: kind})
   }
   let sine = fn (
-    freq: Long | Float | SynthPart | SynthEnvelope | Array = 440.0,
-    phase: Long | Float | SynthPart | SynthEnvelope | Array = 0.0,
-    feedback: Long | Float | SynthPart | SynthEnvelope | Array = 0.0,
+    freq: Long | Float | SynthSignal | SynthEnvelope | Array = 440.0,
+    phase: Long | Float | SynthSignal | SynthEnvelope | Array = 0.0,
+    feedback: Long | Float | SynthSignal | SynthEnvelope | Array = 0.0,
   ) {
     wave("sine", freq, feedback, phase)
   }
-  let saw = fn (freq: Long | Float | SynthPart | SynthEnvelope | Array = 440.0, phase: Long | Float | SynthPart | SynthEnvelope | Array = 0.0) {
+  let saw = fn (freq: Long | Float | SynthSignal | SynthEnvelope | Array = 440.0, phase: Long | Float | SynthSignal | SynthEnvelope | Array = 0.0) {
     wave("saw", freq, 0.0, phase)
   }
-  let square = fn (freq: Long | Float | SynthPart | SynthEnvelope | Array = 440.0, phase: Long | Float | SynthPart | SynthEnvelope | Array = 0.0) {
+  let square = fn (freq: Long | Float | SynthSignal | SynthEnvelope | Array = 440.0, phase: Long | Float | SynthSignal | SynthEnvelope | Array = 0.0) {
     wave("square", freq, 0.0, phase)
   }
-  let triangle = fn (freq: Long | Float | SynthPart | SynthEnvelope | Array = 440.0, phase: Long | Float | SynthPart | SynthEnvelope | Array = 0.0) {
+  let triangle = fn (freq: Long | Float | SynthSignal | SynthEnvelope | Array = 440.0, phase: Long | Float | SynthSignal | SynthEnvelope | Array = 0.0) {
     wave("triangle", freq, 0.0, phase)
   }
   let noise = fn (seed: Long = 1) {
@@ -6275,22 +6305,22 @@ let _synth_module = fn () {
   # `phase`, 0 to below 1, is the part of a period gone by at the
   # start, 0 firing at once. A freq of 0 fires once, at the start, with a
   # phase of 0, and never with another.
-  let impulse = fn (freq: Long | Float | SynthPart | SynthEnvelope | Array = 1.0, phase: Long | Float = 0.0) {
+  let impulse = fn (freq: Long | Float | SynthSignal | SynthEnvelope | Array = 1.0, phase: Long | Float = 0.0) {
     node("impulse", [], {freq: freq}, {phase: phase})
   }
   # Impulses from 0 to 1 at random samples, `density` a second on average.
-  let dust = fn (density: Long | Float | SynthPart | SynthEnvelope | Array, seed: Long = 1) {
+  let dust = fn (density: Long | Float | SynthSignal | SynthEnvelope | Array, seed: Long = 1) {
     node("dust", [], {density: density}, {seed: seed})
   }
   # A new number from -1 to 1 `freq` times a second, held ("step"), in a
   # straight line to the next ("linear") or along a curve ("cubic").
-  let lfnoise = fn (freq: Long | Float | SynthPart | SynthEnvelope | Array, kind: String = "step", seed: Long = 1) {
+  let lfnoise = fn (freq: Long | Float | SynthSignal | SynthEnvelope | Array, kind: String = "step", seed: Long = 1) {
     node("lfnoise", [], {freq: freq}, {kind: kind, seed: seed})
   }
   # A pulse wave from -1 to 1, high for `width` of each period, its jumps
   # smoothed as a square's: a saw `width` of a period behind, less a saw,
   # plus the step the width makes (2 width - 1). A width of 0.5 is a square.
-  let pulse = fn (freq: Long | Float | SynthPart | SynthEnvelope | Array = 440.0, width: Long | Float | SynthPart | Array = 0.5) {
+  let pulse = fn (freq: Long | Float | SynthSignal | SynthEnvelope | Array = 440.0, width: Long | Float | SynthSignal | Array = 0.5) {
     let numbers = width is Array ? width.filter(is_number) : (is_number(width) ? [width] : [])
     __raise("ValueError", "Synth.pulse: a width is above 0 and below 1") unless numbers.all(|w| w > 0 && w < 1)
     # `v` times `k` plus `c`, channel by channel (nothing added for a `c` of 0).
@@ -6302,7 +6332,7 @@ let _synth_module = fn () {
   }
   let mix_parts = fn (parts: Array) {
     __raise("ValueError", "Synth.mix: nothing to mix") if parts.empty()
-    __raise("TypeError", "type error: Synth.mix takes an Array of Long | Float | SynthPart | SynthEnvelope | Array") unless parts.all(|p| p is Long | Float | SynthPart | SynthEnvelope | Array)
+    __raise("TypeError", "type error: Synth.mix takes an Array of Long | Float | SynthSignal | SynthEnvelope | Array") unless parts.all(|p| p is Long | Float | SynthSignal | SynthEnvelope | Array)
     node("mix", parts, {}, {})
   }
 
@@ -6311,7 +6341,7 @@ let _synth_module = fn () {
   # answer t seconds back). Each feedback has its own x, so loops nest.
   let feedback_loop = fn (f: Function) {
     let x = SynthPart("loop", [], {}, {})
-    let body = f(x)
+    let body = as_signal(f(x))
     __raise("TypeError", "type error: Synth.feedback's function returns a SynthPart") unless body is SynthPart
     __raise("ValueError", "Synth.feedback: a loop is one channel; mix the channels first, .mix()") if body.kind == "bundle"
     if undelayed(body, x) {
@@ -6395,30 +6425,30 @@ let _synth_module = fn () {
   # Audio's function, so with the name in scope `samples.lowpass(800.0)` reads
   # as `part.lowpass(800.0)` does. A part's rate is render's or play's.
   fn part_rate(x, rate, who) {
-    __raise("ValueError", "Synth.{who}: a part's rate is the one render or play gives") if x is SynthPart && rate != nil
+    __raise("ValueError", "Synth.{who}: a part's rate is the one render or play gives") if x is SynthSignal && rate != nil
     rate ?? 44100
   }
-  let lowpass = fn (x: SynthPart | Array, cutoff = 1000.0, q: Long | Float = 0.707, rate: Long | Float | Nil = nil) {
+  let lowpass = fn (x: SynthSignal | Array, cutoff = 1000.0, q: Long | Float = 0.707, rate: Long | Float | Nil = nil) {
     let r = part_rate(x, rate, "lowpass")
-    x is SynthPart ? x.lowpass(cutoff, q) : Audio.filter(x, "low", cutoff, q, r)
+    x is SynthSignal ? x.lowpass(cutoff, q) : Audio.filter(x, "low", cutoff, q, r)
   }
-  let highpass = fn (x: SynthPart | Array, cutoff = 1000.0, q: Long | Float = 0.707, rate: Long | Float | Nil = nil) {
+  let highpass = fn (x: SynthSignal | Array, cutoff = 1000.0, q: Long | Float = 0.707, rate: Long | Float | Nil = nil) {
     let r = part_rate(x, rate, "highpass")
-    x is SynthPart ? x.highpass(cutoff, q) : Audio.filter(x, "high", cutoff, q, r)
+    x is SynthSignal ? x.highpass(cutoff, q) : Audio.filter(x, "high", cutoff, q, r)
   }
-  let bandpass = fn (x: SynthPart | Array, cutoff = 1000.0, q: Long | Float = 0.707, rate: Long | Float | Nil = nil) {
+  let bandpass = fn (x: SynthSignal | Array, cutoff = 1000.0, q: Long | Float = 0.707, rate: Long | Float | Nil = nil) {
     let r = part_rate(x, rate, "bandpass")
-    x is SynthPart ? x.bandpass(cutoff, q) : Audio.filter(x, "band", cutoff, q, r)
+    x is SynthSignal ? x.bandpass(cutoff, q) : Audio.filter(x, "band", cutoff, q, r)
   }
-  let resonate = fn (x: SynthPart | Array, modes: Array, dry: Long | Float = 0.0, rate: Long | Float | Nil = nil) {
+  let resonate = fn (x: SynthSignal | Array, modes: Array, dry: Long | Float = 0.0, rate: Long | Float | Nil = nil) {
     let r = part_rate(x, rate, "resonate")
-    x is SynthPart ? x.resonate(modes, dry) : Audio.resonate(x, modes, dry, r)
+    x is SynthSignal ? x.resonate(modes, dry) : Audio.resonate(x, modes, dry, r)
   }
   # Samples times an envelope of (at, value) points, as Audio.envelope; a
   # part times its gain, as `*`.
-  let envelope = fn (x: SynthPart | Array, gain, rate: Long | Float | Nil = nil) {
+  let envelope = fn (x: SynthSignal | Array, gain, rate: Long | Float | Nil = nil) {
     let r = part_rate(x, rate, "envelope")
-    x is SynthPart ? x * gain : Audio.envelope(x, gain, r)
+    x is SynthSignal ? x * gain : Audio.envelope(x, gain, r)
   }
 
   let hz = fn (note: Long | Float) {
@@ -6467,10 +6497,10 @@ let _synth_module = fn () {
 
   # A graph being built: the graph, the parts built so far by the number
   # of the SynthPart they stand for, the controls by name, the one constant
-  # source every level is a gain of (made when the first level is), and the
-  # voice of a Voices being built, if one is.
+  # source every level is a gain of (made when the first level is), the
+  # voice of a Voices being built, if one is, and whether it reads a box.
   fn build_of(g) {
-    {g: g, parts: {}, controls: {}, mut one: nil, mut voice: nil}
+    {g: g, parts: {}, controls: {}, mut one: nil, mut voice: nil, mut reads: false}
   }
 
   # What a value is made with in the graph: a number as itself, an envelope
@@ -6641,6 +6671,10 @@ let _synth_module = fn () {
         feed(b, p, q.damp, v.damp, 0.0)
         q
       },
+      "input" => {
+        b.reads = true
+        g.input(o.bus, channel: o.channel)
+      },
       "math" => match o.kind {
         "abs" => g.abs(input),
         "clip" => g.clip(input, o.lo, o.hi),
@@ -6771,6 +6805,11 @@ let _synth_module = fn () {
 
   # ---- playing
 
+  # What reads a box is heard only as it plays.
+  let check_unread = fn (reads) {
+    __raise("ValueError", "Synth.render: the sound reads a Proxy, which is heard only as it plays") if reads
+  }
+
   # A sound of two channels renders as both; mixed to one, it is one.
   let check_channels = fn (width, channels) {
     __raise("ValueError", "Synth.render: the sound is two channels (left and right); render it with channels: 2, or mix them to one first, .mix()") if width == 2 && channels == 1
@@ -6778,14 +6817,16 @@ let _synth_module = fn () {
 
   # A sound playing: stop() silences it, set() moves a control, and the
   # graph's clock says where it is. `fader` is the value of its output's gain
-  # (one for both channels), and `width` how many channels it has.
+  # (one for both channels), `width` how many channels it has, and `reads`
+  # whether it reads a Proxy box.
   class SynthHandle {
-    new(graph, controls: Object, fader, ends: Long | Float | Nil, width: Long) {
+    new(graph, controls: Object, fader, ends: Long | Float | Nil, width: Long, reads: Bool) {
       @_graph = graph
       @_controls = controls
       @_fader = fader
       @_ends = ends
       @_width = width
+      @_reads = reads
       @_stopped = false
     }
     # When it ends (at play's secs, once a Proxy has faded it out, or else on
@@ -6815,7 +6856,13 @@ let _synth_module = fn () {
     # made to it so far included; with `channels: 2`, [left, right].
     render(seconds: Long | Float, channels: Long = 1) {
       check_channels(@_width, channels)
+      check_unread(@_reads)
       @_graph.render(seconds, channels)
+    }
+    # What it reads no longer orders the graphs (a Proxy's sound replaced
+    # and fading out): a box that reads this one's may be set meanwhile.
+    _let_go() {
+      _Audio.graph_let_go(@_graph._id)
     }
     _wait() {
       while @_graph.now() < @_ends {
@@ -6944,7 +6991,7 @@ let _synth_module = fn () {
       __raise("ValueError", "Synth.Voices: count is 1 or more") if count < 1
       @_voices = iota(count).map(fn (i) {
         let pitch = SynthPart("pitch", [], {}, {})
-        let expr = builder(pitch)
+        let expr = as_signal(builder(pitch))
         __raise("TypeError", "type error: Synth.Voices' builder returns a SynthPart or a SynthEnvelope") unless expr is SynthPart | SynthEnvelope
         let sound = to_part(expr)
         check_playable(sound)
@@ -7083,21 +7130,22 @@ let _synth_module = fn () {
 
   # When `expr` (a Voices with the notes made so far) ends on its own, in
   # seconds from its start: Math.inf for never.
-  let natural_end = |expr| expr is SynthVoices ? expr.ends() : ending(expr)
+  let natural_end = |expr| expr is SynthVoices ? expr.ends() : ending(as_signal(expr))
   let NO_END = "the sound does not end on its own (an oscillator, a loop or a held note plays on)"
-  let built_of = |expr, rate| expr is SynthVoices ? expr._built(rate) : graph_of(expr, rate)
+  let built_of = |expr, rate| expr is SynthVoices ? expr._built(rate) : graph_of(as_signal(expr), rate)
 
   # The first `seconds` of `expr`, as samples: what play would play. Without
   # `seconds`, until it ends on its own. With `channels: 2`, [left, right]
   # (a sound of one channel on both).
   let render = fn (
-    expr: SynthPart | SynthEnvelope | SynthVoices,
+    expr: SynthSignal | SynthEnvelope | SynthVoices,
     seconds: Long | Float | Nil = nil,
     rate: Long | Float = 44100,
     channels: Long = 1,
   ) {
     let built = built_of(expr, rate)
     check_channels(built.outs.size(), channels)
+    check_unread(built.b.reads)
     let secs = seconds ?? natural_end(expr)
     __raise("ValueError", "Synth.render: {NO_END}; give it seconds") if seconds == nil && secs == Math.inf
     built.g.render(secs, channels)
@@ -7113,13 +7161,14 @@ let _synth_module = fn () {
     output_to(built.g, fader.parts)
     let natural = expr is SynthVoices && !wait ? Math.inf : natural_end(expr)
     let ends = natural == Math.inf ? nil : natural
-    {expr, built, handle: SynthHandle(built.g, built.b.controls, fader.value, ends, built.outs.size())}
+    {expr, built, handle: SynthHandle(built.g, built.b.controls, fader.value, ends, built.outs.size(), built.b.reads)}
   }
 
-  # A prepared sound played: waited for until it ends, or else kept until
-  # it ends, so that it plays on when nothing holds its handle.
-  fn started(p, wait) {
-    p.built.g.play()
+  # A prepared sound played (into the bus `to`, if one is given): waited for
+  # until it ends, or else kept until it ends, so that it plays on when
+  # nothing holds its handle.
+  fn started(p, wait, to = nil) {
+    p.built.g.play(to:)
     p.expr._played(p.built, p.handle) if p.expr is SynthVoices && !wait
     if !wait {
       unwaited.handles.push(p.handle)
@@ -7134,7 +7183,7 @@ let _synth_module = fn () {
   # `wait`, play returns when it has ended (at once when no device plays);
   # without, it returns the handle and the sound plays on (a Voices until it
   # is stopped, as notes may come).
-  let play = fn (expr: SynthPart | SynthEnvelope | SynthVoices, wait: Bool = true, secs: Long | Float | Nil = nil) {
+  let play = fn (expr: SynthSignal | SynthEnvelope | SynthVoices, wait: Bool = true, secs: Long | Float | Nil = nil) {
     let_go_ended()
     __raise("ValueError", "Synth.play: secs is a finite number, 0 or more") if secs != nil && !nonnegative(secs)
     let p = prepared(expr, wait)
@@ -7144,34 +7193,120 @@ let _synth_module = fn () {
     started(p, wait)
   }
 
-  # A sound whose expression is replaced while it plays: set(expr) plays
-  # `expr` and fades out the one before over `fade` seconds as `expr` fades
-  # in (at once when it ends on its own), and stop() fades it out. What has
-  # faded out is let go at the next play or set.
+  # The parts that read `bus` (of `width` channels): one, or a bundle of the
+  # left and the right.
+  fn bus_signal(bus, width) {
+    let read = |c| SynthPart("input", [], {}, {bus: bus, channel: c})
+    width == 1 ? read(0) : SynthPart("bundle", [read(0), read(1)], {}, {})
+  }
+
+  # A box's bus heard on the device: a graph that reads it, played without
+  # being waited for.
+  fn heard(bus, width) {
+    started(prepared(bus_signal(bus, width), false), false)
+  }
+
+  # A box whose sound is replaced while it plays, and a signal any expression
+  # reads (what it plays, from its bus, as it plays). set(expr) plays `expr`
+  # into the box's bus, the first set deciding its channels, and fades out
+  # the sound before it over `fade` seconds as `expr` fades in (at once when
+  # it ends on its own); play() hears the box on the device, from its first
+  # set when that comes later; stop() fades out what it plays and hears it
+  # no more; control(name, v) sets a control of what it plays and of what
+  # later sets play. What has faded out is let go at the next play or set.
   class SynthProxy {
     new(fade: Long | Float = 0.05) {
       __raise("ValueError", "Synth.Proxy: fade is a finite number, 0 or more") if !nonnegative(fade)
       @_fade = fade
       @_current = nil
+      @_bus = nil
+      @_width = nil
+      @_read = nil
+      @_heard = false
+      @_listener = nil
+      @_controls = {}
     }
-    # A sound that fails to build or to play leaves the box as it was.
-    set(expr: SynthPart | SynthEnvelope | SynthVoices) {
+    _signal() {
+      __raise("ValueError", "Synth.Proxy: a box is heard in an expression once it is set") if @_bus == nil
+      @_read ??= bus_signal(@_bus, @_width)
+    }
+    __add__(other: Long | Float | SynthSignal | SynthEnvelope | Array) {
+      self._signal() + other
+    }
+    __sub__(other: Long | Float | SynthSignal | SynthEnvelope | Array) {
+      self._signal() - other
+    }
+    __mul__(other: Long | Float | SynthSignal | SynthEnvelope | Array) {
+      self._signal() * other
+    }
+    __div__(other: Long | Float) {
+      self._signal() / other
+    }
+    __neg__() {
+      -self._signal()
+    }
+    # A sound that fails to build or to play (two channels into a box of
+    # one, one graph more than may play, boxes that read each other in a
+    # loop) leaves the box as it was.
+    set(expr: SynthSignal | SynthEnvelope | SynthVoices) {
       let_go_ended()
       let p = prepared(expr, false)
+      let width = p.built.outs.size()
+      if @_width == 1 && width == 2 {
+        __raise("ValueError", "Synth.Proxy: the box is one channel and the sound two (left and right); mix it to one first, .mix()")
+      }
+      let bus = @_bus ?? Audio.Bus(width)
+      for name, v in @_controls {
+        p.handle.set(name, v, at: 0.0) if p.handle._controls.has(name)
+      }
       p.handle._fade_in(@_fade) if p.handle.ends() == nil
-      let h = started(p, false)
+      let h = started(p, false, bus)
+      if @_heard && @_listener == nil {
+        @_listener = try {
+          heard(bus, @_width ?? width)
+        } catch e {
+          h.stop()
+          throw e
+        }
+      }
+      @_bus = bus
+      @_width ??= width
       self._fade_out()
       @_current = h
       nil
     }
+    # A play that fails (one graph more than may play) leaves the box as it was.
+    play() {
+      let_go_ended()
+      @_listener ??= heard(@_bus, @_width) if @_bus != nil
+      @_heard = true
+      nil
+    }
+    # The box empty until the next set, and heard again after play().
     stop() {
       self._fade_out()
+      let l = @_listener
+      l._end(l.now() + @_fade, 0.0) if l != nil
       @_current = nil
+      @_listener = nil
+      @_heard = false
     }
-    # An ended sound is left as it is: its end stays where it was.
+    # Control `name` at `v` in what the box plays (when that has the
+    # control) and from the start in what later sets play: the box keeps it.
+    control(name: String, v: Long | Float) {
+      __raise("ValueError", "Synth.Proxy: a control's value is a finite number") if !finite(v)
+      @_controls[name] = v
+      let h = @_current
+      h.set(name, v) if h != nil && h._controls.has(name)
+      nil
+    }
+    # An ended sound is left as it is: its end stays where it was. What it
+    # read no longer orders the graphs either way.
     _fade_out() {
       let h = @_current
-      h._end(h.now(), @_fade) if h != nil && h.playing()
+      return nil if h == nil
+      h._end(h.now(), @_fade) if h.playing()
+      h._let_go()
     }
   }
 

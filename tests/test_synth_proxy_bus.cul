@@ -1,0 +1,166 @@
+# Synth.Proxy's box as it plays into its bus: set defines what it plays and
+# play() hears it, its channels are its first set's, control(name, v) carries
+# into later sets, and a box is a signal other expressions read (what it
+# plays, read as it plays, so they do not render). The harness keeps the
+# device closed (CULEBRA_AUDIO=off); what a box plays is checked through its
+# handle's render.
+
+let {*} = Synth
+
+let RATE = 44100
+# Lets go of what has ended `secs` from now, so that a fill of the 64 graphs
+# that play at once meets only what plays on: a play lets go of what has
+# ended, and a set or a play after the fill would otherwise free those
+# graphs and find room. What plays without end, or ends far later (the
+# loop's boxes), keeps its graphs either way. The sounds of a file the test
+# runner ran before this one, in the same process, are let go too: the
+# longest fade the Synth tests leave is 1 s (test_synth_proxy's), this
+# file's 0.05 s.
+fn settle(secs) {
+  Time.sleep(secs)
+  Proxy().play()
+}
+# 1 at every sample, so what plays is the level of its output.
+let one = sine(0.0, phase: Math.pi / 2.0)
+let level = |s, t| s[Math.floor(t * RATE)]
+
+# set defines what the box plays; play() hears it, from the first set when
+# it comes before one; stop() fades it out and hears it no more.
+{
+  let box = Proxy(fade: 0.01)
+  box.set(one * 0.5)
+  assert_eq(box._listener, nil)
+  box.play()
+  let listener = box._listener
+  assert_true(listener != nil)
+  box.stop()
+  assert_eq(box._listener, nil)
+  assert_true(listener.ends() != nil)
+  let early = Proxy()
+  early.play()
+  assert_eq(early._listener, nil)
+  early.set(one)
+  assert_true(early._listener != nil)
+  early.stop()
+}
+
+# The first set decides the box's channels: a stereo box takes one channel
+# on both sides, a mono box refuses two and is left as it was.
+{
+  let wide = Proxy()
+  wide.set(sine([220.0, 330.0]))
+  wide.set(one)
+  wide.stop()
+  let narrow = Proxy()
+  narrow.set(one)
+  let before = narrow._current
+  assert_throws("ValueError", || narrow.set(sine([220.0, 330.0])), message: "Synth.Proxy: the box is one channel and the sound two (left and right); mix it to one first, .mix()")
+  assert_eq(narrow._current, before)
+  narrow.stop()
+}
+
+# control(name, v): what plays now moves to v, and a later set's control of
+# that name starts there; a name what plays lacks is only kept.
+{
+  let box = Proxy(fade: 0.0)
+  box.set(one * control("lvl", 1.0))
+  let first = box._current
+  box.control("lvl", 0.25)
+  # From the box's clock now: by the end of two seconds, however late.
+  assert_close(level(first.render(2.0), 1.99), 0.25, 1e-12)
+  box.control("pan", 0.5)
+  box.set(one * control("lvl", 1.0))
+  assert_close(level(box._current.render(0.01), 0.0), 0.25, 1e-12)
+  assert_throws("ValueError", || box.control("lvl", Math.nan), message: "Synth.Proxy: a control's value is a finite number")
+  box.stop()
+}
+
+# A box is a signal: in another expression it is what it plays, read from its
+# bus as it plays, so that expression plays without end and does not render;
+# its methods and operators are a part's.
+{
+  let lfo = Proxy()
+  assert_throws("ValueError", || saw(110.0 + lfo * 5.0), message: "Synth.Proxy: a box is heard in an expression once it is set")
+  lfo.set(sine(5.0))
+  let pad = Proxy()
+  pad.set(saw(110.0 + lfo * 5.0) * 0.1)
+  assert_eq(pad._current.ends(), nil)
+  assert_throws("ValueError", || pad._current.render(0.1), message: "Synth.render: the sound reads a Proxy, which is heard only as it plays")
+  assert_throws("ValueError", || render(saw(220.0 + 0.5 * lfo), 0.1), message: "Synth.render: the sound reads a Proxy, which is heard only as it plays")
+  assert_throws("ValueError", || play(lfo.range(200.0, 800.0)), message: "Synth.play: the sound does not end on its own (an oscillator, a loop or a held note plays on); give it secs, or play it with wait: false")
+  assert_eq(lfo.lowpass(800.0).kind, "filter")
+  pad.stop()
+  lfo.stop()
+}
+
+# Boxes that read each other in a loop are refused, and the set leaves the
+# box as it was; a box whose reading sound was replaced reads it no more, at
+# once (no wait for its fade).
+{
+  let a = Proxy(fade: 100.0)
+  let b = Proxy(fade: 100.0)
+  b.set(one * 0.5)
+  a.set(b * 2.0)
+  let reading = a._current
+  assert_throws("ValueError", || b.set(a * 0.5), message: "Audio.Graph: graphs play into each other's buses in a loop")
+  a.set(one * 0.25)
+  b.set(a * 0.5)
+  assert_true(reading.playing())
+  a.stop()
+  b.stop()
+}
+
+# A box heard before its first set: a set that cannot also start hearing it
+# (the 64 graphs that play at once taken) leaves it as it was, what it
+# played into its bus stopped too.
+{
+  settle(1.1)
+  let fill = []
+  for _ in 0..64 {
+    let g = Audio.Graph.new()
+    g.output(g.noise())
+    try {
+      g.play()
+      fill.push(g)
+    } catch _ {
+      break
+    }
+  }
+  fill.pop().stop()
+  let box = Proxy()
+  box.play()
+  assert_throws("ValueError", || box.set(one), message: "Audio.Graph: 64 graphs play at once at most")
+  assert_eq(box._current, nil)
+  assert_throws("ValueError", || saw(box), message: "Synth.Proxy: a box is heard in an expression once it is set")
+  let last = one * 0.5 |> play(wait: false)
+  last.stop()
+  fill.for_each(|h| h.stop())
+  box.set(one)
+  assert_true(box._listener != nil)
+  box.stop()
+}
+
+# A play that cannot start hearing the box leaves it unheard: a later set
+# plays one graph, not two.
+{
+  let box = Proxy()
+  box.set(one)
+  settle(0.1)
+  let fill = []
+  for _ in 0..64 {
+    let g = Audio.Graph.new()
+    g.output(g.noise())
+    try {
+      g.play()
+      fill.push(g)
+    } catch _ {
+      break
+    }
+  }
+  assert_throws("ValueError", || box.play(), message: "Audio.Graph: 64 graphs play at once at most")
+  fill.pop().stop()
+  box.set(one * 0.5)
+  assert_eq(box._listener, nil)
+  fill.for_each(|h| h.stop())
+  box.stop()
+}
