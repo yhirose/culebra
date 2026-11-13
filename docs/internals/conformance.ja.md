@@ -19,7 +19,9 @@ smokeを1度に回します。AOT差分のみなら`just test aot`。下表は�
 | `tests/test_decorator.cul` | §21 |
 | `tests/test_defer.cul` | §15 (`defer`、scope-guardパターン) |
 | `tests/test_forward_ref.cul` | §6 (スコープ)、§11 (closure)、§20 |
-| `tests/test_iter.cul` | §12 (`for ... in`)、§18 (iterator protocol、Stringメソッド)、§19 (`range`、`iota`) |
+| `tests/test_iter.cul` | §12 (`for ... in`)、§18 (iterator protocol)、§19 (`range`、`iota`) |
+| `tests/test_iter_string.cul` | §18 (Stringのiterator: `code_points`、`graphemes`、`words`、`sentences`、`bytes`と、その逆変換) |
+| `tests/test_iter_grid.cul` | §19 (`grid`)、§18 (non-terminalなiteratorメソッド) |
 | `tests/test_iter_combinators.cul` | §18 (lazy combinator各種、無限ソースのlaziness) |
 | `tests/test_iter_combinators_group.cul` | §18 (`min_by`/`max_by`、`to_set`/`to_object`/`group_by`/`partition`) |
 | `tests/test_iter_combinators_stream.cul` | §18 (`unzip`/`flatten`/`scan`/`distinct`/`tap`/`step_by`/`chunk_by`、無限ソースのlaziness) |
@@ -40,6 +42,7 @@ smokeを1度に回します。AOT差分のみなら`just test aot`。下表は�
 | `tests/test_fs.cul` | stdlib §3 (`FS`) |
 | `tests/test_json.cul` | stdlib §9 (`JSON`) |
 | `tests/test_tensor.cul` | stdlib §8 (`Tensor`) |
+| `tests/test_tensor_views.cul` | stdlib §8 (`Tensor`) |
 | `tests/test_tensor_nn.cul` | stdlib §8 (`Tensor`) |
 | `tests/test_tensor_nn_xent.cul` | stdlib §8 (`Tensor`) |
 | `tests/test_tensor_nn_ops.cul` | stdlib §8 (`Tensor`) |

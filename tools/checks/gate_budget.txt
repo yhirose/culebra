@@ -175,7 +175,13 @@
 # test_xml_stringify.cul): the JIT compiles a flat top-level script in time
 # that grows faster than its size, so one 22 s file became 5.2 s + 4.9 s +
 # 0.6 s.
-tests.cul 354
+# 360 since four flat scripts split where their sections end, so the JIT, whose
+# compile time grows faster than a script's size, gets smaller functions:
+# test_typed_fields (15.6 s) into itself and test_typed_fields_read.cul;
+# test_tensor (16.0 s) into itself and test_tensor_views.cul; test_iter (9.3 s)
+# into itself, test_iter_string.cul and test_iter_grid.cul; test_codegen
+# (13.2 s) into itself, test_codegen_exceptions.cul and test_codegen_runtime.cul.
+tests.cul 360
 
 # tests/isolate/*.cul — run on both engines, plus the over-cap modes.
 # 21 since test_xml_isolate.cul (an XML element keeps its methods across an

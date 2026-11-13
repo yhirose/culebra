@@ -1,0 +1,159 @@
+# Conformance: stdlib §8 (Tensor). See docs/stdlib.md and docs/language.md §25.
+#
+# Tensor shape ops (zero-copy views), clone, reductions and .to_array() (M3.1
+# to M3.3). Construction, the lazy graph and broadcast are in test_tensor.cul.
+
+# --- M3.1: shape ops (zero-copy views) ---
+
+# transpose: [3, 4] → [4, 3]
+let A = Tensor.ones(3, 4)
+let At = A.transpose()
+assert_eq(to_string(At.shape()), "[4, 3]")
+
+# transpose-then-binop: view participates in broadcast/binop kernels
+let bc_t = At + Tensor.ones(4, 3)
+Tensor.eval(bc_t)
+assert_eq(to_string(bc_t.shape()), "[4, 3]")
+
+# slice: [10, 4] → [3, 4] (rows 2..5)
+let B = Tensor.ones(10, 4)
+let Bs = B.slice(2, 5)
+assert_eq(to_string(Bs.shape()), "[3, 4]")
+
+# slice + binop
+let bc_s = Bs + Tensor.ones(3, 4)
+Tensor.eval(bc_s)
+
+# reshape: [2, 6] → [3, 4] (contiguous → contiguous, no copy)
+let C = Tensor.ones(2, 6)
+let Cr = C.reshape([3, 4])
+assert_eq(to_string(Cr.shape()), "[3, 4]")
+
+# reshape: 2D → 1D
+let v1d = C.reshape([12])
+assert_eq(to_string(v1d.shape()), "[12]")
+
+# Chained views: transpose-of-slice
+let chained = B.slice(0, 5).transpose()
+assert_eq(to_string(chained.shape()), "[4, 5]")
+Tensor.eval(chained + Tensor.ones(4, 5))
+
+# --- clone: deep copy, isolates copy from source ---
+
+let cl_src = Tensor.from([[1.0, 2.0], [3.0, 4.0]])
+let cl_copy = cl_src.clone()
+assert_eq(to_string(cl_copy.shape()), "[2, 2]")
+assert_eq(to_string(cl_copy.to_array()), to_string(cl_src.to_array()))
+
+# In-place op on the copy must not touch the source.
+cl_copy -= Tensor.ones(2, 2)
+Tensor.eval(cl_copy)
+assert_eq(to_string(cl_src.to_array()), "[[1.0, 2.0], [3.0, 4.0]]")
+assert_eq(to_string(cl_copy.to_array()), "[[0.0, 1.0], [2.0, 3.0]]")
+
+# Clone of a non-contiguous view: contiguous independent buffer.
+let cl_view = cl_src.transpose()
+let cl_view_copy = cl_view.clone()
+assert_eq(to_string(cl_view_copy.shape()), "[2, 2]")
+assert_eq(to_string(cl_view_copy.to_array()), "[[1.0, 3.0], [2.0, 4.0]]")
+
+# --- M3.2: reductions ---
+
+let R = Tensor.ones(2, 3)
+
+# axis-less: returns Float scalar (eager eval)
+assert_eq(R.sum(), 6.0)
+assert_eq(R.mean(), 1.0)
+assert_eq(R.max(), 1.0)
+
+# axis-ful: returns Tensor with that axis dropped
+let row_sums = R.sum(1)
+let col_sums = R.sum(0)
+Tensor.eval(row_sums, col_sums)
+assert_eq(to_string(row_sums.shape()), "[2]")
+assert_eq(to_string(col_sums.shape()), "[3]")
+
+let row_max = R.max(1)
+let col_mean = R.mean(0)
+Tensor.eval(row_max, col_mean)
+assert_eq(to_string(row_max.shape()), "[2]")
+
+# keepdims: the reduced axis stays as size 1, so the result broadcasts back
+# over the input without a reshape.
+let kd_sum = R.sum(1, keepdims: true)
+let kd_mean = R.mean(0, keepdims: true)
+let kd_max = R.max(1, keepdims: true)
+Tensor.eval(kd_sum, kd_mean, kd_max)
+assert_eq(to_string(kd_sum.shape()), "[2, 1]")
+assert_eq(to_string(kd_mean.shape()), "[1, 3]")
+assert_eq(kd_sum.to_array(), [[3.0], [3.0]])
+assert_eq(kd_max.to_array(), [[1.0], [1.0]])
+assert_eq((R - R.mean(1, keepdims: true)).to_array(), [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]])
+assert_eq(to_string(R.sum(1, keepdims: false).shape()), "[2]")
+
+# argmax: returns Tensor with the reduced axis dropped, F32 indices
+let M3 = Tensor.from([[1.0, 9.0, 2.0], [5.0, 3.0, 8.0]])
+let idx = M3.argmax(1)
+Tensor.eval(idx)
+assert_eq(to_string(idx.shape()), "[2]")
+assert_eq(M3.argmax(1, keepdims: true).to_array(), [[1.0], [2.0]])
+
+# The optional axis is a declared `Long?` parameter, so a bad one is the
+# binder's error at the argument's own position and an explicit nil reads as
+# "no axis" — the same as omitting it. argmax's axis is required, so it says
+# `Long`. A surplus argument is rejected rather than silently dropped.
+let axis_err = fn (f) {
+  try {
+    f()
+    "no throw"
+  } catch e {
+    e.message
+  }
+}
+assert_eq(axis_err(fn () { R.sum('x') }),
+          "type error: parameter 'axis' expects Long?")
+assert_eq(axis_err(fn () { R.mean(1.5) }),
+          "type error: parameter 'axis' expects Long?")
+assert_eq(axis_err(fn () { R.max(true) }),
+          "type error: parameter 'axis' expects Long?")
+assert_eq(axis_err(fn () { R.argmax('x') }),
+          "type error: parameter 'axis' expects Long")
+assert_eq(axis_err(fn () { R.sum(0, 1) }),
+          "takes 1 positional argument but 2 given " +
+            "('keepdims' is keyword-only: write keepdims: ...)")
+assert_eq(R.sum(nil), R.sum())
+
+# Reduction on a transposed view: stride-aware. ones(3,2).transpose()
+# is shape [2, 3]; sum(0) drops axis 0, leaving shape [3].
+let Rv = Tensor.ones(3, 2).transpose()
+assert_eq(Rv.sum(), 6.0)
+let Rv_axis = Rv.sum(0)
+Tensor.eval(Rv_axis)
+assert_eq(to_string(Rv_axis.shape()), "[3]")
+
+# --- M3.3: .to_array() ---
+
+# 1D Tensor → flat Array
+let v1 = Tensor.from([1.0, 2.0, 3.0, 4.0])
+let av1 = v1.to_array()
+assert_eq(to_string(av1), "[1.0, 2.0, 3.0, 4.0]")
+
+# 2D Tensor → nested Array
+let m2 = Tensor.from([[1.0, 2.0], [3.0, 4.0]])
+let am2 = m2.to_array()
+assert_eq(to_string(am2), "[[1.0, 2.0], [3.0, 4.0]]")
+
+# .to_array() on a transposed view: reads via strides
+let mt = m2.transpose()
+let amt = mt.to_array()
+assert_eq(to_string(amt), "[[1.0, 3.0], [2.0, 4.0]]")
+
+# Round-trip a reduction: argmax → to_array gives Float indices
+let scores = Tensor.from([[1.0, 9.0, 2.0], [5.0, 3.0, 8.0]])
+let ai = scores.argmax(1).to_array()
+assert_eq(to_string(ai), "[1.0, 2.0]")
+
+# A shape whose element count overflows is refused, not sized to 0 elements
+# for its views to index past.
+assert_eq(try { Tensor.zeros(8589934592, 2147483648) } catch e { e.kind },
+  "ValueError")
