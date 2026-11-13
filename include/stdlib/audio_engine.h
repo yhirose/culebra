@@ -513,10 +513,19 @@ inline void render_schedule(const double* events, int64_t count, double length, 
 // does; a copy's values have room for the changes made while it plays
 // (graph_post sends a longer list before they could run out); and the posts,
 // and the lists they bring back, are freed on the main thread.
+// A play's `instance` numbers that play alone (a graph played again is a new
+// instance), so a change of rank meant for one play never lands on the next.
 struct GraphCommand {
   int64_t id = 0;
   std::shared_ptr<Graph> graph;  // play; null stops
   int64_t start = 0;             // play: the stream sample it starts on
+  uint64_t instance = 0;         // play
+  int rank = 0;                  // play: where it is worked out among the graphs
+};
+// A playing graph's new place among the graphs, as another was played.
+struct GraphRank {
+  uint64_t instance = 0;
+  int rank = 0;
 };
 struct GraphPost {
   std::shared_ptr<Graph> graph;
@@ -530,12 +539,16 @@ struct PlayingGraph {
   int64_t id = 0;
   std::shared_ptr<Graph> graph;
   int64_t origin = 0;  // the stream sample it starts on
+  uint64_t instance = 0;
+  int rank = 0;
 };
 struct LiveGraph {
   std::shared_ptr<Graph> graph;
   int64_t origin = 0;
   size_t parts = 0;  // the copy's, which a change's part must be one of
   std::vector<size_t> room;  // how many changes each value of the copy holds, kGraphValues a part
+  uint64_t instance = 0;
+  int rank = 0;
 };
 
 // Asked for on the main thread, carried out at the next buffer.
@@ -545,8 +558,9 @@ struct ScheduleCommand {
   int64_t start = 0;             // play: the stream sample the schedule starts on
 };
 
-// The samples the mixer asks for at once, at most; a longer ask is split.
-inline constexpr unsigned kMixChunk = 4096;
+// The samples the mixer asks for at once, at most (what a bus holds); a
+// longer ask is split.
+inline constexpr unsigned kMixChunk = kBusFrames;
 
 // A list the audio thread adds to (the schedules or the graphs playing),
 // kept from ever growing there by the handover graph_post's longer lists use:
@@ -685,12 +699,15 @@ class Engine {
   }
 
   // The copy of graph `id` (graph_def's) plays from the next sample the
-  // stream can start it on.
-  void graph_play(int64_t id) {
+  // stream can start it on, into `into` (null for the device), the graphs
+  // then worked out in `order` (graph_order's): those whose place it moves
+  // are sent their new one.
+  void graph_play(int64_t id, std::shared_ptr<Bus> into, const std::vector<int64_t>& order) {
     const Graph* def = graph_def(id);
     if (!def) return;
     graph_stop(id);
     auto live = std::make_shared<Graph>(*def);
+    live->play_into(std::move(into));
     std::vector<size_t> room;
     live->make_room(room);
     // No more play at once than are live (graph_stop stops one as it lets go).
@@ -698,8 +715,20 @@ class Engine {
     std::lock_guard<std::mutex> lock(mutex_);
     graphs_playing_.send(longer);
     int64_t start = stream_now();
-    live_graphs_[id] = LiveGraph{live, start, def->size(), std::move(room)};
-    graph_inbox_.push_back(GraphCommand{id, std::move(live), start});
+    int rank = 0;
+    for (size_t r = 0; r < order.size(); r++) {
+      if (order[r] == id) {
+        rank = static_cast<int>(r);
+        continue;
+      }
+      auto it = live_graphs_.find(order[r]);
+      if (it == live_graphs_.end() || it->second.rank == static_cast<int>(r)) continue;
+      it->second.rank = static_cast<int>(r);
+      graph_ranks_.push_back(GraphRank{it->second.instance, it->second.rank});
+    }
+    const uint64_t instance = ++instances_;
+    live_graphs_[id] = LiveGraph{live, start, def->size(), std::move(room), instance, rank};
+    graph_inbox_.push_back(GraphCommand{id, std::move(live), start, instance, rank});
   }
   void graph_stop(int64_t id) {
     release_retired();
@@ -760,6 +789,7 @@ class Engine {
     schedule_inbox_.clear();
     graphs_.clear();
     graph_inbox_.clear();
+    graph_ranks_.clear();
     graph_posts_.clear();
     graph_posts_taken_ = 0;
     live_graphs_.clear();
@@ -810,13 +840,22 @@ class Engine {
       }
       schedule_inbox_.clear();
       // A graph played again starts over; one stopped goes silent at once.
+      // The graphs are worked out in the order of their ranks (one moved by
+      // a play takes its new rank here; one no longer playing has none).
+      bool moved = !graph_ranks_.empty();
       for (auto& cmd : graph_inbox_) {
         std::erase_if(graphs_, [&](const PlayingGraph& pg) { return pg.id == cmd.id; });
         if (!cmd.graph) continue;
         assert(graphs_.size() < graphs_.capacity());  // LongerList's room
-        graphs_.push_back(PlayingGraph{cmd.id, std::move(cmd.graph), cmd.start});
+        graphs_.push_back(PlayingGraph{cmd.id, std::move(cmd.graph), cmd.start, cmd.instance, cmd.rank});
+        moved = true;
       }
       graph_inbox_.clear();
+      for (const auto& r : graph_ranks_)
+        for (auto& pg : graphs_)
+          if (pg.instance == r.instance) pg.rank = r.rank;
+      graph_ranks_.clear();  // keeps its room: the audio thread frees nothing
+      if (moved) std::ranges::sort(graphs_, {}, &PlayingGraph::rank);
       // Each change has room in its copy (graph_post sees to it).
       for (size_t k = graph_posts_taken_; k < graph_posts_.size(); k++) {
         auto& post = graph_posts_[k];
@@ -827,15 +866,25 @@ class Engine {
       stream_at_ = now_();
     }
 
-    // The graphs, each from the sample it starts on.
+    // The graphs, each from the sample it starts on, into the device's mix or
+    // a bus; one that plays into a bus is worked out before those that read
+    // it, so they read the same stretch it wrote.
     std::fill(graph_mix_, graph_mix_ + frames, 0.0);
     std::fill(graph_mix_right_, graph_mix_right_ + frames, 0.0);
     for (auto& pg : graphs_) {
       int64_t skip = std::clamp<int64_t>(pg.origin - pos_, 0, frames);
+      pg.graph->begin_reads(skip, pos_, frames);
       pg.graph->render(graph_samples_, graph_samples_right_, frames - skip);
+      double* left = graph_mix_;
+      double* right = graph_mix_right_;
+      if (Bus* bus = pg.graph->into()) {
+        bus->begin(pos_, frames);
+        left = bus->samples[0];
+        right = bus->channels == 2 ? bus->samples[1] : nullptr;
+      }
       for (int64_t i = skip; i < frames; i++) {
-        graph_mix_[i] += graph_samples_[i - skip];
-        graph_mix_right_[i] += graph_samples_right_[i - skip];
+        left[i] += graph_samples_[i - skip];
+        if (right) right[i] += graph_samples_right_[i - skip];
       }
     }
 
@@ -882,6 +931,7 @@ class Engine {
   int64_t last_start_ = 0;    // notes are queued in order, never behind
   std::vector<ScheduleCommand> schedule_inbox_;
   std::vector<GraphCommand> graph_inbox_;
+  std::vector<GraphRank> graph_ranks_;
   std::vector<GraphPost> graph_posts_;
   size_t graph_posts_taken_ = 0;  // the posts the mixer is done with
   LongerList<PlayingSchedule> playing_;      // for mix_.playing
@@ -906,6 +956,7 @@ class Engine {
   std::vector<std::shared_ptr<Schedule>> retired_;
   std::unordered_map<int64_t, LiveGraph> live_graphs_;
   std::vector<std::shared_ptr<Graph>> retired_graphs_;
+  uint64_t instances_ = 0;  // the plays so far, which number them
 };
 
 }  // namespace _audio_detail

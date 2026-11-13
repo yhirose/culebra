@@ -564,10 +564,10 @@ double schedule_held(int64_t id) {
   return static_cast<double>(g_engine.schedule_held(id)) / kSampleRate;
 }
 
-void graph_play(int64_t id) {
+void graph_play(int64_t id, std::shared_ptr<Bus> into, const std::vector<int64_t>& order) {
   ensure_tone_stream();
   if (!g_tone_ready) return;
-  g_engine.graph_play(id);
+  g_engine.graph_play(id, std::move(into), order);
 }
 void graph_stop(int64_t id) { g_engine.graph_stop(id); }
 void graph_post(int64_t id, int part, int value, ParamEvent e) {

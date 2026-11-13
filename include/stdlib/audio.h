@@ -35,6 +35,7 @@
 #include <functional>
 #include <limits>
 #include <map>
+#include <memory>
 #include <numbers>
 #include <optional>
 #include <queue>
@@ -1740,7 +1741,8 @@ struct MathOp {
   }
 };
 
-enum class PartKind { Wave, Noise, Filter, Gain, Resonate, Pluck, Delay, Limit, Drive, Impulse, Dust, LfNoise, Lag, Decay, Math, Room };
+enum class PartKind { Wave, Noise, Filter, Gain, Resonate, Pluck, Delay, Limit, Drive, Impulse, Dust, LfNoise, Lag, Decay, Math, Room,
+                      Input };
 
 // How many values a part of `kind` reads: a wave's freq, feedback and phase,
 // a filter's cutoff, a gain's gain, a string's freq and ring, a delay's time,
@@ -1756,7 +1758,8 @@ inline int value_count(PartKind kind) {
     case PartKind::Limit:
     case PartKind::Lag:
     case PartKind::Decay:
-    case PartKind::Math: return 0;
+    case PartKind::Math:
+    case PartKind::Input: return 0;
     case PartKind::Filter:
     case PartKind::Gain:
     case PartKind::Delay:
@@ -1773,14 +1776,15 @@ inline int value_count(PartKind kind) {
 inline constexpr int kGraphValues = 3;  // the most value_count answers
 
 // Whether a part of `kind` takes in what is connected to it; a source (a
-// wave, a noise, an impulse, a dust, an lfnoise) makes its own.
+// wave, a noise, an impulse, a dust, an lfnoise, an input) makes its own.
 inline bool takes_in(PartKind kind) {
   switch (kind) {
     case PartKind::Wave:
     case PartKind::Noise:
     case PartKind::Impulse:
     case PartKind::Dust:
-    case PartKind::LfNoise: return false;
+    case PartKind::LfNoise:
+    case PartKind::Input: return false;
     case PartKind::Filter:
     case PartKind::Gain:
     case PartKind::Resonate:
@@ -1840,7 +1844,8 @@ inline ValueRange held_range(PartKind kind, int value, double rate) {
     case PartKind::Limit:
     case PartKind::Lag:
     case PartKind::Decay:
-    case PartKind::Math: break;  // a gain's is any number; the rest have no values
+    case PartKind::Math:
+    case PartKind::Input: break;  // a gain's is any number; the rest have no values
   }
   return {};
 }
@@ -1849,6 +1854,43 @@ inline constexpr size_t kGraphsPlaying = 64;
 // Room for changes a copy being played makes in each value at the start, on
 // top of those it was played with; more comes in a longer list (graph_post).
 inline constexpr size_t kGraphLiveRoom = 256;
+
+// The samples the mixer asks for at once, at most (Engine's kMixChunk): a
+// bus holds one such stretch a channel.
+inline constexpr int64_t kBusFrames = 4096;
+
+// A bus: what graphs played into it add up to over the stretch the mixer is
+// rendering, a channel or two, which an input part of another graph reads.
+// Made and let go on the main thread (a graph holds the buses it reads and
+// the one it plays into); the audio thread clears it at the first touch of
+// each stretch, so a bus no graph plays into reads as silence.
+struct Bus {
+  explicit Bus(int channels) : channels(channels) {}
+  // Silent for the stretch of `frames` at stream sample `pos`, unless it
+  // already holds that stretch.
+  void begin(int64_t pos, int64_t frames) {
+    if (cleared == pos) return;
+    for (int c = 0; c < channels; c++) std::fill(samples[c], samples[c] + frames, 0.0);
+    cleared = pos;
+  }
+  const int channels;
+  int64_t cleared = -1;  // audio thread: the stream sample of the stretch it holds
+  double samples[2][kBusFrames] = {};
+};
+// The buses a program has made, by handle. Main thread only.
+inline std::unordered_map<int64_t, std::shared_ptr<Bus>>& bus_defs() {
+  static std::unordered_map<int64_t, std::shared_ptr<Bus>> defs;
+  return defs;
+}
+
+// An input part's: the bus and channel it reads, and where in the stretch
+// being rendered it is.
+struct BusRead {
+  std::shared_ptr<Bus> bus;
+  int64_t id = 0;
+  int channel = 0;
+  int64_t at = 0;
+};
 
 struct GraphPart {
   PartKind kind;
@@ -1861,7 +1903,7 @@ struct GraphPart {
   std::vector<int> connected[kGraphValues];
   ValueRange held[kGraphValues];  // where each value is held (held_range's)
   std::variant<std::monostate, Oscillator, Noise, Svf, Resonance, PluckString, DelayLine, Limiter, Drive, Impulse, Dust,
-               LfNoise, Lag, Decay, MathOp, ReverbTank>
+               LfNoise, Lag, Decay, MathOp, ReverbTank, BusRead>
       processor;
   double out[kGraphBlock] = {};
 };
@@ -2007,6 +2049,30 @@ class Graph {
     out_right_ = right;
   }
   bool stereo() const { return out_right_ >= 0; }
+  // The buses its input parts read, by handle.
+  std::vector<int64_t> buses_read() const {
+    std::vector<int64_t> ids;
+    for (const auto& p : parts_)
+      if (p.kind == PartKind::Input) ids.push_back(std::get<BusRead>(p.processor).id);
+    return ids;
+  }
+  bool reads_bus() const {
+    return std::ranges::any_of(parts_, [](const GraphPart& p) { return p.kind == PartKind::Input; });
+  }
+  // A copy being played: the bus it plays into (null for the device).
+  void play_into(std::shared_ptr<Bus> bus) { into_ = std::move(bus); }
+  Bus* into() const { return into_.get(); }
+  // Before a copy being played renders the samples of a stretch from `skip`
+  // on: its inputs read their buses from there, a bus no graph has played
+  // into this stretch (`frames` at stream sample `pos`) read as silence.
+  void begin_reads(int64_t skip, int64_t pos, int64_t frames) {
+    for (auto& p : parts_) {
+      if (p.kind != PartKind::Input) continue;
+      auto& r = std::get<BusRead>(p.processor);
+      r.bus->begin(pos, frames);
+      r.at = skip;
+    }
+  }
   void schedule(int part, int value, ParamEvent e) {
     parts_[static_cast<size_t>(part)].values[value].schedule(e);
   }
@@ -2174,6 +2240,16 @@ class Graph {
         for (int i = 0; i < n; i++) out[i] = t.step(in[i], reverb_feedback(v0[i]), reverb_damp(v1[i]));
         break;
       }
+      case PartKind::Input: {
+        // Bound by begin_reads: never past the stretch (render() refuses a
+        // graph that reads a bus, so only the mixer works one out).
+        auto& r = std::get<BusRead>(p.processor);
+        assert(r.at + n <= kBusFrames);
+        const double* from = r.bus->samples[r.channel] + r.at;
+        std::copy(from, from + n, out);
+        r.at += n;
+        break;
+      }
     }
   }
 
@@ -2266,6 +2342,7 @@ class Graph {
   bool forward_ = true;           // every line goes to a later part, so steps_ is the order the parts were made
   int out_ = -1, out_right_ = -1;
   int64_t pos_ = 0;
+  std::shared_ptr<Bus> into_;
 };
 
 // The graphs a program has made, by handle: the same on every backend, so one
@@ -2278,11 +2355,53 @@ inline Graph* graph_def(int64_t id) {
   auto it = graph_defs().find(id);
   return it == graph_defs().end() ? nullptr : &it->second;
 }
-// The graphs playing, by handle, and when each started on the monotonic
-// clock: what graph_now answers with no device to keep time.
-inline std::unordered_map<int64_t, std::chrono::steady_clock::time_point>& graphs_playing() {
-  static std::unordered_map<int64_t, std::chrono::steady_clock::time_point> playing;
+// A graph playing: when it started on the monotonic clock (what graph_now
+// answers with no device to keep time), the bus it plays into (0 for the
+// device), the buses it reads, and the how-manyth play it was.
+struct GraphPlay {
+  std::chrono::steady_clock::time_point started;
+  int64_t into = 0;
+  std::vector<int64_t> reads;
+  uint64_t seq = 0;
+};
+// The graphs playing, by handle. Main thread only, and the same with or
+// without a device, so a program is refused the same way on either.
+inline std::unordered_map<int64_t, GraphPlay>& graphs_playing() {
+  static std::unordered_map<int64_t, GraphPlay> playing;
   return playing;
+}
+// The graphs in the order the mixer works them out: each one that plays into
+// a bus before those that read it, the rest in the order they were played;
+// none when they play into each other's buses in a loop.
+inline std::optional<std::vector<int64_t>> graph_order(const std::unordered_map<int64_t, GraphPlay>& playing) {
+  std::vector<int64_t> ids;
+  for (const auto& [id, play] : playing) ids.push_back(id);
+  std::ranges::sort(ids, {}, [&](int64_t id) { return playing.at(id).seq; });
+  std::vector<int> key(ids.size());
+  std::vector<std::pair<int, int>> lines;
+  for (size_t a = 0; a < ids.size(); a++) {
+    key[a] = static_cast<int>(a);
+    const int64_t into = playing.at(ids[a]).into;
+    if (into == 0) continue;
+    for (size_t b = 0; b < ids.size(); b++)
+      if (std::ranges::count(playing.at(ids[b]).reads, into) > 0) lines.emplace_back(static_cast<int>(a), static_cast<int>(b));
+  }
+  auto order = smallest_first_order(key, lines);
+  if (!order) return std::nullopt;
+  std::vector<int64_t> out;
+  for (int k : *order) out.push_back(ids[static_cast<size_t>(k)]);
+  return out;
+}
+// Graph `id` played into `into` (0 for the device), reading `reads`: the
+// graphs playing then, in graph_order's order. None, and nothing kept, when
+// they would play into each other's buses in a loop.
+inline std::optional<std::vector<int64_t>> graph_played(int64_t id, int64_t into, std::vector<int64_t> reads) {
+  static uint64_t plays = 0;
+  auto playing = graphs_playing();
+  playing[id] = GraphPlay{std::chrono::steady_clock::now(), into, std::move(reads), ++plays};
+  auto order = graph_order(playing);
+  if (order) graphs_playing() = std::move(playing);
+  return order;
 }
 
 #if defined(CULEBRA_AUDIO_BROWSER)
@@ -2524,11 +2643,13 @@ bool schedule_render(const double* events, int64_t count, double length, double 
 // A recording's bytes (`fmt` sound_format's) read with the decoders a Sound
 // plays through, as floats at its own rate and channels. Needs no device.
 DecodeResult decode(const uint8_t* data, int64_t len, const char* fmt, Recording& out);
-// A graph played: a copy the mixer works out from the next sample on, the
-// changes scheduled after that to the copy's parts sent on to it (a part
-// added since is the next play()'s). graph_now answers where on the
-// graph's clock a change made now lands, NaN when it is not playing.
-void graph_play(int64_t id);
+// A graph played: a copy the mixer works out from the next sample on, into
+// `into` (null for the device), the graphs playing then worked out in
+// `order` (graph_order's); the changes scheduled after that to the copy's
+// parts are sent on to it (a part added since is the next play()'s).
+// graph_now answers where on the graph's clock a change made now lands, NaN
+// when it is not playing.
+void graph_play(int64_t id, std::shared_ptr<Bus> into, const std::vector<int64_t>& order);
 void graph_stop(int64_t id);
 void graph_post(int64_t id, int part, int value, ParamEvent e);
 double graph_now(int64_t id);
@@ -2668,7 +2789,7 @@ CULEBRA_RT_AUDIO_LINKAGE int64_t midi_dropped(int64_t) { return 0; }
 // A graph renders everywhere, and plays on a device alone: the browser has no
 // backend for one yet.
 #if !defined(CULEBRA_AUDIO_DEVICE)
-CULEBRA_RT_AUDIO_LINKAGE void graph_play(int64_t) {}
+CULEBRA_RT_AUDIO_LINKAGE void graph_play(int64_t, std::shared_ptr<Bus>, const std::vector<int64_t>&) {}
 CULEBRA_RT_AUDIO_LINKAGE void graph_stop(int64_t) {}
 CULEBRA_RT_AUDIO_LINKAGE void graph_post(int64_t, int, int, ParamEvent) {}
 CULEBRA_RT_AUDIO_LINKAGE double graph_now(int64_t) { return std::nan(""); }

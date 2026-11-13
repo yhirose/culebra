@@ -1113,10 +1113,11 @@ g.abs(input)
 g.clip(input, lo = -1.0, hi = 1.0)
 g.exp(input)
 g.room(input, size = 0.5, damp = 0.5, side = 0)
+g.input(bus, channel = 0)
 part.connect(target) -> target
 g.output(left, right = nil)
 g.render(seconds, channels = 1) -> Array
-g.play()
+g.play(to = nil)
 g.stop()
 g.now() -> Float
 value.set(at, v)

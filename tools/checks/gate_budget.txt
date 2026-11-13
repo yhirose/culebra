@@ -194,7 +194,11 @@
 # test_synth_reverb.cul (Synth's .reverb: always stereo, the dry sound and
 # each side's room by mix, the channels' sum in, its end 60 dB into the ring;
 # 0.08 s under --vm, 2.5 s under --jit, 8 CPU s for the three gc-stress runs).
-tests.cul 364
+# 365 since test_audio_bus.cul (Audio.Bus: its channels, a stereo graph into
+# a bus of one, graphs that play into each other's buses in a loop, a graph
+# that reads a bus not rendered; 0.04 s under --vm, 0.9 s under --jit, 2 CPU
+# s for the three gc-stress runs).
+tests.cul 365
 
 # tests/isolate/*.cul — run on both engines, plus the over-cap modes.
 # 21 since test_xml_isolate.cul (an XML element keeps its methods across an
@@ -366,7 +370,8 @@ ctest.entries 41
 # sounds guide (a voice and a drum playing a song). 1190 since its Proxy, in
 # en and ja: a sound replaced while it plays, and stopped. 1192 since its
 # stereo, in en and ja: two parts panned apart, rendered as both channels.
-docs.blocks 1192
+# 1194 since Audio.Bus, in en and ja: a saw played into a bus, read in a room.
+docs.blocks 1194
 
 # The samples the language front ends are run over (examples/languages/*).
 languages.samples 130

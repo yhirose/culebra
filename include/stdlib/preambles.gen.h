@@ -1898,6 +1898,19 @@ inline constexpr const char* AUDIO_MODULE_SOURCE = R"=culpre=(let _audio_module 
     }
   }
 
+  # A bus of `channels` (1 or 2): what graphs played into it add up to,
+  # which an input part of another graph reads as it plays. It lasts while
+  # a graph reads it or plays into it.
+  class AudioBus {
+    new(channels: Long = 2) {
+      @_id = _Audio.bus_new(channels)
+      @channels = channels
+    }
+    drop() {
+      _Audio.bus_free(@_id) if @_id != nil
+    }
+  }
+
   # Parts wired together, which the runtime works out as they play (play)
   # or ahead of time (render), the same either way. It is freed, and stops,
   # with the last reference to it or to any of its parts and values.
@@ -2052,6 +2065,12 @@ inline constexpr const char* AUDIO_MODULE_SOURCE = R"=culpre=(let _audio_module 
       p.damp = @_value(p, 1)
       p
     }
+    # What the graphs played into `bus` add up to on `channel`, the same
+    # stretch of the stream: a graph that reads a bus plays (it does not
+    # render), each graph that plays into the bus worked out before it.
+    input(bus: AudioBus, channel: Long = 0) {
+      @_part("input", "", [], [bus._id, channel])
+    }
     # The part heard, or with `right` the left and the right.
     output(left: AudioGraphPart, right: AudioGraphPart | Nil = nil) {
       if left._graph._id != @_id || (right != nil && right._graph._id != @_id) {
@@ -2066,8 +2085,10 @@ inline constexpr const char* AUDIO_MODULE_SOURCE = R"=culpre=(let _audio_module 
     render(seconds: Long | Float, channels: Long = 1) {
       _Audio.graph_render(@_id, seconds, channels)
     }
-    play() {
-      _Audio.graph_play(@_id)
+    # Played into the device, or into `to`, a bus (a graph of one output
+    # goes to both of a bus's two channels).
+    play(to: AudioBus | Nil = nil) {
+      _Audio.graph_play(@_id, to == nil ? 0 : to._id)
     }
     stop() {
       _Audio.graph_stop(@_id)
@@ -2327,6 +2348,7 @@ inline constexpr const char* AUDIO_MODULE_SOURCE = R"=culpre=(let _audio_module 
       _Audio.integrated_loudness(samples, rate)
     },
     Graph: AudioGraph,
+    Bus: AudioBus,
     Sound: Sound,
     Music: Music,
     PCM: PCM,
