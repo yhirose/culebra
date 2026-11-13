@@ -24,6 +24,10 @@ let PERIOD = 0.003
 # The fewest seconds between two changes of a note by the breath.
 let BREATH_EVERY = 0.01
 
+# How often, at the least, a note let go is looked at to see whether it has
+# ended, when no message comes: until then its graph is worked out, silent.
+let ENDED_EVERY = 0.05
+
 # How many dB over the instrument's own level a full breath plays by
 # default: an instrument made as loud as a song's lead at full breath is
 # then over a song's whole band at the breath blown most, and the limit at
@@ -98,7 +102,11 @@ fn play(player, input, breath, db, room = 0.0) {
 
   while true {
     let fed = player.every != nil && (held != nil || !fading.empty())
-    let waits = [behind ? BREATH_EVERY : nil, fed ? player.every : nil].filter(|w| w != nil)
+    let waits = [
+      behind ? BREATH_EVERY : nil,
+      fed ? player.every : nil,
+      fading.empty() ? nil : ENDED_EVERY,
+    ].filter(|w| w != nil)
     input.wait(waits.empty() ? nil : waits.min())
     for m in input.read() {
       cond {
@@ -165,4 +173,4 @@ fn play(player, input, breath, db, room = 0.0) {
   }
 }
 
-export {play, GAIN, in_room, ROOM_SIZE, ROOM_DAMP}
+export {play, GAIN, ENDED_EVERY, in_room, ROOM_SIZE, ROOM_DAMP}

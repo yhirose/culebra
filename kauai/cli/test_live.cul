@@ -33,3 +33,64 @@ fn a_limit_keeps_each_side_under_full_scale() {
   let loud = struck(1.0)
   assert_true(loud.all(|side| side.all(|x| Math.abs(x) <= 0.9 + 1e-9)))
 }
+
+# What `play` asks of an instrument, for a note that is let go and then has
+# ended (on the second time it is asked).
+class FakeNote {
+  new() {
+    @asked = 0
+  }
+  begin(pitch, level, volume, to = nil) {
+    self
+  }
+  volume(v) {}
+  release() {}
+  done() {
+    @asked += 1
+    @asked > 1
+  }
+}
+
+class FakePlayer {
+  new() {
+    @legato = false
+    @every = nil
+  }
+  prepare() {
+    FakeNote()
+  }
+  breath(n, x) {}
+}
+
+# A controller that plays a note on and off and then nothing, keeping how
+# long each wait was allowed; it stops the loop at its `stop_at`th wait.
+class FakeInput {
+  new(@stop_at) {
+    @waits = []
+    @reads = [
+      [{kind: "note_on", note: 60, velocity: 0.5, channel: 0}],
+      [{kind: "note_off", note: 60, velocity: 0.0, channel: 0}],
+    ]
+  }
+  wait(t) {
+    @waits.push(t)
+    throw {kind: "Stopped"} if @waits.size() == @stop_at
+  }
+  read() {
+    let i = @waits.size() - 1
+    i < @reads.size() ? @reads[i] : []
+  }
+}
+
+# With no message coming, the loop still wakes while a note it let go has not
+# ended, and sleeps until the next message once it has.
+@test
+fn a_note_let_go_is_looked_at_until_it_ends_though_no_message_comes() {
+  let input = FakeInput(4)
+  try {
+    live.play(FakePlayer(), input, "pressure", 0.0)
+  } catch e {
+    throw e if e.kind != "Stopped"
+  }
+  assert_eq(input.waits, [nil, nil, live.ENDED_EVERY, nil])
+}
