@@ -2140,16 +2140,20 @@ class Graph {
     pos_ += n;
   }
 
-  // Part `p` for `n` samples from `offset` samples into the block (a Block is
-  // the whole block, from 0), `time` the block's seconds. A delay's Read takes
-  // no input and its Write no values: they come at different points of a
-  // loop. `phase` is a template argument, and a Block's offset a constant, so
-  // that the block-at-a-time path, all but loops, is worked out as it was
-  // before loops.
+  // Part `p` for `count` samples from `offset` samples into the block (a
+  // Block is the whole block, from 0), `time` the block's seconds. A delay's
+  // Read takes no input and its Write no values: they come at different points
+  // of a loop. `phase` is a template argument, and a Block's offset a
+  // constant, so that the block-at-a-time path, all but loops, is worked out
+  // as it was before loops; a loop's phases are one sample each, a constant
+  // too, so their work is compiled for one sample.
   template <GraphPhase phase>
-  void work(GraphPart& p, int offset, int n, const double* time) {
+  void work(GraphPart& p, int offset, int count, const double* time) {
+    assert(phase == GraphPhase::Block || count == 1);
     const int a = phase == GraphPhase::Block ? 0 : offset;
-    double in[kGraphBlock], signal[kGraphBlock], v[kGraphValues][kGraphBlock];
+    constexpr int kSamples = phase == GraphPhase::Block ? kGraphBlock : 1;
+    const int n = phase == GraphPhase::Block ? count : 1;
+    double in[kSamples], signal[kSamples], v[kGraphValues][kSamples];
     double *v0 = v[0], *v1 = v[1], *v2 = v[2];
     auto sum = [&](const std::vector<int>& from, double* into) {
       std::fill(into, into + n, 0.0);

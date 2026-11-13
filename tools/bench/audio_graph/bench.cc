@@ -349,6 +349,29 @@ ad::Graph room() {
   return std::move(b.g);
 }
 
+// Processing a program writes of small parts in loops (Synth's feedback), a
+// sample at a time: a one-pole lowpass (a mix, a one-sample delay and a gain),
+// a slew limiter (a clip in the loop) and the logistic map (two signals
+// multiplied), mixed.
+ad::Graph user_loops() {
+  Build b;
+  int saw = b.wave(ad::WaveKind::Saw, 220);
+  int pole = b.gain({b.gain({saw}, 0.05)}, 1.0);
+  b.connect(b.gain({b.delay({pole}, 0.0)}, 0.95), pole, -1);
+  int slewed = b.gain({}, 1.0);
+  int before = b.delay({slewed}, 0.0);
+  int step = b.math(ad::MathKind::Clip, {b.gain({b.wave(ad::WaveKind::Square, 110), b.gain({before}, -1.0)}, 1.0)}, -0.01, 0.01);
+  b.connect(before, slewed, -1);
+  b.connect(step, slewed, -1);
+  int chaos = b.gain({b.gain({b.impulse(0.0, 0.0)}, 0.5)}, 1.0);
+  int last = b.delay({chaos}, 0.0);
+  int product = b.gain({last}, 0.0);
+  b.connect(b.gain({last, b.level(-1.0)}, -1.0), product, 0);
+  b.connect(b.gain({product}, 3.9), chaos, -1);
+  b.g.output(b.gain({pole, slewed, b.gain({chaos}, 0.2)}, 0.3));
+  return std::move(b.g);
+}
+
 struct Case {
   const char* name;
   ad::Graph (*make)();
@@ -357,6 +380,7 @@ const Case kCases[] = {
     {"fm_piano", fm_piano},       {"fm_piano_looped", fm_piano_looped}, {"echo_loop", echo_loop},
     {"strings", strings},         {"waves_swept", waves_swept},         {"voices", voices},
     {"decay_tail", decay_tail},   {"sources", sources},                 {"room", room},
+    {"user_loops", user_loops},
 };
 
 constexpr double kSeconds = 4.0;
