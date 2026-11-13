@@ -10485,34 +10485,61 @@ println(lead.ends())  # => 1.4
 println(render(lead, 1.4).size())  # => 61740
 ```
 
-`Synth.Proxy(fade = 0.05)` is a box whose sound is replaced while it plays.
-`box.set(expr)` plays `expr` (a part, an envelope or a `Voices`) and fades
-out the sound the box played before, in a straight line over `fade`
-seconds, as `expr` fades in over the same; a sound that ends on its own
-starts at full, so a stroke keeps its attack. The first `set` starts the
-box, and `box.stop()` fades out what it plays and leaves it empty until the
-next `set`. A `set` that fails (a sound that does not build, or one graph
-more than may play) leaves the box as it was. While a sound fades out the
-box plays two graphs, and one that has faded out keeps its graph, silent,
-until the next `play` or `set` lets it go: from its second `set` a box
-counts as two of the 64 graphs that play at once. A box dropped while it
-plays plays on, as a sound played without `wait` does, and a `Voices` set
-again is built anew, its notes from the new graph's start, as a second
-`play` of it is. A `fade` that is not a finite number, 0 or more, is a
-`ValueError`.
+`Synth.Proxy(fade = 0.05)` is a box whose sound is replaced while it plays,
+and a signal other expressions read. `box.set(expr)` defines what it plays
+(a part, an envelope or a `Voices`): `expr` plays into the box's bus, and
+the sound the box played before fades out in a straight line over `fade`
+seconds as `expr` fades in over the same; a sound that ends on its own
+starts at full, so a stroke keeps its attack. `box.play()` hears the box on
+the device (from its first `set`, when it comes before one), and
+`box.stop()` fades out what it plays, hears it no more, and leaves it empty
+until the next `set` (heard again only after another `play()`). The first
+`set` decides the box's channels: a stereo box plays one channel on both
+sides, and a sound of two into a box of one is a `ValueError`.
+`box.control(name, v)` moves control `name` of what the box plays to `v`
+now (when that has the control), and keeps it: a later `set`'s control of
+that name starts at `v`. A name what plays lacks is kept all the same.
+
+In another expression a box is what it plays, read from its bus as it plays
+(`pad.set(saw(110.0 + lfo * 5.0))`, `lfo` a box): replacing what the box
+plays is heard there at once, through its fade, with no graph built again.
+A box takes a part's methods and operators (`lfo.range(200.0, 800.0)`, `0.5
+* lfo`), and one read before its first `set` is a `ValueError`. An
+expression that reads a box plays without an end of its own, and its
+`render` (a handle's too) is a `ValueError`: it is heard only as it plays.
+Boxes that read each other in a loop are refused by the `set` that would
+close it; a sound replaced reads its box no more from then, so the boxes it
+read may be set meanwhile.
+
+A `set` that fails (a sound that does not build, two channels into a box of
+one, a loop through the boxes, one graph more than may play) leaves the box
+as it was. A box heard plays two graphs, its sound and what hears it, and
+one more while a sound fades out; one that has faded out keeps its graph,
+silent, until the next `play` or `set` lets it go. All count toward the 64
+graphs that play at once. A box dropped while it plays plays on, as a sound
+played without `wait` does, and a `Voices` set again is built anew, its
+notes from the new graph's start, as a second `play` of it is. A `fade`
+that is not a finite number, 0 or more, is a `ValueError`.
 
 | Method of a `Proxy` | Effect |
 | --- | --- |
-| `box.set(expr)` | `expr` played, the sound before it faded out over `fade` as `expr` fades in (at once when it ends on its own) |
-| `box.stop()` | what it plays faded out over `fade`, and the box empty; nothing when it is empty |
+| `box.set(expr)` | `expr` played into the box, the sound before it faded out over `fade` as `expr` fades in (at once when it ends on its own) |
+| `box.play()` | the box heard on the device, from now or from its first `set` |
+| `box.stop()` | what it plays faded out over `fade`, heard no more, and the box empty; nothing when it is empty |
+| `box.control(name, v)` | control `name` at `v` in what it plays, and from the start in what later sets play |
 
 ```culebra
 {
   let {*} = Synth
+  let lfo = Proxy()
+  lfo.set(sine(5.0))
   let box = Proxy(fade: 0.05)
-  box.set(saw(110.0).lowpass(800.0) * 0.2)
+  box.set(saw(110.0 + lfo * 3.0).lowpass(800.0) * 0.2)
+  box.play()
+  lfo.set(sine(7.0))  # the vibrato quickens where box reads it
   box.set(saw([110.0, 110.77]).mix().lowpass(1200.0) * 0.1)  # crossfades
   box.stop()
+  lfo.stop()
 }
 ```
 

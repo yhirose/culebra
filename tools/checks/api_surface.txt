@@ -1231,4 +1231,6 @@ v.sequence(notes: Array, step, len = nil, at = nil)
 v.ends()
 v.now() -> Float
 box.set(expr)
+box.play()
 box.stop()
+box.control(name, v)
