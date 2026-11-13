@@ -1118,6 +1118,8 @@ g.decay(input, time = 1.0)
 g.abs(input)
 g.clip(input, lo = -1.0, hi = 1.0)
 g.exp(input)
+g.round(input, step)
+g.latch(input, trigger = 0.0)
 g.room(input, size = 0.5, damp = 0.5, side = 0)
 g.input(bus, channel = 0)
 part.connect(target) -> target
@@ -1206,8 +1208,8 @@ Synth.play(expr, wait = true, secs = nil) -> SynthHandle
 Synth.lowpass(x, cutoff = 1000.0, q = 0.707, rate = nil)
 Synth.resonate(x, modes: Array, dry = 0.0, rate = nil)
 Synth.envelope(x, gain, rate = nil)
-Synth.hz(note) -> Float
-Synth.db(x) -> Float
+Synth.hz(note) -> Float | SynthPart
+Synth.db(x) -> Float | SynthPart
 Synth.render(expr, seconds = nil, rate = 44100, channels = 1) -> Array
 p.lowpass(cutoff = 1000.0, q = 0.707)
 p.filter(kind, cutoff = 1000.0, q = 0.707)
@@ -1222,6 +1224,8 @@ p.lag(time)
 p.decay2(attack, decay)
 p.clip(lo, hi)
 p.abs()
+p.round(step)
+p.latch(trigger)
 p.mix()
 p.pan(pos)
 p.reverb(mix = 0.33, room = 0.5, damp = 0.5)

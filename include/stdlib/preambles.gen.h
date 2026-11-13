@@ -1862,7 +1862,7 @@ inline constexpr const char* AUDIO_MODULE_SOURCE = R"=culpre=(let _audio_module 
   # What moves in it is an AudioGraphValue: a wave's freq, feedback and
   # phase, a filter's cutoff, a gain's gain, a string's freq and ring, a
   # delay's time, a drive's gain, an impulse's and an lfnoise's freq, a
-  # dust's density, a room's size and damp.
+  # dust's density, a room's size and damp, a latch's trigger.
   class AudioGraphPart {
     freq = nil
     feedback = nil
@@ -1874,6 +1874,7 @@ inline constexpr const char* AUDIO_MODULE_SOURCE = R"=culpre=(let _audio_module 
     density = nil
     size = nil
     damp = nil
+    trigger = nil
     new(graph, index: Long) {
       @_graph = graph
       @_index = index
@@ -2050,6 +2051,18 @@ inline constexpr const char* AUDIO_MODULE_SOURCE = R"=culpre=(let _audio_module 
     }
     exp(input: AudioGraphPart) {
       @_part("math", "exp", [input], [-1.0, 1.0])
+    }
+    # What comes in rounded to the nearest multiple of `step` (a half going
+    # up): `step` is a number above 0.
+    round(input: AudioGraphPart, step: Long | Float) {
+      @_part("round", "", [input], [step])
+    }
+    # What came in when `trigger` last went from 0 or below to above 0, held
+    # until it next does; 0 until it first does.
+    latch(input: AudioGraphPart, trigger: Long | Float = 0.0) {
+      let p = @_part("latch", "", [input], [trigger])
+      p.trigger = @_value(p, 0)
+      p
     }
     # One side of a room (Freeverb): `side` 0 the left, 1 the right, whose
     # delays are longer. `size` (0 to 1) sets how long it rings and `damp`
@@ -6067,6 +6080,8 @@ let _synth_module = fn () {
   # part_of takes one already a signal.
   fn to_part(v) { part_of(as_signal(v)) }
   fn part_of(s) { s is SynthPart ? s : SynthPart("level", [], {level: s}, {}) }
+  # e to the power of a signal.
+  fn exp_of(x) { node("math", [x], {}, {kind: "exp", lo: -1.0, hi: 1.0}) }
   fn negate(v) {
     match v {
       Array => channels_of(v).map(negate),
@@ -6194,6 +6209,15 @@ let _synth_module = fn () {
     abs() {
       node("math", [self], {}, {kind: "abs", lo: -1.0, hi: 1.0})
     }
+    # The signal rounded to the nearest multiple of `step` (a half going up).
+    round(step: Long | Float) {
+      node("math", [self], {}, {kind: "round", unit: step})
+    }
+    # What the signal was when `trigger` last went from 0 or below to above
+    # 0, held until it next does; 0 until it first does.
+    latch(trigger: Long | Float | SynthSignal | SynthEnvelope | Array) {
+      node("latch", [self], {trigger: trigger}, {})
+    }
     # A signal from -1 to 1 taken to `lo`..`hi` along a curve that multiplies
     # by the same at each step, as a pitch or a cutoff is heard:
     # lo * (hi / lo) ^ ((x + 1) / 2).
@@ -6201,7 +6225,7 @@ let _synth_module = fn () {
       if !finite(lo) || !finite(hi) || lo == 0 || hi == 0 || (lo < 0) != (hi < 0) {
         __raise("ValueError", "Synth.exprange: lo and hi are finite numbers of one sign, never 0")
       }
-      node("math", [self.range(0.0, Math.log(hi / lo))], {}, {kind: "exp", lo: -1.0, hi: 1.0}) * lo
+      exp_of(self.range(0.0, Math.log(hi / lo))) * lo
     }
     # A signal from -1 to 1 taken to `lo`..`hi` in a straight line.
     range(lo: Long | Float, hi: Long | Float) {
@@ -6451,11 +6475,17 @@ let _synth_module = fn () {
     x is SynthSignal ? x * gain : Audio.envelope(x, gain, r)
   }
 
-  let hz = fn (note: Long | Float) {
+  # A note number's frequency, a number's a number and a signal's a signal.
+  let hz = fn (note: Long | Float | SynthSignal | SynthEnvelope) {
+    if !is_number(note) {
+      return exp_of((to_part(note) - 69.0) * (Math.log(2.0) / 12.0)) * 440.0
+    }
     __raise("ValueError", "Synth.hz: note is a finite number") if !finite(note)
     440.0 * Math.exp(Math.log(2.0) * (note - 69) / 12.0)
   }
-  let db = fn (x: Long | Float) {
+  # Decibels as a gain, a number's a number and a signal's a signal.
+  let db = fn (x: Long | Float | SynthSignal | SynthEnvelope) {
+    return exp_of(to_part(x) * (Math.log(10.0) / 20.0)) if !is_number(x)
     __raise("ValueError", "Synth.db: x is a finite number") if !finite(x)
     Math.exp(Math.log(10.0) * x / 20.0)
   }
@@ -6678,7 +6708,13 @@ let _synth_module = fn () {
       "math" => match o.kind {
         "abs" => g.abs(input),
         "clip" => g.clip(input, o.lo, o.hi),
+        "round" => g.round(input, o.unit),
         _ => g.exp(input),
+      },
+      "latch" => {
+        let q = g.latch(input, base_of(v.trigger, 0.0))
+        feed(b, p, q.trigger, v.trigger, 0.0)
+        q
       },
       _ => __raise("ValueError", "Synth: no graph part for a {p.kind}"),
     }
@@ -6736,7 +6772,9 @@ let _synth_module = fn () {
   # (60 dB of a mode `width` Hz wide is 6.91 / (pi * width) seconds), a
   # filter's `cutoff / q` wide at its lowest cutoff (one a signal moves adds
   # none: the input's end decides), and a lag and a decay for their time; a
-  # size, and a clip that holds 0, end with their input; an impulse and a
+  # size, a rounding, and a clip that holds 0, end with their input, and a
+  # latch two periods after it when an impulse at a fixed freq triggers it,
+  # never otherwise; an impulse and a
   # dust end when their freq or density is 0; a room rings on 60 dB past
   # its input, as long as its longest comb does at its largest size. A gated
   # envelope ends once it is let go, `held` seconds from its start, and
@@ -6777,6 +6815,14 @@ let _synth_module = fn () {
         _ => ring(cutoff / p.options.q),
       }
     }
+    # A latch holds what it took last until its trigger next fires: an
+    # impulse at a fixed freq fires within a period and a sample, so two
+    # periods past its input it holds 0; any other trigger may never fire.
+    fn latch_end(p) {
+      let t = p.values.trigger
+      let freq = t is SynthPart && t.kind == "impulse" ? t.values.freq : nil
+      is_number(freq) && freq > 0 ? tail(p.inputs[0]) + 2.0 / freq : Math.inf
+    }
     fn tail(p) {
       known[p.id] ??= match p.kind {
         "level" => value_end(p.values.level),
@@ -6792,8 +6838,9 @@ let _synth_module = fn () {
         "dust" => value_end(p.values.density),
         "lag" | "decay" => tail(p.inputs[0]) + p.options.time,
         "room" => tail(p.inputs[0]) + room_ring(longest(p.values.size)),
+        "latch" => latch_end(p),
         "math" => match p.options.kind {
-          "abs" => tail(p.inputs[0]),
+          "abs" | "round" => tail(p.inputs[0]),
           "clip" => p.options.lo <= 0 && p.options.hi >= 0 ? tail(p.inputs[0]) : Math.inf,
           _ => Math.inf,
         },

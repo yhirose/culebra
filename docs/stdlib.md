@@ -9093,6 +9093,8 @@ it or to any of its parts and values.
 | `g.abs(input)` | the size of `input` |
 | `g.clip(input, lo = -1.0, hi = 1.0)` | `input` held within `lo`..`hi` |
 | `g.exp(input)` | e to the power of `input` |
+| `g.round(input, step)` | `input` rounded to the nearest multiple of `step`, a number above 0 (a half goes up: `floor(x / step + 0.5) * step`) |
+| `g.latch(input, trigger = 0.0)` | what `input` was at the last sample its `trigger` went from 0 or below to above 0, held until it next does: a sample and hold. 0 until the first rise; a trigger above 0 at the first sample takes that sample in. It answers at once, so a loop through it still needs a delay. `trigger` is a value (below), so a part connected to it triggers it: `g.impulse(4000.0).connect(l.trigger)` |
 | `g.room(input, size = 0.5, damp = 0.5, side = 0)` | one side of a room (Freeverb: eight damped combs, then four allpasses), answering only the echoes of `input`. `side` 0 is the left and 1 the right, whose delays are 23 samples longer, so two sides of one input ring apart; the delays follow the graph's rate. `size` (0 to 1) sets how long it rings (60 dB in about 0.7 s at 0, 1.5 s at 0.5 and 12 s at 1) and `damp` (0 to 1) how soon its highs go. A room is worked out as long as it plays |
 | `g.input(bus, channel = 0)` | what the graphs played into `bus` (an `Audio.Bus`) add up to on `channel`, the same stretch of the stream (below) |
 | `part.connect(target) -> target` | adds what `part` answers into `target`: into what that part takes in (a source, a wave, a noise, an impulse, a dust, an lfnoise or an input, takes nothing in), or into one of its values (below). A part may be connected from any part, but a loop has to pass through a delay (below) |
@@ -9105,7 +9107,7 @@ it or to any of its parts and values.
 What moves in a part is a value: a wave's `freq`, `feedback` and `phase`, a
 filter's `cutoff`, a gain's `gain`, a string's `freq` and `ring`, a delay's
 `time`, a drive's `gain`, an impulse's and an lfnoise's `freq`, a dust's
-`density`, and a room's `size` and `damp`, each a field of the part. A value is its
+`density`, a room's `size` and `damp`, and a latch's `trigger`, each a field of the part. A value is its
 schedule plus what the parts connected to it answer, sample by sample, as
 Web Audio's `AudioParam` is: `lfo.connect(w.freq)` adds the lfo to the
 wave's freq, in Hz, as `lfo.connect(d.time)` adds it to a delay's time, in
@@ -10302,7 +10304,7 @@ println(render(pad, 0.5).size())  # => 22050
 
 A value a part reads (a wave's `freq`, `feedback` and `phase`, a filter's
 `cutoff`, a delay's `time`, a string's `freq` and `ring`, a drive's `gain`,
-an impulse's and an lfnoise's `freq`, a dust's `density`, and a gain) takes a number, a part, an envelope or an Array of them (one
+an impulse's and an lfnoise's `freq`, a dust's `density`, a latch's `trigger`, and a gain) takes a number, a part, an envelope or an Array of them (one
 channel each, below). A number is the value; an
 envelope is its schedule from the start; a part is the signal itself, not
 something added to a base as `connect` adds in a graph, so
@@ -10334,8 +10336,8 @@ check, when `render` builds it at its rate, with the graph's `ValueError`.
 | `Synth.lowpass(x, cutoff = 1000.0, q = 0.707, rate = nil)` / `highpass` / `bandpass` | a part's method of that name for a part; for samples (an Array of numbers), `Audio.filter(x, kind, cutoff, q, rate)`, `rate` 44100 when `nil`. A part's rate is the one `render` or `play` gives, so a `rate` given with a part is a `ValueError` (so in the two below) |
 | `Synth.resonate(x, modes: Array, dry = 0.0, rate = nil)` | `x.resonate(modes, dry)` for a part; `Audio.resonate(x, modes, dry, rate)` for samples |
 | `Synth.envelope(x, gain, rate = nil)` | `x * gain` for a part; `Audio.envelope(x, gain, rate)` for samples, `gain` an envelope of `(at, value)` |
-| `Synth.hz(note) -> Float` | a note number's frequency: 69 is 440 Hz, a semitone a twelfth of an octave |
-| `Synth.db(x) -> Float` | decibels as a gain: 0 is 1.0, -6 about 0.5 |
+| `Synth.hz(note) -> Float \| SynthPart` | a note number's frequency: 69 is 440 Hz, a semitone a twelfth of an octave. A part or an envelope gives the signal in Hz, so `sine(hz(60.0 + sine(5.0) * 0.3))` is a vibrato of 0.3 semitones |
+| `Synth.db(x) -> Float \| SynthPart` | decibels as a gain: 0 is 1.0, -6 about 0.5; a part or an envelope gives the signal |
 | `Synth.render(expr, seconds = nil, rate = 44100, channels = 1) -> Array` | the first `seconds` of the expression (a part, an envelope or a `Voices`), as `Audio.Graph`'s `render` works them out; without `seconds`, until it ends on its own (below), and a `ValueError` for one that does not. With `channels: 2`, `[left, right]` (below) |
 
 | Method of a part | Effect |
@@ -10353,6 +10355,8 @@ check, when `render` builds it at its rate, with the graph's `ValueError`.
 | `p.decay2(attack, decay)` | impulses in `p` made an envelope that rises in about `attack` seconds and falls 60 dB in `decay` (0 < `attack` < `decay`): `Audio.Graph`'s `decay` over `decay`, less the one over `attack`. Its peak is below 1, and nearer 1 the further apart the two are |
 | `p.clip(lo, hi)` | `p` held within `lo`..`hi` |
 | `p.abs()` | the size of `p` |
+| `p.round(step)` | `p` rounded to the nearest multiple of `step`, a number above 0, as `Audio.Graph`'s `round`: `p.round(0.25)` keeps 9 levels of -1..1 |
+| `p.latch(trigger)` | what `p` was when `trigger` last went from 0 or below to above 0, held until it next does, as `Audio.Graph`'s `latch`; 0 until the first rise. `p.latch(impulse(4000.0))` holds each sample a quarter of a millisecond |
 | `p.mix()` | a bundle's channels added to one part; a part as it is |
 | `p.pan(pos)` | stereo, `p` placed at `pos` from -1 (left) to 1 (right) at equal power: the left times sin((1 - pos)π/4), the right times sin((1 + pos)π/4), so 0 is about 0.707 on each side. A bundle of two is turned down side by side, each channel on its own side. `pos` is a number from -1 to 1 (`ValueError` past it), or a part or an envelope, held within -1..1 |
 | `p.reverb(mix = 0.33, room = 0.5, damp = 0.5)` | stereo, `p` in a room: its channels' sum goes into a room of each side (`Audio.Graph`'s `room`), and each side is `1 - mix` of its dry sound (one channel on both sides) and `mix` of its room. `room` (0 to 1) sets how long the room rings and `damp` (0 to 1) how soon its highs go; a part or an envelope moves them, held within 0..1. `mix` is a number from 0 to 1, and 0 makes no room. A bundle of more than two is a `ValueError` |
@@ -10412,8 +10416,11 @@ string for its `ring`, a resonance for 60 dB of its narrowest mode (a
 filter's is `cutoff / q` wide at its lowest cutoff; one a signal moves
 adds none), a lag and a decay for their time, and a room for 60 dB of its
 ring at its largest size (its longest comb losing what it feeds back each
-time round, then its longest allpass; 1.6 s at 0.5); a size, and a clip that
-holds 0, end with their input. An impulse or a dust ends when its `freq` or
+time round, then its longest allpass; 1.6 s at 0.5); a size, a rounding,
+and a clip that holds 0, end with their input. A latch holds what it took
+last, so it ends two periods after its input when its trigger is an
+`impulse` at a fixed `freq`, which by then has taken in a 0, and never with
+another trigger (a `* perc(...)` after it ends it). An impulse or a dust ends when its `freq` or
 `density` is 0, and an lfnoise never. A loop rings on with no end it can
 work out.
 `play` leaves a sound it does not wait for playing even when nothing holds
@@ -10544,6 +10551,24 @@ that is not a finite number, 0 or more, is a `ValueError`.
   box.stop()
   lfo.stop()
 }
+```
+
+Processing `Synth` has no name for is written of these parts, and runs as
+they do, on the audio thread and the same on every backend. An expression
+with no loop is worked out a block of samples at a time, as the graph's
+parts are; a `feedback` loop a sample at a time, its `y.delay(0.0)` the
+answer one sample back, at several times the cost per part. A sample back
+outside a loop is `x.delay(1.0 / rate)` at the rate it renders at (44100
+for `play`).
+
+```culebra
+let {saw, impulse, feedback, render} = Synth
+let x = saw(220.0) * 0.8
+let lowpassed = feedback(|y| x * 0.05 + y.delay(0.0) * 0.95)  # y = 0.05 x + 0.95 y[-1]
+let slewed = feedback(|y| y.delay(0.0) + (x - y.delay(0.0)).clip(-0.01, 0.01))
+let shaped = x - x * x * x / 3.0
+let coarse = x.round(0.25).latch(impulse(4000.0))  # 9 levels, 4000 samples a second
+println(render(coarse, 0.01).size())  # => 441
 ```
 
 The five functions that take a part or samples let samples chain as a

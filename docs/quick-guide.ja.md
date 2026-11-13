@@ -866,12 +866,12 @@ inspect(match 9 {
 | `StateMachine` | 8 | 入れ子にできる状態機械。テキストでも書ける |
 | `FST` | 14 | 書き換えない辞書を圧縮して持つ。前方一致・補完・あいまい検索 |
 | `Search` | 9 | 自分の文書を全文検索して順位をつける |
-| `Audio` | 83 | ウィンドウの有無によらず使える音: WASM-4のtone、効果音、ストリーム再生の音楽、合成するPCM、マイク |
+| `Audio` | 85 | ウィンドウの有無によらず使える音: WASM-4のtone、効果音、ストリーム再生の音楽、合成するPCM、マイク |
 | `MIDI` | 10 | MIDIの鍵盤やウインドコントローラからの入力と、それへの出力 |
 | `LLM` | 15 | LLMのクライアント。提供元（Messages APIかChat Completions）への1ステップ、関数をツールとして使う会話、素通しのリクエスト |
 | `Llama` | 8 | このプロセス内で動くモデル。GGUFを読んで`generate`か`chat`（ビルドオプション） |
 | `Kauai` | 5 | Kauaiで書いた曲を読み、検査し、`Audio`のruntimeで演奏する |
-| `Synth` | 54 | 音を式として書き、`render`のときに`Audio.Graph`として組み立てる |
+| `Synth` | 56 | 音を式として書き、`render`のときに`Audio.Graph`として組み立てる |
 
 <!-- END GENERATED -->
 

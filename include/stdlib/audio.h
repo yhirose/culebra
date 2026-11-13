@@ -1725,29 +1725,49 @@ class ReverbTank {
 };
 
 // What a Math part answers for what comes in: its size, it held within lo..hi,
-// or e to its power.
-enum class MathKind { Abs, Clip, Exp };
+// e to its power, or it rounded to the nearest multiple of `unit` (a half
+// going up).
+enum class MathKind { Abs, Clip, Exp, Round };
 
 struct MathOp {
   MathKind kind;
   double lo = -1, hi = 1;
+  double unit = 1;
   double step(double x) const {
     switch (kind) {
       case MathKind::Abs: return std::abs(x);
       case MathKind::Clip: return std::clamp(x, lo, hi);
       case MathKind::Exp: return std::exp(x);
+      case MathKind::Round: return std::floor(x / unit + 0.5) * unit;
     }
     return 0.0;
   }
 };
 
+// What came in when its trigger last went from 0 or below to above 0, held
+// until it next does; 0 until it first does. A trigger above 0 at the first
+// sample takes that sample in.
+class Latch {
+ public:
+  double step(double x, double trigger) {
+    const bool up = trigger > 0;
+    if (up && !was_up_) held_ = x;
+    was_up_ = up;
+    return held_;
+  }
+
+ private:
+  double held_ = 0;
+  bool was_up_ = false;
+};
+
 enum class PartKind { Wave, Noise, Filter, Gain, Resonate, Pluck, Delay, Limit, Drive, Impulse, Dust, LfNoise, Lag, Decay, Math, Room,
-                      Input };
+                      Input, Latch };
 
 // How many values a part of `kind` reads: a wave's freq, feedback and phase,
 // a filter's cutoff, a gain's gain, a string's freq and ring, a delay's time,
 // a drive's gain, an impulse's and an lfnoise's freq, a dust's density, a
-// room's size and damp.
+// room's size and damp, a latch's trigger.
 // (Every kind is named here and below, so a kind added is a -Wswitch error in
 // check-bench-audio-graph, which builds this header with -Werror, until each
 // says what it is.)
@@ -1766,7 +1786,8 @@ inline int value_count(PartKind kind) {
     case PartKind::Drive:
     case PartKind::Impulse:
     case PartKind::Dust:
-    case PartKind::LfNoise: return 1;
+    case PartKind::LfNoise:
+    case PartKind::Latch: return 1;
     case PartKind::Pluck:
     case PartKind::Room: return 2;
     case PartKind::Wave: return 3;
@@ -1795,7 +1816,8 @@ inline bool takes_in(PartKind kind) {
     case PartKind::Lag:
     case PartKind::Decay:
     case PartKind::Math:
-    case PartKind::Room: return true;
+    case PartKind::Room:
+    case PartKind::Latch: return true;
   }
   return false;
 }
@@ -1845,7 +1867,8 @@ inline ValueRange held_range(PartKind kind, int value, double rate) {
     case PartKind::Lag:
     case PartKind::Decay:
     case PartKind::Math:
-    case PartKind::Input: break;  // a gain's is any number; the rest have no values
+    case PartKind::Input:
+    case PartKind::Latch: break;  // a gain's and a latch's trigger are any number; the rest have no values
   }
   return {};
 }
@@ -1897,13 +1920,13 @@ struct GraphPart {
   std::vector<int> inputs;  // parts added together as what it takes in
   // A wave's freq, feedback and phase, a filter's cutoff, a gain's gain, a
   // string's freq and ring, a delay's time, a drive's gain, an impulse's and
-  // an lfnoise's freq, a dust's density, a room's size and damp; each is its
-  // schedule plus the sum of the parts connected to it.
+  // an lfnoise's freq, a dust's density, a room's size and damp, a latch's
+  // trigger; each is its schedule plus the sum of the parts connected to it.
   Param values[kGraphValues];
   std::vector<int> connected[kGraphValues];
   ValueRange held[kGraphValues];  // where each value is held (held_range's)
   std::variant<std::monostate, Oscillator, Noise, Svf, Resonance, PluckString, DelayLine, Limiter, Drive, Impulse, Dust,
-               LfNoise, Lag, Decay, MathOp, ReverbTank, BusRead>
+               LfNoise, Lag, Decay, MathOp, ReverbTank, BusRead, Latch>
       processor;
   double out[kGraphBlock] = {};
 };
@@ -2239,6 +2262,11 @@ class Graph {
       case PartKind::Lag: each_in(std::get<Lag>(p.processor)); break;
       case PartKind::Decay: each_in(std::get<Decay>(p.processor)); break;
       case PartKind::Math: each_in(std::get<MathOp>(p.processor)); break;
+      case PartKind::Latch: {
+        auto& l = std::get<Latch>(p.processor);
+        for (int i = 0; i < n; i++) out[i] = l.step(in[i], v0[i]);
+        break;
+      }
       case PartKind::Room: {
         auto& t = std::get<ReverbTank>(p.processor);
         for (int i = 0; i < n; i++) out[i] = t.step(in[i], reverb_feedback(v0[i]), reverb_damp(v1[i]));

@@ -1,5 +1,6 @@
 // Audio.Graph: the sources that are not waves (impulse, dust, lfnoise) and
-// the parts that shape what comes in (lag, decay, abs, clip, exp), each
+// the parts that shape what comes in (lag, decay, abs, clip, exp, round,
+// latch), each
 // against the computation it stands for written out. The
 // harness keeps the device closed (CULEBRA_AUDIO=off).
 
@@ -183,6 +184,56 @@ assert_samples(render(|g| g.abs(sine(g)), 0.1), s.map(|x| Math.abs(x)))
 assert_samples(render(|g| g.clip(sine(g), -0.25, 0.5), 0.1), s.map(|x| Math.clamp(x, -0.25, 0.5)))
 assert_samples(render(|g| g.exp(sine(g)), 0.1), s.map(|x| Math.exp(x)))
 
+// ---- round, latch
+
+let unit = 0.125
+assert_samples(render(|g| g.round(sine(g), unit), 0.1), s.map(|x| Math.floor(x / unit + 0.5) * unit))
+// A half goes up: half a step below 0 rounds to 0, half above to a step.
+let halves = render(fn (g) {
+  let level = g.gain(g.wave("square", freq: 0.0), -unit / 2.0)
+  level.gain.set(0.05, unit / 2.0)
+  g.round(level, unit)
+}, 0.1)
+assert_samples(halves, iota(RATE / 10).map(|i| i < RATE / 20 ? 0.0 : unit))
+
+// It takes in what comes at each rise of its trigger (an impulse at 4 Hz)
+// and holds it until the next.
+fn held(xs, trigger) {
+  mut (h, up) = (0.0, false)
+  iota(xs.size()).map(fn (i) {
+    h = trigger[i] > 0 && !up ? xs[i] : h
+    up = trigger[i] > 0
+    h
+  })
+}
+let started = |g| g.wave("sine", freq: 50.0, phase: 1.0)
+let s1 = render(started, 1.0)
+let ticks4 = render(|g| g.impulse(4.0), 1.0)
+assert_eq(ticks4.filter(|x| x > 0).size(), 4)
+let latched = render(fn (g) {
+  let l = g.latch(started(g), 0.0)
+  g.impulse(4.0).connect(l.trigger)
+  l
+}, 1.0)
+assert_samples(latched, held(s1, ticks4))
+// 0 until the first rise; a trigger held up takes in nothing more.
+let held_up = render(fn (g) {
+  let l = g.latch(started(g), 0.0)
+  l.trigger.set(0.01, 1.0)
+  l.trigger.set(0.02, 0.0)
+  l.trigger.set(0.03, 2.0)
+  l
+}, 0.04)
+assert_samples(held_up, iota(RATE / 25).map(|i| i < 80 ? 0.0 : (i < 240 ? s1[80] : s1[240])))
+// A trigger above 0 from the first sample takes that sample in.
+assert_samples(render(|g| g.latch(started(g), 1.0), 0.01), iota(RATE / 100).map(|_| s1[0]))
+// A latch answers at once, so a loop through it alone has no delay.
+let gl = Audio.Graph.new(rate: RATE)
+let fed = gl.gain(gl.wave(), 1.0)
+let through = gl.latch(fed, 1.0)
+assert_eq(caught(|| through.connect(fed)), ("ValueError", "Audio.Graph: a loop passes through a delay"))
+gl.delay(through, 0.0).connect(fed)
+
 // ---- what is checked
 
 let g = Audio.Graph.new(rate: RATE)
@@ -202,6 +253,10 @@ for (call, kind, message) in [
   (|| g.decay(w, Math.inf), "ValueError", "a decay's time is 0 or more"),
   (|| g.clip(w, 1.0, -1.0), "ValueError", "a clip's lo and hi are finite, lo at most hi"),
   (|| g.clip(w, hi: Math.inf), "ValueError", "a clip's lo and hi are finite, lo at most hi"),
+  (|| g.round(w, 0.0), "ValueError", "a round's step is a finite number above 0"),
+  (|| g.round(w, Math.inf), "ValueError", "a round's step is a finite number above 0"),
+  (|| g.latch(w, Math.inf), "ValueError", "a latch's trigger is a finite number"),
+  (|| g.latch(w).trigger.ramp(0.5, Math.inf), "ValueError", "a latch's trigger is a finite number"),
   (|| w.connect(g.impulse()), "ValueError", "a source (a wave, a noise, an impulse, a dust, an lfnoise or an input) takes nothing in"),
   (|| w.connect(g.dust()), "ValueError", "a source (a wave, a noise, an impulse, a dust, an lfnoise or an input) takes nothing in"),
   (|| w.connect(g.lfnoise()), "ValueError", "a source (a wave, a noise, an impulse, a dust, an lfnoise or an input) takes nothing in"),

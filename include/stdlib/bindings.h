@@ -6315,6 +6315,8 @@ inline const char* _ns_audio_graph_bad_value(culebra::_audio_detail::PartKind ki
     case ad::PartKind::Room:
       if (v >= 0 && v <= 1) return nullptr;
       return value == 0 ? "Audio.Graph: a room's size is from 0 to 1" : "Audio.Graph: a room's damp is from 0 to 1";
+    case ad::PartKind::Latch:
+      return value == 0 && std::isfinite(v) ? nullptr : "Audio.Graph: a latch's trigger is a finite number";
     case ad::PartKind::Input: break;
     case ad::PartKind::Noise:
     case ad::PartKind::Resonate:
@@ -6347,14 +6349,14 @@ inline JitValue _ns_audio_graph_new(JitValue* a, int64_t) {
 }
 // A part of `family` ("wave", "noise", "filter", "gain", "resonate", "pluck",
 // "delay", "limit", "drive", "impulse", "dust", "lfnoise", "lag", "decay",
-// "math", "room" or "input"), `kind` naming the wave, the filter, the lfnoise or the math,
+// "math", "round", "latch", "room" or "input"), `kind` naming the wave, the filter, the lfnoise or the math,
 // taking in `inputs`, parts made before it. It is set up by the numbers
 // `options`: a wave's freq, feedback and phase, a noise's seed, a filter's
 // cutoff and q, a gain's gain, a resonance's dry and modes, a string's freq
 // and ring, a delay's time, a limit's ceiling and release, a drive's gain, an
 // impulse's freq and phase, a dust's density and seed, an lfnoise's freq and
-// seed, a lag's and a decay's time, a math's lo and hi, a room's size, damp
-// and side, an input's bus and channel.
+// seed, a lag's and a decay's time, a math's lo and hi, a round's step, a
+// latch's trigger, a room's size, damp and side, an input's bus and channel.
 inline JitValue _ns_audio_graph_part(JitValue* a, int64_t) {
   namespace ad = culebra::_audio_detail;
   auto& g = _ns_audio_graph(a[0]);
@@ -6372,7 +6374,7 @@ inline JitValue _ns_audio_graph_part(JitValue* a, int64_t) {
       {"wave", 3},    {"noise", 1}, {"filter", 2},  {"gain", 1}, {"resonate", -1},
       {"pluck", 2},   {"delay", 1}, {"limit", 2},   {"drive", 1}, {"impulse", 2},
       {"dust", 2},    {"lfnoise", 2}, {"lag", 1},   {"decay", 1}, {"math", 2},
-      {"room", 3},    {"input", 2}};
+      {"round", 1},   {"latch", 1},   {"room", 3},  {"input", 2}};
   auto fam = std::ranges::find(kFamilies, family, &std::pair<std::string_view, int>::first);
   if (fam == std::end(kFamilies)) {
     auto message = culebra::format("Audio.Graph: no part {}", family);
@@ -6450,6 +6452,11 @@ inline JitValue _ns_audio_graph_part(JitValue* a, int64_t) {
     if (opt[2] != 0 && opt[2] != 1) _ns_audio_fail("Audio.Graph: a room's side is 0 (the left) or 1 (the right)");
     return made(ad::PartKind::Room, ad::ReverbTank(rate, static_cast<int>(opt[2])), opt[0], opt[1]);
   }
+  if (family == "round") {
+    if (!(opt[0] > 0 && std::isfinite(opt[0]))) _ns_audio_fail("Audio.Graph: a round's step is a finite number above 0");
+    return made(ad::PartKind::Math, ad::MathOp{.kind = ad::MathKind::Round, .unit = opt[0]});
+  }
+  if (family == "latch") return made(ad::PartKind::Latch, ad::Latch{}, opt[0]);
   if (family == "math") {
     static constexpr std::pair<std::string_view, ad::MathKind> kMaths[] = {
         {"abs", ad::MathKind::Abs}, {"clip", ad::MathKind::Clip}, {"exp", ad::MathKind::Exp}};

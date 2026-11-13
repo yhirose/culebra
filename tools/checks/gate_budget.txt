@@ -166,6 +166,9 @@
 # out; 0.06 s under --vm, 3.3 s under --jit) and test_synth_sources.cul
 # (Synth's impulse, dust, lfnoise, pulse, .lag, .decay2, .clip, .abs and
 # .exprange, their channels and ends; 0.06 s under --vm, 3.2 s under --jit).
+# Both took round and latch (and Synth's hz and db of a signal, and
+# processing written of the parts) in P15, adding no file: 4.0 -> 5.3 and
+# 3.8 -> 5.8 CPU s under --jit.
 # 351 since test_synth_instrument.cul (Synth's render to a sound's own end, the
 # ends refused, and a Kauai voice made from an expression; 0.13 s under --vm,
 # 1.5 s under --jit). 352 since test_synth_proxy.cul (Synth.Proxy's fades in and
@@ -381,8 +384,10 @@ ctest.entries 41
 # stereo, in en and ja: two parts panned apart, rendered as both channels.
 # 1194 since an operation's declaration binds what `perform` passes, in en and
 # ja: a keyword-only parameter's default filling in for a handler. 1196 since
-# Audio.Bus, in en and ja: a saw played into a bus, read in a room.
-docs.blocks 1196
+# Audio.Bus, in en and ja: a saw played into a bus, read in a room. 1198
+# since Synth's processing of your own, in en and ja: a one-pole and a slew
+# limiter in loops, a waveshaper, and a sound made coarse by round and latch.
+docs.blocks 1198
 
 # The samples the language front ends are run over (examples/languages/*).
 languages.samples 130

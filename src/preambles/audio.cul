@@ -212,7 +212,7 @@ let _audio_module = fn () {
   # What moves in it is an AudioGraphValue: a wave's freq, feedback and
   # phase, a filter's cutoff, a gain's gain, a string's freq and ring, a
   # delay's time, a drive's gain, an impulse's and an lfnoise's freq, a
-  # dust's density, a room's size and damp.
+  # dust's density, a room's size and damp, a latch's trigger.
   class AudioGraphPart {
     freq = nil
     feedback = nil
@@ -224,6 +224,7 @@ let _audio_module = fn () {
     density = nil
     size = nil
     damp = nil
+    trigger = nil
     new(graph, index: Long) {
       @_graph = graph
       @_index = index
@@ -400,6 +401,18 @@ let _audio_module = fn () {
     }
     exp(input: AudioGraphPart) {
       @_part("math", "exp", [input], [-1.0, 1.0])
+    }
+    # What comes in rounded to the nearest multiple of `step` (a half going
+    # up): `step` is a number above 0.
+    round(input: AudioGraphPart, step: Long | Float) {
+      @_part("round", "", [input], [step])
+    }
+    # What came in when `trigger` last went from 0 or below to above 0, held
+    # until it next does; 0 until it first does.
+    latch(input: AudioGraphPart, trigger: Long | Float = 0.0) {
+      let p = @_part("latch", "", [input], [trigger])
+      p.trigger = @_value(p, 0)
+      p
     }
     # One side of a room (Freeverb): `side` 0 the left, 1 the right, whose
     # delays are longer. `size` (0 to 1) sets how long it rings and `damp`
