@@ -181,7 +181,10 @@
 # test_tensor (16.0 s) into itself and test_tensor_views.cul; test_iter (9.3 s)
 # into itself, test_iter_string.cul and test_iter_grid.cul; test_codegen
 # (13.2 s) into itself, test_codegen_exceptions.cul and test_codegen_runtime.cul.
-tests.cul 360
+# 361 since test_audio (16 s under --jit) split into itself and
+# test_audio_dsp.cul, whose samples are each checked against the same
+# computation written out in the script.
+tests.cul 361
 
 # tests/isolate/*.cul — run on both engines, plus the over-cap modes.
 # 21 since test_xml_isolate.cul (an XML element keeps its methods across an
