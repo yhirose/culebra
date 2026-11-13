@@ -8,35 +8,10 @@
 # Run with:  ./build/culebra tests/test_codegen_funcs.cul
 #            ./build/culebra --jit tests/test_codegen_funcs.cul
 
+import cg from './test_import_helpers/codegen_builders.cul'
+let {stmt_block, print_stmt, add_main, call_intr} = cg
+
 let ORIGIN_F = {line: 1, column: 1}
-
-fn stmt_block(m, stmts) {
-  let list = m.list_new()
-  for s in stmts {
-    m.list_push(list, s)
-  }
-  m.block(stmts: list, line: 1, col: 1)
-}
-
-fn print_stmt(m, value) {
-  let args = m.list_new()
-  m.list_push(args, value)
-  m.intrinsic(name: 'print', args: args, line: 1, col: 1)
-}
-
-# `main`: no parameters, captures or cells, and `locals` local slots.
-fn add_main(m, body, locals = 0) {
-  m.add_func(name: 'main', num_locals: locals, num_captures: 0, num_cells: 0,
-             num_params: 0, body: body)
-}
-
-fn call_intr(m, name, args) {
-  let list = m.list_new()
-  for a in args {
-    m.list_push(list, a)
-  }
-  m.intrinsic(name: name, args: list, line: 1, col: 1)
-}
 
 # --- A function may opt into tail calls: a call chain deeper than the frame
 # limit completes in one frame. The control is the same module with the flag

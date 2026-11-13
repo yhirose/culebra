@@ -4,25 +4,8 @@
 # labeled break.
 
 
-fn stmt_block(m, stmts) {
-  let list = m.list_new()
-  for s in stmts {
-    m.list_push(list, s)
-  }
-  m.block(stmts: list, line: 1, col: 1)
-}
-
-fn print_stmt(m, value) {
-  let args = m.list_new()
-  m.list_push(args, value)
-  m.intrinsic(name: 'print', args: args, line: 1, col: 1)
-}
-
-# `main`: no parameters, captures or cells, and `locals` local slots.
-fn add_main(m, body, locals = 0) {
-  m.add_func(name: 'main', num_locals: locals, num_captures: 0, num_cells: 0,
-             num_params: 0, body: body)
-}
+import cg from './test_import_helpers/codegen_builders.cul'
+let {stmt_block, print_stmt, add_main, call_intr} = cg
 
 # --- Runtime: live_objects()/heap_bytes() see a reference cycle a plain
 # run() leaves behind, and collect() (only) frees it. Run outside any
@@ -183,14 +166,6 @@ fn add_main(m, body, locals = 0) {
 # none of these is a node shape of its own. Each family is actually RUN
 # here, not just named: a typo in any of these names is an unknown-intrinsic
 # error, so a green run is the proof the name resolves. ---
-
-fn call_intr(m, name, args) {
-  let list = m.list_new()
-  for a in args {
-    m.list_push(list, a)
-  }
-  m.intrinsic(name: name, args: list, line: 1, col: 1)
-}
 
 # Map: a keyed container whose keys are whole values, read and written with
 # the same index/set_index an object takes.

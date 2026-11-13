@@ -2,19 +2,8 @@
 # the 'enqueue' and 'genthrow' intrinsics. tests/test_codegen.cul covers the
 # rest of the builder; this exercises just those two, end to end.
 
-fn stmt_block(m, stmts) {
-  let list = m.list_new()
-  for s in stmts {
-    m.list_push(list, s)
-  }
-  m.block(stmts: list, line: 1, col: 1)
-}
-
-fn print_stmt(m, value) {
-  let args = m.list_new()
-  m.list_push(args, value)
-  m.intrinsic(name: 'print', args: args, line: 1, col: 1)
-}
+import cg from './test_import_helpers/codegen_builders.cul'
+let {stmt_block, print_stmt} = cg
 
 fn strl(m, v) {
   m.str_literal(s: v, line: 1, col: 1)

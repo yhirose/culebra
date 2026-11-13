@@ -1,0 +1,34 @@
+# The CodeGen.Module builder helpers the test_codegen*.cul files share: a Block
+# of statements, a print of a value, a `main` function, and an intrinsic call.
+# CodeGen IR nodes are plain Long values, and a Block's statements and a Call's
+# arguments are staged through the module's list_new/list_push.
+
+fn stmt_block(m, stmts) {
+  let list = m.list_new()
+  for s in stmts {
+    m.list_push(list, s)
+  }
+  m.block(stmts: list, line: 1, col: 1)
+}
+
+fn print_stmt(m, value) {
+  let args = m.list_new()
+  m.list_push(args, value)
+  m.intrinsic(name: 'print', args: args, line: 1, col: 1)
+}
+
+# `main`: no parameters, captures or cells, and `locals` local slots.
+fn add_main(m, body, locals = 0) {
+  m.add_func(name: 'main', num_locals: locals, num_captures: 0, num_cells: 0,
+             num_params: 0, body: body)
+}
+
+fn call_intr(m, name, args) {
+  let list = m.list_new()
+  for a in args {
+    m.list_push(list, a)
+  }
+  m.intrinsic(name: name, args: list, line: 1, col: 1)
+}
+
+export {stmt_block, print_stmt, add_main, call_intr}

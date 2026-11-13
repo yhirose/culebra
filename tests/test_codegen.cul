@@ -14,25 +14,8 @@
 # verify() and run() report. test_codegen_exceptions.cul and
 # test_codegen_runtime.cul hold the rest.
 
-fn stmt_block(m, stmts) {
-  let list = m.list_new()
-  for s in stmts {
-    m.list_push(list, s)
-  }
-  m.block(stmts: list, line: 1, col: 1)
-}
-
-fn print_stmt(m, value) {
-  let args = m.list_new()
-  m.list_push(args, value)
-  m.intrinsic(name: 'print', args: args, line: 1, col: 1)
-}
-
-# `main`: no parameters, captures or cells, and `locals` local slots.
-fn add_main(m, body, locals = 0) {
-  m.add_func(name: 'main', num_locals: locals, num_captures: 0, num_cells: 0,
-             num_params: 0, body: body)
-}
+import cg from './test_import_helpers/codegen_builders.cul'
+let {stmt_block, print_stmt, add_main} = cg
 
 # --- Arithmetic, via print's captured stdout. ---
 {

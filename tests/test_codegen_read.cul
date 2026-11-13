@@ -6,13 +6,8 @@
 # rather than text. tests/test_codegen.cul covers the builder; this covers
 # reading back what it built.
 
-fn stmt_block(m, stmts) {
-  let list = m.list_new()
-  for s in stmts {
-    m.list_push(list, s)
-  }
-  m.block(stmts: list, line: 1, col: 1)
-}
+import cg from './test_import_helpers/codegen_builders.cul'
+let {stmt_block} = cg
 
 # --- Every tag's node_tag, one of each in a single module. ---
 {
