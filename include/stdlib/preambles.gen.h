@@ -1856,6 +1856,12 @@ inline constexpr const char* AUDIO_MODULE_SOURCE = R"=culpre=(let _audio_module 
       _Audio.graph_schedule(@_graph._id, [@_part, @_index, how, at, to])
       self
     }
+    # Changes, each [how, at, to], sent in one call: all are checked before
+    # any is made.
+    _changes(changes: Array) {
+      _Audio.graph_schedule(@_graph._id, changes.flat_map(|c| [@_part, @_index, c[0], c[1], c[2]]))
+      self
+    }
   }
 
   # A part of a graph, which keeps its graph as an AudioGraphValue does.
@@ -5974,6 +5980,10 @@ let _synth_module = fn () {
   # graph's values only ramp in straight lines, and 20 keep a curve of -4
   # within 0.5% of its full swing.
   let CURVE_STEPS = 20
+  # A change to a graph value as AudioGraphValue._changes takes it, [how, at,
+  # to]: `how` sets or ramps.
+  let SET = 0
+  let RAMP = 1
 
   let is_number = |v| v is Long | Float
   # Neither NaN (unequal to itself) nor an infinity.
@@ -6477,43 +6487,41 @@ let _synth_module = fn () {
 
   # A note number's frequency, a number's a number and a signal's a signal.
   let hz = fn (note: Long | Float | SynthSignal | SynthEnvelope) {
-    if !is_number(note) {
-      return exp_of((to_part(note) - 69.0) * (Math.log(2.0) / 12.0)) * 440.0
-    }
+    return exp_of((to_part(note) - 69.0) * (Math.log(2.0) / 12.0)) * 440.0 unless is_number(note)
     __raise("ValueError", "Synth.hz: note is a finite number") if !finite(note)
     440.0 * Math.exp(Math.log(2.0) * (note - 69) / 12.0)
   }
   # Decibels as a gain, a number's a number and a signal's a signal.
   let db = fn (x: Long | Float | SynthSignal | SynthEnvelope) {
-    return exp_of(to_part(x) * (Math.log(10.0) / 20.0)) if !is_number(x)
+    return exp_of(to_part(x) * (Math.log(10.0) / 20.0)) unless is_number(x)
     __raise("ValueError", "Synth.db: x is a finite number") if !finite(x)
     Math.exp(Math.log(10.0) * x / 20.0)
   }
 
   # ---- from an expression to an Audio.Graph
 
-  # One segment of an envelope on a graph value, from `l0` at `t` to `l1`
-  # `len` later: a ramp when straight, CURVE_STEPS ramps when curved (a
-  # segment 0 long jumps, as a ramp to the time of the change before does).
-  let segment = fn (value, t, l0, l1, len, c) {
-    if c == 0 {
-      value.ramp(t + len, l1)
-    } else {
-      for j in iota(CURVE_STEPS) {
-        let x = (j + 1) / (CURVE_STEPS + 0.0)
-        value.ramp(t + len * x, shape(l0, l1, c, x))
-      }
-    }
+  # One segment of an envelope, from `l0` at `t` to `l1` `len` later, as
+  # the changes to a graph value it makes: a ramp when straight, CURVE_STEPS
+  # ramps when curved (a segment 0 long jumps, as a ramp to the time of the
+  # change before does).
+  let segment = fn (t, l0, l1, len, c) {
+    return [[RAMP, t + len, l1]] if c == 0
+    iota(CURVE_STEPS).map(fn (j) {
+      let x = (j + 1) / (CURVE_STEPS + 0.0)
+      [RAMP, t + len * x, shape(l0, l1, c, x)]
+    })
   }
 
-  # An envelope on a graph value from `t0`, a gated one up to its sustain.
+  # An envelope on a graph value from `t0`, a gated one up to its sustain,
+  # sent in one call.
   let run = fn (value, e, t0) {
-    value.set(t0, e.levels[0])
+    let changes = [[SET, t0, e.levels[0]]]
     mut t = t0
     for i, len in e.times.enumerate() {
-      segment(value, t, e.levels[i], e.levels[i + 1], len, e.curves[i])
+      changes.extend(segment(t, e.levels[i], e.levels[i + 1], len, e.curves[i]))
       t += len
     }
+    value._changes(changes)
   }
 
   # An envelope on a graph value from the start; a gated one has no time to
@@ -6774,9 +6782,9 @@ let _synth_module = fn () {
   # none: the input's end decides), and a lag and a decay for their time; a
   # size, a rounding, and a clip that holds 0, end with their input, and a
   # latch two periods after it when an impulse at a fixed freq triggers it,
-  # never otherwise; an impulse and a
-  # dust end when their freq or density is 0; a room rings on 60 dB past
-  # its input, as long as its longest comb does at its largest size. A gated
+  # never otherwise; an impulse and a dust end when their freq or density is
+  # 0; a room rings on 60 dB past its input, as long as its longest comb
+  # does at its largest size. A gated
   # envelope ends once it is let go, `held` seconds from its start, and
   # never while it is held.
   fn ending(expr, held = nil) {
@@ -6985,7 +6993,7 @@ let _synth_module = fn () {
       for tr in v.gated {
         let held = tr.envelope.hold(e.held + t - e.at)
         let last = held.times.size() - 1
-        segment(tr.value, t, held.levels[last], 0.0, held.times[last], held.curves[last])
+        tr.value._changes(segment(t, held.levels[last], 0.0, held.times[last], held.curves[last]))
       }
     }
   }

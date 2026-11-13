@@ -167,8 +167,9 @@
 # (Synth's impulse, dust, lfnoise, pulse, .lag, .decay2, .clip, .abs and
 # .exprange, their channels and ends; 0.06 s under --vm, 3.2 s under --jit).
 # Both took round and latch (and Synth's hz and db of a signal, and
-# processing written of the parts) in P15, adding no file: 4.0 -> 5.3 and
-# 3.8 -> 5.8 CPU s under --jit.
+# processing written of the parts) in P15, adding no file: 4.0 -> 4.7 and
+# 3.8 -> 4.8 CPU s under --jit, 10 -> 12 and 10 -> 16 CPU s across the three
+# gc-stress runs (each new section's samples in a block of its own).
 # 351 since test_synth_instrument.cul (Synth's render to a sound's own end, the
 # ends refused, and a Kauai voice made from an expression; 0.13 s under --vm,
 # 1.5 s under --jit). 352 since test_synth_proxy.cul (Synth.Proxy's fades in and

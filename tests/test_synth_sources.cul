@@ -1,6 +1,6 @@
 # Synth's impulse, dust, lfnoise and pulse, .lag, .decay2, .clip, .abs,
-# .exprange, .round and .latch, and hz and db of a signal, each against the Audio.Graph written out by hand or the
-# formula it follows.
+# .exprange, .round and .latch, and hz and db of a signal, each against the
+# Audio.Graph written out by hand or the formula it follows.
 
 let {*} = Synth
 
@@ -133,11 +133,12 @@ assert_samples(at_rate(s.abs(), 0.1), raw.map(|x| Math.abs(x)))
 assert_samples(at_rate(s.exprange(100.0, 1600.0), 0.1), raw.map(|x| 100.0 * Math.exp(Math.log(16.0) * (x + 1.0) / 2.0)))
 assert_samples(at_rate(s.exprange(-2.0, -8.0), 0.1), raw.map(|x| -2.0 * Math.exp(Math.log(4.0) * (x + 1.0) / 2.0)))
 
-# ---- round, latch, and hz and db of a signal
+# ---- round, latch, and hz and db of a signal (each section's samples in a
+# block of its own, let go at its end, so gc-stress does not walk them
+# after)
 
-assert_samples(at_rate(s.round(0.125), 0.1), raw.map(|x| Math.floor(x / 0.125 + 0.5) * 0.125))
 # A sample taken at each rise of the trigger, held until the next.
-fn held(xs, trigger) {
+fn sample_and_hold(xs, trigger) {
   mut (h, up) = (0.0, false)
   iota(xs.size()).map(fn (i) {
     h = trigger[i] > 0 && !up ? xs[i] : h
@@ -145,30 +146,36 @@ fn held(xs, trigger) {
     h
   })
 }
-let started = sine(50.0, phase: 1.0)
-let s1 = at_rate(started, 1.0)
-assert_samples(at_rate(started.latch(impulse(4.0)), 1.0), held(s1, at_rate(impulse(4.0), 1.0)))
-# A trigger of a number above 0 takes in the first sample and holds it.
-assert_samples(at_rate(started.latch(1.0), 0.01), iota(RATE / 100).map(|_| s1[0]))
-# A signal's note number and decibels, as the numbers' are.
-let notes = at_rate(line(57.0, 81.0, 0.1), 0.1)
-assert_samples(at_rate(hz(line(57.0, 81.0, 0.1)), 0.1), notes.map(|n| hz(n)))
-assert_samples(at_rate(db(line(-40.0, 6.0, 0.1)), 0.1), at_rate(line(-40.0, 6.0, 0.1), 0.1).map(|x| db(x)))
-assert_true(hz(sine(5.0)) is SynthPart && db(sine(5.0)) is SynthPart && hz(60) is Float)
-# A latch answers at once: a loop through it alone hears x with no delay.
-assert_eq(caught(|| feedback(|x| (s + x).latch(impulse(4.0))))[0], "ValueError")
+{
+  assert_samples(at_rate(s.round(0.125), 0.1), raw.map(|x| Math.floor(x / 0.125 + 0.5) * 0.125))
+  let started = sine(50.0, phase: 1.0)
+  let s1 = at_rate(started, 1.0)
+  assert_samples(at_rate(started.latch(impulse(4.0)), 1.0), sample_and_hold(s1, at_rate(impulse(4.0), 1.0)))
+  # A trigger of a number above 0 takes in the first sample and holds it.
+  assert_samples(at_rate(started.latch(1.0), 0.01), iota(RATE / 100).map(|_| s1[0]))
+  # A signal's note number and decibels, as the numbers' are.
+  let notes = line(57.0, 81.0, 0.1)
+  assert_samples(at_rate(hz(notes), 0.1), at_rate(notes, 0.1).map(hz))
+  let levels = line(-40.0, 6.0, 0.1)
+  assert_samples(at_rate(db(levels), 0.1), at_rate(levels, 0.1).map(db))
+  assert_true(hz(sine(5.0)) is SynthPart && db(sine(5.0)) is SynthPart && hz(60) is Float)
+  # A latch answers at once: a loop through it alone hears x with no delay.
+  assert_eq(caught(|| feedback(|x| (s + x).latch(impulse(4.0))))[0], "ValueError")
+}
 
 # Processing written of these parts, each against its definition worked out
 # a sample at a time: a one-pole lowpass and a slew limiter in loops, and a
 # sound made coarse in level (a round) and in time (a latch at 2 kHz).
-let x = saw(220.0) * 0.8
-let xs = at_rate(x, 0.1)
-mut y = 0.0
-assert_samples(at_rate(feedback(|y| x * 0.05 + y.delay(0.0) * 0.95), 0.1), xs.map(fn (v) { y = 0.05 * v + 0.95 * y; y }))
-y = 0.0
-assert_samples(at_rate(feedback(|y| y.delay(0.0) + (x - y.delay(0.0)).clip(-0.01, 0.01)), 0.1), xs.map(fn (v) { y += Math.clamp(v - y, -0.01, 0.01); y }))
-let coarse = xs.map(|v| Math.floor(v / 0.25 + 0.5) * 0.25)
-assert_samples(at_rate(x.round(0.25).latch(impulse(2000.0)), 0.1), held(coarse, at_rate(impulse(2000.0), 0.1)))
+{
+  let x = saw(220.0) * 0.8
+  let xs = at_rate(x, 0.1)
+  mut prev = 0.0
+  assert_samples(at_rate(feedback(|y| x * 0.05 + y.delay(0.0) * 0.95), 0.1), xs.map(fn (v) { prev = 0.05 * v + 0.95 * prev; prev }))
+  prev = 0.0
+  assert_samples(at_rate(feedback(|y| y.delay(0.0) + (x - y.delay(0.0)).clip(-0.01, 0.01)), 0.1), xs.map(fn (v) { prev += Math.clamp(v - prev, -0.01, 0.01); prev }))
+  let coarse = xs.map(|v| Math.floor(v / 0.25 + 0.5) * 0.25)
+  assert_samples(at_rate(x.round(0.25).latch(impulse(2000.0)), 0.1), sample_and_hold(coarse, at_rate(impulse(2000.0), 0.1)))
+}
 
 # ---- when they end: play needs no secs for one that ends on its own.
 
@@ -179,14 +186,16 @@ fn ends(expr) {
 }
 assert_close(ends(impulse(0.0).decay2(0.001, 0.05) * sine(800.0)), 0.05, 1e-12)
 assert_eq(ends(dust(0.0)), 0.0)
-assert_close(ends((sine(440.0) * perc(0.01, 0.1)).lag(0.05).abs().clip(-0.5, 0.5)), 0.16, 1e-12)
-assert_close(ends((sine(440.0) * perc(0.01, 0.1)).round(0.25)), 0.11, 1e-12)
-# A latch an impulse at a fixed freq triggers holds 0 two periods after its input.
-let stepped = (sine(440.0) * perc(0.01, 0.1)).latch(impulse(100.0))
+let struck = sine(440.0) * perc(0.01, 0.1)
+assert_close(ends(struck.lag(0.05).abs().clip(-0.5, 0.5)), 0.16, 1e-12)
+assert_close(ends(struck.round(0.25)), 0.11, 1e-12)
+# A latch an impulse at a fixed freq triggers holds 0 two periods after its
+# input.
+let stepped = struck.latch(impulse(100.0))
 assert_close(ends(stepped), 0.13, 1e-12)
 let tail_end = render(stepped)
 assert_eq(tail_end[tail_end.size() - 1], 0.0)
-for expr in [dust(10.0), lfnoise(4.0), impulse(4.0), (sine(440.0) * perc(0.01, 0.1)).clip(0.1, 0.5), (sine(440.0) * perc(0.01, 0.1)).exprange(1.0, 2.0), (sine(440.0) * perc(0.01, 0.1)).latch(dust(100.0)), hz(sine(5.0))] {
+for expr in [dust(10.0), lfnoise(4.0), impulse(4.0), struck.clip(0.1, 0.5), struck.exprange(1.0, 2.0), struck.latch(dust(100.0)), hz(sine(5.0))] {
   assert_eq(caught(|| play(expr))[0], "ValueError")
 }
 

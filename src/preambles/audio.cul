@@ -206,6 +206,12 @@ let _audio_module = fn () {
       _Audio.graph_schedule(@_graph._id, [@_part, @_index, how, at, to])
       self
     }
+    # Changes, each [how, at, to], sent in one call: all are checked before
+    # any is made.
+    _changes(changes: Array) {
+      _Audio.graph_schedule(@_graph._id, changes.flat_map(|c| [@_part, @_index, c[0], c[1], c[2]]))
+      self
+    }
   }
 
   # A part of a graph, which keeps its graph as an AudioGraphValue does.
