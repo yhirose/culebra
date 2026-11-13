@@ -13,7 +13,7 @@ server = fn () {
   let s = Http.server()
   return "server-ok"
 }
-inspect(server())
+assert_eq(server(), "server-ok")
 
 # Same shape via Time.monotonic — the member `monotonic` would collide too
 # if a like-named var existed; here `mono` exercises the namespace receiver
@@ -22,14 +22,14 @@ mono = fn () {
   let t = Time.monotonic()
   return "mono-ok"
 }
-inspect(mono())
+assert_eq(mono(), "mono-ok")
 
 # The collision also surfaces when the variable is used from a nested scope
 # (an `if` block), which is how the WebView spike triggered it.
 srv2 = Http.server()
 if true {
   let again = Http.server()
-  inspect("nested-ok")
+  assert_true(again != nil)
 }
 
 # Genuine UFCS on a non-namespace receiver must still capture the method:
@@ -40,4 +40,4 @@ fn dbl(n) {
 let ufcs = fn () {
   return 21.dbl()
 }
-inspect(ufcs().to_string())
+assert_eq(ufcs(), 42)

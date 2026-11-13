@@ -2,14 +2,16 @@
 # scope, exactly as they do on normal fall-through / return. This was a JIT
 # interp/JIT asymmetry (the JIT skipped scope cleanup on the throw path); the
 # difftest corpus does not exercise drop-on-throw, so this is the regression
-# guard. The test runner compares interp vs every JIT backend byte-for-byte.
+# guard. Each section records what ran, in order, and asserts the sequence.
+
+mut ev = []
 
 class Res {
   new(id) {
     self.id = id
   }
   drop() {
-    print("drop " + self.id.to_string() + "\n")
+    ev.push("drop {self.id}")
   }
 }
 
@@ -18,12 +20,13 @@ fn simple() {
   let r = Res.new(1)
   throw "x"
 }
-print("== simple ==\n")
 try {
   simple()
 } catch e {
-  print("caught\n")
+  ev.push("caught")
 }
+assert_eq(ev, ['drop 1', 'caught'])
+ev = []
 
 # 2. nested lexical scopes: inner drops before outer, LIFO
 fn nested() {
@@ -33,12 +36,13 @@ fn nested() {
     throw "x"
   }
 }
-print("== nested ==\n")
 try {
   nested()
 } catch e {
-  print("caught\n")
+  ev.push("caught")
 }
+assert_eq(ev, ['drop 3', 'drop 2', 'caught'])
+ev = []
 
 # 3. defer + drop ordering: defer runs before the scope's drops (in a nested
 # lexical block, so it exercises the per-scope cleanup, not the fn-level one)
@@ -47,18 +51,19 @@ fn deferdrop() {
   {
     let a = Res.new(4)
     defer {
-      print("defer\n")
+      ev.push("defer")
     }
     let b = Res.new(5)
     throw "x"
   }
 }
-print("== defer+drop ==\n")
 try {
   deferdrop()
 } catch e {
-  print("caught\n")
+  ev.push("caught")
 }
+assert_eq(ev, ['defer', 'drop 5', 'drop 4', 'drop 6', 'caught'])
+ev = []
 
 # 4. while body: the current iteration's local is dropped on throw
 fn wloop() {
@@ -69,12 +74,13 @@ fn wloop() {
     i = i + 1
   }
 }
-print("== while ==\n")
 try {
   wloop()
 } catch e {
-  print("caught\n")
+  ev.push("caught")
 }
+assert_eq(ev, ['drop 10', 'drop 11', 'caught'])
+ev = []
 
 # 5. for body
 fn floop() {
@@ -83,12 +89,13 @@ fn floop() {
     throw "x" if i == 1
   }
 }
-print("== for ==\n")
 try {
   floop()
 } catch e {
-  print("caught\n")
+  ev.push("caught")
 }
+assert_eq(ev, ['drop 20', 'drop 21', 'caught'])
+ev = []
 
 # 6. match: arm body local + drop-having subject both released
 fn matchthrow() {
@@ -99,12 +106,13 @@ fn matchthrow() {
     },
   }
 }
-print("== match ==\n")
 try {
   matchthrow()
 } catch e {
-  print("caught\n")
+  ev.push("caught")
 }
+assert_eq(ev, ['drop 31', 'drop 30', 'caught'])
+ev = []
 
 # 7. try body: local dropped before the catch handler runs
 fn trythrow() {
@@ -113,16 +121,17 @@ fn trythrow() {
     let inner = Res.new(41)
     throw "x"
   } catch e {
-    print("inner caught\n")
+    ev.push("inner caught")
   }
   throw "x"
 }
-print("== nested try ==\n")
 try {
   trythrow()
 } catch e {
-  print("outer caught\n")
+  ev.push("outer caught")
 }
+assert_eq(ev, ['drop 41', 'inner caught', 'drop 40', 'outer caught'])
+ev = []
 
 # 8. escaped container: dropping the array frees its held elements
 fn escape() {
@@ -130,12 +139,13 @@ fn escape() {
   let b = [a, Res.new(51)]
   throw "x"
 }
-print("== escape ==\n")
 try {
   escape()
 } catch e {
-  print("caught\n")
+  ev.push("caught")
 }
+assert_eq(ev, ['drop 51', 'drop 50', 'caught'])
+ev = []
 
 # 8b. a captured local releases in DECLARATION order like any other, newest
 # first — the compiling backends pre-allocate its cell at the top of the scope
@@ -145,15 +155,16 @@ try {
 fn captured_order() {
   let first = Res.new(70)
   let held = Res.new(71)
-  print((fn () { held.id })().to_string() + "\n")
+  ev.push((fn () { held.id })())
   throw "x"
 }
-print("== captured order ==\n")
 try {
   captured_order()
 } catch e {
-  print("caught\n")
+  ev.push("caught")
 }
+assert_eq(ev, [71, 'drop 71', 'drop 70', 'caught'])
+ev = []
 
 # 8b'. the same shape with the names' alphabetical order REVERSED from their
 # declaration order. A closure literal in the scope routes the interp's
@@ -164,15 +175,16 @@ try {
 fn captured_order_rev() {
   let z = Res.new(80)
   let a = Res.new(81)
-  print((fn () { a.id })().to_string() + "\n")
+  ev.push((fn () { a.id })())
   throw "x"
 }
-print("== captured order, names reversed ==\n")
 try {
   captured_order_rev()
 } catch e {
-  print("caught\n")
+  ev.push("caught")
 }
+assert_eq(ev, [81, 'drop 81', 'drop 80', 'caught'])
+ev = []
 
 # 8c. a `drop` body that throws is logged and swallowed, and the error already
 # unwinding survives it — the compiled backends carry the thrown payload in a
@@ -182,7 +194,7 @@ class Noisy {
     self.id = id
   }
   drop() {
-    print("drop noisy\n")
+    ev.push("drop noisy")
     throw "from drop"
   }
 }
@@ -190,14 +202,16 @@ fn drop_throws() {
   let n = Noisy.new(1)
   throw "original"
 }
-print("== drop throws ==\n")
 try {
   drop_throws()
 } catch e {
-  print("caught " + e + "\n")
+  ev.push("caught " + e)
 }
+assert_eq(ev, ['drop noisy', 'caught original'])
+ev = []
 
-# 9. for-in over a generator: body local dropped on throw, iterator disposed
+# 9. for-in over a generator: body local dropped on throw (the generator's own
+# dispose on the way out is checked in test_iter_dispose_ownership.cul)
 fn gen(n) {
   for i in 0..n {
     yield i
@@ -209,9 +223,9 @@ fn geniter() {
     throw "x" if i == 2
   }
 }
-print("== for-in generator ==\n")
 try {
   geniter()
 } catch e {
-  print("caught\n")
+  ev.push("caught")
 }
+assert_eq(ev, ['drop 60', 'drop 61', 'drop 62', 'caught'])

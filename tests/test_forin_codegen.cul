@@ -5,49 +5,61 @@
 # for-in paths. SDAG-O0 aborted legalizing the malformed aggregate
 # ("Do not know how to promote this operator's operand"), and FastISel
 # read the undefined upper bits as a garbage tag ("got ?"). O2 hid both.
-# This file exercises every for-in form so the gate can diff interp vs
-# --jit / --jit -O0 / --jit-faststart and catch a reintroduction on any
-# codegen backend.
+# This file exercises every for-in form, and each loop asserts what it
+# yielded, so a reintroduction fails on whichever backend it reaches: the
+# executor, --jit, --jit -O0 or --jit-faststart.
 
 # Array element loop.
+mut seen = []
 for x in [1, 2, 3] {
-  inspect(x)
+  seen.push(x)
 }
+assert_eq(seen, [1, 2, 3])
 
 # Array via explicit .iter() (Iterator-object path).
+seen = []
 for x in [10, 20].iter() {
-  inspect(x)
+  seen.push(x)
 }
+assert_eq(seen, [10, 20])
 
 # Object key/value loop (object_iter path).
+seen = []
 for k, v in {a: 1, b: 2} {
-  inspect(k)
-  inspect(v)
+  seen.push(k)
+  seen.push(v)
 }
+assert_eq(seen, ['a', 1, 'b', 2])
 
 # Range literal (counter fast path) and range object.
+seen = []
 for i in 0..3 {
-  inspect(i)
+  seen.push(i)
 }
 let r = 0..3
 for i in r {
-  inspect(i)
+  seen.push(i)
 }
+assert_eq(seen, [0, 1, 2, 0, 1, 2])
 
 # Range value via explicit .iter(): must yield the start..end sequence, not
 # the Range object's (key, value) pairs. (0..n).iter() is what the generator
 # for-in desugar emits; a broken dispatch walked the object fields / crashed.
+seen = []
 for i in (0..3).iter() {
-  inspect(i)
+  seen.push(i)
 }
 for i in (1..=3).iter() {
-  inspect(i)
+  seen.push(i)
 }
+assert_eq(seen, [0, 1, 2, 1, 2, 3])
 
 # String grapheme loop (StringView path).
+seen = []
 for c in "hi" {
-  inspect(c)
+  seen.push(c)
 }
+assert_eq(seen, ['h', 'i'])
 
 # User-defined generator (yield) driving the protocol loop.
 fn count_to(n) {
@@ -57,9 +69,11 @@ fn count_to(n) {
     i = i + 1
   }
 }
+seen = []
 for x in count_to(3) {
-  inspect(x)
+  seen.push(x)
 }
+assert_eq(seen, [0, 1, 2])
 
 # Generator whose yield lives inside a for-in over a range literal. The
 # transform desugars this to `(0..n).iter()`, and the range bound `n` (a
@@ -69,14 +83,18 @@ fn range_gen(n) {
     yield i * 10
   }
 }
+seen = []
 for x in range_gen(3) {
-  inspect(x)
+  seen.push(x)
 }
+assert_eq(seen, [0, 10, 20])
 
 # Nested for-in over an object inside an array loop.
+seen = []
 for row in [{k: 1}, {k: 2}] {
   for key, val in row {
-    inspect(key)
-    inspect(val)
+    seen.push(key)
+    seen.push(val)
   }
 }
+assert_eq(seen, ['k', 1, 'k', 2])

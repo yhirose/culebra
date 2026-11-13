@@ -2,12 +2,15 @@
 # ref during unwind, firing its drop before the catch — like the
 # interpreter. The for statement's own cleanup pad covers every branch
 # (keys, protocol, set); the JIT used to strand that ref (drop never fired,
-# and the object leaked when the frame wasn't re-entered).
+# and the object leaked when the frame wasn't re-entered). Each section records
+# what ran, in order, and asserts the sequence.
+
+mut ev = []
 
 # Keys branch: plain object, body throws.
 fn run_keys() {
   for k in {a: 1, b: 2, drop: fn () {
-    inspect("keys: iterable dropped")
+    ev.push("keys: iterable dropped")
   }} {
     throw "boom"
   }
@@ -15,8 +18,10 @@ fn run_keys() {
 try {
   run_keys()
 } catch e {
-  inspect("keys: caught " + e)
+  ev.push("keys: caught " + e)
 }
+assert_eq(ev, ["keys: iterable dropped", "keys: caught boom"])
+ev = []
 
 # Protocol branch, distinct iterator: body throws; the iterator is disposed
 # and dropped by the protocol cleanup, then the iterable by the for scope.
@@ -34,15 +39,15 @@ fn mk_proto() {
           self.i
         },
         dispose: fn () {
-          inspect("proto: disposed")
+          ev.push("proto: disposed")
         },
         drop: fn () {
-          inspect("proto: iter dropped")
+          ev.push("proto: iter dropped")
         },
       }
     },
     drop: fn () {
-      inspect("proto: iterable dropped")
+      ev.push("proto: iterable dropped")
     },
   }
 }
@@ -54,8 +59,10 @@ fn run_proto() {
 try {
   run_proto()
 } catch e {
-  inspect("proto: caught " + e)
+  ev.push("proto: caught " + e)
 }
+assert_eq(ev, ["proto: disposed", "proto: iter dropped", "proto: iterable dropped", "proto: caught boom"])
+ev = []
 
 # Protocol branch, throwing dispose on break: the dispose's own throw
 # propagates, and both the iterator and the iterable still drop.
@@ -76,12 +83,12 @@ fn mk_throwing() {
           throw "dboom"
         },
         drop: fn () {
-          inspect("dthrow: iter dropped")
+          ev.push("dthrow: iter dropped")
         },
       }
     },
     drop: fn () {
-      inspect("dthrow: iterable dropped")
+      ev.push("dthrow: iterable dropped")
     },
   }
 }
@@ -93,8 +100,10 @@ fn run_dthrow() {
 try {
   run_dthrow()
 } catch e {
-  inspect("dthrow: caught " + e)
+  ev.push("dthrow: caught " + e)
 }
+assert_eq(ev, ["dthrow: iter dropped", "dthrow: iterable dropped", "dthrow: caught dboom"])
+ev = []
 
 # Set branch: members survive the unwind (the temp array's slot releases,
 # the set itself is dropped at its let scope's exit).
@@ -107,8 +116,10 @@ fn run_set() {
 try {
   run_set()
 } catch e {
-  inspect("set: caught " + e)
+  ev.push("set: caught " + e)
 }
+assert_eq(ev, ["set: caught boom"])
+ev = []
 
 # The element itself, not just the iterable: a destructuring loop variable
 # whose pattern misses throws while the cursor still holds this iteration's
@@ -117,19 +128,21 @@ try {
 # cursor's element guard was outside the loop's cleanup pad.
 fn mk_elem(n) {
   {at: n, drop: fn () {
-    inspect("elem: dropped " + self.at.to_string())
+    ev.push("elem: dropped " + self.at.to_string())
   }}
 }
 fn run_elem_mismatch() {
   for (a, b) in [mk_elem(1)] {
-    inspect("elem: body ran")
+    ev.push("elem: body ran")
   }
 }
 try {
   run_elem_mismatch()
 } catch e {
-  inspect("elem: caught " + e.kind)
+  ev.push("elem: caught " + e.kind)
 }
+assert_eq(ev, ["elem: dropped 1", "elem: caught ValueError"])
+ev = []
 
 # Same window on the protocol cursor, where the element comes from next().
 fn mk_elem_gen() {
@@ -148,23 +161,27 @@ fn mk_elem_gen() {
 }
 fn run_elem_proto() {
   for (a, b) in mk_elem_gen() {
-    inspect("proto: body ran")
+    ev.push("proto: body ran")
   }
 }
 try {
   run_elem_proto()
 } catch e {
-  inspect("elem: caught " + e.kind)
+  ev.push("elem: caught " + e.kind)
 }
+assert_eq(ev, ["elem: dropped 2", "elem: caught ValueError"])
+ev = []
 
 # A matching pattern hands the element to the body slot, so it dies at the
 # end of the iteration — the guard must not release it a second time.
 fn run_elem_ok() {
   for (a, b) in [(mk_elem(3), 9)] {
-    inspect("ok: body ran")
+    ev.push("ok: body ran")
   }
 }
 run_elem_ok()
+assert_eq(ev, ["ok: body ran", "elem: dropped 3"])
+ev = []
 
 // docs §18.5 closes the iterator on the way out, after the iteration's own
 // bindings die — so the element's and the body's drops precede `dispose` on
@@ -172,7 +189,7 @@ run_elem_ok()
 class Res {
   id = ""
   new(id) { self.id = id }
-  drop() { inspect("drop " + self.id) }
+  drop() { ev.push("drop " + self.id) }
 }
 
 fn mk_source() {
@@ -185,43 +202,45 @@ fn mk_source() {
       self.n = v + 1
       Res.new("e" + to_string(v))
     },
-    dispose: fn () { inspect("dispose") },
+    dispose: fn () { ev.push("dispose") },
   }
 }
 
-inspect("-- break")
 for r in mk_source() {
   let local = Res.new("L")
   break
 }
+assert_eq(ev, ["drop L", "drop e0", "dispose"])
+ev = []
 
-inspect("-- throw")
 try {
   for r in mk_source() {
     let local = Res.new("L")
     throw "boom"
   }
 } catch e {
-  inspect("caught " + e)
+  ev.push("caught " + e)
 }
+assert_eq(ev, ["drop L", "drop e0", "dispose", "caught boom"])
+ev = []
 
 // A `return` also travels through here. The element's refcount hits zero
 // while the return is still unwinding, and the drop body has to run there —
 // its statements used to short-circuit on the pending flow, so the drop was
 // silently a no-op.
-inspect("-- return")
 fn leave_early() {
   for r in mk_source() {
     let local = Res.new("L")
     return "left"
   }
 }
-inspect(leave_early())
+ev.push(leave_early())
+assert_eq(ev, ["drop L", "drop e0", "dispose", "left"])
+ev = []
 
 // A destructure mismatch is an error leaving the loop: it is the one that
 // reaches the `catch`, and a `dispose` throwing on the way out is swallowed
 // like any other unwind.
-inspect("-- mismatch")
 fn mk_bad() {
   {
     iter: fn () { self },
@@ -232,10 +251,9 @@ fn mk_bad() {
 }
 try {
   for (a, b) in mk_bad() {
-    inspect("never")
+    ev.push("never")
   }
 } catch e {
-  inspect("mismatch caught " + e.kind)
+  ev.push("mismatch caught " + e.kind)
 }
-
-inspect("done")
+assert_eq(ev, ["mismatch caught ValueError"])

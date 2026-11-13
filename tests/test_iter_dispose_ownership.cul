@@ -5,6 +5,9 @@
 # iterator. The JIT used to pair two defects here (an orphaned iterable ref
 # and a double-consumed dispose `self`) that cancelled only for generators.
 
+# Each section records what ran, in order, and asserts the sequence.
+mut ev = []
+
 # Distinct iterator: the iterator's drop fires at loop exit (after dispose),
 # the iterable's drop at its scope exit.
 fn mk_distinct() {
@@ -21,15 +24,15 @@ fn mk_distinct() {
           self.i
         },
         dispose: fn () {
-          inspect("distinct: disposed")
+          ev.push("distinct: disposed")
         },
         drop: fn () {
-          inspect("distinct: iter dropped")
+          ev.push("distinct: iter dropped")
         },
       }
     },
     drop: fn () {
-      inspect("distinct: iterable dropped")
+      ev.push("distinct: iterable dropped")
     },
   }
 }
@@ -39,20 +42,42 @@ fn run_distinct() {
   for x in g {
     break if x > 1
   }
-  inspect("distinct: after loop")
+  ev.push("distinct: after loop")
 }
 run_distinct()
-inspect("distinct: after run")
+ev.push("distinct: after run")
+assert_eq(
+  ev,
+  [
+    "distinct: disposed",
+    "distinct: iter dropped",
+    "distinct: after loop",
+    "distinct: iterable dropped",
+    "distinct: after run",
+  ],
+)
+ev = []
 
 # Fresh iterable (no binding): its drop fires at the loop's own scope exit.
 fn run_fresh() {
   for x in mk_distinct() {
     break if x > 1
   }
-  inspect("fresh: after loop")
+  ev.push("fresh: after loop")
 }
 run_fresh()
-inspect("fresh: after run")
+ev.push("fresh: after run")
+assert_eq(
+  ev,
+  [
+    "distinct: disposed",
+    "distinct: iter dropped",
+    "distinct: iterable dropped",
+    "fresh: after loop",
+    "fresh: after run",
+  ],
+)
+ev = []
 
 # Self-returning iterator: still usable after the loop, drop at scope exit.
 fn mk_self() {
@@ -69,10 +94,10 @@ fn mk_self() {
       self.i
     },
     dispose: fn () {
-      inspect("self: disposed")
+      ev.push("self: disposed")
     },
     drop: fn () {
-      inspect("self: dropped")
+      ev.push("self: dropped")
     },
   }
 }
@@ -82,16 +107,27 @@ fn run_self() {
   for x in g {
     break if x > 1
   }
-  inspect("self: after loop")
-  inspect("self: usable " + g.has_next().to_string())
+  ev.push("self: after loop")
+  ev.push("self: usable " + g.has_next().to_string())
 }
 run_self()
-inspect("self: after run")
+ev.push("self: after run")
+assert_eq(
+  ev,
+  [
+    "self: disposed",
+    "self: after loop",
+    "self: usable true",
+    "self: dropped",
+    "self: after run",
+  ],
+)
+ev = []
 
 # Generator with a body defer standing in for dispose observability.
 fn gen() {
   defer {
-    inspect("gen: disposed")
+    ev.push("gen: disposed")
   }
   yield 1
   yield 2
@@ -102,10 +138,12 @@ fn run_gen() {
   for x in gen() {
     break if x > 1
   }
-  inspect("gen: after loop")
+  ev.push("gen: after loop")
 }
 run_gen()
-inspect("gen: after run")
+ev.push("gen: after run")
+assert_eq(ev, ["gen: disposed", "gen: after loop", "gen: after run"])
+ev = []
 
 # A `dispose` member that is not a function is skipped, not called. The
 # executor answers `if (fn.tag != TAG_FUNC) return;`; the JIT used to hand
@@ -114,7 +152,7 @@ inspect("gen: after run")
 # under --jit and AOT and nothing under the executor.
 class Ctor {
   new() {
-    inspect("dispose: class ctor ran (it must not)")
+    ev.push("dispose: class ctor ran (it must not)")
   }
 }
 
@@ -142,7 +180,7 @@ for _ in {iter: fn () {
 }} {
   nil
 }
-inspect("dispose: non-function skipped")
+assert_eq(ev, [])
 
 # ...and a real one still runs, on every exit the loop can take.
 mut ran = []
@@ -160,7 +198,7 @@ for _ in {iter: fn () {
 }} {
   break
 }
-inspect(ran)
+assert_eq(ran, ['drain', 'break'])
 
 # A terminal whose step throws lets go of the element it pulled, as one that
 # returns does: `join` printing an element too deep to print, `contains`
