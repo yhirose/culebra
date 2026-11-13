@@ -168,6 +168,17 @@ long differing(const std::vector<float>& a, const std::vector<float>& b) {
 
 bool same_bits(float a, float b) { return std::memcmp(&a, &b, sizeof a) == 0; }
 
+// Graph `id` played as Audio.Graph's play() plays it: into bus `into` (0 for
+// the device), the graphs playing worked out in graph_played's order.
+void play(ad::Engine& engine, int64_t id, int64_t into = 0) {
+  auto order = ad::graph_played(id, into, ad::graph_def(id)->buses_read());
+  engine.graph_play(id, into ? ad::bus_defs().at(into) : nullptr, *order);
+}
+void stop(ad::Engine& engine, int64_t id) {
+  ad::graphs_playing().erase(id);
+  engine.graph_stop(id);
+}
+
 // A graph's samples as the stream plays them: held to -1..1, as floats.
 std::vector<float> as_played(const std::vector<double>& x) {
   std::vector<float> out;
@@ -306,7 +317,7 @@ void graph_plays_as_it_renders() {
   Device device(200000);
   device.run(3000);
   int64_t start = device.pos();
-  device.engine->graph_play(id);
+  play(*device.engine, id);
   device.run(4410);
   auto& live = *ad::graph_def(id);
   for (int k = 0; k < 2 * static_cast<int>(ad::kGraphLiveRoom); k++) {
@@ -322,8 +333,79 @@ void graph_plays_as_it_renders() {
   auto want = as_played(samples);
   hears("the graph", device, start, want);
   CHECK(device.heap_calls == 0, "the renders made %ld heap calls", device.heap_calls);
-  device.engine->graph_stop(id);
+  stop(*device.engine, id);
   ad::graph_defs().erase(id);
+}
+
+// A graph that reads a bus hears what a graph plays into it, the same
+// stretch: the reader is played first and the writer then starts in the
+// middle of a buffer, and the writer is still worked out first. The reader
+// hears silence until the writer starts and after it stops; a mono writer
+// fills both channels of a bus of two.
+void bus_carries_a_graph() {
+  const int64_t bus = 9401, writer = 9402, reader = 9403;
+  ad::bus_defs()[bus] = std::make_shared<ad::Bus>(2);
+  ad::Graph w(ad::kMixerRate);
+  int saw = w.add(ad::PartKind::Wave, {}, ad::Oscillator{ad::WaveKind::Saw}, 220, 0);
+  w.output(w.add(ad::PartKind::Filter, {saw}, ad::Svf(ad::FilterKind::Low, 0.9), 1500));
+  ad::Graph r(ad::kMixerRate);
+  int left = r.add(ad::PartKind::Input, {}, ad::BusRead{ad::bus_defs()[bus], bus, 0});
+  int right = r.add(ad::PartKind::Input, {}, ad::BusRead{ad::bus_defs()[bus], bus, 1});
+  r.output(r.add(ad::PartKind::Gain, {left}, std::monostate{}, 0.5),
+           r.add(ad::PartKind::Gain, {right}, std::monostate{}, 0.25));
+  ad::graph_defs().insert_or_assign(writer, w);
+  ad::graph_defs().insert_or_assign(reader, r);
+
+  Device device(120000);
+  device.run(2000);
+  play(*device.engine, reader);
+  device.run(3000);
+  g_now += std::chrono::milliseconds(10);
+  int64_t start = device.pos() + 441;
+  play(*device.engine, writer, bus);
+  device.run(50000);
+  int64_t stopped = device.pos();
+  stop(*device.engine, writer);
+  device.run(10000);
+  g_now = {};
+
+  std::vector<double> x(static_cast<size_t>(stopped - start));
+  ad::Graph(w).render(x.data(), static_cast<int64_t>(x.size()));
+  std::vector<double> l(x.size()), rr(x.size());
+  for (size_t i = 0; i < x.size(); i++) {
+    l[i] = x[i] * 0.5;
+    rr[i] = x[i] * 0.25;
+  }
+  hears("the bus, left", std::vector<float>(device.left.begin(), device.left.begin() + stopped), start, as_played(l));
+  hears("the bus, right", std::vector<float>(device.right.begin(), device.right.begin() + stopped), start,
+        as_played(rr));
+  CHECK(std::all_of(device.left.begin() + stopped + ad::kMixChunk, device.left.end(), [](float v) { return v == 0; }),
+        "the bus is silent once its writer stops");
+  CHECK(device.heap_calls == 0, "the renders made %ld heap calls", device.heap_calls);
+  stop(*device.engine, reader);
+
+  // A reader that starts in the middle of a buffer hears the writer's samples
+  // from that sample on.
+  Device late(80000);
+  late.run(1000);
+  int64_t written = late.pos();
+  play(*late.engine, writer, bus);
+  late.run(2500);
+  g_now += std::chrono::milliseconds(10);
+  int64_t heard = late.pos() + 441;
+  play(*late.engine, reader);
+  late.run(30000);
+  g_now = {};
+  std::vector<double> y(static_cast<size_t>(late.pos() - written));
+  ad::Graph(w).render(y.data(), static_cast<int64_t>(y.size()));
+  std::vector<double> half(y.begin() + (heard - written), y.end());
+  for (double& v : half) v *= 0.5;
+  hears("a reader from the middle of a buffer", late.left, heard, as_played(half));
+  stop(*late.engine, reader);
+  stop(*late.engine, writer);
+  ad::graph_defs().erase(writer);
+  ad::graph_defs().erase(reader);
+  ad::bus_defs().erase(bus);
 }
 
 // A graph with a loop played is the graph rendered, and the loop (worked out a
@@ -348,7 +430,7 @@ void loop_plays_as_it_renders() {
   Device device(200000);
   device.run(3000);
   int64_t start = device.pos();
-  device.engine->graph_play(id);
+  play(*device.engine, id);
   device.run(30000);
 
   ad::Graph copy(*ad::graph_def(id));
@@ -357,7 +439,7 @@ void loop_plays_as_it_renders() {
   auto want = as_played(samples);
   hears("the loop", device, start, want);
   CHECK(device.heap_calls == 0, "the renders made %ld heap calls", device.heap_calls);
-  device.engine->graph_stop(id);
+  stop(*device.engine, id);
   ad::graph_defs().erase(id);
 }
 
@@ -377,7 +459,7 @@ void stereo_graph_plays_as_it_renders() {
   Device device(100000);
   device.run(3000);
   g_now += std::chrono::milliseconds(10);
-  device.engine->graph_play(id);
+  play(*device.engine, id);
   int64_t start = device.pos() + 441;
   device.run(30000);
   g_now = {};
@@ -389,7 +471,7 @@ void stereo_graph_plays_as_it_renders() {
   hears("the stereo graph, left", device.left, start, as_played(l));
   hears("the stereo graph, right", device.right, start, as_played(r));
   CHECK(device.heap_calls == 0, "the renders made %ld heap calls", device.heap_calls);
-  device.engine->graph_stop(id);
+  stop(*device.engine, id);
   ad::graph_defs().erase(id);
 }
 
@@ -440,13 +522,13 @@ void many_play_at_once() {
   def.output(def.add(ad::PartKind::Wave, {}, ad::Oscillator{ad::WaveKind::Sine}, 330, 0));
   for (int64_t id = 9100; id < 9200; id++) {
     ad::graph_defs().insert_or_assign(id, def);
-    engine.graph_play(id);
+    play(engine, id);
     if (id % 10 == 0) device.run(50);
   }
   device.run(20000);
   CHECK(device.heap_calls == 0, "100 graphs: the renders made %ld heap calls", device.heap_calls);
   for (int64_t id = 1; id <= 40; id++) engine.schedule_free(id);
-  for (int64_t id = 9100; id < 9200; id++) engine.graph_stop(id);
+  for (int64_t id = 9100; id < 9200; id++) stop(engine, id);
   device.heap_calls = 0;
   device.run(5000);
   engine.release_retired();
@@ -605,6 +687,7 @@ int main() {
   graph_plays_as_it_renders();
   loop_plays_as_it_renders();
   stereo_graph_plays_as_it_renders();
+  bus_carries_a_graph();
   two_songs_on_both_channels();
   many_play_at_once();
   stolen_sample_fades();

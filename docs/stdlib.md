@@ -9091,10 +9091,11 @@ it or to any of its parts and values.
 | `g.clip(input, lo = -1.0, hi = 1.0)` | `input` held within `lo`..`hi` |
 | `g.exp(input)` | e to the power of `input` |
 | `g.room(input, size = 0.5, damp = 0.5, side = 0)` | one side of a room (Freeverb: eight damped combs, then four allpasses), answering only the echoes of `input`. `side` 0 is the left and 1 the right, whose delays are 23 samples longer, so two sides of one input ring apart; the delays follow the graph's rate. `size` (0 to 1) sets how long it rings (60 dB in about 0.7 s at 0, 1.5 s at 0.5 and 12 s at 1) and `damp` (0 to 1) how soon its highs go. A room is worked out as long as it plays |
-| `part.connect(target) -> target` | adds what `part` answers into `target`: into what that part takes in (a source, a wave, a noise, an impulse, a dust or an lfnoise, takes nothing in), or into one of its values (below). A part may be connected from any part, but a loop has to pass through a delay (below) |
+| `g.input(bus, channel = 0)` | what the graphs played into `bus` (an `Audio.Bus`) add up to on `channel`, the same stretch of the stream (below) |
+| `part.connect(target) -> target` | adds what `part` answers into `target`: into what that part takes in (a source, a wave, a noise, an impulse, a dust, an lfnoise or an input, takes nothing in), or into one of its values (below). A part may be connected from any part, but a loop has to pass through a delay (below) |
 | `g.output(left, right = nil)` | the part the graph plays (silence until there is one), or with `right` the part on each side, which makes the graph stereo. A graph with one output plays it on both sides |
 | `g.render(seconds, channels = 1) -> Array` | the graph's first `seconds`, worked out now from its start. With `channels: 2`, `[left, right]`, each an Array of samples (a graph with one output gives the same on both); a stereo graph renders only so (`ValueError` with 1) |
-| `g.play()` | play the graph from its start (again, if it is playing) |
+| `g.play(to = nil)` | play the graph from its start (again, if it is playing), to the device, or into `to`, an `Audio.Bus` |
 | `g.stop()` | silence it |
 | `g.now() -> Float` | where on the graph's clock a change made now lands; `0.0` when it is not playing |
 
@@ -9223,6 +9224,35 @@ let copies = iota(3).map(fn (k) {
 })
 ch.output(ch.mix([saw2, ...copies], gain: 0.25))
 println(ch.render(0.1).size())  # => 4410
+```
+
+`Audio.Bus(channels = 2)` (1 or 2) joins graphs as they play: `g.play(to:
+bus)` plays a graph into the bus instead of the device, and an input part
+of another graph, `h.input(bus, channel = 0)`, reads it. The mixer works out
+each graph that plays into a bus before those that read it, so a reader
+hears the same stretch of the stream the writers played, at once, however
+the buffers fall; a bus no graph plays into reads as silence. A graph of
+one output plays into both channels of a bus of two; a stereo graph into a
+bus of one is a `ValueError`. Graphs that play into each other's buses in a
+loop (a graph reading, in the end, what it plays) are refused by the `play`
+that would close the loop (`ValueError`), and that `play` changes nothing.
+A graph that reads a bus is heard only as it plays: its `render` is a
+`ValueError`. Every graph counts toward the 64 that play at once, those
+that play into a bus too. A bus lasts while a graph reads it or plays into
+it; `bus.channels` is how many it has.
+
+```culebra
+# A saw played into a bus, and a graph that reads it, in a room.
+let bus = Audio.Bus(1)
+let src = Audio.Graph.new()
+src.output(src.gain(src.wave("saw", freq: 110.0), 0.2))
+let hall = Audio.Graph.new()
+let dry = hall.input(bus)
+hall.output(hall.mix([dry, hall.room(dry, side: 0)]), hall.mix([dry, hall.room(dry, side: 1)]))
+src.play(to: bus)
+hall.play()
+hall.stop()
+src.stop()
 ```
 
 ### Capture

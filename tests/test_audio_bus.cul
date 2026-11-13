@@ -1,0 +1,105 @@
+# Audio.Bus: a graph played into a bus (g.play(to: bus)) is heard by the
+# graphs that read it (g.input(bus)). The rules are kept with or without a
+# device (the harness keeps it closed): a bus's channels, a stereo graph into
+# a bus of one, graphs that play into each other's buses in a loop, and a
+# graph that reads a bus, which plays and does not render.
+
+fn caught(call) {
+  try {
+    call()
+    nil
+  } catch e {
+    (e.kind, e.message)
+  }
+}
+
+# A graph that answers a saw, and one that reads `bus`.
+fn saw_graph() {
+  let g = Audio.Graph()
+  g.output(g.wave("saw", freq: 110.0))
+  g
+}
+fn reader(bus) {
+  let g = Audio.Graph()
+  g.output(g.gain(g.input(bus), 0.5))
+  g
+}
+
+# A bus has one channel or two, and an input reads one it has.
+{
+  assert_eq(Audio.Bus().channels, 2)
+  assert_eq(caught(|| Audio.Bus(3)), ("ValueError", "Audio.Bus: channels is 1 or 2"))
+  let g = Audio.Graph()
+  assert_eq(caught(|| g.input(Audio.Bus(1), channel: 1)), ("ValueError", "Audio.Graph: an input reads channel 0 of a bus of one"))
+  assert_eq(caught(|| g.input(Audio.Bus(2), channel: 2)), ("ValueError", "Audio.Graph: an input reads channel 0 or 1 of a bus of two"))
+  g.output(g.input(Audio.Bus(2), channel: 1))
+}
+
+# A graph that reads a bus plays and is not rendered; one that plays into a
+# bus renders as it is.
+{
+  let bus = Audio.Bus()
+  let r = reader(bus)
+  assert_eq(caught(|| r.render(0.1)), ("ValueError", "Audio.Graph: a graph that reads a bus is heard only as it plays, not rendered"))
+  let w = saw_graph()
+  w.play(to: bus)
+  assert_eq(w.render(0.01).size(), 441)
+  r.play()
+  r.stop()
+  w.stop()
+}
+
+# A stereo graph plays into a bus of two only; a mono one into either.
+{
+  let g = Audio.Graph()
+  g.output(g.wave(freq: 220.0), g.wave(freq: 330.0))
+  assert_eq(caught(|| g.play(to: Audio.Bus(1))), ("ValueError", "Audio.Graph: a graph with a left and a right output plays into a bus of two channels"))
+  g.play(to: Audio.Bus(2))
+  g.stop()
+  let m = saw_graph()
+  m.play(to: Audio.Bus(1))
+  m.stop()
+}
+
+# Graphs that play into each other's buses in a loop are refused, from the
+# play that would close it, and that play leaves things as they were: a
+# graph reading its own bus, two that read each other's, and three.
+{
+  let loop = "Audio.Graph: graphs play into each other's buses in a loop"
+  let a = Audio.Bus()
+  let b = Audio.Bus()
+  let c = Audio.Bus()
+  let own = reader(a)
+  assert_eq(caught(|| own.play(to: a)), ("ValueError", loop))
+  let ab = reader(a)
+  let ba = reader(b)
+  ab.play(to: b)
+  assert_eq(caught(|| ba.play(to: a)), ("ValueError", loop))
+  ba.play()
+  ba.stop()
+  let cb = reader(c)
+  cb.play(to: a)
+  let bc = reader(b)
+  assert_eq(caught(|| bc.play(to: c)), ("ValueError", loop))
+  # Stopped, a graph no longer closes the loop.
+  ab.stop()
+  bc.play(to: c)
+  for g in [bc, cb] {
+    g.stop()
+  }
+}
+
+# A graph let go of by what replaced it (_Audio.graph_let_go) no longer
+# orders the graphs by what it reads, so a play it would loop with is played.
+{
+  let a = Audio.Bus()
+  let b = Audio.Bus()
+  let fading = reader(a)
+  fading.play(to: b)
+  let back = reader(b)
+  assert_eq(caught(|| back.play(to: a)), ("ValueError", "Audio.Graph: graphs play into each other's buses in a loop"))
+  _Audio.graph_let_go(fading._id)
+  back.play(to: a)
+  back.stop()
+  fading.stop()
+}

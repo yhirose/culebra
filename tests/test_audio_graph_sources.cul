@@ -202,9 +202,9 @@ for (call, kind, message) in [
   (|| g.decay(w, Math.inf), "ValueError", "a decay's time is 0 or more"),
   (|| g.clip(w, 1.0, -1.0), "ValueError", "a clip's lo and hi are finite, lo at most hi"),
   (|| g.clip(w, hi: Math.inf), "ValueError", "a clip's lo and hi are finite, lo at most hi"),
-  (|| w.connect(g.impulse()), "ValueError", "a source (a wave, a noise, an impulse, a dust or an lfnoise) takes nothing in"),
-  (|| w.connect(g.dust()), "ValueError", "a source (a wave, a noise, an impulse, a dust or an lfnoise) takes nothing in"),
-  (|| w.connect(g.lfnoise()), "ValueError", "a source (a wave, a noise, an impulse, a dust or an lfnoise) takes nothing in"),
+  (|| w.connect(g.impulse()), "ValueError", "a source (a wave, a noise, an impulse, a dust, an lfnoise or an input) takes nothing in"),
+  (|| w.connect(g.dust()), "ValueError", "a source (a wave, a noise, an impulse, a dust, an lfnoise or an input) takes nothing in"),
+  (|| w.connect(g.lfnoise()), "ValueError", "a source (a wave, a noise, an impulse, a dust, an lfnoise or an input) takes nothing in"),
 ] {
   assert_eq(caught(call), (kind, "Audio.Graph: {message}"))
 }

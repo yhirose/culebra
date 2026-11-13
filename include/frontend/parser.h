@@ -1355,7 +1355,7 @@ inline void collect_declared_type_names(const peg::Ast& ast,
 // the typed reads through it.
 inline bool is_stdlib_type_name(std::string_view name) {
   static constexpr std::string_view kNames[] = {
-      "Any",       "AudioGraph", "AudioGraphPart", "AudioGraphValue", "Capture",
+      "Any",       "AudioBus", "AudioGraph", "AudioGraphPart", "AudioGraphValue", "Capture",
       "ChannelResult", "Closed",       "Comparable",
       "Deque",     "Dir",      "DiskDir",       "Duration",     "EmbedDir",
       "Empty",     "Eq",       "Font",          "Generator",    "Hashable",

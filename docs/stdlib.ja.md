@@ -8717,10 +8717,11 @@ println(Math.round(Audio.integrated_loudness(both)))                     # => -1
 | `g.clip(input, lo = -1.0, hi = 1.0)` | `lo`から`hi`の間に収めた`input` |
 | `g.exp(input)` | eの`input`乗 |
 | `g.room(input, size = 0.5, damp = 0.5, side = 0)` | 部屋の片側（Freeverb。減衰つきの櫛形フィルタ8本と全域通過4本）。`input`の響きだけを返す。`side`は0が左、1が右で、右は遅延が23サンプル長いので、同じ入力の左右が別々に響く。遅延の長さはグラフのレートに比例する。`size`（0から1）は響きの長さ（60 dBまで、0で約0.7秒、0.5で1.5秒、1で12秒）、`damp`（0から1）は高い音が消える速さ。鳴っている間はずっと計算する |
-| `part.connect(target) -> target` | `part`の出力を`target`に足す。`target`が部品ならその入力に（音源、つまりwave、noise、impulse、dust、lfnoiseは入力を取らない）、値（下記）ならその値に足す。どの部品からでもつなげるが、ループは遅延を通らなければならない（下記） |
+| `g.input(bus, channel = 0)` | `bus`（`Audio.Bus`）に鳴らしたグラフの和の、`channel`のチャンネル。ストリームの同じ区間を読む（下記） |
+| `part.connect(target) -> target` | `part`の出力を`target`に足す。`target`が部品ならその入力に（音源、つまりwave、noise、impulse、dust、lfnoise、inputは入力を取らない）、値（下記）ならその値に足す。どの部品からでもつなげるが、ループは遅延を通らなければならない（下記） |
 | `g.output(left, right = nil)` | グラフが鳴らす部品（決めるまでは無音）。`right`を渡すと左右それぞれの部品で、グラフはステレオになる。出力が1つのグラフは、それを左右の両方で鳴らす |
 | `g.render(seconds, channels = 1) -> Array` | グラフの最初の`seconds`秒を、始まりから今計算する。`channels: 2`なら、サンプルの配列の組`[左, 右]`（出力が1つのグラフは両方に同じもの）。ステレオのグラフはこの形でだけ描ける（1なら`ValueError`） |
-| `g.play()` | グラフを始まりから鳴らす（鳴っていれば始まりからやり直す） |
+| `g.play(to = nil)` | グラフを始まりから鳴らす（鳴っていれば始まりからやり直す）。デバイスへ、または`to`（`Audio.Bus`）へ |
 | `g.stop()` | 止める |
 | `g.now() -> Float` | 今行った変更が、グラフの時計のどこに入るか。鳴っていなければ`0.0` |
 
@@ -8829,6 +8830,33 @@ let copies = iota(3).map(fn (k) {
 })
 ch.output(ch.mix([saw2, ...copies], gain: 0.25))
 println(ch.render(0.1).size())  # => 4410
+```
+
+`Audio.Bus(channels = 2)`（1か2）は、鳴っているグラフどうしをつなぎます。
+`g.play(to: bus)`はグラフをデバイスではなくバスへ鳴らし、別のグラフの入力の部品
+`h.input(bus, channel = 0)`がそれを読みます。ミキサーは、バスへ鳴らすグラフを、
+それを読むグラフより先に計算するので、読む側は、書いた側が鳴らしたストリームの
+同じ区間を、遅れなく聞きます（バッファの区切りによらない）。どのグラフも鳴らして
+いないバスは無音です。出力が1つのグラフは2チャンネルのバスの両方へ鳴り、
+ステレオのグラフを1チャンネルのバスへ鳴らすと`ValueError`です。互いのバスへ
+ループして鳴るグラフ（自分の鳴らしたものを巡り巡って読むグラフ）は、ループを閉じる
+`play`が拒み（`ValueError`）、その`play`は何も変えません。バスを読むグラフは、
+鳴らしてはじめて聞こえるもので、`render`は`ValueError`です。バスへ鳴らすグラフも、
+同時に鳴らせる64個に数えます。バスは、それを読むグラフか、それへ鳴らすグラフが
+ある間は残ります。`bus.channels`はチャンネル数です。
+
+```culebra
+# バスへ鳴らすのこぎり波と、それを読んで部屋に置くグラフ。
+let bus = Audio.Bus(1)
+let src = Audio.Graph.new()
+src.output(src.gain(src.wave("saw", freq: 110.0), 0.2))
+let hall = Audio.Graph.new()
+let dry = hall.input(bus)
+hall.output(hall.mix([dry, hall.room(dry, side: 0)]), hall.mix([dry, hall.room(dry, side: 1)]))
+src.play(to: bus)
+hall.play()
+hall.stop()
+src.stop()
 ```
 
 ### Capture

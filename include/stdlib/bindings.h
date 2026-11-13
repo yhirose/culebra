@@ -6315,6 +6315,7 @@ inline const char* _ns_audio_graph_bad_value(culebra::_audio_detail::PartKind ki
     case ad::PartKind::Room:
       if (v >= 0 && v <= 1) return nullptr;
       return value == 0 ? "Audio.Graph: a room's size is from 0 to 1" : "Audio.Graph: a room's damp is from 0 to 1";
+    case ad::PartKind::Input: break;
     case ad::PartKind::Noise:
     case ad::PartKind::Resonate:
     case ad::PartKind::Limit:
@@ -6346,14 +6347,14 @@ inline JitValue _ns_audio_graph_new(JitValue* a, int64_t) {
 }
 // A part of `family` ("wave", "noise", "filter", "gain", "resonate", "pluck",
 // "delay", "limit", "drive", "impulse", "dust", "lfnoise", "lag", "decay",
-// "math" or "room"), `kind` naming the wave, the filter, the lfnoise or the math,
+// "math", "room" or "input"), `kind` naming the wave, the filter, the lfnoise or the math,
 // taking in `inputs`, parts made before it. It is set up by the numbers
 // `options`: a wave's freq, feedback and phase, a noise's seed, a filter's
 // cutoff and q, a gain's gain, a resonance's dry and modes, a string's freq
 // and ring, a delay's time, a limit's ceiling and release, a drive's gain, an
 // impulse's freq and phase, a dust's density and seed, an lfnoise's freq and
 // seed, a lag's and a decay's time, a math's lo and hi, a room's size, damp
-// and side.
+// and side, an input's bus and channel.
 inline JitValue _ns_audio_graph_part(JitValue* a, int64_t) {
   namespace ad = culebra::_audio_detail;
   auto& g = _ns_audio_graph(a[0]);
@@ -6371,7 +6372,7 @@ inline JitValue _ns_audio_graph_part(JitValue* a, int64_t) {
       {"wave", 3},    {"noise", 1}, {"filter", 2},  {"gain", 1}, {"resonate", -1},
       {"pluck", 2},   {"delay", 1}, {"limit", 2},   {"drive", 1}, {"impulse", 2},
       {"dust", 2},    {"lfnoise", 2}, {"lag", 1},   {"decay", 1}, {"math", 2},
-      {"room", 3}};
+      {"room", 3},    {"input", 2}};
   auto fam = std::ranges::find(kFamilies, family, &std::pair<std::string_view, int>::first);
   if (fam == std::end(kFamilies)) {
     auto message = culebra::format("Audio.Graph: no part {}", family);
@@ -6437,6 +6438,14 @@ inline JitValue _ns_audio_graph_part(JitValue* a, int64_t) {
     }
     return family == "lag" ? made(ad::PartKind::Lag, ad::Lag(opt[0], rate)) : made(ad::PartKind::Decay, ad::Decay(opt[0], rate));
   }
+  if (family == "input") {
+    auto bus = ad::bus_defs().find(static_cast<int64_t>(opt[0]));
+    if (bus == ad::bus_defs().end()) _ns_audio_fail("Audio.Graph: the bus was freed");
+    if (!(opt[1] >= 0 && opt[1] < bus->second->channels && opt[1] == std::floor(opt[1])))
+      _ns_audio_fail(bus->second->channels == 1 ? "Audio.Graph: an input reads channel 0 of a bus of one"
+                                                 : "Audio.Graph: an input reads channel 0 or 1 of a bus of two");
+    return made(ad::PartKind::Input, ad::BusRead{bus->second, bus->first, static_cast<int>(opt[1])});
+  }
   if (family == "room") {
     if (opt[2] != 0 && opt[2] != 1) _ns_audio_fail("Audio.Graph: a room's side is 0 (the left) or 1 (the right)");
     return made(ad::PartKind::Room, ad::ReverbTank(rate, static_cast<int>(opt[2])), opt[0], opt[1]);
@@ -6459,7 +6468,7 @@ inline JitValue _ns_audio_graph_connect(JitValue* a, int64_t) {
   int from = _ns_audio_graph_index(g, static_cast<double>(_ns_adapt::take_long(a[1])));
   int to = _ns_audio_graph_index(g, static_cast<double>(_ns_adapt::take_long(a[2])));
   int64_t v = _ns_adapt::take_long(a[3]);
-  if (v < 0 && !ad::takes_in(g.kind(to))) _ns_audio_fail("Audio.Graph: a source (a wave, a noise, an impulse, a dust or an lfnoise) takes nothing in");
+  if (v < 0 && !ad::takes_in(g.kind(to))) _ns_audio_fail("Audio.Graph: a source (a wave, a noise, an impulse, a dust, an lfnoise or an input) takes nothing in");
   if (!g.connect(from, to, v < 0 ? -1 : _ns_audio_graph_value(g, to, static_cast<double>(v))))
     _ns_audio_fail("Audio.Graph: a loop passes through a delay");
   return _ns_adapt::v_nil();
@@ -6479,7 +6488,8 @@ inline double _ns_audio_graph_clock(int64_t id) {
   auto it = ad::graphs_playing().find(id);
   if (it == ad::graphs_playing().end()) return std::nan("");
   double t = ad::graph_now(id);
-  return std::isnan(t) ? std::chrono::duration<double>(std::chrono::steady_clock::now() - it->second).count() : t;
+  return std::isnan(t) ? std::chrono::duration<double>(std::chrono::steady_clock::now() - it->second.started).count()
+                       : t;
 }
 // The changes come as [part, value, how, at, to] end to end, `how` 0 for a
 // set, 1 for a ramp and 2 for a cancel (whose `to` is unread), all checked
@@ -6524,24 +6534,56 @@ inline JitValue _ns_audio_graph_render(JitValue* a, int64_t) {
   if (!(seconds >= 0 && seconds * g.rate() < 1e10)) _ns_audio_fail("Audio.Graph: the seconds are 0 or more");
   if (channels == 1 && g.stereo())
     _ns_audio_fail("Audio.Graph: a graph with a left and a right output renders with channels: 2");
+  if (g.reads_bus()) _ns_audio_fail("Audio.Graph: a graph that reads a bus is heard only as it plays, not rendered");
   const auto n = static_cast<size_t>(ad::sample_at(seconds, g.rate()));
   std::vector<double> left(n), right(channels == 2 ? n : 0);
   g.render(left.data(), channels == 2 ? right.data() : nullptr, static_cast<int64_t>(n));
   return _ns_audio_sides(left, channels == 2 ? &right : nullptr, "Audio.Graph.render() result");
 }
-// Checked here, so a program answers the same with or without a device.
+// Graph `id` played into bus `into` (0 for the device). Checked here, so a
+// program answers the same with or without a device: the graphs playing
+// with it must have an order (none plays into a bus another reads that
+// reads, in the end, what it plays).
 inline JitValue _ns_audio_graph_play(JitValue* a, int64_t) {
   namespace ad = culebra::_audio_detail;
   int64_t id = _ns_adapt::take_long(a[0]);
   auto& g = _ns_audio_graph(a[0]);
+  int64_t into = _ns_adapt::take_long(a[1]);
   if (g.rate() != ad::kMixerRate) _ns_audio_fail("Audio.Graph: a graph plays at a rate of 44100");
+  std::shared_ptr<ad::Bus> bus;
+  if (into != 0) {
+    auto it = ad::bus_defs().find(into);
+    if (it == ad::bus_defs().end()) _ns_audio_fail("Audio.Graph: the bus was freed");
+    bus = it->second;
+    if (g.stereo() && bus->channels == 1)
+      _ns_audio_fail("Audio.Graph: a graph with a left and a right output plays into a bus of two channels");
+  }
   auto& playing = ad::graphs_playing();
   if (!playing.contains(id) && playing.size() >= ad::kGraphsPlaying)
     _ns_audio_fail("Audio.Graph: 64 graphs play at once at most");
-  playing[id] = std::chrono::steady_clock::now();
-  ad::graph_play(id);
+  auto order = ad::graph_played(id, into, g.buses_read());
+  if (!order) _ns_audio_fail("Audio.Graph: graphs play into each other's buses in a loop");
+  ad::graph_play(id, std::move(bus), *order);
   return _ns_adapt::v_nil();
 }
+// A playing graph let go of by whatever replaced it: what it reads no longer
+// orders it, so a graph that plays into one of those buses may be played
+// (it may then hear silence there until it ends).
+inline void _ns_audio_graph_let_go(int64_t id) {
+  auto it = culebra::_audio_detail::graphs_playing().find(id);
+  if (it != culebra::_audio_detail::graphs_playing().end()) it->second.reads.clear();
+}
+// A bus of `channels` (1 or 2), by its handle.
+inline JitValue _ns_audio_bus_new(JitValue* a, int64_t) {
+  namespace ad = culebra::_audio_detail;
+  int64_t channels = _ns_adapt::take_long(a[0]);
+  if (channels != 1 && channels != 2) _ns_audio_fail("Audio.Bus: channels is 1 or 2");
+  int64_t id = ad::alloc_id();
+  ad::bus_defs()[id] = std::make_shared<ad::Bus>(static_cast<int>(channels));
+  return _ns_adapt::v_long(id);
+}
+// A bus let go: the graphs that read it or play into it keep it.
+inline void _ns_audio_bus_free(int64_t id) { culebra::_audio_detail::bus_defs().erase(id); }
 inline void _ns_audio_graph_stop_id(int64_t id) {
   culebra::_audio_detail::graphs_playing().erase(id);
   culebra::_audio_detail::graph_stop(id);
@@ -11948,7 +11990,10 @@ inline const NsMethod kNsRows_Audio_native[] = {
   {"_Audio", "graph_output",   3, &_ns_audio_graph_output},
   {"_Audio", "graph_schedule", 2, &_ns_audio_graph_schedule},
   {"_Audio", "graph_render",   3, &_ns_audio_graph_render},
-  {"_Audio", "graph_play",     1, &_ns_audio_graph_play},
+  {"_Audio", "graph_play",     2, &_ns_audio_graph_play},
+  {"_Audio", "graph_let_go",   1, &_ns_audio_on<_ns_audio_graph_let_go>},
+  {"_Audio", "bus_new",        1, &_ns_audio_bus_new},
+  {"_Audio", "bus_free",       1, &_ns_audio_on<_ns_audio_bus_free>},
   {"_Audio", "graph_stop",     1, &_ns_audio_on<_ns_audio_graph_stop_id>},
   {"_Audio", "graph_free",     1, &_ns_audio_on<_ns_audio_graph_free>},
   {"_Audio", "graph_now",      1, &_ns_audio_graph_now},
