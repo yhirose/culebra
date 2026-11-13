@@ -114,6 +114,11 @@ effect fn e(k) {
   fn(1, 2)
 }
 handle { e(0) } with ask(resume) { resume(nil) }' "DispatchError: no matching method for \`e\` at 4:3."
+# A handler clause takes what its operation's declaration passes; one that
+# cannot see a declaration takes positional arguments only.
+check_eq "handler clause arity" 'effect fn ask(a)
+handle { perform ask(1) } with ask(a, b, k) { k(a) }' "SyntaxError: handler clause for 'ask' takes 2 arguments before \`resume\`, but \`perform ask\` passes 1. at 2:32."
+check_eq "undeclared perform keyword" 'handle { perform nodecl(1, y: 2) } with nodecl(a, k) { k(a) }' "SyntaxError: keyword and \`**\` arguments to \`perform nodecl\` need its \`effect fn\` declaration in scope. at 1:28."
 check_eq "effect fn arity by name" 'effect fn ask()
 effect fn e(k) {
   perform ask()

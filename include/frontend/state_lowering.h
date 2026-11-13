@@ -364,8 +364,9 @@ inline std::string next_fragment_label(const char* stem) {
 // `{name: v}` (key at 1, after MUTABLE; the 2-child shorthand `{name}` IS a
 // reference and falls through), KWARG `f(name: v)` (key at 0) and
 // OBJECT_PAT_ENTRY `{name: pat}` (key at 0; the bare `{name}` collapses to its
-// IDENTIFIER, a binding). Every walk that asks "is this name read here" has to
-// skip these.
+// IDENTIFIER, a binding), and the operation a PERFORM or a HANDLE_CLAUSE names
+// (at 0), which meets its handler by name and is never read as a value. Every
+// walk that asks "is this name read here" has to skip these.
 inline bool is_label_position(const peg::Ast& parent, size_t i) {
   using namespace peg::udl;
   if (parent.nodes[i]->tag != "IDENTIFIER"_) return false;
@@ -373,7 +374,9 @@ inline bool is_label_position(const peg::Ast& parent, size_t i) {
           parent.nodes.size() >= 3) ||
          (parent.tag == "KWARG"_ && i == 0) ||
          (parent.tag == "OBJECT_PAT_ENTRY"_ && i == 0 &&
-          parent.nodes.size() >= 2);
+          parent.nodes.size() >= 2) ||
+         ((parent.tag == "PERFORM"_ || parent.tag == "HANDLE_CLAUSE"_) &&
+          i == 0);
 }
 
 // Where a node sits, as far as appending to it goes: a statement can be
@@ -469,6 +472,9 @@ class PromotedLocals {
           res_.function_of(use.scope) != body_ && !own_name(use))
         captured_[use.symbol] = true;
     using resolve::Form;
+    for (const auto& m : res_.method_calls)
+      if (m.symbol != resolve::kNone)
+        method_calls_[m.node] = {m.symbol, m.scope, resolve::Role::Read};
     for (const auto& d : res_.declarations) {
       declaring_.insert(d.node);
       declared_[d.symbol].push_back(
@@ -538,6 +544,15 @@ class PromotedLocals {
     auto it = res_.uses.find(&name);
     if (it == res_.uses.end() || it->second.symbol == resolve::kNone)
       return nullptr;
+    const Slot& s = slots_[it->second.symbol];
+    return s.field.empty() || own_name(it->second) ? nullptr : &s;
+  }
+
+  // The slot of what `member`, the name of a call `v.name(…)`, resolves to
+  // where the call is written (resolve::MethodCall), or nullptr.
+  const Slot* method_slot(const peg::Ast& member) const {
+    auto it = method_calls_.find(&member);
+    if (it == method_calls_.end()) return nullptr;
     const Slot& s = slots_[it->second.symbol];
     return s.field.empty() || own_name(it->second) ? nullptr : &s;
   }
@@ -917,6 +932,9 @@ class PromotedLocals {
   std::vector<char> in_expression_;  // by symbol: an expression declares it
   std::vector<char> lazy_;  // by symbol: may be read before it is declared
   std::set<const peg::Ast*> declaring_;  // the name nodes that declare
+  // A method call's name node, and what its name resolves to there
+  // (resolve::MethodCall), for the calls whose name resolves.
+  std::map<const peg::Ast*, resolve::Use> method_calls_;
   std::vector<size_t> order_;   // the slotted symbols, as they got one
   std::map<std::string, int, std::less<>> spelled_;  // slotted per name
 };
@@ -1239,6 +1257,20 @@ inline void collect_promoted_edits(const peg::Ast& n, const std::string& src,
       return;
     }
   }
+  // UFCS looks a call's method name up where the call is written, so a call
+  // naming a slotted `f` runs where `f` is a local again (its slot's value
+  // unchecked: a candidate that is not there yet is no candidate).
+  std::string binds;
+  if (n.tag == "CALL"_) {
+    std::set<std::string_view> seen;
+    for (const auto& m : n.nodes)
+      if (const auto* s = promoted.method_slot(*m);
+          s && seen.insert(m->token).second)
+        binds += std::format("let {} = {}; ", m->token, s->place());
+    if (!binds.empty())  // the receiver opens it: a CALL is written at `(`
+      out.push_back({n.nodes.front()->position, 0,
+                     standing_at("(if true { " + binds, n, src)});
+  }
   for (size_t i = 0; i < n.nodes.size(); i++) {
     const auto& c = *n.nodes[i];
     if (c.path != n.path) {
@@ -1250,6 +1282,7 @@ inline void collect_promoted_edits(const peg::Ast& n, const std::string& src,
     if (is_label_position(n, i)) continue;
     collect_promoted_edits(c, src, promoted, out, child_site(n, i, site));
   }
+  if (!binds.empty()) out.push_back({written_end(n), 0, " })"});
 }
 
 // `n`'s source from `src` with every promoted local moved to its slot (see
@@ -1301,14 +1334,20 @@ inline MappedSource rewrite_block_inner(const peg::Ast& block,
                        static_cast<long>(block.column));
 }
 
-// Positional parameter names of a PARAMETERS node, skipping the kw-only
-// separator and any `**kwargs` rest: the names ctor slot emission is fed.
-inline std::vector<std::string_view> collect_positional_param_names(
+// The names a PARAMETERS node binds, in order: a pattern's leaves, `*rest`
+// and `**kw` included.
+inline std::vector<std::string_view> collect_bound_param_names(
     const peg::Ast& params_ast) {
   std::vector<std::string_view> names;
   for (const auto& pn : params_ast.nodes) {
-    if (is_kw_only_sep(*pn) || is_kwargs_rest(*pn)) continue;
-    names.push_back(view_parameter(*pn).name);
+    if (is_kw_only_sep(*pn)) continue;
+    auto pv = view_parameter(*pn);
+    if (pv.pattern)
+      for_each_pattern_leaf(*pv.pattern, [&](const peg::Ast& id, bool) {
+        names.push_back(id.token);
+      });
+    else
+      names.push_back(pv.name);
   }
   return names;
 }
@@ -1349,7 +1388,28 @@ struct Surroundings {
 
   // The names visible where the walk stands: those of the innermost scope
   // the path is in, and of every scope around it.
-  std::vector<std::string> visible() {
+  std::vector<std::string> visible() const {
+    std::vector<std::string> out;
+    for_each_scope([&](const resolve::Scope& s) {
+      for (const auto& [name, sym] : s.names) out.push_back(name);
+      return false;
+    });
+    return out;
+  }
+  // Whether `name` is among them.
+  bool sees(std::string_view name) const {
+    return for_each_scope(
+        [&](const resolve::Scope& s) { return s.names.contains(name); });
+  }
+
+ private:
+  // `f` over the scopes the walk stands in, innermost first, until it
+  // returns true (and then this does).
+  template <typename F>
+  bool for_each_scope(F&& f) const {
+    if (!root)
+      throw CulebraError("InternalError",
+                         "a lowering asked what is visible without a root", 0, 0);
     if (!*resolved)
       resolved->emplace(
           resolve::resolve_module(*root, {}, lint::resolve_options(around)));
@@ -1364,10 +1424,9 @@ struct Surroundings {
       scope = it->second;
       break;
     }
-    std::vector<std::string> out;
     for (size_t s = scope; s != resolve::kNone; s = res->scopes[s].parent)
-      for (const auto& [name, sym] : res->scopes[s].names) out.push_back(name);
-    return out;
+      if (f(res->scopes[s])) return true;
+    return false;
   }
 };
 

@@ -970,6 +970,13 @@ inline bool effect_fn_has_body(const peg::Ast& decl) {
   using namespace peg::udl;
   return decl.nodes.size() > 2 && decl.nodes.back()->tag != "RETURN_TYPE"_;
 }
+// Its `-> T`, or nullptr.
+inline const peg::Ast* effect_fn_return_type(const peg::Ast& decl) {
+  using namespace peg::udl;
+  return decl.nodes.size() > 2 && decl.nodes[2]->tag == "RETURN_TYPE"_
+             ? decl.nodes[2].get()
+             : nullptr;
+}
 
 // `arity` is the positional payload count (0 = nullary). VARIANT is
 // kept un-collapsed by the AstOptimizer so nodes[0] is always the name.

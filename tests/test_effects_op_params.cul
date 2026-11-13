@@ -1,0 +1,105 @@
+// Conformance: an operation's declaration binds what `perform` passes it, as
+// a plain fn's parameter list binds a call: defaults fill in, `*rest` and
+// `**kw` collect, keyword arguments and `**` splats go where a call's would, and a
+// call no parameter list takes is refused the way a plain fn's is. Its return
+// annotation checks the value the handler resumes with. Each case performs
+// from a handle body (a computation the handle drives) and from a plain fn
+// (dispatched where it runs), which build the arguments apart.
+
+// What `thunk()` gives: [its value], or [kind, message] of the error.
+fn op_outcome(thunk) {
+  try {
+    [thunk()]
+  } catch e {
+    [e.kind, e.message]
+  }
+}
+
+// --- a default ---------------------------------------------------------------------
+effect fn op_dflt(x, y = 7)
+fn op_dflt_plain() {
+  perform op_dflt(1)
+}
+assert_eq(handle { perform op_dflt(1) } with op_dflt(x, y, k) { k([x, y]) }, [1, 7])
+assert_eq(handle { op_dflt_plain() } with op_dflt(x, y, k) { k([x, y]) }, [1, 7])
+
+// --- a `*rest` parameter ----------------------------------------------------------
+effect fn op_rest(a, *xs)
+fn op_rest_plain() {
+  perform op_rest(1, 2, 3)
+}
+assert_eq(handle { perform op_rest(1, 2, 3) } with op_rest(a, xs, k) { k(xs) }, [2, 3])
+assert_eq(handle { op_rest_plain() } with op_rest(a, xs, k) { k(xs) }, [2, 3])
+
+// --- keyword parameters -------------------------------------------------------------
+effect fn op_kw(x, *, y = 1, **more)
+fn op_kw_plain() {
+  perform op_kw(2, y: 5, z: 6)
+}
+assert_eq(handle { perform op_kw(2, y: 5, z: 6) } with op_kw(x, y, more, k) { k([x, y, more]) },
+          [2, 5, {z: 6}])
+assert_eq(handle { op_kw_plain() } with op_kw(x, y, more, k) { k([x, y, more]) },
+          [2, 5, {z: 6}])
+
+// --- a `**` splat ---------------------------------------------------------------------
+effect fn op_pair(a, b)
+let op_args = {a: 3, b: 4}
+fn op_splat_plain() {
+  perform op_pair(**op_args)
+}
+assert_eq(handle { perform op_pair(**op_args) } with op_pair(a, b, k) { k(a * b) }, 12)
+assert_eq(handle { op_splat_plain() } with op_pair(a, b, k) { k(a * b) }, 12)
+
+// --- a call the declaration does not take ---------------------------------------
+// The twin is a plain fn with the operation's name and parameters.
+effect fn op_two(a, b)
+fn op_twin() {
+  fn op_two(a, b) {
+    nil
+  }
+  [op_outcome(|| op_two(1)), op_outcome(|| op_two(1, 2, 3))]
+}
+fn op_short_plain() {
+  perform op_two(1)
+}
+fn op_long_plain() {
+  perform op_two(1, 2, 3)
+}
+let op_resume_nil = fn (thunk) {
+  handle { thunk() } with op_two(a, b, k) { k(nil) }
+}
+assert_eq(op_outcome(|| op_resume_nil(op_short_plain)), op_twin()[0])
+assert_eq(op_outcome(|| op_resume_nil(op_long_plain)), op_twin()[1])
+assert_eq(op_outcome(|| handle { perform op_two(1) } with op_two(a, b, k) { k(nil) }),
+          op_twin()[0])
+
+// --- the return annotation checks what the handler resumes with -----------------
+effect fn op_typed() -> Long
+fn op_typed_plain() {
+  perform op_typed()
+}
+assert_eq(handle { perform op_typed() } with op_typed(k) { k(3) }, 3)
+assert_eq(op_outcome(|| handle { perform op_typed() } with op_typed(k) { k('x') }),
+          ['TypeError', 'type error: return value expects Long'])
+assert_eq(op_outcome(|| handle { op_typed_plain() } with op_typed(k) { k('x') }),
+          ['TypeError', 'type error: return value expects Long'])
+
+// --- an operation the perform does not see declared ---------------------------
+// Its arguments go as written, and a clause that takes another count is
+// refused when the perform reaches it.
+assert_eq(op_outcome(|| handle { perform op_nodecl(1) } with op_nodecl(a, b, k) { k(a) }),
+          ['ArityError',
+           "handler clause for 'op_nodecl' takes 2 arguments before `resume`, " +
+             'but `perform op_nodecl` passes 1'])
+// A handle that sees the declaration still refuses a perform that did not.
+fn op_raw_perform() {
+  perform op_local(1, 2)
+}
+fn op_local_handle() {
+  effect fn op_local(a)
+  handle { op_raw_perform() } with op_local(a, k) { k(a) }
+}
+assert_eq(op_outcome(op_local_handle),
+          ['ArityError',
+           "handler clause for 'op_local' takes 1 argument before `resume`, " +
+             'but `perform op_local` passes 2'])

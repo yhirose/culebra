@@ -45,6 +45,7 @@
 #include <cstdlib>
 #include <format>
 #include <functional>
+#include <map>
 #include <memory>
 #include <optional>
 #include <set>
@@ -86,16 +87,33 @@ inline std::string effect_fn_name(const peg::Ast& decl) {
   return tok;
 }
 
-// Names of every effect fn WITH a body reachable in the program (the
-// "colored" functions whose direct calls are suspension points). Operations
-// (signature-only) are invoked via `perform`, never called directly, so they
-// are excluded.
-inline std::set<std::string> collect_effect_fn_names(const peg::Ast& root) {
+// CULEBRA_TRANSFORM_STATS: 0 unset, 1 the sizes the lowering synthesized,
+// 2 the fragments too (apply_transforms).
+inline int transform_stats_level() {
+  const char* s = std::getenv("CULEBRA_TRANSFORM_STATS");
+  return !s ? 0 : std::string_view(s) == "2" ? 2 : 1;
+}
+
+// The program's `effect fn` declarations by name: the effect fns (with a
+// body), the operations (without) with the argument counts they pass, and the
+// names one of them gives a `-> T`.
+struct EffectDecls {
+  std::set<std::string, std::less<>> fns;
+  std::map<std::string, std::set<size_t>, std::less<>> ops;
+  std::set<std::string, std::less<>> typed;
+};
+
+inline EffectDecls collect_effect_decls(const peg::Ast& root) {
   using namespace peg::udl;
-  std::set<std::string> out;
+  EffectDecls out;
   std::function<void(const peg::Ast&)> walk = [&](const peg::Ast& n) {
-    if (n.tag == "EFFECT_FN_DECL"_ && effect_fn_has_body(n)) {
-      out.insert(effect_fn_name(n));
+    if (n.tag == "EFFECT_FN_DECL"_) {
+      auto name = effect_fn_name(n);
+      if (effect_fn_has_body(n))
+        out.fns.insert(name);
+      else
+        out.ops[name].insert(collect_bound_param_names(*n.nodes[1]).size());
+      if (effect_fn_return_type(n)) out.typed.insert(name);
     }
     for (auto& c : n.nodes) walk(*c);
   };
@@ -111,6 +129,7 @@ struct EffSuspension {
   std::string op;          // Perform: operation name
   std::string args_array;  // Perform: `[a, b, …]` source (rewritten, anchored)
   std::string call_src;    // Delegate: the effect-fn call source (rewritten, anchored)
+  std::string check;       // what the resumed value passes through (resume_check)
   std::string prov;        // ` #@culebra:N` marker for the emitted line ("" = none)
   int64_t at = 0;          // Perform: original position, packed (for EffectError)
 };
@@ -219,10 +238,9 @@ class EffectsLowerer {
   // `path` names the parse label `src` belongs to (the file path for the
   // original, a fragment label for re-parses); the transform() walk uses it to
   // notice subtrees spliced in from other fragments.
-  EffectsLowerer(const std::string& src,
-                 const std::set<std::string>& effect_fns,
+  EffectsLowerer(const std::string& src, const EffectDecls& decls,
                  bool src_is_original = false, std::string path = "")
-      : src_(src), effect_fns_(effect_fns),
+      : src_(src), decls_(decls),
         src_is_original_(src_is_original), path_(std::move(path)),
         markers_{src, src_is_original} {}
 
@@ -253,13 +271,13 @@ class EffectsLowerer {
       // The sub-lower inside reparse_expr recursively handles effect
       // constructs nested in the argument expressions.
       std::string op = std::string(ast->nodes[0]->token);
-      std::string args = anchored(perform_args_array(*ast->nodes[1], {}));
+      auto parts = perform_parts(*ast, {});
       int64_t line = err_line(*ast);
       auto synth = std::make_shared<std::string>(std::format(
           "fn __eff_perform_wrapper__() {{\n"
-          "  __Eff.perform_direct(\"{}\", {}, {})\n"
+          "  {}(__Eff.perform_direct(\"{}\", {}, {}))\n"
           "}}\n",
-          op, args, err_at(*ast)));
+          parts.check, op, parts.args, err_at(*ast)));
       return reparse_expr(synth, line, names_.visible());
     }
     std::optional<InEffectFn> frame;
@@ -300,7 +318,7 @@ class EffectsLowerer {
   }
 
   const std::string& src_;
-  const std::set<std::string>& effect_fns_;
+  const EffectDecls& decls_;
   bool src_is_original_ = false;
   std::string path_;
   Surroundings names_;
@@ -318,7 +336,7 @@ class EffectsLowerer {
   EffectsLowerer lowerer_over(const std::string& src,
                               bool src_is_original = false,
                               std::string path = "") const {
-    EffectsLowerer sub(src, effect_fns_, src_is_original, std::move(path));
+    EffectsLowerer sub(src, decls_, src_is_original, std::move(path));
     sub.own_effect_fn_ = own_effect_fn_;
     return sub;
   }
@@ -397,7 +415,7 @@ class EffectsLowerer {
   std::string effect_callee(const peg::Ast& head) const {
     std::string name(head.token);
     if (name == "fn") return own_effect_fn_;
-    return effect_fns_.count(name) ? name : std::string();
+    return decls_.fns.count(name) ? name : std::string();
   }
 
   // True if a perform/effect-call is reachable inside `n` (used to reject
@@ -414,25 +432,56 @@ class EffectsLowerer {
     return false;
   }
 
-  // Build the `[a, b, …]` array source for a perform's arguments, rewriting
-  // locals per `rewrite`. Rejects kwargs / `**` splat (thin slice).
-  MappedSource perform_args_array(const peg::Ast& arguments,
-                                  const PromotedLocals& rewrite) const {
+  // Whether the operation `op` names is declared around the body being
+  // lowered, so the helpers lowered next to it are in reach. A body's own
+  // declaration is one of its slots, which the lowering's text cannot name.
+  bool sees_operation(const peg::Ast& op, const PromotedLocals& rewrite) const {
+    return decls_.ops.contains(op.token) && !rewrite.slot(op) &&
+           names_.sees(op.token);
+  }
+
+  // A `perform`'s arguments, as source, and the check its resumed value
+  // passes through (resume_check).
+  struct PerformParts {
+    std::string args;
+    std::string check;
+  };
+  // Where the perform sees its declaration, the arguments go through its
+  // binder (`__eff_args_op(…)`, standing at the perform, so a call it does
+  // not take is refused there as `op`'s); else as written, positional only.
+  PerformParts perform_parts(const peg::Ast& perform,
+                             const PromotedLocals& rewrite) const {
     using namespace peg::udl;
-    MappedSource out = "[";
+    const auto& op = *perform.nodes[0];
+    const auto& arguments = *perform.nodes[1];
+    bool bound = sees_operation(op, rewrite);
+    MappedSource out =
+        bound ? standing_at("__eff_args_" + std::string(op.token) + "(",
+                            perform, src_)
+              : MappedSource("[");
     for (size_t i = 0; i < arguments.nodes.size(); i++) {
       const auto& item = *arguments.nodes[i];
-      if (item.tag == "KWARG"_ || item.tag == "KWARG_SPLAT"_) {
+      if (!bound && (item.tag == "KWARG"_ || item.tag == "KWARG_SPLAT"_)) {
         throw CulebraError(
             "SyntaxError",
-            "keyword / splat arguments are not supported in `perform` yet.",
+            std::format("keyword and `**` arguments to `perform {}` need its "
+                        "`effect fn` declaration in scope.",
+                        op.token),
             err_pos(item).line, err_pos(item).col);
       }
       if (i > 0) out += ", ";
       out += rewrite_locals_to_self(item, src_, rewrite);
     }
-    out += "]";
-    return out;
+    out += bound ? ")" : "]";
+    return {anchored(out), bound ? resume_check(op.token, perform) : ""};
+  }
+
+  // The head of the call a resumed value of `name` passes through, standing
+  // at `site` as a plain fn's return check stands at its call; empty when no
+  // declaration of `name` has a `-> T`.
+  std::string resume_check(std::string_view name, const peg::Ast& site) const {
+    if (!decls_.typed.contains(name)) return {};
+    return anchored(standing_at("__eff_ret_" + std::string(name), site, src_));
   }
 
   // Classify a body statement. `rewrite` is the promoted names (params + body
@@ -512,7 +561,9 @@ class EffectsLowerer {
     su.target = target;
     su.binds = binds;
     su.op = std::string(perform.nodes[0]->token);
-    su.args_array = anchored(perform_args_array(*perform.nodes[1], rewrite));
+    auto parts = perform_parts(perform, rewrite);
+    su.args_array = std::move(parts.args);
+    su.check = std::move(parts.check);
     su.prov = mk(perform);
     su.at = err_at(perform);
     return su;
@@ -550,6 +601,7 @@ class EffectsLowerer {
         {name_at, call.nodes[0]->token.size(), "__eff_comp_" + callee});
     su.call_src = anchored(splice_source(
         src_, name_at, call.position + call.length, std::move(edits)));
+    su.check = resume_check(callee, call);
     su.prov = mk(call);
     return su;
   }
@@ -1154,21 +1206,26 @@ class EffectsLowerer {
     return e;
   }
 
-  // A suspension state (+ resume state when it binds a result or is in tail
-  // position). On resume the driver re-enters `_step` at the resume state,
-  // where `_rv` holds the resumed value.
+  // A suspension state (+ resume state when it binds a result, is in tail
+  // position or checks the result). On resume the driver re-enters `_step` at
+  // the resume state, where `_rv` holds the resumed value.
   int cps_emit_suspension(CpsState& st, const EffSuspension& su, int cont,
                           bool tail, PromotedLocals& rw) const {
     int after = cont;
-    if (su.binds || tail) {
+    if (su.binds || tail || !su.check.empty()) {
       int resume = st.fresh();
       std::string b;
+      std::string rv = st.rv;
+      if (!su.check.empty()) {
+        b += std::format("      let _eff_rv = {}({})\n", su.check, rv);
+        rv = "_eff_rv";
+      }
       // `let _ = …` binds nothing: the resumed value is dropped.
       const auto* slot = su.binds ? rw.slot(*su.target) : nullptr;
       if (slot)
-        b += std::format("      {} = {}\n", rw.reference(*su.target), st.rv);
+        b += std::format("      {} = {}\n", rw.reference(*su.target), rv);
       if (tail) {
-        std::string v = slot ? slot->place() : st.rv;
+        std::string v = slot ? slot->place() : rv;
         b += std::format("      self._eff_val = {}\n", v);
       }
       b += std::format("      self._eff_state = {}\n      continue\n", cont);
@@ -1909,24 +1966,40 @@ class EffectsLowerer {
         finalize_body, refork_body);
   }
 
-  // `effect fn f(params) { BODY }` -> `fn f(params) { class …; ….new(args) }`
-  // A signature-only op -> a throwing stub (it must be invoked via perform).
+  // Each entry binds by the parameter list as written, as a plain fn does,
+  // and hands on the names it bound as plain positionals.
   std::shared_ptr<peg::Ast> lower_effect_fn_decl(std::shared_ptr<peg::Ast> ast) {
     using namespace peg::udl;
     std::string name = effect_fn_name(*ast);
+    const auto& params_ast = *ast->nodes[1];
+    auto params = anchored(source_of(params_ast));
+    auto param_names = collect_bound_param_names(params_ast);
+    std::string names;
+    for (size_t j = 0; j < param_names.size(); j++)
+      names += std::format("{}{}", j ? ", " : "", param_names[j]);
+    const peg::Ast* ret_ast = effect_fn_return_type(*ast);
+    std::string ret = ret_ast ? " " + anchored(source_of(*ret_ast)) : "";
+    // resume_check's target; an identity for a declaration without `-> T`.
+    std::string ret_check =
+        decls_.typed.contains(name)
+            ? std::format("fn __eff_ret_{}(v){} {{ v }}\n", name, ret)
+            : "";
 
     if (!effect_fn_has_body(*ast)) {
-      // Operation declaration: a stub that rejects a direct call, at the
-      // declaration (the stub's own text has no column in the source).
+      // An operation: `op` refuses a direct call (at the declaration, where
+      // the stub's own text has no column), and `__eff_args_op` binds what a
+      // `perform` passes, refusing what `op` would (perform_parts).
       auto synth = std::make_shared<std::string>(std::format(
+          "fn __eff_decls__() {{\n"
           "fn {0}{1} {{ __raise_at(\"EffectError\", \"effect "
-          "operation '{0}' must be invoked via `perform`\", {2}) }}\n",
-          name, anchored(source_of(*ast->nodes[1])), err_at(*ast)));
-      return reparse_decl(synth, err_line(*ast), names_.visible());
+          "operation '{0}' must be invoked via `perform`\", {2}) }}\n"
+          "fn __eff_args_{0}{1} {{\n__lowered_frame('{0}')\n[{3}]\n}}\n"
+          "{4}}}\n",
+          name, params, err_at(*ast), names, ret_check));
+      return reparse_stmts(synth, err_line(*ast), names_.visible());
     }
 
     auto around = names_.visible();
-    const auto& params_ast = *ast->nodes[1];
     const auto& body = *ast->nodes.back();
 
     // Same rule as a generator body, for the same reason: an effect fn is a
@@ -1938,7 +2011,6 @@ class EffectsLowerer {
     // body IS covered, by this walk: no receiver survives there either.)
     reject_self_in_body(body, src_, "an effect fn body");
 
-    auto param_names = collect_positional_param_names(params_ast);
     // Named from the prefix; both backends recognize the state class by the
     // mark build_computation_class writes (culebra::is_lowered_state_class).
     auto class_name = std::format("{}{}_{}_{}",
@@ -1953,27 +2025,22 @@ class EffectsLowerer {
                                     collect_mut_param_names(params_ast));
     }
 
-    std::string call_args;
-    for (size_t j = 0; j < param_names.size(); j++) {
-      if (j > 0) call_args += ", ";
-      call_args += std::string(param_names[j]);
-    }
-    // The decl lowers to a PAIR: `__eff_comp_f` builds the un-driven
-    // computation (called by DELEGATE sites compiled into other computation
-    // bodies — static routing, no dynamic in-a-`_step` flag), and `f` drives
-    // one at its own call site. The caller's native frame is the continuation
-    // there (tail/abort dispatch; a full-control clause raises), which is
-    // what lets ordinary code call an effect fn — including through
-    // first-class uses like `.map(f)`.
-    auto params = anchored(source_of(params_ast));
-    // The body is the maker's computation, so the maker's `fn` is the effect
-    // fn (parser.h's lowered-frame marker).
+    // `__eff_make_f` builds the un-driven computation from bound arguments.
+    // Two entries bind them: `__eff_comp_f`, which DELEGATE sites compiled
+    // into other computation bodies call (static routing — no dynamic
+    // in-a-`_step` flag), and `f`, which drives one at its own call site. The
+    // caller's native frame is the continuation there (tail/abort dispatch; a
+    // full-control clause raises), which is what lets ordinary code call an
+    // effect fn — including through first-class uses like `.map(f)`. Each
+    // frame's `fn` is the effect fn (parser.h's lowered-frame marker), and `f`
+    // returns through `T`'s check, as a plain fn does.
     auto synth = std::make_shared<std::string>(std::format(
         "fn __eff_decls__() {{\n"
-        "fn __eff_comp_{0}{1} {{\n__lowered_frame('{0}')\n{2}  {3}.new({4})\n}}\n"
-        "fn {0}{1} {{ __Eff.run_comp(__eff_comp_{0}({4})) }}\n"
-        "}}\n",
-        name, params, cls, class_name, call_args));
+        "fn __eff_make_{0}({4}) {{\n__lowered_frame('{0}')\n{2}  {3}.new({4})\n}}\n"
+        "fn __eff_comp_{0}{1} {{\n__lowered_frame('{0}')\n__eff_make_{0}({4})\n}}\n"
+        "fn {0}{1}{5} {{ __Eff.run_comp(__eff_make_{0}({4})) }}\n"
+        "{6}}}\n",
+        name, params, cls, class_name, names, ret, ret_check));
     return reparse_stmts(synth, err_line(*ast), around);
   }
 
@@ -2131,8 +2198,31 @@ class EffectsLowerer {
             "{ … }`).",
             err_pos(clause).line, err_pos(clause).col);
       }
-      std::string binds;
+      // The clause takes one parameter per name its operation's declaration
+      // binds: refused here where the handle sees that declaration, and when
+      // a perform reaches it with another count (one that saw no declaration
+      // passes its arguments as written).
       size_t nparams = params.nodes.size();
+      size_t takes = nparams - 1;
+      auto arity_words = [&](std::string_view passed) {
+        return std::format(
+            "handler clause for '{}' takes {} argument{} before `resume`, but "
+            "`perform {}` passes {}",
+            op, takes, takes == 1 ? "" : "s", op, passed);
+      };
+      if (sees_operation(*clause.nodes[0], {})) {
+        const auto& arities = decls_.ops.at(op);
+        if (arities.size() == 1 && *arities.begin() != takes)
+          throw CulebraError("SyntaxError",
+                             arity_words(std::to_string(*arities.begin())) + ".",
+                             err_pos(clause).line, err_pos(clause).col);
+      }
+      std::string binds = std::format(
+          "      if {0}.size() != {1} {{ __raise_at(\"ArityError\", \"{2}\", "
+          "{3}) }}\n",
+          args_name, takes,
+          arity_words(std::format("{{{}.size()}}", args_name)),
+          err_at(clause));
       for (size_t i = 0; i + 1 < nparams; i++) {
         auto pn = view_parameter(*params.nodes[i]).name;
         binds += std::format("      let {} = {}[{}]\n", std::string(pn),
@@ -2183,31 +2273,6 @@ class EffectsLowerer {
     return reparse_expr(synth, err_line(*ast), around);
   }
 
-  // Re-parse a synthesized `fn name(...) { … }` and return its MULTIFN_DECL,
-  // then check the generators in the fragment (a nested named generator fn
-  // carried verbatim into a `_step` body is held to the same rules — the
-  // module-level check ran before this text existed) and recursively lower any
-  // effect constructs it still carries (composition of nested handles /
-  // effect fns). The synthesized source is registered for lifetime
-  // (parse_registered_source). `around` are the names visible where the
-  // fragment goes.
-  std::shared_ptr<peg::Ast> reparse_decl(std::shared_ptr<std::string> synth,
-                                         int64_t fallback_line,
-                                         std::vector<std::string> around) {
-    auto label = next_fragment_label("eff");
-    auto fn = parse_wrapper_fn(synth, label.c_str());
-    if (!fn) {
-      throw CulebraError("InternalError",
-                         "effects transform produced unparseable source", 0, 0);
-    }
-    auto out = lower_fragment(fn, *synth, label, std::move(around));
-    // Restore original positions (anchors, then the provenance markers);
-    // machinery lines fall back to the declaration's line. Subtrees spliced
-    // in by the nested lowering above carry other labels and are already
-    // repositioned.
-    return reposition_fragment(out, *synth, fallback_line, label);
-  }
-
   // Re-parse a synthesized `fn __wrapper__() { <stmts> }` and return its whole
   // body (to splice, as a statement sequence, in place of an EFFECT_FN_DECL
   // that lowers to more than one declaration), recursively lowering nested
@@ -2219,6 +2284,9 @@ class EffectsLowerer {
     auto label = next_fragment_label("eff");
     auto fn = parse_wrapper_fn(synth, label.c_str());
     if (!fn) {
+      if (transform_stats_level() == 2)
+        std::fprintf(stderr, "----8<---- unparseable fragment\n%s\n",
+                     synth->c_str());
       throw CulebraError("InternalError",
                          "effects transform produced unparseable source", 0, 0);
     }
@@ -2258,8 +2326,8 @@ class EffectsLowerer {
 // modules pay one whole-tree pointer pass.
 inline std::shared_ptr<peg::Ast> transform_effects_in(
     std::shared_ptr<peg::Ast> ast, const std::string& src) {
-  auto effect_fns = collect_effect_fn_names(*ast);
-  EffectsLowerer lowerer(src, effect_fns, /*src_is_original=*/true,
+  auto decls = collect_effect_decls(*ast);
+  EffectsLowerer lowerer(src, decls, /*src_is_original=*/true,
                          ast->path);
   lowerer.set_scope_root(ast.get());
   return lowerer.transform(ast);
@@ -2279,7 +2347,7 @@ inline std::shared_ptr<peg::Ast> apply_transforms(
   // CULEBRA_TRANSFORM_STATS=1 reports how much culebra source the effects
   // lowering synthesized for this module — the input to every backend's
   // compile, so it bounds what any codegen-side change can save.
-  if (std::getenv("CULEBRA_TRANSFORM_STATS")) {
+  if (int level = transform_stats_level()) {
     auto sources = fragment_sources_snapshot();
     size_t bytes = 0, lines = 0;
     for (auto& s : sources) {
@@ -2290,7 +2358,7 @@ inline std::shared_ptr<peg::Ast> apply_transforms(
                  "[transform-stats] %s: source %zu bytes -> synthesized %zu "
                  "fragments, %zu bytes, %zu lines\n",
                  path.c_str(), expr.size(), sources.size(), bytes, lines);
-    if (std::string_view(std::getenv("CULEBRA_TRANSFORM_STATS")) == "2") {
+    if (level == 2) {
       for (auto& s : sources)
         std::fprintf(stderr, "----8<---- fragment\n%s\n", s->c_str());
     }

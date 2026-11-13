@@ -4849,7 +4849,7 @@ builds (unless noted).
 | `IndexError` | Array / String / Tensor index out of range; Tensor slice out of bounds; Tensor reduction axis out of range. | yes |
 | `ValueError` | Destructure pattern mismatch (`[a, b] = ...` shape mismatch); Tensor shape / dtype mismatch; `[].min()` or other empty-collection reductions; numeric conversion of malformed string; JSON parse failure; walking a value nested deeper than 1000 levels (see the value-nesting bound below). | yes |
 | `AttributeError` | Compound assignment (`o.x += ...`) on a missing property; reading or writing (`=`/`??=`) a member a builtin namespace doesn't have (namespaces are closed — a class or plain dict still reads/writes freely). | yes |
-| `ArityError` | Call missing a required argument — too few positional args to a function or a class constructor; more positional args than a *built-in* or namespace function accepts. Surplus positionals to a **user** function are not an error: they overflow into `__ARGS__` (§19). A class constructor ignores them, and so does a class with no `new`. | yes |
+| `ArityError` | Call missing a required argument — too few positional args to a function or a class constructor; more positional args than a *built-in* or namespace function accepts. Surplus positionals to a **user** function are not an error: they overflow into `__ARGS__` (§19), except that a `fn name(…)` declaration dispatches, so a surplus finds no method (`DispatchError`). A class constructor ignores them, and so does a class with no `new`. A handler clause whose parameters are not the arguments its operation passes (§16). | yes |
 | `DispatchError` | Multimethod call with no matching method or with ambiguous specificity tie (§20). | yes |
 | `AssertionError` | Matcher failure (`assert_true` / `assert_eq` / etc.) or user `throw {kind: "AssertionError", ...}`. Message names both operands for comparison matchers. | yes |
 | `SyntaxError` | Structural errors raised during AST lowering: `**rest` not last param, duplicate `*` separator, non-default param after default, `compound let`, `break` / `continue` outside loop. Surfaces at function decl evaluation, before that function runs. | yes |
@@ -5025,7 +5025,9 @@ function** (with a body):
     }
 
 An operation declaration only names the operation and its parameters; invoking
-it directly is an error — it must be reached through `perform`.
+it directly is an error — it must be reached through `perform`. An effectful
+function binds its arguments and checks a `-> T` annotation as a plain fn
+does, whether ordinary code calls it or another effect body does.
 
 An effectful function's body is lowered into a synthesized computation class,
 so a bare `self` there could only name that internal object, and it may not be
@@ -5081,6 +5083,26 @@ let x = handle {
 inspect(x)  # => 11
 ```
 
+The operation's declaration binds what `perform` passes, as a plain fn's
+parameter list binds a call: defaults fill in, `*rest` and `**kw` collect, and
+keyword and `**` arguments go where a call's would. A `perform` the
+declaration does not take is refused at the `perform`, as a call of a plain
+`fn op(…)` is. A `-> T` on the declaration checks the value the handler
+resumes with, also at the `perform`.
+
+```culebra
+effect fn fetch(key, *, fallback = 0)
+inspect(handle {
+  perform fetch('a')
+} with fetch(key, fallback, resume) {
+  resume([key, fallback])
+})  # => ['a', 0]
+```
+
+A `perform` that sees no declaration of its operation (none was written, or it
+is declared in another module) passes its arguments as written, so they can
+only be positional.
+
 ### Handling
 
 `handle { BODY } with op(params…, resume) { CLAUSE }` runs `BODY` with a
@@ -5089,6 +5111,11 @@ performs `op`, the matching clause runs with the operation's arguments bound to
 the leading parameters and the **continuation** bound to the last parameter
 (`resume` above) — a first-class function that resumes the performing code with
 the value passed to it. `resume()` with no argument resumes with `nil`.
+
+A clause takes one parameter for each argument its operation passes (one per
+name the declaration binds), and then the continuation. A clause that takes
+another count is a `SyntaxError` where the `handle` sees the operation's
+declaration, and otherwise an `ArityError` when a `perform` reaches it.
 
 A handler may resume, or not — declining to call `resume` discards the rest of
 the performing computation:

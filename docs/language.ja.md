@@ -4633,7 +4633,7 @@ unionとしての順位で、`Object`より下です。
 | `IndexError` | Array / String / Tensorの範囲外index；Tensor slice範囲外；Tensor reduction axis範囲外 | はい |
 | `ValueError` | Destructure pattern mismatch；Tensorのshape / dtype不一致；`[].min()`等空コレクションへのreduce；不正な数値文字列；JSON parse失敗；1000段を超えてネストした値のwalk（下記「値ネストの上限」参照） | はい |
 | `AttributeError` | compound代入（`o.x += ...`）で`x`が存在しない；組み込み名前空間が持たないメンバーの読み取り・書き込み（`=`/`??=`）（名前空間は閉じている — クラスやプレーンなdictは自由に読み書きできる） | はい |
-| `ArityError` | 必須引数の欠如 — 関数やclass constructorへのpositional不足；**組み込み**・名前空間関数が受け取れる数を超えたpositional。**ユーザ定義**関数への余分なpositionalはエラーではなく`__ARGS__`（§19）に溢れる。class constructorは`new`の無いclassも含めて無視する | はい |
+| `ArityError` | 必須引数の欠如 — 関数やclass constructorへのpositional不足；**組み込み**・名前空間関数が受け取れる数を超えたpositional。**ユーザ定義**関数への余分なpositionalはエラーではなく`__ARGS__`（§19）に溢れる。ただし`fn name(…)`宣言はディスパッチするので、余分があると合うメソッドが無い（`DispatchError`）。class constructorは`new`の無いclassも含めて無視する。操作が渡す引数と数の合わないハンドラのclause（§16） | はい |
 | `DispatchError` | 多重ディスパッチ（§20）でマッチなし、またはspecificity同点 | はい |
 | `AssertionError` | matcherの失敗 (`assert_true` / `assert_eq`等) もしくはユーザ`throw {kind: "AssertionError", ...}`。比較系matcherは両辺をmessageに含めます | はい |
 | `SyntaxError` | ASTの書き換えで検出される構造エラー：`**rest`が末尾でない、`*`区切りの重複、デフォルト値後に非デフォルト、`let`付きcompound、ループ外の`break` / `continue`等。該当functionの宣言評価時に発火 | はい |
@@ -4796,7 +4796,9 @@ JITレーンは`throw` / `try` / `catch` / `defer`をVMと同一の
     }
 
 操作宣言は操作名とパラメータを名付けるだけです。直接呼び出すのはエラーで、
-必ず`perform`を通して到達しなければなりません。
+必ず`perform`を通して到達しなければなりません。エフェクトフル関数は、普通の
+コードから呼ばれても別のエフェクト本体から呼ばれても、普通のfnと同じく引数を
+束縛し、`-> T`の注釈を検査します。
 
 エフェクトフル関数の本体は合成された計算クラスに下ろされるため、そこでの
 裸の`self`はその内部オブジェクトしか指せず、参照できません（`self is not
@@ -4849,6 +4851,24 @@ let x = handle {
 inspect(x)  # => 11
 ```
 
+`perform`が渡すものは、普通のfnの引数並びが呼び出しを束縛するのと同じく、
+操作の宣言が束縛します。既定値が補われ、`*rest`と`**kw`が集め、キーワード引数と
+`**`引数は呼び出しのときと同じ場所へ入ります。宣言が受け取れない`perform`は、
+普通の`fn op(…)`の呼び出しと同じく、その`perform`で拒否されます。宣言に`-> T`が
+あれば、ハンドラが再開した値を、これも`perform`の位置で検査します。
+
+```culebra
+effect fn fetch(key, *, fallback = 0)
+inspect(handle {
+  perform fetch('a')
+} with fetch(key, fallback, resume) {
+  resume([key, fallback])
+})  # => ['a', 0]
+```
+
+操作の宣言が見えない`perform`（宣言が書かれていない、または別のモジュールで
+宣言されている）は、引数を書かれたまま渡すので、位置引数しか使えません。
+
 ### handle
 
 `handle { BODY } with op(params…, resume) { CLAUSE }`は、その間ハンドラを
@@ -4856,6 +4876,10 @@ inspect(x)  # => 11
 performすると、対応するclauseが、操作の引数を先頭のパラメータに、**継続**を
 最後のパラメータ（上の`resume`）に束縛して走ります。継続は第一級の関数で、
 渡した値でperform側のコードを再開します。引数なしの`resume()`は`nil`で再開します。
+
+clauseは、操作が渡す引数ごとに1つ（宣言が束縛する名前ごとに1つ）のパラメータを
+取り、その後に継続を取ります。数の違うclauseは、`handle`から操作の宣言が見える
+ときは`SyntaxError`、見えないときは`perform`が届いた時点で`ArityError`になります。
 
 ハンドラは再開してもしなくてもよく、`resume`を呼ばなければperform側の残りの
 計算は破棄されます:

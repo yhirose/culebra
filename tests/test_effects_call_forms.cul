@@ -1,0 +1,135 @@
+// Conformance: an effect fn takes and returns what a plain fn of the same
+// signature does, whether ordinary code calls it or an effect body does. The
+// lowering gives an effect fn two entries (one ordinary code calls, one an
+// effect body delegates to), so each case below calls both, next to a plain
+// twin, and asks for the same outcome.
+
+effect fn cf_tick()
+
+// What `thunk()` gives: [its value], or the error it raised.
+fn cf_outcome(thunk) {
+  try {
+    [thunk()]
+  } catch e {
+    e
+  }
+}
+
+// --- a `*rest` parameter ------------------------------------------------------
+effect fn cf_rest(a, *rest) {
+  rest
+}
+fn cf_rest_p(a, *rest) {
+  rest
+}
+assert_eq(cf_rest(1, 2, 3), [2, 3])
+assert_eq(cf_outcome(|| cf_rest(1, 2, 3)), cf_outcome(|| cf_rest_p(1, 2, 3)))
+
+// --- a keyword-only parameter --------------------------------------------------
+effect fn cf_kwonly(a, *, b = 10) {
+  a + b
+}
+assert_eq(cf_kwonly(1, b: 2), 3)
+// Refused where the call is written: on the line a second error raised next
+// to it reports.
+let cf_kw_bad = [cf_outcome(|| cf_kwonly(1, 2)), cf_outcome(|| nil.here())]
+assert_eq(cf_kw_bad[0].line, cf_kw_bad[1].line)
+
+// --- a `**kw` parameter -------------------------------------------------------
+effect fn cf_kwrest(a, **opts) {
+  opts
+}
+assert_eq(cf_kwrest(1, z: 2), {z: 2})
+
+// --- a pattern parameter -------------------------------------------------------
+effect fn cf_pattern((a, b), {c}) {
+  a + b + c
+}
+assert_eq(cf_pattern((1, 2), {c: 3}), 6)
+
+// --- return type ------------------------------------------------------------
+effect fn cf_ret(v) -> Long {
+  perform cf_tick()
+  v
+}
+fn cf_ret_p(v) -> Long {
+  v
+}
+fn cf_ret_run(v) {
+  handle {
+    cf_outcome(|| cf_ret(v))
+  } with cf_tick(resume) {
+    resume(nil)
+  }
+}
+assert_eq(cf_ret_run(1), [1])
+let cf_ret_bad = [cf_ret_run('x'), cf_outcome(|| cf_ret_p('x'))]
+assert_eq([cf_ret_bad[0].kind, cf_ret_bad[0].message],
+          [cf_ret_bad[1].kind, cf_ret_bad[1].message])
+// Called by name in an effect body, the call delegates to the computation.
+effect fn cf_ret_by_name(v) {
+  let r = cf_ret(v)
+  r
+}
+let cf_ret_delegated = try {
+  handle { cf_ret_by_name('x') } with cf_tick(resume) { resume(nil) }
+} catch e {
+  [e.kind, e.message]
+}
+assert_eq(cf_ret_delegated, ['TypeError', 'type error: return value expects Long'])
+
+// --- a function local called as a method, in an effect body -----------------
+// A local of a handle body or an effect fn body lives on the computation the
+// lowering makes; `x.f()` still finds a local function `f` there.
+fn cf_ufcs_handle() {
+  handle {
+    let tw = fn (x) {
+      x * 2
+    }
+    perform cf_tick()
+    21.tw()
+  } with cf_tick(resume) {
+    resume(nil)
+  }
+}
+assert_eq(cf_ufcs_handle(), 42)
+effect fn cf_ufcs_effect() {
+  let tw = |x| x * 3
+  perform cf_tick()
+  [14.tw(), 'ab'.size()]
+}
+assert_eq(handle { cf_ufcs_effect() } with cf_tick(resume) { resume(nil) }, [42, 2])
+effect fn cf_ufcs_shapes() {
+  let tw = |x| x * 2
+  let in_block = fn (v) { v.tw() }
+  perform cf_tick()
+  [in_block(1), (1 + 2).tw(), 2.tw().tw()]
+}
+assert_eq(handle { cf_ufcs_shapes() } with cf_tick(resume) { resume(nil) }, [2, 6, 8])
+// A local not declared yet is no candidate, and the receiver's own method
+// answers, as in a plain fn.
+effect fn cf_ufcs_late() {
+  let call = || {tw: || 'own'}.tw()
+  let first = call()
+  perform cf_tick()
+  let tw = |x| 'free'
+  [first, 1.tw()]
+}
+assert_eq(handle { cf_ufcs_late() } with cf_tick(resume) { resume(nil) }, ['own', 'free'])
+
+// --- an operation declared in an effect body ----------------------------------
+fn cf_local_op() {
+  handle {
+    effect fn cf_inner()
+    let r = handle {
+      perform cf_inner()
+    } with cf_inner(resume) {
+      resume(5)
+    }
+    perform cf_tick()
+    r
+  } with cf_tick(resume) {
+    resume(nil)
+  }
+}
+assert_eq(cf_local_op(), 5)
