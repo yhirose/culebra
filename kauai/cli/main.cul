@@ -150,7 +150,7 @@ if args[0] == "live" {
   }
   let room_text = opts.room
   let room = try {
-    to_long(room_text.ends_with("%") ? room_text.slice(0, room_text.size() - 1) : room_text)
+    to_long(room_text.strip_suffix("%"))
   } catch _ {
     nil
   }
