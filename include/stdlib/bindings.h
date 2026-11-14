@@ -3045,10 +3045,10 @@ inline JitObject* _file_iter_build(JitValue self, bool chunks, int64_t n) {
   JitObject* it;
   if (chunks) {
     auto* n_cell = culebra_runtime_cell_new(TAG_LONG, n);
-    it = _iter_wrap_fast<&_file_chunks_fast_fn>(
+    it = _iter_wrap_source<&_file_chunks_fast_fn>(
         {handle_cell, id_cell, n_cell, line_cell, col_cell});
   } else {
-    it = _iter_wrap_fast<&_file_lines_fast_fn>(
+    it = _iter_wrap_source<&_file_lines_fast_fn>(
         {handle_cell, id_cell, line_cell, col_cell});
   }
   _iter_set_dispose(it, _jit_native<_file_iter_dispose_fn>, id_cell);
@@ -3142,7 +3142,7 @@ inline void _jit_watch_iter(JitValue* __ret, JitClosure*, int8_t self_tag,
   auto* id_cell = culebra_runtime_cell_new(TAG_LONG, id);
   // No dispose: the handle owns the close, so `break` leaves a named handle
   // usable and an anonymous one is stopped by its own drop (interp twin).
-  auto* it = _iter_wrap_fast<&_watch_events_fast_fn>({id_cell});
+  auto* it = _iter_wrap_source<&_watch_events_fast_fn>({id_cell});
   { *__ret = {TAG_OBJECT, reinterpret_cast<int64_t>(it)}; return; }
 }
 inline void _jit_watch_close(JitValue* __ret, JitClosure*, int8_t self_tag,
@@ -3188,7 +3188,7 @@ inline void _jit_stdin_lines(JitValue* __ret, JitClosure*, int8_t self_tag, int6
                                             JitValue*) {
   // The iterator reads the thread-local stdin buffer, not the handle, so no
   // keep-alive capture is needed.
-  auto* it = _iter_wrap_fast<&_stdin_lines_fast_fn>({});
+  auto* it = _iter_wrap_source<&_stdin_lines_fast_fn>({});
   { *__ret = {TAG_OBJECT, reinterpret_cast<int64_t>(it)}; return; }
 }
 // read(n=nil): nil → rest of stdin, Long → up to n bytes. A non-Long n is the
@@ -3732,7 +3732,7 @@ inline void _jit_net_sock_lines(JitValue* __ret, JitClosure*, int8_t self_tag, i
   auto* id_cell = culebra_runtime_cell_new(TAG_LONG, id);
   auto* line_cell = culebra_runtime_cell_new(TAG_LONG, _jit_thread.call_line);
   auto* col_cell = culebra_runtime_cell_new(TAG_LONG, _jit_thread.call_col);
-  auto* it = _iter_wrap_fast<&_net_lines_fast_fn>(
+  auto* it = _iter_wrap_source<&_net_lines_fast_fn>(
       {handle_cell, id_cell, line_cell, col_cell});
   { *__ret = {TAG_OBJECT, reinterpret_cast<int64_t>(it)}; return; }
 }
@@ -3852,7 +3852,7 @@ inline void _jit_net_listener_iter(JitValue* __ret, JitClosure*, int8_t self_tag
   auto* id_cell = culebra_runtime_cell_new(TAG_LONG, id);
   auto* line_cell = culebra_runtime_cell_new(TAG_LONG, _jit_thread.call_line);
   auto* col_cell = culebra_runtime_cell_new(TAG_LONG, _jit_thread.call_col);
-  auto* it = _iter_wrap_fast<&_net_accept_fast_fn>(
+  auto* it = _iter_wrap_source<&_net_accept_fast_fn>(
       {handle_cell, id_cell, line_cell, col_cell});
   { *__ret = {TAG_OBJECT, reinterpret_cast<int64_t>(it)}; return; }
 }
@@ -7854,7 +7854,7 @@ inline void _jit_ws_iter(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t 
   JitValue self{self_tag, self_data};
   int64_t id = _jit_handle_long(reinterpret_cast<JitObject*>(self.data), "_ws");
   auto* id_cell = culebra_runtime_cell_new(TAG_LONG, id);
-  auto* it = _iter_wrap_fast<&_ws_messages_fast_fn>({id_cell});
+  auto* it = _iter_wrap_source<&_ws_messages_fast_fn>({id_cell});
   { *__ret = {TAG_OBJECT, reinterpret_cast<int64_t>(it)}; return; }
 }
 inline void _jit_ws_drop(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t,
@@ -9463,7 +9463,7 @@ inline JitValue _ns_xml_events(JitValue* a, int64_t n) {
   _jit_owned_bind_drop(holder);
   auto* holder_cell = culebra_runtime_cell_new(
       TAG_OBJECT, reinterpret_cast<int64_t>(holder));
-  auto* it = _iter_wrap_fast<&_xml_events_fast_fn>({holder_cell});
+  auto* it = _iter_wrap_source<&_xml_events_fast_fn>({holder_cell});
   _iter_set_dispose(it, _jit_native<_xml_events_dispose_fn>, holder_cell);
   return _ns_adapt::v_object(it);
 }

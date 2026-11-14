@@ -1,0 +1,127 @@
+# An iterator the standard library makes cannot be stepped again while one
+# of its steps is running — from a callback, an inner iterator, a `drop` or a
+# handler's clause that the step runs. That raises `ValueError: iterator
+# already running`, as resuming a running generator does, at the call that
+# stepped it again. Same across the executor, --jit and an AOT binary.
+
+let running = 'iterator already running'
+
+# From an inner iterator's `has_next`, while flat_map steps through it.
+mut flat_outer = nil
+class Inner {
+  iter() { self }
+  has_next() {
+    flat_outer.next()
+    true
+  }
+  next() { 0 }
+}
+flat_outer = [0].iter().flat_map(|_| Inner())
+assert_throws('ValueError', || flat_outer.next(), message: running)
+
+# From the callback flat_map opens each inner with, and the error's position
+# is the call that stepped it again.
+mut opened = nil
+fn open_inner(x) {
+  opened.next()
+  [x]
+}
+opened = [1, 2].iter().flat_map(open_inner)
+assert_throws('ValueError', || opened.collect(), message: running)
+let opened_at = assert_throws('ValueError', || opened.next(), message: running)
+assert_eq([opened_at.line, opened_at.col], [26, 3])
+
+# From a map callback asking `has_next`, and from chunk_by's key function.
+mut peeked = nil
+peeked = [1, 2, 3].iter().map(fn (x) {
+  peeked.has_next()
+  x
+})
+assert_throws('ValueError', || peeked.collect(), message: running)
+mut keyed = nil
+keyed = [1, 2, 3].iter().chunk_by(fn (x) {
+  keyed.next()
+  x
+})
+assert_throws('ValueError', || keyed.collect(), message: running)
+
+# From a key's `eq`, which walking an Object with non-String keys asks.
+mut walked = nil
+class Key {
+  new(@n) {}
+  hash() { 1 }
+  eq(o) {
+    if walked != nil {
+      walked.next()
+    }
+    self.n == o.n
+  }
+}
+let keyed_by = {}
+keyed_by[Key(1)] = 'a'
+keyed_by[Key(2)] = 'b'
+walked = keyed_by.values()
+assert_throws('ValueError', || walked.collect(), message: running)
+
+# From a handler's clause that resumes at the perform inside the callback.
+effect fn ask()
+mut asked = nil
+asked = [1, 2, 3].iter().map(fn (x) {
+  x + perform ask()
+})
+assert_throws('ValueError', fn () {
+  handle {
+    asked.collect()
+  } with ask(k) {
+    k(asked.has_next() ? 1 : 0)
+  }
+}, message: running)
+
+# The mark comes down however a step ends: after a throw, and after an
+# effect's abort unwinds through it, the iterator steps on.
+let thrown = [1, 2, 3].iter().map(fn (x) {
+  if x == 1 {
+    throw 'first'
+  }
+  x * 10
+})
+let thrown_first = try {
+  thrown.next()
+} catch e {
+  e
+}
+assert_eq(thrown_first, 'first')
+assert_eq(thrown.next(), 20)
+effect fn fail()
+let aborted = [1, 2, 3].iter().map(fn (x) {
+  if x == 2 {
+    perform fail()
+  }
+  x * 10
+})
+assert_eq(handle { aborted.collect() } with fail(k) { 'aborted' }, 'aborted')
+assert_eq(aborted.next(), 30)
+assert_false(aborted.has_next())
+
+# Stepping one iterator after another, or a different one from inside a step,
+# is no re-entry.
+let twice = [1, 2, 3, 4].iter().map(|x| x * 10)
+assert_eq(twice.zip(twice).collect().map(|p| [p.first, p.second]),
+          [[10, 20], [30, 40]])
+let chained = [1, 2, 3].iter()
+assert_eq(chained.chain(chained).collect(), [1, 2, 3])
+let other = [7, 8, 9].iter().map(|x| x + 1)
+let nested = [1, 2].iter().map(fn (x) {
+  mut s = 0
+  for y in [5, 6].iter().map(|z| z * x) {
+    s += y
+  }
+  s + other.next()
+})
+assert_eq(nested.collect(), [19, 31])
+# A callback that steps its own upstream: the upstream's step has returned.
+let up = [1, 2, 3].iter().map(|x| x)
+let down = up.map(fn (x) {
+  up.has_next() ? x + up.next() : x
+})
+assert_eq(down.collect(), [3, 3])

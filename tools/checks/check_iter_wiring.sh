@@ -16,14 +16,16 @@
 #        closure caches). A new terminal reaching for them fails here.
 #
 # 2. Combinator upstream wiring: a lazy combinator must hand its upstream(s)
-#    to the wrapper factory (`_iter_wrap_fast<Fn>({cells}, n_upstreams)`,
-#    the shared-runtime form both lanes go through) or dispose stops
-#    forwarding through the chain — the skip_while/flatten/... regression
-#    class (every rebase that added combinators forgot at least one). The
-#    no-upstream call population is exactly the audited LEAF set (source
-#    iterators: range, string iters, File/Net/stdin lines, ...), so a new
-#    combinator built without an upstream argument raises the count and
-#    fails; a new leaf source is a conscious ceiling bump in review.
+#    to its wrapper factory (`_iter_wrap_fast<Fn>({cells}, n_upstreams)`,
+#    the shared-runtime form both lanes go through, which marks each step
+#    running) or dispose stops forwarding through the chain — the
+#    skip_while/flatten/... regression class (every rebase that added
+#    combinators forgot at least one). A leaf source (range, string iters,
+#    File/Net/stdin lines, ...) is built by `_iter_wrap_source`, which takes
+#    no upstream; that population is the audited leaf set, so a new leaf is
+#    a conscious ceiling bump in review, and a no-upstream `_iter_wrap_fast`
+#    call is a combinator that forgot its upstream (or the audited Object
+#    iterator over non-String keys, a guarded leaf).
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 
@@ -123,7 +125,7 @@ PYEOF
 # interpreter's leaf sources, and that engine's body went in d0d00303. The
 # name has since matched nothing, so the ratchet passed 0 against a ceiling of
 # 22 while proving nothing — the empty-population guard in ratchet() is what
-# surfaced it. The surviving population is the shared-runtime `_iter_wrap_fast`
+# surfaced it. The surviving population is the shared-runtime `_iter_wrap_source`
 # form below, which both the executor and the JIT go through.
 
 # leaf sources = 15 (9 rt_iter.inc.h + 6 stdlib_rt.h) — grid_new joined
@@ -138,9 +140,16 @@ PYEOF
 # frozen tree. It was a hand-built {has_next, next} pair until then, which
 # this count never saw; it has nothing to dispose (the walk's own view goes
 # with the captures).
+# 2026-11-14: the leaves moved to `_iter_wrap_source`, which steps without the
+# running mark (a leaf's step runs none of the program's code), and
+# `_iter_wrap_fast` marks every step running (docs §18.5). The Object
+# iterator over non-String keys finds a key again by its `eq`, so it is the
+# one guarded leaf: a no-upstream `_iter_wrap_fast` call (ceiling 1).
+ws=$(count_no_upstream '_iter_wrap_source<[^>]*>\s*\(')
+ratchet "no-upstream _iter_wrap_source calls (leaves)" "$ws" 19
 wf=$(count_no_upstream '_iter_wrap_fast<[^>]*>\s*\(')
-ratchet "no-upstream _iter_wrap_fast calls (leaves)" "$wf" 20
+ratchet "no-upstream _iter_wrap_fast calls (guarded leaves)" "$wf" 1
 
 if (( fail )); then exit 1; fi
 echo "iter-wiring OK (pull=$pull/0 advance_raw=$adv/25 has_next_closure=$hnc/4" \
-     "wrap_fast-leaves=$wf/20)"
+     "wrap_source-leaves=$ws/19 wrap_fast-no-upstream=$wf/1)"

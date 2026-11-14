@@ -222,7 +222,11 @@
 # operator, `__str__`, `[]`, `hash` and `eq`, `iter`, and never for `next`,
 # `dispose` or `drop`; 0.04 s under --vm, 2.4 s under --jit, 7 CPU s for the
 # three gc-stress runs).
-tests.cul 370
+# 371 since test_lazy_reentry.cul (an iterator the standard library makes,
+# stepped again from inside its own step, raises `iterator already running`;
+# 0.07 s under --vm, 1.5 s under --jit, about 4 CPU s for the three gc-stress
+# runs).
+tests.cul 371
 
 # tests/isolate/*.cul — run on both engines, plus the over-cap modes.
 # 21 since test_xml_isolate.cul (an XML element keeps its methods across an

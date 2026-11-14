@@ -2828,7 +2828,8 @@ inspect(b.has_next())
   プログラムを同じ位置で拒否します。
 * 本体が走っている間のジェネレータは再開できません。本体の中から
   自分自身の`has_next()`や`next()`を呼ぶと`ValueError: generator
-  already running`になります。
+  already running`になります。標準ライブラリが作るイテレータ（遅延
+  チェーン、範囲や文字列のもの）にも同じ規則があります（§18.5）。
 * 本体の中の名前は、普通の関数の中と同じ意味を持ちます。宣言は
   それぞれ自分の変数を作り、その変数はスコープの間だけ生きます。
   ブロック・腕・ループ本体の`let`は外側の同名の変数とは別の変数で、
@@ -4675,7 +4676,7 @@ unionとしての順位で、`Object`より下です。
 | `ImmutableError` | `let`（非`mut`）束縛への代入；immutable ObjectプロパティまたはDictエントリへの代入；コンストラクタ本体内の`self`再代入 | はい |
 | `KeyError` | Dictの存在しないキーsubscript；Objectの存在しないキーsubscript | はい |
 | `IndexError` | Array / String / Tensorの範囲外index；Tensor slice範囲外；Tensor reduction axis範囲外 | はい |
-| `ValueError` | Destructure pattern mismatch；Tensorのshape / dtype不一致；`[].min()`等空コレクションへのreduce；不正な数値文字列；JSON parse失敗；1000段を超えてネストした値のwalk（下記「値ネストの上限」参照） | はい |
+| `ValueError` | Destructure pattern mismatch；Tensorのshape / dtype不一致；`[].min()`等空コレクションへのreduce；不正な数値文字列；JSON parse失敗；1000段を超えてネストした値のwalk（下記「値ネストの上限」参照）；走っているジェネレータや標準ライブラリのイテレータを、その一歩の中から再び進める | はい |
 | `AttributeError` | compound代入（`o.x += ...`）で`x`が存在しない；組み込み名前空間が持たないメンバーの読み取り・書き込み（`=`/`??=`）（名前空間は閉じている — クラスやプレーンなdictは自由に読み書きできる） | はい |
 | `ArityError` | 必須引数の欠如 — 関数やclass constructorへのpositional不足；**組み込み**・名前空間関数が受け取れる数を超えたpositional。**ユーザ定義**関数への余分なpositionalはエラーではなく`__ARGS__`（§19）に溢れる。ただし`fn name(…)`宣言はディスパッチするので、余分があると合うメソッドが無い（`DispatchError`）。class constructorは`new`の無いclassも含めて無視する。操作が渡す引数と数の合わないハンドラのclause（§16） | はい |
 | `DispatchError` | 多重ディスパッチ（§20）でマッチなし、またはspecificity同点 | はい |
@@ -5887,6 +5888,16 @@ throwする経路では元のエラーが伝播し、`dispose`自身のthrowは�
 `for x in gen().map(f) { break }`は`for x in gen() { break }`と同様に
 `gen()`のdeferを走らせます。`dispose`を持たないソース上のチェーンは、
 自身も`dispose`を持ちません。
+
+標準ライブラリが作るイテレータは、一歩が走っている間にもう一度進める
+ことはできません。その一歩が走らせるコード（callback、内側のイテレータ、
+`drop`、ハンドラ節）が同じイテレータの`has_next()`や`next()`を呼ぶ
+（またはそれを回す）と、その呼び出しの位置で`ValueError: iterator already
+running`になります。走っているジェネレータを再開したときと同じです。
+エラーが巻き戻ったあとは、そのイテレータを続けて進められます。続けて
+2回進める（`it.zip(it)`）ことや、callbackから別のイテレータを進める
+ことは再入ではありません。プログラムが書いたイテレータのクラスは、
+自分で守ります。
 
     let countdown = fn (start) {
       mut i = start

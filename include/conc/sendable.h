@@ -2581,7 +2581,7 @@ inline void _jit_sv_iter(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t 
       [](JitObject*, const JitResolvedNode& rn) {
         auto* walk = _jit_sv_walk_of(rn);
         // Each cell takes over the +1 it is made with.
-        auto* it = _iter_wrap_fast<&_jit_sv_iter_fast_fn>(
+        auto* it = _iter_wrap_source<&_jit_sv_iter_fast_fn>(
             {culebra_runtime_cell_new(TAG_OBJECT,
                                       reinterpret_cast<int64_t>(walk)),
              culebra_runtime_cell_new(TAG_LONG, 0)});

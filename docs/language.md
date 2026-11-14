@@ -2946,7 +2946,8 @@ inspect(b.has_next())
   same programs at the same position.
 * A generator cannot be resumed while its body is running: `has_next()`
   or `next()` called on it from inside its own body raises `ValueError:
-  generator already running`.
+  generator already running`. An iterator the standard library makes
+  (a lazy chain, a range's, a string's) has the same rule (§18.5).
 * A name in the body means what it means in any function. Each
   declaration makes a variable of its own, which lives as long as its
   scope: a `let` in a block, an arm or a loop body is not the outer
@@ -4896,7 +4897,7 @@ builds (unless noted).
 | `ImmutableError` | Assignment to a `let` (non-`mut`) binding; assignment to an immutable Object property or `Dict` entry; rebinding `self` inside a constructor body. | yes |
 | `KeyError` | Dict subscript on absent key; Object subscript on absent key. | yes |
 | `IndexError` | Array / String / Tensor index out of range; Tensor slice out of bounds; Tensor reduction axis out of range. | yes |
-| `ValueError` | Destructure pattern mismatch (`[a, b] = ...` shape mismatch); Tensor shape / dtype mismatch; `[].min()` or other empty-collection reductions; numeric conversion of malformed string; JSON parse failure; walking a value nested deeper than 1000 levels (see the value-nesting bound below). | yes |
+| `ValueError` | Destructure pattern mismatch (`[a, b] = ...` shape mismatch); Tensor shape / dtype mismatch; `[].min()` or other empty-collection reductions; numeric conversion of malformed string; JSON parse failure; walking a value nested deeper than 1000 levels (see the value-nesting bound below); a running generator or standard-library iterator stepped again from inside its own step. | yes |
 | `AttributeError` | Compound assignment (`o.x += ...`) on a missing property; reading or writing (`=`/`??=`) a member a builtin namespace doesn't have (namespaces are closed — a class or plain dict still reads/writes freely). | yes |
 | `ArityError` | Call missing a required argument — too few positional args to a function or a class constructor; more positional args than a *built-in* or namespace function accepts. Surplus positionals to a **user** function are not an error: they overflow into `__ARGS__` (§19), except that a `fn name(…)` declaration dispatches, so a surplus finds no method (`DispatchError`). A class constructor ignores them, and so does a class with no `new`. A handler clause whose parameters are not the arguments its operation passes (§16). | yes |
 | `DispatchError` | Multimethod call with no matching method or with ambiguous specificity tie (§20). | yes |
@@ -6152,6 +6153,15 @@ iterator(s) they pull from (both, for the two-source combinators). So
 `for x in gen().map(f) { break }` runs `gen()`'s defers just like
 `for x in gen() { break }` does. A chain over a source with no `dispose`
 carries none itself.
+
+An iterator the standard library makes cannot be stepped again while one
+of its steps is running. If code the step runs (a callback, an inner
+iterator, a `drop`, a handler's clause) calls `has_next()` or `next()` on
+the same iterator, or walks it, that call raises `ValueError: iterator
+already running`, as resuming a running generator does. The
+iterator steps on once the error has unwound. Stepping it twice in a row
+(`it.zip(it)`) or stepping another iterator from a callback is no
+re-entry. An iterator class the program writes is its own to guard.
 
     let countdown = fn (start) {
       mut i = start

@@ -255,15 +255,39 @@ inline IterClosureCells _iter_cache_closure_cells(JitValue iv) {
 }
 
 // Lookahead state values stored in the state cell appended by
-// `_iter_wrap_fast`. The cell carries TAG_LONG with these payloads.
+// `_iter_wrap_source`. The cell carries TAG_LONG with these payloads.
 enum : int64_t {
   _ITER_LA_EMPTY   = 0,   // no cached value; pull on demand
   _ITER_LA_FILLED  = 1,   // value cell holds a +1 cached lookahead
   _ITER_LA_DRAINED = 2,   // upstream returned done; has_next stays false
+  _ITER_LA_RUNNING = 3,   // a step is running (_iter_run_step)
 };
 
+// Out of line: the call site is a thread-local read, kept off every step.
+[[noreturn, gnu::noinline, gnu::cold]] inline void _iter_already_running() {
+  throw culebra::CulebraError("ValueError", "iterator already running",
+                              _jit_thread.call_line, _jit_thread.call_col);
+}
+// Run one step (from EMPTY) with the iterator marked running in the state
+// its has_next and next share: the program's code the step runs stepping it
+// again raises, at that call, as a running generator does. The mark drops
+// to EMPTY on every exit, a throw included.
+extern "C++" template <class Step>
+inline void _iter_run_step(JitCell* state_cell, Step&& step) {
+  if (state_cell->value.data == _ITER_LA_RUNNING) _iter_already_running();
+  state_cell->value.data = _ITER_LA_RUNNING;
+  struct Lower {
+    JitCell* cell;
+    ~Lower() {
+      assert(cell->value.data == _ITER_LA_RUNNING);
+      cell->value.data = _ITER_LA_EMPTY;
+    }
+  } lower{state_cell};
+  step();
+}
+
 // Pull the next value via out-params. For iterators built by
-// `_iter_wrap_fast` (i.e. those exposing `fast_next_fn`), consults the
+// `_iter_wrap_source` (i.e. those exposing `fast_next_fn`), consults the
 // lookahead state cells appended by that factory so a prior
 // `has_next()` peek is consumed transparently. For user-defined
 // iterators (no fast_next_fn) calls `has_next()` then `next()` on the
@@ -366,7 +390,8 @@ CULEBRA_RT_KEEP void culebra_runtime_cell_retain(JitCell* c);
 // transparently).
 //
 // Captures layout: [user's captures..., state_cell, value_cell].
-// state_cell.value.data ∈ { _ITER_LA_EMPTY, _ITER_LA_FILLED, _ITER_LA_DRAINED }.
+// state_cell.value.data ∈ { _ITER_LA_EMPTY, _ITER_LA_FILLED, _ITER_LA_DRAINED,
+// _ITER_LA_RUNNING }.
 // value_cell holds a +1-owned lookahead while state == FILLED.
 // `n_upstreams` is how many of the leading `captures` hold the iterator(s) this
 // wrapper pulls from (0 for a source iterator, 2 for zip/chain). They get a
@@ -492,13 +517,40 @@ inline void _iter_trampoline_next_fn(JitValue* __ret, JitClosure* cls, int8_t iv
 // exposes `FastFn` directly so `_iter_advance_raw` can take the fast
 // path while still respecting any cached peek.
 template <JitIterFastFn FastFn>
-inline JitObject* _iter_wrap_fast(std::initializer_list<JitCell*> captures,
-                                  size_t n_upstreams = 0) {
+inline JitObject* _iter_wrap_with(std::initializer_list<JitCell*> captures,
+                                  size_t n_upstreams) {
   auto* obj = _iter_wrap_new(_jit_native<_iter_trampoline_has_next_fn<FastFn>>,
                               _jit_native<_iter_trampoline_next_fn<FastFn>>,
                               captures, n_upstreams);
   obj->fast_next_fn = FastFn;
   return obj;
+}
+
+// A source whose step runs none of the program's code (an Array's, a
+// range's, a string's, a file's lines) and pulls from no iterator: nothing
+// can step it again while it steps, so it runs unmarked.
+template <JitIterFastFn FastFn>
+inline JitObject* _iter_wrap_source(std::initializer_list<JitCell*> captures) {
+  return _iter_wrap_with<FastFn>(captures, 0);
+}
+
+// `FastFn` run as one step (_iter_run_step): the state cell is the one the
+// closure stepping it (has_next's or next's) shares.
+template <JitIterFastFn FastFn>
+inline void _iter_guarded_fast_fn(JitClosure* cls, JitValue iv, bool* done,
+                                  int8_t* out_tag, int64_t* out_data) {
+  _iter_run_step(cls->captures[cls->n_captures - 2],
+                 [&] { FastFn(cls, iv, done, out_tag, out_data); });
+}
+
+// The wrapper for a step that can run the program's code (a callback, an
+// upstream iterator it pulls from, a key's `eq`), marked running while it
+// does.
+template <JitIterFastFn FastFn>
+inline JitObject* _iter_wrap_fast(std::initializer_list<JitCell*> captures,
+                                  size_t n_upstreams = 0) {
+  return _iter_wrap_with<&_iter_guarded_fast_fn<FastFn>>(captures,
+                                                        n_upstreams);
 }
 
 // Give a source iterator the `dispose` that closes what it reads: `fn` runs
@@ -1715,7 +1767,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_str_code_points(
   auto* off_cell = culebra_runtime_cell_new(TAG_LONG, 0);
   auto* len_cell = culebra_runtime_cell_new(
       TAG_LONG, static_cast<int64_t>(_str_len(s)));
-  return _iter_wrap_fast<&_iter_code_points_fast_fn>(
+  return _iter_wrap_source<&_iter_code_points_fast_fn>(
       {buf_cell, off_cell, len_cell});
 }
 
@@ -1747,7 +1799,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_str_bytes(
   auto* off_cell = culebra_runtime_cell_new(TAG_LONG, 0);
   auto* len_cell = culebra_runtime_cell_new(
       TAG_LONG, static_cast<int64_t>(_str_len(s)));
-  return _iter_wrap_fast<&_iter_bytes_fast_fn>(
+  return _iter_wrap_source<&_iter_bytes_fast_fn>(
       {buf_cell, off_cell, len_cell});
 }
 
@@ -1781,7 +1833,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_str_scalars(
   auto* off_cell = culebra_runtime_cell_new(TAG_LONG, 0);
   auto* len_cell = culebra_runtime_cell_new(
       TAG_LONG, static_cast<int64_t>(_str_len(s)));
-  return _iter_wrap_fast<&_iter_str_scalars_fast_fn>(
+  return _iter_wrap_source<&_iter_str_scalars_fast_fn>(
       {buf_cell, off_cell, len_cell});
 }
 
@@ -1929,7 +1981,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_str_graphemes(
   auto* win_count_cell = culebra_runtime_cell_new(TAG_LONG, 0);
   auto* win_cap_cell = culebra_runtime_cell_new(TAG_LONG, 0);
   auto* win_buf_cell = culebra_runtime_cell_new(TAG_STRING, 0);
-  return _iter_wrap_fast<&_iter_graphemes_fast_fn>(
+  return _iter_wrap_source<&_iter_graphemes_fast_fn>(
       {buf_cell, src_len_cell, src_off_cell, win_start_cell, win_count_cell,
        win_cap_cell, win_buf_cell});
 }
@@ -2022,7 +2074,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_str_words(
   auto* win_count_cell = culebra_runtime_cell_new(TAG_LONG, 0);
   auto* win_cap_cell = culebra_runtime_cell_new(TAG_LONG, 0);
   auto* win_buf_cell = culebra_runtime_cell_new(TAG_STRING, 0);
-  return _iter_wrap_fast<&_iter_words_fast_fn>(
+  return _iter_wrap_source<&_iter_words_fast_fn>(
       {buf_cell, src_len_cell, src_off_cell, win_start_cell, win_count_cell,
        win_cap_cell, win_buf_cell});
 }
@@ -2098,7 +2150,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_str_sentences(
   auto* win_count_cell = culebra_runtime_cell_new(TAG_LONG, 0);
   auto* win_cap_cell = culebra_runtime_cell_new(TAG_LONG, 0);
   auto* win_buf_cell = culebra_runtime_cell_new(TAG_STRING, 0);
-  return _iter_wrap_fast<&_iter_sentences_fast_fn>(
+  return _iter_wrap_source<&_iter_sentences_fast_fn>(
       {buf_cell, src_len_cell, src_off_cell, win_start_cell, win_count_cell,
        win_cap_cell, win_buf_cell});
 }
@@ -2127,7 +2179,7 @@ inline JitObject* _iter_from_array_obj(int8_t at, int64_t ad) {
   culebra_runtime_value_retain(at, ad);
   auto* arr_cell = culebra_runtime_cell_new(at, ad);
   auto* idx_cell = culebra_runtime_cell_new(TAG_LONG, 0);
-  return _iter_wrap_fast<&_iter_from_array_fast_fn>({arr_cell, idx_cell});
+  return _iter_wrap_source<&_iter_from_array_fast_fn>({arr_cell, idx_cell});
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_array_iter(
@@ -2255,7 +2307,8 @@ inline JitObject* _jit_obj_snapshot_iter(JitObject* obj) {
       TAG_ARRAY, reinterpret_cast<int64_t>(snap.keys));
   auto* idx_cell = culebra_runtime_cell_new(TAG_LONG, 0);
   if (snap.hashes.tag == TAG_NIL)
-    return _iter_wrap_fast<FastFn>({obj_cell, arr_cell, idx_cell});
+    return _iter_wrap_source<FastFn>({obj_cell, arr_cell, idx_cell});
+  // A non-String key is found again by its `eq`, the program's code.
   return _iter_wrap_fast<FastFn>(
       {obj_cell, arr_cell, idx_cell,
        culebra_runtime_cell_new(snap.hashes.tag, snap.hashes.data)});
@@ -2770,7 +2823,7 @@ inline JitObject* _range_iter_new(int64_t start, int64_t end, int64_t step,
   auto* step_cell = culebra_runtime_cell_new(TAG_LONG, step);
   auto* incl_cell = culebra_runtime_cell_new(TAG_BOOL, inclusive ? 1 : 0);
   auto* exhausted_cell = culebra_runtime_cell_new(TAG_BOOL, 0);
-  return _iter_wrap_fast<&_math_range_fast_fn>(
+  return _iter_wrap_source<&_math_range_fast_fn>(
       {current_cell, end_cell, step_cell, incl_cell, exhausted_cell});
 }
 
@@ -2892,7 +2945,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_grid_new(
   auto* y_exh = culebra_runtime_cell_new(TAG_BOOL, 0);
   auto* cur_y = culebra_runtime_cell_new(TAG_LONG, 0);
   auto* need_row = culebra_runtime_cell_new(TAG_LONG, 1);
-  return _iter_wrap_fast<&_grid_fast_fn>(
+  return _iter_wrap_source<&_grid_fast_fn>(
       {xt_start, xt_end, xt_step, xt_incl, x_cur, x_exh, y_end, y_step,
        y_incl, y_cur, y_exh, cur_y, need_row});
 }
