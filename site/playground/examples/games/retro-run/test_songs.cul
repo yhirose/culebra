@@ -3,7 +3,7 @@ import ep from './ep.cul'
 let ASSETS = Dir.embedded('assets')
 
 # Each song the game plays reads with the game's voices: a knob a band line
-# writes for `Ep` is one the piano declares. The game itself runs in no gate.
+# writes for `Ep` (the theme's `Ep(bright=0.8)`) is one the piano declares.
 @test
 fn the_songs_read_with_the_games_voices() {
   for name in ["cruise.kau", "sprint.kau", "ballad.kau"] {

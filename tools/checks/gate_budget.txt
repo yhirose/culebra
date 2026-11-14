@@ -440,5 +440,7 @@ languages.samples 130
 # 54 since kauai/sample_songs/test_sample_songs.cul (each sample song reads
 # with the bundled instruments and drums, 0.4 s). 55 since
 # kauai/cli/test_live.cul (kauai live's room: a song's feedback and damp, its
-# sides apart, a limit on each, 0.07 s).
-examples.suites 55
+# sides apart, a limit on each, 0.07 s). 56 since
+# examples/games/retro-run/test_songs.cul (the game's songs read with its
+# voices, 0.1 s).
+examples.suites 56

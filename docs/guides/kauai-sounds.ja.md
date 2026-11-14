@@ -191,7 +191,10 @@ println(song.length())             # => 2.0
 
 ```culebra
 # doctest: skip (a module for --sounds; electric_piano is the program's own)
-let voices = {ep: |pitch, params| Audio.Sound(electric_piano(pitch, params.bright))}
+let voices = {ep: {
+  note: |pitch, params| Audio.Sound(electric_piano(pitch, params.bright)),
+  knobs: {bright: {default: 1.0, min: 0.0, max: 2.0}},
+}}
 export {voices}
 ```
 

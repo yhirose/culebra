@@ -1044,7 +1044,10 @@ runtimeは、すべての音を音声ストリーム自身のクロックに合�
 ```culebra
 # doctest: skip (reads ballad.kau, and electric_piano is the program's own)
 let song = Kauai.load("ballad.kau", voices: {
-  ep: |pitch, params| Audio.Sound(electric_piano(pitch, params.bright)),
+  ep: {
+    note: |pitch, params| Audio.Sound(electric_piano(pitch, params.bright)),
+    knobs: {bright: {default: 1.0, min: 0.0, max: 2.0}},
+  },
 })
 song.prepare()          # build one external sound; answers how many remain
 song.play()
