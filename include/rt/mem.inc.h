@@ -49,7 +49,9 @@ inline bool _culebra_call_drop_if_present(JitObject* o) {
     return true;
   }
   // Walks proto so class-sugar instances find their inherited `drop`.
-  auto* cls = _protocol_member(o, "drop");
+  // Held: a body may replace its own `drop` slot, whose reference is then
+  // the only other one.
+  auto cls = _protocol_member(o, "drop");
   if (!cls || cls->arity != 0) return false;
 
   o->dropped = true;  // set before running: re-entrancy-safe, at-most-once
@@ -60,9 +62,6 @@ inline bool _culebra_call_drop_if_present(JitObject* o) {
   const bool dying = o->refcount == 0;
   [[maybe_unused]] const bool native = cls->flags & JIT_CLOSURE_NATIVE;
   o->refcount += 2;  // the body's `self`, and this function's
-  // The body's own closure too: a body may replace its `drop` slot, and the
-  // slot's reference is the only other one.
-  cls->refcount++;
   JitValue self_val{GC_TAG_OBJECT, reinterpret_cast<int64_t>(o)};
   // What the body throws is logged and swallowed (§17), so the rest of the
   // cascade proceeds — but the thrown/pending carriers are globals its
@@ -92,7 +91,7 @@ inline bool _culebra_call_drop_if_present(JitObject* o) {
     std::cerr << "drop: unknown error" << std::endl;
   }
   culebra_runtime_restore_thrown(saved_flag, saved_tag, saved_data);
-  _culebra_value_release_impl(GC_TAG_FUNC, reinterpret_cast<int64_t>(cls));
+  cls = {};
   // A drop the runtime wrote consumes its `self` like any method, and keeps
   // nothing: one that did not would leave a count here nobody holds.
   assert(!(dying && native) || o->refcount == 1);
@@ -812,6 +811,8 @@ inline constexpr auto cell_retain         = "culebra_runtime_cell_retain";
 inline constexpr auto closure_new         = "culebra_runtime_closure_new";
 inline constexpr auto fn_introspect_get    = "culebra_runtime_fn_introspect_get";
 inline constexpr auto call_with_kwargs    = "culebra_runtime_call_with_kwargs";
+inline constexpr auto call_with_kwargs_held =
+    "culebra_runtime_call_with_kwargs_held";
 inline constexpr auto debugger_break      = "culebra_runtime_debugger_break";
 inline constexpr auto defer_mark          = "culebra_runtime_defer_mark";
 inline constexpr auto defer_push          = "culebra_runtime_defer_push";
@@ -976,6 +977,9 @@ inline constexpr auto prop_get            = "culebra_runtime_prop_get";
 inline constexpr auto bind_method_value   = "culebra_runtime_bind_method_value";
 inline constexpr auto call_receiver       = "culebra_runtime_call_receiver";
 inline constexpr auto class_call_method   = "culebra_runtime_class_call_method";
+inline constexpr auto class_call_method_checked =
+    "culebra_runtime_class_call_method_checked";
+inline constexpr auto call_held           = "culebra_runtime_call_held";
 inline constexpr auto class_new_method    = "culebra_runtime_class_new_method";
 inline constexpr auto mark_class          = "culebra_runtime_mark_class";
 inline constexpr auto explicit_drop       = "culebra_runtime_explicit_drop";
@@ -1095,6 +1099,8 @@ inline constexpr auto enumerate_any        = "culebra_runtime_enumerate_any";
 inline constexpr auto iter_flat_map        = "culebra_runtime_iter_flat_map";
 inline constexpr auto iter_advance         = "culebra_runtime_iter_advance";
 inline constexpr auto iter_protocol_open   = "culebra_runtime_iter_protocol_open";
+inline constexpr auto for_call_iter        = "culebra_runtime_for_call_iter";
+inline constexpr auto for_dispose          = "culebra_runtime_for_dispose";
 inline constexpr auto shared_for_open      = "culebra_runtime_shared_for_open";
 inline constexpr auto shared_for_next      = "culebra_runtime_shared_for_next";
 inline constexpr auto str_code_points      = "culebra_runtime_str_code_points";

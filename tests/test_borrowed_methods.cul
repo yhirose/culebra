@@ -1,0 +1,259 @@
+# A method the runtime calls for an operator, a protocol or a call on an
+# instance keeps running when what held it lets it go under the call: an
+# instance's own slot assigned again, or a trait declared again (its defaults
+# released). Each body below lets its holder go, then allocates enough to
+# reuse freed memory, then reads what it captured. Same across the executor,
+# --jit and an AOT binary.
+
+let churn = || iota(1000).map(|i| [i, "s{i}"]).size()
+
+# An operator on an instance's own slot.
+class Own {
+  new() {}
+}
+fn adder(k) {
+  fn (o) {
+    self.__add__ = |x| 0
+    let n = churn()
+    o + k + n
+  }
+}
+let own = Own()
+own.__add__ = adder(7)
+assert_eq(own + 2, 1009)
+
+# How an instance is shown, by its own `__str__`.
+fn shower(k) {
+  fn () {
+    self.__str__ = || "gone"
+    let n = churn()
+    "shown {k + n}"
+  }
+}
+let shown = Own()
+shown.__str__ = shower(7)
+assert_eq("{shown}", "shown 1007")
+
+# A key's own `hash`.
+fn hasher(k) {
+  fn () {
+    self.hash = || 0
+    let n = churn()
+    k + n - 1000
+  }
+}
+let keyed = Own()
+keyed.hash = hasher(7)
+assert_eq(hash(keyed), 7)
+
+# A call on an instance through its own `__call__`, positional and keyword.
+fn caller(k) {
+  fn (o, by = 0) {
+    self.__call__ = |x, y = 0| 0
+    let n = churn()
+    o + k + by + n
+  }
+}
+let called = Own()
+called.__call__ = caller(7)
+assert_eq(called(2), 1009)
+called.__call__ = caller(7)
+assert_eq(called(2, by: 1), 1010)
+
+# A trait's default `__call__` whose trait is declared again while it runs.
+fn redeclare_callable() {
+  trait Callable {
+    v() -> Long
+  }
+}
+fn declare_callable(k) {
+  trait Callable {
+    v() -> Long
+    __call__(o) {
+      redeclare_callable()
+      let n = churn()
+      self.v() + o + k + n
+    }
+  }
+}
+declare_callable(7)
+class Calls {
+  new() {}
+  v() { 1 }
+}
+assert_eq(Calls()(2), 1010)
+
+# An instance's own `iter`, as a `for` opens it and as `zip` takes it in.
+fn opener(k) {
+  fn () {
+    self.iter = || [].iter()
+    let n = churn()
+    [k, n].iter()
+  }
+}
+let walked = Own()
+walked.iter = opener(7)
+mut seen = []
+for x in walked {
+  seen.push(x)
+}
+assert_eq(seen, [7, 1000])
+let zipped = Own()
+zipped.iter = opener(7)
+assert_eq([1, 2].iter().zip(zipped).map(|p| p.second).collect(), [7, 1000])
+
+# An iterator whose own `next` assigns itself again while it is walked: by a
+# `for`, by a lazy chain, and by an eager walk.
+class Counts {
+  new(k) {
+    @n = 0
+    self.next = fn () {
+      @n += 1
+      self.next = || 0
+      let m = churn()
+      @n + k + m
+    }
+  }
+  has_next() { @n < 2 }
+  iter() { self }
+}
+mut counted = []
+for x in Counts(7) {
+  counted.push(x)
+}
+assert_eq(counted, [1008, 1009])
+assert_eq(Counts(7).iter().map(|x| x - 1000).collect(), [8, 9])
+assert_eq(Counts(7).iter().collect(), [1008, 1009])
+
+# An iterator's own `dispose`, run as a `for` breaks out of it.
+mut disposed = 0
+class Closes {
+  new(k) {
+    @n = 0
+    self.dispose = fn () {
+      self.dispose = || nil
+      let n = churn()
+      disposed = k + n
+    }
+  }
+  has_next() { true }
+  next() {
+    @n += 1
+    @n
+  }
+  iter() { self }
+}
+for x in Closes(7) {
+  break
+}
+assert_eq(disposed, 1007)
+
+# When a method that let its holder go dies: as the runtime's call returns,
+# on every lane. A walk keeps the iterator's `next` it opened with, so that
+# one dies as the walk ends.
+mut log = []
+class Res {
+  new(name) {
+    @name = name
+  }
+  drop() {
+    log.push("drop {@name}")
+  }
+}
+fn logging(name, slot) {
+  let r = Res(name)
+  if slot == "iter" {
+    return fn () {
+      self.iter = || [].iter()
+      log.push("body {r.name}")
+      [1].iter()
+    }
+  }
+  if slot == "dispose" {
+    return fn () {
+      self.dispose = || nil
+      log.push("body {r.name}")
+    }
+  }
+  fn (a = 0, by = 0) {
+    if slot == "__add__" {
+      self.__add__ = |x| 0
+    } else {
+      self.__call__ = |x = 0, b = 0| 0
+    }
+    log.push("body {r.name}")
+    1
+  }
+}
+fn drops(name, slot, run) {
+  log = []
+  let o = Own()
+  if slot == "__add__" {
+    o.__add__ = logging(name, slot)
+  } else if slot == "__call__" {
+    o.__call__ = logging(name, slot)
+  } else {
+    o.iter = logging(name, slot)
+  }
+  run(o)
+  log.push("after")
+  log
+}
+assert_eq(drops("add", "__add__", |o| o + 1), ["body add", "drop add", "after"])
+assert_eq(drops("call", "__call__", |o| o(1)), ["body call", "drop call", "after"])
+assert_eq(drops("kw", "__call__", |o| o(1, by: 2)), ["body kw", "drop kw", "after"])
+assert_eq(drops("open", "iter", fn (o) {
+  for x in o {
+    log.push("step {x}")
+  }
+}), ["body open", "drop open", "step 1", "after"])
+
+class Disposes {
+  new(name) {
+    @n = 0
+    self.dispose = logging(name, "dispose")
+  }
+  has_next() { true }
+  next() {
+    @n += 1
+    @n
+  }
+  iter() { self }
+}
+log = []
+for x in Disposes("dispose") {
+  break
+}
+log.push("after")
+assert_eq(log, ["body dispose", "drop dispose", "after"])
+
+class Steps {
+  new(name) {
+    @n = 0
+    let r = Res(name)
+    self.next = fn () {
+      @n += 1
+      self.next = || 0
+      log.push("step {r.name}")
+      @n
+    }
+  }
+  has_next() { @n < 2 }
+  iter() { self }
+}
+log = []
+for x in Steps("for") {
+  log.push("got {x}")
+}
+log.push("after")
+assert_eq(log, ["step for", "got 1", "step for", "got 2", "drop for", "after"])
+log = []
+let mapped = Steps("lazy").iter().map(|x| x * 10).collect()
+log.push("after")
+assert_eq(mapped, [10, 20])
+assert_eq(log, ["step lazy", "step lazy", "drop lazy", "after"])
+log = []
+let walked_all = Steps("eager").iter().collect()
+log.push("after")
+assert_eq(walked_all, [1, 2])
+assert_eq(log, ["step eager", "step eager", "drop eager", "after"])

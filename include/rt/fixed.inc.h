@@ -588,8 +588,8 @@ inline bool _jit_try_object_setindex(JitObject* obj, int8_t key_tag,
   // Class-instance feature only (the call sites also gate on `proto` to
   // skip the slot probe for plain dicts; this keeps the helper self-safe).
   if (!obj->proto()) return false;
-  auto* cls = _lookup_special(TAG_OBJECT, reinterpret_cast<int64_t>(obj),
-                              Special::SetIndex);
+  auto cls = _lookup_special(TAG_OBJECT, reinterpret_cast<int64_t>(obj),
+                             Special::SetIndex);
   if (!cls) return false;
   culebra_runtime_set_op_pos(line, col);
   // Borrows the key and value: the caller consumes them on the normal path and
@@ -1713,24 +1713,26 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_check_namespace_write(
 }
 
 // `obj(args)` overload resolution: returns the class instance's
-// `__call__` method as a borrowed TAG_FUNC JitValue, honoring own slots,
+// `__call__` method as a TAG_FUNC JitValue at +1, honoring own slots,
 // the class meta (proto), and inherited trait defaults — the same
 // resolution order as culebra_runtime_object_get_ic. Gated on
 // `proto != null` so a plain dict that merely holds a "__call__" key
 // stays non-callable, matching the
 // __index__ design. Returns Nil for any non-instance / missing method,
-// so the caller raises "type error: expected Function".
+// so the caller raises "type error: expected Function". The +1 is the
+// caller's for the call's length: the instance's own slot or the trait's
+// default table can let the method go while it runs (vm.md §5.3).
+inline JitHeldMethod _jit_class_call_method(int8_t tag, int64_t data) {
+  if (tag != TAG_OBJECT) return {};
+  auto* obj = reinterpret_cast<JitObject*>(data);
+  if (!obj->proto()) return {};
+  auto fn = _protocol_member(obj, "__call__");
+  if (!fn) fn = JitHeldMethod::hold(_jit_find_trait_default(obj, "__call__"));
+  return fn;
+}
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_class_call_method(
     int8_t tag, int64_t data) {
-  if (tag != TAG_OBJECT) return {TAG_NIL, 0};
-  auto* obj = reinterpret_cast<JitObject*>(data);
-  if (!obj->proto()) return {TAG_NIL, 0};
-  if (auto* e = _find_property(obj, "__call__")) {
-    if (e->value.tag == TAG_FUNC) return e->value;
-  }
-  if (auto* d = _jit_find_trait_default(obj, "__call__"))
-    return {TAG_FUNC, reinterpret_cast<int64_t>(d)};
-  return {TAG_NIL, 0};
+  return _jit_class_call_method(tag, data).take_value();
 }
 
 // Flag a freshly built class namespace object as callable — `C(args)`
@@ -1847,13 +1849,16 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_object_has_value(
 // from a deserialized Object (jit_deserialize, conc/sendable.h), whose
 // properties are already in place by the time this runs.
 inline void _jit_fill_specials(JitObject* meta) {
-  for (size_t s = 0; s < static_cast<size_t>(Special::Count); s++)
-    meta->specials->fn[s] = _special_closure(meta, static_cast<Special>(s));
+  // The meta holds every method it names, and outlives the table.
+  for (size_t s = 0; s < static_cast<size_t>(Special::Count); s++) {
+    auto fn = _special_closure(meta, static_cast<Special>(s));
+    meta->specials->fn[s] = fn.get();
+  }
   // An `eq` that fills no slot is a derived one: the class matches by fields.
   meta->specials->eq_by_fields =
-      _protocol_member(meta, special_name(Special::EqTrait)) &&
+      _has_protocol_member(meta, special_name(Special::EqTrait)) &&
       !meta->specials->fn[static_cast<size_t>(Special::EqTrait)];
-  meta->methods_drop = _protocol_member(meta, "drop") != nullptr;
+  meta->methods_drop = _has_protocol_member(meta, "drop");
 }
 
 // The kClassMeta* flags a meta was made with, read back off it.

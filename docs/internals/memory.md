@@ -102,9 +102,14 @@ that makes those placements correct by construction.
 
 **The runtime helpers.** A `culebra_runtime_*` helper that is handed a
 value follows one of a closed set of ownership contracts (§4.3), and
-its C++ uses two RAII forms: `JitOwnedVal` (an owned local released on
-every exit unless consumed) and `JitUnwindRelease` (a release that runs
-only if the helper throws).
+its C++ uses three RAII forms: `JitOwnedVal` (an owned local released on
+every exit unless consumed), `JitUnwindRelease` (a release that runs
+only if the helper throws), and `JitHeldMethod` (a Function the helper
+calls without the caller's count, held for the call unless it comes from
+a class meta; [`vm.md`](vm.md) §5.3). A held Function lives only in a C++
+local, so on wasm it is called through `_jit_invoke`, whose
+`SafepointUnsafeScope` keeps the collector from running beneath it
+(§6.5).
 
 The release itself (`_culebra_value_release_impl`) answers the common
 case before it does anything else: a value still shared after this

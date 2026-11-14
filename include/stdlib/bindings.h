@@ -4464,6 +4464,8 @@ inline JitValue _ns_global_for_iter(JitValue* a, int64_t) {
   JitClosure* next = nullptr;
   culebra_runtime_iter_protocol_open(static_cast<int8_t>(it.tag), it.data, 0, 0,
                                      &has_next, &next);
+  JitHeldMethod::adopt(has_next);  // only the checks were wanted
+  JitHeldMethod::adopt(next);
   return it;
 }
 inline JitValue _ns_global_eff_catch_abort(JitValue* a, int64_t) {

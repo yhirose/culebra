@@ -130,6 +130,85 @@ struct JitOwnedVal {
   }
 };
 
+// A Function the runtime calls (or keeps for a walk) without the caller's
+// `+1`: a method it looked up by name or protocol, a callback it was handed.
+// The rule (docs/internals/vm.md §5.3) is CPython's for a borrowed reference:
+// whoever calls or keeps a Function it does not own a count of takes one,
+// unless what holds it can neither change nor die under the call. A method
+// replaced in its own slot while it runs, or a trait default whose trait is
+// declared again, lives exactly as long as this handle.
+//
+// Three ways in, named for where the Function comes from:
+//   adopt(fn) — the `+1` is already ours (a probe answered it, a callback was
+//               handed over); released here.
+//   hold(fn)  — borrowed from a holder that can change under the call (an
+//               instance's own slot, the trait default table, a user array);
+//               retained here.
+//   lend(fn)  — borrowed from a holder that cannot (a class meta: its methods
+//               are fixed once declared, and the call's own `self` keeps the
+//               instance, and so the meta, alive until the call returns).
+// There is no implicit conversion from a temporary: `auto* f = lookup(...)`
+// would let the count go at the end of the statement.
+class JitHeldMethod {
+ public:
+  JitHeldMethod() = default;
+  static JitHeldMethod adopt(JitClosure* fn) { return JitHeldMethod(fn, true); }
+  static JitHeldMethod hold(JitClosure* fn) {
+    if (fn) culebra_runtime_value_retain(TAG_FUNC, reinterpret_cast<int64_t>(fn));
+    return JitHeldMethod(fn, true);
+  }
+  static JitHeldMethod lend(JitClosure* fn) { return JitHeldMethod(fn, false); }
+  JitHeldMethod(JitHeldMethod&& o) noexcept : fn_(o.fn_), owned_(o.owned_) {
+    o.owned_ = false;
+  }
+  JitHeldMethod& operator=(JitHeldMethod&& o) noexcept {
+    if (this != &o) {
+      reset();
+      fn_ = o.fn_;
+      owned_ = o.owned_;
+      o.owned_ = false;
+    }
+    return *this;
+  }
+  JitHeldMethod(const JitHeldMethod&) = delete;
+  JitHeldMethod& operator=(const JitHeldMethod&) = delete;
+  ~JitHeldMethod() { reset(); }
+
+  JitClosure* get() const& { return fn_; }
+  JitClosure* get() const&& = delete;
+  JitClosure* operator->() const { return fn_; }
+  operator JitClosure*() const& { return fn_; }
+  operator JitClosure*() const&& = delete;
+  explicit operator bool() const { return fn_ != nullptr; }
+  // Whether this handle keeps a count: only a lent Function is reachable from
+  // something else (its meta) while the call runs.
+  bool holds() const { return owned_; }
+  // A +1 for whoever keeps the Function past this handle (a cell, a cursor
+  // slot that releases it later): ours handed on, or a fresh one for a lent
+  // Function. The handle is empty afterwards.
+  JitClosure* take() {
+    if (fn_ && !owned_)
+      culebra_runtime_value_retain(TAG_FUNC, reinterpret_cast<int64_t>(fn_));
+    owned_ = false;
+    return std::exchange(fn_, nullptr);
+  }
+  // take() as a value: the Function at +1, or nil for an empty handle.
+  JitValue take_value() {
+    if (!fn_) return {TAG_NIL, 0};
+    return {TAG_FUNC, reinterpret_cast<int64_t>(take())};
+  }
+
+ private:
+  JitHeldMethod(JitClosure* fn, bool owned) : fn_(fn), owned_(fn && owned) {}
+  void reset() {
+    if (!owned_) return;
+    owned_ = false;
+    _culebra_value_release_impl(TAG_FUNC, reinterpret_cast<int64_t>(fn_));
+  }
+  JitClosure* fn_ = nullptr;
+  bool owned_ = false;
+};
+
 // Whether comparing this value can run user code (a Set member's `eq`, an
 // entry value's `==`): an Object can define it, and a container can hold one.
 inline bool _member_reaches_user_code(int8_t tag) {
@@ -1702,13 +1781,32 @@ inline JitValue _culebra_invoke_method2(JitClosure* cls, JitValue self,
 // rather than probing for the key, which is what lets the binding contract
 // constrain Functions alone (_culebra_check_well_known_prop);
 // check_protocol_member_door.sh holds it.
-inline JitClosure* _protocol_member(JitObject* obj, const char* name) {
+//
+// The answer is held (JitHeldMethod) for as long as the caller keeps it: an
+// own slot or a plain proto can be written under the call, a class meta's
+// method cannot (the instance keeps its meta alive), so only that is lent.
+// A caller that only asks whether the member is there uses
+// _has_protocol_member.
+inline JitHeldMethod _protocol_member(JitObject* obj, const char* name) {
+  JitObject* holder = obj;
+  auto idx = obj->find_slot(name);
+  if (idx == static_cast<size_t>(-1) && obj->proto()) {
+    holder = obj->proto();
+    idx = holder->find_slot(name);
+  }
+  if (idx == static_cast<size_t>(-1)) return {};
+  const JitValue& v = holder->slots[idx].value;
+  if (v.tag != TAG_FUNC) return {};
+  auto* fn = reinterpret_cast<JitClosure*>(v.data);
+  return holder->is_class_meta ? JitHeldMethod::lend(fn)
+                               : JitHeldMethod::hold(fn);
+}
+inline bool _has_protocol_member(JitObject* obj, const char* name) {
   auto* entry = _find_property(obj, name);
-  if (!entry || entry->value.tag != TAG_FUNC) return nullptr;
-  return reinterpret_cast<JitClosure*>(entry->value.data);
+  return entry && entry->value.tag == TAG_FUNC;
 }
 
-inline JitClosure* _lookup_special(int8_t tag, int64_t data, Special s);
+inline JitHeldMethod _lookup_special(int8_t tag, int64_t data, Special s);
 inline void _culebra_eq_walks_hold();
 
 // Run a user equality method — `__eq__` or `eq`, the operator's step or a
@@ -1729,7 +1827,7 @@ inline std::optional<bool> _jit_object_user_eq(JitObject* a, JitObject* b) {
   // container comparison or a key probe meets, most of which carry no `eq`.
   const JitValue va{TAG_OBJECT, reinterpret_cast<int64_t>(a)};
   const JitValue vb{TAG_OBJECT, reinterpret_cast<int64_t>(b)};
-  auto* cls = _lookup_special(va.tag, va.data, Special::EqTrait);
+  auto cls = _lookup_special(va.tag, va.data, Special::EqTrait);
   if (!cls || !_lookup_special(vb.tag, vb.data, Special::EqTrait))
     return std::nullopt;
   return _culebra_ask_equal(cls, va, vb);
@@ -1765,7 +1863,7 @@ inline bool _derived_method(const JitClosure* fn) {
 // caller's op position anchors it).
 inline std::optional<size_t> _jit_try_object_hash(JitObject* obj,
                                                   JitValue* unhashable) {
-  auto* cls = _protocol_member(obj, "hash");
+  auto cls = _protocol_member(obj, "hash");
   if (cls && !_derived_method(cls)) {
     auto r = _culebra_invoke_method0(
         cls, {TAG_OBJECT, reinterpret_cast<int64_t>(obj)});
@@ -1788,9 +1886,9 @@ inline std::optional<size_t> _jit_try_object_hash(JitObject* obj,
 // the class table (_jit_fill_specials) and for the by-name lookup an instance
 // with a special-named slot of its own takes. A derived `eq` fills none: it
 // states no equality (JitSpecialTable::eq_by_fields).
-inline JitClosure* _special_closure(JitObject* obj, Special s) {
-  auto* fn = _protocol_member(obj, special_name(s));
-  if (fn && s == Special::EqTrait && _derived_method(fn)) return nullptr;
+inline JitHeldMethod _special_closure(JitObject* obj, Special s) {
+  auto fn = _protocol_member(obj, special_name(s));
+  if (fn && s == Special::EqTrait && _derived_method(fn)) return {};
   return fn;
 }
 
@@ -1801,11 +1899,11 @@ inline JitClosure* _special_closure(JitObject* obj, Special s) {
 // one is walked by its keys.
 extern "C" CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool
 culebra_runtime_is_iterator_shaped(JitObject* obj) {
-  return _protocol_member(obj, "next") != nullptr;
+  return _has_protocol_member(obj, "next");
 }
 extern "C" CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool
 culebra_runtime_has_iter_method(JitObject* obj) {
-  return _protocol_member(obj, "iter") != nullptr;
+  return _has_protocol_member(obj, "iter");
 }
 
 // Where a value keeps its special methods, decided once: a class instance
@@ -1817,9 +1915,10 @@ culebra_runtime_has_iter_method(JitObject* obj) {
 struct SpecialLookup {
   JitObject* obj = nullptr;                // null: nothing to look up
   const JitSpecialTable* table = nullptr;  // non-null: read the slot
-  JitClosure* operator()(Special s) const {
-    if (table) return table->fn[static_cast<size_t>(s)];
-    if (!obj) return nullptr;
+  JitHeldMethod operator()(Special s) const {
+    // The table is the class meta's own: lent, as _protocol_member does.
+    if (table) return JitHeldMethod::lend(table->fn[static_cast<size_t>(s)]);
+    if (!obj) return {};
     return _special_closure(obj, s);
   }
 };
@@ -1840,7 +1939,7 @@ inline SpecialLookup _special_lookup(int8_t tag, int64_t data) {
 
 // The special method `s` an operator or protocol reaches on `tag:data`, or
 // null.
-inline JitClosure* _lookup_special(int8_t tag, int64_t data, Special s) {
+inline JitHeldMethod _lookup_special(int8_t tag, int64_t data, Special s) {
   return _special_lookup(tag, data)(s);
 }
 
@@ -1852,7 +1951,7 @@ inline std::optional<JitValue> _try_special_binop(int8_t rt, int64_t rd,
                                                  int8_t at, int64_t ad,
                                                  Special s, int64_t line = 0,
                                                  int64_t col = 0) {
-  auto* cls = _lookup_special(rt, rd, s);
+  auto cls = _lookup_special(rt, rd, s);
   if (!cls) return std::nullopt;
   if (line) culebra_runtime_set_op_pos(line, col);
   return _culebra_invoke_method1(cls, {rt, rd}, {at, ad});
@@ -1861,7 +1960,7 @@ inline std::optional<JitValue> _try_special_binop(int8_t rt, int64_t rd,
 inline std::optional<JitValue> _try_special_unary(int8_t t, int64_t d,
                                                  Special s, int64_t line,
                                                  int64_t col) {
-  auto* cls = _lookup_special(t, d, s);
+  auto cls = _lookup_special(t, d, s);
   if (!cls) return std::nullopt;
   if (line) culebra_runtime_set_op_pos(line, col);
   return _culebra_invoke_method0(cls, {t, d});
@@ -2200,11 +2299,11 @@ inline std::optional<bool> _culebra_user_equal(int8_t t1, int64_t d1,
                                                int8_t t2, int64_t d2) {
   const SpecialLookup a = _special_lookup(t1, d1), b = _special_lookup(t2, d2);
   // `==` is commutative, so try either side's `__eq__`.
-  if (auto* f = a(Special::Eq)) return _culebra_ask_equal(f, {t1, d1}, {t2, d2});
-  if (auto* f = b(Special::Eq)) return _culebra_ask_equal(f, {t2, d2}, {t1, d1});
+  if (auto f = a(Special::Eq)) return _culebra_ask_equal(f, {t1, d1}, {t2, d2});
+  if (auto f = b(Special::Eq)) return _culebra_ask_equal(f, {t2, d2}, {t1, d1});
   // A stated `eq` on both sides: the operator then agrees with key equality,
   // which asks the same `eq`.
-  if (auto* f = a(Special::EqTrait); f && b(Special::EqTrait))
+  if (auto f = a(Special::EqTrait); f && b(Special::EqTrait))
     return _culebra_ask_equal(f, {t1, d1}, {t2, d2});
   return std::nullopt;
 }

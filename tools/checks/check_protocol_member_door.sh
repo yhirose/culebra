@@ -9,6 +9,7 @@
 # Function there?", and it is answered in one place:
 #
 #   _protocol_member(obj, name)            include/rt/runtime.inc.h
+#   _has_protocol_member(obj, name)        — the same question, as a Bool
 #   culebra_runtime_is_iterator_shaped     — a `next` member, by name
 #   culebra_runtime_has_iter_method        — an `iter` member, by name
 #
@@ -43,7 +44,7 @@ bad = [(p, n, s) for p in text for n, s in door_gate.sites(text[p], match)]
 use = lambda path, name: text[path].count(name)
 population = [
     ('_protocol_member defined once',
-     sum(t.count('inline JitClosure* _protocol_member(')
+     sum(t.count('inline JitHeldMethod _protocol_member(')
          for t in text.values()) == 1),
     ('the executor asks is_iterator_shaped',
      use('include/vm/vm.h', 'culebra_runtime_is_iterator_shaped(') >= 1),

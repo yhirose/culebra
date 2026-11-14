@@ -606,7 +606,6 @@ struct JIT {
   }
 
 
-
   // C++ personality routine for this module's target. Windows (mingw) uses the
   // SEH personality `__gxx_personality_seh0` with the *same* Itanium-shaped
   // landingpad IR the rest of the JIT emits — only the personality name differs
@@ -1479,7 +1478,6 @@ struct JIT {
   }
 
 
-
   // Publish the current node's source position (current_line_/column_, which
   // PosGuard keeps pointing at the innermost compiling node — the method-call
   // node here, since arg compiles restore it) just before a fallible runtime
@@ -1586,7 +1584,6 @@ struct JIT {
   // Current AST position for error reporting
   size_t current_line_ = 0;
   size_t current_column_ = 0;
-
 
 
   // Current function's declared return type (empty = unchecked). The token is
@@ -2614,7 +2611,6 @@ struct JIT {
   }
 
 
-
   // The declared return type's check, reported at the prologue-resolved
   // call site. Shared by `return v` and the body's tail value.
   void emit_return_type_check(llvm::Value* val) {
@@ -2794,23 +2790,6 @@ struct JIT {
 
   llvm::Value* extract_data(llvm::Value* v) {
     return builder_.CreateExtractValue(v, {1}, "data");
-  }
-
-  // The LLVM half of the JitFn ABI (see the `JitFn` typedef): every closure
-  // body, ctor, defer thunk, and indirect call site shares this signature —
-  // void(ret:ptr, cls:ptr, self_tag:i8, self_data:i64, n_args:i64, args:ptr).
-  // The result is written through the leading out-pointer and the receiver
-  // `self` crosses as two scalars — no by-value 16-byte aggregate crosses the
-  // boundary in either direction, so the Win64 C ABI and the raw-IR lowering
-  // agree (a by-value aggregate return would be sret on Win64 but two-register
-  // in raw IR, mis-placing args). One place so an ABI change is a single edit.
-  llvm::FunctionType* jitFnCalleeType() {
-    auto ptrTy = llvm::PointerType::get(ctx_, 0);
-    return llvm::FunctionType::get(
-        builder_.getVoidTy(),
-        {ptrTy, ptrTy, builder_.getInt8Ty(), builder_.getInt64Ty(),
-         builder_.getInt64Ty(), ptrTy},
-        false);
   }
 
 
@@ -3399,16 +3378,6 @@ struct JIT {
   }
 
 
-
-  llvm::Value* emit_object_has(llvm::Value* objPtr, llvm::Value* keyPtr,
-                               const llvm::Twine& name = "has.prop") {
-    auto ptrTy = llvm::PointerType::get(ctx_, 0);
-    return emit_call(
-        module_->getOrInsertFunction(rt::object_has, builder_.getInt1Ty(),
-                                     ptrTy, ptrTy),
-        {objPtr, keyPtr}, name);
-  }
-
   // The two protocol-shape questions (runtime.inc.h, next to
   // _protocol_member): asked by name, so no site here spells a well-known
   // key to probe with.
@@ -3435,8 +3404,8 @@ struct JIT {
   // The property arm's test in both UFCS gates: an Object receiver takes it
   // when it resolves `method` itself — own slot, class meta, or a trait
   // default it inherits (the wider question only this gate asks; the
-  // iterator-protocol and dispose probes read a concrete slot, so they stay on
-  // emit_object_has) — or when it is a closed namespace, which resolves the
+  // iterator-protocol and dispose probes read a concrete slot in the
+  // runtime) — or when it is a closed namespace, which resolves the
   // name either way (see emit_object_is_namespace).
   llvm::Value* emit_receiver_resolves_method(llvm::Value* receiver,
                                              const std::string& method) {
@@ -3472,13 +3441,6 @@ struct JIT {
         builder_.CreateLoad(builder_.getInt64Ty(), dataSlot, "ns.data.v");
     return make_value(tag, data);
   }
-
-
-
-
-
-
-
 
 
   // Build a range value via culebra_runtime_make_range. start/end are whole
@@ -4085,7 +4047,6 @@ struct JIT {
   // --- Exponentiation ---
 
 
-
   // --- Comparison ---
 
   // Compile one comparison `lhs OPE rhs` to an i1 (boolean, pre-make_bool).
@@ -4260,6 +4221,11 @@ struct JIT {
     llvm::Value* obj;       // Value — scope slot owning the derived-from value
     llvm::Value* has_next;  // ptr   — hoisted has_next closure
     llvm::Value* next;      // ptr   — hoisted next closure
+    // Value — the frame slots that own the two closures above (+1 each, from
+    // the open): the iterator may replace its own `next` while it is walked,
+    // and the slots' ladder releases them on every exit.
+    llvm::Value* owns_has_next = nullptr;
+    llvm::Value* owns_next = nullptr;
     // A pending guard (make_pending_guard's contract): holds this iteration's
     // element at +1 only between the advance's store and the body binding
     // taking it over, and nil everywhere else. The advance-to-binding window
@@ -4374,116 +4340,25 @@ struct JIT {
   }
 
   // Iterator trait dispose: call `iter.dispose()` if the cursor holds an
-  // iterator and it carries one. The array and string cursors leave the slot
-  // nil, so they skip the whole sequence, and built-in iterators have no
-  // dispose. Releasing the iterator is not this function's job — `iterAlloca`
-  // is a frame slot, so the ordinary teardown frees it on every exit, which is
-  // also why a throw out of dispose needs no local pad here. Shared by the
-  // for-in protocol loop's natural-exit / break, exception, and
-  // early-`return` paths (the lowering's emit_for_dispose) — the last is what
-  // keeps dispose-on-early-return symmetric with the interpreter.
-  void emit_iter_dispose_if_active(llvm::Value* iterAlloca,
-                                   const char* label_prefix,
-                                   bool swallow_dispose = false) {
-    auto ptrTy = llvm::PointerType::get(ctx_, 0);
-    auto fn = builder_.GetInsertBlock()->getParent();
-    // Returned by value: each call feeds one Twine parameter, consumed within
-    // that full expression.
-    auto name = [&](const char* suffix) {
-      return std::string(label_prefix) + suffix;
-    };
-    auto iterFinal =
-        builder_.CreateLoad(valueType_, iterAlloca, name(".iter"));
-    auto activeBB = llvm::BasicBlock::Create(ctx_, name(".active"), fn);
-    auto disposeBB = llvm::BasicBlock::Create(ctx_, name(".dispose"), fn);
-    auto doneBB = llvm::BasicBlock::Create(ctx_, name(".done"), fn);
-    builder_.CreateCondBr(
-        builder_.CreateICmpNE(extract_tag(iterFinal),
-                              builder_.getInt8(TAG_NIL), name(".alive")),
-        activeBB, doneBB);
-
-    // object_has is safe only once the iterator is known non-nil.
-    builder_.SetInsertPoint(activeBB);
-    auto hasDispose = emit_object_has(
-        builder_.CreateIntToPtr(extract_data(iterFinal), ptrTy,
-                                name(".iter.ptr")),
-        get_or_create_global_str("dispose", ".dispose.key"),
-        name(".has_dispose"));
-    builder_.CreateCondBr(hasDispose, disposeBB, doneBB);
-
-    builder_.SetInsertPoint(disposeBB);
-    auto dispose_fn_val = emit_property_get(iterFinal, "dispose");
-    // A `dispose` that is not a function is skipped, not called — the
-    // executor's for_dispose answers `if (fn.tag != TAG_FUNC) return;` and
-    // this has to say the same thing. Without the check the cold path of
-    // compile_function_call_raw takes over and constructs from a class
-    // object, which the executor never does. The property is borrowed
-    // (own_receiver=false), so skipping releases nothing.
-    auto disposeCallBB =
-        llvm::BasicBlock::Create(ctx_, name(".dispose.fn"), fn);
-    builder_.CreateCondBr(
-        builder_.CreateICmpEQ(extract_tag(dispose_fn_val),
-                              builder_.getInt8(TAG_FUNC),
-                              name(".dispose.is_fn")),
-        disposeCallBB, doneBB);
-
-    builder_.SetInsertPoint(disposeCallBB);
-    // Hand the dispose frame its own +1 for `self` (same convention as the
-    // iter() call in emit_for_open_protocol) — the slot keeps holding its own
-    // ref until scope teardown, so this retain is the frame's alone.
-    emit_value_retain(iterFinal);
-    if (!fn->hasPersonalityFn()) fn->setPersonalityFn(get_personality_fn());
-    if (swallow_dispose) {
-      // On the exception / early-return exit paths the interpreter swallows a
-      // throwing dispose() (it must not turn an in-flight throw or a `return`
-      // into the dispose's exception). Route the dispose call to a local
-      // catch-and-discard landingpad, then carry on. (break / natural drain
-      // propagate a throwing dispose, matching the interpreter.)
-      // The thrown-value carrier is a global that a culebra throw from
-      // dispose() OVERWRITES — swallowing the C++ exception alone still lets
-      // the outer catch read dispose's payload instead of the original one.
-      // Save the carrier before the call and restore it on both paths.
-      auto swallowBB =
-          llvm::BasicBlock::Create(ctx_, name(".dispose.swallow"), fn);
-      auto restoreBB =
-          llvm::BasicBlock::Create(ctx_, name(".dispose.rest"), fn);
-      llvm::IRBuilder<> entryB(&fn->getEntryBlock(),
-                               fn->getEntryBlock().begin());
-      auto i8Ty = builder_.getInt8Ty();
-      auto i64Ty = builder_.getInt64Ty();
-      auto flagA = entryB.CreateAlloca(i8Ty, nullptr, "thr.save.flag");
-      auto tagA = entryB.CreateAlloca(i8Ty, nullptr, "thr.save.tag");
-      auto dataA = entryB.CreateAlloca(i64Ty, nullptr, "thr.save.data");
-      emit_call(module_->getOrInsertFunction(
-                    "culebra_runtime_save_thrown", builder_.getVoidTy(),
-                    ptrTy, ptrTy, ptrTy),
-                {flagA, tagA, dataA});
-      auto savedLpad = current_lpad_;
-      current_lpad_ = swallowBB;
-      compile_function_call_raw(dispose_fn_val, iterFinal, {});
-      current_lpad_ = savedLpad;
-      builder_.CreateBr(restoreBB);
-      emit_handler_prologue(swallowBB, name(".dispose.lpad").c_str());
-      builder_.CreateCall(
-          module_->getOrInsertFunction("__cxa_end_catch", builder_.getVoidTy()),
-          {});
-      builder_.CreateBr(restoreBB);
-      builder_.SetInsertPoint(restoreBB);
-      emit_call(module_->getOrInsertFunction(
-                    "culebra_runtime_restore_thrown", builder_.getVoidTy(),
-                    i8Ty, i8Ty, i64Ty),
-                {builder_.CreateLoad(i8Ty, flagA),
-                 builder_.CreateLoad(i8Ty, tagA),
-                 builder_.CreateLoad(i64Ty, dataA)});
-    } else {
-      // A throwing dispose propagates (interp-symmetric) straight into the
-      // enclosing pad, which releases the iterator slot along with the rest of
-      // the statement's scope — no local unwind edge to hand-place here.
-      compile_function_call_raw(dispose_fn_val, iterFinal, {});
-    }
-    builder_.CreateBr(doneBB);
-
-    builder_.SetInsertPoint(doneBB);
+  // iterator and it carries one (culebra_runtime_for_dispose, the executor's
+  // own body). The array and string cursors leave the slot nil. Releasing the
+  // iterator is not this function's job — `iterAlloca` is a frame slot, so
+  // the ordinary teardown frees it on every exit. Shared by the for-in
+  // protocol loop's natural-exit / break, exception, and early-`return` paths
+  // (the lowering's emit_for_dispose); `swallow_dispose` is the two exits
+  // where an exception or a `return` is already under way, which a throwing
+  // dispose must not replace.
+  void emit_iter_dispose_if_active(llvm::Value* iterAlloca, bool swallow_dispose,
+                                   int64_t line, int64_t col) {
+    auto i64Ty = builder_.getInt64Ty();
+    auto iterFinal = builder_.CreateLoad(valueType_, iterAlloca, "for.iter");
+    emit_call(module_->getOrInsertFunction(rt::for_dispose,
+                                           builder_.getVoidTy(),
+                                           builder_.getInt8Ty(), i64Ty, i64Ty,
+                                           i64Ty, i64Ty),
+              {extract_tag(iterFinal), extract_data(iterFinal),
+               builder_.getInt64(swallow_dispose ? 1 : 0),
+               builder_.getInt64(line), builder_.getInt64(col)});
   }
 
   // Iterator protocol: `c.obj.iter()` yields the iterator, then each `next()`
@@ -4503,9 +4378,13 @@ struct JIT {
     auto ptrTy = llvm::PointerType::get(ctx_, 0);
     auto objVal = builder_.CreateLoad(valueType_, c.obj, "for.proto.src");
 
-    auto iter_fn_val = emit_property_get(objVal, "iter");
-    emit_value_retain(objVal);  // handed off to `self` slot
-    Owned iter_owned = compile_function_call_raw(iter_fn_val, objVal, {});
+    // `iter()`, read, checked and called by the executor's own body.
+    Owned iter_owned = own(emit_value_call(
+        module_->getOrInsertFunction(rt::for_call_iter, valueType_,
+                                     builder_.getInt8Ty(), builder_.getInt64Ty(),
+                                     builder_.getInt64Ty(), builder_.getInt64Ty()),
+        {extract_tag(objVal), extract_data(objVal), open_line, open_col},
+        "for.iter"));
 
     // `has_next` + `next` are fixed for an iterator's lifetime — resolve both
     // once so each step is a pair of cached closure dispatches rather than a
@@ -4523,6 +4402,14 @@ struct JIT {
             builder_.getInt64Ty(), ptrTy, ptrTy),
         {extract_tag(iter_owned.borrow()), extract_data(iter_owned.borrow()),
          open_line, open_col, c.has_next, c.next});
+    assert(c.owns_has_next && c.owns_next);
+    for (auto [ptr, slot] : {std::pair{c.has_next, c.owns_has_next},
+                             std::pair{c.next, c.owns_next}})
+      builder_.CreateStore(
+          make_value(builder_.getInt8(TAG_FUNC),
+                     builder_.CreatePtrToInt(builder_.CreateLoad(ptrTy, ptr),
+                                             builder_.getInt64Ty())),
+          slot);
 
     // The slot owns the iterator from here (every exit path releases it); the
     // raw deliberately crosses the blocks below with the slot as its per-edge
@@ -4758,8 +4645,6 @@ struct JIT {
   // --- Function ---
 
 
-
-
   // Emit module-level globals describing this function's parameter
   // list, then return a constant pointer to a JitParamMeta struct. The
   // runtime resolver `culebra_runtime_call_with_kwargs` consults this
@@ -4961,8 +4846,6 @@ struct JIT {
 
 
   // --- Call ---
-
-
 
 
   // Resolve `obj.name` read AS A VALUE (no call parens): fire a getter, bind a
@@ -5753,7 +5636,6 @@ struct JIT {
   }
 
 
-
   // Whether an Object receiver is a closed builtin namespace. Valid only where
   // the tag is already known to be TAG_OBJECT — it probes the pointer. A
   // namespace resolves every member name itself (as a member, or as the
@@ -5766,239 +5648,6 @@ struct JIT {
         builder_.getInt8(0));
   }
 
-
-
-  // Publish the call-site + per-argument positions the callee reads at
-  // runtime (set_call_site / set_arg_pos thread-locals): the multifn
-  // dispatcher's DispatchError, _jit_ns_method_trampoline, and the user-fn
-  // prologue's typed-param snapshot (culebra_runtime_param_pos) all resolve
-  // their report position from these. Must be emitted after every argument
-  // expression has compiled — an argument's own inner calls clobber the
-  // thread-locals — and immediately before the dispatch.
-  //
-  // set_call_site resets the per-arg count to 0; a HOF callback reaches its
-  // per-element call with it still 0 (the body-coercion path). Per-argument
-  // positions are published by the lowering's own emitter, which has the
-  // bytecode's argument positions to hand (Lowering::emit_call_positions).
-  void emit_call_position_publish() {
-    auto i64Ty = builder_.getInt64Ty();
-    emit_call(module_->getOrInsertFunction(
-                  rt::set_call_site_at, builder_.getVoidTy(),
-                  llvm::PointerType::get(ctx_, 0), i64Ty, i64Ty),
-              {thread_state_ptr(), current_line_val(), current_column_val()});
-  }
-
-  Owned compile_function_call_raw(
-      llvm::Value* callee, llvm::Value* selfVal,
-      llvm::ArrayRef<llvm::Value*> userArgs,
-      bool check_kw_only = false, bool allow_call_overload = true,
-      bool own_self_on_error = false,
-      bool own_args_on_error = false) {
-    auto ptrTy = llvm::PointerType::get(ctx_, 0);
-
-    auto tag = extract_tag(callee);
-    auto isFunc = builder_.CreateICmpEQ(tag, builder_.getInt8(TAG_FUNC));
-
-    auto fn = builder_.GetInsertBlock()->getParent();
-    auto callBB = llvm::BasicBlock::Create(ctx_, "call.ok", fn);
-    auto errorBB = llvm::BasicBlock::Create(ctx_, "call.error", fn);
-    builder_.CreateCondBr(isFunc, callBB, errorBB);
-
-    // Cold path: the callee isn't a function. A callable class instance
-    // (`obj(args)` where obj defines `__call__`, the twin of `__index__`)
-    // dispatches to its `__call__` method here; everything else is a
-    // type error. The hot path (callBB) is untouched. `allow_call_overload`
-    // is cleared on the self-recursive __call__ invocation below so the
-    // reconstruction emits only once (no compile-time recursion).
-    builder_.SetInsertPoint(errorBB);
-    // `callee` is often BORROWED out of `selfVal`'s own slots (`{m:
-    // Adder.new(1)}.m(41)` reads `callee` off `selfVal`'s `m` slot), so pin
-    // it with our own +1 before releasing `selfVal` below — otherwise the
-    // release can free the object the `class_call_method`/`class_new_method`
-    // probes below still need to dereference. None of the three sub-arms
-    // (not-a-function, `__call__` overload, ctor dispatch) consumes the
-    // ORIGINAL `selfVal` either, so release it here once, covering all
-    // three uniformly instead of only the not-a-function tail (where it used
-    // to sit, stranding it whenever the overload/ctor arm was taken — the
-    // receiver leak `{m: Adder.new(1)}.m(41)` hit). Each arm below drops the
-    // `callee` pin exactly once in turn (transferred into `self` on the
-    // overload arm, an explicit release on the ctor/not-a-function arms).
-    // Most callers pass a nil/borrowed `selfVal` and opt into neither this
-    // nor the args release below; `selfVal` may be null (releasing nil is a
-    // no-op). Gated on `allow_call_overload` (a C++-time constant, not a
-    // runtime branch): the overload/ctor probes this pin protects only exist
-    // on that arm, and the self-recursive `__call__` invocation below always
-    // passes a confirmed-Function callee, so its own errorBB is dead code —
-    // no sense emitting an unreachable pin/unpin pair into it.
-    if (allow_call_overload) emit_value_retain(callee);
-    if (own_self_on_error && selfVal) emit_value_release(selfVal);
-    auto emit_not_function = [&] {
-      // The callee is not callable (a method miss lowers to `call nil` —
-      // `[1,2,3].first()`). No callee frame will run, so the args the caller
-      // handed this call have no consumer and strand on the raise (`selfVal`
-      // is already handled above). Args are gated separately by the caller:
-      // the method-call fallthrough consumes them and nothing else releases
-      // them, so it opts in; the unresolved-builtin path (`{a:1}.map(f)`)
-      // already releases its receiver on this edge via its own machinery but
-      // strands the callback arg, so it opts in too. Most callers pass no
-      // args needing this or opt out.
-      if (allow_call_overload)
-        emit_value_release(callee);  // drop the pin taken at errorBB entry
-      if (own_args_on_error)
-        for (auto* a : userArgs) emit_value_release(a);
-      emit_type_error_typed("Function", tag);
-      builder_.CreateUnreachable();
-    };
-    llvm::Value* overloadResult = nullptr;
-    llvm::BasicBlock* overloadEndBB = nullptr;
-    llvm::Value* ctorResult = nullptr;
-    llvm::BasicBlock* ctorEndBB = nullptr;
-    if (allow_call_overload) {
-      auto callMethod = emit_value_call(
-          module_->getOrInsertFunction(
-              rt::class_call_method, valueType_,
-              builder_.getInt8Ty(), builder_.getInt64Ty()),
-          {tag, extract_data(callee)}, "call.method");
-      auto isCallFn = builder_.CreateICmpEQ(
-          extract_tag(callMethod), builder_.getInt8(TAG_FUNC));
-      auto overloadBB = llvm::BasicBlock::Create(ctx_, "call.overload", fn);
-      auto tryCtorBB = llvm::BasicBlock::Create(ctx_, "call.tryctor", fn);
-      builder_.CreateCondBr(isCallFn, overloadBB, tryCtorBB);
-
-      builder_.SetInsertPoint(overloadBB);
-      // `callee` becomes `self`: the pin taken at errorBB entry above IS
-      // that +1 (the recursive frame consumes it, the convention the normal
-      // path shares — see the leak note in the kwargs path); no second
-      // retain needed.
-      // Late-merge arm raw: the value lives only on this arm's
-      // runtime path and is re-owned when the builder revisits the arm to
-      // declare it into call.phi below — holding it in an Owned across the
-      // other arms' emission would spill a non-dominating SSA value.
-      overloadResult = compile_function_call_raw(
-          callMethod, callee, userArgs,
-          /*check_kw_only=*/false, /*allow_call_overload=*/false)
-          .consume_unchecked();
-      overloadEndBB = builder_.GetInsertBlock();
-      // Terminator added after callBB so all arms can merge at contBB.
-
-      // Not a callable instance: try a class object — `C(args)` dispatches
-      // to its `new`. This arm does NOT mirror what the executor and the
-      // bytecode lowering do for the same source form: they hand the class
-      // object over as the constructor's receiver (vm.h's Call/CallM, and
-      // lowering.h's emit_invoke), which is where MakeInst reads it back to
-      // set JitObject::cls. Passing no `self` here builds an instance whose
-      // class_of is nil. Both of this helper's callers screen the callee
-      // first — the iterator protocol rejects a non-Function `iter`, and the
-      // dispose emitter skips a non-Function `dispose` — so nothing reaches
-      // it today. A new caller that could must fix this arm rather than
-      // trust it.
-      builder_.SetInsertPoint(tryCtorBB);
-      auto newMethod = emit_value_call(
-          module_->getOrInsertFunction(
-              rt::class_new_method, valueType_,
-              builder_.getInt8Ty(), builder_.getInt64Ty()),
-          {tag, extract_data(callee)}, "ctor.method");
-      auto isNewFn = builder_.CreateICmpEQ(
-          extract_tag(newMethod), builder_.getInt8(TAG_FUNC));
-      auto ctorBB = llvm::BasicBlock::Create(ctx_, "call.ctor", fn);
-      auto notFnBB = llvm::BasicBlock::Create(ctx_, "call.notfn", fn);
-      builder_.CreateCondBr(isNewFn, ctorBB, notFnBB);
-
-      builder_.SetInsertPoint(notFnBB);
-      emit_not_function();
-
-      builder_.SetInsertPoint(ctorBB);
-      // The constructor takes no receiver, so the pin taken at errorBB entry
-      // has no further use on this arm — drop it.
-      emit_value_release(callee);
-      // Late-merge arm raw — same contract as overloadResult above.
-      ctorResult = compile_function_call_raw(
-          newMethod, /*selfVal=*/nullptr, userArgs,
-          /*check_kw_only=*/false, /*allow_call_overload=*/false)
-          .consume_unchecked();
-      ctorEndBB = builder_.GetInsertBlock();
-    } else {
-      emit_not_function();
-    }
-
-    builder_.SetInsertPoint(callBB);
-    auto clsPtr = builder_.CreateIntToPtr(extract_data(callee), ptrTy);
-    auto fnFieldPtr =
-        builder_.CreateStructGEP(closureType_, clsPtr, 1, "fn.ptr");
-    auto fnPtr = builder_.CreateLoad(ptrTy, fnFieldPtr, "fn");
-
-    if (check_kw_only && !userArgs.empty()) {
-      emit_pos_count_check(clsPtr, static_cast<int64_t>(userArgs.size()),
-                           static_cast<int64_t>(current_line_),
-                           static_cast<int64_t>(current_column_));
-    }
-
-    // Build the args slab in the entry block (hoisted) so repeated
-    // calls within a loop don't grow the stack frame per iteration.
-    llvm::Value* argsPtr;
-    if (userArgs.empty()) {
-      argsPtr = llvm::ConstantPointerNull::get(ptrTy);
-    } else {
-      llvm::IRBuilder<> entryB(&fn->getEntryBlock(),
-                               fn->getEntryBlock().begin());
-      argsPtr = entryB.CreateAlloca(
-          valueType_,
-          builder_.getInt64(static_cast<int64_t>(userArgs.size())),
-          "call.args");
-      for (size_t i = 0; i < userArgs.size(); i++) {
-        auto slot = builder_.CreateInBoundsGEP(
-            valueType_, argsPtr,
-            {builder_.getInt64(static_cast<int64_t>(i))});
-        builder_.CreateStore(userArgs[i], slot);
-      }
-    }
-
-    emit_call_position_publish();
-
-    auto calleeType = jitFnCalleeType();
-    // The result comes back through an out-pointer slot and the receiver `self`
-    // crosses as two scalars (tag, data) — no by-value 16-byte aggregate crosses
-    // the ABI in either direction, so the raw-IR lowering matches the Win64 C
-    // ABI (which would pass an aggregate arg by-reference and return it via
-    // sret). Hoist the result slot into the entry block like the args slab.
-    llvm::Value* retSlot;
-    {
-      llvm::IRBuilder<> entryB(&fn->getEntryBlock(),
-                               fn->getEntryBlock().begin());
-      retSlot = entryB.CreateAlloca(valueType_, nullptr, "call.ret");
-    }
-    llvm::Value* selfNormal = selfVal ? selfVal : make_no_self();
-    std::vector<llvm::Value*> args = {
-        retSlot,
-        clsPtr,
-        extract_tag(selfNormal),
-        extract_data(selfNormal),
-        builder_.getInt64(static_cast<int64_t>(userArgs.size())),
-        argsPtr};
-    emit_call(calleeType, fnPtr, args);
-    auto callResult = builder_.CreateLoad(valueType_, retSlot, "call.result");
-
-    // No __call__ overload arm (recursive inner call): callBB is the
-    // only producer, return directly and keep the original shape.
-    if (!allow_call_overload) return own(callResult);
-
-    // Merge the function-call result with the __call__ and constructor
-    // dispatch results (three producers: callBB, overload arm, ctor arm).
-    // The arm end blocks were left unterminated; each incoming is declared
-    // as the builder revisits its arm to emit the branch.
-    auto contBB = llvm::BasicBlock::Create(ctx_, "call.cont", fn);
-    OwnedPhi callMerge(this, "call.phi");
-    callMerge.add_incoming(own(callResult));
-    builder_.CreateBr(contBB);
-    builder_.SetInsertPoint(overloadEndBB);
-    callMerge.add_incoming(own(overloadResult));
-    builder_.CreateBr(contBB);
-    builder_.SetInsertPoint(ctorEndBB);
-    callMerge.add_incoming(own(ctorResult));
-    builder_.CreateBr(contBB);
-    builder_.SetInsertPoint(contBB);
-    return callMerge.finish(contBB);
-  }
 
   // --- Execution ---
 

@@ -596,6 +596,33 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_check_pos_count_cls(
       line, col);
 }
 
+// culebra_runtime_class_call_method (rt_fixed.inc.h) for a positional call
+// of `argc` arguments, with the keyword-only guard the call makes before it
+// hands anything over: a guard that throws strands no +1 (the executor's
+// dynamic_callee, in one call).
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue
+culebra_runtime_class_call_method_checked(int8_t tag, int64_t data,
+                                          int64_t argc, int64_t line,
+                                          int64_t col) {
+  JitOwnedVal m(culebra_runtime_class_call_method(tag, data));
+  if (m.borrow().tag == TAG_FUNC && argc > 0)
+    culebra_runtime_check_pos_count_cls(
+        reinterpret_cast<JitClosure*>(m.borrow().data), argc, line, col);
+  return m.consume();
+}
+
+// A Function called at +1 through the JitFn ABI, in place of its own entry:
+// the count lives exactly as long as the call, throw included. Compiled code
+// calls a probed `__call__` (which nothing else holds for the call) through
+// this, and a borrowed callee through its own `fn_ptr`.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_call_held(
+    JitValue* __ret, JitClosure* cls, int8_t self_tag, int64_t self_data,
+    int64_t n_args, JitValue* args) {
+  auto held = JitHeldMethod::adopt(cls);
+  // Not rooted: only `held` keeps `cls`, and no register sees it.
+  *__ret = _jit_invoke(cls, {self_tag, self_data}, n_args, args);
+}
+
 struct JitMultiMethodEntry {
   std::vector<std::string> param_types;  // empty = "Any"
   // Regular param names, parallel to param_types — a required param omitted
@@ -1502,7 +1529,7 @@ inline void _jit_multifn_dispatcher_thunk(JitValue* __ret, JitClosure* cls,
 }
 
 // Record the call-site position read by `_jit_multifn_dispatcher_thunk` on
-// the DispatchError path. Emitted by compile_function_call_raw just before
+// the DispatchError path. Published by the compiled call sites just before
 // an indirect closure call. Kept trivial so it inlines to two stores.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_set_call_site_at(
     JitThreadState* ts, int64_t line, int64_t col) {
@@ -2543,6 +2570,20 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_call_with_kwargs(
 
   return _jit_invoke(cls, self_val, static_cast<int64_t>(slab_n),
                      slab.data());
+}
+
+// The call above for a callee held at +1 (a probed `__call__`, which nothing
+// else holds for the call): released when the call ends, throw included.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_call_with_kwargs_held(
+    JitClosure* cls, int8_t self_val_tag, int64_t self_val_data,
+    int64_t n_pos, JitValue* positional, int64_t n_kw,
+    const char* const* kw_keys, JitValue* kw_vals, int64_t n_splat,
+    JitValue* splat_objs, int64_t line, int64_t col) {
+  auto held = JitHeldMethod::adopt(cls);
+  return culebra_runtime_call_with_kwargs(cls, self_val_tag, self_val_data,
+                                          n_pos, positional, n_kw, kw_keys,
+                                          kw_vals, n_splat, splat_objs, line,
+                                          col);
 }
 
 }  // extern "C" (block continues in rt_iter.inc.h)

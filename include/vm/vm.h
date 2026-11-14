@@ -815,6 +815,7 @@ enum ForSlot : int32_t {
   kForPos = 7,       // element index / byte offset
   kForCount = 8,     // element count / byte length
   kForPtr = 9,       // array storage / string bytes / a Shared view's walk
+  // +1 each: the iterator may replace its own under the walk.
   kForHasNext = 10,  // the hoisted has_next closure
   kForNext = 11,     // the hoisted next closure
   kForSlots = 12,
@@ -3922,7 +3923,7 @@ inline void rc_apply(const Chunk& c, const Insn& in, RcWords& out,
 template <class Read, class ReadAll>
 inline void rc_reads(const Insn& in, Read read, ReadAll read_all) {
   auto run = [&](int32_t base) {
-    for (int32_t k = 0; k <= kForHasNext; ++k) read(base + k);
+    for (int32_t k = 0; k < kForSlots; ++k) read(base + k);
   };
   switch (in.op) {
     case Op::LoadConst:
@@ -4212,7 +4213,7 @@ inline std::vector<char> rc_plan_for_chunk(const Chunk& c, RcScratch& s,
     }
   };
   auto pin_run = [&](int32_t base) {
-    for (int32_t k = 0; k <= kForHasNext; ++k) pin(base + k);
+    for (int32_t k = 0; k < kForSlots; ++k) pin(base + k);
   };
   for (const auto& cu : c.cleanups) {
     if (cu.dispose_base >= 0) pin_run(cu.dispose_base);
@@ -5588,7 +5589,7 @@ class Compiler {
 
   // Record where the just-emitted call's arguments were written, so a
   // typed-parameter error in the callee reports at the argument expression
-  // (emit_call_position_publish's rodata array, per instruction). A null
+  // (the lowering's publish_site rodata array, per instruction). A null
   // node — the UFCS receiver, which has no argument expression — takes the
   // call's own position, as the JIT's null entry does.
   void record_call_argpos(size_t ix, const peg::Ast& at,
@@ -16047,18 +16048,8 @@ struct Exec {
       // The slot owns what the protocol derives from, so the `iter()` frame
       // gets its own `+1` for `self` and the two refs die with two slots.
       cur[kForSrc] = src;
-      JitPropIC ic{};  // per-call scratch: the executor never reads a cache
-      JitValue iter_fn = culebra_runtime_prop_get(
-          static_cast<int8_t>(src.tag), src.data, "iter", &ic, line, col,
-          /*own_receiver=*/false);
-      if (iter_fn.tag != TAG_FUNC) {
-        culebra_runtime_type_error_typed(line, col, "Function",
-                                         static_cast<int8_t>(iter_fn.tag));
-      }
-      _culebra_value_retain_impl(static_cast<int8_t>(src.tag), src.data);
-      culebra_runtime_set_call_site(line, col);  // the lowering's call publishes
-      JitValue iter = _jit_invoke(reinterpret_cast<JitClosure*>(iter_fn.data),
-                                  src, 0, nullptr);
+      JitValue iter = culebra_runtime_for_call_iter(static_cast<int8_t>(src.tag),
+                                                    src.data, line, col);
       JitClosure* has_next = nullptr;
       JitClosure* next = nullptr;
       {
@@ -16070,8 +16061,9 @@ struct Exec {
                                            &next);
       }
       cur[kForIter] = iter;
-      cur[kForHasNext] = {TAG_LONG, reinterpret_cast<int64_t>(has_next)};
-      cur[kForNext] = {TAG_LONG, reinterpret_cast<int64_t>(next)};
+      // The open's two +1s: the run's ladder releases them with the rest.
+      cur[kForHasNext] = {TAG_FUNC, reinterpret_cast<int64_t>(has_next)};
+      cur[kForNext] = {TAG_FUNC, reinterpret_cast<int64_t>(next)};
       cur[kForKind] = {TAG_LONG, FOR_PROTO};
     };
     auto open_counted = [&](int64_t ptr, int64_t count, int64_t kind) {
@@ -16202,39 +16194,8 @@ struct Exec {
     if (cur[kForDisposed].data) return;
     cur[kForDisposed] = JitValue{TAG_LONG, 1};
     JitValue iter = cur[kForIter];
-    if (iter.tag == TAG_NIL) return;
-    auto* obj = reinterpret_cast<JitObject*>(iter.data);
-    if (!culebra_runtime_object_has(obj, "dispose")) return;
-    JitPropIC ic{};
-    JitValue fn = culebra_runtime_prop_get(static_cast<int8_t>(iter.tag),
-                                           iter.data, "dispose", &ic, 0, 0,
-                                           /*own_receiver=*/false);
-    if (fn.tag != TAG_FUNC) return;
-    // The frame gets its own `+1` for `self`, as the iter() call above did.
-    auto call = [&] {
-      _culebra_value_retain_impl(static_cast<int8_t>(iter.tag), iter.data);
-      culebra_runtime_set_call_site(line, col);  // as the lowering's call does
-      JitValue r = _jit_invoke(reinterpret_cast<JitClosure*>(fn.data), iter, 0,
-                               nullptr);
-      _culebra_value_release_impl(static_cast<int8_t>(r.tag), r.data);
-    };
-    if (!swallow) {
-      call();
-      return;
-    }
-    // An exception is already unwinding: the dispose's own throw must not
-    // replace it, and neither must the value it threw — the thrown-value
-    // carrier is a global that a culebra throw overwrites.
-    int8_t flag = 0, tag = 0;
-    int64_t data = 0;
-    culebra_runtime_save_thrown(&flag, &tag, &data);
-    try {
-      call();
-    } catch (...) {
-      // thrown value: dropped, for the reason above; the restore below puts
-      // the unwinding one's payload back over it.
-    }
-    culebra_runtime_restore_thrown(flag, tag, data);
+    culebra_runtime_for_dispose(static_cast<int8_t>(iter.tag), iter.data,
+                                swallow, line, col);
   }
 
   // The call site, with this call's per-argument positions when it has any
@@ -16274,14 +16235,20 @@ struct Exec {
   // TypeError a missing method has always raised when neither answers.
   // `member` is the name a method call read `callee` by and `recv` what it
   // read it from (null for a plain call): what a missing method is told with.
-  static JitValue probe_callee(const JitValue& callee, int64_t line,
-                               int64_t col, const char* member = nullptr,
+  // The `__call__` probe answers through `keep`, which holds it for the call
+  // unless it is the class's own: the instance's own slot, or a trait's
+  // default table, can let it go under the call (vm.md §5.3). A class
+  // object's `new` cannot change, so it is borrowed.
+  static JitValue probe_callee(const JitValue& callee, JitHeldMethod& keep,
+                               int64_t line, int64_t col,
+                               const char* member = nullptr,
                                const JitValue* recv = nullptr) {
     if (callee.tag == TAG_FUNC) return callee;
     auto tag = static_cast<int8_t>(callee.tag);
-    JitValue target = culebra_runtime_class_call_method(tag, callee.data);
-    if (target.tag != TAG_FUNC)
-      target = culebra_runtime_class_new_method(tag, callee.data);
+    keep = _jit_class_call_method(tag, callee.data);
+    JitValue target =
+        keep ? JitValue{TAG_FUNC, reinterpret_cast<int64_t>(keep.get())}
+             : culebra_runtime_class_new_method(tag, callee.data);
     if (target.tag != TAG_FUNC) {
       if (recv)
         culebra_runtime_method_not_callable(
@@ -16311,15 +16278,27 @@ struct Exec {
 
   // The closure a positional call runs, with the keyword-only guard between
   // finding it and handing the receiver over.
-  static JitValue dynamic_callee(const JitValue& callee, JitValue* self_reg,
-                                 JitValue& self, int64_t argc, int64_t line,
-                                 int64_t col, const char* member = nullptr) {
-    JitValue target =
-        probe_callee(callee, line, col, member, member ? self_reg : nullptr);
+  static JitValue dynamic_callee(const JitValue& callee, JitHeldMethod& keep,
+                                 JitValue* self_reg, JitValue& self,
+                                 int64_t argc, int64_t line, int64_t col,
+                                 const char* member = nullptr) {
+    JitValue target = probe_callee(callee, keep, line, col, member,
+                                   member ? self_reg : nullptr);
     culebra_runtime_check_pos_count_cls(
         reinterpret_cast<JitClosure*>(target.data), argc, line, col);
     adopt_callee_as_self(callee, self_reg, self);
     return target;
+  }
+
+  // Run what dynamic_callee found. A target the frame's registers hold is
+  // called rooted; one only `keep` holds sits in no register, so the wasm
+  // collector must not run beneath it (rt_value.inc.h).
+  static JitValue invoke_dynamic(const JitValue& target,
+                                 const JitHeldMethod& keep, JitValue self,
+                                 int64_t n, JitValue* args) {
+    auto* fn = reinterpret_cast<JitClosure*>(target.data);
+    return keep.holds() ? _jit_invoke(fn, self, n, args)
+                        : _jit_invoke_rooted(fn, self, n, args);
   }
 
   // What a borrowed callee stands on, checked where the assert lanes run it
@@ -17479,16 +17458,17 @@ struct Exec {
             // this arm through its emit_invoke).
             publish_call_site(c, VM_PC, line, col);
             JitValue self = regs[in.b + 1];
-            JitValue target =
-                dynamic_callee(gate, &regs[in.b + 1], self, in.d, line, col);
+            JitHeldMethod keep;
+            JitValue target = dynamic_callee(gate, keep, &regs[in.b + 1], self,
+                                             in.d, line, col);
             JitValue r;
             try {
-              // Rooted: gate (regs[b]), receiver (regs[b+1]) and args
-              // (regs[b+2..], nil'd only after the return) stay in this
-              // frame's registers for the call's duration (rt_value.inc.h).
-              r = _jit_invoke_rooted(
-                  reinterpret_cast<JitClosure*>(target.data), self, in.d,
-                  in.d ? &regs[in.b + 2] : nullptr);
+              // Gate (regs[b]), receiver (regs[b+1]) and args (regs[b+2..],
+              // nil'd only after the return) stay in this frame's registers
+              // for the call's duration; invoke_dynamic says whether the
+              // callee does too.
+              r = invoke_dynamic(target, keep, self, in.d,
+                                 in.d ? &regs[in.b + 2] : nullptr);
             } catch (...) {
               for (int32_t i = 1; i <= in.d + 1; ++i)
                 regs[in.b + i] = JitValue{TAG_NIL, 0};
@@ -17952,15 +17932,17 @@ struct Exec {
           // `obj(args)` / `C(args)`: the callable instance or the class
           // object becomes the receiver (the instance keeps a +1 on its
           // class, JitObject::cls); a plain call had none to release.
-          target = dynamic_callee(callee, nullptr, self, in.d, line, col);
+          JitHeldMethod keep;
+          target = dynamic_callee(callee, keep, nullptr, self, in.d, line, col);
           JitValue r;
           try {
-            // Rooted: callee (regs[b]), receiver (== callee on the __call__
-            // path) and args (regs[c..], nil'd only after the return) all
-            // stay in this frame's registers for the call's duration, so a
-            // safepoint collect beneath it sees them (rt_value.inc.h).
-            r = _jit_invoke_rooted(reinterpret_cast<JitClosure*>(target.data),
-                                   self, in.d, in.d ? &regs[in.c] : nullptr);
+            // Callee (regs[b]), receiver (== callee on the __call__ path) and
+            // args (regs[c..], nil'd only after the return) all stay in this
+            // frame's registers for the call's duration, so a safepoint
+            // collect beneath it sees them; invoke_dynamic says whether the
+            // callee does too.
+            r = invoke_dynamic(target, keep, self, in.d,
+                               in.d ? &regs[in.c] : nullptr);
           } catch (...) {
             // The callee consumed each arg's +1 on its own unwind path too
             // (the JitFn ABI); nil the slab slots so an enclosing region's
@@ -18006,7 +17988,9 @@ struct Exec {
           // the interp's "expected Function, got Nil": the receiver and
           // args stay register-owned — nothing has been handed over yet, so
           // the enclosing ladder is still their releaser.
-          target = dynamic_callee(callee, &regs[in.c], self, in.d, line, col,
+          JitHeldMethod keep;
+          target = dynamic_callee(callee, keep, &regs[in.c], self, in.d, line,
+                                  col,
                                   callee.tag == TAG_NIL
                                       ? chunk_call_name_at(c, VM_PC)
                                       : nullptr);
@@ -18017,12 +18001,12 @@ struct Exec {
           // rejects outright.
           JitValue r;
           try {
-            // Rooted: callee (regs[b]), receiver (regs[c]) and args
-            // (regs[c+1..], nil'd only after the return) stay in this
-            // frame's registers for the call's duration (rt_value.inc.h).
-            r = _jit_invoke_rooted(reinterpret_cast<JitClosure*>(target.data),
-                                   self, in.d,
-                                   in.d ? &regs[in.c + 1] : nullptr);
+            // Callee (regs[b]), receiver (regs[c]) and args (regs[c+1..],
+            // nil'd only after the return) stay in this frame's registers
+            // for the call's duration; invoke_dynamic says whether the
+            // callee does too.
+            r = invoke_dynamic(target, keep, self, in.d,
+                               in.d ? &regs[in.c + 1] : nullptr);
           } catch (...) {
             for (int32_t i = 0; i <= in.d; ++i)
               regs[in.c + i] = JitValue{TAG_NIL, 0};
@@ -18051,8 +18035,9 @@ struct Exec {
                                           : JitValue{TAG_NO_SELF, 0};
           // The same two cold probes the plain call makes, in the same order;
           // no keyword-only guard, since the resolver binds keywords itself.
+          JitHeldMethod keep;
           JitValue target = probe_callee(
-              callee, line, col,
+              callee, keep, line, col,
               callee.tag == TAG_NIL ? chunk_call_name_at(c, VM_PC) : nullptr,
               kc.has_receiver ? &regs[in.c] : nullptr);
           adopt_callee_as_self(callee, kc.has_receiver ? &regs[in.c] : nullptr,

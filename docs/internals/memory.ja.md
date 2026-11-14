@@ -94,9 +94,13 @@ IRが構築されている間`struct JIT`内のC++オブジェクトであり、
 
 **ランタイムのヘルパー。** 値を渡される`culebra_runtime_*`ヘルパー
 は閉じた所有権契約の集合（§4.3）のうち1つに従い、そのC++コードは
-2つのRAII形式を使う: `JitOwnedVal`（消費されない限りすべての出口
-で解放される所有ローカル）と`JitUnwindRelease`（ヘルパーがthrowした
-場合のみ実行される解放）。
+3つのRAII形式を使う: `JitOwnedVal`（消費されない限りすべての出口
+で解放される所有ローカル）、`JitUnwindRelease`（ヘルパーがthrowした
+場合のみ実行される解放）、`JitHeldMethod`（呼び手の参照なしにヘルパーが
+呼ぶFunctionで、クラスのmetaから来たもの以外は呼び出しの間参照を持つ。
+[`vm.md`](vm.ja.md) §5.3）。持たれたFunctionはC++のローカルにしか
+ないので、wasmでは`_jit_invoke`を通して呼ぶ。その
+`SafepointUnsafeScope`が、呼び出しの下で回収が走るのを止める（§6.5）。
 
 解放そのもの（`_culebra_value_release_impl`）は、まず最も多いケースを片づける。この解放の後もまだ共有されている値は、カウントを1つ減らすだけで終わる。カウントがゼロに達したときだけ
 teardownに入り、そこで初めてtrashcan（`culebra::Trashcan`、深いコンテナ

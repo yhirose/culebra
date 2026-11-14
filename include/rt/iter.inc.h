@@ -60,16 +60,14 @@ inline JitClosure* _culebra_capture_callback(int8_t fn_tag, int64_t fn_data,
 // capture cell) and this wrapper releases the normalized closure on any
 // exit, including a throw from the per-element call. The lazy combinators
 // take the same `+1` into a capture cell via `_culebra_capture_callback`
-// instead. Converts to JitClosure* so the call sites read unchanged.
-struct JitHofCallback {
-  JitClosure* fn;
-  JitOwnedVal guard;
+// instead. A JitHeldMethod that adopts that +1 (the one type for "a Function
+// the runtime calls without its caller's count"), so the call sites read it
+// as a JitClosure*.
+struct JitHofCallback : JitHeldMethod {
   JitHofCallback(int8_t ft, int64_t fd, size_t arity, const char* method,
                  const char* param, int64_t line, int64_t col)
-      : fn(_culebra_expect_callback(ft, fd, arity, method, param, line, col)),
-        guard(JitValue{TAG_FUNC, reinterpret_cast<int64_t>(fn)}) {}
-  JitClosure* operator->() const { return fn; }
-  operator JitClosure*() const { return fn; }
+      : JitHeldMethod(JitHeldMethod::adopt(_culebra_expect_callback(
+            ft, fd, arity, method, param, line, col))) {}
 };
 
 extern "C" CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray*
@@ -79,19 +77,19 @@ culebra_runtime_object_keys(JitObject* obj);
 // if the receiver isn't a TAG_OBJECT or doesn't expose `method` as a
 // Function. Used once at walk entry so each step skips the per-iteration
 // std::map::find.
-inline JitClosure* _iter_method_closure(JitValue iter_val,
-                                        const char* method) {
-  if (iter_val.tag != TAG_OBJECT) return nullptr;
+inline JitHeldMethod _iter_method_closure(JitValue iter_val,
+                                          const char* method) {
+  if (iter_val.tag != TAG_OBJECT) return {};
   // Instance + proto: class instances carry methods on their class meta
   // proto, while Phase 2 wrapped iterators put them on the instance directly.
   return _protocol_member(reinterpret_cast<JitObject*>(iter_val.data), method);
 }
 
-inline JitClosure* _iter_has_next_closure(JitValue iter_val) {
+inline JitHeldMethod _iter_has_next_closure(JitValue iter_val) {
   return _iter_method_closure(iter_val, "has_next");
 }
 
-inline JitClosure* _iter_next_closure(JitValue iter_val) {
+inline JitHeldMethod _iter_next_closure(JitValue iter_val) {
   return _iter_method_closure(iter_val, "next");
 }
 
@@ -105,7 +103,7 @@ inline void _iter_dispose_upstreams_fn(JitValue* __ret, JitClosure* cls,
   std::exception_ptr first;
   for (size_t i = 0; i < cls->n_captures; i++) {
     JitValue up = cls->captures[i]->value;
-    auto* dispose_cls = _iter_method_closure(up, "dispose");
+    auto dispose_cls = _iter_method_closure(up, "dispose");
     if (!dispose_cls || dispose_cls->arity != 0) continue;
     try {
       culebra_runtime_value_retain(up.tag, up.data);  // the callee consumes it
@@ -131,16 +129,83 @@ inline void _iter_dispose_upstreams_fn(JitValue* __ret, JitClosure* cls,
 // own. `_iter_method_closure` already rejects a non-Function member, so a
 // broken `has_next` can never reach a call through its payload.
 // The interp twin is `_check_iter_protocol`; both raise the shared errors.
+// Both closures come back at +1: the walk keeps them, and the iterator can
+// replace its own `next` while it is walked (the cursor's slots release them).
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_iter_protocol_open(
     int8_t tag, int64_t data, int64_t line, int64_t col,
     JitClosure** out_has_next, JitClosure** out_next) {
   JitValue iter_val{tag, data};
   if (tag != TAG_OBJECT) culebra::throw_iter_not_object(line, col);
-  auto* has_next = _iter_has_next_closure(iter_val);
-  auto* next = _iter_next_closure(iter_val);
+  auto has_next = _iter_has_next_closure(iter_val);
+  auto next = _iter_next_closure(iter_val);
   if (!has_next || !next) culebra::throw_iter_missing_protocol(line, col);
-  *out_has_next = has_next;
-  *out_next = next;
+  *out_has_next = has_next.take();
+  *out_next = next.take();
+}
+
+// The two protocol calls a `for` makes by name, `iter()` as it opens and
+// `dispose()` as it leaves: one body for the executor and compiled code, so
+// both read the member, check it and call it the same way. Each holds the
+// method for its call, which may replace the slot it was read from.
+//
+inline JitValue _for_call_member(const JitHeldMethod& cls, int8_t tag,
+                                 int64_t data, int64_t line, int64_t col) {
+  culebra_runtime_value_retain(tag, data);  // the frame's own `self`
+  culebra_runtime_set_call_site(line, col);
+  return _jit_invoke(cls, {tag, data}, 0, nullptr);
+}
+
+// `iter()` on `src` (borrowed), at +1. Anything but a Function there is the
+// TypeError the head reports at `line`:`col`.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_for_call_iter(
+    int8_t tag, int64_t data, int64_t line, int64_t col) {
+  JitPropIC ic{};  // per-call scratch
+  JitValue fn = culebra_runtime_prop_get(tag, data, "iter", &ic, line, col,
+                                         /*own_receiver=*/false);
+  if (fn.tag != TAG_FUNC)
+    culebra_runtime_type_error_typed(line, col, "Function",
+                                     static_cast<int8_t>(fn.tag));
+  auto cls = JitHeldMethod::hold(reinterpret_cast<JitClosure*>(fn.data));
+  return _for_call_member(cls, tag, data, line, col);
+}
+
+// `dispose()` on the iterator a `for` walked, when it carries one that is a
+// Function. With `swallow` an exception is already unwinding: the dispose's
+// own throw must not replace it, and neither must the value it threw (the
+// thrown-value carrier is a global a culebra throw overwrites).
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_for_dispose(
+    int8_t tag, int64_t data, int64_t swallow, int64_t line, int64_t col) {
+  if (tag != TAG_OBJECT) return;
+  if (!culebra_runtime_object_has(reinterpret_cast<JitObject*>(data),
+                                  "dispose"))
+    return;
+  JitPropIC ic{};
+  JitValue fn = culebra_runtime_prop_get(tag, data, "dispose", &ic, 0, 0,
+                                         /*own_receiver=*/false);
+  if (fn.tag != TAG_FUNC) return;
+  auto cls = JitHeldMethod::hold(reinterpret_cast<JitClosure*>(fn.data));
+  auto call = [&] {
+    JitValue r = _for_call_member(cls, tag, data, line, col);
+    _culebra_value_release_impl(static_cast<int8_t>(r.tag), r.data);
+  };
+  if (!swallow) {
+    call();
+    return;
+  }
+  int8_t flag = 0, ttag = 0;
+  int64_t tdata = 0;
+  culebra_runtime_save_thrown(&flag, &ttag, &tdata);
+  try {
+    call();
+  } catch (const culebra::Interrupted&) {
+    // The press cannot be thrown over what is already unwinding; the next
+    // safepoint raises it instead (JitIterDrive's unwind does the same).
+    culebra::rearm_interrupt();
+  } catch (...) {
+    // thrown value: dropped, for the reason above; the restore below puts
+    // the unwinding one's payload back over it.
+  }
+  culebra_runtime_restore_thrown(flag, ttag, tdata);
 }
 
 // `for ... in view` over a Shared view walks it by position, as it walks an
@@ -172,12 +237,20 @@ struct IterClosureCells {
   JitCell* has_next;
   JitCell* next;
 };
+// The cell owns the closure it caches (+1, nil when absent): the upstream can
+// replace its own `next` while the chain walks it. Readers take `.data`.
+inline JitCell* _iter_closure_cell(JitHeldMethod m) {
+  auto v = m.take_value();
+  return culebra_runtime_cell_new(static_cast<int8_t>(v.tag), v.data);
+}
+inline void _iter_replace_closure(JitCell* cell, JitHeldMethod m) {
+  auto v = m.take_value();
+  _jit_replace_value(cell->value, static_cast<int8_t>(v.tag), v.data);
+}
 inline IterClosureCells _iter_cache_closure_cells(JitValue iv) {
   return {
-      culebra_runtime_cell_new(
-          TAG_LONG, reinterpret_cast<int64_t>(_iter_has_next_closure(iv))),
-      culebra_runtime_cell_new(
-          TAG_LONG, reinterpret_cast<int64_t>(_iter_next_closure(iv))),
+      _iter_closure_cell(_iter_has_next_closure(iv)),
+      _iter_closure_cell(_iter_next_closure(iv)),
   };
 }
 
@@ -527,7 +600,7 @@ class JitIterDrive {
   // One lookup; a dispose-free iterator (any built-in-source chain) returns
   // immediately, so the per-drive cost stays a single property probe.
   void dispose() {
-    auto* dispose_cls = _iter_method_closure(iter_, "dispose");
+    auto dispose_cls = _iter_method_closure(iter_, "dispose");
     if (!dispose_cls || dispose_cls->arity != 0) return;
     culebra_runtime_value_retain(iter_.tag, iter_.data);  // callee consumes
     JitBorrowedCallSite site;  // an implicit entry, at the op
@@ -536,8 +609,8 @@ class JitIterDrive {
   }
 
   JitValue iter_;
-  JitClosure* has_next_cls_;
-  JitClosure* next_cls_;
+  JitHeldMethod has_next_cls_;
+  JitHeldMethod next_cls_;
   int uncaught_;
   bool done_ = false;
 };
@@ -1514,7 +1587,7 @@ inline JitValue _iter_coerce_iterable(int8_t t, int64_t d, int64_t line,
     // generator (or class instance) carries `iter` on its class meta, so the
     // instance-slots-only probe this used rejected `gen().zip(xs)` as
     // non-iterable on this backend while the interp accepted it.
-    if (auto* iv_cls =
+    if (auto iv_cls =
             _protocol_member(reinterpret_cast<JitObject*>(d), "iter")) {
       culebra_runtime_value_retain(t, d);
       JitBorrowedCallSite site;  // an implicit entry, at the op
@@ -2243,7 +2316,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_object_values(
 // `ObjectValue::builtins()`.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject*
 culebra_runtime_object_iter_dispatch(JitObject* obj) {
-  if (auto* cls = _protocol_member(obj, "iter")) {
+  if (auto cls = _protocol_member(obj, "iter")) {
     auto self = JitValue{TAG_OBJECT, reinterpret_cast<int64_t>(obj)};
     // `self` is borrowed: _culebra_invoke_method0 mints the callee's own +1, so
     // a throw from the user iter() body leaves this object's refcount alone.
@@ -2300,8 +2373,8 @@ inline void _iter_flatten_step(const _IterFlattenCells& c, bool* done,
       }
       _culebra_value_release_impl(inner_v.tag, inner_v.data);
       c.inner->value = {0, 0};
-      c.inner_has_next->value = {TAG_LONG, 0};
-      c.inner_next->value = {TAG_LONG, 0};
+      _jit_replace_value(c.inner_has_next->value, TAG_NIL, 0);
+      _jit_replace_value(c.inner_next->value, TAG_NIL, 0);
     }
     int8_t tag;
     int64_t data;
@@ -2312,10 +2385,8 @@ inline void _iter_flatten_step(const _IterFlattenCells& c, bool* done,
     }
     auto iv = to_inner(tag, data);
     c.inner->value = iv;
-    c.inner_has_next->value = {
-        TAG_LONG, reinterpret_cast<int64_t>(_iter_has_next_closure(iv))};
-    c.inner_next->value = {
-        TAG_LONG, reinterpret_cast<int64_t>(_iter_next_closure(iv))};
+    _iter_replace_closure(c.inner_has_next, _iter_has_next_closure(iv));
+    _iter_replace_closure(c.inner_next, _iter_next_closure(iv));
   }
 }
 
@@ -2356,8 +2427,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_iter_flat_map(
   auto* f = culebra_runtime_cell_new(TAG_FUNC, reinterpret_cast<int64_t>(fn));
   auto* inner = culebra_runtime_cell_new(TAG_NIL, 0);
   auto up_cells = _iter_cache_closure_cells({it, id});
-  auto* inner_has_next = culebra_runtime_cell_new(TAG_LONG, 0);
-  auto* inner_next = culebra_runtime_cell_new(TAG_LONG, 0);
+  auto* inner_has_next = culebra_runtime_cell_new(TAG_NIL, 0);
+  auto* inner_next = culebra_runtime_cell_new(TAG_NIL, 0);
   return _iter_wrap_fast<&_iter_flat_map_fast_fn>(
       {up, inner, up_cells.has_next, up_cells.next, inner_has_next, inner_next,
        f, _iter_pos_cell(line, col)}, /*n_upstreams=*/1);
@@ -2382,8 +2453,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_iter_flatten(
   auto* up = culebra_runtime_cell_new(it, id);
   auto* inner = culebra_runtime_cell_new(TAG_NIL, 0);
   auto up_cells = _iter_cache_closure_cells({it, id});
-  auto* inner_has_next = culebra_runtime_cell_new(TAG_LONG, 0);
-  auto* inner_next = culebra_runtime_cell_new(TAG_LONG, 0);
+  auto* inner_has_next = culebra_runtime_cell_new(TAG_NIL, 0);
+  auto* inner_next = culebra_runtime_cell_new(TAG_NIL, 0);
   return _iter_wrap_fast<&_iter_flatten_fast_fn>(
       {up, inner, up_cells.has_next, up_cells.next, inner_has_next, inner_next,
        _iter_pos_cell(line, col)}, /*n_upstreams=*/1);

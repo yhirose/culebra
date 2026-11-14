@@ -75,7 +75,7 @@ ratchet "raw _iter_advance_raw uses" "$adv" 25
 # flatten share one), JitIterDrive's ctor. A new hand-resolved drive would add
 # one here.
 hnc=$(grep -rn "_iter_has_next_closure(" include/ \
-      | grep -v "inline JitClosure\* _iter_has_next_closure(" \
+      | grep -v "inline JitHeldMethod _iter_has_next_closure(" \
       | grep -vcE ":[[:space:]]*//" || true)
 ratchet "raw _iter_has_next_closure uses" "$hnc" 4
 

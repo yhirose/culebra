@@ -223,15 +223,15 @@ ratchet throwguard "ThrowGuard sites (jit.h)" "$tg" 21
 #    (`value_to_long(...consume())`) is not counted — the stored value is
 #    an i64/i1, not a +1.
 # Current population: 3 ownership-layer internals (consume()'s own
-# delegation, consume_all, OwnedPhi::add_incoming) + 11 justified sites
-# (dispatch-arm handoffs, slot-owned crossings, prologue transfer, the
-# call.phi late-merge arm raws in compile_function_call_raw, and the
-# for-protocol iterator whose alloca slot owns the crossing — the last
-# three added 2026-07-12 by the compile_*→Owned return-seam migration,
-# each with a per-site rationale comment).
+# delegation, consume_all, OwnedPhi::add_incoming) + justified sites
+# (dispatch-arm handoffs, slot-owned crossings, prologue transfer, and the
+# for-protocol iterator whose alloca slot owns the crossing, each with a
+# per-site rationale comment). compile_function_call_raw and its call.phi
+# arms went 2026-11-13: the for-in's iter() and dispose() are the
+# executor's runtime calls now (culebra_runtime_for_call_iter / _dispose).
 cu=$(grep "consume_unchecked()" include/jit/jit.h \
      | grep -v "llvm::Value\* consume_unchecked" | grep -vc "^[[:space:]]*//")
-ratchet unchecked "consume_unchecked sites (jit.h)" "$cu" 14
+ratchet unchecked "consume_unchecked sites (jit.h)" "$cu" 4
 vphi=$(grep -v "jit_->builder_" include/jit/jit.h | grep -c "CreatePHI(valueType_" \
        || true)
 ratchet vphi "hand-built %Value phis (jit.h)" "$vphi" 0

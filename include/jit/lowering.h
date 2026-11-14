@@ -526,12 +526,15 @@ struct Lowering {
       cur.obj = slots[base + kForSrc];
       cur.iter = slots[base + kForIter];
       cur.elem = slots[base + kForElem];
+      cur.owns_has_next = slots[base + kForHasNext];
+      cur.owns_next = slots[base + kForNext];
       return for_cursors.emplace(base, cur).first->second;
     };
     // ForDispose, and the same sequence the cleanup pads run at the rung that
     // frees a loop's iterator. Guarded on the run's own latch, so the two
     // ladders a `break` walks cannot close the iterator twice.
-    auto emit_for_dispose = [&](int32_t base, bool swallow) {
+    auto emit_for_dispose = [&](int32_t base, bool swallow, int64_t line,
+                                int64_t col) {
       auto doBB = BasicBlock::Create(j.ctx_, "vm.for.dispose", fn);
       auto doneBB = BasicBlock::Create(j.ctx_, "vm.for.disposed", fn);
       b.CreateCondBr(b.CreateICmpNE(
@@ -540,7 +543,8 @@ struct Lowering {
                      doneBB, doBB);
       b.SetInsertPoint(doBB);
       b.CreateStore(j.make_long(b.getInt64(1)), slots[base + kForDisposed]);
-      j.emit_iter_dispose_if_active(slots[base + kForIter], "vm.for", swallow);
+      j.emit_iter_dispose_if_active(slots[base + kForIter], swallow, line,
+                                    col);
       b.CreateBr(doneBB);
       b.SetInsertPoint(doneBB);
     };
@@ -786,9 +790,8 @@ struct Lowering {
     for (size_t k = 0; k < c.cleanups.size(); ++k)
       pads[k] = BasicBlock::Create(j.ctx_, std::format("vm.scope.{}", k), fn);
     // The call site, with this call's per-argument positions when it has
-    // any — the JIT's emit_call_position_publish, whose packed array is
-    // rodata here too (every position is a compile-time constant). The
-    // executor's publish_call_site is the same decision.
+    // any; the packed array is rodata (every position is a compile-time
+    // constant). The executor's publish_call_site is the same decision.
     auto publish_site = [&](int64_t line, int64_t col,
                             const std::vector<int64_t>* argpos) {
       if (argpos) {
@@ -975,12 +978,18 @@ struct Lowering {
       // becomes a method call on itself, and `C(args)` builds an instance
       // through the class object's borrowed `new` — the is_class gate keeps
       // a plain dict with a "new" key inert, so its TypeError is unchanged.
+      // The `__call__` comes back at +1 with the keyword-only guard already
+      // passed, and is called through call_held, which owns that count for
+      // the call: its own slot or a trait's table may let it go meanwhile.
       auto* callee0 = calleeV;
       b.SetInsertPoint(probeBB);
       auto callM = j.emit_value_call(
-          j.module_->getOrInsertFunction(rt::class_call_method, j.valueType_,
-                                         b.getInt8Ty(), i64Ty),
-          {tag, j.extract_data(callee0)}, "call.method");
+          j.module_->getOrInsertFunction(rt::class_call_method_checked,
+                                         j.valueType_, b.getInt8Ty(), i64Ty,
+                                         i64Ty, i64Ty, i64Ty),
+          {tag, j.extract_data(callee0), b.getInt64(argc), b.getInt64(line),
+           b.getInt64(col)},
+          "call.method");
       b.CreateCondBr(
           b.CreateICmpEQ(j.extract_tag(callM), b.getInt8(TAG_FUNC)),
           overloadBB, ctorBB);
@@ -1030,16 +1039,34 @@ struct Lowering {
       ovPhi->addIncoming(b.getInt1(false), fromBB);
       ovPhi->addIncoming(b.getInt1(true), overloadEndBB);
       ovPhi->addIncoming(b.getInt1(true), ctorEndBB);
+      // The `__call__` arm alone holds its callee at +1.
+      auto* heldPhi = b.CreatePHI(b.getInt1Ty(), 3, "call.held");
+      heldPhi->addIncoming(b.getInt1(false), fromBB);
+      heldPhi->addIncoming(b.getInt1(true), overloadEndBB);
+      heldPhi->addIncoming(b.getInt1(false), ctorEndBB);
       auto clsPtr = b.CreateIntToPtr(j.extract_data(calleeV), ptrTy);
       auto fnFieldPtr = b.CreateStructGEP(j.closureType_, clsPtr, 1, "fn.ptr");
-      auto fnPtr = b.CreateLoad(ptrTy, fnFieldPtr, "fn");
+      auto fnPtr = b.CreateSelect(
+          heldPhi,
+          j.module_->getOrInsertFunction(rt::call_held, jit_fn_type(b, ptrTy))
+              .getCallee(),
+          b.CreateLoad(ptrTy, fnFieldPtr, "fn"), "fn.entry");
       // A keyword-only parameter cannot be filled positionally, and the
       // callee is only known here — the JIT's own guard, at the same point
       // in its call. check_pos_count_cls throws only for a closure whose
       // meta puts the keyword-only run within this site's count, so that is
       // tested here and the call made only then; no count reaches past a
-      // run that does not exist, nor any run at all when there is none.
-      if (argc > 0) j.emit_pos_count_check(clsPtr, argc, line, col);
+      // run that does not exist, nor any run at all when there is none. The
+      // held arm passed it in the probe, before it took its count.
+      if (argc > 0) {
+        auto checkBB = BasicBlock::Create(j.ctx_, "call.kwonly", fn);
+        auto checkedBB = BasicBlock::Create(j.ctx_, "call.kwonly.ok", fn);
+        b.CreateCondBr(heldPhi, checkedBB, checkBB);
+        b.SetInsertPoint(checkBB);
+        j.emit_pos_count_check(clsPtr, argc, line, col);
+        b.CreateBr(checkedBB);
+        b.SetInsertPoint(checkedBB);
+      }
       // On the probe arms the called value becomes the receiver: mint the +1
       // its frame consumes, and release and nil the receiver this call
       // started with — nothing else takes it now, and a slot left holding
@@ -4203,6 +4230,10 @@ struct Lowering {
           IRBuilder<> eb(&fn->getEntryBlock(), fn->getEntryBlock().begin());
           auto* calleeSlot = eb.CreateAlloca(j.valueType_, nullptr, "kw.callee");
           auto* selfSlot = eb.CreateAlloca(j.valueType_, nullptr, "kw.self");
+          // Set on the `__call__` arm, whose callee comes back at +1 and is
+          // called through the entry that owns that count for the call.
+          auto* heldSlot = eb.CreateAlloca(b.getInt1Ty(), nullptr, "kw.held");
+          b.CreateStore(b.getInt1(false), heldSlot);
           b.CreateStore(callee, calleeSlot);
           b.CreateStore(kc.has_receiver ? load_slot(in.c)
                                         : j.make_value(b.getInt8(TAG_NO_SELF),
@@ -4227,6 +4258,7 @@ struct Lowering {
                 b.CreateICmpEQ(j.extract_tag(callM), b.getInt8(TAG_FUNC)),
                 ovBB, ctorBB);
             b.SetInsertPoint(ovBB);
+            b.CreateStore(b.getInt1(true), heldSlot);
             j.emit_value_retain(callee);
             if (kc.has_receiver) {
               j.emit_value_release(load_slot(in.c));
@@ -4304,12 +4336,21 @@ struct Lowering {
             return b.CreateConstGEP2_64(ArrayType::get(j.valueType_, n_vals),
                                         vslab, 0, static_cast<uint64_t>(at));
           };
+          auto* kwTy = FunctionType::get(
+              j.valueType_,
+              {ptrTy, b.getInt8Ty(), i64Ty, i64Ty, ptrTy, i64Ty, ptrTy, ptrTy,
+               i64Ty, ptrTy, i64Ty, i64Ty},
+              false);
+          auto* kwEntry = b.CreateSelect(
+              b.CreateLoad(b.getInt1Ty(), heldSlot, "kw.held.v"),
+              j.module_->getOrInsertFunction(rt::call_with_kwargs_held, kwTy)
+                  .getCallee(),
+              j.module_->getOrInsertFunction(rt::call_with_kwargs, kwTy)
+                  .getCallee(),
+              "kw.entry");
           b.CreateStore(
               j.emit_value_call(
-                  j.module_->getOrInsertFunction(
-                      rt::call_with_kwargs, j.valueType_, ptrTy,
-                      b.getInt8Ty(), i64Ty, i64Ty, ptrTy, i64Ty, ptrTy, ptrTy,
-                      i64Ty, ptrTy, i64Ty, i64Ty),
+                  llvm::FunctionCallee(kwTy, kwEntry),
                   {b.CreateIntToPtr(j.extract_data(
                                         b.CreateLoad(j.valueType_, calleeSlot)),
                                     ptrTy),
@@ -5009,9 +5050,11 @@ struct Lowering {
           j.emit_for_advance_shared(cur, advSharedBB, bodyBB, exitBB);
           break;
         }
-        case Op::ForDispose:
-          emit_for_dispose(in.a, in.d != 0);
+        case Op::ForDispose: {
+          auto [line, col] = chunk_pos_at(c, i);
+          emit_for_dispose(in.a, in.d != 0, line, col);
           break;
+        }
         case Op::ForPrep: {
           auto [line, col] = chunk_pos_at(c, i);
           j.emit_range_step_check(j.extract_data(load_slot(in.a + 2)), line,
@@ -5340,7 +5383,8 @@ struct Lowering {
         // A for-in's own step closes its iterator here, swallowing a
         // throwing dispose — an exception is already in flight (docs §18.5).
         if (cu.dispose_base >= 0 && s == cu.dispose_base + kForIter)
-          emit_for_dispose(cu.dispose_base, /*swallow=*/true);
+          emit_for_dispose(cu.dispose_base, /*swallow=*/true, /*line=*/0,
+                           /*col=*/0);
         release_slot_ir(s, chunk_slot_is_cell(c, s, cu.cells_before));
       }
       if (hush) suppress(0);

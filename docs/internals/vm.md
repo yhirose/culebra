@@ -768,6 +768,30 @@ copied as before, and the test is `slot_cell_` rather than `is_cell`.
 cell still holds the same value when the call is over, the throw path
 included.
 
+The runtime is held to the same rule wherever it calls a Function the
+caller did not hand it a count of: a method it looks up by name or by
+protocol (an operator's `__add__`, `__str__`, `hash`, a callable
+instance's `__call__`, a `for`'s `iter`, `next` and `dispose`), and a
+callback it finds in a user's container. Only a class meta passes both
+tests: its methods are fixed once declared, and an instance keeps its
+meta alive. An instance's own slot fails the first (the method can
+assign it), and so does a trait's default table (a trait declared again
+releases the bodies it held). So a lookup answers a `JitHeldMethod`,
+which lends a class meta's method and takes a count of anything else for
+as long as the runtime calls it — CPython's rule for a borrowed
+reference. A `for` keeps the `has_next` and `next` it opened with for the
+whole walk (in the cursor's two Function slots, which the run's ladder
+releases), so a `next` that replaces itself is called again on the next
+step and dies when the walk ends; the lazy chains keep theirs in their
+capture cells the same way. A probed `__call__` comes back at `+1` and
+compiled code calls it through `culebra_runtime_call_held`, which owns
+that count for the call; the executor holds it in C++ and calls it
+unrooted, so on wasm no collection runs beneath it. A class's own
+`__call__` is lent and stays a rooted call. A raw
+`JitClosure*` cast is counted per file by
+`tools/checks/check_borrowed_closure_door.sh`, so a new borrow is looked
+at before it lands.
+
 ### 5.3.1 A flat `@value` chain is compiled, not called
 
 Naming a callee is the ceiling of §5.3's resolution — the code is static,
