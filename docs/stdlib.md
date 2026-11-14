@@ -8446,7 +8446,9 @@ for hit in idx.search("quick -dog") {
 ```
 
 An index is a live handle holding its documents in memory. It is closed at
-scope exit like a file, or explicitly with `close()`.
+scope exit like a file, or explicitly with `close()`. It prints as
+`[Search.Index]` (`[closed Search.Index]` after `close()`), has no fields, and
+is not Sendable.
 
 ### Keys are yours
 

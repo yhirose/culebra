@@ -2363,9 +2363,9 @@ struct JitHttpSink {
 // body producer, a part's stream, a response's stream): what it was read from
 // can let it go meanwhile, so it takes its own +1, pinned because the
 // collector does not count it, both dropped with the last copy of the handle.
-// Only for a span that always ends: a pin is a root, so a native object kept
-// for a value's life keeps what it calls on that value instead, where the
-// collector sees the edge (Search's analyzer hooks, make_analyzer).
+// Only for a span that always ends: a pin is a root, so a native object that
+// keeps a value for its own life keeps it in its handle instead (JitHandle),
+// where the collector sees the edge (JitSearchIndex).
 inline std::shared_ptr<JitClosure> _jit_keep_closure(JitValue fn) {
   auto* cls = reinterpret_cast<JitClosure*>(fn.data);
   culebra_runtime_value_retain(TAG_FUNC, fn.data);
@@ -11004,18 +11004,6 @@ inline JitValue hits(const std::vector<culebra::search::Hit>& list) {
   return _ns_adapt::v_array(arr);
 }
 
-// A culebra analyzer object as the value-neutral hooks search.h asks for,
-// with what the hooks reach raw: the closures (called through
-// _culebra_invoke1) and a wrapped splitter's handle. The index handle keeps
-// `keep` for as long as the index lives (_culebra_search_build_index_handle):
-// the program can assign the analyzer's fields meanwhile, and an edge the
-// collector traces, unlike a pin, leaves a hook that reaches its own index
-// garbage along with it. A segmenter is not in it: the index copies its
-// model.
-struct BuiltAnalyzer {
-  culebra::search::Analyzer analyzer;
-  JitOwnedVal keep;
-};
 // How an analyzer is described in a saved index. One place, so that an
 // omitted analyzer and an empty one cannot describe themselves differently
 // (they are the same analyzer).
@@ -11025,14 +11013,17 @@ inline std::string analyzer_shape(std::string_view splitter,
                          custom_normalizer ? "closure" : "builtin", filters);
 }
 
-inline BuiltAnalyzer make_analyzer(JitValue v) {
-  BuiltAnalyzer out{
-      {}, JitOwnedVal{_ns_adapt::v_array(culebra_runtime_array_new())}};
-  auto& analyzer = out.analyzer;
-  auto* kept = reinterpret_cast<JitArray*>(out.keep.borrow().data);
-  auto keep = [kept](JitValue x) {
+// A culebra analyzer object as the value-neutral hooks search.h asks for.
+// What the hooks reach raw -- the closures (called through _culebra_invoke1)
+// and a wrapped splitter's handle -- goes into `kept`, the index handle's
+// (JitSearchIndex): the program can assign the analyzer's fields meanwhile.
+// A segmenter is not in it: the index copies its model.
+inline culebra::search::Analyzer make_analyzer(JitValue v,
+                                               std::vector<JitValue>& kept) {
+  culebra::search::Analyzer analyzer;
+  auto keep = [&kept](JitValue x) {
     culebra_runtime_value_retain(x.tag, x.data);
-    culebra_runtime_array_push(kept, x.tag, x.data);
+    kept.push_back(x);
   };
   // A Function the index calls raw, kept.
   auto keep_fn = [&](JitValue fn) {
@@ -11041,7 +11032,7 @@ inline BuiltAnalyzer make_analyzer(JitValue v) {
   };
   if (v.tag == TAG_NIL) {
     analyzer.shape = analyzer_shape("builtin", false, 0);
-    return out;
+    return analyzer;
   }
   if (v.tag != TAG_OBJECT) {
     throw culebra::CulebraError(
@@ -11199,15 +11190,40 @@ inline BuiltAnalyzer make_analyzer(JitValue v) {
 
   analyzer.shape = analyzer_shape(splitter_shape, analyzer.normalizer != nullptr,
                                   analyzer.filters.size());
-  return out;
+  return analyzer;
 }
 
 }  // namespace _search_adapt
 
+// A Search index handle's C++ half: the index's id and what its analyzer's
+// hooks reach raw (make_analyzer), each an edge of the handle. The handle
+// owns the index: closed by close/drop, or by this destructor when no drop
+// ran (program exit), so the index never outlives the values its hooks call.
+// close leaves `kept` alone -- a hook may be running when it is called.
+struct JitSearchIndex final : JitHandle {
+  int64_t id = -1;  // none yet while the analyzer is built
+  bool open = true;
+  std::vector<JitValue> kept;
+  JitSearchIndex() : JitHandle(Kind::SearchIndex) {}
+  ~JitSearchIndex() override { culebra::search::index_drop(id); }
+  std::string show() const override {
+    return open ? "[Search.Index]" : "[closed Search.Index]";
+  }
+  bool same(const JitHandle&) const override { return false; }
+  void each_value(Visit visit, void* ctx) override {
+    for (auto& v : kept) visit(ctx, v);
+  }
+};
+
+inline JitSearchIndex* _jit_self_search_index(JitValue self) {
+  return _jit_self_handle<JitSearchIndex>(self, JitHandle::Kind::SearchIndex,
+                                          "Search index");
+}
+
 inline void _jit_search_add(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                             int64_t n, JitValue* args) {
   JitValue self{self_tag, self_data};
-  int64_t ix = _search_adapt::id(self);
+  int64_t ix = _jit_self_search_index(self)->id;
   // Strings only, deliberately: the key comes back out of `search`, so
   // accepting a Long and answering with "1" would change its type between the
   // two calls (Elasticsearch's `_id` is a string for the same reason).
@@ -11220,7 +11236,7 @@ inline void _jit_search_add(JitValue* __ret, JitClosure*, int8_t self_tag, int64
 inline void _jit_search_remove(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                                int64_t n, JitValue* args) {
   JitValue self{self_tag, self_data};
-  int64_t ix = _search_adapt::id(self);
+  int64_t ix = _jit_self_search_index(self)->id;
   auto key = _jit_handle_req_string(n, args, 0, "key");
   culebra::search::index_remove(ix, key);
   { *__ret = {TAG_NIL, 0}; return; }
@@ -11229,7 +11245,7 @@ inline void _jit_search_remove(JitValue* __ret, JitClosure*, int8_t self_tag, in
 inline void _jit_search_search(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                                int64_t n, JitValue* args) {
   JitValue self{self_tag, self_data};
-  int64_t ix = _search_adapt::id(self);
+  int64_t ix = _jit_self_search_index(self)->id;
   auto query = _jit_handle_req_string(n, args, 0, "query");
   int64_t limit = 10;
   if (_jit_file_arg_present(n, args, 1)) {
@@ -11251,23 +11267,20 @@ inline void _jit_search_search(JitValue* __ret, JitClosure*, int8_t self_tag, in
 inline void _jit_search_save(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                              int64_t n, JitValue* args) {
   JitValue self{self_tag, self_data};
-  int64_t ix = _search_adapt::id(self);
+  int64_t ix = _jit_self_search_index(self)->id;
   auto path = _jit_handle_req_string(n, args, 0, "path");
   culebra::search::index_save(ix, path);
   { *__ret = {TAG_NIL, 0}; return; }
 }
 
+// close and drop: the index goes, its handle's `kept` stays until the handle
+// does (see JitSearchIndex).
 inline void _jit_search_close(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                               int64_t, JitValue*) {
   JitValue self{self_tag, self_data};
-  culebra::search::index_drop(_search_adapt::id(self));
-  { *__ret = {TAG_NIL, 0}; return; }
-}
-
-inline void _jit_search_drop(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
-                                             int64_t, JitValue*) {
-  JitValue self{self_tag, self_data};
-  culebra::search::index_drop(_search_adapt::id(self));
+  auto* ix = _jit_self_search_index(self);
+  culebra::search::index_drop(ix->id);
+  ix->open = false;
   { *__ret = {TAG_NIL, 0}; return; }
 }
 
@@ -11307,35 +11320,38 @@ inline JitValue _ns_search_segmenter(JitValue* a, int64_t) {
   return {TAG_OBJECT, reinterpret_cast<int64_t>(h)};
 }
 
-inline JitValue _culebra_search_build_index_handle(int64_t id,
-                                                  JitOwnedVal keep) {
-  auto* h = culebra_runtime_object_new();
-  h->set_or_append("_id", JitValue{TAG_LONG, id}, false);
-  // What the index's hooks reach raw (make_analyzer): the native side holds
-  // them in std::function captures, which the collector cannot scan, so they
-  // live as long as the handle, through this slot.
-  _search_adapt::set_field(h, "_keep", keep.consume());
-  // A live index is not Sendable: its results alias it, and its registry is
-  // per-thread, so it must not cross to an isolate (jit_serialize checks this).
-  h->set_or_append("__nonsendable__", JitValue{TAG_BOOL, 1}, false);
-  static const JitParamMeta* add_meta =
-      _jit_make_handle_meta({"key", "text"}, {false, false});
-  static const JitParamMeta* key_meta =
-      _jit_make_handle_meta({"key"}, {false});
-  static const JitParamMeta* search_meta =
-      _jit_make_handle_meta({"query", "limit"}, {false, true});
-  static const JitParamMeta* path_meta =
-      _jit_make_handle_meta({"path"}, {false});
-  _jit_handle_bind_method(h, "add", _jit_native<_jit_search_add>, 2, add_meta);
-  _jit_handle_bind_method(h, "remove", _jit_native<_jit_search_remove>, 1, key_meta);
-  _jit_handle_bind_method(h, "search", _jit_native<_jit_search_search>, 1, search_meta);
-  _jit_handle_bind_method(h, "save", _jit_native<_jit_search_save>, 1, path_meta);
-  _jit_handle_bind_method(h, "close", _jit_native<_jit_search_close>, 0);
-  _jit_handle_bind_method(h, "drop", _jit_native<_jit_search_drop>, 0);
+// The meta every Search index handle points its `proto` at. Borrowed.
+inline JitObject* _jit_search_index_meta() {
+  return _jit_pinned_meta(culebra::kSlotSearchIndexMeta, 0, [] {
+    auto* meta = culebra_runtime_object_new();
+    static const JitParamMeta* add_meta =
+        _jit_make_handle_meta({"key", "text"}, {false, false});
+    static const JitParamMeta* key_meta =
+        _jit_make_handle_meta({"key"}, {false});
+    static const JitParamMeta* search_meta =
+        _jit_make_handle_meta({"query", "limit"}, {false, true});
+    static const JitParamMeta* path_meta =
+        _jit_make_handle_meta({"path"}, {false});
+    _jit_handle_bind_method(meta, "add", _jit_native<_jit_search_add>, 2, add_meta);
+    _jit_handle_bind_method(meta, "remove", _jit_native<_jit_search_remove>, 1, key_meta);
+    _jit_handle_bind_method(meta, "search", _jit_native<_jit_search_search>, 1,
+                            search_meta);
+    _jit_handle_bind_method(meta, "save", _jit_native<_jit_search_save>, 1, path_meta);
+    _jit_handle_bind_method(meta, "close", _jit_native<_jit_search_close>, 0);
+    _jit_handle_bind_method(meta, "drop", _jit_native<_jit_search_close>, 0);
+    return meta;
+  });
+}
+
+// An index handle with no index yet, owned by the caller: what the analyzer
+// keeps is gathered on it as it is built, so a throw on the way gives all of
+// it back with the handle.
+inline JitOwnedVal _jit_search_index_handle() {
+  JitOwnedVal v(_jit_make_handle(new JitSearchIndex(), _jit_search_index_meta()));
   // Through the bind chokepoint so the handle also registers on the owned
-  // stack — a cycle-held index would otherwise miss its scope-exit drop.
-  _jit_owned_bind_drop(h);
-  return {TAG_OBJECT, reinterpret_cast<int64_t>(h)};
+  // stack -- a cycle-held index would otherwise miss its scope-exit drop.
+  _jit_owned_bind_drop(reinterpret_cast<JitObject*>(v.borrow().data));
+  return v;
 }
 
 inline JitValue _ns_search_index_new(JitValue* a, int64_t n) {
@@ -11343,9 +11359,11 @@ inline JitValue _ns_search_index_new(JitValue* a, int64_t n) {
   // arguments that were passed -- an omitted optional is not a Nil slot to
   // read, it is not there.
   JitValue analyzer = n > 0 ? a[0] : JitValue{TAG_NIL, 0};
-  auto built = _search_adapt::make_analyzer(analyzer);
-  int64_t id = culebra::search::index_new(std::move(built.analyzer));
-  return _culebra_search_build_index_handle(id, std::move(built.keep));
+  JitOwnedVal h = _jit_search_index_handle();
+  auto* ix = _jit_self_search_index(h.borrow());
+  ix->id = culebra::search::index_new(
+      _search_adapt::make_analyzer(analyzer, ix->kept));
+  return h.consume();
 }
 
 inline JitValue _ns_search_index_load(JitValue* a, int64_t n) {
@@ -11354,10 +11372,12 @@ inline JitValue _ns_search_index_load(JitValue* a, int64_t n) {
   // catch it (see docs/stdlib.md).
   JitValue analyzer = n > 1 ? a[1] : JitValue{TAG_NIL, 0};
   bool readonly = n > 2 && a[2].tag == TAG_BOOL && a[2].data != 0;
-  auto built = _search_adapt::make_analyzer(analyzer);
-  int64_t id = culebra::search::index_load(_ns_adapt::require_sv(a[0], "path"),
-                                           std::move(built.analyzer), readonly);
-  return _culebra_search_build_index_handle(id, std::move(built.keep));
+  JitOwnedVal h = _jit_search_index_handle();
+  auto* ix = _jit_self_search_index(h.borrow());
+  auto built = _search_adapt::make_analyzer(analyzer, ix->kept);
+  ix->id = culebra::search::index_load(_ns_adapt::require_sv(a[0], "path"),
+                                       std::move(built), readonly);
+  return h.consume();
 }
 
 // NsParamMeta — the per-parameter view for stdlib methods that accept

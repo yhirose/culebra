@@ -341,6 +341,35 @@ let corpus_growth_seen = corpus_growth(20)
 assert_eq(corpus_growth_seen, 0)
 assert_eq(corpora_dropped, 21)
 
+# What the index keeps is in its handle, out of the program's reach: there is
+# nothing to read or empty under the hooks it calls.
+assert_eq(index.keys(), [])
+assert_eq("{index}", "[Search.Index]")
+let closed_index = Search.Index.new()
+closed_index.close()
+assert_eq("{closed_index}", "[closed Search.Index]")
+
+# An analyzer refused part way gives back the hooks it had already kept.
+fn refused_round() {
+  try {
+    Search.Index.new(analyzer: {normalizer: suffixed(1), filters: [suffixed(2), 3]})
+  } catch e {
+    e.kind
+  }
+}
+fn refused_growth(rounds) {
+  refused_round()
+  GC.stat()
+  let before = GC.stat().rc_objects
+  for _ in 0..rounds {
+    refused_round()
+  }
+  GC.stat()
+  GC.stat().rc_objects - before
+}
+assert_eq(refused_round(), "TypeError")
+assert_eq(refused_growth(20), 0)
+
 # A multipart part's `stream` that replaces itself on its first call.
 let parts_srv = Http.server()
 parts_srv.post("/echo", |req| {body: "ok"})
