@@ -3997,6 +3997,45 @@ defaultは適合クラスが継承したmethodなので、クラス自身のmeth
 methodの`size`や`keys`など、合成された`parameters()`、duck typing
 のiterator method)にはdefaultが勝ちます。
 
+runtimeが名前でmethodを呼ぶところでは、クラス自身のmethodと同じように
+defaultにも届きます。演算子のmethod（`__add__`、`__mul__`、`__neg__`、
+`__lt__`、`__eq__`、`__index__`、`__setindex__`、`__call__`など）、値を
+表示するときの`__str__`、keyにしたときの`hash`と`eq`、順序を付けるときの
+`cmp`、`for`で回すときの`iter`です:
+
+    trait Scaled {
+      k() -> Float
+      __mul__(x) { self.k() * x }
+      __str__() { "x{self.k()}" }
+    }
+    class Twice {
+      new() {}
+      k() { 2.0 }
+    }
+    Twice() * 3.0                    # → 6.0
+    "{Twice()}"                      # → "x2.0"
+
+例外は、値が何者か、いつ用済みになるかを決める名前（`next`、`has_next`、
+`dispose`、`drop`）です。これらの名前のdefaultも名前で呼べるふつうの
+method（`x.next()`）ですが、runtimeがクラスのためにそれを呼ぶことは
+ありません。クラスがiteratorになるのも、`dispose`や`drop`が走るのも、
+クラス自身がそのmethodを定義したときだけです。そのため、`next()`が別の
+意味を持つtrait（上の`Counter`）に適合しても、クラスはiteratorになりません。
+
+同じ問いに答える名前は1つに数えます。`__eq__`、`eq`、`hash`（等しさと、
+それと食い違ってはならないhash）と、`__lt__`、`__le__`、`cmp`（順序）です。
+組のどれかの名前のmethodを持つクラス（自分で書いたものも、`@derive`や
+`@value`が供給したものも）はその問いに自分で答えるので、runtimeはその組を
+どれもdefaultから取りません（その名前そのもののデータの欄は、ほかのmethodと
+同じく、そのdefault1つだけを隠します）。
+自分の`eq`を持つクラスは、traitが`__eq__`を供給していてもそれで比べ、自分の
+`hash`がなければkeyになりません。名前で呼べば、defaultはその名前のmethodの
+ままです（`x.__eq__(y)`）。
+
+methodを1つも要求しないtraitにはすべてのクラスが適合するので、その
+defaultは演算子も含めてプログラム中のすべてのクラスのインスタンスに届き、
+runtimeが自分のクラスで作る値（範囲、ジェネレータ）にも届きます。
+
 2つのtraitがそれぞれ同名のdefaultを持つこともある。両方に適合し、その名前を
 自分では定義していないクラスには継承すべきdefaultが1つに決まらないので、
 それに触れると`DispatchError`（`ambiguous default`）になります。クラスにその
@@ -4015,6 +4054,11 @@ methodを定義すれば解決します:
       right_req() { 2 }
     }
     Both().side()     # DispatchError: ambiguous default `side`: ...
+
+このエラーは、その名前を求めた所（演算子、呼び出し、`for`の頭、読み出し）で
+起きます。あるかどうかを聞くだけなら何も起きません。2つのtraitが`__call__`を
+供給するインスタンスは、`is`、型のパターン、引数の型にとって`Function`で、
+呼んだ所でエラーになります。
 
 trait内でmethod名は1度だけ宣言します。同名を2つ書くと`SyntaxError`です。
 contractもdefaultの本体も名前をkeyに持つので、trait側にはそれらを
@@ -4037,7 +4081,7 @@ runtimeはpreambleとして8つの基本traitを同梱しており、`import`な
 | `Comparable` | `cmp(other) -> Long` | `lt`, `le`, `gt`, `ge` |
 | `StringLike` | `to_string_view() -> StringView` | — |
 | `Hashable` | `hash() -> Long` | — |
-| `Iterator` | `has_next() -> Bool`, `next() -> Any` | — |
+| `Iterator` | `has_next() -> Bool`, `next() -> Any` | `dispose`（何もしない） |
 | `Iterable` | `iter() -> Iterator` | — |
 | `Dir` | `read(path) -> String`, `list_dir(path) -> Array`, `exists(path) -> Bool`, `is_file(path) -> Bool`, `is_dir(path) -> Bool` | `files`, `glob`, `size`, `copy_to` |
 
@@ -4304,11 +4348,11 @@ fieldの変更に追従します。詳細:
 
 * `impl Foo for Bar` blockには未対応で、構造的な適合のみです。
   (Phase 4+ で明示宣言を再検討します)
-* **演算子はtrait defaultを呼びません**: `<` / `<=` / `>` / `>=`は
-  `__lt__` / `__le__`、次に`cmp`を、`==`は`__eq__`、次に宣言された
-  `eq`を使います（*traitメソッドへのフォールバック*）。Comparableの
-  default `lt` / `le`は、classが自分で上書きしたものも含めて、
-  `x.lt(y)`の形で呼んだときだけ動きます。
+* **Comparableの`lt` / `le` / `gt` / `ge`は演算子ではありません**:
+  `<` / `<=` / `>` / `>=`は`__lt__` / `__le__`、次に`cmp`を（クラス
+  自身のものかdefault）、`==`は`__eq__`、次に宣言された`eq`を使います
+  （*traitメソッドへのフォールバック*）。Comparableのdefault `lt` / `le`は、
+  classが自分で上書きしたものも含めて、`x.lt(y)`の形で呼んだときだけ動きます。
 * **自己再帰するtrait defaultはuserの責任です**: `trait X { foo() {
   self.foo() } }`でconform classが`foo`をoverrideしないと
   stack overflowになります。depth guardは未実装です。

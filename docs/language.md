@@ -4248,6 +4248,49 @@ outranks it, and it outranks everything the runtime supplies for an
 object — the `Object` built-in methods (`size`, `keys`, ...), the
 synthesized `parameters()`, and the duck-typed iterator method set.
 
+The runtime reaches a default wherever it calls a method by its name,
+as it reaches the class's own: an operator's method (`__add__`,
+`__mul__`, `__neg__`, `__lt__`, `__eq__`, `__index__`, `__setindex__`,
+`__call__`, ...), `__str__` when the value is shown, `hash` and `eq`
+when it is a key, `cmp` when it is ordered, and `iter` when a `for`
+walks it:
+
+    trait Scaled {
+      k() -> Float
+      __mul__(x) { self.k() * x }
+      __str__() { "x{self.k()}" }
+    }
+    class Twice {
+      new() {}
+      k() { 2.0 }
+    }
+    Twice() * 3.0                    # → 6.0
+    "{Twice()}"                      # → "x2.0"
+
+The names that say what a value is or when it is done with — `next`,
+`has_next`, `dispose` and `drop` — are the exception: a default of one
+of those names is a method like any other, called by name (`x.next()`),
+but the runtime never calls it for the class. A class is an iterator,
+or runs a `dispose` or a `drop`, only by defining that method itself,
+so a trait whose `next()` means something else (the `Counter` above)
+does not make its classes iterators.
+
+Names that answer one question count as one: `__eq__`, `eq` and `hash`
+(equality, and the hash that must agree with it), and `__lt__`, `__le__`
+and `cmp` (order). A class that has a method of any name of a group,
+written or supplied by `@derive` or `@value`, answers that question
+itself, so the runtime takes none of the group from a default (a data
+field of the name itself shadows that one default, as it does any
+method): a class with its own `eq`
+compares with it even where a trait supplies `__eq__`, and with no
+`hash` of its own it is no key. Called by name, a default is still the
+method of that name (`x.__eq__(y)`).
+
+A trait that requires no method is one every class conforms to, so its
+defaults reach every class instance in the program, operators included,
+and every value the runtime makes of a class of its own too (a range, a
+generator).
+
 Two traits may each supply a default of the same name. A class that
 conforms to both and does not define that name itself has no one
 default to inherit, so reaching it raises `DispatchError` (`ambiguous
@@ -4266,6 +4309,12 @@ default`), and defining the method on the class settles it:
       right_req() { 2 }
     }
     Both().side()     # DispatchError: ambiguous default `side`: ...
+
+The error is raised where the name is asked for: at the operator, the
+call, the `for` head or the read. Only asking whether there is one
+raises nothing: an instance two traits supply a `__call__` to is a
+`Function` to `is`, a type pattern and a parameter type, and calling it
+raises.
 
 A trait declares each method name once. Two same-name methods are a
 `SyntaxError`: the contract and the default bodies are keyed by name,
@@ -4288,7 +4337,7 @@ are visible without `import`:
 | `Comparable` | `cmp(other) -> Long` | `lt`, `le`, `gt`, `ge` |
 | `StringLike` | `to_string_view() -> StringView` | — |
 | `Hashable` | `hash() -> Long` | — |
-| `Iterator` | `has_next() -> Bool`, `next() -> Any` | — |
+| `Iterator` | `has_next() -> Bool`, `next() -> Any` | `dispose` (does nothing) |
 | `Iterable` | `iter() -> Iterator` | — |
 | `Dir` | `read(path) -> String`, `list_dir(path) -> Array`, `exists(path) -> Bool`, `is_file(path) -> Bool`, `is_dir(path) -> Bool` | `files`, `glob`, `size`, `copy_to` |
 
@@ -4511,11 +4560,11 @@ tag), so they stay correct as fields change. Details:
 
 * `impl Foo for Bar` block is unsupported — conformance is purely
   structural. (Phase 4+: revisit if explicit conformance is wanted.)
-* **Operators do not call trait defaults**: `<` / `<=` / `>` / `>=`
-  reach `__lt__` / `__le__` and then `cmp`, and `==` reaches `__eq__`
-  and then a stated `eq` (*Trait-method fallback*). Comparable's
-  default `lt` / `le` — and a class's own override of them — fire only
-  when called as `x.lt(y)`.
+* **Comparable's `lt` / `le` / `gt` / `ge` are not operators**: `<` /
+  `<=` / `>` / `>=` reach `__lt__` / `__le__` and then `cmp` (a class's
+  own or a default), and `==` reaches `__eq__` and then a stated `eq`
+  (*Trait-method fallback*). Comparable's default `lt` / `le` — and a
+  class's own override of them — fire only when called as `x.lt(y)`.
 * **Self-recursive trait defaults are user responsibility**:
   `trait X { foo() { self.foo() } }` will stack-overflow if a
   conforming class doesn't override `foo`. No depth guard is

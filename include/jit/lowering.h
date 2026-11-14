@@ -4249,11 +4249,15 @@ struct Lowering {
             auto ovBB = BasicBlock::Create(j.ctx_, "kw.overload", fn);
             auto ctorBB = BasicBlock::Create(j.ctx_, "kw.ctor", fn);
             auto errBB = BasicBlock::Create(j.ctx_, "kw.err", fn);
+            // No positional count to guard (argc 0): the probe at the call's
+            // position, where an ambiguous `__call__` raises.
             auto callM = j.emit_value_call(
-                j.module_->getOrInsertFunction(rt::class_call_method,
+                j.module_->getOrInsertFunction(rt::class_call_method_checked,
                                                j.valueType_, b.getInt8Ty(),
-                                               i64Ty),
-                {j.extract_tag(callee), j.extract_data(callee)}, "kw.method");
+                                               i64Ty, i64Ty, i64Ty, i64Ty),
+                {j.extract_tag(callee), j.extract_data(callee), b.getInt64(0),
+                 b.getInt64(line), b.getInt64(col)},
+                "kw.method");
             b.CreateCondBr(
                 b.CreateICmpEQ(j.extract_tag(callM), b.getInt8(TAG_FUNC)),
                 ovBB, ctorBB);

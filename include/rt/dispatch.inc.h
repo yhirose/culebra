@@ -596,15 +596,20 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_check_pos_count_cls(
       line, col);
 }
 
-// culebra_runtime_class_call_method (rt_fixed.inc.h) for a positional call
-// of `argc` arguments, with the keyword-only guard the call makes before it
-// hands anything over: a guard that throws strands no +1 (the executor's
-// dynamic_callee, in one call).
+// `obj(args)` at `line`:`col`: the instance's `__call__`
+// (_culebra_call_operator) as a TAG_FUNC at +1, or Nil. The +1 is the
+// caller's for the call's length: the instance's own slot or the trait's
+// default table can let the method go while it runs (vm.md §5.3). With the
+// keyword-only guard a call of `argc` positionals makes before it hands
+// anything over: a guard that throws strands no +1 (the executor's
+// dynamic_callee, in one call). A keyword call guards later (argc 0).
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue
 culebra_runtime_class_call_method_checked(int8_t tag, int64_t data,
                                           int64_t argc, int64_t line,
                                           int64_t col) {
-  JitOwnedVal m(culebra_runtime_class_call_method(tag, data));
+  JitOwnedVal m(_jit_at_pos(line, col, [&] {
+    return _culebra_call_operator(tag, data).take_value();
+  }));
   if (m.borrow().tag == TAG_FUNC && argc > 0)
     culebra_runtime_check_pos_count_cls(
         reinterpret_cast<JitClosure*>(m.borrow().data), argc, line, col);
@@ -657,12 +662,23 @@ struct _JitTraitDefaultTable {
       shipped;
   std::vector<bool> shipped_open;
   std::unordered_set<std::string> shipped_closed;
+  // As culebra_runtime_trait_defaults_reset: no special table may still
+  // hand out a default once it is released (a teardown `drop` can dispatch).
+  // A worker's shipped defaults go first, so such a dispatch installs none,
+  // and a release that registers again is drained by the next round.
   ~_JitTraitDefaultTable() {
-    for (auto& [_, methods] : entries)
-      for (auto& [__, cls] : methods)
-        if (cls)
-          _culebra_value_release_impl(TAG_FUNC,
-                                      reinterpret_cast<int64_t>(cls));
+    shipped.reset();
+    while (!entries.empty()) {
+      auto doomed = std::move(entries);
+      entries.clear();
+      culebra::trait_default_generation().fetch_add(1,
+                                                    std::memory_order_relaxed);
+      for (auto& [_, methods] : doomed)
+        for (auto& [__, cls] : methods)
+          if (cls)
+            _culebra_value_release_impl(TAG_FUNC,
+                                        reinterpret_cast<int64_t>(cls));
+    }
   }
 };
 inline _JitTraitDefaultTable& _jit_trait_default_table() {
@@ -679,14 +695,17 @@ _jit_trait_default_impls() {
 // instance's traits supplies (jit_install_shipped_default, conc/sendable.h,
 // which sets the hook when it ships the defaults); null when none does, or
 // when `found` (the trait of an installed one) already does — a shipped one
-// besides it is the same ambiguity it would be in the parent.
-inline JitClosure* (*_jit_shipped_default_hook)(JitObject*, const char*,
-                                                const std::string*) = nullptr;
-inline JitClosure* _jit_find_shipped_default(JitObject* obj, const char* key,
-                                             const std::string* found) {
-  return _jit_trait_default_table().shipped
-             ? _jit_shipped_default_hook(obj, key, found)
-             : nullptr;
+// besides it is the same ambiguity it would be in the parent
+// (_jit_trait_default_clash, through `ambiguous`).
+inline JitTraitDefault (*_jit_shipped_default_hook)(JitObject*, const char*,
+                                                    const std::string*,
+                                                    JitDefaultAsk) = nullptr;
+inline JitTraitDefault _jit_find_shipped_default(JitObject* obj,
+                                                 const char* key,
+                                                 const std::string* found,
+                                                 JitDefaultAsk ask) {
+  if (!_jit_trait_default_table().shipped) return {};
+  return _jit_shipped_default_hook(obj, key, found, ask);
 }
 
 // Runtime registration hook called from compile_trait_decl's emitted
@@ -708,6 +727,7 @@ culebra_runtime_register_trait_default(const char* trait_name,
   auto& slot = _jit_trait_default_impls()[trait_name][method_name];
   auto* displaced = slot;
   slot = closure;
+  culebra::trait_default_generation().fetch_add(1, std::memory_order_relaxed);
   if (displaced) {
     _culebra_value_release_impl(TAG_FUNC,
                                 reinterpret_cast<int64_t>(displaced));
@@ -728,6 +748,7 @@ culebra_runtime_trait_defaults_reset(const char* trait_name) {
   if (it == tbl.end()) return;
   auto doomed = std::move(it->second);
   it->second.clear();
+  culebra::trait_default_generation().fetch_add(1, std::memory_order_relaxed);
   for (auto& [_, cls] : doomed)
     if (cls)
       _culebra_value_release_impl(TAG_FUNC,

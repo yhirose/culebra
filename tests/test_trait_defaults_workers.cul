@@ -54,6 +54,15 @@ assert_eq(Isolate.spawn(fn () {
   [t.describe(), t.bigger_than(Tri('u', 2, 2)), t.neq(Tri('v', 6, 2))]
 }).join(), ['t: 6', true, false])
 
+# An operator reaches a default in a worker as it does here.
+trait Scaled {
+  area()
+  __mul__(k) {
+    self.area() * k
+  }
+}
+assert_eq(Isolate.spawn(fn (s) { s * 2 }, Sq('a', 3)).join(), 18)
+
 # Parallel.map: every worker of the pool has the defaults.
 let squares = [1, 2, 3, 4].map(|n| Sq('s', n))
 assert_eq(
@@ -237,5 +246,33 @@ class Tg {
 assert_eq(Isolate.spawn(fn (t) {
   [tag_of(1), t.tagged(), tag_of("s")]
 }, Tg(1)).join(), ['long', 'long', 'str'])
+
+# A worker rebuilds only the defaults it calls: one that only compares with
+# `==` neither rebuilds a `__str__` default nor copies the hundred values it
+# captures; one that shows does.
+fn declare_shows(tags) {
+  trait Shows {
+    shown() -> Long
+    __str__() {
+      "shows {tags.size()}"
+    }
+  }
+}
+declare_shows(iota(100).map(|i| {tag: i}))
+class Shown {
+  new() {}
+  shown() { 1 }
+}
+fn made_by(f) {
+  fn (a, b) {
+    let before = GC.stat().rc_objects
+    f(a, b)
+    GC.stat().rc_objects - before
+  }
+}
+let compared = Isolate.spawn(made_by(|a, b| a == b), Shown(), Shown()).join()
+let shown = Isolate.spawn(made_by(|a, b| "{a}"), Shown(), Shown()).join()
+assert_true(compared < 50)
+assert_true(shown >= 100)
 
 inspect('trait defaults reach workers')

@@ -11,7 +11,7 @@
 #   _protocol_member(obj, name)            include/rt/runtime.inc.h
 #   _has_protocol_member(obj, name)        — the same question, as a Bool
 #   culebra_runtime_is_iterator_shaped     — a `next` member, by name
-#   culebra_runtime_has_iter_method        — an `iter` member, by name
+#   culebra_runtime_has_iter_method        — an `iter` member or trait default
 #
 # A probe that asks for the key instead treats data as a protocol member. The
 # mild form is a wrong diagnostic (`for k, v in parsed` failing on an `iter`

@@ -35,6 +35,7 @@
 #include <unicodelib_encodings.h>
 
 #include <atomic>
+#include <bit>
 #include <cassert>
 #include <cctype>
 #include <charconv>

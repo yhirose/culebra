@@ -3168,7 +3168,8 @@ inline std::mt19937_64& random_engine() {
 // So a name's presence says nothing: the question every consumer asks is
 // "is a Function there?", and it is answered in one place — the runtime's
 // _protocol_member, with the two shape questions built on it
-// (is_iterator_shaped, has_iter_method). `has_next` once missed the binding
+// (is_iterator_shaped asks it; has_iter_method asks the special table, which
+// is filled through it). `has_next` once missed the binding
 // check and a broken one reached a raw closure cast in the JIT (a jump
 // through a Long payload); that cannot recur by omission now, because no
 // cast happens off a bare key lookup — check_protocol_member_door.sh fails
@@ -3394,6 +3395,15 @@ inline uint64_t& trait_generation() {
   return gen;
 }
 
+// Bumped on every trait registration and every default method registered or
+// dropped, in any Runtime: stamps the defaults a class's special table holds
+// (JitSpecialTable::defaults_gen). Atomic, as a table is checked against it
+// without trait_mutex().
+inline std::atomic<uint64_t>& trait_default_generation() {
+  static std::atomic<uint64_t> gen{1};
+  return gen;
+}
+
 // Merge a supertrait's methods into `def` (dedup by name, keeping
 // `def`'s own entries). The supertrait must already be registered —
 // declaration order guarantees this for `trait Ord: Eq`. Unknown
@@ -3418,6 +3428,7 @@ inline void register_trait(TraitDef def) {
   for (const auto& super : def.supertraits) merge_supertrait_into(def, super);
   trait_registry()[def.name] = std::move(def);
   ++trait_generation();
+  trait_default_generation().fetch_add(1, std::memory_order_relaxed);
 }
 
 inline const TraitDef* lookup_trait(std::string_view name) {

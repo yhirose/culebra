@@ -16245,7 +16245,9 @@ struct Exec {
                                const JitValue* recv = nullptr) {
     if (callee.tag == TAG_FUNC) return callee;
     auto tag = static_cast<int8_t>(callee.tag);
-    keep = _jit_class_call_method(tag, callee.data);
+    // At the call's position: an ambiguous `__call__` raises here.
+    keep = _jit_at_pos(line, col,
+                       [&] { return _culebra_call_operator(tag, callee.data); });
     JitValue target =
         keep ? JitValue{TAG_FUNC, reinterpret_cast<int64_t>(keep.get())}
              : culebra_runtime_class_new_method(tag, callee.data);

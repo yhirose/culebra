@@ -218,7 +218,11 @@
 # keeps: Compress.zip's Dir, a Search analyzer, a multipart stream; 0.15 s
 # under --vm, 2.8 s under --jit, 4.6 CPU s for the three gc-stress runs at
 # the first version).
-tests.cul 369
+# 370 since test_trait_default_operators.cul (a trait default stands in for an
+# operator, `__str__`, `[]`, `hash` and `eq`, `iter`, and never for `next`,
+# `dispose` or `drop`; 0.04 s under --vm, 2.4 s under --jit, 7 CPU s for the
+# three gc-stress runs).
+tests.cul 370
 
 # tests/isolate/*.cul — run on both engines, plus the over-cap modes.
 # 21 since test_xml_isolate.cul (an XML element keeps its methods across an

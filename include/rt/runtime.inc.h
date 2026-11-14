@@ -1480,15 +1480,26 @@ inline const char* _culebra_tag_name(int8_t tag) {
   return "Unknown";
 }
 
-// The `__call__` a class instance answers a call with, or null. The gate for
-// the structural-callable rule (Option A) the type check below, the callback
-// precheck and the adapter in _culebra_expect_callback all read, so one
-// answer serves them.
-inline const JitValue* _culebra_call_operator(int8_t fn_tag, int64_t fn_data) {
-  if (fn_tag != TAG_OBJECT) return nullptr;
-  auto* obj = reinterpret_cast<JitObject*>(fn_data);
-  auto* e = obj->proto() ? _find_property(obj, "__call__") : nullptr;
-  return e && e->value.tag == TAG_FUNC ? &e->value : nullptr;
+inline JitHeldMethod _lookup_special(int8_t tag, int64_t data, Special s);
+inline bool _has_special(int8_t tag, int64_t data, Special s);
+
+// The `__call__` a class instance answers a call with (its own, or a trait
+// default it inherits), or null: what the adapter in _culebra_expect_callback
+// and a call on an instance call. A plain dict holding a "__call__" key is
+// not callable.
+inline JitHeldMethod _culebra_call_operator(int8_t fn_tag, int64_t fn_data) {
+  if (fn_tag != TAG_OBJECT) return {};
+  if (!reinterpret_cast<JitObject*>(fn_data)->proto()) return {};
+  return _lookup_special(fn_tag, fn_data, Special::Call);
+}
+// Whether the value is callable that way: the structural-callable rule
+// (Option A) the type check below and the callback prechecks read. Asks
+// without calling, so a `__call__` two traits supply is callable here and
+// raises where it is called.
+inline bool _culebra_has_call_operator(int8_t fn_tag, int64_t fn_data) {
+  return fn_tag == TAG_OBJECT &&
+         reinterpret_cast<JitObject*>(fn_data)->proto() &&
+         _has_special(fn_tag, fn_data, Special::Call);
 }
 
 // Whether a value conforms to the registered trait `name` (false when no
@@ -1556,12 +1567,12 @@ inline bool _culebra_type_matches_single(int8_t tag, int64_t data,
                                           std::string_view expected) {
   if (expected == "Any") return true;
   // Function type `fn(...) -> R`: structural callable match.
-  // Params/return are documentation in the MVP, so
-  // a closure (TAG_FUNC) or a class instance with an own/proto `__call__`
+  // Params/return are documentation in the MVP, so a closure (TAG_FUNC) or
+  // a class instance with an own, class or trait-default `__call__`
   // satisfies it. Checked before the `?` sugar so `fn(A) -> B?` (optional
   // return) isn't misread as an optional function.
   if (culebra::is_fn_type(expected))
-    return tag == TAG_FUNC || _culebra_call_operator(tag, data);
+    return tag == TAG_FUNC || _culebra_has_call_operator(tag, data);
   // Composite bound (`A + B`) — all-of: conform to every part.
   if (culebra::has_toplevel_plus(expected)) {
     for (auto part : culebra::split_intersection_types(expected)) {
@@ -1587,7 +1598,8 @@ inline bool _culebra_type_matches_single(int8_t tag, int64_t data,
   // code after the check. `Function` also takes a callable instance
   // (Option A: structural callable, proto-gated so a dict is not one).
   if (auto t = _culebra_primitive_type_tag(expected))
-    return tag == *t || (*t == TAG_FUNC && _culebra_call_operator(tag, data));
+    return tag == *t ||
+           (*t == TAG_FUNC && _culebra_has_call_operator(tag, data));
   // `Enum.Variant`: both halves, so nothing but that enum's variant
   // satisfies it. Reached from an annotation and, through
   // culebra_runtime_ctor_matches, from a constructor pattern alike.
@@ -1748,6 +1760,7 @@ struct JitUnwindRelease {
 //
 // Each is an implicit entry (a dunder, a protocol method), so it lends the
 // published op position as the call site (JitBorrowedCallSite).
+
 inline JitValue _culebra_invoke_method1(JitClosure* cls, JitValue self,
                                         JitValue arg) {
   culebra_runtime_value_retain(self.tag, self.data);
@@ -1806,7 +1819,6 @@ inline bool _has_protocol_member(JitObject* obj, const char* name) {
   return entry && entry->value.tag == TAG_FUNC;
 }
 
-inline JitHeldMethod _lookup_special(int8_t tag, int64_t data, Special s);
 inline void _culebra_eq_walks_hold();
 
 // Run a user equality method — `__eq__` or `eq`, the operator's step or a
@@ -1863,7 +1875,8 @@ inline bool _derived_method(const JitClosure* fn) {
 // caller's op position anchors it).
 inline std::optional<size_t> _jit_try_object_hash(JitObject* obj,
                                                   JitValue* unhashable) {
-  auto cls = _protocol_member(obj, "hash");
+  auto cls = _lookup_special(TAG_OBJECT, reinterpret_cast<int64_t>(obj),
+                            Special::Hash);
   if (cls && !_derived_method(cls)) {
     auto r = _culebra_invoke_method0(
         cls, {TAG_OBJECT, reinterpret_cast<int64_t>(obj)});
@@ -1892,6 +1905,82 @@ inline JitHeldMethod _special_closure(JitObject* obj, Special s) {
   return fn;
 }
 
+// What a lookup of a trait default asks: the method, to call it (a worker
+// rebuilds one it was shipped, and two traits that supply it raise the
+// ambiguity), or only what is there (neither happens).
+enum class JitDefaultAsk : uint8_t { Resolve, Peek };
+struct JitTraitDefault {
+  // Found: `fn`, owned by its trait's table. Ambiguous and Pending only come
+  // back to a Peek: two traits supply it, or a shipped one is not rebuilt.
+  enum Kind : uint8_t { None, Found, Ambiguous, Pending };
+  Kind kind = None;
+  JitClosure* fn = nullptr;
+  explicit operator bool() const { return kind != None; }
+};
+inline JitTraitDefault _jit_find_trait_default(JitObject* obj, const char* key,
+                                               JitDefaultAsk ask);
+
+// Whether `o` (its own slots, then its class's) answers `s`'s question
+// itself, so that no trait default of `s`'s group (special_group) answers
+// it: a member of the name `s`, data included (a field shadows a default as
+// it does a method), or a method of another name in the group (a derived
+// `eq`, which fills no special slot, too).
+inline bool _jit_states_group(JitObject* o, Special s) {
+  if (_find_property(o, special_name(s))) return true;
+  const uint32_t others =
+      special_group(s) & ~(uint32_t{1} << static_cast<size_t>(s));
+  for (uint32_t g = others; g; g &= g - 1) {
+    const auto t = static_cast<Special>(std::countr_zero(g));
+    if (_has_protocol_member(o, special_name(t))) return true;
+  }
+  return false;
+}
+
+// `meta`'s table (an instance `obj` of it asking) filled with the trait
+// defaults the class inherits: each special whose group the class has no
+// member of (_jit_states_group) takes the default of its name, if one. Only
+// peeked: a clash, or a default a worker was shipped and has not rebuilt, is
+// left to the by-name lookup, which raises the one and rebuilds the other
+// where the name is asked for — so a worker rebuilds only what it calls.
+// Stamped with the generation read first, so a default installed meanwhile
+// is picked up by the next fill.
+inline void _jit_fill_inherited_specials(JitObject* obj, JitObject* meta) {
+  auto& t = *meta->specials;
+  const uint64_t gen =
+      culebra::trait_default_generation().load(std::memory_order_relaxed);
+  uint32_t inherited = 0, by_name = 0;
+  for (size_t i = 0; i < static_cast<size_t>(Special::Count); i++) {
+    const auto s = static_cast<Special>(i);
+    auto own = _special_closure(meta, s);  // the meta's own: lent
+    JitClosure* fn = own.get();
+    if (!fn && !_jit_states_group(meta, s)) {
+      auto d = _jit_find_trait_default(obj, special_name(s),
+                                       JitDefaultAsk::Peek);
+      if (d.kind == JitTraitDefault::Found) {
+        fn = d.fn;
+        inherited |= uint32_t{1} << i;
+      } else if (d) {
+        by_name |= uint32_t{1} << i;
+      }
+    }
+    t.fn[i] = fn;
+  }
+  t.inherited = inherited;
+  t.by_name = by_name;
+  t.defaults_gen = gen;
+}
+
+// `meta`'s table with the defaults it inherits as of now: filled again first
+// once a trait or a default has changed anywhere.
+inline const JitSpecialTable& _jit_fresh_specials(JitObject* obj,
+                                                  JitObject* meta) {
+  if (meta->specials->defaults_gen !=
+      culebra::trait_default_generation().load(std::memory_order_relaxed))
+      [[unlikely]]
+    _jit_fill_inherited_specials(obj, meta);
+  return *meta->specials;
+}
+
 // The two questions the executor and compiled code ask about an Object's
 // shape, by name — so no well-known key is spelled outside this file's
 // protocol code. `next` is what shapes an iterator (it resolves the lazy
@@ -1903,23 +1992,61 @@ culebra_runtime_is_iterator_shaped(JitObject* obj) {
 }
 extern "C" CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool
 culebra_runtime_has_iter_method(JitObject* obj) {
-  return _has_protocol_member(obj, "iter");
+  return _has_special(TAG_OBJECT, reinterpret_cast<int64_t>(obj),
+                      Special::Iter);
 }
 
 // Where a value keeps its special methods, decided once: a class instance
-// answers from its meta's table (one load) unless its own shape carries a
-// special name, which is the only way an own slot could shadow the class's
-// method — then, as for a plain object, the name lookup runs (own slots
-// first, the proto after: _find_property's rule). Asking for two names
-// (`==` wants `__eq__` and `eq`) then walks the shapes once.
+// answers from its meta's table (one load), which holds the trait defaults
+// the class inherits as well (filled again here once a trait or a default has
+// changed), unless its own shape carries a special name, which is the only way
+// an own slot could shadow the class's method — then, as for a plain object,
+// the name lookup runs (own slots first, the proto after: _find_property's
+// rule), and a class instance's trait default after them. Asking for two
+// names (`==` wants `__eq__` and `eq`) then walks the shapes once. A name the
+// table leaves to the by-name lookup (JitSpecialTable::by_name) is asked for
+// by name either way.
+//
+// `s(...)` answers the method, to call it; `has(...)` only whether there is
+// one — so a type test or a `for` head asking whether a value drives itself
+// rebuilds no shipped default and raises no ambiguity; calling it does.
 struct SpecialLookup {
   JitObject* obj = nullptr;                // null: nothing to look up
   const JitSpecialTable* table = nullptr;  // non-null: read the slot
   JitHeldMethod operator()(Special s) const {
-    // The table is the class meta's own: lent, as _protocol_member does.
-    if (table) return JitHeldMethod::lend(table->fn[static_cast<size_t>(s)]);
+    return find(s, JitDefaultAsk::Resolve).method;
+  }
+  bool has(Special s) const { return find(s, JitDefaultAsk::Peek).there; }
+
+ private:
+  struct Found {
+    JitHeldMethod method;
+    bool there = false;
+  };
+  static Found inherited(JitObject* obj, Special s, JitDefaultAsk ask) {
+    auto d = _jit_find_trait_default(obj, special_name(s), ask);
+    return {JitHeldMethod::hold(d.fn), static_cast<bool>(d)};
+  }
+  // `t`'s slot for `s`: the class's own method is lent (its meta cannot
+  // change); one it inherits is its trait's, which a re-declaration
+  // releases: held.
+  Found slot(const JitSpecialTable& t, Special s, JitDefaultAsk ask) const {
+    const auto i = static_cast<size_t>(s);
+    if (t.by_name >> i & 1) return inherited(obj, s, ask);
+    JitClosure* fn = t.fn[i];
+    return {t.inherited >> i & 1 ? JitHeldMethod::hold(fn)
+                                 : JitHeldMethod::lend(fn),
+            fn != nullptr};
+  }
+  Found find(Special s, JitDefaultAsk ask) const {
+    if (table) return slot(*table, s, ask);
     if (!obj) return {};
-    return _special_closure(obj, s);
+    if (auto fn = _special_closure(obj, s)) return {std::move(fn), true};
+    // Only a class instance inherits, and only where neither it nor its
+    // class answers the question: its class's table then holds the answer.
+    auto* meta = obj->proto();
+    if (!meta || !meta->is_class_meta || _jit_states_group(obj, s)) return {};
+    return slot(_jit_fresh_specials(obj, meta), s, ask);
   }
 };
 
@@ -1928,8 +2055,10 @@ inline SpecialLookup _special_lookup(int8_t tag, int64_t data) {
   auto* obj = reinterpret_cast<JitObject*>(data);
   auto* meta = obj->proto();
   if (meta && meta->is_class_meta && !obj->is_dict &&
-      !(obj->shape && obj->shape->any_special))
+      !(obj->shape && obj->shape->any_special)) {
+    _jit_fresh_specials(obj, meta);
     return {obj, meta->specials};
+  }
   // A plain shaped Object whose shape never took a special name has none to
   // find (a dict's names are not in its shape, so it takes the lookup).
   if (!meta && !obj->is_dict && obj->shape && !obj->shape->any_special)
@@ -1942,27 +2071,34 @@ inline SpecialLookup _special_lookup(int8_t tag, int64_t data) {
 inline JitHeldMethod _lookup_special(int8_t tag, int64_t data, Special s) {
   return _special_lookup(tag, data)(s);
 }
+// Whether `tag:data` has the special method `s`, without calling it.
+inline bool _has_special(int8_t tag, int64_t data, Special s) {
+  return _special_lookup(tag, data).has(s);
+}
 
 // Invoke a special method `recv.<name>(arg)`. Returns the +1 result
 // or std::nullopt.
-// `line`, when given, is the operator's own position, published for the
-// dunder's entry (a caller with none has published it already).
+// `line`, when given, is the operator's own position, published before the
+// lookup (which can raise an ambiguous default) and for the dunder's entry;
+// a caller with none has published it already.
 inline std::optional<JitValue> _try_special_binop(int8_t rt, int64_t rd,
                                                  int8_t at, int64_t ad,
                                                  Special s, int64_t line = 0,
                                                  int64_t col = 0) {
+  if (rt != TAG_OBJECT) return std::nullopt;
+  if (line) culebra_runtime_set_op_pos(line, col);
   auto cls = _lookup_special(rt, rd, s);
   if (!cls) return std::nullopt;
-  if (line) culebra_runtime_set_op_pos(line, col);
   return _culebra_invoke_method1(cls, {rt, rd}, {at, ad});
 }
 
 inline std::optional<JitValue> _try_special_unary(int8_t t, int64_t d,
                                                  Special s, int64_t line,
                                                  int64_t col) {
+  if (t != TAG_OBJECT) return std::nullopt;
+  if (line) culebra_runtime_set_op_pos(line, col);
   auto cls = _lookup_special(t, d, s);
   if (!cls) return std::nullopt;
-  if (line) culebra_runtime_set_op_pos(line, col);
   return _culebra_invoke_method0(cls, {t, d});
 }
 

@@ -588,10 +588,10 @@ inline bool _jit_try_object_setindex(JitObject* obj, int8_t key_tag,
   // Class-instance feature only (the call sites also gate on `proto` to
   // skip the slot probe for plain dicts; this keeps the helper self-safe).
   if (!obj->proto()) return false;
+  culebra_runtime_set_op_pos(line, col);
   auto cls = _lookup_special(TAG_OBJECT, reinterpret_cast<int64_t>(obj),
                              Special::SetIndex);
   if (!cls) return false;
-  culebra_runtime_set_op_pos(line, col);
   // Borrows the key and value: the caller consumes them on the normal path and
   // guards them over this call for the throw path.
   auto r = _culebra_invoke_method2(
@@ -1486,8 +1486,10 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_get(
 inline std::unordered_map<std::string,
                           std::unordered_map<std::string, JitClosure*>>&
 _jit_trait_default_impls();
-inline JitClosure* _jit_find_shipped_default(JitObject* obj, const char* key,
-                                             const std::string* found);
+inline JitTraitDefault _jit_find_shipped_default(JitObject* obj,
+                                                 const char* key,
+                                                 const std::string* found,
+                                                 JitDefaultAsk ask);
 
 // Two traits that both supply this instance a default `key` leave it
 // ambiguous, as two equally specific methods do; the class settles it by
@@ -1504,12 +1506,25 @@ inline JitClosure* _jit_find_shipped_default(JitObject* obj, const char* key,
       0, 0);
 }
 
-// The registered default named `key` whose trait this instance conforms to,
-// or null — in a worker Runtime, one its parent shipped is installed here on
-// its first miss. Conformance is cached inside _jit_conforms_to_trait.
-// One source for the three askers: the property read, the UFCS gate, and the
-// `__call__` lookup — each keeps its own gate on what may ask.
-inline JitClosure* _jit_find_trait_default(JitObject* obj, const char* key) {
+// The ambiguity above, raised for an asker that is to call the default, and
+// answered to one that only asks what is there.
+inline JitTraitDefault _jit_trait_default_clash(const std::string& a,
+                                                const std::string& b,
+                                                const char* key,
+                                                JitDefaultAsk ask) {
+  if (ask == JitDefaultAsk::Resolve) _jit_trait_default_ambiguous(a, b, key);
+  return {JitTraitDefault::Ambiguous};
+}
+
+// The registered default named `key` whose trait this instance conforms to —
+// in a worker Runtime, one its parent shipped is installed here on its first
+// Resolve. Conformance is cached inside _jit_conforms_to_trait. One source
+// for its askers: the property read, the UFCS gate, a class's special table
+// (_jit_fill_inherited_specials) and the special lookup (SpecialLookup) —
+// each keeps its own gate on what may ask. Two traits that both supply it:
+// see _jit_trait_default_clash.
+inline JitTraitDefault _jit_find_trait_default(JitObject* obj, const char* key,
+                                               JitDefaultAsk ask) {
   JitClosure* found = nullptr;
   const std::string* from = nullptr;
   for (auto& [trait_name, methods] : _jit_trait_default_impls()) {
@@ -1518,13 +1533,14 @@ inline JitClosure* _jit_find_trait_default(JitObject* obj, const char* key) {
     if (!_jit_conforms_to_trait(TAG_OBJECT, reinterpret_cast<int64_t>(obj),
                                 trait_name))
       continue;
-    if (from) _jit_trait_default_ambiguous(*from, trait_name, key);
+    if (from) return _jit_trait_default_clash(*from, trait_name, key, ask);
     found = m_it->second;
     from = &trait_name;
   }
-  if (auto* shipped = _jit_find_shipped_default(obj, key, from))
+  if (auto shipped = _jit_find_shipped_default(obj, key, from, ask))
     return shipped;
-  return found;
+  if (!found) return {};
+  return {JitTraitDefault::Found, found};
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_object_get_ic(
@@ -1587,9 +1603,12 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_object_get_ic(
   if (obj->is_namespace && !culebra::is_object_builtin_method_name(key)) {
     culebra::throw_namespace_missing_member_at(obj->ns_name, key, line, col);
   }
-  // Trait default-method fallback (T4 part 2).
-  if (auto* d = _jit_find_trait_default(obj, key))
-    return {TAG_FUNC, reinterpret_cast<int64_t>(d)};
+  // Trait default-method fallback (T4 part 2), raising an ambiguous one at
+  // the read.
+  if (auto d = _jit_at_pos(line, col, [&] {
+        return _jit_find_trait_default(obj, key, JitDefaultAsk::Resolve);
+      }))
+    return {TAG_FUNC, reinterpret_cast<int64_t>(d.fn)};
   return {TAG_NIL, 0};
 }
 
@@ -1677,12 +1696,15 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_object_has(JitObject* obj
 // name, which is what keeps a same-named free function from hijacking the
 // call (the UFCS gate asks this). Gated on `proto` — a
 // plain dict is not a class instance and inherits nothing — so a dict's
-// lookup costs one extra null test.
+// lookup costs one extra null test. Only asks: two traits that supply it, or
+// a worker's default not yet rebuilt, answer yes, and the read that follows
+// raises the one and rebuilds the other.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool
 culebra_runtime_object_has_or_trait_default(JitObject* obj, const char* key) {
   if (culebra_runtime_object_has(obj, key)) return true;
   if (!obj->proto()) return false;
-  return _jit_find_trait_default(obj, key) != nullptr;
+  return static_cast<bool>(
+      _jit_find_trait_default(obj, key, JitDefaultAsk::Peek));
 }
 
 // True iff `tag/data` is an Object carrying an OWN slot named `key` (proto /
@@ -1710,29 +1732,6 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_check_namespace_write(
       !culebra::is_object_builtin_method_name(key)) {
     culebra::throw_namespace_missing_member_at(obj->ns_name, key, line, col);
   }
-}
-
-// `obj(args)` overload resolution: returns the class instance's
-// `__call__` method as a TAG_FUNC JitValue at +1, honoring own slots,
-// the class meta (proto), and inherited trait defaults — the same
-// resolution order as culebra_runtime_object_get_ic. Gated on
-// `proto != null` so a plain dict that merely holds a "__call__" key
-// stays non-callable, matching the
-// __index__ design. Returns Nil for any non-instance / missing method,
-// so the caller raises "type error: expected Function". The +1 is the
-// caller's for the call's length: the instance's own slot or the trait's
-// default table can let the method go while it runs (vm.md §5.3).
-inline JitHeldMethod _jit_class_call_method(int8_t tag, int64_t data) {
-  if (tag != TAG_OBJECT) return {};
-  auto* obj = reinterpret_cast<JitObject*>(data);
-  if (!obj->proto()) return {};
-  auto fn = _protocol_member(obj, "__call__");
-  if (!fn) fn = JitHeldMethod::hold(_jit_find_trait_default(obj, "__call__"));
-  return fn;
-}
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_class_call_method(
-    int8_t tag, int64_t data) {
-  return _jit_class_call_method(tag, data).take_value();
 }
 
 // Flag a freshly built class namespace object as callable — `C(args)`

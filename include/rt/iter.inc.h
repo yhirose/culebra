@@ -520,7 +520,7 @@ inline void _iter_set_dispose(JitObject* it, JitNativeFn fn, JitCell* cell) {
 // exactly what _culebra_expect_callback accepts; a pass consumes nothing.
 inline void _culebra_callback_type_precheck(int8_t fn_tag, int64_t fn_data,
                                             const char* param_name) {
-  if (fn_tag == TAG_FUNC || _culebra_call_operator(fn_tag, fn_data)) return;
+  if (fn_tag == TAG_FUNC || _culebra_has_call_operator(fn_tag, fn_data)) return;
   _culebra_value_release_impl(fn_tag, fn_data);  // the callee-consumes +1
   throw culebra::CulebraError("TypeError",
       culebra::format("type error: parameter '{}' expects Function", param_name),
@@ -1587,8 +1587,7 @@ inline JitValue _iter_coerce_iterable(int8_t t, int64_t d, int64_t line,
     // generator (or class instance) carries `iter` on its class meta, so the
     // instance-slots-only probe this used rejected `gen().zip(xs)` as
     // non-iterable on this backend while the interp accepted it.
-    if (auto iv_cls =
-            _protocol_member(reinterpret_cast<JitObject*>(d), "iter")) {
+    if (auto iv_cls = _lookup_special(t, d, Special::Iter)) {
       culebra_runtime_value_retain(t, d);
       JitBorrowedCallSite site;  // an implicit entry, at the op
       return _jit_invoke(iv_cls, JitValue{t, d}, 0, nullptr);
@@ -2311,12 +2310,14 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_object_values(
 // Dispatch helper: prefer the user `iter` method when present so an
 // Object that already implements Iterator returns the right iterator
 // (range/map/etc. wrapped iterators put `iter` on the instance; class
-// instances put it on the proto — `_find_property` covers both), and
+// instances put it on the proto or inherit a trait default —
+// `_lookup_special` covers all three), and
 // fall back to the key iterator for plain `{...}` literals via
 // `ObjectValue::builtins()`.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject*
 culebra_runtime_object_iter_dispatch(JitObject* obj) {
-  if (auto cls = _protocol_member(obj, "iter")) {
+  if (auto cls = _lookup_special(
+          TAG_OBJECT, reinterpret_cast<int64_t>(obj), Special::Iter)) {
     auto self = JitValue{TAG_OBJECT, reinterpret_cast<int64_t>(obj)};
     // `self` is borrowed: _culebra_invoke_method0 mints the callee's own +1, so
     // a throw from the user iter() body leaves this object's refcount alone.
@@ -2973,7 +2974,7 @@ inline bool _culebra_callback_arity_ok(JitClosure* cls, size_t expected) {
 // arity half stays there: interp checks it in the body too.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_check_callback_type(
     int8_t fn_tag, int64_t fn_data, const char* param_name) {
-  if (fn_tag == TAG_FUNC || _culebra_call_operator(fn_tag, fn_data)) return;
+  if (fn_tag == TAG_FUNC || _culebra_has_call_operator(fn_tag, fn_data)) return;
   throw culebra::CulebraError(
       "TypeError",
       culebra::format("type error: parameter '{}' expects Function", param_name),
@@ -3001,12 +3002,11 @@ inline JitClosure* _culebra_expect_callback(int8_t fn_tag, int64_t fn_data,
   // taken over yet, so the guard is the sole releaser there — all tags.
   JitUnwindRelease g{JitValue{fn_tag, fn_data}};
   if (fn_tag != TAG_FUNC) {
-    // A callable class instance (own/proto `__call__`) stands in for a
-    // function: synthesize an adapter closure that forwards to __call__
-    // with `self` bound (Option A: structural callable). Mirrors interp's
-    // as_callback. proto-gated so a plain dict isn't callable.
-    if (const JitValue* e = _culebra_call_operator(fn_tag, fn_data)) {
-      auto* call_cls = reinterpret_cast<JitClosure*>(e->data);
+    // A callable class instance (an own, class or trait-default `__call__`)
+    // stands in for a function: synthesize an adapter closure that forwards
+    // to __call__ with `self` bound (Option A: structural callable). Mirrors
+    // interp's as_callback. proto-gated so a plain dict isn't callable.
+    if (auto call_cls = _culebra_call_operator(fn_tag, fn_data)) {
       if (!accepts(call_cls)) {
         throw culebra::CulebraError("TypeError", culebra::format(
             "type error: {} expects a {}-parameter function",
@@ -3015,15 +3015,14 @@ inline JitClosure* _culebra_expect_callback(int8_t fn_tag, int64_t fn_data,
       // Capture the instance and its __call__ closure (each +1, released
       // when the adapter is collected). The instance's +1 is the incoming
       // callee-consumes ref, transferred into the capture cell; the
-      // resolved closure is a borrowed property read, so it takes a fresh
-      // retain. Capturing the closure lets the per-element forward skip
-      // the property lookup.
-      culebra_runtime_value_retain(TAG_FUNC, e->data);
+      // closure's is the lookup's own (take_value). Capturing the closure
+      // lets the per-element forward skip the lookup.
       auto* adapter = culebra_runtime_closure_new(
           reinterpret_cast<void*>(&_culebra_callable_adapter), 2,
           expected_arity, JIT_CLOSURE_NATIVE, /*meta=*/nullptr);
       adapter->captures[0] = culebra_runtime_cell_new(fn_tag, fn_data);
-      adapter->captures[1] = culebra_runtime_cell_new(TAG_FUNC, e->data);
+      adapter->captures[1] =
+          culebra_runtime_cell_new(TAG_FUNC, call_cls.take_value().data);
       return adapter;
     }
     // A non-Function (non-callable) argument: the interp routes it through

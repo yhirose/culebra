@@ -976,7 +976,6 @@ inline constexpr auto object_get_ic       = "culebra_runtime_object_get_ic";
 inline constexpr auto prop_get            = "culebra_runtime_prop_get";
 inline constexpr auto bind_method_value   = "culebra_runtime_bind_method_value";
 inline constexpr auto call_receiver       = "culebra_runtime_call_receiver";
-inline constexpr auto class_call_method   = "culebra_runtime_class_call_method";
 inline constexpr auto class_call_method_checked =
     "culebra_runtime_class_call_method_checked";
 inline constexpr auto call_held           = "culebra_runtime_call_held";

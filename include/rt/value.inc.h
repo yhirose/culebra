@@ -124,7 +124,7 @@ struct Shape {
     child_tables.push_back(std::move(wider));
   }
   // Whether any name is one the runtime dispatches specially (a `__x__`
-  // dunder, or the `hash`/`cmp` protocol names): the one question a
+  // dunder, or the `hash`/`cmp`/`eq`/`iter` protocol names): the one question a
   // special-method lookup has to ask of an instance's own slots before it
   // may trust its class's table (see _lookup_special). Fixed once per Shape.
   bool any_special = false;
@@ -143,7 +143,7 @@ struct Shape {
   static bool is_special_name(std::string_view name) {
     return (name.size() > 4 && name.substr(0, 2) == "__" &&
             name.substr(name.size() - 2) == "__") ||
-           name == "hash" || name == "cmp" || name == "eq";
+           name == "hash" || name == "cmp" || name == "eq" || name == "iter";
   }
 
   bool has(std::string_view name) const {
@@ -441,21 +441,48 @@ class JitHashedKey {
 };
 
 // The special methods the runtime itself dispatches by name — an operator's
-// dunder, the protocol names `hash`/`cmp`/`eq`, and `__call__`/`__str__`. A class
-// meta resolves each of them once, at declaration (JitSpecialTable), so an
-// operator on an instance reads one pointer instead of walking two shapes'
-// name lists on every evaluation: Python's type slots, keyed the same way.
+// dunder, the protocol names `hash`/`cmp`/`eq`, `iter` (what a `for` walks),
+// and `__call__`/`__str__`. A class meta resolves each of them once, at
+// declaration (JitSpecialTable), so an operator on an instance reads one
+// pointer instead of walking two shapes' name lists on every evaluation:
+// Python's type slots, keyed the same way. A trait default stands in for any
+// of them (JitSpecialTable::defaults_gen); the names that say what a value is
+// or when it ends (`next`, `has_next`, `dispose`, `drop`) are not here, and a
+// default never stands in for those.
 enum class Special : uint8_t {
   Add, Sub, Mul, Div, Mod, Pow, Matmul, Neg, Eq, EqTrait, Lt, Le, Cmp, Hash,
-  Str, Call, Index, SetIndex, Count
+  Str, Call, Index, SetIndex, Iter, Count
 };
 inline constexpr const char* kSpecialNames[] = {
     "__add__", "__sub__", "__mul__", "__div__", "__mod__", "__pow__",
     "__matmul__", "__neg__", "__eq__", "eq", "__lt__", "__le__", "cmp",
-    "hash", "__str__", "__call__", "__index__", "__setindex__"};
+    "hash", "__str__", "__call__", "__index__", "__setindex__", "iter"};
 static_assert(std::size(kSpecialNames) == static_cast<size_t>(Special::Count));
+static_assert(static_cast<size_t>(Special::Count) <= 32,
+              "JitSpecialTable::inherited has a bit per Special");
 inline const char* special_name(Special s) {
   return kSpecialNames[static_cast<size_t>(s)];
+}
+// The specials that answer one question with `s`, as a bit per Special:
+// equality and the hash that must agree with it, and order. A class with a
+// member of any of them answers that question itself, so none of them is
+// taken from a trait default (_jit_states_group).
+inline constexpr uint32_t special_group(Special s) {
+  constexpr auto bit = [](Special x) {
+    return uint32_t{1} << static_cast<size_t>(x);
+  };
+  switch (s) {
+    case Special::Eq:
+    case Special::EqTrait:
+    case Special::Hash:
+      return bit(Special::Eq) | bit(Special::EqTrait) | bit(Special::Hash);
+    case Special::Lt:
+    case Special::Le:
+    case Special::Cmp:
+      return bit(Special::Lt) | bit(Special::Le) | bit(Special::Cmp);
+    default:
+      return bit(s);
+  }
 }
 // A declared enum's weak handle: the enum object holds one and every variant
 // meta it declared shares it, the way a std::weak_ptr shares a control block.
@@ -494,6 +521,20 @@ struct JitSpecialTable {
     if (enum_ref) enum_ref->release();
   }
   JitClosure* fn[static_cast<size_t>(Special::Count)] = {};
+  // `fn` holds the class's own methods from its seal (_jit_fill_specials),
+  // and, once `defaults_gen` is trait_default_generation(), the trait
+  // defaults it inherits for the specials it has no member for
+  // (_jit_fill_inherited_specials, when an instance is next looked up: a
+  // trait may be declared, or a default installed, after the class). 0: not
+  // yet.
+  uint64_t defaults_gen = 0;
+  // Bit per Special: `fn` holds a trait default there, which its trait's
+  // table owns (a lookup holds it for the call, not lends it).
+  uint32_t inherited = 0;
+  // Bit per Special: a default is there that the table does not hold — two
+  // traits supply it (asking raises the ambiguity) or a worker has yet to
+  // rebuild the one it was shipped — so that name is asked by name.
+  uint32_t by_name = 0;
   // The class this meta belongs to, interned. Every instance reaches it
   // through `proto`, so the name lives here rather than on JitObject, which
   // must stay inside its 128-byte slab class.

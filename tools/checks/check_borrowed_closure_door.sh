@@ -45,7 +45,7 @@ COUNTED = {
     'include/conc/sendable.h': 8,
     'include/rt/dispatch.inc.h': 12,
     'include/rt/fixed.inc.h': 2,
-    'include/rt/iter.inc.h': 53,
+    'include/rt/iter.inc.h': 52,
     'include/rt/mem.inc.h': 3,
     'include/rt/runtime.inc.h': 4,
     'include/stdlib/bindings.h': 17,
