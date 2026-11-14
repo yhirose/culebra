@@ -16238,7 +16238,9 @@ struct Exec {
   // The `__call__` probe answers through `keep`, which holds it for the call
   // unless it is the class's own: the instance's own slot, or a trait's
   // default table, can let it go under the call (vm.md §5.3). A class
-  // object's `new` cannot change, so it is borrowed.
+  // object's `new` is borrowed: `K.remove('new')` inside it frees it under
+  // the call, but a constructor has read what it captured into its own
+  // registers before its body runs (tests/test_borrowed_methods.cul).
   static JitValue probe_callee(const JitValue& callee, JitHeldMethod& keep,
                                int64_t line, int64_t col,
                                const char* member = nullptr,

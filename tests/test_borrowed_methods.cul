@@ -148,6 +148,22 @@ for x in Closes(7) {
 }
 assert_eq(disposed, 1007)
 
+# A class's `new` that removes itself from the class while it runs: the
+# constructor has read what it captured before its body runs.
+fn make_removing(k) {
+  class Removing {
+    new() {
+      Removing.remove('new')
+      churn()
+      @k = k
+    }
+  }
+  Removing
+}
+let removing = make_removing(7)
+assert_eq(removing().k, 7)
+assert_throws('TypeError', || removing())
+
 # When a method that let its holder go dies: as the runtime's call returns,
 # on every lane. A walk keeps the iterator's `next` it opened with, so that
 # one dies as the walk ends.
