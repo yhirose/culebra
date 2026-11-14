@@ -1,0 +1,71 @@
+# The theme's electric piano is sampled rather than an APU channel: a chord
+# needs several notes at once, and a struck tine needs more than a pulse. The
+# band plays it as `Ep`, and each pitch the theme uses is synthesised
+# here once, into a WAV kept as a `Sound`.
+let EP_RATE = 22050
+
+# A mono 16-bit PCM WAV file's 44-byte header, field by field in file order.
+@packable
+class WavHeader {
+  riff: Bytes<4> = "RIFF"
+  size: UInt32  # 36 + the samples' bytes
+  wave: Bytes<4> = "WAVE"
+  fmt: Bytes<4> = "fmt "
+  fmt_size: UInt32 = 16
+  format: UInt16 = 1  # PCM
+  channels: UInt16 = 1
+  rate: UInt32 = EP_RATE
+  byte_rate: UInt32 = EP_RATE * 2
+  block_align: UInt16 = 2
+  bits: UInt16 = 16
+  data: Bytes<4> = "data"
+  data_size: UInt32
+}
+
+# 16-bit mono samples as a WAV file's bytes.
+fn pcm_wav(samples) {
+  let data = String.pack("i16", samples)
+  let h = WavHeader()
+  h.size = 36 + data.size()
+  h.data_size = data.size()
+  String.pack(WavHeader, [h]) + data
+}
+
+# Three seconds of one electric-piano note. Two FM pairs a hair apart give
+# the slow chorus of a real instrument; the modulation index starts high and
+# falls away after the hammer (the bark, the band's `bright=`) to a warm sine;
+# a bell partial rings for an instant above notes low enough to keep it
+# under the Nyquist limit; higher keys die away sooner. Kauai's
+# kauai/recipes/fm_electric_piano.json grew from this piano; it stays written
+# out here so the game needs nothing outside its own directory, which is what
+# the Playground serves.
+fn ep_samples(pitch, bark) {
+  let freq = 440.0 * Math.exp((pitch - 69) / 12.0 * Math.log(2.0))
+  let n = EP_RATE * 3
+  let w = 2.0 * Math.pi * freq / EP_RATE
+  let w2 = w * 1.0025
+  let decay = 1.1 * Math.sqrt(freq / 261.63)
+  let ping = freq * 15 < EP_RATE / 2 ? 0.08 : 0.0
+  mut out = repeat(n, 0)
+  for i in 0..n {
+    let t = i.to_float() / EP_RATE
+    let index = bark * (1.4 * Math.exp(-t * 6.0) + 0.25)
+    let tines = Math.sin(w * i + index * Math.sin(w * i)) +
+      Math.sin(w2 * i + index * Math.sin(w2 * i))
+    let bell = Math.sin(w * 15.0 * i) * Math.exp(-t * 35.0) * ping
+    let env = Math.exp(-t * decay) *
+      Math.min(1.0, i / 40.0) *
+      Math.min(1.0, (n - i) / 800.0)
+    out[i] = ((tines * 0.5 + bell) * env * 7000).to_long()
+  }
+  out
+}
+
+# The game's external voices for Kauai's `voices:`: the piano, whose bark is
+# the knob a band line sets as `Ep(bright=0.8)`.
+let VOICES = {ep: {
+  note: |pitch, params| Audio.Sound(pcm_wav(ep_samples(pitch, params.bright))),
+  knobs: {bright: {default: 1.0, min: 0.0, max: 2.0}},
+}}
+
+export {VOICES}
