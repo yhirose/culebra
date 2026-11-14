@@ -71,7 +71,8 @@ def function_spans(code, name):
     each definition of the function `name` in `code` (a blank()ed source), at
     any indentation: a declaration or a call is not one, since what follows
     its parameter list is not a body."""
-    head = re.compile(r'^[ \t]*(?:[\w:<>*&,]+[ \t]+)*' + re.escape(name) +
+    head = re.compile(r'^[ \t]*(?:\[\[[^\]]*\]\][ \t]+)?(?:[\w:<>*&,]+[ \t]+)*' +
+                      re.escape(name) +
                       r'\s*\(', re.M)
     out = []
     for m in head.finditer(code):
@@ -86,6 +87,24 @@ def function_spans(code, name):
                     code.count('\n', 0, end) + 1,
                     code[m.end():params_end - 1], open_at, end))
     return out
+
+
+def listed_spans(text, keys):
+    """{(path, fn): function_spans} for each listed function, and the listed
+    paths whose braces do not balance once blanked: a span is found by
+    matching braces, so a literal the blanking misread would stretch one
+    silently."""
+    code = {p: blank(text.get(p, '')) for p, _ in keys}
+    unbalanced = sorted(p for p, c in code.items()
+                        if c.count('{') != c.count('}'))
+    return {k: function_spans(code[k[0]], k[1]) for k in keys}, unbalanced
+
+
+def enclosing(spans, path, n):
+    """The listed (path, fn) whose definition holds line `n` of `path`, or
+    None."""
+    return next((k for k, ss in spans.items()
+                 if k[0] == path and any(a <= n <= b for a, b, *_ in ss)), None)
 
 
 def require_scanner(label, match, planted):

@@ -311,6 +311,15 @@ check-protocol-member-door:
 check-borrowed-closure-door:
     tools/checks/check_borrowed_closure_door.sh
 
+# A pin is a root, so a program value a native object keeps for its own life
+# under one never dies with its holder: an Http.server whose handler captured
+# the server kept both. Such a value is the handle's edge (each_value); a pin
+# is only for the Runtime's own values and for holds that always end.
+[group("test")]
+[doc("Verify every GC pin sits in a function named with the kind of hold it is (ratchet)")]
+check-gc-pin-door:
+    tools/checks/check_gc_pin_door.sh
+
 [group("test")]
 [doc("Verify nothing compares by structure what `==` compares by its rule (ratchet)")]
 check-value-equal-door:
@@ -397,7 +406,7 @@ check-docs-cpp:
 # well under a second once the grammar-blob tool and the Audio.Graph bench are
 # ccache-warm.
 [private]
-check-generated: check-grammar-sync check-preambles check-blob check-site-version check-site-playground-sync check-difftest-coverage check-gate-budget check-release-coverage check-spec-examples check-api-coverage check-canon-return-types check-registrar-rooted check-pe-exports-gen check-interrupt-discipline check-thrown-value-discipline check-docs-cpp-includes check-header-naming check-pipefail-readers check-change-scopes check-error-kinds check-search-splitter check-bench-audio-graph check-layering check-codegen-enums check-vm-dispatch-table check-protocol-member-door check-borrowed-closure-door check-value-equal-door check-value-order-door check-source-anchor-door check-object-facts check-portable-closure-door check-native-entry-door check-runner-pins check-llama-versions
+check-generated: check-grammar-sync check-preambles check-blob check-site-version check-site-playground-sync check-difftest-coverage check-gate-budget check-release-coverage check-spec-examples check-api-coverage check-canon-return-types check-registrar-rooted check-pe-exports-gen check-interrupt-discipline check-thrown-value-discipline check-docs-cpp-includes check-header-naming check-pipefail-readers check-change-scopes check-error-kinds check-search-splitter check-bench-audio-graph check-layering check-codegen-enums check-vm-dispatch-table check-protocol-member-door check-borrowed-closure-door check-gc-pin-door check-value-equal-door check-value-order-door check-source-anchor-door check-object-facts check-portable-closure-door check-native-entry-door check-runner-pins check-llama-versions
 
 # The slim download (CULEBRA_SLIM: the VM alone, no LLVM, window, 3D, audio,
 # Webview or Llama), built as a release is (-O3, LTO). Its own dir: the JIT

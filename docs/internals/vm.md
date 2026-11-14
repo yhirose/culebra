@@ -794,11 +794,13 @@ at before it lands.
 
 A native object that keeps a Function past the call that handed it over
 takes its count where the collector can see it. A Search index keeps its
-analyzer's hooks in an Array on the index handle: an edge the collector
-traces, so a hook that reaches its own index is garbage along with it. A
-pin is a root, and is used only for a span that always ends — a request's
-body producer, a part's stream, a response's stream — where nothing is
-left pinned once the transfer is over.
+analyzer's hooks, and an Http.server its handlers, in the C++ half of
+its handle, which reports them as the handle's edges
+(`JitHandle::each_value`, memory.md §6.2), so a hook that reaches its own
+index is garbage along with it. A pin is a root, and is used only for a
+span that always ends — a request's body producer, a part's stream, a
+response's stream — where nothing is left pinned once the transfer is
+over.
 
 ### 5.3.1 A flat `@value` chain is compiled, not called
 

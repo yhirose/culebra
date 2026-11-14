@@ -582,6 +582,22 @@ runtime's root function (`set_extra_roots_fn`) or pinned individually
 (`Heap::pin`). An object in teardown and an object whose edges are in
 flux are roots too, for as long as that lasts (§6.3).
 
+A pin is for what the Runtime keeps of its own (a meta, a namespace
+object) and for a hold that always ends (a transfer's producer, a
+worker's copy of a handler for the serve it runs). A program value that
+a native object keeps for its own life is not pinned: a root does not die
+with its holder, so a value that reaches back to the holder would keep
+both. It is kept in the C++ half of the holder's handle and reported by
+`JitHandle::each_value`, which the mark, the release path and the
+trial-deletion walk follow as they follow a slot (CPython's
+`tp_traverse`). It is not kept in a slot either, where the program could
+empty it under the native code that calls it. A Search index's analyzer
+hooks and an Http.server's handlers are kept this way;
+`tools/checks/check_gc_pin_door.sh` names every function that pins and
+the kind of hold it is. A host that keeps a `Value` (embed.h) pins it
+until it lets go, as a JNI global reference does, and a cycle through
+the host is the host's to break.
+
 **Why this is sound.** Any collector-tracked pointer that is live
 across a call which might trigger a collection must, by the
 platform's calling convention, already be either spilled to the stack

@@ -64,9 +64,7 @@ def offending(code, spans):
             if DECLARES.search(c[max(0, m.start() - 40):m.start()]):
                 continue
             n = c.count('\n', 0, m.start()) + 1
-            inside = any(key[0] == path and lo <= n <= hi
-                         for key, ss in spans.items() for lo, hi, *_ in ss)
-            if not inside:
+            if not door_gate.enclosing(spans, path, n):
                 bad.append((path, n, ' '.join(c[m.start():m.start() + 90].split())))
     return bad
 

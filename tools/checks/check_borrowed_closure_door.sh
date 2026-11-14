@@ -20,9 +20,10 @@
 # (a call's own argument, the running closure's capture cell, a frame
 # register, a class meta) or a hole. So the casts are counted per file, and a
 # new one fails here until it is looked at and counted in on purpose. What
-# the standard library keeps past a call (a request's or a part's producer,
-# an analyzer's hooks, a response's stream) goes through _jit_keep_closure,
-# which holds and pins it, instead of a cast.
+# the standard library keeps past a call for a span that ends (a request's or
+# a part's producer, a response's stream) goes through _jit_keep_closure,
+# which holds and pins it, instead of a cast; what a native object keeps for
+# its own life is its handle's edge (check_gc_pin_door.sh).
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 
