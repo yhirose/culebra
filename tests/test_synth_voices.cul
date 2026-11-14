@@ -281,3 +281,9 @@ let holding = Voices(1, |f| sine(f) * adsr(0.01, 0.1, 0.5, 0.2))
 holding.note_on(60, at: 0.0)
 assert_throws("ValueError", || holding |> play())
 assert_close((holding |> play(secs: 0.2)).ends(), 0.2, 1e-9)
+# A cutoff that reaches 0 is the graph's to refuse, when the voices are
+# heard: their end is worked out without a division by it.
+let shut = Voices(1, |f| noise() * perc(0.01, 0.2) |> lowpass(env([3000.0, 0.0], [1.0])))
+shut.note_on(60, at: 0.0)
+shut.note_off(60, at: 0.1)
+assert_eq(caught(|| render(shut, 0.5)), ("ValueError", "Audio.Graph: a cutoff is above 0 and below half the rate"))

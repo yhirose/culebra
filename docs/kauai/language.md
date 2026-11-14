@@ -1097,7 +1097,12 @@ sound has no function is a
 `ValueError` when it is read, which names the line of the voice or drum and
 the keys there are. `prepare()` builds one sound and answers how
 many remain, so a game can spread the work over frames; `play()` builds
-whatever is left first.
+whatever is left first. An error an instrument raises while it makes a
+sound names the voice or drum it was making it for, keeping its kind and
+the place in the instrument it was raised at:
+`ValueError: Kauai: line 6: voice Bass: Audio.Graph: a cutoff is above 0
+and below half the rate`. One answering no `Audio.Sound` is a `TypeError`
+that names it the same way.
 
 A sound can be written as a [`Synth`](../stdlib.md#46-synth) expression:
 `Synth.render(expr)`, given no seconds, renders it until it ends on its own,

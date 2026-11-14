@@ -10413,8 +10413,8 @@ A sound ends on its own where its output is 0 for good: a product with the
 first of its factors to end (an envelope ending at 0 ends there, a 0 at
 once), a sum with the last; a delay rings on for its longest delay, a
 string for its `ring`, a resonance for 60 dB of its narrowest mode (a
-filter's is `cutoff / q` wide at its lowest cutoff; one a signal moves
-adds none), a lag and a decay for their time, and a room for 60 dB of its
+filter's is `cutoff / q` wide at its lowest cutoff, and never ends once
+that is 0, where it holds what it has; one a signal moves adds none), a lag and a decay for their time, and a room for 60 dB of its
 ring at its largest size (its longest comb losing what it feeds back each
 time round, then its longest allpass; 1.6 s at 0.5); a size, a rounding,
 and a clip that holds 0, end with their input. A latch holds what it took

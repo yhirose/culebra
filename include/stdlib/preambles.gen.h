@@ -5555,6 +5555,11 @@ let _kauai_module = fn () {
       for by, w in @_weighed {
         @_by[w.sound] = by
       }
+      # How an error in the sound of each voice and drum names it.
+      @_named = {
+        ...x.voices.keys().map(|by| (by, "{x.voices[by].line}: voice {by}")).to_object(),
+        ...x.drums.keys().map(|by| (by, "{x.drums[by].line}: drum {by}")).to_object(),
+      }
       let weigh = @_weighed.values().map(|w| w.sound).collect()
       # What prepare() builds, the next last: the sounds the others are
       # weighed by, then each in the order it first plays.
@@ -5575,12 +5580,16 @@ let _kauai_module = fn () {
     _sound(key) {
       return @_sounds[key] if @_sounds.has(key)
       let began = @_now()
-      let s = @_build[key]()
+      let named = "Kauai: {@_named[@_by[key]]}"
+      let s = try {
+        @_build[key]()
+      } catch {kind, message, line, col} if kind != "Interrupted" {
+        # An error the runtime raised (a thrown Object of these keys reads the
+        # same); an interrupt and any other thrown value go on as they were.
+        __raise_at(kind, "{named}: {message}", line << 32 | col)
+      }
       if type_of(s) != "Sound" {
-        __raise(
-          "TypeError",
-          "Kauai: an external instrument answers an Audio.Sound, not {type_of(s)}",
-        )
+        __raise("TypeError", "{named} answers an Audio.Sound, not {type_of(s)}")
       }
       let (took, n) = @_took.get(@_by[key], (0.0, 0))
       @_took[@_by[key]] = (took + @_now() - began, n + 1)
@@ -6778,15 +6787,14 @@ let _synth_module = fn () {
   # envelope ending at 0 ends there; a delay and a string ring on after their
   # input (the longest delay, the string's 60 dB ring), as a resonance does
   # (60 dB of a mode `width` Hz wide is 6.91 / (pi * width) seconds), a
-  # filter's `cutoff / q` wide at its lowest cutoff (one a signal moves adds
-  # none: the input's end decides), and a lag and a decay for their time; a
-  # size, a rounding, and a clip that holds 0, end with their input, and a
-  # latch two periods after it when an impulse at a fixed freq triggers it,
-  # never otherwise; an impulse and a dust end when their freq or density is
-  # 0; a room rings on 60 dB past its input, as long as its longest comb
-  # does at its largest size. A gated
-  # envelope ends once it is let go, `held` seconds from its start, and
-  # never while it is held.
+  # filter's `cutoff / q` wide at its lowest cutoff (never, at 0; one a
+  # signal moves adds none: the input's end decides), and a lag and a decay
+  # for their time; a size, a rounding, and a clip that holds 0, end with
+  # their input, and a latch two periods after it when an impulse at a fixed
+  # freq triggers it, never otherwise; an impulse and a dust end when their
+  # freq or density is 0; a room rings on 60 dB past its input, as long as
+  # its longest comb does at its largest size. A gated envelope ends once it
+  # is let go, `held` seconds from its start, and never while it is held.
   fn ending(expr, held = nil) {
     let known = {}
     fn envelope_end(e) {
@@ -6815,12 +6823,19 @@ let _synth_module = fn () {
     # bounds what its damped highs do, and then its longest allpass (579
     # samples) ringing 60 dB at a half each time round.
     let room_ring = |size| 3.0 * 1640.0 / 44100.0 / -Math.log(0.7 + 0.28 * Math.clamp(size, 0.0, 1.0)) * Math.log(10.0) + 10.0 * 579.0 / 44100.0
+    # A filter shut at a cutoff of 0 holds what it has, so it never ends
+    # (the graph refuses one at 0 or below when it is built).
     fn filter_ring(p) {
       let cutoff = p.values.cutoff
-      match cutoff {
-        SynthPart => 0.0,
-        SynthEnvelope => ring(cutoff.levels.min() / p.options.q),
-        _ => ring(cutoff / p.options.q),
+      let lowest = match cutoff {
+        SynthPart => nil,
+        SynthEnvelope => cutoff.levels.min(),
+        _ => cutoff,
+      }
+      cond {
+        lowest == nil => 0.0,
+        lowest <= 0 => Math.inf,
+        _ => ring(lowest / p.options.q),
       }
     }
     # A latch holds what it took last until its trigger next fires: an

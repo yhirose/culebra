@@ -3167,6 +3167,11 @@ let _kauai_module = fn () {
       for by, w in @_weighed {
         @_by[w.sound] = by
       }
+      # How an error in the sound of each voice and drum names it.
+      @_named = {
+        ...x.voices.keys().map(|by| (by, "{x.voices[by].line}: voice {by}")).to_object(),
+        ...x.drums.keys().map(|by| (by, "{x.drums[by].line}: drum {by}")).to_object(),
+      }
       let weigh = @_weighed.values().map(|w| w.sound).collect()
       # What prepare() builds, the next last: the sounds the others are
       # weighed by, then each in the order it first plays.
@@ -3187,12 +3192,16 @@ let _kauai_module = fn () {
     _sound(key) {
       return @_sounds[key] if @_sounds.has(key)
       let began = @_now()
-      let s = @_build[key]()
+      let named = "Kauai: {@_named[@_by[key]]}"
+      let s = try {
+        @_build[key]()
+      } catch {kind, message, line, col} if kind != "Interrupted" {
+        # An error the runtime raised (a thrown Object of these keys reads the
+        # same); an interrupt and any other thrown value go on as they were.
+        __raise_at(kind, "{named}: {message}", line << 32 | col)
+      }
       if type_of(s) != "Sound" {
-        __raise(
-          "TypeError",
-          "Kauai: an external instrument answers an Audio.Sound, not {type_of(s)}",
-        )
+        __raise("TypeError", "{named} answers an Audio.Sound, not {type_of(s)}")
       }
       let (took, n) = @_took.get(@_by[key], (0.0, 0))
       @_took[@_by[key]] = (took + @_now() - began, n + 1)

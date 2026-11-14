@@ -438,9 +438,57 @@ let not_a_sound = Kauai.new(EXTERNAL, voices: {ep: ep(|pitch, params| 1)}, drums
 let unbuilt = not_a_sound._todo.size()
 assert_throws("TypeError", fn () {
   not_a_sound.prepare()
-})
+}, message: "Kauai: line 2: voice Piano answers an Audio.Sound, not Long")
 # A sound whose building threw is still to build.
 assert_eq(not_a_sound._todo.size(), unbuilt)
+
+# An error an instrument raises names the voice or drum whose sound it was
+# making, keeping its kind and where in the instrument it was raised.
+fn instrument_errors_name_their_voice() {
+  let shut = fn (pitch, params) {
+    Audio.Sound(Synth.render(Synth.sine(440.0).lowpass(-5.0), 0.1))
+  }
+  let direct = try {
+    shut(60, {})
+  } catch e {
+    e
+  }
+  let named = try {
+    Kauai.new(EXTERNAL, voices: {ep: ep(shut)}, drums: {ride: |n, params| Audio.Sound.new(WAV)}).prepare()
+  } catch e {
+    e
+  }
+  assert_eq(named.kind, "ValueError")
+  assert_eq(named.message, "Kauai: line 2: voice Piano: {direct.message}")
+  assert_eq((named.line, named.col), (direct.line, direct.col))
+  assert_throws("ZeroDivisionError", fn () {
+    Kauai.new(EXTERNAL, voices: {ep: ep(|pitch, params| Audio.Sound.new(WAV))}, drums: {ride: fn (n, params) {
+      let _ = 1 / 0
+    }}).render()
+  }, message: "Kauai: line 3: drum Ride: divide by 0 error")
+  # Of two voices on one instrument, the one whose sound failed is named.
+  let duo = lines([
+    'band Duo {', '  voice Lead  Shared  plays melody  vol 50', '  voice Bass  Shared  plays roots in C2..B2  vol 50', '}',
+    'groove G {', '  Bass  1', '}',
+    'song Run {', '  tempo 60', '  band Duo', '  groove G', '  melody in C4..B4', '  Run', '}',
+    'section Run {', '  C  c2 e', '}',
+  ])
+  assert_throws("ValueError", fn () {
+    Kauai.new(duo, voices: {shared: fn (pitch, params) {
+      __raise("ValueError", "too low") if pitch < 48
+      Audio.Sound([0.0])
+    }}).render()
+  }, message: "Kauai: line 3: voice Bass: too low")
+  # What a program throws of its own passes as it was thrown.
+  let own = |thrown| try {
+    Kauai.new(EXTERNAL, voices: {ep: ep(fn (pitch, params) { throw thrown })}, drums: {ride: |n, params| Audio.Sound.new(WAV)}).prepare()
+  } catch e {
+    e
+  }
+  assert_eq(own("mine"), "mine")
+  assert_eq(own({kind: "Mine", message: "m"}), {kind: "Mine", message: "m"})
+}
+instrument_errors_name_their_voice()
 
 # prepare() builds the sound a voice is weighed by first, then each in the
 # order it first plays.

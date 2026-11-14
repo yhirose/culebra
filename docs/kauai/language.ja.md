@@ -1093,7 +1093,11 @@ song.seconds("1:04")                           # => 64.0
 あると、曲を読み込んだ時点で`ValueError`になります。このエラーは、その声部やドラムを
 書いた行と、渡されたキーの一覧を示します。`prepare()`は音声を1つ作って
 残りの数を返すので、ゲームでは音声の準備を複数のフレームに分けられます。
-`play()`は、残っている音声をすべて作ってから演奏を始めます。
+`play()`は、残っている音声をすべて作ってから演奏を始めます。楽器が音声を作る途中で
+エラーを出すと、そのエラーは種類と楽器の中で起きた位置を保ったまま、どの声部やドラムの
+音声を作っていたかを示します（`ValueError: Kauai: line 6: voice Bass: Audio.Graph: a
+cutoff is above 0 and below half the rate`）。`Audio.Sound`を返さない楽器は、同じ形で
+声部やドラムを示す`TypeError`になります。
 
 音声は[`Synth`](../stdlib.ja.md#46-synth)の式でも書けます。`Synth.render(expr)`は、
 秒数を渡さなければ式が自然に終わるまで描くので、減衰する音（`perc`、`pluck`）は
