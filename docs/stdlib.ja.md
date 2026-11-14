@@ -4247,7 +4247,8 @@ TLSは現在OpenSSLを静的リンクしていますが、将来BoringSSLへ切�
 
 HTTPサーバです。`get`/`post`/`put`/`delete`/`patch`/`options`でルートを登録し、
 `static`でファイルを配信し、`listen`で接続を受け付けます。各ハンドラは
-`fn(req) -> response`クロージャです。
+`fn(req) -> response`クロージャです。サーバはハンドルで、表示は`[Http.server]`
+（`close()`後は`[closed Http.server]`）、フィールドを持たず、Sendableではありません。
 
 ```culebra
 # doctest: skip

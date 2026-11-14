@@ -2504,9 +2504,10 @@ enum RuntimeSlot : size_t {
   // The same, for the one an Isolate.spawn handle points its at. Placed like
   // the seven above.
   kSlotIsolateMeta,
-  // The same, for the one a Search index points its at. Placed like the
-  // eight above.
+  // The same, for the ones a Search index and an Http server point theirs
+  // at. Placed like the eight above.
   kSlotSearchIndexMeta,
+  kSlotHttpServerMeta,
   kSlotShapeRegistry,  // reserved/unused: the Shape intern table is now a
                        // process-global singleton (see jit.h ShapeRegistry) —
                        // Shapes are shared immutable metadata, not isolated heap

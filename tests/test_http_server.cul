@@ -864,3 +864,57 @@ for _ in range(0, 5) {
   assert_eq(Http.get("http://127.0.0.1:{sport}/gc").body, 'gc')
 }
 ssrv.stop()
+
+# The routes a server records are its own: it prints as a handle and has no
+# fields.
+let shown = Http.server()
+assert_eq(shown.keys(), [])
+assert_eq("{shown}", "[Http.server]")
+shown.close()
+assert_eq("{shown}", "[closed Http.server]")
+
+# A handler that reaches its own server leaves the two garbage together, and
+# what it captured is dropped.
+mut routes_dropped = 0
+class RouteMark {
+  drop() {
+    routes_dropped += 1
+  }
+}
+fn route_round() {
+  let mark = RouteMark()
+  let srv = Http.server()
+  srv.get('/', fn (req) { [srv, mark] })
+  0
+}
+fn route_growth(rounds) {
+  route_round()
+  GC.stat()
+  let before = GC.stat().rc_objects
+  for _ in 0..rounds {
+    route_round()
+  }
+  GC.stat()
+  GC.stat().rc_objects - before
+}
+assert_eq(route_growth(20), 0)
+assert_eq(routes_dropped, 21)
+
+# close lets the recorded handlers go while the server is still held.
+mut closed_dropped = 0
+class ClosedMark {
+  drop() {
+    closed_dropped += 1
+  }
+}
+let held_srv = Http.server()
+fn record_on(srv) {
+  let mark = ClosedMark()
+  srv.get('/', fn (req) { [mark] })
+}
+record_on(held_srv)
+GC.stat()
+assert_eq(closed_dropped, 0)
+held_srv.close()
+GC.stat()
+assert_eq(closed_dropped, 1)

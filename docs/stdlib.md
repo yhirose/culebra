@@ -4377,7 +4377,9 @@ a server with a CN-only certificate that works today may then be rejected).
 
 An HTTP server. Register routes with `get`/`post`/`put`/`delete`/`patch`/`options`,
 serve files with `static`, then `listen` to accept connections. Each handler is a
-`fn(req) -> response` closure.
+`fn(req) -> response` closure. The server is a handle: it prints as
+`[Http.server]` (`[closed Http.server]` after `close()`), has no fields, and is
+not Sendable.
 
 ```culebra
 # doctest: skip

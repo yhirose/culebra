@@ -662,7 +662,7 @@ struct JitGenFrame;  // rt/gen.inc.h
 // The C++ half of a handle Object (JitObject::has_handle): what the value
 // stands for outside this Runtime's heap: a channel end, a fan_in's merged
 // rx, an rx's cursor, a SharedBuffer, a view of one's bytes and a view's
-// cursor, an Isolate and a Search index.
+// cursor, an Isolate, a Search index and an Http server.
 // A native object that keeps program values for as long as it lives keeps
 // them here and reports them in each_value, never in a slot the program can
 // reach nor under a pin, which the collector takes for a root.
@@ -679,6 +679,7 @@ struct JitHandle {
     BufViewIter,
     Isolate,
     SearchIndex,
+    HttpServer,
   };
   const Kind kind;
   explicit JitHandle(Kind k) : kind(k) {}

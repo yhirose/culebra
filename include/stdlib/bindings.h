@@ -7888,32 +7888,50 @@ inline JitObject* _jit_make_http_ws_handle(int64_t ws_id, bool is_client) {
   return h;
 }
 
-// Deferred route records per server id (registered at listen, when the worker
-// count — and so whether handlers must be Sendable — is known). The handler is
-// retained AND pinned for the record's lifetime: it lives only in this C++ map
-// (and later httplib's route table), unreachable from any GC root, so a retain
-// (RC) alone is not enough — the mark-sweep backstop sweeps unmarked objects
-// regardless of refcount. Both are undone by the release at close. thread_local:
-// the handle is non-sendable.
+// A route recorded on a server, installed at serve, when the worker count --
+// and so whether handlers must be Sendable -- is known. `handler` is a +1.
 struct JitRouteRecord {
   std::string method;
   std::string pattern;
   JitValue handler;
 };
-inline thread_local std::unordered_map<int64_t, std::vector<JitRouteRecord>>
-    g_jit_srv_routes;
+
+// An Http.server handle's C++ half: the server's id and its recorded routes,
+// each handler an edge of the handle (a handler that reaches its own server
+// leaves the two garbage together). Only serve reads the handlers, to send
+// them to the workers, which run their own copies; close lets them go.
+struct JitHttpServer final : JitHandle {
+  const int64_t id;
+  bool open = true;
+  std::vector<JitRouteRecord> routes;
+  explicit JitHttpServer(int64_t i) : JitHandle(Kind::HttpServer), id(i) {}
+  std::string show() const override {
+    return open ? "[Http.server]" : "[closed Http.server]";
+  }
+  bool same(const JitHandle&) const override { return false; }
+  void each_value(Visit visit, void* ctx) override {
+    for (auto& r : routes) visit(ctx, r.handler);
+  }
+};
+
+inline JitHttpServer* _jit_self_http_server(JitValue self) {
+  return _jit_self_handle<JitHttpServer>(self, JitHandle::Kind::HttpServer,
+                                         "Http.server handle");
+}
+inline int64_t _jit_http_server_id(JitValue self) {
+  return _jit_self_http_server(self)->id;
+}
 // Per-worker deserialized handlers for a concurrent server (workers > 1): each
 // worker thread rebuilds the handlers onto its own heap here.
 inline thread_local std::vector<JitValue> g_jit_srv_w_handlers;
 
-// Records `value` (a handler, or a Dir sent like one) on server `id`, held as
-// the comment on JitRouteRecord says; returns its index, which is also where
-// each worker finds its copy in g_jit_srv_w_handlers.
-inline size_t _jit_http_server_record(int64_t id, std::string method,
+// Records `value` (a handler, or a Dir sent like one) on the server `self`;
+// returns its index, which is also where each worker finds its copy in
+// g_jit_srv_w_handlers.
+inline size_t _jit_http_server_record(JitValue self, std::string method,
                                       std::string pattern, JitValue value) {
-  auto& recs = g_jit_srv_routes[id];
+  auto& recs = _jit_self_http_server(self)->routes;
   culebra_runtime_value_retain(value.tag, value.data);
-  _gc_heap().pin(reinterpret_cast<void*>(value.data));
   recs.push_back({std::move(method), std::move(pattern), value});
   return recs.size() - 1;
 }
@@ -7986,8 +8004,6 @@ struct _JitWorkerDir : culebra::Dir {
 
 inline JitValue _jit_http_server_route(JitValue self, int64_t n, JitValue* args,
                                        const char* method) {
-  int64_t id =
-      _jit_handle_long(reinterpret_cast<JitObject*>(self.data), "_id");
   if (!_jit_file_arg_present(n, args, 0)) _jit_file_missing_arg("pattern");
   if (args[0].tag != TAG_STRING)
     _jit_file_param_type_error("pattern", "String", 0);
@@ -7995,7 +8011,7 @@ inline JitValue _jit_http_server_route(JitValue self, int64_t n, JitValue* args,
   if (args[1].tag != TAG_FUNC)
     _jit_file_param_type_error("handler", "Function", 1);
   _jit_http_server_record(
-      id, method, std::string(_culebra_str_view(args[0].tag, args[0].data)),
+      self, method, std::string(_culebra_str_view(args[0].tag, args[0].data)),
       args[1]);
   culebra_runtime_value_retain(self.tag, self.data);  // chainable return (+1)
   return self;
@@ -8044,7 +8060,7 @@ inline std::unique_ptr<culebra::Dir> _dir_rebuild(JitObject* o);
 inline void _jit_http_server_static(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                                    int64_t n, JitValue* args) {
   JitValue self{self_tag, self_data};
-  int64_t id = _jit_handle_long(reinterpret_cast<JitObject*>(self.data), "_id");
+  int64_t id = _jit_http_server_id(self);
   if (!_jit_file_arg_present(n, args, 0)) _jit_file_missing_arg("mount");
   if (args[0].tag != TAG_STRING)
     _jit_file_param_type_error("mount", "String", 0);
@@ -8070,7 +8086,7 @@ inline void _jit_http_server_static(JitValue* __ret, JitClosure*, int8_t self_ta
         if (!_culebra_value_matches_type(args[1].tag, args[1].data, "Dir"))
           bad_dir();
         dir = std::make_unique<_JitWorkerDir>(
-            _jit_http_server_record(id, "STATIC", mount, args[1]));
+            _jit_http_server_record(self, "STATIC", mount, args[1]));
       }
       culebra::http::http_server_serve_dir(id, mount, std::move(dir), err);
     } else if (args[1].tag == TAG_STRING) {
@@ -8091,15 +8107,17 @@ inline void _jit_http_server_static(JitValue* __ret, JitClosure*, int8_t self_ta
 // Register the recorded routes and serve. Handlers always run on a worker pool
 // (serialized once here, rebuilt per worker — so they must be Sendable); the
 // accept loop never runs a handler. `async` selects background vs blocking serve.
-inline JitValue _jit_http_server_do_serve(int64_t id, int64_t workers,
+inline JitValue _jit_http_server_do_serve(JitValue self, int64_t workers,
                                           bool async, const char* ctx) {
+  auto* srv = _jit_self_http_server(self);
+  int64_t id = srv->id;
   std::string err;
   // Reject an unservable handle before installing any route trampoline, so a
   // rejected serve() leaves the handle exactly as it was.
   if (!culebra::http::http_server_serve_ready(id, err))
     throw culebra::CulebraError("HttpError", culebra::format("{}: {}", ctx, err), 0,
                                 0);
-  auto& recs = g_jit_srv_routes[id];
+  const auto& recs = srv->routes;
   {
     auto snodes = std::make_shared<std::vector<sendable::SendNode>>();
     for (const auto& rec : recs) {
@@ -8204,10 +8222,6 @@ inline JitValue _jit_http_server_do_serve(int64_t id, int64_t workers,
   }
 }
 
-inline int64_t _jit_http_server_id(JitValue self) {
-  return _jit_handle_long(reinterpret_cast<JitObject*>(self.data), "_id");
-}
-
 // args[0] = port, args[1] = host. Shared by bind and listen. The caller has
 // already checked that port is present.
 inline int64_t _jit_http_server_bind_args(int64_t id, int64_t n, JitValue* args,
@@ -8250,10 +8264,9 @@ inline void _jit_http_server_bind(JitValue* __ret, JitClosure*, int8_t self_tag,
 // Shared body for serve (async=false, blocks) and serve_async (returns).
 inline JitValue _jit_http_server_serve_impl(JitValue self, int64_t n,
                                             JitValue* args, bool async) {
-  int64_t id = _jit_http_server_id(self);
   return _jit_at_call_site([&] {
     return _jit_http_server_do_serve(
-        id, _jit_http_server_workers_arg(n, args, 0), async,
+        self, _jit_http_server_workers_arg(n, args, 0), async,
         async ? "server.serve_async" : "server.serve");
   });
 }
@@ -8279,7 +8292,7 @@ inline JitValue _jit_http_server_listen_impl(JitValue self, int64_t n,
     const char* ctx = async ? "server.listen_async" : "server.listen";
     int64_t bound = _jit_http_server_bind_args(id, n, args, ctx);
     int64_t workers = _jit_http_server_workers_arg(n, args, 2);
-    JitValue r = _jit_http_server_do_serve(id, workers, async, ctx);
+    JitValue r = _jit_http_server_do_serve(self, workers, async, ctx);
     return async ? JitValue{TAG_LONG, bound} : r;
   });
 }
@@ -8298,72 +8311,70 @@ inline void _jit_http_server_listen_async(JitValue* __ret, JitClosure*,
 inline void _jit_http_server_stop(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                                  int64_t, JitValue*) {
   JitValue self{self_tag, self_data};
-  culebra::http::http_server_stop(
-      _jit_handle_long(reinterpret_cast<JitObject*>(self.data), "_id"));
+  culebra::http::http_server_stop(_jit_http_server_id(self));
   { *__ret = {TAG_NIL, 0}; return; }
 }
 
-// Release the recorded handlers (their retain + the registry entry; the pin is
-// dropped when RC frees them), drop the records, and free the server.
-inline void _jit_http_server_clear_routes(int64_t id) {
-  auto it = g_jit_srv_routes.find(id);
-  if (it == g_jit_srv_routes.end()) return;
-  for (auto& rec : it->second)
-    culebra_runtime_value_release(rec.handler.tag, rec.handler.data);
-  g_jit_srv_routes.erase(it);
-}
+// close and drop: the server closes and its recorded handlers go. Nothing
+// calls an original handler meanwhile (the workers run their copies).
 inline void _jit_http_server_close(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                                   int64_t, JitValue*) {
   JitValue self{self_tag, self_data};
-  int64_t id = _jit_handle_long(reinterpret_cast<JitObject*>(self.data), "_id");
-  _jit_http_server_clear_routes(id);
-  culebra::http::http_server_close(id);
-  { *__ret = {TAG_NIL, 0}; return; }
-}
-inline void _jit_http_server_drop(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
-                                                 int64_t, JitValue*) {
-  JitValue self{self_tag, self_data};
-  int64_t id = _jit_handle_long(reinterpret_cast<JitObject*>(self.data), "_id");
-  _jit_http_server_clear_routes(id);
-  culebra::http::http_server_close(id);
+  auto* srv = _jit_self_http_server(self);
+  srv->open = false;
+  auto routes = std::exchange(srv->routes, {});
+  for (auto& rec : routes)
+    culebra_runtime_value_release(rec.handler.tag, rec.handler.data);
+  culebra::http::http_server_close(srv->id);
   { *__ret = {TAG_NIL, 0}; return; }
 }
 
+// The meta every Http.server handle points its `proto` at. Borrowed.
+inline JitObject* _jit_http_server_meta() {
+  return _jit_pinned_meta(culebra::kSlotHttpServerMeta, 0, [] {
+    auto* meta = culebra_runtime_object_new();
+    static const JitParamMeta* route_meta =
+        _jit_make_handle_meta({"pattern", "handler"}, {false, false});
+    static const JitParamMeta* static_meta =
+        _jit_make_handle_meta({"mount", "dir"}, {false, false});
+    static const JitParamMeta* bind_meta =
+        _jit_make_handle_meta({"port", "host"}, {false, true});
+    static const JitParamMeta* serve_meta =
+        _jit_make_handle_meta({"workers"}, {true});
+    static const JitParamMeta* listen_meta =
+        _jit_make_handle_meta({"port", "host", "workers"}, {false, true, true});
+    _jit_handle_bind_method(meta, "get", _jit_native<_jit_http_server_get>, 2, route_meta);
+    _jit_handle_bind_method(meta, "post", _jit_native<_jit_http_server_post>, 2, route_meta);
+    _jit_handle_bind_method(meta, "put", _jit_native<_jit_http_server_put>, 2, route_meta);
+    _jit_handle_bind_method(meta, "delete", _jit_native<_jit_http_server_delete>, 2,
+                            route_meta);
+    _jit_handle_bind_method(meta, "patch", _jit_native<_jit_http_server_patch>, 2,
+                            route_meta);
+    _jit_handle_bind_method(meta, "options", _jit_native<_jit_http_server_options>, 2,
+                            route_meta);
+    _jit_handle_bind_method(meta, "ws", _jit_native<_jit_http_server_ws>, 2, route_meta);
+    _jit_handle_bind_method(meta, "static", _jit_native<_jit_http_server_static>, 2,
+                            static_meta);
+    _jit_handle_bind_method(meta, "bind", _jit_native<_jit_http_server_bind>, 1, bind_meta);
+    _jit_handle_bind_method(meta, "serve", _jit_native<_jit_http_server_serve>, 0,
+                            serve_meta);
+    _jit_handle_bind_method(meta, "serve_async", _jit_native<_jit_http_server_serve_async>,
+                            0, serve_meta);
+    _jit_handle_bind_method(meta, "listen", _jit_native<_jit_http_server_listen>, 1,
+                            listen_meta);
+    _jit_handle_bind_method(meta, "listen_async",
+                            _jit_native<_jit_http_server_listen_async>, 1, listen_meta);
+    _jit_handle_bind_method(meta, "stop", _jit_native<_jit_http_server_stop>, 0);
+    _jit_handle_bind_method(meta, "close", _jit_native<_jit_http_server_close>, 0);
+    _jit_handle_bind_method(meta, "drop", _jit_native<_jit_http_server_close>, 0);
+    return meta;
+  });
+}
+
 inline JitValue _culebra_http_build_server_handle(int64_t id) {
-  auto* h = culebra_runtime_object_new();
-  h->set_or_append("_id", JitValue{TAG_LONG, id}, false);
-  h->set_or_append("__nonsendable__", JitValue{TAG_BOOL, 1}, false);
-  static const JitParamMeta* route_meta =
-      _jit_make_handle_meta({"pattern", "handler"}, {false, false});
-  static const JitParamMeta* static_meta =
-      _jit_make_handle_meta({"mount", "dir"}, {false, false});
-  static const JitParamMeta* bind_meta =
-      _jit_make_handle_meta({"port", "host"}, {false, true});
-  static const JitParamMeta* serve_meta =
-      _jit_make_handle_meta({"workers"}, {true});
-  static const JitParamMeta* listen_meta =
-      _jit_make_handle_meta({"port", "host", "workers"}, {false, true, true});
-  _jit_handle_bind_method(h, "get", _jit_native<_jit_http_server_get>, 2, route_meta);
-  _jit_handle_bind_method(h, "post", _jit_native<_jit_http_server_post>, 2, route_meta);
-  _jit_handle_bind_method(h, "put", _jit_native<_jit_http_server_put>, 2, route_meta);
-  _jit_handle_bind_method(h, "delete", _jit_native<_jit_http_server_delete>, 2, route_meta);
-  _jit_handle_bind_method(h, "patch", _jit_native<_jit_http_server_patch>, 2, route_meta);
-  _jit_handle_bind_method(h, "options", _jit_native<_jit_http_server_options>, 2,
-                          route_meta);
-  _jit_handle_bind_method(h, "ws", _jit_native<_jit_http_server_ws>, 2, route_meta);
-  _jit_handle_bind_method(h, "static", _jit_native<_jit_http_server_static>, 2, static_meta);
-  _jit_handle_bind_method(h, "bind", _jit_native<_jit_http_server_bind>, 1, bind_meta);
-  _jit_handle_bind_method(h, "serve", _jit_native<_jit_http_server_serve>, 0, serve_meta);
-  _jit_handle_bind_method(h, "serve_async", _jit_native<_jit_http_server_serve_async>, 0,
-                          serve_meta);
-  _jit_handle_bind_method(h, "listen", _jit_native<_jit_http_server_listen>, 1, listen_meta);
-  _jit_handle_bind_method(h, "listen_async", _jit_native<_jit_http_server_listen_async>, 1,
-                          listen_meta);
-  _jit_handle_bind_method(h, "stop", _jit_native<_jit_http_server_stop>, 0);
-  _jit_handle_bind_method(h, "close", _jit_native<_jit_http_server_close>, 0);
-  _jit_handle_bind_method(h, "drop", _jit_native<_jit_http_server_drop>, 0);
-  _jit_owned_bind_drop(h);
-  return {TAG_OBJECT, reinterpret_cast<int64_t>(h)};
+  JitValue v = _jit_make_handle(new JitHttpServer(id), _jit_http_server_meta());
+  _jit_owned_bind_drop(reinterpret_cast<JitObject*>(v.data));
+  return v;
 }
 
 // Http.server() → server handle.

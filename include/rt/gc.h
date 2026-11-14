@@ -289,13 +289,14 @@ class Heap {
   void mark_callbacks_wired() { callbacks_wired_ = true; }
 
   // Pin an object as a root (and trace its children) while C++ holds it out
-  // of the collector's sight: the cached namespace objects, a server's
-  // handlers, a streaming response's closure. Pins are counted, as JNI's
-  // global references are: each holder pins once and unpins once, and the
-  // object stays a root while any holder is left — one object can have two
-  // holders (a handler that streams itself), and the first to let go must
-  // not unpin it for the other. kFlagPinned mirrors "the count is not zero"
-  // in the header, which is what the collector reads.
+  // of the collector's sight: the cached namespace objects, a worker's copy
+  // of a server's handlers, a streaming response's closure. Pins are
+  // counted, as JNI's global references are: each holder pins once and
+  // unpins once, and the object stays a root while any holder is left — one
+  // object can have two holders (a handler that streams itself), and the
+  // first to let go must not unpin it for the other. kFlagPinned mirrors
+  // "the count is not zero" in the header, which is what the collector
+  // reads.
   static constexpr uint8_t kFlagPinned = 1;
   void pin(void* p) {
     if (GcHeader* h = objects_.find(p)) {
