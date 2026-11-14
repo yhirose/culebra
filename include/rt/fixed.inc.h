@@ -1848,6 +1848,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_object_has_value(
 // from a deserialized Object (jit_deserialize, conc/sendable.h), whose
 // properties are already in place by the time this runs.
 inline void _jit_fill_specials(JitObject* meta) {
+  meta->specials->sealed = true;
   // The meta holds every method it names, and outlives the table.
   for (size_t s = 0; s < static_cast<size_t>(Special::Count); s++) {
     auto fn = _special_closure(meta, static_cast<Special>(s));

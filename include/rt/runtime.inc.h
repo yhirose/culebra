@@ -1811,8 +1811,9 @@ inline JitHeldMethod _protocol_member(JitObject* obj, const char* name) {
   const JitValue& v = holder->slots[idx].value;
   if (v.tag != TAG_FUNC) return {};
   auto* fn = reinterpret_cast<JitClosure*>(v.data);
-  return holder->is_class_meta ? JitHeldMethod::lend(fn)
-                               : JitHeldMethod::hold(fn);
+  if (!holder->is_class_meta) return JitHeldMethod::hold(fn);
+  assert(holder->specials && holder->specials->sealed);
+  return JitHeldMethod::lend(fn);
 }
 inline bool _has_protocol_member(JitObject* obj, const char* name) {
   auto* entry = _find_property(obj, name);
@@ -2034,9 +2035,10 @@ struct SpecialLookup {
     const auto i = static_cast<size_t>(s);
     if (t.by_name >> i & 1) return inherited(obj, s, ask);
     JitClosure* fn = t.fn[i];
-    return {t.inherited >> i & 1 ? JitHeldMethod::hold(fn)
-                                 : JitHeldMethod::lend(fn),
-            fn != nullptr};
+    if (t.inherited >> i & 1) return {JitHeldMethod::hold(fn), true};
+    // A class's own method is only ever here once the table is sealed.
+    assert(!fn || t.sealed);
+    return {JitHeldMethod::lend(fn), fn != nullptr};
   }
   Found find(Special s, JitDefaultAsk ask) const {
     if (table) return slot(*table, s, ask);
@@ -4316,6 +4318,7 @@ inline void _jit_object_set_declared(
   } else {
     if (obj->shape)
       _jit_check_slot_write(key, obj->shape, idx, tag, data, line, col);
+    obj->assert_slots_writable();
     _jit_overwrite_slot(obj->slots[idx], key, tag, data, mut, is_init, line,
                         col, /*check_wk=*/true);
   }

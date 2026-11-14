@@ -535,6 +535,13 @@ struct JitSpecialTable {
   // traits supply it (asking raises the ambiguity) or a worker has yet to
   // rebuild the one it was shipped — so that name is asked by name.
   uint32_t by_name = 0;
+  // Set as the table is first filled (_jit_fill_specials): from here on the
+  // meta's slots never change, which `fn`, a lent method
+  // (JitHeldMethod::lend) and `methods_drop` all rely on. Asserted where a
+  // method is lent, and in JitObject's own slot writers and object_set; the
+  // compiled code's cached writes are not checked, as a program never holds
+  // a meta to write through.
+  bool sealed = false;
   // The class this meta belongs to, interned. Every instance reaches it
   // through `proto`, so the name lives here rather than on JitObject, which
   // must stay inside its 128-byte slab class.
@@ -975,6 +982,7 @@ struct JitObject {
   // would go. An empty one (no shape yet, a received dictionary) flips too.
   void become_dict() {
     assert(!is_dict && !proto_);
+    assert_slots_writable();
     // `key_order` is the only insertion-order record once the shape stops
     // growing, so it is made real here if it is still lazy; its Strings are
     // the names the index views.
@@ -985,6 +993,7 @@ struct JitObject {
   }
 
   size_t append_dict(std::string_view key, JitValue value, bool mut) {
+    assert_slots_writable();
     auto entry = name_key(key);
     key_order->push_back(entry);
     dict_->add(name_of(entry), slots.size());
@@ -998,6 +1007,7 @@ struct JitObject {
   // stamps one fixed key on every object it builds and so can cache the
   // target Shape. `next` must be this object's shape plus that one name.
   size_t append_slot_shaped(culebra::Shape* next, JitValue value, bool mut) {
+    assert_slots_writable();
     shape = next;
     if (slots.capacity() == 0) slots.reserve(8);
     slots.push_back({value, mut});
@@ -1016,8 +1026,14 @@ struct JitObject {
     if (idx == static_cast<size_t>(-1)) {
       return append_slot(key, value, mut);
     }
+    assert_slots_writable();
     slots[idx] = {value, mut};
     return idx;
+  }
+
+  // A class meta's slots are fixed once sealed (JitSpecialTable::sealed).
+  void assert_slots_writable() const {
+    assert(!(is_class_meta && specials && specials->sealed));
   }
 
   // Iterate (name, entry) pairs in insertion order.
@@ -1056,6 +1072,7 @@ struct JitObject {
   void erase(std::string_view key) {
     auto idx = find_slot(key);
     if (idx == static_cast<size_t>(-1)) return;
+    assert_slots_writable();
     if (!is_dict && !proto_) become_dict();
     // A String key's entry holds a String of its own, found by its bytes.
     // The index below still views it: nothing collects in between.

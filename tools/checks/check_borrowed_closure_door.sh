@@ -79,6 +79,8 @@ population = [
          'inline JitHeldMethod _protocol_member(') == 1),
     ('the special lookup answers a held method',
      use('include/rt/runtime.inc.h', 'JitHeldMethod operator()(Special s)') == 1),
+    ('a method is lent only from a sealed class meta, in two places',
+     sum(t.count('JitHeldMethod::lend(') for t in text.values()) == 2),
     ('the lowering calls a probed `__call__` through call_held',
      use('include/jit/lowering.h', 'rt::call_held') >= 1),
     ('the JIT opens a for through the executor\'s iter() call',
