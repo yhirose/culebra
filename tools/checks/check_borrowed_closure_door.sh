@@ -19,10 +19,10 @@
 # `reinterpret_cast<JitClosure*>(v.data)`. Each one is either a sound borrow
 # (a call's own argument, the running closure's capture cell, a frame
 # register, a class meta) or a hole. So the casts are counted per file, and a
-# new one fails here until it is looked at and counted in on purpose. The
-# counts in bindings.h still include the standard-library holes the second
-# stage fixes (Compress.zip's `read`, Search's analyzer filters, the worker
-# Dir's methods, a multipart `stream`); they only go down from here.
+# new one fails here until it is looked at and counted in on purpose. What
+# the standard library keeps past a call (a request's or a part's producer,
+# an analyzer's hooks, a response's stream) goes through _jit_keep_closure,
+# which holds and pins it, instead of a cast.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 
@@ -48,7 +48,7 @@ COUNTED = {
     'include/rt/iter.inc.h': 53,
     'include/rt/mem.inc.h': 3,
     'include/rt/runtime.inc.h': 4,
-    'include/stdlib/bindings.h': 21,
+    'include/stdlib/bindings.h': 17,
     'include/stdlib/codegen.h': 1,
     'include/vm/embed.h': 1,
     'include/vm/vm.h': 13,

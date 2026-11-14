@@ -257,3 +257,89 @@ let walked_all = Steps("eager").iter().collect()
 log.push("after")
 assert_eq(walked_all, [1, 2])
 assert_eq(log, ["step eager", "step eager", "drop eager", "after"])
+
+# The standard library keeps what it reads from the program's own objects
+# for as long as it uses it: Compress.zip a Dir's `read` that replaces
+# itself, a Search index the analyzer hooks the program assigns over.
+class Zipped {
+  new(k) {
+    self.read = fn (path) {
+      self.read = |p| "x"
+      let n = churn()
+      "{path}:{k + n}"
+    }
+  }
+  list_dir(path) { path == '' ? ['a.txt', 'b.txt'] : [] }
+  exists(path) { self.is_file(path) || self.is_dir(path) }
+  is_file(path) { path == 'a.txt' || path == 'b.txt' }
+  is_dir(path) { path == '' }
+}
+fn as_dir(d: Dir) { d }
+let unzipped = Dir.zip(bytes: Compress.zip(as_dir(Zipped(7))))
+assert_eq(unzipped.files().map(|f| unzipped.read(f)), ["a.txt:1007", "b.txt:1007"])
+
+fn suffixed(k) {
+  fn (t) { "{t}{k}" }
+}
+let filters = [suffixed(7)]
+let analyzer = {mut normalizer: suffixed(""), filters: filters}
+let index = Search.Index.new(analyzer: analyzer)
+filters[0] = |t| t
+analyzer.normalizer = |t| "gone"
+churn()
+index.add("doc-1", "quick brown")
+assert_eq(index.search("quick").size(), 1)
+
+# An index keeps its analyzer's hooks for as long as it lives, as edges the
+# collector follows: a hook that reaches its index's owner leaves the two
+# garbage together, and the owner's `drop` runs.
+mut corpora_dropped = 0
+class Corpus {
+  new() {
+    @stop = ['the']
+    @index = Search.Index.new(analyzer: {
+      normalizer: |t| self.stop.size() > 0 ? t : '',
+      filters: [|t| self.stop.contains(t) ? nil : t],
+    })
+    @index.add('d', 'the quick fox')
+  }
+  drop() {
+    corpora_dropped += 1
+  }
+}
+fn corpus_round() {
+  let c = Corpus()
+  0
+}
+fn corpus_growth(rounds) {
+  corpus_round()
+  GC.stat()
+  let before = GC.stat().rc_objects
+  for _ in 0..rounds {
+    corpus_round()
+  }
+  GC.stat()
+  GC.stat().rc_objects - before
+}
+let corpus_growth_seen = corpus_growth(20)
+assert_eq(corpus_growth_seen, 0)
+assert_eq(corpora_dropped, 21)
+
+# A multipart part's `stream` that replaces itself on its first call.
+let parts_srv = Http.server()
+parts_srv.post("/echo", |req| {body: "ok"})
+let parts_port = parts_srv.listen_async(0, "127.0.0.1")
+let part = {mut stream: nil}
+fn part_producer(k) {
+  mut n = 0
+  fn () {
+    part.stream = || nil
+    n += 1
+    churn()
+    n <= 3 ? "piece{k}" : nil
+  }
+}
+part.stream = part_producer(7)
+let sent = Http.post("http://127.0.0.1:{parts_port}/echo", files: {a: part})
+parts_srv.stop()
+assert_eq([sent.status, sent.body], [200, "ok"])

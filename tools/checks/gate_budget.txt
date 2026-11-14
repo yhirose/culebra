@@ -214,8 +214,10 @@
 # 369 since test_borrowed_methods.cul (a method the runtime calls by name or
 # protocol keeps running when its own slot or its trait's table lets it go,
 # and dies as the call returns: operators, __str__, hash, __call__, a for's
-# iter/next/dispose, lazy and eager walks; 0.04 s under --vm, 2.1 s under
-# --jit, 4.6 CPU s for the three gc-stress runs).
+# iter/next/dispose, lazy and eager walks, and what the standard library
+# keeps: Compress.zip's Dir, a Search analyzer, a multipart stream; 0.15 s
+# under --vm, 2.8 s under --jit, 4.6 CPU s for the three gc-stress runs at
+# the first version).
 tests.cul 369
 
 # tests/isolate/*.cul — run on both engines, plus the over-cap modes.

@@ -792,6 +792,14 @@ unrooted, so on wasm no collection runs beneath it. A class's own
 `tools/checks/check_borrowed_closure_door.sh`, so a new borrow is looked
 at before it lands.
 
+A native object that keeps a Function past the call that handed it over
+takes its count where the collector can see it. A Search index keeps its
+analyzer's hooks in an Array on the index handle: an edge the collector
+traces, so a hook that reaches its own index is garbage along with it. A
+pin is a root, and is used only for a span that always ends — a request's
+body producer, a part's stream, a response's stream — where nothing is
+left pinned once the transfer is over.
+
 ### 5.3.1 A flat `@value` chain is compiled, not called
 
 Naming a callee is the ceiling of §5.3's resolution — the code is static,

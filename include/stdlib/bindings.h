@@ -2359,6 +2359,23 @@ struct JitHttpSink {
   std::exception_ptr eptr;
 };
 
+// A Function a transfer keeps past the call that handed it over (a request's
+// body producer, a part's stream, a response's stream): what it was read from
+// can let it go meanwhile, so it takes its own +1, pinned because the
+// collector does not count it, both dropped with the last copy of the handle.
+// Only for a span that always ends: a pin is a root, so a native object kept
+// for a value's life keeps what it calls on that value instead, where the
+// collector sees the edge (Search's analyzer hooks, make_analyzer).
+inline std::shared_ptr<JitClosure> _jit_keep_closure(JitValue fn) {
+  auto* cls = reinterpret_cast<JitClosure*>(fn.data);
+  culebra_runtime_value_retain(TAG_FUNC, fn.data);
+  _gc_heap().pin(cls);
+  return std::shared_ptr<JitClosure>(cls, [](JitClosure* p) {
+    _gc_heap().unpin(p);
+    culebra_runtime_value_release(TAG_FUNC, reinterpret_cast<int64_t>(p));
+  });
+}
+
 // Call a sink's culebra callback with the value `make_arg` builds (consumed).
 // A throw from either is kept in `st.eptr` and returns false, which aborts the
 // transfer; the request's runner rethrows it as it is once the send is over.
@@ -2571,11 +2588,11 @@ inline void _http_setup_multipart(JitValue filesv,
             culebra::format("{}: files['{}'].stream must be a Function (producer)",
                             ctx, name), 0, 0);
       }
-      auto* producer = reinterpret_cast<JitClosure*>(sv.data);
+      auto producer = _jit_keep_closure(sv);
       part.source = [producer, &st, ctx](std::string& out) -> bool {
         if (st.eptr) return false;  // a previous part already failed.
         try {
-          JitValue r = _culebra_invoke0(producer);
+          JitValue r = _culebra_invoke0(producer.get());
           if (r.tag == TAG_NIL) return false;  // end of stream.
           if (r.tag != TAG_STRING && r.tag != TAG_STRINGVIEW) {
             _culebra_value_release_impl(r.tag, r.data);
@@ -2672,10 +2689,10 @@ inline void _http_setup_body(JitValue bodyv, JitValue jsonv, JitValue formv,
   }
   if (bodyv.tag == TAG_NIL) return;  // missing → no request body
   if (bodyv.tag == TAG_FUNC) {
-    auto* producer = reinterpret_cast<JitClosure*>(bodyv.data);
+    auto producer = _jit_keep_closure(bodyv);
     req.body_source = [producer, &st, ctx](std::string& out) -> bool {
       try {
-        JitValue r = _culebra_invoke0(producer);
+        JitValue r = _culebra_invoke0(producer.get());
         if (r.tag == TAG_NIL) return false;  // end of stream
         if (r.tag != TAG_STRING && r.tag != TAG_STRINGVIEW) {
           _culebra_value_release_impl(r.tag, r.data);
@@ -7185,6 +7202,17 @@ inline JitValue _ns_proc_race(JitValue* a, int64_t n) {
                                  fds.empty() ? nullptr : &fds);
 }
 
+// A Dir's method `name`, held (it can replace the field it was read from);
+// empty when a field of the name, which shadows the trait's default, is no
+// method.
+inline JitHeldMethod _jit_dir_method(JitObject* o, const char* name) {
+  JitPropIC ic{};
+  JitValue m = culebra_runtime_object_get_ic(o, name, &ic, 0, 0);
+  return m.tag == TAG_FUNC
+             ? JitHeldMethod::hold(reinterpret_cast<JitClosure*>(m.data))
+             : JitHeldMethod{};
+}
+
 #if defined(CULEBRA_HTTP_ENABLED)
 namespace _http_adapt {
 // Fill `headers`/`timeout`/`follow_redirects`/`params` from the slab into
@@ -7701,20 +7729,11 @@ inline bool _jit_http_try_stream_response(JitValue ret,
         0);
   std::string content_type = _jit_http_apply_response_meta(o, res);
   // The provider runs after this returns (same worker thread, same response
-  // write), and the closure lives only in C++ until then — so retain + pin it
-  // (the mark-sweep backstop ignores refcount). A shared_ptr deleter unpins and
-  // releases when httplib drops the provider, whether or not it ever ran.
-  culebra_runtime_value_retain(TAG_FUNC, stream_v.data);
-  _gc_heap().pin(reinterpret_cast<void*>(stream_v.data));
-  std::shared_ptr<void> keep(reinterpret_cast<void*>(stream_v.data),
-                             [](void* p) {
-                               _gc_heap().unpin(p);
-                               culebra_runtime_value_release(
-                                   TAG_FUNC, reinterpret_cast<int64_t>(p));
-                             });
+  // write), and is dropped by httplib whether or not it ever ran.
+  auto keep = _jit_keep_closure(stream_v);
   culebra::http::http_res_set_stream(
       res, content_type, [keep](int64_t sink_id) -> bool {
-        auto* cls = reinterpret_cast<JitClosure*>(keep.get());
+        auto* cls = keep.get();
         try {
           JitValue sink{TAG_OBJECT, reinterpret_cast<int64_t>(
                                         _jit_make_http_sink_handle(sink_id))};
@@ -7906,22 +7925,18 @@ inline size_t _jit_http_server_record(int64_t id, std::string method,
 struct _JitWorkerDir : culebra::Dir {
   size_t index;
   explicit _JitWorkerDir(size_t i) : index(i) {}
-  // `dir.name(path)`, owned. Looked up as Compress.zip looks a Dir's
-  // methods up: a field of the name shadows the trait's default.
+  // `dir.name(path)`, owned.
   JitValue call(const char* name, std::string_view path) const {
     JitValue d = g_jit_srv_w_handlers[index];
-    JitPropIC ic{};
-    JitValue m = culebra_runtime_object_get_ic(
-        reinterpret_cast<JitObject*>(d.data), name, &ic, 0, 0);
-    if (m.tag != TAG_FUNC)
+    auto method = _jit_dir_method(reinterpret_cast<JitObject*>(d.data), name);
+    if (!method)
       throw culebra::CulebraError(
           "TypeError",
           culebra::format("server.static: the Dir's {} is not a method", name),
           0, 0);
     JitOwnedVal p(_ns_adapt::str(path));
     return culebra_runtime_call_from_host([&] {
-      return _culebra_invoke_method1(reinterpret_cast<JitClosure*>(m.data), d,
-                                     p.borrow());
+      return _culebra_invoke_method1(method, d, p.borrow());
     });
   }
   bool ask(const char* name, std::string_view path) const {
@@ -8772,19 +8787,18 @@ inline JitValue _ns_compress_zip(JitValue* a, int64_t) {
     // A class instance: a Dir, asked for its files and their bytes.
     if (!_culebra_type_matches_single(TAG_OBJECT, a[0].data, "Dir"))
       bad_type(_jit_meta_class_name(o));
-    // A field of the name shadows the trait's default, and is no method.
     auto method = [&](const char* name) {
-      JitPropIC ic{};
-      JitValue m = culebra_runtime_object_get_ic(o, name, &ic, 0, 0);
-      if (m.tag != TAG_FUNC)
+      auto m = _jit_dir_method(o, name);
+      if (!m)
         fail("TypeError", culebra::format("the Dir's {} is not a method", name));
-      return reinterpret_cast<JitClosure*>(m.data);
+      return m;
     };
-    JitOwnedVal list(_culebra_invoke_method0(method("files"), a[0]));
+    auto files = method("files");
+    JitOwnedVal list(_culebra_invoke_method0(files, a[0]));
     if (list.borrow().tag != TAG_ARRAY)
       fail("TypeError", "files() did not return an Array");
     auto* arr = reinterpret_cast<JitArray*>(list.borrow().data);
-    auto* read = method("read");
+    auto read = method("read");
     for (size_t i = 0; i < arr->size; i++) {
       JitValue p = arr->items[i];
       if (p.tag != TAG_STRING && p.tag != TAG_STRINGVIEW)
@@ -10956,8 +10970,7 @@ inline std::string foreign_class_name(JitValue v) {
 // dropped after the index was built raises ClosedError at the next add or
 // search, as any use of a dropped instance does -- the instance is the
 // wrapper's, unlike a Search.segmenter's model, which the index shares. `v`
-// stays reachable through the analyzer object the index handle holds, the
-// same way the closure hooks do (see make_analyzer).
+// is kept on the index handle, as the closure hooks are (see make_analyzer).
 inline culebra::search::Analyzer::NativeSplitter foreign_splitter(JitValue v) {
   auto of = culebra::wrapped_implementer<culebra::search::ISplitter>(v);
   if (!of) return nullptr;
@@ -10991,14 +11004,18 @@ inline JitValue hits(const std::vector<culebra::search::Hit>& list) {
   return _ns_adapt::v_array(arr);
 }
 
-// A culebra analyzer object as the value-neutral hooks search.h asks for.
-//
-// The closures are called through _culebra_invoke1. What keeps them reachable
-// for the collector is the analyzer object stored on the index handle below,
-// not these captures: a std::function's captures live in a malloc'd block the
-// collector does not scan, so the handle field is the root and the index must
-// not outlive it (it cannot -- every call that runs a hook goes through the
-// handle).
+// A culebra analyzer object as the value-neutral hooks search.h asks for,
+// with what the hooks reach raw: the closures (called through
+// _culebra_invoke1) and a wrapped splitter's handle. The index handle keeps
+// `keep` for as long as the index lives (_culebra_search_build_index_handle):
+// the program can assign the analyzer's fields meanwhile, and an edge the
+// collector traces, unlike a pin, leaves a hook that reaches its own index
+// garbage along with it. A segmenter is not in it: the index copies its
+// model.
+struct BuiltAnalyzer {
+  culebra::search::Analyzer analyzer;
+  JitOwnedVal keep;
+};
 // How an analyzer is described in a saved index. One place, so that an
 // omitted analyzer and an empty one cannot describe themselves differently
 // (they are the same analyzer).
@@ -11008,11 +11025,23 @@ inline std::string analyzer_shape(std::string_view splitter,
                          custom_normalizer ? "closure" : "builtin", filters);
 }
 
-inline culebra::search::Analyzer make_analyzer(JitValue v) {
-  culebra::search::Analyzer analyzer;
+inline BuiltAnalyzer make_analyzer(JitValue v) {
+  BuiltAnalyzer out{
+      {}, JitOwnedVal{_ns_adapt::v_array(culebra_runtime_array_new())}};
+  auto& analyzer = out.analyzer;
+  auto* kept = reinterpret_cast<JitArray*>(out.keep.borrow().data);
+  auto keep = [kept](JitValue x) {
+    culebra_runtime_value_retain(x.tag, x.data);
+    culebra_runtime_array_push(kept, x.tag, x.data);
+  };
+  // A Function the index calls raw, kept.
+  auto keep_fn = [&](JitValue fn) {
+    keep(fn);
+    return reinterpret_cast<JitClosure*>(fn.data);
+  };
   if (v.tag == TAG_NIL) {
     analyzer.shape = analyzer_shape("builtin", false, 0);
-    return analyzer;
+    return out;
   }
   if (v.tag != TAG_OBJECT) {
     throw culebra::CulebraError(
@@ -11027,8 +11056,8 @@ inline culebra::search::Analyzer make_analyzer(JitValue v) {
     culebra_runtime_object_get(obj, name, &tag, &data);
     return {tag, data};
   };
-  auto hook = [&](const char* name,
-                  const char* expected = "a Function") -> JitClosure* {
+  auto hook = [&](const char* name, const char* expected = "a Function")
+      -> JitClosure* {
     auto v = field(name);
     if (v.tag == TAG_NIL) return nullptr;
     if (v.tag != TAG_FUNC) {
@@ -11037,7 +11066,7 @@ inline culebra::search::Analyzer make_analyzer(JitValue v) {
           culebra::format("Search: analyzer {} must be {}", name, expected),
           _jit_thread.call_line, _jit_thread.call_col);
     }
-    return reinterpret_cast<JitClosure*>(v.data);
+    return keep_fn(v);
   };
   auto called = [](JitClosure* cb, std::string_view arg) {
     JitOwnedVal in{_ns_adapt::v_string(_culebra_heap_str(arg))};
@@ -11062,9 +11091,7 @@ inline culebra::search::Analyzer make_analyzer(JitValue v) {
   }
 
   // The splitter slot takes a closure, a Search.segmenter handle or a wrapped
-  // C++ splitter's handle. A handle stays reachable the same way the closures
-  // do: through the analyzer object the index handle holds (see
-  // _culebra_search_build_index_handle).
+  // C++ splitter's handle.
   //
   // Each branch also names itself in `analyzer.shape`, which a saved index
   // records: the hooks are std::functions with no identity to compare, so
@@ -11077,6 +11104,7 @@ inline culebra::search::Analyzer make_analyzer(JitValue v) {
     splitter_shape =
         "model:" + culebra::search::segmenter_model_tag(analyzer.segmenter);
   } else if (auto native = foreign_splitter(seg)) {
+    keep(seg);
     analyzer.native_splitter = std::move(native);
     splitter_shape = "native:" + foreign_class_name(seg);
   } else if (auto* cb = hook("splitter",
@@ -11145,7 +11173,7 @@ inline culebra::search::Analyzer make_analyzer(JitValue v) {
             "TypeError", type_error("filters must be an Array of Functions"),
             _jit_thread.call_line, _jit_thread.call_col);
       }
-      auto* cb = reinterpret_cast<JitClosure*>(arr->items[i].data);
+      auto* cb = keep_fn(arr->items[i]);
       analyzer.filters.push_back(
           [cb, called, type_error](std::string& term) -> bool {
             auto ret = called(cb, term);
@@ -11171,7 +11199,7 @@ inline culebra::search::Analyzer make_analyzer(JitValue v) {
 
   analyzer.shape = analyzer_shape(splitter_shape, analyzer.normalizer != nullptr,
                                   analyzer.filters.size());
-  return analyzer;
+  return out;
 }
 
 }  // namespace _search_adapt
@@ -11280,18 +11308,13 @@ inline JitValue _ns_search_segmenter(JitValue* a, int64_t) {
 }
 
 inline JitValue _culebra_search_build_index_handle(int64_t id,
-                                                  JitValue analyzer) {
+                                                  JitOwnedVal keep) {
   auto* h = culebra_runtime_object_new();
   h->set_or_append("_id", JitValue{TAG_LONG, id}, false);
-  // The analyzer's closures are reachable only through here: the native side
-  // holds them in std::function captures, which the collector cannot scan.
-  // object_set adopts a +1 and the analyzer arrived borrowed, so the slot
-  // needs its own reference -- without it the object is freed while the
-  // native hooks still hold pointers into it.
-  if (analyzer.tag != TAG_NIL) {
-    culebra_runtime_value_retain(analyzer.tag, analyzer.data);
-    _search_adapt::set_field(h, "_analyzer", analyzer);
-  }
+  // What the index's hooks reach raw (make_analyzer): the native side holds
+  // them in std::function captures, which the collector cannot scan, so they
+  // live as long as the handle, through this slot.
+  _search_adapt::set_field(h, "_keep", keep.consume());
   // A live index is not Sendable: its results alias it, and its registry is
   // per-thread, so it must not cross to an isolate (jit_serialize checks this).
   h->set_or_append("__nonsendable__", JitValue{TAG_BOOL, 1}, false);
@@ -11320,9 +11343,9 @@ inline JitValue _ns_search_index_new(JitValue* a, int64_t n) {
   // arguments that were passed -- an omitted optional is not a Nil slot to
   // read, it is not there.
   JitValue analyzer = n > 0 ? a[0] : JitValue{TAG_NIL, 0};
-  return _culebra_search_build_index_handle(
-      culebra::search::index_new(_search_adapt::make_analyzer(analyzer)),
-      analyzer);
+  auto built = _search_adapt::make_analyzer(analyzer);
+  int64_t id = culebra::search::index_new(std::move(built.analyzer));
+  return _culebra_search_build_index_handle(id, std::move(built.keep));
 }
 
 inline JitValue _ns_search_index_load(JitValue* a, int64_t n) {
@@ -11331,11 +11354,10 @@ inline JitValue _ns_search_index_load(JitValue* a, int64_t n) {
   // catch it (see docs/stdlib.md).
   JitValue analyzer = n > 1 ? a[1] : JitValue{TAG_NIL, 0};
   bool readonly = n > 2 && a[2].tag == TAG_BOOL && a[2].data != 0;
-  return _culebra_search_build_index_handle(
-      culebra::search::index_load(_ns_adapt::require_sv(a[0], "path"),
-                                  _search_adapt::make_analyzer(analyzer),
-                                  readonly),
-      analyzer);
+  auto built = _search_adapt::make_analyzer(analyzer);
+  int64_t id = culebra::search::index_load(_ns_adapt::require_sv(a[0], "path"),
+                                           std::move(built.analyzer), readonly);
+  return _culebra_search_build_index_handle(id, std::move(built.keep));
 }
 
 // NsParamMeta — the per-parameter view for stdlib methods that accept

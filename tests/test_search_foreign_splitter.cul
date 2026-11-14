@@ -19,6 +19,15 @@ let idx = Search.Index.new(analyzer: { splitter: splitter })
 idx.add("a", "The fox jumps over lazy dogs")
 idx.add("b", "A dog was walking home")
 
+// The index keeps the wrapped splitter it was built with: the analyzer's
+// `splitter` assigned over and collected leaves the index splitting as before.
+let reassigned = {mut splitter: __Foreign.Splitter.new(false)}
+let kept_idx = Search.Index.new(analyzer: reassigned)
+reassigned.splitter = nil
+GC.stat()
+kept_idx.add("a", "The fox jumps over lazy dogs")
+assert_eq(kept_idx.search("jump").map(|h| h.key), ["a"])
+
 // Both sides go through the same splitter: a query is stemmed too.
 assert_eq(found(idx.search("jump")), ["a"])
 assert_eq(found(idx.search("jumps")), ["a"])
