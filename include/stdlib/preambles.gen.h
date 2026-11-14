@@ -6175,10 +6175,26 @@ let _synth_module = fn () {
 
   # A signal an expression is made of: a part, or a Proxy box (what it
   # plays). Its methods make the parts that follow it, the same for both;
-  # `_signal()` is the part (or bundle) it stands for. Each class has its
-  # own operators, which a trait's methods do not stand in for.
+  # `_signal()` is the part (or bundle) it stands for, worked out first.
   trait SynthSignal {
     _signal()
+    __add__(other: Long | Float | SynthSignal | SynthEnvelope | Array) {
+      node("mix", [self._signal(), other], {}, {})
+    }
+    __sub__(other: Long | Float | SynthSignal | SynthEnvelope | Array) {
+      self._signal() + negate(other)
+    }
+    __mul__(other: Long | Float | SynthSignal | SynthEnvelope | Array) {
+      node("gain", [self._signal()], {gain: other}, {})
+    }
+    __div__(other: Long | Float) {
+      let s = self._signal()
+      __raise("ValueError", "Synth: a part divided by 0") if other == 0
+      s * (1.0 / other)
+    }
+    __neg__() {
+      self._signal() * -1.0
+    }
     filter(kind: String, cutoff: Long | Float | SynthSignal | SynthEnvelope | Array = 1000.0, q: Long | Float = 0.707) {
       node("filter", [self], {cutoff: cutoff}, {kind: kind, q: q})
     }
@@ -6298,22 +6314,6 @@ let _synth_module = fn () {
     }
     _signal() {
       self
-    }
-    __add__(other: Long | Float | SynthSignal | SynthEnvelope | Array) {
-      node("mix", [self, other], {}, {})
-    }
-    __sub__(other: Long | Float | SynthSignal | SynthEnvelope | Array) {
-      self + negate(other)
-    }
-    __mul__(other: Long | Float | SynthSignal | SynthEnvelope | Array) {
-      node("gain", [self], {gain: other}, {})
-    }
-    __div__(other: Long | Float) {
-      __raise("ValueError", "Synth: a part divided by 0") if other == 0
-      self * (1.0 / other)
-    }
-    __neg__() {
-      self * -1.0
     }
   }
 
@@ -7299,21 +7299,6 @@ let _synth_module = fn () {
     _signal() {
       __raise("ValueError", "Synth.Proxy: a box is heard in an expression once it is set") if @_bus == nil
       @_read ??= bus_signal(@_bus, @_width)
-    }
-    __add__(other: Long | Float | SynthSignal | SynthEnvelope | Array) {
-      self._signal() + other
-    }
-    __sub__(other: Long | Float | SynthSignal | SynthEnvelope | Array) {
-      self._signal() - other
-    }
-    __mul__(other: Long | Float | SynthSignal | SynthEnvelope | Array) {
-      self._signal() * other
-    }
-    __div__(other: Long | Float) {
-      self._signal() / other
-    }
-    __neg__() {
-      -self._signal()
     }
     # A sound that fails to build or to play (two channels into a box of
     # one, one graph more than may play, boxes that read each other in a
