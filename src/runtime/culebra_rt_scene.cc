@@ -1452,16 +1452,13 @@ class View {
   // Keys by name (stdlib/keynames.h — the vocabulary Canvas.key and
   // Term.read_key share); an unknown name is a key that is never pressed.
   bool key(std::string name) const {
-    int c = culebra::keynames::key_code_of(name);
-    return c != 0 && IsKeyDown(c);
+    return culebra::keynames::key_state(name, culebra::keynames::KeyEdge::Held);
   }
   bool key_pressed(std::string name) const {
-    int c = culebra::keynames::key_code_of(name);
-    return c != 0 && IsKeyPressed(c);
+    return culebra::keynames::key_state(name, culebra::keynames::KeyEdge::Pressed);
   }
   bool key_released(std::string name) const {
-    int c = culebra::keynames::key_code_of(name);
-    return c != 0 && IsKeyReleased(c);
+    return culebra::keynames::key_state(name, culebra::keynames::KeyEdge::Released);
   }
   // Gamepads by slot (0-3), buttons and axes by name (keynames.h); SDL's
   // mapping DB normalizes Xbox / DualSense / others to one layout.

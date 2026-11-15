@@ -4,10 +4,12 @@
 // move to the terminal too.
 //
 // A key name is a printable character ("a", " ", "-") or a special-key name
-// ("left", "enter", "f1", …). raylib's printable key codes are upper-case
-// ASCII, so single characters map by arithmetic and only the specials need a
-// table. Unknown names map to 0 / -1 and are never held — a typo is a key that
-// is never pressed, not an error, the same contract Canvas.key has always had.
+// ("left", "enter", "f1", …), or "shift" for either Shift key (Canvas and
+// Scene only: Term reports Shift as a field of the key event). raylib's
+// printable key codes are upper-case ASCII, so single characters map by
+// arithmetic and only the specials need a table. Unknown names map to 0 / -1
+// and are never held — a typo is a key that is never pressed, not an error,
+// the same contract Canvas.key has always had.
 #pragma once
 
 #include <string>
@@ -44,6 +46,61 @@ inline int key_code_of(std::string_view name) {
   }
   auto it = special_keys().find(name);
   return it == special_keys().end() ? 0 : it->second;
+}
+
+// The physical keys a name stands for: one, or both sides of a modifier
+// ("shift" is either Shift). No codes is an unknown name.
+struct KeyCodes {
+  int code[2] = {0, 0};
+  int count = 0;
+};
+
+inline KeyCodes key_codes_of(std::string_view name) {
+  if (name == "shift") return {{KEY_LEFT_SHIFT, KEY_RIGHT_SHIFT}, 2};
+  int c = key_code_of(name);
+  if (c == 0) return {};
+  return {{c, 0}, 1};
+}
+
+enum class KeyEdge { Held, Pressed, Released };
+
+// A name's state from its keys' states; `query(code, edge)` answers for one
+// physical key (raylib below, a stub in test/keynames_test.cc). The keys of
+// one name act as one key: it goes down when the first of them does and
+// comes up when the last does, so pressing the second Shift is no new press.
+template <class Query>
+bool key_state(std::string_view name, KeyEdge edge, Query query) {
+  KeyCodes keys = key_codes_of(name);
+  bool now = false, before = false;
+  for (int i = 0; i < keys.count; i++) {
+    bool down = query(keys.code[i], KeyEdge::Held);
+    // Last frame's state: up if it went down now, down if it came up now.
+    bool was = query(keys.code[i], KeyEdge::Pressed)    ? false
+               : query(keys.code[i], KeyEdge::Released) ? true
+                                                        : down;
+    now = now || down;
+    before = before || was;
+  }
+  switch (edge) {
+    case KeyEdge::Held: return now;
+    case KeyEdge::Pressed: return now && !before;
+    case KeyEdge::Released: return !now && before;
+  }
+  return false;
+}
+
+inline bool raylib_key(int code, KeyEdge edge) {
+  switch (edge) {
+    case KeyEdge::Held: return IsKeyDown(code);
+    case KeyEdge::Pressed: return IsKeyPressed(code);
+    case KeyEdge::Released: return IsKeyReleased(code);
+  }
+  return false;
+}
+
+// What Canvas.key and view.key / key_pressed / key_released read.
+inline bool key_state(std::string_view name, KeyEdge edge) {
+  return key_state(name, edge, raylib_key);
 }
 
 // The queue direction: a pressed key code back to its name. Unmapped codes

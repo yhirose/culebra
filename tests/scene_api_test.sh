@@ -266,7 +266,8 @@ let k1 = view.key("escape")
 let k2 = view.key_pressed("a")
 let k3 = view.key_released(" ")
 let k4 = view.key("nosuchkey")
-println("keys {k1} {k2} {k3} {k4}")
+let k5 = view.key_pressed("shift")
+println("keys {k1} {k2} {k3} {k4} {k5}")
 let p1 = view.pad_available()
 let p2 = view.pad("a")
 let p3 = view.pad_pressed("start", 1)
@@ -930,7 +931,7 @@ expect() {
 expect "checker 64.0x64.0 grain 32.0 canvas 32.0x32.0"
 expect "sizes: ValueError: view.checker: 65536x65536 is too large | ValueError: view.grain: 65536x65536 is too large | ValueError: view.render_target: 65536x65536 is too large | ValueError: view.canvas: width and height must not be negative, got -1x8"
 expect "ball 3.0 0.5 0.0"
-expect "keys false false false false"
+expect "keys false false false false false"
 expect "closing false -> true"
 expect "screenshot true"
 expect "window 320.0x240.0 fps>=0 true time>0 true resized true clipboard 'scene'"

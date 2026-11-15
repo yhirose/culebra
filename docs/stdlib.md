@@ -6115,7 +6115,9 @@ special-key name (`"up"` / `"down"` / `"left"` / `"right"`, `"enter"`,
 `"escape"`, `"tab"`, `"backspace"`, `"insert"`, `"delete"`, `"home"`,
 `"end"`, `"pageup"`, `"pagedown"`, `"f1"`…`"f12"`). `"space"` is accepted as
 a readable alias for `" "`; an unknown name is simply never held. Letters
-name the physical key regardless of Shift (`"a"` covers both cases).
+name the physical key regardless of Shift (`"a"` covers both cases), and
+`"shift"` is held while either Shift key is (Term reports Shift as the
+`shift` field of a key event instead).
 
 `Canvas.key_queue()` returns the keys pressed since it was last called — the
 edge events, for bindings that must not repeat while held — and
@@ -6574,7 +6576,9 @@ vocabulary `Canvas.key` and `Term.poll` use**: a printable character
 `"right"`, `"enter"`, `"escape"`, `"tab"`, `"backspace"`, `"insert"`,
 `"delete"`, `"home"`, `"end"`, `"pageup"`, `"pagedown"`, `"f1"`…`"f12"`;
 `"space"` is a readable alias for `" "`). An unknown name is a key that is
-never pressed. Esc is an ordinary key here, not a way out of the window: the
+never pressed. `"shift"` is either Shift key, read as one key: it goes down
+when the first does and comes up when the last does. Letters name the
+physical key, so Shift+E still holds `"e"`. Esc is an ordinary key here, not a way out of the window: the
 loop ends at the close box or at `view.quit()`.
 
 Gamepad buttons and axes are named too, by the layout SDL's mapping DB

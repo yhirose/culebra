@@ -2287,6 +2287,14 @@ target_compile_features(format_test PRIVATE cxx_std_23)
 target_include_directories(format_test PRIVATE include)
 add_test(NAME format_test COMMAND format_test)
 
+# Key names (include/stdlib/keynames.h): what Canvas.key and view.key /
+# key_pressed / key_released report, raylib's per-key answers stubbed, so
+# "shift" (two keys, one name) is checked without a window. Header-only.
+add_executable(keynames_test test/keynames_test.cc)
+target_compile_features(keynames_test PRIVATE cxx_std_23)
+target_include_directories(keynames_test PRIVATE include vendor/raylib/src)
+add_test(NAME keynames_test COMMAND keynames_test)
+
 # The audio engine (include/stdlib/audio_engine.h) driven as a device drives
 # it, with no device: what it plays against what renders offline, sample for
 # sample, and no heap call in a render. Header-only, no raylib.

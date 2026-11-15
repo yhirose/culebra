@@ -283,7 +283,6 @@ int64_t held_button(int key, int64_t bit) { return IsKeyDown(key) ? bit : 0; }
 // --- arbitrary keys: Term's key vocabulary over raylib key codes ------------
 // The name table itself lives in stdlib/keynames.h, shared with the Scene
 // backend so the two namespaces cannot drift apart on what a key is called.
-using keynames::key_code_of;
 using keynames::key_name_of;
 
 // A unicode code point as UTF-8, for the typed-characters queue. A negative
@@ -564,8 +563,7 @@ int64_t fps() {
 bool key(const char* name) {
   ensure_window();
   if (!g_window_ready || name == nullptr) return false;
-  int code = key_code_of(name);
-  return code != 0 && IsKeyDown(code);
+  return keynames::key_state(name, keynames::KeyEdge::Held);
 }
 
 std::string key_pop() {

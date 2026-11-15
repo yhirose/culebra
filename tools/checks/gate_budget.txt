@@ -284,7 +284,9 @@ vm_cases 191
 # sample for sample, and a render makes no heap call).
 # 41 since one_at_a_time_test (the heavy-lane lock queues two processes and
 # does not wait on itself when a command under it asks for it again).
-ctest.entries 41
+# 42 since keynames_test (a key name's held / pressed / released from raylib's
+# per-key answers, "shift" as one key over both Shift keys; 0.00 s).
+ctest.entries 42
 
 # ```culebra blocks under docs/ — `just doctest` runs the runnable ones on both
 # engines, and the JIT lane costs one LLVM module per block.
