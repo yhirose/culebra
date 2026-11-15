@@ -1786,6 +1786,23 @@ cacheのヒットは`cached`と報告される — ソースキーが答えた�
 2命令少なく、モジュールは5%小さい）にすると同じファイルのcoalescerが
 1.2sから9.2sになる。範囲テストはそのために残している。
 
+起動が遅くなるもう1つの形は長い関数である。どの文もunwindとreleaseの
+経路で数十のブロックに降ろされ、パイプラインの両側のいくつかのパス
+（CorrelatedValuePropagation、InstCombine、coalescer、greedyのレジスタ
+割り当て、control-flow optimizer）は関数の大きさより速く重くなる。
+13,500ブロックの277行の関数は13s、48,000ブロックの関数は74sかかった。
+そこで`run_program`は、パイプラインの前に`JIT::keep_big_functions_unoptimized`
+で`kMaxOptimizedBlocks`（4096）を超える関数を`optnone` + `noinline`にする。
+clang自身の関数単位の`-O0`と同じ形で、IRのパスは`OptNoneInstrumentation`
+（`optimize_module`はそのためにこれを登録する）を通してその関数を飛ばし、
+バックエンドはFastISelと速いレジスタ割り当てを使う。モジュールの残りは
+これまでどおり最適化される。277行の関数は2.5sで起動し、`-O2`より約4割
+遅く走る。`DropSettledRefcounts`は必須のパスなので、そこでも走る。
+焼き込むpreambleと`culebra build`は、どの関数にもパイプライン全体を通す。
+コンパイルはビルドのときに1度払うだけで、stdlibにもこの線を超える関数が
+ある（kauaiのパーサー、synthの`lower`）。
+`tests/jit_big_function_test.sh`がこの切り分けをIRから読む。
+
 このパイプラインのうち1つのパスはLLVM変換自身のものである。
 4つのrefcountヘルパーはそれぞれガードで始まる — 値の2つは
 `_is_refcounted_value_tag`とnullペイロードに対して、cellの2つは

@@ -26,6 +26,7 @@
 #include "llvm/Passes/OptimizationLevel.h"
 #include "llvm/IR/PassTimingInfo.h"  // TimePassesHandler (CULEBRA_JIT_TIME_PASSES)
 #include "llvm/Passes/PassBuilder.h"
+#include "llvm/Passes/StandardInstrumentations.h"  // OptNoneInstrumentation
 #include "llvm/Config/llvm-config.h"
 #include "llvm/MC/TargetRegistry.h"
 #include "llvm/Support/CommandLine.h"
@@ -1180,6 +1181,9 @@ struct JIT {
   // the way LLVM's ARC optimizer treats objc_retain/objc_release. The calls
   // are `nounwind`, so a settled one is never an `invoke`.
   struct DropSettledRefcounts : llvm::PassInfoMixin<DropSettledRefcounts> {
+    // Runs on an `optnone` function too (keep_big_functions_unoptimized), so
+    // no_settled_refcounts holds for the whole module.
+    static bool isRequired() { return true; }
     llvm::PreservedAnalyses run(llvm::Function& f,
                                 llvm::FunctionAnalysisManager&) {
       bool dropped = false;
@@ -1413,13 +1417,31 @@ struct JIT {
     t = now;
   }
 
+  // `--jit` compiles a function past this many blocks the way -O0 does
+  // (clang's per-function `optnone` + `noinline`): passes on both sides of the
+  // pipeline grow faster than the function, and one long function held a
+  // start-up for most of a minute (docs/internals/vm.md §7).
+  static constexpr size_t kMaxOptimizedBlocks = 4096;
+
+  static void keep_big_functions_unoptimized(llvm::Module& mod) {
+    for (auto& f : mod) {
+      if (f.isDeclaration() || f.size() <= kMaxOptimizedBlocks) continue;
+      f.removeFnAttr(llvm::Attribute::AlwaysInline);
+      f.addFnAttr(llvm::Attribute::OptimizeNone);
+      f.addFnAttr(llvm::Attribute::NoInline);
+    }
+  }
+
   static void optimize_module(llvm::Module& mod, int opt_level) {
     using namespace llvm;
     PassInstrumentationCallbacks PIC;
+    // The new pass manager skips an `optnone` function only through this
+    // instrumentation; without it the attribute reaches the backend alone.
+    OptNoneInstrumentation optnone(/*DebugLogging=*/false);
+    optnone.registerCallbacks(PIC);
     TimePassesHandler pass_timer(time_passes());
     pass_timer.registerCallbacks(PIC);
-    PassBuilder PB(nullptr, PipelineTuningOptions(), std::nullopt,
-                   time_passes() ? &PIC : nullptr);
+    PassBuilder PB(nullptr, PipelineTuningOptions(), std::nullopt, &PIC);
 
     LoopAnalysisManager LAM;
     FunctionAnalysisManager FAM;

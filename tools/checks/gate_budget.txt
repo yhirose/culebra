@@ -226,7 +226,10 @@
 # stepped again from inside its own step, raises `iterator already running`;
 # 0.07 s under --vm, 1.5 s under --jit, about 4 CPU s for the three gc-stress
 # runs).
-tests.cul 371
+# 372 since test_jit_big_function.cul (a function past the JIT's optnone cut
+# agrees with the executor, a throw from inside it included; 0.00 s under
+# --vm, 0.3 s under --jit).
+tests.cul 372
 
 # tests/isolate/*.cul — run on both engines, plus the over-cap modes.
 # 21 since test_xml_isolate.cul (an XML element keeps its methods across an
@@ -286,7 +289,9 @@ vm_cases 191
 # does not wait on itself when a command under it asks for it again).
 # 42 since keynames_test (a key name's held / pressed / released from raylib's
 # per-key answers, "shift" as one key over both Shift keys; 0.00 s).
-ctest.entries 42
+# 43 since jit_big_function_test (a function past 4096 blocks is compiled
+# optnone + noinline, read off the IR; 0.15 s).
+ctest.entries 43
 
 # ```culebra blocks under docs/ — `just doctest` runs the runnable ones on both
 # engines, and the JIT lane costs one LLVM module per block.

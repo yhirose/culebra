@@ -1,0 +1,62 @@
+# A function long enough that the JIT compiles it unoptimised (`optnone`,
+# past kMaxOptimizedBlocks in include/jit/jit.h): it must still agree with the
+# executor, including a throw from inside it and the values it holds when
+# that throw unwinds. tests/jit_big_function_test.sh checks the cut is taken.
+
+fn risky(n) {
+  throw "risky {n}" if n % 4 == 0
+  n * 3
+}
+
+fn big(xs, k) {
+  let tag = "k{k}"
+  mut acc = 0
+  let v0 = xs[0] > 0 ? xs[0] * 1 + acc % 7 : xs[1] - 0 + (acc > 100 ? 1 : 2)
+  acc = acc + (v0 % 2 == 0 ? v0 / 2 : v0 * 3 + 1) % 1000
+  let v1 = xs[1] > 1 ? xs[1] * 2 + acc % 7 : xs[4] - 1 + (acc > 100 ? 1 : 2)
+  acc = acc + (v1 % 2 == 0 ? v1 / 2 : v1 * 3 + 1) % 1000
+  let v2 = xs[2] > 2 ? xs[2] * 3 + acc % 7 : xs[7] - 2 + (acc > 100 ? 1 : 2)
+  acc = acc + (v2 % 2 == 0 ? v2 / 2 : v2 * 3 + 1) % 1000
+  let v3 = xs[3] > 3 ? xs[3] * 4 + acc % 7 : xs[2] - 3 + (acc > 100 ? 1 : 2)
+  acc = acc + (v3 % 2 == 0 ? v3 / 2 : v3 * 3 + 1) % 1000
+  let v4 = xs[4] > 4 ? xs[4] * 5 + acc % 7 : xs[5] - 4 + (acc > 100 ? 1 : 2)
+  acc = acc + (v4 % 2 == 0 ? v4 / 2 : v4 * 3 + 1) % 1000
+  let v5 = xs[5] > 5 ? xs[5] * 6 + acc % 7 : xs[0] - 5 + (acc > 100 ? 1 : 2)
+  acc = acc + (v5 % 2 == 0 ? v5 / 2 : v5 * 3 + 1) % 1000
+  throw "{tag} at {acc}" if k == 3
+  let r = try {
+    risky(k + acc)
+  } catch e {
+    -1
+  }
+  acc = acc + r
+  let v6 = xs[6] > 6 ? xs[6] * 7 + acc % 7 : xs[3] - 6 + (acc > 100 ? 1 : 2)
+  acc = acc + (v6 % 2 == 0 ? v6 / 2 : v6 * 3 + 1) % 1000
+  let v7 = xs[7] > 7 ? xs[7] * 8 + acc % 7 : xs[6] - 7 + (acc > 100 ? 1 : 2)
+  acc = acc + (v7 % 2 == 0 ? v7 / 2 : v7 * 3 + 1) % 1000
+  let v8 = xs[0] > 8 ? xs[0] * 9 + acc % 7 : xs[1] - 8 + (acc > 100 ? 1 : 2)
+  acc = acc + (v8 % 2 == 0 ? v8 / 2 : v8 * 3 + 1) % 1000
+  let v9 = xs[1] > 9 ? xs[1] * 10 + acc % 7 : xs[4] - 9 + (acc > 100 ? 1 : 2)
+  acc = acc + (v9 % 2 == 0 ? v9 / 2 : v9 * 3 + 1) % 1000
+  [tag, acc, xs.size()]
+}
+
+let xs = [3, 14, 15, 92, 65, 35, 89, 79]
+let got = range(6).map(fn (k) {
+  try {
+    big(xs, k)
+  } catch e {
+    e
+  }
+}).collect()
+assert_eq(
+  got,
+  [
+    ['k0', 9961, 8],
+    ['k1', 4324, 8],
+    ['k2', 10568, 8],
+    'k3 at 2079',
+    ['k4', 9406, 8],
+    ['k5', 4324, 8],
+  ],
+)

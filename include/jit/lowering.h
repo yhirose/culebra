@@ -93,7 +93,12 @@ struct Lowering {
     // backend alone. --emit-llvm prints the pipeline's output and asks neither.
     auto cached = emit_llvm ? nullptr : JIT::cached_object(source_key);
     if (!cached) {
-      if (opt_level > 0) JIT::optimize_module(*mod, opt_level);
+      if (opt_level > 0) {
+        // Here alone: the baked preamble and `culebra build` pay their
+        // compile once, at build, and run many times.
+        JIT::keep_big_functions_unoptimized(*mod);
+        JIT::optimize_module(*mod, opt_level);
+      }
       JIT::time_phase("optimize", phase_t);
       if (!emit_llvm) cached = JIT::keyed_object(*mod, source_key, fast_codegen);
     }

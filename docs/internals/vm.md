@@ -1906,6 +1906,25 @@ folding the sentinel tags under `& 31` in `emit_tag_is_refcounted` would
 save two instructions per site and give a 5% smaller module, but takes
 the same file's coalescer from 1.2 s to 9.2 s, so the range test stays.
 
+A long function is the other way a start-up goes. Every statement lowers
+to dozens of blocks (its unwind and release paths), and several passes on
+both sides of the pipeline — CorrelatedValuePropagation, InstCombine, the
+coalescer, the greedy allocator, the control-flow optimizer — grow faster
+than the function does: a 277-line function of 13,500 blocks took 13 s,
+and one of 48,000 blocks 74 s. So before the pipeline, `run_program`
+has `JIT::keep_big_functions_unoptimized` mark a function past
+`kMaxOptimizedBlocks` (4096) `optnone` + `noinline`, clang's own
+per-function `-O0`: the IR passes skip it through
+`OptNoneInstrumentation`, which `optimize_module` registers for that
+reason, and the backend gives it FastISel and the fast allocator. The
+rest of the module is optimized as before. The 277-line function starts
+in 2.5 s and runs about 40% slower than at `-O2`; `DropSettledRefcounts`
+is a required pass, so it still runs there. The baked preamble and
+`culebra build` keep the whole pipeline for every function: they pay the
+compile once, at build, and the stdlib holds functions past the cut
+(kauai's parser, synth's `lower`). `tests/jit_big_function_test.sh`
+reads the cut off the IR.
+
 One pass of that pipeline is the lowering's own. The four refcount
 helpers each open with a guard — the value pair against
 `_is_refcounted_value_tag` and a null payload, the cell pair against a

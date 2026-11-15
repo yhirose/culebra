@@ -2427,6 +2427,13 @@ add_test(NAME jit_error_pos_test
          COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/jit_error_pos_test.sh
                  $<TARGET_FILE:culebra>)
 
+# A function past kMaxOptimizedBlocks (include/jit/jit.h) is compiled
+# optnone + noinline. Nothing a program computes shows the cut, so this reads
+# the IR.
+add_test(NAME jit_big_function_test
+         COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/jit_big_function_test.sh
+                 $<TARGET_FILE:culebra>)
+
 # What the compiler RESOLVED, read off the emitted bytecode. A resolution
 # that stops happening still computes the right answer through the dynamic
 # arm it falls back to, so no behavioural test can see it go — this one reads
