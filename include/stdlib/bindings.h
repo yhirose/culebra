@@ -2337,13 +2337,34 @@ inline JitObject* _culebra_http_result_to_object(
       reinterpret_cast<int64_t>(_culebra_heap_str(r.reason)), line, col);
   culebra_runtime_object_set(o, "body", false, TAG_STRING,
       reinterpret_cast<int64_t>(_culebra_heap_str(r.body)), line, col);
-  auto* headers = culebra_runtime_object_new();
+  // `headers`: one entry per name (case-insensitive), repeated fields joined
+  // with ", " (RFC 9110 5.3, as Fetch's Headers.get). `header_pairs`: every
+  // field as [name, value] in arrival order, for Set-Cookie, which a comma
+  // join would corrupt.
+  std::vector<std::pair<std::string, std::string>> joined;
   for (auto& [k, v] : r.headers) {
+    auto it = std::find_if(joined.begin(), joined.end(), [&](auto& e) {
+      return culebra::http::_iequals(e.first, k);
+    });
+    if (it == joined.end()) joined.emplace_back(k, v);
+    else it->second += ", " + v;
+  }
+  auto* headers = culebra_runtime_object_new();
+  for (auto& [k, v] : joined) {
     _jit_object_set_keyed(headers, k.c_str(), false, TAG_STRING,
         reinterpret_cast<int64_t>(_culebra_heap_str(v)), line, col);
   }
   culebra_runtime_object_set(o, "headers", false, TAG_OBJECT,
       reinterpret_cast<int64_t>(headers), line, col);
+  auto* pairs = culebra_runtime_array_new();
+  for (auto& [k, v] : r.headers) {
+    auto* pair = culebra_runtime_array_new();
+    culebra_runtime_array_push(pair, TAG_STRING, reinterpret_cast<int64_t>(_culebra_heap_str(k)));
+    culebra_runtime_array_push(pair, TAG_STRING, reinterpret_cast<int64_t>(_culebra_heap_str(v)));
+    culebra_runtime_array_push(pairs, TAG_ARRAY, reinterpret_cast<int64_t>(pair));
+  }
+  culebra_runtime_object_set(o, "header_pairs", false, TAG_ARRAY,
+      reinterpret_cast<int64_t>(pairs), line, col);
   culebra_runtime_object_set(o, "json", false, TAG_FUNC,
       reinterpret_cast<int64_t>(_jit_make_handle_method(_jit_native<_jit_http_json>, 0)),
       line, col);

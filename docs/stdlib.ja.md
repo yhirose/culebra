@@ -3943,7 +3943,8 @@ inspect(Regex.escape("a.b(c)"))                         # => 'a\.b\(c\)'
 | `ok` | `Bool` | `status`が`[200, 300)`の範囲なら`true` |
 | `reason` | `String` | ステータス文言（`"OK"`、`"Not Found"` …） |
 | `body` | `String` | レスポンスボディ（生バイト列） |
-| `headers` | `Object` | レスポンスヘッダ（名前→値、String→String） |
+| `headers` | `Object` | レスポンスヘッダ（名前→値、String→String）。同じ名前（大文字小文字を区別しない）が複数回届いたときは1つのエントリで、値は届いた順に`", "`でつなぐ |
+| `header_pairs` | `Array` | すべてのレスポンスヘッダを`[名前, 値]`の組にして、届いた順に並べた配列。繰り返しも含む。`, `でつなぐと表せない`Set-Cookie`にはこちらを使う |
 | `json()` | `Any` | `body`をJSONとしてパース（`JSON.parse(r.body)`の糖衣） |
 
 **4xx/5xxは通常の結果**（`ok: false`）でありエラーではありません — `status` /

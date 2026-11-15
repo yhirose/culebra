@@ -48,6 +48,10 @@ iso = Isolate.spawn(fn () {
       headers: {"X-Test": "yes"},
     }
   })
+  # two fields of one name: the Object can only hold them under spellings that differ
+  srv.get("/dup", fn (req) {
+    {body: "dup", headers: {"Set-Cookie": "a=1", "set-cookie": "b=2", "X-One": "1"}}
+  })
   srv.get("/empty", fn (req) {
     nil
   })
@@ -168,6 +172,18 @@ assert_eq(r6.status.to_string() +
   r6.headers["Content-Type"] +
   " | x=" +
   r6.headers["X-Test"], '201 | {"ok":true} | ct=application/json | x=yes')
+
+# A name that arrives twice is one `headers` entry, joined with ", "; every
+# field stays in `header_pairs`, in arrival order, for Set-Cookie.
+rd = Http.get(BASE + "/dup")
+assert_eq(rd.body, "dup")
+assert_eq(rd.headers["X-One"], "1")
+assert_eq(rd.headers.keys().filter(fn (k) { k.lower() == "set-cookie" }).size(), 1)
+let sc = rd.header_pairs.filter(fn (p) { p[0].lower() == "set-cookie" }).map(fn (p) { p[1] })
+assert_eq(sc.sorted(), ["a=1", "b=2"])
+assert_eq(rd.header_pairs.filter(fn (p) { p[0] == "X-One" }), [["X-One", "1"]])
+let joined = rd.headers[rd.headers.keys().find(fn (k) { k.lower() == "set-cookie" })]
+assert_eq(joined.split(", ").sorted(), ["a=1", "b=2"])
 
 r7 = Http.get(BASE + "/empty")
 assert_eq(r7.status.to_string() +

@@ -4063,7 +4063,8 @@ failure:
 | `ok` | `Bool` | `true` iff `status` is in `[200, 300)` |
 | `reason` | `String` | status reason phrase (`"OK"`, `"Not Found"`, …) |
 | `body` | `String` | response body (raw bytes) |
-| `headers` | `Object` | response headers, keyed by name (String → String) |
+| `headers` | `Object` | response headers, keyed by name (String → String). A name sent more than once (compared case-insensitively) is one entry whose values are joined with `", "` in arrival order |
+| `header_pairs` | `Array` | every response header as a `[name, value]` pair, in arrival order, repeats included. Use it for `Set-Cookie`, which a comma join cannot represent |
 | `json()` | `Any` | parse `body` as JSON (convenience for `JSON.parse(r.body)`) |
 
 A **4xx/5xx response is a normal result** (`ok: false`), not an error — branch
