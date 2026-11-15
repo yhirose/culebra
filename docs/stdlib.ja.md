@@ -6295,7 +6295,8 @@ let road = view.add_material().texture(view.texture(asphalt)).pbr(0.0, 0.9)
 | `view.sky(tr,tg,tb, br,bg,bb)` | 天頂 → 地平のグラデーション（反射環境も兼ねる） |
 | `view.sun(dx,dy,dz, intensity, r,g,b)` | 指向性ライト（2カスケード影）。`(0, 0, 0)`は方向を指さないので拒否される |
 | `view.ambient(intensity, r, g, b)` | フィルライト |
-| `view.fog(start, end, r, g, b)` | 距離フォグ |
+| `view.fog(start, end, r, g, b)` | 距離フォグ。`start`から`end`メートルにかけて色へ溶ける |
+| `view.height_fog(density, falloff, r, g, b)` | 指数の高さフォグ。世界の高さ`y`での密度は1メートルあたり`density * exp(-falloff * y)`（`y = 0`が海面）で、面は`1 - exp(-tau)`の割合で色へ寄る。`tau`はその密度を目からの直線に沿って積分した量。地表近くに溜まり、高さとともに薄くなるので、上空から真下を見ると澄み、遠い水平方向は霞む。`falloff = 0`なら一様なフォグ。`fog()`を後から呼ぶまで`fog()`の代わりに効く。負の値や有限でない値はログに出して、フォグは変えない |
 | `view.screenshot(path)` | 描いている途中のフレームをPNGに保存 — `render_3d()` / `begin_2d()`の後、`present()`の前に呼ぶ。後では表示済みバッファは既に無く、1〜2フレーム古い絵になる |
 
 ### 2D オーバーレイ

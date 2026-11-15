@@ -30,6 +30,8 @@ view.sky(120, 160, 210, 190, 205, 225)
 view.sun(0.5, -0.8, -0.3, 1.2, 255, 245, 230)
 view.ambient(0.4, 180, 200, 220)
 view.fog(50.0, 400.0, 190, 205, 225)
+view.height_fog(0.0001, 0.001, 190, 205, 225)
+view.fog(50.0, 400.0, 190, 205, 225)
 
 # --- textures: generated, and drawn by the 2D calls ---
 let checks = view.checker(64, 4, 200, 200, 200, 40, 40, 40)
@@ -621,6 +623,48 @@ view.present()
 println("unknown name keeps the last filter: {pure_in_rows("point_mipmap")[0] == 160}")
 EOF
 
+# height_fog: a magenta slab seen through white fog. The green channel is the
+# fog's share (magenta has none, white has all). From 3000 m looking straight
+# down at the ground the haze column is thin, so the slab stays magenta; from
+# the slab's own height 30 km out (a level line, where the height difference
+# is 0) the same fog is dense. fog() afterwards takes the fog back, and a bad
+# argument leaves it alone.
+cat > scene_hfog.cul <<'EOF'
+let view = Scene.View.new(160, 120, "scene hfog")
+view.background(20, 24, 30)
+view.sun(0.0, -1.0, -0.3, 1.0, 255, 255, 255)
+view.ambient(0.6, 255, 255, 255)
+view.clip_planes(1.0, 60000.0)
+view.post_process(false)
+let magenta = view.add_material().rgb(255, 0, 255).unlit()
+view.add_plane(4000.0, 4000.0).material(magenta)
+view.add_box(4000.0, 4000.0, 10.0).move(0.0, 10.0, 30000.0).material(magenta)
+Canvas.init(160, 120)
+fn green_at_centre(ex, ey, ez, tx, ty, tz) {
+  view.camera(ex, ey, ez, tx, ty, tz, 0.0, 1.0, 0.0, 40.0)
+  view.render_3d()
+  view.screenshot("hfog.png")
+  view.present()
+  Canvas.clear(Canvas.rgba(0, 0, 0))
+  Canvas.Sprite.from_png(FS.read("hfog.png")).draw(0, 0)
+  (Canvas.get_pixel(80, 60) >> 8) & 255
+}
+fn down() { green_at_centre(0.0, 3000.0, 0.0, 0.0, 0.0, 1.0) }
+fn level() { green_at_centre(0.0, 10.0, 0.0, 0.0, 10.0, 30000.0) }
+let clear_view = (down(), level())
+view.height_fog(1.0 / 30000.0, 1.0 / 1200.0, 255, 255, 255)
+let foggy = (down(), level())
+println("clear without fog: {clear_view[0] < 8 && clear_view[1] < 8}")
+println("down stays clear: {foggy[0] < 40} level hazes: {foggy[1] > 100 && foggy[1] < 220}")
+view.height_fog(-1.0, 0.0, 0, 0, 0)
+view.height_fog(0.001, Math.sqrt(-1.0), 0, 0, 0)
+println("bad arguments keep the fog: {level() == foggy[1]}")
+view.height_fog(1.0 / 30000.0, 0.0, 255, 255, 255)
+println("falloff 0 is uniform: {level() > 100}")
+view.fog(1.0e8, 2.0e8, 255, 255, 255)
+println("fog() takes over: {level() < 8}")
+EOF
+
 # Scene.Image needs no window, so this program opens none: the one part of Scene
 # that runs with no display at all, and the one whose answers are exact pixels.
 cat > scene_image.cul <<'EOF'
@@ -865,6 +909,31 @@ for want in "near stays sharp: true" "far is averaged: true" \
 done
 [ $fail -eq 0 ] || exit 1
 echo "OK: point_mipmap keeps near texels sharp and averages far ones"
+
+for engine in "--vm" "--jit"; do
+  if ! CULEBRA_CANVAS_HEADLESS=1 "$CULEBRA" "$engine" scene_hfog.cul > "hfog${engine}.txt" 2> "hfog${engine}.err"; then
+    echo "${prefix}scene_api_test: hfog program $engine exited non-zero:" >&2
+    cat "hfog${engine}.txt" "hfog${engine}.err" >&2
+    fail=1
+  fi
+done
+[ $fail -eq 0 ] || exit 1
+if ! diff -q "hfog--vm.txt" "hfog--jit.txt" > /dev/null; then
+  echo "${prefix}scene_api_test: the VM and the JIT disagree on height_fog:" >&2
+  cat "hfog--vm.txt" "hfog--jit.txt" >&2
+  exit 1
+fi
+for want in "clear without fog: true" "down stays clear: true level hazes: true" \
+            "bad arguments keep the fog: true" "falloff 0 is uniform: true" \
+            "fog() takes over: true"; do
+  if ! grep -qxF "$want" "hfog--vm.txt"; then
+    echo "${prefix}scene_api_test: height_fog line missing: $want" >&2
+    cat "hfog--vm.txt" >&2
+    fail=1
+  fi
+done
+[ $fail -eq 0 ] || exit 1
+echo "OK: height_fog clears a view from above and hazes a far level one"
 
 for engine in "--vm" "--jit"; do
   if ! CULEBRA_CANVAS_HEADLESS=1 "$CULEBRA" "$engine" scene_api.cul "$TTF" > "out${engine}.txt" 2> "out${engine}.err"; then

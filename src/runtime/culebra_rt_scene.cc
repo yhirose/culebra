@@ -136,6 +136,7 @@ uniform vec3 viewPos;     // camera position (specular + fog distance)
 uniform vec3 fogColor;
 uniform float fogStart;   // fogStart huge => fog effectively off
 uniform float fogEnd;
+uniform vec2 heightFog;   // (density, falloff); density 0 => distance fog above
 uniform float metallic;   // 0 dielectric .. 1 metal
 uniform float roughness;  // 0 glossy .. 1 matte
 uniform vec3 skyTop;      // zenith colour (also drives reflections)
@@ -246,6 +247,17 @@ void main() {
   // Distance fog toward fogColor (off when fogStart is set very large).
   float dist = length(fragWorld - viewPos);
   float fogF = clamp((dist - fogStart) / max(fogEnd - fogStart, 1.0), 0.0, 1.0);
+  if (heightFog.x > 0.0) {
+    // Exponential height fog: density(y) = d0 * exp(-k * y). Optical depth
+    // along the eye-to-fragment line is d0 * dist * (exp(-k*yE) - exp(-k*yP))
+    // / (k * (yP - yE)); written as exp(-k*yE) * (1 - exp(-e)) / e with
+    // e = k * (yP - yE), whose e -> 0 limit (a level line, or k = 0) is 1.
+    float k = heightFog.y;
+    float e = k * (fragWorld.y - viewPos.y);
+    float g = abs(e) < 1e-3 ? 1.0 - 0.5 * e : (1.0 - exp(-e)) / e;
+    float tau = heightFog.x * dist * exp(min(-k * viewPos.y, 60.0)) * g;
+    fogF = 1.0 - exp(-tau);
+  }
   col = mix(col, fogColor, fogF * fogOn);
 
   // Opaque pass: alpha carries linear camera depth (0=near .. 1=far) for the
@@ -1268,6 +1280,7 @@ class View {
     loc_fogcol_ = GetShaderLocation(lit_, "fogColor");
     loc_fogstart_ = GetShaderLocation(lit_, "fogStart");
     loc_fogend_ = GetShaderLocation(lit_, "fogEnd");
+    loc_heightfog_ = GetShaderLocation(lit_, "heightFog");
     loc_metallic_ = GetShaderLocation(lit_, "metallic");
     loc_rough_ = GetShaderLocation(lit_, "roughness");
     loc_skytop_ = GetShaderLocation(lit_, "skyTop");
@@ -1492,6 +1505,22 @@ class View {
     fogcol_ = rgb01(r, g, b);
     fogstart_ = (float)start;
     fogend_ = (float)end;
+    height_density_ = 0.0f;
+    set_fog_uniform();
+  }
+  // Height fog: density * exp(-falloff * y) per metre, y the world height (0 is
+  // sea level), so it pools low and thins with altitude. Replaces fog() until
+  // fog() is called again.
+  void height_fog(double density, double falloff, int64_t r, int64_t g, int64_t b) {
+    if (!(density >= 0.0) || !(falloff >= 0.0) || !std::isfinite(density) || !std::isfinite(falloff)) {
+      TraceLog(LOG_ERROR, "Scene: height_fog() needs a density and a falloff that are finite and >= 0 — fog unchanged.");
+      return;
+    }
+    fogcol_ = rgb01(r, g, b);
+    height_density_ = (float)density;
+    height_falloff_ = (float)falloff;
+    fogstart_ = 1.0e9f;   // the distance term stays off
+    fogend_ = 2.0e9f;
     set_fog_uniform();
   }
   // Save the frame being drawn: call it between render_3d() / begin_2d() and
@@ -2208,6 +2237,8 @@ class View {
     SetShaderValue(lit_, loc_fogcol_, &fogcol_, SHADER_UNIFORM_VEC3);
     SetShaderValue(lit_, loc_fogstart_, &fogstart_, SHADER_UNIFORM_FLOAT);
     SetShaderValue(lit_, loc_fogend_, &fogend_, SHADER_UNIFORM_FLOAT);
+    float hf[2] = {height_density_, height_falloff_};
+    SetShaderValue(lit_, loc_heightfog_, hf, SHADER_UNIFORM_VEC2);
   }
   void set_sky_uniform() {
     Vector3 t{sky_top_.r / 255.0f, sky_top_.g / 255.0f, sky_top_.b / 255.0f};
@@ -2247,7 +2278,7 @@ class View {
   Mesh cube_{}, sphere_{}, cyl_{}, plane_{};
   int loc_dir_ = 0, loc_lcol_ = 0, loc_amb_ = 0;
   int loc_lvp0_ = 0, loc_lvp1_ = 0;
-  int loc_viewpos_ = 0, loc_fogcol_ = 0, loc_fogstart_ = 0, loc_fogend_ = 0;
+  int loc_viewpos_ = 0, loc_fogcol_ = 0, loc_fogstart_ = 0, loc_fogend_ = 0, loc_heightfog_ = 0;
   int loc_skytop_ = 0, loc_skybot_ = 0;
   int loc_metallic_ = 0, loc_rough_ = 0;
   int loc_opacity_ = 0, loc_cutoff_ = 0, loc_emissive_ = 0, loc_unlit_ = 0, loc_fogon_ = 0;
@@ -2260,6 +2291,7 @@ class View {
   Vector3 fogcol_ = Vector3{0.7f, 0.8f, 0.9f};
   float fogstart_ = 1.0e9f;   // fog off until fog() is called
   float fogend_ = 2.0e9f;
+  float height_density_ = 0.0f, height_falloff_ = 0.0f;   // 0 density: height fog off
 };
 
 }  // namespace gfx
@@ -2432,6 +2464,7 @@ const bool registered = [] {
       .method<&gfx::View::background>("background", {"r", "g", "b"})
       .method<&gfx::View::sky>("sky", {"tr", "tg", "tb", "br", "bg", "bb"})
       .method<&gfx::View::fog>("fog", {"start", "end", "r", "g", "b"})
+      .method<&gfx::View::height_fog>("height_fog", {"density", "falloff", "r", "g", "b"})
       .method<&gfx::View::screenshot>("screenshot", {"path"})
       .method<&gfx::View::sun>("sun", {"dx", "dy", "dz", "intensity", "r", "g", "b"})
       .method<&gfx::View::ambient>("ambient", {"intensity", "r", "g", "b"})

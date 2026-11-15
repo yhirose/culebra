@@ -6514,7 +6514,8 @@ Lighting is set on the view:
 | `view.sky(tr,tg,tb, br,bg,bb)` | zenith → horizon gradient (also the reflected environment) |
 | `view.sun(dx,dy,dz, intensity, r,g,b)` | directional light (two-cascade shadows); `(0, 0, 0)` names no direction and is refused |
 | `view.ambient(intensity, r, g, b)` | fill light |
-| `view.fog(start, end, r, g, b)` | distance fog |
+| `view.fog(start, end, r, g, b)` | distance fog: surfaces fade to the colour between `start` and `end` metres |
+| `view.height_fog(density, falloff, r, g, b)` | exponential height fog: the density at world height `y` is `density * exp(-falloff * y)` per metre (`y = 0` is sea level), and a surface fades by `1 - exp(-tau)`, `tau` being that density integrated along the line from the eye. It pools near the ground and thins with altitude, so looking down from high up stays clear while a far horizontal view hazes. `falloff = 0` is a uniform fog. Replaces `fog()` until `fog()` is called again; a negative or non-finite argument is logged and the fog is unchanged |
 | `view.screenshot(path)` | save the frame being drawn to a PNG — call it after `render_3d()` / `begin_2d()` and before `present()`; afterwards the shown buffer is gone and the shot would be a frame or two stale |
 
 ### 2D overlay
