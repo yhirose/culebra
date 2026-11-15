@@ -568,6 +568,59 @@ for y in 0..120 {
 println("unlit pixels not magenta: {dark}")
 EOF
 
+# point_mipmap: one-texel black/white stripes on a ground plane seen to the
+# horizon. Near the camera a texel is many pixels wide, so every pixel of the
+# bottom row is pure black or white under point_mipmap (trilinear blends the
+# edges); at the far row texels are sub-pixel, so point_mipmap averages them
+# to grey while plain point still aliases to pure pixels. Post pass off, so
+# nothing blurs the rows.
+cat > scene_pmip.cul <<'EOF'
+let view = Scene.View.new(160, 120, "scene pmip")
+view.background(20, 24, 30)
+view.sun(0.0, -1.0, -0.3, 1.0, 255, 255, 255)
+view.ambient(0.6, 255, 255, 255)
+let img = Scene.Image.new(64, 64)
+for y in 0..64 {
+  for x in 0..64 {
+    if x % 2 == 0 { img.pixel(x, y, 0, 0, 0) } else { img.pixel(x, y, 255, 255, 255) }
+  }
+}
+let tex = view.texture(img, false, true)
+# the plane's UV spans it once; 4000 m / 64 texels = a 1 m texel
+let mat = view.add_material().texture(tex).unlit().uv(62.5, 62.5, 0.0, 0.0)
+view.add_plane(4000.0, 4000.0).material(mat)
+view.camera(0.0, 3.0, 0.0, 0.0, 0.0, 20.0, 0.0, 1.0, 0.0, 60.0)
+view.post_process(false)
+Canvas.init(160, 120)
+# pure (black or white) pixels in one row of the frame drawn with `mode`
+fn pure_in_rows(mode) {
+  tex.filter(mode)
+  view.render_3d()
+  view.screenshot("pmip_{mode}.png")
+  view.present()
+  Canvas.clear(Canvas.rgba(0, 0, 0))
+  Canvas.Sprite.from_png(FS.read("pmip_{mode}.png")).draw(0, 0)
+  fn pure(y) {
+    mut n = 0
+    for x in 0..160 {
+      let r = Canvas.get_pixel(x, y) & 255
+      if r <= 40 || r >= 215 { n += 1 }
+    }
+    n
+  }
+  (pure(119), pure(55))
+}
+let (pm_near, pm_far) = pure_in_rows("point_mipmap")
+let (tri_near, tri_far) = pure_in_rows("trilinear")
+let (pt_near, pt_far) = pure_in_rows("point")
+println("near stays sharp: {pm_near == 160 && pt_near == 160 && tri_near < 160}")
+println("far is averaged: {pm_far == 0 && tri_far == 0 && pt_far > 0}")
+tex.filter("no_such_mode")
+view.render_3d()
+view.present()
+println("unknown name keeps the last filter: {pure_in_rows("point_mipmap")[0] == 160}")
+EOF
+
 # Scene.Image needs no window, so this program opens none: the one part of Scene
 # that runs with no display at all, and the one whose answers are exact pixels.
 cat > scene_image.cul <<'EOF'
@@ -788,6 +841,30 @@ if ! grep -qxF "unlit pixels not magenta: 0" "nosun--vm.txt" || ! diff -q "nosun
   exit 1
 fi
 echo "OK: with no sun() call an unlit surface keeps its colour"
+
+for engine in "--vm" "--jit"; do
+  if ! CULEBRA_CANVAS_HEADLESS=1 "$CULEBRA" "$engine" scene_pmip.cul > "pmip${engine}.txt" 2> "pmip${engine}.err"; then
+    echo "${prefix}scene_api_test: pmip program $engine exited non-zero:" >&2
+    cat "pmip${engine}.txt" "pmip${engine}.err" >&2
+    fail=1
+  fi
+done
+[ $fail -eq 0 ] || exit 1
+if ! diff -q "pmip--vm.txt" "pmip--jit.txt" > /dev/null; then
+  echo "${prefix}scene_api_test: the VM and the JIT disagree on point_mipmap:" >&2
+  cat "pmip--vm.txt" "pmip--jit.txt" >&2
+  exit 1
+fi
+for want in "near stays sharp: true" "far is averaged: true" \
+            "unknown name keeps the last filter: true"; do
+  if ! grep -qxF "$want" "pmip--vm.txt"; then
+    echo "${prefix}scene_api_test: point_mipmap line missing: $want" >&2
+    cat "pmip--vm.txt" >&2
+    fail=1
+  fi
+done
+[ $fail -eq 0 ] || exit 1
+echo "OK: point_mipmap keeps near texels sharp and averages far ones"
 
 for engine in "--vm" "--jit"; do
   if ! CULEBRA_CANVAS_HEADLESS=1 "$CULEBRA" "$engine" scene_api.cul "$TTF" > "out${engine}.txt" 2> "out${engine}.err"; then

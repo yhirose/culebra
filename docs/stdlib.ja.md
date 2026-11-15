@@ -6226,7 +6226,7 @@ while !view.closing() {
 | `view.canvas(w, h) -> Texture` / `view.canvas_end()` | 2D呼び出しで塗るrender-to-textureを開く / 閉じる |
 | `view.render_target(w, h) -> Texture` | 第2カメラからシーンを描き込むテクスチャ（下記） |
 | `tex.width()` / `tex.height() -> Float` | ピクセル寸法 |
-| `tex.filter(name) -> Texture` | サンプリング: `"point"`（ピクセルアート、LUTのセルそのまま）、`"bilinear"`、`"trilinear"` |
+| `tex.filter(name) -> Texture` | サンプリング: `"point"`（ピクセルアート、LUTのセルそのまま）、`"bilinear"`、`"trilinear"`（ミップマップ）、`"point_mipmap"`（ミップマップを使うが、拡大されたテクセルは鋭い四角のまま。近くはドット、遠くは平均の色）。知らない名前はログに出して、フィルタは変えない |
 | `tex.wrap(name) -> Texture` | 端の外側: `"repeat"`、`"clamp"`、`"mirror"` |
 
 `checker`・`grain`・`canvas`・`render_target`に渡す大きさも、下の画像の規則に従います。

@@ -435,15 +435,22 @@ class Texture : public std::enable_shared_from_this<Texture> {
   double width() const { return tex.width; }
   double height() const { return tex.height; }
   // Sampling: "point" for pixel art and a LUT's exact cells, "bilinear",
-  // "trilinear" (mipmapped — built here if the upload skipped them).
+  // "trilinear" (mipmapped — built here if the upload skipped them),
+  // "point_mipmap" (mipmapped; magnified texels stay sharp).
   Texture& filter(std::string name) {
     if (!live()) return *this;
     if (name == "point") SetTextureFilter(tex, TEXTURE_FILTER_POINT);
     else if (name == "bilinear") SetTextureFilter(tex, TEXTURE_FILTER_BILINEAR);
-    else if (name == "trilinear") { GenTextureMipmaps(&tex); SetTextureFilter(tex, TEXTURE_FILTER_TRILINEAR); }
-    else TraceLog(LOG_ERROR, "Scene: filter('%s') names no mode (point / bilinear / trilinear) — unchanged.", name.c_str());
+    else if (name == "trilinear") { ensure_mipmaps(); SetTextureFilter(tex, TEXTURE_FILTER_TRILINEAR); }
+    else if (name == "point_mipmap") {
+      ensure_mipmaps();
+      rlTextureParameters(tex.id, RL_TEXTURE_MAG_FILTER, RL_TEXTURE_FILTER_NEAREST);
+      rlTextureParameters(tex.id, RL_TEXTURE_MIN_FILTER, RL_TEXTURE_FILTER_NEAREST_MIP_LINEAR);
+    }
+    else TraceLog(LOG_ERROR, "Scene: filter('%s') names no mode (point / bilinear / trilinear / point_mipmap) — unchanged.", name.c_str());
     return *this;
   }
+  void ensure_mipmaps() { if (tex.mipmaps <= 1) GenTextureMipmaps(&tex); }
   // Past the edge: "repeat" (a tiled road), "clamp" (a LUT, a sprite),
   // "mirror".
   Texture& wrap(std::string name) {
