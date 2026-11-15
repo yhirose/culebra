@@ -128,9 +128,6 @@ ALLOWED = {
 # Holds not shown sound, kept apart until each is fixed (or shown sound and
 # moved to ALLOWED): (rule, file, function, variable): (declarations, what).
 KNOWN_HOLES = {
-    ('R1', 'include/vm/embed.h', 'culebra::vm::Embed::call_owned', 'fn'):
-        (1, 'a session function that rebinds its own name frees itself '
-            'under the call'),
     ('R3', 'include/rt/runtime.inc.h', '_culebra_any_key_values_equal', 'y'):
         (1, 'the pair array is allocated before y is held, and a collection '
             'there can run a drop'),

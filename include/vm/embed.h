@@ -845,10 +845,13 @@ class Embed {
       throw culebra::CulebraError(
           "TypeError", "'" + std::string(name) + "' is not a session function");
     }
-    // A script `throw v` surfaces structured, as an engine error does.
+    // Held for the call: the function can rebind its own name, and the
+    // session's cell then lets go of it. A script `throw v` surfaces
+    // structured, as an engine error does.
+    auto held = JitHeldMethod::hold(reinterpret_cast<JitClosure*>(fn.data));
     return culebra_runtime_call_from_host([&] {
-      return Value::adopt(_jit_invoke(reinterpret_cast<JitClosure*>(fn.data),
-                                      JitValue{TAG_NO_SELF, 0}, n, args));
+      return Value::adopt(
+          _jit_invoke(held.get(), JitValue{TAG_NO_SELF, 0}, n, args));
     });
   }
 

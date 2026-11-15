@@ -452,6 +452,31 @@ int run() {
                 "arguments built up in a vector arrive as they were made");
   }
 
+  {  // a session function that rebinds its own name lets go of itself
+     // mid-call: the call holds it, so what it captured outlives the call
+    embed.eval(
+        "let mut guard_dropped = false\n"
+        "class Guard {\n"
+        "  new() {}\n"
+        "  drop() { guard_dropped = true }\n"
+        "}\n"
+        "fn make_selfish() {\n"
+        "  let guard = Guard()\n"
+        "  fn () {\n"
+        "    selfish = nil\n"
+        "    let junk = [fn (x) { x }, fn (y) { y }, [1], [2]]\n"
+        "    [guard_dropped, type_of(guard)]\n"
+        "  }\n"
+        "}\n"
+        "let mut selfish = make_selfish()");
+    auto seen = embed.call("selfish");
+    ok &= check(!seen[0].as<bool>() && seen[1].as<std::string>() == "Guard",
+                "a session function that rebinds itself keeps what it "
+                "captured to the end of its call");
+    ok &= check(embed.eval("guard_dropped").as<bool>(),
+                "and lets it go once the call ends");
+  }
+
   std::cout << (ok ? "OK\n" : "FAIL\n");
   return ok ? 0 : 1;
 }
