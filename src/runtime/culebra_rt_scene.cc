@@ -868,6 +868,9 @@ class Node : public std::enable_shared_from_this<Node> {
   std::vector<float> mv;   // vertices xyz
   std::vector<float> mn;   // normals xyz
   std::vector<float> mt;   // texcoords uv
+  std::vector<unsigned char> mc;   // vertex colours rgba, one per vertex
+  Color cur_color_ = WHITE;        // what the next pushed vertex gets
+  bool has_color_ = false;         // a colour was set: build() uploads mc
   std::vector<long> mi;    // indices (range-checked at build())
   bool mesh_built = false;
   ::Mesh mesh_{};   // GL ids + indices — see build(); the vertex data is ours
@@ -979,6 +982,15 @@ class Node : public std::enable_shared_from_this<Node> {
     mv.push_back((float)x); mv.push_back((float)y); mv.push_back((float)z);
     mn.push_back((float)nx); mn.push_back((float)ny); mn.push_back((float)nz);
     mt.push_back((float)u); mt.push_back((float)v);
+    mc.push_back(cur_color_.r); mc.push_back(cur_color_.g);
+    mc.push_back(cur_color_.b); mc.push_back(cur_color_.a);
+    return *this;
+  }
+  // Colour of the vertices pushed from here on (sticky, like Godot's
+  // SurfaceTool.set_color); vertices pushed before the first call stay white.
+  Node& set_vertex_color(int64_t r, int64_t g, int64_t b) {
+    cur_color_ = col(r, g, b);
+    has_color_ = true;
     return *this;
   }
   Node& tri(int64_t a, int64_t b, int64_t c) {
@@ -1022,12 +1034,14 @@ class Node : public std::enable_shared_from_this<Node> {
     m.vertices = mv.data();
     if (!mn.empty()) m.normals = mn.data();
     if (!mt.empty()) m.texcoords = mt.data();
+    if (has_color_) m.colors = mc.data();   // else raylib feeds white
     m.indices = (unsigned short*)MemAlloc((unsigned)(mi.size() * sizeof(unsigned short)));
     for (size_t i = 0; i < mi.size(); i++) m.indices[i] = (unsigned short)mi[i];
     UploadMesh(&m, false);
     m.vertices = nullptr;
     m.normals = nullptr;
     m.texcoords = nullptr;
+    m.colors = nullptr;
     float r2 = 0;
     for (size_t i = 0; i + 2 < mv.size(); i += 3)
       r2 = std::max(r2, mv[i] * mv[i] + mv[i + 1] * mv[i + 1] + mv[i + 2] * mv[i + 2]);
@@ -1040,7 +1054,10 @@ class Node : public std::enable_shared_from_this<Node> {
     std::vector<float>().swap(mv);
     std::vector<float>().swap(mn);
     std::vector<float>().swap(mt);
+    std::vector<unsigned char>().swap(mc);
     std::vector<long>().swap(mi);
+    cur_color_ = WHITE;
+    has_color_ = false;
     return *this;
   }
 
@@ -2397,6 +2414,7 @@ const bool registered = [] {
       .borrowed_method<&gfx::Node::show>("show")
       .borrowed_method<&gfx::Node::vertex>("vertex", {"x", "y", "z", "nx", "ny", "nz"})
       .borrowed_method<&gfx::Node::vertex_uv>("vertex_uv", {"x", "y", "z", "nx", "ny", "nz", "u", "v"})
+      .borrowed_method<&gfx::Node::set_vertex_color>("color", {"r", "g", "b"})
       .borrowed_method<&gfx::Node::tri>("tri", {"a", "b", "c"})
       .borrowed_method<&gfx::Node::build>("build")
       .method<&gfx::Node::child>("add_node")

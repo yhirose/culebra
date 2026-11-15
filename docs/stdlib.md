@@ -6328,7 +6328,12 @@ persistent geometry once and move it each frame.
 
 A custom mesh is built from vertices and triangles, then finalised:
 `m.vertex(x, y, z, nx, ny, nz)` (or `vertex_uv(…, u, v)`) adds a vertex,
-`m.tri(a, b, c)` a triangle by vertex index, and `m.build()` uploads it. (raylib
+`m.tri(a, b, c)` a triangle by vertex index, and `m.build()` uploads it.
+`m.color(r, g, b)` sets the colour of the vertices pushed after it (it stays
+until the next call; vertices pushed before the first call are white), and a
+face blends its corners' colours. The colour multiplies the material's colour
+and texture, lit or `unlit()`; a mesh that never calls `color` draws as before.
+Unlike `tint`, which colours the whole node, it varies per vertex. (raylib
 uses a 16-bit index buffer, so a mesh caps at 65535 vertices; `build()` rejects
 more.) Texture coordinates put `(0, 0)` at an image's top-left, as in 2D; the
 primitives show an image upright, its top toward `+y` (a plane's toward `-z`,

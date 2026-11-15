@@ -83,7 +83,7 @@ root.add_sphere(0.2).add_cylinder(0.1, 0.1).add_plane(1.0, 1.0)
 let mesh = view.add_mesh()
 mesh.vertex(-1.0, 0.0, -1.0, 0.0, 1.0, 0.0)
 mesh.vertex(1.0, 0.0, -1.0, 0.0, 1.0, 0.0)
-mesh.vertex_uv(1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 1.0)
+mesh.color(255, 128, 0).vertex_uv(1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 1.0)
 mesh.tri(0, 1, 2)
 mesh.build()
 root.add_mesh().tri(0, 0, 0)   # nothing pushed: build is a no-op, never an error
@@ -385,6 +385,69 @@ println("blended: {red_of(bl) < red_of(o) && blue_of(bl) > blue_of(o)}")
 println("depth kept: {px("alpha_opaque.png", 140, 75) == px("alpha_blend.png", 140, 75)}")
 println("order matters: {px("alpha_blend.png", 105, 75) != px("alpha_order.png", 105, 75)}")
 println("background untouched: {px("alpha_opaque.png", 5, 5) == px("alpha_order.png", 5, 5)}")
+EOF
+
+# Per-vertex colour, judged by pixels: one quad pushed three ways. No colour
+# at all (white, as before), red on the left edge to blue on the right (unlit),
+# and white until color() is called then blue on the right (lit, under a sun).
+cat > scene_vcolor.cul <<'EOF'
+let view = Scene.View.new(200, 150, "scene vertex color")
+view.background(20, 24, 30)
+view.sun(0.0, 0.0, -1.0, 1.0, 255, 255, 255)
+view.ambient(0.5, 255, 255, 255)
+let flat = view.add_material().unlit().double_sided()
+let lit = view.add_material().double_sided()
+view.camera(0.0, 0.0, 4.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 50.0)
+# The left edge is pushed first, then the right (the colour is sticky).
+fn quad(node, left, right) {
+  left(node)
+  node.vertex(-1.5, -1.0, 0.0, 0.0, 0.0, 1.0)
+  node.vertex(-1.5, 1.0, 0.0, 0.0, 0.0, 1.0)
+  right(node)
+  node.vertex(1.5, -1.0, 0.0, 0.0, 0.0, 1.0)
+  node.vertex(1.5, 1.0, 0.0, 0.0, 0.0, 1.0)
+  node.tri(0, 2, 3).tri(0, 3, 1).build()
+}
+let plain = view.add_mesh().material(flat)
+quad(plain, |n| n, |n| n)
+let ramp = view.add_mesh().material(flat)
+quad(ramp, |n| n.color(255, 0, 0), |n| n.color(0, 0, 255))
+let late = view.add_mesh().material(lit)
+quad(late, |n| n, |n| n.color(0, 0, 255))
+fn shot(node, path) {
+  plain.hide()
+  ramp.hide()
+  late.hide()
+  node.show()
+  view.render_3d()
+  view.screenshot(path)
+  view.present()
+}
+shot(plain, "vc_plain.png")
+shot(ramp, "vc_ramp.png")
+shot(late, "vc_late.png")
+view.drop()
+
+Canvas.init(200, 150)
+fn px(path, x, y) {
+  Canvas.clear(Canvas.rgba(0, 0, 0))
+  Canvas.Sprite.from_png(FS.read(path)).draw(0, 0)
+  Canvas.get_pixel(x, y)
+}
+fn r_of(v) { v & 255 }
+fn g_of(v) { (v >> 8) & 255 }
+fn b_of(v) { (v >> 16) & 255 }
+let p_l = px("vc_plain.png", 45, 75)
+let p_r = px("vc_plain.png", 155, 75)
+println("uncoloured stays white: {r_of(p_l) > 200 && r_of(p_l) == g_of(p_l) && g_of(p_l) == b_of(p_l) && p_l == p_r}")
+let l = px("vc_ramp.png", 45, 75)
+let m = px("vc_ramp.png", 100, 75)
+let r = px("vc_ramp.png", 155, 75)
+println("corners take their colour: {r_of(l) > 200 && b_of(l) < 60 && b_of(r) > 200 && r_of(r) < 60}")
+println("centre is the blend: {r_of(m) > 80 && b_of(m) > 80 && g_of(m) < 40}")
+let ll = px("vc_late.png", 45, 75)
+let lr = px("vc_late.png", 155, 75)
+println("lit, white then blue: {r_of(ll) > 60 && b_of(ll) > 60 && r_of(lr) < 30 && b_of(lr) > 60}")
 EOF
 
 # A second camera into a texture, and the one flip model behind render targets
@@ -904,6 +967,9 @@ echo "OK: point_mipmap keeps near texels sharp and averages far ones"
 run_pair hfog "clear without fog: true" "down stays clear: true level hazes: true" \
   "bad arguments keep the fog: true" "falloff 0 is uniform: true" "fog() takes over: true"
 echo "OK: height_fog clears a view from above and hazes a far level one"
+run_pair vcolor "uncoloured stays white: true" "corners take their colour: true" \
+  "centre is the blend: true" "lit, white then blue: true"
+echo "OK: vertex colours blend across a face, and an uncoloured mesh stays white"
 
 for engine in "--vm" "--jit"; do
   if ! CULEBRA_CANVAS_HEADLESS=1 "$CULEBRA" "$engine" scene_api.cul "$TTF" > "out${engine}.txt" 2> "out${engine}.err"; then
