@@ -541,6 +541,33 @@ println("knobs change the frame: {knobs != none}")
 println("post off still draws: {red_of(nopost) > 150 && green_of(nopost) < 60}")
 EOF
 
+# No sun() call: an unlit surface keeps its own colour. The default sun used to
+# be stored unnormalised, which blew the reflection's sun disc up to infinity
+# and, through mix(.., 0), blacked out a disc of the plane. A flat plane seen
+# from behind-and-above sweeps the mirror direction through the sun's.
+cat > scene_nosun.cul <<'EOF'
+let view = Scene.View.new(160, 120, "scene nosun")
+view.background(20, 24, 30)
+let magenta = view.add_material().rgb(255, 0, 255).unlit()
+view.add_plane(4000.0, 4000.0).material(magenta)
+view.camera(0.0, 40.0, -30.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 90.0)
+view.render_3d()
+view.screenshot("nosun.png")
+view.present()
+view.drop()
+Canvas.init(160, 120)
+Canvas.clear(Canvas.rgba(0, 0, 0))
+Canvas.Sprite.from_png(FS.read("nosun.png")).draw(0, 0)
+mut dark = 0
+for y in 0..120 {
+  for x in 0..160 {
+    let v = Canvas.get_pixel(x, y)
+    if (v & 255) < 150 || ((v >> 16) & 255) < 150 { dark += 1 }
+  }
+}
+println("unlit pixels not magenta: {dark}")
+EOF
+
 # Scene.Image needs no window, so this program opens none: the one part of Scene
 # that runs with no display at all, and the one whose answers are exact pixels.
 cat > scene_image.cul <<'EOF'
@@ -746,6 +773,21 @@ for want in "identity lut matches: true" "swap lut swaps: true" \
 done
 [ $fail -eq 0 ] || exit 1
 echo "OK: the LUT grades the frame and the post knobs bind"
+
+for engine in "--vm" "--jit"; do
+  if ! CULEBRA_CANVAS_HEADLESS=1 "$CULEBRA" "$engine" scene_nosun.cul > "nosun${engine}.txt" 2> "nosun${engine}.err"; then
+    echo "${prefix}scene_api_test: nosun program $engine exited non-zero:" >&2
+    cat "nosun${engine}.txt" "nosun${engine}.err" >&2
+    fail=1
+  fi
+done
+[ $fail -eq 0 ] || exit 1
+if ! grep -qxF "unlit pixels not magenta: 0" "nosun--vm.txt" || ! diff -q "nosun--vm.txt" "nosun--jit.txt" > /dev/null; then
+  echo "${prefix}scene_api_test: an unlit plane lost its colour with no sun() call:" >&2
+  cat "nosun--vm.txt" "nosun--jit.txt" >&2
+  exit 1
+fi
+echo "OK: with no sun() call an unlit surface keeps its colour"
 
 for engine in "--vm" "--jit"; do
   if ! CULEBRA_CANVAS_HEADLESS=1 "$CULEBRA" "$engine" scene_api.cul "$TTF" > "out${engine}.txt" 2> "out${engine}.err"; then

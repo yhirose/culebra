@@ -234,12 +234,14 @@ void main() {
   // sheen); rough surfaces blur toward the average sky and reflect less.
   vec3 R = reflect(-V, N);
   vec3 envAvg = (skyTop + skyBot) * 0.5;
-  vec3 env = mix(envColor(R, lightDir, lightColor), envAvg, roughness);
+  vec3 env = mix(envColor(R, -L, lightColor), envAvg, roughness);
   vec3 F0 = mix(vec3(0.04), base, metallic);
   float ct = max(dot(N, V), 0.0);
   vec3 F = F0 + (max(vec3(1.0 - roughness), F0) - F0) * pow(1.0 - ct, 5.0);
   col += env * F * mix(1.0, 0.35, roughness);
-  col = mix(col, base, unlit) + emissive;
+  // A branch, not a mix: a non-finite lit term would survive `mix(.., 0)`.
+  if (unlit > 0.5) col = base;
+  col += emissive;
 
   // Distance fog toward fogColor (off when fogStart is set very large).
   float dist = length(fragWorld - viewPos);
@@ -2245,7 +2247,7 @@ class View {
   int loc_alphamode_ = 0, loc_uv_ = 0, loc_nstrength_ = 0;
   bool culling_ = true;
   std::vector<DrawItem> items_;   // the lit pass's draw list, reused each frame
-  Vector3 dir_ = Vector3{0.5f, -1.0f, -0.6f};
+  Vector3 dir_ = Vector3{0.4f, -0.8f, -0.48f};   // unit length, like sun() stores
   Vector3 lcol_ = Vector3{1.0f, 0.98f, 0.94f};
   Vector3 amb_ = Vector3{0.35f, 0.38f, 0.42f};
   Vector3 fogcol_ = Vector3{0.7f, 0.8f, 0.9f};
