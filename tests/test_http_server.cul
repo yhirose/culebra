@@ -178,12 +178,12 @@ assert_eq(r6.status.to_string() +
 rd = Http.get(BASE + "/dup")
 assert_eq(rd.body, "dup")
 assert_eq(rd.headers["X-One"], "1")
-assert_eq(rd.headers.keys().filter(fn (k) { k.lower() == "set-cookie" }).size(), 1)
+let sck = rd.headers.keys().find(fn (k) { k.lower() == "set-cookie" })
+assert_eq(rd.headers.keys().filter(fn (k) { k == sck }).size(), 1)
+assert_eq(rd.headers[sck].split(", ").sorted(), ["a=1", "b=2"])
 let sc = rd.header_pairs.filter(fn (p) { p[0].lower() == "set-cookie" }).map(fn (p) { p[1] })
 assert_eq(sc.sorted(), ["a=1", "b=2"])
 assert_eq(rd.header_pairs.filter(fn (p) { p[0] == "X-One" }), [["X-One", "1"]])
-let joined = rd.headers[rd.headers.keys().find(fn (k) { k.lower() == "set-cookie" })]
-assert_eq(joined.split(", ").sorted(), ["a=1", "b=2"])
 
 r7 = Http.get(BASE + "/empty")
 assert_eq(r7.status.to_string() +

@@ -1509,18 +1509,17 @@ class View {
     set_fog_uniform();
   }
   // Height fog: density * exp(-falloff * y) per metre, y the world height (0 is
-  // sea level), so it pools low and thins with altitude. Replaces fog() until
-  // fog() is called again.
+  // sea level), so it pools low and thins with altitude. The shader prefers it
+  // over the distance term until fog() is called again.
   void height_fog(double density, double falloff, int64_t r, int64_t g, int64_t b) {
-    if (!(density >= 0.0) || !(falloff >= 0.0) || !std::isfinite(density) || !std::isfinite(falloff)) {
+    auto ok = [](double x) { return std::isfinite(x) && x >= 0.0; };
+    if (!ok(density) || !ok(falloff)) {
       TraceLog(LOG_ERROR, "Scene: height_fog() needs a density and a falloff that are finite and >= 0 — fog unchanged.");
       return;
     }
     fogcol_ = rgb01(r, g, b);
     height_density_ = (float)density;
     height_falloff_ = (float)falloff;
-    fogstart_ = 1.0e9f;   // the distance term stays off
-    fogend_ = 2.0e9f;
     set_fog_uniform();
   }
   // Save the frame being drawn: call it between render_3d() / begin_2d() and

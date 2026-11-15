@@ -2350,6 +2350,7 @@ inline JitObject* _culebra_http_result_to_object(
     else it->second += ", " + v;
   }
   auto* headers = culebra_runtime_object_new();
+  if (!joined.empty()) headers->become_dict();   // peer-chosen names
   for (auto& [k, v] : joined) {
     _jit_object_set_keyed(headers, k.c_str(), false, TAG_STRING,
         reinterpret_cast<int64_t>(_culebra_heap_str(v)), line, col);

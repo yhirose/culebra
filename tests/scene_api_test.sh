@@ -31,7 +31,6 @@ view.sun(0.5, -0.8, -0.3, 1.2, 255, 245, 230)
 view.ambient(0.4, 180, 200, 220)
 view.fog(50.0, 400.0, 190, 205, 225)
 view.height_fog(0.0001, 0.001, 190, 205, 225)
-view.fog(50.0, 400.0, 190, 205, 225)
 
 # --- textures: generated, and drawn by the 2D calls ---
 let checks = view.checker(64, 4, 200, 200, 200, 40, 40, 40)
@@ -871,68 +870,38 @@ done
 [ $fail -eq 0 ] || exit 1
 echo "OK: the LUT grades the frame and the post knobs bind"
 
-for engine in "--vm" "--jit"; do
-  if ! CULEBRA_CANVAS_HEADLESS=1 "$CULEBRA" "$engine" scene_nosun.cul > "nosun${engine}.txt" 2> "nosun${engine}.err"; then
-    echo "${prefix}scene_api_test: nosun program $engine exited non-zero:" >&2
-    cat "nosun${engine}.txt" "nosun${engine}.err" >&2
-    fail=1
+# Run one program on both engines: it must exit 0 and the engines must print the
+# same lines, each of which must include every expected line given after the name.
+run_pair() {
+  local name="$1"; shift
+  for engine in "--vm" "--jit"; do
+    if ! CULEBRA_CANVAS_HEADLESS=1 "$CULEBRA" "$engine" "scene_$name.cul" > "$name${engine}.txt" 2> "$name${engine}.err"; then
+      echo "${prefix}scene_api_test: $name program $engine exited non-zero:" >&2
+      cat "$name${engine}.txt" "$name${engine}.err" >&2
+      exit 1
+    fi
+  done
+  if ! diff -q "$name--vm.txt" "$name--jit.txt" > /dev/null; then
+    echo "${prefix}scene_api_test: the VM and the JIT disagree on $name:" >&2
+    cat "$name--vm.txt" "$name--jit.txt" >&2
+    exit 1
   fi
-done
-[ $fail -eq 0 ] || exit 1
-if ! grep -qxF "unlit pixels not magenta: 0" "nosun--vm.txt" || ! diff -q "nosun--vm.txt" "nosun--jit.txt" > /dev/null; then
-  echo "${prefix}scene_api_test: an unlit plane lost its colour with no sun() call:" >&2
-  cat "nosun--vm.txt" "nosun--jit.txt" >&2
-  exit 1
-fi
+  for want in "$@"; do
+    if ! grep -qxF "$want" "$name--vm.txt"; then
+      echo "${prefix}scene_api_test: $name line missing: $want" >&2
+      cat "$name--vm.txt" >&2
+      exit 1
+    fi
+  done
+}
+
+run_pair nosun "unlit pixels not magenta: 0"
 echo "OK: with no sun() call an unlit surface keeps its colour"
-
-for engine in "--vm" "--jit"; do
-  if ! CULEBRA_CANVAS_HEADLESS=1 "$CULEBRA" "$engine" scene_pmip.cul > "pmip${engine}.txt" 2> "pmip${engine}.err"; then
-    echo "${prefix}scene_api_test: pmip program $engine exited non-zero:" >&2
-    cat "pmip${engine}.txt" "pmip${engine}.err" >&2
-    fail=1
-  fi
-done
-[ $fail -eq 0 ] || exit 1
-if ! diff -q "pmip--vm.txt" "pmip--jit.txt" > /dev/null; then
-  echo "${prefix}scene_api_test: the VM and the JIT disagree on point_mipmap:" >&2
-  cat "pmip--vm.txt" "pmip--jit.txt" >&2
-  exit 1
-fi
-for want in "near stays sharp: true" "far is averaged: true" \
-            "unknown name keeps the last filter: true"; do
-  if ! grep -qxF "$want" "pmip--vm.txt"; then
-    echo "${prefix}scene_api_test: point_mipmap line missing: $want" >&2
-    cat "pmip--vm.txt" >&2
-    fail=1
-  fi
-done
-[ $fail -eq 0 ] || exit 1
+run_pair pmip "near stays sharp: true" "far is averaged: true" \
+  "unknown name keeps the last filter: true"
 echo "OK: point_mipmap keeps near texels sharp and averages far ones"
-
-for engine in "--vm" "--jit"; do
-  if ! CULEBRA_CANVAS_HEADLESS=1 "$CULEBRA" "$engine" scene_hfog.cul > "hfog${engine}.txt" 2> "hfog${engine}.err"; then
-    echo "${prefix}scene_api_test: hfog program $engine exited non-zero:" >&2
-    cat "hfog${engine}.txt" "hfog${engine}.err" >&2
-    fail=1
-  fi
-done
-[ $fail -eq 0 ] || exit 1
-if ! diff -q "hfog--vm.txt" "hfog--jit.txt" > /dev/null; then
-  echo "${prefix}scene_api_test: the VM and the JIT disagree on height_fog:" >&2
-  cat "hfog--vm.txt" "hfog--jit.txt" >&2
-  exit 1
-fi
-for want in "clear without fog: true" "down stays clear: true level hazes: true" \
-            "bad arguments keep the fog: true" "falloff 0 is uniform: true" \
-            "fog() takes over: true"; do
-  if ! grep -qxF "$want" "hfog--vm.txt"; then
-    echo "${prefix}scene_api_test: height_fog line missing: $want" >&2
-    cat "hfog--vm.txt" >&2
-    fail=1
-  fi
-done
-[ $fail -eq 0 ] || exit 1
+run_pair hfog "clear without fog: true" "down stays clear: true level hazes: true" \
+  "bad arguments keep the fog: true" "falloff 0 is uniform: true" "fog() takes over: true"
 echo "OK: height_fog clears a view from above and hazes a far level one"
 
 for engine in "--vm" "--jit"; do
