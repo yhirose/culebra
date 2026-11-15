@@ -3047,14 +3047,27 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_array_push(JitArray* arr,
 // same keys, and equal values. The map offers no walk by index, and a user
 // `eq` may rehash it, so the pairs that can reach one are gathered first —
 // into an Array, which the collector sees where a C++ vector is invisible to
-// it — and compared once the map has been left.
+// it — and compared once the map has been left. The Array is made before the
+// walk, if any value can reach one: a collection its allocation starts runs
+// `drop`s, which could change either map under the walk.
 inline bool _culebra_any_key_values_equal(JitObject* a, JitObject* b) {
   size_t na = a->non_string_props ? a->non_string_props->size() : 0;
   size_t nb = b->non_string_props ? b->non_string_props->size() : 0;
   if (na != nb) return false;
   if (na == 0) return true;
+  auto any_reaches = [](JitObject* o) {
+    for (auto& [k, entry] : *o->non_string_props)
+      if (_member_reaches_user_code(entry.value.tag)) return true;
+    return false;
+  };
   JitOwnedVal pairs(JitValue{TAG_NIL, 0});
   JitArray* held = nullptr;
+  if (any_reaches(a) || any_reaches(b)) {
+    held = culebra_runtime_array_new_reserved(static_cast<int64_t>(2 * na));
+    pairs = JitOwnedVal(JitValue{TAG_ARRAY, reinterpret_cast<int64_t>(held)});
+    if (a->non_string_props->size() != b->non_string_props->size())
+      return false;
+  }
   for (auto& [k, entry] : *a->non_string_props) {
     auto it = b->non_string_props->find(k);
     if (it == b->non_string_props->end()) return false;
@@ -3063,10 +3076,6 @@ inline bool _culebra_any_key_values_equal(JitObject* a, JitObject* b) {
         !_member_reaches_user_code(y.tag)) {
       if (!_culebra_value_equal(x.tag, x.data, y.tag, y.data)) return false;
       continue;
-    }
-    if (!held) {
-      held = culebra_runtime_array_new_reserved(static_cast<int64_t>(2 * na));
-      pairs = JitOwnedVal(JitValue{TAG_ARRAY, reinterpret_cast<int64_t>(held)});
     }
     culebra_runtime_value_retain(x.tag, x.data);
     culebra_runtime_array_push(held, x.tag, x.data);
