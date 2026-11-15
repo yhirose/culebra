@@ -14,6 +14,7 @@ const lengthSel = $("length");
 const loopBox = $("loop");
 const statusEl = $("status");
 const shareBtn = $("share");
+const sampleSel = $("sample");
 const consoleEl = $("console");
 const clockEl = $("clock");
 const scope = $("scope");
@@ -205,6 +206,7 @@ function start(buffer) {
   startedAt = audio.currentTime;
   s.start();
   setStatus("playing");
+  update();
   animate();
 }
 
@@ -408,9 +410,9 @@ shareBtn.addEventListener("click", async () => {
 
 // --- start ------------------------------------------------------------------------
 //
-// A shared link's code, else the draft, else the sample.
+// A shared link's code, else the draft, else (null) the opening sample.
 
-async function initialCode() {
+async function linkOrDraft() {
   const param = new URLSearchParams(location.hash.slice(1)).get("code");
   if (param) {
     try {
@@ -419,13 +421,51 @@ async function initialCode() {
       setStatus("the link's code could not be read", true);
     }
   }
-  const draft = loadDraft();
-  if (draft !== null) return draft;
-  const res = await fetch("./studio-sample.cul");
-  return res.ok ? res.text() : "";
+  return loadDraft();
 }
+
+// --- the samples ---------------------------------------------------------------
+//
+// studio-samples/index.json lists them from the simplest up. Choosing one puts
+// it in the editor, as the Playground's Examples do.
+
+const SAMPLES = "./studio-samples/";
+let samples = [];
+
+// Into the editor, unless another has been chosen while it was on its way.
+async function loadSample(file) {
+  sampleSel.value = file;
+  try {
+    const res = await fetch(SAMPLES + file);
+    if (!res.ok) throw new Error(`${file}: HTTP ${res.status}`);
+    const text = await res.text();
+    if (sampleSel.value === file) editor.setValue(text);
+  } catch (err) {
+    setStatus("the sample could not be loaded: " + err.message, true);
+  }
+}
+
+async function loadSamples() {
+  try {
+    const res = await fetch(SAMPLES + "index.json");
+    samples = res.ok ? await res.json() : [];
+  } catch {
+    samples = [];
+  }
+  for (const { title, file } of samples) sampleSel.add(new Option(title, file));
+}
+
+sampleSel.addEventListener("change", async () => {
+  if (!sampleSel.value) return;
+  await loadSample(sampleSel.value);
+  editor.focus();
+});
 
 addEventListener("hashchange", () => location.reload());
 spawnWorker();
-editor.setValue(await initialCode());
+await loadSamples();
+const code = await linkOrDraft();
+const opening = samples.find((s) => s.opening);
+if (code !== null) editor.setValue(code);
+else if (opening) await loadSample(opening.file);
 draw();

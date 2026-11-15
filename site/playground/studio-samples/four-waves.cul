@@ -1,0 +1,8 @@
+# Four waves at one pitch. Select a line and play it: the shape of
+# the wave is which harmonics it has, and how strong.
+let {sine, triangle, square, saw} = Synth
+
+sine(220.0) * 0.3
+triangle(220.0) * 0.3
+square(220.0) * 0.15
+saw(220.0) * 0.15

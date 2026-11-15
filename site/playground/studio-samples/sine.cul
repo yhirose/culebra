@@ -1,0 +1,3 @@
+# A sine wave at 440 Hz (A): one frequency, so one peak in the
+# spectrum. Change the number and play it again.
+Synth.sine(440.0) * 0.3

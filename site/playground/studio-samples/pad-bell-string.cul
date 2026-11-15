@@ -16,4 +16,4 @@ let bell = sine(440.0, phase: sine(616.0) * index) * ring
 # A string, plucked at A.
 let string = noise() * perc(0.001, 0.01) |> pluck(hz(57.0), ring: 1.5)
 
-(pad + bell + string).reverb(mix: 0.3)
+((pad + bell + string) * 0.6).reverb(mix: 0.3)

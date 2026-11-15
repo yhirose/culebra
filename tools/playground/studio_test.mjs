@@ -49,6 +49,14 @@ function shape(wav) {
   return [channels, wav.readUInt32LE(data + 4) / (channels * 2)];
 }
 
+// The loudest sample of a 16-bit WAV, from 0 to 1.
+function peak(wav) {
+  const data = wav.indexOf("data") + 8;
+  let m = 0;
+  for (let i = data; i + 1 < wav.length; i += 2) m = Math.max(m, Math.abs(wav.readInt16LE(i)));
+  return m / 32768;
+}
+
 const select = (source, text, nth = 0) => {
   let from = -1;
   for (let i = 0; i <= nth; i++) from = source.indexOf(text, from + 1);
@@ -144,13 +152,19 @@ const broken = "let {saw} = Synth\n\nlet y = Math.abss(1)\nsaw(110.0)\n";
   assert.doesNotMatch(r.text, / at \d+:\d+/);
 }
 
-// --- the sample the page opens on plays --------------------------------------
+// --- every sample the page offers plays, and none clips -----------------------
 
 {
-  const sample = fs.readFileSync(path.join(root, "playground/studio-sample.cul"), "utf8");
-  const r = await play(sample, null, 0.5);
-  assert.equal(r.failed, false, r.text);
-  assert.deepEqual(shape(r.wav), [2, 22050]);
+  const dir = path.join(root, "playground/studio-samples");
+  const catalog = JSON.parse(fs.readFileSync(path.join(dir, "index.json"), "utf8"));
+  assert.equal(catalog.filter((s) => s.opening).length, 1, "one sample opens the page");
+  assert.deepEqual(fs.readdirSync(dir).filter((f) => f.endsWith(".cul")).sort(),
+                   catalog.map((s) => s.file).sort());
+  for (const { title, file } of catalog) {
+    const r = await play(fs.readFileSync(path.join(dir, file), "utf8"), null, 0.5);
+    assert.equal(r.failed, false, `${title}: ${r.text}`);
+    assert.ok(peak(r.wav) < 0.99, `${title} clips`);
+  }
 }
 
 // --- an Array is samples already --------------------------------------------

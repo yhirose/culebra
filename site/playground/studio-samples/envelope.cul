@@ -1,0 +1,6 @@
+# An envelope shapes a sound's loudness over time. A percussive
+# one rises in 5 ms and dies away over a second, so the sound ends
+# on its own.
+let {saw, perc} = Synth
+
+saw(220.0).lowpass(1500.0) * perc(0.005, 1.0, peak: 0.3)

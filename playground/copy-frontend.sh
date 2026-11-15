@@ -18,7 +18,11 @@ cp playground/index.html playground/boot.js playground/app.js playground/worker.
    playground/project.js playground/styles.css "$OUT/"
 # Synth Studio: a second page on the same worker and editor.
 cp playground/studio.html playground/studio.js playground/studio.css \
-   playground/studio-program.js playground/studio-sample.cul "$OUT/"
+   playground/studio-program.js "$OUT/"
+# Named rather than the folder copied, so a stray file there is not published.
+rm -rf "$OUT/studio-samples"
+mkdir -p "$OUT/studio-samples"
+cp playground/studio-samples/index.json playground/studio-samples/*.cul "$OUT/studio-samples/"
 # The vendored libraries (vendor.sh): the bundles and the stylesheet are what
 # the page loads; package.json, the lockfile and VERSIONS are how they were
 # built, and stay behind.

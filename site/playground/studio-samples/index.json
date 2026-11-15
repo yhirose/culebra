@@ -1,0 +1,11 @@
+[
+  { "title": "A sine", "file": "sine.cul" },
+  { "title": "Four waves", "file": "four-waves.cul" },
+  { "title": "An envelope", "file": "envelope.cul" },
+  { "title": "A filter sweep", "file": "filter-sweep.cul" },
+  { "title": "An FM bell", "file": "fm-bell.cul" },
+  { "title": "Plucked strings", "file": "plucked-strings.cul" },
+  { "title": "An echo", "file": "echo.cul" },
+  { "title": "Pad, bell and string", "file": "pad-bell-string.cul", "opening": true },
+  { "title": "A wide chord", "file": "stereo-chorus.cul" }
+]

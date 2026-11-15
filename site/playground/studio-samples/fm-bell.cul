@@ -1,0 +1,8 @@
+# FM: one sine moving another's phase. The ratio of the two
+# frequencies (616 / 440 = 1.4) puts the partials between the
+# harmonics, which is what sounds like metal; the depth dies away
+# faster than the sound, so it turns pure as it fades.
+let {sine, perc} = Synth
+
+let depth = perc(0.001, 1.2, peak: 3.0)
+sine(440.0, phase: sine(616.0) * depth) * perc(0.002, 2.5, peak: 0.3)

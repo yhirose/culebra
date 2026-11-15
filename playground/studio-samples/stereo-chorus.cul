@@ -1,0 +1,14 @@
+# A wide chord: each note is two saws a few cents apart, one on
+# each side, through a filter that slowly opens and closes, in a room.
+let {saw, sine, hz, mix, adsr} = Synth
+
+let voice = fn (note) {
+  let f = hz(note)
+  mix([saw(f).pan(-0.7), saw(f * 1.004).pan(0.7)])
+}
+
+let chord = mix([voice(48.0), voice(55.0), voice(60.0), voice(63.0)])
+let cutoff = 400.0 + (sine(0.25) + 1.0) * 1200.0
+let swell = adsr(0.8, 0.5, 0.7, 1.5).hold(4.0)
+let dry = chord.lowpass(cutoff, q: 1.5) * swell * 0.08
+dry.reverb(mix: 0.35, room: 0.8)
