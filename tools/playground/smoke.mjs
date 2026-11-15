@@ -13,9 +13,9 @@
 //   node tools/playground/smoke.mjs <culebra-binary> [basic|full]
 
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
+import { root, loadPlayground } from "./wasm.mjs";
 
 const [bin, variant = "basic"] = process.argv.slice(2);
 if (!bin) {
@@ -23,8 +23,6 @@ if (!bin) {
   process.exit(2);
 }
 
-const root = path.resolve(path.dirname(new URL(import.meta.url).pathname),
-                          "../..");
 const caseDir = path.join(root, "tools/playground/cases");
 const cases = fs.readdirSync(caseDir).filter((f) => f.endsWith(".cul")).sort();
 if (cases.length === 0) {
@@ -32,30 +30,7 @@ if (cases.length === 0) {
   process.exit(2);
 }
 
-// The page's own scope: the glue posts output as messages and asks for a
-// worker-ish global. Nothing here fetches — the wasm arrives as bytes.
-let captured = "";
-globalThis.self = globalThis;
-globalThis.location = { href: "file:///" };
-globalThis.postMessage = (m) => {
-  if (m && m.type === "output") captured += m.text;
-};
-
-const jsPath = path.join(root, `site/playground/culebra-${variant}.js`);
-const wasmBinary = fs.readFileSync(jsPath.replace(/\.js$/, ".wasm"));
-// node reads a .js as CommonJS and the glue is an ES module; the copy is the
-// cheapest way to say so without a package.json inside the served directory.
-const glue = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "culebra-pg-")),
-                       "glue.mjs");
-fs.copyFileSync(jsPath, glue);
-
-const Module = await (await import(glue)).default({
-  instantiateWasm(imports, done) {
-    WebAssembly.instantiate(wasmBinary, imports).then((r) => done(r.instance));
-    return {};
-  },
-});
-Module.FS.mkdir("/work");
+const playground = await loadPlayground(variant);
 
 // stdout and stderr reach the page through one channel, so the native side is
 // merged too. The cases keep the two apart — a case either prints or throws —
@@ -65,16 +40,8 @@ function native(file) {
   return { out: r.stdout + r.stderr, failed: r.status !== 0 };
 }
 
-async function wasm(name, src) {
-  const p = `/work/${name}`;
-  Module.FS.writeFile(p, src);
-  captured = "";
-  // run_culebra's result is a verdict, not a process status — compare it as
-  // one.
-  const rc = await Module.ccall("run_culebra", "number",
-                                ["string", "string", "string"],
-                                [src, p, ""], { async: true });
-  return { out: captured, failed: rc !== 0 };
+function wasm(name, src) {
+  return playground.run(`/work/${name}`, src);
 }
 
 let bad = 0;

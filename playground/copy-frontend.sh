@@ -16,19 +16,24 @@ mkdir -p "$OUT"
 cp playground/index.html playground/boot.js playground/app.js playground/worker.js \
    playground/editor.js playground/culebra-lang.js playground/share-link.js \
    playground/project.js playground/styles.css "$OUT/"
+# Synth Studio: a second page on the same worker and editor.
+cp playground/studio.html playground/studio.js playground/studio.css \
+   playground/studio-program.js playground/studio-sample.cul "$OUT/"
 # The vendored libraries (vendor.sh): the bundles and the stylesheet are what
 # the page loads; package.json, the lockfile and VERSIONS are how they were
 # built, and stay behind.
 mkdir -p "$OUT/vendor"
 cp playground/vendor/codemirror.js playground/vendor/xterm.js playground/vendor/xterm.css "$OUT/vendor/"
 
-# Stamp the version into the copy, reading the one place that defines it. The
-# source index.html keeps the placeholder — it is never served directly, only
-# this copy is. Not `sed -i`: its in-place syntax differs between BSD and GNU.
+# Stamp the version into the copies, reading the one place that defines it. The
+# source pages keep the placeholder — they are never served directly, only
+# the copies are. Not `sed -i`: its in-place syntax differs between BSD and GNU.
 version="$(sed -n 's/^#define CULEBRA_VERSION "\([^"]*\)"/\1/p' include/culebra.h)"
 [ -n "$version" ] || { echo "error: no CULEBRA_VERSION in include/culebra.h" >&2; exit 1; }
-sed "s/{{CULEBRA_VERSION}}/v$version/g" "$OUT/index.html" >"$OUT/index.html.tmp"
-mv "$OUT/index.html.tmp" "$OUT/index.html"
+for page in index.html studio.html; do
+  sed "s/{{CULEBRA_VERSION}}/v$version/g" "$OUT/$page" >"$OUT/$page.tmp"
+  mv "$OUT/$page.tmp" "$OUT/$page"
+done
 
 # examples.json's "path" doubles as the source location (relative to the repo
 # root) and the fetch path the browser uses (relative to $OUT), so mirroring

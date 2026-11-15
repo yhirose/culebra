@@ -2352,6 +2352,7 @@ site-vendor:
 [doc("Check the committed playground wasm against native --vm")]
 check-playground bin="./build/culebra":
     node tools/playground/smoke.mjs {{bin}}
+    node tools/playground/studio_test.mjs {{bin}}
     node tools/playground/share_link_test.mjs
     node tools/playground/project_test.mjs
 

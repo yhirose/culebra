@@ -341,6 +341,14 @@ onmessage = async (e) => {
   self.__musicPlaying = {};
   self.__soundsPlaying = {};
 
+  // `collect` names files the program writes for the page (repo-relative, as
+  // `files` are): each is handed back with "done", and one a run did not write
+  // must not be the last run's, so they go first.
+  const collect = e.data.collect || [];
+  for (const rel of collect) {
+    try { mod.FS.unlink(underWork(rel)); } catch { /* not there */ }
+  }
+
   const t0 = performance.now();
   let rc = 1;
   // A game loop never returns, so flushing only at the end would never flush
@@ -363,5 +371,9 @@ onmessage = async (e) => {
   const ms = performance.now() - t0;  // the program's time, not the flush's
   await flushSaves();
   running = false;
-  postMessage({ type: "done", rc, ms });
+  const files = {};
+  for (const rel of collect) {
+    try { files[rel] = mod.FS.readFile(underWork(rel)); } catch { /* not written */ }
+  }
+  postMessage({ type: "done", rc, ms, files }, Object.values(files).map((b) => b.buffer));
 };

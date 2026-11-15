@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <!-- The Playground's policy (index.html says why each line is there), less
+       the remote fetch: nothing here loads from another host. -->
+  <meta http-equiv="Content-Security-Policy" content="
+    default-src 'none';
+    script-src 'self' 'wasm-unsafe-eval';
+    style-src 'self' 'unsafe-inline';
+    img-src 'self' data:;
+    font-src 'self';
+    connect-src 'self';
+    worker-src 'self';
+    base-uri 'none';
+    form-action 'none'">
+  <title>culebra Synth Studio {{CULEBRA_VERSION}}</title>
+  <meta name="description" content="Write a sound in culebra's Synth, play it, and watch its wave and spectrum, in your browser.">
+  <link rel="icon" type="image/svg+xml" href="../assets/favicon.svg">
+  <link rel="stylesheet" href="../assets/brand.css">
+  <link rel="stylesheet" href="./styles.css">
+  <link rel="stylesheet" href="./studio.css">
+  <script src="./boot.js"></script>
+</head>
+<body>
+  <header class="pg-header">
+    <div class="brand">
+      <a class="wordmark" href="../" aria-label="culebra home">
+        <svg class="mark" width="24" height="24" viewBox="0 0 26 26" fill="none" aria-hidden="true">
+          <path d="M13 15C13 12 13.5 9 14 6" stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none"/>
+          <path d="M14 6C15 2 18 1 19 3" stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none"/>
+          <path d="M14 6C16.2 5.4 18.5 6 19 8.8" stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none"/>
+          <path d="M14 6C13 2 10 1 9 3" stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none"/>
+          <path d="M14 6C11.8 5.4 9.5 6 9 8.8" stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none"/>
+          <path d="M2 15.5c1.5-2 3.5-2 5 0s3.5 2 5 0 3.5-2 5 0 3.5 2 5 0"
+                stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none"/>
+          <path d="M2 20c1.5-2 3.5-2 5 0s3.5 2 5 0 3.5-2 5 0 3.5 2 5 0"
+                stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none" opacity="0.5"/>
+        </svg>
+        culebra
+      </a>
+      <span class="sub">Synth Studio {{CULEBRA_VERSION}}</span>
+    </div>
+    <nav>
+      <a href="./">Playground</a>
+      <a href="https://github.com/yhirose/culebra/blob/master/docs/stdlib.md#46-synth">Docs</a>
+      <a href="https://github.com/yhirose/culebra">Repository</a>
+    </nav>
+  </header>
+
+  <main class="pg-main st-main">
+    <section class="st-left" aria-label="Code">
+      <div class="pg-toolbar st-toolbar">
+        <button id="play" class="btn btn-primary" disabled
+                title="Play the selection, or the last expression (Ctrl/⌘+Enter)">▶ Play</button>
+        <button id="stop" class="btn" disabled title="Stop (Ctrl/⌘+.)">■ Stop</button>
+        <label class="st-field" title="How long a sound that never ends plays">
+          Length
+          <select id="length" aria-label="Length of a sound that never ends">
+            <option value="1">1 s</option>
+            <option value="2">2 s</option>
+            <option value="4" selected>4 s</option>
+            <option value="8">8 s</option>
+            <option value="16">16 s</option>
+          </select>
+        </label>
+        <label class="st-field"><input id="loop" type="checkbox"> Loop</label>
+        <span class="spacer"></span>
+        <span id="status" class="status">loading…</span>
+        <button id="share" class="btn" title="Copy a link to this code">Share</button>
+      </div>
+      <div id="editor" class="pg-editor st-editor"></div>
+      <pre id="console" class="pg-output st-console" hidden></pre>
+    </section>
+
+    <section class="st-right" aria-label="Sound">
+      <figure class="st-panel">
+        <figcaption>Wave <span id="clock" class="st-clock"></span></figcaption>
+        <canvas id="scope" aria-label="The wave playing now"></canvas>
+      </figure>
+      <figure class="st-panel">
+        <figcaption>Spectrum</figcaption>
+        <canvas id="spectrum" aria-label="The spectrum playing now"></canvas>
+      </figure>
+    </section>
+  </main>
+
+  <script type="module" src="./studio.js"></script>
+</body>
+</html>

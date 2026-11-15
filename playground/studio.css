@@ -1,0 +1,44 @@
+/* Synth Studio's own panes. The header, the toolbar's controls and the split
+   come from styles.css; colors from ../assets/brand.css. */
+
+/* Both sides are columns: the code under its toolbar, the two graphs one
+   over the other. */
+.st-left, .st-right { display: flex; flex-direction: column; min-height: 0; min-width: 0; }
+.st-left { border-right: 1px solid var(--border); }
+.st-editor { flex: 1; border-right: 0; }
+
+.st-toolbar { padding: 0.45rem 0.8rem; }
+.st-field {
+  display: inline-flex; align-items: center; gap: 0.35rem;
+  color: var(--muted); font-size: 0.85rem;
+}
+.st-field input { margin: 0; }
+
+/* What a run printed, and an error: the Playground's Output pane, kept short
+   under the code it is about. */
+.st-console {
+  max-height: 30%; overflow: auto;
+  padding: 0.6rem 1rem; border-top: 1px solid var(--border);
+  background: var(--surface); font-size: 0.85rem; line-height: 1.45;
+}
+
+.st-right { background: var(--bg); }
+.st-panel {
+  flex: 1; display: flex; flex-direction: column; min-height: 0;
+  margin: 0; padding: 0.5rem 0.8rem 0.8rem;
+}
+.st-panel + .st-panel { border-top: 1px solid var(--border); }
+.st-panel figcaption {
+  display: flex; justify-content: space-between;
+  color: var(--muted); font-size: 0.8rem; padding-bottom: 0.35rem;
+}
+.st-clock { font-variant-numeric: tabular-nums; }
+.st-panel canvas {
+  flex: 1; min-height: 0; width: 100%;
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+}
+
+@media (max-width: 720px) {
+  .st-left { border-right: 0; border-bottom: 1px solid var(--border); }
+  .st-toolbar .spacer { display: block; }
+}

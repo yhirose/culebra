@@ -56,10 +56,15 @@ const theme = EditorView.theme({
   },
 });
 
-export function createEditor(parent, doc, { onChange, readOnly = false } = {}) {
+// `keys` are bindings (CodeMirror's KeyBinding objects) that take a key from
+// the defaults, for a page whose commands the editor's own keys should reach.
+export function createEditor(parent, doc, { onChange, readOnly = false, keys = [] } = {}) {
   const view = new EditorView({
     doc,
     extensions: [
+      // Ahead of basicSetup, whose own keymap binds Mod-Enter: of two
+      // extensions at one precedence, the earlier wins.
+      keymap.of(keys),
       basicSetup,
       // The opening listing (app.js) is the same editor with the typing taken
       // out: still selectable, still copyable, still highlighted by the rules
@@ -83,6 +88,9 @@ export function createEditor(parent, doc, { onChange, readOnly = false } = {}) {
   });
   return {
     getValue: () => view.state.doc.toString(),
+    // The main selection's ends as offsets in getValue(); equal when nothing
+    // is selected.
+    getSelection: () => ({ from: view.state.selection.main.from, to: view.state.selection.main.to }),
     setValue(text) {
       view.dispatch({
         changes: { from: 0, to: view.state.doc.length, insert: text },

@@ -715,6 +715,11 @@ jobs:
       - name: Run the committed wasm against native --vm
         run: node tools/playground/smoke.mjs ./build/culebra
 
+      # Synth Studio's program on the same wasm: the WAV a Play leaves, byte
+      # for byte the native one, and an error's line as the editor's.
+      - name: Check Synth Studio's program
+        run: node tools/playground/studio_test.mjs ./build/culebra
+
       # The share-link codec the page loads, round-tripped through node's own
       # CompressionStream — no wasm and no binary involved.
       - name: Round-trip the Playground share-link codec
