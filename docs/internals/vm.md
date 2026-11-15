@@ -792,6 +792,19 @@ unrooted, so on wasm no collection runs beneath it. A class's own
 `tools/checks/check_borrowed_closure_door.sh`, so a new borrow is looked
 at before it lands.
 
+The rule is the same for any value native code reads without a count
+(out of an array, a slot, a cell) and then holds across a call that can
+run program code: a closure call, a release that runs a `drop`, an
+allocation whose collection runs one. `tools/checks/check_gc_hazard.sh`
+finds such holds with a clang analysis of the runtime (the shape of V8's
+gcmole): a borrowed callee, a borrowed value kept in a `std::function` or
+a field, and a borrowed value live after such a call. It allows none but
+the holds it names with why each is sound (the running closure's own
+captures, a String no release frees, a table the program cannot change
+under the call), and the known holes it lists apart until each is fixed.
+A value held through a `JitOwnedVal` or `JitHeldMethod`
+is owned and is not a hold. The IR the JIT emits is out of its sight.
+
 A native object that keeps a Function past the call that handed it over
 takes its count where the collector can see it. A Search index keeps its
 analyzer's hooks, and an Http.server its handlers, in the C++ half of

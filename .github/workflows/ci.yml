@@ -129,6 +129,32 @@ jobs:
           echo "change scope: $scope"
           echo "scope=$scope" >> "$GITHUB_OUTPUT"
 
+  # Native code holding a value it has no count of across a call into program
+  # code (tools/checks/check_gc_hazard.sh). A job of its own: it builds a clang
+  # tool and parses main.cc from a configure alone, needs no culebra build, and
+  # would delay every job behind build-ubuntu if it ran there. Its libstdc++
+  # and the toolchain action's LLVM are a second configuration to a Mac's
+  # libc++ and Homebrew LLVM; the tool reports the same holds under both.
+  gc-hazard:
+    needs: scope
+    if: needs.scope.outputs.scope == 'full'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      CULEBRA_CANVAS_WINDOW_DEFAULT: OFF
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+      - name: Install dependencies
+        uses: ./.github/actions/setup-linux-toolchain
+      - name: Install clang's libraries
+        run: |
+          v=$("$LLVM_CONFIG" --version | cut -d. -f1)
+          sudo apt-get install -y "libclang-$v-dev" "libclang-cpp$v-dev"
+      - name: Check GC hazards
+        run: just check-gc-hazard
+
   # Ubuntu used to be one job (build + `_run-tests all`), and on the 4-core
   # standard runner that serialized ~24 min of test phases behind the build,
   # making it the workflow's ~34 min critical path. It is now this build job

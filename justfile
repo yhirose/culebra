@@ -321,6 +321,11 @@ check-gc-pin-door:
     tools/checks/check_gc_pin_door.sh
 
 [group("test")]
+[doc("Verify no borrowed value is held across a call into program code (clang analysis)")]
+check-gc-hazard:
+    tools/checks/check_gc_hazard.sh
+
+[group("test")]
 [doc("Verify nothing compares by structure what `==` compares by its rule (ratchet)")]
 check-value-equal-door:
     tools/checks/check_value_equal_door.sh
