@@ -158,3 +158,29 @@ run_cell_holder()
 GC.stat()
 assert_eq(ev5, ['a', 'c'])
 assert_eq(keep5.x, [1, 2])
+
+# --- 6) `get(key, fallback)` lets go of the key it was handed after finding
+# the entry, and that key's drop takes the entry out: the value it answers
+# is already its own by then.
+let t6 = {}
+mut armed6 = false
+class K6 {
+  new(@k) {}
+  hash() {
+    @k
+  }
+  eq(o) {
+    o is K6 && o.k == @k
+  }
+  drop() {
+    if armed6 {
+      armed6 = false
+      t6.remove(stored6)
+      let _ = [9, 9, 9]  # reuses what was freed
+    }
+  }
+}
+let stored6 = K6(1)
+t6[stored6] = [1, 2, 3]
+armed6 = true
+assert_eq(t6.get(K6(1), 0), [1, 2, 3])

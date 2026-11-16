@@ -4037,11 +4037,13 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_object_get_default(
       found = true;
     }
   }
+  // The value is the caller's before the key goes: letting go of a key can
+  // run its `drop`, which may take this very entry out.
+  if (found) culebra_runtime_value_retain(stored.tag, stored.data);
   // Release the key once: no-op for a String, a view or a Long, frees a
   // refcounted (e.g. Tuple) key.
   _culebra_value_release_impl(kt, kd);
   if (found) {
-    culebra_runtime_value_retain(stored.tag, stored.data);
     _culebra_value_release_impl(ft, fd);  // fallback unused
     return stored;
   }
