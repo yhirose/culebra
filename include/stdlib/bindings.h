@@ -4158,14 +4158,6 @@ struct JitExtension {
 // Convenience wrapper for embedders. Call once before running a program.
 inline void install_jit_stdlib() { JitExtension::install(); }
 
-// What the executor's compiler needs of the hooks, the builtin names, without
-// declare_runtime, which names the LLVM lowering a built binary does not
-// carry. Leaves alone the hooks a host installed already.
-inline void install_executor_stdlib() {
-  auto& h = default_extension_hooks();
-  if (!h.is_builtin_var) h.is_builtin_var = &JitExtension::is_builtin_var;
-}
-
 // --- Stdlib namespace as first-class JIT object ---
 //
 // `let m = IO; m.inspect(x)` needs IO to be a value, not just a

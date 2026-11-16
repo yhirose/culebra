@@ -102,6 +102,7 @@ inline void run_source_isolate(IsolateCore& core, std::string source,
       const VmFnDesc* d = Exec::closure_desc(const_cast<JitClosure*>(c));
       return d && units->retains(d->prog);
     };
+    origin->hooks.is_builtin_var = &JitExtension::is_builtin_var;
     set_source_origin(rt, origin);
     // The source's top-level bindings, released on this thread while its
     // Runtime is current: releasing one can run the source's code (a `drop`).
@@ -117,11 +118,9 @@ inline void run_source_isolate(IsolateCore& core, std::string source,
 // Lets this process run Isolate.spawn_source. Each host that carries the
 // compiler calls it where it sets up the stdlib (the CLI's main, Embed, an
 // AOT binary through culebra_rt_source). What compiling a source needs comes
-// with it, since a built binary compiles nothing else: the compiler's
-// builtin names and the namespace members the parse expands `let {*} = NS`
-// over.
+// with it, since a built binary compiles nothing else: the namespace members
+// the parse expands `let {*} = NS` over (the builtin names ride the origin).
 inline void install_source_isolate() {
-  install_executor_stdlib();
   install_namespace_members();
   source_isolate_run() = &run_source_isolate;
 }

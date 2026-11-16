@@ -58,6 +58,10 @@ struct SourceOrigin {
   // included: a value that carries it may not leave for a Runtime that does
   // not hold `code` (JitSerCtx::leaving).
   std::function<bool(const JitClosure*)> owns;
+  // What its Runtimes compile with: the stdlib's builtin names for the
+  // executor's compiler, set on each of them rather than as the process's
+  // default, which a host that runs without the stdlib relies on.
+  ExtensionHooks hooks{};
 };
 
 struct SourceOriginSlot {
@@ -82,6 +86,8 @@ inline const std::shared_ptr<const SourceOrigin>& current_source_origin() {
 
 inline void set_source_origin(culebra::Runtime& rt,
                               std::shared_ptr<const SourceOrigin> origin) {
+  culebra::runtime_substate<ExtensionHooks>(rt, culebra::kSlotJitHooks) =
+      origin->hooks;
   culebra::runtime_substate<SourceOriginSlot>(rt, culebra::kSlotSourceOrigin)
       .origin = std::move(origin);
 }

@@ -49,6 +49,21 @@ if [[ ! -f "$core" ]]; then
   exit 1
 fi
 
+# libculebra_rt_source.a is no feature archive: its one object is the core's
+# culebra_rt.cc.o built again with Isolate.spawn_source in it, linked in that
+# object's place (src/main.cc's replaces_core). It is held to everything the
+# core is, and the feature archives are held against both.
+cores=("$core")
+features=()
+for ar in "$BUILD_DIR"/libculebra_rt_*.a; do
+  [[ -f "$ar" ]] || continue
+  if [[ "$(basename "$ar")" == libculebra_rt_source.a ]]; then
+    cores+=("$ar")
+  else
+    features+=("$ar")
+  fi
+done
+
 # Mangled names of the namespace-scope, dynamically-initialized thread_locals a
 # given archive *defines*. An undefined reference is a borrow, and is the
 # second check's subject, not this one's.
@@ -95,16 +110,21 @@ strong_defs() {
     | awk '$2 ~ /^[TDBR]$/ {print $NF}' | sort -u
 }
 
+# A per-archive symbol list, taken over every core archive as one.
+over_cores() {
+  local c
+  for c in "${cores[@]}"; do "$1" "$c"; done | sort -u
+}
+
 demangle() {
   if command -v c++filt >/dev/null 2>&1; then c++filt; else cat; fi
 }
 
-core_defs=$(tls_defs "$core")
+core_defs=$(over_cores tls_defs)
 fail=0
 checked=0
 
-for ar in "$BUILD_DIR"/libculebra_rt_*.a; do
-  [[ -f "$ar" ]] || continue
+for ar in "${features[@]}"; do
   checked=$((checked + 1))
   shared=$(comm -12 <(printf '%s\n' "$core_defs") <(tls_defs "$ar"))
   [[ -n "$shared" ]] || continue
@@ -141,8 +161,7 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
   echo "rt-archive-borrow SKIP (references are read on ELF -- see all_defs)"
 else
   borrow_fail=0
-  for ar in "$core" "$BUILD_DIR"/libculebra_rt_*.a; do
-    [[ -f "$ar" ]] || continue
+  for ar in "${cores[@]}" "${features[@]}"; do
     borrowed=$(tls_borrows "$ar")
     [[ -n "$borrowed" ]] || continue
     borrow_fail=1
@@ -178,7 +197,7 @@ fi
 # corner of OpenSSL/zlib still trips it. `7httplib` is the Itanium mangling of
 # `namespace httplib`, matched directly so the check does not depend on c++filt
 # being installed (demangle() falls back to `cat`, which would silently pass).
-core_undef=$(undef_syms "$core")
+core_undef=$(over_cores undef_syms)
 leak=$(printf '%s\n' "$core_undef" | grep -E \
   '^_?(SSL|X509|EVP_|BIO_|ERR_|ASN1_|RAND_|PEM_|OPENSSL|CRYPTO_|OCSP_|i2d_|d2i_|GENERAL_NAME|deflate|inflate|crc32|adler32|compress|uncompress|zlib|gz)|7httplib' \
   || true)
@@ -219,10 +238,9 @@ else
   # helpers GNU89 inline semantics (rt_macros.h), so a feature archive calls
   # the core's definition instead of emitting one. Nothing is waived: the
   # answer is zero.
-  core_strong=$(strong_defs "$core")
+  core_strong=$(over_cores strong_defs)
   dup_fail=0
-  for ar in "$BUILD_DIR"/libculebra_rt_*.a; do
-    [[ -f "$ar" ]] || continue
+  for ar in "${features[@]}"; do
     shared=$(comm -12 <(printf '%s\n' "$core_strong") <(all_defs "$ar"))
     [[ -n "$shared" ]] || continue
     dup_fail=1

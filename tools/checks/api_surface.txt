@@ -362,7 +362,7 @@ Isolate.spawn(fn, *args) -> handle
 h.join()
 h.poll()
 h.drop()
-Isolate.spawn_source(source, *args, name: "<source>") -> handle
+Isolate.spawn_source(source, *args, name = "<source>") -> handle
 Channel.new(cap = 1) -> (tx, rx)
 tx.send(v)
 tx.clone()

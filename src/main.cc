@@ -566,6 +566,9 @@ struct FeatureAxis {
   const char* link_flags;  // appended on a hit ("" when built out)
   bool embedded;           // this driver carries `archive`
   AxisVariant variant = {};
+  // `archive` is the core's own object built again with more in it, so it
+  // goes before the core archive and the link never pulls the core's copy.
+  bool replaces_core = false;
 };
 
 static constexpr FeatureAxis kFeatureAxes[] = {
@@ -638,10 +641,11 @@ static constexpr FeatureAxis kFeatureAxes[] = {
     // CodeGen.Module, for the same reason: its wrap<T> registrar is a static
     // initializer (see src/runtime/culebra_rt_codegen.cc).
     {{"CodeGen"}, "libculebra_rt_codegen.a", CULEBRA_CODEGEN_LINK, true},
-    // Isolate.spawn_source: the parser, the bytecode compiler and the
-    // executor, installed by a static initializer (culebra_rt_source.cc). The
-    // trigger is the method name, as `segmenter`'s is.
-    {{"spawn_source"}, "libculebra_rt_source.a", "", true},
+    // Isolate.spawn_source: the core's object again with the parser, the
+    // bytecode compiler and the executor in it, installed by a static
+    // initializer (culebra_rt_source.cc). The trigger is the method name, as
+    // `segmenter`'s is.
+    {{"spawn_source"}, "libculebra_rt_source.a", "", true, {}, true},
 };
 // Cross-compiling with Tensor would need a target-specific BLAS link, which we
 // don't bundle — run_build rejects that pair up front by this row.
@@ -1335,14 +1339,15 @@ int run_build(const BuildOptions& opts) {
   // line, so collect the two runs separately and splice them in below.
   // (host_build is computed above, before the object is emitted: the baked
   // stdlib preamble rides the same policy.)
-  std::vector<std::string> feature_objs, feature_links;
+  std::vector<std::string> core_objs, feature_objs, feature_links;
   for (size_t i = 0; i < std::size(kFeatureAxes); i++) {
     if (!used[i]) continue;
     const auto& ax = kFeatureAxes[i];
     // The axis's variant, when its flag was given, links it the other way.
     bool alt = opts.variant[i];
     const char* archive = alt && ax.variant.archive ? ax.variant.archive : ax.archive;
-    if (host_build && ax.embedded) force_load_feature(feature_objs, archive);
+    if (host_build && ax.embedded)
+      force_load_feature(ax.replaces_core ? core_objs : feature_objs, archive);
     expand_archive_names(feature_links, alt ? ax.variant.link_flags : ax.link_flags);
   }
   // The wrap archive holds static registrars nothing references by name, so it
@@ -1384,13 +1389,15 @@ int run_build(const BuildOptions& opts) {
   // user's, where the kit describes this host.
   bool inprocess = !cross && culebra::toolchain::use_inprocess_link();
 
-  // Assembled in link order: inputs, force-loaded feature objects, link-wide
-  // flags, then the libraries those objects need. Raw argv tokens — the
+  // Assembled in link order: inputs, the core object's stand-in, the core
+  // archive, force-loaded feature objects, link-wide flags, then the libraries
+  // those objects need. Raw argv tokens — the
   // external path quotes them once at the join below, and the in-process one
   // hands them over as they are, where a quote would be part of a filename.
   std::vector<std::string> args;
   args.push_back(obj);
   if (!assets_obj.empty()) args.push_back(assets_obj);
+  args.insert(args.end(), core_objs.begin(), core_objs.end());
   args.push_back(lib);
   args.insert(args.end(), feature_objs.begin(), feature_objs.end());
   expand_archive_names(args, dead_strip);

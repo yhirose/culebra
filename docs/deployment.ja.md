@@ -137,7 +137,7 @@ MSYS2ツールチェーンを必要とします。[`CONTRIBUTING.md`](../CONTRIB
 | `--keep-symbols` | デバッグ用にシンボルテーブルを出力に残す（詳細は後述の[シンボルの除去](#シンボルの除去)を参照） |
 | `--no-tls` | `Http`をOpenSSL抜きでリンクする。約3.9 MB小さくなるが、`https://`と`wss://`は`HttpError`になる（後述の[TLS抜きでHttpをビルドする](#tls抜きでhttpをビルドする)を参照） |
 | `--llama-cpu` | `Llama`をGPUのバックエンドなしでリンクする。約42MB小さくなるが、モデルはCPUだけで動く（後述の[モデルを動かすバイナリ](#モデルを動かすバイナリ)を参照） |
-| `--with <ns,...>` | 標準ライブラリの名前空間を、プログラムが名指ししたものとしてリンクする。[`Isolate.spawn_source`](stdlib.ja.md#isolatespawn_sourcesource-args-name-source---handle)で実行するソースは、バイナリが持つものしか使えないため（`--with Synth,Audio`） |
+| `--with <ns,...>` | 標準ライブラリの名前空間を、プログラムが名指ししたものとしてリンクする。[`Isolate.spawn_source`](stdlib.ja.md#isolatespawn_sourcesource-args-name--source---handle)で実行するソースは、バイナリが持つものしか使えないため（`--with Synth,Audio`） |
 | `--target=<triple>` | 指定LLVM triple向けにクロスコンパイル |
 | `--sysroot=<path>` | `cc`の`--sysroot=`にそのまま渡す |
 | `--rt-lib=<path>` | ランタイムアーカイブのパスを上書き（cross-compileでは必須） |

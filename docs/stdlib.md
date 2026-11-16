@@ -1356,7 +1356,7 @@ with, the same way and with the same skip of the program name. The
 value is process-wide, so an [isolate](#12-isolate) or an HTTP handler
 running on a worker thread reads the same array as the main thread. The one
 exception is a source run by
-[`Isolate.spawn_source`](#isolatespawn_sourcesource-args-name-source---handle),
+[`Isolate.spawn_source`](#isolatespawn_sourcesource-args-name--source---handle),
 which reads the arguments it was handed.
 
 ### `Sys.exit(code: Long) -> Nil`
@@ -2852,7 +2852,7 @@ next statement or blocking-channel boundary, so a runaway or idle isolate never
 hangs the program. A `Time.sleep` already in progress runs to its end first, so
 dropping the handle waits for it.
 
-### `Isolate.spawn_source(source, *args, name: "<source>") -> handle`
+### `Isolate.spawn_source(source, *args, name = "<source>") -> handle`
 
 Runs `source`, a program as a `String`, on an isolate of its own and returns
 the same handle `Isolate.spawn` does: `join()` hands back the value of the

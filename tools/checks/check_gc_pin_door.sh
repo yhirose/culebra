@@ -48,6 +48,8 @@ ALLOWED = {
         "a worker's copy of the handler, for its serve",
     ('include/stdlib/bindings.h', '_jit_http_server_do_serve'):
         "a worker's copies of the handlers, for its serve",
+    ('include/vm/source_isolate.h', 'SourceArgv'):
+        "a source's Sys.argv, for the source's run",
 }
 
 text = door_gate.sources()

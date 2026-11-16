@@ -146,7 +146,7 @@ covers that.
 | `--keep-symbols` | Keep the symbol table in the output, for debugging (see [Symbol stripping](#symbol-stripping) below). |
 | `--no-tls` | Link `Http` without OpenSSL. ~3.9 MB smaller; `https://` and `wss://` then raise `HttpError` (see [Building Http without TLS](#building-http-without-tls) below). |
 | `--llama-cpu` | Link `Llama` without its GPU backend: about 42 MB smaller, models run on the CPU only (see [Binaries that run a model](#binaries-that-run-a-model) below). |
-| `--with <ns,...>` | Also link these stdlib namespaces, as if the program named them: for a source it runs with [`Isolate.spawn_source`](stdlib.md#isolatespawn_sourcesource-args-name-source---handle), which can name only what the binary carries (`--with Synth,Audio`). |
+| `--with <ns,...>` | Also link these stdlib namespaces, as if the program named them: for a source it runs with [`Isolate.spawn_source`](stdlib.md#isolatespawn_sourcesource-args-name--source---handle), which can name only what the binary carries (`--with Synth,Audio`). |
 | `--target=<triple>` | Cross-compile for the given LLVM triple. |
 | `--sysroot=<path>` | Forwarded to `cc` as `--sysroot=`. |
 | `--rt-lib=<path>` | Override the runtime archive path (required for cross-compile). |

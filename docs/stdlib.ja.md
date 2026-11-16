@@ -1316,7 +1316,7 @@ inspect(Sys.argv)  # ['hello', 'world']
 実行時の引数を返します。値はプロセス全体で共有されるので、
 [isolate](#12-isolate)やworkerスレッド上のHTTPハンドラでも
 メインスレッドと同じ配列が読めます。唯一の例外は
-[`Isolate.spawn_source`](#isolatespawn_sourcesource-args-name-source---handle)
+[`Isolate.spawn_source`](#isolatespawn_sourcesource-args-name--source---handle)
 で実行したソースで、渡された引数を読みます。
 
 ### `Sys.exit(code: Long) -> Nil`
@@ -2762,7 +2762,7 @@ GCが回収する）とisolateに停止が伝わり、次の文境界またはch
 ありません。実行中の`Time.sleep`は最後まで待ってから巻き戻るので、dropはその
 間待たされます。
 
-### `Isolate.spawn_source(source, *args, name: "<source>") -> handle`
+### `Isolate.spawn_source(source, *args, name = "<source>") -> handle`
 
 `String`で渡したプログラム`source`を専用のisolateで実行し、`Isolate.spawn`と
 同じハンドルを返します。`join()`はソースの最後の式の値を返し、`drop()`は

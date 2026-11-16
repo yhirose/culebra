@@ -460,9 +460,9 @@ expect_class codegen "$peg_choke" "" "expected absent" "CodeGen only"
 expect_absent codegen "$fmt_machinery" "libstdc++'s formatter, CodeGen"
 expect_output codegen "42"
 
-# Isolate.spawn_source: the front end and the executor are an archive of
-# their own, installed by a static initializer, so naming spawn_source is
-# what brings them. A source can name only what the binary carries, which
+# Isolate.spawn_source: the front end and the executor ride the core's object
+# built again with them (culebra_rt_source), linked in its place only when the
+# program names spawn_source. A source can name only what the binary carries, which
 # --with extends: Synth is written in Culebra and reaches the native Audio
 # half, so the source's Synth.hz runs only on a binary built --with Synth.
 source_entry='culebra::vm::run_source_isolate[(]'
