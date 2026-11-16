@@ -1,12 +1,11 @@
 # A plucked string: a short burst of noise ringing in a delay as
 # long as one period. Three strings struck one after another make
 # an A minor chord.
-let {noise, perc, hz, mix} = Synth
+let {*} = Synth
 
 let string = fn (note, at) {
   let strike = noise() * perc(0.001, 0.01)
-  strike.pluck(hz(note), ring: 2.0).delay(at)
+  strike.pluck(note.hz(), ring: 2.0).delay(at)
 }
 
-let chord = [string(57.0, 0.0), string(60.0, 0.15), string(64.0, 0.3)]
-mix(chord) * 0.5
+[string(57.0, 0.0), string(60.0, 0.15), string(64.0, 0.3)].mix() * 0.5

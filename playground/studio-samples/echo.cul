@@ -1,7 +1,7 @@
 # An echo is a loop: what comes out goes back in a third of a
 # second later, at half the level. `feedback` writes the loop,
 # with `x` for what comes out.
-let {sine, perc, feedback} = Synth
+let {*} = Synth
 
-let blip = sine(880.0) * perc(0.001, 0.08, peak: 0.4)
+let blip = 880.0.sine() * perc(0.001, 0.08, peak: 0.4)
 feedback(|x| blip + x.delay(0.33) * 0.5)

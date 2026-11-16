@@ -1,8 +1,19 @@
-# Four waves at one pitch. Select a line and play it: the shape of
-# the wave is which harmonics it has, and how strong.
-let {sine, triangle, square, saw} = Synth
+# Four waves at one pitch: the shape of a wave is which harmonics it
+# has, and how strong. Select one wave's expression and play it to
+# hear it alone; with nothing selected, the four play a second each.
+let {*} = Synth
 
-sine(220.0) * 0.3
-triangle(220.0) * 0.3
-square(220.0) * 0.15
-saw(220.0) * 0.15
+let smooth = 220.0.sine() * 0.3
+let soft = 220.0.triangle() * 0.3
+let hollow = 220.0.square() * 0.15
+let bright = 220.0.saw() * 0.15
+
+# A gate open for a second from `at`.
+let gate = |at| env([0.0, 0.0, 1.0, 1.0, 0.0], [at, 0.01, 0.97, 0.01])
+
+[
+  smooth * gate(0.0),
+  soft * gate(1.0),
+  hollow * gate(2.0),
+  bright * gate(3.0),
+].mix()
