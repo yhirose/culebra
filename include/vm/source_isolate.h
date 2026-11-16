@@ -49,6 +49,40 @@ inline JitValue _run_source_unit(Session& units, std::string source,
   return units.run_input_carrying(ast, std::move(owned));
 }
 
+// The source's Sys.argv for as long as it runs: the arguments rebuilt once,
+// as Isolate.spawn's child rebuilds its own, so that the message lets go of
+// what it held (a channel's counts) and only the values do. Each read is a
+// fresh Array of them, as the process's Sys.argv is.
+class SourceArgv {
+ public:
+  explicit SourceArgv(std::vector<sendable::SendNode> argv) {
+    auto* r = culebra_runtime_array_new_reserved(
+        static_cast<int64_t>(argv.size()));
+    held_ = JitOwnedVal(JitValue{TAG_ARRAY, reinterpret_cast<int64_t>(r)});
+    // One message, as the spawn serialized it: a class the second argument
+    // shares with the first arrives as a reference back to it.
+    JitDeCtx dc;
+    for (const auto& a : argv) {
+      JitValue v = jit_deserialize(a, dc).consume();
+      culebra_runtime_array_push(r, v.tag, v.data);  // absorbs the +1
+    }
+    // Reached from a std::function from here on, which no collection scans.
+    _gc_heap().pin(r);
+    current_source_slot().argv = [r] {
+      return culebra_runtime_array_slice(r, 0, static_cast<int64_t>(r->size));
+    };
+  }
+  ~SourceArgv() {
+    current_source_slot().argv = nullptr;
+    _gc_heap().unpin(reinterpret_cast<void*>(held_.borrow().data));
+  }
+  SourceArgv(const SourceArgv&) = delete;
+  SourceArgv& operator=(const SourceArgv&) = delete;
+
+ private:
+  JitOwnedVal held_{TAG_NIL, 0};
+};
+
 // SourceIsolateRun (sendable.h).
 inline void run_source_isolate(IsolateCore& core, std::string source,
                                std::string name,
@@ -63,19 +97,6 @@ inline void run_source_isolate(IsolateCore& core, std::string source,
     auto units = std::make_shared<Session>();
     auto origin = std::make_shared<SourceOrigin>();
     origin->code = units;
-    origin->argv = [argv = std::move(argv)] {
-      auto* r = culebra_runtime_array_new_reserved(
-          static_cast<int64_t>(argv.size()));
-      JitOwnedVal guard(JitValue{TAG_ARRAY, reinterpret_cast<int64_t>(r)});
-      // One message, as the spawn serialized it: a class the second argument
-      // shares with the first arrives as a reference back to it.
-      JitDeCtx dc;
-      for (const auto& a : argv) {
-        JitValue v = jit_deserialize(a, dc).consume();
-        culebra_runtime_array_push(r, v.tag, v.data);  // absorbs the +1
-      }
-      return reinterpret_cast<JitArray*>(guard.consume().data);
-    };
     // Raw: the origin owns the session, and only a holder of the origin asks.
     origin->owns = [units = units.get()](const JitClosure* c) {
       const VmFnDesc* d = Exec::closure_desc(const_cast<JitClosure*>(c));
@@ -86,6 +107,7 @@ inline void run_source_isolate(IsolateCore& core, std::string source,
     // Runtime is current: releasing one can run the source's code (a `drop`).
     ReplSessionSwap cells;
     _jit_isolate_settle_child(core, origin.get(), [&] {
+      SourceArgv args(std::move(argv));
       return JitOwnedVal(_run_source_unit(*units, std::move(source), name));
     });
   }

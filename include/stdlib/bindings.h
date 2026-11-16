@@ -1537,8 +1537,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_sys_set_env(
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_sys_argv() {
   // A source Isolate.spawn_source runs reads what it was handed.
-  if (const auto& origin = culebra::current_source_origin())
-    return origin->argv();
+  if (const auto& source_argv = culebra::current_source_slot().argv)
+    return source_argv();
   auto& argv = culebra::sys_argv();
   auto* r = culebra_runtime_array_new();
   for (const auto& s : argv) {

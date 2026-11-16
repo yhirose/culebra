@@ -63,6 +63,11 @@ for src in ["fn () \{ 1 }", "[1, |x| x]", "class C \{ f() \{ 1 } }\nC()", "throw
   assert_true(caught(|| Isolate.spawn_source(src).join())
                 .contains("SendError"), src)
 }
+# Nor into another source, which holds none of this one's code.
+assert_true(caught(|| Isolate.spawn_source(
+  "let f = fn () \{ 1 }\nIsolate.spawn_source(Sys.argv[0], f).join()",
+  "Sys.argv[0]()",
+).join()).contains("SendError"))
 # One the spawning program handed over is its own, and comes back.
 let twice = |x| x * 2
 assert_eq(Isolate.spawn_source("Sys.argv[0]", twice).join()(4), 8)
@@ -72,6 +77,18 @@ let (tx, rx) = Channel.new(4)
 let h = Isolate.spawn_source("let tx = Sys.argv[0]\ntx.send(5)\ntx.send(|| 1)", tx)
 assert_eq(rx.recv(), 5)
 assert_true(caught(|| h.join()).contains("SendError"))
+
+# A channel handed to the source closes when its ends there are dropped: the
+# arguments hold the ends, not the message they came in.
+fn sum_through_source() {
+  let (tx, rx) = Channel.new(4)
+  Isolate.spawn_source(
+    "let tx = Sys.argv[0]\nlet c = Isolate.spawn(fn (r) \{\n  mut n = 0\n  for x in r \{ n += x }\n  n\n}, Sys.argv[1])\ntx.send(1)\ntx.send(2)\ntx.drop()\nc.join()",
+    tx,
+    rx,
+  )
+}
+assert_eq(sum_through_source().join(), 3)
 
 # The isolates the source spawns run its code, and answer to it the same way.
 assert_eq(Isolate.spawn_source("Isolate.spawn(|x| x + 1, 1).join()").join(), 2)

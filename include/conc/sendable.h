@@ -54,11 +54,6 @@ struct SourceOrigin {
   // spawned it would build them from code that is not its own.
   mutable std::mutex builders_m;
   mutable std::unordered_map<std::string, LazyNsBuilder> builders;
-  // `Sys.argv` there, built on the current Runtime from what spawn_source was
-  // handed after the source. A function, so that what rebuilds a message
-  // stays in the binaries that run a source (vm/source_isolate.h) rather than
-  // in every one that reads Sys.
-  std::function<JitArray*()> argv;
   // Whether `c` runs code compiled from the source, its stdlib modules
   // included: a value that carries it may not leave for a Runtime that does
   // not hold `code` (JitSerCtx::leaving).
@@ -67,12 +62,22 @@ struct SourceOrigin {
 
 struct SourceOriginSlot {
   std::shared_ptr<const SourceOrigin> origin;
+  // `Sys.argv` on the source's own Runtime, a fresh Array of what
+  // spawn_source was handed after the source; empty on every other one, which
+  // reads the process's. A function, so that what holds those values stays
+  // in the binaries that run a source (vm/source_isolate.h) rather than in
+  // every one that reads Sys.
+  std::function<JitArray*()> argv;
 };
+
+inline SourceOriginSlot& current_source_slot() {
+  return culebra::runtime_substate<SourceOriginSlot>(
+      culebra::kSlotSourceOrigin);
+}
 
 // The current Runtime's source, or null on one no source started.
 inline const std::shared_ptr<const SourceOrigin>& current_source_origin() {
-  return culebra::runtime_substate<SourceOriginSlot>(culebra::kSlotSourceOrigin)
-      .origin;
+  return current_source_slot().origin;
 }
 
 inline void set_source_origin(culebra::Runtime& rt,
@@ -1291,6 +1296,9 @@ inline JitValue culebra_jit_isolate_spawn_source(std::string source,
   std::vector<sendable::SendNode> argv;
   try {
     JitSerCtx sc;
+    // The new source is a family of its own, which holds none of this one's
+    // code.
+    sc.leaving = current_source_origin().get();
     argv.reserve(args->size);
     for (size_t i = 0; i < args->size; i++)
       argv.push_back(jit_serialize(args->items[i], sc));
