@@ -182,17 +182,18 @@ inline JitBufViewIter& _jit_self_view_iter(JitValue self) {
 extern "C++" {
 // A view's method `F` as a native body: a call with fewer arguments than
 // `Need` names is the missing-required ArityError, and what `F` raises without
-// a position reports at the call, as on every lane.
+// a position reports at the call, as on every lane. `Need` is an empty list
+// rather than nullptr when nothing is required: GCC under -fsanitize=null
+// (`just asan`) cannot fold an address compared with nullptr at compile time.
+inline constexpr const char* kViewNone[] = {nullptr};
 template <JitValue (*F)(JitBufView&, JitValue*),
-          const char* const* Need = nullptr>
+          const char* const* Need = kViewNone>
 void _jit_view_native(JitValue* ret, JitClosure*, int8_t self_tag,
                       int64_t self_data, int64_t n, JitValue* args) {
   auto& v = _jit_self_view(JitValue{self_tag, self_data});
-  if constexpr (Need != nullptr) {
-    int64_t need = 0;
-    while (Need[need]) need++;
-    if (n < need) culebra_runtime_arity_missing(Need, n, 0, 0);
-  }
+  int64_t need = 0;
+  while (Need[need]) need++;
+  if (n < need) culebra_runtime_arity_missing(Need, n, 0, 0);
   *ret = _jit_at_call_site([&] { return F(v, args); });
 }
 template <JitValue (*F)(JitBufViewIter&)>
