@@ -1,0 +1,78 @@
+// A key's `eq` runs while an Object's non-String keys or a Set's members are
+// being looked up, and it may change that very table. The lookup then starts
+// over (as CPython's dict does): the answer holds of the table as it was at
+// some point of the call, and nothing reads an entry the `eq` took out.
+// Under ASan with the slab on malloc (CI's linux-asan) the old lookups read
+// freed nodes here; without it they answered from them.
+
+mut on_eq = nil
+class K {
+  new(@k) {}
+  hash() {
+    @k
+  }
+  eq(o) {
+    if on_eq != nil {
+      let f = on_eq
+      on_eq = nil
+      f()
+      let _ = [K(7), K(8), K(9)]  // reuses what was freed
+    }
+    o is K && o.k == @k
+  }
+}
+
+// --- An Object: the `eq` takes the key it is compared with out ---
+
+let r = {}
+let kr = K(1)
+r[kr] = [1, 2, 3]
+on_eq = || r.remove(kr)
+assert_eq(r.has(K(1)), false)
+
+let w = {}
+let kw = K(1)
+w[kw] = [1, 2, 3]
+on_eq = || w.remove(kw)
+w[K(1)] = [4]
+assert_eq([w.size(), w[K(1)]], [1, [4]])
+
+// `==` walks one Object while the other's lookup changes both.
+let a = {}
+let b = {}
+let ka = K(1)
+let kb = K(1)
+a[ka] = 5
+b[kb] = 5
+on_eq = fn () {
+  b.remove(kb)
+  a.remove(ka)
+}
+assert_eq(a == b, false)
+
+// --- A Set: the same, through its members ---
+
+let s = Set()
+let ks = K(1)
+s.add(ks)
+on_eq = || s.remove(ks)
+assert_eq(s.contains(K(1)), false)
+
+let t = Set()
+let kt = K(1)
+t.add(kt)
+on_eq = || t.remove(kt)
+assert_eq(t.add(K(1)), true)
+assert_eq(t.size(), 1)
+
+let sa = Set()
+let sb = Set()
+let ksa = K(1)
+let ksb = K(1)
+sa.add(ksa)
+sb.add(ksb)
+on_eq = fn () {
+  sb.remove(ksb)
+  sa.remove(ksa)
+}
+assert_eq(sa == sb, false)

@@ -197,9 +197,15 @@ ratchet sendable "bare RC calls (sendable_rt.h)" "$(count_bare include/conc/send
 # sent twice in one message had one count for two places), and `remember`
 # holds one until the message is rebuilt (the node that carried it can go
 # first, a Set member that comes out equal to an earlier one).
+# 9 -> 13 (2026-11-16, reviewed): a key's `eq` runs between a keyed table's
+# steps now, not inside them. JitKeyTable::find holds the stored key across
+# its `eq` (which may take it out of the table), and an Object `==`'s walk
+# over non-String keys holds the key and both values of a step across `b`'s
+# lookup and the values' compare (either may change both objects), where it
+# kept them in an Array.
 rbrw=$(grep -rE --include='*.h' "JitOwnedVal::from_borrowed\(" include/ \
        | grep -vcE "^[^:]*:[[:space:]]*//" || true)
-ratchet rt-borrow "runtime borrow->owned seam sites" "$rbrw" 9
+ratchet rt-borrow "runtime borrow->owned seam sites" "$rbrw" 13
 
 # Codegen-side hand-placed throw guards: the automatic unwind-temp window
 # is the default cleaner for a codegen-owned +1, so the hand-placed

@@ -91,45 +91,6 @@ inline void _arith_guard_numeric(const char* op, int8_t lt, int8_t rt,
                                   _culebra_tag_name(rt), line, col);
 }
 
-// Move-only owned JitValue for runtime *helper* bodies — the C++-side twin of
-// the codegen `Owned` handle (see the `Owned` struct further down). Releases
-// its `+1` on scope exit — every exit path, INCLUDING C++ exception unwind —
-// unless `consume()`d (handed to an out-param / return / a sink that takes
-// ownership). The iterator/HOF helpers held raw `JitValue` across a throwing
-// `_culebra_invoke*` and leaked on the throw path (leak-fuzzer P0); wrapping
-// a helper's owned locals in this makes the throw path release for free. Also
-// the single chokepoint for callee-consumes contracts (a @packable store, a
-// native method's `self`/args — see `_jit_native_entry`).
-struct JitOwnedVal {
-  JitValue v;
-  bool owned;
-  explicit JitOwnedVal(JitValue val) : v(val), owned(true) {}
-  JitOwnedVal(int8_t t, int64_t d) : v{t, d}, owned(true) {}
-  JitOwnedVal(JitOwnedVal&& o) noexcept : v(o.v), owned(o.owned) { o.owned = false; }
-  JitOwnedVal& operator=(JitOwnedVal&& o) noexcept {  // releases the old value
-    if (this != &o) {
-      if (owned) _culebra_value_release_impl(v.tag, v.data);
-      v = o.v;
-      owned = o.owned;
-      o.owned = false;
-    }
-    return *this;
-  }
-  JitOwnedVal(const JitOwnedVal&) = delete;
-  JitOwnedVal& operator=(const JitOwnedVal&) = delete;
-  JitValue borrow() const { return v; }            // read without consuming
-  JitValue consume() { owned = false; return v; }  // hand the +1 onward
-  ~JitOwnedVal() { if (owned) _culebra_value_release_impl(v.tag, v.data); }
-
-  // Borrow -> +1, the runtime-helper twin of codegen's emit_borrow_to_owned. A
-  // native adapter only borrows its arguments (the dispatcher releases them
-  // on return), so one handed back as the *result* needs its own reference.
-  static JitOwnedVal from_borrowed(JitValue val) {
-    culebra_runtime_value_retain(val.tag, val.data);
-    return JitOwnedVal(val);
-  }
-};
-
 // A Function the runtime calls (or keeps for a walk) without the caller's
 // `+1`: a method it looked up by name or protocol, a callback it was handed.
 // The rule (docs/internals/vm.md §5.3) is CPython's for a borrowed reference:
@@ -2840,7 +2801,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitSet* culebra_runtime_set_new() {
 // on a user `eq`'s throw.
 inline bool _jit_set_insert(JitSet* set, const JitHashedKey& k) {
   JitUnwindRelease g{k.value()};
-  if (!set->index->insert(k).second) {
+  if (!set->index->try_put(k).second) {
     _culebra_value_release_impl(k.value().tag, k.value().data);
     return false;
   }
@@ -2880,7 +2841,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_set_size(JitSet* set) 
 // into `out` if not already present. Source members are unique within
 // their own set, so the dedup check is only meaningful for `union`.
 inline void _set_take(JitSet* out, const JitHashedKey& k) {
-  if (!out->index->insert(k).second) return;
+  if (!out->index->try_put(k).second) return;
   culebra_runtime_value_retain(k.value().tag, k.value().data);
   out->members.push_back(k);
 }
@@ -2956,10 +2917,10 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int8_t culebra_runtime_set_remove(
   // The member the index stored, so the members vector below is searched by
   // that value, running no user `eq`.
   auto stored = _jit_at_pos(line, col, [&]() -> std::optional<JitValue> {
-    auto it = set->index->find(JitHashedKey::of({tag, data}));
-    if (it == set->index->end()) return std::nullopt;
-    JitValue v = it->value();
-    set->index->erase(it);
+    auto* m = set->index->find(JitHashedKey::of({tag, data}));
+    if (!m) return std::nullopt;
+    JitValue v = m->value();
+    set->index->erase(m);
     return v;
   });
   if (!stored) return 0;
@@ -3044,51 +3005,36 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_array_push(JitArray* arr,
 }
 
 // _culebra_structure_equal's half for the entries under non-String keys: the
-// same keys, and equal values. The map offers no walk by index, and a user
-// `eq` may rehash it, so the pairs that can reach one are gathered first —
-// into an Array, which the collector sees where a C++ vector is invisible to
-// it — and compared once the map has been left. The Array is made before the
-// walk, if any value can reach one: a collection its allocation starts runs
-// `drop`s, which could change either map under the walk.
+// same keys, and equal values. `a` is walked by its key order, read afresh at
+// every step (_jit_each_entry), since looking a key up in `b` can ask its
+// `eq` and comparing two values can ask theirs, and either may change both
+// objects. Each step holds what it compares, so neither an `eq` nor the
+// collection it lets run frees it. The entries met are counted against `a`'s
+// own: a key whose hash changed while stored can leave an order entry that
+// finds none.
 inline bool _culebra_any_key_values_equal(JitObject* a, JitObject* b) {
   size_t na = a->non_string_props ? a->non_string_props->size() : 0;
   size_t nb = b->non_string_props ? b->non_string_props->size() : 0;
   if (na != nb) return false;
   if (na == 0) return true;
-  auto any_reaches = [](JitObject* o) {
-    for (auto& [k, entry] : *o->non_string_props)
-      if (_member_reaches_user_code(entry.value.tag)) return true;
-    return false;
-  };
-  JitOwnedVal pairs(JitValue{TAG_NIL, 0});
-  JitArray* held = nullptr;
-  if (any_reaches(a) || any_reaches(b)) {
-    held = culebra_runtime_array_new_reserved(static_cast<int64_t>(2 * na));
-    pairs = JitOwnedVal(JitValue{TAG_ARRAY, reinterpret_cast<int64_t>(held)});
-    if (a->non_string_props->size() != b->non_string_props->size())
+  size_t met = 0;
+  for (size_t i = 0; a->key_order && i < a->key_order->size(); i++) {
+    JitHashedKey k = (*a->key_order)[i];
+    if (k.value().tag == TAG_STRING) continue;
+    auto* entry = _jit_sidecar_own(a, k);
+    if (!entry) continue;
+    met++;
+    auto held = JitOwnedVal::from_borrowed(k.value());
+    auto x = JitOwnedVal::from_borrowed(entry->value);
+    if (!b->non_string_props) return false;
+    auto* found = b->non_string_props->find(k);
+    if (!found) return false;
+    auto y = JitOwnedVal::from_borrowed(found->second.value);
+    if (!_culebra_value_equal(x.borrow().tag, x.borrow().data, y.borrow().tag,
+                              y.borrow().data))
       return false;
   }
-  for (auto& [k, entry] : *a->non_string_props) {
-    auto it = b->non_string_props->find(k);
-    if (it == b->non_string_props->end()) return false;
-    const JitValue x = entry.value, y = it->second.value;
-    if (!_member_reaches_user_code(x.tag) &&
-        !_member_reaches_user_code(y.tag)) {
-      if (!_culebra_value_equal(x.tag, x.data, y.tag, y.data)) return false;
-      continue;
-    }
-    culebra_runtime_value_retain(x.tag, x.data);
-    culebra_runtime_array_push(held, x.tag, x.data);
-    culebra_runtime_value_retain(y.tag, y.data);
-    culebra_runtime_array_push(held, y.tag, y.data);
-  }
-  if (!held) return true;
-  for (size_t i = 0; i + 1 < held->size; i += 2) {
-    if (!_culebra_value_equal(held->items[i].tag, held->items[i].data,
-                              held->items[i + 1].tag, held->items[i + 1].data))
-      return false;
-  }
-  return true;
+  return a->non_string_props && met == a->non_string_props->size();
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_array_resize(

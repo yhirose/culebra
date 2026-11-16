@@ -1641,11 +1641,8 @@ inline JitValue _jit_shared_val_child(JitObject* view,
                                       culebra::FrozenCell child) {
   if (!_jit_sv_is_node(child)) return _jit_shared_val_read(rn, child);
   auto key = JitHashedKey::of({TAG_LONG, child.data});
-  if (view->non_string_props) {
-    auto it = view->non_string_props->find(key);
-    if (it != view->non_string_props->end())
-      return it->second.value;  // cache hit: borrowed (+0), parent owns the +1
-  }
+  if (auto* hit = _jit_sidecar_at(view, key))
+    return hit->second.value;  // cache hit: borrowed (+0), parent owns the +1
   JitValue sub = _jit_shared_val_read(rn, child);  // fresh +1
   if (!view->non_string_props) {
     view->non_string_props = new JitObject::AnyKeyMap();
@@ -1655,7 +1652,7 @@ inline JitValue _jit_shared_val_child(JitObject* view,
   // the key so the GC child enumeration (which walks key_order ∩
   // non_string_props) sees the cached sub-view as an owned edge; the object
   // release path frees the stored value, and the Long key is non-refcounted.
-  (*view->non_string_props)[key] = JitObjectEntry{sub, false};
+  view->non_string_props->try_put(key, JitObjectEntry{sub, false});
   view->key_order->push_back(key);
   return sub;  // borrowed (+0)
 }

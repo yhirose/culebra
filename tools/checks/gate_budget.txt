@@ -229,7 +229,10 @@
 # 372 since test_jit_big_function.cul (a function past the JIT's optnone cut
 # agrees with the executor, a throw from inside it included; 0.00 s under
 # --vm, 0.3 s under --jit).
-tests.cul 372
+# 373 since test_key_eq_reentrant.cul (a key's eq that changes the table or
+# Set being looked up makes the lookup start over; 0.1 s under --vm, 0.75 s
+# under --jit).
+tests.cul 373
 
 # tests/isolate/*.cul — run on both engines, plus the over-cap modes.
 # 21 since test_xml_isolate.cul (an XML element keeps its methods across an

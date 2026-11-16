@@ -2265,8 +2265,8 @@ inline bool JitKeySnapshot::value(JitObject* obj, JitArray* keys,
   auto it = _jit_sidecar_at(
       obj, JitHashedKey::restore(key, static_cast<size_t>(hs->items[i].data)));
   if (!it) return false;
-  *out_tag = (*it)->second.value.tag;
-  *out_data = (*it)->second.value.data;
+  *out_tag = it->second.value.tag;
+  *out_data = it->second.value.data;
   culebra_runtime_value_retain(*out_tag, *out_data);
   return true;
 }
@@ -4033,7 +4033,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_object_get_default(
     // are this call's to release on that exit too.
     JitUnwindRelease guard{JitValue{kt, kd}, JitValue{ft, fd}};
     if (auto it = _jit_sidecar_find(obj, {kt, kd})) {
-      stored = (*it)->second.value;
+      stored = it->second.value;
       found = true;
     }
   }
@@ -4077,7 +4077,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_object_get_or_put(
     JitUnwindRelease guard{JitValue{kt, kd}, JitValue{it_tag, it_data}};
     hashed = JitHashedKey::of({kt, kd});
     if (auto iter = _jit_sidecar_at(obj, *hashed)) {
-      stored = (*iter)->second.value;
+      stored = iter->second.value;
       found = true;
     }
   }
@@ -4153,10 +4153,9 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_remove_any(
     _culebra_value_release_impl(tag, data);
     return;
   }
-  auto it = *found;
-  JitValue stored = it->first.value();
-  JitValue value = it->second.value;
-  obj->non_string_props->erase(it);
+  JitValue stored = found->first.value();
+  JitValue value = found->second.value;
+  obj->non_string_props->erase(found);
   _key_order_erase(obj, stored);
   assert(_jit_key_order_whole(obj));
   _culebra_value_release_impl(value.tag, value.data);

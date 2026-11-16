@@ -1796,6 +1796,45 @@ inline JitHashedKey JitHashedKey::of(JitValue v) {
   _jit_throw_unhashable(unhashable);
 }
 
+// Move-only owned JitValue for runtime *helper* bodies — the C++-side twin of
+// the codegen `Owned` handle (see the `Owned` struct further down). Releases
+// its `+1` on scope exit — every exit path, INCLUDING C++ exception unwind —
+// unless `consume()`d (handed to an out-param / return / a sink that takes
+// ownership). The iterator/HOF helpers held raw `JitValue` across a throwing
+// `_culebra_invoke*` and leaked on the throw path (leak-fuzzer P0); wrapping
+// a helper's owned locals in this makes the throw path release for free. Also
+// the single chokepoint for callee-consumes contracts (a @packable store, a
+// native method's `self`/args — see `_jit_native_entry`).
+struct JitOwnedVal {
+  JitValue v;
+  bool owned;
+  explicit JitOwnedVal(JitValue val) : v(val), owned(true) {}
+  JitOwnedVal(int8_t t, int64_t d) : v{t, d}, owned(true) {}
+  JitOwnedVal(JitOwnedVal&& o) noexcept : v(o.v), owned(o.owned) { o.owned = false; }
+  JitOwnedVal& operator=(JitOwnedVal&& o) noexcept {  // releases the old value
+    if (this != &o) {
+      if (owned) _culebra_value_release_impl(v.tag, v.data);
+      v = o.v;
+      owned = o.owned;
+      o.owned = false;
+    }
+    return *this;
+  }
+  JitOwnedVal(const JitOwnedVal&) = delete;
+  JitOwnedVal& operator=(const JitOwnedVal&) = delete;
+  JitValue borrow() const { return v; }            // read without consuming
+  JitValue consume() { owned = false; return v; }  // hand the +1 onward
+  ~JitOwnedVal() { if (owned) _culebra_value_release_impl(v.tag, v.data); }
+
+  // Borrow -> +1, the runtime-helper twin of codegen's emit_borrow_to_owned. A
+  // native adapter only borrows its arguments (the dispatcher releases them
+  // on return), so one handed back as the *result* needs its own reference.
+  static JitOwnedVal from_borrowed(JitValue val) {
+    culebra_runtime_value_retain(val.tag, val.data);
+    return JitOwnedVal(val);
+  }
+};
+
 // Key equality: the one answer to "are these the same key?", and the second
 // of the two comparisons that mean equal. `==`'s door
 // (_culebra_value_equal) is the other, and this one is deliberately a
@@ -1805,8 +1844,16 @@ inline JitHashedKey JitHashedKey::of(JitValue v) {
 // does not: NaN is one key. Everything keyed asks it: an Object's non-String
 // keys, a Set's members, an iterator's dedup, and a derived `eq`, whose
 // fields are compared the way the class's own key would be.
+//
+// `kAsk` false gives the same relation without the program's code: an Object
+// is then the same key only as itself. The keyed containers compare stored
+// keys that way (JitKeySame), and ask `eq` outside them (JitKeyTable::find).
 struct JitValueEq {
   bool operator()(const JitValue& a, const JitValue& b) const {
+    return equal<true>(a, b);
+  }
+  template <bool kAsk>
+  static bool equal(const JitValue& a, const JitValue& b) {
     bool a_str = a.tag == TAG_STRING || a.tag == TAG_STRINGVIEW;
     bool b_str = b.tag == TAG_STRING || b.tag == TAG_STRINGVIEW;
     if (a_str || b_str) {
@@ -1831,12 +1878,13 @@ struct JitValueEq {
         if (aa->size != bb->size) return false;
         culebra::ValueWalkFrame walk;
         for (size_t i = 0; i < aa->size; i++) {
-          if (!(*this)(aa->items[i], bb->items[i])) return false;
+          if (!equal<kAsk>(aa->items[i], bb->items[i])) return false;
         }
         return true;
       }
       case TAG_OBJECT: {
         if (a.data == b.data) return true;
+        if constexpr (!kAsk) return false;
         // A message's rebuild puts keys its sender held apart, each a fresh
         // copy: two Objects there are one key only if they are one Object.
         if (_jit_keys_distinct()) return false;
@@ -1849,30 +1897,114 @@ struct JitValueEq {
     }
     return false;  // unhashable tags never reach here (JitHashedKey::of throws)
   }
-};
-
-// The containers' hash and equality over stored keys. The hash is the one the
-// key carries, so a rehash runs no user code, and a hash that differs settles
-// "not the same key" before a user `eq` is asked.
-struct JitKeyHash {
-  size_t operator()(const JitHashedKey& k) const noexcept { return k.hash(); }
-};
-struct JitKeyEq {
-  bool operator()(const JitHashedKey& a, const JitHashedKey& b) const {
-    return a.hash() == b.hash() && JitValueEq{}(a.value(), b.value());
+  // Whether comparing `v` with another key can ask the program: it is, or a
+  // Tuple holds, an Object.
+  static bool asks(const JitValue& v) {
+    if (v.tag == TAG_OBJECT) return !_jit_keys_distinct();
+    if (v.tag != TAG_TUPLE) return false;
+    auto* t = reinterpret_cast<JitArray*>(v.data);
+    for (size_t i = 0; i < t->size; i++)
+      if (asks(t->items[i])) return true;
+    return false;
   }
 };
 
-struct JitObject::AnyKeyMap
-    : std::unordered_map<JitHashedKey, JitObjectEntry, JitKeyHash, JitKeyEq> {};
+// The containers' hash and equality over stored keys. The hash is the one the
+// key carries, so a rehash runs no user code, and the equality is the one
+// without the program's code, so neither does anything else a container does.
+struct JitKeyHash {
+  size_t operator()(const JitHashedKey& k) const noexcept { return k.hash(); }
+};
+struct JitKeySame {
+  bool operator()(const JitHashedKey& a, const JitHashedKey& b) const {
+    if (a.hash() != b.hash()) return false;
+    const JitValue &x = a.value(), &y = b.value();
+    return (x.tag == y.tag && x.data == y.data) || JitValueEq::equal<false>(x, y);
+  }
+};
 
-inline std::optional<JitObject::AnyKeyMap::iterator> _jit_sidecar_at(
-    JitObject* obj, const JitHashedKey& key) {
+// A hash table of keys: an Object's non-String keys (a map to the entry) or a
+// Set's members. The table itself never runs the program's code; `find`,
+// `contains` and `try_put` answer by key equality and ask a key's `eq`
+// between their steps, never inside one. The program can change the table
+// from that `eq`, so a lookup notes the table's version before asking and
+// starts over if it moved (CPython's lookdict): the answer holds of the table
+// as it was at some point of the call, and no step reads a node the `eq`
+// freed. The raw lookups and inserts stay private, so none skips this.
+template <class Base>
+class JitKeyTable : private Base {
+ public:
+  using typename Base::iterator;
+  using Base::begin;
+  using Base::bucket;
+  using Base::empty;
+  using Base::end;
+  using Base::size;
+
+  // A stored entry: the pair under a key, or the member itself.
+  using entry = std::remove_reference_t<decltype(*std::declval<iterator>())>;
+
+  entry* find(const JitHashedKey& k) {
+    if (!JitValueEq::asks(k.value())) return at(Base::find(k));
+  again:
+    if (Base::empty()) return nullptr;  // and maybe no buckets to ask about
+    size_t b = Base::bucket(k);
+    for (auto it = Base::begin(b); it != Base::end(b); ++it) {
+      const JitHashedKey& s = key_of(*it);
+      if (s.hash() != k.hash()) continue;
+      if (JitValueEq::equal<false>(s.value(), k.value())) return &*it;
+      // The stored key is held across its `eq`, which may take it out; an
+      // unmoved version leaves `it` where it was.
+      JitOwnedVal held = JitOwnedVal::from_borrowed(s.value());
+      uint64_t seen = version_;
+      bool same = JitValueEq{}(s.value(), k.value());
+      if (version_ != seen) goto again;
+      if (same) return &*it;
+    }
+    return nullptr;
+  }
+  bool contains(const JitHashedKey& k) { return find(k) != nullptr; }
+
+  // The stored entry equal to `k`, or `k` stored with `args` when none is
+  // (std::unordered_map::try_emplace, by key equality); whether it was.
+  template <class... Args>
+  std::pair<entry*, bool> try_put(const JitHashedKey& k, Args&&... args) {
+    if (auto* e = find(k)) return {e, false};
+    // An `eq` the lookup ran may have stored `k` itself: then that is found.
+    auto [it, put] = Base::emplace(k, std::forward<Args>(args)...);
+    if (put) version_++;
+    return {&*it, put};
+  }
+
+  // Takes out an entry `find` or `try_put` gave.
+  void erase(entry* e) {
+    version_++;
+    Base::erase(Base::find(key_of(*e)));
+  }
+  void reserve(size_t n) {
+    version_++;
+    Base::reserve(n);
+  }
+
+ private:
+  static const JitHashedKey& key_of(const typename Base::value_type& e) {
+    if constexpr (std::is_same_v<typename Base::value_type, JitHashedKey>)
+      return e;
+    else
+      return e.first;
+  }
+  entry* at(iterator it) { return it == Base::end() ? nullptr : &*it; }
+  uint64_t version_ = 0;
+};
+
+struct JitObject::AnyKeyMap
+    : JitKeyTable<std::unordered_map<JitHashedKey, JitObjectEntry, JitKeyHash,
+                                     JitKeySame>> {};
+
+inline JitObject::AnyKeyMap::entry* _jit_sidecar_at(JitObject* obj,
+                                                    const JitHashedKey& key) {
   auto* m = obj->non_string_props;
-  if (!m) return std::nullopt;
-  auto it = m->find(key);
-  if (it == m->end()) return std::nullopt;
-  return it;
+  return m ? m->find(key) : nullptr;
 }
 
 // The entry of a key the object itself holds (one out of its `key_order`),
@@ -1928,9 +2060,9 @@ inline void _jit_each_own_entry(JitObject* obj, Named&& named, Keyed&& keyed) {
   _jit_each_entry(obj, named, keyed);
 }
 
-// A non-String key's entry in `obj`'s sidecar, or nullopt; an unhashable key
-// is the dict builtins' TypeError.
-inline std::optional<JitObject::AnyKeyMap::iterator> _jit_sidecar_find(
+// A non-String key's entry in `obj`'s sidecar, or null; an unhashable key is
+// the dict builtins' TypeError.
+inline JitObject::AnyKeyMap::entry* _jit_sidecar_find(
     JitObject* obj, JitValue key) {
   return _jit_sidecar_at(obj, JitHashedKey::of(key));
 }
@@ -1938,10 +2070,11 @@ inline std::optional<JitObject::AnyKeyMap::iterator> _jit_sidecar_find(
 // The same lookup for a key a class's `__index__` / `__setindex__` may still
 // take: one that cannot be hashed is absent (none is stored), with what stops
 // it in `*unhashable` for the caller to raise once the class declines it.
-inline std::optional<JitObject::AnyKeyMap::iterator> _jit_sidecar_probe(
-    JitObject* obj, JitValue key, JitValue* unhashable) {
+inline JitObject::AnyKeyMap::entry* _jit_sidecar_probe(JitObject* obj,
+                                                       JitValue key,
+                                                       JitValue* unhashable) {
   auto k = JitHashedKey::try_of(key, unhashable);
-  if (!k) return std::nullopt;
+  if (!k) return nullptr;
   return _jit_sidecar_at(obj, *k);
 }
 
@@ -1962,7 +2095,7 @@ struct JitKeySnapshot {
 // Set storage: insertion-ordered members + an O(1) sidecar index, each member
 // carrying the hash it was stored with.
 struct JitSetIndex
-    : std::unordered_set<JitHashedKey, JitKeyHash, JitKeyEq> {};
+    : JitKeyTable<std::unordered_set<JitHashedKey, JitKeyHash, JitKeySame>> {};
 
 struct JitSet {
   int64_t refcount;

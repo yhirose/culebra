@@ -662,7 +662,7 @@ inline bool _jit_object_set_hashed(JitObject* obj, const JitHashedKey& key,
     // dictionary-mode object already keeps key_order eagerly.
     obj->materialize_key_order();
   }
-  auto [it, inserted] = obj->non_string_props->try_emplace(
+  auto [it, inserted] = obj->non_string_props->try_put(
       key, JitObjectEntry{val, mut});
   if (inserted) {
     culebra_runtime_value_retain(key.value().tag, key.value().data);
@@ -974,8 +974,8 @@ inline bool _jit_try_own_slot(JitObject* obj, const char* name, int8_t key_tag,
   if (name) return _jit_named_slot(obj, name, out_tag, out_data);
   auto it = _jit_sidecar_probe(obj, {key_tag, key_data}, unhashable);
   if (!it) return false;
-  *out_tag = (*it)->second.value.tag;
-  *out_data = (*it)->second.value.data;
+  *out_tag = it->second.value.tag;
+  *out_data = it->second.value.data;
   culebra_runtime_value_retain(*out_tag, *out_data);
   _culebra_value_release_impl(key_tag, key_data);
   return true;
@@ -1837,7 +1837,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_object_has_value(
   // Hashing the key is where an unhashable one raises; the key is this
   // call's to release on that exit as on the normal one.
   JitUnwindRelease key_guard{JitValue{tag, data}};
-  bool result = _jit_sidecar_find(obj, {tag, data}).has_value();
+  bool result = _jit_sidecar_find(obj, {tag, data}) != nullptr;
   _culebra_value_release_impl(tag, data);
   return result;
 }
