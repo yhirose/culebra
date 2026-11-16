@@ -5,15 +5,15 @@
 let {*} = Synth
 
 # A pad: two saws a little apart, through a low-pass that breathes.
-let sweep = 700.0 + 0.4.sine() * 400.0
-let pad = [110.0, 110.6].saw().mix().lowpass(sweep, q: 2.0) * 0.2
+let sweep = 700.0 + sine(0.4) * 400.0
+let pad = saw([110.0, 110.6]).mix().lowpass(sweep, q: 2.0) * 0.2
 
 # A bell: one sine moving another's phase (FM), dying out first.
 let index = perc(0.001, 1.2, peak: 3.0)
 let ring = perc(0.002, 2.5, peak: 0.3)
-let bell = 440.0.sine(phase: 616.0.sine() * index) * ring
+let bell = sine(440.0, phase: sine(616.0) * index) * ring
 
 # A string, plucked at A.
-let string = noise() * perc(0.001, 0.01) |> pluck(57.0.hz(), ring: 1.5)
+let string = noise() * perc(0.001, 0.01) |> pluck(hz(57.0), ring: 1.5)
 
-((pad + bell + string) * 0.6).reverb(mix: 0.3)
+(pad + bell + string) * 0.6 |> reverb(mix: 0.3)

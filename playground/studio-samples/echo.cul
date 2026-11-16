@@ -3,5 +3,5 @@
 # with `x` for what comes out.
 let {*} = Synth
 
-let blip = 880.0.sine() * perc(0.001, 0.08, peak: 0.4)
+let blip = sine(880.0) * perc(0.001, 0.08, peak: 0.4)
 feedback(|x| blip + x.delay(0.33) * 0.5)

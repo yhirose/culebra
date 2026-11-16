@@ -5,4 +5,4 @@
 let {*} = Synth
 
 let depth = perc(0.001, 1.2, peak: 3.0)
-440.0.sine(phase: 616.0.sine() * depth) * perc(0.002, 2.5, peak: 0.3)
+sine(440.0, phase: sine(616.0) * depth) * perc(0.002, 2.5, peak: 0.3)

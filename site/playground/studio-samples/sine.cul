@@ -2,4 +2,4 @@
 # spectrum. Change the number and play it again.
 let {*} = Synth
 
-440.0.sine() * 0.3
+sine(440.0) * 0.3

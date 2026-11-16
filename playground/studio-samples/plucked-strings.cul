@@ -4,8 +4,7 @@
 let {*} = Synth
 
 let string = fn (note, at) {
-  let strike = noise() * perc(0.001, 0.01)
-  strike.pluck(note.hz(), ring: 2.0).delay(at)
+  noise() * perc(0.001, 0.01) |> pluck(hz(note), ring: 2.0).delay(at)
 }
 
 [string(57.0, 0.0), string(60.0, 0.15), string(64.0, 0.3)].mix() * 0.5

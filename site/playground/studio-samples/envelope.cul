@@ -3,4 +3,4 @@
 # on its own.
 let {*} = Synth
 
-220.0.saw().lowpass(1500.0) * perc(0.005, 1.0, peak: 0.3)
+saw(220.0).lowpass(1500.0) * perc(0.005, 1.0, peak: 0.3)

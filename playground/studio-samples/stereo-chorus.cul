@@ -3,12 +3,11 @@
 let {*} = Synth
 
 let voice = fn (note) {
-  let f = note.hz()
-  [f.saw().pan(-0.7), (f * 1.004).saw().pan(0.7)].mix()
+  let f = hz(note)
+  [saw(f).pan(-0.7), saw(f * 1.004).pan(0.7)].mix()
 }
 
 let chord = [48.0, 55.0, 60.0, 63.0].map(voice).mix()
-let cutoff = 400.0 + (0.25.sine() + 1.0) * 1200.0
+let cutoff = 400.0 + (sine(0.25) + 1.0) * 1200.0
 let swell = adsr(0.8, 0.5, 0.7, 1.5).hold(4.0)
-let dry = chord.lowpass(cutoff, q: 1.5) * swell * 0.08
-dry.reverb(mix: 0.35, room: 0.8)
+chord.lowpass(cutoff, q: 1.5) * swell * 0.08 |> reverb(mix: 0.35, room: 0.8)

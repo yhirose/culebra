@@ -3,10 +3,10 @@
 # hear it alone; with nothing selected, the four play a second each.
 let {*} = Synth
 
-let smooth = 220.0.sine() * 0.3
-let soft = 220.0.triangle() * 0.3
-let hollow = 220.0.square() * 0.15
-let bright = 220.0.saw() * 0.15
+let smooth = sine(220.0) * 0.3
+let soft = triangle(220.0) * 0.3
+let hollow = square(220.0) * 0.15
+let bright = saw(220.0) * 0.15
 
 # A gate open for a second from `at`.
 let gate = |at| env([0.0, 0.0, 1.0, 1.0, 0.0], [at, 0.01, 0.97, 0.01])
