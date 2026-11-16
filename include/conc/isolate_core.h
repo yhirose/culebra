@@ -589,11 +589,16 @@ inline std::optional<sendable::SendNode> chan_select_recv(
 //   Race       — first success wins (cancels the rest); all-fail throws
 enum class PMode { Map, Each, MapSettled, Race };
 
+struct SourceOrigin;  // sendable.h
+
 struct ParallelState {
   std::vector<sendable::SendNode> items;    // serialized inputs
   sendable::SendNode fn;                     // serialized closure
   // The parent's default table, shared by the workers.
   std::shared_ptr<const sendable::TraitDefaults> trait_defaults;
+  // The source the parent runs, when Isolate.spawn_source started it: the
+  // workers run its code, so they answer to it as the parent does.
+  std::shared_ptr<const SourceOrigin> origin;
   PMode mode = PMode::Map;
   std::vector<sendable::SendNode> results;   // serialized outputs, by index
   std::atomic<size_t> next{0};               // next element to claim

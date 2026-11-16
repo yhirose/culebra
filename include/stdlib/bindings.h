@@ -1536,6 +1536,17 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_sys_set_env(
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_sys_argv() {
+  // A source Isolate.spawn_source runs reads what it was handed.
+  if (const auto& origin = culebra::current_source_origin()) {
+    auto* r = culebra_runtime_array_new_reserved(
+        static_cast<int64_t>(origin->argv.size()));
+    JitOwnedVal guard(JitValue{TAG_ARRAY, reinterpret_cast<int64_t>(r)});
+    for (const auto& a : origin->argv) {
+      JitValue v = culebra::jit_deserialize(a).consume();
+      culebra_runtime_array_push(r, v.tag, v.data);  // absorbs the +1
+    }
+    return reinterpret_cast<JitArray*>(guard.consume().data);
+  }
   auto& argv = culebra::sys_argv();
   auto* r = culebra_runtime_array_new();
   for (const auto& s : argv) {
@@ -8424,6 +8435,16 @@ inline JitValue _ns_isolate_spawn(JitValue* a, int64_t n) {
   return culebra_jit_isolate_spawn(a[0].tag, a[0].data, n - 1, a + 1, 0, 0);
 }
 
+// Isolate.spawn_source(source, *args, name:): a kwarg slab, a[0] = source,
+// a[1] = the args Array, a[2] = name.
+inline JitValue _ns_isolate_spawn_source(JitValue* a, int64_t) {
+  std::string source(_ns_adapt::require_sv(a[0], "source"));
+  std::string name(_ns_adapt::require_sv(a[2], "name"));
+  return culebra_jit_isolate_spawn_source(
+      std::move(source), std::move(name),
+      reinterpret_cast<const JitArray*>(a[1].data), 0, 0);
+}
+
 inline JitValue _ns_channel_new(JitValue* a, int64_t n) {
   return culebra_jit_channel_new(n, a, 0, 0);
 }
@@ -11545,6 +11566,7 @@ inline bool _ns_method_uses_kwarg_slab(const NsMethod* m) {
   if (ns == "FS")       return nm == "remove" || nm == "copy" ||
                                nm == "chown" || nm == "watch";
   if (ns == "File")     return nm == "open" || nm == "with";
+  if (ns == "Isolate")  return nm == "spawn_source";  // `name` binds by name
   if (ns == "Parallel") return nm == "map" || nm == "each" ||
                                 nm == "map_settled" || nm == "race";
   if (ns == "Http")     return true;  // all Http methods take kwargs
@@ -11807,6 +11829,7 @@ inline const NsMethod kNsRows_Http[] = {
 #endif
 inline const NsMethod kNsRows_Isolate[] = {
   {"Isolate", "spawn", -1, &_ns_isolate_spawn},
+  {"Isolate", "spawn_source", -1, &_ns_isolate_spawn_source},
 };
 inline const NsMethod kNsRows_Channel[] = {
   {"Channel", "new",    -1, &_ns_channel_new},
@@ -12372,12 +12395,13 @@ inline const NsConstant kNsConstants[] = {
 
 // --- Trampoline + factory + lazy table ---
 
-// Build the canonical slab for an args-rest method (range/iota): every
-// positional collects into a fresh Array at `args_rest_idx` (these methods
-// have no regular positional param before it), and each remaining slot fills
-// from `merged` kwargs (moved out) or its default. Mirrors the interp binder
-// for `range(*args, step=1)`, so the bare-positional trampoline and the
-// kwarg/splat resolver hand the adapter an identical slab. The caller owns +1
+// Build the canonical slab for an args-rest method (range/iota,
+// Isolate.spawn_source): the positionals bind the params ahead of
+// `args_rest_idx` in order, the rest collect into a fresh Array there, and
+// each remaining slot fills from `merged` kwargs (moved out) or its default.
+// Mirrors the binder of a user `fn (a, *args, k: 1)`, so the bare-positional
+// trampoline and the kwarg/splat resolver hand the adapter an identical slab.
+// The caller owns +1
 // on every positional and every value in `merged`; ownership transfers into
 // the returned slab (released by the caller after the adapter runs). On a
 // missing-required / unknown-keyword error the slab and `merged` are released
@@ -12386,15 +12410,17 @@ inline std::vector<JitValue> _jit_ns_build_args_rest_slab(
     const NsParamMeta* pm, int64_t n_pos, JitValue* positional,
     culebra::MergedKwargs<JitValue>& merged, int64_t line, int64_t col) {
   std::vector<JitValue> slab(pm->n_params, JitValue{TAG_NIL, 0});
+  const int64_t n_lead = std::min<int64_t>(n_pos, pm->args_rest_idx);
+  for (int64_t i = 0; i < n_lead; i++) slab[i] = positional[i];
   auto* arr = culebra_runtime_array_new();
-  for (int64_t i = 0; i < n_pos; i++)
+  for (int64_t i = n_lead; i < n_pos; i++)
     culebra_runtime_array_push(arr, positional[i].tag, positional[i].data);
   slab[pm->args_rest_idx] = {TAG_ARRAY, reinterpret_cast<int64_t>(arr)};
   auto cleanup = [&]() {
     for (auto& sv : slab) _culebra_value_release_impl(sv.tag, sv.data);
     for (auto& [_, v] : merged) _culebra_value_release_impl(v.tag, v.data);
   };
-  for (int i = 0; i < pm->n_params; i++) {
+  for (int i = static_cast<int>(n_lead); i < pm->n_params; i++) {
     if (i == pm->args_rest_idx) continue;
     auto it = merged.find(pm->params[i].name);
     if (it != merged.end()) {
@@ -12563,13 +12589,15 @@ inline void _jit_ns_method_trampoline(
   if (_jit_thread.argpos_n > 0 && _ns_positional_count_ok(m, n_args)) {
     // `_ns_type_meta` carries every method's per-positional type (derived from
     // the canonical params), so all positionals — not just arg0 — are checked
-    // here, matching the interp binder. Args-rest methods (range/iota) bind
-    // positionals into the rest Array, so skip them (the dispatch validates).
+    // here, matching the interp binder. An args-rest method binds the
+    // positionals past its fixed params into the rest Array, so only those
+    // ahead of it are checked here (the dispatch validates the rest).
     const NsParamMeta* tm = _ns_type_meta(m);
     for (int64_t i = 0; i < n_args && i < _jit_thread.argpos_n; i++) {
       std::string_view ty, pname;
       if (tm) {
-        if (tm->args_rest_idx < 0 && i < tm->n_params) {
+        if (i < tm->n_params &&
+            (tm->args_rest_idx < 0 || i < tm->args_rest_idx)) {
           ty = tm->params[i].type;
           pname = tm->params[i].name;
         }
@@ -12866,12 +12894,13 @@ inline JitObject* _jit_build_namespace_object(std::string_view ns_name,
                                      culebra::current_executable_path()))},
         /*mut=*/false);
     // `Sys.script` — the entry script's absolute path, or nil when there is no
-    // source file at runtime (an AOT binary never sets the holder). Mirrors the
-    // interpreter's make_sys_namespace.
+    // source file at runtime (an AOT binary never sets the holder, and the
+    // source Isolate.spawn_source runs is no file). Mirrors the interpreter's
+    // make_sys_namespace.
     const auto& sp = culebra::main_script_path();
     obj->append_slot(
         "script",
-        sp.empty()
+        sp.empty() || culebra::current_source_origin()
             ? JitValue{TAG_NIL, 0}
             : JitValue{TAG_STRING,
                        reinterpret_cast<int64_t>(_culebra_heap_str(sp))},

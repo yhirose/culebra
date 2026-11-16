@@ -2525,7 +2525,9 @@ int run_main(int argc, const char** argv) {
   // lint before any subcommand loads a module (run / build / test all load
   // through the shared module loader, so installing here covers every path).
   culebra::install_undefined_var_lint();
-  culebra::install_namespace_members();
+  // Isolate.spawn_source runs on this binary's executor whichever lane the
+  // program does; it installs the namespace members with it.
+  culebra::vm::install_source_isolate();
 
   if (argc >= 2 && string(argv[1]) == "test") {
     return run_test(argc, argv);

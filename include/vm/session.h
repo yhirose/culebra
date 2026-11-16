@@ -132,6 +132,22 @@ class Session {
     });
   }
 
+  // One input run for a caller that is itself the boundary (an isolate's
+  // thread): what it raises or throws goes on as raised or thrown, and the
+  // value it ends with comes back owned.
+  JitValue run_input_carrying(const std::shared_ptr<peg::Ast>& ast,
+                              std::shared_ptr<std::string> source) {
+    auto prog =
+        std::make_unique<VmProgram>(Compiler::compile_repl_line(*ast));
+    auto& kept = retained_.keep(std::move(source), ast, std::move(prog));
+    Exec::run_carrying(*kept.prog);
+    return take_result();
+  }
+
+  // Whether `p` is one of the programs this session ran, which live as long
+  // as it does.
+  bool retains(const VmProgram* p) const { return retained_.holds(p); }
+
   // Take the value a session unit left in the result cell, clearing it. The
   // REPL echoes it; a caller that has no prompt still has to take it, or the
   // input's last value stays pinned for the rest of the session.

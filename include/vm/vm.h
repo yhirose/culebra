@@ -15463,15 +15463,24 @@ struct Exec {
     at_boundary([&] { run_frame(p, 0, nullptr, 0, nullptr); });
   }
 
+  // A run whose caller is itself the boundary (an isolate's thread, which
+  // hands join() the value an uncaught `throw` carried): that throw goes on
+  // as thrown rather than as the report.
+  static void run_carrying(VmProgram& p) {
+    prepare(p);
+    at_boundary</*carry=*/true>([&] { run_frame(p, 0, nullptr, 0, nullptr); });
+  }
+
   // The engine's boundary around program code: what it leaves uncaught goes
   // on as the report every lane prints, holding nothing in the Runtime. A
   // program's run, and the code a host runs for one outside it (the prompt's
-  // echo calls a `__str__`).
-  template <class Body>
+  // echo calls a `__str__`). `carry`: see run_carrying.
+  template <bool carry = false, class Body>
   static void at_boundary(Body&& body) {
     try {
       body();
     } catch (const CulebraException& e) {
+      if constexpr (carry) throw;
       // Uncaught user throw: format first, then consume the carrier's
       // reference — JIT::exec's boundary, so main.cc prints the same
       // "uncaught: ..." on every lane.
@@ -19020,6 +19029,11 @@ class RetainedRuns {
                         std::unique_ptr<VmProgram> prog) {
     return runs_.emplace_back(
         RetainedProgram{std::move(source), std::move(ast), std::move(prog)});
+  }
+
+  bool holds(const VmProgram* p) const {
+    return std::ranges::any_of(
+        runs_, [p](const RetainedProgram& r) { return r.prog.get() == p; });
   }
 
  private:

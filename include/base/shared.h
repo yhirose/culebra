@@ -2542,6 +2542,11 @@ enum RuntimeSlot : size_t {
   // The ZIP archives Dir.zip opened (bindings.h _DirZipTable): plain C++
   // readers, no JitValue, so its place among the GC slots is moot.
   kSlotZipArchives,
+  // What a Runtime spawned by Isolate.spawn_source, or by an isolate it
+  // spawned, knows of that source (sendable.h SourceOrigin): its Sys.argv and
+  // which functions are its own. Messages and a shared_ptr, no JitValue, so
+  // its place among the GC slots is moot.
+  kSlotSourceOrigin,
   // The session name table vm.h's repl_session() falls back to when no
   // session is current on the thread. A slot rather than one object for the
   // process because a session's cells are heap objects, and a heap belongs to

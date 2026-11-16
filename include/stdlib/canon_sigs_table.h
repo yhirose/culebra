@@ -910,8 +910,15 @@ inline constexpr CanonParam kCanonParams_Isolate_spawn[] = {
   {"args", false, false, false, true, false, "", CanonDefault::None, 0, {}},
 };
 
+inline constexpr CanonParam kCanonParams_Isolate_spawn_source[] = {
+  {"source", false, false, false, false, false, "String", CanonDefault::None, 0, {}},
+  {"args", false, false, false, true, false, "", CanonDefault::None, 0, {}},
+  {"name", true, true, false, false, false, "String", CanonDefault::Str, 0, "<source>"},
+};
+
 inline constexpr CanonSig kCanonSigs_Isolate[] = {
   {"Isolate", "", "spawn", kCanonParams_Isolate_spawn, "Object"},
+  {"Isolate", "", "spawn_source", kCanonParams_Isolate_spawn_source, "Object"},
 };
 
 inline constexpr CanonParam kCanonParams_Channel_new[] = {

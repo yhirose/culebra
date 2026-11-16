@@ -1,0 +1,76 @@
+# Isolate.spawn_source runs a source on an isolate of its own, on the
+# executor whichever lane spawned it, and join() hands back the value of its
+# last expression. Runs under both lanes; the symmetry sweep holds them to
+# the same output.
+
+fn caught(thunk) {
+  try {
+    thunk()
+    "NO ERROR"
+  } catch e {
+    "{e.kind} {e.line}:{e.col} {e.message}"
+  }
+}
+
+# The value of the last expression.
+assert_eq(Isolate.spawn_source("1 + 2").join(), 3)
+assert_eq(Isolate.spawn_source("let xs = [3, 1, 2]\nxs.sorted()").join(), [1, 2, 3])
+
+# What follows the source is its Sys.argv, any Sendable value; the source is
+# no file, so it has no Sys.script.
+assert_eq(Isolate.spawn_source("Sys.argv", 1, "a", [2.5]).join(), [1, "a", [2.5]])
+assert_eq(Isolate.spawn_source("Sys.argv").join(), [])
+assert_eq(Isolate.spawn_source("Sys.script").join(), nil)
+
+# The whole stdlib is in scope, `{*}` and the modules written in Culebra too.
+assert_eq(Isolate.spawn_source("let \{*} = Synth\nhz(69.0)").join(), 440.0)
+assert_eq(Isolate.spawn_source("let q = Deque.new()\nq.push_back(1)\nq.push_front(0)\nq.pop_front()").join(), 0)
+
+# Nothing of the spawning program is: a binding of its own is an unknown name.
+let secret = 7
+assert_eq(caught(|| Isolate.spawn_source("secret + 1").join()).split(" ")[0], "NameError")
+
+# A failure arrives with its kind and its place in the source.
+assert_eq(caught(|| Isolate.spawn_source("let x = 1\nx + 'a'").join()),
+          "TypeError 2:1 type error: cannot apply '+' to Long and String")
+assert_true(caught(|| Isolate.spawn_source("let = 1").join()).starts_with("SyntaxError 1:"))
+assert_true(caught(|| Isolate.spawn_source("1 +", name: "studio.cul").join())
+              .starts_with("SyntaxError 1:"))
+
+# A thrown value crosses as Isolate.spawn's does.
+let thrown = try {
+  Isolate.spawn_source("throw [1, 2]").join()
+} catch e {
+  e
+}
+assert_eq(thrown, [1, 2])
+
+# A function the source defines is freed with the isolate, so it cannot come
+# back: not as the value, not inside one, not as a method of an instance.
+for src in ["fn () \{ 1 }", "[1, |x| x]", "class C \{ f() \{ 1 } }\nC()", "throw || 1"] {
+  assert_true(caught(|| Isolate.spawn_source(src).join())
+                .contains("SendError"), src)
+}
+# One the spawning program handed over is its own, and comes back.
+let twice = |x| x * 2
+assert_eq(Isolate.spawn_source("Sys.argv[0]", twice).join()(4), 8)
+
+# Nor through a channel, the other way out.
+let (tx, rx) = Channel.new(4)
+let h = Isolate.spawn_source("let tx = Sys.argv[0]\ntx.send(5)\ntx.send(|| 1)", tx)
+assert_eq(rx.recv(), 5)
+assert_true(caught(|| h.join()).contains("SendError"))
+
+# The isolates the source spawns run its code, and answer to it the same way.
+assert_eq(Isolate.spawn_source("Isolate.spawn(|x| x + 1, 1).join()").join(), 2)
+assert_eq(Isolate.spawn_source("Parallel.map([1, 2], |x| x * 10)").join(), [10, 20])
+
+# A source that never ends is dropped as any isolate is.
+let forever = Isolate.spawn_source("mut n = 0\nwhile true \{ n += 1 }")
+forever.drop()
+assert_eq(forever.join(), nil)
+
+# The source has to be a String; what is not Sendable stays behind.
+assert_eq(caught(|| Isolate.spawn_source(5)).split(" ")[0], "TypeError")
+assert_true(caught(|| Isolate.spawn_source("1", File.open(Sys.executable)))
+              .starts_with("SendError"))

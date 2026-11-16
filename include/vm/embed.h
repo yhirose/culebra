@@ -20,6 +20,7 @@
 #include <stdlib/bindings.h>       // install_jit_stdlib, the runtime helpers
 #include <vm/vm.h>
 #include <vm/session.h>
+#include <vm/source_isolate.h>  // Isolate.spawn_source, installed by an Embed
 
 #include <bit>
 #include <concepts>
@@ -687,7 +688,7 @@ class Embed {
  public:
   Embed() {
     install_jit_stdlib();
-    install_namespace_members();
+    install_source_isolate();  // install_namespace_members with it
     Swap in(*this);
     std::vector<std::string> msgs;
     if (!units_.run_builtin_traits(msgs)) {

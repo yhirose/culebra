@@ -16,6 +16,8 @@
 // executor and the LLVM lane.
 
 #include <atomic>
+#include <functional>
+#include <memory>
 #include <mutex>
 #include <unordered_map>
 #include <unordered_set>
@@ -26,9 +28,45 @@
 
 namespace culebra {
 
+// --- Isolate.spawn_source ----------------------------------------------------
+
+// What a Runtime running a source handed to Isolate.spawn_source, or running
+// an isolate that one spawned, knows of that source. The isolates a source
+// spawns share it, so everything the source's code runs on answers alike.
+struct SourceOrigin {
+  // `Sys.argv` there: what spawn_source was handed after the source.
+  std::vector<sendable::SendNode> argv;
+  // Whether `c` runs code compiled from the source, its stdlib modules
+  // included: code that is freed when the source's isolate ends, so a value
+  // that carries it may not outlive that isolate (SourceOrigin::leaving).
+  std::function<bool(const JitClosure*)> owns;
+};
+
+struct SourceOriginSlot {
+  std::shared_ptr<const SourceOrigin> origin;
+};
+
+// The current Runtime's source, or null on one no source started.
+inline const std::shared_ptr<const SourceOrigin>& current_source_origin() {
+  return culebra::runtime_substate<SourceOriginSlot>(culebra::kSlotSourceOrigin)
+      .origin;
+}
+
+inline void set_source_origin(culebra::Runtime& rt,
+                              std::shared_ptr<const SourceOrigin> origin) {
+  culebra::runtime_substate<SourceOriginSlot>(rt, culebra::kSlotSourceOrigin)
+      .origin = std::move(origin);
+}
+
 // --- JitValue <-> SendNode ---------------------------------------------------
 
 struct JitSerCtx {
+  // A message that may outlive this source's isolate (its join's result or
+  // throw, a channel message): a function of the source's own may not ride
+  // in it. Null for one that stays inside (an argument to an isolate the
+  // source spawns, which is joined before the source ends).
+  const SourceOrigin* leaving = nullptr;
+
   // A closure, a class object, an enum object or a meta -> its ref id: one
   // node per message however often it is reached.
   std::map<const void*, int> ids;
@@ -534,6 +572,10 @@ inline sendable::SendNode jit_serialize(JitValue v, JitSerCtx& ctx) {
           return jit_serialize(
               JitValue{TAG_FUNC, reinterpret_cast<int64_t>(m)}, ctx);
       }
+      if (ctx.leaving && ctx.leaving->owns(c))
+        sendable::send_error(
+            "a function defined in a source run by Isolate.spawn_source "
+            "cannot leave its isolate");
       n.kind = K::Closure;
       if (!ctx.first(c, n)) return n;  // a recursive fn refers back to itself
       // Closure chains nest through captures, not containers, so the
@@ -932,18 +974,80 @@ inline void jit_install_trait_defaults(
 
 // --- Child entry point: run the spawned closure on a fresh JIT heap ----------
 
+// Run an isolate's body on its own thread, with its Runtime current, and leave
+// in `core` what join() hands back: the value the body ends with, the error it
+// raised, the value it threw, or that it was cancelled. `leaving` is the
+// source whose functions may not ride out with that value (null for an isolate
+// a closure started, whose code outlives it).
+template <class Body>
+inline void _jit_isolate_settle_child(IsolateCore& core,
+                                      const SourceOrigin* leaving,
+                                      Body&& body) {
+  try {
+    JitOwnedVal r = body();
+    JitSerCtx sc;
+    sc.leaving = leaving;
+    sendable::SendNode out = jit_serialize(r.borrow(), sc);
+    {
+      std::lock_guard<std::mutex> lk(core.m);
+      core.result = std::move(out);
+      core.finished = true;
+    }
+  } catch (const culebra::Interrupted& e) {
+    culebra_runtime_release_passed_error();
+    // A cancelled child: join() re-raises this as an Interrupted, not as a
+    // program error. Explicit — the type no longer rides in `error`.
+    std::lock_guard<std::mutex> lk(core.m);
+    core.interrupted = e.what();
+    core.finished = true;
+  } catch (culebra::CulebraError& e) {
+    culebra_runtime_release_passed_error();
+    std::lock_guard<std::mutex> lk(core.m);
+    core.error = e;
+    core.finished = true;
+  } catch (CulebraException& e) {
+    // A raw user `throw <value>` (not a structured error): the value crosses,
+    // and _jit_isolate_settle re-raises it as a CulebraException on the
+    // parent. One that cannot cross fails the join with its SendError, as a
+    // result that cannot does; the throw is let go either way.
+    std::optional<sendable::SendNode> tn;
+    std::optional<culebra::CulebraError> unsent;
+    try {
+      JitSerCtx sc;
+      sc.leaving = leaving;
+      tn = jit_serialize({e.tag, e.data}, sc);
+    } catch (culebra::CulebraError& se) {
+      unsent = std::move(se);
+    } catch (std::exception& se) {  // as the handler below reports one
+      unsent = culebra::CulebraError("RuntimeError", se.what());
+    }
+    culebra_runtime_consume_throw(e);
+    std::lock_guard<std::mutex> lk(core.m);
+    if (tn) core.thrown = std::move(*tn);
+    else core.error = std::move(*unsent);
+    core.finished = true;
+  } catch (std::exception& e) {
+    std::lock_guard<std::mutex> lk(core.m);
+    core.error = culebra::CulebraError("RuntimeError", e.what());
+    core.finished = true;
+  }
+}
+
 // `core` is borrowed: ~IsolateCore joins this thread before it goes, so the
-// thread is never the last to let it go (and never joins itself).
+// thread is never the last to let it go (and never joins itself). `origin`:
+// the source whose code this isolate runs, when a source's isolate spawned it.
 inline void run_isolate_child_jit(IsolateCore& core,
                                   sendable::SendNode sclosure,
                                   std::vector<sendable::SendNode> sargs,
                                   std::shared_ptr<const sendable::TraitDefaults> defaults,
+                                  std::shared_ptr<const SourceOrigin> origin,
                                   bool decrement_live) {
   // A fresh Runtime gives this work its own JIT heap (and its own multifn
   // registry); the shared fn_ptr allocates on whichever Runtime is active.
   culebra::Runtime rt(&core.interrupt);
   culebra::RuntimeScope scope(rt);
-  try {
+  if (origin) set_source_origin(rt, std::move(origin));
+  _jit_isolate_settle_child(core, nullptr, [&] {
     jit_install_trait_defaults(std::move(defaults));
     JitDeCtx dc;
     // The rebuilt closure is the child heap's only ref to whatever crossed the
@@ -985,67 +1089,32 @@ inline void run_isolate_child_jit(IsolateCore& core,
     else
       raw = _jit_invoke(cls, {TAG_NO_SELF, 0}, static_cast<int64_t>(argc),
                         argv->items);
-    JitOwnedVal r(raw);
-    JitSerCtx sc;
-    sendable::SendNode out = jit_serialize(r.borrow(), sc);
-    {
-      std::lock_guard<std::mutex> lk(core.m);
-      core.result = std::move(out);
-      core.finished = true;
-    }
-  } catch (const culebra::Interrupted& e) {
-    culebra_runtime_release_passed_error();
-    // A cancelled child: join() re-raises this as an Interrupted, not as a
-    // program error. Explicit — the type no longer rides in `error`.
-    std::lock_guard<std::mutex> lk(core.m);
-    core.interrupted = e.what();
-    core.finished = true;
-  } catch (culebra::CulebraError& e) {
-    culebra_runtime_release_passed_error();
-    std::lock_guard<std::mutex> lk(core.m);
-    core.error = e;
-    core.finished = true;
-  } catch (CulebraException& e) {
-    // A raw user `throw <value>` (not a structured error): the value crosses,
-    // and _jit_isolate_settle re-raises it as a CulebraException on the
-    // parent. One that cannot cross fails the join with its SendError, as a
-    // result that cannot does; the throw is let go either way.
-    std::optional<sendable::SendNode> tn;
-    std::optional<culebra::CulebraError> unsent;
-    try {
-      JitSerCtx sc;
-      tn = jit_serialize({e.tag, e.data}, sc);
-    } catch (culebra::CulebraError& se) {
-      unsent = std::move(se);
-    } catch (std::exception& se) {  // as the handler below reports one
-      unsent = culebra::CulebraError("RuntimeError", se.what());
-    }
-    culebra_runtime_consume_throw(e);
-    std::lock_guard<std::mutex> lk(core.m);
-    if (tn) core.thrown = std::move(*tn);
-    else core.error = std::move(*unsent);
-    core.finished = true;
-  } catch (std::exception& e) {
-    std::lock_guard<std::mutex> lk(core.m);
-    core.error = culebra::CulebraError("RuntimeError", e.what());
-    core.finished = true;
-  }
+    return JitOwnedVal(raw);
+  });
   if (decrement_live)
     g_live_isolates().fetch_sub(1, std::memory_order_relaxed);
 }
 
-// A core whose thread runs the shipped closure on the shipped arguments.
-// `counted`: it holds a g_live_isolates count, which the thread gives back.
-inline std::shared_ptr<IsolateCore> _jit_start_isolate(
-    sendable::SendNode sclosure, std::vector<sendable::SendNode> sargs,
-    std::shared_ptr<const sendable::TraitDefaults> defaults, bool counted) {
+// A core whose thread runs `run(core, counted)`; `counted` says the thread
+// holds a g_live_isolates count, which it gives back. Beyond the parallelism
+// cap the isolate still gets a thread and a Runtime of its own, but is joined
+// at once, so concurrency stays bounded. One that may block on a peer (it
+// carries a channel) always runs alongside: joining it at once could deadlock
+// (a streaming producer fills a bounded channel before any consumer starts).
+template <class Run>
+inline std::shared_ptr<IsolateCore> _jit_launch_isolate(bool must_thread,
+                                                        Run run) {
+  bool under_cap =
+      g_live_isolates().fetch_add(1, std::memory_order_relaxed) < isolate_cap();
+  bool threaded = must_thread || under_cap;
+  if (!threaded) g_live_isolates().fetch_sub(1, std::memory_order_relaxed);
   auto core = std::make_shared<IsolateCore>();
   core->thread = culebra::SizedThread(
-      [c = core.get(), sclosure = std::move(sclosure), sargs = std::move(sargs),
-       defaults = std::move(defaults), counted]() mutable {
-        run_isolate_child_jit(*c, std::move(sclosure), std::move(sargs),
-                              std::move(defaults), counted);
+      [c = core.get(), run = std::move(run), threaded]() mutable {
+        run(*c, threaded);
       });
+  if (threaded) started_isolates_add(core);
+  else core->join();
   return core;
 }
 
@@ -1160,19 +1229,61 @@ inline JitValue culebra_jit_isolate_spawn(int8_t fn_tag, int64_t fn_data,
   bool must_thread = node_carries_channel(sclo);
   for (const auto& a : sargs)
     if (!must_thread && node_carries_channel(a)) must_thread = true;
-  bool under_cap =
-      g_live_isolates().fetch_add(1, std::memory_order_relaxed) < isolate_cap();
-  bool threaded = must_thread || under_cap;
-  if (!threaded) g_live_isolates().fetch_sub(1, std::memory_order_relaxed);
-  auto core = _jit_start_isolate(std::move(sclo), std::move(sargs),
-                                 std::move(defaults), /*counted=*/threaded);
-  if (threaded) {
-    started_isolates_add(core);
-  } else {
-    // Synchronous fallback over the cap: still a fresh thread with a Runtime
-    // of its own, but joined immediately, so concurrency stays bounded.
-    core->join();
+  auto core = _jit_launch_isolate(
+      must_thread,
+      [sclo = std::move(sclo), sargs = std::move(sargs),
+       defaults = std::move(defaults),
+       origin = current_source_origin()](IsolateCore& c, bool counted) mutable {
+        run_isolate_child_jit(c, std::move(sclo), std::move(sargs),
+                              std::move(defaults), std::move(origin), counted);
+      });
+  return _jit_make_isolate_handle(std::move(core));
+}
+
+// Runs a source on an isolate's thread: vm/source_isolate.h, which a host
+// carrying the bytecode compiler and the executor installs (the CLI, an Embed,
+// an AOT binary that links culebra_rt_source). Null in one that carries
+// neither.
+using SourceIsolateRun = void (*)(IsolateCore& core, std::string source,
+                                  std::string name,
+                                  std::vector<sendable::SendNode> argv,
+                                  bool counted);
+inline SourceIsolateRun& source_isolate_run() {
+  static SourceIsolateRun run = nullptr;
+  return run;
+}
+
+// Runtime entry for Isolate.spawn_source(source, *args, name:): the source
+// compiles and runs on the new isolate's executor, reading `args` as Sys.argv.
+inline JitValue culebra_jit_isolate_spawn_source(std::string source,
+                                                 std::string name,
+                                                 const JitArray* args,
+                                                 int64_t line, int64_t col) {
+  auto run = source_isolate_run();
+  if (!run) {
+    throw culebra::CulebraError(
+        "RuntimeError",
+        "Isolate.spawn_source: this binary does not carry the compiler", line,
+        col);
   }
+  std::vector<sendable::SendNode> argv;
+  try {
+    JitSerCtx sc;
+    argv.reserve(args->size);
+    for (size_t i = 0; i < args->size; i++)
+      argv.push_back(jit_serialize(args->items[i], sc));
+  } catch (const culebra::CulebraError& e) {
+    sendable::rethrow_send_error_in(e, "Isolate.spawn_source", line, col);
+  }
+  bool must_thread = false;
+  for (const auto& a : argv)
+    if (!must_thread && node_carries_channel(a)) must_thread = true;
+  auto core = _jit_launch_isolate(
+      must_thread, [run, source = std::move(source), name = std::move(name),
+                    argv = std::move(argv)](IsolateCore& c,
+                                            bool counted) mutable {
+        run(c, std::move(source), std::move(name), std::move(argv), counted);
+      });
   return _jit_make_isolate_handle(std::move(core));
 }
 
@@ -1196,6 +1307,8 @@ inline void _jit_chan_send(JitValue* __ret, JitClosure*, int8_t self_tag, int64_
   auto* end = _jit_self_chan_end(self);
   if (n >= 1) {
     JitSerCtx sc;
+    // Whoever receives may outlive the source this isolate runs.
+    sc.leaving = current_source_origin().get();
     // The thunk ABI carries no line/col; backfill the serializer's
     // positionless errors (SendError, nesting ValueError) from the call
     // site the codegen published, like _jit_ns_method_dispatch does.
@@ -2745,11 +2858,16 @@ inline JitValue culebra_jit_channel_fan_in(int64_t n, JitValue* args,
     auto* chcore = new ChannelCore(1);
     merge->sources.push_back(chcore);
     sargs.push_back(chan_node(chcore, /*role=*/0));
-    g_live_isolates().fetch_add(1, std::memory_order_relaxed);
-    auto pcore = _jit_start_isolate(std::move(sfn), std::move(sargs), defaults,
-                                    /*counted=*/true);
-    started_isolates_add(pcore);
-    merge->producers.push_back(std::move(pcore));
+    // A producer carries its channel, so it always runs alongside.
+    merge->producers.push_back(_jit_launch_isolate(
+        /*must_thread=*/true,
+        [sfn = std::move(sfn), sargs = std::move(sargs), defaults,
+         origin = current_source_origin()](IsolateCore& c,
+                                           bool counted) mutable {
+          run_isolate_child_jit(c, std::move(sfn), std::move(sargs),
+                                std::move(defaults), std::move(origin),
+                                counted);
+        }));
   }
   return _jit_make_merged_rx(std::move(merge));
 }
@@ -2828,6 +2946,7 @@ inline void jit_parallel_record_element_error(ParallelState& st, size_t i,
 inline void jit_parallel_worker(std::shared_ptr<ParallelState> st) {
   culebra::Runtime rt(&st->interrupt);
   culebra::RuntimeScope scope(rt);
+  if (st->origin) set_source_origin(rt, st->origin);
   try {
     jit_install_trait_defaults(st->trait_defaults);
     // Owned for the same reason as the isolate child's closure: the captures
@@ -2914,6 +3033,7 @@ inline JitValue jit_parallel_run(JitValue items_v, JitValue fn_v, int64_t limit,
   st->mode = mode;
   { JitSerCtx sc; st->fn = jit_serialize(fn_v, sc); }
   st->trait_defaults = jit_snapshot_trait_defaults();
+  st->origin = current_source_origin();
   st->items.reserve(arr->size);
   for (size_t i = 0; i < arr->size; i++) {
     JitSerCtx sc;
