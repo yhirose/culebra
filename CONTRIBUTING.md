@@ -104,7 +104,10 @@ asserts away — and they check internal invariants no test can observe from
 script level, like a cross-Runtime slab free. `just test-assert` runs the same
 sweep against a build without it (into `build-assert/`); CI runs it on Ubuntu
 (`linux-assert`). Reach for it when touching `Runtime` teardown, the GC heap,
-or the slab allocator.
+or the slab allocator. `just asan` builds with AddressSanitizer and UBSan
+and runs the embedding smokes, the vm/jit sweep and gc-stress on it, with
+every slab block handed to `malloc` so a use after free is reported where
+it happens; CI runs it on Ubuntu (`linux-asan`).
 
 Grammar
 -------

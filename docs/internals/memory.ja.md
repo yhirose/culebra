@@ -143,11 +143,12 @@ retain/releaseのコードは自分が所有していないヘッダに一切触
 タプルは作るときの要素数で作られ、あとから伸びないので、要素は
 `JitArray`ヘッダの直後、同じブロックに置かれる（CPythonと同じ配置）。
 配列の要素は別に確保したバッファにあり、伸ばせる。スラブのブロックは
-毒を塗らずに使い回すので、AddressSanitizerのビルド（`just asan`）は、
+毒を塗らずに使い回すので、AddressSanitizerのビルドだけでは、
 解放されたオブジェクト・閉包・cellを読む誤りを見つけない。見つけるのは
 それらが`malloc`で取ったもの（閉包のcapture、配列のバッファ）だけである。
 `CULEBRA_SLAB_PASSTHROUGH=1`はすべてのブロックを`malloc`に渡すので、
-ASanがすべてを見る。
+ASanがすべてを見る。`just asan`（CIではlinux-asan）は、これを立ててスイープを回す
+（vm.md §5.3）。
 
 決定的な`drop`は同じカウントに乗る: refcountがゼロに達した
 オブジェクトは、その子が解放される前に`drop`を実行する。`drop`を

@@ -554,36 +554,64 @@ coverage: coverage-build
     @head -12 build-cov/corpus_only.txt
     @echo "coverage: full list in build-cov/corpus_only.txt"
 
-# Build with ASan+UBSan (no-LTO Release) and smoke the JIT GC paths.
-# The conservative stack scanner (scan_range, rt_gc.h) is exempted from
-# ASan via no_sanitize("address"); without that, every JIT GC collect
-# aborts with a stack-buffer-underflow. GC_STRESS=1 forces a collect on
-# every allocation, so the feature files below hammer scan_range. Any
-# sanitizer diagnostic fails the recipe.
+# Build with ASan+UBSan (no-LTO Release) and run what the collector is most
+# likely to get wrong on it: the embedding smokes, the vm/jit sweep of every
+# test file, and the gc-stress sweep (a collection at every allocation, on
+# both lanes). CULEBRA_SLAB_PASSTHROUGH=1 hands every slab block to malloc, so
+# ASan sees an object read after it is freed, not only what the object keeps
+# from malloc (docs/internals/memory.md). This watches what check-gc-hazard
+# cannot read: the executor, and the runtime as JIT code calls it; the JIT's
+# own code is not instrumented. CI runs it as linux-asan.
+#
+# The conservative stack scanner (scan_range, rt/gc.h) is exempted from ASan
+# via no_sanitize("address") and reads the real stack only, so ASan's fake
+# stack for use-after-return stays off: a root kept there would be missed.
+# Leaks have gates of their own. Linux raises the main thread's stack (macOS
+# links 16 MB): the 1000-frame recursion tests use 6.6 MB uninstrumented, and
+# ASan's redzones widen every frame. The smokes run first and both parts run
+# before the recipe fails, so a red sweep cannot hide what the smokes found.
+# LDFLAGS joins the sanitizer's link flags (CI passes mold).
+[doc("ASan+UBSan build, then the embedding smokes, the vm/jit sweep and gc-stress on it, with slab passthrough")]
 [group("test")]
-asan:
+asan *LDFLAGS:
+    @{{lock_cmd}} just _asan {{LDFLAGS}}
+
+[private]
+_asan *LDFLAGS:
     #!/usr/bin/env bash
     set -euo pipefail
+    export ASAN_OPTIONS=detect_leaks=0:detect_stack_use_after_return=0
+    export UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1
+    san="-fsanitize=address,undefined"
     mkdir -p build-asan
     ( cd build-asan && cmake -DCMAKE_BUILD_TYPE=Release -DCULEBRA_ENABLE_JIT=ON \
         -DCULEBRA_LTO=OFF -DCULEBRA_DEV_NO_RT=ON \
-        -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer" \
-        -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined" .. > /dev/null \
-      && {{lock_cmd}} make -j{{build_jobs}} culebra )
-    bin=build-asan/culebra
-    fail=0
-    for f in tests/test_forin_codegen.cul tests/test_value_equality.cul \
-             tests/test_generator_complex.cul; do
-        out=$(ASAN_OPTIONS=detect_leaks=0 CULEBRA_GC_STRESS=1 "$bin" --jit "$f" 2>&1) \
-            || { echo "asan: run failed: $f" >&2; fail=1; }
-        if grep -qiE "ERROR: AddressSanitizer|runtime error:|-buffer-|use-after" <<<"$out"; then
-            echo "asan: sanitizer diagnostic in $f:" >&2
-            grep -m 5 -iE "ERROR|runtime error|buffer|use-after" <<<"$out" >&2
-            fail=1
-        fi
+        -DCMAKE_CXX_FLAGS="$san -fno-omit-frame-pointer" \
+        -DCMAKE_EXE_LINKER_FLAGS="$san {{LDFLAGS}}" .. > /dev/null \
+      && {{nice_cmd}} make -j{{build_jobs}} culebra smoke_suite )
+    # Without this the recipe goes green while proving nothing.
+    for sym in __asan_report_load8 __ubsan_handle_; do
+        grep -qa "$sym" build-asan/culebra \
+            || { echo "asan: build-asan/culebra is not instrumented ($sym missing)" >&2; exit 1; }
     done
+    if [[ "$(uname -s)" == Linux ]]; then ulimit -s 65536; fi
+    export CULEBRA_SLAB_PASSTHROUGH=1
+    # It asks for sizes no machine has and expects bad_alloc; ASan's operator
+    # new reports the allocation and stops instead of throwing.
+    export CULEBRA_SWEEP_SKIP=tests/test_size_too_large.cul
+    # The usual per-file limits times what ASan costs each sweep: on CI the
+    # vm/jit sweep took 2.5x its ci-gc time and gc-stress 5.5x (2026-11-16).
+    export CULEBRA_TEST_TIMEOUT="${CULEBRA_TEST_TIMEOUT:-1800}"
+    export CULEBRA_JIT_FILE_BUDGET_MS="${CULEBRA_JIT_FILE_BUDGET_MS:-180000}"
+    export CULEBRA_GC_STRESS_FILE_BUDGET_MS="${CULEBRA_GC_STRESS_FILE_BUDGET_MS:-720000}"
+    jobs="${JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu)}"
+    fail=0
+    ( cd build-asan && {{nice_cmd}} ctest -R '_smoke$' --output-on-failure \
+        --timeout "$CULEBRA_TEST_TIMEOUT" -j "$jobs" ) || fail=1
+    # "full|vm/jit" spans a row's function and label: the every-file sweep alone.
+    BIN=./build-asan/culebra just _run-tests "only:full|vm/jit run_gc_stress" || fail=1
     [[ "$fail" == 0 ]] || { echo "asan FAIL" >&2; exit 1; }
-    echo "asan OK (JIT GC paths clean under ASan+UBSan)"
+    echo "asan OK (smokes, vm/jit sweep and gc-stress clean under ASan+UBSan, slab passthrough)"
 
 # Remove every temporary file: the build directories, an instrument's work folder,
 # scratch, editor config and caches (all regenerable). What .gitignore leaves out
@@ -725,6 +753,20 @@ _run-tests BACKEND:
     export -f cul
     export BIN TIMEOUT_BIN CULEBRA_TEST_TIMEOUT
 
+    # The test files a caller leaves out of the vm/jit and gc-stress sweeps
+    # (CULEBRA_SWEEP_SKIP, space-separated paths), for a build the file cannot
+    # run on: `just asan` names one, with its reason.
+    unskipped() {
+        local f
+        while read -r f; do
+            if [[ " ${CULEBRA_SWEEP_SKIP:-} " == *" $f "* ]]; then
+                echo "skipped (CULEBRA_SWEEP_SKIP): $f" >&2
+            else
+                printf '%s\n' "$f"
+            fi
+        done
+    }
+
     # Per-recipe scratch dir for parallel job artifacts (per-file
     # stdout/stderr, .fail markers). Cleaned on exit.
     job_dir="${TMPDIR:-/tmp}/culebra-test-$$"
@@ -812,7 +854,7 @@ _run-tests BACKEND:
     run_diff_vm_jit() {
         local d="$job_dir/diff" scope="${1:-full}" files
         mkdir -p "$d"
-        files=$(diff_vm_jit_files "$scope" | grep -E '^tests/[^/]+\.cul$' | sort -u)
+        files=$(diff_vm_jit_files "$scope" | grep -E '^tests/[^/]+\.cul$' | sort -u | unskipped)
         [[ -n "$files" ]] || { echo "test (vm vs jit): no file selected" >&2; exit 1; }
         printf '%s\n' $files | xargs -n1 -P "$JOBS" -I '{}' bash -c '
             f="$1"; d="$2"
@@ -1558,7 +1600,7 @@ _run-tests BACKEND:
     run_gc_stress() {
         local d="$job_dir/gcstress" f mark files=() skipped=0 bad=()
         mkdir -p "$d"
-        for f in tests/*.cul; do
+        for f in $(printf '%s\n' tests/*.cul | unskipped); do
             mark=$(awk '!/^#/ { body = 1 } /^# gc-stress:/ { print (body ? "below the header" : $0); exit }' "$f")
             case "$mark" in
               '') files+=("$f") ;;

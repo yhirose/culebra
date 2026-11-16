@@ -108,6 +108,7 @@ Project rules (culebra):
 | 1 run（ほかのrunと重ならない単独） | 約22分（27ジョブ、ci/ブランチ） | 2026-11-08、dev-loop-toolsの束。重なると増える |
 | ジョブ数 | 25（masterは`release-diff`を足して26）、合計317ジョブ分 | 2026-11-08。Linux 17、macOS 4、Windows 5 |
 | クリティカルパス | test-macos 37〜39分 | 2026-11-08 |
+| linux-asan（`just asan`） | 70分（ccacheが冷えた状態：ビルド39分、smoke数秒、vm/jit 3.4分、gc-stress 27分）。ccacheが温まった後の値は未測定 | 2026-11-16、ci/asan-watch |
 | 同時実行の上限 | 20ジョブ、macOS 5 | GitHub Docs。3本重ねたとき、3本目のmacOSジョブは11〜19分待った（2026-11-08） |
 | 安定性 | 直近100回：成功70、失敗10、取り消し18 | 2026-11-08。失敗の原因はばらばら |
 

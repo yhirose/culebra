@@ -1,0 +1,23 @@
+# The key prefix of the gate's JIT object cache (.gate-jit). An object is keyed
+# by its IR and the backend, host CPU included, so the cache is kept per CPU
+# model: the prefix names the runner's. ci-gc saves under it and linux-asan
+# restores from it, so it is spelled here once.
+name: gate JIT cache key
+description: Name the runner's CPU and give the gate JIT cache's key prefix
+inputs:
+  lane:
+    description: The lane whose cache this is
+    required: true
+outputs:
+  prefix:
+    description: The key prefix; a save appends the commit
+    value: ${{ steps.cpu.outputs.prefix }}
+runs:
+  using: composite
+  steps:
+    - id: cpu
+      shell: bash
+      run: |
+        grep -m1 '^model name' /proc/cpuinfo
+        cpu=$( (grep -m1 '^model name' /proc/cpuinfo; grep -m1 '^flags' /proc/cpuinfo) | sha256sum | cut -c1-12 )
+        echo "prefix=${{ runner.os }}-gate-jit-${{ inputs.lane }}-$cpu-" >> "$GITHUB_OUTPUT"

@@ -750,6 +750,11 @@ String、呼び出しの下でプログラムが変えられない表）と、�
 ほかは1つも許さない。
 `JitOwnedVal`や`JitHeldMethod`を通して持つ値は所有なので、保持に数えない。
 JITが出すIRはこの解析から見えない。
+解析が読めないところは、走らせて見張る。`just asan`（CIのlinux-asan）は、
+スラブのブロックをすべて`malloc`に渡すAddressSanitizerのビルド（memory.md §3）で、
+埋め込みのsmoke、vm/jitのスイープ、gc-stressのスイープを回す。まだ値を持っている
+呼び出しの下でその値が解放されれば、executorでも、JITのコードが呼ぶランタイムでも、
+読んだところで報告される。JITのコード自身は計装されない。
 
 ネイティブのオブジェクトが、渡された呼び出しの後まで関数を持つときは、
 回収器から見える所で参照を持つ。Searchの索引は解析器のhookを、Http.serverは

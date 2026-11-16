@@ -157,11 +157,12 @@ a header it does not own. A tuple is built to the element count it is
 created with and never grows, so its elements sit right after its
 `JitArray` header in the same block (CPython's layout); an array's
 elements live in a buffer of their own, which can grow. A slab block is
-reused without being poisoned, so an AddressSanitizer build (`just asan`)
-does not see an object, a closure or a cell read after it is freed, only
-what they keep from `malloc` (a closure's captures, an array's buffer);
+reused without being poisoned, so an AddressSanitizer build alone does
+not see an object, a closure or a cell read after it is freed, only what
+they keep from `malloc` (a closure's captures, an array's buffer);
 `CULEBRA_SLAB_PASSTHROUGH=1` hands every block to `malloc`, so that ASan
-sees them all.
+sees them all. `just asan`, which CI runs as linux-asan, sets it for its
+sweeps (vm.md §5.3).
 
 Deterministic `drop` rides on the same count: an object whose refcount
 reaches zero runs its `drop` before its children are released. Objects

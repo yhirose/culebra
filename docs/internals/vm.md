@@ -804,6 +804,12 @@ captures, a String no release frees, a table the program cannot change
 under the call), and the known holes it lists apart until each is fixed.
 A value held through a `JitOwnedVal` or `JitHeldMethod`
 is owned and is not a hold. The IR the JIT emits is out of its sight.
+What the analysis cannot read is watched while it runs: `just asan`
+(CI's linux-asan) runs the embedding smokes, the vm/jit sweep and the
+gc-stress sweep on an AddressSanitizer build that hands every slab block
+to `malloc` (memory.md §3), so a value freed under a call that still
+holds it is reported where it is read, in the executor or in the runtime
+the JIT's code calls. The JIT's own code is not instrumented.
 
 A native object that keeps a Function past the call that handed it over
 takes its count where the collector can see it. A Search index keeps its
