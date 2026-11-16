@@ -12403,7 +12403,7 @@ inline const NsConstant kNsConstants[] = {
 // on every positional and every value in `merged`; ownership transfers into
 // the returned slab (released by the caller after the adapter runs). On a
 // missing-required / unknown-keyword error the slab and `merged` are released
-// here before throwing.
+// here before throwing. Called only under _jit_ns_dispatch_args_rest's pause.
 inline std::vector<JitValue> _jit_ns_build_args_rest_slab(
     const NsParamMeta* pm, int64_t n_pos, JitValue* positional,
     culebra::MergedKwargs<JitValue>& merged, int64_t line, int64_t col) {
@@ -12467,6 +12467,21 @@ inline JitValue _jit_ns_dispatch_owned_slab(const NsMethod* m,
   }
 }
 
+// Build an args-rest method's slab and run its adapter over it. Collection
+// stays paused from the rest Array's creation to the slab's release: the
+// slab is heap the collector does not scan, and filling it allocates (a
+// String default, Isolate.spawn_source's `name`), which would otherwise
+// sweep the Array before the adapter reads it.
+inline JitValue _jit_ns_dispatch_args_rest(
+    const NsMethod* m, const NsParamMeta* pm, int64_t n_pos,
+    JitValue* positional, culebra::MergedKwargs<JitValue>& merged,
+    int64_t line, int64_t col) {
+  culebra::gc::Heap::CollectPause _pause(_gc_heap());
+  auto slab =
+      _jit_ns_build_args_rest_slab(pm, n_pos, positional, merged, line, col);
+  return _jit_ns_dispatch_owned_slab(m, slab);
+}
+
 // Core ns-method dispatch: arity-check `n_args` against `m`, run the adapter
 // (consuming/releasing `args`), and backfill a positionless error to
 // (line,col). Shared by the closure trampoline (which snapshots the call site
@@ -12496,9 +12511,7 @@ inline JitValue _jit_ns_method_dispatch(const NsMethod* m, int64_t n_args,
     // so the slab (not `args`) is what gets released afterward.
     if (pm && pm->args_rest_idx >= 0) {
       culebra::MergedKwargs<JitValue> none;
-      auto slab = _jit_ns_build_args_rest_slab(pm, n_args, args, none,
-                                               line, col);
-      return _jit_ns_dispatch_owned_slab(m, slab);
+      return _jit_ns_dispatch_args_rest(m, pm, n_args, args, none, line, col);
     }
     auto release_args = [&]() {
       for (int64_t i = 0; i < n_args; i++) {
@@ -12792,10 +12805,9 @@ inline bool _jit_ns_kwarg_resolve_core(
     culebra::MergedKwargs<JitValue> named;
     for (auto& v : call.pos) pos.push_back(v.consume());
     for (auto& [k, v] : call.named) named.items.emplace_back(k, v.consume());
-    auto rest_slab = _jit_ns_build_args_rest_slab(pm, n_pos, pos.data(), named,
-                                                  line, col);
     *out = _jit_at_pos(line, col, [&] {
-      return _jit_ns_dispatch_owned_slab(m, rest_slab);
+      return _jit_ns_dispatch_args_rest(m, pm, n_pos, pos.data(), named, line,
+                                        col);
     });
     return true;
   }
