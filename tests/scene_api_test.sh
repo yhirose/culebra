@@ -735,6 +735,84 @@ let rect = view.texture_mips([Scene.Image.new(4, 2), Scene.Image.new(2, 1), Scen
 println("rect {rect.width()}x{rect.height()}")
 EOF2
 
+# node.load: one quad pushed vertex by vertex and the same quad handed over as
+# packed bytes draw the same frame; a bad length or index is refused; and a
+# million vertices go up in well under a second (16 nodes of 65535).
+cat > scene_mload.cul <<'EOF2'
+let view = Scene.View.new(160, 120, "scene mload")
+view.background(20, 24, 30)
+view.sun(0.0, -1.0, -0.3, 1.0, 255, 255, 255)
+view.ambient(0.6, 255, 255, 255)
+view.camera(0.0, 0.0, 0.0, 0.0, 0.0, 5.0, 0.0, 1.0, 0.0, 60.0)
+view.post_process(false)
+Canvas.init(160, 120)
+let checks = view.checker(8, 2, 255, 255, 255, 40, 40, 40)
+let mat = view.add_material().texture(checks).unlit()
+let pos = [-1.0, -1.0, 5.0,  1.0, -1.0, 5.0,  1.0, 1.0, 5.0,  -1.0, 1.0, 5.0]
+let nrm = [0.0, 0.0, -1.0,  0.0, 0.0, -1.0,  0.0, 0.0, -1.0,  0.0, 0.0, -1.0]
+let uvs = [0.0, 1.0,  1.0, 1.0,  1.0, 0.0,  0.0, 0.0]
+let cols = [255, 255, 255, 255,  255, 128, 128, 255,  128, 255, 128, 255,  128, 128, 255, 255]
+let idx = [0, 2, 1,  0, 3, 2]
+fn shot(path) {
+  view.render_3d()
+  view.screenshot(path)
+  view.present()
+  FS.read(path)
+}
+let empty = shot("mload_e.png")
+let pushed = view.add_mesh().material(mat)
+for i in 0..4 {
+  pushed.color(cols[4 * i], cols[4 * i + 1], cols[4 * i + 2])
+  pushed.vertex_uv(pos[3 * i], pos[3 * i + 1], pos[3 * i + 2], 0.0, 0.0, -1.0, uvs[2 * i], uvs[2 * i + 1])
+}
+pushed.tri(0, 2, 1).tri(0, 3, 2).build()
+let a = shot("mload_a.png")
+pushed.hide()
+let loaded = view.add_mesh().material(mat)
+let packed_cols = String.pack("u8", cols)
+loaded.load(String.pack("f32", pos), String.pack("u16", idx), String.pack("f32", nrm),
+            String.pack("f32", uvs), packed_cols)
+let b = shot("mload_b.png")
+println("vertices {loaded.vertex_count()}")
+println("same frame: {a == b}")
+let bare = view.add_mesh().material(view.add_material().rgb(255, 0, 0).unlit())
+bare.load(String.pack("f32", pos), String.pack("u16", idx))
+loaded.hide()
+let c = shot("mload_c.png")
+println("drawn: {a != empty && c != empty && c != a}")
+fn err(f) {
+  try {
+    f()
+    'accepted'
+  } catch e {
+    "{e.kind}: {e.message}"
+  }
+}
+let P = String.pack("f32", pos)
+let short_p = String.pack("u8", [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11])
+let short_i = String.pack("u8", [1, 2, 3, 4, 5])
+let I = String.pack("u16", idx)
+let n = view.add_mesh()
+println(err(fn () { n.load(short_p, I) }))
+println(err(fn () { n.load(P, short_i) }))
+println(err(fn () { n.load(P, I, short_p) }))
+println(err(fn () { n.load(P, I, "", P) }))
+println(err(fn () { n.load(P, I, "", "", P) }))
+n.load(P, String.pack("u16", [0, 1, 9]))
+println("index past the vertices draws nothing: {shot("mload_d.png") == c}")
+# a million vertices
+mut flat = []
+for i in 0..65535 { flat.push((i % 256) * 1.0); flat.push(0.0); flat.push(0.0) }
+let big_p = String.pack("f32", flat)
+mut seq = []
+for i in 0..65535 { seq.push(i) }
+let big_i = String.pack("u16", seq)
+let t0 = Time.now()
+for k in 0..16 { view.add_mesh().load(big_p, big_i) }
+let fast = Time.now() - t0 < Time.seconds(1)
+println("a million vertices load fast: {fast}")
+EOF2
+
 # height_fog: a magenta slab seen through white fog. The green channel is the
 # fog's share (magenta has none, white has all). From 3000 m looking straight
 # down at the ground the haze column is thin, so the slab stays magenta; from
@@ -1021,6 +1099,14 @@ run_pair tmips "size 64.0x64.0" "near is level 0: true" "far is a given level: t
   "TypeError: view.texture_mips: levels must be an Array of Scene.Image" \
   "TypeError: view.texture_mips: levels[1] is Long, not a Scene.Image" "rect 4.0x2.0"
 echo "OK: texture_mips samples the levels it is given"
+run_pair mload "vertices 4" "same frame: true" "drawn: true" "index past the vertices draws nothing: true" \
+  "ValueError: node.load: positions is 11 bytes, expected 12 per vertex (3 x f32)" \
+  "ValueError: node.load: indices is 5 bytes, expected 6 per triangle (3 x u16)" \
+  "ValueError: node.load: normals is 11 bytes, expected 12 per vertex (3 x f32)" \
+  "ValueError: node.load: uvs is 48 bytes, expected 8 per vertex (2 x f32)" \
+  "ValueError: node.load: colours is 48 bytes, expected 4 per vertex (rgba u8)" \
+  "a million vertices load fast: true"
+echo "OK: node.load draws what vertex_uv pushes and refuses bad bytes"
 run_pair hfog "clear without fog: true" "down stays clear: true level hazes: true" \
   "bad arguments keep the fog: true" "falloff 0 is uniform: true" "fog() takes over: true"
 echo "OK: height_fog clears a view from above and hazes a far level one"

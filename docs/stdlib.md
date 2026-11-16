@@ -6342,6 +6342,17 @@ uploaded it: a node kept past `view.drop()` stays usable as a transform, but
 draws nothing in a later view. `build()` needs an open view to upload into,
 so it refuses with no view at all and the vertices stay for a later one.
 
+`m.load(positions, indices, normals = "", uvs = "", colours = "")` hands over the
+whole mesh at once as packed little-endian bytes (build them with `String.pack`):
+`positions` and `normals` are `f32` x, y, z per vertex, `uvs` `f32` u, v,
+`colours` `u8` r, g, b, a, and `indices` `u16`, three per triangle. It replaces
+what `vertex` and `tri` pushed and then does what `build()` does, so the same
+checks and the same 65535-vertex cap apply. Where `vertex_uv` costs a call per
+vertex, `load` reads a million vertices (16 meshes of 65535) in tens of
+milliseconds, so a mesh made ahead of time and saved loads at start-up. Leave
+out `normals` for up-facing normals, `uvs` for zeros, `colours` for white. A
+length that does not fit the vertex count is a `ValueError`.
+
 ### Materials, lighting, textures
 
 A material is a handle the view creates and the script configures with fluent

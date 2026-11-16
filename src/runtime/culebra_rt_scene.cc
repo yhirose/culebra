@@ -33,6 +33,7 @@
 #include <stdlib/pixel_size.h>
 
 #include <algorithm>
+#include <bit>
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
@@ -997,6 +998,41 @@ class Node : public std::enable_shared_from_this<Node> {
   Node& tri(int64_t a, int64_t b, int64_t c) {
     mi.push_back(a); mi.push_back(b); mi.push_back(c);
     return *this;
+  }
+  // The whole mesh from packed little-endian bytes (String.pack): positions and
+  // normals f32 xyz, uvs f32 uv, colours u8 rgba, indices u16, three a triangle.
+  // The pushed arrays are replaced, then build() checks and uploads as always.
+  // An empty normals / uvs / colours is the absent one: up-facing normals, zero
+  // UVs, white.
+  Node& load(const std::string& positions, const std::string& indices,
+             const std::string& normals, const std::string& uvs,
+             const std::string& colours) {
+    static_assert(std::endian::native == std::endian::little, "load() reads little-endian bytes");
+    auto refuse = [](const char* what, size_t got, size_t unit, const char* of) {
+      throw culebra::CulebraError("ValueError",
+          culebra::format("node.load: {} is {} bytes, expected {} per {}", what, got, unit, of), 0, 0);
+    };
+    if (positions.size() % 12) refuse("positions", positions.size(), 12, "vertex (3 x f32)");
+    if (indices.size() % 6) refuse("indices", indices.size(), 6, "triangle (3 x u16)");
+    size_t n = positions.size() / 12;
+    if (!normals.empty() && normals.size() != n * 12) refuse("normals", normals.size(), 12, "vertex (3 x f32)");
+    if (!uvs.empty() && uvs.size() != n * 8) refuse("uvs", uvs.size(), 8, "vertex (2 x f32)");
+    if (!colours.empty() && colours.size() != n * 4) refuse("colours", colours.size(), 4, "vertex (rgba u8)");
+    mv.resize(n * 3); std::memcpy(mv.data(), positions.data(), positions.size());
+    mn.resize(n * 3);
+    if (normals.empty()) for (size_t i = 0; i < n; i++) { mn[3 * i] = 0; mn[3 * i + 1] = 1; mn[3 * i + 2] = 0; }
+    else std::memcpy(mn.data(), normals.data(), normals.size());
+    mt.assign(n * 2, 0.0f);
+    if (!uvs.empty()) std::memcpy(mt.data(), uvs.data(), uvs.size());
+    mc.assign(n * 4, 255);
+    has_color_ = !colours.empty();
+    if (has_color_) std::memcpy(mc.data(), colours.data(), colours.size());
+    mi.resize(indices.size() / 2);
+    for (size_t i = 0; i < mi.size(); i++) {
+      uint16_t v; std::memcpy(&v, indices.data() + 2 * i, 2);
+      mi[i] = v;
+    }
+    return build();
   }
   Node& build() {
     if (mv.empty() || mi.empty()) return *this;   // nothing pushed → no-op (no GL upload)
@@ -2458,6 +2494,7 @@ const bool registered = [] {
       .borrowed_method<&gfx::Node::vertex_uv>("vertex_uv", {"x", "y", "z", "nx", "ny", "nz", "u", "v"})
       .borrowed_method<&gfx::Node::set_vertex_color>("color", {"r", "g", "b"})
       .borrowed_method<&gfx::Node::tri>("tri", {"a", "b", "c"})
+      .borrowed_method<&gfx::Node::load>("load", {"positions", "indices", {"normals", ""}, {"uvs", ""}, {"colours", ""}})
       .borrowed_method<&gfx::Node::build>("build")
       .method<&gfx::Node::child>("add_node")
       .method<&gfx::Node::add_box>("add_box", {"w", "h", "d"})
