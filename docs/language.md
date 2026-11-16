@@ -4439,7 +4439,10 @@ primitives go through the `hash(v)` global builtin (companion to
 `to_string`); class instances also accept the direct `x.hash()`
 call. For Hashable user classes used as Object / Set keys the
 matching `eq(other)` method is required so the container's
-equality check stays consistent with the hash.
+equality check stays consistent with the hash. An `eq` may change the
+very Object or Set being looked up (directly, or through a `drop` it
+lets run); the lookup then starts over, so its answer holds of the
+container as it was at some point during the call.
 
 #### Generic Bound
 

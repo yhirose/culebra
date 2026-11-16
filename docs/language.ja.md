@@ -4181,7 +4181,10 @@ show(x: Stringer)`) を通して扱い、`.method()`の構文は使えません�
 (`to_string`と対) を通し、class instanceは`x.hash()`の直接呼び出しも
 使えます。user classをObjectやSetのkeyにする場合は、対応する
 `eq(other)`も同時に定義する必要があります (container内でequalityと
-hashを一貫させるため)。
+hashを一貫させるため)。`eq`が、引いている最中のObjectやSetそのものを
+変えることもあります (直接、または`eq`の中で走る`drop`を通して)。
+そのときは引き直すので、答えは呼び出しの途中のある時点のcontainerに
+対して正しいものになります。
 
 #### Generic Bound
 
