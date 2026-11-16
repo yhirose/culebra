@@ -460,6 +460,19 @@ expect_class codegen "$peg_choke" "" "expected absent" "CodeGen only"
 expect_absent codegen "$fmt_machinery" "libstdc++'s formatter, CodeGen"
 expect_output codegen "42"
 
+# Isolate.spawn_source: the front end and the executor are an archive of
+# their own, installed by a static initializer, so naming spawn_source is
+# what brings them. A source can name only what the binary carries, which
+# --with extends: Synth is written in Culebra and reaches the native Audio
+# half, so the source's Synth.hz runs only on a binary built --with Synth.
+source_entry='culebra::vm::run_source_isolate[(]'
+expect_absent none "$source_entry" "the front end and the executor"
+build source 'IO.print(Isolate.spawn_source("1 + 2").join())'
+expect_present source "$source_entry" "spawn_source named"
+expect_output source "3"
+build source_with 'IO.print(Isolate.spawn_source("Synth.hz(69.0)").join())' --with Synth
+expect_output source_with "440.0"
+
 # Http, both halves of its axis. The default links OpenSSL; --no-tls links the
 # other archive and must carry not one OpenSSL symbol. The second probe also
 # runs, because "no OpenSSL" is only half the contract: an https URL has to
@@ -617,4 +630,4 @@ if (( fail )); then
 EOF
   exit 1
 fi
-echo "aot-feature-axes OK ($checks checks: Regex / Search / Tensor / Http+TLS / Audio / __Foreign / CodeGen by axis; Proc/Canvas/PEG/Shared by namespace group, no peglib in none; groups linked only when named; no libstdc++ formatter)"
+echo "aot-feature-axes OK ($checks checks: Regex / Search / Tensor / Http+TLS / Audio / __Foreign / CodeGen / spawn_source by axis; Proc/Canvas/PEG/Shared by namespace group, no peglib in none; groups linked only when named; no libstdc++ formatter)"

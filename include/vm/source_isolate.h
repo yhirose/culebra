@@ -57,39 +57,49 @@ inline void run_source_isolate(IsolateCore& core, std::string source,
   culebra::Runtime rt(&core.interrupt);
   culebra::RuntimeScope scope(rt);
   {
-    Session units;
-    // Whether the programs are still there to ask: once they go, any function
-    // the executor runs counts as the source's.
-    auto alive = std::make_shared<std::atomic<bool>>(true);
+    // Owned by the origin, which every Runtime that can run the source's
+    // code holds: the programs outlive this thread when an isolate the source
+    // spawned does.
+    auto units = std::make_shared<Session>();
     auto origin = std::make_shared<SourceOrigin>();
-    origin->argv = std::move(argv);
-    origin->owns = [&units, alive](const JitClosure* c) {
-      if (c->fn_ptr != reinterpret_cast<void*>(&Exec::trampoline))
-        return false;
-      if (!alive->load(std::memory_order_acquire)) return true;
+    origin->code = units;
+    origin->argv = [argv = std::move(argv)] {
+      auto* r = culebra_runtime_array_new_reserved(
+          static_cast<int64_t>(argv.size()));
+      JitOwnedVal guard(JitValue{TAG_ARRAY, reinterpret_cast<int64_t>(r)});
+      // One message, as the spawn serialized it: a class the second argument
+      // shares with the first arrives as a reference back to it.
+      JitDeCtx dc;
+      for (const auto& a : argv) {
+        JitValue v = jit_deserialize(a, dc).consume();
+        culebra_runtime_array_push(r, v.tag, v.data);  // absorbs the +1
+      }
+      return reinterpret_cast<JitArray*>(guard.consume().data);
+    };
+    // Raw: the origin owns the session, and only a holder of the origin asks.
+    origin->owns = [units = units.get()](const JitClosure* c) {
       const VmFnDesc* d = Exec::closure_desc(const_cast<JitClosure*>(c));
-      return d && units.retains(d->prog);
+      return d && units->retains(d->prog);
     };
     set_source_origin(rt, origin);
-    {
-      // The source's top-level bindings. They go before the programs, since
-      // releasing one can run the source's code (a `drop`, an isolate handle
-      // joining one the source spawned).
-      ReplSessionSwap cells;
-      _jit_isolate_settle_child(core, origin.get(), [&] {
-        return JitOwnedVal(_run_source_unit(units, std::move(source), name));
-      });
-    }
-    alive->store(false, std::memory_order_release);
+    // The source's top-level bindings, released on this thread while its
+    // Runtime is current: releasing one can run the source's code (a `drop`).
+    ReplSessionSwap cells;
+    _jit_isolate_settle_child(core, origin.get(), [&] {
+      return JitOwnedVal(_run_source_unit(*units, std::move(source), name));
+    });
   }
   if (counted) g_live_isolates().fetch_sub(1, std::memory_order_relaxed);
 }
 
 // Lets this process run Isolate.spawn_source. Each host that carries the
 // compiler calls it where it sets up the stdlib (the CLI's main, Embed, an
-// AOT binary through culebra_rt_source); the parse the source goes through
-// expands `let {*} = NS`, so the namespace members come with it.
+// AOT binary through culebra_rt_source). What compiling a source needs comes
+// with it, since a built binary compiles nothing else: the compiler's
+// builtin names and the namespace members the parse expands `let {*} = NS`
+// over.
 inline void install_source_isolate() {
+  install_executor_stdlib();
   install_namespace_members();
   source_isolate_run() = &run_source_isolate;
 }

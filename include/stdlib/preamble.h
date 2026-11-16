@@ -276,8 +276,11 @@ inline bool stdlib_spliced(const std::vector<LoadedModule>& modules) {
 inline std::unordered_set<std::string_view> program_tokens(
     const std::vector<LoadedModule>& modules) {
   std::unordered_set<std::string_view> names;
-  for (size_t i = stdlib_spliced(modules) ? 1 : 0; i < modules.size(); ++i)
+  for (size_t i = stdlib_spliced(modules) ? 1 : 0; i < modules.size(); ++i) {
     if (modules[i].ast) collect_ast_tokens(*modules[i].ast, names);
+    names.insert(modules[i].reached_names.begin(),
+                 modules[i].reached_names.end());
+  }
   return names;
 }
 

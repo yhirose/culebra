@@ -39,6 +39,7 @@
 #include <vm/vm.h>
 #include <cli/repl.h>
 #include <algorithm>
+#include <ranges>
 #include <chrono>
 #include <mutex>
 #include <thread>
@@ -161,14 +162,18 @@ void print_culebra_error(const culebra::CulebraError& e) {
 // splice_stdlib_preamble). Returns false having already reported the failure —
 // `build` and a script run differ only in what they return, so sharing this
 // keeps their diagnostics identical.
+// `reached` are names the program reaches without writing them
+// (LoadedModule::reached_names), read before the splice, which they select.
 bool load_entry_program(
     const string& path, std::string_view src, bool splice_preamble,
     std::vector<culebra::LoadedModule>& modules,
-    std::vector<const culebra::BakedPreamble*>* baked = nullptr) {
+    std::vector<const culebra::BakedPreamble*>* baked = nullptr,
+    std::vector<string> reached = {}) {
   vector<string> msgs;
   culebra::ModuleLoader loader;
   try {
     modules = loader.load_program(path, src, msgs);
+    if (!modules.empty()) modules.back().reached_names = std::move(reached);
     if (splice_preamble) culebra::splice_stdlib_preamble(modules, baked);
   } catch (const culebra::CulebraError& e) {
     print_culebra_error(e);
@@ -633,6 +638,10 @@ static constexpr FeatureAxis kFeatureAxes[] = {
     // CodeGen.Module, for the same reason: its wrap<T> registrar is a static
     // initializer (see src/runtime/culebra_rt_codegen.cc).
     {{"CodeGen"}, "libculebra_rt_codegen.a", CULEBRA_CODEGEN_LINK, true},
+    // Isolate.spawn_source: the parser, the bytecode compiler and the
+    // executor, installed by a static initializer (culebra_rt_source.cc). The
+    // trigger is the method name, as `segmenter`'s is.
+    {{"spawn_source"}, "libculebra_rt_source.a", "", true},
 };
 // Cross-compiling with Tensor would need a target-specific BLAS link, which we
 // don't bundle — run_build rejects that pair up front by this row.
@@ -707,6 +716,9 @@ struct BuildOptions {
   // Per kFeatureAxes row: its variant's flag was given (--no-tls, --llama-cpu).
   bool variant[std::size(kFeatureAxes)] = {};
   int opt_level = 2;
+  // --with: stdlib namespaces a source the program hands Isolate.spawn_source
+  // may name, carried as if the program named them.
+  std::vector<string> with;
 };
 #endif  // CULEBRA_JIT_ENABLED — end of build/wrap-only helpers
 
@@ -807,6 +819,9 @@ void print_build_usage(ostream& os) {
         "                     the output (for debugging)\n"
         "  --keep-symbols     Keep the symbol table in the output (default:\n"
         "                     stripped). Use for debugging.\n"
+        "  --with <ns,...>    Also link these stdlib namespaces, for a source\n"
+        "                     the program runs with Isolate.spawn_source (it\n"
+        "                     links what the program names, e.g. Synth,Audio).\n"
         "  --no-tls           Build Http without TLS: no OpenSSL, so the\n"
         "                     binary is ~3.9 MB smaller but `https://` and\n"
         "                     `wss://` raise HttpError at run time.\n"
@@ -889,6 +904,14 @@ static bool parse_opt_level(std::string_view arg, int& level, string& err) {
   return true;
 }
 
+// A namespace a source can name: a native one or one written in Culebra.
+static bool is_stdlib_namespace(std::string_view ns) {
+  return culebra::_is_known_ns(ns) ||
+         std::ranges::any_of(culebra::lazy_ns_modules(), [&](const auto& m) {
+           return ns == m.name;
+         });
+}
+
 bool parse_build_command_line(int argc, const char** argv, BuildOptions& opts,
                               string& err) {
   for (int i = 2; i < argc; ++i) {
@@ -903,6 +926,20 @@ bool parse_build_command_line(int argc, const char** argv, BuildOptions& opts,
       opts.emit_llvm = true;
     } else if (arg == "--keep-symbols") {
       opts.keep_symbols = true;
+    } else if (arg == "--with") {
+      if (i + 1 >= argc) {
+        err = "--with requires a list of namespaces (--with Synth,Audio)";
+        return false;
+      }
+      std::string_view list = argv[++i];
+      for (auto part : std::views::split(list, ',')) {
+        std::string_view ns(part.begin(), part.end());
+        if (!is_stdlib_namespace(ns)) {
+          err = std::format("--with: '{}' is no stdlib namespace", ns);
+          return false;
+        }
+        opts.with.emplace_back(ns);
+      }
     } else if (auto v = std::find_if(std::begin(kFeatureAxes), std::end(kFeatureAxes),
                                      [&](const FeatureAxis& ax) {
                                        return ax.variant.flag && arg == ax.variant.flag;
@@ -1010,7 +1047,9 @@ int run_build(const BuildOptions& opts) {
 
   // AOT always needs the preamble spliced in — it runs the JIT's lowering.
   std::vector<culebra::LoadedModule> modules;
-  if (!load_entry_program(opts.input, *user_src, true, modules)) return 1;
+  if (!load_entry_program(opts.input, *user_src, true, modules, nullptr,
+                          opts.with))
+    return 1;
 
   // Scratch object goes in the platform temp dir. temp_directory_path()
   // honours TMPDIR/TMP/TEMP and falls back to /tmp on POSIX; on Windows it

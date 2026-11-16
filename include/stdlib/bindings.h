@@ -1537,16 +1537,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_sys_set_env(
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_sys_argv() {
   // A source Isolate.spawn_source runs reads what it was handed.
-  if (const auto& origin = culebra::current_source_origin()) {
-    auto* r = culebra_runtime_array_new_reserved(
-        static_cast<int64_t>(origin->argv.size()));
-    JitOwnedVal guard(JitValue{TAG_ARRAY, reinterpret_cast<int64_t>(r)});
-    for (const auto& a : origin->argv) {
-      JitValue v = culebra::jit_deserialize(a).consume();
-      culebra_runtime_array_push(r, v.tag, v.data);  // absorbs the +1
-    }
-    return reinterpret_cast<JitArray*>(guard.consume().data);
-  }
+  if (const auto& origin = culebra::current_source_origin())
+    return origin->argv();
   auto& argv = culebra::sys_argv();
   auto* r = culebra_runtime_array_new();
   for (const auto& s : argv) {
@@ -3921,7 +3913,10 @@ inline void _jit_net_listener_serve(JitValue* __ret, JitClosure*, int8_t self_ta
         _jit_thread.call_line, _jit_thread.call_col);
   }
   culebra::net::ServeHooks hooks;
-  hooks.setup = [snode, defaults = culebra::jit_snapshot_trait_defaults()]() {
+  hooks.setup = [snode, defaults = culebra::jit_snapshot_trait_defaults(),
+                 source = culebra::current_source_origin()]() {
+    // A worker runs the handler's code, so it holds the source it came from.
+    if (source) culebra::set_source_origin(culebra::current_runtime(), source);
     culebra::jit_install_trait_defaults(defaults);
     JitValue h = culebra::jit_deserialize(*snode).consume();
     // Held only in this C++ slot → pin so the GC backstop won't sweep it.
@@ -4162,6 +4157,14 @@ struct JitExtension {
 
 // Convenience wrapper for embedders. Call once before running a program.
 inline void install_jit_stdlib() { JitExtension::install(); }
+
+// What the executor's compiler needs of the hooks, the builtin names, without
+// declare_runtime, which names the LLVM lowering a built binary does not
+// carry. Leaves alone the hooks a host installed already.
+inline void install_executor_stdlib() {
+  auto& h = default_extension_hooks();
+  if (!h.is_builtin_var) h.is_builtin_var = &JitExtension::is_builtin_var;
+}
 
 // --- Stdlib namespace as first-class JIT object ---
 //
@@ -8228,7 +8231,10 @@ inline JitValue _jit_http_server_do_serve(JitValue self, int64_t workers,
         throw culebra::CulebraError("HttpError",
                                     culebra::format("{}: {}", ctx, rerr), 0, 0);
     }
-    auto setup = [snodes, defaults = jit_snapshot_trait_defaults()]() {
+    auto setup = [snodes, defaults = jit_snapshot_trait_defaults(),
+                  source = culebra::current_source_origin()]() {
+      // A worker runs the handlers' code, so it holds the source they came from.
+      if (source) culebra::set_source_origin(culebra::current_runtime(), source);
       jit_install_trait_defaults(defaults);
       g_jit_srv_w_handlers.clear();
       g_jit_srv_w_handlers.reserve(snodes->size());
@@ -13344,14 +13350,10 @@ inline std::mutex& _lazy_ns_builder_mutex() {
   static std::mutex m;
   return m;
 }
-// Everything the closure constructor takes, so the rebuild produces the same
-// closure rather than one that merely runs the same code. On a lane whose
-// closures share one fn_ptr the meta is also what names the chunk to run.
-struct _LazyNsBuilder {
-  void* fn_ptr = nullptr;
-  uint64_t flags = 0;
-  const JitParamMeta* meta = nullptr;
-};
+// A Runtime a source started (Isolate.spawn_source) registers and finds its
+// builders in that source's own table instead, since its code goes when the
+// source's last Runtime does (culebra::SourceOrigin).
+using _LazyNsBuilder = culebra::LazyNsBuilder;
 inline _NameMap<_LazyNsBuilder>& _lazy_ns_builders() {
   static _NameMap<_LazyNsBuilder> r;
   return r;
@@ -13359,11 +13361,23 @@ inline _NameMap<_LazyNsBuilder>& _lazy_ns_builders() {
 inline void _lazy_ns_register_builder(const std::string& name, void* fn_ptr,
                                       uint64_t flags,
                                       const JitParamMeta* meta) {
+  if (const auto& origin = culebra::current_source_origin()) {
+    std::lock_guard<std::mutex> lk(origin->builders_m);
+    origin->builders.insert_or_assign(name,
+                                      _LazyNsBuilder{fn_ptr, flags, meta});
+    return;
+  }
   std::lock_guard<std::mutex> lk(_lazy_ns_builder_mutex());
   _lazy_ns_builders().insert_or_assign(name,
                                        _LazyNsBuilder{fn_ptr, flags, meta});
 }
 inline _LazyNsBuilder _lazy_ns_builder(std::string_view name) {
+  if (const auto& origin = culebra::current_source_origin()) {
+    std::lock_guard<std::mutex> lk(origin->builders_m);
+    if (auto it = origin->builders.find(std::string(name));
+        it != origin->builders.end())
+      return it->second;
+  }
   std::lock_guard<std::mutex> lk(_lazy_ns_builder_mutex());
   auto it = _lazy_ns_builders().find(name);
   return it == _lazy_ns_builders().end() ? _LazyNsBuilder{} : it->second;
@@ -13425,8 +13439,10 @@ inline JitObject* _jit_namespace_get_or_build(std::string_view name) {
     culebra::throw_runtime_error_at(
         "InternalError",
         culebra::format("namespace '{}' is not linked into this binary "
-                        "(culebra build's namespace scan did not see it named)",
-                        name),
+                        "(culebra build links the namespaces the program "
+                        "names; a source it runs with Isolate.spawn_source "
+                        "can name more with `--with {}`)",
+                        name, culebra::public_ns_name(name)),
         0, 0);
   }
   auto* obj = _jit_build_namespace_object(

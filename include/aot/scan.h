@@ -52,8 +52,7 @@ inline void aot_collect_embed_dirs(const peg::Ast& node,
 using AotNames = std::unordered_set<std::string_view>;
 
 inline std::string_view _aot_name_key(std::string_view id) {
-  if (id.starts_with('_')) id.remove_prefix(1);
-  return id;
+  return public_ns_name(id);
 }
 
 // With `held`, a trait declaration is not walked but handed back there
@@ -89,10 +88,12 @@ inline AotNames aot_collect_program_names(
     const std::vector<LoadedModule>& modules) {
   AotNames out;
   std::vector<const peg::Ast*> decls;
-  for (const auto& m : modules)
+  for (const auto& m : modules) {
     if (m.ast)
       aot_collect_names(*m.ast, out,
                         is_library_path(m.abs_path.string()) ? &decls : nullptr);
+    for (const auto& n : m.reached_names) out.insert(_aot_name_key(n));
+  }
   if (auto core = parse_builtin_traits_preamble()) {
     AotNames none;  // the core preamble is declarations alone
     aot_collect_names(*core, none, &decls);

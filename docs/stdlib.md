@@ -1354,7 +1354,10 @@ so the next argument becomes the script even if it begins with a dash
 A binary built by `culebra build` reports the arguments it was run
 with, the same way and with the same skip of the program name. The
 value is process-wide, so an [isolate](#12-isolate) or an HTTP handler
-running on a worker thread reads the same array as the main thread.
+running on a worker thread reads the same array as the main thread. The one
+exception is a source run by
+[`Isolate.spawn_source`](#isolatespawn_sourcesource-args-name-source---handle),
+which reads the arguments it was handed.
 
 ### `Sys.exit(code: Long) -> Nil`
 
@@ -1464,8 +1467,9 @@ inspect(Sys.executable)  # '/usr/local/bin/culebra'
 Absolute path of the running script — the `__file__` analogue. Use it to resolve
 files next to the script instead of relying on the current working directory:
 `FS.join(FS.dirname(Sys.script), "data.txt")`. It is `nil` when there is no
-source file at runtime — the REPL, a piped `stdin`, or an AOT-built binary (which
-carries no `.cul`; use `Sys.executable` there).
+source file at runtime — the REPL, a piped `stdin`, an AOT-built binary (which
+carries no `.cul`; use `Sys.executable` there), or a source run by
+`Isolate.spawn_source`.
 
 ```culebra
 # doctest: skip — prints values particular to one machine
@@ -2847,6 +2851,44 @@ An isolate is cooperatively cancellable. Dropping its handle without `join()`
 next statement or blocking-channel boundary, so a runaway or idle isolate never
 hangs the program. A `Time.sleep` already in progress runs to its end first, so
 dropping the handle waits for it.
+
+### `Isolate.spawn_source(source, *args, name: "<source>") -> handle`
+
+Runs `source`, a program as a `String`, on an isolate of its own and returns
+the same handle `Isolate.spawn` does: `join()` hands back the value of the
+source's last expression, and `drop()` stops a source that never ends.
+
+```culebra
+# doctest: skip
+Isolate.spawn_source("1 + 2").join()  # => 3
+
+let h = Isolate.spawn_source("Sys.argv[0] * 2", 21)
+h.join()  # => 42
+```
+
+- **What it sees**: the standard library, and `args` as its `Sys.argv` (any
+  Sendable values, not only strings). Nothing of the spawning program: a name
+  the program binds is an unknown name there. It has no `Sys.script`, being
+  no file, and cannot `import`.
+- **Errors**: a failure in the source, a `SyntaxError` included, is raised
+  by `join()` with its kind and its line and column in the source; a thrown
+  value crosses as `Isolate.spawn`'s does. `name` is what a syntax error
+  names the source by.
+- **Engine**: the source compiles on the bytecode compiler and runs on the
+  executor whichever lane runs the program (`--jit` and a built binary
+  included), so it behaves the same everywhere.
+- **What comes back**: copies, as from any isolate. A function the source
+  defines is freed when its isolate ends, so a value carrying one (a
+  function, an instance of a class the source declares or its stdlib
+  modules do) cannot leave by `join()`, a throw, or a channel: that is a
+  `SendError`. A function the program handed it is the program's, and can
+  come back.
+
+A binary built by `culebra build` carries the compiler only when the program
+names `spawn_source`, and the namespaces the program names; a source that
+names more needs them listed, as in `culebra build app.cul -o app --with
+Synth,Audio` ([deployment](deployment.md#1-standalone-binary-build-culebra-build)).
+Reaching one that is not linked raises an error naming the namespace.
 
 ### Channels — `Channel.new(cap = 1) -> (tx, rx)`
 

@@ -235,7 +235,11 @@
 # 374 since test_property_value_read.cul (a property read as a value takes
 # every arm of the compiled lanes' read from one site, warm, cold and changing
 # shape; 0.03 s under --vm, 0.35 s under --jit).
-tests.cul 374
+# 375 since test_isolate_spawn_source.cul (a source run by
+# Isolate.spawn_source answers alike on every lane, a built binary included,
+# and a function it defines cannot leave its isolate; 0.1 s under --vm, 1.0 s
+# under --jit).
+tests.cul 375
 
 # tests/isolate/*.cul — run on both engines, plus the over-cap modes.
 # 21 since test_xml_isolate.cul (an XML element keeps its methods across an
@@ -416,7 +420,8 @@ ctest.entries 43
 # Audio.Bus, in en and ja: a saw played into a bus, read in a room. 1198
 # since Synth's processing of your own, in en and ja: a one-pole and a slew
 # limiter in loops, a waveshaper, and a sound made coarse by round and latch.
-docs.blocks 1198
+# 1200 since Isolate.spawn_source, in en and ja (a doctest-skipped example).
+docs.blocks 1200
 
 # The samples the language front ends are run over (examples/languages/*).
 languages.samples 130

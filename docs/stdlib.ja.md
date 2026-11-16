@@ -1315,7 +1315,9 @@ inspect(Sys.argv)  # ['hello', 'world']
 `culebra build`で作ったバイナリも同じ形で（プログラム名を同様に除いて）
 実行時の引数を返します。値はプロセス全体で共有されるので、
 [isolate](#12-isolate)やworkerスレッド上のHTTPハンドラでも
-メインスレッドと同じ配列が読めます。
+メインスレッドと同じ配列が読めます。唯一の例外は
+[`Isolate.spawn_source`](#isolatespawn_sourcesource-args-name-source---handle)
+で実行したソースで、渡された引数を読みます。
 
 ### `Sys.exit(code: Long) -> Nil`
 
@@ -1426,7 +1428,8 @@ inspect(Sys.executable)  # '/usr/local/bin/culebra'
 スクリプトの隣にあるファイルを解決するのに使います:
 `FS.join(FS.dirname(Sys.script), "data.txt")`。実行時にソースファイルが存在しない
 場合（REPL、パイプした`stdin`、`.cul`を持たないAOTビルドされたバイナリ。AOTの
-場合は`Sys.executable`を使います）は`nil`です。
+場合は`Sys.executable`を使います。`Isolate.spawn_source`で実行したソース）は
+`nil`です。
 
 ```culebra
 # doctest: skip — マシン固有の値を印字する
@@ -2758,6 +2761,42 @@ GCが回収する）とisolateに停止が伝わり、次の文境界またはch
 境界で巻き戻ります。暴走中・待機中のisolateがプログラムをハングさせることは
 ありません。実行中の`Time.sleep`は最後まで待ってから巻き戻るので、dropはその
 間待たされます。
+
+### `Isolate.spawn_source(source, *args, name: "<source>") -> handle`
+
+`String`で渡したプログラム`source`を専用のisolateで実行し、`Isolate.spawn`と
+同じハンドルを返します。`join()`はソースの最後の式の値を返し、`drop()`は
+終わらないソースを止めます。
+
+```culebra
+# doctest: skip
+Isolate.spawn_source("1 + 2").join()  # => 3
+
+let h = Isolate.spawn_source("Sys.argv[0] * 2", 21)
+h.join()  # => 42
+```
+
+- **見えるもの**: 標準ライブラリと、`Sys.argv`としての`args`（文字列に限らず
+  Sendableな値なら何でも）。起動したプログラムのものは何も見えず、プログラムが
+  束縛した名前はソースの中では未定義の名前です。ファイルではないので
+  `Sys.script`は`nil`で、`import`もできません。
+- **エラー**: ソースの失敗（`SyntaxError`を含む）は、kindとソース内の行・列を
+  保って`join()`が送出します。投げた値は`Isolate.spawn`と同じく値のまま越えます。
+  `name`は構文エラーがソースを呼ぶ名前です。
+- **エンジン**: ソースは、プログラムをどのレーンで実行していても（`--jit`や
+  ビルドしたバイナリでも）バイトコードコンパイラでコンパイルされ、executorで
+  動きます。そのためどこでも同じに振る舞います。
+- **戻るもの**: どのisolateとも同じくコピーです。ソースが定義した関数は
+  isolateの終了とともに解放されるので、それを運ぶ値（関数、ソースやその標準
+  モジュールが宣言したクラスのインスタンス）は、`join()`・throw・channelの
+  どれでも外へ出られず、`SendError`になります。プログラムが渡した関数は
+  プログラムのものなので戻せます。
+
+`culebra build`で作ったバイナリは、プログラムが`spawn_source`を名指ししたとき
+だけコンパイラを持ち、名前空間はプログラムが名指ししたものだけを持ちます。
+ソースがそれ以外を使うときは`culebra build app.cul -o app --with Synth,Audio`
+のように並べます（[deployment](deployment.ja.md#1-standalone-バイナリビルドculebra-build)）。
+リンクされていない名前空間に触れると、その名前を挙げたエラーになります。
 
 ### Channel — `Channel.new(cap = 1) -> (tx, rx)`
 

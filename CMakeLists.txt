@@ -1298,9 +1298,11 @@ inline const auto FS = ::cpp_embedlib::EmbeddedFS{_entries};
   # body is force-loaded from culebra_rt_tensor (below) only when the
   # program uses Tensor — collapsing the tensor axis from 2 variants to
   # this one stub flag.
-  target_compile_definitions(culebra_rt PRIVATE
+  # The weak chokes, as a list: culebra_rt_source (below) reaches the same
+  # runtime through the executor, so it has to see the same stubs, or it
+  # would carry the bodies the feature archives exist to keep out.
+  set(_rt_core_stub_defs
     LLVM_DISABLE_ABI_BREAKING_CHECKS_ENFORCING=1
-    CULEBRA_RT_DEFINE_RUNTIME=1
     CULEBRA_RT_TENSOR_EVAL_WEAK=1
     CULEBRA_RT_HTTP_REQUEST_WEAK=1
     CULEBRA_RT_COMPRESS_WEAK=1
@@ -1314,15 +1316,15 @@ inline const auto FS = ::cpp_embedlib::EmbeddedFS{_entries};
   # default build these flags are absent and the base archive's Canvas ops are
   # the real headless inline bodies, as before.
   if(CULEBRA_ENABLE_CANVAS_WINDOW)
-    target_compile_definitions(culebra_rt PRIVATE
-      CULEBRA_CANVAS_WINDOW=1 CULEBRA_RT_CANVAS_WEAK=1)
+    list(APPEND _rt_core_stub_defs CULEBRA_CANVAS_WINDOW=1 CULEBRA_RT_CANVAS_WEAK=1)
   endif()
   # The same for Audio: weak silent bodies here (stdlib/audio.h), overridden by
   # culebra_rt_audio on Audio use.
   if(CULEBRA_ENABLE_AUDIO)
-    target_compile_definitions(culebra_rt PRIVATE
-      CULEBRA_AUDIO_NATIVE=1 CULEBRA_RT_AUDIO_WEAK=1)
+    list(APPEND _rt_core_stub_defs CULEBRA_AUDIO_NATIVE=1 CULEBRA_RT_AUDIO_WEAK=1)
   endif()
+  target_compile_definitions(culebra_rt PRIVATE
+    CULEBRA_RT_DEFINE_RUNTIME=1 ${_rt_core_stub_defs})
   # One section per function/data so the AOT link can `-dead_strip`
   # the ~200 `culebra_runtime_*` helpers a typical program doesn't
   # touch. Without this every runtime helper is in the same .text /
@@ -1508,6 +1510,17 @@ inline const auto FS = ::cpp_embedlib::EmbeddedFS{_entries};
   list(APPEND _rt_embed_files
     "${CMAKE_CURRENT_BINARY_DIR}/${CMAKE_STATIC_LIBRARY_PREFIX}culebra_rt_codegen${CMAKE_STATIC_LIBRARY_SUFFIX}")
   list(APPEND _rt_embed_deps culebra_rt_codegen)
+  # Isolate.spawn_source: the front end and the executor, installed by a static
+  # initializer like the wrap fixtures above (src/runtime/culebra_rt_source.cc),
+  # force-loaded only when the program names spawn_source.
+  add_library(culebra_rt_source STATIC ./src/runtime/culebra_rt_source.cc)
+  target_compile_features(culebra_rt_source PRIVATE cxx_std_23)
+  target_compile_definitions(culebra_rt_source PRIVATE ${_rt_core_stub_defs})
+  target_compile_options(culebra_rt_source PRIVATE
+    -ffunction-sections -fdata-sections)
+  list(APPEND _rt_embed_files
+    "${CMAKE_CURRENT_BINARY_DIR}/${CMAKE_STATIC_LIBRARY_PREFIX}culebra_rt_source${CMAKE_STATIC_LIBRARY_SUFFIX}")
+  list(APPEND _rt_embed_deps culebra_rt_source)
   # SQLite feature archive (gated), appended like Scene/Webview below.
   if(CULEBRA_ENABLE_SQLITE)
     list(APPEND _rt_embed_files
@@ -1644,7 +1657,7 @@ inline const auto FS = ::cpp_embedlib::EmbeddedFS{_entries};
                       culebra_rt_compress
                       culebra_rt_regex culebra_rt_search
                       culebra_rt_search_segmenter culebra_rt_foreign
-                      culebra_rt_codegen
+                      culebra_rt_codegen culebra_rt_source
                       culebra_rt_sqlite culebra_rt_llama culebra_rt_scene culebra_rt_canvas
                       culebra_rt_audio culebra_rt_webview culebra_rt_wrap)
     if(TARGET ${_rt_feature})

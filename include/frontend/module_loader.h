@@ -33,6 +33,11 @@ struct LoadedModule {
   // lowerings (lint::scope_diagnostics) and reported once every module is
   // read (lint::check_module).
   std::vector<lint::Diagnostic> scope_diagnostics;
+  // Names the program reaches at run time without writing them: what a
+  // source it hands Isolate.spawn_source may name (`culebra build --with`).
+  // The scans that decide what the program carries read them as its own
+  // (program_tokens, aot_collect_program_names).
+  std::vector<std::string> reached_names;
 };
 
 // Path stamped on the synthesized preamble module, so it is distinguishable

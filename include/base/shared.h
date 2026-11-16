@@ -385,6 +385,13 @@ inline std::string too_many_positionals_message(int64_t cap, int64_t got,
                          cap == 1 ? "" : "s", got, keyword_only_hint(kw_only));
 }
 
+// The name a program writes for a stdlib namespace: `_Audio` is the native
+// half of `Audio`, and naming either is naming both.
+inline std::string_view public_ns_name(std::string_view ns) {
+  if (ns.starts_with('_')) ns.remove_prefix(1);
+  return ns;
+}
+
 // "missing required argument 'name'" — no positional, no kwarg, no default.
 inline std::string missing_required_arg_message(std::string_view name) {
   return culebra::format("missing required argument '{}'", name);
@@ -2441,7 +2448,12 @@ inline double parse_double_strict(std::string_view s, int64_t line,
 // because they're defined in headers that include shared.h, so they
 // can't be direct members.
 enum RuntimeSlot : size_t {
-  kSlotInterpGc = 0,
+  // The source a Runtime runs the code of, when Isolate.spawn_source started
+  // it (sendable.h SourceOrigin), which holds that code. First, so it goes
+  // last: every other slot's teardown can still run the code (a `drop`).
+  // It holds no JitValue.
+  kSlotSourceOrigin = 0,
+  kSlotInterpGc,
   // Backs the hot JIT structs/buffers (rt_slab.h). MUST stay below kSlotJitGc
   // and below every JitValue-holding table slot: ~Runtime destroys substates
   // in reverse slot order, and those table dtors (module/namespace/test) free
@@ -2542,11 +2554,6 @@ enum RuntimeSlot : size_t {
   // The ZIP archives Dir.zip opened (bindings.h _DirZipTable): plain C++
   // readers, no JitValue, so its place among the GC slots is moot.
   kSlotZipArchives,
-  // What a Runtime spawned by Isolate.spawn_source, or by an isolate it
-  // spawned, knows of that source (sendable.h SourceOrigin): its Sys.argv and
-  // which functions are its own. Messages and a shared_ptr, no JitValue, so
-  // its place among the GC slots is moot.
-  kSlotSourceOrigin,
   // The session name table vm.h's repl_session() falls back to when no
   // session is current on the thread. A slot rather than one object for the
   // process because a session's cells are heap objects, and a heap belongs to

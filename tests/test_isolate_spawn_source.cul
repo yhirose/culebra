@@ -1,7 +1,13 @@
 # Isolate.spawn_source runs a source on an isolate of its own, on the
 # executor whichever lane spawned it, and join() hands back the value of its
-# last expression. Runs under both lanes; the symmetry sweep holds them to
+# last expression. The sweeps hold every lane, a built binary included, to
 # the same output.
+
+# A built binary carries the namespaces the program names (or `--with`
+# names), so the program names the ones its sources use. Never called.
+fn namespaces_the_sources_use() {
+  [Synth, Deque, Parallel]
+}
 
 fn caught(thunk) {
   try {
@@ -20,6 +26,12 @@ assert_eq(Isolate.spawn_source("let xs = [3, 1, 2]\nxs.sorted()").join(), [1, 2,
 # no file, so it has no Sys.script.
 assert_eq(Isolate.spawn_source("Sys.argv", 1, "a", [2.5]).join(), [1, "a", [2.5]])
 assert_eq(Isolate.spawn_source("Sys.argv").join(), [])
+# The arguments are one message, as Isolate.spawn's are: a class two of them
+# share crosses once.
+class Point {
+  new(@x) {}
+}
+assert_eq(Isolate.spawn_source("Sys.argv.map(|p| p.x)", Point(1), Point(2)).join(), [1, 2])
 assert_eq(Isolate.spawn_source("Sys.script").join(), nil)
 
 # The whole stdlib is in scope, `{*}` and the modules written in Culebra too.
@@ -64,6 +76,17 @@ assert_true(caught(|| h.join()).contains("SendError"))
 # The isolates the source spawns run its code, and answer to it the same way.
 assert_eq(Isolate.spawn_source("Isolate.spawn(|x| x + 1, 1).join()").join(), 2)
 assert_eq(Isolate.spawn_source("Parallel.map([1, 2], |x| x * 10)").join(), [10, 20])
+
+# The stdlib modules a source names are its own: the program builds them from
+# its own code, during the source's run and after it.
+assert_eq(Isolate.spawn_source("Time.now()\nDeque.new().size()").join(), 0)
+assert_eq(Deque.new().size(), 0)
+assert_true(Time.now() != nil)
+
+# The source's code lives as long as anything that runs it: here an isolate
+# it spawned, whose handle a cycle keeps from being joined when it ends.
+Isolate.spawn_source("let b = []\nb.push(b)\nb.push(Isolate.spawn(fn () \{\n  Time.sleep(0.1)\n  [1, 2].map(|x| x + 1)\n}))\n1").join()
+Time.sleep(0.2)
 
 # A source that never ends is dropped as any isolate is.
 let forever = Isolate.spawn_source("mut n = 0\nwhile true \{ n += 1 }")

@@ -15,6 +15,7 @@
 // neutral sendable::SendNode, which is what keeps this symmetric across the
 // executor and the LLVM lane.
 
+#include <algorithm>
 #include <atomic>
 #include <functional>
 #include <memory>
@@ -30,15 +31,37 @@ namespace culebra {
 
 // --- Isolate.spawn_source ----------------------------------------------------
 
+// A stdlib namespace's builder as `_lazy_ns_register` records it: everything
+// the closure constructor takes, so the rebuild produces the same closure
+// rather than one that merely runs the same code. On a lane whose closures
+// share one fn_ptr the meta is also what names the chunk to run.
+struct LazyNsBuilder {
+  void* fn_ptr = nullptr;
+  uint64_t flags = 0;
+  const JitParamMeta* meta = nullptr;
+};
+
 // What a Runtime running a source handed to Isolate.spawn_source, or running
-// an isolate that one spawned, knows of that source. The isolates a source
-// spawns share it, so everything the source's code runs on answers alike.
+// an isolate, a Parallel worker or a server worker one spawned, knows of that
+// source. Every such Runtime holds it, and it holds the source's code, so the
+// code lives as long as anything that can run it.
 struct SourceOrigin {
-  // `Sys.argv` there: what spawn_source was handed after the source.
-  std::vector<sendable::SendNode> argv;
+  // The source's compiled programs (vm::Session), freed with the last
+  // Runtime that runs them.
+  std::shared_ptr<void> code;
+  // The stdlib namespaces the source registered, built from its own code:
+  // kept here rather than in the process's table, where the program that
+  // spawned it would build them from code that is not its own.
+  mutable std::mutex builders_m;
+  mutable std::unordered_map<std::string, LazyNsBuilder> builders;
+  // `Sys.argv` there, built on the current Runtime from what spawn_source was
+  // handed after the source. A function, so that what rebuilds a message
+  // stays in the binaries that run a source (vm/source_isolate.h) rather than
+  // in every one that reads Sys.
+  std::function<JitArray*()> argv;
   // Whether `c` runs code compiled from the source, its stdlib modules
-  // included: code that is freed when the source's isolate ends, so a value
-  // that carries it may not outlive that isolate (SourceOrigin::leaving).
+  // included: a value that carries it may not leave for a Runtime that does
+  // not hold `code` (JitSerCtx::leaving).
   std::function<bool(const JitClosure*)> owns;
 };
 
@@ -1226,9 +1249,8 @@ inline JitValue culebra_jit_isolate_spawn(int8_t fn_tag, int64_t fn_data,
   // joins immediately and would deadlock (e.g. a streaming producer fills a
   // bounded channel before any consumer starts). Mirrors the interp spawn and
   // fan_in(items, fn). CPU-bound closures still honor the cap.
-  bool must_thread = node_carries_channel(sclo);
-  for (const auto& a : sargs)
-    if (!must_thread && node_carries_channel(a)) must_thread = true;
+  bool must_thread = node_carries_channel(sclo) ||
+                     std::ranges::any_of(sargs, node_carries_channel);
   auto core = _jit_launch_isolate(
       must_thread,
       [sclo = std::move(sclo), sargs = std::move(sargs),
@@ -1275,9 +1297,7 @@ inline JitValue culebra_jit_isolate_spawn_source(std::string source,
   } catch (const culebra::CulebraError& e) {
     sendable::rethrow_send_error_in(e, "Isolate.spawn_source", line, col);
   }
-  bool must_thread = false;
-  for (const auto& a : argv)
-    if (!must_thread && node_carries_channel(a)) must_thread = true;
+  bool must_thread = std::ranges::any_of(argv, node_carries_channel);
   auto core = _jit_launch_isolate(
       must_thread, [run, source = std::move(source), name = std::move(name),
                     argv = std::move(argv)](IsolateCore& c,
