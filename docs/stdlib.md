@@ -6443,6 +6443,7 @@ a dropped handle a `ClosedError`.
 | Method | Result |
 | --- | --- |
 | `view.texture(img, mipmaps = true, repeat = true) -> Texture` | upload a `Scene.Image` (below); mipmapped and repeating for a tiled material, neither for a sprite or a LUT |
+| `view.texture_mips(levels, repeat = true) -> Texture` | upload mipmap levels you made yourself: `levels[0]` is the full size and each next `Scene.Image` is half of it (rounded down, at least 1) down to 1×1, so a 64×64 texture takes 7. The GPU samples exactly these, where `texture` averages them; a wrong count or size is a `ValueError`. `filter("point_mipmap")` and `filter("trilinear")` read the levels as given |
 | `view.texture_png(bytes) -> Texture` | a PNG's bytes (`FS.read`, or a `Dir.embedded` asset) straight to a texture |
 | `view.checker(px, checks, r1,g1,b1, r2,g2,b2) -> Texture` | a checkerboard |
 | `view.grain(px, r, g, b, amt) -> Texture` | a flat colour with noise grain |

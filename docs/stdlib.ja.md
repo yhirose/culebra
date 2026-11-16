@@ -6224,6 +6224,7 @@ while !view.closing() {
 | メソッド | 結果 |
 | --- | --- |
 | `view.texture(img, mipmaps = true, repeat = true) -> Texture` | `Scene.Image`（下記）をアップロード。タイル用マテリアルならミップマップ＋リピート、スプライトやLUTなら両方off |
+| `view.texture_mips(levels, repeat = true) -> Texture` | 自分で作ったミップマップの段をアップロード。`levels[0]`が元の大きさで、続く`Scene.Image`は前の段の縦横半分（端数は切り捨て、最小1）を1×1まで並べる（64×64なら7枚）。`texture`が平均で作るのに対し、GPUは渡した段をそのまま使う。段の数や大きさが合わなければ`ValueError`。`filter("point_mipmap")`や`filter("trilinear")`も渡した段をそのまま読む |
 | `view.texture_png(bytes) -> Texture` | PNGのバイト列（`FS.read`や`Dir.embedded`の資産）を直接テクスチャに |
 | `view.checker(px, checks, r1,g1,b1, r2,g2,b2) -> Texture` | 市松 |
 | `view.grain(px, r, g, b, amt) -> Texture` | 単色＋ノイズの粒 |

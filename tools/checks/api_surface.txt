@@ -683,6 +683,7 @@ view.ssao(strength, radius)
 view.vignette(k)
 view.lut(tex, amount = 1.0)
 view.texture(img, mipmaps = true, repeat = true) -> Texture
+view.texture_mips(levels, repeat = true) -> Texture
 view.texture_png(bytes) -> Texture
 view.checker(px, checks, r1,g1,b1, r2,g2,b2) -> Texture
 view.grain(px, r, g, b, amt) -> Texture

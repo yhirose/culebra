@@ -686,6 +686,55 @@ view.present()
 println("unknown name keeps the last filter: {pure_in_rows("point_mipmap")[0] == 160}")
 EOF
 
+# texture_mips: a red full-size level and green levels below it. The plane is
+# seen to the horizon, so the bottom row samples level 0 and the far row a deep
+# level. Averaging a red level 0 would stay red all the way out; green there
+# means the levels passed in are the ones the GPU read. Then the refusals.
+cat > scene_tmips.cul <<'EOF2'
+let view = Scene.View.new(160, 120, "scene tmips")
+view.background(20, 24, 30)
+view.sun(0.0, -1.0, -0.3, 1.0, 255, 255, 255)
+view.ambient(0.6, 255, 255, 255)
+fn level(n, r, g) { Scene.Image.new(n, n).fill(r, g, 0, 255) }
+fn chain() {
+  [level(64, 255, 0), level(32, 0, 255), level(16, 0, 255), level(8, 0, 255),
+   level(4, 0, 255), level(2, 0, 255), level(1, 0, 255)]
+}
+let tex = view.texture_mips(chain())
+let mat = view.add_material().texture(tex).unlit().uv(62.5, 62.5, 0.0, 0.0)
+view.add_plane(4000.0, 4000.0).material(mat)
+view.camera(0.0, 3.0, 0.0, 0.0, 0.0, 20.0, 0.0, 1.0, 0.0, 60.0)
+view.post_process(false)
+Canvas.init(160, 120)
+view.render_3d()
+view.screenshot("tmips.png")
+view.present()
+Canvas.clear(Canvas.rgba(0, 0, 0))
+Canvas.Sprite.from_png(FS.read("tmips.png")).draw(0, 0)
+let near = Canvas.get_pixel(80, 119)
+let far = Canvas.get_pixel(80, 48)
+println("size {tex.width()}x{tex.height()}")
+println("near is level 0: {(near & 255) > 200 && ((near >> 8) & 255) < 50}")
+println("far is a given level: {(far & 255) < 50 && ((far >> 8) & 255) > 200}")
+fn err(f) {
+  try {
+    f()
+    'accepted'
+  } catch e {
+    "{e.kind}: {e.message}"
+  }
+}
+println(err(fn () { view.texture_mips([]) }))
+println(err(fn () { view.texture_mips(chain()[..3]) }))
+println(err(fn () { view.texture_mips([level(64, 0, 0), level(16, 0, 0)]) }))
+println(err(fn () { view.texture_mips([level(64, 0, 0), level(32, 0, 0), level(8, 0, 0), level(8, 0, 0),
+                               level(4, 0, 0), level(2, 0, 0), level(1, 0, 0)]) }))
+println(err(fn () { view.texture_mips(5) }))
+println(err(fn () { view.texture_mips([level(1, 0, 0), 5]) }))
+let rect = view.texture_mips([Scene.Image.new(4, 2), Scene.Image.new(2, 1), Scene.Image.new(1, 1)], false)
+println("rect {rect.width()}x{rect.height()}")
+EOF2
+
 # height_fog: a magenta slab seen through white fog. The green channel is the
 # fog's share (magenta has none, white has all). From 3000 m looking straight
 # down at the ground the haze column is thin, so the slab stays magenta; from
@@ -964,6 +1013,14 @@ echo "OK: with no sun() call an unlit surface keeps its colour"
 run_pair pmip "near stays sharp: true" "far is averaged: true" \
   "unknown name keeps the last filter: true"
 echo "OK: point_mipmap keeps near texels sharp and averages far ones"
+run_pair tmips "size 64.0x64.0" "near is level 0: true" "far is a given level: true" \
+  "ValueError: view.texture_mips: levels is empty" \
+  "ValueError: view.texture_mips: a 64x64 texture has 7 levels down to 1x1, got 3" \
+  "ValueError: view.texture_mips: a 64x64 texture has 7 levels down to 1x1, got 2" \
+  "ValueError: view.texture_mips: levels[2] is 8x8, expected 16x16" \
+  "TypeError: view.texture_mips: levels must be an Array of Scene.Image" \
+  "TypeError: view.texture_mips: levels[1] is Long, not a Scene.Image" "rect 4.0x2.0"
+echo "OK: texture_mips samples the levels it is given"
 run_pair hfog "clear without fog: true" "down stays clear: true level hazes: true" \
   "bad arguments keep the fog: true" "falloff 0 is uniform: true" "fog() takes over: true"
 echo "OK: height_fog clears a view from above and hazes a far level one"

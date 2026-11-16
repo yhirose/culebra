@@ -28,6 +28,7 @@
 #define NOUSER  // CloseWindow(), ShowCursor() and the rest of the window API
 #endif
 
+#include <interop/value_args.h>
 #include <interop/wrap.h>
 #include <stdlib/pixel_size.h>
 
@@ -399,7 +400,7 @@ static uint64_t& gl_epoch() {
 // the mipmaps in one place, so two textures born of the same request cannot
 // end up sampling differently.
 static Texture2D configure(Texture2D t, bool mipmaps, bool repeat) {
-  if (mipmaps) GenTextureMipmaps(&t);
+  if (mipmaps && t.mipmaps <= 1) GenTextureMipmaps(&t);   // an upload may carry its own
   SetTextureFilter(t, mipmaps ? TEXTURE_FILTER_TRILINEAR
                               : TEXTURE_FILTER_BILINEAR);
   SetTextureWrap(t, repeat ? TEXTURE_WRAP_REPEAT : TEXTURE_WRAP_CLAMP);
@@ -1593,6 +1594,47 @@ class View {
     t->tex = configure(LoadTextureFromImage(img.im), mipmaps, repeat);
     return t;
   }
+  // Upload mipmap levels the script made, `levels[0]` the full size and each
+  // next one half of it (rounded down, never below 1) down to 1x1: the GPU
+  // samples exactly these, where `texture` averages them itself. A chain that
+  // stops short leaves the texture incomplete, so it is refused, not padded.
+  std::shared_ptr<Texture> texture_mips(culebra::JitListArg levels, bool repeat) {
+    namespace wd = culebra::wrap_detail;
+    if (levels.v.tag != TAG_ARRAY)
+      throw culebra::CulebraError("TypeError", "view.texture_mips: levels must be an Array of Scene.Image", 0, 0);
+    auto* a = reinterpret_cast<JitArray*>(levels.v.data);
+    std::vector<const Image*> im;
+    for (size_t i = 0; i < a->size; i++) {
+      if (!wd::jit_arg_matches<const Image&>(a->items[i]))
+        throw culebra::CulebraError("TypeError",
+            culebra::format("view.texture_mips: levels[{}] is {}, not a Scene.Image", i,
+                            _culebra_tag_name(a->items[i].tag)), 0, 0);
+      im.push_back(wd::jit_handle_self<Image>(a->items[i]));
+    }
+    if (im.empty())
+      throw culebra::CulebraError("ValueError", "view.texture_mips: levels is empty", 0, 0);
+    int w = im[0]->im.width, h = im[0]->im.height;
+    size_t want = 1;
+    for (int x = std::max(w, h); x > 1; x >>= 1) want++;
+    if (im.size() != want)
+      throw culebra::CulebraError("ValueError",
+          culebra::format("view.texture_mips: a {}x{} texture has {} levels down to 1x1, got {}",
+                          w, h, want, im.size()), 0, 0);
+    std::vector<unsigned char> bytes;
+    int lw = w, lh = h;
+    for (size_t i = 0; i < im.size(); i++, lw = std::max(lw / 2, 1), lh = std::max(lh / 2, 1)) {
+      if (im[i]->im.width != lw || im[i]->im.height != lh)
+        throw culebra::CulebraError("ValueError",
+            culebra::format("view.texture_mips: levels[{}] is {}x{}, expected {}x{}", i,
+                            im[i]->im.width, im[i]->im.height, lw, lh), 0, 0);
+      auto* p = static_cast<const unsigned char*>(im[i]->im.data);
+      bytes.insert(bytes.end(), p, p + (size_t)lw * lh * 4);
+    }
+    ::Image all{bytes.data(), w, h, (int)im.size(), PIXELFORMAT_UNCOMPRESSED_R8G8B8A8};
+    auto t = std::make_shared<Texture>();
+    t->tex = configure(LoadTextureFromImage(all), true, repeat);
+    return t;
+  }
   // A PNG's bytes (FS.read, or an Dir.embedded asset) straight to a texture.
   std::shared_ptr<Texture> texture_png(std::string bytes) {
     return texture(*Image::from_png(std::move(bytes)), true, true);
@@ -2484,6 +2526,7 @@ const bool registered = [] {
       .method<&gfx::View::ambient>("ambient", {"intensity", "r", "g", "b"})
       .method<&gfx::View::add_material>("add_material")
       .method<&gfx::View::texture>("texture", {"img", {"mipmaps", true}, {"repeat", true}})
+      .method<&gfx::View::texture_mips>("texture_mips", {"levels", {"repeat", true}})
       .method<&gfx::View::texture_png>("texture_png", {"bytes"})
       .method<&gfx::View::checker>("checker", {"px", "checks", "r1", "g1", "b1", "r2", "g2", "b2"})
       .method<&gfx::View::grain>("grain", {"px", "r", "g", "b", "amt"})
