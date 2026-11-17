@@ -1,21 +1,22 @@
 #!/usr/bin/env bash
-# ci.yml's push `paths-ignore` must be exactly the `none` globs of
-# tools/checks/change_scopes.txt (written as GitHub globs: a trailing `/*`
-# becomes `/**`). Both decide that nothing reads those paths; this keeps the
-# one list the source of both.
+# The push `paths-ignore` of ci.yml and asan.yml must be exactly the `none`
+# globs of tools/checks/change_scopes.txt (written as GitHub globs: a trailing
+# `/*` becomes `/**`). All three decide that nothing reads those paths; this
+# keeps the one list the source of them.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 
 want=$(awk '$1 == "none" { g = $2; sub(/\/\*$/, "/**", g); print g }' \
   tools/checks/change_scopes.txt | sort)
-have=$(sed -n "s/^[[:space:]]*paths-ignore:[[:space:]]*\[\(.*\)\][[:space:]]*$/\1/p" \
-  .github/workflows/ci.yml | tr ',' '\n' | tr -d " '\"" | sed '/^$/d' | sort)
-
-if [ "$want" != "$have" ]; then
-  echo "change-scopes FAIL: ci.yml push paths-ignore differs from the none scope in change_scopes.txt" >&2
-  printf 'change_scopes.txt (none):\n%s\nci.yml paths-ignore:\n%s\n' "$want" "$have" >&2
-  exit 1
-fi
+for wf in ci.yml asan.yml; do
+  have=$(sed -n "s/^[[:space:]]*paths-ignore:[[:space:]]*\[\(.*\)\][[:space:]]*$/\1/p" \
+    ".github/workflows/$wf" | tr ',' '\n' | tr -d " '\"" | sed '/^$/d' | sort)
+  if [ "$want" != "$have" ]; then
+    echo "change-scopes FAIL: $wf push paths-ignore differs from the none scope in change_scopes.txt" >&2
+    printf 'change_scopes.txt (none):\n%s\n%s paths-ignore:\n%s\n' "$want" "$wf" "$have" >&2
+    exit 1
+  fi
+done
 # The classifier decides which checks a change skips, so pin what it says.
 # Each case: the paths of one change, then the scope it must get.
 fail=0

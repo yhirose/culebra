@@ -51,6 +51,18 @@ if [ -n "$(git -C "$main_repo" status --porcelain)" ]; then
   exit 1
 fi
 
+# asan.yml runs on master pushes and nothing waits on it, so a red there (or a
+# run cut short, which on master only a timeout does) is seen only if
+# something shows it: every landing does. A warning, not a stop: the landing at
+# hand is rarely the cause, and gh may be absent or offline.
+asan=$(gh run list --workflow asan.yml --branch master --status completed --limit 1 \
+         --json conclusion,headSha,url \
+         --jq '.[] | select(.conclusion == "failure" or .conclusion == "cancelled")
+                | "\(.conclusion) at \(.headSha[:8]) \(.url)"' 2>/dev/null) || asan=
+if [ -n "$asan" ]; then
+  echo "land: WARNING -- master's latest finished ASan run is not green: $asan" >&2
+fi
+
 rebase_onto_master() {
   if ! git -C "$worktree" rebase master; then
     git -C "$worktree" rebase --abort

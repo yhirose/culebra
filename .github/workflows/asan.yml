@@ -1,0 +1,112 @@
+# The dynamic half of check-gc-hazard: `just asan` builds with ASan+UBSan and
+# runs the embedding smokes, the vm/jit sweep and gc-stress with every slab
+# block handed to malloc, so a value freed under a running call is reported
+# where it is read. It sees the executor and the runtime the JIT calls, which
+# the static check cannot read. Ubuntu only, like ci.yml's linux-assert: the
+# paths it watches are backend-neutral.
+#
+# A workflow of its own, not a ci.yml job, so that nothing waits on it: a cold
+# run is 75-90 min against ci.yml's ~37, and a ci/ branch's verdict would be
+# this job alone. It runs on every master push whose change scope is `full`
+# (tools/checks/change_scopes.txt), one run per commit, so a red names the
+# landing that caused it; `just land` warns while master's latest finished run
+# here is not green. A change to the runtime's memory (Runtime teardown, the
+# GC heap, the slab allocator, a borrowed value) is put through it before
+# landing by hand:
+#   gh workflow run asan.yml --ref ci/<topic>
+name: ASan
+
+on:
+  push:
+    branches: [master]
+    # The `none` scope of tools/checks/change_scopes.txt, as in ci.yml;
+    # check_change_scopes.sh keeps all three equal. The rest of the table
+    # decides in the scope job below.
+    paths-ignore: ['.claude/**', 'CLAUDE.md']
+  workflow_dispatch:
+
+# One group per master commit, as in ci.yml, so every landing keeps its
+# result; a branch's newer dispatch replaces its older one.
+concurrency:
+  group: asan-${{ github.ref }}${{ github.ref == 'refs/heads/master' && format('-{0}', github.sha) || '' }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
+
+env:
+  CULEBRA_REQUIRE_EXPLICIT_ENGINE: "1"
+  # As in ci.yml: an unbounded lineage crowds master's caches out of the quota.
+  CCACHE_MAXSIZE: 300M
+
+jobs:
+  scope:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      scope: ${{ steps.scope.outputs.scope }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          sparse-checkout: |
+            .github/actions/change-scope
+            misc/change_scope.sh
+            tools/checks/change_scopes.txt
+          sparse-checkout-cone-mode: false
+      - id: scope
+        uses: ./.github/actions/change-scope
+        with:
+          token: ${{ github.token }}
+
+  linux-asan:
+    needs: scope
+    if: needs.scope.outputs.scope == 'full'
+    runs-on: ubuntu-24.04
+    # A cold build is ~45 min of it; nothing waits on this run, so the bound
+    # only stops a hang, and a run cut short before its verdict is the waste.
+    timeout-minutes: 120
+    env:
+      CULEBRA_CANVAS_WINDOW_DEFAULT: OFF
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CMAKE_C_COMPILER_LAUNCHER: ccache
+      CMAKE_CXX_COMPILER_LAUNCHER: ccache
+      CULEBRA_GATE_JIT_CACHE: ${{ github.workspace }}/.gate-jit
+      CULEBRA_JIT_CACHE_MAX_MB: "300"
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+
+      - name: Install toolchain
+        uses: ./.github/actions/setup-linux-toolchain
+
+      - name: Restore ccache
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.ccache
+          key: linux-asan-ccache-${{ github.sha }}
+          restore-keys: |
+            linux-asan-ccache-
+
+      # Borrowed from ci.yml's ci-gc, read-only: an object is keyed by its IR
+      # and the backend (CPU, LLVM), not by the binary, so the instrumented
+      # build links what ci-gc compiled. A miss only means compiling cold.
+      - name: Name the runner's CPU
+        id: jitkey
+        uses: ./.github/actions/gate-jit-key
+        with:
+          lane: ci-gc
+
+      - name: Restore JIT object cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ github.workspace }}/.gate-jit
+          key: ${{ steps.jitkey.outputs.prefix }}${{ github.sha }}
+          restore-keys: |
+            ${{ steps.jitkey.outputs.prefix }}
+
+      - name: ASan+UBSan build and sweeps
+        run: just asan -fuse-ld=mold
+
+      - name: Report ccache stats
+        if: always()
+        run: ccache -s || true

@@ -109,6 +109,7 @@ Project rules (culebra):
 | ジョブ数 | 25（masterは`release-diff`を足して26）、合計317ジョブ分 | 2026-11-08。Linux 17、macOS 4、Windows 5 |
 | クリティカルパス | test-macos 37〜39分 | 2026-11-08 |
 | linux-asan（`just asan`） | 70分（ccacheが冷えた状態：ビルド39分、smoke数秒、vm/jit 3.4分、gc-stress 27分）。温まった後は35分で、test-macosが25分だったrunではクリティカルパスになった | 2026-11-16、ci/asan-watch |
+| linux-asanの内訳（冷えた状態） | ビルド38〜51分（preamble_cc 9分、焼き込み4分、main.cc 20分、smoke_suite 17分はculebraの後に直列）、vm/jit 3〜7分、gc-stress 27〜35分。90分の上限で2回打ち切り。`ci.yml`から`asan.yml`（masterへのpushごと、誰も待たない、上限120分）へ移した | 2026-11-17、直近10回のログ |
 | 同時実行の上限 | 20ジョブ、macOS 5 | GitHub Docs。3本重ねたとき、3本目のmacOSジョブは11〜19分待った（2026-11-08） |
 | 安定性 | 直近100回：成功70、失敗10、取り消し18 | 2026-11-08。失敗の原因はばらばら |
 
