@@ -662,7 +662,7 @@ inline bool _jit_object_set_hashed(JitObject* obj, const JitHashedKey& key,
     // dictionary-mode object already keeps key_order eagerly.
     obj->materialize_key_order();
   }
-  auto [it, inserted] = obj->non_string_props->try_put(
+  auto [entry, inserted] = obj->non_string_props->try_put(
       key, JitObjectEntry{val, mut});
   if (inserted) {
     culebra_runtime_value_retain(key.value().tag, key.value().data);
@@ -672,11 +672,11 @@ inline bool _jit_object_set_hashed(JitObject* obj, const JitHashedKey& key,
   // Object-literal construction (`is_init`) overwrites a duplicate key
   // last-wins like the interp's `initialize`; only a post-construction
   // `o[k] = v` (is_init=false) honors the slot's immutable flag.
-  if (!is_init && !it->second.mut)
+  if (!is_init && !entry->second.mut)
     throw culebra::CulebraError("ImmutableError",
                                 "immutable entry on non-String key", line, col);
-  if (is_init) it->second.mut = mut;
-  _jit_replace_value(it->second.value, val.tag, val.data);
+  if (is_init) entry->second.mut = mut;
+  _jit_replace_value(entry->second.value, val.tag, val.data);
   _culebra_value_release_impl(key.value().tag, key.value().data);
   return false;
 }
@@ -972,10 +972,10 @@ inline bool _jit_try_own_slot(JitObject* obj, const char* name, int8_t key_tag,
                               int64_t key_data, int8_t* out_tag,
                               int64_t* out_data, JitValue* unhashable) {
   if (name) return _jit_named_slot(obj, name, out_tag, out_data);
-  auto it = _jit_sidecar_probe(obj, {key_tag, key_data}, unhashable);
-  if (!it) return false;
-  *out_tag = it->second.value.tag;
-  *out_data = it->second.value.data;
+  auto* entry = _jit_sidecar_probe(obj, {key_tag, key_data}, unhashable);
+  if (!entry) return false;
+  *out_tag = entry->second.value.tag;
+  *out_data = entry->second.value.data;
   culebra_runtime_value_retain(*out_tag, *out_data);
   _culebra_value_release_impl(key_tag, key_data);
   return true;

@@ -1797,7 +1797,7 @@ inline JitHashedKey JitHashedKey::of(JitValue v) {
 }
 
 // Move-only owned JitValue for runtime *helper* bodies — the C++-side twin of
-// the codegen `Owned` handle (see the `Owned` struct further down). Releases
+// the codegen `Owned` handle (include/jit/jit.h). Releases
 // its `+1` on scope exit — every exit path, INCLUDING C++ exception unwind —
 // unless `consume()`d (handed to an out-param / return / a sink that takes
 // ownership). The iterator/HOF helpers held raw `JitValue` across a throwing
@@ -1945,23 +1945,7 @@ class JitKeyTable : private Base {
   using entry = std::remove_reference_t<decltype(*std::declval<iterator>())>;
 
   entry* find(const JitHashedKey& k) {
-    if (!JitValueEq::asks(k.value())) return at(Base::find(k));
-  again:
-    if (Base::empty()) return nullptr;  // and maybe no buckets to ask about
-    size_t b = Base::bucket(k);
-    for (auto it = Base::begin(b); it != Base::end(b); ++it) {
-      const JitHashedKey& s = key_of(*it);
-      if (s.hash() != k.hash()) continue;
-      if (JitValueEq::equal<false>(s.value(), k.value())) return &*it;
-      // The stored key is held across its `eq`, which may take it out; an
-      // unmoved version leaves `it` where it was.
-      JitOwnedVal held = JitOwnedVal::from_borrowed(s.value());
-      uint64_t seen = version_;
-      bool same = JitValueEq{}(s.value(), k.value());
-      if (version_ != seen) goto again;
-      if (same) return &*it;
-    }
-    return nullptr;
+    return JitValueEq::asks(k.value()) ? find_asking(k) : at(Base::find(k));
   }
   bool contains(const JitHashedKey& k) { return find(k) != nullptr; }
 
@@ -1969,7 +1953,9 @@ class JitKeyTable : private Base {
   // (std::unordered_map::try_emplace, by key equality); whether it was.
   template <class... Args>
   std::pair<entry*, bool> try_put(const JitHashedKey& k, Args&&... args) {
-    if (auto* e = find(k)) return {e, false};
+    // A key that asks no `eq` is settled by the table's own equality.
+    if (JitValueEq::asks(k.value()))
+      if (auto* e = find_asking(k)) return {e, false};
     // An `eq` the lookup ran may have stored `k` itself: then that is found.
     auto [it, put] = Base::emplace(k, std::forward<Args>(args)...);
     if (put) version_++;
@@ -1987,6 +1973,24 @@ class JitKeyTable : private Base {
   }
 
  private:
+  entry* find_asking(const JitHashedKey& k) {
+  again:
+    if (Base::empty()) return nullptr;  // and maybe no buckets to ask about
+    size_t b = Base::bucket(k);
+    for (auto it = Base::begin(b); it != Base::end(b); ++it) {
+      const JitHashedKey& s = key_of(*it);
+      if (s.hash() != k.hash()) continue;
+      if (JitValueEq::equal<false>(s.value(), k.value())) return &*it;
+      // The stored key is held across its `eq`, which may take it out; an
+      // unmoved version leaves `it` where it was.
+      JitOwnedVal held = JitOwnedVal::from_borrowed(s.value());
+      uint64_t seen = version_;
+      bool same = JitValueEq{}(s.value(), k.value());
+      if (version_ != seen) goto again;
+      if (same) return &*it;
+    }
+    return nullptr;
+  }
   static const JitHashedKey& key_of(const typename Base::value_type& e) {
     if constexpr (std::is_same_v<typename Base::value_type, JitHashedKey>)
       return e;

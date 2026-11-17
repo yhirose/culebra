@@ -3006,7 +3006,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_array_push(JitArray* arr,
 
 // _culebra_structure_equal's half for the entries under non-String keys: the
 // same keys, and equal values. `a` is walked by its key order, read afresh at
-// every step (_jit_each_entry), since looking a key up in `b` can ask its
+// every step, since looking a key up in `b` can ask its
 // `eq` and comparing two values can ask theirs, and either may change both
 // objects. Each step holds what it compares, so neither an `eq` nor the
 // collection it lets run frees it. The entries met are counted against `a`'s
@@ -3026,8 +3026,7 @@ inline bool _culebra_any_key_values_equal(JitObject* a, JitObject* b) {
     met++;
     auto held = JitOwnedVal::from_borrowed(k.value());
     auto x = JitOwnedVal::from_borrowed(entry->value);
-    if (!b->non_string_props) return false;
-    auto* found = b->non_string_props->find(k);
+    auto* found = _jit_sidecar_at(b, k);
     if (!found) return false;
     auto y = JitOwnedVal::from_borrowed(found->second.value);
     if (!_culebra_value_equal(x.borrow().tag, x.borrow().data, y.borrow().tag,

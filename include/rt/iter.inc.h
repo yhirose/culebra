@@ -2262,11 +2262,11 @@ inline bool JitKeySnapshot::value(JitObject* obj, JitArray* keys,
     return _jit_named_slot(obj, reinterpret_cast<const char*>(key.data),
                            out_tag, out_data);
   auto* hs = reinterpret_cast<JitArray*>(hashes.data);
-  auto it = _jit_sidecar_at(
+  auto* entry = _jit_sidecar_at(
       obj, JitHashedKey::restore(key, static_cast<size_t>(hs->items[i].data)));
-  if (!it) return false;
-  *out_tag = it->second.value.tag;
-  *out_data = it->second.value.data;
+  if (!entry) return false;
+  *out_tag = entry->second.value.tag;
+  *out_data = entry->second.value.data;
   culebra_runtime_value_retain(*out_tag, *out_data);
   return true;
 }
@@ -4032,8 +4032,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_object_get_default(
     // An unhashable key raises from the lookup; the key and the fallback
     // are this call's to release on that exit too.
     JitUnwindRelease guard{JitValue{kt, kd}, JitValue{ft, fd}};
-    if (auto it = _jit_sidecar_find(obj, {kt, kd})) {
-      stored = it->second.value;
+    if (auto* entry = _jit_sidecar_find(obj, {kt, kd})) {
+      stored = entry->second.value;
       found = true;
     }
   }
@@ -4078,8 +4078,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_object_get_or_put(
     // this call's to release on that exit too.
     JitUnwindRelease guard{JitValue{kt, kd}, JitValue{it_tag, it_data}};
     hashed = JitHashedKey::of({kt, kd});
-    if (auto iter = _jit_sidecar_at(obj, *hashed)) {
-      stored = iter->second.value;
+    if (auto* entry = _jit_sidecar_at(obj, *hashed)) {
+      stored = entry->second.value;
       found = true;
     }
   }
