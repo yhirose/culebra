@@ -12,8 +12,14 @@
 #include <jit/baked_address.h>  // the object file's no-live-address rule
 #include <stdlib/preamble.h>    // resolve_baked_preamble — which not to lower
 #include <vm/vm.h>
+#include <llvm/IR/ValueMap.h>  // BlockStats (CULEBRA_JIT_BLOCK_STATS)
 
+#include <algorithm>
+#include <cstdlib>
+#include <functional>
+#include <map>
 #include <memory>
+#include <optional>
 #include <string>
 #include <unordered_set>
 #include <vector>
@@ -392,6 +398,108 @@ struct Lowering {
     return fns[0];
   }
 
+  // CULEBRA_JIT_BLOCK_STATS=<n>: for each lowered function of at least n
+  // blocks, which part of the lowering made its blocks (docs/internals/vm.md
+  // §7). A block belongs to the bytecode instruction whose lowering created
+  // it, or to the prologue, the jump targets or the unwind pads; the second
+  // table counts blocks and their instructions by the emitter's block name.
+  class BlockStats {
+   public:
+    static size_t min_blocks() {
+      static const size_t n = [] {
+        const char* v = std::getenv("CULEBRA_JIT_BLOCK_STATS");
+        if (!v) return size_t{0};
+        long k = std::strtol(v, nullptr, 10);
+        return k > 0 ? static_cast<size_t>(k) : size_t{1};
+      }();
+      return n;
+    }
+
+    explicit BlockStats(llvm::Function* fn) : fn_(fn) {}
+
+    // The blocks created from here on belong to `what`.
+    void at(const char* what) {
+      claim();
+      owner_now_ = what;
+    }
+
+    void finish(const std::string& title) {
+      claim();
+      size_t blocks = fn_->size();
+      if (blocks < min_blocks()) return;
+      struct Row {
+        size_t blocks = 0, insts = 0;
+        std::map<std::string, size_t> names;
+      };
+      std::map<std::string, Row> by_owner, by_name;
+      size_t insts = 0;
+      for (auto& bb : *fn_) {
+        std::string name = name_of(bb);
+        auto it = owner_.find(&bb);
+        auto& o = by_owner[it != owner_.end() ? it->second : "?"];
+        ++o.blocks;
+        ++o.names[name];
+        auto& n = by_name[name];
+        ++n.blocks;
+        n.insts += bb.size();
+        insts += bb.size();
+      }
+      auto pct = [&](size_t k) { return 100.0 * k / blocks; };
+      // A table's rows, the largest count first.
+      auto by_count = []<class V>(const std::map<std::string, V>& m,
+                                  auto count) {
+        std::vector<std::pair<std::string, V>> v(m.begin(), m.end());
+        std::ranges::stable_sort(v, std::greater{}, [&](const auto& e) {
+          return std::invoke(count, e.second);
+        });
+        return v;
+      };
+      std::string out = std::format(
+          "[jit-blocks] {}: {} blocks, {} instructions\n"
+          "[jit-blocks]   blocks       %  lowered from      block names\n",
+          title, blocks, insts);
+      for (const auto& [owner, r] : by_count(by_owner, &Row::blocks)) {
+        auto names = by_count(r.names, std::identity{});
+        std::string list;
+        const size_t shown = std::min<size_t>(names.size(), 4);
+        for (size_t k = 0; k < shown; ++k)
+          list += std::format("{}{} {}", k ? ", " : "", names[k].first,
+                              names[k].second);
+        if (names.size() > shown) list += ", ...";
+        out += std::format("[jit-blocks]   {:6} {:6.1f}%  {:<16}  {}\n",
+                           r.blocks, pct(r.blocks), owner, list);
+      }
+      out += "[jit-blocks]   blocks       %  instrs  block name\n";
+      for (const auto& [name, r] : by_count(by_name, &Row::blocks))
+        out += std::format("[jit-blocks]   {:6} {:6.1f}%  {:6}  {}\n",
+                           r.blocks, pct(r.blocks), r.insts, name);
+      std::fputs(out.c_str(), stderr);
+    }
+
+   private:
+    // Blocks are created at the end of the function, so the new ones are
+    // the run after the last one claimed. A ValueMap drops the entry of a
+    // block that is erased (an unreached pad), so a later block the
+    // allocator puts at its address is not taken for a claimed one.
+    void claim() {
+      for (auto it = fn_->end(); it != fn_->begin();)
+        if (!owner_.insert({&*--it, owner_now_}).second) break;
+    }
+
+    // The emitter's name without its trailing number: LLVM's suffix for a
+    // repeated name (`rc.cont123`) or the emitter's own index (`L42`,
+    // `vm.scope.7`).
+    static std::string name_of(const llvm::BasicBlock& bb) {
+      llvm::StringRef s = bb.getName().rtrim("0123456789");
+      s.consume_back(".");
+      return s.empty() ? "(unnamed)" : s.str();
+    }
+
+    llvm::Function* fn_;
+    const char* owner_now_ = "[prologue]";
+    llvm::ValueMap<llvm::BasicBlock*, const char*> owner_;
+  };
+
   // `gen_body` is a generator chunk's body function (lower_program): the
   // chunk is lowered into it rather than into the JitFn. Returns how many
   // words of native scratch its frame needs.
@@ -410,6 +518,8 @@ struct Lowering {
     // scope's slots on the way out), so it always needs a personality.
     if (!c.cleanups.empty()) fn->setPersonalityFn(j.get_personality_fn());
     b.SetInsertPoint(BasicBlock::Create(j.ctx_, "entry", fn));
+    std::optional<BlockStats> stats;
+    if (BlockStats::min_blocks()) stats.emplace(fn);
     // Per-LLVM-function JIT state: one chunk is one function, and a cleanup
     // pad's exception slot must be an alloca in THIS function's entry block.
     j.exc_slot_ = nullptr;
@@ -728,6 +838,7 @@ struct Lowering {
     // fall-through (and the insn after a terminator — dead code a
     // break/continue/return can leave) opens one too, so pass 2 never emits
     // into a terminated block.
+    if (stats) stats->at("[jump targets]");
     std::map<int32_t, BasicBlock*> blocks;
     auto mark = [&](int32_t t) {
       if (t < static_cast<int32_t>(c.code.size()) && !blocks.count(t))
@@ -791,6 +902,7 @@ struct Lowering {
     for (const auto& cu : c.cleanups)
       if (cu.handler != Chunk::kNoHandler)
         mark(static_cast<int32_t>(cu.handler));
+    if (stats) stats->at("[unwind]");
     std::vector<BasicBlock*> pads(c.cleanups.size());
     for (size_t k = 0; k < c.cleanups.size(); ++k)
       pads[k] = BasicBlock::Create(j.ctx_, std::format("vm.scope.{}", k), fn);
@@ -1199,6 +1311,7 @@ struct Lowering {
     // into calls (arith, comparisons, to_bool) attributes exactly as the
     // interp reports.
     for (size_t i = 0; i < c.code.size(); ++i) {
+      if (stats) stats->at(op_name(c.code[i].op));
       if (auto it = blocks.find(static_cast<int32_t>(i)); it != blocks.end()) {
         j.close_block(it->second);
         b.SetInsertPoint(it->second);
@@ -5263,6 +5376,7 @@ struct Lowering {
       }
     }
     j.current_lpad_ = nullptr;
+    if (stats) stats->at("[unwind]");
     auto release_slot_ir = [&](int32_t s, bool as_cell) {
       if (s < 0 || s >= c.num_slots) return;
       if (as_cell)
@@ -5434,6 +5548,14 @@ struct Lowering {
                            depthSlot, slots[cu.caught_slot],
                            blocks.at(static_cast<int32_t>(cu.handler)));
       if (passBB) b.SetInsertPoint(passBB);
+    }
+    if (stats) {
+      std::string who = chunk_idx == 0         ? "main"
+                        : c.multifn_name.empty() ? "fn"
+                                                 : c.multifn_name;
+      auto [line, col] = chunk_pos_at(c, 0);
+      stats->finish(std::format("{} {} ({}:{})", fn->getName().str(), who,
+                                line, col));
     }
     return n_scratch;
   }

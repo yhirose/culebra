@@ -1808,6 +1808,16 @@ clang自身の関数単位の`-O0`と同じ形で、IRのパスは`OptNoneInstru
 ある（kauaiのパーサー、synthの`lower`）。
 `tests/jit_big_function_test.sh`がこの切り分けをIRから読む。
 
+長い関数のブロックが何でできているかは`CULEBRA_JIT_BLOCK_STATS=<n>`で
+読める。LLVM変換が作るnブロック以上の関数ごとに、2つの表をstderrに出す。
+1つ目はブロックを作ったものごとの数で、ブロックを作ったのはそのブロックを
+生んだバイトコード命令の変換か、プロローグ、ジャンプ先、unwindのパッドの
+どれかである。それぞれの下にブロック名を並べる。2つ目はブロック名ごとの
+ブロック数と命令数である。数えるのはパイプラインに入る前の、変換した
+ままのIRで、`--jit -O0 --emit-llvm`が出すものと同じである。277行の関数
+ではunwindのパッドがブロックの4分の1近くを作り、mini-culebra・mini-js・
+mini-lua（`examples/languages/`）の最大の関数では52〜76%を作っていた。
+
 このパイプラインのうち1つのパスはLLVM変換自身のものである。
 4つのrefcountヘルパーはそれぞれガードで始まる — 値の2つは
 `_is_refcounted_value_tag`とnullペイロードに対して、cellの2つは

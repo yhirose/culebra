@@ -15305,7 +15305,7 @@ class Compiler {
   }
 };
 
-inline std::string dump(const Chunk& c) {
+inline const char* op_name(Op op) {
   static constexpr const char* kNames[] = {
       "LoadConst", "Move",      "Take",       "Release",
       "Neg",       "Not",       "Add",        "Sub",          "Mul",
@@ -15351,6 +15351,10 @@ inline std::string dump(const Chunk& c) {
       "Halt",      "MoveRetain", "ReleaseMany",
       "GenStart",  "Yield"};
   static_assert(std::size(kNames) == static_cast<size_t>(Op::Yield) + 1);
+  return kNames[static_cast<size_t>(op)];
+}
+
+inline std::string dump(const Chunk& c) {
   std::string out;
   out += culebra::format("; slots: {}\n", c.num_slots);
   if (!c.capture_src_slots.empty()) {
@@ -15364,8 +15368,7 @@ inline std::string dump(const Chunk& c) {
     const auto& in = c.code[i];
     auto [line, col] = chunk_pos_at(c, i);
     out += culebra::format("{:4}: {:<12} {:4} {:4} {:4} {:4}   ; {}:{}", i,
-                           kNames[static_cast<size_t>(in.op)], in.a, in.b, in.c,
-                           in.d, line, col);
+                           op_name(in.op), in.a, in.b, in.c, in.d, line, col);
     if (auto t = chunk_call_target_at(c, i); t.chunk >= 0 || t.callee_in_cell) {
       if (t.chunk >= 0)
         out += culebra::format(

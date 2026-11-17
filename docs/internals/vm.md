@@ -1931,6 +1931,18 @@ compile once, at build, and the stdlib holds functions past the cut
 (kauai's parser, synth's `lower`). `tests/jit_big_function_test.sh`
 reads the cut off the IR.
 
+What a long function's blocks are made of is read with
+`CULEBRA_JIT_BLOCK_STATS=<n>`: for each function the lowering produces
+with at least n blocks, two tables on stderr. The first counts its blocks
+by what made them — the bytecode instruction whose lowering created the
+block, or the prologue, the jump targets and the unwind pads — with the
+block names under each; the second counts its blocks and their
+instructions by block name. It reads the IR as lowered, before the
+pipeline, which is what `--jit -O0 --emit-llvm` prints. The unwind pads
+made nearly a quarter of the 277-line function's blocks, and 52 to 76% of
+the largest function of mini-culebra, mini-js and mini-lua
+(`examples/languages/`).
+
 One pass of that pipeline is the lowering's own. The four refcount
 helpers each open with a guard — the value pair against
 `_is_refcounted_value_tag` and a null payload, the cell pair against a

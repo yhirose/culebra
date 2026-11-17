@@ -229,3 +229,21 @@ try {
   ev.push("caught")
 }
 assert_eq(ev, ['drop 60', 'drop 61', 'drop 62', 'caught'])
+ev = []
+
+# 10. a statement's temporaries still in flight when a later operand throws:
+# the throw site's own unwind entry releases them, newest first, ahead of the
+# scope's bindings
+fn boom() {
+  throw "x"
+}
+fn in_flight() {
+  let keep = Res.new(90)
+  let n = Res.new(91).id + Res.new(92).id + boom()
+}
+try {
+  in_flight()
+} catch e {
+  ev.push("caught")
+}
+assert_eq(ev, ['drop 92', 'drop 91', 'drop 90', 'caught'])

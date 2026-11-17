@@ -2,7 +2,8 @@
 # The JIT compiles a function past kMaxOptimizedBlocks (include/jit/jit.h)
 # unoptimised: `optnone` + `noinline`, so neither the IR pipeline nor the
 # backend spends superlinear time on it. A program that only computes the same
-# answer either way cannot see the cut go, so this reads the IR.
+# answer either way cannot see the cut go, so this reads the IR — as do the
+# checks below on what a long function's blocks are made of.
 # Usage: <path-to-culebra>
 set -u
 CULEBRA="${1:?usage: jit_big_function_test.sh <culebra-binary>}"
@@ -51,6 +52,28 @@ done
 printf 'fn f(x) { x > 1 ? x * 2 : x + 1 }\nprintln(f(3))\n' > "$TMP/p.cul"
 if emit -O2 | grep -q optnone; then
   echo "FAIL: a small program was compiled optnone"
+  fail=1
+fi
+
+# CULEBRA_JIT_BLOCK_STATS=<n> says which part of the lowering made a long
+# function's blocks (docs/internals/vm.md §7). It counts the IR the pipeline
+# is handed, which -O0 prints as it is, and gives every block an owner.
+cp "$HERE/test_jit_big_function.cul" "$TMP/p.cul"
+CULEBRA_JIT_CACHE=off CULEBRA_JIT_BLOCK_STATS=1 "$CULEBRA" --jit -O0 \
+  --emit-llvm "$TMP/p.cul" > "$TMP/o0.ll" 2> "$TMP/stats.txt"
+awk '
+  /^define/ { n = $0; sub(/\(.*/, "", n); sub(/.*@/, "", n); b = 0; f = 1; next }
+  f && /^}/ { print n, b; f = 0; next }
+  f && /^[A-Za-z0-9_.$"-]+:/ { b++ }' "$TMP/o0.ll" | sort > "$TMP/ir_counts"
+awk '/^\[jit-blocks\] [^ ]+ .*: [0-9]+ blocks/ {
+  for (i = 1; i <= NF; i++) if ($i == "blocks,") print $2, $(i - 1) }' \
+  "$TMP/stats.txt" | sort > "$TMP/stat_counts"
+if [[ ! -s "$TMP/stat_counts" ]] || ! diff "$TMP/ir_counts" "$TMP/stat_counts"; then
+  echo "FAIL: CULEBRA_JIT_BLOCK_STATS counts differ from the -O0 IR's"
+  fail=1
+fi
+if grep -qE '^\[jit-blocks\] +[0-9]+ +[0-9.]+% +\? ' "$TMP/stats.txt"; then
+  echo "FAIL: CULEBRA_JIT_BLOCK_STATS left a block without an owner"
   fail=1
 fi
 
