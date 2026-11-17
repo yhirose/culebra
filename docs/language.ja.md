@@ -5865,6 +5865,13 @@ arguments.`が送出されます（§17の`drop`契約と同じ）。`Function`�
 | `iter()`が`Object`以外を返した | `TypeError: type error: iter() did not return an Object` | iterable式 |
 | イテレータが`has_next` / `next`を欠く | `TypeError: type error: iterator missing has_next()/next()` | iterable式、またはチェーンを駆動した終端 |
 
+組み込みイテレータの`has_next`と`next`には代入できませんが、`remove`で
+取り除いてから新しいものを置けます。イテレータをたどる側は、どの`Object`
+とも同じく、そこにある組を呼びます。`42`を返す`next`
+なら`42`が並び、別のイテレータから読んだ`next`ならそちらを進めます。
+`has_next`を取り除いたまま置き直さなければ、もうイテレータではないので、
+たどると上のエラーになります。
+
 **省略可能な`dispose`**: イテレータが引数なしの`dispose`を持つ場合、
 全exitパス（正常なdrain・`break`・早期`return`・ループを抜ける例外）で
 呼ばれます。例外はどちら側が投げたかを問いません — ループ本体、

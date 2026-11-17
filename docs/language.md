@@ -6129,6 +6129,13 @@ nothing, so that is where the error appears:
 | `iter()` returned a non-`Object` | `TypeError: type error: iter() did not return an Object` | the iterable expression |
 | iterator missing `has_next` or `next` | `TypeError: type error: iterator missing has_next()/next()` | the iterable expression, or the terminal that drove the chain |
 
+A built-in iterator's `has_next` and `next` cannot be assigned, but
+`remove` takes one out and a new one can then be set. Whatever walks the
+iterator calls the pair it finds there, as for any `Object`: a `next`
+that answers `42` is walked as `42`s, and a `next` read from another
+iterator steps that one. With `has_next` removed and not set
+again it is no longer an iterator, and walking it raises the error above.
+
 **Optional `dispose`**: if the iterator has a zero-arity `dispose`, it
 is called on every exit path — normal drain, `break`, early `return`, or
 an exception leaving the loop, whichever side raised it: the loop body,
