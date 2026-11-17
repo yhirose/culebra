@@ -393,12 +393,14 @@ static_assert(sizeof(JitTensor) <= 32 && !std::is_polymorphic_v<JitTensor>);
 
 struct JitClosure;
 
-// Fast-path iterator advance: writes the next value into out-params
-// instead of allocating a `{done, value}` step Object. Set on wrapper
-// Objects by JIT-controlled iterator factories; `_iter_advance_raw`
-// picks it up and skips the user-visible `next()` closure when present.
-using JitIterFastFn = void (*)(JitClosure* /*next_cls*/, bool* /*done*/,
+// A built-in iterator's step: writes the next value into out-params
+// instead of allocating a `{done, value}` step Object. Its state is the
+// captures of the closure stepping it (has_next's or next's).
+using JitIterFastFn = void (*)(JitClosure* /*cls*/, bool* /*done*/,
                                int8_t* /*out_tag*/, int64_t* /*out_data*/);
+// A built-in iterator's step and the has_next / next trampolines over it
+// (rt/iter.inc.h).
+struct JitIterFastOps;
 
 struct JitObjectEntry {
   JitValue value;
@@ -719,7 +721,7 @@ struct JitObject {
   // A handle, its C++ half in `handle` below (see JitHandle). In the same
   // padding as the flags above. Never GEP'd.
   bool has_handle = false;
-  JitIterFastFn fast_next_fn = nullptr;
+  const JitIterFastOps* fast_ops = nullptr;
   // Optional prototype pointer. When set, property lookup falls through
   // to `proto->slots` after this object's own slots are exhausted (one
   // level only — proto chains aren't supported). Class-sugar instances

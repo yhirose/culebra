@@ -285,7 +285,7 @@ inline std::string _jit_class_meta_names(const JitObject* o) {
 //   handle            left behind: likewise
 //   is_gen_frame      left behind: a generator is refused
 //   gen_frame         left behind: likewise
-//   fast_next_fn      left behind: an iterator's, and an iterator is refused
+//   fast_ops          left behind: an iterator's, and an iterator is refused
 //   is_shared_buffer  left behind: a node of its own (SharedBuffer)
 //   is_shared_val     left behind: a node of its own (SharedVal)
 // object-facts: end

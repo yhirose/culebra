@@ -22,12 +22,13 @@ extern "C" {
 // than a full closure body. State for built-in factories lives in
 // JitCells attached to both trampolines; the last two cells are a
 // shared lookahead pair (see `_iter_wrap_new`) that lets `has_next()`
-// peek and `next()` consume without re-pulling from `fast_next_fn`.
+// peek and `next()` consume without re-pulling from the step.
 //
 // Conventions:
 //   - `_iter_advance_raw(has_next_cls, next_cls, iter, out_tag, out_data)`
-//     pulls one value via the cached lookahead when present, otherwise
-//     `fast_next_fn` (or the user's has_next/next pair).
+//     steps the wrapper directly (its cached lookahead first) when handed
+//     the wrapper's own pair; otherwise calls the has_next/next pair it
+//     was handed.
 //   - HOF receivers are borrowed: terminal methods only pull values
 //     (the caller's +1 outlives the call and the caller releases it),
 //     and lazy wrapper factories retain what they store — upstream goes
@@ -286,12 +287,55 @@ inline void _iter_run_step(JitCell* state_cell, Step&& step) {
   step();
 }
 
-// Pull the next value via out-params. For iterators built by
-// `_iter_wrap_source` (i.e. those exposing `fast_next_fn`), consults the
-// lookahead state cells appended by that factory so a prior
-// `has_next()` peek is consumed transparently. For user-defined
-// iterators (no fast_next_fn) calls `has_next()` then `next()` on the
-// user-visible closures.
+// A wrapper built by _iter_wrap_with<F>: its step F, and the trampolines its
+// `has_next` / `next` closures run F through (_iter_fast_ops below).
+struct JitIterFastOps {
+  JitIterFastFn step;
+  JitNativeFn has_next;
+  JitNativeFn next;
+};
+
+// What `next()` on a wrapper does, with `false` for its `nil` past the end:
+// the cached peek if `has_next()` left one, else one step.
+inline bool _iter_la_take(JitClosure* cls, JitIterFastFn step,
+                          int8_t* out_tag, int64_t* out_data) {
+  size_t n = cls->n_captures;
+  JitCell* state_cell = cls->captures[n - 2];
+  if (state_cell->value.data == _ITER_LA_FILLED) {
+    // The cell's +1 transfers to the caller.
+    JitCell* value_cell = cls->captures[n - 1];
+    *out_tag = value_cell->value.tag;
+    *out_data = value_cell->value.data;
+    state_cell->value = {TAG_LONG, _ITER_LA_EMPTY};
+    value_cell->value = {TAG_NIL, 0};
+    return true;
+  }
+  if (state_cell->value.data == _ITER_LA_DRAINED) return false;
+  bool done;
+  step(cls, &done, out_tag, out_data);
+  if (done) state_cell->value = {TAG_LONG, _ITER_LA_DRAINED};
+  return !done;
+}
+
+// Whether stepping `ops` directly is the same as calling `has_next` / `next`:
+// they are its trampolines, over one shared lookahead. A pair that was
+// replaced (`remove` then set), or a `next` taken from another iterator, is
+// called instead. The fn_ptr matches come first: they establish the layout
+// (the lookahead cells last) that the cell compare reads.
+inline bool _iter_fast_walks(const JitIterFastOps& ops,
+                             const JitClosure* has_next,
+                             const JitClosure* next) {
+  return has_next && next &&
+         has_next->fn_ptr == reinterpret_cast<void*>(ops.has_next.entry()) &&
+         next->fn_ptr == reinterpret_cast<void*>(ops.next.entry()) &&
+         has_next->captures[has_next->n_captures - 2] ==
+             next->captures[next->n_captures - 2];
+}
+
+// Pull the next value via out-params. For a wrapper whose own pair is handed
+// in (_iter_fast_walks), steps it directly, consulting the lookahead cells so
+// a prior `has_next()` peek is consumed transparently. Otherwise calls
+// `has_next()` then `next()` on the closures it was handed.
 inline bool _iter_advance_raw(JitClosure* has_next_cls, JitClosure* next_cls,
                               JitValue iter_val,
                               int8_t* out_tag, int64_t* out_data) {
@@ -303,28 +347,9 @@ inline bool _iter_advance_raw(JitClosure* has_next_cls, JitClosure* next_cls,
         return _jit_gen_advance(g, out_tag, out_data);
       }
     }
-    if (iter_obj->fast_next_fn) {
-      size_t n = next_cls->n_captures;
-      JitCell* state_cell = next_cls->captures[n - 2];
-      JitCell* value_cell = next_cls->captures[n - 1];
-      if (state_cell->value.data == _ITER_LA_FILLED) {
-        // Consume the cached peek; ownership of value_cell's +1
-        // transfers to the caller.
-        *out_tag = value_cell->value.tag;
-        *out_data = value_cell->value.data;
-        state_cell->value = {TAG_LONG, _ITER_LA_EMPTY};
-        value_cell->value = {TAG_NIL, 0};
-        return true;
-      }
-      if (state_cell->value.data == _ITER_LA_DRAINED) return false;
-      bool done;
-      iter_obj->fast_next_fn(next_cls, &done, out_tag, out_data);
-      if (done) {
-        state_cell->value = {TAG_LONG, _ITER_LA_DRAINED};
-        return false;
-      }
-      return true;
-    }
+    if (auto* ops = iter_obj->fast_ops;
+        ops && _iter_fast_walks(*ops, has_next_cls, next_cls))
+      return _iter_la_take(next_cls, ops->step, out_tag, out_data);
   }
   // Slow path: user-built iterator. Drive its has_next() / next()
   // closures directly; the user owns any caching they need. A non-iterator
@@ -464,7 +489,6 @@ inline void _iter_trampoline_has_next_fn(JitValue* __ret, JitClosure* cls, int8_
                                          int64_t, int64_t, JitValue*) {
   size_t n = cls->n_captures;
   JitCell* state_cell = cls->captures[n - 2];
-  JitCell* value_cell = cls->captures[n - 1];
   if (state_cell->value.data == _ITER_LA_FILLED) { *__ret = {TAG_BOOL, 1}; return; }
   if (state_cell->value.data == _ITER_LA_DRAINED) { *__ret = {TAG_BOOL, 0}; return; }
   bool done;
@@ -476,7 +500,7 @@ inline void _iter_trampoline_has_next_fn(JitValue* __ret, JitClosure* cls, int8_
     { *__ret = {TAG_BOOL, 0}; return; }
   }
   state_cell->value = {TAG_LONG, _ITER_LA_FILLED};
-  value_cell->value = {tag, data};   // +1 transfers into the cell
+  cls->captures[n - 1]->value = {tag, data};   // +1 transfers into the cell
   { *__ret = {TAG_BOOL, 1}; return; }
 }
 
@@ -487,38 +511,27 @@ inline void _iter_trampoline_has_next_fn(JitValue* __ret, JitClosure* cls, int8_
 template <JitIterFastFn FastFn>
 inline void _iter_trampoline_next_fn(JitValue* __ret, JitClosure* cls, int8_t,
                                      int64_t, int64_t, JitValue*) {
-  size_t n = cls->n_captures;
-  JitCell* state_cell = cls->captures[n - 2];
-  JitCell* value_cell = cls->captures[n - 1];
-  if (state_cell->value.data == _ITER_LA_FILLED) {
-    auto v = value_cell->value;
-    state_cell->value = {TAG_LONG, _ITER_LA_EMPTY};
-    value_cell->value = {TAG_NIL, 0};
-    { *__ret = v; return; }  // +1 transfers to caller
-  }
-  if (state_cell->value.data == _ITER_LA_DRAINED) { *__ret = {TAG_NIL, 0}; return; }
-  bool done;
   int8_t tag;
   int64_t data;
-  FastFn(cls, &done, &tag, &data);
-  if (done) {
-    state_cell->value = {TAG_LONG, _ITER_LA_DRAINED};
-    { *__ret = {TAG_NIL, 0}; return; }
-  }
-  { *__ret = {tag, data}; return; }
+  *__ret = _iter_la_take(cls, FastFn, &tag, &data) ? JitValue{tag, data}
+                                                   : JitValue{TAG_NIL, 0};
 }
 
+template <JitIterFastFn FastFn>
+inline constexpr JitIterFastOps _iter_fast_ops{
+    FastFn, _jit_native<_iter_trampoline_has_next_fn<FastFn>>,
+    _jit_native<_iter_trampoline_next_fn<FastFn>>};
+
 // Build a wrapper Object whose user-visible has_next / next trampoline
-// to `FastFn` (shared lookahead cells) and whose `fast_next_fn` slot
-// exposes `FastFn` directly so `_iter_advance_raw` can take the fast
-// path while still respecting any cached peek.
+// to `FastFn` (shared lookahead cells) and whose `fast_ops` lets
+// `_iter_advance_raw` step `FastFn` directly while it is handed that pair,
+// still respecting any cached peek.
 template <JitIterFastFn FastFn>
 inline JitObject* _iter_wrap_with(std::initializer_list<JitCell*> captures,
                                   size_t n_upstreams) {
-  auto* obj = _iter_wrap_new(_jit_native<_iter_trampoline_has_next_fn<FastFn>>,
-                              _jit_native<_iter_trampoline_next_fn<FastFn>>,
-                              captures, n_upstreams);
-  obj->fast_next_fn = FastFn;
+  constexpr const JitIterFastOps& ops = _iter_fast_ops<FastFn>;
+  auto* obj = _iter_wrap_new(ops.has_next, ops.next, captures, n_upstreams);
+  obj->fast_ops = &ops;
   return obj;
 }
 

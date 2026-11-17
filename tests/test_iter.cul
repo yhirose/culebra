@@ -137,3 +137,39 @@ let err = try {
 }
 assert_true(err.kind == 'ValueError' && err.message.contains('step'))
 
+# §18.5: a built-in iterator whose `has_next` / `next` were removed and set
+# again is walked through what it now holds, as any Object is.
+fn replaced(it, name, f) {
+  it.remove(name)
+  it[name] = f
+  it
+}
+assert_eq(replaced([1, 2, 3].iter(), 'next', || 42).take(4).collect(), [42, 42, 42, 42])
+
+assert_eq(replaced([1, 2].iter().map(|x| x), 'next', || 42).take(4).collect(), [42, 42, 42, 42])
+
+mut rf = []
+for x in replaced([1, 2, 3].iter(), 'next', || 42) {
+  rf.push(x)
+  break if rf.size() == 3
+}
+assert_eq(rf, [42, 42, 42])
+
+assert_eq(replaced([1, 2, 3].iter(), 'has_next', || false).take(4).collect(), [])
+
+# A `next` from another iterator steps that one; `has_next` still peeks this.
+let rb = [7, 8, 9].iter()
+assert_eq(replaced([1, 2, 3].iter(), 'next', rb.next).take(4).collect(), [7, 8, 9, nil])
+
+assert_eq(replaced([1, 2, 3].iter(), 'next', [7, 8, 9].iter()['next']).take(4).collect(), [7, 8, 9, nil])
+
+assert_eq(replaced([1, 2, 3].iter(), 'has_next', [7].iter()['has_next']).take(4).collect(), [1, 2, 3, nil])
+
+# Without `has_next` it is not an iterator, whoever walks it.
+let rx = [1, 2, 3].iter()
+rx.remove('has_next')
+assert_throws('TypeError', || rx.collect(), message: 'type error: iterator missing has_next()/next()')
+
+let ry = [1, 2, 3].iter()
+ry.remove('has_next')
+assert_throws('TypeError', || ry.map(|x| x).collect(), message: 'type error: iterator missing has_next()/next()')

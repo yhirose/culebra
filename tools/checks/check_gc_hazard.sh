@@ -93,7 +93,7 @@ ALLOWED = {
         (1, NO_CODE + ' (trait conformance is a table lookup)'),
     ('R3', 'include/rt/iter.inc.h', '_arr_minmax', 'run_best'):
         (1, 'only a Long, Float or String, none of which a release frees'),
-    ('R3', 'include/rt/iter.inc.h', '_iter_advance_raw', 'state_cell'):
+    ('R3', 'include/rt/iter.inc.h', '_iter_la_take', 'state_cell'):
         (1, GUARDED + ' (an iterator with a fast step)'),
     ('R3', 'include/rt/iter.inc.h', '_iter_flatten_step', 'inner_v'): (1, RUNNING),
     ('R3', 'include/rt/iter.inc.h', '_jit_obj_snapshot_next', 'arr'): (1, RUNNING),
