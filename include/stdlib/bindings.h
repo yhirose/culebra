@@ -3018,7 +3018,7 @@ inline void _jit_file_drop(JitValue* __ret, JitClosure*, int8_t self_tag, int64_
 // an anonymous `File.open(p).lines()` isn't GC'd before the loop runs; the
 // position is the one captured when the iterator was built, which is where the
 // interp's closure reports a step's error too — not the loop that pulls it.
-inline void _file_lines_fast_fn(JitClosure* cls, JitValue, bool* done,
+inline void _file_lines_fast_fn(JitClosure* cls, bool* done,
                                 int8_t* out_tag, int64_t* out_data) {
   int64_t id = cls->captures[1]->value.data;
   std::string out;
@@ -3031,7 +3031,7 @@ inline void _file_lines_fast_fn(JitClosure* cls, JitValue, bool* done,
   *out_tag = TAG_STRING;
   *out_data = reinterpret_cast<int64_t>(_culebra_heap_str(out));
 }
-inline void _file_chunks_fast_fn(JitClosure* cls, JitValue, bool* done,
+inline void _file_chunks_fast_fn(JitClosure* cls, bool* done,
                                  int8_t* out_tag, int64_t* out_data) {
   int64_t id = cls->captures[1]->value.data;
   int64_t n = cls->captures[2]->value.data;
@@ -3134,7 +3134,7 @@ inline JitValue _culebra_file_build_handle(int64_t id) {
 
 // for-in pull: block for the next change. A close (or a stale id) ends the
 // iteration; an interrupt propagates out as the cooperative Interrupted.
-inline void _watch_events_fast_fn(JitClosure* cls, JitValue, bool* done,
+inline void _watch_events_fast_fn(JitClosure* cls, bool* done,
                                   int8_t* out_tag, int64_t* out_data) {
   int64_t id = cls->captures[0]->value.data;
   culebra::fswatch::FsEvent ev;
@@ -3198,7 +3198,7 @@ inline JitValue _culebra_watch_build_handle(int64_t id) {
 
 // Per-step fast-fn for the .lines() iterator: yield each line (newline
 // stripped) until EOF.
-inline void _stdin_lines_fast_fn(JitClosure*, JitValue, bool* done,
+inline void _stdin_lines_fast_fn(JitClosure*, bool* done,
                                  int8_t* out_tag, int64_t* out_data) {
   std::string out;
   if (!culebra::read_stdin_line_interruptible(out)) { *done = true; return; }
@@ -3730,7 +3730,7 @@ inline void _jit_net_sock_read_exact(JitValue* __ret, JitClosure*, int8_t self_t
 // col_cell] — the handle keeps an anonymous `Net.connect(...).lines()` alive,
 // and the captured call site keeps a mid-iteration NetError's position
 // identical to the interp's (which captures it the same way).
-inline void _net_lines_fast_fn(JitClosure* cls, JitValue, bool* done,
+inline void _net_lines_fast_fn(JitClosure* cls, bool* done,
                                int8_t* out_tag, int64_t* out_data) {
   int64_t id = cls->captures[1]->value.data;
   std::string out, err;
@@ -3851,7 +3851,7 @@ inline void _jit_net_listener_accept(JitValue* __ret, JitClosure*, int8_t self_t
 }
 
 // iter() FastFn — an endless accept loop; same captures as lines().
-inline void _net_accept_fast_fn(JitClosure* cls, JitValue, bool* done,
+inline void _net_accept_fast_fn(JitClosure* cls, bool* done,
                                 int8_t* out_tag, int64_t* out_data) {
   int64_t id = cls->captures[1]->value.data;
   int64_t cid = -1;
@@ -7789,7 +7789,7 @@ inline int _ws_receive_blocking(int64_t id, std::string& out) {
 }
 
 // for-in pull: read the next message; close (or a stale id) ends iteration.
-inline void _ws_messages_fast_fn(JitClosure* cls, JitValue, bool* done,
+inline void _ws_messages_fast_fn(JitClosure* cls, bool* done,
                                  int8_t* out_tag, int64_t* out_data) {
   int64_t id = cls->captures[0]->value.data;
   std::string out;
@@ -9430,7 +9430,7 @@ inline JitObject* _xml_events_holder(JitClosure* cls) {
   return reinterpret_cast<JitObject*>(cls->captures[0]->value.data);
 }
 
-inline void _xml_events_fast_fn(JitClosure* cls, JitValue, bool* done,
+inline void _xml_events_fast_fn(JitClosure* cls, bool* done,
                                 int8_t* out_tag, int64_t* out_data) {
   auto* holder = _xml_events_holder(cls);
   auto* st = reinterpret_cast<_XmlEventsState*>(_jit_handle_long(holder, "_ptr"));

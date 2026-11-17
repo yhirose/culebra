@@ -12,7 +12,7 @@ struct JitArray { int64_t refcount; JitValue* items; int64_t size; };
 struct JitSlot { JitValue value; };
 struct JitObject { int64_t refcount; std::vector<JitSlot> slots; };
 using JitFn = void (*)(JitValue*, JitClosure*, int8_t, int64_t, int64_t, JitValue*);
-using JitIterFastFn = void (*)(JitClosure*, JitValue, bool*, int8_t*, int64_t*);
+using JitIterFastFn = void (*)(JitClosure*, bool*, int8_t*, int64_t*);
 
 inline JitValue _jit_invoke(JitClosure* fn, JitValue, int64_t, JitValue*) {
   JitValue r;
@@ -83,7 +83,7 @@ inline void no_running_capture(JitValue* ret, JitClosure* cls, int8_t, int64_t,
   _jit_invoke(reinterpret_cast<JitClosure*>(fv.data), {}, 0, nullptr);
   *ret = fv;
 }
-inline void no_running_capture_fast(JitClosure* cls, JitValue, bool*, int8_t*,
+inline void no_running_capture_fast(JitClosure* cls, bool*, int8_t*,
                                     int64_t* out) {
   JitValue fv = cls->captures[0]->value;
   _jit_invoke(reinterpret_cast<JitClosure*>(fv.data), {}, 0, nullptr);

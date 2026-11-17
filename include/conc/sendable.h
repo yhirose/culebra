@@ -2558,7 +2558,7 @@ inline bool _jit_shared_val_step_impl(JitObject* walk, int64_t at, JitValue* out
 // `view.iter()`: a built-in iterator like an Array's own (so it answers
 // `iter` itself, and a lazy chain pulls it with no call per element). Its
 // captures: [0] the walk's private view, [1] the position.
-inline void _jit_sv_iter_fast_fn(JitClosure* cls, JitValue, bool* done,
+inline void _jit_sv_iter_fast_fn(JitClosure* cls, bool* done,
                                  int8_t* out_tag, int64_t* out_data) {
   auto* at = cls->captures[1];
   JitValue v;

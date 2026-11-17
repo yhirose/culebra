@@ -397,9 +397,8 @@ struct JitClosure;
 // instead of allocating a `{done, value}` step Object. Set on wrapper
 // Objects by JIT-controlled iterator factories; `_iter_advance_raw`
 // picks it up and skips the user-visible `next()` closure when present.
-using JitIterFastFn = void (*)(JitClosure* /*next_cls*/, JitValue /*iter*/,
-                               bool* /*done*/, int8_t* /*out_tag*/,
-                               int64_t* /*out_data*/);
+using JitIterFastFn = void (*)(JitClosure* /*next_cls*/, bool* /*done*/,
+                               int8_t* /*out_tag*/, int64_t* /*out_data*/);
 
 struct JitObjectEntry {
   JitValue value;

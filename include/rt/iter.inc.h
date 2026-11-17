@@ -318,7 +318,7 @@ inline bool _iter_advance_raw(JitClosure* has_next_cls, JitClosure* next_cls,
       }
       if (state_cell->value.data == _ITER_LA_DRAINED) return false;
       bool done;
-      iter_obj->fast_next_fn(next_cls, iter_val, &done, out_tag, out_data);
+      iter_obj->fast_next_fn(next_cls, &done, out_tag, out_data);
       if (done) {
         state_cell->value = {TAG_LONG, _ITER_LA_DRAINED};
         return false;
@@ -460,10 +460,8 @@ inline JitObject* _iter_wrap_new(JitNativeFn has_next_fn, JitNativeFn next_fn,
 // state cells) so a subsequent `next()` can consume the cached value
 // without re-invoking FastFn. Idempotent on repeat calls.
 template <JitIterFastFn FastFn>
-inline void _iter_trampoline_has_next_fn(JitValue* __ret, JitClosure* cls, int8_t iv_tag,
-                                              int64_t iv_data, int64_t,
-                                              JitValue*) {
-  JitValue iv{iv_tag, iv_data};
+inline void _iter_trampoline_has_next_fn(JitValue* __ret, JitClosure* cls, int8_t,
+                                         int64_t, int64_t, JitValue*) {
   size_t n = cls->n_captures;
   JitCell* state_cell = cls->captures[n - 2];
   JitCell* value_cell = cls->captures[n - 1];
@@ -472,7 +470,7 @@ inline void _iter_trampoline_has_next_fn(JitValue* __ret, JitClosure* cls, int8_
   bool done;
   int8_t tag;
   int64_t data;
-  FastFn(cls, iv, &done, &tag, &data);
+  FastFn(cls, &done, &tag, &data);
   if (done) {
     state_cell->value = {TAG_LONG, _ITER_LA_DRAINED};
     { *__ret = {TAG_BOOL, 0}; return; }
@@ -487,10 +485,8 @@ inline void _iter_trampoline_has_next_fn(JitValue* __ret, JitClosure* cls, int8_
 // Calling next() past end yields nil; the contract advises pairing
 // with has_next() to avoid that case.
 template <JitIterFastFn FastFn>
-inline void _iter_trampoline_next_fn(JitValue* __ret, JitClosure* cls, int8_t iv_tag,
-                                          int64_t iv_data, int64_t,
-                                          JitValue*) {
-  JitValue iv{iv_tag, iv_data};
+inline void _iter_trampoline_next_fn(JitValue* __ret, JitClosure* cls, int8_t,
+                                     int64_t, int64_t, JitValue*) {
   size_t n = cls->n_captures;
   JitCell* state_cell = cls->captures[n - 2];
   JitCell* value_cell = cls->captures[n - 1];
@@ -504,7 +500,7 @@ inline void _iter_trampoline_next_fn(JitValue* __ret, JitClosure* cls, int8_t iv
   bool done;
   int8_t tag;
   int64_t data;
-  FastFn(cls, iv, &done, &tag, &data);
+  FastFn(cls, &done, &tag, &data);
   if (done) {
     state_cell->value = {TAG_LONG, _ITER_LA_DRAINED};
     { *__ret = {TAG_NIL, 0}; return; }
@@ -537,10 +533,10 @@ inline JitObject* _iter_wrap_source(std::initializer_list<JitCell*> captures) {
 // `FastFn` run as one step (_iter_run_step): the state cell is the one the
 // closure stepping it (has_next's or next's) shares.
 template <JitIterFastFn FastFn>
-inline void _iter_guarded_fast_fn(JitClosure* cls, JitValue iv, bool* done,
+inline void _iter_guarded_fast_fn(JitClosure* cls, bool* done,
                                   int8_t* out_tag, int64_t* out_data) {
   _iter_run_step(cls->captures[cls->n_captures - 2],
-                 [&] { FastFn(cls, iv, done, out_tag, out_data); });
+                 [&] { FastFn(cls, done, out_tag, out_data); });
 }
 
 // The wrapper for a step that can run the program's code (a callback, an
@@ -1087,7 +1083,7 @@ inline void _iter_publish_call_site(JitClosure* cls) {
 // through chained wrappers so a deep map/filter/take stack pays zero
 // step-object allocations per iteration. Upstream's `next` closure is
 // cached at factory time in captures[2] to drop the per-step map::find.
-inline void _iter_map_fast_fn(JitClosure* cls, JitValue, bool* done,
+inline void _iter_map_fast_fn(JitClosure* cls, bool* done,
                               int8_t* out_tag, int64_t* out_data) {
   auto upstream = cls->captures[0]->value;
   auto fnv = cls->captures[1]->value;
@@ -1121,7 +1117,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_iter_map(
 }
 
 // filter: captures upstream + predicate + cached upstream next.
-inline void _iter_filter_fast_fn(JitClosure* cls, JitValue, bool* done,
+inline void _iter_filter_fast_fn(JitClosure* cls, bool* done,
                                  int8_t* out_tag, int64_t* out_data) {
   auto upstream = cls->captures[0]->value;
   auto fnv = cls->captures[1]->value;
@@ -1168,7 +1164,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_iter_filter(
 
 // take: captures upstream + remaining (Long cell, decremented each step)
 //       + cached upstream next closure.
-inline void _iter_take_fast_fn(JitClosure* cls, JitValue, bool* done,
+inline void _iter_take_fast_fn(JitClosure* cls, bool* done,
                                int8_t* out_tag, int64_t* out_data) {
   auto* rem_cell = cls->captures[1];
   if (rem_cell->value.data <= 0) {
@@ -1203,7 +1199,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_iter_take(
 }
 
 // skip: captures upstream + remaining-to-skip + cached upstream next.
-inline void _iter_skip_fast_fn(JitClosure* cls, JitValue, bool* done,
+inline void _iter_skip_fast_fn(JitClosure* cls, bool* done,
                                int8_t* out_tag, int64_t* out_data) {
   auto* rem_cell = cls->captures[1];
   auto upstream = cls->captures[0]->value;
@@ -1240,7 +1236,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_iter_skip(
 
 // take_while: captures upstream + predicate + stopped flag + cached upstream
 // next.
-inline void _iter_take_while_fast_fn(JitClosure* cls, JitValue, bool* done,
+inline void _iter_take_while_fast_fn(JitClosure* cls, bool* done,
                                      int8_t* out_tag, int64_t* out_data) {
   auto* stopped_cell = cls->captures[2];
   if (stopped_cell->value.data) {
@@ -1294,7 +1290,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_iter_take_while(
 // skip_while: captures upstream + predicate + "still skipping" flag + cached
 // upstream next. Once the predicate rejects an element, the flag clears and
 // every later step forwards blindly without calling the predicate again.
-inline void _iter_skip_while_fast_fn(JitClosure* cls, JitValue, bool* done,
+inline void _iter_skip_while_fast_fn(JitClosure* cls, bool* done,
                                      int8_t* out_tag, int64_t* out_data) {
   auto* skipping_cell = cls->captures[2];
   auto upstream = cls->captures[0]->value;
@@ -1352,7 +1348,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_iter_skip_while(
 // chunks: captures upstream + size + cached upstream next. Each step pulls
 // up to `size` values into a fresh Array (the last chunk may be shorter);
 // stops once a pull yields nothing.
-inline void _iter_chunks_fast_fn(JitClosure* cls, JitValue, bool* done,
+inline void _iter_chunks_fast_fn(JitClosure* cls, bool* done,
                                  int8_t* out_tag, int64_t* out_data) {
   int64_t size = cls->captures[1]->value.data;
   auto upstream = cls->captures[0]->value;
@@ -1395,7 +1391,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_iter_chunks(
 // window's elements) + cached upstream next. Each step tops the buffer up
 // to `size`, copies it out as a fresh Array, then drops the buffer's
 // oldest element so the next step slides by one.
-inline void _iter_windows_fast_fn(JitClosure* cls, JitValue, bool* done,
+inline void _iter_windows_fast_fn(JitClosure* cls, bool* done,
                                   int8_t* out_tag, int64_t* out_data) {
   int64_t size = cls->captures[1]->value.data;
   auto* buf = reinterpret_cast<JitArray*>(cls->captures[2]->value.data);
@@ -1444,7 +1440,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_iter_windows(
 }
 
 // enumerate: captures upstream + index + cached upstream next.
-inline void _iter_enumerate_fast_fn(JitClosure* cls, JitValue, bool* done,
+inline void _iter_enumerate_fast_fn(JitClosure* cls, bool* done,
                                     int8_t* out_tag, int64_t* out_data) {
   auto upstream = cls->captures[0]->value;
   auto* idx_cell = cls->captures[1];
@@ -1480,7 +1476,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_iter_enumerate(
 }
 
 // chain: captures iter1 + iter2 + phase + has_next/next pair for each.
-inline void _iter_chain_fast_fn(JitClosure* cls, JitValue, bool* done,
+inline void _iter_chain_fast_fn(JitClosure* cls, bool* done,
                                 int8_t* out_tag, int64_t* out_data) {
   auto* phase_cell = cls->captures[2];
   auto* h1 = reinterpret_cast<JitClosure*>(cls->captures[3]->value.data);
@@ -1685,7 +1681,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_iter_chain(
 }
 
 // zip: captures iter1 + iter2 + has_next/next pair for each.
-inline void _iter_zip_fast_fn(JitClosure* cls, JitValue, bool* done,
+inline void _iter_zip_fast_fn(JitClosure* cls, bool* done,
                               int8_t* out_tag, int64_t* out_data) {
   auto up1 = cls->captures[0]->value;
   auto up2 = cls->captures[1]->value;
@@ -1731,7 +1727,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_iter_zip(
 // String lazily — one decode per next() step — mirroring the interp
 // behaviour in `string_builtins()`.
 
-inline void _iter_code_points_fast_fn(JitClosure* cls, JitValue, bool* done,
+inline void _iter_code_points_fast_fn(JitClosure* cls, bool* done,
                                       int8_t* out_tag, int64_t* out_data) {
   auto buf_cell = cls->captures[0];
   auto off_cell = cls->captures[1];
@@ -1774,7 +1770,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_str_code_points(
 // String.bytes(): yields the receiver's raw UTF-8 bytes as Long (0-255), one
 // byte per step — no decoding, unlike code_points. Mirrors the interp's
 // `bytes` entry in string_builtins().
-inline void _iter_bytes_fast_fn(JitClosure* cls, JitValue, bool* done,
+inline void _iter_bytes_fast_fn(JitClosure* cls, bool* done,
                                  int8_t* out_tag, int64_t* out_data) {
   auto buf_cell = cls->captures[0];
   auto off_cell = cls->captures[1];
@@ -1806,7 +1802,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_str_bytes(
 // Like code_points, but yields each scalar as a 1-scalar StringView into
 // the source buffer — matches interp's `s.iter()` (type StringView, zero
 // copy). Invalid bytes yield as one-byte views (docs §17.1).
-inline void _iter_str_scalars_fast_fn(JitClosure* cls, JitValue, bool* done,
+inline void _iter_str_scalars_fast_fn(JitClosure* cls, bool* done,
                                       int8_t* out_tag, int64_t* out_data) {
   auto buf_cell = cls->captures[0];
   auto off_cell = cls->captures[1];
@@ -1900,7 +1896,7 @@ inline void _grapheme_window_extend(const char* s, int64_t src_len,
   src_off_cell->value.data = src_off;
 }
 
-inline void _iter_graphemes_fast_fn(JitClosure* cls, JitValue, bool* done,
+inline void _iter_graphemes_fast_fn(JitClosure* cls, bool* done,
                                     int8_t* out_tag, int64_t* out_data) {
   auto* buf_cell = cls->captures[0];
   auto* src_len_cell = cls->captures[1];
@@ -1994,7 +1990,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_str_graphemes(
 // `Intl.Segmenter` `isWordLike` use. Streaming shape mirrors `graphemes`
 // above — see its comment for the windowing rationale; `_grapheme_window_
 // extend` is boundary-agnostic so it is reused as-is.
-inline void _iter_words_fast_fn(JitClosure* cls, JitValue, bool* done,
+inline void _iter_words_fast_fn(JitClosure* cls, bool* done,
                                 int8_t* out_tag, int64_t* out_data) {
   auto* buf_cell = cls->captures[0];
   auto* src_len_cell = cls->captures[1];
@@ -2083,7 +2079,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_str_words(
 // zero-copy StringViews — one sentence per step, trailing whitespace stays
 // attached to the sentence before it. Identical shape to `graphemes`
 // above, just a different boundary predicate.
-inline void _iter_sentences_fast_fn(JitClosure* cls, JitValue, bool* done,
+inline void _iter_sentences_fast_fn(JitClosure* cls, bool* done,
                                     int8_t* out_tag, int64_t* out_data) {
   auto* buf_cell = cls->captures[0];
   auto* src_len_cell = cls->captures[1];
@@ -2157,7 +2153,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_str_sentences(
 
 // Wrap a JitArray as a one-shot iterator Object. Used to drive
 // flat_map callbacks that return Arrays.
-inline void _iter_from_array_fast_fn(JitClosure* cls, JitValue, bool* done,
+inline void _iter_from_array_fast_fn(JitClosure* cls, bool* done,
                                      int8_t* out_tag, int64_t* out_data) {
   auto arr_cell = cls->captures[0];
   auto idx_cell = cls->captures[1];
@@ -2318,9 +2314,8 @@ extern "C" {
 
 // Object for-in / .iter() fast fn — yields `(key, value)` tuples. The key
 // gets a fresh +1 for the tuple (the snapshot array keeps its own).
-inline void _iter_from_object_pairs_fast_fn(JitClosure* cls, JitValue,
-                                            bool* done, int8_t* out_tag,
-                                            int64_t* out_data) {
+inline void _iter_from_object_pairs_fast_fn(JitClosure* cls, bool* done,
+                                            int8_t* out_tag, int64_t* out_data) {
   JitValue key;
   int8_t vt;
   int64_t vd;
@@ -2346,9 +2341,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_object_iter(
 }
 
 // Object.values() fast fn — the value-only view of the pairs iterator.
-inline void _iter_from_object_values_fast_fn(JitClosure* cls, JitValue,
-                                             bool* done, int8_t* out_tag,
-                                             int64_t* out_data) {
+inline void _iter_from_object_values_fast_fn(JitClosure* cls, bool* done,
+                                             int8_t* out_tag, int64_t* out_data) {
   JitValue key;
   *done = !_jit_obj_snapshot_next(cls, &key, out_tag, out_data);
 }
@@ -2450,7 +2444,7 @@ extern "C" {
 // then a packed (line << 32 | col) cell for error reporting when the callback
 // yields a non-iterable. The inner has_next/next pair is refreshed per element,
 // as fn() returns a new iterable each time.
-inline void _iter_flat_map_fast_fn(JitClosure* cls, JitValue, bool* done,
+inline void _iter_flat_map_fast_fn(JitClosure* cls, bool* done,
                                    int8_t* out_tag, int64_t* out_data) {
   auto* fn_cls = reinterpret_cast<JitClosure*>(cls->captures[6]->value.data);
   auto [line, col] = _iter_unpack_pos(cls->captures[7]);
@@ -2490,7 +2484,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_iter_flat_map(
 
 // flatten: flat_map's shape without the callback — the upstream element IS the
 // inner iterable. The six shared cells, then the packed line|col.
-inline void _iter_flatten_fast_fn(JitClosure* cls, JitValue, bool* done,
+inline void _iter_flatten_fast_fn(JitClosure* cls, bool* done,
                                   int8_t* out_tag, int64_t* out_data) {
   auto [line, col] = _iter_unpack_pos(cls->captures[6]);
   _iter_flatten_step(_iter_flatten_cells(cls), done, out_tag, out_data,
@@ -2516,7 +2510,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_iter_flatten(
 
 // scan: threads an accumulator cell, yielding f(acc, x) each step. The cell
 // owns the running value, so each update releases the previous one.
-inline void _iter_scan_fast_fn(JitClosure* cls, JitValue, bool* done,
+inline void _iter_scan_fast_fn(JitClosure* cls, bool* done,
                                int8_t* out_tag, int64_t* out_data) {
   auto upstream = cls->captures[0]->value;
   auto fnv = cls->captures[1]->value;
@@ -2565,7 +2559,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_iter_scan(
 // distinct: a Set cell records what has been yielded. set_add absorbs the
 // value's +1 on insert and releases it on a duplicate, so a hit needs its
 // own retain for the yield.
-inline void _iter_distinct_fast_fn(JitClosure* cls, JitValue, bool* done,
+inline void _iter_distinct_fast_fn(JitClosure* cls, bool* done,
                                    int8_t* out_tag, int64_t* out_data) {
   auto upstream = cls->captures[0]->value;
   auto* seen = reinterpret_cast<JitSet*>(cls->captures[1]->value.data);
@@ -2606,7 +2600,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_iter_distinct(
 }
 
 // tap: run the callback for its side effect, pass the element through.
-inline void _iter_tap_fast_fn(JitClosure* cls, JitValue, bool* done,
+inline void _iter_tap_fast_fn(JitClosure* cls, bool* done,
                               int8_t* out_tag, int64_t* out_data) {
   auto upstream = cls->captures[0]->value;
   auto fnv = cls->captures[1]->value;
@@ -2645,7 +2639,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_iter_tap(
 
 // step_by: yield the first element, then discard step-1 before each later
 // one. The "started" cell distinguishes the first pull from the rest.
-inline void _iter_step_by_fast_fn(JitClosure* cls, JitValue, bool* done,
+inline void _iter_step_by_fast_fn(JitClosure* cls, bool* done,
                                   int8_t* out_tag, int64_t* out_data) {
   auto upstream = cls->captures[0]->value;
   int64_t step = cls->captures[1]->value.data;
@@ -2693,7 +2687,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_iter_step_by(
 // terminal, which hashes everything into one bucket per key). The element
 // that ended the previous run is parked in `held` so the next step starts
 // from what it already pulled.
-inline void _iter_chunk_by_fast_fn(JitClosure* cls, JitValue, bool* done,
+inline void _iter_chunk_by_fast_fn(JitClosure* cls, bool* done,
                                    int8_t* out_tag, int64_t* out_data) {
   auto upstream = cls->captures[0]->value;
   auto fnv = cls->captures[1]->value;
@@ -2769,7 +2763,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitObject* culebra_runtime_iter_chunk_by(
 // RangeBounds (range_bounds.h), which owns the sequence semantics shared
 // with the interpreter and mirrored by the counted-range loop the JIT
 // emits (compile_for_counted_range).
-inline void _math_range_fast_fn(JitClosure* cls, JitValue, bool* done,
+inline void _math_range_fast_fn(JitClosure* cls, bool* done,
                                 int8_t* out_tag, int64_t* out_data) {
   auto* current_cell = cls->captures[0];
   auto* exhausted_cell = cls->captures[4];
@@ -2881,7 +2875,7 @@ inline culebra::RangeBounds _grid_bounds_from_range(int8_t t, int64_t d,
 // cursor and a mutable y cursor, mirroring the interp's _iter_over_grid
 // state machine field-for-field so both lanes walk the
 // identical sequence at the int64 boundary.
-inline void _grid_fast_fn(JitClosure* cls, JitValue, bool* done,
+inline void _grid_fast_fn(JitClosure* cls, bool* done,
                           int8_t* out_tag, int64_t* out_data) {
   auto* xt_start = cls->captures[0];
   auto* xt_end = cls->captures[1];
