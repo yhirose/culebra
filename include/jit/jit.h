@@ -4876,10 +4876,10 @@ struct JIT {
   // own field of an Object whose shape the site's cache knows is read and
   // retained inline; everything else — a Function to bind or a getter, a
   // proto's field, a miss, a non-Object — is one call to prop_value, the
-  // executor's own read. `.name`/`.params`/`.return_type` keep
-  // emit_property_get's fn_mode, whose view is already a +1, and
-  // getter_or_value. The 16-byte results come back through emit_value_call
-  // (the Win64 sret ABI).
+  // executor's own read. `.name`/`.params`/`.return_type` on a Function are
+  // its own metadata (fn_introspect_get, a fresh value); on anything else
+  // they are names like any other, as in the executor. The 16-byte results
+  // come back through emit_value_call (the Win64 sret ABI).
   llvm::Value* emit_property_value(llvm::Value* receiver,
                                    const std::string& name) {
     auto i8Ty = builder_.getInt8Ty();
@@ -4887,23 +4887,30 @@ struct JIT {
     auto ptrTy = llvm::PointerType::get(ctx_, 0);
     auto tag = extract_tag(receiver);
     auto data = extract_data(receiver);
-    if (fn_introspection_name(name)) {
-      auto view = emit_property_get(receiver, name);
-      emit_set_op_pos();  // a getter's entry site
-      return emit_value_call(
-          module_->getOrInsertFunction(rt::getter_or_value, valueType_, i8Ty,
-                                       i64Ty, i8Ty, i64Ty, ptrTy),
-          {tag, data, extract_tag(view), extract_data(view),
-           get_or_create_global_str(name, ".getter.key")},
-          "getter.or.value");
-    }
     auto* fn = builder_.GetInsertBlock()->getParent();
+    auto mergeBB = llvm::BasicBlock::Create(ctx_, "pval.merge", fn);
+    OwnedPhi merge(this, "pval.value");
+    if (fn_introspection_name(name)) {
+      auto introBB = llvm::BasicBlock::Create(ctx_, "pval.fn", fn);
+      auto readBB = llvm::BasicBlock::Create(ctx_, "pval.read", fn);
+      builder_.CreateCondBr(
+          builder_.CreateICmpEQ(tag, builder_.getInt8(TAG_FUNC)), introBB,
+          readBB);
+      builder_.SetInsertPoint(introBB);
+      merge.add_incoming(emit_value_call(
+          module_->getOrInsertFunction(rt::fn_introspect_get, valueType_,
+                                       ptrTy, ptrTy),
+          {builder_.CreateIntToPtr(data, ptrTy),
+           get_or_create_global_str(name, ".fn.prop")},
+          "fn.intro"));
+      builder_.CreateBr(mergeBB);
+      builder_.SetInsertPoint(readBB);
+    }
     auto [icTy, icGlobal] = emit_prop_ic_global();
     auto objBB = llvm::BasicBlock::Create(ctx_, "pval.obj", fn);
     auto ownBB = llvm::BasicBlock::Create(ctx_, "pval.own", fn);
     auto plainBB = llvm::BasicBlock::Create(ctx_, "pval.plain", fn);
     auto slowBB = llvm::BasicBlock::Create(ctx_, "pval.slow", fn);
-    auto mergeBB = llvm::BasicBlock::Create(ctx_, "pval.merge", fn);
     builder_.CreateCondBr(
         builder_.CreateICmpEQ(tag, builder_.getInt8(TAG_OBJECT)), objBB,
         slowBB);
@@ -4916,7 +4923,6 @@ struct JIT {
     builder_.CreateCondBr(
         builder_.CreateICmpEQ(ownTag, builder_.getInt8(TAG_FUNC)), slowBB,
         plainBB);
-    OwnedPhi merge(this, "pval.value");
     builder_.SetInsertPoint(plainBB);
     auto field = make_value(ownTag, ownData);
     emit_value_retain(field);

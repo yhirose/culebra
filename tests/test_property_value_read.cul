@@ -64,3 +64,32 @@ while n < 100 {
   n += 1
 }
 assert_eq(GC.refcount(inner) - base, 0)
+
+# `name`, `params` and `return_type` are a Function's own metadata, and on
+# anything else names like any other: a method of that name comes back bound,
+# an own Function field too, and a getter of that name fires.
+class N {
+  new() {
+    self.v = 3
+  }
+  name() {
+    self.v
+  }
+}
+class G {
+  get name() {
+    [1][3]
+  }
+}
+fn read_name(o) {
+  o.name
+}
+assert_eq(read_name(N.new())(), 3)
+assert_eq(type_of(read_name({name: fn () { self }})()), 'Object')
+assert_eq(read_name(read_name), 'read_name')
+let gm = try {
+  read_name(G.new())
+} catch e {
+  e.message
+}
+assert_eq(gm, 'index out of range')

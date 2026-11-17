@@ -799,7 +799,6 @@ inline constexpr auto recursion_enter     = "culebra_runtime_recursion_enter";
 inline constexpr auto recursion_leave     = "culebra_runtime_recursion_leave";
 inline constexpr auto recursion_depth     = "culebra_runtime_recursion_depth";
 inline constexpr auto recursion_restore   = "culebra_runtime_recursion_restore";
-inline constexpr auto getter_or_value     = "culebra_runtime_getter_or_value";
 inline constexpr auto param_pos           = "culebra_runtime_param_pos";
 inline constexpr auto type_check_param    = "culebra_runtime_type_check_param";
 // Trailing underscore on `throw_` dodges C++ keyword collision.

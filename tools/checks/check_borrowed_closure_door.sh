@@ -44,7 +44,7 @@ door_gate.require_scanner(
 COUNTED = {
     'include/cli/test_engine.h': 1,
     'include/conc/sendable.h': 8,
-    'include/rt/dispatch.inc.h': 12,
+    'include/rt/dispatch.inc.h': 11,
     'include/rt/fixed.inc.h': 2,
     'include/rt/iter.inc.h': 52,
     'include/rt/mem.inc.h': 3,

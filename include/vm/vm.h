@@ -252,12 +252,12 @@ enum class Op : uint8_t {
                // non-Object receiver falls through silently — PropSet's
                // receiver gate reports it, same observable order.
   PropVal,     // regs[a] = property consts[c] of regs[b], read AS A VALUE
-               // (+1) — a bare `x.name`, the JIT's non-call DOT arm. The
-               // resolve is emit_property_get's (function introspection on a
-               // Function receiver, own slot then proto on an Object, a
-               // container's miss as nil, a scalar's TypeError), then
-               // bind_method_value / getter_or_value: a function-valued
-               // property comes back bound to its receiver, a getter fires.
+               // (+1) — a bare `x.name`, the JIT's non-call DOT arm. Function
+               // introspection on a Function receiver, otherwise
+               // culebra_runtime_prop_value (own slot then proto on an
+               // Object, a container's miss as nil, a scalar's TypeError,
+               // then bind_method_value): a function-valued property comes
+               // back bound to its receiver, a getter fires.
                // Stamped at the chain head, both backends' anchor for the
                // read's errors.
   BareMethChk, // the bare built-in method reject: when regs[a] is nil, let

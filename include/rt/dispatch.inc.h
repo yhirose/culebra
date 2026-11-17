@@ -2242,31 +2242,6 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_self_merge(
   return v;
 }
 
-// The `.name` / `.params` / `.return_type` value-read path skips
-// bind_method_value (those names are function-introspection on a TAG_FUNC
-// receiver, whose resolved `view` is a fresh +1-owned result, not a borrowed
-// method to bind). But on a class instance those same names may be getters, so
-// fire them here. `view` is +1 OWNED (emit_property_get's fn_mode retains
-// the object path too), so on the getter branch release the owned method view
-// after invoking; on the pass-through branch return it unchanged (ownership
-// flows to the caller, which does own(view) with no extra retain).
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_getter_or_value(
-    int8_t recv_tag, int64_t recv_data, int8_t view_tag, int64_t view_data,
-    const char* key) {
-  if (view_tag == TAG_FUNC && recv_tag == TAG_OBJECT) {
-    auto* obj = reinterpret_cast<JitObject*>(recv_data);
-    if (obj->proto() && obj->find_slot(key) == static_cast<size_t>(-1)) {
-      auto* method = reinterpret_cast<JitClosure*>(view_data);
-      if (method->flags & JIT_CLOSURE_GETTER) {
-        JitValue r = _jit_invoke_getter(method, recv_tag, recv_data);
-        _culebra_value_release_impl(view_tag, view_data);  // drop owned view
-        return r;
-      }
-    }
-  }
-  return {view_tag, view_data};
-}
-
 // A `**` operand must be an Object keyed only by Strings, with entries of its
 // own: the TypeError message for one that is not, or "". Every keyword binder
 // checks this before reading an operand's entries (a handle's slots are its
