@@ -17216,6 +17216,12 @@ struct Exec {
             break;
           }
           JitPropIC ic{};
+          if (in.op == Op::PropVal && in.d == 0) {
+            regs[in.a] = culebra_runtime_prop_value(
+                static_cast<int8_t>(recv.tag), recv.data, key, &ic, line, col);
+            ++ip;
+            break;
+          }
           JitValue view = culebra_runtime_prop_get(
               static_cast<int8_t>(recv.tag), recv.data, key, &ic, line, col,
               /*own_receiver=*/false);
@@ -17225,7 +17231,7 @@ struct Exec {
             _culebra_value_retain_impl(static_cast<int8_t>(view.tag),
                                          view.data);
             regs[in.a] = view;
-          } else if (in.d != 0) {
+          } else {
             // The compiler read this field's type off the receiver's declared
             // class; a value that disagrees means the receiver is not the
             // instance it claimed to be. The JIT asks the same question at
@@ -17235,12 +17241,6 @@ struct Exec {
               culebra_runtime_field_type_reject(static_cast<int8_t>(in.d), key,
                                                 line, col);
             regs[in.a] = view;
-          } else {
-            if (view.tag == TAG_FUNC && recv.tag == TAG_OBJECT)
-              culebra_runtime_set_op_pos(line, col);  // a getter's entry site
-            regs[in.a] = culebra_runtime_bind_method_value(
-                static_cast<int8_t>(recv.tag), recv.data,
-                static_cast<int8_t>(view.tag), view.data, key);
           }
           ++ip;
           break;

@@ -1628,8 +1628,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_object_get_ic(
 // handle) strands that +1 when this cold path throws — a dropped Shared view's
 // ClosedError, a closed namespace's AttributeError, a corrupt-view ValueError,
 // or the scalar TypeError. All of those are DIRECT errors (no user dispatch:
-// a getter is invoked later in emit_property_value_read, where the receiver
-// rides the unwind-temp window), so this helper is the sole releaser on the
+// a getter is invoked later, in bind_method_value, with the receiver
+// borrowed), so this helper is the sole releaser on the
 // unwind edge. Callers that merely borrow the receiver (compound-assign
 // intermediates, the iterator protocol) pass false. The fast inline path never
 // reaches here, so the gate costs the cold path one i1 arg and no IR at the

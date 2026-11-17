@@ -421,6 +421,7 @@ struct Lowering {
     void at(const char* what) {
       claim();
       owner_now_ = what;
+      ++lowered_[what];
     }
 
     void finish(const std::string& title) {
@@ -456,7 +457,8 @@ struct Lowering {
       };
       std::string out = std::format(
           "[jit-blocks] {}: {} blocks, {} instructions\n"
-          "[jit-blocks]   blocks       %  lowered from      block names\n",
+          "[jit-blocks]   blocks       %   count  lowered from      "
+          "block names\n",
           title, blocks, insts);
       for (const auto& [owner, r] : by_count(by_owner, &Row::blocks)) {
         auto names = by_count(r.names, std::identity{});
@@ -466,8 +468,14 @@ struct Lowering {
           list += std::format("{}{} {}", k ? ", " : "", names[k].first,
                               names[k].second);
         if (names.size() > shown) list += ", ...";
-        out += std::format("[jit-blocks]   {:6} {:6.1f}%  {:<16}  {}\n",
-                           r.blocks, pct(r.blocks), owner, list);
+        // How many of that instruction were lowered; a part of the lowering
+        // that is not an instruction has none.
+        auto n = lowered_.find(owner);
+        std::string count = owner.starts_with('[') || n == lowered_.end()
+                                ? "-"
+                                : std::to_string(n->second);
+        out += std::format("[jit-blocks]   {:6} {:6.1f}%  {:>6}  {:<16}  {}\n",
+                           r.blocks, pct(r.blocks), count, owner, list);
       }
       out += "[jit-blocks]   blocks       %  instrs  block name\n";
       for (const auto& [name, r] : by_count(by_name, &Row::blocks))
@@ -498,6 +506,7 @@ struct Lowering {
     llvm::Function* fn_;
     const char* owner_now_ = "[prologue]";
     llvm::ValueMap<llvm::BasicBlock*, const char*> owner_;
+    std::map<std::string, size_t> lowered_;
   };
 
   // `gen_body` is a generator chunk's body function (lower_program): the
@@ -1893,6 +1902,10 @@ struct Lowering {
           std::string key(_str_sv(
               reinterpret_cast<const char*>(c.consts[in.c].data)));
           auto recv = load_slot(in.b);
+          if (in.op == Op::PropVal && in.d == 0) {
+            b.CreateStore(j.emit_property_value(recv, key), slots[in.a]);
+            break;
+          }
           // own_receiver=false: the register keeps its +1 across the read,
           // and the handler ladder is its sole releaser on a throw edge.
           auto view = j.emit_property_get(recv, key);
@@ -1908,12 +1921,11 @@ struct Lowering {
             // declared, its type is checked on every write, and the frame
             // only reached here because the entry check accepted an instance
             // of that class. Verified before the value is formed, where the
-            // executor verifies it, so the read below sees a constant tag.
-            if (in.d != 0)
-              view = j.emit_field_type_guard(view, static_cast<int8_t>(in.d),
-                                             key);
-            b.CreateStore(j.emit_property_value_read(recv, view, key),
-                          slots[in.a]);
+            // executor verifies it; what agrees is a scalar, with nothing to
+            // bind or retain.
+            b.CreateStore(
+                j.emit_field_type_guard(view, static_cast<int8_t>(in.d), key),
+                slots[in.a]);
           }
           break;
         }

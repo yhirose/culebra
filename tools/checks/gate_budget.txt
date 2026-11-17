@@ -232,7 +232,10 @@
 # 373 since test_key_eq_reentrant.cul (a key's eq that changes the table or
 # Set being looked up makes the lookup start over; 0.1 s under --vm, 0.75 s
 # under --jit).
-tests.cul 373
+# 374 since test_property_value_read.cul (a property read as a value takes
+# every arm of the compiled lanes' read from one site, warm, cold and changing
+# shape; 0.03 s under --vm, 0.35 s under --jit).
+tests.cul 374
 
 # tests/isolate/*.cul — run on both engines, plus the over-cap modes.
 # 21 since test_xml_isolate.cul (an XML element keeps its methods across an

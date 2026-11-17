@@ -4870,64 +4870,68 @@ struct JIT {
   // --- Call ---
 
 
-  // Resolve `obj.name` read AS A VALUE (no call parens): fire a getter, bind a
-  // plain method's `self` (interp's _wrap_method_with_this), or pass a data
-  // field / introspection result through. `.name`/`.params`/`.return_type`
-  // route to getter_or_value because emit_property_get's fn_mode returns a
-  // +1-OWNED `view` for them; every other name yields a BORROWED `view` and
-  // routes to bind_method_value. Both return a fresh +1-owned value, so the
-  // caller does `own(...)` (the move-assign releases the receiver). Shared by
-  // compile_call and compile_call_with_builtins so the two stay in lockstep.
-  llvm::Value* emit_property_value_read(llvm::Value* receiver,
-                                        llvm::Value* view,
-                                        const std::string& name) {
-    bool intro = fn_introspection_name(name);
+  // `obj.name` read as a value (no call parens, no declared type): fire a
+  // getter, bind a method's `self` (interp's _wrap_method_with_this), or hand
+  // a field through, a fresh +1 on every arm with the receiver borrowed. An
+  // own field of an Object whose shape the site's cache knows is read and
+  // retained inline; everything else — a Function to bind or a getter, a
+  // proto's field, a miss, a non-Object — is one call to prop_value, the
+  // executor's own read. `.name`/`.params`/`.return_type` keep
+  // emit_property_get's fn_mode, whose view is already a +1, and
+  // getter_or_value. The 16-byte results come back through emit_value_call
+  // (the Win64 sret ABI).
+  llvm::Value* emit_property_value(llvm::Value* receiver,
+                                   const std::string& name) {
     auto i8Ty = builder_.getInt8Ty();
     auto i64Ty = builder_.getInt64Ty();
     auto ptrTy = llvm::PointerType::get(ctx_, 0);
-    auto keyPtr =
-        get_or_create_global_str(name, intro ? ".getter.key" : ".bind.key");
-    // Both helpers return a 16-byte JitValue by value; route through
-    // emit_value_call so the Win64 sret ABI matches the C++ side (no-op on
-    // SysV). See the emit_value_call rationale at its definition.
-    auto call_helper = [&] {
+    auto tag = extract_tag(receiver);
+    auto data = extract_data(receiver);
+    if (fn_introspection_name(name)) {
+      auto view = emit_property_get(receiver, name);
       emit_set_op_pos();  // a getter's entry site
       return emit_value_call(
-          module_->getOrInsertFunction(
-              intro ? rt::getter_or_value : rt::bind_method_value, valueType_,
-              i8Ty, i64Ty, i8Ty, i64Ty, ptrTy),
-          {extract_tag(receiver), extract_data(receiver), extract_tag(view),
-           extract_data(view), keyPtr},
-          intro ? "getter.or.value" : "bind.method");
-    };
-    if (intro) return call_helper();
-    // bind_method_value has something to do only for a Function read off an
-    // Object (a getter to fire, a method to bind). Everything else — which
-    // is every data field a program reads — it hands back with one retain,
-    // so that arm is emitted here and the helper is reached only for the
-    // Function case. Same answer, without a call per field read.
-    auto viewTag = extract_tag(view);
-    auto isFn = builder_.CreateAnd(
-        builder_.CreateICmpEQ(viewTag, builder_.getInt8(TAG_FUNC)),
-        builder_.CreateICmpEQ(extract_tag(receiver),
-                              builder_.getInt8(TAG_OBJECT)),
-        "bind.is_method");
+          module_->getOrInsertFunction(rt::getter_or_value, valueType_, i8Ty,
+                                       i64Ty, i8Ty, i64Ty, ptrTy),
+          {tag, data, extract_tag(view), extract_data(view),
+           get_or_create_global_str(name, ".getter.key")},
+          "getter.or.value");
+    }
     auto* fn = builder_.GetInsertBlock()->getParent();
-    auto bindBB = llvm::BasicBlock::Create(ctx_, "bind.method", fn);
-    auto plainBB = llvm::BasicBlock::Create(ctx_, "bind.plain", fn);
-    auto joinBB = llvm::BasicBlock::Create(ctx_, "bind.join", fn);
-    OwnedPhi merge(this, "bind.value");
-    builder_.CreateCondBr(isFn, bindBB, plainBB);
-    builder_.SetInsertPoint(bindBB);
-    merge.add_incoming(call_helper());
-    builder_.CreateBr(joinBB);
+    auto [icTy, icGlobal] = emit_prop_ic_global();
+    auto objBB = llvm::BasicBlock::Create(ctx_, "pval.obj", fn);
+    auto ownBB = llvm::BasicBlock::Create(ctx_, "pval.own", fn);
+    auto plainBB = llvm::BasicBlock::Create(ctx_, "pval.plain", fn);
+    auto slowBB = llvm::BasicBlock::Create(ctx_, "pval.slow", fn);
+    auto mergeBB = llvm::BasicBlock::Create(ctx_, "pval.merge", fn);
+    builder_.CreateCondBr(
+        builder_.CreateICmpEQ(tag, builder_.getInt8(TAG_OBJECT)), objBB,
+        slowBB);
+    builder_.SetInsertPoint(objBB);
+    auto objPtr = builder_.CreateIntToPtr(data, ptrTy);
+    auto probe = emit_ic_probe(objPtr, icTy, icGlobal);
+    builder_.CreateCondBr(probe.match, ownBB, slowBB);
+    builder_.SetInsertPoint(ownBB);
+    auto [ownTag, ownData] = emit_prop_ic_own_slot(objPtr, probe.entry);
+    builder_.CreateCondBr(
+        builder_.CreateICmpEQ(ownTag, builder_.getInt8(TAG_FUNC)), slowBB,
+        plainBB);
+    OwnedPhi merge(this, "pval.value");
     builder_.SetInsertPoint(plainBB);
-    emit_value_retain(view);
-    // The retain just made this arm's copy of the borrowed view a +1.
-    merge.add_incoming(own(view));
-    builder_.CreateBr(joinBB);
-    builder_.SetInsertPoint(joinBB);
-    return merge.finish(joinBB).consume();
+    auto field = make_value(ownTag, ownData);
+    emit_value_retain(field);
+    merge.add_incoming(own(field));
+    builder_.CreateBr(mergeBB);
+    builder_.SetInsertPoint(slowBB);
+    merge.add_incoming(emit_value_call(
+        module_->getOrInsertFunction(rt::prop_value, valueType_, i8Ty, i64Ty,
+                                     ptrTy, ptrTy, i64Ty, i64Ty),
+        {tag, data, get_or_create_global_str(name, ".key"), icGlobal,
+         current_line_val(), current_column_val()},
+        "pval.slow"));
+    builder_.CreateBr(mergeBB);
+    builder_.SetInsertPoint(mergeBB);
+    return merge.finish(mergeBB).consume();
   }
 
   // The tag the compiler promised a declared field's read, verified on the

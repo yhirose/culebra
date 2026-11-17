@@ -72,8 +72,21 @@ if [[ ! -s "$TMP/stat_counts" ]] || ! diff "$TMP/ir_counts" "$TMP/stat_counts"; 
   echo "FAIL: CULEBRA_JIT_BLOCK_STATS counts differ from the -O0 IR's"
   fail=1
 fi
-if grep -qE '^\[jit-blocks\] +[0-9]+ +[0-9.]+% +\? ' "$TMP/stats.txt"; then
+if grep -qE '^\[jit-blocks\] +[0-9]+ +[0-9.]+% +(-|[0-9]+) +\? ' "$TMP/stats.txt"; then
   echo "FAIL: CULEBRA_JIT_BLOCK_STATS left a block without an owner"
+  fail=1
+fi
+
+# A property read as a value (PropVal) is an own-field read and one slow
+# path, without the proto arm and the binding diamond a call's read has.
+printf '%s\n' 'fn f(a, b) {' '  let x = a.p * b + a.q * b' '  [x, a].size() + x' \
+  '}' 'println(f({p: 1.5, q: 2.5}, 2.0))' > "$TMP/p.cul"
+pv_row=$(CULEBRA_JIT_CACHE=off CULEBRA_JIT_BLOCK_STATS=1 "$CULEBRA" --jit -O0 \
+  --emit-llvm "$TMP/p.cul" 2>&1 > /dev/null |
+  awk '/^\[jit-blocks\] __vm_fn_1 / { f = 1; next } /^\[jit-blocks\] __/ { f = 0 }
+       f && / PropVal / { print }')
+if [[ "$pv_row" != *pval.* || "$pv_row" == *bind.* ]]; then
+  echo "FAIL: a property read as a value has the call read's shape: $pv_row"
   fail=1
 fi
 

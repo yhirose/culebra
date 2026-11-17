@@ -1,0 +1,66 @@
+# `obj.name` read as a value: the compiled lanes read an own field inline off
+# the site's cache and send everything else through one slow path (the
+# property lookup, then the method binding). Each arm here is one of those
+# paths, read from one site that sees it warm, cold and changing shape, and
+# the count of a heap field read back many times comes out where it started.
+
+class P {
+  new(x) {
+    self.x = x
+  }
+  twice() {
+    self.x * 2
+  }
+  get half() {
+    self.x / 2
+  }
+}
+
+fn read_x(o) {
+  o.x
+}
+fn read_twice(o) {
+  o.twice
+}
+fn read_half(o) {
+  o.half
+}
+
+# An own field of every kind, through one site, the shape changing under it.
+let box = {k: 1}
+let f = |a| a + 1
+assert_eq(read_x(P.new(1.5)), 1.5)
+assert_eq(read_x(P.new(7)), 7)
+assert_eq(read_x({x: 'str'}), 'str')
+assert_eq(read_x({y: 0, x: box}).k, 1)
+assert_eq(read_x({x: nil}), nil)
+assert_eq(read_x({x: f})(2), 3)
+assert_eq(read_x(P.new(2.5)), 2.5)
+
+# A method read as a value is bound to its receiver; a getter fires.
+assert_eq(read_twice(P.new(4))(), 8)
+assert_eq(read_twice(P.new(5))(), 10)
+assert_eq(read_half(P.new(9.0)), 4.5)
+
+# A field the receiver lacks reads as nil; a scalar has none to read.
+assert_eq(read_x({y: 1}), nil)
+let msg = try {
+  read_x(5)
+  'no error'
+} catch e {
+  e.message
+}
+assert_eq(msg, 'type error: expected Object, Array, or Tensor, got Long')
+
+# A heap field read back many times through the warm site leaves its count
+# where it was.
+let held = {x: {payload: true}}
+let inner = held.x
+let base = GC.refcount(inner)
+mut n = 0
+while n < 100 {
+  let v = read_x(held)
+  assert_eq(v.payload, true)
+  n += 1
+}
+assert_eq(GC.refcount(inner) - base, 0)

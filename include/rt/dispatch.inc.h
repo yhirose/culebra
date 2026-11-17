@@ -2190,6 +2190,21 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_bind_method_value(
   return {view_tag, view_data};
 }
 
+// `obj.name` read as a value where no inline cache answers: the lookup,
+// which fills `ic`, then the binding a Function read off an Object gets.
+// The executor's PropVal, and the slow arm of the JIT's
+// (JIT::emit_property_value). A fresh +1; the receiver stays borrowed.
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_prop_value(
+    int8_t recv_tag, int64_t recv_data, const char* key, JitPropIC* ic,
+    int64_t line, int64_t col) {
+  JitValue view = culebra_runtime_prop_get(recv_tag, recv_data, key, ic, line,
+                                           col, /*own_receiver=*/false);
+  if (view.tag == TAG_FUNC && recv_tag == TAG_OBJECT)
+    culebra_runtime_set_op_pos(line, col);  // a getter's entry site
+  return culebra_runtime_bind_method_value(
+      recv_tag, recv_data, static_cast<int8_t>(view.tag), view.data, key);
+}
+
 // Value-read of the `fn` recursion handle (see compile_identifier). With a
 // receiver the call delivered (the ABI slot, never a lexical fallback a
 // SelfMerge supplied), the handle is the bound wrapper

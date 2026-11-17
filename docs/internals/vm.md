@@ -1935,9 +1935,10 @@ What a long function's blocks are made of is read with
 `CULEBRA_JIT_BLOCK_STATS=<n>`: for each function the lowering produces
 with at least n blocks, two tables on stderr. The first counts its blocks
 by what made them — the bytecode instruction whose lowering created the
-block, or the prologue, the jump targets and the unwind pads — with the
-block names under each; the second counts its blocks and their
-instructions by block name. It reads the IR as lowered, before the
+block, or the prologue, the jump targets and the unwind pads — with how
+many of that instruction were lowered and the block names under each; the
+second counts its blocks and their instructions by block name. It reads
+the IR as lowered, before the
 pipeline, which is what `--jit -O0 --emit-llvm` prints. The unwind pads
 made nearly a quarter of the 277-line function's blocks, and 52 to 76% of
 the largest function of mini-culebra, mini-js and mini-lua
@@ -1977,6 +1978,22 @@ That branch is IR at every release site, which is the cost side: on
 `--jit` takes half again as long to reach the first instruction. The
 executor lowers nothing, so what pays it is `--jit` and `culebra build` —
 the two lanes chosen for throughput.
+
+A property read as a value (`PropVal` with no declared type,
+`JIT::emit_property_value`) has the shape of the read programs make
+most: an own field of an Object whose shape the site's cache knows is
+read and retained inline, and everything else — a Function to bind or a
+getter to fire, a field on the proto, a cache miss, a non-Object — is one
+call to `culebra_runtime_prop_value`, which is the executor's `PropVal`:
+`prop_get`, which refreshes the cache, then `bind_method_value`.
+`emit_property_get` keeps its inline proto arm for the method read a call
+makes (`MethGate`); a value read that finds a Function there binds it in
+the helper anyway. A read the compiler typed from a declared field is the
+verified view itself, a scalar with nothing to bind or retain, as in the
+executor. The 277-line function went from 13,500 blocks to 12,700, its
+module loads in 2.9 s instead of 3.3, and its step, unoptimized, went from
+8.3 to 6.7 µs in the air and from 15.0 to 13.6 µs on the ground. No row of
+`tools/bench/ops.cul` went up; the getter row went from 25 to 17 ns.
 
 The pipeline's other own pass is about how a Float travels. A `Value`
 keeps one in the `i64` payload, so the phi a loop carries it in is an
