@@ -232,14 +232,23 @@ enum class Ord : uint8_t { Lt, Le, Gt, Ge };
 [[gnu::always_inline]] inline bool _culebra_scalar_order(
     Ord op, int8_t t1, int64_t d1, int8_t t2, int64_t d2, int64_t line,
     int64_t col) {
-  // Cross-type (non-numeric) and same-type-unorderable (Array/Set/...)
-  // both raise the canonical "cannot compare L and R". == stays structural
-  // on its own path.
+  // Two strings order by bytes, either flavor against either, as `==`
+  // compares them.
+  auto str_order = [&] {
+    auto c = _culebra_str_view(t1, d1).compare(_culebra_str_view(t2, d2));
+    return _ord_holds(op, double(c), 0.0);
+  };
+  // Cross-type (other than Long/Float and String/StringView) and
+  // same-type-unorderable (Array/Set/...) both raise the canonical "cannot
+  // compare L and R". == stays structural on its own path.
   if (t1 != t2) {
     if ((t1 == TAG_LONG || t1 == TAG_FLOAT) &&
         (t2 == TAG_LONG || t2 == TAG_FLOAT)) {
       return _ord_holds(op, _culebra_num_cross_cmp(t1, d1, t2, d2), 0.0);
     }
+    if ((t1 == TAG_STRING || t1 == TAG_STRINGVIEW) &&
+        (t2 == TAG_STRING || t2 == TAG_STRINGVIEW))
+      return str_order();
     culebra::throw_compare_type_error(_culebra_tag_name(t1),
                                       _culebra_tag_name(t2), line, col);
   }
@@ -253,12 +262,7 @@ enum class Ord : uint8_t { Lt, Le, Gt, Ge };
       return _ord_holds(op, _culebra_float_to_double(d1),
                         _culebra_float_to_double(d2));
     case TAG_STRING:
-    case TAG_STRINGVIEW: {
-      // Same-tag only (the cross-type branch above already threw):
-      // String<String and StringView<StringView both order by bytes.
-      auto c = _culebra_str_view(t1, d1).compare(_culebra_str_view(t2, d2));
-      return _ord_holds(op, double(c), 0.0);
-    }
+    case TAG_STRINGVIEW: return str_order();
     default:
       culebra::throw_compare_type_error(_culebra_tag_name(t1),
                                         _culebra_tag_name(t2), line, col);

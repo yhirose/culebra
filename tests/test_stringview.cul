@@ -81,6 +81,15 @@ assert_eq(n_bytes('hello'.slice(0, 3)), 3)
 assert_eq('hello', 'hello'.view())
 assert_eq('hello'.view(), 'hello')
 
+// --- Cross-flavor ordering: by bytes, as == compares ---
+let ba = 'b,a'.split(',')
+assert_true(ba[1] < 'b')
+assert_true('a' < ba[0])
+assert_true(ba[0] >= 'b')
+assert_eq([ba[0], 'a', ba[1], 'c'].sorted(), ['a', 'a', 'b', 'c'])
+assert_eq([ba[1], 'b'].max(), 'b')
+assert_eq(['c', ba[0]].min_by(|s| s), 'b')
+
 // --- for-in iterates StringView ---
 let chars = []
 for c in 'abc'.view() {

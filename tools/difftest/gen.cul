@@ -1304,9 +1304,8 @@ for d in drops {
 # --- Dimension 24: StringView ordering / equality -------------------------
 # String iteration yields StringViews, so `sort_by(|c| c)` over collected
 # characters orders StringView-to-StringView — a seam the JIT once missed
-# (microgpt smoke regression). Same-tag ordering works; String-vs-StringView
-# ordering is a TypeError on both backends; equality is value-based across
-# the two tags.
+# (microgpt smoke regression). Ordering and equality are both by bytes, within
+# a tag and across the two.
 let svs = [
   'mut xs = []; for c in "cba" { xs.push(c) }; xs.sort_by(|c| c); xs',
   'let v = "xz"[1..2]; let w = "ay"[1..2]; v < w',

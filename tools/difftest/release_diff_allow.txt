@@ -329,3 +329,7 @@ disp-str|(1, 2)
 # answer 3, and a non-function binding of that name is a method miss.
 ufcsshadow|size|*|[1, 2].iter()
 ufcsshadownest|size|*|[1, 2].iter()
+
+# A String and a StringView order by bytes, as `==` already compared them: the
+# baseline raised "cannot compare StringView and String".
+svord|let v = "xz"[1..2]; v < "z"

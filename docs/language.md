@@ -418,7 +418,8 @@ Ordering (`<`, `<=`, `>`, `>=`) is defined for:
 * `Long`, `Float`, and `Bool` — numeric ordering (booleans order
   `false` < `true`; `Long` and `Float` mix by value, exactly, so
   ordering and `==` agree about every pair).
-* `String` — lexicographic byte ordering.
+* `String` and `StringView` — lexicographic byte ordering, across the two
+  as within one.
 * `Tuple` — pair by pair: the first pair that is not `==` decides, and
   two Tuples with no such pair are equal (`(1, 2) < (1, 3)`,
   `(1, 2) <= (1, 2)`). The two must have the same length — a shorter
@@ -429,7 +430,8 @@ Ordering (`<`, `<=`, `>`, `>=`) is defined for:
 * An `Object` whose class defines `__lt__` or `cmp` — see
   *Trait-method fallback*.
 
-Ordering values of different types (outside the numeric pair) raises
+Ordering values of different types (outside the numeric pair and the
+two string flavors) raises
 `type error`, and so does ordering two `Array`s, `Set`s, or `Object`s
 with neither method.
 
@@ -774,10 +776,11 @@ parentheses there: `|x = (A | B)|`. `||` remains logical-or.
 
 * `==`, `!=`: any two values; see §5 for reference-type semantics
   and for numeric cross-type equality (`1 == 1.0`).
-* `<`, `<=`, `>`, `>=`: same-typed operands, with the exception that
-  `Long` and `Float` compare by numeric value (`1 < 1.5` works). Any
-  other cross-type ordering raises `type error`. §5 lists the types
-  that order.
+* `<`, `<=`, `>`, `>=`: same-typed operands, with two exceptions:
+  `Long` and `Float` compare by numeric value (`1 < 1.5` works), and
+  `String` and `StringView` by bytes, as `==` compares them. Any other
+  cross-type ordering raises `type error`. §5 lists the types that
+  order.
 * **Chaining**: `a < b < c` means `(a < b) && (b < c)` — the middle
   operand `b` is evaluated once, and the chain short-circuits to `false`
   at the first failing link. Any mix of comparison

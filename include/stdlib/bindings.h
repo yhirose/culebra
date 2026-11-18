@@ -1578,7 +1578,8 @@ struct _JitJsonReader {
       case TAG_BOOL:   return Kind::Bool;
       case TAG_LONG:   return Kind::Long;
       case TAG_FLOAT:  return Kind::Float;
-      case TAG_STRING: return Kind::String;
+      case TAG_STRING:
+      case TAG_STRINGVIEW: return Kind::String;
       // Array and Tuple share JitArray storage; Set renders in insertion
       // order — all three are JSON arrays.
       case TAG_ARRAY:
@@ -1598,7 +1599,7 @@ struct _JitJsonReader {
     return _culebra_float_to_double(v.data);
   }
   static std::string_view as_string(const JitValue& v) {
-    return reinterpret_cast<const char*>(v.data);
+    return _culebra_str_view(v.tag, v.data);
   }
   static size_t seq_size(const JitValue& v) {
     if (v.tag == TAG_SET) return reinterpret_cast<JitSet*>(v.data)->members.size();
@@ -1978,11 +1979,13 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_json_stringify(
 // _JitJsonBuilder; the returned root is +1 owned by the caller, who
 // hands ownership to the user binding.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_json_parse(
-    const char* s, const char* number_mode, int8_t lines, int8_t jsonc) {
+    const char* s, int64_t len, const char* number_mode, int8_t lines,
+    int8_t jsonc) {
+  std::string_view src(s, static_cast<size_t>(len));
   if (!lines) {
-    return culebra::json::parse<_JitJsonBuilder>(s, number_mode, jsonc != 0);
+    return culebra::json::parse<_JitJsonBuilder>(src, number_mode, jsonc != 0);
   }
-  return culebra::json::parse_lines<_JitJsonBuilder>(s, number_mode,
+  return culebra::json::parse_lines<_JitJsonBuilder>(src, number_mode,
                                                      jsonc != 0);
 }
 
@@ -2329,7 +2332,8 @@ inline void _jit_http_json(JitValue* __ret, JitClosure*, int8_t self_tag, int64_
       body = _culebra_str_view(b.tag, b.data);
     }
   }
-  JitValue r = culebra_runtime_json_parse(body.c_str(), "auto", 0, 0);
+  JitValue r = culebra_runtime_json_parse(
+      body.data(), static_cast<int64_t>(body.size()), "auto", 0, 0);
   { *__ret = r; return; }
 }
 
@@ -4190,9 +4194,6 @@ namespace _ns_adapt {
       line, col);
 }
 
-inline const char* take_str(JitValue v) {
-  return v.tag == TAG_STRING ? reinterpret_cast<const char*>(v.data) : "";
-}
 // PathLike coercion for a path-typed adapter argument: a String/StringView
 // passes through, a `Path` object collapses to its inner string via __str__
 // (culebra_runtime_value_to_display honors it). The
@@ -4210,14 +4211,6 @@ inline const char* take_path(JitValue v) {
                                      culebra_runtime_type_of(v.tag)),
       0, 0);
 }
-// Length-authoritative view of a TAG_STRING (header-backed, so embedded NUL
-// survives). Use this instead of take_str for binary-safe codecs where a
-// strlen would truncate at the first NUL byte.
-inline std::string_view take_sv(JitValue v) {
-  return v.tag == TAG_STRING
-             ? _str_sv(reinterpret_cast<const char*>(v.data))
-             : std::string_view{};
-}
 // String-or-StringView view that *enforces* the type, raising the binder's
 // canonical `parameter '<name>' expects String` (the position is 0/0 and gets
 // backfilled to the call site by the ns trampoline). Slow-path codecs whose
@@ -4232,6 +4225,11 @@ inline std::string_view require_sv(JitValue v, const char* param,
         0, 0);
   }
   return _culebra_str_view(v.tag, v.data);
+}
+// require_sv's bytes, owned and NUL-terminated, for a C API: a view's bytes
+// run on into its source string.
+inline std::string require_str(JitValue v, const char* param) {
+  return std::string(require_sv(v, param));
 }
 // Long/Bool twins of require_sv: enforce the declared type for a slow-path
 // adapter argument, raising the binder's `parameter '<name>' expects <T>` at
@@ -4873,7 +4871,7 @@ inline JitValue _ns_file_with(JitValue* a, int64_t n) {
 #if defined(CULEBRA_SQLITE_ENABLED)
 // SQLite.open(path) -> Database handle. SQLite.version() -> library version.
 inline JitValue _ns_sqlite_open(JitValue* a, int64_t) {
-  std::string path = _ns_adapt::take_str(a[0]);
+  std::string path = _ns_adapt::require_str(a[0], "path");
   std::string err;
   int64_t id = culebra::sqlite::open_db(path, &err);
   if (id < 0) _jit_sqlite_throw(err, 0, 0);
@@ -5177,7 +5175,7 @@ inline JitValue _culebra_llama_build_model_handle(int64_t id) {
 // Llama.load(path, n_ctx=2048, gpu=true, n_batch=0, n_slots=1) -> model handle.
 // A slot left out, or nil, is the default.
 inline JitValue _ns_llama_load(JitValue* a, int64_t n) {
-  std::string path(_ns_adapt::require_sv(a[0], "path"));
+  std::string path = _ns_adapt::require_str(a[0], "path");
   auto slot = [&](int64_t i) { return i < n ? a[i] : JitValue{TAG_NIL, 0}; };
   auto bounded = [&](int64_t i, const char* name, int64_t dflt, int64_t lo, int64_t hi) {
     JitValue v = slot(i);
@@ -5260,11 +5258,13 @@ inline JitValue _ns_time_sleep(JitValue* a, int64_t) {
 }
 inline JitValue _ns_time_from_iso_nanos(JitValue* a, int64_t) {
   return _ns_adapt::v_long(
-      culebra_runtime_time_from_iso_nanos(_ns_adapt::take_str(a[0]), 0, 0));
+      culebra_runtime_time_from_iso_nanos(
+          _ns_adapt::require_str(a[0], "s").c_str(), 0, 0));
 }
 inline JitValue _ns_time_parse_nanos(JitValue* a, int64_t) {
   return _ns_adapt::v_long(culebra_runtime_time_parse_nanos(
-      _ns_adapt::take_str(a[0]), _ns_adapt::take_str(a[1]), 0, 0));
+      _ns_adapt::require_str(a[0], "s").c_str(),
+      _ns_adapt::require_str(a[1], "fmt").c_str(), 0, 0));
 }
 inline JitValue _ns_time_iso_nanos(JitValue* a, int64_t) {
   return _ns_adapt::v_string(culebra_runtime_time_iso_nanos(
@@ -5272,7 +5272,7 @@ inline JitValue _ns_time_iso_nanos(JitValue* a, int64_t) {
 }
 inline JitValue _ns_time_format_nanos(JitValue* a, int64_t) {
   return _ns_adapt::v_string(culebra_runtime_time_format_nanos(
-      _ns_adapt::take_long(a[0]), _ns_adapt::take_str(a[1]),
+      _ns_adapt::take_long(a[0]), _ns_adapt::require_str(a[1], "fmt").c_str(),
       _ns_adapt::take_bool(a[2])));
 }
 inline JitValue _ns_time_parts_nanos(JitValue* a, int64_t) {
@@ -5296,7 +5296,7 @@ inline JitValue _ns_time_add_nanos(JitValue* a, int64_t) {
 }
 inline JitValue _ns_time_start_of_nanos(JitValue* a, int64_t) {
   return _ns_adapt::v_long(culebra_runtime_time_start_of_nanos(
-      _ns_adapt::take_long(a[0]), _ns_adapt::take_str(a[1]),
+      _ns_adapt::take_long(a[0]), _ns_adapt::require_str(a[1], "unit").c_str(),
       _ns_adapt::take_bool(a[2]), 0, 0));
 }
 
@@ -5892,12 +5892,12 @@ inline JitValue _ns_audio_midi_ports(JitValue* a, int64_t) {
 inline JitValue _ns_audio_midi_open(JitValue* a, int64_t) {
   namespace ad = culebra::_audio_detail;
   int64_t id = ad::alloc_id();
-  return _ns_adapt::v_long(ad::midi_open(id, _ns_adapt::take_str(a[0]), _ns_adapt::take_bool(a[1])) ? id : -1);
+  return _ns_adapt::v_long(ad::midi_open(id, _ns_adapt::require_str(a[0], "port"), _ns_adapt::take_bool(a[1])) ? id : -1);
 }
 inline JitValue _ns_audio_midi_out_open(JitValue* a, int64_t) {
   namespace ad = culebra::_audio_detail;
   int64_t id = ad::alloc_id();
-  return _ns_adapt::v_long(ad::midi_out_open(id, _ns_adapt::take_str(a[0])) ? id : -1);
+  return _ns_adapt::v_long(ad::midi_out_open(id, _ns_adapt::require_str(a[0], "port")) ? id : -1);
 }
 inline JitValue _ns_audio_midi_send(JitValue* a, int64_t) {
   auto* given = _ns_adapt::take_array(a[1]);
@@ -6265,7 +6265,7 @@ inline JitValue _ns_audio_filter(JitValue* a, int64_t) {
   namespace ad = culebra::_audio_detail;
   std::vector<double> x, cutoff;
   _ns_audio_numbers(a[0], x, ad::kSamplesError);
-  auto name = _ns_adapt::take_sv(a[1]);
+  auto name = _ns_adapt::require_sv(a[1], "kind");
   _ns_audio_points(a[2], cutoff, ad::kFilterEnvelopeError,
                    "Audio.filter: a cutoff's times are 0 or more, in the order they come");
   double q = _ns_adapt::take_double(a[3]);
@@ -6413,8 +6413,8 @@ inline JitValue _ns_audio_graph_new(JitValue* a, int64_t) {
 inline JitValue _ns_audio_graph_part(JitValue* a, int64_t) {
   namespace ad = culebra::_audio_detail;
   auto& g = _ns_audio_graph(a[0]);
-  auto family = _ns_adapt::take_sv(a[1]);
-  auto kind = _ns_adapt::take_sv(a[2]);
+  auto family = _ns_adapt::require_sv(a[1], "family");
+  auto kind = _ns_adapt::require_sv(a[2], "kind");
   std::vector<double> ins, opt;
   std::vector<int> inputs;
   _ns_audio_numbers(a[3], ins, "type error: an Audio.Graph part takes in parts of its graph");
@@ -6889,7 +6889,8 @@ inline JitValue _ns_fs_temp_dir(JitValue*, int64_t) {
 }
 inline JitValue _ns_fs_mkdtemp(JitValue* a, int64_t) {
   return _ns_adapt::v_string(
-      culebra_runtime_fs_mkdtemp(_ns_adapt::take_str(a[0]), 0, 0));
+      culebra_runtime_fs_mkdtemp(
+          _ns_adapt::require_str(a[0], "prefix").c_str(), 0, 0));
 }
 inline JitValue _ns_fs_is_symlink(JitValue* a, int64_t) {
   return _ns_adapt::v_bool(
@@ -6910,7 +6911,7 @@ inline JitValue _ns_fs_walk(JitValue* a, int64_t) {
 }
 inline JitValue _ns_fs_glob(JitValue* a, int64_t) {
   return _ns_adapt::v_array(
-      culebra_runtime_fs_glob(_ns_adapt::take_str(a[0])));
+      culebra_runtime_fs_glob(_ns_adapt::require_str(a[0], "pattern").c_str()));
 }
 
 // Random
@@ -6964,7 +6965,7 @@ inline JitValue _ns_sys_exit(JitValue* a, int64_t) {
 // directly rather than through culebra_runtime_sys_env because that one folds
 // "unset" into "", which is exactly the distinction `fallback` restores.
 inline JitValue _ns_sys_env(JitValue* a, int64_t n) {
-  const char* v = std::getenv(_ns_adapt::take_str(a[0]));
+  const char* v = std::getenv(_ns_adapt::require_str(a[0], "name").c_str());
   if (v) return _ns_adapt::v_string(_culebra_heap_str(std::string(v)));
   if (n > 1) return JitOwnedVal::from_borrowed(a[1]).consume();
   return _ns_adapt::v_string(_culebra_heap_str(std::string()));
@@ -6976,16 +6977,18 @@ inline JitValue _ns_sys_getcwd(JitValue*, int64_t) {
   return _ns_adapt::v_string(culebra_runtime_sys_getcwd(0, 0));
 }
 inline JitValue _ns_sys_chdir(JitValue* a, int64_t) {
-  culebra_runtime_sys_chdir(_ns_adapt::take_str(a[0]), 0, 0);
+  culebra_runtime_sys_chdir(_ns_adapt::require_str(a[0], "path").c_str(), 0, 0);
   return _ns_adapt::v_nil();
 }
 inline JitValue _ns_sys_data_dir(JitValue* a, int64_t) {
   return _ns_adapt::v_string(
-      culebra_runtime_sys_data_dir(_ns_adapt::take_str(a[0]), 0, 0));
+      culebra_runtime_sys_data_dir(_ns_adapt::require_str(a[0], "app").c_str(),
+                                   0, 0));
 }
 inline JitValue _ns_sys_set_env(JitValue* a, int64_t) {
-  culebra_runtime_sys_set_env(_ns_adapt::take_str(a[0]),
-                              _ns_adapt::take_str(a[1]), 0, 0);
+  culebra_runtime_sys_set_env(_ns_adapt::require_str(a[0], "name").c_str(),
+                              _ns_adapt::require_str(a[1], "value").c_str(),
+                              0, 0);
   return _ns_adapt::v_nil();
 }
 
@@ -7107,7 +7110,7 @@ inline culebra::proc::Stdio stdio_slots(JitValue* a, int64_t n, int64_t first,
 // canonical interp params — a nil slab slot means the caller omitted it.
 
 inline JitValue _ns_net_connect(JitValue* a, int64_t n) {
-  std::string host(_ns_adapt::require_sv(a[0], "host"));
+  std::string host = _ns_adapt::require_str(a[0], "host");
   auto port = culebra::Port::checked(
       _ns_adapt::require_long(_proc_adapt::at(a, n, 1), "port"), "Net.connect",
       0, 0);
@@ -7138,7 +7141,7 @@ inline JitValue _ns_net_listen(JitValue* a, int64_t n) {
   JitValue hv = _proc_adapt::at(a, n, 1);
   std::string host = hv.tag == TAG_NIL
                          ? std::string("0.0.0.0")
-                         : std::string(_ns_adapt::require_sv(hv, "host"));
+                         : _ns_adapt::require_str(hv, "host");
   JitValue bv = _proc_adapt::at(a, n, 2);
   int64_t backlog =
       bv.tag == TAG_NIL ? 0 : _ns_adapt::require_long(bv, "backlog");
@@ -7161,7 +7164,7 @@ inline JitValue _ns_net_udp(JitValue* a, int64_t n) {
   JitValue hv = _proc_adapt::at(a, n, 1);
   std::string host = hv.tag == TAG_NIL
                          ? std::string("0.0.0.0")
-                         : std::string(_ns_adapt::require_sv(hv, "host"));
+                         : _ns_adapt::require_str(hv, "host");
   std::string err;
   int64_t id = culebra::net::udp_open(host, port, &err);
   if (id < 0) _jit_net_throw("Net.udp", err, 0, 0);
@@ -7172,7 +7175,7 @@ inline JitValue _ns_net_udp(JitValue* a, int64_t n) {
 }
 
 inline JitValue _ns_net_resolve(JitValue* a, int64_t) {
-  std::string host(_ns_adapt::require_sv(a[0], "host"));
+  std::string host = _ns_adapt::require_str(a[0], "host");
   std::vector<std::string> addrs;
   std::string err;
   if (!culebra::net::resolve(host, addrs, &err))
@@ -7558,7 +7561,7 @@ inline JitValue _culebra_http_build_client_handle(int64_t id) {
 // Http.client(base_url, headers=nil, timeout=0, follow_redirects=true) → handle.
 inline JitValue _ns_http_client(JitValue* a, int64_t n) {
   const char* ctx = "Http.client";
-  std::string base_url(_ns_adapt::require_sv(a[0], "base_url"));
+  std::string base_url = _ns_adapt::require_str(a[0], "base_url");
   culebra::http::HeaderList headers;
   JitValue h = _proc_adapt::at(a, n, 1);
   if (h.tag == TAG_OBJECT) {
@@ -8428,7 +8431,7 @@ inline JitValue _ns_http_server(JitValue*, int64_t) {
 
 // Http.ws(url) → connected WebSocket client handle (HttpError on failure).
 inline JitValue _ns_http_ws(JitValue* a, int64_t) {
-  std::string url(_ns_adapt::require_sv(a[0], "url"));
+  std::string url = _ns_adapt::require_str(a[0], "url");
   std::string err;
   int64_t id = culebra::http::ws_client_open(url, err);
   if (id < 0) throw culebra::CulebraError("HttpError", err, 0, 0);
@@ -8448,8 +8451,8 @@ inline JitValue _ns_isolate_spawn(JitValue* a, int64_t n) {
 // Isolate.spawn_source(source, *args, name:): a kwarg slab, a[0] = source,
 // a[1] = the args Array, a[2] = name.
 inline JitValue _ns_isolate_spawn_source(JitValue* a, int64_t) {
-  std::string source(_ns_adapt::require_sv(a[0], "source"));
-  std::string name(_ns_adapt::require_sv(a[2], "name"));
+  std::string source = _ns_adapt::require_str(a[0], "source");
+  std::string name = _ns_adapt::require_str(a[2], "name");
   return culebra_jit_isolate_spawn_source(
       std::move(source), std::move(name),
       reinterpret_cast<const JitArray*>(a[1].data), 0, 0);
@@ -8685,10 +8688,10 @@ inline JitValue _ns_json_stringify(JitValue* a, int64_t n) {
 // JSON.parse(s, lines=false, number_mode="auto", jsonc=false): same
 // variable-prefix slab.
 inline JitValue _ns_json_parse(JitValue* a, int64_t n) {
-  _ns_adapt::require_sv(a[0], "s");  // s: String
+  auto s = _ns_adapt::require_sv(a[0], "s");
   int8_t lines = (n > 1) ? (_ns_adapt::require_bool(a[1], "lines") ? 1 : 0) : 0;
   std::string mode =
-      (n > 2) ? std::string(_ns_adapt::require_sv(a[2], "number_mode")) : "auto";
+      (n > 2) ? _ns_adapt::require_str(a[2], "number_mode") : "auto";
   int8_t jsonc = (n > 3) ? (_ns_adapt::require_bool(a[3], "jsonc") ? 1 : 0) : 0;
   if (mode != "auto" && mode != "float") {
     // interp validates this in the method body (a ValueError, not a typed-param
@@ -8696,8 +8699,8 @@ inline JitValue _ns_json_parse(JitValue* a, int64_t n) {
     culebra::throw_runtime_error_at(
         "ValueError", "JSON.parse: number_mode must be 'auto' or 'float'", 0, 0);
   }
-  return culebra_runtime_json_parse(_ns_adapt::take_str(a[0]), mode.c_str(),
-                                     lines, jsonc);
+  return culebra_runtime_json_parse(s.data(), static_cast<int64_t>(s.size()),
+                                    mode.c_str(), lines, jsonc);
 }
 
 // Encoding.html.{escape,unescape}: the codec logic is shared with interp via
@@ -8712,7 +8715,7 @@ inline JitValue _ns_encoding_html_unescape(JitValue* a, int64_t) {
       _culebra_heap_str(culebra::html_unescape(_ns_adapt::require_sv(a[0], "s"))));
 }
 // Encoding.base64.{encode,decode}: shared codec; decode raises ValueError on
-// invalid input (same as interp). take_sv (not take_str) keeps the codecs
+// invalid input (same as interp). require_sv's length keeps the codecs
 // binary-safe — embedded NUL bytes must not truncate the input.
 inline JitValue _ns_encoding_base64_encode(JitValue* a, int64_t) {
   return _ns_adapt::v_string(
@@ -9555,7 +9558,7 @@ inline JitValue _ns_env_load(JitValue* a, int64_t n) {
   // Kwarg slab: a[0]=path (".env" default), a[1]=override (false default).
   // require_bool enforces the declared Bool type so a non-Bool `override:`
   // raises the same TypeError as the interp binder (not a silent coerce).
-  std::string path = n > 0 ? _ns_adapt::take_str(a[0]) : ".env";
+  std::string path = n > 0 ? _ns_adapt::require_str(a[0], "path") : ".env";
   bool overwrite = n > 1 && _ns_adapt::require_bool(a[1], "override");
   std::ifstream ifs(path, std::ios::binary);
   if (!ifs)
@@ -9833,7 +9836,8 @@ inline JitValue _ns_tensor_scatter_to_axis(JitValue* a, int64_t) {
 }
 inline JitValue _ns_tensor_from_csv(JitValue* a, int64_t) {
   return _ns_adapt::v_tensor(
-      culebra_runtime_tensor_from_csv(_ns_adapt::take_str(a[0])));
+      culebra_runtime_tensor_from_csv(
+          _ns_adapt::require_str(a[0], "path").c_str()));
 }
 inline JitValue _ns_tensor_adam_step(JitValue* a, int64_t) {
   culebra_runtime_tensor_adam_step(
@@ -10440,7 +10444,8 @@ inline std::vector<std::string> keys(JitValue v) {
       throw culebra::CulebraError("TypeError", "FST: keys must be Strings", 0,
                                   0);
     }
-    out.emplace_back(_ns_adapt::take_sv(arr->items[i]));
+    out.emplace_back(
+        _culebra_str_view(arr->items[i].tag, arr->items[i].data));
   }
   return out;
 }
@@ -10452,7 +10457,7 @@ template <typename O> inline O value_of(JitValue v) {
       throw culebra::CulebraError("TypeError",
                                   "FST: Map values must be Strings", 0, 0);
     }
-    return std::string(_ns_adapt::take_sv(v));
+    return std::string(_culebra_str_view(v.tag, v.data));
   } else {
     if (v.tag != ::TAG_LONG) {
       throw culebra::CulebraError("TypeError",
@@ -10684,7 +10689,7 @@ inline _DirZipTable::Open& _dir_zip_open_of(JitValue self) {
     return it->second;
   JitValue path = _jit_slot_or_nil(o, "path");
   if (path.tag != TAG_NIL) {
-    std::string p(_ns_adapt::require_sv(path, "path"));
+    std::string p = _ns_adapt::require_str(path, "path");
     _dir_zip_need_file(p);
     return _dir_zip_register(culebra::zip::open_file(p), "'" + p + "': ",
                              id.data);
@@ -10699,7 +10704,7 @@ inline _DirZipTable::Open& _dir_zip_open_of(JitValue self) {
 // file read; one that is there and holds no archive is a ValueError, with the
 // reason.
 inline JitValue _ns_dir_zip_open(JitValue* a, int64_t) {
-  std::string path(_ns_adapt::require_sv(a[0], "path"));
+  std::string path = _ns_adapt::require_str(a[0], "path");
   _dir_zip_need_file(path);
   return _dir_zip_register_new(culebra::zip::open_file(path),
                                "'" + path + "': ");
@@ -10793,7 +10798,7 @@ inline JitValue _ns_dir_zip_close(JitValue* a, int64_t) {
 inline std::unique_ptr<culebra::Dir> _dir_rebuild(JitObject* o) {
   auto field = [o](const char* name) { return _jit_slot_or_nil(o, name); };
   auto text = [&](const char* name) {
-    return std::string(_ns_adapt::require_sv(field(name), name));
+    return _ns_adapt::require_str(field(name), name);
   };
   switch (static_cast<culebra::DirKind>(_jit_meta_dir_kind(o))) {
     case culebra::DirKind::Disk:
@@ -14013,7 +14018,8 @@ inline void JitExtension::declare_runtime(JIT& jit) {
 
 
   // JSON: stringify takes (tag, data, indent, sort_keys, lines) ->
-  // String; parse takes (String, number_mode_cstr, lines, jsonc) -> Value.
+  // String; parse takes (bytes, length, number_mode_cstr, lines, jsonc) ->
+  // Value.
   jit.module_->getOrInsertFunction(rt::json_stringify, ptrTy,
                                 jit.builder_.getInt8Ty(),
                                 jit.builder_.getInt64Ty(),
@@ -14021,7 +14027,8 @@ inline void JitExtension::declare_runtime(JIT& jit) {
                                 jit.builder_.getInt8Ty(),
                                 jit.builder_.getInt8Ty());
   jit.module_->getOrInsertFunction(rt::json_parse, jit.valueType_, ptrTy,
-                                ptrTy, jit.builder_.getInt8Ty(),
+                                jit.builder_.getInt64Ty(), ptrTy,
+                                jit.builder_.getInt8Ty(),
                                 jit.builder_.getInt8Ty());
 }
 #endif  // CULEBRA_JIT_ENABLED
