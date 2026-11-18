@@ -146,19 +146,10 @@ fi
 
 # --- A. every #include resolves -------------------------------------------
 
-missing=0
-while IFS= read -r line; do
-  hdr=$(sed -n 's/.*#include *<\([^>]*\)>.*/\1/p' <<<"$line")
-  [[ -n $hdr ]] || continue
-  [[ -f "include/$hdr" ]] && continue
-  # Not one of ours, so it has to be one the compiler finds by itself.
-  printf '#include <%s>\n' "$hdr" \
-    | "$CXXBIN" -std=c++23 -fsyntax-only -x c++ - 2>/dev/null && continue
-  echo "docs-cpp FAIL: <$hdr> is neither under include/ nor findable —" >&2
-  echo "  renamed, moved, or a typo. Named by a \`\`\`cpp block, by the" >&2
-  echo "  prose around it, or by the landing page's embedding sample." >&2
-  missing=1
-done < <({
+# Every #include the docs name, one per line. A function, not a `{ }` group
+# inside `<( )`: macOS's bash 3.2 brace-expands that body at its commas, and
+# the loop below read nothing and passed.
+named_includes() {
   grep -ho '#include *<[^>]*>' "$TMP"/*.cpp 2>/dev/null
   # The landing page carries the same embedding sample, HTML-escaped, so no
   # pass that rewrites `#include <x>` ever touched it. It sat one release
@@ -168,9 +159,30 @@ done < <({
   # a backticked <...h> is always a header, so the shape alone identifies them.
   grep -hoE '`<[A-Za-z0-9_/.-]+\.h>`' "${SOURCES[@]}" 2>/dev/null \
     | tr -d '`' | sed 's/^/#include /'
-} | sort -u)
+}
+
+missing=0
+checked=0
+while IFS= read -r line; do
+  hdr=$(sed -n 's/.*#include *<\([^>]*\)>.*/\1/p' <<<"$line")
+  [[ -n $hdr ]] || continue
+  checked=$((checked + 1))
+  [[ -f "include/$hdr" ]] && continue
+  # Not one of ours, so it has to be one the compiler finds by itself.
+  printf '#include <%s>\n' "$hdr" \
+    | "$CXXBIN" -std=c++23 -fsyntax-only -x c++ - 2>/dev/null && continue
+  echo "docs-cpp FAIL: <$hdr> is neither under include/ nor findable —" >&2
+  echo "  renamed, moved, or a typo. Named by a \`\`\`cpp block, by the" >&2
+  echo "  prose around it, or by the landing page's embedding sample." >&2
+  missing=1
+done < <(named_includes | sort -u)
+if (( checked == 0 )); then
+  echo "docs-cpp FAIL: read no #include from the docs, the prose or site/:" >&2
+  echo "  the reader broke, and this check is measuring nothing." >&2
+  missing=1
+fi
 (( missing )) && fail=1
-(( missing )) || echo "docs-cpp OK (includes): every <header> in $blocks block(s), the prose and site/ resolves"
+(( missing )) || echo "docs-cpp OK (includes): every <header> ($checked) in $blocks block(s), the prose and site/ resolves"
 
 # --- C. the documented include list is this one -----------------------------
 
