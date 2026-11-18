@@ -763,4 +763,30 @@ fn native_catch_module(m, name, args, key) {
   assert_eq(m.const_kind(node: m.nil_literal(line: 1, col: 1)), 'nil')
 }
 
+# --- A native cannot free the Runtime its program is running in: the drop is
+# refused (logged on stderr, as a drop's error is) and the run goes on. The
+# allocations would reuse a freed Runtime's memory.
+{
+  let m = native_call_module(CodeGen.Module.new(), 'k', [])
+  let box = {p: m.compile(), rt: CodeGen.Runtime.new()}
+  let natives = {k: fn () {
+    box.rt.drop()
+    for i in 0..2000 { CodeGen.Module.new() }
+    'ran'
+  }}
+  assert_eq(IO.capture(fn () { box.p.run(rt: box.rt, natives: natives) }), "ran\n")
+}
+
+# ... and a refused drop leaves the Program and the Runtime usable.
+{
+  let m = native_call_module(CodeGen.Module.new(), 'k', [])
+  let box = {p: m.compile(), rt: CodeGen.Runtime.new()}
+  box.p.run(rt: box.rt, natives: {k: fn () {
+    box.p.drop()
+    box.rt.drop()
+  }})
+  assert_eq(IO.capture(fn () { box.p.run(rt: box.rt, natives: {k: || 'again'}) }),
+            "again\n")
+}
+
 println('test_codegen_funcs OK')

@@ -1639,7 +1639,7 @@ class View {
     if (levels.v.tag != TAG_ARRAY)
       throw culebra::CulebraError("TypeError", "view.texture_mips: levels must be an Array of Scene.Image", 0, 0);
     auto* a = reinterpret_cast<JitArray*>(levels.v.data);
-    std::vector<const Image*> im;
+    std::vector<culebra::Held<Image>> im;
     for (size_t i = 0; i < a->size; i++) {
       if (!wd::jit_arg_matches<const Image&>(a->items[i]))
         throw culebra::CulebraError("TypeError",

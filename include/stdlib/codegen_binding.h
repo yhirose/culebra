@@ -41,13 +41,13 @@ inline void codegen_program_run_thunk(JitValue* __ret, JitClosure*,
                                       int8_t self_tag, int64_t self_data,
                                       int64_t n, JitValue* args) {
   JitValue self{self_tag, self_data};
-  auto* prog = wrap_detail::jit_handle_self<codegen::Program>(self);
+  // Both held for the run: its natives are program code that may drop them.
+  auto prog = wrap_detail::jit_handle_self<codegen::Program>(self);
   const JitValue rt_v =
       codegen_raw_arg<codegen::Runtime*>(n, args, 0, "rt");
-  codegen::Runtime* rt =
-      rt_v.tag == TAG_NIL
-          ? nullptr
-          : wrap_detail::jit_handle_self<codegen::Runtime>(rt_v);
+  auto rt = rt_v.tag == TAG_NIL
+                ? Held<codegen::Runtime>()
+                : wrap_detail::jit_handle_self<codegen::Runtime>(rt_v);
   const JitValue depth_v = codegen_raw_arg<long>(n, args, 1, "max_call_depth");
   const int64_t depth = depth_v.tag == TAG_NIL
                             ? ::vm::RunOptions{}.max_call_depth
@@ -65,7 +65,7 @@ inline void codegen_program_run_thunk(JitValue* __ret, JitClosure*,
   // exception becomes a catchable RuntimeError instead of escaping the
   // process, and a positionless CulebraError gets the call site.
   *__ret = wrap_detail::surface_native_error_at_call_site([&] {
-    prog->run(rt, depth, natives);
+    prog->run(rt.get(), depth, natives);
     return JitValue{TAG_NIL, 0};
   });
 }

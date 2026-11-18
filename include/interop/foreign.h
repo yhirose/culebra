@@ -36,6 +36,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include <base/held.h>
 #include <base/shared.h>
 
 namespace culebra::foreign {
@@ -78,8 +79,31 @@ class ForeignTable {
     if (it != entries_.end()) it->second.gen++;
   }
 
-  // The drop event: destroy (or release) the instance. Idempotent.
-  void erase(int64_t id) { entries_.erase(id); }
+  // The live instance held for as long as the caller keeps the Held (a
+  // native frame that may call program code with it in hand), or an empty
+  // Held once dropped. An entry's address is stable (the map is node-based)
+  // until its erase, which a Hold on it refuses.
+  Held<T> held(int64_t id) {
+    auto it = entries_.find(id);
+    if (it == entries_.end()) return {};
+    auto& e = it->second;
+    return {e.owned ? e.owned.get() : e.shared.get(), Hold(&e.users)};
+  }
+  // The use count a borrow's Hold counts on, or nullptr once dropped.
+  uint32_t* users_of(int64_t id) {
+    auto it = entries_.find(id);
+    return it == entries_.end() ? nullptr : &it->second.users;
+  }
+
+  // The drop event: destroy (or release) the instance. Idempotent. False,
+  // dropping nothing, while a native frame holds it (held).
+  bool erase(int64_t id) {
+    auto it = entries_.find(id);
+    if (it == entries_.end()) return true;
+    if (it->second.users != 0) return false;
+    entries_.erase(it);
+    return true;
+  }
 
   size_t size() const { return entries_.size(); }
 
@@ -88,6 +112,7 @@ class ForeignTable {
     std::unique_ptr<T> owned;
     std::shared_ptr<T> shared;
     int64_t gen = 0;
+    uint32_t users = 0;  // Holds on it (see Hold)
   };
   std::unordered_map<int64_t, Entry> entries_;
   int64_t next_id_ = 1;
@@ -124,12 +149,12 @@ inline ForeignTable<T>& table() {
   return *cached;
 }
 
-// Method-entry guard: the live instance, or the safety error. The
+// Method-entry guard: the live instance, held, or the safety error. The
 // wording is shared by both backends so messages stay symmetric.
 template <class T>
-inline T* get_or_throw(int64_t id, std::string_view type_name, int64_t line,
-                       int64_t col) {
-  T* p = table<T>().get(id);
+inline Held<T> held_or_throw(int64_t id, std::string_view type_name, int64_t line,
+                           int64_t col) {
+  auto p = table<T>().held(id);
   if (!p) {
     throw CulebraError(
         "ClosedError",
@@ -145,28 +170,47 @@ inline int64_t entry_state(int64_t id) {
   return table<T>().gen_of(id);
 }
 
-// Registry of the entry_state<T> functions, indexed by a small id. An
-// owning handle carries the INDEX (not the raw pointer) so a borrow can
-// read its parent's generation without knowing the parent's C++ type —
-// and a forged index is a bounds miss, never a called pointer. (Storing
-// the raw function pointer in a script-writable slot would let a forged
-// value be called: the function-pointer twin of the _ptr hole.)
-inline std::vector<int64_t (*)(int64_t)>& state_fns() {
-  static std::vector<int64_t (*)(int64_t)> v;
+// The use count a borrow's Hold counts on (its root owner's).
+template <class T>
+inline uint32_t* entry_users(int64_t id) {
+  return table<T>().users_of(id);
+}
+
+// Registry of the per-T entry reads, indexed by a small id. An owning
+// handle carries the INDEX (not the raw pointer) so a borrow can read its
+// parent's generation, and hold its root owner, without knowing the
+// parent's C++ type — and a forged index is a bounds miss, never a called
+// pointer. (Storing the raw function pointer in a script-writable slot
+// would let a forged value be called: the function-pointer twin of the
+// _ptr hole.)
+struct OwnerFns {
+  int64_t (*gen)(int64_t);      // entry_state<T>
+  uint32_t* (*users)(int64_t);  // entry_users<T>
+};
+inline std::vector<OwnerFns>& state_fns() {
+  static std::vector<OwnerFns> v;
   return v;
 }
 template <class T>
 inline int64_t state_fn_id() {
   static const int64_t id = [] {
-    state_fns().push_back(&entry_state<T>);
+    state_fns().push_back({&entry_state<T>, &entry_users<T>});
     return static_cast<int64_t>(state_fns().size() - 1);
   }();
   return id;
 }
-inline int64_t owner_gen_via(int64_t state_id, int64_t owner_id) {
+inline const OwnerFns* owner_fns(int64_t state_id) {
   auto& v = state_fns();
-  if (state_id < 0 || static_cast<size_t>(state_id) >= v.size()) return -1;
-  return v[state_id](owner_id);
+  if (state_id < 0 || static_cast<size_t>(state_id) >= v.size()) return nullptr;
+  return &v[state_id];
+}
+inline int64_t owner_gen_via(int64_t state_id, int64_t owner_id) {
+  auto* f = owner_fns(state_id);
+  return f ? f->gen(owner_id) : -1;
+}
+inline uint32_t* owner_users_via(int64_t state_id, int64_t owner_id) {
+  auto* f = owner_fns(state_id);
+  return f ? f->users(owner_id) : nullptr;
 }
 
 // The single user-visible borrow failure (closed, one check): both
@@ -226,6 +270,19 @@ inline int64_t borrow_gen(int64_t bid) {
   auto it = t.entries.find(bid);
   if (it == t.entries.end() || !borrow_valid(bid)) return -1;
   return it->second.gen;
+}
+// The use count a frame using borrow `bid` holds: its root owner's, found by
+// walking the parent links (a validated chain, so every link resolves).
+inline uint32_t* borrow_root_users(int64_t bid) {
+  auto& t = borrow_table();
+  for (;;) {
+    auto it = t.entries.find(bid);
+    if (it == t.entries.end()) return nullptr;
+    const auto& e = it->second;
+    if (e.parent_state_id >= 0)
+      return owner_users_via(e.parent_state_id, e.parent_owner_id);
+    bid = e.parent_bid;
+  }
 }
 inline int64_t borrow_adopt(void* ptr, int64_t parent_state_id,
                             int64_t parent_owner_id, int64_t parent_bid,

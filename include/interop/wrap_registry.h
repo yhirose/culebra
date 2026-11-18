@@ -7,6 +7,7 @@
 // (Phase 4 B7-b); wrap.h includes this and pushes into both.
 
 #include <rt/rt.h>  // JitValue (the adapter signature)
+#include <base/held.h>  // Held (an implementer's accessor)
 
 #include <string>
 #include <unordered_map>
@@ -67,9 +68,10 @@ inline std::vector<WrappedClassName>& wrapped_class_names() {
 // handles carry (foreign.h): a binding has a handle and no T, and this is how
 // it reaches the instance as the interface. The accessor is wrap.h's
 // jit_handle_self<T>, so a dropped handle raises the same ClosedError there
-// as a method call would. Filled by register_implementer (wrap.h).
+// as a method call would, and the instance is held while the Held lives.
+// Filled by register_implementer (wrap.h).
 template <class I>
-using WrappedImplementerOf = const I* (*)(JitValue handle);
+using WrappedImplementerOf = Held<const I> (*)(JitValue handle);
 template <class I>
 inline std::unordered_map<int64_t, WrappedImplementerOf<I>>&
 wrapped_implementers() {

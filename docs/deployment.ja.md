@@ -1088,8 +1088,11 @@ v.len()           # !! ClosedError
 
 ラップされたインスタンスは完全なlifetimeモデルを持つリソースです:
 scope終端の確定drop（循環込み）、冪等な明示`drop()`、use-after-dropの
-`ClosedError`。`ext-culebra build script.cul`のAOTバイナリにも
-バインディングが載ります。
+`ClosedError`。呼び出しが使っているインスタンス（そのメソッドが走っている、または
+ネイティブが引数として持っている）は、その呼び出しの下では解放されません。呼び出しが走らせた
+プログラムのコードからの`drop()`は断られ、dropのエラーと同じく報告され
+（[言語仕様 §17](language.ja.md)）、インスタンスは使えるまま残ります。
+`ext-culebra build script.cul`のAOTバイナリにもバインディングが載ります。
 
 ラップされたインスタンスは、他のインスタンスと同じようにクラスを名乗ります。
 `type_of(v)`は宣言した名前（`'Vec2'`）で、`v: Vec2`の引数にそのまま渡せます。

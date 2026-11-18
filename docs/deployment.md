@@ -1161,8 +1161,13 @@ not callable and stays an ordinary `Object`.
 
 Wrapped instances are resources with the full lifetime model: scope-exit
 deterministic drop (cycles included), an idempotent explicit `drop()`,
-and `ClosedError` on use-after-drop. `ext-culebra build script.cul`
-produces standalone AOT binaries that carry the binding.
+and `ClosedError` on use-after-drop. An instance a call is using (a
+method running on it, or a native holding it as an argument) is not
+dropped under that call: a `drop()` from program code the call runs is
+refused, reported as a drop's error is
+([§17 of the language spec](language.md)), and the instance stays usable.
+`ext-culebra build script.cul` produces standalone AOT binaries that carry
+the binding.
 
 A wrapped instance answers to its class the way any other instance does:
 `type_of(v)` is the declared name (`'Vec2'`), a `v: Vec2` parameter

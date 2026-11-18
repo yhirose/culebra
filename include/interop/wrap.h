@@ -44,6 +44,7 @@
 // include it here.
 #include <rt/rt.h>
 
+#include <array>
 #include <cassert>
 #include <cstring>
 #include <functional>
@@ -286,20 +287,21 @@ inline int64_t jit_handle_gen(JitObject* h) {
   return -1;
 }
 
-// The live instance, or ClosedError at the method call site. A borrowing
-// handle resolves its raw pointer from the borrow table only after the
-// parent chain validates.
+// The live instance, held for as long as the caller keeps the Held, or
+// ClosedError at the method call site. A borrowing handle resolves its raw
+// pointer from the borrow table only after the parent chain validates.
 template <class T>
-inline T* jit_handle_self(JitValue self) {
+inline Held<T> jit_handle_self(JitValue self) {
   auto* h = reinterpret_cast<JitObject*>(self.data);
   if (h->find_slot("_bid") != static_cast<size_t>(-1)) {
     int64_t bid = _jit_handle_long(h, "_bid");
     if (!foreign::borrow_valid(bid))
       foreign::throw_borrow_invalid(jit_class_info<T>::name,
                                     _jit_thread.call_line, _jit_thread.call_col);
-    return reinterpret_cast<T*>(foreign::borrow_ptr(bid));
+    return {reinterpret_cast<T*>(foreign::borrow_ptr(bid)),
+            Hold(foreign::borrow_root_users(bid))};
   }
-  return foreign::get_or_throw<T>(_jit_handle_long(h, "_id"),
+  return foreign::held_or_throw<T>(_jit_handle_long(h, "_id"),
                                   jit_class_info<T>::name, _jit_thread.call_line,
                                   _jit_thread.call_col);
 }
@@ -361,7 +363,15 @@ void jit_drop_thunk(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_
                         int64_t, JitValue*) {
   JitValue self{self_tag, self_data};
   auto* h = reinterpret_cast<JitObject*>(self.data);
-  foreign::table<T>().erase(_jit_handle_long(h, "_id"));
+  // A call using it (a method, or a native holding it as an argument) may be
+  // what is running this drop: freeing it would free it under that call.
+  if (!foreign::table<T>().erase(_jit_handle_long(h, "_id"))) {
+    throw culebra::CulebraError(
+        "ValueError",
+        jit_class_info<T>::name +
+            " instance cannot be dropped while a call is using it",
+        _jit_thread.call_line, _jit_thread.call_col);
+  }
   { *__ret = {TAG_NIL, 0}; return; }
 }
 
@@ -538,10 +548,11 @@ inline decltype(auto) jit_arg_get(const JitValue& v) {
   } else if constexpr (!std::is_void_v<typename handle_target<A>::type>) {
     using Target = typename handle_target<A>::type;
     if constexpr (handle_target<A>::is_pointer) {
+      // Held for the call by jit_resolve_arg_handles.
       return v.tag == TAG_NIL ? static_cast<Target*>(nullptr)
-                              : jit_handle_self<Target>(v);
+                              : jit_handle_self<Target>(v).get();
     } else {
-      return *jit_handle_self<Target>(v);
+      return *jit_handle_self<Target>(v).get();
     }
   } else {
     using D = std::decay_t<A>;
@@ -565,21 +576,26 @@ inline decltype(auto) jit_arg_get(const JitValue& v) {
 // gets reported would be compiler-dependent (difftest and a macOS/Linux
 // toolchain difference would both see it). This pass — not that call — is
 // what fixes the order; jit_arg_get's own resolution afterward is redundant
-// but always succeeds once this one has.
+// but always succeeds once this one has. It is also what holds the
+// arguments' instances for the call: the caller keeps the Holds it returns.
 template <class A>
-inline void jit_arg_handle_check(int64_t n, JitValue* args, size_t i) {
+inline Hold jit_arg_handle_check(int64_t n, JitValue* args, size_t i) {
   using Target = typename handle_target<A>::type;
   if constexpr (!std::is_void_v<Target>) {
-    if (static_cast<int64_t>(i) >= n) return;  // absent; a default supplies it
+    if (static_cast<int64_t>(i) >= n) return {};  // absent; a default supplies it
     const JitValue& v = args[i];
-    if (v.tag == TAG_UNFILLED || v.tag == TAG_NIL) return;
-    (void)jit_handle_self<Target>(v);  // ClosedError on a dropped/stale handle
+    if (v.tag == TAG_UNFILLED || v.tag == TAG_NIL) return {};
+    // ClosedError on a dropped/stale handle
+    return jit_handle_self<Target>(v).hold();
   }
+  return {};
 }
 template <class... Args>
-inline void jit_resolve_arg_handles(int64_t n, JitValue* args) {
+inline std::array<Hold, sizeof...(Args)> jit_resolve_arg_handles(
+    int64_t n, JitValue* args) {
   size_t i = 0;
-  (jit_arg_handle_check<Args>(n, args, i++), ...);
+  // A braced list evaluates left to right.
+  return {jit_arg_handle_check<Args>(n, args, i++)...};
 }
 
 // Companion pass: bump the generation of every non-const handle argument,
@@ -683,16 +699,16 @@ void jit_method_thunk(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t sel
                           int64_t n, JitValue* args) {
   JitValue self{self_tag, self_data};
   jit_check_args<T, Mf, Args...>(n, args);
-  T* obj = jit_handle_self<T>(self);
-  jit_resolve_arg_handles<Args...>(n, args);  // order-fixing; see its own comment
+  auto obj = jit_handle_self<T>(self);
+  auto held = jit_resolve_arg_handles<Args...>(n, args);  // see its own comment
   if constexpr (Bump) jit_bump_handle_gen<T>(self);
   jit_bump_arg_handles<Args...>(n, args);
   auto invoke = [&]<size_t... I>(std::index_sequence<I...>) -> JitValue {
     if constexpr (std::is_void_v<R>) {
-      (obj->*Mf)(jit_arg_get<Args>(jit_arg_or_default<T, Mf>(n, args, I))...);
+      (obj.get()->*Mf)(jit_arg_get<Args>(jit_arg_or_default<T, Mf>(n, args, I))...);
       return {TAG_NIL, 0};
     } else {
-      auto&& r = (obj->*Mf)(
+      auto&& r = (obj.get()->*Mf)(
           jit_arg_get<Args>(jit_arg_or_default<T, Mf>(n, args, I))...);
       return jit_lower_return<R>(std::forward<decltype(r)>(r));
     }
@@ -710,12 +726,12 @@ void jit_borrowed_thunk(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t s
   JitValue self{self_tag, self_data};
   jit_check_args<T, Mf, Args...>(n, args);
   // The borrow handle keeps its own reference to self as its parent.
-  T* obj = jit_handle_self<T>(self);
-  jit_resolve_arg_handles<Args...>(n, args);  // see jit_method_thunk
+  auto obj = jit_handle_self<T>(self);
+  auto held = jit_resolve_arg_handles<Args...>(n, args);  // see jit_method_thunk
   jit_bump_arg_handles<Args...>(n, args);
   int64_t pgen = jit_handle_gen(reinterpret_cast<JitObject*>(self.data));
   auto invoke = [&]<size_t... I>(std::index_sequence<I...>) -> JitValue {
-    auto& r = (obj->*Mf)(
+    auto& r = (obj.get()->*Mf)(
         jit_arg_get<Args>(jit_arg_or_default<T, Mf>(n, args, I))...);
     return jit_make_borrow_handle<T2>(const_cast<T2*>(&r), self, pgen);
   };
@@ -726,9 +742,11 @@ void jit_borrowed_thunk(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t s
 // ns adapters: reached through the ns-method trampoline, which has
 // already arity- and type-checked every positional against the
 // CANONICAL interp params (the calling-convention single source), so
-// these convert and call.
+// these convert and call. Handle arguments are held for the call, as a
+// method's are (jit_resolve_arg_handles).
 template <class T, class... Args>
 JitValue jit_ctor_adapter(JitValue* a, int64_t) {
+  auto held = jit_resolve_arg_handles<Args...>(sizeof...(Args), a);
   auto invoke = [&]<size_t... I>(std::index_sequence<I...>) {
     return foreign::table<T>().adopt(
         std::make_unique<T>(jit_arg_get<Args>(a[I])...));
@@ -739,6 +757,7 @@ JitValue jit_ctor_adapter(JitValue* a, int64_t) {
 
 template <auto Fn, class R, class... Args>
 JitValue jit_static_adapter(JitValue* a, int64_t) {
+  auto held = jit_resolve_arg_handles<Args...>(sizeof...(Args), a);
   auto invoke = [&]<size_t... I>(std::index_sequence<I...>) -> JitValue {
     if constexpr (std::is_void_v<R>) {
       Fn(jit_arg_get<Args>(a[I])...);
@@ -779,7 +798,7 @@ template <class T, class I>
 void register_implementer() {
   if constexpr (std::is_base_of_v<I, T>) {
     wrapped_implementers<I>()[foreign::state_fn_id<T>()] =
-        [](JitValue h) -> const I* {
+        [](JitValue h) -> Held<const I> {
       return wrap_detail::jit_handle_self<T>(h);
     };
   }
