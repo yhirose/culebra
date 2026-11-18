@@ -41,7 +41,9 @@ function runNative(main, files = {}) {
   fs.writeFileSync(path.join(dir, "main.cul"), main);
   const r = spawnSync(bin, ["--vm", path.join(dir, "main.cul"),
                             ...Object.keys(files).map((f) => path.join(dir, f))],
-                      { encoding: "utf8", env: { ...process.env, CULEBRA_AUDIO: "off" } });
+                      // A runner that never answers fails the test rather than hang it.
+                      { encoding: "utf8", timeout: 60_000,
+                        env: { ...process.env, CULEBRA_AUDIO: "off" } });
   assert.equal(r.status, 0, r.stdout + r.stderr);
   return { dir, stdout: r.stdout };
 }
@@ -75,12 +77,10 @@ const select = (source, text, nth = 0) => {
 // --- a sound that ends on its own plays to its end -------------------------
 
 const pluck = "let {noise, perc} = Synth\nnoise() * perc(0.001, 0.01) |> pluck(220.0, ring: 0.5)\n";
-{
-  const r = await play(pluck, null, 4);
-  assert.equal(r.failed, false, r.text);
-  assert.deepEqual(shape(r.wav), [2, 22535]);
-  assert.ok(r.wav.equals(native(r.src)), "the wasm's WAV is not the native one");
-}
+const plucked = await play(pluck, null, 4);
+assert.equal(plucked.failed, false, plucked.text);
+assert.deepEqual(shape(plucked.wav), [2, 22535]);
+assert.ok(plucked.wav.equals(native(plucked.src)), "the wasm's WAV is not the native one");
 
 // --- one that does not plays for the seconds asked -------------------------
 
@@ -210,8 +210,7 @@ print(JSON.stringify(reply))
 {
   const r = desktop(pluck, null, 4);
   assert.equal(r.failed, false, r.text);
-  assert.ok(r.wav.equals(native(buildProgram(pluck, null, 4).src)),
-            "the desktop app's WAV is not the browser's");
+  assert.ok(r.wav.equals(plucked.wav), "the desktop app's WAV is not the browser's");
   const sel = desktop(pad, select(pad, "saw(110.0)"), 0.25);
   assert.ok(sel.wav.equals(saw.wav), "the desktop app's selection did not play saw(110.0) alone");
   const failed = desktop(broken, select(broken, "Math.abss(1)\nsaw"));

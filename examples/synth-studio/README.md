@@ -26,9 +26,9 @@ ones `--with` adds for the sources it runs.
 | `runner/test_runner.cul` | its test, which the examples sweep runs |
 
 The page is the browser's own (`playground/studio.html` and what it loads),
-not a copy. `main.cul` serves it with one change, the
-`<meta name="studio-runner">` that tells it to send its Plays to this
-program's server rather than to the Playground's wasm worker.
+not a copy. `main.cul` serves it with its `<meta name="studio-runner">` set
+to `socket`, which sends its Plays to this program's server rather than to
+the Playground's wasm worker, and with no version (see Limits).
 
 A Play sends the program the page builds (`playground/studio-program.js`) over
 the WebSocket. The runner runs it on an isolate of its own; the program's

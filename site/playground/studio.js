@@ -112,7 +112,7 @@ function socketRunner(on) {
         if (m.text) on.output(m.text);
         on.done(m.rc, m.wav ? bytesOf(atob(m.wav)) : null);
       };
-      ws.onclose = () => on.error("the app's server is gone", "");
+      ws.onclose = () => on.error("the app's server is gone", "", true);
     },
     run(src) {
       ws.send(JSON.stringify({ src, path: ENTRY }));
@@ -141,8 +141,10 @@ const runner = (runnerKind === "socket" ? socketRunner : workerRunner)({
     showConsole(printed, false);
   },
   done: finish,
-  error(status, detail) {
-    ready = false;  // what ran the program is gone until it is started again
+  // `gone`: what runs the program cannot take another until it is started
+  // again (a closed connection; a worker's error leaves the worker running).
+  error(status, detail, gone = false) {
+    if (gone) ready = false;
     setStatus(status, true);
     showConsole(detail, true);
     if (rendering) {

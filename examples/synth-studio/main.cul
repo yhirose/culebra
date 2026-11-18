@@ -15,7 +15,7 @@ import runner from './runner/runner.cul'
 # (the site's assets are mounted beside them, below). The page is told to run
 # its Plays here, and has no version to show (the site stamps it when it
 # copies the page).
-let page = fn () {
+fn page() {
   let studio = Dir.embedded("../../playground")
   let meta = "<meta name=\"studio-runner\" content=\"worker\">"
   let html = studio.read("studio.html")

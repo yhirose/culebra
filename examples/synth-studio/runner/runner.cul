@@ -8,18 +8,18 @@
 
 # A failure as the command line prints one: a built-in error with its kind and
 # place, a thrown value as it is (an isolate's join keeps no place for it).
-let failure_text = fn (e) {
+fn failure_text(e) {
   e is Object && e.kind is String
     ? "{e.kind}: {e.message} at {e.line}:{e.col}.\n"
     : "uncaught: {e}\n"
 }
 
-let start = fn (src, path) {
+fn start(src, path) {
   Isolate.spawn_source(src, name: path)
 }
 
 # The answer to send for a run, or nil while it is still rendering.
-let answer = fn (run) {
+fn answer(run) {
   try {
     let wav = run.poll()
     # Encoded here rather than by the program: Encoding is this program's to
@@ -32,7 +32,7 @@ let answer = fn (run) {
 
 # One connection: each message is a program to run, in place of one still
 # rendering; a closed connection drops what runs.
-let serve = fn (ws) {
+fn serve(ws) {
   ws.set_timeout(50)
   mut run = nil
   while true {
