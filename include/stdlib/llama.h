@@ -71,6 +71,10 @@ struct Result {
   Finish finish = Finish::End;
   int prompt_tokens = 0;
   int completion_tokens = 0;
+  // Refused before starting, *err saying why: every slot is taken by a call
+  // still running, which only an on_text callback can have made (see
+  // open_model_slot).
+  bool busy = false;
 };
 
 // Where a model runs, decided when it is loaded.
@@ -94,6 +98,7 @@ namespace detail {
 struct Model {
   std::unique_ptr<llamalib::Llama> lib;
   Device device;
+  int n_slots = 1;  // how many calls the model runs at once (LoadOptions)
 };
 
 inline thread_local IdRegistry<Model> g_models;
@@ -287,6 +292,24 @@ inline Held<Model> open_model(int64_t id, std::string* err) {
   return m;
 }
 
+// The model for a generate or chat, which takes one of its slots for the call
+// and runs on_text in it. A model stays on its thread, so a call finding every
+// slot taken is one on_text made, and waiting for a slot would wait forever:
+// it is refused instead. Only generate and chat hold a model across program
+// code, so the holders past n_slots are exactly such calls.
+inline Held<Model> open_model_slot(int64_t id, Result* out, std::string* err) {
+  auto m = open_model(id, err);
+  if (m && g_models.holders(id) > static_cast<uint32_t>(m->n_slots)) {
+    out->busy = true;
+    if (err) {
+      *err = "cannot start a call while all of the model's slots (n_slots: " +
+             std::to_string(m->n_slots) + ") are taken by its running calls";
+    }
+    return {};
+  }
+  return m;
+}
+
 // Runs `body`, which may throw cpp-llamalib's errors; they end here as text.
 template <class F>
 inline bool guarded(std::string* err, F&& body) {
@@ -334,7 +357,8 @@ CULEBRA_RT_LLAMA_LINKAGE int64_t load(const std::string& path,
     return -1;
   }
   Device device = detail::loaded_device(*model, opts.gpu);
-  return detail::model_intern(new detail::Model{std::move(model), std::move(device)});
+  return detail::model_intern(
+      new detail::Model{std::move(model), std::move(device), opts.n_slots});
 }
 
 CULEBRA_RT_LLAMA_LINKAGE bool close(int64_t id) {
@@ -362,7 +386,7 @@ CULEBRA_RT_LLAMA_LINKAGE bool generate(int64_t id, const std::string& prompt,
                                        const GenerateOptions& opts,
                                        const OnPiece& on_piece, Result* out,
                                        std::string* err) {
-  auto m = detail::open_model(id, err);
+  auto m = detail::open_model_slot(id, out, err);
   if (!m) return false;
   return detail::guarded(err, [&] {
     *out = detail::from_lib(m->lib->complete(prompt, detail::to_lib(opts), on_piece));
@@ -373,7 +397,7 @@ CULEBRA_RT_LLAMA_LINKAGE bool chat(int64_t id, const std::vector<Message>& messa
                                    const GenerateOptions& opts,
                                    const OnPiece& on_piece, Result* out,
                                    std::string* err) {
-  auto m = detail::open_model(id, err);
+  auto m = detail::open_model_slot(id, out, err);
   if (!m) return false;
   return detail::guarded(err, [&] {
     *out = detail::from_lib(

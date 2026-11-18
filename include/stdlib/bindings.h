@@ -2518,6 +2518,10 @@ inline JitValue _http_run_client(int64_t id, culebra::http::HttpRequest& req,
                                  JitHttpSink& st, const char* ctx) {
   auto r = culebra::http::http_client_request(id, req);
   if (st.eptr) std::rethrow_exception(st.eptr);
+  if (r.busy) {
+    throw culebra::CulebraError("ValueError", r.error, _jit_thread.call_line,
+                                _jit_thread.call_col);
+  }
   if (!r.ok) {
     throw culebra::CulebraError("HttpError", culebra::format("{}: {}", ctx, r.error),
                                 0, 0);
@@ -4890,7 +4894,8 @@ inline JitValue _ns_sqlite_version(JitValue*, int64_t) {
 // ===========================================================================
 // Llama — a language model run in this process: the model handle over the
 // value-neutral core (llama.h). This layer marshals values and nothing else;
-// every refusal the core makes comes back as a LlamaError, and a Ctrl+C is the
+// every refusal the core makes comes back as a LlamaError, but a call refused
+// for want of a slot (Result::busy), which is a ValueError; a Ctrl+C is the
 // interrupt, never an error of this namespace.
 // ===========================================================================
 
@@ -5057,6 +5062,7 @@ inline JitValue _jit_llama_run(JitLlamaCall& c, Run run) {
   bool ok = run(on_piece, &result, &err);
   if (c.eptr) std::rethrow_exception(c.eptr);
   culebra::throw_if_interrupted();
+  if (!ok && result.busy) _jit_llama_bad_value(err, _jit_thread.call_line, _jit_thread.call_col);
   if (!ok) _jit_llama_throw(err, _jit_thread.call_line, _jit_thread.call_col);
   return _jit_llama_result_value(result);
 }

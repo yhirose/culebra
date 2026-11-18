@@ -114,6 +114,12 @@ fn with_a_model(path) {
             "ValueError: Llama: cannot close a model while one of its calls is running")
   assert_eq(m.generate("Say ok", grammar: only("ok")).text, "ok")
 
+  # With its one slot taken, a call from on_text raises instead of waiting
+  # for a slot that cannot free.
+  assert_eq(failure(|| m.generate("Count", grammar: only("one two"),
+                                  on_text: fn (t) { m.generate("x", max_tokens: 1) })),
+            "ValueError: Llama: cannot start a call while all of the model's slots (n_slots: 1) are taken by its running calls")
+
   # The same call gives the same text: the cache is not reused unless asked.
   let first = m.generate("Tell me a story", max_tokens: 16, temperature: 0)
   let second = m.generate("Tell me a story", max_tokens: 16, temperature: 0)

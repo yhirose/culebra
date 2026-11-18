@@ -293,6 +293,10 @@ assert_throws('ValueError', || api.get("/", into: fn (chunk) { api.close() }),
   message: 'Http.client: cannot close a client while one of its requests is running')
 
 assert_eq(api.get("/").body, "Hello, world!")
+
+# Nor make another request on it: the connection is mid-request.
+assert_throws('ValueError', || api.get("/", into: fn (chunk) { api.get("/method") }),
+  message: 'Http.client: cannot make a request with a path on a client while one of its requests is running')
 api.close()
 
 # Http.sse is Http.get(url, events:): the same events, and the same rule for a

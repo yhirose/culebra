@@ -327,6 +327,9 @@ struct Index {
   Pipeline pipeline;
   std::optional<Indexer> indexer;      // empty when read-only
   std::string shape;                   // what a save records, see write_envelope
+  // An add is indexing a document: its hooks run while the index is half
+  // changed, so the index takes no other call until it ends (index_use).
+  bool writing = false;
 
   explicit Index(const Analyzer &analyzer)
       : invidx(std::make_unique<Invidx>()), pipeline(analyzer),
@@ -360,21 +363,19 @@ struct Index {
 // the core and the feature archive).
 inline thread_local IdRegistry<Index> g_indexes;
 
-[[noreturn]] inline void throw_dropped() {
-  throw CulebraError("SearchError", "Search: index was dropped", 0, 0);
-}
-
-inline Index& index_get(int64_t id) {
-  auto* p = g_indexes.get(id);
-  if (!p) throw_dropped();
-  return *p;
-}
-
-// The index for a call that runs its analyzer's hooks, which are program
-// code: held in use until the call returns, so a hook cannot close it.
+// The index for a call, held until the call returns: add and search run
+// their analyzer's hooks, program code that must not close it meanwhile. A
+// call from inside an add's hooks is refused, since the add has the index
+// half changed (a search would read it so, another add or remove would undo
+// part of it).
 inline Held<Index> index_use(int64_t id) {
   auto use = g_indexes.use(id);
-  if (!use) throw_dropped();
+  if (!use) throw CulebraError("SearchError", "Search: index was dropped", 0, 0);
+  if (use->writing) {
+    throw CulebraError(
+        "ValueError",
+        "Search: cannot use an index while an add on it is running", 0, 0);
+  }
   return use;
 }
 
@@ -496,6 +497,11 @@ CULEBRA_RT_SEARCH_LINKAGE void index_add(int64_t id, std::string_view key,
   auto use = detail::index_use(id);
   auto& index = *use.get();
   if (!index.writable()) detail::throw_readonly("add");
+  struct Writing {
+    detail::Index& index;
+    explicit Writing(detail::Index& i) : index(i) { index.writing = true; }
+    ~Writing() { index.writing = false; }
+  } writing(index);
   try {
     // The key is copied because the index owns it from here on; the text is
     // not, since the tokenizer only reads it.
@@ -517,7 +523,8 @@ CULEBRA_RT_SEARCH_LINKAGE void index_add(int64_t id, std::string_view key,
 }
 
 CULEBRA_RT_SEARCH_LINKAGE void index_remove(int64_t id, std::string_view key) {
-  auto& index = detail::index_get(id);
+  auto use = detail::index_use(id);
+  auto& index = *use.get();
   if (!index.writable()) detail::throw_readonly("remove");
   index.invidx->remove_document(std::string(key));
 }
@@ -574,7 +581,8 @@ CULEBRA_RT_SEARCH_LINKAGE std::vector<Hit> index_search(int64_t id,
 }
 
 CULEBRA_RT_SEARCH_LINKAGE void index_save(int64_t id, std::string_view path) {
-  auto& index = detail::index_get(id);
+  auto use = detail::index_use(id);
+  auto& index = *use.get();
   if (!index.writable()) detail::throw_readonly("save");
   try {
     std::ofstream os(std::string(path), std::ios::binary);

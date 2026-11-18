@@ -36,12 +36,14 @@ struct IdRegistry {
     if (!live(id, &s)) return {};
     return {slots[s], culebra::Hold(&users[s])};
   }
+  // How many native frames hold the object (0 for a stale id).
+  uint32_t holders(int64_t id) const {
+    uint32_t s;
+    return live(id, &s) ? users[s] : 0;
+  }
   // Whether a native frame is using the object: closing it now would free it
   // under that frame, so a close checks this first.
-  bool in_use(int64_t id) const {
-    uint32_t s;
-    return live(id, &s) && users[s] != 0;
-  }
+  bool in_use(int64_t id) const { return holders(id) != 0; }
   // The one place the (gen, slot) packing lives, so a caller walking `slots`
   // to retire what it finds there names an id the same way add() minted it.
   int64_t id_at(uint32_t s) const {

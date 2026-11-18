@@ -4679,7 +4679,7 @@ unionとしての順位で、`Object`より下です。
 | `ImmutableError` | `let`（非`mut`）束縛への代入；immutable ObjectプロパティまたはDictエントリへの代入；コンストラクタ本体内の`self`再代入 | はい |
 | `KeyError` | Dictの存在しないキーsubscript；Objectの存在しないキーsubscript | はい |
 | `IndexError` | Array / String / Tensorの範囲外index；Tensor slice範囲外；Tensor reduction axis範囲外 | はい |
-| `ValueError` | Destructure pattern mismatch；Tensorのshape / dtype不一致；`[].min()`等空コレクションへのreduce；不正な数値文字列；JSON parse失敗；1000段を超えてネストした値のwalk（下記「値ネストの上限」参照）；走っているジェネレータや標準ライブラリのイテレータを、その一歩の中から再び進める | はい |
+| `ValueError` | Destructure pattern mismatch；Tensorのshape / dtype不一致；`[].min()`等空コレクションへのreduce；不正な数値文字列；JSON parse失敗；1000段を超えてネストした値のwalk（下記「値ネストの上限」参照）；走っているジェネレータや標準ライブラリのイテレータを、その一歩の中から再び進める；ネイティブのオブジェクト（`Search`の索引、`Http.client`、`Llama`のモデル）を、それに対してまだ走っている呼び出しのコールバックから閉じる、または再入できない形で使う | はい |
 | `AttributeError` | compound代入（`o.x += ...`）で`x`が存在しない；組み込み名前空間が持たないメンバーの読み取り・書き込み（`=`/`??=`）（名前空間は閉じている — クラスやプレーンなdictは自由に読み書きできる） | はい |
 | `ArityError` | 必須引数の欠如 — 関数やclass constructorへのpositional不足；**組み込み**・名前空間関数が受け取れる数を超えたpositional。**ユーザ定義**関数への余分なpositionalはエラーではなく`__ARGS__`（§19）に溢れる。ただし`fn name(…)`宣言はディスパッチするので、余分があると合うメソッドが無い（`DispatchError`）。class constructorは`new`の無いclassも含めて無視する。操作が渡す引数と数の合わないハンドラのclause（§16） | はい |
 | `DispatchError` | 多重ディスパッチ（§20）でマッチなし、またはspecificity同点 | はい |

@@ -211,6 +211,9 @@ struct HttpResult {
   std::string body;       // response body (raw bytes).
   HeaderList headers;     // response headers (insertion order from server).
   std::string error;      // transport error text (empty when ok).
+  // Refused before sending, error saying why: the client is running a request
+  // whose callback made this one (http_client_request).
+  bool busy = false;
 };
 
 inline bool _iequals(std::string_view a, std::string_view b) {
@@ -681,7 +684,6 @@ struct HttpClient {
   HeaderList default_headers;   // layered under each request's headers.
   int64_t timeout_sec = 0;         // carried so an absolute-URL one-off can reuse it.
   bool follow_redirects = true;
-  std::mutex m;                 // one connection → serialize requests.
   explicit HttpClient(const std::string& origin) : cli(origin) {}
 };
 
@@ -852,8 +854,8 @@ CULEBRA_RT_HTTP_LINKAGE int64_t http_client_open(const std::string& base_url,
 }
 
 // Run `req` against the persistent client `id`. A relative `req.url` is joined to
-// the client's base path and sent over the reused connection (serialized by the
-// client mutex); an absolute `req.url` (with a scheme) can't reuse a connection
+// the client's base path and sent over the reused connection, one request at a
+// time; an absolute `req.url` (with a scheme) can't reuse a connection
 // bound to a different origin, so it goes through a one-off http_request. Either
 // way the client's default headers layer under the request's. A closed/invalid
 // id is an error result (never a crash).
@@ -879,6 +881,17 @@ CULEBRA_RT_HTTP_LINKAGE HttpResult http_client_request(int64_t id,
     fresh.follow_redirects = c->follow_redirects;
     return http_request(fresh);
   }
+  // The connection is mid-request while a request's callback runs, and a
+  // client is used on one thread only: a request from that callback is the
+  // only way to overlap one, and it would interleave on the connection.
+  if (g_http_clients.in_use(id)) {
+    HttpResult out;
+    out.busy = true;
+    out.error =
+        "Http.client: cannot make a request with a path on a client while one "
+        "of its requests is running";
+    return out;
+  }
   std::string path = _http_join_path(c->base_path, req.url);
   _http_append_params(path, req.params);
   HeaderList headers = merge_headers(c->default_headers, req.headers);
@@ -888,7 +901,6 @@ CULEBRA_RT_HTTP_LINKAGE HttpResult http_client_request(int64_t id,
   // which are program code: the client stays in use until it returns, so
   // they cannot close it under the connection.
   auto use = g_http_clients.use(id);
-  std::lock_guard<std::mutex> lk(c->m);
   return _http_send(c->cli, hreq, req);
 #endif
 }

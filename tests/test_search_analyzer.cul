@@ -184,6 +184,22 @@ reopened.idx.add("doc-1", "please shut it")
 reopened.idx.add("doc-2", "still open")
 assert_eq(found(reopened.idx.search("still")), ["doc-2"])
 
+// Nor can an add's hook use the index the add has half changed.
+let readding = { mut idx: nil }
+readding.idx = Search.Index.new(analyzer: {
+  normalizer: fn (t) { if t == "again" { readding.idx.add("doc-1", "other words") }; t },
+})
+assert_throws('ValueError', || readding.idx.add("doc-1", "add again later"),
+  message: 'Search: cannot use an index while an add on it is running')
+
+let peeking = { mut idx: nil }
+peeking.idx = Search.Index.new(analyzer: {
+  normalizer: fn (t) { if t == "peek" { peeking.idx.search("first") }; t },
+})
+peeking.idx.add("doc-1", "first words")
+assert_throws('ValueError', || peeking.idx.add("doc-2", "peek here"),
+  message: 'Search: cannot use an index while an add on it is running')
+
 // --- no analyzer is the built-in behaviour ----------------------------------
 
 let plain = Search.Index.new()

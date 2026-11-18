@@ -4265,9 +4265,11 @@ api.close()                                         # 接続を解放
 マージされます（同名キーは上書き）。`close()`で接続を解放します（スコープを抜けた
 クライアントはGCも閉じるので明示`close`は任意）。`close`後のリクエストは
 `HttpError`。リクエスト自身のコールバック（`body:`、multipartのpartの`stream:`、
-`into:`、`events:`）は、そのリクエストが使っているクライアントを閉じられず、そこでの
-`close()`は`ValueError`になります。ハンドルはnon-sendable（1接続・1スレッド）なので、
-ファンアウトするならisolateごとにクライアントを作ります。
+`into:`、`events:`）は、そのリクエストが使っているクライアントを閉じられず、パスで
+別のリクエストも出せません（接続がリクエストの途中のため）。どちらも`ValueError`に
+なります。絶対URLのリクエストは接続を使わないので、そこでも出せます。
+ハンドルはnon-sendable（1接続・1スレッド）なので、ファンアウトするならisolateごとに
+クライアントを作ります。
 
 **並列・レースリクエスト**はHTTP専用APIを使わず、汎用の [`Parallel`](#12-isolate)
 コンビネータを`Http.get`に適用します — JSの`Promise.all`/`race`やElixirの
@@ -8277,7 +8279,9 @@ inspect(idx.search("the"))           # => []
 そのkindのまま、`throw`した値はその値のままプログラムの`catch`に届きます。
 
 フックは、自分を走らせている`add`や`search`の索引を閉じられません。そこでの`close()`は
-`ValueError`になり、索引は開いたまま残ります。
+`ValueError`になり、索引は開いたまま残ります。`add`のフックは索引が半分変わった状態で
+走るので、その索引をまったく使えません。そこでの`add`、`remove`、`search`、`save`も
+`ValueError`になります。`search`のフックは索引を読む前に走るので、自由に使えます。
 
 C++で書いたsplitterはネイティブに走ります。`ISplitter`を継承して`wrap<T>`で宣言した
 クラスのハンドルは、そのまま`splitter`に渡せます。契約とハンドルの寿命は
@@ -9743,7 +9747,9 @@ culebraがGPUのバックエンドを持っていれば、それも入ります�
 `path`のGGUFモデルを読み込みます。`n_ctx`はコンテキストのトークン数です（llama.cppが切り上げることが
 あります。`n_ctx()`を参照）。`gpu: false`はモデルをCPUに留めます。`n_batch`は一度にデコードするトークン数で
 （0はllama.cppの既定。これより長いプロンプトは、この大きさに分けてデコードされます）、`n_slots`はモデルが
-同時に走らせられる呼び出しの数です。
+同時に走らせられる呼び出しの数です。モデルは自分のスレッドから出ないので、同時の呼び出しとは
+`generate`や`chat`と、その`on_text`が出す呼び出しのことです。`n_slots`を超える1つは、空くはずのない
+スロットを待たずに`ValueError`になります。
 
 ### `model.generate(prompt, max_tokens=nil, stop=nil, temperature=nil, seed=nil, grammar=nil, cache=false, on_text=nil) -> Object`
 
@@ -9840,6 +9846,7 @@ NVIDIAのドライバと、AMDとIntelのGPU向けのMesaが持っています�
 |---|---|
 | モデルを読み込めない（ファイルがない、GGUFでない、メモリ不足）、CPUにAVX2がない | `LlamaError`（理由つき） |
 | モデルが閉じている | `LlamaError` |
+| コールバック`on_text`の中での`close()`、または`n_slots`を超える呼び出し | `ValueError` |
 | プロンプトと`max_tokens`がコンテキストに収まらない | `LlamaError` |
 | 使えるチャットテンプレートがない | `LlamaError` |
 | 型の違う引数 | `TypeError` |

@@ -4398,8 +4398,10 @@ scheme) bypasses `base_url` but still gets the default headers. Per-request
 `close()` releases the connection; the GC also closes a client that goes out of
 scope (so an explicit `close` is optional). A request after `close` is an
 `HttpError`. A request's own callbacks (`body:`, a multipart part's `stream:`,
-`into:`, `events:`) cannot close the client it is running on: `close()` there
-raises `ValueError`. The handle is non-sendable (one connection, one thread):
+`into:`, `events:`) cannot close the client it is running on, nor make another
+request on it with a path (the connection is mid-request): either raises
+`ValueError`. A request with an absolute URL does not use the connection and
+works there. The handle is non-sendable (one connection, one thread):
 to fan out, make a client per isolate.
 
 **Parallel and racing requests** use the general [`Parallel`](#12-isolate)
@@ -8614,7 +8616,10 @@ What a hook raises leaves `add` or `search` as it was raised: an error keeps
 its kind, and a thrown value reaches the program's `catch` as that value.
 
 A hook cannot close the index whose `add` or `search` is running it: `close()`
-there raises `ValueError` and the index stays open.
+there raises `ValueError` and the index stays open. An `add`'s hooks run while
+the index is half changed, so they cannot use it at all: an `add`, `remove`,
+`search` or `save` on it there raises `ValueError` too. A `search`'s hooks run
+before it reads the index and may use it freely.
 
 A splitter written in C++ runs natively instead: a class deriving from
 `ISplitter` and declared with `wrap<T>` gives a handle the `splitter` slot
@@ -10197,7 +10202,9 @@ Loads the GGUF model at `path`. `n_ctx` is the context size in tokens (llama.cpp
 may round it up, see `n_ctx()`); `gpu: false` keeps the model on the CPU;
 `n_batch` is how many tokens are decoded at a time (0 = llama.cpp's default; a
 longer prompt is decoded in pieces of this size); `n_slots` is how many calls the
-model can run at once.
+model can run at once. A model stays on its thread, so those calls are a
+`generate` or `chat` and the ones its `on_text` makes: one beyond `n_slots`
+raises `ValueError` rather than waiting for a slot that cannot free.
 
 ### `model.generate(prompt, max_tokens=nil, stop=nil, temperature=nil, seed=nil, grammar=nil, cache=false, on_text=nil) -> Object`
 
@@ -10302,6 +10309,7 @@ callback cannot close the model it is generating on: `close()` there raises
 |---|---|
 | The model cannot be loaded (no such file, not a GGUF, out of memory), the CPU lacks AVX2 | `LlamaError`, with the reason |
 | The model is closed | `LlamaError` |
+| From `on_text`: `close()`, or a call beyond `n_slots` | `ValueError` |
 | The prompt, with `max_tokens`, does not fit the context | `LlamaError` |
 | The model has no usable chat template | `LlamaError` |
 | An argument of the wrong type | `TypeError` |
