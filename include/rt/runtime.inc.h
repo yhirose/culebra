@@ -3297,8 +3297,8 @@ _culebra_parse_tensor_ctor_args(const JitValue* args, int64_t n, int64_t line,
   };
   culebra::Dtype dt = culebra::Dtype::F32;
   int64_t off = 0;
-  if (n > 0 && args[0].tag == TAG_STRING) {
-    auto d = culebra::parse_dtype(reinterpret_cast<const char*>(args[0].data));
+  if (n > 0 && (args[0].tag == TAG_STRING || args[0].tag == TAG_STRINGVIEW)) {
+    auto d = culebra::parse_dtype(_culebra_str_view(args[0].tag, args[0].data));
     if (!d) type_err();
     dt = *d;
     off = 1;

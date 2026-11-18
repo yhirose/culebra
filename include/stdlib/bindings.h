@@ -2910,14 +2910,14 @@ inline bool _jit_file_arg_present(int64_t n, JitValue* args,
       culebra::param_type_error_message(pname, expected),
       pos.line, pos.col);
 }
-// A required String positional, read as a view into the caller's own bytes.
-// Arity first, then type, so a handle method reports the two the same way
-// every other one does. Only valid for the duration of the call: `args` is
-// the caller's frame.
+// A required String positional (either representation), read as a view into
+// the caller's own bytes. Arity first, then type, so a handle method reports
+// the two the same way every other one does. Only valid for the duration of
+// the call: `args` is the caller's frame.
 inline std::string_view _jit_handle_req_string(int64_t n, JitValue* args,
                                                size_t i, const char* pname) {
   if (!_jit_file_arg_present(n, args, i)) _jit_file_missing_arg(pname);
-  if (args[i].tag != TAG_STRING)
+  if (args[i].tag != TAG_STRING && args[i].tag != TAG_STRINGVIEW)
     _jit_file_param_type_error(pname, "String", i);
   return _culebra_str_view(args[i].tag, args[i].data);
 }
@@ -2954,12 +2954,7 @@ inline void _jit_file_write(JitValue* __ret, JitClosure*, int8_t self_tag, int64
                                            int64_t n, JitValue* args) {
   JitValue self{self_tag, self_data};
   int64_t id = _jit_id_of(self, kFileHandle);
-  if (!_jit_file_arg_present(n, args, 0)) _jit_file_missing_arg("data");
-  // A `String` param rejects a StringView slice on every path (wrap.h's
-  // jit_check_args predicate; interp type_matches) — same here.
-  if (args[0].tag != TAG_STRING)
-    _jit_file_param_type_error("data", "String", 0);
-  auto sv = _culebra_str_view(args[0].tag, args[0].data);
+  auto sv = _jit_handle_req_string(n, args, 0, "data");
   culebra::_file_write(id, sv, _jit_thread.call_line, _jit_thread.call_col);
   { *__ret = {TAG_NIL, 0}; return; }
 }
@@ -3483,10 +3478,7 @@ inline int64_t _jit_sqlite_db_id(JitValue self) {
 // Reads the required `sql` String arg (arity-checks + type-checks, like the
 // File thunks), returning it by value.
 inline std::string _jit_sqlite_take_sql(int64_t n, JitValue* args) {
-  if (!_jit_file_arg_present(n, args, 0)) _jit_file_missing_arg("sql");
-  if (args[0].tag != TAG_STRING)
-    _jit_file_param_type_error("sql", "String", 0);
-  return std::string(_culebra_str_view(args[0].tag, args[0].data));
+  return std::string(_jit_handle_req_string(n, args, 0, "sql"));
 }
 
 inline void _jit_sqlite_db_execute(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
@@ -7417,18 +7409,14 @@ inline JitValue _jit_http_client_bodyless(JitValue self, int64_t n,
                                           culebra::HttpMethod method,
                                           const char* ctx) {
   int64_t id = _jit_http_client_id(self);
-  if (!_jit_file_arg_present(n, args, 0)) _jit_file_missing_arg("path");
-  // typed `String` param: reject StringView too (matches interp type_matches,
-  // which only accepts "String" for a plain String annotation).
-  if (args[0].tag != TAG_STRING)
-    _jit_file_param_type_error("path", "String", 0);
+  auto path = _jit_handle_req_string(n, args, 0, "path");
   auto at = [&](size_t i) {
     return _jit_file_arg_present(n, args, i) ? args[i] : JitValue{TAG_NIL, 0};
   };
   return _jit_at_call_site([&] {
     culebra::http::HttpRequest req;
     req.method = std::move(method);
-    req.url = std::string(_culebra_str_view(args[0].tag, args[0].data));
+    req.url = std::string(path);
     _jit_http_client_strobj(at(1), req.headers, ctx, "headers", "header");
     _jit_http_client_strobj(at(2), req.params, ctx, "params", "param");
     JitHttpSink st;
@@ -7442,18 +7430,14 @@ inline JitValue _jit_http_client_withbody(JitValue self, int64_t n,
                                           culebra::HttpMethod method,
                                           const char* ctx) {
   int64_t id = _jit_http_client_id(self);
-  if (!_jit_file_arg_present(n, args, 0)) _jit_file_missing_arg("path");
-  // typed `String` param: reject StringView too (matches interp type_matches,
-  // which only accepts "String" for a plain String annotation).
-  if (args[0].tag != TAG_STRING)
-    _jit_file_param_type_error("path", "String", 0);
+  auto path = _jit_handle_req_string(n, args, 0, "path");
   auto at = [&](size_t i) {
     return _jit_file_arg_present(n, args, i) ? args[i] : JitValue{TAG_NIL, 0};
   };
   return _jit_at_call_site([&] {
     culebra::http::HttpRequest req;
     req.method = std::move(method);
-    req.url = std::string(_culebra_str_view(args[0].tag, args[0].data));
+    req.url = std::string(path);
     _jit_http_client_strobj(at(3), req.headers, ctx, "headers", "header");
     _jit_http_client_strobj(at(4), req.params, ctx, "params", "param");
     JitHttpSink st;
@@ -7492,21 +7476,15 @@ inline void _jit_http_client_request(JitValue* __ret, JitClosure*, int8_t self_t
                                                     int64_t n, JitValue* args) {
   JitValue self{self_tag, self_data};
   int64_t id = _jit_http_client_id(self);
-  if (!_jit_file_arg_present(n, args, 0)) _jit_file_missing_arg("method");
-  // typed `String` params: reject StringView too (matches interp type_matches).
-  if (args[0].tag != TAG_STRING)
-    _jit_file_param_type_error("method", "String", 0);
-  if (!_jit_file_arg_present(n, args, 1)) _jit_file_missing_arg("path");
-  if (args[1].tag != TAG_STRING)
-    _jit_file_param_type_error("path", "String", 1);
+  auto method = _jit_handle_req_string(n, args, 0, "method");
+  auto path = _jit_handle_req_string(n, args, 1, "path");
   auto at = [&](size_t i) {
     return _jit_file_arg_present(n, args, i) ? args[i] : JitValue{TAG_NIL, 0};
   };
   *__ret = _jit_at_call_site([&] {
     culebra::http::HttpRequest req;
-    req.method = culebra::HttpMethod::checked(
-        _culebra_str_view(args[0].tag, args[0].data), "client.request", 0, 0);
-    req.url = std::string(_culebra_str_view(args[1].tag, args[1].data));
+    req.method = culebra::HttpMethod::checked(method, "client.request", 0, 0);
+    req.url = std::string(path);
     _jit_http_client_strobj(at(4), req.headers, "client.request", "headers",
                             "header");
     _jit_http_client_strobj(at(5), req.params, "client.request", "params",
@@ -7722,15 +7700,11 @@ inline void _jit_http_sink_fill(JitObject* meta);
 inline constexpr JitIdHandleSpec kHttpSinkHandle{"Http.sink", _jit_http_sink_fill};
 
 // sink.write(chunk) for a streaming response. Returns Bool (false if the client
-// has gone away or the sink has been invalidated). A `String` param rejects a
-// StringView slice on every path, matching the File handle-method convention.
+// has gone away or the sink has been invalidated).
 inline void _jit_http_sink_write(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                                 int64_t n, JitValue* args) {
   int64_t sid = _jit_id_of({self_tag, self_data}, kHttpSinkHandle);
-  if (!_jit_file_arg_present(n, args, 0)) _jit_file_missing_arg("data");
-  if (args[0].tag != TAG_STRING)
-    _jit_file_param_type_error("data", "String", 0);
-  auto sv = _culebra_str_view(args[0].tag, args[0].data);
+  auto sv = _jit_handle_req_string(n, args, 0, "data");
   bool ok = culebra::http::http_sink_write(sid, sv.data(), sv.size());
   { *__ret = {TAG_BOOL, ok ? 1 : 0}; return; }
 }
@@ -7840,10 +7814,7 @@ inline void _jit_ws_send(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t 
                                         JitValue* args) {
   JitValue self{self_tag, self_data};
   int64_t id = _jit_ws_id(self);
-  if (!_jit_file_arg_present(n, args, 0)) _jit_file_missing_arg("data");
-  if (args[0].tag != TAG_STRING)
-    _jit_file_param_type_error("data", "String", 0);
-  auto sv = _culebra_str_view(args[0].tag, args[0].data);
+  auto sv = _jit_handle_req_string(n, args, 0, "data");
   bool ok = culebra::http::ws_send(id, sv.data(), sv.size());
   { *__ret = {TAG_BOOL, ok ? 1 : 0}; return; }
 }
@@ -8017,7 +7988,7 @@ struct _JitWorkerDir : culebra::Dir {
     if (!is_file(path)) return false;
     JitOwnedVal r(call("read", path));
     JitValue v = r.borrow();
-    if (v.tag != TAG_STRING)
+    if (v.tag != TAG_STRING && v.tag != TAG_STRINGVIEW)
       throw culebra::CulebraError(
           "TypeError",
           culebra::format("server.static: the Dir's read('{}') returned {}, not String",
@@ -8035,7 +8006,8 @@ struct _JitWorkerDir : culebra::Dir {
     if (v.tag != TAG_ARRAY) return false;
     auto* arr = reinterpret_cast<JitArray*>(v.data);
     for (size_t i = 0; i < arr->size; i++)
-      if (arr->items[i].tag == TAG_STRING)
+      if (arr->items[i].tag == TAG_STRING ||
+          arr->items[i].tag == TAG_STRINGVIEW)
         out.emplace_back(_culebra_str_view(arr->items[i].tag, arr->items[i].data));
     return true;
   }
@@ -8050,15 +8022,11 @@ struct _JitWorkerDir : culebra::Dir {
 
 inline JitValue _jit_http_server_route(JitValue self, int64_t n, JitValue* args,
                                        const char* method) {
-  if (!_jit_file_arg_present(n, args, 0)) _jit_file_missing_arg("pattern");
-  if (args[0].tag != TAG_STRING)
-    _jit_file_param_type_error("pattern", "String", 0);
+  auto pattern = _jit_handle_req_string(n, args, 0, "pattern");
   if (!_jit_file_arg_present(n, args, 1)) _jit_file_missing_arg("handler");
   if (args[1].tag != TAG_FUNC)
     _jit_file_param_type_error("handler", "Function", 1);
-  _jit_http_server_record(
-      self, method, std::string(_culebra_str_view(args[0].tag, args[0].data)),
-      args[1]);
+  _jit_http_server_record(self, method, std::string(pattern), args[1]);
   culebra_runtime_value_retain(self.tag, self.data);  // chainable return (+1)
   return self;
 }
@@ -8107,12 +8075,9 @@ inline void _jit_http_server_static(JitValue* __ret, JitClosure*, int8_t self_ta
                                                    int64_t n, JitValue* args) {
   JitValue self{self_tag, self_data};
   int64_t id = _jit_http_server_id(self);
-  if (!_jit_file_arg_present(n, args, 0)) _jit_file_missing_arg("mount");
-  if (args[0].tag != TAG_STRING)
-    _jit_file_param_type_error("mount", "String", 0);
+  std::string mount(_jit_handle_req_string(n, args, 0, "mount"));
   if (!_jit_file_arg_present(n, args, 1)) _jit_file_missing_arg("dir");
   *__ret = _jit_at_call_site([&] {
-    std::string mount(_culebra_str_view(args[0].tag, args[0].data));
     std::string err;
     // dir is a String path (live disk via mount point) or a Dir. One of the
     // Dir module's, known by its class (JitSpecialTable::dir_kind), is
@@ -8135,7 +8100,7 @@ inline void _jit_http_server_static(JitValue* __ret, JitClosure*, int8_t self_ta
             _jit_http_server_record(self, "STATIC", mount, args[1]));
       }
       culebra::http::http_server_serve_dir(id, mount, std::move(dir), err);
-    } else if (args[1].tag == TAG_STRING) {
+    } else if (args[1].tag == TAG_STRING || args[1].tag == TAG_STRINGVIEW) {
       culebra::http::http_server_static(
           id, mount, std::string(_culebra_str_view(args[1].tag, args[1].data)),
           err);
@@ -8539,11 +8504,11 @@ inline JitValue _ns_sharedbuffer_file(JitValue* a, int64_t n) {
     throw culebra::CulebraError("ArityError",
         "SharedBuffer.file: expected 3 arguments (path, count, Class)");
   }
-  if (a[0].tag != TAG_STRING) {
+  if (a[0].tag != TAG_STRING && a[0].tag != TAG_STRINGVIEW) {
     throw culebra::CulebraError("TypeError",
         "SharedBuffer.file: path must be a String");
   }
-  std::string path(_str_sv(reinterpret_cast<const char*>(a[0].data)));
+  std::string path(_culebra_str_view(a[0].tag, a[0].data));
   if (a[1].tag != TAG_LONG) {
     culebra::throw_type_mismatch("Long", _culebra_tag_name(a[1].tag), 0, 0);
   }
@@ -8604,11 +8569,11 @@ inline JitValue _ns_sharedbuffer_receive(JitValue* a, int64_t n) {
     throw culebra::CulebraError("ArityError",
         "SharedBuffer.receive: expected 2 arguments (name, Class)");
   }
-  if (a[0].tag != TAG_STRING) {
+  if (a[0].tag != TAG_STRING && a[0].tag != TAG_STRINGVIEW) {
     throw culebra::CulebraError("TypeError",
         "SharedBuffer.receive: name must be a String");
   }
-  std::string_view name = _str_sv(reinterpret_cast<const char*>(a[0].data));
+  std::string_view name = _culebra_str_view(a[0].tag, a[0].data);
   std::string_view cname = _jit_packable_class_name(a[1]);
   if (cname.empty()) {
     throw culebra::CulebraError("TypeError",
@@ -10440,7 +10405,8 @@ inline std::vector<std::string> keys(JitValue v) {
   std::vector<std::string> out;
   out.reserve(arr->size);
   for (size_t i = 0; i < arr->size; i++) {
-    if (arr->items[i].tag != ::TAG_STRING) {
+    if (arr->items[i].tag != ::TAG_STRING &&
+        arr->items[i].tag != ::TAG_STRINGVIEW) {
       throw culebra::CulebraError("TypeError", "FST: keys must be Strings", 0,
                                   0);
     }
@@ -10453,7 +10419,7 @@ inline std::vector<std::string> keys(JitValue v) {
 // One entry's value, per output type.
 template <typename O> inline O value_of(JitValue v) {
   if constexpr (std::is_same_v<O, std::string>) {
-    if (v.tag != ::TAG_STRING) {
+    if (v.tag != ::TAG_STRING && v.tag != ::TAG_STRINGVIEW) {
       throw culebra::CulebraError("TypeError",
                                   "FST: Map values must be Strings", 0, 0);
     }

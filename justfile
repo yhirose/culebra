@@ -1671,6 +1671,13 @@ _run-tests BACKEND:
     # (tools/checks/check_rt_keep_scope.sh).
     run_rt_keep_scope() { bash tools/checks/check_rt_keep_scope.sh; }
 
+    # A StringView is a String, so a native tests both tags and reads the
+    # bytes of either through _culebra_str_view / require_sv: refusing the
+    # view after the binder's check, or reading a payload as `const char*`,
+    # is refused in include/stdlib/ and include/interop/
+    # (tools/checks/check_string_read_door.sh).
+    run_string_read_door() { bash tools/checks/check_string_read_door.sh; }
+
     # The tests/*.cul sweep runs on every lane, so a file in it may only name
     # namespaces every build carries — not Scene/Webview/Desktop, which a CMake
     # option takes away and the display-less lanes build without. Source-only:
@@ -1846,6 +1853,7 @@ _run-tests BACKEND:
       "run_long_width|long width (language values are int64_t, not long)|static|check,dev,test|buildtree|-|0"
       "run_iter_wiring|iter wiring (JitIterDrive + upstream forwarding ratchet)|static|check,dev,test|buildtree|-|0"
       "run_rt_keep_scope|rt-keep scope (CULEBRA_RT_KEEP is culebra_runtime_*-only)|static|check,dev,test|buildtree|-|0"
+      "run_string_read_door|string-read door (a native takes and reads a String in either representation)|static|check,dev,test|buildtree|-|0"
       "run_optional_ns|optional ns (the tests/*.cul sweep names no optional namespace)|static|check,dev,test|buildtree|-|0"
       "run_clean_covers_ignored|clean covers ignored (each .gitignore pattern is cleaned or kept on purpose)|static|check,dev,test|buildtree|-|0"
       "run_jit_host_symbols|jit host symbols (driver defines what codegen names)|binary|dev,test|light|-|0"

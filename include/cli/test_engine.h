@@ -134,8 +134,8 @@ class VmTestHost : public TestHost {
   }
   std::string as_string(ValueRef v) override {
     auto val = at(v);
-    if (val.tag != TAG_STRING) return {};
-    return std::string(_str_sv(reinterpret_cast<const char*>(val.data)));
+    if (val.tag != TAG_STRING && val.tag != TAG_STRINGVIEW) return {};
+    return std::string(_culebra_str_view(val.tag, val.data));
   }
 
   ValueRef call(ValueRef fn, const std::vector<ValueRef>& args) override {

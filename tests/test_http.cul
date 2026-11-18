@@ -227,11 +227,12 @@ assert_throws("TypeError", || cl.post("/x", into: |c| nil, events: |e| nil),
 assert_throws("TypeError", || cl.request("PATCH", "/x", events: 1),
   message: 'client.request: events must be a Function')
 
-// `path` is a typed String param: a StringView (e.g. a slice) is rejected, the
-// same as the free Http.* functions' typed url (interp/JIT must agree).
+// `path` and `method` are typed String params, and a StringView (e.g. a
+// slice) is a String: the request goes out, and fails on the dead port like
+// any other.
 let cl_pathstr = "/abc"
-assert_throws("TypeError", || cl.get(cl_pathstr[0..2]),
-  message: "type error: parameter 'path' expects String")
+assert_throws("HttpError", || cl.get(cl_pathstr[0..2]))
+assert_throws("HttpError", || cl.request("GET /".split(" ")[0], cl_pathstr[0..2]))
 
 // a closed client errors cleanly (no crash) on further use.
 cl.close()

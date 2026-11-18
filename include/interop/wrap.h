@@ -558,7 +558,8 @@ inline std::string_view param_type_name() {
 
 // Annotation check through the canonical matcher — the SAME predicate the
 // ns-method trampoline applies to ctor/static params, so a String param
-// rejects a StringView slice identically on every path.
+// takes a StringView identically on every path, and jit_arg_get reads either
+// by its bytes and length.
 template <class A>
 inline bool jit_arg_matches(const JitValue& v) {
   return _culebra_value_matches_type(v.tag, v.data, param_type_name<A>());
