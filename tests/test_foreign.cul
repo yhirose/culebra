@@ -22,24 +22,23 @@
 assert_eq(__Foreign.Counter.live(), 0)
 
 # --- What a handle shows. Its methods live on the class's meta, which is
-# also where its name comes from; its own slots are how it reaches the C++
-# instance, so nothing that lists an object's properties shows them. Pinned:
-# binding methods per instance again would cost a closure apiece at
-# construction, and 64 own slots would put the handle in dictionary mode,
-# where it can hold no meta at all. ---
+# also where its name comes from; which instance it is lives in C++, where no
+# program can reach it, so it has no fields at all. Pinned: binding methods
+# per instance again would cost a closure apiece at construction. ---
 {
   let c = __Foreign.Counter.new(1)
   assert_eq(type_of(c), 'Counter')
   assert_eq(c.value(), 1)  # reached through the meta
   assert_eq(c.keys(), [])
   assert_eq(c.size(), 0)
-  assert_eq(JSON.stringify(c), '{}')
-  assert_eq({...c}, {})
-  # Printing one: the class it came from and an empty body, since its state
-  # is in C++ and none of it is a field.
+  assert_throws('TypeError', || JSON.stringify(c),
+    message: 'JSON.stringify: cannot serialize a Counter')
+  assert_throws('TypeError', || {...c},
+    message: 'cannot walk the entries of a Counter')
+  # Printing one: the class it came from and an empty body.
   assert_eq(to_string(c), 'Counter {}')
   assert_eq("{c}", 'Counter {}')
-  assert_true(c._id != nil)  # readable by name: not enumerable is not absent
+  assert_eq(c._id, nil)
   c.drop()
 }
 assert_eq(__Foreign.Counter.live(), 0)
@@ -87,11 +86,13 @@ assert_eq(__Foreign.Counter.live(), 0)  # every shape released its own
   assert_eq(__Foreign.Counter.live(), 0)
 }
 
-# --- Phase 2 integration: a Foreign held in a reference cycle still
-# drops at the owning scope's exit.
+# --- Phase 2 integration: a Foreign held by a reference cycle drops when the
+# collector reclaims the cycle. (A handle has no fields, so no cycle runs
+# through one.)
 fn cyc() {
   let c = __Foreign.Counter.new(3)
-  c.me = c
+  let o = {c: c, mut me: nil}
+  o.me = o
   nil
 }
 fn run_cyc() {
@@ -99,6 +100,7 @@ fn run_cyc() {
   nil
 }
 run_cyc()
+GC.stat()
 assert_eq(__Foreign.Counter.live(), 0)
 
 # --- Escape: ownership follows the value out of the creating scope.

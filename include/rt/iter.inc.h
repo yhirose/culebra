@@ -1552,6 +1552,10 @@ inline culebra::RangeBounds _range_bounds_from_object(JitObject* o,
   }
   auto iv = _jit_slot_or_nil(o, "inclusive");
   auto stv = _jit_slot_or_nil(o, "step");
+  if (stv.tag != TAG_NIL && stv.tag != TAG_LONG) {
+    culebra_runtime_type_error_typed(line, col, "Long",
+                                     static_cast<int8_t>(stv.tag));
+  }
   int64_t step = stv.tag == TAG_NIL ? 1 : stv.data;
   bool inclusive = iv.tag == TAG_BOOL && iv.data != 0;
   return culebra::RangeBounds{sv.data, ev.data, step, inclusive,
@@ -1609,6 +1613,12 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int8_t culebra_runtime_range_contains(
   auto ev = _jit_slot_or_nil(o, "end");
   auto iv = _jit_slot_or_nil(o, "inclusive");
   bool inclusive = iv.tag == TAG_BOOL && iv.data != 0;
+  // A range is an Object whose bounds the program may have rewritten.
+  for (auto b : {sv, ev}) {
+    if (b.tag != TAG_NIL && b.tag != TAG_LONG && b.tag != TAG_FLOAT)
+      culebra_runtime_type_error_typed(line, col, "Long",
+                                       static_cast<int8_t>(b.tag));
+  }
   if (sv.tag != TAG_NIL && !_num_before(sv, x, false)) return 0;
   if (ev.tag != TAG_NIL && !_num_before(x, ev, !inclusive)) return 0;
   return 1;
@@ -2245,8 +2255,7 @@ culebra_runtime_object_iter_dispatch(JitObject* obj);
 // entries in one pass; any other Object's keys are culebra_runtime_object_keys'.
 inline JitKeySnapshot JitKeySnapshot::take(JitObject* obj) {
   _jit_require_own_entries(obj);
-  if (!obj->non_string_props || obj->non_string_props->empty() ||
-      _jit_meta_opaque(obj))
+  if (!obj->non_string_props || obj->non_string_props->empty())
     return {culebra_runtime_object_keys(obj), {TAG_NIL, 0}};
   auto n = static_cast<int64_t>(obj->key_order->size());
   auto* keys = culebra_runtime_array_new_reserved(n);
@@ -3863,7 +3872,6 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_array_reverse(JitArray* a
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitArray* culebra_runtime_object_keys(
     JitObject* obj) {
   auto* r = culebra_runtime_array_new();
-  if (_jit_meta_opaque(obj)) return r;
   // Walk key_order when populated so String and non-String keys come
   // out interleaved in insertion order. Fall back to the shape walk
   // for objects built via direct slot append (class instances).

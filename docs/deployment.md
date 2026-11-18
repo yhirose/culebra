@@ -1176,10 +1176,12 @@ comes from the class that built the value), and its methods come from
 the class, so what a trait asks of it is the method set the declaration
 provides.
 
-Its state is in C++, not in fields, and nothing pretends otherwise:
-`keys()` is empty, `size()` is 0, spread copies nothing, `JSON.stringify`
-gives `{}`, and the display is the class name and an empty body. Declare
-a method as `__str__` to say more than that. The instance cannot cross
+Its state is in C++, not in fields: it has none. `keys()` is empty,
+`size()` is 0, setting a field, spread and `JSON.stringify` raise
+`TypeError`, and the display is the class name and an empty body.
+Declare a method as `__str__` to say more than that. An instance of
+another class of the same name is not one: a method given it raises
+`TypeError`. The instance cannot cross
 an isolate (`SendError`): it reaches an object the sending thread owns.
 
 A wrapped C++ body that throws — ctor, method or static — does not escape

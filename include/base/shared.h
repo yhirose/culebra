@@ -2522,6 +2522,9 @@ enum RuntimeSlot : size_t {
   // at. Placed like the eight above.
   kSlotSearchIndexMeta,
   kSlotHttpServerMeta,
+  // The same, one per kind of id handle (runtime.inc.h JitIdHandle: a File,
+  // a Proc, a database...), keyed by its spec. Placed like the ten above.
+  kSlotIdHandleMetas,
   kSlotShapeRegistry,  // reserved/unused: the Shape intern table is now a
                        // process-global singleton (see jit.h ShapeRegistry) —
                        // Shapes are shared immutable metadata, not isolated heap

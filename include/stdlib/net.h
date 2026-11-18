@@ -33,7 +33,7 @@
 // a raw fd: a forged, closed, or stale (slot-reused) id is bounds- and
 // generation-checked and degrades to a graceful error, never a dereference of
 // arbitrary or unrelated memory. Thread_local is correct because a Net handle
-// is __nonsendable__ — it never crosses an isolate, i.e. never crosses a
+// is not Sendable — it never crosses an isolate, i.e. never crosses a
 // thread.
 
 #include <algorithm>
@@ -877,7 +877,7 @@ inline bool shutdown_write(int64_t id, std::string* err) {
 // heap — and released by hooks.teardown. What crosses the thread boundary is
 // the accepted *fd*, never a handle: the worker interns it into its OWN table,
 // so a Socket handle still never leaves the thread that made it, and the
-// __nonsendable__ contract holds unchanged. Mirrors http.h's CulebraWorkerPool
+// not-Sendable contract holds unchanged. Mirrors http.h's CulebraWorkerPool
 // without the httplib::TaskQueue interface.
 
 struct ServeHooks {

@@ -226,7 +226,7 @@ Webview.Window.quit()  # static: terminate the window currently in
 
 The window is a resource with culebra's full lifetime model: scope-exit
 deterministic drop, idempotent `drop()`, `ClosedError` on use-after-drop.
-It is `__nonsendable__` (a GUI handle never crosses an isolate boundary).
+It is not Sendable (a GUI handle never crosses an isolate boundary).
 
 ## Vendoring note
 

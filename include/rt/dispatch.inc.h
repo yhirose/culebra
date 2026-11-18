@@ -2252,8 +2252,7 @@ inline std::string _jit_splat_operand_error(JitValue sv) {
                            _culebra_tag_name(sv.tag));
   auto* obj = reinterpret_cast<JitObject*>(sv.data);
   if (_jit_is_handle(obj))
-    return "**: a Shared view, a SharedBuffer or an array view has no entries "
-           "of its own to splat";
+    return "**: cannot splat " + _jit_handle_what(obj);
   if (obj->non_string_props && !obj->non_string_props->empty())
     return "**: splat key must be String";
   return {};

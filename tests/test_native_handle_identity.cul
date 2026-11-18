@@ -1,0 +1,63 @@
+# What a native handle is, and which resource it reaches, lives in C++, where
+# no program can reach it: a handle has no fields to remove and set again, and
+# an Object that only looks like one is not one. Objects the runtime builds and
+# then reads back (a Regex match, a Range) are read only as what it made them.
+
+# A wrapped instance cannot be pointed at another one by an id it is given.
+let c1 = __Foreign.Counter.new(1)
+let c2 = __Foreign.Counter.new(2)
+c1.remove("_id")
+assert_throws('TypeError', fn () { c1._id = 2 },
+  message: 'a Counter has no fields to set')
+assert_eq(c1.value(), 1)
+
+# Nor read a borrow of another instance through an id it is given.
+let box = __Foreign.Box.new(7)
+let inner = box.inner()
+let c3 = __Foreign.Counter.new(3)
+assert_throws('TypeError', fn () { c3._bid = 1 },
+  message: 'a Counter has no fields to set')
+assert_eq(c3.value(), 3)
+
+# A class of the same name is not the wrapped class.
+class Counter {
+  new(@_id) {}
+}
+let real = __Foreign.Counter.new(5)
+assert_throws('TypeError', || real.merge(Counter.new(1)),
+  message: 'not a Counter')
+
+# A child process's pid cannot be rewritten to signal another process.
+let p = Proc.spawn(["true"])
+assert_throws('TypeError', fn () { p._pid = 1 },
+  message: 'a Proc has no fields to set')
+p.wait()
+
+# A method taken off a handle without its receiver reaches nothing.
+let q = Proc.spawn(["true"])
+assert_throws('KeyError', || q["wait"])
+q.wait()
+
+# A statement's database cannot be swapped for a number.
+let db = SQLite.open(":memory:")
+let stmt = db.prepare("select 1")
+stmt.remove("__parent__")
+assert_throws('TypeError', fn () { stmt.__parent__ = 7 },
+  message: 'a SQLite statement has no fields to set')
+assert_eq(stmt.run(), 0)
+
+# A match's groups read as nothing once the program replaced them.
+let m = re"(?<a>x)".find("x")
+m.remove("named")
+m.named = 7
+assert_eq(m["a"], nil)
+
+# A range's step is a Long, whatever the program set there.
+let r = 0..3
+r.remove("step")
+r.step = "s"
+assert_throws('TypeError', fn () {
+  for i in r {
+    i
+  }
+})

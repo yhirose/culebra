@@ -275,16 +275,54 @@ struct jit_class_info {
   static constinit inline std::vector<Method> methods;
 };
 
+// A wrapped instance's handle: which class it is an instance of, and the id
+// of its entry in that class's foreign table (an owning handle) or of its
+// borrow in the borrow table (a borrowing one). All of it here, where no
+// program can reach it: what a handle is, and which instance, is never read
+// from a field an Object can be given.
+struct JitWrapped final : JitHandle {
+  const std::string& name;  // jit_class_info<T>::name
+  int64_t state_fn;         // foreign::state_fn_id<T>(): the class
+  bool borrow;
+  int64_t id;               // the table id, or the borrow id
+  JitValue parent{TAG_NIL, 0};  // a borrow's parent handle, owned
+  JitWrapped(const std::string& n, int64_t s, bool b, int64_t i)
+      : JitHandle(Kind::Wrapped), name(n), state_fn(s), borrow(b), id(i) {}
+  std::string show() const override { return name + " {}"; }
+  std::string what() const override { return "a " + name; }
+  bool same(const JitHandle&) const override { return false; }
+  void each_value(Visit visit, void* ctx) override {
+    if (parent.tag != TAG_NIL) visit(ctx, parent);
+  }
+};
+
+// The wrapped handle `h` is, or null.
+inline JitWrapped* jit_wrapped_of(JitObject* h) {
+  auto* x = h->handle_of();
+  return x && x->kind == JitHandle::Kind::Wrapped ? static_cast<JitWrapped*>(x)
+                                                  : nullptr;
+}
+
+// A handle of class T: anything else, an Object of a user class of the same
+// name among them, is a TypeError.
+template <class T>
+inline JitWrapped& jit_wrapped_self(JitValue v) {
+  auto* w = v.tag == TAG_OBJECT ? jit_wrapped_of(reinterpret_cast<JitObject*>(v.data))
+                                : nullptr;
+  if (!w || w->state_fn != foreign::state_fn_id<T>())
+    throw culebra::CulebraError("TypeError", "not a " + jit_class_info<T>::name,
+                                _jit_thread.call_line, _jit_thread.call_col);
+  return *w;
+}
+
 // Generation of a handle, or -1 when it is no longer valid. Both
-// owning (the class's state fn + the table) and borrowing (_bid + the borrow
-// table) read through an indirection — a forged id misses, never derefs.
+// owning (the class's state fn + the table) and borrowing (the borrow table)
+// read through an indirection.
 inline int64_t jit_handle_gen(JitObject* h) {
-  constexpr size_t npos = static_cast<size_t>(-1);
-  if (h->find_slot("_bid") != npos)
-    return foreign::borrow_gen(_jit_handle_long(h, "_bid"));
-  if (auto state = _jit_meta_foreign_state_fn(h); state >= 0)
-    return foreign::owner_gen_via(state, _jit_handle_long(h, "_id"));
-  return -1;
+  auto* w = jit_wrapped_of(h);
+  if (!w) return -1;
+  return w->borrow ? foreign::borrow_gen(w->id)
+                   : foreign::owner_gen_via(w->state_fn, w->id);
 }
 
 // The live instance, held for as long as the caller keeps the Held, or
@@ -292,29 +330,27 @@ inline int64_t jit_handle_gen(JitObject* h) {
 // pointer from the borrow table only after the parent chain validates.
 template <class T>
 inline Held<T> jit_handle_self(JitValue self) {
-  auto* h = reinterpret_cast<JitObject*>(self.data);
-  if (h->find_slot("_bid") != static_cast<size_t>(-1)) {
-    int64_t bid = _jit_handle_long(h, "_bid");
-    if (!foreign::borrow_valid(bid))
+  auto& w = jit_wrapped_self<T>(self);
+  if (w.borrow) {
+    if (!foreign::borrow_valid(w.id))
       foreign::throw_borrow_invalid(jit_class_info<T>::name,
                                     _jit_thread.call_line, _jit_thread.call_col);
-    return {reinterpret_cast<T*>(foreign::borrow_ptr(bid)),
-            Hold(foreign::borrow_root_users(bid))};
+    return {reinterpret_cast<T*>(foreign::borrow_ptr(w.id)),
+            Hold(foreign::borrow_root_users(w.id))};
   }
-  return foreign::held_or_throw<T>(_jit_handle_long(h, "_id"),
-                                  jit_class_info<T>::name, _jit_thread.call_line,
-                                  _jit_thread.call_col);
+  return foreign::held_or_throw<T>(w.id, jit_class_info<T>::name,
+                                   _jit_thread.call_line, _jit_thread.call_col);
 }
 
 // Non-const method dispatch bumps the instance's generation, staling its
 // outstanding borrows.
 template <class T>
 inline void jit_bump_handle_gen(JitValue self) {
-  auto* h = reinterpret_cast<JitObject*>(self.data);
-  if (h->find_slot("_bid") != static_cast<size_t>(-1)) {
-    foreign::borrow_bump(_jit_handle_long(h, "_bid"));
+  auto& w = jit_wrapped_self<T>(self);
+  if (w.borrow) {
+    foreign::borrow_bump(w.id);
   } else {
-    foreign::table<T>().bump_gen(_jit_handle_long(h, "_id"));
+    foreign::table<T>().bump_gen(w.id);
   }
 }
 
@@ -362,10 +398,9 @@ template <class T>
 void jit_drop_thunk(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                         int64_t, JitValue*) {
   JitValue self{self_tag, self_data};
-  auto* h = reinterpret_cast<JitObject*>(self.data);
   // A call using it (a method, or a native holding it as an argument) may be
   // what is running this drop: freeing it would free it under that call.
-  if (!foreign::table<T>().erase(_jit_handle_long(h, "_id"))) {
+  if (!foreign::table<T>().erase(jit_wrapped_self<T>(self).id)) {
     throw culebra::CulebraError(
         "ValueError",
         jit_class_info<T>::name +
@@ -379,13 +414,14 @@ void jit_drop_thunk(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_
 // borrowing parent (chained borrow).
 inline void jit_parent_link(JitObject* parent, int64_t* state,
                            int64_t* owner_id, int64_t* bid) {
-  if (parent->find_slot("_bid") != static_cast<size_t>(-1)) {
+  auto& w = *jit_wrapped_of(parent);  // a method's own receiver
+  if (w.borrow) {
     *state = -1;
     *owner_id = 0;
-    *bid = _jit_handle_long(parent, "_bid");
+    *bid = w.id;
   } else {
-    *state = _jit_meta_foreign_state_fn(parent);
-    *owner_id = _jit_handle_long(parent, "_id");
+    *state = w.state_fn;
+    *owner_id = w.id;
     *bid = -1;
   }
 }
@@ -396,8 +432,7 @@ template <class T2>
 void jit_borrow_drop_thunk(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                int64_t, JitValue*) {
   JitValue self{self_tag, self_data};
-  auto* h = reinterpret_cast<JitObject*>(self.data);
-  foreign::borrow_erase(_jit_handle_long(h, "_bid"));
+  foreign::borrow_erase(jit_wrapped_self<T2>(self).id);
   { *__ret = {TAG_NIL, 0}; return; }
 }
 
@@ -408,8 +443,8 @@ void jit_borrow_drop_thunk(JitValue* __ret, JitClosure*, int8_t self_tag, int64_
 // true of the instance. Owning and borrowing handles differ in `drop` alone,
 // so there are two per class.
 //
-// Per Runtime and pinned for the reason _jit_native_meta states, and returning
-// +1 the way it does — the caller transfers it into the instance's `proto`.
+// Per Runtime and pinned for the reason _jit_native_meta states. Borrowed:
+// _jit_make_handle takes the instance's own count on it.
 template <class T>
 JitObject* jit_wrapped_meta(bool borrow) {
   // One entry per (class, which handle kind) — the two differ in `drop`.
@@ -426,32 +461,30 @@ JitObject* jit_wrapped_meta(bool borrow) {
                                    : _jit_native<&jit_drop_thunk<T>>,
                             0);
     // What is true of the class rather than of one instance of it.
-    m->specials->opaque_instances = true;  // state is in C++, not in slots
-    m->specials->nonsendable_instances = true;  // it reaches this thread
     m->specials->foreign_state_fn = foreign::state_fn_id<T>();
     // The method set is fixed from here on — resolve the specials table and
     // the `drop` gate once, as a declared class's meta does.
     _jit_fill_specials(m);
     return m;
   });
-  meta->refcount++;
   return meta;
 }
 
 template <class T>
 JitValue jit_make_handle(int64_t id) {
   culebra::gc::Heap::CollectPause pause(_gc_heap());
-  auto* h = culebra_runtime_object_new();
-  h->set_proto(jit_wrapped_meta<T>(/*borrow=*/false));  // transferred
-  h->set_or_append("_id", JitValue{TAG_LONG, id}, false);
-  _jit_owned_bind_drop(h);
-  return {TAG_OBJECT, reinterpret_cast<int64_t>(h)};
+  JitValue v = _jit_make_handle(
+      new JitWrapped(jit_class_info<T>::name, foreign::state_fn_id<T>(),
+                     /*borrow=*/false, id),
+      jit_wrapped_meta<T>(/*borrow=*/false));
+  _jit_owned_bind_drop(reinterpret_cast<JitObject*>(v.data));
+  return v;
 }
 
-// Borrowing handle, JIT side — same shape as the interp's: opaque _bid
-// (raw ptr + parent link in the borrow table), __parent__ for liveness,
-// an internal drop that erases the id, registered on the owned stack so
-// the table entry is reclaimed deterministically.
+// Borrowing handle: the borrow id and the parent it points into live on its
+// JitWrapped (the parent owned, given back through each_value); its `drop`
+// erases the id, registered on the owned stack so the table entry is
+// reclaimed deterministically.
 template <class T2>
 JitValue jit_make_borrow_handle(T2* p, JitValue parent, int64_t pgen) {
   culebra::gc::Heap::CollectPause pause(_gc_heap());
@@ -460,13 +493,13 @@ JitValue jit_make_borrow_handle(T2* p, JitValue parent, int64_t pgen) {
   jit_parent_link(pobj, &state, &owner_id, &parent_bid);
   int64_t bid = foreign::borrow_adopt(p, state, owner_id, parent_bid, pgen);
 
-  auto* h = culebra_runtime_object_new();
-  h->set_proto(jit_wrapped_meta<T2>(/*borrow=*/true));  // transferred
-  h->set_or_append("_bid", JitValue{TAG_LONG, bid}, false);
+  auto* w = new JitWrapped(jit_class_info<T2>::name, foreign::state_fn_id<T2>(),
+                           /*borrow=*/true, bid);
   culebra_runtime_value_retain(parent.tag, parent.data);
-  h->set_or_append("__parent__", parent, false);
-  _jit_owned_bind_drop(h);
-  return {TAG_OBJECT, reinterpret_cast<int64_t>(h)};
+  w->parent = parent;  // keeps the instance it points into alive
+  JitValue v = _jit_make_handle(w, jit_wrapped_meta<T2>(/*borrow=*/true));
+  _jit_owned_bind_drop(reinterpret_cast<JitObject*>(v.data));
+  return v;
 }
 
 // A method parameter naming a wrapped class: U& / const U& (a required

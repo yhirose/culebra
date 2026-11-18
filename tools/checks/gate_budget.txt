@@ -239,7 +239,11 @@
 # Isolate.spawn_source answers alike on every lane, a built binary included,
 # and a function it defines cannot leave its isolate; 0.1 s under --vm, 1.0 s
 # under --jit).
-tests.cul 375
+# 376 since test_native_handle_identity.cul (a native handle's id cannot be
+# removed and set again, an Object that looks like one is not one, and a
+# match or range the program rewrote is read only as what the runtime made;
+# 0.14 s under --vm, 0.6 s under --jit).
+tests.cul 376
 
 # tests/isolate/*.cul — run on both engines, plus the over-cap modes.
 # 21 since test_xml_isolate.cul (an XML element keeps its methods across an

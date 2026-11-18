@@ -558,23 +558,9 @@ struct JitSpecialTable {
   // on first ask and reached from a value through `proto`, so two classes that
   // share a name cannot share an answer.
   culebra::TraitConformance conformance;
-  // The instances of this class have no fields to enumerate: their state is
-  // not in their slots. A wrapped C++ class is the case — what its handles
-  // carry is the bookkeeping that reaches the instance in the id table, not
-  // data the program put there — so `keys()`, `size()`, spread, JSON and the
-  // display show nothing rather than showing that. Reads by name still work
-  // (`h._id`), and so does everything the runtime itself asks of the slots:
-  // `==` compares them, and the collector still traverses them.
-  bool opaque_instances = false;
-  // The instances of this class cannot cross an isolate: what they carry
-  // reaches a resource this thread owns. The other native handles say the
-  // same with a `__nonsendable__` slot of their own; a class that can say it
-  // once says it here (conc/sendable.h checks both).
-  bool nonsendable_instances = false;
-  // The per-T state-fn id of a wrapped class (interop/foreign.h), or -1.
-  // It is a fact about the class, so it rides here rather than in a slot on
-  // every handle — which is also what lets a consumer holding only a
-  // JitValue find the C++ type behind it in one load.
+  // The per-T state-fn id of a wrapped class (interop/foreign.h), or -1:
+  // what lets a consumer outside wrap.h, holding only a JitValue, find the
+  // C++ type behind it (each handle's JitWrapped carries it too).
   int64_t foreign_state_fn = -1;
   // The class's `eq` is `@derive`d, which states no equality: its instances
   // match by their fields, as an enum variant's do — `==` by structure, keys
@@ -681,6 +667,10 @@ struct JitHandle {
     Isolate,
     SearchIndex,
     HttpServer,
+    Id,  // JitIdHandle (rt/runtime.inc.h): one id into a native registry
+    Proc,  // a child process (stdlib/bindings.h JitProc)
+    XmlEvents,  // XML.events' parser (stdlib/bindings.h JitXmlEvents)
+    Wrapped,  // an instance of a wrap<T> class (interop/wrap.h JitWrapped)
   };
   const Kind kind;
   explicit JitHandle(Kind k) : kind(k) {}
@@ -689,8 +679,14 @@ struct JitHandle {
   virtual ~JitHandle() = default;
   // How the value shows (`println`, interpolation): its slots are none.
   virtual std::string show() const = 0;
-  // What an error says the value is ("a FixedArray view").
-  virtual std::string what() const { return show(); }
+  // What an error says the value is ("a FixedArray view"): by default, what
+  // it shows as, out of its brackets ("[Channel tx]" says "a Channel tx").
+  virtual std::string what() const {
+    std::string s = show();
+    if (s.size() >= 2 && s.front() == '[' && s.back() == ']')
+      s = s.substr(1, s.size() - 2);
+    return "a " + s;
+  }
   // What `==` asks of two handles, neither the same object.
   virtual bool same(const JitHandle& other) const = 0;
   // Each heap value the handle owns a count on: an edge of the Object, which
@@ -790,9 +786,10 @@ struct JitObject {
   // hash rather than through the shape. Sits in the padding these flags
   // already carry, so JitObject stays inside its 128-byte slab class.
   bool is_dict = false;
-  // Set on a CLASS META that binds a `drop`: every instance built from it
-  // registers on the owned stack. Answered once at declaration so a
-  // construction does not walk the method names for it. Never GEP'd.
+  // Set on a CLASS META, or a native handle's (JitIdHandleSpec), that binds a
+  // `drop`: every instance built from it registers on the owned stack.
+  // Answered once when the meta is built so a construction does not walk the
+  // method names for it. Never GEP'd.
   bool methods_drop = false;
   // Set on a CLASS META, and only there: the object `build_class_meta`
   // returns, which every instance of the class reaches through `proto`. It
@@ -1165,21 +1162,10 @@ inline const char* _jit_meta_class_name(JitObject* obj) {
   auto* sp = _jit_meta_specials(obj);
   return sp ? sp->name : nullptr;
 }
-// Whether the class declares its instances to have no fields to enumerate —
-// the one question every listing of an object's properties asks first.
-inline bool _jit_meta_opaque(JitObject* obj) {
-  auto* sp = _jit_meta_specials(obj);
-  return sp && sp->opaque_instances;
-}
 // Which Dir module class the value is an instance of (culebra::DirKind).
 inline int8_t _jit_meta_dir_kind(JitObject* obj) {
   auto* sp = _jit_meta_specials(obj);
   return sp ? sp->dir_kind : 0;
-}
-// Whether the class declares its instances non-Sendable.
-inline bool _jit_meta_nonsendable(JitObject* obj) {
-  auto* sp = _jit_meta_specials(obj);
-  return sp && sp->nonsendable_instances;
 }
 // The wrapped C++ type behind this value, as its state-fn id, or -1.
 inline int64_t _jit_meta_foreign_state_fn(JitObject* obj) {
@@ -2056,12 +2042,10 @@ inline void _jit_each_entry(JitObject* obj, Named&& named, Keyed&& keyed) {
   }
 }
 
-// An Object's own entries: the ones it stores, and none for a class that
-// declares its instances to have no fields to enumerate. The one walk behind
-// showing an Object, spreading it and listing it for a host.
+// An Object's own entries. The one walk behind showing an Object, spreading
+// it and listing it for a host.
 template <class Named, class Keyed>
 inline void _jit_each_own_entry(JitObject* obj, Named&& named, Keyed&& keyed) {
-  if (_jit_meta_opaque(obj)) return;
   _jit_each_entry(obj, named, keyed);
 }
 

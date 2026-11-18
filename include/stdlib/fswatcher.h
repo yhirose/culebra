@@ -526,7 +526,7 @@ inline bool platform_start(Watcher*, std::string& reason) {
 //
 // Script-visible handles carry an int64 id from an IdRegistry, never a
 // Watcher*, so a forged or stale id fails safely (see id_registry.h). The
-// table is thread_local because a watch handle is __nonsendable__ and so
+// table is thread_local because a watch handle is not Sendable and so
 // never crosses a thread — same reasoning as sqlite.h's db/stmt tables.
 //
 // Its destructor is the backstop for a thread that ends with a watch still

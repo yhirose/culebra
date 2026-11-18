@@ -36,7 +36,7 @@
 //   size_t seq_size(v);  const Value& seq_at(v, i);
 //   bool object_has_non_string_keys(v);
 //   std::vector<std::pair<std::string_view, const Value*>> object_entries(v);
-//   std::string_view type_name(v);                            // error text
+//   std::string type_name(v);                                 // error text
 //
 // Errors throw culebra::CulebraError directly (shared.h — which also owns
 // the leaf formatters json_escape / format_float_shortest), so no rethrow

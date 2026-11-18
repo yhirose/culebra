@@ -37,6 +37,15 @@ Conventions used below:
   still work on a namespace. `Path` is the one exception: it is a class, not
   a namespace, so a missing property reads as `nil` the way it does on any
   other class.
+* A **native handle** (a `File`, a `Proc`, a database, a socket, a model, a
+  wrapped C++ instance...) keeps what it is and which resource it reaches
+  inside the runtime, not in fields: it prints as its kind (`[File]`; a
+  wrapped instance as `Counter {}`), has no
+  fields (`keys()` is `[]`, setting one is a `TypeError`; a `Listener`'s and
+  a `UdpSocket`'s `host` and `port` are the exception, read-only), is refused
+  by spread, `**`, a for-in over its keys and `JSON.stringify` /
+  `TOML.stringify`, and is not Sendable. An Object that only looks like one
+  is not one: a method given it raises `TypeError`.
 
 ## Index
 

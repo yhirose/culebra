@@ -1005,8 +1005,13 @@ inline ThrownReport describe_thrown_value(JitValue v) {
     r.kind = _jit_string_slot(o, "kind").value_or("");
     r.message = _jit_string_slot(o, "message").value_or("");
     if (o->is_error) {
-      r.line = _jit_slot_or_nil(o, "line").data;
-      r.col = _jit_slot_or_nil(o, "col").data;
+      // Only a Long is a position: the program may have set anything there.
+      auto pos = [&](const char* name) {
+        JitValue v = _jit_slot_or_nil(o, name);
+        return v.tag == TAG_LONG ? v.data : 0;
+      };
+      r.line = pos("line");
+      r.col = pos("col");
     }
   }
   if (r.message.empty()) r.message = _culebra_uncaught_display(v.tag, v.data);
@@ -1309,11 +1314,17 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_reanchor(int64_t site) {
     // A caught error thrown again by library code carries its position in
     // the Object too, which is what a report of it reads.
     if (rt.thrown_tag == TAG_OBJECT) {
+      // An Error is an Object the program may have rewritten: only a `line`
+      // and `col` still the Longs the runtime put there are moved.
       auto* o = reinterpret_cast<JitObject*>(rt.thrown_data);
-      if (o->is_error &&
-          culebra::is_library_line(_jit_slot_or_nil(o, "line").data)) {
-        o->slots[o->find_slot("line")].value = JitValue{TAG_LONG, line};
-        o->slots[o->find_slot("col")].value = JitValue{TAG_LONG, col};
+      constexpr size_t npos = static_cast<size_t>(-1);
+      size_t li = o->is_error ? o->find_slot("line") : npos;
+      size_t ci = o->is_error ? o->find_slot("col") : npos;
+      if (li != npos && ci != npos && o->slots[li].value.tag == TAG_LONG &&
+          o->slots[ci].value.tag == TAG_LONG &&
+          culebra::is_library_line(o->slots[li].value.data)) {
+        o->slots[li].value = JitValue{TAG_LONG, line};
+        o->slots[ci].value = JitValue{TAG_LONG, col};
       }
     }
     if (culebra::is_library_line(rt.thrown_line))
@@ -4387,6 +4398,83 @@ inline H* _jit_self_handle(JitValue self, JitHandle::Kind kind,
   if (!h || h->kind != kind)
     throw culebra::CulebraError("TypeError", std::string("not a ") + what);
   return static_cast<H*>(h);
+}
+
+// What one kind of id handle is: the name it shows as and is refused by, and
+// the methods its meta carries. A spec is a static object, and its address is
+// the kind: a handle of another spec, or anything that is no handle, is not
+// this one, however its fields read.
+struct JitIdHandleSpec {
+  const char* name;            // "File": shows as [File], refused as "a File"
+  void (*fill)(JitObject* meta);  // binds the methods (a `drop` among them)
+};
+
+// A native handle whose resource is one id into a registry the stdlib keeps
+// (a File's descriptor, a database, a socket...). The id lives here, where no
+// program can reach it, rather than in a field it could remove and set again;
+// `kept` holds the program values the handle keeps alive (a statement's
+// database), each an edge of the Object.
+struct JitIdHandle final : JitHandle {
+  const JitIdHandleSpec& spec;
+  int64_t id;
+  std::vector<JitValue> kept;
+  JitIdHandle(const JitIdHandleSpec& s, int64_t i)
+      : JitHandle(Kind::Id), spec(s), id(i) {}
+  std::string show() const override {
+    return std::string("[") + spec.name + "]";
+  }
+  std::string what() const override { return std::string("a ") + spec.name; }
+  bool same(const JitHandle&) const override { return false; }
+  void each_value(Visit visit, void* ctx) override {
+    for (auto& v : kept) visit(ctx, v);
+  }
+};
+
+// The Object of `handle` on `spec`'s meta (built the first time it is asked
+// for). One whose meta carries a `drop` registers on the owned stack.
+inline JitValue _jit_make_spec_handle(JitHandle* handle,
+                                      const JitIdHandleSpec& spec) {
+  auto* meta = _jit_pinned_meta(culebra::kSlotIdHandleMetas, &spec, [&] {
+    auto* m = culebra_runtime_object_new();
+    spec.fill(m);
+    m->methods_drop = _has_protocol_member(m, "drop");
+    return m;
+  });
+  JitValue v = _jit_make_handle(handle, meta);
+  if (meta->methods_drop)
+    _jit_owned_bind_drop(reinterpret_cast<JitObject*>(v.data));
+  return v;
+}
+// A new handle of `spec` over `id`, keeping `kept` (each a +1 it takes).
+inline JitValue _jit_make_id_handle(const JitIdHandleSpec& spec, int64_t id,
+                                    std::vector<JitValue> kept = {}) {
+  auto* handle = new JitIdHandle(spec, id);
+  handle->kept = std::move(kept);
+  return _jit_make_spec_handle(handle, spec);
+}
+
+// The id handle `v` is if its spec is one of `specs`, or null: a spec's
+// address is what a handle is, whatever fields an Object has.
+inline JitIdHandle* _jit_id_handle_in(
+    JitValue v, std::initializer_list<const JitIdHandleSpec*> specs) {
+  auto* h = v.tag == TAG_OBJECT
+                ? reinterpret_cast<JitObject*>(v.data)->handle_of()
+                : nullptr;
+  if (!h || h->kind != JitHandle::Kind::Id) return nullptr;
+  auto* id = static_cast<JitIdHandle*>(h);
+  for (auto* spec : specs)
+    if (&id->spec == spec) return id;
+  return nullptr;
+}
+// The handle of `spec` a method was called on, or one handed in as an
+// argument: anything else (no receiver, another kind, an Object that only
+// looks like one) is a TypeError, not a read of fields it chose.
+inline JitIdHandle& _jit_id_handle(JitValue v, const JitIdHandleSpec& spec) {
+  if (auto* h = _jit_id_handle_in(v, {&spec})) return *h;
+  throw culebra::CulebraError("TypeError", std::string("not a ") + spec.name);
+}
+inline int64_t _jit_id_of(JitValue v, const JitIdHandleSpec& spec) {
+  return _jit_id_handle(v, spec).id;
 }
 }  // extern "C++"
 

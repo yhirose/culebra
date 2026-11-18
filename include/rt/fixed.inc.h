@@ -13,14 +13,9 @@
 // (split across rt_fixed.inc.h / rt_dispatch.inc.h / rt_iter.inc.h).
 extern "C" {
 
-// Handle plumbing shared by every native-handle builder (Proc / File /
-// Foreign / wrap.h-generated handles): a typed slot read, the
-// captureless method-closure constructor, and the bind helper. Live
-// here (not stdlib_rt.h) so wrap.h's generated thunks can use them.
-inline int64_t _jit_handle_long(JitObject* h, const char* key) {
-  size_t i = h->find_slot(key);
-  return i == static_cast<size_t>(-1) ? -1 : h->slots[i].value.data;
-}
+// Handle plumbing shared by every native handle (the stdlib's and wrap.h's):
+// the captureless method-closure constructor and the bind helper. Live here
+// (not stdlib_rt.h) so wrap.h's generated thunks can use them.
 
 // Every closure is born through this one constructor, which is where what it
 // is (rt_value.inc.h JIT_CLOSURE_*) and what its body declares are both
@@ -93,10 +88,9 @@ inline JitClosure* _jit_make_handle_method(JitNativeFn f, size_t arity,
   return _jit_native_closure(f, /*n_captures=*/0, arity, extra_flags, meta);
 }
 
-// Slot a handle method onto `h` — shared by every native-handle builder
-// (Proc / File / Foreign). `meta` (non-null) registers the method's
-// param names so it accepts keyword arguments like the interp; the
-// drop / no-param methods pass nullptr.
+// Slot a method onto `h` (a native handle's meta, or any Object). `meta`
+// (non-null) registers the method's param names so it accepts keyword
+// arguments; the drop / no-param methods pass nullptr.
 //
 // A method bound here is entered through a thunk ABI with no line/col, so a
 // positionless error escaping it prints without a location where the interp
@@ -623,15 +617,18 @@ inline const char* _jit_key_name(int8_t key_tag, int64_t key_data,
 inline bool _jit_is_handle(JitObject* obj) {
   return obj->is_shared_val || obj->has_handle;
 }
+// What an error calls one: the handle's own name for itself.
+inline std::string _jit_handle_what(JitObject* obj) {
+  if (auto* h = obj->handle_of()) return h->what();
+  return "a Shared view";
+}
 // ...so what walks an Object's own entries refuses one.
 inline void _jit_require_own_entries(JitObject* obj, int64_t line = 0,
                                      int64_t col = 0) {
   if (_jit_is_handle(obj))
     throw culebra::CulebraError(
         "TypeError",
-        "a Shared view, a SharedBuffer or a view of one, or a channel end has "
-        "no entries of its own to walk",
-        line, col);
+        "cannot walk the entries of " + _jit_handle_what(obj), line, col);
 }
 
 // Whether a subscript on `obj` is a question about its own entries. A handle
@@ -927,8 +924,11 @@ inline JitValue _jit_match_group_value(JitValue g) {
 inline JitValue _jit_match_index(JitObject* m, int8_t key_tag,
                                  int64_t key_data) {
   if (key_tag == TAG_LONG) {
+    // A match is an Object: the program can remove `groups` and set it to
+    // anything, so it is read only as what the match made it.
     size_t gi = m->find_slot("groups");
-    if (gi == static_cast<size_t>(-1)) return JitValue{TAG_NIL, 0};
+    if (gi == static_cast<size_t>(-1) || m->slots[gi].value.tag != TAG_ARRAY)
+      return JitValue{TAG_NIL, 0};
     auto* arr = reinterpret_cast<JitArray*>(m->slots[gi].value.data);
     int64_t n = static_cast<long>(arr->size);
     int64_t i = key_data;
@@ -938,7 +938,8 @@ inline JitValue _jit_match_index(JitObject* m, int8_t key_tag,
   }
   if (key_tag == TAG_STRING || key_tag == TAG_STRINGVIEW) {
     size_t ni = m->find_slot("named");
-    if (ni == static_cast<size_t>(-1)) return JitValue{TAG_NIL, 0};
+    if (ni == static_cast<size_t>(-1) || m->slots[ni].value.tag != TAG_OBJECT)
+      return JitValue{TAG_NIL, 0};
     auto* named = reinterpret_cast<JitObject*>(m->slots[ni].value.data);
     size_t si = named->find_slot(_culebra_str_view(key_tag, key_data));
     if (si == static_cast<size_t>(-1)) return JitValue{TAG_NIL, 0};
@@ -2366,7 +2367,6 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_is_sequence_object(
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_object_size(
     JitObject* obj) {
-  if (_jit_meta_opaque(obj)) return 0;
   int64_t n = static_cast<int64_t>(obj->prop_size());
   if (obj->non_string_props) {
     n += static_cast<int64_t>(obj->non_string_props->size());

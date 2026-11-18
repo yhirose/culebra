@@ -143,16 +143,14 @@
 
 # --- What a borrow prints: the class it borrows (Box::inner lends out a
 # Counter) and an empty body, like the owning handle test_foreign.cul prints
-# — its _bid and __parent__ are not fields. --------------------------------
+# — which borrow it is lives in C++, not in fields. -------------------------
 {
   let b = __Foreign.Box.new(2)
   assert_eq(to_string(b.inner()), 'Counter {}')
   b.drop()
 }
 
-# --- Forging a borrow's internal slots is memory-safe (no raw pointer is
-# read from a script-writable slot — the borrow id resolves through the
-# borrow table, so a bogus id is a clean miss, never a deref). A method read
+# --- A borrow cannot be forged: it has no slots to imitate, and a method read
 # off a borrow stays bound to it, so calling it through another Object
 # returns the real value on every lane.
 {

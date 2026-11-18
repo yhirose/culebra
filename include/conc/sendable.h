@@ -401,10 +401,6 @@ inline JitHandleKind _jit_handle_kind(JitObject* o) {
   if (o->has_handle) return JitHandleKind::Native;
   if (o->is_shared_val) return JitHandleKind::SharedVal;
   if (o->is_gen_frame) return JitHandleKind::Generator;
-  // A native handle says so with a slot of its own; a wrapped class says it
-  // once, on the meta all its handles share.
-  if (o->find_slot("__nonsendable__") != none || _jit_meta_nonsendable(o))
-    return JitHandleKind::Native;
   return JitHandleKind::None;
 }
 

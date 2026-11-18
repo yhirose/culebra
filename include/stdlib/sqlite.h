@@ -78,7 +78,7 @@ struct BindVal {
 // table and File's fd table). A slot is reusable the moment a db/stmt closes,
 // so the generation check is what stops a captured/escaped id from a prior
 // handle silently addressing a later, unrelated one on the same slot. Tables
-// are thread_local: a Database/Statement handle is __nonsendable__ (never
+// are thread_local: a Database/Statement handle is not Sendable (never
 // crosses an isolate, i.e. never crosses a thread), so per-thread tables are
 // correct and lock-free.
 //

@@ -5,7 +5,7 @@
 //
 // A model is a handle id into a registry (id_registry.h), never a pointer, so a
 // closed or stale id degrades to an error instead of being dereferenced. The
-// registry is thread_local: a model handle is __nonsendable__ (it never crosses
+// registry is thread_local: a model handle is not Sendable (it never crosses
 // an isolate), so per-thread tables are correct and lock-free.
 //
 // Everything that reaches llama.cpp is a "choke" that three linkages share
