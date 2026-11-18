@@ -255,8 +255,8 @@ The heap objects a VM needs are the runtime's existing ones:
   `object_set_update`, which answers false for a transition or a
   refusal; the site then calls `object_set_fast`, which words the error.
   The read half of a compound step (`o.k op= v`, `Op::PropWr`) has the
-  read site's own-slot arm; its miss is `prop_wr`, which is the
-  executor's whole step and primes the site from a plain Object only.
+  read site's own-slot arm; its miss is `prop_wr`, which primes the
+  site from a plain Object only.
   Isolates run the same compiled code, so they share these caches and
   can prime one site at once. Each cache entry is therefore one word,
   stored and loaded whole: a Shape pointer in the low 48 bits and the
@@ -265,6 +265,16 @@ The heap objects a VM needs are the runtime's existing ones:
   trusted only while its parent (`Shape::parent`) is the shape the
   entry guarded on. A class's declared-field layout (`Op::FieldsInit`)
   caches only the shape it leads to, the same way.
+  The executor keeps the same caches. Each property instruction
+  (`PropVal`, `PropRaw`, `PropSet`, `PropWr`, `PropCo`, `MethGate`) names
+  a `Chunk::PropSite` by its `c`: the name, the name-keyed checks a write
+  owes (`prop_key_kind`), and that site's `JitPropIC` and `JitPropSetIC`.
+  The executor's arms ask them what the IR asks, in the same order (`_ic_own_hit`,
+  then `_ic_proto_hit`; `object_set_update`, then `object_set_fast`), and
+  a miss goes to the helper the IR's miss calls, which primes them. A
+  warm access is a shape compare, not a scan of the shape's names, which
+  an instance of many fields made long: a read of the 90th field of one
+  took about 400 ns.
 - `JitArray`, `JitSet`, tuples, `JitTensor`.
 
 Objects are allocated from a per-`Runtime` slab allocator

@@ -239,8 +239,8 @@ VMが必要とするヒープオブジェクトはランタイムの既存のも
   済ませる。これはtransitionや拒否にはfalseを返し、サイトはそのとき
   `object_set_fast`を呼んでエラーを組み立てさせる。
   複合代入（`o.k op= v`、`Op::PropWr`）の読みの側は、読みサイトの自分の
-  slotの枝を持つ。missは`prop_wr`が受け持ち、executorはこれ1つで済ませる。
-  サイトのキャッシュを温めるのは、`prop_wr`が扱う普通のObjectだけである。
+  slotの枝を持つ。missは`prop_wr`が受け持つ。サイトのキャッシュを
+  温めるのは、`prop_wr`が扱う普通のObjectだけである。
   isolateは同じコンパイル済みコードを走らせるので、これらのキャッシュを
   共有し、1つのサイトを同時に温めうる。そのためキャッシュのエントリは
   1語で、丸ごと書き丸ごと読む（下位48bitがShapeへのポインタ、その上に
@@ -248,6 +248,15 @@ VMが必要とするヒープオブジェクトはランタイムの既存のも
   ない。書きサイトのtransition先は2語目に置き、その親（`Shape::parent`）
   がエントリの守るshapeであるときだけ信用する。クラスの宣言フィールドの
   レイアウト（`Op::FieldsInit`）も同じく、行き先のshapeだけをキャッシュする。
+  executorも同じキャッシュを持つ。プロパティを扱う命令（`PropVal`、
+  `PropRaw`、`PropSet`、`PropWr`、`PropCo`、`MethGate`）は、`c`で
+  `Chunk::PropSite`を指す。そこに名前と、書き込みが負う名前による検査
+  （`prop_key_kind`）と、そのサイトの`JitPropIC`と`JitPropSetIC`がある。
+  executorの腕はIRと同じことを同じ順に尋ね（`_ic_own_hit`、次に
+  `_ic_proto_hit`。`object_set_update`、次に`object_set_fast`）、missは
+  IRのmissと同じhelperに渡し、そこでキャッシュが温まる。温まった読み書きは
+  shapeの比較1回で、shapeの名前を順に探さない。欄の多いインスタンスでは
+  この探索が長く、90個目の欄の読み出しに約400 nsかかっていた。
 - `JitArray`、`JitSet`、タプル、`JitTensor`。
 
 オブジェクトはper-`Runtime`のスラブアロケータ（`rt/slab.h`）から

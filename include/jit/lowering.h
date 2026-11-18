@@ -1899,8 +1899,7 @@ struct Lowering {
         case Op::PropRaw: {
           // The JIT's own emitters, so the resolve, the inline cache and
           // the `self` binding are the same IR a `x.name` read compiles to.
-          std::string key(_str_sv(
-              reinterpret_cast<const char*>(c.consts[in.c].data)));
+          std::string key(_str_sv(c.prop_sites[in.c].key));
           auto recv = load_slot(in.b);
           if (in.op == Op::PropVal && in.d == 0) {
             b.CreateStore(j.emit_property_value(recv, key), slots[in.a]);
@@ -2048,7 +2047,7 @@ struct Lowering {
           // checkBB then the receiver gate, in compile_user_method_over_
           // builtin's order, with the JIT's own property emitter.
           std::string key(_str_sv(
-              reinterpret_cast<const char*>(c.consts[in.c].data)));
+              c.prop_sites[in.c].key));
           const BMethSpec& gate = bmeth_specs()[in.d];
           auto id = gate.id;
           auto recv = load_slot(in.b);
@@ -4081,7 +4080,7 @@ struct Lowering {
           // The retain feeds object_set's consuming store; the slot keeps
           // its +1 (IndexSet's rule) so the expression still reads it.
           j.emit_value_retain(val);
-          auto* nm = reinterpret_cast<const char*>(c.consts[in.c].data);
+          auto* nm = c.prop_sites[in.c].key;
           auto objPtr = b.CreateIntToPtr(j.extract_data(recv), ptrTy);
           auto keyPtr = j.get_or_create_global_str(nm, ".vm.propname");
           auto i8Ty = b.getInt8Ty();
@@ -4117,7 +4116,7 @@ struct Lowering {
           b.SetInsertPoint(fastBB);
           // The two name-keyed contract checks object_set_fast owes, answered
           // here where the name is a literal.
-          int8_t key_kind = culebra::prop_key_kind(nm);
+          int8_t key_kind = c.prop_sites[in.c].key_kind;
           if (key_kind == 0) {
             // One nounwind call settles the warm update; false (a transition
             // or a refusal) falls to object_set_fast, which words the error.
@@ -4161,7 +4160,7 @@ struct Lowering {
           auto tag = j.extract_tag(recv);
           require_object_recv(tag, "pwr");
           auto objPtr = b.CreateIntToPtr(j.extract_data(recv), ptrTy);
-          auto* nm = reinterpret_cast<const char*>(c.consts[in.c].data);
+          auto* nm = c.prop_sites[in.c].key;
           auto i8Ty = b.getInt8Ty();
           auto po = Chunk::decode_prop_wr(in.d);
           auto [icTy, icGlobal] = j.emit_prop_ic_global();
@@ -4236,7 +4235,7 @@ struct Lowering {
             // Pin the read at the DOT node (consts[d]): a namespace's
             // unknown member raises its AttributeError there, the interp's
             // reject_namespace_write anchor. A dict miss stays nil.
-            auto* nm = reinterpret_cast<const char*>(c.consts[in.c].data);
+            auto* nm = c.prop_sites[in.c].key;
             int64_t pk = c.consts[in.d].data;
             auto sl = j.current_line_;
             auto sc = j.current_column_;

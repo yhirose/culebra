@@ -3917,8 +3917,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int8_t culebra_runtime_nc_receiver_kind(
   return 0;
 }
 
-// The read half of `o.k op= v` (Op::PropWr): the executor's whole step, and
-// the JIT's cache miss. The Shared-view reject runs ahead of the existence
+// The read half of `o.k op= v` (Op::PropWr): the cache miss of the executor
+// and the JIT alike. The Shared-view reject runs ahead of the existence
 // check (the interp's order) at the statement; the miss anchors at the DOT
 // node (`dot_pos`, packed). The value comes back borrowed.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_prop_wr(

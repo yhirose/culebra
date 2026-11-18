@@ -218,7 +218,7 @@ enum class Op : uint8_t {
                // mutable, is_init=false), else "expected Array". The value
                // stays register-owned (a retain feeds the consuming store),
                // so the assignment expression still reads it afterwards.
-  PropSet,     // regs[a].consts[c] = regs[b]: object_set with is_init=false
+  PropSet,     // regs[a].prop_sites[c] = regs[b]: object_set with is_init=false
                // (an existing slot's mut flag decides; a fresh slot defaults
                // mutable). A non-Object receiver is the write reject's typed
                // TypeError ("expected Object, Array, or Tensor" — the read
@@ -230,7 +230,7 @@ enum class Op : uint8_t {
                // those four names only (the ObjectSet literal's condition) —
                // and a packed field's own error, which anchors at the DOT
                // node (packed line<<32|col in consts[d], as PropWr's miss).
-  PropWr,      // regs[a] = property consts[c] of regs[b], the write-context
+  PropWr,      // regs[a] = property prop_sites[c] of regs[b], the write-context
                // read of `o.k op= v`: receiver gate as PropSet, then the
                // Shared-view ImmutableError (ahead of the existence check,
                // the interp's order), then the missing-property
@@ -251,7 +251,7 @@ enum class Op : uint8_t {
                // node) for a closed namespace's unknown member. A
                // non-Object receiver falls through silently — PropSet's
                // receiver gate reports it, same observable order.
-  PropVal,     // regs[a] = property consts[c] of regs[b], read AS A VALUE
+  PropVal,     // regs[a] = property prop_sites[c] of regs[b], read AS A VALUE
                // (+1) — a bare `x.name`, the JIT's non-call DOT arm. Function
                // introspection on a Function receiver, otherwise
                // culebra_runtime_prop_value (own slot then proto on an
@@ -282,8 +282,8 @@ enum class Op : uint8_t {
                // whose receiver gate (specs[d]'s tag mask, else the
                // resolution error) runs here too — ahead of the arguments,
                // both backends' order: `(5).repeat(boom())` never evaluates
-               // boom(). consts[c] names the method; positioned at the chain
-               // head, where both backends anchor a receiver's failure.
+               // boom(). prop_sites[c] names the method; positioned at the
+               // chain head, where both backends anchor a receiver's failure.
   ChkParam,    // a built-in parameter's declared-type check: unless regs[b]
                // (MethGate's gate slot) still holds the sentinel — a user
                // method binds by its own signature, not the built-in's —
@@ -326,7 +326,7 @@ enum class Op : uint8_t {
                // interp's "expected Function, got Long"). The built-in arm
                // BORROWS the receiver and the arguments — the statement sweep
                // stays their sole releaser — and yields a fresh +1.
-  PropRaw,     // regs[a] = the raw property view of consts[c] on regs[b],
+  PropRaw,     // regs[a] = the raw property view of prop_sites[c] on regs[b],
                // retained (+1) — the callee half of `x.m(...)`. Unlike
                // PropVal it neither binds `self` into a wrapper nor runs the
                // bare-method reject: CallM passes the receiver as `self`
@@ -2718,6 +2718,23 @@ struct Chunk {
   static PropWrOperand decode_prop_wr(int32_t d) {
     return {d >> 8, static_cast<int8_t>(d & 0xff)};
   }
+  // One per property-access instruction (PropVal, PropRaw, PropSet, PropWr,
+  // PropCo, MethGate), named by its `c`: the property's name (a `consts`
+  // string's bytes, as ObjectShapeSpec's keys), the name-keyed checks a
+  // write owes (culebra::prop_key_kind), and the site's own inline caches —
+  // the JitPropIC / JitPropSetIC the lowering keeps in a global per site, so
+  // a warm access in the executor is a shape compare rather than a scan of
+  // the shape's names. `mutable` like ObjectShapeSpec::shape: a physical
+  // detail of execution reached through a const Chunk&, which the isolates
+  // running the chunk prime together (each cache word is stored and loaded
+  // whole).
+  struct PropSite {
+    const char* key;
+    int8_t key_kind;
+    mutable JitPropIC get;
+    mutable JitPropSetIC set;
+  };
+  std::vector<PropSite> prop_sites;
   int32_t num_slots = 0;
   // Cell slots in creation order: a slot's rank, against a cleanup step's
   // `cells_before`, says whether it already owned a cell at that point in the
@@ -3561,6 +3578,26 @@ inline std::pair<int64_t, int64_t> chunk_pos_at(const Chunk& c, size_t pc) {
   return chunk_pos_search(c, pc);
 }
 
+// A property read the way emit_property_get's IR makes it, for the executor
+// arms that read through it (PropVal with a declared tag, PropRaw, MethGate,
+// PropCo): the site cache's own answer, then its proto answer, and on a miss
+// or a receiver that is no Object, the runtime's prop_get, which answers
+// everything else and primes the cache. A borrowed view. `pos` gives the
+// (line, col) a miss's errors anchor at.
+template <class Pos>
+inline JitValue vm_prop_get(const JitValue& recv, const Chunk::PropSite& site,
+                            Pos pos) {
+  if (recv.tag == TAG_OBJECT) {
+    auto* obj = reinterpret_cast<JitObject*>(recv.data);
+    if (auto* hit = _ic_own_hit(obj, site.get)) return *hit;
+    if (auto* hit = _ic_proto_hit(obj, site.get)) return *hit;
+  }
+  auto [line, col] = pos();
+  return culebra_runtime_prop_get(static_cast<int8_t>(recv.tag), recv.data,
+                                  site.key, &site.get, line, col,
+                                  /*own_receiver=*/false);
+}
+
 // Derive pos_ix from `positions`, and argpos_ix from `call_argpos`. Runs
 // once per chunk, after every pass that moves pcs (compile_unit asserts the
 // indexes still agree with the searches).
@@ -3591,6 +3628,28 @@ inline bool pos_index_agrees(const VmProgram& p) {
           chunk_argpos_at(c, pc) != chunk_argpos_search(c, pc))
         return false;
   }
+  return true;
+}
+
+// The instructions whose `c` names a Chunk::PropSite rather than a const.
+inline bool op_names_prop_site(Op op) {
+  switch (op) {
+    case Op::PropVal: case Op::PropRaw: case Op::PropSet: case Op::PropWr:
+    case Op::PropCo: case Op::MethGate:
+      return true;
+    default:
+      return false;
+  }
+}
+
+// Does every one of them name a site of its own chunk? The assert lane's
+// check, as pos_index_agrees.
+inline bool prop_sites_agree(const VmProgram& p) {
+  for (const Chunk& c : p.chunks)
+    for (const Insn& in : c.code)
+      if (op_names_prop_site(in.op) &&
+          (in.c < 0 || static_cast<size_t>(in.c) >= c.prop_sites.size()))
+        return false;
   return true;
 }
 
@@ -4833,6 +4892,7 @@ class Compiler {
       // pos_ix restates the covering-row rule as a sweep; a pass added after
       // the build, or a drift between the two formulations, shows up here.
       assert(pos_index_agrees(prog));
+      assert(prop_sites_agree(prog));
       return prog;
     } catch (const Unsupported& u) {
       throw CulebraError("VmError", "--vm: unsupported: " + u.what,
@@ -5863,6 +5923,15 @@ class Compiler {
     chunk_.str_arena.push_back(std::move(buf));
     it->second = kconst({TAG_STRING, reinterpret_cast<int64_t>(data)});
     return it->second;
+  }
+
+  // A fresh Chunk::PropSite for one property-access instruction to name
+  // (its `c`): every instruction its own, so each keeps its own caches.
+  int32_t prop_site(std::string_view name) {
+    auto* key =
+        reinterpret_cast<const char*>(chunk_.consts[kconst_str(name)].data);
+    chunk_.prop_sites.push_back({key, culebra::prop_key_kind(name), {}, {}});
+    return static_cast<int32_t>(chunk_.prop_sites.size() - 1);
   }
 
   // Freeze what the runtime needs of the frame layout: the slot count, the
@@ -9539,7 +9608,7 @@ class Compiler {
       TempScope fts(fc);
       size_t filled = fc.emit(Op::JumpIfFilled, fc.lazy_probe(*pl->at, *b));
       int32_t v = fc.alloc_temp(*pl->at);
-      fc.emit(Op::PropVal, v, fc.chunk_.self_slot, fc.kconst_str(pl->name),
+      fc.emit(Op::PropVal, v, fc.chunk_.self_slot, fc.prop_site(pl->name),
               fc.self_field_read_tag(pl->name));
       fc.store_binding(*pl->at, *b, {v, true});
       fc.patch_to_here(filled);
@@ -9985,7 +10054,6 @@ class Compiler {
       // is the anchor for the two write-context property errors (the
       // namespace typo and the compound miss), packed into a Long const
       // for the ops that need both positions.
-      int32_t name = kconst_str(fin.token);
       int32_t dotpos = kconst_long(packed_pos(fin));
       if (av.compound && av.op_base == "??") {
         auto recv = chain_prefix();
@@ -9998,7 +10066,7 @@ class Compiler {
           return {recv.slot + ix, /*owned=*/false};
         }
         int32_t cur = alloc_temp(ast);
-        emit(Op::PropCo, cur, recv.slot, name, dotpos);
+        emit(Op::PropCo, cur, recv.slot, prop_site(fin.token), dotpos);
         size_t skip = emit(Op::JumpIfNotNil, cur);
         auto rhs = compile_assign_rhs(ast, av);
         emit_prop_set(fin, recv.slot, rhs.slot, /*ns_check=*/false);
@@ -10024,7 +10092,7 @@ class Compiler {
         int32_t tag = end == av.lvaloff + 1
                           ? declared_read_tag(*ast.nodes[av.lvaloff], fin.token)
                           : 0;
-        emit(Op::PropWr, cur, recv.slot, name,
+        emit(Op::PropWr, cur, recv.slot, prop_site(fin.token),
              Chunk::encode_prop_wr({dotpos, static_cast<int8_t>(tag)}));
         int32_t t = alloc_temp(ast);
         emit(op, t, cur, rhs.slot, /*inplace=*/1);
@@ -10140,16 +10208,15 @@ class Compiler {
   // value; the statement sweep is its releaser.
   void emit_prop_set(const peg::Ast& dot, int32_t recv, int32_t val,
                      bool ns_check) {
-    int32_t name = kconst_str(dot.token);
     int32_t dotpos = kconst_long(packed_pos(dot));
     if (ns_check) {
       StampGuard dp(*this, dot);
-      emit(Op::NsWrChk, recv, 0, name);
+      emit(Op::NsWrChk, recv, 0, kconst_str(dot.token));
     }
     // The insert path's well-known contract throw is positionless; publish
     // the statement position for those four names (compile_object's rule).
     if (culebra::is_well_known_prop(dot.token)) emit(Op::SetOpPos);
-    emit(Op::PropSet, recv, val, name, dotpos);
+    emit(Op::PropSet, recv, val, prop_site(dot.token), dotpos);
   }
 
   // `(a, p[0], o.k) = e` — parallel assignment. The RHS evaluates once and
@@ -12958,7 +13025,7 @@ class Compiler {
     {
       StampGuard pos(*this, at);
       t = alloc_temp(at);
-      emit(Op::PropVal, t, recv.slot, kconst_str(post.token), known_tag);
+      emit(Op::PropVal, t, recv.slot, prop_site(post.token), known_tag);
     }
     if (known_tag == 0 && culebra::is_builtin_method_name(post.token)) {
       StampGuard pos(*this, post);  // the method name's own position
@@ -13355,7 +13422,7 @@ class Compiler {
                                    const peg::Ast& args, ExprResult recv) {
     StampGuard pos(*this, at);
     int32_t callee = alloc_temp(at);
-    emit(Op::PropRaw, callee, recv.slot, kconst_str(post.token));
+    emit(Op::PropRaw, callee, recv.slot, prop_site(post.token));
     if (has_kwargs(args))
       return compile_kwargs_call(at, args, callee, &recv, nullptr, nullptr,
                                  post.token);
@@ -13403,7 +13470,7 @@ class Compiler {
     alloc_temp(at);             // [1] = the receiver
     for (int32_t i = 0; i < spec.nargs; i++)
       alloc_temp(i < argc ? *pos_args[i] : at);
-    emit(Op::MethGate, base, recv.slot, kconst_str(post.token),
+    emit(Op::MethGate, base, recv.slot, prop_site(post.token),
          bmeth_spec_index(spec));
     size_t to_builtin = 0;
     size_t done_user = 0;
@@ -15380,6 +15447,8 @@ inline std::string dump(const Chunk& c) {
     }
     if (in.op == Op::NsCall)
       out += culebra::format("  -> {}", nsfn_name(in.c));
+    if (op_names_prop_site(in.op))
+      out += culebra::format("  .{}", c.prop_sites[in.c].key);
     if (in.op == Op::ReleaseMany) {
       out += "  ->";
       for (int32_t sl : chunk_release_run(c, in))
@@ -17209,12 +17278,8 @@ struct Exec {
         do {
           [[maybe_unused]] const Insn& in = *ip;
           const JitValue& recv = regs[in.b];
-          const char* key = reinterpret_cast<const char*>(c.consts[in.c].data);
-          auto [line, col] = chunk_pos_at(c, VM_PC);
-          // emit_property_get without its per-site inline cache: the executor
-          // always takes the cold funnel, and object_get_ic only WRITES the
-          // cache (the fast path that reads it lives in emitted code), so one
-          // scratch entry per execution is all it needs.
+          const Chunk::PropSite& site = c.prop_sites[in.c];
+          const char* key = site.key;
           // emit_property_get's fn_mode branch, mirrored: a Function receiver
           // answers the three signature names from its own metadata, and the
           // result is a fresh value rather than a borrowed object slot.
@@ -17224,16 +17289,32 @@ struct Exec {
             ++ip;
             break;
           }
-          JitPropIC ic{};
           if (in.op == Op::PropVal && in.d == 0) {
+            // emit_property_value: an own field the site's cache knows is
+            // the value itself, unless it holds a Function, which prop_value
+            // binds to the receiver; every other read is prop_value's.
+            if (recv.tag == TAG_OBJECT) {
+              auto* obj = reinterpret_cast<JitObject*>(recv.data);
+              auto* hit = _ic_own_hit(obj, site.get);
+              if (hit && hit->tag != TAG_FUNC) {
+                _culebra_value_retain_impl(static_cast<int8_t>(hit->tag),
+                                             hit->data);
+                regs[in.a] = *hit;
+                ++ip;
+                break;
+              }
+            }
+            auto [line, col] = chunk_pos_at(c, VM_PC);
             regs[in.a] = culebra_runtime_prop_value(
-                static_cast<int8_t>(recv.tag), recv.data, key, &ic, line, col);
+                static_cast<int8_t>(recv.tag), recv.data, key, &site.get, line,
+                col);
             ++ip;
             break;
           }
-          JitValue view = culebra_runtime_prop_get(
-              static_cast<int8_t>(recv.tag), recv.data, key, &ic, line, col,
-              /*own_receiver=*/false);
+          // The pc goes in by value: on GCC `ip` is pinned to a register,
+          // whose address a by-reference capture would take.
+          auto pos = [&c, pc = VM_PC] { return chunk_pos_at(c, pc); };
+          JitValue view = vm_prop_get(recv, site, pos);
           if (in.op == Op::PropRaw) {
             // The register owns what it holds, so the borrowed view becomes a
             // +1 here; the statement sweep is its releaser.
@@ -17246,9 +17327,11 @@ struct Exec {
             // instance it claimed to be. The JIT asks the same question at
             // the same point of the same read (Op::PropVal's `d`). What
             // agrees is a scalar: nothing to bind, and nothing to retain.
-            if (static_cast<int8_t>(view.tag) != static_cast<int8_t>(in.d))
+            if (static_cast<int8_t>(view.tag) != static_cast<int8_t>(in.d)) {
+              auto [line, col] = chunk_pos_at(c, VM_PC);
               culebra_runtime_field_type_reject(static_cast<int8_t>(in.d), key,
                                                 line, col);
+            }
             regs[in.a] = view;
           }
           ++ip;
@@ -17333,17 +17416,15 @@ struct Exec {
         do {
           [[maybe_unused]] const Insn& in = *ip;
           const JitValue& recv = regs[in.b];
-          const char* key = reinterpret_cast<const char*>(c.consts[in.c].data);
-          auto [line, col] = chunk_pos_at(c, VM_PC);
+          const Chunk::PropSite& site = c.prop_sites[in.c];
+          const char* key = site.key;
+          auto pos = [&c, pc = VM_PC] { return chunk_pos_at(c, pc); };
           regs[in.a] = JitValue{TAG_NO_SELF, kBMethGateBuiltin};
           if (recv.tag == TAG_OBJECT) {
             // checkBB: the object's own read decides. A namespace raises its
             // AttributeError from inside this read (a dict-builtin name is
             // exempt there, which is why `Math.size()` reaches the built-in).
-            JitPropIC ic{};
-            JitValue view = culebra_runtime_prop_get(
-                TAG_OBJECT, recv.data, key, &ic, line, col,
-                /*own_receiver=*/false);
+            JitValue view = vm_prop_get(recv, site, pos);
             // An own slot wins even holding a non-Function: `{size: 5}.size()`
             // is "expected Function, got Long", not the dict builtin. A Shared
             // view carries no dict builtins at all — every name it lacks is a
@@ -17377,11 +17458,14 @@ struct Exec {
               ok = !culebra_runtime_is_sequence_object(obj);
           }
           if (!ok) {
-            if (bmeth_scalar_tag(static_cast<int8_t>(recv.tag)))
+            if (bmeth_scalar_tag(static_cast<int8_t>(recv.tag))) {
+              auto [line, col] = pos();
               bmeth_scalar_receiver_error(static_cast<int8_t>(recv.tag), line,
                                           col);
+            }
             regs[in.a] = JitValue{TAG_NO_SELF, kBMethGateMiss};
           } else if (bmeth_publishes_call_pos(gate.id)) {
+            auto [line, col] = pos();
             culebra_runtime_set_op_pos(line, col);
           }
           ++ip;
@@ -17662,20 +17746,41 @@ struct Exec {
           [[maybe_unused]] const Insn& in = *ip;
           const JitValue& recv = regs[in.a];
           const JitValue& val = regs[in.b];
-          auto [line, col] = chunk_pos_at(c, VM_PC);
-          if (recv.tag != TAG_OBJECT)
+          auto pos = [&c, pc = VM_PC] { return chunk_pos_at(c, pc); };
+          if (recv.tag != TAG_OBJECT) {
+            auto [line, col] = pos();
             culebra_runtime_type_error_typed(
                 line, col, "Object, Array, or Tensor",
                 static_cast<int8_t>(recv.tag));
+          }
           // The retain feeds object_set's consuming store; the register
           // keeps its +1 so the assignment expression reads it afterwards.
           _culebra_value_retain_impl(static_cast<int8_t>(val.tag), val.data);
-          int64_t dotpk = c.consts[in.d].data;
-          culebra_runtime_object_set_uncached(
-              reinterpret_cast<JitObject*>(recv.data),
-              reinterpret_cast<const char*>(c.consts[in.c].data),
-              /*mut=*/true, static_cast<int8_t>(val.tag), val.data, line, col,
-              /*is_init=*/false, dotpk >> 32, dotpk & 0xffffffff);
+          // The lowering's arms: on the shape the site's cache guards on, a
+          // warm update owing no name-keyed check is one call, and the rest
+          // object_set_fast's, both given the entry the guard approved; a
+          // miss is object_set_ic's, which primes the cache.
+          const Chunk::PropSite& site = c.prop_sites[in.c];
+          auto* obj = reinterpret_cast<JitObject*>(recv.data);
+          auto vt = static_cast<int8_t>(val.tag);
+          uint64_t entry = _ic_load(site.set.entry);
+          if (_ic_matches(entry, obj->shape)) {
+            if (site.key_kind == 0 &&
+                culebra_runtime_object_set_update(obj, entry, vt, val.data)) {
+              ++ip;
+              break;
+            }
+            auto [line, col] = pos();
+            culebra_runtime_object_set_fast(obj, site.key, &site.set, entry, vt,
+                                            val.data, line, col, /*mut=*/true,
+                                            /*is_init=*/false, site.key_kind);
+          } else {
+            auto [line, col] = pos();
+            auto dot = culebra::unpack_pos(c.consts[in.d].data);
+            culebra_runtime_object_set_ic(obj, site.key, &site.set,
+                                          /*mut=*/true, vt, val.data, line, col,
+                                          /*is_init=*/false, dot.line, dot.col);
+          }
           ++ip;
           break;
         } while (0);
@@ -17684,22 +17789,33 @@ struct Exec {
         do {
           [[maybe_unused]] const Insn& in = *ip;
           const JitValue& recv = regs[in.b];
-          const auto* key = reinterpret_cast<const char*>(c.consts[in.c].data);
-          auto [line, col] = chunk_pos_at(c, VM_PC);
-          if (recv.tag != TAG_OBJECT)
+          const Chunk::PropSite& site = c.prop_sites[in.c];
+          const char* key = site.key;
+          auto pos = [&c, pc = VM_PC] { return chunk_pos_at(c, pc); };
+          if (recv.tag != TAG_OBJECT) {
+            auto [line, col] = pos();
             culebra_runtime_type_error_typed(
                 line, col, "Object, Array, or Tensor",
                 static_cast<int8_t>(recv.tag));
-          // The JIT's cache miss, whole: the miss anchors at the DOT node.
-          // One scratch cache entry, as PropVal's.
-          JitPropIC ic{};
+          }
+          // The lowering's read: the site cache's own answer, else the JIT's
+          // cache miss, whole (prop_wr primes the cache from plain Objects
+          // only; the miss anchors at the DOT node).
+          auto* obj = reinterpret_cast<JitObject*>(recv.data);
           auto po = Chunk::decode_prop_wr(in.d);
-          JitValue view = culebra_runtime_prop_wr(
-              reinterpret_cast<JitObject*>(recv.data), key, &ic, line, col,
-              c.consts[po.pos_const].data);
+          JitValue view;
+          if (auto* hit = _ic_own_hit(obj, site.get)) {
+            view = *hit;
+          } else {
+            auto [line, col] = pos();
+            view = culebra_runtime_prop_wr(obj, key, &site.get, line, col,
+                                           c.consts[po.pos_const].data);
+          }
           // A declared field's tag, checked where PropVal checks it.
-          if (po.tag != 0 && static_cast<int8_t>(view.tag) != po.tag)
+          if (po.tag != 0 && static_cast<int8_t>(view.tag) != po.tag) {
+            auto [line, col] = pos();
             culebra_runtime_field_type_reject(po.tag, key, line, col);
+          }
           _culebra_value_retain_impl(static_cast<int8_t>(view.tag),
                                        view.data);
           regs[in.a] = view;
@@ -17711,37 +17827,41 @@ struct Exec {
         do {
           [[maybe_unused]] const Insn& in = *ip;
           const JitValue& recv = regs[in.b];
-          const auto* key = reinterpret_cast<const char*>(c.consts[in.c].data);
-          auto [line, col] = chunk_pos_at(c, VM_PC);
-          if (recv.tag != TAG_OBJECT)
+          const Chunk::PropSite& site = c.prop_sites[in.c];
+          auto pos = [&c, pc = VM_PC] { return chunk_pos_at(c, pc); };
+          if (recv.tag != TAG_OBJECT) {
+            auto [line, col] = pos();
             culebra_runtime_type_error_typed(
                 line, col, "Object, Array, or Tensor",
                 static_cast<int8_t>(recv.tag));
+          }
           // The nc receiver-kind rejects fire ahead of the read (the JIT's
           // nc DOT dispatch — only the Shared-view kind is constructible in
           // the slice, but the mirror keeps the arm 1:1).
           switch (culebra_runtime_nc_receiver_kind(recv.data)) {
-            case 2:
+            case 2: {
+              auto [line, col] = pos();
               culebra_runtime_throw_error("ImmutableError",
                                           "Shared values are immutable", line,
                                           col);
               break;
-            case 4:
+            }
+            case 4: {
+              auto [line, col] = pos();
               culebra_runtime_throw_error(
                   "TypeError", "`?" "?=` is not supported on a packed field",
                   line, col);
               break;
+            }
             default:
               break;
           }
           // A plain read: a dict miss is nil (the JumpIfNotNil write test);
           // a namespace's unknown member raises AttributeError at the DOT
           // node (consts[d]) — before the RHS ever runs.
-          int64_t pk = c.consts[in.d].data;
-          JitPropIC ic{};
-          JitValue view = culebra_runtime_prop_get(
-              TAG_OBJECT, recv.data, key, &ic, pk >> 32, pk & 0xffffffff,
-              /*own_receiver=*/false);
+          JitValue view = vm_prop_get(recv, site, [&] {
+            return culebra::unpack_pos(c.consts[in.d].data);
+          });
           _culebra_value_retain_impl(static_cast<int8_t>(view.tag),
                                        view.data);
           regs[in.a] = view;

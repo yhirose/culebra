@@ -1141,10 +1141,10 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_set_ic(
     int8_t tag, int64_t data, int64_t line, int64_t col, bool is_init,
     int64_t mem_line, int64_t mem_col);
 
-// Fast path for the property-write IC. Caller (JIT-emitted IR) has
-// already verified that `obj->shape` is the shape `entry` (the word it
-// loaded from `ic` and compared) guards on, so this just dispatches on the
-// entry's mode:
+// Fast path for the property-write IC. Caller (the JIT's IR, or the
+// executor's PropSet) has already verified that `obj->shape` is the shape
+// `entry` (the word it loaded from `ic` and compared) guards on, so this just
+// dispatches on the entry's mode:
 //   * update: overwrite slots[slot], honoring the existing entry's mut
 //     flag; the slot's declared type is obj's own shape's.
 //   * transition: grow `slots` by one (the reserved capacity from
@@ -1291,10 +1291,9 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_fields_init(
 // on a @packable packed view writes straight into the shared backing bytes
 // (zero copy); a Shared.new view is immutable on every write surface; a
 // JitHandle has no fields. No name ever becomes an own slot, so the write
-// always reaches an uncached path — the IC below stays cold for all three,
-// and the bytecode VM, which keeps no per-site cache at all, comes through
-// the entry after it. Returns true when
-// the write was handled here. Matches the interp's packed_view_set arm.
+// always takes the IC's slow path and leaves the IC cold for all three. Returns
+// true when the write was handled here. Matches the interp's packed_view_set
+// arm.
 inline bool _jit_prop_write_intercepted(JitObject* obj, const char* key,
                                         int8_t tag, int64_t data,
                                         int64_t line, int64_t col,
@@ -1314,18 +1313,6 @@ inline bool _jit_prop_write_intercepted(JitObject* obj, const char* key,
   }
   if (obj->has_handle) _jit_handle_reject_write(obj, tag, data, line, col);
   return false;
-}
-
-// Property write with no per-site inline cache — the bytecode VM's `o.k = v`.
-// Same interceptions the IC slow path performs, then the plain store.
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_set_uncached(
-    JitObject* obj, const char* key, bool mut, int8_t tag, int64_t data,
-    int64_t line, int64_t col, bool is_init, int64_t mem_line,
-    int64_t mem_col) {
-  if (_jit_prop_write_intercepted(obj, key, tag, data, line, col, mem_line,
-                                  mem_col))
-    return;
-  culebra_runtime_object_set(obj, key, mut, tag, data, line, col, is_init);
 }
 
 // Slow path for the property-write IC. Performs the full lookup
@@ -1561,11 +1548,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_object_get_ic(
   // — so both linear scans are already answered. This is the shape a class
   // instance's every method read has (data in own slots, methods on the
   // shared meta behind `proto`).
-  auto proto_entry = _ic_load(ic->proto);
-  if (obj->shape == _ic_load(ic->owner_shape) &&
-      obj->proto() && _ic_matches(proto_entry, obj->proto()->shape)) {
-    return obj->proto()->slots[_ic_slot(proto_entry)].value;
-  }
+  if (auto* hit = _ic_proto_hit(obj, *ic)) return *hit;
   if (obj->shape) {
     auto idx = obj->find_slot(key);
     if (idx != static_cast<size_t>(-1)) {

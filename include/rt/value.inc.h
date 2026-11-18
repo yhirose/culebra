@@ -1277,13 +1277,13 @@ inline size_t _ic_slot(uint64_t entry) {
   return (entry & ~kIcTransition) >> kIcShapeBits;
 }
 
-// Per-callsite inline cache for `obj.prop` reads. Allocated as a JIT module
-// global per property-get site; the IR reads all three words (the own slot,
-// then the proto hit), so emit_prop_ic_global's `icTy` mirrors this layout
-// word for word. The proto half answers a class instance's method read: data
-// in own slots and methods on the shared meta behind `proto`, so
-// `inst.method` would otherwise miss the own-slot cache on every call and
-// re-run two linear Shape::offset scans.
+// Per-callsite inline cache for `obj.prop` reads. One per property-get
+// site, a JIT module global or the executor's Chunk::PropSite; the IR reads
+// all three words (the own slot, then the proto hit), so
+// emit_prop_ic_global's `icTy` mirrors this layout word for word. The proto
+// half answers a class instance's method read: data in own slots and methods
+// on the shared meta behind `proto`, so `inst.method` would otherwise miss
+// the own-slot cache on every call and re-run two linear Shape::offset scans.
 //
 // A Shape fixes the own-name set exactly, which is what makes skipping the
 // recorded miss sound — a shape that gained the name is a different shape,
@@ -1317,6 +1317,24 @@ struct JitPropIC {
     _ic_store(proto, e);
   }
 };
+
+// A read cache's two answers for `obj`, asked the way emit_property_get's IR
+// asks them: the own slot `own` recorded for obj's shape; and the proto's
+// slot, when obj's shape is the one whose own scan missed and its proto's
+// shape is the one `proto` recorded (a dictionary has no proto). Null on a
+// miss, which the full lookup answers and primes. Each word is loaded once.
+inline JitValue* _ic_own_hit(JitObject* obj, JitPropIC& ic) {
+  auto e = _ic_load(ic.own);
+  return _ic_matches(e, obj->shape) ? &obj->slots[_ic_slot(e)].value
+                                    : nullptr;
+}
+inline JitValue* _ic_proto_hit(JitObject* obj, JitPropIC& ic) {
+  auto* proto = obj->proto();
+  if (!proto || obj->shape != _ic_load(ic.owner_shape)) return nullptr;
+  auto e = _ic_load(ic.proto);
+  return _ic_matches(e, proto->shape) ? &proto->slots[_ic_slot(e)].value
+                                      : nullptr;
+}
 
 // Per-callsite inline cache for `obj.prop = ...` writes. `entry` is the
 // shape `obj` must have and a slot, flagged when the site appends:

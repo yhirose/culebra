@@ -243,7 +243,12 @@
 # removed and set again, an Object that looks like one is not one, and a
 # match or range the program rewrote is read only as what the runtime made;
 # 0.14 s under --vm, 0.6 s under --jit).
-tests.cul 376
+# 377 since test_property_site_cache.cul (a property access's own cache, in
+# every lane, answers only for the shape it saw: methods of two classes
+# whose metas share a shape, an own field shadowing a method, writes and
+# compound writes through one site, a dictionary; 0.02 s under --vm, 1.0 s
+# under --jit).
+tests.cul 377
 
 # tests/isolate/*.cul — run on both engines, plus the over-cap modes.
 # 21 since test_xml_isolate.cul (an XML element keeps its methods across an

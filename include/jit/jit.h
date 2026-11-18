@@ -4916,8 +4916,8 @@ struct JIT {
   // a field through, a fresh +1 on every arm with the receiver borrowed. An
   // own field of an Object whose shape the site's cache knows is read and
   // retained inline; everything else — a Function to bind or a getter, a
-  // proto's field, a miss, a non-Object — is one call to prop_value, the
-  // executor's own read. `.name`/`.params`/`.return_type` on a Function are
+  // proto's field, a miss, a non-Object — is one call to prop_value, as
+  // the executor's miss is. `.name`/`.params`/`.return_type` on a Function are
   // its own metadata (fn_introspect_get, a fresh value); on anything else
   // they are names like any other, as in the executor. The 16-byte results
   // come back through emit_value_call (the Win64 sret ABI).

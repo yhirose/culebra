@@ -1,0 +1,222 @@
+# Every property access keeps a cache at its site, in every lane: the shape
+# it last saw and the slot there. Each case below sends receivers of
+# different shapes through one site, warm, so a cache that answered for the
+# wrong shape would read, write or call the wrong thing.
+
+# --- method reads: the proto half --------------------------------------------
+
+# Two classes whose methods have the same names in the same order: their
+# metas share a shape, so the site must take the method from the receiver's
+# own proto, not from the one it cached.
+class A {
+  new() {
+    @v = 1
+  }
+  m() {
+    'A'
+  }
+}
+class B {
+  new() {
+    @v = 2
+  }
+  m() {
+    'B'
+  }
+}
+fn call_m(o) {
+  o.m()
+}
+let seen = [A(), B(), A(), A(), B()].map(call_m)
+assert_eq(seen, ['A', 'B', 'A', 'A', 'B'])
+
+# An own field of the method's name shadows it, through the same warm site:
+# an instance of A that gained one, whose proto is the one the site cached.
+let shadowed = A()
+shadowed.m = fn () {
+  'own'
+}
+assert_eq(call_m(A()), 'A')
+assert_eq(call_m(shadowed), 'own')
+assert_eq(call_m(A()), 'A')
+assert_eq(call_m({
+  v: 0,
+  m: fn () {
+    'literal'
+  },
+}), 'literal')
+
+# A method that shares a dict builtin's name goes through the built-in
+# method's gate: through one site, each class's own method, and a plain
+# Object (the classes' own shape, no proto) the builtin.
+class Box {
+  new() {
+    @v = 1
+  }
+  size() {
+    10
+  }
+}
+class Bag {
+  new() {
+    @v = 2
+  }
+  size() {
+    20
+  }
+}
+fn size_of(o) {
+  o.size()
+}
+assert_eq([Box(), Bag(), {v: 3}, Box()].map(size_of), [10, 20, 1, 10])
+
+# A Function in an own field, read as a value at a warm site, is bound to
+# its receiver every time.
+fn read_f(o) {
+  o.f
+}
+let withf = {
+  n: 5,
+  f: fn () {
+    self.n
+  },
+}
+assert_eq(read_f(withf)(), 5)
+assert_eq(read_f(withf)(), 5)
+assert_eq(read_f({
+  n: 6,
+  f: fn () {
+    self.n
+  },
+})(), 6)
+
+# A method read as a value, warm, then an instance of the other class.
+fn read_m(o) {
+  o.m
+}
+assert_eq(read_m(A())(), 'A')
+assert_eq(read_m(A())(), 'A')
+assert_eq(read_m(B())(), 'B')
+
+# --- reads of a declared field -----------------------------------------------
+
+# A read the compiler typed from the declared class, warm: the cached slot
+# still meets the tag check.
+
+class Pt {
+  x: Float = 0.0
+  y: Float = 0.0
+}
+fn read_y(p: Pt) {
+  p.y
+}
+let p = Pt()
+p.x = 1.0
+p.y = 2.0
+assert_eq(read_y(p), 2.0)
+assert_eq(read_y(p), 2.0)
+
+# --- writes ------------------------------------------------------------------
+
+# One site writing `x`: a warm update, then a receiver with `x` at another
+# slot, then one gaining `x` (a transition), then the first again.
+fn set_x(o, v) {
+  o.x = v
+}
+let o1 = {mut x: 0, mut y: 0}
+let o2 = {mut y: 0, mut x: 0}
+let o3 = {y: 0}
+set_x(o1, 1)
+set_x(o1, 2)
+set_x(o2, 3)
+set_x(o3, 4)
+set_x(o1, 5)
+assert_eq([o1.x, o1.y, o2.x, o2.y, o3.x, o3.y], [5, 0, 3, 0, 4, 0])
+
+# Fresh objects gaining two fields at warm sites take the same transitions.
+fn make(a, b) {
+  let o = {}
+  o.a = a
+  o.b = b
+  o
+}
+let made = iota(4).map(|i| make(i, i * 10))
+assert_eq(made.map(|o| o.a + o.b), [0, 11, 22, 33])
+assert_eq(made[3].keys(), ['a', 'b'])
+
+# A warm site still refuses what the slot refuses: a value of the wrong type
+# for a declared field, and an immutable slot.
+fn set_px(q, v) {
+  q.x = v
+}
+let q = Pt()
+set_px(q, 1.5)
+set_px(q, 2.5)
+let typed = try {
+  set_px(q, 'no')
+  'stored'
+} catch e {
+  e.kind
+}
+assert_eq(typed, 'TypeError')
+assert_eq(q.x, 2.5)
+
+let fixed = try {
+  set_x({x: 1, y: 0}, 2)
+  'stored'
+} catch e {
+  e.kind
+}
+assert_eq(fixed, 'ImmutableError')
+
+# A Shared value refuses the write even where plain Objects warmed the site.
+let shared = Shared.new({x: 1})
+let refused = try {
+  set_x(shared, 2)
+  'stored'
+} catch e {
+  e.kind
+}
+assert_eq(refused, 'ImmutableError')
+
+# --- compound writes ---------------------------------------------------------
+
+fn bump(o) {
+  o.x += 1
+}
+let c1 = {mut x: 1, y: 0}
+let c2 = {y: 10, mut x: 20}
+bump(c1)
+bump(c1)
+bump(c2)
+bump(c1)
+assert_eq([c1.x, c1.y, c2.x, c2.y], [4, 0, 21, 10])
+
+fn fill(o) {
+  o.x ??= 7
+}
+let f1 = {mut x: nil, y: 1}
+let f2 = {y: 2, mut x: 3}
+let f3 = {y: 3}
+fill(f1)
+fill(f2)
+fill(f3)
+assert_eq([f1.x, f2.x, f3.x], [7, 3, 7])
+
+# --- dictionary mode ---------------------------------------------------------
+
+# An Object past the shape limit keeps its keys in a dictionary; a site warm
+# on shaped Objects reads and writes it by name.
+let big = {}
+for i in range(100) {
+  big["k{i}"] = i
+}
+big.x = 'dict'
+fn read_x_of(o) {
+  o.x
+}
+assert_eq(read_x_of({x: 'shaped'}), 'shaped')
+assert_eq(read_x_of(big), 'dict')
+set_x(big, 'set')
+assert_eq(big.x, 'set')
+assert_eq(big.k99, 99)

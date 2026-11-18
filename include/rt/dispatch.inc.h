@@ -2192,7 +2192,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_bind_method_value(
 
 // `obj.name` read as a value where no inline cache answers: the lookup,
 // which fills `ic`, then the binding a Function read off an Object gets.
-// The executor's PropVal, and the slow arm of the JIT's
+// PropVal's slow arm, in the executor and in the JIT
 // (JIT::emit_property_value). A fresh +1; the receiver stays borrowed.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_prop_value(
     int8_t recv_tag, int64_t recv_data, const char* key, JitPropIC* ic,
