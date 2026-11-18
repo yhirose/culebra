@@ -65,10 +65,19 @@ int main(int argc, char **argv) {
   if (argc < 2) { return 2; }
   MIDIClientRef client;
   MIDIEndpointRef dest;
-  if (MIDIClientCreateWithBlock(CFSTR("culebra midi test"), &client, ^(const MIDINotification *) {}) != noErr ||
-      MIDISourceCreateWithProtocol(client, CFSTR("culebra midi test"), kMIDIProtocol_1_0, &source) != noErr ||
-      MIDIDestinationCreateWithProtocol(client, CFSTR("culebra midi test"), kMIDIProtocol_1_0, &dest,
-                                        ^(const MIDIEventList *list, void *) { hear(list); }) != noErr) {
+  // Which call failed, and how, on stderr: midi_test.sh shows it when the
+  // reader never sees the ports.
+  auto made = [](const char *what, OSStatus st) {
+    if (st != noErr) { std::fprintf(stderr, "midi_sender: %s failed: OSStatus %d\n", what, int(st)); }
+    return st == noErr;
+  };
+  if (!made("MIDIClientCreate",
+            MIDIClientCreateWithBlock(CFSTR("culebra midi test"), &client, ^(const MIDINotification *) {})) ||
+      !made("MIDISourceCreate",
+            MIDISourceCreateWithProtocol(client, CFSTR("culebra midi test"), kMIDIProtocol_1_0, &source)) ||
+      !made("MIDIDestinationCreate",
+            MIDIDestinationCreateWithProtocol(client, CFSTR("culebra midi test"), kMIDIProtocol_1_0, &dest,
+                                              ^(const MIDIEventList *list, void *) { hear(list); }))) {
     return 1;
   }
   std::ifstream ready(argv[1]);

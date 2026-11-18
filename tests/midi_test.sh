@@ -18,6 +18,18 @@ TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 fail=0
 
+# What the sender was doing when a run failed, so that a sender that never
+# made its ports (its stderr says which call failed) is told apart from a MIDI
+# server slow to list them.
+sender_state() {
+  if kill -0 "$1" 2>/dev/null; then
+    echo "sender running"
+  else
+    wait "$1"
+    echo "sender exited $?: $(tr '\n' ' ' < "$TMP/sender.err")"
+  fi
+}
+
 c++ -std=c++17 -o "$TMP/sender" "$HERE/midi_sender.cc" -framework CoreMIDI -framework CoreFoundation || {
   echo "FAIL: cannot build the sender"; exit 1; }
 
@@ -39,7 +51,7 @@ fn listed(ports) {
     port = ports().find(|p| p.name == "culebra midi test")
     Time.sleep(0.01) if port == nil
   }
-  throw "no port named culebra midi test after 30 s" if port == nil
+  throw "no port named culebra midi test after 30 s (listed: {ports().map(|p| p.name)})" if port == nil
   port
 }
 
@@ -111,9 +123,10 @@ want_sent='90 3D 64 F0 7D 01 02 03 04 05 06 07 F7 C0 03 90 00 01'
 
 for engine in --vm --jit; do
   mkfifo "$TMP/ready"
-  "$TMP/sender" "$TMP/ready" > "$TMP/sent" &
+  "$TMP/sender" "$TMP/ready" > "$TMP/sent" 2> "$TMP/sender.err" &
   sender=$!
   got=$(CULEBRA_AUDIO=on "$CULEBRA" "$engine" "$TMP/read.cul" "$TMP/ready" 2>&1)
+  state=$(sender_state $sender)
   # The sender ends when the reader's last message comes; a reader that
   # failed leaves it waiting, on the FIFO or for that message, and it is
   # stopped here.
@@ -122,7 +135,7 @@ for engine in --vm --jit; do
   wait $sender 2>/dev/null
   rm -f "$TMP/ready"
   sent=$(cat "$TMP/sent")
-  [[ "$got" == "$want" ]] || { echo "FAIL $engine: got [$got]"; fail=1; }
+  [[ "$got" == "$want" ]] || { echo "FAIL $engine: got [$got] ($state)"; fail=1; }
   [[ "$sent" == "$want_sent" ]] || { echo "FAIL $engine: the destination got [$sent]"; fail=1; }
 done
 
@@ -136,6 +149,7 @@ while port == nil && Time.monotonic() < until {
   port = MIDI.inputs().find(|p| p.name == "culebra midi test")
   Time.sleep(0.01) if port == nil
 }
+throw "no port named culebra midi test after 30 s (listed: {MIDI.inputs().map(|p| p.name)})" if port == nil
 let input = MIDI.Input.new(port.id)
 FS.write(Sys.argv[0], "ready\n")
 IO.eprint("waiting\n")
@@ -147,7 +161,7 @@ EOF
 
 for engine in --vm --jit; do
   mkfifo "$TMP/ready"
-  "$TMP/sender" "$TMP/ready" > /dev/null &
+  "$TMP/sender" "$TMP/ready" > /dev/null 2> "$TMP/sender.err" &
   sender=$!
   # Emptied here, before the launch: the background `>` truncates only once
   # the child runs, and the poll below could read the previous engine's
@@ -158,15 +172,16 @@ for engine in --vm --jit; do
   # As long as the program may take to see the source (wait.cul's 30 s).
   for _ in $(seq 300); do grep -q waiting "$TMP/waited" && break; sleep 0.1; done
   sleep 0.3
-  kill -INT $pid
+  kill -INT $pid 2>/dev/null
   for _ in $(seq 20); do kill -0 $pid 2>/dev/null || break; sleep 0.1; done
   kill -9 $pid 2>/dev/null
   wait $pid 2>/dev/null
+  state=$(sender_state $sender)
   kill $sender 2>/dev/null
   wait $sender 2>/dev/null
   rm -f "$TMP/ready"
   waited=$(tr '\n' '|' < "$TMP/waited")
-  [[ "$waited" == 'waiting|DEFER|interrupted|' ]] || { echo "FAIL $engine: one Ctrl+C left [$waited]"; fail=1; }
+  [[ "$waited" == 'waiting|DEFER|interrupted|' ]] || { echo "FAIL $engine: one Ctrl+C left [$waited] ($state)"; fail=1; }
 done
 
 [[ $fail == 0 ]] && echo "midi_test OK"
