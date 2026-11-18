@@ -79,8 +79,12 @@ jobs:
       - name: Install toolchain
         uses: ./.github/actions/setup-linux-toolchain
 
+      # Restored and saved in two steps, so that a run that fails or hits the
+      # bound still keeps what it compiled and its rerun builds warm
+      # (actions/cache saves only after a job that succeeded).
       - name: Restore ccache
-        uses: actions/cache@v4
+        id: ccache
+        uses: actions/cache/restore@v4
         with:
           path: ${{ github.workspace }}/.ccache
           key: linux-asan-ccache-${{ github.sha }}
@@ -106,6 +110,13 @@ jobs:
 
       - name: ASan+UBSan build and sweeps
         run: just asan -fuse-ld=mold
+
+      - name: Save ccache
+        if: always() && steps.ccache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ github.workspace }}/.ccache
+          key: linux-asan-ccache-${{ github.sha }}
 
       - name: Report ccache stats
         if: always()
