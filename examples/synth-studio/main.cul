@@ -1,0 +1,44 @@
+# Synth Studio as a desktop app: the browser Studio's page
+# (playground/studio.html) in a native window, its Plays run by this program's
+# server with Isolate.spawn_source rather than by the Playground's wasm.
+#
+# Dev (the page read from disk):  culebra examples/synth-studio/main.cul
+# One binary (the page baked in): culebra build examples/synth-studio/main.cul \
+#                                   -o synth-studio --with Synth,Audio
+#
+# `--with Synth,Audio` because the sounds are the editor's, which this program
+# does not name: a built binary carries only the namespaces it is told of.
+
+import runner from './runner/runner.cul'
+
+# The Studio's files with studio.html as the index, as the site serves them
+# (the site's assets are mounted beside them, below). The page is told to run
+# its Plays here, and has no version to show (the site stamps it when it
+# copies the page).
+let page = fn () {
+  let studio = Dir.embedded("../../playground")
+  let meta = "<meta name=\"studio-runner\" content=\"worker\">"
+  let html = studio.read("studio.html")
+  if !html.contains(meta) {
+    throw "studio.html no longer says {meta}: the page would run its Plays on the Playground's wasm"
+  }
+  let index = html
+    .replace(meta, meta.replace("worker", "socket"))
+    .replace("\{\{CULEBRA_VERSION}}", "")
+  Dir.memory({
+    ...studio.files().map(|f| (f, studio.read(f))).to_object(),
+    "index.html": index,
+  })
+}
+
+Desktop.run({
+  title: "Synth Studio",
+  size: [1200, 800],
+  assets: page(),
+  routes: fn (srv) {
+    srv.static("/assets", Dir.embedded("../../site/assets"))
+    srv.ws("/api/run", fn (req, ws) {
+      runner.serve(ws)
+    })
+  },
+})

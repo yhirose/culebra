@@ -1,0 +1,61 @@
+# What a Play runs in the desktop app: the program the page builds
+# (playground/studio-program.js, the WAV's bytes as its value) on an isolate
+# of its own, over one WebSocket connection. The page sends the program and
+# the path a syntax error names it by; the answer is the WAV in base64 or the
+# failure as the command line prints it, which the page reads as it reads the
+# browser's run. The page's Stop closes the connection, which drops a run
+# still rendering: a source that never ends stops with it.
+
+# A failure as the command line prints one: a built-in error with its kind and
+# place, a thrown value as it is (an isolate's join keeps no place for it).
+let failure_text = fn (e) {
+  e is Object && e.kind is String
+    ? "{e.kind}: {e.message} at {e.line}:{e.col}.\n"
+    : "uncaught: {e}\n"
+}
+
+let start = fn (src, path) {
+  Isolate.spawn_source(src, name: path)
+}
+
+# The answer to send for a run, or nil while it is still rendering.
+let answer = fn (run) {
+  try {
+    let wav = run.poll()
+    # Encoded here rather than by the program: Encoding is this program's to
+    # name, which is what links it into a built binary.
+    wav == nil ? nil : {rc: 0, wav: Encoding.base64.encode(wav)}
+  } catch e {
+    {rc: 1, text: failure_text(e)}
+  }
+}
+
+# One connection: each message is a program to run, in place of one still
+# rendering; a closed connection drops what runs.
+let serve = fn (ws) {
+  ws.set_timeout(50)
+  mut run = nil
+  while true {
+    match ws.try_receive() {
+      Message(m) => {
+        run?.drop()
+        let msg = JSON.parse(m)
+        run = start(msg.src, msg.path)
+      },
+      Empty() => nil,
+      Closed() => {
+        run?.drop()
+        return nil
+      },
+    }
+    if run != nil {
+      let reply = answer(run)
+      if reply != nil {
+        ws.send(JSON.stringify(reply))
+        run = nil
+      }
+    }
+  }
+}
+
+export {failure_text, start, answer, serve}

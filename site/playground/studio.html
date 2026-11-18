@@ -15,6 +15,9 @@
     worker-src 'self';
     base-uri 'none';
     form-action 'none'">
+  <!-- What runs a Play: the Playground's worker. The desktop app
+       (examples/synth-studio) serves this page with `socket`, its server. -->
+  <meta name="studio-runner" content="worker">
   <title>culebra Synth Studio v0.8.0</title>
   <meta name="description" content="Write a sound in culebra's Synth, play it, and watch its wave and spectrum, in your browser.">
   <link rel="icon" type="image/svg+xml" href="../assets/favicon.svg">

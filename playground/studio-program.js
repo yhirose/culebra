@@ -1,11 +1,14 @@
-// Synth Studio's program: the source the page hands the worker for one Play,
+// Synth Studio's program: the source the page hands its runner for one Play,
 // and the way back from the line numbers of that program to the editor's.
 //
 // The editor's text (or the part of it selected) runs inside a function, so
 // that its last expression is a value whatever comes before it; a tail then
-// renders that value and writes it as a WAV file, which the worker hands the
-// page when the run ends (worker.js's `collect`). The page plays the file
-// itself, so the sound outlives the run and Stop is the page's to do.
+// renders that value as a WAV. In the browser the tail writes it as a file,
+// which the worker hands the page when the run ends (worker.js's `collect`);
+// the desktop app (examples/synth-studio) runs the program with
+// Isolate.spawn_source, which has no file to write beside, so there the WAV's
+// bytes are the program's value. The page plays the WAV itself, so the
+// sound outlives the run and Stop is the page's to do.
 //
 // No DOM and no imports, so node can load this for tools/playground/'s test,
 // which runs what it builds on the wasm.
@@ -26,9 +29,12 @@ const LINE_OFFSET = 1;
 // A value that ends on its own plays to its end; one that does not (an
 // oscillator, a loop) plays for `seconds`. An Array is samples already, as
 // Audio's own functions answer them: one channel, or `[left, right]`.
-function tail(seconds) {
+// `out` says how the WAV leaves: "file" or "value" (above).
+function tail(seconds, out) {
+  const wav = `__studio_wav(__studio_value, ${Number(seconds).toFixed(3)})`;
+  const last = out === "value" ? wav : `FS.write(FS.join(FS.dirname(Sys.script), "${WAV}"), ${wav})`;
   return `})()
-let __studio_play = fn (value, seconds) {
+let __studio_wav = fn (value, seconds) {
   let sound = if value is Array {
     Audio.Sound(value)
   } else if value is SynthSignal | SynthEnvelope | SynthVoices {
@@ -41,9 +47,9 @@ let __studio_play = fn (value, seconds) {
   } else {
     throw "Studio plays the value of the last expression, a Synth part or an Array of samples; this one is {type_of(value)}"
   }
-  FS.write(FS.join(FS.dirname(Sys.script), "${WAV}"), sound.data())
+  sound.data()
 }
-__studio_play(__studio_value, ${Number(seconds).toFixed(3)})
+${last}
 `;
 }
 
@@ -52,7 +58,7 @@ __studio_play(__studio_value, ${Number(seconds).toFixed(3)})
 // define; the part of its first line before it is blanked rather than dropped,
 // which keeps every location in it where it is in the editor. `lines` is how
 // many of the editor's lines the program carries.
-export function buildProgram(source, selection, seconds) {
+export function buildProgram(source, selection, seconds, out = "file") {
   let body = source;
   if (selection && selection.to > selection.from) {
     const lineStart = source.slice(0, selection.from).lastIndexOf("\n") + 1;
@@ -60,7 +66,7 @@ export function buildProgram(source, selection, seconds) {
     const lead = " ".repeat(new TextEncoder().encode(source.slice(lineStart, selection.from)).length);
     body = source.slice(0, lineStart) + lead + source.slice(selection.from, selection.to);
   }
-  return { src: `${HEAD}\n${body}\n${tail(seconds)}`, lines: body.split("\n").length };
+  return { src: `${HEAD}\n${body}\n${tail(seconds, out)}`, lines: body.split("\n").length };
 }
 
 // What a run printed, for the editor: when it failed, the error's location

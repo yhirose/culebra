@@ -1,0 +1,65 @@
+# The desktop Studio's runner: what a run answers the page with.
+
+import runner from './runner.cul'
+
+# The path the page names its program by (playground/studio-program.js).
+let PATH = "studio/main.cul"
+
+# What a run answers once it has ended.
+fn answer_of(src) {
+  let run = runner.start(src, PATH)
+  mut reply = runner.answer(run)
+  while reply == nil {
+    Time.sleep(0.01)
+    reply = runner.answer(run)
+  }
+  reply
+}
+
+# The program's value is the WAV's bytes, which go to the page in base64.
+assert_eq(answer_of("'RIFF'"), {rc: 0, wav: "UklGRg=="})
+
+# A failure reads as the command line prints it, so the page finds its place
+# in the program as it does for the browser's run.
+assert_eq(
+  answer_of("let x = 1\nx + 'a'"),
+  {
+    rc: 1,
+    text: "TypeError: type error: cannot apply '+' to Long and String at 2:1.\n",
+  },
+)
+let syntax = answer_of("let = 1").text
+assert_true(syntax.starts_with("SyntaxError: "))
+assert_true(syntax.ends_with(" at 1:5.\n"))
+assert_eq(answer_of("throw 'boom'"), {rc: 1, text: "uncaught: boom\n"})
+assert_eq(answer_of("throw [1, 2]"), {rc: 1, text: "uncaught: [1, 2]\n"})
+
+# Over the connection, as the page talks to it: a program in, its answer out,
+# and a program sent while one renders takes its place.
+{
+  let srv = Http.server()
+  srv.ws("/api/run", fn (req, ws) {
+    runner.serve(ws)
+  })
+  let port = srv.listen_async(0, "127.0.0.1")
+  defer {
+    srv.stop()
+  }
+  let ws = Http.ws("ws://127.0.0.1:{port}/api/run")
+  let send = fn (src) {
+    ws.send(JSON.stringify({src: src, path: PATH}))
+  }
+  send("'RIFF'")
+  assert_eq(JSON.parse(ws.receive()), {rc: 0, wav: "UklGRg=="})
+  send("mut n = 0\nwhile true \{ n += 1 }")
+  send("'WAVE'")
+  assert_eq(JSON.parse(ws.receive()), {rc: 0, wav: "V0FWRQ=="})
+  ws.close()
+}
+
+# A run still rendering answers nothing, and Stop's drop ends one that never
+# would.
+let forever = runner.start("mut n = 0\nwhile true \{ n += 1 }", PATH)
+assert_eq(runner.answer(forever), nil)
+forever.drop()
+assert_eq(forever.join(), nil)

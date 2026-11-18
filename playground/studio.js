@@ -1,8 +1,9 @@
-// Synth Studio: the editor's code runs in the Playground's worker
-// (studio-program.js says what it runs), and the WAV that run leaves is
-// played here, through an AnalyserNode the two graphs read every frame. The
-// sound is the page's, so it outlives the run: Stop silences it, and stops a
-// run still rendering by terminating the worker, as the Playground's Stop does.
+// Synth Studio: the editor's code runs in the Playground's worker, or in the
+// desktop app on its server (studio-program.js says what it runs), and the WAV
+// that run leaves is played here, through an AnalyserNode the two graphs read
+// every frame. The sound is the page's, so it outlives the run: Stop silences
+// it, and stops a run still rendering by starting what runs it afresh, as the
+// Playground's Stop does.
 import { createEditor } from "./editor.js";
 import { encodeShareParam, decodeShareParam } from "./share-link.js";
 import { ENTRY, OUT, buildProgram, editorReport } from "./studio-program.js";
@@ -51,9 +52,74 @@ const editor = createEditor($("editor"), "", {
 });
 addEventListener("pagehide", writeDraft);
 
-// --- the worker --------------------------------------------------------------
+// --- what runs the program -----------------------------------------------------
+//
+// In the browser, the Playground's worker; in the desktop app
+// (examples/synth-studio), the app's own server over a WebSocket, which runs
+// the program with Isolate.spawn_source. The app says which in the page's
+// <meta name="studio-runner">. Either one tells the page `ready`, what the run
+// prints, and `done` with the run's verdict and its WAV; `start` abandons any
+// run in flight (the worker terminated, the connection closed) and starts
+// afresh.
 
-let worker = null;
+function workerRunner(on) {
+  let worker = null;
+  return {
+    out: "file",
+    start() {
+      worker?.terminate();
+      worker = new Worker("./worker.js", { type: "module" });
+      worker.onmessage = (e) => {
+        const m = e.data;
+        if (m.type === "ready") on.ready();
+        else if (m.type === "output") on.output(m.text);
+        else if (m.type === "done") on.done(m.rc, m.files?.[OUT] ?? null);
+        // The rest (the Sound the run builds its WAV with, a Canvas frame) is
+        // the Playground's to show: here the sound is the WAV the run leaves.
+      };
+      worker.onerror = (e) => on.error("worker error", String(e.message || e));
+    },
+    run(src) {
+      worker.postMessage({
+        type: "run", src, path: ENTRY, base: "./", files: [], args: [], collect: [OUT],
+      });
+    },
+  };
+}
+
+// The bytes of a binary string, as atob answers one.
+function bytesOf(s) {
+  const bytes = new Uint8Array(s.length);
+  for (let i = 0; i < s.length; i++) bytes[i] = s.charCodeAt(i);
+  return bytes;
+}
+
+// The server answers a run with `{rc, wav}` (the WAV in base64) or `{rc, text}`
+// (the failure, as the command line prints it).
+function socketRunner(on) {
+  let ws = null;
+  return {
+    out: "value",
+    start() {
+      if (ws) {
+        ws.onclose = null;  // closed on purpose: the server drops the run
+        ws.close();
+      }
+      ws = new WebSocket(new URL("api/run", location.href.replace(/^http/, "ws")));
+      ws.onopen = () => on.ready();
+      ws.onmessage = (e) => {
+        const m = JSON.parse(e.data);
+        if (m.text) on.output(m.text);
+        on.done(m.rc, m.wav ? bytesOf(atob(m.wav)) : null);
+      };
+      ws.onclose = () => on.error("the app's server is gone", "");
+    },
+    run(src) {
+      ws.send(JSON.stringify({ src, path: ENTRY }));
+    },
+  };
+}
+
 let ready = false;
 let rendering = false;
 let printed = "";  // what the run in flight has printed
@@ -62,35 +128,34 @@ let lines = 0;     // the editor's lines it carries (studio-program.js)
 // either comes is not played.
 let take = 0;
 
-function spawnWorker() {
-  ready = false;
-  worker = new Worker("./worker.js", { type: "module" });
-  worker.onmessage = (e) => {
-    const m = e.data;
-    if (m.type === "ready") {
-      ready = true;
-      // Not over an error the page already has to say (an unreadable link).
-      if (!statusEl.classList.contains("err")) setStatus("ready");
-      update();
-    } else if (m.type === "output") {
-      printed += m.text;
-      showConsole(printed, false);
-    } else if (m.type === "done") {
-      finish(m);
-    }
-    // The rest (the Sound the run builds its WAV with, a Canvas frame) is the
-    // Playground's to show: here the sound is the WAV the run leaves.
-  };
-  worker.onerror = (e) => {
-    setStatus("worker error", true);
-    showConsole(String(e.message || e), true);
+const runnerKind = document.querySelector('meta[name="studio-runner"]')?.content;
+const runner = (runnerKind === "socket" ? socketRunner : workerRunner)({
+  ready() {
+    ready = true;
+    // Not over an error the page already has to say (an unreadable link).
+    if (!statusEl.classList.contains("err")) setStatus("ready");
+    update();
+  },
+  output(text) {
+    printed += text;
+    showConsole(printed, false);
+  },
+  done: finish,
+  error(status, detail) {
+    ready = false;  // what ran the program is gone until it is started again
+    setStatus(status, true);
+    showConsole(detail, true);
     if (rendering) {
       rendering = false;
-      worker.terminate();
-      spawnWorker();
+      startRunner();
     }
     update();
-  };
+  },
+});
+
+function startRunner() {
+  ready = false;
+  runner.start();
   update();
 }
 
@@ -113,7 +178,7 @@ function play() {
   stopSound();
   take++;
   const program = buildProgram(editor.getValue(), editor.getSelection(),
-                               Number(lengthSel.value));
+                               Number(lengthSel.value), runner.out);
   lines = program.lines;
   printed = "";
   showConsole("", false);
@@ -121,20 +186,16 @@ function play() {
   rendering = true;
   update();
   setStatus("rendering…");
-  worker.postMessage({
-    type: "run", src: program.src, path: ENTRY, base: "./", files: [], args: [],
-    collect: [OUT],
-  });
+  runner.run(program.src);
 }
 
-async function finish(m) {
+async function finish(rc, wav) {
   rendering = false;
   update();
-  const failed = m.rc !== 0;
+  const failed = rc !== 0;
   const { text, line } = editorReport(printed, failed, lines);
   showConsole(text, failed);
   if (line) editor.setError(line);
-  const wav = m.files?.[OUT];
   if (failed || !wav) {
     setStatus("error", true);
     return;
@@ -153,10 +214,9 @@ async function finish(m) {
 function stop() {
   take++;
   if (rendering) {
-    worker.terminate();
     rendering = false;
     setStatus("stopped — reloading…");
-    spawnWorker();
+    startRunner();
   } else if (source) {
     setStatus("stopped");
   }
@@ -462,7 +522,7 @@ sampleSel.addEventListener("change", async () => {
 });
 
 addEventListener("hashchange", () => location.reload());
-spawnWorker();
+startRunner();
 await loadSamples();
 const code = await linkOrDraft();
 const opening = samples.find((s) => s.opening);

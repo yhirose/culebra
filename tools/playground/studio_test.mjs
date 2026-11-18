@@ -33,13 +33,21 @@ async function play(source, selection = null, seconds = 1) {
   return { src, failed, wav, ...editorReport(text, failed, lines) };
 }
 
-function native(src) {
+// Runs `main` on the native executor in a fresh directory, beside `files`
+// (name to text), whose paths are its arguments.
+function runNative(main, files = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "culebra-studio-"));
-  fs.writeFileSync(path.join(dir, "main.cul"), src);
-  const r = spawnSync(bin, ["--vm", path.join(dir, "main.cul")],
+  for (const [name, text] of Object.entries(files)) fs.writeFileSync(path.join(dir, name), text);
+  fs.writeFileSync(path.join(dir, "main.cul"), main);
+  const r = spawnSync(bin, ["--vm", path.join(dir, "main.cul"),
+                            ...Object.keys(files).map((f) => path.join(dir, f))],
                       { encoding: "utf8", env: { ...process.env, CULEBRA_AUDIO: "off" } });
   assert.equal(r.status, 0, r.stdout + r.stderr);
-  return fs.readFileSync(path.join(dir, "out.wav"));
+  return { dir, stdout: r.stdout };
+}
+
+function native(src) {
+  return fs.readFileSync(path.join(runNative(src).dir, "out.wav"));
 }
 
 // [channels, frames] from a 16-bit WAV's fmt and data chunks.
@@ -173,6 +181,56 @@ const broken = "let {saw} = Synth\n\nlet y = Math.abss(1)\nsaw(110.0)\n";
   const r = await play("[0.0, 0.5, -0.5]");
   assert.equal(r.failed, false, r.text);
   assert.deepEqual(shape(r.wav), [1, 3]);
+}
+
+// --- the desktop app plays the same WAV ---------------------------------------
+//
+// examples/synth-studio runs a Play with Isolate.spawn_source through its
+// runner, the WAV the program's value rather than a file beside it. What the
+// page gets is held to the browser's: the same WAV, and an error at the same
+// line of the editor.
+
+function desktop(source, selection = null, seconds = 1) {
+  const { src, lines } = buildProgram(source, selection, seconds, "value");
+  const runner = path.join(root, "examples/synth-studio/runner/runner.cul");
+  const { stdout } = runNative(`import runner from '${runner}'
+let run = runner.start(FS.read(Sys.argv[0]), "${ENTRY}")
+mut reply = runner.answer(run)
+while reply == nil {
+  Time.sleep(0.01)
+  reply = runner.answer(run)
+}
+print(JSON.stringify(reply))
+`, { "program.cul": src });
+  const { rc, wav, text = "" } = JSON.parse(stdout);
+  return { failed: rc !== 0, wav: wav ? Buffer.from(wav, "base64") : null,
+           ...editorReport(text, rc !== 0, lines) };
+}
+
+{
+  const r = desktop(pluck, null, 4);
+  assert.equal(r.failed, false, r.text);
+  assert.ok(r.wav.equals(native(buildProgram(pluck, null, 4).src)),
+            "the desktop app's WAV is not the browser's");
+  const sel = desktop(pad, select(pad, "saw(110.0)"), 0.25);
+  assert.ok(sel.wav.equals(saw.wav), "the desktop app's selection did not play saw(110.0) alone");
+  const failed = desktop(broken, select(broken, "Math.abss(1)\nsaw"));
+  assert.equal(failed.wav, null);
+  assert.equal(failed.line, 3, failed.text);
+  assert.equal(desktop("let {saw} = Synth\nsaw(110.0))\n").line, 2);
+  const notSound = desktop("let x = 3\nx\n");
+  assert.match(notSound.text, /Studio plays the value of the last expression.*this one is Long/);
+  assert.equal(notSound.line, null, notSound.text);
+}
+
+// The app is built `--with Synth,Audio` (examples/synth-studio/main.cul): a
+// namespace the program adds around the editor's code beyond those is not in
+// the binary, and every Play there fails. Only a built binary shows it, which
+// this test does not build, so the program is read for the names instead.
+{
+  const { src } = buildProgram("", null, 1, "value");
+  const named = new Set([...src.matchAll(/\b([A-Z][A-Za-z]*)\./g)].map((m) => m[1]));
+  assert.deepEqual([...named].sort(), ["Audio", "Synth"]);
 }
 
 console.log("playground studio OK");
