@@ -884,20 +884,29 @@ CULEBRA_RT_HTTP_LINKAGE HttpResult http_client_request(int64_t id,
   HeaderList headers = merge_headers(c->default_headers, req.headers);
   httplib::Request hreq;
   _http_build_request(req, path, headers, hreq);
+  // The send runs the request's callbacks (body, stream, into:, events:),
+  // which are program code: the client stays in use until it returns, so
+  // they cannot close it under the connection.
+  auto use = g_http_clients.use(id);
   std::lock_guard<std::mutex> lk(c->m);
   return _http_send(c->cli, hreq, req);
 #endif
 }
 
 // Close and free a persistent client (idempotent; a closed/invalid id no-ops).
-CULEBRA_RT_HTTP_LINKAGE void http_client_close(int64_t id) {
+// False, freeing nothing, while one of its requests is running (its callbacks
+// are program code that may call this).
+CULEBRA_RT_HTTP_LINKAGE bool http_client_close(int64_t id) {
 #if defined(CULEBRA_RT_HTTP_REQUEST_WEAK)
   (void)id;
+  return true;
 #else
   HttpClient* c = _http_client_get(id);
-  if (!c) return;
+  if (!c) return true;
+  if (g_http_clients.in_use(id)) return false;
   _http_client_unregister(id);
   delete c;
+  return true;
 #endif
 }
 

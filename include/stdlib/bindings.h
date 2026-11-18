@@ -5135,7 +5135,10 @@ inline void _jit_llama_model_device(JitValue* __ret, JitClosure*, int8_t self_ta
 inline void _jit_llama_model_close(JitValue* __ret, JitClosure*, int8_t self_tag,
                                    int64_t self_data, int64_t, JitValue*) {
   JitValue self{self_tag, self_data};
-  culebra::llama::close(_jit_llama_model_id(self));
+  if (!culebra::llama::close(_jit_llama_model_id(self))) {
+    _jit_llama_bad_value("cannot close a model while one of its calls is running",
+                         _jit_thread.call_line, _jit_thread.call_col);
+  }
   *__ret = {TAG_NIL, 0};
 }
 
@@ -7509,13 +7512,12 @@ inline void _jit_http_client_request(JitValue* __ret, JitClosure*, int8_t self_t
 inline void _jit_http_client_close(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
                                                   int64_t, JitValue*) {
   JitValue self{self_tag, self_data};
-  culebra::http::http_client_close(_jit_http_client_id(self));
-  { *__ret = {TAG_NIL, 0}; return; }
-}
-inline void _jit_http_client_drop(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
-                                                 int64_t, JitValue*) {
-  JitValue self{self_tag, self_data};
-  culebra::http::http_client_close(_jit_http_client_id(self));
+  if (!culebra::http::http_client_close(_jit_http_client_id(self))) {
+    throw culebra::CulebraError(
+        "ValueError",
+        "Http.client: cannot close a client while one of its requests is running",
+        _jit_thread.call_line, _jit_thread.call_col);
+  }
   { *__ret = {TAG_NIL, 0}; return; }
 }
 
@@ -7543,7 +7545,7 @@ inline JitValue _culebra_http_build_client_handle(int64_t id) {
   _jit_handle_bind_method(h, "request", _jit_native<_jit_http_client_request>, 2,
                           request_meta);
   _jit_handle_bind_method(h, "close", _jit_native<_jit_http_client_close>, 0);
-  _jit_handle_bind_method(h, "drop", _jit_native<_jit_http_client_drop>, 0);
+  _jit_handle_bind_method(h, "drop", _jit_native<_jit_http_client_close>, 0);
   _jit_owned_bind_drop(h);
   return {TAG_OBJECT, reinterpret_cast<int64_t>(h)};
 }
@@ -11251,7 +11253,7 @@ inline culebra::search::Analyzer make_analyzer(JitValue v,
 // hooks reach raw (make_analyzer), each an edge of the handle. The handle
 // owns the index: closed by close/drop, or by this destructor when no drop
 // ran (program exit), so the index never outlives the values its hooks call.
-// close leaves `kept` alone -- a hook may be running when it is called.
+// close leaves `kept` to the handle, which goes after every call on it.
 struct JitSearchIndex final : JitHandle {
   int64_t id = -1;  // none yet while the analyzer is built
   bool open = true;
@@ -11331,7 +11333,11 @@ inline void _jit_search_close(JitValue* __ret, JitClosure*, int8_t self_tag, int
                                               int64_t, JitValue*) {
   JitValue self{self_tag, self_data};
   auto* ix = _jit_self_search_index(self);
-  culebra::search::index_drop(ix->id);
+  if (!culebra::search::index_drop(ix->id)) {
+    throw culebra::CulebraError(
+        "ValueError", "Search: cannot close an index while one of its calls is running",
+        _jit_thread.call_line, _jit_thread.call_col);
+  }
   ix->open = false;
   { *__ret = {TAG_NIL, 0}; return; }
 }

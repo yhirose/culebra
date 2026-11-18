@@ -159,6 +159,31 @@ let hook_thrown = try {
 }
 assert_eq(hook_thrown, "no such term")
 
+// A hook cannot close the index whose add or search is running it: the close
+// raises where it is called, and the index stays open.
+let closing = { mut idx: nil }
+closing.idx = Search.Index.new(analyzer: {
+  normalizer: fn (t) { if t == "shut" { closing.idx.close() }; t },
+})
+assert_throws('ValueError', || closing.idx.add("doc-1", "please shut it"),
+  message: 'Search: cannot close an index while one of its calls is running')
+
+let searching = { mut idx: nil }
+searching.idx = Search.Index.new(analyzer: {
+  normalizer: fn (t) { if t == "shut" { searching.idx.close() }; t },
+})
+searching.idx.add("doc-1", "open text")
+assert_throws('ValueError', || searching.idx.search("shut"),
+  message: 'Search: cannot close an index while one of its calls is running')
+
+let reopened = { mut idx: nil }
+reopened.idx = Search.Index.new(analyzer: {
+  normalizer: fn (t) { if t == "shut" { try { reopened.idx.close() } catch e {} }; t },
+})
+reopened.idx.add("doc-1", "please shut it")
+reopened.idx.add("doc-2", "still open")
+assert_eq(found(reopened.idx.search("still")), ["doc-2"])
+
 // --- no analyzer is the built-in behaviour ----------------------------------
 
 let plain = Search.Index.new()

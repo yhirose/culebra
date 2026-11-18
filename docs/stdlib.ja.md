@@ -4264,8 +4264,10 @@ api.close()                                         # 接続を解放
 デフォルトヘッダは付きます。リクエストごとの`headers`はクライアント既定の上に
 マージされます（同名キーは上書き）。`close()`で接続を解放します（スコープを抜けた
 クライアントはGCも閉じるので明示`close`は任意）。`close`後のリクエストは
-`HttpError`。ハンドルはnon-sendable（1接続・1スレッド）なので、ファンアウトする
-ならisolateごとにクライアントを作ります。
+`HttpError`。リクエスト自身のコールバック（`body:`、multipartのpartの`stream:`、
+`into:`、`events:`）は、そのリクエストが使っているクライアントを閉じられず、そこでの
+`close()`は`ValueError`になります。ハンドルはnon-sendable（1接続・1スレッド）なので、
+ファンアウトするならisolateごとにクライアントを作ります。
 
 **並列・レースリクエスト**はHTTP専用APIを使わず、汎用の [`Parallel`](#12-isolate)
 コンビネータを`Http.get`に適用します — JSの`Promise.all`/`race`やElixirの
@@ -8274,6 +8276,9 @@ inspect(idx.search("the"))           # => []
 これらの関数が投げたものは、投げられたままの形で`add`や`search`から出てきます。エラーは
 そのkindのまま、`throw`した値はその値のままプログラムの`catch`に届きます。
 
+フックは、自分を走らせている`add`や`search`の索引を閉じられません。そこでの`close()`は
+`ValueError`になり、索引は開いたまま残ります。
+
 C++で書いたsplitterはネイティブに走ります。`ISplitter`を継承して`wrap<T>`で宣言した
 クラスのハンドルは、そのまま`splitter`に渡せます。契約とハンドルの寿命は
 [Searchにsplitterを挿す](deployment.ja.md#searchにsplitterを挿す)にあります。
@@ -9826,7 +9831,8 @@ NVIDIAのドライバと、AMDとIntelのGPU向けのMesaが持っています�
 ### `model.close()`
 
 モデルを解放します。ハンドルがスコープを抜けたときも解放されます。2回閉じても構いません。閉じたモデルへの
-呼び出しは`LlamaError`です。
+呼び出しは`LlamaError`です。`on_text`のコールバックは生成中のモデルを閉じられず、そこでの
+`close()`は`ValueError`になり、生成もそこで終わります。
 
 ### エラー
 

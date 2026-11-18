@@ -148,8 +148,10 @@ CULEBRA_RT_SEARCH_LINKAGE std::vector<Hit> index_search(int64_t id,
                                                         std::string_view query,
                                                         size_t limit);
 CULEBRA_RT_SEARCH_LINKAGE void index_save(int64_t id, std::string_view path);
-// Frees the handle. Idempotent; a stale/forged id is ignored.
-CULEBRA_RT_SEARCH_LINKAGE void index_drop(int64_t id);
+// Frees the handle. Idempotent; a stale/forged id is ignored. False, freeing
+// nothing, while an add or search on it is running one of its analyzer's hooks
+// (program code that may call this).
+CULEBRA_RT_SEARCH_LINKAGE bool index_drop(int64_t id);
 
 // A word-segmentation model (cpp-segmentlib, any format it loads) as a
 // splitter handle for Analyzer::segmenter: runs of Japanese script go to the
@@ -187,7 +189,7 @@ CULEBRA_RT_SEARCH_LINKAGE std::vector<Hit> index_search(int64_t,
 CULEBRA_RT_SEARCH_LINKAGE void index_save(int64_t, std::string_view) {
   _not_linked();
 }
-CULEBRA_RT_SEARCH_LINKAGE void index_drop(int64_t) {}
+CULEBRA_RT_SEARCH_LINKAGE bool index_drop(int64_t) { return true; }
 CULEBRA_RT_SEARCH_LINKAGE int64_t segmenter_load(std::string_view) {
   _not_linked();
 }
@@ -358,10 +360,22 @@ struct Index {
 // the core and the feature archive).
 inline thread_local IdRegistry<Index> g_indexes;
 
+[[noreturn]] inline void throw_dropped() {
+  throw CulebraError("SearchError", "Search: index was dropped", 0, 0);
+}
+
 inline Index& index_get(int64_t id) {
   auto* p = g_indexes.get(id);
-  if (!p) throw CulebraError("SearchError", "Search: index was dropped", 0, 0);
+  if (!p) throw_dropped();
   return *p;
+}
+
+// The index for a call that runs its analyzer's hooks, which are program
+// code: held in use until the call returns, so a hook cannot close it.
+inline Held<Index> index_use(int64_t id) {
+  auto use = g_indexes.use(id);
+  if (!use) throw_dropped();
+  return use;
 }
 
 // A saved index is culebra's envelope around the engine's bytes: the analyzer
@@ -479,7 +493,8 @@ CULEBRA_RT_SEARCH_LINKAGE int64_t index_load(std::string_view path,
 
 CULEBRA_RT_SEARCH_LINKAGE void index_add(int64_t id, std::string_view key,
                                          std::string_view text) {
-  auto& index = detail::index_get(id);
+  auto use = detail::index_use(id);
+  auto& index = *use.get();
   if (!index.writable()) detail::throw_readonly("add");
   try {
     // The key is copied because the index owns it from here on; the text is
@@ -510,7 +525,8 @@ CULEBRA_RT_SEARCH_LINKAGE void index_remove(int64_t id, std::string_view key) {
 CULEBRA_RT_SEARCH_LINKAGE std::vector<Hit> index_search(int64_t id,
                                                         std::string_view query,
                                                         size_t limit) {
-  auto& index = detail::index_get(id);
+  auto use = detail::index_use(id);
+  auto& index = *use.get();
   const auto& invidx = *index.reader;
   // Parsed on its own so that the malformed-query error below is raised
   // outside the catch that wraps engine failures — it is already a
@@ -582,11 +598,13 @@ CULEBRA_RT_SEARCH_LINKAGE void index_save(int64_t id, std::string_view path) {
   }
 }
 
-CULEBRA_RT_SEARCH_LINKAGE void index_drop(int64_t id) {
+CULEBRA_RT_SEARCH_LINKAGE bool index_drop(int64_t id) {
   auto* index = detail::g_indexes.get(id);
-  if (!index) return;
+  if (!index) return true;
+  if (detail::g_indexes.in_use(id)) return false;
   detail::g_indexes.invalidate(id);
   delete index;
+  return true;
 }
 
 CULEBRA_RT_SEARCH_LINKAGE int64_t segmenter_load(std::string_view model_path) {

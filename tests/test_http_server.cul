@@ -286,6 +286,13 @@ let turns = [1, 2].map(fn (t) {
   got[0]
 })
 assert_eq(turns, ['{"turn":1}', '{"turn":2}'])
+
+# A callback cannot close the client its request is running on: the close
+# raises where it is called, and the client stays open.
+assert_throws('ValueError', || api.get("/", into: fn (chunk) { api.close() }),
+  message: 'Http.client: cannot close a client while one of its requests is running')
+
+assert_eq(api.get("/").body, "Hello, world!")
 api.close()
 
 # Http.sse is Http.get(url, events:): the same events, and the same rule for a

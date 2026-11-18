@@ -4397,8 +4397,10 @@ scheme) bypasses `base_url` but still gets the default headers. Per-request
 `headers` are merged over the client's defaults (a per-key match overrides).
 `close()` releases the connection; the GC also closes a client that goes out of
 scope (so an explicit `close` is optional). A request after `close` is an
-`HttpError`. The handle is non-sendable (one connection, one thread): to fan out,
-make a client per isolate.
+`HttpError`. A request's own callbacks (`body:`, a multipart part's `stream:`,
+`into:`, `events:`) cannot close the client it is running on: `close()` there
+raises `ValueError`. The handle is non-sendable (one connection, one thread):
+to fan out, make a client per isolate.
 
 **Parallel and racing requests** use the general [`Parallel`](#12-isolate)
 combinators over `Http.get`, not an HTTP-specific API — the same shape as
@@ -8611,6 +8613,9 @@ crossings back into the program.
 What a hook raises leaves `add` or `search` as it was raised: an error keeps
 its kind, and a thrown value reaches the program's `catch` as that value.
 
+A hook cannot close the index whose `add` or `search` is running it: `close()`
+there raises `ValueError` and the index stays open.
+
 A splitter written in C++ runs natively instead: a class deriving from
 `ISplitter` and declared with `wrap<T>` gives a handle the `splitter` slot
 accepts as it is. The contract and the handle's lifetime are in [Plugging a
@@ -10287,7 +10292,9 @@ commands for Debian and Ubuntu):
 ### `model.close()`
 
 Frees the model. The model is also freed when its handle goes out of scope.
-Closing twice is fine; a call on a closed model is a `LlamaError`.
+Closing twice is fine; a call on a closed model is a `LlamaError`. An `on_text`
+callback cannot close the model it is generating on: `close()` there raises
+`ValueError`, which ends the generation.
 
 ### Errors
 

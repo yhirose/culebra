@@ -107,6 +107,13 @@ fn with_a_model(path) {
             "ValueError: enough")
   assert_eq(calls.size(), 1)
 
+  # A callback cannot close the model it is generating on: the close raises,
+  # the generation ends with it, and the model stays open.
+  assert_eq(failure(|| m.generate("Count", grammar: only("one two"),
+                                  on_text: fn (t) { m.close() })),
+            "ValueError: Llama: cannot close a model while one of its calls is running")
+  assert_eq(m.generate("Say ok", grammar: only("ok")).text, "ok")
+
   # The same call gives the same text: the cache is not reused unless asked.
   let first = m.generate("Tell me a story", max_tokens: 16, temperature: 0)
   let second = m.generate("Tell me a story", max_tokens: 16, temperature: 0)

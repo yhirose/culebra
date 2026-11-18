@@ -111,7 +111,9 @@ CULEBRA_RT_LLAMA_LINKAGE int64_t load(const std::string& path,
                                       const LoadOptions& opts, std::string* err);
 
 // Frees the model and its table slot. Idempotent; a stale id is ignored.
-CULEBRA_RT_LLAMA_LINKAGE void close(int64_t id);
+// False, freeing nothing, while a generate or chat on it is running (its
+// on_text callback is program code that may call this).
+CULEBRA_RT_LLAMA_LINKAGE bool close(int64_t id);
 
 // The context size the model got, which llama.cpp may round up from n_ctx.
 // 0 for a closed handle.
@@ -153,7 +155,7 @@ CULEBRA_RT_LLAMA_LINKAGE int64_t load(const std::string&, const LoadOptions&,
   if (err) *err = CULEBRA_LLAMA_STUB;
   return -1;
 }
-CULEBRA_RT_LLAMA_LINKAGE void close(int64_t) {}
+CULEBRA_RT_LLAMA_LINKAGE bool close(int64_t) { return true; }
 CULEBRA_RT_LLAMA_LINKAGE int64_t n_ctx(int64_t) { return 0; }
 CULEBRA_RT_LLAMA_LINKAGE bool device(int64_t, Device*, std::string* err) {
   if (err) *err = CULEBRA_LLAMA_STUB;
@@ -276,9 +278,11 @@ inline Device loaded_device(const llamalib::Llama& lib, bool gpu) {
   return {gpu_backend(), names, ""};
 }
 
-// A handle that is not open: the one message for every method that needs a model.
-inline Model* open_model(int64_t id, std::string* err) {
-  auto* m = model_get(id);
+// The model, held for the call (generate and chat run on_text, program code
+// that may try to close it), or the one message for every method that needs a
+// model when the handle is not open.
+inline Held<Model> open_model(int64_t id, std::string* err) {
+  auto m = g_models.use(id);
   if (!m && err) *err = "the model is closed";
   return m;
 }
@@ -333,11 +337,13 @@ CULEBRA_RT_LLAMA_LINKAGE int64_t load(const std::string& path,
   return detail::model_intern(new detail::Model{std::move(model), std::move(device)});
 }
 
-CULEBRA_RT_LLAMA_LINKAGE void close(int64_t id) {
+CULEBRA_RT_LLAMA_LINKAGE bool close(int64_t id) {
   auto* m = detail::model_get(id);
-  if (!m) return;
+  if (!m) return true;
+  if (detail::g_models.in_use(id)) return false;
   detail::g_models.invalidate(id);
   delete m;
+  return true;
 }
 
 CULEBRA_RT_LLAMA_LINKAGE int64_t n_ctx(int64_t id) {
@@ -346,7 +352,7 @@ CULEBRA_RT_LLAMA_LINKAGE int64_t n_ctx(int64_t id) {
 }
 
 CULEBRA_RT_LLAMA_LINKAGE bool device(int64_t id, Device* out, std::string* err) {
-  auto* m = detail::open_model(id, err);
+  auto m = detail::open_model(id, err);
   if (!m) return false;
   *out = m->device;
   return true;
@@ -356,7 +362,7 @@ CULEBRA_RT_LLAMA_LINKAGE bool generate(int64_t id, const std::string& prompt,
                                        const GenerateOptions& opts,
                                        const OnPiece& on_piece, Result* out,
                                        std::string* err) {
-  auto* m = detail::open_model(id, err);
+  auto m = detail::open_model(id, err);
   if (!m) return false;
   return detail::guarded(err, [&] {
     *out = detail::from_lib(m->lib->complete(prompt, detail::to_lib(opts), on_piece));
@@ -367,7 +373,7 @@ CULEBRA_RT_LLAMA_LINKAGE bool chat(int64_t id, const std::vector<Message>& messa
                                    const GenerateOptions& opts,
                                    const OnPiece& on_piece, Result* out,
                                    std::string* err) {
-  auto* m = detail::open_model(id, err);
+  auto m = detail::open_model(id, err);
   if (!m) return false;
   return detail::guarded(err, [&] {
     *out = detail::from_lib(
@@ -378,14 +384,14 @@ CULEBRA_RT_LLAMA_LINKAGE bool chat(int64_t id, const std::vector<Message>& messa
 CULEBRA_RT_LLAMA_LINKAGE bool format_chat(int64_t id,
                                           const std::vector<Message>& messages,
                                           std::string* out, std::string* err) {
-  auto* m = detail::open_model(id, err);
+  auto m = detail::open_model(id, err);
   if (!m) return false;
   return detail::guarded(err, [&] { *out = m->lib->format_chat(detail::to_lib(messages)); });
 }
 
 CULEBRA_RT_LLAMA_LINKAGE bool count_tokens(int64_t id, const std::string& text,
                                            int64_t* out, std::string* err) {
-  auto* m = detail::open_model(id, err);
+  auto m = detail::open_model(id, err);
   if (!m) return false;
   return detail::guarded(err, [&] { *out = static_cast<int64_t>(m->lib->token_count(text)); });
 }
