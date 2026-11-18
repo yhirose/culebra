@@ -72,7 +72,7 @@ C++ 埋め込み例、各 OS のリリース構成。ローカルで回す価値
 | 着地・rebase 後の再検証 | `just test-dev`（`just land` が回す） |
 | docs | `just doctest`（dev 用バイナリ） |
 | **Canvas/Scene の window backend、AOT gating、runtime archive、CMakeLists/wrap** | **CI**（push 前に知りたければ `ci/<topic>` ブランチ） |
-| **`Runtime` の teardown、GC heap、slab allocator** | **CI の `linux-assert`**（全レーンが `Release`（`-DNDEBUG`）で、`NDEBUG` なしでビルドして同じスイープを回すのはここだけ）。assert で落ちる形を見つけたら `tests/` に足して CI に見せる。解放後の使用は **`asan.yml` の `linux-asan`**（`just asan`：ASan+UBSan、slab を malloc に回して smoke・vm/jit・gc-stress。冷えて75〜90分かかるので `ci.yml` から外してあり、master への push ごとに誰も待たずに回る。赤なら `just land` が警告する）。ランタイムのメモリを触る変更は、着地前に `gh workflow run asan.yml --ref ci/<topic>` で手で回す |
+| **`Runtime` の teardown、GC heap、slab allocator** | **CI の `linux-assert`**（全レーンが `Release`（`-DNDEBUG`）で、`NDEBUG` なしでビルドして同じスイープを回すのはここだけ）。assert で落ちる形を見つけたら `tests/` に足して CI に見せる。解放後の使用は **`asan.yml` の `linux-asan`**（`just asan`：ASan+UBSan、slab を malloc に回して smoke・vm/jit・gc-stress。冷えて75〜90分かかるので `ci.yml` から外してあり、master への push ごとに誰も待たずに回る。赤なら `just land` が警告する）。ランタイムのメモリを触る変更も、着地の前に ASan を待たない（ci/ の CI と `just land` で着地する）。master の ASan が赤なら、原因の commit を戻して master を緑にしてから調べる |
 | push 後 | **CI の両 OS を確認**（toolchain 差異はここでしか出ない） |
 
 ローカルで重い手順を回すのは、下の「CI の穴」（どれも macOS）に触ったときだけで、それは Mac で、
