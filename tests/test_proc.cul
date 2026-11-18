@@ -318,13 +318,19 @@ assert_true(slow.timed_out)
 let live = Proc.spawn(["sh", "-c", "echo out; exit 4"], stdout: "null")
 let done = live.wait()
 assert_eq([done.code, done.stdout], [4, ""])
-// A quick child with no pipe is reaped as it exits, not on a later tick: 20
-// of them take well under the 2 s a 100 ms wait each would.
-let started = Time.monotonic()
-for i in range(20) {
-  Proc.run(["true"], stdin: "null", stdout: "null", stderr: "null")
+// A quick child with no pipe is reaped as it exits, not on a later tick. Timed
+// against the same child with pipes, reaped on their EOF, so a slow machine
+// slows both alike: reaped on a 100 ms tick, 20 would take 2 s longer.
+let timed = fn (run) {
+  let started = Time.monotonic()
+  for i in range(20) {
+    run()
+  }
+  Time.monotonic() - started
 }
-assert_true(Time.monotonic() - started < 1.5)
+let pipeless = timed(|| Proc.run(["true"], stdin: "null", stdout: "null", stderr: "null"))
+let piped = timed(|| Proc.run(["true"]))
+assert_true(pipeless < piped + 1.0)
 // Proc.all's timeout reaches a child that closed its output and ran on.
 let closed = Proc.all([["sh", "-c", "exec >&- 2>&-; sleep 3"]], timeout: 300)
 assert_true(closed[0].timed_out)
