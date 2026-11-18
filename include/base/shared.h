@@ -2460,6 +2460,8 @@ enum RuntimeSlot : size_t {
   // pinned structs through the slab's operator delete during teardown, so the
   // slab must outlive them. See the static_assert below the enum.
   kSlotJitSlab,
+  // The top of the low block: ~Runtime clears every slot above it, revivals
+  // included, before it touches this one or anything below.
   kSlotJitGc,
   // JIT multimethod registry (dispatcher → its record, which holds its
   // overload table). Per Runtime, holding +1 refs on the overload body
@@ -2600,10 +2602,12 @@ enum RuntimeSlot : size_t {
 // delete still resolves a live allocator. A future slot reorder that violates
 // this fails to compile rather than corrupting memory at teardown.
 static_assert(kSlotJitSlab < kSlotJitGc &&
-                  kSlotJitSlab < kSlotJitModuleTable &&
-                  kSlotJitSlab < kSlotJitNamespaceTable,
-              "kSlotJitSlab must outlive the GC heap and all struct-holding "
-              "table substates during reverse-order Runtime teardown");
+                  kSlotJitGc < kSlotJitMultifnNames &&
+                  kSlotJitGc < kSlotJitModuleTable &&
+                  kSlotJitGc < kSlotJitNamespaceTable,
+              "kSlotJitSlab must outlive the GC heap, and both every "
+              "struct-holding table substate, which ~Runtime clears (revivals "
+              "included) before the slots at or below kSlotJitGc");
 
 struct Runtime;
 
@@ -2725,26 +2729,34 @@ struct Runtime {
     //
     // Install ourselves as current first: the worker's own RuntimeScope is
     // already gone by now, so a release here would otherwise free into a
-    // *different* Runtime's slab. Repeat until a pass frees nothing — a slot
-    // revived below the cursor leaks (the interp owned stack revives that way,
-    // from ~InterpGC's collect).
+    // *different* Runtime's slab. Repeat until a pass frees nothing (a slot
+    // revived below the cursor would leak), first over the slots above the GC
+    // heap and only then over the heap, the slab and what lies below them: a
+    // release up there can run a `drop` that revives a table already destroyed
+    // (a worker's trait default whose captures use `FS` builds the namespace
+    // table again), and that table has to go while the heap and slab it
+    // allocated from are alive.
     //
     // The program this Runtime ran is over, and its code may already be
     // unloaded: what the tables still hold goes without `drop`, whichever
     // table held it. A worker's is dropped (see the constructors).
     RuntimeScope self(*this);
     if (!worker) drop_suppressed = true;
-    bool destroyed;
-    do {
-      destroyed = false;
-      for (size_t i = substate.size(); i-- > 0;) {
-        if (substate[i] && substate_deleter[i]) {
-          substate_deleter[i](substate[i]);
-          substate[i] = nullptr;
-          destroyed = true;
+    auto destroy_from = [&](size_t lowest) {
+      bool destroyed;
+      do {
+        destroyed = false;
+        for (size_t i = substate.size(); i-- > lowest;) {
+          if (substate[i] && substate_deleter[i]) {
+            substate_deleter[i](substate[i]);
+            substate[i] = nullptr;
+            destroyed = true;
+          }
         }
-      }
-    } while (destroyed);
+      } while (destroyed);
+    };
+    destroy_from(kSlotJitGc + 1);
+    destroy_from(0);
   }
   Runtime(const Runtime&) = delete;
   Runtime& operator=(const Runtime&) = delete;

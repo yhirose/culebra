@@ -275,4 +275,23 @@ let shown = Isolate.spawn(made_by(|a, b| "{a}"), Shown(), Shown()).join()
 assert_true(compared < 50)
 assert_true(shown >= 100)
 
+# A worker's teardown releases its trait defaults after the namespace table,
+# so a `drop` one of them holds that uses `FS` builds the table again. It is
+# put away while the heap and slab it came from are alive (an assert build
+# caught its free reaching a fresh slab).
+class Probe {
+  new() {}
+  drop() { FS.exists("/nonexistent") }
+}
+let torn_down = Isolate.spawn(fn () {
+  let keep = [Probe()]
+  fn holder() { keep }
+  trait HoldsProbe {
+    w() -> Long
+    held() { holder() }
+  }
+  'worker done'
+}).join()
+assert_eq(torn_down, 'worker done')
+
 inspect('trait defaults reach workers')
