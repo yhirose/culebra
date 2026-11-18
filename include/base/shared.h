@@ -251,6 +251,8 @@ class CulebraError : public std::runtime_error {
 // into an exit code. Script-level semantics are unchanged: what the engines'
 // catch pads read is the pending carrier, not the C++ type, so a culebra
 // `catch e` still binds an error Object with kind "Interrupted" and can resume.
+// That kind is how the carrier tells an interrupt from an error.
+inline constexpr std::string_view kInterruptedKind = "Interrupted";
 class Interrupted {
  public:
   explicit Interrupted(std::string msg) : msg_(std::move(msg)) { publish(); }
@@ -263,7 +265,9 @@ class Interrupted {
   const char* what() const noexcept { return msg_.c_str(); }
 
  private:
-  void publish() { culebra_note_pending_error("Interrupted", msg_, 0, 0); }
+  void publish() {
+    culebra_note_pending_error(std::string(kInterruptedKind), msg_, 0, 0);
+  }
   std::string msg_;
 };
 
@@ -287,6 +291,18 @@ inline constexpr bool is_library_line(int64_t line) {
 }
 inline constexpr int64_t user_line(int64_t line) {
   return line & ~kLibraryLineBit;
+}
+// A line of the user's source: there is one, and it is not marked.
+inline constexpr bool is_user_line(int64_t line) {
+  return line > 0 && !is_library_line(line);
+}
+// An error leaving for a program or host with no library frame of its own to
+// move it to the user's call (vm.md §6.2): a mark still on it names no line
+// there, so it leaves with no position, the carrier too.
+inline void drop_library_pos(CulebraError& e) {
+  if (!is_library_line(e.line)) return;
+  e.line = e.col = 0;
+  culebra_note_pending_error(e);
 }
 
 // A source position packed into one int64, so a single value can carry it

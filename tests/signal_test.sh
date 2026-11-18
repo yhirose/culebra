@@ -67,6 +67,35 @@ try {
 IO.eprint("CONT\n")
 EOF
 
+# The interrupt reaches the top through a library frame (PriorityQueue's push,
+# which calls the key): it stays the interrupt, not an error the library frame's
+# exit re-anchors at its call.
+cat > "$TMP/library.cul" <<'EOF2'
+defer { IO.eprint("DEFER\n") }
+let pq = PriorityQueue.new(key: fn (x) {
+  mut i = 0
+  while true { i = i + 1 }
+  x
+})
+pq.push(1)
+pq.push(2)
+EOF2
+
+cat > "$TMP/library_caught.cul" <<'EOF2'
+fn work() {
+  defer { IO.eprint("DEFER\n") }
+  let pq = PriorityQueue.new(key: fn (x) {
+    mut i = 0
+    while true { i = i + 1 }
+    x
+  })
+  pq.push(1)
+  pq.push(2)
+}
+try { work() } catch e { IO.eprint("CAUGHT {e.kind} {e.line}:{e.col}\n") }
+IO.eprint("CONT\n")
+EOF2
+
 fail=0
 
 # check <desc> <want-exit> <want-output> -- <command...>
@@ -414,6 +443,8 @@ run_vm_group() {
   check "vm passed"   130 "$UNCAUGHT_OUT" -- "$CULEBRA" --vm "$TMP/passed.cul"
   check "vm passed on"  0 "$CAUGHT_OUT"   -- "$CULEBRA" --vm "$TMP/passed_on.cul"
   check "vm iterdispose" 130 "$ITERDISPOSE_OUT" -- "$CULEBRA" --vm "$TMP/iterdispose.cul"
+  check "vm library"   130 "$UNCAUGHT_OUT" -- "$CULEBRA" --vm "$TMP/library.cul"
+  check "vm library caught" 0 "$CAUGHT_OUT" -- "$CULEBRA" --vm "$TMP/library_caught.cul"
   check_stdin "vm stdin" -- "$CULEBRA" --vm "$TMP/stdin.cul"
   check_http  "vm http"  -- "$CULEBRA" --vm "$TMP/http.cul"
   check_proc  "vm proc"  -- "$CULEBRA" --vm "$TMP/proc.cul"
@@ -431,6 +462,8 @@ run_jit_group() {
   check "jit passed"   130 "$UNCAUGHT_OUT" -- "$CULEBRA" --jit "$TMP/passed.cul"
   check "jit passed on"  0 "$CAUGHT_OUT"   -- "$CULEBRA" --jit "$TMP/passed_on.cul"
   check "jit iterdispose" 130 "$ITERDISPOSE_OUT" -- "$CULEBRA" --jit "$TMP/iterdispose.cul"
+  check "jit library"   130 "$UNCAUGHT_OUT" -- "$CULEBRA" --jit "$TMP/library.cul"
+  check "jit library caught" 0 "$CAUGHT_OUT" -- "$CULEBRA" --jit "$TMP/library_caught.cul"
   check_stdin "jit stdin" -- "$CULEBRA" --jit "$TMP/stdin.cul"
   check_http  "jit http"  -- "$CULEBRA" --jit "$TMP/http.cul"
   check_proc  "jit proc"  -- "$CULEBRA" --jit "$TMP/proc.cul"
@@ -442,13 +475,15 @@ run_jit_group() {
 }
 
 # --- AOT (skip if this build can't produce binaries) ---
-# (REPL has no AOT form; it is an interp/JIT driver only.) The seven binaries are
+# (REPL has no AOT form; it is an interp/JIT driver only.) The binaries are
 # built here, serially, before the concurrent phase — see the note above.
 aot_ok=0
 if "$CULEBRA" build "$TMP/uncaught.cul" -o "$TMP/uncaught_aot" >/dev/null 2>&1 \
    && "$CULEBRA" build "$TMP/caught.cul" -o "$TMP/caught_aot" >/dev/null 2>&1 \
    && "$CULEBRA" build "$TMP/passed.cul" -o "$TMP/passed_aot" >/dev/null 2>&1 \
    && "$CULEBRA" build "$TMP/iterdispose.cul" -o "$TMP/iterdispose_aot" >/dev/null 2>&1 \
+   && "$CULEBRA" build "$TMP/library.cul" -o "$TMP/library_aot" >/dev/null 2>&1 \
+   && "$CULEBRA" build "$TMP/library_caught.cul" -o "$TMP/library_caught_aot" >/dev/null 2>&1 \
    && "$CULEBRA" build "$TMP/stdin.cul" -o "$TMP/stdin_aot" >/dev/null 2>&1 \
    && "$CULEBRA" build "$TMP/http.cul" -o "$TMP/http_aot" >/dev/null 2>&1 \
    && "$CULEBRA" build "$TMP/proc.cul" -o "$TMP/proc_aot" >/dev/null 2>&1 \
@@ -463,6 +498,8 @@ run_aot_group() {
     check "aot caught"     0 "$CAUGHT_OUT"   -- "$TMP/caught_aot"
     check "aot passed"   130 "$UNCAUGHT_OUT" -- "$TMP/passed_aot"
     check "aot iterdispose" 130 "$ITERDISPOSE_OUT" -- "$TMP/iterdispose_aot"
+    check "aot library"   130 "$UNCAUGHT_OUT" -- "$TMP/library_aot"
+    check "aot library caught" 0 "$CAUGHT_OUT" -- "$TMP/library_caught_aot"
     check_stdin "aot stdin" -- "$TMP/stdin_aot"
     check_http  "aot http"  -- "$TMP/http_aot"
     check_proc  "aot proc"  -- "$TMP/proc_aot"

@@ -1646,10 +1646,19 @@ interruptが（または値のthrowが）どうなるかの注記をハンドラ
 報告する。コンパイラはライブラリのソース（`<stdlib>`のpreamble、
 `<builtin>`のtrait、`culebra test`の`<test>`のambient）から取る位置すべての
 行に`kLibraryLineBit`を立てる。このため印は既存の経路をそのまま通って運ばれる。経路とは、chunkの位置、LLVM変換の定数、公開される呼び出し位置、引数位置、carrierである。ライブラリの関数はprologueで
-自分を呼んだ位置を控え（`PosSnap`で`Cleanup::site_slot`へ）、フレームの段でその位置を`culebra_runtime_reanchor`に渡す。ライブラリの印の付いた位置のままフレームを抜けるエラーは、控えた位置がユーザーのものであれば、その位置を持つ同じエラーに置き換わる（throwする`defer`が置き換えるのと同じ）。控えた位置にも印があれば、その位置が属するライブラリのフレームに任せる。executorの
+自分を呼んだ位置を控え（`PosSnap`で`Cleanup::site_slot`へ）、フレームの段でその位置を`culebra_runtime_reanchor`に渡す。ユーザーの行を持たないまま（ライブラリの印の付いた位置か、位置なしのまま）フレームを抜けるエラーは、控えた位置がユーザーのものであれば、その位置を持つ同じエラーに置き換わる（throwする`defer`が置き換えるのと同じ。位置を持たない割り込みは割り込みのまま）。控えた位置にも印があれば、その位置が属するライブラリのフレームに任せる。executorの
 `unwind`とLLVM変換のframe padは同じ段で同じヘルパーを呼び、ヘルパーは
-carrierしか読まないので、JITのpadにC++の再検査は要らない。フォーマッタまで
-印が残った位置（上にユーザーのフレームが無いthrow）は、位置なしで表示する。
+carrierしか読まないので、JITのpadにC++の再検査は要らない。名前空間のbuilderは
+呼び出しから入らないので位置を控えず（`JitBorrowedCallSite(0, 0)`）、それを
+起動したexecutorの`NsGet`が自分の位置へ付け替える。
+
+位置なしのエラーを埋める公開されたop位置は、後から読まれる。catch pad
+（`culebra_runtime_try_translate`）やエンジンの境界で読むときには、それを
+公開したライブラリのフレームはとうに戻っているかもしれない。そこでこの読み手は、
+印の付いた位置を位置なしとして扱う（`_jit_backfilled_op_pos`）。付け替える
+ライブラリのフレームを持たないプログラムやホストへ渡るエラー（isolateの
+`join()`、`culebra_runtime_call_from_host`）は、残った印を落とす
+（`drop_library_pos`）。フォーマッタも、印の残った位置は位置なしで表示する。
 
 控える位置は、読む呼び出し位置が正しい限りでしか正しくない。runtimeは
 自分でもclosureを起動する: 演算子のdunder、キーの`hash`/`eq`、getter、

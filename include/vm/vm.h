@@ -18583,8 +18583,18 @@ struct Exec {
           [[maybe_unused]] const Insn& in = *ip;
           int8_t tag;
           int64_t data;
-          culebra_runtime_namespace_get(
-              reinterpret_cast<const char*>(c.consts[in.b].data), &tag, &data);
+          try {
+            culebra_runtime_namespace_get(
+                reinterpret_cast<const char*>(c.consts[in.b].data), &tag,
+                &data);
+          } catch (culebra::CulebraError&) {
+            // A library module's builder, which no call entered, failed (a
+            // namespace an AOT binary did not link): this reference is its
+            // site. The lowering's NsGet names only what the binary links.
+            auto [line, col] = chunk_pos_at(c, VM_PC);
+            culebra_runtime_reanchor(_jit_pack_pos(line, col));
+            throw;
+          }
           regs[in.a] = JitValue{tag, data};  // the resolver's +1
           ++ip;
           break;

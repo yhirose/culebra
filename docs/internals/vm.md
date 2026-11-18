@@ -1750,14 +1750,24 @@ unchanged: chunk positions, lowered constants, published call sites,
 argument positions, the carriers. A library function's prologue
 snapshots the call site that entered it
 (`PosSnap` into `Cleanup::site_slot`), and its frame step hands
-`culebra_runtime_reanchor` that site: an error leaving the frame still at a
-marked position is replaced — as a throwing `defer` replaces one — by the
-same error at the site, when the site is the user's; a marked site leaves
-it to the library frame that site belongs to. The executor's `unwind` and
-the lowering's frame pad call the same helper at the same step, and the
-helper reads only the carriers, so the JIT pad needs no C++ re-inspection.
-A mark that survives to a formatter (a throw with no user frame above it)
-prints with no position.
+`culebra_runtime_reanchor` that site: an error leaving the frame at no line
+of the user's (still at a marked position, or at none) is replaced — as a
+throwing `defer` replaces one — by the same error at the site, when the site
+is the user's (an interrupt, which has no position, stays the interrupt); a marked site leaves it to the library frame that site belongs
+to. The executor's `unwind` and the lowering's frame pad call the same helper
+at the same step, and the helper reads only the carriers, so the JIT pad needs
+no C++ re-inspection. A namespace's builder is entered by no call, so it takes
+no site (`JitBorrowedCallSite(0, 0)`), and the executor's `NsGet` that ran it
+re-anchors at its own position.
+
+The published op position a positionless error is backfilled from is read
+after the fact, at a catch pad (`culebra_runtime_try_translate`) or an engine
+boundary, when the library frame that published it may long have returned;
+those reads take a marked one as no position (`_jit_backfilled_op_pos`). An
+error that leaves for a program or host with no library frame of its own to
+move it (an isolate's `join()`, `culebra_runtime_call_from_host`) loses a mark
+it still carries (`drop_library_pos`), and a mark that still reaches a
+formatter prints as no position.
 
 The snapshot is only as good as the call site it reads, and the runtime
 enters closures on its own too: an operator's dunder, a key's `hash`/`eq`,

@@ -2880,9 +2880,10 @@ h.join()  # => 42
   the program binds is an unknown name there. It has no `Sys.script`, being
   no file, and cannot `import`.
 - **Errors**: a failure in the source, a `SyntaxError` included, is raised
-  by `join()` with its kind and its line and column in the source; a thrown
-  value crosses as `Isolate.spawn`'s does. `name` is what a syntax error
-  names the source by.
+  by `join()` with its kind and its line and column in the source, or at the
+  `join()` when it has none there (a `SendError` for what comes back); a
+  thrown value crosses as `Isolate.spawn`'s does. `name` is what a syntax
+  error names the source by.
 - **Engine**: the source compiles on the bytecode compiler and runs on the
   executor whichever lane runs the program (`--jit` and a built binary
   included), so it behaves the same everywhere.

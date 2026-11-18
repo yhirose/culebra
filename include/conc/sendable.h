@@ -1036,6 +1036,7 @@ inline void _jit_isolate_settle_child(IsolateCore& core,
     culebra_runtime_release_passed_error();
     std::lock_guard<std::mutex> lk(core.m);
     core.error = e;
+    culebra::drop_library_pos(*core.error);
     core.finished = true;
   } catch (CulebraException& e) {
     // A raw user `throw <value>` (not a structured error): the value crosses,
@@ -1157,7 +1158,9 @@ inline std::shared_ptr<IsolateCore> _jit_launch_isolate(bool must_thread,
 inline void _jit_isolate_settle(const std::shared_ptr<IsolateCore>& core) {
   core->join();
   if (core->interrupted) throw culebra::Interrupted(*core->interrupted);
-  if (core->error) throw *core->error;
+  // One with no line of the isolate's (a library's, dropped as it left)
+  // reports at the call that raises it (join, poll).
+  if (core->error) _jit_at_call_site([&] { throw *core->error; });
   if (core->thrown) {
     // A raw user `throw <value>` from the child. Rebuild it on the parent heap
     // and re-raise in the JIT's throw form, so a compiled `catch` binds the

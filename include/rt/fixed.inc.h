@@ -1385,13 +1385,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_try_translate() {
   auto& passed = _passed_error(rt);
   auto* obj = rt.pending_passed ? passed.take() : nullptr;
   if (!obj) {
-    // A positionless runtime error (line/col 0) adopts the last published op
-    // position, matching the old _jit_backfill_op_pos path.
-    int64_t line = rt.pending_line, col = rt.pending_col;
-    if (line == 0 && col == 0) {
-      line = _jit_thread.op_line;
-      col = _jit_thread.op_col;
-    }
+    auto [line, col] = _jit_backfilled_op_pos(rt.pending_line, rt.pending_col);
     obj = culebra_runtime_object_new();
     culebra_runtime_object_set(
         obj, "kind", false, TAG_STRING,

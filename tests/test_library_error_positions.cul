@@ -65,3 +65,32 @@ check("generator step", [64, 3], fn () {
     nil
   }
 })
+
+// An isolate whose body is the library's own function has no user frame to
+// move its error to: it leaves with no library position, and reports at the
+// join that raises it.
+check("isolate body", [73, 3], fn () {
+  Isolate.spawn(assert_throws, "X", || 1).join()
+})
+
+// A positionless error caught after a library call returned (here the stop of
+// a cancelled isolate): the library's last published line does not linger
+// for the catch to take.
+let (stop_ready, stop_ready_rx) = Channel.new(1)
+let (stop_seen, stop_seen_rx) = Channel.new(1)
+let stopped = Isolate.spawn(fn () {
+  let pq = PriorityQueue.new(key: |x| x)
+  pq.push(3)
+  pq.push(1)
+  try {
+    stop_ready.send(true)
+    while true {
+      nil
+    }
+  } catch e {
+    stop_seen.send([e.kind, e.line, e.col])
+  }
+})
+stop_ready_rx.recv()
+stopped.drop()
+assert_eq(stop_seen_rx.recv(), ["Interrupted", 0, 0])

@@ -462,13 +462,22 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_set_op_pos(
 }
 }  // extern "C"
 
+// An error's position as a catch pad or an engine boundary reports it: a
+// positionless one takes the published op position, after the fact, so a
+// library one is none — the frame that published it may have returned long
+// before the error arrived (vm.md §6.2).
+inline culebra::LineCol _jit_backfilled_op_pos(int64_t line, int64_t col) {
+  if (line != 0 || col != 0) return {line, col};
+  if (culebra::is_library_line(_jit_thread.op_line)) return {0, 0};
+  return {_jit_thread.op_line, _jit_thread.op_col};
+}
+
 // Stamp the published op position onto a positionless runtime error. Shared by
 // the three exception boundaries above.
 inline void _jit_backfill_op_pos(culebra::CulebraError& e) {
-  if (e.line == 0 && e.col == 0) {
-    e.line = _jit_thread.op_line;
-    e.col = _jit_thread.op_col;
-  }
+  auto [line, col] = _jit_backfilled_op_pos(e.line, e.col);
+  e.line = line;
+  e.col = col;
 }
 
 // culebra::pack_pos, under the names the runtime uses: a runtime call's
@@ -1134,7 +1143,8 @@ inline void culebra_runtime_release_passed_error() {
 // two boundaries above: what leaves it holds nothing in the Runtime. A thrown
 // value leaves as the CulebraError a host reports (describe_thrown_value,
 // read before its reference is given up), so the C++ around the call reads
-// one kind of failure; anything else leaves as it was.
+// one kind of failure. That one, like a CulebraError, leaves without a library
+// position (drop_library_pos); anything else leaves as it was.
 extern "C++" {  // a template cannot have C linkage
 template <class Call>
 auto culebra_runtime_call_from_host(Call&& call) -> decltype(call()) {
@@ -1143,8 +1153,14 @@ auto culebra_runtime_call_from_host(Call&& call) -> decltype(call()) {
   } catch (const CulebraException& e) {
     auto r = describe_thrown_value({e.tag, e.data});
     culebra_runtime_consume_throw(e);
-    throw culebra::CulebraError(r.kind.empty() ? "RuntimeError" : r.kind,
-                                r.message, r.line, r.col);
+    culebra::CulebraError out(r.kind.empty() ? "RuntimeError" : r.kind,
+                              r.message, r.line, r.col);
+    culebra::drop_library_pos(out);
+    throw out;
+  } catch (culebra::CulebraError& e) {
+    culebra_runtime_release_passed_error();
+    culebra::drop_library_pos(e);
+    throw;
   } catch (...) {
     culebra_runtime_release_passed_error();
     throw;
@@ -1294,7 +1310,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_rethrow_caught(
   _passed_error(culebra::current_runtime())
       .reset(reinterpret_cast<JitObject*>(data));
   try {
-    if (r.kind == "Interrupted")
+    if (r.kind == culebra::kInterruptedKind)
       throw culebra::Interrupted(std::move(r.message));
     throw culebra::CulebraError(r.kind, r.message, r.line, r.col);
   } catch (...) {
@@ -1305,13 +1321,14 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_rethrow_caught(
   }
 }
 
-// A library frame's exit step (docs/internals/vm.md §6.2): an error still at
-// a library position moves to the user site that entered the frame, by
-// replacing the in-flight exception from the carriers, as a throwing defer
-// does. The thrown payload's reference stays with the carrier.
+// A library frame's exit step (docs/internals/vm.md §6.2): an error at no line
+// of the user's — still at a library position, or at none — moves to the user
+// site that entered the frame, by replacing the in-flight exception from the
+// carriers, as a throwing defer does. The thrown payload's reference stays
+// with the carrier.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_reanchor(int64_t site) {
   auto [line, col] = _jit_unpack_pos(site);
-  if (line == 0 || culebra::is_library_line(line)) return;
+  if (!culebra::is_user_line(line)) return;
   auto& rt = culebra::current_runtime();
   if (rt.is_throw) {
     // A caught error thrown again by library code carries its position in
@@ -1321,16 +1338,18 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_reanchor(int64_t site) {
       // and `col` still the Longs the runtime put there are moved.
       auto* o = reinterpret_cast<JitObject*>(rt.thrown_data);
       auto at = o->is_error ? _jit_long_slot(o, "line") : std::nullopt;
-      if (at && _jit_long_slot(o, "col") && culebra::is_library_line(*at)) {
+      if (at && _jit_long_slot(o, "col") && !culebra::is_user_line(*at)) {
         o->slots[o->find_slot("line")].value = JitValue{TAG_LONG, line};
         o->slots[o->find_slot("col")].value = JitValue{TAG_LONG, col};
       }
     }
-    if (culebra::is_library_line(rt.thrown_line))
+    if (!culebra::is_user_line(rt.thrown_line))
       culebra_runtime_throw(rt.thrown_tag, rt.thrown_data, line, col);
     return;
   }
-  if (rt.pending_error && culebra::is_library_line(rt.pending_line))
+  // An interrupt has no position to move, and stays the interrupt it is.
+  if (rt.pending_error && !culebra::is_user_line(rt.pending_line) &&
+      rt.pending_kind != culebra::kInterruptedKind)
     throw culebra::CulebraError(rt.pending_kind, rt.pending_msg, line, col);
 }
 

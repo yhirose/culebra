@@ -13433,6 +13433,9 @@ inline JitObject* _jit_namespace_get_or_build(std::string_view name) {
   if (auto bd = _lazy_ns_builder(name); bd.fn_ptr) {
     auto* cls = culebra_runtime_closure_new(bd.fn_ptr, /*n_captures=*/0,
                                             /*arity=*/0, bd.flags, bd.meta);
+    // No call entered it, so it takes no site: the reference that built it
+    // places what it raises (the executor's NsGet).
+    JitBorrowedCallSite site{0, 0};
     JitValue r = _culebra_invoke0(cls);
     culebra_runtime_value_release(TAG_FUNC, reinterpret_cast<int64_t>(cls));
     if (r.tag != TAG_OBJECT) {

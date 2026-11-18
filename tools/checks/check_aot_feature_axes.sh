@@ -472,6 +472,14 @@ expect_present source "$source_entry" "spawn_source named"
 expect_output source "3"
 build source_with 'IO.print(Isolate.spawn_source("Synth.hz(69.0)").join())' --with Synth
 expect_output source_with "440.0"
+# Without --with, Synth's module fails as it is built, which no call of the
+# source entered: it reports at the source's reference to Synth.
+build source_unlinked 'try {
+  Isolate.spawn_source("Synth.hz(69.0)").join()
+} catch e {
+  IO.print("{e.kind} {e.line}:{e.col}")
+}'
+expect_output source_unlinked "InternalError 1:1"
 
 # Http, both halves of its axis. The default links OpenSSL; --no-tls links the
 # other archive and must carry not one OpenSSL symbol. The second probe also
