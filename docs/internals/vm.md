@@ -1979,6 +1979,25 @@ That branch is IR at every release site, which is the cost side: on
 executor lowers nothing, so what pays it is `--jit` and `culebra build` —
 the two lanes chosen for throughput.
 
+A function past the cut does not pay it in its cleanup pads. A pad
+releases every slot of its scope, and a statement's temporaries at each
+throw site that abandons them, so most of a long function's release sites
+are on a throw's path, where the test buys nothing and costs two blocks
+apiece. The emitter marks a pad's test (`culebra.pad_release_test`), and
+once the cut is decided `JIT::settle_pad_release_tests` turns each marked
+test of a function past it into the helper call alone. `optimize_module`
+drops the marks left, so an optimized function — under `--jit`, in the
+baked preamble, under `culebra build` — reaches the pipeline as it did
+before. An optimized function keeps the test because taking it out
+of every pad left the loop bodies' IR as it was, but the greedy allocator
+spilled more at their heads: the scalars row of
+`tools/bench/value_physics.cul` went from 12.0 to 17.0 ns/op. Past the
+cut, the 277-line function reaches the backend with 10,300 blocks instead
+of 12,700, and the largest function of mini-culebra, mini-js and mini-lua
+with 36 to 56% fewer. Loading the 277-line function's module takes 2.65 s
+of optimize and codegen instead of 2.82, and mini-culebra's 40 s instead
+of 48.
+
 A property read as a value (`PropVal` with no declared type,
 `JIT::emit_property_value`) has the shape of the read programs make
 most: an own field of an Object whose shape the site's cache knows is

@@ -40,6 +40,8 @@
 #include "llvm/Support/xxhash.h"
 #include "llvm/TargetParser/Host.h"
 #include "llvm/Target/TargetMachine.h"
+#include "llvm/Transforms/Utils/BasicBlockUtils.h"  // settle_pad_release_tests
+#include "llvm/Transforms/Utils/Local.h"  // settle_pad_release_tests
 
 #ifdef _WIN32
 #include "llvm/ExecutionEngine/Orc/AbsoluteSymbols.h"  // orc::absoluteSymbols
@@ -1429,11 +1431,45 @@ struct JIT {
       f.removeFnAttr(llvm::Attribute::AlwaysInline);
       f.addFnAttr(llvm::Attribute::OptimizeNone);
       f.addFnAttr(llvm::Attribute::NoInline);
+      settle_pad_release_tests(f, /*keep_test=*/false);
+    }
+  }
+
+  // Marks the inline tag test of a release emitted inside a cleanup pad
+  // (emit_value_release). Every mark is settled before the IR pipeline:
+  // keep_big_functions_unoptimized past the cut, optimize_module the rest.
+  static constexpr const char* kPadReleaseTest = "culebra.pad_release_test";
+
+  // An optimized function keeps the test in its pads: without it the
+  // register allocator spilled more at the head of the function's loops
+  // (docs/internals/vm.md §7), so there the mark just goes and the pipeline
+  // sees the IR it saw before there were marks. Past the cut the test only
+  // makes blocks, two per release on a throw's path, so there the release
+  // is the helper call alone, whose own first act is the test.
+  static void settle_pad_release_tests(llvm::Function& f, bool keep_test) {
+    std::vector<llvm::Instruction*> tests;
+    for (auto& bb : f)
+      if (auto* t = terminator_of(&bb); t && t->getMetadata(kPadReleaseTest))
+        tests.push_back(t);
+    for (auto* test : tests) {
+      test->setMetadata(kPadReleaseTest, nullptr);
+      if (keep_test) continue;
+      auto* head = test->getParent();
+      auto* release = test->getSuccessor(0);
+      auto* cont = test->getSuccessor(1);
+      // Both edges into the release, and LLVM's own folds take the diamond
+      // apart: the test goes with its condition, then the blocks merge.
+      cont->removePredecessor(head);
+      test->setSuccessor(1, release);
+      llvm::ConstantFoldTerminator(head, /*DeleteDeadConditions=*/true);
+      llvm::MergeBlockIntoPredecessor(release);
+      llvm::MergeBlockIntoPredecessor(cont);
     }
   }
 
   static void optimize_module(llvm::Module& mod, int opt_level) {
     using namespace llvm;
+    for (auto& f : mod) settle_pad_release_tests(f, /*keep_test=*/true);
     PassInstrumentationCallbacks PIC;
     // The new pass manager skips an `optnone` function only through this
     // instrumentation; without it the attribute reaches the backend alone.
@@ -2404,7 +2440,12 @@ struct JIT {
     auto* fn = builder_.GetInsertBlock()->getParent();
     auto ownedBB = llvm::BasicBlock::Create(ctx_, "rc.release", fn);
     auto contBB = llvm::BasicBlock::Create(ctx_, "rc.cont", fn);
-    builder_.CreateCondBr(emit_tag_is_refcounted(tag), ownedBB, contBB);
+    auto* test =
+        builder_.CreateCondBr(emit_tag_is_refcounted(tag), ownedBB, contBB);
+    // A function past the cut releases in its pads without the test
+    // (settle_pad_release_tests).
+    if (emitting_unwind_cleanup_)
+      test->setMetadata(kPadReleaseTest, llvm::MDNode::get(ctx_, {}));
     builder_.SetInsertPoint(ownedBB);
     emit_refcount_call(rt::value_release, tag, data);
     close_block(contBB);

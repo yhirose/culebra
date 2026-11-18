@@ -1,7 +1,19 @@
 # A function long enough that the JIT compiles it unoptimised (`optnone`,
 # past kMaxOptimizedBlocks in include/jit/jit.h): it must still agree with the
 # executor, including a throw from inside it and the values it holds when
-# that throw unwinds. tests/jit_big_function_test.sh checks the cut is taken.
+# that throw unwinds, which its cleanup pads release without the inline tag
+# test. tests/jit_big_function_test.sh checks the cut is taken.
+
+mut ev = []
+
+class Res {
+  new(id) {
+    self.id = id
+  }
+  drop() {
+    ev.push("drop {self.id}")
+  }
+}
 
 fn risky(n) {
   throw "risky {n}" if n % 4 == 0
@@ -10,6 +22,7 @@ fn risky(n) {
 
 fn big(xs, k) {
   let tag = "k{k}"
+  let held = Res.new("held {k}")
   mut acc = 0
   let v0 = xs[0] > 0 ? xs[0] * 1 + acc % 7 : xs[1] - 0 + (acc > 100 ? 1 : 2)
   acc = acc + (v0 % 2 == 0 ? v0 / 2 : v0 * 3 + 1) % 1000
@@ -24,6 +37,8 @@ fn big(xs, k) {
   let v5 = xs[5] > 5 ? xs[5] * 6 + acc % 7 : xs[0] - 5 + (acc > 100 ? 1 : 2)
   acc = acc + (v5 % 2 == 0 ? v5 / 2 : v5 * 3 + 1) % 1000
   throw "{tag} at {acc}" if k == 3
+  # An in-flight temporary when the second element throws.
+  let pair = [Res.new("pair {k}"), k == 6 ? risky(4) : k]
   let r = try {
     risky(k + acc)
   } catch e {
@@ -50,7 +65,7 @@ fn big(xs, k) {
 }
 
 let xs = [3, 14, 15, 92, 65, 35, 89, 79]
-let got = range(6).map(fn (k) {
+let got = range(7).map(fn (k) {
   try {
     big(xs, k)
   } catch e {
@@ -66,5 +81,26 @@ assert_eq(
     'k3 at 2079',
     ['k4', 10716, 8],
     ['k5', 5634, 8],
+    'risky 4',
+  ],
+)
+# k = 3 throws before `pair`; k = 6 abandons it in flight, its first element
+# built.
+assert_eq(
+  ev,
+  [
+    'drop pair 0',
+    'drop held 0',
+    'drop pair 1',
+    'drop held 1',
+    'drop pair 2',
+    'drop held 2',
+    'drop held 3',
+    'drop pair 4',
+    'drop held 4',
+    'drop pair 5',
+    'drop held 5',
+    'drop pair 6',
+    'drop held 6',
   ],
 )

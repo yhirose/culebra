@@ -18,10 +18,10 @@ emit() { CULEBRA_JIT_CACHE=off "$CULEBRA" --jit "$@" --emit-llvm "$TMP/p.cul" 2>
 # The functions the lowering hands the pipeline with more than LIMIT blocks
 # (-O0 prints the lowered IR as it is).
 big_names() {
-  emit -O0 | awk -v min="$LIMIT" '
+  awk -v min="$LIMIT" '
     /^define/ { n = $0; sub(/\(.*/, "", n); sub(/.*@/, "", n); b = 0; f = 1; next }
     f && /^}/ { if (b > min) print n; f = 0; next }
-    f && /^[A-Za-z0-9_.$"-]+:/ { b++ }'
+    f && /^[A-Za-z0-9_.$"-]+:/ { b++ }' "$TMP/lowered.ll"
 }
 
 # The attributes the optimised module gives function `name`.
@@ -32,8 +32,17 @@ attrs_of() {
     END { print attrs[g] }' "$TMP/opt.ll"
 }
 
+# Function `name` in IR file `ll`: its marked pad release tests and its
+# `rc.release` blocks.
+pad_tests_of() { # <name> <ll>
+  sed -n "/^define .*@$1(/,/^}/p" "$2" > "$TMP/fn.ll"
+  echo "$(grep -c '!culebra[.]pad_release_test' "$TMP/fn.ll")" \
+    "$(grep -c '^rc[.]release[0-9]*:' "$TMP/fn.ll")"
+}
+
 # tests/test_jit_big_function.cul holds one function past the cut.
 cp "$HERE/test_jit_big_function.cul" "$TMP/p.cul"
+emit -O0 > "$TMP/lowered.ll"
 names=$(big_names)
 emit -O2 > "$TMP/opt.ll"
 if [[ -z "$names" ]]; then
@@ -48,6 +57,24 @@ for n in $names; do
   fi
 done
 
+# Past the cut a cleanup pad's release is the helper call alone
+# (settle_pad_release_tests): each inline tag test the lowering marked as a
+# pad's (-O0 prints the marks) takes its `rc.release` block with it, and no
+# mark reaches the pipeline.
+for n in $names; do
+  read -r marks before < <(pad_tests_of "$n" "$TMP/lowered.ll")
+  read -r _ after < <(pad_tests_of "$n" "$TMP/opt.ll")
+  if (( marks == 0 || before - after < marks )); then
+    echo "FAIL: $n (past $LIMIT blocks) kept its pads' release tests:" \
+      "$marks marked, rc.release $before -> $after"
+    fail=1
+  fi
+done
+if grep -q 'culebra[.]pad_release_test' "$TMP/opt.ll"; then
+  echo "FAIL: a pad release test's mark reached the pipeline"
+  fail=1
+fi
+
 # A small program keeps the whole pipeline.
 printf 'fn f(x) { x > 1 ? x * 2 : x + 1 }\nprintln(f(3))\n' > "$TMP/p.cul"
 if emit -O2 | grep -q optnone; then
@@ -56,8 +83,8 @@ if emit -O2 | grep -q optnone; then
 fi
 
 # CULEBRA_JIT_BLOCK_STATS=<n> says which part of the lowering made a long
-# function's blocks (docs/internals/vm.md §7). It counts the IR the pipeline
-# is handed, which -O0 prints as it is, and gives every block an owner.
+# function's blocks (docs/internals/vm.md §7). It counts the IR as lowered,
+# which -O0 prints as it is, and gives every block an owner.
 cp "$HERE/test_jit_big_function.cul" "$TMP/p.cul"
 CULEBRA_JIT_CACHE=off CULEBRA_JIT_BLOCK_STATS=1 "$CULEBRA" --jit -O0 \
   --emit-llvm "$TMP/p.cul" > "$TMP/o0.ll" 2> "$TMP/stats.txt"
@@ -87,6 +114,16 @@ pv_row=$(CULEBRA_JIT_CACHE=off CULEBRA_JIT_BLOCK_STATS=1 "$CULEBRA" --jit -O0 \
        f && / PropVal / { print }')
 if [[ "$pv_row" != *pval.* || "$pv_row" == *bind.* ]]; then
   echo "FAIL: a property read as a value has the call read's shape: $pv_row"
+  fail=1
+fi
+
+# A function under the cut keeps the inline test in its pads, as marked:
+# without it the register allocator spilled more at the head of the
+# function's loops (docs/internals/vm.md §7).
+emit -O0 > "$TMP/small.ll"
+read -r marks _ < <(pad_tests_of __vm_fn_1 "$TMP/small.ll")
+if (( marks == 0 )); then
+  echo "FAIL: a pad of a function under the cut releases without the inline test"
   fail=1
 fi
 
