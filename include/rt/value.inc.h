@@ -11,6 +11,19 @@
 // string.inc.h; declared here for FieldAnnotation's interned name.
 inline const char* _intern_str(std::string_view s);
 
+// A set of JitValue tags, one bit per tag: every tag a type name can take
+// (TAG_NIL through TAG_STRINGVIEW, below) is under 16. _culebra_type_tags
+// says which set a built-in type's name takes.
+using CulebraTagSet = uint16_t;
+
+constexpr CulebraTagSet _culebra_tag_bit(int8_t tag) {
+  return static_cast<CulebraTagSet>(1u << tag);
+}
+
+constexpr bool _culebra_tag_set_has(CulebraTagSet set, int8_t tag) {
+  return tag >= 0 && tag < 16 && ((set >> tag) & 1u) != 0;
+}
+
 namespace culebra {
 
 // Object property layout description, V8/SpiderMonkey "hidden class"
@@ -37,14 +50,14 @@ namespace culebra {
 // A Named slot's annotation, interned (ShapeRegistry::intern_annotation), so
 // the pointer is its identity: the text a write is checked against, and what
 // settles the common write without parsing it. When the text names one type
-// (its Generic args aside): a built-in type's tag, which its own values carry
+// (its Generic args aside): a built-in type's tags, which its own values carry
 // (`Function` also admits a callable instance, which the text settles); else
 // the class or enum name, interned as a class meta's names are (_intern_str),
 // so an instance answers to it exactly when one of its meta's names is this
 // pointer.
 struct FieldAnnotation {
   std::string text;
-  int8_t tag = -1;             // a built-in type name's tag, else -1
+  CulebraTagSet tags = 0;      // a built-in type name's tags, else none
   const char* name = nullptr;  // a class or enum name, else null
 };
 
@@ -246,7 +259,7 @@ struct ShapeRegistry {
   // The one copy of a Named slot's annotation, for the life of the process
   // as the Shapes that point at it: the pointer is what tells two Shapes'
   // declared types apart.
-  // Defined after _culebra_primitive_type_tag, which it reads.
+  // Defined after _culebra_type_tags, which it reads.
   inline const FieldAnnotation* intern_annotation(std::string_view text);
 
   ShapeRegistry()
@@ -1657,34 +1670,36 @@ constexpr bool _is_refcounted_value(const JitValue& v) {
   return _is_refcounted_value(static_cast<int8_t>(v.tag), v.data);
 }
 
-// Primitive type-name → TAG_* (nullopt for anything else: `Any`, traits,
-// user classes). The generic-strip and the Any / union / non-primitive
-// policies stay with the callers. base's is_builtin_type_name holds the
-// same names for the dispatch scorer, which cannot see TAG_*.
-inline std::optional<int8_t> _culebra_primitive_type_tag(std::string_view tn) {
-  if (tn == "Nil") return TAG_NIL;
-  if (tn == "Bool") return TAG_BOOL;
-  if (tn == "Long") return TAG_LONG;
-  if (tn == "Float") return TAG_FLOAT;
-  if (tn == "String") return TAG_STRING;
-  if (tn == "StringView") return TAG_STRINGVIEW;
-  if (tn == "Array") return TAG_ARRAY;
-  if (tn == "Object") return TAG_OBJECT;
-  if (tn == "Function") return TAG_FUNC;
-  if (tn == "Tuple") return TAG_TUPLE;
-  if (tn == "Set") return TAG_SET;
-  if (tn == "Tensor") return TAG_TENSOR;
-  return std::nullopt;
-}
+// The tags of the values a built-in type's name takes. `exact` when the tags
+// are the whole answer, so a tag test can stand in for the type check — every
+// name's but `Function`'s, which a class instance with a `__call__` also
+// satisfies (_culebra_type_matches_single). Empty for any other name: `Any`,
+// traits, user classes. The generic-strip and the Any / union / non-primitive
+// policies stay with the callers. base's is_builtin_type_name holds the same
+// names for the dispatch scorer, which cannot see TAG_*.
+struct CulebraTypeTags {
+  CulebraTagSet set = 0;
+  bool exact = false;
+  constexpr explicit operator bool() const { return set != 0; }
+  constexpr bool has(int8_t tag) const {
+    return _culebra_tag_set_has(set, tag);
+  }
+};
 
-// The tag a value has exactly when it satisfies the type name `tn`, so a tag
-// compare can stand in for the type check. Every primitive name's but
-// `Function`'s, which a class instance with a `__call__` also satisfies
-// (_culebra_type_matches_single).
-inline std::optional<int8_t> _culebra_exact_type_tag(std::string_view tn) {
-  auto tag = _culebra_primitive_type_tag(tn);
-  if (tag == TAG_FUNC) return std::nullopt;
-  return tag;
+inline constexpr std::pair<std::string_view, int8_t> kCulebraBuiltinTypeTags[] =
+    {{"Nil", TAG_NIL},       {"Bool", TAG_BOOL},
+     {"Long", TAG_LONG},     {"Float", TAG_FLOAT},
+     {"String", TAG_STRING}, {"StringView", TAG_STRINGVIEW},
+     {"Array", TAG_ARRAY},   {"Object", TAG_OBJECT},
+     {"Function", TAG_FUNC}, {"Tuple", TAG_TUPLE},
+     {"Set", TAG_SET},       {"Tensor", TAG_TENSOR}};
+
+constexpr CulebraTypeTags _culebra_type_tags(std::string_view tn) {
+  CulebraTypeTags out;
+  for (auto [name, tag] : kCulebraBuiltinTypeTags)
+    if (name == tn) out.set |= _culebra_tag_bit(tag);
+  out.exact = out.set != 0 && tn != "Function";
+  return out;
 }
 
 inline const culebra::FieldAnnotation*
@@ -1702,8 +1717,8 @@ culebra::ShapeRegistry::intern_annotation(std::string_view text) {
       if (!std::isalnum(static_cast<unsigned char>(c)) && c != '_')
         plain = false;
     if (plain && name != "Any") {
-      if (auto tag = _culebra_primitive_type_tag(name))
-        it->second.tag = *tag;
+      if (auto t = _culebra_type_tags(name))
+        it->second.tags = t.set;
       else
         it->second.name = _intern_str(name);
     }

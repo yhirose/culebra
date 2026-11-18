@@ -591,13 +591,14 @@ enum class Op : uint8_t {
                // expression, or the call site for a default-filled slot).
                // The eager form above is what a param after the first
                // default takes instead — user code has run by then.
-  ArgTag,      // regs[a]'s tag is settled: b is the tag the entry check just
-               // accepted for this parameter (§14), so every read below may
-               // take it as given. Emitted past the check AND past the gate
-               // that skips it, so both routes reach it. The executor reads
-               // tags off values and has nothing to do; the JIT substitutes
-               // the constant, which is what folds a chain of built-in calls
-               // on the parameter (`s.trim().size()`).
+  ArgTag,      // regs[a]'s tag is settled: b is the tag set (CulebraTagSet)
+               // the entry check just accepted for this parameter (§14), so
+               // every read below may take it as given. Emitted past the
+               // check AND past the gate that skips it, so both routes reach
+               // it. The executor reads tags off values and has nothing to
+               // do; the JIT substitutes constants, which is what folds a
+               // chain of built-in calls on the parameter
+               // (`s.trim().size()`).
   JumpIfFilled,  // jump to b when regs[a] is a supplied argument; falls
                // through to the default expression when the prologue left
                // the slot TAG_UNFILLED.
@@ -1680,7 +1681,7 @@ inline constexpr BRecvMask bmeth_param_tags(BParam p) {
     case BParam::Long: return bmeth_tag_bit(TAG_LONG);
     case BParam::Array: return bmeth_tag_bit(TAG_ARRAY);
     case BParam::StrLike: return kRecvStrLike;
-    case BParam::String: return bmeth_tag_bit(TAG_STRING);
+    case BParam::String: return _culebra_type_tags("String").set;
     case BParam::Set: return kRecvSet;
     case BParam::Tensor: return kRecvTensor;
     case BParam::LongOpt:
@@ -8081,8 +8082,7 @@ class Compiler {
       culebra::register_class_fields(name, fields);
       if (library) continue;
       if (culebra::is_stdlib_type_name(name) ||
-          culebra::is_error_kind_name(name) ||
-          _culebra_primitive_type_tag(name))
+          culebra::is_error_kind_name(name) || _culebra_type_tags(name))
         culebra::register_class_fields(name, none);
     }
     culebra::TypeNames others;
@@ -9476,11 +9476,12 @@ class Compiler {
         for (size_t ix : skip) fc.patch_to_here(ix);
         // Past the check and past the gate that skips it: whichever route
         // got here, the value satisfies the annotation. When the annotation's
-        // tag decides it, that settles the tag for every read below — except
-        // in a `mut` parameter, whose reassignment is not re-checked (§14).
+        // tags decide it, the value's tag is one of them for every read below
+        // — except in a `mut` parameter, whose reassignment is not re-checked
+        // (§14).
         if (!pl.is_mut)
-          if (auto tag = _culebra_exact_type_tag(pl.type))
-            fc.emit(Op::ArgTag, pl.slot, *tag);
+          if (auto t = _culebra_type_tags(pl.type); t.exact)
+            fc.emit(Op::ArgTag, pl.slot, t.set);
       }
       if (pl.sink) {
         // `fn (_, x)`: the argument's +1 is dropped rather than bound, so a
@@ -14725,14 +14726,13 @@ class Compiler {
     }
   }
 
-  // One alternative of an annotation, as a tag compare that jumps (via
-  // `skip`) when it matches. Mirrors _culebra_type_matches_single's own
-  // structure in order: a callable or an all-of bound is not a single tag, a
-  // trailing `?` also admits Nil, generic args are documentation, and the
-  // base case is that function's `_culebra_tag_name(tag) == expected` test —
-  // which is why a hit here can never disagree with it. Anything else (a
-  // user class, an enum, a trait) emits nothing and leaves the decision to
-  // the check itself.
+  // One alternative of an annotation, as tag compares that jump (via `skip`)
+  // when one matches. Mirrors _culebra_type_matches_single's own structure
+  // in order: a callable or an all-of bound is not a tag set, a trailing `?`
+  // also admits Nil, generic args are documentation, and the base case is
+  // that function's _culebra_type_tags test — which is why a hit here can
+  // never disagree with it. Anything else (a user class, an enum, a trait)
+  // emits nothing and leaves the decision to the check itself.
   void emit_type_check_gate_alt(std::string_view tn, int32_t subj,
                           std::vector<size_t>& skip) {
     if (culebra::is_fn_type(tn) || culebra::has_toplevel_plus(tn)) return;
@@ -14743,8 +14743,9 @@ class Compiler {
     }
     if (tn.find('<') != std::string_view::npos)
       tn = culebra::parse_generic_head(tn).outer;
-    if (auto tag = _culebra_primitive_type_tag(tn))
-      skip.push_back(emit(Op::JumpIfTag, subj, 0, *tag));
+    auto t = _culebra_type_tags(tn);
+    for (int8_t tag = 0; t && tag < 16; ++tag)
+      if (t.has(tag)) skip.push_back(emit(Op::JumpIfTag, subj, 0, tag));
   }
 
   // Tag fast path in front of a ChkArg / ChkTypeAt: a matching alternative
@@ -14785,8 +14786,8 @@ class Compiler {
   // A pattern's type annotation: fall through when the subject satisfies it,
   // jump (via `fail`) when it doesn't, as the annotation's check decides.
   // Each alternative is the check's own tag gate (emit_type_check_gate_alt),
-  // then the runtime's type_matches unless the tag already decided the name
-  // (_culebra_exact_type_tag; generic args stripped, so `Array<Long>` is
+  // then the runtime's type_matches unless the tags already decided the name
+  // (_culebra_type_tags' `exact`; generic args stripped, so `Array<Long>` is
   // Array's tag alone). A union ORs its alternatives, and an `Any`
   // alternative (an unbounded Generic parameter's, too) gates nothing at all.
   void compile_type_gate(const peg::Ast& type_node, int32_t subj,
@@ -14801,7 +14802,7 @@ class Compiler {
       if (head.find('<') != std::string_view::npos)
         head = culebra::parse_generic_head(head).outer;
       if (head == "Any") return false;
-      alts.push_back({head, _culebra_exact_type_tag(head).has_value()});
+      alts.push_back({head, _culebra_type_tags(head).exact});
       return true;
     };
     if (full.find('|') != std::string_view::npos) {
@@ -18630,12 +18631,12 @@ struct Exec {
       L_ArgTag:
         do {
           [[maybe_unused]] const Insn& in = *ip;
-          // The value already carries this tag — the check the emitter put
-          // above it is what says so. Only the JIT has something to gain
-          // (the constant it substitutes); here the assert is the whole
-          // instruction, and it is compiled out of a release build.
-          assert(static_cast<int8_t>(regs[in.a].tag) ==
-                     static_cast<int8_t>(in.b) &&
+          // The value already carries one of these tags — the check the
+          // emitter put above it is what says so. Only the JIT has something
+          // to gain (the constants it substitutes); here the assert is the
+          // whole instruction, and it is compiled out of a release build.
+          assert(_culebra_tag_set_has(static_cast<CulebraTagSet>(in.b),
+                                      static_cast<int8_t>(regs[in.a].tag)) &&
                  "ArgTag past a check that did not settle the tag");
           ++ip;
           break;

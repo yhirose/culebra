@@ -4980,15 +4980,25 @@ struct Lowering {
           break;
         }
         case Op::ArgTag: {
-          // What the entry check just accepted, written back as a constant:
+          // What the entry check just accepted, written back as constants:
           // every read below the prologue then sees a settled tag, which is
           // what lets a chain of built-in calls on the parameter fold (the
-          // receiver switch in emit_size_probe and friends collapses to one
-          // arm). The payload is untouched, so this is free at run time.
+          // receiver switch in emit_size_probe and friends collapses to the
+          // set's own arms). One tag is a constant; several are a select
+          // among them keyed on the tag itself, which LLVM folds a switch on
+          // into a branch between those arms, and a compare against any
+          // other tag into false. The payload is untouched.
           auto v = load_slot(in.a);
-          b.CreateStore(
-              j.make_value(static_cast<uint8_t>(in.b), j.extract_data(v)),
-              slots[in.a]);
+          auto set = static_cast<CulebraTagSet>(in.b);
+          auto actual = j.extract_tag(v);
+          llvm::Value* tag = nullptr;
+          for (int8_t t = 15; t >= 0; --t) {
+            if (!_culebra_tag_set_has(set, t)) continue;
+            tag = tag ? b.CreateSelect(b.CreateICmpEQ(actual, b.getInt8(t)),
+                                       b.getInt8(t), tag)
+                      : b.getInt8(t);
+          }
+          b.CreateStore(j.make_value(tag, j.extract_data(v)), slots[in.a]);
           break;
         }
         case Op::JumpIfFilled: {

@@ -1588,13 +1588,13 @@ inline bool _culebra_type_matches_single(int8_t tag, int64_t data,
     expected = culebra::parse_generic_head(expected).outer;
   }
   // A built-in type's name means that type, whatever a program calls its own
-  // classes, enums, variants or traits: only the tag passes, as a typed
+  // classes, enums, variants or traits: only its tags pass, as a typed
   // field's check has it and as an annotated parameter's ArgTag tells the
-  // code after the check. `Function` also takes a callable instance
-  // (Option A: structural callable, proto-gated so a dict is not one).
-  if (auto t = _culebra_primitive_type_tag(expected))
-    return tag == *t ||
-           (*t == TAG_FUNC && _culebra_has_call_operator(tag, data));
+  // code after the check. `Function`, whose tags are not the whole answer,
+  // also takes a callable instance (Option A: structural callable,
+  // proto-gated so a dict is not one).
+  if (auto t = _culebra_type_tags(expected))
+    return t.has(tag) || (!t.exact && _culebra_has_call_operator(tag, data));
   // `Enum.Variant`: both halves, so nothing but that enum's variant
   // satisfies it. Reached from an annotation and, through
   // culebra_runtime_ctor_matches, from a constructor pattern alike.
@@ -1638,7 +1638,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_ctor_matches(
     int8_t tag, int64_t data, const char* name) {
   if (tag != TAG_OBJECT) return false;
   std::string_view n(name);
-  if (_culebra_primitive_type_tag(n))
+  if (_culebra_type_tags(n))
     return _jit_answers_to(reinterpret_cast<JitObject*>(data), n);
   return _culebra_type_matches_single(tag, data, n);
 }
@@ -4181,7 +4181,7 @@ inline culebra::FieldType _jit_field_type_of_tag(int8_t tag) {
 // Whether a value may be stored in a slot declared `t`, as far as that can be
 // told without parsing an annotation or asking a trait: a scalar by its tag,
 // and a Named slot (`annotation`) by nil — such a field's zero, so its `Car`
-// reads as `Car?` — or by the one type it names: a built-in type's tag, or a
+// reads as `Car?` — or by the one type it names: a built-in type's tags, or a
 // class or enum its instance answers to. Never throws; false only means "not
 // settled here".
 inline bool _jit_value_surely_fits_field(
@@ -4192,7 +4192,8 @@ inline bool _jit_value_surely_fits_field(
     case culebra::FieldType::Long: return tag == TAG_LONG;
     case culebra::FieldType::Bool: return tag == TAG_BOOL;
     case culebra::FieldType::Named: {
-      if (tag == TAG_NIL || tag == annotation->tag) return true;
+      if (tag == TAG_NIL || _culebra_tag_set_has(annotation->tags, tag))
+        return true;
       if (tag != TAG_OBJECT || !annotation->name) return false;
       auto* sp = _jit_meta_specials(reinterpret_cast<JitObject*>(data));
       return sp && (sp->name == annotation->name ||

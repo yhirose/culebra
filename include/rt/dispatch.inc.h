@@ -806,10 +806,10 @@ struct JitMultifnDispatcher {
   std::string name;  // the source name, as diagnostics say it
   std::vector<JitMultiMethodEntry> methods;
   const JitMultiMethodEntry* mono = nullptr;
-  // One required tag per positional parameter (-1 = any) when `mono` is an
-  // annotated overload; empty when it needs no gate. See
+  // The tags one positional parameter admits (none = any), per parameter,
+  // when `mono` is an annotated overload; empty when it needs no gate. See
   // _jit_multifn_refresh_mono and _jit_mono_admits.
-  std::vector<int8_t> mono_tags;
+  std::vector<CulebraTagSet> mono_tags;
 };
 
 // Side table mapping a dispatcher closure pointer to its record, so the
@@ -846,22 +846,21 @@ extern "C++" {
 inline JitMultifnDispatcher* _jit_dispatcher_record(JitClosure* c);
 }
 
-// The tag whose values ALWAYS satisfy this annotation, or -1 when no single
-// tag does. The inverse of _jit_value_arg_type over the labels it produces
-// one-to-one, which is what lets `arg.tag == this` stand in for the picker:
-// the label the argument reports IS the annotation, so multifn_specificity's
-// concrete-exact arm answers and nothing below it runs.
+// The tags whose values are exactly the ones satisfying this annotation, or
+// none when no tag test decides it. Used only for a lone overload, which the
+// picker returns for every argument list that matches it, so a tag test that
+// answers "does it match" stands in for the picker.
 //
 // The Object-side labels are left out on purpose: TAG_OBJECT reports a class
-// name, which is no annotation's one tag (an instance of a class called
-// `Array` is no `Array`, here as in the picker).
-// `Function` has no exact tag for the opposite reason — the scorer lets a
+// name, which is no annotation's tag (an instance of a class called `Array`
+// is no `Array`, here as in the picker).
+// `Function` has no exact tags for the opposite reason — the scorer lets a
 // class instance with `__call__` match it, so the tag is not the whole answer.
 // Anything left out declines the shortcut and takes the picker, which is only
 // slower.
-inline int8_t _jit_tag_exactly_matching(std::string_view annotation) {
-  auto tag = _culebra_exact_type_tag(annotation);
-  return tag && *tag != TAG_OBJECT ? *tag : -1;
+inline CulebraTagSet _jit_tags_exactly_matching(std::string_view annotation) {
+  auto t = _culebra_type_tags(annotation);
+  return t.exact && !t.has(TAG_OBJECT) ? t.set : 0;
 }
 
 // Recompute the shortcut and publish it. Both halves are non-owning: the
@@ -890,13 +889,14 @@ inline void _jit_multifn_refresh_mono(JitClosure* c) {
         d->mono = nullptr;
       } else {
         for (const auto& t : m.param_types) {
-          const int8_t tag = t.empty() ? -1 : _jit_tag_exactly_matching(t);
-          if (!t.empty() && tag < 0) {
+          const CulebraTagSet tags =
+              t.empty() ? 0 : _jit_tags_exactly_matching(t);
+          if (!t.empty() && !tags) {
             d->mono = nullptr;
             d->mono_tags.clear();
             break;
           }
-          d->mono_tags.push_back(tag);
+          d->mono_tags.push_back(tags);
         }
       }
     }
@@ -916,8 +916,9 @@ inline bool _jit_mono_admits(const JitMultifnDispatcher& d, int64_t n_args,
   if (d.mono_tags.empty()) return true;
   if (static_cast<size_t>(n_args) != d.mono_tags.size()) return false;
   for (int64_t i = 0; i < n_args; ++i) {
-    const int8_t want = d.mono_tags[static_cast<size_t>(i)];
-    if (want >= 0 && args[i].tag != want) return false;
+    const CulebraTagSet want = d.mono_tags[static_cast<size_t>(i)];
+    if (want && !_culebra_tag_set_has(want, static_cast<int8_t>(args[i].tag)))
+      return false;
   }
   return true;
 }
@@ -2078,9 +2079,11 @@ extern "C" CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_ufcs_takes(
       _jit_unwrap_bound_method(reinterpret_cast<JitClosure*>(cand_data));
   if (const auto* rec = _jit_dispatcher_record(cls)) {
     // The lone overload — the plain `fn name` — asks no table, and one whose
-    // annotation names this very tag asks no matcher either.
+    // annotation's tags hold this very tag asks no matcher either.
     if (const auto* m = rec->mono) {
-      if (!rec->mono_tags.empty() && rec->mono_tags[0] == recv_tag) return true;
+      if (!rec->mono_tags.empty() &&
+          _culebra_tag_set_has(rec->mono_tags[0], recv_tag))
+        return true;
       return m->param_types.empty() || takes(m->param_types[0]);
     }
     for (const auto& m : rec->methods)

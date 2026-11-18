@@ -3846,9 +3846,9 @@ inline bool is_error_kind_name(std::string_view name) {
 
 // --- Multimethod dispatch (shared between interp and JIT) ---
 
-// The names of the built-in types (rt's _culebra_primitive_type_tag keys
-// the same set to their tags). As a parameter's annotation such a name
-// takes only its own values, whatever a class or variant is called.
+// The names of the built-in types (rt's _culebra_type_tags keys the same set
+// to their tags). As a parameter's annotation such a name takes only its own
+// values, whatever a class or variant is called.
 inline bool is_builtin_type_name(std::string_view n) {
   return n == "Nil" || n == "Bool" || n == "Long" || n == "Float" ||
          n == "String" || n == "StringView" || n == "Array" ||
