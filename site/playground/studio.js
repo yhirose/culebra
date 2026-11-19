@@ -191,7 +191,9 @@ let lines = 0;     // the editor's lines it carries (studio-program.js)
 let take = 0;
 // Whether what runs the program keeps the WAV of this take, which an analysis
 // reads; and the analysis of it: null, or {state: "running" | "done" |
-// "failed", hz, harmonics, text}, `text` what the analysis printed.
+// "stopped" | "failed", frames, hz, harmonics, text}: the frames worked out so
+// far of `frames` in all (null before the first part), and what the analysis
+// printed. A Stop keeps the frames that have come and asks for no more.
 let kept = false;
 let analysis = null;
 
@@ -209,7 +211,7 @@ const runner = (runnerKind === "socket" ? socketRunner : workerRunner)({
       printed += text;
       showConsole(printed, false);
     } else if (analysis?.state === "running") {
-      analysis.text = (analysis.text ?? "") + text;
+      analysis.text += text;
     }
   },
   done(kind, rc, result) {
@@ -304,7 +306,9 @@ function stop() {
   take++;
   if (rendering) setStatus("stopped — reloading…");
   else if (source) setStatus("stopped");
-  if (rendering || analysis?.state === "running") {
+  const analysing = analysis?.state === "running";
+  if (analysing) analysis.state = "stopped";
+  if (rendering || analysing) {
     rendering = false;
     startRunner();
   }
@@ -322,22 +326,38 @@ loopBox.addEventListener("change", () => {
 // --- the harmonics --------------------------------------------------------------
 //
 // Worked out when the harmonics are shown and the runner keeps a WAV with none
-// worked out yet: after a Play, or on switching to them.
+// worked out yet: after a Play, or on switching to them. It comes a part at a
+// time from the start, each part twice the last, so the first frames are
+// there soon after the sound starts and the rest stay ahead of it.
+
+const FIRST_PART = 50;  // frames
 
 function analyse() {
   if (view !== "harmonics" || !kept || analysis) return;
-  analysis = { state: "running" };
-  runner.run(buildAnalysis(runner.out), "analysis");
+  analysis = { state: "running", frames: null, hz: [], harmonics: [], text: "" };
+  analysePart(0, FIRST_PART);
   update();
   draw();
 }
 
+function analysePart(from, to) {
+  runner.run(buildAnalysis(runner.out, from, to), "analysis");
+}
+
 function analysed(rc, result) {
   if (analysis?.state !== "running") return;  // dropped by a Play or a Stop
-  const failed = rc !== 0 || !result;
-  // Its error under the code, as a Play's is: the graph has no room for it.
-  if (failed) showConsole(analysis.text ?? "", true);
-  analysis = failed ? { state: "failed" } : { state: "done", hz: result.hz, harmonics: result.harmonics };
+  if (rc !== 0 || !result) {
+    // Its error under the code, as a Play's is: the graph has no room for it.
+    showConsole(analysis.text, true);
+    analysis = { state: "failed" };
+  } else {
+    analysis.frames = result.frames;
+    analysis.hz.push(...result.hz);
+    analysis.harmonics.push(...result.harmonics);
+    const next = analysis.hz.length;
+    if (next < result.frames) analysePart(next, next + 2 * result.hz.length);
+    else analysis.state = "done";
+  }
   update();
   draw();
 }
@@ -635,13 +655,15 @@ function drawHarmonics(t) {
     g.fillStyle = colors.label;
     g.fillText(text, left + (w - left) / 2, base / 2);
   };
-  const done = analysis?.state === "done" && t !== null;
-  const at = done ? Math.min(analysis.hz.length - 1, Math.round(t / FRAME_SECONDS)) : -1;
+  // The frame at the playhead, when its part has come.
+  const at = analysis?.frames && t !== null ? Math.min(analysis.frames - 1, Math.round(t / FRAME_SECONDS)) : -1;
+  const come = at >= 0 && at < analysis.hz.length;
   if (rendering) say("rendering…");
-  else if (analysis?.state === "running") say("analysing…");
   else if (analysis?.state === "failed") say("the analysis failed");
-  else if (!done) say("Play a sound to see its harmonics");
-  else if (at < 0 || analysis.hz[at] === null) say("no pitch");
+  else if (!come) {
+    say({ running: "analysing…", stopped: "stopped" }[analysis?.state] ?? "Play a sound to see its harmonics");
+  }
+  else if (analysis.hz[at] === null) say("no pitch");
   else {
     const hz = analysis.hz[at];
     pitchEl.textContent = `${hz.toFixed(1)} Hz · ${noteOf(hz)}`;

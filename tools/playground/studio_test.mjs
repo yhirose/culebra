@@ -199,12 +199,17 @@ const broken = "let {saw} = Synth\n\nlet y = Math.abss(1)\nsaw(110.0)\n";
 // rounding leaves: the pitch's last digits differ between the wasm's libm and
 // the native one's.
 
+// The analysis of the WAV the last Play left, of frames `from` up to `to`.
+async function analysed(from = 0, to = null) {
+  const { text, failed, bytes } = await runWasm(ANALYSIS_ENTRY, ANALYSIS_OUT, buildAnalysis("file", from, to));
+  assert.equal(failed, false, text);
+  return JSON.parse(bytes.toString());
+}
+
 async function analyse(source, seconds) {
   const p = await play(source, null, seconds);
   assert.equal(p.failed, false, p.text);
-  const { text, failed, bytes } = await runWasm(ANALYSIS_ENTRY, ANALYSIS_OUT, buildAnalysis());
-  assert.equal(failed, false, text);
-  return { wav: p.wav, ...JSON.parse(bytes.toString()) };
+  return { wav: p.wav, ...(await analysed()) };
 }
 
 // The same frames pitched, the pitches to 0.01 Hz and the levels to 0.1 dB.
@@ -231,6 +236,17 @@ const sawAnalysis = await analyse("Synth.saw(220.0) * 0.5", 0.5);
   // A saw's k-th harmonic is 1/k of its first: 6.0 and 9.5 dB under it.
   assert.ok(Math.abs(h[1] - h[0] + 6.02) < 0.3, `harmonic 2 at ${h[1] - h[0]} dB`);
   assert.ok(Math.abs(h[2] - h[0] + 9.54) < 0.3, `harmonic 3 at ${h[2] - h[0]} dB`);
+}
+{
+  // The page asks for it a part at a time; the parts read the sound on either
+  // side of them, so together they are the whole read at once (a note whose
+  // pitch and level move, so that what a part's edge cuts off would show).
+  const whole = await analyse("Synth.saw(Synth.hz(57.0 + Synth.sine(5.0) * 0.5)) * Synth.perc(0.01, 1.0) * 0.3", 1.2);
+  assert.equal(whole.frames, whole.hz.length);
+  const parts = [await analysed(0, 50), await analysed(50, 90), await analysed(90)];
+  assert.ok(parts.every((p) => p.frames === whole.frames));
+  assert.deepEqual(parts.flatMap((p) => p.hz), whole.hz);
+  assert.deepEqual(parts.flatMap((p) => p.harmonics), whole.harmonics);
 }
 {
   // Harmonics past 0.45 of the rate read nothing, which is DB_FLOOR rather

@@ -44,8 +44,10 @@ When the lower graph shows the harmonics, the page then sends a second
 program on the same connection, its `kind` `"analysis"`. The runner keeps the
 last WAV a run rendered and passes it to that program as its argument
 (`Sys.argv[0]`); the program's value is the pitch and the harmonics' levels
-every 10 ms, which go to the page as JSON. A Play sent while it runs reconnects
-first, so the analysis is dropped as a Stop drops a run.
+every 10 ms, which go to the page as JSON. The page asks for them a part of
+the sound at a time from its start, each part twice the last, so the first
+ones arrive soon after the sound starts. A Play sent while they come
+reconnects first, so the analysis is dropped as a Stop drops a run.
 
 ## Limits
 
