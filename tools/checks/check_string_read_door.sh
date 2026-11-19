@@ -40,11 +40,14 @@ ALLOWED = [
     ('include/stdlib/bindings.h', 'take_path'),
     ('include/stdlib/bindings.h', '_jit_peg_each_callback'),
 ]
-STRING_ONLY = re.compile(r'(?:==|!=)\s*(?:::)?TAG_STRING\b')
-# A value is a struct, so its payload is `.data`; a byte buffer's `->data`
-# is not one.
+STRING_ONLY = re.compile(
+    r'(?:==|!=|\bcase)\s*(?:::)?TAG_STRING\b|\bTAG_STRING\s*(?:==|!=)')
+# A payload is a value's `.data` (through `->` to an element too) or a
+# native's bare `data` parameter; a byte buffer's `e->data` and `buf.data()`
+# are not one.
 CSTR_READ = re.compile(
-    r'reinterpret_cast\s*<\s*const\s+char\s*\*\s*>\s*\(\s*[\w\[\]]+\.data\s*\)')
+    r'reinterpret_cast\s*<\s*const\s+char\s*\*\s*>\s*'
+    r'\(\s*(?:[\w\[\]>-]*\.)?data\s*\)')
 
 
 def offends(stmt):
@@ -59,6 +62,12 @@ door_gate.require_scanner(
 door_gate.require_scanner(
     LABEL, offends,
     'std::string path(_str_sv(\n    reinterpret_cast<const char*>(a[0].data)));')
+door_gate.require_scanner(
+    LABEL, offends, 'switch (v.tag) {\n  case TAG_STRING: return f(v);')
+door_gate.require_scanner(
+    LABEL, offends, 'if (TAG_STRING == tag) return f(tag, data);')
+door_gate.require_scanner(
+    LABEL, offends, 'auto s = reinterpret_cast<const char*>(data);')
 
 text = door_gate.sources(ROOTS)
 spans, unbalanced = door_gate.listed_spans(text, ALLOWED)
@@ -67,13 +76,15 @@ bad = [(p, n, s) for p in sorted(text)
        if not door_gate.enclosing(spans, p, n)]
 bad += [(p, 0, 'braces do not balance once blanked') for p in unbalanced]
 
+BINDINGS = 'include/stdlib/bindings.h'
+WRAP = 'include/interop/wrap.h'
+code = {p: door_gate.blank(text[p]) for p in (BINDINGS, WRAP)}
 body = lambda path, name: next(
-    (door_gate.blank(text[path])[s[3]:s[4]] for s in
-     door_gate.function_spans(door_gate.blank(text[path]), name)), '')
+    (code[path][s[3]:s[4]] for s in door_gate.function_spans(code[path], name)),
+    '')
 # Bodies are blanked, so a name inside a string literal does not count.
 population = [(f'{name} defined in {path}', bool(spans[(path, name)]))
               for path, name in ALLOWED]
-BINDINGS = 'include/stdlib/bindings.h'
 population += [
     ('require_sv takes a StringView',
      'TAG_STRINGVIEW' in body(BINDINGS, 'require_sv')),
@@ -81,7 +92,7 @@ population += [
      'TAG_STRINGVIEW' in body(BINDINGS, '_jit_handle_req_string')),
     ("wrap's argument check asks the type matcher",
      '_culebra_value_matches_type' in
-     body('include/interop/wrap.h', 'jit_arg_matches')),
+     body(WRAP, 'jit_arg_matches')),
 ]
 
 door_gate.report(

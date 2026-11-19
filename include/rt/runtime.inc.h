@@ -1590,11 +1590,11 @@ inline bool _culebra_type_matches_single(int8_t tag, int64_t data,
   // A built-in type's name means that type, whatever a program calls its own
   // classes, enums, variants or traits: only its tags pass, as a typed
   // field's check has it and as an annotated parameter's ArgTag tells the
-  // code after the check. `Function`, whose tags are not the whole answer,
-  // also takes a callable instance (Option A: structural callable,
-  // proto-gated so a dict is not one).
+  // code after the check. `Function` also takes a callable instance (Option
+  // A: structural callable, proto-gated so a dict is not one).
   if (auto t = _culebra_type_tags(expected))
-    return t.has(tag) || (!t.exact && _culebra_has_call_operator(tag, data));
+    return t.has(tag) ||
+           (t.has(TAG_FUNC) && _culebra_has_call_operator(tag, data));
   // `Enum.Variant`: both halves, so nothing but that enum's variant
   // satisfies it. Reached from an annotation and, through
   // culebra_runtime_ctor_matches, from a constructor pattern alike.

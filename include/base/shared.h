@@ -3886,11 +3886,17 @@ struct ArgType {
   bool object = false;
 };
 
-// Specificity score for a (param_type, arg) pair: the tier (higher = more
-// specific, -1 = no match) and, where a union demoted its matched
-// alternative to the union tier, that alternative's own tier (`within`;
-// 0 otherwise). multifn_pick compares tiers, and reads `within` only to
-// separate two overloads the tiers and arities leave even.
+// A (param_type, arg) pair's score: the tier (higher = more specific, -1 =
+// no match) and, where a union demoted its matched alternative to the union
+// tier, that alternative's own tier (`within`; 0 otherwise).
+struct DispatchScore {
+  int tier = -1;
+  int within = 0;
+};
+
+// Specificity score for a (param_type, arg) pair. multifn_pick compares
+// tiers, and reads `within` only to separate two overloads the tiers and
+// arities leave even.
 //
 // See the tier table below for the order. A concrete `Long` param wins
 // over `Long | Float`; `Array<Long>` wins over bare `Array` when both
@@ -3903,11 +3909,6 @@ struct ArgType {
 // Generic param (`Array<Long>`) matches an arg whose type label
 // equals the outer name (`Array`) — element info isn't on the arg
 // side in the MVP, so it tie-breaks only against bare `Array`.
-struct DispatchScore {
-  int tier = -1;
-  int within = 0;
-};
-
 inline DispatchScore multifn_specificity(std::string_view param_type,
                                          ArgType arg) {
   // Tiers (×2 from the pre-trait era so trait can slot strictly
@@ -4143,11 +4144,16 @@ inline int64_t multifn_pick(const std::vector<Entry>& methods,
       have_best = true;
       continue;
     }
-    bool better_any = false, worse_any = false;
-    for (size_t p = 0; p < arg_types.size(); p++) {
-      if (score[p].tier > best_score[p].tier) better_any = true;
-      if (score[p].tier < best_score[p].tier) worse_any = true;
-    }
+    // Whether this entry beats the best on some argument, and loses on some,
+    // by one field of their scores.
+    auto compare = [&](int DispatchScore::*field) {
+      bool better = false, worse = false;
+      for (size_t p = 0; p < arg_types.size(); p++) {
+        if (score[p].*field > best_score[p].*field) better = true;
+        if (score[p].*field < best_score[p].*field) worse = true;
+      }
+      return std::pair{better, worse};
+    };
     auto take = [&] {
       best_idx = i;
       best_score = score;
@@ -4158,33 +4164,29 @@ inline int64_t multifn_pick(const std::vector<Entry>& methods,
     // Even on every tier and on arity: what a union's matched alternatives
     // scored on their own is compared the way the tiers were (`E.A?` over
     // `E?`), and only what it leaves even too is a tie.
-    auto even = [&] {
-      bool better = false, worse = false;
-      for (size_t p = 0; p < arg_types.size(); p++) {
-        if (score[p].within > best_score[p].within) better = true;
-        if (score[p].within < best_score[p].within) worse = true;
-      }
+    auto settle_by_within = [&] {
+      auto [better, worse] = compare(&DispatchScore::within);
       if (better && !worse) take();
       else if (!better && !worse) ambiguous = true;
     };
+    auto [better_any, worse_any] = compare(&DispatchScore::tier);
     if (better_any && !worse_any) {
       take();
     } else if (!better_any && !worse_any) {
       // Equal type-specificity. Break the tie by, in order: a fixed-arity
       // entry beats a variadic one (`*args` is the fallback); among two
       // variadic entries, the one with more regular params is more
-      // specific. Anything still even is genuinely ambiguous.
+      // specific. What is still even goes to settle_by_within.
       if (best_variadic && !variadic) {
         take();
       } else if (best_variadic && variadic) {
         if (params.size() > best_regular) take();
-        else if (params.size() == best_regular) even();
+        else if (params.size() == best_regular) settle_by_within();
       } else if (!best_variadic && !variadic) {
         // Both fixed-arity, equal type-specificity: prefer the entry that
-        // fills fewer params by default (the more exact arity match). Equal
-        // regular counts are genuinely ambiguous.
+        // fills fewer params by default (the more exact arity match).
         if (params.size() < best_regular) take();
-        else if (params.size() == best_regular) even();
+        else if (params.size() == best_regular) settle_by_within();
       }
     }
   }

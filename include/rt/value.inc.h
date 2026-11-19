@@ -1672,10 +1672,11 @@ constexpr bool _is_refcounted_value(const JitValue& v) {
 
 // The tags of the values a built-in type's name takes: its own, and those of
 // the built-in types that are part of it (culebra::builtin_supertype_of: a
-// StringView is a String). `exact` when the tags are the whole answer, so a tag test can stand in for the type check — every
-// name's but `Function`'s, which a class instance with a `__call__` also
-// satisfies (_culebra_type_matches_single). Empty for any other name: `Any`,
-// traits, user classes. The generic-strip and the Any / union / non-primitive
+// StringView is a String). `exact` when the tags are the whole answer, so a
+// tag test can stand in for the type check — every name's but `Function`'s,
+// which a class instance with a `__call__` also satisfies
+// (_culebra_type_matches_single). Empty for any other name: `Any`, traits,
+// user classes. The generic-strip and the Any / union / non-primitive
 // policies stay with the callers. base's is_builtin_type_name holds the same
 // names for the dispatch scorer, which cannot see TAG_*.
 struct CulebraTypeTags {
@@ -1694,17 +1695,37 @@ inline constexpr std::pair<std::string_view, int8_t> kCulebraBuiltinTypeTags[] =
      {"Array", TAG_ARRAY},   {"Object", TAG_OBJECT},
      {"Function", TAG_FUNC}, {"Tuple", TAG_TUPLE},
      {"Set", TAG_SET},       {"Tensor", TAG_TENSOR}};
+static_assert(std::ranges::all_of(kCulebraBuiltinTypeTags,
+                                  [](auto e) { return e.second < 16; }),
+              "a CulebraTagSet holds tags under 16");
 
-constexpr CulebraTypeTags _culebra_type_tags(std::string_view tn) {
-  CulebraTypeTags out;
-  for (auto [name, tag] : kCulebraBuiltinTypeTags) {
-    auto whole = culebra::builtin_supertype_of(name);
-    if (name == tn || (!whole.empty() && whole == tn))
-      out.set |= _culebra_tag_bit(tag);
+// Each name's whole set, settled at compile time, so the lookup a type check
+// makes at run time is the name compare alone.
+constexpr auto _culebra_builtin_type_tag_sets() {
+  std::array<std::pair<std::string_view, CulebraTagSet>,
+             std::size(kCulebraBuiltinTypeTags)>
+      out{};
+  for (size_t i = 0; i < out.size(); ++i) {
+    auto name = kCulebraBuiltinTypeTags[i].first;
+    out[i].first = name;
+    for (auto [part, tag] : kCulebraBuiltinTypeTags)
+      if (part == name || culebra::builtin_supertype_of(part) == name)
+        out[i].second |= _culebra_tag_bit(tag);
   }
-  out.exact = out.set != 0 && tn != "Function";
   return out;
 }
+inline constexpr auto kCulebraBuiltinTypeTagSets =
+    _culebra_builtin_type_tag_sets();
+
+constexpr CulebraTypeTags _culebra_type_tags(std::string_view tn) {
+  for (auto [name, set] : kCulebraBuiltinTypeTagSets)
+    if (name == tn) return {set, tn != "Function"};
+  return {};
+}
+static_assert(std::ranges::all_of(kCulebraBuiltinTypeTags, [](auto e) {
+  auto whole = culebra::builtin_supertype_of(e.first);
+  return whole.empty() || _culebra_type_tags(whole).has(e.second);
+}), "a built-in type's supertype is a built-in type that takes its tag");
 
 inline const culebra::FieldAnnotation*
 culebra::ShapeRegistry::intern_annotation(std::string_view text) {

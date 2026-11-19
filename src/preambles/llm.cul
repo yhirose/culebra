@@ -1095,8 +1095,7 @@ let _llm_module = fn () {
           {content: _describe(e), is_error: true}
         },
         verdict == false => {content: "the call was not approved", is_error: true},
-        verdict is String =>
-          {content: to_string(verdict), is_error: true},
+        verdict is String => {content: to_string(verdict), is_error: true},
         _ => __raise("TypeError",
                "LLM: approve: must answer true, false or a String, not {type_of(verdict)}"),
       }

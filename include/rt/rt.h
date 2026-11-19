@@ -34,6 +34,8 @@
 #include <unicodelib.h>
 #include <unicodelib_encodings.h>
 
+#include <algorithm>
+#include <array>
 #include <atomic>
 #include <bit>
 #include <cassert>

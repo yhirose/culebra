@@ -958,10 +958,10 @@ inline int64_t bmeth_unary_op(BMeth id) {
 // two-way answer outright — a scalar cannot hold members at all ("expected
 // Object, Array, or Tensor"), anything else simply lacks the method ("expected
 // Function, got Nil") — instead of asking the tables again.
-using BRecvMask = uint16_t;
+using BRecvMask = CulebraTagSet;
 
 inline constexpr BRecvMask bmeth_tag_bit(int8_t tag) {
-  return static_cast<BRecvMask>(1u << tag);
+  return _culebra_tag_bit(tag);
 }
 
 inline constexpr BRecvMask kRecvStrLike =
@@ -1533,7 +1533,7 @@ inline int32_t bmeth_spec_index(const BMethSpec& s) {
 // Whether `tag` is a receiver the gate lets through.
 inline bool bmeth_receiver_ok(BRecvMask recv, int8_t tag) {
   if (recv == kRecvAny) return true;  // no gate: every receiver resolves it
-  return tag >= 0 && tag < 16 && (recv & bmeth_tag_bit(tag)) != 0;
+  return _culebra_tag_set_has(recv, tag);
 }
 
 // The UFCS gate's answer, executor-side. `tags` is the operand the compiler baked from
@@ -1681,7 +1681,10 @@ inline constexpr BRecvMask bmeth_param_tags(BParam p) {
     case BParam::Long: return bmeth_tag_bit(TAG_LONG);
     case BParam::Array: return bmeth_tag_bit(TAG_ARRAY);
     case BParam::StrLike: return kRecvStrLike;
-    case BParam::String: return _culebra_type_tags("String").set;
+    case BParam::String: {
+      constexpr BRecvMask kString = _culebra_type_tags("String").set;
+      return kString;
+    }
     case BParam::Set: return kRecvSet;
     case BParam::Tensor: return kRecvTensor;
     case BParam::LongOpt:
@@ -14744,7 +14747,7 @@ class Compiler {
     if (tn.find('<') != std::string_view::npos)
       tn = culebra::parse_generic_head(tn).outer;
     auto t = _culebra_type_tags(tn);
-    for (int8_t tag = 0; t && tag < 16; ++tag)
+    for (int8_t tag = 0; tag < 16; ++tag)
       if (t.has(tag)) skip.push_back(emit(Op::JumpIfTag, subj, 0, tag));
   }
 
