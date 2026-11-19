@@ -8,5 +8,6 @@
   - 最初は`JitAny`で持つ形で書き、rc-disciplineの上限を13→14に上げた。1本目のci/が`check-borrowed-closure-door`（`check-generated`の中で、`just check`の外）で落ち、そこに「呼び出しを越えて一定の間持つクロージャは`_jit_keep_closure`」という決まりが書かれていた。それに合わせて組み直し、上限は13のまま、キャストのカウントは17→15、gc-pin-doorにPEGの2関数を登録。
   - 共通化のレビューは`_jit_keep_closure`を「HTTPの中にあり、ピンが余分」として退けていた。ゲートの決まりを読んでいれば最初から選べた。C++を変えたら、`just check`だけでなく`check-generated`も手元で回す。
 - userの指摘：ツールの合間の一言を英語で書き続け、「日本語で会話して」と2回言われた（メモリfeedback_language_japaneseに追記）。
-- 後処理：just check、check-generated、gc-hazard、PEGのテスト4本の両レーン、修正前のビルドで5つの確認がそれぞれ落ちること、/simplify、ci/ 2本。
+- 後処理：just check、check-generated、gc-hazard、PEGのテスト4本の両レーン、修正前のビルドで5つの確認がそれぞれ落ちること、/simplify、ci/ 3本。
+- /simplifyの回し漏れ：/simplifyは組み直す前の`JitAny`版にしか回しておらず、userに「しましたか？」と聞かれて最終版に回した。採った4件（フックを読んで持つ処理を`_jit_peg_keep_hook`の1か所に、gc-pin-doorの登録も1件に、テストを`taken_in_parse`に）はa58ba8afで、ci/の3本目が要った。CIの失敗で組み直したら、それは新しい差分なので/simplifyも回し直す。
 - テスト時間：test_peg_callbacks.culはexecutorで変わらず、`--jit`で約+0.5秒（高負荷のマシンで約2.9→3.4秒）。
