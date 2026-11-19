@@ -354,7 +354,7 @@ These are the built-in value types. `type_of` also answers `'Range'`,
 | `Long`       | 64-bit signed integer                                                                |
 | `Float`      | IEEE 754 binary64 (double precision)                                                 |
 | `String`     | Immutable heap-allocated byte string                                                 |
-| `StringView` | Immutable zero-copy borrow of another string's bytes, produced by `slice` / `split` / `view` (§18.1) |
+| `StringView` | Immutable zero-copy borrow of another string's bytes, produced by `slice` / `split` / `view`; a `String` in its other representation (§18.1) |
 | `Array`      | Mutable ordered collection of values                                                 |
 | `Object`     | Mutable map of hashable keys to values (String keys go through a fast shape path)    |
 | `Function`   | Closure (function pointer + captures)                                                |
@@ -1841,7 +1841,7 @@ Semantics:
   fixed-width spellings of §21 (`Float32`, `Int32`, `Byte`, ...), each of
   which stands for one of those three — admits its own values alone. Any
   other annotation — a class, an enum, a trait, a union, an optional
-  (`T?`), `Array`, `Object`, `Function` — is checked by the rule a
+  (`T?`), `String`, `Array`, `Object`, `Function` — is checked by the rule a
   parameter's is, except that `nil` always passes: it is such a field's
   zero above, so a field declared `Car` admits `nil` as `Car?` would. The
   check covers every way a value reaches the field: the declaration's own
@@ -1867,13 +1867,11 @@ Semantics:
   g.car = 'a string'   # !! field 'car' expects Car
   ```
 
-  **`String` is unchecked**, and so is any annotation that admits it
-  (`String?`, `String | Long`) or admits anything (`Any?`), as is a field
-  with no annotation at all.
-  `String` has a second spelling: `StringView` (§18.1) is also a string
-  value, and it is what `slice`, `split`, `lines` and `for` over a string
-  hand back. A `name: String` field therefore accepts a `StringView` —
-  and anything else — and a read of it asks the value what it is.
+  An annotation that admits anything (`Any`, `Any?`) is unchecked, as is
+  a field with no annotation at all. A `name: String` field takes a
+  `StringView` (§18.1), the representation `slice`, `split`, `lines` and
+  `for` over a string hand back, as every `String` annotation does, and
+  refuses `42`.
 
   `@packable` classes (§21) additionally read a field's declared type to
   compute their fixed byte layout, and `@value` classes to check that
@@ -3657,9 +3655,16 @@ enforce their invariant at three specific runtime points:
     Nil  Bool  Long  Float  String  StringView  Array  Tuple  Set
     Object  Function  Tensor  Any
 
-`Any` always matches. Unknown type names fail the check and raise
-`type error`. Class names declared with `class C { ... }` are also
-valid annotations and accept any instance of that class. An enum name
+`Any` always matches. `String` accepts both representations of a
+string: an owning `String` and a `StringView` (§18.1), which is what
+`slice`, `split`, `lines` and `for` over a string hand back. This holds
+for every check — a parameter (a stdlib function's too), a return type,
+`let`, a field, `is` and a type pattern. `StringView` accepts only a
+view, and `type_of` names the representation.
+
+Unknown type names fail the check and raise `type error`. Class names
+declared with `class C { ... }` are also valid annotations and accept
+any instance of that class. An enum name
 accepts any of its variants, a variant name accepts that variant of any
 enum, and the qualified `Enum.Variant` accepts only that enum's — see
 "Sum types".
@@ -5824,8 +5829,22 @@ inspect(v.to_string())  # => 'world'
 ```
 
 Use `.to_string()` when you need an owning `String` (storing in a
-data structure, returning from a long-lived function, etc.). Most
-APIs declared with `StringLike` accept either flavor directly.
+data structure, returning from a long-lived function, etc.).
+
+A `StringView` is a `String`: every `String` annotation accepts one (a
+parameter, a stdlib function's included, a return type, `let`, a
+field), and so do `x is String` and a `s: String` pattern. Only
+`type_of`, which answers `'StringView'`, and an annotation or pattern
+naming `StringView`, which accepts a view alone, tell the two apart. In a
+multimethod a `StringView` overload outranks a `String` one for a view
+(§20).
+
+```culebra
+fn initial(s: String) -> String { s.slice(0, 1) }
+let word = 'hello world'.split(' ')[1]
+inspect(word is String)  # => true
+inspect(initial(word))   # => 'w'
+```
 
 **Known limitation** (cycle B): calling `.contains()` / `.starts_with()`
 / `.ends_with()` etc. on a `StringView` materializes a temporary cstr
@@ -6830,16 +6849,22 @@ of the argument yield a specificity score:
 
 Three more tiers sit between the `Object` row and an exact match,
 from least to most specific: a trait the argument conforms to, a union
-(`Ok | Err`), and the enum name of a variant argument (`Result`). Two
-sit above an exact match: a qualified variant (`Result.Ok` beats a bare
-`Ok`), then a generic that carries type arguments (`Array<Long>` beats
-a bare `Array`). `T?` scores at the union tier whatever `T` would score
-above it, so a bare `T` always wins over `T?`.
+(`Ok | Err`), and the type the argument's type is part of — the enum
+name of a variant argument (`Result`), `String` for a `StringView`
+argument. Two sit above an exact match: a qualified variant
+(`Result.Ok` beats a bare `Ok`), then a generic that carries type
+arguments (`Array<Long>` beats a bare `Array`). `T?` scores at the union
+tier whatever `T` would score above it, so a bare `T` always wins over
+`T?`.
 
 The per-argument scores form a tuple. A method is selected when its
 score tuple is **at least as large as the other in every position and
-strictly greater in at least one**. If two tuples compare equal, an
-**ambiguous dispatch** error is raised. If two tuples are
+strictly greater in at least one**. Two tuples that compare equal (with
+the same arity) are compared once more by what each union or `T?`
+alternative scored before it came down to the union tier, so
+`fn f(x: Result.Ok?)` beats `fn f(x: Result?)` for an `Ok`, and
+`fn f(s: StringView?)` beats `fn f(s: String?)` for a view. If they are
+still equal, an **ambiguous dispatch** error is raised. If two tuples are
 incomparable (each wins on some position), the earlier-declared
 method takes precedence.
 

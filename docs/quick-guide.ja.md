@@ -704,7 +704,7 @@ inspect(show('hi'))  # => 'hi'
 エラーにならず値が返るぶん見落としやすいものが3つ:
 
 ```culebra
-# split が返すのは String ではなく StringView。安いが type_of は異なる
+# split が返す StringView は is にも String 引数にも String だが type_of は異なる
 inspect(type_of('a,b'.split(',')[0]))  # => 'StringView'
 
 # 存在しないプロパティは黙って nil
@@ -734,7 +734,7 @@ inspect(match 9 {
 | `ClassName.new(...)` | `ClassName(...)` — `class`定義型は呼び出し可能で、コンストラクタ呼び出しの糖衣になる |
 | `new(x, y) { self.x = x; self.y = y }` | `new(@x, @y) {}` — field parameterはフィールドにも格納する |
 | メソッド本体の`self.count += 1`、`self.items.push(v)` | `@count += 1`、`@items.push(v)` — `@name`は`self.name`。オブジェクト自身を渡すときは`self`のまま（`f(self)`）。メソッドの外の`@name`は`NameError` |
-| `type_of(x) == "Long"`、`type_of(x) == "String" \|\| type_of(x) == "StringView"` | `x is Long`、`x is String \| StringView` — 逆は`x !is T`。型パターンなので、`Long?`はnilも通す |
+| `type_of(x) == "Long"`、`type_of(x) == "String" \|\| type_of(x) == "StringView"` | `x is Long`、`x is String` — 逆は`x !is T`。型パターンなので、`Long?`はnilも通す |
 | `f(workers: workers, timeout: timeout)` | `f(workers:, timeout:)` — 値を持つ変数と同名のキーワードは値を省略できる。オブジェクトでは`{x}`が同じ働き |
 | `"a" + x + "b"`（値の前後にリテラル文字列を継ぎ足す） | `"a{x}b"` |
 | `i = i + 1` | `i += 1` |

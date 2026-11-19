@@ -338,7 +338,7 @@ _ = -N(2) * N(3)
 | `Long`      | 64ビット符号付き整数                                           |
 | `Float`     | IEEE 754 binary64（倍精度浮動小数点）                           |
 | `String`    | イミュータブルなヒープ文字列                                      |
-| `StringView`| 他の文字列のバイト列をzero-copyで借用するイミュータブルなビュー。`slice` / `split` / `view`が返す（§18.1） |
+| `StringView`| 他の文字列のバイト列をzero-copyで借用するイミュータブルなビュー。`slice` / `split` / `view`が返す。もう一つの表現の`String`（§18.1） |
 | `Array`     | ミュータブルな順序付きコレクション                                |
 | `Object`    | ハッシュ可能なキーと値のミュータブルな対応（Stringキーはshape経由の高速パス） |
 | `Function`  | クロージャ（関数ポインタ + 捕捉セル）                              |
@@ -1752,7 +1752,7 @@ variable 'self'`になります。送出されるのは本体に入った時点�
   取ります。**スカラ**（`Float`・`Long`・`Bool`、および§21の固定幅の綴り
   `Float32`・`Int32`・`Byte`…。いずれもこの3つのどれかを表します）は
   自分の値だけを受け取ります。それ以外の注釈（クラス、enum、trait、
-  union、オプショナル`T?`、`Array`・`Object`・`Function`）はパラメータと
+  union、オプショナル`T?`、`String`・`Array`・`Object`・`Function`）はパラメータと
   同じ規則で検査しますが、`nil`は常に通ります。`nil`はそうしたfieldの
   上のゼロ値なので、`Car`と宣言したfieldは`Car?`と同じく`nil`を受け取り
   ます。検査は値がfieldに届く経路すべてを覆います: 宣言自身の初期化子、
@@ -1778,13 +1778,10 @@ variable 'self'`になります。送出されるのは本体に入った時点�
   g.car = 'a string'   # !! field 'car' expects Car
   ```
 
-  **`String`は検査されません**。`String`を許す注釈（`String?`・
-  `String | Long`）、何でも許す注釈（`Any?`）、注釈のないfieldも同じ
-  です。`String`には第二の綴り
-  があります: `StringView`（§18.1）も文字列値で、`slice`・`split`・
-  `lines`・文字列に対する`for`が返すのはこちらです。したがって
-  `name: String`のfieldは`StringView`を（そして何でも）受け取り、その読み
-  は値に型を問い合わせます。
+  何でも許す注釈（`Any`・`Any?`）は検査されません。注釈のないfieldも
+  同じです。`name: String`のfieldは、すべての`String`注釈と同じく
+  `StringView`（§18.1。`slice`・`split`・`lines`・文字列に対する`for`が
+  返す表現）を受け取り、`42`は拒みます。
 
   `@packable`クラス（§21）はこれに加えて、fieldの宣言型を固定バイト
   レイアウトの計算に読み、`@value`クラスは全fieldがスカラまたは別の
@@ -3503,7 +3500,14 @@ Culebraは動的型付けで、型注釈は任意です。注釈は以下3つの
     Nil  Bool  Long  Float  String  StringView  Array  Tuple  Set
     Object  Function  Tensor  Any
 
-`Any`は常に一致します。未知の型名は検査失敗で`type error`と
+`Any`は常に一致します。`String`は文字列の両方の表現を受け入れます:
+所有権付きの`String`と、`slice`・`split`・`lines`・文字列に対する
+`for`が返す`StringView`（§18.1）です。これはすべての検査に当てはまり
+ます: パラメータ（stdlibの関数のものも）、戻り値の型、`let`、field、
+`is`、型パターン。`StringView`はviewだけを受け入れ、どちらの表現かは
+`type_of`が答えます。
+
+未知の型名は検査失敗で`type error`と
 なります。`class C { ... }`で宣言したクラス名も有効な注釈で、
 そのインスタンスを受け入れます。enum名はそのenumの全variantを、
 variant名はどのenumのものでも同名variantを、修飾形
@@ -5562,8 +5566,21 @@ inspect(v.to_string())  # => 'world'
 ```
 
 所有権付き`String`が必要な場面 (data structureに格納、長寿命の
-関数から返す等) では`.to_string()`を呼びます。多くのAPIが
-`StringLike`で宣言されており、どちらの型もそのまま受けます。
+関数から返す等) では`.to_string()`を呼びます。
+
+`StringView`は`String`です: すべての`String`注釈（パラメータ。stdlibの
+関数のものも含む。戻り値の型、`let`、field）がviewを受け取り、
+`x is String`と`s: String`パターンも同じです。2つを区別するのは
+`'StringView'`と答える`type_of`と、viewだけを受け取る`StringView`を
+書いた注釈・パターンだけです。multimethodでは、viewに対して
+`StringView`のoverloadが`String`のものに勝ちます（§20）。
+
+```culebra
+fn initial(s: String) -> String { s.slice(0, 1) }
+let word = 'hello world'.split(' ')[1]
+inspect(word is String)  # => true
+inspect(initial(word))   # => 'w'
+```
 
 **既知の制約** (cycle B): `StringView`に対して`.contains()` /
 `.starts_with()` / `.ends_with()`等を呼ぶと、呼び出しごとに一時的な
@@ -6549,16 +6566,20 @@ MULTIFN_DECL <- 'fn' IDENTIFIER PARAMETERS RETURN_TYPE? BLOCK
 | それ以外           | —                  | 不一致 |
 
 `Object`と厳密一致の間にも段があり、粗いほうから順に、引数が
-conformするtrait、union（`Ok | Err`）、variant引数の親enum名
-（`Result`）の3つです。厳密一致より上は2つで、修飾したvariant
+conformするtrait、union（`Ok | Err`）、引数の型を含む型（variant引数の
+親enum名`Result`、`StringView`引数に対する`String`）の3つです。厳密一致
+より上は2つで、修飾したvariant
 (`Result.Ok`は素の`Ok`に勝つ)、それから型引数まで書いたgeneric
 (`Array<Long>`は素の`Array`に勝つ)。`T?`は`T`が本来取るスコアを
 unionの段まで下げるので、素の`T`が常に`T?`に勝ちます。
 
 引数ごとのスコアからなるタプルを比較し、すべての要素で **他方
 以上、少なくとも1要素で他方より大** の関係を満たすメソッドが
-あればそれを採用します。スコアタプルが完全に一致する場合は
-**ambiguous dispatch** エラーを投げます。比較不能（互いに勝つ
+あればそれを採用します。スコアタプルが（arityも含めて）完全に一致する
+場合は、unionや`T?`の選択肢がunionの段まで下がる前のスコアでもう一度
+比べます。`Ok`に対して`fn f(x: Result.Ok?)`が`fn f(x: Result?)`に勝ち、
+viewに対して`fn f(s: StringView?)`が`fn f(s: String?)`に勝つのはこのため
+です。それでも一致する場合は**ambiguous dispatch** エラーを投げます。比較不能（互いに勝つ
 要素がある）な場合は、先に宣言されたメソッドが優先されます。
 
 ```

@@ -528,11 +528,12 @@ inspect(['a', 'b', 'c'].join('-'))  # => 'a-b-c'
 ### 4.4 `StringView`、`StringLike`、graphemes() lazy
 
 `.slice()` / `.split()` / `.view()`は`StringView`を返します。これは元の文字列のバイト列へのzero-copyな借用で、
-元の束縛がスコープを抜けても共有オーナーが生存させ続けます。`StringLike`型のパラメータは`String`と`StringView`の両方を受け付けるので、
-読むだけのヘルパーがcopyを強制することはありません。
+元の束縛がスコープを抜けても共有オーナーが生存させ続けます。`StringView`はもう一つの表現の`String`で、
+`String`型のパラメータも`is String`も`String`型のfieldも両方を受け付けるので、読むだけのヘルパーがcopyを強制することはありません。
+どちらの表現かは`type_of`が答えます。`StringLike`は自分のクラスもconformできるtraitです。
 
 ```culebra
-print_first_grapheme = fn (s: StringLike) {
+print_first_grapheme = fn (s: String) {
   for g in s.graphemes() {
     inspect(g)
     break

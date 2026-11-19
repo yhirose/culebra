@@ -588,11 +588,14 @@ See [language.md §18.1](language.md) for the full method list.
 `.slice()`, `.split()`, and `.view()` return a `StringView` — a
 zero-copy borrow into the original string's bytes, kept alive by a
 shared owner even if the original binding goes out of scope. A
-parameter typed `StringLike` accepts either a `String` or a
-`StringView`, so helpers don't force a copy just to read.
+`StringView` is a `String` in its other representation: a parameter
+typed `String` accepts either, as do `is String` and a `String` field,
+so helpers don't force a copy just to read. `type_of` names the
+representation, and `StringLike` is the trait a class of your own can
+conform to as well.
 
 ```culebra
-print_first_grapheme = fn (s: StringLike) {
+print_first_grapheme = fn (s: String) {
   for g in s.graphemes() {
     inspect(g)
     break
