@@ -3,8 +3,7 @@
 # every write surface: a literal name, a computed key, a method's own
 # `self.x`, and the constructor's prologue. A scalar — `Float`, `Long`,
 # `Bool` — is decided by the value's tag; any other annotation by the rule a
-# parameter's is, nil passing as the field's zero. `String` alone stays
-# unchecked: it picks the field's zero value and nothing more.
+# parameter's is, nil passing as the field's zero.
 # The read side is in test_typed_fields_read.cul.
 # Run: ./build/culebra tests/test_typed_fields.cul
 #      ./build/culebra --jit tests/test_typed_fields.cul
@@ -134,16 +133,16 @@ class Order {
 assert_eq(Order().a, 1)
 assert_eq(Order().b, 2)
 
-# --- `String` picks the zero value and checks nothing ---
+# --- `String` takes either representation, and nothing else ---
 #
-# It names a type the annotation vocabulary knows, and the field starts as
-# `''`, but it is unchecked, because `StringView` is a second spelling of
-# the same thing and `slice` / `split` / `lines` / `for` over a string all
-# produce it.
+# The field starts as `''`. A StringView is a String (§18.1), so what
+# `slice` / `split` / `lines` / `for` over a string produce passes; a Long
+# does not.
 
 assert_eq(v.s, '')
-v.s = 42
-assert_eq(v.s, 42)
+assert_eq(try { v.s = 42 } catch e { e.message },
+          "type error: field 's' expects String")
+assert_eq(v.s, '')
 v.s = 'hello world'.slice(0, 5)
 assert_eq(v.s, 'hello')
 assert_eq(type_of(v.s), 'StringView')
@@ -174,7 +173,7 @@ let refused_opt = try {
 } catch e {
   [e.message, e.line]
 }
-assert_eq(refused_opt, ["type error: field 'n' expects Long?", 173])
+assert_eq(refused_opt, ["type error: field 'n' expects Long?", 172])
 assert_eq(opt.n, nil)
 
 class Car {
@@ -303,7 +302,7 @@ assert_eq(span_lo(span), 1.5)
 # would turn the write check off for the whole object
 class Mixed {
   keep: Float
-  gone: String
+  gone: Any
   new() {
     self.extra = 1
   }

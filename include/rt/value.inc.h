@@ -1670,8 +1670,9 @@ constexpr bool _is_refcounted_value(const JitValue& v) {
   return _is_refcounted_value(static_cast<int8_t>(v.tag), v.data);
 }
 
-// The tags of the values a built-in type's name takes. `exact` when the tags
-// are the whole answer, so a tag test can stand in for the type check — every
+// The tags of the values a built-in type's name takes: its own, and those of
+// the built-in types that are part of it (culebra::builtin_supertype_of: a
+// StringView is a String). `exact` when the tags are the whole answer, so a tag test can stand in for the type check — every
 // name's but `Function`'s, which a class instance with a `__call__` also
 // satisfies (_culebra_type_matches_single). Empty for any other name: `Any`,
 // traits, user classes. The generic-strip and the Any / union / non-primitive
@@ -1696,8 +1697,11 @@ inline constexpr std::pair<std::string_view, int8_t> kCulebraBuiltinTypeTags[] =
 
 constexpr CulebraTypeTags _culebra_type_tags(std::string_view tn) {
   CulebraTypeTags out;
-  for (auto [name, tag] : kCulebraBuiltinTypeTags)
-    if (name == tn) out.set |= _culebra_tag_bit(tag);
+  for (auto [name, tag] : kCulebraBuiltinTypeTags) {
+    auto whole = culebra::builtin_supertype_of(name);
+    if (name == tn || (!whole.empty() && whole == tn))
+      out.set |= _culebra_tag_bit(tag);
+  }
   out.exact = out.set != 0 && tn != "Function";
   return out;
 }

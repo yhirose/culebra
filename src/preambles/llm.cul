@@ -34,21 +34,15 @@ let _llm_module = fn () {
     __raise("TypeError", "type error: parameter '{name}' expects {want}")
   }
 
-  # A String argument as a String: a slice is copied, since JSON writes only
-  # a String.
+  # A String argument as an owned String: a slice is copied.
   fn _string(name, v) {
-    let t = type_of(v)
-    cond {
-      t == "String" => v,
-      t == "StringView" => to_string(v),
-      _ => _type_error(name, "String"),
-    }
+    v is String ? to_string(v) : _type_error(name, "String")
   }
 
   fn _optional_string(name, v) {
     cond {
       v == nil => nil,
-      v is String || v is StringView => _string(name, v),
+      v is String => _string(name, v),
       _ => _type_error(name, "String | Nil"),
     }
   }
@@ -150,14 +144,10 @@ let _llm_module = fn () {
     LLMTool(id, summary, schema, f)
   }
 
-  # What a tool's value becomes in a tool_result: a String as it is, anything
-  # else as JSON.
+  # What a tool's value becomes in a tool_result: a String as an owned one,
+  # anything else as JSON.
   fn _content_of(v) {
-    cond {
-      v is String => v,
-      v is StringView => to_string(v),
-      _ => JSON.stringify(v),
-    }
+    v is String ? to_string(v) : JSON.stringify(v)
   }
 
   fn _describe(e) {
@@ -1105,7 +1095,7 @@ let _llm_module = fn () {
           {content: _describe(e), is_error: true}
         },
         verdict == false => {content: "the call was not approved", is_error: true},
-        verdict is String || verdict is StringView =>
+        verdict is String =>
           {content: to_string(verdict), is_error: true},
         _ => __raise("TypeError",
                "LLM: approve: must answer true, false or a String, not {type_of(verdict)}"),
@@ -1136,7 +1126,7 @@ let _llm_module = fn () {
       if type_of(c.get("args", {})) != "Object" {
         __raise("TypeError", "type error: calls[{i}].args expects Object")
       }
-      if c.get("error", nil) != nil && type_of(c.error) != "String" {
+      if c.get("error", nil) != nil && c.error !is String {
         __raise("TypeError", "type error: calls[{i}].error expects String")
       }
     }

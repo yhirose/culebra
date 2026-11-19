@@ -334,6 +334,17 @@ fn grain(x: Same) {
 assert_eq(grain(Left.Same), "qualified")
 assert_eq(grain(Right.Same), "variant")
 
+// Inside a union or an optional both come down to the union tier, and the
+// alternative each matched decides between them as it would bare.
+fn grain_opt(x: Left?) {
+  "enum"
+}
+fn grain_opt(x: Left.Same?) {
+  "qualified"
+}
+assert_eq(grain_opt(Left.Same), "qualified")
+assert_eq(grain_opt(Left.L2), "enum")
+
 // Type patterns, unions and the optional form all take it.
 let which = fn (v) {
   match v {

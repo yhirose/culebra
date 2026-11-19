@@ -248,7 +248,10 @@
 # whose metas share a shape, an own field shadowing a method, writes and
 # compound writes through one site, a dictionary; 0.02 s under --vm, 1.0 s
 # under --jit).
-tests.cul 377
+# 378 since test_stringview_is_string.cul (a StringView is a String to every
+# annotation, `is`, a pattern, a field, dispatch and the stdlib's String
+# parameters; 0.04 s under --vm, 0.7 s under --jit).
+tests.cul 378
 
 # tests/isolate/*.cul — run on both engines, plus the over-cap modes.
 # 21 since test_xml_isolate.cul (an XML element keeps its methods across an

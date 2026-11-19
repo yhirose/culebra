@@ -8153,8 +8153,7 @@ fn _peg_wrap_predicate(f, path, dt) {
       (a, b) => (a, b, nil),
       _ => (r, "", nil),
     }
-    let said = type_of(msg)
-    if ok !is Bool || said != "String" && said != "StringView" {
+    if ok !is Bool || msg !is String {
       __raise(
         "TypeError",
         "PEG: a predicate answers Bool, (Bool, String) or (Bool, String, Any), got {r}",
@@ -8508,7 +8507,7 @@ let FST = _fst_module()
 )=culpre=";
 
 inline constexpr const char* STRING_FNS_MODULE_SOURCE = R"=culpre=(let replace = fn (s, pat, repl) {
-  if pat is String || pat is StringView {
+  if pat is String {
     s.split(pat).join(repl)
   } else {
     pat.replace_all(s, repl)
@@ -8516,7 +8515,7 @@ inline constexpr const char* STRING_FNS_MODULE_SOURCE = R"=culpre=(let replace =
 }
 
 let replace_first = fn (s, pat, repl) {
-  if pat is String || pat is StringView {
+  if pat is String {
     s.split(pat, 2).join(repl)
   } else {
     pat.replace_first(s, repl)
@@ -8685,13 +8684,12 @@ let _path_module = fn () {
   # a TypeError — the same strictness the native FS.* layer enforces, so a
   # non-path never slips through Path.new / `/` / `rename` as stringified junk.
   let _s = fn (o) {
-    let t = type_of(o)
-    if t == "String" || t == "StringView" {
+    if o is String {
       o
     } else if _is_path(o) {
       to_string(o)
     } else {
-      __raise("TypeError", "type error: expected String|Path, got {t}")
+      __raise("TypeError", "type error: expected String|Path, got {type_of(o)}")
     }
   }
   class Path {
@@ -8709,7 +8707,7 @@ let _path_module = fn () {
     # equal only to a String/StringView or another Path with the same path;
     # any other type is simply not-equal (never a TypeError).
     __eq__(o) {
-      if o is String || o is StringView {
+      if o is String {
         @_path == o
       } else if _is_path(o) {
         @_path == to_string(o)
@@ -9592,15 +9590,14 @@ let _dir_module = fn () {
   # A path argument that names a directory on disk: a String or a Path.
   let _disk_path = fn (who, p) {
     let t = type_of(p)
-    if t != 'String' && t != 'StringView' && t != 'Path' {
+    if p !is String && t != 'Path' {
       __raise('TypeError', "type error: {who} expects String|Path, got {t}")
     }
     to_string(p)
   }
   let _string_arg = fn (who, v) {
-    let t = type_of(v)
-    if t != 'String' && t != 'StringView' {
-      __raise('TypeError', "type error: {who} expects String, got {t}")
+    if v !is String {
+      __raise('TypeError', "type error: {who} expects String, got {type_of(v)}")
     }
     to_string(v)
   }
@@ -9688,11 +9685,10 @@ let _dir_module = fn () {
             "Dir.memory: a path is a String, got {type_of(key)}",
           )
         }
-        let t = type_of(value)
-        if t != 'String' && t != 'StringView' {
+        if value !is String {
           __raise(
             'TypeError',
-            "Dir.memory: '{key}' holds {t}, not String (a file in a subdirectory is a key like 'sub/name.txt')",
+            "Dir.memory: '{key}' holds {type_of(value)}, not String (a file in a subdirectory is a key like 'sub/name.txt')",
           )
         }
         let rel = _Dir.normalize(key)
@@ -9820,11 +9816,10 @@ let _dir_module = fn () {
         @path = FS.abspath(_disk_path('Dir.zip', path))
         @_id = _Dir.zip_open(@path)
       } else {
-        let t = type_of(bytes)
-        if t != 'String' && t != 'StringView' {
+        if bytes !is String {
           __raise(
             'TypeError',
-            "type error: Dir.zip bytes: expects String, got {t}",
+            "type error: Dir.zip bytes: expects String, got {type_of(bytes)}",
           )
         }
         @bytes = bytes
@@ -10327,21 +10322,15 @@ let _llm_module = fn () {
     __raise("TypeError", "type error: parameter '{name}' expects {want}")
   }
 
-  # A String argument as a String: a slice is copied, since JSON writes only
-  # a String.
+  # A String argument as an owned String: a slice is copied.
   fn _string(name, v) {
-    let t = type_of(v)
-    cond {
-      t == "String" => v,
-      t == "StringView" => to_string(v),
-      _ => _type_error(name, "String"),
-    }
+    v is String ? to_string(v) : _type_error(name, "String")
   }
 
   fn _optional_string(name, v) {
     cond {
       v == nil => nil,
-      v is String || v is StringView => _string(name, v),
+      v is String => _string(name, v),
       _ => _type_error(name, "String | Nil"),
     }
   }
@@ -10443,14 +10432,10 @@ let _llm_module = fn () {
     LLMTool(id, summary, schema, f)
   }
 
-  # What a tool's value becomes in a tool_result: a String as it is, anything
-  # else as JSON.
+  # What a tool's value becomes in a tool_result: a String as an owned one,
+  # anything else as JSON.
   fn _content_of(v) {
-    cond {
-      v is String => v,
-      v is StringView => to_string(v),
-      _ => JSON.stringify(v),
-    }
+    v is String ? to_string(v) : JSON.stringify(v)
   }
 
   fn _describe(e) {
@@ -11398,7 +11383,7 @@ let _llm_module = fn () {
           {content: _describe(e), is_error: true}
         },
         verdict == false => {content: "the call was not approved", is_error: true},
-        verdict is String || verdict is StringView =>
+        verdict is String =>
           {content: to_string(verdict), is_error: true},
         _ => __raise("TypeError",
                "LLM: approve: must answer true, false or a String, not {type_of(verdict)}"),
@@ -11429,7 +11414,7 @@ let _llm_module = fn () {
       if type_of(c.get("args", {})) != "Object" {
         __raise("TypeError", "type error: calls[{i}].args expects Object")
       }
-      if c.get("error", nil) != nil && type_of(c.error) != "String" {
+      if c.get("error", nil) != nil && c.error !is String {
         __raise("TypeError", "type error: calls[{i}].error expects String")
       }
     }

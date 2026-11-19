@@ -19,13 +19,12 @@ let _path_module = fn () {
   # a TypeError — the same strictness the native FS.* layer enforces, so a
   # non-path never slips through Path.new / `/` / `rename` as stringified junk.
   let _s = fn (o) {
-    let t = type_of(o)
-    if t == "String" || t == "StringView" {
+    if o is String {
       o
     } else if _is_path(o) {
       to_string(o)
     } else {
-      __raise("TypeError", "type error: expected String|Path, got {t}")
+      __raise("TypeError", "type error: expected String|Path, got {type_of(o)}")
     }
   }
   class Path {
@@ -43,7 +42,7 @@ let _path_module = fn () {
     # equal only to a String/StringView or another Path with the same path;
     # any other type is simply not-equal (never a TypeError).
     __eq__(o) {
-      if o is String || o is StringView {
+      if o is String {
         @_path == o
       } else if _is_path(o) {
         @_path == to_string(o)

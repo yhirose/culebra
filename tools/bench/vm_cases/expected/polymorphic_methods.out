@@ -91,6 +91,6 @@ TypeError: type error: expected Function, got Nil ('product' is not a method of 
 TypeError: type error: expected Function, got Nil ('distinct' is not a method of Array)
 ran 5
 TypeError: type error: parameter 'sep' expects String
-TypeError: type error: parameter 'sep' expects String
+'3-1-2-1'
 300
 181800

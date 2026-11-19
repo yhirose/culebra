@@ -1036,9 +1036,9 @@ inline constexpr BRecvMask kRecvAny = 0xFFFF;
 
 // A parameter's declared type, checked with the interp binder's wording at the
 // argument's own position. `Any` is an undeclared parameter — no check at all,
-// so the compiler emits no ChkParam for it. `String` is strict (unlike
-// StrLike, a StringView fails it) — `join`'s `sep` is declared plain "String"
-// in the interp table, not the StringLike trait.
+// so the compiler emits no ChkParam for it. `String` takes a StringView, as
+// StrLike does; it differs in the name the error gives — `join`'s `sep` is
+// declared plain "String" in the interp table, not the StringLike trait.
 enum class BParam : uint8_t {
   Any, Long, StrLike, Array, String, Set, Tensor,
   // `Long?` — the reduction axis, optional in the interp signature, so an

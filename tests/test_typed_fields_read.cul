@@ -88,7 +88,7 @@ assert_throws('DispatchError', fn () {
 })
 
 # a checked field cannot be removed: a field that can vanish is no contract.
-# One declared `String`, or nothing at all, carries no promise, so it can go.
+# One declared `Any`, or nothing at all, carries no promise, so it can go.
 assert_throws('ImmutableError', fn () {
   r.remove('f')
 })

@@ -191,8 +191,7 @@ inspect([].to_set())
 # Errors: a scalar receiver cannot carry members at all (before the
 # arguments run); an Array lacking the name (distinct/flatten) or a Tensor
 # lacking it (product/min/join/to_set) merely lacks the method, reported
-# once the arguments have run; join's `sep` is declared plain String, so a
-# StringView fails it where `contains`'s StringLike needle would not.
+# once the arguments have run.
 try {
     (5).sum()
 } catch err {
@@ -218,11 +217,8 @@ try {
 } catch err {
     println("{err.kind}: {err.message}")
 }
-try {
-    nums.join('-'.view())
-} catch err {
-    println("{err.kind}: {err.message}")
-}
+# join's `sep` is declared String, which a StringView is too.
+inspect(nums.join('-'.view()))
 
 # Churn: every round allocates through the Array and iterator arms, so
 # GC_STRESS gets to look at the refcounts of results that outlive their

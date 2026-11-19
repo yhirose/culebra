@@ -14,15 +14,14 @@ let _dir_module = fn () {
   # A path argument that names a directory on disk: a String or a Path.
   let _disk_path = fn (who, p) {
     let t = type_of(p)
-    if t != 'String' && t != 'StringView' && t != 'Path' {
+    if p !is String && t != 'Path' {
       __raise('TypeError', "type error: {who} expects String|Path, got {t}")
     }
     to_string(p)
   }
   let _string_arg = fn (who, v) {
-    let t = type_of(v)
-    if t != 'String' && t != 'StringView' {
-      __raise('TypeError', "type error: {who} expects String, got {t}")
+    if v !is String {
+      __raise('TypeError', "type error: {who} expects String, got {type_of(v)}")
     }
     to_string(v)
   }
@@ -110,11 +109,10 @@ let _dir_module = fn () {
             "Dir.memory: a path is a String, got {type_of(key)}",
           )
         }
-        let t = type_of(value)
-        if t != 'String' && t != 'StringView' {
+        if value !is String {
           __raise(
             'TypeError',
-            "Dir.memory: '{key}' holds {t}, not String (a file in a subdirectory is a key like 'sub/name.txt')",
+            "Dir.memory: '{key}' holds {type_of(value)}, not String (a file in a subdirectory is a key like 'sub/name.txt')",
           )
         }
         let rel = _Dir.normalize(key)
@@ -242,11 +240,10 @@ let _dir_module = fn () {
         @path = FS.abspath(_disk_path('Dir.zip', path))
         @_id = _Dir.zip_open(@path)
       } else {
-        let t = type_of(bytes)
-        if t != 'String' && t != 'StringView' {
+        if bytes !is String {
           __raise(
             'TypeError',
-            "type error: Dir.zip bytes: expects String, got {t}",
+            "type error: Dir.zip bytes: expects String, got {type_of(bytes)}",
           )
         }
         @bytes = bytes

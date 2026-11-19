@@ -1,9 +1,10 @@
 # A parameter's annotation is checked on entry (docs/language.md §14), so
 # every read of that name in the body already satisfies it. When the
-# annotation names one primitive type, that settles the tag, and Op::ArgTag
-# hands the fact to the compiled lanes -- a built-in call on the parameter
-# then resolves to one receiver arm instead of the switch its method name
-# shares across types, and arithmetic drops its operand tests.
+# annotation names one primitive type, that settles the tag -- for `String`,
+# one of its two representations -- and Op::ArgTag hands the fact to the
+# compiled lanes: a built-in call on the parameter then resolves to the
+# type's own receiver arms instead of the switch its method name shares
+# across types, and arithmetic drops its operand tests.
 #
 # What this file pins is that the shortcut never changes an answer. Every
 # case below is one the promise does NOT hold for, or one where it does and
@@ -116,9 +117,9 @@ assert_throws('DispatchError', fn () {
   n_math('no')
 })
 
-# `String` names TAG_STRING alone, so a StringView is refused at the door
-assert_throws('DispatchError', fn () {
-  s_len('hello world'.slice(0, 5))
-})
+# `String` takes both representations, so a StringView passes the door and
+# the body reads it as the String it is
+assert_eq(s_len('hello world'.slice(0, 5)), 5)
+assert_eq(s_chain('  ab  cd'.slice(0, 6)), 2)
 
 println('param tag OK')

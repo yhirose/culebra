@@ -6,7 +6,7 @@
 // --- argv / executable / time (pre-existing) ---
 // argv is an Array; executable is a non-empty absolute path.
 assert_eq(type_of(Sys.argv), 'Array')
-assert_true(Sys.argv.all(|a| type_of(a) == 'String'))
+assert_true(Sys.argv.all(|a| a is String))
 assert_true(Sys.executable != "")
 // Monotonic clock: two reads are non-decreasing.
 let t0 = Sys.time()

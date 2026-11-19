@@ -1,0 +1,81 @@
+// A StringView is a String (docs/language.md §18.1): whatever asks for a
+// `String` takes the view `slice`, `split`, `lines` and `for` over a string
+// hand back. Only `type_of` and `StringView` itself tell the two apart.
+
+let v = 'hello world'.slice(0, 5)  // 'hello', as a StringView
+let words = 'alpha beta'.split(' ')
+
+// --- annotations ---
+fn size_of(s: String) -> Long { s.size() }
+assert_eq(size_of(v), 5)
+fn first_word(s) -> String { s.split(' ')[0] }
+assert_eq(first_word('ab cd'), 'ab')
+let annotated: String = v
+assert_eq(annotated, 'hello')
+fn maybe(s: String?) { s }
+assert_eq(maybe(v), 'hello')
+fn either(s: String | Long) { s }
+assert_eq(either(v), 'hello')
+// A `mut` parameter is checked on entry like any other.
+fn grow(mut s: String) { s = s + '!'; s }
+assert_eq(grow(v), 'hello!')
+
+// --- `is` and type patterns ---
+assert_true(v is String)
+assert_true(v is String?)
+assert_false(v !is String)
+fn kind(x) {
+  match x {
+    s: String => 'string',
+    _ => 'other',
+  }
+}
+assert_eq(kind(v), 'string')
+assert_eq(words.filter(|w| w is String).size(), 2)
+
+// --- typed fields ---
+class Named {
+  name: String
+}
+let named = Named()
+named.name = v
+assert_eq(named.name, 'hello')
+assert_throws('TypeError', fn () { named.name = 42 },
+  message: "type error: field 'name' expects String")
+
+// --- dispatch: the narrower overload wins ---
+fn which(s: String) { 'String' }
+fn which(s: StringView) { 'StringView' }
+assert_eq(which(v), 'StringView')
+fn which_opt(s: String?) { 'String?' }
+fn which_opt(s: StringView?) { 'StringView?' }
+assert_eq(which_opt(v), 'StringView?')
+fn what(s: String) { 'String' }
+fn what(n: Long) { 'Long' }
+assert_eq(what(v), 'String')
+
+// --- natives that ask for a String ---
+assert_eq(JSON.parse('[1, 2] '.slice(0, 6)), [1, 2])
+assert_eq(Hash.sha256(v), Hash.sha256('hello'))
+assert_eq(Encoding.base64.encode(v), 'aGVsbG8=')
+assert_eq(['a', 'b'].join('-+'.slice(0, 1)), 'a-b')
+assert_eq(Time.parse('2026-05-21 junk'.slice(0, 10), '%Y-%m-%d'),
+  Time.parse('2026-05-21', '%Y-%m-%d'))
+// A view's bytes run on into its source; a C API reads the view's own.
+Sys.set_env('CULEBRA_SV_TEST', 'yes')
+assert_eq(Sys.env('CULEBRA_SV_TEST=no'.split('=')[0]), 'yes')
+
+let tmp_root = FS.mkdtemp('culebra_sv_test_')
+let path = FS.join(tmp_root, 'a.txt')
+FS.write(path, 'hello world'.slice(0, 5))
+assert_eq(FS.read(path), 'hello')
+let file = File.open(path, 'w')
+file.write('bye now'.split(' ')[0])
+file.close()
+assert_eq(FS.read(path), 'bye')
+FS.remove(tmp_root, recursive: true)
+
+let set = FST.Set.new(FST.compile_set(words))
+assert_true(set.contains('beta'))
+let map = FST.Map.new(FST.compile_map({k: 'v1 v2'.split(' ')[1]}))
+assert_eq(map.get('k'), 'v2')

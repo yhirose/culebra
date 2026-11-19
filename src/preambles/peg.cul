@@ -129,8 +129,7 @@ fn _peg_wrap_predicate(f, path, dt) {
       (a, b) => (a, b, nil),
       _ => (r, "", nil),
     }
-    let said = type_of(msg)
-    if ok !is Bool || said != "String" && said != "StringView" {
+    if ok !is Bool || msg !is String {
       __raise(
         "TypeError",
         "PEG: a predicate answers Bool, (Bool, String) or (Bool, String, Any), got {r}",
