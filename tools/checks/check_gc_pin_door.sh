@@ -40,6 +40,10 @@ ALLOWED = {
         'a host-held Value, until the host lets it go (a JNI global ref)',
     ('include/stdlib/bindings.h', '_jit_keep_closure'):
         'a transfer hold, dropped with the transfer',
+    ('include/stdlib/bindings.h', '_jit_peg_each_callback'):
+        "a parse's hooks, dropped when the parse ends",
+    ('include/stdlib/bindings.h', '_jit_peg_hooks'):
+        "a parse's log hook, dropped when the parse ends",
     ('include/stdlib/bindings.h', '_http_setup_multipart'): 'a transfer hold',
     ('include/stdlib/bindings.h', '_http_setup_body'): 'a transfer hold',
     ('include/stdlib/bindings.h', '_jit_http_try_stream_response'):

@@ -49,7 +49,7 @@ COUNTED = {
     'include/rt/iter.inc.h': 52,
     'include/rt/mem.inc.h': 3,
     'include/rt/runtime.inc.h': 4,
-    'include/stdlib/bindings.h': 17,
+    'include/stdlib/bindings.h': 15,
     'include/stdlib/codegen.h': 1,
     'include/vm/embed.h': 1,
     'include/vm/vm.h': 13,

@@ -337,3 +337,52 @@ fn leftover() {
 }
 let left_over = leftover()
 assert_eq(left_over, 0)
+
+// --- a hooks object of the program's own, handed to the native parse: the
+// parse reads its hooks once, as it starts, and holds each one until it ends,
+// so a hook taken out of the object mid-parse is still called ---
+mut taken = 0
+// Takes `key` out of `hooks`, then fills the freed closure's memory with
+// others.
+fn take_out(hooks, key) {
+  hooks.remove(key)
+  taken += 1
+  iota(64).map(|i| fn () { i })
+}
+fn parses(hooks) {
+  _PEG.run("S <- A+\nA <- 'a'\n", "aaa", "S", 0, false, hooks)[0]
+}
+
+let acts = {actions: {}}
+acts.actions.A = fn (sv, data) { take_out(acts.actions, "A") }
+taken = 0
+assert_eq(parses(acts), true)
+assert_eq(taken, 3)
+
+let preds = {predicates: {}}
+preds.predicates.A = fn (sv) {
+  take_out(preds.predicates, "A")
+  (true, "", nil)
+}
+taken = 0
+assert_eq(parses(preds), true)
+assert_eq(taken, 3)
+
+let enters = {enter: {}}
+enters.enter.A = fn (pos) { take_out(enters.enter, "A") }
+taken = 0
+assert_eq(parses(enters), true)
+assert_eq(taken, 4)
+
+let leaves = {leave: {}}
+leaves.leave.A = fn (pos, len, value) { take_out(leaves.leave, "A") }
+taken = 0
+assert_eq(parses(leaves), true)
+assert_eq(taken, 4)
+
+let logs = {actions: {}}
+let logged = []
+logs.log = fn (line, col, msg, rule) { logged.push(msg) }
+logs.actions.A = fn (sv, data) { take_out(logs, "log") }
+assert_eq(_PEG.run("S <- A 'x'\nA <- 'a'\n", "ab", "S", 0, false, logs)[0], false)
+assert_eq(logged.size(), 1)

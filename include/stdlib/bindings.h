@@ -2318,6 +2318,24 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_proc_race_kw(
                                  share_fds.empty() ? nullptr : &share_fds);
 }
 
+// A Function the library keeps past the call that handed it over (a
+// request's body producer, a part's stream, a response's stream, a parse's
+// hooks): what it was read from
+// can let it go meanwhile, so it takes its own +1, pinned because the
+// collector does not count it, both dropped with the last copy of the handle.
+// Only for a span that always ends: a pin is a root, so a native object that
+// keeps a value for its own life keeps it in its handle instead (JitHandle),
+// where the collector sees the edge (JitSearchIndex).
+inline std::shared_ptr<JitClosure> _jit_keep_closure(JitValue fn) {
+  auto* cls = reinterpret_cast<JitClosure*>(fn.data);
+  culebra_runtime_value_retain(TAG_FUNC, fn.data);
+  _gc_heap().pin(cls);
+  return std::shared_ptr<JitClosure>(cls, [](JitClosure* p) {
+    _gc_heap().unpin(p);
+    culebra_runtime_value_release(TAG_FUNC, reinterpret_cast<int64_t>(p));
+  });
+}
+
 #if defined(CULEBRA_HTTP_ENABLED)
 // `r.json()` — parse the response body as JSON.
 inline void _jit_http_json(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t,
@@ -2394,23 +2412,6 @@ struct JitHttpSink {
   culebra::http::SseDecoder sse;
   std::exception_ptr eptr;
 };
-
-// A Function a transfer keeps past the call that handed it over (a request's
-// body producer, a part's stream, a response's stream): what it was read from
-// can let it go meanwhile, so it takes its own +1, pinned because the
-// collector does not count it, both dropped with the last copy of the handle.
-// Only for a span that always ends: a pin is a root, so a native object that
-// keeps a value for its own life keeps it in its handle instead (JitHandle),
-// where the collector sees the edge (JitSearchIndex).
-inline std::shared_ptr<JitClosure> _jit_keep_closure(JitValue fn) {
-  auto* cls = reinterpret_cast<JitClosure*>(fn.data);
-  culebra_runtime_value_retain(TAG_FUNC, fn.data);
-  _gc_heap().pin(cls);
-  return std::shared_ptr<JitClosure>(cls, [](JitClosure* p) {
-    _gc_heap().unpin(p);
-    culebra_runtime_value_release(TAG_FUNC, reinterpret_cast<int64_t>(p));
-  });
-}
 
 // Call a sink's culebra callback with the value `make_arg` builds (consumed).
 // A throw from either is kept in `st.eptr` and returns false, which aborts the
@@ -10222,10 +10223,10 @@ inline JitValue _jit_peg_sv_object(culebra::pegparser::Sv& sv) {
   return _ns_adapt::v_object(o);
 }
 
-// Calls `f(rule, fn)` for each Function `hooks[key]` names a rule for. The
-// maps' own properties keep every Function alive for the call, so a callback
-// only borrows one: `hooks` -- the caller's live argument -- outlives the
-// parse. A non-Function entry is skipped.
+// Calls `f(rule, fn)` for each Function `hooks[key]` names a rule for, `fn`
+// kept for the parse (_jit_keep_closure): `hooks` is the program's, and a
+// callback may take an entry out of it mid-parse. A non-Function entry is
+// skipped.
 template <typename F>
 inline void _jit_peg_each_callback(JitObject* hooks, const char* key, F f) {
   int8_t mtag;
@@ -10247,14 +10248,15 @@ inline void _jit_peg_each_callback(JitObject* hooks, const char* key, F f) {
     int64_t vdata;
     culebra_runtime_object_get(map, rule.c_str(), &vtag, &vdata);
     if (vtag != TAG_FUNC) continue;
-    f(std::move(rule), reinterpret_cast<JitClosure*>(vdata));
+    f(std::move(rule), _jit_keep_closure({vtag, vdata}));
   }
 }
 
 // A callback's arguments are handed over: the callee's frame owns them.
 template <size_t N>
-inline JitOwnedVal _jit_peg_call(JitClosure* cb, JitValue (&&args)[N]) {
-  return JitOwnedVal{_jit_invoke(cb, {TAG_NO_SELF, 0}, N, args)};
+inline JitOwnedVal _jit_peg_call(const std::shared_ptr<JitClosure>& cb,
+                                 JitValue (&&args)[N]) {
+  return JitOwnedVal{_jit_invoke(cb.get(), {TAG_NO_SELF, 0}, N, args)};
 }
 
 // `hooks` as peg.h's Hooks. nil is a parse with nothing to call.
@@ -10264,10 +10266,11 @@ inline culebra::pegparser::Hooks _jit_peg_hooks(JitValue hooks_val) {
   if (hooks_val.tag != TAG_OBJECT) return out;
   auto* hooks = reinterpret_cast<JitObject*>(hooks_val.data);
 
-  _jit_peg_each_callback(hooks, "actions", [&](std::string rule, JitClosure* cb) {
+  _jit_peg_each_callback(hooks, "actions", [&](std::string rule, std::shared_ptr<JitClosure> cb) {
     out.actions.emplace(
         std::move(rule),
-        [cb](pp::Sv& sv, const std::any& predicate_data) -> std::any {
+        [cb = std::move(cb)](pp::Sv& sv,
+                             const std::any& predicate_data) -> std::any {
           JitOwnedVal ret = _jit_peg_call(
               cb, {_jit_peg_sv_object(sv), _jit_peg_copy_value(predicate_data)});
           return std::any(JitAny(ret.consume()));
@@ -10278,8 +10281,9 @@ inline culebra::pegparser::Hooks _jit_peg_hooks(JitValue hooks_val) {
   // program's own returned: (ok, msg, predicate_data). The Tuple itself is
   // what rides to the rule's action, which the module unwraps there: moving
   // it on takes no reference that picking its third field out would.
-  _jit_peg_each_callback(hooks, "predicates", [&](std::string rule, JitClosure* cb) {
-    out.predicates.emplace(std::move(rule), [cb](pp::Sv& sv) -> pp::Verdict {
+  _jit_peg_each_callback(hooks, "predicates", [&](std::string rule, std::shared_ptr<JitClosure> cb) {
+    out.predicates.emplace(std::move(rule), [cb = std::move(cb)](
+                                                pp::Sv& sv) -> pp::Verdict {
       JitOwnedVal ret = _jit_peg_call(cb, {_jit_peg_sv_object(sv)});
       JitValue r = ret.borrow();
       auto* t = reinterpret_cast<JitArray*>(r.data);
@@ -10294,15 +10298,16 @@ inline culebra::pegparser::Hooks _jit_peg_hooks(JitValue hooks_val) {
       return v;
     });
   });
-  _jit_peg_each_callback(hooks, "enter", [&](std::string rule, JitClosure* cb) {
-    out.enter.emplace(std::move(rule), [cb](size_t pos) {
+  _jit_peg_each_callback(hooks, "enter", [&](std::string rule, std::shared_ptr<JitClosure> cb) {
+    out.enter.emplace(std::move(rule), [cb = std::move(cb)](size_t pos) {
       _jit_peg_call(cb, {_ns_adapt::v_long(static_cast<int64_t>(pos))});
     });
   });
-  _jit_peg_each_callback(hooks, "leave", [&](std::string rule, JitClosure* cb) {
+  _jit_peg_each_callback(hooks, "leave", [&](std::string rule, std::shared_ptr<JitClosure> cb) {
     out.leave.emplace(
         std::move(rule),
-        [cb](size_t pos, size_t matchlen, const std::any& value) {
+        [cb = std::move(cb)](size_t pos, size_t matchlen,
+                             const std::any& value) {
           // peglib's size_t(-1) for a rule that did not match is -1 here too.
           _jit_peg_call(cb, {_ns_adapt::v_long(static_cast<int64_t>(pos)),
                              _ns_adapt::v_long(static_cast<int64_t>(matchlen)),
@@ -10313,9 +10318,9 @@ inline culebra::pegparser::Hooks _jit_peg_hooks(JitValue hooks_val) {
   int64_t data;
   culebra_runtime_object_get(hooks, "log", &tag, &data);
   if (tag == TAG_FUNC) {
-    auto* cb = reinterpret_cast<JitClosure*>(data);
-    out.log = [cb](size_t line, size_t col, const std::string& msg,
-                   const std::string& rule) {
+    out.log = [cb = _jit_keep_closure({tag, data})](
+                  size_t line, size_t col, const std::string& msg,
+                  const std::string& rule) {
       _jit_peg_call(cb, {_ns_adapt::v_long(static_cast<int64_t>(line)),
                          _ns_adapt::v_long(static_cast<int64_t>(col)),
                          _ns_adapt::str(msg), _ns_adapt::str(rule)});
