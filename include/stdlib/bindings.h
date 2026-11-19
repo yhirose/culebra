@@ -2320,9 +2320,9 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_proc_race_kw(
 
 // A Function the library keeps past the call that handed it over (a
 // request's body producer, a part's stream, a response's stream, a parse's
-// hooks): what it was read from
-// can let it go meanwhile, so it takes its own +1, pinned because the
-// collector does not count it, both dropped with the last copy of the handle.
+// hooks): what it was read from can let it go meanwhile, so it takes its own
+// +1, pinned because the collector does not count it, both dropped with the
+// last copy of the handle.
 // Only for a span that always ends: a pin is a root, so a native object that
 // keeps a value for its own life keeps it in its handle instead (JitHandle),
 // where the collector sees the edge (JitSearchIndex).
@@ -10223,10 +10223,19 @@ inline JitValue _jit_peg_sv_object(culebra::pegparser::Sv& sv) {
   return _ns_adapt::v_object(o);
 }
 
+// `o[key]` kept for the parse (_jit_keep_closure) when it is a Function, else
+// empty: `o` is the program's, and a hook may take the entry out of it
+// mid-parse.
+inline std::shared_ptr<JitClosure> _jit_peg_keep_hook(JitObject* o,
+                                                      const char* key) {
+  int8_t tag;
+  int64_t data;
+  culebra_runtime_object_get(o, key, &tag, &data);
+  return tag == TAG_FUNC ? _jit_keep_closure({tag, data}) : nullptr;
+}
+
 // Calls `f(rule, fn)` for each Function `hooks[key]` names a rule for, `fn`
-// kept for the parse (_jit_keep_closure): `hooks` is the program's, and a
-// callback may take an entry out of it mid-parse. A non-Function entry is
-// skipped.
+// kept for the parse (_jit_peg_keep_hook). A non-Function entry is skipped.
 template <typename F>
 inline void _jit_peg_each_callback(JitObject* hooks, const char* key, F f) {
   int8_t mtag;
@@ -10244,11 +10253,9 @@ inline void _jit_peg_each_callback(JitObject* hooks, const char* key, F f) {
     JitOwnedVal k{keys->items[i]};
     if (k.borrow().tag != TAG_STRING) continue;
     std::string rule(_culebra_str_view(k.borrow().tag, k.borrow().data));
-    int8_t vtag;
-    int64_t vdata;
-    culebra_runtime_object_get(map, rule.c_str(), &vtag, &vdata);
-    if (vtag != TAG_FUNC) continue;
-    f(std::move(rule), _jit_keep_closure({vtag, vdata}));
+    if (auto cb = _jit_peg_keep_hook(map, rule.c_str())) {
+      f(std::move(rule), std::move(cb));
+    }
   }
 }
 
@@ -10314,11 +10321,8 @@ inline culebra::pegparser::Hooks _jit_peg_hooks(JitValue hooks_val) {
                              _jit_peg_copy_value(value)});
         });
   });
-  int8_t tag;
-  int64_t data;
-  culebra_runtime_object_get(hooks, "log", &tag, &data);
-  if (tag == TAG_FUNC) {
-    out.log = [cb = _jit_keep_closure({tag, data})](
+  if (auto cb = _jit_peg_keep_hook(hooks, "log")) {
+    out.log = [cb = std::move(cb)](
                   size_t line, size_t col, const std::string& msg,
                   const std::string& rule) {
       _jit_peg_call(cb, {_ns_adapt::v_long(static_cast<int64_t>(line)),

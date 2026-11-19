@@ -12,9 +12,9 @@
 # collector, the release path and the trial-deletion walk follow
 # (docs/internals/memory.md §6.2).
 #
-# So every pin, and every caller of _jit_keep_closure (a pinned transfer
-# hold), sits in a function named below with what kind of hold it is. A new
-# one fails here until it is looked at and named on purpose.
+# So every pin, and every caller of _jit_keep_closure (a pinned hold that
+# always ends), sits in a function named below with what kind of hold it is.
+# A new one fails here until it is looked at and named on purpose.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 
@@ -39,11 +39,9 @@ ALLOWED = {
     ('include/vm/embed.h', 'pin'):
         'a host-held Value, until the host lets it go (a JNI global ref)',
     ('include/stdlib/bindings.h', '_jit_keep_closure'):
-        'a transfer hold, dropped with the transfer',
-    ('include/stdlib/bindings.h', '_jit_peg_each_callback'):
+        'a hold that always ends, dropped with its last copy',
+    ('include/stdlib/bindings.h', '_jit_peg_keep_hook'):
         "a parse's hooks, dropped when the parse ends",
-    ('include/stdlib/bindings.h', '_jit_peg_hooks'):
-        "a parse's log hook, dropped when the parse ends",
     ('include/stdlib/bindings.h', '_http_setup_multipart'): 'a transfer hold',
     ('include/stdlib/bindings.h', '_http_setup_body'): 'a transfer hold',
     ('include/stdlib/bindings.h', '_jit_http_try_stream_response'):

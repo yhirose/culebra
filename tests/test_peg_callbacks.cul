@@ -349,36 +349,33 @@ fn take_out(hooks, key) {
   taken += 1
   iota(64).map(|i| fn () { i })
 }
-fn parses(hooks) {
-  _PEG.run("S <- A+\nA <- 'a'\n", "aaa", "S", 0, false, hooks)[0]
+// Parses "aaa" with `hooks`, which must succeed, and answers how many hooks
+// took themselves out on the way. _PEG.run's arguments: grammar, text, start,
+// ast, packrat, hooks.
+fn taken_in_parse(hooks) {
+  taken = 0
+  assert_eq(_PEG.run("S <- A+\nA <- 'a'\n", "aaa", "S", 0, false, hooks)[0], true)
+  taken
 }
 
 let acts = {actions: {}}
 acts.actions.A = fn (sv, data) { take_out(acts.actions, "A") }
-taken = 0
-assert_eq(parses(acts), true)
-assert_eq(taken, 3)
+assert_eq(taken_in_parse(acts), 3)
 
 let preds = {predicates: {}}
 preds.predicates.A = fn (sv) {
   take_out(preds.predicates, "A")
   (true, "", nil)
 }
-taken = 0
-assert_eq(parses(preds), true)
-assert_eq(taken, 3)
+assert_eq(taken_in_parse(preds), 3)
 
 let enters = {enter: {}}
 enters.enter.A = fn (pos) { take_out(enters.enter, "A") }
-taken = 0
-assert_eq(parses(enters), true)
-assert_eq(taken, 4)
+assert_eq(taken_in_parse(enters), 4)
 
 let leaves = {leave: {}}
 leaves.leave.A = fn (pos, len, value) { take_out(leaves.leave, "A") }
-taken = 0
-assert_eq(parses(leaves), true)
-assert_eq(taken, 4)
+assert_eq(taken_in_parse(leaves), 4)
 
 let logs = {actions: {}}
 let logged = []
