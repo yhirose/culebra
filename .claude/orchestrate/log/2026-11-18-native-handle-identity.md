@@ -8,3 +8,4 @@
   - 1本目の ci/ は tests/isolate/test_channel.cul（JSON の `{}` を固定）で落ちた。tests/isolate は just check の対象外。ハンドルの振る舞いを変えたら tests/*/ も grep する。
 - 後処理：just check、doctest、gc-hazard、check-generated、quick-guide、修正前のビルドで確認ごとに落ちること、/simplify（3本）、ci/ 2本。
 - テストできなかったもの：捕まえられなかった Error の行の表示（AOT では Sys.executable が使えない）。手元の再現で確認。
+- 続き（628b17a1）：/simplify を着地後にもう1回（a4343fec 全体）。user 決定2つ：ハンドルへの `remove` も TypeError（Listener の host/port が本当に読み取り専用に）、表示名は docs の型名（`[Database]`、`[Statement]` など、`IO.stdin() -> Stdin`）。ほかは「1つか複数の spec か TypeError」の一本化、`_jit_long_slot`、Isolate の「an Isolate」、古いコメント7か所、ja docs の訳語。ci/ 1本で緑。
