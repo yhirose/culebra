@@ -109,12 +109,17 @@ Time.sleep(0.05)
 late.set("freq", 880.0)
 let moved = late.now()
 assert_close(pitch(late.render(moved + 0.2), 44100, Math.ceil(moved * 44100), Math.floor((moved + 0.2) * 44100)), 880.0, 4.0)
+# The ramp starts where the clock is when set runs, between the two reads: a
+# quarter second after the later one it is half way down, or lower by what
+# the clock moved between them (1320 Hz a second).
+let set_at_least = late.now()
 late.set("freq", 220.0, at: 0.0, secs: 0.5)
-let from = late.now()
-let swept = late.render(from + 0.6)
-# Half way through the half second it ramps over, it is half way down.
-let mid = Math.floor((from + 0.25) * 44100)
-assert_close(pitch(swept, 44100, mid - 1000, mid + 1000), 550.0, 20.0)
+let set_at_most = late.now()
+let swept = late.render(set_at_most + 0.6)
+let mid = Math.floor((set_at_most + 0.25) * 44100)
+let heard = pitch(swept, 44100, mid - 1000, mid + 1000)
+assert_lt(heard, 550.0 + 20.0)
+assert_gt(heard, 550.0 - 1320.0 * (set_at_most - set_at_least) - 20.0)
 late.stop()
 # Two controls of one name are one value: setting it moves both.
 let pair = (sine(control("f", 440.0)) + sine(control("f", 440.0))) * 0.5 |> play(wait: false)
