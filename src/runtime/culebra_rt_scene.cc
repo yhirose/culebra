@@ -1519,7 +1519,9 @@ class View {
   bool pad_available(int64_t index) const { return IsGamepadAvailable((int)index); }
   double pad_axis(std::string name, int64_t index) const {
     int a = culebra::keynames::pad_axis_of(name);
-    return a < 0 ? 0.0 : (double)GetGamepadAxisMovement((int)index, a);
+    return a < 0 ? 0.0
+                 : culebra::keynames::pad_axis_value(
+                       a, GetGamepadAxisMovement((int)index, a));
   }
   bool pad(std::string name, int64_t index) const {
     int b = culebra::keynames::pad_button_of(name);

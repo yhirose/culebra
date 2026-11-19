@@ -1,6 +1,7 @@
 // Unit test for the key-name state (include/stdlib/keynames.h): what
 // Canvas.key and view.key / key_pressed / key_released report for a name,
-// given what raylib reports for each physical key.
+// given what raylib reports for each physical key, and what pad_axis reports
+// for a stored axis value.
 //
 // The query is a stub here, so the frames a window would produce are written
 // out: which keys are down, which went down this frame, which came up. The
@@ -100,12 +101,36 @@ void shift() {
   eq("e", {{L, KEY_E}, {KEY_E}, {}}, "HP-", "E with Shift held");
 }
 
+// pad_axis_value (keynames.h says why triggers are rescaled): a trigger reads
+// -1 released, 1 full; a stick passes through.
+void axes() {
+  using culebra::keynames::pad_axis_value;
+  struct Case {
+    int axis;
+    double stored, want;
+    const char* what;
+  } cases[] = {
+      {GAMEPAD_AXIS_RIGHT_TRIGGER, -1.0, -1.0, "rt before it first moves"},
+      {GAMEPAD_AXIS_RIGHT_TRIGGER, 0.0, -1.0, "rt released after a pull"},
+      {GAMEPAD_AXIS_RIGHT_TRIGGER, 0.5, 0.0, "rt half pulled"},
+      {GAMEPAD_AXIS_RIGHT_TRIGGER, 1.0, 1.0, "rt fully pulled"},
+      {GAMEPAD_AXIS_LEFT_TRIGGER, 0.0, -1.0, "lt released after a pull"},
+      {GAMEPAD_AXIS_LEFT_TRIGGER, 1.0, 1.0, "lt fully pulled"},
+      {GAMEPAD_AXIS_LEFT_X, 0.0, 0.0, "a stick centred"},
+      {GAMEPAD_AXIS_LEFT_Y, -1.0, -1.0, "a stick pushed up"},
+      {GAMEPAD_AXIS_RIGHT_X, 0.5, 0.5, "a stick half right"},
+  };
+  for (const auto& c : cases)
+    check(pad_axis_value(c.axis, c.stored) == c.want, c.what);
+}
+
 }  // namespace
 
 int main() {
   names();
   one_key();
   shift();
+  axes();
   if (failures == 0) std::printf("keynames_test: all passed\n");
   return failures == 0 ? 0 : 1;
 }

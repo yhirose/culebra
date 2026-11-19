@@ -466,7 +466,8 @@ bool pad_available(int64_t index) {
 double pad_axis(int64_t index, int64_t axis) {
   ensure_window();
   if (!g_window_ready) return 0.0;
-  return static_cast<double>(
+  return keynames::pad_axis_value(
+      static_cast<int>(axis),
       GetGamepadAxisMovement(static_cast<int>(index), static_cast<int>(axis)));
 }
 bool pad_button(int64_t index, int64_t button) {

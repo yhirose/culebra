@@ -6192,7 +6192,7 @@ browser's `-deltaY` convention.
 | Function | Result |
 | --- | --- |
 | `Canvas.pad_available(index = 0) -> Bool` | a gamepad is connected at `index` |
-| `Canvas.pad_axis(axis, index = 0) -> Float` | axis value (sticks, triggers) |
+| `Canvas.pad_axis(axis, index = 0) -> Float` | axis value: a stick -1..1, centred at 0; a trigger -1 released, 1 fully pulled |
 | `Canvas.pad_held(button, index = 0) -> Bool` | button is held now |
 | `Canvas.pad_pressed(button, index = 0) -> Bool` | button went down **this** frame |
 | `Canvas.pad_name(index = 0) -> String` | the pad's reported name |
@@ -6668,7 +6668,7 @@ The mouse reports in window points; its buttons are `"left"`, `"right"` and
 | `view.key(name) -> Bool` | key is held now |
 | `view.key_pressed(name) -> Bool` / `key_released(name) -> Bool` | key went down / came up this frame |
 | `view.pad_available(index = 0) -> Bool` | a gamepad is connected |
-| `view.pad_axis(name, index = 0) -> Float` | axis value (sticks, triggers) |
+| `view.pad_axis(name, index = 0) -> Float` | axis value: a stick -1..1, centred at 0; a trigger -1 released, 1 fully pulled |
 | `view.pad(name, index = 0) -> Bool` / `pad_pressed(name, index = 0) -> Bool` | button held / just pressed |
 | `view.rumble(left, right, sec, index = 0)` | haptics (Sony pads and XInput; Xbox-on-macOS is silent) |
 | `view.pad_name(index = 0) -> String` / `view.gamepad_mappings(db)` | pad identity / load an SDL mapping DB |

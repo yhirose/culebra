@@ -1,7 +1,8 @@
 // Names for raylib's key, gamepad-button and gamepad-axis codes — the one
 // vocabulary the Canvas and Scene backends share, so input code moves between
 // the two namespaces unchanged. The key names are `Term.read_key`'s, so they
-// move to the terminal too.
+// move to the terminal too. It also puts gamepad axis values on one scale
+// (pad_axis_value).
 //
 // A key name is a printable character ("a", " ", "-") or a special-key name
 // ("left", "enter", "f1", …), or "shift" for either Shift key (Canvas and
@@ -161,6 +162,16 @@ inline int pad_axis_of(std::string_view name) {
   };
   auto it = m.find(name);
   return it == m.end() ? -1 : it->second;
+}
+
+// An axis on the scale pad_axis promises: a stick -1..1 centred at 0, a
+// trigger -1 released, 1 fully pulled (raylib's own convention). raylib's
+// SDL backend divides every axis by 32767, but SDL reports a trigger
+// 0..32767, so a stored trigger reads 0..1, or -1 until it first moves.
+inline double pad_axis_value(int axis, double stored) {
+  if (axis != GAMEPAD_AXIS_LEFT_TRIGGER && axis != GAMEPAD_AXIS_RIGHT_TRIGGER)
+    return stored;
+  return stored < 0.0 ? -1.0 : 2.0 * stored - 1.0;
 }
 
 }  // namespace culebra::keynames

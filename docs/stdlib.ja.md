@@ -5983,7 +5983,7 @@ Canvas.run(320, 240, fn () {
 | 関数 | 結果 |
 | --- | --- |
 | `Canvas.pad_available(index = 0) -> Bool` | `index`にゲームパッドが接続されているか |
-| `Canvas.pad_axis(axis, index = 0) -> Float` | 軸の値（スティック、トリガー） |
+| `Canvas.pad_axis(axis, index = 0) -> Float` | 軸の値。スティックは-1〜1で中央が0、トリガーは離して-1、引ききって1 |
 | `Canvas.pad_held(button, index = 0) -> Bool` | ボタンが今押されているか |
 | `Canvas.pad_pressed(button, index = 0) -> Bool` | **このフレーム**に押されたか |
 | `Canvas.pad_name(index = 0) -> String` | パッドが報告する名前 |
@@ -6439,7 +6439,7 @@ ASCII）。数字と数語のHUDはそれだけ列挙して小さなアトラス
 | `view.key(name) -> Bool` | キーが押下中 |
 | `view.key_pressed(name) -> Bool` / `key_released(name) -> Bool` | このフレームで押された / 離された |
 | `view.pad_available(index = 0) -> Bool` | ゲームパッド接続あり |
-| `view.pad_axis(name, index = 0) -> Float` | 軸の値（スティック、トリガー） |
+| `view.pad_axis(name, index = 0) -> Float` | 軸の値。スティックは-1〜1で中央が0、トリガーは離して-1、引ききって1 |
 | `view.pad(name, index = 0) -> Bool` / `pad_pressed(name, index = 0) -> Bool` | ボタン押下中 / 今押された |
 | `view.rumble(left, right, sec, index = 0)` | ハプティクス（SonyパッドとXInput。Xbox × macOSは無音） |
 | `view.pad_name(index = 0) -> String` / `view.gamepad_mappings(db)` | パッド識別 / SDLマッピングDB読込 |
