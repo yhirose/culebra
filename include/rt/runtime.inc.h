@@ -1338,7 +1338,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_reanchor(int64_t site) {
       // and `col` still the Longs the runtime put there are moved.
       auto* o = reinterpret_cast<JitObject*>(rt.thrown_data);
       auto at = o->is_error ? _jit_long_slot(o, "line") : std::nullopt;
-      if (at && _jit_long_slot(o, "col") && !culebra::is_user_line(*at)) {
+      if (at && !culebra::is_user_line(*at) &&
+          _jit_long_slot(o, "col").has_value()) {
         o->slots[o->find_slot("line")].value = JitValue{TAG_LONG, line};
         o->slots[o->find_slot("col")].value = JitValue{TAG_LONG, col};
       }
@@ -4247,14 +4248,20 @@ inline void _jit_check_slot_write(const char* key, const culebra::Shape* shape,
                          tag, data, line, col);
 }
 
-// A JitHandle keeps its state in C++, so it has no field to write; consumes
-// the value.
+// A JitHandle keeps its state in C++, so it has no field to set or remove.
+[[noreturn]] inline void _jit_handle_refuse_field(JitObject* obj,
+                                                  const char* verb,
+                                                  int64_t line, int64_t col) {
+  throw culebra::CulebraError(
+      "TypeError", obj->handle->what() + " has no fields to " + verb, line,
+      col);
+}
+// The same for a write; consumes the value.
 [[noreturn]] inline void _jit_handle_reject_write(JitObject* obj, int8_t tag,
                                                   int64_t data, int64_t line,
                                                   int64_t col) {
   _culebra_value_release_impl(tag, data);
-  throw culebra::CulebraError(
-      "TypeError", obj->handle->what() + " has no fields to set", line, col);
+  _jit_handle_refuse_field(obj, "set", line, col);
 }
 
 struct JitBufView;
@@ -4486,12 +4493,12 @@ inline JitIdHandle* _jit_id_handle_in(
 }
 // The handle of one of `specs` a method was called on, or one handed in as
 // an argument: anything else (no receiver, another kind, an Object that only
-// looks like one) is a TypeError naming `what`, not a read of fields it chose.
+// looks like one) is a TypeError naming `name`, not a read of fields it chose.
 inline JitIdHandle& _jit_id_handle(
     JitValue v, std::initializer_list<const JitIdHandleSpec*> specs,
-    const char* what) {
+    const char* name) {
   if (auto* h = _jit_id_handle_in(v, specs)) return *h;
-  throw culebra::CulebraError("TypeError", std::string("not a ") + what);
+  throw culebra::CulebraError("TypeError", std::string("not a ") + name);
 }
 inline JitIdHandle& _jit_id_handle(JitValue v, const JitIdHandleSpec& spec) {
   return _jit_id_handle(v, {&spec}, spec.name);

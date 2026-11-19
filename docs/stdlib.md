@@ -8598,7 +8598,7 @@ inspect(idx.search("the"))           # => []
 
 | Field | | |
 |---|---|---|
-| `splitter` | `fn (text: String) -> Array` | cuts text into terms. Each element is `{term, position, length}` — the term string plus the byte range it came from. Omit it for the built-in splitting described above. Also takes a `Search.segmenter` (below) or a splitter written in C++ (next paragraph). |
+| `splitter` | `fn (text: String) -> Array` | cuts text into terms. Each element is `{term, position, length}` — the term string plus the byte range it came from. Omit it for the built-in splitting described above. Also takes a `Segmenter` (from `Search.segmenter`, below) or a splitter written in C++ (next paragraph). |
 | `normalizer` | `fn (term: String) -> String` | runs on every term, before the filters. Omit it for the built-in lowercasing. |
 | `filters` | `Array` of `fn (term: String) -> String \| Nil` | applied in order after the normalizer. Return a replacement term, or `nil` to drop it. |
 

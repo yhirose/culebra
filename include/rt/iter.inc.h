@@ -4146,22 +4146,18 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_object_get_or_put(
 // value's are released. `_key_order_erase` drops the key_order entry's +1.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_remove_any(
     JitObject* obj, int8_t tag, int64_t data, int64_t line, int64_t col) {
-  if (obj->is_shared_val) {
+  // A Shared view's entries are not this heap's, and a handle has none (a
+  // Listener's address is the runtime's): the key is released, then refused.
+  if (_jit_is_handle(obj)) {
     if (tag != TAG_STRING) _culebra_value_release_impl(tag, data);
-    _jit_shared_val_builtin_reject(obj, "remove", line, col);
-  }
-  // A handle has no fields: its own (a Listener's address) are the runtime's,
-  // and removing one is a write.
-  if (obj->has_handle) {
-    if (tag != TAG_STRING) _culebra_value_release_impl(tag, data);
-    throw culebra::CulebraError(
-        "TypeError", _jit_handle_what(obj) + " has no fields to remove", line,
-        col);
+    if (obj->is_shared_val)
+      _jit_shared_val_builtin_reject(obj, "remove", line, col);
+    _jit_handle_refuse_field(obj, "remove", line, col);
   }
   // Every normal exit below releases the key, so the unwind edges owe the same
   // — and hashing it is exactly where an unhashable key raises
   // (`({a: 1}).remove([1])` stranded the array otherwise). Armed after the
-  // shared-value reject, which does its own release before throwing.
+  // refusals above, which release the key themselves.
   JitUnwindRelease key_guard{JitValue{tag, data}};
   std::string _kbuf;
   if (const char* name = _jit_key_name(tag, data, _kbuf)) {

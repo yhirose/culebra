@@ -7737,9 +7737,6 @@ inline void _jit_http_sink_fill(JitObject* meta) {
   _jit_handle_bind_method(meta, "write", _jit_native<_jit_http_sink_write>, 1, write_meta);
 }
 
-inline JitValue _jit_make_http_sink_handle(int64_t sink_id) {
-  return _jit_make_id_handle(kHttpSinkHandle, sink_id);
-}
 
 // If `ret` is an Object carrying a
 // `stream` Function, wire a chunked response (same status/content_type/headers
@@ -7770,7 +7767,7 @@ inline bool _jit_http_try_stream_response(JitValue ret,
       res, content_type, [keep](int64_t sink_id) -> bool {
         auto* cls = keep.get();
         try {
-          JitValue sink = _jit_make_http_sink_handle(sink_id);
+          JitValue sink = _jit_make_id_handle(kHttpSinkHandle, sink_id);
           JitValue r = culebra_runtime_call_from_host([&] {
             return _culebra_invoke1(cls, sink);  // consumes sink's +1
           });
@@ -10987,7 +10984,7 @@ template <typename O> inline JitValue _ns_fst_map_suggest(JitValue* a, int64_t) 
 // This layer only does the JitValue/JitObject marshalling.
 //===------------------------------------------------------------------------//
 
-// A Search.segmenter: the id of its model in the segmenter table.
+// A Segmenter: the id of its model in the segmenter table.
 inline void _jit_search_segmenter_fill(JitObject* meta);
 inline constexpr JitIdHandleSpec kSegmenterHandle{"Segmenter", _jit_search_segmenter_fill};
 
@@ -11019,7 +11016,7 @@ inline culebra::search::ModelStore default_model_store() {
   return store;
 }
 
-// Whether `v` (the analyzer's `splitter`) is a Search.segmenter handle.
+// Whether `v` (the analyzer's `splitter`) is a Segmenter.
 inline bool is_segmenter(JitValue v) {
   return _jit_id_handle_in(v, {&kSegmenterHandle}) != nullptr;
 }
@@ -11038,7 +11035,7 @@ inline std::string foreign_class_name(JitValue v) {
 // class deriving from ISplitter (wrap.h). Resolved at every call, so a handle
 // dropped after the index was built raises ClosedError at the next add or
 // search, as any use of a dropped instance does -- the instance is the
-// wrapper's, unlike a Search.segmenter's model, which the index shares. `v`
+// wrapper's, unlike a Segmenter's model, which the index shares. `v`
 // is kept on the index handle, as the closure hooks are (see make_analyzer).
 inline culebra::search::Analyzer::NativeSplitter foreign_splitter(JitValue v) {
   auto of = culebra::wrapped_implementer<culebra::search::ISplitter>(v);
@@ -11150,7 +11147,7 @@ inline culebra::search::Analyzer make_analyzer(JitValue v,
     };
   }
 
-  // The splitter slot takes a closure, a Search.segmenter handle or a wrapped
+  // The splitter slot takes a closure, a Segmenter or a wrapped
   // C++ splitter's handle.
   //
   // Each branch also names itself in `analyzer.shape`, which a saved index
@@ -11168,7 +11165,7 @@ inline culebra::search::Analyzer make_analyzer(JitValue v,
     analyzer.native_splitter = std::move(native);
     splitter_shape = "native:" + foreign_class_name(seg);
   } else if (auto* cb = hook("splitter",
-                             "a Function, a Search.segmenter or a wrapped "
+                             "a Function, a Segmenter or a wrapped "
                              "splitter")) {
     splitter_shape = "closure";
     analyzer.splitter =
