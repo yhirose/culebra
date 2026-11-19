@@ -274,6 +274,13 @@ let p3 = view.pad_pressed("start", 1)
 let p4 = view.pad_axis("lx")
 let p5 = view.pad_axis("bogus", 2)
 println("pad {p1} {p2} {p3} {p4} {p5} '{view.pad_name()}'")
+# a device past the last one reads as nothing, whatever is plugged in
+let j1 = view.joy_axis(0, 99)
+let j2 = view.joy(0, 99)
+let j3 = view.joy_hat(0, 99)
+let j4 = view.joy_axes(99) + view.joy_buttons(99) + view.joy_hats(99)
+let j5 = view.joy_count() >= 0
+println("joy {j1} {j2} {j3} {j4} {j5} '{view.joy_name(99)}' '{view.joy_guid(99)}'")
 view.rumble(0.5, 0.5, 0.1)
 view.rumble(0.5, 0.5, 0.1, 1)
 
@@ -1141,6 +1148,7 @@ expect "checker 64.0x64.0 grain 32.0 canvas 32.0x32.0"
 expect "sizes: ValueError: view.checker: 65536x65536 is too large | ValueError: view.grain: 65536x65536 is too large | ValueError: view.render_target: 65536x65536 is too large | ValueError: view.canvas: width and height must not be negative, got -1x8"
 expect "ball 3.0 0.5 0.0"
 expect "keys false false false false false"
+expect "joy 0.0 false 0 0 true '' ''"
 expect "closing false -> true"
 expect "screenshot true"
 expect "window 320.0x240.0 fps>=0 true time>0 true resized true clipboard 'scene'"

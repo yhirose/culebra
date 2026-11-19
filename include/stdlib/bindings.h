@@ -1313,6 +1313,41 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_canvas_pad_mappings(
   auto sv = _culebra_str_view(tag, data);
   return culebra::_canvas_detail::pad_mappings(std::string(sv).c_str());
 }
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_canvas_joy_count() {
+  return culebra::_canvas_detail::joy_count();
+}
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_canvas_joy_name(
+    int64_t index) {
+  return _culebra_heap_str(culebra::_canvas_detail::joy_name(index));
+}
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_canvas_joy_guid(
+    int64_t index) {
+  return _culebra_heap_str(culebra::_canvas_detail::joy_guid(index));
+}
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_canvas_joy_axes(
+    int64_t index) {
+  return culebra::_canvas_detail::joy_axes(index);
+}
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_canvas_joy_buttons(
+    int64_t index) {
+  return culebra::_canvas_detail::joy_buttons(index);
+}
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_canvas_joy_hats(
+    int64_t index) {
+  return culebra::_canvas_detail::joy_hats(index);
+}
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE double culebra_runtime_canvas_joy_axis(
+    int64_t index, int64_t axis) {
+  return culebra::_canvas_detail::joy_axis(index, axis);
+}
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_canvas_joy_button(
+    int64_t index, int64_t button) {
+  return culebra::_canvas_detail::joy_button(index, button);
+}
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_canvas_joy_hat(
+    int64_t index, int64_t hat) {
+  return culebra::_canvas_detail::joy_hat(index, hat);
+}
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_canvas_quit() {
   culebra::_canvas_detail::quit();
 }
@@ -5590,6 +5625,41 @@ inline JitValue _ns_canvas_pad_rumble(JitValue* a, int64_t) {
 inline JitValue _ns_canvas_pad_mappings(JitValue* a, int64_t) {
   return _ns_adapt::v_long(culebra_runtime_canvas_pad_mappings(
       static_cast<uint8_t>(a[0].tag), a[0].data));
+}
+inline JitValue _ns_canvas_joy_count(JitValue*, int64_t) {
+  return _ns_adapt::v_long(culebra_runtime_canvas_joy_count());
+}
+inline JitValue _ns_canvas_joy_name(JitValue* a, int64_t) {
+  return _ns_adapt::v_string(
+      culebra_runtime_canvas_joy_name(_ns_adapt::take_long(a[0])));
+}
+inline JitValue _ns_canvas_joy_guid(JitValue* a, int64_t) {
+  return _ns_adapt::v_string(
+      culebra_runtime_canvas_joy_guid(_ns_adapt::take_long(a[0])));
+}
+inline JitValue _ns_canvas_joy_axes(JitValue* a, int64_t) {
+  return _ns_adapt::v_long(
+      culebra_runtime_canvas_joy_axes(_ns_adapt::take_long(a[0])));
+}
+inline JitValue _ns_canvas_joy_buttons(JitValue* a, int64_t) {
+  return _ns_adapt::v_long(
+      culebra_runtime_canvas_joy_buttons(_ns_adapt::take_long(a[0])));
+}
+inline JitValue _ns_canvas_joy_hats(JitValue* a, int64_t) {
+  return _ns_adapt::v_long(
+      culebra_runtime_canvas_joy_hats(_ns_adapt::take_long(a[0])));
+}
+inline JitValue _ns_canvas_joy_axis(JitValue* a, int64_t) {
+  return _ns_adapt::v_float(culebra_runtime_canvas_joy_axis(
+      _ns_adapt::take_long(a[0]), _ns_adapt::take_long(a[1])));
+}
+inline JitValue _ns_canvas_joy_button(JitValue* a, int64_t) {
+  return _ns_adapt::v_bool(culebra_runtime_canvas_joy_button(
+      _ns_adapt::take_long(a[0]), _ns_adapt::take_long(a[1])));
+}
+inline JitValue _ns_canvas_joy_hat(JitValue* a, int64_t) {
+  return _ns_adapt::v_long(culebra_runtime_canvas_joy_hat(
+      _ns_adapt::take_long(a[0]), _ns_adapt::take_long(a[1])));
 }
 inline JitValue _ns_canvas_quit(JitValue*, int64_t) {
   culebra_runtime_canvas_quit();
@@ -12163,6 +12233,15 @@ inline const NsMethod kNsRows_Canvas_native[] = {
   {"_Canvas", "pad_name",        1,  &_ns_canvas_pad_name},
   {"_Canvas", "pad_rumble",      4,  &_ns_canvas_pad_rumble},
   {"_Canvas", "pad_mappings",    1,  &_ns_canvas_pad_mappings},
+  {"_Canvas", "joy_count",       0,  &_ns_canvas_joy_count},
+  {"_Canvas", "joy_name",        1,  &_ns_canvas_joy_name},
+  {"_Canvas", "joy_guid",        1,  &_ns_canvas_joy_guid},
+  {"_Canvas", "joy_axes",        1,  &_ns_canvas_joy_axes},
+  {"_Canvas", "joy_buttons",     1,  &_ns_canvas_joy_buttons},
+  {"_Canvas", "joy_hats",        1,  &_ns_canvas_joy_hats},
+  {"_Canvas", "joy_axis",        2,  &_ns_canvas_joy_axis},
+  {"_Canvas", "joy_button",      2,  &_ns_canvas_joy_button},
+  {"_Canvas", "joy_hat",         2,  &_ns_canvas_joy_hat},
   {"_Canvas", "quit",            0,  &_ns_canvas_quit},
   {"_Canvas", "can_quit",        0,  &_ns_canvas_can_quit},
 };

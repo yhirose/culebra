@@ -6009,6 +6009,37 @@ raylib自身の`GamepadButton` / `GamepadAxis`の値で、スクリプトがそ�
 それを駆動するAPIが無い）では黙って何もしません。ゲームパッドの状態は
 ブラウザとヘッドレスでは利用できず、`pad_available`は常に`false`です。
 
+### ジョイスティック
+
+SDLのマッピングDBに載っていない機器（フライトスティック、ヨーク、スロットル、
+ラダーペダル）はゲームパッドではないので、`pad_*`のスロットには入りません。
+`joy_*`は、SDLが見えるすべてのジョイスティック（ゲームパッドを含む）を、機器自身の
+軸・ボタン・ハットの番号（0から）で読みます。GLFWの`glfwGetJoystick*`やpygameの
+`joystick`と同じ形です。値は生のままで、不感帯、曲線、割り当て直しはプログラムの側で行います。
+
+| 関数 | 結果 |
+| --- | --- |
+| `Canvas.joy_count() -> Long` | 接続されているジョイスティックの数 |
+| `Canvas.joy_name(index = 0) -> String` | 機器が報告する名前 |
+| `Canvas.joy_guid(index = 0) -> String` | SDLの16進32桁のGUID。同じ機種なら同じ値で、割り当てのファイルの鍵に使える |
+| `Canvas.joy_axes(index = 0) -> Long` / `joy_buttons(index = 0) -> Long` / `joy_hats(index = 0) -> Long` | 機器が持つ数 |
+| `Canvas.joy_axis(axis, index = 0) -> Float` | 軸の値（-1〜1） |
+| `Canvas.joy_held(button, index = 0) -> Bool` | ボタンが今押されているか |
+| `Canvas.joy_hat(hat, index = 0) -> Long` | ハットのビット。1が上、2が右、4が下、8が左（斜めは2つ立つ。中央は0） |
+
+`index`は接続の順番での機器の位置です。最後の機器より後の番号や、機器に無い軸・
+ボタン・ハットは、0、`false`、`""`として読めます。ジョイスティックのボタンには
+「このフレームだけのエッジ」はないので、前のフレームの`joy_held`と比べます。
+ブラウザとヘッドレスでは`joy_count`は0です。
+
+```culebra
+# doctest: skip — reads a device
+for i in 0..Canvas.joy_count() {
+  println("{i} {Canvas.joy_name(i)}: {Canvas.joy_axes(i)} axes, {Canvas.joy_buttons(i)} buttons")
+}
+let pitch = Canvas.joy_axis(1)   # most sticks: axis 1 is forward/back
+```
+
 ### 衝突判定
 
 軸並行の重なり・内包判定。ネイティブ側の実装を持たない純粋なculebraコード:
@@ -6443,6 +6474,9 @@ ASCII）。数字と数語のHUDはそれだけ列挙して小さなアトラス
 | `view.pad(name, index = 0) -> Bool` / `pad_pressed(name, index = 0) -> Bool` | ボタン押下中 / 今押された |
 | `view.rumble(left, right, sec, index = 0)` | ハプティクス（SonyパッドとXInput。Xbox × macOSは無音） |
 | `view.pad_name(index = 0) -> String` / `view.gamepad_mappings(db)` | パッド識別 / SDLマッピングDB読込 |
+| `view.joy_count() -> Long` / `joy_name(index = 0) -> String` / `joy_guid(index = 0) -> String` | 汎用ジョイスティック（フライトスティック、ヨーク、ペダル。ゲームパッドも）の数 / 機器の名前 / 機種のGUID |
+| `view.joy_axes(index = 0) -> Long` / `joy_buttons(index = 0) -> Long` / `joy_hats(index = 0) -> Long` | 機器が持つ数 |
+| `view.joy_axis(axis, index = 0) -> Float` / `joy(button, index = 0) -> Bool` / `joy_hat(hat, index = 0) -> Long` | 生の軸（-1〜1） / ボタン押下中 / ハットのビット（1上、2右、4下、8左）。機器自身の番号で。[`Canvas`のジョイスティック](#ジョイスティック)と同じ |
 | `view.mouse_x()` / `mouse_y() -> Float` | ポインタ位置 |
 | `view.mouse_dx()` / `mouse_dy() -> Float` | 前フレームからの移動量（capture中も） |
 | `view.mouse_wheel() -> Float` | このフレームのホイール量 |

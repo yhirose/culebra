@@ -1743,6 +1743,41 @@ inline constexpr CanonParam kCanonParams_Canvas_native_pad_mappings[] = {
   {"db", false, false, false, false, false, "String", CanonDefault::None, 0, {}},
 };
 
+inline constexpr CanonParam kCanonParams_Canvas_native_joy_name[] = {
+  {"index", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
+};
+
+inline constexpr CanonParam kCanonParams_Canvas_native_joy_guid[] = {
+  {"index", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
+};
+
+inline constexpr CanonParam kCanonParams_Canvas_native_joy_axes[] = {
+  {"index", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
+};
+
+inline constexpr CanonParam kCanonParams_Canvas_native_joy_buttons[] = {
+  {"index", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
+};
+
+inline constexpr CanonParam kCanonParams_Canvas_native_joy_hats[] = {
+  {"index", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
+};
+
+inline constexpr CanonParam kCanonParams_Canvas_native_joy_axis[] = {
+  {"index", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
+  {"axis", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
+};
+
+inline constexpr CanonParam kCanonParams_Canvas_native_joy_button[] = {
+  {"index", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
+  {"button", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
+};
+
+inline constexpr CanonParam kCanonParams_Canvas_native_joy_hat[] = {
+  {"index", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
+  {"hat", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
+};
+
 inline constexpr CanonSig kCanonSigs_Canvas_native[] = {
   {"_Canvas", "", "init", kCanonParams_Canvas_native_init, ""},
   {"_Canvas", "", "ttf_load", kCanonParams_Canvas_native_ttf_load, "Long"},
@@ -1808,6 +1843,15 @@ inline constexpr CanonSig kCanonSigs_Canvas_native[] = {
   {"_Canvas", "", "pad_name", kCanonParams_Canvas_native_pad_name, "String"},
   {"_Canvas", "", "pad_rumble", kCanonParams_Canvas_native_pad_rumble, ""},
   {"_Canvas", "", "pad_mappings", kCanonParams_Canvas_native_pad_mappings, "Long"},
+  {"_Canvas", "", "joy_count", {}, "Long"},
+  {"_Canvas", "", "joy_name", kCanonParams_Canvas_native_joy_name, "String"},
+  {"_Canvas", "", "joy_guid", kCanonParams_Canvas_native_joy_guid, "String"},
+  {"_Canvas", "", "joy_axes", kCanonParams_Canvas_native_joy_axes, "Long"},
+  {"_Canvas", "", "joy_buttons", kCanonParams_Canvas_native_joy_buttons, "Long"},
+  {"_Canvas", "", "joy_hats", kCanonParams_Canvas_native_joy_hats, "Long"},
+  {"_Canvas", "", "joy_axis", kCanonParams_Canvas_native_joy_axis, "Float"},
+  {"_Canvas", "", "joy_button", kCanonParams_Canvas_native_joy_button, "Bool"},
+  {"_Canvas", "", "joy_hat", kCanonParams_Canvas_native_joy_hat, "Long"},
   {"_Canvas", "", "quit", {}, ""},
   {"_Canvas", "", "can_quit", {}, "Bool"},
 };

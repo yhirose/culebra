@@ -434,8 +434,9 @@ ctest.entries 43
 # limiter in loops, a waveshaper, and a sound made coarse by round and latch.
 # 1200 since Isolate.spawn_source, in en and ja (a doctest-skipped example).
 # 1202 since a StringView is a String, in en and ja: a split piece passed to
-# a String parameter and asked `is String`.
-docs.blocks 1202
+# a String parameter and asked `is String`. 1204 since Canvas's joysticks, in
+# en and ja (a doctest-skipped example: it reads a device).
+docs.blocks 1204
 
 # The samples the language front ends are run over (examples/languages/*).
 languages.samples 130

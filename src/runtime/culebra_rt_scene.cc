@@ -47,6 +47,7 @@
 #include "raymath.h"
 #include "rlgl.h"       // FBO / shader / matrix stack for shadows
 #include "stdlib/keynames.h"    // key / pad names, shared with the Canvas backend
+#include "culebra_joystick.h"   // generic joysticks, shared with the Canvas backend
 
 namespace gfx {
 
@@ -1535,6 +1536,24 @@ class View {
     const char* n = GetGamepadName((int)index);
     return n ? n : "";
   }
+  // Generic joysticks (culebra_joystick.h, shared with the Canvas backend):
+  // every device SDL sees -- flight sticks, yokes, pedals, gamepads too -- by
+  // raw axis / button / hat number, which raylib's gamepad slots cannot open.
+  int64_t joy_count() const { return culebra::joystick::count(); }
+  std::string joy_name(int64_t index) const { return culebra::joystick::name(index); }
+  std::string joy_guid(int64_t index) const { return culebra::joystick::guid(index); }
+  int64_t joy_axes(int64_t index) const { return culebra::joystick::axes(index); }
+  int64_t joy_buttons(int64_t index) const { return culebra::joystick::buttons(index); }
+  int64_t joy_hats(int64_t index) const { return culebra::joystick::hats(index); }
+  double joy_axis(int64_t axis, int64_t index) const {
+    return culebra::joystick::axis(index, axis);
+  }
+  bool joy(int64_t button, int64_t index) const {
+    return culebra::joystick::button(index, button);
+  }
+  int64_t joy_hat(int64_t hat, int64_t index) const {
+    return culebra::joystick::hat(index, hat);
+  }
   // Load SDL_GameControllerDB mapping lines for pads the bundled DB lacks
   // (newer controllers). Returns 1 on success.
   int64_t gamepad_mappings(std::string db) { return SetGamepadMappings(db.c_str()); }
@@ -2556,6 +2575,15 @@ const bool registered = [] {
       .method<&gfx::View::pad_name>("pad_name", {{"index", 0}})
       .method<&gfx::View::gamepad_mappings>("gamepad_mappings", {"db"})
       .method<&gfx::View::rumble>("rumble", {"left", "right", "sec", {"index", 0}})
+      .method<&gfx::View::joy_count>("joy_count")
+      .method<&gfx::View::joy_name>("joy_name", {{"index", 0}})
+      .method<&gfx::View::joy_guid>("joy_guid", {{"index", 0}})
+      .method<&gfx::View::joy_axes>("joy_axes", {{"index", 0}})
+      .method<&gfx::View::joy_buttons>("joy_buttons", {{"index", 0}})
+      .method<&gfx::View::joy_hats>("joy_hats", {{"index", 0}})
+      .method<&gfx::View::joy_axis>("joy_axis", {"axis", {"index", 0}})
+      .method<&gfx::View::joy>("joy", {"button", {"index", 0}})
+      .method<&gfx::View::joy_hat>("joy_hat", {"hat", {"index", 0}})
       .method<&gfx::View::background>("background", {"r", "g", "b"})
       .method<&gfx::View::sky>("sky", {"tr", "tg", "tb", "br", "bg", "bb"})
       .method<&gfx::View::fog>("fog", {"start", "end", "r", "g", "b"})

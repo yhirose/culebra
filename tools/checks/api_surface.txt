@@ -586,6 +586,15 @@ Canvas.pad_pressed(button, index = 0) -> Bool
 Canvas.pad_name(index = 0) -> String
 Canvas.pad_rumble(left, right, sec, index = 0)
 Canvas.pad_mappings(db) -> Bool
+Canvas.joy_count() -> Long
+Canvas.joy_name(index = 0) -> String
+Canvas.joy_guid(index = 0) -> String
+Canvas.joy_axes(index = 0) -> Long
+joy_buttons(index = 0) -> Long
+joy_hats(index = 0) -> Long
+Canvas.joy_axis(axis, index = 0) -> Float
+Canvas.joy_held(button, index = 0) -> Bool
+Canvas.joy_hat(hat, index = 0) -> Long
 Canvas.rect_overlap(x1, y1, w1, h1, x2, y2, w2, h2) -> Bool
 Canvas.circle_overlap(x1, y1, r1, x2, y2, r2) -> Bool
 Canvas.point_in_rect(px, py, x, y, w, h) -> Bool
@@ -766,6 +775,15 @@ pad_pressed(name, index = 0) -> Bool
 view.rumble(left, right, sec, index = 0)
 view.pad_name(index = 0) -> String
 view.gamepad_mappings(db)
+view.joy_count() -> Long
+joy_name(index = 0) -> String
+joy_guid(index = 0) -> String
+view.joy_axes(index = 0) -> Long
+joy_buttons(index = 0) -> Long
+joy_hats(index = 0) -> Long
+view.joy_axis(axis, index = 0) -> Float
+joy(button, index = 0) -> Bool
+joy_hat(hat, index = 0) -> Long
 view.mouse_x()
 mouse_y() -> Float
 view.mouse_dx()

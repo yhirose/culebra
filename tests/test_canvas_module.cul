@@ -564,6 +564,20 @@ assert_throws("TypeError", fn () {
   Canvas.pad_axis("nope")
 })
 
+// Joysticks: headless sees none, so every read is the "no device" value.
+assert_eq(Canvas.joy_count(), 0)
+assert_eq(Canvas.joy_name(), "")
+assert_eq(Canvas.joy_guid(3), "")
+assert_eq(Canvas.joy_axes(), 0)
+assert_eq(Canvas.joy_buttons(), 0)
+assert_eq(Canvas.joy_hats(), 0)
+assert_eq(Canvas.joy_axis(1), 0.0)
+assert_eq(Canvas.joy_held(0, 2), false)
+assert_eq(Canvas.joy_hat(0), 0)
+assert_throws("TypeError", fn () {
+  Canvas.joy_axis("x")
+})
+
 // Gamepad button/axis constants are distinct.
 assert_eq(Canvas.PAD_UP, 1)
 assert_eq(Canvas.PAD_R3, 17)

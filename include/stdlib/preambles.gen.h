@@ -1437,6 +1437,39 @@ inline constexpr const char* CANVAS_MODULE_SOURCE = R"=culpre=(let _canvas_modul
     _Canvas.pad_mappings(db) == 1
   }
 
+  # Generic joysticks: every device SDL sees (flight sticks, yokes, throttles,
+  # pedals, gamepads too), by its own axis / button / hat numbers from 0. Raw
+  # values -- no dead zone or curve. `index` is the device's place in the
+  # connection order; `joy_guid` names the model, for a mapping file.
+  let joy_count = fn () {
+    _Canvas.joy_count()
+  }
+  let joy_name = fn (index = 0) {
+    _Canvas.joy_name(index)
+  }
+  let joy_guid = fn (index = 0) {
+    _Canvas.joy_guid(index)
+  }
+  let joy_axes = fn (index = 0) {
+    _Canvas.joy_axes(index)
+  }
+  let joy_buttons = fn (index = 0) {
+    _Canvas.joy_buttons(index)
+  }
+  let joy_hats = fn (index = 0) {
+    _Canvas.joy_hats(index)
+  }
+  let joy_axis = fn (axis, index = 0) {
+    _Canvas.joy_axis(index, axis)
+  }
+  let joy_held = fn (button, index = 0) {
+    _Canvas.joy_button(index, button)
+  }
+  # 1 up, 2 right, 4 down, 8 left; a diagonal sets two, 0 is centred.
+  let joy_hat = fn (hat, index = 0) {
+    _Canvas.joy_hat(index, hat)
+  }
+
   # --- collision --------------------------------------------------------------
   # Axis-aligned rectangle / circle overlap -- the two shapes almost every
   # casual game ends up hand-rolling for hit detection. `rect` args are a
@@ -1639,6 +1672,15 @@ inline constexpr const char* CANVAS_MODULE_SOURCE = R"=culpre=(let _canvas_modul
     pad_name: pad_name,
     pad_rumble: pad_rumble,
     pad_mappings: pad_mappings,
+    joy_count: joy_count,
+    joy_name: joy_name,
+    joy_guid: joy_guid,
+    joy_axes: joy_axes,
+    joy_buttons: joy_buttons,
+    joy_hats: joy_hats,
+    joy_axis: joy_axis,
+    joy_held: joy_held,
+    joy_hat: joy_hat,
     rect_overlap: rect_overlap,
     circle_overlap: circle_overlap,
     point_in_rect: point_in_rect,

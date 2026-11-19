@@ -1565,7 +1565,8 @@ inline const auto FS = ::cpp_embedlib::EmbeddedFS{_entries};
   if(CULEBRA_ENABLE_SCENE)
     add_library(culebra_rt_scene STATIC ./src/runtime/culebra_rt_scene.cc)
     target_compile_features(culebra_rt_scene PRIVATE cxx_std_23)
-    target_include_directories(culebra_rt_scene PRIVATE ./vendor/raylib/src)
+    target_include_directories(culebra_rt_scene PRIVATE ./vendor/raylib/src
+                                                        ./vendor/SDL/include)
     target_compile_definitions(culebra_rt_scene PRIVATE CULEBRA_ENABLE_SCENE=1)
     target_compile_options(culebra_rt_scene PRIVATE -ffunction-sections -fdata-sections)
     list(APPEND _rt_embed_files

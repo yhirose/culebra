@@ -867,8 +867,8 @@ from a signature produces code that lints and does not run.
 | `Term` | 27 | terminal color, cursor control, size, and key/mouse input for TUIs |
 | `XML` | 12 | parse / search (an XPath subset) / stringify XML; a lazy event stream for large documents |
 | `SQLite` | 10 | embedded SQL database (query / execute / prepared statements / transactions) |
-| `Canvas` | 61 | immediate-mode 2D framebuffer for games (shapes, sprites, offscreen targets, text, keys/mouse/gamepad, window controls) |
-| `Scene` | 180 | retained-mode 3D renderer for procedural geometry |
+| `Canvas` | 70 | immediate-mode 2D framebuffer for games (shapes, sprites, offscreen targets, text, keys/mouse/gamepad, window controls) |
+| `Scene` | 189 | retained-mode 3D renderer for procedural geometry |
 | `Net` | 22 | raw TCP / UDP sockets and name resolution (the layer under `Http`) |
 | `Desktop` / `Webview` | 10 | native WebView desktop app: local HTTP server + window, one call |
 | `Vector2` | 9 | minimal 2D float vector for graphics/game code (also stands in for a "Point") |

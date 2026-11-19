@@ -1013,6 +1013,15 @@ inline bool pad_pressed(int64_t, int64_t) { return false; }
 inline std::string pad_name(int64_t) { return ""; }
 inline void pad_rumble(int64_t, double, double, double) {}
 inline int64_t pad_mappings(const char*) { return 0; }
+inline int64_t joy_count() { return 0; }
+inline std::string joy_name(int64_t) { return ""; }
+inline std::string joy_guid(int64_t) { return ""; }
+inline int64_t joy_axes(int64_t) { return 0; }
+inline int64_t joy_buttons(int64_t) { return 0; }
+inline int64_t joy_hats(int64_t) { return 0; }
+inline double joy_axis(int64_t, int64_t) { return 0.0; }
+inline bool joy_button(int64_t, int64_t) { return false; }
+inline int64_t joy_hat(int64_t, int64_t) { return 0; }
 // Quitting is the tab's call, not the program's -- see closing() above.
 inline void quit() {}
 inline bool can_quit() { return false; }
@@ -1063,6 +1072,15 @@ __attribute__((weak)) bool pad_pressed(int64_t, int64_t) { return false; }
 __attribute__((weak)) std::string pad_name(int64_t) { return ""; }
 __attribute__((weak)) void pad_rumble(int64_t, double, double, double) {}
 __attribute__((weak)) int64_t pad_mappings(const char*) { return 0; }
+__attribute__((weak)) int64_t joy_count() { return 0; }
+__attribute__((weak)) std::string joy_name(int64_t) { return ""; }
+__attribute__((weak)) std::string joy_guid(int64_t) { return ""; }
+__attribute__((weak)) int64_t joy_axes(int64_t) { return 0; }
+__attribute__((weak)) int64_t joy_buttons(int64_t) { return 0; }
+__attribute__((weak)) int64_t joy_hats(int64_t) { return 0; }
+__attribute__((weak)) double joy_axis(int64_t, int64_t) { return 0.0; }
+__attribute__((weak)) bool joy_button(int64_t, int64_t) { return false; }
+__attribute__((weak)) int64_t joy_hat(int64_t, int64_t) { return 0; }
 __attribute__((weak)) void quit() {}
 __attribute__((weak)) bool can_quit() { return false; }
 
@@ -1107,6 +1125,15 @@ bool pad_pressed(int64_t index, int64_t button);
 std::string pad_name(int64_t index);
 void pad_rumble(int64_t index, double left, double right, double sec);
 int64_t pad_mappings(const char* db);
+int64_t joy_count();
+std::string joy_name(int64_t index);
+std::string joy_guid(int64_t index);
+int64_t joy_axes(int64_t index);
+int64_t joy_buttons(int64_t index);
+int64_t joy_hats(int64_t index);
+double joy_axis(int64_t index, int64_t axis);
+bool joy_button(int64_t index, int64_t button);
+int64_t joy_hat(int64_t index, int64_t hat);
 void quit();
 bool can_quit();
 
@@ -1150,6 +1177,15 @@ inline bool pad_pressed(int64_t, int64_t) { return false; }
 inline std::string pad_name(int64_t) { return ""; }
 inline void pad_rumble(int64_t, double, double, double) {}
 inline int64_t pad_mappings(const char*) { return 0; }
+inline int64_t joy_count() { return 0; }
+inline std::string joy_name(int64_t) { return ""; }
+inline std::string joy_guid(int64_t) { return ""; }
+inline int64_t joy_axes(int64_t) { return 0; }
+inline int64_t joy_buttons(int64_t) { return 0; }
+inline int64_t joy_hats(int64_t) { return 0; }
+inline double joy_axis(int64_t, int64_t) { return 0.0; }
+inline bool joy_button(int64_t, int64_t) { return false; }
+inline int64_t joy_hat(int64_t, int64_t) { return 0; }
 inline void quit() {}
 inline bool can_quit() { return false; }
 

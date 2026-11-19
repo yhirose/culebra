@@ -6218,6 +6218,38 @@ script never has to know them:
 pads on macOS have no API driving them). Gamepad state is unavailable — and
 `pad_available` is always `false` — in the browser and headless.
 
+### Joysticks
+
+A device SDL's mapping DB does not list — a flight stick, a yoke, a
+throttle quadrant, rudder pedals — is not a gamepad and never fills a `pad_*`
+slot. The `joy_*` functions read every joystick SDL sees, gamepads included,
+by the device's own axis, button and hat numbers (from 0), the way GLFW's
+`glfwGetJoystick*` and pygame's `joystick` do. Values are raw: no dead zone,
+curve or remapping, which belong to the program.
+
+| Function | Result |
+| --- | --- |
+| `Canvas.joy_count() -> Long` | joysticks connected |
+| `Canvas.joy_name(index = 0) -> String` | the device's reported name |
+| `Canvas.joy_guid(index = 0) -> String` | SDL's 32-hex-digit GUID: the same for every unit of a model, a key for a mapping file |
+| `Canvas.joy_axes(index = 0) -> Long` / `joy_buttons(index = 0) -> Long` / `joy_hats(index = 0) -> Long` | how many the device has |
+| `Canvas.joy_axis(axis, index = 0) -> Float` | the axis -1..1 |
+| `Canvas.joy_held(button, index = 0) -> Bool` | the button is held now |
+| `Canvas.joy_hat(hat, index = 0) -> Long` | the hat's bits: 1 up, 2 right, 4 down, 8 left (a diagonal sets two; 0 centred) |
+
+`index` is the device's place in the connection order. An index past the
+last device, or an axis, button or hat the device lacks, reads as 0, `false`
+or `""`. There is no same-frame edge for a joystick button; compare with the
+previous frame's `joy_held`. In the browser and headless, `joy_count` is 0.
+
+```culebra
+# doctest: skip — reads a device
+for i in 0..Canvas.joy_count() {
+  println("{i} {Canvas.joy_name(i)}: {Canvas.joy_axes(i)} axes, {Canvas.joy_buttons(i)} buttons")
+}
+let pitch = Canvas.joy_axis(1)   # most sticks: axis 1 is forward/back
+```
+
 ### Collision
 
 Axis-aligned overlap and containment tests, plain culebra with no native
@@ -6672,6 +6704,9 @@ The mouse reports in window points; its buttons are `"left"`, `"right"` and
 | `view.pad(name, index = 0) -> Bool` / `pad_pressed(name, index = 0) -> Bool` | button held / just pressed |
 | `view.rumble(left, right, sec, index = 0)` | haptics (Sony pads and XInput; Xbox-on-macOS is silent) |
 | `view.pad_name(index = 0) -> String` / `view.gamepad_mappings(db)` | pad identity / load an SDL mapping DB |
+| `view.joy_count() -> Long` / `joy_name(index = 0) -> String` / `joy_guid(index = 0) -> String` | generic joysticks (flight sticks, yokes, pedals; gamepads too) connected / a device's name / its model's GUID |
+| `view.joy_axes(index = 0) -> Long` / `joy_buttons(index = 0) -> Long` / `joy_hats(index = 0) -> Long` | how many the device has |
+| `view.joy_axis(axis, index = 0) -> Float` / `joy(button, index = 0) -> Bool` / `joy_hat(hat, index = 0) -> Long` | raw axis -1..1 / button held / hat bits (1 up, 2 right, 4 down, 8 left), by the device's own numbers; as [`Canvas`'s joysticks](#joysticks) |
 | `view.mouse_x()` / `mouse_y() -> Float` | pointer position |
 | `view.mouse_dx()` / `mouse_dy() -> Float` | pointer motion since the last frame (also while captured) |
 | `view.mouse_wheel() -> Float` | wheel delta this frame |

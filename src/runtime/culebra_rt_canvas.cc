@@ -39,6 +39,8 @@
 #include <SDL3/SDL_keyboard.h>
 #include <SDL3/SDL_video.h>
 
+#include "culebra_joystick.h"
+
 namespace culebra {
 namespace _canvas_detail {
 namespace {
@@ -501,6 +503,46 @@ int64_t pad_mappings(const char* db) {
   ensure_window();
   if (!g_window_ready) return 0;
   return SetGamepadMappings(db);
+}
+
+// Generic joysticks (culebra_joystick.h): every device SDL sees, gamepads
+// included, by raw axis / button / hat number -- the flight sticks, yokes and
+// pedals raylib's gamepad slots cannot open.
+int64_t joy_count() {
+  ensure_window();
+  return g_window_ready ? joystick::count() : 0;
+}
+std::string joy_name(int64_t index) {
+  ensure_window();
+  return g_window_ready ? joystick::name(index) : "";
+}
+std::string joy_guid(int64_t index) {
+  ensure_window();
+  return g_window_ready ? joystick::guid(index) : "";
+}
+int64_t joy_axes(int64_t index) {
+  ensure_window();
+  return g_window_ready ? joystick::axes(index) : 0;
+}
+int64_t joy_buttons(int64_t index) {
+  ensure_window();
+  return g_window_ready ? joystick::buttons(index) : 0;
+}
+int64_t joy_hats(int64_t index) {
+  ensure_window();
+  return g_window_ready ? joystick::hats(index) : 0;
+}
+double joy_axis(int64_t index, int64_t axis) {
+  ensure_window();
+  return g_window_ready ? joystick::axis(index, axis) : 0.0;
+}
+bool joy_button(int64_t index, int64_t button) {
+  ensure_window();
+  return g_window_ready && joystick::button(index, button);
+}
+int64_t joy_hat(int64_t index, int64_t hat) {
+  ensure_window();
+  return g_window_ready ? joystick::hat(index, hat) : 0;
 }
 
 // Mouse position in framebuffer pixels (window pixels / the upscale), clamped
