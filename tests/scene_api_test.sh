@@ -1129,6 +1129,52 @@ println(bad_five)
 println(bad_size)
 EOS
 
+# A queued 2D draw names its texture or font atlas by GPU id until the frame is
+# presented, so a handle the script lets go of first must stay alive: the next
+# canvases take the freed ids, and the sprite and the text would show them.
+{
+  echo "let ttf = \"$TTF\""
+  cat <<'EOS'
+let view = Scene.View.new(160, 120, "scene life")
+view.background(0, 0, 0)
+fn draw_sprite() {
+  let c = view.canvas(16, 16)
+  view.rect(0.0, 0.0, 16.0, 16.0, 255, 0, 0)
+  view.canvas_end()
+  view.sprite(c, 10.0, 10.0, 32.0, 32.0)
+}
+fn draw_text() {
+  let f = view.font_bytes(FS.read(ttf), 40, "M")
+  view.text("M", 80.0, 10.0, 40, 255, 255, 255, font: f)
+}
+view.begin_2d()
+draw_sprite()
+draw_text()
+let t1 = view.canvas(16, 16)
+view.rect(0.0, 0.0, 16.0, 16.0, 0, 0, 255)
+view.canvas_end()
+let t2 = view.canvas(16, 16)
+view.rect(0.0, 0.0, 16.0, 16.0, 0, 0, 255)
+view.canvas_end()
+view.screenshot("life.png")
+view.present()
+view.drop()
+
+Canvas.init(160, 120)
+Canvas.Sprite.from_png(FS.read("life.png")).draw(0, 0)
+let v = Canvas.get_pixel(26, 26)
+println("a sprite outlives its handle: {(v & 255) > 200 && ((v >> 8) & 255) < 60 && ((v >> 16) & 255) < 60}")
+mut white = 0
+for y in 10..50 {
+  for x in 80..120 {
+    let p = Canvas.get_pixel(x, y)
+    if (p & 255) > 200 && ((p >> 8) & 255) > 200 && ((p >> 16) & 255) > 200 { white += 1 }
+  }
+}
+println("text outlives its font: {white > 100}")
+EOS
+} > scene_life.cul
+
 # Run one program on both engines: it must exit 0 and the engines must print the
 # same lines, each of which must include every expected line given after the name.
 run_pair() {
@@ -1188,6 +1234,8 @@ run_pair tss "a 4x target is 16.0x16.0 to its readers: true" "1x is the default:
   "ValueError: view.render_target: supersample must be 1 to 4, got 5" \
   "ValueError: view.render_target: 65536x65536 is too large"
 echo "OK: a supersampled render target averages its edges and keeps the output's mip levels"
+run_pair life "a sprite outlives its handle: true" "text outlives its font: true"
+echo "OK: a handle dropped before present() still draws what it was given"
 
 for engine in "--vm" "--jit"; do
   if ! CULEBRA_CANVAS_HEADLESS=1 "$CULEBRA" "$engine" scene_api.cul "$TTF" > "out${engine}.txt" 2> "out${engine}.err"; then

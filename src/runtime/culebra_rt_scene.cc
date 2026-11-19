@@ -461,6 +461,9 @@ class Texture : public std::enable_shared_from_this<Texture> {
   Texture& operator=(const Texture&) = delete;
   ~Texture() {
     if (!live()) return;
+    // Queued 2D draws name this texture by GPU id: draw them before the id can
+    // be handed to the next texture.
+    rlDrawRenderBatchActive();
     if (ss_rt.id) UnloadRenderTexture(ss_rt);
     if (is_rt) UnloadRenderTexture(rt); else UnloadTexture(tex);
   }
@@ -579,7 +582,11 @@ class Font {
   Font(const Font&) = delete;
   Font& operator=(const Font&) = delete;
   ~Font() {
-    if (live() && IsWindowReady()) { UnloadFont(font); return; }
+    if (live() && IsWindowReady()) {
+      rlDrawRenderBatchActive();   // queued text names the atlas by GPU id (see ~Texture)
+      UnloadFont(font);
+      return;
+    }
     // The atlas texture went with the context, but the glyph images and the
     // rectangles are plain heap — the same split unload_mesh() makes. Both
     // calls take a null (adopt_font leaves ::Font{} behind on failure).

@@ -6548,7 +6548,8 @@ while !view.closing() {
 
 A texture is a handle too. The two handle types are the contract: a texture
 where a material is expected (or the reverse) is a `TypeError` at the call, and
-a dropped handle a `ClosedError`.
+a dropped handle a `ClosedError`. A `sprite` or `text` call draws what it was
+given even if the script lets go of the handle before `present()`.
 
 | Method | Result |
 | --- | --- |
