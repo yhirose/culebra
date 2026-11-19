@@ -333,3 +333,8 @@ ufcsshadownest|size|*|[1, 2].iter()
 # A String and a StringView order by bytes, as `==` already compared them: the
 # baseline raised "cannot compare StringView and String".
 svord|let v = "xz"[1..2]; v < "z"
+
+# A StringView is a String (docs/language.md §18.1), so a handle method's
+# String parameter takes one: the baseline refused a slice passed to
+# File.write ("parameter 'data' expects String").
+filecheck|{ let f = File.open("/dev/null", "w"); f.write("abcd"[1..3]) }
