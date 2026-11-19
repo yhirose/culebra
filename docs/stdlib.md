@@ -39,10 +39,10 @@ Conventions used below:
   other class.
 * A **native handle** (a `File`, a `Proc`, a database, a socket, a model, a
   wrapped C++ instance...) keeps what it is and which resource it reaches
-  inside the runtime, not in fields: it prints as its kind (`[File]`; a
-  wrapped instance as `Counter {}`), has no
-  fields (`keys()` is `[]`, setting one is a `TypeError`; a `Listener`'s and
-  a `UdpSocket`'s `host` and `port` are the exception, read-only), is refused
+  inside the runtime, not in fields: it prints as its type (`[File]`; a
+  wrapped instance as `Counter {}`), has no fields (`keys()` is `[]`, and
+  setting or removing one is a `TypeError`; a `Listener`'s and a
+  `UdpSocket`'s `host` and `port` are the exception, read-only), is refused
   by spread, `**`, a for-in over its keys and `JSON.stringify` /
   `TOML.stringify`, and is not Sendable. An Object that only looks like one
   is not one: a method given it raises `TypeError`.
@@ -423,7 +423,7 @@ name = IO.input()
 println("Hello, {name}")
 ```
 
-### `IO.stdin() -> reader`
+### `IO.stdin() -> Stdin`
 
 Return a read-only handle over standard input, sharing the same reader shape
 as a `File` handle (so source-generic code works over either):

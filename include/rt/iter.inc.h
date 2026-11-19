@@ -4150,6 +4150,14 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_remove_any(
     if (tag != TAG_STRING) _culebra_value_release_impl(tag, data);
     _jit_shared_val_builtin_reject(obj, "remove", line, col);
   }
+  // A handle has no fields: its own (a Listener's address) are the runtime's,
+  // and removing one is a write.
+  if (obj->has_handle) {
+    if (tag != TAG_STRING) _culebra_value_release_impl(tag, data);
+    throw culebra::CulebraError(
+        "TypeError", _jit_handle_what(obj) + " has no fields to remove", line,
+        col);
+  }
   // Every normal exit below releases the key, so the unwind edges owe the same
   // — and hashing it is exactly where an unhashable key raises
   // (`({a: 1}).remove([1])` stranded the array otherwise). Armed after the

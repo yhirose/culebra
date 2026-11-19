@@ -317,7 +317,7 @@ inline std::string _sys_data_dir(std::string_view app, int64_t line,
 
 // --- File handle side table (file-scope, shared between interp + JIT) ---
 //
-// A File handle is an Object carrying just `_id` (Long); the native
+// A File handle carries the id of its entry here (JitIdHandle); the native
 // std::fstream lives here, keyed by id. The table is per-Runtime (Runtime
 // is thread_local), so handles don't cross isolate/copy boundaries — which
 // matches the concurrency model. close()/drop erase the entry (idempotent:

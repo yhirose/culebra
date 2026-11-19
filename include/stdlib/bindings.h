@@ -2783,7 +2783,6 @@ struct JitProc final : JitHandle {
   JitProc(int64_t p, int o, int e, bool g)
       : JitHandle(Kind::Proc), pid(p), out_fd(o), err_fd(e), own_pgroup(g) {}
   std::string show() const override { return "[Proc]"; }
-  std::string what() const override { return "a Proc"; }
   bool same(const JitHandle&) const override { return false; }
   void each_value(Visit visit, void* ctx) override {
     if (result.tag != TAG_NIL) visit(ctx, result);
@@ -2881,8 +2880,8 @@ inline JitValue _culebra_proc_build_handle(int64_t pid, int out_fd, int err_fd,
 }
 
 // --- File handle (JIT) ---
-// Methods read `_id` (Long) from the handle and operate on the shared
-// side table (culebra::_file_* helpers, stdlib_kernels.h).
+// Methods read the handle's id and operate on the shared side table
+// (culebra::_file_* helpers, stdlib_kernels.h).
 
 // Binder-order argument checks, the same convention as wrap.h's
 // jit_check_args (interp parity): a missing required argument is an
@@ -3040,9 +3039,8 @@ inline void _file_chunks_fast_fn(JitClosure* cls, bool* done,
 }
 
 // dispose() for a lines()/chunks() iterator: closes the handle by the id
-// held in a capture cell. `self` here is the iterator wrapper (no `_id`
-// property), so a handle-method thunk reading `self._id` silently no-ops —
-// the interp twin captures the id in its dispose closure the same way.
+// held in a capture cell. `self` here is the iterator wrapper, not the
+// handle, so it cannot reach the File through a handle method.
 inline void _file_iter_dispose_fn(JitValue* __ret, JitClosure* cls, int8_t,
                                   int64_t, int64_t, JitValue*) {
   culebra::_file_close(cls->captures[0]->value.data);
@@ -3147,7 +3145,7 @@ inline void _watch_events_fast_fn(JitClosure* cls, bool* done,
 
 // A watch handle: the id of its watcher in the fswatch table.
 inline void _jit_watch_fill(JitObject* meta);
-inline constexpr JitIdHandleSpec kWatchHandle{"FS.watch", _jit_watch_fill};
+inline constexpr JitIdHandleSpec kWatchHandle{"WatchHandle", _jit_watch_fill};
 
 inline void _jit_watch_iter(JitValue* __ret, JitClosure*, int8_t self_tag,
                                            int64_t self_data, int64_t, JitValue*) {
@@ -3410,9 +3408,8 @@ inline JitValue _jit_sqlite_query(int64_t db_id, const std::string& sql,
 // tables. A Statement keeps its Database alive (its `kept`).
 inline void _jit_sqlite_db_fill(JitObject* meta);
 inline void _jit_sqlite_stmt_fill(JitObject* meta);
-inline constexpr JitIdHandleSpec kSqliteDbHandle{"SQLite database", _jit_sqlite_db_fill};
-inline constexpr JitIdHandleSpec kSqliteStmtHandle{"SQLite statement",
-                                                   _jit_sqlite_stmt_fill};
+inline constexpr JitIdHandleSpec kSqliteDbHandle{"Database", _jit_sqlite_db_fill};
+inline constexpr JitIdHandleSpec kSqliteStmtHandle{"Statement", _jit_sqlite_stmt_fill};
 
 // --- Statement handle methods ----------------------------------------------
 
@@ -3608,10 +3605,10 @@ inline constexpr JitIdHandleSpec kNetUdpHandle{"UdpSocket", _jit_net_udp_fill};
 // The id of the Net handle a method was called on: the methods all three
 // share accept any of them, and nothing else.
 inline int64_t _jit_net_id(JitValue self) {
-  if (auto* h = _jit_id_handle_in(
-          self, {&kNetSocketHandle, &kNetListenerHandle, &kNetUdpHandle}))
-    return h->id;
-  throw culebra::CulebraError("TypeError", "not a Net socket");
+  return _jit_id_handle(
+             self, {&kNetSocketHandle, &kNetListenerHandle, &kNetUdpHandle},
+             "Net socket")
+      .id;
 }
 
 inline JitValue _jit_net_str(const std::string& s) {
@@ -4910,7 +4907,7 @@ inline JitValue _ns_sqlite_version(JitValue*, int64_t) {
 }
 
 inline void _jit_llama_model_fill(JitObject* h);
-inline constexpr JitIdHandleSpec kLlamaModelHandle{"Llama model", _jit_llama_model_fill};
+inline constexpr JitIdHandleSpec kLlamaModelHandle{"LlamaModel", _jit_llama_model_fill};
 
 inline int64_t _jit_llama_model_id(JitValue self) {
   return _jit_id_of(self, kLlamaModelHandle);
@@ -7740,9 +7737,8 @@ inline void _jit_http_sink_fill(JitObject* meta) {
   _jit_handle_bind_method(meta, "write", _jit_native<_jit_http_sink_write>, 1, write_meta);
 }
 
-inline JitObject* _jit_make_http_sink_handle(int64_t sink_id) {
-  return reinterpret_cast<JitObject*>(
-      _jit_make_id_handle(kHttpSinkHandle, sink_id).data);
+inline JitValue _jit_make_http_sink_handle(int64_t sink_id) {
+  return _jit_make_id_handle(kHttpSinkHandle, sink_id);
 }
 
 // If `ret` is an Object carrying a
@@ -7774,8 +7770,7 @@ inline bool _jit_http_try_stream_response(JitValue ret,
       res, content_type, [keep](int64_t sink_id) -> bool {
         auto* cls = keep.get();
         try {
-          JitValue sink{TAG_OBJECT, reinterpret_cast<int64_t>(
-                                        _jit_make_http_sink_handle(sink_id))};
+          JitValue sink = _jit_make_http_sink_handle(sink_id);
           JitValue r = culebra_runtime_call_from_host([&] {
             return _culebra_invoke1(cls, sink);  // consumes sink's +1
           });
@@ -7838,9 +7833,7 @@ inline constexpr JitIdHandleSpec kWsClientHandle{"WebSocket", _jit_ws_client_fil
 inline constexpr JitIdHandleSpec kWsServerHandle{"WebSocket", _jit_ws_fill};
 
 inline int64_t _jit_ws_id(JitValue self) {
-  if (auto* h = _jit_id_handle_in(self, {&kWsClientHandle, &kWsServerHandle}))
-    return h->id;
-  throw culebra::CulebraError("TypeError", "not a WebSocket");
+  return _jit_id_handle(self, {&kWsClientHandle, &kWsServerHandle}, "WebSocket").id;
 }
 
 inline void _jit_ws_send(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t n,
@@ -7937,9 +7930,8 @@ inline void _jit_ws_client_fill(JitObject* meta) {
   _jit_handle_bind_method(meta, "drop", _jit_native<_jit_ws_drop>, 0);
 }
 
-inline JitObject* _jit_make_http_ws_handle(int64_t ws_id, bool is_client) {
-  return reinterpret_cast<JitObject*>(
-      _jit_make_id_handle(is_client ? kWsClientHandle : kWsServerHandle, ws_id).data);
+inline JitValue _jit_make_http_ws_handle(int64_t ws_id, bool is_client) {
+  return _jit_make_id_handle(is_client ? kWsClientHandle : kWsServerHandle, ws_id);
 }
 
 // A route recorded on a server, installed at serve, when the worker count --
@@ -8202,9 +8194,7 @@ inline JitValue _jit_http_server_do_serve(JitValue self, int64_t workers,
                 JitOwnedVal req(JitValue{
                     TAG_OBJECT,
                     reinterpret_cast<int64_t>(_jit_http_request_to_object(q))});
-                JitOwnedVal wsh(JitValue{
-                    TAG_OBJECT, reinterpret_cast<int64_t>(
-                                    _jit_make_http_ws_handle(wsid, false))});
+                JitOwnedVal wsh(_jit_make_http_ws_handle(wsid, false));
                 auto* cb = reinterpret_cast<JitClosure*>(
                     g_jit_srv_w_handlers[ri].data);
                 // The invoke consumes both +1s; owning them until then covers
@@ -8445,8 +8435,7 @@ inline JitValue _ns_http_ws(JitValue* a, int64_t) {
   std::string err;
   int64_t id = culebra::http::ws_client_open(url, err);
   if (id < 0) throw culebra::CulebraError("HttpError", err, 0, 0);
-  return {TAG_OBJECT,
-          reinterpret_cast<int64_t>(_jit_make_http_ws_handle(id, true))};
+  return _jit_make_http_ws_handle(id, true);
 }
 #endif  // CULEBRA_HTTP_ENABLED
 
@@ -11000,8 +10989,7 @@ template <typename O> inline JitValue _ns_fst_map_suggest(JitValue* a, int64_t) 
 
 // A Search.segmenter: the id of its model in the segmenter table.
 inline void _jit_search_segmenter_fill(JitObject* meta);
-inline constexpr JitIdHandleSpec kSegmenterHandle{"Search.segmenter",
-                                                  _jit_search_segmenter_fill};
+inline constexpr JitIdHandleSpec kSegmenterHandle{"Segmenter", _jit_search_segmenter_fill};
 
 namespace _search_adapt {
 

@@ -613,7 +613,7 @@ inline const char* _jit_key_name(int8_t key_tag, int64_t key_data,
 }
 
 // A Shared view, or a JitHandle (a SharedBuffer or a view of one, a channel
-// end): what it holds is not entries.
+// end, a native resource...): what it holds is not entries.
 inline bool _jit_is_handle(JitObject* obj) {
   return obj->is_shared_val || obj->has_handle;
 }
@@ -926,10 +926,9 @@ inline JitValue _jit_match_index(JitObject* m, int8_t key_tag,
   if (key_tag == TAG_LONG) {
     // A match is an Object: the program can remove `groups` and set it to
     // anything, so it is read only as what the match made it.
-    size_t gi = m->find_slot("groups");
-    if (gi == static_cast<size_t>(-1) || m->slots[gi].value.tag != TAG_ARRAY)
-      return JitValue{TAG_NIL, 0};
-    auto* arr = reinterpret_cast<JitArray*>(m->slots[gi].value.data);
+    auto groups = _jit_slot_or_nil(m, "groups");
+    if (groups.tag != TAG_ARRAY) return JitValue{TAG_NIL, 0};
+    auto* arr = reinterpret_cast<JitArray*>(groups.data);
     int64_t n = static_cast<long>(arr->size);
     int64_t i = key_data;
     if (i < 0) i += n;
@@ -937,10 +936,9 @@ inline JitValue _jit_match_index(JitObject* m, int8_t key_tag,
     return _jit_match_group_value(arr->items[i]);
   }
   if (key_tag == TAG_STRING || key_tag == TAG_STRINGVIEW) {
-    size_t ni = m->find_slot("named");
-    if (ni == static_cast<size_t>(-1) || m->slots[ni].value.tag != TAG_OBJECT)
-      return JitValue{TAG_NIL, 0};
-    auto* named = reinterpret_cast<JitObject*>(m->slots[ni].value.data);
+    auto named_v = _jit_slot_or_nil(m, "named");
+    if (named_v.tag != TAG_OBJECT) return JitValue{TAG_NIL, 0};
+    auto* named = reinterpret_cast<JitObject*>(named_v.data);
     size_t si = named->find_slot(_culebra_str_view(key_tag, key_data));
     if (si == static_cast<size_t>(-1)) return JitValue{TAG_NIL, 0};
     return _jit_match_group_value(named->slots[si].value);

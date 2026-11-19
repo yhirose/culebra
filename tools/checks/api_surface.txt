@@ -195,7 +195,7 @@ IO.inspect(x: Any) -> Nil
 IO.print(x: Any) -> Nil
 IO.println(x: Any = '') -> Nil
 IO.input() -> String
-IO.stdin() -> reader
+IO.stdin() -> Stdin
 .read()
 .read(n: Long)
 .lines()

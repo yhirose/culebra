@@ -2244,8 +2244,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_self_merge(
 
 // A `**` operand must be an Object keyed only by Strings, with entries of its
 // own: the TypeError message for one that is not, or "". Every keyword binder
-// checks this before reading an operand's entries (a handle's slots are its
-// bookkeeping; a Shared view is splatted as `**{...view}`).
+// checks this before reading an operand's entries (a handle has none of its
+// own; a Shared view is splatted as `**{...view}`).
 inline std::string _jit_splat_operand_error(JitValue sv) {
   if (sv.tag != TAG_OBJECT)
     return culebra::format("**: splat operand must be Object, got {}",

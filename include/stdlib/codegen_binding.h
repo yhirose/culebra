@@ -9,9 +9,9 @@ namespace culebra {
 
 // Reads one declared argument of a hand-written thunk: the caller's value, or
 // nil where it was omitted, checked against the annotation `A` would carry on
-// a deduced thunk. The type check is the part a raw thunk must not skip --
-// jit_handle_self reinterpret_casts what it is handed, so an unchecked Long
-// in a handle's slot is a wild pointer rather than a TypeError.
+// a deduced thunk. The type check is the part a raw thunk must not skip: it
+// is what makes a wrong argument a TypeError at its own position rather than
+// at the receiver check behind it.
 template <class A>
 inline JitValue codegen_raw_arg(int64_t n, JitValue* args, int64_t i,
                                 const char* name) {

@@ -641,6 +641,13 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_format_value(
       culebra_runtime_value_to_display(type, data), spec, line, col));
 }
 
+// A Long-valued own slot, or nullopt when absent / not a Long.
+inline std::optional<int64_t> _jit_long_slot(const JitObject* obj,
+                                             const char* name) {
+  auto v = _jit_slot_or_nil(obj, name);
+  if (v.tag != TAG_LONG) return std::nullopt;
+  return v.data;
+}
 // A String-valued own slot, or nullopt when absent / not a String.
 inline std::optional<std::string_view> _jit_string_slot(const JitObject* obj,
                                                         const char* name) {
@@ -1006,12 +1013,8 @@ inline ThrownReport describe_thrown_value(JitValue v) {
     r.message = _jit_string_slot(o, "message").value_or("");
     if (o->is_error) {
       // Only a Long is a position: the program may have set anything there.
-      auto pos = [&](const char* name) {
-        JitValue v = _jit_slot_or_nil(o, name);
-        return v.tag == TAG_LONG ? v.data : 0;
-      };
-      r.line = pos("line");
-      r.col = pos("col");
+      r.line = _jit_long_slot(o, "line").value_or(0);
+      r.col = _jit_long_slot(o, "col").value_or(0);
     }
   }
   if (r.message.empty()) r.message = _culebra_uncaught_display(v.tag, v.data);
@@ -1317,14 +1320,10 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_reanchor(int64_t site) {
       // An Error is an Object the program may have rewritten: only a `line`
       // and `col` still the Longs the runtime put there are moved.
       auto* o = reinterpret_cast<JitObject*>(rt.thrown_data);
-      constexpr size_t npos = static_cast<size_t>(-1);
-      size_t li = o->is_error ? o->find_slot("line") : npos;
-      size_t ci = o->is_error ? o->find_slot("col") : npos;
-      if (li != npos && ci != npos && o->slots[li].value.tag == TAG_LONG &&
-          o->slots[ci].value.tag == TAG_LONG &&
-          culebra::is_library_line(o->slots[li].value.data)) {
-        o->slots[li].value = JitValue{TAG_LONG, line};
-        o->slots[ci].value = JitValue{TAG_LONG, col};
+      auto at = o->is_error ? _jit_long_slot(o, "line") : std::nullopt;
+      if (at && _jit_long_slot(o, "col") && culebra::is_library_line(*at)) {
+        o->slots[o->find_slot("line")].value = JitValue{TAG_LONG, line};
+        o->slots[o->find_slot("col")].value = JitValue{TAG_LONG, col};
       }
     }
     if (culebra::is_library_line(rt.thrown_line))
@@ -4400,10 +4399,11 @@ inline H* _jit_self_handle(JitValue self, JitHandle::Kind kind,
   return static_cast<H*>(h);
 }
 
-// What one kind of id handle is: the name it shows as and is refused by, and
-// the methods its meta carries. A spec is a static object, and its address is
-// the kind: a handle of another spec, or anything that is no handle, is not
-// this one, however its fields read.
+// The methods one kind of native handle carries (its meta's key). For a
+// JitIdHandle it is also the kind and the name it shows as and is refused by:
+// a spec is a static object, and its address is the kind, so a handle of
+// another spec, or anything that is no handle, is not this one, however its
+// fields read.
 struct JitIdHandleSpec {
   const char* name;            // "File": shows as [File], refused as "a File"
   void (*fill)(JitObject* meta);  // binds the methods (a `drop` among them)
@@ -4423,7 +4423,6 @@ struct JitIdHandle final : JitHandle {
   std::string show() const override {
     return std::string("[") + spec.name + "]";
   }
-  std::string what() const override { return std::string("a ") + spec.name; }
   bool same(const JitHandle&) const override { return false; }
   void each_value(Visit visit, void* ctx) override {
     for (auto& v : kept) visit(ctx, v);
@@ -4466,12 +4465,17 @@ inline JitIdHandle* _jit_id_handle_in(
     if (&id->spec == spec) return id;
   return nullptr;
 }
-// The handle of `spec` a method was called on, or one handed in as an
-// argument: anything else (no receiver, another kind, an Object that only
-// looks like one) is a TypeError, not a read of fields it chose.
+// The handle of one of `specs` a method was called on, or one handed in as
+// an argument: anything else (no receiver, another kind, an Object that only
+// looks like one) is a TypeError naming `what`, not a read of fields it chose.
+inline JitIdHandle& _jit_id_handle(
+    JitValue v, std::initializer_list<const JitIdHandleSpec*> specs,
+    const char* what) {
+  if (auto* h = _jit_id_handle_in(v, specs)) return *h;
+  throw culebra::CulebraError("TypeError", std::string("not a ") + what);
+}
 inline JitIdHandle& _jit_id_handle(JitValue v, const JitIdHandleSpec& spec) {
-  if (auto* h = _jit_id_handle_in(v, {&spec})) return *h;
-  throw culebra::CulebraError("TypeError", std::string("not a ") + spec.name);
+  return _jit_id_handle(v, {&spec}, spec.name);
 }
 inline int64_t _jit_id_of(JitValue v, const JitIdHandleSpec& spec) {
   return _jit_id_handle(v, spec).id;

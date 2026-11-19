@@ -649,7 +649,9 @@ struct JitGenFrame;  // rt/gen.inc.h
 // The C++ half of a handle Object (JitObject::has_handle): what the value
 // stands for outside this Runtime's heap: a channel end, a fan_in's merged
 // rx, an rx's cursor, a SharedBuffer, a view of one's bytes and a view's
-// cursor, an Isolate, a Search index and an Http server.
+// cursor, an Isolate, a Search index, an Http server, a native resource by id
+// (a File, a Database, a socket...), a child process, XML.events' parser and
+// an instance of a wrapped C++ class.
 // A native object that keeps program values for as long as it lives keeps
 // them here and reports them in each_value, never in a slot the program can
 // reach nor under a pin, which the collector takes for a root.
@@ -2042,8 +2044,9 @@ inline void _jit_each_entry(JitObject* obj, Named&& named, Keyed&& keyed) {
   }
 }
 
-// An Object's own entries. The one walk behind showing an Object, spreading
-// it and listing it for a host.
+// An Object's own entries (a handle's are refused before this is reached).
+// The one walk behind showing an Object, spreading it and listing it for a
+// host.
 template <class Named, class Keyed>
 inline void _jit_each_own_entry(JitObject* obj, Named&& named, Keyed&& keyed) {
   _jit_each_entry(obj, named, keyed);

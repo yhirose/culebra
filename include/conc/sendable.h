@@ -193,6 +193,9 @@ struct JitIsolate final : JitHandle {
   std::string show() const override {
     return core ? "[Isolate]" : "[dropped Isolate]";
   }
+  std::string what() const override {
+    return core ? "an Isolate" : "a dropped Isolate";
+  }
   // Nothing makes a second handle of one isolate.
   bool same(const JitHandle&) const override { return false; }
 };
@@ -394,7 +397,6 @@ enum class JitHandleKind {
   Native,
 };
 inline JitHandleKind _jit_handle_kind(JitObject* o) {
-  constexpr auto none = static_cast<size_t>(-1);
   if (_jit_chan_end(o)) return JitHandleKind::Channel;
   if (o->is_shared_buffer) return JitHandleKind::SharedBuffer;
   if (_jit_buf_view(o)) return JitHandleKind::BufView;
