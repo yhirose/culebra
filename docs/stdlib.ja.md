@@ -6298,6 +6298,16 @@ LUTは`n`個のスライス（各`n`×`n`）を横に並べたストリップを
 ミラーなら共有できます）。そのため最初のフレームのミラーには影がありません。render targetは
 canvasと同じく、メッシュ上でも`sprite`でも`uv()`越しでも正しい向きになります。
 
+`view.render_target(w, h, supersample: n)`（`n`は1から4、既定は1）にすると、
+`render_to`は縦横`n`倍の描画先に描き、`n`×`n`の箱ごとに平均して`w`×`h`に縮めます。
+画素の途中にある縁、細い標示、遠くのスカイラインが、2つの画素の間で跳ばずに
+灰色の中間値になります。ウィンドウの`view.supersample(n)`は`render_3d()`に対して
+同じことを、箱全体ではなくbilinearの1回のサンプルで行います。
+`tex.width()`と`tex.height()`は`w`と`h`のままで、大きい描画先はメモリが`n²`倍、
+`render_to`ごとにパスが1つ増えます。模様（ミップマップ）の段は出力の解像度で
+選ばれるので、ミップマップのある模様はどの`n`でも同じに見え、縁だけがなめらかに
+なります。`supersample`が1から4の外か、確保できない大きさなら`ValueError`です。
+
 ```culebra
 # doctest: skip
 let mirror = view.render_target(512, 256)
@@ -6323,7 +6333,7 @@ while !view.closing() {
 | `view.checker(px, checks, r1,g1,b1, r2,g2,b2) -> Texture` | 市松 |
 | `view.grain(px, r, g, b, amt) -> Texture` | 単色＋ノイズの粒 |
 | `view.canvas(w, h) -> Texture` / `view.canvas_end()` | 2D呼び出しで塗るrender-to-textureを開く / 閉じる |
-| `view.render_target(w, h) -> Texture` | 第2カメラからシーンを描き込むテクスチャ（下記） |
+| `view.render_target(w, h, supersample = 1) -> Texture` | 第2カメラからシーンを描き込むテクスチャ（下記） |
 | `tex.width()` / `tex.height() -> Float` | ピクセル寸法 |
 | `tex.filter(name) -> Texture` | サンプリング: `"point"`（ピクセルアート、LUTのセルそのまま）、`"bilinear"`、`"trilinear"`（ミップマップ）、`"point_mipmap"`（ミップマップを使うが、拡大されたテクセルは鋭い四角のまま。近くはドット、遠くは平均の色）。知らない名前はログに出して、フィルタは変えない |
 | `tex.wrap(name) -> Texture` | 端の外側: `"repeat"`、`"clamp"`、`"mirror"` |

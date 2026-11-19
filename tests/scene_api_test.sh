@@ -1068,6 +1068,67 @@ done
 [ $fail -eq 0 ] || exit 1
 echo "OK: the LUT grades the frame and the post knobs bind"
 
+# A supersampled render target: a plate edge inside a pixel comes out grey at 2x
+# and 4x (white or black at 1x), and a mipmapped texture keeps the output's
+# level at any factor (bilinear picks one level; trilinear would blend two).
+# One plate and camera for each, 100 units apart.
+cat > scene_tss.cul <<'EOS'
+let view = Scene.View.new(160, 120, "scene tss")
+view.background(0, 0, 0)
+view.post_process(false)
+fn err(f) {
+  try {
+    f()
+    'accepted'
+  } catch e {
+    "{e.kind}: {e.message}"
+  }
+}
+let white = view.add_material().rgb(255, 255, 255).unlit()
+view.add_box(20.0, 40.0, 0.1).move(-9.375, 0.0, 0.0).material(white)
+mut tex_levels = []
+mut side = 64
+for c in [[255, 0, 0], [0, 255, 0], [0, 0, 255], [255, 255, 0], [0, 255, 255], [255, 0, 255], [255, 255, 255]] {
+  tex_levels.push(Scene.Image.new(side, side).rect(0, 0, side, side, c[0], c[1], c[2]))
+  side = Math.max(1, side / 2)
+}
+let mips = view.add_material().texture(view.texture_mips(tex_levels).filter("bilinear")).unlit()
+view.add_box(20.0, 20.0, 0.01).move(100.0, 0.0, 0.0).material(mips)
+let edges = [view.render_target(16, 16), view.render_target(16, 16, supersample: 2), view.render_target(16, 16, supersample: 4)]
+let levels = [view.render_target(16, 16), view.render_target(16, 16, supersample: 2), view.render_target(16, 16, supersample: 4)]
+for t in edges { view.render_to(t, 0.0, 0.0, 10.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 90.0) }
+for t in levels { view.render_to(t, 100.0, 0.0, 10.0, 100.0, 0.0, 0.0, 0.0, 1.0, 0.0, 90.0) }
+view.begin_2d()
+for i in 0..3 {
+  view.sprite(edges[i], 20.0 * i, 0.0, 16.0, 16.0)
+  view.sprite(levels[i], 20.0 * i, 20.0, 16.0, 16.0)
+}
+view.screenshot("tss.png")
+view.present()
+let default_target = view.render_target(8, 4)
+let bad_zero = err(fn () { view.render_target(16, 16, supersample: 0) })
+let bad_five = err(fn () { view.render_target(16, 16, supersample: 5) })
+let bad_size = err(fn () { view.render_target(1 << 16, 1 << 16, supersample: 2) })
+view.drop()
+
+Canvas.init(160, 120)
+Canvas.Sprite.from_png(FS.read("tss.png")).draw(0, 0)
+fn grey_at(i, x) { Canvas.get_pixel(20 * i + x, 8) & 255 }
+fn level_at(i) {
+  let v = Canvas.get_pixel(20 * i + 8, 28)
+  [v & 255, (v >> 8) & 255, (v >> 16) & 255]
+}
+println("a 4x target is {edges[2].width()}x{edges[2].height()} to its readers: {edges[2].width() == 16.0 && edges[2].height() == 16.0}")
+println("1x is the default: {default_target.width() == 8.0 && default_target.height() == 4.0}")
+println("1x edge is white or black: {grey_at(0, 8) == 255 && grey_at(0, 9) == 0}")
+println("2x and 4x average the edge pixel: {grey_at(1, 8) > 100 && grey_at(1, 8) < 155 && grey_at(2, 8) > 100 && grey_at(2, 8) < 155}")
+println("solid inside, empty outside: {grey_at(2, 7) == 255 && grey_at(2, 10) == 0}")
+println("level 2 at 1x, 2x and 4x: {level_at(0) == [0, 0, 255] && level_at(1) == [0, 0, 255] && level_at(2) == [0, 0, 255]}")
+println(bad_zero)
+println(bad_five)
+println(bad_size)
+EOS
+
 # Run one program on both engines: it must exit 0 and the engines must print the
 # same lines, each of which must include every expected line given after the name.
 run_pair() {
@@ -1120,6 +1181,13 @@ echo "OK: height_fog clears a view from above and hazes a far level one"
 run_pair vcolor "uncoloured stays white: true" "corners take their colour: true" \
   "centre is the blend: true" "lit, white then blue: true"
 echo "OK: vertex colours blend across a face, and an uncoloured mesh stays white"
+run_pair tss "a 4x target is 16.0x16.0 to its readers: true" "1x is the default: true" \
+  "1x edge is white or black: true" "2x and 4x average the edge pixel: true" \
+  "solid inside, empty outside: true" "level 2 at 1x, 2x and 4x: true" \
+  "ValueError: view.render_target: supersample must be 1 to 4, got 0" \
+  "ValueError: view.render_target: supersample must be 1 to 4, got 5" \
+  "ValueError: view.render_target: 65536x65536 is too large"
+echo "OK: a supersampled render target averages its edges and keeps the output's mip levels"
 
 for engine in "--vm" "--jit"; do
   if ! CULEBRA_CANVAS_HEADLESS=1 "$CULEBRA" "$engine" scene_api.cul "$TTF" > "out${engine}.txt" 2> "out${engine}.err"; then

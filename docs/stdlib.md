@@ -6522,6 +6522,17 @@ road shares; the first frame's mirror is unshadowed. A render target, like a
 canvas, is upright wherever it is sampled — on a mesh, as a `sprite`, through
 `uv()`.
 
+`view.render_target(w, h, supersample: n)` (`n` from 1 to 4, default 1) makes
+`render_to` draw into a target `n` times larger each way and average each
+`n` × `n` block down to `w` × `h`, so an edge inside a pixel, a thin marking or a
+distant skyline comes out grey instead of jumping between two pixels. The
+window's `view.supersample(n)` does this for `render_3d()` with a bilinear tap
+instead of the whole block. `tex.width()` and `tex.height()` stay `w` and `h`; the
+larger target costs `n²` times the memory and one more pass per `render_to`.
+Mip levels are chosen as at the output size, so a mipmapped texture reads the
+same at any `n` and only the edges are smoothed. A `supersample` outside 1 to 4,
+or a size that cannot be allocated, is a `ValueError`.
+
 ```culebra
 # doctest: skip
 let mirror = view.render_target(512, 256)
@@ -6547,7 +6558,7 @@ a dropped handle a `ClosedError`.
 | `view.checker(px, checks, r1,g1,b1, r2,g2,b2) -> Texture` | a checkerboard |
 | `view.grain(px, r, g, b, amt) -> Texture` | a flat colour with noise grain |
 | `view.canvas(w, h) -> Texture` / `view.canvas_end()` | open a render-to-texture the 2D calls paint into, and close it |
-| `view.render_target(w, h) -> Texture` | a texture the scene renders into from a second camera (below) |
+| `view.render_target(w, h, supersample = 1) -> Texture` | a texture the scene renders into from a second camera (below) |
 | `tex.width()` / `tex.height() -> Float` | size in pixels |
 | `tex.filter(name) -> Texture` | sampling: `"point"` (pixel art, a LUT's exact cells), `"bilinear"`, `"trilinear"` (mipmapped), `"point_mipmap"` (mipmapped, but a magnified texel stays a sharp square: dots up close, averaged colour far away). A name it does not know is logged and the filter is unchanged |
 | `tex.wrap(name) -> Texture` | past the edge: `"repeat"`, `"clamp"`, `"mirror"` |

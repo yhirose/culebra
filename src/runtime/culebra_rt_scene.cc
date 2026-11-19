@@ -129,6 +129,7 @@ uniform sampler2D texture2;     // far cascade (wide)
 // and UV (Schüler's method): exact on flat faces, good enough on curved ones.
 uniform sampler2D normalMap;
 uniform float normalStrength;   // 0 = no normal map
+uniform float lodBias;          // log2 of a supersampled pass's factor, else 0
 uniform mat4 lightVP0;
 uniform mat4 lightVP1;
 uniform vec4 colDiffuse;
@@ -186,7 +187,7 @@ float pcf(sampler2D sm, vec3 proj, float bias) {
 void main() {
   // texture0 defaults to a 1x1 white texture, so untextured shapes are
   // unaffected (white * colour). A material can swap in a real texture.
-  vec4 tex = texture(texture0, fragUV);
+  vec4 tex = texture(texture0, fragUV, lodBias);
   float cover = opacity * tex.a;
   if (cutoff > 0.0 && cover < cutoff) discard;
   vec3 N = normalize(fragNormal);
@@ -197,7 +198,7 @@ void main() {
     vec3 T = dp2perp * duv1.x + dp1perp * duv2.x;
     vec3 B = dp2perp * duv1.y + dp1perp * duv2.y;
     float invmax = inversesqrt(max(dot(T, T), dot(B, B)));
-    vec3 nm = texture(normalMap, fragUV).xyz * 2.0 - 1.0;
+    vec3 nm = texture(normalMap, fragUV, lodBias).xyz * 2.0 - 1.0;
     nm.xy *= normalStrength;
     N = normalize(mat3(T * invmax, B * invmax, N) * normalize(nm));
   }
@@ -287,6 +288,21 @@ void main() {
   vec4 e = vec4(d, fract(d * 255.0), fract(d * 65025.0), fract(d * 16581375.0));
   e -= e.yzww * vec4(1.0 / 255.0, 1.0 / 255.0, 1.0 / 255.0, 0.0);
   c = e;
+}
+)";
+
+// Resolve of a supersampled render target: the mean of each n x n block (a bilinear tap would average only 2 x 2).
+static const char* kFS_BOX = R"(#version 330
+out vec4 finalColor;
+uniform sampler2D texture0;
+uniform int ssFactor;
+void main() {
+  ivec2 base = ivec2(gl_FragCoord.xy) * ssFactor;
+  vec4 sum = vec4(0.0);
+  for (int j = 0; j < ssFactor; j++)
+    for (int i = 0; i < ssFactor; i++)
+      sum += texelFetch(texture0, base + ivec2(i, j), 0);
+  finalColor = sum / float(ssFactor * ssFactor);
 }
 )";
 
@@ -428,6 +444,11 @@ class Texture : public std::enable_shared_from_this<Texture> {
   Texture2D tex{};
   RenderTexture2D rt{};   // a canvas or render target: tex is rt.texture
   bool is_rt = false;
+  // A supersampled render target draws into ss_rt (n times larger each way) and
+  // is averaged down into rt, which is what every reader samples.
+  RenderTexture2D ss_rt{};
+  int supersample() const { return ss_rt.id ? ss_rt.texture.width / rt.texture.width : 1; }
+  const RenderTexture2D& draw_target() const { return ss_rt.id ? ss_rt : rt; }
   // A render target is stored bottom-up. Rather than bake an upright copy
   // (a GPU -> CPU -> GPU round trip, unthinkable per frame for a mirror), the
   // flip is folded into wherever the texture is read: the material's UV
@@ -440,6 +461,7 @@ class Texture : public std::enable_shared_from_this<Texture> {
   Texture& operator=(const Texture&) = delete;
   ~Texture() {
     if (!live()) return;
+    if (ss_rt.id) UnloadRenderTexture(ss_rt);
     if (is_rt) UnloadRenderTexture(rt); else UnloadTexture(tex);
   }
   // The context that made these ids has to still be current. The epoch alone
@@ -1348,6 +1370,7 @@ class View {
     loc_alphamode_ = GetShaderLocation(lit_, "alphaMode");
     loc_uv_ = GetShaderLocation(lit_, "uvXform");
     loc_nstrength_ = GetShaderLocation(lit_, "normalStrength");
+    loc_lodbias_ = GetShaderLocation(lit_, "lodBias");
     // DrawMesh binds maps[i] to shader.locs[MAP_DIFFUSE + i]; raylib fills the
     // first three (texture0..2), so the normal map's slot is named here.
     lit_.locs[SHADER_LOC_MAP_ROUGHNESS] = GetShaderLocation(lit_, "normalMap");
@@ -1357,6 +1380,8 @@ class View {
     set_fog_uniform();
     depth_ = LoadShaderFromMemory(kVS_DEPTH, kFS_DEPTH);
     post_ = LoadShaderFromMemory(0, kFS_POST);   // default 2D VS + our composite FS
+    box_ = LoadShaderFromMemory(0, kFS_BOX);
+    loc_ssfactor_ = GetShaderLocation(box_, "ssFactor");
     loc_aascale_ = GetShaderLocation(post_, "aaScale");
     set_aa_uniform();
     loc_lut_ = GetShaderLocation(post_, "lutTex");
@@ -1400,6 +1425,7 @@ class View {
       UnloadShader(lit_);
       UnloadShader(depth_);
       UnloadShader(post_);
+      UnloadShader(box_);
       CloseWindow();
     }
     // Plain heap (raylib allocates one MaterialMap array per material), so it
@@ -1473,7 +1499,7 @@ class View {
   // render at this multiple of the window and box-filter down. The single
   // largest performance knob for a scene-heavy frame.
   void supersample(int64_t n) {
-    ss_ = (int)(n < 1 ? 1 : n > 4 ? 4 : n);
+    ss_ = (int)(n < 1 ? 1 : n > kMaxSupersample ? kMaxSupersample : n);
     set_aa_uniform();
     sync_targets();
   }
@@ -1720,10 +1746,21 @@ class View {
   // A texture the scene is rendered into (render_to): the same GL object a
   // canvas is, kept for as long as the handle lives, so a mirror redraws into
   // it every frame. Clamped, not repeating — a target's edge pixels have no
-  // business wrapping round.
-  std::shared_ptr<Texture> render_target(int64_t w, int64_t h) {
-    auto t = make_target(culebra::PixelSize::checked(w, h, "view.render_target", 0, 0));
+  // business wrapping round. With supersample n, render_to draws into a target
+  // n times larger each way and averages it down into this one.
+  std::shared_ptr<Texture> render_target(int64_t w, int64_t h, int64_t supersample) {
+    auto size = culebra::PixelSize::checked(w, h, "view.render_target", 0, 0);
+    if (supersample < 1 || supersample > kMaxSupersample)
+      throw culebra::CulebraError("ValueError",
+          "view.render_target: supersample must be 1 to " + std::to_string(kMaxSupersample) +
+              ", got " + std::to_string(supersample), 0, 0);
+    auto big = culebra::PixelSize::checked(w * supersample, h * supersample, "view.render_target", 0, 0);
+    auto t = make_target(size);
     SetTextureWrap(t->tex, TEXTURE_WRAP_CLAMP);
+    if (supersample > 1) {
+      t->ss_rt = LoadRenderTexture(big.w(), big.h());
+      if (!IsRenderTextureValid(t->ss_rt)) big.refuse();
+    }
     return t;
   }
 
@@ -1784,8 +1821,26 @@ class View {
     // Alpha is coverage here, not depth: no post pass reads this target, and a
     // sprite() of it (or anything else blending by alpha) must see the image
     // as opaque, not as 0.4% of itself.
-    lit_target(tex.rt, cam, /*depth_in_alpha=*/false);
+    int n = tex.supersample();
+    lit_target(tex.draw_target(), cam, /*depth_in_alpha=*/false, std::log2((float)n));
+    if (n > 1) resolve(tex, n);
     SetShaderValue(lit_, loc_viewpos_, &cam_.position, SHADER_UNIFORM_VEC3);
+  }
+
+  // Average a supersampled target's n x n blocks into the texture it is read
+  // through. Blending is off: alpha is coverage, averaged with the colour.
+  void resolve(const Texture& t, int n) {
+    BeginTextureMode(t.rt);
+    rlDisableColorBlend();
+    BeginShaderMode(box_);
+    SetShaderValue(box_, loc_ssfactor_, &n, SHADER_UNIFORM_INT);
+    DrawTexturePro(t.ss_rt.texture,
+                   Rectangle{0, 0, (float)t.ss_rt.texture.width, (float)t.ss_rt.texture.height},
+                   Rectangle{0, 0, (float)t.rt.texture.width, (float)t.rt.texture.height},
+                   Vector2{0, 0}, 0.0f, WHITE);
+    EndShaderMode();
+    EndTextureMode();
+    rlEnableColorBlend();
   }
 
   // --- fonts ------------------------------------------------------------------
@@ -1992,8 +2047,12 @@ class View {
   // near (low-alpha) fragments would blend away. Opaque items draw with no
   // blend; the transparent ones re-enable it with factors that leave the
   // destination's alpha alone (emit / set_blend).
+  //
+  // `lod_bias` is log2 of the pass's supersample factor: drawn n times larger,
+  // the GPU would pick finer mip levels than the output's own size does.
   void lit_target(const RenderTexture2D& rt, const Camera3D& cam,
-                  bool depth_in_alpha) {
+                  bool depth_in_alpha, float lod_bias = 0.0f) {
+    if (lod_bias != 0.0f) SetShaderValue(lit_, loc_lodbias_, &lod_bias, SHADER_UNIFORM_FLOAT);
     rlSetClipPlanes(near_, far_);
     BeginTextureMode(rt);
     ClearBackground(bg_);
@@ -2006,6 +2065,10 @@ class View {
     EndMode3D();
     rlEnableColorBlend();
     EndTextureMode();
+    if (lod_bias != 0.0f) {
+      float none = 0.0f;
+      SetShaderValue(lit_, loc_lodbias_, &none, SHADER_UNIFORM_FLOAT);
+    }
   }
 
   void render_3d() {
@@ -2371,9 +2434,12 @@ class View {
   std::vector<Vector2> path_;   // the 2D path being built (path_begin / path_to)
   Texture2D white_{};
   Shader lit_{}, depth_{}, post_{};
+  Shader box_{};   // the supersampled-target resolve
+  int loc_ssfactor_ = 0;
   ::Material mat_{}, depth_mat_{};   // raylib's (gfx::Material is the script's)
   RenderTexture2D shadowmap0_{}, shadowmap1_{}, scene_rt_{}, post_rt_{};
   int ss_ = 2;              // supersample factor for antialiasing
+  static constexpr int kMaxSupersample = 4;   // cost and memory grow with its square
   float near_ = 2.0f, far_ = 8000.0f;   // 3D clip planes, metres
   int loc_aascale_ = 0;
   int loc_lut_ = 0, loc_lutsize_ = 0, loc_lutamount_ = 0;
@@ -2394,7 +2460,7 @@ class View {
   int loc_skytop_ = 0, loc_skybot_ = 0;
   int loc_metallic_ = 0, loc_rough_ = 0;
   int loc_opacity_ = 0, loc_cutoff_ = 0, loc_emissive_ = 0, loc_unlit_ = 0, loc_fogon_ = 0;
-  int loc_alphamode_ = 0, loc_uv_ = 0, loc_nstrength_ = 0;
+  int loc_alphamode_ = 0, loc_uv_ = 0, loc_nstrength_ = 0, loc_lodbias_ = 0;
   bool culling_ = true;
   std::vector<DrawItem> items_;   // the lit pass's draw list, reused each frame
   Vector3 dir_ = Vector3{0.4f, -0.8f, -0.48f};   // unit length, like sun() stores
@@ -2599,7 +2665,7 @@ const bool registered = [] {
       .method<&gfx::View::grain>("grain", {"px", "r", "g", "b", "amt"})
       .method<&gfx::View::canvas>("canvas", {"w", "h"})
       .method<&gfx::View::canvas_end>("canvas_end")
-      .method<&gfx::View::render_target>("render_target", {"w", "h"})
+      .method<&gfx::View::render_target>("render_target", {"w", "h", {"supersample", 1}})
       .method<&gfx::View::render_to>(
           "render_to", {"tex", "px", "py", "pz", "tx", "ty", "tz", "ux", "uy", "uz", "fov"})
       .method<&gfx::View::font>("font", {"path", "size", {"chars", ""}})

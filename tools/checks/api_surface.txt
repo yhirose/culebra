@@ -699,7 +699,7 @@ view.checker(px, checks, r1,g1,b1, r2,g2,b2) -> Texture
 view.grain(px, r, g, b, amt) -> Texture
 view.canvas(w, h) -> Texture
 view.canvas_end()
-view.render_target(w, h) -> Texture
+view.render_target(w, h, supersample = 1) -> Texture
 tex.width()
 tex.height() -> Float
 tex.filter(name) -> Texture
