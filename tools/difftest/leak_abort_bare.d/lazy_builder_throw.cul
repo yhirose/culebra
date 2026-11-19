@@ -1,0 +1,18 @@
+# A lazy namespace's builder that throws: at the deepest frame the stack
+# allows, the first reference to `Path` runs its builder one frame further
+# down, past the limit. The builder's closure is released on that way out
+# too, and a later reference builds the namespace as usual.
+fn go() {
+  try {
+    go()
+  } catch _ {
+    try {
+      Path
+      'built'
+    } catch e {
+      e.kind
+    }
+  }
+}
+println(go())
+println(Path.new('a').to_string())

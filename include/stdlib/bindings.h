@@ -13401,16 +13401,16 @@ inline JitObject* _jit_namespace_get_or_build(std::string_view name) {
   if (auto bd = _lazy_ns_builder(name); bd.fn_ptr) {
     auto* cls = culebra_runtime_closure_new(bd.fn_ptr, /*n_captures=*/0,
                                             /*arity=*/0, bd.flags, bd.meta);
+    // Owned across the call: a builder that throws (one frame past the
+    // depth limit, say) still releases it.
+    JitOwnedVal builder(TAG_FUNC, reinterpret_cast<int64_t>(cls));
     // No call entered it, so it takes no site: the reference that built it
     // places what it raises (the executor's NsGet).
     JitBorrowedCallSite site{0, 0};
-    JitValue r = _culebra_invoke0(cls);
-    culebra_runtime_value_release(TAG_FUNC, reinterpret_cast<int64_t>(cls));
-    if (r.tag != TAG_OBJECT) {
-      culebra_runtime_value_release(r.tag, r.data);
-      return nullptr;  // a builder must return its namespace Object
-    }
-    auto* obj = reinterpret_cast<JitObject*>(r.data);
+    JitOwnedVal r(_culebra_invoke0(cls));
+    // a builder must return its namespace Object
+    if (r.borrow().tag != TAG_OBJECT) return nullptr;
+    auto* obj = reinterpret_cast<JitObject*>(r.consume().data);
     // Tag it as a closed namespace like the native path below does. Every
     // reference (entry module, closure, child isolate) resolves through here,
     // so one write per Runtime covers them all.
