@@ -12,7 +12,7 @@ SKILL.mdの原則と手順をculebraに当てはめるための事実。今のma
 
 **中心ヘッダ**：`include/`の133本のうち、`preamble_cc.cc`からも辿れる96本は、触るとdevが278秒の直列の作り直しになる（preamble_cc.cc → 焼き込み → main.cc）。`main.cc`だけが辿る30本は約111秒＋リンク、残りの7本はほぼ0（2026-11-08、ed17896eのdevの依存ファイルから）。C++を1か所直すたびのdevは、中央値3.9分、p90 5.0分（312回）なので、直しはまとめてからビルドする。
 
-**サンドボックス**：ビルドは内でも外でも同じ（2026-11-08まで、内外を切り替えるたびにdevが全部作り直していた。平均5.4分、記録の中で78回。CMakeのアーキテクチャの既定が`sysctl`に頼っていたのが原因で、CMakeLists.txtの先頭で固定して直した）。`gh`（中ではTLSで必ず失敗する）、`ps`、`sysctl`、`nice`（中では`setpriority`が失敗し、codegenの比較の結果を壊す）、submoduleの初期化も外で。`diff -`やプロセス置換`<(…)`も中では失敗するので、比べる両側をファイルに書いてから比べる。一時ファイルは`$TMPDIR`かscratchpadに。
+**サンドボックス**：ビルドは内でも外でも同じ（2026-11-08まで、内外を切り替えるたびにdevが全部作り直していた。平均5.4分、記録の中で78回。CMakeのアーキテクチャの既定が`sysctl`に頼っていたのが原因で、CMakeLists.txtの先頭で固定して直した）。`gh`（中ではTLSで必ず失敗する）、`ps`、`sysctl`、`nice`（中では`setpriority`が失敗し、codegenの比較の結果を壊す）、submoduleの初期化も外で。`just check`（`test_fs_watch`がFSEventsで落ちる）と`tests/signal_test.sh`（一時ディレクトリが作れない）も外で回す。`diff -`やプロセス置換`<(…)`も中では失敗するので、比べる両側をファイルに書いてから比べる。一時ファイルは`$TMPDIR`かscratchpadに。
 
 ## 2. 後処理の特性表（SKILL.md原則3で選ぶ。担当にはこの中から選んで「Checks for this subtask」に書く）
 
@@ -62,7 +62,8 @@ SKILL.mdの原則と手順をculebraに当てはめるための事実。今のma
 - ロックの持ち主：`lsof "$TMPDIR/culebra-heavy-lane.lock"`（重いビルド。`TMPDIR`はサンドボックスの内と外で違う）、`lsof "$(git rev-parse --git-common-dir)/culebra-land.lock"`（着地）。待っている側も一覧に出る。
 - プロセス：`ps -p <pid>`（サンドボックスの外）。
 - CI：`gh run list`（サンドボックスの外）。コミットで絞るときは`--commit <完全なSHA>`（短いSHAでは何も返らない）。待つときは`timeout 3600 gh run watch <id> --exit-status --compact -i 30`を、サンドボックスの外のバックグラウンドで。終了コード124は期限切れ。
-- **CIの待ちは、runのIDで。** pushした直後は、ブランチ名で最新のrunを引くと、前回の完了済みのrunを拾う（masterで起きた）。`gh run list --commit <完全なSHA>`でIDを取ってから、`gh run watch <id>`で待つ。
+- **CIの待ちは、runのIDで。** pushした直後は、ブランチ名で最新のrunを引くと、前回の完了済みのrunを拾う（masterで起きた）。`gh run list --commit <完全なSHA>`でIDを取ってから、`gh run watch <id>`で待つ。見張りをスクリプトにするときは、`gh`に`-R yhirose/culebra`を付ける（cwdがリポジトリの外だと`gh`は何も返さず、見張りが空回りする）。cwdを、待つ間に消すworktreeに置かない（消した時点で見張りが落ちる）。
+- **release-diffは、ci/の前に手元で回せる**：`gh release download <最新のタグ> --pattern culebra-macos-arm64.tar.gz`で比べる相手を取り、`RELEASE_DIFF_WORK=<scratch> tools/difftest/release_diff.sh <展開したculebra> ./build-dev/culebra`（build-devで足りる）。許可リストを直した後は、`tools/difftest/release_diff.py --baseline <WORK>/out_baseline.txt --head <WORK>/out_head.txt --allow tools/difftest/release_diff_allow.txt --cases <件数>`だけを回し直せばよい。挙動を変える変更で、許可リストに載せる変化を先に知りたいときに使う。
 - **外のサービスの障害でCIが落ちたとき**（例：`Install just`が、GitHubのリリース配布の504で8分間失敗した）：ログで原因を確かめ、ジョブの中身が一度も走っていなければ、`gh run rerun <id> --failed`で、失敗したジョブだけを再実行する（約10分）。
 
 ## 5. CIと着地の決まり
@@ -76,6 +77,7 @@ SKILL.mdの原則と手順をculebraに当てはめるための事実。今のma
 - **着地の前に回す静的な検査**：`just check`は`check-generated`も`_check-quick-guide`も回さないが、着地のゲート（test-dev）は回す。着地の失敗の約3分の1はこれだった（記録の約30回中10回）。着地の前に`just check-generated`を回し、docs、テスト、標準ライブラリ、文法を変えたら`just check-quick-guide`も回す。
 - **変更のスコープ**（`tools/checks/change_scopes.txt`）で、着地とCIは回す範囲を自分で絞る。`just land`のままでよい。表を変えたら`just check-change-scopes`。
 - **後片付け**：リモートのci/ブランチの削除は自動判定に拒否されるので、まとめてuserに頼む。worktreeは`ExitWorktree`の`remove`で消す（`rm -rf`は使わない）。担当のworktreeは、担当が終わるまで消せない。
+- **別のworktreeのブランチの着地が衝突したとき**：`just land`は相手のworktreeでrebaseをabortして止まる。セッションのgitが自分のworktreeに閉じているときは、自分のworktreeに一時ブランチ（そのコミットから）を作ってrebaseし、衝突を解いて`just land <一時ブランチ>`で着地させる。元のworktreeは`git worktree remove --force`（submoduleがあるので要る、サンドボックスの外）で消す。
 - **pushの単位は束で、着地ごとではない。** 同じ話題の連続した着地（決定の追加、フォローアップ、`ci/`で検証済みの設定）は、ローカルのmasterに着地するだけにして、束が仕上がってからpushを1回にする。pushのたびに全ジョブのCI（macOSが約40分）が走るので、着地ごとにpushすると同じ木のCIが並ぶ（2026-11-11：3回のpushでCIが3本並び、1回で済んだ）。ローカルの着地は`just test-dev`を通っているので、pushを遅らせても壊れたmasterにはならない。着地のたびにpushするのは、後続の作業がその着地に依存する、ほかのセッションやuserが使う、赤になったときの切り分けが難しくなる大きさ、のどれかのとき。userの「着地ごとにpushしてよい」は許可であって、毎回pushする義務ではない。
 - pushしたら、CIの読むファイルが変わっていればCIを見る。pushの前に`git log origin/master..master`で、自分の分以外がないかを見る。後のpushが同じ木を含み、古いmasterのrunの結果が要らないときは、`gh run cancel <id>`で止めてよい（完了済みのrunは止められない）。
 
