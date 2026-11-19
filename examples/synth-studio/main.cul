@@ -4,10 +4,12 @@
 #
 # Dev (the page read from disk):  culebra examples/synth-studio/main.cul
 # One binary (the page baked in): culebra build examples/synth-studio/main.cul \
-#                                   -o synth-studio --with Synth,Audio
+#                                   -o synth-studio --with Synth,Audio,Sys,String,Math
 #
-# `--with Synth,Audio` because the sounds are the editor's, which this program
-# does not name: a built binary carries only the namespaces it is told of.
+# `--with` names every namespace the programs the page sends name (a sound,
+# and the analysis of its harmonics), which this program does not: a built
+# binary carries only the namespaces it is told of. tools/playground/
+# studio_test.mjs holds the programs to this list.
 
 import runner from './runner/runner.cul'
 

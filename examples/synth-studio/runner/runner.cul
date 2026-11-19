@@ -3,8 +3,10 @@
 # of its own, over one WebSocket connection. The page sends the program and
 # the path a syntax error names it by; the answer is the WAV in base64 or the
 # failure as the command line prints it, which the page reads as it reads the
-# browser's run. The page's Stop closes the connection, which drops a run
-# still rendering: a source that never ends stops with it.
+# browser's run. A message whose `kind` is "analysis" runs the page's analysis
+# of the harmonics instead, with the connection's last WAV as its argument,
+# and the answer is its value. The page's Stop closes the connection, which
+# drops a run still rendering: a source that never ends stops with it.
 
 # A failure as the command line prints one: a built-in error with its kind and
 # place, a thrown value as it is (an isolate's join keeps no place for it).
@@ -14,19 +16,27 @@ fn failure_text(e) {
     : "uncaught: {e}\n"
 }
 
-fn start(src, path) {
-  Isolate.spawn_source(src, name: path)
+# `wav`, when given, is the run's argument (Sys.argv[0]).
+fn start(src, path, wav = nil) {
+  wav == nil
+    ? Isolate.spawn_source(src, name: path)
+    : Isolate.spawn_source(src, wav, name: path)
 }
 
-# The answer to send for a run, or nil while it is still rendering.
+# Nil while the run is still rendering; else the answer to send, and the WAV
+# the run rendered (nil for any other answer).
 fn answer(run) {
   try {
-    let wav = run.poll()
+    let value = run.poll()
     # Encoded here rather than by the program: Encoding is this program's to
     # name, which is what links it into a built binary.
-    wav == nil ? nil : {rc: 0, wav: Encoding.base64.encode(wav)}
+    cond {
+      value == nil => nil,
+      value is String => ({rc: 0, wav: Encoding.base64.encode(value)}, value),
+      _ => ({rc: 0, value: value}, nil),
+    }
   } catch e {
-    {rc: 1, text: failure_text(e)}
+    ({rc: 1, text: failure_text(e)}, nil)
   }
 }
 
@@ -35,12 +45,23 @@ fn answer(run) {
 fn serve(ws) {
   ws.set_timeout(50)
   mut run = nil
+  mut wav = nil  # the last one a run rendered, which an analysis reads
   while true {
     match ws.try_receive() {
       Message(m) => {
         run?.drop()
+        run = nil
         let msg = JSON.parse(m)
-        run = start(msg.src, msg.path)
+        if msg.kind != "analysis" {
+          run = start(msg.src, msg.path)
+        } else if wav != nil {
+          run = start(msg.src, msg.path, wav)
+        } else {
+          ws.send(JSON.stringify({
+            rc: 1,
+            text: "there is no sound to analyse\n",
+          }))
+        }
       },
       Empty() => nil,
       Closed() => {
@@ -49,8 +70,10 @@ fn serve(ws) {
       },
     }
     if run != nil {
-      let reply = answer(run)
-      if reply != nil {
+      let done = answer(run)
+      if done != nil {
+        let (reply, rendered) = done
+        wav = rendered ?? wav
         ws.send(JSON.stringify(reply))
         run = nil
       }

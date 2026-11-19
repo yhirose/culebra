@@ -5,19 +5,30 @@ import runner from './runner.cul'
 # The path the page names its program by (playground/studio-program.js).
 let PATH = "studio/main.cul"
 
-# What a run answers once it has ended.
-fn answer_of(src) {
-  let run = runner.start(src, PATH)
-  mut reply = runner.answer(run)
-  while reply == nil {
+# What a run answers once it has ended, and the WAV it rendered.
+fn ended(src, wav = nil) {
+  let run = runner.start(src, PATH, wav)
+  mut done = runner.answer(run)
+  while done == nil {
     Time.sleep(0.01)
-    reply = runner.answer(run)
+    done = runner.answer(run)
   }
-  reply
+  done
+}
+
+fn answer_of(src) {
+  ended(src)[0]
 }
 
 # The program's value is the WAV's bytes, which go to the page in base64.
-assert_eq(answer_of("'RIFF'"), {rc: 0, wav: "UklGRg=="})
+assert_eq(ended("'RIFF'"), ({rc: 0, wav: "UklGRg=="}, "RIFF"))
+
+# Any other value is an analysis's answer, which goes as it is; its argument
+# is a WAV the connection kept.
+assert_eq(
+  ended("\{n: Sys.argv[0].size(), none: nil}", "RIFF"),
+  ({rc: 0, value: {n: 4, none: nil}}, nil),
+)
 
 # A failure reads as the command line prints it, so the page finds its place
 # in the program as it does for the browser's run.
@@ -46,14 +57,26 @@ assert_eq(answer_of("throw [1, 2]"), {rc: 1, text: "uncaught: [1, 2]\n"})
     srv.stop()
   }
   let ws = Http.ws("ws://127.0.0.1:{port}/api/run")
-  let send = fn (src) {
-    ws.send(JSON.stringify({src: src, path: PATH}))
+  let send = fn (src, kind = "play") {
+    ws.send(JSON.stringify({kind: kind, src: src, path: PATH}))
   }
+  let size = "Sys.argv[0].size() * 1.0"
+  # An analysis needs a sound to read.
+  send(size, "analysis")
+  assert_eq(
+    JSON.parse(ws.receive()),
+    {rc: 1, text: "there is no sound to analyse\n"},
+  )
   send("'RIFF'")
   assert_eq(JSON.parse(ws.receive()), {rc: 0, wav: "UklGRg=="})
   send("mut n = 0\nwhile true \{ n += 1 }")
-  send("'WAVE'")
-  assert_eq(JSON.parse(ws.receive()), {rc: 0, wav: "V0FWRQ=="})
+  send("'WAVE!'")
+  assert_eq(JSON.parse(ws.receive()), {rc: 0, wav: "V0FWRSE="})
+  # It reads the last one rendered, which a failed run leaves as it was.
+  send("throw 'boom'")
+  assert_eq(JSON.parse(ws.receive()), {rc: 1, text: "uncaught: boom\n"})
+  send(size, "analysis")
+  assert_eq(JSON.parse(ws.receive()), {rc: 0, value: 5.0})
   ws.close()
 }
 

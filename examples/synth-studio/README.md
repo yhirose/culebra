@@ -2,20 +2,21 @@
 
 The [Synth Studio](https://yhirose.github.io/culebra/playground/studio.html)
 page in a native window, as one binary: write a sound in `Synth`, play it,
-and watch its wave and spectrum, with no browser and no network.
+and watch its wave, spectrum and harmonics, with no browser and no network.
 
 ```sh
 # From source (the page is read from the checkout)
 culebra examples/synth-studio/main.cul
 
 # One binary (the page baked in)
-culebra build examples/synth-studio/main.cul -o synth-studio --with Synth,Audio
+culebra build examples/synth-studio/main.cul -o synth-studio --with Synth,Audio,Sys,String,Math
 ./synth-studio
 ```
 
-`--with Synth,Audio` is needed because the sounds are the editor's, not this
-program's: a built binary carries the namespaces its program names, and the
-ones `--with` adds for the sources it runs.
+`--with` is needed because the sounds are the editor's, not this program's: a
+built binary carries the namespaces its program names, and the ones `--with`
+adds for the sources it runs. The list is every namespace those sources name
+(a sound's program, and the analysis of its harmonics).
 
 ## How it works
 
@@ -34,11 +35,17 @@ A Play sends the program the page builds (`playground/studio-program.js`) over
 the WebSocket. The runner runs it on an isolate of its own; the program's
 value is the WAV it renders, which the runner sends on in base64 (encoded by
 the runner, so the sources need no namespace beyond `Synth` and `Audio`). A
-failure comes back worded as the
-command line prints it, so the page points at the editor's line as it does in
-the browser. The page plays the WAV itself, which is what the scope and the
-spectrum read. Stop closes the connection, and the server drops a run still
-rendering, so a sound that never ends stops too.
+failure comes back worded as the command line prints it, so the page points
+at the editor's line as it does in the browser. The page plays the WAV itself,
+which is what the scope and the spectrum read. Stop closes the connection, and
+the server drops a run still rendering, so a sound that never ends stops too.
+
+When the lower graph shows the harmonics, the page then sends a second
+program on the same connection, its `kind` `"analysis"`. The runner keeps the
+last WAV a run rendered and passes it to that program as its argument
+(`Sys.argv[0]`); the program's value is the pitch and the harmonics' levels
+every 10 ms, which go to the page as JSON. A Play sent while it runs reconnects
+first, so the analysis is dropped as a Stop drops a run.
 
 ## Limits
 

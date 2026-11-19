@@ -90,3 +90,48 @@ export function editorReport(text, failed, lines) {
   });
   return { text: out, line };
 }
+
+// --- the harmonics of what a Play rendered ---------------------------------
+//
+// A second program, run once the sound plays, reads the WAV the Play left and
+// answers its pitch and the levels of its harmonics every FRAME_SECONDS:
+// `{hz, harmonics}`, `hz[t]` the pitch in Hz (nil where there is none) and
+// `harmonics[t]` HARMONICS levels in dBFS, DB_FLOOR at the least (nil where
+// `hz[t]` is). The channels are heard as one, their mean. In the browser it
+// reads the WAV beside it and writes its answer as JSON beside that; in the
+// desktop app the WAV is its argument and its answer is its value, so it names
+// no namespace the app is not built with (examples/synth-studio/main.cul).
+const ANALYSIS = "analysis.json";
+export const ANALYSIS_ENTRY = `${DIR}/analysis.cul`;
+export const ANALYSIS_OUT = `${DIR}/${ANALYSIS}`;
+export const FRAME_SECONDS = 0.01;
+export const HARMONICS = 40;
+export const DB_FLOOR = -80;
+// The pitches looked for: a bass's lowest note to a soprano's highest.
+const PITCH_LOW = 40;
+const PITCH_HIGH = 2000;
+
+export function buildAnalysis(out = "file") {
+  const wav = out === "value" ? "Sys.argv[0]" : `FS.read(FS.join(FS.dirname(Sys.script), "${WAV}"))`;
+  const analysis = `(fn (wav) {
+  # The 16-bit WAV that Audio.Sound's data() writes: its samples from byte 44.
+  __raise("ValueError", "Studio's analysis reads a 16-bit WAV") if wav.slice(36, 40) != "data"
+  let channels = String.unpack("u16", wav, at: 22, count: 1)[0]
+  let rate = String.unpack("u32", wav, at: 24, count: 1)[0]
+  let pcm = String.unpack("i16", wav, at: 44)
+  let mono = channels == 1
+    ? pcm.map(|x| x / 32768.0)
+    : iota(pcm.size() / 2).map(|i| (pcm[2 * i] + pcm[2 * i + 1]) / 65536.0)
+  let pitch = Audio.pitch(mono, ${PITCH_LOW}.0, ${PITCH_HIGH}.0, rate)
+  let found = Audio.harmonics(mono, pitch.hz, count: ${HARMONICS}, rate: rate)
+  let floor = 10.0 ** (${DB_FLOOR}.0 / 20.0)
+  let db = |a| a <= floor ? ${DB_FLOOR}.0 : Math.round(200.0 * Math.log(a) / Math.log(10.0)) / 10.0
+  {
+    hz: pitch.hz.map(|f| f == nil ? nil : Math.round(f * 100.0) / 100.0),
+    harmonics: found.harmonics.map(|h| h == nil ? nil : h.map(db)),
+  }
+})(${wav})`;
+  return out === "value"
+    ? `${analysis}\n`
+    : `FS.write(FS.join(FS.dirname(Sys.script), "${ANALYSIS}"), JSON.stringify(${analysis}))\n`;
+}

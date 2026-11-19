@@ -33,6 +33,14 @@
   color: var(--muted); font-size: 0.8rem; padding-bottom: 0.35rem;
 }
 .st-clock { font-variant-numeric: tabular-nums; }
+/* The lower graph's two views, as words in the caption: the one shown reads
+   as the caption's text, the other as a link to it. */
+.st-views { display: inline-flex; gap: 0.7rem; }
+.st-views button {
+  padding: 0; border: 0; background: none; font: inherit; color: inherit; cursor: pointer;
+}
+.st-views button[aria-selected="true"] { color: var(--text); cursor: default; }
+.st-views button:hover { color: var(--text); }
 .st-panel canvas {
   flex: 1; min-height: 0; width: 100%;
   background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);

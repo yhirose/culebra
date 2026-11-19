@@ -1,12 +1,16 @@
 // Synth Studio: the editor's code runs in the Playground's worker, or in the
 // desktop app on its server (studio-program.js says what it runs), and the WAV
-// that run leaves is played here, through an AnalyserNode the two graphs read
-// every frame. The sound is the page's, so it outlives the run: Stop silences
-// it, and stops a run still rendering by starting what runs it afresh, as the
-// Playground's Stop does.
+// that run leaves is played here, through an AnalyserNode the wave and the
+// spectrum read every frame. The sound is the page's, so it outlives the run:
+// Stop silences it, and stops a run still rendering by starting what runs it
+// afresh, as the Playground's Stop does. The harmonics are a second run's, on
+// the WAV the first one left, while the sound plays.
 import { createEditor } from "./editor.js";
 import { encodeShareParam, decodeShareParam } from "./share-link.js";
-import { ENTRY, OUT, buildProgram, editorReport } from "./studio-program.js";
+import {
+  ENTRY, OUT, ANALYSIS_ENTRY, ANALYSIS_OUT, FRAME_SECONDS, HARMONICS, DB_FLOOR,
+  buildProgram, buildAnalysis, editorReport,
+} from "./studio-program.js";
 
 const $ = (id) => document.getElementById(id);
 const playBtn = $("play");
@@ -18,8 +22,10 @@ const shareBtn = $("share");
 const sampleSel = $("sample");
 const consoleEl = $("console");
 const clockEl = $("clock");
+const pitchEl = $("pitch");
 const scope = $("scope");
-const spectrum = $("spectrum");
+const lower = $("lower");
+const viewTabs = { spectrum: $("view-spectrum"), harmonics: $("view-harmonics") };
 
 function setStatus(text, isErr = false) {
   statusEl.textContent = text;
@@ -57,33 +63,85 @@ addEventListener("pagehide", writeDraft);
 // In the browser, the Playground's worker; in the desktop app
 // (examples/synth-studio), the app's own server over a WebSocket, which runs
 // the program with Isolate.spawn_source. The app says which in the page's
-// <meta name="studio-runner">. Either one tells the page `ready`, what the run
-// prints, and `done` with the run's verdict and its WAV; `start` abandons any
-// run in flight (the worker terminated, the connection closed) and starts
-// afresh.
+// <meta name="studio-runner">. Either one runs a program of a kind, "play" or
+// "analysis" (which reads the last WAV a play left), one at a time: it tells
+// the page `ready`, what the run prints, and `done` with the run's verdict and
+// its WAV or its analysis. A run asked for before `ready` waits for it.
+// `start` abandons any run in flight (the worker terminated, the connection
+// closed, with the WAV it kept) and starts afresh.
+
+// Each kind of run: the path its program goes by, the file it leaves in the
+// browser, and how the page reads that file.
+const RUNS = {
+  play: { path: ENTRY, out: OUT, read: (bytes) => bytes },
+  analysis: { path: ANALYSIS_ENTRY, out: ANALYSIS_OUT,
+              read: (bytes) => JSON.parse(new TextDecoder().decode(bytes)) },
+};
+
+// One run at a time, `kind` the one in flight; a run asked for before what
+// runs it has `opened` waits for it. `send(src, kind)` hands one over.
+function runQueue(send) {
+  let open = false;
+  let kind = null;
+  let waiting = null;
+  const go = (src, k) => {
+    kind = k;
+    send(src, k);
+  };
+  return {
+    reset() {
+      open = false;
+      kind = waiting = null;
+    },
+    opened() {
+      open = true;
+      const w = waiting;
+      waiting = null;
+      if (w) go(w.src, w.kind);
+    },
+    run(src, k) {
+      if (open) go(src, k);
+      else waiting = { src, kind: k };
+    },
+    get kind() { return kind; },
+    finished() {
+      const k = kind;
+      kind = null;
+      return k;
+    },
+  };
+}
 
 function workerRunner(on) {
   let worker = null;
+  const runs = runQueue((src, kind) => {
+    const { path, out } = RUNS[kind];
+    worker.postMessage({ type: "run", src, path, base: "./", files: [], args: [], collect: [out] });
+  });
   return {
     out: "file",
     start() {
       worker?.terminate();
+      runs.reset();
       worker = new Worker("./worker.js", { type: "module" });
       worker.onmessage = (e) => {
         const m = e.data;
-        if (m.type === "ready") on.ready();
-        else if (m.type === "output") on.output(m.text);
-        else if (m.type === "done") on.done(m.rc, m.files?.[OUT] ?? null);
+        if (m.type === "ready") {
+          on.ready();
+          runs.opened();
+        } else if (m.type === "output") {
+          on.output(runs.kind, m.text);
+        } else if (m.type === "done") {
+          const kind = runs.finished();
+          const file = m.files?.[RUNS[kind].out];
+          on.done(kind, m.rc, file ? RUNS[kind].read(file) : null);
+        }
         // The rest (the Sound the run builds its WAV with, a Canvas frame) is
         // the Playground's to show: here the sound is the WAV the run leaves.
       };
       worker.onerror = (e) => on.error("worker error", String(e.message || e));
     },
-    run(src) {
-      worker.postMessage({
-        type: "run", src, path: ENTRY, base: "./", files: [], args: [], collect: [OUT],
-      });
-    },
+    run: (src, kind) => runs.run(src, kind),
   };
 }
 
@@ -94,10 +152,11 @@ function bytesOf(s) {
   return bytes;
 }
 
-// The server answers a run with `{rc, wav}` (the WAV in base64) or `{rc, text}`
-// (the failure, as the command line prints it).
+// The server answers a run with `{rc, wav}` (the WAV in base64), `{rc, value}`
+// (an analysis) or `{rc, text}` (the failure, as the command line prints it).
 function socketRunner(on) {
   let ws = null;
+  const runs = runQueue((src, kind) => ws.send(JSON.stringify({ kind, src, path: RUNS[kind].path })));
   return {
     out: "value",
     start() {
@@ -105,58 +164,79 @@ function socketRunner(on) {
         ws.onclose = null;  // closed on purpose: the server drops the run
         ws.close();
       }
+      runs.reset();
       ws = new WebSocket(new URL("api/run", location.href.replace(/^http/, "ws")));
-      ws.onopen = () => on.ready();
+      ws.onopen = () => {
+        on.ready();
+        runs.opened();
+      };
       ws.onmessage = (e) => {
         const m = JSON.parse(e.data);
-        if (m.text) on.output(m.text);
-        on.done(m.rc, m.wav ? bytesOf(atob(m.wav)) : null);
+        const kind = runs.finished();
+        if (m.text) on.output(kind, m.text);
+        on.done(kind, m.rc, m.wav ? bytesOf(atob(m.wav)) : (m.value ?? null));
       };
       ws.onclose = () => on.error("the app's server is gone", "", true);
     },
-    run(src) {
-      ws.send(JSON.stringify({ src, path: ENTRY }));
-    },
+    run: (src, kind) => runs.run(src, kind),
   };
 }
 
 let ready = false;
 let rendering = false;
-let printed = "";  // what the run in flight has printed
+let printed = "";  // what the play in flight has printed
 let lines = 0;     // the editor's lines it carries (studio-program.js)
 // Bumped by each Play and Stop: a run whose sound is still being decoded when
 // either comes is not played.
 let take = 0;
+// Whether what runs the program keeps the WAV of this take, which an analysis
+// reads; and the analysis of it: null, or {state: "running" | "done" |
+// "failed", hz, harmonics, text}, `text` what the analysis printed.
+let kept = false;
+let analysis = null;
 
 const runnerKind = document.querySelector('meta[name="studio-runner"]')?.content;
 const runner = (runnerKind === "socket" ? socketRunner : workerRunner)({
   ready() {
     ready = true;
-    // Not over an error the page already has to say (an unreadable link).
-    if (!statusEl.classList.contains("err")) setStatus("ready");
+    // Not over an error the page already has to say (an unreadable link), nor
+    // over a Play that restarted the runner and waits for it.
+    if (!rendering && !statusEl.classList.contains("err")) setStatus("ready");
     update();
   },
-  output(text) {
-    printed += text;
-    showConsole(printed, false);
+  output(kind, text) {
+    if (kind === "play") {
+      printed += text;
+      showConsole(printed, false);
+    } else if (analysis?.state === "running") {
+      analysis.text = (analysis.text ?? "") + text;
+    }
   },
-  done: finish,
+  done(kind, rc, result) {
+    if (kind === "play") finish(rc, result);
+    else analysed(rc, result);
+  },
   // `gone`: what runs the program cannot take another until it is started
   // again (a closed connection; a worker's error leaves the worker running).
   error(status, detail, gone = false) {
     if (gone) ready = false;
     setStatus(status, true);
     showConsole(detail, true);
-    if (rendering) {
+    if (rendering || analysis?.state === "running") {
       rendering = false;
+      if (analysis?.state === "running") analysis = { state: "failed" };
       startRunner();
     }
     update();
+    draw();
   },
 });
 
+// A fresh runner keeps no WAV, so an analysis running is dropped with it.
 function startRunner() {
   ready = false;
+  kept = false;
+  if (analysis?.state === "running") analysis = null;
   runner.start();
   update();
 }
@@ -169,7 +249,7 @@ function showConsole(text, isErr) {
 
 function update() {
   playBtn.disabled = !ready || rendering;
-  stopBtn.disabled = !rendering && !source;
+  stopBtn.disabled = !rendering && !source && analysis?.state !== "running";
 }
 
 // --- Play and Stop -------------------------------------------------------------
@@ -179,6 +259,10 @@ function play() {
   ensureAudio();  // in the click or the key press, which is what lets it start
   stopSound();
   take++;
+  // The runner takes one run at a time: an analysis still running goes.
+  if (analysis?.state === "running") startRunner();
+  analysis = null;
+  kept = false;
   const program = buildProgram(editor.getValue(), editor.getSelection(),
                                Number(lengthSel.value), runner.out);
   lines = program.lines;
@@ -188,7 +272,8 @@ function play() {
   rendering = true;
   update();
   setStatus("rendering…");
-  runner.run(program.src);
+  draw();
+  runner.run(program.src, "play");
 }
 
 async function finish(rc, wav) {
@@ -202,6 +287,8 @@ async function finish(rc, wav) {
     setStatus("error", true);
     return;
   }
+  kept = true;
+  analyse();
   const mine = take;
   let buffer;
   try {
@@ -215,15 +302,15 @@ async function finish(rc, wav) {
 
 function stop() {
   take++;
-  if (rendering) {
+  if (rendering) setStatus("stopped — reloading…");
+  else if (source) setStatus("stopped");
+  if (rendering || analysis?.state === "running") {
     rendering = false;
-    setStatus("stopped — reloading…");
     startRunner();
-  } else if (source) {
-    setStatus("stopped");
   }
   stopSound();
   update();
+  draw();
 }
 
 playBtn.addEventListener("click", play);
@@ -231,6 +318,46 @@ stopBtn.addEventListener("click", stop);
 loopBox.addEventListener("change", () => {
   if (source) source.loop = loopBox.checked;
 });
+
+// --- the harmonics --------------------------------------------------------------
+//
+// Worked out when the harmonics are shown and the runner keeps a WAV with none
+// worked out yet: after a Play, or on switching to them.
+
+function analyse() {
+  if (view !== "harmonics" || !kept || analysis) return;
+  analysis = { state: "running" };
+  runner.run(buildAnalysis(runner.out), "analysis");
+  update();
+  draw();
+}
+
+function analysed(rc, result) {
+  if (analysis?.state !== "running") return;  // dropped by a Play or a Stop
+  const failed = rc !== 0 || !result;
+  // Its error under the code, as a Play's is: the graph has no room for it.
+  if (failed) showConsole(analysis.text ?? "", true);
+  analysis = failed ? { state: "failed" } : { state: "done", hz: result.hz, harmonics: result.harmonics };
+  update();
+  draw();
+}
+
+// --- the lower graph's view ---------------------------------------------------------
+
+const VIEW_KEY = "culebra-studio-view";
+let view = "spectrum";
+try { if (localStorage.getItem(VIEW_KEY) === "harmonics") view = "harmonics"; } catch { /* not kept */ }
+
+function showView(v) {
+  view = v;
+  try { localStorage.setItem(VIEW_KEY, v); } catch { /* not kept */ }
+  for (const [name, tab] of Object.entries(viewTabs)) tab.setAttribute("aria-selected", String(name === v));
+  lower.setAttribute("aria-label", v === "spectrum" ? "The spectrum playing now"
+                                                    : "The levels of the harmonics playing now");
+  analyse();
+  draw();
+}
+for (const [name, tab] of Object.entries(viewTabs)) tab.addEventListener("click", () => showView(name));
 
 // --- the sound -----------------------------------------------------------------
 
@@ -266,6 +393,7 @@ function start(buffer) {
   source = s;
   duration = buffer.duration;
   startedAt = audio.currentTime;
+  stoppedAt = null;
   s.start();
   setStatus("playing");
   update();
@@ -274,6 +402,7 @@ function start(buffer) {
 
 function stopSound() {
   if (!source) return;
+  stoppedAt = playhead();
   const s = source;
   source = null;
   s.onended = null;
@@ -281,10 +410,21 @@ function stopSound() {
   s.disconnect();
 }
 
-// --- the two graphs ------------------------------------------------------------
+// Where the sound is, in seconds from its start, or null before the first: one
+// stopped stays where it stopped, one that ended at its end.
+let stoppedAt = null;
+function playhead() {
+  if (!audio || !duration) return null;
+  const t = audio.currentTime - startedAt;
+  if (!source) return stoppedAt ?? Math.min(t, duration);
+  return source.loop ? t % duration : Math.min(t, duration);
+}
+
+// --- the graphs ------------------------------------------------------------------
 //
-// Drawn every frame while a sound plays, from the analyser's latest samples;
-// when it stops, the last frame stays. A resize redraws what was last read.
+// Drawn every frame while a sound plays, from the analyser's latest samples
+// and the analysis; when it stops, the last frame stays. A resize redraws what
+// was last read.
 
 let timeData = null;
 let freqData = null;
@@ -336,13 +476,12 @@ function fit(canvas) {
 }
 
 function draw() {
+  const t = playhead();
+  pitchEl.textContent = "";  // a pitched frame of the harmonics says its pitch
   drawScope();
-  drawSpectrum();
-  if (audio && duration) {
-    let t = audio.currentTime - startedAt;
-    t = source ? (source.loop ? t % duration : Math.min(t, duration)) : Math.min(t, duration);
-    clockEl.textContent = `${t.toFixed(2)} / ${duration.toFixed(2)} s`;
-  }
+  if (view === "spectrum") drawSpectrum();
+  else drawHarmonics(t);
+  if (t !== null) clockEl.textContent = `${t.toFixed(2)} / ${duration.toFixed(2)} s`;
 }
 
 const SCOPE_SECONDS = 0.03;
@@ -389,7 +528,7 @@ const DB_HIGH = -20;
 const F_MARKS = [50, 100, 200, 500, 1000, 2000, 5000, 10000];
 
 function drawSpectrum() {
-  const { g, w, h, dpr } = fit(spectrum);
+  const { g, w, h, dpr } = fit(lower);
   const fHigh = Math.min(16000, (audio ? audio.sampleRate : 44100) / 2);
   const xOf = (f) => (Math.log(f / F_LOW) / Math.log(fHigh / F_LOW)) * w;
   const fOf = (x) => F_LOW * (fHigh / F_LOW) ** (x / w);
@@ -452,6 +591,67 @@ function drawLevels(g, w, h, dpr, fOf, yOf) {
   g.strokeStyle = colors.line;
   g.lineWidth = 1.5 * dpr;
   g.stroke();
+}
+
+const NOTE_NAMES = ["C", "C♯", "D", "D♯", "E", "F", "F♯", "G", "G♯", "A", "A♯", "B"];
+
+// The note nearest `hz`, as A4 is 440 Hz.
+function noteOf(hz) {
+  const n = Math.round(69 + 12 * Math.log2(hz / 440));
+  return `${NOTE_NAMES[((n % 12) + 12) % 12]}${Math.floor(n / 12) - 1}`;
+}
+
+const HARMONIC_MARKS = [1, 5, 10, 15, 20, 25, 30, 35, 40];
+
+// A bar for each harmonic of the analysis's frame at `t`, its height the
+// level from DB_FLOOR up to 0 dBFS; where there is no frame to draw, the
+// reason, in the middle.
+function drawHarmonics(t) {
+  const { g, w, h, dpr } = fit(lower);
+  // The bars stand right of the levels' labels and above the harmonics'.
+  const left = 44 * dpr;
+  const base = h - 16 * dpr;
+  const yOf = (db) => base * (db / DB_FLOOR);
+  const slot = (w - left) / HARMONICS;
+  const dbMarks = [0, -20, -40, -60];
+  g.strokeStyle = colors.grid;
+  g.lineWidth = dpr;
+  g.beginPath();
+  for (const db of [...dbMarks, DB_FLOOR]) {
+    const y = Math.round(yOf(db)) + (db === 0 ? dpr : 0);
+    g.moveTo(left, y);
+    g.lineTo(w, y);
+  }
+  g.stroke();
+  g.fillStyle = colors.label;
+  g.textAlign = "right";
+  g.textBaseline = "middle";
+  for (const db of dbMarks) g.fillText(`${db} dB`, left - 6 * dpr, Math.max(6 * dpr, yOf(db)));
+  g.textAlign = "center";
+  g.textBaseline = "alphabetic";
+  for (const k of HARMONIC_MARKS) g.fillText(String(k), left + (k - 0.5) * slot, h - 4 * dpr);
+
+  const say = (text) => {
+    g.fillStyle = colors.label;
+    g.fillText(text, left + (w - left) / 2, base / 2);
+  };
+  const done = analysis?.state === "done" && t !== null;
+  const at = done ? Math.min(analysis.hz.length - 1, Math.round(t / FRAME_SECONDS)) : -1;
+  if (rendering) say("rendering…");
+  else if (analysis?.state === "running") say("analysing…");
+  else if (analysis?.state === "failed") say("the analysis failed");
+  else if (!done) say("Play a sound to see its harmonics");
+  else if (at < 0 || analysis.hz[at] === null) say("no pitch");
+  else {
+    const hz = analysis.hz[at];
+    pitchEl.textContent = `${hz.toFixed(1)} Hz · ${noteOf(hz)}`;
+    g.fillStyle = colors.line;
+    analysis.harmonics[at].forEach((db, k) => {
+      const y = yOf(db);
+      g.fillRect(left + k * slot + slot * 0.15, y, slot * 0.7, base - y);
+    });
+  }
+  g.textAlign = "start";
 }
 
 new ResizeObserver(() => draw()).observe(scope.closest(".st-right"));
@@ -525,6 +725,7 @@ sampleSel.addEventListener("change", async () => {
 
 addEventListener("hashchange", () => location.reload());
 startRunner();
+showView(view);
 await loadSamples();
 const code = await linkOrDraft();
 const opening = samples.find((s) => s.opening);

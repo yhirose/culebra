@@ -19,7 +19,7 @@
        (examples/synth-studio) serves this page with `socket`, its server. -->
   <meta name="studio-runner" content="worker">
   <title>culebra Synth Studio v0.8.0</title>
-  <meta name="description" content="Write a sound in culebra's Synth, play it, and watch its wave and spectrum, in your browser.">
+  <meta name="description" content="Write a sound in culebra's Synth, play it, and watch its wave, spectrum and harmonics, in your browser.">
   <link rel="icon" type="image/svg+xml" href="../assets/favicon.svg">
   <link rel="stylesheet" href="../assets/brand.css">
   <link rel="stylesheet" href="./styles.css">
@@ -86,8 +86,15 @@
         <canvas id="scope" aria-label="The wave playing now"></canvas>
       </figure>
       <figure class="st-panel">
-        <figcaption>Spectrum</figcaption>
-        <canvas id="spectrum" aria-label="The spectrum playing now"></canvas>
+        <figcaption>
+          <span class="st-views" role="tablist" aria-label="What the lower graph shows">
+            <button id="view-spectrum" role="tab" aria-selected="true" aria-controls="lower">Spectrum</button>
+            <button id="view-harmonics" role="tab" aria-selected="false" aria-controls="lower"
+                    title="The levels of the sound's harmonics, from its pitch every 10 ms">Harmonics</button>
+          </span>
+          <span id="pitch" class="st-clock"></span>
+        </figcaption>
+        <canvas id="lower" aria-label="The spectrum playing now"></canvas>
       </figure>
     </section>
   </main>
