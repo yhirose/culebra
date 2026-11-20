@@ -91,12 +91,16 @@ assert_eq([pa.twice().x, pb.twice().x], [6, 6])
 
 # A static holding an instance of its own class: one class per message,
 # which the instance names as its own. That instance sent itself is no
-# cycle: what the class holds arrives as a copy of its own.
+# cycle: the class it takes along holds that same instance there.
 Pt.origin = Pt(0)
 assert_eq(Isolate.spawn(|| [Pt.origin.twice().x, class_of(Pt.origin) == Pt])
   .join(), [0, true])
 let origin = Pt.origin
 assert_eq(Isolate.spawn(|| origin.twice().x).join(), 0)
+assert_eq(Isolate.spawn(fn () {
+  origin.x = 5
+  Pt.origin.x
+}).join(), 5)
 
 # A class whose `new` keeps every instance it builds: each one sent takes the
 # class, and so the others, along.

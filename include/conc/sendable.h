@@ -101,9 +101,10 @@ struct JitSerCtx {
   // source spawns, which is joined before the source ends).
   const SourceOrigin* leaving = nullptr;
 
-  // A closure, a class object, an enum object or a meta -> its ref id: one
-  // node per message however often it is reached.
-  std::map<const void*, int> ids;
+  // A closure, a container or what a class is made of -> its ref id: one
+  // node per message however often it is reached, so what two places hold
+  // arrives held by both.
+  std::unordered_map<const void*, int> ids;
   int next_id = 0;
   std::set<const void*> visiting;          // container cycle guard
 
@@ -116,6 +117,21 @@ struct JitSerCtx {
     n.is_backref = !fresh;
     if (fresh) next_id++;
     return fresh;
+  }
+  // first() for a container of data, which may not hold itself: a reach
+  // from inside its own walk is a cycle, not a backref. One with a single
+  // count, met as a member of a container (`in_container`), has no holder
+  // but that container, which the walk meets once (a count is never below
+  // the references the heap holds, which the cycle collector's gc_refs
+  // relies on too), so no reach can come back to it and it goes unnumbered.
+  // A closure's capture is no such member: closures share a cell.
+  template <class Container>
+  bool first_data(const Container* p, bool in_container,
+                  sendable::SendNode& n) {
+    if (visiting.contains(p))
+      sendable::send_error("a cyclic value cannot be sent");
+    if (in_container && p->refcount == 1) return true;
+    return first(p, n);
   }
 };
 // One Runtime's hold on a frozen tree: what a view's kSvHoldSlot points at
@@ -229,25 +245,31 @@ struct JitChanIter final : JitHandle {
 // What one message's rebuild remembers: the node JitSerCtx::first numbered,
 // which each later backref names.
 struct JitDeCtx {
-  std::map<int, JitValue> rebuilt;  // ref id -> the value
-  // A reference on each until the message is rebuilt, so a later backref
-  // finds it whatever becomes of the node that carried it. A heap Array,
-  // which a collection reaches from this frame, as it does not a map's nodes.
-  JitOwnedVal held{TAG_NIL, 0};
+  // Each numbered node at its ref id (ids are numbered in the order the
+  // rebuild remembers them in), with a reference on it until the message is
+  // rebuilt, so a later backref finds it whatever becomes of the node that
+  // carried it. A heap Array, which a collection reaches from this frame, as
+  // it does not a vector's buffer.
+  JitOwnedVal rebuilt{TAG_NIL, 0};
 
+  // A node left unnumbered (JitSerCtx::first_data) is never referred back to.
   void remember(int id, JitValue v) {
-    if (held.borrow().tag == TAG_NIL)
-      held = JitOwnedVal(TAG_ARRAY,
-                         reinterpret_cast<int64_t>(culebra_runtime_array_new()));
+    if (id < 0) return;
+    if (rebuilt.borrow().tag == TAG_NIL)
+      rebuilt = JitOwnedVal(
+          TAG_ARRAY, reinterpret_cast<int64_t>(culebra_runtime_array_new()));
+    auto* a = reinterpret_cast<JitArray*>(rebuilt.borrow().data);
+    assert(static_cast<size_t>(id) == a->size &&
+           "a node remembered out of the order it was numbered in");
     JitValue ref = JitOwnedVal::from_borrowed(v).consume();
-    culebra_runtime_array_push(reinterpret_cast<JitArray*>(held.borrow().data),
-                               ref.tag, ref.data);
-    rebuilt.emplace(id, v);
+    culebra_runtime_array_push(a, ref.tag, ref.data);
   }
   // A reference of its own, like any other node's.
   JitOwnedVal recall(int id) const {
-    assert(rebuilt.contains(id) && "a backref ahead of its node");
-    return JitOwnedVal::from_borrowed(rebuilt.at(id));
+    auto* a = reinterpret_cast<JitArray*>(rebuilt.borrow().data);
+    assert(a && static_cast<size_t>(id) < a->size &&
+           "a backref ahead of its node");
+    return JitOwnedVal::from_borrowed(a->items[id]);
   }
   // A Set member, and an entry under a key that is no String, put where its
   // sender held it: under the hash the sender stored the key under
@@ -406,7 +428,10 @@ inline JitHandleKind _jit_handle_kind(JitObject* o) {
   return JitHandleKind::None;
 }
 
-inline sendable::SendNode jit_serialize(JitValue v, JitSerCtx& ctx);
+// `in_container`: `v` is a member of a container the walk is in (see
+// JitSerCtx::first_data).
+inline sendable::SendNode jit_serialize(JitValue v, JitSerCtx& ctx,
+                                        bool in_container = false);
 
 // The class object an instance takes along to the other side, or null: the
 // one its methods name (names_class), which they read through the instance.
@@ -420,7 +445,8 @@ inline JitObject* _jit_class_along(const JitObject* o) {
 // reached `as_meta` through an instance) are one node per message: a
 // variant's meta names one enum, so a second copy of its enum is no enum.
 inline sendable::SendNode _jit_object_node(JitObject* o, JitSerCtx& ctx,
-                                           bool as_meta) {
+                                           bool as_meta,
+                                           bool in_container = false) {
   using K = sendable::SendNode::K;
   sendable::SendNode n;
   switch (_jit_handle_kind(o)) {
@@ -478,14 +504,16 @@ inline sendable::SendNode _jit_object_node(JitObject* o, JitSerCtx& ctx,
     sendable::send_error(
         "a @value instance whose `new` has not returned is not Sendable");
   n.kind = K::Object;
-  if ((as_meta || o->is_class_meta || o->class_meta_of() || o->is_enum) &&
-      !ctx.first(o, n))
+  // A class, an enum or a meta may be reached again from inside its own
+  // walk (a method naming its class); data may not.
+  bool of_class =
+      as_meta || o->is_class_meta || o->class_meta_of() || o->is_enum;
+  if (!(of_class ? ctx.first(o, n) : ctx.first_data(o, in_container, n)))
     return n;
   culebra::ValueWalkFrame walk;
   // What the Object is (SendNode::elems) goes ahead of what it holds, and
   // before it counts as visited: an instance a static of its own class
-  // holds is reached again from there, and copied there as any second
-  // reach of an Object is.
+  // holds is reached again from there, and refers back to it there.
   const char* cls_name = nullptr;
   if (auto* meta = o->class_meta_of()) {
     cls_name = meta->specials->name;
@@ -510,8 +538,7 @@ inline sendable::SendNode _jit_object_node(JitObject* o, JitSerCtx& ctx,
       }
     });
   }
-  if (!ctx.visiting.insert(o).second)
-    sendable::send_error("a cyclic value cannot be sent");
+  ctx.visiting.insert(o);
   // The Object's own facts (the object-facts table above), the instance's
   // drop gate among them: carried rather than re-derived from the meta on
   // the other side, since a nested instance can relink while its meta is
@@ -523,7 +550,7 @@ inline sendable::SendNode _jit_object_node(JitObject* o, JitSerCtx& ctx,
   // enum with a constructor, unseen by the sender.
   auto member = [&](std::string_view key, JitValue v) {
     try {
-      return jit_serialize(v, ctx);
+      return jit_serialize(v, ctx, /*in_container=*/true);
     } catch (const culebra::CulebraError& e) {
       if (!cls_name) throw;
       sendable::rethrow_send_error_in(
@@ -547,8 +574,8 @@ inline sendable::SendNode _jit_object_node(JitObject* o, JitSerCtx& ctx,
         // The value before its key, as the receiver rebuilds them: the
         // first of two instances of a class carries the class, and the
         // other refers back to it.
-        auto val = jit_serialize(entry.value, ctx);
-        auto key = jit_serialize(k.value(), ctx);
+        auto val = jit_serialize(entry.value, ctx, /*in_container=*/true);
+        auto key = jit_serialize(k.value(), ctx, /*in_container=*/true);
         key.hash = k.hash();
         n.entries.emplace_back(std::move(key), std::move(val));
         n.entry_mut.push_back(entry.mut);
@@ -557,18 +584,20 @@ inline sendable::SendNode _jit_object_node(JitObject* o, JitSerCtx& ctx,
   return n;
 }
 
-inline sendable::SendNode jit_serialize(JitValue v, JitSerCtx& ctx) {
+inline sendable::SendNode jit_serialize(JitValue v, JitSerCtx& ctx,
+                                        bool in_container) {
   using K = sendable::SendNode::K;
   sendable::SendNode n;
   if (_jit_scalar_node(v, n)) return n;
   auto seq = [&](JitArray* a, K kind) -> sendable::SendNode {
-    if (!ctx.visiting.insert(a).second)
-      sendable::send_error("a cyclic value cannot be sent");
-    culebra::ValueWalkFrame walk;
     n.kind = kind;
+    if (!ctx.first_data(a, in_container, n)) return n;
+    ctx.visiting.insert(a);
+    culebra::ValueWalkFrame walk;
     n.elems.reserve(a->size);
     for (size_t i = 0; i < a->size; i++)
-      n.elems.push_back(jit_serialize(a->items[i], ctx));
+      n.elems.push_back(
+          jit_serialize(a->items[i], ctx, /*in_container=*/true));
     ctx.visiting.erase(a);
     return n;
   };
@@ -578,13 +607,14 @@ inline sendable::SendNode jit_serialize(JitValue v, JitSerCtx& ctx) {
     case TAG_TUPLE:  return seq(reinterpret_cast<JitArray*>(v.data), K::Tuple);
     case TAG_SET: {
       auto* s = reinterpret_cast<JitSet*>(v.data);
-      if (!ctx.visiting.insert(s).second)
-        sendable::send_error("a cyclic value cannot be sent");
-      culebra::ValueWalkFrame walk;
       n.kind = K::Set;
+      if (!ctx.first_data(s, in_container, n)) return n;
+      ctx.visiting.insert(s);
+      culebra::ValueWalkFrame walk;
       n.elems.reserve(s->members.size());
       for (const auto& m : s->members) {
-        n.elems.push_back(jit_serialize(m.value(), ctx));
+        n.elems.push_back(
+            jit_serialize(m.value(), ctx, /*in_container=*/true));
         n.elems.back().hash = m.hash();
       }
       ctx.visiting.erase(s);
@@ -592,7 +622,7 @@ inline sendable::SendNode jit_serialize(JitValue v, JitSerCtx& ctx) {
     }
     case TAG_OBJECT:
       return _jit_object_node(reinterpret_cast<JitObject*>(v.data), ctx,
-                              /*as_meta=*/false);
+                              /*as_meta=*/false, in_container);
     case TAG_FUNC: {
       auto* c = reinterpret_cast<JitClosure*>(v.data);
       // `obj.f` binds `obj` to `f`; when `f` never reads it, send `f` alone
@@ -746,6 +776,7 @@ inline JitOwnedVal jit_deserialize(const sendable::SendNode& n, JitDeCtx& ctx) {
   if (n.is_backref) return ctx.recall(n.ref_id);
   auto fill = [&](auto* c, int8_t tag, auto add) {
     JitOwnedVal out(tag, reinterpret_cast<int64_t>(c));
+    ctx.remember(n.ref_id, out.borrow());
     for (const auto& e : n.elems) add(c, jit_deserialize(e, ctx).consume());
     return out;
   };
@@ -773,6 +804,7 @@ inline JitOwnedVal jit_deserialize(const sendable::SendNode& n, JitDeCtx& ctx) {
       JitOwnedVal out(TAG_SET,
                       reinterpret_cast<int64_t>(culebra_runtime_set_new()));
       auto* s = reinterpret_cast<JitSet*>(out.borrow().data);
+      ctx.remember(n.ref_id, out.borrow());
       for (const auto& e : n.elems)
         JitDeCtx::put_member(s, jit_deserialize(e, ctx).consume(), e.hash);
       return out;
@@ -780,7 +812,7 @@ inline JitOwnedVal jit_deserialize(const sendable::SendNode& n, JitDeCtx& ctx) {
     case K::Object: {
       auto* o = culebra_runtime_object_new();
       JitOwnedVal out(TAG_OBJECT, reinterpret_cast<int64_t>(o));
-      if (n.ref_id >= 0) ctx.remember(n.ref_id, out.borrow());
+      ctx.remember(n.ref_id, out.borrow());
       // What it is, ahead of what it holds (SendNode::elems). A class is one
       // from the start, since its meta's methods may reach an instance that
       // links it; the mark then takes the meta's +1. An instance links its

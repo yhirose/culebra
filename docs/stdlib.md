@@ -2759,6 +2759,10 @@ closure returns or throws:
 What arrives is a copy that reads as the original does: an Object keeps
 its entries in the order it held them, whatever their keys, and a Set
 member or a key that is no `String` keeps the hash it was stored under.
+One message makes one copy of each value it reaches, however often it
+reaches it: an Array passed twice arrives as one Array, and two functions
+that capture the same top-level Object share one copy of it on the other
+side. Separate messages make separate copies.
 Rebuilding the copy runs none of the program's code: no `hash()` or
 `eq()` is called on the receiving side, where the class of a key may
 itself still be arriving.
@@ -4575,7 +4579,9 @@ sets the pool size:
   parallel**: no global interpreter lock stands between them.
 
 Each worker has its own runtime, so handlers must be **Sendable**: they can't
-capture mutable variables or non-Sendable values. Share large read-only data with
+capture mutable variables or non-Sendable values. A worker receives all of the
+server's handlers as one message, so the routes share the worker's copy of what
+they capture. Share large read-only data with
 [`Shared.new`](#12-isolate) (one copy across all workers) and open per-worker
 resources (a DB connection) inside the handler. A non-Sendable handler is a
 `SendError` at `listen`, naming the offending route. (To keep mutable state, route

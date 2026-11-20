@@ -8201,10 +8201,11 @@ inline JitValue _jit_http_server_do_serve(JitValue self, int64_t workers,
                                 0);
   const auto& recs = srv->routes;
   {
+    // One message, so the routes share a worker's copy of what they hold.
     auto snodes = std::make_shared<std::vector<sendable::SendNode>>();
+    JitSerCtx sc;
     for (const auto& rec : recs) {
       try {
-        JitSerCtx sc;
         snodes->push_back(jit_serialize(rec.handler, sc));
       } catch (culebra::CulebraError& e) {
         throw culebra::CulebraError(
@@ -8282,8 +8283,9 @@ inline JitValue _jit_http_server_do_serve(JitValue self, int64_t workers,
       jit_install_trait_defaults(defaults);
       g_jit_srv_w_handlers.clear();
       g_jit_srv_w_handlers.reserve(snodes->size());
+      JitDeCtx dc;
       for (const auto& sn : *snodes) {
-        JitValue h = jit_deserialize(sn).consume();
+        JitValue h = jit_deserialize(sn, dc).consume();
         // Held only in this C++ vector → pin so the GC backstop won't sweep it.
         _gc_heap().pin(reinterpret_cast<void*>(h.data));
         g_jit_srv_w_handlers.push_back(h);

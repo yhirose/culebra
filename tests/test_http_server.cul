@@ -342,6 +342,30 @@ squares = Parallel.map([1, 2, 3, 4, 5, 6, 7, 8], fn (i) {
 assert_eq(squares, ['1', '4', '9', '16', '25', '36', '49', '64'])
 iso2.drop()
 
+# --- The handlers go to a worker as one message, so two routes over one Object
+# share the worker's copy of it.
+let visits = {mut n: 0}
+let (tx3, rx3) = Channel.new(1)
+iso3 = Isolate.spawn(fn () {
+  let srv = Http.server()
+  srv.post("/visit", fn (req) {
+    visits.n += 1
+    "ok"
+  })
+  srv.get("/visits", fn (req) {
+    visits.n.to_string()
+  })
+  tx3.send(srv.bind(0))
+  tx3.drop()
+  srv.serve(workers: 1)
+})
+tx3.drop()
+BASE3 = "http://127.0.0.1:" + bound_port(rx3).to_string()
+Http.post(BASE3 + "/visit", "")
+Http.post(BASE3 + "/visit", "")
+assert_eq(Http.get(BASE3 + "/visits").body, '2')
+iso3.drop()
+
 # --- A non-Sendable handler is rejected with SendError when serving starts (the
 # check is at serve, so listen() has bound by then) — identical across backends.
 bad = Http.server()

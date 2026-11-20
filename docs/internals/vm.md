@@ -376,13 +376,16 @@ message). A C++-bodied closure crosses only when it is marked portable
 values of its own, copied as any closure's are. A derived method, a handle
 method that reads only `self`, a variant's constructor and a bound method
 are; `tools/checks/check_portable_closure_door.sh` holds the mark to their
-constructors. A class object, an enum object and a meta are one node per
-message however often they are reached, numbered before their own walk
-(`JitSerCtx::first`). An Object's node carries what it is (a class's meta;
+constructors. A closure, a class object, an enum object, a meta and each
+container of data are one node per message however often they are reached,
+numbered before their own walk (`JitSerCtx::first`); a container with a
+single count met as a member of another is reached only through it and goes
+unnumbered (`first_data`). An Object's node carries what it is (a class's meta;
 an enum's, the metas of the variants it declared, which the receiver points
 back at the copy; an instance's meta and the class it takes along) ahead of
 what it holds, walked before the Object counts as visited: an instance that
-a static of its own class holds is copied there rather than read as a cycle,
+a static of its own class holds is referred back to there rather than read
+as a cycle,
 and the receiver marks a class one before its meta's methods can reach an
 instance that links it.
 

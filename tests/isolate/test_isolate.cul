@@ -124,6 +124,45 @@ let hmut = Isolate.spawn(fn () {
 assert_eq(hmut.join(), 4)         # the child mutated its own copy
 assert_eq(shared_arr, [1, 2, 3])  # the parent's array is untouched
 
+# --- one message, one copy: a value it reaches twice arrives as one value, so
+#     two functions over one top-level Object still share it in the child ---
+let tally = {mut n: 0}
+fn tally_bump() {
+  tally.n += 1
+}
+fn tally_read() {
+  tally.n
+}
+assert_eq(Isolate.spawn(fn () {
+  tally_bump()
+  tally_bump()
+  tally_read()
+}).join(), 2)
+let twice = [1]
+assert_eq(Isolate.spawn(fn (a, b) {
+  a.push(2)
+  b.size()
+}, twice, twice).join(), 2)
+assert_eq(Isolate.spawn(fn (pair) {
+  pair[0].push(2)
+  pair[1].size()
+}, [twice, twice]).join(), 2)
+let one_set = Set(1)
+assert_eq(Isolate.spawn(fn (pair) {
+  pair[0].add(2)
+  pair[1].size()
+}, [one_set, one_set]).join(), 2)
+assert_eq(Isolate.spawn(fn (o) {
+  o.a[0].push(2)
+  o.b[0].size()
+}, {a: [twice], b: [twice]}).join(), 2)
+let back_pair = Isolate.spawn(fn () {
+  let a = [1]
+  [a, a]
+}).join()
+back_pair[0].push(2)
+assert_eq(back_pair[1], [1, 2])
+
 # --- nested isolate: a spawned closure can itself spawn ---
 fn dbl(x) {
   return x * 2
