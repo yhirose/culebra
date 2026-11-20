@@ -16,8 +16,10 @@ let ALGORITHMS = {
 
 # A modulator at full level moves its carrier's phase by this many radians.
 let INDEX_MAX = 4.0 * Math.pi
-# A carrier at full level, so that a few notes at once stay under the limit.
-let CARRIER_GAIN = 0.25
+# A carrier at full level: the keyboard's leaves room for a few notes at
+# once under the limit, the wind controller's one voice needs none.
+let KEYS_GAIN = 0.6
+let WIND_GAIN = 1.5
 # The feedback at 100.
 let FEEDBACK_MAX = 1.5
 # The vibrato at full mod wheel: a ratio of the pitch, about 20 cents.
@@ -63,10 +65,11 @@ let keys_shape = |patch| [
 let wind_shape = |patch| [patch.algorithm, patch.glide]
 let output_shape = |patch| patch.reverb
 
-# One voice at `freq` (a signal in Hz): `env_of(i)` is operator i's envelope.
+# One voice at `freq` (a signal in Hz), its carriers at `gain`: `env_of(i)` is
+# operator i's envelope.
 # Each control is made with the patch's value, so a new sound starts where
 # the knobs are.
-fn voice(patch, freq, env_of, vibrato) {
+fn voice(patch, freq, gain, env_of, vibrato) {
   let alg = ALGORITHMS[patch.algorithm]
   let values = controls(patch)
   let knob = |name| control(name, values[name])
@@ -79,7 +82,7 @@ fn voice(patch, freq, env_of, vibrato) {
       env_of(i) *
       knob("level{i}")
   }
-  alg.carriers.map(op).mix() * CARRIER_GAIN
+  alg.carriers.map(op).mix() * gain
 }
 
 # The mod wheel's vibrato, shared by every voice.
@@ -98,7 +101,7 @@ fn keys(patch) {
       let op = patch.ops[i]
       adsr(op.attack, op.decay, op.sustain / 100.0, op.release) * played
     }
-    voice(patch, f, env_of, vib)
+    voice(patch, f, KEYS_GAIN, env_of, vib)
   })
 }
 
@@ -111,7 +114,7 @@ fn wind(patch) {
   let alg = ALGORITHMS[patch.algorithm]
   let env_of = |i| alg.carriers.contains(i) ? breath : opened
   let freq = control("wind_hz", 440.0).lag(patch.glide)
-  voice(patch, freq, env_of, vibrato())
+  voice(patch, freq, WIND_GAIN, env_of, vibrato())
 }
 
 # What is heard: the keyboard's and the wind controller's sounds (two

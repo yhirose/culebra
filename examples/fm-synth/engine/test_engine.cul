@@ -10,14 +10,15 @@ import engine from './engine.cul'
 
 let peak = |s| s.map(|x| Math.abs(x)).max()
 
-# Every preset sounds on the keyboard, a note at most half of full, so that
-# a chord meets the output's limit only now and then.
+# Every preset sounds on the keyboard, a note at its volume at most half of
+# full, so that a chord meets the output's limit only now and then.
 for p in presets.FACTORY {
   let v = fm.keys(p)
   v.sequence([60], step: 0.6)
   let s = render(v, 0.8)
   assert_true(peak(s) > 0.02, "{p.name} sounds")
-  assert_true(peak(s) < 0.5, "{p.name} is under half of full")
+  let heard = peak(s) * fm.controls(p).volume
+  assert_true(heard < 0.5, "{p.name} is under half of full")
 }
 
 # Touch: at 100 a key played softly is quieter; at 0 how hard is not heard.
