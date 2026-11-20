@@ -45,7 +45,7 @@ SKILL.mdの原則と手順をculebraに当てはめるための事実。今のma
 | `examples/`の`.cul`（スコープlight。`examples/wrap/`と`examples/tensor/mnist/`はfull） | なし（今のbuild-devで回す） | 該当のスイート。`examples/languages/`なら`just phase languages` | 不要 |
 | `kauai/`（スコープfull。aotレーンがKauaiのCLIをビルドする） | なし（今のbuild-devで回す） | `bash tests/kauai_cli_test.sh build-dev/culebra`、`kauai_play_test`。AOTの確認はCIのaotレーン | 不要 |
 | `kauai/recipes/`・`examples/kauai/`（`site/playground/`に写しがある） | なし | 着地前に`playground/copy-frontend.sh site/playground`で写しを揃えてコミット（check-generatedが落とす。emsdk不要） | 不要 |
-| `tests/*.cul`、`tests/*_test.sh` | なし | 単発の実行、`bash tests/<name>_test.sh build-dev/culebra`（pl0、mini_*、scene、wrapのスクリプトは着地で回らない） | 不要 |
+| `tests/*.cul`、`tests/*_test.sh` | なし | 単発の実行、`bash tests/<name>_test.sh build-dev/culebra`（pl0、mini_*、scene、wrapのスクリプトは着地で回らない）。ファイルを足したら`bash tools/checks/check_gate_budget.sh`（`just check`も`test-dev`も回さず、CIのbuild-ubuntuだけが見る。足りなければ`tools/checks/gate_budget.txt`を同じコミットで増やす） | 不要 |
 | `src/preambles/*.cul` | dev（278秒。`just dev`がヘッダを作り直すので、`gen-preambles`を別に回さなくてよい） | `just check`、該当のphase | 不要 |
 | `include/stdlib/audio.h`（中心ヘッダ） | dev 278秒。その前に`just bench-audio-graph master`（ビルド不要、約10秒） | エンジンの単体ベンチ、該当の後処理 | §5の種類（音声スレッド）に当たれば要る |
 | 中心ヘッダ（`include/`の133本のうち96本） | dev 278秒 | 該当の後処理 | §5の種類に当たれば要る |
@@ -53,6 +53,7 @@ SKILL.mdの原則と手順をculebraに当てはめるための事実。今のma
 | runtime archiveだけのソース（`src/runtime/culebra_rt*.cc`、`include/aot/bootstrap.h`） | devでは一切コンパイルされない | `build-gate`か、CIに任せる | 要る |
 | `CMakeLists.txt`、`vendor/` | 広い作り直し | 該当の後処理 | 要る |
 | `justfile`、`tools/checks/`、`misc/` | なし | `just check-generated`と、変えたレシピやチェック自体 | 不要 |
+| エラーの文面や出力を変える（どの層でも） | 上の行どおり | `tools/bench/vm_cases/compare.sh ./build-dev/culebra`（凍結した期待出力。`just check`も`test-dev`も回さず、CIの`just test`だけが見る。直すのは`--freeze <case.cul>…`で、差分を全行見る）と、手元のrelease-diff（§4） | 上の行どおり |
 | `.github/workflows/` | なし | `just check-generated` | CIでしか確かめられない（release.ymlはタグでしか走らない） |
 
 ## 3. 共有の準備
