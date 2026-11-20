@@ -67,6 +67,14 @@ void names() {
   check(sh.count == 2 && sh.code[0] == KEY_LEFT_SHIFT &&
             sh.code[1] == KEY_RIGHT_SHIFT,
         "\"shift\" is both Shift keys");
+  auto ctrl = culebra::keynames::key_codes_of("ctrl");
+  check(ctrl.count == 2 && ctrl.code[0] == KEY_LEFT_CONTROL &&
+            ctrl.code[1] == KEY_RIGHT_CONTROL,
+        "\"ctrl\" is both Control keys");
+  auto alt = culebra::keynames::key_codes_of("alt");
+  check(alt.count == 2 && alt.code[0] == KEY_LEFT_ALT &&
+            alt.code[1] == KEY_RIGHT_ALT,
+        "\"alt\" is both Alt keys");
   check(culebra::keynames::key_codes_of("nosuchkey").count == 0,
         "an unknown name has no keys");
   check(culebra::keynames::key_codes_of("Shift").count == 0,

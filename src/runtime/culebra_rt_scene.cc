@@ -48,6 +48,7 @@
 #include "rlgl.h"       // FBO / shader / matrix stack for shadows
 #include "external/glad.h"  // glPolygonOffset, which rlgl doesn't wrap (glad lives in libraylib.a)
 #include "stdlib/keynames.h"    // key / pad names, shared with the Canvas backend
+#include "stdlib/os_window.h"   // fullscreen as the OS has it, shared with Canvas
 #include "culebra_joystick.h"   // generic joysticks, shared with the Canvas backend
 
 namespace gfx {
@@ -1463,8 +1464,8 @@ class View {
   // SDL applies these live; the render targets follow the new size at the next
   // render_3d() (sync_targets), so a fullscreen or dragged-out frame is drawn
   // at its own resolution rather than stretched from the old one.
-  void fullscreen(bool on) { if (on != IsWindowFullscreen()) ToggleFullscreen(); }
-  bool is_fullscreen() const { return IsWindowFullscreen(); }
+  void fullscreen(bool on) { culebra::os_window::set_fullscreen(on); }
+  bool is_fullscreen() const { return culebra::os_window::fullscreen(); }
   void resizable(bool on) {
     if (on) SetWindowState(FLAG_WINDOW_RESIZABLE); else ClearWindowState(FLAG_WINDOW_RESIZABLE);
   }

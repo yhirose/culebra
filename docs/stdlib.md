@@ -5953,6 +5953,15 @@ title belongs to the page hosting the canvas, not to the program drawing on it
 — and the same holds for every other entry above, all of them no-ops in the
 browser and headless where there is no OS window to affect.
 
+The window's state can be set before the window opens, the way its title
+is: `resizable`, `toggle_fullscreen` and `hide_cursor` called ahead of
+`Canvas.run` are kept and applied when it opens, and `fullscreen()` and
+`cursor_hidden()` report what was asked until then. None of them opens a
+window. Once it is open, `fullscreen()` reports the window as the OS has it,
+so a window the user takes fullscreen themselves — macOS's green button or
+Window > Enter Full Screen (Ctrl+Cmd+F), which a `resizable` window offers —
+reads as fullscreen, and the next `toggle_fullscreen()` takes it back out.
+
 `Canvas` windows are otherwise a fixed size; `resizable` only lets the OS
 window itself be dragged, and the framebuffer's own logical resolution does
 not follow along — `resized()` is the one-frame edge a script polls to react
@@ -6178,8 +6187,9 @@ special-key name (`"up"` / `"down"` / `"left"` / `"right"`, `"enter"`,
 `"end"`, `"pageup"`, `"pagedown"`, `"f1"`…`"f12"`). `"space"` is accepted as
 a readable alias for `" "`; an unknown name is simply never held. Letters
 name the physical key regardless of Shift (`"a"` covers both cases), and
-`"shift"` is held while either Shift key is (Term reports Shift as the
-`shift` field of a key event instead).
+`"shift"`, `"ctrl"` and `"alt"` are each held while either key of the pair
+is (Option is Alt on a Mac keyboard; Term reports the three as the `shift`,
+`ctrl` and `alt` fields of a key event instead).
 
 `Canvas.key_queue()` returns the keys pressed since it was last called — the
 edge events, for bindings that must not repeat while held — and
@@ -6373,7 +6383,7 @@ or pure 2D (`begin_2d()` → draws → `present()`).
 | `view.render_3d()` | render the scene graph, then open the frame for a 2D overlay |
 | `view.begin_2d()` | open a pure-2D frame (no 3D pass) |
 | `view.present()` | finish and show the frame |
-| `view.fullscreen(on)` / `view.is_fullscreen() -> Bool` | switch fullscreen on or off / is it on now |
+| `view.fullscreen(on)` / `view.is_fullscreen() -> Bool` | switch fullscreen on or off / is it on now, as the OS has it (the user can take a `resizable` window fullscreen themselves) |
 | `view.resizable(on)` / `view.resized() -> Bool` | let the user drag the edges / did the size change this frame |
 | `view.size(w, h)` / `view.title(s)` | set the window's size / its title |
 | `view.vsync(on)` | wait for the display's refresh at `present()` |
@@ -6700,8 +6710,9 @@ vocabulary `Canvas.key` and `Term.poll` use**: a printable character
 `"right"`, `"enter"`, `"escape"`, `"tab"`, `"backspace"`, `"insert"`,
 `"delete"`, `"home"`, `"end"`, `"pageup"`, `"pagedown"`, `"f1"`…`"f12"`;
 `"space"` is a readable alias for `" "`). An unknown name is a key that is
-never pressed. `"shift"` is either Shift key, read as one key: it goes down
-when the first does and comes up when the last does. Letters name the
+never pressed. `"shift"`, `"ctrl"` and `"alt"` are each either key of the
+pair, read as one key: it goes down when the first does and comes up when the
+last does. Letters name the
 physical key, so Shift+E still holds `"e"`. Esc is an ordinary key here, not a way out of the window: the
 loop ends at the close box or at `view.quit()`.
 

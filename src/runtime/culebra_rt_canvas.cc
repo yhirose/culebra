@@ -21,6 +21,7 @@
 
 #include "stdlib/canvas.h"
 #include "stdlib/keynames.h"
+#include "stdlib/os_window.h"
 
 #include <algorithm>
 #include <cstdarg>
@@ -74,6 +75,13 @@ bool g_quit_requested = false;
 // declared (CULEBRA_CANVAS_HEADLESS=1), never inferred from a failed window.
 std::string g_window_error;
 std::string g_title = "culebra Canvas";  // applied when the window opens
+// The rest of the window's state a script asks for, kept the same way: a
+// program sets it up before Canvas.run opens the window, and
+// apply_window_state() hands it over then. Once the window is open the window
+// answers (fullscreen through SDL, which also hears the OS change it).
+bool g_want_resizable = false;
+bool g_want_fullscreen = false;
+bool g_want_cursor_hidden = false;
 
 // Integer upscale so the small framebuffer fills a comfortable window while
 // pixels stay crisp (nearest-neighbour), matching the Playground's
@@ -91,15 +99,10 @@ int pick_scale(int w, int h) {
 // press-and-hold accent picker, and a CJK input method would open its
 // candidate window over the game. Turn it back off — raylib exposes no API
 // for this, so it goes through SDL directly (raylib is built on the same
-// vendored static SDL3 this links). The process has exactly one window, and
-// asking SDL for its window list keeps this independent of focus, which the
-// window may not have yet at creation.
+// vendored static SDL3 this links). os_window::the() finds the window without
+// asking which has focus, which it may not have yet at creation.
 void stop_text_input() {
-  int count = 0;
-  SDL_Window** windows = SDL_GetWindows(&count);
-  if (windows == nullptr) return;
-  for (int i = 0; i < count; i++) SDL_StopTextInput(windows[i]);
-  SDL_free(windows);
+  if (SDL_Window* w = os_window::the()) SDL_StopTextInput(w);
 }
 
 // char_pop() (Canvas.typed) needs those same text-input events, so the first
@@ -110,11 +113,7 @@ bool g_text_input_on = false;
 void start_text_input() {
   if (g_text_input_on) return;
   g_text_input_on = true;
-  int count = 0;
-  SDL_Window** windows = SDL_GetWindows(&count);
-  if (windows == nullptr) return;
-  for (int i = 0; i < count; i++) SDL_StartTextInput(windows[i]);
-  SDL_free(windows);
+  if (SDL_Window* w = os_window::the()) SDL_StartTextInput(w);
 }
 
 // Forced-headless mode for the windowed build: with CULEBRA_CANVAS_HEADLESS set
@@ -196,21 +195,36 @@ void sync_render_size() {
   // Point size is the floor, and the answer wherever the drawable is 1x.
   g_render_w = GetScreenWidth();
   g_render_h = GetScreenHeight();
-  // The SDL window has to come from SDL's own window list, the way
-  // stop_text_input() gets it: raylib's GetWindowHandle() hands back the
-  // PLATFORM window (an NSWindow* on macOS), not the SDL_Window*, so passing
-  // it to an SDL call quietly does nothing.
-  int count = 0;
-  SDL_Window** windows = SDL_GetWindows(&count);
-  if (windows == nullptr) return;
-  if (count == 1) {  // the process opens exactly one window
-    int pw = 0, ph = 0;
-    if (SDL_GetWindowSizeInPixels(windows[0], &pw, &ph) && pw > 0 && ph > 0) {
-      g_render_w = pw;
-      g_render_h = ph;
-    }
+  SDL_Window* win = os_window::the();
+  if (win == nullptr) return;
+  int pw = 0, ph = 0;
+  if (SDL_GetWindowSizeInPixels(win, &pw, &ph) && pw > 0 && ph > 0) {
+    g_render_w = pw;
+    g_render_h = ph;
   }
-  SDL_free(windows);
+}
+
+void apply_resizable() {
+  if (g_want_resizable) {
+    SetWindowState(FLAG_WINDOW_RESIZABLE);
+  } else {
+    ClearWindowState(FLAG_WINDOW_RESIZABLE);
+  }
+}
+
+void apply_cursor() {
+  if (g_want_cursor_hidden) {
+    HideCursor();
+  } else {
+    ShowCursor();
+  }
+}
+
+// What the script asked for before the window opened.
+void apply_window_state() {
+  apply_resizable();
+  apply_cursor();
+  if (g_want_fullscreen) os_window::set_fullscreen(true);
 }
 
 // (Re)create the window + texture to match the current framebuffer size. Called
@@ -264,6 +278,7 @@ void ensure_window() {
     SetExitKey(KEY_NULL);
     g_window_ready = true;
     arm_exit_teardown();
+    apply_window_state();
   } else {
     UnloadTexture(g_tex);
     SetWindowSize(w * g_scale, h * g_scale);
@@ -663,31 +678,34 @@ const char* window_error() {
   return g_window_error.empty() ? nullptr : g_window_error.c_str();
 }
 
-// SDL (the platform backend here) applies fullscreen and the resizable flag
-// live, unlike FLAG_WINDOW_HIGHDPI above, so none of these need to happen
-// before ensure_window() the way that one does.
+// The window's state, like its title, never opens a window: before there is
+// one a call records the wish (g_want_*), ensure_window() applies it, and a
+// read reports it. Headless, where no window will open, a read reports none.
+bool window_to_come() { return !forced_headless() && !g_window_failed; }
+
 void toggle_fullscreen() {
-  ensure_window();
-  if (!g_window_ready) return;
-  ToggleFullscreen();
+  if (g_window_ready) {
+    SDL_Window* w = os_window::the();
+    os_window::set_fullscreen(!os_window::fullscreen(w), w);
+  } else {
+    g_want_fullscreen = !g_want_fullscreen;
+  }
 }
 bool is_fullscreen() {
-  ensure_window();
-  if (!g_window_ready) return false;
-  return IsWindowFullscreen();
+  if (g_window_ready) return os_window::fullscreen();
+  return window_to_come() && g_want_fullscreen;
 }
 void show_cursor() {
-  ensure_window();
-  if (g_window_ready) ShowCursor();
+  g_want_cursor_hidden = false;
+  if (g_window_ready) apply_cursor();
 }
 void hide_cursor() {
-  ensure_window();
-  if (g_window_ready) HideCursor();
+  g_want_cursor_hidden = true;
+  if (g_window_ready) apply_cursor();
 }
 bool cursor_hidden() {
-  ensure_window();
-  if (!g_window_ready) return false;
-  return IsCursorHidden();
+  if (g_window_ready) return IsCursorHidden();
+  return window_to_come() && g_want_cursor_hidden;
 }
 std::string clipboard_get() {
   ensure_window();
@@ -700,13 +718,8 @@ void clipboard_set(const char* text) {
   if (g_window_ready) SetClipboardText(text);
 }
 void set_resizable(bool enabled) {
-  ensure_window();
-  if (!g_window_ready) return;
-  if (enabled) {
-    SetWindowState(FLAG_WINDOW_RESIZABLE);
-  } else {
-    ClearWindowState(FLAG_WINDOW_RESIZABLE);
-  }
+  g_want_resizable = enabled;
+  if (g_window_ready) apply_resizable();
 }
 // One-frame edge, like WindowShouldClose: true only on the frame the OS
 // window's pixel size last changed (the user dragging an edge, maximizing,

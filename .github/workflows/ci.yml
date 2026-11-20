@@ -1003,11 +1003,14 @@ jobs:
       # binary whose raylib bodies are never entered.
       - name: Open a real window (Xvfb)
         run: |
+          # The cursor is asked hidden before the window opens; once open,
+          # cursor_hidden() reads raylib's flag, which only applying the wish sets.
           cat > canvas_window.cul <<'EOF'
+          Canvas.hide_cursor()
           Canvas.init(64, 48)
           Canvas.clear(Canvas.rgba(0, 128, 255))
           Canvas.present()
-          println("window ok")
+          println(Canvas.cursor_hidden() ? "window ok" : "cursor asked before the window opened is shown")
           EOF
           out=$(CULEBRA_CANVAS_HEADLESS=0 LIBGL_ALWAYS_SOFTWARE=1 \
             xvfb-run -a ./build/culebra --vm canvas_window.cul)

@@ -5,8 +5,9 @@
 // (pad_axis_value).
 //
 // A key name is a printable character ("a", " ", "-") or a special-key name
-// ("left", "enter", "f1", …), or "shift" for either Shift key (Canvas and
-// Scene only: Term reports Shift as a field of the key event). raylib's
+// ("left", "enter", "f1", …), or a modifier — "shift", "ctrl" or "alt" for
+// either key of the pair (Canvas and Scene only: Term reports the three as
+// fields of the key event, under the same names). raylib's
 // printable key codes are upper-case ASCII, so single characters map by
 // arithmetic and only the specials need a table. Unknown names map to 0 / -1
 // and are never held — a typo is a key that is never pressed, not an error,
@@ -50,7 +51,8 @@ inline int key_code_of(std::string_view name) {
 }
 
 // The physical keys a name stands for: one, or both sides of a modifier
-// ("shift" is either Shift). No codes is an unknown name.
+// ("shift" is either Shift; "alt" is Option on a Mac keyboard). No codes is
+// an unknown name.
 struct KeyCodes {
   int code[2] = {0, 0};
   int count = 0;
@@ -58,6 +60,8 @@ struct KeyCodes {
 
 inline KeyCodes key_codes_of(std::string_view name) {
   if (name == "shift") return {{KEY_LEFT_SHIFT, KEY_RIGHT_SHIFT}, 2};
+  if (name == "ctrl") return {{KEY_LEFT_CONTROL, KEY_RIGHT_CONTROL}, 2};
+  if (name == "alt") return {{KEY_LEFT_ALT, KEY_RIGHT_ALT}, 2};
   int c = key_code_of(name);
   if (c == 0) return {};
   return {{c, 0}, 1};
