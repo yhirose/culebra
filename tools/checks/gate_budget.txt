@@ -435,8 +435,10 @@ ctest.entries 43
 # 1200 since Isolate.spawn_source, in en and ja (a doctest-skipped example).
 # 1202 since a StringView is a String, in en and ja: a split piece passed to
 # a String parameter and asked `is String`. 1204 since Canvas's joysticks, in
-# en and ja (a doctest-skipped example: it reads a device).
-docs.blocks 1204
+# en and ja (a doctest-skipped example: it reads a device). 1244 since
+# docs/guides/synth, en and ja (20 blocks each: a sound built up from a sine,
+# one idea at a time, each rendered as it is written; one skips, it plays).
+docs.blocks 1244
 
 # The samples the language front ends are run over (examples/languages/*).
 languages.samples 130

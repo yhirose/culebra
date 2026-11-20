@@ -435,7 +435,8 @@ BLAS級の数値計算です。
   [デスクトップアプリを作る](docs/guides/desktop-app.ja.md)、
   [言語モデルを使う](docs/guides/llm.ja.md)、
   [Kauaiで曲を書く](docs/guides/kauai-songs.ja.md)、
-  [Kauaiで音を作る](docs/guides/kauai-sounds.ja.md)
+  [Kauaiで音を作る](docs/guides/kauai-sounds.ja.md)、
+  [Synthで音を書く](docs/guides/synth.ja.md)
 * クイックガイド：構文、間違えやすい点、言われなくても手が伸びる範囲の
   標準ライブラリのシグネチャを1ファイルに凝縮したもの。LLMのプロンプト用に
   書いていますが、人が最初から最後まで読み切れる分量でもあります:
