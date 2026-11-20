@@ -6478,7 +6478,11 @@ checks and the same 65535-vertex cap apply. Where `vertex_uv` costs a call per
 vertex, `load` reads a million vertices (16 meshes of 65535) in tens of
 milliseconds, so a mesh made ahead of time and saved loads at start-up. Leave
 out `normals` for up-facing normals, `uvs` for zeros, `colours` for white. A
-length that does not fit the vertex count is a `ValueError`.
+mesh that leaves out `normals` or `uvs` uploads no buffer for it: every such
+mesh reads one shared buffer of those values, which matters to a scene of
+thousands of meshes that are unlit or untextured, since a GL driver can keep
+every buffer in a page of its own (16 KB on macOS). A length that does not fit the
+vertex count is a `ValueError`.
 
 ### Materials, lighting, textures
 

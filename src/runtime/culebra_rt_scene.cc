@@ -34,6 +34,7 @@
 
 #include <algorithm>
 #include <bit>
+#include <cassert>
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
@@ -412,6 +413,44 @@ enum class Shape { Group, Box, Sphere, Cylinder, Plane, Mesh };
 static uint64_t& gl_epoch() {
   static uint64_t epoch = 0;
   return epoch;
+}
+
+// The most vertices a mesh holds: raylib's mesh indices are 16-bit.
+constexpr int kMeshMaxVertices = 65535;
+
+// A mesh loaded without normals or UVs reads them from one buffer of
+// up-facing normals and one of zero UVs, long enough for the largest mesh and
+// made once per context, instead of uploading a buffer of those same values
+// of its own. Every buffer the driver holds can cost a page (16 KB on Apple's
+// GL), so a scene of thousands of small meshes paid more for the copies than
+// for its geometry. A buffer, not the attribute's current value: GL leaves
+// that undefined after a draw with the array enabled. The mesh's vboId slots
+// stay 0, so UnloadMesh never deletes the shared ones; they go with their
+// context.
+static void share_absent(const ::Mesh& m, bool normals, bool uvs) {
+  if (!(normals || uvs)) return;
+  assert(m.vaoId != 0);   // GL33: DrawMesh draws a mesh through its VAO
+  struct Shared { uint64_t epoch = 0; unsigned normals = 0, uvs = 0; };
+  static Shared s;
+  if (s.epoch != gl_epoch()) {
+    constexpr int kMax = kMeshMaxVertices;
+    std::vector<float> up(3 * kMax, 0.0f);
+    for (int i = 0; i < kMax; i++) up[3 * i + 1] = 1.0f;
+    std::vector<float> zero(2 * kMax, 0.0f);
+    s.normals = rlLoadVertexBuffer(up.data(), (int)(up.size() * sizeof(float)), false);
+    s.uvs = rlLoadVertexBuffer(zero.data(), (int)(zero.size() * sizeof(float)), false);
+    s.epoch = gl_epoch();
+  }
+  rlEnableVertexArray(m.vaoId);
+  auto attach = [](unsigned vbo, int loc, int comps) {
+    rlEnableVertexBuffer(vbo);
+    rlSetVertexAttribute(loc, comps, RL_FLOAT, false, 0, 0);
+    rlEnableVertexAttribute(loc);
+  };
+  if (normals) attach(s.normals, RL_DEFAULT_SHADER_ATTRIB_LOCATION_NORMAL, 3);
+  if (uvs) attach(s.uvs, RL_DEFAULT_SHADER_ATTRIB_LOCATION_TEXCOORD, 2);
+  rlDisableVertexArray();
+  rlDisableVertexBuffer();
 }
 
 // GPU-upload an Image as a repeat-wrapped texture, consuming it. Mipmapped
@@ -1017,6 +1056,11 @@ class Node : public std::enable_shared_from_this<Node> {
   }
   Node& vertex_uv(double x, double y, double z, double nx, double ny, double nz,
                   double u, double v) {
+    // A load() that build() refused (no View yet, too many vertices) keeps its
+    // vertices, its absent normals / uvs empty: spell out the values the shared
+    // buffers hold for them, so every array stays one entry a vertex.
+    for (size_t i = mn.size(); i < mv.size(); i += 3) mn.insert(mn.end(), {0.0f, 1.0f, 0.0f});
+    mt.resize(mv.size() / 3 * 2, 0.0f);
     mv.push_back((float)x); mv.push_back((float)y); mv.push_back((float)z);
     mn.push_back((float)nx); mn.push_back((float)ny); mn.push_back((float)nz);
     mt.push_back((float)u); mt.push_back((float)v);
@@ -1055,10 +1099,12 @@ class Node : public std::enable_shared_from_this<Node> {
     if (!uvs.empty() && uvs.size() != n * 8) refuse("uvs", uvs.size(), 8, "vertex (2 x f32)");
     if (!colours.empty() && colours.size() != n * 4) refuse("colours", colours.size(), 4, "vertex (rgba u8)");
     mv.resize(n * 3); std::memcpy(mv.data(), positions.data(), positions.size());
-    mn.resize(n * 3);
-    if (normals.empty()) for (size_t i = 0; i < n; i++) { mn[3 * i] = 0; mn[3 * i + 1] = 1; mn[3 * i + 2] = 0; }
-    else std::memcpy(mn.data(), normals.data(), normals.size());
-    mt.assign(n * 2, 0.0f);
+    // An absent normals / uvs leaves its array empty, and build() points the
+    // mesh at the context's shared up-facing normals / zero UVs (share_absent)
+    // instead of uploading a buffer of those same values for each mesh.
+    mn.resize(normals.size() / 4);
+    if (!normals.empty()) std::memcpy(mn.data(), normals.data(), normals.size());
+    mt.resize(uvs.size() / 4);
     if (!uvs.empty()) std::memcpy(mt.data(), uvs.data(), uvs.size());
     mc.assign(n * 4, 255);
     has_color_ = !colours.empty();
@@ -1076,10 +1122,10 @@ class Node : public std::enable_shared_from_this<Node> {
       TraceLog(LOG_ERROR, "Scene: build() needs an open View — mesh not built.");
       return *this;
     }
-    if (mv.size() / 3 > 65535) {                   // raylib mesh indices are 16-bit
+    if (mv.size() / 3 > kMeshMaxVertices) {
       TraceLog(LOG_ERROR,
                "Scene: mesh has %zu vertices; raylib's 16-bit index buffer "
-               "caps at 65535 — split it across multiple nodes.", mv.size() / 3);
+               "caps at %d — split it across multiple nodes.", mv.size() / 3, kMeshMaxVertices);
       return *this;   // refuse rather than silently wrap indices into garbage
     }
     // Every index must name a vertex that was pushed. That subsumes the 16-bit
@@ -1101,6 +1147,10 @@ class Node : public std::enable_shared_from_this<Node> {
     // outlive its window (see unload_mesh). No Model: render() draws the Mesh.
     // (GL33-only: the GL 1.1 draw path reads mesh.vertices per frame — moot
     // while the lit shader is #version 330.)
+    // Each array is one entry a vertex, or empty for an absent one (load()).
+    assert(mn.empty() || mn.size() == mv.size());
+    assert(mt.empty() || mt.size() / 2 == mv.size() / 3);
+    assert(!has_color_ || mc.size() / 4 == mv.size() / 3);
     ::Mesh m{};
     m.vertexCount = (int)(mv.size() / 3);
     m.triangleCount = (int)(mi.size() / 3);
@@ -1111,6 +1161,7 @@ class Node : public std::enable_shared_from_this<Node> {
     m.indices = (unsigned short*)MemAlloc((unsigned)(mi.size() * sizeof(unsigned short)));
     for (size_t i = 0; i < mi.size(); i++) m.indices[i] = (unsigned short)mi[i];
     UploadMesh(&m, false);
+    share_absent(m, mn.empty(), mt.empty());
     m.vertices = nullptr;
     m.normals = nullptr;
     m.texcoords = nullptr;

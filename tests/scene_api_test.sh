@@ -787,6 +787,29 @@ bare.load(String.pack("f32", pos), String.pack("u16", idx))
 loaded.hide()
 let c = shot("mload_c.png")
 println("drawn: {a != empty && c != empty && c != a}")
+# Normals and uvs left out read as up-facing and zero (the context's shared
+# buffers): the same frame as a mesh handed those values, lit (the sun reads
+# the normal) and textured (the texel at uv 0, 0). Zero uvs are also what GL
+# reads for an attribute with no array, so the normals tell the shared
+# buffer apart; `half` leaves out the normals alone.
+let lit = view.add_material().texture(checks)
+let up = String.pack("f32", [0.0, 1.0, 0.0,  0.0, 1.0, 0.0,  0.0, 1.0, 0.0,  0.0, 1.0, 0.0])
+let zero = String.pack("f32", [0.0, 0.0,  0.0, 0.0,  0.0, 0.0,  0.0, 0.0])
+bare.hide()
+let given = view.add_mesh().material(lit)
+given.load(String.pack("f32", pos), String.pack("u16", idx), up, zero)
+let g = shot("mload_g.png")
+given.hide()
+let left = view.add_mesh().material(lit)
+left.load(String.pack("f32", pos), String.pack("u16", idx))
+let l = shot("mload_l.png")
+left.hide()
+let half = view.add_mesh().material(lit)
+half.load(String.pack("f32", pos), String.pack("u16", idx), "", zero)
+let h = shot("mload_h.png")
+println("left out reads up and zero: {g != empty && l == g && h == g}")
+half.hide()
+bare.show()
 fn err(f) {
   try {
     f()
@@ -807,6 +830,11 @@ println(err(fn () { n.load(P, I, "", P) }))
 println(err(fn () { n.load(P, I, "", "", P) }))
 n.load(P, String.pack("u16", [0, 1, 9]))
 println("index past the vertices draws nothing: {shot("mload_d.png") == c}")
+# the refused load keeps its vertices, its normals and uvs left out: vertices
+# pushed after it until the index names one build with every array whole
+for _ in 0..6 { n.vertex(0.0, 0.0, 5.0, 0.0, 0.0, -1.0) }
+n.build()
+println("pushed after a refused load: {n.vertex_count()}")
 # a million vertices
 mut flat = []
 for i in 0..65535 { flat.push((i % 256) * 1.0); flat.push(0.0); flat.push(0.0) }
@@ -1282,7 +1310,8 @@ run_pair tmips "size 64.0x64.0" "near is level 0: true" "far is a given level: t
   "TypeError: view.texture_mips: levels must be an Array of Scene.Image" \
   "TypeError: view.texture_mips: levels[1] is Long, not a Scene.Image" "rect 4.0x2.0"
 echo "OK: texture_mips samples the levels it is given"
-run_pair mload "vertices 4" "same frame: true" "drawn: true" "index past the vertices draws nothing: true" \
+run_pair mload "vertices 4" "same frame: true" "drawn: true" "left out reads up and zero: true" \
+  "index past the vertices draws nothing: true" "pushed after a refused load: 10" \
   "ValueError: node.load: positions is 11 bytes, expected 12 per vertex (3 x f32)" \
   "ValueError: node.load: indices is 5 bytes, expected 6 per triangle (3 x u16)" \
   "ValueError: node.load: normals is 11 bytes, expected 12 per vertex (3 x f32)" \
