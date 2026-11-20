@@ -155,6 +155,8 @@ seconds, renders the expression until it ends on its own: a `perc` at the
 end of its release, a `pluck` when its `ring` is over. So the instrument
 needs no length of its own, which suits a note's function, as it is not
 told how long the note is held. `hz(pitch)` is the pitch's frequency.
+[Writing a sound with Synth](synth.md) builds up the parts such an
+expression is made of.
 
 ```culebra
 let {noise, sine, xline, perc, hz, render} = Synth

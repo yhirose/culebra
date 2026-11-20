@@ -142,6 +142,7 @@ println(song.events()[0])          # => {at: 0.0, len: 0.5, by: 'Ep', pitch: 60,
 `perc`ならリリースの終わりまで、`pluck`なら`ring`が尽きるまでです。そのため楽器は
 長さを自分で決めなくて済み、音符の長さを受け取らない音ごとの関数に合います。
 `hz(pitch)`は、音の高さの周波数です。
+こうした式の部品を順に組み立てる手引きは[Synthで音を書く](synth.ja.md)にあります。
 
 ```culebra
 let {noise, sine, xline, perc, hz, render} = Synth
