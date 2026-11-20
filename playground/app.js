@@ -1424,10 +1424,12 @@ const KEY_BITS = {
 };
 let heldButtons = 0;
 
-// e.code → the culebra key name (Term.read_key's vocabulary): a printable
-// character or a special-key name. Keyed on the physical code so a key's
-// identity survives Shift changing e.key between its down and up events;
-// e.key fills in printable keys the table doesn't list (other layouts).
+// e.code → the culebra key name (Term.read_key's vocabulary, the table in
+// include/stdlib/keynames.h): a printable character, a special-key name or a
+// modifier. Keyed on the physical code so a key's identity survives Shift
+// changing e.key between its down and up events; e.key fills in printable
+// keys the table doesn't list (other layouts). A modifier's two sides share a
+// name, and a keypad key has its main-keyboard twin's, whatever Num Lock says.
 const CODE_NAMES = {
   Space: " ", ArrowLeft: "left", ArrowRight: "right", ArrowUp: "up",
   ArrowDown: "down", Enter: "enter", Escape: "escape", Tab: "tab",
@@ -1436,22 +1438,37 @@ const CODE_NAMES = {
   Minus: "-", Equal: "=", Comma: ",", Period: ".", Slash: "/",
   Semicolon: ";", Quote: "'", BracketLeft: "[", BracketRight: "]",
   Backslash: "\\", Backquote: "`",
+  ShiftLeft: "shift", ShiftRight: "shift", ControlLeft: "ctrl",
+  ControlRight: "ctrl", AltLeft: "alt", AltRight: "alt", MetaLeft: "cmd",
+  MetaRight: "cmd",
+  NumpadDecimal: ".", NumpadDivide: "/", NumpadMultiply: "*",
+  NumpadSubtract: "-", NumpadAdd: "+", NumpadEqual: "=", NumpadEnter: "enter",
 };
 function keyName(e) {
   const c = e.code;
   if (CODE_NAMES[c] !== undefined) return CODE_NAMES[c];
   if (/^Key[A-Z]$/.test(c)) return c.slice(3).toLowerCase();
-  if (/^Digit[0-9]$/.test(c)) return c.slice(5);
+  if (/^(Digit|Numpad)[0-9]$/.test(c)) return c.slice(-1);
   if (/^F([1-9]|1[0-2])$/.test(c)) return c.toLowerCase();
   if (e.key.length === 1) return e.key.toLowerCase();
   return null;
 }
 // Held names + this frame's presses/typed characters ride the same "input"
-// message as the button mask; worker.js keeps the wasm-visible state.
-const heldKeys = new Set();
+// message as the button mask; worker.js keeps the wasm-visible state. Held
+// keys are kept by e.code, so a name over two keys (either Shift, 0 and the
+// keypad's 0) stays held until the last comes up, and goes into the queue of
+// presses only when the first goes down.
+const heldCodes = new Map();  // e.code → name
+// Another key under the same name is down (the other Shift, 0 beside keypad
+// 0). The same key going down again is a new press: its keyup went missing.
+function twinHeld(code, name) {
+  for (const [c, n] of heldCodes) if (n === name && c !== code) return true;
+  return false;
+}
 function sendInput(extra) {
   if (worker) worker.postMessage(Object.assign(
-      { type: "input", buttons: heldButtons, keys: [...heldKeys] }, extra));
+      { type: "input", buttons: heldButtons,
+        keys: [...new Set(heldCodes.values())] }, extra));
 }
 canvasPane.addEventListener("keydown", (e) => {
   const name = keyName(e);
@@ -1461,8 +1478,8 @@ canvasPane.addEventListener("keydown", (e) => {
   if (bit !== undefined) heldButtons |= bit;
   const extra = {};
   if (name !== null) {
-    heldKeys.add(name);
-    if (!e.repeat) extra.keyEvents = [name];
+    if (!e.repeat && !twinHeld(e.code, name)) extra.keyEvents = [name];
+    heldCodes.set(e.code, name);
     // The typed character respects Shift/layout (e.key), unlike the name.
     if (e.key.length === 1) extra.chars = [e.key];
   }
@@ -1471,16 +1488,23 @@ canvasPane.addEventListener("keydown", (e) => {
 canvasPane.addEventListener("keyup", (e) => {
   const name = keyName(e);
   const bit = KEY_BITS[e.key];
-  if (bit === undefined && name === null) return;
+  // By e.code, so a key comes up whatever e.key reads now.
+  const wasHeld = heldCodes.delete(e.code);
+  if (bit === undefined && name === null && !wasHeld) return;
   e.preventDefault();
   if (bit !== undefined) heldButtons &= ~bit;
-  if (name !== null) heldKeys.delete(name);
+  // A Mac browser sends no keyup for a key released while Command is held, so
+  // Command coming up releases every key: none is left held for good.
+  if (name === "cmd") {
+    heldCodes.clear();
+    heldButtons = 0;
+  }
   sendInput({});
 });
 // Alt-tab / focus loss never delivers the keyup: release everything.
 window.addEventListener("blur", () => {
   heldButtons = 0;
-  heldKeys.clear();
+  heldCodes.clear();
   sendInput({});
 });
 

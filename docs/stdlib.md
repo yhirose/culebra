@@ -6203,15 +6203,21 @@ special-key name (`"up"` / `"down"` / `"left"` / `"right"`, `"enter"`,
 `"escape"`, `"tab"`, `"backspace"`, `"insert"`, `"delete"`, `"home"`,
 `"end"`, `"pageup"`, `"pagedown"`, `"f1"`…`"f12"`). `"space"` is accepted as
 a readable alias for `" "`; an unknown name is simply never held. Letters
-name the physical key regardless of Shift (`"a"` covers both cases), and
-`"shift"`, `"ctrl"` and `"alt"` are each held while either key of the pair
-is (Option is Alt on a Mac keyboard; Term reports the three as the `shift`,
-`ctrl` and `alt` fields of a key event instead).
+name the physical key regardless of Shift (`"a"` covers both cases).
+`"shift"`, `"ctrl"`, `"alt"` and `"cmd"` are each held while either key of
+the pair is (Option is Alt on a Mac keyboard; `"cmd"` is Command there and
+the Windows or Super key elsewhere). Term reports shift, ctrl and alt as the
+`shift`, `ctrl` and `alt` fields of a key event instead, and a terminal sends
+nothing for cmd. A keypad key has its main-keyboard twin's name, as a
+terminal reports it: keypad 0 holds `"0"`, its Enter `"enter"`, its `+`
+`"+"`.
 
 `Canvas.key_queue()` returns the keys pressed since it was last called — the
-edge events, for bindings that must not repeat while held — and
-`Canvas.typed()` returns the characters typed (Shift, layout and IME
-applied), which is what a name-entry screen reads. Both drain destructively
+edge events, for bindings that must not repeat while held — and a name over
+two keys is pressed once, when the first of them goes down (the second Shift,
+or keypad 0 while 0 is held, adds nothing). `Canvas.typed()` returns the
+characters typed (Shift, layout and IME applied), which is what a
+name-entry screen reads. Both drain destructively
 and are capped at 256 entries (oldest first out), so call each from one place
 per frame and hand the result around. Natively, the first `typed()` call
 turns the platform's text input on — a program that only polls keys never
@@ -6727,9 +6733,10 @@ vocabulary `Canvas.key` and `Term.poll` use**: a printable character
 `"right"`, `"enter"`, `"escape"`, `"tab"`, `"backspace"`, `"insert"`,
 `"delete"`, `"home"`, `"end"`, `"pageup"`, `"pagedown"`, `"f1"`…`"f12"`;
 `"space"` is a readable alias for `" "`). An unknown name is a key that is
-never pressed. `"shift"`, `"ctrl"` and `"alt"` are each either key of the
-pair, read as one key: it goes down when the first does and comes up when the
-last does. Letters name the
+never pressed. `"shift"`, `"ctrl"`, `"alt"` and `"cmd"` are each either key
+of the pair, and a keypad key has its main-keyboard twin's name (keypad 0 is
+`"0"`); two keys under one name read as one key: it goes down when the first
+does and comes up when the last does. Letters name the
 physical key, so Shift+E still holds `"e"`. Esc is an ordinary key here, not a way out of the window: the
 loop ends at the close box or at `view.quit()`.
 

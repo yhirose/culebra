@@ -5,18 +5,22 @@
 // (pad_axis_value).
 //
 // A key name is a printable character ("a", " ", "-") or a special-key name
-// ("left", "enter", "f1", …), or a modifier — "shift", "ctrl" or "alt" for
-// either key of the pair (Canvas and Scene only: Term reports the three as
-// fields of the key event, under the same names). raylib's
-// printable key codes are upper-case ASCII, so single characters map by
-// arithmetic and only the specials need a table. Unknown names map to 0 / -1
-// and are never held — a typo is a key that is never pressed, not an error,
-// the same contract Canvas.key has always had.
+// ("left", "enter", "f1", …), or a modifier — "shift", "ctrl", "alt" or "cmd"
+// for either key of the pair (Canvas and Scene only: Term reports shift, ctrl
+// and alt as fields of the key event, under the same names, and a terminal
+// sends nothing for cmd). A keypad key has its main-keyboard twin's name, as
+// a terminal and a browser report it: keypad 0 is "0", its Enter "enter".
+// raylib's printable key codes are upper-case ASCII, so single characters map
+// by arithmetic and only the specials need a table. Unknown names map to 0 /
+// -1 and are never held — a typo is a key that is never pressed, not an
+// error, the same contract Canvas.key has always had.
 #pragma once
 
+#include <algorithm>
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <vector>
 
 #include "raylib.h"
 
@@ -50,24 +54,57 @@ inline int key_code_of(std::string_view name) {
   return it == special_keys().end() ? 0 : it->second;
 }
 
-// The physical keys a name stands for: one, or both sides of a modifier
-// ("shift" is either Shift; "alt" is Option on a Mac keyboard). No codes is
-// an unknown name.
+// The physical keys a name stands for: one, or two that read as one key.
+// No codes is an unknown name.
 struct KeyCodes {
   int code[2] = {0, 0};
   int count = 0;
 };
 
+// The names over two keys, the one table both directions read: a modifier's
+// left and right ("alt" is Option on a Mac keyboard, "cmd" is Command there
+// and the Windows or Super key elsewhere), and a key and its keypad twin.
+// '*' and '+' are no main-keyboard key raylib reports, so only the keypad
+// ever holds them.
+inline const std::unordered_map<std::string_view, KeyCodes>& paired_keys() {
+  static const std::unordered_map<std::string_view, KeyCodes> m = {
+      {"shift", {{KEY_LEFT_SHIFT, KEY_RIGHT_SHIFT}, 2}},
+      {"ctrl", {{KEY_LEFT_CONTROL, KEY_RIGHT_CONTROL}, 2}},
+      {"alt", {{KEY_LEFT_ALT, KEY_RIGHT_ALT}, 2}},
+      {"cmd", {{KEY_LEFT_SUPER, KEY_RIGHT_SUPER}, 2}},
+      {"0", {{KEY_ZERO, KEY_KP_0}, 2}},       {"1", {{KEY_ONE, KEY_KP_1}, 2}},
+      {"2", {{KEY_TWO, KEY_KP_2}, 2}},        {"3", {{KEY_THREE, KEY_KP_3}, 2}},
+      {"4", {{KEY_FOUR, KEY_KP_4}, 2}},       {"5", {{KEY_FIVE, KEY_KP_5}, 2}},
+      {"6", {{KEY_SIX, KEY_KP_6}, 2}},        {"7", {{KEY_SEVEN, KEY_KP_7}, 2}},
+      {"8", {{KEY_EIGHT, KEY_KP_8}, 2}},      {"9", {{KEY_NINE, KEY_KP_9}, 2}},
+      {".", {{KEY_PERIOD, KEY_KP_DECIMAL}, 2}},
+      {"/", {{KEY_SLASH, KEY_KP_DIVIDE}, 2}},
+      {"*", {{'*', KEY_KP_MULTIPLY}, 2}},
+      {"-", {{KEY_MINUS, KEY_KP_SUBTRACT}, 2}},
+      {"+", {{'+', KEY_KP_ADD}, 2}},
+      {"=", {{KEY_EQUAL, KEY_KP_EQUAL}, 2}},
+      {"enter", {{KEY_ENTER, KEY_KP_ENTER}, 2}},
+  };
+  return m;
+}
+
 inline KeyCodes key_codes_of(std::string_view name) {
-  if (name == "shift") return {{KEY_LEFT_SHIFT, KEY_RIGHT_SHIFT}, 2};
-  if (name == "ctrl") return {{KEY_LEFT_CONTROL, KEY_RIGHT_CONTROL}, 2};
-  if (name == "alt") return {{KEY_LEFT_ALT, KEY_RIGHT_ALT}, 2};
+  auto it = paired_keys().find(name);
+  if (it != paired_keys().end()) return it->second;
   int c = key_code_of(name);
   if (c == 0) return {};
   return {{c, 0}, 1};
 }
 
 enum class KeyEdge { Held, Pressed, Released };
+
+// One key's state last frame: up if it went down now, down if it came up now.
+template <class Query>
+bool was_down(int code, Query& query) {
+  return query(code, KeyEdge::Pressed)    ? false
+         : query(code, KeyEdge::Released) ? true
+                                          : query(code, KeyEdge::Held);
+}
 
 // A name's state from its keys' states; `query(code, edge)` answers for one
 // physical key (raylib below, a stub in test/keynames_test.cc). The keys of
@@ -78,13 +115,8 @@ bool key_state(std::string_view name, KeyEdge edge, Query query) {
   KeyCodes keys = key_codes_of(name);
   bool now = false, before = false;
   for (int i = 0; i < keys.count; i++) {
-    bool down = query(keys.code[i], KeyEdge::Held);
-    // Last frame's state: up if it went down now, down if it came up now.
-    bool was = query(keys.code[i], KeyEdge::Pressed)    ? false
-               : query(keys.code[i], KeyEdge::Released) ? true
-                                                        : down;
-    now = now || down;
-    before = before || was;
+    now = now || query(keys.code[i], KeyEdge::Held);
+    before = before || was_down(keys.code[i], query);
   }
   switch (edge) {
     case KeyEdge::Held: return now;
@@ -109,15 +141,40 @@ inline bool key_state(std::string_view name, KeyEdge edge) {
 }
 
 // The queue direction: a pressed key code back to its name. Unmapped codes
-// (modifiers, keypad) produce "" and are dropped from the queue, the same
-// keys Term's parser has no name for. Space reads back as " ", its canonical
-// spelling, not the alias.
+// produce "" and are dropped from the queue. Space reads back as " ", its
+// canonical spelling, not the alias.
 inline std::string key_name_of(int code) {
   if (code >= 'A' && code <= 'Z') return std::string(1, static_cast<char>(code + 32));
   if (code >= ' ' && code <= '~') return std::string(1, static_cast<char>(code));
+  for (const auto& [name, keys] : paired_keys())
+    for (int i = 0; i < keys.count; i++)
+      if (keys.code[i] == code) return std::string(name);
   for (const auto& [name, c] : special_keys())
     if (c == code && name != "space") return std::string(name);
   return "";
+}
+
+// The names a batch of keys going down (raylib's pressed queue, in order)
+// adds to a script's queue. A name over two keys is pressed when the first of
+// them goes down, as key_state reads it: the second adds nothing while the
+// first is held, from before the batch or from earlier in it.
+template <class Query>
+std::vector<std::string> pressed_names(const std::vector<int>& codes, Query query) {
+  std::vector<std::string> out;
+  for (auto at = codes.begin(); at != codes.end(); ++at) {
+    std::string name = key_name_of(*at);
+    if (name.empty()) continue;
+    KeyCodes keys = key_codes_of(name);
+    bool twin_held = false;
+    for (int i = 0; i < keys.count; i++) {
+      int k = keys.code[i];
+      if (k == *at) continue;
+      twin_held = twin_held || was_down(k, query) ||
+                  std::find(codes.begin(), at, k) != at;  // earlier in the batch
+    }
+    if (!twin_held) out.push_back(std::move(name));
+  }
+  return out;
 }
 
 // Gamepad buttons by the names Canvas's PAD_* constants already spell, lower-

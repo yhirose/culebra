@@ -300,7 +300,6 @@ int64_t held_button(int key, int64_t bit) { return IsKeyDown(key) ? bit : 0; }
 // --- arbitrary keys: Term's key vocabulary over raylib key codes ------------
 // The name table itself lives in stdlib/keynames.h, shared with the Scene
 // backend so the two namespaces cannot drift apart on what a key is called.
-using keynames::key_name_of;
 
 // A unicode code point as UTF-8, for the typed-characters queue. A negative
 // or non-scalar value (raylib hands over whatever the platform reported)
@@ -321,9 +320,9 @@ std::deque<std::string> g_char_queue;
 // Pull raylib's per-frame pressed/typed events into the queues. Called from
 // present(), right after EndDrawing has pumped the platform events.
 void drain_key_events() {
-  for (int c = GetKeyPressed(); c != 0; c = GetKeyPressed()) {
-    std::string n = key_name_of(c);
-    if (n.empty()) continue;
+  std::vector<int> codes;
+  for (int c = GetKeyPressed(); c != 0; c = GetKeyPressed()) codes.push_back(c);
+  for (std::string& n : keynames::pressed_names(codes, keynames::raylib_key)) {
     if (g_key_queue.size() >= kKeyQueueCap) g_key_queue.pop_front();
     g_key_queue.push_back(std::move(n));
   }
