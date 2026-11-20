@@ -438,7 +438,8 @@ ctest.entries 43
 # en and ja (a doctest-skipped example: it reads a device). 1244 since
 # docs/guides/synth, en and ja (20 blocks each: a sound built up from a sine,
 # one idea at a time, each rendered as it is written; one skips, it plays).
-docs.blocks 1244
+# 1246 since Synth.velocity, in en and ja (two notes played softly and hard).
+docs.blocks 1246
 
 # The samples the language front ends are run over (examples/languages/*).
 languages.samples 130

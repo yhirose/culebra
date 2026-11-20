@@ -4,9 +4,10 @@
 # A patch: `algorithm` (a key of fm.ALGORITHMS), `ops` (three operators, each
 # a `ratio` to the note, a `detune` in cents, a `level` 0..100, and an
 # envelope: `attack`, `decay`, `release` in seconds and `sustain` 0..100),
-# `feedback` 0..100 (operator 3's), `volume` 0..100, `reverb` 0..100, and
-# for a wind controller `breath_bright` 0..100 (how much the breath opens the
-# modulators) and `glide` (seconds from note to note).
+# `feedback` 0..100 (operator 3's), `volume` 0..100, `reverb` 0..100, for a
+# wind controller `breath_bright` 0..100 (how much the breath opens the
+# modulators) and `glide` (seconds from note to note), and for a keyboard
+# `touch` 0..100 (how much a key played harder is louder and brighter).
 
 import fm from './fm.cul'
 
@@ -23,8 +24,9 @@ fn patch(
   breath_bright = 50.0,
   glide = 0.03,
   volume = 75.0,
+  touch = 50.0,
 ) {
-  {name, algorithm, ops, feedback, volume, reverb, breath_bright, glide}
+  {name, algorithm, ops, feedback, volume, reverb, breath_bright, glide, touch}
 }
 
 let FACTORY = [
@@ -37,6 +39,7 @@ let FACTORY = [
       op(1.0, 55.0, 0.002, 1.8, 10.0, 0.4, detune: 3.0),
     ],
     reverb: 25.0,
+    touch: 70.0,
   ),
   patch(
     "Bell",
@@ -78,6 +81,7 @@ let FACTORY = [
       op(4.0, 40.0, 0.005, 0.1, 100.0, 0.05),
     ],
     reverb: 30.0,
+    touch: 0.0,
   ),
   patch(
     "Clav",
@@ -165,6 +169,7 @@ let RANGES = {
     reverb: [0.0, 100.0],
     breath_bright: [0.0, 100.0],
     glide: [0.0, 1.0],
+    touch: [0.0, 100.0],
   },
 }
 

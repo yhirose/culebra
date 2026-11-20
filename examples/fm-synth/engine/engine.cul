@@ -47,6 +47,7 @@ class Instrument {
     @pressed = Set()    # the keys down
     @sustained = Set()  # the keys up that the pedal holds
     @pedal_down = false
+    @velocities = {}    # how hard each key sounding was played, by note
     @fingers = []  # the wind controller's notes held, the last one sounding
     @blown = 0.0
     self._build_keys()
@@ -86,12 +87,14 @@ class Instrument {
     @blown
   }
 
-  key_on(note) {
+  # `velocity` 0..1, how hard the key is played.
+  key_on(note, velocity) {
     # A key struck again while it sounds starts again.
     @keys.note_off(note) if @pressed.contains(note) || @sustained.contains(note)
     @sustained.remove(note)
     @pressed.add(note)
-    @keys.note_on(note)
+    @velocities["{note}"] = velocity
+    @keys.note_on(note, velocity:)
   }
   key_off(note) {
     return nil unless @pressed.contains(note)
@@ -155,10 +158,11 @@ class Instrument {
   _blow() {
     @wind_box.control("breath", self.finger() == nil ? 0.0 : @blown)
   }
-  # New keyboard voices for the patch; the keys sounding play on in them.
+  # New keyboard voices for the patch; the keys sounding play on in them, as
+  # hard as they were played.
   _build_keys() {
     let keys = fm.keys(@patch)
-    self.sounding().for_each(|n| keys.note_on(n))
+    self.sounding().for_each(|n| keys.note_on(n, velocity: @velocities["{n}"]))
     @keys = keys
     @keys_box.set(keys)
   }
@@ -234,7 +238,7 @@ fn play_message(inst, inputs, port, m) {
   let wind = inputs.mode(port.name) == "wind"
   let breath = inputs.breath_source()
   match m.kind {
-    "note_on" => wind ? inst.finger_on(m.note) : inst.key_on(m.note),
+    "note_on" => wind ? inst.finger_on(m.note) : inst.key_on(m.note, m.velocity),
     "note_off" => wind ? inst.finger_off(m.note) : inst.key_off(m.note),
     "bend" => inst.bend(wind, m.bend),
     "pressure" => {
@@ -306,7 +310,7 @@ fn serve(ws) {
               patch = presets.whole(msg.patch)
               inst.use_patch(patch)
             },
-            "key" => msg.on ? inst.key_on(msg.note) : inst.key_off(msg.note),
+            "key" => msg.on ? inst.key_on(msg.note, Math.clamp(msg.get("velocity", 1.0), 0.0, 1.0)) : inst.key_off(msg.note),
             "all_off" => inst.all_off(),
             "load" => {
               let p = store.find(msg.name)

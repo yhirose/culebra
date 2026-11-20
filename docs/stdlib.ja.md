@@ -10006,6 +10006,7 @@ sine(5.0))`は、0から1の間で揺れるトレモロです。同じ値を2回
 | `Synth.perc(attack, release, peak = 1.0, curve = -4.0)` | `env([0, peak, 0], [attack, release], curve)`。打つ音のエンベロープ |
 | `Synth.adsr(attack, decay, sustain, release, peak = 1.0, curve = -4.0)` | ゲートつきのエンベロープ。`peak`まで上がり、`sustain * peak`まで下がり、離すまでそこに留まり、`release`秒で0まで下がる。`e.hold(secs)`は、始まりから`secs`秒で離す（その時点の値から下がる）。離す時刻がないままでは、ノートオフが離す`Voices`の中でだけ使え、それ以外では`ValueError` |
 | `Synth.control(name, init, lo = nil, hi = nil)` | `name`という名前の値。`play`が返すハンドルで設定するまでは`init`（`lo`と`hi`があれば、その範囲に収め、`init`もその中）。1つの式の中の同じ名前の`control`は同じ値で、同じ引数で作る |
+| `Synth.velocity()` | `Voices`のビルダーの中で、声のノートのベロシティ（0〜1）。ノートオンのたびに設定される（下記） |
 | `Synth.play(expr, wait = true, secs = nil) -> SynthHandle` | 式（または下の`Voices`）を、`secs`まで、なければ自然な終わり（下の説明）まで鳴らす。`wait`なら終わってから戻り、`wait: false`ならすぐ戻って、終わるか止めるまで鳴り続ける（`Voices`は、ノートが来うるので止めるまで）。自然に終わらない音（発振器、ループ、押さえたままのノート）は`secs`か`wait: false`が要り、なければ`ValueError`。2チャンネルの束は左右で鳴る（下の説明）。デバイスがなければ、鳴らさずにすぐ戻る |
 | `Synth.lowpass(x, cutoff = 1000.0, q = 0.707, rate = nil)` / `highpass` / `bandpass` | 部品には、その名前のメソッド。サンプル（数の配列）には`Audio.filter(x, kind, cutoff, q, rate)`（`rate`が`nil`なら44100）。部品のサンプルレートは`render`か`play`が決めるので、部品に`rate`を渡すと`ValueError`（下の2つも同じ） |
 | `Synth.resonate(x, modes: Array, dry = 0.0, rate = nil)` | 部品には`x.resonate(modes, dry)`、サンプルには`Audio.resonate(x, modes, dry, rate)` |
@@ -10143,9 +10144,17 @@ println(render(noise() * perc(0.001, 0.01) |> pluck(220.0, ring: 0.5)).size())  
 分け合う）、`render`と`play`はそのノートつきでグラフを作り、鳴らしている間に
 作ったノートは、そのグラフの時計に合わせて、鳴っている音にも入ります。
 
+`Synth.velocity()`をビルダーの中で呼ぶと、その声が鳴らすノートのベロシティ
+（0〜1）になります。ノートオンのたびに`freq`と同じく設定される信号で、
+ベロシティを渡さないノートでは1です。キャリアに掛ければ強く弾くほど大きく、
+モジュレーターに掛ければ明るくなります。呼ぶたびに別の部品になり、声の
+ビルダーが作ったものはすべて、その声のノートで設定されます。ビルダーの外で
+作ったものや、`Voices`の外で鳴らすものは、`render`や`play`の時点で
+`ValueError`です。
+
 | `Voices`のメソッド | 動作 |
 | --- | --- |
-| `v.note_on(note, at = nil)` | `note`（ノート番号。`hz(note)` Hz）を`at`秒から鳴らす。`nil`ならいま（鳴らしている`play`の時計、鳴らす前は0） |
+| `v.note_on(note, at = nil, velocity = 1.0)` | `note`（ノート番号。`hz(note)` Hz）を`at`秒から鳴らす。`nil`ならいま（鳴らしている`play`の時計、鳴らす前は0）。`velocity`（0〜1。それ以外は`ValueError`）は、声の`velocity()`が読む |
 | `v.note_off(note, at = nil)` | `note`をいちばん長く鳴らしている声を、`at`から離す |
 | `v.sequence(notes: Array, step, len = nil, at = nil)` | `at`から`step`秒おきに`notes`を鳴らし、それぞれ`len`秒（`nil`なら`step`）で離す。`nil`のノートは休符 |
 | `v.ends()` | それまでに作ったノートが、余韻を含めて終わる時刻。押さえたままのノートがあれば`Math.inf` |
@@ -10157,6 +10166,15 @@ let lead = Voices(4, |f| sine(f) * adsr(0.01, 0.1, 0.6, 0.2) * 0.2)
 lead.sequence([60, 64, 67, nil, 72], step: 0.25, len: 0.2)
 println(lead.ends())  # => 1.4
 println(render(lead, 1.4).size())  # => 61740
+```
+
+```culebra
+let {sine, adsr, Voices, velocity, render} = Synth
+# 強く弾くほど大きく明るい：ベロシティをキャリアとモジュレーターに掛ける
+let piano = Voices(4, |f| sine(f, phase: sine(f * 2.0) * velocity() * 2.0) * adsr(0.002, 1.0, 0.0, 0.2) * velocity() * 0.3)
+piano.note_on(60, at: 0.0, velocity: 0.3)
+piano.note_on(64, at: 0.5, velocity: 0.9)
+println(render(piano, 1.0).size())  # => 44100
 ```
 
 `Synth.Proxy(fade = 0.05)`は、鳴らしたまま音を入れ替える箱で、ほかの式が読む

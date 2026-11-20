@@ -20,6 +20,15 @@ for p in presets.FACTORY {
   assert_true(peak(s) < 0.5, "{p.name} is under half of full")
 }
 
+# Touch: at 100 a key played softly is quieter; at 0 how hard is not heard.
+fn played_at(touch, velocity) {
+  let v = fm.keys({...presets.FACTORY[4], touch})
+  v.note_on(60, at: 0.0, velocity:)
+  peak(render(v, 0.2))
+}
+assert_true(played_at(100.0, 0.3) < played_at(100.0, 1.0) * 0.5)
+assert_eq(played_at(0.0, 0.3), played_at(0.0, 1.0))
+
 # Each knob is a control of the sound, by the name the patch's controls give
 # it (a name the sound lacks is a ValueError of set), and moves it.
 fn note_of(p) {
@@ -79,8 +88,8 @@ for p in presets.FACTORY {
 # The instrument: keys sound until let go, the pedal holds them, a new
 # patch keeps them sounding.
 let inst = engine.Instrument(base)
-inst.key_on(60)
-inst.key_on(64)
+inst.key_on(60, 0.5)
+inst.key_on(64, 1.0)
 inst.key_off(64)
 assert_eq(inst.sounding(), [60])
 inst.pedal(true)

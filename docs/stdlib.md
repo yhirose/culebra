@@ -10473,6 +10473,7 @@ check, when `render` builds it at its rate, with the graph's `ValueError`.
 | `Synth.perc(attack, release, peak = 1.0, curve = -4.0)` | `env([0, peak, 0], [attack, release], curve)`: a struck sound's envelope |
 | `Synth.adsr(attack, decay, sustain, release, peak = 1.0, curve = -4.0)` | a gated envelope: up to `peak`, down to `sustain * peak`, held there until it is let go, then down to 0 over `release`. `e.hold(secs)` lets it go `secs` from its start (from the level it has then); unheld, it plays in a `Voices`, whose note off lets it go, and is a `ValueError` elsewhere |
 | `Synth.control(name, init, lo = nil, hi = nil)` | a value named `name`, `init` until the handle `play` gave sets it (kept to `lo..hi` when they are given, `init` among them); controls of one name in an expression are one value, and are made alike |
+| `Synth.velocity()` | in a `Voices` builder, the velocity of the voice's note, 0 to 1, as each note on sets it (below) |
 | `Synth.play(expr, wait = true, secs = nil) -> SynthHandle` | the expression (or a `Voices`, below) played until `secs`, or else until it ends on its own (below); with `wait` it returns once it has ended, without it at once, the sound playing on until it ends or is stopped (a `Voices` until it is stopped, as notes may come). A sound that does not end on its own (an oscillator, a loop, a note still held) needs `secs` or `wait: false`, else `ValueError`. A bundle of two channels plays as the left and the right (below). With no device nothing sounds and it returns at once |
 | `Synth.lowpass(x, cutoff = 1000.0, q = 0.707, rate = nil)` / `highpass` / `bandpass` | a part's method of that name for a part; for samples (an Array of numbers), `Audio.filter(x, kind, cutoff, q, rate)`, `rate` 44100 when `nil`. A part's rate is the one `render` or `play` gives, so a `rate` given with a part is a `ValueError` (so in the two below) |
 | `Synth.resonate(x, modes: Array, dry = 0.0, rate = nil)` | `x.resonate(modes, dry)` for a part; `Audio.resonate(x, modes, dry, rate)` for samples |
@@ -10620,9 +10621,17 @@ A `Voices` keeps its notes in time order, whatever order they are made in
 build its graph with them; a note made while it plays is heard there too,
 from the graph's clock.
 
+`Synth.velocity()`, called in a builder, is the velocity of the note the
+voice plays, from 0 to 1: a signal each note on sets as it sets `freq`, 1
+for a note given none. Multiplied into a carrier it makes a note played
+harder louder; into a modulator, brighter. Each call is a part of its own,
+and every one a voice's builder made is set by its notes. Made outside a
+builder, or heard outside a `Voices`, it is a `ValueError` where it is
+rendered or played.
+
 | Method of a `Voices` | Effect |
 | --- | --- |
-| `v.note_on(note, at = nil)` | `note` (a note number, `hz(note)` Hz) from `at` seconds, now when `nil` (the clock of the play of it still playing, 0 before one) |
+| `v.note_on(note, at = nil, velocity = 1.0)` | `note` (a note number, `hz(note)` Hz) from `at` seconds, now when `nil` (the clock of the play of it still playing, 0 before one), at `velocity` (0 to 1, else `ValueError`), which the voice's `velocity()` reads |
 | `v.note_off(note, at = nil)` | the voice playing `note` longest let go from `at` |
 | `v.sequence(notes: Array, step, len = nil, at = nil)` | the notes `step` seconds apart from `at`, each `len` long (a `step` when `nil`); a `nil` note is a rest |
 | `v.ends()` | when the notes made so far have ended, their tails included; `Math.inf` while one is held |
@@ -10634,6 +10643,15 @@ let lead = Voices(4, |f| sine(f) * adsr(0.01, 0.1, 0.6, 0.2) * 0.2)
 lead.sequence([60, 64, 67, nil, 72], step: 0.25, len: 0.2)
 println(lead.ends())  # => 1.4
 println(render(lead, 1.4).size())  # => 61740
+```
+
+```culebra
+let {sine, adsr, Voices, velocity, render} = Synth
+# Harder is louder and brighter: the velocity in the carrier and the modulator.
+let piano = Voices(4, |f| sine(f, phase: sine(f * 2.0) * velocity() * 2.0) * adsr(0.002, 1.0, 0.0, 0.2) * velocity() * 0.3)
+piano.note_on(60, at: 0.0, velocity: 0.3)
+piano.note_on(64, at: 0.5, velocity: 0.9)
+println(render(piano, 1.0).size())  # => 44100
 ```
 
 `Synth.Proxy(fade = 0.05)` is a box whose sound is replaced while it plays,

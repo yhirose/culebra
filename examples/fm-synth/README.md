@@ -23,14 +23,14 @@ culebra build examples/fm-synth/main.cul -o fm-synth
 - **MIDI devices** appear at the top as they are plugged in, each with a
   **Keys / Wind** switch. A device whose name says it is a wind controller
   (EWI, WX, Aerophone…) starts as Wind.
-  - *Keys* plays chords (8 voices), with the sustain pedal (CC64) and the mod
-    wheel's vibrato (CC1).
+  - *Keys* plays chords (8 voices), as hard as each key is played, with the
+    sustain pedal (CC64) and the mod wheel's vibrato (CC1).
   - *Wind* plays one voice: the last finger held is the note, gliding there,
     and the breath is the volume and opens the brightness. Choose where the
     breath comes from (CC2, CC11, CC7 or aftertouch) next to the devices.
   - Both bend ±2 semitones. **All notes off** stops everything.
 - **The keyboard** at the bottom plays with the mouse, or with the keys
-  A W S E D F T G Y H U J K (Z and X change the octave).
+  A W S E D F T G Y H U J K (Z and X change the octave), at a velocity of 0.8.
 
 ## Making a sound
 
@@ -46,10 +46,14 @@ culebra build examples/fm-synth/main.cul -o fm-synth
   - **Attack, Decay, Sustain, Release**: how its level moves from the key
     down to after the key up, drawn above the knobs. On a modulator this is
     how the tone changes: a short decay gives a bright attack that mellows.
+    It is heard when you let go of the knob (a new envelope builds new voices,
+    which start the notes held again).
   - Operator 3 also has **Grit**, its feedback, which turns its sine toward a
     sawtooth.
-- **Overall**: the volume and the reverb. **Wind controller**: how much the
-  breath brightens the sound, and how long the glide between notes is.
+- **Overall**: the volume and the reverb. **Keyboard**: Touch, how much a key
+  played harder is louder and brighter (0: every key alike). **Wind
+  controller**: how much the breath brightens the sound, and how long the
+  glide between notes is.
 
 Double-click a knob to put it back where the preset had it.
 
@@ -80,9 +84,6 @@ sound anew for the rest (the wiring, the envelopes, the reverb). The
 keyboard's voices are a `Synth.Voices` and the wind controller's voice an
 expression of its own, each in a `Synth.Proxy`, so a new sound crossfades in
 while the notes held keep sounding. A third box hears both through the reverb
-and a limiter. The device runs at a 3 ms period, as `kauai live` does.
-
-## Limits
-
-- The keyboard's velocity is not heard: `Synth.Voices` sets a note's pitch,
-  not its loudness.
+and a limiter. The device runs at a 3 ms period, as `kauai live` does. A
+key's velocity is the voice's `Synth.velocity()`, which Touch scales each
+operator's envelope by.

@@ -380,6 +380,7 @@ function buildOverall(range) {
     g("Volume", "volume", showPercent),
     g("Reverb", "reverb", showPercent),
   );
+  $("keys-knobs").append(g("Touch", "touch", showPercent));
   $("wind").append(
     g("Breath brightness", "breath_bright", showPercent),
     g("Glide", "glide", showTime),
@@ -460,8 +461,12 @@ const keyEls = new Map();
 const mouseNotes = new Set();
 const pcNotes = new Map();
 
+// How hard the page's keys are played (the mouse and the computer's keys
+// have no velocity).
+const PAGE_VELOCITY = 0.8;
+
 function noteOn(note) {
-  send({ type: "key", on: true, note });
+  send({ type: "key", on: true, note, velocity: PAGE_VELOCITY });
   keyEls.get(note)?.classList.add("down");
 }
 function noteOff(note) {

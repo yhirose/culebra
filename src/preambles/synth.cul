@@ -676,6 +676,16 @@ let _synth_module = fn () {
     q
   }
 
+  # A voice's velocity: a level each note sets, made by the voice's builder
+  # (one level however many velocity() it made, as they read the same). It
+  # starts at the voice's first note's velocity (1 with none).
+  fn velocity_part(b, p) {
+    if !owned(b, p) {
+      __raise("ValueError", "Synth.velocity: a note's velocity is heard only in what a Voices' builder returns, made there")
+    }
+    b.voice.velocity ??= level(b, b.voice.first_velocity)
+  }
+
   # A feedback's x is a mix its expression's answer is connected back into,
   # made before the expression so the expression can read it.
   fn close_loop(b, p) {
@@ -702,6 +712,7 @@ let _synth_module = fn () {
       "level" => signal(b, v.level, p),
       "control" => control_part(b, o),
       "pitch" => pitch_part(b, p),
+      "velocity" => velocity_part(b, p),
       # close_loop builds x; graph_of has refused an x outside its loop.
       "loop" => __raise("ValueError", "Synth.feedback: x is heard only in the expression its function returns"),
       "mix" => g.mix(p.inputs.map(|i| part(b, i))),
@@ -1023,11 +1034,11 @@ let _synth_module = fn () {
   let STEAL_FADE = 0.005
 
   # A note's change to a Voices' graph: a note on starts the voice's
-  # envelopes and sets its freq (after fading the voice out, when the note
-  # takes it from another), a note off lets its gated envelopes go as
-  # `hold` does, and a cut fades the voice out until its next note. On a
-  # playing graph the cancels land at its clock at the earliest, so what
-  # follows them starts from there.
+  # envelopes and sets its freq and velocity (after fading the voice out,
+  # when the note takes it from another), a note off lets its gated
+  # envelopes go as `hold` does, and a cut fades the voice out until its next
+  # note. On a playing graph the cancels land at its clock at the earliest,
+  # so what follows them starts from there.
   fn apply_note(built, e) {
     let v = built.voices[e.voice]
     if e.kind == "cut" {
@@ -1036,11 +1047,13 @@ let _synth_module = fn () {
     } else if e.kind == "on" {
       v.gate.cancel(e.at)
       v.pitch.cancel(e.at) if v.pitch != nil
+      v.velocity.cancel(e.at) if v.velocity != nil
       v.triggers.for_each(|tr| tr.value.cancel(e.at))
       let start = Math.max(e.at, built.g.now()) + (e.start - e.at)
       v.gate.ramp(start, 0.0) if e.start > e.at
       v.gate.set(start, 1.0)
       v.pitch.set(start, hz(e.note)) if v.pitch != nil
+      v.velocity.set(start, e.velocity) if v.velocity != nil
       v.triggers.for_each(|tr| run(tr.value, tr.envelope, start))
     } else {
       v.gated.for_each(|tr| tr.value.cancel(e.at))
@@ -1091,6 +1104,10 @@ let _synth_module = fn () {
     i < v.notes.size() ? v.notes[i].start : Math.inf
   }
 
+  # The velocity of the note a voice plays, 0 to 1: a level each note on
+  # sets, heard in what a Voices' builder returns (a ValueError elsewhere).
+  let note_velocity = || SynthPart("velocity", [], {}, {})
+
   # `count` voices, each the expression `builder` returns for its freq (a
   # signal in Hz each note sets): a note goes to a voice free for as long as
   # it sounds, or else takes the voice whose sounding note began first. A
@@ -1118,12 +1135,14 @@ let _synth_module = fn () {
       let live = self._live()
       live.empty() ? 0.0 : live[live.size() - 1].handle.now()
     }
-    # `note` (a note number) from `at` (now when nil): on a voice free for as
-    # long as it sounds; or else on one silent then, until that voice's next
-    # note (fading out over the STEAL_FADE before it); or else on the voice
-    # whose sounding note began first, which fades out first.
-    note_on(note: Long | Float, at: Long | Float | Nil = nil) {
+    # `note` (a note number) from `at` (now when nil), at `velocity` (0 to
+    # 1): on a voice free for as long as it sounds; or else on one silent
+    # then, until that voice's next note (fading out over the STEAL_FADE
+    # before it); or else on the voice whose sounding note began first, which
+    # fades out first.
+    note_on(note: Long | Float, at: Long | Float | Nil = nil, velocity: Long | Float = 1.0) {
       __raise("ValueError", "Synth.Voices: note is a finite number") if !finite(note)
+      __raise("ValueError", "Synth.Voices: velocity is a number from 0 to 1") unless finite(velocity) && velocity >= 0 && velocity <= 1
       let t = self._time(at)
       mut voice = @_voices.find(|v| free_between(v, t, t + v.natural))
       mut start = t
@@ -1143,11 +1162,11 @@ let _synth_module = fn () {
           taken.held = false
         }
       }
-      let placed = {note: note, at: t, start: start, mut free: Math.min(start + voice.natural, next_start(voice, t)), mut held: true}
+      let placed = {note: note, velocity: velocity + 0.0, at: t, start: start, mut free: Math.min(start + voice.natural, next_start(voice, t)), mut held: true}
       # After those starting by `t`: nothing else starts before `placed` ends.
       voice.notes.insert(count_before(voice.notes, start_of, t, true), placed)
       @_held.get_or_put(held_key(note), []).push({voice: voice, note: placed})
-      self._add({kind: "on", voice: voice.index, at: t, start: start, note: note})
+      self._add({kind: "on", voice: voice.index, at: t, start: start, note: note, velocity: placed.velocity})
       self._add({kind: "cut", voice: voice.index, at: Math.max(t, cut - STEAL_FADE), until: cut}) if cut != nil
     }
     # The note `note` held longest let go from `at` (now when nil): its
@@ -1219,10 +1238,11 @@ let _synth_module = fn () {
       let b = build_of(g)
       let voices = @_voices.map(fn (v) {
         let first = v.notes.empty() ? 440.0 : hz(v.notes[0].note)
-        b.voice = {pitch_id: v.pitch_id, first: first, mut pitch: nil, triggers: []}
+        let first_velocity = v.notes.empty() ? 1.0 : v.notes[0].velocity
+        b.voice = {pitch_id: v.pitch_id, first: first, mut pitch: nil, first_velocity, mut velocity: nil, triggers: []}
         let gate = shared_gain(b, channels_or_one(v.expr).map(|c| part(b, c)), 0.0)
         let triggers = b.voice.triggers
-        let voice = {parts: gate.parts, gate: gate.value, pitch: b.voice.pitch, triggers: triggers, gated: triggers.filter(|tr| tr.envelope.release != nil)}
+        let voice = {parts: gate.parts, gate: gate.value, pitch: b.voice.pitch, velocity: b.voice.velocity?.gain, triggers: triggers, gated: triggers.filter(|tr| tr.envelope.release != nil)}
         b.voice = nil
         voice
       })
@@ -1425,6 +1445,7 @@ let _synth_module = fn () {
     mix: mix_parts,
     feedback: feedback_loop,
     Voices: SynthVoices,
+    velocity: note_velocity,
     Proxy: SynthProxy,
     lowpass: lowpass,
     highpass: highpass,

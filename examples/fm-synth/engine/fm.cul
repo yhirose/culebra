@@ -47,6 +47,7 @@ fn controls(patch) {
   {
     feedback: patch.feedback / 100.0 * FEEDBACK_MAX,
     breath_bright: patch.breath_bright / 100.0,
+    touch: patch.touch / 100.0,
     volume: squared(patch.volume),
     ...per_op,
   }
@@ -85,15 +86,20 @@ fn voice(patch, freq, env_of, vibrato) {
 let vibrato = || sine(VIBRATO_HZ) * control("vibrato", 0.0)
 
 # The keyboard's voices: each operator's envelope starts at a note on and is
-# let go at its note off. The patch is a whole one (presets.whole), its times
-# above 0.
+# let go at its note off, scaled by how hard the note is played as far as
+# `touch` says (at 0 not at all): a carrier louder, a modulator brighter.
+# The patch is a whole one (presets.whole), its times above 0.
 fn keys(patch) {
   let vib = vibrato()
-  let env_of = fn (i) {
-    let op = patch.ops[i]
-    adsr(op.attack, op.decay, op.sustain / 100.0, op.release)
-  }
-  Voices(POLYPHONY, |f| voice(patch, f, env_of, vib))
+  let touch = control("touch", controls(patch).touch)
+  Voices(POLYPHONY, fn (f) {
+    let played = touch * (velocity() - 1.0) + 1.0
+    let env_of = fn (i) {
+      let op = patch.ops[i]
+      adsr(op.attack, op.decay, op.sustain / 100.0, op.release) * played
+    }
+    voice(patch, f, env_of, vib)
+  })
 }
 
 # The wind controller's one voice: its pitch glides to each note, the breath
