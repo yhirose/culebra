@@ -1,0 +1,19 @@
+# FM Synth: a three-operator FM synthesizer played from a MIDI keyboard, a
+# wind controller (an EWI) or the computer's keys, with its sound edited as
+# it plays and kept as presets.
+#
+# Dev (the page read from disk):  culebra examples/fm-synth/main.cul
+# One binary (the page baked in): culebra build examples/fm-synth/main.cul -o fm-synth
+
+import engine from './engine/engine.cul'
+
+Desktop.run({
+  title: "FM Synth",
+  size: [1280, 820],
+  assets: Dir.embedded("ui"),
+  routes: fn (srv) {
+    srv.ws("/api/synth", fn (req, ws) {
+      engine.serve(ws)
+    })
+  },
+})

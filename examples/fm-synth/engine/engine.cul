@@ -1,0 +1,389 @@
+# The playing synth: the sound of the patch (fm.cul), the notes from the MIDI
+# inputs and the page, and the page's one WebSocket connection, over which it
+# sends the patch it edits and hears what is played.
+#
+# A keyboard plays the polyphonic voices, a note at a time per key, with the
+# sustain pedal. A wind controller (an input in "wind" mode) plays the one
+# voice of its own: the last finger held is the pitch, gliding there, and the
+# breath is how loud it is and how bright.
+
+import fm from './fm.cul'
+import presets from './presets.cul'
+
+# The device's period: a note sounds this much after it is played, besides
+# the device's own delay.
+let PERIOD = 0.003
+# How long a loop waits on the page before reading the MIDI inputs again.
+let WAIT_MS = 2
+# How often the inputs are looked for (a device plugged in while playing).
+let SCAN_EVERY = 1.0
+# How often the page is told what is played.
+let SHOW_EVERY = 0.04
+# How long after the last change the settings are written.
+let KEEP_AFTER = 1.0
+# How long an input is shown as playing after its last message.
+let ACTIVE_FOR = 0.25
+# The bend's range at full, in semitones.
+let BEND_RANGE = 2.0
+# Where a wind controller's breath can come from.
+let BREATH_SOURCES = ["cc2", "cc11", "cc7", "pressure"]
+
+# An input whose name says it is a wind controller starts in "wind" mode.
+let WIND_NAMES = ["ewi", "wind", "wx", "aerophone", "breath"]
+let looks_wind = |name| WIND_NAMES.any(|w| name.lower().contains(w))
+
+let bend_ratio = |bend| 2.0 ** (bend * BEND_RANGE / 12.0)
+
+# The sound of a patch, as it plays: the keyboard's voices and the wind
+# controller's voice (each a box, so that a new patch replaces its sound
+# while it plays), and the output that hears both.
+class Instrument {
+  new(patch) {
+    @patch = patch
+    @keys_box = Synth.Proxy(fade: 0.02)
+    @wind_box = Synth.Proxy(fade: 0.02)
+    @out = Synth.Proxy(fade: 0.05)
+    @keys = nil
+    @pressed = Set()    # the keys down
+    @sustained = Set()  # the keys up that the pedal holds
+    @pedal_down = false
+    @fingers = []  # the wind controller's notes held, the last one sounding
+    @blown = 0.0
+    self._build_keys()
+    @wind_box.set(fm.wind(patch))
+    @out.set(fm.output(patch, @keys_box, @wind_box))
+    @out.play()
+  }
+
+  # The patch replaced: a new sound only for what controls cannot move. The
+  # controls come first: a box keeps them, so a new sound starts at them.
+  use_patch(patch) {
+    let old = @patch
+    @patch = patch
+    for name, v in fm.controls(patch) {
+      @keys_box.control(name, v)
+      @wind_box.control(name, v)
+      @out.control(name, v)
+    }
+    self._build_keys() if fm.keys_shape(patch) != fm.keys_shape(old)
+    @wind_box.set(fm.wind(patch)) if fm.wind_shape(patch) != fm.wind_shape(old)
+    @out.set(fm.output(
+      patch,
+      @keys_box,
+      @wind_box,
+    )) if fm.output_shape(patch) != fm.output_shape(old)
+  }
+
+  # The notes sounding on the keyboard: down, or held by the pedal.
+  sounding() {
+    @pressed.union(@sustained).to_array()
+  }
+  # The wind controller's note, nil when no finger is held.
+  finger() {
+    @fingers.get(-1, nil)
+  }
+  breath() {
+    @blown
+  }
+
+  key_on(note) {
+    # A key struck again while it sounds starts again.
+    @keys.note_off(note) if @pressed.contains(note) || @sustained.contains(note)
+    @sustained.remove(note)
+    @pressed.add(note)
+    @keys.note_on(note)
+  }
+  key_off(note) {
+    return nil unless @pressed.contains(note)
+    @pressed.remove(note)
+    if @pedal_down {
+      @sustained.add(note)
+    } else {
+      @keys.note_off(note)
+    }
+  }
+  pedal(down) {
+    @pedal_down = down
+    return nil if down
+    for n in @sustained.to_array() {
+      @keys.note_off(n)
+    }
+    @sustained = Set()
+  }
+  # Every note let go, the pedal's too: the "all off" button and MIDI's.
+  all_off() {
+    self.pedal(false)
+    for n in @pressed.to_array() {
+      self.key_off(n)
+    }
+    @fingers = []
+    self._blow()
+  }
+
+  finger_on(note) {
+    @fingers = @fingers.filter(|n| n != note) + [note]
+    @wind_box.control("wind_hz", Synth.hz(note))
+    self._blow()
+  }
+  finger_off(note) {
+    @fingers = @fingers.filter(|n| n != note)
+    let f = self.finger()
+    @wind_box.control("wind_hz", Synth.hz(f)) if f != nil
+    self._blow()
+  }
+  blow(x) {
+    @blown = x
+    self._blow()
+  }
+
+  # Bend (-1..1) and mod wheel (0..1), each for the keyboard or the wind
+  # controller.
+  bend(wind, x) {
+    (wind ? @wind_box : @keys_box).control("bend", bend_ratio(x))
+  }
+  vibrato(wind, x) {
+    (wind ? @wind_box : @keys_box).control("vibrato", x)
+  }
+
+  stop() {
+    @out.stop()
+    @keys_box.stop()
+    @wind_box.stop()
+  }
+
+  # The breath is heard only while a finger is held.
+  _blow() {
+    @wind_box.control("breath", self.finger() == nil ? 0.0 : @blown)
+  }
+  # New keyboard voices for the patch; the keys sounding play on in them.
+  _build_keys() {
+    let keys = fm.keys(@patch)
+    self.sounding().for_each(|n| keys.note_on(n))
+    @keys = keys
+    @keys_box.set(keys)
+  }
+}
+
+# The MIDI inputs, opened as they appear, each in "keys" or "wind" mode.
+class Inputs {
+  new(modes) {
+    # By input name, as the player set them (a copy: what JSON.parse made
+    # cannot be changed).
+    @by_name = {...modes}
+    @open = {}  # by id: {id, name, input}
+    @breath = "cc2"
+    @heard = {}  # by id: when a message last came
+  }
+  # The inputs there are opened, and those gone let go: whether one went (its
+  # notes and pedal will never be let go by it).
+  scan() {
+    let there = MIDI.inputs()
+    let ids = there.map(|i| "{i.id}")
+    let gone = @open.keys().filter(|k| !ids.contains(k))
+    for k in gone {
+      @open.remove(k)
+    }
+    for i in there.filter(|i| !@open.has("{i.id}")) {
+      try {
+        @open["{i.id}"] = {id: "{i.id}", name: i.name, input: MIDI.Input(i.id)}
+      } catch _ {
+        # Another program may hold it: tried again at the next scan.
+      }
+    }
+    !gone.empty()
+  }
+  mode(name) {
+    @by_name.get(name, looks_wind(name) ? "wind" : "keys")
+  }
+  set_mode(name, mode) {
+    @by_name[name] = mode
+  }
+  modes() {
+    @by_name
+  }
+  list() {
+    @open
+      .values()
+      .map(|p| {id: p.id, name: p.name, mode: self.mode(p.name)})
+      .collect()
+  }
+  breath_source() {
+    @breath
+  }
+  set_breath_source(s) {
+    @breath = BREATH_SOURCES.contains(s) ? s : "cc2"
+  }
+  # Each message that came, with its input's port, to `handle(port, m)`.
+  read(handle) {
+    for p in @open.values().collect() {
+      let ms = p.input.read()
+      @heard[p.id] = Time.monotonic() unless ms.empty()
+      for m in ms {
+        handle(p, m)
+      }
+    }
+  }
+  # The inputs a message came from lately, by id: the page lights them.
+  active(now) {
+    @heard.keys().filter(|id| now - @heard[id] < ACTIVE_FOR)
+  }
+}
+
+# A MIDI message played on the instrument, as its input's mode says.
+fn play_message(inst, inputs, port, m) {
+  let wind = inputs.mode(port.name) == "wind"
+  let breath = inputs.breath_source()
+  match m.kind {
+    "note_on" => wind ? inst.finger_on(m.note) : inst.key_on(m.note),
+    "note_off" => wind ? inst.finger_off(m.note) : inst.key_off(m.note),
+    "bend" => inst.bend(wind, m.bend),
+    "pressure" => {
+      inst.blow(m.value) if wind && breath == "pressure"
+    },
+    "cc" => cond {
+      wind &&
+        breath == "cc{m.cc}" => inst.blow(port.input.control(m.cc, m.channel)),
+      m.cc == 1 => inst.vibrato(wind, m.value),
+      m.cc == 64 && !wind => inst.pedal(m.value >= 0.5),
+      m.cc == 120 || m.cc == 123 => inst.all_off(),
+      _ => nil,
+    },
+    _ => nil,
+  }
+}
+
+# One connection from the page: the synth plays while it is open.
+fn serve(ws) {
+  Audio.latency(PERIOD) if Audio.latency() == nil
+  let store = presets.Store(presets.app_dir())
+  let settings = store.settings()
+  mut patch = presets.whole(settings.get("patch", presets.FACTORY[0]))
+  let modes = settings.get("modes", {})
+  let inputs = Inputs(modes is Object ? modes : {})
+  inputs.set_breath_source(settings.get("breath", "cc2"))
+  let inst = Instrument(patch)
+  let send = |msg| ws.send(JSON.stringify(msg))
+  let keep = || store.keep_settings({
+    patch: patch,
+    modes: inputs.modes(),
+    breath: inputs.breath_source(),
+  })
+  # The patch the page shows anew (loaded or saved), the presets there are,
+  # and the inputs: each told when it changes.
+  let tell_patch = || send({
+    type: "patch",
+    patch: patch,
+    presets: store.names(),
+    ranges: presets.RANGES,
+    algorithms: fm.ALGORITHMS,
+  })
+  let tell_presets = || send({type: "presets", presets: store.names()})
+  let tell_inputs = || send({
+    type: "inputs",
+    inputs: inputs.list(),
+    breath: inputs.breath_source(),
+  })
+  let tell_error = |text| send({type: "error", text: text})
+  let reason = |e| e is String ? e : e.message
+
+  inputs.scan()
+  tell_patch()
+  tell_inputs()
+  ws.set_timeout(WAIT_MS)
+  mut scanned = Time.monotonic()
+  mut shown = 0.0
+  mut last_shown = nil
+  # The settings are written a moment after the last change, not at each.
+  mut changed = nil
+  while true {
+    match ws.try_receive() {
+      Message(text) => {
+        let msg = JSON.parse(text)
+        changed = Time.monotonic() if msg.type != "key" && msg.type != "all_off"
+        try {
+          match msg.type {
+            "patch" => {
+              patch = presets.whole(msg.patch)
+              inst.use_patch(patch)
+            },
+            "key" => msg.on ? inst.key_on(msg.note) : inst.key_off(msg.note),
+            "all_off" => inst.all_off(),
+            "load" => {
+              let p = store.find(msg.name)
+              if p != nil {
+                patch = p
+                inst.use_patch(patch)
+                tell_patch()
+              }
+            },
+            # The page's patch comes with it: its last edit may not have yet.
+            "save" => {
+              let name = store.save(msg.name, msg.patch)
+              patch = presets.whole(msg.patch, name)
+              inst.use_patch(patch)
+              tell_patch()
+            },
+            "delete" => {
+              store.delete(msg.name)
+              tell_presets()
+            },
+            "mode" => {
+              inputs.set_mode(msg.name, msg.mode == "wind" ? "wind" : "keys")
+              inst.all_off()
+              tell_inputs()
+            },
+            "breath" => {
+              inputs.set_breath_source(msg.source)
+              tell_inputs()
+            },
+            _ => nil,
+          }
+        } catch e {
+          tell_error(reason(e))
+        }
+      },
+      Empty() => nil,
+      Closed() => {
+        inst.stop()
+        try {
+          keep()
+        } catch _ {
+          nil
+        }
+        return nil
+      },
+    }
+    inputs.read(|port, m| play_message(inst, inputs, port, m))
+    let now = Time.monotonic()
+    if now - scanned >= SCAN_EVERY {
+      scanned = now
+      let before = inputs.list()
+      inst.all_off() if inputs.scan()
+      tell_inputs() if inputs.list() != before
+    }
+    if changed != nil && now - changed >= KEEP_AFTER {
+      changed = nil
+      try {
+        keep()
+      } catch e {
+        tell_error("the settings were not saved: {reason(e)}")
+      }
+    }
+    if now - shown >= SHOW_EVERY {
+      shown = now
+      let played = {
+        type: "played",
+        keys: inst.sounding(),
+        finger: inst.finger(),
+        breath: Math.round(inst.breath() * 100.0) / 100.0,
+        active: inputs.active(now),
+      }
+      if played != last_shown {
+        send(played)
+        last_shown = played
+      }
+    }
+  }
+}
+
+export {Instrument, Inputs, play_message, serve, looks_wind, BREATH_SOURCES}

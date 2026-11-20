@@ -1,0 +1,118 @@
+# The sound of a patch: three sine operators, wired by an algorithm, each a
+# frequency ratio, a level and an envelope. A modulator's output moves its
+# carrier's phase (FM as a DX7 does); a carrier's is heard. What a knob moves
+# while notes sound is a control; what changes the wiring or an envelope
+# builds the sound anew (`shape`).
+let {*} = Synth
+
+# Who modulates whom (`mods[i]`: the operators moving operator i's phase) and
+# which operators are heard. Operator 3 (index 2) has the feedback.
+let ALGORITHMS = {
+  stack: {mods: [[1], [2], []], carriers: [0]},
+  pair: {mods: [[1, 2], [], []], carriers: [0]},
+  split: {mods: [[1], [], []], carriers: [0, 2]},
+  organ: {mods: [[], [], []], carriers: [0, 1, 2]},
+}
+
+# A modulator at full level moves its carrier's phase by this many radians.
+let INDEX_MAX = 4.0 * Math.pi
+# A carrier at full level, so that a few notes at once stay under the limit.
+let CARRIER_GAIN = 0.25
+# The feedback at 100.
+let FEEDBACK_MAX = 1.5
+# The vibrato at full mod wheel: a ratio of the pitch, about 20 cents.
+let VIBRATO_DEPTH = 0.012
+let VIBRATO_HZ = 5.5
+# How long the breath takes to follow the wind controller.
+let BREATH_LAG = 0.015
+# Notes a keyboard plays at once.
+let POLYPHONY = 8
+
+let squared = |x| (x / 100.0) * (x / 100.0)
+
+# The value of each control of a patch, by name (a knob's 0..100 made the
+# level the sound reads).
+fn controls(patch) {
+  let per_op = patch
+    .ops
+    .enumerate()
+    .flat_map(|(
+      i,
+      op,
+    )| [
+      ("ratio{i}", op.ratio * 2.0 ** (op.detune / 1200.0)),
+      ("level{i}", squared(op.level)),
+    ])
+    .to_object()
+  {
+    feedback: patch.feedback / 100.0 * FEEDBACK_MAX,
+    breath_bright: patch.breath_bright / 100.0,
+    volume: squared(patch.volume),
+    ...per_op,
+  }
+}
+
+# What only a new sound changes: the wiring and the envelopes (the keyboard's
+# voices), the wiring and the glide (the wind controller's), and the reverb
+# (the output's).
+let keys_shape = |patch| [
+  patch.algorithm,
+  patch.ops.map(|op| [op.attack, op.decay, op.sustain, op.release]),
+]
+let wind_shape = |patch| [patch.algorithm, patch.glide]
+let output_shape = |patch| patch.reverb
+
+# One voice at `freq` (a signal in Hz): `env_of(i)` is operator i's envelope.
+# Each control is made with the patch's value, so a new sound starts where
+# the knobs are.
+fn voice(patch, freq, env_of, vibrato) {
+  let alg = ALGORITHMS[patch.algorithm]
+  let values = controls(patch)
+  let knob = |name| control(name, values[name])
+  let f = freq * control("bend", 1.0) * (1.0 + vibrato * VIBRATO_DEPTH)
+  fn op(i) {
+    let mods = alg.mods[i]
+    let phase = mods.empty() ? 0.0 : mods.map(|j| op(j) * INDEX_MAX).mix()
+    let fb = i == 2 ? knob("feedback") : 0.0
+    sine(f * knob("ratio{i}"), phase: phase, feedback: fb) *
+      env_of(i) *
+      knob("level{i}")
+  }
+  alg.carriers.map(op).mix() * CARRIER_GAIN
+}
+
+# The mod wheel's vibrato, shared by every voice.
+let vibrato = || sine(VIBRATO_HZ) * control("vibrato", 0.0)
+
+# The keyboard's voices: each operator's envelope starts at a note on and is
+# let go at its note off. The patch is a whole one (presets.whole), its times
+# above 0.
+fn keys(patch) {
+  let vib = vibrato()
+  let env_of = fn (i) {
+    let op = patch.ops[i]
+    adsr(op.attack, op.decay, op.sustain / 100.0, op.release)
+  }
+  Voices(POLYPHONY, |f| voice(patch, f, env_of, vib))
+}
+
+# The wind controller's one voice: its pitch glides to each note, the breath
+# is the carriers' envelope, and opens the modulators by `breath_bright`.
+fn wind(patch) {
+  let breath = control("breath", 0.0).lag(BREATH_LAG)
+  let bright = control("breath_bright", controls(patch).breath_bright)
+  let opened = bright * (breath - 1.0) + 1.0
+  let alg = ALGORITHMS[patch.algorithm]
+  let env_of = |i| alg.carriers.contains(i) ? breath : opened
+  let freq = control("wind_hz", 440.0).lag(patch.glide)
+  voice(patch, freq, env_of, vibrato())
+}
+
+# What is heard: the keyboard's and the wind controller's sounds (two
+# boxes), at the volume, through the reverb, under a limit.
+fn output(patch, keys_box, wind_box) {
+  let dry = (keys_box + wind_box) * control("volume", controls(patch).volume)
+  dry.reverb(mix: patch.reverb / 100.0 * 0.5).limit(ceiling: 0.95)
+}
+
+export {ALGORITHMS, POLYPHONY, controls, keys_shape, wind_shape, output_shape, keys, wind, output}

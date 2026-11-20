@@ -1,0 +1,175 @@
+# The synth's parts without a device (the sweep runs with CULEBRA_AUDIO=off):
+# every preset sounds, the patch's knobs reach the sound, the keyboard's and
+# the wind controller's notes go where they should, and presets are kept.
+
+let {*} = Synth
+
+import fm from './fm.cul'
+import presets from './presets.cul'
+import engine from './engine.cul'
+
+let peak = |s| s.map(|x| Math.abs(x)).max()
+
+# Every preset sounds on the keyboard, a note at most half of full, so that
+# a chord meets the output's limit only now and then.
+for p in presets.FACTORY {
+  let v = fm.keys(p)
+  v.sequence([60], step: 0.6)
+  let s = render(v, 0.8)
+  assert_true(peak(s) > 0.02, "{p.name} sounds")
+  assert_true(peak(s) < 0.5, "{p.name} is under half of full")
+}
+
+# Each knob is a control of the sound, by the name the patch's controls give
+# it (a name the sound lacks is a ValueError of set), and moves it.
+fn note_of(p) {
+  let v = fm.keys(p)
+  v.sequence([57], step: 0.3)
+  v
+}
+let brass = presets.FACTORY[2]
+let darker = {
+  ...brass,
+  ops: brass.ops.map(|o| {...o, level: o.level / 2.0, ratio: 2.0}),
+  feedback: 0.0,
+}
+assert_true(render(note_of(brass), 0.3) != render(note_of(darker), 0.3))
+let h = play(note_of(brass), wait: false)
+for name, value in fm.controls(darker) {
+  # The volume is the output's, the breath's brightness the wind voice's.
+  h.set(name, value, at: 0.0) unless name == "volume" || name == "breath_bright"
+}
+assert_true(h.render(0.3) != render(note_of(brass), 0.3))
+h.stop()
+
+# The wiring and envelopes make new keyboard voices, the wiring and the glide
+# a new wind voice; the knobs neither.
+let base = presets.FACTORY[0]
+let louder = {...base, ops: base.ops.map(|o| {...o, level: 50.0})}
+let slower = {...base, ops: base.ops.map(|o| {...o, attack: 1.0})}
+let glides = {...base, glide: 0.5}
+let organ = {...base, algorithm: "organ"}
+for shape in [fm.keys_shape, fm.wind_shape] {
+  assert_eq(shape(base), shape(louder))
+  assert_true(shape(base) != shape(organ))
+}
+assert_true(fm.keys_shape(base) != fm.keys_shape(slower))
+assert_eq(fm.keys_shape(base), fm.keys_shape(glides))
+assert_eq(fm.wind_shape(base), fm.wind_shape(slower))
+assert_true(fm.wind_shape(base) != fm.wind_shape(glides))
+assert_eq(fm.controls(louder).level0, 0.25)
+
+# A patch from anywhere is made whole: missing and wrong fields are the
+# default's, numbers kept in range.
+let w = presets.whole({
+  algorithm: "nope",
+  ops: [{ratio: 99.0, level: "x"}],
+  volume: -5.0,
+})
+assert_eq(w.algorithm, presets.FACTORY[0].algorithm)
+assert_eq(w.ops.size(), 3)
+assert_eq(w.ops[0].ratio, 16.0)
+assert_eq(w.ops[0].level, presets.FACTORY[0].ops[0].level)
+assert_eq(w.volume, 0.0)
+# The app's presets are whole already, so the sound may count on the ranges.
+for p in presets.FACTORY {
+  assert_eq(presets.whole(p), p)
+}
+
+# The instrument: keys sound until let go, the pedal holds them, a new
+# patch keeps them sounding.
+let inst = engine.Instrument(base)
+inst.key_on(60)
+inst.key_on(64)
+inst.key_off(64)
+assert_eq(inst.sounding(), [60])
+inst.pedal(true)
+inst.key_off(60)
+assert_eq(inst.sounding(), [60])
+inst.use_patch({...base, algorithm: "organ"})
+assert_eq(inst.sounding(), [60])
+inst.pedal(false)
+assert_eq(inst.sounding(), [])
+
+# The wind controller: the last finger sounds, and the one before when it is
+# lifted; the breath is heard only while a finger is held.
+inst.finger_on(60)
+inst.finger_on(62)
+assert_eq(inst.finger(), 62)
+inst.finger_off(62)
+assert_eq(inst.finger(), 60)
+inst.blow(0.7)
+inst.all_off()
+assert_eq(inst.finger(), nil)
+inst.stop()
+
+# A message goes by its input's mode: an EWI's notes to the wind voice.
+let inputs = engine.Inputs({})
+assert_true(engine.looks_wind("EWI USB"))
+assert_true(!engine.looks_wind("KeyStep 37"))
+let wind_inst = engine.Instrument(base)
+let port = {name: "EWI USB", input: nil}
+engine.play_message(
+  wind_inst,
+  inputs,
+  port,
+  {kind: "note_on", note: 65, velocity: 0.5, channel: 0},
+)
+assert_eq(wind_inst.finger(), 65)
+assert_eq(wind_inst.sounding(), [])
+engine.play_message(
+  wind_inst,
+  inputs,
+  port,
+  {kind: "pressure", value: 0.4, channel: 0},
+)
+assert_eq(wind_inst.breath(), 0.0)
+inputs.set_breath_source("pressure")
+engine.play_message(
+  wind_inst,
+  inputs,
+  port,
+  {kind: "pressure", value: 0.4, channel: 0},
+)
+assert_eq(wind_inst.breath(), 0.4)
+let keys_port = {name: "KeyStep 37", input: nil}
+engine.play_message(
+  wind_inst,
+  inputs,
+  keys_port,
+  {kind: "note_on", note: 48, velocity: 0.5, channel: 0},
+)
+assert_eq(wind_inst.sounding(), [48])
+wind_inst.stop()
+
+# The player's presets: kept, found before the app's, refused under an app
+# preset's name, deleted.
+let dir = FS.mkdtemp("fm-synth")
+let store = presets.Store(dir)
+assert_eq(store.names().mine, [])
+store.save("My Bell", {...presets.FACTORY[1], volume: 40.0})
+assert_eq(store.names().mine, ["My Bell"])
+assert_eq(store.find("My Bell").volume, 40.0)
+let refused = try {
+  store.save("Bell", base)
+  nil
+} catch e {
+  e
+}
+assert_true(refused is String)
+store.delete("My Bell")
+assert_eq(store.names().mine, [])
+store.keep_settings({breath: "cc11", modes: {"EWI USB": "wind"}})
+assert_eq(store.settings().breath, "cc11")
+# A mode read back from the settings can be changed.
+let kept = engine.Inputs(store.settings().modes)
+kept.set_mode("EWI USB", "keys")
+assert_eq(kept.mode("EWI USB"), "keys")
+# Two names one character apart are two presets.
+store.save("Lead/A", base)
+store.save("Lead:A", base)
+assert_eq(store.names().mine, ["Lead/A", "Lead:A"])
+# Settings that are not an object are none.
+FS.write(FS.join(dir, "settings.json"), "[1, 2]")
+assert_eq(store.settings(), {})
+FS.remove(dir, recursive: true)

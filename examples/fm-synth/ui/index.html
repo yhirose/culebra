@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FM Synth</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="bar">
+  <div class="presets">
+    <button id="prev" class="icon" title="Previous preset">&#9664;</button>
+    <select id="preset" title="Presets"></select>
+    <button id="next" class="icon" title="Next preset">&#9654;</button>
+    <span id="edited" class="edited" hidden>edited</span>
+    <button id="save">Save</button>
+    <button id="save-as">Save as&hellip;</button>
+    <button id="delete" class="quiet">Delete</button>
+  </div>
+  <div class="devices">
+    <div id="inputs" class="inputs"></div>
+    <label id="breath-source-box" class="breath-source" hidden>Breath
+      <select id="breath-source">
+        <option value="cc2">CC2 (breath)</option>
+        <option value="cc11">CC11 (expression)</option>
+        <option value="cc7">CC7 (volume)</option>
+        <option value="pressure">Aftertouch</option>
+      </select>
+    </label>
+    <button id="panic" class="quiet" title="Stop every note">All notes off</button>
+  </div>
+</header>
+
+<div id="message" class="message" hidden></div>
+
+<form id="name-form" class="name-form" hidden>
+  <label>Name <input id="name-input" maxlength="40" autocomplete="off"></label>
+  <button type="submit">Save</button>
+  <button type="button" id="name-cancel" class="quiet">Cancel</button>
+</form>
+
+<main>
+  <section class="panel wiring">
+    <h2>Wiring</h2>
+    <p class="hint">Operators that point at another change its tone. Operators that point at the speaker are heard.</p>
+    <div id="algorithms" class="algorithms"></div>
+  </section>
+
+  <section class="ops" id="ops"></section>
+
+  <section class="panel overall">
+    <h2>Overall</h2>
+    <div id="overall"></div>
+    <h3>Wind controller</h3>
+    <div id="wind"></div>
+    <div class="meter" title="Breath"><div id="breath-meter"></div></div>
+  </section>
+</main>
+
+<footer class="keyboard-area">
+  <div class="octave">
+    <button id="oct-down" class="icon" title="Octave down (Z)">&minus;</button>
+    <span id="octave-label"></span>
+    <button id="oct-up" class="icon" title="Octave up (X)">+</button>
+  </div>
+  <div id="keyboard" class="keyboard"></div>
+  <p class="hint keys-hint">Play with the mouse or the computer keys A W S E D F T G Y H U J K. Z and X change the octave.</p>
+</footer>
+
+<script src="app.js"></script>
+</body>
+</html>

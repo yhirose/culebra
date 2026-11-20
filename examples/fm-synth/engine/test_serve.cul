@@ -1,0 +1,79 @@
+# The engine over its connection, as the page talks to it: the patch and the
+# inputs come first, the notes played are told back, presets load and save,
+# and the patch played last is there at the next start.
+
+import engine from './engine.cul'
+
+# The app's folder is the platform's place for a program's data: under a
+# fresh home for the test, whichever platform's variable says where.
+let home = FS.mkdtemp("fm-synth-home")
+for name in ["HOME", "XDG_DATA_HOME", "APPDATA"] {
+  Sys.set_env(name, home)
+}
+
+let srv = Http.server()
+srv.ws("/api/synth", fn (req, ws) {
+  engine.serve(ws)
+})
+let port = srv.listen_async(0, "127.0.0.1")
+defer {
+  srv.stop()
+  FS.remove(home, recursive: true)
+}
+
+let connect = || Http.ws("ws://127.0.0.1:{port}/api/synth")
+let send = |ws, msg| ws.send(JSON.stringify(msg))
+# The next message of `type`, those of other types passed over.
+fn next(ws, type) {
+  while true {
+    let msg = JSON.parse(ws.receive())
+    return msg if msg.type == type
+  }
+}
+
+let ws = connect()
+let first = next(ws, "patch")
+assert_eq(first.patch.name, "Electric Piano")
+assert_true(first.presets.factory.contains("Bell"))
+assert_eq(first.presets.mine, [])
+assert_eq(next(ws, "inputs").breath, "cc2")
+
+# A key played on the page is told back as sounding, and let go.
+send(ws, {type: "key", on: true, note: 60})
+mut played = next(ws, "played")
+while played.keys != [60] {
+  played = next(ws, "played")
+}
+send(ws, {type: "key", on: false, note: 60})
+while played.keys != [] {
+  played = next(ws, "played")
+}
+
+# A preset loads; one saved is the player's, under its name; the app's names
+# are refused.
+send(ws, {type: "load", name: "Bell"})
+let bell = next(ws, "patch").patch
+assert_eq(bell.name, "Bell")
+send(ws, {type: "save", name: "Mine", patch: {...bell, volume: 33.0}})
+let saved = next(ws, "patch")
+assert_eq(saved.patch.name, "Mine")
+assert_eq(saved.patch.volume, 33.0)
+assert_eq(saved.presets.mine, ["Mine"])
+send(ws, {type: "save", name: "Bell", patch: bell})
+assert_true(next(ws, "error").text.contains("one of the app's presets"))
+ws.close()
+
+# The patch last played is kept when the page goes, and is where the next
+# start begins.
+let settings = FS.join(Sys.data_dir("culebra-fm-synth"), "settings.json")
+assert_true(settings.starts_with(home))
+let until = Time.monotonic() + 5.0
+while !(FS.exists(settings) && JSON.parse(FS.read(settings)).patch.name == "Mine") {
+  assert_true(Time.monotonic() < until, "the settings are kept")
+  Time.sleep(0.02)
+}
+let again = connect()
+assert_eq(next(again, "patch").patch.name, "Mine")
+send(again, {type: "delete", name: "Mine"})
+assert_eq(next(again, "presets").presets.mine, [])
+again.close()

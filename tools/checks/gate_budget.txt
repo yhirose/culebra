@@ -494,5 +494,10 @@ languages.samples 130
 # examples/games/retro-run/test_songs.cul (the game's songs read with its
 # voices, 0.1 s). 57 since examples/synth-studio/runner/test_runner.cul (the
 # desktop Studio's runner answers a Play, a failure and a Stop over its
-# WebSocket as the page reads them, 0.45 s; 1.4 s under --jit).
-examples.suites 57
+# WebSocket as the page reads them, 0.45 s; 1.4 s under --jit). 58 and 59
+# since examples/fm-synth/engine/test_engine.cul (every preset sounds, the
+# knobs reach the sound, the keyboard's and the wind controller's notes and
+# the presets kept, 0.4 s) and test_serve.cul (the engine over the page's
+# WebSocket: the patch, the notes played told back, presets, the settings
+# kept, 0.3 s).
+examples.suites 59
