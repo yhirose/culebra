@@ -21,7 +21,8 @@ It also reads each frame's 40 harmonics along the pitch
 (`Audio.harmonics`) and the breath, what is left without them, in five
 octave bands from 500 Hz, against the harmonics' power: the soprano's notes
 hold the same numbers, measured the same way. The harmonics are read with
-the pitch moving across each 20 ms window as it moves between frames;
+the pitch moving across each window as it moves between frames (a
+window of whole periods, as many as fit in 20 ms and at least 2);
 held, a vibrato of 30 cents leaves its own harmonics in the rest 30 dB
 under them, about as loud as a saxophone's breath (in the soprano's
 recordings, whose breath is louder, it read the vibrato notes' lowest band

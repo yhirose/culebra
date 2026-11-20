@@ -1309,16 +1309,20 @@ inline PitchTrack pitch_track(const double* x, size_t n, double rate, double low
 
 // The harmonics of a sound along its pitch every 10 ms, and what is left of
 // it without them, as a harmonic-plus-residual analysis (Serra's SMS) splits
-// a sound. Frame t, about frame_centre(t), reaches to its neighbours' middles
-// through a raised cosine, 0 there, and across it the pitch moves in a
-// straight line to each pitched neighbour's (held, a vibrato leaves its
-// harmonics in the rest about as loud as a saxophone's breath). Harmonic k is
-// the frame's projection on a sine and a cosine at k times that pitch's
-// phase, twice it over the window's sum: for a steady tone, the peak
-// Audio.partials sounds it at. Put back together, each frame's harmonics
-// faded into its neighbours' through the same raised cosine (two pitched
-// frames' sum to 1 between their middles, and the last frame's hold past its
-// middle), they are taken from the sound to leave the rest.
+// a sound. Frame t, about frame_centre(t), is read through a raised cosine
+// as long as a whole number of its pitch's periods, as many as fit in 20 ms
+// and at least 2, so that a steady tone's other harmonics fall on the
+// window's zeros and none leaks into another. From the frame's
+// middle the pitch moves in a straight line to each pitched neighbour's,
+// reached at the neighbour's middle and held past it, or held from the start
+// where there is none (held across the whole window, a vibrato leaves its
+// harmonics in the rest about as loud as a saxophone's breath). Harmonic k is the frame's projection on a
+// sine and a cosine at k times that pitch's phase, twice it over the
+// window's sum: for a steady tone, the peak Audio.partials sounds it at. Put
+// back together, each frame's harmonics faded into its neighbours' through a
+// raised cosine from one's middle to the other's (two pitched frames' sum to
+// 1 between their middles, and the last frame's hold past its middle), they
+// are taken from the sound to leave the rest.
 struct HarmonicsTrack {
   std::vector<double> amps;  // `count` a frame, frame after frame; 0 where unpitched
   std::vector<double> rest;
@@ -1330,8 +1334,11 @@ inline HarmonicsTrack harmonics_track(const double* x, size_t n, const std::vect
   const size_t frames = f0.size();
   // The harmonics are put back together in `rest`, then taken from x there.
   HarmonicsTrack out{std::vector<double>(frames * count, 0.0), std::vector<double>(n, 0.0)};
-  std::vector<double> weight;
-  std::vector<std::complex<double>> turn, coef(count);
+  std::vector<std::complex<double>> turns, coef(count);
+  // A raised cosine `d` samples from its middle, 0 at `reach` either side.
+  const auto bell = [](int64_t d, double reach) {
+    return 0.5 + 0.5 * std::cos(std::numbers::pi * static_cast<double>(d) / reach);
+  };
   for (size_t t = 0; t < frames; t++) {
     const double f = f0[t];
     if (!std::isfinite(f)) continue;
@@ -1340,23 +1347,32 @@ inline HarmonicsTrack harmonics_track(const double* x, size_t n, const std::vect
     const auto ti = static_cast<int64_t>(t);
     const int64_t c = frame_centre(ti, rate), back = c - frame_centre(ti - 1, rate),
                   ahead = frame_centre(ti + 1, rate) - c;
-    const double before = t > 0 ? f0[t - 1] : NAN, after = t + 1 < frames ? f0[t + 1] : NAN;
-    weight.resize(static_cast<size_t>(back + ahead - 1));
-    turn.resize(weight.size());
+    const double before = t > 0 && std::isfinite(f0[t - 1]) ? f0[t - 1] : f,
+                 after = t + 1 < frames && std::isfinite(f0[t + 1]) ? f0[t + 1] : f;
+    // The samples to the neighbour's middle on the side of `d`.
+    const auto reach = [&](int64_t d) { return static_cast<double>(d < 0 ? back : ahead); };
+    // Half the window: whole periods, as many as fit in 20 ms and at least 2.
+    const double half = std::max(2.0, std::floor(0.02 * f)) * rate / (2.0 * f);
+    const auto edge = static_cast<int64_t>(std::ceil(half));
+    // The fundamental's turn `d` samples from the middle, for both the window
+    // and the fade: its pitch moving to the neighbour's g over reach(d)
+    // samples and holding g past it.
+    const int64_t lo = std::min(1 - edge, 1 - back), hi = std::max(edge, ahead);
+    turns.resize(static_cast<size_t>(hi - lo));
+    for (int64_t d = lo; d < hi; d++) {
+      const double r = reach(d), g = d < 0 ? before : after, dist = std::abs(static_cast<double>(d)),
+                   moving = std::min(dist, r);
+      const double cycles = f * moving + (g - f) * moving * moving / (2.0 * r) + g * (dist - moving);
+      turns[static_cast<size_t>(d - lo)] =
+          std::polar(1.0, 2.0 * std::numbers::pi * std::copysign(cycles, static_cast<double>(d)) / rate);
+    }
     std::fill(coef.begin(), coef.end(), std::complex<double>{});
     double sum = 0.0;
-    for (int64_t d = 1 - back; d < ahead; d++) {
-      const auto i = static_cast<size_t>(d + back - 1);
-      const double reach = static_cast<double>(d < 0 ? back : ahead), dd = static_cast<double>(d);
-      weight[i] = 0.5 + 0.5 * std::cos(std::numbers::pi * dd / reach);
-      sum += weight[i];
-      // The fundamental's cycles from the middle, its pitch moving to g.
-      double cycles = f * dd;
-      const double g = d < 0 ? before : after;
-      if (std::isfinite(g)) cycles += (g - f) * dd * std::abs(dd) / (2.0 * reach);
-      turn[i] = std::polar(1.0, 2.0 * std::numbers::pi * cycles / rate);
-      const double wy = weight[i] * sample_at(x, n, c + d);
-      const auto step = std::conj(turn[i]);
+    for (int64_t d = 1 - edge; d < edge; d++) {
+      const double w = bell(d, half);
+      sum += w;
+      const double wy = w * sample_at(x, n, c + d);
+      const auto step = std::conj(turns[static_cast<size_t>(d - lo)]);
       auto z = step;
       for (size_t k = 0; k < top; k++) {
         coef[k] += wy * z;
@@ -1372,14 +1388,15 @@ inline HarmonicsTrack harmonics_track(const double* x, size_t n, const std::vect
     for (int64_t d = 1 - back; d < ahead; d++) {
       const int64_t j = c + d;
       if (j < 0 || j >= static_cast<int64_t>(n)) continue;
-      const auto i = static_cast<size_t>(d + back - 1);
-      auto z = turn[i];
+      const double fade = last && d > 0 ? 1.0 : bell(d, reach(d));
+      const auto step = turns[static_cast<size_t>(d - lo)];
+      auto z = step;
       double v = 0.0;
       for (size_t k = 0; k < top; k++) {
         v += (coef[k] * z).real();
-        z *= turn[i];
+        z *= step;
       }
-      out.rest[static_cast<size_t>(j)] += (last && d > 0 ? 1.0 : weight[i]) * v;
+      out.rest[static_cast<size_t>(j)] += fade * v;
     }
   }
   for (size_t j = 0; j < n; j++) out.rest[j] = x[j] - out.rest[j];

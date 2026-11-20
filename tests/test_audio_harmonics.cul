@@ -5,6 +5,8 @@ let REED = [0.3, 0.45, 0.25, 0.2, 0.15, 0.1, 0.08, 0.05]
 let db = |a, b| 20.0 * Math.log(a / b) / Math.log(10.0)
 // How far under the power of `xs` the power of `rest` is, in dB.
 let under = |rest, xs| 10.0 * Math.log(rest.map(|v| v * v).sum() / xs.map(|v| v * v).sum()) / Math.log(10.0)
+// Whether frames `ts` of `h` read REED's harmonics within `tol` dB.
+let reads = |h, ts, tol| ts.all(|t| iota(8).all(|k| Math.abs(db(h.harmonics[t][k], REED[k])) < tol))
 
 // A tone `seconds` long at freq(t) (a point every 5 ms), its harmonics
 // `amps`, and its pitch every 10 ms as Audio.pitch would answer it.
@@ -23,7 +25,7 @@ let steady = tone(1.0, |_| 440.0, REED)
 let held = Audio.harmonics(steady, track(1.0, |_| 440.0), count: 8)
 assert_eq((held.harmonics.size(), held.rest.size()), (100, 44100))
 assert_true(held.harmonics.all(|row| row.size() == 8))
-assert_true(iota(1, 100).all(|t| iota(8).all(|k| Math.abs(db(held.harmonics[t][k], REED[k])) < 0.01)))
+assert_true(reads(held, iota(1, 100), 0.01))
 assert_true(under(held.rest.slice(441, 44100), steady.slice(441, 44100)) < -65.0)
 assert_eq(Audio.harmonics(steady, [440.0]).harmonics[0].size(), 40)
 
@@ -40,19 +42,35 @@ assert_true(iota(1, 50).all(|t| Math.abs(db(high.harmonics[t][5], REED[5])) < 0.
 let wave = |t| 880.0 * 2.0 ** (0.3 / 12.0 * Math.sin(2.0 * Math.pi * 5.5 * t))
 let vibrato = tone(1.0, wave, REED)
 let moving = Audio.harmonics(vibrato, track(1.0, wave), count: 8)
-assert_true(iota(1, 99).all(|t| iota(8).all(|k| Math.abs(db(moving.harmonics[t][k], REED[k])) < 0.05)))
+assert_true(reads(moving, iota(1, 99), 0.05))
 assert_true(under(moving.rest.slice(441, 43218), vibrato.slice(441, 43218)) < -50.0)
+
+// A frame is read across a whole number of its pitch's periods, at least 2,
+// so that no harmonic leaks into another at any pitch: 20 ms holds 1.1
+// periods of 55 Hz and 2.2 of 110 Hz. Those whose window lies in the tone.
+for f in [55.0, 110.0] {
+  let low = Audio.harmonics(tone(1.0, |_| f, REED), track(1.0, |_| f), count: 8)
+  assert_true(reads(low, iota(2, 98), 0.01))
+}
+
+// A vibrato of 30 cents on a low note, its window reaching past its
+// neighbours' middles: the pitch is held at theirs beyond them.
+let deep = |t| 55.0 * 2.0 ** (0.3 / 12.0 * Math.sin(2.0 * Math.pi * 5.5 * t))
+let swaying = tone(1.0, deep, REED)
+let sway = Audio.harmonics(swaying, track(1.0, deep), count: 8)
+assert_true(reads(sway, iota(2, 98), 0.1))
+assert_true(under(sway.rest.slice(882, 43218), swaying.slice(882, 43218)) < -55.0)
 
 // A frame without a pitch has none; the rest is the samples themselves
 // where no pitched frame reaches. Frame t is about t * 10 ms: one about a
-// tone's start reads about half its harmonics (6 dB down, within 0.7), its
-// window of 20 ms half silent.
+// tone's start reads about half its harmonics (6 dB down, within 0.8), its
+// window half silent.
 let late = [...repeat(22050, 0.0), ...tone(0.5, |_| 440.0, REED)]
 let after = Audio.harmonics(late, iota(100).map(|t| t < 50 ? nil : 440.0), count: 8)
 assert_true(iota(50).all(|t| after.harmonics[t] == nil))
 assert_eq(after.rest.slice(0, 21610), late.slice(0, 21610))
-assert_true(iota(8).all(|k| Math.abs(db(after.harmonics[50][k], REED[k]) + 6.0) < 0.7))
-assert_true(iota(51, 100).all(|t| iota(8).all(|k| Math.abs(db(after.harmonics[t][k], REED[k])) < 0.01)))
+assert_true(iota(8).all(|k| Math.abs(db(after.harmonics[50][k], REED[k]) + 6.0) < 0.8))
+assert_true(reads(after, iota(51, 100), 0.01))
 
 // The rate is the samples'.
 let at48 = Audio.harmonics(tone(0.5, |_| 330.0, REED, r: 48000), track(0.5, |_| 330.0), count: 8, rate: 48000)

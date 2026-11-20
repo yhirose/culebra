@@ -224,19 +224,23 @@ function assertClose(a, b, what) {
   });
 }
 
-const sawAnalysis = await analyse("Synth.saw(220.0) * 0.5", 0.5);
-{
-  const a = sawAnalysis;
+// Half a second of a saw at `hz`, its middle frame's pitch and harmonics.
+async function analyseSaw(hz) {
+  const a = await analyse(`Synth.saw(${hz.toFixed(1)}) * 0.5`, 0.5);
   // A frame every 10 ms.
   assert.equal(a.hz.length, 50);
   const mid = 25;
-  assert.ok(Math.abs(a.hz[mid] - 220) < 0.5, `pitch ${a.hz[mid]}`);
+  assert.ok(Math.abs(a.hz[mid] - hz) < 0.5, `pitch ${a.hz[mid]}`);
   const h = a.harmonics[mid];
   assert.equal(h.length, HARMONICS);
   // A saw's k-th harmonic is 1/k of its first: 6.0 and 9.5 dB under it.
-  assert.ok(Math.abs(h[1] - h[0] + 6.02) < 0.3, `harmonic 2 at ${h[1] - h[0]} dB`);
-  assert.ok(Math.abs(h[2] - h[0] + 9.54) < 0.3, `harmonic 3 at ${h[2] - h[0]} dB`);
+  assert.ok(Math.abs(h[1] - h[0] + 6.02) < 0.3, `${hz} Hz: harmonic 2 at ${h[1] - h[0]} dB`);
+  assert.ok(Math.abs(h[2] - h[0] + 9.54) < 0.3, `${hz} Hz: harmonic 3 at ${h[2] - h[0]} dB`);
+  return a;
 }
+const sawAnalysis = await analyseSaw(220);
+// A bass note too, under two periods in 20 ms.
+await analyseSaw(55);
 {
   // The page asks for it a part at a time; the parts read the sound on either
   // side of them, so together they are the whole read at once (a note whose
