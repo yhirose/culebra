@@ -1129,6 +1129,75 @@ println(bad_five)
 println(bad_size)
 EOS
 
+# depth_bias: two 100 km squares on one plane, the marking's turned a quarter
+# so its diagonal crosses the ground's (the same surface from other vertices),
+# the ground drawn last. Only the bias keeps the marking in front: overhead from
+# 30 m and 40 km, 40 km off from 1 km up, a 2 m eye 300 m short of its aim,
+# each a few frames apart, into a 4x target and the 4x window. With the bias
+# taken off again, the ground shows through.
+cat > scene_bias.cul <<'EOS'
+let view = Scene.View.new(64, 48, "scene bias")
+view.background(0, 0, 0)
+view.post_process(false)
+view.supersample(4)
+view.clip_planes(1.0, 200000.0)
+let red = view.add_material().rgb(255, 0, 0).unlit()
+let green = view.add_material().rgb(0, 255, 0).unlit().depth_bias(-1.0, -4.0)
+view.add_plane(100000.0, 100000.0).material(red).order(1)
+view.add_plane(100000.0, 100000.0).yaw(90.0).material(green)
+let shots = [
+  [0.0, 30.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -1.0, 60.0],
+  [0.0, 40000.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -1.0, 60.0],
+  [0.0, 1000.0, 40000.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 10.0],
+  [0.0, 2.0, 300.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 30.0],
+]
+let target = view.render_target(16, 16, supersample: 4)
+Canvas.init(64, 48)
+# [red, green] pixels in the window's top-left w x h
+fn counts(w, h) {
+  view.screenshot("bias.png")
+  view.present()
+  Canvas.clear(Canvas.rgba(0, 0, 0))
+  Canvas.Sprite.from_png(FS.read("bias.png")).draw(0, 0)
+  mut r = 0
+  mut g = 0
+  for y in 0..h {
+    for x in 0..w {
+      let v = Canvas.get_pixel(x, y)
+      r += 1 if (v & 255) > 0
+      g += 1 if ((v >> 8) & 255) > 0
+    }
+  }
+  [r, g]
+}
+# every shot, k frames apart: [red, green] summed over the target and the window
+fn sweep(frames) {
+  mut total = [0, 0]
+  for s in shots {
+    for k in 0..frames {
+      let d = k * 0.37
+      let eye = [s[0] + d, s[1] + d * 0.03, s[2] + d * 1.4]
+      let aim = [s[3] + d * 3.0, s[4], s[5] + d * 2.0]
+      view.render_to(target, eye[0], eye[1], eye[2], aim[0], aim[1], aim[2], s[6], s[7], s[8], s[9])
+      view.begin_2d()
+      view.sprite(target, 0.0, 0.0, 16.0, 16.0)
+      let t = counts(16, 16)
+      view.camera(eye[0], eye[1], eye[2], aim[0], aim[1], aim[2], s[6], s[7], s[8], s[9])
+      view.render_3d()
+      let w = counts(64, 48)
+      total = [total[0] + t[0] + w[0], total[1] + t[1] + w[1]]
+    }
+  }
+  total
+}
+let biased = sweep(6)
+println("biased: the marking only: {biased[0] == 0 && biased[1] > 0}")
+green.depth_bias(0.0, 0.0)
+let plain = sweep(1)
+println("unbiased: the ground shows through: {plain[0] > 0}")
+view.drop()
+EOS
+
 # A queued 2D draw names its texture or font atlas by GPU id until the frame is
 # presented, so a handle the script lets go of first must stay alive: the next
 # canvases take the freed ids, and the sprite and the text would show them.
@@ -1234,6 +1303,8 @@ run_pair tss "a 4x target is 16.0x16.0 to its readers: true" "1x is the default:
   "ValueError: view.render_target: supersample must be 1 to 4, got 5" \
   "ValueError: view.render_target: 65536x65536 is too large"
 echo "OK: a supersampled render target averages its edges and keeps the output's mip levels"
+run_pair bias "biased: the marking only: true" "unbiased: the ground shows through: true"
+echo "OK: depth_bias keeps a coplanar marking in front, near, far and grazing"
 run_pair life "a sprite outlives its handle: true" "text outlives its font: true"
 echo "OK: a handle dropped before present() still draws what it was given"
 

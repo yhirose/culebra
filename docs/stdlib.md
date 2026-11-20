@@ -6467,6 +6467,7 @@ setters, so one reads as a single expression:
 | `mat.unlit(on = true) -> Material` | the base colour as is — no light, shadow or reflection (a mirror image, a decal) |
 | `mat.double_sided(on = true) -> Material` | draw both faces (a flag, a fence) |
 | `mat.depth_write(on)` / `mat.depth_test(on) -> Material` | the depth buffer: whether the surface writes it / is hidden by it (both default on) |
+| `mat.depth_bias(slope, units) -> Material` | shift the depth the surface is tested and written at by `slope` × its depth slope + `units` × the depth buffer's smallest step, as `glPolygonOffset(factor, units)` does; negative pulls it toward the camera, so a decal or a runway marking on the ground's plane draws in front of the ground at any distance and angle: `(-1.0, -4.0)` holds from a 2 m eye to 40 km off with the clip planes at 1 m and 200 km (default `0, 0`; the shadow passes ignore it) |
 | `mat.casts_shadow(on) -> Material` | in the shadow passes (default on; off for a blob shadow or a mirror plate) |
 | `mat.fog(on) -> Material` | whether distance fog reaches it (default on; off for a sky dome) |
 

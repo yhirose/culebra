@@ -682,6 +682,7 @@ mat.unlit(on = true) -> Material
 mat.double_sided(on = true) -> Material
 mat.depth_write(on)
 mat.depth_test(on) -> Material
+mat.depth_bias(slope, units) -> Material
 mat.casts_shadow(on) -> Material
 mat.fog(on) -> Material
 view.post_process(on)

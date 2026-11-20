@@ -46,6 +46,7 @@
 #include "raylib.h"     // vendored: vendor/raylib/src (added to include path by CMake)
 #include "raymath.h"
 #include "rlgl.h"       // FBO / shader / matrix stack for shadows
+#include "external/glad.h"  // glPolygonOffset, which rlgl doesn't wrap (glad lives in libraylib.a)
 #include "stdlib/keynames.h"    // key / pad names, shared with the Canvas backend
 #include "culebra_joystick.h"   // generic joysticks, shared with the Canvas backend
 
@@ -528,6 +529,7 @@ class Material : public std::enable_shared_from_this<Material> {
   Vector3 emissive_{0, 0, 0};
   bool unlit_ = false, double_sided_ = false, depth_write_ = true, depth_test_ = true;
   bool casts_shadow_ = true, fog_ = true;
+  Vector2 depth_bias_{0, 0};   // glPolygonOffset(factor, units)
   Blend blend_ = Blend::Over;
   Vector4 uv_{1, 1, 0, 0};   // scale.xy, offset.zw
   std::shared_ptr<const Texture> normal;
@@ -549,6 +551,9 @@ class Material : public std::enable_shared_from_this<Material> {
   Material& double_sided(bool on) { double_sided_ = on; return *this; }
   Material& depth_write(bool on) { depth_write_ = on; return *this; }
   Material& depth_test(bool on) { depth_test_ = on; return *this; }
+  Material& depth_bias(double slope, double units) {
+    depth_bias_ = Vector2{(float)slope, (float)units}; return *this;
+  }
   Material& casts_shadow(bool on) { casts_shadow_ = on; return *this; }
   Material& fog(bool on) { fog_ = on; return *this; }
   Material& uv(double us, double vs, double uo, double vo) {
@@ -1965,6 +1970,7 @@ class View {
     auto ctx = pass_ctx(mat_);
     // The state the pass starts in (BeginMode3D's defaults + our blend-off).
     bool blending = false, depth_write = true, depth_test = true, culling = true;
+    Vector2 depth_bias{0, 0};
     // Which mode the custom factors currently hold, and whether they hold any.
     // Both are the pass's, not the View's: the restore below puts GL back to
     // RL_BLEND_ALPHA, which blends destination alpha too, so a later pass that
@@ -1977,6 +1983,7 @@ class View {
       bool want_dw = m ? m->depth_write_ : true;
       bool want_dt = m ? m->depth_test_ : true;
       bool want_cull = !(m && m->double_sided_);
+      Vector2 want_bias = m ? m->depth_bias_ : Vector2{0, 0};
       Blend want_blend = m ? m->blend_ : Blend::Over;
       if (it.transparent != blending) {
         if (it.transparent) rlEnableColorBlend(); else rlDisableColorBlend();
@@ -1990,6 +1997,10 @@ class View {
       if (want_dw != depth_write) { if (want_dw) rlEnableDepthMask(); else rlDisableDepthMask(); depth_write = want_dw; }
       if (want_dt != depth_test) { if (want_dt) rlEnableDepthTest(); else rlDisableDepthTest(); depth_test = want_dt; }
       if (want_cull != culling) { if (want_cull) rlEnableBackfaceCulling(); else rlDisableBackfaceCulling(); culling = want_cull; }
+      if (want_bias.x != depth_bias.x || want_bias.y != depth_bias.y) {
+        set_depth_bias(want_bias);
+        depth_bias = want_bias;
+      }
 
       // Per-item uniforms and the diffuse map. A texture from a closed View
       // samples as white, the way a stale mesh draws nothing (see Texture).
@@ -2027,7 +2038,14 @@ class View {
     if (!depth_write) rlEnableDepthMask();
     if (!depth_test) rlEnableDepthTest();
     if (!culling) rlEnableBackfaceCulling();
+    if (depth_bias.x != 0 || depth_bias.y != 0) set_depth_bias(Vector2{0, 0});
     if (blending) { rlSetBlendMode(RL_BLEND_ALPHA); rlDisableColorBlend(); }
+  }
+  // glPolygonOffset for the fills that follow; (0, 0) turns it off.
+  static void set_depth_bias(Vector2 b) {
+    if (b.x == 0 && b.y == 0) { glDisable(GL_POLYGON_OFFSET_FILL); return; }
+    glEnable(GL_POLYGON_OFFSET_FILL);
+    glPolygonOffset(b.x, b.y);
   }
   // RGB blend factors for a mode; alpha always (ZERO, ONE) — see Blend.
   void set_blend(Blend b) {
@@ -2549,6 +2567,7 @@ const bool registered = [] {
       .borrowed_method<&gfx::Material::double_sided>("double_sided", {{"on", true}})
       .borrowed_method<&gfx::Material::depth_write>("depth_write", {"on"})
       .borrowed_method<&gfx::Material::depth_test>("depth_test", {"on"})
+      .borrowed_method<&gfx::Material::depth_bias>("depth_bias", {"slope", "units"})
       .borrowed_method<&gfx::Material::casts_shadow>("casts_shadow", {"on"})
       .borrowed_method<&gfx::Material::fog>("fog", {"on"})
       .borrowed_method<&gfx::Material::blend>("blend", {"name"})

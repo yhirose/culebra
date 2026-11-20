@@ -6247,6 +6247,7 @@ ny, nz)`（または`vertex_uv(…, u, v)`）が頂点、`m.tri(a, b, c)`が頂�
 | `mat.unlit(on = true) -> Material` | 基本色をそのまま — 光も影も反射も無し（ミラー像、デカール） |
 | `mat.double_sided(on = true) -> Material` | 両面を描く（旗、フェンス） |
 | `mat.depth_write(on)` / `mat.depth_test(on) -> Material` | デプスバッファに書くか / それに隠されるか（既定は両方on） |
+| `mat.depth_bias(slope, units) -> Material` | 面が深度の比較と書き込みに使う値を、`slope` × その面の深度の傾き + `units` × デプスバッファの最小の刻みだけずらす（`glPolygonOffset(factor, units)`と同じ）。負の値でカメラへ寄るので、地面と同じ平面に置いたデカールや滑走路の標示が、どの距離・角度でも地面の前に出る。クリップ面が1 mと200 kmなら、`(-1.0, -4.0)`で目の高さ2 mから40 km先まで保つ（既定は`0, 0`。影パスには効かない） |
 | `mat.casts_shadow(on) -> Material` | 影パスに参加するか（既定on。ブロブシャドウやミラー板はoff） |
 | `mat.fog(on) -> Material` | 距離フォグが届くか（既定on。スカイドームはoff） |
 
