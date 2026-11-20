@@ -47,14 +47,19 @@ struct Result {
 
 #if !defined(CULEBRA_RT_COMPRESS_WEAK)
 // The two compressors are one deflate stream apart: `window_bits` picks the
-// wrapper and `level` the effort.
+// wrapper and `level` the effort. `header` is the gzip wrapper's header (null
+// for zlib's).
 inline Result _deflate_stream(std::string_view data, int level,
-                              int window_bits) {
+                              int window_bits, gz_header* header = nullptr) {
   if (data.size() > 0xFFFFFFFFull) return {{}, "input too large"};
   z_stream zs{};
   if (deflateInit2(&zs, level, Z_DEFLATED, window_bits, 8,
                    Z_DEFAULT_STRATEGY) != Z_OK) {
     return {{}, "deflate init failed"};
+  }
+  if (header && deflateSetHeader(&zs, header) != Z_OK) {
+    deflateEnd(&zs);
+    return {{}, "deflate header failed"};
   }
   zs.next_in = reinterpret_cast<Bytef*>(const_cast<char*>(data.data()));
   zs.avail_in = static_cast<uInt>(data.size());
@@ -82,8 +87,13 @@ CULEBRA_RT_COMPRESS_LINKAGE Result gzip(std::string_view data) {
   (void)data;
   return {{}, "runtime not linked (no Compress use detected at build)"};
 #else
-  // windowBits 15 + 16 selects a gzip wrapper over raw deflate.
-  return _deflate_stream(data, Z_DEFAULT_COMPRESSION, 15 + 16);
+  // windowBits 15 + 16 selects a gzip wrapper over raw deflate. zlib's own
+  // header names the OS it was built for (3 on Linux, 19 on macOS); 255
+  // ("unknown", as Go and Python write) and no time keep the bytes the same
+  // on every machine.
+  gz_header header{};
+  header.os = 255;
+  return _deflate_stream(data, Z_DEFAULT_COMPRESSION, 15 + 16, &header);
 #endif
 }
 

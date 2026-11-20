@@ -12,6 +12,13 @@ assert_true(Compress.gzip(s).size() < s.size())
 // --- empty input round-trips ---
 assert_eq(Compress.gunzip(Compress.gzip("")), "")
 
+// --- the same bytes on every machine: the header has no time and OS 255
+// (unknown), not the OS zlib was built for ---
+assert_eq(
+  Compress.gzip(""),
+  "\x1f\x8b\x08\x00\x00\x00\x00\x00\x00\xff\x03\x00\x00\x00\x00\x00\x00\x00\x00\x00",
+)
+
 // --- binary-safe: embedded NUL bytes survive and don't truncate ---
 let b = "a\x00b\x00c"
 assert_eq(b.size(), 5)

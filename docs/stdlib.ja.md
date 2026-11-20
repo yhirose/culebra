@@ -4718,7 +4718,7 @@ NULも往復で保持）です。
 
 | 関数 | 結果 |
 | --- | --- |
-| `Compress.gzip(data: String) -> String` | gzip圧縮したバイト列（RFC 1952ラッパー）。標準の`gzip`ツールと相互運用可 |
+| `Compress.gzip(data: String) -> String` | gzip圧縮したバイト列（RFC 1952ラッパー）。標準の`gzip`ツールと相互運用可。ヘッダは時刻を持たず、OSは255（不明）なので、同じデータはどの機械でも同じバイト列になる |
 | `Compress.gunzip(data: String) -> String` | 展開したバイト列。不正な入力は`ValueError` |
 | `Compress.deflate(data: String, level: Long = -1) -> String` | zlib圧縮したバイト列（RFC 1950ラッパー）— `gzip`からgzip固有のヘッダを除いたもの |
 | `Compress.zip(files: Object \| Dir) -> String` | `files`を持つZIPアーカイブのバイト列 |

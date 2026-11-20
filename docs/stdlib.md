@@ -4869,7 +4869,7 @@ gzip / deflate (de)compression, backed by zlib. Every function is binary-safe
 
 | Function | Result |
 | --- | --- |
-| `Compress.gzip(data: String) -> String` | gzip-compressed bytes (RFC 1952 wrapper); interoperates with the standard `gzip` tool |
+| `Compress.gzip(data: String) -> String` | gzip-compressed bytes (RFC 1952 wrapper); interoperates with the standard `gzip` tool. The header has no time and OS 255 (unknown), so the same data gives the same bytes on every machine |
 | `Compress.gunzip(data: String) -> String` | the decompressed bytes; raises `ValueError` on malformed input |
 | `Compress.deflate(data: String, level: Long = -1) -> String` | zlib-compressed bytes (RFC 1950 wrapper) — `gzip` minus its gzip-specific header |
 | `Compress.zip(files: Object \| Dir) -> String` | the bytes of a ZIP archive holding `files` |
