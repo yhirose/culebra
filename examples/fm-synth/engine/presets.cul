@@ -208,6 +208,15 @@ let file_of = |dir, name| FS.join(
   "{Encoding.url.encode(name)}.json",
 )
 
+# `text` written to `path` whole: into a file of its own beside it, then moved
+# over it, so a reader (another page's engine, the next start) never meets it
+# half written.
+fn write_whole(path, text) {
+  let part = "{path}.{UUID.v4()}.part"
+  FS.write(part, text)
+  FS.rename(part, path)
+}
+
 # A store of the player's presets in `dir`.
 class Store {
   new(dir: String) {
@@ -240,7 +249,7 @@ class Store {
     throw "give the preset a name" if n.empty()
     throw "\"{n}\" is one of the app's presets: give yours another name" if FACTORY_NAMES.contains(n)
     FS.mkdir(FS.join(@dir, "presets"))
-    FS.write(file_of(@dir, n), JSON.stringify(whole(p, n), indent: 2))
+    write_whole(file_of(@dir, n), JSON.stringify(whole(p, n), indent: 2))
     n
   }
   delete(name: String) {
@@ -261,7 +270,7 @@ class Store {
   }
   keep_settings(s) {
     FS.mkdir(@dir)
-    FS.write(FS.join(@dir, "settings.json"), JSON.stringify(s, indent: 2))
+    write_whole(FS.join(@dir, "settings.json"), JSON.stringify(s, indent: 2))
   }
 }
 
