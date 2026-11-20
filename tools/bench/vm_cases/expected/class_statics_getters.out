@@ -40,4 +40,4 @@ getter
 ['v', 'set_by_ctor']
 ['g', 'g', ['p']]
 dict
-TypeError: type error: expected Object, Array, or Tensor, got Long at 148:10.
+TypeError: type error: cannot read 'name' of Long at 148:10.

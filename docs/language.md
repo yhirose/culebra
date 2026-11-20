@@ -1598,7 +1598,11 @@ type of what it read it from, in `type_of`'s vocabulary.
 
 The one thing that fails earlier is a scalar receiver: `nil`, `Bool`,
 `Long` and `Float` carry no members at all, so `(5).push(loud())` fails
-at the property read and `loud()` never runs.
+at the property read and `loud()` never runs. The message is the same
+miss (`'push' is not a method of Long`). Reading a member of a scalar
+names it as well (`nil.x` is "cannot read 'x' of Nil"), and so does
+setting one on anything but an Object (`[1].x = 2` is "cannot set 'x'
+on Array").
 
 #### Namespaces are closed
 

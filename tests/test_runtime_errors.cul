@@ -609,7 +609,7 @@ let r_scoll = try {
 assert_eq(r_scoll.kind, 'TypeError')
 assert_eq(
   r_scoll.message,
-  "type error: expected Object, Array, or Tensor, got Long",
+  "type error: expected Function, got Nil ('collect' is not a method of Long)",
 )
 
 # The JIT fuses `.map(λ).collect()`, but the fusion is only valid for an
@@ -633,10 +633,10 @@ assert_eq([1, 2, 3].iter().map(fn (x) {
 }).collect(), [2, 4, 6])
 
 # A type-specific builtin method on the WRONG receiver resolves like
-# interp, not via the codegen's "expected <SpecificType>". A scalar can't
-# be an object → the member-access error; an object-ish value of the wrong
-# type just lacks the method → "expected Function, got Nil". (The JIT used
-# to leak "expected String/Tensor/Set, got X".)
+# interp, not via the codegen's "expected <SpecificType>": a scalar and an
+# object-ish value of the wrong type both just lack the method, named with
+# the receiver's type. (The JIT used to leak "expected String/Tensor/Set,
+# got X".)
 let r_su = try {
   2.upper()
   nil
@@ -646,7 +646,7 @@ let r_su = try {
 assert_eq(r_su.kind, 'TypeError')
 assert_eq(
   r_su.message,
-  "type error: expected Object, Array, or Tensor, got Long",
+  "type error: expected Function, got Nil ('upper' is not a method of Long)",
 )
 
 let r_au = try {
@@ -667,7 +667,7 @@ let r_tp = try {
 assert_eq(r_tp.kind, 'TypeError')
 assert_eq(
   r_tp.message,
-  "type error: expected Object, Array, or Tensor, got Long",
+  "type error: expected Function, got Nil ('pow' is not a method of Long)",
 )
 
 let r_su2 = try {
@@ -688,7 +688,7 @@ let r_ap = try {
 assert_eq(r_ap.kind, 'TypeError')
 assert_eq(
   r_ap.message,
-  "type error: expected Object, Array, or Tensor, got Long",
+  "type error: expected Function, got Nil ('push' is not a method of Long)",
 )
 
 # range / iota take 1 or 2 positional args. Too few/many is an ArityError
@@ -783,12 +783,12 @@ assert_eq(r_nshof.kind, 'TypeError')
 assert_eq(r_nshof.line, 778)
 
 # A built-in method on a receiver whose type doesn't support it reports the
-# same receiver-resolution failure on both backends. The JIT's polymorphic
-# dispatchers (size/slice/contains/remove/iter, map/filter/... ) used to leak a
-# per-method type list (`expected Array, Object, String, or Set`); they now
-# route through the shared receiver-error path, matching interp's generic
-# message for a scalar receiver (and "expected Function, got Nil" for a wrong
-# object-ish type, via permissive member access).
+# same method miss on both backends. The JIT's polymorphic dispatchers
+# (size/slice/contains/remove/iter, map/filter/... ) used to leak a per-method
+# type list (`expected Array, Object, String, or Set`); they now report the
+# method missing, named with the receiver's type, whether the receiver is a
+# scalar (which fails before the arguments run) or an object-ish value of the
+# wrong type.
 let r_rs = try {
   1.size()
 } catch e {
@@ -797,7 +797,7 @@ let r_rs = try {
 assert_eq(r_rs.kind, 'TypeError')
 assert_eq(
   r_rs.message,
-  'type error: expected Object, Array, or Tensor, got Long',
+  "type error: expected Function, got Nil ('size' is not a method of Long)",
 )
 let r_rm = try {
   1.map(|x| x)
@@ -806,7 +806,7 @@ let r_rm = try {
 }
 assert_eq(
   r_rm.message,
-  'type error: expected Object, Array, or Tensor, got Long',
+  "type error: expected Function, got Nil ('map' is not a method of Long)",
 )
 let r_ri = try {
   true.iter()
@@ -815,7 +815,7 @@ let r_ri = try {
 }
 assert_eq(
   r_ri.message,
-  'type error: expected Object, Array, or Tensor, got Bool',
+  "type error: expected Function, got Nil ('iter' is not a method of Bool)",
 )
 
 # A negative index never writes: `a[-1] = v` is rejected by the store, and
@@ -961,3 +961,32 @@ let r_topfn = try {
   [e.kind, e.message, e.line, e.col]
 }
 assert_eq(r_topfn, ['NameError', "undefined variable 'fn'", 958, 5])
+
+# A member on a receiver that cannot carry members is named, read or written.
+let miss_round = "type error: expected Function, got Nil ('round' is not a method of Float)"
+assert_throws("TypeError", || 3.6.round(), message: miss_round)
+# A scalar's miss comes before the arguments run, built-in name or not.
+let mut member_args_ran = false
+fn member_arg() {
+  member_args_ran = true
+  1
+}
+assert_throws("TypeError", || 3.6.round(member_arg()), message: miss_round)
+assert_throws("TypeError", || nil.nope(member_arg()),
+  message: "type error: expected Function, got Nil ('nope' is not a method of Nil)")
+assert_eq(member_args_ran, false)
+assert_throws("TypeError", || nil.x, message: "type error: cannot read 'x' of Nil")
+assert_throws("TypeError", || 3.abs, message: "type error: cannot read 'abs' of Long")
+fn member_set(o) {
+  o.y = 1
+}
+fn member_add(o) {
+  o.y += 1
+}
+fn member_fill(o) {
+  o.y ??= 1
+}
+assert_throws("TypeError", || member_set(nil), message: "type error: cannot set 'y' on Nil")
+assert_throws("TypeError", || member_set([1]), message: "type error: cannot set 'y' on Array")
+assert_throws("TypeError", || member_add(2), message: "type error: cannot set 'y' on Long")
+assert_throws("TypeError", || member_fill("s"), message: "type error: cannot set 'y' on String")

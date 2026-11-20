@@ -22,7 +22,10 @@ A message that gained a clause is a change of another shape: it touches every
 case that reaches the message, and a glob wide enough to name them all would
 also allow whatever else changes in them.  A `+ <regex>` entry names the added
 text instead: a case is allowed when this build's output, with every match
-removed, is the baseline's.
+removed, is the baseline's.  A message reworded outright is the same shape,
+and a `~ <old regex> => <new regex>` entry names both wordings: a case is
+allowed when the baseline matches the old as often as this build matches the
+new, and the two outputs are the same once those matches are removed.
 
 Usage: release_diff.py --baseline F --head F --allow F --cases N
                        [--baseline-name S] [--head-name S]
@@ -74,17 +77,20 @@ def compile_glob(pattern):
 
 
 ADDED = "+ "
+REWORDED = "~ "
+REWORDED_SEP = " => "
 
 
 def read_allow(path):
-    """Read the allowlist into label globs and added-text regexes.
+    """Read the allowlist into label globs, added-text and reworded regexes.
 
-    Each is [(text, regex)], keeping the text for reports.
+    Each is [(text, regex)] — a reworded entry's regex is the (old, new)
+    pair — keeping the text for reports.
     """
     # No FileNotFoundError arm: the file is committed, so a missing one means a
     # mistyped --allow, and returning [] there would report every difference as
     # unlisted or — with no differences — print OK having read nothing.
-    labels, added = [], []
+    labels, added, reworded = [], [], []
     text = open(path, encoding="utf-8").read()
     for line in text.splitlines():
         line = line.strip()
@@ -92,9 +98,14 @@ def read_allow(path):
             continue
         if line.startswith(ADDED):
             added.append((line, re.compile(line[len(ADDED):])))
+        elif line.startswith(REWORDED):
+            old, sep, new = line[len(REWORDED):].partition(REWORDED_SEP)
+            if not sep:
+                sys.exit(f"release-diff: '{line}' lacks '{REWORDED_SEP}'")
+            reworded.append((line, (re.compile(old), re.compile(new))))
         else:
             labels.append((line, compile_glob(line)))
-    return labels, added
+    return labels, added, reworded
 
 
 def without_added(body, baseline, added):
@@ -107,6 +118,23 @@ def without_added(body, baseline, added):
     for text, rx in added:
         body, n = rx.subn("", body)
         if n:
+            hits.append(text)
+    return hits if hits and body == baseline else None
+
+
+def rewordings(body, baseline, reworded):
+    """The reworded entries that account for every difference, or None.
+
+    All of them are applied, each removing its old wording from the baseline
+    and its new one from `body` the same number of times.
+    """
+    hits = []
+    for text, (old, new) in reworded:
+        baseline, n_old = old.subn("", baseline)
+        body, n_new = new.subn("", body)
+        if n_old != n_new:
+            return None
+        if n_old:
             hits.append(text)
     return hits if hits and body == baseline else None
 
@@ -139,7 +167,7 @@ def main():
         )
         return 1
 
-    patterns, added = read_allow(args.allow)
+    patterns, added, reworded = read_allow(args.allow)
     changed, unlisted, used = [], [], set()
     for (blabel, bbody), (hlabel, hbody) in zip(base, head):
         if blabel != hlabel:
@@ -164,6 +192,8 @@ def main():
             used.add(hit)
         elif (hits := without_added(hbody, bbody, added)) is not None:
             used.update(hits)
+        elif (hits := rewordings(hbody, bbody, reworded)) is not None:
+            used.update(hits)
         else:
             unlisted.append((blabel, bbody, hbody))
 
@@ -172,7 +202,7 @@ def main():
         f"{len(unlisted)} unlisted"
     )
 
-    stale = [text for text, _ in patterns + added if text not in used]
+    stale = [text for text, _ in patterns + added + reworded if text not in used]
     if stale:
         # Advisory, not a failure: the release that needed the entry may not
         # have shipped yet, and a gate that fails on an entry being *too*

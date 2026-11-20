@@ -162,7 +162,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_for_call_iter(
     int8_t tag, int64_t data, int64_t line, int64_t col) {
   JitPropIC ic{};  // per-call scratch
   JitValue fn = culebra_runtime_prop_get(tag, data, "iter", &ic, line, col,
-                                         /*own_receiver=*/false);
+                                         /*own_receiver=*/false,
+                                         /*as_callee=*/false);
   if (fn.tag != TAG_FUNC)
     culebra_runtime_type_error_typed(line, col, "Function",
                                      static_cast<int8_t>(fn.tag));
@@ -182,7 +183,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_for_dispose(
     return;
   JitPropIC ic{};
   JitValue fn = culebra_runtime_prop_get(tag, data, "dispose", &ic, 0, 0,
-                                         /*own_receiver=*/false);
+                                         /*own_receiver=*/false,
+                                         /*as_callee=*/false);
   if (fn.tag != TAG_FUNC) return;
   auto cls = JitHeldMethod::hold(reinterpret_cast<JitClosure*>(fn.data));
   auto call = [&] {

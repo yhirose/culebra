@@ -491,6 +491,20 @@ inline std::string missing_method_hint(std::string_view name,
   return culebra::format(" ('{}' is not a method of {})", name, receiver_type);
 }
 
+// A member read on a scalar (`nil.x`) or a member write on anything but an
+// Object (`[1].x = 2`): the member's name and what it was asked of.
+inline std::string member_read_reject_message(std::string_view name,
+                                              std::string_view receiver_type) {
+  return culebra::format("type error: cannot read '{}' of {}", name,
+                         receiver_type);
+}
+
+inline std::string member_set_reject_message(std::string_view name,
+                                               std::string_view receiver_type) {
+  return culebra::format("type error: cannot set '{}' on {}", name,
+                         receiver_type);
+}
+
 // "type error: expected X, got Y" — an argument/receiver type mismatch.
 inline std::string type_mismatch_message(std::string_view expected,
                                          std::string_view got) {

@@ -74,7 +74,7 @@ assert_true(kw_error(fn () { [3, 1].sorted(**opts) }).contains(kw_msg))
 # `take` is an iterator method, not an Array one.
 assert_true(kw_error(fn () { [1, 2, 3].take(n: 2) }).contains("expected Function"))
 assert_true(
-  kw_error(fn () { (5).truncate(max: 8) }).contains("expected Object, Array"))
+  kw_error(fn () { (5).truncate(max: 8) }).contains("'truncate' is not a method of Long"))
 
 # A user-defined method of the same name binds its keywords normally.
 class Doc {

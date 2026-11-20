@@ -220,9 +220,9 @@ enum class Op : uint8_t {
                // so the assignment expression still reads it afterwards.
   PropSet,     // regs[a].prop_sites[c] = regs[b]: object_set with is_init=false
                // (an existing slot's mut flag decides; a fresh slot defaults
-               // mutable). A non-Object receiver is the write reject's typed
-               // TypeError ("expected Object, Array, or Tensor" — the read
-               // wording, both backends'). The value stays register-owned
+               // mutable). A non-Object receiver is the write reject's
+               // TypeError ("cannot set 'k' on T", member_set_reject, both
+               // backends'). The value stays register-owned
                // (IndexSet's retain-feeds-the-store rule). All throws carry
                // this instruction's position (the assignment statement)
                // except the well-known contract on insert, which is
@@ -954,10 +954,9 @@ inline int64_t bmeth_unary_op(BMeth id) {
 
 // The receivers a built-in resolves on, one bit per value tag. A gate's set
 // must be exactly the set of receivers whose built-in table holds the name at
-// this arity, because everything else takes emit_receiver_resolution_error's
-// two-way answer outright — a scalar cannot hold members at all ("expected
-// Object, Array, or Tensor"), anything else simply lacks the method ("expected
-// Function, got Nil") — instead of asking the tables again.
+// this arity, because everything else is told the method is missing outright
+// ("expected Function, got Nil ('m' is not a method of T)": at the gate for
+// a scalar, after the arguments otherwise) instead of asking the tables again.
 using BRecvMask = CulebraTagSet;
 
 inline constexpr BRecvMask bmeth_tag_bit(int8_t tag) {
@@ -1711,19 +1710,15 @@ inline std::string bmeth_param_message(const BMethSpec& s, int32_t i) {
                                            bmeth_param_type(s.params[i]));
 }
 
-// emit_receiver_resolution_error's two halves, executor-side. A scalar
-// cannot carry members at all and interp says so at the property read —
-// before the arguments run, so MethGate raises it on the spot. Anything else
-// merely lacks the method, which is only known once the arguments have run:
-// MethGate marks the gate slot and BMeth raises it at the far end.
+// A receiver the built-in's gate rejects lacks the method either way, but
+// when the miss is raised differs. A scalar cannot carry members at all, so
+// its property read fails before the arguments run and MethGate raises the
+// miss on the spot. Anything else merely lacks the method, which is only
+// known once the arguments have run: MethGate marks the gate slot and BMeth
+// raises it at the far end.
 inline bool bmeth_scalar_tag(int8_t tag) {
   return tag == TAG_NIL || tag == TAG_BOOL || tag == TAG_LONG ||
          tag == TAG_FLOAT;
-}
-
-inline void bmeth_scalar_receiver_error(int8_t tag, int64_t line,
-                                        int64_t col) {
-  culebra_runtime_type_error_typed(line, col, "Object, Array, or Tensor", tag);
 }
 
 // No receiver resolves the name: the missing method, told by the name the
@@ -3587,10 +3582,11 @@ inline std::pair<int64_t, int64_t> chunk_pos_at(const Chunk& c, size_t pc) {
 // PropCo): the site cache's own answer, then its proto answer, and on a miss
 // or a receiver that is no Object, the runtime's prop_get, which answers
 // everything else and primes the cache. A borrowed view. `pos` gives the
-// (line, col) a miss's errors anchor at.
+// (line, col) a miss's errors anchor at. `as_callee` marks a method call's
+// callee read (PropRaw), whose scalar receiver is told as a missing method.
 template <class Pos>
 inline JitValue vm_prop_get(const JitValue& recv, const Chunk::PropSite& site,
-                            Pos pos) {
+                            Pos pos, bool as_callee = false) {
   if (recv.tag == TAG_OBJECT) {
     auto* obj = reinterpret_cast<JitObject*>(recv.data);
     if (auto* hit = _ic_own_hit(obj, site.get)) return *hit;
@@ -3599,7 +3595,18 @@ inline JitValue vm_prop_get(const JitValue& recv, const Chunk::PropSite& site,
   auto [line, col] = pos();
   return culebra_runtime_prop_get(static_cast<int8_t>(recv.tag), recv.data,
                                   site.key, &site.get, line, col,
-                                  /*own_receiver=*/false);
+                                  /*own_receiver=*/false, as_callee);
+}
+
+// The property writes' receiver gate (the lowering's require_object_recv):
+// only an Object carries writable members.
+template <class Pos>
+inline void vm_require_object_recv(const JitValue& recv, const char* key,
+                                   Pos pos) {
+  if (recv.tag == TAG_OBJECT) return;
+  auto [line, col] = pos();
+  culebra_runtime_member_set_reject(line, col, key,
+                                    static_cast<int8_t>(recv.tag));
 }
 
 // Derive pos_ix from `positions`, and argpos_ix from `call_argpos`. Runs
@@ -17318,7 +17325,8 @@ struct Exec {
           // The pc goes in by value: on GCC `ip` is pinned to a register,
           // whose address a by-reference capture would take.
           auto pos = [&c, pc = VM_PC] { return chunk_pos_at(c, pc); };
-          JitValue view = vm_prop_get(recv, site, pos);
+          JitValue view =
+              vm_prop_get(recv, site, pos, /*as_callee=*/in.op == Op::PropRaw);
           if (in.op == Op::PropRaw) {
             // The register owns what it holds, so the borrowed view becomes a
             // +1 here; the statement sweep is its releaser.
@@ -17464,8 +17472,7 @@ struct Exec {
           if (!ok) {
             if (bmeth_scalar_tag(static_cast<int8_t>(recv.tag))) {
               auto [line, col] = pos();
-              bmeth_scalar_receiver_error(static_cast<int8_t>(recv.tag), line,
-                                          col);
+              bmeth_miss_error(line, col, key, recv);
             }
             regs[in.a] = JitValue{TAG_NO_SELF, kBMethGateMiss};
           } else if (bmeth_publishes_call_pos(gate.id)) {
@@ -17751,12 +17758,7 @@ struct Exec {
           const JitValue& recv = regs[in.a];
           const JitValue& val = regs[in.b];
           auto pos = [&c, pc = VM_PC] { return chunk_pos_at(c, pc); };
-          if (recv.tag != TAG_OBJECT) {
-            auto [line, col] = pos();
-            culebra_runtime_type_error_typed(
-                line, col, "Object, Array, or Tensor",
-                static_cast<int8_t>(recv.tag));
-          }
+          vm_require_object_recv(recv, c.prop_sites[in.c].key, pos);
           // The retain feeds object_set's consuming store; the register
           // keeps its +1 so the assignment expression reads it afterwards.
           _culebra_value_retain_impl(static_cast<int8_t>(val.tag), val.data);
@@ -17796,12 +17798,7 @@ struct Exec {
           const Chunk::PropSite& site = c.prop_sites[in.c];
           const char* key = site.key;
           auto pos = [&c, pc = VM_PC] { return chunk_pos_at(c, pc); };
-          if (recv.tag != TAG_OBJECT) {
-            auto [line, col] = pos();
-            culebra_runtime_type_error_typed(
-                line, col, "Object, Array, or Tensor",
-                static_cast<int8_t>(recv.tag));
-          }
+          vm_require_object_recv(recv, c.prop_sites[in.c].key, pos);
           // The lowering's read: the site cache's own answer, else the JIT's
           // cache miss, whole (prop_wr primes the cache from plain Objects
           // only; the miss anchors at the DOT node).
@@ -17833,12 +17830,7 @@ struct Exec {
           const JitValue& recv = regs[in.b];
           const Chunk::PropSite& site = c.prop_sites[in.c];
           auto pos = [&c, pc = VM_PC] { return chunk_pos_at(c, pc); };
-          if (recv.tag != TAG_OBJECT) {
-            auto [line, col] = pos();
-            culebra_runtime_type_error_typed(
-                line, col, "Object, Array, or Tensor",
-                static_cast<int8_t>(recv.tag));
-          }
+          vm_require_object_recv(recv, c.prop_sites[in.c].key, pos);
           // The nc receiver-kind rejects fire ahead of the read (the JIT's
           // nc DOT dispatch — only the Shared-view kind is constructible in
           // the slice, but the mirror keeps the arm 1:1).

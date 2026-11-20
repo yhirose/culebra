@@ -973,6 +973,7 @@ inline constexpr auto object_get_default  = "culebra_runtime_object_get_default"
 inline constexpr auto object_get_or_put   = "culebra_runtime_object_get_or_put";
 inline constexpr auto object_get_ic       = "culebra_runtime_object_get_ic";
 inline constexpr auto prop_get            = "culebra_runtime_prop_get";
+inline constexpr auto member_set_reject   = "culebra_runtime_member_set_reject";
 inline constexpr auto bind_method_value   = "culebra_runtime_bind_method_value";
 inline constexpr auto prop_value          = "culebra_runtime_prop_value";
 inline constexpr auto call_receiver       = "culebra_runtime_call_receiver";

@@ -1,1 +1,1 @@
-TypeError: type error: expected Object, Array, or Tensor, got Long at 4:9.
+TypeError: type error: expected Function, got Nil ('upper' is not a method of Long) at 4:9.

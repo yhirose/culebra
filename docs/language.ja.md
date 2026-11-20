@@ -1512,7 +1512,11 @@ iterator / `Tensor`）は引数を**位置で**バインドします。キーワ
 これより早く失敗する唯一の場合がスカラーのレシーバです。`nil`・
 `Bool`・`Long`・`Float`はそもそもメンバーを持てないので、
 `(5).push(loud())`はプロパティ読みの時点で失敗し、`loud()`は走り
-ません。
+ません。文面は持たないメソッドを呼んだときと同じ
+（`'push' is not a method of Long`）です。
+スカラーのメンバーを読むときも名前を示し（`nil.x`は
+「cannot read 'x' of Nil」）、Object以外にメンバーを書くときも同様です
+（`[1].x = 2`は「cannot set 'x' on Array」）。
 
 #### namespaceは閉じている
 

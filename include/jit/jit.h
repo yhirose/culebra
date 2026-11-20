@@ -2614,6 +2614,17 @@ struct JIT {
         {current_line_val(), current_column_val(), exp_str, got_tag});
   }
 
+  // rt::member_set_reject: a member write on a receiver that is no Object.
+  void emit_member_set_reject(std::string_view key, llvm::Value* got_tag) {
+    auto ptrTy = llvm::PointerType::get(ctx_, 0);
+    auto i64Ty = builder_.getInt64Ty();
+    emit_call(module_->getOrInsertFunction(rt::member_set_reject,
+                                           builder_.getVoidTy(), i64Ty, i64Ty,
+                                           ptrTy, builder_.getInt8Ty()),
+              {current_line_val(), current_column_val(),
+               get_or_create_global_str(key, ".set.key"), got_tag});
+  }
+
   void emit_div_zero() {
     emit_call(
         module_->getOrInsertFunction(rt::div_zero,
@@ -5111,7 +5122,8 @@ struct JIT {
   // member is its data pointer (true on libc++/libstdc++/MSVC STL).
   llvm::Value* emit_property_get(llvm::Value* receiver,
                                     const std::string& name,
-                                    bool own_receiver = false) {
+                                    bool own_receiver = false,
+                                    bool as_callee = false) {
     // Callee-cleans: with own_receiver the slow-path helper
     // (culebra_runtime_prop_get) is the sole releaser of the receiver on
     // its direct-error unwind edge —
@@ -5237,10 +5249,11 @@ struct JIT {
     auto slowResult = emit_value_call(
         module_->getOrInsertFunction(rt::prop_get, valueType_,
                                      i8Ty, i64Ty, ptrTy, ptrTy,
-                                     i64Ty, i64Ty, builder_.getInt1Ty()),
+                                     i64Ty, i64Ty, builder_.getInt1Ty(),
+                                     builder_.getInt1Ty()),
         {tag, recvData, keyPtr, icGlobal,
          current_line_val(), current_column_val(),
-         builder_.getInt1(own_receiver)},
+         builder_.getInt1(own_receiver), builder_.getInt1(as_callee)},
         "prop.slow");
     auto slowTag = extract_tag(slowResult);
     auto slowData = extract_data(slowResult);
@@ -5612,38 +5625,13 @@ struct JIT {
             builder_.CreateICmpEQ(tag, builder_.getInt8(TAG_FLOAT))));
   }
 
-  // Emit interp's eval_property resolution-failure error for a builtin
-  // method whose receiver is the wrong type: a scalar (Nil/Bool/Long/
-  // Float — interp's to_object rejects it) → the member-access error
-  // "expected Object, Array, or Tensor, got <T>"; any object-ish value
-  // simply lacks the method → "expected Function, got Nil". Assumes the
-  // builder is at the failure block and terminates it (unreachable).
-  //
-  // The object-ish miss is only KNOWN once the arguments have run: interp
-  // reads the property (nil), evaluates the arguments, and fails on the
-  // call. The bytecode compiler emits that argument evaluation itself
-  // (Op::MethGate's miss edge), so this half only has to report.
-  void emit_receiver_resolution_error(llvm::Value* tag,
-                                      const std::string& prefix) {
-    auto fn = builder_.GetInsertBlock()->getParent();
-    auto scalarBB = llvm::BasicBlock::Create(ctx_, prefix + ".scalar", fn);
-    auto objishBB = llvm::BasicBlock::Create(ctx_, prefix + ".objish", fn);
-    builder_.CreateCondBr(emit_is_scalar_tag(tag), scalarBB, objishBB);
-    builder_.SetInsertPoint(scalarBB);
-    emit_type_error_typed("Object, Array, or Tensor", tag);
-    builder_.CreateUnreachable();
-    builder_.SetInsertPoint(objishBB);
-    emit_type_error_typed("Function", builder_.getInt8(TAG_NIL));
-    builder_.CreateUnreachable();
-  }
-
-
   // The length probe behind `.size()` / `.empty()` / `.presence()`: switch on
   // the receiver tag (Tuple rides with Array), take each container's length
-  // its own way, and merge them into one i64. A tag with no length raises the
-  // receiver-resolution error for `label`, which also names the blocks.
-  // Returns with the builder inserting at the merge block, so a caller only
-  // has to turn the length into its own result.
+  // its own way, and merge them into one i64. MethGate ran first, so every
+  // tag reaching here has a length: the Set arm takes the switch's default,
+  // as in the executor's bmeth_size. `label` names the blocks. Returns with
+  // the builder inserting at the merge block, so a caller only has to turn
+  // the length into its own result.
   llvm::Value* emit_size_probe(llvm::Value* receiver, llvm::Value* tag,
                                const std::string& label) {
     auto fn = builder_.GetInsertBlock()->getParent();
@@ -5656,16 +5644,14 @@ struct JIT {
     auto strBB = block("str");
     auto svBB = block("sv");
     auto setBB = block("set");
-    auto errBB = block("err");
     auto mergeBB = block("len");  // not ".merge" — presence names its own
 
-    auto sw = builder_.CreateSwitch(tag, errBB, 6);
+    auto sw = builder_.CreateSwitch(tag, setBB, 5);
     sw->addCase(builder_.getInt8(TAG_ARRAY), arrBB);
     sw->addCase(builder_.getInt8(TAG_TUPLE), arrBB);
     sw->addCase(builder_.getInt8(TAG_OBJECT), objBB);
     sw->addCase(builder_.getInt8(TAG_STRING), strBB);
     sw->addCase(builder_.getInt8(TAG_STRINGVIEW), svBB);
-    sw->addCase(builder_.getInt8(TAG_SET), setBB);
 
     // The PHI names where each arm actually leaves from, which is not where it
     // started when a helper splits the block.
@@ -5697,9 +5683,6 @@ struct JIT {
                            rt::set_size, builder_.getInt64Ty(), ptrTy),
                        {p}, "ssz2");
     });
-
-    builder_.SetInsertPoint(errBB);
-    emit_receiver_resolution_error(tag, label);
 
     builder_.SetInsertPoint(mergeBB);
     auto phi = builder_.CreatePHI(builder_.getInt64Ty(),

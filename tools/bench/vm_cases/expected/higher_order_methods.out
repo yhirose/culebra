@@ -41,7 +41,7 @@ true
 nil
 0
 nil
-TypeError: type error: expected Object, Array, or Tensor, got Long
+TypeError: type error: expected Function, got Nil ('map' is not a method of Long)
 ran 2
 TypeError: type error: expected Function, got Nil ('map' is not a method of String)
 ran 3

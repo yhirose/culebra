@@ -2201,7 +2201,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_prop_value(
     int8_t recv_tag, int64_t recv_data, const char* key, JitPropIC* ic,
     int64_t line, int64_t col) {
   JitValue view = culebra_runtime_prop_get(recv_tag, recv_data, key, ic, line,
-                                           col, /*own_receiver=*/false);
+                                           col, /*own_receiver=*/false,
+                                           /*as_callee=*/false);
   if (view.tag == TAG_FUNC && recv_tag == TAG_OBJECT)
     culebra_runtime_set_op_pos(line, col);  // a getter's entry site
   return culebra_runtime_bind_method_value(

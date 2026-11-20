@@ -682,14 +682,15 @@ struct Lowering {
     };
 
     // The property writes' shared receiver gate: fall through only for an
-    // Object receiver, otherwise the interp's own error text from a
-    // terminated block.
-    auto require_object_recv = [&](llvm::Value* tag, const char* pfx) {
+    // Object receiver, otherwise the member write's reject, naming the key of
+    // prop site `site`, from a terminated block.
+    auto require_object_recv = [&](llvm::Value* tag, int32_t site,
+                                   const char* pfx) {
       auto okBB = BasicBlock::Create(j.ctx_, std::string(pfx) + ".ok", fn);
       auto errBB = BasicBlock::Create(j.ctx_, std::string(pfx) + ".err", fn);
       b.CreateCondBr(b.CreateICmpEQ(tag, b.getInt8(TAG_OBJECT)), okBB, errBB);
       b.SetInsertPoint(errBB);
-      j.emit_type_error_typed("Object, Array, or Tensor", tag);
+      j.emit_member_set_reject(_str_sv(c.prop_sites[site].key), tag);
       b.CreateUnreachable();
       b.SetInsertPoint(okBB);
     };
@@ -1907,7 +1908,8 @@ struct Lowering {
           }
           // own_receiver=false: the register keeps its +1 across the read,
           // and the handler ladder is its sole releaser on a throw edge.
-          auto view = j.emit_property_get(recv, key);
+          auto view = j.emit_property_get(recv, key, /*own_receiver=*/false,
+                                          /*as_callee=*/in.op == Op::PropRaw);
           if (in.op == Op::PropRaw) {
             // A borrowed object-slot view, which the register must own — except
             // for the three introspection names, whose fn_mode merge hands back
@@ -2129,7 +2131,9 @@ struct Lowering {
             auto missBB = BasicBlock::Create(j.ctx_, "vbm.miss", fn);
             b.CreateCondBr(j.emit_is_scalar_tag(tag), scalarBB, missBB);
             b.SetInsertPoint(scalarBB);
-            j.emit_type_error_typed("Object, Array, or Tensor", tag);
+            j.emit_method_not_callable(j.current_line_val(),
+                                       j.current_column_val(),
+                                       b.getInt8(TAG_NIL), key.c_str(), recv);
             b.CreateUnreachable();
             b.SetInsertPoint(missBB);
             b.CreateStore(j.make_value(b.getInt8(TAG_NO_SELF),
@@ -4076,7 +4080,7 @@ struct Lowering {
           auto valTag = j.extract_tag(val);
           auto valData = j.extract_data(val);
           auto tag = j.extract_tag(recv);
-          require_object_recv(tag, "pset");
+          require_object_recv(tag, in.c, "pset");
           // The retain feeds object_set's consuming store; the slot keeps
           // its +1 (IndexSet's rule) so the expression still reads it.
           j.emit_value_retain(val);
@@ -4158,7 +4162,7 @@ struct Lowering {
         case Op::PropWr: {
           auto recv = load_slot(in.b);
           auto tag = j.extract_tag(recv);
-          require_object_recv(tag, "pwr");
+          require_object_recv(tag, in.c, "pwr");
           auto objPtr = b.CreateIntToPtr(j.extract_data(recv), ptrTy);
           auto* nm = c.prop_sites[in.c].key;
           auto i8Ty = b.getInt8Ty();
@@ -4207,7 +4211,7 @@ struct Lowering {
         case Op::PropCo: {
           auto recv = load_slot(in.b);
           auto tag = j.extract_tag(recv);
-          require_object_recv(tag, "pco");
+          require_object_recv(tag, in.c, "pco");
           auto objData = j.extract_data(recv);
           // The nc receiver-kind rejects ahead of the read (the JIT's nc
           // DOT dispatch: Shared view / packed field), at the statement.

@@ -136,8 +136,28 @@ check added-stale 0 "$PY" --baseline same_b.txt --head same_h.txt \
   --allow allow_add.txt --cases 2
 says added-stale "is missing"
 
+# A `~ <old> => <new>` entry names a message reworded outright: the baseline's
+# old wording and this build's new one, matched as often on each side, are the
+# only difference. A case that also moved, or that gained the new wording
+# without losing the old, is still a change.
+mk "m|1|nope| ::: err=TypeError|bad receiver Long|1|1" \
+   "m|2|nope| ::: err=TypeError|bad receiver Long|2|1" \
+   "m|3|nope| ::: ok=Long:1" > rew_b.txt
+mk "m|1|nope| ::: err=TypeError|'nope' is not on Long|1|1" \
+   "m|2|nope| ::: err=TypeError|'nope' is not on Long|2|9" \
+   "m|3|nope| ::: err=TypeError|'nope' is not on Long|3|1" > rew_h.txt
+printf "~ bad receiver \\\\w+ => '\\\\w+' is not on \\\\w+\n" > allow_rew.txt
+check reworded 1 "$PY" --baseline rew_b.txt --head rew_h.txt \
+  --allow allow_rew.txt --cases 3
+says reworded "3 changed, 1 allowed, 2 unlisted"
+
+# One that rewords nothing is reported like a glob that matches nothing.
+check reworded-stale 0 "$PY" --baseline same_b.txt --head same_h.txt \
+  --allow allow_rew.txt --cases 2
+says reworded-stale "is not on"
+
 if [ "$fails" != 0 ]; then
   echo "release-diff selftest: $fails case(s) failed" >&2
   exit 1
 fi
-echo "release-diff selftest OK (12 cases)"
+echo "release-diff selftest OK (14 cases)"

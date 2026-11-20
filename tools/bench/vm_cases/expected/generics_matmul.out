@@ -14,7 +14,7 @@ T
 5
 7
 matmul on scalars ::: err=TypeError|type error: cannot apply '@' to Long and Long
-matmul without the method ::: err=TypeError|type error: expected Object, Array, or Tensor, got Long
+matmul without the method ::: err=TypeError|type error: cannot read 'v' of Long
 matmul reversed operands ::: err=TypeError|type error: cannot apply '@' to Long and Object
 bounded generic rejects a non-conformer ::: err=DispatchError|no matching method for `needs`
 4000

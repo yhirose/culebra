@@ -10,7 +10,7 @@ own
 ['a']
 iter-ufcs
 AttributeError: namespace 'Math' has no member 'dbl'
-TypeError: type error: expected Object, Array, or Tensor, got Long
+TypeError: type error: expected Function, got Nil ('nonfn' is not a method of Long)
 caught: B
 10
 one

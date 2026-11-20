@@ -40,8 +40,8 @@ assert_eq(Box.new().size(), 1)  // just `x`: the class name is not a field
 assert_eq({value: 1, next: {value: 2}}.size(), 2)
 
 // --- every other receiver is rejected, identically on both backends -----
-// A scalar has no member table at all, so it raises the shared
-// receiver-resolution error naming what could have answered.
+// A scalar has no member table at all, so the method is missing on it, as
+// on any other receiver that lacks it.
 fn rejects(v, kind, message_for) {
   let calls = [
     ['size', || v.size()],
@@ -61,21 +61,16 @@ fn rejects(v, kind, message_for) {
   }
 }
 
-for scalar in [nil, true, 1, 1.5] {
-  rejects(
-    scalar,
-    "TypeError",
-    |_| "type error: expected Object, Array, or Tensor, got {type_of(scalar)}",
-  )
-}
-
-// Functions and Tensors do have member access, so `.size` reads as a missing
-// property (`nil`) and the call is what fails, naming it. Note the scalar message above
-// names Tensor as a receiver that could have answered, but a Tensor does not
-// carry a length either — it reports its extent through `.shape`.
 fn sized_miss(type) {
   |name| "type error: expected Function, got Nil ('{name}' is not a method of {type})"
 }
+for scalar in [nil, true, 1, 1.5] {
+  rejects(scalar, "TypeError", sized_miss(type_of(scalar)))
+}
+
+// Functions and Tensors do have member access, so `.size` reads as a missing
+// property (`nil`) and the call is what fails, naming it. A Tensor reports its
+// extent through `.shape`, not a length.
 rejects(|x| x, "TypeError", sized_miss('Function'))
 rejects(Tensor.zeros([2]), "TypeError", sized_miss('Tensor'))
 

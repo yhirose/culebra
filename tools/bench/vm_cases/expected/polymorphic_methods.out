@@ -49,7 +49,7 @@ true
 'el'
 300
 ['[300, 301]']
-TypeError: type error: expected Object, Array, or Tensor, got Long
+TypeError: type error: expected Function, got Nil ('slice' is not a method of Long)
 ran 2
 TypeError: type error: expected Function, got Nil ('slice' is not a method of Set)
 ran 3
@@ -85,7 +85,7 @@ Set(0, 1, 2, 3)
 1
 []
 Set()
-TypeError: type error: expected Object, Array, or Tensor, got Long
+TypeError: type error: expected Function, got Nil ('sum' is not a method of Long)
 ValueError: min of empty Array
 TypeError: type error: expected Function, got Nil ('product' is not a method of Tensor)
 TypeError: type error: expected Function, got Nil ('distinct' is not a method of Array)

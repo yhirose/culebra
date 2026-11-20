@@ -50,7 +50,7 @@ let msg = try {
 } catch e {
   e.message
 }
-assert_eq(msg, 'type error: expected Object, Array, or Tensor, got Long')
+assert_eq(msg, "type error: cannot read 'x' of Long")
 
 # A heap field read back many times through the warm site leaves its count
 # where it was.

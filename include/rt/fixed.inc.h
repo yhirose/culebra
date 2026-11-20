@@ -1589,6 +1589,12 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_object_get_ic(
   return {TAG_NIL, 0};
 }
 
+// Defined below; prop_get's scalar callee read raises it.
+[[noreturn]] CULEBRA_RT_KEEP CULEBRA_RT_INLINE void
+culebra_runtime_method_not_callable(int64_t line, int64_t col,
+                                    int8_t callee_tag, const char* name,
+                                    int8_t recv_tag, int64_t recv_data);
+
 // Consolidated cold path for a JIT property read `recv.key`. The JIT
 // inlines only the monomorphic object fast path (shape hit -> direct slot
 // read); every other case funnels here, so the receiver-tag semantics live
@@ -1597,7 +1603,9 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_object_get_ic(
 //   - container-ish receiver -> missing member reads as Nil (mirrors the
 //     interpreter's permissive member read; a `.foo()` on that Nil then
 //     fails with the usual "expected Function, got Nil")
-//   - scalar -> TypeError, the fixed engine-wide wording.
+//   - scalar -> TypeError naming the member: a method call's callee read
+//     (`as_callee`, the callee half of `3.6.round()`) says what an Object
+//     missing the method says; any other read says it cannot read it.
 //
 // `own_receiver` gate (C⑧, mirrors object_get_any's C③ contract): a bare
 // property read `recv.key` on a +1-owned receiver (the postfix chain's rolling
@@ -1612,7 +1620,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_object_get_ic(
 // monomorphic read site.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_prop_get(
     int8_t recv_tag, int64_t recv_data, const char* key, JitPropIC* ic,
-    int64_t line, int64_t col, bool own_receiver) {
+    int64_t line, int64_t col, bool own_receiver, bool as_callee) {
   JitUnwindRelease g{own_receiver ? JitValue{recv_tag, recv_data}
                                   : JitValue{TAG_NIL, 0}};
   if (recv_tag == TAG_OBJECT) {
@@ -1624,10 +1632,25 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_prop_get(
     case TAG_SET: case TAG_STRINGVIEW: case TAG_TENSOR:
       return {TAG_NIL, 0};
     default:
-      culebra_runtime_type_error_typed(line, col, "Object, Array, or Tensor",
-                                       recv_tag);
+      if (as_callee)
+        culebra_runtime_method_not_callable(line, col, TAG_NIL, key, recv_tag,
+                                            recv_data);
+      throw culebra::CulebraError(
+          "TypeError",
+          culebra::member_read_reject_message(key, _culebra_tag_name(recv_tag)),
+          line, col);
   }
-  return {TAG_NIL, 0};  // unreachable: type_error_typed throws
+}
+
+// A member write (`recv.key = v`, `op=`, `??=`) on a receiver that is no
+// Object: nothing else carries writable members.
+[[noreturn]] CULEBRA_RT_KEEP CULEBRA_RT_INLINE void
+culebra_runtime_member_set_reject(int64_t line, int64_t col, const char* key,
+                                  int8_t recv_tag) {
+  throw culebra::CulebraError(
+      "TypeError",
+      culebra::member_set_reject_message(key, _culebra_tag_name(recv_tag)),
+      line, col);
 }
 
 // Cold path for JIT truthiness. The JIT inlines only the monomorphic Bool

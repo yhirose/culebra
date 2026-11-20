@@ -78,9 +78,8 @@ effect fn mm_run_miss(xs) {
 }
 assert_eq(mm_said(|| handle { mm_run_miss([1]) } with mm_ask(k) { k(1) }),
           mm_miss('nope', 'Array'))
-# A scalar has no members at all, which is reported before the call.
-assert_throws("TypeError", || mm_nil.foo(),
-  message: 'type error: expected Object, Array, or Tensor, got Nil')
+# A scalar has no members at all, so the method is missing there too.
+assert_eq(mm_said(|| mm_nil.foo()), mm_miss('foo', 'Nil'))
 # And a method that is there is called.
 assert_eq(mm_p.area(), 6)
 

@@ -27,7 +27,7 @@ ArityError: expected 1 positional argument, got 0
 TypeError: type error: parameter 'i' expects Long
 TypeError: unhashable type: 'Array'
 TypeError: unhashable type: 'Array'
-TypeError: type error: expected Object, Array, or Tensor, got Long
+TypeError: type error: expected Function, got Nil ('get' is not a method of Long)
 ran 3
 ran 4
 TypeError: type error: expected Function, got Nil ('get_or_put' is not a method of String)

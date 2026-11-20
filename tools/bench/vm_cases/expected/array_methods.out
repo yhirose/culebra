@@ -34,7 +34,7 @@ TypeError: type error: parameter 'i' expects Long
 TypeError: type error: parameter 'i' expects Long
 TypeError: type error: parameter 'other' expects Array
 [1, 2]
-TypeError: type error: expected Object, Array, or Tensor, got Long
+TypeError: type error: expected Function, got Nil ('push' is not a method of Long)
 ran 2
 TypeError: type error: expected Function, got Nil ('push' is not a method of String)
 TypeError: type error: expected Function, got Nil ('reverse' is not a method of Tuple)

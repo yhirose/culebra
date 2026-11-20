@@ -8,7 +8,7 @@ div by zero on line 38
 array 1 +2
 string plain
 43
-{kind: 'TypeError', message: 'type error: expected Object, Array, or Tensor, got Nil', line: 45, col: 30}
+{kind: 'TypeError', message: 'type error: expected Function, got Nil ('missing' is not a method of Nil)', line: 45, col: 30}
 descending 2 1
 pair 1 2
 unhandled
