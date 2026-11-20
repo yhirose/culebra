@@ -2682,7 +2682,12 @@ struct RuntimeScope {
 };
 
 struct Runtime {
-  std::mt19937_64 random_engine{std::random_device{}()};
+  // The engine Random, UUID and Tensor's random fills draw from
+  // (random_engine()), built on first use: from `random_seed` when the code
+  // that spawned this Runtime gave one, else from the OS. Reseeding is
+  // setting the seed and dropping the engine.
+  std::optional<std::mt19937_64> random;
+  std::optional<uint64_t> random_seed;
 
   // JIT exception carriers. Set by `culebra_runtime_throw`, read by
   // the try/catch landing pad. See jit.h for the protocol.
@@ -2749,8 +2754,10 @@ struct Runtime {
   // cancelled through `interrupt` (may be null). The program and its code are
   // still there when it ends, so what its tables still hold is dropped like
   // anything else: a `tx` a trait default captured must close its channel.
-  explicit Runtime(std::atomic<bool>* interrupt)
-      : interrupt_flag(interrupt), worker(true) {}
+  // `random_seed` is drawn where it was spawned (child_random_seed), so the
+  // spawner's `Random.seed` reaches it.
+  Runtime(std::atomic<bool>* interrupt, uint64_t random_seed)
+      : random_seed(random_seed), interrupt_flag(interrupt), worker(true) {}
   ~Runtime() {
     // Destroy substates in reverse slot order. The GC substates (kSlotInterpGc,
     // kSlotJitGc) are the lowest slots and MUST outlive the JitValue-holding
@@ -3208,10 +3215,36 @@ inline T& runtime_substate(RuntimeSlot slot) {
   return runtime_substate<T>(current_runtime(), slot);
 }
 
-// --- Shared PRNG (interpreter and JIT) ---
+// --- PRNG: one engine per Runtime ---
 
 inline std::mt19937_64& random_engine() {
-  return current_runtime().random_engine;
+  auto& rt = current_runtime();
+  if (!rt.random)
+    rt.random.emplace(rt.random_seed ? *rt.random_seed
+                                     : std::random_device{}());
+  return *rt.random;
+}
+
+// Start this Runtime's draws over from `seed` (Random.seed, a Parallel
+// element's own seed).
+inline void reseed_random(Runtime& rt, uint64_t seed) {
+  rt.random_seed = seed;
+  rt.random.reset();
+}
+
+// The seed a worker spawned from this thread starts from: the next draw of
+// this Runtime's engine, so after `Random.seed(n)` here, workers spawned in
+// the same order draw the same numbers.
+inline uint64_t child_random_seed() { return random_engine()(); }
+
+// The `i`th of a family of seeds drawn once as `base` (a Parallel element's, a
+// server pool thread's, an Audio noise stream's): base and index mixed by
+// SplitMix64's finalizer, so neighbouring indices give unrelated streams.
+inline uint64_t derive_random_seed(uint64_t base, uint64_t i) {
+  uint64_t z = base + i * 0x9E3779B97F4A7C15ull;
+  z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ull;
+  z = (z ^ (z >> 27)) * 0x94D049BB133111EBull;
+  return z ^ (z >> 31);
 }
 
 // --- Well-known property contract ---

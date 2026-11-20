@@ -7,7 +7,7 @@
 // variants, both returned in the canonical lowercase 8-4-4-4-12 hyphenated
 // form: v4 (random) and v7 (Unix-millisecond timestamp prefix + random, so
 // values sort by creation time — handy as database keys). Entropy comes from
-// the process's shared Mersenne-Twister (culebra::random_engine(), the same
+// the running Runtime's Mersenne-Twister (culebra::random_engine(), the same
 // engine `Random.*` uses and `Random.seed` reseeds) — convenient and
 // reproducible under a seed, NOT cryptographically secure.
 
@@ -32,7 +32,7 @@ inline std::string format(const uint8_t b[16]) {
   return out;
 }
 
-// Fill `b` with 16 random bytes from the shared engine (two 64-bit draws).
+// Fill `b` with 16 random bytes from the Runtime's engine (two 64-bit draws).
 inline void fill_random(uint8_t b[16]) {
   auto& eng = culebra::random_engine();
   uint64_t lo = eng(), hi = eng();

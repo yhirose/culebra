@@ -672,7 +672,7 @@ Create a new directory under `FS.temp_dir()` whose name begins with
 `prefix`, and return its path. The directory is *created*, not just
 named, so two programs running at once cannot be handed the same one —
 including two seeded identically with `Random.seed`, since the suffix
-comes from the OS rather than the shared engine. Removing it is the
+comes from the OS rather than the `Random` engine. Removing it is the
 caller's job.
 
 `prefix` is a name, not a path: a parent that doesn't already exist is
@@ -1269,15 +1269,32 @@ any other type is `false`, never an error.
 
 ## 6. `Random`
 
-Random-number generation. The process has a single shared
-Mersenne-Twister-64 engine, shared between the VM and JIT
-backends; `Random.seed(n)` resets it and makes every subsequent draw
-reproducible within one program execution. Without a `seed` call the
-engine is initialised from `std::random_device`.
+Random-number generation, from a Mersenne-Twister-64 engine (the same
+on the VM and JIT backends). The main program, each isolate, each
+`Parallel` element and each server worker draws from an engine of its
+own. `Random.seed(n)` resets the engine of the code that calls it and
+makes every later draw there reproducible within one program
+execution. Without a `seed` call the main program's engine is
+initialised from `std::random_device`.
+
+The other engines are seeded from the one that started them, so one
+`Random.seed` on the main program reaches them too:
+
+- An isolate (`Isolate.spawn`, `Isolate.spawn_source`, the producers
+  `Channel.fan_in(items, fn)` starts) takes one draw of its spawner's
+  engine as its seed. After `Random.seed(n)`, isolates spawned in the
+  same order draw the same numbers, and each spawn moves the spawner's
+  own sequence on by one draw.
+- A `Parallel` call takes one draw, and each element starts from a seed
+  made from it and the element's index, so an element draws the same
+  numbers whichever worker runs it.
+- A server's workers (`Http.server`'s handlers, `listener.serve`) are
+  seeded the same way, one per worker. Which worker answers which
+  request is not fixed, so their draws do not repeat from run to run.
 
 ### `Random.seed(n: Long) -> Nil`
 
-Reseed the shared PRNG. Same `n` → same sequence.
+Reseed the engine of the code that calls it. Same `n` → same sequence.
 
 ```culebra
 Random.seed(42)
@@ -5104,7 +5121,7 @@ variants:
 | `UUID.v4() -> String` | random UUID (122 random bits) |
 | `UUID.v7() -> String` | time-ordered UUID — a 48-bit Unix-millisecond prefix then random, so values sort by creation time (good as database keys) |
 
-Entropy comes from the shared PRNG that `Random.*` uses, so UUIDs are
+Entropy comes from the same engine `Random.*` uses, so UUIDs are
 reproducible under `Random.seed` and are **not** cryptographically secure —
 fine for identifiers, not for tokens or secrets. v7 orders by millisecond;
 two values created within the same millisecond are not ordered relative to

@@ -591,8 +591,8 @@ inline TensorPtr tensor_from_csv(const std::string& path, Dtype d) {
   return t;
 }
 
-// Standard normal (mean 0, std 1). Uses the process-wide PRNG from
-// shared.h so `Random.seed(n)` makes Tensor.randn reproducible.
+// Standard normal (mean 0, std 1). Draws from the running Runtime's engine
+// (random_engine()), so `Random.seed(n)` makes Tensor.randn reproducible.
 inline TensorPtr tensor_randn(TensorShape s, Dtype d) {
   auto t = std::make_shared<TensorImpl>(std::move(s), d);
   std::normal_distribution<double> dist{0.0, 1.0};

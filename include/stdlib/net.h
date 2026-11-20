@@ -904,7 +904,12 @@ class ServePool {
         interrupt_flag_(interrupt_flag),
         conn_timeout_ms_(conn_timeout_ms),
         cap_(n * 8) {
-    for (size_t i = 0; i < n; i++) threads_.emplace_back([this] { worker(); });
+    // Built on the serving thread, so the seed is drawn from its engine.
+    uint64_t seed = culebra::child_random_seed();
+    for (size_t i = 0; i < n; i++)
+      threads_.emplace_back([this, s = culebra::derive_random_seed(seed, i)] {
+        worker(s);
+      });
   }
 
   // Drops connections that never started, then waits for the in-flight ones.
@@ -936,8 +941,9 @@ class ServePool {
   }
 
  private:
-  void worker() {
-    culebra::Runtime rt(interrupt_flag_);  // honor cancel in nested blocking ops
+  void worker(uint64_t random_seed) {
+    // interrupt_flag_: honor cancel in nested blocking ops.
+    culebra::Runtime rt(interrupt_flag_, random_seed);
     culebra::RuntimeScope scope(rt);
     if (hooks_.setup) hooks_.setup();
     for (;;) {

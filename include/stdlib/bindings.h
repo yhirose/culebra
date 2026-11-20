@@ -343,7 +343,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_ns_call(
 // --- Random ---
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_random_seed(int64_t n) {
-  culebra::random_engine().seed(static_cast<uint64_t>(n));
+  culebra::reseed_random(culebra::current_runtime(), static_cast<uint64_t>(n));
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_random_int(
@@ -700,7 +700,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_fs_temp_dir(
 
 // A directory no one else holds, created rather than named: the gap between
 // picking a free name and creating it is what lets two programs land on the
-// same one. The suffix is drawn from std::random_device, not the shared
+// same one. The suffix is drawn from std::random_device, not the `Random`
 // engine, so `Random.seed(n)` cannot make two runs agree on a directory.
 // Nothing removes it but the caller.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE const char* culebra_runtime_fs_mkdtemp(

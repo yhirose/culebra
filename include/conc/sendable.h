@@ -1109,7 +1109,7 @@ inline void run_isolate_child_jit(IsolateCore& core,
                                   bool decrement_live) {
   // A fresh Runtime gives this work its own JIT heap (and its own multifn
   // registry); the shared fn_ptr allocates on whichever Runtime is active.
-  culebra::Runtime rt(&core.interrupt);
+  culebra::Runtime rt(&core.interrupt, core.random_seed);
   culebra::RuntimeScope scope(rt);
   if (origin) set_source_origin(rt, std::move(origin));
   _jit_isolate_settle_child(core, nullptr, [&] {
@@ -1174,6 +1174,7 @@ inline std::shared_ptr<IsolateCore> _jit_launch_isolate(bool must_thread,
   bool threaded = must_thread || under_cap;
   if (!threaded) g_live_isolates().fetch_sub(1, std::memory_order_relaxed);
   auto core = std::make_shared<IsolateCore>();
+  core->random_seed = culebra::child_random_seed();
   core->thread = culebra::SizedThread(
       [c = core.get(), run = std::move(run), threaded]() mutable {
         run(*c, threaded);
@@ -3011,7 +3012,7 @@ inline void jit_parallel_record_element_error(ParallelState& st, size_t i,
 }
 
 inline void jit_parallel_worker(std::shared_ptr<ParallelState> st) {
-  culebra::Runtime rt(&st->interrupt);
+  culebra::Runtime rt(&st->interrupt, st->random_seed);
   culebra::RuntimeScope scope(rt);
   if (st->origin) set_source_origin(rt, st->origin);
   try {
@@ -3023,6 +3024,9 @@ inline void jit_parallel_worker(std::shared_ptr<ParallelState> st) {
     while (!st->interrupt.load(std::memory_order_relaxed)) {
       size_t i = st->next.fetch_add(1, std::memory_order_relaxed);
       if (i >= st->items.size()) break;
+      // An element draws the same numbers whichever worker claims it.
+      culebra::reseed_random(rt,
+                             culebra::derive_random_seed(st->random_seed, i));
       try {
         JitOwnedVal item = jit_deserialize(st->items[i]);
         // A thrown value fails its element as an error does, by what it says,
@@ -3101,6 +3105,7 @@ inline JitValue jit_parallel_run(JitValue items_v, JitValue fn_v, int64_t limit,
   { JitSerCtx sc; st->fn = jit_serialize(fn_v, sc); }
   st->trait_defaults = jit_snapshot_trait_defaults();
   st->origin = current_source_origin();
+  st->random_seed = culebra::child_random_seed();
   st->items.reserve(arr->size);
   for (size_t i = 0; i < arr->size; i++) {
     JitSerCtx sc;

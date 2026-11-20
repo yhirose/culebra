@@ -711,12 +711,11 @@ inline constexpr uint64_t kDustStream = 1;
 inline constexpr uint64_t kLfNoiseStream = 2;
 
 // A Noise for `stream` from `seed`: the seed and the stream mixed
-// (SplitMix64's finalizer), so nearby seeds start far apart.
+// (derive_random_seed), so nearby seeds start far apart.
 inline Noise noise_stream(int64_t seed, uint64_t stream) {
-  uint64_t z = static_cast<uint64_t>(seed) + stream * 0x9E3779B97F4A7C15ull;
-  z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ull;
-  z = (z ^ (z >> 27)) * 0x94D049BB133111EBull;
-  return Noise{static_cast<int64_t>((z ^ (z >> 31)) % 2147483648ull)};
+  return Noise{static_cast<int64_t>(
+      derive_random_seed(static_cast<uint64_t>(seed), stream) %
+      2147483648ull)};
 }
 
 // The pieces of a harmonic tone for partials(): its spectra, `count` amps

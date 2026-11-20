@@ -64,6 +64,8 @@ struct IsolateCore {
   std::optional<std::string> interrupted;
   std::atomic<bool> interrupt{false};       // set by cancel()
   std::atomic<bool> cancel_counted{false};  // contributed to g_cancel_pending
+  // The child Runtime's random seed, drawn on the spawning thread.
+  uint64_t random_seed = 0;
 
   // Sets the child's sticky `interrupt` AND the global JIT wake (so a JIT
   // tight loop branches to its safepoint). Counted once per core, so the wake
@@ -604,6 +606,9 @@ struct ParallelState {
   std::atomic<size_t> next{0};               // next element to claim
   std::atomic<size_t> done{0};               // elements finished (on_progress)
   std::atomic<bool> interrupt{false};        // fail-fast / cancellation
+  // Drawn on the parent; element i draws from derive_random_seed(it, i),
+  // whichever worker runs it.
+  uint64_t random_seed = 0;
   std::mutex err_m;
   bool failed = false;
   size_t err_index = 0;

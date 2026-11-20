@@ -1256,10 +1256,15 @@ struct ServerWorkerHooks {
 // Ctrl+C / cancel and stops the server, which joins the workers.
 class CulebraWorkerPool : public httplib::TaskQueue {
  public:
+  // `random_seed` was drawn on the thread that started the server (this pool
+  // is built on the accept thread); worker i draws from its i-th derivation.
   CulebraWorkerPool(size_t n, httplib::Server* svr,
-                    std::atomic<bool>* isolate_flag, ServerWorkerHooks hooks)
+                    std::atomic<bool>* isolate_flag, ServerWorkerHooks hooks,
+                    uint64_t random_seed)
       : svr_(svr), isolate_flag_(isolate_flag), hooks_(std::move(hooks)) {
-    for (size_t i = 0; i < n; i++) threads_.emplace_back([this] { worker(); });
+    for (size_t i = 0; i < n; i++)
+      threads_.emplace_back([this, s = culebra::derive_random_seed(
+                                       random_seed, i)] { worker(s); });
   }
   bool enqueue(std::function<void()> fn) override {
     {
@@ -1284,8 +1289,9 @@ class CulebraWorkerPool : public httplib::TaskQueue {
   }
 
  private:
-  void worker() {
-    culebra::Runtime rt(isolate_flag_);  // honor cancel in nested blocking ops
+  void worker(uint64_t random_seed) {
+    // isolate_flag_: honor cancel in nested blocking ops.
+    culebra::Runtime rt(isolate_flag_, random_seed);
     culebra::RuntimeScope scope(rt);
     if (hooks_.setup) hooks_.setup();
     for (;;) {
@@ -1588,8 +1594,9 @@ inline HttpServer* _http_server_begin_serve(int64_t id, int n_workers,
   size_t nw = n_workers >= 1 ? static_cast<size_t>(n_workers)
                              : default_http_workers();
   s->svr.new_task_queue = [nw, svr = &s->svr, isolate_flag,
-                           hooks = std::move(hooks)] {
-    return new CulebraWorkerPool(nw, svr, isolate_flag, hooks);
+                           hooks = std::move(hooks),
+                           seed = culebra::child_random_seed()] {
+    return new CulebraWorkerPool(nw, svr, isolate_flag, hooks, seed);
   };
   // Poll on_idle ~10x/s so a pending Ctrl+C stops the accept loop promptly even
   // when no connection arrives (idle_interval turns accept into a timed select).

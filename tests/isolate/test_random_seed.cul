@@ -1,0 +1,48 @@
+# One `Random.seed` on the spawner reaches the engines it starts: an isolate
+# takes one draw of its spawner's engine as its seed, and a Parallel element
+# starts from a seed made from the call's draw and its own index.
+let top = 1000000000
+
+fn spawned(seed) {
+  Random.seed(seed)
+  let a = Isolate.spawn(|| Random.int(0, top)).join()
+  let b = Isolate.spawn(|| Random.int(0, top)).join()
+  [a, b, Random.int(0, top)]
+}
+let first = spawned(7)
+# The same seed, the same spawns in the same order: the same draws, the
+# spawner's own included.
+assert_eq(spawned(7), first)
+# Two isolates spawned in turn draw from different seeds.
+assert_ne(first[0], first[1])
+# Another seed, other draws in the isolates too.
+let other = spawned(8)
+assert_ne(other[0], first[0])
+assert_ne(other[1], first[1])
+
+# An isolate spawned from source takes its seed the same way.
+fn sourced(seed) {
+  Random.seed(seed)
+  Isolate.spawn_source("Random.int(0, 1000000000)").join()
+}
+assert_eq(sourced(5), sourced(5))
+
+# An isolate that seeds itself is not overridden by its spawner's draw.
+fn self_seeded() {
+  Isolate.spawn(fn () {
+    Random.seed(3)
+    Random.int(0, top)
+  }).join()
+}
+Random.seed(3)
+let main_draw = Random.int(0, top)
+assert_eq(self_seeded(), main_draw)
+
+# A Parallel element draws the same numbers whichever worker runs it.
+fn par(seed) {
+  Random.seed(seed)
+  Parallel.map(iota(64), |_| Random.int(0, top))
+}
+let p = par(11)
+assert_eq(par(11), p)
+assert_ne(p[0], p[1])

@@ -88,7 +88,7 @@ inline void run_source_isolate(IsolateCore& core, std::string source,
                                std::string name,
                                std::vector<sendable::SendNode> argv,
                                bool counted) {
-  culebra::Runtime rt(&core.interrupt);
+  culebra::Runtime rt(&core.interrupt, core.random_seed);
   culebra::RuntimeScope scope(rt);
   {
     // Owned by the origin, which every Runtime that can run the source's
