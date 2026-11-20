@@ -229,16 +229,21 @@ function showInputs() {
 // ---- knobs
 
 // A slider for `get`/`set` of the patch, shown on `scale` as `show` says;
-// `onChange` redraws what else shows the value.
-function knob(label, scale, show, get, set, { big = false, reset = null, onChange = null } = {}) {
+// `onChange` redraws what else shows the value. One not `live` sends the
+// patch when let go: its change builds new voices, restarting held notes.
+function knob(label, scale, show, get, set, { big = false, reset = null, onChange = null, live = true } = {}) {
   const value = el("span", { className: "value" });
   const labelEl = el("span", { textContent: label });
   const input = el("input", { type: "range", min: 0, max: 1000, step: 1 });
   input.oninput = () => {
     set(scale.value(Number(input.value)));
     value.textContent = show(get());
-    patchChanged();
+    if (live) patchChanged();
+    else showEdited();
     onChange?.();
+  };
+  input.onchange = () => {
+    if (!live) patchChanged();
   };
   // A double click puts the knob back where it was when the preset loaded.
   input.ondblclick = () => {
@@ -344,7 +349,7 @@ function buildOps(range, patchRange) {
     const env = el("canvas", { className: "env-graph", width: 240, height: 52 });
     // A canvas takes a color, not a CSS variable: the variable read once.
     const color = getComputedStyle(document.documentElement).getPropertyValue(`--op${i + 1}`).trim();
-    const redraw = { onChange: () => drawEnvelope(env, op(), color) };
+    const envelopeKnob = { onChange: () => drawEnvelope(env, op(), color), live: false };
     const parts = [
       el("header", {}, [el("span", { className: "num", textContent: String(i + 1) }), el("div", {}, [role, roleAbout])]),
       level.root,
@@ -355,15 +360,15 @@ function buildOps(range, patchRange) {
       parts.push(knob("Grit (feedback)", linear(patchRange.feedback), showPercent, () => patch.feedback, (v) => (patch.feedback = v), { reset: () => loadedPatch().feedback }).root);
     }
     parts.push(env, el("div", { className: "env-grid" }, [
-      opKnob("Attack", "attack", log, showTime, redraw).root,
-      opKnob("Decay", "decay", log, showTime, redraw).root,
-      opKnob("Sustain", "sustain", linear, showPercent, redraw).root,
-      opKnob("Release", "release", log, showTime, redraw).root,
+      opKnob("Attack", "attack", log, showTime, envelopeKnob).root,
+      opKnob("Decay", "decay", log, showTime, envelopeKnob).root,
+      opKnob("Sustain", "sustain", linear, showPercent, envelopeKnob).root,
+      opKnob("Release", "release", log, showTime, envelopeKnob).root,
     ]));
     const card = el("section", { className: "op" }, parts);
     card.style.setProperty("--op-color", `var(--op${i + 1})`);
     box.append(card);
-    opCards.push({ card, role, roleAbout, level, redraw: redraw.onChange });
+    opCards.push({ card, role, roleAbout, level, redraw: envelopeKnob.onChange });
   }
 }
 
@@ -482,18 +487,20 @@ function buildKeyboard() {
       key.style.width = `${whiteWidth * 0.6}%`;
     }
     // The left button plays; dragging with it held plays the keys passed.
-    key.onpointerdown = (e) => {
+    // Mouse events, not pointer events: WKWebView sends no pointerdown for
+    // the first click after a <select>'s menu closes.
+    key.onmousedown = (e) => {
       if (e.button !== 0) return;
       e.preventDefault();
       mouseNotes.add(note);
       noteOn(note);
     };
-    key.onpointerenter = (e) => {
+    key.onmouseenter = (e) => {
       if (!(e.buttons & 1)) return;
       mouseNotes.add(note);
       noteOn(note);
     };
-    key.onpointerleave = () => {
+    key.onmouseleave = () => {
       if (!mouseNotes.has(note)) return;
       mouseNotes.delete(note);
       noteOff(note);
@@ -504,7 +511,7 @@ function buildKeyboard() {
   $("octave-label").textContent = `C${Math.floor(base / 12) - 1}`;
 }
 
-window.addEventListener("pointerup", () => {
+window.addEventListener("mouseup", () => {
   for (const n of mouseNotes) noteOff(n);
   mouseNotes.clear();
 });
