@@ -642,12 +642,9 @@ class Engine {
       std::move(inbox_ + 1, inbox_ + kQueueCap, inbox_);
       inbox_count_--;
     }
-    // The queue is walked head-first, and a sequencer never means to place a
-    // note behind one it has already asked for, so clock jitter across a buffer
-    // edge settles in favour of the order the calls came in.
-    int64_t start = std::max(stream_now(), last_start_);
-    last_start_ = start;
-    inbox_[inbox_count_++] = Queued{start, channel, n};
+    // The queue is walked head-first; stream_now() never goes back, so the
+    // notes are queued in the order the calls came in.
+    inbox_[inbox_count_++] = Queued{stream_now(), channel, n};
   }
 
   void schedule_new(int64_t id, std::shared_ptr<Schedule> s) {
@@ -909,12 +906,18 @@ class Engine {
   }
 
  private:
-  // The stream sample a note asked for now starts on: the next buffer's, and as
-  // far into it as the clock has moved since that buffer was dated, so notes
-  // keep their spacing however long a buffer is. Called under mutex_.
+  // The stream sample whatever is asked for now starts on: the next buffer's,
+  // and as far into it as the clock has moved since that buffer was dated, so
+  // notes keep their spacing however long a buffer is. Never behind what it
+  // said before: a buffer called back late dates the stream behind where the
+  // clock had run on to, and a graph started in that gap would read its own
+  // clock as before its start. Called under mutex_.
   int64_t stream_now() {
     double ahead = std::chrono::duration<double>(now_() - stream_at_).count();
-    return stream_next_ + static_cast<int64_t>(ahead * kSampleRate);
+    latest_now_ = std::max(
+        latest_now_,
+        stream_next_ + static_cast<int64_t>(ahead * kSampleRate));
+    return latest_now_;
   }
 
   Clock::time_point (*now_)();
@@ -924,11 +927,10 @@ class Engine {
   Queued inbox_[kQueueCap];   // handed over by tone(), drained once per buffer
   int inbox_count_ = 0;
   // Where the stream stands once the buffer being rendered is done, and the
-  // instant that was. tone() dates itself against this pair, so notes keep their
-  // spacing however long a buffer is.
+  // instant that was: stream_now() measures from this pair.
   int64_t stream_next_ = 0;
   Clock::time_point stream_at_{};
-  int64_t last_start_ = 0;    // notes are queued in order, never behind
+  int64_t latest_now_ = 0;  // the latest stream_now(), which never goes back
   std::vector<ScheduleCommand> schedule_inbox_;
   std::vector<GraphCommand> graph_inbox_;
   std::vector<GraphRank> graph_ranks_;

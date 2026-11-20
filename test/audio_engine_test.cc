@@ -337,6 +337,29 @@ void graph_plays_as_it_renders() {
   ad::graph_defs().erase(id);
 }
 
+// The stream's clock never goes back. A buffer called back late dates the
+// stream behind where the clock had run on to; a graph started in that gap
+// still reads its own clock as 0 or more once the late buffer is in.
+void clock_never_goes_back() {
+  const int64_t id = 9005;
+  ad::Graph def(ad::kMixerRate);
+  def.output(def.add(ad::PartKind::Wave, {}, ad::Oscillator{ad::WaveKind::Sine}, 220, 0));
+  ad::graph_defs().insert_or_assign(id, def);
+
+  Device device(10000);
+  device.run(3000);
+  g_now += std::chrono::milliseconds(50);  // the next buffer comes late
+  play(*device.engine, id);
+  double before = device.engine->graph_now(id);
+  device.run(1);  // that buffer, dated where the stream really is
+  double after = device.engine->graph_now(id);
+  CHECK(after >= before, "the graph's clock went from %f back to %f", before, after);
+  CHECK(after >= 0, "the graph's clock reads %f, before its start", after);
+  g_now = {};
+  stop(*device.engine, id);
+  ad::graph_defs().erase(id);
+}
+
 // A graph that reads a bus hears what a graph plays into it, the same
 // stretch: the reader is played first and the writer then starts in the
 // middle of a buffer, and the writer is still worked out first. The reader
@@ -687,6 +710,7 @@ int main() {
   graph_plays_as_it_renders();
   loop_plays_as_it_renders();
   stereo_graph_plays_as_it_renders();
+  clock_never_goes_back();
   bus_carries_a_graph();
   two_songs_on_both_channels();
   many_play_at_once();
