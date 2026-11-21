@@ -1,11 +1,11 @@
 // The page's audio, for a page that runs programs in the Playground's worker
 // (app.js, fm-synth.html). One AudioContext at the mixer's rate
-// (stdlib/audio_engine.h's kSampleRate), made at the first gesture so the page
-// asks for no audio before a program plays. A program's tones, schedules and
-// graphs play in it on the mixer, an AudioWorklet (audio-worklet.js) running
-// the engine a native build mixes with (audio-engine.wasm), so they play the
-// samples a native build plays. A worker sends the mixer its calls over a port
-// of its own (channel()).
+// (stdlib/audio_engine.h's kSampleRate), made as the page opens with the
+// mixer in it, so the first sound waits on nothing but the context resuming.
+// A program's tones, schedules and graphs play in it on the mixer, an
+// AudioWorklet (audio-worklet.js) running the engine a native build mixes
+// with (audio-engine.wasm), so they play the samples a native build plays. A
+// worker sends the mixer its calls over a port of its own (channel()).
 
 const MIXER_RATE = 44100;
 
@@ -38,20 +38,24 @@ export function hostAudio() {
     }
   }
 
-  // Browsers start an AudioContext "suspended" until a user gesture: made
-  // (once) and resumed if suspended, from the first click or key anywhere on
-  // the page and from a sound played, so a program that makes noise right away
-  // is not silent. Answers the context, or null with no audio here.
+  // Browsers keep a context made before a user gesture "suspended" (Chrome
+  // says so in the console): the mixer comes up in it all the same and takes
+  // a worker's calls, and once it renders its stream catches up the time it
+  // was held (stdlib/audio_wire.h). With no audio here (no device, or
+  // blocked) a program stays playable, silent.
+  try {
+    ctx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: MIXER_RATE });
+    startMixer();
+  } catch {
+    ctx = null;
+  }
+
+  // Resumed if suspended, from the first click or key anywhere on the page
+  // and from a sound played, so a program that makes noise right away is
+  // not silent. Answers the context, or null with no audio here.
   function ensure() {
-    try {
-      if (!ctx) {
-        ctx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: MIXER_RATE });
-        startMixer();
-      }
-      if (ctx.state === "suspended") ctx.resume();
-    } catch {
-      // Audio unavailable (no device, or blocked): a program stays playable.
-    }
+    // Refused (not yet a gesture), it stays suspended and the program plays on.
+    if (ctx && ctx.state === "suspended") ctx.resume().catch(() => {});
     return ctx;
   }
   for (const ev of ["pointerdown", "keydown", "touchstart"]) {

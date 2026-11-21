@@ -2,9 +2,10 @@
 // audio-worklet.js on the page's audio thread) fed what the committed
 // Playground wasm sends it, as the page wires them: a graph played is the
 // graph the same program renders, sample for sample; on a mixer that came
-// up late, a graph keeps the program's time; a tone sounds; a Sound
-// decodes for a song; and a second run in the same instance plays as the
-// first did (what a run leaves playing is let go).
+// up late, a graph keeps the program's time; a tone sounds, at once on a
+// mixer held still until it was asked for; a Sound decodes for a song; and
+// a second run in the same instance plays as the first did (what a run
+// leaves playing is let go).
 //
 //   node tools/playground/mixer_test.mjs
 
@@ -53,14 +54,73 @@ async function playWith(src, frames) {
   const sent = [];
   self.__audioPort = { postMessage: (m) => sent.push(m) };
   self.__audioStatus = null;
+  const out = await run(src);
+  const worker = { postMessage() {}, close() {}, onmessage: null };
+  const mixer = newMixer(worker);
+  const calls = sent.slice(0, -1);
+  for (const m of calls) worker.onmessage({ data: m });
+  return { out, ...render(mixer, frames), calls };
+}
+
+// One program run on a mixer made before it and held still (a page's
+// AudioContext, made as the page opens, stays suspended until its first
+// gesture): the mixer takes each call but the run's last (the reset that
+// lets go of what it left playing) as it comes, the wall clock moving
+// `stall` ms on after the run's first (its reset), and renders only after.
+// Answers the mixer's left over `frames`.
+async function playOnHeldMixer(src, frames, stall) {
+  const wall = Date.now;
+  let now = wall();
+  Date.now = () => now;
+  try {
+    // The worker takes the mixer's word on the stream as worker.js does.
+    const worker = {
+      postMessage: ({ status, at }) => {
+        const held = {};
+        for (let i = 1; i + 1 < status.length; i += 2) held[status[i]] = status[i + 1];
+        self.__audioStatus = { pos: status[0], at, held };
+      },
+      close() {},
+      onmessage: null,
+    };
+    self.__audioStatus = null;
+    const mixer = newMixer(worker);
+    const sent = [];
+    self.__audioPort = {
+      postMessage: (m) => {
+        sent.push({ m, at: now });
+        if (sent.length === 1) now += stall;
+      },
+    };
+    await run(src);
+    const end = now;
+    for (const { m, at } of sent.slice(0, -1)) {
+      now = at;
+      worker.onmessage({ data: m });
+    }
+    now = end;
+    return render(mixer, frames).left;
+  } finally {
+    Date.now = wall;
+  }
+}
+
+// The program run, the worker's audio state fresh (the mixer's word kept):
+// what it printed.
+async function run(src) {
   self.__soundPcm = {};
   const { out, failed } = await playground.run("/work/mixer.cul", src);
   if (failed) throw new Error("the program failed:\n" + out);
+  return out;
+}
+// The worklet, its port to the worker `worker`.
+function newMixer(worker) {
   const mixer = new Processor({ processorOptions: { module } });
-  const worker = { postMessage() {}, close() {}, onmessage: null };
   mixer.port.onmessage({ data: { port: worker } });
-  const calls = sent.slice(0, -1);
-  for (const m of calls) worker.onmessage({ data: m });
+  return mixer;
+}
+// The mixer's left and right over `frames`.
+function render(mixer, frames) {
   const left = new Float32Array(frames), right = new Float32Array(frames);
   const block = [new Float32Array(128), new Float32Array(128)];
   for (let at = 0; at < frames; at += 128) {
@@ -68,7 +128,7 @@ async function playWith(src, frames) {
     left.set(block[0].subarray(0, Math.min(128, frames - at)), at);
     right.set(block[1].subarray(0, Math.min(128, frames - at)), at);
   }
-  return { out, left, right, calls };
+  return { left, right };
 }
 
 let bad = 0;
@@ -103,8 +163,8 @@ for (const time of ["first", "second"]) {
   check(ms >= 250, `a sound of 0.3 s played to its end returned after ${Math.round(ms)} ms`);
 }
 
-// A mixer that comes up after a graph started (a page's first gesture comes
-// after its program began) plays the graph on the program's time: a change
+// A mixer that comes up after a graph started (its module came after the
+// program began) plays the graph on the program's time: a change
 // for now sounds at once, not as late as the mixer was.
 {
   const { left } = await play(`let {sine, control, play} = Synth
@@ -122,6 +182,15 @@ h.set("level", 0.3)
   check(left.some((v) => v !== 0), "a tone is silent");
 }
 
+// A mixer made as the page opens and held still until the first gesture
+// (which plays a tone) sounds the tone at once once it renders, not as long
+// after as it was held.
+{
+  const left = await playOnHeldMixer("Audio.tone(440, 30)\n", 4410, 3000);
+  const first = left.findIndex((v) => v !== 0);
+  check(first >= 0 && first < 441, `a tone on a mixer held 3 s sounds from sample ${first}, not at once`);
+}
+
 // A Sound is decoded for a song: the mixer's samples of it are kept.
 {
   const wav =
@@ -132,4 +201,4 @@ h.set("level", 0.3)
 }
 
 if (bad) process.exit(1);
-console.log("mixer OK (a graph played twice, a sound played to its end, a change on a mixer up late, a tone, a Sound decoded)");
+console.log("mixer OK (a graph played twice, a sound played to its end, a change on a mixer up late, a tone, a tone on a mixer held, a Sound decoded)");

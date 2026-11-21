@@ -59,9 +59,10 @@ __attribute__((export_name("engine_reset"))) void engine_reset() {
   const auto m = ad::wire::reset();
   engine().apply(m.data(), m.size());
 }
-// `frames` (at most kMixChunk) frames, the left and the right in turn.
-__attribute__((export_name("engine_render"))) const float* engine_render(int frames) {
-  engine().render(g_out.data(), static_cast<unsigned>(frames));
+// `frames` (at most kMixChunk) frames, the left and the right in turn,
+// rendered at `now_ms` on the wall clock.
+__attribute__((export_name("engine_render"))) const float* engine_render(int frames, double now_ms) {
+  engine().render(g_out.data(), static_cast<unsigned>(frames), now_ms);
   return g_out.data();
 }
 // WireEngine::status() into engine_status_at, answering its count.

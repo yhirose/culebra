@@ -820,6 +820,30 @@ void graph_travels_as_numbers() {
   CHECK(!decoded(bent, bent.size()), "a wave of two options was made");
 }
 
+// Message `m` taken by `far` as a worker sends it, at `ms` on the wall clock.
+void wire_send(ad::WireEngine& far, const std::vector<double>& m, ad::Pcm samples = nullptr, double ms = 0) {
+  CHECK(far.apply(m.data(), m.size(), std::move(samples), ms), "message %d was refused", static_cast<int>(m[0]));
+}
+// Song `id` as a worker sends it: opened, then its slots filled (the rows
+// and samples as song_rows and song_pcm make them).
+void wire_open_song(ad::WireEngine& far, int64_t id, const std::vector<double>& rows, const ad::PcmByHandle& pcm,
+                    double seconds, double ms = 0) {
+  auto slotted = ad::slotted_rows(rows.data(), static_cast<int64_t>(rows.size()),
+                                  [&](int64_t handle) { return pcm.contains(handle); });
+  wire_send(far,
+            ad::wire::schedule_open(id, slotted.rows.data(), static_cast<int64_t>(slotted.rows.size()),
+                                    static_cast<int64_t>(slotted.handles.size()), seconds, -1),
+            nullptr, ms);
+  for (size_t k = 0; k < slotted.handles.size(); k++)
+    wire_send(far, ad::wire::schedule_fill(id, static_cast<int64_t>(k)), pcm.at(slotted.handles[k]), ms);
+}
+// Where `far` says the stream is.
+int64_t wire_place(ad::WireEngine& far) {
+  std::vector<double> status;
+  far.status(status);
+  return static_cast<int64_t>(status[0]);
+}
+
 // An Engine sent its calls as numbers (audio_wire.h, as a browser's worker
 // sends them to its AudioWorklet) plays what one called directly plays,
 // sample for sample, each call made for the same stream sample: tones, a
@@ -838,9 +862,6 @@ void wire_plays_as_called() {
   ad::graph_defs().insert_or_assign(reader, r);
   auto rows = song_rows(1.0, 3);
   auto pcm = song_pcm();
-  // The song as a worker sends it: opened, then its slots filled.
-  auto slotted = ad::slotted_rows(rows.data(), static_cast<int64_t>(rows.size()),
-                                  [&](int64_t handle) { return pcm.contains(handle); });
 
   Device direct(200000);
   ad::WireEngine far;
@@ -856,7 +877,7 @@ void wire_plays_as_called() {
         direct.left.push_back(buffer[2 * i]);
         direct.right.push_back(buffer[2 * i + 1]);
       }
-      far.render(buffer.data(), n);
+      far.render(buffer.data(), n, 0.0);
       for (unsigned i = 0; i < n; i++) {
         far_left.push_back(buffer[2 * i]);
         far_right.push_back(buffer[2 * i + 1]);
@@ -864,9 +885,7 @@ void wire_plays_as_called() {
       frames -= n;
     }
   };
-  auto send = [&](const std::vector<double>& m, ad::Pcm samples = nullptr) {
-    CHECK(far.apply(m.data(), m.size(), std::move(samples)), "message %d was refused", static_cast<int>(m[0]));
-  };
+  auto send = [&](const std::vector<double>& m, ad::Pcm samples = nullptr) { wire_send(far, m, std::move(samples)); };
 
   run(3000);
   int64_t at = direct.pos() + 100;
@@ -879,10 +898,7 @@ void wire_plays_as_called() {
   run(5000);
 
   direct.engine->schedule_new(tune, song(rows, pcm, 1.0));
-  send(ad::wire::schedule_open(tune, slotted.rows.data(), static_cast<int64_t>(slotted.rows.size()),
-                               static_cast<int64_t>(slotted.handles.size()), 1.0, -1));
-  for (size_t k = 0; k < slotted.handles.size(); k++)
-    send(ad::wire::schedule_fill(tune, static_cast<int64_t>(k)), pcm.at(slotted.handles[k]));
+  wire_open_song(far, tune, rows, pcm, 1.0);
   direct.engine->schedule_volume(tune, 0.7);
   send(ad::wire::schedule(ad::WireOp::ScheduleVolume, tune, 0.7));
   direct.engine->schedule_room(tune, 0.3);
@@ -928,12 +944,7 @@ void wire_plays_as_called() {
   at = direct.pos();
   send(ad::wire::tone(0, ad::make_note(440, 440, 0, 0, 40000, 0, 80, 80, 2), at));
   run(1000);
-  // Where the far engine says the stream is.
-  auto place = [&] {
-    std::vector<double> status;
-    far.status(status);
-    return static_cast<long long>(status[0]);
-  };
+  auto place = [&] { return static_cast<long long>(wire_place(far)); };
   long long before = place();
   send(ad::wire::reset());
   CHECK(place() == before, "a reset moved the stream from %lld to %lld", before, place());
@@ -955,6 +966,148 @@ void wire_plays_as_called() {
   ad::bus_defs().erase(bus);
 }
 
+// A browser's mixer, on the wall clock (ms, Date.now()'s) it is called on:
+// reset to stream sample 0 at 1000 ms, as a worker resets it.
+struct WallMixer {
+  ad::WireEngine engine;
+  std::vector<float> left;
+  double ms = 1000.0;
+  double pace = 1.0;  // the wall clock's ms to a device's, which run apart a little
+  int burst = 4;      // the blocks of 128 frames a device asks for at once
+
+  WallMixer() { send(ad::wire::reset(0, ms)); }
+  void send(const std::vector<double>& m) { wire_send(engine, m, nullptr, ms); }
+  // The stream sample a call made now is dated (the worker's reckoning).
+  int64_t now() const { return std::llround((ms - 1000.0) * ad::kSampleRate / 1000.0); }
+  // `frames` (a multiple of 128) rendered in step with the wall clock, as an
+  // AudioContext renders: bursts of blocks at once, the clock moving on as
+  // long as they last before the next.
+  void run(int64_t frames) {
+    float buffer[2 * 128];
+    for (int64_t block = 0; block < frames / 128; block++) {
+      engine.render(buffer, 128, ms);
+      for (int i = 0; i < 128; i++) left.push_back(buffer[2 * i]);
+      if (block % burst == burst - 1) ms += pace * burst * 128 * 1000.0 / ad::kSampleRate;
+    }
+  }
+  // The first sample heard from `from` on; -1 for none.
+  int64_t first_heard(size_t from) const {
+    for (size_t i = from; i < left.size(); i++)
+      if (left[i] != 0) return static_cast<int64_t>(i - from);
+    return -1;
+  }
+  // The samples song `id` held, as the engine says.
+  int64_t held(int64_t id) {
+    std::vector<double> status;
+    engine.status(status);
+    for (size_t i = 1; i + 1 < status.size(); i += 2)
+      if (status[i] == static_cast<double>(id)) return static_cast<int64_t>(status[i + 1]);
+    return -1;
+  }
+  void open_song(int64_t id, const std::vector<double>& rows, const ad::PcmByHandle& pcm, double seconds) {
+    wire_open_song(engine, id, rows, pcm, seconds, ms);
+  }
+};
+
+// A browser's mixer held still (an AudioContext suspended until the page's
+// first gesture) while the worker dates its calls by the wall clock: once it
+// renders again the stream takes up the wall clock's place, as if it had
+// played on unheard. What was asked for meanwhile sounds at once, a tone and
+// a change for now to a graph; a song holds for the time it did not play
+// (its clock stands still, which it reports) and plays on from where it was,
+// from its top when it was started in that time. Rendering in step with the
+// wall clock moves nothing.
+void stalled_mixer_keeps_step() {
+  const double stall = 2000.0;  // ms
+  const int64_t stalled = std::llround(stall * ad::kSampleRate / 1000.0);
+  {
+    WallMixer far;
+    far.run(2048);
+    far.ms += stall;
+    const size_t from = far.left.size();
+    far.send(ad::wire::tone(0, ad::make_note(440, 440, 0, 0, 4000, 0, 80, 80, 2), far.now()));
+    far.run(1024);
+    const int64_t first = far.first_heard(from);
+    CHECK(first >= 0 && first < 64, "a tone asked for after a stall sounds %lld samples in",
+          static_cast<long long>(first));
+  }
+  {
+    const int64_t id = 9701;
+    ad::Graph def(ad::kMixerRate);
+    const int level = gain(def, wave(def, ad::WaveKind::Sine, 440), 0.0);
+    def.output(level);
+    ad::graph_defs().insert_or_assign(id, def);
+    WallMixer far;
+    const int64_t start = far.now();
+    far.send(ad::wire::graph_play(id, 0, *ad::graph_played(id, 0, def.buses_read()), start));
+    far.run(2048);
+    far.ms += stall;
+    const size_t from = far.left.size();
+    const double at = static_cast<double>(far.now() - start) / ad::kMixerRate;
+    far.send(ad::wire::graph_post(id, level, 0, ad::ParamEvent{at, false, 0.5, false}));
+    far.run(1024);
+    const int64_t first = far.first_heard(from);
+    CHECK(first >= 0 && first < 64, "a change for now after a stall sounds %lld samples in",
+          static_cast<long long>(first));
+    ad::graphs_playing().clear();
+    ad::graph_defs().erase(id);
+  }
+  auto rows = song_rows(1.0, 5);
+  auto pcm = song_pcm();
+  const auto want = rendered(rows, pcm, 1.0, 0.0, 1.0);
+  const int64_t length = static_cast<int64_t>(want.size()) + 8192;
+  {
+    WallMixer far;
+    far.open_song(1, rows, pcm, 1.0);
+    far.send(ad::wire::schedule_play(1, far.now()));
+    far.ms += stall;
+    far.run(length / 128 * 128);
+    hears("a song started before a stall", far.left, 0, want);
+    CHECK(far.held(1) == stalled, "a song started before a stall held %lld samples, not %lld",
+          static_cast<long long>(far.held(1)), static_cast<long long>(stalled));
+  }
+  {
+    WallMixer far;
+    far.open_song(1, rows, pcm, 1.0);
+    far.send(ad::wire::schedule_play(1, far.now()));
+    far.run(128 * 80);
+    CHECK(far.held(1) == 0 && wire_place(far.engine) == 128 * 80,
+          "rendering in step held %lld samples, the stream at %lld", static_cast<long long>(far.held(1)),
+          static_cast<long long>(wire_place(far.engine)));
+    far.ms += stall;
+    far.run(length / 128 * 128);
+    hears("a song playing across a stall", far.left, 0, want);
+    // The stall, give or take the burst the wall clock was read in.
+    CHECK(far.held(1) >= stalled && far.held(1) <= stalled + 512, "a song playing across a stall held %lld samples",
+          static_cast<long long>(far.held(1)));
+  }
+  {
+    // A song of 0.1 s whose one sample (0.3 s) rings on past its end.
+    const std::vector<double> ringing = {0, -1, 3, 0.5, 0, 0, 0, 0, 0, 0, 0};
+    WallMixer far;
+    far.open_song(1, ringing, pcm, 0.1);
+    far.send(ad::wire::schedule_play(1, far.now()));
+    far.run(128 * 50);
+    far.ms += stall;
+    far.run(128 * 8);
+    CHECK(far.held(1) == 0, "a song played through before a stall held %lld samples",
+          static_cast<long long>(far.held(1)));
+  }
+  {
+    // A device that renders in long bursts (4096 frames, some 93 ms) and
+    // runs slower than the wall clock (5% here, to show in seconds what a
+    // real one's drift shows in hours) falls behind it by more than a
+    // stall's mark, a little at each render: no stall.
+    WallMixer far;
+    far.burst = 32;
+    far.pace = 1.05;
+    const int64_t frames = 6 * ad::kSampleRate / 4096 * 4096;
+    far.run(frames);
+    CHECK(wire_place(far.engine) == frames, "a device slower than the wall clock moved on to %lld, not %lld",
+          static_cast<long long>(wire_place(far.engine)), static_cast<long long>(frames));
+  }
+}
+
 }  // namespace
 
 int main() {
@@ -968,6 +1121,7 @@ int main() {
   stereo_graph_plays_as_it_renders();
   clock_never_goes_back();
   late_graph_reads_its_start();
+  stalled_mixer_keeps_step();
   bus_carries_a_graph();
   two_songs_on_both_channels();
   many_play_at_once();

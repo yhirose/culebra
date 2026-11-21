@@ -58,7 +58,7 @@ class CulebraEngine extends AudioWorkletProcessor {
   process(_inputs, outputs) {
     const out = outputs[0];
     const frames = out[0].length;
-    const at = this.wasm.engine_render(frames);
+    const at = this.wasm.engine_render(frames, Date.now());
     const buffer = this.wasm.memory.buffer;
     if (!this.lr || this.lr.buffer !== buffer || this.lr.byteOffset !== at || this.lr.length !== 2 * frames)
       this.lr = new Float32Array(buffer, at, 2 * frames);

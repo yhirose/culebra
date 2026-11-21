@@ -205,6 +205,8 @@ class WireEngine {
         if (args >= 2) {
           if (!whole(a[0]) || !std::isfinite(a[1])) return false;
           base_ = static_cast<int64_t>(a[0]) + std::llround((now_ms - a[1]) * kSampleRate / 1000.0);
+          step_at_ = base_;
+          step_ms_ = now_ms;
         } else {
           base_ += engine_->played_to();
         }
@@ -218,22 +220,44 @@ class WireEngine {
     return false;
   }
 
-  // `frames` frames, the left and the right in turn.
-  void render(float* out, unsigned frames) { engine_->render(out, frames); }
+  // `frames` frames, the left and the right in turn, rendered at `now_ms`
+  // on the wall clock. The stream keeps step with the wall clock the worker
+  // dates its calls by: from where the two last were in step (a reset with a
+  // place, or the last render), a stream further behind than kOutOfStep was
+  // held still (an AudioContext suspended until the page's first gesture),
+  // and passes on over that time unheard (Engine::pass), so what was asked
+  // for meanwhile sounds now. A device's own pace and its buffers stay well
+  // inside it, and taking up the step at each render keeps the two clocks'
+  // drift from adding up.
+  void render(float* out, unsigned frames, double now_ms) {
+    if (!std::isnan(step_ms_)) {
+      const int64_t behind = step_at_ + std::llround((now_ms - step_ms_) * kSampleRate / 1000.0) - place();
+      if (behind > kOutOfStep) engine_->pass(behind);
+    }
+    step_at_ = place();
+    step_ms_ = now_ms;
+    engine_->render(out, frames);
+  }
 
   // What the worker reckons the stream's clock and a schedule's hold from,
   // into `out`: the stream sample the next render starts on, then each
   // schedule's samples held since it last started, as id and held.
   void status(std::vector<double>& out) {
     out.clear();
-    out.push_back(static_cast<double>(base_ + engine_->played_to()));
+    out.push_back(static_cast<double>(place()));
     for (int64_t id : schedules_)
       out.insert(out.end(), {static_cast<double>(id), static_cast<double>(engine_->schedule_held(id))});
   }
 
  private:
+  // Samples behind the wall clock that tell a stream held still (250 ms),
+  // well past what a device renders in one burst.
+  static constexpr int64_t kOutOfStep = kSampleRate / 4;
+
   // The Engine's own clock dates nothing here (every call brings its start).
   static Engine::Clock::time_point epoch() { return {}; }
+  // The stream sample the next render starts on.
+  int64_t place() { return base_ + engine_->played_to(); }
 
   template <class Whole>
   bool graph_play(NumberReader& in, Whole whole) {
@@ -278,6 +302,10 @@ class WireEngine {
 
   std::unique_ptr<Engine> engine_;
   int64_t base_ = 0;  // the stream samples played by the Engines before this one
+  // Where the stream and the wall clock were last in step: the stream sample
+  // and the time (none before the first render or reset with a place).
+  int64_t step_at_ = 0;
+  double step_ms_ = std::nan("");
   std::set<int64_t> schedules_;
   // The kind of each part of each graph playing, which a change is checked
   // against, and the buses they touch, by the worker's handles.

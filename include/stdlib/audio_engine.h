@@ -238,6 +238,8 @@ struct Schedule {
   int64_t length = 0;              // samples in one time through
   int64_t loop_at = -1;            // where a loop goes back to; -1 plays once
   std::atomic<double> volume{1.0};
+  // No loop, or one that would go back past its end.
+  bool plays_once() const { return loop_at < 0 || length <= loop_at; }
   std::unique_ptr<Room> room = std::make_unique<Room>();
   // Samples it has held since it last started, waiting for a slot (Mixer::advance).
   std::atomic<int64_t> held{0};
@@ -380,6 +382,10 @@ struct Mixer {
   // Start what schedule `ps` has due at sample `p`, and go round again at its
   // end if it loops; false once it has played through and its sounds ended.
   bool advance(PlayingSchedule& ps, int64_t p);
+  // The stream passes from sample `from` to `to` unheard (Engine::pass, or a
+  // start it already passed): schedule `ps` holds for what of that it would
+  // have played, its clock standing still as for a sound not yet come.
+  void hold(PlayingSchedule& ps, int64_t from, int64_t to);
   // Silence what schedule `id` started: its tones on their channels, its samples.
   void cut(int64_t id);
   // A sample starting, stealing from the oldest past kMaxSamplers.
@@ -424,7 +430,7 @@ inline bool Mixer::advance(PlayingSchedule& ps, int64_t p) {
       }
     }
     if (p < ps.origin + s.length) return true;
-    if (s.loop_at < 0 || s.length <= s.loop_at) {
+    if (s.plays_once()) {
       // Played through, it goes once nothing it started sounds, its room too.
       return s.room->ringing() ||
              std::ranges::any_of(samplers, [&](const Sampler& x) { return x.owner == ps.id; }) ||
@@ -435,6 +441,16 @@ inline bool Mixer::advance(PlayingSchedule& ps, int64_t p) {
                                [](const ScheduleEvent& e, int64_t at) { return e.at < at; }) -
               s.events.begin();
   }
+}
+
+inline void Mixer::hold(PlayingSchedule& ps, int64_t from, int64_t to) {
+  Schedule& s = *ps.schedule;
+  // Played through, only its sounds ring on.
+  if (s.plays_once() && from >= ps.origin + s.length) return;
+  const int64_t n = to - std::max(from, ps.origin);
+  if (n <= 0) return;
+  ps.origin += n;
+  s.held.fetch_add(n, std::memory_order_relaxed);
 }
 
 inline void Mixer::start(const Sampler& s) {
@@ -876,6 +892,9 @@ class Engine {
           cmd.schedule->held.store(0, std::memory_order_relaxed);
           assert(mix_.playing.size() < mix_.playing.capacity());  // LongerList's room
           mix_.playing.push_back(PlayingSchedule{cmd.id, std::move(cmd.schedule), cmd.start, 0});
+          // Its start already passed (a browser's mixer held still, or up
+          // late): it holds until now, and starts from its top.
+          mix_.hold(mix_.playing.back(), cmd.start, pos_);
         }
       }
       schedule_inbox_.clear();
@@ -886,9 +905,9 @@ class Engine {
       for (auto& cmd : graph_inbox_) {
         std::erase_if(graphs_, [&](const PlayingGraph& pg) { return pg.id == cmd.id; });
         if (!cmd.graph) continue;
-        // Its start already passed (a browser's mixer that came up after the
-        // worker started it): its time is still counted from that start.
-        if (cmd.start < pos_) cmd.graph->start_late(pos_ - cmd.start);
+        // Its start already passed (a browser's mixer held still, or up
+        // late): its time is still counted from that start.
+        if (cmd.start < pos_) cmd.graph->pass(pos_ - cmd.start);
         assert(graphs_.size() < graphs_.capacity());  // LongerList's room
         graphs_.push_back(PlayingGraph{cmd.id, std::move(cmd.graph), cmd.start, cmd.instance, cmd.rank});
         moved = true;
@@ -949,6 +968,22 @@ class Engine {
     std::move(pending_ + head, pending_ + pending_count_, pending_);
     pending_count_ -= head;
     pos_ += frames;
+  }
+
+  // `n` samples of the stream pass unheard, as if played with no device to
+  // hear them (a browser's mixer held still while its worker's clock ran on:
+  // audio_wire.h's WireEngine). The graphs' time moves on past them, the
+  // songs hold for them, and what was asked to start in them starts on the
+  // next sample; what sounds sounds on from where it was.
+  void pass(int64_t n) {
+    assert(n >= 0);
+    const int64_t to = pos_ + n;
+    for (auto& pg : graphs_) pg.graph->pass(std::clamp<int64_t>(to - pg.origin, 0, n));
+    for (auto& ps : mix_.playing) mix_.hold(ps, pos_, to);
+    pos_ = to;
+    std::lock_guard<std::mutex> lock(mutex_);
+    stream_next_ = pos_;
+    stream_at_ = now_();
   }
 
  private:

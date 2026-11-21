@@ -108,8 +108,8 @@ inline void send(const std::vector<double>& m, int64_t sound = -1) {
 // The stream's clock, as the worker reckons it: from the place it set at the
 // last reset (reset_playing), which the worklet took up, and the wall clock
 // since, corrected by the worklet's word once it comes. So it runs with no
-// worklet too (a page not yet clicked, a test), as a native stream's clock
-// does with no device.
+// worklet rendering too (one not yet up, or held still until the page's first
+// gesture; a test), as a native stream's clock does with no device.
 struct WebClock {
   int64_t at = 0;  // the stream sample at the last reset
   double at_ms = std::nan("");  // and when that was, on the wall clock (none before the first)
