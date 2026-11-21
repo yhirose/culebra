@@ -124,11 +124,12 @@ EMSCRIPTEN_KEEPALIVE int run_culebra(const char* src_c, const char* path_c,
   // every Run click, so a Runtime carried between them dangles on the second.
   culebra::Runtime rt;
   culebra::RuntimeScope scope(rt);
-  // What the last run left playing on the mixer stops, and what this one
-  // leaves stops with it (the run is the process here).
-  culebra::_audio_detail::reset_playing();
+  // What the last run left of the audio (sounds playing, MIDI ports open)
+  // is let go, and what this one leaves goes with it (the run is the
+  // process here).
+  culebra::_audio_detail::reset_run();
   struct ResetAfter {
-    ~ResetAfter() { culebra::_audio_detail::reset_playing(); }
+    ~ResetAfter() { culebra::_audio_detail::reset_run(); }
   } reset_after;
 
   int rc = 0;

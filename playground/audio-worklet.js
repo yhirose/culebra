@@ -23,7 +23,7 @@ class CulebraEngine extends AudioWorkletProcessor {
     this.lr = null;  // the rendered frames' view, made again when memory grows
     // A worker's port: its calls from now on, after a reset of what the last
     // one left playing (a worker resets the mixer itself, in line with its
-    // calls, before and after each run: audio_web.h's reset_playing).
+    // calls, before and after each run: audio_web.h's reset_run).
     this.port.onmessage = (e) => {
       if (this.worker) this.worker.close();
       this.wasm.engine_reset();

@@ -11,17 +11,23 @@
 // stream was and the time since. The samples a schedule plays are decoded in
 // the worker by the decoders a native build has (playground's
 // audio-engine.wasm), so a song mixes the same samples as natively. Without a
-// page (no port) nothing plays, as on a machine with no device.
+// page (no port) nothing plays, as on a machine with no device. MIDI is the
+// page's Web MIDI, through midilib as natively (below).
 //
 // Included by playground/wasm_main.cc alone, which is the whole program.
 
 #include <stdlib/audio_wire.h>
+#include <stdlib/midi_handles.h>
 
 #include <emscripten.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
+#include <cstring>
+#include <string>
 #include <unordered_map>
 #include <vector>
 
@@ -130,9 +136,8 @@ inline std::unordered_map<int64_t, int64_t>& graph_origins() {
   return origins;
 }
 
-// Everything the mixer plays let go, as a native process's exit does: before
-// and after each run (playground/wasm_main.cc).
-// The stream's place goes with it, for the worklet to take up.
+// Everything the mixer plays let go (reset_run's part), the stream's place
+// going with it for the worklet to take up.
 inline void reset_playing() {
   graph_origins().clear();
   auto& c = web_clock();
@@ -224,6 +229,218 @@ void graph_post(int64_t id, int part, int value, ParamEvent e) {
 double graph_now(int64_t id) {
   auto it = graph_origins().find(id);
   return it == graph_origins().end() ? std::nan("") : static_cast<double>(stream_now() - it->second) / kSampleRate;
+}
+
+// --- MIDI: the page's Web MIDI, through midilib's host backend --------------
+//
+// The page asks the browser for MIDI when a program first asks for a port
+// (worker.js's __midiAccess, which this waits for with JSPI: the first time,
+// the browser asks the user), then tells the worker the ports there are and
+// each message of an input this program holds open. Those wait in worker.js
+// until taken here (midi_pump) into midilib, as the system's MIDI thread
+// fills its queues natively, and from there everything is a native build's
+// (midi_handles.h). Waiting for one gives the worker back to its event loop
+// until one comes. Without JSPI (an older browser) there is no MIDI: no ports.
+
+#if defined(CULEBRA_WASM_JSPI)
+// What is granted, MIDI asked for (with sysexes when `sysex`): 1 for MIDI,
+// and 2 for sysexes, the page asking the browser when it must.
+EM_ASYNC_JS(int, _wasm_midi_access, (int sysex), {
+  const granted = await self.__midiAccess(sysex !== 0);
+  return (granted.ok ? 1 : 0) | (granted.sysex ? 2 : 0);
+});
+// Until a message of an input held open comes, or `ms` pass.
+EM_ASYNC_JS(void, _wasm_midi_wait, (double ms), {
+  await self.__midiWait(ms);
+});
+#endif
+// Which list of ports the page last told of (each a new number).
+EM_JS(int, _wasm_midi_ports_version, (), { return self.__midi.version; });
+// That list: each input as id, unit separator, name, record separator; then a
+// group separator; then each output the same way. Freed by the caller.
+EM_JS(char*, _wasm_midi_ports, (), {
+  const list = (ports) => ports.map((p) => p.id + "\x1f" + p.name + "\x1e").join("");
+  const text = list(self.__midi.inputs) + "\x1d" + list(self.__midi.outputs);
+  const n = lengthBytesUTF8(text) + 1;
+  const at = _malloc(n);
+  stringToUTF8(text, at, n);
+  return at;
+});
+// The messages waiting, taken: their count, then each as how long ago it came
+// in ms (a double), its port's id's length and its bytes' (32 bits each), and
+// those bytes, little-endian; null when none wait. Freed by the caller.
+EM_JS(uint8_t*, _wasm_midi_take, (), {
+  const q = self.__midi.queue;
+  if (q.length === 0) return 0;
+  const now = performance.timeOrigin + performance.now();
+  const enc = new TextEncoder();
+  const byPort = new Map();  // a take's messages come from a port or two
+  const ids = q.map((m) => byPort.get(m.id) || byPort.set(m.id, enc.encode(m.id)).get(m.id));
+  let n = 4;
+  q.forEach((m, i) => { n += 16 + ids[i].length + m.data.length; });
+  const at = _malloc(n);
+  const view = new DataView(HEAPU8.buffer, at, n);
+  view.setUint32(0, q.length, true);
+  let k = 4;
+  q.forEach((m, i) => {
+    view.setFloat64(k, now - m.at, true);
+    view.setUint32(k + 8, ids[i].length, true);
+    view.setUint32(k + 12, m.data.length, true);
+    HEAPU8.set(ids[i], at + k + 16);
+    HEAPU8.set(m.data, at + k + 16 + ids[i].length);
+    k += 16 + ids[i].length + m.data.length;
+  });
+  q.length = 0;
+  return at;
+});
+// An input of port `id` held open (`by` 1) or let go (-1): worker.js keeps the
+// messages of the ports held, and passes over the rest.
+EM_JS(void, _wasm_midi_hold, (const char* id, int by), {
+  const held = self.__midi.held;
+  const port = UTF8ToString(id);
+  held[port] = (held[port] || 0) + by;
+});
+EM_JS(void, _wasm_midi_send, (const char* id, const uint8_t* bytes, int n), {
+  postMessage({ type: "midiSend", id: UTF8ToString(id), bytes: HEAPU8.slice(bytes, bytes + n) });
+});
+
+// The ports and messages the page has sent since, into midilib.
+inline void midi_pump() {
+  static int version = -1;
+  if (int v = _wasm_midi_ports_version(); v != version) {
+    version = v;
+    char* text = _wasm_midi_ports();
+    std::string s(text);
+    std::free(text);
+    std::vector<midilib::Port> lists[2];
+    size_t side = 0;
+    for (size_t i = 0; i < s.size();) {
+      if (s[i] == '\x1d') {
+        side = 1;
+        i++;
+        continue;
+      }
+      size_t unit = s.find('\x1f', i), end = s.find('\x1e', i);
+      if (unit == std::string::npos || end == std::string::npos) break;
+      lists[side].push_back({s.substr(i, unit - i), s.substr(unit + 1, end - unit - 1)});
+      i = end + 1;
+    }
+    midilib::host::set_ports(std::move(lists[0]), std::move(lists[1]));
+  }
+  uint8_t* taken = _wasm_midi_take();
+  if (!taken) return;
+  auto u32 = [](const uint8_t* p) {
+    uint32_t x;
+    std::memcpy(&x, p, 4);
+    return x;
+  };
+  const int64_t now = midilib::now_ns();
+  const uint8_t* p = taken + 4;
+  std::string id;
+  for (uint32_t k = u32(taken); k > 0; k--) {
+    double ago_ms;
+    std::memcpy(&ago_ms, p, 8);
+    const uint32_t id_len = u32(p + 8), n = u32(p + 12);
+    id.assign(reinterpret_cast<const char*>(p + 16), id_len);
+    midilib::host::receive(id, p + 16 + id_len, n, now - static_cast<int64_t>(ago_ms * 1e6));
+    p += 16 + id_len + n;
+  }
+  std::free(taken);
+}
+
+// What the browser granted this run, and what it was asked for: a later run
+// asks again, as a later process does natively.
+struct MidiGrant {
+  bool asked = false, asked_sysex = false;
+  bool midi = false, sysex = false;
+};
+inline MidiGrant& midi_grant() {
+  static MidiGrant grant;
+  return grant;
+}
+
+// What is granted, MIDI asked for once a run, and sysexes too when `sysex`;
+// a refused sysex leaves what was granted.
+inline const MidiGrant& midi_granted(bool sysex) {
+  auto& g = midi_grant();
+#if defined(CULEBRA_WASM_JSPI)
+  static const bool sending = [] {
+    midilib::host::on_send([](const std::string& id, const std::vector<uint8_t>& bytes) {
+      _wasm_midi_send(id.c_str(), bytes.data(), static_cast<int>(bytes.size()));
+    });
+    return true;
+  }();
+  (void)sending;
+  if (sysex ? !g.sysex && !g.asked_sysex : !g.asked) {
+    const int answer = _wasm_midi_access(sysex ? 1 : 0);
+    g.asked = true;
+    g.asked_sysex = g.asked_sysex || sysex;
+    g.midi = (answer & 1) != 0;
+    g.sysex = (answer & 2) != 0;
+  }
+#else
+  (void)sysex;
+#endif
+  return g;
+}
+
+// Whether MIDI is there, the ports and messages the page has sent taken in.
+inline bool midi_ready(bool sysex) {
+  if (!midi_granted(sysex).midi) return false;
+  midi_pump();
+  return true;
+}
+
+std::vector<std::string> midi_ports(bool output) { return midi_ready(false) ? midi::ports(output) : std::vector<std::string>{}; }
+// An input's messages are held from when it opens, as natively.
+bool midi_open(int64_t id, const std::string& port, bool sysex) {
+  if (!midi_ready(sysex) || !midi::open(id, port, sysex)) return false;
+  _wasm_midi_hold(port.c_str(), 1);
+  return true;
+}
+bool midi_out_open(int64_t id, const std::string& port) { return midi_ready(false) && midi::open_output(id, port); }
+void midi_free(int64_t id) {
+  if (auto* in = midi::input(id)) _wasm_midi_hold(in->port.c_str(), -1);
+  midi::close(id);
+}
+// A sysex goes out only with the browser's leave, asked for when one is sent
+// (0xF0 is never a data byte).
+std::string midi_send(int64_t id, const std::vector<uint8_t>& bytes) {
+  if (std::find(bytes.begin(), bytes.end(), 0xF0) != bytes.end() && !midi_granted(true).sysex)
+    return "the browser did not allow sysexes";
+  return midi::send(id, bytes);
+}
+void midi_read(int64_t id, std::vector<double>& out) {
+  midi_pump();
+  midi::read(id, out);
+}
+bool midi_wait(int64_t id, double seconds) {
+  auto* in = midi::input(id);
+  if (!in) return false;
+  const double until = _wasm_audio_now_ms() + seconds * 1000.0;
+  for (;;) {
+    midi_pump();
+    if (in->input.wait(std::chrono::nanoseconds(0))) return true;
+    const double left = until - _wasm_audio_now_ms();
+    if (left <= 0) return false;
+#if defined(CULEBRA_WASM_JSPI)
+    _wasm_midi_wait(left);
+#else
+    return false;
+#endif
+  }
+}
+int64_t midi_control(int64_t id, int64_t channel, int64_t cc) { return midi::control(id, channel, cc); }
+int64_t midi_dropped(int64_t id) { return midi::dropped(id); }
+
+// What a run holds of the audio let go, as a native process's exit does: what
+// the mixer plays, the MIDI ports open and what was granted. Before and after each run
+// (playground/wasm_main.cc).
+inline void reset_run() {
+  reset_playing();
+  for (auto& [id, in] : midi::ins()) _wasm_midi_hold(in.port.c_str(), -1);
+  midi::close_all();
+  midi_grant() = {};
 }
 
 }  // namespace _audio_detail

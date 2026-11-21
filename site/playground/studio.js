@@ -135,6 +135,8 @@ function workerRunner(on) {
           const kind = runs.finished();
           const file = m.files?.[RUNS[kind].out];
           on.done(kind, m.rc, file ? RUNS[kind].read(file) : null);
+        } else if (m.type === "midiAccess") {
+          worker.postMessage({ type: "midiAccess", ok: false });  // the studio plays no MIDI
         }
         // The rest (the Sound the run builds its WAV with, a Canvas frame) is
         // the Playground's to show: here the sound is the WAV the run leaves.

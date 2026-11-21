@@ -73,7 +73,7 @@ COMMON=(
   # (worker.js mounts it). MEMFS serves everything else.
   -lidbfs.js
   -Iinclude
-  -Ivendor/cpp-peglib -Ivendor/cpp-unicodelib -Ivendor/cpp-regexlib
+  -Ivendor/cpp-peglib -Ivendor/cpp-unicodelib -Ivendor/cpp-regexlib -Ivendor/cpp-midilib
   -Ivendor/cpp-tensorlib/include -Ivendor/cpp-tensorlib/kernels
   # The same roots CMakeLists.txt gives the Search stack: cpp-searchlib reaches
   # peglib, unicodelib and fstlib by bare name (one copy of each), and its

@@ -919,9 +919,22 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE double culebra_runtime_time_monotonic() {
   return std::chrono::duration<double>(d).count();
 }
 
+#if defined(__EMSCRIPTEN__) && defined(CULEBRA_WASM_JSPI)
+// A browser's worker sleeps by giving itself back to its event loop (JSPI),
+// so what the page sends it (MIDI, input) comes in meanwhile, as a native
+// program's other threads go on while it sleeps.
+EM_ASYNC_JS(void, _wasm_time_sleep, (double ms), {
+  await new Promise((done) => setTimeout(done, ms));
+});
+#endif
+
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_time_sleep(double secs) {
   if (secs > 0) {
+#if defined(__EMSCRIPTEN__) && defined(CULEBRA_WASM_JSPI)
+    _wasm_time_sleep(secs * 1000.0);
+#else
     std::this_thread::sleep_for(std::chrono::duration<double>(secs));
+#endif
   }
 }
 

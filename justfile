@@ -2412,6 +2412,7 @@ check-playground bin="./build/culebra":
     node tools/playground/smoke.mjs {{bin}}
     node tools/playground/studio_test.mjs {{bin}}
     node tools/playground/mixer_test.mjs
+    node tools/playground/midi_test.mjs
     node tools/playground/share_link_test.mjs
     node tools/playground/project_test.mjs
 

@@ -9486,8 +9486,13 @@ program that plays sound as it is played, and output to one, as to change
 a device's settings. An input's messages wait from when it opens until
 they are read, in the order they came, each with the time it came. `MIDI`
 rides on `Audio`'s native backend: CoreMIDI on macOS, WinMM on Windows, and
-on Linux the ALSA sequencer, loaded when it is first asked for. With no
-device, in the browser, or with `CULEBRA_AUDIO` set to `off`,
+on Linux the ALSA sequencer, loaded when it is first asked for. In the
+browser it is the page's Web MIDI (Chrome, Edge, Firefox), asked for when a
+program first asks for a port, which waits for the answer (the first time
+the browser asks the user; a sysex input, or a sysex sent, asks again, and a
+sysex the browser does not allow raises `ValueError` from `send`), and a
+wait or a `Time.sleep` lets the messages in. With no device, with `CULEBRA_AUDIO` set
+to `off`, or in a browser without Web MIDI (Safari) or without JSPI,
 `MIDI.inputs()` and `MIDI.outputs()` are `[]`.
 
 | Function / method | Effect |

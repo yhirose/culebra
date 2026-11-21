@@ -2,6 +2,7 @@
 // Stop = the main thread terminates this worker and spawns a fresh one.
 
 import { engineImports, mixerDecoder } from "./audio-engine.js";
+import { workerMidi } from "./web-midi.js";
 
 // Two builds ship (see build.sh): culebra-full adds JSPI, which is what makes
 // the TUI tab's Term.read_key and Canvas.present able to wait — without it a
@@ -193,6 +194,10 @@ self.__soundsPlaying = {};
 self.__audioPort = null;
 self.__audioStatus = null;
 self.__soundPcm = {};
+
+// MIDI: the page's Web MIDI, for stdlib/audio_web.h (web-midi.js).
+const onMidi = workerMidi(self, postMessage);
+
 self.__decodeForMixer = await (async () => {
   try {
     const { instance } = await WebAssembly.instantiateStreaming(fetch("./audio-engine.wasm"), engineImports);
@@ -313,6 +318,7 @@ onmessage = async (e) => {
     self.__canvasMouseButtons = e.data.buttons;
     return;
   }
+  if (onMidi(e.data)) return;
   if (type === "audioPort") {
     // The worklet's word on the stream: [where it is, then id and held
     // samples for each schedule], dated by the worklet on the wall clock.

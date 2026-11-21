@@ -13,9 +13,9 @@
 //   build (CULEBRA_RT_AUDIO_WEAK)   feature archive when a program names Audio
 //   browser (__EMSCRIPTEN__)        the same mixer in the page's AudioWorklet
 //                                   for tones, schedules and graphs, WebAudio
-//                                   for Sound and Music, with the bodies in
-//                                   stdlib/audio_web.h; PCM, Capture and MIDI
-//                                   are silent there
+//                                   for Sound and Music, the page's Web MIDI,
+//                                   with the bodies in stdlib/audio_web.h;
+//                                   PCM and Capture are silent there
 //   anything else                   silent, as a machine with no device is
 //
 // Silent means what a native build answers on a machine with no audio device:
@@ -2727,8 +2727,8 @@ void music_seek(int64_t id, double seconds);
 void music_volume(int64_t id, double v);
 void music_pitch(int64_t id, double p);
 void music_pan(int64_t id, double p);
-// A browser has none of these yet: its PCM, Capture and MIDI are the silent
-// ones below.
+// A browser has none of these yet: its PCM and Capture are the silent ones
+// below.
 #if defined(CULEBRA_AUDIO_DEVICE)
 void pcm_new(int64_t id, int64_t rate, int64_t channels, int64_t buffer);
 void pcm_free(int64_t id);
@@ -2757,7 +2757,9 @@ int64_t capture_waiting(int64_t id);
 // Up to `frames` waiting frames (all of them when negative), interleaved into
 // `out`, which arrives empty.
 void capture_read(int64_t id, int64_t frames, std::vector<float>& out);
-// MIDI (vendor/cpp-midilib), on the device's backend: the inputs (or
+#endif
+// MIDI (vendor/cpp-midilib, stdlib/midi_handles.h), on the system's MIDI
+// natively and the page's Web MIDI in a browser: the inputs (or
 // outputs) there are, each its id and then its name; an input opened under
 // handle `id`, getting sysexes when `sysex` (false when there is no `port`);
 // an output the same way; either closed; what came since the last read, six
@@ -2776,7 +2778,6 @@ void midi_read(int64_t id, std::vector<double>& out);
 bool midi_wait(int64_t id, double seconds);
 int64_t midi_control(int64_t id, int64_t channel, int64_t cc);
 int64_t midi_dropped(int64_t id);
-#endif
 void schedule_new(int64_t id, const double* events, int64_t count, double length,
                double loop_at);
 void schedule_free(int64_t id);
@@ -2935,8 +2936,8 @@ CULEBRA_RT_AUDIO_LINKAGE void capture_read(int64_t, int64_t,
                                            std::vector<float>&) {}
 #endif
 
-// MIDI input, the same: no inputs, and none opens.
-#if !defined(CULEBRA_AUDIO_DEVICE)
+// MIDI where there is no backend, the same: no inputs, and none opens.
+#if defined(CULEBRA_AUDIO_SILENT)
 CULEBRA_RT_AUDIO_LINKAGE std::vector<std::string> midi_ports(bool) { return {}; }
 CULEBRA_RT_AUDIO_LINKAGE bool midi_open(int64_t, const std::string&, bool) { return false; }
 CULEBRA_RT_AUDIO_LINKAGE bool midi_out_open(int64_t, const std::string&) { return false; }

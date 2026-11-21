@@ -9069,8 +9069,12 @@ MIDIコントローラ（鍵盤、ウインドコントローラ、パッドな�
 入力は演奏に合わせて音を鳴らすプログラムのため、出力はデバイスの設定を変えるときなどのための
 ものです。入力を開くと、届いたメッセージは読まれるまで、届いた順に、届いた時刻とともに待ちます。
 `MIDI`は`Audio`のネイティブのバックエンドの上で動きます。macOSはCoreMIDI、WindowsはWinMM、
-LinuxはALSAのシーケンサで、LinuxではALSAを最初に必要になったときに読み込みます。デバイスが
-無いとき、ブラウザ、`CULEBRA_AUDIO`が`off`のときは、`MIDI.inputs()`も`MIDI.outputs()`も`[]`です。
+LinuxはALSAのシーケンサで、LinuxではALSAを最初に必要になったときに読み込みます。ブラウザでは
+ページのWeb MIDI（Chrome、Edge、Firefox）を使います。プログラムが最初にポートを求めたときに
+許可を求め、答えが出るまで待ちます（初回はブラウザが利用者に確認します。sysexを受ける入力を開くときと、
+sysexを送るときはもう一度確認し、ブラウザが許さないsysexの`send`は`ValueError`です）。メッセージは、`wait`か`Time.sleep`で待っている間に届きます。デバイスが
+無いとき、`CULEBRA_AUDIO`が`off`のとき、Web MIDIの無いブラウザ（Safari）やJSPIの無いブラウザでは、
+`MIDI.inputs()`も`MIDI.outputs()`も`[]`です。
 
 | 関数・メソッド | 効果 |
 | --- | --- |

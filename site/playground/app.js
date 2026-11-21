@@ -432,6 +432,19 @@ function spawnWorker() {
       drawFrame(msg);
       return;
     }
+    if (msg.type === "midiAccess") {
+      answerMidi(msg.sysex);
+      return;
+    }
+    if (msg.type === "midiSend") {
+      const out = midiAccess && midiAccess.outputs.get(msg.id);
+      try {
+        if (out) out.send(msg.bytes);
+      } catch {
+        // Unplugged since: what is sent to a device gone is lost, as natively.
+      }
+      return;
+    }
     if (msg.type === "music") {
       handleMusic(msg);
       return;
@@ -949,6 +962,54 @@ function connectMixer() {
   if (!mixer || !mixerPort) return;
   mixer.port.postMessage({ port: mixerPort }, [mixerPort]);
   mixerPort = null;
+}
+
+// --- MIDI: the browser's Web MIDI, for the worker (stdlib/audio_web.h) -------
+//
+// Asked for when a program first asks for a port, which waits for the answer
+// (the first time the browser asks the user), and again for sysexes; a
+// refusal leaves what was granted. From then on the worker is sent the ports
+// as they change and every message of every input, dated on the wall clock;
+// it keeps those of the inputs a program holds open. Web MIDI is the page's
+// alone (a worker has none). A browser without it (Safari) has no ports.
+let midiAccess = null;
+
+async function answerMidi(sysex) {
+  try {
+    if (navigator.requestMIDIAccess && (!midiAccess || (sysex && !midiAccess.sysexEnabled))) {
+      const next = await navigator.requestMIDIAccess({ sysex });
+      // An access has ports of its own: the old one's stop, or each message
+      // would come twice.
+      if (midiAccess) {
+        midiAccess.onstatechange = null;
+        for (const input of midiAccess.inputs.values()) input.onmidimessage = null;
+      }
+      midiAccess = next;
+      midiAccess.onstatechange = () => {
+        listenMidi();
+        sendMidiPorts();
+      };
+      listenMidi();
+    }
+  } catch {
+    // Refused, or no MIDI here: what was granted before stays.
+  }
+  if (midiAccess) sendMidiPorts();
+  worker.postMessage({ type: "midiAccess", ok: midiAccess !== null, sysex: midiAccess?.sysexEnabled === true });
+}
+
+function listenMidi() {
+  for (const input of midiAccess.inputs.values()) {
+    input.onmidimessage = (e) => {
+      if (worker) worker.postMessage({ type: "midi", id: input.id, data: e.data, at: performance.timeOrigin + e.timeStamp });
+    };
+  }
+}
+
+function sendMidiPorts() {
+  const list = (ports) =>
+    [...ports.values()].filter((p) => p.state === "connected").map((p) => ({ id: p.id, name: p.name }));
+  worker.postMessage({ type: "midiPorts", inputs: list(midiAccess.inputs), outputs: list(midiAccess.outputs) });
 }
 
 // --- Audio.Sound / Audio.Music: decoded and driven here ----------------------
