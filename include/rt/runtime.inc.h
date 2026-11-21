@@ -2116,14 +2116,21 @@ inline std::optional<std::string> _try_str_special(int8_t type, int64_t data) {
   return out;
 }
 
-// Arithmetic binop: try `lhs.__op__(rhs)`; if `reflect` is true and
-// nothing matched, try `rhs.__op__(lhs)` (commutative auto-reflection
-// for `+` and `*`). Callers fall back to the numeric path otherwise.
+// Arithmetic binop `lhs OP rhs` (`s` one of `Add`..`Matmul`) through the
+// operands' methods, the first that is there: `lhs.__op__(rhs)`, the
+// reflected `rhs.__rop__(lhs)`, and for the commutative `+` and `*`
+// `rhs.__op__(lhs)` (auto-reflection). A method is picked by its name, so
+// one that does not take the other operand raises (its parameter's
+// TypeError, or DispatchError among overloads) rather than passing on.
+// Callers fall back to the numeric path otherwise.
 inline std::optional<JitValue> _dispatch_arith_special(
-    int8_t lt, int64_t ld, int8_t rt, int64_t rd, Special s, bool reflect,
-    int64_t line, int64_t col) {
+    int8_t lt, int64_t ld, int8_t rt, int64_t rd, Special s, int64_t line,
+    int64_t col) {
   if (auto r = _try_special_binop(lt, ld, rt, rd, s, line, col)) return r;
-  if (reflect) {
+  if (auto r = _try_special_binop(rt, rd, lt, ld, reflected_special(s), line,
+                                  col))
+    return r;
+  if (s == Special::Add || s == Special::Mul) {
     if (auto r = _try_special_binop(rt, rd, lt, ld, s, line, col)) return r;
   }
   return std::nullopt;
@@ -2158,7 +2165,7 @@ inline std::optional<JitValue> _try_tensor_binop(
 // touching the operands' refs — the lowering's contract, where operands
 // stay owned by the frame's registers and a try handler's release ladder
 // is the one releaser.
-#define CUL_NUM_BINOP(name, opstr, method, expr, reflect, op_id)        \
+#define CUL_NUM_BINOP(name, opstr, method, expr, op_id)                 \
   CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue                            \
   culebra_runtime_num_##name##_borrow(                                  \
       int8_t lt, int64_t ld, int8_t rt, int64_t rd,                     \
@@ -2166,16 +2173,16 @@ inline std::optional<JitValue> _try_tensor_binop(
     if (auto r = _try_tensor_binop(lt, ld, rt, rd, op_id, opstr, line,  \
                                    col))                                \
       return *r;                                                        \
-    if (auto r = _dispatch_arith_special(lt, ld, rt, rd, method,        \
-                                         reflect, line, col))           \
+    if (auto r = _dispatch_arith_special(lt, ld, rt, rd, method, line,  \
+                                         col))                          \
       return *r;                                                        \
     _arith_guard_numeric(opstr, lt, rt, line, col);                     \
     auto a = _culebra_coerce_num(lt, ld);                               \
     auto b = _culebra_coerce_num(rt, rd);                               \
     return {TAG_FLOAT, _culebra_double_to_bits(expr)};                  \
   }
-CUL_NUM_BINOP(sub, "-", Special::Sub, a - b, false, static_cast<int>(culebra::Op::Sub))
-CUL_NUM_BINOP(mul, "*", Special::Mul, a * b, true,  static_cast<int>(culebra::Op::Mul))
+CUL_NUM_BINOP(sub, "-", Special::Sub, a - b, static_cast<int>(culebra::Op::Sub))
+CUL_NUM_BINOP(mul, "*", Special::Mul, a * b, static_cast<int>(culebra::Op::Mul))
 #undef CUL_NUM_BINOP
 
 // Forward decl — body is further down with the other Array runtime entries.
@@ -2193,8 +2200,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_num_add_borrow(
                                   static_cast<int>(culebra::Op::Add), "+",
                                   line, col))
     return *r;
-  if (auto r = _dispatch_arith_special(lt, ld, rt, rd, Special::Add, true,
-                                       line, col))
+  if (auto r = _dispatch_arith_special(lt, ld, rt, rd, Special::Add, line,
+                                       col))
     return *r;
   bool ls = (lt == TAG_STRING || lt == TAG_STRINGVIEW);
   bool rs = (rt == TAG_STRING || rt == TAG_STRINGVIEW);
@@ -2222,8 +2229,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_num_div_borrow(
                                   static_cast<int>(culebra::Op::Div), "/",
                                   line, col))
     return *r;
-  if (auto r = _dispatch_arith_special(lt, ld, rt, rd, Special::Div, false,
-                                       line, col))
+  if (auto r = _dispatch_arith_special(lt, ld, rt, rd, Special::Div, line,
+                                       col))
     return *r;
   _arith_guard_numeric("/", lt, rt, line, col);
   auto a = _culebra_coerce_num(lt, ld);
@@ -2234,8 +2241,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_num_div_borrow(
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_num_mod_borrow(
     int8_t lt, int64_t ld, int8_t rt, int64_t rd, int64_t line, int64_t col) {
-  if (auto r = _dispatch_arith_special(lt, ld, rt, rd, Special::Mod, false,
-                                       line, col))
+  if (auto r = _dispatch_arith_special(lt, ld, rt, rd, Special::Mod, line,
+                                       col))
     return *r;
   _arith_guard_numeric("%", lt, rt, line, col);
   auto a = _culebra_coerce_num(lt, ld);
@@ -2244,11 +2251,11 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_num_mod_borrow(
   return {TAG_FLOAT, _culebra_double_to_bits(std::fmod(a, b))};
 }
 
-// `@` (matmul) has no numeric meaning — always dispatches through
-// `__matmul__`. Non-commutative, so no reflection.
+// `@` (matmul) has no numeric meaning: always `__matmul__` or `__rmatmul__`.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_num_matmul_borrow(
     int8_t lt, int64_t ld, int8_t rt, int64_t rd, int64_t line, int64_t col) {
-  if (auto r = _try_special_binop(lt, ld, rt, rd, Special::Matmul, line, col))
+  if (auto r = _dispatch_arith_special(lt, ld, rt, rd, Special::Matmul, line,
+                                       col))
     return *r;
   culebra::throw_arith_type_error("@", _culebra_tag_name(lt),
                                   _culebra_tag_name(rt), line, col);
@@ -2638,7 +2645,8 @@ CUL_NUM_INPLACE(div, Op::Div)
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_num_pow_borrow(
     int8_t lt, int64_t ld, int8_t rt, int64_t rd, int64_t line, int64_t col) {
-  if (auto r = _try_special_binop(lt, ld, rt, rd, Special::Pow, line, col))
+  if (auto r = _dispatch_arith_special(lt, ld, rt, rd, Special::Pow, line,
+                                       col))
     return *r;
   if (lt == TAG_LONG && rt == TAG_LONG) {
     int64_t a = ld, e = rd;

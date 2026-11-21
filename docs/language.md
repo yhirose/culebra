@@ -1971,25 +1971,26 @@ Any `Object` (whether produced by `class` sugar or a plain literal)
 can participate in arithmetic and comparison by defining special
 methods. Dispatch happens at runtime: if the left operand is an
 `Object` with the matching special method, it is called with the
-right operand as its sole argument; otherwise the built-in numeric
-path runs. **Both engines** route through the same special-method
+right operand as its sole argument; otherwise the right operand may
+answer (see *Reflected operators* below), and failing that the
+built-in numeric path runs. **Both engines** route through the same special-method
 protocol, so `Object` arithmetic compiles.
 Classes defined via `class` sugar participate identically since
 their instances are plain `Object`s with methods attached.
 
-| Operator     | Special method | Notes                                 |
-|--------------|----------------|---------------------------------------|
-| `a + b`      | `__add__`      |                                       |
-| `a - b`      | `__sub__`      |                                       |
-| `a * b`      | `__mul__`      |                                       |
-| `a / b`      | `__div__`      |                                       |
-| `a % b`      | `__mod__`      |                                       |
-| `a ** b`     | `__pow__`      |                                       |
-| `a @ b`      | `__matmul__`   | Matrix multiply (PEP 465). Same precedence as `*`. Has no built-in numeric meaning — operand without `__matmul__` raises `type error`. |
-| `-a`         | `__neg__`      | 0-arg method on `a`                   |
-| `a == b`     | `__eq__`       | `!=` derives by negation              |
-| `a < b`      | `__lt__`       | `>=` derives by negation              |
-| `a <= b`     | `__le__`       | If missing and `__lt__` exists, derived as `a < b or a == b`; `>` derives by negation |
+| Operator     | Special method | Reflected (on `b`) | Notes                                 |
+|--------------|----------------|--------------------|---------------------------------------|
+| `a + b`      | `__add__`      | `__radd__`         |                                       |
+| `a - b`      | `__sub__`      | `__rsub__`         |                                       |
+| `a * b`      | `__mul__`      | `__rmul__`         |                                       |
+| `a / b`      | `__div__`      | `__rdiv__`         |                                       |
+| `a % b`      | `__mod__`      | `__rmod__`         |                                       |
+| `a ** b`     | `__pow__`      | `__rpow__`         |                                       |
+| `a @ b`      | `__matmul__`   | `__rmatmul__`      | Matrix multiply (PEP 465). Same precedence as `*`. Has no built-in numeric meaning: operands with neither method raise `type error`. |
+| `-a`         | `__neg__`      |                    | 0-arg method on `a`                   |
+| `a == b`     | `__eq__`       |                    | `!=` derives by negation              |
+| `a < b`      | `__lt__`       |                    | `>=` derives by negation              |
+| `a <= b`     | `__le__`       |                    | If missing and `__lt__` exists, derived as `a < b or a == b`; `>` derives by negation |
 
 Example:
 
@@ -2148,28 +2149,44 @@ interpolate `"{self}"` — there is no built-in recursion guard, so
 that form loops until the call stack is exhausted. Produce the
 final string via direct property access (`self.x`) instead.
 
-### Auto-reflection
+### Reflected operators
 
-For commutative operators (`+`, `*`, `==`), when the LHS doesn't carry
-the matching special method (e.g., it's a `Long` or `Float`) but the
-RHS is an `Object` that does, the call reflects: `lhs op rhs` becomes
-`rhs.__op__(lhs)`.
-The `rhs`-side method receives the scalar as its argument and is
-expected to handle it (typically with a `match` on the argument type):
+When the left operand of an arithmetic operator has no special method
+for it (a `Long`, a `Float`, a `String`, or an `Object` without one),
+the right operand can answer with its *reflected* method, the one in
+the table's third column: `2.0 - v` calls `v.__rsub__(2.0)`. The
+reflected method receives the left operand as its argument. For the
+commutative `+` and `*`, a right operand with no reflected method
+answers with its own method instead (auto-reflection: `2 * v` calls
+`v.__mul__(2)`). In full, `a op b` is answered by the first of:
 
-    class Vec { ...
-      __mul__(r) {
-        match r {
-          n: Long => Vec.new(self.x * n, self.y * n),   # scalar
-          _       => Vec.new(self.x * r.x, self.y * r.y) # elementwise
-        }
-      }
-    }
-    a = 2 * Vec.new(3, 4)        # reflects → Vec.__mul__(2) → Vec(6, 8)
+1. a Tensor on either side: the Tensor operation;
+2. `a.__op__(b)`, when `a` has `__op__`;
+3. `b.__rop__(a)`, when `b` has `__rop__`;
+4. `b.__op__(a)`, when `op` is `+` or `*` and `b` has `__op__`;
+5. the built-in operation, a `TypeError` for operands it does not take.
 
-Non-commutative operators (`-`, `/`, `%`, `**`, `@`, `<`, `<=`) do
-**not** reflect — `rhs.__op__(lhs)` would compute the wrong answer.
-For those, the LHS must be an Object carrying the matching special method.
+A method is chosen by its name alone. When `a` has `__op__` but it does
+not take `b`, the operator raises what a call of it would (its
+parameter's `TypeError`, or `DispatchError` when no overload takes `b`)
+and `b` is not asked; a `b.__rop__` that does not take `a` raises the
+same way.
+
+```culebra
+class Celsius {
+  new(@deg) {}
+  __sub__(o) { Celsius(@deg - o) }   # c - 5
+  __rsub__(o) { Celsius(o - @deg) }  # 30 - c
+  __mul__(k) { Celsius(@deg * k) }   # c * 2, and 2 * c by reflection
+}
+inspect((30 - Celsius(12)).deg)  # => 18
+inspect((2 * Celsius(12)).deg)   # => 24
+```
+
+`-`, `/`, `%`, `**` and `@` never fall back to the right operand's own
+method (`b.__sub__(a)` would compute the wrong answer). Comparisons (`<`, `<=`) have no reflected
+methods: their left operand must be an `Object` with `__lt__` /
+`__le__` (or `cmp`). `==` asks either side's `__eq__`.
 
 ### Auto-synthesized `parameters()`
 
@@ -5656,7 +5673,7 @@ features. They are checked by name on both backends:
 
 | Method | Purpose | Defined in |
 |---|---|---|
-| `__add__`, `__sub__`, `__mul__`, `__div__`, `__mod__`, `__pow__`, `__matmul__`, `__neg__`, `__eq__`, `__lt__`, `__le__` | Operator overloading | §10 |
+| `__add__`, `__sub__`, `__mul__`, `__div__`, `__mod__`, `__pow__`, `__matmul__`, `__neg__`, `__eq__`, `__lt__`, `__le__`, and the reflected `__radd__`, `__rsub__`, `__rmul__`, `__rdiv__`, `__rmod__`, `__rpow__`, `__rmatmul__` | Operator overloading | §10 |
 | `__str__` | Custom display form | §10 |
 | `drop` | RAII cleanup hook | §17 |
 | `iter`, `next` | Iterator protocol | §18.5 |

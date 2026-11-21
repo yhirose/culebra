@@ -6226,6 +6226,10 @@ let _synth_module = fn () {
     __sub__(other: Long | Float | SynthSignal | SynthEnvelope | Array) {
       self._signal() + negate(other)
     }
+    # `other - self` for what has no `__sub__` of its own (`2.0 - p`).
+    __rsub__(other: Long | Float | SynthEnvelope | Array) {
+      -self._signal() + other
+    }
     __mul__(other: Long | Float | SynthSignal | SynthEnvelope | Array) {
       node("gain", [self._signal()], {gain: other}, {})
     }

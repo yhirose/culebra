@@ -92,6 +92,11 @@ assert_samples(render((sine([440.0, 660.0]) * [0.2, 0.1]).mix(), 0.1), render(si
 assert_samples(render((saw([110.0, 220.0]) |> lowpass([800.0, 1600.0], q: 2.0)).mix() * 0.5, 0.1), render((saw(110.0).lowpass(800.0, q: 2.0) + saw(220.0).lowpass(1600.0, q: 2.0)) * 0.5, 0.1))
 assert_samples(render(mix([sine([440.0, 660.0]), 0.25]).mix(), 0.05), render(sine(440.0) + 0.25 + sine(660.0) + 0.25, 0.05))
 assert_samples(render((sine([440.0, 660.0]) - [0.1, 0.2]).mix(), 0.05), render(sine(440.0) - 0.1 + sine(660.0) - 0.2, 0.05))
+# A number, an envelope or channels on the left of `-` (the part's `__rsub__`).
+assert_samples(render(2.0 - sine(440.0), 0.05), render(-sine(440.0) + 2.0, 0.05))
+let ramp = env([0.0, 1.0], [0.05])
+assert_samples(render(ramp - sine(440.0), 0.05), render(-sine(440.0) + ramp, 0.05))
+assert_samples(render(([0.1, 0.2] - sine([440.0, 660.0])).mix(), 0.05), render(-sine(440.0) + 0.1 + -sine(660.0) + 0.2, 0.05))
 assert_eq(sine(440.0).mix().kind, "wave")
 # One channel is the part itself.
 assert_samples(render(sine([440.0]), 0.05), render(sine(440.0), 0.05))

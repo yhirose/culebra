@@ -1,0 +1,165 @@
+# Reflected operators (docs/language.md §10): when the left operand of an
+# arithmetic operator has no method for it, the right operand's reflected
+# method answers, `2.0 - v` as `v.__rsub__(2.0)`. The left operand's own
+# method always comes first, and `+` and `*` still fall back to the right
+# operand's own method. Same across the executor, --jit and an AOT binary.
+#
+# NOTE: the expected positions below are positions in this file: keep
+# additions at the bottom.
+
+class R {
+  new(@x) {}
+  __rsub__(o) {
+    ["rsub", o, @x]
+  }
+  __rdiv__(o) {
+    ["rdiv", o, @x]
+  }
+  __rmod__(o) {
+    ["rmod", o, @x]
+  }
+  __rpow__(o) {
+    ["rpow", o, @x]
+  }
+  __rmatmul__(o) {
+    ["rmatmul", o, @x]
+  }
+  __radd__(o) {
+    ["radd", o, @x]
+  }
+  __rmul__(o) {
+    ["rmul", o, @x]
+  }
+}
+let r = R(1)
+
+# Each operator, the left operand handed over as it is.
+assert_eq(2 - r, ["rsub", 2, 1])
+assert_eq(2.5 / r, ["rdiv", 2.5, 1])
+assert_eq(7 % r, ["rmod", 7, 1])
+assert_eq(2 ** r, ["rpow", 2, 1])
+assert_eq(3 @ r, ["rmatmul", 3, 1])
+assert_eq('a' + r, ["radd", 'a', 1])
+assert_eq(4 * r, ["rmul", 4, 1])
+
+# A compound assignment steps through the same operator.
+mut acc = 10
+acc -= r
+assert_eq(acc, ["rsub", 10, 1])
+
+# An Object on the left with no method of its own hands over too.
+class Plain {}
+assert_eq((Plain() - r)[0], "rsub")
+
+# The left operand's own method comes first.
+class Own {
+  __sub__(o) {
+    "own sub"
+  }
+  __add__(o) {
+    "own add"
+  }
+}
+assert_eq(Own() - r, "own sub")
+assert_eq(Own() + r, "own add")
+
+# `+` and `*`: the right operand's reflected method, then its own.
+class Both {
+  __add__(o) {
+    "add"
+  }
+  __radd__(o) {
+    "radd"
+  }
+}
+assert_eq(Both() + 1, "add")
+assert_eq(1 + Both(), "radd")
+class OnlyAdd {
+  __add__(o) {
+    "add {o}"
+  }
+}
+assert_eq(1 + OnlyAdd(), "add 1")
+
+# `-` does not fall back to the right operand's own `__sub__`.
+class OnlySub {
+  __sub__(o) {
+    "sub"
+  }
+}
+assert_throws("TypeError", || 1 - OnlySub())
+
+# A reflected method that does not take the left operand raises what a call
+# of it would (its parameter's TypeError, or DispatchError among overloads),
+# not a step on to the next rule.
+class Typed {
+  __rsub__(o: Long) {
+    o - 1
+  }
+}
+assert_eq(5 - Typed(), 4)
+assert_throws(
+  "TypeError",
+  || 'a' - Typed(),
+  message: "type error: parameter 'o' expects Long",
+)
+class Overloaded {
+  __rsub__(o: Long) {
+    "long"
+  }
+  __rsub__(o: Float) {
+    "float"
+  }
+}
+assert_eq(1.5 - Overloaded(), "float")
+assert_throws(
+  "DispatchError",
+  || 'a' - Overloaded(),
+  message: "no matching method for `__rsub__`",
+)
+
+# The left operand's method is chosen by its name: one that does not take the
+# right operand raises, and the right is not asked.
+class Picky {
+  __sub__(o: Long) {
+    "picky"
+  }
+}
+assert_throws(
+  "TypeError",
+  || Picky() - r,
+  message: "type error: parameter 'o' expects Long",
+)
+
+# A trait's default stands in for the class's own method.
+trait Back {
+  tag() -> String
+  __rsub__(o) {
+    "{self.tag()} {o}"
+  }
+}
+class T {
+  tag() {
+    "t"
+  }
+}
+assert_eq(3 - T(), "t 3")
+
+# A value class.
+@value
+class Money {
+  cents: Long
+  new(@cents) {}
+  __rsub__(o: Long) {
+    Money(o - @cents)
+  }
+}
+assert_eq((100 - Money(30)).cents, 70)
+
+# Neither side answers: the TypeError it always was, at the operator.
+let e = assert_throws(
+  "TypeError",
+  || 1.5 - Plain(),
+  message: "type error: cannot apply '-' to Float and Object",
+)
+assert_eq([e.line, e.col], [162, 6])

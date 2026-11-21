@@ -10551,7 +10551,7 @@ check, when `render` builds it at its rate, with the graph's `ValueError`.
 | `p.mix()` | a bundle's channels added to one part; a part as it is |
 | `p.pan(pos)` | stereo, `p` placed at `pos` from -1 (left) to 1 (right) at equal power: the left times sin((1 - pos)π/4), the right times sin((1 + pos)π/4), so 0 is about 0.707 on each side. A bundle of two is turned down side by side, each channel on its own side. `pos` is a number from -1 to 1 (`ValueError` past it), or a part or an envelope, held within -1..1 |
 | `p.reverb(mix = 0.33, room = 0.5, damp = 0.5)` | stereo, `p` in a room: its channels' sum goes into a room of each side (`Audio.Graph`'s `room`), and each side is `1 - mix` of its dry sound (one channel on both sides) and `mix` of its room. `room` (0 to 1) sets how long the room rings and `damp` (0 to 1) how soon its highs go; a part or an envelope moves them, held within 0..1. `mix` is a number from 0 to 1, and 0 makes no room. A bundle of more than two is a `ValueError` |
-| `p + x`, `p - x`, `p * x`, `p / n`, `-p` | parts added, subtracted and multiplied (a gain), with a number, a part, an envelope or an Array on the right, and a number on the left of `+` and `*`; `/` by a number only, `ValueError` for 0 |
+| `p + x`, `p - x`, `p * x`, `p / n`, `-p` | parts added, subtracted and multiplied (a gain), with a number, a part, an envelope or an Array on the right; a number, an envelope or an Array on the left of `+`, `-` and `*` too (`2.0 - p`); `/` by a number only, `ValueError` for 0 |
 
 An Array where a value or a part goes is a channel per item, and what is
 made of it is a bundle: a part per channel, what is one channel going to

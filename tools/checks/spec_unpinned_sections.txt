@@ -21,7 +21,6 @@
 # lexical structure, grammar tables and CLI prose have nothing to execute.
 1. Overview and philosophy
 10. Objects > Access and mutation
-10. Objects > Auto-reflection
 10. Objects > Auto-synthesized `parameters()`
 10. Objects > Construction
 10. Objects > Custom string representation (`__str__`)

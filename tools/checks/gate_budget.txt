@@ -255,7 +255,11 @@
 # loop and reads as range() does: the sequence, the order its arguments
 # evaluate and are checked in, its errors, a shadowing `range`; 0.03 s under
 # --vm, 0.6 s under --jit).
-tests.cul 379
+# 380 since test_reflected_operators.cul (`2.0 - v` reaches `v.__rsub__`, and
+# the rest of the reflected methods: the order of the rules, an overload that
+# does not take the other operand, a trait default, a value class; 0.03 s
+# under --vm, 0.6 s under --jit).
+tests.cul 380
 
 # tests/isolate/*.cul — run on both engines, plus the over-cap modes.
 # 21 since test_xml_isolate.cul (an XML element keeps its methods across an
@@ -445,7 +449,9 @@ ctest.entries 43
 # docs/guides/synth, en and ja (20 blocks each: a sound built up from a sine,
 # one idea at a time, each rendered as it is written; one skips, it plays).
 # 1246 since Synth.velocity, in en and ja (two notes played softly and hard).
-docs.blocks 1246
+# 1248 since the reflected operators, in en and ja (`30 - c` through
+# `__rsub__`, `2 * c` through auto-reflection).
+docs.blocks 1248
 
 # The samples the language front ends are run over (examples/languages/*).
 languages.samples 130

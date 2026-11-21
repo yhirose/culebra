@@ -19,7 +19,7 @@ let breath = control("breath", 0.0).lag(0.006)
 let gate = control("gate", 0.0).lag(0.01)
 let open = control("open", 1.0)
 # A soft breath already sounds: half of it is three quarters as loud.
-let push = breath * (-breath + 2.0)
+let push = breath * (2.0 - breath)
 # Its oscillators sit on the note's own octaves: ones a little apart would
 # beat, and a held note would swell and fade.
 let body = saw(freq) * 0.45 +

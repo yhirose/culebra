@@ -463,20 +463,33 @@ class JitHashedKey {
 // of them (JitSpecialTable::defaults_gen); the names that say what a value is
 // or when it ends (`next`, `has_next`, `dispose`, `drop`) are not here, and a
 // default never stands in for those.
+// `RAdd`..`RMatmul` are the right operand's methods for `Add`..`Matmul`, in
+// the same order (reflected_special).
 enum class Special : uint8_t {
   Add, Sub, Mul, Div, Mod, Pow, Matmul, Neg, Eq, EqTrait, Lt, Le, Cmp, Hash,
-  Str, Call, Index, SetIndex, Iter, Count
+  Str, Call, Index, SetIndex, Iter, RAdd, RSub, RMul, RDiv, RMod, RPow,
+  RMatmul, Count
 };
 inline constexpr const char* kSpecialNames[] = {
     "__add__", "__sub__", "__mul__", "__div__", "__mod__", "__pow__",
     "__matmul__", "__neg__", "__eq__", "eq", "__lt__", "__le__", "cmp",
-    "hash", "__str__", "__call__", "__index__", "__setindex__", "iter"};
+    "hash", "__str__", "__call__", "__index__", "__setindex__", "iter",
+    "__radd__", "__rsub__", "__rmul__", "__rdiv__", "__rmod__", "__rpow__",
+    "__rmatmul__"};
 static_assert(std::size(kSpecialNames) == static_cast<size_t>(Special::Count));
 static_assert(static_cast<size_t>(Special::Count) <= 32,
               "JitSpecialTable::inherited has a bit per Special");
 inline const char* special_name(Special s) {
   return kSpecialNames[static_cast<size_t>(s)];
 }
+// The right operand's method for the arithmetic operator `s` (`Add`..`Matmul`).
+inline constexpr Special reflected_special(Special s) {
+  return static_cast<Special>(static_cast<size_t>(s) -
+                              static_cast<size_t>(Special::Add) +
+                              static_cast<size_t>(Special::RAdd));
+}
+static_assert(reflected_special(Special::Sub) == Special::RSub &&
+              reflected_special(Special::Matmul) == Special::RMatmul);
 // The specials that answer one question with `s`, as a bit per Special:
 // equality and the hash that must agree with it, and order. A class with a
 // member of any of them answers that question itself, so none of them is

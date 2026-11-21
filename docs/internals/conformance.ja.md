@@ -15,6 +15,7 @@ smokeを1度に回します。AOT差分のみなら`just test aot`。下表は�
 |---|---|
 | `tests/test_core.cul` | §6, §7, §8, §9, §10, §11, §12, §15, §18, §19 (broad — 主要unit-testまとめ) |
 | `tests/test_class.cul` | §10 (class構文、演算子オーバーロード、`__str__`、auto-reflection、static methods)、§11 |
+| `tests/test_reflected_operators.cul` | §10 (右側のメソッド：`__rsub__`ほか、決まりの順番、もう一方の値を受けないメソッド) |
 | `tests/test_class_parameters.cul` | §10 (自動合成`parameters()`) |
 | `tests/test_decorator.cul` | §21 |
 | `tests/test_defer.cul` | §15 (`defer`、scope-guardパターン) |

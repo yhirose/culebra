@@ -1308,9 +1308,9 @@ Static fields are eagerly evaluated once, at class declaration time.
 
 Arithmetic, comparison, indexing, and call operators each map to a
 dunder method (`__add__`, `__eq__`, `__lt__`, `__index__`, `__call__`,
-...) that a class can define to participate in the operator. The
-reverse-side method (`__radd__`, ...) is *not* supported — place your
-overload on the type that owns the operation. Full method table and
+...) that a class can define to participate in the operator. When the
+left operand has no such method (`2.0 - v`), the right operand's
+reflected method (`__rsub__`, ...) answers. Full method table and
 dispatch rules: [language.md §10](language.md) (Operator overloading).
 
 #### A worked example: 2-D vectors

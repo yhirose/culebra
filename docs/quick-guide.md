@@ -529,9 +529,9 @@ inspect(Tally().add(2).add(3).n)  # => 5
 ```
 
 Operators map to dunder methods (`__add__`, `__eq__`, `__lt__`,
-`__index__`, `__setindex__`, `__call__`, ...). Reverse-side methods
-(`__radd__`) do not exist — put the overload on the type that owns the
-operation.
+`__index__`, `__setindex__`, `__call__`, ...). When the left operand
+has no such method (`2.0 - v`), the right operand's reflected method
+(`__rsub__`, `__radd__`, ...) answers.
 
 Any free function `f(x, ...)` can be called as `x.f(...)`, but an
 existing property or method always wins, and a first parameter whose

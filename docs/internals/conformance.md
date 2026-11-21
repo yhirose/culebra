@@ -17,6 +17,7 @@ touch multiple sections, marked "(broad)".
 |---|---|
 | `tests/test_core.cul` | §6, §7, §8, §9, §10, §11, §12, §15, §18, §19 (broad — primary unit-test catch-all) |
 | `tests/test_class.cul` | §10 (class sugar, operator overloading, `__str__`, auto-reflection, static methods), §11 |
+| `tests/test_reflected_operators.cul` | §10 (reflected operators: `__rsub__` and the rest, the order of the rules, a method that does not take the other operand) |
 | `tests/test_class_parameters.cul` | §10 (auto-synthesized `parameters()`) |
 | `tests/test_decorator.cul` | §21 |
 | `tests/test_defer.cul` | §15 (`defer`, scope-guard pattern) |
