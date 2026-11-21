@@ -13168,12 +13168,14 @@ class Compiler {
     return m;
   }
 
-  enum class UfcsCand { None, Binding, Global };
-  UfcsCand ufcs_candidate(std::string_view name, const BMethSpec* spec) {
-    if (lookup_name(name)) return UfcsCand::Binding;
-    bool subsumes = spec && spec->subsumes_global;
-    if (is_stdlib_global(name) && !subsumes) return UfcsCand::Global;
-    return UfcsCand::None;
+  // The binding a UFCS call `x.name(...)` would call: one in scope, or the
+  // session's cell when an earlier input declared the name, which outranks
+  // the stdlib global there as a read of the name does.
+  const Binding* ufcs_binding(const peg::Ast& name) {
+    if (const Binding* b = lookup_name(name.token)) return b;
+    if (session_declared(name.token))
+      return &bind_session(name, std::string(name.token));
+    return nullptr;
   }
 
   // The check the JIT emits in front of an unresolved built-in method call,
@@ -13397,9 +13399,10 @@ class Compiler {
     // A built-in that subsumes its same-named global (`to_string`) does so
     // only for a call it can bind: with a keyword it cannot, the global is
     // the callee the interp reaches, and its own binder answers.
-    UfcsCand cand =
-        ufcs_candidate(post.token, has_kwargs(args) ? nullptr : spec);
-    if (cand == UfcsCand::None) return resolved_call(recv);
+    const Binding* cb = ufcs_binding(post);
+    bool subsumes = spec && spec->subsumes_global && !has_kwargs(args);
+    if (!cb && (!is_stdlib_global(post.token) || subsumes))
+      return resolved_call(recv);
     // A visible candidate: the runtime gate decides, interp's eval_call
     // order — resolution first, arguments inside whichever arm runs. Every
     // arm writes the merge temp once per disjoint path (compile_if's
@@ -13418,8 +13421,6 @@ class Compiler {
     // The candidate load. A lazy dispatcher cell's sentinel is no Function,
     // so UfcsTakes below declines it like interp's pre-decl env miss (no
     // UnboundErr); NsGet is the resolver's cached closure, always a Function.
-    const Binding* cb =
-        cand == UfcsCand::Binding ? lookup_name(post.token) : nullptr;
     ExprResult candv = cb ? read_binding(post, *cb, /*unbound_guard=*/false)
                           : [&] {
                               int32_t t = alloc_temp(post);

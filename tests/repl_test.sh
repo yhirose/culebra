@@ -105,6 +105,15 @@ out=$(session "let to_float = |x| 7" "to_float(1)" \
 [[ "$out" == *$'\n'"7"$'\n'*$'\n'"'mine'"$'\n'*$'\n'"3"$'\n'"3"$'\n'*$'\n'"0" ]] ||
   { echo "FAIL session binding over a stdlib call: $out"; fail=1; }
 
+# ...and so does a method call that reaches the name through UFCS: a stdlib
+# name the session rebound, and a name only the session declares.
+out=$(session 'let inspect = |x| "mine"' "5.inspect()")
+[[ "$out" == *$'\n'"'mine'" ]] ||
+  { echo "FAIL session binding over a stdlib UFCS call: $out"; fail=1; }
+out=$(session 'let shout = |s| s.upper() + "!"' "'hi'.shout()")
+[[ "$out" == *$'\n'"'HI!'" ]] ||
+  { echo "FAIL session binding as a UFCS call: $out"; fail=1; }
+
 # An error leaves the session usable, and a failed declaration leaves the name
 # undeclared rather than half-made.
 out=$(session "1 + 'a'" "undefined_name" "let z = 1" "z = 2" "z" \
