@@ -8949,15 +8949,13 @@ extension `Audio.SAWTOOTH`. Each channel is monophonic (a new note cuts the
 previous one). A synthesised waveform is raw and four channels can sound at
 once, so `tone` mixes its `0..100` well under full scale.
 
-In the browser, `tone` plays through WebAudio (an oscillator per channel, a
-`PeriodicWave` for the pulse duty cycle, a filtered noise buffer). Natively it
-plays through a small software synth mixed on the audio thread (naive, not
-band-limited, oscillators; noise is a filtered PRNG). Either way a note is
-placed on the audio stream's own sample clock rather than at the edge of
-whatever buffer the device was filling, so a sequencer keeps its spacing
-whatever buffer length the device chose. The two are independent
-implementations tuned to sound alike, not sample-identical: unlike pixel ops,
-`tone` isn't required to produce bit-identical output across backends.
+`tone` plays through a small software synth mixed on the audio thread
+(naive, not band-limited, oscillators; noise is a filtered PRNG): natively
+the device's, and in the browser the page's, where the same mixer runs at
+44100 samples a second, so both play the same samples. A note is placed on
+the audio stream's own sample clock rather than at the edge of whatever
+buffer the device was filling, so a sequencer keeps its spacing whatever
+buffer length the device chose.
 
 ```culebra
 Audio.tone(440, 8)
@@ -9368,7 +9366,7 @@ graph, a target that is neither a part nor a value, or a mode that is not
 an object of three numbers, raises `TypeError`. A graph
 plays at a rate of 44100, and at most 64 play at once (`ValueError`
 otherwise). With no device nothing sounds and `now()` follows the clock from
-`play()`; in the browser a graph renders but does not play yet.
+`play()`. In the browser a graph plays on the page's mixer, the same one.
 
 ```culebra
 # A saw through a low-pass that closes over its first 0.3 s, faded in and out.

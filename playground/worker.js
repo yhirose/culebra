@@ -1,6 +1,8 @@
 // Playground worker: owns the WASM instance so the page never blocks.
 // Stop = the main thread terminates this worker and spawns a fresh one.
-//
+
+import { engineImports, mixerDecoder } from "./audio-engine.js";
+
 // Two builds ship (see build.sh): culebra-full adds JSPI, which is what makes
 // the TUI tab's Term.read_key and Canvas.present able to wait — without it a
 // TUI script sees no keys and a Canvas game never yields to the worker's
@@ -176,11 +178,29 @@ self.__canvasButtons = 0;
 self.__canvasMouseX = 0;
 self.__canvasMouseY = 0;
 self.__canvasMouseButtons = 0;
-// Audio playback state, per handle: set optimistically by stdlib/audio.h's
+// Audio playback state, per handle: set optimistically by stdlib/audio_web.h's
 // EM_JS calls, corrected by the main thread's "soundState" / "musicState"
 // messages (a failed decode, a one-shot or a non-looping track ending).
 self.__musicPlaying = {};
 self.__soundsPlaying = {};
+
+// Tones, schedules and graphs play on the page's AudioWorklet
+// (audio-worklet.js), which stdlib/audio_web.h sends each call over the port
+// the page hands over ("audioPort"); the worklet answers where the stream is
+// and how long each schedule has held. A Sound loaded is decoded here for the
+// mixer, by the decoders a native build has (audio-engine.wasm, an instance
+// of its own), into __soundPcm, which a schedule's slots are filled from.
+self.__audioPort = null;
+self.__audioStatus = null;
+self.__soundPcm = {};
+self.__decodeForMixer = await (async () => {
+  try {
+    const { instance } = await WebAssembly.instantiateStreaming(fetch("./audio-engine.wasm"), engineImports);
+    return mixerDecoder(instance.exports);
+  } catch {
+    return null;  // no decoder: a schedule's Sounds stay silent, as an undecodable one is
+  }
+})();
 
 // Two independent facts now, so the page reports them separately: `backend`
 // is whether waits work (TUI keys, Canvas frames), `gpu` is where Tensor runs.
@@ -291,6 +311,18 @@ onmessage = async (e) => {
     self.__canvasMouseX = e.data.x;
     self.__canvasMouseY = e.data.y;
     self.__canvasMouseButtons = e.data.buttons;
+    return;
+  }
+  if (type === "audioPort") {
+    // The worklet's word on the stream: [where it is, then id and held
+    // samples for each schedule], dated by the worklet on the wall clock.
+    self.__audioPort = e.data.port;
+    self.__audioPort.onmessage = (w) => {
+      const s = w.data.status;
+      const held = {};
+      for (let i = 1; i + 1 < s.length; i += 2) held[s[i]] = s[i + 1];
+      self.__audioStatus = { pos: s[0], at: w.data.at, held };
+    };
     return;
   }
   if (type === "musicState") {

@@ -405,6 +405,9 @@ function spawnWorker() {
       // (a Worker can't see app.js's `self` directly) — must arrive before
       // the program runs, so send it as soon as the module is up.
       worker.postMessage({ type: "termSize", cols: TERM_COLS, rows: TERM_ROWS });
+      // Its way to the mixer, for the same reason: a message posted before
+      // the worker's handler is up is lost.
+      mixerChannel();
       runBtn.disabled = false;
       // Where Tensor runs and whether a TUI/Canvas script can take input are
       // separate capabilities (worker.js) — the badge names the first, the
@@ -429,10 +432,6 @@ function spawnWorker() {
       drawFrame(msg);
       return;
     }
-    if (msg.type === "tone") {
-      playTone(msg);
-      return;
-    }
     if (msg.type === "music") {
       handleMusic(msg);
       return;
@@ -441,17 +440,12 @@ function spawnWorker() {
       handleSound(msg);
       return;
     }
-    if (msg.type === "schedule") {
-      handleSchedule(msg);
-      return;
-    }
     if (msg.type === "done") {
       running = false;
       previewing = false;
       stopRafPump();
       resetMusic();   // the native analogue: process exit silences every track
       resetSounds();
-      resetSchedules();
       stopBtn.disabled = true;
       runBtn.disabled = false;
       ranOnce = true;
@@ -486,7 +480,6 @@ function run({ holdFirstFrame = false } = {}) {
   ensureAudio();    // this click is a user gesture — unlock audio for any tones
   resetMusic();     // a fresh run must not inherit the previous run's BGM
   resetSounds();
-  resetSchedules();
   running = true;
   runBtn.disabled = true;
   stopBtn.disabled = false;
@@ -529,7 +522,6 @@ function stop() {
   stopRafPump();
   resetMusic();     // terminating the worker must also silence a looping BGM
   resetSounds();
-  resetSchedules();
   stopBtn.disabled = true;
   runBtn.disabled = true; // until the fresh worker reports ready
   updatePlayOverlay();
@@ -892,25 +884,30 @@ function stopRafPump() {
   }
 }
 
-// WebAudio implementation of Audio.tone — a small WASM-4-style APU. A note
-// slides start->end frequency under an ADSR envelope on one of four channels:
-// two pulse waves with a selectable duty cycle (via a cached PeriodicWave), a
-// triangle, and noise (white noise through a sweeping lowpass, which reads as a
-// pitched hiss). Channels are monophonic — a new note cuts the previous one on
-// the same channel, like the real APU. The context is created lazily so the
-// page needs no audio permission until a program actually plays something.
+// --- the page's audio ---------------------------------------------------------
+//
+// One AudioContext, at the mixer's rate (stdlib/audio_engine.h's kSampleRate),
+// made at the first gesture so the page asks for no audio before a program
+// plays. The program's tones, schedules and graphs play in it on the mixer,
+// an AudioWorklet (audio-worklet.js) running the engine a native build mixes
+// with (audio-engine.wasm), so they play the samples a native build plays.
+// The worker sends the mixer its calls over a port of its own; Sounds and
+// Music play here, with WebAudio (below).
+const MIXER_RATE = 44100;
 let audioCtx = null;
-// Per channel, the notes started or scheduled and not yet ended.
-const activeVoices = Array.from({ length: 5 }, () => new Set());
-const pulseWaves = {};  // duty index -> PeriodicWave, built on demand
+let mixer = null;        // the AudioWorkletNode, once it is up
+let mixerPort = null;    // the current worker's port to it, until it is up
 
 // Browsers start an AudioContext "suspended" until a user gesture. Create it
-// (once) and resume it if suspended — called both from the first click/key
-// anywhere on the page and from playTone, so a program that makes noise right
-// away isn't silent. A resume() on an already-running context is a no-op.
+// (once) and resume it if suspended — called from the first click/key
+// anywhere on the page and from a Sound played, so a program that makes
+// noise right away isn't silent. A resume() on a running context is a no-op.
 function ensureAudio() {
   try {
-    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    if (!audioCtx) {
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: MIXER_RATE });
+      startMixer(audioCtx);
+    }
     if (audioCtx.state === "suspended") audioCtx.resume();
   } catch {
     // Audio unavailable (no device / blocked) — a program stays playable.
@@ -921,116 +918,41 @@ for (const ev of ["pointerdown", "keydown", "touchstart"]) {
   window.addEventListener(ev, ensureAudio, { passive: true });
 }
 
-// A pulse wave of the given duty cycle as a PeriodicWave. Sine-series
-// coefficients b_n = (2/(n*pi))(1 - cos(2*pi*n*D)); D=0.5 recovers a square.
-function pulseWave(dutyIndex) {
-  if (pulseWaves[dutyIndex]) return pulseWaves[dutyIndex];
-  const D = [0.125, 0.25, 0.5, 0.75][dutyIndex] ?? 0.5;
-  const N = 32;
-  const real = new Float32Array(N + 1);
-  const imag = new Float32Array(N + 1);
-  for (let n = 1; n <= N; n++) {
-    imag[n] = (2 / (n * Math.PI)) * (1 - Math.cos(2 * Math.PI * n * D));
-  }
-  const w = audioCtx.createPeriodicWave(real, imag, { disableNormalization: false });
-  pulseWaves[dutyIndex] = w;
-  return w;
-}
-
-// One second of white noise, reused for every noise voice.
-let noiseBuffer = null;
-function whiteNoise() {
-  if (noiseBuffer) return noiseBuffer;
-  const buf = audioCtx.createBuffer(1, audioCtx.sampleRate, audioCtx.sampleRate);
-  const d = buf.getChannelData(0);
-  for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
-  noiseBuffer = buf;
-  return buf;
-}
-
-// tone's vol/peak arrive as WASM-4's 0..100.
-const toneLevel = (v) => Math.max(0, Math.min(1, v / 100));
-
-function playTone(m) {
-  const F = (frames) => Math.max(0, frames) / 60;  // frames@60fps -> seconds
-  if (!ensureAudio()) return;
-  toneAt(audioCtx.currentTime, m.channel, m.startFreq, m.endFreq, F(m.attack),
-         F(m.decay), F(m.sustain), F(m.release), m.vol, m.peak, m.duty);
-}
-
-// A tone from `now` on the context's clock, its phases in seconds; answers
-// the source node (null when audio is unavailable). `scale` multiplies the
-// levels after they are clamped, as a schedule's volume does natively, and `out`
-// is where it sounds (a schedule's own bus).
-function toneAt(now, ch, startFreq, endFreq, attackT, decayT, sustainT, releaseT,
-                vol, peak, duty, scale = 1, out = audioCtx.destination) {
+async function startMixer(ctx) {
   try {
-    let total = attackT + decayT + sustainT + releaseT;
-    if (total <= 0) total = 1 / 60;  // guarantee an audible blip
-    const startF = Math.max(1, startFreq);
-    const endF = Math.max(1, endFreq);
-    const G = (v) => toneLevel(v) * 0.2 * scale;  // raw waveforms stack: keep it gentle
-    const peakG = G(peak), susG = G(vol);
-    const channel = ch | 0;
-
-    // Monophony by time, as the native mixer has it: a channel belongs to the
-    // note that started last. This one cuts what is sounding at `now`, and is
-    // cut in turn by a note a schedule has already put later on.
-    let end = now + total;
-    for (const v of activeVoices[channel]) {
-      if (v.start <= now) {
-        if (now < v.end) { try { v.src.stop(now); } catch {} v.end = now; }
-      } else {
-        end = Math.min(end, v.start);
-      }
-    }
-
-    const gain = audioCtx.createGain();
-    let src;
-    if (channel === 3) {  // noise: white noise through a lowpass that sweeps
-      src = audioCtx.createBufferSource();
-      src.buffer = whiteNoise();
-      src.loop = true;
-      const lp = audioCtx.createBiquadFilter();
-      lp.type = "lowpass";
-      lp.frequency.setValueAtTime(startF * 8, now);
-      lp.frequency.linearRampToValueAtTime(endF * 8, now + total);
-      src.connect(lp).connect(gain);
-    } else {
-      const osc = audioCtx.createOscillator();
-      if (channel === 0 || channel === 1) osc.setPeriodicWave(pulseWave(duty | 0));
-      else if (channel === 2) osc.type = "triangle";
-      else osc.type = "sawtooth";  // channel 4: culebra extension
-      osc.frequency.setValueAtTime(startF, now);
-      osc.frequency.linearRampToValueAtTime(endF, now + total);
-      osc.connect(gain);
-      src = osc;
-    }
-
-    // ADSR: 0 -> peak (attack) -> sustain vol (decay) -> hold -> 0 (release).
-    // Zero-length phases collapse to instant steps at the same instant.
-    let t = now;
-    gain.gain.setValueAtTime(0.0001, t);
-    t += attackT;  gain.gain.linearRampToValueAtTime(Math.max(0.0001, peakG), t);
-    t += decayT;   gain.gain.linearRampToValueAtTime(Math.max(0.0001, susG), t);
-    t += sustainT; gain.gain.setValueAtTime(Math.max(0.0001, susG), t);
-    t += releaseT; gain.gain.linearRampToValueAtTime(0.0001, t);
-
-    gain.connect(out);
-    src.start(now);
-    src.stop(end);
-    const voice = { src, start: now, end };
-    activeVoices[channel].add(voice);
-    src.onended = () => activeVoices[channel].delete(voice);
-    return src;
+    const [module] = await Promise.all([
+      WebAssembly.compileStreaming(fetch("./audio-engine.wasm")),
+      ctx.audioWorklet.addModule("./audio-worklet.js"),
+    ]);
+    mixer = new AudioWorkletNode(ctx, "culebra-engine", {
+      numberOfInputs: 0,
+      outputChannelCount: [2],
+      processorOptions: { module },
+    });
+    mixer.connect(ctx.destination);
+    connectMixer();
   } catch {
-    // Audio unavailable (autoplay policy, no device) — a game stays playable.
-    return null;
+    // No worklet here: tones, songs and graphs stay silent, as with no device.
   }
+}
+
+// A worker's way to the mixer, once it is ready: one end of a channel goes
+// to it, the other to the mixer once that is up; what the worker sends
+// before then waits in the channel.
+function mixerChannel() {
+  const ch = new MessageChannel();
+  worker.postMessage({ type: "audioPort", port: ch.port2 }, [ch.port2]);
+  mixerPort = ch.port1;
+  connectMixer();
+}
+function connectMixer() {
+  if (!mixer || !mixerPort) return;
+  mixer.port.postMessage({ port: mixerPort }, [mixerPort]);
+  mixerPort = null;
 }
 
 // --- Audio.Sound / Audio.Music: decoded and driven here ----------------------
-// The worker posts commands keyed by the wasm-side handle (stdlib/audio.h keeps
+// The worker posts commands keyed by the wasm-side handle (stdlib/audio_web.h keeps
 // the script-visible playing flags optimistically, in step with the call);
 // this side owns the decoded AudioBuffers and the live source nodes. What only
 // this side can observe — a failed decode, a one-shot or a non-looping track
@@ -1104,8 +1026,8 @@ function handleSound(m) {
         if (!ensureAudio()) return;
         // The decode is asynchronous, and a script plays a sample it has just
         // made: a play asked for before it lands is honoured when it does,
-        // as a track's is, and a schedule waits for `ready`.
-        entry.ready = audioCtx.decodeAudioData(m.buf.buffer)
+        // as a track's is.
+        audioCtx.decodeAudioData(m.buf.buffer)
           .then((buf) => {
             if (sounds.get(m.id) !== entry) return;  // freed while decoding
             entry.buf = buf;
@@ -1170,188 +1092,6 @@ function startTrack(id, t, offset) {
   t.voice = v;
   t.pausedAt = null;
   t.wantPlay = false;
-}
-
-// --- Kauai: a song's notes, each started on the context's own clock ---
-// A schedule arrives whole, in time order, with the width of an event
-// (stdlib/audio.h's kScheduleStride, which says what one holds), and a timer
-// puts each note on the context's clock a little ahead of when it sounds, the
-// usual WebAudio lookahead: the notes keep time however the page's own timers
-// jitter.
-const SCHEDULE_AHEAD = 0.2;  // seconds of notes scheduled ahead of the clock
-const schedules = new Map();  // id -> { events, stride, length, loopAt, volume, room, run }
-
-// The room a schedule plays in, as the native mixer has it (Freeverb: eight
-// damped combs in parallel, then four allpasses in series, at Jezar's delays
-// and gain, scaled to the context's rate; the right side's delays 23 samples
-// longer): its echoes of a single click, 2.3 seconds of them on each side,
-// which a convolver plays against the schedule's sound (one channel in, the
-// left and the right out).
-const roomEchoes = new Map();  // sample rate -> AudioBuffer
-function roomEcho(rate) {
-  if (roomEchoes.has(rate)) return roomEchoes.get(rate);
-  const n = Math.round(2.3 * rate);
-  const buf = audioCtx.createBuffer(2, n, rate);
-  for (const side of [0, 1]) {
-    const at = (d) => Math.round((d + 23 * side) * rate / 44100);
-    const combs = [1116, 1188, 1277, 1356, 1422, 1491, 1557, 1617].map((d) => new Float32Array(at(d)));
-    const passes = [556, 441, 341, 225].map((d) => new Float32Array(at(d)));
-    const damped = new Float32Array(combs.length);
-    const out = buf.getChannelData(side);
-    for (let i = 0; i < n; i++) {
-      const into = (i === 0 ? 1 : 0) * 0.015;
-      let echo = 0;
-      combs.forEach((c, k) => {
-        const j = i % c.length;
-        const y = c[j];
-        damped[k] = y * 0.75 + damped[k] * 0.25;
-        c[j] = into + damped[k] * 0.86;
-        echo += y;
-      });
-      for (const p of passes) {
-        const j = i % p.length;
-        const held = p[j];
-        p[j] = echo + held * 0.5;
-        echo = held - echo;
-      }
-      out[i] = echo;
-    }
-  }
-  roomEchoes.set(rate, buf);
-  return buf;
-}
-
-// Where a schedule's notes sound: straight out, and through its room when it
-// plays in one.
-function scheduleBus(e) {
-  const dry = audioCtx.createGain();
-  dry.connect(audioCtx.destination);
-  const nodes = [dry];
-  if (e.room > 0) {
-    const verb = audioCtx.createConvolver();
-    verb.normalize = false;
-    // One channel in, as the native room takes a song's sound: a stereo
-    // sample is its two sides' mean, and each side's echoes come out.
-    verb.channelCount = 1;
-    verb.channelCountMode = "explicit";
-    verb.buffer = roomEcho(audioCtx.sampleRate);
-    const wet = audioCtx.createGain();
-    wet.gain.value = e.room;
-    dry.connect(verb).connect(wet).connect(audioCtx.destination);
-    nodes.push(verb, wet);
-  }
-  return { out: dry, nodes };
-}
-
-function stopSchedule(e) {
-  const run = e.run;
-  e.run = null;
-  if (!run) return;
-  clearInterval(run.timer);
-  for (const node of run.nodes) { try { node.stop(); } catch {} }
-  // Its room goes silent with it, as the native mixer's does.
-  for (const node of run.bus.nodes) { try { node.disconnect(); } catch {} }
-  // Its notes give their channels up now, not when their `ended` comes round.
-  for (const voices of activeVoices) {
-    for (const v of voices) if (run.nodes.has(v.src)) voices.delete(v);
-  }
-}
-
-function resetSchedules() {
-  for (const e of schedules.values()) stopSchedule(e);
-  schedules.clear();
-}
-
-// Put every note due before the clock is SCHEDULE_AHEAD further on in place,
-// going round again at the end of a song that loops.
-function pumpSchedule(e) {
-  const run = e.run;
-  if (!run) return;
-  const ev = e.events;
-  const stride = e.stride;
-  const n = ev.length / stride;
-  const until = audioCtx.currentTime + SCHEDULE_AHEAD;
-  for (;;) {
-    while (run.next < n && run.origin + ev[run.next * stride] < until) {
-      const i = run.next++ * stride;
-      const when = Math.max(audioCtx.currentTime, run.origin + ev[i]);
-      let node = null;
-      if (ev[i + 1] < 0) {
-        const snd = sounds.get(ev[i + 2]);
-        if (snd && snd.buf) {
-          node = audioCtx.createBufferSource();
-          node.buffer = snd.buf;
-          const gain = audioCtx.createGain();
-          gain.gain.value = Math.max(0, ev[i + 3] * e.volume);
-          node.connect(gain).connect(run.bus.out);
-          node.start(when);
-        }
-      } else {
-        node = toneAt(when, ev[i + 1], ev[i + 2], ev[i + 3], ev[i + 4], ev[i + 5],
-                      ev[i + 6], ev[i + 7], ev[i + 8], ev[i + 9], ev[i + 10],
-                      e.volume, run.bus.out);
-      }
-      if (node) {
-        run.nodes.add(node);
-        node.addEventListener("ended", () => run.nodes.delete(node));
-      }
-    }
-    if (run.origin + e.length > until) return;
-    if (e.loopAt < 0 || e.length <= e.loopAt) {
-      // Played through: the timer goes once the last notes have started.
-      if (run.next >= n) { clearInterval(run.timer); }
-      return;
-    }
-    run.origin += e.length - e.loopAt;
-    run.next = 0;
-    while (run.next < n && ev[run.next * stride] < e.loopAt) run.next++;
-  }
-}
-
-function handleSchedule(m) {
-  try {
-    const e = schedules.get(m.id);
-    switch (m.cmd) {
-      case "new":
-        schedules.set(m.id, { events: m.events, stride: m.stride, length: m.length,
-                           loopAt: m.loopAt, volume: 1, room: 0, run: null });
-        break;
-      case "play": {
-        if (!e || !ensureAudio()) return;
-        stopSchedule(e);
-        // The samples the song plays have just been made, and decode on their
-        // own time: the song starts once they have.
-        const decoding = [];
-        for (let i = 0; i < e.events.length; i += e.stride) {
-          if (e.events[i + 1] < 0) decoding.push(sounds.get(e.events[i + 2])?.ready);
-        }
-        const run = { origin: 0, next: 0, nodes: new Set(), timer: 0, bus: scheduleBus(e) };
-        e.run = run;
-        Promise.all(decoding).then(() => {
-          if (e.run !== run) return;  // stopped or played again meanwhile
-          run.origin = audioCtx.currentTime + 0.05;
-          run.timer = setInterval(() => pumpSchedule(e), 25);
-          pumpSchedule(e);
-        });
-        break;
-      }
-      case "stop":
-        if (e) stopSchedule(e);
-        break;
-      case "volume":
-        if (e) e.volume = Math.max(0, m.value);
-        break;
-      case "room":
-        if (e) e.room = Math.max(0, m.value);
-        break;
-      case "free":
-        if (e) stopSchedule(e);
-        schedules.delete(m.id);
-        break;
-    }
-  } catch {
-    // Audio unavailable — the program plays on in silence.
-  }
 }
 
 function resetMusic() {

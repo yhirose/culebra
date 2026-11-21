@@ -1036,7 +1036,7 @@ check the song and raise the first error of [section 9](#9-errors) as a
 | `external_sounds(from:, to:)` | the external sounds `render(from:, to:)` builds, in the order they start: `{at, until, by, external, args}`, `at` the seconds from the start the sound plays from and `until` those its notes end at (a hit's when it strikes), `by` the voice or drum, `external` its instrument's key under `voices:` or `drums:`, and `args` what the instrument is handed for it, `[notes, params]`, `[pitch, params]` or `[n, params]` by how it makes its sound (a phrase, a note or a hit; below); without `from:` and `to:`, every one the song plays. The sound Kauai weighs an instrument by is not one of them |
 | `seconds(at)` | how many seconds from the start a point in the song is: a mark's name, seconds, or a `String` of seconds (`"83.5"`) or of minutes and seconds (`"1:23.5"`), as `render(from:, to:)` takes it; a mark the song does not have, or a `String` of neither form (`"1:5"`), is a `ValueError` |
 | `prepare()` | builds one external sound, and answers how many remain: those the sounds are weighed by first, then each in the order it first plays. One whose building throws is still to build |
-| `render(from:, to:, channels: 1)` | the song once through as `play()` would sound it, until its last sound and its room's echoes end: an `Array` of samples, `44100` a second, from the same mixer, with no audio device: the left channel, or with `channels: 2` `[left, right]` (with no `room` the two are the same); a song that loops is heard once. `FS.write("song.wav", Audio.Sound(song.render()).data())` saves it. With `from:` or `to:`, each a point as `seconds(at)` reads one, only that part of the song (below). Not in the browser, where the page plays a song (`ValueError`) |
+| `render(from:, to:, channels: 1)` | the song once through as `play()` would sound it, until its last sound and its room's echoes end: an `Array` of samples, `44100` a second, from the same mixer, with no audio device: the left channel, or with `channels: 2` `[left, right]` (with no `room` the two are the same); a song that loops is heard once. `FS.write("song.wav", Audio.Sound(song.render()).data())` saves it. With `from:` or `to:`, each a point as `seconds(at)` reads one, only that part of the song (below). Not in the browser yet (`ValueError`) |
 | `length()` | seconds once through |
 | `about()` | what its `about` says, as an object of the items written: `{title: 'Je te veux', composer: 'Erik Satie', year: 1897}`; `{}` without one |
 | `events()` | what it plays, in order: `{at, len, by, pitch, vol}`, with `at` and `len` in seconds, `by` the voice or drum, `pitch` a MIDI note (`nil` for a drum), and `vol` the voice's or drum's `vol` at the note's dynamic, on the tones' `0` to `100` for an external sound too |
@@ -1129,8 +1129,7 @@ that is still not built, it waits for it, as a video waits for its next
 frames, and goes on once `prepare()` has built it: what was sounding rings
 on, and `playing()` and `reached()` leave the time it waited out. So the
 program calls `prepare()` until it answers `0`; a song that is never given
-its next sound waits there. In the browser, where the page mixes a song,
-`play(early: true)` builds everything first, as `play()` does.
+its next sound waits there.
 
 ```culebra
 # doctest: skip (reads ballad.kau, and sax is the program's own)

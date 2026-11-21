@@ -131,8 +131,34 @@ compile "culebra-full.wasm (WebGPU + TUI, JSPI)" "$OUT/culebra-full.js" \
   --use-port=emdawnwebgpu -DTENSORLIB_WEBGPU -DCULEBRA_WASM_JSPI \
   -sJSPI=1 -sJSPI_EXPORTS=run_culebra
 
+# The mixer: what the page's AudioWorklet plays tones, schedules and graphs
+# with (audio-worklet.js), and what the worker decodes a schedule's Sounds
+# with, a native build's engine and raudio's decoders (audio_engine_wasm.cc).
+# Standalone, with no JS runtime: a worklet has no fetch and no clock to
+# give one. Skipped as the engine builds are, on a fingerprint of its inputs.
+ENGINE="$OUT/audio-engine.wasm"
+RAUDIO_CMD=(-O2 -w -Isrc/runtime -c src/runtime/culebra_raudio.c -o "$CACHE/raudio.o")
+ENGINE_CMD=(-std=c++23 -O2 -fwasm-exceptions -Wno-vla-cxx-extension
+  -Iinclude -Isrc/runtime -Ivendor/cpp-unicodelib
+  playground/audio_engine_wasm.cc "$CACHE/raudio.o" -o "$ENGINE"
+  --no-entry -sSTANDALONE_WASM -sALLOW_MEMORY_GROWTH=1 -sINITIAL_MEMORY=16MB)
+compile_mixer() {
+  local dep="$CACHE/audio-engine.d" stamp="$CACHE/audio-engine.stamp" want
+  if [ -s "$dep" ] && [ -f "$stamp" ] && [ -f "$ENGINE" ] &&
+     want=$(fingerprint "$dep" "$ENGINE" "${RAUDIO_CMD[@]}" "${ENGINE_CMD[@]}") && [ "$want" = "$(cat "$stamp")" ]; then
+    echo "[playground] audio-engine.wasm is up to date"
+    return
+  fi
+  echo "[playground] compiling audio-engine.wasm…"
+  emcc "${RAUDIO_CMD[@]}" -MD -MF "$CACHE/raudio.d"
+  em++ "${ENGINE_CMD[@]}" -MD -MF "$CACHE/audio-engine-cc.d"
+  cat "$CACHE/raudio.d" "$CACHE/audio-engine-cc.d" >"$dep"
+  fingerprint "$dep" "$ENGINE" "${RAUDIO_CMD[@]}" "${ENGINE_CMD[@]}" >"$stamp" || rm -f "$stamp"
+}
+compile_mixer
+
 # The static half — frontend, version stamp, mirrored examples — is its own
 # script so the sync gate can replay it without emsdk.
 playground/copy-frontend.sh "$OUT"
 
-echo "[playground] done → $OUT/ (basic $(du -h "$OUT/culebra-basic.wasm" | cut -f1), full $(du -h "$OUT/culebra-full.wasm" | cut -f1))"
+echo "[playground] done → $OUT/ (basic $(du -h "$OUT/culebra-basic.wasm" | cut -f1), full $(du -h "$OUT/culebra-full.wasm" | cut -f1), mixer $(du -h "$ENGINE" | cut -f1))"

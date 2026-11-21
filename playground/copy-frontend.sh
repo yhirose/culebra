@@ -14,6 +14,7 @@ mkdir -p "$OUT"
 # examples.json is not copied but written below, each example's file list
 # filled in.
 cp playground/index.html playground/boot.js playground/app.js playground/worker.js \
+   playground/audio-worklet.js playground/audio-engine.js \
    playground/editor.js playground/culebra-lang.js playground/share-link.js \
    playground/project.js playground/styles.css "$OUT/"
 # Synth Studio: a second page on the same worker and editor.

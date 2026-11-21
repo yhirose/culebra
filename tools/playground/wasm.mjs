@@ -39,10 +39,11 @@ export async function loadPlayground(variant = "basic") {
     Module.FS.mkdirTree(path.dirname(file));
     Module.FS.writeFile(file, src);
     captured = "";
-    // What worker.js sets before each run for audio.h's handles to write
-    // their playing flags into.
+    // What worker.js sets for audio_web.h's handles to write their playing
+    // flags and decoded samples into.
     self.__musicPlaying = {};
     self.__soundsPlaying = {};
+    self.__soundPcm = self.__soundPcm || {};
     // run_culebra's result is a verdict, not a process status — compare it as
     // one.
     const rc = await Module.ccall("run_culebra", "number",
