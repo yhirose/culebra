@@ -249,9 +249,10 @@ EM_ASYNC_JS(int, _wasm_midi_access, (int sysex), {
   const granted = await self.__midiAccess(sysex !== 0);
   return (granted.ok ? 1 : 0) | (granted.sysex ? 2 : 0);
 });
-// Until a message of an input held open comes, or `ms` pass.
-EM_ASYNC_JS(void, _wasm_midi_wait, (double ms), {
-  await self.__midiWait(ms);
+// Until something comes from the page (a MIDI message of an input held open,
+// a message for Page.socket; playground/worker-wake.js), or `ms` pass.
+EM_ASYNC_JS(void, _wasm_input_wait, (double ms), {
+  await self.__inputWait(ms);
 });
 #endif
 // Which list of ports the page last told of (each a new number).
@@ -424,7 +425,7 @@ bool midi_wait(int64_t id, double seconds) {
     const double left = until - _wasm_audio_now_ms();
     if (left <= 0) return false;
 #if defined(CULEBRA_WASM_JSPI)
-    _wasm_midi_wait(left);
+    _wasm_input_wait(left);
 #else
     return false;
 #endif

@@ -14,6 +14,12 @@ culebra build examples/fm-synth/main.cul -o fm-synth
 ./fm-synth
 ```
 
+It also runs in a browser: the
+[Playground](https://yhirose.github.io/culebra/playground/fm-synth.html)
+opens it as a page of its own (Audio, *FM Synth*). A wind controller or a
+keyboard plays it through the browser's Web MIDI, in Chrome, Edge or
+Firefox; Safari has no MIDI, so it plays there with the mouse and the keys.
+
 ## Playing it
 
 - **Presets**: pick one at the top, or step through them with ◀ ▶. *edited*
@@ -65,12 +71,16 @@ Support/culebra-fm-synth` on macOS, `%APPDATA%\culebra-fm-synth` on Windows,
 `~/.local/share/culebra-fm-synth` elsewhere. There is one JSON file per preset
 in `presets/`, and `settings.json` holds the sound you played last, each
 device's mode and the breath's source. The app starts where you left off.
+In a browser they are kept in the site's storage (IndexedDB), the same
+files under the same folder name, and are there when the page is opened
+again.
 
 ## How it works
 
 | File | Role |
 | --- | --- |
 | `main.cul` | `Desktop.run`: serves the page and the `/api/synth` WebSocket |
+| `browser.cul` | in the Playground: serves the page it runs in, its `Page.socket()` |
 | `engine/fm.cul` | the sound: a patch made `Synth` expressions |
 | `engine/engine.cul` | the playing synth: the MIDI inputs, the notes, the page's connection |
 | `engine/presets.cul` | the presets that come with the app, yours, and the settings |

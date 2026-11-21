@@ -259,7 +259,9 @@
 # the rest of the reflected methods: the order of the rules, an overload that
 # does not take the other operand, a trait default, a value class; 0.03 s
 # under --vm, 0.6 s under --jit).
-tests.cul 380
+# 381 since test_page.cul (Page.socket with no page is an IOError on every
+# engine; 0.1 s under --vm, 0.2 s under --jit).
+tests.cul 381
 
 # tests/isolate/*.cul — run on both engines, plus the over-cap modes.
 # 21 since test_xml_isolate.cul (an XML element keeps its methods across an
@@ -451,7 +453,9 @@ ctest.entries 43
 # 1246 since Synth.velocity, in en and ja (two notes played softly and hard).
 # 1248 since the reflected operators, in en and ja (`30 - c` through
 # `__rsub__`, `2 * c` through auto-reflection).
-docs.blocks 1248
+# 1252 since Page, in en and ja (Page.socket with no page is an IOError; a
+# page's loop, which skips).
+docs.blocks 1252
 
 # The samples the language front ends are run over (examples/languages/*).
 languages.samples 130

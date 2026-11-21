@@ -1,6 +1,8 @@
 // Playground UI. The WASM interpreter runs inside worker.js; this file owns
 // the editor, toolbar, worker lifecycle (Stop = terminate + respawn), and
 // the Output/TUI tabs.
+import { hostAudio } from "./host-audio.js";
+import { hostMidi } from "./host-midi.js";
 import { createEditor } from "./editor.js";
 import { encodeShareParam, decodeShareParam } from "./share-link.js";
 import { parseSourceUrl, projectFiles, cdnBase, treeUrl } from "./project.js";
@@ -407,7 +409,7 @@ function spawnWorker() {
       worker.postMessage({ type: "termSize", cols: TERM_COLS, rows: TERM_ROWS });
       // Its way to the mixer, for the same reason: a message posted before
       // the worker's handler is up is lost.
-      mixerChannel();
+      audio.channel(worker);
       runBtn.disabled = false;
       // Where Tensor runs and whether a TUI/Canvas script can take input are
       // separate capabilities (worker.js) — the badge names the first, the
@@ -432,19 +434,7 @@ function spawnWorker() {
       drawFrame(msg);
       return;
     }
-    if (msg.type === "midiAccess") {
-      answerMidi(msg.sysex);
-      return;
-    }
-    if (msg.type === "midiSend") {
-      const out = midiAccess && midiAccess.outputs.get(msg.id);
-      try {
-        if (out) out.send(msg.bytes);
-      } catch {
-        // Unplugged since: what is sent to a device gone is lost, as natively.
-      }
-      return;
-    }
+    if (onMidi(msg)) return;
     if (msg.type === "music") {
       handleMusic(msg);
       return;
@@ -786,7 +776,9 @@ exampleCatSel.addEventListener("change", () => {
 });
 exampleItemSel.addEventListener("change", () => {
   const name = exampleItemSel.value;
-  if (name) loadExampleIntoEditor(name).catch(showLoadError);
+  // An example with a page of its own (examples.json's "page") opens there.
+  if (name && EXAMPLES[name].page) location.assign(EXAMPLES[name].page);
+  else if (name) loadExampleIntoEditor(name).catch(showLoadError);
 });
 // Enter in a command line runs it, the way it would in a shell.
 argsInput.addEventListener("keydown", (e) => {
@@ -897,120 +889,18 @@ function stopRafPump() {
   }
 }
 
-// --- the page's audio ---------------------------------------------------------
-//
-// One AudioContext, at the mixer's rate (stdlib/audio_engine.h's kSampleRate),
-// made at the first gesture so the page asks for no audio before a program
-// plays. The program's tones, schedules and graphs play in it on the mixer,
-// an AudioWorklet (audio-worklet.js) running the engine a native build mixes
-// with (audio-engine.wasm), so they play the samples a native build plays.
-// The worker sends the mixer its calls over a port of its own; Sounds and
-// Music play here, with WebAudio (below).
-const MIXER_RATE = 44100;
+// --- the page's audio and MIDI (host-audio.js, host-midi.js) ----------------
+// The mixer plays a program's tones, schedules and graphs; Sounds and Music
+// play here, with WebAudio (below), in the same context.
+const audio = hostAudio();
 let audioCtx = null;
-let mixer = null;        // the AudioWorkletNode, once it is up
-let mixerPort = null;    // the current worker's port to it, until it is up
-
-// Browsers start an AudioContext "suspended" until a user gesture. Create it
-// (once) and resume it if suspended — called from the first click/key
-// anywhere on the page and from a Sound played, so a program that makes
-// noise right away isn't silent. A resume() on a running context is a no-op.
 function ensureAudio() {
-  try {
-    if (!audioCtx) {
-      audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: MIXER_RATE });
-      startMixer(audioCtx);
-    }
-    if (audioCtx.state === "suspended") audioCtx.resume();
-  } catch {
-    // Audio unavailable (no device / blocked) — a program stays playable.
-  }
+  audioCtx = audio.ensure();
   return audioCtx;
 }
-for (const ev of ["pointerdown", "keydown", "touchstart"]) {
-  window.addEventListener(ev, ensureAudio, { passive: true });
-}
-
-async function startMixer(ctx) {
-  try {
-    const [module] = await Promise.all([
-      WebAssembly.compileStreaming(fetch("./audio-engine.wasm")),
-      ctx.audioWorklet.addModule("./audio-worklet.js"),
-    ]);
-    mixer = new AudioWorkletNode(ctx, "culebra-engine", {
-      numberOfInputs: 0,
-      outputChannelCount: [2],
-      processorOptions: { module },
-    });
-    mixer.connect(ctx.destination);
-    connectMixer();
-  } catch {
-    // No worklet here: tones, songs and graphs stay silent, as with no device.
-  }
-}
-
-// A worker's way to the mixer, once it is ready: one end of a channel goes
-// to it, the other to the mixer once that is up; what the worker sends
-// before then waits in the channel.
-function mixerChannel() {
-  const ch = new MessageChannel();
-  worker.postMessage({ type: "audioPort", port: ch.port2 }, [ch.port2]);
-  mixerPort = ch.port1;
-  connectMixer();
-}
-function connectMixer() {
-  if (!mixer || !mixerPort) return;
-  mixer.port.postMessage({ port: mixerPort }, [mixerPort]);
-  mixerPort = null;
-}
-
-// --- MIDI: the browser's Web MIDI, for the worker (stdlib/audio_web.h) -------
-//
-// Asked for when a program first asks for a port, which waits for the answer
-// (the first time the browser asks the user), and again for sysexes; a
-// refusal leaves what was granted. From then on the worker is sent the ports
-// as they change and every message of every input, dated on the wall clock;
-// it keeps those of the inputs a program holds open. Web MIDI is the page's
-// alone (a worker has none). A browser without it (Safari) has no ports.
-let midiAccess = null;
-
-async function answerMidi(sysex) {
-  try {
-    if (navigator.requestMIDIAccess && (!midiAccess || (sysex && !midiAccess.sysexEnabled))) {
-      const next = await navigator.requestMIDIAccess({ sysex });
-      // An access has ports of its own: the old one's stop, or each message
-      // would come twice.
-      if (midiAccess) {
-        midiAccess.onstatechange = null;
-        for (const input of midiAccess.inputs.values()) input.onmidimessage = null;
-      }
-      midiAccess = next;
-      midiAccess.onstatechange = () => {
-        listenMidi();
-        sendMidiPorts();
-      };
-      listenMidi();
-    }
-  } catch {
-    // Refused, or no MIDI here: what was granted before stays.
-  }
-  if (midiAccess) sendMidiPorts();
-  worker.postMessage({ type: "midiAccess", ok: midiAccess !== null, sysex: midiAccess?.sysexEnabled === true });
-}
-
-function listenMidi() {
-  for (const input of midiAccess.inputs.values()) {
-    input.onmidimessage = (e) => {
-      if (worker) worker.postMessage({ type: "midi", id: input.id, data: e.data, at: performance.timeOrigin + e.timeStamp });
-    };
-  }
-}
-
-function sendMidiPorts() {
-  const list = (ports) =>
-    [...ports.values()].filter((p) => p.state === "connected").map((p) => ({ id: p.id, name: p.name }));
-  worker.postMessage({ type: "midiPorts", inputs: list(midiAccess.inputs), outputs: list(midiAccess.outputs) });
-}
+const onMidi = hostMidi((msg) => {
+  if (worker) worker.postMessage(msg);
+});
 
 // --- Audio.Sound / Audio.Music: decoded and driven here ----------------------
 // The worker posts commands keyed by the wasm-side handle (stdlib/audio_web.h keeps

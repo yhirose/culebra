@@ -872,6 +872,7 @@ inspect(match 9 {
 | `Llama` | 8 | このプロセス内で動くモデル。GGUFを読んで`generate`か`chat`（ビルドオプション） |
 | `Kauai` | 5 | Kauaiで書いた曲を読み、検査し、`Audio`のruntimeで演奏する |
 | `Synth` | 57 | 音を式として書き、`render`のときに`Audio.Graph`として組み立てる |
+| `Page` | 1 | プログラムを動かすブラウザのページに、WebSocketとしてつなぐ |
 
 <!-- END GENERATED -->
 

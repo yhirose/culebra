@@ -2517,7 +2517,7 @@ enum RuntimeSlot : size_t {
   kSlotJitTraitDefaults,
   // Shared metas for the values the runtime builds itself: the Range `a..b`
   // makes, and the ChannelResult / WsResult variants `try_recv` and
-  // `ws_receive` return. None has a declaration to own a meta, and minting
+  // `try_receive` return. None has a declaration to own a meta, and minting
   // one per value cost ~20% of try_recv. Holds a +1 (and a pin) on each, so
   // it needs the same placement as the registries above — torn down while the
   // GC heap and slab are still alive. Per Runtime, not per process: a meta

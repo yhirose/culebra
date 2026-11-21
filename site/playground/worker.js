@@ -3,6 +3,8 @@
 
 import { engineImports, mixerDecoder } from "./audio-engine.js";
 import { workerMidi } from "./web-midi.js";
+import { workerPage } from "./web-page.js";
+import { workerWake } from "./worker-wake.js";
 
 // Two builds ship (see build.sh): culebra-full adds JSPI, which is what makes
 // the TUI tab's Term.read_key and Canvas.present able to wait — without it a
@@ -195,8 +197,11 @@ self.__audioPort = null;
 self.__audioStatus = null;
 self.__soundPcm = {};
 
-// MIDI: the page's Web MIDI, for stdlib/audio_web.h (web-midi.js).
-const onMidi = workerMidi(self, postMessage);
+// MIDI (the page's Web MIDI, for stdlib/audio_web.h) and Page.socket (the
+// page itself, for page_web.h), waking one wait as they come.
+const wake = workerWake(self);
+const onMidi = workerMidi(self, postMessage, wake);
+const onPage = workerPage(self, wake);
 
 self.__decodeForMixer = await (async () => {
   try {
@@ -318,7 +323,7 @@ onmessage = async (e) => {
     self.__canvasMouseButtons = e.data.buttons;
     return;
   }
-  if (onMidi(e.data)) return;
+  if (onMidi(e.data) || onPage(e.data)) return;
   if (type === "audioPort") {
     // The worklet's word on the stream: [where it is, then id and held
     // samples for each schedule], dated by the worklet on the wall clock.

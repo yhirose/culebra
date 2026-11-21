@@ -1,0 +1,280 @@
+# The patches: the ones that come with the app, the player's own (one JSON
+# file each in the app's folder), and what makes any of them whole.
+#
+# A patch: `algorithm` (a key of fm.ALGORITHMS), `ops` (three operators, each
+# a `ratio` to the note, a `detune` in cents, a `level` 0..100, and an
+# envelope: `attack`, `decay`, `release` in seconds and `sustain` 0..100),
+# `feedback` 0..100 (operator 3's), `volume` 0..100, `reverb` 0..100, for a
+# wind controller `breath_bright` 0..100 (how much the breath opens the
+# modulators) and `glide` (seconds from note to note), and for a keyboard
+# `touch` 0..100 (how much a key played harder is louder and brighter).
+
+import fm from './fm.cul'
+
+fn op(ratio, level, attack, decay, sustain, release, detune = 0.0) {
+  {ratio, detune, level, attack, decay, sustain, release}
+}
+
+fn patch(
+  name,
+  algorithm,
+  ops,
+  feedback = 0.0,
+  reverb = 20.0,
+  breath_bright = 50.0,
+  glide = 0.03,
+  volume = 75.0,
+  touch = 50.0,
+) {
+  {name, algorithm, ops, feedback, volume, reverb, breath_bright, glide, touch}
+}
+
+let FACTORY = [
+  patch(
+    "Electric Piano",
+    "split",
+    [
+      op(1.0, 85.0, 0.002, 2.5, 0.0, 0.5),
+      op(14.0, 30.0, 0.001, 0.25, 0.0, 0.2),
+      op(1.0, 55.0, 0.002, 1.8, 10.0, 0.4, detune: 3.0),
+    ],
+    reverb: 25.0,
+    touch: 70.0,
+  ),
+  patch(
+    "Bell",
+    "pair",
+    [
+      op(1.0, 85.0, 0.001, 5.0, 0.0, 3.0),
+      op(3.5, 45.0, 0.001, 3.0, 0.0, 2.0),
+      op(7.13, 20.0, 0.001, 1.0, 0.0, 1.0),
+    ],
+    reverb: 45.0,
+  ),
+  patch(
+    "Brass",
+    "stack",
+    [
+      op(1.0, 85.0, 0.05, 0.4, 85.0, 0.15),
+      op(1.0, 60.0, 0.08, 0.5, 65.0, 0.2),
+      op(1.0, 30.0, 0.1, 0.5, 50.0, 0.2),
+    ],
+    feedback: 40.0,
+    breath_bright: 80.0,
+  ),
+  patch(
+    "Bass",
+    "stack",
+    [
+      op(0.5, 95.0, 0.001, 1.0, 40.0, 0.08),
+      op(0.5, 60.0, 0.001, 0.3, 20.0, 0.08),
+      op(1.0, 25.0, 0.001, 0.2, 0.0, 0.08),
+    ],
+    reverb: 5.0,
+  ),
+  patch(
+    "Organ",
+    "organ",
+    [
+      op(1.0, 75.0, 0.005, 0.1, 100.0, 0.05),
+      op(2.0, 55.0, 0.005, 0.1, 100.0, 0.05),
+      op(4.0, 40.0, 0.005, 0.1, 100.0, 0.05),
+    ],
+    reverb: 30.0,
+    touch: 0.0,
+  ),
+  patch(
+    "Clav",
+    "stack",
+    [
+      op(1.0, 85.0, 0.001, 0.8, 0.0, 0.05),
+      op(3.0, 55.0, 0.001, 0.4, 0.0, 0.05),
+      op(1.0, 35.0, 0.001, 0.3, 0.0, 0.05),
+    ],
+    feedback: 30.0,
+    reverb: 10.0,
+  ),
+  patch(
+    "Marimba",
+    "split",
+    [
+      op(1.0, 90.0, 0.001, 0.6, 0.0, 0.3),
+      op(4.0, 40.0, 0.001, 0.08, 0.0, 0.05),
+      op(10.0, 15.0, 0.001, 0.1, 0.0, 0.05),
+    ],
+    reverb: 30.0,
+  ),
+  patch(
+    "Soft Pad",
+    "split",
+    [
+      op(1.0, 70.0, 0.8, 1.0, 80.0, 1.5),
+      op(2.0, 30.0, 1.2, 1.5, 60.0, 1.5),
+      op(1.0, 60.0, 0.9, 1.0, 80.0, 1.5, detune: 7.0),
+    ],
+    feedback: 20.0,
+    reverb: 60.0,
+  ),
+  patch(
+    "Wind Lead",
+    "stack",
+    [
+      op(1.0, 85.0, 0.02, 0.2, 90.0, 0.1),
+      op(1.0, 55.0, 0.03, 0.3, 70.0, 0.1),
+      op(2.0, 25.0, 0.03, 0.3, 50.0, 0.1),
+    ],
+    feedback: 25.0,
+    breath_bright: 80.0,
+    glide: 0.04,
+  ),
+  patch(
+    "Wind Flute",
+    "pair",
+    [
+      op(1.0, 85.0, 0.05, 0.2, 90.0, 0.1),
+      op(1.0, 25.0, 0.05, 0.3, 60.0, 0.1),
+      op(3.0, 10.0, 0.05, 0.3, 50.0, 0.1),
+    ],
+    feedback: 60.0,
+    reverb: 35.0,
+    breath_bright: 60.0,
+    glide: 0.02,
+  ),
+]
+
+let FACTORY_NAMES = FACTORY.map(|p| p.name)
+
+# `x` as a number within lo..hi, or `default` when it is not a number.
+fn number(x, lo, hi, default) {
+  x is Long | Float && x == x && Math.abs(x) != Math.inf
+    ? Math.clamp(x + 0.0, lo, hi)
+    : default
+}
+
+# Each number's range, [lo, hi]: an operator's and the patch's. The page's
+# knobs span the same (the engine sends them).
+let RANGES = {
+  op: {
+    ratio: [0.5, 16.0],
+    detune: [-50.0, 50.0],
+    level: [0.0, 100.0],
+    attack: [0.001, 5.0],
+    decay: [0.01, 10.0],
+    sustain: [0.0, 100.0],
+    release: [0.01, 10.0],
+  },
+  patch: {
+    feedback: [0.0, 100.0],
+    volume: [0.0, 100.0],
+    reverb: [0.0, 100.0],
+    breath_bright: [0.0, 100.0],
+    glide: [0.0, 1.0],
+    touch: [0.0, 100.0],
+  },
+}
+
+# The numbers `ranges` names, from `given`, or else from `default`.
+fn numbers(given, default, ranges) {
+  ranges
+    .iter()
+    .map(|(k, r)| (k, number(given.get(k, nil), r[0], r[1], default[k])))
+    .to_object()
+}
+
+# `p` (from a file or the page) made a whole patch: what is missing or out of
+# range is the default's.
+fn whole(p, name = nil) {
+  let d = FACTORY[0]
+  let given = p is Object ? p : {}
+  let ops = given.get("ops", [])
+  {
+    name: name ?? (given.get("name", nil) is String ? given.name : "Untitled"),
+    algorithm: fm.ALGORITHMS.has(given.get("algorithm", ""))
+      ? given.algorithm
+      : d.algorithm,
+    ops: iota(3).map(fn (i) {
+      let o = ops is Array && i < ops.size() && ops[i] is Object ? ops[i] : {}
+      numbers(o, d.ops[i], RANGES.op)
+    }),
+    ...numbers(given, d, RANGES.patch),
+  }
+}
+
+# The player's presets and settings live in `dir`: a file name made of the
+# preset's name, percent-encoded so that no two names share one.
+let file_of = |dir, name| FS.join(
+  dir,
+  "presets",
+  "{Encoding.url.encode(name)}.json",
+)
+
+# `text` written to `path` whole: into a file of its own beside it, then moved
+# over it, so a reader (another page's engine, the next start) never meets it
+# half written.
+fn write_whole(path, text) {
+  let part = "{path}.{UUID.v4()}.part"
+  FS.write(part, text)
+  FS.rename(part, path)
+}
+
+# A store of the player's presets in `dir`.
+class Store {
+  new(dir: String) {
+    @dir = dir
+  }
+  # The player's presets, by name, in order of name.
+  mine() {
+    let folder = FS.join(@dir, "presets")
+    return [] unless FS.is_dir(folder)
+    FS.list_dir(folder).filter(|f| FS.extension(f) == ".json").map(fn (f) {
+      try {
+        whole(JSON.parse(FS.read(FS.join(folder, f))))
+      } catch _ {
+        nil
+      }
+    }).filter(|p| p != nil).sorted_by(|p| p.name.lower())
+  }
+  # Every preset's name: the app's, then the player's.
+  names() {
+    {factory: FACTORY_NAMES, mine: self.mine().map(|p| p.name)}
+  }
+  # The preset named `name`: the player's first, so one of theirs is never hidden.
+  find(name: String) {
+    self.mine().find(|p| p.name == name) ?? FACTORY.find(|p| p.name == name)
+  }
+  # `p` kept as the player's preset `name`; a name the app's presets have is
+  # refused, as the app's presets do not change.
+  save(name: String, p) {
+    let n = name.trim()
+    throw "give the preset a name" if n.empty()
+    throw "\"{n}\" is one of the app's presets: give yours another name" if FACTORY_NAMES.contains(n)
+    FS.mkdir(FS.join(@dir, "presets"))
+    write_whole(file_of(@dir, n), JSON.stringify(whole(p, n), indent: 2))
+    n
+  }
+  delete(name: String) {
+    let f = file_of(@dir, name)
+    FS.remove(f) if FS.exists(f)
+  }
+  # The settings kept between runs (the patch last played, each input's
+  # mode, the breath's source); {} when there are none, or the file holds
+  # anything but an object.
+  settings() {
+    let f = FS.join(@dir, "settings.json")
+    let read = try {
+      FS.exists(f) ? JSON.parse(FS.read(f)) : {}
+    } catch _ {
+      {}
+    }
+    read is Object ? read : {}
+  }
+  keep_settings(s) {
+    FS.mkdir(@dir)
+    write_whole(FS.join(@dir, "settings.json"), JSON.stringify(s, indent: 2))
+  }
+}
+
+# The app's folder, where the platform keeps a program's data.
+let app_dir = || Sys.data_dir("culebra-fm-synth")
+
+export {FACTORY, RANGES, whole, Store, app_dir}

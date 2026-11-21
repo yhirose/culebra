@@ -506,20 +506,20 @@ int main() {
     CHECK(r.error.find("scheme") != std::string::npos);
   }
 
-  // --- WebSocket round-trip (client path through the WsConn registry) ---
+  // --- WebSocket round-trip (client path through ws::'s connections) ---
   // Its own server (a WS handler occupies a connection for its lifetime), so it
   // stays independent of the shared server's thread pool.
   {
     httplib::Server wsvr;
     wsvr.WebSocket("/ws", [](const httplib::Request&,
                              httplib::ws::WebSocket& ws) {
-      // Drive the WsConn registry exactly as the backend trampolines do.
+      // Drive ws:: exactly as the WebSocket handle does.
       int64_t cid = culebra::http::ws_register_server(&ws);
       std::string m;
-      while (culebra::http::ws_receive(cid, m) == 1) {
-        culebra::http::ws_send(cid, m.data(), m.size());
+      while (culebra::ws::receive(cid, m) == 1) {
+        culebra::ws::send(cid, m.data(), m.size());
       }
-      culebra::http::ws_unregister(cid);
+      culebra::ws::remove(cid);
     });
     int wport = wsvr.bind_to_any_port("127.0.0.1");
     CHECK(wport > 0);
@@ -531,17 +531,17 @@ int main() {
         "ws://127.0.0.1:" + std::to_string(wport) + "/ws", err);
     CHECK(id >= 0);
     CHECK(err.empty());
-    CHECK(culebra::http::ws_is_open(id));
-    CHECK(culebra::http::ws_send(id, "ping", 4));
+    CHECK(culebra::ws::is_open(id));
+    CHECK(culebra::ws::send(id, "ping", 4));
     std::string got;
-    CHECK(culebra::http::ws_receive(id, got) == 1);
+    CHECK(culebra::ws::receive(id, got) == 1);
     CHECK(got == "ping");  // server echoed it back
-    CHECK(culebra::http::ws_send(id, "again", 5));
-    CHECK(culebra::http::ws_receive(id, got) == 1);
+    CHECK(culebra::ws::send(id, "again", 5));
+    CHECK(culebra::ws::receive(id, got) == 1);
     CHECK(got == "again");
-    culebra::http::ws_close(id);
-    culebra::http::ws_unregister(id);             // frees the client WsConn
-    CHECK(!culebra::http::ws_send(id, "x", 1));   // stale id fails safely
+    culebra::ws::close(id);
+    culebra::ws::remove(id);                       // frees the client's link
+    CHECK(!culebra::ws::send(id, "x", 1));   // stale id fails safely
 
     wsvr.stop();
     wth.join();
@@ -555,19 +555,25 @@ int main() {
     CHECK(!err.empty());
   }
 
-  // WsConn registry slot+generation (no ABA): a reused slot bumps the
-  // generation so a stale id stays dead.
+  // ws:: ids by slot+generation (no ABA): a reused slot bumps the generation
+  // so a stale id stays dead.
   {
-    culebra::http::WsConn a, b;
-    int64_t ida = culebra::http::g_ws_conns.add(&a);
-    CHECK(culebra::http::g_ws_conns.get(ida) == &a);
-    culebra::http::g_ws_conns.invalidate(ida);
-    CHECK(culebra::http::g_ws_conns.get(ida) == nullptr);  // stale after invalidate
-    int64_t idb = culebra::http::g_ws_conns.add(&b);        // reuses the slot
-    CHECK(idb != ida);                                      // generation bumped
-    CHECK(culebra::http::g_ws_conns.get(ida) == nullptr);  // old id still dead
-    CHECK(culebra::http::g_ws_conns.get(idb) == &b);
-    culebra::http::g_ws_conns.invalidate(idb);
+    struct Open : culebra::ws::Link {
+      int receive(std::string&) override { return -1; }
+      void set_read_timeout(int64_t) override {}
+      bool send(const char*, size_t) override { return true; }
+      void close() override {}
+      bool is_open() override { return true; }
+    };
+    int64_t ida = culebra::ws::add(std::make_unique<Open>());
+    CHECK(culebra::ws::is_open(ida));
+    culebra::ws::remove(ida);
+    CHECK(!culebra::ws::is_open(ida));                 // stale after remove
+    int64_t idb = culebra::ws::add(std::make_unique<Open>());  // reuses the slot
+    CHECK(idb != ida);                                 // generation bumped
+    CHECK(!culebra::ws::is_open(ida));                 // old id still dead
+    CHECK(culebra::ws::is_open(idb));
+    culebra::ws::remove(idb);
   }
 
   // --- Http server core (registry + route/static/close contract) ---

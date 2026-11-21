@@ -93,8 +93,9 @@
 44. [`Llama`](#44-llama) — このプロセス内で動くモデル。GGUFを読んで`generate`か`chat`（ビルドオプション）
 45. [`Kauai`](#45-kauai) — Kauaiで書いた曲を読み、検査し、`Audio`のruntimeで演奏する
 46. [`Synth`](#46-synth) — 音を式として書き、`render`のときに`Audio.Graph`として組み立てる
-47. [設計上の注記](#47-設計上の注記)
-48. [未収録（将来検討）](#48-未収録将来検討)
+47. [`Page`](#47-page) — プログラムを動かすブラウザのページに、WebSocketとしてつなぐ
+48. [設計上の注記](#48-設計上の注記)
+49. [未収録（将来検討）](#49-未収録将来検討)
 
 **目的別索引**
 
@@ -139,6 +140,7 @@
 | 可変長のread-onlyデータをスレッド間で共有（コピーなし） | [§12 Shared](#shared--参照共有する-immutable-値) — `Shared.new(value)` |
 | Ctrl+C / SIGINTを綺麗に扱う | [§12 Signal](#signal--signalnotify--signalreset) — `Signal.notify(tx)` / `Signal.reset()` |
 | デスクトップGUI（ネイティブWebView + ローカルサーバ） | [§30 Desktop](#30-desktop--webview) — `Desktop.run({title, assets, routes})` |
+| プログラムを動かしているブラウザのページとやり取りする | [§47 Page](#47-page) — `Page.socket()`のあとはWebSocketと同じく`send` / `try_receive` |
 | MIDIの鍵盤やウインドコントローラで演奏する | [§41 MIDI](#41-midi) — `MIDI.inputs()` / `MIDI.Input.new(id).messages()` / `input.control(2)` |
 | 音を鳴らす（tone・効果音・音楽）、音を合成する | [§40 Audio](#40-audio) — `Audio.tone(440, 10)` / `Audio.Sound.new(bytes).play()` / `Audio.Music.new(bytes)` / `Audio.PCM.new(44100, 1, 1024)` / `Audio.Capture.new(44100)` |
 | Kauaiで書いた曲を演奏する | [§45 Kauai](#45-kauai) — `Kauai.new(text).play()` / `Kauai.load(path)` |
@@ -10315,7 +10317,29 @@ let a = sine(220.0)
 println(render(a + a, 0.001) == render(a * 2.0, 0.001))  # => true
 ```
 
-## 47. 設計上の注記
+## 47. `Page`
+
+プログラムを動かしているページ。Playgroundのように、ブラウザのページがプログラムを動かしているときにある。`Page.socket()`はそのページへの接続を開き、[`Http.ws`](#httpwsurl---object)と同じ形のハンドルを返す: `send(msg)`、`receive()`、`try_receive()`、`set_timeout(ms)`、`for msg in socket`、`close()`、`is_open()`。[`Desktop.run`](#30-desktop--webview)のアプリのようにWebSocketでページに応えるプログラムは、同じコードで自分を動かしているページに応えられる。名前空間はどのビルドにもあり、プログラムを動かすページが無いところ（ネイティブ、JSPIの無いブラウザ）では`Page.socket()`が`IOError`を投げる。
+
+| 関数 | 効果 |
+| --- | --- |
+| `Page.socket()` | ページのソケットを開いて返す。ページが無いとき、この実行のソケットが既に開いているときは`IOError` |
+
+ソケットを開く前にページが送ったものは残らない。ページを待つ間（`receive()`、またはタイムアウト付きの`try_receive()`）はブラウザに制御を返し、ページからのメッセージで待ちが終わる。開いている[`MIDI`](#41-midi)の入力のメッセージでも終わり、そのとき`try_receive()`はタイムアウトの前に`Empty`を返すので、ページとMIDIの両方を読むループはどちらが来ても起きる。ページが去るとソケットは閉じたものとして読め（`receive()`は`nil`、`try_receive()`は`Closed`）、実行が終わるとページの側も閉じる。
+
+```culebra
+assert_throws("IOError", || Page.socket())
+```
+
+```culebra
+# doctest: skip — needs a page in a browser
+let page = Page.socket()
+for msg in page {
+  page.send("heard {msg}")
+}
+```
+
+## 48. 設計上の注記
 
 ### 名前空間ファースト、グローバルは出力の3つだけ
 
@@ -10372,7 +10396,7 @@ run_with(IO, "via parameter")
 
 ---
 
-## 48. 未収録（将来検討）
+## 49. 未収録（将来検討）
 
 ### 重量級データ構造
 

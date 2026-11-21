@@ -17,6 +17,7 @@
 #include <frontend/module_loader.h>
 #include <stdlib/audio_web.h>  // the Audio backend's bodies in a browser
 #include <stdlib/bindings.h>  // the stdlib the executor resolves through
+#include "page_web.h"  // Page.socket's body in a browser
 #include <stdlib/preamble.h>
 #include <stdlib/vfs.h>
 #include <vm/vm.h>
@@ -125,12 +126,17 @@ EMSCRIPTEN_KEEPALIVE int run_culebra(const char* src_c, const char* path_c,
   culebra::Runtime rt;
   culebra::RuntimeScope scope(rt);
   // What the last run left of the audio (sounds playing, MIDI ports open)
-  // is let go, and what this one leaves goes with it (the run is the
-  // process here).
-  culebra::_audio_detail::reset_run();
+  // and of its connections (the page's socket) is let go, and what this one
+  // leaves goes with it (the run is the process here).
+  auto reset = [] {
+    culebra::_audio_detail::reset_run();
+    culebra::ws::remove_all();
+  };
+  reset();
   struct ResetAfter {
-    ~ResetAfter() { culebra::_audio_detail::reset_run(); }
-  } reset_after;
+    void (*reset)();
+    ~ResetAfter() { reset(); }
+  } reset_after{reset};
 
   int rc = 0;
   auto exit_with = [](const auto& e) {

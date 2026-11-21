@@ -16,6 +16,8 @@ import { root, loadPlayground } from "./wasm.mjs";
 globalThis.self = globalThis;
 const site = path.join(root, "site/playground");
 const { workerMidi } = await import(path.join(site, "web-midi.js"));
+const { workerWake } = await import(path.join(site, "worker-wake.js"));
+const wake = workerWake(globalThis);
 
 let bad = 0;
 function check(ok, what) {
@@ -37,7 +39,7 @@ const onMidi = workerMidi(globalThis, (m) => {
              outputs: [{ id: "out-1", name: "Synth" }] });
     onMidi({ type: "midiAccess", ok: true, sysex: false });
   }, 5);
-});
+}, wake);
 const play = (id, ...bytes) =>
   onMidi({ type: "midi", id, data: new Uint8Array(bytes), at: performance.timeOrigin + performance.now() });
 

@@ -95,8 +95,9 @@ Conventions used below:
 44. [`Llama`](#44-llama) — a model run in this process: load a GGUF file, then `generate` or `chat` (a build option)
 45. [`Kauai`](#45-kauai) — songs written in Kauai, read, checked and played on the Audio runtime
 46. [`Synth`](#46-synth) — sound written as an expression, built as an `Audio.Graph` when it renders
-47. [Design notes](#47-design-notes)
-48. [Not included (yet)](#48-not-included-yet)
+47. [`Page`](#47-page) — the browser page running the program, as a WebSocket
+48. [Design notes](#48-design-notes)
+49. [Not included (yet)](#49-not-included-yet)
 
 **Where to find what**
 
@@ -143,6 +144,7 @@ Conventions used below:
 | Share variable-length read-only data across threads (no copy) | [§12 Shared](#shared--immutable-values-shared-by-reference) — `Shared.new(value)` |
 | Handle Ctrl+C / SIGINT gracefully | [§12 Signal](#signal--signalnotify--signalreset) — `Signal.notify(tx)` / `Signal.reset()` |
 | Desktop GUI (native WebView + local server) | [§30 Desktop](#30-desktop--webview) — `Desktop.run({title, assets, routes})` |
+| Talk to the browser page the program runs in | [§47 Page](#47-page) — `Page.socket()`, then `send` / `try_receive` as on a WebSocket |
 | Play from a MIDI keyboard or wind controller | [§41 MIDI](#41-midi) — `MIDI.inputs()` / `MIDI.Input.new(id).messages()` / `input.control(2)` |
 | Play a tone, a sound effect or music; synthesise audio | [§40 Audio](#40-audio) — `Audio.tone(440, 10)` / `Audio.Sound.new(bytes).play()` / `Audio.Music.new(bytes)` / `Audio.PCM.new(44100, 1, 1024)` / `Audio.Capture.new(44100)` |
 | Play a song written in Kauai | [§45 Kauai](#45-kauai) — `Kauai.new(text).play()` / `Kauai.load(path)` |
@@ -10806,7 +10808,44 @@ let a = sine(220.0)
 println(render(a + a, 0.001) == render(a * 2.0, 0.001))  # => true
 ```
 
-## 47. Design notes
+## 47. `Page`
+
+The page a program runs in, where a page in a browser runs it, as the
+Playground's do. `Page.socket()` opens a connection to that page, a handle
+of the same shape as [`Http.ws`](#httpwsurl---object)'s: `send(msg)`,
+`receive()`, `try_receive()`, `set_timeout(ms)`, `for msg in socket`,
+`close()` and `is_open()`. A program that serves a page over a WebSocket, as
+a [`Desktop.run`](#30-desktop--webview) app's does, serves the page it runs
+in with the same code. Every build has the namespace; where no page runs
+the program (natively, or in a browser without JSPI), `Page.socket()` raises
+`IOError`.
+
+| Function | Effect |
+| --- | --- |
+| `Page.socket()` | the page's socket, open; `IOError` with no page, or with a socket of this run open on it already |
+
+What the page sends before the program opens the socket is not kept. A
+wait for the page (`receive()`, or `try_receive()` with a timeout) lets the
+browser run, and a message from the page ends it; so does a message of a
+[`MIDI`](#41-midi) input held open, for which `try_receive()` answers
+`Empty` before its timeout, so a loop that reads both the page and MIDI
+wakes for either. When the page goes away the socket reads as closed
+(`receive()` is `nil`, `try_receive()` is `Closed`), and when the run ends
+the page's side closes.
+
+```culebra
+assert_throws("IOError", || Page.socket())
+```
+
+```culebra
+# doctest: skip — needs a page in a browser
+let page = Page.socket()
+for msg in page {
+  page.send("heard {msg}")
+}
+```
+
+## 48. Design notes
 
 ### Namespace-first, with three global shortcuts
 
@@ -10862,7 +10901,7 @@ sentinel values for "found or not" predicates (`IO.input()` returns
 
 ---
 
-## 48. Not included (yet)
+## 49. Not included (yet)
 
 ### Heavier data structures
 

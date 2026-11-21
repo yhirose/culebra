@@ -1,0 +1,6 @@
+# Page: every build has the namespace, and only a program a browser page runs
+# has a page to open a socket on (the Playground's; tools/playground/page_test.mjs
+# holds that side). Anywhere else, asking for one is an IOError.
+
+assert_throws("IOError", || Page.socket(),
+              message: "Page.socket: no page runs this program (a page in a browser does, as the Playground's)")

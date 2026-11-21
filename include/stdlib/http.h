@@ -61,6 +61,7 @@
 #include <stdlib/http_method.h>  // HttpMethod (a checked method)
 #include <stdlib/port.h>    // Port (a checked port number)
 #include <stdlib/vfs.h>     // Dir / LiveDir / EmbeddedDir / serve_static (static assets)
+#include <stdlib/ws_link.h>  // ws::Link (a WebSocket's connection, by id)
 
 namespace culebra::http {
 
@@ -331,8 +332,8 @@ inline std::string encode_query(const HeaderList& pairs) {
 #endif
 
 // IdRegistry<T> (id_registry.h): the slot+generation id table every handle
-// table in this file (client, server, streaming sink, WebSocket connection)
-// is built on, thread_local per instance since each handle is non-sendable.
+// table in this file (client, server, streaming sink; the WebSocket
+// connections are ws_link.h's) is built on, thread_local per instance since each handle is non-sendable.
 // Included ahead of the client table (its first use) but outside the
 // WEAK/STRONG gate that follows — a registry over T* never itself needs T to
 // be complete, and the streaming sink table below needs it visible in the
@@ -987,8 +988,8 @@ using RouteHandler =
     std::function<void(const ServerRequest&, ServerResponse&)>;
 
 // Backend-supplied WebSocket handler: run a long-lived loop over the
-// connection referenced by `ws` (via ws_send/ws_receive after
-// ws_register_server(ws)) for one connection. httplib calls it on the worker
+// connection referenced by `ws` (through ws:: by the id
+// ws_register_server(ws) gives) for one connection. httplib calls it on the worker
 // thread, so it occupies that worker until it returns. Like RouteHandler,
 // declaring it pulls no TLS symbol.
 using WsHandler = std::function<void(const ServerRequest&, WebSocketRef*)>;
@@ -1317,44 +1318,35 @@ class CulebraWorkerPool : public httplib::TaskQueue {
   bool shutdown_ = false;
 };
 
-// One WebSocket endpoint, unifying the two cpp-httplib types behind one shape so
-// the backends call the same ws_* functions. A server endpoint borrows the
-// httplib::ws::WebSocket the handler was handed (valid only during the handler); a client
-// endpoint owns its httplib::ws::WebSocketClient (freed on drop). receive() collapses
-// Text/Binary to a message string (binary-safe) and reports close as 0.
-struct WsConn {
-  httplib::ws::WebSocket* server = nullptr;                  // borrowed (server handler)
-  std::unique_ptr<httplib::ws::WebSocketClient> client;      // owned (client handle)
-  int receive(std::string& out) {
-    httplib::ws::ReadResult r = server ? server->read(out) : client->read(out);
+// A WebSocket on httplib's socket, as a ws::Link: a server handler's
+// (borrowed: the server closes it when the handler returns) or a client's
+// (owned). `Holder` points to an httplib::ws::WebSocket or WebSocketClient,
+// which read, send and time out alike. Text and Binary read alike, as one
+// message (binary-safe).
+template <class Holder>
+struct HttplibWsLink : ws::Link {
+  Holder socket;
+  explicit HttplibWsLink(Holder s) : socket(std::move(s)) {}
+  int receive(std::string& out) override {
+    httplib::ws::ReadResult r = socket->read(out);
     if (r == httplib::ws::Timeout) return -1;  // still open, nothing consumed
     return r == httplib::ws::Fail ? 0 : 1;     // Text/Binary → 1; Fail → 0
   }
-  // 0 waits forever, as on a Socket. Only a connection that has one set can
-  // report a timeout, which is what lets one thread both read and send here.
-  void set_read_timeout(int64_t ms) {
-    auto sec = static_cast<time_t>(ms / 1000);
-    auto usec = static_cast<time_t>((ms % 1000) * 1000);
-    if (server) server->set_read_timeout(sec, usec);
-    else if (client) client->set_read_timeout(sec, usec);
+  // As on a Socket. Only a connection that has one set can report a timeout,
+  // which is what lets one thread both read and send here.
+  void set_read_timeout(int64_t ms) override {
+    socket->set_read_timeout(static_cast<time_t>(ms / 1000),
+                             static_cast<time_t>((ms % 1000) * 1000));
   }
-  bool send(const char* d, size_t n) {
-    std::string s(d, n);  // send as a Text frame (the std::string overload)
-    return server ? server->send(s) : (client && client->send(s));
+  bool send(const char* d, size_t n) override {
+    return socket->send(std::string(d, n));  // a Text frame
   }
-  void close() {
-    if (server) server->close();
-    else if (client) client->close();
-  }
-  bool is_open() {
-    return server ? server->is_open() : (client && client->is_open());
-  }
+  void close() override { socket->close(); }
+  bool is_open() override { return socket->is_open(); }
 };
-
-// id → WsConn registry (same slot+generation scheme as the sink registry): a
-// captured/escaped ws handle (used after its handler returned, or after close)
-// resolves stale and its ops fail safely.
-inline thread_local IdRegistry<WsConn> g_ws_conns;
+using WsServerLink = HttplibWsLink<httplib::ws::WebSocket*>;
+using WsClientLink =
+    HttplibWsLink<std::unique_ptr<httplib::ws::WebSocketClient>>;
 
 // Mirror one httplib request into the neutral shape handed to the backends.
 // Views throughout: `q` outlives the handler call. Iteration order from
@@ -1706,26 +1698,15 @@ CULEBRA_RT_HTTP_LINKAGE void http_server_ws(int64_t id,
 #endif
 }
 
-// Register a borrowed server-side WebSocket and return its id. The caller
-// invalidates it (ws_unregister) when the handler returns.
+// Register a borrowed server-side WebSocket and return its ws:: id. The
+// caller removes it (ws::remove) when the handler returns.
 CULEBRA_RT_HTTP_LINKAGE int64_t ws_register_server(void* ws) {
 #if defined(CULEBRA_RT_HTTP_REQUEST_WEAK)
   (void)ws;
   return -1;
 #else
-  auto* conn = new WsConn();
-  conn->server = static_cast<httplib::ws::WebSocket*>(ws);
-  return g_ws_conns.add(conn);
-#endif
-}
-CULEBRA_RT_HTTP_LINKAGE void ws_unregister(int64_t id) {
-#if defined(CULEBRA_RT_HTTP_REQUEST_WEAK)
-  (void)id;
-#else
-  if (WsConn* c = g_ws_conns.get(id)) {
-    g_ws_conns.invalidate(id);
-    delete c;  // frees the WsConn (and, for a client, its WebSocketClient)
-  }
+  return ws::add(std::make_unique<WsServerLink>(
+      static_cast<httplib::ws::WebSocket*>(ws)));
 #endif
 }
 
@@ -1748,66 +1729,7 @@ CULEBRA_RT_HTTP_LINKAGE int64_t ws_client_open(const std::string& url,
     err = "Http.ws: could not connect: " + url;
     return -1;
   }
-  auto* conn = new WsConn();
-  conn->client = std::move(client);
-  return g_ws_conns.add(conn);
-#endif
-}
-
-// Read the next message into `out`. Returns 1 on a message, 0 on close / a stale
-// id (so a loop or for-in ends), -1 when the read timeout elapsed with the
-// connection still open.
-CULEBRA_RT_HTTP_LINKAGE int ws_receive(int64_t id, std::string& out) {
-#if defined(CULEBRA_RT_HTTP_REQUEST_WEAK)
-  (void)id; (void)out;
-  return 0;
-#else
-  WsConn* c = g_ws_conns.get(id);
-  return c ? c->receive(out) : 0;
-#endif
-}
-
-// Bound how long a read waits before reporting a timeout (0 = forever).
-// False on a stale id.
-CULEBRA_RT_HTTP_LINKAGE bool ws_set_timeout(int64_t id, int64_t ms) {
-#if defined(CULEBRA_RT_HTTP_REQUEST_WEAK)
-  (void)id; (void)ms;
-  return false;
-#else
-  WsConn* c = g_ws_conns.get(id);
-  if (!c) return false;
-  c->set_read_timeout(ms);
-  return true;
-#endif
-}
-
-// Send a text message. Returns false on a stale id or a failed/closed socket.
-CULEBRA_RT_HTTP_LINKAGE bool ws_send(int64_t id, const char* data, size_t len) {
-#if defined(CULEBRA_RT_HTTP_REQUEST_WEAK)
-  (void)id; (void)data; (void)len;
-  return false;
-#else
-  WsConn* c = g_ws_conns.get(id);
-  return c ? c->send(data, len) : false;
-#endif
-}
-
-// Close the connection (idempotent; a stale id no-ops).
-CULEBRA_RT_HTTP_LINKAGE void ws_close(int64_t id) {
-#if defined(CULEBRA_RT_HTTP_REQUEST_WEAK)
-  (void)id;
-#else
-  if (WsConn* c = g_ws_conns.get(id)) c->close();
-#endif
-}
-
-CULEBRA_RT_HTTP_LINKAGE bool ws_is_open(int64_t id) {
-#if defined(CULEBRA_RT_HTTP_REQUEST_WEAK)
-  (void)id;
-  return false;
-#else
-  WsConn* c = g_ws_conns.get(id);
-  return c ? c->is_open() : false;
+  return ws::add(std::make_unique<WsClientLink>(std::move(client)));
 #endif
 }
 

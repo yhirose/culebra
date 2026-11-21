@@ -1,0 +1,9 @@
+# FM Synth in a browser: the Playground's fm-synth.html shows ui/ and runs
+# this in its worker, so the engine serves the page it runs in, as main.cul
+# serves the desktop app's window over a WebSocket.
+#
+# Run it from the Playground (Audio, FM Synth); natively, main.cul.
+
+import engine from './engine/engine.cul'
+
+engine.serve(Page.socket())

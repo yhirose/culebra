@@ -884,6 +884,7 @@ from a signature produces code that lints and does not run.
 | `Llama` | 8 | a model run in this process: load a GGUF file, then `generate` or `chat` (a build option) |
 | `Kauai` | 5 | songs written in Kauai, read, checked and played on the Audio runtime |
 | `Synth` | 57 | sound written as an expression, built as an `Audio.Graph` when it renders |
+| `Page` | 1 | the browser page running the program, as a WebSocket |
 
 <!-- END GENERATED -->
 

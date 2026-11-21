@@ -4,7 +4,7 @@
 // escaped id (used after the handle is invalidated, or after a slot is reused)
 // resolves stale and fails safely with no ABA. The id encodes (gen<<32 | slot)
 // in unsigned space (a signed shift into the sign bit would be UB). Http's
-// client/server/streaming sink/WebSocket connection tables, net.h's Sock
+// client/server/streaming sink tables, ws_link.h's connections, net.h's Sock
 // table, sqlite.h's db/stmt tables and canvas.h's Sprite table are all one of
 // these, so a forged or stale id behaves the same way everywhere: bounds- and
 // generation-checked, never a dereference of arbitrary memory (same posture as

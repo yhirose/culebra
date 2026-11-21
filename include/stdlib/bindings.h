@@ -29,6 +29,7 @@
 #include <stdlib/font_ttf.h>
 #include <stdlib/image.h>
 #include <stdlib/term.h>
+#include <stdlib/ws_link.h>  // a WebSocket handle's connection, Http or not
 #if defined(CULEBRA_HTTP_ENABLED)
 #include <stdlib/http.h>
 #endif
@@ -7306,6 +7307,164 @@ inline JitHeldMethod _jit_dir_method(JitObject* o, const char* name) {
              : JitHeldMethod{};
 }
 
+// --- WebSocket handle (an Http server's connection, an Http.ws client, or
+// Page.socket) ---------------------------------------------------------------
+// send/receive/close/is_open + `iter` for for-in, and (on an owned
+// connection) drop to free it. Outside the Http section: the connection is a
+// ws::Link (ws_link.h), and a build without Http has the page's.
+
+// Block for the next message, waiting again through a read timeout: both
+// `receive()` and for-in mean "the next message", and a timeout is the absence
+// of one, not the end. The wait is also where a pending Ctrl+C gets to land.
+inline int _ws_receive_blocking(int64_t id, std::string& out) {
+  int got;
+  while ((got = culebra::ws::receive(id, out)) == -1) {
+    culebra::throw_if_interrupted();
+  }
+  return got;
+}
+
+// for-in pull: read the next message; close (or a stale id) ends iteration.
+inline void _ws_messages_fast_fn(JitClosure* cls, bool* done,
+                                 int8_t* out_tag, int64_t* out_data) {
+  int64_t id = cls->captures[0]->value.data;
+  std::string out;
+  if (_ws_receive_blocking(id, out) == 0) { *done = true; return; }
+  *done = false;
+  *out_tag = TAG_STRING;
+  *out_data = reinterpret_cast<int64_t>(_culebra_heap_str(out));
+}
+
+// The WsResult variant names, interned once: `Empty` is the common answer in a
+// polling loop, so don't retake _intern_str's global lock per call. Same entry
+// point compiled `Enum.Variant(...)` calls use, so the instance is
+// indistinguishable from a declared one. `kind` is ws::receive's return.
+inline JitValue _jit_ws_result(int kind, JitValue* payload) {
+  static const char* kEnum = _intern_str("WsResult");
+  static const char* kMessage = _intern_str("Message");
+  static const char* kEmpty = _intern_str("Empty");
+  static const char* kClosed = _intern_str("Closed");
+  const char* name = kind == 1 ? kMessage : (kind == -1 ? kEmpty : kClosed);
+  return _jit_build_native_variant(name, kEnum, payload);
+}
+
+// A WebSocket: the id of its ws::Link. A client's or the page's handle owns
+// the connection (its `drop` frees it); a server handler's does not, the
+// server closes it when the handler returns.
+inline void _jit_ws_fill(JitObject* meta);
+inline void _jit_ws_owned_fill(JitObject* meta);
+inline constexpr JitIdHandleSpec kWsOwnedHandle{"WebSocket", _jit_ws_owned_fill};
+inline constexpr JitIdHandleSpec kWsBorrowedHandle{"WebSocket", _jit_ws_fill};
+
+inline int64_t _jit_ws_id(JitValue self) {
+  return _jit_id_handle(self, {&kWsOwnedHandle, &kWsBorrowedHandle}, "WebSocket").id;
+}
+
+inline void _jit_ws_send(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t n,
+                                        JitValue* args) {
+  JitValue self{self_tag, self_data};
+  int64_t id = _jit_ws_id(self);
+  auto sv = _jit_handle_req_string(n, args, 0, "data");
+  bool ok = culebra::ws::send(id, sv.data(), sv.size());
+  { *__ret = {TAG_BOOL, ok ? 1 : 0}; return; }
+}
+inline void _jit_ws_receive(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t,
+                                           JitValue*) {
+  JitValue self{self_tag, self_data};
+  int64_t id = _jit_ws_id(self);
+  std::string out;
+  int got = _ws_receive_blocking(id, out);
+  if (got == 0) { *__ret = {TAG_NIL, 0}; return; }  // nil = closed
+  { *__ret = {TAG_STRING, reinterpret_cast<int64_t>(_culebra_heap_str(out))}; return; }
+}
+// Non-blocking counterpart, the shape Channel.try_recv settled on: nil cannot
+// mean "a message", "nothing yet" and "closed" at once.
+inline void _jit_ws_try_receive(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t,
+                                               JitValue*) {
+  JitValue self{self_tag, self_data};
+  int64_t id = _jit_ws_id(self);
+  std::string out;
+  int got = culebra::ws::receive(id, out);
+  if (got != 1) { *__ret = _jit_ws_result(got, nullptr); return; }
+  JitValue msg{TAG_STRING,
+               reinterpret_cast<int64_t>(_culebra_heap_str(out))};
+  { *__ret = _jit_ws_result(got, &msg); return; }
+}
+inline void _jit_ws_set_timeout(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
+                                               int64_t n, JitValue* args) {
+  JitValue self{self_tag, self_data};
+  if (!_jit_file_arg_present(n, args, 0)) _jit_file_missing_arg("ms");
+  if (args[0].tag != TAG_LONG)
+    _jit_file_param_type_error("ms", "Long", 0);
+  culebra::ws::set_timeout(
+      _jit_ws_id(self),
+      args[0].data);
+  { *__ret = {TAG_NIL, 0}; return; }
+}
+inline void _jit_ws_close(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t,
+                                         JitValue*) {
+  JitValue self{self_tag, self_data};
+  culebra::ws::close(
+      _jit_ws_id(self));
+  { *__ret = {TAG_NIL, 0}; return; }
+}
+inline void _jit_ws_is_open(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t,
+                                           JitValue*) {
+  JitValue self{self_tag, self_data};
+  bool open = culebra::ws::is_open(
+      _jit_ws_id(self));
+  { *__ret = {TAG_BOOL, open ? 1 : 0}; return; }
+}
+inline void _jit_ws_iter(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t,
+                                        JitValue*) {
+  JitValue self{self_tag, self_data};
+  int64_t id = _jit_ws_id(self);
+  auto* id_cell = culebra_runtime_cell_new(TAG_LONG, id);
+  auto* it = _iter_wrap_source<&_ws_messages_fast_fn>({id_cell});
+  { *__ret = {TAG_OBJECT, reinterpret_cast<int64_t>(it)}; return; }
+}
+inline void _jit_ws_drop(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t,
+                                        JitValue*) {
+  JitValue self{self_tag, self_data};
+  // An owned handle's drop (a client's, the page's): close + free the
+  // connection. A server handler's has none (the trampoline frees it).
+  culebra::ws::remove(
+      _jit_ws_id(self));
+  { *__ret = {TAG_NIL, 0}; return; }
+}
+
+// The methods both kinds share.
+inline void _jit_ws_fill(JitObject* meta) {
+  static const JitParamMeta* send_meta =
+      _jit_make_handle_meta({"data"}, {false});
+  static const JitParamMeta* ms_meta = _jit_make_handle_meta({"ms"}, {false});
+  _jit_handle_bind_method(meta, "send", _jit_native<_jit_ws_send>, 1, send_meta);
+  _jit_handle_bind_method(meta, "receive", _jit_native<_jit_ws_receive>, 0);
+  _jit_handle_bind_method(meta, "try_receive", _jit_native<_jit_ws_try_receive>, 0);
+  _jit_handle_bind_method(meta, "set_timeout", _jit_native<_jit_ws_set_timeout>, 1, ms_meta);
+  _jit_handle_bind_method(meta, "close", _jit_native<_jit_ws_close>, 0);
+  _jit_handle_bind_method(meta, "is_open", _jit_native<_jit_ws_is_open>, 0);
+  _jit_handle_bind_method(meta, "iter", _jit_native<_jit_ws_iter>, 0);
+}
+inline void _jit_ws_owned_fill(JitObject* meta) {
+  _jit_ws_fill(meta);
+  _jit_handle_bind_method(meta, "drop", _jit_native<_jit_ws_drop>, 0);
+}
+
+inline JitValue _jit_make_ws_handle(int64_t ws_id, bool owns) {
+  return _jit_make_id_handle(owns ? kWsOwnedHandle : kWsBorrowedHandle, ws_id);
+}
+
+// Page.socket(): the page this program runs in, as a WebSocket the program
+// owns. Only a page in a browser runs one (ws::page_link).
+inline JitValue _ns_page_socket(JitValue*, int64_t) {
+  std::string err;
+  auto link = culebra::ws::page_link(err);
+  if (!link)
+    throw culebra::CulebraError("IOError", "Page.socket: " + err, 0, 0);
+  return _jit_make_ws_handle(culebra::ws::add(std::move(link)), true);
+}
+
 #if defined(CULEBRA_HTTP_ENABLED)
 namespace _http_adapt {
 // Fill `headers`/`timeout`/`follow_redirects`/`params` from the slab into
@@ -7823,152 +7982,6 @@ inline bool _jit_http_try_stream_response(JitValue ret,
   return true;
 }
 
-// --- WebSocket handle (server-side connection or Http.ws client) ----------
-// send/receive/close/is_open + `iter` for
-// for-in, and (client only) drop to free the owned connection.
-
-// Block for the next message, waiting again through a read timeout: both
-// `receive()` and for-in mean "the next message", and a timeout is the absence
-// of one, not the end. The wait is also where a pending Ctrl+C gets to land.
-inline int _ws_receive_blocking(int64_t id, std::string& out) {
-  int got;
-  while ((got = culebra::http::ws_receive(id, out)) == -1) {
-    culebra::throw_if_interrupted();
-  }
-  return got;
-}
-
-// for-in pull: read the next message; close (or a stale id) ends iteration.
-inline void _ws_messages_fast_fn(JitClosure* cls, bool* done,
-                                 int8_t* out_tag, int64_t* out_data) {
-  int64_t id = cls->captures[0]->value.data;
-  std::string out;
-  if (_ws_receive_blocking(id, out) == 0) { *done = true; return; }
-  *done = false;
-  *out_tag = TAG_STRING;
-  *out_data = reinterpret_cast<int64_t>(_culebra_heap_str(out));
-}
-
-// The WsResult variant names, interned once: `Empty` is the common answer in a
-// polling loop, so don't retake _intern_str's global lock per call. Same entry
-// point compiled `Enum.Variant(...)` calls use, so the instance is
-// indistinguishable from a declared one. `kind` is ws_receive's return.
-inline JitValue _jit_ws_result(int kind, JitValue* payload) {
-  static const char* kEnum = _intern_str("WsResult");
-  static const char* kMessage = _intern_str("Message");
-  static const char* kEmpty = _intern_str("Empty");
-  static const char* kClosed = _intern_str("Closed");
-  const char* name = kind == 1 ? kMessage : (kind == -1 ? kEmpty : kClosed);
-  return _jit_build_native_variant(name, kEnum, payload);
-}
-
-// A WebSocket: the id of its connection in the Http table. The client's
-// handle owns the connection (its `drop` closes it); a server handler's does
-// not, the server closes it when the handler returns.
-inline void _jit_ws_fill(JitObject* meta);
-inline void _jit_ws_client_fill(JitObject* meta);
-inline constexpr JitIdHandleSpec kWsClientHandle{"WebSocket", _jit_ws_client_fill};
-inline constexpr JitIdHandleSpec kWsServerHandle{"WebSocket", _jit_ws_fill};
-
-inline int64_t _jit_ws_id(JitValue self) {
-  return _jit_id_handle(self, {&kWsClientHandle, &kWsServerHandle}, "WebSocket").id;
-}
-
-inline void _jit_ws_send(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t n,
-                                        JitValue* args) {
-  JitValue self{self_tag, self_data};
-  int64_t id = _jit_ws_id(self);
-  auto sv = _jit_handle_req_string(n, args, 0, "data");
-  bool ok = culebra::http::ws_send(id, sv.data(), sv.size());
-  { *__ret = {TAG_BOOL, ok ? 1 : 0}; return; }
-}
-inline void _jit_ws_receive(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t,
-                                           JitValue*) {
-  JitValue self{self_tag, self_data};
-  int64_t id = _jit_ws_id(self);
-  std::string out;
-  int got = _ws_receive_blocking(id, out);
-  if (got == 0) { *__ret = {TAG_NIL, 0}; return; }  // nil = closed
-  { *__ret = {TAG_STRING, reinterpret_cast<int64_t>(_culebra_heap_str(out))}; return; }
-}
-// Non-blocking counterpart, the shape Channel.try_recv settled on: nil cannot
-// mean "a message", "nothing yet" and "closed" at once.
-inline void _jit_ws_try_receive(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t,
-                                               JitValue*) {
-  JitValue self{self_tag, self_data};
-  int64_t id = _jit_ws_id(self);
-  std::string out;
-  int got = culebra::http::ws_receive(id, out);
-  if (got != 1) { *__ret = _jit_ws_result(got, nullptr); return; }
-  JitValue msg{TAG_STRING,
-               reinterpret_cast<int64_t>(_culebra_heap_str(out))};
-  { *__ret = _jit_ws_result(got, &msg); return; }
-}
-inline void _jit_ws_set_timeout(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data,
-                                               int64_t n, JitValue* args) {
-  JitValue self{self_tag, self_data};
-  if (!_jit_file_arg_present(n, args, 0)) _jit_file_missing_arg("ms");
-  if (args[0].tag != TAG_LONG)
-    _jit_file_param_type_error("ms", "Long", 0);
-  culebra::http::ws_set_timeout(
-      _jit_ws_id(self),
-      args[0].data);
-  { *__ret = {TAG_NIL, 0}; return; }
-}
-inline void _jit_ws_close(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t,
-                                         JitValue*) {
-  JitValue self{self_tag, self_data};
-  culebra::http::ws_close(
-      _jit_ws_id(self));
-  { *__ret = {TAG_NIL, 0}; return; }
-}
-inline void _jit_ws_is_open(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t,
-                                           JitValue*) {
-  JitValue self{self_tag, self_data};
-  bool open = culebra::http::ws_is_open(
-      _jit_ws_id(self));
-  { *__ret = {TAG_BOOL, open ? 1 : 0}; return; }
-}
-inline void _jit_ws_iter(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t,
-                                        JitValue*) {
-  JitValue self{self_tag, self_data};
-  int64_t id = _jit_ws_id(self);
-  auto* id_cell = culebra_runtime_cell_new(TAG_LONG, id);
-  auto* it = _iter_wrap_source<&_ws_messages_fast_fn>({id_cell});
-  { *__ret = {TAG_OBJECT, reinterpret_cast<int64_t>(it)}; return; }
-}
-inline void _jit_ws_drop(JitValue* __ret, JitClosure*, int8_t self_tag, int64_t self_data, int64_t,
-                                        JitValue*) {
-  JitValue self{self_tag, self_data};
-  // client drop: close + free the owned connection. A server ws has no drop
-  // (the trampoline frees it).
-  culebra::http::ws_unregister(
-      _jit_ws_id(self));
-  { *__ret = {TAG_NIL, 0}; return; }
-}
-
-// The methods both kinds share.
-inline void _jit_ws_fill(JitObject* meta) {
-  static const JitParamMeta* send_meta =
-      _jit_make_handle_meta({"data"}, {false});
-  static const JitParamMeta* ms_meta = _jit_make_handle_meta({"ms"}, {false});
-  _jit_handle_bind_method(meta, "send", _jit_native<_jit_ws_send>, 1, send_meta);
-  _jit_handle_bind_method(meta, "receive", _jit_native<_jit_ws_receive>, 0);
-  _jit_handle_bind_method(meta, "try_receive", _jit_native<_jit_ws_try_receive>, 0);
-  _jit_handle_bind_method(meta, "set_timeout", _jit_native<_jit_ws_set_timeout>, 1, ms_meta);
-  _jit_handle_bind_method(meta, "close", _jit_native<_jit_ws_close>, 0);
-  _jit_handle_bind_method(meta, "is_open", _jit_native<_jit_ws_is_open>, 0);
-  _jit_handle_bind_method(meta, "iter", _jit_native<_jit_ws_iter>, 0);
-}
-inline void _jit_ws_client_fill(JitObject* meta) {
-  _jit_ws_fill(meta);
-  _jit_handle_bind_method(meta, "drop", _jit_native<_jit_ws_drop>, 0);
-}
-
-inline JitValue _jit_make_http_ws_handle(int64_t ws_id, bool is_client) {
-  return _jit_make_id_handle(is_client ? kWsClientHandle : kWsServerHandle, ws_id);
-}
-
 // A route recorded on a server, installed at serve, when the worker count --
 // and so whether handlers must be Sendable -- is known. `handler` is a +1.
 struct JitRouteRecord {
@@ -8224,7 +8237,7 @@ inline JitValue _jit_http_server_do_serve(JitValue self, int64_t workers,
                 JitOwnedVal req(JitValue{
                     TAG_OBJECT,
                     reinterpret_cast<int64_t>(_jit_http_request_to_object(q))});
-                JitOwnedVal wsh(_jit_make_http_ws_handle(wsid, false));
+                JitOwnedVal wsh(_jit_make_ws_handle(wsid, false));
                 auto* cb = reinterpret_cast<JitClosure*>(
                     g_jit_srv_w_handlers[ri].data);
                 // The invoke consumes both +1s; owning them until then covers
@@ -8236,7 +8249,7 @@ inline JitValue _jit_http_server_do_serve(JitValue self, int64_t workers,
                 // thrown value: none arrives; call_from_host above makes one
                 // an error. A handler that fails closes its own connection.
               }
-              culebra::http::ws_unregister(wsid);
+              culebra::ws::remove(wsid);
             };
         culebra::http::http_server_ws(id, recs[i].pattern, std::move(wh), rerr);
       } else {
@@ -8466,7 +8479,7 @@ inline JitValue _ns_http_ws(JitValue* a, int64_t) {
   std::string err;
   int64_t id = culebra::http::ws_client_open(url, err);
   if (id < 0) throw culebra::CulebraError("HttpError", err, 0, 0);
-  return _jit_make_http_ws_handle(id, true);
+  return _jit_make_ws_handle(id, true);
 }
 #endif  // CULEBRA_HTTP_ENABLED
 
@@ -11980,6 +11993,9 @@ inline const NsMethod kNsRows_Env[] = {
 inline const NsMethod kNsRows_Set[] = {
   {"Set", "new", -1, &_ns_set_new},
 };
+inline const NsMethod kNsRows_Page[] = {
+  {"Page", "socket", 0, &_ns_page_socket},
+};
 inline const NsMethod kNsRows_UUID[] = {
   {"UUID", "v4", 0, &_ns_uuid_v4},
   {"UUID", "v7", 0, &_ns_uuid_v7},
@@ -12337,6 +12353,8 @@ CULEBRA_NS_GROUP_LINKAGE const NsGroup culebra_ns_group_Set{
     kNsRows_Set, kCanonSigs_Set};
 CULEBRA_NS_GROUP_LINKAGE const NsGroup culebra_ns_group_UUID{
     kNsRows_UUID, kCanonSigs_UUID};
+CULEBRA_NS_GROUP_LINKAGE const NsGroup culebra_ns_group_Page{
+    kNsRows_Page, kCanonSigs_Page};
 CULEBRA_NS_GROUP_LINKAGE const NsGroup culebra_ns_group_String{
     kNsRows_String, kCanonSigs_String};
 CULEBRA_NS_GROUP_LINKAGE const NsGroup culebra_ns_group_Tensor{
@@ -12397,6 +12415,7 @@ inline const NsGroupRef kNsGroups[] = {
   {"Env", &culebra_ns_group_Env},
   {"Set", &culebra_ns_group_Set},
   {"UUID", &culebra_ns_group_UUID},
+  {"Page", &culebra_ns_group_Page},
   {"String", &culebra_ns_group_String},
   {"Tensor", &culebra_ns_group_Tensor},
   {"_Time", &culebra_ns_group_Time_native},
@@ -14101,7 +14120,7 @@ inline const std::unordered_set<std::string_view>& builtin_var_names() {
       "Parallel",
       "Signal",  "Encoding", "Compress",  "SharedBuffer", "Shared",
       "Hash",    "CSV",       "TOML",      "XML",       "Env",        "UUID",
-      "String",  "Set",
+      "String",  "Set",       "Page",
       "_Term",   "_Canvas",   "_Audio",    "_Dir",
 #if defined(CULEBRA_SQLITE_ENABLED)
       "SQLite",

@@ -63,6 +63,12 @@
         { "title": "Canvas: Piano", "path": "examples/audio/piano.cul" },
         { "title": "EWI: Synth Lead", "path": "examples/audio/ewi_lead.cul" },
         {
+          "title": "FM Synth (a page of its own)",
+          "page": "fm-synth.html",
+          "path": "examples/fm-synth/browser.cul",
+          "uses": ["examples/fm-synth/engine/engine.cul", "examples/fm-synth/engine/fm.cul", "examples/fm-synth/engine/presets.cul"]
+        },
+        {
           "title": "Kauai: a song on recipe instruments",
           "path": "examples/kauai/play_recipes.cul",
           "uses": ["kauai/engine/recipe.cul", "kauai/recipes/main.cul", "kauai/recipes/*.json", "examples/kauai/songs/strings.kau"]

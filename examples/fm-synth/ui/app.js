@@ -63,8 +63,12 @@ const el = (tag, props = {}, children = []) => {
 
 // ---- the connection
 
+// The engine is the desktop app's server, or, where a page runs the engine
+// itself (the Playground's fm-synth.html), the socket that page hands in.
 function connect() {
-  socket = new WebSocket(`ws://${location.host}/api/synth`);
+  socket = window.openSynthSocket
+    ? window.openSynthSocket()
+    : new WebSocket(`ws://${location.host}/api/synth`);
   socket.onopen = () => hideMessage();
   socket.onmessage = (ev) => receive(JSON.parse(ev.data));
   socket.onclose = () => {

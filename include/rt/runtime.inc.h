@@ -3874,7 +3874,7 @@ inline JitObject* _jit_pinned_meta(culebra::RuntimeSlot slot, const Key& key,
 }  // extern "C++"
 
 // The shared meta a value the runtime builds itself carries: the Range `a..b`
-// makes, the ChannelResult / WsResult variants `try_recv` and `ws_receive`
+// makes, the ChannelResult / WsResult variants `try_recv` and `try_receive`
 // return, and a generator's iterator (rt/gen.inc.h). None has a declaration
 // to own a meta, and minting one per value cost ~20% of `try_recv` (488 ->
 // 389 ns/op measured at -O1), so they come from a table instead.

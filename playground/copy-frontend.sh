@@ -14,7 +14,8 @@ mkdir -p "$OUT"
 # examples.json is not copied but written below, each example's file list
 # filled in.
 cp playground/index.html playground/boot.js playground/app.js playground/worker.js \
-   playground/audio-worklet.js playground/audio-engine.js playground/web-midi.js \
+   playground/audio-worklet.js playground/audio-engine.js playground/web-midi.js playground/web-page.js playground/worker-wake.js \
+   playground/host-audio.js playground/host-midi.js \
    playground/editor.js playground/culebra-lang.js playground/share-link.js \
    playground/project.js playground/styles.css "$OUT/"
 # Synth Studio: a second page on the same worker and editor.
@@ -24,6 +25,20 @@ cp playground/studio.html playground/studio.js playground/studio.css \
 rm -rf "$OUT/studio-samples"
 mkdir -p "$OUT/studio-samples"
 cp playground/studio-samples/index.json playground/studio-samples/*.cul "$OUT/studio-samples/"
+# FM Synth: examples/fm-synth/ui as a page of its own, its engine run in this
+# worker (fm-synth-host.js). The page is ui/index.html with its files under
+# fm-synth/ and the host loaded ahead of ui/app.js.
+rm -rf "$OUT/fm-synth"
+mkdir -p "$OUT/fm-synth"
+cp examples/fm-synth/ui/app.js examples/fm-synth/ui/style.css "$OUT/fm-synth/"
+cp playground/fm-synth-host.js "$OUT/"
+sed -e 's|href="style.css"|href="fm-synth/style.css"|' \
+    -e 's|<script src="app.js" defer></script>|<script type="module" src="fm-synth-host.js"></script>\
+<script src="fm-synth/app.js" defer></script>|' \
+    examples/fm-synth/ui/index.html >"$OUT/fm-synth.html"
+grep -q 'src="fm-synth-host.js"' "$OUT/fm-synth.html" &&
+  grep -q 'href="fm-synth/style.css"' "$OUT/fm-synth.html" ||
+  { echo "error: fm-synth.html: ui/index.html's stylesheet or script tag changed" >&2; exit 1; }
 # The vendored libraries (vendor.sh): the bundles and the stylesheet are what
 # the page loads; package.json, the lockfile and VERSIONS are how they were
 # built, and stay behind.

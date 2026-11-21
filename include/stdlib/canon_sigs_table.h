@@ -1284,6 +1284,10 @@ inline constexpr CanonSig kCanonSigs_UUID[] = {
   {"UUID", "", "v7", {}, "String"},
 };
 
+inline constexpr CanonSig kCanonSigs_Page[] = {
+  {"Page", "", "socket", {}, "Object"},
+};
+
 inline constexpr CanonParam kCanonParams_String_from_code_point[] = {
   {"cp", false, false, false, false, false, "Long", CanonDefault::None, 0, {}},
 };
