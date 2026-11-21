@@ -1,0 +1,122 @@
+# `for i in range(...)` walks the counted-loop fast path (ForPrep/ForLoop)
+# that `for i in a..b` takes, when `range` is the built-in and the call is
+# `range(n)` or `range(a, b)` with an optional `step:`. What range() itself
+# does must read the same through it: the sequence, the order the arguments
+# evaluate and are checked in, the errors, and every shape it does not take.
+
+fn walk(f) {
+  let out = []
+  f(out)
+  out
+}
+
+assert_eq(walk(|o| { for i in range(5) { o.push(i) } }), [0, 1, 2, 3, 4])
+assert_eq(walk(|o| { for i in range(-2) { o.push(i) } }), [])
+assert_eq(walk(|o| { for i in range(2, 6) { o.push(i) } }), [2, 3, 4, 5])
+assert_eq(walk(|o| { for i in range(6, 2) { o.push(i) } }), [])
+assert_eq(walk(|o| { for i in range(1, 10, step: 3) { o.push(i) } }), [1, 4, 7])
+assert_eq(walk(|o| { for i in range(5, 0, step: -1) { o.push(i) } }), [5, 4, 3, 2, 1])
+assert_eq(walk(|o| { for i in range(7, step: 2) { o.push(i) } }), [0, 2, 4, 6])
+assert_eq(
+  walk(|o| { for i in range(9223372036854775805, 9223372036854775807) { o.push(i) } }),
+  [9223372036854775805, 9223372036854775806],
+)
+
+# A sink walks the same counter.
+mut count = 0
+for _ in range(4) {
+  count += 1
+}
+assert_eq(count, 4)
+
+# The bounds evaluate once, before the loop: rebinding one in the body
+# changes nothing.
+mut n = 3
+count = 0
+for i in range(n) {
+  n = 10
+  count += 1
+}
+assert_eq(count, 3)
+
+# Every argument evaluates, in source order, before any is checked — as a
+# call's arguments do — so a bad first argument still runs the second.
+mut log = []
+let bad = fn () {
+  log.push('start')
+  1.5
+}
+let good = fn () {
+  log.push('end')
+  4
+}
+let r = try {
+  for i in range(bad(), good()) {
+    log.push(i)
+  }
+  'ran'
+} catch e {
+  "{e.kind}: {e.message}"
+}
+assert_eq(r, 'TypeError: type error: expected Long, got Float')
+assert_eq(log, ['start', 'end'])
+
+log = []
+let step0 = fn () {
+  log.push('step')
+  0
+}
+let r0 = try {
+  for i in range(good(), 9, step: step0()) {
+    log.push(i)
+  }
+  'ran'
+} catch e {
+  "{e.kind}: {e.message}"
+}
+assert_eq(r0, 'ValueError: range() step must not be zero')
+assert_eq(log, ['end', 'step'])
+
+# break / continue / nobreak, and a closure per iteration.
+log = []
+for i in range(10) {
+  continue if i % 2 == 1
+  break if i > 5
+  log.push(i)
+} nobreak {
+  log.push('done')
+}
+assert_eq(log, [0, 2, 4])
+
+let fns = []
+for i in range(3) {
+  fns.push(|| i)
+}
+assert_eq(fns.map(|f| f()), [0, 1, 2])
+
+# Shapes the counter does not take stay calls, and range() answers them.
+let arity = try {
+  for i in range(1, 2, 3) {}
+  'ran'
+} catch e {
+  e.kind
+}
+assert_eq(arity, 'ArityError')
+let unknown = try {
+  for i in range(3, foo: 1) {}
+  'ran'
+} catch e {
+  e.message
+}
+assert_eq(unknown, "unknown keyword argument 'foo'")
+
+# A `range` the program binds is the program's.
+fn shadowed() {
+  let range = |k| [k, k]
+  walk(|o| {
+    for i in range(7) {
+      o.push(i)
+    }
+  })
+}
+assert_eq(shadowed(), [7, 7])

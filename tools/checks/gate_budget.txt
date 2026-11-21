@@ -251,7 +251,11 @@
 # 378 since test_stringview_is_string.cul (a StringView is a String to every
 # annotation, `is`, a pattern, a field, dispatch and the stdlib's String
 # parameters; 0.04 s under --vm, 0.7 s under --jit).
-tests.cul 378
+# 379 since test_for_range_call.cul (`for i in range(...)` walks the counted
+# loop and reads as range() does: the sequence, the order its arguments
+# evaluate and are checked in, its errors, a shadowing `range`; 0.03 s under
+# --vm, 0.6 s under --jit).
+tests.cul 379
 
 # tests/isolate/*.cul — run on both engines, plus the over-cap modes.
 # 21 since test_xml_isolate.cul (an XML element keeps its methods across an

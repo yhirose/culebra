@@ -6648,6 +6648,11 @@ for i in range(1000000000) {
 `range(N).<HOF>(...)` method-chain pattern is fused into a direct
 counter loop. See §18.5.
 
+`for i in range(n)` and `for i in range(start, end)`, with or without
+`step:`, walk the same Long counter as `for i in start..end` on every
+engine: no iterator is built. The arguments still evaluate and are
+checked as a call's are.
+
 ### `iota(n: Long) -> Array` / `iota(start: Long, end: Long) -> Array`
 
 Eager counterpart to `range`: materialise an `Array` of the same

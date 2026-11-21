@@ -6369,6 +6369,10 @@ for i in range(1000000000) {
 `range(N).<HOF>(...)`のメソッドチェーンは直接のcounterループに
 fusionされます。§18.5を参照。
 
+`for i in range(n)`と`for i in range(start, end)`は、`step:`の有無に
+かかわらず、どのエンジンでも`for i in start..end`と同じLongのcounterを
+回し、iteratorを作りません。引数の評価と検査は呼び出しと同じです。
+
 ### `iota(n: Long) -> Array` / `iota(start: Long, end: Long) -> Array`
 
 `range`のeager版。同じ整数列を`Array`として実体化します。名前はAPL、

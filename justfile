@@ -1775,6 +1775,13 @@ _run-tests BACKEND:
     # its own unannotated control so it cannot pass by measuring nothing.
     run_param_tag() { bash tools/checks/check_param_tag_fold.sh "$BIN"; }
 
+    # Counted-range gate: `for i in range(...)` on the built-in compiles to
+    # the counter `for i in a..b` walks, opening no iterator. Losing it is
+    # only slower (~0.6 us a loop start), which nothing else would notice
+    # (tools/checks/check_counted_range.sh). Reads emitted IR, and carries a
+    # control that must still open the protocol.
+    run_counted_range() { bash tools/checks/check_counted_range.sh "$BIN"; }
+
     # Parameter-name gate: every stdlib function binds keywords under the
     # names the reference docs print, so each documented `Ns.fn(...)` row is
     # compared with the binary's own `fn.params`
@@ -1864,6 +1871,7 @@ _run-tests BACKEND:
       "run_alloca_discipline|alloca discipline (scratch slots stay entry-block)|binary|dev,test|light|-|0"
       "run_float_carry|float carry (loop-carried Floats stay double phis)|binary|dev,test|light|-|0"
       "run_param_tag|param tag (a declared parameter type reaches the code)|binary|dev,test|light|-|0"
+      "run_counted_range|counted range (for i in range(...) walks a counter)|binary|dev,test|light|-|0"
       "run_param_names|param names (stdlib functions bind their documented names)|binary|dev,test|light|-|1"
       "run_early_ifcvt|early ifcvt (a carried Float's if arm stays a branch)|binary|dev,test|light|-|1"
       "run_rt_archive_tls|rt-archive TLS ownership (core vs force-loaded features)|tree|test|buildtree|-|0"

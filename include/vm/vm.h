@@ -10381,18 +10381,60 @@ class Compiler {
     const auto& id = *fv.binding;
     // The iterable runs on the level around the loop (resolve.h).
     predeclare_conditional_decls(*fv.iter);
-    // Fast path: `for <ident> in <a>..<b>` walks a Long counter, as the JIT's
-    // compile_for_counted_range does — a sink included, which is the same
-    // loop binding nothing. Everything else — a pattern binding, an
-    // unbounded range, any other iterable — opens the protocol.
-    if (id.tag == "IDENTIFIER"_ && id.is_token && fv.iter->tag == "RANGE"_) {
-      auto lay = culebra::decode_range_layout(*fv.iter);
-      if (lay.start && lay.end) {
-        compile_for_counted_range(ast, fv, lay);
+    // Fast path: `for <ident> in <a>..<b>` and `for <ident> in range(...)`
+    // walk a Long counter — a sink included, which is the same loop binding
+    // nothing. Everything else — a pattern binding, an unbounded range, any
+    // other iterable — opens the protocol.
+    if (id.tag == "IDENTIFIER"_ && id.is_token) {
+      if (fv.iter->tag == "RANGE"_) {
+        auto lay = culebra::decode_range_layout(*fv.iter);
+        if (lay.start && lay.end) {
+          compile_for_counted_range(
+              ast, fv, {lay.start, lay.end, lay.step, lay.inclusive, false});
+          return;
+        }
+      } else if (auto b = range_call_bounds(*fv.iter)) {
+        compile_for_counted_range(ast, fv, *b);
         return;
       }
     }
     compile_for_generic(ast, fv);
+  }
+
+  // What a counted loop walks: a `..` range's endpoints, or the arguments of
+  // a call to the built-in `range` (`start` null for `range(n)`, which counts
+  // from 0).
+  struct CountedBounds {
+    const peg::Ast* start;
+    const peg::Ast* end;
+    const peg::Ast* step;
+    bool inclusive;
+    // A call evaluates every argument before range() checks any, so its
+    // ChkLongs follow the last one; a `..` checks each endpoint as it
+    // compiles (compile_range's order).
+    bool is_call;
+  };
+
+  // `range(n)`, `range(a, b)`, either with a trailing `step:` — the shapes
+  // whose counting range() and a `..` loop share (RangeBounds), when `range`
+  // is the stdlib's (calls_stdlib). Any other shape (another arity, another
+  // keyword, a splat) stays a call, so range()'s own diagnostics answer it.
+  std::optional<CountedBounds> range_call_bounds(const peg::Ast& iter) {
+    using namespace peg::udl;
+    if (iter.tag != "CALL"_ || !calls_stdlib(iter, "range")) return std::nullopt;
+    const auto& args = iter.nodes[1]->nodes;
+    size_t positional = args.size();
+    const peg::Ast* step = nullptr;
+    if (positional > 0 && is_kwarg(*args.back()) &&
+        args.back()->nodes[0]->token == "step") {
+      step = args.back()->nodes[1].get();
+      --positional;
+    }
+    if (positional < 1 || positional > 2) return std::nullopt;
+    for (size_t i = 0; i < positional; ++i)
+      if (is_kwarg(*args[i]) || is_kwarg_splat(*args[i])) return std::nullopt;
+    const peg::Ast* start = positional == 2 ? args[0].get() : nullptr;
+    return CountedBounds{start, args[positional - 1].get(), step, false, true};
   }
 
   // Walk anything the iterator protocol reaches: an Array/Tuple or a Set's
@@ -10563,7 +10605,7 @@ class Compiler {
 
   void compile_for_counted_range(const peg::Ast& ast,
                                  const culebra::ForView& fv,
-                                 const culebra::RangeLayout& lay) {
+                                 const CountedBounds& bounds) {
     using namespace peg::udl;
     const auto& id = *fv.binding;
     // A sink walks the same counter with nothing bound: ForLoop still writes
@@ -10580,25 +10622,30 @@ class Compiler {
     // Endpoints evaluate before the binding exists, on the level around the
     // loop (a declaration in one outlives it), in source order, with errors
     // attributed to the range expression — same as both backends. Each is
-    // ChkLong'd right after it compiles (compile_range's order): the counter
-    // is a Long, and a Float bound is a TypeError rather than something to
-    // truncate (`for i in 1.5..3` ran no iterations here, and `by 0.5`
-    // walked a step of its own invention). A variable's value is copied out,
-    // as a later endpoint may rebind it.
+    // ChkLong'd (a `..` right after it compiles, a call after its last
+    // argument): the counter is a Long, and a Float bound is a TypeError
+    // rather than something to truncate (`for i in 1.5..3` ran no iterations
+    // here, and `by 0.5` walked a step of its own invention). A variable's
+    // value is copied out, as a later endpoint may rebind it.
     stamp(*fv.iter);
-    auto endpoint = [&](const peg::Ast& e) {
-      ExprResult r = compile_expr(e);
+    auto endpoint = [&](const peg::Ast* e) {
+      if (!e) return ExprResult{-1, false};
+      ExprResult r = compile_expr(*e);
       if (!r.owned) {
-        int32_t t = alloc_temp(e);
+        int32_t t = alloc_temp(*e);
         emit(Op::MoveRetain, t, r.slot);
         r = {t, true};
       }
-      emit(Op::ChkLong, r.slot);
+      if (!bounds.is_call) emit(Op::ChkLong, r.slot);
       return r;
     };
-    ExprResult start = endpoint(*lay.start);
-    ExprResult end = endpoint(*lay.end);
-    ExprResult step = lay.step ? endpoint(*lay.step) : ExprResult{-1, false};
+    ExprResult start = endpoint(bounds.start);
+    ExprResult end = endpoint(bounds.end);
+    ExprResult step = endpoint(bounds.step);
+    if (bounds.is_call) {
+      for (const auto& r : {start, end, step})
+        if (r.slot >= 0) emit(Op::ChkLong, r.slot);
+    }
 
     push_scope(ast);
     int32_t base = alloc_slot(ast, "(for.cur)");
@@ -10609,9 +10656,12 @@ class Compiler {
                                               : std::string(id.token));
     int32_t bind = var;
     if (cell) bind = alloc_cell_slot(id, std::string(id.token));
-    store_into(base + 0, start, /*dst_is_fresh=*/true);
+    if (bounds.start)
+      store_into(base + 0, start, /*dst_is_fresh=*/true);
+    else
+      emit(Op::LoadConst, base + 0, kconst_long(0));
     store_into(base + 1, end, /*dst_is_fresh=*/true);
-    if (lay.step)
+    if (bounds.step)
       store_into(base + 2, step, /*dst_is_fresh=*/true);
     else
       emit(Op::LoadConst, base + 2, kconst_long(1));
@@ -10626,7 +10676,7 @@ class Compiler {
     size_t safepoint_ix = emit(Op::Safepoint);
     patch_jump(prep, chunk_.code.size());
     emit(Op::ForLoop, base, static_cast<int32_t>(body_ix), var,
-         lay.inclusive ? 1 : 0);
+         bounds.inclusive ? 1 : 0);
     size_t exit_ix = chunk_.code.size();
 
     auto& lc = loops_.back();

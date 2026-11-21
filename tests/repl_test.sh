@@ -96,11 +96,13 @@ out=$(session "Math.abs(-3)" "to_string(42)" "assert_eq(1, 1)" \
 
 # A session binding outranks the stdlib name on every later line, including
 # the calls the compiler would otherwise replace (a direct println/to_float,
-# an Ns.f call): nothing on a line may assume the name is the stdlib's.
+# an Ns.f call, a counted `for i in range(...)`): nothing on a line may
+# assume the name is the stdlib's.
 out=$(session "let to_float = |x| 7" "to_float(1)" \
               "let Math = {abs: |x| 'mine'}" "Math.abs(0 - 3)" \
+              "let range = |n| [n, n]" "for i in range(3) { println(i) }" \
               "let println = |x| 0" "println('stdlib?')")
-[[ "$out" == *$'\n'"7"$'\n'*$'\n'"'mine'"$'\n'*$'\n'"0" ]] ||
+[[ "$out" == *$'\n'"7"$'\n'*$'\n'"'mine'"$'\n'*$'\n'"3"$'\n'"3"$'\n'*$'\n'"0" ]] ||
   { echo "FAIL session binding over a stdlib call: $out"; fail=1; }
 
 # An error leaves the session usable, and a failed declaration leaves the name
