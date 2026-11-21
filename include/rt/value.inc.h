@@ -562,6 +562,10 @@ struct JitSpecialTable {
   // traits supply it (asking raises the ambiguity) or a worker has yet to
   // rebuild the one it was shipped — so that name is asked by name.
   uint32_t by_name = 0;
+  // Bit per Special: some trait has a default of its name, whatever the
+  // class conforms to — what an instance whose traits are its own may
+  // inherit where its class inherits nothing.
+  uint32_t defaulted = 0;
   // Set as the table is first filled (_jit_fill_specials): from here on the
   // meta's slots never change, which `fn`, a lent method
   // (JitHeldMethod::lend) and `methods_drop` all rely on. Asserted where a

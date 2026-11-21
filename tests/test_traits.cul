@@ -402,4 +402,72 @@ let ambiguous_side = try {
 }
 assert_eq(ambiguous_side, "DispatchError: ambiguous default `side`: traits LeftSide and RightSide both supply it; define `side` on the class")
 
+// --- An instance's own function field counts for that instance alone:
+//     two instances of one class answer apart, whichever is asked first.
+//     Each check has a class of its own, so no answer leaks between them.
+trait FieldTalker {
+  speak()
+}
+fn field_talk(x: FieldTalker) {
+  "talk"
+}
+fn field_pick(x: FieldTalker) {
+  "talker"
+}
+fn field_pick(x) {
+  "any"
+}
+class IsWithFirst { new(f) { if f { self.speak = || "hi" } } }
+assert_eq([IsWithFirst(true) is FieldTalker, IsWithFirst(false) is FieldTalker],
+          [true, false])
+class IsWithoutFirst { new(f) { if f { self.speak = || "hi" } } }
+assert_eq([IsWithoutFirst(false) is FieldTalker, IsWithoutFirst(true) is FieldTalker],
+          [false, true])
+class CallWithFirst { new(f) { if f { self.speak = || "hi" } } }
+assert_eq(field_talk(CallWithFirst(true)), "talk")
+assert_throws('DispatchError', fn () {
+  field_talk(CallWithFirst(false))
+})
+class CallWithoutFirst { new(f) { if f { self.speak = || "hi" } } }
+assert_throws('DispatchError', fn () {
+  field_talk(CallWithoutFirst(false))
+})
+assert_eq(field_talk(CallWithoutFirst(true)), "talk")
+class PickWithFirst { new(f) { if f { self.speak = || "hi" } } }
+assert_eq([field_pick(PickWithFirst(true)), field_pick(PickWithFirst(false))],
+          ["talker", "any"])
+class PickWithoutFirst { new(f) { if f { self.speak = || "hi" } } }
+assert_eq([field_pick(PickWithoutFirst(false)), field_pick(PickWithoutFirst(true))],
+          ["any", "talker"])
+// The single `fn` a call reaches without a dispatch: its class's methods
+// conform, but this instance's own `speak` takes none of the one argument.
+trait SpeaksTo {
+  speak(who)
+}
+fn speak_to(x: SpeaksTo) {
+  "spoke"
+}
+class MonoClassFirst {
+  new(f) { if f { self.speak = || "zero" } }
+  speak(who) { "hi {who}" }
+}
+assert_eq(speak_to(MonoClassFirst(false)), "spoke")
+assert_throws('DispatchError', fn () {
+  speak_to(MonoClassFirst(true))
+})
+// A trait default its class's instances inherit as a special method: only
+// the instance that conforms gets it.
+trait ShowsSpeech {
+  speak()
+  __str__() {
+    "shows"
+  }
+}
+class StrWithFirst { new(f) { if f { self.speak = || "hi" } } }
+assert_eq(["{StrWithFirst(true)}", "{StrWithFirst(false)}" == "shows"],
+          ["shows", false])
+class StrWithoutFirst { new(f) { if f { self.speak = || "hi" } } }
+assert_eq(["{StrWithoutFirst(false)}" == "shows", "{StrWithoutFirst(true)}"],
+          [false, "shows"])
+
 IO.inspect("test_traits OK")

@@ -3983,7 +3983,9 @@ variantは構造上`Eq`かつ`Hashable`です。同一性はenum・variant・
 **構造的conformance**: クラスがtraitのrequired methodを全て
 (名前とarityが一致する形で)持てば、自動的にtraitにconformします。
 `impl Foo for Bar`ブロックは不要です。conformするかどうかはクラスが
-実際に持つメソッドで決まります。
+実際に持つメソッドで決まります。インスタンスがフィールドに持つ関数も、
+呼び出しが先に届くので、そのインスタンスに限って数えます。同じクラスの
+インスタンスでも答えが分かれることがあります。
 
     class Bob {
       new(name) { self.name = name }

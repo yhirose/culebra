@@ -1497,10 +1497,22 @@ inline bool _culebra_has_call_operator(int8_t fn_tag, int64_t fn_data) {
          _has_special(fn_tag, fn_data, Special::Call);
 }
 
+// Whether a class instance's traits are its own rather than its class's: it
+// holds a function in a field, which a call reaches ahead of the class's
+// methods. Every class-wide table (conformance, inherited specials) is then
+// bypassed for it and filled only from instances this answers false for.
+inline bool _jit_answers_for_itself(JitObject* obj) {
+  for (size_t i = 0; i < obj->prop_size(); i++)
+    if (obj->slots[i].value.tag == TAG_FUNC)
+      return !_jit_enum_name(obj);  // a variant's traits are fixed
+  return false;
+}
+
 // Whether a value conforms to the registered trait `name` (false when no
 // trait has that name): a primitive or a bare Object literal by the built-in
 // table, a variant by what its kind fixes, a class instance by the methods
-// its class supplies (matching arity), cached on the class. What an
+// it answers a call with (matching arity): its class's, cached on the class,
+// and the functions it holds in its own fields, which come first. What an
 // annotation naming a trait asks, and what a trait's default method asks of
 // its receiver, whatever the trait is called.
 inline bool _jit_conforms_to_trait(int8_t tag, int64_t data,
@@ -1514,6 +1526,25 @@ inline bool _jit_conforms_to_trait(int8_t tag, int64_t data,
   // `iter()` for Iterable) so the built-in table answers.
   if (_jit_derived_class_tag(obj).empty())
     return culebra::builtin_conforms_to_trait("Object", name);
+  std::unordered_map<std::string, size_t> methods;
+  auto add_methods = [&](JitObject* o) {
+    if (!o || !o->shape) return;
+    for (size_t i = 0; i < o->prop_size(); i++) {
+      const auto& slot = o->slots[i];
+      if (slot.value.tag != TAG_FUNC) continue;
+      auto* cls = reinterpret_cast<JitClosure*>(slot.value.data);
+      // JitClosure::arity counts user-visible params (excluding __cls__
+      // and `self`); for an overloaded method (a dispatcher) report the
+      // widest overload so conformance sees the real arities. Helper is
+      // defined after the multimethod registry.
+      methods.emplace(o->prop_name(i), _jit_dispatcher_max_arity(cls));
+    }
+  };
+  if (_jit_answers_for_itself(obj)) {
+    add_methods(obj);
+    add_methods(obj->proto());
+    return culebra::class_conforms_to_trait(methods, *trait);
+  }
   std::string trait_name(name);
   // A class name comes from the meta, so the meta is there to answer from.
   auto& cache = *_jit_meta_conformance(obj);
@@ -1526,31 +1557,11 @@ inline bool _jit_conforms_to_trait(int8_t tag, int64_t data,
   auto it = by_trait.find(trait_name);
   if (it != by_trait.end()) return it->second;
   // A variant has no method table; what it conforms to is fixed.
-  if (_jit_enum_name(obj)) {
+  if (_jit_enum_name(obj))
     return by_trait[trait_name] = culebra::enum_variant_conforms_to_trait(name);
-  }
-  std::unordered_map<std::string, size_t> class_methods;
-  auto walk_slots = [&](JitObject* o) {
-    if (!o || !o->shape) return;
-    for (size_t i = 0; i < o->prop_size(); i++) {
-      const auto& slot = o->slots[i];
-      if (slot.value.tag != TAG_FUNC) continue;
-      auto* cls = reinterpret_cast<JitClosure*>(slot.value.data);
-      // JitClosure::arity counts user-visible params (excluding __cls__
-      // and `self`); for an overloaded method (a dispatcher) report the
-      // widest overload so conformance sees the real arities (mirrors the
-      // interp walk). Helper is defined after the multimethod registry.
-      class_methods.emplace(o->prop_name(i), _jit_dispatcher_max_arity(cls));
-    }
-  };
-  // Methods live on the class meta (proto), data fields on the
-  // instance itself. Walk both so e.g. `to_s` defined on the class
-  // is visible to the conformance check.
-  walk_slots(obj);
-  walk_slots(obj->proto());
-  bool conforms = culebra::class_conforms_to_trait(class_methods, *trait);
-  by_trait[trait_name] = conforms;
-  return conforms;
+  add_methods(obj->proto());
+  return by_trait[trait_name] =
+             culebra::class_conforms_to_trait(methods, *trait);
 }
 
 // Whether the value at (tag, data) satisfies one non-Union type name ("Any"
@@ -1915,6 +1926,8 @@ struct JitTraitDefault {
 };
 inline JitTraitDefault _jit_find_trait_default(JitObject* obj, const char* key,
                                                JitDefaultAsk ask);
+// Bit per Special: a trait default of its name is registered or shipped.
+inline uint32_t _jit_defaulted_specials();
 
 // Whether `o` (its own slots, then its class's) answers `s`'s question
 // itself, so that no trait default of `s`'s group (special_group) answers
@@ -1941,6 +1954,8 @@ inline bool _jit_states_group(JitObject* o, Special s) {
 // Stamped with the generation read first, so a default installed meanwhile
 // is picked up by the next fill.
 inline void _jit_fill_inherited_specials(JitObject* obj, JitObject* meta) {
+  assert(!_jit_answers_for_itself(obj) &&
+         "a class's table is filled only from an instance answering as it");
   auto& t = *meta->specials;
   const uint64_t gen =
       culebra::trait_default_generation().load(std::memory_order_relaxed);
@@ -1963,16 +1978,19 @@ inline void _jit_fill_inherited_specials(JitObject* obj, JitObject* meta) {
   }
   t.inherited = inherited;
   t.by_name = by_name;
+  t.defaulted = _jit_defaulted_specials();
   t.defaults_gen = gen;
 }
 
 // `meta`'s table with the defaults it inherits as of now: filled again first
 // once a trait or a default has changed anywhere.
+inline bool _jit_specials_stale(JitObject* meta) {
+  return meta->specials->defaults_gen !=
+         culebra::trait_default_generation().load(std::memory_order_relaxed);
+}
 inline const JitSpecialTable& _jit_fresh_specials(JitObject* obj,
                                                   JitObject* meta) {
-  if (meta->specials->defaults_gen !=
-      culebra::trait_default_generation().load(std::memory_order_relaxed))
-      [[unlikely]]
+  if (_jit_specials_stale(meta)) [[unlikely]]
     _jit_fill_inherited_specials(obj, meta);
   return *meta->specials;
 }
@@ -2001,7 +2019,8 @@ culebra_runtime_has_iter_method(JitObject* obj) {
 // rule), and a class instance's trait default after them. Asking for two
 // names (`==` wants `__eq__` and `eq`) then walks the shapes once. A name the
 // table leaves to the by-name lookup (JitSpecialTable::by_name) is asked for
-// by name either way.
+// by name either way, and so is a trait default an instance whose traits are
+// its own (_jit_answers_for_itself) asks for.
 //
 // `s(...)` answers the method, to call it; `has(...)` only whether there is
 // one — so a type test or a `for` head asking whether a value drives itself
@@ -2030,10 +2049,16 @@ struct SpecialLookup {
     const auto i = static_cast<size_t>(s);
     if (t.by_name >> i & 1) return inherited(obj, s, ask);
     JitClosure* fn = t.fn[i];
-    if (t.inherited >> i & 1) return {JitHeldMethod::hold(fn), true};
+    // The class's own method answers every instance alike; a default, or
+    // none, rests on conformance, which may be this instance's own.
+    bool own = fn && !(t.inherited >> i & 1);
+    if (!own && (t.defaulted >> i & 1) && _jit_answers_for_itself(obj))
+      return inherited(obj, s, ask);
+    if (!fn) return {};
+    if (!own) return {JitHeldMethod::hold(fn), true};
     // A class's own method is only ever here once the table is sealed.
-    assert(!fn || t.sealed);
-    return {JitHeldMethod::lend(fn), fn != nullptr};
+    assert(t.sealed);
+    return {JitHeldMethod::lend(fn), true};
   }
   Found find(Special s, JitDefaultAsk ask) const {
     if (table) return slot(*table, s, ask);
@@ -2043,6 +2068,7 @@ struct SpecialLookup {
     // class answers the question: its class's table then holds the answer.
     auto* meta = obj->proto();
     if (!meta || !meta->is_class_meta || _jit_states_group(obj, s)) return {};
+    if (_jit_answers_for_itself(obj)) return inherited(obj, s, ask);
     return slot(_jit_fresh_specials(obj, meta), s, ask);
   }
 };
@@ -2053,7 +2079,12 @@ inline SpecialLookup _special_lookup(int8_t tag, int64_t data) {
   auto* meta = obj->proto();
   if (meta && meta->is_class_meta && !obj->is_dict &&
       !(obj->shape && obj->shape->any_special)) {
-    _jit_fresh_specials(obj, meta);
+    // A stale table is filled again only from an instance whose answers are
+    // its class's; any other asks by name this once.
+    if (_jit_specials_stale(meta)) [[unlikely]] {
+      if (_jit_answers_for_itself(obj)) return {obj, nullptr};
+      _jit_fill_inherited_specials(obj, meta);
+    }
     return {obj, meta->specials};
   }
   // A plain shaped Object whose shape never took a special name has none to

@@ -691,6 +691,18 @@ _jit_trait_default_impls() {
   return _jit_trait_default_table().entries;
 }
 
+// A worker's shipped defaults are named only as each is rebuilt, so there
+// every special may have one.
+inline uint32_t _jit_defaulted_specials() {
+  if (_jit_trait_default_table().shipped) return ~uint32_t{0};
+  uint32_t m = 0;
+  for (const auto& [_, methods] : _jit_trait_default_impls())
+    for (size_t i = 0; i < static_cast<size_t>(Special::Count); i++)
+      if (methods.contains(special_name(static_cast<Special>(i))))
+        m |= uint32_t{1} << i;
+  return m;
+}
+
 // Installs, and returns, the shipped default named `key` that one of this
 // instance's traits supplies (jit_install_shipped_default, conc/sendable.h,
 // which sets the hook when it ships the defaults); null when none does, or
@@ -1387,7 +1399,8 @@ inline culebra::ArgType _jit_value_arg_type(JitValue v) {
       return {.name = cls,
               .enum_name = _jit_enum_name(obj).value_or(std::string_view{}),
               .conformance = _jit_meta_conformance(obj),
-              .object = true};
+              .object = true,
+              .answers_itself = _jit_answers_for_itself(obj)};
     }
   }
   return {.name = "Object", .object = true};
@@ -1459,13 +1472,26 @@ inline JitClosure* _jit_multifn_resolve(
   auto has_cache = [](const culebra::ArgType& a) {
     return a.conformance != nullptr;
   };
+  // An instance that answers for itself is scored from a table made for it
+  // here, never its class's.
+  std::vector<culebra::TraitConformance> own;
   if (std::ranges::any_of(arg_types, has_cache) &&
       _jit_multifn_wants_trait_warmup(methods)) {
+    own.resize(arg_types.size());
+    for (size_t i = 0; i < arg_types.size(); i++) {
+      if (!arg_types[i].answers_itself) continue;
+      std::shared_lock lock(culebra::trait_mutex());
+      own[i].gen = culebra::trait_generation();
+      arg_types[i].conformance = &own[i];
+      arg_types[i].answers_itself = false;
+    }
     for (const auto& trait_name : culebra::snapshot_trait_names()) {
       for (size_t i = 0; i < arg_types.size(); i++) {
-        if (has_cache(arg_types[i]))
-          (void)_jit_conforms_to_trait(positional[i].tag, positional[i].data,
-                                       trait_name);
+        if (!has_cache(arg_types[i])) continue;
+        bool c = _jit_conforms_to_trait(positional[i].tag, positional[i].data,
+                                        trait_name);
+        if (arg_types[i].conformance == &own[i])
+          own[i].by_trait[trait_name] = c;
       }
     }
   }
@@ -1497,7 +1523,8 @@ inline JitClosure* _jit_multifn_resolve(
 // where it always came from (the body's own check reports a TypeError at the
 // argument instead). Declining is always safe — the picker decides — so the
 // gate needs no answer the picker would not give: a trait scores only from
-// the conformance cache the picker warms, and declines while it is cold.
+// the conformance cache the picker warms, and declines while it is cold or
+// for an argument that answers for itself (ArgType::answers_itself).
 inline bool _jit_mono_admits(const JitMultifnDispatcher& d, int64_t n_args,
                              const JitValue* args) {
   if (d.mono_tags.empty()) return true;

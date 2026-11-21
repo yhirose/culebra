@@ -4236,7 +4236,9 @@ Bound positions.
 **Structural conformance**: any class whose methods cover the trait's
 required ones (name + arity) automatically satisfies the trait —
 no `impl Foo for Bar` block needed: conformance is decided by the
-methods a class actually has.
+methods a class actually has. A function an instance holds in a field
+counts too, for that instance alone, since a call reaches it first: two
+instances of one class can answer differently.
 
     class Bob {
       new(name) { self.name = name }

@@ -3931,6 +3931,11 @@ struct ArgType {
   // variant's name, which may be a built-in type's (`class Long`), and no
   // Object is that type.
   bool object = false;
+  // A class instance whose traits are its own, not its class's (a function
+  // in a field): `conformance` is its class's and does not answer for it,
+  // so a trait param scores no match until a table made for this argument
+  // takes its place (_jit_multifn_resolve's warm-up).
+  bool answers_itself = false;
 };
 
 // A (param_type, arg) pair's score: the tier (higher = more specific, -1 =
@@ -4074,6 +4079,7 @@ inline DispatchScore multifn_specificity(std::string_view param_type,
       return builtin_conforms_to_trait(arg.name, param_type)
                  ? DispatchScore{3}
                  : DispatchScore{};
+    if (arg.answers_itself) return {};
     // Read-only path: `multifn_specificity` only reads the class's cache and
     // returns -1 on miss (the warm-up in _jit_multifn_resolve is what fills
     // it, through _jit_conforms_to_trait). Take a shared lock so dispatchers
