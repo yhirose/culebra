@@ -199,6 +199,10 @@ struct FnAnalysis {
   // beside the class writes the same cell.
   std::unordered_set<const peg::Ast*> sole_class_decls;
 
+  // `Name.new(...)`, by its `Name` node: the name node declaring what it
+  // means there (resolve.h). No entry: nothing the program declares.
+  std::unordered_map<const peg::Ast*, const peg::Ast*> constructed_names;
+
   // What every class declaration analysed says of its fields, by the
   // declaration: what a class's own members read `self` by. What a class's
   // NAME may promise is another question, settled over all of these before
@@ -515,6 +519,9 @@ struct FnAnalysis {
         type_scope_ = std::move(saved_scope);
         return;
       }
+      if (const peg::Ast* head = culebra::new_call_head(node))
+        if (size_t s = symbol_of(*head); s != culebra::resolve::kNone)
+          constructed_names[head] = res_.symbols[s].declared_at;
       // `v.name(...)` may reach the body's own name through UFCS, unless the
       // receiver is a stdlib namespace (member dispatch).
       for (size_t i = 1; i + 1 < node.nodes.size(); i++) {

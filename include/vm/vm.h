@@ -12423,13 +12423,9 @@ class Compiler {
   // Asked at the property call itself, which is where the shape is still
   // visible and where the CallM it answers for is emitted.
   StaticCallee postfix_ctor_callee(const peg::Ast& at, const peg::Ast& post) {
-    using namespace peg::udl;
-    if (at.nodes.size() < 2 || at.nodes[1].get() != &post ||
-        post.original_tag != "DOT"_ || post.token != "new")
-      return {};
-    const auto& head = *at.nodes[0];
-    if (head.tag != "IDENTIFIER"_) return {};
-    const Binding* b = lookup_at(head);
+    const peg::Ast* head = culebra::new_call_head(at);
+    if (!head || at.nodes[1].get() != &post) return {};
+    const Binding* b = lookup_at(*head);
     if (!b) return {};
     // `lazy` is exactly "the value of this name is still a run-time
     // question": a member's own class name is read off the receiver, and a
@@ -12444,37 +12440,40 @@ class Compiler {
   // asks, answered with the declaration instead of the chunk.
   const peg::Ast* postfix_value_class(const peg::Ast& at,
                                       const peg::Ast& post) {
-    using namespace peg::udl;
-    if (at.nodes.size() < 2 || at.nodes[1].get() != &post ||
-        post.original_tag != "DOT"_ || post.token != "new")
-      return nullptr;
-    const auto& head = *at.nodes[0];
-    if (head.tag != "IDENTIFIER"_) return nullptr;
-    const Binding* b = lookup_at(head);
-    if (b) {
-      // Only a class declaration grants this, to its own name, and only where
-      // it is the one writer of that name in its scope (sole_class_decls):
-      // the name holds this class or nothing yet. A lazy binding (the
-      // declaration is still running: a static value, or a function made in
-      // one) leaves "nothing yet" to run time, and the emitting caller asks
-      // it (guard_lazy) before it lays an instance out. A member's own name,
-      // read off the receiver, is a question about WHICH class and is never
-      // granted one; in a body being spliced in it is the class being
-      // spliced, whose binding the lookup found by the declaration.
-      return b->known.value_class;
-    }
-    // No live local of this name: an UNSHADOWED stdlib namespace identifier
-    // is never a `lookup()`-able Binding at all — every stdlib lazy module
-    // resolves at runtime through the namespace registry
-    // (`_lazy_ns_register`, `stdlib_preamble.h`), not a compile-time `let`
-    // — so a flat `@value` class declared inside one (`Vector2`, ...) would
-    // otherwise never reach `known.value_class` no matter how it is
-    // written. `stdlib_value_classes` is that declaration under its NAME
-    // instead, entered only for a stdlib module's class
-    // (register_value_class_layout).
-    if (!is_stdlib_namespace(head.token)) return nullptr;
-    auto it = analysis_.stdlib_value_classes.find(head.token);
+    const peg::Ast* head = culebra::new_call_head(at);
+    if (!head || at.nodes[1].get() != &post) return nullptr;
+    // Only a class declaration grants this, to its own name, and only where
+    // it is the one writer of that name in its scope (sole_class_decls):
+    // the name holds this class or nothing yet. A lazy binding (the
+    // declaration is still running: a static value, or a function made in
+    // one) leaves "nothing yet" to run time, and the emitting caller asks
+    // it (guard_lazy) before it lays an instance out. A member's own name,
+    // read off the receiver, is a question about WHICH class and is never
+    // granted one; in a body being spliced in it is the class being
+    // spliced, whose binding the lookup found by the declaration.
+    const Binding* b = lookup_at(*head);
+    const peg::Ast* cls =
+        b ? b->known.value_class : stdlib_value_class(head->token);
+    // Which class the name means is resolve.h's answer where it is written;
+    // the scope, asked from wherever this runs, only says whether it unboxes.
+    auto named = analysis_.constructed_names.find(head);
+    if (named == analysis_.constructed_names.end()) return b ? nullptr : cls;
+    return cls && class_name_node(*cls) == named->second ? cls : nullptr;
+  }
+
+  // A stdlib module's flat `@value` class (`Vector2`, ...), by its unshadowed
+  // namespace name. No binding carries one: every stdlib lazy module
+  // resolves at run time through the namespace registry
+  // (`_lazy_ns_register`, `stdlib_preamble.h`), so `stdlib_value_classes` is
+  // the declaration under its NAME (register_value_class_layout).
+  const peg::Ast* stdlib_value_class(std::string_view name) const {
+    if (!is_stdlib_namespace(name)) return nullptr;
+    auto it = analysis_.stdlib_value_classes.find(name);
     return it == analysis_.stdlib_value_classes.end() ? nullptr : it->second;
+  }
+
+  static const peg::Ast* class_name_node(const peg::Ast& cls) {
+    return cls.nodes[culebra::first_non_decorator_index(cls)].get();
   }
 
   // `Own.new(args)`, with or without a chain after it: a construction of a
@@ -12482,9 +12481,8 @@ class Compiler {
   // the body has none).
   static bool is_own_construction(const peg::Ast& n, std::string_view own) {
     using namespace peg::udl;
-    return !own.empty() && n.tag == "CALL"_ && n.nodes.size() >= 3 &&
-           n.nodes[0]->tag == "IDENTIFIER"_ && n.nodes[0]->token == own &&
-           n.nodes[1]->original_tag == "DOT"_ && n.nodes[1]->token == "new" &&
+    const peg::Ast* head = culebra::new_call_head(n);
+    return !own.empty() && head && head->token == own && n.nodes.size() >= 3 &&
            n.nodes[2]->original_tag == "ARGUMENTS"_;
   }
 

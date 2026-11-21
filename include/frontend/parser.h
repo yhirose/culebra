@@ -956,6 +956,18 @@ inline size_t first_non_decorator_index(const peg::Ast& node) {
   return i;
 }
 
+// The `Name` of a postfix chain that starts `Name.new`, else nullptr.
+inline const peg::Ast* new_call_head(const peg::Ast& call) {
+  using namespace peg::udl;
+  if (call.tag != "CALL"_ || call.nodes.size() < 2) return nullptr;
+  const auto& head = *call.nodes[0];
+  const auto& step = *call.nodes[1];
+  return head.tag == "IDENTIFIER"_ && step.original_tag == "DOT"_ &&
+                 step.token == "new"
+             ? &head
+             : nullptr;
+}
+
 // True if this EFFECT_FN_DECL has a body (an effectful function) rather than a
 // bare operation declaration. Grammar:
 //   effect _ fn _ CLASS_HEAD _ PARAMETERS (_ RETURN_TYPE)? (_ BLOCK)?
