@@ -171,8 +171,8 @@ Math.e
 Math.inf
 Math.nan
 Math.abs(x: Long|Float) -> Long|Float
-Math.min(a, b, ...) -> Long|Float
-Math.max(a, b, ...) -> Long|Float
+Math.min(a, ...) -> Long|Float
+Math.max(a, ...) -> Long|Float
 Math.log(x: Long|Float) -> Float
 Math.exp(x: Long|Float) -> Float
 Math.sqrt(x: Long|Float) -> Float

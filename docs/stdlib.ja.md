@@ -216,15 +216,16 @@ inspect(Math.abs(-7))    # => 7
 inspect(Math.abs(-7.5))  # => 7.5
 ```
 
-### `Math.min(a, b, ...) -> Long|Float`、`Math.max(a, b, ...) -> Long|Float`
+### `Math.min(a, ...) -> Long|Float`、`Math.max(a, ...) -> Long|Float`
 
-2つ以上の数値引数から最小 / 最大を取ります。全て`Long`なら`Long`、
-1つでも`Float`が含まれれば結果は`Float`です。引数が1個以下の場合、または
-数値以外が混じる場合は`type error`になります。
+1つ以上の数値引数から最小 / 最大を取ります。引数が1つならそれ自身が
+答えです。全て`Long`なら`Long`、1つでも`Float`が含まれれば結果は`Float`
+です。引数がない場合、または数値以外が混じる場合は`type error`になります。
 
 ```culebra
 inspect(Math.min(3, 1, 4, 1, 5))  # => 1
 inspect(Math.max(1.5, 2, 0.5))    # => 2.0
+inspect(Math.max(7))              # => 7
 ```
 
 ### `Math.log(x: Long|Float) -> Float`

@@ -222,16 +222,17 @@ inspect(Math.abs(-7))    # => 7
 inspect(Math.abs(-7.5))  # => 7.5
 ```
 
-### `Math.min(a, b, ...) -> Long|Float`, `Math.max(a, b, ...) -> Long|Float`
+### `Math.min(a, ...) -> Long|Float`, `Math.max(a, ...) -> Long|Float`
 
-Smallest / largest of two or more numeric arguments. Returns `Long`
-when every argument is `Long`; any `Float` argument promotes the
-result to `Float`. At least two arguments are required; fewer — or
-any non-numeric argument — raises `type error`.
+Smallest / largest of one or more numeric arguments; one argument is
+its own answer. Returns `Long` when every argument is `Long`; any
+`Float` argument promotes the result to `Float`. No argument at all, or
+any non-numeric one, raises `type error`.
 
 ```culebra
 inspect(Math.min(3, 1, 4, 1, 5))  # => 1
 inspect(Math.max(1.5, 2, 0.5))    # => 2.0
+inspect(Math.max(7))              # => 7
 ```
 
 ### `Math.log(x: Long|Float) -> Float`
