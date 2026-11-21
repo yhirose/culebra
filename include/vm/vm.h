@@ -316,17 +316,16 @@ enum class Op : uint8_t {
                // BEFORE the arguments, where the interp's own check sits.
                // Positioned at the ARGUMENTS node, interp's anchor for every
                // count-based built-in ArityError.
-  BMeth,       // regs[a] = the built-in of spec row c over the run at b:
-               // regs[b] is MethGate's gate slot, regs[b+1] the receiver, and
-               // regs[b+2..) the row's nargs arguments — defaults already
+  BMeth,       // regs[a] = the built-in of BMethSpec row c over the run at
+               // b: regs[b] is MethGate's gate slot, regs[b+1] the receiver,
+               // and regs[b+2..) the row's nargs arguments, defaults already
                // materialized. A gate slot holding anything but the sentinel
                // is the shadowing user method, called through the JitFn ABI
-               // exactly as CallM does with only the row's argc arguments
-               // the call wrote (consuming receiver and those; a non-Function
-               // there is the interp's "expected Function, got Long"). The
-               // built-in arm BORROWS the receiver and the arguments — the
-               // statement sweep stays their sole releaser — and yields a
-               // fresh +1.
+               // exactly as CallM does with only the argc the call wrote
+               // (consuming receiver and args; a non-Function there is the
+               // interp's "expected Function, got Long"). The built-in arm
+               // BORROWS the receiver and the arguments — the statement sweep
+               // stays their sole releaser — and yields a fresh +1.
   PropRaw,     // regs[a] = the raw property view of prop_sites[c] on regs[b],
                // retained (+1) — the callee half of `x.m(...)`. Unlike
                // PropVal it neither binds `self` into a wrapper nor runs the
@@ -1619,10 +1618,10 @@ inline bool bmeth_consumes_args(BMeth id) {
 // the runtime helper reads the site this publishes
 // (culebra_runtime_set_callback_arg_site), the way the AST arms publish it
 // just before handing the callback over.
-inline int8_t bmeth_callback_arg(BMeth id, int8_t nargs) {
-  if (id == BMeth::SortBy || id == BMeth::SortedBy) return 0;
-  return bmeth_is_hof(id) ? static_cast<int8_t>(nargs - 1)
-                          : static_cast<int8_t>(-1);
+inline int8_t bmeth_callback_arg(const BMethSpec& s) {
+  if (s.id == BMeth::SortBy || s.id == BMeth::SortedBy) return 0;
+  return bmeth_is_hof(s.id) ? static_cast<int8_t>(s.nargs - 1)
+                            : static_cast<int8_t>(-1);
 }
 
 // Whether some OTHER row binds the same name — i.e. whether a receiver can
@@ -6764,6 +6763,16 @@ class Compiler {
     return session_owns(name) ? &bind_session(at, name) : nullptr;
   }
 
+  // What `name` already holds: what is in scope, else the session's cell when
+  // an earlier input declared it. A compound step and a UFCS candidate ask
+  // this; binding a cell for every unbound name, as a plain read does, would
+  // gate every built-in method call of a session unit.
+  const Binding* lookup_or_declared(const peg::Ast& at,
+                                    const std::string& name) {
+    if (const Binding* b = lookup_name(name)) return b;
+    return session_declared(name) ? &bind_session(at, name) : nullptr;
+  }
+
   // Record what a declaration just bound. Only session bindings need it:
   // a frame binding's mutability is settled by the `let` / `mut` the
   // compiler is looking at, while a session name outlives this line and may
@@ -9907,12 +9916,12 @@ class Compiler {
                          static_cast<int>(ast.column));
     }
     auto base = av.op_base;
-    const Binding* b = lookup_at(tgt);
     // Only a name that already holds a value has one to step from: a stdlib
     // global does, and at the REPL so does anything the session declared.
+    const Binding* b = lookup_or_declared(tgt, std::string(tgt.token));
+    check_use(tgt, b);
     bool global = is_stdlib_global(tgt.token) || is_stdlib_namespace(tgt.token);
-    if (!b && ((repl_ && global) || session_declared(tgt.token)))
-      b = &bind_session(tgt, std::string(tgt.token));
+    if (!b && repl_ && global) b = &bind_session(tgt, std::string(tgt.token));
     if (!b && !global) {
       // Unlike a bare `x = v`, a compound one never declares — it is a
       // NameError. `op=` raises it with the RHS already run (probed); `??=`
@@ -13168,16 +13177,6 @@ class Compiler {
     return m;
   }
 
-  // The binding a UFCS call `x.name(...)` would call: one in scope, or the
-  // session's cell when an earlier input declared the name, which outranks
-  // the stdlib global there as a read of the name does.
-  const Binding* ufcs_binding(const peg::Ast& name) {
-    if (const Binding* b = lookup_name(name.token)) return b;
-    if (session_declared(name.token))
-      return &bind_session(name, std::string(name.token));
-    return nullptr;
-  }
-
   // The check the JIT emits in front of an unresolved built-in method call,
   // as one op over a baked table. Every verdict comes from the interp's own
   // parameter lists, so the three lanes cannot disagree; a receiver whose
@@ -13396,13 +13395,15 @@ class Compiler {
       if (is_drop) return emit_explicit_drop(at, post, args, r);
       return compile_property_call(at, post, args, r);
     };
+    // The candidate: a binding of the name, else the stdlib global.
+    const Binding* cb = lookup_or_declared(post, std::string(post.token));
     // A built-in that subsumes its same-named global (`to_string`) does so
     // only for a call it can bind: with a keyword it cannot, the global is
     // the callee the interp reaches, and its own binder answers.
-    const Binding* cb = ufcs_binding(post);
-    bool subsumes = spec && spec->subsumes_global && !has_kwargs(args);
-    if (!cb && (!is_stdlib_global(post.token) || subsumes))
-      return resolved_call(recv);
+    bool global_cand =
+        is_stdlib_global(post.token) &&
+        !(spec && spec->subsumes_global && !has_kwargs(args));
+    if (!cb && !global_cand) return resolved_call(recv);
     // A visible candidate: the runtime gate decides, interp's eval_call
     // order — resolution first, arguments inside whichever arm runs. Every
     // arm writes the merge temp once per disjoint path (compile_if's
@@ -17663,24 +17664,22 @@ struct Exec {
           // the arguments' `+1` are the exception: hand the values over and
           // nil the run first, so the helper is their only owner from the
           // call on (`array_insert` releases on its own throw edge).
-          auto id = spec.id;
           // A non-Function callback reports at its own argument: publish the
           // site the runtime helper's check reads.
-          if (int8_t cb = bmeth_callback_arg(id, spec.nargs);
-              cb >= 0) {
+          if (int8_t cb = bmeth_callback_arg(spec); cb >= 0) {
             if (const auto* ap = chunk_argpos_at(c, VM_PC);
                 ap && cb < static_cast<int8_t>(ap->size()))
               culebra_runtime_set_callback_arg_site((*ap)[cb] >> 32,
                                                     (*ap)[cb] & 0xffffffff);
           }
-          bool consumes = bmeth_consumes_args(id);
+          bool consumes = bmeth_consumes_args(spec.id);
           JitValue argv[2] = {JitValue{TAG_NIL, 0}, JitValue{TAG_NIL, 0}};
           for (int32_t k = 0; consumes && k < spec.nargs; ++k) {
             argv[k] = regs[in.b + 2 + k];
             regs[in.b + 2 + k] = JitValue{TAG_NIL, 0};
           }
           culebra_runtime_set_op_pos(line, col);  // as the lowering's arm
-          regs[in.a] = bmeth_apply(id, regs[in.b + 1],
+          regs[in.a] = bmeth_apply(spec.id, regs[in.b + 1],
                                    consumes ? argv : &regs[in.b + 2], line,
                                    col);
           ++ip;
