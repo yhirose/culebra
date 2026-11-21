@@ -303,6 +303,29 @@ struct JitDeCtx {
 };
 
 // The node of a value that holds no other value; false for one that does.
+// A packed Array element (SendNode::scalars) and back. A Float's payload is
+// already its double's bits, so every kind keeps its payload as it is.
+inline std::optional<sendable::SendNode::Scalar> _jit_scalar_of(
+    const JitValue& v) {
+  using K = sendable::SendNode::K;
+  switch (v.tag) {
+    case TAG_NIL: return {{K::Nil, 0}};
+    case TAG_BOOL: return {{K::Bool, v.data != 0}};
+    case TAG_LONG: return {{K::Long, v.data}};
+    case TAG_FLOAT: return {{K::Float, v.data}};
+    default: return std::nullopt;
+  }
+}
+inline JitValue _jit_from_scalar(const sendable::SendNode::Scalar& s) {
+  using K = sendable::SendNode::K;
+  switch (s.kind) {
+    case K::Nil: return {TAG_NIL, 0};
+    case K::Bool: return {TAG_BOOL, s.bits};
+    case K::Long: return {TAG_LONG, s.bits};
+    default: return {TAG_FLOAT, s.bits};
+  }
+}
+
 inline bool _jit_scalar_node(const JitValue& v, sendable::SendNode& n) {
   using K = sendable::SendNode::K;
   switch (v.tag) {
@@ -592,8 +615,16 @@ inline sendable::SendNode jit_serialize(JitValue v, JitSerCtx& ctx,
   auto seq = [&](JitArray* a, K kind) -> sendable::SendNode {
     n.kind = kind;
     if (!ctx.first_data(a, in_container, n)) return n;
+    culebra::ValueWalkFrame walk;  // a packed array is a level too
+    if (std::all_of(a->items, a->items + a->size, [](const JitValue& e) {
+          return _jit_scalar_of(e).has_value();
+        })) {
+      n.scalars.reserve(a->size);
+      for (size_t i = 0; i < a->size; i++)
+        n.scalars.push_back(*_jit_scalar_of(a->items[i]));
+      return n;
+    }
     ctx.visiting.insert(a);
-    culebra::ValueWalkFrame walk;
     n.elems.reserve(a->size);
     for (size_t i = 0; i < a->size; i++)
       n.elems.push_back(
@@ -778,6 +809,7 @@ inline JitOwnedVal jit_deserialize(const sendable::SendNode& n, JitDeCtx& ctx) {
     JitOwnedVal out(tag, reinterpret_cast<int64_t>(c));
     ctx.remember(n.ref_id, out.borrow());
     for (const auto& e : n.elems) add(c, jit_deserialize(e, ctx).consume());
+    for (const auto& s : n.scalars) add(c, _jit_from_scalar(s));
     return out;
   };
   auto array_push = [](JitArray* a, JitValue v) {
@@ -795,10 +827,13 @@ inline JitOwnedVal jit_deserialize(const sendable::SendNode& n, JitDeCtx& ctx) {
     case K::Str:
       return JitOwnedVal(TAG_STRING,
                          reinterpret_cast<int64_t>(_culebra_heap_str(n.s)));
-    case K::Array: return fill(culebra_runtime_array_new(), TAG_ARRAY, array_push);
+    case K::Array:
+      return fill(culebra_runtime_array_new_reserved(
+                      static_cast<int64_t>(n.elems.size() + n.scalars.size())),
+                  TAG_ARRAY, array_push);
     case K::Tuple:
-      return fill(culebra_runtime_tuple_new(
-                      static_cast<int64_t>(n.elems.size())),
+      return fill(culebra_runtime_tuple_new(static_cast<int64_t>(
+                      n.elems.size() + n.scalars.size())),
                   TAG_TUPLE, tuple_push);
     case K::Set: {
       JitOwnedVal out(TAG_SET,

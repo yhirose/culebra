@@ -1,0 +1,31 @@
+# An Array or Tuple whose elements are all Nil, Bool, Long or Float crosses
+# an isolate boundary as a packed run of them rather than a node an element;
+# what arrives reads as what was sent, wherever the array sits.
+
+let scalars = [nil, true, false, 0, -1, 9223372036854775807, 1.5, -0.0, 1e308]
+let back = Isolate.spawn(|| scalars).join()
+assert_eq(back, scalars)
+assert_eq(back.map(|x| to_string(x)), scalars.map(|x| to_string(x)))
+assert_eq(back.map(|x| type_of(x)), scalars.map(|x| type_of(x)))
+
+let tup = (1, 2.5, true, nil)
+assert_eq(Isolate.spawn(|| tup).join(), tup)
+
+# Packed and node-per-element arrays nest either way round.
+let nested = [[1, 2], [], [3.5, nil], ["s", 1], [[4], [5.0, true]]]
+assert_eq(Isolate.spawn(|| nested).join(), nested)
+
+# One array sent twice in one message arrives as one array.
+let xs = [1, 2, 3]
+let twice = Isolate.spawn(|| [xs, xs]).join()
+twice[0].push(4)
+assert_eq(twice[1], [1, 2, 3, 4])
+
+# Through a channel, and as a spawn argument.
+let (tx, rx) = Channel.new(1)
+let worker = Isolate.spawn(fn () {
+  tx.send([7, 8.5, false])
+})
+assert_eq(rx.recv(), [7, 8.5, false])
+worker.join()
+assert_eq(Isolate.spawn(|a| a.sum(), [1, 2, 3, 4]).join(), 10)

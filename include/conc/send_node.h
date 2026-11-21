@@ -51,6 +51,13 @@ struct SendNode {
   // the metas of the variants it declared; an instance's meta, then the
   // class it takes along (its methods name it).
   std::vector<SendNode> elems;
+  // An Array or Tuple of only Nil, Bool, Long and Float: packed here, 16 bytes
+  // an element, with `elems` empty. A Float's bits are its double's.
+  struct Scalar {
+    K kind;
+    int64_t bits;
+  };
+  std::vector<Scalar> scalars;
 
   // Object: ordered (key, value) pairs + parallel mutability flags. Keys are
   // themselves SendNodes (String keys → K::Str; non-String keys serialize as
