@@ -15,6 +15,7 @@
 // once more at the end so a plain script's trailing print()-without-\n text
 // is never lost, matching the old behavior for non-TUI scripts.
 #include <frontend/module_loader.h>
+#include <stdlib/audio_web.h>  // the Audio backend's bodies in a browser
 #include <stdlib/bindings.h>  // the stdlib the executor resolves through
 #include <stdlib/preamble.h>
 #include <stdlib/vfs.h>
@@ -123,6 +124,12 @@ EMSCRIPTEN_KEEPALIVE int run_culebra(const char* src_c, const char* path_c,
   // every Run click, so a Runtime carried between them dangles on the second.
   culebra::Runtime rt;
   culebra::RuntimeScope scope(rt);
+  // What the last run left playing on the mixer stops, and what this one
+  // leaves stops with it (the run is the process here).
+  culebra::_audio_detail::reset_playing();
+  struct ResetAfter {
+    ~ResetAfter() { culebra::_audio_detail::reset_playing(); }
+  } reset_after;
 
   int rc = 0;
   auto exit_with = [](const auto& e) {

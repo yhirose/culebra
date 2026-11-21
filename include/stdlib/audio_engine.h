@@ -35,9 +35,8 @@ namespace _audio_detail {
 
 // --- tone: a small WASM-4-style APU, mixed in software ----------------------
 //
-// The browser side (playground/app.js's playTone) hands each note to WebAudio,
-// which owns its own envelope/oscillator machinery; native has none of that,
-// so the Mixer below IS the synth. Five channels (two pulse, a triangle,
+// The Mixer below IS the synth, natively and in a browser (whose page runs
+// this engine in an AudioWorklet, audio_wire.h). Five channels (two pulse, a triangle,
 // noise, and the culebra-only sawtooth), one note at a time each: a new tone()
 // on a channel cuts whatever was still playing there, like the real APU. Times
 // arrive in frames at ~60 fps and become sample counts once, at note-start.
@@ -67,8 +66,7 @@ struct Note {
 // A note carries where it starts, on the stream's own sample clock. tone()
 // runs on the main thread while the mixer renders whole buffers at once, so
 // writing straight to the sounding voice keeps only the last note a buffer
-// spans and pins every onset to a buffer edge. This is what WebAudio's own
-// src.start(now) gives the browser side.
+// spans and pins every onset to a buffer edge.
 struct Queued {
   int64_t start = 0;   // absolute position in the stream, in samples
   int channel = 0;
@@ -82,7 +80,7 @@ inline constexpr int kQueueCap = 64;
 
 // tone's vol/peak arrive as WASM-4's 0..100. A synthesised waveform is raw and
 // up to four channels stack, so tone keeps a headroom the file paths don't
-// need: kToneLevel, the browser's "keep it gentle" 0.2.
+// need: kToneLevel, a "keep it gentle" 0.2.
 inline double tone_gain_of(double v) {
   return std::clamp(v, 0.0, 100.0) / 100.0 * kToneLevel;
 }
@@ -146,12 +144,23 @@ inline Note make_note(double start_freq, double end_freq, int64_t attack, int64_
   n.sustain = sustain;
   n.release = release;
   n.total = n.attack + n.decay + n.sustain + n.release;
-  if (n.total <= 0) n.total = 1;  // guarantee an audible blip, like the browser
+  if (n.total <= 0) n.total = 1;  // guarantee an audible blip
   n.vol = tone_gain_of(vol);
   n.peak = tone_gain_of(peak);
   static constexpr double kDutyCycles[4] = {0.125, 0.25, 0.5, 0.75};
   n.duty = kDutyCycles[std::clamp<int64_t>(duty, 0, 3)];
   return n;
+}
+
+// The note Audio.tone asks for, its phases in frames at ~60 fps (`frames / 60`
+// seconds each).
+inline Note tone_note(int64_t start_freq, int64_t end_freq, int64_t attack, int64_t decay, int64_t sustain,
+                      int64_t release, int64_t vol, int64_t peak, int64_t duty) {
+  auto samples = [](int64_t frames) {
+    return static_cast<int64_t>(std::max<int64_t>(0, frames) * (static_cast<double>(kSampleRate) / 60.0));
+  };
+  return make_note(static_cast<double>(start_freq), static_cast<double>(end_freq), samples(attack), samples(decay),
+                   samples(sustain), samples(release), static_cast<double>(vol), static_cast<double>(peak), duty);
 }
 
 // --- Schedule: a song's notes, on the stream's own clock ---------------------
@@ -275,25 +284,32 @@ std::shared_ptr<Schedule> schedule_of(const double* events, int64_t count, doubl
   return s;
 }
 
-// A schedule from Kauai's list, a Sound's samples found by its handle in
-// `pcm` (one it does not hold, which the device could not decode, is left
-// out): a slot for each, filled.
-using PcmByHandle = std::unordered_map<int64_t, Pcm>;
-inline std::shared_ptr<Schedule> build_schedule(const double* events, int64_t count, double length,
-                                                double loop_at, const PcmByHandle& pcm) {
-  std::unordered_map<int64_t, size_t> slot_by_handle;
-  std::vector<Pcm> filled;
-  auto s = schedule_of(events, count, length, loop_at,
-                       [&](double handle) -> std::optional<size_t> {
-                         auto it = pcm.find(static_cast<int64_t>(handle));
-                         if (it == pcm.end()) return std::nullopt;
-                         auto [entry, added] = slot_by_handle.try_emplace(it->first, filled.size());
-                         if (added) filled.push_back(it->second);
-                         return entry->second;
-                       });
-  s->slots = std::vector<Slot>(filled.size());
-  for (size_t k = 0; k < filled.size(); k++) s->fill(k, filled[k]);
-  return s;
+// Kauai's list with each Sound's handle in its rows replaced by the slot it
+// plays from (handles in the order they first come, a slot each), and the
+// handles by slot: what open_schedule() takes, and what to fill it with. A
+// row whose handle `has` answers false for (a Sound the device could not
+// decode) names no slot, and is left out.
+struct SlottedRows {
+  std::vector<double> rows;
+  std::vector<int64_t> handles;
+};
+template <class Has>
+SlottedRows slotted_rows(const double* events, int64_t count, Has has) {
+  SlottedRows out{{events, events + count}, {}};
+  std::unordered_map<int64_t, size_t> slot_of;
+  for (int64_t i = 0; i + kScheduleStride <= count; i += kScheduleStride) {
+    double* row = out.rows.data() + i;
+    if (row[1] >= 0) continue;
+    const auto handle = static_cast<int64_t>(row[2]);
+    if (!has(handle)) {
+      row[2] = -1;
+      continue;
+    }
+    auto [entry, added] = slot_of.try_emplace(handle, out.handles.size());
+    if (added) out.handles.push_back(handle);
+    row[2] = static_cast<double>(entry->second);
+  }
+  return out;
 }
 
 // A schedule from Kauai's list whose samples' rows name a slot, 0 to `slots`
@@ -307,6 +323,18 @@ inline std::shared_ptr<Schedule> open_schedule(const double* events, int64_t cou
     return static_cast<size_t>(k);
   });
   s->slots = std::vector<Slot>(n);
+  return s;
+}
+
+// A schedule from Kauai's list, a Sound's samples found by its handle in
+// `pcm` (one it does not hold, which the device could not decode, is left
+// out): a slot for each, filled.
+using PcmByHandle = std::unordered_map<int64_t, Pcm>;
+inline std::shared_ptr<Schedule> build_schedule(const double* events, int64_t count, double length,
+                                                double loop_at, const PcmByHandle& pcm) {
+  auto slotted = slotted_rows(events, count, [&](int64_t handle) { return pcm.contains(handle); });
+  auto s = open_schedule(slotted.rows.data(), count, static_cast<int64_t>(slotted.handles.size()), length, loop_at);
+  for (size_t k = 0; k < slotted.handles.size(); k++) s->fill(k, pcm.at(slotted.handles[k]));
   return s;
 }
 
@@ -427,7 +455,7 @@ inline void Mixer::cut(int64_t id) {
 }
 
 // Noise: a cheap xorshift PRNG through a one-pole lowpass that sweeps
-// start->end (times 8, matching the browser's filter sweep), so it reads as a
+// start->end (times 8), so it reads as a
 // pitched hiss rather than flat static. The generator is the mixer's, so a
 // rendered schedule's noise is the same every time.
 inline double Mixer::noise(Note& n, double cutoff) {
@@ -547,6 +575,9 @@ struct LiveGraph {
   int64_t origin = 0;
   size_t parts = 0;  // the copy's, which a change's part must be one of
   std::vector<size_t> room;  // how many changes each value of the copy holds, kGraphValues a part
+  // How many changes each value has been given, before the play and since:
+  // what its list must hold at most (a cancel can only make it fewer).
+  std::vector<size_t> changes;
   uint64_t instance = 0;
   int rank = 0;
 };
@@ -633,8 +664,10 @@ class Engine {
     stream_at_ = now_();
   }
 
-  // A note on `channel` from the next sample the stream can start it on.
-  void tone(int channel, const Note& n) {
+  // A note on `channel` from the next sample the stream can start it on, or
+  // from stream sample `start` (the calls dated by a clock elsewhere, which
+  // never goes back either: audio_wire.h's).
+  void tone(int channel, const Note& n, std::optional<int64_t> start = std::nullopt) {
     if (channel < 0 || channel > 4) return;
     release_retired();
     std::lock_guard<std::mutex> lock(mutex_);
@@ -644,7 +677,7 @@ class Engine {
     }
     // The queue is walked head-first; stream_now() never goes back, so the
     // notes are queued in the order the calls came in.
-    inbox_[inbox_count_++] = Queued{stream_now(), channel, n};
+    inbox_[inbox_count_++] = Queued{start ? *start : stream_now(), channel, n};
   }
 
   void schedule_new(int64_t id, std::shared_ptr<Schedule> s) {
@@ -659,7 +692,8 @@ class Engine {
     schedules_.erase(it);
     release_retired();
   }
-  void schedule_play(int64_t id) {
+  // From the next sample the stream can start it on, or from `start`.
+  void schedule_play(int64_t id, std::optional<int64_t> start = std::nullopt) {
     release_retired();
     auto it = schedules_.find(id);
     if (it == schedules_.end()) return;
@@ -668,7 +702,7 @@ class Engine {
     auto longer = playing_.longer_for(schedules_.size());
     std::lock_guard<std::mutex> lock(mutex_);
     playing_.send(longer);
-    schedule_inbox_.push_back(ScheduleCommand{id, it->second, stream_now()});
+    schedule_inbox_.push_back(ScheduleCommand{id, it->second, start ? *start : stream_now()});
   }
   void schedule_stop(int64_t id) {
     if (!schedules_.contains(id)) return;
@@ -695,23 +729,26 @@ class Engine {
     return it == schedules_.end() ? 0 : it->second->held.load(std::memory_order_relaxed);
   }
 
-  // The copy of graph `id` (graph_def's) plays from the next sample the
-  // stream can start it on, into `into` (null for the device), the graphs
-  // then worked out in `order` (graph_order's): those whose place it moves
-  // are sent their new one.
-  void graph_play(int64_t id, std::shared_ptr<Bus> into, const std::vector<int64_t>& order) {
-    const Graph* def = graph_def(id);
-    if (!def) return;
+  // A copy of `def`, graph `id`'s definition, plays from the next sample the
+  // stream can start it on (or from `start_at`), into `into` (null for the
+  // device), the graphs then worked out in `order` (graph_order's): those
+  // whose place it moves are sent their new one.
+  void graph_play(int64_t id, Graph def, std::shared_ptr<Bus> into, const std::vector<int64_t>& order,
+                  std::optional<int64_t> start_at = std::nullopt) {
     graph_stop(id);
-    auto live = std::make_shared<Graph>(*def);
+    auto live = std::make_shared<Graph>(std::move(def));
     live->play_into(std::move(into));
     std::vector<size_t> room;
     live->make_room(room);
+    std::vector<size_t> changes(room.size());
+    for (size_t part = 0; part < live->size(); part++)
+      for (int k = 0; k < value_count(live->kind(static_cast<int>(part))); k++)
+        changes[kGraphValues * part + static_cast<size_t>(k)] = live->changes(static_cast<int>(part), k);
     // No more play at once than are live (graph_stop stops one as it lets go).
     auto longer = graphs_playing_.longer_for(live_graphs_.size() + 1);
     std::lock_guard<std::mutex> lock(mutex_);
     graphs_playing_.send(longer);
-    int64_t start = stream_now();
+    int64_t start = start_at ? *start_at : stream_now();
     int rank = 0;
     for (size_t r = 0; r < order.size(); r++) {
       if (order[r] == id) {
@@ -724,7 +761,7 @@ class Engine {
       graph_ranks_.push_back(GraphRank{it->second.instance, it->second.rank});
     }
     const uint64_t instance = ++instances_;
-    live_graphs_[id] = LiveGraph{live, start, def->size(), std::move(room), instance, rank};
+    live_graphs_[id] = LiveGraph{live, start, live->size(), std::move(room), std::move(changes), instance, rank};
     graph_inbox_.push_back(GraphCommand{id, std::move(live), start, instance, rank});
   }
   void graph_stop(int64_t id) {
@@ -736,15 +773,16 @@ class Engine {
     std::lock_guard<std::mutex> lock(mutex_);
     graph_inbox_.push_back(GraphCommand{id, nullptr, 0});
   }
-  // The definition holds every change the copy does and this one too, so its
-  // count bounds what the copy's list must hold; past what that list can, the
-  // change brings a longer one, twice as long.
+  // The changes the value has been given, this one too, bound what the copy's
+  // list must hold; past what that list can, the change brings a longer one,
+  // twice as long.
   void graph_post(int64_t id, int part, int value, ParamEvent e) {
     release_retired();
     auto it = live_graphs_.find(id);
     if (it == live_graphs_.end() || static_cast<size_t>(part) >= it->second.parts) return;
-    size_t need = graph_def(id)->changes(part, value);
-    size_t& room = it->second.room[kGraphValues * static_cast<size_t>(part) + static_cast<size_t>(value)];
+    const size_t k = kGraphValues * static_cast<size_t>(part) + static_cast<size_t>(value);
+    size_t need = ++it->second.changes[k];
+    size_t& room = it->second.room[k];
     std::vector<ParamEvent> longer;
     if (need > room) {
       room = 2 * need + kGraphLiveRoom;
@@ -760,6 +798,11 @@ class Engine {
     if (it == live_graphs_.end()) return std::nan("");
     std::lock_guard<std::mutex> lock(mutex_);
     return static_cast<double>(stream_now() - it->second.origin) / kSampleRate;
+  }
+  // The stream sample the next buffer starts on.
+  int64_t played_to() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return stream_next_;
   }
 
   // Called from the main thread's audio calls, so a freed song goes soon after

@@ -11,8 +11,11 @@
 //                                   bodies in src/runtime/culebra_rt_audio.cc
 //   base AOT archive of a native    weak silent bodies, overridden by the Audio
 //   build (CULEBRA_RT_AUDIO_WEAK)   feature archive when a program names Audio
-//   browser (__EMSCRIPTEN__)        WebAudio on the page (playground/app.js);
-//                                   PCM is silent there
+//   browser (__EMSCRIPTEN__)        the same mixer in the page's AudioWorklet
+//                                   for tones, schedules and graphs, WebAudio
+//                                   for Sound and Music, with the bodies in
+//                                   stdlib/audio_web.h; PCM, Capture and MIDI
+//                                   are silent there
 //   anything else                   silent, as a machine with no device is
 //
 // Silent means what a native build answers on a machine with no audio device:
@@ -307,7 +310,7 @@ inline int64_t alloc_id() {
 inline constexpr double kMixerRate = 44100;
 
 // A tone at vol 100 is a raw wave at a fifth of full scale, as up to four
-// channels stack (the browser's app.js keeps the same 0.2).
+// channels stack.
 inline constexpr double kToneLevel = 0.2;
 
 // How loud a tone of `freq` Hz is at vol 100 on a pulse at a half's duty, in
@@ -334,8 +337,8 @@ inline double tone_loudness(double freq) {
 // refuses a list out of it or not a whole number of rows.
 //
 // The width is defined here alone. Kauai asks the binding for it
-// (_Audio.schedule_stride) and checks each row it builds against it, and the
-// page is sent it with the list. The entry points, all on _Audio:
+// (_Audio.schedule_stride) and checks each row it builds against it. The
+// entry points, all on _Audio:
 // schedule_new(list, length, loop_at) -> id, schedule_play/stop/free(id),
 // schedule_volume/room(id, x), schedule_render(...) -> samples, schedule_stride().
 //
@@ -344,8 +347,8 @@ inline double tone_loudness(double freq) {
 // slots - 1, in place of a handle; schedule_fill(id, slot, sound) gives a
 // slot its Sound as it comes; the mixer holds the song where it reaches a
 // slot still empty, and schedule_held(id) answers for how long, in seconds,
-// since it last started. Only a native mixer holds a song (schedule_open
-// answers false elsewhere, and the song is made whole with schedule_new).
+// since it last started. Only a mixer holds a song (schedule_open answers
+// false where there is none, and the song is made whole with schedule_new).
 inline constexpr int64_t kScheduleStride = 11;
 
 // A Sound a schedule plays, by the bytes it was made from, for schedule_render: the
@@ -449,6 +452,7 @@ class Param {
     return {at, false, from, true};
   }
   size_t size() const { return events_.size(); }
+  const std::vector<ParamEvent>& events() const { return events_; }
   // Room for `extra` changes more without allocating; answers how many it
   // can hold.
   size_t make_room(size_t extra) {
@@ -1916,9 +1920,10 @@ struct Bus {
   int64_t cleared = -1;  // audio thread: the stream sample of the stretch it holds
   double samples[2][kBusFrames] = {};
 };
+using BusMap = std::unordered_map<int64_t, std::shared_ptr<Bus>>;
 // The buses a program has made, by handle. Main thread only.
-inline std::unordered_map<int64_t, std::shared_ptr<Bus>>& bus_defs() {
-  static std::unordered_map<int64_t, std::shared_ptr<Bus>> defs;
+inline BusMap& bus_defs() {
+  static BusMap defs;
   return defs;
 }
 
@@ -1931,7 +1936,115 @@ struct BusRead {
   int64_t at = 0;
 };
 
+// A part as Audio.Graph's part() asks for it, checked: its family, the kind
+// within it (a wave's WaveKind, a filter's FilterKind, an lfnoise's
+// LfNoiseKind, a math's MathKind; 0 for the rest) and its numbers. A graph
+// keeps each part's, so the same graph can be made again from them alone
+// (Graph::encode, for an engine on another thread of a browser).
+enum class PartFamily : uint8_t {
+  Wave, Noise, Filter, Gain, Resonate, Pluck, Delay, Limit, Drive, Impulse, Dust, LfNoise, Lag, Decay, Math, Round,
+  Latch, Room, Input
+};
+inline constexpr int kPartFamilies = static_cast<int>(PartFamily::Input) + 1;
+struct PartSpec {
+  PartFamily family = PartFamily::Gain;
+  int kind = 0;
+  std::vector<double> options;
+};
+// Each family, in PartFamily's order: its name in part(), the part it makes,
+// how many kinds it has (1 for one with none) and how many options it takes
+// (-1 for a resonance: its dry, then three a mode).
+struct PartFamilyInfo {
+  std::string_view name;
+  PartKind kind;
+  int kinds;
+  int options;
+};
+inline constexpr PartFamilyInfo kPartFamilyInfo[] = {
+    {"wave", PartKind::Wave, 4, 3},          {"noise", PartKind::Noise, 1, 1},
+    {"filter", PartKind::Filter, 3, 2},      {"gain", PartKind::Gain, 1, 1},
+    {"resonate", PartKind::Resonate, 1, -1}, {"pluck", PartKind::Pluck, 1, 2},
+    {"delay", PartKind::Delay, 1, 1},        {"limit", PartKind::Limit, 1, 2},
+    {"drive", PartKind::Drive, 1, 1},        {"impulse", PartKind::Impulse, 1, 2},
+    {"dust", PartKind::Dust, 1, 2},          {"lfnoise", PartKind::LfNoise, 3, 2},
+    {"lag", PartKind::Lag, 1, 1},            {"decay", PartKind::Decay, 1, 1},
+    {"math", PartKind::Math, 3, 2},          {"round", PartKind::Math, 1, 1},
+    {"latch", PartKind::Latch, 1, 1},        {"room", PartKind::Room, 1, 3},
+    {"input", PartKind::Input, 1, 2}};
+static_assert(std::size(kPartFamilyInfo) == kPartFamilies);
+inline const PartFamilyInfo& family_info(PartFamily f) { return kPartFamilyInfo[static_cast<int>(f)]; }
+inline PartKind part_kind(PartFamily f) { return family_info(f).kind; }
+// Whether `n` options are what a part of family `f` takes.
+inline bool options_fit(PartFamily f, size_t n) {
+  const int k = family_info(f).options;
+  return k < 0 ? n > 0 && (n - 1) % 3 == 0 : n == static_cast<size_t>(k);
+}
+
+// Numbers read in order, each count checked against what is left: how a
+// definition (Graph::decode) and a message (audio_wire.h) are read, which
+// may be cut short.
+class NumberReader {
+ public:
+  NumberReader(const double* at, const double* end) : at_(at), end_(end) {}
+  size_t left() const { return static_cast<size_t>(end_ - at_); }
+  const double* at() const { return at_; }
+  bool take(double& x) {
+    if (at_ == end_) return false;
+    x = *at_++;
+    return true;
+  }
+  // A count of things `each` numbers long, all of which are still to come.
+  bool count(size_t& n, size_t each = 1) {
+    double x;
+    if (!take(x) || !(x >= 0 && x * static_cast<double>(each) <= static_cast<double>(left()))) return false;
+    n = static_cast<size_t>(x);
+    return true;
+  }
+  // The next `n` numbers (count() has checked there are as many).
+  const double* skip(size_t n) {
+    const double* from = at_;
+    at_ += n;
+    return from;
+  }
+
+ private:
+  const double* at_;
+  const double* end_;
+};
+// Where a part's values rest until their first change: the options that are
+// values (a wave's freq, feedback and phase, a filter's cutoff, a string's
+// freq and ring, a room's size and damp, ...), 0 for the rest.
+struct PartRests {
+  double v[kGraphValues] = {};
+};
+inline PartRests part_rests(const PartSpec& s) {
+  const auto& o = s.options;
+  switch (s.family) {
+    case PartFamily::Wave: return {{o[0], o[1], o[2]}};
+    case PartFamily::Pluck:
+    case PartFamily::Room: return {{o[0], o[1], 0}};
+    case PartFamily::Filter:
+    case PartFamily::Gain:
+    case PartFamily::Delay:
+    case PartFamily::Drive:
+    case PartFamily::Impulse:
+    case PartFamily::Dust:
+    case PartFamily::LfNoise:
+    case PartFamily::Latch: return {{o[0], 0, 0}};
+    case PartFamily::Noise:
+    case PartFamily::Resonate:
+    case PartFamily::Limit:
+    case PartFamily::Lag:
+    case PartFamily::Decay:
+    case PartFamily::Math:
+    case PartFamily::Round:
+    case PartFamily::Input: return {};
+  }
+  return {};
+}
+
 struct GraphPart {
+  PartSpec spec;  // what it was made from
   PartKind kind;
   std::vector<int> inputs;  // parts added together as what it takes in
   // A wave's freq, feedback and phase, a filter's cutoff, a gain's gain, a
@@ -1946,6 +2059,40 @@ struct GraphPart {
       processor;
   double out[kGraphBlock] = {};
 };
+
+// The processor a checked spec makes at `rate`, new; an input's bus is found
+// among `buses`, where the spec's handle names one.
+inline decltype(GraphPart::processor) make_processor(const PartSpec& s, double rate, const BusMap& buses) {
+  const auto& o = s.options;
+  auto seed = [](double x) { return static_cast<int64_t>(x); };
+  switch (s.family) {
+    case PartFamily::Wave: return Oscillator{static_cast<WaveKind>(s.kind)};
+    case PartFamily::Noise: return Noise{seed(o[0])};
+    case PartFamily::Filter: return Svf(static_cast<FilterKind>(s.kind), o[1]);
+    case PartFamily::Gain: return std::monostate{};
+    case PartFamily::Resonate:
+      return Resonance(o.data() + 1, static_cast<int64_t>((o.size() - 1) / 3), o[0], rate);
+    case PartFamily::Pluck: return graph_string(rate);
+    case PartFamily::Delay: return graph_delay_line(rate);
+    case PartFamily::Limit: return Limiter(o[0], o[1], rate);
+    case PartFamily::Drive: return Drive{};
+    case PartFamily::Impulse: return Impulse(o[1]);
+    case PartFamily::Dust: return Dust{noise_stream(seed(o[1]), kDustStream)};
+    case PartFamily::LfNoise:
+      return LfNoise(static_cast<LfNoiseKind>(s.kind), noise_stream(seed(o[1]), kLfNoiseStream));
+    case PartFamily::Lag: return Lag(o[0], rate);
+    case PartFamily::Decay: return Decay(o[0], rate);
+    case PartFamily::Math: return MathOp{static_cast<MathKind>(s.kind), o[0], o[1]};
+    case PartFamily::Round: return MathOp{.kind = MathKind::Round, .unit = o[0]};
+    case PartFamily::Latch: return Latch{};
+    case PartFamily::Room: return ReverbTank(rate, static_cast<int>(o[2]));
+    case PartFamily::Input: {
+      auto id = static_cast<int64_t>(o[0]);
+      return BusRead{buses.at(id), id, static_cast<int>(o[1])};
+    }
+  }
+  return std::monostate{};
+}
 
 // How a part is worked out: for the samples of a block at once (Block), or in
 // a loop a sample at a time (Sample), a delay then in two halves: Read, what
@@ -2054,14 +2201,97 @@ class Graph {
   size_t size() const { return parts_.size(); }
   PartKind kind(int part) const { return parts_[static_cast<size_t>(part)].kind; }
 
-  // A part taking in `inputs`, parts made before it.
-  int add(PartKind kind, std::vector<int> inputs, decltype(GraphPart::processor) processor, double rest0 = 0,
-          double rest1 = 0, double rest2 = 0) {
-    parts_.push_back(GraphPart{kind, std::move(inputs), {Param(rest0), Param(rest1), Param(rest2)}, {},
-                               {held_range(kind, 0, rate_), held_range(kind, 1, rate_), held_range(kind, 2, rate_)},
-                               std::move(processor)});
+  // A part made from `spec` (checked), taking in `inputs`, parts made before it.
+  int add(PartSpec spec, std::vector<int> inputs) {
+    parts_.push_back(made(std::move(spec), std::move(inputs), bus_defs()));
     steps_.push_back(GraphStep{static_cast<int>(parts_.size()) - 1, {}});
     return static_cast<int>(parts_.size()) - 1;
+  }
+
+  // The definition as numbers, appended to `out`: the rate, the outputs, and
+  // each part's spec, what it takes in, what is connected to each value and
+  // each value's changes. decode() makes the same graph from them, one that
+  // renders the same samples. Read on a definition, which is never rendered.
+  void encode(std::vector<double>& out) const {
+    auto list = [&](const std::vector<int>& xs) {
+      out.push_back(static_cast<double>(xs.size()));
+      out.insert(out.end(), xs.begin(), xs.end());
+    };
+    out.insert(out.end(), {rate_, static_cast<double>(out_), static_cast<double>(out_right_),
+                           static_cast<double>(parts_.size())});
+    for (const auto& p : parts_) {
+      out.insert(out.end(), {static_cast<double>(p.spec.family), static_cast<double>(p.spec.kind),
+                             static_cast<double>(p.spec.options.size())});
+      out.insert(out.end(), p.spec.options.begin(), p.spec.options.end());
+      list(p.inputs);
+      for (const auto& c : p.connected) list(c);
+      for (int k = 0; k < value_count(p.kind); k++) {
+        const auto& events = p.values[k].events();
+        out.push_back(static_cast<double>(events.size()));
+        for (const auto& e : events) out.insert(out.end(), {e.at, e.ramp ? 1.0 : 0.0, e.value});
+      }
+    }
+  }
+  // The graph encode() wrote, read from `in`, its inputs reading `buses`;
+  // none when the numbers are not one a definition could have written (too
+  // few, a family or kind not known, a part out of range, options not the
+  // family's, an input of a bus not in `buses` or of no channel of it, a
+  // room on neither side, a loop through no delay).
+  static std::optional<Graph> decode(NumberReader& in, const BusMap& buses = bus_defs()) {
+    double rate, out, out_right;
+    size_t n;
+    if (!in.take(rate) || !in.take(out) || !in.take(out_right) || !in.count(n) || !(rate > 0)) return std::nullopt;
+    auto whole = [](double x, double below) { return x >= 0 && x < below && x == std::floor(x); };
+    auto part = [&](double x) { return whole(x, static_cast<double>(n)); };
+    auto parts_list = [&](std::vector<int>& xs) {
+      size_t m;
+      if (!in.count(m)) return false;
+      for (const double* x = in.skip(m); m > 0; m--, x++) {
+        if (!part(*x)) return false;
+        xs.push_back(static_cast<int>(*x));
+      }
+      return true;
+    };
+    Graph g(rate);
+    for (size_t i = 0; i < n; i++) {
+      double family, kind;
+      size_t options;
+      if (!in.take(family) || !in.take(kind) || !in.count(options) || !whole(family, kPartFamilies)) return std::nullopt;
+      const auto f = static_cast<PartFamily>(family);
+      if (!options_fit(f, options) || !whole(kind, family_info(f).kinds)) return std::nullopt;
+      const double* o = in.skip(options);
+      PartSpec spec{f, static_cast<int>(kind), {o, o + options}};
+      if (f == PartFamily::Input) {
+        if (!whole(o[0], 0x1p53)) return std::nullopt;
+        auto bus = buses.find(static_cast<int64_t>(o[0]));
+        if (bus == buses.end() || !whole(o[1], bus->second->channels)) return std::nullopt;
+      }
+      if (f == PartFamily::Room && o[2] != 0 && o[2] != 1) return std::nullopt;
+      std::vector<int> inputs;
+      if (!parts_list(inputs)) return std::nullopt;
+      GraphPart made_part = g.made(std::move(spec), std::move(inputs), buses);
+      for (auto& c : made_part.connected)
+        if (!parts_list(c)) return std::nullopt;
+      for (int k = 0; k < value_count(made_part.kind); k++) {
+        size_t events;
+        if (!in.count(events, 3)) return std::nullopt;
+        for (const double* e = in.skip(3 * events); events > 0; events--, e += 3)
+          made_part.values[k].schedule({e[0], e[1] != 0, e[2]});
+      }
+      g.parts_.push_back(std::move(made_part));
+    }
+    if (!(out == -1 || part(out)) || !(out_right == -1 || part(out_right))) return std::nullopt;
+    g.out_ = static_cast<int>(out);
+    g.out_right_ = static_cast<int>(out_right);
+    for (size_t t = 0; t < n; t++) {
+      const auto& q = g.parts_[t];
+      auto earlier = [&](int s) { return static_cast<size_t>(s) < t; };
+      if (!std::ranges::all_of(q.inputs, earlier) ||
+          !std::ranges::all_of(q.connected, [&](const auto& c) { return std::ranges::all_of(c, earlier); }))
+        g.forward_ = false;
+    }
+    if (!g.order(g.steps_)) return std::nullopt;
+    return g;
   }
   // `from`'s output added into `to`: what it takes in when `value` is -1, its
   // value `value` otherwise. False, and nothing connected, when that closes a
@@ -2156,6 +2386,19 @@ class Graph {
   }
 
  private:
+  GraphPart made(PartSpec spec, std::vector<int> inputs, const BusMap& buses) const {
+    const PartKind kind = part_kind(spec.family);
+    const PartRests r = part_rests(spec);
+    auto processor = make_processor(spec, rate_, buses);
+    return GraphPart{std::move(spec),
+                     kind,
+                     std::move(inputs),
+                     {Param(r.v[0]), Param(r.v[1]), Param(r.v[2])},
+                     {},
+                     {held_range(kind, 0, rate_), held_range(kind, 1, rate_), held_range(kind, 2, rate_)},
+                     std::move(processor)};
+  }
+
   void block(int n) {
     double time[kGraphBlock];
     for (int i = 0; i < n; i++) time[i] = static_cast<double>(pos_ + i) / rate_;
@@ -2452,143 +2695,10 @@ inline std::optional<std::vector<int64_t>> graph_played(int64_t id, int64_t into
   return order;
 }
 
-#if defined(CULEBRA_AUDIO_BROWSER)
+#if defined(CULEBRA_AUDIO_BROWSER) || defined(CULEBRA_AUDIO_DEVICE)
 
-// The page owns WebAudio and each handle's settings; these post commands to it
-// (playground/app.js), a setter's or seek's number as `value`. The playing
-// flags a script reads back are kept here, optimistically and in step with the
-// call, and corrected by the page's "soundState" / "musicState" messages when
-// something ends on its own (playground/worker.js).
-
-// A WASM-4-style tone: times in frames at ~60 fps, vol/peak 0..100.
-EM_JS(void, _wasm_audio_tone,
-      (int start_freq, int end_freq, int attack, int decay, int sustain,
-       int release, int vol, int peak, int channel, int duty), {
-  postMessage({ type: "tone", startFreq: start_freq, endFreq: end_freq,
-                attack: attack, decay: decay, sustain: sustain,
-                release: release, vol: vol, peak: peak, channel: channel,
-                duty: duty });
-});
-EM_JS(void, _wasm_audio_sound, (int cmd, int id, double value), {
-  const names = ["play", "stop", "free", "volume", "pitch", "pan"];
-  const flags = self.__soundsPlaying;
-  if (cmd === 0) flags[id] = true;
-  else if (cmd === 1) flags[id] = false;
-  else if (cmd === 2) delete flags[id];
-  postMessage({ type: "sound", cmd: names[cmd], id: id, value: value });
-});
-EM_JS(void, _wasm_audio_sound_load, (int id, const uint8_t* buf, int len), {
-  postMessage({ type: "sound", cmd: "load", id: id,
-                buf: HEAPU8.slice(buf, buf + len) });
-});
-EM_JS(int, _wasm_audio_sound_playing, (int id), {
-  return self.__soundsPlaying[id] ? 1 : 0;
-});
-EM_JS(void, _wasm_audio_music, (int cmd, int id, double value), {
-  const names = ["play", "stop", "pause", "resume", "free", "seek",
-                 "volume", "pitch", "pan"];
-  const flags = self.__musicPlaying;
-  if (cmd === 0 || cmd === 3) flags[id] = true;
-  else if (cmd === 1 || cmd === 2) flags[id] = false;
-  else if (cmd === 4) delete flags[id];
-  postMessage({ type: "music", cmd: names[cmd], id: id, value: value });
-});
-EM_JS(void, _wasm_audio_music_load,
-      (int id, const uint8_t* buf, int len, int looping), {
-  postMessage({ type: "music", cmd: "load", id: id,
-                buf: HEAPU8.slice(buf, buf + len), loop: looping !== 0 });
-});
-EM_JS(int, _wasm_audio_music_playing, (int id), {
-  return self.__musicPlaying[id] ? 1 : 0;
-});
-// A schedule's events go to the page whole, with the width of a row; it
-// schedules them on its own clock.
-EM_JS(void, _wasm_audio_schedule_new,
-      (int id, const double* events, int count, int stride, double length, double loop_at), {
-  postMessage({ type: "schedule", cmd: "new", id: id,
-                events: HEAPF64.slice(events >> 3, (events >> 3) + count),
-                stride: stride, length: length, loopAt: loop_at });
-});
-EM_JS(void, _wasm_audio_schedule, (int cmd, int id, double value), {
-  const names = ["play", "stop", "free", "volume", "room"];
-  postMessage({ type: "schedule", cmd: names[cmd], id: id, value: value });
-});
-
-inline bool available() { return true; }
-// The page's AudioContext chooses its own latency.
-inline bool latency_ask(double) { return true; }
-inline double latency() { return std::nan(""); }
-inline void tone(int64_t start_freq, int64_t end_freq, int64_t attack,
-                 int64_t decay, int64_t sustain, int64_t release, int64_t vol,
-                 int64_t peak, int64_t channel, int64_t duty) {
-  _wasm_audio_tone(static_cast<int>(start_freq), static_cast<int>(end_freq),
-                   static_cast<int>(attack), static_cast<int>(decay),
-                   static_cast<int>(sustain), static_cast<int>(release),
-                   static_cast<int>(vol), static_cast<int>(peak),
-                   static_cast<int>(channel), static_cast<int>(duty));
-}
-// `fmt` is for raylib's decoder dispatch; the page decodes the bytes itself.
-inline void sound_load(int64_t id, const uint8_t* data, int64_t len,
-                       const char* /*fmt*/) {
-  _wasm_audio_sound_load(static_cast<int>(id), data, static_cast<int>(len));
-}
-inline void sound_play(int64_t id) { _wasm_audio_sound(0, static_cast<int>(id), 0); }
-inline void sound_stop(int64_t id) { _wasm_audio_sound(1, static_cast<int>(id), 0); }
-inline void sound_free(int64_t id) { _wasm_audio_sound(2, static_cast<int>(id), 0); }
-inline bool sound_playing(int64_t id) {
-  return _wasm_audio_sound_playing(static_cast<int>(id)) != 0;
-}
-inline void sound_volume(int64_t id, double x) { _wasm_audio_sound(3, static_cast<int>(id), x); }
-inline void sound_pitch(int64_t id, double x) { _wasm_audio_sound(4, static_cast<int>(id), x); }
-inline void sound_pan(int64_t id, double x) { _wasm_audio_sound(5, static_cast<int>(id), x); }
-
-inline void music_load(int64_t id, const uint8_t* data, int64_t len,
-                       const char* /*fmt*/, bool loop) {
-  _wasm_audio_music_load(static_cast<int>(id), data, static_cast<int>(len),
-                         loop ? 1 : 0);
-}
-inline void music_play(int64_t id) { _wasm_audio_music(0, static_cast<int>(id), 0); }
-inline void music_stop(int64_t id) { _wasm_audio_music(1, static_cast<int>(id), 0); }
-inline void music_pause(int64_t id) { _wasm_audio_music(2, static_cast<int>(id), 0); }
-inline void music_resume(int64_t id) { _wasm_audio_music(3, static_cast<int>(id), 0); }
-inline void music_free(int64_t id) { _wasm_audio_music(4, static_cast<int>(id), 0); }
-inline bool music_playing(int64_t id) {
-  return _wasm_audio_music_playing(static_cast<int>(id)) != 0;
-}
-inline void music_seek(int64_t id, double seconds) {
-  _wasm_audio_music(5, static_cast<int>(id), seconds);
-}
-inline void music_volume(int64_t id, double x) { _wasm_audio_music(6, static_cast<int>(id), x); }
-inline void music_pitch(int64_t id, double x) { _wasm_audio_music(7, static_cast<int>(id), x); }
-inline void music_pan(int64_t id, double x) { _wasm_audio_music(8, static_cast<int>(id), x); }
-
-inline void schedule_new(int64_t id, const double* events, int64_t count,
-                      double length, double loop_at) {
-  _wasm_audio_schedule_new(static_cast<int>(id), events, static_cast<int>(count),
-                           static_cast<int>(kScheduleStride), length, loop_at);
-}
-inline void schedule_play(int64_t id) { _wasm_audio_schedule(0, static_cast<int>(id), 0); }
-inline void schedule_stop(int64_t id) { _wasm_audio_schedule(1, static_cast<int>(id), 0); }
-inline void schedule_free(int64_t id) { _wasm_audio_schedule(2, static_cast<int>(id), 0); }
-inline void schedule_volume(int64_t id, double x) { _wasm_audio_schedule(3, static_cast<int>(id), x); }
-inline void schedule_room(int64_t id, double x) { _wasm_audio_schedule(4, static_cast<int>(id), x); }
-// The page plays a song whole.
-inline bool schedule_open(int64_t, const double*, int64_t, int64_t, double, double) { return false; }
-inline void schedule_fill(int64_t, int64_t, int64_t) {}
-inline double schedule_held(int64_t) { return 0.0; }
-// The page mixes a schedule in WebAudio, which renders nothing back to the program.
-inline bool schedule_render(const double*, int64_t, double, double, double, double,
-                         const std::vector<SoundBytes>&, std::vector<float>&, std::vector<float>*) {
-  return false;
-}
-// The page's decoder answers later, and to the page.
-inline DecodeResult decode(const uint8_t*, int64_t, const char*, Recording&) {
-  return DecodeResult::Unavailable;
-}
-
-#elif defined(CULEBRA_AUDIO_DEVICE)
-
-// Strong bodies in src/runtime/culebra_rt_audio.cc.
+// Strong bodies in src/runtime/culebra_rt_audio.cc natively, and in a
+// browser in stdlib/audio_web.h (playground/wasm_main.cc includes it).
 bool available();
 // The output's period: asked for before the device opens (false once it has),
 // and the one it runs at in seconds, NaN when it is not open.
@@ -2617,6 +2727,9 @@ void music_seek(int64_t id, double seconds);
 void music_volume(int64_t id, double v);
 void music_pitch(int64_t id, double p);
 void music_pan(int64_t id, double p);
+// A browser has none of these yet: its PCM, Capture and MIDI are the silent
+// ones below.
+#if defined(CULEBRA_AUDIO_DEVICE)
 void pcm_new(int64_t id, int64_t rate, int64_t channels, int64_t buffer);
 void pcm_free(int64_t id);
 bool pcm_ready(int64_t id);
@@ -2663,6 +2776,7 @@ void midi_read(int64_t id, std::vector<double>& out);
 bool midi_wait(int64_t id, double seconds);
 int64_t midi_control(int64_t id, int64_t channel, int64_t cc);
 int64_t midi_dropped(int64_t id);
+#endif
 void schedule_new(int64_t id, const double* events, int64_t count, double length,
                double loop_at);
 void schedule_free(int64_t id);
@@ -2692,12 +2806,12 @@ bool schedule_render(const double* events, int64_t count, double length, double 
 // plays through, as floats at its own rate and channels. Needs no device.
 DecodeResult decode(const uint8_t* data, int64_t len, const char* fmt, Recording& out);
 // A graph played: a copy the mixer works out from the next sample on, into
-// `into` (null for the device), the graphs playing then worked out in
+// bus `into` (0 for the device), the graphs playing then worked out in
 // `order` (graph_order's); the changes scheduled after that to the copy's
 // parts are sent on to it (a part added since is the next play()'s).
 // graph_now answers where on the graph's clock a change made now lands, NaN
 // when it is not playing.
-void graph_play(int64_t id, std::shared_ptr<Bus> into, const std::vector<int64_t>& order);
+void graph_play(int64_t id, int64_t into, const std::vector<int64_t>& order);
 void graph_stop(int64_t id);
 void graph_post(int64_t id, int part, int value, ParamEvent e);
 double graph_now(int64_t id);
@@ -2834,10 +2948,9 @@ CULEBRA_RT_AUDIO_LINKAGE int64_t midi_control(int64_t, int64_t, int64_t) { retur
 CULEBRA_RT_AUDIO_LINKAGE int64_t midi_dropped(int64_t) { return 0; }
 #endif
 
-// A graph renders everywhere, and plays on a device alone: the browser has no
-// backend for one yet.
-#if !defined(CULEBRA_AUDIO_DEVICE)
-CULEBRA_RT_AUDIO_LINKAGE void graph_play(int64_t, std::shared_ptr<Bus>, const std::vector<int64_t>&) {}
+// A graph renders everywhere, and plays where there is a mixer.
+#if defined(CULEBRA_AUDIO_SILENT)
+CULEBRA_RT_AUDIO_LINKAGE void graph_play(int64_t, int64_t, const std::vector<int64_t>&) {}
 CULEBRA_RT_AUDIO_LINKAGE void graph_stop(int64_t) {}
 CULEBRA_RT_AUDIO_LINKAGE void graph_post(int64_t, int, int, ParamEvent) {}
 CULEBRA_RT_AUDIO_LINKAGE double graph_now(int64_t) { return std::nan(""); }

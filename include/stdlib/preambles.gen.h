@@ -5753,8 +5753,8 @@ let _kauai_module = fn () {
     # Play from the top (again, if it is playing), after building what is
     # left; `early`, once what is left can be built ahead of the song, which
     # prepare() then builds as it plays: the song waits where a sound is not
-    # built yet. Where the mixer cannot wait (the browser), it builds what is
-    # left first all the same.
+    # built yet. Where no mixer can wait (no device), it builds what is left
+    # first all the same.
     play(early: Bool = false) {
       if @_schedule == nil {
         @_schedule = (early ? @_open() : nil) ?? _Audio.schedule_new(@_list(@_plays, nil), @_length, @_loop_at)

@@ -46,46 +46,44 @@ struct Build {
   ad::Graph g{kRate};
   int one = -1;
 
+  int part(ad::PartFamily family, int kind, std::vector<int> in, std::vector<double> options) {
+    return g.add(ad::PartSpec{family, kind, std::move(options)}, std::move(in));
+  }
   int wave(ad::WaveKind kind, double freq, double feedback = 0, double phase = 0) {
-    return g.add(ad::PartKind::Wave, {}, ad::Oscillator{kind}, freq, feedback, phase);
+    return part(ad::PartFamily::Wave, static_cast<int>(kind), {}, {freq, feedback, phase});
   }
-  int noise(int64_t seed) { return g.add(ad::PartKind::Noise, {}, ad::Noise{seed}); }
+  int noise(int64_t seed) { return part(ad::PartFamily::Noise, 0, {}, {static_cast<double>(seed)}); }
   int filter(ad::FilterKind kind, std::vector<int> in, double cutoff, double q) {
-    return g.add(ad::PartKind::Filter, std::move(in), ad::Svf(kind, q), cutoff);
+    return part(ad::PartFamily::Filter, static_cast<int>(kind), std::move(in), {cutoff, q});
   }
-  int gain(std::vector<int> in, double gain) {
-    return g.add(ad::PartKind::Gain, std::move(in), std::monostate{}, gain);
-  }
-  int delay(std::vector<int> in, double time) {
-    return g.add(ad::PartKind::Delay, std::move(in), ad::graph_delay_line(kRate), time);
-  }
+  int gain(std::vector<int> in, double gain) { return part(ad::PartFamily::Gain, 0, std::move(in), {gain}); }
+  int delay(std::vector<int> in, double time) { return part(ad::PartFamily::Delay, 0, std::move(in), {time}); }
   int pluck(std::vector<int> in, double freq, double ring) {
-    return g.add(ad::PartKind::Pluck, std::move(in), ad::graph_string(kRate), freq, ring);
+    return part(ad::PartFamily::Pluck, 0, std::move(in), {freq, ring});
   }
   int resonate(std::vector<int> in, const std::vector<double>& modes, double dry) {
-    return g.add(ad::PartKind::Resonate, std::move(in),
-                 ad::Resonance(modes.data(), static_cast<int64_t>(modes.size() / 3), dry, kRate));
+    std::vector<double> options{dry};
+    options.insert(options.end(), modes.begin(), modes.end());
+    return part(ad::PartFamily::Resonate, 0, std::move(in), std::move(options));
   }
-  int drive(std::vector<int> in, double gain) { return g.add(ad::PartKind::Drive, std::move(in), ad::Drive{}, gain); }
+  int drive(std::vector<int> in, double gain) { return part(ad::PartFamily::Drive, 0, std::move(in), {gain}); }
   int limit(std::vector<int> in, double ceiling, double release) {
-    return g.add(ad::PartKind::Limit, std::move(in), ad::Limiter(ceiling, release, kRate));
+    return part(ad::PartFamily::Limit, 0, std::move(in), {ceiling, release});
   }
-  int impulse(double freq, double phase) { return g.add(ad::PartKind::Impulse, {}, ad::Impulse(phase), freq); }
+  int impulse(double freq, double phase) { return part(ad::PartFamily::Impulse, 0, {}, {freq, phase}); }
   int dust(double density, int64_t seed) {
-    return g.add(ad::PartKind::Dust, {}, ad::Dust{ad::noise_stream(seed, ad::kDustStream)}, density);
+    return part(ad::PartFamily::Dust, 0, {}, {density, static_cast<double>(seed)});
   }
   int lfnoise(ad::LfNoiseKind kind, double freq, int64_t seed) {
-    return g.add(ad::PartKind::LfNoise, {}, ad::LfNoise(kind, ad::noise_stream(seed, ad::kLfNoiseStream)), freq);
+    return part(ad::PartFamily::LfNoise, static_cast<int>(kind), {}, {freq, static_cast<double>(seed)});
   }
-  int lag(std::vector<int> in, double time) { return g.add(ad::PartKind::Lag, std::move(in), ad::Lag(time, kRate)); }
-  int decay(std::vector<int> in, double time) {
-    return g.add(ad::PartKind::Decay, std::move(in), ad::Decay(time, kRate));
-  }
+  int lag(std::vector<int> in, double time) { return part(ad::PartFamily::Lag, 0, std::move(in), {time}); }
+  int decay(std::vector<int> in, double time) { return part(ad::PartFamily::Decay, 0, std::move(in), {time}); }
   int math(ad::MathKind kind, std::vector<int> in, double lo = -1, double hi = 1) {
-    return g.add(ad::PartKind::Math, std::move(in), ad::MathOp{kind, lo, hi});
+    return part(ad::PartFamily::Math, static_cast<int>(kind), std::move(in), {lo, hi});
   }
   int room(std::vector<int> in, double size, double damp, int side) {
-    return g.add(ad::PartKind::Room, std::move(in), ad::ReverbTank(kRate, side), size, damp);
+    return part(ad::PartFamily::Room, 0, std::move(in), {size, damp, static_cast<double>(side)});
   }
   // Synth's constant: a gain of a square at 0 Hz, which answers 1.
   int level(double v) {

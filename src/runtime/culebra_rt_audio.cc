@@ -2,8 +2,9 @@
 // on raylib's audio module built standalone (culebra_raudio.c, raudio.h), so
 // sound links neither raylib's core nor SDL. Canvas and Scene carry no audio
 // of their own. The backend-neutral pieces (format sniff, handle ids, the
-// silent and browser backends) are in include/stdlib/audio.h, and the mixer
-// tones, schedules and graphs play through in include/stdlib/audio_engine.h.
+// silent backend) are in include/stdlib/audio.h, the browser's backend in
+// include/stdlib/audio_web.h, and the mixer tones, schedules and graphs play
+// through in include/stdlib/audio_engine.h.
 //
 // Everything here runs on the main thread except three helpers raylib,
 // miniaudio or this file starts: raylib's mixer thread (the engine's audio
@@ -33,6 +34,7 @@
 #include "culebra_period.h"
 #include "midilib.h"
 #include "culebra_decode.h"
+#include "culebra_mixer_samples.h"
 #include "raudio.h"
 
 namespace culebra {
@@ -134,13 +136,6 @@ void ensure_tone_stream() {
 // The Sounds a schedule can play, by handle, as the mixer's samples. Main
 // thread only.
 PcmByHandle g_sound_pcm;
-
-// Frames (at ~60 fps) to samples, matching the browser's own `frames / 60`
-// seconds (playground/app.js's F()).
-int64_t frames_to_samples(int64_t frames) {
-  return static_cast<int64_t>(std::max<int64_t>(0, frames) *
-                              (static_cast<double>(kSampleRate) / 60.0));
-}
 
 // The handle behind `id` in one of the tables below; nullptr once freed.
 template <class Map>
@@ -488,21 +483,7 @@ void tone(int64_t start_freq, int64_t end_freq, int64_t attack, int64_t decay,
   ensure_tone_stream();
   if (!g_tone_ready) return;
   g_engine.tone(static_cast<int>(channel),
-                make_note(start_freq, end_freq, frames_to_samples(attack),
-                          frames_to_samples(decay), frames_to_samples(sustain),
-                          frames_to_samples(release), vol, peak, duty));
-}
-
-// A decoded sample as a schedule mixes it, mono floats at the mixer's rate
-// (converting `w` so); nullptr when it has none. Playing a Sound and
-// rendering a schedule both decode through it.
-std::shared_ptr<const std::vector<float>> mixer_samples(Wave& w) {
-  WaveFormat(&w, kSampleRate, 32, 1);
-  float* f = LoadWaveSamples(w);
-  if (f == nullptr) return nullptr;
-  auto pcm = std::make_shared<const std::vector<float>>(f, f + w.frameCount);
-  UnloadWaveSamples(f);
-  return pcm;
+                tone_note(start_freq, end_freq, attack, decay, sustain, release, vol, peak, duty));
 }
 
 // A schedule from Kauai's list, its Sounds' samples the ones sound_load kept.
@@ -519,12 +500,8 @@ bool schedule_render(const double* events, int64_t count, double length, double 
                   double volume, double from, const std::vector<SoundBytes>& sounds,
                   std::vector<float>& out, std::vector<float>* right) {
   PcmByHandle pcm;
-  for (const SoundBytes& b : sounds) {
-    Wave w = LoadWaveFromMemory(b.fmt, b.data, static_cast<int>(b.len));
-    if (w.data == nullptr) continue;
-    if (auto p = mixer_samples(w)) pcm[b.handle] = std::move(p);
-    UnloadWave(w);
-  }
+  for (const SoundBytes& b : sounds)
+    if (auto p = mixer_samples_of(b.fmt, b.data, b.len)) pcm[b.handle] = std::move(p);
   render_schedule(events, count, length, wet, volume, from, pcm, out, right);
   return true;
 }
@@ -564,10 +541,11 @@ double schedule_held(int64_t id) {
   return static_cast<double>(g_engine.schedule_held(id)) / kSampleRate;
 }
 
-void graph_play(int64_t id, std::shared_ptr<Bus> into, const std::vector<int64_t>& order) {
+void graph_play(int64_t id, int64_t into, const std::vector<int64_t>& order) {
   ensure_tone_stream();
   if (!g_tone_ready) return;
-  g_engine.graph_play(id, std::move(into), order);
+  if (const Graph* def = graph_def(id))
+    g_engine.graph_play(id, *def, into != 0 ? bus_defs().at(into) : nullptr, order);
 }
 void graph_stop(int64_t id) { g_engine.graph_stop(id); }
 void graph_post(int64_t id, int part, int value, ParamEvent e) {

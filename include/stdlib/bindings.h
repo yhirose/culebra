@@ -6484,104 +6484,86 @@ inline JitValue _ns_audio_graph_part(JitValue* a, int64_t) {
   for (double p : ins) inputs.push_back(_ns_audio_graph_index(g, p));
   _ns_audio_numbers(a[4], opt, "type error: an Audio.Graph part is set up by numbers");
   double rate = g.rate();
-  // Each family and the options it takes, in number; a resonance takes its
-  // dry and then three a mode (-1 here).
-  static constexpr std::pair<std::string_view, int> kFamilies[] = {
-      {"wave", 3},    {"noise", 1}, {"filter", 2},  {"gain", 1}, {"resonate", -1},
-      {"pluck", 2},   {"delay", 1}, {"limit", 2},   {"drive", 1}, {"impulse", 2},
-      {"dust", 2},    {"lfnoise", 2}, {"lag", 1},   {"decay", 1}, {"math", 2},
-      {"round", 1},   {"latch", 1},   {"room", 3},  {"input", 2}};
-  auto fam = std::ranges::find(kFamilies, family, &std::pair<std::string_view, int>::first);
-  if (fam == std::end(kFamilies)) {
+  auto fam = std::ranges::find(ad::kPartFamilyInfo, family, &ad::PartFamilyInfo::name);
+  if (fam == std::end(ad::kPartFamilyInfo)) {
     auto message = culebra::format("Audio.Graph: no part {}", family);
     _ns_audio_fail(message.c_str());
   }
-  bool counted = fam->second < 0 ? !opt.empty() && (opt.size() - 1) % 3 == 0
-                                 : opt.size() == static_cast<size_t>(fam->second);
-  if (!counted)
+  ad::PartSpec spec{static_cast<ad::PartFamily>(fam - std::begin(ad::kPartFamilyInfo)), 0, opt};
+  if (!ad::options_fit(spec.family, opt.size()))
     culebra::throw_runtime_error_at("TypeError", "type error: an Audio.Graph part is set up by numbers", 0, 0);
-  auto made = [&](ad::PartKind k, decltype(ad::GraphPart::processor) proc, double v0 = 0, double v1 = 0,
-                  double v2 = 0) {
-    const double rests[ad::kGraphValues] = {v0, v1, v2};
-    for (int value = 0; value < ad::value_count(k); value++)
-      if (auto* bad = _ns_audio_graph_bad_value(k, rate, value, rests[value])) _ns_audio_fail(bad);
-    return _ns_adapt::v_long(g.add(k, std::move(inputs), std::move(proc), v0, v1, v2));
-  };
-  if (family == "wave") {
-    static constexpr std::pair<std::string_view, ad::WaveKind> kWaves[] = {
-        {"sine", ad::WaveKind::Sine}, {"saw", ad::WaveKind::Saw},
-        {"square", ad::WaveKind::Square}, {"triangle", ad::WaveKind::Triangle}};
-    return made(ad::PartKind::Wave, ad::Oscillator{_ns_audio_named(kind, kWaves, "Audio.Graph", "a wave")}, opt[0],
-                opt[1], opt[2]);
-  }
-  if (family == "noise") {
-    return made(ad::PartKind::Noise, ad::Noise{_ns_audio_seed(opt[0], "Audio.Graph: a noise's seed")});
-  }
-  if (family == "filter") {
-    ad::FilterKind f = _ns_audio_filter_kind(kind, "Audio.Graph");
-    if (!(opt[1] > 0)) _ns_audio_fail("Audio.Graph: the q is above 0");
-    return made(ad::PartKind::Filter, ad::Svf(f, opt[1]), opt[0]);
-  }
-  if (family == "gain") return made(ad::PartKind::Gain, std::monostate{}, opt[0]);
-  if (family == "resonate") {
-    _ns_audio_check_modes(opt.data() + 1, (opt.size() - 1) / 3, rate, "Audio.Graph");
-    return made(ad::PartKind::Resonate,
-                ad::Resonance(opt.data() + 1, static_cast<int64_t>((opt.size() - 1) / 3), opt[0], rate));
-  }
-  if (family == "delay") return made(ad::PartKind::Delay, ad::graph_delay_line(rate), opt[0]);
-  if (family == "limit") {
-    if (!(opt[0] > 0 && std::isfinite(opt[0]))) _ns_audio_fail("Audio.Graph: a limit's ceiling is above 0");
-    if (!(opt[1] > 0 && std::isfinite(opt[1]))) _ns_audio_fail("Audio.Graph: a limit's release is above 0");
-    return made(ad::PartKind::Limit, ad::Limiter(opt[0], opt[1], rate));
-  }
-  if (family == "drive") return made(ad::PartKind::Drive, ad::Drive{}, opt[0]);
-  if (family == "impulse") {
-    if (!(opt[1] >= 0 && opt[1] < 1)) _ns_audio_fail("Audio.Graph: an impulse's phase is from 0 to below 1");
-    return made(ad::PartKind::Impulse, ad::Impulse(opt[1]), opt[0]);
-  }
-  if (family == "dust") {
-    auto seed = _ns_audio_seed(opt[1], "Audio.Graph: a dust's seed");
-    return made(ad::PartKind::Dust, ad::Dust{ad::noise_stream(seed, ad::kDustStream)}, opt[0]);
-  }
-  if (family == "lfnoise") {
-    static constexpr std::pair<std::string_view, ad::LfNoiseKind> kNoises[] = {
-        {"step", ad::LfNoiseKind::Step}, {"linear", ad::LfNoiseKind::Linear}, {"cubic", ad::LfNoiseKind::Cubic}};
-    auto seed = _ns_audio_seed(opt[1], "Audio.Graph: an lfnoise's seed");
-    auto k = _ns_audio_named(kind, kNoises, "Audio.Graph", "an lfnoise");
-    return made(ad::PartKind::LfNoise, ad::LfNoise(k, ad::noise_stream(seed, ad::kLfNoiseStream)), opt[0]);
-  }
-  if (family == "lag" || family == "decay") {
-    if (!(opt[0] >= 0 && std::isfinite(opt[0]))) {
-      _ns_audio_fail(family == "lag" ? "Audio.Graph: a lag's time is 0 or more" : "Audio.Graph: a decay's time is 0 or more");
+  // What only some families check, before their values are.
+  switch (spec.family) {
+    case ad::PartFamily::Wave: {
+      static constexpr std::pair<std::string_view, ad::WaveKind> kWaves[] = {
+          {"sine", ad::WaveKind::Sine}, {"saw", ad::WaveKind::Saw},
+          {"square", ad::WaveKind::Square}, {"triangle", ad::WaveKind::Triangle}};
+      spec.kind = static_cast<int>(_ns_audio_named(kind, kWaves, "Audio.Graph", "a wave"));
+      break;
     }
-    return family == "lag" ? made(ad::PartKind::Lag, ad::Lag(opt[0], rate)) : made(ad::PartKind::Decay, ad::Decay(opt[0], rate));
+    case ad::PartFamily::Noise: _ns_audio_seed(opt[0], "Audio.Graph: a noise's seed"); break;
+    case ad::PartFamily::Filter:
+      spec.kind = static_cast<int>(_ns_audio_filter_kind(kind, "Audio.Graph"));
+      if (!(opt[1] > 0)) _ns_audio_fail("Audio.Graph: the q is above 0");
+      break;
+    case ad::PartFamily::Resonate:
+      _ns_audio_check_modes(opt.data() + 1, (opt.size() - 1) / 3, rate, "Audio.Graph");
+      break;
+    case ad::PartFamily::Limit:
+      if (!(opt[0] > 0 && std::isfinite(opt[0]))) _ns_audio_fail("Audio.Graph: a limit's ceiling is above 0");
+      if (!(opt[1] > 0 && std::isfinite(opt[1]))) _ns_audio_fail("Audio.Graph: a limit's release is above 0");
+      break;
+    case ad::PartFamily::Impulse:
+      if (!(opt[1] >= 0 && opt[1] < 1)) _ns_audio_fail("Audio.Graph: an impulse's phase is from 0 to below 1");
+      break;
+    case ad::PartFamily::Dust: _ns_audio_seed(opt[1], "Audio.Graph: a dust's seed"); break;
+    case ad::PartFamily::LfNoise: {
+      static constexpr std::pair<std::string_view, ad::LfNoiseKind> kNoises[] = {
+          {"step", ad::LfNoiseKind::Step}, {"linear", ad::LfNoiseKind::Linear}, {"cubic", ad::LfNoiseKind::Cubic}};
+      _ns_audio_seed(opt[1], "Audio.Graph: an lfnoise's seed");
+      spec.kind = static_cast<int>(_ns_audio_named(kind, kNoises, "Audio.Graph", "an lfnoise"));
+      break;
+    }
+    case ad::PartFamily::Lag:
+    case ad::PartFamily::Decay:
+      if (!(opt[0] >= 0 && std::isfinite(opt[0]))) {
+        _ns_audio_fail(spec.family == ad::PartFamily::Lag ? "Audio.Graph: a lag's time is 0 or more"
+                                                          : "Audio.Graph: a decay's time is 0 or more");
+      }
+      break;
+    case ad::PartFamily::Input: {
+      auto bus = ad::bus_defs().find(static_cast<int64_t>(opt[0]));
+      if (bus == ad::bus_defs().end()) _ns_audio_fail("Audio.Graph: the bus was freed");
+      if (!(opt[1] >= 0 && opt[1] < bus->second->channels && opt[1] == std::floor(opt[1])))
+        _ns_audio_fail(bus->second->channels == 1 ? "Audio.Graph: an input reads channel 0 of a bus of one"
+                                                   : "Audio.Graph: an input reads channel 0 or 1 of a bus of two");
+      break;
+    }
+    case ad::PartFamily::Room:
+      if (opt[2] != 0 && opt[2] != 1) _ns_audio_fail("Audio.Graph: a room's side is 0 (the left) or 1 (the right)");
+      break;
+    case ad::PartFamily::Round:
+      if (!(opt[0] > 0 && std::isfinite(opt[0]))) _ns_audio_fail("Audio.Graph: a round's step is a finite number above 0");
+      break;
+    case ad::PartFamily::Math: {
+      static constexpr std::pair<std::string_view, ad::MathKind> kMaths[] = {
+          {"abs", ad::MathKind::Abs}, {"clip", ad::MathKind::Clip}, {"exp", ad::MathKind::Exp}};
+      spec.kind = static_cast<int>(_ns_audio_named(kind, kMaths, "Audio.Graph", "a math"));
+      if (!(std::isfinite(opt[0]) && std::isfinite(opt[1]) && opt[0] <= opt[1]))
+        _ns_audio_fail("Audio.Graph: a clip's lo and hi are finite, lo at most hi");
+      break;
+    }
+    case ad::PartFamily::Gain:
+    case ad::PartFamily::Pluck:
+    case ad::PartFamily::Delay:
+    case ad::PartFamily::Drive:
+    case ad::PartFamily::Latch: break;
   }
-  if (family == "input") {
-    auto bus = ad::bus_defs().find(static_cast<int64_t>(opt[0]));
-    if (bus == ad::bus_defs().end()) _ns_audio_fail("Audio.Graph: the bus was freed");
-    if (!(opt[1] >= 0 && opt[1] < bus->second->channels && opt[1] == std::floor(opt[1])))
-      _ns_audio_fail(bus->second->channels == 1 ? "Audio.Graph: an input reads channel 0 of a bus of one"
-                                                 : "Audio.Graph: an input reads channel 0 or 1 of a bus of two");
-    return made(ad::PartKind::Input, ad::BusRead{bus->second, bus->first, static_cast<int>(opt[1])});
-  }
-  if (family == "room") {
-    if (opt[2] != 0 && opt[2] != 1) _ns_audio_fail("Audio.Graph: a room's side is 0 (the left) or 1 (the right)");
-    return made(ad::PartKind::Room, ad::ReverbTank(rate, static_cast<int>(opt[2])), opt[0], opt[1]);
-  }
-  if (family == "round") {
-    if (!(opt[0] > 0 && std::isfinite(opt[0]))) _ns_audio_fail("Audio.Graph: a round's step is a finite number above 0");
-    return made(ad::PartKind::Math, ad::MathOp{.kind = ad::MathKind::Round, .unit = opt[0]});
-  }
-  if (family == "latch") return made(ad::PartKind::Latch, ad::Latch{}, opt[0]);
-  if (family == "math") {
-    static constexpr std::pair<std::string_view, ad::MathKind> kMaths[] = {
-        {"abs", ad::MathKind::Abs}, {"clip", ad::MathKind::Clip}, {"exp", ad::MathKind::Exp}};
-    if (!(std::isfinite(opt[0]) && std::isfinite(opt[1]) && opt[0] <= opt[1]))
-      _ns_audio_fail("Audio.Graph: a clip's lo and hi are finite, lo at most hi");
-    return made(ad::PartKind::Math, ad::MathOp{_ns_audio_named(kind, kMaths, "Audio.Graph", "a math"), opt[0], opt[1]});
-  }
-  // pluck
-  return made(ad::PartKind::Pluck, ad::graph_string(rate), opt[0], opt[1]);
+  const ad::PartKind k = ad::part_kind(spec.family);
+  const ad::PartRests rests = ad::part_rests(spec);
+  for (int value = 0; value < ad::value_count(k); value++)
+    if (auto* bad = _ns_audio_graph_bad_value(k, rate, value, rests.v[value])) _ns_audio_fail(bad);
+  return _ns_adapt::v_long(g.add(std::move(spec), std::move(inputs)));
 }
 // Part `from`'s output added into part `to`: what it takes in when `value` is
 // -1, its value `value` otherwise. A loop has to pass through a delay.
@@ -6673,12 +6655,10 @@ inline JitValue _ns_audio_graph_play(JitValue* a, int64_t) {
   auto& g = _ns_audio_graph(a[0]);
   int64_t into = _ns_adapt::take_long(a[1]);
   if (g.rate() != ad::kMixerRate) _ns_audio_fail("Audio.Graph: a graph plays at a rate of 44100");
-  std::shared_ptr<ad::Bus> bus;
   if (into != 0) {
     auto it = ad::bus_defs().find(into);
     if (it == ad::bus_defs().end()) _ns_audio_fail("Audio.Graph: the bus was freed");
-    bus = it->second;
-    if (g.stereo() && bus->channels == 1)
+    if (g.stereo() && it->second->channels == 1)
       _ns_audio_fail("Audio.Graph: a graph with a left and a right output plays into a bus of two channels");
   }
   auto& playing = ad::graphs_playing();
@@ -6686,7 +6666,7 @@ inline JitValue _ns_audio_graph_play(JitValue* a, int64_t) {
     _ns_audio_fail("Audio.Graph: 64 graphs play at once at most");
   auto order = ad::graph_played(id, into, g.buses_read());
   if (!order) _ns_audio_fail("Audio.Graph: graphs play into each other's buses in a loop");
-  ad::graph_play(id, std::move(bus), *order);
+  ad::graph_play(id, into, *order);
   return _ns_adapt::v_nil();
 }
 // A playing graph let go of by whatever replaced it: what it reads no longer

@@ -8,6 +8,7 @@
 // Built and run by CTest (see CMakeLists.txt).
 
 #include <stdlib/audio_engine.h>
+#include <stdlib/audio_wire.h>
 
 #include <atomic>
 #include <cmath>
@@ -168,11 +169,27 @@ long differing(const std::vector<float>& a, const std::vector<float>& b) {
 
 bool same_bits(float a, float b) { return std::memcmp(&a, &b, sizeof a) == 0; }
 
+// Parts of `g` as Audio.Graph's part() makes them.
+int part(ad::Graph& g, ad::PartFamily family, int kind, std::vector<int> in, std::vector<double> options) {
+  return g.add(ad::PartSpec{family, kind, std::move(options)}, std::move(in));
+}
+int wave(ad::Graph& g, ad::WaveKind kind, double freq) {
+  return part(g, ad::PartFamily::Wave, static_cast<int>(kind), {}, {freq, 0, 0});
+}
+int lowpass(ad::Graph& g, int in, double cutoff, double q) {
+  return part(g, ad::PartFamily::Filter, static_cast<int>(ad::FilterKind::Low), {in}, {cutoff, q});
+}
+int gain(ad::Graph& g, int in, double v) { return part(g, ad::PartFamily::Gain, 0, {in}, {v}); }
+int delay(ad::Graph& g, int in, double time) { return part(g, ad::PartFamily::Delay, 0, {in}, {time}); }
+int input(ad::Graph& g, int64_t bus, int channel) {
+  return part(g, ad::PartFamily::Input, 0, {}, {static_cast<double>(bus), static_cast<double>(channel)});
+}
+
 // Graph `id` played as Audio.Graph's play() plays it: into bus `into` (0 for
 // the device), the graphs playing worked out in graph_played's order.
 void play(ad::Engine& engine, int64_t id, int64_t into = 0) {
   auto order = ad::graph_played(id, into, ad::graph_def(id)->buses_read());
-  engine.graph_play(id, into ? ad::bus_defs().at(into) : nullptr, *order);
+  engine.graph_play(id, *ad::graph_def(id), into ? ad::bus_defs().at(into) : nullptr, *order);
 }
 void stop(ad::Engine& engine, int64_t id) {
   ad::graphs_playing().erase(id);
@@ -309,9 +326,8 @@ void tone_starts_when_asked() {
 void graph_plays_as_it_renders() {
   const int64_t id = 9001;
   ad::Graph def(ad::kMixerRate);
-  int wave = def.add(ad::PartKind::Wave, {}, ad::Oscillator{ad::WaveKind::Saw}, 220, 0);
-  int lowpass = def.add(ad::PartKind::Filter, {wave}, ad::Svf(ad::FilterKind::Low, 0.9), 1200);
-  def.output(lowpass);
+  int saw = wave(def, ad::WaveKind::Saw, 220);
+  def.output(lowpass(def, saw, 1200, 0.9));
   ad::graph_defs().insert_or_assign(id, def);
 
   Device device(200000);
@@ -322,8 +338,8 @@ void graph_plays_as_it_renders() {
   auto& live = *ad::graph_def(id);
   for (int k = 0; k < 2 * static_cast<int>(ad::kGraphLiveRoom); k++) {
     ad::ParamEvent e{0.2 + 0.002 * k, k % 2 == 1, 200.0 + 3 * k};
-    live.schedule(wave, 0, e);
-    device.engine->graph_post(id, wave, 0, e);
+    live.schedule(saw, 0, e);
+    device.engine->graph_post(id, saw, 0, e);
   }
   device.run(60000);
 
@@ -343,7 +359,7 @@ void graph_plays_as_it_renders() {
 void clock_never_goes_back() {
   const int64_t id = 9005;
   ad::Graph def(ad::kMixerRate);
-  def.output(def.add(ad::PartKind::Wave, {}, ad::Oscillator{ad::WaveKind::Sine}, 220, 0));
+  def.output(wave(def, ad::WaveKind::Sine, 220));
   ad::graph_defs().insert_or_assign(id, def);
 
   Device device(10000);
@@ -369,13 +385,12 @@ void bus_carries_a_graph() {
   const int64_t bus = 9401, writer = 9402, reader = 9403;
   ad::bus_defs()[bus] = std::make_shared<ad::Bus>(2);
   ad::Graph w(ad::kMixerRate);
-  int saw = w.add(ad::PartKind::Wave, {}, ad::Oscillator{ad::WaveKind::Saw}, 220, 0);
-  w.output(w.add(ad::PartKind::Filter, {saw}, ad::Svf(ad::FilterKind::Low, 0.9), 1500));
+  int saw = wave(w, ad::WaveKind::Saw, 220);
+  w.output(lowpass(w, saw, 1500, 0.9));
   ad::Graph r(ad::kMixerRate);
-  int left = r.add(ad::PartKind::Input, {}, ad::BusRead{ad::bus_defs()[bus], bus, 0});
-  int right = r.add(ad::PartKind::Input, {}, ad::BusRead{ad::bus_defs()[bus], bus, 1});
-  r.output(r.add(ad::PartKind::Gain, {left}, std::monostate{}, 0.5),
-           r.add(ad::PartKind::Gain, {right}, std::monostate{}, 0.25));
+  int left = input(r, bus, 0);
+  int right = input(r, bus, 1);
+  r.output(gain(r, left, 0.5), gain(r, right, 0.25));
   ad::graph_defs().insert_or_assign(writer, w);
   ad::graph_defs().insert_or_assign(reader, r);
 
@@ -438,13 +453,12 @@ void bus_carries_a_graph() {
 void loop_plays_as_it_renders() {
   const int64_t id = 9002;
   ad::Graph def(ad::kMixerRate);
-  int saw = def.add(ad::PartKind::Wave, {}, ad::Oscillator{ad::WaveKind::Saw}, 220, 0);
-  int mix = def.add(ad::PartKind::Gain, {saw}, std::monostate{}, 1.0);
-  int line = def.add(ad::PartKind::Delay, {mix}, ad::DelayLine(ad::kMixerRate + 1), 200.0 / ad::kMixerRate);
-  int lowpass = def.add(ad::PartKind::Filter, {line}, ad::Svf(ad::FilterKind::Low, 0.9), 2000);
-  int back = def.add(ad::PartKind::Gain, {lowpass}, std::monostate{}, 0.6);
+  int saw = wave(def, ad::WaveKind::Saw, 220);
+  int mix = gain(def, saw, 1.0);
+  int line = delay(def, mix, 200.0 / ad::kMixerRate);
+  int back = gain(def, lowpass(def, line, 2000, 0.9), 0.6);
   CHECK(def.connect(back, mix, -1), "a loop through a delay is refused");
-  int short_line = def.add(ad::PartKind::Delay, {back}, ad::DelayLine(ad::kMixerRate + 1), 37.0 / ad::kMixerRate);
+  int short_line = delay(def, back, 37.0 / ad::kMixerRate);
   CHECK(def.connect(short_line, short_line, -1), "a delay taking itself in is refused");
   CHECK(!def.connect(back, back, -1), "a gain taking itself in is not refused");
   def.output(mix);
@@ -472,10 +486,10 @@ void loop_plays_as_it_renders() {
 void stereo_graph_plays_as_it_renders() {
   const int64_t id = 9003;
   ad::Graph def(ad::kMixerRate);
-  int saw = def.add(ad::PartKind::Wave, {}, ad::Oscillator{ad::WaveKind::Saw}, 220, 0);
-  int left = def.add(ad::PartKind::Gain, {saw}, std::monostate{}, 0.3);
-  int sine = def.add(ad::PartKind::Wave, {}, ad::Oscillator{ad::WaveKind::Sine}, 330, 0);
-  int right = def.add(ad::PartKind::Gain, {sine}, std::monostate{}, 0.4);
+  int saw = wave(def, ad::WaveKind::Saw, 220);
+  int left = gain(def, saw, 0.3);
+  int sine = wave(def, ad::WaveKind::Sine, 330);
+  int right = gain(def, sine, 0.4);
   def.output(left, right);
   ad::graph_defs().insert_or_assign(id, def);
 
@@ -542,7 +556,7 @@ void many_play_at_once() {
   CHECK(device.heap_calls == 0, "40 songs: the renders made %ld heap calls", device.heap_calls);
   device.heap_calls = 0;
   ad::Graph def(ad::kMixerRate);
-  def.output(def.add(ad::PartKind::Wave, {}, ad::Oscillator{ad::WaveKind::Sine}, 330, 0));
+  def.output(wave(def, ad::WaveKind::Sine, 330));
   for (int64_t id = 9100; id < 9200; id++) {
     ad::graph_defs().insert_or_assign(id, def);
     play(engine, id);
@@ -701,9 +715,223 @@ void filled_while_it_renders() {
   CHECK(device.heap_calls == 0, "the renders made %ld heap calls", device.heap_calls);
 }
 
+// A definition written as numbers and made again from them (an engine on
+// another thread of a browser does) is the same graph: every family of part,
+// lines into what parts take in and into their values, a loop through a
+// delay, two outputs and each value's changes, a ramp and a cancel among
+// them, render the same samples; a graph that reads a bus writes the same
+// numbers again; and numbers cut short make none.
+void graph_travels_as_numbers() {
+  using F = ad::PartFamily;
+  ad::Graph g(ad::kMixerRate);
+  int saw = part(g, F::Wave, static_cast<int>(ad::WaveKind::Saw), {}, {110, 0.3, 0});
+  int noise = part(g, F::Noise, 0, {}, {7});
+  int band = part(g, F::Filter, static_cast<int>(ad::FilterKind::Band), {saw, noise}, {900, 2.0});
+  int ring = part(g, F::Resonate, 0, {band}, {0.2, 440, 8, 0.5, 1320, 20, 0.25});
+  int string = part(g, F::Pluck, 0, {part(g, F::Impulse, 0, {}, {2, 0.25})}, {220, 0.995});
+  int mix = part(g, F::Gain, 0, {ring, string}, {0.5});
+  int echo = part(g, F::Delay, 0, {mix}, {0.01});
+  CHECK(g.connect(part(g, F::Gain, 0, {echo}, {0.4}), mix, -1), "a loop through a delay is refused");
+  int wobble = part(g, F::LfNoise, static_cast<int>(ad::LfNoiseKind::Cubic), {}, {3, 11});
+  g.connect(part(g, F::Gain, 0, {wobble}, {200}), band, 0);
+  int dust = part(g, F::Dust, 0, {}, {30, 5});
+  int env = part(g, F::Decay, 0, {part(g, F::Lag, 0, {dust}, {0.01})}, {0.2});
+  int held = part(g, F::Latch, 0, {part(g, F::Round, 0, {wobble}, {0.25})}, {0});
+  g.connect(dust, held, 0);
+  int shaped = part(g, F::Math, static_cast<int>(ad::MathKind::Clip),
+                    {part(g, F::Drive, 0, {mix, env, held}, {2})}, {-0.8, 0.8});
+  int left = part(g, F::Limit, 0, {shaped}, {0.9, 0.05});
+  int right = part(g, F::Room, 0, {left}, {0.6, 0.4, 1});
+  g.output(left, right);
+  g.schedule(saw, 0, {0.05, false, 220});
+  g.schedule(saw, 0, {0.2, true, 330});
+  g.schedule(saw, 0, g.held(saw, 0, 0.1));
+  g.schedule(right, 0, {0.15, true, 0.9});
+
+  // The first `n` numbers of `xs` decoded, every one of them read.
+  auto decoded = [](const std::vector<double>& xs, size_t n) -> std::optional<ad::Graph> {
+    ad::NumberReader in(xs.data(), xs.data() + n);
+    auto made = ad::Graph::decode(in);
+    if (made && in.left() != 0) return std::nullopt;
+    return made;
+  };
+  std::vector<double> numbers;
+  g.encode(numbers);
+  auto again = decoded(numbers, numbers.size());
+  CHECK(again, "the numbers made no graph, or not all of them were read");
+  if (!again) return;
+  const int64_t n = 30000;
+  std::vector<double> l1(n), r1(n), l2(n), r2(n);
+  ad::Graph(g).render(l1.data(), r1.data(), n);
+  again->render(l2.data(), r2.data(), n);
+  CHECK(l1 == l2 && r1 == r2, "the graph made again renders other samples");
+
+  const int64_t bus = 9501;
+  ad::bus_defs()[bus] = std::make_shared<ad::Bus>(2);
+  ad::Graph reader(ad::kMixerRate);
+  reader.output(gain(reader, input(reader, bus, 1), 0.5));
+  std::vector<double> first, second;
+  reader.encode(first);
+  auto read_again = decoded(first, first.size());
+  CHECK(read_again, "a graph reading a bus made no graph");
+  if (read_again) read_again->encode(second);
+  CHECK(first == second, "a graph reading a bus writes other numbers again");
+  ad::bus_defs()[bus] = std::make_shared<ad::Bus>(1);
+  CHECK(!decoded(first, first.size()), "a graph reading the right of a bus of one was made");
+  ad::bus_defs().erase(bus);
+  CHECK(!decoded(first, first.size()), "a graph reading a bus freed was made");
+
+  for (size_t cut : {size_t{0}, size_t{3}, numbers.size() / 2, numbers.size() - 1})
+    CHECK(!decoded(numbers, cut), "%zu numbers of %zu made a graph", cut, numbers.size());
+  // The first part is the saw: [rate, out, right, parts, family, kind, options, ...].
+  auto bent = numbers;
+  bent[5] = 4;
+  CHECK(!decoded(bent, bent.size()), "a wave of no kind was made");
+  bent = numbers;
+  bent[6] = 2;
+  CHECK(!decoded(bent, bent.size()), "a wave of two options was made");
+}
+
+// An Engine sent its calls as numbers (audio_wire.h, as a browser's worker
+// sends them to its AudioWorklet) plays what one called directly plays,
+// sample for sample, each call made for the same stream sample: tones, a
+// song opened and filled, its volume and room, graphs into a bus and out of
+// it with changes while they play, and stops. A reset silences it, and the
+// stream's place carries on.
+void wire_plays_as_called() {
+  const int64_t bus = 9601, writer = 9602, reader = 9603, tune = 9604;
+  ad::bus_defs()[bus] = std::make_shared<ad::Bus>(2);
+  ad::Graph w(ad::kMixerRate);
+  int saw = wave(w, ad::WaveKind::Saw, 220);
+  w.output(lowpass(w, saw, 1500, 0.9));
+  ad::Graph r(ad::kMixerRate);
+  r.output(gain(r, input(r, bus, 0), 0.5), gain(r, input(r, bus, 1), 0.25));
+  ad::graph_defs().insert_or_assign(writer, w);
+  ad::graph_defs().insert_or_assign(reader, r);
+  auto rows = song_rows(1.0, 3);
+  auto pcm = song_pcm();
+  // The song as a worker sends it: opened, then its slots filled.
+  auto slotted = ad::slotted_rows(rows.data(), static_cast<int64_t>(rows.size()),
+                                  [&](int64_t handle) { return pcm.contains(handle); });
+
+  Device direct(200000);
+  ad::WireEngine far;
+  std::vector<float> far_left, far_right, buffer(2 * 3 * ad::kMixChunk);
+  std::mt19937 rng(99);
+  // Both rendered the same `frames`, in buffers of the same sizes.
+  auto run = [&](int64_t frames) {
+    std::uniform_int_distribution<unsigned> size(1, 3 * ad::kMixChunk);
+    while (frames > 0) {
+      unsigned n = static_cast<unsigned>(std::min<int64_t>(size(rng), frames));
+      direct.engine->render(buffer.data(), n);
+      for (unsigned i = 0; i < n; i++) {
+        direct.left.push_back(buffer[2 * i]);
+        direct.right.push_back(buffer[2 * i + 1]);
+      }
+      far.render(buffer.data(), n);
+      for (unsigned i = 0; i < n; i++) {
+        far_left.push_back(buffer[2 * i]);
+        far_right.push_back(buffer[2 * i + 1]);
+      }
+      frames -= n;
+    }
+  };
+  auto send = [&](const std::vector<double>& m, ad::Pcm samples = nullptr) {
+    CHECK(far.apply(m.data(), m.size(), std::move(samples)), "message %d was refused", static_cast<int>(m[0]));
+  };
+
+  run(3000);
+  int64_t at = direct.pos() + 100;
+  ad::Note note = ad::make_note(440, 660, 2000, 3000, 4000, 2000, 80, 100, 2);
+  direct.engine->tone(0, note, at);
+  send(ad::wire::tone(0, note, at));
+  ad::Note hiss = ad::make_note(800, 200, 0, 0, 3000, 3000, 50, 50, 0);
+  direct.engine->tone(ad::kNoise, hiss, at + 500);
+  send(ad::wire::tone(ad::kNoise, hiss, at + 500));
+  run(5000);
+
+  direct.engine->schedule_new(tune, song(rows, pcm, 1.0));
+  send(ad::wire::schedule_open(tune, slotted.rows.data(), static_cast<int64_t>(slotted.rows.size()),
+                               static_cast<int64_t>(slotted.handles.size()), 1.0, -1));
+  for (size_t k = 0; k < slotted.handles.size(); k++)
+    send(ad::wire::schedule_fill(tune, static_cast<int64_t>(k)), pcm.at(slotted.handles[k]));
+  direct.engine->schedule_volume(tune, 0.7);
+  send(ad::wire::schedule(ad::WireOp::ScheduleVolume, tune, 0.7));
+  direct.engine->schedule_room(tune, 0.3);
+  send(ad::wire::schedule(ad::WireOp::ScheduleRoom, tune, 0.3));
+  at = direct.pos() + 300;
+  direct.engine->schedule_play(tune, at);
+  send(ad::wire::schedule_play(tune, at));
+  run(8000);
+
+  at = direct.pos() + 50;
+  auto order = ad::graph_played(reader, 0, r.buses_read());
+  direct.engine->graph_play(reader, r, nullptr, *order, at);
+  send(ad::wire::graph_play(reader, 0, *order, at));
+  run(2000);
+  at = direct.pos() + 700;
+  order = ad::graph_played(writer, bus, w.buses_read());
+  direct.engine->graph_play(writer, w, ad::bus_defs().at(bus), *order, at);
+  send(ad::wire::graph_play(writer, bus, *order, at));
+  run(4000);
+  for (int k = 0; k < 2 * static_cast<int>(ad::kGraphLiveRoom); k++) {
+    ad::ParamEvent e{0.2 + 0.002 * k, k % 2 == 1, 200.0 + 3 * k};
+    direct.engine->graph_post(writer, saw, 0, e);
+    send(ad::wire::graph_post(writer, saw, 0, e));
+  }
+  run(30000);
+  direct.engine->graph_stop(writer);
+  send(ad::wire::graph_stop(writer));
+  direct.engine->schedule_stop(tune);
+  send(ad::wire::schedule(ad::WireOp::ScheduleStop, tune));
+  run(6000);
+  direct.engine->graph_stop(reader);
+  send(ad::wire::graph_stop(reader));
+  direct.engine->schedule_free(tune);
+  send(ad::wire::schedule(ad::WireOp::ScheduleFree, tune));
+  run(3000);
+
+  CHECK(differing(direct.left, far_left) == 0 && differing(direct.right, far_right) == 0,
+        "the far engine played %ld left and %ld right samples otherwise", differing(direct.left, far_left),
+        differing(direct.right, far_right));
+  CHECK(std::any_of(far_left.begin(), far_left.end(), [](float v) { return v != 0; }), "the far engine was silent");
+
+  // A reset lets go of what plays, and the stream's place carries on.
+  at = direct.pos();
+  send(ad::wire::tone(0, ad::make_note(440, 440, 0, 0, 40000, 0, 80, 80, 2), at));
+  run(1000);
+  // Where the far engine says the stream is.
+  auto place = [&] {
+    std::vector<double> status;
+    far.status(status);
+    return static_cast<long long>(status[0]);
+  };
+  long long before = place();
+  send(ad::wire::reset());
+  CHECK(place() == before, "a reset moved the stream from %lld to %lld", before, place());
+  size_t heard = far_left.size();
+  run(2000);
+  CHECK(std::all_of(far_left.begin() + static_cast<std::ptrdiff_t>(heard), far_left.end(),
+                    [](float v) { return v == 0; }),
+        "a tone sounds on after a reset");
+  CHECK(place() == before + 2000, "the stream is at %lld after a reset", place());
+  // A reset with a place takes it up: the stream is where the worker said,
+  // and as much further on as the wall clock moved before it came.
+  const auto anchored = ad::wire::reset(123456, 1000.0);
+  CHECK(far.apply(anchored.data(), anchored.size(), nullptr, 1500.0), "a reset with a place was refused");
+  CHECK(place() == 123456 + 22050, "a reset with a place put the stream at %lld", place());
+
+  ad::graphs_playing().clear();
+  ad::graph_defs().erase(writer);
+  ad::graph_defs().erase(reader);
+  ad::bus_defs().erase(bus);
+}
+
 }  // namespace
 
 int main() {
+  graph_travels_as_numbers();
+  wire_plays_as_called();
   schedule_plays_as_it_renders();
   room_left_is_the_room_it_was();
   tone_starts_when_asked();
