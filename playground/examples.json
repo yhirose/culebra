@@ -61,6 +61,7 @@
         { "title": "Tones and effects", "path": "examples/audio/tones.cul" },
         { "title": "A sample, built in memory", "path": "examples/audio/sound.cul" },
         { "title": "Canvas: Piano", "path": "examples/audio/piano.cul" },
+        { "title": "EWI: Synth Lead", "path": "examples/audio/ewi_lead.cul" },
         {
           "title": "Kauai: a song on recipe instruments",
           "path": "examples/kauai/play_recipes.cul",

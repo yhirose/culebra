@@ -205,6 +205,11 @@
           "assets": []
         },
         {
+          "title": "EWI: Synth Lead",
+          "path": "examples/audio/ewi_lead.cul",
+          "assets": []
+        },
+        {
           "title": "Kauai: a song on recipe instruments",
           "path": "examples/kauai/play_recipes.cul",
           "uses": [

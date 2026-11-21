@@ -1,0 +1,76 @@
+# A synth lead played from a wind controller (an EWI): the breath is how
+# loud it is and how bright, the last finger held is the note, and the bite's
+# bend bends it. A saw, a saw and a square an octave down and a narrow pulse,
+# through two lowpasses that open as the breath grows (a note from silence
+# starting duller and opening), warmed by a drive, with an echo and a room.
+# Stop to stop.
+let {*} = Synth
+
+# How long a change of finger slides to the new note while one sounds, and
+# how long the start of a note from silence takes to settle.
+let GLIDE = 0.04
+let OPEN = 0.08
+
+# The sound, its controls moved as the player plays. It sounds while a note
+# is down (the gate): the breath comes a moment before the note it starts,
+# and would sound the last note's pitch meanwhile.
+let freq = control("freq", 440.0) * control("bend", 1.0)
+let breath = control("breath", 0.0).lag(0.006)
+let gate = control("gate", 0.0).lag(0.01)
+let open = control("open", 1.0)
+# A soft breath already sounds: half of it is three quarters as loud.
+let push = breath * (-breath + 2.0)
+# Its oscillators sit on the note's own octaves: ones a little apart would
+# beat, and a held note would swell and fade.
+let body = saw(freq) * 0.45 +
+  saw(freq * 0.5) * 0.35 +
+  square(freq * 0.5) * 0.45 +
+  pulse(freq, 0.3) * 0.08
+let cutoff = push * (open * 1800.0 + 1200.0) + 250.0
+let dull = body.lowpass(cutoff, q: 1.0).lowpass(cutoff * 2.0)
+let tone = dull * push * gate * 0.45 |> drive(2.2)
+let lead = tone + tone.delay(0.3) * 0.1 |> reverb(0.18) |> limit(0.9)
+
+let ins = MIDI.inputs()
+if ins.empty() {
+  println("No MIDI input: plug in a wind controller (an EWI) and run again.")
+} else {
+  let winds = ins.filter(|p| p.name.lower().contains("ewi"))
+  let port = winds.empty() ? ins[0] : winds[0]
+  println("Playing from {port.name}")
+  let ewi = MIDI.Input(port.id)
+  let voice = lead |> play(wait: false)
+  mut held = []  # the notes down, the last one sounding
+  for m in ewi.messages() {
+    match m.kind {
+      # From silence a note starts on its pitch, dull, and opens; while one
+      # sounds, it slides.
+      "note_on" => {
+        if held.empty() {
+          voice.set("freq", hz(m.note))
+          voice.set("open", 0.0)
+          voice.set("open", 1.0, secs: OPEN)
+        } else {
+          voice.set("freq", hz(m.note), secs: GLIDE)
+        }
+        held = held.filter(|n| n != m.note)
+        held.push(m.note)
+        voice.set("gate", 1.0)
+      },
+      "note_off" => {
+        held = held.filter(|n| n != m.note)
+        if held.empty() {
+          voice.set("gate", 0.0)
+        } else {
+          voice.set("freq", hz(held[held.size() - 1]), secs: GLIDE)
+        }
+      },
+      # The breath at 14 bits where it is sent so (CC 2 with 34).
+      "cc" => {
+        voice.set("breath", ewi.control(2)) if m.cc == 2 || m.cc == 34
+      },
+      "bend" => voice.set("bend", 2.0 ** (m.bend * 2.0 / 12.0)),
+      _ => nil,
+    }
+  }
+}
