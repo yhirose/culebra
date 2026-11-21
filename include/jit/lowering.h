@@ -2290,6 +2290,8 @@ struct Lowering {
         }
         case Op::BMeth: {
           auto [line, col] = chunk_pos_at(c, i);
+          const BMethSpec& spec = bmeth_specs()[in.c];
+          const BMeth bid = spec.id;
           auto gate = load_slot(in.b);
           auto userBB = BasicBlock::Create(j.ctx_, "vbm.call", fn);
           auto biBB = BasicBlock::Create(j.ctx_, "vbm.builtin", fn);
@@ -2315,7 +2317,7 @@ struct Lowering {
 
           b.SetInsertPoint(userBB);
           // The shadowing user method: CallM's hand-off, one slot over.
-          b.CreateStore(emit_invoke(gate, in.b + 1, in.b + 2, in.d, line, col,
+          b.CreateStore(emit_invoke(gate, in.b + 1, in.b + 2, spec.argc, line, col,
                                     chunk_argpos_at(c, i)),
                         slots[in.a]);
           b.CreateBr(mergeBB);
@@ -2327,7 +2329,7 @@ struct Lowering {
           // them; the result is a fresh +1.
           auto recv = load_slot(in.b + 1);
           llvm::SmallVector<llvm::Value*, 2> argv;
-          for (int32_t k = 0; k < in.d; ++k)
+          for (int32_t k = 0; k < spec.nargs; ++k)
             argv.push_back(load_slot(in.b + 2 + k));
           auto arg = [&](int32_t k) { return argv[k]; };
           auto arr = [&] {
@@ -2342,8 +2344,7 @@ struct Lowering {
           // A non-Function callback reports at its own argument: publish the
           // site the runtime helper's check reads.
           if (int8_t cb =
-                  bmeth_callback_arg(static_cast<BMeth>(in.c),
-                                     static_cast<int8_t>(in.d));
+                  bmeth_callback_arg(bid, spec.nargs);
               cb >= 0) {
             if (const auto* ap = chunk_argpos_at(c, i);
                 ap && cb < static_cast<int8_t>(ap->size()))
@@ -2355,8 +2356,8 @@ struct Lowering {
           }
           // The consuming built-ins take the arguments off the registers
           // before the call, so the helper is their only owner from there on.
-          if (bmeth_consumes_args(static_cast<BMeth>(in.c)))
-            for (int32_t k = 0; k < in.d; ++k)
+          if (bmeth_consumes_args(bid))
+            for (int32_t k = 0; k < spec.nargs; ++k)
               b.CreateStore(j.make_nil(), slots[in.b + 2 + k]);
           auto cstr = [&](llvm::Value* v) {
             return j.emit_call(j.module_->getFunction(rt::strlike_to_cstr),
@@ -2376,7 +2377,7 @@ struct Lowering {
                                      "vbm.r");
           };
           llvm::Value* res = nullptr;
-          switch (static_cast<BMeth>(in.c)) {
+          switch (bid) {
             case BMeth::Size:
               res = j.make_long(j.emit_size_probe(recv, j.extract_tag(recv),
                                                   "vbm.size"));
@@ -2460,7 +2461,7 @@ struct Lowering {
               // rides straight into the Bool (the AST arms' own shape).
               res = j.make_bool(j.emit_call(
                   j.module_->getFunction(
-                      static_cast<BMeth>(in.c) == BMeth::StartsWith
+                      bid == BMeth::StartsWith
                           ? rt::str_starts_with
                           : rt::str_ends_with),
                   {cstr(recv), cstr(arg(0))}, "vbm.p"));
@@ -2498,7 +2499,7 @@ struct Lowering {
               // arm, joined through an entry-block alloca like the other
               // polymorphic ones. String/StringView is the default, which is
               // how the executor reads it too.
-              bool is_rev = static_cast<BMeth>(in.c) == BMeth::Reverse;
+              bool is_rev = bid == BMeth::Reverse;
               IRBuilder<> eb(&fn->getEntryBlock(), fn->getEntryBlock().begin());
               auto out = eb.CreateAlloca(j.valueType_, nullptr, "vbm.rio");
               auto arrBB = BasicBlock::Create(j.ctx_, "vbm.rio.arr", fn);
@@ -2594,7 +2595,7 @@ struct Lowering {
               res = j.make_bool(j.emit_call(
                   j.module_->getFunction(rt::str_is_class),
                   {cstr(recv),
-                   b.getInt64(bmeth_str_class(static_cast<BMeth>(in.c)))},
+                   b.getInt64(bmeth_str_class(bid))},
                   "vbm.isc"));
               break;
             case BMeth::Slice:
@@ -2603,7 +2604,7 @@ struct Lowering {
               // an entry-block alloca (this arm can sit inside a loop body).
               // String/StringView is the switch's default, the executor's own
               // reading. The gate proved the tag is one of the cases.
-              bool is_slice = static_cast<BMeth>(in.c) == BMeth::Slice;
+              bool is_slice = bid == BMeth::Slice;
               auto tagv = j.extract_tag(recv);
               IRBuilder<> eb(&fn->getEntryBlock(), fn->getEntryBlock().begin());
               auto out = eb.CreateAlloca(j.valueType_, nullptr, "vbm.poly");
@@ -2773,7 +2774,7 @@ struct Lowering {
             }
             case BMeth::Sum:
             case BMeth::Max: {
-              bool is_sum = static_cast<BMeth>(in.c) == BMeth::Sum;
+              bool is_sum = bid == BMeth::Sum;
               auto tagv = j.extract_tag(recv);
               IRBuilder<> eb(&fn->getEntryBlock(), fn->getEntryBlock().begin());
               auto out = eb.CreateAlloca(j.valueType_, nullptr, "vbm.sx");
@@ -2811,7 +2812,7 @@ struct Lowering {
             }
             case BMeth::Product:
             case BMeth::Min: {
-              bool is_product = static_cast<BMeth>(in.c) == BMeth::Product;
+              bool is_product = bid == BMeth::Product;
               auto tagv = j.extract_tag(recv);
               IRBuilder<> eb(&fn->getEntryBlock(), fn->getEntryBlock().begin());
               auto out = eb.CreateAlloca(j.valueType_, nullptr, "vbm.pn");
@@ -2899,7 +2900,7 @@ struct Lowering {
             case BMeth::Map:
             case BMeth::Filter:
             case BMeth::FlatMap: {
-              auto id = static_cast<BMeth>(in.c);
+              auto id = bid;
               const char* arrSym = id == BMeth::Map      ? rt::array_map
                                    : id == BMeth::Filter  ? rt::array_filter
                                                           : rt::array_flat_map;
@@ -2961,7 +2962,7 @@ struct Lowering {
             }
             case BMeth::AnyOf:
             case BMeth::All: {
-              bool is_any = static_cast<BMeth>(in.c) == BMeth::AnyOf;
+              bool is_any = bid == BMeth::AnyOf;
               auto tagv = j.extract_tag(recv);
               IRBuilder<> eb(&fn->getEntryBlock(), fn->getEntryBlock().begin());
               auto out = eb.CreateAlloca(j.valueType_, nullptr, "vbm.aa");
@@ -3029,7 +3030,7 @@ struct Lowering {
             }
             case BMeth::MinBy:
             case BMeth::MaxBy: {
-              bool is_min = static_cast<BMeth>(in.c) == BMeth::MinBy;
+              bool is_min = bid == BMeth::MinBy;
               auto tagv = j.extract_tag(recv);
               IRBuilder<> eb(&fn->getEntryBlock(), fn->getEntryBlock().begin());
               auto out = eb.CreateAlloca(j.valueType_, nullptr, "vbm.mb");
@@ -3089,7 +3090,7 @@ struct Lowering {
             }
             case BMeth::GroupBy:
             case BMeth::Partition: {
-              bool is_group_by = static_cast<BMeth>(in.c) == BMeth::GroupBy;
+              bool is_group_by = bid == BMeth::GroupBy;
               auto tagv = j.extract_tag(recv);
               IRBuilder<> eb(&fn->getEntryBlock(), fn->getEntryBlock().begin());
               auto out = eb.CreateAlloca(j.valueType_, nullptr, "vbm.gp");
@@ -3152,7 +3153,7 @@ struct Lowering {
               IRBuilder<> eb(&fn->getEntryBlock(), fn->getEntryBlock().begin());
               auto outTag = eb.CreateAlloca(b.getInt8Ty(), nullptr, "vbm.rt");
               auto outData = eb.CreateAlloca(i64Ty, nullptr, "vbm.rd");
-              if (static_cast<BMeth>(in.c) == BMeth::Pop) {
+              if (bid == BMeth::Pop) {
                 j.emit_call(
                     j.module_->getOrInsertFunction(rt::array_pop, b.getVoidTy(),
                                                    ptrTy, ptrTy, ptrTy),
@@ -3175,7 +3176,7 @@ struct Lowering {
             case BMeth::Intersect:
             case BMeth::Diff:
             case BMeth::SymDiff: {
-              auto id = static_cast<BMeth>(in.c);
+              auto id = bid;
               const char* rt_name = id == BMeth::Union       ? rt::set_union
                                     : id == BMeth::Intersect ? rt::set_intersect
                                     : id == BMeth::Diff      ? rt::set_diff
@@ -3188,7 +3189,7 @@ struct Lowering {
             }
             case BMeth::Subset:
             case BMeth::Superset: {
-              const char* rt_name = static_cast<BMeth>(in.c) == BMeth::Subset
+              const char* rt_name = bid == BMeth::Subset
                                         ? rt::set_subset
                                         : rt::set_superset;
               auto r = j.emit_call(
@@ -3203,7 +3204,7 @@ struct Lowering {
             // nils the slot above); `remove` only hashes it for lookup.
             case BMeth::Add:
             case BMeth::Remove: {
-              bool is_add = static_cast<BMeth>(in.c) == BMeth::Add;
+              bool is_add = bid == BMeth::Add;
               auto setArm = [&]() {
                 auto r = j.emit_call(
                     j.module_->getOrInsertFunction(
@@ -3435,7 +3436,7 @@ struct Lowering {
             case BMeth::Graphemes:
             case BMeth::Words:
             case BMeth::Sentences: {
-              auto id2 = static_cast<BMeth>(in.c);
+              auto id2 = bid;
               const char* sym = id2 == BMeth::CodePoints ? rt::str_code_points
                                 : id2 == BMeth::Bytes    ? rt::str_bytes
                                 : id2 == BMeth::Graphemes ? rt::str_graphemes
@@ -3476,7 +3477,7 @@ struct Lowering {
               break;
             case BMeth::ToObject:
             case BMeth::Unzip: {
-              bool to_object = static_cast<BMeth>(in.c) == BMeth::ToObject;
+              bool to_object = bid == BMeth::ToObject;
               auto tagv = j.extract_tag(recv);
               IRBuilder<> eb(&fn->getEntryBlock(), fn->getEntryBlock().begin());
               auto out = eb.CreateAlloca(j.valueType_, nullptr, "vbm.tou");
@@ -3520,7 +3521,7 @@ struct Lowering {
               // MethGate publish already covers the drive's protocol error.
               res = j.make_object(j.emit_call(
                   j.module_->getOrInsertFunction(
-                      static_cast<BMeth>(in.c) == BMeth::Take ? rt::iter_take
+                      bid == BMeth::Take ? rt::iter_take
                                                               : rt::iter_skip,
                       ptrTy, b.getInt8Ty(), i64Ty, i64Ty),
                   {j.extract_tag(recv), j.extract_data(recv),
@@ -3530,7 +3531,7 @@ struct Lowering {
             case BMeth::StepBy:
             case BMeth::Chunks:
             case BMeth::Windows: {
-              auto id2 = static_cast<BMeth>(in.c);
+              auto id2 = bid;
               const char* sym = id2 == BMeth::StepBy  ? rt::iter_step_by
                                 : id2 == BMeth::Chunks ? rt::iter_chunks
                                                        : rt::iter_windows;
@@ -3547,7 +3548,7 @@ struct Lowering {
             case BMeth::SkipWhile:
             case BMeth::Tap:
             case BMeth::ChunkBy: {
-              auto id2 = static_cast<BMeth>(in.c);
+              auto id2 = bid;
               const char* sym = id2 == BMeth::TakeWhile ? rt::iter_take_while
                                 : id2 == BMeth::SkipWhile
                                     ? rt::iter_skip_while
@@ -3583,7 +3584,7 @@ struct Lowering {
               // retains what it stores, so the slot keeps its own `+1`.
               res = j.make_object(j.emit_call(
                   j.module_->getOrInsertFunction(
-                      static_cast<BMeth>(in.c) == BMeth::Chain ? rt::iter_chain
+                      bid == BMeth::Chain ? rt::iter_chain
                                                                : rt::iter_zip,
                       ptrTy, b.getInt8Ty(), i64Ty, b.getInt8Ty(), i64Ty, i64Ty,
                       i64Ty),
@@ -3610,7 +3611,7 @@ struct Lowering {
             case BMeth::Position: {
               // An exhausted iterator answers nil, so the element's `+1`
               // arrives through out-params like Find's.
-              auto id2 = static_cast<BMeth>(in.c);
+              auto id2 = bid;
               IRBuilder<> eb(&fn->getEntryBlock(), fn->getEntryBlock().begin());
               auto outTag = eb.CreateAlloca(b.getInt8Ty(), nullptr, "vbm.io.t");
               auto outData = eb.CreateAlloca(i64Ty, nullptr, "vbm.io.d");
@@ -3672,7 +3673,7 @@ struct Lowering {
             case BMeth::TEq:
             case BMeth::TNe: {
               culebra::Op cmp_op;
-              switch (static_cast<BMeth>(in.c)) {
+              switch (bid) {
                 case BMeth::TGt: cmp_op = culebra::Op::Gt; break;
                 case BMeth::TLt: cmp_op = culebra::Op::Lt; break;
                 case BMeth::TGe: cmp_op = culebra::Op::Ge; break;
@@ -3708,7 +3709,7 @@ struct Lowering {
               break;
             case BMeth::CausalAttention:
             case BMeth::LayerNorm: {  // two Tensor params, a shape check
-              const bool attn = static_cast<BMeth>(in.c) == BMeth::CausalAttention;
+              const bool attn = bid == BMeth::CausalAttention;
               j.emit_set_op_pos();
               res = j.make_tensor(j.emit_call(
                   j.module_->getFunction(attn ? rt::tensor_causal_attention
@@ -3725,7 +3726,7 @@ struct Lowering {
             case BMeth::Backward:
             case BMeth::ZeroGrad:
             case BMeth::Detach: {
-              auto id2 = static_cast<BMeth>(in.c);
+              auto id2 = bid;
               const char* sym =
                   id2 == BMeth::Transpose      ? rt::tensor_transpose
                   : id2 == BMeth::Clone        ? rt::tensor_clone
@@ -3748,7 +3749,7 @@ struct Lowering {
               res = j.make_tensor(j.emit_call(
                   j.module_->getFunction(rt::tensor_unary),
                   {arr(),
-                   b.getInt64(bmeth_unary_op(static_cast<BMeth>(in.c)))},
+                   b.getInt64(bmeth_unary_op(bid))},
                   "vbm.tact"));
               break;
             case BMeth::Reshape:
@@ -3770,7 +3771,7 @@ struct Lowering {
               // `Long?` on all but argmax, so an explicit nil is the axis-less
               // reduction — one runtime test, the reading the interp's binder
               // gives it.
-              auto op = b.getInt64(bmeth_reduce_op(static_cast<BMeth>(in.c)));
+              auto op = b.getInt64(bmeth_reduce_op(bid));
               IRBuilder<> eb(&fn->getEntryBlock(), fn->getEntryBlock().begin());
               auto out = eb.CreateAlloca(j.valueType_, nullptr, "vbm.trd");
               auto allBB = BasicBlock::Create(j.ctx_, "vbm.trd.all", fn);

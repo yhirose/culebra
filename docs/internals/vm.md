@@ -1363,7 +1363,10 @@ are driven by one table, `bmeth_specs()`: one `BMethSpec` row per
 the optional trailing parameter's default, an optional keyword-only
 parameter, and an id. The compiler reads the receiver check and the
 parameter checks out of the row (`MethGate` → `ChkParam` → `BMeth`), and
-the executor and the lowering switch on the id. Which receiver resolves
+the executor and the lowering switch on the id. `BMeth` names the row:
+the built-in reads the row's arguments with the defaults filled in,
+while a receiver's own method of the same name gets only the `argc` the
+call wrote. Which receiver resolves
 a name at which arity decides between an `ArityError` and a method miss,
 so **a spec's receiver mask must equal the set of receivers that resolve
 that name at that arity** — everything outside the mask is answered as a

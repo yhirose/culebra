@@ -316,16 +316,17 @@ enum class Op : uint8_t {
                // BEFORE the arguments, where the interp's own check sits.
                // Positioned at the ARGUMENTS node, interp's anchor for every
                // count-based built-in ArityError.
-  BMeth,       // regs[a] = built-in method c over the run at b: regs[b] is
-               // MethGate's gate slot, regs[b+1] the receiver, and
-               // regs[b+2..b+2+d) the arguments — defaults already
-               // materialized, so d is the built-in's own arity. A gate slot
-               // holding anything but the sentinel is the shadowing user
-               // method, called through the JitFn ABI exactly as CallM does
-               // (consuming receiver and args; a non-Function there is the
-               // interp's "expected Function, got Long"). The built-in arm
-               // BORROWS the receiver and the arguments — the statement sweep
-               // stays their sole releaser — and yields a fresh +1.
+  BMeth,       // regs[a] = the built-in of spec row c over the run at b:
+               // regs[b] is MethGate's gate slot, regs[b+1] the receiver, and
+               // regs[b+2..) the row's nargs arguments — defaults already
+               // materialized. A gate slot holding anything but the sentinel
+               // is the shadowing user method, called through the JitFn ABI
+               // exactly as CallM does with only the row's argc arguments
+               // the call wrote (consuming receiver and those; a non-Function
+               // there is the interp's "expected Function, got Long"). The
+               // built-in arm BORROWS the receiver and the arguments — the
+               // statement sweep stays their sole releaser — and yields a
+               // fresh +1.
   PropRaw,     // regs[a] = the raw property view of prop_sites[c] on regs[b],
                // retained (+1) — the callee half of `x.m(...)`. Unlike
                // PropVal it neither binds `self` into a wrapper nor runs the
@@ -13610,8 +13611,8 @@ class Compiler {
                : kconst_str(spec.def));
     }
     int32_t t = alloc_temp(at);
-    size_t ix = emit(Op::BMeth, t, base, static_cast<int32_t>(spec.id),
-                     spec.nargs);
+    assert(argc == spec.argc && "the row is the one for the written arity");
+    size_t ix = emit(Op::BMeth, t, base, bmeth_spec_index(spec));
     record_call_name(ix, spec.name);
     // A user method shadowing the built-in name takes the gate slot and is
     // called from here, so this site publishes argument positions like any
@@ -17621,6 +17622,7 @@ struct Exec {
         do {
           [[maybe_unused]] const Insn& in = *ip;
           const JitValue& gate = regs[in.b];
+          const BMethSpec& spec = bmeth_specs()[in.c];
           auto [line, col] = chunk_pos_at(c, VM_PC);
           if (gate.tag == TAG_NO_SELF && gate.data == kBMethGateMiss)
             // the arguments have run by now
@@ -17634,21 +17636,21 @@ struct Exec {
             JitValue self = regs[in.b + 1];
             JitHeldMethod keep;
             JitValue target = dynamic_callee(gate, keep, &regs[in.b + 1], self,
-                                             in.d, line, col);
+                                             spec.argc, line, col);
             JitValue r;
             try {
               // Gate (regs[b]), receiver (regs[b+1]) and args (regs[b+2..],
               // nil'd only after the return) stay in this frame's registers
               // for the call's duration; invoke_dynamic says whether the
               // callee does too.
-              r = invoke_dynamic(target, keep, self, in.d,
-                                 in.d ? &regs[in.b + 2] : nullptr);
+              r = invoke_dynamic(target, keep, self, spec.argc,
+                                 spec.argc ? &regs[in.b + 2] : nullptr);
             } catch (...) {
-              for (int32_t i = 1; i <= in.d + 1; ++i)
+              for (int32_t i = 1; i <= spec.argc + 1; ++i)
                 regs[in.b + i] = JitValue{TAG_NIL, 0};
               throw;
             }
-            for (int32_t i = 1; i <= in.d + 1; ++i)
+            for (int32_t i = 1; i <= spec.argc + 1; ++i)
               regs[in.b + i] = JitValue{TAG_NIL, 0};
             regs[in.a] = r;
             ++ip;
@@ -17660,10 +17662,10 @@ struct Exec {
           // the arguments' `+1` are the exception: hand the values over and
           // nil the run first, so the helper is their only owner from the
           // call on (`array_insert` releases on its own throw edge).
-          auto id = static_cast<BMeth>(in.c);
+          auto id = spec.id;
           // A non-Function callback reports at its own argument: publish the
           // site the runtime helper's check reads.
-          if (int8_t cb = bmeth_callback_arg(id, static_cast<int8_t>(in.d));
+          if (int8_t cb = bmeth_callback_arg(id, spec.nargs);
               cb >= 0) {
             if (const auto* ap = chunk_argpos_at(c, VM_PC);
                 ap && cb < static_cast<int8_t>(ap->size()))
@@ -17672,7 +17674,7 @@ struct Exec {
           }
           bool consumes = bmeth_consumes_args(id);
           JitValue argv[2] = {JitValue{TAG_NIL, 0}, JitValue{TAG_NIL, 0}};
-          for (int32_t k = 0; consumes && k < in.d; ++k) {
+          for (int32_t k = 0; consumes && k < spec.nargs; ++k) {
             argv[k] = regs[in.b + 2 + k];
             regs[in.b + 2 + k] = JitValue{TAG_NIL, 0};
           }

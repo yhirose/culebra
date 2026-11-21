@@ -1293,7 +1293,9 @@ pinしないとtrial-deletionが「metaの参照数はインスタンスから�
 オプション引数のデフォルト、任意のkeyword-onlyパラメータ、idを
 持つ。コンパイラはこの行からreceiverの確認とパラメータチェックを
 読み取り（`MethGate` → `ChkParam` → `BMeth`）、executorとLLVM変換
-はidでswitchする。どのreceiverがどのarityでその名前を解決するかが
+はidでswitchする。`BMeth`は行を指す: 組み込みはデフォルトを埋めた
+行の引数を読み、同じ名前のreceiver自身のメソッドは呼び出しが書いた
+`argc`個だけを受け取る。どのreceiverがどのarityでその名前を解決するかが
 `ArityError`とメソッドmissのどちらになるかを決めるので、**specの
 receiverマスクはその名前・arityを解決するreceiverの集合と厳密に
 一致していなければならない** — マスクの外はすべてmissとして答え

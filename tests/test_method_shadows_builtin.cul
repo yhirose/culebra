@@ -57,4 +57,24 @@ xs.sort_by(fn (x) {
 })
 assert_eq(xs[0], 1)
 
+// a shadowing method receives the arguments the call wrote, not the defaults
+// the built-in of that name would have filled in
+class Rest {
+  max(*xs) {
+    xs
+  }
+  split(*xs) {
+    xs
+  }
+  truncate(*xs) {
+    xs
+  }
+}
+assert_eq(Rest().max(5), [5])
+assert_eq(Rest().split("a"), ["a"])
+assert_eq(Rest().truncate(3), [3])
+assert_eq({max: fn (*xs) { xs }}.max(5), [5])
+let ns = Math
+assert_eq([ns.max(5), Math?.max(5)], [Math.max(5), Math.max(5)])
+
 inspect("test_method_shadows_builtin: ok")
