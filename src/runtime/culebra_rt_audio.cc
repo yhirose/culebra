@@ -32,7 +32,7 @@
 #include "base/shared.h"
 #include "culebra_capture.h"
 #include "culebra_period.h"
-#include "midilib.h"
+#include "stdlib/midi_handles.h"
 #include "culebra_decode.h"
 #include "culebra_mixer_samples.h"
 #include "raudio.h"
@@ -58,15 +58,6 @@ bool audio_off() {
 
 bool g_ready = false;
 bool g_failed = false;  // latch: don't retry InitAudioDevice every call
-
-// The MIDI inputs and outputs open, by handle (see midi_open below).
-struct MidiIn {
-  MidiIn(const std::string& port, bool sysex) : input(port, 4096, sysex) {}
-  midilib::Input input;
-  midilib::Controls controls;
-};
-std::unordered_map<int64_t, MidiIn> g_midi;                // main thread
-std::unordered_map<int64_t, midilib::Output> g_midi_out;  // main thread
 
 void arm_exit_teardown();
 
@@ -327,8 +318,7 @@ void exit_teardown() {
   g_sounds.clear();
   g_streams.clear();
   g_captures.clear();
-  g_midi.clear();
-  g_midi_out.clear();
+  midi::close_all();
   if (g_capture_ready) {
     culebra_capture_shutdown();
     g_capture_ready = false;
@@ -377,86 +367,26 @@ double latency() { return g_ready ? culebra_period() : std::nan(""); }
 //
 // cpp-midilib takes each input's messages on the system's MIDI thread into a
 // queue of its own; the script reads them here, on its thread, which keeps
-// the controls they set. An output sends from the script's thread.
-// CULEBRA_AUDIO=off closes MIDI too: no inputs and no outputs.
+// the controls they set (stdlib/midi_handles.h, which a browser's backend
+// shares). An output sends from the script's thread. CULEBRA_AUDIO=off
+// closes MIDI too: no inputs and no outputs.
 
-// A backend that cannot start (no CoreMIDI client, in a sandbox) has no
-// ports, as CULEBRA_AUDIO=off has none.
 std::vector<std::string> midi_ports(bool output) {
-  std::vector<std::string> out;
-  if (audio_off()) return out;
-  try {
-    for (auto& p : output ? midilib::output_ports() : midilib::input_ports()) {
-      out.push_back(p.id);
-      out.push_back(p.name);
-    }
-  } catch (const midilib::Error&) {
-    out.clear();
-  }
-  return out;
+  return audio_off() ? std::vector<std::string>{} : midi::ports(output);
 }
-
 bool midi_open(int64_t id, const std::string& port, bool sysex) {
-  if (audio_off()) return false;
-  try {
-    g_midi.try_emplace(id, port, sysex);
-    return true;
-  } catch (const midilib::Error&) {
-    return false;
-  }
+  return !audio_off() && midi::open(id, port, sysex);
 }
-
-bool midi_out_open(int64_t id, const std::string& port) {
-  if (audio_off()) return false;
-  try {
-    g_midi_out.try_emplace(id, port);
-    return true;
-  } catch (const midilib::Error&) {
-    return false;
-  }
-}
-
-void midi_free(int64_t id) {
-  g_midi.erase(id);
-  g_midi_out.erase(id);
-}
-
-std::string midi_send(int64_t id, const std::vector<uint8_t>& bytes) {
-  auto* out = find_handle(g_midi_out, id);
-  if (!out) return "the output is closed";
-  try {
-    out->send(bytes);
-    return "";
-  } catch (const midilib::Error& e) {
-    return std::string(str_strip_prefix(e.what(), "midilib: "));
-  }
-}
-
-void midi_read(int64_t id, std::vector<double>& out) {
-  auto* in = find_handle(g_midi, id);
-  if (!in) return;
-  auto now = midilib::now_ns();
-  midilib::Message m;
-  while (in->input.poll(m)) {
-    double ago = static_cast<double>(now - m.time_ns) / 1e9;
-    if (m.kind() == midilib::Kind::sysex) {
-      out.insert(out.end(), {ago, 240.0, static_cast<double>(m.sysex.size()), 0.0, 0.0, 0.0});
-      out.insert(out.end(), m.sysex.begin(), m.sysex.end());
-      continue;
-    }
-    in->controls.apply(m);
-    bool on = m.kind() == midilib::Kind::note_on;
-    out.insert(out.end(), {ago, static_cast<double>(m.bytes[0]), static_cast<double>(m.bytes[1]),
-                           static_cast<double>(m.bytes[2]), static_cast<double>(m.size),
-                           on ? static_cast<double>(in->controls.velocity14(m.channel())) : 0.0});
-  }
-}
+bool midi_out_open(int64_t id, const std::string& port) { return !audio_off() && midi::open_output(id, port); }
+void midi_free(int64_t id) { midi::close(id); }
+std::string midi_send(int64_t id, const std::vector<uint8_t>& bytes) { return midi::send(id, bytes); }
+void midi_read(int64_t id, std::vector<double>& out) { midi::read(id, out); }
 
 // Waits in slices, so one Ctrl+C stops a program waiting for a note, as it
 // stops one waiting on a socket or a child process.
 bool midi_wait(int64_t id, double seconds) {
   using namespace std::chrono;
-  auto* in = find_handle(g_midi, id);
+  auto* in = midi::input(id);
   if (!in) return false;
   auto deadline = steady_clock::now() + duration_cast<nanoseconds>(duration<double>(seconds));
   for (;;) {
@@ -467,15 +397,8 @@ bool midi_wait(int64_t id, double seconds) {
   }
 }
 
-int64_t midi_control(int64_t id, int64_t channel, int64_t cc) {
-  auto* in = find_handle(g_midi, id);
-  return in ? in->controls.value14(static_cast<int>(channel), static_cast<int>(cc)) : 0;
-}
-
-int64_t midi_dropped(int64_t id) {
-  auto* in = find_handle(g_midi, id);
-  return in ? static_cast<int64_t>(in->input.dropped()) : 0;
-}
+int64_t midi_control(int64_t id, int64_t channel, int64_t cc) { return midi::control(id, channel, cc); }
+int64_t midi_dropped(int64_t id) { return midi::dropped(id); }
 
 void tone(int64_t start_freq, int64_t end_freq, int64_t attack, int64_t decay,
           int64_t sustain, int64_t release, int64_t vol, int64_t peak,
