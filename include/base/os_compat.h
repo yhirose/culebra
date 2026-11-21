@@ -68,6 +68,12 @@
 #include <unistd.h>   // isatty
 #endif
 
+#if defined(__APPLE__)
+#include <malloc/malloc.h>  // malloc_zone_pressure_relief
+#elif defined(__GLIBC__) || defined(_WIN32)
+#include <malloc.h>  // malloc_trim (glibc), _heapmin (Windows CRT)
+#endif
+
 namespace culebra {
 
 // `isatty(3)` — true when the fd refers to a terminal. Used by
@@ -136,6 +142,18 @@ inline const char* os_strptime(const char* s, const char* fmt, std::tm* tm) {
   return in.eof() ? s + std::strlen(s) : s + static_cast<std::streamoff>(in.tellg());
 #else
   return strptime(s, fmt, tm);
+#endif
+}
+
+// Hand the C heap's free pages back to the OS: glibc returns only the top of
+// its heap by itself. A no-op where the allocator has no such call.
+inline void os_release_free_heap() {
+#if defined(__APPLE__)
+  malloc_zone_pressure_relief(nullptr, 0);
+#elif defined(__GLIBC__)
+  malloc_trim(0);
+#elif defined(_WIN32)
+  _heapmin();
 #endif
 }
 

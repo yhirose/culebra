@@ -10,6 +10,7 @@
 #include <frontend/module_loader.h>  // LoadedModule — the embedding entries' argument
 #include <stdlib/preamble.h>  // baked_preambles — symbols every JITDylib defines
 #include <vm/script_teardown.h>  // ScriptTeardownGuard, at the end of exec()
+#include <base/os_compat.h>  // os_release_free_heap, once codegen is done
 
 #include <chrono>  // time_phase (CULEBRA_JIT_TIME_PASSES)
 #include <filesystem>  // the object cache's directory
@@ -5738,6 +5739,10 @@ struct JIT {
         cantFail(jit->lookup("__culebra_main")).toPtr<void (*)()>();
     if (time_passes()) reportAndResetTimings();
     time_phase("codegen", phase_t);
+    // The compile's memory is freed by now, but glibc returns only the top of
+    // its heap by itself: without this a long run goes on holding it (some
+    // 570 MB for a 3D game).
+    os_release_free_heap();
     // GAP5 detector fixture (debug/tests only): CULEBRA_GC_TEST_LEAK=1 mints
     // one orphaned +1 array before the program body runs, so the teardown
     // audit has a leak to fire on. Run it under CULEBRA_GC_NEVER=1, or a
