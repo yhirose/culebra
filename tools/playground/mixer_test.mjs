@@ -1,7 +1,8 @@
 // The Playground's mixer (site/playground/audio-engine.wasm, run by
 // audio-worklet.js on the page's audio thread) fed what the committed
 // Playground wasm sends it, as the page wires them: a graph played is the
-// graph the same program renders, sample for sample; a tone sounds; a Sound
+// graph the same program renders, sample for sample; on a mixer that came
+// up late, a graph keeps the program's time; a tone sounds; a Sound
 // decodes for a song; and a second run in the same instance plays as the
 // first did (what a run leaves playing is let go).
 //
@@ -33,8 +34,22 @@ const playground = await loadPlayground("basic");
 
 // One program run with the mixer's port: what it printed, and the mixer's
 // left and right over `frames` after every call but the run's last (the
-// reset that lets go of what it left playing).
-async function play(src, frames) {
+// reset that lets go of what it left playing). The mixer comes up after the
+// run, as late as the run took; with `still`, the wall clock stands still
+// meanwhile, so it is up in time.
+async function play(src, frames, { still = false } = {}) {
+  const wall = Date.now;
+  if (still) {
+    const at = wall();
+    Date.now = () => at;
+  }
+  try {
+    return await playWith(src, frames);
+  } finally {
+    Date.now = wall;
+  }
+}
+async function playWith(src, frames) {
   const sent = [];
   self.__audioPort = { postMessage: (m) => sent.push(m) };
   self.__audioStatus = null;
@@ -64,14 +79,15 @@ function check(ok, what) {
   }
 }
 
-// A graph played is the graph rendered, twice over in one instance.
+// A graph played on a mixer up in time is the graph rendered, twice over in
+// one instance.
 const graph = `let {saw, line, render, play} = Synth
 let sound = saw(220.0).lowpass(line(400.0, 2000.0, 0.5)) * 0.3
 println(JSON.stringify(render(sound, 0.5)))
 play(sound, wait: false)
 `;
 for (const time of ["first", "second"]) {
-  const { out, left, right } = await play(graph, 22050);
+  const { out, left, right } = await play(graph, 22050, { still: true });
   const want = JSON.parse(out).map((v) => Math.fround(Math.max(-1, Math.min(1, v))));
   const off = want.findIndex((v, i) => v !== left[i] || v !== right[i]);
   check(off < 0, `the ${time} run's graph plays otherwise than it renders, from sample ${off}`);
@@ -85,6 +101,19 @@ for (const time of ["first", "second"]) {
   await play("let {saw, play} = Synth\nplay(saw(220.0) * 0.2, secs: 0.3)\n", 128);
   const ms = performance.now() - t0;
   check(ms >= 250, `a sound of 0.3 s played to its end returned after ${Math.round(ms)} ms`);
+}
+
+// A mixer that comes up after a graph started (a page's first gesture comes
+// after its program began) plays the graph on the program's time: a change
+// for now sounds at once, not as late as the mixer was.
+{
+  const { left } = await play(`let {sine, control, play} = Synth
+let h = play(sine(440.0) * control("level", 0.0), wait: false)
+Time.sleep(0.5)
+h.set("level", 0.3)
+`, 8820);
+  const first = left.findIndex((v) => v !== 0);
+  check(first >= 0 && first < 441, `a change for now, on a mixer that came up late, sounds from sample ${first}, not at once`);
 }
 
 // A tone sounds, and is gone at the next run.
@@ -103,4 +132,4 @@ for (const time of ["first", "second"]) {
 }
 
 if (bad) process.exit(1);
-console.log("mixer OK (a graph played twice, a sound played to its end, a tone, a Sound decoded)");
+console.log("mixer OK (a graph played twice, a sound played to its end, a change on a mixer up late, a tone, a Sound decoded)");

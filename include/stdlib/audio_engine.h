@@ -886,6 +886,9 @@ class Engine {
       for (auto& cmd : graph_inbox_) {
         std::erase_if(graphs_, [&](const PlayingGraph& pg) { return pg.id == cmd.id; });
         if (!cmd.graph) continue;
+        // Its start already passed (a browser's mixer that came up after the
+        // worker started it): its time is still counted from that start.
+        if (cmd.start < pos_) cmd.graph->start_late(pos_ - cmd.start);
         assert(graphs_.size() < graphs_.capacity());  // LongerList's room
         graphs_.push_back(PlayingGraph{cmd.id, std::move(cmd.graph), cmd.start, cmd.instance, cmd.rank});
         moved = true;

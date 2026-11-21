@@ -353,6 +353,34 @@ void graph_plays_as_it_renders() {
   ad::graph_defs().erase(id);
 }
 
+// A graph whose start the stream has passed (a browser's mixer comes up
+// after the worker started it) reads the time since that start, as the
+// program reckons it: a change for a moment after now sounds then, not the
+// time it was late later.
+void late_graph_reads_its_start() {
+  const int64_t id = 9006;
+  const int64_t late = 5000, soon = 200;
+  ad::Graph def(ad::kMixerRate);
+  int g = gain(def, wave(def, ad::WaveKind::Sine, 440), 0.0);
+  def.output(g);
+  def.schedule(g, 0, ad::ParamEvent{static_cast<double>(late + soon) / ad::kMixerRate, false, 1.0, false});
+  ad::graph_defs().insert_or_assign(id, def);
+
+  Device device(20000);
+  device.run(8000);
+  const int64_t now = device.pos();
+  auto order = ad::graph_played(id, 0, def.buses_read());
+  device.engine->graph_play(id, def, nullptr, *order, now - late);
+  device.run(late + 2 * soon);
+  int64_t first = now;
+  while (first < device.pos() && device.left[static_cast<size_t>(first)] == 0) first++;
+  CHECK(first - now >= soon - 1 && first - now <= soon + 1,
+        "a graph started %lld samples late sounds %lld samples in, not %lld", static_cast<long long>(late),
+        static_cast<long long>(first - now), static_cast<long long>(soon));
+  stop(*device.engine, id);
+  ad::graph_defs().erase(id);
+}
+
 // The stream's clock never goes back. A buffer called back late dates the
 // stream behind where the clock had run on to; a graph started in that gap
 // still reads its own clock as 0 or more once the late buffer is in.
@@ -939,6 +967,7 @@ int main() {
   loop_plays_as_it_renders();
   stereo_graph_plays_as_it_renders();
   clock_never_goes_back();
+  late_graph_reads_its_start();
   bus_carries_a_graph();
   two_songs_on_both_channels();
   many_play_at_once();

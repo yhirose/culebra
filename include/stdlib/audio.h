@@ -2369,6 +2369,14 @@ class Graph {
 
   // The next `n` samples into `out`: the left, or the one output.
   void render(double* out, int64_t n) { render(out, nullptr, n); }
+  // A graph not yet rendered starts `elapsed` samples into its time, as one
+  // that began that long ago would read it: a stream that starts it late
+  // keeps it on the time its changes were dated by.
+  void start_late(int64_t elapsed) {
+    assert(pos_ == 0 && elapsed >= 0);
+    pos_ = elapsed;
+  }
+
   // The next `n` samples of each channel; `right` may be null. A graph with
   // one output answers it on both.
   void render(double* left, double* right, int64_t n) {
