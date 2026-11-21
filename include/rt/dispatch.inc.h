@@ -796,18 +796,19 @@ culebra_runtime_register_trait(const char* trait_name, const char* spec,
 // A dispatcher's registry record: its name, its overloads, and the
 // monomorphic shortcut. Each dispatcher owns its overload table — a
 // declaration's activation, an effects fork's copy and a message's rebuild
-// alike — so no two dispatchers can share one. With exactly one untyped
-// overload, that overload is the only method `multifn_pick` could ever
-// return, so a positional call its arity accepts skips resolution and invokes
-// it directly — the plain annotation-free `fn name`, on every call. `mono` is
+// alike — so no two dispatchers can share one. With exactly one overload, a
+// positional call its arity accepts — and, for an annotated one, its gate
+// admits — skips resolution and invokes it directly: the plain `fn name`, on
+// every call. `mono` is
 // non-owning and points into `methods` (the entry holds the body's +1);
 // refreshed by `_jit_multifn_refresh_mono` after each table mutation.
 struct JitMultifnDispatcher {
   std::string name;  // the source name, as diagnostics say it
   std::vector<JitMultiMethodEntry> methods;
   const JitMultiMethodEntry* mono = nullptr;
-  // The tags one positional parameter admits (none = any), per parameter,
-  // when `mono` is an annotated overload; empty when it needs no gate. See
+  // The tags one positional parameter admits, per parameter, when `mono` is
+  // an annotated overload (none: no annotation, or one no tag set decides,
+  // which the gate scores instead); empty when it needs no gate. See
   // _jit_multifn_refresh_mono and _jit_mono_admits.
   std::vector<CulebraTagSet> mono_tags;
 };
@@ -856,8 +857,8 @@ inline JitMultifnDispatcher* _jit_dispatcher_record(JitClosure* c);
 // is no `Array`, here as in the picker).
 // `Function` has no exact tags for the opposite reason — the scorer lets a
 // class instance with `__call__` match it, so the tag is not the whole answer.
-// Anything left out declines the shortcut and takes the picker, which is only
-// slower.
+// Anything left out is scored instead, as the picker scores it
+// (_jit_mono_admits).
 inline CulebraTagSet _jit_tags_exactly_matching(std::string_view annotation) {
   auto t = _culebra_type_tags(annotation);
   return t.exact && !t.has(TAG_OBJECT) ? t.set : 0;
@@ -867,12 +868,14 @@ inline CulebraTagSet _jit_tags_exactly_matching(std::string_view annotation) {
 // table entry holds the body's +1, and both are rewritten whenever it is.
 //
 // A lone overload with no annotations admits every call its arity accepts, so
-// the shortcut is unconditional. One whose annotations are all tag-exact keeps
-// the shortcut behind a gate (`mono_tags`) that the call site checks: matching
-// arguments reach the body, and everything else falls through to the picker,
-// which is what keeps a mismatch's DispatchError coming from where it always
-// came from. A defaulted, variadic or keyword-taking overload is left out —
-// then the arguments no longer line up one-to-one with the annotations.
+// the shortcut is unconditional. An annotated one keeps the shortcut behind a
+// gate that the call site checks — a tag test where the annotation's tags
+// decide it (`mono_tags`), the picker's own score where they do not:
+// matching arguments reach the body, and everything else
+// falls through to the picker, which is what keeps a mismatch's DispatchError
+// coming from where it always came from. A defaulted, variadic or
+// keyword-taking overload is left out — then the arguments no longer line up
+// one-to-one with the annotations.
 inline void _jit_multifn_refresh_mono(JitClosure* c) {
   auto* d = _jit_dispatcher_record(c);
   if (!d) return;
@@ -891,11 +894,6 @@ inline void _jit_multifn_refresh_mono(JitClosure* c) {
         for (const auto& t : m.param_types) {
           const CulebraTagSet tags =
               t.empty() ? 0 : _jit_tags_exactly_matching(t);
-          if (!t.empty() && !tags) {
-            d->mono = nullptr;
-            d->mono_tags.clear();
-            break;
-          }
           d->mono_tags.push_back(tags);
         }
       }
@@ -904,23 +902,6 @@ inline void _jit_multifn_refresh_mono(JitClosure* c) {
   c->captures[kMultifnMonoCapture]->value =
       d->mono ? JitValue{TAG_LONG, reinterpret_cast<int64_t>(d->mono->body)}
               : JitValue{TAG_NIL, 0};
-}
-
-// Do THESE arguments take the shortcut? An unannotated overload has no gate
-// and admits every call its arity accepts; an annotated one admits the
-// arguments whose tags match, and sends the rest to the picker, which is what
-// keeps a mismatch's DispatchError coming from where it always came from
-// (the body's own check reports a TypeError at the argument instead).
-inline bool _jit_mono_admits(const JitMultifnDispatcher& d, int64_t n_args,
-                             const JitValue* args) {
-  if (d.mono_tags.empty()) return true;
-  if (static_cast<size_t>(n_args) != d.mono_tags.size()) return false;
-  for (int64_t i = 0; i < n_args; ++i) {
-    const CulebraTagSet want = d.mono_tags[static_cast<size_t>(i)];
-    if (want && !_culebra_tag_set_has(want, static_cast<int8_t>(args[i].tag)))
-      return false;
-  }
-  return true;
 }
 
 // Non-owning body→dispatcher uplinks: the multifn self-recursion handle.
@@ -1507,6 +1488,32 @@ inline JitClosure* _jit_multifn_resolve(
         fail("ambiguous dispatch"), line, col);
   }
   return methods[static_cast<size_t>(pick)].body;
+}
+
+// Do THESE arguments take the shortcut? An unannotated overload has no gate
+// and admits every call its arity accepts; an annotated one admits the
+// arguments that match it as the picker would match them, and sends the rest
+// to the picker, which is what keeps a mismatch's DispatchError coming from
+// where it always came from (the body's own check reports a TypeError at the
+// argument instead). Declining is always safe — the picker decides — so the
+// gate needs no answer the picker would not give: a trait scores only from
+// the conformance cache the picker warms, and declines while it is cold.
+inline bool _jit_mono_admits(const JitMultifnDispatcher& d, int64_t n_args,
+                             const JitValue* args) {
+  if (d.mono_tags.empty()) return true;
+  if (static_cast<size_t>(n_args) != d.mono_tags.size()) return false;
+  for (size_t i = 0; i < d.mono_tags.size(); ++i) {
+    if (const CulebraTagSet want = d.mono_tags[i]) {
+      if (!_culebra_tag_set_has(want, static_cast<int8_t>(args[i].tag)))
+        return false;
+      continue;
+    }
+    const std::string& t = d.mono->param_types[i];
+    if (!t.empty() &&
+        culebra::multifn_specificity(t, _jit_value_arg_type(args[i])).tier < 0)
+      return false;
+  }
+  return true;
 }
 
 // JitFn-ABI shared thunk installed as `fn_ptr` on every multimethod

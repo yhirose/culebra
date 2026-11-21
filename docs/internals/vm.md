@@ -296,11 +296,16 @@ message and the policy for which position it reports — so both lanes
 report the same error because they call the same function.
 
 The multimethod registry resolves only when it has to. A dispatcher
-whose table holds exactly one untyped overload records that overload as
-a monomorphic shortcut (`JitMultifnDispatcher`, refreshed on every
-table mutation), and a positional call its arity accepts invokes it
-directly — the plain annotation-free `fn name`, which would otherwise
-pay type scoring and a trait walk to choose among one candidate.
+whose table holds exactly one overload records it as a monomorphic
+shortcut (`JitMultifnDispatcher`, refreshed on every table mutation),
+and a positional call its arity accepts invokes it directly — the plain
+`fn name`, which would otherwise pay type scoring and a trait walk to
+choose among one candidate. An annotated overload's shortcut is gated
+per argument: a tag test for a single built-in type name, the picker's
+own score for everything else (a class, a trait, a union, `Function`,
+`Object`, ...).
+A call the gate declines takes the picker, so a mismatch is still the
+picker's DispatchError rather than the body's TypeError.
 
 Helpers follow a small set of ownership contracts for the values they
 are handed (borrow, consume-on-every-exit, transfer); `memory.md` §4.3

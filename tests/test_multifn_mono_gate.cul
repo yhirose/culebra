@@ -3,8 +3,9 @@
 // carried an annotation, because the body's own entry check reports a
 // mismatch differently from the picker: `TypeError: parameter 'n' expects
 // Long` at the argument, against `DispatchError: no matching method` at the
-// call. The shortcut is now gated on the argument tags instead, so a matching
-// call takes it and everything else still goes to the picker.
+// call. The shortcut is now gated instead — on the argument tags where the
+// annotation's tags decide it, on the picker's own score where they do not —
+// so a matching call takes it and everything else still goes to the picker.
 //
 // What this file pins is that the gate is invisible. The two errors are told
 // apart by their message, so asserting the message is what catches a gate that
@@ -35,8 +36,8 @@ try {
 assert_eq(e2.kind, 'DispatchError')
 assert_eq(e2.message, 'no matching method for `only`')
 
-// --- annotations the gate cannot decide from a tag alone: all still dispatch,
-// because declining the shortcut only means taking the picker.
+// --- annotations no tag decides: the gate scores them as the picker does,
+// so they match what the picker matches and refuse what it refuses.
 
 // `Float` does not admit a Long, and the gate must not widen it.
 fn onlyf(x: Float) {
@@ -51,7 +52,7 @@ try {
 }
 assert_eq(e3.kind, 'DispatchError')
 
-// A class name: an Object tag says nothing about which class, so no gate.
+// A class name: an Object tag says nothing about which class.
 class Box {
   new(v) {
     self.v = v
@@ -70,7 +71,7 @@ try {
 assert_eq(e4.kind, 'DispatchError')
 
 // `Function` admits a class instance with `__call__`, so the tag is not the
-// whole answer and the gate has to stay out of it.
+// whole answer and the gate scores it as the picker does.
 class Callable {
   __call__(a) {
     a
@@ -151,3 +152,121 @@ assert_eq(b_(true), 'B')
 assert_eq(a_([1]), 'A')
 assert_eq(t_((1, 2)), 'T')
 assert_eq(n_(nil), 'N')
+
+// --- scored annotations: an argument the picker refuses is still its
+// DispatchError, however close it comes (another class, nil, a variant of the
+// wrong arm, an error of another kind).
+fn no_match(f) {
+  try {
+    f()
+    'ran'
+  } catch ex {
+    "{ex.kind}: {ex.message}"
+  }
+}
+class Other {}
+assert_eq(no_match(|| takesbox(Other())), 'DispatchError: no matching method for `takesbox`')
+assert_eq(no_match(|| takesbox(nil)), 'DispatchError: no matching method for `takesbox`')
+
+fn anyv(x: Any) {
+  'any'
+}
+assert_eq([anyv(nil), anyv(1), anyv(Box(1))], ['any', 'any', 'any'])
+
+fn objv(x: Object) {
+  'obj'
+}
+assert_eq([objv({a: 1}), objv(Box(1))], ['obj', 'obj'])
+assert_eq(no_match(|| objv(1)), 'DispatchError: no matching method for `objv`')
+
+// `Function` takes an instance the scorer cannot tell from a callable; the
+// body's check is what refuses it, as it was before the gate.
+assert_eq(no_match(|| takesfn(Other())), "TypeError: type error: parameter 'f' expects Function")
+
+fn boxlong(x: Box | Long) {
+  'boxlong'
+}
+assert_eq([boxlong(Box(1)), boxlong(2)], ['boxlong', 'boxlong'])
+assert_eq(no_match(|| boxlong('s')), 'DispatchError: no matching method for `boxlong`')
+
+fn optbox(x: Box?) {
+  'optbox'
+}
+assert_eq([optbox(nil), optbox(Box(1))], ['optbox', 'optbox'])
+assert_eq(no_match(|| optbox(1)), 'DispatchError: no matching method for `optbox`')
+
+enum Res { Ok(Any), Err(Any) }
+fn res(r: Res) {
+  'res'
+}
+fn okv(r: Ok) {
+  'ok'
+}
+fn qual(r: Res.Ok) {
+  'qual'
+}
+assert_eq([res(Res.Ok(1)), res(Res.Err(1)), okv(Res.Ok(1)), qual(Res.Ok(1))],
+  ['res', 'res', 'ok', 'qual'])
+assert_eq(no_match(|| res(1)), 'DispatchError: no matching method for `res`')
+assert_eq(no_match(|| okv(Res.Err(1))), 'DispatchError: no matching method for `okv`')
+assert_eq(no_match(|| qual(Res.Err(1))), 'DispatchError: no matching method for `qual`')
+
+let te = try {
+  1 + 'a'
+} catch ex {
+  ex
+}
+let ze = try {
+  1 / 0
+} catch ex {
+  ex
+}
+fn terr(e: TypeError) {
+  'terr'
+}
+assert_eq(terr(te), 'terr')
+assert_eq(no_match(|| terr(ze)), 'DispatchError: no matching method for `terr`')
+
+fn mixed(a: Box, b: Long) {
+  'mixed'
+}
+assert_eq(mixed(Box(1), 2), 'mixed')
+assert_eq(no_match(|| mixed(Box(1), 'x')), 'DispatchError: no matching method for `mixed`')
+assert_eq(no_match(|| mixed(Other(), 2)), 'DispatchError: no matching method for `mixed`')
+
+// A trait scores from a conformance cache the picker fills; while it is cold
+// the gate declines, so both answers stay the picker's.
+trait Named {
+  name()
+}
+class Named1 {
+  name() {
+    'n'
+  }
+}
+fn named(x: Named) {
+  'named'
+}
+assert_eq(named(Named1()), 'named')
+assert_eq(named(Named1()), 'named')  // the cache is warm now: the gate admits
+assert_eq(no_match(|| named(Other())), 'DispatchError: no matching method for `named`')
+
+// A name that becomes a trait after the first call: refused while it names
+// nothing, taken once the trait it names is declared.
+class Speaker {
+  speak() {
+    'hi'
+  }
+}
+fn talk(x: Talker) {
+  'talked'
+}
+assert_eq(no_match(|| talk(Speaker())), 'DispatchError: no matching method for `talk`')
+let declare_talker = fn () {
+  trait Talker {
+    speak()
+  }
+  nil
+}
+declare_talker()
+assert_eq(talk(Speaker()), 'talked')
