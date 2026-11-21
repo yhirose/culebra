@@ -10750,14 +10750,29 @@ class Compiler {
   // wrong arity, kwargs, the name as a value, a shadowing binding) takes the
   // generic NsGet + Call route and the runtime's own diagnostics.
   bool is_direct_global_call(const peg::Ast& ast, std::string_view name) {
-    using namespace peg::udl;
-    if (ast.nodes.size() != 2 || ast.nodes[0]->tag != "IDENTIFIER"_ ||
-        ast.nodes[0]->token != name || lookup_at(*ast.nodes[0]) ||
-        ast.nodes[1]->original_tag != "ARGUMENTS"_ ||
-        ast.nodes[1]->nodes.size() != 1)
+    if (!calls_stdlib(ast, name) || ast.nodes[1]->nodes.size() != 1)
       return false;
     const auto& a0 = *ast.nodes[1]->nodes[0];
     return !is_kwarg(a0) && !is_kwarg_splat(a0);
+  }
+
+  // `name(...)`, any argument list, whose callee is the stdlib's `name`.
+  bool calls_stdlib(const peg::Ast& ast, std::string_view name) {
+    using namespace peg::udl;
+    return ast.nodes.size() == 2 && ast.nodes[0]->tag == "IDENTIFIER"_ &&
+           ast.nodes[0]->token == name &&
+           ast.nodes[1]->original_tag == "ARGUMENTS"_ &&
+           names_stdlib(*ast.nodes[0]);
+  }
+
+  // Whether the bare name `head` is the stdlib's where it stands, settled at
+  // compile time — what every peephole that replaces a stdlib call asks.
+  // Nothing in scope may bind it, and no earlier input of the session may
+  // have declared it (an unresolved name on a line reads the session's cell
+  // first). A body compiled before a later line declares the name keeps the
+  // stdlib call it was compiled with.
+  bool names_stdlib(const peg::Ast& head) {
+    return !lookup_at(head) && !session_declared(head.token);
   }
 
   // `Ns.f(a, b)` at the head of a chain, `Ns` an unshadowed stdlib namespace
@@ -10779,7 +10794,7 @@ class Compiler {
     // The table first: every `x.m(args)` chain passes here, and the scope
     // walk and the resolver's string are only worth paying for a row.
     const NsFnSpec* spec = nsfn_lookup(head.token, post.token);
-    if (!spec || lookup_at(head) || !is_stdlib_namespace(head.token))
+    if (!spec || !names_stdlib(head) || !is_stdlib_namespace(head.token))
       return nullptr;
     const culebra::CanonSig* sig = nsfn_sig(*spec);
     if (!sig) return nullptr;
