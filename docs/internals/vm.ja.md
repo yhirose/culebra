@@ -283,11 +283,14 @@ monomorphicショートカットとして記録し（`JitMultifnDispatcher`、
 テーブル変更のたびに更新）、そのarityが受け付ける位置引数呼び出しは
 直接それを呼ぶ。素の`fn name`がこれに当たる。候補が1つしかない選択の
 ために型スコアリングとtrait走査を払っていた経路である。型注釈のある
-オーバーロードでは、引数ごとのゲートを通す: 組み込みの型名1つの注釈は
-タグの検査、それ以外（クラス、trait、union、`Function`、`Object`など）は
-picker自身のスコアで判定する。ゲートが断った呼び出しはpickerに回るので、型の
-合わない呼び出しは本体のTypeErrorではなく、これまでどおりpickerの
-DispatchErrorになる。
+オーバーロードでは、一度だけ解釈して覚えた注釈（`culebra::TypeAnnotation`）
+で引数ごとのゲートを通す: 注釈が名指す組み込み型のタグと、クラス名・列挙型名は、
+タグの検査とポインタの比較で決まる。それ以外（trait、`Enum.Variant`、
+`Function`の下の呼び出せるインスタンスなど）はpicker自身のスコアで判定する。
+ゲートが断った呼び出しはpickerに回るので、型の合わない呼び出しは本体の
+TypeErrorではなく、これまでどおりpickerのDispatchErrorになる。本体の入口の
+検査（`Op::ChkArg`、`Op::ChkTypeAt`）も`Chunk::type_sites`を通して同じ覚えた
+注釈を読み、型付きfieldの書き込みも同じものを読む。
 
 ヘルパーは渡される値について小さな所有権契約の集合（borrow、
 consume-on-every-exit、transfer）に従う。`memory.md` §4.3が一覧に
@@ -1329,7 +1332,7 @@ namespace closureのadapterが届いたであろうhelperへ1つのdispatch
 §10）ので、型は推測ではなく答えである。*スカラ*（`Float`・`Long`・
 `Bool`）は1つのtagで答える。それ以外の検査される注釈は
 `FieldType::Named`で、slotは書き込みを検査する注釈
-（`culebra::FieldAnnotation`）を持つが、1つのtagには決まらないので、読み
+（`culebra::TypeAnnotation`）を持つが、1つのtagには決まらないので、読み
 がそれに合わせてコンパイルされることはない。`Op::PropVal`はそれを`d`で運ぶ:
 受け手が「宣言クラスがそのfieldをスカラ型で宣言している名前」のとき、
 コンパイラがこれを埋める — クラスを名指す注釈を持つパラメータかローカル、

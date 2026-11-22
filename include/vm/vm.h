@@ -578,13 +578,13 @@ enum class Op : uint8_t {
                // Taken in the prologue: the body's own calls (and a default
                // expression's) overwrite the caller's position long before
                // the check runs.
-  ChkTypeAt,   // check regs[a] against the type consts[b] in the context
+  ChkTypeAt,   // check regs[a] against the type type_sites[b] in the context
                // consts[c] ("return value", "parameter 'x'"), reporting at
                // the position in regs[d] (PosSnap's snapshot) — or, with
                // d < 0, at this instruction's own position, which is what an
                // assignment's `x: T = e` annotation wants. The return check
                // is emitted before the frame's defers run, as the JIT's is.
-  ChkArg,      // check regs[a] against the declared type consts[b] for
+  ChkArg,      // check regs[a] against the declared type type_sites[b] for
                // parameter consts[c] at argument index d, resolving the
                // report position on the FAILURE path
                // (culebra_runtime_type_check_param: the argument's own
@@ -2734,6 +2734,9 @@ struct Chunk {
     mutable JitPropSetIC set;
   };
   std::vector<PropSite> prop_sites;
+  // The annotations ChkArg / ChkTypeAt check against (their `b`), interned
+  // when compiled; the lowering reads only the text.
+  std::vector<const culebra::TypeAnnotation*> type_sites;
   int32_t num_slots = 0;
   // Cell slots in creation order: a slot's rank, against a cleanup step's
   // `cells_before`, says whether it already owned a cell at that point in the
@@ -5953,6 +5956,15 @@ class Compiler {
         reinterpret_cast<const char*>(chunk_.consts[name_const(name)].data);
     chunk_.prop_sites.push_back({key, culebra::prop_key_kind(name), {}, {}});
     return static_cast<int32_t>(chunk_.prop_sites.size() - 1);
+  }
+
+  // The Chunk::type_sites row a check against `type` names (its `b`).
+  int32_t type_site(std::string_view type) {
+    const auto* a = culebra::shape_registry().intern_annotation(type);
+    auto& sites = chunk_.type_sites;
+    auto it = std::ranges::find(sites, a);
+    if (it == sites.end()) it = sites.insert(it, a);
+    return static_cast<int32_t>(it - sites.begin());
   }
 
   // Freeze what the runtime needs of the frame layout: the slot count, the
@@ -9269,7 +9281,7 @@ class Compiler {
       // against the lowered one — a Generic's unbounded `T` checks as Any.
       fc.chunk_.return_type = std::string(return_type);
       fc.ret_type_str_ = fc.lower_annotation(return_type);
-      fc.ret_type_ = fc.kconst_str(fc.ret_type_str_);
+      fc.ret_type_ = fc.type_site(fc.ret_type_str_);
       fc.ret_pos_slot_ = site;  // the same snapshot, when there is one
       if (site < 0) {
         fc.ret_pos_slot_ = fc.alloc_slot(ast, "(ret.pos)");
@@ -9495,7 +9507,7 @@ class Compiler {
         fc.patch_to_here(filled);
       }
       if (!pl.type.empty()) {
-        int32_t ty = fc.kconst_str(pl.type);
+        int32_t ty = fc.type_site(pl.type);
         int32_t ctx = fc.kconst_str(culebra::format("parameter '{}'", pl.name));
         std::vector<size_t> skip;
         fc.emit_type_check_gate(pl.type, pl.slot, skip);
@@ -14859,7 +14871,7 @@ class Compiler {
                        const std::string& context) {
     std::vector<size_t> skip;
     emit_type_check_gate(type, slot, skip);
-    emit(Op::ChkTypeAt, slot, kconst_str(type), kconst_str(context), -1);
+    emit(Op::ChkTypeAt, slot, type_site(type), kconst_str(context), -1);
     for (size_t ix : skip) patch_to_here(ix);
   }
 
@@ -15010,7 +15022,7 @@ class Compiler {
       {
         StampGuard fpos(*this, field);
         size_t skip = emit(Op::JumpIfTag, v.slot, 0, TAG_LONG);
-        emit(Op::ChkTypeAt, v.slot, kconst_str("Long"),
+        emit(Op::ChkTypeAt, v.slot, type_site("Long"),
              kconst_str(culebra::kSpecFieldContext), -1);
         patch_to_here(skip);
       }
@@ -18679,9 +18691,8 @@ struct Exec {
             col = pos.col;
           }
           const JitValue& v = regs[in.a];
-          culebra_runtime_type_check(
-              static_cast<int8_t>(v.tag), v.data,
-              reinterpret_cast<const char*>(c.consts[in.b].data),
+          _culebra_type_check(
+              *c.type_sites[in.b], static_cast<int8_t>(v.tag), v.data,
               reinterpret_cast<const char*>(c.consts[in.c].data), line, col);
           ++ip;
           break;
@@ -18692,9 +18703,8 @@ struct Exec {
           [[maybe_unused]] const Insn& in = *ip;
           auto [line, col] = chunk_pos_at(c, VM_PC);
           const JitValue& v = regs[in.a];
-          culebra_runtime_type_check_param(
-              static_cast<int8_t>(v.tag), v.data,
-              reinterpret_cast<const char*>(c.consts[in.b].data),
+          _culebra_type_check_param(
+              *c.type_sites[in.b], static_cast<int8_t>(v.tag), v.data,
               reinterpret_cast<const char*>(c.consts[in.c].data), in.d, line,
               col);
           ++ip;

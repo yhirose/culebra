@@ -270,3 +270,46 @@ let declare_talker = fn () {
 }
 declare_talker()
 assert_eq(talk(Speaker()), 'talked')
+
+// --- the interned annotation's own reading (culebra::TypeAnnotation): what
+// its tags and names settle must be what the picker and the entry check say.
+
+// Built-in alternatives only: a value outside them is refused outright.
+assert_eq(no_match(|| uni(1.5)), 'DispatchError: no matching method for `uni`')
+assert_eq(no_match(|| opt(1.5)), 'DispatchError: no matching method for `opt`')
+fn arrl(x: Array<Long>) {
+  'arrl'
+}
+assert_eq(arrl([1]), 'arrl')
+assert_eq(no_match(|| arrl((1, 2))), 'DispatchError: no matching method for `arrl`')
+
+// A function type takes a closure by its tag and a callable instance by the
+// text.
+fn apply1(f: fn(Long) -> Long) {
+  f(1)
+}
+assert_eq([apply1(|x| x + 1), apply1(Callable())], [2, 1])
+assert_eq(no_match(|| apply1(1)), 'DispatchError: no matching method for `apply1`')
+
+// An enum's name beside a built-in type, and a variant's name.
+fn reslong(x: Res | Long) {
+  'reslong'
+}
+assert_eq([reslong(Res.Err(1)), reslong(3)], ['reslong', 'reslong'])
+assert_eq(no_match(|| reslong(Box(1))), 'DispatchError: no matching method for `reslong`')
+fn okornil(x: Ok?) {
+  'okornil'
+}
+assert_eq([okornil(Res.Ok(1)), okornil(nil)], ['okornil', 'okornil'])
+assert_eq(no_match(|| okornil(Res.Err(1))), 'DispatchError: no matching method for `okornil`')
+
+// The checks that are not a gate's read the same annotation: a return value
+// and an assignment.
+fn made_box(v) -> Box? {
+  v
+}
+assert_eq(made_box(nil), nil)
+assert_eq(made_box(Box(1)).v, 1)
+assert_eq(no_match(|| made_box(Other())), 'TypeError: type error: return value expects Box?')
+assert_eq(no_match(fn () { let y: Box | Long = 'x' }),
+  'TypeError: type error: assignment expects Box | Long')

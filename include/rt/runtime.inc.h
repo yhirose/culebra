@@ -1671,13 +1671,50 @@ inline bool _culebra_value_matches_type(int8_t tag, int64_t data,
   return _culebra_type_matches_single(tag, data, expected);
 }
 
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_type_check(
-    int8_t tag, int64_t data, const char* expected, const char* context,
-    int64_t line, int64_t col) {
-  if (expected == nullptr || expected[0] == '\0') return;
-  if (_culebra_value_matches_type(tag, data, std::string_view(expected))) return;
+// The whole answer for an interned annotation: what its tags and names settle,
+// else the text. Agrees with _culebra_value_matches_type on every value.
+inline bool _culebra_annotation_admits(const culebra::TypeAnnotation& a,
+                                       int8_t tag, int64_t data) {
+  if (_culebra_annotation_takes(a, tag, data)) {
+    assert(_culebra_value_matches_type(tag, data, a.text) &&
+           "an annotation's tags or names admit what its text refuses");
+    return true;
+  }
+  if (a.exact) {
+    assert(!_culebra_value_matches_type(tag, data, a.text) &&
+           "an exact annotation refuses what its text admits");
+    return false;
+  }
+  return _culebra_value_matches_type(tag, data, a.text);
+}
+
+// A check site's interned annotation. The executor's sites are interned when
+// compiled; a lowered one cannot carry the address (an AOT binary is another
+// process), so it starts null and interns `text` on its first check.
+inline const culebra::TypeAnnotation& _culebra_site_annotation(
+    const culebra::TypeAnnotation** site, const char* text) {
+  std::atomic_ref<const culebra::TypeAnnotation*> ref(*site);
+  auto* a = ref.load(std::memory_order_acquire);
+  if (!a) {
+    a = culebra::shape_registry().intern_annotation(text);
+    ref.store(a, std::memory_order_release);
+  }
+  return *a;
+}
+
+inline void _culebra_type_check(const culebra::TypeAnnotation& a, int8_t tag,
+                                int64_t data, const char* context,
+                                int64_t line, int64_t col) {
+  if (_culebra_annotation_admits(a, tag, data)) return;
   throw culebra::CulebraError("TypeError", culebra::format(
-      "type error: {} expects {}", context, expected), line, col);
+      "type error: {} expects {}", context, a.text), line, col);
+}
+
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_type_check(
+    int8_t tag, int64_t data, const culebra::TypeAnnotation** site,
+    const char* expected, const char* context, int64_t line, int64_t col) {
+  _culebra_type_check(_culebra_site_annotation(site, expected), tag, data,
+                      context, line, col);
 }
 
 // Forward declaration — defined with the call-site thread-locals below.
@@ -1694,15 +1731,23 @@ CULEBRA_RT_KEEP int64_t culebra_runtime_param_pos(int64_t idx,
 // param — the pre-existing cost. Only valid while the thread-locals are
 // still the caller's; params at/after the first default snapshot eagerly
 // instead (see the prologue).
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_type_check_param(
-    int8_t tag, int64_t data, const char* expected, const char* context,
-    int64_t idx, int64_t def_line, int64_t def_col) {
-  if (expected == nullptr || expected[0] == '\0') return;
-  if (_culebra_value_matches_type(tag, data, std::string_view(expected))) return;
+inline void _culebra_type_check_param(const culebra::TypeAnnotation& a,
+                                      int8_t tag, int64_t data,
+                                      const char* context, int64_t idx,
+                                      int64_t def_line, int64_t def_col) {
+  if (_culebra_annotation_admits(a, tag, data)) return;
   auto pos = _jit_unpack_pos(culebra_runtime_param_pos(idx, def_line, def_col));
   throw culebra::CulebraError("TypeError", culebra::format(
-      "type error: {} expects {}", context, expected),
+      "type error: {} expects {}", context, a.text),
       pos.line, pos.col);
+}
+
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_type_check_param(
+    int8_t tag, int64_t data, const culebra::TypeAnnotation** site,
+    const char* expected, const char* context, int64_t idx, int64_t def_line,
+    int64_t def_col) {
+  _culebra_type_check_param(_culebra_site_annotation(site, expected), tag,
+                            data, context, idx, def_line, def_col);
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_div_zero(int64_t line,
@@ -4221,24 +4266,18 @@ inline culebra::FieldType _jit_field_type_of_tag(int8_t tag) {
 // Whether a value may be stored in a slot declared `t`, as far as that can be
 // told without parsing an annotation or asking a trait: a scalar by its tag,
 // and a Named slot (`annotation`) by nil — such a field's zero, so its `Car`
-// reads as `Car?` — or by the one type it names: a built-in type's tags, or a
-// class or enum its instance answers to. Never throws; false only means "not
-// settled here".
+// reads as `Car?` — or by what the annotation settles itself
+// (_culebra_annotation_takes). Never throws; false only means "not settled
+// here".
 inline bool _jit_value_surely_fits_field(
     int8_t tag, int64_t data, culebra::FieldType t,
-    const culebra::FieldAnnotation* annotation) {
+    const culebra::TypeAnnotation* annotation) {
   switch (t) {
     case culebra::FieldType::Float: return tag == TAG_FLOAT;
     case culebra::FieldType::Long: return tag == TAG_LONG;
     case culebra::FieldType::Bool: return tag == TAG_BOOL;
-    case culebra::FieldType::Named: {
-      if (tag == TAG_NIL || _culebra_tag_set_has(annotation->tags, tag))
-        return true;
-      if (tag != TAG_OBJECT || !annotation->name) return false;
-      auto* sp = _jit_meta_specials(reinterpret_cast<JitObject*>(data));
-      return sp && (sp->name == annotation->name ||
-                    sp->enum_name == annotation->name);
-    }
+    case culebra::FieldType::Named:
+      return tag == TAG_NIL || _culebra_annotation_takes(*annotation, tag, data);
     case culebra::FieldType::Any:
     case culebra::FieldType::Count: break;
   }
@@ -4248,17 +4287,17 @@ inline bool _jit_value_surely_fits_field(
 // The whole answer: a Named slot not settled above takes the parameter's rule.
 inline bool _jit_value_fits_field(int8_t tag, int64_t data,
                                   culebra::FieldType t,
-                                  const culebra::FieldAnnotation* annotation) {
+                                  const culebra::TypeAnnotation* annotation) {
   if (_jit_value_surely_fits_field(tag, data, t, annotation)) return true;
   return t == culebra::FieldType::Named &&
-         _culebra_value_matches_type(tag, data, annotation->text);
+         _culebra_annotation_admits(*annotation, tag, data);
 }
 
 // The one wording, so the write check and the read's reject cannot drift
 // apart — `tests/test_typed_fields.cul` pins the sentence.
 [[noreturn]] inline void _jit_throw_field_type(
     JitKeyName key, culebra::FieldType t,
-    const culebra::FieldAnnotation* annotation, int64_t line, int64_t col) {
+    const culebra::TypeAnnotation* annotation, int64_t line, int64_t col) {
   throw culebra::CulebraError(
       "TypeError",
       culebra::format("type error: field '{}' expects {}", key.view(),
@@ -4271,7 +4310,7 @@ inline bool _jit_value_fits_field(int8_t tag, int64_t data,
 // A write's check against the slot's declared type: a refused value is
 // released (the write owned it) and reported in the one wording.
 inline void _jit_check_field_write(JitKeyName key, culebra::FieldType t,
-                                   const culebra::FieldAnnotation* annotation,
+                                   const culebra::TypeAnnotation* annotation,
                                    int8_t tag, int64_t data, int64_t line,
                                    int64_t col) {
   if (_jit_value_fits_field(tag, data, t, annotation)) return;
@@ -4327,7 +4366,7 @@ template <bool kFromData = false>
 inline void _jit_object_set_declared(
     JitObject* obj, JitKeyName key, bool mut, int8_t tag, int64_t data,
     int64_t line, int64_t col, bool is_init, culebra::FieldType declared,
-    const culebra::FieldAnnotation* annotation = nullptr) {
+    const culebra::TypeAnnotation* annotation = nullptr) {
   if (auto* rec = _jit_record_view(obj))
     return _jit_packed_view_set(*rec, key, tag, data, line, col);
   if (obj->has_handle) _jit_handle_reject_write(obj, tag, data, line, col);

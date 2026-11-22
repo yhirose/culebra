@@ -4958,25 +4958,27 @@ struct Lowering {
             lineV = b.CreateLShr(packed, b.getInt64(32));
             colV = b.CreateAnd(packed, b.getInt64(0xffffffff));
           }
+          const auto& type = c.type_sites[in.b]->text;
           j.emit_call(
               j.module_->getOrInsertFunction(rt::type_check, b.getVoidTy(),
                                              b.getInt8Ty(), i64Ty, ptrTy,
-                                             ptrTy, i64Ty, i64Ty),
-              {j.extract_tag(v), j.extract_data(v),
-               vm_str_const(in.b, ".vm.chktype"),
+                                             ptrTy, ptrTy, i64Ty, i64Ty),
+              {j.extract_tag(v), j.extract_data(v), j.type_site_cache(type),
+               j.get_or_create_global_str(type, ".vm.chktype"),
                vm_str_const(in.c, ".vm.chkctx"), lineV, colV});
           break;
         }
         case Op::ChkArg: {
           auto [line, col] = chunk_pos_at(c, i);
           auto v = load_slot(in.a);
+          const auto& type = c.type_sites[in.b]->text;
           j.emit_call(
               j.module_->getOrInsertFunction(rt::type_check_param,
                                              b.getVoidTy(), b.getInt8Ty(),
-                                             i64Ty, ptrTy, ptrTy, i64Ty,
-                                             i64Ty, i64Ty),
-              {j.extract_tag(v), j.extract_data(v),
-               vm_str_const(in.b, ".vm.chktype"),
+                                             i64Ty, ptrTy, ptrTy, ptrTy,
+                                             i64Ty, i64Ty, i64Ty),
+              {j.extract_tag(v), j.extract_data(v), j.type_site_cache(type),
+               j.get_or_create_global_str(type, ".vm.chktype"),
                vm_str_const(in.c, ".vm.chkctx"), b.getInt64(in.d),
                b.getInt64(line), b.getInt64(col)});
           break;

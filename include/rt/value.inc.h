@@ -8,7 +8,7 @@
 // fragments rely on rt.h's #include block and are included by rt.h in a
 // fixed sequence (see rt.h); they are not standalone headers.
 
-// string.inc.h; declared here for FieldAnnotation's interned name.
+// string.inc.h; declared here for TypeAnnotation's interned name.
 inline const char* _intern_str(std::string_view s);
 
 // A set of JitValue tags, one bit per tag: every tag a type name can take
@@ -81,18 +81,24 @@ namespace culebra {
 // not hold for an Object used as a dictionary, whose keys come from data:
 // there the shape tree is quadratic in both directions, and such an object
 // flips to a per-object hash index instead (see `DictIndex` below).
-// A Named slot's annotation, interned (ShapeRegistry::intern_annotation), so
-// the pointer is its identity: the text a write is checked against, and what
-// settles the common write without parsing it. When the text names one type
-// (its Generic args aside): a built-in type's tags, which its own values carry
-// (`Function` also admits a callable instance, which the text settles); else
-// the class or enum name, interned as a class meta's names are (_intern_str),
-// so an instance answers to it exactly when one of its meta's names is this
-// pointer.
-struct FieldAnnotation {
+// An annotation, interned (ShapeRegistry::intern_annotation), so the pointer
+// is its identity: the text a Named slot's write, an annotated parameter's
+// entry check and a lone overload's gate are checked against, and what
+// settles the common value without parsing that text again. Each alternative
+// that names one type (a `T?` its `T` and Nil, Generic args aside) adds a
+// built-in type's tags, which its own values carry, or a class or enum name,
+// interned as a class meta's names are (_intern_str), so an instance answers
+// to it exactly when one of its meta's names is that pointer. The rest — a
+// trait, an error kind, `Enum.Variant`, a callable instance under `Function`
+// — the text decides (_culebra_annotation_admits).
+struct TypeAnnotation {
   std::string text;
-  CulebraTagSet tags = 0;      // a built-in type name's tags, else none
-  const char* name = nullptr;  // a class or enum name, else null
+  CulebraTagSet tags = 0;          // the built-in types' tags it names
+  std::vector<const char*> names;  // the class and enum names it names
+  bool any = false;                // the whole text is `Any` (or empty)
+  // Only `tags` can admit a value: every alternative is a built-in type
+  // whose tags are its whole answer, so a value outside them is refused.
+  bool exact = false;
 };
 
 struct Shape {
@@ -105,7 +111,7 @@ struct Shape {
   std::vector<uint8_t> types;
   // For a slot declared FieldType::Named, its annotation; null for every
   // other slot. Parallel to `types`.
-  std::vector<const FieldAnnotation*> annotations;
+  std::vector<const TypeAnnotation*> annotations;
   // The Shapes one property past this one, found by that property's name
   // and declared type (the last of each a child has): adding the same name
   // with a different declared type is a different Shape. Every isolate reads
@@ -132,15 +138,15 @@ struct Shape {
   std::vector<std::unique_ptr<Children>> child_tables;  // the last is current
 
   static size_t slot_of(std::string_view name, uint8_t type,
-                        const FieldAnnotation* annotation) {
+                        const TypeAnnotation* annotation) {
     return std::hash<std::string_view>{}(name) + type +
-           std::hash<const FieldAnnotation*>{}(annotation);
+           std::hash<const TypeAnnotation*>{}(annotation);
   }
   // The child that adds `name` declared `type` (with `annotation` when it is
   // Named), or null when there is none yet (or none this reader can see yet:
   // the writer looks again).
   Shape* child(std::string_view name, FieldType type,
-               const FieldAnnotation* annotation) const {
+               const TypeAnnotation* annotation) const {
     auto* table = children.load(std::memory_order_acquire);
     if (!table) return nullptr;
     auto t = static_cast<uint8_t>(type);
@@ -203,7 +209,7 @@ struct Shape {
                             : FieldType::Any;
   }
   // Slot `i`'s annotation when it is declared Named, else null.
-  const FieldAnnotation* annotation_at(size_t i) const {
+  const TypeAnnotation* annotation_at(size_t i) const {
     return i < annotations.size() ? annotations[i] : nullptr;
   }
   // Position of `name` in `slots`, or static_cast<size_t>(-1) if absent.
@@ -250,7 +256,7 @@ struct ShapeRegistry {
   // `annotation` is the slot's when `type` is Named (interned), else null.
   Shape* transition_add(Shape* current, std::string_view name,
                         FieldType type = FieldType::Any,
-                        const FieldAnnotation* annotation = nullptr) {
+                        const TypeAnnotation* annotation = nullptr) {
     if (auto* known = current->child(name, type, annotation)) return known;
     std::lock_guard<std::mutex> lk(mu_);
     if (auto* known = current->child(name, type, annotation)) return known;
@@ -294,7 +300,7 @@ struct ShapeRegistry {
   // as the Shapes that point at it: the pointer is what tells two Shapes'
   // declared types apart.
   // Defined after _culebra_type_tags, which it reads.
-  inline const FieldAnnotation* intern_annotation(std::string_view text);
+  inline const TypeAnnotation* intern_annotation(std::string_view text);
 
   ShapeRegistry()
       : root_(std::make_unique<Shape>()),
@@ -303,7 +309,7 @@ struct ShapeRegistry {
  private:
   // The child of `current` that adds `name`, made under `mu_`.
   Shape* mint(Shape* current, std::string_view name, FieldType type,
-              const FieldAnnotation* annotation) {
+              const TypeAnnotation* annotation) {
     auto next = std::make_unique<Shape>();
     next->names = current->names;
     next->names.push_back(std::string(name));
@@ -328,7 +334,7 @@ struct ShapeRegistry {
   std::unique_ptr<Shape> view_root_;
   std::vector<std::unique_ptr<Shape>> owned_;  // keeps non-root shapes alive
   std::atomic<size_t> data_shapes_{0};  // made by transition_keyed
-  std::map<std::string, FieldAnnotation, std::less<>> annotations_;  // nodes stay put
+  std::map<std::string, TypeAnnotation, std::less<>> annotations_;  // nodes stay put
 };
 
 inline ShapeRegistry& shape_registry() { return ShapeRegistry::instance(); }
@@ -1017,7 +1023,7 @@ struct JitObject {
   // turning 4 small heap allocations into one.
   size_t append_slot(JitKeyName key, JitValue value, bool mut,
                      culebra::FieldType type = culebra::FieldType::Any,
-                     const culebra::FieldAnnotation* annotation = nullptr) {
+                     const culebra::TypeAnnotation* annotation = nullptr) {
     if (is_dict) return append_dict(key, value, mut);
     if (!shape) shape = culebra::shape_registry().root();
     // A class instance keeps its proto in the shared storage, so it stays
@@ -1782,28 +1788,69 @@ static_assert(std::ranges::all_of(kCulebraBuiltinTypeTags, [](auto e) {
   return whole.empty() || _culebra_type_tags(whole).has(e.second);
 }), "a built-in type's supertype is a built-in type that takes its tag");
 
-inline const culebra::FieldAnnotation*
+inline const culebra::TypeAnnotation*
 culebra::ShapeRegistry::intern_annotation(std::string_view text) {
   std::lock_guard<std::mutex> lk(mu_);
   auto [it, fresh] = annotations_.try_emplace(std::string(text));
-  if (fresh) {
-    it->second.text = it->first;
-    auto name = text;  // a field's `T?` is its `T`: nil always passes
-    if (!name.empty() && name.back() == '?') name.remove_suffix(1);
-    name = culebra::parse_generic_head(name).outer;
+  if (!fresh) return &it->second;
+  auto& a = it->second;
+  a.text = it->first;
+  if (text.empty() || text == "Any") {
+    a.any = true;
+    return &a;
+  }
+  a.exact = true;
+  // One alternative, read in _culebra_type_matches_single's order, so what
+  // it settles here is what that function would answer.
+  auto add = [&](auto& self, std::string_view alt) -> void {
+    if (culebra::is_fn_type(alt)) {  // a callable instance also passes
+      a.tags |= _culebra_tag_bit(TAG_FUNC);
+      a.exact = false;
+      return;
+    }
+    if (culebra::has_toplevel_plus(alt)) {
+      a.exact = false;
+      return;
+    }
+    if (!alt.empty() && alt.back() == '?') {
+      a.tags |= _culebra_tag_bit(TAG_NIL);
+      self(self, alt.substr(0, alt.size() - 1));
+      return;
+    }
+    alt = culebra::parse_generic_head(alt).outer;
+    if (auto t = _culebra_type_tags(alt)) {
+      a.tags |= t.set;
+      if (!t.exact) a.exact = false;
+      return;
+    }
+    a.exact = false;
     bool plain =
-        !name.empty() && std::isupper(static_cast<unsigned char>(name[0]));
-    for (char c : name)
+        !alt.empty() && std::isupper(static_cast<unsigned char>(alt[0]));
+    for (char c : alt)
       if (!std::isalnum(static_cast<unsigned char>(c)) && c != '_')
         plain = false;
-    if (plain && name != "Any") {
-      if (auto t = _culebra_type_tags(name))
-        it->second.tags = t.set;
-      else
-        it->second.name = _intern_str(name);
-    }
+    if (plain) a.names.push_back(_intern_str(alt));
+  };
+  if (culebra::has_toplevel_pipe(text)) {
+    for (auto alt : culebra::split_union_types(text)) add(add, alt);
+  } else {
+    add(add, text);
   }
-  return &it->second;
+  return &a;
+}
+
+// Whether the annotation's tags or names admit the value. A refusal only
+// means "not settled here" unless the annotation is `exact`; the whole
+// answer is _culebra_annotation_admits. Never throws, takes no lock.
+inline bool _culebra_annotation_takes(const culebra::TypeAnnotation& a,
+                                      int8_t tag, int64_t data) {
+  if (a.any || _culebra_tag_set_has(a.tags, tag)) return true;
+  if (tag != TAG_OBJECT || a.names.empty()) return false;
+  auto* sp = _jit_meta_specials(reinterpret_cast<JitObject*>(data));
+  if (!sp) return false;
+  for (const char* n : a.names)
+    if (sp->name == n || sp->enum_name == n) return true;
+  return false;
 }
 
 // Forward decl: byte-view of a TAG_STRING or TAG_STRINGVIEW payload.

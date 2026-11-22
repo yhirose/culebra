@@ -818,11 +818,10 @@ struct JitMultifnDispatcher {
   std::string name;  // the source name, as diagnostics say it
   std::vector<JitMultiMethodEntry> methods;
   const JitMultiMethodEntry* mono = nullptr;
-  // The tags one positional parameter admits, per parameter, when `mono` is
-  // an annotated overload (none: no annotation, or one no tag set decides,
-  // which the gate scores instead); empty when it needs no gate. See
+  // Per positional parameter, the annotation `mono`'s gate checks it against
+  // (null: none, or `Any`); empty when no parameter needs one. See
   // _jit_multifn_refresh_mono and _jit_mono_admits.
-  std::vector<CulebraTagSet> mono_tags;
+  std::vector<const culebra::TypeAnnotation*> mono_annotations;
 };
 
 // Side table mapping a dispatcher closure pointer to its record, so the
@@ -859,30 +858,14 @@ extern "C++" {
 inline JitMultifnDispatcher* _jit_dispatcher_record(JitClosure* c);
 }
 
-// The tags whose values are exactly the ones satisfying this annotation, or
-// none when no tag test decides it. Used only for a lone overload, which the
-// picker returns for every argument list that matches it, so a tag test that
-// answers "does it match" stands in for the picker.
-//
-// The Object-side labels are left out on purpose: TAG_OBJECT reports a class
-// name, which is no annotation's tag (an instance of a class called `Array`
-// is no `Array`, here as in the picker).
-// `Function` has no exact tags for the opposite reason — the scorer lets a
-// class instance with `__call__` match it, so the tag is not the whole answer.
-// Anything left out is scored instead, as the picker scores it
-// (_jit_mono_admits).
-inline CulebraTagSet _jit_tags_exactly_matching(std::string_view annotation) {
-  auto t = _culebra_type_tags(annotation);
-  return t.exact && !t.has(TAG_OBJECT) ? t.set : 0;
-}
-
 // Recompute the shortcut and publish it. Both halves are non-owning: the
 // table entry holds the body's +1, and both are rewritten whenever it is.
 //
 // A lone overload with no annotations admits every call its arity accepts, so
 // the shortcut is unconditional. An annotated one keeps the shortcut behind a
-// gate that the call site checks — a tag test where the annotation's tags
-// decide it (`mono_tags`), the picker's own score where they do not:
+// gate that the call site checks against each interned annotation
+// (`mono_annotations`) — its tags and names where they settle it, the
+// picker's own score where they do not:
 // matching arguments reach the body, and everything else
 // falls through to the picker, which is what keeps a mismatch's DispatchError
 // coming from where it always came from. A defaulted, variadic or
@@ -892,11 +875,11 @@ inline void _jit_multifn_refresh_mono(JitClosure* c) {
   auto* d = _jit_dispatcher_record(c);
   if (!d) return;
   d->mono = nullptr;
-  d->mono_tags.clear();
+  d->mono_annotations.clear();
   if (d->methods.size() == 1) {
     const auto& m = d->methods.front();
     d->mono = &m;
-    bool annotated = false;
+    bool annotated = false, gated = false;
     for (const auto& t : m.param_types)
       if (!t.empty()) annotated = true;
     if (annotated) {
@@ -904,10 +887,13 @@ inline void _jit_multifn_refresh_mono(JitClosure* c) {
         d->mono = nullptr;
       } else {
         for (const auto& t : m.param_types) {
-          const CulebraTagSet tags =
-              t.empty() ? 0 : _jit_tags_exactly_matching(t);
-          d->mono_tags.push_back(tags);
+          const auto* a = t.empty() ? nullptr
+                                    : culebra::shape_registry().intern_annotation(t);
+          if (a && a->any) a = nullptr;
+          gated |= a != nullptr;
+          d->mono_annotations.push_back(a);
         }
+        if (!gated) d->mono_annotations.clear();
       }
     }
   }
@@ -1527,17 +1513,26 @@ inline JitClosure* _jit_multifn_resolve(
 // for an argument that answers for itself (ArgType::answers_itself).
 inline bool _jit_mono_admits(const JitMultifnDispatcher& d, int64_t n_args,
                              const JitValue* args) {
-  if (d.mono_tags.empty()) return true;
-  if (static_cast<size_t>(n_args) != d.mono_tags.size()) return false;
-  for (size_t i = 0; i < d.mono_tags.size(); ++i) {
-    if (const CulebraTagSet want = d.mono_tags[i]) {
-      if (!_culebra_tag_set_has(want, static_cast<int8_t>(args[i].tag)))
-        return false;
+  if (d.mono_annotations.empty()) return true;
+  if (static_cast<size_t>(n_args) != d.mono_annotations.size()) return false;
+  for (size_t i = 0; i < d.mono_annotations.size(); ++i) {
+    const auto* a = d.mono_annotations[i];
+    if (!a) continue;
+    const auto tag = static_cast<int8_t>(args[i].tag);
+    if (_culebra_annotation_takes(*a, tag, args[i].data)) {
+      assert(culebra::multifn_specificity(a->text, _jit_value_arg_type(args[i]))
+                     .tier >= 0 &&
+             "the gate admits what the picker refuses");
       continue;
     }
-    const std::string& t = d.mono->param_types[i];
-    if (!t.empty() &&
-        culebra::multifn_specificity(t, _jit_value_arg_type(args[i])).tier < 0)
+    if (a->exact) {
+      assert(culebra::multifn_specificity(a->text, _jit_value_arg_type(args[i]))
+                     .tier < 0 &&
+             "the gate refuses what the picker admits");
+      return false;
+    }
+    if (culebra::multifn_specificity(a->text, _jit_value_arg_type(args[i]))
+            .tier < 0)
       return false;
   }
   return true;
@@ -2112,12 +2107,12 @@ extern "C" CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_ufcs_takes(
   auto* cls =
       _jit_unwrap_bound_method(reinterpret_cast<JitClosure*>(cand_data));
   if (const auto* rec = _jit_dispatcher_record(cls)) {
-    // The lone overload — the plain `fn name` — asks no table, and one whose
-    // annotation's tags hold this very tag asks no matcher either.
+    // The lone overload — the plain `fn name` — asks no table, and its gate's
+    // interned annotation answers without reading the text when it can.
     if (const auto* m = rec->mono) {
-      if (!rec->mono_tags.empty() &&
-          _culebra_tag_set_has(rec->mono_tags[0], recv_tag))
-        return true;
+      if (!rec->mono_annotations.empty())
+        if (const auto* a = rec->mono_annotations[0])
+          return _culebra_annotation_admits(*a, recv_tag, recv_data);
       return m->param_types.empty() || takes(m->param_types[0]);
     }
     for (const auto& m : rec->methods)

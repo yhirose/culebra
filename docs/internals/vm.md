@@ -301,11 +301,15 @@ shortcut (`JitMultifnDispatcher`, refreshed on every table mutation),
 and a positional call its arity accepts invokes it directly — the plain
 `fn name`, which would otherwise pay type scoring and a trait walk to
 choose among one candidate. An annotated overload's shortcut is gated
-per argument: a tag test for a single built-in type name, the picker's
-own score for everything else (a class, a trait, a union, `Function`,
-`Object`, ...).
-A call the gate declines takes the picker, so a mismatch is still the
-picker's DispatchError rather than the body's TypeError.
+per argument on the annotation interned once (`culebra::TypeAnnotation`):
+the built-in types' tags and the class and enum names it names settle an
+argument with a tag test and a pointer compare, and the picker's own
+score settles the rest (a trait, `Enum.Variant`, a callable instance
+under `Function`, ...). A call the gate declines takes the picker, so a
+mismatch is still the picker's DispatchError rather than the body's
+TypeError. The body's entry check (`Op::ChkArg`, `Op::ChkTypeAt`) reads
+the same interned annotation, through `Chunk::type_sites`, and so does a
+typed field's write.
 
 Helpers follow a small set of ownership contracts for the values they
 are handed (borrow, consume-on-every-exit, transfer); `memory.md` §4.3
@@ -1402,7 +1406,7 @@ A class's declared field types are checked on every write
 (`docs/language.md` §10), so the type is an answer rather than a guess. A
 *scalar* one — `Float`, `Long`, `Bool` — answers with one tag; every other
 checked annotation is `FieldType::Named`, its slot carrying the annotation
-(`culebra::FieldAnnotation`) the write is checked against, which answers
+(`culebra::TypeAnnotation`) the write is checked against, which answers
 no one tag and so gives a read nothing to compile against.
 `Op::PropVal` carries it in `d`: the compiler fills it when the receiver
 is a name whose declared class declares that field with a scalar type —

@@ -1272,7 +1272,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_fields_init(
   size_t n_before = obj->slots.size();
   for (int64_t i = 0; i < n_keys; i++) {
     auto type = static_cast<culebra::FieldType>(types[i]);
-    const culebra::FieldAnnotation* annotation =
+    const culebra::TypeAnnotation* annotation =
         type == culebra::FieldType::Named
             ? culebra::shape_registry().intern_annotation(annotations[i])
             : nullptr;

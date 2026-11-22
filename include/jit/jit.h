@@ -1645,14 +1645,6 @@ struct JIT {
   size_t current_column_ = 0;
 
 
-  // Current function's declared return type (empty = unchecked). The token is
-  // owned by the AST, which outlives the compilation, so string_view is safe.
-  std::string_view current_return_type_;
-
-  // Where a return-value type error reports: the call site, resolved once in
-  // the prologue (interp's check_type reads the caller's line/column). Null
-  // when the function declares no return type. See emit_return_pos_snapshot.
-  std::pair<llvm::Value*, llvm::Value*> current_return_pos_{nullptr, nullptr};
 
   // Defer-stack mark recorded at the current function's entry. `return`
   // lowers `defer_run_to(this mark)` before emitting `ret` so the
@@ -2686,33 +2678,21 @@ struct JIT {
   }
 
 
-  // The declared return type's check, reported at the prologue-resolved
-  // call site. Shared by `return v` and the body's tail value.
-  void emit_return_type_check(llvm::Value* val) {
-    emit_type_check_at(val, current_return_type_, "return value",
-                       current_return_pos_.first, current_return_pos_.second);
-  }
-
-
-  // Core type-check emission with a runtime-computed report position —
-  // the user-fn prologue passes the per-call position snapshot (see
-  // culebra_runtime_param_pos) so a typed-param error points where the
-  // interp binder points, not at the baked def position.
-  void emit_type_check_at(llvm::Value* val, std::string_view expected_type,
-                          std::string_view context, llvm::Value* lineV,
-                          llvm::Value* colV) {
-    if (expected_type.empty() || expected_type == "Any") return;
-    auto ptrTy = llvm::PointerType::get(ctx_, 0);
-    auto tag = extract_tag(val);
-    auto data = extract_data(val);
-    auto expPtr = get_or_create_global_str(expected_type, ".tycheck.exp");
-    auto ctxPtr = get_or_create_global_str(context, ".tycheck.ctx");
-    emit_call(
-        module_->getOrInsertFunction(
-            rt::type_check, builder_.getVoidTy(),
-            builder_.getInt8Ty(), builder_.getInt64Ty(), ptrTy, ptrTy,
-            builder_.getInt64Ty(), builder_.getInt64Ty()),
-        {tag, data, expPtr, ctxPtr, lineV, colV});
+  // One type check site's cache of its interned annotation, shared by the
+  // module's checks against the same text: null until the first check
+  // fills it (_culebra_site_annotation), since no address survives into
+  // an AOT binary.
+  std::unordered_map<std::string, llvm::Constant*> type_site_cache_;
+  llvm::Constant* type_site_cache(std::string_view text) {
+    auto [it, fresh] = type_site_cache_.try_emplace(std::string(text));
+    if (fresh) {
+      auto ptrTy = llvm::PointerType::get(ctx_, 0);
+      it->second = new llvm::GlobalVariable(
+          *module_, ptrTy, /*isConstant=*/false,
+          llvm::GlobalValue::PrivateLinkage,
+          llvm::ConstantPointerNull::get(ptrTy), ".type.site");
+    }
+    return it->second;
   }
 
   // Cache of compile-time string constants to avoid duplicate globals per
@@ -2997,7 +2977,7 @@ struct JIT {
     module_->getOrInsertFunction(rt::safepoint, builder_.getVoidTy());
     module_->getOrInsertFunction(
         rt::type_check, builder_.getVoidTy(),
-        builder_.getInt8Ty(), builder_.getInt64Ty(), ptrTy, ptrTy,
+        builder_.getInt8Ty(), builder_.getInt64Ty(), ptrTy, ptrTy, ptrTy,
         builder_.getInt64Ty(), builder_.getInt64Ty());
     module_->getOrInsertFunction(rt::div_zero,
                                  builder_.getVoidTy(), builder_.getInt64Ty(),
