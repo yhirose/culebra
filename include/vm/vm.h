@@ -16548,11 +16548,15 @@ struct Exec {
 
   // Which closure a Reach::Mono site enters: the dispatcher's monomorphic
   // body, since a dispatcher's own captures are not the ones the body's
-  // frame reads. Nil where that shortcut is gone, and the site then takes
-  // the dynamic arm and its DispatchError.
-  static JitValue mono_callee(const JitValue& callee) {
-    auto* body =
-        _jit_dispatcher_mono_body(reinterpret_cast<JitClosure*>(callee.data));
+  // frame reads. Nil where that shortcut is gone — or, at a gated site
+  // (Reach::MonoGated), where its gate refuses these arguments — and the
+  // site then takes the dynamic arm and its DispatchError.
+  static JitValue mono_callee(const JitValue& callee, bool gated,
+                              const JitValue* args, int32_t argc) {
+    auto* dispatcher = reinterpret_cast<JitClosure*>(callee.data);
+    auto* body = _jit_dispatcher_mono_body(dispatcher);
+    if (body && gated && !culebra_runtime_mono_admits(dispatcher, argc, args))
+      body = nullptr;
     return body ? JitValue{TAG_FUNC, reinterpret_cast<int64_t>(body)}
                 : JitValue{TAG_NIL, 0};
   }
@@ -16570,13 +16574,10 @@ struct Exec {
       case Chunk::Reach::Direct:
         return true;
       case Chunk::Reach::Mono:
-        entered = mono_callee(callee);
-        return entered.tag == TAG_FUNC;
       case Chunk::Reach::MonoGated:
-        entered = mono_callee(callee);
-        return entered.tag == TAG_FUNC &&
-               culebra_runtime_mono_admits(
-                   reinterpret_cast<JitClosure*>(callee.data), argc, args);
+        entered = mono_callee(callee, tgt.reach == Chunk::Reach::MonoGated,
+                              args, argc);
+        return entered.tag == TAG_FUNC;
       case Chunk::Reach::Guarded:
         return call_target_holds(p, callee, tgt.chunk);
     }
