@@ -722,12 +722,15 @@ has one.
 **And a `fn name`.** A `fn name` binds a dispatcher, not a closure: its
 overloads live in the runtime's registry, so the body is not reachable
 from the call site at all. One shape makes it reachable anyway — a name
-the statement list declares exactly once, with no annotated parameter.
-Only a same-scope second declaration appends to a dispatcher's table
-(the `into` operand of `MultifnReg`), so such a table holds its one
-untyped entry for as long as the dispatcher lives, and that entry is
-the only method dispatch could ever pick. The compiler records it as
-`Known::chunk` with `via_mono` set, and marks the site `Reach::Mono`;
+the statement list declares exactly once. Only a same-scope second
+declaration appends to a dispatcher's table (the `into` operand of
+`MultifnReg`), so such a table holds its one entry for as long as the
+dispatcher lives, and that entry is the only method dispatch could ever
+pick. The compiler records it as `Known::chunk` with `via_mono` set,
+and marks the site `Reach::Mono` — or `Reach::MonoGated` when a
+parameter is annotated, whose site enters the body only for arguments the
+dispatcher's gate admits (`culebra_runtime_mono_admits`) and calls the
+dispatcher otherwise, so a mismatch is still the picker's `DispatchError`;
 the dispatcher carries that body in its second capture cell, rewritten
 whenever the table is. A resolved site reads it — three loads, no
 registry — and enters the named chunk with the body as the frame's

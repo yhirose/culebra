@@ -99,6 +99,11 @@ struct TypeAnnotation {
   // Only `tags` can admit a value: every alternative is a built-in type
   // whose tags are its whole answer, so a value outside them is refused.
   bool exact = false;
+  // Whether an annotation refuses anything: not `Any` (an unbounded
+  // Generic's lowered `T` included), and not left unwritten.
+  static constexpr bool checks_anything(std::string_view t) {
+    return !t.empty() && t != "Any";
+  }
 };
 
 struct Shape {
@@ -1795,7 +1800,7 @@ culebra::ShapeRegistry::intern_annotation(std::string_view text) {
   if (!fresh) return &it->second;
   auto& a = it->second;
   a.text = it->first;
-  if (text.empty() || text == "Any") {
+  if (!TypeAnnotation::checks_anything(text)) {
     a.any = true;
     return &a;
   }

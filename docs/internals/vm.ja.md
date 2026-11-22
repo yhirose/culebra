@@ -676,12 +676,15 @@ releaseビルドは何も払わない。
 **`fn name`の場合。** `fn name`が束縛するのはclosureではなくdispatcher
 であり、overloadはランタイムのregistryの中にあるので、body自体は呼び出し
 サイトから辿れない。それでも辿れる形が1つある — その文リストがちょうど
-1度だけ宣言し、どのパラメータにも注釈が無い名前である。dispatcherの
-テーブルに追記するのは同じスコープでの2度目の宣言だけ（`MultifnReg`の
-`into`オペランド）なので、この形のテーブルはdispatcherが生きている限り
-無注釈のエントリを1つ持ち続け、そのエントリはdispatchが選びうる唯一の
-メソッドである。コンパイラはこれを`Known::chunk`＋`via_mono`として記録し、
-サイトには`Reach::Mono`の印を付ける。dispatcherはそのbodyを2つ目のcapture
+1度だけ宣言する名前である。dispatcherのテーブルに追記するのは同じスコープ
+での2度目の宣言だけ（`MultifnReg`の`into`オペランド）なので、この形の
+テーブルはdispatcherが生きている限りエントリを1つ持ち続け、そのエントリは
+dispatchが選びうる唯一のメソッドである。コンパイラはこれを`Known::chunk`＋
+`via_mono`として記録し、サイトには`Reach::Mono`の印を付ける。注釈のある
+パラメータがあれば`Reach::MonoGated`で、そのサイトはdispatcherのゲートが
+通す引数（`culebra_runtime_mono_admits`）のときだけbodyに入り、それ以外は
+dispatcherを呼ぶので、型の合わない呼び出しはこれまでどおりpickerの
+`DispatchError`になる。dispatcherはそのbodyを2つ目のcapture
 cellに持ち、テーブルが書き換わるたびにこのcellも書き換わる。解決済み
 サイトはこのcellを読み（ロード3段で、registryは引かない）、bodyをフレームの
 closureとして、名指しされたchunkに入る。記録するのは唯一のoverloadが

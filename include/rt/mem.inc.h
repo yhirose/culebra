@@ -987,6 +987,7 @@ inline constexpr auto gen_ramp            = "culebra_runtime_gen_ramp";
 inline constexpr auto gen_resnap_site     = "culebra_runtime_gen_resnap_site";
 inline constexpr auto takes_drop_guard    = "culebra_runtime_takes_drop_guard";
 inline constexpr auto ufcs_takes          = "culebra_runtime_ufcs_takes";
+inline constexpr auto mono_admits         = "culebra_runtime_mono_admits";
 inline constexpr auto owned_hot           = "culebra_runtime_owned_hot";
 inline constexpr auto owned_scope_exit    = "culebra_runtime_owned_scope_exit";
 inline constexpr auto object_has          = "culebra_runtime_object_has";

@@ -1538,6 +1538,15 @@ inline bool _jit_mono_admits(const JitMultifnDispatcher& d, int64_t n_args,
   return true;
 }
 
+// The same question from a call site the compiler resolved to an annotated
+// lone overload (Chunk::Reach::MonoGated), which enters the body only on a
+// yes and otherwise calls the dispatcher as an unresolved site would.
+extern "C" CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_mono_admits(
+    JitClosure* dispatcher, int64_t n_args, const JitValue* args) {
+  const auto* rec = _jit_dispatcher_record(dispatcher);
+  return rec && _jit_mono_admits(*rec, n_args, args);
+}
+
 // JitFn-ABI shared thunk installed as `fn_ptr` on every multimethod
 // dispatcher closure. The `cls` identity (load-bearing comparison in
 // `culebra_runtime_call_with_kwargs` to intercept the kwargs path) leads

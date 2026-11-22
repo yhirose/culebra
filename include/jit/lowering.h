@@ -1033,10 +1033,12 @@ struct Lowering {
         switch (tgt.reach) {
           case Chunk::Reach::Direct:
             break;
-          case Chunk::Reach::Mono: {
+          case Chunk::Reach::Mono:
+          case Chunk::Reach::MonoGated: {
             // The code is static, but the closure the frame reads is the
             // dispatcher's monomorphic body, three loads away in its second
             // capture cell. A null payload means the shortcut is gone.
+            auto dispatcherPtr = clsPtr;
             auto caps = b.CreateLoad(
                 ptrTy, b.CreateStructGEP(j.closureType_, clsPtr, 3),
                 "mono.caps");
@@ -1053,6 +1055,28 @@ struct Lowering {
             holds = b.CreateICmpNE(body, b.getInt64(0));
             clsPtr = b.CreateIntToPtr(body, ptrTy);
             open_diamond();
+            if (tgt.reach == Chunk::Reach::MonoGated) {
+              // An annotated overload: these arguments must pass its gate.
+              auto gateBB = BasicBlock::Create(j.ctx_, "call.gate", fn);
+              b.CreateCondBr(holds, gateBB, dynBB);
+              b.SetInsertPoint(gateBB);
+              llvm::Value* argv = ConstantPointerNull::get(ptrTy);
+              if (argc > 0) {
+                IRBuilder<> eb(&fn->getEntryBlock(),
+                               fn->getEntryBlock().begin());
+                auto* arrTy = ArrayType::get(j.valueType_, argc);
+                argv = eb.CreateAlloca(arrTy, nullptr, "gate.args");
+                for (int32_t k = 0; k < argc; ++k)
+                  b.CreateStore(load_slot(argBase + k),
+                                b.CreateConstGEP2_64(arrTy, argv, 0,
+                                                     static_cast<uint64_t>(k)));
+              }
+              holds = j.emit_call(
+                  j.module_->getOrInsertFunction(rt::mono_admits,
+                                                 b.getInt1Ty(), ptrTy, i64Ty,
+                                                 ptrTy),
+                  {dispatcherPtr, b.getInt64(argc), argv}, "mono.admits");
+            }
             break;
           }
           case Chunk::Reach::Guarded: {
@@ -1086,7 +1110,7 @@ struct Lowering {
         auto fastBB = BasicBlock::Create(j.ctx_, "call.resolved", fn);
         b.CreateCondBr(holds, fastBB, dynBB);
         b.SetInsertPoint(fastBB);
-        if (tgt.reach != Chunk::Reach::Mono) emit_cap_check();
+        if (!Chunk::via_dispatcher(tgt.reach)) emit_cap_check();
         fastResult = emit_direct(tgt.chunk, clsPtr);
         fastEndBB = b.GetInsertBlock();
         b.CreateBr(mergeBB);

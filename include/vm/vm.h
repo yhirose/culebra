@@ -3005,7 +3005,14 @@ struct Chunk {
     // (Op::ClsSelf), which is this class only when the receiver is one of
     // its instances — a method value moved onto a foreign object is not.
     Guarded = 2,
+    // Mono for an annotated overload: the body is entered only for
+    // arguments its gate admits (culebra_runtime_mono_admits); the rest take
+    // the dynamic arm, whose picker raises the DispatchError.
+    MonoGated = 3,
   };
+  static constexpr bool via_dispatcher(Reach r) {
+    return r == Reach::Mono || r == Reach::MonoGated;
+  }
   struct CallTarget {
     int32_t chunk = -1;
     Reach reach = Reach::Direct;
@@ -5138,7 +5145,7 @@ class Compiler {
       // it borrows is the very one that binding owns.
       int32_t chunk = -1;
       // How that chunk is reached: a `fn name` binds a dispatcher, so its
-      // code is one indirection further — the chunk of the single untyped
+      // code is one indirection further — the chunk of the single
       // overload the table holds (grant_mono_chunk). At most one grant ever
       // lands on a binding, so the pair is the answer and its shape, not
       // two answers.
@@ -5762,11 +5769,11 @@ class Compiler {
   // this declaration's dispatcher (which is also why a `shadowed` fallback,
   // where it need not be, declines). What rules the table out from growing
   // is the caller's (Scope::sole_multifn); what rules out a second write to
-  // the cell is the same revocation grant_known_chunk relies on.
+  // the cell is the same revocation grant_known_chunk relies on. An annotated
+  // overload is granted too: its sites ask the dispatcher's gate before they
+  // enter (Chunk::Reach::MonoGated).
   void grant_mono_chunk(Binding& b, int32_t chunk) {
-    if (chunk < 0 || b.shadowed || !binding_writes_once(b) ||
-        !mono_eligible_chunk(chunk))
-      return;
+    if (chunk < 0 || b.shadowed || !binding_writes_once(b)) return;
     settle_callee(b, chunk, /*via_mono=*/true);
   }
 
@@ -5889,14 +5896,14 @@ class Compiler {
     return argc >= f.cb_min && (f.cb_max < 0 || argc <= f.cb_max);
   }
 
-  // Every regular parameter annotation-free — the shape `multifn_pick` can
-  // never be asked about, and so the shape a lone table entry is a
-  // monomorphic shortcut for (_jit_multifn_refresh_mono).
-  bool mono_eligible_chunk(int32_t chunk) const {
-    const Chunk& f = chunk_ref(chunk);
-    for (const auto& t : f.param_types)
-      if (!t.empty()) return false;
-    return true;
+  // How a site reaches a lone overload: through the gate when a parameter is
+  // annotated (_jit_multifn_refresh_mono gates the same ones), straight in
+  // when none is — the shape `multifn_pick` can never be asked about.
+  Chunk::Reach mono_reach(int32_t chunk) const {
+    for (const auto& t : chunk_ref(chunk).param_types)
+      if (culebra::TypeAnnotation::checks_anything(t))
+        return Chunk::Reach::MonoGated;
+    return Chunk::Reach::Mono;
   }
 
   // Record that the call at `ix` reaches a named chunk, under the cell its
@@ -5909,7 +5916,7 @@ class Compiler {
     // A dispatcher's body is reached only for the arities its one overload
     // accepts; every other count is the DispatchError the dynamic arm
     // raises, so those sites stay unresolved.
-    if (chunk >= 0 && target.reach == Chunk::Reach::Mono &&
+    if (chunk >= 0 && Chunk::via_dispatcher(target.reach) &&
         !mono_window_admits(chunk, argc))
       chunk = -1;
     if (chunk < 0 && !callee_in_cell) return;
@@ -9145,6 +9152,7 @@ class Compiler {
         bool optional = pv.default_value || pv.is_optional;
         fc.chunk_.param_has_default.push_back(optional ? 1 : 0);
         fc.chunk_.param_mut.push_back(pv.is_mut ? 1 : 0);
+        if (!culebra::TypeAnnotation::checks_anything(type)) type.clear();
         plans.push_back({p.get(), name, std::move(type), pv.default_value,
                          slot, abi, pv.is_mut, is_sink_name(name), optional,
                          pv.is_field});
@@ -9281,11 +9289,13 @@ class Compiler {
       // against the lowered one — a Generic's unbounded `T` checks as Any.
       fc.chunk_.return_type = std::string(return_type);
       fc.ret_type_str_ = fc.lower_annotation(return_type);
-      fc.ret_type_ = fc.type_site(fc.ret_type_str_);
-      fc.ret_pos_slot_ = site;  // the same snapshot, when there is one
-      if (site < 0) {
-        fc.ret_pos_slot_ = fc.alloc_slot(ast, "(ret.pos)");
-        fc.emit(Op::PosSnap, fc.ret_pos_slot_, fc.def_pos_const(ast), -1);
+      if (culebra::TypeAnnotation::checks_anything(fc.ret_type_str_)) {
+        fc.ret_type_ = fc.type_site(fc.ret_type_str_);
+        fc.ret_pos_slot_ = site;  // the same snapshot, when there is one
+        if (site < 0) {
+          fc.ret_pos_slot_ = fc.alloc_slot(ast, "(ret.pos)");
+          fc.emit(Op::PosSnap, fc.ret_pos_slot_, fc.def_pos_const(ast), -1);
+        }
       }
     }
     // The body's own name: delivered by the frame rather than captured —
@@ -12445,7 +12455,9 @@ class Compiler {
     const Binding* b = lookup_at(head);
     if (!b) return {};
     return {b->known.chunk, b->known.cell,
-            b->known.via_mono ? Chunk::Reach::Mono : Chunk::Reach::Direct};
+            b->known.via_mono && b->known.chunk >= 0
+                ? mono_reach(b->known.chunk)
+                : Chunk::Reach::Direct};
   }
 
   // What `Name.new(...)` reaches. A constructor arrives through the class
@@ -14869,6 +14881,7 @@ class Compiler {
   // the gate skips when the tag already matches, worded by `context`.
   void emit_type_check(std::string_view type, int32_t slot,
                        const std::string& context) {
+    if (!culebra::TypeAnnotation::checks_anything(type)) return;
     std::vector<size_t> skip;
     emit_type_check_gate(type, slot, skip);
     emit(Op::ChkTypeAt, slot, type_site(type), kconst_str(context), -1);
@@ -15542,9 +15555,10 @@ inline std::string dump(const Chunk& c) {
       if (t.chunk >= 0)
         out += culebra::format(
             "  -> chunk {}{}", t.chunk,
-            t.reach == Chunk::Reach::Mono      ? " (mono)"
-            : t.reach == Chunk::Reach::Guarded ? " (guarded)"
-                                               : "");
+            t.reach == Chunk::Reach::Mono        ? " (mono)"
+            : t.reach == Chunk::Reach::MonoGated ? " (mono, gated)"
+            : t.reach == Chunk::Reach::Guarded   ? " (guarded)"
+                                                 : "");
       if (t.callee_in_cell) out += "  [callee in cell]";
     }
     if (in.op == Op::NsCall)
@@ -16546,8 +16560,10 @@ struct Exec {
   // question — if it has one — came out yes. A `no` sends the site down the
   // dynamic arm it would have taken all along. Both Call and CallM ask here,
   // so a shape is never handled by one and ignored by the other.
+  // `args` are the positional arguments, which only a gated site reads.
   static bool resolved_entry(const VmProgram& p, Chunk::CallTarget tgt,
-                             const JitValue& callee, JitValue& entered) {
+                             const JitValue& callee, const JitValue* args,
+                             int32_t argc, JitValue& entered) {
     entered = callee;
     switch (tgt.reach) {
       case Chunk::Reach::Direct:
@@ -16555,6 +16571,11 @@ struct Exec {
       case Chunk::Reach::Mono:
         entered = mono_callee(callee);
         return entered.tag == TAG_FUNC;
+      case Chunk::Reach::MonoGated:
+        entered = mono_callee(callee);
+        return entered.tag == TAG_FUNC &&
+               culebra_runtime_mono_admits(
+                   reinterpret_cast<JitClosure*>(callee.data), argc, args);
       case Chunk::Reach::Guarded:
         return call_target_holds(p, callee, tgt.chunk);
     }
@@ -18138,7 +18159,8 @@ struct Exec {
           JitValue target = callee;
           JitValue self{TAG_NO_SELF, 0};
           if (JitValue entered;
-              tgt.chunk >= 0 && resolved_entry(p, tgt, callee, entered)) {
+              tgt.chunk >= 0 &&
+              resolved_entry(p, tgt, callee, &regs[in.c], in.d, entered)) {
             // The callee runs in this loop; BorrowWitness above then checks
             // nothing, and the fallback below is what it still covers.
             if (VmFrame* nf = enter_inline(p, f, tgt.chunk, entered, self,
@@ -18190,7 +18212,8 @@ struct Exec {
           JitValue self = regs[in.c];
           auto tgt = chunk_call_target_at(c, VM_PC);
           if (JitValue entered;
-              tgt.chunk >= 0 && resolved_entry(p, tgt, callee, entered)) {
+              tgt.chunk >= 0 && resolved_entry(p, tgt, callee, &regs[in.c + 1],
+                                               in.d, entered)) {
             if (VmFrame* nf =
                     enter_inline(p, f, tgt.chunk, entered, self, in.a, in.c,
                                  in.d + 1, in.d, line, col)) {

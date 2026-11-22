@@ -313,3 +313,24 @@ assert_eq(made_box(Box(1)).v, 1)
 assert_eq(no_match(|| made_box(Other())), 'TypeError: type error: return value expects Box?')
 assert_eq(no_match(fn () { let y: Box | Long = 'x' }),
   'TypeError: type error: assignment expects Box | Long')
+
+// --- a call the compiler resolved to an annotated lone overload enters the
+// body only past the gate (Reach::MonoGated): a recursive call, and one the
+// gate refuses from inside the body, which is still the picker's error.
+fn fact(n: Long) {
+  if n <= 1 {
+    1
+  } else {
+    n * fact(n - 1)
+  }
+}
+assert_eq(fact(10), 3628800)
+fn down(b: Box) {
+  if b.v > 1 {
+    down(Box(b.v - 1))
+  } else {
+    down(b.v - 1)
+  }
+}
+assert_eq(no_match(|| down(Box(3))), 'DispatchError: no matching method for `down`')
+assert_eq(no_match(|| fact('x')), 'DispatchError: no matching method for `fact`')
