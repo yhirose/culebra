@@ -5936,11 +5936,21 @@ class Compiler {
     return it->second;
   }
 
+  // A name op's constant, which the runtime reads as a C string: no NUL (a
+  // key holding one goes by value).
+  static bool nameable(std::string_view name) {
+    return name.find('\0') == std::string_view::npos;
+  }
+  int32_t name_const(std::string_view name) {
+    assert(nameable(name) && "a property name crosses the C ABI as a C string");
+    return kconst_str(name);
+  }
+
   // A fresh Chunk::PropSite for one property-access instruction to name
   // (its `c`): every instruction its own, so each keeps its own caches.
   int32_t prop_site(std::string_view name) {
     auto* key =
-        reinterpret_cast<const char*>(chunk_.consts[kconst_str(name)].data);
+        reinterpret_cast<const char*>(chunk_.consts[name_const(name)].data);
     chunk_.prop_sites.push_back({key, culebra::prop_key_kind(name), {}, {}});
     return static_cast<int32_t>(chunk_.prop_sites.size() - 1);
   }
@@ -6454,7 +6464,7 @@ class Compiler {
           patch_to_here(filled);
         }
         emit(Op::ObjectSet, chunk_.self_slot, v,
-             kconst_str(std::string(culebra::view_method(*f).name)),
+             name_const(std::string(culebra::view_method(*f).name)),
              /*mut=*/1);
         if (pf->optional) patch_to_here(skip);
       }
@@ -6488,7 +6498,7 @@ class Compiler {
       if (field_check(field_annotation(mv.type_annotation)).first !=
           culebra::FieldType::Any)
         emit_declared_field_layout({f});
-      emit(Op::ObjectSet, chunk_.self_slot, v, kconst_str(std::string(mv.name)),
+      emit(Op::ObjectSet, chunk_.self_slot, v, name_const(std::string(mv.name)),
            /*mut=*/1);
       if (pf->second.optional) patch_to_here(done);
     }
@@ -6512,7 +6522,7 @@ class Compiler {
     if (field_check(field_annotation(mv.type_annotation)).first !=
         culebra::FieldType::Any)
       emit_declared_field_layout({&f});
-    emit(Op::ObjectSet, chunk_.self_slot, v, kconst_str(std::string(mv.name)),
+    emit(Op::ObjectSet, chunk_.self_slot, v, name_const(std::string(mv.name)),
          /*mut=*/1);
     forget_temp(v);  // ObjectSet absorbed the +1
   }
@@ -8596,7 +8606,7 @@ class Compiler {
     // bind is deliberate — a static named `drop` is an ordinary function
     // here, so neither the well-known contract nor the drop registration
     // applies (the JIT's emit_bind_static).
-    emit(Op::BindStatic, cls, kconst_str("new"), owned_src(ast, {ctor, true}));
+    emit(Op::BindStatic, cls, name_const("new"), owned_src(ast, {ctor, true}));
     // The class's own name, so a class object reached through `class_of`
     // can say what it is (`type_of` of a class object is `Class`). Bound
     // before the statics, so a `static name` shadows it the way a static
@@ -8604,7 +8614,7 @@ class Compiler {
     {
       int32_t nm = alloc_temp(ast);
       emit(Op::LoadConst, nm, kconst_str(class_name));
-      emit(Op::BindStatic, cls, kconst_str("name"), nm);
+      emit(Op::BindStatic, cls, name_const("name"), nm);
       forget_temp(nm);
     }
     // Statics overload the same way, on their own dispatcher — the class
@@ -8612,12 +8622,12 @@ class Compiler {
     for (const auto& arms : group_overloads(static_names)) {
       int32_t t = alloc_temp(*static_asts[arms.front()]);
       emit_member_closure(t, arms, static_asts, static_chunks);
-      emit(Op::BindStatic, cls, kconst_str(static_names[arms.front()]),
+      emit(Op::BindStatic, cls, name_const(static_names[arms.front()]),
            owned_src(*static_asts[arms.front()], {t, true}));
     }
     for (size_t i = 0; i < static_fields.size(); i++) {
       emit(Op::BindStatic, cls,
-           kconst_str(std::string(culebra::view_method(*static_fields[i]).name)),
+           name_const(std::string(culebra::view_method(*static_fields[i]).name)),
            static_field_vals[i]);
       forget_temp(static_field_vals[i]);  // the slot absorbed the +1
     }
@@ -8636,7 +8646,7 @@ class Compiler {
       emit(Op::RegPack, kconst_str(class_name), kconst_str(spec), cls);
       int32_t marker = alloc_temp(ast);
       emit(Op::LoadConst, marker, kconst_str(class_name));
-      emit(Op::BindStatic, cls, kconst_str("__packable__"), marker);
+      emit(Op::BindStatic, cls, name_const("__packable__"), marker);
       forget_temp(marker);  // the slot absorbed the +1
     }
     // The name binds what the decorators return — the class object itself when
@@ -8731,7 +8741,7 @@ class Compiler {
       TempScope ts(*this);
       int32_t t = alloc_temp(m);
       emit(Op::MakeClosure, t, idx);
-      emit(Op::TraitDefault, name_k, kconst_str(std::string(tv.name)), t);
+      emit(Op::TraitDefault, name_k, name_const(std::string(tv.name)), t);
       forget_temp(t);  // the registry took the +1
     }
     emit(Op::TraitReg, name_k, kconst_str(spec.methods),
@@ -9726,7 +9736,7 @@ class Compiler {
     emit(Op::ObjectNew, obj);
     for_each_export(mod, [&](const peg::Ast& id) {
       auto v = compile_expr(id);
-      emit(Op::ObjectSet, obj, owned_src(id, v), kconst_str(id.token),
+      emit(Op::ObjectSet, obj, owned_src(id, v), name_const(id.token),
            /*mut=*/0);
     });
     emit(Op::ModReg, obj, kconst_str(std::string(mod.path)));
@@ -13113,7 +13123,7 @@ class Compiler {
     }
     if (known_tag == 0 && culebra::is_builtin_method_name(post.token)) {
       StampGuard pos(*this, post);  // the method name's own position
-      emit(Op::BareMethChk, t, recv.slot, kconst_str(post.token));
+      emit(Op::BareMethChk, t, recv.slot, name_const(post.token));
     }
     return {t, true};
   }
@@ -13412,7 +13422,7 @@ class Compiler {
     StampGuard pos(*this, at);
     int32_t out = alloc_temp(at);
     int32_t gate = alloc_temp(at);
-    emit(Op::HasProp, gate, recv.slot, kconst_str(post.token),
+    emit(Op::HasProp, gate, recv.slot, name_const(post.token),
          has_prop_gate_operand(post.token));
     size_t to_ufcs = emit(Op::JumpIfFalse, gate);
     // hit arm: the receiver resolves the name itself.
@@ -13511,7 +13521,7 @@ class Compiler {
     // A promoted body local of a lowering's state object is storage, not a
     // method: calling one passes no receiver, which is a run-time fact about
     // the receiver's proto, asked at this same point.
-    emit(Op::CallRecv, base, 0, kconst_str(post.token));
+    emit(Op::CallRecv, base, 0, name_const(post.token));
     for (int32_t i = 0; i < argc; i++)
       store_into(base + 1 + i, compile_expr(*args.nodes[i]),
                  /*dst_is_fresh=*/true);
@@ -14440,7 +14450,7 @@ class Compiler {
           int32_t t = alloc_temp(*pat.nodes[i]);
           fail.push_back(
               emit(Op::ObjGet, t, 0, subj,
-                   kconst_str(culebra::positional_field_name(i - 1))));
+                   name_const(culebra::positional_field_name(i - 1))));
           compile_pattern_bind(*pat.nodes[i], t, /*subj_owned=*/true, fail,
                                is_mut, declares);
         }
@@ -14464,7 +14474,7 @@ class Compiler {
             continue;
           auto key = object_entry_key(*entry);
           int32_t t = alloc_temp(*entry);
-          fail.push_back(emit(Op::ObjGet, t, 0, subj, kconst_str(key)));
+          fail.push_back(emit(Op::ObjGet, t, 0, subj, name_const(key)));
           if (sub)
             compile_pattern_bind(*sub, t, /*subj_owned=*/true, fail, is_mut,
                                  declares);
@@ -14756,7 +14766,7 @@ class Compiler {
     for (size_t i = 1; i < pat.nodes.size(); i++) {
       int32_t t = alloc_temp(*pat.nodes[i]);
       fail.push_back(emit(Op::ObjGet, t, 0, subj,
-                          kconst_str(culebra::positional_field_name(i - 1))));
+                          name_const(culebra::positional_field_name(i - 1))));
       if (pattern_has_test(*pat.nodes[i]))
         compile_pattern_test(*pat.nodes[i], t, fail);
     }
@@ -14797,7 +14807,7 @@ class Compiler {
       const peg::Ast* sub = full ? entry->nodes[1].get() : nullptr;
       auto key = object_entry_key(*entry);
       int32_t t = alloc_temp(*entry);
-      fail.push_back(emit(Op::ObjGet, t, 0, subj, kconst_str(key)));
+      fail.push_back(emit(Op::ObjGet, t, 0, subj, name_const(key)));
       if (sub && pattern_has_test(*sub)) compile_pattern_test(*sub, t, fail);
     }
   }
@@ -15124,7 +15134,7 @@ class Compiler {
           for (const auto& prop : ast.nodes) {
             auto key = culebra::view_object_property(*prop).key->token;
             auto* data = reinterpret_cast<const char*>(
-                chunk_.consts[kconst_str(key)].data);
+                chunk_.consts[name_const(key)].data);
             // Dedup in first-occurrence order — matches the shape a
             // duplicate key would transition to via sequential appends
             // (find_slot hits the first one, later ObjectSets overwrite it).
@@ -15154,10 +15164,13 @@ class Compiler {
           auto pv = culebra::view_object_property(*prop);
           // A String key spelled whole ('k', `k`, "k") is a name the program
           // wrote, as an IDENTIFIER is, and is stored as one: by name, so
-          // its layout is never one budgeted for keys from data.
+          // its layout is never one budgeted for keys from data. Not one
+          // holding a NUL: a name crosses the C ABI as a C string, so such a
+          // key goes by value, whose bytes keep their length.
           std::string name(pv.key->token);
           bool named = pv.key->tag == "IDENTIFIER"_ ||
-                       culebra::_ast_literal_string(*pv.key, name);
+                       (culebra::_ast_literal_string(*pv.key, name) &&
+                        nameable(name));
           if (!named) {
             // Any other literal key (Float/Number/Nil/Bool/Tuple, or a
             // String with an interpolation) — object_set_any. Both key and
@@ -15198,13 +15211,13 @@ class Compiler {
               return pv.key->token == k;
             });
             emit(Op::SlotInit, t, owned_src(*pv.value, val),
-                 kconst_str(pv.key->token),
+                 name_const(pv.key->token),
                  Chunk::encode_slot_init(
                      {static_cast<int32_t>(it - keys.begin()), pv.is_mut,
                       culebra::prop_key_kind(pv.key->token)}));
             continue;
           }
-          emit(Op::ObjectSet, t, owned_src(*pv.value, val), kconst_str(name),
+          emit(Op::ObjectSet, t, owned_src(*pv.value, val), name_const(name),
                pv.is_mut ? 1 : 0);
         }
         return {t, true};

@@ -1382,8 +1382,9 @@ operator. Keys of different types are never the same key, so
 holds for the `==` operator. In the other direction, `NaN` is one key
 (a second write under it replaces the first, and it can be read and
 removed) even though `NaN == NaN` is false. `0.0` and `-0.0` are one key,
-as they are equal under `==`. A Set's members and `distinct()` follow the
-same rule. A literal
+as they are equal under `==`. A String key is all of its bytes, a NUL
+included, so two that differ only after one are two keys. A Set's members
+and `distinct()` follow the same rule. A literal
 that *repeats* a key keeps the
 last write —
 `{1: 'a', 1: 'b'}` is `{1: 'b'}` — the same last-wins rule a literal
