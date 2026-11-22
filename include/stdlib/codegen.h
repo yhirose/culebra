@@ -1059,21 +1059,21 @@ class Module {
             static_cast<uint32_t>(field(o, "column"))};
   }
 
-  static int64_t field(JitObject* o, const char* name) {
+  static int64_t field(JitObject* o, JitKeyName name) {
     const size_t slot = o->find_slot(name);
     if (slot == static_cast<size_t>(-1)) {
       throw culebra::CulebraError(
           "TypeError",
           culebra::format("'at' needs a '{}' -- an Object with 'line' and "
                           "'column', such as a parse node",
-                          name),
+                          name.view()),
           0, 0);
     }
     const JitValue v = o->slots[slot].value;
     if (v.tag != TAG_LONG) {
       throw culebra::CulebraError(
           "TypeError",
-          culebra::format("'at.{}' must be a Long, got {}", name,
+          culebra::format("'at.{}' must be a Long, got {}", name.view(),
                           _culebra_tag_name(v.tag)),
           0, 0);
     }

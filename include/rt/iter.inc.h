@@ -79,7 +79,7 @@ culebra_runtime_object_keys(JitObject* obj);
 // Function. Used once at walk entry so each step skips the per-iteration
 // std::map::find.
 inline JitHeldMethod _iter_method_closure(JitValue iter_val,
-                                          const char* method) {
+                                          JitKeyName method) {
   if (iter_val.tag != TAG_OBJECT) return {};
   // Instance + proto: class instances carry methods on their class meta
   // proto, while Phase 2 wrapped iterators put them on the instance directly.
@@ -3935,7 +3935,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_prop_wr(
   // one lookup. Only this arm primes the site, so its cache holds a plain
   // Object's shape, which no view shares: the JIT's shape test is enough.
   if (kind == 0) {
-    auto idx = obj->find_slot(key);
+    auto idx = obj->find_slot(JitKeyName::source(key));
     if (idx != static_cast<size_t>(-1)) {
       ic->prime_own(obj->shape, idx);
       return obj->slots[idx].value;
@@ -3977,7 +3977,9 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int8_t culebra_runtime_is_namespace(
       line, col);
 }
 
-inline void _jit_object_remove(JitObject* obj, std::string_view key) {
+// Removes the slot named `key`, every byte of it; the C ABI's
+// culebra_runtime_object_remove hands over a name codegen spelled.
+inline void _jit_object_remove(JitObject* obj, JitKeyName key) {
   if (obj->is_shared_val) _jit_shared_val_builtin_reject(obj, "remove", 0, 0);
   // The other direction of a `@value` instance's frozen field set: dropping a
   // field would break the fixed shape the contract exists to guarantee, so it
@@ -3987,7 +3989,7 @@ inline void _jit_object_remove(JitObject* obj, std::string_view key) {
     throw culebra::CulebraError(
         "ImmutableError",
         culebra::format("cannot remove property '{}' from a @value instance",
-                        key));
+                        key.view()));
   auto idx = obj->find_slot(key);
   if (idx == static_cast<size_t>(-1)) return;
   // A declared field's type is a contract a reader may trust
@@ -3996,16 +3998,16 @@ inline void _jit_object_remove(JitObject* obj, std::string_view key) {
   if (obj->shape && obj->shape->type_at(idx) != culebra::FieldType::Any)
     throw culebra::CulebraError(
         "ImmutableError",
-        culebra::format("cannot remove declared field '{}'", key));
+        culebra::format("cannot remove declared field '{}'", key.view()));
   _culebra_value_release_impl(obj->slots[idx].value.tag,
                               obj->slots[idx].value.data);
   obj->erase(key);
-  if (key == "drop") _jit_owned_unbind_drop(obj);
+  if (key.view() == "drop") _jit_owned_unbind_drop(obj);
 }
 
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_remove(
     JitObject* obj, const char* key) {
-  _jit_object_remove(obj, key);
+  _jit_object_remove(obj, JitKeyName::source(key));
 }
 
 // Whether `key_order`, once it exists, names every key the object holds and
@@ -4085,7 +4087,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_object_get_or_put(
   bool found = false;
   JitValue stored{TAG_NIL, 0};
   std::optional<JitHashedKey> hashed;  // a non-String key, for the store too
-  JitKeyName name = _jit_key_name(kt, kd);
+  auto name = _jit_key_name(kt, kd);
   if (name) {
     auto idx = obj->find_slot(*name);
     if (idx != static_cast<size_t>(-1)) {

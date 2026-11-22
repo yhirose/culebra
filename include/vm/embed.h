@@ -502,9 +502,9 @@ inline JitValue to_jit(std::nullptr_t) { return {TAG_NIL, 0}; }
 
 // `{mut k: v}` — the object-literal seat (Value::object). `mut` because what
 // the host builds is the host's own data.
-inline void _object_put(JitObject* obj, std::string_view key, JitValue v) {
-  _jit_object_set(obj, key, /*mut=*/true, v.tag, v.data, 0, 0,
-                  /*is_init=*/true);
+inline void _object_put(JitObject* obj, JitKeyName key, JitValue v) {
+  _jit_object_set_named(obj, key, /*mut=*/true, v.tag, v.data, 0, 0,
+                        /*is_init=*/true);
 }
 
 template <class T>
@@ -607,7 +607,7 @@ inline void Value::set(std::string_view key,
   auto* obj = reinterpret_cast<JitObject*>(v_.data);
   if (!culebra_runtime_object_sets_named(obj, key)) return set(Value(key), v);
   const JitValue val = v.owned();  // the store absorbs this +1
-  _jit_object_set(obj, key, /*mut=*/true, val.tag, val.data, 0, 0);
+  _jit_object_set_named(obj, key, /*mut=*/true, val.tag, val.data, 0, 0);
 }
 
 inline void Value::set(int64_t idx, const _embed_detail::Arg& v) {

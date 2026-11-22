@@ -46,7 +46,7 @@ static_assert(sizeof(JitStringView) == 24, "JitStringView layout drift");
 
 // `obj.k` as a JitValue, or Nil when the key is absent. Used where a
 // missing slot should read as Nil (e.g. a range value's optional bounds).
-inline JitValue _jit_slot_or_nil(const JitObject* obj, std::string_view k) {
+inline JitValue _jit_slot_or_nil(const JitObject* obj, JitKeyName k) {
   auto i = obj->find_slot(k);
   return i == static_cast<size_t>(-1) ? JitValue{TAG_NIL, 0}
                                       : obj->slots[i].value;

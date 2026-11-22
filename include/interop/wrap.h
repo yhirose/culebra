@@ -453,7 +453,7 @@ JitObject* jit_wrapped_meta(bool borrow) {
     auto* m = culebra_runtime_make_variant_meta(
         jit_class_info<T>::name.c_str(), /*enum_name=*/nullptr);
     for (const auto& method : jit_class_info<T>::methods) {
-      _jit_handle_bind_method(m, method.name.c_str(), method.thunk,
+      _jit_handle_bind_method(m, method.name, method.thunk,
                               method.arity, method.meta);
     }
     _jit_handle_bind_method(m, "drop",

@@ -71,8 +71,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_build_variant(
   inst->set_proto(meta);  // transferred: no retain — and it carries both names
   for (int64_t i = 0; i < arity; i++) {
     auto fname = culebra::positional_field_name(static_cast<size_t>(i));
-    culebra_runtime_object_set(inst, fname.data(), /*mut*/ false, args[i].tag,
-                               args[i].data, 0, 0);
+    _jit_object_set_named(inst, fname, /*mut=*/false, args[i].tag,
+                          args[i].data, 0, 0);
   }
   // Drop excess positional args (interp ignores them); release the +1 we
   // were handed so they don't leak.
@@ -2185,7 +2185,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_call_receiver(
     int8_t recv_tag, int64_t recv_data, const char* key) {
   if (recv_tag == TAG_OBJECT) {
     auto* recv = reinterpret_cast<JitObject*>(recv_data);
-    if (recv->proto() && recv->proto()->is_lowered_state && recv->has_own(key)) {
+    if (recv->proto() && recv->proto()->is_lowered_state &&
+        recv->has_own(JitKeyName::source(key))) {
       _culebra_value_release_impl(recv_tag, recv_data);
       return {TAG_NO_SELF, 0};
     }
@@ -2203,7 +2204,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_bind_method_value(
     // state class's own methods live on the proto and bind as usual. Twin of
     // the interp's eval_property branch.
     auto* recv = reinterpret_cast<JitObject*>(recv_data);
-    if (recv->proto() && recv->proto()->is_lowered_state && recv->has_own(key)) {
+    if (recv->proto() && recv->proto()->is_lowered_state &&
+        recv->has_own(JitKeyName::source(key))) {
       culebra_runtime_value_retain(view_tag, view_data);
       return {view_tag, view_data};
     }

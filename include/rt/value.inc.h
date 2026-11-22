@@ -24,6 +24,40 @@ constexpr bool _culebra_tag_set_has(CulebraTagSet set, int8_t tag) {
   return tag >= 0 && tag < 16 && ((set >> tag) & 1u) != 0;
 }
 
+// An Object key's name with its length, since a String key may hold a NUL.
+// Never made from a bare `const char*`, whose strlen stops at one; a name
+// codegen spelled (no NUL reaches it) comes in through `source`, or through
+// `source_unmeasured` where only an error may read it (a copy measures again).
+class JitKeyName {
+ public:
+  constexpr JitKeyName(std::string_view s) : p_(s.data()), n_(s.size()) {}
+  JitKeyName(const std::string& s) : p_(s.data()), n_(s.size()) {}
+  template <size_t N>
+  constexpr JitKeyName(const char (&literal)[N]) : p_(literal), n_(N - 1) {}
+  template <class P>
+    requires std::is_pointer_v<P>
+  JitKeyName(P) = delete;
+  static JitKeyName source(const char* name) {
+    return JitKeyName(std::string_view(name));
+  }
+  static JitKeyName source_unmeasured(const char* name) {
+    JitKeyName k(std::string_view{});
+    k.p_ = name;
+    k.n_ = kUnmeasured;
+    return k;
+  }
+  std::string_view view() const {
+    if (n_ == kUnmeasured) n_ = std::char_traits<char>::length(p_);
+    return {p_, n_};
+  }
+  operator std::string_view() const { return view(); }
+
+ private:
+  static constexpr size_t kUnmeasured = static_cast<size_t>(-1);
+  const char* p_;
+  mutable size_t n_;
+};
+
 namespace culebra {
 
 // Object property layout description, V8/SpiderMonkey "hidden class"
@@ -482,6 +516,10 @@ static_assert(static_cast<size_t>(Special::Count) <= 32,
 inline const char* special_name(Special s) {
   return kSpecialNames[static_cast<size_t>(s)];
 }
+// The same name as an Object asks for it.
+inline JitKeyName special_key(Special s) {
+  return JitKeyName::source(special_name(s));
+}
 // The right operand's method for the arithmetic operator `s` (`Add`..`Matmul`).
 inline constexpr Special reflected_special(Special s) {
   return static_cast<Special>(static_cast<size_t>(s) -
@@ -936,7 +974,7 @@ struct JitObject {
   // --- Shape-based property access helpers ---
 
   // Slot index for `key`, or static_cast<size_t>(-1) if absent.
-  size_t find_slot(std::string_view key) const {
+  size_t find_slot(JitKeyName key) const {
     if (is_dict) {
       auto it = dict_->index.find(key);
       return it == dict_->index.end() ? static_cast<size_t>(-1) : it->second;
@@ -944,7 +982,7 @@ struct JitObject {
     if (!shape) return static_cast<size_t>(-1);
     return shape->offset(key);
   }
-  bool has_own(std::string_view key) const {
+  bool has_own(JitKeyName key) const {
     return find_slot(key) != static_cast<size_t>(-1);
   }
   size_t prop_size() const { return slots.size(); }
@@ -977,7 +1015,7 @@ struct JitObject {
   // has 6, plain Object literals 2–5, iterator wrappers 2). The
   // reserve avoids the std::vector doubling chain (cap 1→2→4→8),
   // turning 4 small heap allocations into one.
-  size_t append_slot(std::string_view key, JitValue value, bool mut,
+  size_t append_slot(JitKeyName key, JitValue value, bool mut,
                      culebra::FieldType type = culebra::FieldType::Any,
                      const culebra::FieldAnnotation* annotation = nullptr) {
     if (is_dict) return append_dict(key, value, mut);
@@ -998,7 +1036,7 @@ struct JitObject {
   // the process's budget for those lasts (ShapeRegistry::transition_keyed).
   // Past it a plain Object becomes a dictionary rather than mint one; a
   // class instance cannot, so it takes its Shape as a named key does.
-  size_t append_keyed(std::string_view key, JitValue value, bool mut) {
+  size_t append_keyed(JitKeyName key, JitValue value, bool mut) {
     if (!is_dict && !proto_ && slots.size() < kDictAt) {
       if (!shape) shape = culebra::shape_registry().root();
       if (auto* next = culebra::shape_registry().transition_keyed(shape, key))
@@ -1056,7 +1094,7 @@ struct JitObject {
   }
 
   // Set or update. Returns slot index.
-  size_t set_or_append(std::string_view key, JitValue value, bool mut) {
+  size_t set_or_append(JitKeyName key, JitValue value, bool mut) {
     auto idx = find_slot(key);
     if (idx == static_cast<size_t>(-1)) {
       return append_slot(key, value, mut);
@@ -1104,7 +1142,7 @@ struct JitObject {
   // mints one: a plain Object becomes a dictionary first, as V8 normalizes an
   // object on `delete` (an object whose keys churn, a cache or a memo table,
   // otherwise interned a fresh chain of Shapes on every removal).
-  void erase(std::string_view key) {
+  void erase(JitKeyName key) {
     auto idx = find_slot(key);
     if (idx == static_cast<size_t>(-1)) return;
     assert_slots_writable();

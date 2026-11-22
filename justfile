@@ -339,6 +339,13 @@ check-value-equal-door:
 check-value-order-door:
     tools/checks/check_value_order_door.sh
 
+# An Object key keeps every byte, a NUL included, so C++ names one with
+# JitKeyName and hands the `const char*` C ABI only a literal.
+[group("test")]
+[doc("Verify C++ names a C-ABI object key only by a literal (ratchet)")]
+check-key-name-door:
+    tools/checks/check_key_name_door.sh
+
 # A message rebuilds an Object on the receiving heap, and what the Object is
 # beyond its entries lives in JitObject's own flags. A flag the rebuild knew
 # nothing of was lost without a sound: typed fields took any value, a meta ran
@@ -411,7 +418,7 @@ check-docs-cpp:
 # well under a second once the grammar-blob tool and the Audio.Graph bench are
 # ccache-warm.
 [private]
-check-generated: check-grammar-sync check-preambles check-blob check-site-version check-site-playground-sync check-difftest-coverage check-gate-budget check-release-coverage check-spec-examples check-api-coverage check-canon-return-types check-registrar-rooted check-pe-exports-gen check-interrupt-discipline check-thrown-value-discipline check-docs-cpp-includes check-header-naming check-pipefail-readers check-change-scopes check-error-kinds check-search-splitter check-bench-audio-graph check-layering check-codegen-enums check-vm-dispatch-table check-protocol-member-door check-borrowed-closure-door check-gc-pin-door check-value-equal-door check-value-order-door check-source-anchor-door check-object-facts check-portable-closure-door check-native-entry-door check-runner-pins check-llama-versions
+check-generated: check-grammar-sync check-preambles check-blob check-site-version check-site-playground-sync check-difftest-coverage check-gate-budget check-release-coverage check-spec-examples check-api-coverage check-canon-return-types check-registrar-rooted check-pe-exports-gen check-interrupt-discipline check-thrown-value-discipline check-docs-cpp-includes check-header-naming check-pipefail-readers check-change-scopes check-error-kinds check-search-splitter check-bench-audio-graph check-layering check-codegen-enums check-vm-dispatch-table check-protocol-member-door check-borrowed-closure-door check-gc-pin-door check-value-equal-door check-value-order-door check-key-name-door check-source-anchor-door check-object-facts check-portable-closure-door check-native-entry-door check-runner-pins check-llama-versions
 
 # The slim download (CULEBRA_SLIM: the VM alone, no LLVM, window, 3D, audio,
 # Webview or Llama), built as a release is (-O3, LTO). Its own dir: the JIT

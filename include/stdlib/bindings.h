@@ -1433,8 +1433,8 @@ culebra_runtime_time_parts_nanos(int64_t nanos, int64_t utc) {
   auto tm = culebra::_time_detail::to_tm_nanos(nanos, utc != 0);
   auto sub = culebra::_time_detail::split_nanos(nanos).second;
   auto* o = culebra_runtime_object_new();
-  auto put = [&](const char* k, int64_t v) {
-    culebra_runtime_object_set(o, k, /*mut=*/false, TAG_LONG, v, 0, 0);
+  auto put = [&](JitKeyName k, int64_t v) {
+    _jit_object_set_named(o, k, /*mut=*/false, TAG_LONG, v, 0, 0);
   };
   put("year",       tm.tm_year + 1900);
   put("month",      tm.tm_mon + 1);
@@ -1452,13 +1452,14 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int64_t culebra_runtime_time_from_parts_nanos(
     JitObject* o, int64_t utc) {
   // Each part is a Long in its calendar range (civil_out_of_range): the
   // inverse of `parts` names one date.
-  auto get_long = [&](const char* k, int64_t fallback) -> int64_t {
+  auto get_long = [&](JitKeyName k, int64_t fallback) -> int64_t {
     auto* entry = _find_property(o, k);
     if (!entry) return fallback;
     if (entry->value.tag != TAG_LONG)
       throw culebra::CulebraError(
           "TypeError",
-          culebra::format("Time.from_parts: '{}' must be a Long, got {}", k,
+          culebra::format("Time.from_parts: '{}' must be a Long, got {}",
+                          k.view(),
                           culebra_runtime_type_of(entry->value.tag)),
           0, 0);
     return entry->value.data;
@@ -2604,14 +2605,16 @@ inline void _http_setup_multipart(JitValue filesv,
     throw culebra::CulebraError("TypeError",
         culebra::format("{}: files must be an Object", ctx), 0, 0);
   }
-  auto str_at = [&](JitObject* o, const char* key, bool& present) -> std::string {
+  auto str_at = [&](JitObject* o, JitKeyName key,
+                    bool& present) -> std::string {
     size_t i = o->find_slot(key);
     present = i != static_cast<size_t>(-1);
     if (!present) return std::string();
     JitValue v = o->slots[i].value;
     if (v.tag != TAG_STRING && v.tag != TAG_STRINGVIEW) {
       throw culebra::CulebraError("TypeError",
-          culebra::format("{}: files {} must be a String", ctx, key), 0, 0);
+          culebra::format("{}: files {} must be a String", ctx, key.view()), 0,
+          0);
     }
     return std::string(_culebra_str_view(v.tag, v.data));
   };
@@ -4363,8 +4366,8 @@ inline JitValue v_tensor(JitTensor* t)   {
   return {TAG_TENSOR, reinterpret_cast<int64_t>(t)};
 }
 // One field of a data object an adapter builds (a result record).
-inline void set_field(JitObject* o, const char* name, JitValue v) {
-  culebra_runtime_object_set(o, name, false, v.tag, v.data, 0, 0);
+inline void set_field(JitObject* o, JitKeyName name, JitValue v) {
+  _jit_object_set_named(o, name, false, v.tag, v.data, 0, 0);
 }
 
 }  // namespace _ns_adapt
@@ -5047,13 +5050,13 @@ inline std::vector<culebra::llama::Message> _jit_llama_messages(JitValue v,
   auto* arr = reinterpret_cast<JitArray*>(v.data);
   std::vector<culebra::llama::Message> out;
   out.reserve(arr->size);
-  auto field = [&](JitObject* o, const char* key, size_t i) -> std::string {
-    size_t k = o->find_slot(key);
-    JitValue f = k == static_cast<size_t>(-1) ? JitValue{TAG_NIL, 0} : o->slots[k].value;
+  auto field = [&](JitObject* o, JitKeyName key, size_t i) -> std::string {
+    JitValue f = _jit_slot_or_nil(o, key);
     if (f.tag != TAG_STRING && f.tag != TAG_STRINGVIEW) {
       throw culebra::CulebraError(
           "TypeError",
-          culebra::format("type error: messages[{}].{} expects String", i, key),
+          culebra::format("type error: messages[{}].{} expects String", i,
+                          key.view()),
           _jit_arg_pos(static_cast<int>(slot)).line, _jit_arg_pos(static_cast<int>(slot)).col);
     }
     return std::string(_culebra_str_view(f.tag, f.data));
@@ -9249,7 +9252,8 @@ struct _JitXmlBuilder {
   static JitValue attrs_object(const std::vector<culebra::xml::Attr>& attrs) {
     auto* a = culebra_runtime_object_new();
     for (const auto& at : attrs) {
-      _ns_adapt::set_field(a, at.name.c_str(), _ns_adapt::str(at.value));
+      JitValue v = _ns_adapt::str(at.value);
+      _jit_object_set_keyed(a, at.name, false, v.tag, v.data, 0, 0);
     }
     return _ns_adapt::v_object(a);
   }
@@ -10167,13 +10171,13 @@ inline JitValue _jit_peg_tree(const culebra::pegparser::Tree& t) {
       culebra_runtime_array_push(kids, v.tag, v.data);
     }
     auto* o = culebra_runtime_object_new();
-    auto set_str = [&](const char* key, std::string_view s) {
-      culebra_runtime_object_set(
+    auto set_str = [&](JitKeyName key, std::string_view s) {
+      _jit_object_set_named(
           o, key, false, TAG_STRING,
           reinterpret_cast<int64_t>(_culebra_heap_str(s)), 0, 0);
     };
-    auto set_long = [&](const char* key, size_t x) {
-      culebra_runtime_object_set(o, key, false, TAG_LONG,
+    auto set_long = [&](JitKeyName key, size_t x) {
+      _jit_object_set_named(o, key, false, TAG_LONG,
                                  static_cast<int64_t>(x), 0, 0);
     };
     set_str("name", n.name);
@@ -10277,13 +10281,13 @@ inline JitValue _jit_peg_sv_object(culebra::pegparser::Sv& sv) {
     culebra_runtime_array_push(values, jv.tag, jv.data);
   }
   auto* o = culebra_runtime_object_new();
-  auto set_str = [&](const char* key, std::string_view s) {
-    culebra_runtime_object_set(
+  auto set_str = [&](JitKeyName key, std::string_view s) {
+    _jit_object_set_named(
         o, key, false, TAG_STRING,
         reinterpret_cast<int64_t>(_culebra_heap_str(s)), 0, 0);
   };
-  auto set_long = [&](const char* key, size_t x) {
-    culebra_runtime_object_set(o, key, false, TAG_LONG,
+  auto set_long = [&](JitKeyName key, size_t x) {
+    _jit_object_set_named(o, key, false, TAG_LONG,
                                static_cast<int64_t>(x), 0, 0);
   };
   set_str("name", sv.name);
@@ -10302,20 +10306,20 @@ inline JitValue _jit_peg_sv_object(culebra::pegparser::Sv& sv) {
 // empty: `o` is the program's, and a hook may take the entry out of it
 // mid-parse.
 inline std::shared_ptr<JitClosure> _jit_peg_keep_hook(JitObject* o,
-                                                      const char* key) {
+                                                      JitKeyName key) {
   int8_t tag;
   int64_t data;
-  culebra_runtime_object_get(o, key, &tag, &data);
+  _jit_object_get(o, key, &tag, &data);
   return tag == TAG_FUNC ? _jit_keep_closure({tag, data}) : nullptr;
 }
 
 // Calls `f(rule, fn)` for each Function `hooks[key]` names a rule for, `fn`
 // kept for the parse (_jit_peg_keep_hook). A non-Function entry is skipped.
 template <typename F>
-inline void _jit_peg_each_callback(JitObject* hooks, const char* key, F f) {
+inline void _jit_peg_each_callback(JitObject* hooks, JitKeyName key, F f) {
   int8_t mtag;
   int64_t mdata;
-  culebra_runtime_object_get(hooks, key, &mtag, &mdata);
+  _jit_object_get(hooks, key, &mtag, &mdata);
   if (mtag != TAG_OBJECT) return;
   auto* map = reinterpret_cast<JitObject*>(mdata);
   // object_keys() hands back a fresh, retained (+1) array of retained (+1)
@@ -10328,7 +10332,7 @@ inline void _jit_peg_each_callback(JitObject* hooks, const char* key, F f) {
     JitOwnedVal k{keys->items[i]};
     if (k.borrow().tag != TAG_STRING) continue;
     std::string rule(_culebra_str_view(k.borrow().tag, k.borrow().data));
-    if (auto cb = _jit_peg_keep_hook(map, rule.c_str())) {
+    if (auto cb = _jit_peg_keep_hook(map, rule)) {
       f(std::move(rule), std::move(cb));
     }
   }
@@ -10846,8 +10850,8 @@ inline JitValue _ns_dir_zip_close(JitValue* a, int64_t) {
 // contents and an archive's bytes are copied once, an archive file is opened
 // again — so it lives as long as its owner wants, on any thread.
 inline std::unique_ptr<culebra::Dir> _dir_rebuild(JitObject* o) {
-  auto field = [o](const char* name) { return _jit_slot_or_nil(o, name); };
-  auto text = [&](const char* name) {
+  auto field = [o](JitKeyName name) { return _jit_slot_or_nil(o, name); };
+  auto text = [&]<size_t N>(const char (&name)[N]) {
     return _ns_adapt::require_str(field(name), name);
   };
   switch (static_cast<culebra::DirKind>(_jit_meta_dir_kind(o))) {
@@ -11162,20 +11166,21 @@ inline culebra::search::Analyzer make_analyzer(JitValue v,
   }
   auto* obj = reinterpret_cast<JitObject*>(v.data);
 
-  auto field = [&](const char* name) -> JitValue {
+  auto field = [&](JitKeyName name) -> JitValue {
     int8_t tag = TAG_NIL;
     int64_t data = 0;
-    culebra_runtime_object_get(obj, name, &tag, &data);
+    _jit_object_get(obj, name, &tag, &data);
     return {tag, data};
   };
-  auto hook = [&](const char* name, const char* expected = "a Function")
+  auto hook = [&](JitKeyName name, const char* expected = "a Function")
       -> JitClosure* {
     auto v = field(name);
     if (v.tag == TAG_NIL) return nullptr;
     if (v.tag != TAG_FUNC) {
       throw culebra::CulebraError(
           "TypeError",
-          culebra::format("Search: analyzer {} must be {}", name, expected),
+          culebra::format("Search: analyzer {} must be {}", name.view(),
+                          expected),
           _jit_thread.call_line, _jit_thread.call_col);
     }
     return keep_fn(v);
@@ -11256,15 +11261,16 @@ inline culebra::search::Analyzer make_analyzer(JitValue v,
                   _jit_thread.call_line, _jit_thread.call_col);
             }
             auto term = _culebra_str_view(tag, data);
-            auto span = [&](const char* name) -> size_t {
+            auto span = [&](JitKeyName name) -> size_t {
               int8_t t = TAG_NIL;
               int64_t d = 0;
-              culebra_runtime_object_get(o, name, &t, &d);
+              _jit_object_get(o, name, &t, &d);
               if (t != TAG_LONG || d < 0) {
                 throw culebra::CulebraError(
                     "TypeError",
                     culebra::format(
-                        "Search: a split piece needs a Long {} >= 0", name),
+                        "Search: a split piece needs a Long {} >= 0",
+                        name.view()),
                     _jit_thread.call_line, _jit_thread.call_col);
               }
               return static_cast<size_t>(d);
@@ -13018,9 +13024,10 @@ inline JitObject* _jit_build_namespace_object(std::string_view ns_name,
     auto* fn = _jit_make_ns_method_closure(&m);
     JitValue fv{TAG_FUNC, reinterpret_cast<int64_t>(fn)};
     if (m.sub) {
-      sub_object(m.sub)->append_slot(m.name, fv, /*mut=*/false);
+      sub_object(m.sub)->append_slot(JitKeyName::source(m.name), fv,
+                                     /*mut=*/false);
     } else {
-      obj->append_slot(m.name, fv, /*mut=*/false);
+      obj->append_slot(JitKeyName::source(m.name), fv, /*mut=*/false);
     }
   };
   for (const auto& m : rows) add_method(m);
@@ -13048,7 +13055,7 @@ inline JitObject* _jit_build_namespace_object(std::string_view ns_name,
   }
   for (auto& c : kNsConstants) {
     if (ns_name != c.ns) continue;
-    obj->append_slot(c.name, c.build(), /*mut=*/false);
+    obj->append_slot(JitKeyName::source(c.name), c.build(), /*mut=*/false);
   }
   // Tag as a builtin namespace so an unknown-member read raises AttributeError
   // (see culebra_runtime_object_get_ic), matching the interpreter.
@@ -13687,13 +13694,13 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_bare_builtin_reject(
       if (obj->is_shared_val) return;
       // A user property — own or proto, e.g. a getter that returned nil —
       // is first-class on both backends; never reject it.
-      if (_find_property(obj, key)) return;
+      if (_find_property(obj, JitKeyName::source(key))) return;
       // interp's ObjectValue::has(): own props ∪ the dict builtins. This arm
       // deliberately stays on the hand-written shared.h set rather than
       // canon_object_sigs(): the interp's own TAG_OBJECT reject site reads
       // is_object_builtin_method_name — not the builtins table — so lockstep
       // with it is what keeps the lanes symmetric. Unified in B7-f.
-      auto has = [&](const char* k) {
+      auto has = [&](JitKeyName k) {
         return _find_property(obj, k) != nullptr ||
                culebra::is_object_builtin_method_name(k);
       };

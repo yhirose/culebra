@@ -71,8 +71,14 @@ def function_spans(code, name):
     each definition of the function `name` in `code` (a blank()ed source), at
     any indentation: a declaration or a call is not one, since what follows
     its parameter list is not a body."""
+    return function_spans_re(code, re.escape(name))
+
+
+def function_spans_re(code, name_re):
+    """function_spans for every function whose name matches `name_re`, in one
+    pass over `code`."""
     head = re.compile(r'^[ \t]*(?:\[\[[^\]]*\]\][ \t]+)?(?:[\w:<>*&,]+[ \t]+)*' +
-                      re.escape(name) +
+                      name_re +
                       r'\s*\(', re.M)
     out = []
     for m in head.finditer(code):
