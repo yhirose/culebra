@@ -90,7 +90,7 @@ namespace culebra {
 // interned as a class meta's names are (_intern_str), so an instance answers
 // to it exactly when one of its meta's names is that pointer. The rest — a
 // trait, an error kind, `Enum.Variant`, a callable instance under `Function`
-// — the text decides (_culebra_annotation_admits).
+// — the text decides (_culebra_annotation_decides).
 struct TypeAnnotation {
   std::string text;
   CulebraTagSet tags = 0;          // the built-in types' tags it names
@@ -105,6 +105,15 @@ struct TypeAnnotation {
     return !t.empty() && t != "Any";
   }
 };
+
+// Whether a lone overload's shortcut needs a gate: some parameter's annotation
+// refuses something. The dispatcher (_jit_multifn_refresh_mono) and the
+// compiler's resolved sites (Compiler::mono_reach) ask this one question.
+inline bool mono_needs_gate(const std::vector<std::string>& param_types) {
+  return std::ranges::any_of(param_types, [](const std::string& t) {
+    return TypeAnnotation::checks_anything(t);
+  });
+}
 
 struct Shape {
   std::vector<std::string> names;          // insertion order
@@ -1796,8 +1805,9 @@ static_assert(std::ranges::all_of(kCulebraBuiltinTypeTags, [](auto e) {
 inline const culebra::TypeAnnotation*
 culebra::ShapeRegistry::intern_annotation(std::string_view text) {
   std::lock_guard<std::mutex> lk(mu_);
-  auto [it, fresh] = annotations_.try_emplace(std::string(text));
-  if (!fresh) return &it->second;
+  if (auto hit = annotations_.find(text); hit != annotations_.end())
+    return &hit->second;
+  auto it = annotations_.try_emplace(std::string(text)).first;
   auto& a = it->second;
   a.text = it->first;
   if (!TypeAnnotation::checks_anything(text)) {
@@ -1845,8 +1855,8 @@ culebra::ShapeRegistry::intern_annotation(std::string_view text) {
 }
 
 // Whether the annotation's tags or names admit the value. A refusal only
-// means "not settled here" unless the annotation is `exact`; the whole
-// answer is _culebra_annotation_admits. Never throws, takes no lock.
+// means "not settled here" unless the annotation is `exact`. Never throws,
+// takes no lock.
 inline bool _culebra_annotation_takes(const culebra::TypeAnnotation& a,
                                       int8_t tag, int64_t data) {
   if (a.any || _culebra_tag_set_has(a.tags, tag)) return true;
@@ -1856,6 +1866,25 @@ inline bool _culebra_annotation_takes(const culebra::TypeAnnotation& a,
   for (const char* n : a.names)
     if (sp->name == n || sp->enum_name == n) return true;
   return false;
+}
+
+// The whole answer: what the tags and names settle, else `by_text()` — the
+// reading of the text this answer must agree with (the entry check's matcher,
+// or the picker's score), which the asserts hold it to both ways.
+template <class ByText>
+inline bool _culebra_annotation_decides(const culebra::TypeAnnotation& a,
+                                        int8_t tag, int64_t data,
+                                        ByText by_text) {
+  if (_culebra_annotation_takes(a, tag, data)) {
+    assert(by_text() && "an annotation's tags or names admit what its text "
+                        "refuses");
+    return true;
+  }
+  if (a.exact) {
+    assert(!by_text() && "an exact annotation refuses what its text admits");
+    return false;
+  }
+  return by_text();
 }
 
 // Forward decl: byte-view of a TAG_STRING or TAG_STRINGVIEW payload.

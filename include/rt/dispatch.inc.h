@@ -879,21 +879,15 @@ inline void _jit_multifn_refresh_mono(JitClosure* c) {
   if (d->methods.size() == 1) {
     const auto& m = d->methods.front();
     d->mono = &m;
-    bool annotated = false, gated = false;
-    for (const auto& t : m.param_types)
-      if (!t.empty()) annotated = true;
-    if (annotated) {
+    if (culebra::mono_needs_gate(m.param_types)) {
       if (m.variadic || m.min_params != m.param_types.size()) {
         d->mono = nullptr;
       } else {
-        for (const auto& t : m.param_types) {
-          const auto* a = t.empty() ? nullptr
-                                    : culebra::shape_registry().intern_annotation(t);
-          if (a && a->any) a = nullptr;
-          gated |= a != nullptr;
-          d->mono_annotations.push_back(a);
-        }
-        if (!gated) d->mono_annotations.clear();
+        for (const auto& t : m.param_types)
+          d->mono_annotations.push_back(
+              culebra::TypeAnnotation::checks_anything(t)
+                  ? culebra::shape_registry().intern_annotation(t)
+                  : nullptr);
       }
     }
   }
@@ -1517,22 +1511,12 @@ inline bool _jit_mono_admits(const JitMultifnDispatcher& d, int64_t n_args,
   if (static_cast<size_t>(n_args) != d.mono_annotations.size()) return false;
   for (size_t i = 0; i < d.mono_annotations.size(); ++i) {
     const auto* a = d.mono_annotations[i];
-    if (!a) continue;
-    const auto tag = static_cast<int8_t>(args[i].tag);
-    if (_culebra_annotation_takes(*a, tag, args[i].data)) {
-      assert(culebra::multifn_specificity(a->text, _jit_value_arg_type(args[i]))
-                     .tier >= 0 &&
-             "the gate admits what the picker refuses");
-      continue;
-    }
-    if (a->exact) {
-      assert(culebra::multifn_specificity(a->text, _jit_value_arg_type(args[i]))
-                     .tier < 0 &&
-             "the gate refuses what the picker admits");
-      return false;
-    }
-    if (culebra::multifn_specificity(a->text, _jit_value_arg_type(args[i]))
-            .tier < 0)
+    if (a && !_culebra_annotation_decides(
+                 *a, static_cast<int8_t>(args[i].tag), args[i].data, [&] {
+                   return culebra::multifn_specificity(
+                              a->text, _jit_value_arg_type(args[i]))
+                              .tier >= 0;
+                 }))
       return false;
   }
   return true;

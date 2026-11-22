@@ -5465,10 +5465,9 @@ class Compiler {
   // executor / frame pad when a throw escapes every region.
   int32_t frame_defer_mark_ = -1;
   int32_t gen_points_ = 0;  // GenStart / Yield emitted so far (their `c`)
-  // Declared return type of this frame (const index) and the slot holding
-  // the position its violation reports; -1 when the function declares none.
+  // Declared return type of this frame (its type_sites row) and the slot
+  // holding the position its violation reports; -1 when it declares none.
   int32_t ret_type_ = -1;
-  std::string ret_type_str_;  // same annotation, for emit_type_check_gate
   int32_t ret_ctx_ = -1;
   int32_t ret_pos_slot_ = -1;
   // A mark taken for the scope that is about to be pushed (DeferScope and
@@ -5774,6 +5773,12 @@ class Compiler {
   // enter (Chunk::Reach::MonoGated).
   void grant_mono_chunk(Binding& b, int32_t chunk) {
     if (chunk < 0 || b.shadowed || !binding_writes_once(b)) return;
+    // A gated overload has a shortcut only at one fixed arity
+    // (_jit_multifn_refresh_mono): with a default or `*args` it never would.
+    const Chunk& f = chunk_ref(chunk);
+    if (mono_reach(chunk) == Chunk::Reach::MonoGated &&
+        (f.cb_max < 0 || f.cb_min != f.cb_max))
+      return;
     settle_callee(b, chunk, /*via_mono=*/true);
   }
 
@@ -5896,14 +5901,13 @@ class Compiler {
     return argc >= f.cb_min && (f.cb_max < 0 || argc <= f.cb_max);
   }
 
-  // How a site reaches a lone overload: through the gate when a parameter is
-  // annotated (_jit_multifn_refresh_mono gates the same ones), straight in
-  // when none is — the shape `multifn_pick` can never be asked about.
+  // How a site reaches a lone overload: through the dispatcher's gate when it
+  // has one, straight in when none — the shape `multifn_pick` can never be
+  // asked about.
   Chunk::Reach mono_reach(int32_t chunk) const {
-    for (const auto& t : chunk_ref(chunk).param_types)
-      if (culebra::TypeAnnotation::checks_anything(t))
-        return Chunk::Reach::MonoGated;
-    return Chunk::Reach::Mono;
+    return culebra::mono_needs_gate(chunk_ref(chunk).param_types)
+               ? Chunk::Reach::MonoGated
+               : Chunk::Reach::Mono;
   }
 
   // Record that the call at `ix` reaches a named chunk, under the cell its
@@ -7514,7 +7518,7 @@ class Compiler {
     if (ret_type_ < 0) return;
     if (ret_ctx_ < 0) ret_ctx_ = kconst_str("return value");
     std::vector<size_t> skip;
-    emit_type_check_gate(ret_type_str_, rv, skip);
+    emit_type_check_gate(ret_type_, rv, skip);
     emit(Op::ChkTypeAt, rv, ret_type_, ret_ctx_, ret_pos_slot_);
     for (size_t ix : skip) patch_to_here(ix);
   }
@@ -9288,9 +9292,9 @@ class Compiler {
       // written, which is what `f.return_type` reports, while the check runs
       // against the lowered one — a Generic's unbounded `T` checks as Any.
       fc.chunk_.return_type = std::string(return_type);
-      fc.ret_type_str_ = fc.lower_annotation(return_type);
-      if (culebra::TypeAnnotation::checks_anything(fc.ret_type_str_)) {
-        fc.ret_type_ = fc.type_site(fc.ret_type_str_);
+      auto ret_type = fc.lower_annotation(return_type);
+      if (culebra::TypeAnnotation::checks_anything(ret_type)) {
+        fc.ret_type_ = fc.type_site(ret_type);
         fc.ret_pos_slot_ = site;  // the same snapshot, when there is one
         if (site < 0) {
           fc.ret_pos_slot_ = fc.alloc_slot(ast, "(ret.pos)");
@@ -9520,7 +9524,7 @@ class Compiler {
         int32_t ty = fc.type_site(pl.type);
         int32_t ctx = fc.kconst_str(culebra::format("parameter '{}'", pl.name));
         std::vector<size_t> skip;
-        fc.emit_type_check_gate(pl.type, pl.slot, skip);
+        fc.emit_type_check_gate(ty, pl.slot, skip);
         if (pl.pos_slot >= 0)
           fc.emit(Op::ChkTypeAt, pl.slot, ty, ctx, pl.pos_slot);
         else
@@ -14858,22 +14862,18 @@ class Compiler {
       if (t.has(tag)) skip.push_back(emit(Op::JumpIfTag, subj, 0, tag));
   }
 
-  // Tag fast path in front of a ChkArg / ChkTypeAt: a matching alternative
-  // jumps past the check, a miss falls into it. The check is emitted
-  // unchanged, so every error keeps its kind, message and position, and the
-  // gate can only ever skip a check that would have passed — the annotation
-  // is a compile-time constant that the runtime otherwise re-scans on every
-  // call. Splitting with the runtime's own depth-aware `has_toplevel_pipe`
-  // keeps `Array<Long | Float>` one alternative, as _culebra_value_matches_type
-  // reads it. Emitted as bytecode, so the executor, `--jit` and AOT all get it.
-  void emit_type_check_gate(std::string_view full, int32_t subj,
+  // Tag fast path in front of a ChkArg / ChkTypeAt against type_sites[site]:
+  // a value of a tag the interned annotation admits jumps past the check,
+  // anything else falls into it. The check is emitted unchanged, so every
+  // error keeps its kind, message and position, and the gate can only ever
+  // skip a check that would have passed. Emitted as bytecode, so the
+  // executor, `--jit` and AOT all get it.
+  void emit_type_check_gate(int32_t site, int32_t subj,
                             std::vector<size_t>& skip) {
-    if (culebra::has_toplevel_pipe(full)) {
-      for (auto cand : culebra::split_union_types(full))
-        emit_type_check_gate_alt(cand, subj, skip);
-    } else {
-      emit_type_check_gate_alt(full, subj, skip);
-    }
+    const CulebraTagSet tags = chunk_.type_sites[site]->tags;
+    for (int8_t tag = 0; tag < 16; ++tag)
+      if (_culebra_tag_set_has(tags, tag))
+        skip.push_back(emit(Op::JumpIfTag, subj, 0, tag));
   }
 
   // A value checked against an annotation where it stands (stamped by the
@@ -14882,9 +14882,10 @@ class Compiler {
   void emit_type_check(std::string_view type, int32_t slot,
                        const std::string& context) {
     if (!culebra::TypeAnnotation::checks_anything(type)) return;
+    int32_t site = type_site(type);
     std::vector<size_t> skip;
-    emit_type_check_gate(type, slot, skip);
-    emit(Op::ChkTypeAt, slot, type_site(type), kconst_str(context), -1);
+    emit_type_check_gate(site, slot, skip);
+    emit(Op::ChkTypeAt, slot, site, kconst_str(context), -1);
     for (size_t ix : skip) patch_to_here(ix);
   }
 

@@ -1671,21 +1671,12 @@ inline bool _culebra_value_matches_type(int8_t tag, int64_t data,
   return _culebra_type_matches_single(tag, data, expected);
 }
 
-// The whole answer for an interned annotation: what its tags and names settle,
-// else the text. Agrees with _culebra_value_matches_type on every value.
+// _culebra_value_matches_type's answer, read off the interned annotation.
 inline bool _culebra_annotation_admits(const culebra::TypeAnnotation& a,
                                        int8_t tag, int64_t data) {
-  if (_culebra_annotation_takes(a, tag, data)) {
-    assert(_culebra_value_matches_type(tag, data, a.text) &&
-           "an annotation's tags or names admit what its text refuses");
-    return true;
-  }
-  if (a.exact) {
-    assert(!_culebra_value_matches_type(tag, data, a.text) &&
-           "an exact annotation refuses what its text admits");
-    return false;
-  }
-  return _culebra_value_matches_type(tag, data, a.text);
+  return _culebra_annotation_decides(a, tag, data, [&] {
+    return _culebra_value_matches_type(tag, data, a.text);
+  });
 }
 
 // A check site's interned annotation. The executor's sites are interned when
@@ -4289,8 +4280,8 @@ inline bool _jit_value_fits_field(int8_t tag, int64_t data,
                                   culebra::FieldType t,
                                   const culebra::TypeAnnotation* annotation) {
   if (_jit_value_surely_fits_field(tag, data, t, annotation)) return true;
-  return t == culebra::FieldType::Named &&
-         _culebra_annotation_admits(*annotation, tag, data);
+  return t == culebra::FieldType::Named && !annotation->exact &&
+         _culebra_value_matches_type(tag, data, annotation->text);
 }
 
 // The one wording, so the write check and the read's reject cannot drift

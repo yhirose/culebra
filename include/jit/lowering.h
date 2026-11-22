@@ -951,20 +951,26 @@ struct Lowering {
     // region's release ladder cannot double-release them on the unwind edge.
     // The receiver pair is already loaded, since it is read from a slot this
     // nils. Returns the call's result value.
+    // The argument slots' values copied into an entry-block slab (null for
+    // none), as the callee reads them.
+    auto emit_arg_slab = [&](int32_t argBase, int32_t argc) -> llvm::Value* {
+      if (argc == 0) return ConstantPointerNull::get(cast<PointerType>(ptrTy));
+      IRBuilder<> eb(&fn->getEntryBlock(), fn->getEntryBlock().begin());
+      auto* arrTy = ArrayType::get(j.valueType_, argc);
+      auto* slab = eb.CreateAlloca(arrTy, nullptr, "call.args");
+      for (int32_t k = 0; k < argc; ++k)
+        b.CreateStore(load_slot(argBase + k),
+                      b.CreateConstGEP2_64(arrTy, slab, 0,
+                                           static_cast<uint64_t>(k)));
+      return slab;
+    };
+    // `slab`: one emit_arg_slab already filled from these slots, else null.
     auto emit_abi_call = [&](llvm::FunctionCallee callee, llvm::Value* clsPtr,
                              llvm::Value* selfTagV, llvm::Value* selfDataV,
-                             int32_t selfSlot, int32_t argBase,
-                             int32_t argc) -> llvm::Value* {
+                             int32_t selfSlot, int32_t argBase, int32_t argc,
+                             llvm::Value* slab = nullptr) -> llvm::Value* {
       IRBuilder<> eb(&fn->getEntryBlock(), fn->getEntryBlock().begin());
-      llvm::Value* slab = ConstantPointerNull::get(cast<PointerType>(ptrTy));
-      if (argc > 0) {
-        auto* arrTy = ArrayType::get(j.valueType_, argc);
-        slab = eb.CreateAlloca(arrTy, nullptr, "call.args");
-        for (int32_t k = 0; k < argc; ++k)
-          b.CreateStore(load_slot(argBase + k),
-                        b.CreateConstGEP2_64(arrTy, slab, 0,
-                                             static_cast<uint64_t>(k)));
-      }
+      if (!slab) slab = emit_arg_slab(argBase, argc);
       auto* retTmp = eb.CreateAlloca(j.valueType_, nullptr, "call.ret");
       for (int32_t k = 0; k < argc; ++k)
         b.CreateStore(j.make_nil(), slots[argBase + k]);
@@ -987,13 +993,14 @@ struct Lowering {
       publish_site(line, col, argpos);
       // Both resolved shapes end here: a direct call to the named chunk's
       // own function, with the receiver pair the ABI wants.
-      auto emit_direct = [&](int32_t chunk, llvm::Value* clsPtr) {
+      auto emit_direct = [&](int32_t chunk, llvm::Value* clsPtr,
+                             llvm::Value* slab = nullptr) {
         auto selfV = selfSlot >= 0 ? load_slot(selfSlot) : nullptr;
         return emit_abi_call(
             fns[static_cast<size_t>(chunk)], clsPtr,
             selfV ? j.extract_tag(selfV) : b.getInt8(TAG_NO_SELF),
             selfV ? j.extract_data(selfV) : b.getInt64(0), selfSlot, argBase,
-            argc);
+            argc, slab);
       };
       // A callee the compiler named (Chunk::call_targets): its code is this
       // module's own function, so the Function gate and the two probes have
@@ -1025,6 +1032,7 @@ struct Lowering {
         // direct call on the taken side, and on the other the arm the site
         // would have taken all along.
         llvm::Value* holds = nullptr;
+        llvm::Value* argSlab = nullptr;  // filled by a gate that read it
         llvm::BasicBlock* dynBB = nullptr;
         auto open_diamond = [&] {
           dynBB = BasicBlock::Create(j.ctx_, "call.dyn", fn);
@@ -1060,22 +1068,13 @@ struct Lowering {
               auto gateBB = BasicBlock::Create(j.ctx_, "call.gate", fn);
               b.CreateCondBr(holds, gateBB, dynBB);
               b.SetInsertPoint(gateBB);
-              llvm::Value* argv = ConstantPointerNull::get(ptrTy);
-              if (argc > 0) {
-                IRBuilder<> eb(&fn->getEntryBlock(),
-                               fn->getEntryBlock().begin());
-                auto* arrTy = ArrayType::get(j.valueType_, argc);
-                argv = eb.CreateAlloca(arrTy, nullptr, "gate.args");
-                for (int32_t k = 0; k < argc; ++k)
-                  b.CreateStore(load_slot(argBase + k),
-                                b.CreateConstGEP2_64(arrTy, argv, 0,
-                                                     static_cast<uint64_t>(k)));
-              }
+              // The slab the gate reads is the one the body is called with.
+              argSlab = emit_arg_slab(argBase, argc);
               holds = j.emit_call(
                   j.module_->getOrInsertFunction(rt::mono_admits,
                                                  b.getInt1Ty(), ptrTy, i64Ty,
                                                  ptrTy),
-                  {dispatcherPtr, b.getInt64(argc), argv}, "mono.admits");
+                  {dispatcherPtr, b.getInt64(argc), argSlab}, "mono.admits");
             }
             break;
           }
@@ -1111,7 +1110,7 @@ struct Lowering {
         b.CreateCondBr(holds, fastBB, dynBB);
         b.SetInsertPoint(fastBB);
         if (!Chunk::via_dispatcher(tgt.reach)) emit_cap_check();
-        fastResult = emit_direct(tgt.chunk, clsPtr);
+        fastResult = emit_direct(tgt.chunk, clsPtr, argSlab);
         fastEndBB = b.GetInsertBlock();
         b.CreateBr(mergeBB);
         b.SetInsertPoint(dynBB);
