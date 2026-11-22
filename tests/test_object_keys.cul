@@ -207,4 +207,40 @@ only_str.remove(42)
 assert_eq(only_str.size(), 1)
 assert_throws('TypeError', fn () { only_str.remove([1]) })
 
+// A String key is every byte it holds: two keys that differ only after a NUL
+// are two entries, as `==` says, on every path that takes a key.
+let nul_a = String.from_bytes([97, 0, 98])
+let nul_b = String.from_bytes([97, 0, 99])
+mut nul_o = {}
+nul_o[nul_a] = 1
+nul_o[nul_b] = 2
+assert_eq(nul_o.size(), 2)
+assert_eq(nul_o[nul_a], 1)
+assert_false(nul_o.has('a'))
+assert_eq(nul_o.get('a', 0), 0)
+mut nul_sizes = []
+for k, v in nul_o {
+  nul_sizes.push(k.size())
+}
+assert_eq(nul_sizes, [3, 3])
+// A StringView key spells the same name as the String it views.
+let nul_view = String.from_bytes([97, 0, 98, 120]).slice(0, 3)
+assert_eq(nul_o[nul_view], 1)
+nul_o.remove('a')
+assert_eq(nul_o.size(), 2)
+nul_o.remove(nul_a)
+assert_eq(nul_o.size(), 1)
+mut nul_put = {}
+nul_put.get_or_put(nul_a, 1)
+nul_put.get_or_put(nul_b, 2)
+assert_eq(nul_put.size(), 2)
+mut nul_coalesce = {}
+nul_coalesce[nul_a] ??= 1
+nul_coalesce[nul_b] ??= 2
+assert_eq(nul_coalesce.size(), 2)
+// So do a builder that reads keys from data, and a spread that copies them.
+let nul_parsed = JSON.parse('{"a\u0000b": 1, "a\u0000c": 2}')
+assert_eq(nul_parsed.size(), 2)
+assert_eq({z: 0, ...nul_put}.size(), 3)
+
 IO.inspect("test_object_keys OK")

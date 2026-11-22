@@ -528,7 +528,7 @@ inline std::optional<JitValue> _try_special_unary(int8_t t, int64_t d,
                                                   Special s, int64_t line = 0,
                                                   int64_t col = 0);
 inline const JitObjectEntry* _find_property(JitObject* obj,
-                                            const char* key);
+                                            std::string_view key);
 
 // The `inspect` repr (top-level strings quoted) as a binary-safe string — no
 // trailing newline. Shared by IO.inspect (→ stdout) and IO.einspect
@@ -1858,7 +1858,7 @@ inline std::optional<bool> _jit_object_user_eq(JitObject* a, JitObject* b) {
 // every property reader on the JIT side; keeps the proto-fallthrough
 // rule in a single place.
 inline const JitObjectEntry* _find_property(JitObject* obj,
-                                             const char* key) {
+                                             std::string_view key) {
   auto idx = obj->find_slot(key);
   if (idx != static_cast<size_t>(-1)) return &obj->slots[idx];
   if (obj->proto()) {
@@ -4134,11 +4134,15 @@ inline void _culebra_check_well_known_prop(std::string_view name,
 // and the store — the interp's `assign` order (ImmutableError wins, and a
 // failed check leaves the old value in place). The IC paths pass false:
 // codegen routes well-known literal names around the IC entirely.
-inline void _jit_overwrite_slot(JitObjectEntry& entry,
-                                           const char* key, int8_t tag,
-                                           int64_t data, bool mut, bool is_init,
-                                           int64_t line, int64_t col,
-                                           bool check_wk = false) {
+extern "C++" {  // a template cannot have C linkage; we sit in extern "C"
+// `Key` is how the caller holds the name: an IC path's `const char*` literal,
+// or a `std::string_view` (a key from data, NUL and all). Only a throw reads
+// it, so the write itself never measures a C string.
+template <class Key>
+inline void _jit_overwrite_slot(JitObjectEntry& entry, Key key, int8_t tag,
+                                int64_t data, bool mut, bool is_init,
+                                int64_t line, int64_t col,
+                                bool check_wk = false) {
   if (!is_init && !entry.mut) {
     _culebra_value_release_impl(tag, data);
     throw culebra::CulebraError("ImmutableError", culebra::format(
@@ -4148,18 +4152,20 @@ inline void _jit_overwrite_slot(JitObjectEntry& entry,
   if (is_init) entry.mut = mut;
   _jit_replace_value(entry.value, tag, data);
 }
+}  // extern "C++"
 
 // A `@value` instance is frozen once its constructor returns: the fields it
 // has are the fields it will ever have. Raised from every branch that would
 // mint a new own slot — the plain set, both write-IC paths, and the
 // non-String sidecar — so the closed field set holds however the write is
-// spelled. `key` is null for a non-String key, which is an entry rather than
+// spelled. `key` is none for a non-String key, which is an entry rather than
 // a property.
-[[noreturn]] inline void _jit_throw_value_add(const char* key, int64_t line,
-                                              int64_t col) {
+[[noreturn]] inline void _jit_throw_value_add(
+    std::optional<std::string_view> key, int64_t line, int64_t col) {
   throw culebra::CulebraError(
       "ImmutableError",
-      key ? culebra::format("cannot add property '{}' to a @value instance", key)
+      key ? culebra::format("cannot add property '{}' to a @value instance",
+                            *key)
           : "cannot add an entry to a @value instance",
       line, col);
 }
@@ -4176,13 +4182,16 @@ inline bool _jit_value_add_refused(const JitObject* obj, bool is_init) {
 
 // The releasing form, for the append branches that own the caller's +1 on
 // the value — the same contract the immutable-slot throw beside them keeps.
-inline void _jit_reject_value_add(JitObject* obj, const char* key, int8_t tag,
+extern "C++" {  // a template cannot have C linkage; we sit in extern "C"
+template <class Key>  // as _jit_overwrite_slot's
+inline void _jit_reject_value_add(JitObject* obj, Key key, int8_t tag,
                                   int64_t data, int64_t line, int64_t col,
                                   bool is_init) {
   if (!_jit_value_add_refused(obj, is_init)) return;
   _culebra_value_release_impl(tag, data);
   _jit_throw_value_add(key, line, col);
 }
+}  // extern "C++"
 
 // Raise the well-known contract error at declaration execution time.
 // Emitted by compile_class_decl when a well-known name has an overload
@@ -4256,7 +4265,7 @@ inline bool _jit_value_fits_field(int8_t tag, int64_t data,
 // The one wording, so the write check and the read's reject cannot drift
 // apart — `tests/test_typed_fields.cul` pins the sentence.
 [[noreturn]] inline void _jit_throw_field_type(
-    const char* key, culebra::FieldType t,
+    std::string_view key, culebra::FieldType t,
     const culebra::FieldAnnotation* annotation, int64_t line, int64_t col) {
   throw culebra::CulebraError(
       "TypeError",
@@ -4269,7 +4278,9 @@ inline bool _jit_value_fits_field(int8_t tag, int64_t data,
 
 // A write's check against the slot's declared type: a refused value is
 // released (the write owned it) and reported in the one wording.
-inline void _jit_check_field_write(const char* key, culebra::FieldType t,
+extern "C++" {  // a template cannot have C linkage; we sit in extern "C"
+template <class Key>  // as _jit_overwrite_slot's
+inline void _jit_check_field_write(Key key, culebra::FieldType t,
                                    const culebra::FieldAnnotation* annotation,
                                    int8_t tag, int64_t data, int64_t line,
                                    int64_t col) {
@@ -4280,7 +4291,8 @@ inline void _jit_check_field_write(const char* key, culebra::FieldType t,
 
 // The same for a write to `shape`'s existing slot `idx`, reading the slot's
 // annotation only when it has one.
-inline void _jit_check_slot_write(const char* key, const culebra::Shape* shape,
+template <class Key>
+inline void _jit_check_slot_write(Key key, const culebra::Shape* shape,
                                   size_t idx, int8_t tag, int64_t data,
                                   int64_t line, int64_t col) {
   auto t = shape->type_at(idx);
@@ -4291,6 +4303,7 @@ inline void _jit_check_slot_write(const char* key, const culebra::Shape* shape,
                              : nullptr,
                          tag, data, line, col);
 }
+}  // extern "C++"
 
 // A JitHandle keeps its state in C++, so it has no field to set or remove.
 [[noreturn]] inline void _jit_handle_refuse_field(JitObject* obj,
@@ -4310,7 +4323,7 @@ inline void _jit_check_slot_write(const char* key, const culebra::Shape* shape,
 
 struct JitBufView;
 inline JitBufView* _jit_record_view(const JitObject* o);
-inline void _jit_packed_view_set(JitBufView& view, const char* key,
+inline void _jit_packed_view_set(JitBufView& view, std::string_view key,
                                  int8_t tag, int64_t data, int64_t line,
                                  int64_t col);
 
@@ -4323,7 +4336,7 @@ inline void _jit_packed_view_set(JitBufView& view, const char* key,
 extern "C++" {  // a template cannot have C linkage; we sit in extern "C"
 template <bool kFromData = false>
 inline void _jit_object_set_declared(
-    JitObject* obj, const char* key, bool mut, int8_t tag, int64_t data,
+    JitObject* obj, std::string_view key, bool mut, int8_t tag, int64_t data,
     int64_t line, int64_t col, bool is_init, culebra::FieldType declared,
     const culebra::FieldAnnotation* annotation = nullptr) {
   if (auto* rec = _jit_record_view(obj))
@@ -4356,7 +4369,7 @@ inline void _jit_object_set_declared(
     _jit_overwrite_slot(obj->slots[idx], key, tag, data, mut, is_init, line,
                         col, /*check_wk=*/true);
   }
-  if (std::string_view(key) == "drop") _jit_owned_bind_drop(obj);
+  if (key == "drop") _jit_owned_bind_drop(obj);
 }
 }  // extern "C++"
 
@@ -4373,19 +4386,26 @@ culebra_runtime_field_type_reject(int8_t want_tag, const char* key,
                         col);
 }
 
+inline void _jit_object_set(JitObject* obj, std::string_view key, bool mut,
+                            int8_t tag, int64_t data, int64_t line, int64_t col,
+                            bool is_init = false) {
+  _jit_object_set_declared(obj, key, mut, tag, data, line, col, is_init,
+                           culebra::FieldType::Any);
+}
+
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_set(
     JitObject* obj, const char* key, bool mut, int8_t tag, int64_t data,
     int64_t line, int64_t col, bool is_init = false) {
-  _jit_object_set_declared(obj, key, mut, tag, data, line, col, is_init,
-                           culebra::FieldType::Any);
+  _jit_object_set(obj, key, mut, tag, data, line, col, is_init);
 }
 
 // object_set for a name the program computed rather than spelled: a
 // subscript's key, a spread's, one a builder read from data (JSON.parse, a
 // request's query). The Shape it takes is budgeted (JitObject::append_keyed).
-inline void _jit_object_set_keyed(JitObject* obj, const char* key, bool mut,
-                                  int8_t tag, int64_t data, int64_t line,
-                                  int64_t col, bool is_init = false) {
+inline void _jit_object_set_keyed(JitObject* obj, std::string_view key,
+                                  bool mut, int8_t tag, int64_t data,
+                                  int64_t line, int64_t col,
+                                  bool is_init = false) {
   _jit_object_set_declared</*kFromData=*/true>(
       obj, key, mut, tag, data, line, col, is_init, culebra::FieldType::Any);
 }
@@ -5009,7 +5029,7 @@ inline const culebra::PackableField& _jit_record_field(const JitBufView& view,
       line, col);
 }
 
-inline JitValue _jit_packed_view_get(JitBufView& view, const char* key,
+inline JitValue _jit_packed_view_get(JitBufView& view, std::string_view key,
                                      int64_t line = 0, int64_t col = 0) {
   auto* core = view.core(line, col);
   const auto& f = _jit_record_field(view, key, line, col);
@@ -5029,7 +5049,7 @@ inline JitValue _jit_packed_view_get(JitBufView& view, const char* key,
   return v;
 }
 
-inline void _jit_packed_view_set(JitBufView& view, const char* key,
+inline void _jit_packed_view_set(JitBufView& view, std::string_view key,
                                  int8_t tag, int64_t data, int64_t line,
                                  int64_t col) {
   // A store consumes exactly one ref of the assigned value, on every exit

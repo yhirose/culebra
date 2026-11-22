@@ -183,6 +183,16 @@ int run() {
     opts.set("port", 1);
     ok &= check(opts["port"].as<int64_t>() == 1, "a built Object is mutable");
   }
+  {  // a key is every byte the host gives, a NUL among them
+    const std::string_view ab("a\0b", 3), ac("a\0c", 3);
+    auto keys = Value::object({{ab, 1}, {ac, 2}});
+    ok &= check(keys.size() == 2, "Value::object keeps a key past its NUL");
+    ok &= check(keys.has(ac) && !keys.has("a"), "has() reads the whole key");
+    keys.set(ab, 3);
+    ok &= check(keys.size() == 2 && keys[ab].as<int64_t>() == 3 &&
+                    keys[ac].as<int64_t>() == 2,
+                "set() writes the whole key");
+  }
   {  // the vector<Value> form still takes values the host already holds
     std::vector<Value> args;
     args.emplace_back(int64_t{4});

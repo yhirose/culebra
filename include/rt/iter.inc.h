@@ -2279,8 +2279,8 @@ inline bool JitKeySnapshot::value(JitObject* obj, JitArray* keys,
   // The slot the key was listed from, not `obj[key]`: a subscript is another
   // question for some receivers (a Regex match answers it with a capture).
   if (key.tag == TAG_STRING)
-    return _jit_named_slot(obj, reinterpret_cast<const char*>(key.data),
-                           out_tag, out_data);
+    return _jit_named_slot(obj, _culebra_str_view(key.tag, key.data), out_tag,
+                           out_data);
   auto* hs = reinterpret_cast<JitArray*>(hashes.data);
   auto* entry = _jit_sidecar_at(
       obj, JitHashedKey::restore(key, static_cast<size_t>(hs->items[i].data)));
@@ -3977,8 +3977,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE int8_t culebra_runtime_is_namespace(
       line, col);
 }
 
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_remove(
-    JitObject* obj, const char* key) {
+inline void _jit_object_remove(JitObject* obj, std::string_view key) {
   if (obj->is_shared_val) _jit_shared_val_builtin_reject(obj, "remove", 0, 0);
   // The other direction of a `@value` instance's frozen field set: dropping a
   // field would break the fixed shape the contract exists to guarantee, so it
@@ -4001,7 +4000,12 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_remove(
   _culebra_value_release_impl(obj->slots[idx].value.tag,
                               obj->slots[idx].value.data);
   obj->erase(key);
-  if (std::string_view(key) == "drop") _jit_owned_unbind_drop(obj);
+  if (key == "drop") _jit_owned_unbind_drop(obj);
+}
+
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_remove(
+    JitObject* obj, const char* key) {
+  _jit_object_remove(obj, key);
 }
 
 // Whether `key_order`, once it exists, names every key the object holds and
@@ -4036,11 +4040,10 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_object_get_default(
   }
   (void)line;
   (void)col;
-  std::string kbuf;
   bool found = false;
   JitValue stored{TAG_NIL, 0};
-  if (const char* name = _jit_key_name(kt, kd, kbuf)) {
-    auto idx = obj->find_slot(name);
+  if (auto name = _jit_key_name(kt, kd)) {
+    auto idx = obj->find_slot(*name);
     if (idx != static_cast<size_t>(-1)) {
       stored = obj->slots[idx].value;
       found = true;
@@ -4079,13 +4082,12 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE JitValue culebra_runtime_object_get_or_put(
     if (kt != TAG_STRING) _culebra_value_release_impl(kt, kd);
     _jit_shared_val_builtin_reject(obj, "get_or_put", line, col);
   }
-  std::string kbuf;
   bool found = false;
   JitValue stored{TAG_NIL, 0};
   std::optional<JitHashedKey> hashed;  // a non-String key, for the store too
-  const char* name = _jit_key_name(kt, kd, kbuf);
+  JitKeyName name = _jit_key_name(kt, kd);
   if (name) {
-    auto idx = obj->find_slot(name);
+    auto idx = obj->find_slot(*name);
     if (idx != static_cast<size_t>(-1)) {
       stored = obj->slots[idx].value;
       found = true;
@@ -4161,10 +4163,9 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_remove_any(
   // (`({a: 1}).remove([1])` stranded the array otherwise). Armed after the
   // refusals above, which release the key themselves.
   JitUnwindRelease key_guard{JitValue{tag, data}};
-  std::string _kbuf;
-  if (const char* name = _jit_key_name(tag, data, _kbuf)) {
-    if (obj->find_slot(name) != static_cast<size_t>(-1)) {
-      culebra_runtime_object_remove(obj, name);
+  if (auto name = _jit_key_name(tag, data)) {
+    if (obj->find_slot(*name) != static_cast<size_t>(-1)) {
+      _jit_object_remove(obj, *name);
       assert(_jit_key_order_whole(obj));
     }
     return;

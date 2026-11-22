@@ -156,9 +156,7 @@ class Value {
   bool has(std::string_view key) const {
     if (v_.tag != TAG_OBJECT)
       culebra_runtime_type_error_typed(0, 0, "Object", v_.tag);
-    std::string k(key);
-    return culebra_runtime_object_has(reinterpret_cast<JitObject*>(v_.data),
-                                      k.c_str());
+    return _jit_object_has(reinterpret_cast<JitObject*>(v_.data), key);
   }
 
   // `recv[key]`, with the script's semantics unchanged: an Object miss is a
@@ -504,9 +502,9 @@ inline JitValue to_jit(std::nullptr_t) { return {TAG_NIL, 0}; }
 
 // `{mut k: v}` — the object-literal seat (Value::object). `mut` because what
 // the host builds is the host's own data.
-inline void _object_put(JitObject* obj, const char* key, JitValue v) {
-  culebra_runtime_object_set(obj, key, /*mut=*/true, v.tag, v.data, 0, 0,
-                             /*is_init=*/true);
+inline void _object_put(JitObject* obj, std::string_view key, JitValue v) {
+  _jit_object_set(obj, key, /*mut=*/true, v.tag, v.data, 0, 0,
+                  /*is_init=*/true);
 }
 
 template <class T>
@@ -529,7 +527,7 @@ JitValue to_jit(const std::map<std::string, T>& m) {
   // A map's keys are data, not names the host spelled.
   for (const auto& [k, x] : m) {
     JitValue v = to_jit(x);
-    _jit_object_set_keyed(obj, k.c_str(), /*mut=*/true, v.tag, v.data, 0, 0,
+    _jit_object_set_keyed(obj, k, /*mut=*/true, v.tag, v.data, 0, 0,
                           /*is_init=*/true);
   }
   return guard.release();
@@ -607,12 +605,9 @@ inline void Value::set(std::string_view key,
   // As operator[]: a store into a slot goes by the key's name, and the key is
   // made a String of the runtime's where a class's `__setindex__` receives it.
   auto* obj = reinterpret_cast<JitObject*>(v_.data);
-  const std::string name(key);
-  if (!culebra_runtime_object_sets_named(obj, name.c_str()))
-    return set(Value(key), v);
+  if (!culebra_runtime_object_sets_named(obj, key)) return set(Value(key), v);
   const JitValue val = v.owned();  // the store absorbs this +1
-  culebra_runtime_object_set(obj, name.c_str(), /*mut=*/true, val.tag,
-                             val.data, 0, 0, /*is_init=*/false);
+  _jit_object_set(obj, key, /*mut=*/true, val.tag, val.data, 0, 0);
 }
 
 inline void Value::set(int64_t idx, const _embed_detail::Arg& v) {
@@ -669,8 +664,7 @@ inline Value Value::object(
       {TAG_OBJECT, reinterpret_cast<int64_t>(culebra_runtime_object_new())});
   auto* obj = reinterpret_cast<JitObject*>(out.get().data);
   for (const auto& [key, val] : entries) {
-    std::string k(key);  // object_set takes a NUL-terminated name
-    _embed_detail::_object_put(obj, k.c_str(), val.owned());
+    _embed_detail::_object_put(obj, key, val.owned());
   }
   return out;
 }

@@ -598,18 +598,14 @@ inline bool _jit_try_object_setindex(JitObject* obj, int8_t key_tag,
 
 // String and StringView are the same dict key (a `==`-equal pair): the slot
 // either reaches is found by the name it spells, and this is that name, or
-// null for a key of any other type. `owned` backs a view's bytes as a C string
-// and must outlive the lookup. The key itself stays the value the program
-// wrote, which is what goes on to anything that reads it as one (a class's
-// `__index__`, the insertion order, a Shared view): the name is no String, it
-// has no length header.
-inline const char* _jit_key_name(int8_t key_tag, int64_t key_data,
-                                 std::string& owned) {
-  if (key_tag == TAG_STRING) return reinterpret_cast<const char*>(key_data);
-  if (key_tag != TAG_STRINGVIEW) return nullptr;
-  auto* sv = reinterpret_cast<JitStringView*>(key_data);
-  owned.assign(sv->ptr, sv->len);
-  return owned.c_str();
+// none for a key of any other type. The name is every byte the key holds, a
+// NUL among them, so it is never handed on as a C string. The key itself
+// stays the value the program wrote, which is what goes on to anything that
+// reads it as one (a class's `__index__`, the insertion order, a Shared view).
+using JitKeyName = std::optional<std::string_view>;
+inline JitKeyName _jit_key_name(int8_t key_tag, int64_t key_data) {
+  if (key_tag != TAG_STRING && key_tag != TAG_STRINGVIEW) return std::nullopt;
+  return _culebra_str_view(key_tag, key_data);
 }
 
 // A Shared view, or a JitHandle (a SharedBuffer or a view of one, a channel
@@ -640,7 +636,7 @@ inline bool _jit_keyed_by_entries(JitObject* obj) {
 
 // A class instance's `__setindex__` is asked first about a String key that is
 // none of the instance's own slots.
-inline bool _jit_setindex_first(JitObject* obj, const char* name) {
+inline bool _jit_setindex_first(JitObject* obj, std::string_view name) {
   return obj->proto() && obj->find_slot(name) == static_cast<size_t>(-1);
 }
 
@@ -692,7 +688,7 @@ inline bool _jit_object_set_hashed(JitObject* obj, const JitHashedKey& key,
 // Consumes the caller's +1 to the key and the value on every exit. `name` is
 // the key's `_jit_key_name`; a caller that has hashed the key already passes
 // that as `hashed`.
-inline void _jit_object_set_any(JitObject* obj, const char* name,
+inline void _jit_object_set_any(JitObject* obj, JitKeyName name,
                                 int8_t key_tag, int64_t key_data,
                                 const std::optional<JitHashedKey>& hashed,
                                 bool mut, int8_t val_tag, int64_t val_data,
@@ -711,7 +707,7 @@ inline void _jit_object_set_any(JitObject* obj, const char* name,
     // `rec["x"] = v` on a record view is its field's write.
     if (auto* view = _jit_record_view(obj)) {
       if (name)
-        return _jit_packed_view_set(*view, name, val_tag, val_data, line, col);
+        return _jit_packed_view_set(*view, *name, val_tag, val_data, line, col);
       _culebra_value_release_impl(val_tag, val_data);
       throw culebra::CulebraError(
           "TypeError", "a @packable record view's fields are named by a String",
@@ -740,7 +736,7 @@ inline void _jit_object_set_any(JitObject* obj, const char* name,
     // its own slots. A plain dict short-circuits on `proto` and sets the
     // slot directly, so its hot path keeps a single lookup (string key is
     // non-refcounted, so only the consumed value is released here).
-    if (_jit_setindex_first(obj, name)) {
+    if (_jit_setindex_first(obj, *name)) {
       // A user `__setindex__` body's throw unwinds past the release below, so
       // guard the value's +1 across the dispatch.
       JitUnwindRelease g{JitValue{val_tag, val_data}};
@@ -749,7 +745,7 @@ inline void _jit_object_set_any(JitObject* obj, const char* name,
         return;
       }
     }
-    _jit_object_set_keyed(obj, name, mut, val_tag, val_data, line, col,
+    _jit_object_set_keyed(obj, *name, mut, val_tag, val_data, line, col,
                           is_init);
     return;
   }
@@ -778,7 +774,7 @@ inline void _jit_object_set_any(JitObject* obj, const char* name,
   // any write reaching here is an add. The guard above owns the key and the
   // value on this edge; throw without releasing.
   if (_jit_value_add_refused(obj, /*is_init=*/false))
-    _jit_throw_value_add(nullptr, line, col);
+    _jit_throw_value_add(std::nullopt, line, col);
   if (!key) _jit_throw_unhashable(unhashable);
   g.disarm();
   _jit_object_set_hashed(obj, *key, mut, {val_tag, val_data}, line, col,
@@ -789,8 +785,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_set_any(
     JitObject* obj, int8_t key_tag, int64_t key_data, bool mut,
     int8_t val_tag, int64_t val_data, int64_t line, int64_t col,
     bool is_init) {
-  std::string _kbuf;
-  _jit_object_set_any(obj, _jit_key_name(key_tag, key_data, _kbuf), key_tag,
+  _jit_object_set_any(obj, _jit_key_name(key_tag, key_data), key_tag,
                       key_data, std::nullopt, mut, val_tag, val_data, line, col,
                       is_init);
 }
@@ -800,7 +795,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_set_any(
 // False where the key goes on as a value, so the caller has to make it one: a
 // class's `__setindex__` receives it, or the receiver is a handle.
 inline bool culebra_runtime_object_sets_named(JitObject* obj,
-                                              const char* name) {
+                                              std::string_view name) {
   return !_jit_is_handle(obj) && !_jit_setindex_first(obj, name);
 }
 
@@ -827,8 +822,8 @@ inline void _jit_copy_own_entries(JitObject* dst, JitObject* src, bool mut,
         if (skipped(name)) return;
         JitValue v = entry.value;
         culebra_runtime_value_retain(v.tag, v.data);
-        _jit_object_set_keyed(dst, std::string(name).c_str(), mut, v.tag,
-                              v.data, line, col, /*is_init=*/true);
+        _jit_object_set_keyed(dst, name, mut, v.tag, v.data, line, col,
+                              /*is_init=*/true);
       },
       [&](const JitHashedKey& k, const JitObjectEntry& entry) {
         JitValue v = entry.value;
@@ -967,10 +962,10 @@ inline bool _jit_named_slot(JitObject* obj, std::string_view name,
 // key that cannot be hashed is a miss, and `*unhashable` (nil otherwise)
 // names why, so the caller can raise once a class's `__index__` declines it.
 // `name` is the key's `_jit_key_name`.
-inline bool _jit_try_own_slot(JitObject* obj, const char* name, int8_t key_tag,
+inline bool _jit_try_own_slot(JitObject* obj, JitKeyName name, int8_t key_tag,
                               int64_t key_data, int8_t* out_tag,
                               int64_t* out_data, JitValue* unhashable) {
-  if (name) return _jit_named_slot(obj, name, out_tag, out_data);
+  if (name) return _jit_named_slot(obj, *name, out_tag, out_data);
   auto* entry = _jit_sidecar_probe(obj, {key_tag, key_data}, unhashable);
   if (!entry) return false;
   *out_tag = entry->second.value.tag;
@@ -1023,9 +1018,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_get_any(
     }
     // `rec["x"]` on a record view: its field `x` (+1).
     if (auto* view = _jit_record_view(obj)) {
-      std::string kbuf;
-      if (const char* name = _jit_key_name(key_tag, key_data, kbuf)) {
-        JitValue r = _jit_packed_view_get(*view, name, line, col);
+      if (auto name = _jit_key_name(key_tag, key_data)) {
+        JitValue r = _jit_packed_view_get(*view, *name, line, col);
         culebra_runtime_value_retain(r.tag, r.data);
         if (key_tag != TAG_STRING)
           _culebra_value_release_impl(key_tag, key_data);
@@ -1075,8 +1069,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_get_any(
   }
   // Slot hit: String keys are unified with shape access (see object_set_any);
   // other keys live in the non-String sidecar, whose probe hashes the key.
-  std::string _kbuf;
-  const char* name = _jit_key_name(key_tag, key_data, _kbuf);
+  JitKeyName name = _jit_key_name(key_tag, key_data);
   if (!name) culebra_runtime_set_op_pos(line, col);
   JitValue unhashable{TAG_NIL, 0};
   if (_jit_try_own_slot(obj, name, key_tag, key_data, out_tag, out_data,
@@ -1108,8 +1101,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE void culebra_runtime_object_get_any(
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_object_get_for_coalesce(
     JitObject* obj, int8_t key_tag, int64_t key_data,
     int8_t* out_tag, int64_t* out_data, int64_t line, int64_t col) {
-  std::string _kbuf;
-  const char* name = _jit_key_name(key_tag, key_data, _kbuf);
+  JitKeyName name = _jit_key_name(key_tag, key_data);
   const JitValue key_guard = key_tag != TAG_STRING
       ? JitValue{key_tag, key_data}
       : JitValue{TAG_NIL, 0};
@@ -1674,8 +1666,7 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_to_bool_borrow(
   return false;  // unreachable: type_error_typed throws
 }
 
-CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_object_has(JitObject* obj,
-                                                             const char* key) {
+inline bool _jit_object_has(JitObject* obj, std::string_view key) {
   // A packed view's "properties" are its @packable fields (not real
   // slots), so the compound-assign existence pre-check (`view.x += v`)
   // resolves against the layout.
@@ -1688,6 +1679,11 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_object_has(JitObject* obj
     return _jit_shared_view_find(obj, key, &found);
   }
   return _find_property(obj, key) != nullptr;
+}
+
+CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_object_has(JitObject* obj,
+                                                             const char* key) {
+  return _jit_object_has(obj, key);
 }
 
 // The UFCS gate's question for an Object receiver: does it resolve `key` as a
@@ -1830,9 +1826,8 @@ CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_object_is_instance(
 // a borrowed cstring (non-refcounted) and needs no release.
 CULEBRA_RT_KEEP CULEBRA_RT_INLINE bool culebra_runtime_object_has_value(
     JitObject* obj, int8_t tag, int64_t data) {
-  std::string _kbuf;
-  if (const char* name = _jit_key_name(tag, data, _kbuf))
-    return _find_property(obj, name) != nullptr;
+  if (auto name = _jit_key_name(tag, data))
+    return _find_property(obj, *name) != nullptr;
   // Hashing the key is where an unhashable one raises; the key is this
   // call's to release on that exit as on the normal one.
   JitUnwindRelease key_guard{JitValue{tag, data}};
