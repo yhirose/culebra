@@ -1,0 +1,103 @@
+# A stretch of operators whose operands come from outside it (a field, an
+# array, an untyped parameter) runs one way when every such operand holds a
+# Float and another way otherwise. Both ways must give the same results and
+# the same errors, at the same place.
+
+class P {
+  new(@a, @b, @c) {}
+}
+
+fn poly(a, b, c) {
+  a * b + c - a
+}
+
+fn from_fields(p) {
+  let (a, b, c) = (p.a, p.b, p.c)
+  a * b + c - a
+}
+
+fn from_array(xs) {
+  let (a, b, c) = (xs[0], xs[1], xs[2])
+  a * b + c - a
+}
+
+# all Float
+assert_eq(poly(1.5, 2.0, 0.25), 1.75)
+assert_eq(from_fields(P(1.5, 2.0, 0.25)), 1.75)
+assert_eq(from_array([1.5, 2.0, 0.25]), 1.75)
+
+# all Long: stays Long
+assert_eq(poly(3, 4, 5), 14)
+assert_eq(type_of(poly(3, 4, 5)), 'Long')
+assert_eq(from_fields(P(3, 4, 5)), 14)
+
+# Long and Float mixed: Float
+assert_eq(poly(1.5, 2, 4), 5.5)
+assert_eq(from_array([2.0, 3, 1]), 5.0)
+
+# signed zero and NaN pass through as they would one operator at a time
+assert_eq("{poly(0.0, -1.0, -0.0)}", '-0.0')
+let nan = poly(Math.inf, 0.0, 1.0)
+assert_eq(nan != nan, true)
+
+# a copy inside the stretch carries the operand's value
+fn copies(a, b) {
+  let t = a * b
+  let x = a
+  t + x - b
+}
+assert_eq(copies(1.5, 4.0), 3.5)
+assert_eq(copies(3, 2), 7)
+
+# the result carried around a loop
+fn decay(xs) {
+  mut s = 0.0
+  for x in xs {
+    s = s * 0.5 + x * 2.0
+  }
+  s
+}
+assert_eq(decay([1.0, 2.0, 4.0]), 10.5)
+assert_eq(decay([1, 2, 4]), 10.5)
+
+# operator methods still answer
+class V {
+  new(@x) {}
+  __mul__(o) {
+    V(@x * (type_of(o) == 'V' ? o.x : o))
+  }
+  __add__(o) {
+    V(@x + (type_of(o) == 'V' ? o.x : o))
+  }
+  __sub__(o) {
+    V(@x - (type_of(o) == 'V' ? o.x : o))
+  }
+}
+assert_eq(poly(V(2.0), 3.0, 1.0).x, 5.0)
+
+# errors: which operator, what it says, and where
+fn caught(f) {
+  try {
+    f()
+    'no error'
+  } catch e {
+    "{e.kind}: {e.message} at {e.line}:{e.col}"
+  }
+}
+assert_eq(caught(|| poly('a', 2.0, 1.0)), "TypeError: type error: cannot apply '*' to String and Float at 11:3")
+assert_eq(caught(|| poly(1.0, 2.0, 'x')), "TypeError: type error: cannot apply '+' to Float and String at 11:3")
+assert_eq(caught(|| from_fields(P(1.0, 2.0, nil))), "TypeError: type error: cannot apply '+' to Float and Nil at 16:3")
+
+fn ratio(a, b, c) {
+  a / b + c
+}
+assert_eq(caught(|| ratio(1.0, 0.0, 2.0)), "ZeroDivisionError: divide by 0 error at 92:3")
+assert_eq(ratio(1.0, 4.0, 2.0), 2.25)
+
+fn rem(a, b, c) {
+  a % b * c
+}
+assert_eq(rem(7.5, 2.0, 2.0), 3.0)
+assert_eq(rem(-7.5, 2.0, 1.0), -1.5)
+assert_eq(rem(7, 2, 3), 3)
+assert_eq(caught(|| rem(1.0, 0.0, 2.0)), 'ZeroDivisionError: divide by 0 error at 98:3')

@@ -1818,6 +1818,14 @@ _run-tests BACKEND:
     # its own unannotated control so it cannot pass by measuring nothing.
     run_param_tag() { bash tools/checks/check_param_tag_fold.sh "$BIN"; }
 
+    # Arith-run gate: operators on Floats from fields, arrays or untyped
+    # parameters run as bare doubles inside the guarded copy the lowering
+    # makes of the stretch (Lowering::arith_runs). Losing it is only slower
+    # (about 2.5x on such arithmetic), which nothing else would notice
+    # (tools/checks/check_arith_runs.sh). Reads emitted IR, and carries a
+    # control the copy cannot reach.
+    run_arith_runs() { bash tools/checks/check_arith_runs.sh "$BIN"; }
+
     # Counted-range gate: `for i in range(...)` on the built-in compiles to
     # the counter `for i in a..b` walks, opening no iterator. Losing it is
     # only slower (~0.6 us a loop start), which nothing else would notice
@@ -1914,6 +1922,7 @@ _run-tests BACKEND:
       "run_alloca_discipline|alloca discipline (scratch slots stay entry-block)|binary|dev,test|light|-|0"
       "run_float_carry|float carry (loop-carried Floats stay double phis)|binary|dev,test|light|-|0"
       "run_param_tag|param tag (a declared parameter type reaches the code)|binary|dev,test|light|-|0"
+      "run_arith_runs|arith runs (operators on untyped Floats fold to doubles)|binary|dev,test|light|-|0"
       "run_counted_range|counted range (for i in range(...) walks a counter)|binary|dev,test|light|-|0"
       "run_param_names|param names (stdlib functions bind their documented names)|binary|dev,test|light|-|1"
       "run_early_ifcvt|early ifcvt (a carried Float's if arm stays a branch)|binary|dev,test|light|-|1"

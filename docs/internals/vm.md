@@ -2081,6 +2081,33 @@ afterwards, and `tools/checks/check_float_carry.sh` pins the result in
 the emitted IR, since nothing else would notice the pass going quiet
 (§10.2).
 
+Arithmetic on a value whose tag no compiler can know, one read from a
+field, an array or an untyped parameter, tests both operands and merges
+the integer arm, the double arm and the helper call into one phi; the
+tag is lost at that merge, so the next operator tests again. The
+lowering takes such stretches whole instead. `Lowering::arith_runs`
+finds two or more operators in one block, with copies, releases and
+number constants allowed between them (a call or a property read ends
+the stretch), and the lowering emits each stretch twice behind one guard
+on its inputs, the slots it reads as operands before writing them: the
+code as it would be anyway, and the same code again where every input
+holds a Float. The two copies are the same per-instruction emission, so
+results, errors and their order cannot differ; under the guard, with no
+path back to a merge that forgets it, the pipeline folds every
+operator's tests and leaves bare double arithmetic. No jump lands inside
+a stretch, so the walk simply rewinds over it, the plain copy first so
+that its blocks and landing pads come out exactly where they would
+without the copy. Only a pipeline folds the second copy, so a lowering
+without one (`-O0`, `--jit-faststart`) makes none
+(`lower_program`'s `optimized`), and a function past the block cut has its
+copies taken back out before it is counted (`JIT::settle_arith_versions`),
+so the cut sees the function as before. Twenty Float operators per call
+went from 42.7 to 16.0 ns on fields and from 36.8 to 13.8 ns on untyped
+parameters (x86-64, `just build`); the flight model's step went from 2.86
+to 2.28 µs in the air and from 8.12 to 7.23 µs on the ground. Across
+`tests/*.cul` the optimized IR grew 0.04% and the JIT's compile time
+0.35%. `tools/checks/check_arith_runs.sh` pins the fold (§10.2).
+
 One knob is turned on the backend itself. AArch64's early
 if-conversion speculates a small `if` arm into `fcsel` whatever the
 branch's odds, and an arm that assigns a loop-carried Float then puts
@@ -2370,6 +2397,9 @@ check, used by the Windows CI jobs.
   double phi and not an `i64` one read back through a bitcast — the
   shape `PromoteFloatPhis` removes, and the one whose return costs a
   third of the loop without any test seeing it),
+  `tools/checks/check_arith_runs.sh` (Floats read from fields chain one
+  operator's double into the next with no test between, against a
+  control whose stretch a call cuts, and `-O0` keeps no Float copy),
   `tools/checks/check_early_ifcvt.sh` (the same row's machine code, read
   back through `CULEBRA_JIT_CACHE` and `objdump`: the loop holds no
   `fcsel`, so AArch64's early if-conversion is still off — a knob the IR

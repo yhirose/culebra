@@ -91,7 +91,7 @@ struct Lowering {
     IRBuilder<> builder(*ctx);
     JIT jit(ctx.get(), mod.get(), builder);
     auto phase_t = std::chrono::steady_clock::now();
-    lower_program(jit, p, "__culebra_main", baked);
+    lower_program(jit, p, opt_level > 0, "__culebra_main", baked);
     JIT::time_phase("lower", phase_t);
     // The object cache's two keys (JIT::FileObjectCache), in the order they
     // can answer: the source key before the IR pipeline, which a hit skips
@@ -192,7 +192,7 @@ struct Lowering {
     }
     IRBuilder<> builder(*ctx);
     JIT jit(ctx.get(), mod.get(), builder);
-    lower_program(jit, p, entry.c_str());
+    lower_program(jit, p, opt_level > 0, entry.c_str());
     if (opt_level > 0) JIT::optimize_module(*mod, opt_level);
     return emit_object_file(p, *tm, *mod, out_path, "culebra build-preamble");
   }
@@ -232,7 +232,7 @@ struct Lowering {
 
     IRBuilder<> builder(*ctx);
     JIT jit(ctx.get(), mod.get(), builder);
-    auto* mainFn = lower_program(jit, p, "__culebra_main", baked);
+    auto* mainFn = lower_program(jit, p, opt_level > 0, "__culebra_main", baked);
 
     auto i32 = builder.getInt32Ty();
     auto ptrTy = PointerType::get(*ctx, 0);
@@ -310,9 +310,11 @@ struct Lowering {
   // call to each one's `culebra_preamble_<Name>`, where the spliced
   // registrations used to be, and the lane's link supplies the symbol —
   // the JIT from the driver's table (JIT::define_baked_preambles), the
-  // built binary from libculebra_rt.a.
+  // built binary from libculebra_rt.a. `optimized`: the IR pipeline runs
+  // next, the one thing that makes an arith run's Float copy worth its IR.
   static llvm::Function* lower_program(
-      JIT& j, const VmProgram& p, const char* entry = "__culebra_main",
+      JIT& j, const VmProgram& p, bool optimized,
+      const char* entry = "__culebra_main",
       std::span<const BakedPreamble* const> baked = {}) {
     using namespace llvm;
     j.declare_runtime_functions();
@@ -338,7 +340,7 @@ struct Lowering {
     for (size_t i = 0; i < p.chunks.size(); ++i) {
       const Chunk& ch = p.chunks[i];
       if (!ch.is_generator) {
-        lower_chunk(j, p, i, fns, metas);
+        lower_chunk(j, p, i, fns, metas, optimized);
         continue;
       }
       auto& b = j.builder_;
@@ -348,7 +350,7 @@ struct Lowering {
       auto* body = Function::Create(
           FunctionType::get(b.getVoidTy(), params, false),
           Function::InternalLinkage, std::format("__vm_gen_{}", i), j.module_);
-      int64_t n_scratch = lower_chunk(j, p, i, fns, metas, body);
+      int64_t n_scratch = lower_chunk(j, p, i, fns, metas, optimized, body);
       b.SetInsertPoint(BasicBlock::Create(j.ctx_, "entry", fns[i]));
       std::vector<llvm::Value*> args;
       for (auto& a : fns[i]->args()) args.push_back(&a);
@@ -509,12 +511,94 @@ struct Lowering {
     std::map<std::string, size_t> lowered_;
   };
 
+  // A stretch of arithmetic the lowering emits twice: as it is, and again
+  // behind a guard that every input holds a Float, where the pipeline folds
+  // each operator's tag tests away. One per-instruction emission for both,
+  // so they cannot disagree (docs/internals/vm.md §7). Only an optimized
+  // lowering makes the copy; a function past the block cut drops it
+  // (JIT::settle_arith_versions).
+  struct ArithRun {
+    size_t start, end;            // [start, end): no jump target past start
+    std::vector<int32_t> inputs;  // slots read as operands before any write
+  };
+
+  // Maximal stretches of the ops below holding two or more operators. A Move
+  // or Take inside carries an input's value to another slot, so a read of the
+  // copy is a read of the input. Generator chunks are left alone: their slots
+  // live in the suspended frame, not in allocas the pipeline promotes.
+  static std::vector<ArithRun> arith_runs(
+      const Chunk& c, const std::map<int32_t, llvm::BasicBlock*>& leaders) {
+    auto is_operator = [](Op op) {
+      return op == Op::Add || op == Op::Sub || op == Op::Mul || op == Op::Div ||
+             op == Op::Mod || op == Op::Neg;
+    };
+    auto fits = [&](const Insn& in) {
+      if (is_operator(in.op)) return true;
+      switch (in.op) {
+        case Op::Move:
+        case Op::MoveRetain:
+        case Op::Take:
+        case Op::Release:
+        case Op::ReleaseMany: return true;
+        case Op::LoadConst: {
+          auto t = c.consts[in.b].tag;
+          return t == TAG_LONG || t == TAG_FLOAT || t == TAG_BOOL ||
+                 t == TAG_NIL;
+        }
+        default: return false;
+      }
+    };
+    std::vector<ArithRun> runs;
+    const size_t n = c.code.size();
+    for (size_t pc = 0; pc < n;) {
+      if (!is_operator(c.code[pc].op)) { ++pc; continue; }
+      size_t end = pc + 1;
+      while (end < n && fits(c.code[end]) &&
+             !leaders.count(static_cast<int32_t>(end)))
+        ++end;
+      // What each slot holds at this point of the run: an input's value
+      // (the input's slot), or something the run made (-1).
+      std::map<int32_t, int32_t> holds;
+      std::vector<int32_t> inputs;
+      size_t operators = 0;
+      auto origin = [&](int32_t s) {
+        auto it = holds.find(s);
+        return it == holds.end() ? s : it->second;
+      };
+      auto read = [&](int32_t s) {
+        int32_t o = origin(s);
+        if (o >= 0 && std::find(inputs.begin(), inputs.end(), o) == inputs.end())
+          inputs.push_back(o);
+      };
+      for (size_t i = pc; i < end; ++i) {
+        const Insn& in = c.code[i];
+        if (is_operator(in.op)) {
+          ++operators;
+          rc_detail::rc_reads(in, read, [] {});
+        }
+        if (in.op == Op::Move || in.op == Op::MoveRetain || in.op == Op::Take) {
+          holds[in.a] = origin(in.b);
+          if (in.op == Op::Take) holds[in.b] = -1;
+        } else if (in.op == Op::ReleaseMany) {
+          for (int32_t s : chunk_release_run(c, in)) holds[s] = -1;
+        } else {
+          holds[rc_detail::rc_single_write(in)] = -1;
+        }
+      }
+      if (operators >= 2 && end < n && !inputs.empty())
+        runs.push_back({pc, end, std::move(inputs)});
+      pc = end;
+    }
+    return runs;
+  }
+
   // `gen_body` is a generator chunk's body function (lower_program): the
   // chunk is lowered into it rather than into the JitFn. Returns how many
   // words of native scratch its frame needs.
   static int64_t lower_chunk(JIT& j, const VmProgram& p, size_t chunk_idx,
                              const std::vector<llvm::Function*>& fns,
                              std::vector<llvm::Constant*>& metas,
+                             bool optimized,
                              llvm::Function* gen_body = nullptr) {
     using namespace llvm;
     const Chunk& c = p.chunks[chunk_idx];
@@ -1343,11 +1427,60 @@ struct Lowering {
     // feeds the JIT's position state, so every emitter that bakes line/col
     // into calls (arith, comparisons, to_bool) attributes exactly as the
     // interp reports.
+    //
+    // An arith run is walked twice: plain copy first, so its blocks and
+    // landing pads land where they would without the run, then the end
+    // rewinds into the Float copy, and the second end joins them. Only the
+    // head can open a block (no jump lands inside), and the run's ops keep no
+    // per-pc state that a second emission would add to (lpad_for caches).
+    const auto runs = gen || !optimized ? std::vector<ArithRun>{}
+                                        : arith_runs(c, blocks);
+    size_t next_run = 0;
+    struct Replay {
+      const ArithRun* run;
+      BasicBlock *fast, *join;
+      bool second;
+    };
+    std::optional<Replay> replay;
+    auto mark_version = [&](Instruction* br) {
+      br->setMetadata(JIT::kArithVersion, MDNode::get(j.ctx_, {}));
+    };
     for (size_t i = 0; i < c.code.size(); ++i) {
+      if (replay && i == replay->run->end) {
+        if (!JIT::terminator_of(b.GetInsertBlock())) {
+          auto* br = b.CreateBr(replay->join);
+          if (!replay->second) mark_version(br);
+        }
+        if (!replay->second) {
+          replay->second = true;
+          i = replay->run->start;
+          b.SetInsertPoint(replay->fast);
+        } else {
+          b.SetInsertPoint(replay->join);
+          replay.reset();
+        }
+      }
       if (stats) stats->at(op_name(c.code[i].op));
-      if (auto it = blocks.find(static_cast<int32_t>(i)); it != blocks.end()) {
+      if (auto it = blocks.find(static_cast<int32_t>(i));
+          it != blocks.end() && !(replay && replay->second)) {
         j.close_block(it->second);
         b.SetInsertPoint(it->second);
+      }
+      if (next_run < runs.size() && runs[next_run].start == i) {
+        assert(!replay);  // runs are disjoint
+        const ArithRun& run = runs[next_run++];
+        auto* fast = BasicBlock::Create(j.ctx_, "arith.float", fn);
+        auto* plain = BasicBlock::Create(j.ctx_, "arith.plain", fn);
+        auto* join = BasicBlock::Create(j.ctx_, "arith.join", fn);
+        llvm::Value* all = nullptr;
+        for (int32_t s : run.inputs) {
+          auto is = b.CreateICmpEQ(j.extract_tag(load_slot(s)),
+                                   b.getInt8(TAG_FLOAT), "arith.is_float");
+          all = all ? b.CreateAnd(all, is) : is;
+        }
+        mark_version(b.CreateCondBr(all, fast, plain));
+        b.SetInsertPoint(plain);
+        replay = Replay{&run, fast, join, false};
       }
       {
         auto [line, col] = chunk_pos_at(c, i);

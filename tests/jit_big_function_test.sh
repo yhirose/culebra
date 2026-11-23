@@ -34,8 +34,11 @@ attrs_of() {
 
 # Function `name` in IR file `ll`: its marked pad release tests and its
 # `rc.release` blocks.
+fn_of() { # <name> <ll>: the function's own lines
+  sed -n "/^define .*@$1(/,/^}/p" "$2"
+}
 pad_tests_of() { # <name> <ll>
-  sed -n "/^define .*@$1(/,/^}/p" "$2" > "$TMP/fn.ll"
+  fn_of "$1" "$2" > "$TMP/fn.ll"
   echo "$(grep -c '!culebra[.]pad_release_test' "$TMP/fn.ll")" \
     "$(grep -c '^rc[.]release[0-9]*:' "$TMP/fn.ll")"
 }
@@ -74,6 +77,29 @@ if grep -q 'culebra[.]pad_release_test' "$TMP/opt.ll"; then
   echo "FAIL: a pad release test's mark reached the pipeline"
   fail=1
 fi
+
+# Past the cut the Float copies of arith runs (Lowering::arith_runs) go
+# before the count, as nothing would fold them. CULEBRA_JIT_BLOCK_STATS
+# counts the lowering before that, so the function -O2 lowers must be bigger
+# than the one -O0 does (it had copies to drop) and no guard may be left.
+lowered_blocks() { # <-O level> <name>
+  CULEBRA_JIT_CACHE=off CULEBRA_JIT_BLOCK_STATS=1 "$CULEBRA" --jit "$1" \
+    --emit-llvm "$TMP/p.cul" 2>&1 > /dev/null |
+    awk -v n="$2" '$2 == n && / blocks,/ { for (i = 1; i <= NF; i++)
+      if ($i == "blocks,") print $(i - 1) }'
+}
+for n in $names; do
+  o0=$(lowered_blocks -O0 "$n")
+  o2=$(lowered_blocks -O2 "$n")
+  if (( o2 <= o0 )); then
+    echo "FAIL: $n was lowered with no arith run to drop ($o0 -> $o2 blocks)"
+    fail=1
+  fi
+  if fn_of "$n" "$TMP/opt.ll" | grep -q 'arith[.]is_float'; then
+    echo "FAIL: $n (past $LIMIT blocks) kept a Float copy's guard"
+    fail=1
+  fi
+done
 
 # A small program keeps the whole pipeline.
 printf 'fn f(x) { x > 1 ? x * 2 : x + 1 }\nprintln(f(3))\n' > "$TMP/p.cul"

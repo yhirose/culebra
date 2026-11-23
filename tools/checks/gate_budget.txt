@@ -261,7 +261,10 @@
 # under --vm, 0.6 s under --jit).
 # 381 since test_page.cul (Page.socket with no page is an IOError on every
 # engine; 0.1 s under --vm, 0.2 s under --jit).
-tests.cul 381
+# 382 since test_arith_runs.cul (a stretch of operators gives the same results
+# and errors whether its inputs are all Floats or not; 0.01 s under --vm,
+# 0.5 s under --jit).
+tests.cul 382
 
 # tests/isolate/*.cul — run on both engines, plus the over-cap modes.
 # 21 since test_xml_isolate.cul (an XML element keeps its methods across an

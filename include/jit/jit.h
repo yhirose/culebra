@@ -41,6 +41,7 @@
 #include "llvm/Support/xxhash.h"
 #include "llvm/TargetParser/Host.h"
 #include "llvm/Target/TargetMachine.h"
+#include "llvm/ADT/DepthFirstIterator.h"  // settle_arith_versions
 #include "llvm/Transforms/Utils/BasicBlockUtils.h"  // settle_pad_release_tests
 #include "llvm/Transforms/Utils/Local.h"  // settle_pad_release_tests
 
@@ -1429,6 +1430,10 @@ struct JIT {
   static void keep_big_functions_unoptimized(llvm::Module& mod) {
     for (auto& f : mod) {
       if (f.isDeclaration() || f.size() <= kMaxOptimizedBlocks) continue;
+      // The Float copies are worth their blocks only to a pipeline that folds
+      // them, so they go first, and the function is counted as it was.
+      settle_arith_versions(f, /*keep=*/false);
+      if (f.size() <= kMaxOptimizedBlocks) continue;
       f.removeFnAttr(llvm::Attribute::AlwaysInline);
       f.addFnAttr(llvm::Attribute::OptimizeNone);
       f.addFnAttr(llvm::Attribute::NoInline);
@@ -1468,9 +1473,53 @@ struct JIT {
     }
   }
 
+  // Marks the guard of an arith run the lowering emitted twice (Lowering::
+  // ArithRun), `br all-inputs-Float, fast, plain`, and the plain copy's
+  // branch to the join. Settled like kPadReleaseTest.
+  static constexpr const char* kArithVersion = "culebra.arith_version";
+
+  // keep: the marks go and both copies stay, for the pipeline to fold.
+  // Otherwise the fast copy goes too, leaving the IR an unversioned lowering
+  // makes, which is what a function past the cut is counted and compiled as.
+  // The fast copy is exactly what the guard alone reaches, so reachability
+  // finds it and no other unreachable block (a dead tail) is touched.
+  static void settle_arith_versions(llvm::Function& f, bool keep) {
+    std::vector<llvm::BranchInst*> guards;
+    std::vector<llvm::BasicBlock*> joins;
+    for (auto& bb : f) {
+      auto* t = llvm::dyn_cast_or_null<llvm::BranchInst>(terminator_of(&bb));
+      if (!t || !t->getMetadata(kArithVersion)) continue;
+      t->setMetadata(kArithVersion, nullptr);
+      if (t->isConditional()) guards.push_back(t);
+      else joins.push_back(t->getSuccessor(0));
+    }
+    if (keep || guards.empty()) return;
+    auto reached = [&] {
+      llvm::SmallPtrSet<llvm::BasicBlock*, 32> seen;
+      for (auto* bb : llvm::depth_first(&f.getEntryBlock())) seen.insert(bb);
+      return seen;
+    };
+    auto before = reached();
+    for (auto* g : guards) g->setSuccessor(0, g->getSuccessor(1));
+    auto after = reached();
+    std::vector<llvm::BasicBlock*> fast;
+    for (auto* bb : before)
+      if (!after.contains(bb)) fast.push_back(bb);
+    llvm::DeleteDeadBlocks(fast);
+    for (auto* g : guards) {
+      auto* plain = g->getSuccessor(1);
+      llvm::ConstantFoldTerminator(g->getParent(), /*DeleteDeadConditions=*/true);
+      llvm::MergeBlockIntoPredecessor(plain);
+    }
+    for (auto* join : joins) llvm::MergeBlockIntoPredecessor(join);
+  }
+
   static void optimize_module(llvm::Module& mod, int opt_level) {
     using namespace llvm;
-    for (auto& f : mod) settle_pad_release_tests(f, /*keep_test=*/true);
+    for (auto& f : mod) {
+      settle_pad_release_tests(f, /*keep_test=*/true);
+      settle_arith_versions(f, /*keep=*/true);
+    }
     PassInstrumentationCallbacks PIC;
     // The new pass manager skips an `optnone` function only through this
     // instrumentation; without it the attribute reaches the backend alone.
