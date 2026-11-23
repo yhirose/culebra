@@ -1345,6 +1345,42 @@ _run-tests BACKEND:
             diff <(printf '%s\n' "$doc_one") <(printf '%s\n' "$doc_par") >&2
             exit 1
         fi
+        # Without --doc, `--jobs n` runs a child per test file. Both reporters
+        # come back as the serial run's, exit status and the throw suite's
+        # failure included, and JSON closes with one run_end over every file.
+        # A run that finds one file is a child too, not a serial run in disguise.
+        local args unit_one unit_par one_rc par_rc
+        for args in "tests/culebra_test_self tests/culebra_test_throw_self" \
+                    "--reporter json tests/culebra_test_self tests/culebra_test_throw_self" \
+                    "tests/culebra_test_throw_self"; do
+            one_rc=0 par_rc=0
+            unit_one=$(cul test --vm $args 2>&1) || one_rc=$?
+            unit_par=$(cul test --vm --jobs 4 $args 2>&1) || par_rc=$?
+            if [[ "$one_rc" != 1 || "$par_rc" != 1 || "$unit_one" != "$unit_par" ]]; then
+                echo "culebra test --jobs 4 $args: disagrees with the serial run (rc $one_rc, $par_rc)" >&2
+                diff <(printf '%s\n' "$unit_one") <(printf '%s\n' "$unit_par") >&2
+                exit 1
+            fi
+            [[ "$args" == --reporter* ]] || continue
+            if [[ $(grep -c '"event":"run_end"' <<< "$unit_par") != 1 ||
+                  "$unit_par" != *'"files":6,"errored_files":0,'* ]]; then
+                echo "culebra test --jobs 4: want one run_end over 6 files:" >&2
+                printf '%s\n' "$unit_par" | tail -5 >&2
+                exit 1
+            fi
+        done
+        # A child that dies is an errored file with a file_error record, and the
+        # run still closes. A serial run would die with it: no serial twin.
+        par_rc=0
+        unit_par=$(cul test --vm --jobs 4 --reporter json tests/culebra_test_crash \
+                   tests/culebra_test_throw_self 2>&1) || par_rc=$?
+        if [[ "$par_rc" != 1 ||
+              "$unit_par" != *'test_kills_itself.cul","kind":"child_failed"'* ||
+              "$unit_par" != *'"files":1,"errored_files":1,'* ]]; then
+            echo "culebra test --jobs 4: a killed child was not an errored file (rc $par_rc)" >&2
+            printf '%s\n' "$unit_par" | tail -5 >&2
+            exit 1
+        fi
     }
 
     # The same `tests/*.cul` the sweep above runs as scripts, through the unit

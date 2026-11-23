@@ -1,0 +1,13 @@
+# A test file whose process dies mid-run, for `culebra test --jobs`: the
+# parent has to count it as errored rather than lose it. Run separately via
+# justfile `run_culebra_test_self`, only under --jobs (a serial run dies too).
+
+@test
+fn before_the_kill() {
+  assert_eq(1 + 1, 2)
+}
+
+@test
+fn kills_its_own_process() {
+  Proc.run(["sh", "-c", "kill -KILL $PPID"])
+}

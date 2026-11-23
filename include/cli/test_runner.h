@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <functional>
@@ -219,6 +220,47 @@ struct TestRunSummary {
   int files = 0;
   std::vector<std::string> failure_messages;
 };
+
+// How a `--jobs` child hands its counts back: one stderr line, so the parent
+// can pass the child's stdout through untouched whichever reporter is in use.
+inline void print_child_counts(const TestRunSummary& s) {
+  std::cerr << "culebra test: child counts passed=" << s.passed
+            << " failed=" << s.failed << " errored=" << s.errored_files
+            << " files=" << s.files << std::endl;
+}
+
+inline bool read_child_counts(const std::string& line, TestRunSummary& s) {
+  return std::sscanf(line.c_str(),
+                     "culebra test: child counts passed=%d failed=%d "
+                     "errored=%d files=%d",
+                     &s.passed, &s.failed, &s.errored_files, &s.files) == 4;
+}
+
+// A file that never got as far as running its tests.
+inline void emit_file_error(Reporter reporter, const std::string& source,
+                            const TestFileError& e) {
+  if (reporter == Reporter::Json) {
+    std::cout << R"({"event":"file_error","source":)" << json_escape(source)
+              << R"(,"kind":)" << json_escape(e.kind)
+              << R"(,"message":)" << json_escape(e.message)
+              << R"(,"line":)" << to_user_line(e.line)
+              << R"(,"col":)" << e.col << "}\n";
+  } else {
+    std::cerr << "culebra test: " << e.kind << " for " << source << ": "
+              << e.message << "\n";
+  }
+}
+
+// A --doc run counts blocks, not files.
+inline void emit_run_end(const TestRunSummary& summary, bool bailed,
+                         bool counts_files, Reporter reporter) {
+  if (reporter != Reporter::Json) return;
+  std::cout << R"({"event":"run_end","passed":)" << summary.passed
+            << R"(,"failed":)" << summary.failed;
+  if (counts_files) std::cout << R"(,"files":)" << summary.files;
+  std::cout << R"(,"errored_files":)" << summary.errored_files
+            << R"(,"bailed":)" << (bailed ? "true" : "false") << "}\n";
+}
 
 // `--bail [n]`: whether the run has seen the failures it was told to stop at.
 // One predicate, because three sites ask — the test loop, the file loop around
@@ -462,32 +504,13 @@ inline TestRunSummary run_tests(
   TestRunSummary summary;
   size_t listed = 0;
 
-  auto emit_file_error = [&](const std::string& path_str,
-                              const TestFileError& e) {
-    const std::string& kind = e.kind;
-    const std::string& message = e.message;
-    int64_t line = to_user_line(e.line), col = e.col;
-    if (reporter == Reporter::Json) {
-      std::cout << R"({"event":"file_error","source":)"
-                << json_escape(path_str)
-                << R"(,"kind":)" << json_escape(kind)
-                << R"(,"message":)" << json_escape(message)
-                << R"(,"line":)" << line
-                << R"(,"col":)" << col
-                << "}\n";
-    } else {
-      std::cerr << "culebra test: " << kind << " for " << path_str
-                << ": " << message << "\n";
-    }
-  };
-
   {
     // Turned on before any file is loaded: a bare `test` is resolved before
     // anything runs, so both the load-stage lint and the compiler need it.
     set_test_ambients(true);
     std::vector<std::string> msgs;
     if (!host.begin_run(msgs)) {
-      emit_file_error("<test ambient>",
+      emit_file_error(reporter, "<test ambient>",
                       {"internal_error", join_messages(msgs), 0, 0});
       summary.errored_files++;
       return summary;
@@ -498,7 +521,8 @@ inline TestRunSummary run_tests(
     auto path_str = path.string();
     std::ifstream ifs(path_str, std::ios::binary);
     if (!ifs) {
-      emit_file_error(path_str, {"open_failed", "can't open file", 0, 0});
+      emit_file_error(reporter, path_str,
+                      {"open_failed", "can't open file", 0, 0});
       summary.errored_files++;
       continue;
     }
@@ -513,7 +537,7 @@ inline TestRunSummary run_tests(
 
     TestFileError err;
     if (!host.run_file(path_str, buff, err)) {
-      emit_file_error(path_str, err);
+      emit_file_error(reporter, path_str, err);
       summary.errored_files++;
       continue;
     }
@@ -530,19 +554,10 @@ inline TestRunSummary run_tests(
     }
   }
 
-  if (reporter == Reporter::Json) {
-    // list_end first, then run_end either way, so a consumer waiting on it as
-    // the stream terminator doesn't hang on a --list run.
-    if (list_only)
-      std::cout << R"({"event":"list_end","count":)" << listed << "}\n";
-    std::cout << R"({"event":"run_end","passed":)" << summary.passed
-              << R"(,"failed":)" << summary.failed
-              << R"(,"files":)" << summary.files
-              << R"(,"errored_files":)" << summary.errored_files
-              << R"(,"bailed":)"
-              << (bailed_out(summary, bail_after) ? "true" : "false")
-              << "}\n";
-  }
+  // The caller writes run_end after this, on a --list run too, so a consumer
+  // waiting on it as the stream terminator doesn't hang.
+  if (reporter == Reporter::Json && list_only)
+    std::cout << R"({"event":"list_end","count":)" << listed << "}\n";
   return summary;
 }
 

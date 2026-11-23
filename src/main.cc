@@ -11,14 +11,14 @@
                               // (tests/test_foreign.cul); registered by the
                               // TU-level variable below
 #include <cli/doctest_runner.h>
-#include <base/exe_path.h>  // current_executable_path — `--doc --jobs` re-runs this
+#include <base/exe_path.h>  // current_executable_path — `test --jobs` re-runs this
 #include <cli/formatter.h>
 #include <cli/init_cmd.h>
 #include <cli/lint_source.h>
 #include <cli/lsp.h>
 #include <cli/stdlib_catalog.h>
 #include <cli/toolchain_cmd.h>
-#include <stdlib/proc.h>  // run_all — the doc shards are child processes
+#include <stdlib/proc.h>  // run_all — `test --jobs` children are processes
 #include <base/source_dir.h>
 #include <cli/test_engine.h>
 #include <cli/test_runner.h>
@@ -1852,89 +1852,57 @@ culebra::BlockRunner doc_block_runner(RunnerEngine engine) {
   };
 }
 
-// The stderr line a shard closes with, and the scanf that reads it back.
-std::string doc_shard_summary_format() {
-  return std::string(culebra::kDocShardSummary) +
-         " %d passed=%d failed=%d errored=%d";
-}
-
-// Fan `--doc --jobs N` out over N copies of this process, one shard of the
-// block list each. A doc block's state is process-wide — the stdout capture,
-// the Sys.exit guard and the compiled lanes' Runtime all live in globals — so
-// the unit of parallelism here is a process, not a thread. Every child builds
-// the same block list and takes a contiguous slice of it, which is what lets
-// the parent replay their stdout in shard order and get source order back.
-// Returns false if a shard could not be started or did not report its counts.
-bool run_doc_shards(int jobs, RunnerEngine engine, culebra::Reporter reporter,
-                    const std::string& filter,
-                    const std::vector<std::string>& roots,
-                    culebra::TestRunSummary& summary) {
-  auto self = culebra::current_executable_path();
-  if (self.empty()) {
-    std::println(stderr, "culebra test: --jobs cannot find this executable");
-    return false;
-  }
-  const char* lane = engine == RunnerEngine::Jit ? "--jit" : "--vm";
-  std::vector<std::vector<std::string>> cmds;
-  for (int i = 0; i < jobs; i++) {
-    std::vector<std::string> a{self, "test", "--doc", lane};
-    if (reporter == culebra::Reporter::Json) {
-      a.emplace_back("--reporter");
-      a.emplace_back("json");
-    }
-    if (!filter.empty()) {
-      a.emplace_back("--filter");
-      a.push_back(filter);
-    }
-    a.emplace_back("--shard");
-    a.push_back(std::to_string(i) + "/" + std::to_string(jobs));
-    a.insert(a.end(), roots.begin(), roots.end());
-    cmds.push_back(std::move(a));
-  }
-
+// Run the children of `culebra test --jobs N`, at most N at a time: a test's
+// state is process-wide (the stdout capture, the Sys.exit guard, the compiled
+// lanes' Runtime), so the unit of parallelism is a process. Replaying their
+// stdout in the order given is what makes the report read as a serial run's.
+void run_test_children(const std::vector<std::vector<std::string>>& cmds,
+                       const std::vector<std::string>& labels, int jobs,
+                       culebra::Reporter reporter,
+                       culebra::TestRunSummary& summary) {
   auto outs = culebra::proc::run_all(cmds, static_cast<size_t>(jobs));
-  const std::string scan = doc_shard_summary_format();
-  bool ok = true;
   for (size_t i = 0; i < outs.size(); i++) {
+    // A child that cannot vouch for its own report is an errored file, and the
+    // run goes on to close its stream.
+    auto child_failed = [&](std::string message) {
+      culebra::emit_file_error(reporter, labels[i],
+                               {"child_failed", std::move(message), 0, 0});
+      summary.errored_files++;
+    };
     if (!outs[i].spawned) {
-      std::println(stderr, "culebra test: shard {} did not start ({})", i,
-                   culebra::proc::outcome_detail(outs[i]));
-      ok = false;
+      child_failed("did not start (" +
+                   culebra::proc::outcome_detail(outs[i]) + ")");
       continue;
     }
     std::cout << outs[i].result.out;
-    // stderr is the shard's counts plus whatever else it had to say: the
+    // stderr is the child's counts plus whatever else it had to say: the
     // counts are consumed here, the rest is passed through.
     std::istringstream lines(outs[i].result.err);
     std::string line;
     bool counted = false;
-    int failed = 0, errored = 0;
+    culebra::TestRunSummary child;
     while (std::getline(lines, line)) {
-      int idx = 0, passed = 0;
-      if (std::sscanf(line.c_str(), scan.c_str(), &idx, &passed, &failed,
-                      &errored) == 4) {
-        summary.passed += passed;
-        summary.failed += failed;
-        summary.errored_files += errored;
+      if (culebra::read_child_counts(line, child)) {
         counted = true;
         continue;
       }
       std::println(stderr, "{}", line);
     }
+    summary.passed += child.passed;
+    summary.failed += child.failed;
+    summary.errored_files += child.errored_files;
+    summary.files += child.files;
     if (!counted) {
-      std::println(stderr, "culebra test: shard {} reported no counts ({})", i,
-                   culebra::proc::outcome_detail(outs[i]));
-      ok = false;
-    } else if (failed == 0 && errored == 0 && !outs[i].result.ok) {
+      child_failed("reported no counts (" +
+                   culebra::proc::outcome_detail(outs[i]) + ")");
+    } else if (child.failed == 0 && child.errored_files == 0 &&
+               !outs[i].result.ok) {
       // The counts leave on unbuffered stderr, so they arrive even from a
-      // child that then dies flushing the report itself. A clean tally next
-      // to a nonzero exit means the shard did not finish saying what it ran.
-      std::println(stderr, "culebra test: shard {} reported no failures but {}",
-                   i, culebra::proc::failure_detail(outs[i].result));
-      ok = false;
+      // child that then dies flushing the report itself.
+      child_failed("reported no failures but " +
+                   culebra::proc::failure_detail(outs[i].result));
     }
   }
-  return ok;
 }
 
 int run_test(int argc, const char** argv) {
@@ -1948,6 +1916,7 @@ int run_test(int argc, const char** argv) {
   bool only_skipped = false;
   int jobs = 1;
   culebra::DocShard shard;
+  bool child = false;
   auto engine = RunnerEngine::Vm;
   bool named = false;
   auto parse_reporter = [&](std::string_view v) {
@@ -1985,8 +1954,9 @@ int run_test(int argc, const char** argv) {
     out = n;
     return true;
   };
-  // `--shard i/n` is how a --jobs parent addresses its children; it is not
-  // part of the documented surface, which is why it is absent from --help.
+  // `--child` (report counts to a --jobs parent, leave it the run_end) and
+  // `--shard i/n` (which slice of the doc blocks) are how a parent addresses
+  // its children; they are absent from --help.
   auto parse_shard = [&](std::string_view v) {
     auto slash = v.find('/');
     auto index = v.substr(0, slash);
@@ -2023,8 +1993,9 @@ int run_test(int argc, const char** argv) {
                    "  --bail [n]      stop after the first failure, or after n\n"
                    "  --list          print the discovered test names, run none\n"
                    "  --doc           run the ```culebra blocks in *.md instead\n"
-                   "  --jobs <n>      run the doc blocks in n processes\n"
-                   "                  (--doc only; not with --bail / --list)\n"
+                   "  --jobs <n>      run up to n processes at once: one per\n"
+                   "                  test file, or n slices of the doc blocks\n"
+                   "                  (not with --bail / --list)\n"
                    "  --only-skipped  run the `# doctest: skip` blocks that give\n"
                    "                  no reason, and nothing else: a skip is\n"
                    "                  justified by the block not running\n"
@@ -2061,6 +2032,8 @@ int run_test(int argc, const char** argv) {
       if (!parse_shard(arg.substr(8))) return 2;
     } else if (arg == "--shard" && i + 1 < argc) {
       if (!parse_shard(argv[++i])) return 2;
+    } else if (arg == "--child") {
+      child = true;
     } else if (arg == "--list") {
       list_only = true;
     } else if (arg == "--doc") {
@@ -2088,9 +2061,45 @@ int run_test(int argc, const char** argv) {
     std::println(stderr, "culebra test: --only-skipped is for --doc blocks");
     return 2;
   }
+  if (shard.count > 1 && !doc_mode) {
+    std::println(stderr, "culebra test: --shard is for --doc blocks");
+    return 2;
+  }
   culebra::TestRunSummary summary;
   require_explicit_engine(named, doc_mode ? "culebra test --doc"
                                           : "culebra test");
+  // --bail ("stop at the first failure") has no meaning across racing
+  // processes and --list runs nothing, so both stay serial; so does
+  // --only-skipped, a seconds-long lane the children do not carry.
+  const bool parallel = jobs > 1 && !list_only && bail_after == 0 &&
+                        !only_skipped;
+  std::string self;
+  if (parallel) {
+    self = culebra::current_executable_path();
+    if (self.empty()) {
+      std::println(stderr, "culebra test: --jobs cannot find this executable");
+      return 1;
+    }
+  }
+  // A --jobs child's command line: this run's own options, then what it runs.
+  std::vector<std::vector<std::string>> cmds;
+  std::vector<std::string> labels;
+  auto add_child = [&](std::vector<std::string> extra, std::string label) {
+    std::vector<std::string> a{self, "test", "--child"};
+    if (doc_mode) a.emplace_back("--doc");
+    a.emplace_back(engine == RunnerEngine::Jit ? "--jit" : "--vm");
+    if (reporter == culebra::Reporter::Json) {
+      a.emplace_back("--reporter");
+      a.emplace_back("json");
+    }
+    if (!filter.empty()) {
+      a.emplace_back("--filter");
+      a.push_back(filter);
+    }
+    a.insert(a.end(), extra.begin(), extra.end());
+    cmds.push_back(std::move(a));
+    labels.push_back(std::move(label));
+  };
   if (doc_mode) {
     // Doctest mode: extract ` ```culebra ` blocks from Markdown docs and
     // run each in a fresh env. A directory root is walked for `*.md`.
@@ -2101,25 +2110,22 @@ int run_test(int argc, const char** argv) {
       std::println(stderr, "culebra test --doc: no .md files found");
       return 1;
     }
-    // --bail is "stop at the first failure", which N processes racing each
-    // other cannot mean, and --list walks names rather than running anything.
-    // Both stay serial instead of quietly meaning something else.
-    // --only-skipped joins them: the shards do not carry it, and the lane it
-    // selects is seconds long on the executor anyway.
-    if (jobs > 1 && !list_only && bail_after == 0 && !only_skipped) {
-      if (!run_doc_shards(jobs, engine, reporter, filter, roots, summary))
-        return 1;
-      culebra::emit_doc_run_end(summary, false, reporter);
+    if (parallel) {
+      // N children over the same roots, each cutting its own contiguous
+      // slice of the block list, so their outputs in order are source order.
+      for (int i = 0; i < jobs; i++) {
+        std::vector<std::string> extra{
+            "--shard", std::to_string(i) + "/" + std::to_string(jobs)};
+        extra.insert(extra.end(), roots.begin(), roots.end());
+        add_child(std::move(extra), "shard " + std::to_string(i));
+      }
+      run_test_children(cmds, labels, jobs, reporter, summary);
     } else {
       summary = culebra::run_doctests(files, filter, doc_block_runner(engine),
                                       reporter, bail_after, list_only, shard,
                                       only_skipped);
     }
   } else {
-    if (jobs > 1) {
-      std::println(stderr, "culebra test: --jobs is for --doc blocks");
-      return 2;
-    }
     if (engine == RunnerEngine::Jit) {
       // There is no JIT host: the lowering has no seam here yet, unlike the
       // doc-block lane. Tier 0 is also the defensible place for a test body,
@@ -2136,22 +2142,29 @@ int run_test(int argc, const char** argv) {
           "culebra test: no test files found (looking for test_*.cul)");
       return 1;
     }
-    // Sys.exit must fail the test, not end the run with its verdict unsaid.
-    culebra::test_exit_guard() = true;
-    auto host = culebra::make_test_host();
-    summary = culebra::run_tests(
-        *host, files, filter, reporter, bail_after, list_only);
+    if (parallel) {
+      // A child per file rather than per slice: the files differ in weight by
+      // two orders of magnitude, and a free slot takes the next file.
+      for (const auto& f : files) add_child({f.string()}, f.string());
+      run_test_children(cmds, labels, jobs, reporter, summary);
+    } else {
+      // Sys.exit must fail the test, not end the run with its verdict unsaid.
+      culebra::test_exit_guard() = true;
+      auto host = culebra::make_test_host();
+      summary = culebra::run_tests(
+          *host, files, filter, reporter, bail_after, list_only);
+    }
   }
 
+  // A child's counts belong to its parent, which closes the run.
+  if (child) {
+    culebra::print_child_counts(summary);
+    return (summary.failed == 0 && summary.errored_files == 0) ? 0 : 1;
+  }
+  culebra::emit_run_end(summary, culebra::bailed_out(summary, bail_after),
+                        !doc_mode, reporter);
   if (list_only) {
     return summary.errored_files == 0 ? 0 : 1;
-  }
-  // A shard's counts belong to its parent, which prints the run's summary.
-  if (shard.count > 1) {
-    std::println(stderr, "{} {} passed={} failed={} errored={}",
-                 culebra::kDocShardSummary, shard.index, summary.passed,
-                 summary.failed, summary.errored_files);
-    return (summary.failed == 0 && summary.errored_files == 0) ? 0 : 1;
   }
   if (reporter == culebra::Reporter::Default) {
     if (summary.errored_files > 0) {

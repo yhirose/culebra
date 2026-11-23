@@ -225,28 +225,12 @@ using BlockRunner =
     std::function<DocRunOutcome(const std::string& name,
                                 const std::string& code)>;
 
-// Which slice of the corpus one process runs. `culebra test --doc --jobs N`
+// Which slice of the block list one process runs. `culebra test --doc --jobs N`
 // re-runs itself N times, one shard each; the default is the whole corpus.
 struct DocShard {
   int index = 0;
   int count = 1;
 };
-
-// How a shard hands its counts back: one stderr line, so the parent can pass
-// the child's stdout through untouched whichever reporter is in use.
-inline constexpr const char* kDocShardSummary = "culebra test: shard";
-
-// The JSON reporter's closing record. A parallel run emits it once, from the
-// parent, over the summed counts — which is why it is not inlined into
-// run_doctests' tail.
-inline void emit_doc_run_end(const TestRunSummary& summary, bool bailed,
-                             Reporter reporter) {
-  if (reporter != Reporter::Json) return;
-  std::cout << R"({"event":"run_end","passed":)" << summary.passed
-            << R"(,"failed":)" << summary.failed
-            << R"(,"errored_files":)" << summary.errored_files
-            << R"(,"bailed":)" << (bailed ? "true" : "false") << "}\n";
-}
 
 // Run the doctest blocks in each file. Mirrors run_tests' reporter
 // output (Default human lines / Json NDJSON) and summary/exit
@@ -454,12 +438,6 @@ inline TestRunSummary run_doctests(
     emit_pass(name);
   }
 
-  // A shard's records are half a run: the parent closes the stream once it has
-  // every child's counts.
-  if (shard.count == 1) {
-    emit_doc_run_end(summary, bail_after > 0 && summary.failed >= bail_after,
-                     reporter);
-  }
   return summary;
 }
 

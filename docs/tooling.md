@@ -155,7 +155,8 @@ fn user_count(db) {
 `defer` inside a fixture body would fire when the fixture fn returns
 (before the test runs), so class `drop` is the right tool for cleanup.
 Long-lived state shared across files (e.g. a model loaded once) goes at
-module top level instead, since the module system caches the binding.
+module top level instead, since the module system caches the binding
+for the rest of the process (under `--jobs`, each file's own process).
 
 **Matchers.** Assertions use the matcher family — there is no `assert`
 keyword or builtin. Matchers are **3-backend globals** (bound on every
@@ -195,6 +196,7 @@ culebra test --reporter json       # NDJSON output (one JSON per line)
 culebra test --bail                # stop after the first failure
 culebra test --bail 3              # stop after 3 failures
 culebra test --list                # discover only; print test names
+culebra test --jobs 8 tests/       # a process per file, 8 at a time
 culebra test --doc docs            # run the doctests in markdown files
 culebra test --doc --vm docs       # ... on the bytecode VM (or --jit)
 culebra test --doc --jit --jobs 8 docs  # ... in 8 processes
@@ -212,6 +214,17 @@ a function everywhere else — and so are its classes, its overloads and its
 fixture declared in one file is not visible from another; pass it through
 a parameter, or declare it in each file that wants it. A file may
 `import`, and its modules run as one unit the way they do in a script.
+
+`--jobs <n>` runs each file in a process of its own, up to `n` at once.
+Since a file is already its own program, the results are the serial
+run's: the parent replays each file's output in discovery order, sums
+the counts, exits with the same code, and closes a JSON stream with one
+`run_end`. What files stop sharing is the module cache, so a module
+several files import is loaded once per file rather than once per run.
+A file whose process dies counts as an errored file (a `file_error` of
+kind `child_failed`). `--bail` and `--list` stay serial: "stop at the
+first failure" has no meaning across processes racing each other, and a
+listing runs nothing.
 
 A file's top level runs in a *session* scope rather than a script's.
 Scoping reads the same either way — a bare write inside a function is
@@ -270,9 +283,8 @@ without `--doc`) runs on the VM.
 `--jobs <n>` runs the blocks in `n` copies of this process, each taking a
 contiguous slice of the block list; the parent replays their output in
 source order, so the report reads the same as a serial run. The JIT lane
-compiles one LLVM module per block and is the reason the flag exists.
-`--bail` and `--list` stay serial: "stop at the first failure" has no
-meaning across processes racing each other, and a listing runs nothing.
+compiles one LLVM module per block, which is where the flag pays most.
+`--bail` and `--list` stay serial here too.
 
 Two consequences are worth knowing when writing examples. An expression
 on its own prints nothing, so a checked example has to go through
