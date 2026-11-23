@@ -1,0 +1,35 @@
+# A function under the JIT's block cut that its arith runs' Float copies
+# take past it: the cut counts it without them, so it keeps them.
+# tests/jit_big_function_test.sh reads its IR.
+
+fn near(x, y, z, w) {
+  mut acc = 0.0
+  acc = acc + x * y - z * 0.5 + w / (x + 0.25) - y * z * 0.5
+  acc = acc + y * z - w * 1.5 + x / (y + 1.25) - z * w * 0.5
+  acc = acc + z * w - x * 2.5 + y / (z + 2.25) - w * x * 0.5
+  acc = acc + w * x - y * 3.5 + z / (w + 3.25) - x * y * 0.5
+  acc = acc + x * y - z * 4.5 + w / (x + 4.25) - y * z * 0.5
+  acc = acc + y * z - w * 5.5 + x / (y + 5.25) - z * w * 0.5
+  acc = acc + z * w - x * 6.5 + y / (z + 6.25) - w * x * 0.5
+  acc = acc + w * x - y * 7.5 + z / (w + 7.25) - x * y * 0.5
+  acc = acc + x * y - z * 8.5 + w / (x + 8.25) - y * z * 0.5
+  acc = acc + y * z - w * 9.5 + x / (y + 9.25) - z * w * 0.5
+  acc = acc + z * w - x * 10.5 + y / (z + 10.25) - w * x * 0.5
+  acc = acc + w * x - y * 11.5 + z / (w + 11.25) - x * y * 0.5
+  acc = acc + x * y - z * 12.5 + w / (x + 12.25) - y * z * 0.5
+  acc = acc + y * z - w * 13.5 + x / (y + 13.25) - z * w * 0.5
+  acc = acc + z * w - x * 14.5 + y / (z + 14.25) - w * x * 0.5
+  acc = acc + w * x - y * 15.5 + z / (w + 15.25) - x * y * 0.5
+  acc = acc + x * y - z * 16.5 + w / (x + 16.25) - y * z * 0.5
+  acc = acc + y * z - w * 17.5 + x / (y + 17.25) - z * w * 0.5
+  acc = acc + z * w - x * 18.5 + y / (z + 18.25) - w * x * 0.5
+  acc = acc + w * x - y * 19.5 + z / (w + 19.25) - x * y * 0.5
+  acc = acc + x * y - z * 20.5 + w / (x + 20.25) - y * z * 0.5
+  acc = acc + y * z - w * 21.5 + x / (y + 21.25) - z * w * 0.5
+  acc = acc + z * w - x * 22.5 + y / (z + 22.25) - w * x * 0.5
+  acc = acc + w * x - y * 23.5 + z / (w + 23.25) - x * y * 0.5
+  acc = acc + x * y - z * 24.5 + w / (x + 24.25) - y * z * 0.5
+  acc = acc + y * z - w * 25.5 + x / (y + 25.25) - z * w * 0.5
+  acc
+}
+println(near(1.5, 2.5, 3.5, 4.5))

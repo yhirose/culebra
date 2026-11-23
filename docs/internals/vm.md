@@ -1962,7 +1962,10 @@ per-function `-O0`: the IR passes skip it through
 `OptNoneInstrumentation`, which `optimize_module` registers for that
 reason, and the backend gives it FastISel and the fast allocator. The
 rest of the module is optimized as before. The 277-line function starts
-in 2.5 s and runs about 40% slower than at `-O2`; `DropSettledRefcounts`
+in 2.5 s and runs about 40% slower than at `-O2`. Float arithmetic loses
+more, as past the cut it also goes without the arith runs' copies (below):
+the flight model's contact routine, 5,379 blocks, takes 4.6 µs a call
+against 1.4 µs optimized. `DropSettledRefcounts`
 is a required pass, so it still runs there. The baked preamble and
 `culebra build` keep the whole pipeline for every function: they pay the
 compile once, at build, and the stdlib holds functions past the cut
@@ -2099,12 +2102,14 @@ a stretch, so the walk simply rewinds over it, the plain copy first so
 that its blocks and landing pads come out exactly where they would
 without the copy. Only a pipeline folds the second copy, so a lowering
 without one (`-O0`, `--jit-faststart`) makes none
-(`lower_program`'s `optimized`), and a function past the block cut has its
-copies taken back out before it is counted (`JIT::settle_arith_versions`),
-so the cut sees the function as before. Twenty Float operators per call
+(`lower_program`'s `optimized`). The block cut counts a function without
+its copies (`JIT::arith_versions`), so it sees the function as before: under
+the cut the function keeps them, and past it they are taken back out
+(`JIT::drop_float_copies`). Twenty Float operators per call
 went from 42.7 to 16.0 ns on fields and from 36.8 to 13.8 ns on untyped
 parameters (x86-64, `just build`); the flight model's step went from 2.86
-to 2.28 µs in the air and from 8.12 to 7.23 µs on the ground. Across
+to 2.04 µs in the air and from 8.12 to 6.91 µs on the ground, where its
+contact routine is past the cut (3.7 µs built ahead of time). Across
 `tests/*.cul` the optimized IR grew 0.04% and the JIT's compile time
 0.35%. `tools/checks/check_arith_runs.sh` pins the fold (§10.2).
 

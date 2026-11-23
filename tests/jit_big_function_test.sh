@@ -15,13 +15,26 @@ LIMIT=4096
 
 emit() { CULEBRA_JIT_CACHE=off "$CULEBRA" --jit "$@" --emit-llvm "$TMP/p.cul" 2>/dev/null; }
 
-# The functions the lowering hands the pipeline with more than LIMIT blocks
-# (-O0 prints the lowered IR as it is).
-big_names() {
+# Each fixture is compiled once per level, with CULEBRA_JIT_BLOCK_STATS on:
+# <stem>.ll is the IR (-O0 prints it as lowered), <stem>.stats the tables
+# and <stem>.counts each function's lowered blocks, by name.
+compile() { # <file> <-O level> <stem>
+  CULEBRA_JIT_CACHE=off CULEBRA_JIT_BLOCK_STATS=1 "$CULEBRA" --jit "$2" \
+    --emit-llvm "$1" > "$TMP/$3.ll" 2> "$TMP/$3.stats"
+  awk '/^\[jit-blocks\] [^ ]+ .*: [0-9]+ blocks/ { for (i = 1; i <= NF; i++)
+    if ($i == "blocks,") print $2, $(i - 1) }' "$TMP/$3.stats" |
+    sort > "$TMP/$3.counts"
+}
+blocks_of() { # <stem> <name>
+  awk -v n="$2" '$1 == n { print $2 }' "$TMP/$1.counts"
+}
+
+# The functions of an -O0 IR file with more than LIMIT blocks.
+big_names() { # <ll>
   awk -v min="$LIMIT" '
     /^define/ { n = $0; sub(/\(.*/, "", n); sub(/.*@/, "", n); b = 0; f = 1; next }
     f && /^}/ { if (b > min) print n; f = 0; next }
-    f && /^[A-Za-z0-9_.$"-]+:/ { b++ }' "$TMP/lowered.ll"
+    f && /^[A-Za-z0-9_.$"-]+:/ { b++ }' "$1"
 }
 
 # The attributes the optimised module gives function `name`.
@@ -44,10 +57,9 @@ pad_tests_of() { # <name> <ll>
 }
 
 # tests/test_jit_big_function.cul holds one function past the cut.
-cp "$HERE/test_jit_big_function.cul" "$TMP/p.cul"
-emit -O0 > "$TMP/lowered.ll"
-names=$(big_names)
-emit -O2 > "$TMP/opt.ll"
+compile "$HERE/test_jit_big_function.cul" -O0 lowered
+compile "$HERE/test_jit_big_function.cul" -O2 opt
+names=$(big_names "$TMP/lowered.ll")
 if [[ -z "$names" ]]; then
   echo "FAIL: no function past $LIMIT blocks in test_jit_big_function.cul"
   fail=1
@@ -82,21 +94,33 @@ fi
 # before the count, as nothing would fold them. CULEBRA_JIT_BLOCK_STATS
 # counts the lowering before that, so the function -O2 lowers must be bigger
 # than the one -O0 does (it had copies to drop) and no guard may be left.
-lowered_blocks() { # <-O level> <name>
-  CULEBRA_JIT_CACHE=off CULEBRA_JIT_BLOCK_STATS=1 "$CULEBRA" --jit "$1" \
-    --emit-llvm "$TMP/p.cul" 2>&1 > /dev/null |
-    awk -v n="$2" '$2 == n && / blocks,/ { for (i = 1; i <= NF; i++)
-      if ($i == "blocks,") print $(i - 1) }'
-}
 for n in $names; do
-  o0=$(lowered_blocks -O0 "$n")
-  o2=$(lowered_blocks -O2 "$n")
+  o0=$(blocks_of lowered "$n")
+  o2=$(blocks_of opt "$n")
   if (( o2 <= o0 )); then
     echo "FAIL: $n was lowered with no arith run to drop ($o0 -> $o2 blocks)"
     fail=1
   fi
   if fn_of "$n" "$TMP/opt.ll" | grep -q 'arith[.]is_float'; then
     echo "FAIL: $n (past $LIMIT blocks) kept a Float copy's guard"
+    fail=1
+  fi
+done
+
+# A function that only its Float copies take past the cut is counted
+# without them (JIT::arith_versions), so it keeps them and their guards.
+compile "$HERE/jit_big_function/near_cut.cul" -O0 near0
+compile "$HERE/jit_big_function/near_cut.cul" -O2 near2
+kept=$(join "$TMP/near0.counts" "$TMP/near2.counts" |
+  awk -v min="$LIMIT" '$2 <= min && $3 > min { print $1 }')
+if [[ -z "$kept" ]]; then
+  echo "FAIL: no function in jit_big_function/near_cut.cul that only its" \
+    "Float copies take past $LIMIT blocks"
+  fail=1
+fi
+for n in $kept; do
+  if ! fn_of "$n" "$TMP/near2.ll" | grep -q 'arith[.]is_float'; then
+    echo "FAIL: $n (past $LIMIT blocks only with its Float copies) lost them"
     fail=1
   fi
 done
@@ -111,21 +135,16 @@ fi
 # CULEBRA_JIT_BLOCK_STATS=<n> says which part of the lowering made a long
 # function's blocks (docs/internals/vm.md §7). It counts the IR as lowered,
 # which -O0 prints as it is, and gives every block an owner.
-cp "$HERE/test_jit_big_function.cul" "$TMP/p.cul"
-CULEBRA_JIT_CACHE=off CULEBRA_JIT_BLOCK_STATS=1 "$CULEBRA" --jit -O0 \
-  --emit-llvm "$TMP/p.cul" > "$TMP/o0.ll" 2> "$TMP/stats.txt"
 awk '
   /^define/ { n = $0; sub(/\(.*/, "", n); sub(/.*@/, "", n); b = 0; f = 1; next }
   f && /^}/ { print n, b; f = 0; next }
-  f && /^[A-Za-z0-9_.$"-]+:/ { b++ }' "$TMP/o0.ll" | sort > "$TMP/ir_counts"
-awk '/^\[jit-blocks\] [^ ]+ .*: [0-9]+ blocks/ {
-  for (i = 1; i <= NF; i++) if ($i == "blocks,") print $2, $(i - 1) }' \
-  "$TMP/stats.txt" | sort > "$TMP/stat_counts"
-if [[ ! -s "$TMP/stat_counts" ]] || ! diff "$TMP/ir_counts" "$TMP/stat_counts"; then
+  f && /^[A-Za-z0-9_.$"-]+:/ { b++ }' "$TMP/lowered.ll" | sort > "$TMP/ir_counts"
+if [[ ! -s "$TMP/lowered.counts" ]] ||
+  ! diff "$TMP/ir_counts" "$TMP/lowered.counts"; then
   echo "FAIL: CULEBRA_JIT_BLOCK_STATS counts differ from the -O0 IR's"
   fail=1
 fi
-if grep -qE '^\[jit-blocks\] +[0-9]+ +[0-9.]+% +(-|[0-9]+) +\? ' "$TMP/stats.txt"; then
+if grep -qE '^\[jit-blocks\] +[0-9]+ +[0-9.]+% +(-|[0-9]+) +\? ' "$TMP/lowered.stats"; then
   echo "FAIL: CULEBRA_JIT_BLOCK_STATS left a block without an owner"
   fail=1
 fi

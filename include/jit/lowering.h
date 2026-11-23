@@ -515,8 +515,8 @@ struct Lowering {
   // behind a guard that every input holds a Float, where the pipeline folds
   // each operator's tag tests away. One per-instruction emission for both,
   // so they cannot disagree (docs/internals/vm.md §7). Only an optimized
-  // lowering makes the copy; a function past the block cut drops it
-  // (JIT::settle_arith_versions).
+  // lowering makes the copy; a function whose blocks without it are past the
+  // cut drops it (JIT::drop_float_copies).
   struct ArithRun {
     size_t start, end;            // [start, end): no jump target past start
     std::vector<int32_t> inputs;  // slots read as operands before any write
